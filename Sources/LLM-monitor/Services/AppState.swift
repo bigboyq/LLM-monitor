@@ -140,7 +140,7 @@ final class AppState: ObservableObject {
         systemHealthLevel(at: Date())
     }
 
-    /// 指定时刻计算系统健康度。状态栏的 TimelineView 用它跨越高峰边界，测试也能
+    /// 指定时刻计算系统健康度。状态栏的分钟时钟用它跨越高峰边界，测试也能
     /// 注入固定时间，避免依赖墙上时钟。
     func systemHealthLevel(at now: Date) -> HealthLevel? {
         let enabled = statuses.filter(\.isEnabled)

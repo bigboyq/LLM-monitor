@@ -4,11 +4,11 @@
 
 适用于 macOS 14 及以上版本的菜单栏额度与本地用量监视器。一个入口集中查看 Minimax、ChatGPT/Codex、Antigravity、GLM Coding Plan 与 DeepSeek，并可选择合并 OpenCode 的本地 token 账本。
 
-> 当前版本：**1.4.0** · 支持 Apple Silicon 与 Intel Mac · 所有凭据和用量缓存只保存在本机
+> 当前版本：**1.4.1** · 支持 Apple Silicon 与 Intel Mac · 所有凭据和用量缓存只保存在本机
 
 ## 下载与安装
 
-1. 从 [GitHub Releases](https://github.com/bigboyq/LLM-monitor/releases/latest) 下载 `LLM-monitor-1.4.0.dmg`。
+1. 从 [GitHub Releases](https://github.com/bigboyq/LLM-monitor/releases/latest) 下载 `LLM-monitor-1.4.1.dmg`。
 2. 打开 DMG，将 **LLM-monitor.app** 拖到 **Applications**。
 3. 首次启动后点击菜单栏图标，再进入“设置”启用并配置需要的 Provider。
 
