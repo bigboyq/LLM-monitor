@@ -55,10 +55,12 @@ The public snapshot is ad-hoc signed and is not Apple-notarized. If macOS blocks
 
 ## Documentation
 
-- [English user guide](docs/help.en.md)
-- [中文帮助文档](docs/help.zh-CN.md)
-- [Architecture and provider specifications](spec/overview.md)
-- [Changelog](CHANGELOG.md)
+- Setup, everyday controls, and troubleshooting: [English user guide](docs/help.en.md) · [中文帮助文档](docs/help.zh-CN.md)
+- Interface structure and interaction rules: [UI design specification](spec/ui-design.md)
+- Architecture, state machine, refresh behavior, and data model: [project specification](spec/overview.md)
+- Provider data sources and accounting rules: [Minimax](spec/providers/minimax.md) · [ChatGPT/Codex](spec/providers/codex.md) · [Antigravity](spec/providers/antigravity.md) · [GLM](spec/providers/glm.md) · [DeepSeek](spec/providers/deepseek.md) · [OpenCode](spec/providers/opencode.md)
+- Engineering policies: [concurrency](docs/policy/concurrency.md) · [errors](docs/policy/error.md) · [logging](docs/policy/logging.md) · [performance](docs/policy/performance.md) · [persistence](docs/policy/persistence.md)
+- Version history: [changelog](CHANGELOG.md) · [release notes](docs/releases/)
 
 ## Build from source
 
