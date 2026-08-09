@@ -16,8 +16,10 @@ This spec documents the UI that is currently implemented in `Sources/LLM-monitor
 Current implementation:
 
 `MenuBarLabel` (defined in `Sources/LLM-monitor/Views/MenuBarLabel.swift`) renders a fixed-width compact icon (`18x18pt`) that dynamically reflects overall provider health and background refreshing status.
-It uses a one-minute `TimelineView`, so GLM/DeepSeek peak-window boundaries update even
-when no provider publishes a fresh network result.
+`AppState` publishes a stable one-minute clock value, so GLM/DeepSeek peak-window
+boundaries update even when no provider publishes a fresh network result. The clock is
+kept outside the `MenuBarExtra` label because embedding `TimelineView` there can trigger
+a status-item redraw loop on some macOS versions.
 
 Icon Styles (`statusBarIconStyle`):
 - `chartBar` (`chart.bar.fill` - default)

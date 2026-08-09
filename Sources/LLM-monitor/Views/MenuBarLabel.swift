@@ -6,19 +6,17 @@ struct MenuBarLabel: View {
     @ObservedObject var configStore: ConfigStore
 
     var body: some View {
-        // 高峰健康度是时间派生状态；即使 provider 没有发布新数据，也要在跨越
-        // GLM / DeepSeek 高峰边界时主动重算。分钟级刷新与卡片倒计时保持一致。
-        TimelineView(.periodic(from: .now, by: 60)) { timeline in
-            let iconStyle = configStore.config.effectiveStatusBarIconStyle
-            let indicatorMode = configStore.config.effectiveStatusBarIndicatorMode
-            let health = state.systemHealthLevel(at: timeline.date)
+        // 分钟脉冲由 AppState 发布。不要在 MenuBarExtra label 内放 TimelineView：
+        // 部分 macOS 版本会因此持续重建 status item 图像，导致 CPU/内存失控。
+        let iconStyle = configStore.config.effectiveStatusBarIconStyle
+        let indicatorMode = configStore.config.effectiveStatusBarIndicatorMode
+        let health = state.systemHealthLevel(at: state.healthEvaluationDate)
 
-            mainIconView(iconStyle: iconStyle, indicatorMode: indicatorMode, health: health)
-                .frame(width: 18, height: 18)
-                .accessibilityLabel(accessibilityTitle(health: health))
-                .onReceive(state.statusDidChange) { _ in
-                    // 观察状态变更广播
-                }
+        mainIconView(iconStyle: iconStyle, indicatorMode: indicatorMode, health: health)
+            .frame(width: 18, height: 18)
+            .accessibilityLabel(accessibilityTitle(health: health))
+            .onReceive(state.statusDidChange) { _ in
+                // 观察状态变更广播
             }
     }
 
@@ -30,16 +28,13 @@ struct MenuBarLabel: View {
     ) -> some View {
         if state.isRefreshing {
             Image(systemName: "arrow.triangle.2.circlepath")
-                .symbolRenderingMode(.hierarchical)
                 .foregroundStyle(indicatorMode == .colored ? Color.accentColor : Color.primary)
         } else if case .critical = health {
             Image(systemName: "exclamationmark.triangle.fill")
-                .symbolRenderingMode(.hierarchical)
                 .foregroundStyle(indicatorMode == .colored ? Color.red : Color.primary)
         } else {
             let imageName = iconStyle.systemImageName
             Image(systemName: imageName)
-                .symbolRenderingMode(.hierarchical)
                 .foregroundStyle(iconColor(indicatorMode: indicatorMode, health: health))
         }
     }

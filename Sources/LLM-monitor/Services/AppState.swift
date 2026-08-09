@@ -19,6 +19,11 @@ final class AppState: ObservableObject {
     /// 下次自动刷新时间
     @Published private(set) var nextRefreshAt: Date?
 
+    /// 菜单栏健康度的时间基准。由 AppState 的稳定定时任务每分钟推进，避免在
+    /// `MenuBarExtra` label 内嵌 `TimelineView`；后者在部分 macOS 版本上会在
+    /// status item 初始化时形成持续重绘循环。
+    @Published private(set) var healthEvaluationDate = Date()
+
     /// 配置文件路径（UI 用）
     let configStore: ConfigStore
 
@@ -54,6 +59,9 @@ final class AppState: ObservableObject {
     /// 定期触发 scan，不依赖 quota 是否成功。scanner 内部的 db+WAL 指纹检查保证
     /// 指纹没变时只做一次 `stat()`（微秒级），指纹变了才跑 SQL（~1.5ms），零额外负担。
     private var glmLocalUsagePeriodicTask: Task<Void, Never>?
+
+    /// 推进 `healthEvaluationDate`，让高峰窗口跨越分钟边界时能更新菜单栏颜色。
+    private var healthClockTask: Task<Void, Never>?
 
     /// Antigravity 本地 token 用量 scanner：通过 `LocalUsageCoordinator` 包装
     /// singleton + Combine wire-up 逻辑，避免在 AppState 里重复 30+ 行。
@@ -277,6 +285,7 @@ final class AppState: ObservableObject {
         triggerOpencodeUsageScan()
         // GLM 本地 scanner 的独立定期触发（不依赖 quota 成功）
         startGlmLocalUsagePeriodicTrigger()
+        startHealthClock()
     }
 
     func stop() {
@@ -291,6 +300,8 @@ final class AppState: ObservableObject {
         opencodeUsageCoordinator.cancelInFlight()
         glmLocalUsagePeriodicTask?.cancel()
         glmLocalUsagePeriodicTask = nil
+        healthClockTask?.cancel()
+        healthClockTask = nil
         nextRefreshAt = nil
         configReloadTask?.cancel()
         configReloadTask = nil
@@ -301,6 +312,25 @@ final class AppState: ObservableObject {
     /// 重新调度所有 timer（配置变更后调用）
     func rescheduleAll() {
         start()
+    }
+
+    /// `TimelineView` 放在 `MenuBarExtra` 的 label 中会让某些 AppKit/SwiftUI 组合
+    /// 反复执行 `MenuBarExtraController.updateButton`，造成主线程满载和内存暴涨。
+    /// 用 AppState 持有的单一定时任务发布分钟脉冲，label 只消费一个普通 Date 值。
+    private func startHealthClock() {
+        healthClockTask?.cancel()
+        healthEvaluationDate = Date()
+        healthClockTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(for: .seconds(60))
+                } catch {
+                    return
+                }
+                guard let self, !Task.isCancelled else { return }
+                self.healthEvaluationDate = Date()
+            }
+        }
     }
 
     // MARK: - 公开操作
