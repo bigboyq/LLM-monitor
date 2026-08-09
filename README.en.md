@@ -34,13 +34,24 @@ The public snapshot is ad-hoc signed and is not Apple-notarized. If macOS blocks
 - Launch-at-login support when the app is installed in `/Applications`.
 - Private local storage: configuration directories use mode `0700`; config and log files use `0600`.
 
-## Screenshot
+## Screenshots
 
 <p align="center">
-  <img src="docs/images/settings-general.png" alt="LLM Monitor general settings" width="900">
+  <img src="docs/images/menu-overview.png" alt="LLM Monitor menu bar dashboard" width="420">
 </p>
 
-<p align="center"><sub>General settings for refresh cadence, menu bar appearance, health indication, and launch at login.</sub></p>
+<p align="center"><sub>The menu bar dashboard combines provider quota, balance, reset time, peak-period status, and local usage.</sub></p>
+
+<table>
+  <tr>
+    <td><img src="docs/images/settings-general.png" alt="LLM Monitor general settings"></td>
+    <td><img src="docs/images/token-usage-seven-days.png" alt="Seven-day token usage chart"></td>
+  </tr>
+  <tr>
+    <td align="center">General settings and provider navigation</td>
+    <td align="center">Seven-day token usage details</td>
+  </tr>
+</table>
 
 ## Documentation
 

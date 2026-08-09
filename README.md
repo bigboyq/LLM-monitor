@@ -27,10 +27,21 @@
 ## 界面预览
 
 <p align="center">
-  <img src="docs/images/settings-general.png" alt="LLM Monitor 通用设置界面" width="900">
+  <img src="docs/images/menu-overview.png" alt="LLM Monitor 菜单栏主面板" width="420">
 </p>
 
-<p align="center"><sub>通用设置：全局刷新间隔、状态栏图标、健康度指示和开机自启动。</sub></p>
+<p align="center"><sub>菜单栏主面板：集中查看 Provider 额度、余额、重置时间、高峰提示和本地用量。</sub></p>
+
+<table>
+  <tr>
+    <td><img src="docs/images/settings-general.png" alt="LLM Monitor 通用设置界面"></td>
+    <td><img src="docs/images/token-usage-seven-days.png" alt="最近七天 Token 用量图表"></td>
+  </tr>
+  <tr>
+    <td align="center">通用设置与 Provider 导航</td>
+    <td align="center">最近七天 Token 用量明细</td>
+  </tr>
+</table>
 
 macOS 菜单栏小工具，展示各家 LLM 服务的剩余额度。
 **展示与配置管理** — 点击菜单栏图标查看下拉，并提供了图形化设置页面直接修改配置。
