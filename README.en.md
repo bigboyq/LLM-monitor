@@ -34,6 +34,14 @@ The public snapshot is ad-hoc signed and is not Apple-notarized. If macOS blocks
 - Launch-at-login support when the app is installed in `/Applications`.
 - Private local storage: configuration directories use mode `0700`; config and log files use `0600`.
 
+## Screenshot
+
+<p align="center">
+  <img src="docs/images/settings-general.png" alt="LLM Monitor general settings" width="900">
+</p>
+
+<p align="center"><sub>General settings for refresh cadence, menu bar appearance, health indication, and launch at login.</sub></p>
+
 ## Documentation
 
 - [English user guide](docs/help.en.md)

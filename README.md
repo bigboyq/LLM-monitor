@@ -24,6 +24,14 @@
 - 提供 GLM/DeepSeek 高峰时段提示、最近 7 天图表和开机自启动。
 - 配置目录权限为 `0700`，配置、日志与凭据文件权限为 `0600`。
 
+## 界面预览
+
+<p align="center">
+  <img src="docs/images/settings-general.png" alt="LLM Monitor 通用设置界面" width="900">
+</p>
+
+<p align="center"><sub>通用设置：全局刷新间隔、状态栏图标、健康度指示和开机自启动。</sub></p>
+
 macOS 菜单栏小工具，展示各家 LLM 服务的剩余额度。
 **展示与配置管理** — 点击菜单栏图标查看下拉，并提供了图形化设置页面直接修改配置。
 所有配置（含 API Key）保存在本地 JSON 中，App 支持图形化配置或直接编辑 JSON，编辑保存后自动 reload。
