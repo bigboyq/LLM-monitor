@@ -1,0 +1,24 @@
+.DS_Store
+
+# Internal review and audit work products
+.review/
+*AUDIT*.md
+audit-round*.md
+CODE_REVIEW_*.md
+
+# SwiftPM / local build output
+.build/
+build/
+.swiftpm/
+
+# Packaged app artifacts
+*.app
+*.dmg
+
+# Local temporary/debug dirs
+.codex-tmp/
+.zcode/
+
+# Editor temp files
+*.swp
+*.swo
