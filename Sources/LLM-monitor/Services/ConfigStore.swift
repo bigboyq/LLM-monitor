@@ -67,12 +67,19 @@ struct AppConfig: Codable, Equatable {
     /// 状态栏指示模式 (nil = 默认 colored)
     var statusBarIndicatorMode: StatusBarIndicatorMode?
 
+    /// 是否显示状态栏健康度圆点 (nil = 默认开启)
+    var statusBarHealthDotEnabled: Bool?
+
     var effectiveStatusBarIconStyle: StatusBarIconStyle {
         statusBarIconStyle ?? .chartBar
     }
 
     var effectiveStatusBarIndicatorMode: StatusBarIndicatorMode {
         statusBarIndicatorMode ?? .colored
+    }
+
+    var effectiveStatusBarHealthDotEnabled: Bool {
+        statusBarHealthDotEnabled ?? true
     }
 
     static let `default` = AppConfig(
@@ -96,18 +103,20 @@ struct AppConfig: Codable, Equatable {
         refreshIntervalSeconds: Int,
         providers: [String: ProviderConfig],
         statusBarIconStyle: StatusBarIconStyle? = nil,
-        statusBarIndicatorMode: StatusBarIndicatorMode? = nil
+        statusBarIndicatorMode: StatusBarIndicatorMode? = nil,
+        statusBarHealthDotEnabled: Bool? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.refreshIntervalSeconds = refreshIntervalSeconds
         self.providers = providers
         self.statusBarIconStyle = statusBarIconStyle
         self.statusBarIndicatorMode = statusBarIndicatorMode
+        self.statusBarHealthDotEnabled = statusBarHealthDotEnabled
     }
 
     private enum CodingKeys: String, CodingKey {
         case schemaVersion, refreshIntervalSeconds, providers
-        case statusBarIconStyle, statusBarIndicatorMode
+        case statusBarIconStyle, statusBarIndicatorMode, statusBarHealthDotEnabled
     }
 
     init(from decoder: Decoder) throws {
@@ -121,12 +130,13 @@ struct AppConfig: Codable, Equatable {
         self.schemaVersion = Self.currentSchemaVersion
         self.refreshIntervalSeconds = try container.decode(Int.self, forKey: .refreshIntervalSeconds)
         self.providers = try container.decode([String: ProviderConfig].self, forKey: .providers)
-        // 这两个字段只影响图标外观，不应因手工拼写错误或新版本增加枚举值而让
+        // 这些字段只影响图标外观，不应因手工拼写错误或新版本增加枚举值而让
         // 整份 provider 配置进入损坏恢复流程。未知值和类型不匹配均按缺失处理。
         self.statusBarIconStyle = (try? container.decode(String.self, forKey: .statusBarIconStyle))
             .flatMap(StatusBarIconStyle.init(rawValue:))
         self.statusBarIndicatorMode = (try? container.decode(String.self, forKey: .statusBarIndicatorMode))
             .flatMap(StatusBarIndicatorMode.init(rawValue:))
+        self.statusBarHealthDotEnabled = try? container.decode(Bool.self, forKey: .statusBarHealthDotEnabled)
     }
 
     /// 实际生效的刷新间隔：优先用 provider 自己的，否则用全局，最后 clamp 到 10s...30d。

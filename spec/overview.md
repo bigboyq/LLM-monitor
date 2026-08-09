@@ -182,6 +182,8 @@ The app reads and writes this shape:
 |---|---|---|
 | `schemaVersion` | global | Configuration schema version. Missing legacy values decode as version 0 and are normalized to the current version; unsupported future versions are rejected rather than silently defaulted. |
 | `refreshIntervalSeconds` | global | Default refresh interval in seconds. Current default is `300`; effective values are clamped to 10 seconds...30 days. |
+| `statusBarIconStyle` | global | Selected menu-bar icon theme. Missing or invalid values use `chartBar`. |
+| `statusBarHealthDotEnabled` | global | Shows the 10 pt health dot on the menu-bar icon. Missing or invalid values default to `true`. |
 | `providers.<id>.enabled` | provider | Disabled providers stay visible but are not fetched. Missing `enabled` decodes as `true`. |
 | `providers.<id>.apiKey` | provider | API key for providers that do not manage external auth. Used by minimax. |
 | `providers.<id>.displayName` | provider | Optional UI label override. |
@@ -190,7 +192,8 @@ The app reads and writes this shape:
 | `providers.<id>.mergeOpencodeUsage` | Minimax / ChatGPT / Antigravity / GLM / DeepSeek | Whether to add the matching OpenCode provider slice to the card's local token data. Missing means `true` for GLM and `false` for the other providers. |
 
 `ProviderConfig.encode(to:)` omits nil optional fields, so saved config only includes relevant keys. `ConfigStore.saveConfig()` writes pretty-printed, sorted-key JSON and reapplies `0600`.
-Unknown or incorrectly typed `statusBarIconStyle` / `statusBarIndicatorMode` values fall back
+Unknown or incorrectly typed `statusBarIconStyle` / `statusBarIndicatorMode` /
+`statusBarHealthDotEnabled` values fall back
 to their defaults; cosmetic config errors do not trigger recovery of the provider settings.
 
 OpenCode is a shared local data source rather than a fifth menu-bar provider. Its

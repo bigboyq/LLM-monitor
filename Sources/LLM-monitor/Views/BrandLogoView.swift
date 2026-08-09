@@ -1,23 +1,48 @@
 import SwiftUI
 import AppKit
 
-/// provider 的真实品牌标志。资源统一按小尺寸展示，不再用无关的 SF Symbol 代替。
+/// 品牌图标资源。Provider 使用关联值；OpenCode 是共享数据源，不属于 ProviderKind。
+enum BrandLogoAsset: Hashable, Sendable {
+    case provider(ProviderKind)
+    case opencode
+
+    fileprivate var cacheKey: String {
+        switch self {
+        case .provider(let kind): return kind.rawValue
+        case .opencode: return "opencode"
+        }
+    }
+
+}
+
+/// Provider 与本地数据源的真实品牌标志。资源统一按小尺寸展示，不再用无关的 SF Symbol 代替。
 struct BrandLogoView: View {
-    let kind: ProviderKind
+    let asset: BrandLogoAsset
+
+    @Environment(\.colorScheme) private var colorScheme
+
+    init(kind: ProviderKind) {
+        asset = .provider(kind)
+    }
+
+    init(asset: BrandLogoAsset) {
+        self.asset = asset
+    }
 
     private final class ImageCache: @unchecked Sendable {
         private let lock = NSLock()
         private var images: [String: NSImage] = [:]
         private var missingAssets: Set<String> = []
 
-        func image(for kind: ProviderKind) -> NSImage? {
-            let key = kind.rawValue
+        func image(for asset: BrandLogoAsset, darkMode: Bool) -> NSImage? {
+            let appearanceKey = asset == .opencode ? (darkMode ? "dark" : "light") : "default"
+            let key = "\(asset.cacheKey)-\(appearanceKey)"
             lock.lock()
             defer { lock.unlock() }
             if let image = images[key] { return image }
             if missingAssets.contains(key) { return nil }
 
-            guard let image = Self.loadImage(for: kind) else {
+            guard let image = Self.loadImage(for: asset, darkMode: darkMode) else {
                 missingAssets.insert(key)
                 return nil
             }
@@ -25,19 +50,23 @@ struct BrandLogoView: View {
             return image
         }
 
-        private static func loadImage(for kind: ProviderKind) -> NSImage? {
-            switch kind {
-            case .minimaxTokenPlan:
-                return loadMinimaxLogo()
-            case .codexChatGpt:
-                return loadSvg("openai")
-            case .antigravity:
-                return loadSvg("antigravity")
-            case .deepseek:
-                return loadSvg("deepseek")
-            case .glmCodingPlan:
-                // 暂无 bundled 品牌资源 → 回退到 SF Symbol（见 body 的 fallback 分支）
-                return nil
+        private static func loadImage(for asset: BrandLogoAsset, darkMode: Bool) -> NSImage? {
+            switch asset {
+            case .opencode:
+                return loadSvg(darkMode ? "opencode-dark" : "opencode-light")
+            case .provider(let kind):
+                switch kind {
+                case .minimaxTokenPlan:
+                    return loadMinimaxLogo()
+                case .codexChatGpt:
+                    return loadSvg("openai")
+                case .antigravity:
+                    return loadSvg("antigravity")
+                case .deepseek:
+                    return loadSvg("deepseek")
+                case .glmCodingPlan:
+                    return loadSvg("glm")
+                }
             }
         }
 
@@ -48,12 +77,13 @@ struct BrandLogoView: View {
             return NSImage(contentsOf: url)
         }
 
-        /// 没有 bundled 品牌资源的 provider 回退用的 SF Symbol。
-        static func fallbackSymbol(for kind: ProviderKind) -> String? {
-            switch kind {
-            case .glmCodingPlan: return "chevron.left.forwardslash.chevron.right"
-            case .deepseek:      return "creditcard.fill"
-            default: return nil
+        /// 缺少 bundled 资源时保留可识别的兜底符号，避免整个位置变空。
+        static func fallbackSymbol(for asset: BrandLogoAsset) -> String? {
+            switch asset {
+            case .opencode: return "terminal"
+            case .provider(.glmCodingPlan): return "chevron.left.forwardslash.chevron.right"
+            case .provider(.deepseek): return "wave.3.right"
+            case .provider: return nil
             }
         }
 
@@ -80,8 +110,8 @@ struct BrandLogoView: View {
 
     var body: some View {
         Group {
-            if let image = Self.imageCache.image(for: kind) {
-                if kind == .codexChatGpt {
+            if let image = Self.imageCache.image(for: asset, darkMode: colorScheme == .dark) {
+                if asset == .provider(.codexChatGpt) {
                     Image(nsImage: image)
                         .renderingMode(.template)
                         .resizable()
@@ -94,7 +124,7 @@ struct BrandLogoView: View {
                         .interpolation(.high)
                         .aspectRatio(contentMode: .fit)
                 }
-            } else if let symbol = Self.ImageCache.fallbackSymbol(for: kind) {
+            } else if let symbol = Self.ImageCache.fallbackSymbol(for: asset) {
                 Image(systemName: symbol)
                     .font(.system(size: 13, weight: .medium))
                     .frame(width: 18, height: 18)

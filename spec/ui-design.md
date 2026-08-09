@@ -27,22 +27,22 @@ Icon Styles (`statusBarIconStyle`):
 - `brain` (`brain.head.profile`)
 - `cpu` (`cpu.fill`)
 
-Indicator Modes (`statusBarIndicatorMode`):
-- `colored` (default): dynamic status tinting based on system health level.
-- `monochrome`: standard macOS template mode.
-
-Unknown or type-mismatched icon/indicator values in a hand-edited config fall back to the
-defaults without discarding the provider configuration.
+The base icon keeps the standard macOS foreground appearance. A 10 pt status dot is
+drawn at the lower-right when `statusBarHealthDotEnabled` is enabled (the default): green
+for healthy, orange for warning, and red for critical. The legacy
+`statusBarIndicatorMode` configuration field is still decoded for compatibility but no
+longer changes rendering. Unknown or type-mismatched icon values in a hand-edited config
+fall back to the default without discarding the provider configuration.
 
 Health State Mapping:
 
-| Health / State | Icon / Glyph | Colored Mode Tint |
+| Health / State | Main Icon | Status Dot |
 |---|---|---|
-| Refreshing | `arrow.triangle.2.circlepath` | `Color.accentColor` |
-| Healthy (`.healthy`) | Configured theme icon | `.green` |
-| Warning (`.warning`) | Configured theme icon (or peak window) | `.orange` |
-| Critical (`.critical`) | `exclamationmark.triangle.fill` | `.red` |
-| Unconfigured (`nil`) | Configured theme icon | `.primary` |
+| Refreshing | `arrow.triangle.2.circlepath` | None |
+| Healthy (`.healthy`) | Configured theme icon | Green, 10 pt |
+| Warning (`.warning`) | Configured theme icon | Orange, 10 pt |
+| Critical (`.critical`) | Configured theme icon | Red, 10 pt |
+| Unconfigured (`nil`) | Configured theme icon | None |
 
 ## Window Structure
 

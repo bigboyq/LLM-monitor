@@ -95,7 +95,7 @@ struct SettingsView: View {
     @State private var globalInterval: Int = 300
     @State private var launchAtLogin: Bool = false
     @State private var statusBarIconStyle: StatusBarIconStyle = .chartBar
-    @State private var statusBarIndicatorMode: StatusBarIndicatorMode = .colored
+    @State private var statusBarHealthDotEnabled: Bool = true
 
     @State private var minimaxEnabled: Bool = false
     @State private var minimaxInterval: Int = 0
@@ -159,7 +159,7 @@ struct SettingsView: View {
             switch self {
             case .general: return "常规"
             case .provider(let d): return d.settingsTabTitle ?? d.displayName
-            case .opencode: return "Opencode"
+            case .opencode: return "OpenCode"
             }
         }
 
@@ -171,10 +171,11 @@ struct SettingsView: View {
             }
         }
 
-        var brandKind: ProviderKind? {
+        var brandAsset: BrandLogoAsset? {
             switch self {
-            case .general, .opencode: return nil
-            case .provider(let d): return d.kind
+            case .general: return nil
+            case .provider(let d): return .provider(d.kind)
+            case .opencode: return .opencode
             }
         }
 
@@ -235,8 +236,8 @@ struct SettingsView: View {
                             currentTab = tab
                         } label: {
                             HStack(spacing: 8) {
-                                if let brandKind = tab.brandKind {
-                                    BrandLogoView(kind: brandKind)
+                                if let brandAsset = tab.brandAsset {
+                                    BrandLogoView(asset: brandAsset)
                                 } else {
                                     Image(systemName: tab.iconSystemName)
                                         .font(.system(size: 14, weight: .medium))
@@ -245,7 +246,7 @@ struct SettingsView: View {
 
                                 Text(tab.displayTitle)
                             }
-                            .font(.system(size: 13, weight: isSelected ? .semibold : .regular))
+                            .font(SettingsTypography.sidebarItem(isSelected: isSelected))
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .padding(.horizontal, 12)
                                 .padding(.vertical, 10)
@@ -293,7 +294,7 @@ struct SettingsView: View {
         HStack(spacing: 12) {
             if let saveErrorMessage {
                 Text(saveErrorMessage)
-                    .font(.footnote)
+                    .font(SettingsTypography.status)
                     .foregroundStyle(.red)
                     .lineLimit(2)
             }
@@ -326,41 +327,38 @@ struct SettingsView: View {
 
     private var generalPane: some View {
         VStack(alignment: .leading, spacing: 20) {
-            SettingsSection(title: "全局刷新间隔") {
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("没有设置独立频率的 Provider 将继承此刷新时间")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
+            SettingsSection(
+                title: "全局刷新间隔",
+                footer: "没有设置独立频率的 Provider 将继承此刷新时间。"
+            ) {
+                SettingsControlRow("刷新频率", alignment: .top) {
+                    VStack(alignment: .trailing, spacing: 6) {
+                        Slider(
+                            value: Binding(
+                                get: { Double(globalInterval) },
+                                set: { globalInterval = roundedInterval(from: $0) }
+                            ),
+                            in: 10...3600,
+                            label: { EmptyView() },
+                            minimumValueLabel: {
+                                Text("10 秒").font(SettingsTypography.metadata).foregroundStyle(.secondary)
+                            },
+                            maximumValueLabel: {
+                                Text("1 小时").font(SettingsTypography.metadata).foregroundStyle(.secondary)
+                            }
+                        )
 
-                    Slider(
-                        value: Binding(
-                            get: { Double(globalInterval) },
-                            set: { globalInterval = roundedInterval(from: $0) }
-                        ),
-                        in: 10...3600,
-                        label: { EmptyView() },
-                        minimumValueLabel: {
-                            Text("10 秒").font(.caption).foregroundStyle(.secondary)
-                        },
-                        maximumValueLabel: {
-                            Text("1 小时").font(.caption).foregroundStyle(.secondary)
-                        }
-                    )
-                    .frame(maxWidth: 400)
-
-                    Text("当前：\(Formatters.formatInterval(seconds: globalInterval))")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .monospacedDigit()
+                        Text("当前：\(Formatters.formatInterval(seconds: globalInterval))")
+                            .font(SettingsTypography.numericValue)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(width: 320)
                 }
             }
 
-            SettingsSection(title: "状态栏图标", footer: "保持固宽状态栏图标尺寸，自定义图标款式与健康度指示风格。") {
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack {
-                        Text("图标主题")
-                            .font(.body)
-                        Spacer()
+            SettingsSection(title: "状态栏图标", footer: "右下角状态圆点：绿色表示额度健康，橙色表示预警，红色表示异常。") {
+                VStack(alignment: .leading, spacing: 16) {
+                    SettingsControlRow("图标主题") {
                         Picker("", selection: $statusBarIconStyle) {
                             ForEach(StatusBarIconStyle.allCases) { style in
                                 Label(style.displayName, systemImage: style.systemImageName)
@@ -368,47 +366,31 @@ struct SettingsView: View {
                             }
                         }
                         .pickerStyle(.menu)
-                        .frame(width: 160)
+                        .frame(width: 160, alignment: .trailing)
                     }
 
-                    Divider()
-
-                    HStack {
-                        Text("指示方式")
-                            .font(.body)
-                        Spacer()
-                        Picker("", selection: $statusBarIndicatorMode) {
-                            ForEach(StatusBarIndicatorMode.allCases) { mode in
-                                Text(mode.displayName).tag(mode)
-                            }
-                        }
-                        .pickerStyle(.menu)
-                        .frame(width: 160)
-                    }
+                    SettingsToggleRow(label: "显示状态圆点", isOn: $statusBarHealthDotEnabled)
                 }
             }
 
             SettingsSection(title: "开机自启动", footer: "在系统登录时自动后台运行 LLM Monitor。") {
-                Toggle("开启开机自启动", isOn: $launchAtLogin)
+                SettingsToggleRow(label: "开启开机自启动", isOn: $launchAtLogin)
 
                 if let lastErrorMessage = loginItemService.lastErrorMessage, !lastErrorMessage.isEmpty {
                     Text(lastErrorMessage)
-                        .font(.footnote)
+                        .font(SettingsTypography.status)
                         .foregroundStyle(.orange)
                 } else if loginItemService.state == .requiresApproval {
                     Text("已提交登录项请求，请到系统设置 > 通用 > 登录项里批准")
-                        .font(.footnote)
+                        .font(SettingsTypography.status)
                         .foregroundStyle(.orange)
                 }
             }
 
             SettingsSection(title: "关于") {
-                HStack {
-                    Text("LLM Monitor")
-                        .font(.body.weight(.semibold))
-                    Spacer()
+                SettingsControlRow("LLM Monitor") {
                     Text("版本 \(AppMetadata.version)（\(AppMetadata.build)）")
-                        .font(.caption.monospacedDigit())
+                        .font(SettingsTypography.numericValue)
                         .foregroundStyle(.secondary)
                 }
             }
@@ -440,7 +422,7 @@ struct SettingsView: View {
             SettingsSection(title: "已发现的模型数据") {
                 if providerIDs.isEmpty {
                     Text("尚未发现带 token 数据的 provider。请先使用 Opencode 产生一次 assistant 调用。")
-                        .font(.subheadline)
+                        .font(SettingsTypography.supporting)
                         .foregroundStyle(.secondary)
                 } else {
                     ForEach(providerIDs, id: \.self) { providerID in
@@ -459,15 +441,13 @@ struct SettingsView: View {
     }
 
     private func diagnosticRow(label: String, value: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 12) {
-            Text(label)
-                .font(.body)
-            Spacer()
+        SettingsControlRow(label, alignment: .firstTextBaseline) {
             Text(value)
-                .font(.caption.monospaced())
+                .font(SettingsTypography.metadataMonospaced)
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
                 .multilineTextAlignment(.trailing)
+                .frame(maxWidth: 320, alignment: .trailing)
         }
     }
 
@@ -480,15 +460,15 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text(providerID)
-                    .font(.body.weight(.semibold))
+                    .font(SettingsTypography.rowEmphasis)
                     .monospaced()
                 Spacer()
                 Text("\(Formatters.formatGroupedInt(usage.roundCount)) rounds")
-                    .font(.caption.monospacedDigit())
+                    .font(SettingsTypography.numericValue)
                     .foregroundStyle(.secondary)
             }
             Text(models.isEmpty ? "model unknown" : models.joined(separator: ", "))
-                .font(.caption)
+                .font(SettingsTypography.metadata)
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
             HStack(spacing: 10) {
@@ -497,12 +477,12 @@ struct SettingsView: View {
                     Text("成本：\(usage.cost, format: .number.precision(.fractionLength(2)))")
                 }
             }
-            .font(.caption.monospacedDigit())
+            .font(SettingsTypography.numericValue)
             .foregroundStyle(.tertiary)
 
             if let today = usage.today {
                 Text("今日总计：\(Formatters.formatTokenCountCompact(today.totalTokens)) tokens（Input + Cache read + Reason + Output；不含 cache write）")
-                    .font(.caption.monospacedDigit())
+                    .font(SettingsTypography.numericValue)
                     .foregroundStyle(.secondary)
                 HStack(spacing: 8) {
                     tokenBreakdown(label: "Input", value: today.inputTokens)
@@ -510,16 +490,16 @@ struct SettingsView: View {
                     tokenBreakdown(label: "Reason", value: today.reasoningTokens)
                     tokenBreakdown(label: "Output", value: today.outputTokens)
                 }
-                .font(.caption.monospacedDigit())
+                .font(SettingsTypography.numericValue)
                 .foregroundStyle(.tertiary)
                 if today.cacheWriteTokens > 0 {
                     tokenBreakdown(label: "Cache write（不计入总量）", value: today.cacheWriteTokens)
-                        .font(.caption.monospacedDigit())
+                        .font(SettingsTypography.numericValue)
                         .foregroundStyle(.tertiary)
                 }
             } else {
                 Text("今日暂无 token 活动")
-                    .font(.caption)
+                    .font(SettingsTypography.metadata)
                     .foregroundStyle(.tertiary)
             }
 
@@ -532,7 +512,7 @@ struct SettingsView: View {
                     )
                     .padding(.top, 4)
                 }
-                .font(.caption)
+                .font(SettingsTypography.metadata)
             }
         }
         .padding(.vertical, 4)
@@ -559,8 +539,7 @@ struct SettingsView: View {
     private var minimaxPane: some View {
         VStack(alignment: .leading, spacing: 20) {
             SettingsSection {
-                Toggle("启用 minimax Token Plan 监测", isOn: $minimaxEnabled)
-                    .toggleStyle(.switch)
+                SettingsToggleRow(label: "启用 minimax Token Plan 监测", isOn: $minimaxEnabled)
             }
 
             opencodeMergeSection(
@@ -571,9 +550,7 @@ struct SettingsView: View {
 
             if minimaxEnabled {
                 SettingsSection(title: "认证与刷新") {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("API Key")
-                            .font(.body)
+                    SettingsControlRow("API Key") {
                         apiKeyField(text: $minimaxApiKey, isVisible: $showMinimaxKey)
                     }
 
@@ -589,8 +566,7 @@ struct SettingsView: View {
     private var chatgptPane: some View {
         VStack(alignment: .leading, spacing: 20) {
             SettingsSection {
-                Toggle("启用 ChatGPT Plan 监测", isOn: $chatgptEnabled)
-                    .toggleStyle(.switch)
+                SettingsToggleRow(label: "启用 ChatGPT Plan 监测", isOn: $chatgptEnabled)
             }
 
             opencodeMergeSection(
@@ -604,17 +580,16 @@ struct SettingsView: View {
                     title: "认证与刷新",
                     footer: "`authPath` 支持填写 `auth.json` 文件，或它所在目录；也可以直接点“选择…”。"
                 ) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("auth.json 路径")
-                            .font(.body)
+                    SettingsControlRow("auth.json 路径") {
                         HStack(spacing: 8) {
                             TextField("", text: $chatgptAuthPath, prompt: Text("~/.codex/auth.json 或 ~/.codex/"))
                                 .textFieldStyle(.roundedBorder)
-                                .frame(width: 360)
+                                .frame(maxWidth: .infinity)
                             Button("选择…") {
                                 selectAuthFile()
                             }
                         }
+                        .frame(width: 320)
                     }
 
                     Divider()
@@ -629,8 +604,7 @@ struct SettingsView: View {
     private var antigravityPane: some View {
         VStack(alignment: .leading, spacing: 20) {
             SettingsSection {
-                Toggle("启用 Antigravity 监测", isOn: $antigravityEnabled)
-                    .toggleStyle(.switch)
+                SettingsToggleRow(label: "启用 Antigravity 监测", isOn: $antigravityEnabled)
             }
 
             opencodeMergeSection(
@@ -653,8 +627,7 @@ struct SettingsView: View {
     private var glmPane: some View {
         VStack(alignment: .leading, spacing: 20) {
             SettingsSection {
-                Toggle("启用 GLM Coding Plan 监测", isOn: $glmEnabled)
-                    .toggleStyle(.switch)
+                SettingsToggleRow(label: "启用 GLM Coding Plan 监测", isOn: $glmEnabled)
             }
 
             opencodeMergeSection(
@@ -668,9 +641,7 @@ struct SettingsView: View {
                     title: "认证与刷新",
                     footer: "填写智谱 GLM Coding Plan 的 API Key（格式 `id.secret`，在 bigmodel.cn 套餐概览页新建）。该 Key 也是 Anthropic / OpenAI 协议接入用的同一个 Key。"
                 ) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("API Key")
-                            .font(.body)
+                    SettingsControlRow("API Key") {
                         glmApiKeyField
                     }
 
@@ -687,8 +658,7 @@ struct SettingsView: View {
                     peakHourRow(label: "开始", value: $glmPeakStart, max: 22)
                     peakHourRow(label: "结束", value: $glmPeakEnd, min: glmPeakStart + 1)
                     Divider().padding(.vertical, 4)
-                    Toggle("仅工作日（周一–周五）", isOn: $glmPeakWeekdays)
-                        .toggleStyle(.switch)
+                    SettingsToggleRow(label: "仅工作日（周一–周五）", isOn: $glmPeakWeekdays)
                 }
             }
         }
@@ -697,8 +667,7 @@ struct SettingsView: View {
     private var deepseekPane: some View {
         VStack(alignment: .leading, spacing: 20) {
             SettingsSection {
-                Toggle("启用 DeepSeek 监测", isOn: $deepseekEnabled)
-                    .toggleStyle(.switch)
+                SettingsToggleRow(label: "启用 DeepSeek 监测", isOn: $deepseekEnabled)
             }
 
             opencodeMergeSection(
@@ -712,9 +681,7 @@ struct SettingsView: View {
                     title: "认证与刷新",
                     footer: "填写 DeepSeek 开放平台 (platform.deepseek.com) 生成的 API Key（格式 `sk-...`）。"
                 ) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("API Key")
-                            .font(.body)
+                    SettingsControlRow("API Key") {
                         apiKeyField(text: $deepseekApiKey, isVisible: $showDeepseekKey)
                     }
 
@@ -728,26 +695,19 @@ struct SettingsView: View {
                     title: "高峰期提示",
                     footer: "DeepSeek API 采用峰谷定价策略，高峰时段价格为平时价格的 2 倍（适用于所有计费项）。系统将自动换算北京时间并实时提示倒计时。高峰时段：北京时间工作日 9:00–12:00 和 14:00–18:00。开启「仅工作日」后，周六、周日全天按平价（1×）计费。"
                 ) {
-                    HStack {
-                        Text("高峰时段定义")
-                            .font(.body)
-                        Spacer()
+                    SettingsControlRow("高峰时段定义") {
                         Text("北京时间工作日 9:00–12:00, 14:00–18:00")
-                            .font(.caption.monospacedDigit())
+                            .font(SettingsTypography.numericValue)
                             .foregroundStyle(.secondary)
                     }
                     Divider().padding(.vertical, 4)
-                    HStack {
-                        Text("高峰期价格")
-                            .font(.body)
-                        Spacer()
+                    SettingsControlRow("高峰期价格") {
                         Text("2× 价格 (平时 1×)")
-                            .font(.caption.monospacedDigit())
+                            .font(SettingsTypography.numericValue)
                             .foregroundStyle(.red)
                     }
                     Divider().padding(.vertical, 4)
-                    Toggle("仅工作日（周一–周五）", isOn: $deepseekPeakWeekdays)
-                        .toggleStyle(.switch)
+                    SettingsToggleRow(label: "仅工作日（周一–周五）", isOn: $deepseekPeakWeekdays)
                 }
             }
         }
@@ -759,11 +719,13 @@ struct SettingsView: View {
         footer: String
     ) -> some View {
         SettingsSection(title: "OpenCode 数据合并", footer: footer) {
-            Toggle("合并 OpenCode 数据", isOn: isOn)
-                .toggleStyle(.switch)
-            Text("来源：\(source)")
-                .font(.caption.monospaced())
-                .foregroundStyle(.secondary)
+            SettingsToggleRow(label: "合并 OpenCode 数据", isOn: isOn)
+            SettingsControlRow("数据来源") {
+                Text(source)
+                    .font(SettingsTypography.metadataMonospaced)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.trailing)
+            }
         }
     }
 
@@ -774,13 +736,10 @@ struct SettingsView: View {
         min: Int = 0,
         max: Int = 23
     ) -> some View {
-        HStack {
-            Text(label)
-                .font(.body)
-            Spacer()
+        SettingsControlRow(label) {
             Stepper(value: value, in: min...max) {
                 Text(String(format: "%02d:00", value.wrappedValue))
-                    .font(.system(.body, design: .monospaced))
+                    .font(SettingsTypography.rowValueMonospaced)
             }
         }
     }
@@ -805,35 +764,34 @@ struct SettingsView: View {
             .buttonStyle(.borderless)
             .help(showGlmKey ? "隐藏 API Key" : "显示 API Key")
         }
-        .frame(width: 360, alignment: .leading)
+        .frame(width: 320, alignment: .leading)
     }
 
     private func intervalSliderField(label: String, value: Binding<Int>) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(label)
-                .font(.body)
+        SettingsControlRow(label, alignment: .top) {
+            VStack(alignment: .trailing, spacing: 6) {
+                Slider(
+                    value: Binding(
+                        get: { Double(value.wrappedValue) },
+                        set: { value.wrappedValue = roundedProviderInterval(from: $0) }
+                    ),
+                    in: 0...3600,
+                    label: { EmptyView() },
+                    minimumValueLabel: {
+                        Text("继承 (0 秒)").font(SettingsTypography.metadata).foregroundStyle(.secondary)
+                    },
+                    maximumValueLabel: {
+                        Text("1 小时").font(SettingsTypography.metadata).foregroundStyle(.secondary)
+                    }
+                )
 
-            Slider(
-                value: Binding(
-                    get: { Double(value.wrappedValue) },
-                    set: { value.wrappedValue = roundedProviderInterval(from: $0) }
-                ),
-                in: 0...3600,
-                label: { EmptyView() },
-                minimumValueLabel: {
-                    Text("继承 (0 秒)").font(.caption).foregroundStyle(.secondary)
-                },
-                maximumValueLabel: {
-                    Text("1 小时").font(.caption).foregroundStyle(.secondary)
-                }
-            )
-
-            Text(value.wrappedValue == 0
-                 ? "当前：继承全局（\(Formatters.formatInterval(seconds: globalInterval))）"
-                 : "当前：\(Formatters.formatInterval(seconds: value.wrappedValue))")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .monospacedDigit()
+                Text(value.wrappedValue == 0
+                     ? "当前：继承全局（\(Formatters.formatInterval(seconds: globalInterval))）"
+                     : "当前：\(Formatters.formatInterval(seconds: value.wrappedValue))")
+                    .font(SettingsTypography.numericValue)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(width: 320)
         }
         .padding(.vertical, 4)
     }
@@ -858,7 +816,7 @@ struct SettingsView: View {
             .buttonStyle(.borderless)
             .help(isVisible.wrappedValue ? "隐藏 API Key" : "显示 API Key")
         }
-        .frame(width: 360, alignment: .leading)
+        .frame(width: 320, alignment: .leading)
     }
 
     private func selectAuthFile() {
@@ -880,7 +838,7 @@ struct SettingsView: View {
         globalInterval = config.refreshIntervalSeconds
         launchAtLogin = loginItemService.isEnabled
         statusBarIconStyle = config.effectiveStatusBarIconStyle
-        statusBarIndicatorMode = config.effectiveStatusBarIndicatorMode
+        statusBarHealthDotEnabled = config.effectiveStatusBarHealthDotEnabled
 
         // 缺失字段走兼容默认：GLM 保持原先的 OpenCode 数据源，其余 provider 默认关闭。
         minimaxMergeOpencode = false
@@ -938,7 +896,7 @@ struct SettingsView: View {
         var config = configStore.config
         config.refreshIntervalSeconds = globalInterval
         config.statusBarIconStyle = statusBarIconStyle
-        config.statusBarIndicatorMode = statusBarIndicatorMode
+        config.statusBarHealthDotEnabled = statusBarHealthDotEnabled
 
         if let id = providerID(for: .minimaxTokenPlan) {
             var minimax = config.providers[id] ?? ProviderConfig(enabled: false)

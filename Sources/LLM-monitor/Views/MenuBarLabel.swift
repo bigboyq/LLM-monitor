@@ -1,55 +1,88 @@
 import SwiftUI
+import AppKit
 
 /// 菜单栏图标视图 — 固宽精致图标，动态感知 Provider 健康度与刷新状态
 struct MenuBarLabel: View {
     @ObservedObject var state: AppState
     @ObservedObject var configStore: ConfigStore
+    @State private var statusRevision: UInt = 0
 
     var body: some View {
         // 分钟脉冲由 AppState 发布。不要在 MenuBarExtra label 内放 TimelineView：
         // 部分 macOS 版本会因此持续重建 status item 图像，导致 CPU/内存失控。
         let iconStyle = configStore.config.effectiveStatusBarIconStyle
-        let indicatorMode = configStore.config.effectiveStatusBarIndicatorMode
+        let showsHealthDot = configStore.config.effectiveStatusBarHealthDotEnabled
         let health = state.systemHealthLevel(at: state.healthEvaluationDate)
 
-        mainIconView(iconStyle: iconStyle, indicatorMode: indicatorMode, health: health)
-            .frame(width: 18, height: 18)
+        mainIconView(iconStyle: iconStyle, health: health, showsHealthDot: showsHealthDot)
+            // MenuBarExtra 会缓存 label；显式改变 identity，确保额度变化后重绘。
+            .id(statusRevision)
+            .frame(width: 22, height: 22)
             .accessibilityLabel(accessibilityTitle(health: health))
             .onReceive(state.statusDidChange) { _ in
-                // 观察状态变更广播
+                statusRevision &+= 1
             }
     }
 
     @ViewBuilder
     private func mainIconView(
         iconStyle: StatusBarIconStyle,
-        indicatorMode: StatusBarIndicatorMode,
-        health: HealthLevel?
+        health: HealthLevel?,
+        showsHealthDot: Bool
     ) -> some View {
         if state.isRefreshing {
             Image(systemName: "arrow.triangle.2.circlepath")
-                .foregroundStyle(indicatorMode == .colored ? Color.accentColor : Color.primary)
-        } else if case .critical = health {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(indicatorMode == .colored ? Color.red : Color.primary)
         } else {
-            let imageName = iconStyle.systemImageName
-            Image(systemName: imageName)
-                .foregroundStyle(iconColor(indicatorMode: indicatorMode, health: health))
+            // MenuBarExtra 对 label 内的 SwiftUI overlay/ZStack 支持不稳定，
+            // 先合成为单张原色图，再交给系统状态栏绘制。
+            Image(nsImage: Self.composedMenuBarImage(
+                iconStyle: iconStyle,
+                health: health,
+                showsHealthDot: showsHealthDot
+            ))
+                .renderingMode(.original)
+                .accessibilityHidden(true)
         }
     }
 
-    private func iconColor(indicatorMode: StatusBarIndicatorMode, health: HealthLevel?) -> Color {
-        guard indicatorMode == .colored else { return .primary }
+    static func composedMenuBarImage(
+        iconStyle: StatusBarIconStyle,
+        health: HealthLevel?,
+        showsHealthDot: Bool = true
+    ) -> NSImage {
+        let canvasSize = NSSize(width: 22, height: 22)
+        let baseConfiguration = NSImage.SymbolConfiguration(pointSize: 14, weight: .regular)
+            .applying(NSImage.SymbolConfiguration(paletteColors: [.labelColor]))
+        let baseImage = NSImage(
+            systemSymbolName: iconStyle.systemImageName,
+            accessibilityDescription: nil
+        )?.withSymbolConfiguration(baseConfiguration)
+
+        let image = NSImage(size: canvasSize, flipped: false) { _ in
+            baseImage?.draw(in: NSRect(x: 1, y: 1, width: 20, height: 20))
+
+            if showsHealthDot, let dotColor = statusDotColor(for: health) {
+                dotColor.setFill()
+                // AppKit 坐标原点在左下角，因此 x=12、y=0 对齐右下角。
+                NSBezierPath(ovalIn: NSRect(x: 12, y: 0, width: 10, height: 10)).fill()
+            }
+            return true
+        }
+        // 保留状态圆点颜色；主图标只使用动态 labelColor。
+        image.isTemplate = false
+        return image
+    }
+
+    static func statusDotColor(for health: HealthLevel?) -> NSColor? {
         switch health {
         case .healthy:
-            return .green
+            return .systemGreen
         case .warning:
-            return .orange
+            return .systemOrange
         case .critical:
-            return .red
+            return .systemRed
         case nil:
-            return .primary
+            return nil
         }
     }
 

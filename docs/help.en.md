@@ -54,7 +54,7 @@ The app reads `~/.local/share/opencode/opencode.db` and separates rows by `provi
 - Use the refresh button to refresh all enabled providers now.
 - Control-click a provider card to refresh it or open the config file.
 - Hover over titles, quota rows, and local-usage footers for account details, window details, recent prompts, and seven-day charts.
-- Use Settings → General for refresh intervals, icon style, indicator mode, and launch at login.
+- Use Settings → General for refresh intervals, icon style, health-dot visibility, and launch at login. When enabled, a 10 pt status dot appears at the lower-right: green for healthy, orange for warning, and red for critical.
 - Disabled providers are hidden and do not make network requests.
 
 ## Privacy and local files

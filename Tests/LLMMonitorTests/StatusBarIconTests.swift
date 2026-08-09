@@ -9,9 +9,11 @@ final class StatusBarIconTests: XCTestCase {
         var config = AppConfig.default
         XCTAssertEqual(config.effectiveStatusBarIconStyle, .chartBar)
         XCTAssertEqual(config.effectiveStatusBarIndicatorMode, .colored)
+        XCTAssertTrue(config.effectiveStatusBarHealthDotEnabled)
 
         config.statusBarIconStyle = .sparkles
         config.statusBarIndicatorMode = .monochrome
+        config.statusBarHealthDotEnabled = false
 
         let encoder = JSONEncoder()
         let data = try encoder.encode(config)
@@ -21,8 +23,10 @@ final class StatusBarIconTests: XCTestCase {
 
         XCTAssertEqual(decoded.statusBarIconStyle, .sparkles)
         XCTAssertEqual(decoded.statusBarIndicatorMode, .monochrome)
+        XCTAssertEqual(decoded.statusBarHealthDotEnabled, false)
         XCTAssertEqual(decoded.effectiveStatusBarIconStyle, .sparkles)
         XCTAssertEqual(decoded.effectiveStatusBarIndicatorMode, .monochrome)
+        XCTAssertFalse(decoded.effectiveStatusBarHealthDotEnabled)
     }
 
     func testStatusBarIconStyleEnumProperties() {
@@ -40,6 +44,37 @@ final class StatusBarIconTests: XCTestCase {
         XCTAssertEqual(StatusBarIndicatorMode.monochrome.displayName, "单色模版")
     }
 
+    func testStatusBarHealthDots() {
+        XCTAssertNil(MenuBarLabel.statusDotColor(for: nil))
+        XCTAssertEqual(MenuBarLabel.statusDotColor(for: .healthy), .systemGreen)
+        XCTAssertEqual(MenuBarLabel.statusDotColor(for: .warning), .systemOrange)
+        XCTAssertEqual(MenuBarLabel.statusDotColor(for: .critical), .systemRed)
+
+        let image = MenuBarLabel.composedMenuBarImage(
+            iconStyle: .chartBar,
+            health: .critical
+        )
+        XCTAssertEqual(image.size.width, 22)
+        XCTAssertEqual(image.size.height, 22)
+        XCTAssertFalse(image.isTemplate)
+        let healthyImage = MenuBarLabel.composedMenuBarImage(
+            iconStyle: .chartBar,
+            health: .healthy
+        )
+        XCTAssertNotEqual(image.tiffRepresentation, healthyImage.tiffRepresentation)
+
+        let hiddenDotImage = MenuBarLabel.composedMenuBarImage(
+            iconStyle: .chartBar,
+            health: .critical,
+            showsHealthDot: false
+        )
+        let unconfiguredImage = MenuBarLabel.composedMenuBarImage(
+            iconStyle: .chartBar,
+            health: nil
+        )
+        XCTAssertEqual(hiddenDotImage.tiffRepresentation, unconfiguredImage.tiffRepresentation)
+    }
+
     func testUnknownStatusBarValuesFallBackWithoutDroppingProviders() throws {
         let json = """
         {
@@ -47,6 +82,7 @@ final class StatusBarIconTests: XCTestCase {
           "refreshIntervalSeconds": 300,
           "statusBarIconStyle": "future-icon-style",
           "statusBarIndicatorMode": 42,
+          "statusBarHealthDotEnabled": "not-a-boolean",
           "providers": {
             "minimax_token_plan": {
               "enabled": true,
@@ -59,6 +95,7 @@ final class StatusBarIconTests: XCTestCase {
         let decoded = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
         XCTAssertEqual(decoded.effectiveStatusBarIconStyle, .chartBar)
         XCTAssertEqual(decoded.effectiveStatusBarIndicatorMode, .colored)
+        XCTAssertTrue(decoded.effectiveStatusBarHealthDotEnabled)
         XCTAssertEqual(decoded.providers["minimax_token_plan"]?.enabled, true)
         XCTAssertEqual(decoded.providers["minimax_token_plan"]?.apiKey, "real-key")
     }
