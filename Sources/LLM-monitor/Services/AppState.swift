@@ -48,6 +48,8 @@ final class AppState: ObservableObject {
     /// 仍在等待同一 background 请求的 full refresh 调用数。用于取消时只撤销
     /// 当前调用的 pending 标记，不影响其他仍在等待的调用。
     private var pendingFullRefreshWaiterCounts: [String: Int] = [:]
+    /// 远程额度恢复通知；通过协议注入，测试不会触碰系统通知中心。
+    private let quotaUpdateNotifier: any QuotaUpdateNotifying
 
     /// GLM（ZCode）本地 scanner 的独立定期触发 task。
     ///
@@ -181,9 +183,14 @@ final class AppState: ObservableObject {
     /// 配置变更后递增。旧请求即使稍后完成，也不能覆盖新配置派生出的状态。
     private var configurationGeneration = 0
 
-    init(descriptors: [FetcherDescriptor], configStore: ConfigStore) {
+    init(
+        descriptors: [FetcherDescriptor],
+        configStore: ConfigStore,
+        quotaUpdateNotifier: any QuotaUpdateNotifying = NoopQuotaUpdateNotifier()
+    ) {
         self.descriptors = descriptors
         self.configStore = configStore
+        self.quotaUpdateNotifier = quotaUpdateNotifier
         self.refreshTimestampsURL = configStore.configURL
             .deletingLastPathComponent()
             .appendingPathComponent("last-refresh.json")
@@ -632,9 +639,10 @@ final class AppState: ObservableObject {
             guard let newIdx = statuses.firstIndex(where: { $0.id == providerID }) else { return .deferred }
             // 把"这次新抓的"和"上次缓存的"按 fetcher 自带的 merger 合成最终值。
             // merger 跟 fetcher 一起在 fetcher 文件里定义，policy 不在 AppState 里堆 if 分支。
+            let previousInfo = statuses[newIdx].lastSuccess
             let info = fetcher.resultMerger.merge(
                 new: fetchedInfo,
-                previous: statuses[newIdx].lastSuccess,
+                previous: previousInfo,
                 mode: mode
             )
             logInfo("  [\(providerID)] 刷新成功，\(info.models.count) 个 model (\(Int(Date().timeIntervalSince(startedAt) * 1000))ms)")
@@ -658,6 +666,17 @@ final class AppState: ObservableObject {
             mutateStatus(at: newIdx) {
                 $0.state = .ok(info)
                 $0.lastRefreshedAt = info.fetchedAt
+            }
+            let quotaIncreases = QuotaIncreaseDetector.detect(
+                current: info,
+                previous: previousInfo
+            )
+            if !quotaIncreases.isEmpty {
+                quotaUpdateNotifier.notify(
+                    providerID: providerID,
+                    providerName: statuses[newIdx].displayName,
+                    increases: quotaIncreases
+                )
             }
             persistedRefreshTimes[providerID] = info.fetchedAt
             persistRefreshTimes()

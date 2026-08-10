@@ -5,9 +5,11 @@ import Darwin
 @MainActor
 final class AppLifecycleDelegate: NSObject, NSApplicationDelegate {
     weak var appState: AppState?
+    var quotaUpdateNotifier: SystemQuotaUpdateNotifier?
     private var wakeObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        quotaUpdateNotifier?.checkAuthorizationAtLaunch()
         wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification,
             object: nil,
@@ -79,12 +81,18 @@ struct LLMMonitorApp: App {
         // 自动补全 config.json 缺失 of provider 段（不覆盖已有）
         configStore.ensureProvidersPresent(descriptors: descriptors)
         
-        let state = AppState(descriptors: descriptors, configStore: configStore)
+        let quotaUpdateNotifier = SystemQuotaUpdateNotifier()
+        let state = AppState(
+            descriptors: descriptors,
+            configStore: configStore,
+            quotaUpdateNotifier: quotaUpdateNotifier
+        )
         _configStore = StateObject(wrappedValue: configStore)
         _state = StateObject(wrappedValue: state)
         _loginItemService = StateObject(wrappedValue: loginItemService)
 
         appDelegate.appState = state
+        appDelegate.quotaUpdateNotifier = quotaUpdateNotifier
         rightClickHandler.setup(state: state)
         logInfo("@main: AppState 启动完成")
     }
