@@ -15,7 +15,7 @@ This spec documents the UI that is currently implemented in `Sources/LLM-monitor
 
 Current implementation:
 
-`MenuBarLabel` (defined in `Sources/LLM-monitor/Views/MenuBarLabel.swift`) renders a fixed-width compact icon (`18x18pt`) that dynamically reflects overall provider health and background refreshing status.
+`MenuBarLabel` (defined in `Sources/LLM-monitor/Views/MenuBarLabel.swift`) renders a fixed `22x22pt` canvas. The configured symbol is drawn in a `20x20pt` area and dynamically reflects overall provider health and background refreshing status.
 `AppState` publishes a stable one-minute clock value, so GLM/DeepSeek peak-window
 boundaries update even when no provider publishes a fresh network result. The clock is
 kept outside the `MenuBarExtra` label because embedding `TimelineView` there can trigger
@@ -80,6 +80,25 @@ in `spec/overview.md` under "Current Design Boundaries".
 
 The 开机自启动 toggle was moved into the Settings panel in Round 5; the menu footer
 shows its status only (`自启 ✓` / `自启 ✗`).
+
+## Settings Window
+
+The native Settings window has a 220pt sidebar and a scrollable detail pane. Its minimum
+size is `720x480pt`, with an ideal size of `760x520pt`. General, provider, and OpenCode
+pages share the same visual hierarchy and reusable section components.
+
+Settings layout rules:
+
+- pane headers vertically center a `34x34pt` icon container with the two-line title and subtitle
+- settings rows use a left-aligned label and a right-aligned control or value
+- boolean settings use native SwiftUI switch toggles with `.controlSize(.small)`
+- controls within a section use 16pt vertical spacing; the section card uses 14pt padding
+- explanatory copy belongs below the section card as caption-sized footer text
+- menu pickers use a fixed trailing-aligned frame where necessary to keep controls in one column
+
+Typography is semantic rather than chosen independently by each pane: 20pt bold for pane
+titles, `subheadline` for subtitles and supporting text, `caption` for section titles,
+footers, and metadata, `body` for row labels, and `footnote` for inline status messages.
 
 ## Header
 
@@ -211,6 +230,7 @@ Accent color mapping:
 | `antigravity` | blue |
 | `glm` | blue |
 | `custom` | gray |
+| `deepseek` | cyan |
 
 Row-level tint rules:
 
@@ -224,7 +244,7 @@ Row-level tint rules:
 | Element | Current behavior |
 |---|---|
 | Status dot | `StatusIndicator(level: status.healthLevel)` |
-| Provider icon | descriptor `iconSystemName`, 12pt semibold in a low-contrast accent circle |
+| Provider icon | bundled brand asset in an `18x18pt` frame; OpenAI follows the system foreground color and missing assets use a recognizable SF Symbol fallback |
 | Display name | 14pt bold |
 | Plan tag | shown when a fetched provider supplies a plan label (for example, ChatGPT plan type) |
 | State tag | compact `未启用` / `待更新` / `已更新` / `需重试` label; a spinner replaces it while loading |
@@ -239,6 +259,10 @@ Row-level tint rules:
 | critical | red |
 
 `.notConfigured`、`.ready`、首次 `.loading` 和没有成功数据的 `.failed` 都返回 `nil` 健康度，因此显示灰点。
+
+Bundled brand assets are used consistently in provider card headers and Settings navigation.
+They cover Minimax, OpenAI, Antigravity, GLM, and DeepSeek; OpenCode has separate light
+and dark assets because it is a shared local data source rather than a provider card.
 
 ## Card States
 
@@ -451,6 +475,20 @@ Reset time color (`summaryColor(for:)`):
 | `> 80` | green |
 | otherwise | primary |
 
+## Quota Update Notifications
+
+After each successful remote quota request, the app compares the result with that provider's
+previous successful snapshot. A macOS notification is sent when an existing model and window
+has increased by at least 0.01 percentage points. The first snapshot, a newly appearing model
+or window, decreases, and smaller floating-point noise do not notify. Multiple model changes
+from one provider refresh are combined into one notification.
+
+At application launch, notification authorization is requested only when the system status is
+`.notDetermined`; an existing allow or deny choice is not prompted again. Notifications remain
+visible as a banner with sound while the menu app is in the foreground. UserNotifications is
+available only from a packaged `.app` with a Bundle Identifier, so raw `swift run` / SwiftPM
+executables disable this feature safely.
+
 ## Reset Credits
 
 Shown when `info.resetCredits?.shouldDisplay == true`.
@@ -504,8 +542,7 @@ The UI intentionally hides reset-credit id, title, description, and grant time.
 
 - No additional settings sheet inside the menu panel; provider toggles and API
   key fields belong to the dedicated Settings window.
-- No onboarding screen.
-- No theme picker.
+- No custom visual theme beyond the menu bar icon theme selector.
 - No custom font.
 - No in-app provider deletion.
 
@@ -514,7 +551,3 @@ The UI intentionally hides reset-credit id, title, description, and grant time.
 These are useful future changes if the app grows:
 
 - Add a scrollable max-height content area for many providers.
-- Make disabled/unconfigured status dots gray.
-- Wire `isRefreshing` and `nextRefreshAt`.
-- Let the menu bar label reflect worst provider health.
-- Consider exposing `planLabel` in the card header or model row.

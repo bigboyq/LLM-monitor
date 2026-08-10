@@ -4,11 +4,11 @@
 
 LLM Monitor is a macOS 14+ menu bar app for viewing quota, balance, reset times, health, and local token usage across multiple LLM services.
 
-> Current version: **1.4.1** · Apple Silicon and Intel · Credentials and usage caches stay on your Mac
+> Current version: **1.4.2** · Apple Silicon and Intel · Credentials and usage caches stay on your Mac
 
 ## Download
 
-1. Download `LLM-monitor-1.4.1.dmg` from [GitHub Releases](https://github.com/bigboyq/LLM-monitor/releases/latest).
+1. Download `LLM-monitor-1.4.2.dmg` from [GitHub Releases](https://github.com/bigboyq/LLM-monitor/releases/latest).
 2. Open the DMG and drag **LLM-monitor.app** to **Applications**.
 3. Launch the app, click its menu bar icon, open Settings, and enable the providers you use.
 
@@ -27,6 +27,8 @@ The public snapshot is ad-hoc signed and is not Apple-notarized. If macOS blocks
 ## Highlights
 
 - Quota, balance, health, reset time, and manual refresh in one menu.
+- The selected menu bar icon stays intact, with an optional green, orange, or red health dot at its lower-right corner.
+- macOS notifications when an existing model's remaining quota increases between successful requests; notification permission is checked at app launch.
 - Local token totals and seven-day charts for supported clients.
 - Per-provider refresh intervals, exponential retry backoff, and live config reload.
 - GLM and DeepSeek peak-period indicators.
@@ -73,6 +75,8 @@ swift build
 ./.build/debug/LLM-monitor
 ```
 
+The raw SwiftPM executable is suitable for debugging core features, but it has no `.app` bundle identifier, so macOS system notifications are disabled. Build and launch the packaged `.app` when testing notifications.
+
 Run the test and audit gates:
 
 ```bash
@@ -83,7 +87,7 @@ Run the test and audit gates:
 Create a deterministic release app, DMG, and checksum file:
 
 ```bash
-./scripts/build-release.sh 1.4.1 94
+./scripts/build-release.sh 1.4.2 95
 ```
 
 The default build is ad-hoc signed. For Developer ID signing and notarization, set `CODESIGN_IDENTITY`, `NOTARIZE=1`, and `NOTARY_PROFILE` as described in the comments in `scripts/build-app.sh` and `scripts/build-dmg.sh`.

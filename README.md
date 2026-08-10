@@ -4,11 +4,11 @@
 
 适用于 macOS 14 及以上版本的菜单栏额度与本地用量监视器。一个入口集中查看 Minimax、ChatGPT/Codex、Antigravity、GLM Coding Plan 与 DeepSeek，并可选择合并 OpenCode 的本地 token 账本。
 
-> 当前版本：**1.4.1** · 支持 Apple Silicon 与 Intel Mac · 所有凭据和用量缓存只保存在本机
+> 当前版本：**1.4.2** · 支持 Apple Silicon 与 Intel Mac · 所有凭据和用量缓存只保存在本机
 
 ## 下载与安装
 
-1. 从 [GitHub Releases](https://github.com/bigboyq/LLM-monitor/releases/latest) 下载 `LLM-monitor-1.4.1.dmg`。
+1. 从 [GitHub Releases](https://github.com/bigboyq/LLM-monitor/releases/latest) 下载 `LLM-monitor-1.4.2.dmg`。
 2. 打开 DMG，将 **LLM-monitor.app** 拖到 **Applications**。
 3. 启动应用，点击菜单栏图标，进入“设置”启用并配置需要的 Provider。
 
@@ -17,6 +17,8 @@
 ## 主要能力
 
 - 在菜单栏集中查看额度、余额、重置时间、健康状态和最近刷新结果。
+- 保留用户选择的菜单栏主图标，并可通过右下角绿、橙、红色圆点快速识别整体健康状态。
+- 当同一模型的剩余额度较上一次成功请求增加时发送 macOS 通知；应用启动时检查通知权限。
 - 汇总 Codex、Minimax、Antigravity、ZCode 与 OpenCode 的本地 token 用量。
 - 支持每个 Provider 独立刷新、失败退避、手动刷新和配置热重载。
 - 提供 GLM/DeepSeek 高峰时段提示、最近 7 天图表和开机自启动。
@@ -75,6 +77,8 @@ swift build
 ./.build/debug/LLM-monitor
 ```
 
+直接运行 SwiftPM 生成的裸可执行文件可调试核心功能，但它没有 `.app` Bundle Identifier，因此 macOS 系统通知会被禁用。测试通知时请使用下方脚本构建并启动 `.app`。
+
 运行测试与完整审计：
 
 ```bash
@@ -85,7 +89,7 @@ swift build
 构建 universal `.app`、DMG 和 SHA-256 校验文件：
 
 ```bash
-./scripts/build-release.sh 1.4.1 94
+./scripts/build-release.sh 1.4.2 95
 ```
 
 默认构建使用 ad-hoc 签名。Developer ID 签名与 notarization 参数见 `scripts/build-app.sh` 和 `scripts/build-dmg.sh` 的文件注释；完整构建与发布约定见[项目架构规格](spec/overview.md#build-and-packaging)。

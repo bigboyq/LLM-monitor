@@ -7,7 +7,7 @@
 # Signing/notarization variables are forwarded to build-app.sh/build-dmg.sh:
 #   CODESIGN_IDENTITY="Developer ID Application: ..." \
 #   NOTARIZE=1 NOTARY_PROFILE="llm-monitor" \
-#   ./scripts/build-release.sh 1.4.1 94
+#   ./scripts/build-release.sh 1.4.2 95
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
