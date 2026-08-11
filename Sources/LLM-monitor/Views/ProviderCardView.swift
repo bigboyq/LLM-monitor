@@ -159,6 +159,7 @@ struct ProviderCardView: View {
                         providerKind: status.kind,
                         accentColor: status.accentColor,
                         localSamples: localUsageSamples,
+                        refreshIntervalSeconds: status.refreshIntervalSeconds,
                         excludeWindows: excludeWindows,
                         deepseekPeakWindow: status.deepseekPeakWindow ?? .defaultWindow
                     )
@@ -175,6 +176,7 @@ struct ProviderCardView: View {
                     providerKind: status.kind,
                     accentColor: status.accentColor,
                     localSamples: localUsageSamples,
+                refreshIntervalSeconds: status.refreshIntervalSeconds,
                 excludeWindows: excludeWindows,
                 deepseekPeakWindow: status.deepseekPeakWindow ?? .defaultWindow
                 )
@@ -203,6 +205,7 @@ struct ProviderCardView: View {
                         providerKind: status.kind,
                         accentColor: status.accentColor,
                         localSamples: localUsageSamples,
+                        refreshIntervalSeconds: status.refreshIntervalSeconds,
                         excludeWindows: excludeWindows,
                         deepseekPeakWindow: status.deepseekPeakWindow ?? .defaultWindow
                     )
@@ -462,6 +465,8 @@ struct QuotaSummary: View {
     let providerKind: ProviderKind
     let accentColor: AccentColor
     let localSamples: [LocalTokenUsageSample]
+    /// R3: reset credits 过期判定用到的刷新间隔（秒）。
+    var refreshIntervalSeconds: Int = 300
     /// 额度窗口 hover 统计需要排除的时间窗口（GLM 闲时任务不消耗积分）。
     /// 本地 token 柱图不走这条路径，仍包含闲时任务。
     var excludeWindows: [GlmOffPeakWindow] = []
@@ -511,7 +516,7 @@ struct QuotaSummary: View {
                 if !displayedModels.isEmpty {
                     Divider().opacity(0.3)
                 }
-                CompactResetCreditsRow(resets: resets)
+                CompactResetCreditsRow(resets: resets, refreshIntervalSeconds: refreshIntervalSeconds)
             }
         }
     }

@@ -81,11 +81,14 @@ struct CodexFetcher: QuotaFetcher {
         let model = try Self.parseUsage(usage)
 
         // 2. 拿 reset credits 详情（失败不阻塞主流程，但 warn 出来）
+        // R3: reset credits 有独立新鲜度。full 成功时记录实际抓取时间、清失败标志；
+        // full 失败或 background 跳过时这里返回 nil，由 CodexFillingMissingMerger 根据
+        // mode 区分"失败（标记过期）"与"按设计跳过（保持原样新鲜度）"。
         var resetCredits: ResetCreditsInfo? = nil
         if mode == .full {
             do {
                 let reset = try await fetchResetCredits(headers: headers)
-                resetCredits = reset.toInfo()
+                resetCredits = reset.toInfo(fetchedAt: Date())
                 logInfo("[codex] reset credits: 可用 \(resetCredits?.availableCount ?? 0) / 共 \(resetCredits?.entries.count ?? 0) 条")
             } catch {
                 logWarn("[codex] reset-credits 拉取失败: \(error.localizedDescription)，忽略")
@@ -312,11 +315,13 @@ struct CodexFetcher: QuotaFetcher {
         let serverAvailableCount: Int?
         let totalEarnedCount: Int?
 
-        func toInfo() -> ResetCreditsInfo {
+        func toInfo(fetchedAt: Date) -> ResetCreditsInfo {
             ResetCreditsInfo(
                 entries: entries,
                 serverAvailableCount: serverAvailableCount,
-                totalEarnedCount: totalEarnedCount
+                totalEarnedCount: totalEarnedCount,
+                fetchedAt: fetchedAt,
+                lastAttemptFailed: false
             )
         }
     }

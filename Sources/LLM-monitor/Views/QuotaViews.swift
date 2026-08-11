@@ -131,6 +131,12 @@ struct ChatGPTPlanModelRow: View {
 /// ChatGPT 重置卡：默认只显示数量和最早过期时间，hover 再看每张卡
 struct CompactResetCreditsRow: View {
     let resets: ResetCreditsInfo
+    /// R3: 用于判定 reset credits 是否过期（max(3×interval, 15min)）。
+    var refreshIntervalSeconds: Int = 300
+
+    private var isStale: Bool {
+        resets.isStale(now: Date(), refreshIntervalSeconds: TimeInterval(refreshIntervalSeconds))
+    }
 
     var body: some View {
         HoverInfoRow {
@@ -146,6 +152,19 @@ struct CompactResetCreditsRow: View {
                 }
 
                 Spacer(minLength: 8)
+
+                if isStale {
+                    // R3: reset credits 子接口失败或数据过旧，显示过期提示（不只靠透明度/颜色）。
+                    HStack(spacing: 3) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 9, weight: .semibold))
+                        Text(staleText)
+                            .font(.system(size: 9, weight: .semibold).monospacedDigit())
+                            .lineLimit(1)
+                    }
+                    .foregroundStyle(.orange)
+                    .help(staleHelp)
+                }
 
                 HStack(spacing: 4) {
                     Image(systemName: "clock.arrow.circlepath")
@@ -197,6 +216,21 @@ struct CompactResetCreditsRow: View {
     private var expiryText: String {
         guard let nearestExpiry = resets.nearestExpiry else { return "—" }
         return Formatters.formatMonthDayMinute(nearestExpiry)
+    }
+
+    /// R3: 过期文案——"可能过期 · 上次更新 HH:mm"；无 fetchedAt 时不带时间。
+    private var staleText: String {
+        if let fetchedAt = resets.fetchedAt {
+            return "可能过期 · 上次更新 \(Formatters.formatClock(fetchedAt))"
+        }
+        return "可能过期"
+    }
+
+    private var staleHelp: String {
+        if resets.lastAttemptFailed {
+            return "最近一次抓取 reset credits 失败，显示的是上次成功的数据"
+        }
+        return "reset credits 数据已较久未更新，可能已过期"
     }
 
     private var summaryColor: Color {

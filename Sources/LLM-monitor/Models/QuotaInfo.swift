@@ -335,6 +335,52 @@ struct ResetCreditsInfo: Equatable, Codable, Sendable {
     /// 服务端给的累计获得数（注意：实测可能跟 credits 数组长度不一致，慎用）
     let totalEarnedCount: Int?
 
+    /// R3: 该 reset credits 值的实际抓取时间，独立于主 quota 的 `fetchedAt`。
+    /// 主 quota 成功但 reset credits 子请求失败时，主 `fetchedAt` 不能冒充子接口时间。
+    /// 旧缓存/解码缺省为 nil（UI 按不可判定处理，不显示过期）。
+    let fetchedAt: Date?
+
+    /// R3: 最近一次 full 抓取是否失败。true 表示当前值是回填的旧数据，需要提示过期。
+    /// background 刷新按设计跳过 reset credits，不算失败，不置位。
+    let lastAttemptFailed: Bool
+
+    init(
+        entries: [ResetCreditEntry],
+        serverAvailableCount: Int?,
+        totalEarnedCount: Int?,
+        fetchedAt: Date? = nil,
+        lastAttemptFailed: Bool = false
+    ) {
+        self.entries = entries
+        self.serverAvailableCount = serverAvailableCount
+        self.totalEarnedCount = totalEarnedCount
+        self.fetchedAt = fetchedAt
+        self.lastAttemptFailed = lastAttemptFailed
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case entries, serverAvailableCount, totalEarnedCount, fetchedAt, lastAttemptFailed
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        entries = try c.decodeIfPresent([ResetCreditEntry].self, forKey: .entries) ?? []
+        serverAvailableCount = try c.decodeIfPresent(Int.self, forKey: .serverAvailableCount)
+        totalEarnedCount = try c.decodeIfPresent(Int.self, forKey: .totalEarnedCount)
+        // 旧数据没有这两个字段 → nil / false（向后兼容）。
+        fetchedAt = try c.decodeIfPresent(Date.self, forKey: .fetchedAt)
+        lastAttemptFailed = try c.decodeIfPresent(Bool.self, forKey: .lastAttemptFailed) ?? false
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(entries, forKey: .entries)
+        try c.encodeIfPresent(serverAvailableCount, forKey: .serverAvailableCount)
+        try c.encodeIfPresent(totalEarnedCount, forKey: .totalEarnedCount)
+        try c.encodeIfPresent(fetchedAt, forKey: .fetchedAt)
+        if lastAttemptFailed { try c.encode(lastAttemptFailed, forKey: .lastAttemptFailed) }
+    }
+
     /// 当前可用的次数（status == "available"）
     var availableCount: Int {
         serverAvailableCount ?? entries.filter { $0.status.lowercased() == "available" }.count
@@ -355,6 +401,28 @@ struct ResetCreditsInfo: Equatable, Codable, Sendable {
 
     /// 是否展示：至少有一条 entry 才展示
     var shouldDisplay: Bool { !entries.isEmpty }
+
+    /// R3: 返回一份标记为"过期（最近 full 抓取失败）"的副本，保留原值与原 fetchedAt。
+    func markingStale() -> ResetCreditsInfo {
+        ResetCreditsInfo(
+            entries: entries,
+            serverAvailableCount: serverAvailableCount,
+            totalEarnedCount: totalEarnedCount,
+            fetchedAt: fetchedAt,
+            lastAttemptFailed: true
+        )
+    }
+
+    /// R3: 是否应对外显示"可能过期"。
+    /// - `lastAttemptFailed` 立即判定过期；
+    /// - 否则当数据年龄超过 `max(3 × 刷新间隔, 15 分钟)` 时也判定过期；
+    /// - 没有 `fetchedAt`（旧数据）时不按年龄判定。
+    func isStale(now: Date, refreshIntervalSeconds: TimeInterval) -> Bool {
+        if lastAttemptFailed { return true }
+        guard let fetchedAt else { return false }
+        let threshold = max(refreshIntervalSeconds * 3, 15 * 60)
+        return now.timeIntervalSince(fetchedAt) > threshold
+    }
 }
 
 enum HealthLevel: String, Sendable, Comparable {
