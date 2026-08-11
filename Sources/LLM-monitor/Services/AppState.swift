@@ -178,6 +178,8 @@ final class AppState: ObservableObject {
     /// 只持久化远程 quota 最近成功时间；quota 本体仍不落盘，避免把完整响应当作用户缓存。
     private let refreshTimestampsURL: URL
     private var persistedRefreshTimes: [String: Date]
+    /// R1: last-refresh.json 的写盘移到独立 actor，MainActor 不再做 encode/fsync。
+    private let lastRefreshStore: LastRefreshStore
     /// 配置变更后递增。旧请求即使稍后完成，也不能覆盖新配置派生出的状态。
     private var configurationGeneration = 0
 
@@ -192,6 +194,7 @@ final class AppState: ObservableObject {
                 .deletingLastPathComponent()
                 .appendingPathComponent("last-refresh.json")
         )
+        self.lastRefreshStore = LastRefreshStore(url: self.refreshTimestampsURL)
         self.refreshScheduler = ProviderRefreshScheduler(
             refreshHandler: { [weak self] providerID, mode in
                 guard let self else { return .deferred }
@@ -1149,13 +1152,11 @@ final class AppState: ObservableObject {
     }
 
     private func persistRefreshTimes() {
-        do {
-            let encoder = JSONEncoder()
-            encoder.dateEncodingStrategy = .iso8601
-            let data = try encoder.encode(persistedRefreshTimes)
-            try FileManagerBox().writePrivate(data, to: refreshTimestampsURL)
-        } catch {
-            logWarn("AppState: 保存 last-refresh.json 失败: \(error.localizedDescription)")
+        // R1: encode + fsync 写盘移出 MainActor。这里只把值类型快照拷贝后 enqueue，
+        // 不在主线程做 JSON 编码或文件 I/O；写盘由 LastRefreshStore 合并窗口处理。
+        let snapshot = persistedRefreshTimes
+        Task { [lastRefreshStore] in
+            await lastRefreshStore.enqueue(snapshot)
         }
     }
 
