@@ -90,7 +90,7 @@ struct ProviderCardView: View {
             } detail: {
                 DeepseekAccountHoverView(
                     planLabel: planLabel,
-                    accountEmail: accountEmail
+                    balanceDetail: status.lastSuccess?.balanceDetail
                 )
             }
         } else {
@@ -491,7 +491,7 @@ struct QuotaSummary: View {
                     DeepseekBalanceRow(
                         model: model,
                         planLabel: info.planLabel,
-                        accountEmail: info.accountEmail,
+                        balanceDetail: info.balanceDetail,
                         tint: accentColor(for: model),
                         peakWindow: deepseekPeakWindow
                     )

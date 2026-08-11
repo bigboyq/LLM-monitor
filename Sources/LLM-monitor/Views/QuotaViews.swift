@@ -803,7 +803,8 @@ func segmentedBarTooltipText(segments: Int, hasTriangle: Bool) -> String {
 struct DeepseekBalanceRow: View {
     let model: ModelQuota
     let planLabel: String?
-    let accountEmail: String?
+    /// R7: 余额明细由结构化字段本地格式化，不再解析 accountEmail 预格式化串。
+    let balanceDetail: DeepseekBalanceDetail?
     let tint: Color
     let peakWindow: DeepseekPeakWindow
 
@@ -829,14 +830,15 @@ struct DeepseekBalanceRow: View {
             }
 
             HStack(spacing: 8) {
-                if let accountEmail, !accountEmail.isEmpty {
-                    let parts = accountEmail.components(separatedBy: "|").map { $0.trimmingCharacters(in: .whitespaces) }
+                if let detail = balanceDetail {
+                    let symbol = detail.symbol
                     HStack(spacing: 8) {
-                        ForEach(parts, id: \.self) { part in
-                            Text(part)
-                                .font(.system(size: 10, weight: .medium))
-                                .foregroundStyle(.secondary)
-                        }
+                        Text("充值: \(symbol)\(String(format: "%.2f", detail.toppedUp))")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(.secondary)
+                        Text("赠金: \(symbol)\(String(format: "%.2f", detail.granted))")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(.secondary)
                     }
                     .padding(.horizontal, 7)
                     .padding(.vertical, 3)

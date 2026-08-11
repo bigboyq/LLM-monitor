@@ -152,8 +152,30 @@ struct QuotaInfo: Equatable, Codable, Sendable {
     /// Codex / ChatGPT Plan 的本地 token 统计明细
     let codexUsageDetails: CodexUsageDetails?
 
+    /// R7: DeepSeek 余额明细（结构化字段，取代之前塞进 accountEmail 的预格式化串）。
+    /// 其他 provider 永远 nil。
+    let balanceDetail: DeepseekBalanceDetail?
+
     /// 数据抓取时刻
     let fetchedAt: Date
+
+    init(
+        models: [ModelQuota],
+        resetCredits: ResetCreditsInfo?,
+        planLabel: String?,
+        accountEmail: String?,
+        codexUsageDetails: CodexUsageDetails?,
+        fetchedAt: Date,
+        balanceDetail: DeepseekBalanceDetail? = nil
+    ) {
+        self.models = models
+        self.resetCredits = resetCredits
+        self.planLabel = planLabel
+        self.accountEmail = accountEmail
+        self.codexUsageDetails = codexUsageDetails
+        self.balanceDetail = balanceDetail
+        self.fetchedAt = fetchedAt
+    }
 
     // MARK: - 派生属性
 
@@ -425,6 +447,28 @@ struct ResetCreditsInfo: Equatable, Codable, Sendable {
     }
 }
 
+/// R7: DeepSeek 余额明细的结构化字段。只存数值与货币，由 DeepSeek 专用 View 本地格式化，
+/// 不再预格式化成 "充值: ... | 赠金: ..." 塞进 accountEmail。
+struct DeepseekBalanceDetail: Equatable, Codable, Sendable {
+    /// 货币代码，如 "CNY" / "USD"。
+    let currency: String
+    /// 总余额。
+    let total: Double
+    /// 充值余额。
+    let toppedUp: Double
+    /// 赠金余额。
+    let granted: Double
+
+    /// 本地展示用的货币符号（CNY→¥，USD→$，其他按 uppercased 首字符兜底）。
+    var symbol: String {
+        switch currency.uppercased() {
+        case "USD": return "$"
+        case "CNY": return "¥"
+        default: return String(currency.uppercased().first ?? "?")
+        }
+    }
+}
+
 enum HealthLevel: String, Sendable, Comparable {
     case healthy
     case warning
@@ -453,7 +497,8 @@ extension QuotaInfo {
             planLabel: planLabel,
             accountEmail: accountEmail,
             codexUsageDetails: details,
-            fetchedAt: fetchedAt
+            fetchedAt: fetchedAt,
+            balanceDetail: balanceDetail
         )
     }
 }

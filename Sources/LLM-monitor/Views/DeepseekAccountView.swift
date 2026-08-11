@@ -3,7 +3,8 @@ import SwiftUI
 /// DeepSeek 卡片标题的 hover 详情：充值金与赠金明细。
 struct DeepseekAccountHoverView: View {
     let planLabel: String?
-    let accountEmail: String?
+    /// R7: 余额明细由结构化字段本地格式化。
+    let balanceDetail: DeepseekBalanceDetail?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -25,12 +26,18 @@ struct DeepseekAccountHoverView: View {
                 }
             }
 
-            if let accountEmail, !accountEmail.isEmpty {
-                HStack(spacing: 4) {
-                    Image(systemName: "info.circle")
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(.tertiary)
-                    Text(accountEmail)
+            if let detail = balanceDetail {
+                let symbol = detail.symbol
+                HStack(spacing: 10) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "info.circle")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(.tertiary)
+                        Text("充值: \(symbol)\(String(format: "%.2f", detail.toppedUp))")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(.secondary)
+                    }
+                    Text("赠金: \(symbol)\(String(format: "%.2f", detail.granted))")
                         .font(.system(size: 10, weight: .medium))
                         .foregroundStyle(.secondary)
                 }
