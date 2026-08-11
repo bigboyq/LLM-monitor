@@ -20,7 +20,9 @@ final class HTTPAndSQLiteTests: XCTestCase {
         let srcDB = try makeTempDB()
         defer { try? FileManager.default.removeItem(at: srcDB) }
 
-        let preCount = try countTempDBCopies()
+        // T2: 不再统计 $TMPDIR 下所有 .db（会受无关文件/并发进程干扰）。
+        // 改为快照本次测试前后的目录内容，断言没有新增的 SQLite 临时副本残留。
+        let before = try currentTempEntries()
 
         do {
             _ = try SQLiteTempCopy.read(dbPath: srcDB, logTag: "[test]") { _ in
@@ -31,8 +33,10 @@ final class HTTPAndSQLiteTests: XCTestCase {
             // expected
         }
 
-        XCTAssertEqual(preCount, try countTempDBCopies(),
-                       "SQLiteTempCopy 在 action 抛错后未清理 /tmp 副本")
+        let after = try currentTempEntries()
+        let leaked = after.subtracting(before).filter { Self.isSQLiteTempCopyName($0) }
+        XCTAssertTrue(leaked.isEmpty,
+                      "SQLiteTempCopy 在 action 抛错后未清理 /tmp 副本: \(leaked)")
     }
 
     func testSQLiteTempCopyFallsBackOnPrepareFailedWithCantOpen() throws {
@@ -62,10 +66,20 @@ final class HTTPAndSQLiteTests: XCTestCase {
         return srcDB
     }
 
-    private func countTempDBCopies() throws -> Int {
+    /// T2: 快照 $TMPDIR 当前条目，用于测试前后做差集判断残留。
+    private func currentTempEntries() throws -> Set<String> {
         let tempDir = NSTemporaryDirectory()
-        let contents = try FileManager.default.contentsOfDirectory(atPath: tempDir)
-        return contents.filter { $0.hasSuffix(".db") && !$0.hasSuffix(".db-wal") && !$0.hasSuffix(".db-shm") }.count
+        let contents = (try? FileManager.default.contentsOfDirectory(atPath: tempDir)) ?? []
+        return Set(contents)
+    }
+
+    /// SQLiteTempCopy 的临时副本命名为 `<UUID>.db` / `<UUID>.db-wal` / `<UUID>.db-shm`。
+    /// 只把 UUID 词干的三件套算作“本次可能产生的副本”，避免把无关 .db 误判为泄漏。
+    private static func isSQLiteTempCopyName(_ name: String) -> Bool {
+        let stems = [".db", ".db-wal", ".db-shm"]
+        guard stems.contains(where: { name.hasSuffix($0) }) else { return false }
+        let uuidRegex = #"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\.db(-wal|-shm)?$"#
+        return name.range(of: uuidRegex, options: .regularExpression) != nil
     }
 
     // MARK: - HTTPClient 取消语义

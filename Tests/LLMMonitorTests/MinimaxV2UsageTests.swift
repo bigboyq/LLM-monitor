@@ -73,7 +73,7 @@ final class MinimaxV2UsageTests: XCTestCase {
         messageRows: [MessageRow] = []
     ) throws -> URL {
         let databaseURL = url ?? FileManager.default.temporaryDirectory
-            .appendingPathComponent("minimax-v2-(UUID().uuidString).sqlite")
+            .appendingPathComponent("minimax-v2-\(UUID().uuidString).sqlite")
         try FileManager.default.createDirectory(
             at: databaseURL.deletingLastPathComponent(),
             withIntermediateDirectories: true
@@ -330,7 +330,7 @@ final class MinimaxV2UsageTests: XCTestCase {
 
     func testV2CacheMigrationResetsLegacySourceData() throws {
         let cacheDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("minimax-v2-cache-(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("minimax-v2-cache-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: cacheDir) }
 
@@ -356,7 +356,7 @@ final class MinimaxV2UsageTests: XCTestCase {
 
     func testScannerReadsOnlyRuntimeDatabaseEvenWhenSiblingLegacyDatabaseExists() throws {
         let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("minimax-v2-only-(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("minimax-v2-only-\(UUID().uuidString)", isDirectory: true)
         let runtimeURL = root.appendingPathComponent("v2/runtime-state.sqlite")
         let legacyURL = root.appendingPathComponent("sqlite.db")
         let cacheDir = root.appendingPathComponent("cache")
