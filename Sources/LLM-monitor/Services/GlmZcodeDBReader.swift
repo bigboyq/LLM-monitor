@@ -82,25 +82,25 @@ final class GlmZcodeDBReader {
           strftime('%Y-%m-%d', mu.started_at/1000,'unixepoch','localtime') AS day,
           COUNT(*) AS rounds,
           COUNT(DISTINCT mu.turn_id) AS turns,
-          SUM(COALESCE(mu.input_tokens, 0)) AS tin,
-          SUM(CASE
+          SUM(MAX(COALESCE(mu.input_tokens, 0), 0)) AS tin,
+          SUM(MAX(CASE
             WHEN COALESCE(mu.reasoning_tokens, 0) > 0 THEN COALESCE(mu.output_tokens, 0)
             WHEN EXISTS (
               SELECT 1 FROM part p WHERE p.message_id = mu.assistant_message_id
                 AND json_extract(CASE WHEN json_valid(p.data) THEN p.data ELSE '{}' END, '$.type') = 'reasoning'
             ) THEN 0
             ELSE COALESCE(mu.output_tokens, 0)
-          END) AS tout,
-          SUM(CASE
+          END, 0)) AS tout,
+          SUM(MAX(CASE
             WHEN COALESCE(mu.reasoning_tokens, 0) > 0 THEN COALESCE(mu.reasoning_tokens, 0)
             WHEN EXISTS (
               SELECT 1 FROM part p WHERE p.message_id = mu.assistant_message_id
                 AND json_extract(CASE WHEN json_valid(p.data) THEN p.data ELSE '{}' END, '$.type') = 'reasoning'
             ) THEN COALESCE(mu.output_tokens, 0)
             ELSE 0
-          END) AS trsn,
-          SUM(COALESCE(mu.cache_read_input_tokens, 0)) AS tcr,
-          SUM(COALESCE(mu.cache_creation_input_tokens, 0)) AS tcw
+          END, 0)) AS trsn,
+          SUM(MAX(COALESCE(mu.cache_read_input_tokens, 0), 0)) AS tcr,
+          SUM(MAX(COALESCE(mu.cache_creation_input_tokens, 0), 0)) AS tcw
         FROM model_usage mu
         WHERE mu.provider_id IN (?, ?)
           AND mu.status = 'completed'
@@ -139,21 +139,26 @@ final class GlmZcodeDBReader {
         )
         for (dayKey, rounds, turns, tin, tout, trsn, tcr, tcw) in rows {
             guard let dayStart = Self.parseDayKey(dayKey, calendar: calendar) else { continue }
-            // uncached input = max(input_raw - cacheRead, 0)
-            let uncachedInput = max(SaturatingArithmetic.subtract(tin, tcr), 0)
+            // R9: 读取层再做非负饱和（单行 MAX 已在 SQL 内 clamp，这里作第二层防御）。
+            let toutNN = Self.nnClamp(tout)
+            let trsnNN = Self.nnClamp(trsn)
+            let tcrNN = Self.nnClamp(tcr)
+            let tcwNN = Self.nnClamp(tcw)
+            // uncached input = max(input_raw - cacheRead, 0)，用原始 Int64 饱和减法
+            let uncachedInput = Int(clamping: max(SaturatingArithmetic.subtract(tin, tcr), 0))
             // total = uncached + cacheRead + output + reason（用 uncached 重算，
             // 避免 cacheRead > input_raw 的取整误差让 total 偏小）
-            let total = SaturatingArithmetic.sum(uncachedInput, tcr, tout, trsn)
+            let total = SaturatingArithmetic.sum(uncachedInput, tcrNN, toutNN, trsnNN)
             let usage = GlmDailyUsage(
                 dayStart: dayStart,
-                inputTokens: Int(clamping: uncachedInput),
-                outputTokens: Int(clamping: tout),
-                cacheReadTokens: Int(clamping: tcr),
-                cacheWriteTokens: Int(clamping: tcw),
-                reasoningTokens: Int(clamping: trsn),
-                totalTokens: Int(clamping: total),
-                turns: Int(clamping: turns),
-                rounds: Int(clamping: rounds)
+                inputTokens: uncachedInput,
+                outputTokens: toutNN,
+                cacheReadTokens: tcrNN,
+                cacheWriteTokens: tcwNN,
+                reasoningTokens: trsnNN,
+                totalTokens: total,
+                turns: max(0, Int(clamping: turns)),
+                rounds: max(0, Int(clamping: rounds))
             )
             if let existing = out[dayStart] {
                 out[dayStart] = existing + usage
@@ -266,14 +271,17 @@ final class GlmZcodeDBReader {
         var samples: [LocalTokenUsageSample] = []
         for (id, sessionID, timestamp, turn, model, input, output, reasoning, cacheRead, providerID) in rows {
             let promptComponent = turn ?? "event-\(id)"
+            // R9: 读取层非负饱和；input 用 nn(input)，cachedInput 用 nn(cacheRead)。
+            let inNN = Self.nnClamp(input)
+            let crNN = Self.nnClamp(cacheRead)
             let sample = LocalTokenUsageSample(
                 completedAt: Date(timeIntervalSince1970: Double(timestamp) / 1000),
                 modelName: model,
                 promptID: "\(sessionID):\(promptComponent)",
-                inputTokens: Int(clamping: input),
-                cachedInputTokens: Int(clamping: cacheRead),
-                outputTokens: Int(clamping: output),
-                reasoningOutputTokens: Int(clamping: reasoning),
+                inputTokens: inNN,
+                cachedInputTokens: crNN,
+                outputTokens: Self.nnClamp(output),
+                reasoningOutputTokens: Self.nnClamp(reasoning),
                 sourceProviderID: providerID
             )
             samples.append(sample)
@@ -302,6 +310,13 @@ final class GlmZcodeDBReader {
         let parts = dayKey.split(separator: "-").compactMap { Int($0) }
         guard parts.count == 3 else { return nil }
         return calendar.date(from: DateComponents(year: parts[0], month: parts[1], day: parts[2]))
+    }
+
+    /// R9: Int64? → 非负 Int 饱和（NULL 当 0，负值当 0，超出 Int 范围封顶）。
+    @inline(__always)
+    private static func nnClamp(_ x: Int64?) -> Int {
+        let v = Int(clamping: x ?? 0)
+        return v < 0 ? 0 : v
     }
 
     private static let sqliteTransientDestructor = unsafeBitCast(

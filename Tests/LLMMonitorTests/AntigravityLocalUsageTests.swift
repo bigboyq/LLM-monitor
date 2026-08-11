@@ -813,8 +813,15 @@ final class AntigravityLocalUsageTests: XCTestCase {
             json = "{\"nested\":\(json)}"
         }
 
-        let event = try parseUsageEvent(json)
-        XCTAssertNil(event, "超过递归深度的嵌套 payload 不应继续遍历")
+        // R11: AnyJSON 在解码阶段统一限制嵌套深度 32；40 层 payload 应在解码阶段
+        // 被拒绝（抛 DecodingError），不再走到 visit 层的 depth cap。visit(depth<32)
+        // 保留为第二层防御。这里断言“不崩溃、被拒绝”。
+        XCTAssertThrowsError(try parseUsageEvent(json), "超过递归深度的嵌套 payload 应在解码阶段被拒绝") { error in
+            guard error is DecodingError else {
+                XCTFail("应为 DecodingError，got \(error)")
+                return
+            }
+        }
     }
 
     /// Timestamp fallback chain 5 个边界：duration 字段不能 preempt / 零 / 负数 / 过早 / 过晚
