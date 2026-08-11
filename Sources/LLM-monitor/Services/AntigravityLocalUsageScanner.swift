@@ -428,33 +428,20 @@ extension AntigravityLocalUsageScanner {
                     let cacheReadTotal = SaturatingArithmetic.sum(events.lazy.map(\.cacheReadTokens))
                     logDebug("[antigravity-scan] session=\(sessionId) ✓ events=\(events.count) input=\(inputTotal) output=\(outputTotal) cacheR=\(cacheReadTotal)")
 
-                    var newDaily = Self.aggregateDaily(events: events, calendar: calendar)
-                    var newSamples = Self.fallbackSamples(
-                        sessionID: sessionId,
-                        events: events
-                    )
-
+                    // F1: 只计算一次 turn/round 明细。aggregateDaily 通过预计算的 counts
+                    // 写入 turns/rounds，samples 直接复用 details.samples；不得再把同一份
+                    // counts 叠加进 newDaily（旧实现会造成 turns/rounds 双倍计数）。
                     let details = Self.computeTurnRoundDetails(
                         sessionID: sessionId,
                         events: events,
                         calendar: calendar
                     )
-                    newSamples = details.samples
-                    for (day, count) in details.counts.perDay {
-                        let key = LocalUsageDayKey.make(day, calendar: calendar)
-                        let existing = newDaily[key] ?? AntigravityDailyUsage(dayStart: day)
-                        newDaily[key] = AntigravityDailyUsage(
-                            dayStart: existing.dayStart,
-                            inputTokens: existing.inputTokens,
-                            cacheReadTokens: existing.cacheReadTokens,
-                            cacheWriteTokens: existing.cacheWriteTokens,
-                            outputTokens: existing.outputTokens,
-                            reasoningTokens: existing.reasoningTokens,
-                            totalTokens: existing.totalTokens,
-                            turns: SaturatingArithmetic.add(existing.turns, count.turns),
-                            rounds: SaturatingArithmetic.add(existing.rounds, count.rounds)
-                        )
-                    }
+                    let newDaily = Self.aggregateDaily(
+                        events: events,
+                        calendar: calendar,
+                        counts: details.counts
+                    )
+                    let newSamples = details.samples
                     logDebug("[antigravity-scan] session=\(sessionId) R/T: turns=\(details.counts.totalTurns) rounds=\(details.counts.totalRounds) days=\(details.counts.perDay.count)")
 
                     index.dailyBySession[sessionId] = newDaily
