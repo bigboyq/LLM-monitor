@@ -59,6 +59,34 @@ struct CodexFetcher: QuotaFetcher {
         return URL(fileURLWithPath: NSString("~/.codex/auth.json").expandingTildeInPath)
     }
 
+    /// R14: auth.json 读取的硬上限。
+    static let maxAuthFileBytes: Int = 1 * 1024 * 1024  // 1 MiB
+
+    /// R14: 认证文件超过 1 MiB 的稳定错误标记。
+    struct CodexAuthFileTooLargeError: Error {}
+
+    /// 用 FileHandle 分块读取并施加硬上限。超限抛 `CodexAuthFileTooLargeError`；
+    /// 不做读取前 stat（stat 仍可能被 TOCTOU 绕过），改为读取过程中累计字节。
+    /// 按已锁定本地威胁模型不拒绝 symlink，但解析目标内容仍受大小限制。
+    /// 不把路径或文件内容写日志。
+    nonisolated static func readBounded(_ url: URL, maxBytes: Int) throws -> Data {
+        guard let handle = try? FileHandle(forReadingFrom: url) else {
+            throw NSError(domain: "codex-auth-read", code: 1)
+        }
+        defer { try? handle.close() }
+        var data = Data()
+        let chunkSize = 64 * 1024
+        while true {
+            if Task.isCancelled { throw CancellationError() }
+            guard let chunk = try? handle.read(upToCount: chunkSize), !chunk.isEmpty else { break }
+            data.append(chunk)
+            if data.count > maxBytes {
+                throw CodexAuthFileTooLargeError()
+            }
+        }
+        return data
+    }
+
     nonisolated static func resolveAuthFileURL(from pathURL: URL) -> URL {
         if pathURL.hasDirectoryPath || pathURL.pathExtension.isEmpty {
             return pathURL.appendingPathComponent("auth.json")
@@ -196,7 +224,13 @@ struct CodexFetcher: QuotaFetcher {
     private func loadAuth() throws -> AuthFile {
         let data: Data
         do {
-            data = try Data(contentsOf: authFileURL)
+            // R14: 用 FileHandle 分块读取并施加 1 MiB 硬上限，不能只做读取前 stat；
+            // 超限返回稳定错误，不把路径/内容写日志。
+            data = try Self.readBounded(authFileURL, maxBytes: Self.maxAuthFileBytes)
+        } catch is CodexAuthFileTooLargeError {
+            throw QuotaError.networkError("Codex 认证文件过大")
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             // 不附带完整路径或底层错误描述；二者都可能泄露用户名和自定义目录。
             throw QuotaError.networkError(

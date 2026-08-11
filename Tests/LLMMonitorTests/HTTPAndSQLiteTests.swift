@@ -20,9 +20,8 @@ final class HTTPAndSQLiteTests: XCTestCase {
         let srcDB = try makeTempDB()
         defer { try? FileManager.default.removeItem(at: srcDB) }
 
-        // T2: 不再统计 $TMPDIR 下所有 .db（会受无关文件/并发进程干扰）。
-        // 改为快照本次测试前后的目录内容，断言没有新增的 SQLite 临时副本残留。
-        let before = try currentTempEntries()
+        // T2/R12: 只统计应用专属临时目录 $TMPDIR/llm-monitor-sqlite/ 的内容。
+        let before = try currentAppTempEntries()
 
         do {
             _ = try SQLiteTempCopy.read(dbPath: srcDB, logTag: "[test]") { _ in
@@ -33,10 +32,9 @@ final class HTTPAndSQLiteTests: XCTestCase {
             // expected
         }
 
-        let after = try currentTempEntries()
-        let leaked = after.subtracting(before).filter { Self.isSQLiteTempCopyName($0) }
-        XCTAssertTrue(leaked.isEmpty,
-                      "SQLiteTempCopy 在 action 抛错后未清理 /tmp 副本: \(leaked)")
+        let after = try currentAppTempEntries()
+        XCTAssertTrue(after.isSubset(of: before),
+                      "SQLiteTempCopy 在 action 抛错后未清理专属目录副本: \(after.subtracting(before))")
     }
 
     func testSQLiteTempCopyFallsBackOnPrepareFailedWithCantOpen() throws {
@@ -66,10 +64,54 @@ final class HTTPAndSQLiteTests: XCTestCase {
         return srcDB
     }
 
-    /// T2: 快照 $TMPDIR 当前条目，用于测试前后做差集判断残留。
-    private func currentTempEntries() throws -> Set<String> {
-        let tempDir = NSTemporaryDirectory()
-        let contents = (try? FileManager.default.contentsOfDirectory(atPath: tempDir)) ?? []
+    // MARK: - R12: 专属临时目录与清理
+
+    /// 正常路径闭包退出即删；副本只出现在专属目录内。
+    func testR12TempCopyLivesInAppDirAndCleansUp() throws {
+        let srcDB = try makeTempDB()
+        defer { try? FileManager.default.removeItem(at: srcDB) }
+        let before = try currentAppTempEntries()
+        _ = try SQLiteTempCopy.read(dbPath: srcDB, logTag: "[test]") { _ in "ok" }
+        let after = try currentAppTempEntries()
+        XCTAssertTrue(after.isSubset(of: before), "成功路径应清理副本: \(after.subtracting(before))")
+    }
+
+    /// sweep 只清理超过 24h 的残留；23h 文件与专属目录外文件不受影响。
+    func testR12SweepStaleCopiesRespectsAgeAndScope() throws {
+        let fm = FileManager.default
+        let dir = SQLiteTempCopy.appTempDir()
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: NSNumber(value: 0o700)])
+
+        let old = dir.appendingPathComponent("old-\(UUID().uuidString).db")
+        let fresh = dir.appendingPathComponent("fresh-\(UUID().uuidString).db")
+        try Data("old".utf8).write(to: old)
+        try Data("fresh".utf8).write(to: fresh)
+        // 把 old 的 mtime 调到 25 小时前，fresh 调到 23 小时前。
+        let now = Date()
+        try fm.setAttributes([.modificationDate: now.addingTimeInterval(-25 * 3600)], ofItemAtPath: old.path)
+        try fm.setAttributes([.modificationDate: now.addingTimeInterval(-23 * 3600)], ofItemAtPath: fresh.path)
+        defer {
+            try? fm.removeItem(at: old)
+            try? fm.removeItem(at: fresh)
+        }
+
+        // 专属目录外放一个无关 .db，sweep 不应动它。
+        let outside = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("r12-outside-\(UUID().uuidString).db")
+        try Data("x".utf8).write(to: outside)
+        defer { try? fm.removeItem(at: outside) }
+
+        SQLiteTempCopy.sweepStaleCopies(now: now, maxAge: 24 * 3600)
+
+        XCTAssertFalse(fm.fileExists(atPath: old.path), "25h 残留应被清理")
+        XCTAssertTrue(fm.fileExists(atPath: fresh.path), "23h 文件不应被清理")
+        XCTAssertTrue(fm.fileExists(atPath: outside.path), "专属目录外文件不受影响")
+    }
+
+    /// T2/R12: 快照应用专属临时目录 `$TMPDIR/llm-monitor-sqlite/` 的内容。
+    private func currentAppTempEntries() throws -> Set<String> {
+        let dir = SQLiteTempCopy.appTempDir().path
+        let contents = (try? FileManager.default.contentsOfDirectory(atPath: dir)) ?? []
         return Set(contents)
     }
 

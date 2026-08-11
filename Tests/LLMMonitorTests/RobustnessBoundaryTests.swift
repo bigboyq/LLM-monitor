@@ -66,4 +66,47 @@ final class RobustnessBoundaryTests: XCTestCase {
         XCTAssertLessThanOrEqual(d5, 30 * 60 * 1.1)
         XCTAssertLessThanOrEqual(d10, 30 * 60 * 1.1)
     }
+
+    // MARK: - R14: Codex auth.json 有界读取
+
+    private func makeAuthFile(_ bytes: Int) throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codex-auth-\(UUID().uuidString).json")
+        try Data(repeating: 0x61, count: bytes).write(to: url)
+        addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+        return url
+    }
+
+    func testR14ReadBoundedAcceptsSmallFile() throws {
+        let url = try makeAuthFile(100)
+        let data = try CodexFetcher.readBounded(url, maxBytes: CodexFetcher.maxAuthFileBytes)
+        XCTAssertEqual(data.count, 100)
+    }
+
+    func testR14ReadBoundedAcceptsExactlyOneMiB() throws {
+        let url = try makeAuthFile(CodexFetcher.maxAuthFileBytes)
+        let data = try CodexFetcher.readBounded(url, maxBytes: CodexFetcher.maxAuthFileBytes)
+        XCTAssertEqual(data.count, CodexFetcher.maxAuthFileBytes)
+    }
+
+    func testR14ReadBoundedRejectsOneMiBPlusOne() throws {
+        let url = try makeAuthFile(CodexFetcher.maxAuthFileBytes + 1)
+        XCTAssertThrowsError(try CodexFetcher.readBounded(url, maxBytes: CodexFetcher.maxAuthFileBytes)) { error in
+            guard error is CodexFetcher.CodexAuthFileTooLargeError else {
+                XCTFail("应为 CodexAuthFileTooLargeError，got \(error)")
+                return
+            }
+        }
+    }
+
+    /// 合法 symlink 仍可读取（本地威胁模型不拒绝 symlink），但内容受大小限制。
+    func testR14ReadBoundedFollowsLegitSymlink() throws {
+        let target = try makeAuthFile(50)
+        let link = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codex-auth-link-\(UUID().uuidString).json")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
+        addTeardownBlock { try? FileManager.default.removeItem(at: link) }
+        let data = try CodexFetcher.readBounded(link, maxBytes: CodexFetcher.maxAuthFileBytes)
+        XCTAssertEqual(data.count, 50)
+    }
 }

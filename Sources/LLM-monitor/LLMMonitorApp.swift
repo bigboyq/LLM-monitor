@@ -86,6 +86,8 @@ struct LLMMonitorApp: App {
 
         appDelegate.appState = state
         rightClickHandler.setup(state: state)
+        // R12: 启动时清理 SQLite 专属临时目录内超过 24 小时的残留副本（best-effort）。
+        SQLiteTempCopy.sweepStaleCopies()
         logInfo("@main: AppState 启动完成")
     }
 
