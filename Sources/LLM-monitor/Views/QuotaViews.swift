@@ -826,20 +826,33 @@ struct DeepseekBalanceRow: View {
                     Text(planLabel)
                         .font(.system(size: 15, weight: .bold).monospacedDigit())
                         .foregroundStyle(tint)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .help(planLabel)
                 }
             }
 
             HStack(spacing: 8) {
                 if let detail = balanceDetail {
                     let symbol = detail.symbol
+                    let toppedUpText = "充值: \(symbol)\(String(format: "%.2f", detail.toppedUp))"
+                    let grantedText = "赠金: \(symbol)\(String(format: "%.2f", detail.granted))"
+                    // R16: 明细单行截断，hover 看完整文本；layoutPriority 让 PeakIndicator 不被遮挡。
                     HStack(spacing: 8) {
-                        Text("充值: \(symbol)\(String(format: "%.2f", detail.toppedUp))")
+                        Text(toppedUpText)
                             .font(.system(size: 10, weight: .medium))
                             .foregroundStyle(.secondary)
-                        Text("赠金: \(symbol)\(String(format: "%.2f", detail.granted))")
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .help(toppedUpText)
+                        Text(grantedText)
                             .font(.system(size: 10, weight: .medium))
                             .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .help(grantedText)
                     }
+                    .layoutPriority(-1)
                     .padding(.horizontal, 7)
                     .padding(.vertical, 3)
                     .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
@@ -848,6 +861,7 @@ struct DeepseekBalanceRow: View {
                 Spacer(minLength: 4)
 
                 DeepseekPeakIndicatorView(window: peakWindow)
+                    .layoutPriority(1)
             }
         }
         .padding(.vertical, 2)

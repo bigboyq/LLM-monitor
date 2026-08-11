@@ -105,6 +105,10 @@ struct ProviderCardView: View {
             Text(displayTitle)
                 .font(.system(size: 14, weight: .bold))
                 .foregroundStyle(Color.primaryLabel)
+                // R15: 长 displayName 不撑破 360pt 宽度，单行尾部截断，hover 看完整文本。
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .help(displayTitle)
             if let pillLabel {
                 Text(pillLabel)
                     .font(.system(size: 9, weight: .semibold))
