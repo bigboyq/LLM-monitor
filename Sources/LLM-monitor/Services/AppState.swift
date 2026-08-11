@@ -372,6 +372,11 @@ final class AppState: ObservableObject {
                 }
                 return
             } catch {
+                // R18: generic catch（非取消错误）也必须清理 waiter count 与 claim set，
+                // 否则会泄漏并可能误触发第二次 full refresh。与 CancellationError 路径一致。
+                if activeMode == .background {
+                    removePendingFullRefreshWaiter(providerID)
+                }
                 return
             }
 

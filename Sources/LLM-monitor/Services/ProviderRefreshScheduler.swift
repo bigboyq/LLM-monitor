@@ -268,7 +268,9 @@ final class ProviderRefreshScheduler {
     }
 
     func recordFailure(_ providerID: String) {
-        failureCounts[providerID, default: 0] += 1
+        // R17: 饱和加法，避免理论上的 Int 溢出。
+        let current = failureCounts[providerID, default: 0]
+        failureCounts[providerID] = SaturatingArithmetic.add(current, 1)
     }
 
     // MARK: - 观察
@@ -295,13 +297,16 @@ final class ProviderRefreshScheduler {
     /// 计算下次刷新延迟：
     /// - 成功 → 直接用 baseInterval
     /// - 失败 → baseInterval × 2^failures（封顶 5 次叠加），再 cap 30 分钟，套 ±10% jitter
+    ///
+    /// R17: 退避指数单独用 min(actual, 5)，日志显示真实连续失败次数（不能把封顶值说成实际次数）。
     func nextDelay(for providerID: String, baseInterval: TimeInterval, succeeded: Bool) -> TimeInterval {
         guard !succeeded else { return baseInterval }
-        let failures = min(failureCounts[providerID, default: 1], 5)
-        let cappedDelay = min(baseInterval * pow(2, Double(failures)), 30 * 60)
+        let actualFailures = failureCounts[providerID, default: 1]
+        let exponent = min(actualFailures, 5)
+        let cappedDelay = min(baseInterval * pow(2, Double(exponent)), 30 * 60)
         let jitter = Double.random(in: 0.9...1.1)
         let delay = cappedDelay * jitter
-        logWarn("ProviderRefreshScheduler: [\(providerID)] 连续失败 \(failures) 次，\(Int(delay)) 秒后重试")
+        logWarn("ProviderRefreshScheduler: [\(providerID)] 连续失败 \(actualFailures) 次（退避级别封顶 5），\(Int(delay)) 秒后重试")
         return delay
     }
 }
