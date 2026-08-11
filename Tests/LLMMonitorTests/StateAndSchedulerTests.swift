@@ -1362,6 +1362,74 @@ final class StateAndSchedulerTests: XCTestCase {
         }
     }
 
+    // MARK: - R4: Antigravity 离线保留 lastSuccess（类型化 derive reason）
+
+    /// R4：已配置且 auth 文件在，但本地服务探测不可用 → serviceOffline；
+    ///     恢复后 → ready；禁用 → notConfigured（必须清空，不是离线）。
+    @MainActor
+    func testR4DeriveAntigravityServiceOfflineVsDisabled() async throws {
+        let fetcher = FakeFetcher(providerID: "antigravity", hasLocalAuth: true, checkLocalAuth: false)
+        let descriptor = FetcherDescriptor(
+            id: "antigravity",
+            displayName: "Antigravity",
+            kind: .antigravity,
+            iconSystemName: "paperplane",
+            accentColor: .antigravity,
+            makeFetcher: { _ in fetcher }
+        )
+        let prober = AuthProber(fetcherProvider: { _ in fetcher }, onChange: { _, _ in })
+        prober.scheduleProbe(for: "antigravity")
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertTrue(prober.isUnavailable("antigravity"), "探测应把 availability 设为 false")
+
+        // 启用 + 服务离线 → serviceOffline
+        let enabledPc = ProviderConfig(enabled: true)
+        let offline = AppState.deriveProviderState(
+            descriptor: descriptor,
+            providerConfig: enabledPc,
+            authProber: prober,
+            hintProvider: { _, _ in "hint" }
+        )
+        XCTAssertEqual(offline, .serviceOffline(message: "Antigravity 本地服务离线"))
+
+        // 恢复（markAvailable）→ ready
+        prober.markAvailable("antigravity")
+        XCTAssertFalse(prober.isUnavailable("antigravity"))
+        let recovered = AppState.deriveProviderState(
+            descriptor: descriptor,
+            providerConfig: enabledPc,
+            authProber: prober,
+            hintProvider: { _, _ in "hint" }
+        )
+        XCTAssertEqual(recovered, .ready)
+
+        // 禁用 → notConfigured（必须清空，不保留数据）
+        let disabledPc = ProviderConfig(enabled: false)
+        let disabled = AppState.deriveProviderState(
+            descriptor: descriptor,
+            providerConfig: disabledPc,
+            authProber: prober,
+            hintProvider: { _, _ in "hint" }
+        )
+        if case .notConfigured = disabled {
+            // OK
+        } else {
+            XCTFail("禁用 provider 必须派生为 .notConfigured，got \(disabled)")
+        }
+    }
+
+    /// R4：serviceOffline 分支保留 lastSuccess——lastSuccessInfo 能从 .ok/.failed/.loading
+    /// 正确取出旧 QuotaInfo，rebuildStatuses 用它构造 .failed(message, lastSuccess:)。
+    func testR4LastSuccessInfoExtractionFromStates() {
+        let info = QuotaInfo(models: [], resetCredits: nil, planLabel: nil, accountEmail: nil, codexUsageDetails: nil, fetchedAt: Date())
+        XCTAssertEqual(AppState.lastSuccessInfo(from: .ok(info)), info)
+        XCTAssertEqual(AppState.lastSuccessInfo(from: .failed(message: "x", lastSuccess: info)), info)
+        XCTAssertEqual(AppState.lastSuccessInfo(from: .loading(lastSuccess: info)), info)
+        XCTAssertNil(AppState.lastSuccessInfo(from: .loading(lastSuccess: nil)))
+        XCTAssertNil(AppState.lastSuccessInfo(from: .ready))
+        XCTAssertNil(AppState.lastSuccessInfo(from: .notConfigured(reason: "r")))
+    }
+
     // MARK: - FileManagerBox 访问约束
 
     /// 运行时验证 `FileManagerBox` 持有 `fileManager: FileManager` 字段。
