@@ -6,6 +6,12 @@ struct MenuContentView: View {
     @ObservedObject var loginItemService: LoginItemService
     @Environment(\.openSettings) private var openSettings
 
+    /// F4: 菜单所在屏幕 visibleFrame 的 70% 高度上限。在 height bridge 报告前为
+    /// `.infinity`（不施加约束），由 `MenuPanelHeightBridge` 附着到实际 menu window
+    /// 后读取 `window.screen?.visibleFrame` 回填，避免使用可能属于另一块屏幕的
+    /// `NSScreen.main`。
+    @State private var maxPanelHeight: CGFloat = .infinity
+
     var body: some View {
         VStack(spacing: 0) {
             headerBar
@@ -13,11 +19,17 @@ struct MenuContentView: View {
             footerBar
         }
         .frame(width: 360)
+        .frame(maxHeight: maxPanelHeight.isFinite ? maxPanelHeight : nil)
         .background {
             MenuPanelSurface()
         }
         .background(MenuWindowAutoCloseBridge())
-        .fixedSize(horizontal: false, vertical: true)   // 高度自适应内容
+        .background(MenuPanelHeightBridge { newHeight in
+            // 只在数值变化时更新，避免重复触发 body 重 eval。
+            if newHeight != maxPanelHeight {
+                maxPanelHeight = newHeight
+            }
+        })
         .onAppear {
             let needsFetch = state.statuses.contains { s in
                 if case .ready = s.state { return true }
@@ -226,6 +238,48 @@ private struct MenuPanelSurface: View {
         } else {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .fill(.regularMaterial)
+        }
+    }
+}
+
+/// F4: 附着到实际 menu window，读取 `window.screen?.visibleFrame`，把
+/// `floor(visibleFrame.height × 0.70)` 回传给 `MenuContentView` 作为菜单总高上限。
+/// 不使用 `NSScreen.main`——多屏环境下它可能属于另一块屏幕。
+private struct MenuPanelHeightBridge: NSViewRepresentable {
+    let onUpdate: (CGFloat) -> Void
+
+    func makeNSView(context: Context) -> HeightProbeView {
+        let view = HeightProbeView()
+        view.onUpdate = onUpdate
+        return view
+    }
+
+    func updateNSView(_ nsView: HeightProbeView, context: Context) {
+        nsView.onUpdate = onUpdate
+        nsView.reportIfReady()
+    }
+
+    final class HeightProbeView: NSView {
+        var onUpdate: ((CGFloat) -> Void)?
+        private var lastReported: CGFloat?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            reportIfReady()
+        }
+
+        override func viewDidChangeEffectiveAppearance() {
+            super.viewDidChangeEffectiveAppearance()
+            reportIfReady()
+        }
+
+        func reportIfReady() {
+            guard let visibleFrame = window?.screen?.visibleFrame else { return }
+            let height = floor(visibleFrame.height * 0.70)
+            // 只在变化时回传，避免每次 layout 都触发 SwiftUI 重 eval。
+            guard height != lastReported else { return }
+            lastReported = height
+            onUpdate?(height)
         }
     }
 }
