@@ -63,8 +63,8 @@ struct MenuBarLabel: View {
 
             if showsHealthDot, let dotColor = statusDotColor(for: health) {
                 dotColor.setFill()
-                // AppKit 坐标原点在左下角，因此 x=12、y=0 对齐右下角。
-                NSBezierPath(ovalIn: NSRect(x: 12, y: 0, width: 10, height: 10)).fill()
+                // AppKit 坐标原点在左下角，因此 x=18、y=0 对齐右下角。
+                NSBezierPath(ovalIn: NSRect(x: 18, y: 0, width: 4, height: 4)).fill()
             }
             return true
         }
