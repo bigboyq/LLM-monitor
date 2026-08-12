@@ -6,38 +6,22 @@ struct MenuContentView: View {
     @ObservedObject var loginItemService: LoginItemService
     @Environment(\.openSettings) private var openSettings
 
-    /// F4: 菜单所在屏幕 visibleFrame 的 70% 高度上限。在 height bridge 报告前为
-    /// `.infinity`（不施加约束），由 `MenuPanelHeightBridge` 附着到实际 menu window
-    /// 后读取 `window.screen?.visibleFrame` 回填，避免使用可能属于另一块屏幕的
-    /// `NSScreen.main`。
-    @State private var maxPanelHeight: CGFloat = .infinity
-    /// header / footer 实测高度，用于从面板上限中扣除后得到 ScrollView 可用预算。
-    /// 用 PreferenceKey 实测，取代之前的硬编码 80pt 预算。
-    @State private var headerHeight: CGFloat = 0
-    @State private var footerHeight: CGFloat = 0
-
     var body: some View {
         VStack(spacing: 0) {
             headerBar
-                .measure { headerHeight = $0 }
             content
             footerBar
-                .measure { footerHeight = $0 }
         }
         .frame(width: 360)
         .background {
             MenuPanelSurface()
         }
         .background(MenuWindowAutoCloseBridge())
-        .background(MenuPanelHeightBridge { newHeight in
-            // 只在数值变化时更新，避免重复触发 body 重 eval。
-            if newHeight != maxPanelHeight {
-                maxPanelHeight = newHeight
-            }
-        })
-        // 纵向 fixedSize 让 MenuBarExtra(.window) 按内容决定窗口高度；
-        // 高度上限改施加在 ScrollView（content）上，而不是整个面板，
-        // 否则 ScrollView 在无界容器里会坍缩为 0，导致所有卡片不可见。
+        // F4: 高度上限直接施加在 NSWindow 上（contentMaxSize），不靠 SwiftUI
+        // frame 拼凑。下面 fixedSize 让窗口按内容自然决定高度；window 的
+        // contentMaxSize 限制它不超过屏幕可见高度的 70%。卡片少→窗口矮，全显示；
+        // 卡片多到超过 70%→窗口封顶，内部 ScrollView 滚动。
+        .background(MenuPanelHeightBridge())
         .fixedSize(horizontal: false, vertical: true)
         .onAppear {
             let needsFetch = state.statuses.contains { s in
@@ -146,19 +130,7 @@ struct MenuContentView: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
             }
-            // F4: 高度上限施加给 ScrollView：面板 70% 上限减去实测的 header/footer
-            // 高度，剩余空间给可滚动区。bridge 报告前（maxPanelHeight=.infinity）不约束；
-            // 地板 120pt 保证极小屏幕上 ScrollView 不会坍缩为 0。
-            .frame(maxHeight: maxScrollViewHeight)
         }
-    }
-
-    /// ScrollView 的最大高度：面板上限减去实测 header/footer 高度，地板 120pt；
-    /// 面板上限未确定（.infinity，bridge 尚未报告）时不约束。
-    private var maxScrollViewHeight: CGFloat? {
-        guard maxPanelHeight.isFinite else { return nil }
-        let budget = maxPanelHeight - headerHeight - footerHeight
-        return max(budget, 120)
     }
 
     /// Four registered cards can all be `.notConfigured` on first launch because
@@ -263,44 +235,58 @@ private struct MenuPanelSurface: View {
     }
 }
 
-/// F4: 附着到实际 menu window，读取 `window.screen?.visibleFrame`，把
-/// `floor(visibleFrame.height × 0.70)` 回传给 `MenuContentView` 作为菜单总高上限。
-/// 不使用 `NSScreen.main`——多屏环境下它可能属于另一块屏幕。
+/// F4: 附着到实际 menu window，直接设置 `window.contentMaxSize` =
+/// `floor(visibleFrame.height × 0.70)`。高度上限放在 NSWindow 层，不靠 SwiftUI
+/// frame 拼凑：`fixedSize` 让窗口按内容自然决定高度，`contentMaxSize` 只负责
+/// “别超过屏幕可见高度的 70%”。卡片少→窗口矮、全显示；卡片多→窗口封顶、内部
+/// ScrollView 滚动。读取 `window.screen`（菜单所在屏），不用 `NSScreen.main`。
 private struct MenuPanelHeightBridge: NSViewRepresentable {
-    let onUpdate: (CGFloat) -> Void
-
     func makeNSView(context: Context) -> HeightProbeView {
-        let view = HeightProbeView()
-        view.onUpdate = onUpdate
-        return view
+        HeightProbeView()
     }
 
     func updateNSView(_ nsView: HeightProbeView, context: Context) {
-        nsView.onUpdate = onUpdate
-        nsView.reportIfReady()
+        nsView.applyMaxSize()
     }
 
     final class HeightProbeView: NSView {
-        var onUpdate: ((CGFloat) -> Void)?
-        private var lastReported: CGFloat?
+        private var lastMaxHeight: CGFloat = 0
+        private var screenObserver: NSObjectProtocol?
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
-            reportIfReady()
+            applyMaxSize()
+            // 监听窗口换屏（多屏拖动 / Dock 位置变化），及时重算上限。
+            if screenObserver == nil, let window {
+                screenObserver = NotificationCenter.default.addObserver(
+                    forName: NSWindow.didChangeScreenNotification,
+                    object: window,
+                    queue: .main
+                ) { [weak self] _ in
+                    Task { @MainActor [weak self] in self?.applyMaxSize() }
+                }
+            }
         }
 
-        override func viewDidChangeEffectiveAppearance() {
-            super.viewDidChangeEffectiveAppearance()
-            reportIfReady()
+        override func updateTrackingAreas() {
+            super.updateTrackingAreas()
+            // 屏幕分辨率/Dock 变化后 visibleFrame 会变，借 updateTrackingAreas 重新核对。
+            applyMaxSize()
         }
 
-        func reportIfReady() {
-            guard let visibleFrame = window?.screen?.visibleFrame else { return }
-            let height = floor(visibleFrame.height * 0.70)
-            // 只在变化时回传，避免每次 layout 都触发 SwiftUI 重 eval。
-            guard height != lastReported else { return }
-            lastReported = height
-            onUpdate?(height)
+        func applyMaxSize() {
+            guard let window, let screen = window.screen else { return }
+            let maxHeight = floor(screen.visibleFrame.height * 0.70)
+            guard maxHeight != lastMaxHeight else { return }
+            lastMaxHeight = maxHeight
+            // contentMaxSize 限制窗口最大 content 尺寸；宽度固定 360。
+            window.contentMaxSize = NSSize(width: 360, height: maxHeight)
+        }
+
+        deinit {
+            if let screenObserver {
+                NotificationCenter.default.removeObserver(screenObserver)
+            }
         }
     }
 }
@@ -310,28 +296,6 @@ private enum SettingsWindowActivator {
     static func prepareForOpening() {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
-    }
-}
-
-/// 测量子视图高度并回传的 PreferenceKey + 便捷 `.measure(_:)` 修饰。
-/// 用于实测 header / footer 高度，替代硬编码预算。
-private struct MeasureHeightKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = max(value, nextValue())
-    }
-}
-
-private extension View {
-    /// 在背景层放一个透明 GeometryReader，把自身高度通过 PreferenceKey 报出。
-    /// 放在 `.background` 不影响布局，且只在该视图尺寸变化时回调。
-    func measure(_ onChange: @escaping (CGFloat) -> Void) -> some View {
-        background(
-            GeometryReader { proxy in
-                Color.clear.preference(key: MeasureHeightKey.self, value: proxy.size.height)
-            }
-        )
-        .onPreferenceChange(MeasureHeightKey.self) { onChange($0) }
     }
 }
 
