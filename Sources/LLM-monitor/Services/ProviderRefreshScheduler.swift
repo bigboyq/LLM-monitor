@@ -68,6 +68,14 @@ final class ProviderRefreshScheduler {
     /// 可注入的 sleep，生产默认为真实 Task.sleep；测试可注入立即返回的实现，
     /// 不必等待真实 15 秒。
     private let sleep: @Sendable (TimeInterval) async throws -> Void
+    /// 每 N 次 background 刷新后补一次 .full（让 reset credits 等只在 full 抓取的字段
+    /// 也能周期性更新）。生产默认 20。0 表示永不周期 full（只靠启动/手动 full）。
+    private let periodicFullEveryN: Int
+
+    /// reset credits 等“只在 .full 抓取”字段的实际刷新周期 = N × provider 间隔。
+    /// UI 的新鲜度判定用它而不是 background 间隔，避免误报过期。
+    /// nonisolated：纯常量，供默认参数与 UI 在非 MainActor 上下文引用。
+    nonisolated static let periodicFullEveryNDefault = 20
 
     init(
         refreshHandler: @escaping RefreshHandler,
@@ -75,6 +83,7 @@ final class ProviderRefreshScheduler {
         onNextRefreshChange: @escaping NextRefreshChangeCallback = {},
         now: @escaping @Sendable () -> Date = { Date() },
         midCycleResetDelay: TimeInterval = 15,
+        periodicFullEveryN: Int = ProviderRefreshScheduler.periodicFullEveryNDefault,
         sleep: @escaping @Sendable (TimeInterval) async throws -> Void = { seconds in
             try await Task.sleep(for: .seconds(seconds))
         }
@@ -84,6 +93,7 @@ final class ProviderRefreshScheduler {
         self.onNextRefreshChange = onNextRefreshChange
         self.now = now
         self.midCycleResetDelay = midCycleResetDelay
+        self.periodicFullEveryN = max(periodicFullEveryN, 0)
         self.sleep = sleep
     }
 
@@ -98,15 +108,33 @@ final class ProviderRefreshScheduler {
         let task = Task { @MainActor [weak self] in
             guard let self else { return }
             var isFirstRefresh = true
+            // 已执行的 background 次数；每 periodicFullEveryN 次补一次 .full，
+            // 让 reset credits 等只在 full 抓取的字段周期性更新。
+            var backgroundsSinceFull = 0
             while !Task.isCancelled {
-                let mode: RefreshMode = isFirstRefresh ? .full : .background
+                let mode: RefreshMode
+                if isFirstRefresh {
+                    mode = .full
+                } else if self.periodicFullEveryN > 0 && backgroundsSinceFull >= self.periodicFullEveryN {
+                    // 每 N 次 background 后补一次 full（仍走常规 deadline，不重置退避）。
+                    mode = .full
+                } else {
+                    mode = .background
+                }
                 let result = await self.refreshHandler(providerID, mode)
                 guard !Task.isCancelled else { break }
 
                 if case .deferred = result {
                     // 配置刚变更或用户正手动刷新时，短暂重试，避免错过新配置后的首次刷新。
+                    // 不更新计数器——本次并未真正完成。
                     try? await Task.sleep(for: .seconds(1))
                     continue
+                }
+                // 只在实际完成（非 deferred）后才更新计数：full 清零，background +1。
+                if mode == .full {
+                    backgroundsSinceFull = 0
+                } else {
+                    backgroundsSinceFull += 1
                 }
                 isFirstRefresh = false
                 let succeeded: Bool
@@ -118,7 +146,9 @@ final class ProviderRefreshScheduler {
                 let delay = self.nextDelay(for: providerID, baseInterval: interval, succeeded: succeeded)
                 self.nextRefreshDates[providerID] = self.now().addingTimeInterval(delay)
                 self.onNextRefreshChange()
-                try? await Task.sleep(for: .seconds(delay))
+                // 用可注入的 sleep（默认实现是真实 Task.sleep，生产行为不变；
+                // 测试可注入立即返回的实现，避免等待真实间隔）。
+                try? await self.sleep(delay)
             }
         }
         tasks[providerID] = task

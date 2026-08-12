@@ -251,21 +251,14 @@ private struct MenuPanelHeightBridge: NSViewRepresentable {
 
     final class HeightProbeView: NSView {
         private var lastMaxHeight: CGFloat = 0
-        private var screenObserver: NSObjectProtocol?
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
+            // 每次菜单窗口出现（viewDidMoveToWindow）都按当前所在屏重算 contentMaxSize。
+            // MenuBarExtra popover 失焦即关、下次在当前屏重新出现，所以不需要单独监听
+            // didChangeScreenNotification（也避免了 Swift 6 下 deinit 访问非 Sendable
+            // observer token 的严格并发问题）。
             applyMaxSize()
-            // 监听窗口换屏（多屏拖动 / Dock 位置变化），及时重算上限。
-            if screenObserver == nil, let window {
-                screenObserver = NotificationCenter.default.addObserver(
-                    forName: NSWindow.didChangeScreenNotification,
-                    object: window,
-                    queue: .main
-                ) { [weak self] _ in
-                    Task { @MainActor [weak self] in self?.applyMaxSize() }
-                }
-            }
         }
 
         override func updateTrackingAreas() {
@@ -281,12 +274,6 @@ private struct MenuPanelHeightBridge: NSViewRepresentable {
             lastMaxHeight = maxHeight
             // contentMaxSize 限制窗口最大 content 尺寸；宽度固定 360。
             window.contentMaxSize = NSSize(width: 360, height: maxHeight)
-        }
-
-        deinit {
-            if let screenObserver {
-                NotificationCenter.default.removeObserver(screenObserver)
-            }
         }
     }
 }

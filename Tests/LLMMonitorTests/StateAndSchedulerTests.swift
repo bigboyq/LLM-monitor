@@ -394,6 +394,22 @@ final class StateAndSchedulerTests: XCTestCase {
         }
     }
 
+    /// 记录 refresh handler 收到的 mode 序列；record 返回记录后的总数。
+    private actor ModeLog {
+        private var modes: [RefreshMode] = []
+        func record(_ mode: RefreshMode) -> Int {
+            modes.append(mode)
+            return modes.count
+        }
+        func snapshot() -> [RefreshMode] { modes }
+    }
+
+    /// 持有 scheduler 的弱引用，供 handler 在记满后自行 cancelAll。
+    /// @unchecked Sendable：handler 与 scheduler 都在 MainActor，访问串行。
+    private final class WeakSchedulerHolder: @unchecked Sendable {
+        weak var sched: ProviderRefreshScheduler?
+    }
+
     @MainActor
     func testSchedulerInFlightDedup() {
         let scheduler = ProviderRefreshScheduler(
@@ -669,6 +685,39 @@ final class StateAndSchedulerTests: XCTestCase {
         scheduler.cancel(providerID: "p")  // 在 sleep 完成前取消
         try? await Task.sleep(nanoseconds: 600_000_000)
         XCTAssertFalse(invokedModes.contains(.background), "cancel 后 mid-cycle task 不应触发")
+    }
+
+    @MainActor
+    func testSchedulerPeriodicFullEveryNBackgrounds() async {
+        // R3/C: scheduler 每 N 次 background 补一次 .full，让 reset credits 等只在
+        // full 抓取的字段也能周期性更新。N=3 期望 mode 序列：
+        // full(首次), bg, bg, bg, full, bg, bg, bg, full ...
+        // 用 actor 记录 mode + 弱引用 holder 在记满 9 个后自行 cancelAll，确定性收尾。
+        let log = ModeLog()
+        let holder = WeakSchedulerHolder()
+        let sched = ProviderRefreshScheduler(
+            refreshHandler: { _, mode in
+                let n = await log.record(mode)
+                if n >= 9 { holder.sched?.cancelAll() }
+                return .completed(success: true)
+            },
+            intervalProvider: { _ in 60 },
+            onNextRefreshChange: {},
+            periodicFullEveryN: 3,
+            sleep: { _ in try? await Task.sleep(nanoseconds: 1) }
+        )
+        holder.sched = sched
+        sched.schedule(for: "p")
+        // 安全超时；正常应在记满 9 个后自行 cancel。
+        try? await Task.sleep(nanoseconds: 1_000_000_000)
+        sched.cancelAll()
+
+        let seq = await log.snapshot()
+        XCTAssertEqual(seq.count, 9, "应正好跑 9 轮后自行 cancel，实际 \(seq.count)")
+        let expected: [RefreshMode] = [.full, .background, .background, .background,
+                                       .full, .background, .background, .background, .full]
+        XCTAssertEqual(seq, expected, "mode 序列应为 full,bg,bg,bg,full,bg,bg,bg,full")
+        XCTAssertEqual(seq.filter { $0 == .full }.count, 3)
     }
 
     @MainActor

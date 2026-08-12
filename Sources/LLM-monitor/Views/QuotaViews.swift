@@ -131,11 +131,18 @@ struct ChatGPTPlanModelRow: View {
 /// ChatGPT 重置卡：默认只显示数量和最早过期时间，hover 再看每张卡
 struct CompactResetCreditsRow: View {
     let resets: ResetCreditsInfo
-    /// R3: 用于判定 reset credits 是否过期（max(3×interval, 15min)）。
+    /// provider 的 background 刷新间隔（秒）。
     var refreshIntervalSeconds: Int = 300
 
+    /// R3: reset credits 的实际刷新周期。reset credits 只在 .full 抓取，而 scheduler
+    /// 每 N 个 background 才补一次 full，所以真实周期 = N × background 间隔。
+    /// 过期判定基于这个周期（3×），否则会在两次 full 之间持续误报。
+    private var resetCreditsRefreshPeriod: TimeInterval {
+        TimeInterval(refreshIntervalSeconds) * TimeInterval(ProviderRefreshScheduler.periodicFullEveryNDefault)
+    }
+
     private var isStale: Bool {
-        resets.isStale(now: Date(), refreshIntervalSeconds: TimeInterval(refreshIntervalSeconds))
+        resets.isStale(now: Date(), refreshIntervalSeconds: resetCreditsRefreshPeriod)
     }
 
     var body: some View {
