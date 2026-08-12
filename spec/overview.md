@@ -268,6 +268,11 @@ deriveState 返回 `.notConfigured` 时整个 state 重置，lastSuccess 跟着�
 3. 失败走指数退避（`baseInterval × 2^failures`，cap 5 次，30 分钟封顶，±10% jitter）
 4. 任务被 cancel → 退出循环
 
+**周期 full（reset credits 等“只在 full 抓取”的字段）**：`ProviderRefreshScheduler` 每累计
+`periodicFullEveryN`（默认 20）次 `.background` 后，下一次补跑一次 `.full`（走常规 deadline，
+不重置退避）。这样 Codex 的 reset credits 不需要用户手动刷新也能周期性更新：默认 300s 间隔下
+约每 `20×300s ≈ 100min` 自动 full 一次。`.background` 仍只抓主 quota，不抓 reset credits。
+
 scheduler 集中持有 5 个 dict：`tasks` / `inFlightModes` / `inFlightWaiters` / `nextRefreshDates` / `failureCounts`。
 in-flight dedup：`markInFlight(providerID)` 返回 false 时直接 `.deferred`（已被 timer /
 manual / menu-open 任一路径占住）。手动 full refresh 若遇到 background 请求，会通过
@@ -323,7 +328,7 @@ Config reload path:
 | Fetcher | Merger | Behavior |
 |---|---|---|
 | `MinimaxTokenPlanFetcher` | `MinimaxVideoPreservingMerger` | `.background` 模式 + previous 有 video model → 沿用上次的 video（消耗极低，< 3 次/天） |
-| `CodexFetcher` | `CodexFillingMissingMerger` | `resetCredits` / `codexUsageDetails` 缺失时回退到上次（避免 UI 空白） |
+| `CodexFetcher` | `CodexFillingMissingMerger` | `resetCredits` / `codexUsageDetails` 缺失时回退到上次（避免 UI 空白）；reset credits 有独立新鲜度——`.background` 按设计跳过时保留原值与原时间，`.full` 抓取失败时保留旧值并标记「可能过期」，恢复成功清除 |
 | `AntigravityFetcher` | `IdentityRefreshResultMerger`（默认） | 直接用新值 |
 
 AppState.fetch 成功后调 `fetcher.resultMerger.merge(new:previous:mode:)` 合成最终值。

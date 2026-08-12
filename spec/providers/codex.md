@@ -223,6 +223,27 @@ Reset-credit fetch failure does not fail the provider refresh. The fetcher logs 
 
 `fetchResetCredits` does not log raw response bodies (`includeBodyInError: false`); only summary count info is logged.
 
+### Refresh cadence & freshness (reset credits)
+
+`fetchResetCredits` only runs on `.full` refresh — i.e. app startup, manual refresh
+(header button / card context menu / menu-bar right-click), menu open when a `.ready`
+provider exists, and the scheduler's **periodic full**. The scheduler inserts one `.full`
+every `periodicFullEveryN` (default 20) `.background` cycles, so at the default 300 s interval
+reset credits auto-refreshes roughly every `20 × 300 s ≈ 100 min` without any manual action.
+`.background` cycles intentionally skip the reset-credits request.
+
+Reset credits carries its own freshness metadata (`fetchedAt` / `lastAttemptFailed`), separate
+from the main `QuotaInfo.fetchedAt`:
+
+- `.background` skip keeps the previous value and its original `fetchedAt` / failure flag — it
+  is **not** treated as a failure and never advances the main provider `failureCount`.
+- A `.full` whose reset-credits sub-request fails keeps the previous value and marks
+  `lastAttemptFailed`, so the row shows "可能过期" immediately.
+- Recovery on the next successful `.full` clears the flag and updates `fetchedAt`.
+- As a safety net, the row also shows "可能过期" when the data age exceeds
+  `3 × (periodicFullEveryN × refreshInterval)` (default ≈ 5 h), meaning several periodic-full
+  cycles were missed. Normal operation never reaches this (data refreshes every ~100 min).
+
 ## QuotaInfo Mapping
 
 Successful fetch returns:
