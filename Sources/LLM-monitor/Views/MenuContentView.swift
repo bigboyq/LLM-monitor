@@ -11,12 +11,18 @@ struct MenuContentView: View {
     /// 后读取 `window.screen?.visibleFrame` 回填，避免使用可能属于另一块屏幕的
     /// `NSScreen.main`。
     @State private var maxPanelHeight: CGFloat = .infinity
+    /// header / footer 实测高度，用于从面板上限中扣除后得到 ScrollView 可用预算。
+    /// 用 PreferenceKey 实测，取代之前的硬编码 80pt 预算。
+    @State private var headerHeight: CGFloat = 0
+    @State private var footerHeight: CGFloat = 0
 
     var body: some View {
         VStack(spacing: 0) {
             headerBar
+                .measure { headerHeight = $0 }
             content
             footerBar
+                .measure { footerHeight = $0 }
         }
         .frame(width: 360)
         .background {
@@ -140,20 +146,19 @@ struct MenuContentView: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
             }
-            // F4: 高度上限施加给 ScrollView（扣除 header/footer 预算）。
-            // bridge 报告前为 .infinity（不约束）；报告后把面板 70% 预算减去
-            // header/footer（约 80pt）给可滚动区，保留至少 240pt 让卡片始终可见。
+            // F4: 高度上限施加给 ScrollView：面板 70% 上限减去实测的 header/footer
+            // 高度，剩余空间给可滚动区。bridge 报告前（maxPanelHeight=.infinity）不约束；
+            // 地板 120pt 保证极小屏幕上 ScrollView 不会坍缩为 0。
             .frame(maxHeight: maxScrollViewHeight)
         }
     }
 
-    /// header/footer 的固定高度预算（padding + 内容），用于从面板高度上限中扣除。
-    private static let headerFooterBudget: CGFloat = 80
-
-    /// ScrollView 的最大高度：面板上限减去 header/footer 预算，地板 240pt，
-    /// 上限未确定（.infinity）时不约束。
+    /// ScrollView 的最大高度：面板上限减去实测 header/footer 高度，地板 120pt；
+    /// 面板上限未确定（.infinity，bridge 尚未报告）时不约束。
     private var maxScrollViewHeight: CGFloat? {
-        maxPanelHeight.isFinite ? max(maxPanelHeight - Self.headerFooterBudget, 240) : nil
+        guard maxPanelHeight.isFinite else { return nil }
+        let budget = maxPanelHeight - headerHeight - footerHeight
+        return max(budget, 120)
     }
 
     /// Four registered cards can all be `.notConfigured` on first launch because
@@ -305,6 +310,28 @@ private enum SettingsWindowActivator {
     static func prepareForOpening() {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
+    }
+}
+
+/// 测量子视图高度并回传的 PreferenceKey + 便捷 `.measure(_:)` 修饰。
+/// 用于实测 header / footer 高度，替代硬编码预算。
+private struct MeasureHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+private extension View {
+    /// 在背景层放一个透明 GeometryReader，把自身高度通过 PreferenceKey 报出。
+    /// 放在 `.background` 不影响布局，且只在该视图尺寸变化时回调。
+    func measure(_ onChange: @escaping (CGFloat) -> Void) -> some View {
+        background(
+            GeometryReader { proxy in
+                Color.clear.preference(key: MeasureHeightKey.self, value: proxy.size.height)
+            }
+        )
+        .onPreferenceChange(MeasureHeightKey.self) { onChange($0) }
     }
 }
 
