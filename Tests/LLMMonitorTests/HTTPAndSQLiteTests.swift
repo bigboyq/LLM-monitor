@@ -20,7 +20,8 @@ final class HTTPAndSQLiteTests: XCTestCase {
         let srcDB = try makeTempDB()
         defer { try? FileManager.default.removeItem(at: srcDB) }
 
-        let preCount = try countTempDBCopies()
+        // T2/R12: 只统计应用专属临时目录 $TMPDIR/llm-monitor-sqlite/ 的内容。
+        let before = try currentAppTempEntries()
 
         do {
             _ = try SQLiteTempCopy.read(dbPath: srcDB, logTag: "[test]") { _ in
@@ -31,8 +32,9 @@ final class HTTPAndSQLiteTests: XCTestCase {
             // expected
         }
 
-        XCTAssertEqual(preCount, try countTempDBCopies(),
-                       "SQLiteTempCopy 在 action 抛错后未清理 /tmp 副本")
+        let after = try currentAppTempEntries()
+        XCTAssertTrue(after.isSubset(of: before),
+                      "SQLiteTempCopy 在 action 抛错后未清理专属目录副本: \(after.subtracting(before))")
     }
 
     func testSQLiteTempCopyFallsBackOnPrepareFailedWithCantOpen() throws {
@@ -62,10 +64,64 @@ final class HTTPAndSQLiteTests: XCTestCase {
         return srcDB
     }
 
-    private func countTempDBCopies() throws -> Int {
-        let tempDir = NSTemporaryDirectory()
-        let contents = try FileManager.default.contentsOfDirectory(atPath: tempDir)
-        return contents.filter { $0.hasSuffix(".db") && !$0.hasSuffix(".db-wal") && !$0.hasSuffix(".db-shm") }.count
+    // MARK: - R12: 专属临时目录与清理
+
+    /// 正常路径闭包退出即删；副本只出现在专属目录内。
+    func testR12TempCopyLivesInAppDirAndCleansUp() throws {
+        let srcDB = try makeTempDB()
+        defer { try? FileManager.default.removeItem(at: srcDB) }
+        let before = try currentAppTempEntries()
+        _ = try SQLiteTempCopy.read(dbPath: srcDB, logTag: "[test]") { _ in "ok" }
+        let after = try currentAppTempEntries()
+        XCTAssertTrue(after.isSubset(of: before), "成功路径应清理副本: \(after.subtracting(before))")
+    }
+
+    /// sweep 只清理超过 24h 的残留；23h 文件与专属目录外文件不受影响。
+    func testR12SweepStaleCopiesRespectsAgeAndScope() throws {
+        let fm = FileManager.default
+        let dir = SQLiteTempCopy.appTempDir()
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: NSNumber(value: 0o700)])
+
+        let old = dir.appendingPathComponent("old-\(UUID().uuidString).db")
+        let fresh = dir.appendingPathComponent("fresh-\(UUID().uuidString).db")
+        try Data("old".utf8).write(to: old)
+        try Data("fresh".utf8).write(to: fresh)
+        // 把 old 的 mtime 调到 25 小时前，fresh 调到 23 小时前。
+        let now = Date()
+        try fm.setAttributes([.modificationDate: now.addingTimeInterval(-25 * 3600)], ofItemAtPath: old.path)
+        try fm.setAttributes([.modificationDate: now.addingTimeInterval(-23 * 3600)], ofItemAtPath: fresh.path)
+        defer {
+            try? fm.removeItem(at: old)
+            try? fm.removeItem(at: fresh)
+        }
+
+        // 专属目录外放一个无关 .db，sweep 不应动它。
+        let outside = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("r12-outside-\(UUID().uuidString).db")
+        try Data("x".utf8).write(to: outside)
+        defer { try? fm.removeItem(at: outside) }
+
+        SQLiteTempCopy.sweepStaleCopies(now: now, maxAge: 24 * 3600)
+
+        XCTAssertFalse(fm.fileExists(atPath: old.path), "25h 残留应被清理")
+        XCTAssertTrue(fm.fileExists(atPath: fresh.path), "23h 文件不应被清理")
+        XCTAssertTrue(fm.fileExists(atPath: outside.path), "专属目录外文件不受影响")
+    }
+
+    /// T2/R12: 快照应用专属临时目录 `$TMPDIR/llm-monitor-sqlite/` 的内容。
+    private func currentAppTempEntries() throws -> Set<String> {
+        let dir = SQLiteTempCopy.appTempDir().path
+        let contents = (try? FileManager.default.contentsOfDirectory(atPath: dir)) ?? []
+        return Set(contents)
+    }
+
+    /// SQLiteTempCopy 的临时副本命名为 `<UUID>.db` / `<UUID>.db-wal` / `<UUID>.db-shm`。
+    /// 只把 UUID 词干的三件套算作“本次可能产生的副本”，避免把无关 .db 误判为泄漏。
+    private static func isSQLiteTempCopyName(_ name: String) -> Bool {
+        let stems = [".db", ".db-wal", ".db-shm"]
+        guard stems.contains(where: { name.hasSuffix($0) }) else { return false }
+        let uuidRegex = #"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\.db(-wal|-shm)?$"#
+        return name.range(of: uuidRegex, options: .regularExpression) != nil
     }
 
     // MARK: - HTTPClient 取消语义

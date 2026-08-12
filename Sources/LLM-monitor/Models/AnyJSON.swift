@@ -30,6 +30,15 @@ indirect enum AnyJSON: Equatable, Sendable {
 extension AnyJSON: Decodable {
     init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
+        // R11: 嵌套深度统一限制 32，防止恶意/损坏的递归 JSON 在递归解码时耗尽调用栈。
+        // codingPath.count 即当前值的嵌套层数；≤32 放行，>32 直接抛 decoding error。
+        // 后续 visit(depth<32) 保留为第二层防御。
+        guard decoder.codingPath.count <= 32 else {
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "AnyJSON: 嵌套深度超过 32"
+            )
+        }
         if container.decodeNil() {
             self = .null
         } else if let b = try? container.decode(Bool.self) {

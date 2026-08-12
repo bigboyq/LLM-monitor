@@ -60,15 +60,41 @@ final class ProviderRefreshScheduler {
     private let refreshHandler: RefreshHandler
     private let intervalProvider: IntervalProvider
     private let onNextRefreshChange: NextRefreshChangeCallback
+    /// 可注入的时钟，生产默认为真实时间。用于 mid-cycle 补刷新计算等待时长，
+    /// 也用于 schedule(for:) 写入 nextRefreshDates。
+    private let now: @Sendable () -> Date
+    /// reset 发生后多久触发 mid-cycle 补刷新，生产默认 15 秒。
+    private let midCycleResetDelay: TimeInterval
+    /// 可注入的 sleep，生产默认为真实 Task.sleep；测试可注入立即返回的实现，
+    /// 不必等待真实 15 秒。
+    private let sleep: @Sendable (TimeInterval) async throws -> Void
+    /// 每 N 次 background 刷新后补一次 .full（让 reset credits 等只在 full 抓取的字段
+    /// 也能周期性更新）。生产默认 20。0 表示永不周期 full（只靠启动/手动 full）。
+    private let periodicFullEveryN: Int
+
+    /// reset credits 等“只在 .full 抓取”字段的实际刷新周期 = N × provider 间隔。
+    /// UI 的新鲜度判定用它而不是 background 间隔，避免误报过期。
+    /// nonisolated：纯常量，供默认参数与 UI 在非 MainActor 上下文引用。
+    nonisolated static let periodicFullEveryNDefault = 20
 
     init(
         refreshHandler: @escaping RefreshHandler,
         intervalProvider: @escaping IntervalProvider,
-        onNextRefreshChange: @escaping NextRefreshChangeCallback = {}
+        onNextRefreshChange: @escaping NextRefreshChangeCallback = {},
+        now: @escaping @Sendable () -> Date = { Date() },
+        midCycleResetDelay: TimeInterval = 15,
+        periodicFullEveryN: Int = ProviderRefreshScheduler.periodicFullEveryNDefault,
+        sleep: @escaping @Sendable (TimeInterval) async throws -> Void = { seconds in
+            try await Task.sleep(for: .seconds(seconds))
+        }
     ) {
         self.refreshHandler = refreshHandler
         self.intervalProvider = intervalProvider
         self.onNextRefreshChange = onNextRefreshChange
+        self.now = now
+        self.midCycleResetDelay = midCycleResetDelay
+        self.periodicFullEveryN = max(periodicFullEveryN, 0)
+        self.sleep = sleep
     }
 
     // MARK: - 生命周期
@@ -82,15 +108,33 @@ final class ProviderRefreshScheduler {
         let task = Task { @MainActor [weak self] in
             guard let self else { return }
             var isFirstRefresh = true
+            // 已执行的 background 次数；每 periodicFullEveryN 次补一次 .full，
+            // 让 reset credits 等只在 full 抓取的字段周期性更新。
+            var backgroundsSinceFull = 0
             while !Task.isCancelled {
-                let mode: RefreshMode = isFirstRefresh ? .full : .background
+                let mode: RefreshMode
+                if isFirstRefresh {
+                    mode = .full
+                } else if self.periodicFullEveryN > 0 && backgroundsSinceFull >= self.periodicFullEveryN {
+                    // 每 N 次 background 后补一次 full（仍走常规 deadline，不重置退避）。
+                    mode = .full
+                } else {
+                    mode = .background
+                }
                 let result = await self.refreshHandler(providerID, mode)
                 guard !Task.isCancelled else { break }
 
                 if case .deferred = result {
                     // 配置刚变更或用户正手动刷新时，短暂重试，避免错过新配置后的首次刷新。
+                    // 不更新计数器——本次并未真正完成。
                     try? await Task.sleep(for: .seconds(1))
                     continue
+                }
+                // 只在实际完成（非 deferred）后才更新计数：full 清零，background +1。
+                if mode == .full {
+                    backgroundsSinceFull = 0
+                } else {
+                    backgroundsSinceFull += 1
                 }
                 isFirstRefresh = false
                 let succeeded: Bool
@@ -100,9 +144,11 @@ final class ProviderRefreshScheduler {
                     succeeded = false
                 }
                 let delay = self.nextDelay(for: providerID, baseInterval: interval, succeeded: succeeded)
-                self.nextRefreshDates[providerID] = Date().addingTimeInterval(delay)
+                self.nextRefreshDates[providerID] = self.now().addingTimeInterval(delay)
                 self.onNextRefreshChange()
-                try? await Task.sleep(for: .seconds(delay))
+                // 用可注入的 sleep（默认实现是真实 Task.sleep，生产行为不变；
+                // 测试可注入立即返回的实现，避免等待真实间隔）。
+                try? await self.sleep(delay)
             }
         }
         tasks[providerID] = task
@@ -140,11 +186,19 @@ final class ProviderRefreshScheduler {
     /// 如果 reset time 与下一次常规刷新时间差距在 1 分钟（60 秒）以上，
     /// 则在 reset time 发生 15 秒后强制/额外刷新一次（.background 模式）。
     /// 注意：中间补刷新不会更新或修改下一次常规刷新时间 `nextRefreshDates`，不打乱整体 refresh 节奏。
+    ///
+    /// F3：首次成功刷新时 `nextRefreshDates[providerID]` 尚未写入（它在 handler
+    /// 返回后才赋值），而本方法正是在 handler 内被调用。此时使用
+    /// `now + intervalProvider(providerID)` 作为本次比较用的 provisional deadline，
+    /// 不写回 `nextRefreshDates`，保持"成功/失败与退避后再算正式 deadline"的现有流程。
     func scheduleMidCycleResetRefreshes(for providerID: String, resetsAtDates: [Date]) {
         cancelMidCycleTasks(for: providerID)
 
-        guard let nextRefreshDate = nextRefreshDates[providerID] else { return }
-        let now = Date()
+        let nowDate = now()
+        // 字典无值时（首次刷新）用 now + interval 作为比较用的 provisional deadline；
+        // 该值只用于本函数的比较，绝不写回 nextRefreshDates。
+        let provisionalDeadline = nowDate.addingTimeInterval(intervalProvider(providerID))
+        let nextRefreshDate = nextRefreshDates[providerID] ?? provisionalDeadline
 
         let uniqueResets = Set(resetsAtDates.compactMap { $0 })
         var newTasks: [Task<Void, Never>] = []
@@ -152,14 +206,14 @@ final class ProviderRefreshScheduler {
         for resetTime in uniqueResets {
             // 检查 reset time 与 nextRefreshDate 差距在 1 分钟（60 秒）以上
             guard nextRefreshDate.timeIntervalSince(resetTime) > 60 else { continue }
-            let targetDate = resetTime.addingTimeInterval(15)
-            let sleepSeconds = targetDate.timeIntervalSince(now)
+            let targetDate = resetTime.addingTimeInterval(midCycleResetDelay)
+            let sleepSeconds = targetDate.timeIntervalSince(nowDate)
             guard sleepSeconds > 0 else { continue }
 
-            logInfo("ProviderRefreshScheduler: 为 [\(providerID)] 调度 resetTime 补刷新，将在 \(Int(sleepSeconds))s 后（reset后15s）触发")
+            logInfo("ProviderRefreshScheduler: 为 [\(providerID)] 调度 resetTime 补刷新，将在 \(Int(sleepSeconds))s 后（reset后\(Int(midCycleResetDelay))s）触发")
 
             let task = Task { @MainActor [weak self] in
-                try? await Task.sleep(for: .seconds(sleepSeconds))
+                try? await self?.sleep(sleepSeconds)
                 guard let self, !Task.isCancelled else { return }
                 logInfo("ProviderRefreshScheduler: [\(providerID)] 触发 resetTime 补刷新")
                 _ = await self.refreshHandler(providerID, .background)
@@ -244,7 +298,9 @@ final class ProviderRefreshScheduler {
     }
 
     func recordFailure(_ providerID: String) {
-        failureCounts[providerID, default: 0] += 1
+        // R17: 饱和加法，避免理论上的 Int 溢出。
+        let current = failureCounts[providerID, default: 0]
+        failureCounts[providerID] = SaturatingArithmetic.add(current, 1)
     }
 
     // MARK: - 观察
@@ -271,13 +327,16 @@ final class ProviderRefreshScheduler {
     /// 计算下次刷新延迟：
     /// - 成功 → 直接用 baseInterval
     /// - 失败 → baseInterval × 2^failures（封顶 5 次叠加），再 cap 30 分钟，套 ±10% jitter
+    ///
+    /// R17: 退避指数单独用 min(actual, 5)，日志显示真实连续失败次数（不能把封顶值说成实际次数）。
     func nextDelay(for providerID: String, baseInterval: TimeInterval, succeeded: Bool) -> TimeInterval {
         guard !succeeded else { return baseInterval }
-        let failures = min(failureCounts[providerID, default: 1], 5)
-        let cappedDelay = min(baseInterval * pow(2, Double(failures)), 30 * 60)
+        let actualFailures = failureCounts[providerID, default: 1]
+        let exponent = min(actualFailures, 5)
+        let cappedDelay = min(baseInterval * pow(2, Double(exponent)), 30 * 60)
         let jitter = Double.random(in: 0.9...1.1)
         let delay = cappedDelay * jitter
-        logWarn("ProviderRefreshScheduler: [\(providerID)] 连续失败 \(failures) 次，\(Int(delay)) 秒后重试")
+        logWarn("ProviderRefreshScheduler: [\(providerID)] 连续失败 \(actualFailures) 次（退避级别封顶 5），\(Int(delay)) 秒后重试")
         return delay
     }
 }

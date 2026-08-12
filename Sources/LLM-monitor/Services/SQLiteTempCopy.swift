@@ -11,6 +11,52 @@ import Darwin
 ///
 /// 不适用：自己创建 + 自己读的 .db（无 IDE 锁）。
 enum SQLiteTempCopy {
+    /// R12: 应用专属临时目录名，副本只出现在 `$TMPDIR/llm-monitor-sqlite/`。
+    static let appTempSubdir = "llm-monitor-sqlite"
+
+    /// R12: 应用专属临时目录（`$TMPDIR/llm-monitor-sqlite/`，0700）。
+    static func appTempDir() -> URL {
+        URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent(appTempSubdir, isDirectory: true)
+    }
+
+    /// R12: 启动时清理专属临时目录内超过 `maxAge`（默认 24h）的残留副本。
+    /// 只扫描该目录内部；目录是 symlink / 非普通目录时放弃清理并 warning，
+    /// 绝不扫描或删除 `$TMPDIR` 其他文件。
+    static func sweepStaleCopies(now: Date = Date(), maxAge: TimeInterval = 24 * 60 * 60) {
+        let fm = FileManager.default
+        let dir = appTempDir()
+        // lstat 检测路径本身是不是 symlink/非目录（不跟随）。
+        var st = stat()
+        guard lstat(dir.path, &st) == 0 else {
+            return  // 目录不存在——无需清理
+        }
+        if (st.st_mode & S_IFMT) != S_IFDIR {
+            logWarn("[sqlite-copy] 专属临时目录是 symlink 或非目录，跳过清理")
+            return
+        }
+        guard let entries = try? fm.contentsOfDirectory(atPath: dir.path) else { return }
+        for entry in entries {
+            let entryURL = dir.appendingPathComponent(entry)
+            guard let attrs = try? fm.attributesOfItem(atPath: entryURL.path),
+                  let mtime = attrs[.modificationDate] as? Date else { continue }
+            if now.timeIntervalSince(mtime) > maxAge {
+                try? fm.removeItem(at: entryURL)
+            }
+        }
+    }
+
+    /// R12: 确保专属临时目录存在且权限为 0700。
+    private static func ensureAppTempDir() throws -> URL {
+        let dir = appTempDir()
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: dir.path) {
+            try fm.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        }
+        try? fm.setAttributes([.posixPermissions: NSNumber(value: 0o700)], ofItemAtPath: dir.path)
+        return dir
+    }
+
     /// 跑 `action(URL)`：
     /// 1. 先用原 .db 路径
     /// 2. 如果是 file-level 错误（SQLITE_CANTOPEN / SQLITE_BUSY），copy 到 /tmp 副本再试
@@ -57,11 +103,12 @@ enum SQLiteTempCopy {
         _ action: (URL) throws -> T
     ) throws -> T {
         let fileManager = FileManager.default
-        let tempDir = NSTemporaryDirectory()
+        // R12: 副本只出现在应用专属临时目录 $TMPDIR/llm-monitor-sqlite/（0700）。
+        let tempDir = try ensureAppTempDir()
         let uuid = UUID().uuidString
-        let tempDB = URL(fileURLWithPath: tempDir).appendingPathComponent("\(uuid).db")
-        let tempWAL = URL(fileURLWithPath: tempDir).appendingPathComponent("\(uuid).db-wal")
-        let tempSHM = URL(fileURLWithPath: tempDir).appendingPathComponent("\(uuid).db-shm")
+        let tempDB = tempDir.appendingPathComponent("\(uuid).db")
+        let tempWAL = tempDir.appendingPathComponent("\(uuid).db-wal")
+        let tempSHM = tempDir.appendingPathComponent("\(uuid).db-shm")
 
         defer {
             try? fileManager.removeItem(at: tempDB)

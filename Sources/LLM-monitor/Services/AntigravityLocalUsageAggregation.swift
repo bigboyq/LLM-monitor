@@ -28,11 +28,15 @@ extension AntigravityLocalUsageScanner {
 
     /// 把 events 按本地自然日分组聚合。
     /// 没有 timestamp 的事件跳过（没法归到任何一天）。
+    ///
+    /// `counts` 可传入调用方已经预算好的 per-day turns/rounds（避免 scanner 成功分支里
+    /// 把同一份 counts 再叠加一次造成双倍计数）；未传时由本函数自行计算，保持原有契约。
     nonisolated static func aggregateDaily(
         events: [AntigravityFetcher.UsageEvent],
-        calendar: Calendar
+        calendar: Calendar,
+        counts: AntigravityTurnRoundCounts? = nil
     ) -> [String: AntigravityDailyUsage] {
-        let details = computeTurnRoundDetails(sessionID: "", events: events, calendar: calendar)
+        let resolvedCounts = counts ?? computeTurnRoundCounts(sessionID: "", events: events, calendar: calendar)
         var byDay: [String: AntigravityDailyUsage] = [:]
         for event in events {
             guard let timestamp = event.timestamp else { continue }
@@ -40,8 +44,8 @@ extension AntigravityLocalUsageScanner {
             let key = LocalUsageDayKey.make(dayStart, calendar: calendar)
             let existing = byDay[key] ?? AntigravityDailyUsage(
                 dayStart: dayStart,
-                turns: details.counts.perDay[dayStart]?.turns ?? 0,
-                rounds: details.counts.perDay[dayStart]?.rounds ?? 0
+                turns: resolvedCounts.perDay[dayStart]?.turns ?? 0,
+                rounds: resolvedCounts.perDay[dayStart]?.rounds ?? 0
             )
             byDay[key] = AntigravityDailyUsage(
                 dayStart: dayStart,

@@ -31,6 +31,15 @@ swift test
 echo "==> Building release"
 swift build -c release
 
+echo "==> Building universal release (arm64 + x86_64) with arch gate"
+swift build -c release --arch arm64 --arch x86_64
+UNIVERSAL_BIN="$ROOT_DIR/.build/apple/Products/Release/LLM-monitor"
+[ -f "$UNIVERSAL_BIN" ] || UNIVERSAL_BIN="$ROOT_DIR/.build/release/LLM-monitor"
+UNIVERSAL_ARCHS=$(lipo -archs "$UNIVERSAL_BIN" 2>/dev/null || true)
+echo "    Universal architectures: ${UNIVERSAL_ARCHS:-<unknown>}"
+echo "$UNIVERSAL_ARCHS" | grep -qw arm64
+echo "$UNIVERSAL_ARCHS" | grep -qw x86_64
+
 echo "==> Building with Swift 6 language mode"
 swift build -Xswiftc -swift-version -Xswiftc 6
 

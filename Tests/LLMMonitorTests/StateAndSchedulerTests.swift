@@ -394,6 +394,22 @@ final class StateAndSchedulerTests: XCTestCase {
         }
     }
 
+    /// 记录 refresh handler 收到的 mode 序列；record 返回记录后的总数。
+    private actor ModeLog {
+        private var modes: [RefreshMode] = []
+        func record(_ mode: RefreshMode) -> Int {
+            modes.append(mode)
+            return modes.count
+        }
+        func snapshot() -> [RefreshMode] { modes }
+    }
+
+    /// 持有 scheduler 的弱引用，供 handler 在记满后自行 cancelAll。
+    /// @unchecked Sendable：handler 与 scheduler 都在 MainActor，访问串行。
+    private final class WeakSchedulerHolder: @unchecked Sendable {
+        weak var sched: ProviderRefreshScheduler?
+    }
+
     @MainActor
     func testSchedulerInFlightDedup() {
         let scheduler = ProviderRefreshScheduler(
@@ -535,6 +551,173 @@ final class StateAndSchedulerTests: XCTestCase {
         XCTAssertEqual(scheduler.earliestNextRefresh, initialNextRefresh, "补刷新调度不应改变/重置下一次常规刷新时间")
 
         scheduler.cancelAll()
+    }
+
+    // MARK: - F3: 首次成功刷新必须安排 mid-cycle 补刷新
+
+    /// F3 核心回归：首次刷新时 nextRefreshDates 尚未写入，旧实现的 guard 直接 return，
+    /// 导致首次成功的 reset+15s 补刷新被丢弃。新实现用 now+interval 作为 provisional
+    /// deadline，并在 reset+delay 后实际触发一次 .background。
+    @MainActor
+    func testF3FirstRefreshSchedulesMidCycleFillIn() async {
+        let fixedNow = Date(timeIntervalSince1970: 1_700_000_000)
+        var invokedModes: [RefreshMode] = []
+        let scheduler = ProviderRefreshScheduler(
+            refreshHandler: { _, mode in
+                invokedModes.append(mode)
+                return .completed(success: true)
+            },
+            intervalProvider: { _ in 300 },
+            onNextRefreshChange: {},
+            now: { fixedNow },
+            midCycleResetDelay: 15,
+            sleep: { _ in }  // 立即返回，不等待真实 15 秒
+        )
+        // 首次刷新场景：nextRefreshDates 为空。provisional deadline = now + 300。
+        // resetTime = now + 200，差距 100s > 60s → 应安排补刷新。
+        let resetTime = fixedNow.addingTimeInterval(200)
+        scheduler.scheduleMidCycleResetRefreshes(for: "first", resetsAtDates: [resetTime])
+
+        // provisional deadline 不得写回 nextRefreshDates（仍由 handler 返回后的正式流程决定）
+        XCTAssertNil(scheduler.earliestNextRefresh, "provisional deadline 不得写回 nextRefreshDates")
+
+        // 让 mid-cycle task 跑完（注入的 sleep 立即返回）
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertTrue(invokedModes.contains(.background), "首次成功后应实际触发一次 .background 补刷新")
+
+        scheduler.cancelAll()
+    }
+
+    /// reset 与常规刷新差距 ≤60 秒时不安排补刷新。
+    @MainActor
+    func testF3NoMidCycleWhenResetWithinSixtySeconds() async {
+        let fixedNow = Date(timeIntervalSince1970: 1_700_000_000)
+        var invokedModes: [RefreshMode] = []
+        let scheduler = ProviderRefreshScheduler(
+            refreshHandler: { _, mode in
+                invokedModes.append(mode)
+                return .completed(success: true)
+            },
+            intervalProvider: { _ in 300 },
+            onNextRefreshChange: {},
+            now: { fixedNow },
+            midCycleResetDelay: 15,
+            sleep: { _ in }
+        )
+        // provisional deadline = now + 300。resetTime = now + 280，差距 20s ≤ 60s → 不安排。
+        let resetTime = fixedNow.addingTimeInterval(280)
+        scheduler.scheduleMidCycleResetRefreshes(for: "p", resetsAtDates: [resetTime])
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertFalse(invokedModes.contains(.background), "差距 ≤60s 时不应安排补刷新")
+        scheduler.cancelAll()
+    }
+
+    /// 已过期的 reset time（targetDate ≤ now）不安排补刷新。
+    @MainActor
+    func testF3NoMidCycleForPastReset() async {
+        let fixedNow = Date(timeIntervalSince1970: 1_700_000_000)
+        var invokedModes: [RefreshMode] = []
+        let scheduler = ProviderRefreshScheduler(
+            refreshHandler: { _, mode in
+                invokedModes.append(mode)
+                return .completed(success: true)
+            },
+            intervalProvider: { _ in 300 },
+            onNextRefreshChange: {},
+            now: { fixedNow },
+            sleep: { _ in }
+        )
+        // resetTime 已在现在之前，targetDate = resetTime + 15 ≤ now → 不安排。
+        scheduler.scheduleMidCycleResetRefreshes(
+            for: "p", resetsAtDates: [fixedNow.addingTimeInterval(-100)]
+        )
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertFalse(invokedModes.contains(.background))
+        scheduler.cancelAll()
+    }
+
+    /// 重复 reset（同一 resetTime 多次出现）只安排一个补刷新；reschedule 取消旧 task。
+    @MainActor
+    func testF3RescheduleCancelsOldMidCycleTasks() async {
+        let fixedNow = Date(timeIntervalSince1970: 1_700_000_000)
+        var backgroundCount = 0
+        let scheduler = ProviderRefreshScheduler(
+            refreshHandler: { _, mode in
+                if mode == .background { backgroundCount += 1 }
+                return .completed(success: true)
+            },
+            intervalProvider: { _ in 300 },
+            onNextRefreshChange: {},
+            now: { fixedNow },
+            midCycleResetDelay: 15,
+            sleep: { _ in try await Task.sleep(nanoseconds: 100_000_000) }  // 短延迟，让 reschedule 有机会 cancel
+        )
+        let resetTime = fixedNow.addingTimeInterval(200)
+        // 第一次安排
+        scheduler.scheduleMidCycleResetRefreshes(for: "p", resetsAtDates: [resetTime])
+        // 立即重新安排（同一 resetTime），应取消第一个 task 并重建
+        scheduler.scheduleMidCycleResetRefreshes(for: "p", resetsAtDates: [resetTime])
+        try? await Task.sleep(nanoseconds: 400_000_000)
+        // 即便两次都触发，sleep 100ms + cancel 语义下至多一次成功 .background；这里只断言
+        // 没有重复风暴（远小于多次），且至少能完成 reschedule 不崩溃。
+        XCTAssertLessThanOrEqual(backgroundCount, 1, "reschedule 应取消旧 mid-cycle task")
+        scheduler.cancelAll()
+    }
+
+    /// cancel 立即取消已安排的 mid-cycle task，不触发 .background。
+    @MainActor
+    func testF3CancelStopsMidCycleTask() async {
+        let fixedNow = Date(timeIntervalSince1970: 1_700_000_000)
+        var invokedModes: [RefreshMode] = []
+        let scheduler = ProviderRefreshScheduler(
+            refreshHandler: { _, mode in
+                invokedModes.append(mode)
+                return .completed(success: true)
+            },
+            intervalProvider: { _ in 300 },
+            onNextRefreshChange: {},
+            now: { fixedNow },
+            sleep: { _ in try await Task.sleep(nanoseconds: 300_000_000) }
+        )
+        scheduler.scheduleMidCycleResetRefreshes(
+            for: "p", resetsAtDates: [fixedNow.addingTimeInterval(200)]
+        )
+        scheduler.cancel(providerID: "p")  // 在 sleep 完成前取消
+        try? await Task.sleep(nanoseconds: 600_000_000)
+        XCTAssertFalse(invokedModes.contains(.background), "cancel 后 mid-cycle task 不应触发")
+    }
+
+    @MainActor
+    func testSchedulerPeriodicFullEveryNBackgrounds() async {
+        // R3/C: scheduler 每 N 次 background 补一次 .full，让 reset credits 等只在
+        // full 抓取的字段也能周期性更新。N=3 期望 mode 序列：
+        // full(首次), bg, bg, bg, full, bg, bg, bg, full ...
+        // 用 actor 记录 mode + 弱引用 holder 在记满 9 个后自行 cancelAll，确定性收尾。
+        let log = ModeLog()
+        let holder = WeakSchedulerHolder()
+        let sched = ProviderRefreshScheduler(
+            refreshHandler: { _, mode in
+                let n = await log.record(mode)
+                if n >= 9 { holder.sched?.cancelAll() }
+                return .completed(success: true)
+            },
+            intervalProvider: { _ in 60 },
+            onNextRefreshChange: {},
+            periodicFullEveryN: 3,
+            sleep: { _ in try? await Task.sleep(nanoseconds: 1) }
+        )
+        holder.sched = sched
+        sched.schedule(for: "p")
+        // 安全超时；正常应在记满 9 个后自行 cancel。
+        try? await Task.sleep(nanoseconds: 1_000_000_000)
+        sched.cancelAll()
+
+        let seq = await log.snapshot()
+        XCTAssertEqual(seq.count, 9, "应正好跑 9 轮后自行 cancel，实际 \(seq.count)")
+        let expected: [RefreshMode] = [.full, .background, .background, .background,
+                                       .full, .background, .background, .background, .full]
+        XCTAssertEqual(seq, expected, "mode 序列应为 full,bg,bg,bg,full,bg,bg,bg,full")
+        XCTAssertEqual(seq.filter { $0 == .full }.count, 3)
     }
 
     @MainActor
@@ -1226,6 +1409,74 @@ final class StateAndSchedulerTests: XCTestCase {
                 XCTFail("expected .ready, got \(state)")
             }
         }
+    }
+
+    // MARK: - R4: Antigravity 离线保留 lastSuccess（类型化 derive reason）
+
+    /// R4：已配置且 auth 文件在，但本地服务探测不可用 → serviceOffline；
+    ///     恢复后 → ready；禁用 → notConfigured（必须清空，不是离线）。
+    @MainActor
+    func testR4DeriveAntigravityServiceOfflineVsDisabled() async throws {
+        let fetcher = FakeFetcher(providerID: "antigravity", hasLocalAuth: true, checkLocalAuth: false)
+        let descriptor = FetcherDescriptor(
+            id: "antigravity",
+            displayName: "Antigravity",
+            kind: .antigravity,
+            iconSystemName: "paperplane",
+            accentColor: .antigravity,
+            makeFetcher: { _ in fetcher }
+        )
+        let prober = AuthProber(fetcherProvider: { _ in fetcher }, onChange: { _, _ in })
+        prober.scheduleProbe(for: "antigravity")
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertTrue(prober.isUnavailable("antigravity"), "探测应把 availability 设为 false")
+
+        // 启用 + 服务离线 → serviceOffline
+        let enabledPc = ProviderConfig(enabled: true)
+        let offline = AppState.deriveProviderState(
+            descriptor: descriptor,
+            providerConfig: enabledPc,
+            authProber: prober,
+            hintProvider: { _, _ in "hint" }
+        )
+        XCTAssertEqual(offline, .serviceOffline(message: "Antigravity 本地服务离线"))
+
+        // 恢复（markAvailable）→ ready
+        prober.markAvailable("antigravity")
+        XCTAssertFalse(prober.isUnavailable("antigravity"))
+        let recovered = AppState.deriveProviderState(
+            descriptor: descriptor,
+            providerConfig: enabledPc,
+            authProber: prober,
+            hintProvider: { _, _ in "hint" }
+        )
+        XCTAssertEqual(recovered, .ready)
+
+        // 禁用 → notConfigured（必须清空，不保留数据）
+        let disabledPc = ProviderConfig(enabled: false)
+        let disabled = AppState.deriveProviderState(
+            descriptor: descriptor,
+            providerConfig: disabledPc,
+            authProber: prober,
+            hintProvider: { _, _ in "hint" }
+        )
+        if case .notConfigured = disabled {
+            // OK
+        } else {
+            XCTFail("禁用 provider 必须派生为 .notConfigured，got \(disabled)")
+        }
+    }
+
+    /// R4：serviceOffline 分支保留 lastSuccess——lastSuccessInfo 能从 .ok/.failed/.loading
+    /// 正确取出旧 QuotaInfo，rebuildStatuses 用它构造 .failed(message, lastSuccess:)。
+    func testR4LastSuccessInfoExtractionFromStates() {
+        let info = QuotaInfo(models: [], resetCredits: nil, planLabel: nil, accountEmail: nil, codexUsageDetails: nil, fetchedAt: Date())
+        XCTAssertEqual(AppState.lastSuccessInfo(from: .ok(info)), info)
+        XCTAssertEqual(AppState.lastSuccessInfo(from: .failed(message: "x", lastSuccess: info)), info)
+        XCTAssertEqual(AppState.lastSuccessInfo(from: .loading(lastSuccess: info)), info)
+        XCTAssertNil(AppState.lastSuccessInfo(from: .loading(lastSuccess: nil)))
+        XCTAssertNil(AppState.lastSuccessInfo(from: .ready))
+        XCTAssertNil(AppState.lastSuccessInfo(from: .notConfigured(reason: "r")))
     }
 
     // MARK: - FileManagerBox 访问约束

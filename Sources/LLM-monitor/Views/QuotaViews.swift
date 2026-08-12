@@ -131,6 +131,19 @@ struct ChatGPTPlanModelRow: View {
 /// ChatGPT 重置卡：默认只显示数量和最早过期时间，hover 再看每张卡
 struct CompactResetCreditsRow: View {
     let resets: ResetCreditsInfo
+    /// provider 的 background 刷新间隔（秒）。
+    var refreshIntervalSeconds: Int = 300
+
+    /// R3: reset credits 的实际刷新周期。reset credits 只在 .full 抓取，而 scheduler
+    /// 每 N 个 background 才补一次 full，所以真实周期 = N × background 间隔。
+    /// 过期判定基于这个周期（3×），否则会在两次 full 之间持续误报。
+    private var resetCreditsRefreshPeriod: TimeInterval {
+        TimeInterval(refreshIntervalSeconds) * TimeInterval(ProviderRefreshScheduler.periodicFullEveryNDefault)
+    }
+
+    private var isStale: Bool {
+        resets.isStale(now: Date(), refreshIntervalSeconds: resetCreditsRefreshPeriod)
+    }
 
     var body: some View {
         HoverInfoRow {
@@ -146,6 +159,19 @@ struct CompactResetCreditsRow: View {
                 }
 
                 Spacer(minLength: 8)
+
+                if isStale {
+                    // R3: reset credits 子接口失败或数据过旧，显示过期提示（不只靠透明度/颜色）。
+                    HStack(spacing: 3) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 9, weight: .semibold))
+                        Text(staleText)
+                            .font(.system(size: 9, weight: .semibold).monospacedDigit())
+                            .lineLimit(1)
+                    }
+                    .foregroundStyle(.orange)
+                    .help(staleHelp)
+                }
 
                 HStack(spacing: 4) {
                     Image(systemName: "clock.arrow.circlepath")
@@ -197,6 +223,21 @@ struct CompactResetCreditsRow: View {
     private var expiryText: String {
         guard let nearestExpiry = resets.nearestExpiry else { return "—" }
         return Formatters.formatMonthDayMinute(nearestExpiry)
+    }
+
+    /// R3: 过期文案——"可能过期 · 上次更新 HH:mm"；无 fetchedAt 时不带时间。
+    private var staleText: String {
+        if let fetchedAt = resets.fetchedAt {
+            return "可能过期 · 上次更新 \(Formatters.formatClock(fetchedAt))"
+        }
+        return "可能过期"
+    }
+
+    private var staleHelp: String {
+        if resets.lastAttemptFailed {
+            return "最近一次抓取 reset credits 失败，显示的是上次成功的数据"
+        }
+        return "reset credits 数据已较久未更新，可能已过期"
     }
 
     private var summaryColor: Color {
@@ -769,7 +810,8 @@ func segmentedBarTooltipText(segments: Int, hasTriangle: Bool) -> String {
 struct DeepseekBalanceRow: View {
     let model: ModelQuota
     let planLabel: String?
-    let accountEmail: String?
+    /// R7: 余额明细由结构化字段本地格式化，不再解析 accountEmail 预格式化串。
+    let balanceDetail: DeepseekBalanceDetail?
     let tint: Color
     let peakWindow: DeepseekPeakWindow
 
@@ -791,19 +833,33 @@ struct DeepseekBalanceRow: View {
                     Text(planLabel)
                         .font(.system(size: 15, weight: .bold).monospacedDigit())
                         .foregroundStyle(tint)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .help(planLabel)
                 }
             }
 
             HStack(spacing: 8) {
-                if let accountEmail, !accountEmail.isEmpty {
-                    let parts = accountEmail.components(separatedBy: "|").map { $0.trimmingCharacters(in: .whitespaces) }
+                if let detail = balanceDetail {
+                    let symbol = detail.symbol
+                    let toppedUpText = "充值: \(symbol)\(String(format: "%.2f", detail.toppedUp))"
+                    let grantedText = "赠金: \(symbol)\(String(format: "%.2f", detail.granted))"
+                    // R16: 明细单行截断，hover 看完整文本；layoutPriority 让 PeakIndicator 不被遮挡。
                     HStack(spacing: 8) {
-                        ForEach(parts, id: \.self) { part in
-                            Text(part)
-                                .font(.system(size: 10, weight: .medium))
-                                .foregroundStyle(.secondary)
-                        }
+                        Text(toppedUpText)
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .help(toppedUpText)
+                        Text(grantedText)
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .help(grantedText)
                     }
+                    .layoutPriority(-1)
                     .padding(.horizontal, 7)
                     .padding(.vertical, 3)
                     .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
@@ -812,6 +868,7 @@ struct DeepseekBalanceRow: View {
                 Spacer(minLength: 4)
 
                 DeepseekPeakIndicatorView(window: peakWindow)
+                    .layoutPriority(1)
             }
         }
         .padding(.vertical, 2)

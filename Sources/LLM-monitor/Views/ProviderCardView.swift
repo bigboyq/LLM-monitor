@@ -90,7 +90,7 @@ struct ProviderCardView: View {
             } detail: {
                 DeepseekAccountHoverView(
                     planLabel: planLabel,
-                    accountEmail: accountEmail
+                    balanceDetail: status.lastSuccess?.balanceDetail
                 )
             }
         } else {
@@ -105,6 +105,10 @@ struct ProviderCardView: View {
             Text(displayTitle)
                 .font(.system(size: 14, weight: .bold))
                 .foregroundStyle(Color.primaryLabel)
+                // R15: 长 displayName 不撑破 360pt 宽度，单行尾部截断，hover 看完整文本。
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .help(displayTitle)
             if let pillLabel {
                 Text(pillLabel)
                     .font(.system(size: 9, weight: .semibold))
@@ -159,6 +163,7 @@ struct ProviderCardView: View {
                         providerKind: status.kind,
                         accentColor: status.accentColor,
                         localSamples: localUsageSamples,
+                        refreshIntervalSeconds: status.refreshIntervalSeconds,
                         excludeWindows: excludeWindows,
                         deepseekPeakWindow: status.deepseekPeakWindow ?? .defaultWindow
                     )
@@ -175,6 +180,7 @@ struct ProviderCardView: View {
                     providerKind: status.kind,
                     accentColor: status.accentColor,
                     localSamples: localUsageSamples,
+                refreshIntervalSeconds: status.refreshIntervalSeconds,
                 excludeWindows: excludeWindows,
                 deepseekPeakWindow: status.deepseekPeakWindow ?? .defaultWindow
                 )
@@ -203,6 +209,7 @@ struct ProviderCardView: View {
                         providerKind: status.kind,
                         accentColor: status.accentColor,
                         localSamples: localUsageSamples,
+                        refreshIntervalSeconds: status.refreshIntervalSeconds,
                         excludeWindows: excludeWindows,
                         deepseekPeakWindow: status.deepseekPeakWindow ?? .defaultWindow
                     )
@@ -462,6 +469,8 @@ struct QuotaSummary: View {
     let providerKind: ProviderKind
     let accentColor: AccentColor
     let localSamples: [LocalTokenUsageSample]
+    /// R3: reset credits 过期判定用到的刷新间隔（秒）。
+    var refreshIntervalSeconds: Int = 300
     /// 额度窗口 hover 统计需要排除的时间窗口（GLM 闲时任务不消耗积分）。
     /// 本地 token 柱图不走这条路径，仍包含闲时任务。
     var excludeWindows: [GlmOffPeakWindow] = []
@@ -486,7 +495,7 @@ struct QuotaSummary: View {
                     DeepseekBalanceRow(
                         model: model,
                         planLabel: info.planLabel,
-                        accountEmail: info.accountEmail,
+                        balanceDetail: info.balanceDetail,
                         tint: accentColor(for: model),
                         peakWindow: deepseekPeakWindow
                     )
@@ -511,7 +520,7 @@ struct QuotaSummary: View {
                 if !displayedModels.isEmpty {
                     Divider().opacity(0.3)
                 }
-                CompactResetCreditsRow(resets: resets)
+                CompactResetCreditsRow(resets: resets, refreshIntervalSeconds: refreshIntervalSeconds)
             }
         }
     }

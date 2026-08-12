@@ -17,7 +17,12 @@ struct MenuContentView: View {
             MenuPanelSurface()
         }
         .background(MenuWindowAutoCloseBridge())
-        .fixedSize(horizontal: false, vertical: true)   // 高度自适应内容
+        // F4: 高度上限直接施加在 NSWindow 上（contentMaxSize），不靠 SwiftUI
+        // frame 拼凑。下面 fixedSize 让窗口按内容自然决定高度；window 的
+        // contentMaxSize 限制它不超过屏幕可见高度的 70%。卡片少→窗口矮，全显示；
+        // 卡片多到超过 70%→窗口封顶，内部 ScrollView 滚动。
+        .background(MenuPanelHeightBridge())
+        .fixedSize(horizontal: false, vertical: true)
         .onAppear {
             let needsFetch = state.statuses.contains { s in
                 if case .ready = s.state { return true }
@@ -226,6 +231,49 @@ private struct MenuPanelSurface: View {
         } else {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .fill(.regularMaterial)
+        }
+    }
+}
+
+/// F4: 附着到实际 menu window，直接设置 `window.contentMaxSize` =
+/// `floor(visibleFrame.height × 0.70)`。高度上限放在 NSWindow 层，不靠 SwiftUI
+/// frame 拼凑：`fixedSize` 让窗口按内容自然决定高度，`contentMaxSize` 只负责
+/// “别超过屏幕可见高度的 70%”。卡片少→窗口矮、全显示；卡片多→窗口封顶、内部
+/// ScrollView 滚动。读取 `window.screen`（菜单所在屏），不用 `NSScreen.main`。
+private struct MenuPanelHeightBridge: NSViewRepresentable {
+    func makeNSView(context: Context) -> HeightProbeView {
+        HeightProbeView()
+    }
+
+    func updateNSView(_ nsView: HeightProbeView, context: Context) {
+        nsView.applyMaxSize()
+    }
+
+    final class HeightProbeView: NSView {
+        private var lastMaxHeight: CGFloat = 0
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            // 每次菜单窗口出现（viewDidMoveToWindow）都按当前所在屏重算 contentMaxSize。
+            // MenuBarExtra popover 失焦即关、下次在当前屏重新出现，所以不需要单独监听
+            // didChangeScreenNotification（也避免了 Swift 6 下 deinit 访问非 Sendable
+            // observer token 的严格并发问题）。
+            applyMaxSize()
+        }
+
+        override func updateTrackingAreas() {
+            super.updateTrackingAreas()
+            // 屏幕分辨率/Dock 变化后 visibleFrame 会变，借 updateTrackingAreas 重新核对。
+            applyMaxSize()
+        }
+
+        func applyMaxSize() {
+            guard let window, let screen = window.screen else { return }
+            let maxHeight = floor(screen.visibleFrame.height * 0.70)
+            guard maxHeight != lastMaxHeight else { return }
+            lastMaxHeight = maxHeight
+            // contentMaxSize 限制窗口最大 content 尺寸；宽度固定 360。
+            window.contentMaxSize = NSSize(width: 360, height: maxHeight)
         }
     }
 }

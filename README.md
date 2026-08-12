@@ -92,6 +92,16 @@ swift build
 ./scripts/build-release.sh 1.4.2 95
 ```
 
+`build-app.sh` 的参数决定是否会修改仓库内的 `.build_number`：
+
+| 命令 | 版本来源 | 是否递增 `.build_number` |
+|---|---|---|
+| `./scripts/build-app.sh` | `VERSION` 文件 | 是（本地构建自动 +1） |
+| `./scripts/build-app.sh 1.4.1` | 参数 | 是（仅给版本号时仍自动 +1） |
+| `./scripts/build-app.sh 1.4.1 94` | 参数 | 否（同时给出版本与 build 号，可重复构建） |
+
+`build-release.sh [version] [build-number]` 永不递增 `.build_number`（省略参数时读取当前值），适合发布前做可重复构建。
+
 默认构建使用 ad-hoc 签名。Developer ID 签名与 notarization 参数见 `scripts/build-app.sh` 和 `scripts/build-dmg.sh` 的文件注释；完整构建与发布约定见[项目架构规格](spec/overview.md#build-and-packaging)。
 
 ## 隐私与安全

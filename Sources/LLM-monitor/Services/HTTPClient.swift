@@ -1,5 +1,99 @@
 import Foundation
 
+/// R2: HTTP/RPC 响应体硬上限常量。
+enum ResponseByteLimits {
+    /// 标准 quota / 状态响应上限。
+    static let standardQuota: Int = 8 * 1024 * 1024
+    /// Antigravity trajectory metadata 响应上限（单 session 可能很大）。
+    static let antigravityTrajectory: Int = 64 * 1024 * 1024
+}
+
+/// R2: 流式累计响应字节并施加硬上限。用 per-task `URLSessionDataDelegate` 在下载
+/// 过程中计数，超过上限立即取消；进程内存不随无限响应增长。
+///
+/// Content-Length 只用于“提前拒绝”（didReceive response 阶段），不能代替实际字节
+/// 累计——服务端可能伪造或省略 Content-Length，也可能分块超限。
+final class CappedDownloadDelegate: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    let maxBytes: Int
+    let redactedPath: String
+    var receivedBytes: Int = 0
+    /// 实际累计字节超过上限（didReceive data 阶段触发）。
+    var overflowed = false
+    /// Content-Length 声明已超上限（didReceive response 阶段提前拒绝）。
+    var declaredTooLarge = false
+
+    init(maxBytes: Int, redactedPath: String) {
+        self.maxBytes = maxBytes
+        self.redactedPath = redactedPath
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        dataTask: URLSessionDataTask,
+        didReceive response: URLResponse,
+        completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
+    ) {
+        // 提前拒绝：Content-Length 只做 advisory early reject。
+        if let http = response as? HTTPURLResponse,
+           http.expectedContentLength > maxBytes {
+            declaredTooLarge = true
+            completionHandler(.cancel)
+            return
+        }
+        completionHandler(.allow)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        receivedBytes += data.count
+        if receivedBytes > maxBytes {
+            overflowed = true
+            dataTask.cancel()
+        }
+    }
+
+    // 注：不重写 willCacheResponse。当前 SDK 把该可选 requirement 声明为 async，
+    // 同步实现只会“几乎匹配”并触发 warning，且实际不会被调用。R2 的字节计数上限
+    // 完全由 didReceive response / didReceive data 保证，不依赖缓存控制。
+}
+
+enum CappedDownloader {
+    /// 用给定 session 流式下载，超过 `maxBytes` 取消并抛 `responseTooLarge`。
+    /// `redactedPath` 仅用于错误日志与错误对象，不含 userinfo/query。
+    static func data(
+        for request: URLRequest,
+        session: URLSession,
+        maxBytes: Int,
+        redactedPath: String
+    ) async throws -> (Data, HTTPURLResponse) {
+        let delegate = CappedDownloadDelegate(maxBytes: maxBytes, redactedPath: redactedPath)
+        do {
+            let (data, response) = try await session.data(for: request, delegate: delegate)
+            guard let http = response as? HTTPURLResponse else {
+                throw QuotaError.invalidResponse
+            }
+            return (data, http)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as URLError where error.code == .cancelled {
+            // 我们的 overflow / declaredTooLarge 取消 vs Task 真取消，用 delegate 标志区分。
+            if delegate.overflowed || delegate.declaredTooLarge {
+                logError("[http] 响应过大：上限 \(maxBytes) bytes，实际 \(delegate.receivedBytes) bytes，\(redactedPath)")
+                throw QuotaError.responseTooLarge(
+                    limit: maxBytes,
+                    actual: delegate.receivedBytes,
+                    redactedPath: redactedPath
+                )
+            }
+            throw error
+        } catch let error as URLError {
+            throw error
+        } catch {
+            let description = HTTPRequestLogSanitizer.networkErrorDescription(error)
+            throw QuotaError.networkError(description)
+        }
+    }
+}
+
 enum HTTPRequestLogSanitizer {
     /// 日志只保留请求定位所需的 origin 与 path。userinfo、query 和 fragment 可能包含
     /// access token、session ID 或一次性凭据，任何情况下都不能进入日志。
@@ -80,15 +174,24 @@ final class HTTPClient: @unchecked Sendable {
     private let session: URLSession
     private let logTag: String
     private let defaultTimeout: TimeInterval
+    /// R2: 响应体硬上限（字节）。标准 quota 默认 8 MiB。
+    let maxResponseBytes: Int
 
     /// - Parameters:
     ///   - session: URLSession 实例（生产用 `.shared`，测试可注入 mock）
     ///   - logTag: 日志前缀，例如 `"[minimax]"`、`"[codex/usage]"`，HTTPClient 不附加额外方括号
     ///   - defaultTimeout: 强制套用的超时（秒），fetcher 即使 set 了 timeout 也会被覆盖
-    init(session: URLSession, logTag: String, defaultTimeout: TimeInterval = 15) {
+    ///   - maxResponseBytes: 响应体硬上限，默认 8 MiB
+    init(
+        session: URLSession,
+        logTag: String,
+        defaultTimeout: TimeInterval = 15,
+        maxResponseBytes: Int = ResponseByteLimits.standardQuota
+    ) {
         self.session = session
         self.logTag = logTag
         self.defaultTimeout = defaultTimeout
+        self.maxResponseBytes = maxResponseBytes
     }
 
     /// 发送请求并校验 HTTP 状态。
@@ -120,10 +223,16 @@ final class HTTPClient: @unchecked Sendable {
         let url = HTTPRequestLogSanitizer.sanitizedURL(request.url)
         logInfo("\(logTag) \(method) \(url)")
 
+        // R2: 流式下载并施加响应体硬上限，避免无限/伪造大响应拖垮内存。
         let data: Data
-        let response: URLResponse
+        let http: HTTPURLResponse
         do {
-            (data, response) = try await session.data(for: request)
+            (data, http) = try await CappedDownloader.data(
+                for: request,
+                session: session,
+                maxBytes: maxResponseBytes,
+                redactedPath: url
+            )
         } catch is CancellationError {
             // Task 取消（如配置变更、停止刷新、窗口关闭）—— 不当 network error，
             // 透传给上层让 AppState 走 deferred 路径，不进 failure 计数。
@@ -131,15 +240,13 @@ final class HTTPClient: @unchecked Sendable {
         } catch let error as URLError where error.code == .cancelled {
             // URLSession 自己把请求 cancel 也是同样语义。
             throw error
+        } catch let error as QuotaError {
+            // responseTooLarge / invalidResponse 已经带好脱敏信息，直接透传。
+            throw error
         } catch {
             let description = HTTPRequestLogSanitizer.networkErrorDescription(error)
             logError("\(logTag) 网络错误: \(description)")
             throw QuotaError.networkError(description)
-        }
-
-        guard let http = response as? HTTPURLResponse else {
-            logError("\(logTag) 响应非 HTTP")
-            throw QuotaError.invalidResponse
         }
 
         logInfo("\(logTag) HTTP \(http.statusCode), \(data.count) bytes")

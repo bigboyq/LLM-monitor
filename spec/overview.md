@@ -17,7 +17,7 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 | Providers | `minimax_token_plan`, `codex_chatgpt`, `antigravity`, `glm_coding_plan`, `deepseek` |
 | Refresh | Independent timer per enabled provider |
 | Config reload | Event-driven via `DispatchSourceFileSystemObject` (no polling) |
-| Window lifetime | Menu closes on focus loss or 30s after mouse exit |
+| Window lifetime | Menu closes on focus loss or after 30s of inactivity; any in-menu interaction resets the timer |
 
 ## Design Goals
 
@@ -81,7 +81,7 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 | `Sources/LLM-monitor/Services/HTTPTimeouts.swift` | HTTP timeout 集中地（之前散落在 minimax/codex/antigravity 三个 fetcher），改一处全局生效 |
 | `Sources/LLM-monitor/Services/LocalUsageScanRunner.swift` | 本地用量 scanner 共享的 lifecycle helper（generation 守门 / cancellation filter / defer generation 守门），消除镜像 boilerplate |
 | `Sources/LLM-monitor/Views/MenuContentView.swift` | 主面板（header / content / footer） |
-| `Sources/LLM-monitor/Views/MenuWindowAutoCloseBridge.swift` | 失焦自动关 + 30s mouse exit 关闭 |
+| `Sources/LLM-monitor/Views/MenuWindowAutoCloseBridge.swift` | 失焦立即关 + 30s 无交互关闭（菜单内 mouse/scroll/key 重置计时）|
 | `Sources/LLM-monitor/Views/ProviderCardView.swift` | provider 卡片 + `StatusIndicator` + `ProviderStateLabel` + `QuotaSummary` |
 | `Sources/LLM-monitor/Views/QuotaViews.swift` | 各种 quota 行 + 进度条 + `EquivalentQuotaAllocation` |
 | `Sources/LLM-monitor/Views/HoverPanel.swift` | `HoverInfoRow` / `HoverPanelController` / 浮层管理 |
@@ -157,16 +157,14 @@ The app reads and writes this shape:
     },
     "codex_chatgpt": {
       "enabled": false,
-      "refreshIntervalSeconds": 60,
       "authPath": "~/.codex/auth.json"
     },
     "antigravity": {
-      "enabled": false,
-      "refreshIntervalSeconds": 60
+      "enabled": false
     },
     "glm_coding_plan": {
       "enabled": false,
-      "apiKey": "your-coding-plan-key-id.secret"
+      "apiKey": "REPLACE-WITH-YOUR-CODING-PLAN-KEY"
     },
     "deepseek": {
       "enabled": false,
@@ -176,7 +174,17 @@ The app reads and writes this shape:
 }
 ```
 
-首次启动模板默认关闭所有 provider，避免占位 Key 被误认为已配置。菜单中会显示“打开设置”引导；配置真实凭据后再启用对应 provider。
+首次启动模板默认关闭所有 provider，避免占位 Key 被误认为已配置。菜单中会显示“打开设置”引导；配置真实凭据后再启用对应 provider。上表是 `ConfigStore.writeTemplate` 实际生成的模板默认值（见 `ConfigStore.templateProviders()`）。
+
+`refreshIntervalSeconds` 除了顶层全局默认，还可以在每个 provider 下**可选覆盖**。模板默认不写该字段，下面是一个让 Codex 每 60 秒刷新一次的自定义示例（并非模板默认值）：
+
+```json
+"codex_chatgpt": {
+  "enabled": true,
+  "authPath": "~/.codex/auth.json",
+  "refreshIntervalSeconds": 60
+}
+```
 
 | Field | Scope | Meaning |
 |---|---|---|
@@ -263,6 +271,11 @@ deriveState 返回 `.notConfigured` 时整个 state 重置，lastSuccess 跟着�
 3. 失败走指数退避（`baseInterval × 2^failures`，cap 5 次，30 分钟封顶，±10% jitter）
 4. 任务被 cancel → 退出循环
 
+**周期 full（reset credits 等“只在 full 抓取”的字段）**：`ProviderRefreshScheduler` 每累计
+`periodicFullEveryN`（默认 20）次 `.background` 后，下一次补跑一次 `.full`（走常规 deadline，
+不重置退避）。这样 Codex 的 reset credits 不需要用户手动刷新也能周期性更新：默认 300s 间隔下
+约每 `20×300s ≈ 100min` 自动 full 一次。`.background` 仍只抓主 quota，不抓 reset credits。
+
 scheduler 集中持有 5 个 dict：`tasks` / `inFlightModes` / `inFlightWaiters` / `nextRefreshDates` / `failureCounts`。
 in-flight dedup：`markInFlight(providerID)` 返回 false 时直接 `.deferred`（已被 timer /
 manual / menu-open 任一路径占住）。手动 full refresh 若遇到 background 请求，会通过
@@ -318,7 +331,7 @@ Config reload path:
 | Fetcher | Merger | Behavior |
 |---|---|---|
 | `MinimaxTokenPlanFetcher` | `MinimaxVideoPreservingMerger` | `.background` 模式 + previous 有 video model → 沿用上次的 video（消耗极低，< 3 次/天） |
-| `CodexFetcher` | `CodexFillingMissingMerger` | `resetCredits` / `codexUsageDetails` 缺失时回退到上次（避免 UI 空白） |
+| `CodexFetcher` | `CodexFillingMissingMerger` | `resetCredits` / `codexUsageDetails` 缺失时回退到上次（避免 UI 空白）；reset credits 有独立新鲜度——`.background` 按设计跳过时保留原值与原时间，`.full` 抓取失败时保留旧值并标记「可能过期」，恢复成功清除 |
 | `AntigravityFetcher` | `IdentityRefreshResultMerger`（默认） | 直接用新值 |
 
 AppState.fetch 成功后调 `fetcher.resultMerger.merge(new:previous:mode:)` 合成最终值。
@@ -681,8 +694,12 @@ These are documented product boundaries:
 - The menu bar label is fixed (`chart.bar.fill`) and does not reflect health.
 - Local usage scanners restore their last-good `index.json` snapshot on cold start; the
   remote quota refresh timestamp is persisted separately in `last-refresh.json`.
-- `MenuContentView` has no `ScrollView.maxHeight`; height follows content. A long provider
-  list could push the menu off-screen — this is a future polish item.
+- `MenuContentView` sizes to its content (window = header + cards + footer) so all cards
+  show when they fit; an AppKit bridge sets `window.contentMaxSize` =
+  `floor(window.screen.visibleFrame.height × 0.70)` so the menu never exceeds 70% of its
+  own screen (read via the window's `screen`, not `NSScreen.main`); when content is taller
+  the menu caps at that 70% and the provider list scrolls while header/footer stay fixed.
+  Updates on screen change / Dock move via `didChangeScreenNotification`.
 - The 4 daily usage types (`AntigravityDailyUsage` / `MinimaxDailyUsage` /
   `DailyTokenUsage` / `OpencodeDailyUsage`) have overlapping but non-identical fields.
   They conform to a common `LocalUsageDaily` protocol so view code is shared, but the

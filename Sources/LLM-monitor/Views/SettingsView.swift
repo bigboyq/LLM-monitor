@@ -797,26 +797,41 @@ struct SettingsView: View {
     }
 
     private func apiKeyField(text: Binding<String>, isVisible: Binding<Bool>) -> some View {
-        HStack(spacing: 8) {
-            Group {
-                if isVisible.wrappedValue {
-                    TextField("", text: text, prompt: Text("sk-cp-..."))
-                } else {
-                    SecureField("", text: text, prompt: Text("sk-cp-..."))
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Group {
+                    if isVisible.wrappedValue {
+                        TextField("", text: text, prompt: Text("sk-cp-..."))
+                    } else {
+                        SecureField("", text: text, prompt: Text("sk-cp-..."))
+                    }
                 }
-            }
-            .textFieldStyle(.roundedBorder)
+                .textFieldStyle(.roundedBorder)
 
-            Button {
-                isVisible.wrappedValue.toggle()
-            } label: {
-                Image(systemName: isVisible.wrappedValue ? "eye.slash" : "eye")
-                    .frame(width: 18, height: 18)
+                Button {
+                    isVisible.wrappedValue.toggle()
+                } label: {
+                    Image(systemName: isVisible.wrappedValue ? "eye.slash" : "eye")
+                        .frame(width: 18, height: 18)
+                }
+                .buttonStyle(.borderless)
+                .help(isVisible.wrappedValue ? "隐藏 API Key" : "显示 API Key")
             }
-            .buttonStyle(.borderless)
-            .help(isVisible.wrappedValue ? "隐藏 API Key" : "显示 API Key")
+            // Q8: 检测误粘贴 'Bearer ' 前缀，给非阻断 soft warning；不阻止保存，
+            // 不记录 key 到日志。未来 key 格式变化不会被这条规则阻止。
+            if Self.hasBearerPrefix(text.wrappedValue) {
+                Label("API Key 通常不需要 “Bearer ” 前缀，将按原值保存。", systemImage: "exclamationmark.triangle")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.orange)
+                    .help("若你是从 Authorization 头里复制的，去掉 “Bearer ” 前缀只保留 Key 本体通常更合适。")
+            }
         }
         .frame(width: 320, alignment: .leading)
+    }
+
+    /// Q8: 判断是否误粘贴了 `Bearer ` 前缀（不记录 key，仅布尔判定）。
+    private static func hasBearerPrefix(_ value: String) -> Bool {
+        value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().hasPrefix("bearer ")
     }
 
     private func selectAuthFile() {

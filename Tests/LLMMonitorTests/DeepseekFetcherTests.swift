@@ -82,7 +82,14 @@ final class DeepseekFetcherTests: XCTestCase {
         XCTAssertEqual(info.models.count, 1)
         XCTAssertEqual(info.models.first?.modelName, "deepseek_balance")
         XCTAssertEqual(info.planLabel, "¥100.50")
-        XCTAssertEqual(info.accountEmail, "充值: ¥90.50 | 赠金: ¥10.00")
+        // R7: 余额明细走结构化字段，accountEmail 不再被占用。
+        XCTAssertNil(info.accountEmail, "DeepSeek 余额不得占用 accountEmail")
+        let detail = try XCTUnwrap(info.balanceDetail)
+        XCTAssertEqual(detail.currency, "CNY")
+        XCTAssertEqual(detail.total, 100.50, accuracy: 0.001)
+        XCTAssertEqual(detail.toppedUp, 90.50, accuracy: 0.001)
+        XCTAssertEqual(detail.granted, 10.00, accuracy: 0.001)
+        XCTAssertEqual(detail.symbol, "¥")
         XCTAssertEqual(StubURLProtocol.capturedHeaders["Authorization"], "Bearer sk-test-key-123456")
     }
 
@@ -104,6 +111,9 @@ final class DeepseekFetcherTests: XCTestCase {
         let info = try DeepseekFetcher.parse(data: json)
         XCTAssertEqual(info.models.first?.intervalRemainingPercent, 0)
         XCTAssertEqual(info.planLabel, "$0.00")
+        XCTAssertEqual(info.balanceDetail?.currency, "USD")
+        XCTAssertEqual(info.balanceDetail?.symbol, "$")
+        XCTAssertEqual(info.balanceDetail?.granted ?? -1, 0, accuracy: 0.001)
     }
 
     func testDeepseekFetcherRejectsNonFiniteBalance() throws {
@@ -289,5 +299,48 @@ final class DeepseekFetcherTests: XCTestCase {
 
         let wasCancelled = await task.value
         XCTAssertTrue(wasCancelled, "fetch 应透传 CancellationError / URLError.cancelled")
+    }
+
+    // MARK: - R7: balanceDetail 结构化 + Codable 向后兼容
+
+    /// 零赠金：granted=0 也能正常解析并展示。
+    func testR7ZeroGrantedBalanceParsed() throws {
+        let json = Data("""
+        {
+          "is_available": true,
+          "balance_infos": [
+            { "currency": "CNY", "total_balance": "50.00", "granted_balance": "0.00", "topped_up_balance": "50.00" }
+          ]
+        }
+        """.utf8)
+        let info = try DeepseekFetcher.parse(data: json)
+        XCTAssertEqual(info.balanceDetail?.granted ?? -1, 0, accuracy: 0.001)
+        XCTAssertEqual(info.balanceDetail?.toppedUp ?? -1, 50, accuracy: 0.001)
+    }
+
+    /// 旧版 QuotaInfo 编码（无 balanceDetail 字段）能解码，balanceDetail 为 nil。
+    func testR7QuotaInfoCodableBackwardCompat() throws {
+        let oldJSON = """
+        {"models":[],"resetCredits":null,"planLabel":"x","accountEmail":null,"codexUsageDetails":null,"fetchedAt":"2026-08-12T00:00:00Z"}
+        """
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let decoded = try decoder.decode(QuotaInfo.self, from: Data(oldJSON.utf8))
+        XCTAssertNil(decoded.balanceDetail, "旧数据缺省 balanceDetail 为 nil")
+    }
+
+    /// balanceDetail round-trip 编解码。
+    func testR7BalanceDetailRoundTrip() throws {
+        let info = QuotaInfo(
+            models: [], resetCredits: nil, planLabel: nil, accountEmail: nil,
+            codexUsageDetails: nil, fetchedAt: Date(timeIntervalSince1970: 1),
+            balanceDetail: DeepseekBalanceDetail(currency: "USD", total: 12.5, toppedUp: 10, granted: 2.5)
+        )
+        let encoder = JSONEncoder()
+        let decoder = JSONDecoder()
+        let data = try encoder.encode(info)
+        let decoded = try decoder.decode(QuotaInfo.self, from: data)
+        XCTAssertEqual(decoded.balanceDetail, info.balanceDetail)
+        XCTAssertEqual(decoded.balanceDetail?.symbol, "$")
     }
 }
