@@ -112,15 +112,24 @@ struct DeepseekFetcher: QuotaFetcher {
         let symbol = (currency.uppercased() == "USD") ? "$" : "¥"
         let formattedTotal = String(format: "%.2f", totalVal)
         let planLabel = "\(symbol)\(formattedTotal)"
-        let detailMsg = "充值: \(symbol)\(String(format: "%.2f", toppedUpVal)) | 赠金: \(symbol)\(String(format: "%.2f", grantedVal))"
+
+        // R7: 余额明细走结构化字段，由 DeepSeek 专用 View 本地格式化；
+        // 不再把预格式化串塞进 accountEmail。
+        let balanceDetail = DeepseekBalanceDetail(
+            currency: currency,
+            total: totalVal,
+            toppedUp: toppedUpVal,
+            granted: grantedVal
+        )
 
         return QuotaInfo(
             models: [model],
             resetCredits: nil,
             planLabel: planLabel,
-            accountEmail: detailMsg,
+            accountEmail: nil,
             codexUsageDetails: nil,
-            fetchedAt: now
+            fetchedAt: now,
+            balanceDetail: balanceDetail
         )
     }
 

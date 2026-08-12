@@ -813,8 +813,15 @@ final class AntigravityLocalUsageTests: XCTestCase {
             json = "{\"nested\":\(json)}"
         }
 
-        let event = try parseUsageEvent(json)
-        XCTAssertNil(event, "超过递归深度的嵌套 payload 不应继续遍历")
+        // R11: AnyJSON 在解码阶段统一限制嵌套深度 32；40 层 payload 应在解码阶段
+        // 被拒绝（抛 DecodingError），不再走到 visit 层的 depth cap。visit(depth<32)
+        // 保留为第二层防御。这里断言“不崩溃、被拒绝”。
+        XCTAssertThrowsError(try parseUsageEvent(json), "超过递归深度的嵌套 payload 应在解码阶段被拒绝") { error in
+            guard error is DecodingError else {
+                XCTFail("应为 DecodingError，got \(error)")
+                return
+            }
+        }
     }
 
     /// Timestamp fallback chain 5 个边界：duration 字段不能 preempt / 零 / 负数 / 过早 / 过晚
@@ -964,6 +971,171 @@ final class AntigravityLocalUsageTests: XCTestCase {
         XCTAssertEqual(combined.turns, 8)
         XCTAssertEqual(combined.rounds, 35)
         XCTAssertEqual(combined.inputTokens, 300)
+    }
+
+    // MARK: - F1: scanner 成功分支 turns/rounds 不得双倍计数
+
+    /// F1 回归：scanner 成功分支现在等价于
+    ///   let details = computeTurnRoundDetails(...)
+    ///   let newDaily = aggregateDaily(events:calendar:counts: details.counts)
+    ///   let newSamples = details.samples
+    /// 这里直接验证该路径：传入预计算 counts 后，turns/rounds 必须等于 details，
+    /// 而不是旧实现叠加出的 2 倍；token 仍按饱和加法正确累加。
+    func testF1AggregateDailyWithPrecomputedCountsDoesNotDoubleCount() {
+        let day = testCalendar.startOfDay(for: Date())
+        let ts = testCalendar.date(bySettingHour: 10, minute: 0, second: 0, of: day)!
+        // 2 个 turn（idx 2..3/3..4 与 6..7/7..8，gap>1），共 4 个 rounds
+        let stepIdxs: [[Int]] = [[2, 3], [3, 4], [6, 7], [7, 8]]
+        let events: [AntigravityFetcher.UsageEvent] = (0..<4).map { i in
+            AntigravityFetcher.UsageEvent(
+                timestamp: ts,
+                model: "test",
+                inputTokens: 100, outputTokens: 50,
+                cacheReadTokens: 10, cacheWriteTokens: 0,
+                reasoningTokens: 5, totalTokens: 150,
+                stepIndices: stepIdxs[i]
+            )
+        }
+
+        let details = AntigravityLocalUsageScanner.computeTurnRoundDetails(
+            sessionID: "f1-session",
+            events: events,
+            calendar: testCalendar
+        )
+        // 这正是 scanner 成功分支现在调用的聚合路径
+        let byDay = AntigravityLocalUsageScanner.aggregateDaily(
+            events: events,
+            calendar: testCalendar,
+            counts: details.counts
+        )
+
+        let key = LocalUsageDayKey.make(day, calendar: testCalendar)
+        let usage = byDay[key]
+        XCTAssertNotNil(usage)
+        // turns/rounds 必须等于 details，不是 2 倍（旧 bug 在这里会得到 4/8）
+        XCTAssertEqual(usage?.turns, details.counts.perDay[day]?.turns)
+        XCTAssertEqual(usage?.rounds, details.counts.perDay[day]?.rounds)
+        XCTAssertEqual(usage?.turns, 2)
+        XCTAssertEqual(usage?.rounds, 4)
+        // token 仍按饱和加法正确累加
+        XCTAssertEqual(usage?.inputTokens, 400)
+        XCTAssertEqual(usage?.outputTokens, 200)
+        XCTAssertEqual(usage?.cacheReadTokens, 40)
+        XCTAssertEqual(usage?.reasoningTokens, 20)
+        XCTAssertEqual(usage?.totalTokens, 600)
+    }
+
+    /// F1：跨日 events 经 scanner 聚合路径后，每天 turns/rounds 等于 details，不翻倍。
+    func testF1AggregateDailyCrossDayWithPrecomputedCounts() {
+        let day14 = testCalendar.date(from: DateComponents(year: 2026, month: 7, day: 14))!
+        let day15 = testCalendar.date(from: DateComponents(year: 2026, month: 7, day: 15))!
+        let day14Ts = testCalendar.date(bySettingHour: 10, minute: 0, second: 0, of: day14)!
+        let day15Ts = testCalendar.date(bySettingHour: 10, minute: 0, second: 0, of: day15)!
+
+        let stepIdxs: [[Int]] = [[2, 3], [3, 4], [6, 7], [7, 8], [10, 11], [11, 12]]
+        let events: [AntigravityFetcher.UsageEvent] = (0..<6).map { i in
+            AntigravityFetcher.UsageEvent(
+                timestamp: i < 4 ? day14Ts : day15Ts,
+                model: "test",
+                inputTokens: 100, outputTokens: 50,
+                cacheReadTokens: 0, cacheWriteTokens: 0,
+                reasoningTokens: 0, totalTokens: 150,
+                stepIndices: stepIdxs[i]
+            )
+        }
+
+        let details = AntigravityLocalUsageScanner.computeTurnRoundDetails(
+            sessionID: "f1-cross-day",
+            events: events,
+            calendar: testCalendar
+        )
+        let byDay = AntigravityLocalUsageScanner.aggregateDaily(
+            events: events,
+            calendar: testCalendar,
+            counts: details.counts
+        )
+
+        let key14 = LocalUsageDayKey.make(day14, calendar: testCalendar)
+        let key15 = LocalUsageDayKey.make(day15, calendar: testCalendar)
+        XCTAssertEqual(byDay[key14]?.turns, details.counts.perDay[day14]?.turns)
+        XCTAssertEqual(byDay[key14]?.rounds, details.counts.perDay[day14]?.rounds)
+        XCTAssertEqual(byDay[key15]?.turns, details.counts.perDay[day15]?.turns)
+        XCTAssertEqual(byDay[key15]?.rounds, details.counts.perDay[day15]?.rounds)
+        // day14: 2 turns / 4 rounds；day15: 1 turn / 2 rounds
+        XCTAssertEqual(byDay[key14]?.turns, 2)
+        XCTAssertEqual(byDay[key14]?.rounds, 4)
+        XCTAssertEqual(byDay[key15]?.turns, 1)
+        XCTAssertEqual(byDay[key15]?.rounds, 2)
+    }
+
+    /// F1：无 stepIndices 的事件，每个 event 计为 1 round，scanner 聚合路径不翻倍。
+    func testF1AggregateDailyNoStepIndicesWithPrecomputedCounts() {
+        let day = testCalendar.startOfDay(for: Date())
+        let ts = testCalendar.date(bySettingHour: 9, minute: 0, second: 0, of: day)!
+        let events: [AntigravityFetcher.UsageEvent] = (0..<3).map { _ in
+            AntigravityFetcher.UsageEvent(
+                timestamp: ts,
+                model: "test",
+                inputTokens: 50, outputTokens: 10,
+                cacheReadTokens: 0, cacheWriteTokens: 0,
+                reasoningTokens: 0, totalTokens: 60,
+                stepIndices: nil
+            )
+        }
+
+        let details = AntigravityLocalUsageScanner.computeTurnRoundDetails(
+            sessionID: "f1-no-idx",
+            events: events,
+            calendar: testCalendar
+        )
+        let byDay = AntigravityLocalUsageScanner.aggregateDaily(
+            events: events,
+            calendar: testCalendar,
+            counts: details.counts
+        )
+
+        let key = LocalUsageDayKey.make(day, calendar: testCalendar)
+        // 无 stepIndices 时 prevMaxStepIndex 永不更新，按现有规则每个 event 各开一个 turn；
+        // 这里只验证 F1：聚合后等于 details，而不是 2 倍。
+        XCTAssertEqual(byDay[key]?.turns, details.counts.perDay[day]?.turns)
+        XCTAssertEqual(byDay[key]?.rounds, details.counts.perDay[day]?.rounds)
+        XCTAssertEqual(byDay[key]?.turns, 3)
+        XCTAssertEqual(byDay[key]?.rounds, 3)
+    }
+
+    /// F1：默认调用（不传 counts）仍保持原有契约——等价于内部自行 computeTurnRoundCounts，
+    /// 不得因为新增参数改变既有行为。
+    func testF1AggregateDailyDefaultContractUnchanged() {
+        let day = testCalendar.startOfDay(for: Date())
+        let ts = testCalendar.date(bySettingHour: 11, minute: 0, second: 0, of: day)!
+        let events: [AntigravityFetcher.UsageEvent] = [
+            AntigravityFetcher.UsageEvent(
+                timestamp: ts, model: "m",
+                inputTokens: 100, outputTokens: 50,
+                cacheReadTokens: 0, cacheWriteTokens: 0,
+                reasoningTokens: 0, totalTokens: 150,
+                stepIndices: [0, 1]
+            ),
+            AntigravityFetcher.UsageEvent(
+                timestamp: ts, model: "m",
+                inputTokens: 20, outputTokens: 5,
+                cacheReadTokens: 0, cacheWriteTokens: 0,
+                reasoningTokens: 0, totalTokens: 25,
+                stepIndices: [1, 2]
+            ),
+        ]
+
+        let withCounts = AntigravityLocalUsageScanner.aggregateDaily(
+            events: events, calendar: testCalendar,
+            counts: AntigravityLocalUsageScanner.computeTurnRoundCounts(
+                sessionID: "", events: events, calendar: testCalendar
+            )
+        )
+        let defaultAggregated = AntigravityLocalUsageScanner.aggregateDaily(
+            events: events, calendar: testCalendar
+        )
+
+        XCTAssertEqual(defaultAggregated, withCounts, "未传 counts 时应与传入预算 counts 完全一致")
     }
 
     // MARK: - Antigravity SQLite Remediation Tests

@@ -454,12 +454,26 @@ struct AntigravityFetcher: QuotaFetcher {
             request.setValue(csrfToken, forHTTPHeaderField: "x-codeium-csrf-token")
         }
 
+        // R2: 按 path 选择响应上限。trajectory metadata 单 session 可能很大（64 MiB）；
+        // 普通状态/额度 8 MiB。流式累计，超过立即取消。
+        let maxBytes = path.contains("TrajectoryGeneratorMetadata")
+            ? ResponseByteLimits.antigravityTrajectory
+            : ResponseByteLimits.standardQuota
+        let redactedPath = HTTPRequestLogSanitizer.sanitizedURL(url)
+
         logInfo("[antigravity] POST \(url.absoluteString) (kind=\(server.kind.rawValue))")
         let startedAt = Date()
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await session.data(for: request)
+            let (downloaded, http) = try await CappedDownloader.data(
+                for: request,
+                session: session,
+                maxBytes: maxBytes,
+                redactedPath: redactedPath
+            )
+            data = downloaded
+            response = http
         } catch let error as URLError where error.code == .cancelled {
             // 保留取消错误类型，让 AppState/CancellationFilter 走 deferred 路径。
             throw error
@@ -467,6 +481,8 @@ struct AntigravityFetcher: QuotaFetcher {
             throw QuotaError.networkError(
                 "Antigravity RPC 失败: \(HTTPRequestLogSanitizer.networkErrorDescription(error))"
             )
+        } catch let quotaError as QuotaError {
+            throw quotaError
         }
         let elapsedMs = Int(Date().timeIntervalSince(startedAt) * 1000)
         let status = (response as? HTTPURLResponse)?.statusCode ?? -1

@@ -178,6 +178,8 @@ final class AppState: ObservableObject {
     /// 只持久化远程 quota 最近成功时间；quota 本体仍不落盘，避免把完整响应当作用户缓存。
     private let refreshTimestampsURL: URL
     private var persistedRefreshTimes: [String: Date]
+    /// R1: last-refresh.json 的写盘移到独立 actor，MainActor 不再做 encode/fsync。
+    private let lastRefreshStore: LastRefreshStore
     /// 配置变更后递增。旧请求即使稍后完成，也不能覆盖新配置派生出的状态。
     private var configurationGeneration = 0
 
@@ -192,6 +194,7 @@ final class AppState: ObservableObject {
                 .deletingLastPathComponent()
                 .appendingPathComponent("last-refresh.json")
         )
+        self.lastRefreshStore = LastRefreshStore(url: self.refreshTimestampsURL)
         self.refreshScheduler = ProviderRefreshScheduler(
             refreshHandler: { [weak self] providerID, mode in
                 guard let self else { return .deferred }
@@ -369,6 +372,11 @@ final class AppState: ObservableObject {
                 }
                 return
             } catch {
+                // R18: generic catch（非取消错误）也必须清理 waiter count 与 claim set，
+                // 否则会泄漏并可能误触发第二次 full refresh。与 CancellationError 路径一致。
+                if activeMode == .background {
+                    removePendingFullRefreshWaiter(providerID)
+                }
                 return
             }
 
@@ -489,7 +497,7 @@ final class AppState: ObservableObject {
             // 这些"非 derived" 字段必须手动从旧 status 拷贝，否则 UI 会在 config 变
             // 更时丢掉"上一秒还在显示的 Antigravity 7 天图"这种状态。
             let preserved = self.preservedFields(for: d.id)
-            let derived = Self.deriveState(
+            let derived = Self.deriveProviderState(
                 descriptor: d,
                 providerConfig: pc,
                 authProber: authProber,
@@ -499,13 +507,25 @@ final class AppState: ObservableObject {
             // 状态 —— 旧 data 跟着旧 state 走，UI 不会闪白。
             // auth 失效（derived == .notConfigured）就重置成 derived 状态，
             // 把 lastSuccess / lastRefreshedAt 一起清掉。
+            //
+            // R4：Antigravity 本地服务暂时离线（.serviceOffline）不复用旧成功状态，
+            // 也不是 notConfigured——改成 .failed("Antigravity 本地服务离线",
+            // lastSuccess: oldInfo)，UI 半透明保留旧数据 + 离线提示。
             let finalState: ProviderStatus.State
             switch (derived, preserved.previousState) {
             case (.ready, let .some(oldState))
                 where Self.stateHasSuccessData(oldState):
                 finalState = oldState
+            case (.serviceOffline(let message), let previous):
+                let lastInfo = previous.flatMap { Self.lastSuccessInfo(from: $0) }
+                finalState = .failed(message: message, lastSuccess: lastInfo)
             default:
-                finalState = derived
+                finalState = Self.deriveState(
+                    descriptor: d,
+                    providerConfig: pc,
+                    authProber: authProber,
+                    hintProvider: externalAuthHint(for:config:)
+                )
             }
             // 与 ProviderRefreshScheduler 共用同一份 effective interval；外部手改配置为
             // 小于 10 秒时，卡片新鲜度与实际调度都按 10 秒计算。
@@ -1137,13 +1157,11 @@ final class AppState: ObservableObject {
     }
 
     private func persistRefreshTimes() {
-        do {
-            let encoder = JSONEncoder()
-            encoder.dateEncodingStrategy = .iso8601
-            let data = try encoder.encode(persistedRefreshTimes)
-            try FileManagerBox().writePrivate(data, to: refreshTimestampsURL)
-        } catch {
-            logWarn("AppState: 保存 last-refresh.json 失败: \(error.localizedDescription)")
+        // R1: encode + fsync 写盘移出 MainActor。这里只把值类型快照拷贝后 enqueue，
+        // 不在主线程做 JSON 编码或文件 I/O；写盘由 LastRefreshStore 合并窗口处理。
+        let snapshot = persistedRefreshTimes
+        Task { [lastRefreshStore] in
+            await lastRefreshStore.enqueue(snapshot)
         }
     }
 
@@ -1186,6 +1204,37 @@ final class AppState: ObservableObject {
         authProber: AuthProber?,
         hintProvider: (ProviderKind, ProviderConfig) -> String
     ) -> ProviderStatus.State {
+        // R4: 真正的派生走类型化 ProviderDerivation；本方法保留 State 返回类型，
+        // 把 .serviceOffline 折叠成 .notConfigured 以兼容历史调用方与测试。
+        switch deriveProviderState(
+            descriptor: descriptor,
+            providerConfig: providerConfig,
+            authProber: authProber,
+            hintProvider: hintProvider
+        ) {
+        case .ready:
+            return .ready
+        case .notConfigured(let reason):
+            return .notConfigured(reason: reason)
+        case .serviceOffline(let message):
+            return .notConfigured(reason: message)
+        }
+    }
+
+    /// R4: 类型化派生结果，让 `rebuildStatuses` 能区分"配置/凭据确实无效"与
+    /// "已配置但本地服务暂时不可用"，后者保留 lastSuccess 而不是清空。
+    enum ProviderDerivation: Equatable {
+        case ready
+        case notConfigured(reason: String)
+        case serviceOffline(message: String)
+    }
+
+    static func deriveProviderState(
+        descriptor: FetcherDescriptor,
+        providerConfig: ProviderConfig?,
+        authProber: AuthProber?,
+        hintProvider: (ProviderKind, ProviderConfig) -> String
+    ) -> ProviderDerivation {
         let id = descriptor.id
         guard let pc = providerConfig else {
             logInfo("  [\(id)] 未在 config 中配置")
@@ -1205,9 +1254,11 @@ final class AppState: ObservableObject {
             if descriptor.kind == .antigravity,
                let authProber,
                authProber.isUnavailable(id) {
-                let hint = hintProvider(descriptor.kind, pc)
-                logInfo("  [\(id)] 后台探测到本地服务未就绪")
-                return .notConfigured(reason: hint)
+                // R4: auth 文件在、配置启用，但本地 Antigravity 服务暂时不可用。
+                // 与"凭据确实不存在"区分开：返回 serviceOffline，rebuildStatuses 会保留
+                // lastSuccess 并以 .failed("Antigravity 本地服务离线") 展示。
+                logInfo("  [\(id)] 后台探测到本地服务离线，保留 lastSuccess")
+                return .serviceOffline(message: "Antigravity 本地服务离线")
             }
             logInfo("  [\(id)] 外部 auth ok，state=ready")
             return .ready
@@ -1218,6 +1269,16 @@ final class AppState: ObservableObject {
             }
             logInfo("  [\(id)] 配置 ok，state=ready")
             return .ready
+        }
+    }
+
+    /// R4: 从旧 State 提取 lastSuccess，供 serviceOffline 分支保留旧数据。
+    nonisolated static func lastSuccessInfo(from state: ProviderStatus.State) -> QuotaInfo? {
+        switch state {
+        case .ok(let info):           return info
+        case .loading(let prev):      return prev
+        case .failed(_, let last):    return last
+        case .notConfigured, .ready:  return nil
         }
     }
 }

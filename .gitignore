@@ -18,6 +18,7 @@ build/
 # Local temporary/debug dirs
 .codex-tmp/
 .zcode/
+/.worktrees/
 
 # Editor temp files
 *.swp

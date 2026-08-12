@@ -7,6 +7,8 @@ enum QuotaError: LocalizedError, Equatable {
     case httpError(status: Int, body: String)
     case decodingError(String)
     case networkError(String)
+    /// R2: 响应体超过硬上限。只携带脱敏 endpoint 路径、上限和实测字节数，不含 body。
+    case responseTooLarge(limit: Int, actual: Int, redactedPath: String)
 
     var errorDescription: String? {
         switch self {
@@ -25,6 +27,8 @@ enum QuotaError: LocalizedError, Equatable {
             return "解析失败：\(msg)"
         case .networkError(let msg):
             return "网络错误：\(msg)"
+        case .responseTooLarge(let limit, _, let redactedPath):
+            return "响应过大（上限 \(limit) bytes）：\(redactedPath)"
         }
     }
 

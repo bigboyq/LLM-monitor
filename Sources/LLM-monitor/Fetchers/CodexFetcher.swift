@@ -59,6 +59,34 @@ struct CodexFetcher: QuotaFetcher {
         return URL(fileURLWithPath: NSString("~/.codex/auth.json").expandingTildeInPath)
     }
 
+    /// R14: auth.json 读取的硬上限。
+    static let maxAuthFileBytes: Int = 1 * 1024 * 1024  // 1 MiB
+
+    /// R14: 认证文件超过 1 MiB 的稳定错误标记。
+    struct CodexAuthFileTooLargeError: Error {}
+
+    /// 用 FileHandle 分块读取并施加硬上限。超限抛 `CodexAuthFileTooLargeError`；
+    /// 不做读取前 stat（stat 仍可能被 TOCTOU 绕过），改为读取过程中累计字节。
+    /// 按已锁定本地威胁模型不拒绝 symlink，但解析目标内容仍受大小限制。
+    /// 不把路径或文件内容写日志。
+    nonisolated static func readBounded(_ url: URL, maxBytes: Int) throws -> Data {
+        guard let handle = try? FileHandle(forReadingFrom: url) else {
+            throw NSError(domain: "codex-auth-read", code: 1)
+        }
+        defer { try? handle.close() }
+        var data = Data()
+        let chunkSize = 64 * 1024
+        while true {
+            if Task.isCancelled { throw CancellationError() }
+            guard let chunk = try? handle.read(upToCount: chunkSize), !chunk.isEmpty else { break }
+            data.append(chunk)
+            if data.count > maxBytes {
+                throw CodexAuthFileTooLargeError()
+            }
+        }
+        return data
+    }
+
     nonisolated static func resolveAuthFileURL(from pathURL: URL) -> URL {
         if pathURL.hasDirectoryPath || pathURL.pathExtension.isEmpty {
             return pathURL.appendingPathComponent("auth.json")
@@ -81,11 +109,14 @@ struct CodexFetcher: QuotaFetcher {
         let model = try Self.parseUsage(usage)
 
         // 2. 拿 reset credits 详情（失败不阻塞主流程，但 warn 出来）
+        // R3: reset credits 有独立新鲜度。full 成功时记录实际抓取时间、清失败标志；
+        // full 失败或 background 跳过时这里返回 nil，由 CodexFillingMissingMerger 根据
+        // mode 区分"失败（标记过期）"与"按设计跳过（保持原样新鲜度）"。
         var resetCredits: ResetCreditsInfo? = nil
         if mode == .full {
             do {
                 let reset = try await fetchResetCredits(headers: headers)
-                resetCredits = reset.toInfo()
+                resetCredits = reset.toInfo(fetchedAt: Date())
                 logInfo("[codex] reset credits: 可用 \(resetCredits?.availableCount ?? 0) / 共 \(resetCredits?.entries.count ?? 0) 条")
             } catch {
                 logWarn("[codex] reset-credits 拉取失败: \(error.localizedDescription)，忽略")
@@ -193,7 +224,13 @@ struct CodexFetcher: QuotaFetcher {
     private func loadAuth() throws -> AuthFile {
         let data: Data
         do {
-            data = try Data(contentsOf: authFileURL)
+            // R14: 用 FileHandle 分块读取并施加 1 MiB 硬上限，不能只做读取前 stat；
+            // 超限返回稳定错误，不把路径/内容写日志。
+            data = try Self.readBounded(authFileURL, maxBytes: Self.maxAuthFileBytes)
+        } catch is CodexAuthFileTooLargeError {
+            throw QuotaError.networkError("Codex 认证文件过大")
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             // 不附带完整路径或底层错误描述；二者都可能泄露用户名和自定义目录。
             throw QuotaError.networkError(
@@ -312,11 +349,13 @@ struct CodexFetcher: QuotaFetcher {
         let serverAvailableCount: Int?
         let totalEarnedCount: Int?
 
-        func toInfo() -> ResetCreditsInfo {
+        func toInfo(fetchedAt: Date) -> ResetCreditsInfo {
             ResetCreditsInfo(
                 entries: entries,
                 serverAvailableCount: serverAvailableCount,
-                totalEarnedCount: totalEarnedCount
+                totalEarnedCount: totalEarnedCount,
+                fetchedAt: fetchedAt,
+                lastAttemptFailed: false
             )
         }
     }

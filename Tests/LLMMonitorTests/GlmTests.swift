@@ -235,6 +235,35 @@ final class GlmTests: XCTestCase {
         XCTAssertEqual(today.totalTokens, today.inputTokens + today.cacheReadTokens + today.outputTokens + today.reasoningTokens)
     }
 
+    /// R9: 单行负 token 不能抵消其他行的合法正值；所有公开字段保持 0...Int.max。
+    /// 混合行（input=-100, output=200，WHERE 求和=100>0 被纳入）的负 input 按 0 计。
+    func testR9GlmNegativeTokensDoNotCancelPositives() throws {
+        let db = try makeDatabase()
+        defer { try? FileManager.default.removeItem(atPath: db) }
+        let day = Self.todayMidnight(calendar: utcCalendar())
+        let ts = ms(day)
+        let cal = utcCalendar()
+
+        // 正行：input=100, output=50
+        try insert(databaseURL: db, id: "pos", sessionID: "s", turnID: "t1", timestamp: ts,
+                   input: 100, output: 50)
+        // 混合行：input=-100, output=200（input+output=100>0，被纳入）
+        try insert(databaseURL: db, id: "neg", sessionID: "s", turnID: "t2", timestamp: ts + 1,
+                   input: -100, output: 200)
+
+        let aggregate = try GlmZcodeLocalUsageScanner.aggregateFromDB(dbPath: URL(fileURLWithPath: db), calendar: cal)
+        let today = try XCTUnwrap(aggregate.perDay[day])
+
+        // input = max(100,0) + max(-100,0) = 100（不是 0）；cacheRead=0
+        XCTAssertEqual(today.inputTokens, 100, "负 input 不得抵消正 input")
+        // output = 50 + 200 = 250
+        XCTAssertEqual(today.outputTokens, 250)
+        // 所有字段非负
+        XCTAssertGreaterThanOrEqual(today.inputTokens, 0)
+        XCTAssertGreaterThanOrEqual(today.outputTokens, 0)
+        XCTAssertGreaterThanOrEqual(today.totalTokens, 0)
+    }
+
     /// 合并测试：native reasoning 聚合 + sample 分配 + snapshot 7 天 padding。
     /// 覆盖：账单层 reasoning_tokens 优先级（per-day + samples 同步）、promptID 命名（turn vs event fallback）、
     /// buildSnapshot 7 天窗口、today 挑选、recentSamples 保留。

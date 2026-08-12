@@ -461,7 +461,9 @@ extension CodexFetcher {
             let perFileByteLimit = min(max(snapshot.fileSize, 0), remainingByteBudget)
             guard perFileByteLimit > 0 else { continue }
             let parsingFingerprint = [
-                "v4",
+                // F2: 策略版本 v5——读取窗口从“文件头”改为“文件尾 + 有界缓冲”，
+                // 旧的 head-reading cache 必须失效，不能被复用。
+                "v5",
                 String(limits.maxEventsPerFile),
                 String(perFileByteLimit),
                 String(limits.maxJSONLLineBytes),
@@ -511,8 +513,16 @@ extension CodexFetcher {
         byteLimit: Int,
         limits: CodexLocalScanLimits
     ) -> (events: [CodexSessionEvent], parsedByteCount: Int) {
+        // F2: 不在收集到 N 个事件时提前停止——否则读取文件头部时会保留最旧 N 个。
+        // 改用容量为 maxEventsPerFile 的有界缓冲，仅保留最后 N 个已解析相关事件。
+        // 超量时批量裁剪，摊销 O(1)，缓冲瞬时最多持有 2N 个紧凑事件。
+        //
+        // 边界：若某个逻辑 turn 的 task_started 落在尾部字节窗口之外（被截断丢弃），
+        // 该 turn 的 prompt 统计会缺失——这是可接受的。不得因此回退到读取文件头，
+        // 否则会重新引入“保留最旧事件”的错误语义。
+        let maxEvents = limits.maxEventsPerFile
         var events: [CodexSessionEvent] = []
-        events.reserveCapacity(min(limits.maxEventsPerFile, 1024))
+        events.reserveCapacity(min(maxEvents, 1024))
         let parsedByteCount = enumerateUTF8Lines(
             in: fileURL,
             fileSize: fileSize,
@@ -569,14 +579,19 @@ extension CodexFetcher {
                 break
             }
 
-            if events.count >= limits.maxEventsPerFile {
-                return false
+            // F2: 有界缓冲——不提前停止，仅在超量时保留最后 N 个相关事件。
+            // 这样从文件尾读取时结果严格为最后 N 个，而读取头部时不会被截断成最旧 N 个。
+            if events.count >= maxEvents * 2 {
+                events.removeFirst(maxEvents)
             }
             return true
         }
         // 总扫描预算必须按实际读取字节扣减，而不是只计算匹配到的 event 行。
         // 否则大量无关/损坏内容可以让每个文件都重复享用完整预算，失去 CPU/I/O
         // DoS 硬上界。production 的 256 MiB 仍足以覆盖正常七天 session 集。
+        if events.count > maxEvents {
+            events.removeFirst(events.count - maxEvents)
+        }
         return (events, parsedByteCount)
     }
 
@@ -730,9 +745,11 @@ extension CodexFetcher {
     }
 
     /// 以固定大小 chunk 读取 JSONL，避免大型活跃 session 被一次性载入内存。
-    /// 只读取文件尾部 `byteLimit` 字节以优先保留近期事件；单行超限会被丢弃至
-    /// 下一个换行符。pending、单文件读取量和整个扫描读取量都有明确硬上限。
-    /// handler 返回 false 时立刻停止，供任务取消快速退出。
+    /// 只读取文件尾部 `byteLimit` 字节以优先保留近期事件；起点落在行中时丢弃
+    /// 到第一个换行符，从下一完整行开始解析。单行超限会被丢弃至下一个换行符。
+    /// pending、单文件读取量和整个扫描读取量都有明确硬上限。handler 返回 false
+    /// 时立刻停止，供任务取消快速退出。seek/读取失败给出明确诊断并返回 0，而不是
+    /// 静默退化为从文件头读取（那样会保留最旧事件，与“保留近期事件”语义相反）。
     @discardableResult
     private nonisolated static func enumerateUTF8Lines(
         in fileURL: URL,
@@ -742,17 +759,42 @@ extension CodexFetcher {
         readChunkBytes: Int,
         handler: (String) -> Bool
     ) -> Int {
-        guard let handle = try? FileHandle(forReadingFrom: fileURL) else { return 0 }
+        guard let handle = try? FileHandle(forReadingFrom: fileURL) else {
+            logWarn("[codex/local] 打开 session 文件失败，跳过: \(fileURL.lastPathComponent)")
+            return 0
+        }
         defer { try? handle.close() }
 
-        let safeFileSize = max(fileSize, 0)
-        let safeByteLimit = max(min(byteLimit, safeFileSize), 0)
+        // 以 handle 实测的文件长度为准，处理 snapshot 之后文件增长或截断；
+        // 不得直接信任调用方传入的 fileSize。
+        let actualEndOffset: UInt64
+        if let end = try? handle.seekToEnd() {
+            actualEndOffset = end
+        } else {
+            logWarn("[codex/local] 无法确定 session 文件长度，跳过: \(fileURL.lastPathComponent)")
+            return 0
+        }
+        let actualLength = Int(actualEndOffset)
+        let safeByteLimit = max(min(byteLimit, actualLength), 0)
         guard safeByteLimit > 0 else { return 0 }
+
+        // 字节预算只覆盖文件尾部。startOffset == 0 时第一行完整，不得丢弃首行；
+        // startOffset > 0 时 seek 到起点并丢弃到第一个换行符。
+        // 注意：上面 seekToEnd() 把文件指针移到了末尾，因此即使 startOffset == 0
+        // 也必须显式 seek 回起点，否则后续 read 立刻 EOF。
+        let startOffset = actualLength - safeByteLimit
+        do {
+            try handle.seek(toOffset: UInt64(startOffset))
+        } catch {
+            logWarn("[codex/local] seek 到文件尾部失败，跳过: \(fileURL.lastPathComponent)")
+            return 0
+        }
+        var discardingInitialPartialLine = startOffset > 0
+        _ = fileSize  // 保留参数以稳定签名，实际限额以 handle 实测长度为准
 
         var pending = Data()
         pending.reserveCapacity(min(maxLineBytes, readChunkBytes))
         var discardingOversizedLine = false
-        var discardingInitialPartialLine = false
 
         var bytesRead = 0
         while !Task.isCancelled, bytesRead < safeByteLimit {
@@ -767,6 +809,7 @@ extension CodexFetcher {
             while let newline = chunk[segmentStart...].firstIndex(of: 0x0A) {
                 let segment = chunk[segmentStart..<newline]
                 if discardingInitialPartialLine {
+                    // 起点落在某行中间，丢弃首段残行；下一个换行符之后恢复解析。
                     discardingInitialPartialLine = false
                 } else if discardingOversizedLine {
                     // 已丢弃此前的超限前缀；换行符结束该坏行，下一段恢复解析。

@@ -131,6 +131,14 @@ if [ ! -f "$BINARY_PATH" ]; then
 fi
 echo "    Binary: $BINARY_PATH"
 
+# Q7: universal build 架构门禁——缺任一架构立即失败，避免静默产出单架构二进制。
+ARCHS=$(lipo -archs "$BINARY_PATH" 2>/dev/null || true)
+echo "    Architectures: ${ARCHS:-<unknown>}"
+if ! echo "$ARCHS" | grep -qw arm64 || ! echo "$ARCHS" | grep -qw x86_64; then
+    echo "ERROR: release 二进制必须同时包含 arm64 和 x86_64，实际: '${ARCHS:-<none>}'" >&2
+    exit 1
+fi
+
 # ── 2. 创建 .app bundle 结构 ──────────────────────────────────────
 echo "==> [2/4] Creating .app bundle"
 APP="$BUILD_DIR/$APP_NAME.app"

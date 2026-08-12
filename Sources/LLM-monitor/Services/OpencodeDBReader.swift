@@ -59,6 +59,9 @@ final class OpencodeDBReader {
 
     /// per-provider × per-day token 聚合。
     /// `json_extract` 在路径缺失时返回 NULL；`SUM` 忽略 NULL，全 NULL 时返回 NULL → 按 0 计。
+    ///
+    /// R9: 每个 token 字段在 SUM 前先做 `MAX(COALESCE(value,0),0)`，单行负值不能抵消
+    /// 其他行的合法正值；读取层再做非负饱和。
     private func queryPerDay(calendar: Calendar) throws -> [String: [Date: OpencodeDailyUsage]] {
         let sql = """
         SELECT
@@ -66,11 +69,11 @@ final class OpencodeDBReader {
           strftime('%Y-%m-%d', time_created/1000,'unixepoch','localtime') AS day,
           COUNT(*) AS rounds,
           COUNT(DISTINCT COALESCE(json_extract(data,'$.parentID'), id)) AS turns,
-          SUM(json_extract(data,'$.tokens.input')) AS tin,
-          SUM(json_extract(data,'$.tokens.output')) AS tout,
-          SUM(json_extract(data,'$.tokens.reasoning')) AS trsn,
-          SUM(json_extract(data,'$.tokens.cache.read')) AS tcr,
-          SUM(json_extract(data,'$.tokens.cache.write')) AS tcw
+          SUM(MAX(COALESCE(json_extract(data,'$.tokens.input'), 0), 0)) AS tin,
+          SUM(MAX(COALESCE(json_extract(data,'$.tokens.output'), 0), 0)) AS tout,
+          SUM(MAX(COALESCE(json_extract(data,'$.tokens.reasoning'), 0), 0)) AS trsn,
+          SUM(MAX(COALESCE(json_extract(data,'$.tokens.cache.read'), 0), 0)) AS tcr,
+          SUM(MAX(COALESCE(json_extract(data,'$.tokens.cache.write'), 0), 0)) AS tcw
         FROM message
         WHERE json_extract(data,'$.role')='assistant'
           AND json_extract(data,'$.tokens') IS NOT NULL
@@ -98,16 +101,21 @@ final class OpencodeDBReader {
         }
         for (provider, dayKey, rounds, turns, tin, tout, trsn, tcr, tcw) in rows {
             guard let dayStart = Self.parseDayKey(dayKey, calendar: calendar) else { continue }
+            let inNN = Self.nnClamp(tin)
+            let outNN = Self.nnClamp(tout)
+            let crNN = Self.nnClamp(tcr)
+            let cwNN = Self.nnClamp(tcw)
+            let rsnNN = Self.nnClamp(trsn)
             let usage = OpencodeDailyUsage(
                 dayStart: dayStart,
-                inputTokens: Int(clamping: tin),
-                outputTokens: Int(clamping: tout),
-                cacheReadTokens: Int(clamping: tcr),
-                cacheWriteTokens: Int(clamping: tcw),
-                reasoningTokens: Int(clamping: trsn),
-                totalTokens: Int(clamping: SaturatingArithmetic.sum(tin, tout, trsn, tcr)),
-                turns: Int(clamping: turns),
-                rounds: Int(clamping: rounds)
+                inputTokens: inNN,
+                outputTokens: outNN,
+                cacheReadTokens: crNN,
+                cacheWriteTokens: cwNN,
+                reasoningTokens: rsnNN,
+                totalTokens: SaturatingArithmetic.sum(inNN, outNN, rsnNN, crNN),
+                turns: max(0, Int(clamping: turns)),
+                rounds: max(0, Int(clamping: rounds))
             )
             var byDay = out[provider] ?? [:]
             if let existing = byDay[dayStart] {
@@ -210,18 +218,28 @@ final class OpencodeDBReader {
         var samplesByProvider: [String: [LocalTokenUsageSample]] = [:]
         for (messageID, sessionID, timestamp, provider, parent, model, input, output, reasoning, cacheRead) in rows {
             let promptComponent = parent ?? "event-\(messageID)"
+            // R9: 读取层非负饱和；input = nn(input) + nn(cacheRead)。
+            let inNN = Self.nnClamp(input)
+            let crNN = Self.nnClamp(cacheRead)
             let sample = LocalTokenUsageSample(
                 completedAt: Date(timeIntervalSince1970: Double(timestamp) / 1000),
                 modelName: model,
                 promptID: "\(sessionID):\(promptComponent)",
-                inputTokens: SaturatingArithmetic.add(Int(clamping: input), Int(clamping: cacheRead)),
-                cachedInputTokens: Int(clamping: cacheRead),
-                outputTokens: Int(clamping: output),
-                reasoningOutputTokens: Int(clamping: reasoning)
+                inputTokens: SaturatingArithmetic.add(inNN, crNN),
+                cachedInputTokens: crNN,
+                outputTokens: Self.nnClamp(output),
+                reasoningOutputTokens: Self.nnClamp(reasoning)
             )
             samplesByProvider[provider, default: []].append(sample)
         }
         return samplesByProvider
+    }
+
+    /// R9: Int64? → 非负 Int 饱和（NULL 当 0，负值当 0，超出 Int 范围封顶）。
+    @inline(__always)
+    private static func nnClamp(_ x: Int64?) -> Int {
+        let v = Int(clamping: x ?? 0)
+        return v < 0 ? 0 : v
     }
 
     /// per-provider 见过的 modelID（去重）。
