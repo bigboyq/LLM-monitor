@@ -686,9 +686,12 @@ These are documented product boundaries:
 - The menu bar label is fixed (`chart.bar.fill`) and does not reflect health.
 - Local usage scanners restore their last-good `index.json` snapshot on cold start; the
   remote quota refresh timestamp is persisted separately in `last-refresh.json`.
-- `MenuContentView` caps total menu height at `floor(screen.visibleFrame.height × 0.70)`
-  of the window's own screen (read via an AppKit bridge, not `NSScreen.main`); header and
-  footer stay fixed while the provider list scrolls.
+- `MenuContentView` sizes to its content (window = header + cards + footer) so all cards
+  show when they fit; an AppKit bridge sets `window.contentMaxSize` =
+  `floor(window.screen.visibleFrame.height × 0.70)` so the menu never exceeds 70% of its
+  own screen (read via the window's `screen`, not `NSScreen.main`); when content is taller
+  the menu caps at that 70% and the provider list scrolls while header/footer stay fixed.
+  Updates on screen change / Dock move via `didChangeScreenNotification`.
 - The 4 daily usage types (`AntigravityDailyUsage` / `MinimaxDailyUsage` /
   `DailyTokenUsage` / `OpencodeDailyUsage`) have overlapping but non-identical fields.
   They conform to a common `LocalUsageDaily` protocol so view code is shared, but the
