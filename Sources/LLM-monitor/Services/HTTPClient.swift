@@ -51,14 +51,9 @@ final class CappedDownloadDelegate: NSObject, URLSessionDataDelegate, @unchecked
         }
     }
 
-    func urlSession(
-        _ session: URLSession,
-        dataTask: URLSessionDataTask,
-        willCacheResponse proposedResponse: CachedURLResponse
-    ) -> CachedURLResponse? {
-        // 不缓存：quota 响应一次性消费，缓存无意义且占磁盘。
-        nil
-    }
+    // 注：不重写 willCacheResponse。当前 SDK 把该可选 requirement 声明为 async，
+    // 同步实现只会“几乎匹配”并触发 warning，且实际不会被调用。R2 的字节计数上限
+    // 完全由 didReceive response / didReceive data 保证，不依赖缓存控制。
 }
 
 enum CappedDownloader {
