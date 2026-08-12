@@ -19,7 +19,6 @@ struct MenuContentView: View {
             footerBar
         }
         .frame(width: 360)
-        .frame(maxHeight: maxPanelHeight.isFinite ? maxPanelHeight : nil)
         .background {
             MenuPanelSurface()
         }
@@ -30,6 +29,10 @@ struct MenuContentView: View {
                 maxPanelHeight = newHeight
             }
         })
+        // 纵向 fixedSize 让 MenuBarExtra(.window) 按内容决定窗口高度；
+        // 高度上限改施加在 ScrollView（content）上，而不是整个面板，
+        // 否则 ScrollView 在无界容器里会坍缩为 0，导致所有卡片不可见。
+        .fixedSize(horizontal: false, vertical: true)
         .onAppear {
             let needsFetch = state.statuses.contains { s in
                 if case .ready = s.state { return true }
@@ -137,7 +140,20 @@ struct MenuContentView: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
             }
+            // F4: 高度上限施加给 ScrollView（扣除 header/footer 预算）。
+            // bridge 报告前为 .infinity（不约束）；报告后把面板 70% 预算减去
+            // header/footer（约 80pt）给可滚动区，保留至少 240pt 让卡片始终可见。
+            .frame(maxHeight: maxScrollViewHeight)
         }
+    }
+
+    /// header/footer 的固定高度预算（padding + 内容），用于从面板高度上限中扣除。
+    private static let headerFooterBudget: CGFloat = 80
+
+    /// ScrollView 的最大高度：面板上限减去 header/footer 预算，地板 240pt，
+    /// 上限未确定（.infinity）时不约束。
+    private var maxScrollViewHeight: CGFloat? {
+        maxPanelHeight.isFinite ? max(maxPanelHeight - Self.headerFooterBudget, 240) : nil
     }
 
     /// Four registered cards can all be `.notConfigured` on first launch because
