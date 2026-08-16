@@ -314,6 +314,56 @@ final class ProviderModelTests: XCTestCase {
         ))
     }
 
+    func testClientBindingsEncodeDecodeRoundTrip() throws {
+        // 把 schema v2 config 编码回 JSON 再解码，必须保持 clientBindings 不丢失。
+        // 覆盖 setClientBindingEnabled 的两条路径：
+        // 1) 更新已有 binding（openCode + deepseek 改为 enabled = true）；
+        // 2) 新增 binding（minimax + codex 这对在 default 中存在；
+        //    改 antigravity binding 走更新路径以验证重复 binding 不重复写入）。
+        var config = AppConfig.default
+        config.setClientBindingEnabled(
+            clientID: ClientID.openCode,
+            quotaProviderID: QuotaProviderID.deepseek,
+            enabled: true
+        )
+        config.setClientBindingEnabled(
+            clientID: ClientID.openCode,
+            quotaProviderID: QuotaProviderID.zhipu,
+            enabled: false
+        )
+
+        let encoded = try JSONEncoder().encode(config)
+        let roundTripped = try JSONDecoder().decode(AppConfig.self, from: encoded)
+
+        XCTAssertEqual(roundTripped.clientBindings.count, config.clientBindings.count,
+                       "clientBindings encode/decode 必须保持原有数量，重复 set 不能添加副本")
+        XCTAssertTrue(roundTripped.isClientBindingEnabled(
+            clientID: ClientID.openCode,
+            quotaProviderID: QuotaProviderID.deepseek
+        ))
+        XCTAssertFalse(roundTripped.isClientBindingEnabled(
+            clientID: ClientID.openCode,
+            quotaProviderID: QuotaProviderID.zhipu
+        ))
+    }
+
+    func testSetClientBindingEnabledAppendsForUnknownPair() throws {
+        // 给一个 default 中不存在的 (clientID, quotaProviderID) 对调用
+        // setClientBindingEnabled 必须 append 一个新 binding，而不是静默失败。
+        var config = AppConfig.default
+        let before = config.clientBindings.count
+        config.setClientBindingEnabled(
+            clientID: ClientID.dsh,
+            quotaProviderID: QuotaProviderID.deepseek,
+            enabled: true
+        )
+        XCTAssertEqual(config.clientBindings.count, before + 1)
+        XCTAssertTrue(config.isClientBindingEnabled(
+            clientID: ClientID.dsh,
+            quotaProviderID: QuotaProviderID.deepseek
+        ))
+    }
+
     // MARK: - QuotaInfo: accountEmail
 
     func testQuotaInfoAccountEmailRoundTrip() throws {

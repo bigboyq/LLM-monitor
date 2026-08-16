@@ -115,16 +115,13 @@ final class AppState: ObservableObject {
 
     /// dsh 本地 session token 用量 scanner。dsh 不是菜单栏 provider；它会扫描
     /// `$DSH_HOME/sessions`（默认 `~/.dsh/sessions`），按 session 中记录的 provider
-    /// 分片，并在设置页提供诊断视图。
+    /// 分片，结果通过 `usageProjection` 自动并入 MiniMax / GLM / DeepSeek 三张卡。
+    /// dsh 自身不暴露 scanning 状态（没有 UI 消费者），所以不传 `setScanning`。
     private lazy var dshUsageCoordinator = LocalUsageCoordinator<DshLocalUsage>(
         providerID: "dsh",
         logTag: "dsh",
         makeScanner: { DshLocalUsageScanner() },
-        apply: { [weak self] usage in self?.applyDshUsage(usage) },
-        setScanning: { [weak self] isScanning in
-            guard let self else { return }
-            self.dshIsScanning = isScanning
-        }
+        apply: { [weak self] usage in self?.applyDshUsage(usage) }
     )
 
     /// 统一的 statuses 广播通道。
@@ -140,20 +137,6 @@ final class AppState: ObservableObject {
     ///
     /// payload 是 `Void`（不需要把值传出去；view 只需要知道"变了"）。
     let statusDidChange = PassthroughSubject<Void, Never>()
-
-    /// dsh 共享 session 用量是否正在扫描。
-    @Published private(set) var dshIsScanning: Bool = false
-
-    /// 最近一次 dsh 共享 session 用量快照。
-    var dshUsageSnapshot: DshLocalUsage? {
-        statuses.lazy.compactMap(\.dshUsage).first
-    }
-
-    /// 最近一次 opencode 共享用量快照，供设置页诊断展示。
-    /// 快照挂在各个 consumer status 上；这里统一提供一个只读入口。
-    var opencodeUsageSnapshot: OpencodeLocalUsage? {
-        statuses.lazy.compactMap(\.opencodeUsage).first
-    }
 
     /// 综合所有已启用 Provider 计算的全局系统健康度等级。
     /// - 若没有启用的 provider，返回 nil。

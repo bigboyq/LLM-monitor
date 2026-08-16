@@ -30,7 +30,7 @@ final class LocalUsageCoordinator<Usage: Equatable> {
     private let logTag: String
     private let makeScanner: () -> any LocalUsageScanner<Usage>
     private let apply: Apply
-    private let setScanning: SetScanning
+    private let setScanning: SetScanning?
 
     private var scanner: (any LocalUsageScanner<Usage>)?
     private var cancellables = Set<AnyCancellable>()
@@ -40,13 +40,15 @@ final class LocalUsageCoordinator<Usage: Equatable> {
     ///   - logTag: 同上，单独传避免耦合 providerID
     ///   - makeScanner: 构造 scanner 的闭包，只在首次 trigger 调用时执行
     ///   - apply: scanner 拿到新结果时调用（接收方：通常写到 ProviderStatus 对应字段 + broadcast）
-    ///   - setScanning: scanner 切换 isScanning 时调用（接收方：通常更新 isScanningLocalUsage 字段）
+    ///   - setScanning: scanner 切换 isScanning 时调用（接收方：通常更新 isScanningLocalUsage 字段）。
+    ///     可选 —— 不传时不订阅 isScanningPublisher，scanner 内部的状态对外不可见，
+    ///     适用于"扫描状态只在 scanner 内部消费"或"暂时无 UI 消费者"的场景。
     init(
         providerID: String,
         logTag: String,
         makeScanner: @escaping () -> any LocalUsageScanner<Usage>,
         apply: @escaping Apply,
-        setScanning: @escaping SetScanning
+        setScanning: SetScanning? = nil
     ) {
         self.providerID = providerID
         self.logTag = logTag
@@ -87,12 +89,14 @@ final class LocalUsageCoordinator<Usage: Equatable> {
             }
             .store(in: &cancellables)
 
-        s.isScanningPublisher
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] isScanning in
-                self?.setScanning(isScanning)
-            }
-            .store(in: &cancellables)
+        if let setScanning {
+            s.isScanningPublisher
+                .receive(on: DispatchQueue.main)
+                .sink { isScanning in
+                    setScanning(isScanning)
+                }
+                .store(in: &cancellables)
+        }
     }
 }
 
