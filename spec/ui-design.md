@@ -27,7 +27,7 @@ Icon Styles (`statusBarIconStyle`):
 - `brain` (`brain.head.profile`)
 - `cpu` (`cpu.fill`)
 
-The base icon keeps the standard macOS foreground appearance. A 4 pt status dot is
+The base icon keeps the standard macOS foreground appearance. A 6 pt status dot is
 drawn at the lower-right when `statusBarHealthDotEnabled` is enabled (the default): green
 for healthy, orange for warning, and red for critical. The legacy
 `statusBarIndicatorMode` configuration field is still decoded for compatibility but no
@@ -39,9 +39,9 @@ Health State Mapping:
 | Health / State | Main Icon | Status Dot |
 |---|---|---|
 | Refreshing | `arrow.triangle.2.circlepath` | None |
-| Healthy (`.healthy`) | Configured theme icon | Green, 4 pt |
-| Warning (`.warning`) | Configured theme icon | Orange, 4 pt |
-| Critical (`.critical`) | Configured theme icon | Red, 4 pt |
+| Healthy (`.healthy`) | Configured theme icon | Green, 6 pt |
+| Warning (`.warning`) | Configured theme icon | Orange, 6 pt |
+| Critical (`.critical`) | Configured theme icon | Red, 6 pt |
 | Unconfigured (`nil`) | Configured theme icon | None |
 
 ## Window Structure
