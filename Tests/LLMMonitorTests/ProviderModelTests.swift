@@ -158,13 +158,54 @@ final class ProviderModelTests: XCTestCase {
         let deepseekPro = ModelPricingCatalog.pricing(
             for: "deepseek-v4-pro", quotaProviderID: QuotaProviderID.deepseek
         )
-        XCTAssertEqual(deepseekFlash?.inputPerMillion, 0.14)
-        XCTAssertEqual(deepseekFlash?.cacheReadPerMillion, 0.0028)
-        XCTAssertEqual(deepseekFlash?.outputPerMillion, 0.28)
-        XCTAssertEqual(deepseekPro?.inputPerMillion, 0.435)
-        XCTAssertEqual(deepseekPro?.cacheReadPerMillion, 0.003625)
-        XCTAssertEqual(deepseekPro?.outputPerMillion, 0.87)
+        XCTAssertEqual(deepseekFlash?.currency, .cny)
+        XCTAssertEqual(deepseekFlash?.inputPerMillion, 1.5)
+        XCTAssertEqual(deepseekFlash?.cacheReadPerMillion, 0.05)
+        XCTAssertEqual(deepseekFlash?.outputPerMillion, 4.5)
+        XCTAssertEqual(deepseekPro?.currency, .cny)
+        XCTAssertEqual(deepseekPro?.inputPerMillion, 4.5)
+        XCTAssertEqual(deepseekPro?.cacheReadPerMillion, 0.15)
+        XCTAssertEqual(deepseekPro?.outputPerMillion, 13.5)
         XCTAssertEqual(ModelPricingCatalog.lastUpdated, "2026-08-17")
+    }
+
+    func testDeepseekPricingUsesOffPeakBaseAndDoublesAtPeak() {
+        let calendar = DeepseekPeakWindow.beijingCalendar
+        let day = calendar.date(from: DateComponents(year: 2026, month: 8, day: 5, hour: 10))!
+        let peak = day
+        let offPeak = day.addingTimeInterval(3 * 60 * 60)
+        let sample = LocalTokenUsageSample(
+            completedAt: peak,
+            modelName: "deepseek-v4-flash",
+            promptID: "p1",
+            inputTokens: 1_000_000,
+            cachedInputTokens: 200_000,
+            outputTokens: 100_000,
+            reasoningOutputTokens: 0
+        )
+
+        let peakEstimate = ModelPricingCatalog.estimate(
+            samples: [sample],
+            quotaProviderID: QuotaProviderID.deepseek,
+            deepseekPeakWindow: .defaultWindow
+        )
+        XCTAssertEqual(peakEstimate.value ?? -1, 3.32, accuracy: 0.000001)
+
+        let offPeakSample = LocalTokenUsageSample(
+            completedAt: offPeak,
+            modelName: "deepseek-v4-flash",
+            promptID: "p2",
+            inputTokens: 1_000_000,
+            cachedInputTokens: 200_000,
+            outputTokens: 100_000,
+            reasoningOutputTokens: 0
+        )
+        let offPeakEstimate = ModelPricingCatalog.estimate(
+            samples: [offPeakSample],
+            quotaProviderID: QuotaProviderID.deepseek,
+            deepseekPeakWindow: .defaultWindow
+        )
+        XCTAssertEqual(offPeakEstimate.value ?? -1, 1.66, accuracy: 0.000001)
     }
 
     func testClientRegistrySeparatesMultiProviderClientsFromQuotaProviders() {

@@ -324,6 +324,7 @@ struct LocalUsageFooterView<Daily: LocalUsageDaily>: View {
     let dailyTokenUsage: [Daily]
     let recentSamples: [LocalTokenUsageSample]
     let quotaProviderID: String
+    let deepseekPeakWindow: DeepseekPeakWindow
     let scannedAt: Date?
     let isScanning: Bool
     let isReady: Bool
@@ -335,6 +336,7 @@ struct LocalUsageFooterView<Daily: LocalUsageDaily>: View {
         dailyTokenUsage: [Daily],
         recentSamples: [LocalTokenUsageSample] = [],
         quotaProviderID: String = "",
+        deepseekPeakWindow: DeepseekPeakWindow = .defaultWindow,
         scannedAt: Date?,
         isScanning: Bool,
         isReady: Bool,
@@ -343,6 +345,7 @@ struct LocalUsageFooterView<Daily: LocalUsageDaily>: View {
         self.dailyTokenUsage = dailyTokenUsage
         self.recentSamples = recentSamples
         self.quotaProviderID = quotaProviderID
+        self.deepseekPeakWindow = deepseekPeakWindow
         self.scannedAt = scannedAt
         self.isScanning = isScanning
         self.isReady = isReady
@@ -369,7 +372,8 @@ struct LocalUsageFooterView<Daily: LocalUsageDaily>: View {
     private var todayCostText: String {
         let estimate = ModelPricingCatalog.estimate(
             samples: todaySamples,
-            quotaProviderID: quotaProviderID
+            quotaProviderID: quotaProviderID,
+            deepseekPeakWindow: deepseekPeakWindow
         )
         guard !todaySamples.isEmpty else { return "—" }
         guard let value = estimate.value, let currency = estimate.currency else {

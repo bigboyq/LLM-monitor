@@ -275,7 +275,8 @@ enum ModelPricingCatalog {
 
     static func estimate(
         samples: [LocalTokenUsageSample],
-        quotaProviderID: String
+        quotaProviderID: String,
+        deepseekPeakWindow: DeepseekPeakWindow = .defaultWindow
     ) -> ModelCostEstimate {
         var value = 0.0
         var currency: ModelPriceCurrency?
@@ -306,9 +307,14 @@ enum ModelPricingCatalog {
                 max(0, sample.outputTokens),
                 max(0, sample.reasoningOutputTokens)
             )
-            value += Double(uncached) * pricing.inputPerMillion / 1_000_000
-            value += Double(cached) * pricing.cacheReadPerMillion / 1_000_000
-            value += Double(output) * pricing.outputPerMillion / 1_000_000
+            let multiplier = pricingMultiplier(
+                quotaProviderID: quotaProviderID,
+                at: sample.completedAt,
+                deepseekPeakWindow: deepseekPeakWindow
+            )
+            value += Double(uncached) * pricing.inputPerMillion * multiplier / 1_000_000
+            value += Double(cached) * pricing.cacheReadPerMillion * multiplier / 1_000_000
+            value += Double(output) * pricing.outputPerMillion * multiplier / 1_000_000
         }
 
         return ModelCostEstimate(
@@ -322,14 +328,32 @@ enum ModelPricingCatalog {
     static func estimateByDay(
         samples: [LocalTokenUsageSample],
         quotaProviderID: String,
-        calendar: Calendar = .current
+        calendar: Calendar = .current,
+        deepseekPeakWindow: DeepseekPeakWindow = .defaultWindow
     ) -> [Date: ModelCostEstimate] {
         let grouped = Dictionary(grouping: samples) {
             calendar.startOfDay(for: $0.completedAt)
         }
         return grouped.mapValues {
-            estimate(samples: $0, quotaProviderID: quotaProviderID)
+            estimate(
+                samples: $0,
+                quotaProviderID: quotaProviderID,
+                deepseekPeakWindow: deepseekPeakWindow
+            )
         }
+    }
+
+    /// 用户给定的是非高峰价；现有 DeepSeek 高峰窗口规则规定高峰统一乘 2。
+    private static func pricingMultiplier(
+        quotaProviderID: String,
+        at date: Date,
+        deepseekPeakWindow: DeepseekPeakWindow
+    ) -> Double {
+        guard quotaProviderID == QuotaProviderID.deepseek else { return 1 }
+        if case .peak = deepseekPeakWindow.status(at: date) {
+            return 2
+        }
+        return 1
     }
 
     static func pricing(
@@ -422,19 +446,16 @@ enum ModelPricingCatalog {
             }
 
         case QuotaProviderID.deepseek:
-            // Snapshot requested for 2026-08-17: Flash $0.14/$0.0028/$0.28,
-            // Pro $0.435/$0.003625/$0.87 per million input/cache/output.
-            if model.contains("deepseek") && model.contains("flash") {
-                return ModelTokenPricing(modelLabel: modelName ?? "DeepSeek Flash", currency: .usd, inputPerMillion: 0.14, cacheReadPerMillion: 0.0028, outputPerMillion: 0.28)
+            // User-specified 2026-08-17 RMB off-peak prices. High-peak samples
+            // are multiplied by 2 in pricingMultiplier above.
+            if model.contains("deepseek-v4-flash")
+                || model.contains("deepseek-chat")
+                || model.contains("deepseek-reasoner")
+                || (model.contains("deepseek") && model.contains("flash")) {
+                return ModelTokenPricing(modelLabel: modelName ?? "DeepSeek Flash", currency: .cny, inputPerMillion: 1.5, cacheReadPerMillion: 0.05, outputPerMillion: 4.5)
             }
-            if model.contains("deepseek") && model.contains("pro") {
-                return ModelTokenPricing(modelLabel: modelName ?? "DeepSeek Pro", currency: .usd, inputPerMillion: 0.435, cacheReadPerMillion: 0.003625, outputPerMillion: 0.87)
-            }
-            if model.contains("deepseek-reasoner") {
-                return ModelTokenPricing(modelLabel: modelName ?? "DeepSeek Reasoner", currency: .usd, inputPerMillion: 0.55, cacheReadPerMillion: 0.14, outputPerMillion: 2.19)
-            }
-            if model.contains("deepseek-chat") {
-                return ModelTokenPricing(modelLabel: modelName ?? "DeepSeek Chat", currency: .usd, inputPerMillion: 0.27, cacheReadPerMillion: 0.07, outputPerMillion: 1.1)
+            if model.contains("deepseek-v4-pro") || (model.contains("deepseek") && model.contains("pro")) {
+                return ModelTokenPricing(modelLabel: modelName ?? "DeepSeek Pro", currency: .cny, inputPerMillion: 4.5, cacheReadPerMillion: 0.15, outputPerMillion: 13.5)
             }
 
         default:
@@ -453,8 +474,27 @@ struct ClientProviderUsageSummary: Identifiable, Equatable, Sendable {
     let dailyTokenUsage: [UnifiedDailyTokenUsage]
     let recentSamples: [LocalTokenUsageSample]
     let scannedAt: Date?
+    let deepseekPeakWindow: DeepseekPeakWindow
 
     var id: String { "\(clientID):\(quotaProviderID)" }
+
+    init(
+        clientID: String,
+        quotaProviderID: String,
+        providerName: String,
+        dailyTokenUsage: [UnifiedDailyTokenUsage],
+        recentSamples: [LocalTokenUsageSample],
+        scannedAt: Date?,
+        deepseekPeakWindow: DeepseekPeakWindow = .defaultWindow
+    ) {
+        self.clientID = clientID
+        self.quotaProviderID = quotaProviderID
+        self.providerName = providerName
+        self.dailyTokenUsage = dailyTokenUsage
+        self.recentSamples = recentSamples
+        self.scannedAt = scannedAt
+        self.deepseekPeakWindow = deepseekPeakWindow
+    }
 
     var totalTokens: Int {
         SaturatingArithmetic.sum(dailyTokenUsage.lazy.map(\.totalTokens))
@@ -488,14 +528,16 @@ struct ClientProviderUsageSummary: Identifiable, Equatable, Sendable {
         let samples = samplesInDisplayedWindow
         return ModelPricingCatalog.estimate(
             samples: samples,
-            quotaProviderID: quotaProviderID
+            quotaProviderID: quotaProviderID,
+            deepseekPeakWindow: deepseekPeakWindow
         )
     }
 
     var priceTextByDay: [Date: String] {
         let estimates = ModelPricingCatalog.estimateByDay(
             samples: samplesInDisplayedWindow,
-            quotaProviderID: quotaProviderID
+            quotaProviderID: quotaProviderID,
+            deepseekPeakWindow: deepseekPeakWindow
         )
         return Dictionary(uniqueKeysWithValues: dailyTokenUsage.map { day in
             let text: String

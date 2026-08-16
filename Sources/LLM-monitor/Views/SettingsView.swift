@@ -528,7 +528,8 @@ struct SettingsView: View {
                         providerName: status.displayName,
                         dailyTokenUsage: contribution.dailyTokenUsage,
                         recentSamples: contribution.recentSamples,
-                        scannedAt: contribution.scannedAt
+                        scannedAt: contribution.scannedAt,
+                        deepseekPeakWindow: status.deepseekPeakWindow ?? .defaultWindow
                     )
                 )
             }

@@ -239,6 +239,7 @@ struct ProviderCardView: View {
             dailyTokenUsage: projection.dailyTokenUsage,
             recentSamples: projection.recentSamples,
             quotaProviderID: status.kind.quotaProviderID,
+            deepseekPeakWindow: status.deepseekPeakWindow ?? .defaultWindow,
             scannedAt: projection.scannedAt,
             isReady: projection.hasActivity
                 && (status.kind != .codexChatGpt || projection.dailyTokenUsage.count == 7),
@@ -261,6 +262,7 @@ struct ProviderCardView: View {
         dailyTokenUsage: [Daily],
         recentSamples: [LocalTokenUsageSample],
         quotaProviderID: String,
+        deepseekPeakWindow: DeepseekPeakWindow,
         scannedAt: Date?,
         isReady: Bool,
         emptyHint: String
@@ -269,6 +271,7 @@ struct ProviderCardView: View {
             dailyTokenUsage: dailyTokenUsage,
             recentSamples: recentSamples,
             quotaProviderID: quotaProviderID,
+            deepseekPeakWindow: deepseekPeakWindow,
             scannedAt: scannedAt,
             isScanning: status.isScanningLocalUsage,
             isReady: isReady,
