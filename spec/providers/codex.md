@@ -231,6 +231,15 @@ provider exists, and the scheduler's **periodic full**. The scheduler inserts on
 every `periodicFullEveryN` (default 20) `.background` cycles, so at the default 300 s interval
 reset credits auto-refreshes roughly every `20 × 300 s ≈ 100 min` without any manual action.
 `.background` cycles intentionally skip the reset-credits request.
+**Why N=20 (not a separate timer)**: Codex reset credits are day-level events — they
+don't change every refresh, so a dedicated full-fetch timer that fires on its own schedule
+would be wasted work. Instead, the scheduler piggybacks on the existing background
+cycle and counts up; every Nth iteration is upgraded to `.full`. N=1 would mean "every
+cycle is full" (heavy given how rarely reset credits change). N=60/100 would push the
+full gap to hours-to-half-a-day — by the time the user notices a stale reset credit
+and clicks refresh, several background cycles have already been wasted on fetches that
+never bothered to look. N=20 at the default 300 s interval lands at ~100 min, which is
+"often enough to feel live, rarely enough to stay cheap".
 
 Reset credits carries its own freshness metadata (`fetchedAt` / `lastAttemptFailed`), separate
 from the main `QuotaInfo.fetchedAt`:
