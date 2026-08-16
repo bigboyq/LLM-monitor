@@ -437,7 +437,12 @@ struct ResetCreditsInfo: Equatable, Codable, Sendable {
 
     /// R3: 是否应对外显示"可能过期"。
     /// - `lastAttemptFailed` 立即判定过期；
-    /// - 否则当数据年龄超过 `max(3 × 刷新间隔, 15 分钟)` 时也判定过期；
+    /// - 否则当数据年龄超过 `max(3 × refreshIntervalSeconds, 15 分钟)` 时也判定过期。
+    ///   调用方在传入前应已按 R3 的 `periodicFullEveryN`（默认 20）把
+    ///   `refreshIntervalSeconds` 放大为 `N × 刷新间隔`——reset credits 只在
+    ///   full 抓取里返回，单纯 3× 刷新间隔会远小于一次 full 抓取的实际间隔，
+    ///   导致连续 background 后被误判为过期。默认参数下 (300s × 20 × 3 = 5h)
+    ///   才是「到下一次自动 full 之前仍然可信」的真正阈值；
     /// - 没有 `fetchedAt`（旧数据）时不按年龄判定。
     func isStale(now: Date, refreshIntervalSeconds: TimeInterval) -> Bool {
         if lastAttemptFailed { return true }
