@@ -32,9 +32,18 @@ cache bucket. The displayed total is `input + cache.read + output + reasoning`;
 
 ## Provider mapping and switches
 
-Each provider has an independent `ProviderConfig.mergeOpencodeUsage` switch. The
-switch is exposed in that provider's Settings pane and is persisted in
-`config.json`.
+Each provider has an independent `ProviderConfig.mergeOpencodeUsage` switch persisted
+in `config.json`. Defaults are encoded in `ProviderConfig.shouldMergeOpencodeUsage(for:)`:
+GLM defaults to `true` (it has shipped with OpenCode merge since 1.3.0); the others default
+to `false`. The schema v2 `clientBindings[]` array mirrors the same values and is the new
+canonical source — both fields stay synchronized when `SettingsView.saveAndApply()` writes
+back.
+
+The settings UI no longer exposes per-provider OpenCode toggles. OpenCode merge is treated
+as the default data plumbing for every supported provider, matching how the DSH harness
+is wired: any compatible local ledger contributes automatically once it is installed and
+its session data is discoverable. Users who want a non-default value edit `config.json`
+directly; future harness-aware UI will surface these bindings in the new client-tab model.
 
 | Card | OpenCode providerID | Missing-field default |
 |---|---|---|
@@ -43,11 +52,10 @@ switch is exposed in that provider's Settings pane and is persisted in
 | Antigravity | `antigravity`, `google-antigravity`, `google-vertex`, or `google` | `false` |
 | GLM Coding Plan | `zhipuai-coding-plan` | `true` |
 
-The `minimax` providerID is intentionally excluded from the Minimax card. It is
-treated as the redundant OpenCode local-capability ledger and remains visible only
-in the OpenCode diagnostic pane.
+The `minimax` providerID is intentionally excluded from the Minimax card; it is the
+redundant OpenCode local-capability ledger and never contributes to that quota card.
 
-When a switch is off, the card receives only its existing native/local data. When it
+When the switch is off, the card receives only its existing native/local data. When it
 is on, OpenCode values are added to the native values:
 
 - daily `input`, `cacheRead`, `cacheWrite`, `output`, `reasoning`, `rounds`, and `turns`;
@@ -110,6 +118,6 @@ provider 的刷新间隔即可——不需要也不存在 OpenCode 自己的独�
 | Field-level merge and format conversion | `Sources/LLM-monitor/Models/OpencodeUsageMerger.swift` |
 | SQLite reader | `Sources/LLM-monitor/Services/OpencodeDBReader.swift` |
 | Scanner, cache, and seven-day snapshot | `Sources/LLM-monitor/Services/OpencodeUsageScanner.swift` |
-| Settings switches | `Sources/LLM-monitor/Views/SettingsView.swift` |
+| Settings switches | `config.json` (`ProviderConfig.mergeOpencodeUsage` + `clientBindings[]`) |
 | Card integration | `Sources/LLM-monitor/Views/ProviderCardView.swift` and `QuotaViews.swift` |
 | Regression tests | `Tests/LLMMonitorTests/OpencodeUsageTests.swift`（含 Minimax / Codex / Antigravity merge 及 reader 回归） |

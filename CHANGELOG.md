@@ -4,6 +4,24 @@
 
 ## [Unreleased]
 
+### Added
+
+- 新增 DeepSeek Harness (dsh) 客户端用量监控：扫描 `~/.dsh/sessions` 中的 JSONL session 日志（zstd / Node 22+ zlib 双解压路径），按 `request/context` 中的 provider 自动合并到 MiniMax / GLM / DeepSeek 三张卡片。
+- 新增"设置 > 客户端"tab：按客户端维度（Antigravity / Codex / DSH / MiniMax Code / OpenCode / ZCode）展示本地 token 用量、最近 7 天柱图、缓存命中率与按公开 API 单价估算的价值。
+- 新增 `ModelPricingCatalog`：模型价目快照（MiniMax-M3 USD→CNY 换算、DeepSeek 高峰期 2× 倍率、DSH 独立 uncached-input / cache-read bucket 计价）；客户端 tab 标注目录更新日期 `lastUpdated`。
+- 客户端 tab 中未定价模型显式列出名称、token 数与调用次数，不再静默归零。
+
+### Changed
+
+- 重构客户端 ↔ quota provider 关系：引入 `ClientDescriptor` / `ClientProviderBinding`，把 provider-level `mergeOpencodeUsage` 字段抽象为 `clientBindings[]`；schema 升级到 v2，旧 v1 配置自动迁移。
+- Codex 本地账本从 `turn_context` 解析 model 名称，让 GPT-5.6 Sol / Terra / Luna 在公开价目中可被独立计价；新增 `recentSamples` 字段把逐次调用样本带入客户端 tab 的价值估算。
+- minimax v2 SQLite reader 增加 model 回退链：row-level `model` → session-level `record_json.effectiveModel` → ledger 唯一模型；多模型时不再猜测。
+
+### Fixed
+
+- 客户端 tab 当日聚合落后于样本时（DB 缓存尚未刷新），用最近样本补齐当日 token 数，避免 UI 显示陈旧的"今日 0"。
+- 移除客户端 tab 中 OpenCode 诊断页（功能已被 clientsPane 吸收，原始 spec 文档已同步更新）。
+
 ## [1.4.2] - 2026-08-12
 
 ### Added

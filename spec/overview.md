@@ -211,8 +211,8 @@ The app reads and writes this shape:
 | `providers.<id>.displayName` | provider | Optional UI label override. |
 | `providers.<id>.refreshIntervalSeconds` | provider | Optional provider-specific timer interval, with the same 10-second...30-day clamp. |
 | `providers.<id>.authPath` | provider | External-auth path used by Codex. Accepts either an `auth.json` file path or its parent directory. |
-| `clientBindings[]` | client → quota Provider | Explicitly controls which Client usage slices contribute to a quota card. Missing bindings are migrated from the legacy provider-level OpenCode switches. |
-| `providers.<id>.mergeOpencodeUsage` | legacy compatibility | Kept synchronized for older builds; new UI reads and writes `clientBindings[]`. |
+| `clientBindings[]` | client → quota Provider | Canonical source of truth for which Client usage slices contribute to a quota card. Schema v2; missing bindings are migrated from the legacy provider-level OpenCode switches by `AppConfig.legacyClientBindings(from:)`. |
+| `providers.<id>.mergeOpencodeUsage` | legacy compatibility | Kept synchronized for older builds; written by `SettingsView.saveAndApply()` so older clients that read this field still see the right value. The settings UI no longer exposes a per-provider OpenCode toggle — defaults are encoded in `ProviderConfig.shouldMergeOpencodeUsage(for:)` (GLM `true`, others `false`) and users with non-default needs edit `config.json`. |
 
 `ProviderConfig.encode(to:)` omits nil optional fields, so saved config only includes relevant keys. `ConfigStore.saveConfig()` writes pretty-printed, sorted-key JSON and reapplies `0600`.
 Unknown or incorrectly typed `statusBarIconStyle` / `statusBarIndicatorMode` /
@@ -220,9 +220,10 @@ Unknown or incorrectly typed `statusBarIconStyle` / `statusBarIndicatorMode` /
 to their defaults; cosmetic config errors do not trigger recovery of the provider settings.
 
 OpenCode and DSH are shared local Clients rather than menu-bar quota Providers. Their
-raw multi-provider slices remain available in diagnostics; card display uses one
-provider-neutral aggregate token projection. Antigravity is a special quota owner:
-its Gemini / Claude / GPT model usage remains attached to the Antigravity quota scope.
+raw multi-provider slices are surfaced in the new "客户端" tab instead of a dedicated
+diagnostic pane; card display uses one provider-neutral aggregate token projection.
+Antigravity is a special quota owner: its Gemini / Claude / GPT model usage remains
+attached to the Antigravity quota scope.
 
 Settings > Clients uses horizontally scrollable client tabs sorted by display name
 (Antigravity, Codex, DSH, MiniMax Code, OpenCode, ZCode). Each tab only renders quota

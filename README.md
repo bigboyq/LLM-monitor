@@ -47,15 +47,15 @@
 
 | Provider | 远程数据 | 本地用量 | 认证方式 |
 |---|---|---|---|
-| Minimax Token Plan | 套餐额度 API | Minimax v2 SQLite；可选合并 OpenCode | Token Plan API Key |
-| ChatGPT Plan / Codex | ChatGPT usage API | Codex session 日志；可选合并 OpenCode | `~/.codex/auth.json` |
-| Antigravity | 本地 language-server RPC | 本地 trajectory metadata RPC；可选合并 OpenCode | 已登录的 Antigravity 会话 |
-| GLM Coding Plan | GLM quota API | ZCode SQLite；可选合并 OpenCode | Coding Plan Key |
-| DeepSeek | 账户余额 API | 可选合并 OpenCode | DeepSeek API Key |
+| Minimax Token Plan | 套餐额度 API | Minimax v2 SQLite；默认合并 OpenCode（默认关闭，可在 config.json 开启） | Token Plan API Key |
+| ChatGPT Plan / Codex | ChatGPT usage API | Codex session 日志；默认合并 OpenCode（默认关闭） | `~/.codex/auth.json` |
+| Antigravity | 本地 language-server RPC | 本地 trajectory metadata RPC；默认合并 OpenCode（默认关闭） | 已登录的 Antigravity 会话 |
+| GLM Coding Plan | GLM quota API | ZCode SQLite；默认合并 OpenCode（GLM 默认开启，其余可在 config.json 调整） | Coding Plan Key |
+| DeepSeek | 账户余额 API | 默认合并 OpenCode（默认关闭） | DeepSeek API Key |
 
 各数据源、token 口径、高峰窗口和合并规则见下方 Provider 规格文档。
 
-> DSH（DeepSeek Harness）不是独立菜单栏 Provider，而是共享本地 session 账本；它会按 `request/context` 中的 provider 分片，并自动合并到 MiniMax / GLM / DeepSeek 卡片。设置页新增 DSH 诊断 tab 可查看每个 provider 的 7 天 Token 明细。
+> DSH（DeepSeek Harness）不是独立菜单栏 Provider，而是共享本地 session 账本；它会按 `request/context` 中的 provider 分片，并自动合并到 MiniMax / GLM / DeepSeek 卡片。所有本地客户端用量可在"设置 → 客户端"按客户端维度查看。
 
 ## 文档索引
 
