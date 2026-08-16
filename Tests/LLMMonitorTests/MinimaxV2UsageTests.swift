@@ -20,7 +20,7 @@ final class MinimaxV2UsageTests: XCTestCase {
             turns: 1, rounds: 2
         )
         let index = MinimaxLocalUsageScanner.CacheIndex(
-            version: 13,
+            version: 14,
             lastScannedAt: now,
             sources: ["runtime": MinimaxLocalUsageScanner.SourceIndexEntry(
                 mtimeMs: 1, sizeBytes: 2, walMtimeMs: 0, walSizeBytes: 0,
@@ -461,7 +461,7 @@ final class MinimaxV2UsageTests: XCTestCase {
             cacheDir: cacheDir,
             fileManager: FileManagerBox()
         )
-        XCTAssertEqual(current.version, 13)
+        XCTAssertEqual(current.version, 14)
         XCTAssertTrue(current.sources.isEmpty)
         XCTAssertTrue(current.dailyBySource.isEmpty)
         XCTAssertEqual(current.samplesBySource, [:])

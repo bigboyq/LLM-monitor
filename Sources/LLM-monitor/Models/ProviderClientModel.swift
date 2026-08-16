@@ -22,6 +22,28 @@ enum ClientID {
     static let minimaxCode = "minimax_code"
 }
 
+/// Model families shown under the Antigravity client in Settings.
+enum AntigravityUsageGroup: String, CaseIterable, Sendable {
+    case gemini
+    case claudeAndGPT
+    case other
+
+    var displayName: String {
+        switch self {
+        case .gemini: return "Gemini Models"
+        case .claudeAndGPT: return "Claude and GPT Models"
+        case .other: return "Other Models"
+        }
+    }
+
+    static func classify(modelName: String?) -> Self {
+        let model = modelName?.lowercased() ?? ""
+        if model.contains("gemini") { return .gemini }
+        if model.contains("claude") || model.contains("gpt") { return .claudeAndGPT }
+        return .other
+    }
+}
+
 /// A client-to-quota relationship. The source aliases are normalized at the
 /// scanner boundary; this type exists so the relationship is explicit instead
 /// of being encoded as provider-specific `merge...` booleans.
@@ -361,9 +383,6 @@ struct UnpricedModelUsage: Equatable, Sendable, Identifiable {
 /// offline, and unknown model names are reported instead of guessed.
 enum ModelPricingCatalog {
     static let lastUpdated = "2026-08-17"
-    /// MiniMax publishes the M3 API price in USD; the settings UI keeps the
-    /// existing CNY display and converts with the user-specified snapshot rate.
-    private static let miniMaxUSDToCNY = 6.74
 
     static func estimate(
         samples: [LocalTokenUsageSample],
@@ -442,17 +461,13 @@ enum ModelPricingCatalog {
         return 1
     }
 
-    /// OpenCode/Codex samples use a cache-inclusive input bucket. DSH records
-    /// uncached input and cache-read input separately, so its cache bucket must
-    /// not be clamped to inputTokens.
     static func tokenComponents(
         for sample: LocalTokenUsageSample
     ) -> (uncached: Int, cached: Int, output: Int) {
         let input = max(sample.inputTokens, 0)
         let cached = max(sample.cachedInputTokens, 0)
-        let isDshUncachedInput = sample.sourceProviderID?.hasPrefix("dsh:") == true
-        let uncached = isDshUncachedInput ? input : max(input - min(cached, input), 0)
-        let effectiveCached = isDshUncachedInput ? cached : min(cached, input)
+        let uncached = max(input - min(cached, input), 0)
+        let effectiveCached = min(cached, input)
         let output = SaturatingArithmetic.sum(
             max(0, sample.outputTokens),
             max(0, sample.reasoningOutputTokens)
@@ -470,16 +485,15 @@ enum ModelPricingCatalog {
         switch quotaProviderID {
         case QuotaProviderID.minimax:
             if model.contains("m3") {
-                // MiniMax-M3 and minimax/MiniMax-M3 are the same model. The
-                // standard <=512K public USD price is converted to CNY; the
-                // local ledger does not retain request context length, so the
-                // >512K high-price tier is intentionally not considered.
+                // MiniMax-M3 and minimax/MiniMax-M3 are the same model. Use
+                // the unified CNY standard; the >512K high-price tier is not
+                // considered because the local ledger lacks request context.
                 return ModelTokenPricing(
                     modelLabel: modelName ?? "MiniMax-M3",
                     currency: .cny,
-                    inputPerMillion: 0.30 * miniMaxUSDToCNY,
-                    cacheReadPerMillion: 0.06 * miniMaxUSDToCNY,
-                    outputPerMillion: 1.20 * miniMaxUSDToCNY
+                    inputPerMillion: 2.1,
+                    cacheReadPerMillion: 0.42,
+                    outputPerMillion: 8.4
                 )
             }
             if model.contains("m2.7") || model.contains("m2.5") || model.contains("m2.1") || model == "m2" {
@@ -518,6 +532,27 @@ enum ModelPricingCatalog {
             if model.contains("gpt-5") {
                 return ModelTokenPricing(modelLabel: modelName ?? "GPT-5", currency: .usd, inputPerMillion: 1.25, cacheReadPerMillion: 0.125, outputPerMillion: 10)
             }
+            if model.contains("gpt-4o-mini") {
+                return ModelTokenPricing(modelLabel: modelName ?? "GPT-4o mini", currency: .usd, inputPerMillion: 0.15, cacheReadPerMillion: 0.075, outputPerMillion: 0.6)
+            }
+            if model.contains("gpt-4o") {
+                return ModelTokenPricing(modelLabel: modelName ?? "GPT-4o", currency: .usd, inputPerMillion: 2.5, cacheReadPerMillion: 1.25, outputPerMillion: 10)
+            }
+            if model.contains("o3-mini") {
+                return ModelTokenPricing(modelLabel: modelName ?? "o3-mini", currency: .usd, inputPerMillion: 1.1, cacheReadPerMillion: 0.55, outputPerMillion: 4.4)
+            }
+            if model.contains("o3") {
+                return ModelTokenPricing(modelLabel: modelName ?? "o3", currency: .usd, inputPerMillion: 15, cacheReadPerMillion: 7.5, outputPerMillion: 60)
+            }
+            if model.contains("o1-mini") || model.contains("o1-preview") {
+                return ModelTokenPricing(modelLabel: modelName ?? "o1-mini", currency: .usd, inputPerMillion: 1.1, cacheReadPerMillion: 0.55, outputPerMillion: 4.4)
+            }
+            if model.contains("o1") {
+                return ModelTokenPricing(modelLabel: modelName ?? "o1", currency: .usd, inputPerMillion: 15, cacheReadPerMillion: 7.5, outputPerMillion: 60)
+            }
+            if model.contains("gpt-4") {
+                return ModelTokenPricing(modelLabel: modelName ?? "GPT-4", currency: .usd, inputPerMillion: 10, cacheReadPerMillion: 5, outputPerMillion: 30)
+            }
 
         case QuotaProviderID.antigravity:
             if model.contains("gemini-3.7-flash") || model.contains("gemini-3.6-flash") {
@@ -528,6 +563,16 @@ enum ModelPricingCatalog {
             }
             if model.contains("gemini-2.5-flash") {
                 return ModelTokenPricing(modelLabel: modelName ?? "Gemini 2.5 Flash", currency: .usd, inputPerMillion: 0.3, cacheReadPerMillion: 0.03, outputPerMillion: 2.5)
+            }
+            if model.contains("claude-opus-4.6") || model.contains("claude-opus-4-6") {
+                return ModelTokenPricing(modelLabel: modelName ?? "Claude Opus 4.6", currency: .usd, inputPerMillion: 5, cacheReadPerMillion: 0.5, outputPerMillion: 25)
+            }
+            if model.contains("claude-sonnet-4.6") || model.contains("claude-sonnet-4-6") {
+                return ModelTokenPricing(modelLabel: modelName ?? "Claude Sonnet 4.6", currency: .usd, inputPerMillion: 3, cacheReadPerMillion: 0.3, outputPerMillion: 15)
+            }
+            let normalizedModel = model.replacingOccurrences(of: "_", with: "-")
+            if normalizedModel.contains("gpt-oss-120b") {
+                return ModelTokenPricing(modelLabel: modelName ?? "gpt-oss-120b", currency: .usd, inputPerMillion: 0.09, cacheReadPerMillion: 0.009, outputPerMillion: 0.36)
             }
             if model.contains("claude-4") || model.contains("claude-3.7-sonnet") {
                 return ModelTokenPricing(modelLabel: modelName ?? "Claude Sonnet", currency: .usd, inputPerMillion: 3, cacheReadPerMillion: 0.3, outputPerMillion: 15)
@@ -576,17 +621,19 @@ struct ClientProviderUsageSummary: Identifiable, Equatable, Sendable {
     let clientID: String
     let quotaProviderID: String
     let providerName: String
+    let usageGroupID: String
     let dailyTokenUsage: [UnifiedDailyTokenUsage]
     let recentSamples: [LocalTokenUsageSample]
     let scannedAt: Date?
     let deepseekPeakWindow: DeepseekPeakWindow
 
-    var id: String { "\(clientID):\(quotaProviderID)" }
+    var id: String { "\(clientID):\(quotaProviderID):\(usageGroupID)" }
 
     init(
         clientID: String,
         quotaProviderID: String,
         providerName: String,
+        usageGroupID: String = "",
         dailyTokenUsage: [UnifiedDailyTokenUsage],
         recentSamples: [LocalTokenUsageSample],
         scannedAt: Date?,
@@ -595,6 +642,7 @@ struct ClientProviderUsageSummary: Identifiable, Equatable, Sendable {
         self.clientID = clientID
         self.quotaProviderID = quotaProviderID
         self.providerName = providerName
+        self.usageGroupID = usageGroupID
         self.recentSamples = recentSamples
         self.dailyTokenUsage = UnifiedDailyUsageNormalizer.includingCurrentDay(
             dailyTokenUsage: dailyTokenUsage,
@@ -643,13 +691,15 @@ struct ClientProviderUsageSummary: Identifiable, Equatable, Sendable {
 
     var priceTextByDay: [Date: String] {
         let estimates = ModelPricingCatalog.estimateByDay(
-            samples: samplesInDisplayedWindow,
+            samples: recentSamples,
             quotaProviderID: quotaProviderID,
             deepseekPeakWindow: deepseekPeakWindow
         )
+        let calendar = Calendar.current
         return Dictionary(uniqueKeysWithValues: dailyTokenUsage.map { day in
+            let dayStart = calendar.startOfDay(for: day.dayStart)
             let text: String
-            if let estimate = estimates[Calendar.current.startOfDay(for: day.dayStart)] {
+            if let estimate = estimates[dayStart] {
                 if let value = estimate.value, let currency = estimate.currency {
                     text = String(format: "%@%.2f", currency.symbol, value)
                 } else {

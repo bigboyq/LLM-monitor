@@ -76,7 +76,7 @@ final class ProviderModelTests: XCTestCase {
             completedAt: now,
             modelName: "MiniMax-M3",
             promptID: "dsh:turn-1",
-            inputTokens: 381_000,
+            inputTokens: 381_000 + 26_000_000,
             cachedInputTokens: 26_000_000,
             outputTokens: 71_000,
             reasoningOutputTokens: 0,
@@ -96,7 +96,7 @@ final class ProviderModelTests: XCTestCase {
         XCTAssertEqual(day.input, 381_000)
         XCTAssertEqual(day.cacheRead, 26_000_000)
         XCTAssertEqual(day.output, 71_000)
-        XCTAssertEqual(summary.priceTextByDay[today], "¥11.86")
+        XCTAssertEqual(summary.priceTextByDay[today], "¥12.32")
     }
 
     func testUnknownModelIsNotAssignedAnEstimatedPrice() {
@@ -171,9 +171,33 @@ final class ProviderModelTests: XCTestCase {
         let minimax = ModelPricingCatalog.pricing(
             for: "minimax/MiniMax-M3", quotaProviderID: QuotaProviderID.minimax
         )
-        XCTAssertEqual(minimax?.inputPerMillion, 2.022)
-        XCTAssertEqual(minimax?.cacheReadPerMillion, 0.4044)
-        XCTAssertEqual(minimax?.outputPerMillion, 8.088)
+        XCTAssertEqual(minimax?.inputPerMillion, 2.1)
+        XCTAssertEqual(minimax?.cacheReadPerMillion, 0.42)
+        XCTAssertEqual(minimax?.outputPerMillion, 8.4)
+
+        let opus = ModelPricingCatalog.pricing(
+            for: "claude-opus-4-6", quotaProviderID: QuotaProviderID.antigravity
+        )
+        XCTAssertEqual(opus?.inputPerMillion, 5)
+        XCTAssertEqual(opus?.cacheReadPerMillion, 0.5)
+        XCTAssertEqual(opus?.outputPerMillion, 25)
+
+        let sonnet = ModelPricingCatalog.pricing(
+            for: "claude-sonnet-4.6", quotaProviderID: QuotaProviderID.antigravity
+        )
+        XCTAssertEqual(sonnet?.inputPerMillion, 3)
+        XCTAssertEqual(sonnet?.cacheReadPerMillion, 0.3)
+        XCTAssertEqual(sonnet?.outputPerMillion, 15)
+
+        let gptOSS = ModelPricingCatalog.pricing(
+            for: "MODEL_OPENAI_GPT_OSS_120B_MEDIUM", quotaProviderID: QuotaProviderID.antigravity
+        )
+        XCTAssertEqual(gptOSS?.inputPerMillion, 0.09)
+        XCTAssertEqual(gptOSS?.cacheReadPerMillion, 0.009)
+        XCTAssertEqual(gptOSS?.outputPerMillion, 0.36)
+        XCTAssertEqual(AntigravityUsageGroup.classify(modelName: "gemini-3.6-flash"), .gemini)
+        XCTAssertEqual(AntigravityUsageGroup.classify(modelName: "claude-opus-4-6"), .claudeAndGPT)
+        XCTAssertEqual(AntigravityUsageGroup.classify(modelName: "gpt-oss-120b"), .claudeAndGPT)
 
         let glm52 = ModelPricingCatalog.pricing(for: "GLM-5.2", quotaProviderID: QuotaProviderID.zhipu)
         let glm53 = ModelPricingCatalog.pricing(for: "GLM-5.3", quotaProviderID: QuotaProviderID.zhipu)
@@ -243,7 +267,7 @@ final class ProviderModelTests: XCTestCase {
             completedAt: Date(timeIntervalSince1970: 1_700_000_000),
             modelName: "deepseek-v4-flash",
             promptID: "dsh-sample",
-            inputTokens: 698_000,
+            inputTokens: 698_000 + 39_000_000,
             cachedInputTokens: 39_000_000,
             outputTokens: 71_000,
             reasoningOutputTokens: 0,
@@ -265,7 +289,7 @@ final class ProviderModelTests: XCTestCase {
             completedAt: Date(timeIntervalSince1970: 1_700_000_000),
             modelName: "MiniMax-M3",
             promptID: "dsh-minimax-sample",
-            inputTokens: 381_000,
+            inputTokens: 381_000 + 26_000_000,
             cachedInputTokens: 26_000_000,
             outputTokens: 71_000,
             reasoningOutputTokens: 0,
@@ -277,7 +301,7 @@ final class ProviderModelTests: XCTestCase {
             quotaProviderID: QuotaProviderID.minimax
         )
 
-        XCTAssertEqual(estimate.value ?? -1, 11.85903, accuracy: 0.000001)
+        XCTAssertEqual(estimate.value ?? -1, 12.3165, accuracy: 0.000001)
         XCTAssertEqual(estimate.currency, .cny)
     }
 

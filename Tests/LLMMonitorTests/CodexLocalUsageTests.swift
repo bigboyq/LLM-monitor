@@ -123,6 +123,40 @@ final class CodexLocalUsageTests: XCTestCase {
         XCTAssertEqual(sample.inputTokens, 100)
     }
 
+    func testSummarizeLocalUsageKeepsTokenSampleWithoutActiveTurn() throws {
+        let base = Date(timeIntervalSince1970: 21_500)
+        let fileURL = URL(fileURLWithPath: "/tmp/codex-local-orphan-token-test.jsonl")
+        let events: [CodexSessionEvent] = [
+            .modelContext(timestamp: base, modelName: "gpt-5.6-terra"),
+            .tokenCount(
+                timestamp: base.addingTimeInterval(2),
+                usage: CodexTokenUsageEvent(
+                    inputTokens: 200,
+                    cachedInputTokens: 20,
+                    outputTokens: 30,
+                    reasoningOutputTokens: 5
+                )
+            )
+        ]
+
+        let result = CodexFetcher.summarizeLocalUsage(
+            windows: ["primary": CodexFetcher.ActiveUsageWindow(
+                startDate: base.addingTimeInterval(-1),
+                resetDate: base.addingTimeInterval(60)
+            )],
+            dailyWindows: [CodexFetcher.DailyUsageWindow(
+                startDate: base.addingTimeInterval(-1),
+                endDate: base.addingTimeInterval(60)
+            )],
+            sessionFiles: [CodexSessionFileEvents(fileURL: fileURL, events: events)]
+        )
+
+        let sample = try XCTUnwrap(result.recentSamples.first)
+        XCTAssertEqual(sample.modelName, "gpt-5.6-terra")
+        XCTAssertEqual(sample.inputTokens, 200)
+        XCTAssertTrue(sample.promptID.hasPrefix("codex:orphan:"))
+    }
+
     func testModelContextUpdatesBetweenTokenCountsInSameTurn() throws {
         // 验证 modelContext 在 turn 中间出现时，后面的 tokenCount 用新 model：
         // turn 1 内先有 modelContext("gpt-5.6-sol") → tokenCount(input 100)；
@@ -371,5 +405,68 @@ final class CodexLocalUsageTests: XCTestCase {
         let files = await CodexFetcher.cachedSessionEvents(for: [snap], limits: limits)
         // 超长行被跳过，只保留 k=0 和 k=2 两个 token_count 事件
         XCTAssertEqual(f2InputTokens(from: files), [0, 2])
+    }
+
+    func testSummarizeLocalUsageRetainsNewestSamplesWhenExceedingLimit() throws {
+        let base = Date(timeIntervalSince1970: 100_000)
+        let olderDate = base.addingTimeInterval(-86400 * 3) // 3 days ago
+        let newerDate = base // today
+
+        let olderFile = URL(fileURLWithPath: "/tmp/codex-older.jsonl")
+        let newerFile = URL(fileURLWithPath: "/tmp/codex-newer.jsonl")
+
+        let olderEvents: [CodexSessionEvent] = [
+            .modelContext(timestamp: olderDate, modelName: "gpt-5.6-sol"),
+            .tokenCount(
+                timestamp: olderDate,
+                usage: CodexTokenUsageEvent(inputTokens: 100, cachedInputTokens: 10, outputTokens: 50, reasoningOutputTokens: 0)
+            )
+        ]
+        let newerEvents: [CodexSessionEvent] = [
+            .modelContext(timestamp: newerDate, modelName: "gpt-5.6-terra"),
+            .tokenCount(
+                timestamp: newerDate,
+                usage: CodexTokenUsageEvent(inputTokens: 200, cachedInputTokens: 20, outputTokens: 60, reasoningOutputTokens: 0)
+            )
+        ]
+
+        // cachedSessionEvents returns files in newest-first order (newerFile first)
+        let sessionFiles = [
+            CodexSessionFileEvents(fileURL: newerFile, events: newerEvents),
+            CodexSessionFileEvents(fileURL: olderFile, events: olderEvents)
+        ]
+
+        let dailyWindows = [
+            CodexFetcher.DailyUsageWindow(startDate: olderDate.addingTimeInterval(-10), endDate: olderDate.addingTimeInterval(86400)),
+            CodexFetcher.DailyUsageWindow(startDate: newerDate.addingTimeInterval(-10), endDate: newerDate.addingTimeInterval(86400))
+        ]
+
+        let limits = CodexLocalScanLimits(
+            maxSessionFiles: 10,
+            maxEventsPerFile: 100,
+            maxTotalParsedBytes: 1024 * 1024,
+            maxJSONLLineBytes: 1024,
+            maxRecentSamples: 1 // Only retain 1 sample
+        )
+
+        let windows = [
+            "primary": CodexFetcher.ActiveUsageWindow(
+                startDate: base.addingTimeInterval(-86400 * 10),
+                resetDate: base.addingTimeInterval(86400)
+            )
+        ]
+
+        let result = CodexFetcher.summarizeLocalUsage(
+            windows: windows,
+            dailyWindows: dailyWindows,
+            sessionFiles: sessionFiles,
+            limits: limits
+        )
+
+        XCTAssertEqual(result.recentSamples.count, 1)
+        let sample = try XCTUnwrap(result.recentSamples.first)
+        // Must retain the NEWER sample (gpt-5.6-terra from newerDate), NOT the older one
+        XCTAssertEqual(sample.modelName, "gpt-5.6-terra")
+        XCTAssertEqual(sample.completedAt, newerDate)
     }
 }

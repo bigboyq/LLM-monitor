@@ -301,4 +301,52 @@ final class DshUsageTests: XCTestCase {
         )
         XCTAssertEqual(a, b)
     }
+
+    func testDshSampleHasTotalInputTokensAndProducesCorrectUncachedSummary() throws {
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let calendar = makeUTCGregorianCalendar()
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("llm-monitor-dsh-sample-test-\(UUID().uuidString)", isDirectory: true)
+        let cache = root.appendingPathComponent(".token-monitor", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let lines: [String] = [
+            #"{"type":"session","version":0,"id":"session-1","createdAt":1700000000000,"cwd":"/tmp","delegationDepth":0}"#,
+            #"{"type":"request/context","seq":1,"time":1700000000000,"data":{"provider":"minimax","model":"MiniMax-M3"}}"#,
+            #"{"type":"assistant/message","seq":2,"time":1700000001000,"data":{"turn":1,"step":0,"usage":{"inputTokens":584000,"cacheReadTokens":100000,"outputTokens":5000,"reasoningTokens":0}}}"#
+        ]
+        try writeSessionLog(
+            root: root.appendingPathComponent("sessions", isDirectory: true),
+            sessionID: "session-1",
+            body: lines.joined(separator: "\n") + "\n"
+        )
+
+        let snapshot = try DshLocalUsageScanner.performScanPure(
+            sessionsRoot: root.appendingPathComponent("sessions", isDirectory: true),
+            cacheDir: cache,
+            fileManager: FileManagerBox(),
+            calendar: calendar,
+            now: { base },
+            decompressor: { $0 },
+            limits: DshLocalUsageScanLimits.production
+        )
+
+        let minimax = try XCTUnwrap(snapshot.byProvider["minimax"])
+        let sample = try XCTUnwrap(minimax.recentSamples.first)
+        // inputTokens is total (uncached 584k + cached 100k) = 684k
+        XCTAssertEqual(sample.inputTokens, 684_000)
+        XCTAssertEqual(sample.cachedInputTokens, 100_000)
+
+        // Summary in hover window:
+        let summary = LocalUsageSummaryBuilder.summary(
+            samples: minimax.recentSamples,
+            providerKind: .minimaxTokenPlan,
+            quotaModelName: "general",
+            start: base.addingTimeInterval(-10),
+            end: base.addingTimeInterval(60)
+        )
+        let unwrappedSummary = try XCTUnwrap(summary)
+        XCTAssertEqual(unwrappedSummary.uncachedInputTokens, 584_000, "Uncached input in current window must match 584k, not 0")
+        XCTAssertEqual(unwrappedSummary.cachedInputTokens, 100_000)
+    }
 }

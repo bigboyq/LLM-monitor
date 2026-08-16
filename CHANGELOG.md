@@ -19,6 +19,12 @@
 
 ### Fixed
 
+- 修复 Codex (ChatGPT) 今日与近几日用量金额显示 `—` 的问题：优化 `summarizeLocalUsage` 样本截断逻辑，在全量读取后按完成时间排序保留最新样本，避免倒序读取时最先解析的最新样本被提前截断丢弃。
+- 修复 Codex 与 DSH 的 `promptID` 粒度过细导致今日 `turns` 等于 `rounds` 的问题：规范化 `promptID` 共享同一个 turn 标识（移除单次 token 事件时间戳与 step 编号），并修正 DSH 每日 turn 聚合的跨 session 去重键。
+- 修复 MiniMax (DSH) 5h 和周额度浮窗中未缓存输入显示为 `0`（如 `0 (+65M cached)`）的问题：统一将 DSH 样本的 `inputTokens` 规范化为包含缓存的总输入口径（`uncached + cached`），使浮窗中的 `uncachedInputTokens` 计算与 7 日图保持一致。
+- 提升本地扫描器容量上限：将 `maxRecentSamples` 从 4,096 扩容至 65,536，`maxSessionFiles` 从 256 扩容至 1,024，`maxEventCacheEntries` 从 64 扩容至 256，避免重度使用及 7 天周期内样本溢出截断。
+- 升级 DSH (`v4`)、MiniMax (`v14`) 和 Codex (`v7`) 本地缓存索引指纹版本，自动失效旧快照以全量重建规范化数据。
+- 扩充 `ModelPricingCatalog` 对 OpenAI 常见模型（`gpt-4o`, `gpt-4o-mini`, `o1`, `o3-mini` 等）的定价覆盖。
 - 客户端 tab 当日聚合落后于样本时（DB 缓存尚未刷新），用最近样本补齐当日 token 数，避免 UI 显示陈旧的"今日 0"。
 - 移除客户端 tab 中 OpenCode 诊断页（功能已被 clientsPane 吸收，原始 spec 文档已同步更新）。
 

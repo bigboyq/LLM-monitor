@@ -96,18 +96,13 @@ struct CodexSessionFileSnapshot: Sendable {
 /// 测试可注入较小值验证边界，而无需构造大型文件。
 struct CodexLocalScanLimits: Sendable {
     static let production = CodexLocalScanLimits(
-        // 64-entry cache × 10,000 compact events caps retained parsed events at
-        // 640,000, while a scan can inspect at most 256 MiB across 256 recent files.
-        maxSessionFiles: 256,
+        maxSessionFiles: 1_024,
         maxEventsPerFile: 10_000,
         maxTotalParsedBytes: 256 * 1024 * 1024,
         maxJSONLLineBytes: 8 * 1024 * 1024,
         readChunkBytes: 64 * 1024,
-        maxEventCacheEntries: 64,
-        // recentSamples 与 DSH scanner 对齐：每个被记入的 tokenCount 算一个 sample
-        // （也就是一次 LLM 调用），4096 在 5h 窗口下足够覆盖重度用户的密集调用，
-        // 不会让 samples 数组在常驻会话中无限增长。
-        maxRecentSamples: 4_096
+        maxEventCacheEntries: 256,
+        maxRecentSamples: 65_536
     )
 
     let maxSessionFiles: Int
@@ -124,8 +119,8 @@ struct CodexLocalScanLimits: Sendable {
         maxTotalParsedBytes: Int,
         maxJSONLLineBytes: Int,
         readChunkBytes: Int = 64 * 1024,
-        maxEventCacheEntries: Int = 64,
-        maxRecentSamples: Int = 4_096
+        maxEventCacheEntries: Int = 256,
+        maxRecentSamples: Int = 65_536
     ) {
         self.maxSessionFiles = max(maxSessionFiles, 1)
         self.maxEventsPerFile = max(maxEventsPerFile, 1)
@@ -371,27 +366,24 @@ extension CodexFetcher {
                         $0.startDate <= timestamp && timestamp < $0.endDate
                     }) {
                         dailySummaries[dailyWindow.startDate, default: MutableUsageSummary()].add(usage)
-                        if let activeTurnID {
-                            recentSamples.append(
-                                LocalTokenUsageSample(
-                                    completedAt: timestamp,
-                                    modelName: currentModelName,
-                                    promptID: "codex:\(activeTurnID):\(timestamp.timeIntervalSince1970)",
-                                    inputTokens: usage.inputTokens,
-                                    cachedInputTokens: usage.cachedInputTokens,
-                                    outputTokens: usage.outputTokens,
-                                    reasoningOutputTokens: usage.reasoningOutputTokens,
-                                    sourceProviderID: QuotaProviderID.openAI
-                                )
+                        // daily 汇总不要求 token_count 必须落在 taskStarted/taskCompleted
+                        // 区间内；价格明细也必须保留这类记录，否则会出现“当天有 token、
+                        // 但价值显示 —”。没有 active turn 时用时间戳生成稳定的明细 ID。
+                        let promptID = activeTurnID.map {
+                            "codex:\($0)"
+                        } ?? "codex:orphan:\(timestamp.timeIntervalSince1970)"
+                        recentSamples.append(
+                            LocalTokenUsageSample(
+                                completedAt: timestamp,
+                                modelName: currentModelName,
+                                promptID: promptID,
+                                inputTokens: usage.inputTokens,
+                                cachedInputTokens: usage.cachedInputTokens,
+                                outputTokens: usage.outputTokens,
+                                reasoningOutputTokens: usage.reasoningOutputTokens,
+                                sourceProviderID: QuotaProviderID.openAI
                             )
-                            // 与 DSH scanner 对齐：recentSamples 保持定长上限，
-                            // 避免常驻会话在多日累计下把内存撑大。
-                            if recentSamples.count > limits.maxRecentSamples {
-                                recentSamples.removeFirst(
-                                    recentSamples.count - limits.maxRecentSamples
-                                )
-                            }
-                        }
+                        )
                     }
                 }
             }
@@ -425,6 +417,17 @@ extension CodexFetcher {
             let key = Formatters.formatMonthDay(day.dayStart)
             logDebug("[codex/local/day] \(key): turns=\(day.turns), rounds=\(day.rounds), input=\(day.inputTokens), cached=\(day.cachedInputTokens), output=\(day.outputTokens), reason=\(day.reasoningOutputTokens)")
         }
+        let sortedSamples = recentSamples.sorted { $0.completedAt < $1.completedAt }
+        let boundedSamples = sortedSamples.count > limits.maxRecentSamples
+            ? Array(sortedSamples.suffix(limits.maxRecentSamples))
+            : sortedSamples
+        let sampleModelNames = Dictionary(grouping: boundedSamples) {
+            $0.modelName ?? "<missing>"
+        }
+        logDebug(
+            "[codex/local] price samples=\(boundedSamples.count), "
+                + "models=\(sampleModelNames.map { "\($0.key):\($0.value.count)" }.sorted().joined(separator: ", "))"
+        )
         for key in windows.keys.sorted() {
             let summary = usageSummaries[key]
             logDebug("[codex/local] \(key): prompts=\(summary?.prompts ?? 0), rounds=\(summary?.rounds ?? 0), input=\(summary?.inputTokens ?? 0), output=\(summary?.outputTokens ?? 0), reasoning=\(summary?.reasoningOutputTokens ?? 0)")
@@ -434,8 +437,8 @@ extension CodexFetcher {
             dailyTokenUsage: dailyTokenUsage,
             // 与 DSH scanner 对齐：samples 跨多个 session 文件拼接后按时间排序，
             // 保证 UI 在 `samplesInDisplayedWindow` / `todaySamples` 这类按日期过滤
-            // 的逻辑下不会因为文件读取顺序错乱而漏掉 sample。
-            recentSamples: recentSamples.sorted { $0.completedAt < $1.completedAt },
+            // 的逻辑下不会因为文件读取顺序错乱而漏掉 sample，且保留最新的 maxRecentSamples 条。
+            recentSamples: boundedSamples,
             latestPromptFile: latestPromptFile,
             latestPromptTurnID: latestPromptTurnID,
             latestPromptCompletedAt: latestPromptCompletedAt,
@@ -509,9 +512,8 @@ extension CodexFetcher {
             let perFileByteLimit = min(max(snapshot.fileSize, 0), remainingByteBudget)
             guard perFileByteLimit > 0 else { continue }
             let parsingFingerprint = [
-                // F2: 策略版本 v5——读取窗口从“文件头”改为“文件尾 + 有界缓冲”，
-                // 旧的 head-reading cache 必须失效，不能被复用。
-                "v5",
+                // F2: 策略版本 v7——修复 turn ID 生成逻辑
+                "v7",
                 String(limits.maxEventsPerFile),
                 String(perFileByteLimit),
                 String(limits.maxJSONLLineBytes),
@@ -581,7 +583,7 @@ extension CodexFetcher {
             guard !Task.isCancelled else { return false }
             // Performance optimization: skip JSON deserialization for non-event or irrelevant lines
             guard line.contains("event_msg") || line.contains("turn_context") else { return true }
-            guard line.contains("task_started") || line.contains("task_complete") || line.contains("token_count") || line.contains("\"type\":\"turn_context\"") else { return true }
+            guard line.contains("task_started") || line.contains("task_complete") || line.contains("token_count") || line.contains("turn_context") else { return true }
 
             guard let object = parseJSONObject(from: line),
                   let timestamp = DateParser.parse(object["timestamp"]),

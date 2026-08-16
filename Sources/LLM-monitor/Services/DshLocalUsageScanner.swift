@@ -10,10 +10,10 @@ import Combine
 /// the pure parser without requiring a zstd binary.
 struct DshLocalUsageScanLimits: Sendable {
     static let production = DshLocalUsageScanLimits(
-        maxSessionFiles: 256,
+        maxSessionFiles: 1_024,
         maxTotalRawBytes: 256 * 1024 * 1024,
         maxJSONLLineBytes: 8 * 1024 * 1024,
-        maxRecentSamples: 4_096
+        maxRecentSamples: 65_536
     )
 
     let maxSessionFiles: Int
@@ -202,7 +202,7 @@ final class DshLocalUsageScanner: ObservableObject, @unchecked Sendable {
                 scannedAt: now()
             )
             try saveIndex(
-                DshCacheIndex(version: 2, files: [], snapshot: empty),
+                DshCacheIndex(version: 4, files: [], snapshot: empty),
                 cacheDir: cacheDir,
                 fileManager: fileManager
             )
@@ -233,9 +233,10 @@ final class DshLocalUsageScanner: ObservableObject, @unchecked Sendable {
             aggregate: aggregate,
             sessionsRoot: sessionsRoot,
             calendar: calendar,
-            now: scanNow
+            now: scanNow,
+            limits: limits
         )
-        index = DshCacheIndex(version: 2, files: fingerprint.files, snapshot: snapshot)
+        index = DshCacheIndex(version: 4, files: fingerprint.files, snapshot: snapshot)
         try saveIndex(index, cacheDir: cacheDir, fileManager: fileManager)
         logInfo(
             "[dsh-scan] ✓ sessions=\(snapshot.sessionCount), providers=\(snapshot.byProvider.count), "
@@ -516,7 +517,7 @@ private extension DshLocalUsageScanner {
             turns: existing.turns,
             rounds: SaturatingArithmetic.add(existing.rounds, 1)
         )
-        let turnKey = usage.turn.map { "turn:\($0)" } ?? "event:\(usage.sessionID):\(usage.seq ?? 0)"
+        let turnKey = usage.turn.map { "\(usage.sessionID):turn:\($0)" } ?? "event:\(usage.sessionID):\(usage.seq ?? 0)"
         if provider.turnsByDay[day, default: []].insert(turnKey).inserted {
             provider.daily[day] = provider.daily[day]?.withIncrementedTurns()
         }
@@ -524,11 +525,14 @@ private extension DshLocalUsageScanner {
         if let model = usage.model, !model.isEmpty {
             provider.models.insert(model)
         }
+        let promptID = usage.turn.map {
+            "dsh:\(usage.sessionID):turn:\($0)"
+        } ?? "dsh:\(usage.sessionID):event:\(usage.seq ?? 0):\(usage.timestamp.timeIntervalSince1970)"
         let sample = LocalTokenUsageSample(
             completedAt: usage.timestamp,
             modelName: usage.model,
-            promptID: "dsh:\(usage.sessionID):\(usage.turn ?? 0):\(usage.step ?? usage.seq ?? 0)",
-            inputTokens: usage.inputTokens,
+            promptID: promptID,
+            inputTokens: SaturatingArithmetic.add(usage.inputTokens, usage.cacheReadTokens),
             cachedInputTokens: usage.cacheReadTokens,
             outputTokens: visibleOutput,
             reasoningOutputTokens: usage.reasoningTokens,
@@ -537,9 +541,6 @@ private extension DshLocalUsageScanner {
             sourceProviderID: "dsh:\(usage.provider)"
         )
         provider.recentSamples.append(sample)
-        if provider.recentSamples.count > limits.maxRecentSamples {
-            provider.recentSamples.removeFirst(provider.recentSamples.count - limits.maxRecentSamples)
-        }
         aggregate.providers[usage.provider] = provider
         aggregate.sessions.insert(usage.sessionID)
         aggregate.eventCount = SaturatingArithmetic.add(aggregate.eventCount, 1)
@@ -552,7 +553,8 @@ private extension DshLocalUsageScanner {
         aggregate: DshAggregate,
         sessionsRoot: URL,
         calendar: Calendar,
-        now: Date
+        now: Date,
+        limits: DshLocalUsageScanLimits = .production
     ) -> DshLocalUsage {
         let today = calendar.startOfDay(for: now)
         var providers: [String: DshProviderUsage] = [:]
@@ -563,12 +565,16 @@ private extension DshLocalUsageScanner {
                 today: today,
                 calendar: calendar
             )
+            let sortedSamples = mutable.recentSamples.sorted { $0.completedAt < $1.completedAt }
+            let boundedSamples = sortedSamples.count > limits.maxRecentSamples
+                ? Array(sortedSamples.suffix(limits.maxRecentSamples))
+                : sortedSamples
             providers[providerID] = DshProviderUsage(
                 today: recent7.last.flatMap { $0.hasActivity ? $0 : nil },
                 dailyTokenUsage: recent7,
                 sessionCount: mutable.sessions.count,
                 roundCount: SaturatingArithmetic.sum(allDaily.lazy.map(\.rounds)),
-                recentSamples: mutable.recentSamples.sorted { $0.completedAt < $1.completedAt }
+                recentSamples: boundedSamples
             )
         }
         return DshLocalUsage(
@@ -659,7 +665,7 @@ private struct DshCacheIndex: Codable, Equatable, Sendable {
 
 private extension DshCacheIndex {
     func matches(_ fingerprint: CacheFingerprint) -> Bool {
-        version == 2 && files == fingerprint.files
+        version == 4 && files == fingerprint.files
     }
 }
 
@@ -671,8 +677,8 @@ private extension DshLocalUsageScanner {
         try ScannerIndexIO.loadIndex(
             cacheDir: cacheDir,
             fileManager: fileManager,
-            currentVersion: 2,
-            empty: DshCacheIndex(version: 2, files: [], snapshot: nil),
+            currentVersion: 4,
+            empty: DshCacheIndex(version: 4, files: [], snapshot: nil),
             version: { $0.version },
             logTag: "[dsh-scan]"
         )

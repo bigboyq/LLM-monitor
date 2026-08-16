@@ -475,22 +475,93 @@ struct SettingsView: View {
             let projection = status.usageProjection(for: status.lastSuccess)
             for contribution in projection.contributions {
                 guard contribution.clientID == clientID, contribution.hasActivity else { continue }
-                rows.append(
-                    ClientProviderUsageSummary(
-                        clientID: clientID,
-                        quotaProviderID: status.kind.quotaProviderID,
-                        providerName: status.displayName,
-                        dailyTokenUsage: contribution.dailyTokenUsage,
-                        recentSamples: contribution.recentSamples,
-                        scannedAt: contribution.scannedAt,
-                        deepseekPeakWindow: status.deepseekPeakWindow ?? .defaultWindow
+                if clientID == ClientID.antigravity, status.kind == .antigravity {
+                    rows.append(contentsOf: antigravityUsageRows(status: status, contribution: contribution))
+                } else {
+                    rows.append(
+                        ClientProviderUsageSummary(
+                            clientID: clientID,
+                            quotaProviderID: status.kind.quotaProviderID,
+                            providerName: status.displayName,
+                            usageGroupID: status.kind.quotaProviderID,
+                            dailyTokenUsage: contribution.dailyTokenUsage,
+                            recentSamples: contribution.recentSamples,
+                            scannedAt: contribution.scannedAt,
+                            deepseekPeakWindow: status.deepseekPeakWindow ?? .defaultWindow
+                        )
                     )
-                )
+                }
             }
         }
         return rows.sorted {
-            $0.providerName.localizedCaseInsensitiveCompare($1.providerName) == .orderedAscending
+            if $0.providerName != $1.providerName {
+                return $0.providerName.localizedCaseInsensitiveCompare($1.providerName) == .orderedAscending
+            }
+            return $0.usageGroupID < $1.usageGroupID
         }
+    }
+
+    /// Antigravity owns one quota account but can produce several billable model
+    /// families. Split the settings rows using the model name recorded in each
+    /// local sample so each row gets its own token totals and price estimate.
+    private func antigravityUsageRows(
+        status: ProviderStatus,
+        contribution: ClientUsageContribution
+    ) -> [ClientProviderUsageSummary] {
+        let groups: [AntigravityUsageGroup: [LocalTokenUsageSample]]
+        if contribution.recentSamples.isEmpty {
+            groups = [.other: []]
+        } else {
+            groups = Dictionary(grouping: contribution.recentSamples) {
+                AntigravityUsageGroup.classify(modelName: $0.modelName)
+            }
+        }
+
+        return groups.keys.sorted { $0.rawValue < $1.rawValue }.map { group in
+            let samples = groups[group] ?? []
+            let daily = samples.isEmpty
+                ? contribution.dailyTokenUsage
+                : dailyUsage(for: samples, matching: contribution.dailyTokenUsage)
+            return ClientProviderUsageSummary(
+                clientID: ClientID.antigravity,
+                quotaProviderID: status.kind.quotaProviderID,
+                providerName: group.displayName,
+                usageGroupID: group.rawValue,
+                dailyTokenUsage: daily,
+                recentSamples: samples,
+                scannedAt: contribution.scannedAt,
+                deepseekPeakWindow: status.deepseekPeakWindow ?? .defaultWindow
+            )
+        }
+    }
+
+    private func dailyUsage(
+        for samples: [LocalTokenUsageSample],
+        matching template: [UnifiedDailyTokenUsage]
+    ) -> [UnifiedDailyTokenUsage] {
+        let calendar = Calendar.current
+        let samplesByDay = Dictionary(grouping: samples) {
+            calendar.startOfDay(for: $0.completedAt)
+        }
+        var byDay = Dictionary(
+            uniqueKeysWithValues: template.map { day in
+                (calendar.startOfDay(for: day.dayStart), UnifiedDailyTokenUsage(dayStart: day.dayStart))
+            }
+        )
+
+        for (dayStart, daySamples) in samplesByDay {
+            let usage = UnifiedDailyTokenUsage(
+                dayStart: dayStart,
+                input: SaturatingArithmetic.sum(daySamples.map { ModelPricingCatalog.tokenComponents(for: $0).uncached }),
+                cacheRead: SaturatingArithmetic.sum(daySamples.map { ModelPricingCatalog.tokenComponents(for: $0).cached }),
+                output: SaturatingArithmetic.sum(daySamples.map { max(0, $0.outputTokens) }),
+                reasoning: SaturatingArithmetic.sum(daySamples.map { max(0, $0.reasoningOutputTokens) }),
+                turns: Set(daySamples.map(\.promptID).filter { $0.isEmpty == false }).count,
+                rounds: daySamples.count
+            )
+            byDay[dayStart] = byDay[dayStart].map { $0 + usage } ?? usage
+        }
+        return byDay.values.sorted { $0.dayStart < $1.dayStart }
     }
 
     private func emptyClientState(_ client: ClientDescriptor) -> some View {
