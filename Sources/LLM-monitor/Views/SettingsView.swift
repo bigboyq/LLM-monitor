@@ -399,52 +399,6 @@ struct SettingsView: View {
         }
     }
 
-    private var dshPane: some View {
-        let snapshot = state.dshUsageSnapshot
-        let providerIDs = snapshot?.byProvider.keys.sorted() ?? []
-
-        return VStack(alignment: .leading, spacing: 20) {
-            SettingsSection(
-                title: "数据源",
-                footer: "DSH（DeepSeek Harness）不是菜单栏 provider，而是一个共享的本地 session Token 账本。扫描器读取 `$DSH_HOME/sessions`（默认 `~/.dsh/sessions`）中的 durable JSONL；默认压缩格式为 `.jsonl.zstd`，会优先使用 zstd，缺少时回退到 Node 22+ 的 zlib。扫描结果按 request/context provider 分片，并可合并到 MiniMax / GLM / DeepSeek 卡片。"
-            ) {
-                diagnosticRow(
-                    label: "会话目录",
-                    value: snapshot?.sessionsRoot ?? DshLocalUsageScanner.defaultSessionsRoot.path
-                )
-                diagnosticRow(
-                    label: "扫描状态",
-                    value: state.dshIsScanning
-                        ? "正在扫描…"
-                        : (snapshot == nil ? "等待首次扫描" : "已扫描 · \(snapshot?.scannedAt.map(Formatters.formatAbsolute) ?? "unknown")")
-                )
-                diagnosticRow(
-                    label: "会话 / LLM 调用",
-                    value: "\(snapshot?.sessionCount ?? 0) / \(snapshot?.eventCount ?? 0)"
-                )
-            }
-
-            SettingsSection(title: "已发现的 provider") {
-                if providerIDs.isEmpty {
-                    Text("尚未发现带 Token 数据的 dsh session。")
-                        .font(SettingsTypography.supporting)
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(providerIDs, id: \.self) { providerID in
-                        if let usage = snapshot?.byProvider[providerID] {
-                            dshProviderSummary(
-                                providerID: providerID,
-                                usage: usage,
-                                models: snapshot?.modelsByProvider[providerID] ?? [],
-                                scannedAt: snapshot?.scannedAt
-                            )
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     private var clientsPane: some View {
         let clients = sortedClientDescriptors
 
@@ -564,18 +518,19 @@ struct SettingsView: View {
                     priceByDay: provider.priceTextByDay
                 )
 
-                LazyVGrid(
-                    columns: Array(repeating: GridItem(.flexible(), alignment: .leading), count: 4),
-                    alignment: .leading,
-                    spacing: 10
-                ) {
+                // 第 1 行：聚合指标（总 Token / 命中率 / 价值），放在一起做整体评估。
+                HStack(alignment: .top, spacing: 16) {
                     usageMetric(label: "总 Token", value: Formatters.formatTokenCountCompact(provider.totalTokens))
+                    usageMetric(label: "命中率", value: provider.cacheHitRate.map { String(format: "%.1f%%", $0 * 100) } ?? "—")
+                    usageMetric(label: "价值", value: costText(provider.costEstimate))
+                }
+
+                // 第 2 行：分项 Token 桶，让 cache / output / reason 的相对比例一眼可读。
+                HStack(alignment: .top, spacing: 16) {
                     usageMetric(label: "Input", value: Formatters.formatTokenCountCompact(provider.inputTokens))
                     usageMetric(label: "Cache", value: Formatters.formatTokenCountCompact(provider.cacheReadTokens))
                     usageMetric(label: "Output", value: Formatters.formatTokenCountCompact(provider.outputTokens))
                     usageMetric(label: "Reason", value: Formatters.formatTokenCountCompact(provider.reasoningTokens))
-                    usageMetric(label: "命中率", value: provider.cacheHitRate.map { String(format: "%.1f%%", $0 * 100) } ?? "—")
-                    usageMetric(label: "价值", value: costText(provider.costEstimate))
                 }
 
                 if provider.unpricedModelUsage.isEmpty == false {
@@ -633,185 +588,6 @@ struct SettingsView: View {
             return "未定价"
         }
         return String(format: "%@%.2f", currency.symbol, value)
-    }
-
-    private func dshProviderSummary(
-        providerID: String,
-        usage: DshProviderUsage,
-        models: [String],
-        scannedAt: Date?
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text(providerID)
-                    .font(SettingsTypography.rowEmphasis)
-                    .monospaced()
-                Spacer()
-                Text("\(Formatters.formatGroupedInt(usage.roundCount)) rounds · \(usage.sessionCount) sessions")
-                    .font(SettingsTypography.numericValue)
-                    .foregroundStyle(.secondary)
-            }
-            if models.isEmpty == false {
-                Text(models.joined(separator: ", "))
-                    .font(SettingsTypography.metadata)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-            }
-            if let today = usage.today {
-                Text("今日总计：\(Formatters.formatTokenCountCompact(today.totalTokens)) tokens（Input + Cache read + Output；Reason 是 Output 子项，不重复计算；不含 cache write）")
-                    .font(SettingsTypography.numericValue)
-                    .foregroundStyle(.secondary)
-                HStack(spacing: 8) {
-                    tokenBreakdown(label: "Input", value: today.inputTokens)
-                    tokenBreakdown(label: "Cache", value: today.cacheReadTokens)
-                    tokenBreakdown(label: "Reason", value: today.reasoningTokens)
-                    tokenBreakdown(label: "Output", value: today.outputTokens)
-                }
-                .font(SettingsTypography.numericValue)
-                .foregroundStyle(.tertiary)
-            } else {
-                Text("今日暂无 Token 活动")
-                    .font(SettingsTypography.metadata)
-                    .foregroundStyle(.tertiary)
-            }
-            if usage.dailyTokenUsage.isEmpty == false {
-                DisclosureGroup("最近 7 天 Token 明细") {
-                    SevenDayTokenUsageHoverView(
-                        days: usage.dailyTokenUsage,
-                        scannedAt: scannedAt,
-                        isScanning: state.dshIsScanning
-                    )
-                    .padding(.top, 4)
-                }
-                .font(SettingsTypography.metadata)
-            }
-        }
-        .padding(.vertical, 4)
-    }
-
-    private var opencodePane: some View {
-        let snapshot = state.opencodeUsageSnapshot
-        let providerIDs = snapshot?.byProvider.keys.sorted() ?? []
-
-        return VStack(alignment: .leading, spacing: 20) {
-            SettingsSection(
-                title: "数据源",
-                footer: "Opencode 不是一个菜单栏 provider，而是共享的本地 token 账本。扫描 opencode.db 后，数据按 providerID 分片；四张卡分别通过自己的开关决定是否合并，minimax 本地能力分片仅作诊断冗余。\n\n**刷新时机**：Opencode 不挂自己的独立 timer，扫描跟随每个 consumer provider（minimax / Codex / Antigravity / GLM）主 quota 刷新成功时触发（应用启动也会主动扫一次）。实际刷新频率 ≈ min(各 consumer provider 的 refreshIntervalSeconds)。如需更密集的扫描，加快对应 provider 的刷新间隔即可。"
-            ) {
-                diagnosticRow(label: "数据库路径", value: snapshot?.dbPath ?? OpencodeUsageScanner.defaultDBURL.path)
-                diagnosticRow(
-                    label: "扫描状态",
-                    value: snapshot == nil
-                        ? "等待扫描或尚未发现数据库"
-                        : "已扫描 · \(snapshot?.scannedAt.map(Formatters.formatAbsolute) ?? "unknown")"
-                )
-                diagnosticRow(
-                    label: "刷新时机",
-                    value: "跟随 4 张卡的 quota 刷新（minimax / Codex / Antigravity / GLM）"
-                )
-            }
-
-            SettingsSection(title: "已发现的模型数据") {
-                if providerIDs.isEmpty {
-                    Text("尚未发现带 token 数据的 provider。请先使用 Opencode 产生一次 assistant 调用。")
-                        .font(SettingsTypography.supporting)
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(providerIDs, id: \.self) { providerID in
-                        if let usage = snapshot?.byProvider[providerID] {
-                            opencodeProviderSummary(
-                                providerID: providerID,
-                                usage: usage,
-                                models: snapshot?.modelsByProvider[providerID] ?? [],
-                                scannedAt: snapshot?.scannedAt
-                            )
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    private func diagnosticRow(label: String, value: String) -> some View {
-        SettingsControlRow(label, alignment: .firstTextBaseline) {
-            Text(value)
-                .font(SettingsTypography.metadataMonospaced)
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
-                .multilineTextAlignment(.trailing)
-                .frame(maxWidth: 320, alignment: .trailing)
-        }
-    }
-
-    private func opencodeProviderSummary(
-        providerID: String,
-        usage: OpencodeProviderUsage,
-        models: [String],
-        scannedAt: Date?
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text(providerID)
-                    .font(SettingsTypography.rowEmphasis)
-                    .monospaced()
-                Spacer()
-                Text("\(Formatters.formatGroupedInt(usage.roundCount)) rounds")
-                    .font(SettingsTypography.numericValue)
-                    .foregroundStyle(.secondary)
-            }
-            Text(models.isEmpty ? "model unknown" : models.joined(separator: ", "))
-                .font(SettingsTypography.metadata)
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
-            HStack(spacing: 10) {
-                Text("近 7 天：\(usage.dailyTokenUsage.count) 天")
-                if usage.cost > 0 {
-                    Text("成本：\(usage.cost, format: .number.precision(.fractionLength(2)))")
-                }
-            }
-            .font(SettingsTypography.numericValue)
-            .foregroundStyle(.tertiary)
-
-            if let today = usage.today {
-                Text("今日总计：\(Formatters.formatTokenCountCompact(today.totalTokens)) tokens（Input + Cache read + Reason + Output；不含 cache write）")
-                    .font(SettingsTypography.numericValue)
-                    .foregroundStyle(.secondary)
-                HStack(spacing: 8) {
-                    tokenBreakdown(label: "Input", value: today.inputTokens)
-                    tokenBreakdown(label: "Cache", value: today.cacheReadTokens)
-                    tokenBreakdown(label: "Reason", value: today.reasoningTokens)
-                    tokenBreakdown(label: "Output", value: today.outputTokens)
-                }
-                .font(SettingsTypography.numericValue)
-                .foregroundStyle(.tertiary)
-                if today.cacheWriteTokens > 0 {
-                    tokenBreakdown(label: "Cache write（不计入总量）", value: today.cacheWriteTokens)
-                        .font(SettingsTypography.numericValue)
-                        .foregroundStyle(.tertiary)
-                }
-            } else {
-                Text("今日暂无 token 活动")
-                    .font(SettingsTypography.metadata)
-                    .foregroundStyle(.tertiary)
-            }
-
-            if !usage.dailyTokenUsage.isEmpty {
-                DisclosureGroup("最近 7 天 token 明细") {
-                    SevenDayTokenUsageHoverView(
-                        days: usage.dailyTokenUsage,
-                        scannedAt: scannedAt,
-                        isScanning: false
-                    )
-                    .padding(.top, 4)
-                }
-                .font(SettingsTypography.metadata)
-            }
-        }
-        .padding(.vertical, 4)
-    }
-
-    private func tokenBreakdown(label: String, value: Int) -> some View {
-        Text("\(label) \(Formatters.formatTokenCountCompact(value))")
     }
 
     /// `providerPane` 派发：把 `ProviderKind` 路由到对应 provider 的设置 UI。
@@ -1101,29 +877,10 @@ struct SettingsView: View {
         statusBarIconStyle = config.effectiveStatusBarIconStyle
         statusBarHealthDotEnabled = config.effectiveStatusBarHealthDotEnabled
 
-        // 映射现在属于 Client 设置；旧版 config 缺少 clientBindings 时，
-        // AppConfig 已从 provider-level mergeOpencodeUsage 自动迁移。
-        minimaxMergeOpencode = config.isClientBindingEnabled(
-            clientID: ClientID.openCode,
-            quotaProviderID: QuotaProviderID.minimax
-        )
-        chatgptMergeOpencode = config.isClientBindingEnabled(
-            clientID: ClientID.openCode,
-            quotaProviderID: QuotaProviderID.openAI
-        )
-        antigravityMergeOpencode = config.isClientBindingEnabled(
-            clientID: ClientID.openCode,
-            quotaProviderID: QuotaProviderID.antigravity
-        )
-        glmMergeOpencode = config.isClientBindingEnabled(
-            clientID: ClientID.openCode,
-            quotaProviderID: QuotaProviderID.zhipu
-        )
-        deepseekMergeOpencode = config.isClientBindingEnabled(
-            clientID: ClientID.openCode,
-            quotaProviderID: QuotaProviderID.deepseek
-        )
-
+        // OpenCode merge 状态从 `ProviderConfig.mergeOpencodeUsage` 读取；
+        // schema v1 配置缺失该字段时走 `shouldMergeOpencodeUsage(for:)` 的兼容默认值
+        // (GLM 默认真，其余默假)。`clientBindings[]` 与之同步，写回时由 saveAndApply
+        // 同步更新两个字段。
         if let id = providerID(for: .minimaxTokenPlan), let minimax = config.providers[id] {
             minimaxEnabled = minimax.enabled
             minimaxApiKey = minimax.apiKey ?? ""
