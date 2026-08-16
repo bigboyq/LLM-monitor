@@ -168,16 +168,16 @@ struct SevenDayTokenUsageHoverView<Daily: LocalUsageDaily>: View {
 
             Divider().opacity(0.45)
 
-            Grid(alignment: .leading, horizontalSpacing: 6, verticalSpacing: 4) {
+            Grid(alignment: .leading, horizontalSpacing: 3, verticalSpacing: 4) {
                 GridRow {
-                    tableHeader("日期", width: 40, alignment: .leading)
-                    tableHeader("R/T", width: 64, alignment: .trailing)
-                    tableHeader("Input", width: 64, alignment: .trailing)
-                    tableHeader("Cache", width: 64, alignment: .trailing)
-                    tableHeader("Output", width: 64, alignment: .trailing)
-                    tableHeader("Reason", width: 64, alignment: .trailing)
+                    tableHeader("日期", width: 34, alignment: .leading)
+                    tableHeader("R/T", width: 48, alignment: .trailing)
+                    tableHeader("Input", width: 58, alignment: .trailing)
+                    tableHeader("Cache", width: 58, alignment: .trailing)
+                    tableHeader("Output", width: 58, alignment: .trailing)
+                    tableHeader("Reason", width: 58, alignment: .trailing)
                     if priceByDay.isEmpty == false {
-                        tableHeader("价值", width: 68, alignment: .trailing)
+                        tableHeader("价值", width: 62, alignment: .trailing)
                     }
                 }
                 ForEach(days) { day in
@@ -186,14 +186,14 @@ struct SevenDayTokenUsageHoverView<Daily: LocalUsageDaily>: View {
                         Text(Formatters.formatMonthDay(day.dayStart))
                             .font(.system(size: 9, weight: .medium).monospacedDigit())
                             .foregroundStyle(.secondary)
-                            .frame(width: 40, alignment: .leading)
-                        roundsTurnsValue(day, width: 64)
-                        tokenValue(metrics.input, color: inputColor, width: 64)
-                        tokenValue(metrics.cacheTotal, color: cacheColor, width: 64)
-                        tokenValue(metrics.output, color: outputColor, width: 64)
-                        tokenValue(metrics.reasoning, color: reasonColor, width: 64)
+                            .frame(width: 34, alignment: .leading)
+                        roundsTurnsValue(day, width: 48)
+                        tokenValue(metrics.input, color: inputColor, width: 58)
+                        tokenValue(metrics.cacheTotal, color: cacheColor, width: 58)
+                        tokenValue(metrics.output, color: outputColor, width: 58)
+                        tokenValue(metrics.reasoning, color: reasonColor, width: 58)
                         if priceByDay.isEmpty == false {
-                            priceValue(priceByDay[day.dayStart] ?? "—", width: 68)
+                            priceValue(priceByDay[day.dayStart] ?? "—", width: 62)
                         }
                     }
                 }
@@ -203,7 +203,7 @@ struct SevenDayTokenUsageHoverView<Daily: LocalUsageDaily>: View {
                 .font(.system(size: 8))
                 .foregroundStyle(.tertiary)
         }
-        .frame(width: priceByDay.isEmpty ? 390 : 460, alignment: .leading)
+        .frame(width: priceByDay.isEmpty ? 390 : 420, alignment: .leading)
     }
 
     private func tableHeader(_ title: String, width: CGFloat, alignment: Alignment) -> some View {
@@ -278,18 +278,16 @@ struct LocalUsageDayBar<Daily: LocalUsageDaily>: View {
             }
             .frame(height: 64)
 
-            HStack(spacing: 2) {
-                Text("I")
-                Text(Formatters.formatTokenCountCompact(metrics.inputTotal))
-                Text("O")
-                Text(Formatters.formatTokenCountCompact(metrics.outputTotal))
+            VStack(spacing: 0) {
+                Text("I \(Formatters.formatTokenCountCompact(metrics.inputTotal))")
+                Text("O \(Formatters.formatTokenCountCompact(metrics.outputTotal))")
             }
-            .font(.system(size: 7, weight: .medium).monospacedDigit())
+            .font(.system(size: 8, weight: .medium).monospacedDigit())
             .foregroundStyle(.secondary)
             .lineLimit(1)
-            .minimumScaleFactor(0.72)
+            .minimumScaleFactor(0.8)
         }
-        .frame(width: 50)
+        .frame(width: 55)
     }
 }
 
@@ -324,6 +322,8 @@ struct LocalUsageLegendDot: View {
 /// - provider 特定的 `isReady`（caller 传 Bool 决定是否进 hover 模式）
 struct LocalUsageFooterView<Daily: LocalUsageDaily>: View {
     let dailyTokenUsage: [Daily]
+    let recentSamples: [LocalTokenUsageSample]
+    let quotaProviderID: String
     let scannedAt: Date?
     let isScanning: Bool
     let isReady: Bool
@@ -331,29 +331,87 @@ struct LocalUsageFooterView<Daily: LocalUsageDaily>: View {
     /// provider 特定的"扫描完毕但还没数据"提示
     let emptyHint: String
 
+    init(
+        dailyTokenUsage: [Daily],
+        recentSamples: [LocalTokenUsageSample] = [],
+        quotaProviderID: String = "",
+        scannedAt: Date?,
+        isScanning: Bool,
+        isReady: Bool,
+        emptyHint: String
+    ) {
+        self.dailyTokenUsage = dailyTokenUsage
+        self.recentSamples = recentSamples
+        self.quotaProviderID = quotaProviderID
+        self.scannedAt = scannedAt
+        self.isScanning = isScanning
+        self.isReady = isReady
+        self.emptyHint = emptyHint
+    }
+
     /// 不把数组顺序当作“今天”的依据；扫描器正常返回升序，但缓存或合并器
     /// 变化时仍应只展示当前自然日的数据。
     private var today: Daily? {
         dailyTokenUsage.last { Calendar.current.isDateInToday($0.dayStart) }
     }
 
-    private var footerText: String? {
-        guard let today else { return nil }
-        return "今天 \(Formatters.formatTokenCountCompact(today.totalTokens)) tokens"
+    private var todaySamples: [LocalTokenUsageSample] {
+        let calendar = Calendar.current
+        let todayStart = calendar.startOfDay(for: Date())
+        guard let tomorrow = calendar.date(byAdding: .day, value: 1, to: todayStart) else {
+            return []
+        }
+        return recentSamples.filter {
+            $0.completedAt >= todayStart && $0.completedAt < tomorrow
+        }
+    }
+
+    private var todayCostText: String {
+        let estimate = ModelPricingCatalog.estimate(
+            samples: todaySamples,
+            quotaProviderID: quotaProviderID
+        )
+        guard !todaySamples.isEmpty else { return "—" }
+        guard let value = estimate.value, let currency = estimate.currency else {
+            return "未定价"
+        }
+        return String(format: "%@%.2f", currency.symbol, value)
+    }
+
+    @ViewBuilder
+    private var todayMetrics: some View {
+        if let today {
+            HStack(spacing: 12) {
+                todayMetric(label: "今天", value: "\(Formatters.formatTokenCountCompact(today.totalTokens)) tokens")
+                todayMetric(label: "命中率", value: today.cacheHitRate.map { String(format: "%.1f%%", $0 * 100) } ?? "—")
+                todayMetric(label: "价值", value: todayCostText)
+            }
+        } else {
+            Text("今日暂无 Token 活动")
+                .font(.system(size: 10))
+                .foregroundStyle(.tertiary)
+        }
+    }
+
+    private func todayMetric(label: String, value: String) -> some View {
+        HStack(spacing: 3) {
+            Text(label)
+                .foregroundStyle(.tertiary)
+            Text(value)
+                .foregroundStyle(Color.secondaryLabel)
+        }
+        .font(.system(size: 10, weight: .medium).monospacedDigit())
+        .lineLimit(1)
     }
 
     var body: some View {
         if isReady, !dailyTokenUsage.isEmpty {
-            let text = footerText ?? "今日暂无 token 活动"
             HoverInfoRow {
                 HStack(spacing: 5) {
                     Image(systemName: "chart.line.uptrend.xyaxis")
                         .font(.system(size: 9, weight: .medium))
                         .foregroundStyle(.tertiary)
-                    Text(text)
-                        .font(.system(size: 10, weight: .medium).monospacedDigit())
-                        .foregroundStyle(Color.secondaryLabel)
-                        .lineLimit(1)
+                    todayMetrics
                 }
             } detail: {
                 SevenDayTokenUsageHoverView(

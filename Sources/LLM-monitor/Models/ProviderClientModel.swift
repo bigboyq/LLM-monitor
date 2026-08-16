@@ -258,6 +258,15 @@ struct ModelCostEstimate: Equatable, Sendable {
     var hasPrice: Bool { value != nil && currency != nil }
 }
 
+/// 未定价模型的实际用量明细，供客户端设置页解释“未知模型”的影响范围。
+struct UnpricedModelUsage: Equatable, Sendable, Identifiable {
+    let modelName: String
+    let totalTokens: Int
+    let sampleCount: Int
+
+    var id: String { modelName }
+}
+
 /// A small, reviewable snapshot of public model prices used by the settings
 /// summary. It is deliberately static: local usage must remain available when
 /// offline, and unknown model names are reported instead of guessed.
@@ -459,6 +468,22 @@ struct ClientProviderUsageSummary: Identifiable, Equatable, Sendable {
         return Double(max(0, cache)) / denominator
     }
 
+    var inputTokens: Int {
+        SaturatingArithmetic.sum(dailyTokenUsage.lazy.map(\.input))
+    }
+
+    var cacheReadTokens: Int {
+        SaturatingArithmetic.sum(dailyTokenUsage.lazy.map(\.cacheRead))
+    }
+
+    var outputTokens: Int {
+        SaturatingArithmetic.sum(dailyTokenUsage.lazy.map(\.output))
+    }
+
+    var reasoningTokens: Int {
+        SaturatingArithmetic.sum(dailyTokenUsage.lazy.map(\.reasoning))
+    }
+
     var costEstimate: ModelCostEstimate {
         let samples = samplesInDisplayedWindow
         return ModelPricingCatalog.estimate(
@@ -474,9 +499,9 @@ struct ClientProviderUsageSummary: Identifiable, Equatable, Sendable {
         )
         return Dictionary(uniqueKeysWithValues: dailyTokenUsage.map { day in
             let text: String
-            if let estimate = estimates[day.dayStart] {
+            if let estimate = estimates[Calendar.current.startOfDay(for: day.dayStart)] {
                 if let value = estimate.value, let currency = estimate.currency {
-                    text = String(format: "%@%.4f", currency.symbol, value)
+                    text = String(format: "%@%.2f", currency.symbol, value)
                 } else {
                     text = "未定价"
                 }
@@ -485,6 +510,51 @@ struct ClientProviderUsageSummary: Identifiable, Equatable, Sendable {
             }
             return (day.dayStart, text)
         })
+    }
+
+    var unpricedModelUsage: [UnpricedModelUsage] {
+        var grouped: [String: (totalTokens: Int, sampleCount: Int)] = [:]
+        for sample in samplesInDisplayedWindow {
+            guard ModelPricingCatalog.pricing(
+                for: sample.modelName,
+                quotaProviderID: quotaProviderID
+            ) == nil else { continue }
+
+            let name: String
+            if let rawName = sample.modelName?.trimmingCharacters(in: .whitespacesAndNewlines),
+               rawName.isEmpty == false {
+                name = rawName
+            } else {
+                name = "模型名缺失"
+            }
+            let input = max(sample.inputTokens, 0)
+            let cached = min(max(sample.cachedInputTokens, 0), input)
+            let sampleTokens = SaturatingArithmetic.sum(
+                input - cached,
+                cached,
+                max(sample.outputTokens, 0),
+                max(sample.reasoningOutputTokens, 0)
+            )
+            let previous = grouped[name] ?? (totalTokens: 0, sampleCount: 0)
+            grouped[name] = (
+                totalTokens: SaturatingArithmetic.add(previous.totalTokens, sampleTokens),
+                sampleCount: SaturatingArithmetic.add(previous.sampleCount, 1)
+            )
+        }
+
+        return grouped.map { name, value in
+            UnpricedModelUsage(
+                modelName: name,
+                totalTokens: value.totalTokens,
+                sampleCount: value.sampleCount
+            )
+        }
+        .sorted {
+            if $0.totalTokens != $1.totalTokens {
+                return $0.totalTokens > $1.totalTokens
+            }
+            return $0.modelName.localizedCaseInsensitiveCompare($1.modelName) == .orderedAscending
+        }
     }
 
     private var samplesInDisplayedWindow: [LocalTokenUsageSample] {

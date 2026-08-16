@@ -59,9 +59,14 @@ final class ProviderModelTests: XCTestCase {
         )
 
         XCTAssertEqual(summary.totalTokens, 140)
+        XCTAssertEqual(summary.inputTokens, 80)
+        XCTAssertEqual(summary.cacheReadTokens, 20)
+        XCTAssertEqual(summary.outputTokens, 30)
+        XCTAssertEqual(summary.reasoningTokens, 10)
         XCTAssertEqual(summary.cacheHitRate ?? -1, 0.2, accuracy: 0.0001)
         XCTAssertEqual(summary.costEstimate.currency, .usd)
         XCTAssertEqual(summary.costEstimate.value ?? -1, 0.00049, accuracy: 0.000001)
+        XCTAssertEqual(summary.priceTextByDay[day], "$0.00")
     }
 
     func testUnknownModelIsNotAssignedAnEstimatedPrice() {
@@ -82,6 +87,35 @@ final class ProviderModelTests: XCTestCase {
         XCTAssertNil(estimate.value)
         XCTAssertNil(estimate.currency)
         XCTAssertEqual(estimate.unpricedModelNames, ["future-model"])
+    }
+
+    func testClientSummaryExplainsUnpricedModelTokenImpact() {
+        let day = Date(timeIntervalSince1970: 1_700_000_000)
+        let summary = ClientProviderUsageSummary(
+            clientID: ClientID.minimaxCode,
+            quotaProviderID: QuotaProviderID.minimax,
+            providerName: "MiniMax",
+            dailyTokenUsage: [
+                UnifiedDailyTokenUsage(dayStart: day, input: 80, cacheRead: 20, output: 30, reasoning: 10)
+            ],
+            recentSamples: [
+                LocalTokenUsageSample(
+                    completedAt: day,
+                    modelName: nil,
+                    promptID: "unknown-model",
+                    inputTokens: 100,
+                    cachedInputTokens: 20,
+                    outputTokens: 30,
+                    reasoningOutputTokens: 10
+                )
+            ],
+            scannedAt: day
+        )
+
+        XCTAssertEqual(summary.unpricedModelUsage.count, 1)
+        XCTAssertEqual(summary.unpricedModelUsage.first?.modelName, "模型名缺失")
+        XCTAssertEqual(summary.unpricedModelUsage.first?.totalTokens, 140)
+        XCTAssertEqual(summary.unpricedModelUsage.first?.sampleCount, 1)
     }
 
     func testPricingAliasesAndAugust17Snapshot() {

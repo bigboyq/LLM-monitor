@@ -230,12 +230,18 @@ providers with observed local token activity. Provider rows are collapsed by def
 expanding one opens the shared seven-day token chart. Its daily table keeps the
 columns `R/T → Input → Cache → Output → Reason → 价值`; the value column is shown
 when the client scanner has per-call model samples. Below the chart, aggregate
-tokens, cache hit rate, and the seven-day estimated public-API value remain visible.
+tokens, the Input/Cache/Output/Reason breakdown, cache hit rate, and the seven-day
+estimated public-API value remain visible. Values are displayed to two decimal
+places. If a sample has no model name or no catalog entry, the client page shows
+the unpriced model and its token amount instead of hiding the impact.
 The estimate uses recognized model names and the published currency for that
 provider; unknown models are explicitly marked as unpriced rather than assigned a
 fallback price. The built-in catalog records its update date in
 `ModelPricingCatalog.lastUpdated` (currently `2026-08-17`). Codex local events keep
 the model from `turn_context` so GPT-5.6 Sol/Terra/Luna can be priced separately.
+
+The main provider card footer also shows today's token total, cache hit rate, and
+value when local model samples are available.
 
 ## Startup Flow
 

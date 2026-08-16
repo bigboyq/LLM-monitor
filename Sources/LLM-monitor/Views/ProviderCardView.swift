@@ -237,6 +237,8 @@ struct ProviderCardView: View {
         let projection = status.usageProjection(for: info)
         makeLocalUsageFooter(
             dailyTokenUsage: projection.dailyTokenUsage,
+            recentSamples: projection.recentSamples,
+            quotaProviderID: status.kind.quotaProviderID,
             scannedAt: projection.scannedAt,
             isReady: projection.hasActivity
                 && (status.kind != .codexChatGpt || projection.dailyTokenUsage.count == 7),
@@ -257,12 +259,16 @@ struct ProviderCardView: View {
     @ViewBuilder
     private func makeLocalUsageFooter<Daily: LocalUsageDaily>(
         dailyTokenUsage: [Daily],
+        recentSamples: [LocalTokenUsageSample],
+        quotaProviderID: String,
         scannedAt: Date?,
         isReady: Bool,
         emptyHint: String
     ) -> some View {
         LocalUsageFooterView(
             dailyTokenUsage: dailyTokenUsage,
+            recentSamples: recentSamples,
+            quotaProviderID: quotaProviderID,
             scannedAt: scannedAt,
             isScanning: status.isScanningLocalUsage,
             isReady: isReady,

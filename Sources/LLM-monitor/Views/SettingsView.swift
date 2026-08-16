@@ -563,16 +563,31 @@ struct SettingsView: View {
                     priceByDay: provider.priceTextByDay
                 )
 
-                HStack(spacing: 18) {
+                LazyVGrid(
+                    columns: Array(repeating: GridItem(.flexible(), alignment: .leading), count: 4),
+                    alignment: .leading,
+                    spacing: 10
+                ) {
                     usageMetric(label: "总 Token", value: Formatters.formatTokenCountCompact(provider.totalTokens))
-                    usageMetric(label: "缓存命中率", value: provider.cacheHitRate.map { String(format: "%.1f%%", $0 * 100) } ?? "—")
+                    usageMetric(label: "Input", value: Formatters.formatTokenCountCompact(provider.inputTokens))
+                    usageMetric(label: "Cache", value: Formatters.formatTokenCountCompact(provider.cacheReadTokens))
+                    usageMetric(label: "Output", value: Formatters.formatTokenCountCompact(provider.outputTokens))
+                    usageMetric(label: "Reason", value: Formatters.formatTokenCountCompact(provider.reasoningTokens))
+                    usageMetric(label: "命中率", value: provider.cacheHitRate.map { String(format: "%.1f%%", $0 * 100) } ?? "—")
                     usageMetric(label: "价值", value: costText(provider.costEstimate))
                 }
 
-                if provider.costEstimate.unpricedModelNames.isEmpty == false {
-                    Text("未定价模型：\(provider.costEstimate.unpricedModelNames.joined(separator: ", "))")
-                        .font(SettingsTypography.metadata)
-                        .foregroundStyle(.orange)
+                if provider.unpricedModelUsage.isEmpty == false {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("未定价模型")
+                            .font(SettingsTypography.metadata)
+                            .foregroundStyle(.orange)
+                        ForEach(provider.unpricedModelUsage) { model in
+                            Text("\(model.modelName) · \(Formatters.formatTokenCountCompact(model.totalTokens)) tokens · \(model.sampleCount) 次")
+                                .font(SettingsTypography.metadata)
+                                .foregroundStyle(.orange)
+                        }
+                    }
                 }
                 if provider.costEstimate.pricedModelNames.isEmpty == false {
                     Text("计价模型：\(provider.costEstimate.pricedModelNames.joined(separator: ", ")) · 价格目录更新于 \(ModelPricingCatalog.lastUpdated)")
@@ -616,7 +631,7 @@ struct SettingsView: View {
         guard let value = estimate.value, let currency = estimate.currency else {
             return "未定价"
         }
-        return String(format: "%@%.4f", currency.symbol, value)
+        return String(format: "%@%.2f", currency.symbol, value)
     }
 
     private func dshProviderSummary(
