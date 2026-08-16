@@ -20,7 +20,7 @@ final class MinimaxV2UsageTests: XCTestCase {
             turns: 1, rounds: 2
         )
         let index = MinimaxLocalUsageScanner.CacheIndex(
-            version: 12,
+            version: 13,
             lastScannedAt: now,
             sources: ["runtime": MinimaxLocalUsageScanner.SourceIndexEntry(
                 mtimeMs: 1, sizeBytes: 2, walMtimeMs: 0, walSizeBytes: 0,
@@ -58,6 +58,36 @@ final class MinimaxV2UsageTests: XCTestCase {
         let cacheRead: Int
         let cacheWrite: Int
         let raw: String?
+        let model: String?
+
+        init(
+            sessionID: String,
+            turnID: String?,
+            timestampMs: Int64,
+            input: Int,
+            output: Int,
+            reasoning: Int,
+            cacheRead: Int,
+            cacheWrite: Int,
+            raw: String?,
+            model: String? = nil
+        ) {
+            self.sessionID = sessionID
+            self.turnID = turnID
+            self.timestampMs = timestampMs
+            self.input = input
+            self.output = output
+            self.reasoning = reasoning
+            self.cacheRead = cacheRead
+            self.cacheWrite = cacheWrite
+            self.raw = raw
+            self.model = model
+        }
+    }
+
+    private struct SessionModelRow {
+        let sessionID: String
+        let effectiveModel: String
     }
 
     private struct MessageRow {
@@ -70,7 +100,8 @@ final class MinimaxV2UsageTests: XCTestCase {
     private func makeV2Database(
         at url: URL? = nil,
         tokenRows: [TokenRow],
-        messageRows: [MessageRow] = []
+        messageRows: [MessageRow] = [],
+        sessionModels: [SessionModelRow] = []
     ) throws -> URL {
         let databaseURL = url ?? FileManager.default.temporaryDirectory
             .appendingPathComponent("minimax-v2-\(UUID().uuidString).sqlite")
@@ -120,13 +151,24 @@ final class MinimaxV2UsageTests: XCTestCase {
             """,
             database: database
         )
+        if !sessionModels.isEmpty {
+            try execute(
+                """
+                CREATE TABLE local_runtime_sessions (
+                    session_id TEXT PRIMARY KEY,
+                    record_json TEXT NOT NULL
+                );
+                """,
+                database: database
+            )
+        }
 
         for row in tokenRows {
             let sql = """
             INSERT INTO local_runtime_token_usage
-              (session_id, turn_id, ts, input_tokens, output_tokens, reasoning_tokens,
+              (session_id, turn_id, model, ts, input_tokens, output_tokens, reasoning_tokens,
                cache_read_tokens, cache_write_tokens, raw)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """
             var statement: OpaquePointer?
             guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK,
@@ -140,17 +182,36 @@ final class MinimaxV2UsageTests: XCTestCase {
             } else {
                 sqlite3_bind_null(statement, 2)
             }
-            sqlite3_bind_int64(statement, 3, row.timestampMs)
-            sqlite3_bind_int64(statement, 4, Int64(row.input))
-            sqlite3_bind_int64(statement, 5, Int64(row.output))
-            sqlite3_bind_int64(statement, 6, Int64(row.reasoning))
-            sqlite3_bind_int64(statement, 7, Int64(row.cacheRead))
-            sqlite3_bind_int64(statement, 8, Int64(row.cacheWrite))
-            if let raw = row.raw {
-                sqlite3_bind_text(statement, 9, raw, -1, transientDestructor)
+            if let model = row.model {
+                sqlite3_bind_text(statement, 3, model, -1, transientDestructor)
             } else {
-                sqlite3_bind_null(statement, 9)
+                sqlite3_bind_null(statement, 3)
             }
+            sqlite3_bind_int64(statement, 4, row.timestampMs)
+            sqlite3_bind_int64(statement, 5, Int64(row.input))
+            sqlite3_bind_int64(statement, 6, Int64(row.output))
+            sqlite3_bind_int64(statement, 7, Int64(row.reasoning))
+            sqlite3_bind_int64(statement, 8, Int64(row.cacheRead))
+            sqlite3_bind_int64(statement, 9, Int64(row.cacheWrite))
+            if let raw = row.raw {
+                sqlite3_bind_text(statement, 10, raw, -1, transientDestructor)
+            } else {
+                sqlite3_bind_null(statement, 10)
+            }
+            XCTAssertEqual(sqlite3_step(statement), SQLITE_DONE)
+        }
+
+        for row in sessionModels {
+            let sql = "INSERT INTO local_runtime_sessions (session_id, record_json) VALUES (?, ?)"
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK,
+                  let statement else {
+                throw NSError(domain: "MinimaxV2UsageTests", code: 5)
+            }
+            defer { sqlite3_finalize(statement) }
+            sqlite3_bind_text(statement, 1, row.sessionID, -1, transientDestructor)
+            let record = "{\"effectiveModel\":\(jsonString(row.effectiveModel))}"
+            sqlite3_bind_text(statement, 2, record, -1, transientDestructor)
             XCTAssertEqual(sqlite3_step(statement), SQLITE_DONE)
         }
 
@@ -222,6 +283,58 @@ final class MinimaxV2UsageTests: XCTestCase {
         XCTAssertEqual(day.cacheWriteTokens, 9)
         XCTAssertEqual(day.totalTokens, 910)
         XCTAssertEqual(aggregate.samples.count, 3)
+    }
+
+    func testV2ReaderRecoversMissingModelFromSessionAndUniqueLedgerModel() throws {
+        let base = Int64(Date().timeIntervalSince1970 * 1000)
+        let databaseURL = try makeV2Database(
+            tokenRows: [
+                TokenRow(sessionID: "session-model", turnID: "t1", timestampMs: base,
+                         input: 10, output: 1, reasoning: 0, cacheRead: 0, cacheWrite: 0,
+                         raw: nil),
+                TokenRow(sessionID: "ledger-model", turnID: "t2", timestampMs: base + 1_000,
+                         input: 10, output: 1, reasoning: 0, cacheRead: 0, cacheWrite: 0,
+                         raw: nil, model: "minimax/MiniMax-M3"),
+                TokenRow(sessionID: "unique-model", turnID: "t3", timestampMs: base + 2_000,
+                         input: 10, output: 1, reasoning: 0, cacheRead: 0, cacheWrite: 0,
+                         raw: nil),
+            ],
+            sessionModels: [
+                SessionModelRow(sessionID: "session-model", effectiveModel: "minimax/MiniMax-M3")
+            ]
+        )
+        defer { try? FileManager.default.removeItem(at: databaseURL) }
+
+        let reader = try MinimaxDBReader(path: databaseURL)
+        defer { reader.close() }
+        let aggregate = try reader.aggregate(calendar: .current)
+
+        XCTAssertEqual(
+            aggregate.samples.map(\.modelName),
+            ["minimax/MiniMax-M3", "minimax/MiniMax-M3", "minimax/MiniMax-M3"]
+        )
+    }
+
+    func testV2ReaderDoesNotGuessWhenLedgerContainsMultipleModels() throws {
+        let base = Int64(Date().timeIntervalSince1970 * 1000)
+        let databaseURL = try makeV2Database(tokenRows: [
+            TokenRow(sessionID: "m3", turnID: "t1", timestampMs: base,
+                     input: 10, output: 1, reasoning: 0, cacheRead: 0, cacheWrite: 0,
+                     raw: nil, model: "minimax/MiniMax-M3"),
+            TokenRow(sessionID: "m27", turnID: "t2", timestampMs: base + 1_000,
+                     input: 10, output: 1, reasoning: 0, cacheRead: 0, cacheWrite: 0,
+                     raw: nil, model: "MiniMax-M2.7"),
+            TokenRow(sessionID: "missing", turnID: "t3", timestampMs: base + 2_000,
+                     input: 10, output: 1, reasoning: 0, cacheRead: 0, cacheWrite: 0,
+                     raw: nil),
+        ])
+        defer { try? FileManager.default.removeItem(at: databaseURL) }
+
+        let reader = try MinimaxDBReader(path: databaseURL)
+        defer { reader.close() }
+        let aggregate = try reader.aggregate(calendar: .current)
+
+        XCTAssertNil(aggregate.samples.last?.modelName)
     }
 
     func testV2ReaderClampsNegativeValuesAndUsesPerRowReasoningMaximum() throws {
@@ -348,7 +461,7 @@ final class MinimaxV2UsageTests: XCTestCase {
             cacheDir: cacheDir,
             fileManager: FileManagerBox()
         )
-        XCTAssertEqual(current.version, 12)
+        XCTAssertEqual(current.version, 13)
         XCTAssertTrue(current.sources.isEmpty)
         XCTAssertTrue(current.dailyBySource.isEmpty)
         XCTAssertEqual(current.samplesBySource, [:])

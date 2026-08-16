@@ -69,6 +69,36 @@ final class ProviderModelTests: XCTestCase {
         XCTAssertEqual(summary.priceTextByDay[day], "$0.00")
     }
 
+    func testCurrentDayUsesSamplesWhenDailyAggregateIsBehind() {
+        let now = Date()
+        let today = Calendar.current.startOfDay(for: now)
+        let sample = LocalTokenUsageSample(
+            completedAt: now,
+            modelName: "MiniMax-M3",
+            promptID: "dsh:turn-1",
+            inputTokens: 381_000,
+            cachedInputTokens: 26_000_000,
+            outputTokens: 71_000,
+            reasoningOutputTokens: 0,
+            sourceProviderID: "dsh:minimax"
+        )
+
+        let summary = ClientProviderUsageSummary(
+            clientID: ClientID.dsh,
+            quotaProviderID: QuotaProviderID.minimax,
+            providerName: "MiniMax",
+            dailyTokenUsage: [UnifiedDailyTokenUsage(dayStart: today)],
+            recentSamples: [sample],
+            scannedAt: now
+        )
+
+        let day = try! XCTUnwrap(summary.dailyTokenUsage.first)
+        XCTAssertEqual(day.input, 381_000)
+        XCTAssertEqual(day.cacheRead, 26_000_000)
+        XCTAssertEqual(day.output, 71_000)
+        XCTAssertEqual(summary.priceTextByDay[today], "¥11.86")
+    }
+
     func testUnknownModelIsNotAssignedAnEstimatedPrice() {
         let sample = LocalTokenUsageSample(
             completedAt: Date(),
@@ -141,9 +171,9 @@ final class ProviderModelTests: XCTestCase {
         let minimax = ModelPricingCatalog.pricing(
             for: "minimax/MiniMax-M3", quotaProviderID: QuotaProviderID.minimax
         )
-        XCTAssertEqual(minimax?.inputPerMillion, 2.1)
-        XCTAssertEqual(minimax?.cacheReadPerMillion, 0.42)
-        XCTAssertEqual(minimax?.outputPerMillion, 8.4)
+        XCTAssertEqual(minimax?.inputPerMillion, 2.022)
+        XCTAssertEqual(minimax?.cacheReadPerMillion, 0.4044)
+        XCTAssertEqual(minimax?.outputPerMillion, 8.088)
 
         let glm52 = ModelPricingCatalog.pricing(for: "GLM-5.2", quotaProviderID: QuotaProviderID.zhipu)
         let glm53 = ModelPricingCatalog.pricing(for: "GLM-5.3", quotaProviderID: QuotaProviderID.zhipu)
@@ -227,6 +257,27 @@ final class ProviderModelTests: XCTestCase {
         )
 
         XCTAssertEqual(estimate.value ?? -1, 3.3165, accuracy: 0.000001)
+        XCTAssertEqual(estimate.currency, .cny)
+    }
+
+    func testMiniMaxDshM3PricingKeepsSeparateCacheReadBucket() {
+        let sample = LocalTokenUsageSample(
+            completedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            modelName: "MiniMax-M3",
+            promptID: "dsh-minimax-sample",
+            inputTokens: 381_000,
+            cachedInputTokens: 26_000_000,
+            outputTokens: 71_000,
+            reasoningOutputTokens: 0,
+            sourceProviderID: "dsh:minimax"
+        )
+
+        let estimate = ModelPricingCatalog.estimate(
+            samples: [sample],
+            quotaProviderID: QuotaProviderID.minimax
+        )
+
+        XCTAssertEqual(estimate.value ?? -1, 11.85903, accuracy: 0.000001)
         XCTAssertEqual(estimate.currency, .cny)
     }
 

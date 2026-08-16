@@ -382,6 +382,28 @@ struct LocalUsageFooterView<Daily: LocalUsageDaily>: View {
         return String(format: "%@%.2f", currency.symbol, value)
     }
 
+    private var priceByDay: [Date: String] {
+        let estimates = ModelPricingCatalog.estimateByDay(
+            samples: recentSamples,
+            quotaProviderID: quotaProviderID,
+            deepseekPeakWindow: deepseekPeakWindow
+        )
+        return Dictionary(uniqueKeysWithValues: dailyTokenUsage.map { day in
+            let key = Calendar.current.startOfDay(for: day.dayStart)
+            let text: String
+            if let estimate = estimates[key] {
+                if let value = estimate.value, let currency = estimate.currency {
+                    text = String(format: "%@%.2f", currency.symbol, value)
+                } else {
+                    text = "未定价"
+                }
+            } else {
+                text = "—"
+            }
+            return (day.dayStart, text)
+        })
+    }
+
     @ViewBuilder
     private var todayMetrics: some View {
         if let today {
@@ -421,7 +443,8 @@ struct LocalUsageFooterView<Daily: LocalUsageDaily>: View {
                 SevenDayTokenUsageHoverView(
                     days: dailyTokenUsage,
                     scannedAt: scannedAt,
-                    isScanning: isScanning
+                    isScanning: isScanning,
+                    priceByDay: priceByDay
                 )
             }
         } else {

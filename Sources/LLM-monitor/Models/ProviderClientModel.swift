@@ -166,6 +166,88 @@ struct UnifiedDailyTokenUsage: Equatable, Codable, Sendable, Identifiable, Local
     }
 }
 
+/// Keep the current day complete when a scanner's persisted daily aggregate is
+/// one scan behind its per-request samples. This can happen while a local DB
+/// is being written: the sample is already visible, but the cached daily row
+/// has not been rebuilt yet.
+enum UnifiedDailyUsageNormalizer {
+    static func includingCurrentDay(
+        dailyTokenUsage: [UnifiedDailyTokenUsage],
+        samples: [LocalTokenUsageSample],
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> [UnifiedDailyTokenUsage] {
+        guard samples.isEmpty == false else { return dailyTokenUsage }
+
+        let todayStart = calendar.startOfDay(for: now)
+        guard let tomorrow = calendar.date(byAdding: .day, value: 1, to: todayStart) else {
+            return dailyTokenUsage
+        }
+        let todaySamples = samples.filter {
+            $0.completedAt >= todayStart && $0.completedAt < tomorrow
+        }
+        guard todaySamples.isEmpty == false else {
+            return dailyTokenUsage
+        }
+
+        let sampleToday = UnifiedDailyTokenUsage(
+            dayStart: todayStart,
+            input: SaturatingArithmetic.sum(todaySamples.map { ModelPricingCatalog.tokenComponents(for: $0).uncached }),
+            cacheRead: SaturatingArithmetic.sum(todaySamples.map { ModelPricingCatalog.tokenComponents(for: $0).cached }),
+            output: SaturatingArithmetic.sum(todaySamples.map { max(0, $0.outputTokens) }),
+            reasoning: SaturatingArithmetic.sum(todaySamples.map { max(0, $0.reasoningOutputTokens) }),
+            turns: Set(todaySamples.map(\.promptID).filter { $0.isEmpty == false }).count,
+            rounds: todaySamples.count
+        )
+
+        var byDay = Dictionary(
+            uniqueKeysWithValues: normalized(dailyTokenUsage, calendar: calendar).map {
+                ($0.dayStart, $0)
+            }
+        )
+        if let existing = byDay[todayStart] {
+            // Daily data remains authoritative for values it already contains;
+            // max() fills a stale current-day row without double-counting the
+            // same samples when both sources contain the same requests.
+            byDay[todayStart] = UnifiedDailyTokenUsage(
+                dayStart: todayStart,
+                input: max(existing.input, sampleToday.input),
+                cacheRead: max(existing.cacheRead, sampleToday.cacheRead),
+                cacheWrite: existing.cacheWrite,
+                output: max(existing.output, sampleToday.output),
+                reasoning: max(existing.reasoning, sampleToday.reasoning),
+                turns: max(existing.turns, sampleToday.turns),
+                rounds: max(existing.rounds, sampleToday.rounds)
+            )
+        } else {
+            byDay[todayStart] = sampleToday
+        }
+        return byDay.values.sorted { $0.dayStart < $1.dayStart }
+    }
+
+    private static func normalized(
+        _ dailyTokenUsage: [UnifiedDailyTokenUsage],
+        calendar: Calendar
+    ) -> [UnifiedDailyTokenUsage] {
+        var byDay: [Date: UnifiedDailyTokenUsage] = [:]
+        for day in dailyTokenUsage {
+            let dayStart = calendar.startOfDay(for: day.dayStart)
+            let normalizedDay = UnifiedDailyTokenUsage(
+                dayStart: dayStart,
+                input: day.input,
+                cacheRead: day.cacheRead,
+                cacheWrite: day.cacheWrite,
+                output: day.output,
+                reasoning: day.reasoning,
+                turns: day.turns,
+                rounds: day.rounds
+            )
+            byDay[dayStart] = byDay[dayStart].map { $0 + normalizedDay } ?? normalizedDay
+        }
+        return byDay.values.sorted { $0.dayStart < $1.dayStart }
+    }
+}
+
 /// One client's contribution to a quota card.
 struct ClientUsageContribution: Equatable, Sendable {
     let clientID: String
@@ -189,8 +271,12 @@ struct ClientUsageContribution: Equatable, Sendable {
     ) {
         self.clientID = clientID
         self.displayName = displayName
-        self.dailyTokenUsage = dailyTokenUsage.map(UnifiedDailyTokenUsage.init)
+        let unifiedDaily = dailyTokenUsage.map(UnifiedDailyTokenUsage.init)
         self.recentSamples = recentSamples
+        self.dailyTokenUsage = UnifiedDailyUsageNormalizer.includingCurrentDay(
+            dailyTokenUsage: unifiedDaily,
+            samples: recentSamples
+        )
         self.scannedAt = scannedAt
     }
 }
@@ -272,6 +358,9 @@ struct UnpricedModelUsage: Equatable, Sendable, Identifiable {
 /// offline, and unknown model names are reported instead of guessed.
 enum ModelPricingCatalog {
     static let lastUpdated = "2026-08-17"
+    /// MiniMax publishes the M3 API price in USD; the settings UI keeps the
+    /// existing CNY display and converts with the user-specified snapshot rate.
+    private static let miniMaxUSDToCNY = 6.74
 
     static func estimate(
         samples: [LocalTokenUsageSample],
@@ -379,14 +468,15 @@ enum ModelPricingCatalog {
         case QuotaProviderID.minimax:
             if model.contains("m3") {
                 // MiniMax-M3 and minimax/MiniMax-M3 are the same model. The
-                // standard <=512K public price is used because the local
-                // ledger does not retain the request context length.
+                // standard <=512K public USD price is converted to CNY; the
+                // local ledger does not retain request context length, so the
+                // >512K high-price tier is intentionally not considered.
                 return ModelTokenPricing(
                     modelLabel: modelName ?? "MiniMax-M3",
                     currency: .cny,
-                    inputPerMillion: 2.1,
-                    cacheReadPerMillion: 0.42,
-                    outputPerMillion: 8.4
+                    inputPerMillion: 0.30 * miniMaxUSDToCNY,
+                    cacheReadPerMillion: 0.06 * miniMaxUSDToCNY,
+                    outputPerMillion: 1.20 * miniMaxUSDToCNY
                 )
             }
             if model.contains("m2.7") || model.contains("m2.5") || model.contains("m2.1") || model == "m2" {
@@ -502,8 +592,11 @@ struct ClientProviderUsageSummary: Identifiable, Equatable, Sendable {
         self.clientID = clientID
         self.quotaProviderID = quotaProviderID
         self.providerName = providerName
-        self.dailyTokenUsage = dailyTokenUsage
         self.recentSamples = recentSamples
+        self.dailyTokenUsage = UnifiedDailyUsageNormalizer.includingCurrentDay(
+            dailyTokenUsage: dailyTokenUsage,
+            samples: recentSamples
+        )
         self.scannedAt = scannedAt
         self.deepseekPeakWindow = deepseekPeakWindow
     }

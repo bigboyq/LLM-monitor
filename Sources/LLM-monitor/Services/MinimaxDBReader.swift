@@ -85,6 +85,9 @@ private struct TotalsRow {
 /// 只保留 minimax v2 领域 SQL（`aggregate(calendar:)`）。
 final class MinimaxDBReader {
     private let conn: SQLiteConnection
+    private static let sqliteTransientDestructor = unsafeBitCast(
+        Int(-1), to: sqlite3_destructor_type.self
+    )
     var path: String { conn.path }
 
     init(path: URL, readOnly: Bool = false) throws {
@@ -218,34 +221,83 @@ final class MinimaxDBReader {
         // 逐次调用只保留 UI 需要的最近窗口。inputTokens 归一为
         // uncached + cacheRead，和 Codex UsageMetricSummary 的语义一致。
         let sampleWhere = sampleCutoff == nil
-            ? "WHERE ts IS NOT NULL"
-            : "WHERE ts IS NOT NULL AND ts >= ?"
+            ? "WHERE t.ts IS NOT NULL"
+            : "WHERE t.ts IS NOT NULL AND t.ts >= ?"
         // 旧版/测试 fixture 可能还没有 `model` 列。额度统计本身不依赖它；
         // 缺失时用 NULL，让 general 文本模型仍可匹配，而不是让整个 source 失败。
         let tableColumns = try conn.query(sql: "PRAGMA table_info(\(resolvedTableName))") { stmt in
             try SQLiteConnection.requiredText(stmt, column: 1)
         }
-        let sampleModelExpression = tableColumns.contains("model") ? "model" : "NULL"
+        let hasModelColumn = tableColumns.contains("model")
+        let sessionColumns = try conn.query(sql: "PRAGMA table_info(local_runtime_sessions)") { stmt in
+            try SQLiteConnection.requiredText(stmt, column: 1)
+        }
+        // MiniMax runtime 在 2026-08-15 的 schema migration 后，部分 token
+        // ledger row 不再写 model，但 session projection 仍可能保留
+        // record_json.effectiveModel。优先使用 row 自己的 model，再回退到
+        // session model；若整个 ledger 只有一个明确模型，最后再使用这个
+        // 唯一模型作为保守回退，避免把多模型数据错误合并。
+        let hasSessionModelProjection = sessionColumns.contains("session_id")
+            && sessionColumns.contains("record_json")
+        let ledgerModelExpression = hasModelColumn ? "NULLIF(TRIM(t.model), '')" : "NULL"
+        let sessionModelExpression = hasSessionModelProjection
+            ? "NULLIF(TRIM(json_extract(CASE WHEN json_valid(s.record_json) THEN s.record_json ELSE '{}' END, '$.effectiveModel')), '')"
+            : "NULL"
+        let observedModels: [String] = hasModelColumn
+            ? try conn.query(sql: """
+                SELECT DISTINCT TRIM(model)
+                FROM \(resolvedTableName)
+                WHERE model IS NOT NULL AND TRIM(model) <> ''
+                ORDER BY TRIM(model)
+                """) { stmt in
+                try SQLiteConnection.requiredText(stmt, column: 0)
+            }
+            : []
+        let uniqueObservedModel = observedModels.count == 1 ? observedModels[0] : nil
+        let uniqueObservedModelExpression = uniqueObservedModel == nil ? "NULL" : "?"
+        let sampleModelExpression = "COALESCE(\(ledgerModelExpression), \(sessionModelExpression), \(uniqueObservedModelExpression))"
+        let sessionJoin = hasSessionModelProjection
+            ? "LEFT JOIN local_runtime_sessions s ON s.session_id = t.session_id"
+            : ""
         let sampleSQL = """
             SELECT
-              session_id,
-              turn_id,
+              t.session_id,
+              t.turn_id,
               \(sampleModelExpression) AS model,
-              ts,
-              input_tokens,
-              output_tokens,
-              reasoning_tokens,
-              cache_read_tokens
-            FROM \(resolvedTableName)
+              t.ts,
+              t.input_tokens,
+              t.output_tokens,
+              t.reasoning_tokens,
+              t.cache_read_tokens
+            FROM \(resolvedTableName) t
+            \(sessionJoin)
             \(sampleWhere)
-            ORDER BY ts
-            """
+            ORDER BY t.ts
+        """
         let cutoffMs = sampleCutoff.map { Int64($0.timeIntervalSince1970 * 1000) }
+        let sampleBind: ((OpaquePointer) -> Int32)? = (uniqueObservedModel != nil || cutoffMs != nil)
+            ? { stmt in
+                var nextIndex: Int32 = 1
+                if let uniqueObservedModel {
+                    let code = sqlite3_bind_text(
+                        stmt,
+                        nextIndex,
+                        (uniqueObservedModel as NSString).utf8String,
+                        -1,
+                        Self.sqliteTransientDestructor
+                    )
+                    guard code == SQLITE_OK else { return code }
+                    nextIndex += 1
+                }
+                if let cutoffMs {
+                    return sqlite3_bind_int64(stmt, nextIndex, cutoffMs)
+                }
+                return SQLITE_OK
+            }
+            : nil
         let samples = try conn.query(
             sql: sampleSQL,
-            bind: cutoffMs.map { value in
-                { stmt in sqlite3_bind_int64(stmt, 1, value) }
-            },
+            bind: sampleBind,
             map: { stmt -> LocalTokenUsageSample in
                 func optionalText(_ column: Int32) -> String? {
                     guard sqlite3_column_type(stmt, column) != SQLITE_NULL,

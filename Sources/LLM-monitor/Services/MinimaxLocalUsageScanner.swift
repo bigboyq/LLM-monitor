@@ -512,7 +512,7 @@ extension MinimaxLocalUsageScanner {
         var samplesBySource: [String: [LocalTokenUsageSample]]?
 
         static let empty = CacheIndex(
-            version: 12, // v12 收敛为 v2-only，旧 source/cache 全量重建
+            version: 13, // v13 重新读取 model 回退来源，旧 samples 全量重建
             lastScannedAt: Date(timeIntervalSince1970: 0),
             sources: [:],
             dailyBySource: [:],
@@ -617,7 +617,7 @@ extension MinimaxLocalUsageScanner {
         try ScannerIndexIO.loadIndex(
             cacheDir: cacheDir,
             fileManager: fileManager,
-            currentVersion: 12,
+            currentVersion: 13,
             empty: .empty,
             version: { $0.version },
             logTag: "[minimax-scan]"

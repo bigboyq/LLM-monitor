@@ -202,7 +202,7 @@ final class DshLocalUsageScanner: ObservableObject, @unchecked Sendable {
                 scannedAt: now()
             )
             try saveIndex(
-                DshCacheIndex(version: 1, files: [], snapshot: empty),
+                DshCacheIndex(version: 2, files: [], snapshot: empty),
                 cacheDir: cacheDir,
                 fileManager: fileManager
             )
@@ -235,7 +235,7 @@ final class DshLocalUsageScanner: ObservableObject, @unchecked Sendable {
             calendar: calendar,
             now: scanNow
         )
-        index = DshCacheIndex(version: 1, files: fingerprint.files, snapshot: snapshot)
+        index = DshCacheIndex(version: 2, files: fingerprint.files, snapshot: snapshot)
         try saveIndex(index, cacheDir: cacheDir, fileManager: fileManager)
         logInfo(
             "[dsh-scan] ✓ sessions=\(snapshot.sessionCount), providers=\(snapshot.byProvider.count), "
@@ -659,7 +659,7 @@ private struct DshCacheIndex: Codable, Equatable, Sendable {
 
 private extension DshCacheIndex {
     func matches(_ fingerprint: CacheFingerprint) -> Bool {
-        version == 1 && files == fingerprint.files
+        version == 2 && files == fingerprint.files
     }
 }
 
@@ -671,8 +671,8 @@ private extension DshLocalUsageScanner {
         try ScannerIndexIO.loadIndex(
             cacheDir: cacheDir,
             fileManager: fileManager,
-            currentVersion: 1,
-            empty: DshCacheIndex(version: 1, files: [], snapshot: nil),
+            currentVersion: 2,
+            empty: DshCacheIndex(version: 2, files: [], snapshot: nil),
             version: { $0.version },
             logTag: "[dsh-scan]"
         )
