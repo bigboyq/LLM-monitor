@@ -123,6 +123,51 @@ final class CodexLocalUsageTests: XCTestCase {
         XCTAssertEqual(sample.inputTokens, 100)
     }
 
+    func testModelContextUpdatesBetweenTokenCountsInSameTurn() throws {
+        // 验证 modelContext 在 turn 中间出现时，后面的 tokenCount 用新 model：
+        // turn 1 内先有 modelContext("gpt-5.6-sol") → tokenCount(input 100)；
+        // 然后 modelContext("gpt-5.6-terra") → tokenCount(input 200)。
+        // 这条测试覆盖 activeTurnID 已经存在、但 currentModelName 在 turn 中被替换的边界，
+        // 避免 sample 在切换 model 之前/之后错拿旧 model。
+        let base = Date(timeIntervalSince1970: 22_000)
+        let fileURL = URL(fileURLWithPath: "/tmp/codex-local-model-mid-turn-test.jsonl")
+        let events: [CodexSessionEvent] = [
+            .modelContext(timestamp: base, modelName: "gpt-5.6-sol"),
+            .taskStarted(timestamp: base.addingTimeInterval(1), turnID: "turn-mid"),
+            .tokenCount(
+                timestamp: base.addingTimeInterval(2),
+                usage: CodexTokenUsageEvent(inputTokens: 100, cachedInputTokens: 0, outputTokens: 10, reasoningOutputTokens: 0)
+            ),
+            .modelContext(timestamp: base.addingTimeInterval(3), modelName: "gpt-5.6-terra"),
+            .tokenCount(
+                timestamp: base.addingTimeInterval(4),
+                usage: CodexTokenUsageEvent(inputTokens: 200, cachedInputTokens: 0, outputTokens: 20, reasoningOutputTokens: 0)
+            ),
+            .taskCompleted(timestamp: base.addingTimeInterval(5), turnID: "turn-mid")
+        ]
+
+        let result = CodexFetcher.summarizeLocalUsage(
+            windows: ["primary": CodexFetcher.ActiveUsageWindow(
+                startDate: base.addingTimeInterval(-1),
+                resetDate: base.addingTimeInterval(60)
+            )],
+            dailyWindows: [CodexFetcher.DailyUsageWindow(
+                startDate: base.addingTimeInterval(-1),
+                endDate: base.addingTimeInterval(60)
+            )],
+            sessionFiles: [CodexSessionFileEvents(fileURL: fileURL, events: events)]
+        )
+
+        // recentSamples 包含两个 sample，按 completedAt 排序（见 P1-7）。
+        XCTAssertEqual(result.recentSamples.count, 2)
+        let firstSample = try XCTUnwrap(result.recentSamples.first)
+        XCTAssertEqual(firstSample.inputTokens, 100)
+        XCTAssertEqual(firstSample.modelName, "gpt-5.6-sol")
+        let secondSample = try XCTUnwrap(result.recentSamples.last)
+        XCTAssertEqual(secondSample.inputTokens, 200)
+        XCTAssertEqual(secondSample.modelName, "gpt-5.6-terra", "turn 中途切 model 后，第二条 sample 必须用新 model")
+    }
+
     func testLatestPromptUsageOnlyIncludesRoundsOfSelectedTurn() throws {
         let base = Date(timeIntervalSince1970: 30_000)
         let fileURL = URL(fileURLWithPath: "/tmp/codex-latest-prompt-test.jsonl")
