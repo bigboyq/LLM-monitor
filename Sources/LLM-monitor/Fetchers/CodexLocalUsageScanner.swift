@@ -103,7 +103,11 @@ struct CodexLocalScanLimits: Sendable {
         maxTotalParsedBytes: 256 * 1024 * 1024,
         maxJSONLLineBytes: 8 * 1024 * 1024,
         readChunkBytes: 64 * 1024,
-        maxEventCacheEntries: 64
+        maxEventCacheEntries: 64,
+        // recentSamples 与 DSH scanner 对齐：每个被记入的 tokenCount 算一个 sample
+        // （也就是一次 LLM 调用），4096 在 5h 窗口下足够覆盖重度用户的密集调用，
+        // 不会让 samples 数组在常驻会话中无限增长。
+        maxRecentSamples: 4_096
     )
 
     let maxSessionFiles: Int
@@ -112,6 +116,7 @@ struct CodexLocalScanLimits: Sendable {
     let maxJSONLLineBytes: Int
     let readChunkBytes: Int
     let maxEventCacheEntries: Int
+    let maxRecentSamples: Int
 
     init(
         maxSessionFiles: Int,
@@ -119,7 +124,8 @@ struct CodexLocalScanLimits: Sendable {
         maxTotalParsedBytes: Int,
         maxJSONLLineBytes: Int,
         readChunkBytes: Int = 64 * 1024,
-        maxEventCacheEntries: Int = 64
+        maxEventCacheEntries: Int = 64,
+        maxRecentSamples: Int = 4_096
     ) {
         self.maxSessionFiles = max(maxSessionFiles, 1)
         self.maxEventsPerFile = max(maxEventsPerFile, 1)
@@ -127,6 +133,7 @@ struct CodexLocalScanLimits: Sendable {
         self.maxJSONLLineBytes = max(maxJSONLLineBytes, 1)
         self.readChunkBytes = max(min(readChunkBytes, maxJSONLLineBytes), 1)
         self.maxEventCacheEntries = max(maxEventCacheEntries, 1)
+        self.maxRecentSamples = max(maxRecentSamples, 1)
     }
 }
 
@@ -287,7 +294,8 @@ extension CodexFetcher {
     nonisolated static func summarizeLocalUsage(
         windows: [String: ActiveUsageWindow],
         dailyWindows: [DailyUsageWindow],
-        sessionFiles: [CodexSessionFileEvents]
+        sessionFiles: [CodexSessionFileEvents],
+        limits: CodexLocalScanLimits = .production
     ) -> LocalUsageScanResult {
         guard !windows.isEmpty else {
             return LocalUsageScanResult(
@@ -319,7 +327,7 @@ extension CodexFetcher {
         var recentSamples: [LocalTokenUsageSample] = []
         var scannedFileCount = 0
 
-            logInfo("[codex/local] 候选 session files=\(sessionFiles.count)")
+        logInfo("[codex/local] 候选 session files=\(sessionFiles.count)")
 
         for sessionFile in sessionFiles {
             guard !Task.isCancelled else { break }
@@ -376,6 +384,13 @@ extension CodexFetcher {
                                     sourceProviderID: QuotaProviderID.openAI
                                 )
                             )
+                            // 与 DSH scanner 对齐：recentSamples 保持定长上限，
+                            // 避免常驻会话在多日累计下把内存撑大。
+                            if recentSamples.count > limits.maxRecentSamples {
+                                recentSamples.removeFirst(
+                                    recentSamples.count - limits.maxRecentSamples
+                                )
+                            }
                         }
                     }
                 }
@@ -417,7 +432,10 @@ extension CodexFetcher {
         return LocalUsageScanResult(
             usageSummaries: usageSummaries,
             dailyTokenUsage: dailyTokenUsage,
-            recentSamples: recentSamples,
+            // 与 DSH scanner 对齐：samples 跨多个 session 文件拼接后按时间排序，
+            // 保证 UI 在 `samplesInDisplayedWindow` / `todaySamples` 这类按日期过滤
+            // 的逻辑下不会因为文件读取顺序错乱而漏掉 sample。
+            recentSamples: recentSamples.sorted { $0.completedAt < $1.completedAt },
             latestPromptFile: latestPromptFile,
             latestPromptTurnID: latestPromptTurnID,
             latestPromptCompletedAt: latestPromptCompletedAt,
