@@ -60,6 +60,9 @@ struct ClientDescriptor: Identifiable, Equatable, Sendable {
             id: ClientID.codex,
             displayName: "Codex",
             iconSystemName: "terminal",
+            // Codex CLI 当前只走 OpenAI ChatGPT Plan 一条 quota 通道。
+            // DeepSeek / MiniMax 是预留路由：未来 Codex 增加对其它上游的支持时
+            // 直接启用，不需要再改 ClientDescriptor 注册。
             supportedQuotaProviderIDs: [QuotaProviderID.openAI, QuotaProviderID.deepseek, QuotaProviderID.minimax],
             subtitle: "Codex 本地会话与 token 用量"
         ),
