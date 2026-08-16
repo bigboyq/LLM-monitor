@@ -52,6 +52,27 @@ extension FileManagerBox {
         fileManager.fileExists(atPath: path)
     }
 
+    /// Recursively discover dsh session artifacts without exposing the wrapped
+    /// `FileManager` instance outside this access-controlled extension.
+    func sessionFileURLs(in root: URL) throws -> [URL] {
+        let relativePaths = try fileManager.subpathsOfDirectory(atPath: root.path)
+        return relativePaths
+            .filter { relativePath in
+                let name = URL(fileURLWithPath: relativePath).lastPathComponent.lowercased()
+                return name == "session.jsonl"
+                    || name.hasSuffix(".jsonl.zstd")
+                    || name.hasSuffix(".jsonl.zst")
+            }
+            .map { root.appendingPathComponent($0) }
+            .sorted { $0.path < $1.path }
+    }
+
+    /// Create a private, unique temporary file URL used by local decoders.
+    func temporaryURL() -> URL {
+        fileManager.temporaryDirectory
+            .appendingPathComponent("llm-monitor-dsh-\(UUID().uuidString)")
+    }
+
     /// 创建并收紧本地缓存目录。token 用量缓存属于用户数据，不能依赖系统 umask。
     func createPrivateDirectory(at url: URL) throws {
         if !fileManager.fileExists(atPath: url.path) {

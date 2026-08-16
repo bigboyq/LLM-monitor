@@ -98,6 +98,16 @@ extension OpencodeDailyUsage: LocalUsageDaily {
     var reasoning: Int { reasoningTokens }
 }
 
+// MARK: - dsh adapter（usage 字段为 dsh 原生 token bucket）
+
+extension DshDailyUsage: LocalUsageDaily {
+    var input: Int { inputTokens }
+    var cacheRead: Int { cacheReadTokens }
+    var cacheWrite: Int { cacheWriteTokens }
+    var output: Int { outputTokens }
+    var reasoning: Int { reasoningTokens }
+}
+
 // MARK: - codex adapter（字段名完全不同 + 缺 cacheWrite）
 
 extension DailyTokenUsage: LocalUsageDaily {

@@ -143,15 +143,18 @@ struct SettingsView: View {
         case general
         case provider(FetcherDescriptor)
         case opencode
+        case dsh
 
         static let generalID = "general"
         static let opencodeID = "opencode"
+        static let dshID = "dsh"
 
         var id: String {
             switch self {
             case .general: return Self.generalID
             case .provider(let d): return d.id
             case .opencode: return Self.opencodeID
+            case .dsh: return Self.dshID
             }
         }
 
@@ -160,6 +163,7 @@ struct SettingsView: View {
             case .general: return "常规"
             case .provider(let d): return d.settingsTabTitle ?? d.displayName
             case .opencode: return "OpenCode"
+            case .dsh: return "DSH"
             }
         }
 
@@ -168,6 +172,7 @@ struct SettingsView: View {
             case .general: return "gearshape"
             case .provider(let d): return d.iconSystemName
             case .opencode: return "terminal"
+            case .dsh: return "terminal.fill"
             }
         }
 
@@ -176,6 +181,7 @@ struct SettingsView: View {
             case .general: return nil
             case .provider(let d): return .provider(d.kind)
             case .opencode: return .opencode
+            case .dsh: return nil
             }
         }
 
@@ -184,6 +190,7 @@ struct SettingsView: View {
             case .general: return "刷新节奏与应用启动行为"
             case .provider(let d): return d.settingsTabSubtitle ?? ""
             case .opencode: return "本地 token 用量数据源诊断（不显示在菜单栏）"
+            case .dsh: return "DeepSeek Harness 本地 session Token 用量诊断"
             }
         }
     }
@@ -191,7 +198,7 @@ struct SettingsView: View {
     /// 全部 tab（`.general` + descriptors 派生的 provider tab）。
     /// `Identifiable` 让 `ForEach` 走 `id` 区分，切换不会触发整列重渲染。
     private var allTabs: [SettingsTab] {
-        [.general] + descriptors.map { .provider($0) } + [.opencode]
+        [.general] + descriptors.map { .provider($0) } + [.opencode, .dsh]
     }
 
     var body: some View {
@@ -283,6 +290,8 @@ struct SettingsView: View {
                     providerPane(for: d.kind)
                 case .opencode:
                     opencodePane
+                case .dsh:
+                    dshPane
                 }
             }
             .padding(20)
@@ -395,6 +404,106 @@ struct SettingsView: View {
                 }
             }
         }
+    }
+
+    private var dshPane: some View {
+        let snapshot = state.dshUsageSnapshot
+        let providerIDs = snapshot?.byProvider.keys.sorted() ?? []
+
+        return VStack(alignment: .leading, spacing: 20) {
+            SettingsSection(
+                title: "数据源",
+                footer: "DSH（DeepSeek Harness）不是菜单栏 provider，而是一个共享的本地 session Token 账本。扫描器读取 `$DSH_HOME/sessions`（默认 `~/.dsh/sessions`）中的 durable JSONL；默认压缩格式为 `.jsonl.zstd`，会优先使用 zstd，缺少时回退到 Node 22+ 的 zlib。扫描结果按 request/context provider 分片，并可合并到 MiniMax / GLM / DeepSeek 卡片。"
+            ) {
+                diagnosticRow(
+                    label: "会话目录",
+                    value: snapshot?.sessionsRoot ?? DshLocalUsageScanner.defaultSessionsRoot.path
+                )
+                diagnosticRow(
+                    label: "扫描状态",
+                    value: state.dshIsScanning
+                        ? "正在扫描…"
+                        : (snapshot == nil ? "等待首次扫描" : "已扫描 · \(snapshot?.scannedAt.map(Formatters.formatAbsolute) ?? "unknown")")
+                )
+                diagnosticRow(
+                    label: "会话 / LLM 调用",
+                    value: "\(snapshot?.sessionCount ?? 0) / \(snapshot?.eventCount ?? 0)"
+                )
+            }
+
+            SettingsSection(title: "已发现的 provider") {
+                if providerIDs.isEmpty {
+                    Text("尚未发现带 Token 数据的 dsh session。")
+                        .font(SettingsTypography.supporting)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(providerIDs, id: \.self) { providerID in
+                        if let usage = snapshot?.byProvider[providerID] {
+                            dshProviderSummary(
+                                providerID: providerID,
+                                usage: usage,
+                                models: snapshot?.modelsByProvider[providerID] ?? [],
+                                scannedAt: snapshot?.scannedAt
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func dshProviderSummary(
+        providerID: String,
+        usage: DshProviderUsage,
+        models: [String],
+        scannedAt: Date?
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(providerID)
+                    .font(SettingsTypography.rowEmphasis)
+                    .monospaced()
+                Spacer()
+                Text("\(Formatters.formatGroupedInt(usage.roundCount)) rounds · \(usage.sessionCount) sessions")
+                    .font(SettingsTypography.numericValue)
+                    .foregroundStyle(.secondary)
+            }
+            if models.isEmpty == false {
+                Text(models.joined(separator: ", "))
+                    .font(SettingsTypography.metadata)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            if let today = usage.today {
+                Text("今日总计：\(Formatters.formatTokenCountCompact(today.totalTokens)) tokens（Input + Cache read + Output；Reason 是 Output 子项，不重复计算；不含 cache write）")
+                    .font(SettingsTypography.numericValue)
+                    .foregroundStyle(.secondary)
+                HStack(spacing: 8) {
+                    tokenBreakdown(label: "Input", value: today.inputTokens)
+                    tokenBreakdown(label: "Cache", value: today.cacheReadTokens)
+                    tokenBreakdown(label: "Reason", value: today.reasoningTokens)
+                    tokenBreakdown(label: "Output", value: today.outputTokens)
+                }
+                .font(SettingsTypography.numericValue)
+                .foregroundStyle(.tertiary)
+            } else {
+                Text("今日暂无 Token 活动")
+                    .font(SettingsTypography.metadata)
+                    .foregroundStyle(.tertiary)
+            }
+            if usage.dailyTokenUsage.isEmpty == false {
+                DisclosureGroup("最近 7 天 Token 明细") {
+                    SevenDayTokenUsageHoverView(
+                        days: usage.dailyTokenUsage,
+                        scannedAt: scannedAt,
+                        isScanning: state.dshIsScanning
+                    )
+                    .padding(.top, 4)
+                }
+                .font(SettingsTypography.metadata)
+            }
+        }
+        .padding(.vertical, 4)
     }
 
     private var opencodePane: some View {

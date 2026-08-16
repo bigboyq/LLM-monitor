@@ -243,7 +243,8 @@ struct ProviderCardView: View {
                 providerID: "antigravity"
             )
         case .minimaxTokenPlan:
-            let native = status.minimaxLocalUsage?.recentSamples ?? []
+            let native = (status.minimaxLocalUsage?.recentSamples ?? [])
+                + DshUsageMerger.dshSamples(DshUsageMerger.minimaxSlice(status.dshUsage))
             let open = status.mergeOpencodeUsage ? status.opencodeUsage?.minimaxCodingPlanSlice : nil
             return OpencodeUsageMerger.mergeSamples(
                 native: native,
@@ -251,7 +252,8 @@ struct ProviderCardView: View {
                 providerID: OpencodeLocalUsage.minimaxCodingPlanProviderID
             )
         case .glmCodingPlan:
-            let native = status.glmLocalUsage?.recentSamples ?? []
+            let native = (status.glmLocalUsage?.recentSamples ?? [])
+                + DshUsageMerger.dshSamples(DshUsageMerger.glmSlice(status.dshUsage))
             let open = status.mergeOpencodeUsage ? status.opencodeUsage?.glmSlice : nil
             return OpencodeUsageMerger.mergeSamples(
                 native: native,
@@ -259,11 +261,15 @@ struct ProviderCardView: View {
                 providerID: OpencodeLocalUsage.glmProviderID
             )
         case .deepseek:
-            guard status.mergeOpencodeUsage else { return [] }
-            return OpencodeUsageMerger.opencodeSamples(
-                status.opencodeUsage?.deepseekSlice,
-                providerID: OpencodeLocalUsage.deepseekProviderID
-            )
+            let dsh = DshUsageMerger.deepseekSlice(status.dshUsage)
+            guard status.mergeOpencodeUsage || dsh != nil else { return [] }
+            return DshUsageMerger.dshSamples(dsh)
+                + (status.mergeOpencodeUsage
+                    ? OpencodeUsageMerger.opencodeSamples(
+                        status.opencodeUsage?.deepseekSlice,
+                        providerID: OpencodeLocalUsage.deepseekProviderID
+                    )
+                    : [])
         }
     }
 
@@ -308,38 +314,42 @@ struct ProviderCardView: View {
             )
         case .minimaxTokenPlan:
             let open = status.mergeOpencodeUsage ? status.opencodeUsage?.minimaxCodingPlanSlice : nil
-            let usage = OpencodeUsageMerger.mergeMinimax(
+            let usage = DshUsageMerger.mergeMinimax(
                 native: status.minimaxLocalUsage,
-                opencode: open,
-                opencodeScannedAt: status.opencodeUsage?.scannedAt
+                dsh: status.dshUsage,
+                opencode: open
             )
             makeLocalUsageFooter(
                 dailyTokenUsage: usage?.dailyTokenUsage ?? [],
-                scannedAt: usage?.scannedAt,
+                scannedAt: [status.minimaxLocalUsage?.scannedAt, status.dshUsage?.scannedAt, status.opencodeUsage?.scannedAt].compactMap { $0 }.max(),
                 isReady: !(usage?.dailyTokenUsage ?? []).isEmpty,
-                emptyHint: "本机未发现 minimax v2 会话数据（已检查 ~/.minimax/v2/sqlite/runtime-state.sqlite）"
+                emptyHint: "本机未发现 minimax v2 / dsh 会话数据"
             )
         case .glmCodingPlan:
             let open = status.mergeOpencodeUsage ? status.opencodeUsage?.glmSlice : nil
-            let usage = OpencodeUsageMerger.mergeGlm(
+            let usage = DshUsageMerger.mergeGlm(
                 native: status.glmLocalUsage,
-                opencode: open,
-                opencodeScannedAt: status.opencodeUsage?.scannedAt
+                dsh: status.dshUsage,
+                opencode: open
             )
             makeLocalUsageFooter(
                 dailyTokenUsage: usage?.dailyTokenUsage ?? [],
-                scannedAt: usage?.scannedAt,
+                scannedAt: [status.glmLocalUsage?.scannedAt, status.dshUsage?.scannedAt, status.opencodeUsage?.scannedAt].compactMap { $0 }.max(),
                 isReady: !(usage?.dailyTokenUsage ?? []).isEmpty,
-                emptyHint: "本机未发现 ZCode 会话数据（已检查 ~/.zcode/cli/db/db.sqlite）"
+                emptyHint: "本机未发现 ZCode / dsh 会话数据"
             )
         case .deepseek:
             let open = status.mergeOpencodeUsage ? status.opencodeUsage?.deepseekSlice : nil
-            let days = open?.dailyTokenUsage ?? []
+            let usage = DshUsageMerger.mergeDeepseek(
+                dsh: status.dshUsage,
+                opencode: open
+            )
+            let days = usage?.dailyTokenUsage ?? []
             makeLocalUsageFooter(
                 dailyTokenUsage: days,
-                scannedAt: status.opencodeUsage?.scannedAt,
-                isReady: !days.isEmpty,
-                emptyHint: "暂无 OpenCode 的 DeepSeek Token 消耗历史"
+                scannedAt: [status.dshUsage?.scannedAt, status.opencodeUsage?.scannedAt].compactMap { $0 }.max(),
+                isReady: days.isEmpty == false,
+                emptyHint: "暂无 DSH / OpenCode 的 DeepSeek Token 消耗历史"
             )
         }
     }

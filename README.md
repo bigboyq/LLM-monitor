@@ -2,7 +2,7 @@
 
 [English](README.en.md) | **简体中文**
 
-适用于 macOS 14 及以上版本的菜单栏额度与本地用量监视器。一个入口集中查看 Minimax、ChatGPT/Codex、Antigravity、GLM Coding Plan 与 DeepSeek，并可选择合并 OpenCode 的本地 token 账本。
+适用于 macOS 14 及以上版本的菜单栏额度与本地用量监视器。一个入口集中查看 Minimax、ChatGPT/Codex、Antigravity、GLM Coding Plan 与 DeepSeek，并可选择合并 OpenCode 与 DeepSeek Harness (dsh) 的本地 token 账本。
 
 > 当前版本：**1.4.2** · 支持 Apple Silicon 与 Intel Mac · 所有凭据和用量缓存只保存在本机
 
@@ -19,7 +19,7 @@
 - 在菜单栏集中查看额度、余额、重置时间、健康状态和最近刷新结果。
 - 保留用户选择的菜单栏主图标，并可通过右下角绿、橙、红色圆点快速识别整体健康状态。
 - 当同一模型的剩余额度较上一次成功请求增加时发送 macOS 通知；应用启动时检查通知权限。
-- 汇总 Codex、Minimax、Antigravity、ZCode 与 OpenCode 的本地 token 用量。
+- 汇总 Codex、Minimax、Antigravity、ZCode、OpenCode 与 DeepSeek Harness (dsh) 的本地 token 用量。
 - 支持每个 Provider 独立刷新、失败退避、手动刷新和配置热重载。
 - 提供 GLM/DeepSeek 高峰时段提示、最近 7 天图表和开机自启动。
 - 配置目录权限为 `0700`，配置、日志与凭据文件权限为 `0600`。
@@ -55,6 +55,8 @@
 
 各数据源、token 口径、高峰窗口和合并规则见下方 Provider 规格文档。
 
+> DSH（DeepSeek Harness）不是独立菜单栏 Provider，而是共享本地 session 账本；它会按 `request/context` 中的 provider 分片，并自动合并到 MiniMax / GLM / DeepSeek 卡片。设置页新增 DSH 诊断 tab 可查看每个 provider 的 7 天 Token 明细。
+
 ## 文档索引
 
 | 主题 | 中文 | English / 技术规格 |
@@ -62,7 +64,7 @@
 | 安装、配置、日常操作与排错 | [中文帮助](docs/help.zh-CN.md) | [English user guide](docs/help.en.md) |
 | 界面结构与交互规则 | [交互设计规格](spec/ui-design.md) | 同一文档 |
 | 架构、状态机、刷新与数据模型 | [项目架构规格](spec/overview.md) | 同一文档 |
-| Provider 数据源与口径 | [Minimax](spec/providers/minimax.md) · [ChatGPT/Codex](spec/providers/codex.md) · [Antigravity](spec/providers/antigravity.md) · [GLM](spec/providers/glm.md) · [DeepSeek](spec/providers/deepseek.md) · [OpenCode](spec/providers/opencode.md) | 同左 |
+| Provider 数据源与口径 | [Minimax](spec/providers/minimax.md) · [ChatGPT/Codex](spec/providers/codex.md) · [Antigravity](spec/providers/antigravity.md) · [GLM](spec/providers/glm.md) · [DeepSeek](spec/providers/deepseek.md) · [OpenCode](spec/providers/opencode.md) · [DSH](spec/providers/dsh.md) | 同左 |
 | 并发、错误、日志、性能与持久化策略 | [工程策略](docs/policy/) | 同一目录 |
 | 版本变化 | [CHANGELOG](CHANGELOG.md) | [Release notes](docs/releases/) |
 

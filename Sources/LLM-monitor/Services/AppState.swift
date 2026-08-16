@@ -113,6 +113,20 @@ final class AppState: ObservableObject {
         setScanning: { _ in /* opencode 不暴露 scanning 状态 */ }
     )
 
+    /// dsh 本地 session token 用量 scanner。dsh 不是菜单栏 provider；它会扫描
+    /// `$DSH_HOME/sessions`（默认 `~/.dsh/sessions`），按 session 中记录的 provider
+    /// 分片，并在设置页提供诊断视图。
+    private lazy var dshUsageCoordinator = LocalUsageCoordinator<DshLocalUsage>(
+        providerID: "dsh",
+        logTag: "dsh",
+        makeScanner: { DshLocalUsageScanner() },
+        apply: { [weak self] usage in self?.applyDshUsage(usage) },
+        setScanning: { [weak self] isScanning in
+            guard let self else { return }
+            self.dshIsScanning = isScanning
+        }
+    )
+
     /// 统一的 statuses 广播通道。
     ///
     /// 之前是 3 个独立 publisher + 手动 `objectWillChange.send()`：
@@ -126,6 +140,14 @@ final class AppState: ObservableObject {
     ///
     /// payload 是 `Void`（不需要把值传出去；view 只需要知道"变了"）。
     let statusDidChange = PassthroughSubject<Void, Never>()
+
+    /// dsh 共享 session 用量是否正在扫描。
+    @Published private(set) var dshIsScanning: Bool = false
+
+    /// 最近一次 dsh 共享 session 用量快照。
+    var dshUsageSnapshot: DshLocalUsage? {
+        statuses.lazy.compactMap(\.dshUsage).first
+    }
 
     /// 最近一次 opencode 共享用量快照，供设置页诊断展示。
     /// 快照挂在各个 consumer status 上；这里统一提供一个只读入口。
@@ -293,6 +315,7 @@ final class AppState: ObservableObject {
         // opencode 是共享数据源，不依赖某个 quota provider 是否启用；启动时主动扫描一次，
         // 让设置页诊断和已有 GLM/minimax 卡片尽早拿到本地历史。
         triggerOpencodeUsageScan()
+        triggerDshUsageScan()
         // GLM 本地 scanner 的独立定期触发（不依赖 quota 成功）
         startGlmLocalUsagePeriodicTrigger()
         startHealthClock()
@@ -308,6 +331,7 @@ final class AppState: ObservableObject {
         minimaxLocalUsageCoordinator.cancelInFlight()
         glmLocalUsageCoordinator.cancelInFlight()
         opencodeUsageCoordinator.cancelInFlight()
+        dshUsageCoordinator.cancelInFlight()
         glmLocalUsagePeriodicTask?.cancel()
         glmLocalUsagePeriodicTask = nil
         healthClockTask?.cancel()
@@ -555,6 +579,7 @@ final class AppState: ObservableObject {
             statusItem.minimaxLocalUsage = preserved.minimaxLocalUsage
             statusItem.glmLocalUsage = preserved.glmLocalUsage
             statusItem.opencodeUsage = preserved.opencodeUsage
+            statusItem.dshUsage = preserved.dshUsage
             // GLM 高峰期窗口是纯 config 派生（非运行时累积），每次 rebuild 直接重算。
             statusItem.glmPeakWindow = d.kind == .glmCodingPlan
                 ? (pc?.glmPeakWindow ?? .zhipuDefault)
@@ -729,11 +754,18 @@ final class AppState: ObservableObject {
                 triggerMinimaxLocalUsageScan()
                 // 同时触发 opencode 扫描，供各卡合并开关与诊断页更新
                 triggerOpencodeUsageScan()
+                triggerDshUsageScan()
             }
             if descriptor.kind == .glmCodingPlan {
                 // GLM 主 quota 拿到后，触发 native ZCode + opencode 双扫描
                 triggerGlmLocalUsageScan()
                 triggerOpencodeUsageScan()
+                triggerDshUsageScan()
+            }
+            if descriptor.kind == .deepseek {
+                // DeepSeek quota 刷新后补扫 dsh，便利在没有 API Key / 余额请求失败时
+                // 仍能看到 harness 自身的 token 活动。
+                triggerDshUsageScan()
             }
             refreshScheduler.recordSuccess(providerID)
             let resetDates = info.models.flatMap { [$0.intervalResetsAt, $0.weeklyResetsAt] }.compactMap { $0 }
@@ -915,6 +947,29 @@ final class AppState: ObservableObject {
             summarize: { "\($0.sessionCount) sessions" },
             usage: usage
         )
+    }
+
+    // MARK: - dsh local usage scanner（共享 session 日志 + 诊断页）
+
+    private func triggerDshUsageScan() {
+        logDebug("[dsh/apply] triggerDshUsageScan called")
+        dshUsageCoordinator.trigger()
+    }
+
+    @MainActor
+    private func applyDshUsage(_ usage: DshLocalUsage?) {
+        var copy = statuses
+        var changed = false
+        for idx in copy.indices {
+            if copy[idx].dshUsage != usage {
+                copy[idx].dshUsage = usage
+                changed = true
+            }
+        }
+        guard changed else { return }
+        statuses = copy
+        statusDidChange.send()
+        logDebug("[dsh/apply] providers=\(usage?.byProvider.count ?? 0), sessions=\(usage?.sessionCount ?? 0)")
     }
 
     // MARK: - opencode local usage scanner（GLM 卡 + 诊断页）
@@ -1201,7 +1256,8 @@ final class AppState: ObservableObject {
                 antigravityLocalUsage: nil,
                 minimaxLocalUsage: nil,
                 glmLocalUsage: nil,
-                opencodeUsage: nil
+                opencodeUsage: nil,
+                dshUsage: nil
             )
         }
         return PreservedStatusFields(
@@ -1211,7 +1267,8 @@ final class AppState: ObservableObject {
             antigravityLocalUsage: old.antigravityLocalUsage,
             minimaxLocalUsage: old.minimaxLocalUsage,
             glmLocalUsage: old.glmLocalUsage,
-            opencodeUsage: old.opencodeUsage
+            opencodeUsage: old.opencodeUsage,
+            dshUsage: old.dshUsage
         )
     }
 
@@ -1315,4 +1372,5 @@ struct PreservedStatusFields {
     /// opencode 扫描快照（挂在各个 consumer status 上），跨 rebuildStatuses 保留
     /// 避免配置变更触发的那次 rebuild 抹掉刚扫到的共享用量导致 footer 闪空白。
     let opencodeUsage: OpencodeLocalUsage?
+    let dshUsage: DshLocalUsage?
 }

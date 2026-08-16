@@ -14,7 +14,7 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 | Config | `~/Library/Application Support/LLM-monitor/config.json`, JSON, permission `0600` |
 | Instance | One process per user config directory, enforced by `instance.lock` |
 | Runtime log | `~/Library/Application Support/LLM-monitor/log.txt` plus stdout and `os.Logger` (privacy `.private`, Console.app 默认脱敏) |
-| Providers | `minimax_token_plan`, `codex_chatgpt`, `antigravity`, `glm_coding_plan`, `deepseek` |
+| Providers | `minimax_token_plan`, `codex_chatgpt`, `antigravity`, `glm_coding_plan`, `deepseek`; shared local ledgers: OpenCode + DSH |
 | Refresh | Independent timer per enabled provider |
 | Config reload | Event-driven via `DispatchSourceFileSystemObject` (no polling) |
 | Window lifetime | Menu closes on focus loss or after 30s of inactivity; any in-menu interaction resets the timer |
@@ -41,6 +41,9 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 | `Sources/LLM-monitor/Models/LocalUsageDaily.swift` | Antigravity / Codex / Minimax / GLM / OpenCode 共享的 7-day chart 协议 + 默认实现 |
 | `Sources/LLM-monitor/Models/OpencodeLocalUsage.swift` | OpenCode provider 分片、今日 / 7 天聚合与逐次 samples |
 | `Sources/LLM-monitor/Models/OpencodeUsageMerger.swift` | OpenCode 与各 Provider 的字段级合并和 token 语义转换 |
+| `Sources/LLM-monitor/Models/DshLocalUsage.swift` | DeepSeek Harness session token 数据模型与 provider 分片 |
+| `Sources/LLM-monitor/Models/DshUsageMerger.swift` | DSH 与 MiniMax / GLM / DeepSeek 卡片的字段级合并 |
+| `Sources/LLM-monitor/Services/DshLocalUsageScanner.swift` | 读取 `~/.dsh/sessions` 的 JSONL/zstd session 日志，按 provider 聚合 7 天用量 |
 | `Sources/LLM-monitor/Models/AntigravityLocalUsage.swift` | Antigravity 本地用量数据模型 |
 | `Sources/LLM-monitor/Models/MinimaxLocalUsage.swift` | minimax 本地用量数据模型 |
 | `Sources/LLM-monitor/Fetchers/QuotaFetcher.swift` | `QuotaFetcher` protocol + 默认实现 |

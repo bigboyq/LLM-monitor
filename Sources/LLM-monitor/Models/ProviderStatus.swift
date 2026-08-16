@@ -49,6 +49,11 @@ struct ProviderStatus: Identifiable, Equatable, Sendable {
     /// 只在 `kind == .glmCodingPlan` 时使用；其他 provider 永远 nil。
     var glmLocalUsage: GlmLocalUsage?
 
+    /// DeepSeek Harness (`dsh`) session-log token usage。
+    /// 这是共享本地数据源，不在 `ProviderKind` 中增加一个独立 provider；
+    /// 按 request/context provider 分片后合并到对应卡片。
+    var dshUsage: DshLocalUsage?
+
     /// GLM Coding Plan 高峰期窗口（来自 config，纯本地时间计算）。
     /// 只在 `kind == .glmCodingPlan` 时使用；其他 provider 永远 nil。
     var glmPeakWindow: GlmPeakWindow?
