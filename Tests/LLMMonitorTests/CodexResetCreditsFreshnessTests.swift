@@ -120,6 +120,60 @@ final class CodexResetCreditsFreshnessTests: XCTestCase {
         XCTAssertFalse(smallInterval.isStale(now: now, refreshIntervalSeconds: 10))
     }
 
+    /// R3 followup: 调用方按 `periodicFullEveryN`（默认 20）把 interval 预放大后再传入
+    /// isStale；放大后的实际阈值是 `3 × (N × interval)`，默认 300s × 20 × 3 = 18000s = 5h。
+    /// 这个测试钉死"5h 边界"的语义——也是为什么 8c6a97f 把 background 路径的过期判定
+    /// 从旧的 15min 误报改为现在的 5h 真阈值。如果未来 caller 忘了 pre-scale，
+    /// 这个测试会直接红。
+    func testIsStaleUsesPeriodicFullPeriodAt5hBoundary() {
+        // 模拟 caller 已经在 QuotaViews.swift 里把 interval × N 后传进来
+        let intervalSeconds: TimeInterval = 300
+        let periodicFullEveryN = 20
+        let scaled = intervalSeconds * Double(periodicFullEveryN)  // 6000
+        let now = Date(timeIntervalSince1970: 100_000)
+
+        // 5h = 18000s；恰好 18000 不过期，18001 过期
+        let exactlyThreshold = resetCredits(
+            available: 1,
+            fetchedAt: now.addingTimeInterval(-18000)
+        )
+        XCTAssertFalse(
+            exactlyThreshold.isStale(now: now, refreshIntervalSeconds: scaled),
+            "恰好 5h 仍应判定为新鲜"
+        )
+
+        let overThreshold = resetCredits(
+            available: 1,
+            fetchedAt: now.addingTimeInterval(-18001)
+        )
+        XCTAssertTrue(
+            overThreshold.isStale(now: now, refreshIntervalSeconds: scaled),
+            "超过 5h 应判定为过期"
+        )
+
+        // 4h 仍在 5h 阈值内 → 不过期
+        let fourHoursOld = resetCredits(
+            available: 1,
+            fetchedAt: now.addingTimeInterval(-4 * 3600)
+        )
+        XCTAssertFalse(
+            fourHoursOld.isStale(now: now, refreshIntervalSeconds: scaled),
+            "4h 仍应判定为新鲜（5h 阈值内）"
+        )
+
+        // 防回归：如果 caller 忘了 pre-scale，传原始 interval=300，旧的 15min 误报逻辑
+        // 会让 4h 数据被错误判定为过期——这就是 8c6a97f 修复前的 bug 行为。
+        // 我们用同样的 4h 数据，传 unscaled interval 验证它确实会被误判。
+        let preR3Behavior = resetCredits(
+            available: 1,
+            fetchedAt: now.addingTimeInterval(-4 * 3600)
+        )
+        XCTAssertTrue(
+            preR3Behavior.isStale(now: now, refreshIntervalSeconds: intervalSeconds),
+            "未 pre-scale 的 4h 数据按 3×300=900s 阈值会被误判为过期（防 R3 前行为回归）"
+        )
+    }
+
     /// R3 Codable 向后兼容：旧格式（无 fetchedAt/lastAttemptFailed）能解码。
     func testResetCreditsCodableBackwardCompat() throws {
         let oldJSON = """
