@@ -706,6 +706,10 @@ These are documented product boundaries:
   observer is registered — the path was removed in 8c6a97f to avoid Swift 6
   deinit-access-of-non-Sendable-token warnings, and is not needed because the
   popover reattaches on every screen change.
+  **Why 70%**: a full-screen (100%) menu looks crowded and, when scrollable,
+  gets its bottom rows covered by the Dock / status bar icons. 70% leaves a
+  30% buffer so internal scrolling never pushes content under the Dock, and
+  the menu as a whole still feels "centered" rather than wall-to-wall.
 - The 4 daily usage types (`AntigravityDailyUsage` / `MinimaxDailyUsage` /
   `DailyTokenUsage` / `OpencodeDailyUsage`) have overlapping but non-identical fields.
   They conform to a common `LocalUsageDaily` protocol so view code is shared, but the
