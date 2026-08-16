@@ -532,7 +532,9 @@ private extension DshLocalUsageScanner {
             cachedInputTokens: usage.cacheReadTokens,
             outputTokens: visibleOutput,
             reasoningOutputTokens: usage.reasoningTokens,
-            sourceProviderID: usage.provider
+            // DSH stores uncached input and cache-read tokens separately.
+            // Keep a source marker so pricing preserves both buckets.
+            sourceProviderID: "dsh:\(usage.provider)"
         )
         provider.recentSamples.append(sample)
         if provider.recentSamples.count > limits.maxRecentSamples {

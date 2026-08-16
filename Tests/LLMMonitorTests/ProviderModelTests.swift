@@ -208,6 +208,28 @@ final class ProviderModelTests: XCTestCase {
         XCTAssertEqual(offPeakEstimate.value ?? -1, 1.66, accuracy: 0.000001)
     }
 
+    func testDeepseekDshPricingKeepsSeparateCacheReadBucket() {
+        let sample = LocalTokenUsageSample(
+            completedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            modelName: "deepseek-v4-flash",
+            promptID: "dsh-sample",
+            inputTokens: 698_000,
+            cachedInputTokens: 39_000_000,
+            outputTokens: 71_000,
+            reasoningOutputTokens: 0,
+            sourceProviderID: "dsh:deepseek-official"
+        )
+
+        let estimate = ModelPricingCatalog.estimate(
+            samples: [sample],
+            quotaProviderID: QuotaProviderID.deepseek,
+            deepseekPeakWindow: DeepseekPeakWindow(slots: [], weekdaysOnly: true)
+        )
+
+        XCTAssertEqual(estimate.value ?? -1, 3.3165, accuracy: 0.000001)
+        XCTAssertEqual(estimate.currency, .cny)
+    }
+
     func testClientRegistrySeparatesMultiProviderClientsFromQuotaProviders() {
         let openCode = try! XCTUnwrap(ClientDescriptor.all.first { $0.id == ClientID.openCode })
         let dsh = try! XCTUnwrap(ClientDescriptor.all.first { $0.id == ClientID.dsh })

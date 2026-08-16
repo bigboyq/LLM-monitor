@@ -3,8 +3,9 @@ import Foundation
 /// Provider 本地账本中的一次模型调用。
 ///
 /// 三个 provider 最终都归一到同一语义：
-/// - `inputTokens` 是完整输入（包含 cached input）
-/// - `cachedInputTokens` 是 input 的子集
+/// - `inputTokens` 通常是完整输入（包含 cached input）；DSH 通过
+///   `sourceProviderID` 的 `dsh:` 标记表示它保存的是未命中缓存输入
+/// - `cachedInputTokens` 是独立的 cache-read bucket
 /// - 相同 `promptID` 的多条 sample 属于同一次用户请求的多轮模型调用
 struct LocalTokenUsageSample: Equatable, Codable, Sendable {
     let completedAt: Date

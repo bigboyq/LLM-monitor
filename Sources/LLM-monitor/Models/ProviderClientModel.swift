@@ -300,21 +300,15 @@ enum ModelPricingCatalog {
             currency = pricing.currency
             pricedModels.insert(pricing.modelLabel)
 
-            let input = max(0, sample.inputTokens)
-            let cached = min(max(0, sample.cachedInputTokens), input)
-            let uncached = input - cached
-            let output = SaturatingArithmetic.sum(
-                max(0, sample.outputTokens),
-                max(0, sample.reasoningOutputTokens)
-            )
+            let components = tokenComponents(for: sample)
             let multiplier = pricingMultiplier(
                 quotaProviderID: quotaProviderID,
                 at: sample.completedAt,
                 deepseekPeakWindow: deepseekPeakWindow
             )
-            value += Double(uncached) * pricing.inputPerMillion * multiplier / 1_000_000
-            value += Double(cached) * pricing.cacheReadPerMillion * multiplier / 1_000_000
-            value += Double(output) * pricing.outputPerMillion * multiplier / 1_000_000
+            value += Double(components.uncached) * pricing.inputPerMillion * multiplier / 1_000_000
+            value += Double(components.cached) * pricing.cacheReadPerMillion * multiplier / 1_000_000
+            value += Double(components.output) * pricing.outputPerMillion * multiplier / 1_000_000
         }
 
         return ModelCostEstimate(
@@ -354,6 +348,24 @@ enum ModelPricingCatalog {
             return 2
         }
         return 1
+    }
+
+    /// OpenCode/Codex samples use a cache-inclusive input bucket. DSH records
+    /// uncached input and cache-read input separately, so its cache bucket must
+    /// not be clamped to inputTokens.
+    static func tokenComponents(
+        for sample: LocalTokenUsageSample
+    ) -> (uncached: Int, cached: Int, output: Int) {
+        let input = max(sample.inputTokens, 0)
+        let cached = max(sample.cachedInputTokens, 0)
+        let isDshUncachedInput = sample.sourceProviderID?.hasPrefix("dsh:") == true
+        let uncached = isDshUncachedInput ? input : max(input - min(cached, input), 0)
+        let effectiveCached = isDshUncachedInput ? cached : min(cached, input)
+        let output = SaturatingArithmetic.sum(
+            max(0, sample.outputTokens),
+            max(0, sample.reasoningOutputTokens)
+        )
+        return (uncached, effectiveCached, output)
     }
 
     static func pricing(
@@ -569,13 +581,11 @@ struct ClientProviderUsageSummary: Identifiable, Equatable, Sendable {
             } else {
                 name = "模型名缺失"
             }
-            let input = max(sample.inputTokens, 0)
-            let cached = min(max(sample.cachedInputTokens, 0), input)
+            let components = ModelPricingCatalog.tokenComponents(for: sample)
             let sampleTokens = SaturatingArithmetic.sum(
-                input - cached,
-                cached,
-                max(sample.outputTokens, 0),
-                max(sample.reasoningOutputTokens, 0)
+                components.uncached,
+                components.cached,
+                components.output
             )
             let previous = grouped[name] ?? (totalTokens: 0, sampleCount: 0)
             grouped[name] = (

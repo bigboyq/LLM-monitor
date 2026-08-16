@@ -72,6 +72,9 @@ final class DshUsageTests: XCTestCase {
         XCTAssertEqual(today.turns, 2)
         XCTAssertEqual(today.rounds, 3)
         XCTAssertEqual(deepseek.recentSamples.count, 3)
+        XCTAssertTrue(deepseek.recentSamples.allSatisfy {
+            $0.sourceProviderID?.hasPrefix("dsh:") == true
+        })
     }
 
     func testDshMergerSelectsDeepSeekSliceAndAddsOpencode() throws {
