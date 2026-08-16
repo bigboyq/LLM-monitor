@@ -699,7 +699,13 @@ These are documented product boundaries:
   `floor(window.screen.visibleFrame.height × 0.70)` so the menu never exceeds 70% of its
   own screen (read via the window's `screen`, not `NSScreen.main`); when content is taller
   the menu caps at that 70% and the provider list scrolls while header/footer stay fixed.
-  Updates on screen change / Dock move via `didChangeScreenNotification`.
+  The 70% cap is re-applied on every popover open via `viewDidMoveToWindow`
+  (MenuBarExtra popover reattaches the view each time the user opens the menu, so a
+  fresh `window.screen` lookup is taken on every appearance); `updateTrackingAreas`
+  covers resolution / Dock frame changes. No explicit `didChangeScreenNotification`
+  observer is registered — the path was removed in 8c6a97f to avoid Swift 6
+  deinit-access-of-non-Sendable-token warnings, and is not needed because the
+  popover reattaches on every screen change.
 - The 4 daily usage types (`AntigravityDailyUsage` / `MinimaxDailyUsage` /
   `DailyTokenUsage` / `OpencodeDailyUsage`) have overlapping but non-identical fields.
   They conform to a common `LocalUsageDaily` protocol so view code is shared, but the
