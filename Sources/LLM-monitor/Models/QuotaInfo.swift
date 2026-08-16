@@ -320,7 +320,25 @@ struct CodexUsageDetails: Equatable, Codable, Sendable {
     let lastPrompt: LastPromptUsage?
     /// 包含今天在内的最近七个本地自然日（00:00–23:59）。
     let dailyTokenUsage: [DailyTokenUsage]?
+    /// 最近七天的逐次调用样本。旧缓存没有此字段时保持 nil。
+    let recentSamples: [LocalTokenUsageSample]?
     let scannedAt: Date?
+
+    init(
+        primary: UsageMetricSummary?,
+        secondary: UsageMetricSummary?,
+        lastPrompt: LastPromptUsage?,
+        dailyTokenUsage: [DailyTokenUsage]?,
+        recentSamples: [LocalTokenUsageSample]? = nil,
+        scannedAt: Date?
+    ) {
+        self.primary = primary
+        self.secondary = secondary
+        self.lastPrompt = lastPrompt
+        self.dailyTokenUsage = dailyTokenUsage
+        self.recentSamples = recentSamples
+        self.scannedAt = scannedAt
+    }
 }
 
 /// 单条 reset credit 记录（对齐 codex RateLimitResetCredit 真实 schema）

@@ -14,7 +14,8 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 | Config | `~/Library/Application Support/LLM-monitor/config.json`, JSON, permission `0600` |
 | Instance | One process per user config directory, enforced by `instance.lock` |
 | Runtime log | `~/Library/Application Support/LLM-monitor/log.txt` plus stdout and `os.Logger` (privacy `.private`, Console.app 默认脱敏) |
-| Providers | `minimax_token_plan`, `codex_chatgpt`, `antigravity`, `glm_coding_plan`, `deepseek`; shared local ledgers: OpenCode + DSH |
+| Quota Providers | `minimax_token_plan`, `codex_chatgpt`, `antigravity`, `glm_coding_plan`, `deepseek` |
+| Clients | Codex, Antigravity, ZCode, OpenCode, DSH, MiniMax Code; clients may contribute to multiple quota providers |
 | Refresh | Independent timer per enabled provider |
 | Config reload | Event-driven via `DispatchSourceFileSystemObject` (no polling) |
 | Window lifetime | Menu closes on focus loss or after 30s of inactivity; any in-menu interaction resets the timer |
@@ -35,10 +36,12 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 | `Sources/LLM-monitor/LLMMonitorApp.swift` | App entry point, lifecycle delegate, `FetcherDescriptor` registry, fixed menu bar label |
 | `Sources/LLM-monitor/Services/AppInstanceLock.swift` | Per-user single-instance lock held for the process lifetime |
 | `Sources/LLM-monitor/Models/FetcherDescriptor.swift` | `FetcherDescriptor` (provider 注册元信息 single source of truth) |
+| `Sources/LLM-monitor/Models/ProviderClientModel.swift` | quota Provider / Client IDs, explicit bindings, and provider-neutral usage projection |
 | `Sources/LLM-monitor/Models/ProviderStatus.swift` | UI-facing provider state + `ProviderKind` / `AccentColor` 枚举 |
 | `Sources/LLM-monitor/Models/QuotaInfo.swift` | Provider-neutral quota 和 reset-credit 模型 |
 | `Sources/LLM-monitor/Models/AnyJSON.swift` | 弱类型 JSON（Antigravity 递归解析用） |
 | `Sources/LLM-monitor/Models/LocalUsageDaily.swift` | Antigravity / Codex / Minimax / GLM / OpenCode 共享的 7-day chart 协议 + 默认实现 |
+| `Sources/LLM-monitor/Models/ProviderClientModel.swift` | Client/Quota Provider 关系、Provider usage projection、模型价格目录与设置页摘要模型 |
 | `Sources/LLM-monitor/Models/OpencodeLocalUsage.swift` | OpenCode provider 分片、今日 / 7 天聚合与逐次 samples |
 | `Sources/LLM-monitor/Models/OpencodeUsageMerger.swift` | OpenCode 与各 Provider 的字段级合并和 token 语义转换 |
 | `Sources/LLM-monitor/Models/DshLocalUsage.swift` | DeepSeek Harness session token 数据模型与 provider 分片 |
@@ -151,7 +154,7 @@ The app reads and writes this shape:
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "refreshIntervalSeconds": 300,
   "providers": {
     "minimax_token_plan": {
@@ -173,7 +176,15 @@ The app reads and writes this shape:
       "enabled": false,
       "apiKey": "sk-REPLACE-WITH-YOUR-KEY"
     }
-  }
+  },
+  "clientBindings": [
+    {
+      "clientID": "opencode",
+      "quotaProviderID": "zhipu",
+      "sourceProviderAliases": ["zhipuai-coding-plan"],
+      "enabled": true
+    }
+  ]
 }
 ```
 
@@ -200,15 +211,31 @@ The app reads and writes this shape:
 | `providers.<id>.displayName` | provider | Optional UI label override. |
 | `providers.<id>.refreshIntervalSeconds` | provider | Optional provider-specific timer interval, with the same 10-second...30-day clamp. |
 | `providers.<id>.authPath` | provider | External-auth path used by Codex. Accepts either an `auth.json` file path or its parent directory. |
-| `providers.<id>.mergeOpencodeUsage` | Minimax / ChatGPT / Antigravity / GLM / DeepSeek | Whether to add the matching OpenCode provider slice to the card's local token data. Missing means `true` for GLM and `false` for the other providers. |
+| `clientBindings[]` | client → quota Provider | Explicitly controls which Client usage slices contribute to a quota card. Missing bindings are migrated from the legacy provider-level OpenCode switches. |
+| `providers.<id>.mergeOpencodeUsage` | legacy compatibility | Kept synchronized for older builds; new UI reads and writes `clientBindings[]`. |
 
 `ProviderConfig.encode(to:)` omits nil optional fields, so saved config only includes relevant keys. `ConfigStore.saveConfig()` writes pretty-printed, sorted-key JSON and reapplies `0600`.
 Unknown or incorrectly typed `statusBarIconStyle` / `statusBarIndicatorMode` /
 `statusBarHealthDotEnabled` values fall back
 to their defaults; cosmetic config errors do not trigger recovery of the provider settings.
 
-OpenCode is a shared local data source rather than a fifth menu-bar provider. Its
-provider mapping and merge semantics are documented in [`spec/providers/opencode.md`](providers/opencode.md).
+OpenCode and DSH are shared local Clients rather than menu-bar quota Providers. Their
+raw multi-provider slices remain available in diagnostics; card display uses one
+provider-neutral aggregate token projection. Antigravity is a special quota owner:
+its Gemini / Claude / GPT model usage remains attached to the Antigravity quota scope.
+
+Settings > Clients uses horizontally scrollable client tabs sorted by display name
+(Antigravity, Codex, DSH, MiniMax Code, OpenCode, ZCode). Each tab only renders quota
+providers with observed local token activity. Provider rows are collapsed by default;
+expanding one opens the shared seven-day token chart. Its daily table keeps the
+columns `R/T → Input → Cache → Output → Reason → 价值`; the value column is shown
+when the client scanner has per-call model samples. Below the chart, aggregate
+tokens, cache hit rate, and the seven-day estimated public-API value remain visible.
+The estimate uses recognized model names and the published currency for that
+provider; unknown models are explicitly marked as unpriced rather than assigned a
+fallback price. The built-in catalog records its update date in
+`ModelPricingCatalog.lastUpdated` (currently `2026-08-17`). Codex local events keep
+the model from `turn_context` so GPT-5.6 Sol/Terra/Luna can be priced separately.
 
 ## Startup Flow
 

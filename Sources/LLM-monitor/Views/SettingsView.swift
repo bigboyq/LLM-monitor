@@ -127,6 +127,8 @@ struct SettingsView: View {
     @State private var deepseekMergeOpencode: Bool = false
     @State private var deepseekPeakWeekdays: Bool = DeepseekPeakWindow.defaultWindow.weekdaysOnly
 
+    @State private var selectedClientID: String = ClientID.antigravity
+
     @State private var isSaving: Bool = false
     @State private var saveErrorMessage: String?
 
@@ -142,19 +144,16 @@ struct SettingsView: View {
     enum SettingsTab: Identifiable {
         case general
         case provider(FetcherDescriptor)
-        case opencode
-        case dsh
+        case clients
 
         static let generalID = "general"
-        static let opencodeID = "opencode"
-        static let dshID = "dsh"
+        static let clientsID = "clients"
 
         var id: String {
             switch self {
             case .general: return Self.generalID
             case .provider(let d): return d.id
-            case .opencode: return Self.opencodeID
-            case .dsh: return Self.dshID
+            case .clients: return Self.clientsID
             }
         }
 
@@ -162,8 +161,7 @@ struct SettingsView: View {
             switch self {
             case .general: return "常规"
             case .provider(let d): return d.settingsTabTitle ?? d.displayName
-            case .opencode: return "OpenCode"
-            case .dsh: return "DSH"
+            case .clients: return "客户端"
             }
         }
 
@@ -171,8 +169,7 @@ struct SettingsView: View {
             switch self {
             case .general: return "gearshape"
             case .provider(let d): return d.iconSystemName
-            case .opencode: return "terminal"
-            case .dsh: return "terminal.fill"
+            case .clients: return "terminal"
             }
         }
 
@@ -180,8 +177,7 @@ struct SettingsView: View {
             switch self {
             case .general: return nil
             case .provider(let d): return .provider(d.kind)
-            case .opencode: return .opencode
-            case .dsh: return nil
+            case .clients: return nil
             }
         }
 
@@ -189,8 +185,7 @@ struct SettingsView: View {
             switch self {
             case .general: return "刷新节奏与应用启动行为"
             case .provider(let d): return d.settingsTabSubtitle ?? ""
-            case .opencode: return "本地 token 用量数据源诊断（不显示在菜单栏）"
-            case .dsh: return "DeepSeek Harness 本地 session Token 用量诊断"
+            case .clients: return "本地客户端用量与 Provider 映射"
             }
         }
     }
@@ -198,7 +193,7 @@ struct SettingsView: View {
     /// 全部 tab（`.general` + descriptors 派生的 provider tab）。
     /// `Identifiable` 让 `ForEach` 走 `id` 区分，切换不会触发整列重渲染。
     private var allTabs: [SettingsTab] {
-        [.general] + descriptors.map { .provider($0) } + [.opencode, .dsh]
+        [.general] + descriptors.map { .provider($0) } + [.clients]
     }
 
     var body: some View {
@@ -288,10 +283,8 @@ struct SettingsView: View {
                     // kind 派发，加新 provider 只需在那加一个 case，**不要**在这里
                     // 改 `SettingsTab` 枚举。
                     providerPane(for: d.kind)
-                case .opencode:
-                    opencodePane
-                case .dsh:
-                    dshPane
+                case .clients:
+                    clientsPane
                 }
             }
             .padding(20)
@@ -450,6 +443,180 @@ struct SettingsView: View {
                 }
             }
         }
+    }
+
+    private var clientsPane: some View {
+        let clients = sortedClientDescriptors
+
+        return VStack(alignment: .leading, spacing: 16) {
+            clientTabBar(clients)
+
+            if let client = clients.first(where: { $0.id == selectedClientID }) {
+                let providers = clientProviderUsage(for: client.id)
+                SettingsSection(
+                    title: "已识别的 Provider",
+                    footer: providers.isEmpty
+                        ? "暂未发现这个客户端产生的本地 Token 数据。使用客户端完成一次模型调用后，重新扫描即可显示。"
+                        : "仅显示最近扫描到实际 Token 活动的 Provider。展开行可查看总 Token、缓存命中率和按公开 API 单价估算的价值。"
+                ) {
+                    if providers.isEmpty {
+                        emptyClientState(client)
+                    } else {
+                        ForEach(providers) { provider in
+                            clientProviderDisclosure(provider)
+                        }
+                    }
+                }
+            }
+        }
+        .onAppear {
+            if sortedClientDescriptors.contains(where: { $0.id == selectedClientID }) == false {
+                selectedClientID = sortedClientDescriptors.first?.id ?? ClientID.antigravity
+            }
+        }
+    }
+
+    private var sortedClientDescriptors: [ClientDescriptor] {
+        ClientDescriptor.all.sorted {
+            $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
+        }
+    }
+
+    private func clientTabBar(_ clients: [ClientDescriptor]) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(clients) { client in
+                    let selected = selectedClientID == client.id
+                    Button {
+                        selectedClientID = client.id
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: client.iconSystemName)
+                                .font(.system(size: 12, weight: .medium))
+                            Text(client.displayName)
+                                .font(SettingsTypography.metadata)
+                        }
+                        .foregroundStyle(selected ? Color.accentColor : .secondary)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 7)
+                        .background(
+                            Capsule(style: .continuous)
+                                .fill(selected ? Color.accentColor.opacity(0.14) : Color.clear)
+                        )
+                        .overlay(
+                            Capsule(style: .continuous)
+                                .stroke(selected ? Color.accentColor.opacity(0.35) : Color.secondary.opacity(0.18), lineWidth: 0.5)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.vertical, 2)
+        }
+    }
+
+    private func clientProviderUsage(for clientID: String) -> [ClientProviderUsageSummary] {
+        var rows: [ClientProviderUsageSummary] = []
+        for status in state.statuses {
+            let projection = status.usageProjection(for: status.lastSuccess)
+            for contribution in projection.contributions {
+                guard contribution.clientID == clientID, contribution.hasActivity else { continue }
+                rows.append(
+                    ClientProviderUsageSummary(
+                        clientID: clientID,
+                        quotaProviderID: status.kind.quotaProviderID,
+                        providerName: status.displayName,
+                        dailyTokenUsage: contribution.dailyTokenUsage,
+                        recentSamples: contribution.recentSamples,
+                        scannedAt: contribution.scannedAt
+                    )
+                )
+            }
+        }
+        return rows.sorted {
+            $0.providerName.localizedCaseInsensitiveCompare($1.providerName) == .orderedAscending
+        }
+    }
+
+    private func emptyClientState(_ client: ClientDescriptor) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Image(systemName: client.iconSystemName)
+                .font(.system(size: 22, weight: .medium))
+                .foregroundStyle(.tertiary)
+            Text("尚未识别到 (client.displayName) 的 Token 用量")
+                .font(SettingsTypography.rowEmphasis)
+            Text(client.subtitle)
+                .font(SettingsTypography.metadata)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 12)
+    }
+
+    private func clientProviderDisclosure(_ provider: ClientProviderUsageSummary) -> some View {
+        DisclosureGroup {
+            VStack(alignment: .leading, spacing: 10) {
+                SevenDayTokenUsageHoverView(
+                    days: provider.dailyTokenUsage,
+                    scannedAt: provider.scannedAt,
+                    isScanning: false,
+                    priceByDay: provider.priceTextByDay
+                )
+
+                HStack(spacing: 18) {
+                    usageMetric(label: "总 Token", value: Formatters.formatTokenCountCompact(provider.totalTokens))
+                    usageMetric(label: "缓存命中率", value: provider.cacheHitRate.map { String(format: "%.1f%%", $0 * 100) } ?? "—")
+                    usageMetric(label: "价值", value: costText(provider.costEstimate))
+                }
+
+                if provider.costEstimate.unpricedModelNames.isEmpty == false {
+                    Text("未定价模型：\(provider.costEstimate.unpricedModelNames.joined(separator: ", "))")
+                        .font(SettingsTypography.metadata)
+                        .foregroundStyle(.orange)
+                }
+                if provider.costEstimate.pricedModelNames.isEmpty == false {
+                    Text("计价模型：\(provider.costEstimate.pricedModelNames.joined(separator: ", ")) · 价格目录更新于 \(ModelPricingCatalog.lastUpdated)")
+                        .font(SettingsTypography.metadata)
+                        .foregroundStyle(.tertiary)
+                }
+                if let scannedAt = provider.scannedAt {
+                    Text("最近扫描：\(Formatters.formatAbsolute(scannedAt))")
+                        .font(SettingsTypography.metadata)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .padding(.top, 8)
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "circle.fill")
+                    .font(.system(size: 6))
+                    .foregroundStyle(Color.accentColor)
+                Text(provider.providerName)
+                    .font(SettingsTypography.rowEmphasis)
+                Spacer()
+                Text(Formatters.formatTokenCountCompact(provider.totalTokens) + " tokens")
+                    .font(SettingsTypography.numericValue)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .font(SettingsTypography.metadata)
+    }
+
+    private func usageMetric(label: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label)
+                .font(SettingsTypography.metadata)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(SettingsTypography.numericValue)
+        }
+    }
+
+    private func costText(_ estimate: ModelCostEstimate) -> String {
+        guard let value = estimate.value, let currency = estimate.currency else {
+            return "未定价"
+        }
+        return String(format: "%@%.4f", currency.symbol, value)
     }
 
     private func dshProviderSummary(
@@ -651,12 +818,6 @@ struct SettingsView: View {
                 SettingsToggleRow(label: "启用 minimax Token Plan 监测", isOn: $minimaxEnabled)
             }
 
-            opencodeMergeSection(
-                isOn: $minimaxMergeOpencode,
-                source: "minimax-cn-coding-plan",
-                footer: "关闭时只显示本地 Scanner；开启后，OpenCode 的 Input / Cache / Reason / Output / rounds / turns 会与本地数据逐项相加。OpenCode 的 minimax 本地能力账本不参与。"
-            )
-
             if minimaxEnabled {
                 SettingsSection(title: "认证与刷新") {
                     SettingsControlRow("API Key") {
@@ -677,12 +838,6 @@ struct SettingsView: View {
             SettingsSection {
                 SettingsToggleRow(label: "启用 ChatGPT Plan 监测", isOn: $chatgptEnabled)
             }
-
-            opencodeMergeSection(
-                isOn: $chatgptMergeOpencode,
-                source: "openai",
-                footer: "关闭时只显示 Codex / ChatGPT 本地 Scanner；开启后，OpenCode 的 openai 数据会逐项合并到 ChatGPT 卡片。"
-            )
 
             if chatgptEnabled {
                 SettingsSection(
@@ -716,12 +871,6 @@ struct SettingsView: View {
                 SettingsToggleRow(label: "启用 Antigravity 监测", isOn: $antigravityEnabled)
             }
 
-            opencodeMergeSection(
-                isOn: $antigravityMergeOpencode,
-                source: "antigravity / google / google-vertex",
-                footer: "关闭时只显示 Antigravity 本地 Scanner；开启后，匹配到的 OpenCode Antigravity provider 数据逐项合并。"
-            )
-
             if antigravityEnabled {
                 SettingsSection(
                     title: "刷新频率",
@@ -738,12 +887,6 @@ struct SettingsView: View {
             SettingsSection {
                 SettingsToggleRow(label: "启用 GLM Coding Plan 监测", isOn: $glmEnabled)
             }
-
-            opencodeMergeSection(
-                isOn: $glmMergeOpencode,
-                source: "zhipuai-coding-plan",
-                footer: "GLM 卡同时读取本机 ZCode（~/.zcode/cli/db/db.sqlite，native 源）与可选的 OpenCode 数据；本开关只控制后者。默认开启（叠加 OpenCode）。"
-            )
 
             if glmEnabled {
                 SettingsSection(
@@ -779,12 +922,6 @@ struct SettingsView: View {
                 SettingsToggleRow(label: "启用 DeepSeek 监测", isOn: $deepseekEnabled)
             }
 
-            opencodeMergeSection(
-                isOn: $deepseekMergeOpencode,
-                source: "deepseek",
-                footer: "关闭时只显示 DeepSeek 余额；开启后，OpenCode 的 deepseek 模型 Token 数据会合并展示。"
-            )
-
             if deepseekEnabled {
                 SettingsSection(
                     title: "认证与刷新",
@@ -818,22 +955,6 @@ struct SettingsView: View {
                     Divider().padding(.vertical, 4)
                     SettingsToggleRow(label: "仅工作日（周一–周五）", isOn: $deepseekPeakWeekdays)
                 }
-            }
-        }
-    }
-
-    private func opencodeMergeSection(
-        isOn: Binding<Bool>,
-        source: String,
-        footer: String
-    ) -> some View {
-        SettingsSection(title: "OpenCode 数据合并", footer: footer) {
-            SettingsToggleRow(label: "合并 OpenCode 数据", isOn: isOn)
-            SettingsControlRow("数据来源") {
-                Text(source)
-                    .font(SettingsTypography.metadataMonospaced)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.trailing)
             }
         }
     }
@@ -964,11 +1085,28 @@ struct SettingsView: View {
         statusBarIconStyle = config.effectiveStatusBarIconStyle
         statusBarHealthDotEnabled = config.effectiveStatusBarHealthDotEnabled
 
-        // 缺失字段走兼容默认：GLM 保持原先的 OpenCode 数据源，其余 provider 默认关闭。
-        minimaxMergeOpencode = false
-        chatgptMergeOpencode = false
-        antigravityMergeOpencode = false
-        glmMergeOpencode = true
+        // 映射现在属于 Client 设置；旧版 config 缺少 clientBindings 时，
+        // AppConfig 已从 provider-level mergeOpencodeUsage 自动迁移。
+        minimaxMergeOpencode = config.isClientBindingEnabled(
+            clientID: ClientID.openCode,
+            quotaProviderID: QuotaProviderID.minimax
+        )
+        chatgptMergeOpencode = config.isClientBindingEnabled(
+            clientID: ClientID.openCode,
+            quotaProviderID: QuotaProviderID.openAI
+        )
+        antigravityMergeOpencode = config.isClientBindingEnabled(
+            clientID: ClientID.openCode,
+            quotaProviderID: QuotaProviderID.antigravity
+        )
+        glmMergeOpencode = config.isClientBindingEnabled(
+            clientID: ClientID.openCode,
+            quotaProviderID: QuotaProviderID.zhipu
+        )
+        deepseekMergeOpencode = config.isClientBindingEnabled(
+            clientID: ClientID.openCode,
+            quotaProviderID: QuotaProviderID.deepseek
+        )
 
         if let id = providerID(for: .minimaxTokenPlan), let minimax = config.providers[id] {
             minimaxEnabled = minimax.enabled
@@ -1004,7 +1142,6 @@ struct SettingsView: View {
             glmPeakWeekdays = glm.peakWeekdaysOnly ?? GlmPeakWindow.zhipuDefault.weekdaysOnly
         }
 
-        deepseekMergeOpencode = false
         if let id = providerID(for: .deepseek), let deepseek = config.providers[id] {
             deepseekEnabled = deepseek.enabled
             deepseekApiKey = deepseek.apiKey ?? ""
@@ -1090,6 +1227,32 @@ struct SettingsView: View {
             deepseek.deepseekPeakWeekdaysOnly = deepseekPeakWeekdays == ds.weekdaysOnly ? nil : deepseekPeakWeekdays
             config.providers[id] = deepseek
         }
+
+        config.setClientBindingEnabled(
+            clientID: ClientID.openCode,
+            quotaProviderID: QuotaProviderID.minimax,
+            enabled: minimaxMergeOpencode
+        )
+        config.setClientBindingEnabled(
+            clientID: ClientID.openCode,
+            quotaProviderID: QuotaProviderID.openAI,
+            enabled: chatgptMergeOpencode
+        )
+        config.setClientBindingEnabled(
+            clientID: ClientID.openCode,
+            quotaProviderID: QuotaProviderID.antigravity,
+            enabled: antigravityMergeOpencode
+        )
+        config.setClientBindingEnabled(
+            clientID: ClientID.openCode,
+            quotaProviderID: QuotaProviderID.zhipu,
+            enabled: glmMergeOpencode
+        )
+        config.setClientBindingEnabled(
+            clientID: ClientID.openCode,
+            quotaProviderID: QuotaProviderID.deepseek,
+            enabled: deepseekMergeOpencode
+        )
 
         try await SettingsSaveTransaction.execute(
             previousLaunchAtLogin: previousLaunchAtLogin,

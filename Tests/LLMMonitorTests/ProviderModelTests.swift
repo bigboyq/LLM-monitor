@@ -5,6 +5,167 @@ import AppKit
 
 final class ProviderModelTests: XCTestCase {
 
+    func testProviderUsageProjectionAggregatesMultipleClientsByDay() {
+        let day = Date(timeIntervalSince1970: 1_700_000_000)
+        let first = ClientUsageContribution(
+            clientID: ClientID.openCode,
+            displayName: "OpenCode",
+            dailyTokenUsage: [
+                UnifiedDailyTokenUsage(dayStart: day, input: 100, cacheRead: 20, output: 30, reasoning: 10, rounds: 2)
+            ],
+            scannedAt: day
+        )
+        let second = ClientUsageContribution(
+            clientID: ClientID.dsh,
+            displayName: "DSH",
+            dailyTokenUsage: [
+                UnifiedDailyTokenUsage(dayStart: day, input: 40, cacheRead: 5, output: 15, reasoning: 5, rounds: 1)
+            ],
+            scannedAt: day.addingTimeInterval(10)
+        )
+
+        let projection = ProviderUsageProjection(contributions: [first, second])
+        let total = try! XCTUnwrap(projection.dailyTokenUsage.first)
+        XCTAssertEqual(total.input, 140)
+        XCTAssertEqual(total.cacheRead, 25)
+        XCTAssertEqual(total.output, 45)
+        XCTAssertEqual(total.reasoning, 15)
+        XCTAssertEqual(total.totalTokens, 225)
+        XCTAssertEqual(projection.clientIDs, [ClientID.openCode, ClientID.dsh])
+        XCTAssertEqual(projection.scannedAt, day.addingTimeInterval(10))
+    }
+
+    func testClientProviderSummaryUsesAggregateTokensAndCacheHitRate() {
+        let day = Date(timeIntervalSince1970: 1_700_000_000)
+        let summary = ClientProviderUsageSummary(
+            clientID: ClientID.openCode,
+            quotaProviderID: QuotaProviderID.openAI,
+            providerName: "ChatGPT Plan",
+            dailyTokenUsage: [
+                UnifiedDailyTokenUsage(dayStart: day, input: 80, cacheRead: 20, output: 30, reasoning: 10)
+            ],
+            recentSamples: [
+                LocalTokenUsageSample(
+                    completedAt: day,
+                    modelName: "gpt-4.1",
+                    promptID: "prompt-1",
+                    inputTokens: 100,
+                    cachedInputTokens: 20,
+                    outputTokens: 30,
+                    reasoningOutputTokens: 10
+                )
+            ],
+            scannedAt: day
+        )
+
+        XCTAssertEqual(summary.totalTokens, 140)
+        XCTAssertEqual(summary.cacheHitRate ?? -1, 0.2, accuracy: 0.0001)
+        XCTAssertEqual(summary.costEstimate.currency, .usd)
+        XCTAssertEqual(summary.costEstimate.value ?? -1, 0.00049, accuracy: 0.000001)
+    }
+
+    func testUnknownModelIsNotAssignedAnEstimatedPrice() {
+        let sample = LocalTokenUsageSample(
+            completedAt: Date(),
+            modelName: "future-model",
+            promptID: "prompt-1",
+            inputTokens: 100,
+            cachedInputTokens: 20,
+            outputTokens: 30,
+            reasoningOutputTokens: 0
+        )
+
+        let estimate = ModelPricingCatalog.estimate(
+            samples: [sample],
+            quotaProviderID: QuotaProviderID.openAI
+        )
+        XCTAssertNil(estimate.value)
+        XCTAssertNil(estimate.currency)
+        XCTAssertEqual(estimate.unpricedModelNames, ["future-model"])
+    }
+
+    func testPricingAliasesAndAugust17Snapshot() {
+        let codexPrices = [
+            ModelPricingCatalog.pricing(for: "gpt-5.6-sol", quotaProviderID: QuotaProviderID.openAI),
+            ModelPricingCatalog.pricing(for: "gpt-5.6-terra", quotaProviderID: QuotaProviderID.openAI),
+            ModelPricingCatalog.pricing(for: "gpt-5.6-luna", quotaProviderID: QuotaProviderID.openAI)
+        ].compactMap { $0 }
+        XCTAssertEqual(codexPrices.map(\.inputPerMillion), [5, 2, 0.2])
+        XCTAssertEqual(codexPrices.map(\.outputPerMillion), [30, 12, 1.2])
+
+        let gemini36 = ModelPricingCatalog.pricing(
+            for: "gemini-3.6-flash", quotaProviderID: QuotaProviderID.antigravity
+        )
+        let gemini37 = ModelPricingCatalog.pricing(
+            for: "gemini-3.7-flash", quotaProviderID: QuotaProviderID.antigravity
+        )
+        XCTAssertEqual(gemini36?.currency, gemini37?.currency)
+        XCTAssertEqual(gemini36?.inputPerMillion, gemini37?.inputPerMillion)
+        XCTAssertEqual(gemini36?.cacheReadPerMillion, gemini37?.cacheReadPerMillion)
+        XCTAssertEqual(gemini36?.outputPerMillion, gemini37?.outputPerMillion)
+
+        let minimax = ModelPricingCatalog.pricing(
+            for: "minimax/MiniMax-M3", quotaProviderID: QuotaProviderID.minimax
+        )
+        XCTAssertEqual(minimax?.inputPerMillion, 2.1)
+        XCTAssertEqual(minimax?.cacheReadPerMillion, 0.42)
+        XCTAssertEqual(minimax?.outputPerMillion, 8.4)
+
+        let glm52 = ModelPricingCatalog.pricing(for: "GLM-5.2", quotaProviderID: QuotaProviderID.zhipu)
+        let glm53 = ModelPricingCatalog.pricing(for: "GLM-5.3", quotaProviderID: QuotaProviderID.zhipu)
+        XCTAssertEqual(glm52?.currency, glm53?.currency)
+        XCTAssertEqual(glm52?.inputPerMillion, glm53?.inputPerMillion)
+        XCTAssertEqual(glm52?.cacheReadPerMillion, glm53?.cacheReadPerMillion)
+        XCTAssertEqual(glm52?.outputPerMillion, glm53?.outputPerMillion)
+
+        let deepseekFlash = ModelPricingCatalog.pricing(
+            for: "deepseek-v4-flash", quotaProviderID: QuotaProviderID.deepseek
+        )
+        let deepseekPro = ModelPricingCatalog.pricing(
+            for: "deepseek-v4-pro", quotaProviderID: QuotaProviderID.deepseek
+        )
+        XCTAssertEqual(deepseekFlash?.inputPerMillion, 0.14)
+        XCTAssertEqual(deepseekFlash?.cacheReadPerMillion, 0.0028)
+        XCTAssertEqual(deepseekFlash?.outputPerMillion, 0.28)
+        XCTAssertEqual(deepseekPro?.inputPerMillion, 0.435)
+        XCTAssertEqual(deepseekPro?.cacheReadPerMillion, 0.003625)
+        XCTAssertEqual(deepseekPro?.outputPerMillion, 0.87)
+        XCTAssertEqual(ModelPricingCatalog.lastUpdated, "2026-08-17")
+    }
+
+    func testClientRegistrySeparatesMultiProviderClientsFromQuotaProviders() {
+        let openCode = try! XCTUnwrap(ClientDescriptor.all.first { $0.id == ClientID.openCode })
+        let dsh = try! XCTUnwrap(ClientDescriptor.all.first { $0.id == ClientID.dsh })
+        XCTAssertGreaterThan(openCode.supportedQuotaProviderIDs.count, 2)
+        XCTAssertGreaterThan(dsh.supportedQuotaProviderIDs.count, 1)
+        XCTAssertEqual(ProviderKind.deepseek.quotaProviderID, QuotaProviderID.deepseek)
+        XCTAssertEqual(ProviderKind.glmCodingPlan.quotaProviderID, QuotaProviderID.zhipu)
+    }
+
+    func testLegacyProviderMergeFlagsMigrateToClientBindings() throws {
+        let json = """
+        {
+          "schemaVersion": 1,
+          "refreshIntervalSeconds": 300,
+          "providers": {
+            "glm_coding_plan": {"enabled": false, "mergeOpencodeUsage": false},
+            "deepseek": {"enabled": false, "mergeOpencodeUsage": true}
+          }
+        }
+        """.data(using: .utf8)!
+
+        let config = try JSONDecoder().decode(AppConfig.self, from: json)
+        XCTAssertEqual(config.schemaVersion, AppConfig.currentSchemaVersion)
+        XCTAssertFalse(config.isClientBindingEnabled(
+            clientID: ClientID.openCode,
+            quotaProviderID: QuotaProviderID.zhipu
+        ))
+        XCTAssertTrue(config.isClientBindingEnabled(
+            clientID: ClientID.openCode,
+            quotaProviderID: QuotaProviderID.deepseek
+        ))
+    }
+
     // MARK: - QuotaInfo: accountEmail
 
     func testQuotaInfoAccountEmailRoundTrip() throws {

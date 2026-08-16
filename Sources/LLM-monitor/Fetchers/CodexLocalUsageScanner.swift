@@ -61,12 +61,14 @@ struct CodexTokenUsageEvent: Sendable {
 enum CodexSessionEvent: Sendable {
     case taskStarted(timestamp: Date, turnID: String)
     case taskCompleted(timestamp: Date, turnID: String)
+    case modelContext(timestamp: Date, modelName: String)
     case tokenCount(timestamp: Date, usage: CodexTokenUsageEvent)
 
     var timestamp: Date {
         switch self {
         case .taskStarted(let timestamp, _),
              .taskCompleted(let timestamp, _),
+             .modelContext(let timestamp, _),
              .tokenCount(let timestamp, _):
             return timestamp
         }
@@ -253,6 +255,7 @@ extension CodexFetcher {
     struct LocalUsageScanResult {
         let usageSummaries: [String: UsageMetricSummary]
         let dailyTokenUsage: [DailyTokenUsage]
+        let recentSamples: [LocalTokenUsageSample]
         let latestPromptFile: URL?
         let latestPromptTurnID: String?
         let latestPromptCompletedAt: Date?
@@ -290,6 +293,7 @@ extension CodexFetcher {
             return LocalUsageScanResult(
                 usageSummaries: [:],
                 dailyTokenUsage: [],
+                recentSamples: [],
                 latestPromptFile: nil,
                 latestPromptTurnID: nil,
                 latestPromptCompletedAt: nil,
@@ -312,13 +316,16 @@ extension CodexFetcher {
         var latestPromptFile: URL?
         var latestPromptTurnID: String?
         var latestPromptCompletedAt: Date?
+        var recentSamples: [LocalTokenUsageSample] = []
         var scannedFileCount = 0
 
-        logInfo("[codex/local] 候选 session files=\(sessionFiles.count)")
+            logInfo("[codex/local] 候选 session files=\(sessionFiles.count)")
 
         for sessionFile in sessionFiles {
             guard !Task.isCancelled else { break }
             scannedFileCount += 1
+            var activeTurnID: String?
+            var currentModelName: String?
             for event in sessionFile.events {
                 guard !Task.isCancelled else { break }
                 let timestamp = event.timestamp
@@ -327,6 +334,7 @@ extension CodexFetcher {
                 }
                 switch event {
                 case .taskStarted(_, let turnID):
+                    activeTurnID = turnID
                     for key in matchingKeys {
                         promptIDs[key, default: []].insert(turnID)
                     }
@@ -336,13 +344,18 @@ extension CodexFetcher {
                         dailyPromptIDs[dailyWindow.startDate, default: []].insert(turnID)
                     }
                 case .taskCompleted(_, let turnID):
+                    if activeTurnID == turnID {
+                        activeTurnID = nil
+                    }
                     guard !matchingKeys.isEmpty else { continue }
                     if latestPromptCompletedAt == nil || timestamp > latestPromptCompletedAt! {
                         latestPromptCompletedAt = timestamp
                         latestPromptFile = sessionFile.fileURL
                         latestPromptTurnID = turnID
                     }
-                case .tokenCount(_, let usage):
+                case .modelContext(_, let modelName):
+                    currentModelName = modelName
+                case .tokenCount(let timestamp, let usage):
                     for key in matchingKeys {
                         tokenSummaries[key, default: MutableUsageSummary()].add(usage)
                     }
@@ -350,6 +363,20 @@ extension CodexFetcher {
                         $0.startDate <= timestamp && timestamp < $0.endDate
                     }) {
                         dailySummaries[dailyWindow.startDate, default: MutableUsageSummary()].add(usage)
+                        if let activeTurnID {
+                            recentSamples.append(
+                                LocalTokenUsageSample(
+                                    completedAt: timestamp,
+                                    modelName: currentModelName,
+                                    promptID: "codex:\(activeTurnID):\(timestamp.timeIntervalSince1970)",
+                                    inputTokens: usage.inputTokens,
+                                    cachedInputTokens: usage.cachedInputTokens,
+                                    outputTokens: usage.outputTokens,
+                                    reasoningOutputTokens: usage.reasoningOutputTokens,
+                                    sourceProviderID: QuotaProviderID.openAI
+                                )
+                            )
+                        }
                     }
                 }
             }
@@ -390,6 +417,7 @@ extension CodexFetcher {
         return LocalUsageScanResult(
             usageSummaries: usageSummaries,
             dailyTokenUsage: dailyTokenUsage,
+            recentSamples: recentSamples,
             latestPromptFile: latestPromptFile,
             latestPromptTurnID: latestPromptTurnID,
             latestPromptCompletedAt: latestPromptCompletedAt,
@@ -427,6 +455,8 @@ extension CodexFetcher {
                     continue
                 }
                 summary.add(usage)
+            case .modelContext:
+                continue
             case .taskCompleted:
                 continue
             }
@@ -532,13 +562,23 @@ extension CodexFetcher {
         ) { line in
             guard !Task.isCancelled else { return false }
             // Performance optimization: skip JSON deserialization for non-event or irrelevant lines
-            guard line.contains("event_msg") else { return true }
-            guard line.contains("task_started") || line.contains("task_complete") || line.contains("token_count") else { return true }
+            guard line.contains("event_msg") || line.contains("turn_context") else { return true }
+            guard line.contains("task_started") || line.contains("task_complete") || line.contains("token_count") || line.contains("\"type\":\"turn_context\"") else { return true }
 
             guard let object = parseJSONObject(from: line),
                   let timestamp = DateParser.parse(object["timestamp"]),
-                  object["type"] as? String == "event_msg",
-                  let payload = object["payload"] as? [String: Any],
+                  let payload = object["payload"] as? [String: Any] else {
+                return true
+            }
+
+            if object["type"] as? String == "turn_context",
+               let modelName = payload["model"] as? String,
+               !modelName.isEmpty {
+                events.append(.modelContext(timestamp: timestamp, modelName: modelName))
+                return true
+            }
+
+            guard object["type"] as? String == "event_msg",
                   let payloadType = payload["type"] as? String else {
                 return true
             }

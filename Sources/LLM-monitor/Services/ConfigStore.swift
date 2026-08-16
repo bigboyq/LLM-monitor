@@ -47,8 +47,9 @@ enum StatusBarIndicatorMode: String, Codable, Sendable, CaseIterable, Identifiab
 
 /// 应用配置 — 从 ~/Library/Application Support/LLM-monitor/config.json 读
 struct AppConfig: Codable, Equatable {
-    /// 当前配置 schema。缺失该字段的历史配置按 schema 0 解码并规范化到当前版本。
-    static let currentSchemaVersion = 1
+    /// 当前配置 schema。缺失该字段的历史配置按 schema 0 解码并规范化到当前版本；
+    /// schema 1 的 provider-level OpenCode 开关会迁移到 clientBindings。
+    static let currentSchemaVersion = 2
     /// 防止手工配置的极大整数经过 `TimeInterval` 转换后无法安全转回 `Int`，
     /// 同时避免一次拼写错误让 provider 实际上永久停止刷新。
     static let maximumRefreshIntervalSeconds = 30 * 24 * 60 * 60
@@ -60,6 +61,10 @@ struct AppConfig: Codable, Equatable {
 
     /// 各 provider 配置（key = providerID）
     var providers: [String: ProviderConfig]
+
+    /// Client → quota Provider 的显式绑定。缺失时从旧版 provider-level
+    /// `mergeOpencodeUsage` 字段迁移生成，确保旧配置继续生效。
+    var clientBindings: [ClientProviderBinding]
 
     /// 状态栏图标风格 (nil = 默认 chartBar)
     var statusBarIconStyle: StatusBarIconStyle?
@@ -84,8 +89,42 @@ struct AppConfig: Codable, Equatable {
 
     static let `default` = AppConfig(
         refreshIntervalSeconds: 300,
-        providers: [:]
+        providers: [:],
+        clientBindings: defaultClientBindings
     )
+
+    static let defaultClientBindings: [ClientProviderBinding] = [
+        ClientProviderBinding(
+            clientID: ClientID.openCode,
+            quotaProviderID: QuotaProviderID.minimax,
+            sourceProviderAliases: [OpencodeLocalUsage.minimaxCodingPlanProviderID],
+            enabled: false
+        ),
+        ClientProviderBinding(
+            clientID: ClientID.openCode,
+            quotaProviderID: QuotaProviderID.openAI,
+            sourceProviderAliases: [OpencodeLocalUsage.openAIProviderID],
+            enabled: false
+        ),
+        ClientProviderBinding(
+            clientID: ClientID.openCode,
+            quotaProviderID: QuotaProviderID.antigravity,
+            sourceProviderAliases: OpencodeLocalUsage.antigravityProviderIDs,
+            enabled: false
+        ),
+        ClientProviderBinding(
+            clientID: ClientID.openCode,
+            quotaProviderID: QuotaProviderID.zhipu,
+            sourceProviderAliases: [OpencodeLocalUsage.glmProviderID],
+            enabled: true
+        ),
+        ClientProviderBinding(
+            clientID: ClientID.openCode,
+            quotaProviderID: QuotaProviderID.deepseek,
+            sourceProviderAliases: [OpencodeLocalUsage.deepseekProviderID],
+            enabled: false
+        )
+    ]
 
     enum SchemaError: LocalizedError, Equatable {
         case unsupportedVersion(Int)
@@ -102,6 +141,7 @@ struct AppConfig: Codable, Equatable {
         schemaVersion: Int = AppConfig.currentSchemaVersion,
         refreshIntervalSeconds: Int,
         providers: [String: ProviderConfig],
+        clientBindings: [ClientProviderBinding] = AppConfig.defaultClientBindings,
         statusBarIconStyle: StatusBarIconStyle? = nil,
         statusBarIndicatorMode: StatusBarIndicatorMode? = nil,
         statusBarHealthDotEnabled: Bool? = nil
@@ -109,20 +149,21 @@ struct AppConfig: Codable, Equatable {
         self.schemaVersion = schemaVersion
         self.refreshIntervalSeconds = refreshIntervalSeconds
         self.providers = providers
+        self.clientBindings = clientBindings
         self.statusBarIconStyle = statusBarIconStyle
         self.statusBarIndicatorMode = statusBarIndicatorMode
         self.statusBarHealthDotEnabled = statusBarHealthDotEnabled
     }
 
     private enum CodingKeys: String, CodingKey {
-        case schemaVersion, refreshIntervalSeconds, providers
+        case schemaVersion, refreshIntervalSeconds, providers, clientBindings
         case statusBarIconStyle, statusBarIndicatorMode, statusBarHealthDotEnabled
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        // schemaVersion 缺失代表首个无版本配置格式；当前没有字段迁移，
-        // 但统一归一化到当前版本，后续迁移只需在这里按 sourceVersion 分支扩展。
+        // schemaVersion 缺失代表首个无版本配置格式；缺失 clientBindings 时，
+        // 由 legacyClientBindings 从旧的 ProviderConfig 字段生成迁移结果。
         let sourceVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 0
         guard (0...Self.currentSchemaVersion).contains(sourceVersion) else {
             throw SchemaError.unsupportedVersion(sourceVersion)
@@ -130,6 +171,10 @@ struct AppConfig: Codable, Equatable {
         self.schemaVersion = Self.currentSchemaVersion
         self.refreshIntervalSeconds = try container.decode(Int.self, forKey: .refreshIntervalSeconds)
         self.providers = try container.decode([String: ProviderConfig].self, forKey: .providers)
+        self.clientBindings = try container.decodeIfPresent(
+            [ClientProviderBinding].self,
+            forKey: .clientBindings
+        ) ?? Self.legacyClientBindings(from: self.providers)
         // 这些字段只影响图标外观，不应因手工拼写错误或新版本增加枚举值而让
         // 整份 provider 配置进入损坏恢复流程。未知值和类型不匹配均按缺失处理。
         self.statusBarIconStyle = (try? container.decode(String.self, forKey: .statusBarIconStyle))
@@ -147,6 +192,52 @@ struct AppConfig: Codable, Equatable {
     func effectiveRefreshInterval(for providerID: String) -> TimeInterval {
         let value = providers[providerID]?.refreshIntervalSeconds ?? refreshIntervalSeconds
         return TimeInterval(min(max(value, 10), Self.maximumRefreshIntervalSeconds))
+    }
+
+    func isClientBindingEnabled(clientID: String, quotaProviderID: String) -> Bool {
+        clientBindings.first {
+            $0.clientID == clientID && $0.quotaProviderID == quotaProviderID
+        }?.enabled ?? false
+    }
+
+    mutating func setClientBindingEnabled(
+        clientID: String,
+        quotaProviderID: String,
+        enabled: Bool
+    ) {
+        guard let index = clientBindings.firstIndex(where: {
+            $0.clientID == clientID && $0.quotaProviderID == quotaProviderID
+        }) else {
+            clientBindings.append(
+                ClientProviderBinding(
+                    clientID: clientID,
+                    quotaProviderID: quotaProviderID,
+                    enabled: enabled
+                )
+            )
+            return
+        }
+        clientBindings[index].enabled = enabled
+    }
+
+    private static func legacyClientBindings(
+        from providers: [String: ProviderConfig]
+    ) -> [ClientProviderBinding] {
+        let legacyPairs: [(ProviderKind, String, [String])] = [
+            (.minimaxTokenPlan, QuotaProviderID.minimax, [OpencodeLocalUsage.minimaxCodingPlanProviderID]),
+            (.codexChatGpt, QuotaProviderID.openAI, [OpencodeLocalUsage.openAIProviderID]),
+            (.antigravity, QuotaProviderID.antigravity, OpencodeLocalUsage.antigravityProviderIDs),
+            (.glmCodingPlan, QuotaProviderID.zhipu, [OpencodeLocalUsage.glmProviderID]),
+            (.deepseek, QuotaProviderID.deepseek, [OpencodeLocalUsage.deepseekProviderID])
+        ]
+        return legacyPairs.map { kind, quotaProviderID, aliases in
+            ClientProviderBinding(
+                clientID: ClientID.openCode,
+                quotaProviderID: quotaProviderID,
+                sourceProviderAliases: aliases,
+                enabled: providers[kind.providerID]?.shouldMergeOpencodeUsage(for: kind) ?? (kind == .glmCodingPlan)
+            )
+        }
     }
 }
 

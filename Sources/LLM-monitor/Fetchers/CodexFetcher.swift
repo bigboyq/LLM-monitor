@@ -201,6 +201,7 @@ struct CodexFetcher: QuotaFetcher {
             secondary: summaries.usageSummaries["secondary"],
             lastPrompt: lastPrompt,
             dailyTokenUsage: summaries.dailyTokenUsage,
+            recentSamples: summaries.recentSamples,
             scannedAt: Date()
         )
         await CodexUsageDetailsCache.shared.store(

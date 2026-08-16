@@ -87,6 +87,42 @@ final class CodexLocalUsageTests: XCTestCase {
         XCTAssertEqual(result.latestPromptTurnID, "turn-2")
     }
 
+    func testSummarizeLocalUsageCarriesCodexModelIntoRecentSamples() throws {
+        let base = Date(timeIntervalSince1970: 21_000)
+        let fileURL = URL(fileURLWithPath: "/tmp/codex-local-model-test.jsonl")
+        let events: [CodexSessionEvent] = [
+            .modelContext(timestamp: base, modelName: "gpt-5.6-sol"),
+            .taskStarted(timestamp: base.addingTimeInterval(1), turnID: "turn-model"),
+            .tokenCount(
+                timestamp: base.addingTimeInterval(2),
+                usage: CodexTokenUsageEvent(
+                    inputTokens: 100,
+                    cachedInputTokens: 25,
+                    outputTokens: 10,
+                    reasoningOutputTokens: 5
+                )
+            ),
+            .taskCompleted(timestamp: base.addingTimeInterval(3), turnID: "turn-model")
+        ]
+
+        let result = CodexFetcher.summarizeLocalUsage(
+            windows: ["primary": CodexFetcher.ActiveUsageWindow(
+                startDate: base.addingTimeInterval(-1),
+                resetDate: base.addingTimeInterval(60)
+            )],
+            dailyWindows: [CodexFetcher.DailyUsageWindow(
+                startDate: base.addingTimeInterval(-1),
+                endDate: base.addingTimeInterval(60)
+            )],
+            sessionFiles: [CodexSessionFileEvents(fileURL: fileURL, events: events)]
+        )
+
+        let sample = try XCTUnwrap(result.recentSamples.first)
+        XCTAssertEqual(sample.modelName, "gpt-5.6-sol")
+        XCTAssertEqual(sample.sourceProviderID, QuotaProviderID.openAI)
+        XCTAssertEqual(sample.inputTokens, 100)
+    }
+
     func testLatestPromptUsageOnlyIncludesRoundsOfSelectedTurn() throws {
         let base = Date(timeIntervalSince1970: 30_000)
         let fileURL = URL(fileURLWithPath: "/tmp/codex-latest-prompt-test.jsonl")

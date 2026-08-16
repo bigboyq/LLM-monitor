@@ -34,6 +34,12 @@ protocol LocalUsageDaily: Identifiable where ID == Date {
 // MARK: - 默认实现（消除各 provider daily type 的重复定义）
 
 extension LocalUsageDaily {
+    /// Total displayed consumption. Cache-write tokens are intentionally not
+    /// included because they are reported as a separate accounting bucket.
+    var totalTokens: Int {
+        SaturatingArithmetic.sum(input, cacheRead, output, reasoning)
+    }
+
     /// `input + cacheRead + cacheWrite`（输入侧总量）。
     /// 这不是 uncached input；名称强调的是输入侧合计，包含 cacheWrite。
     var inputTotal: Int {

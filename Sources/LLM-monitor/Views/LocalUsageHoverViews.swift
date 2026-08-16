@@ -91,6 +91,21 @@ struct SevenDayTokenUsageHoverView<Daily: LocalUsageDaily>: View {
     let days: [Daily]
     let scannedAt: Date?
     let isScanning: Bool
+    /// Optional per-day cost text. Client settings passes this so the table
+    /// reads `Reason → 价值`; provider cards keep the historical 6-column view.
+    let priceByDay: [Date: String]
+
+    init(
+        days: [Daily],
+        scannedAt: Date?,
+        isScanning: Bool,
+        priceByDay: [Date: String] = [:]
+    ) {
+        self.days = days
+        self.scannedAt = scannedAt
+        self.isScanning = isScanning
+        self.priceByDay = priceByDay
+    }
 
     private let inputColor = Color(red: 0.16, green: 0.47, blue: 0.91)
     private let cacheColor = Color(red: 0.18, green: 0.70, blue: 0.76)
@@ -161,6 +176,9 @@ struct SevenDayTokenUsageHoverView<Daily: LocalUsageDaily>: View {
                     tableHeader("Cache", width: 64, alignment: .trailing)
                     tableHeader("Output", width: 64, alignment: .trailing)
                     tableHeader("Reason", width: 64, alignment: .trailing)
+                    if priceByDay.isEmpty == false {
+                        tableHeader("价值", width: 68, alignment: .trailing)
+                    }
                 }
                 ForEach(days) { day in
                     let metrics = LocalUsageChartDayMetrics(day)
@@ -174,6 +192,9 @@ struct SevenDayTokenUsageHoverView<Daily: LocalUsageDaily>: View {
                         tokenValue(metrics.cacheTotal, color: cacheColor, width: 64)
                         tokenValue(metrics.output, color: outputColor, width: 64)
                         tokenValue(metrics.reasoning, color: reasonColor, width: 64)
+                        if priceByDay.isEmpty == false {
+                            priceValue(priceByDay[day.dayStart] ?? "—", width: 68)
+                        }
                     }
                 }
             }
@@ -182,7 +203,7 @@ struct SevenDayTokenUsageHoverView<Daily: LocalUsageDaily>: View {
                 .font(.system(size: 8))
                 .foregroundStyle(.tertiary)
         }
-        .frame(width: 390, alignment: .leading)
+        .frame(width: priceByDay.isEmpty ? 390 : 460, alignment: .leading)
     }
 
     private func tableHeader(_ title: String, width: CGFloat, alignment: Alignment) -> some View {
@@ -196,6 +217,13 @@ struct SevenDayTokenUsageHoverView<Daily: LocalUsageDaily>: View {
         Text(Formatters.formatTokenCountCompact(value))
             .font(.system(size: 9, weight: .medium).monospacedDigit())
             .foregroundStyle(color)
+            .frame(width: width, alignment: .trailing)
+    }
+
+    private func priceValue(_ value: String, width: CGFloat) -> some View {
+        Text(value)
+            .font(.system(size: 9, weight: .medium).monospacedDigit())
+            .foregroundStyle(value == "未定价" ? .orange : .secondary)
             .frame(width: width, alignment: .trailing)
     }
 
@@ -311,12 +339,7 @@ struct LocalUsageFooterView<Daily: LocalUsageDaily>: View {
 
     private var footerText: String? {
         guard let today else { return nil }
-        let metrics = LocalUsageChartDayMetrics(today)
-        let inStr = Formatters.formatTokenCountCompact(metrics.input)
-        let outStr = Formatters.formatTokenCountCompact(metrics.output)
-        let cacheStr = Formatters.formatTokenCountCompact(metrics.cacheTotal)
-        let reasonStr = Formatters.formatTokenCountCompact(metrics.reasoning)
-        return "今天 \(inStr) in · \(outStr) out · \(cacheStr) cache · \(reasonStr) reason"
+        return "今天 \(Formatters.formatTokenCountCompact(today.totalTokens)) tokens"
     }
 
     var body: some View {

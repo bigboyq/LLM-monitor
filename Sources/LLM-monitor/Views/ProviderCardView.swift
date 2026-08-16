@@ -227,130 +227,30 @@ struct ProviderCardView: View {
     }
 
     private var localUsageSamples: [LocalTokenUsageSample] {
-        switch status.kind {
-        case .codexChatGpt:
-            guard status.mergeOpencodeUsage else { return [] }
-            return OpencodeUsageMerger.opencodeSamples(
-                status.opencodeUsage?.openAISlice,
-                providerID: OpencodeLocalUsage.openAIProviderID
-            )
-        case .antigravity:
-            let native = status.antigravityLocalUsage?.recentSamples ?? []
-            let open = status.mergeOpencodeUsage ? status.opencodeUsage?.antigravitySlice : nil
-            return OpencodeUsageMerger.mergeSamples(
-                native: native,
-                opencode: open,
-                providerID: "antigravity"
-            )
-        case .minimaxTokenPlan:
-            let native = (status.minimaxLocalUsage?.recentSamples ?? [])
-                + DshUsageMerger.dshSamples(DshUsageMerger.minimaxSlice(status.dshUsage))
-            let open = status.mergeOpencodeUsage ? status.opencodeUsage?.minimaxCodingPlanSlice : nil
-            return OpencodeUsageMerger.mergeSamples(
-                native: native,
-                opencode: open,
-                providerID: OpencodeLocalUsage.minimaxCodingPlanProviderID
-            )
-        case .glmCodingPlan:
-            let native = (status.glmLocalUsage?.recentSamples ?? [])
-                + DshUsageMerger.dshSamples(DshUsageMerger.glmSlice(status.dshUsage))
-            let open = status.mergeOpencodeUsage ? status.opencodeUsage?.glmSlice : nil
-            return OpencodeUsageMerger.mergeSamples(
-                native: native,
-                opencode: open,
-                providerID: OpencodeLocalUsage.glmProviderID
-            )
-        case .deepseek:
-            let dsh = DshUsageMerger.deepseekSlice(status.dshUsage)
-            guard status.mergeOpencodeUsage || dsh != nil else { return [] }
-            return DshUsageMerger.dshSamples(dsh)
-                + (status.mergeOpencodeUsage
-                    ? OpencodeUsageMerger.opencodeSamples(
-                        status.opencodeUsage?.deepseekSlice,
-                        providerID: OpencodeLocalUsage.deepseekProviderID
-                    )
-                    : [])
-        }
+        status.usageProjection(for: status.lastSuccess).recentSamples
     }
 
-    /// 按 provider kind 派发本地用量 footer。三个 provider 共享 `LocalUsageFooterView`
-    /// 泛型（视觉 / 内联文案 / hover 触发完全一致），只 placeholder 文案 + ready
-    /// 判断 provider-specific：
-    /// - antigravity / minimax：任意一天有数据就 ready
-    /// - codex：必须 7 天满（要等 7 天历史积累）
+    /// 所有卡片统一展示 quota provider 关联的客户端 token 汇总；客户端来源
+    /// 只保留在 hover 明细中，避免卡片主体出现复杂的多来源信息。
     @ViewBuilder
     private func localUsageFooter(for info: QuotaInfo) -> some View {
+        let projection = status.usageProjection(for: info)
+        makeLocalUsageFooter(
+            dailyTokenUsage: projection.dailyTokenUsage,
+            scannedAt: projection.scannedAt,
+            isReady: projection.hasActivity
+                && (status.kind != .codexChatGpt || projection.dailyTokenUsage.count == 7),
+            emptyHint: emptyUsageHint
+        )
+    }
+
+    private var emptyUsageHint: String {
         switch status.kind {
-        case .antigravity:
-            let open = status.mergeOpencodeUsage ? status.opencodeUsage?.antigravitySlice : nil
-            let usage = OpencodeUsageMerger.mergeAntigravity(
-                native: status.antigravityLocalUsage,
-                opencode: open,
-                opencodeScannedAt: status.opencodeUsage?.scannedAt
-            )
-            let days = usage?.dailyTokenUsage ?? []
-            makeLocalUsageFooter(
-                dailyTokenUsage: days,
-                scannedAt: usage?.scannedAt,
-                isReady: !days.isEmpty,
-                emptyHint: "本机未发现 Antigravity 会话数据（已检查 ~/.gemini/antigravity-ide/conversations 与 ~/.gemini/antigravity/conversations）"
-            )
-        case .codexChatGpt:
-            let details = info.codexUsageDetails
-            let open = status.mergeOpencodeUsage ? status.opencodeUsage?.openAISlice : nil
-            let days = OpencodeUsageMerger.mergeCodexDaily(
-                native: details?.dailyTokenUsage,
-                opencode: open
-            )
-            let scannedAt = [
-                details?.scannedAt,
-                status.mergeOpencodeUsage ? status.opencodeUsage?.scannedAt : nil
-            ].compactMap { $0 }.max()
-            makeLocalUsageFooter(
-                dailyTokenUsage: days,
-                scannedAt: scannedAt,
-                isReady: days.count == 7,
-                emptyHint: "本地 token 用量扫描尚未完成"
-            )
-        case .minimaxTokenPlan:
-            let open = status.mergeOpencodeUsage ? status.opencodeUsage?.minimaxCodingPlanSlice : nil
-            let usage = DshUsageMerger.mergeMinimax(
-                native: status.minimaxLocalUsage,
-                dsh: status.dshUsage,
-                opencode: open
-            )
-            makeLocalUsageFooter(
-                dailyTokenUsage: usage?.dailyTokenUsage ?? [],
-                scannedAt: [status.minimaxLocalUsage?.scannedAt, status.dshUsage?.scannedAt, status.opencodeUsage?.scannedAt].compactMap { $0 }.max(),
-                isReady: !(usage?.dailyTokenUsage ?? []).isEmpty,
-                emptyHint: "本机未发现 minimax v2 / dsh 会话数据"
-            )
-        case .glmCodingPlan:
-            let open = status.mergeOpencodeUsage ? status.opencodeUsage?.glmSlice : nil
-            let usage = DshUsageMerger.mergeGlm(
-                native: status.glmLocalUsage,
-                dsh: status.dshUsage,
-                opencode: open
-            )
-            makeLocalUsageFooter(
-                dailyTokenUsage: usage?.dailyTokenUsage ?? [],
-                scannedAt: [status.glmLocalUsage?.scannedAt, status.dshUsage?.scannedAt, status.opencodeUsage?.scannedAt].compactMap { $0 }.max(),
-                isReady: !(usage?.dailyTokenUsage ?? []).isEmpty,
-                emptyHint: "本机未发现 ZCode / dsh 会话数据"
-            )
-        case .deepseek:
-            let open = status.mergeOpencodeUsage ? status.opencodeUsage?.deepseekSlice : nil
-            let usage = DshUsageMerger.mergeDeepseek(
-                dsh: status.dshUsage,
-                opencode: open
-            )
-            let days = usage?.dailyTokenUsage ?? []
-            makeLocalUsageFooter(
-                dailyTokenUsage: days,
-                scannedAt: [status.dshUsage?.scannedAt, status.opencodeUsage?.scannedAt].compactMap { $0 }.max(),
-                isReady: days.isEmpty == false,
-                emptyHint: "暂无 DSH / OpenCode 的 DeepSeek Token 消耗历史"
-            )
+        case .codexChatGpt: return "本地 token 用量扫描尚未完成"
+        case .antigravity: return "本机未发现 Antigravity 会话数据"
+        case .minimaxTokenPlan: return "本机未发现 MiniMax Code / DSH 会话数据"
+        case .glmCodingPlan: return "本机未发现 ZCode / DSH 会话数据"
+        case .deepseek: return "暂无 DSH / OpenCode 的 DeepSeek Token 消耗历史"
         }
     }
 

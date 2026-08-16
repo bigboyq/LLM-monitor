@@ -574,7 +574,13 @@ final class AppState: ObservableObject {
                 lastRefreshedAt: preserved.lastRefreshedAt ?? persistedRefreshTimes[d.id],
                 isScanningLocalUsage: preserved.isScanningLocalUsage
             )
-            statusItem.mergeOpencodeUsage = pc?.shouldMergeOpencodeUsage(for: d.kind) ?? (d.kind == .glmCodingPlan)
+            // OpenCode is a Client; keep the old ProviderStatus field as a
+            // compatibility projection while reading the new client binding
+            // registry as the source of truth.
+            statusItem.mergeOpencodeUsage = configStore.config.isClientBindingEnabled(
+                clientID: ClientID.openCode,
+                quotaProviderID: d.kind.quotaProviderID
+            )
             statusItem.antigravityLocalUsage = preserved.antigravityLocalUsage
             statusItem.minimaxLocalUsage = preserved.minimaxLocalUsage
             statusItem.glmLocalUsage = preserved.glmLocalUsage
