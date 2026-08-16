@@ -238,9 +238,26 @@ private struct MenuPanelSurface: View {
 /// F4: 附着到实际 menu window，直接设置 `window.contentMaxSize` =
 /// `floor(visibleFrame.height × 0.70)`。高度上限放在 NSWindow 层，不靠 SwiftUI
 /// frame 拼凑：`fixedSize` 让窗口按内容自然决定高度，`contentMaxSize` 只负责
-/// “别超过屏幕可见高度的 70%”。卡片少→窗口矮、全显示；卡片多→窗口封顶、内部
+/// "别超过屏幕可见高度的 70%"。卡片少→窗口矮、全显示；卡片多→窗口封顶、内部
 /// ScrollView 滚动。读取 `window.screen`（菜单所在屏），不用 `NSScreen.main`。
-private struct MenuPanelHeightBridge: NSViewRepresentable {
+///
+/// Testability note: `heightCapFraction` / `cappedHeight(_:)` / `width` 暴露为
+/// `static`，让 `MenuPanelHeightBridgeTests` 不需要构造 `NSWindow` / `NSScreen`
+/// 就能验证 70% 算式。`HeightProbeView.applyMaxSize()` 是带 NSWindow 副作用的
+/// side-effect-only path，集成测试留给 UI 验证。
+struct MenuPanelHeightBridge: NSViewRepresentable {
+    /// F4: 70% 高度上限。设计判断：菜单贴顶/贴 Dock 时仍保留 30% 余量，
+    /// 比 0.85+ 体感更"飘"、比 0.5- 触发 ScrollView 太频繁。具体取值见
+    /// 7859f2d 的 commit body（"screen-relative height cap"）的视觉评估。
+    static let heightCapFraction: CGFloat = 0.70
+    /// F4: 菜单固定宽度。改这里会改所有 menu 卡片列宽。
+    static let width: CGFloat = 360
+
+    /// F4: 给定 `screen.visibleFrame.height`，算 floor 后的 max content height。
+    /// 抽成 pure function 让单测不需要 fake NSWindow/NSScreen。
+    static func cappedHeight(_ visibleFrameHeight: CGFloat) -> CGFloat {
+        floor(visibleFrameHeight * heightCapFraction)
+    }
     func makeNSView(context: Context) -> HeightProbeView {
         HeightProbeView()
     }
@@ -269,11 +286,11 @@ private struct MenuPanelHeightBridge: NSViewRepresentable {
 
         func applyMaxSize() {
             guard let window, let screen = window.screen else { return }
-            let maxHeight = floor(screen.visibleFrame.height * 0.70)
+            let maxHeight = MenuPanelHeightBridge.cappedHeight(screen.visibleFrame.height)
             guard maxHeight != lastMaxHeight else { return }
             lastMaxHeight = maxHeight
             // contentMaxSize 限制窗口最大 content 尺寸；宽度固定 360。
-            window.contentMaxSize = NSSize(width: 360, height: maxHeight)
+            window.contentMaxSize = NSSize(width: MenuPanelHeightBridge.width, height: maxHeight)
         }
     }
 }
