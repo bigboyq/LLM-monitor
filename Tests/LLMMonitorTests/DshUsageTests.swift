@@ -545,6 +545,134 @@ final class DshUsageTests: XCTestCase {
         XCTAssertEqual(second.eventCount, 1, "好文件数据在重试轮次仍要保留")
     }
 
+    func testDshSelectionPrefersNewestFilesWhenOverFileLimit() throws {
+        // spec：文件数超限时必须按 mtime 最新优先，而不是路径字典序截断。
+        let calendar = makeUTCGregorianCalendar()
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("llm-monitor-dsh-select-mtime-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        // 三个 session，inputTokens 与 mtime 一一对应：old=100, mid=200, new=300。
+        let spec: [(sessionID: String, tokens: Int, mtime: Date)] = [
+            ("session-old", 100, Date(timeIntervalSince1970: 1_600_000_000)),
+            ("session-mid", 200, Date(timeIntervalSince1970: 1_650_000_000)),
+            ("session-new", 300, Date(timeIntervalSince1970: 1_700_000_000))
+        ]
+        for entry in spec {
+            let body = [
+                #"{"type":"request/context","seq":1,"time":1700000000000,"data":{"provider":"deepseek-official","model":"deepseek-v4-flash"}}"#,
+                #"{"type":"assistant/message","seq":2,"time":1700000001000,"data":{"turn":1,"step":0,"usage":{"inputTokens":\#(entry.tokens),"outputTokens":10}}}"#
+            ].joined(separator: "\n") + "\n"
+            let url = try writeSessionLog(root: sessionsRoot, sessionID: entry.sessionID, body: body)
+            try FileManager.default.setAttributes(
+                [.modificationDate: entry.mtime],
+                ofItemAtPath: url.path
+            )
+        }
+
+        let limits = DshLocalUsageScanLimits(
+            maxSessionFiles: 2,
+            maxTotalRawBytes: 1024 * 1024,
+            maxJSONLLineBytes: 8 * 1024 * 1024,
+            maxRecentSamples: 65_536
+        )
+        let selection = try DshLocalUsageScanner.selectSessionSnapshots(
+            filePaths: try FileManagerBox().sessionFileURLs(in: sessionsRoot),
+            fileManager: FileManagerBox(),
+            limits: limits
+        )
+
+        XCTAssertEqual(selection.availableCount, 3)
+        XCTAssertEqual(selection.snapshots.count, 2)
+        XCTAssertEqual(
+            selection.snapshots.map({ $0.url.deletingLastPathComponent().lastPathComponent }),
+            ["session-new", "session-mid"],
+            "超限时应保留 mtime 最新的文件"
+        )
+        XCTAssertFalse(selection.byteLimited)
+    }
+
+    func testDshSelectionAppliesByteCapAfterMtimeOrdering() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("llm-monitor-dsh-select-bytes-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let spec: [(sessionID: String, mtime: Date)] = [
+            ("session-old", Date(timeIntervalSince1970: 1_600_000_000)),
+            ("session-new", Date(timeIntervalSince1970: 1_700_000_000))
+        ]
+        for entry in spec {
+            let body = "{\"pad\":\"\(String(repeating: "x", count: 400))\"}\n"
+            let url = try writeSessionLog(root: sessionsRoot, sessionID: entry.sessionID, body: body)
+            try FileManager.default.setAttributes(
+                [.modificationDate: entry.mtime],
+                ofItemAtPath: url.path
+            )
+        }
+
+        // 每个文件约 420 字节；字节上限设为 1 个文件的大小，
+        // 只有最新的文件应当入选。
+        let newSize = try FileManager.default.attributesOfItem(
+            atPath: sessionsRoot.appendingPathComponent("--Project--/session-new/session.jsonl").path
+        )[.size] as! Int
+        let limits = DshLocalUsageScanLimits(
+            maxSessionFiles: 100,
+            maxTotalRawBytes: newSize,
+            maxJSONLLineBytes: 8 * 1024 * 1024,
+            maxRecentSamples: 65_536
+        )
+        let selection = try DshLocalUsageScanner.selectSessionSnapshots(
+            filePaths: try FileManagerBox().sessionFileURLs(in: sessionsRoot),
+            fileManager: FileManagerBox(),
+            limits: limits
+        )
+
+        XCTAssertEqual(selection.availableCount, 2)
+        XCTAssertEqual(selection.snapshots.count, 1)
+        XCTAssertEqual(
+            selection.snapshots.first?.url.deletingLastPathComponent().lastPathComponent,
+            "session-new",
+            "字节上限也应按 mtime 顺序截断，保留最新文件"
+        )
+        XCTAssertTrue(selection.byteLimited)
+    }
+
+    func testDshSelectionBreaksMtimeTiesByPath() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("llm-monitor-dsh-select-tie-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let sameTime = Date(timeIntervalSince1970: 1_700_000_000)
+        for sessionID in ["session-b", "session-a", "session-c"] {
+            let url = try writeSessionLog(root: sessionsRoot, sessionID: sessionID, body: "{\"x\":1}\n")
+            try FileManager.default.setAttributes(
+                [.modificationDate: sameTime],
+                ofItemAtPath: url.path
+            )
+        }
+
+        let limits = DshLocalUsageScanLimits(
+            maxSessionFiles: 2,
+            maxTotalRawBytes: 1024 * 1024,
+            maxJSONLLineBytes: 8 * 1024 * 1024,
+            maxRecentSamples: 65_536
+        )
+        let selection = try DshLocalUsageScanner.selectSessionSnapshots(
+            filePaths: try FileManagerBox().sessionFileURLs(in: sessionsRoot),
+            fileManager: FileManagerBox(),
+            limits: limits
+        )
+
+        XCTAssertEqual(
+            selection.snapshots.map({ $0.url.deletingLastPathComponent().lastPathComponent }),
+            ["session-a", "session-b"],
+            "同 mtime 时以路径升序作为稳定 tie-breaker"
+        )
+    }
+
     func testDshLocalUsageEqualityIgnoresScannedAt() {
         let a = DshLocalUsage(
             byProvider: [:],

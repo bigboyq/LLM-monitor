@@ -179,19 +179,19 @@ final class DshLocalUsageScanner: ObservableObject, @unchecked Sendable {
         try fileManager.createPrivateDirectory(at: cacheDir)
 
         let filePaths = try fileManager.sessionFileURLs(in: sessionsRoot)
-        var snapshots: [DshLogFileSnapshot] = []
-        snapshots.reserveCapacity(filePaths.count)
-        var currentBytes = 0
-        for url in filePaths {
-            if snapshots.count >= limits.maxSessionFiles { break }
-            guard let snapshot = try? DshLogFileSnapshot(url: url, fileManager: fileManager) else {
-                continue
-            }
-            guard snapshot.sizeBytes > 0 else { continue }
-            currentBytes = SaturatingArithmetic.add(currentBytes, snapshot.sizeBytes)
-            guard currentBytes <= limits.maxTotalRawBytes else { break }
-            snapshots.append(snapshot)
+        let selection = selectSessionSnapshots(
+            filePaths: filePaths,
+            fileManager: fileManager,
+            limits: limits
+        )
+        if selection.truncatedByFileLimit || selection.byteLimited {
+            logWarn(
+                "[dsh-scan] session 文件超过上限，已按 mtime 最新优先截断: "
+                    + "selected=\(selection.snapshots.count), available=\(selection.availableCount)"
+                    + (selection.byteLimited ? ", byteTruncated=true" : "")
+            )
         }
+        let snapshots = selection.snapshots
         guard !snapshots.isEmpty else {
             let empty = DshLocalUsage(
                 byProvider: [:],
@@ -246,6 +246,51 @@ final class DshLocalUsageScanner: ObservableObject, @unchecked Sendable {
         return snapshot
     }
 
+    /// Select which session files participate in a scan. All valid snapshots are
+    /// collected first, ordered newest-first (mtime desc, path asc as a stable
+    /// tie-breaker), and only then capped by `maxSessionFiles` and
+    /// `maxTotalRawBytes`. Selecting before capping keeps the newest sessions
+    /// when the directory holds more artifacts than the limits allow.
+    nonisolated static func selectSessionSnapshots(
+        filePaths: [URL],
+        fileManager: FileManagerBox,
+        limits: DshLocalUsageScanLimits
+    ) -> DshFileSelection {
+        var candidates: [DshLogFileSnapshot] = []
+        candidates.reserveCapacity(filePaths.count)
+        for url in filePaths {
+            guard let snapshot = try? DshLogFileSnapshot(url: url, fileManager: fileManager) else {
+                continue
+            }
+            guard snapshot.sizeBytes > 0 else { continue }
+            candidates.append(snapshot)
+        }
+        let ordered = candidates.sorted { lhs, rhs in
+            if lhs.modifiedAt != rhs.modifiedAt {
+                return lhs.modifiedAt > rhs.modifiedAt
+            }
+            return lhs.url.path < rhs.url.path
+        }
+        let fileCapped = Array(ordered.prefix(limits.maxSessionFiles))
+        var selected: [DshLogFileSnapshot] = []
+        var currentBytes = 0
+        var byteLimited = false
+        for snapshot in fileCapped {
+            let accumulated = SaturatingArithmetic.add(currentBytes, snapshot.sizeBytes)
+            if accumulated > limits.maxTotalRawBytes {
+                byteLimited = true
+                break
+            }
+            currentBytes = accumulated
+            selected.append(snapshot)
+        }
+        return DshFileSelection(
+            snapshots: selected,
+            availableCount: candidates.count,
+            byteLimited: byteLimited
+        )
+    }
+
     /// Reapply the current seven-day window to a cached snapshot. This keeps a
     /// healthy app from re-reading large logs just because midnight crossed.
     nonisolated static func rebaseCached(
@@ -297,7 +342,7 @@ extension DshLocalUsageScanner: LocalUsageScanner {
 
 // MARK: - Parsed data
 
-private struct DshLogFileSnapshot: Sendable {
+struct DshLogFileSnapshot: Sendable {
     let url: URL
     let modifiedAt: Date
     let sizeBytes: Int
@@ -316,6 +361,18 @@ private struct DshLogFileSnapshot: Sendable {
             sizeBytes: sizeBytes
         )
     }
+}
+
+/// Result of DSH session-file selection: the newest-first slice that fits both
+/// the file-count and raw-byte caps, plus counters for diagnostics.
+struct DshFileSelection: Sendable {
+    let snapshots: [DshLogFileSnapshot]
+    /// Valid, non-empty snapshots discovered before any cap was applied.
+    let availableCount: Int
+    /// True when the raw-byte cap dropped at least one otherwise-selected file.
+    let byteLimited: Bool
+
+    var truncatedByFileLimit: Bool { snapshots.count < availableCount }
 }
 
 private struct DshRawEvent: Decodable {
@@ -774,7 +831,7 @@ private extension DshDailyUsage {
 
 // MARK: - Fingerprint/index
 
-private struct DshLogFileFingerprint: Codable, Equatable, Sendable {
+struct DshLogFileFingerprint: Codable, Equatable, Sendable {
     let path: String
     let modificationMs: Double
     let sizeBytes: Int

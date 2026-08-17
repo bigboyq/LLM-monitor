@@ -78,7 +78,10 @@ not double count. Recent samples are namespaced as `dsh:<provider>:...` before m
 - Uses file mtime + size fingerprints; if nothing changed it only rebases the cached
   seven-day window after midnight.
 - Limits: 1,024 session files, 256 MiB of compressed input, 8 MiB per JSONL line, and
-  65,536 recent samples per provider.
+  65,536 recent samples per provider. When the directory exceeds a cap, snapshots are
+  ordered newest-first (mtime descending, path ascending as a stable tie-breaker)
+  *before* the caps are applied, so the most recent sessions are always preferred; the
+  scan logs a warning with selected/available counts whenever truncation happens.
 - A corrupt or unreadable log does not abort the whole scan; it is skipped with a
   warning (path + error summary) and the next scan retries it. Failed files are
   excluded from the success fingerprint in `index.json`, so a lingering bad file
