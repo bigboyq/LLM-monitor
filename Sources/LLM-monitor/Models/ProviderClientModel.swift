@@ -215,14 +215,10 @@ enum UnifiedDailyUsageNormalizer {
             return dailyTokenUsage
         }
 
-        let sampleToday = UnifiedDailyTokenUsage(
+        let sampleToday = UnifiedTokenUsageAggregator.day(
+            from: todaySamples,
             dayStart: todayStart,
-            input: SaturatingArithmetic.sum(todaySamples.map { ModelPricingCatalog.tokenComponents(for: $0).uncached }),
-            cacheRead: SaturatingArithmetic.sum(todaySamples.map { ModelPricingCatalog.tokenComponents(for: $0).cached }),
-            output: SaturatingArithmetic.sum(todaySamples.map { max(0, $0.outputTokens) }),
-            reasoning: SaturatingArithmetic.sum(todaySamples.map { max(0, $0.reasoningOutputTokens) }),
-            turns: Set(todaySamples.map(\.promptID).filter { $0.isEmpty == false }).count,
-            rounds: todaySamples.count
+            calendar: calendar
         )
 
         var byDay = Dictionary(

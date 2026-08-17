@@ -90,6 +90,8 @@ struct TokenUsageBuckets: Equatable, Sendable {
     let output: Int
     let reasoning: Int
 
+    static let zero = Self(input: 0, cacheRead: 0, output: 0, reasoning: 0)
+
     var totalTokens: Int {
         SaturatingArithmetic.sum(input, cacheRead, output, reasoning)
     }
@@ -115,6 +117,53 @@ struct TokenUsageBuckets: Equatable, Sendable {
             output: max(sample.outputTokens, 0),
             reasoning: max(sample.reasoningOutputTokens, 0)
         )
+    }
+}
+
+/// Aggregates persisted samples after they cross the accounting boundary.
+/// Keeping this here prevents Settings, cards, and stale-current-day repair
+/// from each reimplementing input/cache/output/reasoning conversions.
+enum UnifiedTokenUsageAggregator {
+    static func day(
+        from samples: [LocalTokenUsageSample],
+        dayStart: Date,
+        calendar: Calendar = .current
+    ) -> UnifiedDailyTokenUsage {
+        var buckets = TokenUsageBuckets.zero
+        var promptIDs = Set<String>()
+        for sample in samples {
+            let sampleBuckets = TokenUsageBuckets.fromSample(sample)
+            buckets = TokenUsageBuckets(
+                input: SaturatingArithmetic.add(buckets.input, sampleBuckets.input),
+                cacheRead: SaturatingArithmetic.add(buckets.cacheRead, sampleBuckets.cacheRead),
+                output: SaturatingArithmetic.add(buckets.output, sampleBuckets.output),
+                reasoning: SaturatingArithmetic.add(buckets.reasoning, sampleBuckets.reasoning)
+            )
+            if sample.promptID.isEmpty == false {
+                promptIDs.insert(sample.promptID)
+            }
+        }
+        return UnifiedDailyTokenUsage(
+            dayStart: calendar.startOfDay(for: dayStart),
+            input: buckets.input,
+            cacheRead: buckets.cacheRead,
+            output: buckets.output,
+            reasoning: buckets.reasoning,
+            turns: promptIDs.count,
+            rounds: samples.count
+        )
+    }
+
+    static func days(
+        from samples: [LocalTokenUsageSample],
+        calendar: Calendar = .current
+    ) -> [UnifiedDailyTokenUsage] {
+        let grouped = Dictionary(grouping: samples) {
+            calendar.startOfDay(for: $0.completedAt)
+        }
+        return grouped.keys.sorted().map { dayStart in
+            day(from: grouped[dayStart] ?? [], dayStart: dayStart, calendar: calendar)
+        }
     }
 }
 

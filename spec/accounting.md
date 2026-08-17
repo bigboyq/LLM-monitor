@@ -64,6 +64,7 @@ cache-inclusive，`cachedInputTokens` 保持独立 cache-read。`TokenUsageBucke
 | Harness 原始字段定义 | `Sources/LLM-monitor/Models/TokenAccounting.swift` 的 `TokenAccountingCatalog` |
 | Daily 统一字段 | `Sources/LLM-monitor/Models/LocalUsageDaily.swift` |
 | Sample → 估算四桶 | `TokenUsageBuckets.fromSample(_:)` |
+| Sample → daily 规范化汇总 | `UnifiedTokenUsageAggregator` |
 | Sample → 计价三项 | `ModelPricingCatalog.tokenComponents(for:)` |
 | DSH raw → daily/sample | `DshLocalUsageScanner.add` |
 

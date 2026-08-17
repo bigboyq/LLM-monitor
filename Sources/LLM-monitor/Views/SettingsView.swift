@@ -441,6 +441,7 @@ struct SettingsView: View {
             HStack(spacing: 6) {
                 ForEach(clients) { client in
                     let selected = selectedClientID == client.id
+                    let providerCount = clientProviderUsage(for: client.id).count
                     Button {
                         selectedClientID = client.id
                     } label: {
@@ -449,6 +450,17 @@ struct SettingsView: View {
                                 .font(.system(size: 12, weight: .medium))
                             Text(client.displayName)
                                 .font(SettingsTypography.metadata)
+                            if providerCount > 0 {
+                                Text("\(providerCount)")
+                                    .font(.system(size: 9, weight: .semibold).monospacedDigit())
+                                    .foregroundStyle(selected ? Color.accentColor : .secondary)
+                                    .padding(.horizontal, 4)
+                                    .padding(.vertical, 1)
+                                    .background(
+                                        Capsule(style: .continuous)
+                                            .fill(selected ? Color.accentColor.opacity(0.14) : Color.secondary.opacity(0.12))
+                                    )
+                            }
                         }
                         .foregroundStyle(selected ? Color.accentColor : .secondary)
                         .padding(.horizontal, 10)
@@ -540,25 +552,14 @@ struct SettingsView: View {
         matching template: [UnifiedDailyTokenUsage]
     ) -> [UnifiedDailyTokenUsage] {
         let calendar = Calendar.current
-        let samplesByDay = Dictionary(grouping: samples) {
-            calendar.startOfDay(for: $0.completedAt)
-        }
         var byDay = Dictionary(
             uniqueKeysWithValues: template.map { day in
                 (calendar.startOfDay(for: day.dayStart), UnifiedDailyTokenUsage(dayStart: day.dayStart))
             }
         )
 
-        for (dayStart, daySamples) in samplesByDay {
-            let usage = UnifiedDailyTokenUsage(
-                dayStart: dayStart,
-                input: SaturatingArithmetic.sum(daySamples.map { ModelPricingCatalog.tokenComponents(for: $0).uncached }),
-                cacheRead: SaturatingArithmetic.sum(daySamples.map { ModelPricingCatalog.tokenComponents(for: $0).cached }),
-                output: SaturatingArithmetic.sum(daySamples.map { max(0, $0.outputTokens) }),
-                reasoning: SaturatingArithmetic.sum(daySamples.map { max(0, $0.reasoningOutputTokens) }),
-                turns: Set(daySamples.map(\.promptID).filter { $0.isEmpty == false }).count,
-                rounds: daySamples.count
-            )
+        for usage in UnifiedTokenUsageAggregator.days(from: samples, calendar: calendar) {
+            let dayStart = calendar.startOfDay(for: usage.dayStart)
             byDay[dayStart] = byDay[dayStart].map { $0 + usage } ?? usage
         }
         return byDay.values.sorted { $0.dayStart < $1.dayStart }
@@ -569,7 +570,7 @@ struct SettingsView: View {
             Image(systemName: client.iconSystemName)
                 .font(.system(size: 22, weight: .medium))
                 .foregroundStyle(.tertiary)
-            Text("尚未识别到 (client.displayName) 的 Token 用量")
+            Text("尚未识别到 \(client.displayName) 的 Token 用量")
                 .font(SettingsTypography.rowEmphasis)
             Text(client.subtitle)
                 .font(SettingsTypography.metadata)
