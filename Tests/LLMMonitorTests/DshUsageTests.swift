@@ -772,6 +772,107 @@ final class DshUsageTests: XCTestCase {
         XCTAssertEqual(snapshot.byProvider["deepseek-official"]?.today?.inputTokens, 20)
     }
 
+    private func makeUsageLine(seq: Int, turn: Int, step: Int, timeMs: Int64, input: Int) -> String {
+        #"{"type":"assistant/message","seq":\#(seq),"time":\#(timeMs),"data":{"turn":\#(turn),"step":\#(step),"usage":{"inputTokens":\#(input),"outputTokens":1,"reasoningTokens":0}}}"#
+    }
+
+    func testDshFullScanDropsSamplesOlderThanEightDays() throws {
+        // 统一契约：full scan 与 cached rebase 都保留最近 8 个自然日。
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let calendar = makeUTCGregorianCalendar()
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("llm-monitor-dsh-window-full-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let cache = root.appendingPathComponent(".token-monitor", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let day: TimeInterval = 24 * 60 * 60
+        let lines = [
+            #"{"type":"request/context","seq":1,"time":1700000000000,"data":{"provider":"deepseek-official","model":"deepseek-v4-flash"}}"#,
+            // 9 天前：超出 8 自然日窗口，sample 必须被丢弃。
+            makeUsageLine(seq: 2, turn: 1, step: 0, timeMs: Int64((base.timeIntervalSince1970 - 9 * day) * 1000), input: 111),
+            // 1 天前：窗口内，必须保留。
+            makeUsageLine(seq: 3, turn: 2, step: 0, timeMs: Int64((base.timeIntervalSince1970 - 1 * day) * 1000), input: 222)
+        ]
+        try writeSessionLog(root: sessionsRoot, sessionID: "session-window", body: lines.joined(separator: "\n") + "\n")
+
+        let snapshot = try DshLocalUsageScanner.performScanPure(
+            sessionsRoot: sessionsRoot,
+            cacheDir: cache,
+            fileManager: FileManagerBox(),
+            calendar: calendar,
+            now: { base },
+            decompressor: { $0 },
+            limits: DshLocalUsageScanLimits.production
+        )
+
+        let deepseek = try XCTUnwrap(snapshot.byProvider["deepseek-official"])
+        XCTAssertEqual(deepseek.recentSamples.count, 1, "8 自然日窗口外的 sample 不应保留")
+        XCTAssertEqual(deepseek.recentSamples.first?.inputTokens, 222)
+    }
+
+    func testDshCachedRebaseMatchesFreshFullScan() throws {
+        // 等价性：full scan → rebase → 再次 full scan，展示窗口内的 samples 与 daily 必须一致。
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let calendar = makeUTCGregorianCalendar()
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("llm-monitor-dsh-window-equiv-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let cache = root.appendingPathComponent(".token-monitor", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let day: TimeInterval = 24 * 60 * 60
+        var lines = [
+            #"{"type":"request/context","seq":1,"time":1700000000000,"data":{"provider":"deepseek-official","model":"deepseek-v4-flash"}}"#
+        ]
+        // 覆盖 0..6 天前（7 天窗口内）+ 10 天前（窗口外）。
+        for (index, daysAgo) in [10, 6, 5, 4, 3, 2, 1, 0].enumerated() {
+            lines.append(makeUsageLine(
+                seq: 2 + index,
+                turn: index + 1,
+                step: 0,
+                timeMs: Int64((base.timeIntervalSince1970 - TimeInterval(daysAgo) * day) * 1000),
+                input: 10 + index
+            ))
+        }
+        try writeSessionLog(root: sessionsRoot, sessionID: "session-equiv", body: lines.joined(separator: "\n") + "\n")
+
+        let limits = DshLocalUsageScanLimits.production
+        let firstScan = try DshLocalUsageScanner.performScanPure(
+            sessionsRoot: sessionsRoot,
+            cacheDir: cache,
+            fileManager: FileManagerBox(),
+            calendar: calendar,
+            now: { base },
+            decompressor: { $0 },
+            limits: limits
+        )
+
+        // 一天后 rebase（缓存命中路径）。
+        let later = base.addingTimeInterval(day)
+        let rebased = DshLocalUsageScanner.rebaseCached(firstScan, calendar: calendar, now: later, limits: limits)
+
+        // 一天后再次完整扫描（指纹必然变化：mtime 不变则命中缓存，这里强制换
+        // cacheDir 绕开 index，重新聚合）。
+        let freshCache = root.appendingPathComponent(".token-monitor-fresh", isDirectory: true)
+        let freshScan = try DshLocalUsageScanner.performScanPure(
+            sessionsRoot: sessionsRoot,
+            cacheDir: freshCache,
+            fileManager: FileManagerBox(),
+            calendar: calendar,
+            now: { later },
+            decompressor: { $0 },
+            limits: limits
+        )
+
+        // 比较展示窗口契约：samples 与 daily 必须逐字段一致。
+        let rebasedProvider = try XCTUnwrap(rebased.byProvider["deepseek-official"])
+        let freshProvider = try XCTUnwrap(freshScan.byProvider["deepseek-official"])
+        XCTAssertEqual(rebasedProvider.recentSamples, freshProvider.recentSamples, "rebase 与全量扫描的 samples 必须等价")
+        XCTAssertEqual(rebasedProvider.dailyTokenUsage, freshProvider.dailyTokenUsage, "rebase 与全量扫描的 daily 必须等价")
+        XCTAssertEqual(rebasedProvider.today, freshProvider.today)
+    }
+
     func testDshLocalUsageEqualityIgnoresScannedAt() {
         let a = DshLocalUsage(
             byProvider: [:],

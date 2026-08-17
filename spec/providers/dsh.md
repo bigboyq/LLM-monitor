@@ -86,7 +86,10 @@ to the next line, so a replayed event can never stall the scan.
 - Uses file mtime + size fingerprints; if nothing changed it only rebases the cached
   seven-day window after midnight.
 - Limits: 1,024 session files, 256 MiB of compressed input, 8 MiB per JSONL line, and
-  65,536 recent samples per provider. When the directory exceeds a cap, snapshots are
+  at most 65,536 recent samples per provider within the last 8 calendar days (today
+  plus the previous 7). Full scans and cached midnight rebases apply the same
+  window/cap contract, so a fingerprint hit and a fresh scan produce equivalent
+  recent samples. When the directory exceeds a file/byte cap, snapshots are
   ordered newest-first (mtime descending, path ascending as a stable tie-breaker)
   *before* the caps are applied, so the most recent sessions are always preferred; the
   scan logs a warning with selected/available counts whenever truncation happens.

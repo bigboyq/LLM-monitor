@@ -291,14 +291,33 @@ final class DshLocalUsageScanner: ObservableObject, @unchecked Sendable {
         )
     }
 
+    /// Unified recent-samples contract shared by full scans and cached rebases:
+    /// keep at most the last 8 calendar days (today plus the previous 7, which
+    /// fully covers the 7-day daily window across midnight rebases), oldest-to-
+    /// newest, capped at `maxCount`.
+    nonisolated static func boundedRecentSamples(
+        _ samples: [LocalTokenUsageSample],
+        calendar: Calendar,
+        now: Date,
+        maxCount: Int
+    ) -> [LocalTokenUsageSample] {
+        let cutoff = calendar.startOfDay(for: now).addingTimeInterval(-7 * 24 * 60 * 60)
+        return Array(
+            samples
+                .filter { $0.completedAt >= cutoff }
+                .sorted { $0.completedAt < $1.completedAt }
+                .suffix(maxCount)
+        )
+    }
+
     /// Reapply the current seven-day window to a cached snapshot. This keeps a
     /// healthy app from re-reading large logs just because midnight crossed.
     nonisolated static func rebaseCached(
         _ snapshot: DshLocalUsage,
         calendar: Calendar,
-        now: Date
+        now: Date,
+        limits: DshLocalUsageScanLimits = .production
     ) -> DshLocalUsage {
-        let sampleCutoff = now.addingTimeInterval(-8 * 24 * 60 * 60)
         let rebasedProviders = snapshot.byProvider.mapValues { provider in
             let daily = DailyUsageAggregation.filterLast7Days(
                 allDaily: provider.dailyTokenUsage,
@@ -310,10 +329,11 @@ final class DshLocalUsageScanner: ObservableObject, @unchecked Sendable {
                 dailyTokenUsage: daily,
                 sessionCount: provider.sessionCount,
                 roundCount: provider.roundCount,
-                recentSamples: Array(
-                    provider.recentSamples
-                        .filter { $0.completedAt >= sampleCutoff }
-                        .suffix(4_096)
+                recentSamples: boundedRecentSamples(
+                    provider.recentSamples,
+                    calendar: calendar,
+                    now: now,
+                    maxCount: limits.maxRecentSamples
                 )
             )
         }
@@ -673,10 +693,12 @@ private extension DshLocalUsageScanner {
                 today: today,
                 calendar: calendar
             )
-            let sortedSamples = mutable.recentSamples.sorted { $0.completedAt < $1.completedAt }
-            let boundedSamples = sortedSamples.count > limits.maxRecentSamples
-                ? Array(sortedSamples.suffix(limits.maxRecentSamples))
-                : sortedSamples
+            let boundedSamples = boundedRecentSamples(
+                mutable.recentSamples,
+                calendar: calendar,
+                now: now,
+                maxCount: limits.maxRecentSamples
+            )
             providers[providerID] = DshProviderUsage(
                 today: recent7.last.flatMap { $0.hasActivity ? $0 : nil },
                 dailyTokenUsage: recent7,
