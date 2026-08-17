@@ -87,6 +87,47 @@ final class CodexLocalUsageTests: XCTestCase {
         XCTAssertEqual(result.latestPromptTurnID, "turn-2")
     }
 
+    func testSummarizeLocalUsageClampsCachedWhenCacheExceedsInput() throws {
+        // Codex 日志损坏：cached > input（损坏 cache 字段大于真实 input）。
+        // `MutableUsageSummary` 在累加时不做 clamp（保留中间值），freeze 时才 clamp
+        // 到 `min(cached, input)`，避免下游 cache hit rate > 100%。
+        let base = Date(timeIntervalSince1970: 22_000)
+        let fileURL = URL(fileURLWithPath: "/tmp/codex-local-cache-clamp-test.jsonl")
+        let events: [CodexSessionEvent] = [
+            .taskStarted(timestamp: base, turnID: "turn-clamp"),
+            // input=50, cached=200（损坏）, output=10, reasoning=2
+            .tokenCount(
+                timestamp: base.addingTimeInterval(1),
+                usage: CodexTokenUsageEvent(
+                    inputTokens: 50,
+                    cachedInputTokens: 200,
+                    outputTokens: 10,
+                    reasoningOutputTokens: 2
+                )
+            ),
+            .taskCompleted(timestamp: base.addingTimeInterval(2), turnID: "turn-clamp")
+        ]
+        let files = [CodexSessionFileEvents(fileURL: fileURL, events: events)]
+        let result = CodexFetcher.summarizeLocalUsage(
+            windows: ["primary": CodexFetcher.ActiveUsageWindow(
+                startDate: base.addingTimeInterval(-1),
+                resetDate: base.addingTimeInterval(60)
+            )],
+            dailyWindows: [CodexFetcher.DailyUsageWindow(
+                startDate: base.addingTimeInterval(-1),
+                endDate: base.addingTimeInterval(60)
+            )],
+            sessionFiles: files
+        )
+
+        let summary = try XCTUnwrap(result.usageSummaries["primary"])
+        // 累加阶段不 clamp（cached=200），freeze 时才 clamp 到 min(cached, input)=50
+        XCTAssertEqual(summary.inputTokens, 50)
+        XCTAssertEqual(summary.cachedInputTokens, 50, "cached 必须 clamp 到 input，避免 cache hit rate > 100%")
+        XCTAssertEqual(summary.outputTokens, 10)
+        XCTAssertEqual(summary.reasoningOutputTokens, 2)
+    }
+
     func testSummarizeLocalUsageCarriesCodexModelIntoRecentSamples() throws {
         let base = Date(timeIntervalSince1970: 21_000)
         let fileURL = URL(fileURLWithPath: "/tmp/codex-local-model-test.jsonl")
