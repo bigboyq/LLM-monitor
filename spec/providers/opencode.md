@@ -35,7 +35,7 @@ cache bucket. The displayed total is `input + cache.read + output + reasoning`;
 `cacheWrite` 继续保留在 raw 诊断，但不进入统一图表、total 或价值。详见
 [`spec/accounting.md`](../accounting.md)。
 
-## Provider mapping and switches
+## Provider mapping and bindings
 
 OpenCode merge is controlled by the schema-v2 `clientBindings[]` array in `config.json`.
 The settings UI intentionally has no per-provider OpenCode toggles: the client binding is

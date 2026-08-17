@@ -2,8 +2,8 @@ import Foundation
 import Combine
 
 /// 扫描 opencode 的 `~/.local/share/opencode/opencode.db`，按 `providerID` 分片产出
-/// `OpencodeLocalUsage`。各 Provider 卡片通过独立开关决定是否合并对应 slice；
-/// `minimax` 本地能力分片仅保留在诊断快照。
+/// `OpencodeLocalUsage`。各 Provider 卡片通过 `clientBindings[]` 派生的运行时绑定
+/// 决定是否合并对应 slice；`minimax` 本地能力分片仅保留在诊断快照。
 ///
 /// 跟 minimax scanner 的关键区别（更简单）：
 /// - **单源**（一个 opencode.db），不是双源 union

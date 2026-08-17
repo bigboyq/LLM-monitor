@@ -301,7 +301,13 @@ final class DshLocalUsageScanner: ObservableObject, @unchecked Sendable {
         now: Date,
         maxCount: Int
     ) -> [LocalTokenUsageSample] {
-        let cutoff = calendar.startOfDay(for: now).addingTimeInterval(-7 * 24 * 60 * 60)
+        guard let cutoff = calendar.date(
+            byAdding: .day,
+            value: -7,
+            to: calendar.startOfDay(for: now)
+        ) else {
+            return []
+        }
         return Array(
             samples
                 .filter { $0.completedAt >= cutoff }

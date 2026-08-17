@@ -907,6 +907,53 @@ final class DshUsageTests: XCTestCase {
         XCTAssertEqual(rebasedProvider.today, freshProvider.today)
     }
 
+    func testDshRecentSampleWindowUsesCalendarDaysAcrossDST() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "America/Los_Angeles"))
+        let now = try XCTUnwrap(calendar.date(from: DateComponents(
+            calendar: calendar,
+            timeZone: calendar.timeZone,
+            year: 2026,
+            month: 3,
+            day: 15,
+            hour: 12
+        )))
+        let cutoff = try XCTUnwrap(calendar.date(
+            byAdding: .day,
+            value: -7,
+            to: calendar.startOfDay(for: now)
+        ))
+        let samples = [
+            LocalTokenUsageSample(
+                completedAt: cutoff.addingTimeInterval(-30 * 60),
+                modelName: "model",
+                promptID: "before",
+                inputTokens: 1,
+                cachedInputTokens: 0,
+                outputTokens: 0,
+                reasoningOutputTokens: 0
+            ),
+            LocalTokenUsageSample(
+                completedAt: cutoff.addingTimeInterval(30 * 60),
+                modelName: "model",
+                promptID: "after",
+                inputTokens: 1,
+                cachedInputTokens: 0,
+                outputTokens: 0,
+                reasoningOutputTokens: 0
+            )
+        ]
+
+        let bounded = DshLocalUsageScanner.boundedRecentSamples(
+            samples,
+            calendar: calendar,
+            now: now,
+            maxCount: 100
+        )
+
+        XCTAssertEqual(bounded.map { $0.promptID }, ["after"])
+    }
+
     func testMiniMaxM3ExplicitZeroReasoningStillEstimatesWithoutDoubleCounting() throws {
         // spec：估算条件是“原生字段缺失或值不可用/为零”。显式 reasoningTokens=0
         // 必须走估算而不是双计（raw output 全放 Output 又额外加 Reason）。
