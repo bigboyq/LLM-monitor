@@ -491,9 +491,10 @@ enum ModelPricingCatalog {
         switch quotaProviderID {
         case QuotaProviderID.minimax:
             if model.contains("m3") {
-                // MiniMax-M3 and minimax/MiniMax-M3 are the same model. Use
-                // the unified CNY standard; the >512K high-price tier is not
-                // considered because the local ledger lacks request context.
+                // MiniMax-M3 和 minimax/MiniMax-M3 是同一模型。价格为 MiniMax
+                // 中文官方公开价（CNY 直接给出，不再用 USD × 汇率换算，避免汇率
+                // 漂移让估算值跟官方对不上）。>512K 高价档不参与：本地账本不
+                // 保留请求上下文长度。
                 return ModelTokenPricing(
                     modelLabel: modelName ?? "MiniMax-M3",
                     currency: .cny,
