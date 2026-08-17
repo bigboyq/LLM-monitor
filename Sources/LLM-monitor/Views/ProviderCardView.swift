@@ -37,9 +37,15 @@ struct ProviderCardView: View {
     let status: ProviderStatus
 
     var body: some View {
+        // A single card render used to rebuild the same provider-neutral
+        // projection once for QuotaSummary and again for the local-usage
+        // footer. The projection is derived only from `status`, so compute it
+        // once and pass the value down to both consumers.
+        let projection = status.usageProjection(for: status.lastSuccess)
+
         VStack(alignment: .leading, spacing: 8) {
             header
-            content
+            content(projection: projection)
         }
         .padding(12)
         .background(
@@ -149,7 +155,7 @@ struct ProviderCardView: View {
     }
 
     @ViewBuilder
-    private var content: some View {
+    private func content(projection: ProviderUsageProjection) -> some View {
         switch status.state {
         case .notConfigured(let reason):
             notConfiguredView(reason: reason)
@@ -162,24 +168,24 @@ struct ProviderCardView: View {
                         info: last,
                         providerKind: status.kind,
                         accentColor: status.accentColor,
-                        localSamples: localUsageSamples,
+                        localSamples: projection.recentSamples,
                         refreshIntervalSeconds: status.refreshIntervalSeconds,
                         excludeWindows: excludeWindows,
                         deepseekPeakWindow: status.deepseekPeakWindow ?? .defaultWindow
                     )
                     .opacity(0.5)
-                    localUsageFooter(for: last)
+                    localUsageFooter(projection: projection)
                 }
             } else {
                 placeholder("正在获取…")
             }
         case .ok(let info):
             VStack(alignment: .leading, spacing: 6) {
-                QuotaSummary(
-                    info: info,
-                    providerKind: status.kind,
-                    accentColor: status.accentColor,
-                    localSamples: localUsageSamples,
+                    QuotaSummary(
+                        info: info,
+                        providerKind: status.kind,
+                        accentColor: status.accentColor,
+                        localSamples: projection.recentSamples,
                 refreshIntervalSeconds: status.refreshIntervalSeconds,
                 excludeWindows: excludeWindows,
                 deepseekPeakWindow: status.deepseekPeakWindow ?? .defaultWindow
@@ -187,7 +193,7 @@ struct ProviderCardView: View {
                 if status.kind == .glmCodingPlan, let peak = status.glmPeakWindow {
                     GlmPeakIndicatorView(window: peak)
                 }
-                localUsageFooter(for: info)
+                localUsageFooter(projection: projection)
             }
         case .failed(let message, let lastSuccess):
             VStack(alignment: .leading, spacing: 6) {
@@ -208,13 +214,13 @@ struct ProviderCardView: View {
                         info: last,
                         providerKind: status.kind,
                         accentColor: status.accentColor,
-                        localSamples: localUsageSamples,
+                        localSamples: projection.recentSamples,
                         refreshIntervalSeconds: status.refreshIntervalSeconds,
                         excludeWindows: excludeWindows,
                         deepseekPeakWindow: status.deepseekPeakWindow ?? .defaultWindow
                     )
                         .opacity(0.55)
-                        localUsageFooter(for: last)
+                        localUsageFooter(projection: projection)
                 }
             }
         }
@@ -226,15 +232,10 @@ struct ProviderCardView: View {
         status.glmLocalUsage?.offPeakWindows ?? []
     }
 
-    private var localUsageSamples: [LocalTokenUsageSample] {
-        status.usageProjection(for: status.lastSuccess).recentSamples
-    }
-
     /// 所有卡片统一展示 quota provider 关联的客户端 token 汇总；客户端来源
     /// 只保留在 hover 明细中，避免卡片主体出现复杂的多来源信息。
     @ViewBuilder
-    private func localUsageFooter(for info: QuotaInfo) -> some View {
-        let projection = status.usageProjection(for: info)
+    private func localUsageFooter(projection: ProviderUsageProjection) -> some View {
         makeLocalUsageFooter(
             dailyTokenUsage: projection.dailyTokenUsage,
             recentSamples: projection.recentSamples,

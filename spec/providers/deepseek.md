@@ -44,7 +44,6 @@ Full config shape:
     "deepseek": {
       "enabled": true,
       "apiKey": "sk-xxxxxxxxxxxxxxxx",
-      "mergeOpencodeUsage": false,
       "deepseekPeakWeekdaysOnly": true
     }
   }
@@ -59,7 +58,7 @@ Supported provider fields:
 | `apiKey` | DeepSeek API Key. Empty values and `REPLACE...` placeholders are treated as missing (`ProviderConfig.usableAPIKey`). |
 | `refreshIntervalSeconds` | Optional independent refresh interval (overrides global default of 300s). |
 | `displayName` | Optional card title override. |
-| `mergeOpencodeUsage` | Adds OpenCode `deepseek` model token data on top of the balance display. Missing defaults to `false` (no native local ledger to preserve). |
+| `clientBindings[]` | The canonical client-to-quota binding controls whether OpenCode `deepseek` samples are projected into the card. The default binding is disabled; the legacy provider-level field is migration compatibility only. |
 | `deepseekPeakWeekdaysOnly` | 高峰期是否仅工作日（周一–周五），周末全天平价。缺省 = `true`（默认周末平价）。设为 `false` 时每天（含周末）都执行高峰时段。 |
 
 `DeepseekFetcher.hasLocalAuth()` always returns `true`; `AppState` validates the config `apiKey`.
@@ -103,9 +102,10 @@ UI 上 `DeepseekPeakIndicatorView` 嵌在余额行右侧：
 
 ## OpenCode merge
 
-OpenCode 的 `deepseek` provider 分片作为可选叠加源（`mergeOpencodeUsage` 开关，DeepSeek
-缺省关闭），按字段逐项相加到卡片本地数据。DeepSeek 没有 native 本地账本，因此开启后
-柱图 / 今日汇总完全来自 OpenCode 数据；关闭时卡片只显示远程余额。
+OpenCode 的 `deepseek` provider 分片作为可选叠加源，由 `config.json` 的
+`clientBindings[]` 控制（DeepSeek 缺省关闭），按字段逐项相加到卡片本地数据。DeepSeek
+没有 native 本地账本，因此开启后柱图 / 今日汇总完全来自 OpenCode 数据；关闭时卡片只
+显示远程余额。设置页不提供独立 Toggle，修改 binding 后目录监听会热加载。
 
 ## Error mapping
 

@@ -56,6 +56,7 @@ The app reads `~/.local/share/opencode/opencode.db` and separates rows by `provi
 - Hover over titles, quota rows, and local-usage footers for account details, window details, recent prompts, and seven-day charts.
 - Use Settings → General for refresh intervals, icon style, health-dot visibility, and launch at login. When enabled, a 6 pt status dot appears at the lower-right: green for healthy, orange for warning, and red for critical.
 - Disabled providers are hidden and do not make network requests.
+- Cost estimates cover only models with a published price. If a usage window also contains unknown models, the menu and seven-day table show “partially priced.”
 
 ## Privacy and local files
 
@@ -68,6 +69,7 @@ The app reads `~/.local/share/opencode/opencode.db` and separates rows by `provi
 | Antigravity scanner cache | `~/.gemini/antigravity/.token-monitor/` |
 | ZCode scanner cache | `~/.zcode/cli/.token-monitor/` |
 | OpenCode scanner cache | `~/.local/share/opencode/.token-monitor/` |
+| DSH scanner cache | `~/.dsh/.token-monitor/` |
 
 Configuration changes are reloaded automatically. If the file is invalid, the app first creates a `config.json.corrupt-*.json` backup and then restores defaults. Never post real API keys in a repository, issue, or log attachment.
 

@@ -62,8 +62,8 @@ Card merging uses these aliases:
 | DeepSeek | `deepseek`, `deepseek-official`, `deepseek-cn`, `deepseek-v4` |
 
 Unlike OpenCode, DSH data is merged automatically when present. It is a native harness
-ledger, not an optional external account ledger. The existing `mergeOpencodeUsage`
-switch still controls whether OpenCode data is added on top.
+ledger, not an optional external account ledger. OpenCode remains independently controlled
+by the matching `clientBindings[]` entry.
 
 ## Rounds and turns
 

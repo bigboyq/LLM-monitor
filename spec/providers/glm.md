@@ -9,8 +9,8 @@ Implementation:
 The quota portion queries 智谱 (Zhipu / BigModel) GLM Coding Plan's internal monitor
 endpoint — the same one used by the official `zai-coding-plugins` — for the 5-hour and
 weekly credit windows plus the subscribed tier (Lite / Pro / Max). Token detail is supplied
-by the native ZCode local scanner, with the shared OpenCode scanner optionally merged when
-the provider's merge switch is enabled.
+by the native ZCode local scanner, with the shared OpenCode scanner optionally projected
+through the matching `clientBindings[]` entry.
 
 ## Current Status
 
@@ -47,8 +47,7 @@ Full config shape:
       "apiKey": "your-coding-plan-key-id.secret",
       "peakStartHour": 14,
       "peakEndHour": 18,
-      "peakWeekdaysOnly": true,
-      "mergeOpencodeUsage": true
+      "peakWeekdaysOnly": true
     }
   }
 }
@@ -65,7 +64,7 @@ Supported provider fields:
 | `peakStartHour` | Peak window start hour (24h, local tz). Default `14`. |
 | `peakEndHour` | Peak window end hour (24h, half-open, must be > `peakStartHour`). Default `18`. |
 | `peakWeekdaysOnly` | `true` = Mon–Fri only; `false` = every day. Default `true`. |
-| `mergeOpencodeUsage` | Adds OpenCode `zhipuai-coding-plan` token data on top of the native ZCode scanner. Missing defaults to `true` for backward compatibility; set `false` to show only the native ZCode local Scanner data. |
+| `clientBindings[]` | Canonical client-to-quota binding for the optional OpenCode `zhipuai-coding-plan` slice. GLM defaults to enabled; the legacy provider-level field is migration compatibility only. |
 
 Peak fields are optional; when omitted (or when `peakEndHour ≤ peakStartHour`) the window
 falls back to the official default (Mon–Fri 14:00–18:00). Omitted fields are not written to
@@ -227,8 +226,10 @@ Window multiplier (`QuotaSummary.weeklyEquivalentMultiplier`): **5** — renders
 The card shows the standard two-window layout (5h + weekly remaining %, reset countdown)
 and a tier pill (`Lite` / `Pro` / `Max`). The footer renders the shared seven-day
 Input/Cache/Output/Reason local-usage chart, fed by the native ZCode scanner with OpenCode's
-`zhipuai-coding-plan` slice optionally merged on top (`mergeOpencodeUsage`, default on).
-The merged samples also feed the quota-window hover summary.
+`zhipuai-coding-plan` slice optionally merged on top (`clientBindings[]`, default on).
+The merged samples also feed the quota-window hover summary. The settings UI has no separate
+OpenCode toggle; edit `clientBindings[]` and save the config file when a non-default binding is
+needed.
 
 ## Peak Hours Indicator
 
@@ -260,7 +261,7 @@ The merged samples also feed the quota-window hover summary.
 
 GLM Coding Plan's native local token detail comes from the official ZCode CLI's SQLite
 database — the same client used to drive GLM. OpenCode's `zhipuai-coding-plan` slice is an
-optional overlay on top (controlled by `mergeOpencodeUsage`, default on).
+optional overlay on top (controlled by `clientBindings[]`, default on).
 
 | Item | Value |
 |---|---|
@@ -343,7 +344,8 @@ and is not included in the consumption total.
 "思考重" 的直觉一致。剩余 101 / 189 行（`session_title` 后台任务 + text-only part）保持
 output 不变,`reasoning_tokens = 0`。
 
-OpenCode 的 `zhipuai-coding-plan` 分片本身有原生 reasoning tokens（`mergeGlm` 相加合并），
+OpenCode 的 `zhipuai-coding-plan` 分片本身有原生 reasoning tokens（由
+`ProviderStatus.usageProjection` 相加合并），
 所以合并后 reason 数据来自两个独立源交叉验证。如果 Method A 估值跟 OpenCode 原生 reason
 差异巨大（>20%），说明 ZCode schema 变了（新增 reason 字段 / part 类型变化），
 需要重新评估 reader 逻辑。
@@ -412,7 +414,7 @@ OpenCode 合并 sample 带独立命名空间，始终视为正常消耗。
 | SQLite reader | `Sources/LLM-monitor/Services/GlmZcodeDBReader.swift` |
 | Off-peak window reader | `Sources/LLM-monitor/Services/GlmZcodeOffPeakReader.swift` |
 | Scanner, cache, and seven-day snapshot | `Sources/LLM-monitor/Services/GlmZcodeLocalUsageScanner.swift` |
-| Field-level merge with OpenCode | `Sources/LLM-monitor/Models/OpencodeUsageMerger.swift` (`mergeGlm`) |
+| Provider-neutral projection with OpenCode | `Sources/LLM-monitor/Models/ProviderClientModel.swift` (`ProviderStatus.usageProjection`) + `DshUsageMerger` |
 | Window summary + off-peak exclusion | `Sources/LLM-monitor/Models/LocalTokenUsageSample.swift` (`summary(excludeGlmOffPeak:)`) |
 | Card integration | `Sources/LLM-monitor/Views/ProviderCardView.swift` + `QuotaViews.swift` |
 | Regression tests | `Tests/LLMMonitorTests/GlmTests.swift` |
@@ -447,7 +449,8 @@ provider-specific interval can be set via `refreshIntervalSeconds`.
 
 - **OpenCode only as the overlay source.** The native local scanner reads ZCode's
   `model_usage` table; OpenCode's `zhipuai-coding-plan` slice is an optional overlay
-  (default on). Turning `mergeOpencodeUsage` off leaves only the native ZCode data.
+  (default on) controlled by `clientBindings[]`. Turning that binding off leaves only the
+  native ZCode data.
 - **OpenCode only for the second token source.** The `/api/monitor/usage/model-usage`
   endpoint exists and returns hourly aggregate tokens (without the Input/Cache/Reason/Output
   split used by the shared chart), so it is not used as a remote second GLM data source.
@@ -477,7 +480,7 @@ and OpenCode merge tests are consolidated in one file:
 | `testGlmZcodeDBReaderMethodAClassification` | Native/reasoning-part priority, malformed JSON fallback, and conservation |
 | `testGlmZcodeDBReaderNativeAndSnapshot` | Native aggregation, samples, snapshot padding, and today selection |
 | `testGlmReaderAppliesRecentCutoffToDailyAggregation` | Recent cutoff applies to daily aggregation and samples |
-| `testOpencodeUsageMergerMergeGlm` | OpenCode GLM usage merge |
+| usageProjection GLM client contribution tests | OpenCode GLM usage projection and sample namespace |
 
 `StateAndSchedulerTests.testLocalUsageScanTriggerTimingPolicy` covers the startup timing
 policy.

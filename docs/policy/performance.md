@@ -16,7 +16,7 @@ macOS 菜单栏常驻 app（所有 provider 默认 5 分钟/300s 一刷）。以
 | Provider | 默认间隔 | 失败退避 |
 | --- | --- | --- |
 | minimax / GLM / Codex / Antigravity / DeepSeek | 300s | 2×, 4×, …, 30min + ±10% jitter |
-| 4 协议 scanner（minimax / antigravity / glm / opencode） | 跟随对应主 quota 刷新后触发；minimax/glm/opencode 进 app 即扫一次 | single attempt，失败不重试，下次主刷新自然重试 |
+| 5 协议 scanner（minimax / antigravity / glm / opencode / dsh） | 跟随对应主 quota 刷新后触发；minimax/glm/opencode/dsh 进 app 即扫一次 | single attempt，失败不重试，下次主刷新自然重试 |
 | Codex JSONL 本地用量 | 主 quota 抓取时按需读取（无独立 timer/退避） | on-demand，失败由下次 quota 抓取自然重试 |
 
 [`AppConfig.effectiveRefreshInterval`](../../Sources/LLM-monitor/Services/ConfigStore.swift)
@@ -29,7 +29,7 @@ jitter。
 ## 主线程约束
 
 - 重 I/O 全部 background（SQL 聚合、文件遍历、缓存读写）
-- 4 scanner 模板：`@MainActor` 实例只改 `@Published` 状态；`performScanPure` 是
+- 5 scanner 模板：`@MainActor` 实例只改 `@Published` 状态；`performScanPure` 是
   `nonisolated static`；pipeline 在 `AsyncMutex.pipelineMutex` 内串行
 - 主线程不调 `Data.write(to:)` / `FileManager.moveItem` / `Process.run`
 - `AppLog` 走专用 `DispatchQueue` 异步写，UI 线程零阻塞；stdout 也异步

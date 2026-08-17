@@ -472,12 +472,16 @@ struct SettingsView: View {
 
     private var clientsPane: some View {
         let clients = sortedClientDescriptors
+        // Build every provider projection once for this settings render. The
+        // previous implementation recomputed all projections once for the
+        // selected panel and once again for every client-count badge.
+        let usageByClient = clientProviderUsageByClient()
 
         return VStack(alignment: .leading, spacing: 16) {
-            clientTabBar(clients)
+            clientTabBar(clients, usageByClient: usageByClient)
 
             if let client = clients.first(where: { $0.id == selectedClientID }) {
-                let providers = clientProviderUsage(for: client.id)
+                let providers = usageByClient[client.id] ?? []
                 SettingsSection(
                     title: "已识别的 Provider",
                     footer: providers.isEmpty
@@ -507,12 +511,15 @@ struct SettingsView: View {
         }
     }
 
-    private func clientTabBar(_ clients: [ClientDescriptor]) -> some View {
+    private func clientTabBar(
+        _ clients: [ClientDescriptor],
+        usageByClient: [String: [ClientProviderUsageSummary]]
+    ) -> some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 6) {
                 ForEach(clients) { client in
                     let selected = selectedClientID == client.id
-                    let providerCount = clientProviderUsage(for: client.id).count
+                    let providerCount = usageByClient[client.id]?.count ?? 0
                     Button {
                         selectedClientID = client.id
                     } label: {
@@ -552,18 +559,20 @@ struct SettingsView: View {
         }
     }
 
-    private func clientProviderUsage(for clientID: String) -> [ClientProviderUsageSummary] {
-        var rows: [ClientProviderUsageSummary] = []
+    private func clientProviderUsageByClient() -> [String: [ClientProviderUsageSummary]] {
+        var rowsByClient: [String: [ClientProviderUsageSummary]] = [:]
         for status in state.statuses {
             let projection = status.usageProjection(for: status.lastSuccess)
             for contribution in projection.contributions {
-                guard contribution.clientID == clientID, contribution.hasActivity else { continue }
-                if clientID == ClientID.antigravity, status.kind == .antigravity {
-                    rows.append(contentsOf: antigravityUsageRows(status: status, contribution: contribution))
+                guard contribution.hasActivity else { continue }
+                if contribution.clientID == ClientID.antigravity, status.kind == .antigravity {
+                    rowsByClient[contribution.clientID, default: []].append(
+                        contentsOf: antigravityUsageRows(status: status, contribution: contribution)
+                    )
                 } else {
-                    rows.append(
+                    rowsByClient[contribution.clientID, default: []].append(
                         ClientProviderUsageSummary(
-                            clientID: clientID,
+                            clientID: contribution.clientID,
                             quotaProviderID: status.kind.quotaProviderID,
                             providerName: status.displayName,
                             usageGroupID: status.kind.quotaProviderID,
@@ -576,11 +585,13 @@ struct SettingsView: View {
                 }
             }
         }
-        return rows.sorted {
-            if $0.providerName != $1.providerName {
-                return $0.providerName.localizedCaseInsensitiveCompare($1.providerName) == .orderedAscending
+        return rowsByClient.mapValues { rows in
+            rows.sorted {
+                if $0.providerName != $1.providerName {
+                    return $0.providerName.localizedCaseInsensitiveCompare($1.providerName) == .orderedAscending
+                }
+                return $0.usageGroupID < $1.usageGroupID
             }
-            return $0.usageGroupID < $1.usageGroupID
         }
     }
 

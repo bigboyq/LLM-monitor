@@ -225,8 +225,12 @@ struct SevenDayTokenUsageHoverView<Daily: LocalUsageDaily>: View {
     private func priceValue(_ value: String, width: CGFloat) -> some View {
         Text(value)
             .font(.system(size: 9, weight: .medium).monospacedDigit())
-            .foregroundStyle(value == "未定价" ? .orange : .secondary)
+            .foregroundStyle(
+                value == "未定价" || value.contains("部分计价") ? .orange : .secondary
+            )
             .frame(width: width, alignment: .trailing)
+            .lineLimit(1)
+            .minimumScaleFactor(0.65)
     }
 
     private func roundsTurnsValue(_ day: Daily, width: CGFloat) -> some View {

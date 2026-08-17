@@ -622,6 +622,14 @@ struct ClientProviderUsageSummary: Identifiable, Equatable, Sendable {
     let scannedAt: Date?
     let deepseekPeakWindow: DeepseekPeakWindow
 
+    // These values are derived entirely from the immutable summary inputs. Keep
+    // them as part of the value snapshot so a SwiftUI row can read cost,
+    // per-day prices, and unpriced details without re-scanning every sample on
+    // each property access during one render pass.
+    private let cachedCostEstimate: ModelCostEstimate
+    private let cachedPriceTextByDay: [Date: String]
+    private let cachedUnpricedModelUsage: [UnpricedModelUsage]
+
     var id: String { "\(clientID):\(quotaProviderID):\(usageGroupID)" }
 
     init(
@@ -639,12 +647,33 @@ struct ClientProviderUsageSummary: Identifiable, Equatable, Sendable {
         self.providerName = providerName
         self.usageGroupID = usageGroupID
         self.recentSamples = recentSamples
-        self.dailyTokenUsage = UnifiedDailyUsageNormalizer.includingCurrentDay(
+        let normalizedDaily = UnifiedDailyUsageNormalizer.includingCurrentDay(
             dailyTokenUsage: dailyTokenUsage,
             samples: recentSamples
         )
+        self.dailyTokenUsage = normalizedDaily
         self.scannedAt = scannedAt
         self.deepseekPeakWindow = deepseekPeakWindow
+
+        let displayedSamples = Self.samplesInDisplayedWindow(
+            dailyTokenUsage: normalizedDaily,
+            recentSamples: recentSamples
+        )
+        self.cachedCostEstimate = ModelPricingCatalog.estimate(
+            samples: displayedSamples,
+            quotaProviderID: quotaProviderID,
+            deepseekPeakWindow: deepseekPeakWindow
+        )
+        self.cachedPriceTextByDay = Self.makePriceTextByDay(
+            dailyTokenUsage: normalizedDaily,
+            recentSamples: recentSamples,
+            quotaProviderID: quotaProviderID,
+            deepseekPeakWindow: deepseekPeakWindow
+        )
+        self.cachedUnpricedModelUsage = Self.makeUnpricedModelUsage(
+            samples: displayedSamples,
+            quotaProviderID: quotaProviderID
+        )
     }
 
     var totalTokens: Int {
@@ -676,15 +705,23 @@ struct ClientProviderUsageSummary: Identifiable, Equatable, Sendable {
     }
 
     var costEstimate: ModelCostEstimate {
-        let samples = samplesInDisplayedWindow
-        return ModelPricingCatalog.estimate(
-            samples: samples,
-            quotaProviderID: quotaProviderID,
-            deepseekPeakWindow: deepseekPeakWindow
-        )
+        cachedCostEstimate
     }
 
     var priceTextByDay: [Date: String] {
+        cachedPriceTextByDay
+    }
+
+    var unpricedModelUsage: [UnpricedModelUsage] {
+        cachedUnpricedModelUsage
+    }
+
+    private static func makePriceTextByDay(
+        dailyTokenUsage: [UnifiedDailyTokenUsage],
+        recentSamples: [LocalTokenUsageSample],
+        quotaProviderID: String,
+        deepseekPeakWindow: DeepseekPeakWindow
+    ) -> [Date: String] {
         let estimates = ModelPricingCatalog.estimateByDay(
             samples: recentSamples,
             quotaProviderID: quotaProviderID,
@@ -693,23 +730,16 @@ struct ClientProviderUsageSummary: Identifiable, Equatable, Sendable {
         let calendar = Calendar.current
         return Dictionary(uniqueKeysWithValues: dailyTokenUsage.map { day in
             let dayStart = calendar.startOfDay(for: day.dayStart)
-            let text: String
-            if let estimate = estimates[dayStart] {
-                if let value = estimate.value, let currency = estimate.currency {
-                    text = String(format: "%@%.2f", currency.symbol, value)
-                } else {
-                    text = "未定价"
-                }
-            } else {
-                text = "—"
-            }
-            return (day.dayStart, text)
+            return (day.dayStart, estimates[dayStart]?.displayText ?? "—")
         })
     }
 
-    var unpricedModelUsage: [UnpricedModelUsage] {
+    private static func makeUnpricedModelUsage(
+        samples: [LocalTokenUsageSample],
+        quotaProviderID: String
+    ) -> [UnpricedModelUsage] {
         var grouped: [String: (totalTokens: Int, sampleCount: Int)] = [:]
-        for sample in samplesInDisplayedWindow {
+        for sample in samples {
             guard ModelPricingCatalog.pricing(
                 for: sample.modelName,
                 quotaProviderID: quotaProviderID
@@ -750,7 +780,10 @@ struct ClientProviderUsageSummary: Identifiable, Equatable, Sendable {
         }
     }
 
-    private var samplesInDisplayedWindow: [LocalTokenUsageSample] {
+    private static func samplesInDisplayedWindow(
+        dailyTokenUsage: [UnifiedDailyTokenUsage],
+        recentSamples: [LocalTokenUsageSample]
+    ) -> [LocalTokenUsageSample] {
         guard let start = dailyTokenUsage.map(\.dayStart).min(),
               let last = dailyTokenUsage.map(\.dayStart).max(),
               let end = Calendar.current.date(byAdding: .day, value: 1, to: last) else {

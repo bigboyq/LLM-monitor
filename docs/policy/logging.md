@@ -41,6 +41,6 @@ key 长度、文件 `lastPathComponent`、provider id / model name / 错误堆�
 `[glm]` [GlmCodingPlanFetcher:43](../../Sources/LLM-monitor/Fetchers/GlmCodingPlanFetcher.swift:43) ·
 `[codex]` / `[codex/usage]` / `[codex/reset-credits]` [CodexFetcher:51](../../Sources/LLM-monitor/Fetchers/CodexFetcher.swift:51) ·
 `[antigravity]` [AntigravityFetcher:419](../../Sources/LLM-monitor/Fetchers/AntigravityFetcher.swift:419) ·
-4× `[*-scan]`（各 scanner）。敏感字段在 HTTP 层和各 fetcher 的日志组装入口脱敏。
+5× `[*-scan]`（各 scanner，包含 DSH）。敏感字段在 HTTP 层和各 fetcher 的日志组装入口脱敏。
 `ScannerAndLoggingTests` 覆盖 log 0600 权限、
 rotate、min-level release/DEBUG 区分、`osLogPrivate` 标签。

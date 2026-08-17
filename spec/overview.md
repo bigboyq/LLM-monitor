@@ -40,7 +40,7 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 | `Sources/LLM-monitor/Models/ProviderStatus.swift` | UI-facing provider state + `ProviderKind` / `AccentColor` 枚举 |
 | `Sources/LLM-monitor/Models/QuotaInfo.swift` | Provider-neutral quota 和 reset-credit 模型 |
 | `Sources/LLM-monitor/Models/AnyJSON.swift` | 弱类型 JSON（Antigravity 递归解析用） |
-| `Sources/LLM-monitor/Models/LocalUsageDaily.swift` | Antigravity / Codex / Minimax / GLM / OpenCode 共享的 7-day chart 协议 + 默认实现 |
+| `Sources/LLM-monitor/Models/LocalUsageDaily.swift` | Antigravity / Codex / Minimax / GLM / DSH / OpenCode 共享的 7-day chart 协议 + 默认实现 |
 | `Sources/LLM-monitor/Models/ProviderClientModel.swift` | Client/Quota Provider 关系、Provider usage projection、模型价格目录与设置页摘要模型 |
 | `Sources/LLM-monitor/Models/DisplayOrder.swift` | Stable-ID ordering helper for configurable Provider cards and alphabetical fallback lists |
 | `Sources/LLM-monitor/Models/OpencodeLocalUsage.swift` | OpenCode provider 分片、今日 / 7 天聚合与逐次 samples |
@@ -66,7 +66,7 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 | `Sources/LLM-monitor/Services/Formatters.swift` | token / percent / 时间 / codex window 标签格式化 |
 | `Sources/LLM-monitor/Services/HTTPClient.swift` | 共享 HTTP 客户端（minimax / codex 三个 fetch 路径） |
 | `Sources/LLM-monitor/Services/LocalUsageCoordinator.swift` | scanner 协议 + Combine wire-up 容器 |
-| `Sources/LLM-monitor/Services/ProviderRefreshScheduler.swift` | per-provider timer + in-flight dedup + 退避 + 失败计数（5 个 dict） |
+| `Sources/LLM-monitor/Services/ProviderRefreshScheduler.swift` | per-provider timer + in-flight dedup + 退避 + 失败计数（5 个 provider dict） |
 | `Sources/LLM-monitor/Services/AuthProber.swift` | 异步探测本地服务（antigravity）是否还活着 + 缓存 + 离/在线变化回调 |
 | `Sources/LLM-monitor/Fetchers/RefreshResultMergers.swift` | `CodexFillingMissingMerger` 等 per-provider 合并策略（Minimax 使用默认 `IdentityRefreshResultMerger`） |
 | `Sources/LLM-monitor/Services/DateParser.swift` | ISO8601 / unix timestamp 统一解析 |

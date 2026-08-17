@@ -708,6 +708,40 @@ final class DshUsageTests: XCTestCase {
         XCTAssertEqual(deepseek.recentSamples.count, 1)
     }
 
+    func testDshSameTurnStepAcrossProvidersRemainIsolated() throws {
+        // `provider` is an explicit isolation dimension. Two providers may
+        // reuse the same session/turn/step coordinates and must not collapse.
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let calendar = makeUTCGregorianCalendar()
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("llm-monitor-dsh-dedup-provider-(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let cache = root.appendingPathComponent(".token-monitor", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let lines = [
+            #"{"type":"request/context","seq":1,"time":1700000000000,"data":{"provider":"deepseek-official","model":"deepseek-v4-flash"}}"#,
+            #"{"type":"assistant/message","seq":2,"time":1700000001000,"data":{"turn":1,"step":0,"usage":{"inputTokens":100,"outputTokens":10}}}"#,
+            #"{"type":"request/context","seq":3,"time":1700000002000,"data":{"provider":"minimax-cn","model":"MiniMax-M3"}}"#,
+            #"{"type":"assistant/message","seq":4,"time":1700000003000,"data":{"turn":1,"step":0,"usage":{"inputTokens":200,"outputTokens":20}}}"#
+        ]
+        try writeSessionLog(root: sessionsRoot, sessionID: "session-provider-isolation", body: lines.joined(separator: "\n") + "\n")
+
+        let snapshot = try DshLocalUsageScanner.performScanPure(
+            sessionsRoot: sessionsRoot,
+            cacheDir: cache,
+            fileManager: FileManagerBox(),
+            calendar: calendar,
+            now: { base },
+            decompressor: { $0 },
+            limits: DshLocalUsageScanLimits.production
+        )
+
+        XCTAssertEqual(snapshot.eventCount, 2)
+        XCTAssertEqual(snapshot.byProvider["deepseek-official"]?.today?.inputTokens, 100)
+        XCTAssertEqual(snapshot.byProvider["minimax-cn"]?.today?.inputTokens, 200)
+    }
+
     func testDshDistinctStepsAndTurnsStillCountSeparately() throws {
         let base = Date(timeIntervalSince1970: 1_700_000_000)
         let calendar = makeUTCGregorianCalendar()

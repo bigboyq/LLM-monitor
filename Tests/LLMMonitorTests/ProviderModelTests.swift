@@ -182,6 +182,41 @@ final class ProviderModelTests: XCTestCase {
         XCTAssertTrue(minimaxCNY.displayText.hasPrefix("¥"))
     }
 
+    func testClientSummaryMarksPartialPricingInSevenDayTable() {
+        let day = Date(timeIntervalSince1970: 1_700_000_000)
+        let samples = [
+            LocalTokenUsageSample(
+                completedAt: day,
+                modelName: "gpt-5.5",
+                promptID: "priced",
+                inputTokens: 1_000_000,
+                cachedInputTokens: 0,
+                outputTokens: 0,
+                reasoningOutputTokens: 0
+            ),
+            LocalTokenUsageSample(
+                completedAt: day.addingTimeInterval(1),
+                modelName: "future-model",
+                promptID: "unpriced",
+                inputTokens: 1_000_000,
+                cachedInputTokens: 0,
+                outputTokens: 0,
+                reasoningOutputTokens: 0
+            )
+        ]
+        let summary = ClientProviderUsageSummary(
+            clientID: ClientID.codex,
+            quotaProviderID: QuotaProviderID.openAI,
+            providerName: "ChatGPT Plan",
+            dailyTokenUsage: [UnifiedDailyTokenUsage(dayStart: day, input: 2_000_000)],
+            recentSamples: samples,
+            scannedAt: day
+        )
+
+        XCTAssertEqual(summary.costEstimate.coverage, .partiallyPriced)
+        XCTAssertEqual(summary.priceTextByDay[day], "$5.00（部分计价）")
+    }
+
     func testClientSummaryExplainsUnpricedModelTokenImpact() {
         let day = Date(timeIntervalSince1970: 1_700_000_000)
         let summary = ClientProviderUsageSummary(

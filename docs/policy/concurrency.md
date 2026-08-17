@@ -12,7 +12,7 @@ Swift 6 strict-concurrency（[`-swift-version 6`](../../scripts/audit.sh:36)）�
 - `FileManagerBox` [FileManagerBox.swift:38](../../Sources/LLM-monitor/Services/FileManagerBox.swift:38) — `private fileManager` + 调方 `AsyncMutex`/`@MainActor`
 - 4× `NSLock` 容器 — [Formatters:5](../../Sources/LLM-monitor/Services/Formatters.swift:5) / [DateParser:17](../../Sources/LLM-monitor/Services/DateParser.swift:17) / [BrandLogoView:8](../../Sources/LLM-monitor/Views/BrandLogoView.swift:8) / [ProcessRunner:27](../../Sources/LLM-monitor/Services/ProcessRunner.swift:27)
 - `ObserverStore` [MenuWindowAutoCloseBridge.swift:24](../../Sources/LLM-monitor/Views/MenuWindowAutoCloseBridge.swift:24) — Coordinator 主线程访问
-- 4× scanner — [Minimax:48](../../Sources/LLM-monitor/Services/MinimaxLocalUsageScanner.swift:48) / [Antigravity:27](../../Sources/LLM-monitor/Services/AntigravityLocalUsageScanner.swift:27) / [Opencode:17](../../Sources/LLM-monitor/Services/OpencodeUsageScanner.swift:17) / [GlmZcode:26](../../Sources/LLM-monitor/Services/GlmZcodeLocalUsageScanner.swift:26) — `@MainActor` + `AsyncMutex.pipelineMutex`
+- 5× scanner — [Minimax:48](../../Sources/LLM-monitor/Services/MinimaxLocalUsageScanner.swift:48) / [Antigravity:27](../../Sources/LLM-monitor/Services/AntigravityLocalUsageScanner.swift:27) / [Opencode:17](../../Sources/LLM-monitor/Services/OpencodeUsageScanner.swift:17) / [GlmZcode:26](../../Sources/LLM-monitor/Services/GlmZcodeLocalUsageScanner.swift:26) / [DSH:30](../../Sources/LLM-monitor/Services/DshLocalUsageScanner.swift:30) — `@MainActor` + `AsyncMutex.pipelineMutex`
 
 ## `actor` 清册
 
@@ -37,7 +37,7 @@ pipeline（load → RPC → SQL → save）安全持锁。`acquire()` 注册
 
 `ConfigStore` [ConfigStore.swift:155](../../Sources/LLM-monitor/Services/ConfigStore.swift:155) ·
 `ProviderRefreshScheduler` [ProviderRefreshScheduler.swift:27](../../Sources/LLM-monitor/Services/ProviderRefreshScheduler.swift:27) ·
-`AuthProber` [AuthProber.swift:28](../../Sources/LLM-monitor/Services/AuthProber.swift:28) · 4 scanner。模板同构：
+`AuthProber` [AuthProber.swift:28](../../Sources/LLM-monitor/Services/AuthProber.swift:28) · 5 scanner。模板同构：
 `@MainActor` + `nonisolated static performScanPure` + `AsyncMutex.pipelineMutex` 串行。
 [`ProviderRefreshScheduler.waitUntilNotInFlight`](../../Sources/LLM-monitor/Services/ProviderRefreshScheduler.swift:145)
 和 [`AsyncMutex.acquire`](../../Sources/LLM-monitor/Services/AsyncMutex.swift:97) 是 cancellation

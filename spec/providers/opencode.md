@@ -1,7 +1,7 @@
 # OpenCode Local Usage — Provider Merge Spec
 
 OpenCode is not a menu-bar provider. It is a shared local token ledger that can be
-optionally merged into the Minimax, ChatGPT, Antigravity, and GLM cards.
+optionally merged into the Minimax, ChatGPT, Antigravity, GLM, and DeepSeek cards.
 
 ## Data source
 
@@ -37,18 +37,12 @@ cache bucket. The displayed total is `input + cache.read + output + reasoning`;
 
 ## Provider mapping and switches
 
-Each provider has an independent `ProviderConfig.mergeOpencodeUsage` switch persisted
-in `config.json`. Defaults are encoded in `ProviderConfig.shouldMergeOpencodeUsage(for:)`:
-GLM defaults to `true` (it has shipped with OpenCode merge since 1.3.0); the others default
-to `false`. The schema v2 `clientBindings[]` array mirrors the same values and is the new
-canonical source — both fields stay synchronized when `SettingsView.saveAndApply()` writes
-back.
-
-The settings UI no longer exposes per-provider OpenCode toggles. OpenCode merge is treated
-as the default data plumbing for every supported provider, matching how the DSH harness
-is wired: any compatible local ledger contributes automatically once it is installed and
-its session data is discoverable. Users who want a non-default value edit `config.json`
-directly; future harness-aware UI will surface these bindings in the new client-tab model.
+OpenCode merge is controlled by the schema-v2 `clientBindings[]` array in `config.json`.
+The settings UI intentionally has no per-provider OpenCode toggles: the client binding is
+the canonical source of truth, while `providers.<id>.mergeOpencodeUsage` is retained only
+as a legacy compatibility field for older builds and migration. GLM defaults to enabled;
+the other supported bindings default to disabled. Users who need a non-default value edit
+`config.json` and save it; the directory watcher hot-reloads the binding.
 
 | Card | OpenCode providerID | Missing-field default |
 |---|---|---|
@@ -56,12 +50,13 @@ directly; future harness-aware UI will surface these bindings in the new client-
 | ChatGPT Plan | `openai` | `false` |
 | Antigravity | `antigravity`, `google-antigravity`, `google-vertex`, or `google` | `false` |
 | GLM Coding Plan | `zhipuai-coding-plan` | `true` |
+| DeepSeek | `deepseek`, `deepseek-official`, `deepseek-cn`, or `deepseek-v4` | `false` |
 
 The `minimax` providerID is intentionally excluded from the Minimax card; it is the
 redundant OpenCode local-capability ledger and never contributes to that quota card.
 
-When the switch is off, the card receives only its existing native/local data. When it
-is on, OpenCode values are added to the native values:
+When the matching `clientBindings[]` entry is disabled, the card receives only its existing
+native/local data. When it is enabled, OpenCode values are added to the native values:
 
 - daily `input`, `cacheRead`, `cacheWrite`, `output`, `reasoning`, `rounds`, and `turns`;
 - quota-window token summaries (`prompts`, `rounds`, and token categories);
@@ -101,7 +96,7 @@ where R is rounds and T is turns.
 ## Refresh timing
 
 OpenCode **不挂自己的独立 timer**,扫描由 consumer provider 的 quota 刷新触发:
-- 应用启动时主动扫一次(让设置页诊断和已有 GLM/minimax 卡片尽早拿到本地历史)
+- 应用启动时主动扫一次(让设置页诊断和已有 GLM/minimax/DeepSeek 卡片尽早拿到本地历史)
 - minimax 主 quota 刷新成功时(`refreshProviderDirectly` 在成功路径触发 `triggerOpencodeUsageScan`)
 - GLM 主 quota 刷新成功时(同上,加 native ZCode + opencode 双扫描)
 - Codex / Antigravity 主 quota 刷新成功时(同上路径)
@@ -111,8 +106,8 @@ OpenCode **不挂自己的独立 timer**,扫描由 consumer provider 的 quota �
 provider 的刷新间隔即可——不需要也不存在 OpenCode 自己的独立配置项。
 
 > 决策依据:OpenCode 是"跨 provider 共享账本",不是用户主动查询的服务。给它一个独立
-> timer 会导致 4 个 consumer 还在静默时 OpenCode 已经扫了,反而造成"看 OpenCode 卡片
-> 的 prompt 时间"和"看 minimax/Codex/Antigravity 卡片的 prompt 时间"对不上的诡异感。
+> timer 会导致 consumer 还在静默时 OpenCode 已经扫了,反而造成"看 OpenCode 卡片
+> 的 prompt 时间"和"看各 quota 卡片的 prompt 时间"对不上的诡异感。
 > piggyback consumer provider 是最自然的同步点。
 
 ## Implementation map
@@ -123,6 +118,6 @@ provider 的刷新间隔即可——不需要也不存在 OpenCode 自己的独�
 | OpenCode sample promptID 命名空间 | `Sources/LLM-monitor/Models/OpencodeUsageMerger.swift`（卡片合并入口是 `ProviderStatus.usageProjection`，历史 `merge*` 函数已删除） |
 | SQLite reader | `Sources/LLM-monitor/Services/OpencodeDBReader.swift` |
 | Scanner, cache, and seven-day snapshot | `Sources/LLM-monitor/Services/OpencodeUsageScanner.swift` |
-| Merge 控制（无设置页开关） | `config.json` 的 `clientBindings[]`（唯一事实源；schema v1 以下由 `legacyClientBindings` 从 `ProviderConfig.mergeOpencodeUsage` 迁移） |
+| Merge 控制（无设置页开关） | `config.json` 的 `clientBindings[]`（唯一事实源；legacy config 由 `legacyClientBindings` 从 `ProviderConfig.mergeOpencodeUsage` 迁移） |
 | Card integration | `Sources/LLM-monitor/Views/ProviderCardView.swift` and `QuotaViews.swift` |
 | Regression tests | `Tests/LLMMonitorTests/OpencodeUsageTests.swift`（usageProjection 多 client 投影、命名空间与 reader 回归） |

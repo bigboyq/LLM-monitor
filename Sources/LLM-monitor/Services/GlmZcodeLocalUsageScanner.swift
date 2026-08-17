@@ -10,8 +10,8 @@ import Combine
 /// 的 SQL `CASE` 内一次性走 Method A 完成（`reasoning_tokens` priority + `EXISTS` part 表
 /// `type='reasoning'` 的整轮归类），不再有 scanner 端字符分摊步骤。
 ///
-/// OpenCode 的 `zhipuai-coding-plan` 分片作为可叠加源（由 `mergeOpencodeUsage` 开关控制），
-/// 与本 native 源字段相加。
+/// OpenCode 的 `zhipuai-coding-plan` 分片作为可叠加源（由 `clientBindings[]` 中的
+/// binding 控制，运行时映射为兼容字段），与本 native 源字段相加。
 ///
 /// 跟 minimax / antigravity scanner 的关键区别（更简单，对齐 OpencodeUsageScanner）：
 /// - **单源**（一个 zcode db），不是双源 union，也不走 RPC

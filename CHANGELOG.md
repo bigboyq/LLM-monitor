@@ -8,7 +8,7 @@
 
 - 新增 DeepSeek Harness (dsh) 客户端用量监控：扫描 `~/.dsh/sessions` 中的 JSONL session 日志（zstd / Node 22+ zlib 双解压路径），按 `request/context` 中的 provider 自动合并到 MiniMax / GLM / DeepSeek 三张卡片。
 - 新增"设置 > 客户端"tab：按客户端维度（Antigravity / Codex / DSH / MiniMax Code / OpenCode / ZCode）展示本地 token 用量、最近 7 天柱图、缓存命中率与按公开 API 单价估算的价值。
-- 新增 `ModelPricingCatalog`：模型价目快照（MiniMax-M3 USD→CNY 换算、DeepSeek 高峰期 2× 倍率、DSH 独立 uncached-input / cache-read bucket 计价）；客户端 tab 标注目录更新日期 `lastUpdated`。
+- 新增 `ModelPricingCatalog`：模型价目快照（MiniMax-M3 直接使用公开 CNY 价格、DeepSeek 高峰期 2× 倍率、DSH 独立 uncached-input / cache-read bucket 计价）；客户端 tab 标注目录更新日期 `lastUpdated`。
 - 客户端 tab 中未定价模型显式列出名称、token 数与调用次数，不再静默归零。
 - 主菜单 Provider 卡片可自定义顺序：设置 → 通用 → 主菜单 Provider 顺序段提供上下按钮拖拽，按 Provider 显示名称排序。客户端 tab、设置页 Provider tabs 与 Client tab 内的 Provider 行仍按显示名称字母顺序排列；`providerCardOrder` 仅作用于主菜单。
 
@@ -25,10 +25,13 @@
 - 修复 Codex 与 DSH 的 `promptID` 粒度过细导致今日 `turns` 等于 `rounds` 的问题：规范化 `promptID` 共享同一个 turn 标识（移除单次 token 事件时间戳与 step 编号），并修正 DSH 每日 turn 聚合的跨 session 去重键。
 - 修复 MiniMax (DSH) 5h 和周额度浮窗中未缓存输入显示为 `0`（如 `0 (+65M cached)`）的问题：统一将 DSH 样本的 `inputTokens` 规范化为包含缓存的总输入口径（`uncached + cached`），使浮窗中的 `uncachedInputTokens` 计算与 7 日图保持一致。
 - 提升本地扫描器容量上限：将 `maxRecentSamples` 从 4,096 扩容至 65,536，`maxSessionFiles` 从 256 扩容至 1,024，`maxEventCacheEntries` 从 64 扩容至 256，避免重度使用及 7 天周期内样本溢出截断。
-- 升级 DSH (`v4`)、MiniMax (`v14`) 和 Codex (`v7`) 本地缓存索引指纹版本，自动失效旧快照以全量重建规范化数据。
-- 扩充 `ModelPricingCatalog` 对 OpenAI 常见模型（`gpt-4o`, `gpt-4o-mini`, `o1`, `o3-mini` 等）的定价覆盖。
+- 升级 DSH (`v5`)、MiniMax (`v14`) 和 Codex (`v7`) 本地缓存索引指纹版本，自动失效旧快照以全量重建规范化数据。
+- 明确 OpenAI/Codex 价格目录只对当前支持的 GPT-5.5 / GPT-5.6 Sol/Terra/Luna 建立价格；未知或已移除模型不再猜价。
 - 客户端 tab 当日聚合落后于样本时（DB 缓存尚未刷新），用最近样本补齐当日 token 数，避免 UI 显示陈旧的"今日 0"。
 - 移除客户端 tab 中 OpenCode 诊断页（功能已被 clientsPane 吸收，原始 spec 文档已同步更新）。
+- 部分模型没有公开价格时，菜单 footer、7 天表格和设置页统一标注“部分计价”，金额只覆盖已知价格模型。
+- Provider 卡片和设置页复用同一次 `usageProjection` 快照，避免一次 SwiftUI 渲染重复聚合相同本地样本。
+- DSH 坏文件、文件选择顺序、replay dedup、缓存样本边界和 MiniMax 字符聚合失败路径增加隔离与重试诊断。
 - 修复 DSH 路由 MiniMax-M3 模型时 reasoning token 始终显示为 `0` 的问题：DSH session 日志的 MiniMax-M3 路径经常缺少 `reasoningTokens` 字段，scanner 现在读取同一 `assistant/message` 事件下的 `reasoning`、`text`、`tool-call.arguments` 内容块，按字符比例估算 Reason，并保持 `Output + Reason = raw outputTokens`。其他模型、其他 provider 或没有可用内容块时仍按 `Reason = 0` 处理。升级 DSH cache 到 `v5` 触发全量重建。
 
 ## [1.4.2] - 2026-08-12

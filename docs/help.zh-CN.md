@@ -57,6 +57,7 @@ shasum -a 256 -c SHA256SUMS.txt
 - 悬停卡片标题、额度行或底部用量：查看账号、窗口、最近请求及七天图表。
 - 设置 → 通用：修改刷新间隔、状态栏图标、状态圆点显示开关和开机自启动。开关开启时，右下角显示 6pt 状态圆点：绿色表示额度健康，橙色表示预警，红色表示异常。
 - 禁用的 Provider 不会显示卡片，也不会发起网络请求。
+- 客户端用量价值只覆盖有公开价格的模型；如果同一段用量包含未知模型，菜单和 7 天表格会显示“部分计价”。
 
 ## 配置与本地文件
 
@@ -69,6 +70,7 @@ shasum -a 256 -c SHA256SUMS.txt
 | Antigravity scanner 缓存 | `~/.gemini/antigravity/.token-monitor/` |
 | ZCode scanner 缓存 | `~/.zcode/cli/.token-monitor/` |
 | OpenCode scanner 缓存 | `~/.local/share/opencode/.token-monitor/` |
+| DSH scanner 缓存 | `~/.dsh/.token-monitor/` |
 
 配置保存后会自动重载。若配置无法解析，应用会先备份为同目录的 `config.json.corrupt-*.json`，再恢复默认配置。请勿把真实 API Key 提交到 Git 仓库、issue 或日志附件中。
 
