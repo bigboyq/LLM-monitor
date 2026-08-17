@@ -361,6 +361,190 @@ final class DshUsageTests: XCTestCase {
         XCTAssertNotEqual(today.inputTokens, 888)
     }
 
+    @discardableResult
+    private func writeRawSessionArtifact(
+        root: URL,
+        sessionID: String,
+        fileName: String,
+        body: Data
+    ) throws -> URL {
+        let directory = root
+            .appendingPathComponent("--Project--", isDirectory: true)
+            .appendingPathComponent(sessionID, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appendingPathComponent(fileName)
+        try body.write(to: url)
+        return url
+    }
+
+    private struct DshDecompressorCallCounter {
+        final class Box: @unchecked Sendable {
+            private let lock = NSLock()
+            private var count = 0
+            var value: Int {
+                lock.lock(); defer { lock.unlock() }
+                return count
+            }
+            func increment() {
+                lock.lock(); defer { lock.unlock() }
+                count += 1
+            }
+        }
+
+        struct DecompressError: LocalizedError {
+            var errorDescription: String? { "模拟的 zstd 解压失败" }
+        }
+    }
+
+    func testCorruptZstdSessionFileIsSkippedWhileGoodFilesStillAggregate() throws {
+        // spec/providers/dsh.md Scanner behavior：坏文件跳过、不中断整扫。
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let calendar = makeUTCGregorianCalendar()
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("llm-monitor-dsh-corrupt-mixed-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let cache = root.appendingPathComponent(".token-monitor", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let goodLines = [
+            #"{"type":"request/context","seq":1,"time":1700000000000,"data":{"provider":"deepseek-official","model":"deepseek-v4-flash"}}"#,
+            #"{"type":"assistant/message","seq":2,"time":1700000001000,"data":{"turn":1,"step":0,"usage":{"inputTokens":100,"cacheReadTokens":50,"outputTokens":30,"reasoningTokens":10}}}"#
+        ]
+        try writeSessionLog(
+            root: sessionsRoot,
+            sessionID: "session-good",
+            body: goodLines.joined(separator: "\n") + "\n"
+        )
+        try writeRawSessionArtifact(
+            root: sessionsRoot,
+            sessionID: "session-bad",
+            fileName: "session.jsonl.zst",
+            body: Data([0xDE, 0xAD, 0xBE, 0xEF])
+        )
+
+        // 坏 .zst 抛错时整个扫描必须仍然成功，且好文件数据保留。
+        let snapshot = try DshLocalUsageScanner.performScanPure(
+            sessionsRoot: sessionsRoot,
+            cacheDir: cache,
+            fileManager: FileManagerBox(),
+            calendar: calendar,
+            now: { base },
+            decompressor: { _ in throw DshDecompressorCallCounter.DecompressError() },
+            limits: DshLocalUsageScanLimits.production
+        )
+
+        XCTAssertEqual(snapshot.sessionCount, 1, "坏文件必须被隔离，好 session 仍要聚合")
+        XCTAssertEqual(snapshot.eventCount, 1)
+        let deepseek = try XCTUnwrap(snapshot.byProvider["deepseek-official"])
+        XCTAssertEqual(deepseek.today?.inputTokens, 100)
+        XCTAssertEqual(deepseek.recentSamples.count, 1)
+    }
+
+    func testAllCorruptSessionFilesProduceEmptySnapshotWithoutThrowing() throws {
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let calendar = makeUTCGregorianCalendar()
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("llm-monitor-dsh-corrupt-all-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let cache = root.appendingPathComponent(".token-monitor", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try writeRawSessionArtifact(
+            root: sessionsRoot,
+            sessionID: "session-bad-1",
+            fileName: "session.jsonl.zst",
+            body: Data([0xDE, 0xAD])
+        )
+        try writeRawSessionArtifact(
+            root: sessionsRoot,
+            sessionID: "session-bad-2",
+            fileName: "session.jsonl.zstd",
+            body: Data([0xBE, 0xEF])
+        )
+
+        let snapshot = try DshLocalUsageScanner.performScanPure(
+            sessionsRoot: sessionsRoot,
+            cacheDir: cache,
+            fileManager: FileManagerBox(),
+            calendar: calendar,
+            now: { base },
+            decompressor: { _ in throw DshDecompressorCallCounter.DecompressError() },
+            limits: DshLocalUsageScanLimits.production
+        )
+
+        // 全部文件失败：不抛错（目录枚举和缓存写入本身没有失败），
+        // 结果为空快照，坏文件不计入 session/event。
+        XCTAssertEqual(snapshot.sessionCount, 0)
+        XCTAssertEqual(snapshot.eventCount, 0)
+        XCTAssertTrue(snapshot.byProvider.isEmpty)
+    }
+
+    func testFailedSessionFileIsNotInSuccessFingerprintAndIsRetriedNextScan() throws {
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let calendar = makeUTCGregorianCalendar()
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("llm-monitor-dsh-corrupt-retry-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let cache = root.appendingPathComponent(".token-monitor", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let goodLines = [
+            #"{"type":"request/context","seq":1,"time":1700000000000,"data":{"provider":"deepseek-official","model":"deepseek-v4-flash"}}"#,
+            #"{"type":"assistant/message","seq":2,"time":1700000001000,"data":{"turn":1,"step":0,"usage":{"inputTokens":100,"outputTokens":30}}}"#
+        ]
+        try writeSessionLog(
+            root: sessionsRoot,
+            sessionID: "session-good",
+            body: goodLines.joined(separator: "\n") + "\n"
+        )
+        let badURL = try writeRawSessionArtifact(
+            root: sessionsRoot,
+            sessionID: "session-bad",
+            fileName: "session.jsonl.zst",
+            body: Data([0xDE, 0xAD])
+        )
+
+        let counter = DshDecompressorCallCounter.Box()
+        let failingDecompressor: DshLocalUsageScanner.Decompressor = { _ in
+            counter.increment()
+            throw DshDecompressorCallCounter.DecompressError()
+        }
+
+        _ = try DshLocalUsageScanner.performScanPure(
+            sessionsRoot: sessionsRoot,
+            cacheDir: cache,
+            fileManager: FileManagerBox(),
+            calendar: calendar,
+            now: { base },
+            decompressor: failingDecompressor,
+            limits: DshLocalUsageScanLimits.production
+        )
+        XCTAssertEqual(counter.value, 1)
+
+        // 坏文件不能进入“成功指纹”：index.json 里不得出现坏文件路径。
+        let indexJSON = try XCTUnwrap(String(
+            data: Data(contentsOf: cache.appendingPathComponent("index.json")),
+            encoding: .utf8
+        ))
+        XCTAssertFalse(
+            indexJSON.contains(badURL.path),
+            "失败文件不得写入成功指纹，否则下一轮缓存命中会跳过重试"
+        )
+
+        // 文件无任何变化时的第二次扫描必须再次尝试坏文件（缓存不得命中）。
+        let second = try DshLocalUsageScanner.performScanPure(
+            sessionsRoot: sessionsRoot,
+            cacheDir: cache,
+            fileManager: FileManagerBox(),
+            calendar: calendar,
+            now: { base },
+            decompressor: failingDecompressor,
+            limits: DshLocalUsageScanLimits.production
+        )
+        XCTAssertEqual(counter.value, 2, "坏文件在下一轮扫描必须被重试")
+        XCTAssertEqual(second.eventCount, 1, "好文件数据在重试轮次仍要保留")
+    }
+
     func testDshLocalUsageEqualityIgnoresScannedAt() {
         let a = DshLocalUsage(
             byProvider: [:],

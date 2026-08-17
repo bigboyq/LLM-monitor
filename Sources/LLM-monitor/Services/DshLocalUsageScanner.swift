@@ -222,7 +222,7 @@ final class DshLocalUsageScanner: ObservableObject, @unchecked Sendable {
         }
 
         let scanNow = now()
-        let aggregate = try aggregateFiles(
+        let outcome = try aggregateFiles(
             snapshots: snapshots,
             sessionsRoot: sessionsRoot,
             calendar: calendar,
@@ -230,17 +230,18 @@ final class DshLocalUsageScanner: ObservableObject, @unchecked Sendable {
             limits: limits
         )
         let snapshot = buildSnapshot(
-            aggregate: aggregate,
+            aggregate: outcome.aggregate,
             sessionsRoot: sessionsRoot,
             calendar: calendar,
             now: scanNow,
             limits: limits
         )
-        index = DshCacheIndex(version: 5, files: fingerprint.files, snapshot: snapshot)
+        index = DshCacheIndex(version: 5, files: outcome.processedFingerprints, snapshot: snapshot)
         try saveIndex(index, cacheDir: cacheDir, fileManager: fileManager)
         logInfo(
             "[dsh-scan] ✓ sessions=\(snapshot.sessionCount), providers=\(snapshot.byProvider.count), "
                 + "events=\(snapshot.eventCount)"
+                + (outcome.failedFileCount > 0 ? ", skippedFailedFiles=\(outcome.failedFileCount)" : "")
         )
         return snapshot
     }
@@ -394,6 +395,15 @@ private struct DshAggregate: Sendable {
 
 // MARK: - Parsing helpers
 
+private struct DshFileAggregationOutcome: Sendable {
+    var aggregate = DshAggregate()
+    /// Fingerprints of files that were fully read, decompressed, and parsed.
+    /// Files that failed are deliberately excluded so the cache never records
+    /// them as successfully processed; the next scan retries them.
+    var processedFingerprints: [DshLogFileFingerprint] = []
+    var failedFileCount = 0
+}
+
 private extension DshLocalUsageScanner {
     private nonisolated static func aggregateFiles(
         snapshots: [DshLogFileSnapshot],
@@ -401,29 +411,47 @@ private extension DshLocalUsageScanner {
         calendar: Calendar,
         decompressor: @escaping Decompressor,
         limits: DshLocalUsageScanLimits
-    ) throws -> DshAggregate {
-        var aggregate = DshAggregate()
+    ) throws -> DshFileAggregationOutcome {
+        var outcome = DshFileAggregationOutcome()
         for snapshot in snapshots.sorted(by: { $0.modifiedAt > $1.modifiedAt }) {
             try Task.checkCancellation()
-            let data: Data
-            if snapshot.url.lastPathComponent.lowercased().hasSuffix(".zstd")
-                || snapshot.url.lastPathComponent.lowercased().hasSuffix(".zst") {
-                data = try decompressor(try Data(contentsOf: snapshot.url))
-            } else {
-                data = try Data(contentsOf: snapshot.url)
-            }
-            let result = try parseFile(
-                data: data,
-                sessionID: snapshot.url.deletingLastPathComponent().lastPathComponent,
-                limits: limits
-            )
-            guard !result.usages.isEmpty else { continue }
-            for usage in result.usages {
-                try Task.checkCancellation()
-                add(usage, to: &aggregate, calendar: calendar, limits: limits)
+            do {
+                let data: Data
+                if snapshot.url.lastPathComponent.lowercased().hasSuffix(".zstd")
+                    || snapshot.url.lastPathComponent.lowercased().hasSuffix(".zst") {
+                    data = try decompressor(try Data(contentsOf: snapshot.url))
+                } else {
+                    data = try Data(contentsOf: snapshot.url)
+                }
+                let result = try parseFile(
+                    data: data,
+                    sessionID: snapshot.url.deletingLastPathComponent().lastPathComponent,
+                    limits: limits
+                )
+                outcome.processedFingerprints.append(snapshot.fingerprint)
+                guard !result.usages.isEmpty else { continue }
+                for usage in result.usages {
+                    try Task.checkCancellation()
+                    add(usage, to: &outcome.aggregate, calendar: calendar, limits: limits)
+                }
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                // 单文件可恢复错误：隔离坏文件，其余 snapshot 继续聚合。
+                // 日志只含路径/阶段/错误摘要，不落原始内容。
+                outcome.failedFileCount += 1
+                logWarn(
+                    "[dsh-scan] 跳过无法读取的 session 文件（已隔离，下一轮重试）: "
+                        + "\(snapshot.url.path), error: \(errorSummary(error))"
+                )
             }
         }
-        return aggregate
+        return outcome
+    }
+
+    private nonisolated static func errorSummary(_ error: Error) -> String {
+        let text = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+        return String(text.prefix(200))
     }
 
     private nonisolated static func parseFile(
