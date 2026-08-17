@@ -502,6 +502,9 @@ enum ModelPricingCatalog {
             }
 
         case QuotaProviderID.openAI:
+            if model.contains("gpt-5.5") {
+                return ModelTokenPricing(modelLabel: modelName ?? "GPT-5.5", currency: .usd, inputPerMillion: 5, cacheReadPerMillion: 0.5, outputPerMillion: 30)
+            }
             if model.contains("gpt-5.6-sol") {
                 return ModelTokenPricing(modelLabel: modelName ?? "GPT-5.6 Sol", currency: .usd, inputPerMillion: 5, cacheReadPerMillion: 0.5, outputPerMillion: 30)
             }
@@ -511,13 +514,6 @@ enum ModelPricingCatalog {
             if model.contains("gpt-5.6-luna") {
                 return ModelTokenPricing(modelLabel: modelName ?? "GPT-5.6 Luna", currency: .usd, inputPerMillion: 0.2, cacheReadPerMillion: 0.02, outputPerMillion: 1.2)
             }
-            if model.contains("gpt-5-mini") {
-                return ModelTokenPricing(modelLabel: modelName ?? "GPT-5 mini", currency: .usd, inputPerMillion: 0.25, cacheReadPerMillion: 0.025, outputPerMillion: 2)
-            }
-            if model.contains("gpt-5") {
-                return ModelTokenPricing(modelLabel: modelName ?? "GPT-5", currency: .usd, inputPerMillion: 1.25, cacheReadPerMillion: 0.125, outputPerMillion: 10)
-            }
-
         case QuotaProviderID.antigravity:
             if model.contains("gemini-3.7-flash") || model.contains("gemini-3.6-flash") {
                 return ModelTokenPricing(modelLabel: modelName ?? "Gemini Flash 3.x", currency: .usd, inputPerMillion: 0.75, cacheReadPerMillion: 0.075, outputPerMillion: 3.75)

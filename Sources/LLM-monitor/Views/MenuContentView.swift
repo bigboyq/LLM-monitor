@@ -78,7 +78,12 @@ struct MenuContentView: View {
 
     @ViewBuilder
     private var content: some View {
-        let cards = state.statuses.filter { $0.isEnabled }
+        let cards = DisplayOrder.ordered(
+            state.statuses.filter { $0.isEnabled },
+            preferredIDs: state.configStore.config.providerCardOrder,
+            id: { $0.kind.quotaProviderID },
+            by: Self.providerStatusDisplayNameAscending
+        )
 
         if cards.isEmpty {
             VStack(spacing: 8) {
@@ -131,6 +136,15 @@ struct MenuContentView: View {
                 .padding(.vertical, 8)
             }
         }
+    }
+
+    private static func providerStatusDisplayNameAscending(
+        _ lhs: ProviderStatus,
+        _ rhs: ProviderStatus
+    ) -> Bool {
+        let comparison = lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName)
+        if comparison != .orderedSame { return comparison == .orderedAscending }
+        return lhs.id < rhs.id
     }
 
     /// Four registered cards can all be `.notConfigured` on first launch because

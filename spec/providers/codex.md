@@ -18,6 +18,7 @@ This provider reads the local Codex authentication file and calls ChatGPT backen
 | Reset credits | Parsed and displayed when entries exist |
 | Plan label | Parsed from `id_token` JWT when available |
 | Local usage details | Aggregated from local Codex session logs |
+| Local pricing models | GPT-5.5, GPT-5.6 Sol, GPT-5.6 Terra, GPT-5.6 Luna |
 
 ## Config
 

@@ -75,6 +75,10 @@ struct AppConfig: Codable, Equatable {
     /// 是否显示状态栏健康度圆点 (nil = 默认开启)
     var statusBarHealthDotEnabled: Bool?
 
+    /// 主菜单 Provider 卡片的自定义顺序。nil 或空数组表示使用默认的
+    /// Provider 显示名称字母顺序；这里只保存 canonical QuotaProviderID，不保存显示名。
+    var providerCardOrder: [String]?
+
     var effectiveStatusBarIconStyle: StatusBarIconStyle {
         statusBarIconStyle ?? .chartBar
     }
@@ -90,7 +94,8 @@ struct AppConfig: Codable, Equatable {
     static let `default` = AppConfig(
         refreshIntervalSeconds: 300,
         providers: [:],
-        clientBindings: defaultClientBindings
+        clientBindings: defaultClientBindings,
+        providerCardOrder: nil
     )
 
     static let defaultClientBindings: [ClientProviderBinding] = [
@@ -144,7 +149,8 @@ struct AppConfig: Codable, Equatable {
         clientBindings: [ClientProviderBinding] = AppConfig.defaultClientBindings,
         statusBarIconStyle: StatusBarIconStyle? = nil,
         statusBarIndicatorMode: StatusBarIndicatorMode? = nil,
-        statusBarHealthDotEnabled: Bool? = nil
+        statusBarHealthDotEnabled: Bool? = nil,
+        providerCardOrder: [String]? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.refreshIntervalSeconds = refreshIntervalSeconds
@@ -153,11 +159,13 @@ struct AppConfig: Codable, Equatable {
         self.statusBarIconStyle = statusBarIconStyle
         self.statusBarIndicatorMode = statusBarIndicatorMode
         self.statusBarHealthDotEnabled = statusBarHealthDotEnabled
+        self.providerCardOrder = providerCardOrder
     }
 
     private enum CodingKeys: String, CodingKey {
         case schemaVersion, refreshIntervalSeconds, providers, clientBindings
         case statusBarIconStyle, statusBarIndicatorMode, statusBarHealthDotEnabled
+        case providerCardOrder
     }
 
     init(from decoder: Decoder) throws {
@@ -182,6 +190,7 @@ struct AppConfig: Codable, Equatable {
         self.statusBarIndicatorMode = (try? container.decode(String.self, forKey: .statusBarIndicatorMode))
             .flatMap(StatusBarIndicatorMode.init(rawValue:))
         self.statusBarHealthDotEnabled = try? container.decode(Bool.self, forKey: .statusBarHealthDotEnabled)
+        self.providerCardOrder = try? container.decode([String].self, forKey: .providerCardOrder)
     }
 
     /// 实际生效的刷新间隔：优先用 provider 自己的，否则用全局，最后 clamp 到 10s...30d。

@@ -128,6 +128,7 @@ struct SettingsView: View {
     @State private var deepseekPeakWeekdays: Bool = DeepseekPeakWindow.defaultWindow.weekdaysOnly
 
     @State private var selectedClientID: String = ClientID.antigravity
+    @State private var providerCardOrder: [String] = []
 
     @State private var isSaving: Bool = false
     @State private var saveErrorMessage: String?
@@ -193,7 +194,11 @@ struct SettingsView: View {
     /// 全部 tab（`.general` + descriptors 派生的 provider tab）。
     /// `Identifiable` 让 `ForEach` 走 `id` 区分，切换不会触发整列重渲染。
     private var allTabs: [SettingsTab] {
-        [.general] + descriptors.map { .provider($0) } + [.clients]
+        [.general] + sortedProviderDescriptors.map { .provider($0) } + [.clients]
+    }
+
+    private var sortedProviderDescriptors: [FetcherDescriptor] {
+        descriptors.sorted(by: providerDescriptorDisplayNameAscending)
     }
 
     var body: some View {
@@ -389,6 +394,13 @@ struct SettingsView: View {
                 }
             }
 
+            SettingsSection(
+                title: "主菜单 Provider 顺序",
+                footer: "未配置时按 Provider 名称排序。这里只调整主菜单卡片；客户端和设置页保持字母排序。"
+            ) {
+                providerCardOrderEditor
+            }
+
             SettingsSection(title: "关于") {
                 SettingsControlRow("LLM Monitor") {
                     Text("版本 \(AppMetadata.version)（\(AppMetadata.build)）")
@@ -397,6 +409,70 @@ struct SettingsView: View {
                 }
             }
         }
+    }
+
+    private var providerCardOrderEditor: some View {
+        let providers = providerDescriptorsInCardOrder
+        return VStack(spacing: 0) {
+            ForEach(Array(providers.enumerated()), id: \.element.id) { index, descriptor in
+                HStack(spacing: 8) {
+                    BrandLogoView(asset: BrandLogoAsset.provider(descriptor.kind))
+                    Text(descriptor.displayName)
+                        .font(SettingsTypography.rowEmphasis)
+                    Spacer()
+                    Button {
+                        moveProviderCard(from: index, offset: -1)
+                    } label: {
+                        Image(systemName: "chevron.up")
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(index == 0)
+                    .help("上移")
+
+                    Button {
+                        moveProviderCard(from: index, offset: 1)
+                    } label: {
+                        Image(systemName: "chevron.down")
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(index == providers.count - 1)
+                    .help("下移")
+                }
+                .padding(.vertical, 6)
+
+                if index < providers.count - 1 {
+                    Divider().opacity(0.35)
+                }
+            }
+        }
+    }
+
+    private var providerDescriptorsInCardOrder: [FetcherDescriptor] {
+        DisplayOrder.ordered(
+            descriptors,
+            preferredIDs: providerCardOrder,
+            id: { $0.kind.quotaProviderID },
+            by: providerDescriptorDisplayNameAscending
+        )
+    }
+
+    private func providerDescriptorDisplayNameAscending(
+        _ lhs: FetcherDescriptor,
+        _ rhs: FetcherDescriptor
+    ) -> Bool {
+        let lhsName = lhs.settingsTabTitle ?? lhs.displayName
+        let rhsName = rhs.settingsTabTitle ?? rhs.displayName
+        let comparison = lhsName.localizedCaseInsensitiveCompare(rhsName)
+        if comparison != .orderedSame { return comparison == .orderedAscending }
+        return lhs.id < rhs.id
+    }
+
+    private func moveProviderCard(from index: Int, offset: Int) {
+        var order = providerDescriptorsInCardOrder.map { $0.kind.quotaProviderID }
+        let destination = index + offset
+        guard order.indices.contains(index), order.indices.contains(destination) else { return }
+        order.swapAt(index, destination)
+        providerCardOrder = order
     }
 
     private var clientsPane: some View {
@@ -529,7 +605,11 @@ struct SettingsView: View {
             }
         }
 
-        return groups.keys.sorted { $0.rawValue < $1.rawValue }.map { group in
+        return groups.keys.sorted {
+            let comparison = $0.displayName.localizedCaseInsensitiveCompare($1.displayName)
+            if comparison != .orderedSame { return comparison == .orderedAscending }
+            return $0.rawValue < $1.rawValue
+        }.map { group in
             let samples = groups[group] ?? []
             let daily = samples.isEmpty
                 ? contribution.dailyTokenUsage
@@ -948,6 +1028,12 @@ struct SettingsView: View {
         launchAtLogin = loginItemService.isEnabled
         statusBarIconStyle = config.effectiveStatusBarIconStyle
         statusBarHealthDotEnabled = config.effectiveStatusBarHealthDotEnabled
+        providerCardOrder = DisplayOrder.normalizedIDs(
+            descriptors,
+            preferredIDs: config.providerCardOrder,
+            id: { $0.kind.quotaProviderID },
+            by: providerDescriptorDisplayNameAscending
+        )
 
         // OpenCode merge 状态从 `ProviderConfig.mergeOpencodeUsage` 读取；
         // schema v1 配置缺失该字段时走 `shouldMergeOpencodeUsage(for:)` 的兼容默认值
@@ -1003,6 +1089,18 @@ struct SettingsView: View {
         config.refreshIntervalSeconds = globalInterval
         config.statusBarIconStyle = statusBarIconStyle
         config.statusBarHealthDotEnabled = statusBarHealthDotEnabled
+        let defaultProviderOrder = descriptors
+            .sorted(by: providerDescriptorDisplayNameAscending)
+            .map { $0.kind.quotaProviderID }
+        let effectiveProviderOrder = DisplayOrder.normalizedIDs(
+            descriptors,
+            preferredIDs: providerCardOrder,
+            id: { $0.kind.quotaProviderID },
+            by: providerDescriptorDisplayNameAscending
+        )
+        config.providerCardOrder = effectiveProviderOrder == defaultProviderOrder
+            ? nil
+            : effectiveProviderOrder
 
         if let id = providerID(for: .minimaxTokenPlan) {
             var minimax = config.providers[id] ?? ProviderConfig(enabled: false)

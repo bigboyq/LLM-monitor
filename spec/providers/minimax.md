@@ -130,6 +130,7 @@ Important fields:
 | `current_weekly_*` | Weekly window data |
 | `*_remaining_percent` | Core display value, `0...100` |
 | `*_total_count` / `*_usage_count` | Preserved in `ModelQuota`; often `0` for percent-only plans |
+| `points` / account credits | Not present in the current `token_plan/remains` response; no separate Minimax points balance is currently exposed by this fetcher |
 | `*_status` | `1` = active; `2` = active but exhausted (0% remaining); `3` = not subscribed. The parser normalizes `2` to the internal active-window status so an exhausted window remains visible. |
 | `end_time` / `weekly_end_time` | Millisecond timestamps used as reset times |
 | `base_resp.status_code` | `0` means success |
@@ -161,6 +162,12 @@ Mapping per `model_remains[]` item:
 | `weekly_end_time` | `weeklyResetsAt` |
 
 `parseMsTimestamp(_:)` treats numbers and numeric strings as milliseconds since Unix epoch.
+
+The current successful response contains only model/window quota data and `base_resp`;
+there is no points, credits, or account-balance field to display. The strict response
+model intentionally ignores unknown JSON keys for forward compatibility, so a future
+Minimax points field must be added explicitly to a provider-neutral credit/balance model
+before it can appear in the UI; it must not be folded into `ModelQuota` percentages.
 
 The API can return placeholder model records for capabilities that are not available to the
 current subscription. A model is displayed only when at least one quota window is present. Raw

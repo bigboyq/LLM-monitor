@@ -42,6 +42,7 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 | `Sources/LLM-monitor/Models/AnyJSON.swift` | 弱类型 JSON（Antigravity 递归解析用） |
 | `Sources/LLM-monitor/Models/LocalUsageDaily.swift` | Antigravity / Codex / Minimax / GLM / OpenCode 共享的 7-day chart 协议 + 默认实现 |
 | `Sources/LLM-monitor/Models/ProviderClientModel.swift` | Client/Quota Provider 关系、Provider usage projection、模型价格目录与设置页摘要模型 |
+| `Sources/LLM-monitor/Models/DisplayOrder.swift` | Stable-ID ordering helper for configurable Provider cards and alphabetical fallback lists |
 | `Sources/LLM-monitor/Models/OpencodeLocalUsage.swift` | OpenCode provider 分片、今日 / 7 天聚合与逐次 samples |
 | `Sources/LLM-monitor/Models/OpencodeUsageMerger.swift` | OpenCode 与各 Provider 的字段级合并和 token 语义转换 |
 | `Sources/LLM-monitor/Models/DshLocalUsage.swift` | DeepSeek Harness session token 数据模型与 provider 分片 |
@@ -184,6 +185,10 @@ The app reads and writes this shape:
       "sourceProviderAliases": ["zhipuai-coding-plan"],
       "enabled": true
     }
+  ],
+  "providerCardOrder": [
+    "deepseek",
+    "minimax"
   ]
 }
 ```
@@ -206,6 +211,7 @@ The app reads and writes this shape:
 | `refreshIntervalSeconds` | global | Default refresh interval in seconds. Current default is `300`; effective values are clamped to 10 seconds...30 days. |
 | `statusBarIconStyle` | global | Selected menu-bar icon theme. Missing or invalid values use `chartBar`. |
 | `statusBarHealthDotEnabled` | global | Shows the 6 pt health dot on the menu-bar icon. Missing or invalid values default to `true`. |
+| `providerCardOrder` | global | Optional ordered list of stable canonical Quota Provider IDs (for example `deepseek` or `minimax`) for the main menu cards. Missing, empty, unknown, or duplicate IDs are normalized; omitted items are appended by Provider display name. |
 | `providers.<id>.enabled` | provider | Disabled providers stay visible but are not fetched. Missing `enabled` decodes as `true`. |
 | `providers.<id>.apiKey` | provider | API key for providers that do not manage external auth. Used by minimax. |
 | `providers.<id>.displayName` | provider | Optional UI label override. |
@@ -225,6 +231,13 @@ diagnostic pane; card display uses one provider-neutral aggregate token projecti
 Antigravity is a special quota owner: its Gemini / Claude / GPT model usage remains
 attached to the Antigravity quota scope.
 
+Display ordering is intentionally scoped. Client tabs, Settings Provider tabs, and
+Provider rows inside a Client tab are always sorted by their user-facing display name.
+Only the main menu Provider cards are user-configurable through `providerCardOrder`;
+the Settings window exposes up/down controls for this list. The ordering helper uses
+stable IDs, ignores removed or duplicated entries, and appends newly registered
+Providers using the default alphabetical order.
+
 Settings > Clients uses horizontally scrollable client tabs sorted by display name
 (Antigravity, Codex, DSH, MiniMax Code, OpenCode, ZCode). Each tab only renders quota
 providers with observed local token activity. Provider rows are collapsed by default;
@@ -237,7 +250,9 @@ places. If a sample has no model name or no catalog entry, the client page shows
 the unpriced model and its token amount instead of hiding the impact.
 The estimate uses recognized model names and the published currency for that
 provider; unknown models are explicitly marked as unpriced rather than assigned a
-fallback price. The built-in catalog records its update date in
+fallback price. The OpenAI/Codex catalog recognizes GPT-5.5 and GPT-5.6 Sol/Terra/Luna;
+legacy GPT-4, o1, o3, and generic GPT-5 names remain unpriced. Antigravity's
+independent GPT pricing rules are not affected. The built-in catalog records its update date in
 `ModelPricingCatalog.lastUpdated` (currently `2026-08-17`). Codex local events keep
 the model from `turn_context` so GPT-5.6 Sol/Terra/Luna can be priced separately.
 

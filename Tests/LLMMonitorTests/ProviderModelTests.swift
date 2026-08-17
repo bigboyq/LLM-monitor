@@ -150,14 +150,16 @@ final class ProviderModelTests: XCTestCase {
 
     func testPricingAliasesAndAugust17Snapshot() {
         let codexPrices = [
+            ModelPricingCatalog.pricing(for: "gpt-5.5", quotaProviderID: QuotaProviderID.openAI),
             ModelPricingCatalog.pricing(for: "gpt-5.6-sol", quotaProviderID: QuotaProviderID.openAI),
             ModelPricingCatalog.pricing(for: "gpt-5.6-terra", quotaProviderID: QuotaProviderID.openAI),
             ModelPricingCatalog.pricing(for: "gpt-5.6-luna", quotaProviderID: QuotaProviderID.openAI)
         ].compactMap { $0 }
-        XCTAssertEqual(codexPrices.map(\.inputPerMillion), [5, 2, 0.2])
-        XCTAssertEqual(codexPrices.map(\.outputPerMillion), [30, 12, 1.2])
+        XCTAssertEqual(codexPrices.map(\.inputPerMillion), [5, 5, 2, 0.2])
+        XCTAssertEqual(codexPrices.map(\.cacheReadPerMillion), [0.5, 0.5, 0.2, 0.02])
+        XCTAssertEqual(codexPrices.map(\.outputPerMillion), [30, 30, 12, 1.2])
 
-        for legacyModel in ["gpt-4", "gpt-4.1", "gpt-4o", "o1", "o1-mini", "o3", "o3-mini"] {
+        for legacyModel in ["gpt-4", "gpt-4.1", "gpt-4o", "o1", "o1-mini", "o3", "o3-mini", "gpt-5", "gpt-5-mini"] {
             XCTAssertNil(
                 ModelPricingCatalog.pricing(for: legacyModel, quotaProviderID: QuotaProviderID.openAI),
                 "OpenAI/Codex should not price removed legacy model \(legacyModel)"
@@ -325,6 +327,32 @@ final class ProviderModelTests: XCTestCase {
         XCTAssertGreaterThan(dsh.supportedQuotaProviderIDs.count, 1)
         XCTAssertEqual(ProviderKind.deepseek.quotaProviderID, QuotaProviderID.deepseek)
         XCTAssertEqual(ProviderKind.glmCodingPlan.quotaProviderID, QuotaProviderID.zhipu)
+    }
+
+    func testDisplayOrderHonorsKnownIDsAndAppendsNewItemsByDefaultOrder() {
+        let items = ["zeta", "alpha", "beta"]
+        let ordered = DisplayOrder.ordered(
+            items,
+            preferredIDs: ["beta", "missing", "beta", "alpha"],
+            id: { $0 },
+            by: { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+        )
+
+        XCTAssertEqual(ordered, ["beta", "alpha", "zeta"])
+    }
+
+    func testProviderCardOrderRoundTripsAndRemainsOptionalByDefault() throws {
+        var config = AppConfig.default
+        XCTAssertNil(config.providerCardOrder)
+
+        config.providerCardOrder = [
+            QuotaProviderID.deepseek,
+            QuotaProviderID.minimax
+        ]
+        let encoded = try JSONEncoder().encode(config)
+        let decoded = try JSONDecoder().decode(AppConfig.self, from: encoded)
+
+        XCTAssertEqual(decoded.providerCardOrder, config.providerCardOrder)
     }
 
     func testLegacyProviderMergeFlagsMigrateToClientBindings() throws {
