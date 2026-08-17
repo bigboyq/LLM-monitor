@@ -553,30 +553,36 @@ private extension DshLocalUsageScanner {
                             provider: provider,
                             turn: event.data?.turn,
                             step: event.data?.step,
-                            seq: event.seq
-                        )
-                        guard seen.insert(key).inserted else { continue }
-                        let parsed = normalizeUsage(
-                            usage,
-                            provider: provider,
-                            model: context?.model,
-                            message: event.data?.message
-                        )
-                        usages.append(DshParsedUsage(
-                            timestamp: timestamp,
-                            inputTokens: parsed.input,
-                            cacheReadTokens: parsed.cacheRead,
-                            cacheWriteTokens: parsed.cacheWrite,
-                            outputTokens: parsed.output,
-                            reasoningTokens: parsed.reasoning,
-                            turn: event.data?.turn,
-                            step: event.data?.step,
                             seq: event.seq,
-                            provider: provider,
-                            model: context?.model,
-                            sessionID: sessionID
-                        ))
-                        activeProviders.insert(provider)
+                            time: event.time
+                        )
+                        // Dedup only skips aggregation of this line. It must NOT
+                        // `continue` the outer loop: the offset advance below
+                        // would be skipped too, and a replayed event would spin
+                        // the parser on the same line forever.
+                        if seen.insert(key).inserted {
+                            let parsed = normalizeUsage(
+                                usage,
+                                provider: provider,
+                                model: context?.model,
+                                message: event.data?.message
+                            )
+                            usages.append(DshParsedUsage(
+                                timestamp: timestamp,
+                                inputTokens: parsed.input,
+                                cacheReadTokens: parsed.cacheRead,
+                                cacheWriteTokens: parsed.cacheWrite,
+                                outputTokens: parsed.output,
+                                reasoningTokens: parsed.reasoning,
+                                turn: event.data?.turn,
+                                step: event.data?.step,
+                                seq: event.seq,
+                                provider: provider,
+                                model: context?.model,
+                                sessionID: sessionID
+                            ))
+                            activeProviders.insert(provider)
+                        }
                     }
                 }
             }
@@ -791,15 +797,29 @@ private extension DshLocalUsageScanner {
             || modelLeaf.hasPrefix("minimax-m3-")
     }
 
+    /// Replay dedup identity per `spec/providers/dsh.md`:
+    /// - both `turn` and `step` present → `(sessionID, provider, turn, step)`;
+    ///   `seq` is intentionally NOT part of the key, so a retried/replayed
+    ///   logical event with a fresh `seq` still counts once.
+    /// - `turn` or `step` missing → the event has no stable harness identity,
+    ///   so `seq` (or the raw timestamp when `seq` is also missing) becomes the
+    ///   fallback identity. Distinct malformed events stay distinct instead of
+    ///   collapsing into one bucket; replays that keep the same `seq` still
+    ///   dedup.
     private nonisolated static func usageKey(
         sessionID: String,
         provider: String,
         turn: Int?,
         step: Int?,
-        seq: Int?
+        seq: Int?,
+        time: Int?
     ) -> String {
-        [sessionID, provider, turn.map(String.init) ?? "?", step.map(String.init) ?? "?", seq.map(String.init) ?? "?"]
-            .joined(separator: ":")
+        if let turn, let step {
+            return "ts:\(sessionID):\(provider):\(turn):\(step)"
+        }
+        let turnPart = turn.map { "t\($0)" } ?? "t-"
+        let identity = seq.map { "seq\($0)" } ?? "time\(time.map(String.init) ?? "-")"
+        return "fb:\(sessionID):\(provider):\(turnPart):\(identity)"
     }
 
     private nonisolated static func normalizedProvider(_ raw: String?) -> String {

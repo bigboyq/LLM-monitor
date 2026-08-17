@@ -69,8 +69,16 @@ switch still controls whether OpenCode data is added on top.
 - `turns`: distinct `data.turn` values per provider/day; dsh turns are the harness turn
   IDs, so one user prompt with many tool/LLM continuations counts as one turn.
 
-The scanner deduplicates on `(sessionID, turn, step)` so a retried/replayed event does
-not double count. Recent samples are namespaced as `dsh:<provider>:...` before merging.
+The scanner deduplicates on `(sessionID, provider, turn, step)`; `provider` is an
+explicit isolation dimension because one session can fan out to several providers,
+while `seq` is deliberately not part of the key — a retried/replayed logical event
+with a fresh `seq` must still count once. When `turn` or `step` is missing the event
+has no stable harness identity, so `seq` (or the raw timestamp when `seq` is also
+missing) becomes the fallback identity: distinct malformed events stay distinct
+instead of collapsing into one bucket, and replays that keep the same `seq` still
+deduplicate. Recent samples are namespaced as `dsh:<provider>:...` before merging.
+Deduping skips only aggregation of the duplicated line; the parser always advances
+to the next line, so a replayed event can never stall the scan.
 
 ## Scanner behavior
 

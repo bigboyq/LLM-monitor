@@ -673,6 +673,105 @@ final class DshUsageTests: XCTestCase {
         )
     }
 
+    func testDshReplayWithDifferentSeqSameTurnStepCountsOnce() throws {
+        // spec：dedup key 是 (sessionID, provider, turn, step)。同一逻辑事件重放
+        // 但 seq 改变时不得重复计数。
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let calendar = makeUTCGregorianCalendar()
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("llm-monitor-dsh-dedup-replay-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let cache = root.appendingPathComponent(".token-monitor", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let lines = [
+            #"{"type":"request/context","seq":1,"time":1700000000000,"data":{"provider":"deepseek-official","model":"deepseek-v4-flash"}}"#,
+            #"{"type":"assistant/message","seq":2,"time":1700000001000,"data":{"turn":1,"step":0,"usage":{"inputTokens":100,"outputTokens":10}}}"#,
+            // 重放：同一 (turn=1, step=0)，seq 与 time 都变了。
+            #"{"type":"assistant/message","seq":9,"time":1700000009000,"data":{"turn":1,"step":0,"usage":{"inputTokens":100,"outputTokens":10}}}"#
+        ]
+        try writeSessionLog(root: sessionsRoot, sessionID: "session-replay", body: lines.joined(separator: "\n") + "\n")
+
+        let snapshot = try DshLocalUsageScanner.performScanPure(
+            sessionsRoot: sessionsRoot,
+            cacheDir: cache,
+            fileManager: FileManagerBox(),
+            calendar: calendar,
+            now: { base },
+            decompressor: { $0 },
+            limits: DshLocalUsageScanLimits.production
+        )
+
+        XCTAssertEqual(snapshot.eventCount, 1, "重放事件（seq 变化）只允许计一次")
+        let deepseek = try XCTUnwrap(snapshot.byProvider["deepseek-official"])
+        XCTAssertEqual(deepseek.today?.inputTokens, 100)
+        XCTAssertEqual(deepseek.recentSamples.count, 1)
+    }
+
+    func testDshDistinctStepsAndTurnsStillCountSeparately() throws {
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let calendar = makeUTCGregorianCalendar()
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("llm-monitor-dsh-dedup-steps-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let cache = root.appendingPathComponent(".token-monitor", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let lines = [
+            #"{"type":"request/context","seq":1,"time":1700000000000,"data":{"provider":"deepseek-official","model":"deepseek-v4-flash"}}"#,
+            #"{"type":"assistant/message","seq":2,"time":1700000001000,"data":{"turn":1,"step":0,"usage":{"inputTokens":10,"outputTokens":1}}}"#,
+            #"{"type":"assistant/message","seq":3,"time":1700000002000,"data":{"turn":1,"step":1,"usage":{"inputTokens":10,"outputTokens":1}}}"#,
+            #"{"type":"assistant/message","seq":4,"time":1700000003000,"data":{"turn":2,"step":0,"usage":{"inputTokens":10,"outputTokens":1}}}"#
+        ]
+        try writeSessionLog(root: sessionsRoot, sessionID: "session-steps", body: lines.joined(separator: "\n") + "\n")
+
+        let snapshot = try DshLocalUsageScanner.performScanPure(
+            sessionsRoot: sessionsRoot,
+            cacheDir: cache,
+            fileManager: FileManagerBox(),
+            calendar: calendar,
+            now: { base },
+            decompressor: { $0 },
+            limits: DshLocalUsageScanLimits.production
+        )
+
+        XCTAssertEqual(snapshot.eventCount, 3, "不同 step/turn 的事件必须分别计数")
+        XCTAssertEqual(snapshot.byProvider["deepseek-official"]?.today?.inputTokens, 30)
+    }
+
+    func testDshMissingTurnStepEventsDoNotCollapseAndReplayStillDedups() throws {
+        // 缺 turn/step 的事件：不同 seq 不得互相吞掉；同 seq 重放只计一次。
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let calendar = makeUTCGregorianCalendar()
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("llm-monitor-dsh-dedup-missing-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let cache = root.appendingPathComponent(".token-monitor", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let lines = [
+            #"{"type":"request/context","seq":1,"time":1700000000000,"data":{"provider":"deepseek-official","model":"deepseek-v4-flash"}}"#,
+            #"{"type":"assistant/message","seq":2,"time":1700000001000,"data":{"usage":{"inputTokens":10,"outputTokens":1}}}"#,
+            #"{"type":"assistant/message","seq":3,"time":1700000002000,"data":{"usage":{"inputTokens":10,"outputTokens":1}}}"#,
+            // seq=3 的重放（time 变了，seq 没变）：fallback 身份去重。
+            #"{"type":"assistant/message","seq":3,"time":1700000009000,"data":{"usage":{"inputTokens":10,"outputTokens":1}}}"#
+        ]
+        try writeSessionLog(root: sessionsRoot, sessionID: "session-missing", body: lines.joined(separator: "\n") + "\n")
+
+        let snapshot = try DshLocalUsageScanner.performScanPure(
+            sessionsRoot: sessionsRoot,
+            cacheDir: cache,
+            fileManager: FileManagerBox(),
+            calendar: calendar,
+            now: { base },
+            decompressor: { $0 },
+            limits: DshLocalUsageScanLimits.production
+        )
+
+        XCTAssertEqual(snapshot.eventCount, 2, "两个缺字段事件各自计数；seq 相同的重放去重")
+        XCTAssertEqual(snapshot.byProvider["deepseek-official"]?.today?.inputTokens, 20)
+    }
+
     func testDshLocalUsageEqualityIgnoresScannedAt() {
         let a = DshLocalUsage(
             byProvider: [:],
