@@ -101,16 +101,13 @@ struct SettingsView: View {
     @State private var minimaxInterval: Int = 0
     @State private var minimaxApiKey: String = ""
     @State private var showMinimaxKey: Bool = false
-    @State private var minimaxMergeOpencode: Bool = false
 
     @State private var chatgptEnabled: Bool = false
     @State private var chatgptInterval: Int = 0
     @State private var chatgptAuthPath: String = ""
-    @State private var chatgptMergeOpencode: Bool = false
 
     @State private var antigravityEnabled: Bool = false
     @State private var antigravityInterval: Int = 0
-    @State private var antigravityMergeOpencode: Bool = false
     @State private var glmEnabled: Bool = false
     @State private var glmInterval: Int = 0
     @State private var glmApiKey: String = ""
@@ -118,13 +115,11 @@ struct SettingsView: View {
     @State private var glmPeakStart: Int = GlmPeakWindow.zhipuDefault.startHour
     @State private var glmPeakEnd: Int = GlmPeakWindow.zhipuDefault.endHour
     @State private var glmPeakWeekdays: Bool = GlmPeakWindow.zhipuDefault.weekdaysOnly
-    @State private var glmMergeOpencode: Bool = true
 
     @State private var deepseekEnabled: Bool = false
     @State private var deepseekInterval: Int = 0
     @State private var deepseekApiKey: String = ""
     @State private var showDeepseekKey: Bool = false
-    @State private var deepseekMergeOpencode: Bool = false
     @State private var deepseekPeakWeekdays: Bool = DeepseekPeakWindow.defaultWindow.weekdaysOnly
 
     @State private var selectedClientID: String = ClientID.antigravity
@@ -1035,35 +1030,31 @@ struct SettingsView: View {
             by: providerDescriptorDisplayNameAscending
         )
 
-        // OpenCode merge 状态从 `ProviderConfig.mergeOpencodeUsage` 读取；
-        // schema v1 配置缺失该字段时走 `shouldMergeOpencodeUsage(for:)` 的兼容默认值
-        // (GLM 默认真，其余默假)。`clientBindings[]` 与之同步，写回时由 saveAndApply
-        // 同步更新两个字段。
+        // OpenCode merge 状态不再进入设置表单：设置页没有独立 Toggle，
+        // `clientBindings[]` 是唯一事实源（schema v1 以下配置在解码时由
+        // `legacyClientBindings` 迁移）。saveAndApply 只修改本表单真正编辑的字段，
+        // merge 状态随 `configStore.config` 原样透传，手工编辑不会被保存回滚。
         if let id = providerID(for: .minimaxTokenPlan), let minimax = config.providers[id] {
             minimaxEnabled = minimax.enabled
             minimaxApiKey = minimax.apiKey ?? ""
             minimaxInterval = minimax.refreshIntervalSeconds ?? 0
-            minimaxMergeOpencode = minimax.shouldMergeOpencodeUsage(for: .minimaxTokenPlan)
         }
 
         if let id = providerID(for: .codexChatGpt), let chatgpt = config.providers[id] {
             chatgptEnabled = chatgpt.enabled
             chatgptAuthPath = chatgpt.authPath ?? ""
             chatgptInterval = chatgpt.refreshIntervalSeconds ?? 0
-            chatgptMergeOpencode = chatgpt.shouldMergeOpencodeUsage(for: .codexChatGpt)
         }
 
         if let id = providerID(for: .antigravity), let antigravity = config.providers[id] {
             antigravityEnabled = antigravity.enabled
             antigravityInterval = antigravity.refreshIntervalSeconds ?? 0
-            antigravityMergeOpencode = antigravity.shouldMergeOpencodeUsage(for: .antigravity)
         }
 
         if let id = providerID(for: .glmCodingPlan), let glm = config.providers[id] {
             glmEnabled = glm.enabled
             glmApiKey = glm.apiKey ?? ""
             glmInterval = glm.refreshIntervalSeconds ?? 0
-            glmMergeOpencode = glm.shouldMergeOpencodeUsage(for: .glmCodingPlan)
             let loadedPeakStart = min(max(glm.peakStartHour ?? GlmPeakWindow.zhipuDefault.startHour, 0), 22)
             glmPeakStart = loadedPeakStart
             glmPeakEnd = min(
@@ -1077,7 +1068,6 @@ struct SettingsView: View {
             deepseekEnabled = deepseek.enabled
             deepseekApiKey = deepseek.apiKey ?? ""
             deepseekInterval = deepseek.refreshIntervalSeconds ?? 0
-            deepseekMergeOpencode = deepseek.shouldMergeOpencodeUsage(for: .deepseek)
             deepseekPeakWeekdays = deepseek.deepseekPeakWeekdaysOnly ?? DeepseekPeakWindow.defaultWindow.weekdaysOnly
         }
     }
@@ -1107,10 +1097,6 @@ struct SettingsView: View {
             minimax.enabled = minimaxEnabled
             minimax.apiKey = trimmedString(minimaxApiKey)
             minimax.refreshIntervalSeconds = providerRefreshInterval(from: minimaxInterval)
-            minimax.mergeOpencodeUsage = storedOpencodeMergeValue(
-                minimaxMergeOpencode,
-                for: .minimaxTokenPlan
-            )
             config.providers[id] = minimax
         }
 
@@ -1119,10 +1105,6 @@ struct SettingsView: View {
             chatgpt.enabled = chatgptEnabled
             chatgpt.authPath = trimmedString(chatgptAuthPath)
             chatgpt.refreshIntervalSeconds = providerRefreshInterval(from: chatgptInterval)
-            chatgpt.mergeOpencodeUsage = storedOpencodeMergeValue(
-                chatgptMergeOpencode,
-                for: .codexChatGpt
-            )
             config.providers[id] = chatgpt
         }
 
@@ -1130,10 +1112,6 @@ struct SettingsView: View {
             var antigravity = config.providers[id] ?? ProviderConfig(enabled: false)
             antigravity.enabled = antigravityEnabled
             antigravity.refreshIntervalSeconds = providerRefreshInterval(from: antigravityInterval)
-            antigravity.mergeOpencodeUsage = storedOpencodeMergeValue(
-                antigravityMergeOpencode,
-                for: .antigravity
-            )
             config.providers[id] = antigravity
         }
 
@@ -1142,10 +1120,6 @@ struct SettingsView: View {
             glm.enabled = glmEnabled
             glm.apiKey = trimmedString(glmApiKey)
             glm.refreshIntervalSeconds = providerRefreshInterval(from: glmInterval)
-            glm.mergeOpencodeUsage = storedOpencodeMergeValue(
-                glmMergeOpencode,
-                for: .glmCodingPlan
-            )
             // 与默认一致时写 nil，保持 config.json 干净
             let d = GlmPeakWindow.zhipuDefault
             // 先把结束时间钳到合法区间，避免用户先把开始调高导致 end ≤ start
@@ -1162,40 +1136,10 @@ struct SettingsView: View {
             deepseek.enabled = deepseekEnabled
             deepseek.apiKey = trimmedString(deepseekApiKey)
             deepseek.refreshIntervalSeconds = providerRefreshInterval(from: deepseekInterval)
-            deepseek.mergeOpencodeUsage = storedOpencodeMergeValue(
-                deepseekMergeOpencode,
-                for: .deepseek
-            )
             let ds = DeepseekPeakWindow.defaultWindow
             deepseek.deepseekPeakWeekdaysOnly = deepseekPeakWeekdays == ds.weekdaysOnly ? nil : deepseekPeakWeekdays
             config.providers[id] = deepseek
         }
-
-        config.setClientBindingEnabled(
-            clientID: ClientID.openCode,
-            quotaProviderID: QuotaProviderID.minimax,
-            enabled: minimaxMergeOpencode
-        )
-        config.setClientBindingEnabled(
-            clientID: ClientID.openCode,
-            quotaProviderID: QuotaProviderID.openAI,
-            enabled: chatgptMergeOpencode
-        )
-        config.setClientBindingEnabled(
-            clientID: ClientID.openCode,
-            quotaProviderID: QuotaProviderID.antigravity,
-            enabled: antigravityMergeOpencode
-        )
-        config.setClientBindingEnabled(
-            clientID: ClientID.openCode,
-            quotaProviderID: QuotaProviderID.zhipu,
-            enabled: glmMergeOpencode
-        )
-        config.setClientBindingEnabled(
-            clientID: ClientID.openCode,
-            quotaProviderID: QuotaProviderID.deepseek,
-            enabled: deepseekMergeOpencode
-        )
 
         try await SettingsSaveTransaction.execute(
             previousLaunchAtLogin: previousLaunchAtLogin,
@@ -1212,11 +1156,6 @@ struct SettingsView: View {
                 try configStore.applyAndSave(config)
             }
         )
-    }
-
-    private func storedOpencodeMergeValue(_ value: Bool, for kind: ProviderKind) -> Bool? {
-        let defaultValue = kind == .glmCodingPlan
-        return value == defaultValue ? nil : value
     }
 
     /// 通过 descriptors 拿实际 provider id — 不再硬编码。

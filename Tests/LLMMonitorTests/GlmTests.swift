@@ -426,7 +426,7 @@ final class GlmTests: XCTestCase {
         XCTAssertEqual(aggregate.samples.map(\.promptID), ["s-recent:t-recent"])
     }
 
-    func testOpencodeUsageMergerMergeGlm() {
+    func testGlmUsageProjectionCombinesZcodeAndOpencode() {
         let day = Self.todayMidnight(calendar: .current)
         let nativeDay = GlmDailyUsage(
             dayStart: day, inputTokens: 100, outputTokens: 50,
@@ -457,18 +457,30 @@ final class GlmTests: XCTestCase {
             recentSamples: [sample2]
         )
 
-        let merged = OpencodeUsageMerger.mergeGlm(native: native, opencode: opencode, opencodeScannedAt: Date(timeIntervalSince1970: 2000))
-        XCTAssertNotNil(merged)
-        let mergedToday = try! XCTUnwrap(merged?.today)
-        XCTAssertEqual(mergedToday.inputTokens, 300)
-        XCTAssertEqual(mergedToday.outputTokens, 130)
-        XCTAssertEqual(mergedToday.cacheReadTokens, 70)
-        XCTAssertEqual(mergedToday.cacheWriteTokens, 25)
-        XCTAssertEqual(mergedToday.reasoningTokens, 50)
+        // 生产路径：usageProjection 把 ZCode native 与 OpenCode glm 分片按日相加。
+        var status = ProviderStatus(
+            id: "glm", displayName: "GLM", kind: .glmCodingPlan,
+            iconSystemName: "circle", accentColor: .glm,
+            refreshIntervalSeconds: 300, state: .ready
+        )
+        status.glmLocalUsage = native
+        status.opencodeUsage = OpencodeLocalUsage(
+            byProvider: [OpencodeLocalUsage.glmProviderID: opencode],
+            modelsByProvider: [:], dbPath: nil, scannedAt: nil
+        )
+        status.mergeOpencodeUsage = true
+
+        let projection = status.usageProjection(for: nil)
+        XCTAssertEqual(projection.clientIDs, [ClientID.zcode, ClientID.openCode])
+        let mergedToday = try! XCTUnwrap(projection.dailyTokenUsage.first)
+        XCTAssertEqual(mergedToday.input, 300)
+        XCTAssertEqual(mergedToday.output, 130)
+        XCTAssertEqual(mergedToday.cacheRead, 70)
+        XCTAssertEqual(mergedToday.cacheWrite, 25)
+        XCTAssertEqual(mergedToday.reasoning, 50)
 
         // Verify recentSamples promptID namespacing
-        let samples = merged?.recentSamples ?? []
-        let sampleIDs = samples.map { $0.promptID }
+        let sampleIDs = projection.recentSamples.map { $0.promptID }
         XCTAssertTrue(sampleIDs.contains("native:1"))
         XCTAssertTrue(sampleIDs.contains("opencode:\(OpencodeLocalUsage.glmProviderID):p1"))
     }
@@ -726,8 +738,10 @@ final class GlmTests: XCTestCase {
         )
     }
 
-    /// mergeGlm 保留 native 的 offPeakWindows（OpenCode 无此概念）。
-    func testGlmMergePreservesOffPeakWindowsFromNative() {
+    /// 闲时窗口语义（旧 mergeGlm 测试的迁移）：offPeakWindows 只属于 native
+    /// ZCode 源，卡片直接从 `status.glmLocalUsage` 读取（ProviderCardView），
+    /// `usageProjection` 不携带也不修改它 —— 合并路径无法再影响闲时窗口。
+    func testGlmOffPeakWindowsStayOnNativeUsageOutsideProjection() {
         let day = Self.todayMidnight(calendar: .current)
         let native = GlmLocalUsage(
             today: GlmDailyUsage(dayStart: day, inputTokens: 10, rounds: 1),
@@ -738,22 +752,18 @@ final class GlmTests: XCTestCase {
                 startedAt: day, endedAt: day.addingTimeInterval(600)
             )]
         )
-        let open = OpencodeProviderUsage(
-            today: OpencodeDailyUsage(dayStart: day, inputTokens: 5, rounds: 1),
-            dailyTokenUsage: [OpencodeDailyUsage(dayStart: day, inputTokens: 5, rounds: 1)],
-            roundCount: 1, cost: 0, recentSamples: []
-        )
 
-        let merged = OpencodeUsageMerger.mergeGlm(native: native, opencode: open, opencodeScannedAt: nil)
-        XCTAssertEqual(merged?.offPeakWindows.count, 1)
-
-        // native 无 offPeak → merged 也无
-        let nativeNoOffPeak = GlmLocalUsage(
-            today: nil, dailyTokenUsage: [], scannedAt: nil,
-            sessionCount: 0, eventCount: 0, failedSessionCount: 0, recentSamples: [],
-            offPeakWindows: []
+        var status = ProviderStatus(
+            id: "glm", displayName: "GLM", kind: .glmCodingPlan,
+            iconSystemName: "circle", accentColor: .glm,
+            refreshIntervalSeconds: 300, state: .ready
         )
-        let merged2 = OpencodeUsageMerger.mergeGlm(native: nativeNoOffPeak, opencode: open, opencodeScannedAt: nil)
-        XCTAssertEqual(merged2?.offPeakWindows.count, 0)
+        status.glmLocalUsage = native
+
+        // 卡片读取闲时窗口的唯一入口仍是 native usage。
+        XCTAssertEqual(status.glmLocalUsage?.offPeakWindows.count, 1)
+        // projection 只表达 token 用量，闲时窗口不参与、也不受合并影响。
+        _ = status.usageProjection(for: nil)
+        XCTAssertEqual(status.glmLocalUsage?.offPeakWindows.count, 1)
     }
 }

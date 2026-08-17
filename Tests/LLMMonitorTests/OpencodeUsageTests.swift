@@ -121,18 +121,41 @@ final class OpencodeUsageTests: XCTestCase {
             recentSamples: [nativeSample]
         )
 
-        let merged = try XCTUnwrap(
-            OpencodeUsageMerger.mergeMinimax(native: native, opencode: open, opencodeScannedAt: nil)
+        // 生产路径：usageProjection 按 client 贡献合并（不再走历史 mergeMinimax）。
+        var status = ProviderStatus(
+            id: "minimax", displayName: "MiniMax", kind: .minimaxTokenPlan,
+            iconSystemName: "circle", accentColor: .minimax,
+            refreshIntervalSeconds: 300, state: .ready
         )
-        let mergedDay = try XCTUnwrap(merged.dailyTokenUsage.first)
-        XCTAssertEqual(mergedDay.inputTokens, 15)
-        XCTAssertEqual(mergedDay.cacheReadTokens, 6)
-        XCTAssertEqual(mergedDay.outputTokens, 10)
-        XCTAssertEqual(mergedDay.reasoningTokens, 3)
+        status.minimaxLocalUsage = native
+        status.opencodeUsage = OpencodeLocalUsage(
+            byProvider: [OpencodeLocalUsage.minimaxCodingPlanProviderID: open],
+            modelsByProvider: [:], dbPath: nil, scannedAt: nil
+        )
+        status.mergeOpencodeUsage = true
+
+        let projection = status.usageProjection(for: nil)
+        XCTAssertEqual(projection.clientIDs, [ClientID.minimaxCode, ClientID.openCode])
+        let mergedDay = try XCTUnwrap(projection.dailyTokenUsage.first)
+        XCTAssertEqual(mergedDay.input, 15)
+        XCTAssertEqual(mergedDay.cacheRead, 6)
+        XCTAssertEqual(mergedDay.output, 10)
+        XCTAssertEqual(mergedDay.reasoning, 3)
         XCTAssertEqual(mergedDay.rounds, 5)
         XCTAssertEqual(mergedDay.turns, 3)
-        XCTAssertEqual(merged.eventCount, 5)
-        XCTAssertEqual(merged.recentSamples?.count, 2)
+        XCTAssertEqual(projection.recentSamples.count, 2)
+        XCTAssertTrue(
+            projection.recentSamples.contains {
+                $0.promptID == "opencode:\(OpencodeLocalUsage.minimaxCodingPlanProviderID):same-prompt"
+            },
+            "OpenCode sample 必须带命名空间前缀"
+        )
+
+        // mergeOpencodeUsage=false 时 OpenCode 贡献整体消失。
+        status.mergeOpencodeUsage = false
+        let nativeOnly = status.usageProjection(for: nil)
+        XCTAssertEqual(nativeOnly.clientIDs, [ClientID.minimaxCode])
+        XCTAssertEqual(nativeOnly.dailyTokenUsage.first?.input, 10)
 
         let summary = LocalUsageSummaryBuilder.summary(
             samples: OpencodeUsageMerger.mergeSamples(
@@ -219,25 +242,31 @@ final class OpencodeUsageTests: XCTestCase {
             recentSamples: []
         )
 
-        let merged = try XCTUnwrap(
-            OpencodeUsageMerger.mergeAntigravity(
-                native: native,
-                opencode: open,
-                opencodeScannedAt: nil
-            )
+        // 生产路径：usageProjection 合并 Antigravity native 与 OpenCode 分片。
+        var status = ProviderStatus(
+            id: "antigravity", displayName: "Antigravity", kind: .antigravity,
+            iconSystemName: "circle", accentColor: .antigravity,
+            refreshIntervalSeconds: 300, state: .ready
         )
-        let mergedDay = try XCTUnwrap(merged.dailyTokenUsage.first)
-        XCTAssertEqual(mergedDay.inputTokens, 15)
-        XCTAssertEqual(mergedDay.cacheReadTokens, 6)
-        XCTAssertEqual(mergedDay.cacheWriteTokens, 4)
-        XCTAssertEqual(mergedDay.outputTokens, 10)
-        XCTAssertEqual(mergedDay.reasoningTokens, 3)
-        XCTAssertEqual(mergedDay.totalTokens, 34)
+        status.antigravityLocalUsage = native
+        status.opencodeUsage = OpencodeLocalUsage(
+            byProvider: [OpencodeLocalUsage.antigravityProviderIDs[0]: open],
+            modelsByProvider: [:], dbPath: nil, scannedAt: nil
+        )
+        status.mergeOpencodeUsage = true
+
+        let projection = status.usageProjection(for: nil)
+        XCTAssertEqual(projection.clientIDs, [ClientID.antigravity, ClientID.openCode])
+        let mergedDay = try XCTUnwrap(projection.dailyTokenUsage.first)
+        XCTAssertEqual(mergedDay.input, 15)
+        XCTAssertEqual(mergedDay.cacheRead, 6)
+        XCTAssertEqual(mergedDay.cacheWrite, 4)
+        XCTAssertEqual(mergedDay.output, 10)
+        XCTAssertEqual(mergedDay.reasoning, 3)
         XCTAssertEqual(mergedDay.rounds, 5)
         XCTAssertEqual(mergedDay.turns, 3)
-        XCTAssertEqual(merged.eventCount, 5)
         XCTAssertEqual(
-            merged.recentSamples?.first?.promptID,
+            projection.recentSamples.first?.promptID,
             "opencode:\(OpencodeLocalUsage.antigravityProviderIDs.first!):same-prompt"
         )
     }
@@ -329,7 +358,7 @@ final class OpencodeUsageTests: XCTestCase {
         )
     }
 
-    func testAllFourProvidersMergeIndependentlyWithOneOpencodeSnapshot() throws {
+    func testUsageProjectionCombinesClientsIndependentlyWithOneOpencodeSnapshot() throws {
         let day = Date(timeIntervalSince1970: 1_800_000_000)
 
         func openUsage(input: Int, promptID: String) -> OpencodeProviderUsage {
@@ -396,46 +425,66 @@ final class OpencodeUsageTests: XCTestCase {
             outputTokens: 4, reasoningOutputTokens: 0, rounds: 1, turns: 1
         )]
 
-        let mergedMinimax = try XCTUnwrap(
-            OpencodeUsageMerger.mergeMinimax(
-                native: minimax,
-                opencode: snapshot.minimaxCodingPlanSlice,
-                opencodeScannedAt: snapshot.scannedAt
+        func makeStatus(
+            id: String,
+            kind: ProviderKind,
+            accent: AccentColor
+        ) -> ProviderStatus {
+            var status = ProviderStatus(
+                id: id, displayName: id, kind: kind,
+                iconSystemName: "circle", accentColor: accent,
+                refreshIntervalSeconds: 300, state: .ready
             )
-        )
-        let mergedAntigravity = try XCTUnwrap(
-            OpencodeUsageMerger.mergeAntigravity(
-                native: antigravity,
-                opencode: snapshot.antigravitySlice,
-                opencodeScannedAt: snapshot.scannedAt
-            )
-        )
-        let mergedGlm = try XCTUnwrap(
-            OpencodeUsageMerger.mergeGlm(
-                native: glm,
-                opencode: snapshot.glmSlice,
-                opencodeScannedAt: snapshot.scannedAt
-            )
-        )
-        let mergedCodex = try XCTUnwrap(
-            OpencodeUsageMerger.mergeCodexDaily(
-                native: codex,
-                opencode: snapshot.openAISlice
-            ).first
-        )
+            status.opencodeUsage = snapshot
+            status.mergeOpencodeUsage = true
+            return status
+        }
 
-        XCTAssertEqual(mergedMinimax.dailyTokenUsage.first?.inputTokens, 31)
-        XCTAssertEqual(mergedAntigravity.dailyTokenUsage.first?.inputTokens, 52)
-        XCTAssertEqual(mergedGlm.dailyTokenUsage.first?.inputTokens, 23)
-        // Codex's OpenCode input is uncached, so cacheRead is added to input.
-        XCTAssertEqual(mergedCodex.inputTokens, 84)
-        XCTAssertEqual(mergedCodex.cachedInputTokens, 40)
-        XCTAssertEqual(mergedMinimax.recentSamples?.count, 1)
-        XCTAssertEqual(mergedAntigravity.recentSamples?.count, 1)
-        XCTAssertEqual(mergedGlm.recentSamples?.count, 1)
+        // Minimax Token Plan：native MiniMax Code + OpenCode。
+        var minimaxStatus = makeStatus(id: "minimax", kind: .minimaxTokenPlan, accent: .minimax)
+        minimaxStatus.minimaxLocalUsage = minimax
+        let projectionMinimax = minimaxStatus.usageProjection(for: nil)
+        XCTAssertEqual(projectionMinimax.clientIDs, [ClientID.minimaxCode, ClientID.openCode])
+        XCTAssertEqual(projectionMinimax.dailyTokenUsage.first?.input, 31)
+        XCTAssertEqual(projectionMinimax.recentSamples.count, 1)
+
+        // Antigravity：native + OpenCode（google 别名分片）。
+        var antigravityStatus = makeStatus(id: "antigravity", kind: .antigravity, accent: .antigravity)
+        antigravityStatus.antigravityLocalUsage = antigravity
+        let projectionAntigravity = antigravityStatus.usageProjection(for: nil)
+        XCTAssertEqual(projectionAntigravity.clientIDs, [ClientID.antigravity, ClientID.openCode])
+        XCTAssertEqual(projectionAntigravity.dailyTokenUsage.first?.input, 52)
+        XCTAssertEqual(projectionAntigravity.recentSamples.count, 1)
+
+        // GLM Coding Plan：native ZCode + OpenCode。
+        var glmStatus = makeStatus(id: "glm", kind: .glmCodingPlan, accent: .glm)
+        glmStatus.glmLocalUsage = glm
+        let projectionGlm = glmStatus.usageProjection(for: nil)
+        XCTAssertEqual(projectionGlm.clientIDs, [ClientID.zcode, ClientID.openCode])
+        XCTAssertEqual(projectionGlm.dailyTokenUsage.first?.input, 23)
+        XCTAssertEqual(projectionGlm.recentSamples.count, 1)
+
+        // Codex：codexUsageDetails（cache-inclusive input）+ OpenCode openAI 分片。
+        // 统一化在 LocalUsageDaily 边界完成：native input 归一为 uncached 4，
+        // OpenCode 贡献 input 40；cacheRead 0 + 40。
+        let codexInfo = QuotaInfo(
+            models: [], resetCredits: nil, planLabel: nil, accountEmail: nil,
+            codexUsageDetails: CodexUsageDetails(
+                primary: nil, secondary: nil, lastPrompt: nil,
+                dailyTokenUsage: codex, recentSamples: [], scannedAt: day
+            ),
+            fetchedAt: day
+        )
+        var codexStatus = makeStatus(id: "codex", kind: .codexChatGpt, accent: .chatgpt)
+        codexStatus.state = .ok(codexInfo)
+        let projectionCodex = codexStatus.usageProjection(for: codexInfo)
+        XCTAssertEqual(projectionCodex.clientIDs, [ClientID.codex, ClientID.openCode])
+        XCTAssertEqual(projectionCodex.dailyTokenUsage.first?.input, 44)
+        XCTAssertEqual(projectionCodex.dailyTokenUsage.first?.cacheRead, 40)
+        XCTAssertEqual(projectionCodex.recentSamples.count, 1)
     }
 
-    func testMergeCodexDailyConvertsOpenCodeInputAndCache() throws {
+    func testUsageProjectionNormalizesCodexAndOpencodeCacheInputAtBoundary() throws {
         let day = Date(timeIntervalSince1970: 1_800_000_000)
         let native = DailyTokenUsage(
             dayStart: day,
@@ -462,15 +511,37 @@ final class OpencodeUsageTests: XCTestCase {
             recentSamples: []
         )
 
-        let merged = try XCTUnwrap(
-            OpencodeUsageMerger.mergeCodexDaily(native: [native], opencode: open).first
+        // 生产路径：统一模型在 LocalUsageDaily 边界归一 cache-inclusive input。
+        // native 100（含 cache 20）→ uncached 80 + cacheRead 20；OpenCode 30 + 40。
+        let info = QuotaInfo(
+            models: [], resetCredits: nil, planLabel: nil, accountEmail: nil,
+            codexUsageDetails: CodexUsageDetails(
+                primary: nil, secondary: nil, lastPrompt: nil,
+                dailyTokenUsage: [native], recentSamples: [], scannedAt: day
+            ),
+            fetchedAt: day
         )
-        XCTAssertEqual(merged.inputTokens, 170) // native 100 + OpenCode (30 uncached + 40 cache)
-        XCTAssertEqual(merged.cachedInputTokens, 60)
-        XCTAssertEqual(merged.outputTokens, 16)
-        XCTAssertEqual(merged.reasoningOutputTokens, 7)
-        XCTAssertEqual(merged.rounds, 5)
-        XCTAssertEqual(merged.turns, 3)
+        var status = ProviderStatus(
+            id: "codex", displayName: "Codex", kind: .codexChatGpt,
+            iconSystemName: "circle", accentColor: .chatgpt,
+            refreshIntervalSeconds: 300, state: .ok(info)
+        )
+        status.opencodeUsage = OpencodeLocalUsage(
+            byProvider: [OpencodeLocalUsage.openAIProviderID: open],
+            modelsByProvider: [:], dbPath: nil, scannedAt: nil
+        )
+        status.mergeOpencodeUsage = true
+
+        let projection = status.usageProjection(for: info)
+        let mergedDay = try XCTUnwrap(projection.dailyTokenUsage.first)
+        // uncached: 80 + 30；cacheRead: 20 + 40；cache-inclusive 仍是 170。
+        XCTAssertEqual(mergedDay.input, 110)
+        XCTAssertEqual(mergedDay.cacheRead, 60)
+        XCTAssertEqual(mergedDay.input + mergedDay.cacheRead, 170)
+        XCTAssertEqual(mergedDay.output, 16)
+        XCTAssertEqual(mergedDay.reasoning, 7)
+        XCTAssertEqual(mergedDay.rounds, 5)
+        XCTAssertEqual(mergedDay.turns, 3)
     }
 
     func testReaderCountsTokenizedRoundsAndDistinctTurns() throws {

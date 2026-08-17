@@ -361,23 +361,28 @@ This is currently used for:
 - 单条 `GLM-5.2` 模型行：智谱 Coding Plan 的 5h + 周积分是套餐共享池，合成一条展示，标题右侧显示 `5h × 5 = 周`（周积分 = 5 × 5h 积分：Lite 2000/10000、Pro 12000/60000、Max 28000/140000）。
 - 数据来源：远程 `GET open.bigmodel.cn/api/monitor/usage/quota/limit`，Coding Plan Key 作裸 token 放 `Authorization`。鉴权失败（HTTP 200 + `code:1000`）在 parse 阶段捕获并映射成 401 语义。
 - **高峰期提示**：额度行下方一行，纯本地时区计算（与 API 无关）。颜色分 3 档：高峰期 🔥 红色 `高峰期 · 还剩 X`；非高峰期距高峰 < 1 小时 ❄️ 橙色、≥ 1 小时 ❄️ 绿色 `距高峰期 X · 非高峰 5 折`。默认 Mon–Fri 14–18（官方规则：高峰全价、非高峰 50% 折），窗口可在设置面板自定义。`TimelineView(.periodic(by: 60))` 让倒计时在菜单打开时每分钟刷新。
-- **OpenCode 数据合并**：设置页默认开启 `zhipuai-coding-plan` 合并。卡片底部展示 native ZCode 与 OpenCode 合并后的今日与最近 7 天 Input / Cache / Output / Reason 以及 R/T；关闭开关后只显示 native ZCode local Scanner 数据。
+- **OpenCode 数据合并**：`zhipuai-coding-plan` 绑定默认开启（`clientBindings[]`）。卡片底部展示 native ZCode 与 OpenCode 合并后的今日与最近 7 天 Input / Cache / Output / Reason 以及 R/T；绑定关闭后只显示 native ZCode local Scanner 数据。设置页没有该开关，调整方式见下节。
 
-### OpenCode merge switches
+### OpenCode client bindings（无设置页开关）
 
-Each of Minimax, ChatGPT, Antigravity, and GLM has an independent `合并 OpenCode 数据`
-switch in its Settings pane. The switch does not change remote quota percentages; it
-controls the local token detail shown in the card and hover panels.
+The settings panes intentionally expose **no** per-provider OpenCode toggle. Whether
+an OpenCode provider slice is merged into a card is owned by `clientBindings[]` in
+`config.json` (see the Config Schema section); GLM defaults to enabled, all other
+providers to disabled. To change it, edit `config.json` and save — the directory
+watcher hot-reloads the config and rebuilds the cards, no app restart needed.
 
-| Switch | Off | On |
+| Binding (`opencode` → quota) | Off | On |
 |---|---|---|
 | Minimax | native Minimax Scanner only | add `minimax-cn-coding-plan` OpenCode data |
 | ChatGPT | native Codex session data only | add OpenCode `openai` data to 5h / weekly summaries and daily chart |
 | Antigravity | native conversation Scanner only | add matching OpenCode Antigravity provider data |
 | GLM | native ZCode scanner only | add `zhipuai-coding-plan` OpenCode data on top of native ZCode |
 
-OpenCode rounds are tokenized assistant messages. Turns are distinct user-prompt
-parents. The 7-day chart shows R/T alongside Input, Cache, Output, and Reason.
+The merge itself is provider-neutral: `ProviderStatus.usageProjection` folds every
+client contribution into the card; the switch only controls whether the OpenCode
+contribution appears. OpenCode rounds are tokenized assistant messages. Turns are
+distinct user-prompt parents. The 7-day chart shows R/T alongside Input, Cache,
+Output, and Reason.
 
 ### Failed
 

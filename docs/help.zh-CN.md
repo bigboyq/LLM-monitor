@@ -27,7 +27,7 @@ shasum -a 256 -c SHA256SUMS.txt
 
 ### Minimax Token Plan
 
-在设置中启用 Minimax 并填写 Token Plan API Key。本地用量读取 `~/.minimax/v2/sqlite/runtime-state.sqlite`；如需叠加 OpenCode 中的 `minimax-cn-coding-plan` 用量，开启“合并 OpenCode 数据”。
+在设置中启用 Minimax 并填写 Token Plan API Key。本地用量读取 `~/.minimax/v2/sqlite/runtime-state.sqlite`；如需叠加 OpenCode 中的 `minimax-cn-coding-plan` 用量，把 `config.json` 中对应的 `clientBindings` 设为 `true`（见下文“OpenCode 合并”）。
 
 ### ChatGPT Plan / Codex
 
@@ -43,11 +43,11 @@ shasum -a 256 -c SHA256SUMS.txt
 
 ### DeepSeek
 
-填写 `sk-...` 格式的 DeepSeek API Key。卡片显示账户余额；DeepSeek 没有 native 本地账本，只有开启 OpenCode 合并后才会显示本地 token 图表。高峰提示按北京时间计算，默认周末平价。
+填写 `sk-...` 格式的 DeepSeek API Key。卡片显示账户余额；DeepSeek 没有 native 本地账本，只有启用 OpenCode 合并（`config.json` 的 `clientBindings`）后才会显示本地 token 图表。高峰提示按北京时间计算，默认周末平价。
 
 ### OpenCode 合并
 
-应用读取 `~/.local/share/opencode/opencode.db`，按 `providerID` 分片。OpenCode 不是独立卡片；请在每个 Provider 的设置页单独开启或关闭合并。GLM 默认开启，其他 Provider 默认关闭。
+应用读取 `~/.local/share/opencode/opencode.db`，按 `providerID` 分片。OpenCode 不是独立卡片；合并由 `~/Library/Application Support/LLM-monitor/config.json` 中 `clientBindings[]` 的 `opencode` 绑定控制（GLM 默认开启，其他 Provider 默认关闭），设置页不提供独立开关。手工修改该文件并保存后应用会热加载，无需重启。
 
 ## 日常操作
 

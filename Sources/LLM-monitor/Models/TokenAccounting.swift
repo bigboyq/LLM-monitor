@@ -207,14 +207,4 @@ enum TokenAccountingCatalog {
         input: .cacheInclusive,
         output: .normalized
     )
-
-    static func forQuotaProviderID(_ id: String) -> TokenAccountingDefinition? {
-        switch id {
-        case QuotaProviderID.minimax: return minimax
-        case QuotaProviderID.openAI: return codex
-        case QuotaProviderID.antigravity: return antigravity
-        case QuotaProviderID.zhipu: return zcode
-        default: return nil
-        }
-    }
 }

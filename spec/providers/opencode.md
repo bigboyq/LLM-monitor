@@ -120,9 +120,9 @@ provider 的刷新间隔即可——不需要也不存在 OpenCode 自己的独�
 | Responsibility | Source |
 |---|---|
 | Data model and provider slices | `Sources/LLM-monitor/Models/OpencodeLocalUsage.swift` |
-| Field-level merge and format conversion | `Sources/LLM-monitor/Models/OpencodeUsageMerger.swift` |
+| OpenCode sample promptID 命名空间 | `Sources/LLM-monitor/Models/OpencodeUsageMerger.swift`（卡片合并入口是 `ProviderStatus.usageProjection`，历史 `merge*` 函数已删除） |
 | SQLite reader | `Sources/LLM-monitor/Services/OpencodeDBReader.swift` |
 | Scanner, cache, and seven-day snapshot | `Sources/LLM-monitor/Services/OpencodeUsageScanner.swift` |
-| Settings switches | `config.json` (`ProviderConfig.mergeOpencodeUsage` + `clientBindings[]`) |
+| Merge 控制（无设置页开关） | `config.json` 的 `clientBindings[]`（唯一事实源；schema v1 以下由 `legacyClientBindings` 从 `ProviderConfig.mergeOpencodeUsage` 迁移） |
 | Card integration | `Sources/LLM-monitor/Views/ProviderCardView.swift` and `QuotaViews.swift` |
-| Regression tests | `Tests/LLMMonitorTests/OpencodeUsageTests.swift`（含 Minimax / Codex / Antigravity merge 及 reader 回归） |
+| Regression tests | `Tests/LLMMonitorTests/OpencodeUsageTests.swift`（usageProjection 多 client 投影、命名空间与 reader 回归） |

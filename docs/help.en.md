@@ -26,7 +26,7 @@ shasum -a 256 -c SHA256SUMS.txt
 
 ### Minimax Token Plan
 
-Enable Minimax and enter a Token Plan API key. Local usage comes from `~/.minimax/v2/sqlite/runtime-state.sqlite`. Enable the OpenCode merge option to include `minimax-cn-coding-plan` usage.
+Enable Minimax and enter a Token Plan API key. Local usage comes from `~/.minimax/v2/sqlite/runtime-state.sqlite`. To include `minimax-cn-coding-plan` usage from OpenCode, set the matching `clientBindings` entry to `true` in `config.json` (see "OpenCode merge" below).
 
 ### ChatGPT Plan / Codex
 
@@ -42,11 +42,11 @@ Enter a Coding Plan key, commonly in `id.secret` format. Remote quota comes from
 
 ### DeepSeek
 
-Enter a DeepSeek `sk-...` API key. The card displays account balance. DeepSeek has no native local ledger, so local token charts require the OpenCode merge option. Peak-period status uses Beijing time and treats weekends as off-peak by default.
+Enter a DeepSeek `sk-...` API key. The card displays account balance. DeepSeek has no native local ledger, so local token charts require the OpenCode merge (`clientBindings` in `config.json`). Peak-period status uses Beijing time and treats weekends as off-peak by default.
 
 ### OpenCode merge
 
-The app reads `~/.local/share/opencode/opencode.db` and separates rows by `providerID`. OpenCode is not a standalone card. Enable or disable its merge independently on each provider settings page. GLM defaults to enabled; other providers default to disabled.
+The app reads `~/.local/share/opencode/opencode.db` and separates rows by `providerID`. OpenCode is not a standalone card. Merging is controlled by the `opencode` bindings in `clientBindings[]` inside `~/Library/Application Support/LLM-monitor/config.json` (GLM defaults to enabled, other providers to disabled); the settings window has no per-provider toggle for it. Save the edited file and the app hot-reloads it without a restart.
 
 ## Everyday controls
 

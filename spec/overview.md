@@ -44,7 +44,7 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 | `Sources/LLM-monitor/Models/ProviderClientModel.swift` | Client/Quota Provider 关系、Provider usage projection、模型价格目录与设置页摘要模型 |
 | `Sources/LLM-monitor/Models/DisplayOrder.swift` | Stable-ID ordering helper for configurable Provider cards and alphabetical fallback lists |
 | `Sources/LLM-monitor/Models/OpencodeLocalUsage.swift` | OpenCode provider 分片、今日 / 7 天聚合与逐次 samples |
-| `Sources/LLM-monitor/Models/OpencodeUsageMerger.swift` | OpenCode 与各 Provider 的字段级合并和 token 语义转换 |
+| `Sources/LLM-monitor/Models/OpencodeUsageMerger.swift` | OpenCode sample 的 `opencode:<provider>:` promptID 命名空间 helper（卡片合并入口是 `ProviderStatus.usageProjection`） |
 | `Sources/LLM-monitor/Models/DshLocalUsage.swift` | DeepSeek Harness session token 数据模型与 provider 分片 |
 | `Sources/LLM-monitor/Models/DshUsageMerger.swift` | DSH 与 MiniMax / GLM / DeepSeek 卡片的字段级合并 |
 | `Sources/LLM-monitor/Services/DshLocalUsageScanner.swift` | 读取 `~/.dsh/sessions` 的 JSONL/zstd session 日志，按 provider 聚合 7 天用量 |
@@ -142,8 +142,8 @@ flowchart TD
 
   AppState --> OpenCode["OpencodeUsageScanner\n(shared local ledger)"]
   OpenCode --> OpenCodeDB["~/.local/share/opencode/opencode.db"]
-  OpenCode --> Merge["OpencodeUsageMerger"]
-  Merge --> ProviderCard["ProviderCardView\nper-provider merge switch"]
+  OpenCode --> Projection["ProviderStatus.usageProjection\n(clientBindings 控制 OpenCode 贡献)"]
+  Projection --> ProviderCard["ProviderCardView"]
 
   ConfigStore --> ConfigFile["~/Library/Application Support/\nLLM-monitor/config.json"]
   AppState --> LogFile["~/Library/Application Support/\nLLM-monitor/log.txt"]
