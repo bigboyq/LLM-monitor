@@ -873,6 +873,45 @@ final class DshUsageTests: XCTestCase {
         XCTAssertEqual(rebasedProvider.today, freshProvider.today)
     }
 
+    func testMiniMaxM3ExplicitZeroReasoningStillEstimatesWithoutDoubleCounting() throws {
+        // spec：估算条件是“原生字段缺失或值不可用/为零”。显式 reasoningTokens=0
+        // 必须走估算而不是双计（raw output 全放 Output 又额外加 Reason）。
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let calendar = makeUTCGregorianCalendar()
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("llm-monitor-dsh-m3-zero-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let cache = root.appendingPathComponent(".token-monitor", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let lines = [
+            #"{"type":"session","version":0,"id":"session-m3-zero","createdAt":1700000000000}"#,
+            #"{"type":"request/context","seq":1,"time":1700000000000,"data":{"provider":"minimax-cn","model":"MiniMax-M3"}}"#,
+            // reasoning chars 30 / total 40 → 3/4 of 80 raw output = 60 reasoning。
+            #"{"type":"assistant/message","seq":2,"time":1700000001000,"data":{"turn":1,"step":0,"usage":{"inputTokens":10,"outputTokens":80,"reasoningTokens":0},"message":{"role":"assistant","content":[{"type":"reasoning","text":"123456789012345678901234567890"},{"type":"text","text":"1234567890"}]}}}"#
+        ]
+        try writeSessionLog(root: sessionsRoot, sessionID: "session-m3-zero", body: lines.joined(separator: "\n") + "\n")
+
+        let snapshot = try DshLocalUsageScanner.performScanPure(
+            sessionsRoot: sessionsRoot,
+            cacheDir: cache,
+            fileManager: FileManagerBox(),
+            calendar: calendar,
+            now: { base },
+            decompressor: { $0 },
+            limits: DshLocalUsageScanLimits.production
+        )
+
+        let minimax = try XCTUnwrap(snapshot.byProvider["minimax-cn"])
+        let today = try XCTUnwrap(minimax.today)
+        // Output + Reason = raw output 80，无双计。
+        XCTAssertEqual(today.outputTokens, 20)
+        XCTAssertEqual(today.reasoningTokens, 60)
+        XCTAssertEqual(today.totalTokens, 10 + 0 + 80)
+        XCTAssertEqual(minimax.recentSamples.first?.outputTokens, 20)
+        XCTAssertEqual(minimax.recentSamples.first?.reasoningOutputTokens, 60)
+    }
+
     func testDshLocalUsageEqualityIgnoresScannedAt() {
         let a = DshLocalUsage(
             byProvider: [:],
