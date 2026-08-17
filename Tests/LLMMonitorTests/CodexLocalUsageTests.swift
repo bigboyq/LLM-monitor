@@ -121,6 +121,9 @@ final class CodexLocalUsageTests: XCTestCase {
         XCTAssertEqual(sample.modelName, "gpt-5.6-sol")
         XCTAssertEqual(sample.sourceProviderID, QuotaProviderID.openAI)
         XCTAssertEqual(sample.inputTokens, 100)
+        XCTAssertEqual(sample.cachedInputTokens, 25)
+        XCTAssertEqual(sample.outputTokens, 10)
+        XCTAssertEqual(sample.reasoningOutputTokens, 5)
     }
 
     func testSummarizeLocalUsageKeepsTokenSampleWithoutActiveTurn() throws {

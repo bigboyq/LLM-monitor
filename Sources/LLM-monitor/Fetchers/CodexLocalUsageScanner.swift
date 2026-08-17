@@ -373,18 +373,26 @@ extension CodexFetcher {
                             "codex:\($0)"
                         } ?? "codex:orphan:\(timestamp.timeIntervalSince1970)"
                         // Codex raw input already includes cache-read and the
-                        // separate cached field is its subset. Preserve that
-                        // sample contract; LocalUsageDaily/pricing subtract
-                        // the cached subset at the normalization boundary.
+                        // separate cached field is its subset. Route the raw
+                        // counters through the harness catalog so clamping and
+                        // output/reasoning semantics stay aligned with the
+                        // other local scanners, then reconstruct the persisted
+                        // cache-inclusive sample contract.
+                        let buckets = TokenAccountingCatalog.codex.normalizedBuckets(
+                            rawInput: usage.inputTokens,
+                            cacheRead: usage.cachedInputTokens,
+                            rawOutput: usage.outputTokens,
+                            rawReasoning: usage.reasoningOutputTokens
+                        )
                         recentSamples.append(
                             LocalTokenUsageSample(
                                 completedAt: timestamp,
                                 modelName: currentModelName,
                                 promptID: promptID,
-                                inputTokens: usage.inputTokens,
-                                cachedInputTokens: usage.cachedInputTokens,
-                                outputTokens: usage.outputTokens,
-                                reasoningOutputTokens: usage.reasoningOutputTokens,
+                                inputTokens: buckets.cacheInclusiveInput,
+                                cachedInputTokens: buckets.cacheRead,
+                                outputTokens: buckets.output,
+                                reasoningOutputTokens: buckets.reasoning,
                                 sourceProviderID: QuotaProviderID.openAI
                             )
                         )

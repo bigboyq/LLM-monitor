@@ -57,6 +57,30 @@ cache-inclusive，`cachedInputTokens` 保持独立 cache-read。`TokenUsageBucke
 是样本进入价格和汇总计算的唯一转换入口：它把 input 拆成 `Input + Cache read`，并将
 `outputTokens` 与 `reasoningOutputTokens` 视为已经互斥的 `Output/Reason`。
 
+### 为什么需要统一汇总器
+
+`UnifiedTokenUsageAggregator` 是 sample 进入日汇总的唯一入口。Settings 页、Provider
+卡片和 stale current-day 修复都可能需要从同一批 recent samples 重建当日数据；如果各自
+直接相加 `inputTokens`，Codex 的 cache-inclusive input 会被重复计入，或不同入口会对
+reasoning / cache 的处理不一致。汇总器先对每个 sample 调用
+`TokenUsageBuckets.fromSample(_:)`，再按四个规范化桶累加，因此这些 UI 和修复路径共享
+同一套 input/cache/output/reasoning 口径。它只改变规范化汇总，不改写任何 provider 原始
+daily 字段或已持久化 sample。
+
+### M3 reasoning 的两条估算路径
+
+DSH 与 MiniMax Code 都只在 provider 没有可用原生 reasoning 数值时估算 M3 的 Reason，
+但数据粒度不同：
+
+| Harness | 估算粒度 | 字符来源 | 限制 |
+|---|---|---|---|
+| DSH | 同一个 `assistant/message` 事件 | `reasoning`、`text`、`tool-call.arguments` 内容块 | 事件级比例估算；内容块缺失时不猜，`Reason = 0` |
+| MiniMax Code | 按本地自然日聚合 | `thinking_content`、`msg_content`、`tool_call_args` | token usage 与 message 行无法可靠逐请求配对，只能日级比例估算 |
+
+两条路径都保持 `Output + Reason = raw output`，但结果是估算值，精度受字符与 token
+分布差异影响。不要把两种来源的字符统计直接合并，也不要把估算的 Reason 当作 provider
+原生账单字段。
+
 ## 代码入口
 
 | 责任 | 入口 |

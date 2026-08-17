@@ -135,6 +135,14 @@ final class StatusBarIconTests: XCTestCase {
 
         let configURL = dir.appendingPathComponent("config.json")
         let store = ConfigStore(configURL: configURL)
+        // Custom test descriptors are not part of ConfigStore's built-in
+        // template. Explicitly disable them so the test does not inherit
+        // AppState's compatibility fallback for a missing provider entry.
+        var initialConfig = store.config
+        for id in ["test_a", "test_b", "test_glm"] {
+            initialConfig.providers[id] = ProviderConfig(enabled: false)
+        }
+        try? store.applyAndSave(initialConfig)
         let appState = AppState(descriptors: descriptors, configStore: store)
 
         // 默认全未启用 -> nil
