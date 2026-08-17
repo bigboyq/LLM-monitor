@@ -77,8 +77,8 @@ not double count. Recent samples are namespaced as `dsh:<provider>:...` before m
 - Scans at app startup, and after MiniMax / GLM / DeepSeek quota refresh success.
 - Uses file mtime + size fingerprints; if nothing changed it only rebases the cached
   seven-day window after midnight.
-- Limits: 256 session files, 256 MiB of compressed input, 8 MiB per JSONL line, and
-  4,096 recent samples per provider.
+- Limits: 1,024 session files, 256 MiB of compressed input, 8 MiB per JSONL line, and
+  65,536 recent samples per provider.
 - A corrupt or unreadable log does not abort the whole scan; it is skipped and the next
   scan retries it.
 

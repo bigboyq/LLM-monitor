@@ -245,6 +245,16 @@ only the changed source's contribution without rebuilding unrelated cache state.
 
 1. **mtime + size + WAL-size diff (v12)**: each scan `stat`s the v2 `.db` file **+ its `.db-wal`** via `URL.resourceValues` (fast, no DB open). The source is re-scanned when **any** of `mtimeMs` / `sizeBytes` / `walSizeBytes` changes. Older cache versions are reset so no legacy source data can survive the v2-only migration.
 
+   ### Cache index 版本
+
+   | 版本 | 内容 |
+   |---|---|
+   | v12 | 加 WAL-size diff,避免 WAL 长 checkpoint 期间漏数据 |
+   | v13 | `MinimaxDBReader` 增加 model 回退链：row-level `model` → session-level `record_json.effectiveModel` → ledger 唯一模型；旧 samples 全量重建以应用新模型解析 |
+   | v14 | 重新规范化样本 `inputTokens` 为 `uncached + cache_read`（cache-inclusive），与 Codex/DSH 的 sample 字段语义对齐；`tokenComponents` 统一假设 cache-inclusive 输入后，无需再为 Minimax 走特殊分支。旧 snapshots 全量重建 |
+
+   当前 scanner 的 `currentVersion` 是 14。`MinimaxLocalUsageScanner.CacheIndex` 注释中标明每次 bump 的理由。
+
    **Why WAL dimension was added**: minimax v2 runtime uses SQLite WAL mode and may go **36+ hours without checkpointing** — new writes accumulate in `runtime-state.sqlite-wal` (observed up to 5.4MB before flush) while `.db`'s mtime/size stay frozen. The old two-dimension diff (`mtime || size`) could not detect this, leaving the UI without 7/25-7/26 data until the runtime finally flushed. The WAL size is a direct signal: `walSize` increasing = new data waiting. WAL truncation on checkpoint is captured by `.db`'s mtime jump (runtime `fsync` after WAL write), so the old dimension still catches that case.
 2. **Per-source incremental aggregation**: `index.dailyBySource["runtime"]` stores the day-keyed breakdown. When runtime changes, only its daily map is replaced.
 3. **In-flight dedup**: if `scan()` is called while a previous scan is still running, the new call is a no-op.

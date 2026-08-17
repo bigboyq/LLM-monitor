@@ -22,6 +22,7 @@
 - 汇总 Codex、Minimax、Antigravity、ZCode、OpenCode 与 DeepSeek Harness (dsh) 的本地 token 用量。
 - 支持每个 Provider 独立刷新、失败退避、手动刷新和配置热重载。
 - 提供 GLM/DeepSeek 高峰时段提示、最近 7 天图表和开机自启动。
+- 主菜单 Provider 卡片可自定义显示顺序（设置 → 通用 → 主菜单 Provider 顺序）；客户端 tab、设置页 Provider tabs 与 Client tab 内的 Provider 行按显示名称字母顺序排列，仅主菜单卡片读取 `providerCardOrder`。
 - 配置目录权限为 `0700`，配置、日志与凭据文件权限为 `0600`。
 
 ## 界面预览

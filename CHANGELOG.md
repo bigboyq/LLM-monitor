@@ -10,12 +10,14 @@
 - 新增"设置 > 客户端"tab：按客户端维度（Antigravity / Codex / DSH / MiniMax Code / OpenCode / ZCode）展示本地 token 用量、最近 7 天柱图、缓存命中率与按公开 API 单价估算的价值。
 - 新增 `ModelPricingCatalog`：模型价目快照（MiniMax-M3 USD→CNY 换算、DeepSeek 高峰期 2× 倍率、DSH 独立 uncached-input / cache-read bucket 计价）；客户端 tab 标注目录更新日期 `lastUpdated`。
 - 客户端 tab 中未定价模型显式列出名称、token 数与调用次数，不再静默归零。
+- 主菜单 Provider 卡片可自定义顺序：设置 → 通用 → 主菜单 Provider 顺序段提供上下按钮拖拽，按 Provider 显示名称排序。客户端 tab、设置页 Provider tabs 与 Client tab 内的 Provider 行仍按显示名称字母顺序排列；`providerCardOrder` 仅作用于主菜单。
 
 ### Changed
 
 - 重构客户端 ↔ quota provider 关系：引入 `ClientDescriptor` / `ClientProviderBinding`，把 provider-level `mergeOpencodeUsage` 字段抽象为 `clientBindings[]`；schema 升级到 v2，旧 v1 配置自动迁移。
 - Codex 本地账本从 `turn_context` 解析 model 名称，让 GPT-5.6 Sol / Terra / Luna 在公开价目中可被独立计价；新增 `recentSamples` 字段把逐次调用样本带入客户端 tab 的价值估算。
 - minimax v2 SQLite reader 增加 model 回退链：row-level `model` → session-level `record_json.effectiveModel` → ledger 唯一模型；多模型时不再猜测。
+- 客户端 tab tab 标题新增 provider 数量徽标：每个客户端 tab 后显示该客户端已识别的 Provider 数（如"Antigravity 3"），让用户一眼看到哪些 Provider 在产生数据。
 
 ### Fixed
 
@@ -27,6 +29,7 @@
 - 扩充 `ModelPricingCatalog` 对 OpenAI 常见模型（`gpt-4o`, `gpt-4o-mini`, `o1`, `o3-mini` 等）的定价覆盖。
 - 客户端 tab 当日聚合落后于样本时（DB 缓存尚未刷新），用最近样本补齐当日 token 数，避免 UI 显示陈旧的"今日 0"。
 - 移除客户端 tab 中 OpenCode 诊断页（功能已被 clientsPane 吸收，原始 spec 文档已同步更新）。
+- 修复 DSH 路由 MiniMax-M3 模型时 reasoning token 始终显示为 `0` 的问题：DSH session 日志的 MiniMax-M3 路径经常缺少 `reasoningTokens` 字段，scanner 现在读取同一 `assistant/message` 事件下的 `reasoning`、`text`、`tool-call.arguments` 内容块，按字符比例估算 Reason，并保持 `Output + Reason = raw outputTokens`。其他模型、其他 provider 或没有可用内容块时仍按 `Reason = 0` 处理。升级 DSH cache 到 `v5` 触发全量重建。
 
 ## [1.4.2] - 2026-08-12
 
