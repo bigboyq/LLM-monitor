@@ -167,7 +167,7 @@ final class DshUsageTests: XCTestCase {
         XCTAssertEqual(today.cacheWriteTokens, 777, "cacheWrite 必须保留到独立字段，不能丢弃")
         XCTAssertEqual(today.outputTokens, 20, "output = 30 - reasoning 10")
         XCTAssertEqual(today.reasoningTokens, 10)
-        // totalTokens = input + cacheRead + output + reasoning = 100 + 50 + 20 + 10 = 180，
+        // totalTokens = input + cacheRead + rawOutput（含 reasoning）= 100 + 50 + 30 = 180，
         // 不应包含 cacheWrite (777)。
         XCTAssertEqual(today.totalTokens, 180)
     }

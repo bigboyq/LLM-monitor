@@ -2,8 +2,8 @@ import Foundation
 
 /// 7-day token 用量 hover 图表用的 daily 数据协议。
 ///
-/// 五个 provider（antigravity / codex / minimax / GLM / OpenCode）的 daily struct 各自通过
-/// computed property adapter conform（字段命名差异大 + codex 缺 `cacheWrite`）。
+/// 六个 provider（antigravity / codex / minimax / GLM / OpenCode / DSH）的 daily struct
+/// 各自通过 computed property adapter conform（字段命名差异大 + codex 缺 `cacheWrite`）。
 ///
 /// 字段语义（重点！）：
 /// - `input` = **未命中 cache 的 input**（uncached）—— antigravity/minimax 直接映射

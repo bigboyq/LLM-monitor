@@ -2,11 +2,13 @@ import Foundation
 
 /// Provider 本地账本中的一次模型调用。
 ///
-/// 三个 provider 最终都归一到同一语义：
-/// - `inputTokens` 通常是完整输入（包含 cached input）；DSH 通过
-///   `sourceProviderID` 的 `dsh:` 标记表示它保存的是未命中缓存输入
-/// - `cachedInputTokens` 是独立的 cache-read bucket
-/// - 相同 `promptID` 的多条 sample 属于同一次用户请求的多轮模型调用
+/// 所有 scanner（Codex / MiniMax v2 / Antigravity / ZCode / OpenCode / DSH）都归一到
+/// 同一语义：`inputTokens` 是 cache-inclusive 总输入（uncached + cached），
+/// `cachedInputTokens` 是独立的 cache-read bucket。
+/// `sourceProviderID` 仍记录原始账本的 provider 标识（`dsh:provider`、
+/// `zhipuai-coding-plan` 等），但不再参与 token 桶拆分——`tokenComponents`
+/// 对所有 sample 走同一公式 `uncached = input - min(cached, input)`。
+/// 相同 `promptID` 的多条 sample 属于同一次用户请求的多轮模型调用。
 struct LocalTokenUsageSample: Equatable, Codable, Sendable {
     let completedAt: Date
     let modelName: String?
