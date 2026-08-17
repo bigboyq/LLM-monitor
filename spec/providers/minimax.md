@@ -400,6 +400,12 @@ WHERE ts IS NOT NULL;
 这是独立的 per-day 查询，不 join token rows，因为 v2 的 `turn_id` 与 `msg_id`
 不匹配；它是当前 v2 reasoning split 的输入。
 
+字符聚合 SQL 失败时**不静默降级**：主 token 账本（input / cacheRead / output）照常
+返回，Reason 按 0 处理，`MinimaxDBAggregate.charAggregationDegraded` 置位；scanner
+把 `charSplitDegraded` 写进 source 的 fingerprint entry（optional 字段，旧 cache 解码
+为 nil，无需 bump 版本），下一轮扫描即使 db 指纹未变也强制重扫重试，直到字符聚合
+恢复成功并清除标记。warning 日志只含 source 路径与错误摘要，不落消息正文。
+
 ### Reasoning split (output → realOutput + reason)
 
 `MinimaxLocalUsageScanner.applyReasoningSplit(perDay:perDayChars:)` 在 SQL 聚合之上把账单的 `outputTokens` 拆成 (realOutput, reason),per-day 决策:

@@ -333,7 +333,10 @@ final class MinimaxLocalUsageScanner: ObservableObject, @unchecked Sendable {
         var dirty: [(key: String, info: MinimaxDBFileInfo)] = []
         for (key, info) in currentSourceInfo {
             if let cached = index.sources[key] {
-                if index.samplesBySource?[key] == nil {
+                if cached.charSplitDegraded == true {
+                    logInfo("[minimax-scan] source=\(key) 上次字符聚合 degraded，强制重扫重试")
+                    dirty.append((key, info))
+                } else if index.samplesBySource?[key] == nil {
                     logInfo("[minimax-scan] source=\(key) 缺少逐次调用缓存，强制重扫")
                     dirty.append((key, info))
                 } else if Self.isSourceDirty(cached: cached, current: info) {
@@ -398,9 +401,14 @@ final class MinimaxLocalUsageScanner: ObservableObject, @unchecked Sendable {
                     walSizeBytes: info.walSizeBytes,
                     scannedAt: now(),
                     eventCount: aggregate.eventCount,
-                    sessionCount: aggregate.sessionCount
+                    sessionCount: aggregate.sessionCount,
+                    charSplitDegraded: aggregate.charAggregationDegraded
                 )
-                logInfo("[minimax-scan] source=\(key) ✓ events=\(aggregate.eventCount) sessions=\(aggregate.sessionCount) days=\(aggregate.perDay.count) charSplitDays=\(aggregate.perDayChars.count)")
+                logInfo(
+                    "[minimax-scan] source=\(key) ✓ events=\(aggregate.eventCount) sessions=\(aggregate.sessionCount) "
+                        + "days=\(aggregate.perDay.count) charSplitDays=\(aggregate.perDayChars.count)"
+                        + (aggregate.charAggregationDegraded ? " [charSplitDegraded]" : "")
+                )
             } catch {
                 failedKeys.insert(key)
                 logInfo("[minimax-scan] source=\(key) ✗ aggregate 失败 (下次 scan 再试): \(error)")
@@ -498,6 +506,10 @@ extension MinimaxLocalUsageScanner {
         var scannedAt: Date?
         var eventCount: Int
         var sessionCount: Int
+        /// 上次聚合时字符 SQL 失败（Reason 按 0 降级）。true 时该 source
+        /// 即使指纹未变也会在下一轮强制重扫。Optional：旧 cache 缺该键
+        /// 解码为 nil（非 degraded），不需要 bump 版本号。
+        var charSplitDegraded: Bool? = nil
     }
 
     /// 顶层 index 状态，存到 `~/.minimax/.token-monitor/index.json`。

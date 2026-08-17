@@ -409,6 +409,147 @@ final class MinimaxV2UsageTests: XCTestCase {
         XCTAssertEqual(adjusted.totalTokens, 1000)
     }
 
+    /// 把 message 表替换成缺 `data_json` 列的坏 schema，让字符聚合 SQL 确定性失败。
+    private func breakMessageTableSchema(at url: URL) throws {
+        var database: OpaquePointer?
+        guard sqlite3_open_v2(url.path, &database, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK,
+              let database else {
+            throw NSError(domain: "MinimaxV2UsageTests", code: 6)
+        }
+        defer { sqlite3_close(database) }
+        try execute(
+            """
+            DROP TABLE local_runtime_message_rows;
+            CREATE TABLE local_runtime_message_rows (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                msg_id TEXT NOT NULL,
+                role TEXT,
+                turn_id TEXT,
+                created_at_ms INTEGER NOT NULL
+            );
+            """,
+            database: database
+        )
+    }
+
+    /// 修复 message 表 schema 并写入一条 assistant 字符数据（reason 30 / output 10）。
+    private func repairMessageTableWithCharData(at url: URL, timestampMs: Int64) throws {
+        var database: OpaquePointer?
+        guard sqlite3_open_v2(url.path, &database, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK,
+              let database else {
+            throw NSError(domain: "MinimaxV2UsageTests", code: 7)
+        }
+        defer { sqlite3_close(database) }
+        try execute(
+            "ALTER TABLE local_runtime_message_rows ADD COLUMN data_json TEXT NOT NULL DEFAULT '{}'",
+            database: database
+        )
+        let sql = """
+        INSERT INTO local_runtime_message_rows
+          (session_id, msg_id, role, created_at_ms, data_json)
+        VALUES ('s', 'msg-fixed', 'assistant', ?, ?)
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK,
+              let statement else {
+            throw NSError(domain: "MinimaxV2UsageTests", code: 8)
+        }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_int64(statement, 1, timestampMs)
+        let data = "{\"thinking_content\":\"\(String(repeating: "r", count: 30))\",\"msg_content\":\"\(String(repeating: "o", count: 10))\"}"
+        sqlite3_bind_text(statement, 2, data, -1, transientDestructor)
+        XCTAssertEqual(sqlite3_step(statement), SQLITE_DONE)
+    }
+
+    func testV2CharSQLFailureKeepsTokenLedgerAndMarksDegradedForRetry() throws {
+        let base = Int64(Date().timeIntervalSince1970 * 1000)
+        let databaseURL = try makeV2Database(
+            tokenRows: [TokenRow(sessionID: "s", turnID: "uuid-turn", timestampMs: base,
+                                 input: 100, output: 1000, reasoning: 0, cacheRead: 20, cacheWrite: 0, raw: nil)]
+        )
+        defer { try? FileManager.default.removeItem(at: databaseURL) }
+        try breakMessageTableSchema(at: databaseURL)
+
+        let reader = try MinimaxDBReader(path: databaseURL)
+        defer { reader.close() }
+        let aggregate = try reader.aggregate(calendar: .current)
+
+        // 主 token 账本必须保留。
+        let day = try XCTUnwrap(aggregate.perDay.values.first)
+        XCTAssertEqual(day.inputTokens, 100)
+        XCTAssertEqual(day.outputTokens, 1000)
+        XCTAssertEqual(day.cacheReadTokens, 20)
+        // 字符数据为空 + degraded 标记，Reason 走 0。
+        XCTAssertTrue(aggregate.perDayChars.isEmpty)
+        XCTAssertTrue(aggregate.charAggregationDegraded, "字符 SQL 失败必须显式标记 degraded，不得静默")
+
+        let adjusted = MinimaxLocalUsageScanner.applyReasoningSplit(
+            perDay: aggregate.perDay,
+            perDayChars: aggregate.perDayChars
+        )
+        XCTAssertEqual(adjusted[day.dayStart]?.reasoningTokens, 0, "无字符数据时 Reason 必须为 0，不能猜")
+    }
+
+    func testV2DegradedSourceIsRetriedAndRecovers() throws {
+        let base = Int64(Date().timeIntervalSince1970 * 1000)
+        let databaseURL = try makeV2Database(
+            tokenRows: [TokenRow(sessionID: "s", turnID: "uuid-turn", timestampMs: base,
+                                 input: 100, output: 1000, reasoning: 0, cacheRead: 0, cacheWrite: 0, raw: nil)]
+        )
+        let cacheDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("minimax-v2-degraded-\(UUID().uuidString)", isDirectory: true)
+        defer {
+            try? FileManager.default.removeItem(at: databaseURL)
+            try? FileManager.default.removeItem(at: cacheDir)
+        }
+        try breakMessageTableSchema(at: databaseURL)
+
+        let calendar = Calendar.current
+        let fileManager = FileManagerBox()
+        let scanOnce: () throws -> MinimaxLocalUsage = {
+            try MinimaxLocalUsageScanner.performScanPureImpl(
+                runtimeDBURL: databaseURL,
+                cacheDir: cacheDir,
+                fileManager: fileManager,
+                calendar: calendar,
+                now: { Date() },
+                shouldSave: true
+            )
+        }
+
+        #if DEBUG
+        MinimaxDBReader.testCharAggregateAttempts = 0
+        #endif
+        _ = try scanOnce()
+
+        // 第一次扫描：degraded 状态写入缓存指纹。
+        let index1 = try MinimaxLocalUsageScanner.loadIndex(cacheDir: cacheDir, fileManager: fileManager)
+        let entry1 = try XCTUnwrap(index1.sources["runtime"])
+        XCTAssertEqual(entry1.charSplitDegraded, true, "degraded 必须写入 source entry 供下次重试判定")
+        XCTAssertEqual(entry1.eventCount, 1, "主账本成功，event 数不丢")
+
+        // db 完全不变：degraded source 仍必须强制重扫（重试语义）。
+        _ = try scanOnce()
+        #if DEBUG
+        XCTAssertEqual(
+            MinimaxDBReader.testCharAggregateAttempts, 2,
+            "指纹未变化的 degraded source 也要重新尝试字符聚合"
+        )
+        #endif
+
+        // 修复 schema（db mtime 变化）：重扫后恢复字符分摊并清除 degraded 标记。
+        try repairMessageTableWithCharData(at: databaseURL, timestampMs: base)
+        _ = try scanOnce()
+        let index3 = try MinimaxLocalUsageScanner.loadIndex(cacheDir: cacheDir, fileManager: fileManager)
+        let entry3 = try XCTUnwrap(index3.sources["runtime"])
+        XCTAssertNotEqual(entry3.charSplitDegraded, true, "成功重聚合并完成字符分摊后必须清除 degraded 标记")
+
+        let adjustedDay = try XCTUnwrap(index3.dailyBySource["runtime"]?.values.first)
+        XCTAssertEqual(adjustedDay.reasoningTokens, 750, "30/(30+10) × 1000")
+        XCTAssertEqual(adjustedDay.outputTokens, 250)
+    }
+
     func testV2UnsafeCharacterRatioDropsOnlyMisalignedDay() {
         let day = Calendar.current.startOfDay(for: Date())
         let usage = MinimaxDailyUsage(dayStart: day, outputTokens: 100, rounds: 1)

@@ -34,6 +34,10 @@ struct MinimaxDBAggregate: Equatable, Sendable {
     let turnCount: Int
     /// 最近窗口的逐次调用。scanner 会按每日 reasoning 比例做最终校正。
     let samples: [LocalTokenUsageSample]
+    /// 字符聚合 SQL 失败时为 true：主 token 账本仍然有效（Reason 按 0 处理），
+    /// 但 scanner 不得把该 source 当作完全成功 —— 指纹 entry 会带上 degraded
+    /// 标记并在下一轮扫描强制重试。
+    let charAggregationDegraded: Bool
 
     init(
         perDay: [Date: MinimaxDailyUsage],
@@ -41,7 +45,8 @@ struct MinimaxDBAggregate: Equatable, Sendable {
         sessionCount: Int,
         eventCount: Int,
         turnCount: Int,
-        samples: [LocalTokenUsageSample] = []
+        samples: [LocalTokenUsageSample] = [],
+        charAggregationDegraded: Bool = false
     ) {
         self.perDay = perDay
         self.perDayChars = perDayChars
@@ -49,6 +54,7 @@ struct MinimaxDBAggregate: Equatable, Sendable {
         self.eventCount = eventCount
         self.turnCount = turnCount
         self.samples = samples
+        self.charAggregationDegraded = charAggregationDegraded
     }
 
     static let empty = MinimaxDBAggregate(
@@ -89,6 +95,12 @@ final class MinimaxDBReader {
         Int(-1), to: sqlite3_destructor_type.self
     )
     var path: String { conn.path }
+
+    /// Test-only: 统计字符聚合被尝试的次数，验证 degraded source 的强制重试语义。
+    /// Release build 编译期消除。
+    #if DEBUG
+    nonisolated(unsafe) static var testCharAggregateAttempts = 0
+    #endif
 
     init(path: URL, readOnly: Bool = false) throws {
         self.conn = try SQLiteConnection(path: path, readOnly: readOnly)
@@ -335,7 +347,23 @@ final class MinimaxDBReader {
             }
         )
 
-        perDayChars = (try? runtimePerDayCharAggregate(calendar: calendar)) ?? [:]
+        // 字符聚合是 Reason 拆分的增强数据，不是主账本：失败时保留 token 主账本、
+        // Reason 按 0 处理，并把 degraded 标记带回给 scanner（强制下一轮重试）。
+        // 不得用 try? 静默吞掉 —— 那会让指纹照常推进，Reason=0 氡化且无诊断线索。
+        #if DEBUG
+        MinimaxDBReader.testCharAggregateAttempts += 1
+        #endif
+        var charAggregationDegraded = false
+        do {
+            perDayChars = try runtimePerDayCharAggregate(calendar: calendar)
+        } catch {
+            charAggregationDegraded = true
+            perDayChars = [:]
+            logWarn(
+                "[minimax/reader] 字符聚合 SQL 失败，Reason 按 0 降级并标记重试: "
+                    + "source=\(conn.path), error=\(error.localizedDescription)"
+            )
+        }
 
         return MinimaxDBAggregate(
             perDay: perDay,
@@ -343,7 +371,8 @@ final class MinimaxDBReader {
             sessionCount: sessionCount,
             eventCount: eventCount,
             turnCount: totalTurns,
-            samples: samples
+            samples: samples,
+            charAggregationDegraded: charAggregationDegraded
         )
     }
 
