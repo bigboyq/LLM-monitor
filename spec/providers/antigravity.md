@@ -339,6 +339,14 @@ Model field is selected from explicit `model`-named keys first, with `apiProvide
 
 Events with no token fields at all (just a timestamp + model) are skipped — they don't contribute to the aggregate.
 
+**Timestampless events**: an event without a timestamp cannot be assigned to any
+local calendar day, so it is excluded from daily tokens, turns, rounds, and
+samples. `eventCount` uses the same population — it counts only events that
+successfully entered the daily statistics (`AntigravityLocalUsageScanner.accountedEventStats`).
+A single field must not simultaneously mean "raw events received" and "events
+accounted"; the raw total is logged for diagnostics whenever timestampless
+events are dropped.
+
 ## Local Token Usage Scanner
 
 `AntigravityLocalUsageScanner` runs in the background after every successful quota refresh. It scans both supported conversation directories, accepts `.db` and `.pb` session files, reads only file metadata (mtime/size plus WAL mtime/size for `.db`) against a cached index, and re-fetches only dirty sessions via `GetCascadeTrajectoryGeneratorMetadata`. It never opens the session file contents.

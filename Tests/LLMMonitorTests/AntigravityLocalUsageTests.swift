@@ -533,6 +533,38 @@ final class AntigravityLocalUsageTests: XCTestCase {
         )
     }
 
+    func testEventCountCountsOnlyTimestampedEventsLikeDaily() {
+        // 语义统一：eventCount = 成功进入日统计（有 timestamp）的 event 数。
+        // 无 timestamp 的 event 不进 daily/turns/rounds/samples，也不得计入
+        // eventCount，否则“事件数”与 Token 日汇总口径互相矛盾。
+        let now = Date()
+        let events = [
+            makeEvent(timestamp: nil, input: 100, total: 100),
+            makeEvent(timestamp: now, input: 5, total: 5),
+            makeEvent(timestamp: now.addingTimeInterval(60), input: 7, total: 7),
+            makeEvent(timestamp: nil, input: 200, total: 200),
+        ]
+
+        let stats = AntigravityLocalUsageScanner.accountedEventStats(events)
+        XCTAssertEqual(stats.accounted, 2)
+        XCTAssertEqual(stats.droppedTimestampless, 2)
+
+        // 与 aggregateDaily 的一致性：daily 的 token 总量只来自 accounted 事件。
+        let byDay = AntigravityLocalUsageScanner.aggregateDaily(events: events, calendar: testCalendar)
+        let dailyInput = byDay.values.reduce(0) { $0 + $1.inputTokens }
+        XCTAssertEqual(dailyInput, 12)
+        XCTAssertEqual(stats.accounted, 2, "eventCount 与 daily 计入的事件数一致")
+
+        // 全部有 timestamp：不丢弃。
+        let allStamped = [
+            makeEvent(timestamp: now, input: 1, total: 1),
+            makeEvent(timestamp: now, input: 2, total: 2),
+        ]
+        let allStats = AntigravityLocalUsageScanner.accountedEventStats(allStamped)
+        XCTAssertEqual(allStats.accounted, 2)
+        XCTAssertEqual(allStats.droppedTimestampless, 0)
+    }
+
     func testCacheInitializationRemovesLegacyPerSessionArtifacts() throws {
         let fm = FileManager.default
         let cacheDir = fm.temporaryDirectory

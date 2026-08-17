@@ -455,13 +455,20 @@ extension AntigravityLocalUsageScanner {
                     index.samplesBySession = samplesBySession
 
                     if let info = dirtyByID[sessionId] {
+                        let eventStats = Self.accountedEventStats(events)
+                        if eventStats.droppedTimestampless > 0 {
+                            logWarn(
+                                "[antigravity-scan] session=\(sessionId) 丢弃无 timestamp 的 usage event: "
+                                    + "accounted=\(eventStats.accounted), dropped=\(eventStats.droppedTimestampless), raw=\(events.count)"
+                            )
+                        }
                         index.sessions[sessionId] = SessionIndexEntry(
                             mtimeMs: info.mtimeMs,
                             sizeBytes: info.sizeBytes,
                             walMtimeMs: info.walMtimeMs,
                             walSizeBytes: info.walSizeBytes,
                             fetchedAt: nowDate,
-                            eventCount: events.count
+                            eventCount: eventStats.accounted
                         )
                     }
                 case .failure(let error):

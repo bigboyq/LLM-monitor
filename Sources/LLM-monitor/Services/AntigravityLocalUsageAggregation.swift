@@ -26,6 +26,20 @@ extension AntigravityLocalUsageScanner {
         let samples: [LocalTokenUsageSample]
     }
 
+    /// eventCount 的统一口径：只有带 timestamp、真正进入日统计的事件才计数。
+    /// 无 timestamp 的 event 进不了 daily / turns / rounds / samples，也不得计入
+    /// eventCount —— 一个字段不得同时代表“收到的 raw event 数”和“入账 event 数”。
+    /// raw 总数保留在 scanner 的 debug 日志里，用于诊断 RPC 返回质量。
+    nonisolated static func accountedEventStats(
+        _ events: [AntigravityFetcher.UsageEvent]
+    ) -> (accounted: Int, droppedTimestampless: Int) {
+        var accounted = 0
+        for event in events where event.timestamp != nil {
+            accounted = SaturatingArithmetic.add(accounted, 1)
+        }
+        return (accounted, events.count - accounted)
+    }
+
     /// 把 events 按本地自然日分组聚合。
     /// 没有 timestamp 的事件跳过（没法归到任何一天）。
     ///
