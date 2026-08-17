@@ -2186,6 +2186,63 @@ final class StateAndSchedulerTests: XCTestCase {
         XCTAssertEqual(store.config.refreshIntervalSeconds, changed.refreshIntervalSeconds)
     }
 
+    /// 审计降级项复现测试 1：生产写入路径（ConfigStore.persist → FileManagerBox
+    /// .writePrivate → 临时文件 + rename）必须触发目录 `.write` watcher 的 reload。
+    /// 该测试与 startAfterStop 测试一起，作为“目录 .write 掩码不会错过 rename 替换”
+    /// 的 macOS 平台行为证据；若未来 macOS 行为变化导致本测试失败，再改事件模型。
+    @MainActor
+    func testConfigWatcherCatchesProductionPersistRenameWrite() async throws {
+        let store = makeIsolatedConfigStore()
+        let state = AppState(descriptors: [], configStore: store)
+        state.start()
+        defer { state.stop() }
+
+        let reloadExpectation = expectation(description: "生产 persist 路径触发 reload")
+        let cancellable = store.$config
+            .dropFirst()
+            .sink { _ in reloadExpectation.fulfill() }
+        defer { cancellable.cancel() }
+
+        var changed = store.config
+        changed.refreshIntervalSeconds += 1
+        try store.applyAndSave(changed)
+
+        await fulfillment(of: [reloadExpectation], timeout: 2)
+        XCTAssertEqual(store.config.refreshIntervalSeconds, changed.refreshIntervalSeconds)
+    }
+
+    /// 审计降级项复现测试 2：最坏情况——外部进程在同一目录创建临时文件后用
+    /// rename(2) 覆盖 config.json。目录 `.write` 事件仍必须触发 reload。
+    @MainActor
+    func testConfigWatcherCatchesRawRenameOverConfigFile() async throws {
+        let store = makeIsolatedConfigStore()
+        let state = AppState(descriptors: [], configStore: store)
+        state.start()
+        defer { state.stop() }
+
+        let reloadExpectation = expectation(description: "raw rename 覆盖触发 reload")
+        let cancellable = store.$config
+            .dropFirst()
+            .sink { _ in reloadExpectation.fulfill() }
+        defer { cancellable.cancel() }
+
+        var changed = store.config
+        changed.refreshIntervalSeconds += 2
+        let data = try JSONEncoder().encode(changed)
+        let stagingURL = store.configURL.deletingLastPathComponent()
+            .appendingPathComponent("config.json.editor-swap")
+        try data.write(to: stagingURL)
+        let renameResult = stagingURL.path.withCString { src in
+            store.configURL.path.withCString { dst in
+                Darwin.rename(src, dst)
+            }
+        }
+        XCTAssertEqual(renameResult, 0, "rename(2) 覆盖 config.json 必须成功")
+
+        await fulfillment(of: [reloadExpectation], timeout: 2)
+        XCTAssertEqual(store.config.refreshIntervalSeconds, changed.refreshIntervalSeconds)
+    }
+
     // MARK: - P0 #2: AppState 多 waiter / 失败保留 lastSuccess
 
     /// 多个 `refreshOne` 在同一 background refresh 上挂起时，只有一个 waiter 真正
