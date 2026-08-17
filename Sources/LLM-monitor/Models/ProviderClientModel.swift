@@ -356,6 +356,17 @@ struct ModelTokenPricing: Equatable, Sendable {
     let outputPerMillion: Double
 }
 
+/// 估算的计价覆盖度。金额只覆盖 `pricedModelNames` 的 sample；
+/// `partiallyPriced` 时 UI 必须提示“部分计价”，避免把金额误读为全部 Token 的成本。
+enum CostCoverage: Equatable, Sendable {
+    /// 没有任何 sample 被计价（未知模型 / 模型名缺失 / 币种冲突吞掉全部）。
+    case noPricedSamples
+    /// 一部分 sample 已计价，另一部分未计价；`value` 只覆盖已计价部分。
+    case partiallyPriced
+    /// 全部 sample 都已按同一币种计价。
+    case fullyPriced
+}
+
 struct ModelCostEstimate: Equatable, Sendable {
     let value: Double?
     let currency: ModelPriceCurrency?
@@ -363,6 +374,26 @@ struct ModelCostEstimate: Equatable, Sendable {
     let unpricedModelNames: [String]
 
     var hasPrice: Bool { value != nil && currency != nil }
+
+    var coverage: CostCoverage {
+        if value == nil || currency == nil {
+            return .noPricedSamples
+        }
+        return unpricedModelNames.isEmpty ? .fullyPriced : .partiallyPriced
+    }
+
+    /// 菜单 / 7 天表格共用的金额文案：
+    /// - 全部计价 → `¥1.23`
+    /// - 部分计价 → `¥1.23（部分计价）`，金额只覆盖已计价模型
+    /// - 无可计价 sample → `未定价`
+    var displayText: String {
+        guard let value, let currency else { return "未定价" }
+        let amount = String(format: "%@%.2f", currency.symbol, value)
+        if case .partiallyPriced = coverage {
+            return amount + "（部分计价）"
+        }
+        return amount
+    }
 }
 
 /// 未定价模型的实际用量明细，供客户端设置页解释“未知模型”的影响范围。
@@ -400,7 +431,11 @@ enum ModelPricingCatalog {
             if let currency, currency != pricing.currency {
                 // A single provider should normally have one currency. If a
                 // future provider mixes currencies, do not add incompatible
-                // amounts together.
+                // amounts together: the conflicting model lands in
+                // unpricedModels, so the estimate reports partial coverage
+                // (CostCoverage.partiallyPriced) instead of a fake total.
+                // 当前价格目录中每个 provider 只有一种币种，此分支为防御性设计；
+                // 一旦有 provider 真的开始混币种，coverage 会自动提示部分计价。
                 unpricedModels.insert(pricing.modelLabel)
                 continue
             }

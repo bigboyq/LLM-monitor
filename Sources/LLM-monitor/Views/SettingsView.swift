@@ -731,10 +731,9 @@ struct SettingsView: View {
     }
 
     private func costText(_ estimate: ModelCostEstimate) -> String {
-        guard let value = estimate.value, let currency = estimate.currency else {
-            return "未定价"
-        }
-        return String(format: "%@%.2f", currency.symbol, value)
+        // 设置页保留未定价模型明细（unpricedModelUsage），金额文案与菜单共用
+        // displayText 的覆盖度语义。
+        estimate.displayText
     }
 
     /// `providerPane` 派发：把 `ProviderKind` 路由到对应 provider 的设置 UI。

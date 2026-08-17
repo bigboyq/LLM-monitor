@@ -372,16 +372,14 @@ struct LocalUsageFooterView<Daily: LocalUsageDaily>: View {
     }
 
     private var todayCostText: String {
+        guard !todaySamples.isEmpty else { return "—" }
         let estimate = ModelPricingCatalog.estimate(
             samples: todaySamples,
             quotaProviderID: quotaProviderID,
             deepseekPeakWindow: deepseekPeakWindow
         )
-        guard !todaySamples.isEmpty else { return "—" }
-        guard let value = estimate.value, let currency = estimate.currency else {
-            return "未定价"
-        }
-        return String(format: "%@%.2f", currency.symbol, value)
+        // displayText 统一处理“未定价 / 部分计价 / 全部计价”三种覆盖度。
+        return estimate.displayText
     }
 
     private var priceByDay: [Date: String] {
@@ -394,11 +392,7 @@ struct LocalUsageFooterView<Daily: LocalUsageDaily>: View {
             let key = Calendar.current.startOfDay(for: day.dayStart)
             let text: String
             if let estimate = estimates[key] {
-                if let value = estimate.value, let currency = estimate.currency {
-                    text = String(format: "%@%.2f", currency.symbol, value)
-                } else {
-                    text = "未定价"
-                }
+                text = estimate.displayText
             } else {
                 text = "—"
             }

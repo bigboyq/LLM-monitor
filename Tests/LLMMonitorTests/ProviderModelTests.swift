@@ -119,6 +119,69 @@ final class ProviderModelTests: XCTestCase {
         XCTAssertEqual(estimate.unpricedModelNames, ["future-model"])
     }
 
+    /// UI-002：计价覆盖度必须可区分。金额只覆盖已计价 sample；
+    /// 部分计价时 displayText 必须带“（部分计价）”标记，避免误读为全部成本。
+    func testCostEstimateCoverageAndDisplayText() {
+        func sample(_ model: String?, input: Int = 100) -> LocalTokenUsageSample {
+            LocalTokenUsageSample(
+                completedAt: Date(),
+                modelName: model,
+                promptID: "p-\(model ?? "nil")",
+                inputTokens: input,
+                cachedInputTokens: 0,
+                outputTokens: 0,
+                reasoningOutputTokens: 0
+            )
+        }
+
+        // 1. 全部计价：两个已定价 openai 模型（同币种）→ fullyPriced，无标记。
+        let fullyPriced = ModelPricingCatalog.estimate(
+            samples: [sample("gpt-5.5"), sample("gpt-5.6-luna")],
+            quotaProviderID: QuotaProviderID.openAI
+        )
+        XCTAssertEqual(fullyPriced.coverage, .fullyPriced)
+        XCTAssertEqual(fullyPriced.unpricedModelNames, [])
+        XCTAssertFalse(fullyPriced.displayText.contains("部分计价"))
+        XCTAssertTrue(fullyPriced.displayText.hasPrefix("$"))
+
+        // 2. 部分计价：已定价模型 + 未知模型 → 金额只覆盖已定价部分。
+        let partial = ModelPricingCatalog.estimate(
+            samples: [sample("gpt-5.5", input: 1_000_000), sample("future-model", input: 1_000_000)],
+            quotaProviderID: QuotaProviderID.openAI
+        )
+        XCTAssertEqual(partial.coverage, .partiallyPriced)
+        XCTAssertEqual(partial.pricedModelNames, ["gpt-5.5"])
+        XCTAssertEqual(partial.unpricedModelNames, ["future-model"])
+        XCTAssertEqual(partial.displayText, "$5.00（部分计价）", "金额只覆盖已计价 sample，且必须带部分计价标记")
+
+        // 3. 模型名缺失：nil 与空串都归入“未知模型”，同样算未计价。
+        let missingName = ModelPricingCatalog.estimate(
+            samples: [sample(nil), sample("")],
+            quotaProviderID: QuotaProviderID.openAI
+        )
+        XCTAssertEqual(missingName.coverage, .noPricedSamples)
+        XCTAssertEqual(missingName.unpricedModelNames, ["未知模型"])
+        XCTAssertEqual(missingName.displayText, "未定价")
+
+        // 4. 全部未知 → 无可计价 sample。
+        let nonePriced = ModelPricingCatalog.estimate(
+            samples: [sample("mystery")],
+            quotaProviderID: QuotaProviderID.openAI
+        )
+        XCTAssertEqual(nonePriced.coverage, .noPricedSamples)
+        XCTAssertEqual(nonePriced.displayText, "未定价")
+
+        // 5. 同 provider 混合币种当前不可达（目录中每个 provider 只有一种币种）；
+        //    estimate 的冲突分支把冲突模型计入 unpricedModels 并停止相加，
+        //    语义等价于部分计价 —— 见 ProviderClientModel.estimate 里的注释。
+        let minimaxCNY = ModelPricingCatalog.estimate(
+            samples: [sample("MiniMax-M3")],
+            quotaProviderID: QuotaProviderID.minimax
+        )
+        XCTAssertEqual(minimaxCNY.coverage, .fullyPriced)
+        XCTAssertTrue(minimaxCNY.displayText.hasPrefix("¥"))
+    }
+
     func testClientSummaryExplainsUnpricedModelTokenImpact() {
         let day = Date(timeIntervalSince1970: 1_700_000_000)
         let summary = ClientProviderUsageSummary(
