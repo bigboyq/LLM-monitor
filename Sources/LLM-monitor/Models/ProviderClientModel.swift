@@ -464,9 +464,10 @@ enum ModelPricingCatalog {
     /// Split a sample into the (uncached input, cached input, output) buckets
     /// used by the pricing catalog. Assumes every scanner feeds us a
     /// cache-inclusive `inputTokens` and an independent `cachedInputTokens`,
-    /// so the only thing left is to peel cached off the total. `output` is
-    /// reasoning + non-reasoning — both already come from the scanner's own
-    /// decomposition (e.g. Codex output = raw - reasoning for DSH).
+    /// so the only thing left is to peel cached off the total. For output the
+    /// scanners all store *visible* output (reasoning peeled off), but
+    /// providers bill on the full completion, so pricing re-adds reasoning:
+    /// output = visible + reasoning == raw completion tokens.
     static func tokenComponents(
         for sample: LocalTokenUsageSample
     ) -> (uncached: Int, cached: Int, output: Int) {
