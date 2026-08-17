@@ -36,6 +36,14 @@ This provider covers two distinct data sources:
 | Reasoning tokens | **来源**: M3 / M2.7 当前按 `session_messages.thinking_content` 字符数比例分摊 `output_tokens` 出来(账单层 `reasoning_tokens` 永远是 0)。未来切到 thinking model 时,scanner 自动切到 `raw.reasoning` 字段直接用。 |
 | Cross-provider hover | Shared `SevenDayTokenUsageHoverView<Daily: LocalUsageDaily>` + `LocalUsageFooterView<Daily>` — Antigravity / Codex / Minimax / OpenCode all use the same SwiftUI view with field-level adapters |
 
+## Accounting contract
+
+MiniMax v2 的 raw `input` 与 `cacheRead` 是分开的；sample 为兼容历史结构会保存
+`inputTokens = input + cacheRead`。账单 output 与 reasoning 在 scanner 中保持守恒：有
+原生 reasoning 或可安全使用 thinking 字符比例时拆成 `Output` / `Reason`；没有可靠拆分
+依据时 raw output 全放 `Output`、`Reason = 0`。`cacheWrite` 保留用于原始诊断，但不进入
+统一 total、图表或金额估算。见 [`spec/accounting.md`](../accounting.md)。
+
 ## Config
 
 Full config shape:

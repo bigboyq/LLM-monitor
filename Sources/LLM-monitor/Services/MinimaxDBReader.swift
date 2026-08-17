@@ -319,6 +319,10 @@ final class MinimaxDBReader {
                 let reasoning = Self.nonNegativeInt(sqlite3_column_int64(stmt, 6))
                 let cachedInput = Self.nonNegativeInt(sqlite3_column_int64(stmt, 7))
                 let promptComponent = turnID ?? "event-\(timestampMs)"
+                // MiniMax raw input is uncached and cache-read is separate;
+                // samples deliberately store their legacy cache-inclusive
+                // input. Reasoning is split later by the scanner when a safe
+                // native/character-based signal exists.
                 return LocalTokenUsageSample(
                     completedAt: Date(timeIntervalSince1970: Double(timestampMs) / 1000),
                     modelName: modelName,

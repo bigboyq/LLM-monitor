@@ -495,24 +495,22 @@ private extension DshLocalUsageScanner {
         var provider = aggregate.providers[usage.provider, default: DshMutableProviderAggregate()]
         let existing = provider.daily[day]
             ?? DshDailyUsage(dayStart: day)
-        let visibleOutput = max(
-            0,
-            usage.outputTokens - usage.reasoningTokens
+        let buckets = TokenAccountingCatalog.dsh.normalizedBuckets(
+            rawInput: usage.inputTokens,
+            cacheRead: usage.cacheReadTokens,
+            rawOutput: usage.outputTokens,
+            rawReasoning: usage.reasoningTokens
         )
         provider.daily[day] = DshDailyUsage(
             dayStart: day,
-            inputTokens: SaturatingArithmetic.add(existing.inputTokens, usage.inputTokens),
-            cacheReadTokens: SaturatingArithmetic.add(existing.cacheReadTokens, usage.cacheReadTokens),
+            inputTokens: SaturatingArithmetic.add(existing.inputTokens, buckets.input),
+            cacheReadTokens: SaturatingArithmetic.add(existing.cacheReadTokens, buckets.cacheRead),
             cacheWriteTokens: SaturatingArithmetic.add(existing.cacheWriteTokens, usage.cacheWriteTokens),
-            outputTokens: SaturatingArithmetic.add(existing.outputTokens, visibleOutput),
-            reasoningTokens: SaturatingArithmetic.add(existing.reasoningTokens, usage.reasoningTokens),
+            outputTokens: SaturatingArithmetic.add(existing.outputTokens, buckets.output),
+            reasoningTokens: SaturatingArithmetic.add(existing.reasoningTokens, buckets.reasoning),
             totalTokens: SaturatingArithmetic.add(
                 existing.totalTokens,
-                SaturatingArithmetic.sum(
-                    usage.inputTokens,
-                    usage.cacheReadTokens,
-                    usage.outputTokens
-                )
+                buckets.totalTokens
             ),
             turns: existing.turns,
             rounds: SaturatingArithmetic.add(existing.rounds, 1)
@@ -532,10 +530,10 @@ private extension DshLocalUsageScanner {
             completedAt: usage.timestamp,
             modelName: usage.model,
             promptID: promptID,
-            inputTokens: SaturatingArithmetic.add(usage.inputTokens, usage.cacheReadTokens),
-            cachedInputTokens: usage.cacheReadTokens,
-            outputTokens: visibleOutput,
-            reasoningOutputTokens: usage.reasoningTokens,
+            inputTokens: buckets.cacheInclusiveInput,
+            cachedInputTokens: buckets.cacheRead,
+            outputTokens: buckets.output,
+            reasoningOutputTokens: buckets.reasoning,
             // DSH stores uncached input and cache-read tokens separately. We
             // fold them into `inputTokens` here so all scanners feed
             // `tokenComponents` with the same cache-inclusive input bucket.

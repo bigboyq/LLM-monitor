@@ -274,6 +274,9 @@ final class GlmZcodeDBReader {
             // R9: 读取层非负饱和；input 用 nn(input)，cachedInput 用 nn(cacheRead)。
             let inNN = Self.nnClamp(input)
             let crNN = Self.nnClamp(cacheRead)
+            // ZCode raw input is cache-inclusive and the reader has already
+            // applied Method A to output/reasoning. Do not subtract cache or
+            // split reasoning again in the sample path.
             let sample = LocalTokenUsageSample(
                 completedAt: Date(timeIntervalSince1970: Double(timestamp) / 1000),
                 modelName: model,

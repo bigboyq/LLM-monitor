@@ -164,6 +164,9 @@ extension AntigravityLocalUsageScanner {
         promptComponent: String,
         event: AntigravityFetcher.UsageEvent
     ) -> LocalTokenUsageSample {
+        // Antigravity events report uncached input and cache-read separately.
+        // Samples keep the historical cache-inclusive input field; the daily
+        // adapter and TokenUsageBuckets split it for UI/pricing.
         LocalTokenUsageSample(
             completedAt: event.timestamp ?? .distantPast,
             modelName: event.model,

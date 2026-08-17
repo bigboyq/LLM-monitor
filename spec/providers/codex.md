@@ -143,6 +143,14 @@ secondary window remains `.present` even when its remaining percentage is `0%`.
 
 ## Local Usage Aggregation
 
+### Accounting contract
+
+Codex 的 raw `inputTokens` 是包含 cache-read 的完整输入，`cachedInputTokens` 是其子集；
+它们的原始字段语义保持不变。`LocalUsageDaily` adapter 只在统一层计算
+`Input = inputTokens - cachedInputTokens`，并单独保留 `Cache read`。Codex 的 output 和
+reasoning 是独立字段，直接映射为 `Output` / `Reason`。统一 total 与价格不包含
+`cacheWrite`（Codex 本身也不提供该字段）。完整矩阵见 [`spec/accounting.md`](../accounting.md)。
+
 ### Architecture note
 
 Codex local usage intentionally does not use the Minimax/Antigravity three-layer scanner model.

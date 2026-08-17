@@ -11,6 +11,13 @@ DeepSeek 余额来自官方开放接口，展示为"账户剩余余额"（货币
 本地 token 用量没有 native scanner（DeepSeek 官方无本地 CLI 账本），只有可选的 OpenCode
 `deepseek` provider slice 合并。
 
+## Accounting contract
+
+DeepSeek 官方余额接口没有本地 token harness，因此 DeepSeek 卡片本身没有 native
+sample/daily accounting。若合并 OpenCode，使用 OpenCode 的统一四桶口径；余额金额和
+本地 API 名义价值是两条独立信息。统一规则（包括 `cacheWrite` 不计入估算）见
+[`spec/accounting.md`](../accounting.md)。
+
 ## Current Status
 
 | Item | Current implementation |

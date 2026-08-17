@@ -30,6 +30,11 @@ data.tokens.cache.write
 cache bucket. The displayed total is `input + cache.read + output + reasoning`;
 `cache.write` is reported separately and is not included in the consumption total.
 
+这也是统一 accounting contract：daily 的 `input` 已是 uncached input，sample 只为兼容
+历史结构保存 cache-inclusive input；进入价格估算时再拆成 `Input` 与 `Cache read`。
+`cacheWrite` 继续保留在 raw 诊断，但不进入统一图表、total 或价值。详见
+[`spec/accounting.md`](../accounting.md)。
+
 ## Provider mapping and switches
 
 Each provider has an independent `ProviderConfig.mergeOpencodeUsage` switch persisted

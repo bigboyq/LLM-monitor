@@ -30,6 +30,11 @@ data.usage.reasoningTokens    // subdivision of outputTokens
 bucket. `cacheWriteTokens` is reported separately and is not included in the displayed
 consumption total. dsh's own `tokenUsage` projection uses the same buckets.
 
+统一估算契约见 [`spec/accounting.md`](../accounting.md)。DSH raw input 是 uncached input；
+scanner 将 `outputTokens`（含 reasoning）拆成互斥的 `Output` 和 `Reason`。如果日志没有
+可用 `reasoningTokens`，不猜比例：raw output 全放 `Output`，`Reason = 0`。`cacheWrite`
+只保留在 DSH 原始 daily 诊断字段，不进入统一 total、图表或金额。
+
 The UI splits dsh's inclusive `outputTokens` into visible output and reasoning so the
 existing four-category chart stays consistent:
 

@@ -372,6 +372,10 @@ extension CodexFetcher {
                         let promptID = activeTurnID.map {
                             "codex:\($0)"
                         } ?? "codex:orphan:\(timestamp.timeIntervalSince1970)"
+                        // Codex raw input already includes cache-read and the
+                        // separate cached field is its subset. Preserve that
+                        // sample contract; LocalUsageDaily/pricing subtract
+                        // the cached subset at the normalization boundary.
                         recentSamples.append(
                             LocalTokenUsageSample(
                                 completedAt: timestamp,

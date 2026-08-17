@@ -9,7 +9,7 @@ import Foundation
 /// - `input` = **未命中 cache 的 input**（uncached）—— antigravity/minimax 直接映射
 ///   `inputTokens`；codex 是 `uncachedInputTokens`（总 input - cachedInputTokens）
 /// - `cacheRead` = 命中 cache 的 input
-/// - `cacheWrite` = 写入 cache 的 input（codex 不存，固定 0）
+/// - `cacheWrite` = provider 原始诊断字段（codex 不存，固定 0），不进入估算层
 /// - `output` = 生成 tokens
 /// - `reasoning` = 推理 tokens
 /// - `turns` / `rounds` = user prompt 数 / LLM API call 数
@@ -34,21 +34,31 @@ protocol LocalUsageDaily: Identifiable where ID == Date {
 // MARK: - 默认实现（消除各 provider daily type 的重复定义）
 
 extension LocalUsageDaily {
-    /// Total displayed consumption. Cache-write tokens are intentionally not
-    /// included because they are reported as a separate accounting bucket.
-    var totalTokens: Int {
-        SaturatingArithmetic.sum(input, cacheRead, output, reasoning)
+    /// Normalized accounting buckets consumed by UI and pricing. `cacheWrite`
+    /// is deliberately retained only as provider diagnostics.
+    var accountingBuckets: TokenUsageBuckets {
+        TokenUsageBuckets(
+            input: max(input, 0),
+            cacheRead: max(cacheRead, 0),
+            output: max(output, 0),
+            reasoning: max(reasoning, 0)
+        )
     }
 
-    /// `input + cacheRead + cacheWrite`（输入侧总量）。
-    /// 这不是 uncached input；名称强调的是输入侧合计，包含 cacheWrite。
+    /// Total displayed consumption. Cache-write tokens are intentionally not
+    /// included because this is an estimate layer rather than a cache ledger.
+    var totalTokens: Int {
+        accountingBuckets.totalTokens
+    }
+
+    /// `input + cacheRead`（估算层输入侧总量）。`cacheWrite` 不计入。
     var inputTotal: Int {
-        SaturatingArithmetic.sum(input, cacheRead, cacheWrite)
+        SaturatingArithmetic.add(accountingBuckets.input, accountingBuckets.cacheRead)
     }
 
     /// `output + reasoning`（输出侧总量）
     var outputTotal: Int {
-        SaturatingArithmetic.add(output, reasoning)
+        accountingBuckets.billableOutput
     }
 
     /// `cacheRead / (cacheRead + input)`，缓存命中率

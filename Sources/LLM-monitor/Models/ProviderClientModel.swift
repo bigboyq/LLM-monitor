@@ -461,25 +461,15 @@ enum ModelPricingCatalog {
         return 1
     }
 
-    /// Split a sample into the (uncached input, cached input, output) buckets
-    /// used by the pricing catalog. Assumes every scanner feeds us a
-    /// cache-inclusive `inputTokens` and an independent `cachedInputTokens`,
-    /// so the only thing left is to peel cached off the total. For output the
-    /// scanners all store *visible* output (reasoning peeled off), but
-    /// providers bill on the full completion, so pricing re-adds reasoning:
-    /// output = visible + reasoning == raw completion tokens.
+    /// Split the persisted sample into the normalized estimate buckets.
+    /// `TokenUsageBuckets` is the accounting boundary: samples retain their
+    /// historical cache-inclusive input field, while pricing sees uncached
+    /// input, cache-read, output, and reasoning as disjoint buckets.
     static func tokenComponents(
         for sample: LocalTokenUsageSample
     ) -> (uncached: Int, cached: Int, output: Int) {
-        let input = max(sample.inputTokens, 0)
-        let cached = max(sample.cachedInputTokens, 0)
-        let uncached = max(input - min(cached, input), 0)
-        let effectiveCached = min(cached, input)
-        let output = SaturatingArithmetic.sum(
-            max(0, sample.outputTokens),
-            max(0, sample.reasoningOutputTokens)
-        )
-        return (uncached, effectiveCached, output)
+        let buckets = TokenUsageBuckets.fromSample(sample)
+        return (buckets.input, buckets.cacheRead, buckets.billableOutput)
     }
 
     static func pricing(

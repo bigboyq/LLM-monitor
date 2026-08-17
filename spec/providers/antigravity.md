@@ -20,6 +20,14 @@ This provider does not call Google quota APIs with a saved OAuth access token. I
 | Window types | `5h`, `weekly` |
 | Reset credits | Not used |
 | **Local token usage history** | ✅ Pure RPC architecture: per-event input / output / cacheRead / cacheWrite / reasoning, aggregated to last 7 local days, persisted to `~/.gemini/antigravity/.token-monitor/` |
+
+## Accounting contract
+
+Antigravity event 的 `inputTokens` 是 uncached input，`cacheReadTokens` 独立记录命中缓存，
+output/reasoning 也是独立字段。daily 直接进入统一 `Input / Cache read / Output / Reason`
+四桶；sample 为兼容历史结构将 input 保存为 `input + cacheRead`。`cacheWriteTokens` 只
+保留在 raw 诊断数据，不进入统一 total、图表或价值估算。见
+[`spec/accounting.md`](../accounting.md)。
 | Configurable install path | Removed — fully auto-discovered via process scan |
 
 ## Config

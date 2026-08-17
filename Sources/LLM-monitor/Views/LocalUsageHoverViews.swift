@@ -32,7 +32,9 @@ struct LocalUsageChartDayMetrics: Equatable {
         cacheWrite = safeCacheWrite
         output = safeOutput
         reasoning = safeReasoning
-        cacheTotal = SaturatingArithmetic.add(safeCacheRead, safeCacheWrite)
+        // cacheWrite remains available in the raw daily object for diagnostics,
+        // but is intentionally excluded from the estimate/chart layer.
+        cacheTotal = safeCacheRead
         inputTotal = day.inputTotal
         outputTotal = safeOutputTotal
 

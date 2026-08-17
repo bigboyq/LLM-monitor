@@ -221,6 +221,8 @@ final class OpencodeDBReader {
             // R9: 读取层非负饱和；input = nn(input) + nn(cacheRead)。
             let inNN = Self.nnClamp(input)
             let crNN = Self.nnClamp(cacheRead)
+            // OpenCode raw input is uncached; preserve the sample contract by
+            // combining it with cache-read only at this compatibility boundary.
             let sample = LocalTokenUsageSample(
                 completedAt: Date(timeIntervalSince1970: Double(timestamp) / 1000),
                 modelName: model,

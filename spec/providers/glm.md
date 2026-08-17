@@ -25,6 +25,15 @@ the provider's merge switch is enabled.
 | Plan tier | `data.level` → capitalized pill (`lite` → `Lite`) |
 | Local token source | native ZCode `~/.zcode/cli/db/db.sqlite` (`model_usage`, `provider_id='builtin:bigmodel-coding-plan'`); optional OpenCode `zhipuai-coding-plan` slice merged on top |
 
+## Accounting contract
+
+ZCode 的 `model_usage.input_tokens` 是包含 cache-read 的 raw input，
+`cache_read_input_tokens` 是子集。reader 的 daily 路径先计算 uncached input；sample
+保留完整 input 以兼容 `LocalTokenUsageSample`。Method A 已在 reader 内完成 reasoning
+归类：output/reasoning 进入统一层时已经互斥，不再二次相减。`cache_creation_input_tokens`
+只保留为 raw 诊断，不进入统一 total、图表或金额估算。见
+[`spec/accounting.md`](../accounting.md)。
+
 ## Config
 
 Full config shape:
