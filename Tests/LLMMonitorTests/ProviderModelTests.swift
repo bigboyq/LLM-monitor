@@ -47,7 +47,7 @@ final class ProviderModelTests: XCTestCase {
             recentSamples: [
                 LocalTokenUsageSample(
                     completedAt: day,
-                    modelName: "gpt-4.1",
+                    modelName: "gpt-5.6-sol",
                     promptID: "prompt-1",
                     inputTokens: 100,
                     cachedInputTokens: 20,
@@ -65,7 +65,7 @@ final class ProviderModelTests: XCTestCase {
         XCTAssertEqual(summary.reasoningTokens, 10)
         XCTAssertEqual(summary.cacheHitRate ?? -1, 0.2, accuracy: 0.0001)
         XCTAssertEqual(summary.costEstimate.currency, .usd)
-        XCTAssertEqual(summary.costEstimate.value ?? -1, 0.00049, accuracy: 0.000001)
+        XCTAssertEqual(summary.costEstimate.value ?? -1, 0.00161, accuracy: 0.000001)
         XCTAssertEqual(summary.priceTextByDay[day], "$0.00")
     }
 
@@ -156,6 +156,19 @@ final class ProviderModelTests: XCTestCase {
         ].compactMap { $0 }
         XCTAssertEqual(codexPrices.map(\.inputPerMillion), [5, 2, 0.2])
         XCTAssertEqual(codexPrices.map(\.outputPerMillion), [30, 12, 1.2])
+
+        for legacyModel in ["gpt-4", "gpt-4.1", "gpt-4o", "o1", "o1-mini", "o3", "o3-mini"] {
+            XCTAssertNil(
+                ModelPricingCatalog.pricing(for: legacyModel, quotaProviderID: QuotaProviderID.openAI),
+                "OpenAI/Codex should not price removed legacy model \(legacyModel)"
+            )
+        }
+
+        // Antigravity owns a separate GPT pricing namespace; its GPT-4.1 rule is
+        // intentionally unaffected by the OpenAI/Codex cleanup above.
+        XCTAssertNotNil(
+            ModelPricingCatalog.pricing(for: "gpt-4.1", quotaProviderID: QuotaProviderID.antigravity)
+        )
 
         let gemini36 = ModelPricingCatalog.pricing(
             for: "gemini-3.6-flash", quotaProviderID: QuotaProviderID.antigravity

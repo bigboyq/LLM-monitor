@@ -77,6 +77,85 @@ final class DshUsageTests: XCTestCase {
         })
     }
 
+    func testMiniMaxM3EstimatesReasoningFromSameMessageContent() throws {
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let calendar = makeUTCGregorianCalendar()
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("llm-monitor-dsh-m3-reasoning-\(UUID().uuidString)", isDirectory: true)
+        let cache = root.appendingPathComponent(".token-monitor", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let lines: [String] = [
+            #"{"type":"session","version":0,"id":"session-m3","createdAt":1700000000000,"cwd":"/tmp","delegationDepth":0}"#,
+            #"{"type":"request/context","seq":1,"time":1700000000000,"data":{"provider":"minimax-cn","model":"MiniMax-M3","contextWindow":1000000}}"#,
+            // reasoning chars = 10; visible chars = text(5) + tool args(5),
+            // so the 100 raw output tokens split evenly.
+            #"{"type":"assistant/message","seq":2,"time":1700000001000,"data":{"turn":1,"step":0,"usage":{"inputTokens":100,"cacheReadTokens":50,"outputTokens":100},"message":{"role":"assistant","content":[{"type":"reasoning","text":"1234567890"},{"type":"text","text":"12345"},{"type":"tool-call","name":"run","id":"call-1","arguments":"12345"}]}}}"#,
+            // A native reasoning value wins over the character estimate.
+            #"{"type":"assistant/message","seq":3,"time":1700000002000,"data":{"turn":1,"step":1,"usage":{"inputTokens":100,"cacheReadTokens":0,"outputTokens":100,"reasoningTokens":20},"message":{"role":"assistant","content":[{"type":"reasoning","text":"12345678901234567890"},{"type":"text","text":"1"}]}}}"#
+        ]
+        try writeSessionLog(
+            root: root.appendingPathComponent("sessions", isDirectory: true),
+            sessionID: "session-m3",
+            body: lines.joined(separator: "\n") + "\n"
+        )
+
+        let snapshot = try DshLocalUsageScanner.performScanPure(
+            sessionsRoot: root.appendingPathComponent("sessions", isDirectory: true),
+            cacheDir: cache,
+            fileManager: FileManagerBox(),
+            calendar: calendar,
+            now: { base },
+            decompressor: { $0 },
+            limits: DshLocalUsageScanLimits.production
+        )
+
+        let minimax = try XCTUnwrap(snapshot.byProvider["minimax-cn"])
+        let today = try XCTUnwrap(minimax.today)
+        XCTAssertEqual(today.outputTokens, 130)
+        XCTAssertEqual(today.reasoningTokens, 70)
+        XCTAssertEqual(today.totalTokens, 450)
+        XCTAssertEqual(minimax.recentSamples.map(\.reasoningOutputTokens), [50, 20])
+        XCTAssertEqual(minimax.recentSamples.map(\.outputTokens), [50, 80])
+    }
+
+    func testMiniMaxM3ReasoningEstimateDoesNotApplyToOtherDshModels() throws {
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let calendar = makeUTCGregorianCalendar()
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("llm-monitor-dsh-non-m3-reasoning-\(UUID().uuidString)", isDirectory: true)
+        let cache = root.appendingPathComponent(".token-monitor", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let lines: [String] = [
+            #"{"type":"session","version":0,"id":"session-other","createdAt":1700000000000,"cwd":"/tmp","delegationDepth":0}"#,
+            #"{"type":"request/context","seq":1,"time":1700000000000,"data":{"provider":"minimax-cn","model":"MiniMax-M2.7","contextWindow":1000000}}"#,
+            #"{"type":"assistant/message","seq":2,"time":1700000001000,"data":{"turn":1,"step":0,"usage":{"inputTokens":100,"outputTokens":100},"message":{"role":"assistant","content":[{"type":"reasoning","text":"1234567890"},{"type":"text","text":"12345"}]}}}"#
+        ]
+        try writeSessionLog(
+            root: root.appendingPathComponent("sessions", isDirectory: true),
+            sessionID: "session-other",
+            body: lines.joined(separator: "\n") + "\n"
+        )
+
+        let snapshot = try DshLocalUsageScanner.performScanPure(
+            sessionsRoot: root.appendingPathComponent("sessions", isDirectory: true),
+            cacheDir: cache,
+            fileManager: FileManagerBox(),
+            calendar: calendar,
+            now: { base },
+            decompressor: { $0 },
+            limits: DshLocalUsageScanLimits.production
+        )
+
+        let minimax = try XCTUnwrap(snapshot.byProvider["minimax-cn"])
+        let today = try XCTUnwrap(minimax.today)
+        XCTAssertEqual(today.outputTokens, 100)
+        XCTAssertEqual(today.reasoningTokens, 0)
+        XCTAssertEqual(minimax.recentSamples.first?.outputTokens, 100)
+        XCTAssertEqual(minimax.recentSamples.first?.reasoningOutputTokens, 0)
+    }
+
     func testDshMergerSelectsDeepSeekSliceAndAddsOpencode() throws {
         let dayStart = Date(timeIntervalSince1970: 1_700_000_000)
         let dshUsage = DshLocalUsage(

@@ -31,9 +31,12 @@ bucket. `cacheWriteTokens` is reported separately and is not included in the dis
 consumption total. dsh's own `tokenUsage` projection uses the same buckets.
 
 统一估算契约见 [`spec/accounting.md`](../accounting.md)。DSH raw input 是 uncached input；
-scanner 将 `outputTokens`（含 reasoning）拆成互斥的 `Output` 和 `Reason`。如果日志没有
-可用 `reasoningTokens`，不猜比例：raw output 全放 `Output`，`Reason = 0`。`cacheWrite`
-只保留在 DSH 原始 daily 诊断字段，不进入统一 total、图表或金额。
+scanner 将 `outputTokens`（含 reasoning）拆成互斥的 `Output` 和 `Reason`。如果日志有
+`reasoningTokens`，优先使用原生值；针对 `minimax` + `MiniMax-M3`，当原生字段缺失时，
+scanner 在 DSH 内部读取同一 `assistant/message` 的 `reasoning`、`text`、`tool-call`
+内容块，按字符比例估算 Reason，并保持 `Output + Reason = raw outputTokens`。其他模型、
+其他 provider，或没有可用内容块时不猜比例：raw output 全放 `Output`，`Reason = 0`。
+`cacheWrite` 只保留在 DSH 原始 daily 诊断字段，不进入统一 total、图表或金额。
 
 The UI splits dsh's inclusive `outputTokens` into visible output and reasoning so the
 existing four-category chart stays consistent:

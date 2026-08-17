@@ -202,7 +202,7 @@ final class DshLocalUsageScanner: ObservableObject, @unchecked Sendable {
                 scannedAt: now()
             )
             try saveIndex(
-                DshCacheIndex(version: 4, files: [], snapshot: empty),
+                DshCacheIndex(version: 5, files: [], snapshot: empty),
                 cacheDir: cacheDir,
                 fileManager: fileManager
             )
@@ -236,7 +236,7 @@ final class DshLocalUsageScanner: ObservableObject, @unchecked Sendable {
             now: scanNow,
             limits: limits
         )
-        index = DshCacheIndex(version: 4, files: fingerprint.files, snapshot: snapshot)
+        index = DshCacheIndex(version: 5, files: fingerprint.files, snapshot: snapshot)
         try saveIndex(index, cacheDir: cacheDir, fileManager: fileManager)
         logInfo(
             "[dsh-scan] ✓ sessions=\(snapshot.sessionCount), providers=\(snapshot.byProvider.count), "
@@ -328,9 +328,20 @@ private struct DshRawEventData: Decodable {
     let turn: Int?
     let step: Int?
     let usage: DshRawUsage?
+    let message: DshRawMessage?
     let provider: String?
     let model: String?
     let contextWindow: Int?
+}
+
+private struct DshRawMessage: Decodable {
+    let content: [DshRawContentBlock]?
+}
+
+private struct DshRawContentBlock: Decodable {
+    let type: String?
+    let text: String?
+    let arguments: String?
 }
 
 private struct DshRawUsage: Decodable {
@@ -460,7 +471,12 @@ private extension DshLocalUsageScanner {
                             seq: event.seq
                         )
                         guard seen.insert(key).inserted else { continue }
-                        let parsed = normalizeUsage(usage)
+                        let parsed = normalizeUsage(
+                            usage,
+                            provider: provider,
+                            model: context?.model,
+                            message: event.data?.message
+                        )
                         usages.append(DshParsedUsage(
                             timestamp: timestamp,
                             inputTokens: parsed.input,
@@ -588,20 +604,106 @@ private extension DshLocalUsageScanner {
         )
     }
 
-    private nonisolated static func normalizeUsage(_ usage: DshRawUsage) -> (
+    private nonisolated static func normalizeUsage(
+        _ usage: DshRawUsage,
+        provider: String,
+        model: String?,
+        message: DshRawMessage?
+    ) -> (
         input: Int,
         cacheRead: Int,
         cacheWrite: Int,
         output: Int,
         reasoning: Int
     ) {
-        (
+        let output = max(0, usage.outputTokens ?? 0)
+        let nativeReasoning = max(0, usage.reasoningTokens ?? 0)
+        let reasoning = nativeReasoning > 0
+            ? min(nativeReasoning, output)
+            : estimateM3ReasoningTokens(
+                rawOutput: output,
+                provider: provider,
+                model: model,
+                message: message
+            )
+        return (
             max(0, usage.inputTokens ?? 0),
             max(0, usage.cacheReadTokens ?? 0),
             max(0, usage.cacheWriteTokens ?? 0),
-            max(0, usage.outputTokens ?? 0),
-            max(0, usage.reasoningTokens ?? 0)
+            output,
+            reasoning
         )
+    }
+
+    /// DSH's MiniMax-M3 usage records currently expose raw output tokens but
+    /// often omit reasoningTokens. The persisted message still distinguishes
+    /// reasoning/text/tool-call blocks, so estimate the split locally without
+    /// changing the shared accounting contract or affecting other DSH models.
+    ///
+    /// This is deliberately event-local: usage and content belong to the same
+    /// assistant/message event, which avoids the day-level alignment problem
+    /// that MiniMax Code has to solve in its separate SQLite tables.
+    private nonisolated static func estimateM3ReasoningTokens(
+        rawOutput: Int,
+        provider: String,
+        model: String?,
+        message: DshRawMessage?
+    ) -> Int {
+        guard rawOutput > 0,
+              isMiniMaxM3(provider: provider, model: model),
+              let blocks = message?.content,
+              !blocks.isEmpty else {
+            return 0
+        }
+
+        var reasoningChars = 0
+        var visibleChars = 0
+        for block in blocks {
+            let type = block.type?.lowercased().replacingOccurrences(of: "_", with: "-")
+            switch type {
+            case "reasoning":
+                reasoningChars = SaturatingArithmetic.add(
+                    reasoningChars,
+                    block.text?.count ?? 0
+                )
+            case "text":
+                visibleChars = SaturatingArithmetic.add(
+                    visibleChars,
+                    block.text?.count ?? 0
+                )
+            case "tool-call":
+                // Tool-call arguments are model-generated output and are the
+                // DSH equivalent of MiniMax Code's tool_call_args bucket.
+                visibleChars = SaturatingArithmetic.add(
+                    visibleChars,
+                    block.arguments?.count ?? 0
+                )
+            default:
+                continue
+            }
+        }
+
+        let totalChars = SaturatingArithmetic.add(reasoningChars, visibleChars)
+        guard totalChars > 0, reasoningChars > 0 else { return 0 }
+        let proportion = Double(reasoningChars) / Double(totalChars)
+        let estimate = (Double(rawOutput) * proportion).rounded()
+        return min(max(Int(exactly: estimate) ?? 0, 0), rawOutput)
+    }
+
+    private nonisolated static func isMiniMaxM3(provider: String, model: String?) -> Bool {
+        let providerID = provider.lowercased()
+        guard providerID == "minimax"
+                || providerID == "minimax-cn"
+                || providerID == "minimax-cn-coding-plan"
+        else { return false }
+
+        let modelID = (model ?? "")
+            .lowercased()
+            .replacingOccurrences(of: "_", with: "-")
+        let modelLeaf = modelID.split(separator: "/").last.map(String.init) ?? modelID
+        return modelLeaf == "m3"
+            || modelLeaf == "minimax-m3"
+            || modelLeaf.hasPrefix("minimax-m3-")
     }
 
     private nonisolated static func usageKey(
@@ -666,7 +768,7 @@ private struct DshCacheIndex: Codable, Equatable, Sendable {
 
 private extension DshCacheIndex {
     func matches(_ fingerprint: CacheFingerprint) -> Bool {
-        version == 4 && files == fingerprint.files
+        version == 5 && files == fingerprint.files
     }
 }
 
@@ -678,8 +780,8 @@ private extension DshLocalUsageScanner {
         try ScannerIndexIO.loadIndex(
             cacheDir: cacheDir,
             fileManager: fileManager,
-            currentVersion: 4,
-            empty: DshCacheIndex(version: 4, files: [], snapshot: nil),
+            currentVersion: 5,
+            empty: DshCacheIndex(version: 5, files: [], snapshot: nil),
             version: { $0.version },
             logTag: "[dsh-scan]"
         )

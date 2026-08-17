@@ -27,7 +27,7 @@ completion，而不是仅可见文字。
 
 | Harness | raw input | raw cache read | raw output / reasoning | 规范化处理 |
 |---|---|---|---|---|
-| DSH | `inputTokens` = uncached | 独立字段 | `outputTokens` 含 reasoning，`reasoningTokens` 是子集 | `Output = output - reason`，`Reason = reasoning`；reason 缺失时 `Reason=0`、`Output=raw output` |
+| DSH | `inputTokens` = uncached | 独立字段 | `outputTokens` 含 reasoning，`reasoningTokens` 是子集 | 原生 reason 存在时 `Output = output - reason`、`Reason = reasoning`；仅对 DSH 内部的 MiniMax-M3，在原生 reason 缺失时按同一 message 的 `reasoning/text/tool-call.arguments` 字符比例估算；其他缺失场景 `Reason=0`、`Output=raw output` |
 | MiniMax Code | `input` = uncached | 独立字段 | 当前账单 output 可能不含可分离 reasoning；reader 用原生字段或 thinking 字符比例拆分 | 能拆分则 `Output/Reason` 守恒；不能拆分则 raw output 全放 `Output`、`Reason=0` |
 | Codex | `inputTokens` 含 cache | `cachedInputTokens` 是子集 | output/reasoning 独立 | `Input = max(input - cache, 0)`；Output/Reason 直接映射 |
 | Antigravity | event `inputTokens` = uncached | 独立字段 | output/reasoning 独立 | daily 直接映射；sample 保留 cache-inclusive input |

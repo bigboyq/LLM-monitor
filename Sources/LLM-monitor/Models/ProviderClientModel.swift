@@ -511,41 +511,11 @@ enum ModelPricingCatalog {
             if model.contains("gpt-5.6-luna") {
                 return ModelTokenPricing(modelLabel: modelName ?? "GPT-5.6 Luna", currency: .usd, inputPerMillion: 0.2, cacheReadPerMillion: 0.02, outputPerMillion: 1.2)
             }
-            if model.contains("gpt-4.1-mini") {
-                return ModelTokenPricing(modelLabel: modelName ?? "GPT-4.1 mini", currency: .usd, inputPerMillion: 0.4, cacheReadPerMillion: 0.1, outputPerMillion: 1.6)
-            }
-            if model.contains("gpt-4.1-nano") {
-                return ModelTokenPricing(modelLabel: modelName ?? "GPT-4.1 nano", currency: .usd, inputPerMillion: 0.1, cacheReadPerMillion: 0.025, outputPerMillion: 0.4)
-            }
-            if model.contains("gpt-4.1") {
-                return ModelTokenPricing(modelLabel: modelName ?? "GPT-4.1", currency: .usd, inputPerMillion: 2, cacheReadPerMillion: 0.5, outputPerMillion: 8)
-            }
             if model.contains("gpt-5-mini") {
                 return ModelTokenPricing(modelLabel: modelName ?? "GPT-5 mini", currency: .usd, inputPerMillion: 0.25, cacheReadPerMillion: 0.025, outputPerMillion: 2)
             }
             if model.contains("gpt-5") {
                 return ModelTokenPricing(modelLabel: modelName ?? "GPT-5", currency: .usd, inputPerMillion: 1.25, cacheReadPerMillion: 0.125, outputPerMillion: 10)
-            }
-            if model.contains("gpt-4o-mini") {
-                return ModelTokenPricing(modelLabel: modelName ?? "GPT-4o mini", currency: .usd, inputPerMillion: 0.15, cacheReadPerMillion: 0.075, outputPerMillion: 0.6)
-            }
-            if model.contains("gpt-4o") {
-                return ModelTokenPricing(modelLabel: modelName ?? "GPT-4o", currency: .usd, inputPerMillion: 2.5, cacheReadPerMillion: 1.25, outputPerMillion: 10)
-            }
-            if model.contains("o3-mini") {
-                return ModelTokenPricing(modelLabel: modelName ?? "o3-mini", currency: .usd, inputPerMillion: 1.1, cacheReadPerMillion: 0.55, outputPerMillion: 4.4)
-            }
-            if model.contains("o3") {
-                return ModelTokenPricing(modelLabel: modelName ?? "o3", currency: .usd, inputPerMillion: 15, cacheReadPerMillion: 7.5, outputPerMillion: 60)
-            }
-            if model.contains("o1-mini") || model.contains("o1-preview") {
-                return ModelTokenPricing(modelLabel: modelName ?? "o1-mini", currency: .usd, inputPerMillion: 1.1, cacheReadPerMillion: 0.55, outputPerMillion: 4.4)
-            }
-            if model.contains("o1") {
-                return ModelTokenPricing(modelLabel: modelName ?? "o1", currency: .usd, inputPerMillion: 15, cacheReadPerMillion: 7.5, outputPerMillion: 60)
-            }
-            if model.contains("gpt-4") {
-                return ModelTokenPricing(modelLabel: modelName ?? "GPT-4", currency: .usd, inputPerMillion: 10, cacheReadPerMillion: 5, outputPerMillion: 30)
             }
 
         case QuotaProviderID.antigravity:

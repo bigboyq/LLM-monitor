@@ -13,6 +13,8 @@ import Foundation
 /// - `cacheWriteTokens` is reported but excluded from the displayed consumption total;
 /// - `outputTokens` includes reasoning. The UI splits that inclusive output into
 ///   visible output and reasoning, with `output + reasoning == raw dsh output`.
+///   DSH MiniMax-M3 may use an internal message-content character estimate when
+///   the provider omits `reasoningTokens`; other missing splits remain Reason=0.
 ///
 /// The snapshot is split by the provider recorded in the session's `request/context`.
 /// Keeping that split lets a dsh session using multiple providers be merged into the
