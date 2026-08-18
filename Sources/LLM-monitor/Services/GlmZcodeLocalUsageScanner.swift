@@ -118,7 +118,7 @@ final class GlmZcodeLocalUsageScanner: SingleDBSnapshotScanner<GlmLocalUsage>, @
 
     private nonisolated func readOffPeakWindowsWithFallback() -> [GlmOffPeakWindow] {
         do {
-            return try Self.readOffPeakWindows(tasksDBURL: tasksDBURL)
+            return try Self.readOffPeakWindows(tasksDBURL: tasksDBURL, fileManager: fileManager)
         } catch {
             // tasks-index 存在但表缺失 / schema 不符（旧版 ZCode）时不能静默吞掉：
             // 若返回空会把所有样本当高峰计入额度窗口，这里记一条警告便于诊断。
@@ -130,9 +130,12 @@ final class GlmZcodeLocalUsageScanner: SingleDBSnapshotScanner<GlmLocalUsage>, @
     // MARK: - 纯函数（保持既有测试表面）
 
     /// 读闲时任务时间窗口。tasks-index db 不存在 / 表缺失 → 返回空（ZCode 旧版本）。
-    nonisolated static func readOffPeakWindows(tasksDBURL: URL) throws -> [GlmOffPeakWindow] {
+    nonisolated static func readOffPeakWindows(
+        tasksDBURL: URL,
+        fileManager: FileManagerBox = FileManagerBox()
+    ) throws -> [GlmOffPeakWindow] {
         // tasks-index db 不存在不算错误（旧 ZCode 版本）
-        guard FileManager.default.fileExists(atPath: tasksDBURL.path) else { return [] }
+        guard fileManager.fileExists(atPath: tasksDBURL.path) else { return [] }
         return try SQLiteTempCopy.read(dbPath: tasksDBURL, logTag: "[glm-zcode-offpeak]") { url in
             let reader = try GlmZcodeOffPeakReader(path: url, readOnly: url.path == tasksDBURL.path)
             defer { reader.close() }
