@@ -590,6 +590,50 @@ final class DshUsageTests: XCTestCase {
         XCTAssertEqual(counter.value, 3, "另一个 session 变化时，未变化文件不得再次解压")
     }
 
+    func testDshCompressedArtifactUsesStreamingDecoderAndChunkedParser() throws {
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let calendar = makeUTCGregorianCalendar()
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("llm-monitor-dsh-streaming-(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let cache = root.appendingPathComponent(".token-monitor", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let body = [
+            #"{"type":"request/context","seq":1,"time":1700000000000,"data":{"provider":"deepseek-official","model":"deepseek-v4-flash"}}"#,
+            #"{"type":"assistant/message","seq":2,"time":1700000001000,"data":{"turn":1,"step":0,"usage":{"inputTokens":100,"cacheReadTokens":50,"outputTokens":30,"reasoningTokens":10}}}"#
+        ].joined(separator: "\n") + "\n"
+        try writeRawSessionArtifact(
+            root: sessionsRoot,
+            sessionID: "session-streaming",
+            fileName: "session.jsonl.zst",
+            body: Data(body.utf8)
+        )
+
+        let limits = DshLocalUsageScanLimits(
+            maxSessionFiles: 8,
+            maxTotalRawBytes: 1024 * 1024,
+            maxJSONLLineBytes: 8 * 1024 * 1024,
+            maxRecentSamples: 100,
+            readChunkBytes: 17
+        )
+        let snapshot = try DshLocalUsageScanner.performScanPure(
+            sessionsRoot: sessionsRoot,
+            cacheDir: cache,
+            fileManager: FileManagerBox(),
+            calendar: calendar,
+            now: { base },
+            streamingDecompressor: { input, output, _ in
+                try Data(contentsOf: input).write(to: output)
+            },
+            limits: limits
+        )
+
+        XCTAssertEqual(snapshot.eventCount, 1)
+        XCTAssertEqual(snapshot.sessionCount, 1)
+        XCTAssertEqual(snapshot.byProvider["deepseek-official"]?.today?.inputTokens, 100)
+    }
+
     func testDshSelectionPrefersNewestFilesWhenOverFileLimit() throws {
         // spec：文件数超限时必须按 mtime 最新优先，而不是路径字典序截断。
         let root = FileManager.default.temporaryDirectory

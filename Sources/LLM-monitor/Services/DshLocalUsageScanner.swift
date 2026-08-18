@@ -13,13 +13,29 @@ struct DshLocalUsageScanLimits: Sendable {
         maxSessionFiles: 1_024,
         maxTotalRawBytes: 256 * 1024 * 1024,
         maxJSONLLineBytes: 8 * 1024 * 1024,
-        maxRecentSamples: 65_536
+        maxRecentSamples: 65_536,
+        readChunkBytes: 64 * 1024
     )
 
     let maxSessionFiles: Int
     let maxTotalRawBytes: Int
     let maxJSONLLineBytes: Int
     let maxRecentSamples: Int
+    let readChunkBytes: Int
+
+    init(
+        maxSessionFiles: Int,
+        maxTotalRawBytes: Int,
+        maxJSONLLineBytes: Int,
+        maxRecentSamples: Int,
+        readChunkBytes: Int = 64 * 1024
+    ) {
+        self.maxSessionFiles = max(maxSessionFiles, 1)
+        self.maxTotalRawBytes = max(maxTotalRawBytes, 1)
+        self.maxJSONLLineBytes = max(maxJSONLLineBytes, 1)
+        self.maxRecentSamples = max(maxRecentSamples, 1)
+        self.readChunkBytes = max(min(readChunkBytes, self.maxJSONLLineBytes), 1)
+    }
 }
 
 private extension DshLocalUsageScanLimits {
@@ -58,13 +74,15 @@ final class DshLocalUsageScanner: LocalUsageScannerBase<DshLocalUsage>, @uncheck
     }()
 
     typealias Decompressor = @Sendable (Data) throws -> Data
+    typealias StreamingDecompressor = @Sendable (URL, URL, FileManagerBox) throws -> Void
 
     private let sessionsRoot: URL
     private let cacheDir: URL
     private let fileManager: FileManagerBox
     private let calendar: Calendar
     private let now: @Sendable () -> Date
-    private let decompressor: Decompressor
+    private let decompressor: Decompressor?
+    private let streamingDecompressor: StreamingDecompressor
 
     init(
         sessionsRoot: URL = DshLocalUsageScanner.defaultSessionsRoot,
@@ -72,7 +90,10 @@ final class DshLocalUsageScanner: LocalUsageScannerBase<DshLocalUsage>, @uncheck
         fileManager: FileManagerBox = FileManagerBox(),
         calendar: Calendar = .autoupdatingCurrent,
         now: @escaping @Sendable () -> Date = { Date() },
-        decompressor: @escaping Decompressor = { data in try DshLogDecoder.decompress(data) }
+        decompressor: Decompressor? = nil,
+        streamingDecompressor: @escaping StreamingDecompressor = {
+            try DshLogDecoder.decompressToFile(input: $0, output: $1, fileManager: $2)
+        }
     ) {
         self.sessionsRoot = sessionsRoot
         self.cacheDir = cacheDir
@@ -80,6 +101,7 @@ final class DshLocalUsageScanner: LocalUsageScannerBase<DshLocalUsage>, @uncheck
         self.calendar = calendar
         self.now = now
         self.decompressor = decompressor
+        self.streamingDecompressor = streamingDecompressor
         super.init(
             logTag: Self.scanLogTag,
             cachedResult: Self.loadCachedResult(
@@ -128,6 +150,7 @@ final class DshLocalUsageScanner: LocalUsageScannerBase<DshLocalUsage>, @uncheck
         let calendar = self.calendar
         let now = self.now
         let decompressor = self.decompressor
+        let streamingDecompressor = self.streamingDecompressor
         return {
             try await Self.pipelineMutex.withLock {
                 try await Task.detached(priority: .utility) {
@@ -138,6 +161,7 @@ final class DshLocalUsageScanner: LocalUsageScannerBase<DshLocalUsage>, @uncheck
                         calendar: calendar,
                         now: now,
                         decompressor: decompressor,
+                        streamingDecompressor: streamingDecompressor,
                         limits: DshLocalUsageScanLimits.production
                     )
                 }.value
@@ -154,7 +178,10 @@ final class DshLocalUsageScanner: LocalUsageScannerBase<DshLocalUsage>, @uncheck
         fileManager: FileManagerBox,
         calendar: Calendar,
         now: @escaping @Sendable () -> Date,
-        decompressor: @escaping Decompressor,
+        decompressor: Decompressor? = nil,
+        streamingDecompressor: @escaping StreamingDecompressor = {
+            try DshLogDecoder.decompressToFile(input: $0, output: $1, fileManager: $2)
+        },
         limits: DshLocalUsageScanLimits = .production
     ) throws -> DshLocalUsage {
         guard fileManager.fileExists(atPath: sessionsRoot.path) else {
@@ -217,8 +244,10 @@ final class DshLocalUsageScanner: LocalUsageScannerBase<DshLocalUsage>, @uncheck
         let outcome = try aggregateFiles(
             snapshots: snapshots,
             sessionsRoot: sessionsRoot,
+            fileManager: fileManager,
             calendar: calendar,
             decompressor: decompressor,
+            streamingDecompressor: streamingDecompressor,
             limits: limits
         )
         let snapshot = buildSnapshot(
@@ -542,8 +571,10 @@ private extension DshLocalUsageScanner {
     private nonisolated static func aggregateFiles(
         snapshots: [DshLogFileSnapshot],
         sessionsRoot: URL,
+        fileManager: FileManagerBox,
         calendar: Calendar,
-        decompressor: @escaping Decompressor,
+        decompressor: Decompressor?,
+        streamingDecompressor: @escaping StreamingDecompressor,
         limits: DshLocalUsageScanLimits
     ) throws -> DshFileAggregationOutcome {
         var outcome = DshFileAggregationOutcome()
@@ -558,18 +589,32 @@ private extension DshLocalUsageScanner {
                 ) {
                     result = cached
                 } else {
-                    let data: Data
                     if snapshot.url.lastPathComponent.lowercased().hasSuffix(".zstd")
                         || snapshot.url.lastPathComponent.lowercased().hasSuffix(".zst") {
-                        data = try decompressor(try Data(contentsOf: snapshot.url))
+                        if let decompressor {
+                            let data = try decompressor(try Data(contentsOf: snapshot.url))
+                            result = try parseFile(
+                                data: data,
+                                sessionID: snapshot.url.deletingLastPathComponent().lastPathComponent,
+                                limits: limits
+                            )
+                        } else {
+                            let temporary = fileManager.temporaryURL()
+                            defer { try? fileManager.removeItem(at: temporary) }
+                            try streamingDecompressor(snapshot.url, temporary, fileManager)
+                            result = try parseFile(
+                                fileURL: temporary,
+                                sessionID: snapshot.url.deletingLastPathComponent().lastPathComponent,
+                                limits: limits
+                            )
+                        }
                     } else {
-                        data = try Data(contentsOf: snapshot.url)
+                        result = try parseFile(
+                            data: try Data(contentsOf: snapshot.url),
+                            sessionID: snapshot.url.deletingLastPathComponent().lastPathComponent,
+                            limits: limits
+                        )
                     }
-                    result = try parseFile(
-                        data: data,
-                        sessionID: snapshot.url.deletingLastPathComponent().lastPathComponent,
-                        limits: limits
-                    )
                     parsedFileCache.store(result, for: snapshot, limits: limits)
                 }
                 outcome.processedFingerprints.append(snapshot.fingerprint)
@@ -622,61 +667,163 @@ private extension DshLocalUsageScanner {
             }
             if lineLength > 0 {
                 let line = data.subdata(in: offset..<newline)
-                if let event = try? decoder.decode(DshRawEvent.self, from: line) {
-                    if event.type == "request/context" {
-                        let provider = normalizedProvider(event.data?.provider)
-                        if provider != "unknown" {
-                            context = DshProviderContext(
-                                provider: provider,
-                                model: normalizedOptionalString(event.data?.model)
-                            )
-                        }
-                    } else if event.type == "assistant/message",
-                              let usage = event.data?.usage,
-                              let timestamp = event.time.map({ Date(timeIntervalSince1970: TimeInterval($0) / 1_000) }) {
-                        let provider = context?.provider ?? "unknown"
-                        let key = usageKey(
-                            sessionID: sessionID,
-                            provider: provider,
-                            turn: event.data?.turn,
-                            step: event.data?.step,
-                            seq: event.seq,
-                            time: event.time
-                        )
-                        // Dedup only skips aggregation of this line. It must NOT
-                        // `continue` the outer loop: the offset advance below
-                        // would be skipped too, and a replayed event would spin
-                        // the parser on the same line forever.
-                        if seen.insert(key).inserted {
-                            let parsed = normalizeUsage(
-                                usage,
-                                provider: provider,
-                                model: context?.model,
-                                message: event.data?.message
-                            )
-                            usages.append(DshParsedUsage(
-                                timestamp: timestamp,
-                                inputTokens: parsed.input,
-                                cacheReadTokens: parsed.cacheRead,
-                                cacheWriteTokens: parsed.cacheWrite,
-                                outputTokens: parsed.output,
-                                reasoningTokens: parsed.reasoning,
-                                turn: event.data?.turn,
-                                step: event.data?.step,
-                                seq: event.seq,
-                                provider: provider,
-                                model: context?.model,
-                                sessionID: sessionID
-                            ))
-                            activeProviders.insert(provider)
-                        }
-                    }
-                }
+                consumeLine(
+                    line,
+                    sessionID: sessionID,
+                    decoder: decoder,
+                    limits: limits,
+                    context: &context,
+                    usages: &usages,
+                    activeProviders: &activeProviders,
+                    seen: &seen
+                )
             }
             offset = newline == data.endIndex ? data.endIndex : newline + 1
             if lineCount > limits.maxSessionFiles * 10_000 { break }
         }
         return DshFileParseResult(usages: usages, activeProviders: activeProviders)
+    }
+
+    /// Parse a decompressed artifact directly from disk. The line buffer is bounded by
+    /// `maxJSONLLineBytes`, so the full decompressed session never exists in memory.
+    private nonisolated static func parseFile(
+        fileURL: URL,
+        sessionID: String,
+        limits: DshLocalUsageScanLimits
+    ) throws -> DshFileParseResult {
+        let handle = try FileHandle(forReadingFrom: fileURL)
+        defer { try? handle.close() }
+
+        let decoder = JSONDecoder()
+        var context: DshProviderContext?
+        var usages: [DshParsedUsage] = []
+        var activeProviders = Set<String>()
+        var seen = Set<String>()
+        var pending = Data()
+        pending.reserveCapacity(min(limits.readChunkBytes, limits.maxJSONLLineBytes))
+        var discardingOversizedLine = false
+        var lineCount = 0
+
+        while !Task.isCancelled {
+            guard let chunk = try handle.read(upToCount: limits.readChunkBytes), !chunk.isEmpty else {
+                break
+            }
+            if discardingOversizedLine {
+                guard let newline = chunk.firstIndex(of: 0x0A) else {
+                    continue
+                }
+                pending.append(chunk[chunk.index(after: newline)...])
+                discardingOversizedLine = false
+            } else {
+                pending.append(chunk)
+            }
+
+            while let newline = pending.firstIndex(of: 0x0A) {
+                let line = pending.subdata(in: pending.startIndex..<newline)
+                pending.removeSubrange(pending.startIndex...newline)
+                lineCount += 1
+
+                if !discardingOversizedLine, line.count <= limits.maxJSONLLineBytes {
+                    consumeLine(
+                        line,
+                        sessionID: sessionID,
+                        decoder: decoder,
+                        limits: limits,
+                        context: &context,
+                        usages: &usages,
+                        activeProviders: &activeProviders,
+                        seen: &seen
+                    )
+                }
+                discardingOversizedLine = false
+                if lineCount > limits.maxSessionFiles * 10_000 {
+                    return DshFileParseResult(usages: usages, activeProviders: activeProviders)
+                }
+            }
+
+            if !discardingOversizedLine && pending.count > limits.maxJSONLLineBytes {
+                pending.removeAll(keepingCapacity: false)
+                discardingOversizedLine = true
+            }
+        }
+
+        if !discardingOversizedLine, !pending.isEmpty,
+           pending.count <= limits.maxJSONLLineBytes {
+            consumeLine(
+                pending,
+                sessionID: sessionID,
+                decoder: decoder,
+                limits: limits,
+                context: &context,
+                usages: &usages,
+                activeProviders: &activeProviders,
+                seen: &seen
+            )
+        }
+        return DshFileParseResult(usages: usages, activeProviders: activeProviders)
+    }
+
+    private nonisolated static func consumeLine(
+        _ line: Data,
+        sessionID: String,
+        decoder: JSONDecoder,
+        limits: DshLocalUsageScanLimits,
+        context: inout DshProviderContext?,
+        usages: inout [DshParsedUsage],
+        activeProviders: inout Set<String>,
+        seen: inout Set<String>
+    ) {
+        guard line.isEmpty == false,
+              line.count <= limits.maxJSONLLineBytes,
+              let event = try? decoder.decode(DshRawEvent.self, from: line) else {
+            return
+        }
+        if event.type == "request/context" {
+            let provider = normalizedProvider(event.data?.provider)
+            if provider != "unknown" {
+                context = DshProviderContext(
+                    provider: provider,
+                    model: normalizedOptionalString(event.data?.model)
+                )
+            }
+        } else if event.type == "assistant/message",
+                  let usage = event.data?.usage,
+                  let timestamp = event.time.map({ Date(timeIntervalSince1970: TimeInterval($0) / 1_000) }) {
+            let provider = context?.provider ?? "unknown"
+            let key = usageKey(
+                sessionID: sessionID,
+                provider: provider,
+                turn: event.data?.turn,
+                step: event.data?.step,
+                seq: event.seq,
+                time: event.time
+            )
+            // Dedup only skips aggregation of this line. It must not stop the
+            // surrounding reader from advancing to the next line.
+            if seen.insert(key).inserted {
+                let parsed = normalizeUsage(
+                    usage,
+                    provider: provider,
+                    model: context?.model,
+                    message: event.data?.message
+                )
+                usages.append(DshParsedUsage(
+                    timestamp: timestamp,
+                    inputTokens: parsed.input,
+                    cacheReadTokens: parsed.cacheRead,
+                    cacheWriteTokens: parsed.cacheWrite,
+                    outputTokens: parsed.output,
+                    reasoningTokens: parsed.reasoning,
+                    turn: event.data?.turn,
+                    step: event.data?.step,
+                    seq: event.seq,
+                    provider: provider,
+                    model: context?.model,
+                    sessionID: sessionID
+                ))
+                activeProviders.insert(provider)
+            }
+        }
     }
 
     private nonisolated static func add(
@@ -1035,6 +1182,32 @@ enum DshLogDecoder {
         throw DecoderError.unavailable
     }
 
+    /// Stream decompressed output into a private temporary file. The scanner then
+    /// parses that file in bounded chunks instead of keeping compressed input and
+    /// decompressed JSONL in the application heap at the same time.
+    nonisolated static func decompressToFile(
+        input: URL,
+        output: URL,
+        fileManager: FileManagerBox
+    ) throws {
+        if let zstd = existingExecutable(named: "zstd", preferred: ["/opt/homebrew/bin/zstd", "/usr/local/bin/zstd"]) {
+            do {
+                try runZstdToFile(input: input, output: output, executable: zstd, fileManager: fileManager)
+                return
+            } catch {
+                logWarn("[dsh-scan] zstd CLI 流式解压失败，尝试 Node zlib: \(error.localizedDescription)")
+            }
+        }
+        if let node = existingExecutable(
+            named: "node",
+            preferred: ["/opt/homebrew/bin/node", "/usr/local/bin/node"]
+        ) {
+            try runNodeToFile(input: input, output: output, executable: node, fileManager: fileManager)
+            return
+        }
+        throw DecoderError.unavailable
+    }
+
     private static func runZstd(
         data: Data,
         executable: URL,
@@ -1060,6 +1233,28 @@ enum DshLogDecoder {
         }
         try checkOutputSize(output.count)
         return output
+    }
+
+    private static func runZstdToFile(
+        input: URL,
+        output: URL,
+        executable: URL,
+        fileManager: FileManagerBox
+    ) throws {
+        let result = try ProcessRunner.run(
+            executable: executable,
+            arguments: ["-q", "-d", "-c", input.path],
+            timeout: 30,
+            standardOutputFile: output
+        )
+        guard result.terminationStatus == 0 else {
+            throw DecoderError.commandFailed(
+                executable: executable.lastPathComponent,
+                status: result.terminationStatus,
+                stderr: result.standardError
+            )
+        }
+        try checkOutputSize(fileManager.attributesOfItem(atPath: output.path)[.size] as? NSNumber)
     }
 
     private static func runNode(
@@ -1094,6 +1289,38 @@ enum DshLogDecoder {
         return output
     }
 
+    private static func runNodeToFile(
+        input: URL,
+        output: URL,
+        executable: URL,
+        fileManager: FileManagerBox
+    ) throws {
+        let script = """
+        const fs = require("node:fs");
+        const zlib = require("node:zlib");
+        const input = fs.createReadStream(process.argv[1]);
+        const output = zlib.createZstdDecompress();
+        output.on("error", (error) => { console.error(error.message); process.exitCode = 1; });
+        input.on("error", (error) => { console.error(error.message); process.exitCode = 1; });
+        output.pipe(process.stdout);
+        input.pipe(output);
+        """
+        let result = try ProcessRunner.run(
+            executable: executable,
+            arguments: ["-e", script, input.path],
+            timeout: 30,
+            standardOutputFile: output
+        )
+        guard result.terminationStatus == 0 else {
+            throw DecoderError.commandFailed(
+                executable: executable.lastPathComponent,
+                status: result.terminationStatus,
+                stderr: result.standardError
+            )
+        }
+        try checkOutputSize(fileManager.attributesOfItem(atPath: output.path)[.size] as? NSNumber)
+    }
+
     private static func existingExecutable(
         named name: String,
         preferred: [String]
@@ -1112,5 +1339,9 @@ enum DshLogDecoder {
     private static func checkOutputSize(_ bytes: Int) throws {
         let maximum = 256 * 1024 * 1024
         guard bytes <= maximum else { throw DecoderError.outputTooLarge(bytes: bytes) }
+    }
+
+    private static func checkOutputSize(_ bytes: NSNumber?) throws {
+        try checkOutputSize(bytes?.intValue ?? 0)
     }
 }

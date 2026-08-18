@@ -45,7 +45,8 @@ enum ProcessRunner {
     static func run(
         executable: URL,
         arguments: [String],
-        timeout: TimeInterval
+        timeout: TimeInterval,
+        standardOutputFile: URL? = nil
     ) throws -> Result {
         let process = Process()
         process.executableURL = executable
@@ -55,11 +56,32 @@ enum ProcessRunner {
         let stderr = Pipe()
         let stdoutData = LockedData()
         let stderrData = LockedData()
-        process.standardOutput = stdout
+        let outputFileHandle: FileHandle?
+        if let standardOutputFile {
+            let fm = FileManager.default
+            try? fm.removeItem(at: standardOutputFile)
+            if !fm.createFile(atPath: standardOutputFile.path, contents: nil) {
+                throw NSError(
+                    domain: NSPOSIXErrorDomain,
+                    code: Int(EIO),
+                    userInfo: [
+                        NSLocalizedDescriptionKey:
+                            "unable to create process output file: (standardOutputFile.path)"
+                    ]
+                )
+            }
+            outputFileHandle = try FileHandle(forWritingTo: standardOutputFile)
+            process.standardOutput = outputFileHandle
+        } else {
+            outputFileHandle = nil
+            process.standardOutput = stdout
+        }
         process.standardError = stderr
 
-        stdout.fileHandleForReading.readabilityHandler = { handle in
-            stdoutData.append(handle.availableData)
+        if standardOutputFile == nil {
+            stdout.fileHandleForReading.readabilityHandler = { handle in
+                stdoutData.append(handle.availableData)
+            }
         }
         stderr.fileHandleForReading.readabilityHandler = { handle in
             stderrData.append(handle.availableData)
@@ -70,6 +92,7 @@ enum ProcessRunner {
         } catch {
             stdout.fileHandleForReading.readabilityHandler = nil
             stderr.fileHandleForReading.readabilityHandler = nil
+            try? outputFileHandle?.close()
             throw error
         }
 
@@ -116,8 +139,11 @@ enum ProcessRunner {
 
         stdout.fileHandleForReading.readabilityHandler = nil
         stderr.fileHandleForReading.readabilityHandler = nil
-        stdoutData.append(stdout.fileHandleForReading.readDataToEndOfFile())
+        if standardOutputFile == nil {
+            stdoutData.append(stdout.fileHandleForReading.readDataToEndOfFile())
+        }
         stderrData.append(stderr.fileHandleForReading.readDataToEndOfFile())
+        try? outputFileHandle?.close()
 
         if let terminalError {
             throw terminalError
