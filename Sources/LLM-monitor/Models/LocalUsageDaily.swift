@@ -82,49 +82,8 @@ extension LocalUsageDaily {
     }
 }
 
-// MARK: - antigravity adapter（字段名带 Tokens 后缀 → protocol 短名）
-
-extension AntigravityDailyUsage: LocalUsageDaily {
-    var input: Int { inputTokens }
-    var cacheRead: Int { cacheReadTokens }
-    var cacheWrite: Int { cacheWriteTokens }
-    var output: Int { outputTokens }
-    var reasoning: Int { reasoningTokens }
-}
-
-// MARK: - minimax adapter（字段名带 Tokens 后缀 → protocol 短名）
-
-extension MinimaxDailyUsage: LocalUsageDaily {
-    var input: Int { inputTokens }
-    var cacheRead: Int { cacheReadTokens }
-    var cacheWrite: Int { cacheWriteTokens }
-    var output: Int { outputTokens }
-    var reasoning: Int { reasoningTokens }
-}
-
-// MARK: - opencode adapter（同构 minimax，原生 reasoning）
-// OpenCode 是共享本地数据源，因此 adapter 与其他 daily 类型集中放在这里，
-// 不放进 scanner 或某个 provider 专属 model 文件。
-
-extension OpencodeDailyUsage: LocalUsageDaily {
-    var input: Int { inputTokens }
-    var cacheRead: Int { cacheReadTokens }
-    var cacheWrite: Int { cacheWriteTokens }
-    var output: Int { outputTokens }
-    var reasoning: Int { reasoningTokens }
-}
-
-// MARK: - dsh adapter（usage 字段为 dsh 原生 token bucket）
-
-extension DshDailyUsage: LocalUsageDaily {
-    var input: Int { inputTokens }
-    var cacheRead: Int { cacheReadTokens }
-    var cacheWrite: Int { cacheWriteTokens }
-    var output: Int { outputTokens }
-    var reasoning: Int { reasoningTokens }
-}
-
 // MARK: - codex adapter（字段名完全不同 + 缺 cacheWrite）
+// 其余五个本地数据源的 daily 已统一为 LocalDailyTokenUsage（自带 conformance）。
 
 extension DailyTokenUsage: LocalUsageDaily {
     var input: Int { uncachedInputTokens }

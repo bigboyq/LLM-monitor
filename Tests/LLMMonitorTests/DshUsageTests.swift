@@ -164,8 +164,10 @@ final class DshUsageTests: XCTestCase {
                     today: DshDailyUsage(
                         dayStart: dayStart,
                         inputTokens: 100,
-                        cacheReadTokens: 50,
+
                         outputTokens: 20,
+
+                        cacheReadTokens: 50,
                         reasoningTokens: 10,
                         totalTokens: 170,
                         turns: 1,
@@ -263,8 +265,10 @@ final class DshUsageTests: XCTestCase {
                     today: DshDailyUsage(
                         dayStart: dayStart,
                         inputTokens: 50,
-                        cacheReadTokens: 25,
+
                         outputTokens: 10,
+
+                        cacheReadTokens: 25,
                         reasoningTokens: 5,
                         totalTokens: 80,
                         turns: 1,
@@ -317,8 +321,10 @@ final class DshUsageTests: XCTestCase {
                     today: DshDailyUsage(
                         dayStart: dayStart,
                         inputTokens: 100,
-                        cacheReadTokens: 20,
+
                         outputTokens: 15,
+
+                        cacheReadTokens: 20,
                         reasoningTokens: 5,
                         totalTokens: 130,
                         turns: 1,

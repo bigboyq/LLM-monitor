@@ -21,7 +21,7 @@ final class DeepseekPeakWindowTests: XCTestCase {
         let window = DeepseekPeakWindow.defaultWindow
         // 北京时间 8:30 (非高峰，距 9:00 高峰开还剩 30 分钟)
         let now = makeBeijingDate(year: 2026, month: 8, day: 5, hour: 8, minute: 30)
-        let status = window.status(at: now)
+        let status = window.status(at: now, calendar: PeakWindow.beijingCalendar)
 
         if case .offPeak(until: let start) = status {
             let expectedStart = makeBeijingDate(year: 2026, month: 8, day: 5, hour: 9, minute: 0)
@@ -35,7 +35,7 @@ final class DeepseekPeakWindowTests: XCTestCase {
         let window = DeepseekPeakWindow.defaultWindow
         // 北京时间 10:15 (高峰 1，距 12:00 结束还剩 1 小时 45 分)
         let now = makeBeijingDate(year: 2026, month: 8, day: 5, hour: 10, minute: 15)
-        let status = window.status(at: now)
+        let status = window.status(at: now, calendar: PeakWindow.beijingCalendar)
 
         if case .peak(until: let end) = status {
             let expectedEnd = makeBeijingDate(year: 2026, month: 8, day: 5, hour: 12, minute: 0)
@@ -49,7 +49,7 @@ final class DeepseekPeakWindowTests: XCTestCase {
         let window = DeepseekPeakWindow.defaultWindow
         // 北京时间 13:00 (非高峰，距 14:00 高峰二开始还剩 1 小时)
         let now = makeBeijingDate(year: 2026, month: 8, day: 5, hour: 13, minute: 0)
-        let status = window.status(at: now)
+        let status = window.status(at: now, calendar: PeakWindow.beijingCalendar)
 
         if case .offPeak(until: let start) = status {
             let expectedStart = makeBeijingDate(year: 2026, month: 8, day: 5, hour: 14, minute: 0)
@@ -63,7 +63,7 @@ final class DeepseekPeakWindowTests: XCTestCase {
         let window = DeepseekPeakWindow.defaultWindow
         // 北京时间 16:30 (高峰 2，距 18:00 结束还剩 1 小时 30 分)
         let now = makeBeijingDate(year: 2026, month: 8, day: 5, hour: 16, minute: 30)
-        let status = window.status(at: now)
+        let status = window.status(at: now, calendar: PeakWindow.beijingCalendar)
 
         if case .peak(until: let end) = status {
             let expectedEnd = makeBeijingDate(year: 2026, month: 8, day: 5, hour: 18, minute: 0)
@@ -77,7 +77,7 @@ final class DeepseekPeakWindowTests: XCTestCase {
         let window = DeepseekPeakWindow.defaultWindow
         // 北京时间 20:00 (非高峰，距次日 9:00 高峰一开始还剩 13 小时)
         let now = makeBeijingDate(year: 2026, month: 8, day: 5, hour: 20, minute: 0)
-        let status = window.status(at: now)
+        let status = window.status(at: now, calendar: PeakWindow.beijingCalendar)
 
         if case .offPeak(until: let start) = status {
             let expectedStart = makeBeijingDate(year: 2026, month: 8, day: 6, hour: 9, minute: 0)
@@ -93,7 +93,7 @@ final class DeepseekPeakWindowTests: XCTestCase {
         let window = DeepseekPeakWindow.defaultWindow   // weekdaysOnly = true
         // 北京时间 2026-08-08（周六）10:15 —— 本应落在第一高峰 slot(9–12)
         let now = makeBeijingDate(year: 2026, month: 8, day: 8, hour: 10, minute: 15)
-        let status = window.status(at: now)
+        let status = window.status(at: now, calendar: PeakWindow.beijingCalendar)
 
         if case .offPeak(until: let start) = status {
             // 下一高峰为下周一(2026-08-10) 9:00
@@ -108,7 +108,7 @@ final class DeepseekPeakWindowTests: XCTestCase {
         let window = DeepseekPeakWindow.defaultWindow   // weekdaysOnly = true
         // 北京时间 2026-08-09（周日）16:30 —— 本应落在第二高峰 slot(14–18)
         let now = makeBeijingDate(year: 2026, month: 8, day: 9, hour: 16, minute: 30)
-        let status = window.status(at: now)
+        let status = window.status(at: now, calendar: PeakWindow.beijingCalendar)
 
         if case .offPeak(until: let start) = status {
             // 下一高峰为下周一(2026-08-10) 9:00
@@ -124,7 +124,7 @@ final class DeepseekPeakWindowTests: XCTestCase {
         let window = DeepseekPeakWindow(slots: DeepseekPeakWindow.defaultWindow.slots, weekdaysOnly: false)
         // 北京时间 2026-08-08（周六）10:15 —— 落在第一高峰 slot(9–12)
         let now = makeBeijingDate(year: 2026, month: 8, day: 8, hour: 10, minute: 15)
-        let status = window.status(at: now)
+        let status = window.status(at: now, calendar: PeakWindow.beijingCalendar)
 
         if case .peak(until: let end) = status {
             let expectedEnd = makeBeijingDate(year: 2026, month: 8, day: 8, hour: 12, minute: 0)

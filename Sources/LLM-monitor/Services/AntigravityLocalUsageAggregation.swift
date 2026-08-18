@@ -64,9 +64,9 @@ extension AntigravityLocalUsageScanner {
             byDay[key] = AntigravityDailyUsage(
                 dayStart: dayStart,
                 inputTokens: SaturatingArithmetic.add(existing.inputTokens, event.inputTokens),
+                outputTokens: SaturatingArithmetic.add(existing.outputTokens, event.outputTokens),
                 cacheReadTokens: SaturatingArithmetic.add(existing.cacheReadTokens, event.cacheReadTokens),
                 cacheWriteTokens: SaturatingArithmetic.add(existing.cacheWriteTokens, event.cacheWriteTokens),
-                outputTokens: SaturatingArithmetic.add(existing.outputTokens, event.outputTokens),
                 reasoningTokens: SaturatingArithmetic.add(existing.reasoningTokens, event.reasoningTokens),
                 totalTokens: SaturatingArithmetic.add(existing.totalTokens, event.totalTokens),
                 turns: existing.turns,

@@ -15,7 +15,7 @@ struct DeepseekPeakIndicatorView: View {
     var body: some View {
         PeakIndicatorView(
             status: { date in
-                switch window.status(at: date) {
+                switch window.status(at: date, calendar: PeakWindow.beijingCalendar) {
                 case .peak(until: let end): return (true, end)
                 case .offPeak(until: let start): return (false, start)
                 }

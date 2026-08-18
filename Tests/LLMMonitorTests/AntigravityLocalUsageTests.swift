@@ -844,8 +844,10 @@ final class AntigravityLocalUsageTests: XCTestCase {
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
         let day = calendar.startOfDay(for: now)
         let usage = AntigravityDailyUsage(
-            dayStart: day, inputTokens: 11, cacheReadTokens: 3,
-            cacheWriteTokens: 0, outputTokens: 6, reasoningTokens: 1, totalTokens: 21,
+            dayStart: day, inputTokens: 11,
+ outputTokens: 6,
+ cacheReadTokens: 3,
+ cacheWriteTokens: 0, reasoningTokens: 1, totalTokens: 21,
             turns: 1, rounds: 2
         )
         let index = AntigravityLocalUsageScanner.CacheIndex(

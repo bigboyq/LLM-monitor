@@ -950,8 +950,10 @@ final class ProviderModelTests: XCTestCase {
     func testAllDailyUsageTypesConformToLocalUsageDaily() {
         let day = Date(timeIntervalSince1970: 1_800_000_000)
         let antigravity = AntigravityDailyUsage(
-            dayStart: day, inputTokens: 10, cacheReadTokens: 20,
-            cacheWriteTokens: 30, outputTokens: 40, reasoningTokens: 50,
+            dayStart: day, inputTokens: 10,
+ outputTokens: 40,
+ cacheReadTokens: 20,
+ cacheWriteTokens: 30, reasoningTokens: 50,
             turns: 6, rounds: 7
         )
         let minimax = MinimaxDailyUsage(

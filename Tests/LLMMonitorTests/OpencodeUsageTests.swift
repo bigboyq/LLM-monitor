@@ -216,9 +216,12 @@ final class OpencodeUsageTests: XCTestCase {
             today: AntigravityDailyUsage(
                 dayStart: day,
                 inputTokens: 10,
-                cacheReadTokens: 2,
-                cacheWriteTokens: 3,
+
                 outputTokens: 3,
+
+                cacheReadTokens: 2,
+
+                cacheWriteTokens: 3,
                 reasoningTokens: 1,
                 totalTokens: 16,
                 turns: 1,
@@ -227,9 +230,12 @@ final class OpencodeUsageTests: XCTestCase {
             dailyTokenUsage: [AntigravityDailyUsage(
                 dayStart: day,
                 inputTokens: 10,
-                cacheReadTokens: 2,
-                cacheWriteTokens: 3,
+
                 outputTokens: 3,
+
+                cacheReadTokens: 2,
+
+                cacheWriteTokens: 3,
                 reasoningTokens: 1,
                 totalTokens: 16,
                 turns: 1,

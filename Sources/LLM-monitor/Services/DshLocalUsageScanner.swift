@@ -590,9 +590,9 @@ private extension DshLocalUsageScanner {
         provider.daily[day] = DshDailyUsage(
             dayStart: day,
             inputTokens: SaturatingArithmetic.add(existing.inputTokens, buckets.input),
+            outputTokens: SaturatingArithmetic.add(existing.outputTokens, buckets.output),
             cacheReadTokens: SaturatingArithmetic.add(existing.cacheReadTokens, buckets.cacheRead),
             cacheWriteTokens: SaturatingArithmetic.add(existing.cacheWriteTokens, usage.cacheWriteTokens),
-            outputTokens: SaturatingArithmetic.add(existing.outputTokens, buckets.output),
             reasoningTokens: SaturatingArithmetic.add(existing.reasoningTokens, buckets.reasoning),
             totalTokens: SaturatingArithmetic.add(
                 existing.totalTokens,
@@ -819,9 +819,9 @@ private extension DshDailyUsage {
         DshDailyUsage(
             dayStart: dayStart,
             inputTokens: inputTokens,
+            outputTokens: outputTokens,
             cacheReadTokens: cacheReadTokens,
             cacheWriteTokens: cacheWriteTokens,
-            outputTokens: outputTokens,
             reasoningTokens: reasoningTokens,
             totalTokens: totalTokens,
             turns: SaturatingArithmetic.add(turns, 1),
