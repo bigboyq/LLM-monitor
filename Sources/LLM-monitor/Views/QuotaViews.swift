@@ -88,7 +88,7 @@ struct ChatGPTPlanModelRow: View {
             explicitWindowSeconds: model.intervalWindowSeconds,
             fallbackSeconds: 5 * 60 * 60
         )
-        return merge(
+        return Self.preferUsageDetails(
             usageDetails?.primary,
             localUsage(start: bounds?.start, end: bounds?.end)
         )
@@ -100,7 +100,7 @@ struct ChatGPTPlanModelRow: View {
             explicitWindowSeconds: model.weeklyWindowSeconds,
             fallbackSeconds: 7 * 24 * 60 * 60
         )
-        return merge(
+        return Self.preferUsageDetails(
             usageDetails?.secondary,
             localUsage(start: bounds?.start, end: bounds?.end)
         )
@@ -124,15 +124,14 @@ struct ChatGPTPlanModelRow: View {
         )
     }
 
-    private func merge(
-        _ native: UsageMetricSummary?,
-        _ openCode: UsageMetricSummary?
+    /// `usageDetails` 已由同一批 Codex session samples 聚合而来；不能再与
+    /// `localUsage` 相加，否则窗口内的 input/cache/output 会全部重复计算。
+    /// 只有详情尚未生成时，才从当前 samples 回退计算。
+    static func preferUsageDetails(
+        _ usageDetails: UsageMetricSummary?,
+        _ localFallback: @autoclosure () -> UsageMetricSummary?
     ) -> UsageMetricSummary? {
-        switch (native, openCode) {
-        case let (native?, openCode?): return native + openCode
-        case let (value?, nil), let (nil, value?): return value
-        case (nil, nil): return nil
-        }
+        usageDetails ?? localFallback()
     }
 }
 
