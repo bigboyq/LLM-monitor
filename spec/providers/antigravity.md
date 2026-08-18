@@ -339,24 +339,24 @@ Model field is selected from explicit `model`-named keys first, with `apiProvide
 
 Events with no token fields at all (just a timestamp + model) are skipped — they don't contribute to the aggregate.
 
-**Timestampless events**: an event without a timestamp cannot be assigned to any
-local calendar day, so it is excluded from daily tokens, turns, rounds, and
-samples. `eventCount` uses the same population — it counts only events that
-successfully entered the daily statistics (`AntigravityLocalUsageScanner.accountedEventStats`).
-A single field must not simultaneously mean "raw events received" and "events
-accounted"; the raw total is logged for diagnostics whenever timestampless
-events are dropped.
+**Timestampless events**: the scanner first tries to recover a missing timestamp for
+SQLite sessions from the matching `steps.step_type=15` metadata selected by
+`stepIndices`. Token values still come only from RPC. If no fallback is available
+(including `.pb` sessions), the event cannot be assigned to a local calendar day and
+is excluded from daily tokens, turns, rounds, and samples. `eventCount` uses the same
+population — it counts only events that successfully entered the daily statistics
+(`AntigravityLocalUsageScanner.accountedEventStats`).
 
 ## Local Token Usage Scanner
 
-`AntigravityLocalUsageScanner` runs in the background after every successful quota refresh. It scans both supported conversation directories, accepts `.db` and `.pb` session files, reads only file metadata (mtime/size plus WAL mtime/size for `.db`) against a cached index, and re-fetches only dirty sessions via `GetCascadeTrajectoryGeneratorMetadata`. It never opens the session file contents.
+`AntigravityLocalUsageScanner` runs in the background after every successful quota refresh. It scans both supported conversation directories, accepts `.db` and `.pb` session files, compares file metadata (mtime/size plus WAL mtime/size for `.db`) against a cached index, and re-fetches only dirty sessions via `GetCascadeTrajectoryGeneratorMetadata`. Token values always come from RPC; for SQLite events that lack a timestamp, the scanner reads only the matching step metadata timestamp as a fallback.
 
 ### Storage layout
 
 ```
 ~/.gemini/antigravity/
 ├── conversations/                         ← Antigravity IDE native (read-only input)
-│   ├── {sessionId}.db                      ← discovered and fingerprinted, not opened
+│   ├── {sessionId}.db                      ← discovered/fingerprinted; timestamp metadata may be read
 │   └── {sessionId}.pb                      ← discovered and fingerprinted, not decoded
 └── .token-monitor/                        ← scanner's own cache
     └── index.json                         ← top-level state and per-session cache (fast load)
@@ -415,7 +415,7 @@ In the daily aggregate (`AntigravityDailyUsage`), the 5 categories are summed pe
 
 ## Session file formats (`.db` vs `.pb`)
 
-Antigravity IDE has used two on-disk formats for per-cascade session files. The scanner accepts both via `SessionStoreFormat` and the file extension, but treats them as **discovery/fingerprint inputs only**: it does not open SQLite or decode protobuf content. Token data and Turn/Round inference come from the local `GetCascadeTrajectoryGeneratorMetadata` RPC for both formats.
+Antigravity IDE has used two on-disk formats for per-cascade session files. The scanner accepts both via `SessionStoreFormat` and the file extension. Token data comes from the local `GetCascadeTrajectoryGeneratorMetadata` RPC for both formats. SQLite `.db` files additionally provide a narrow timestamp fallback: `stepIndices` select `step_type=15` rows and the scanner reads only their protobuf Timestamp metadata; `.pb` files remain discovery/fingerprint-only.
 
 | Extension | Format | Runtime use | R/T computation | Token computation |
 |---|---|---|---|---|
@@ -563,11 +563,11 @@ For historical sessions whose `.db` steps and RPC response events were in sync:
 
 This means: a `step_type=15` row at `.db idx = N` is the LLM call that produced `events[N]` in the RPC response. `step_type=14` (user prompt) `idx` values sit *before* the `step_type=15` `idx` for the LLM calls they triggered — using `step_type=14` boundaries to slice events[] gives per-turn token totals.
 
-## Current scanner pipeline (pure RPC)
+## Current scanner pipeline (RPC token data + SQLite timestamp fallback)
 
-1. **File fingerprint diff** — enumerate `.db` and `.pb` filenames and compare mtime/size; for `.db`, the adjacent WAL mtime/size is also part of the fingerprint. File contents are not opened.
-2. **RPC fetch** — for each dirty session, call `GetCascadeTrajectoryGeneratorMetadata` and parse timestamp, model, token fields, and `stepIndices` from each event.
-3. **Round aggregation** — count timestamped RPC events as rounds and bucket token totals by the local calendar day.
+1. **File fingerprint diff** — enumerate `.db` and `.pb` filenames and compare mtime/size; for `.db`, the adjacent WAL mtime/size is also part of the fingerprint.
+2. **RPC fetch** — for each dirty session, call `GetCascadeTrajectoryGeneratorMetadata` and parse model, token fields, timestamp, and `stepIndices` from each event. Token values always come from RPC. If a SQLite-backed event has `stepIndices` but no timestamp, read only the matching `steps.step_type=15` metadata from the `.db` to recover its timestamp; `.pb` has no fallback.
+3. **Round aggregation** — count recovered/timestamped events as rounds and bucket token totals by the local calendar day.
 4. **Turn inference** — sort events by timestamp and start a new inferred turn when the next event's minimum `stepIndices` value has a gap after the previous maximum. This is best-effort and can overcount when tool-call steps create gaps.
 5. **Cache update** — only a non-empty RPC result advances the file fingerprint and replaces the session's daily/sample cache. Failed or empty RPC responses retain last-good data and remain dirty for a later scan.
 

@@ -128,6 +128,20 @@ struct AntigravityFetcher: QuotaFetcher {
             self.totalTokens = totalTokens
             self.stepIndices = stepIndices
         }
+
+        func withTimestamp(_ timestamp: Date) -> UsageEvent {
+            UsageEvent(
+                timestamp: timestamp,
+                model: model,
+                inputTokens: inputTokens,
+                outputTokens: outputTokens,
+                cacheReadTokens: cacheReadTokens,
+                cacheWriteTokens: cacheWriteTokens,
+                reasoningTokens: reasoningTokens,
+                totalTokens: totalTokens,
+                stepIndices: stepIndices
+            )
+        }
     }
 
     /// 单个 trajectory / session 的 generatorMetadata 列表。

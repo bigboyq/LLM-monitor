@@ -3,9 +3,11 @@ import Combine
 import os.log
 
 /// 扫描 `~/.gemini/<antigravity|antigravity-ide>/conversations/`，只读取本地
-/// session 文件的路径、扩展名和 mtime/size 指纹；不读取 `.db` / `.pb` 内容。
+/// session 文件的路径、扩展名和 mtime/size 指纹；token 数据不从 `.db` / `.pb` 内容读取。
 /// 对 dirty session 通过 `AntigravityFetcher.getTrajectoryMetadata` RPC 拉取
 /// per-event token 用量和结构信息，聚合后写入正式的 `index.json` daily cache。
+/// 当新版 RPC 事件缺少时间戳时，`.db` session 只额外读取对应 step metadata 中的
+/// protobuf Timestamp；`.pb` 没有该回退路径。
 ///
 /// ## 优化重点
 ///
@@ -423,9 +425,13 @@ extension AntigravityLocalUsageScanner {
                         logWarn("[antigravity-scan] session=\(sessionId) RPC 返回空 events，保留 last-good cache 并于下次重试")
                         continue
                     }
-                    let inputTotal = SaturatingArithmetic.sum(events.lazy.map(\.inputTokens))
-                    let outputTotal = SaturatingArithmetic.sum(events.lazy.map(\.outputTokens))
-                    let cacheReadTotal = SaturatingArithmetic.sum(events.lazy.map(\.cacheReadTokens))
+                    let recoveredEvents = Self.recoverMissingTimestamps(
+                        events,
+                        fileInfo: dirtyByID[sessionId]
+                    )
+                    let inputTotal = SaturatingArithmetic.sum(recoveredEvents.lazy.map(\.inputTokens))
+                    let outputTotal = SaturatingArithmetic.sum(recoveredEvents.lazy.map(\.outputTokens))
+                    let cacheReadTotal = SaturatingArithmetic.sum(recoveredEvents.lazy.map(\.cacheReadTokens))
                     logDebug("[antigravity-scan] session=\(sessionId) ✓ events=\(events.count) input=\(inputTotal) output=\(outputTotal) cacheR=\(cacheReadTotal)")
 
                     // F1: 只计算一次 turn/round 明细。aggregateDaily 通过预计算的 counts
@@ -433,11 +439,11 @@ extension AntigravityLocalUsageScanner {
                     // counts 叠加进 newDaily（旧实现会造成 turns/rounds 双倍计数）。
                     let details = Self.computeTurnRoundDetails(
                         sessionID: sessionId,
-                        events: events,
+                        events: recoveredEvents,
                         calendar: calendar
                     )
                     let newDaily = Self.aggregateDaily(
-                        events: events,
+                        events: recoveredEvents,
                         calendar: calendar,
                         counts: details.counts
                     )
@@ -455,7 +461,7 @@ extension AntigravityLocalUsageScanner {
                     index.samplesBySession = samplesBySession
 
                     if let info = dirtyByID[sessionId] {
-                        let eventStats = Self.accountedEventStats(events)
+                        let eventStats = Self.accountedEventStats(recoveredEvents)
                         if eventStats.droppedTimestampless > 0 {
                             logWarn(
                                 "[antigravity-scan] session=\(sessionId) 丢弃无 timestamp 的 usage event: "
@@ -575,10 +581,11 @@ struct AntigravityDBFileListing: Sendable {
     let isComplete: Bool
 }
 
-/// Antigravity IDE 把每个 cascade 存成本地文件，扩展名只用于识别文件格式和
-/// 决定是否检查 SQLite WAL 指纹；scanner 不读取这些文件的内容：
+/// Antigravity IDE 把每个 cascade 存成本地文件，扩展名用于识别文件格式和
+/// 决定是否检查 SQLite WAL 指纹。Token 数据仍只来自 RPC；SQLite 仅在 RPC
+/// 缺少时间戳时读取匹配 step metadata 做回填：
 ///
-/// - `.db`（SQLite）：旧版 + 新版 IDE 早期格式；只读取文件/WAL 指纹。
+/// - `.db`（SQLite）：旧版 + 新版 IDE 早期格式；读取文件/WAL 指纹，必要时读取时间 metadata。
 /// - `.pb`（protobuf）：新版 IDE 近期格式；只读取文件指纹，不做 protobuf 解析。
 ///   两种格式都依赖 RPC 提供 Token、时间和 stepIndices，再推算 R/T。
 enum SessionStoreFormat: String, Sendable {
@@ -596,6 +603,55 @@ enum SessionStoreFormat: String, Sendable {
 }
 
 extension AntigravityLocalUsageScanner {
+    /// Newer Antigravity responses can omit `createdAt` while still carrying
+    /// `stepIndices`. For SQLite sessions, those indices identify the matching
+    /// `step_type=15` rows whose metadata contains the authoritative timestamp.
+    /// Token values remain sourced exclusively from the RPC response.
+    nonisolated static func recoverMissingTimestamps(
+        _ events: [AntigravityFetcher.UsageEvent],
+        fileInfo: AntigravityDBFileInfo?
+    ) -> [AntigravityFetcher.UsageEvent] {
+        guard let fileInfo, fileInfo.format == .sqlite else { return events }
+        let missingIndices = Set(
+            events
+                .filter { $0.timestamp == nil }
+                .flatMap { $0.stepIndices ?? [] }
+        )
+        guard !missingIndices.isEmpty else { return events }
+
+        let timestamps: [Int: Date]
+        do {
+            timestamps = try SQLiteTempCopy.read(
+                dbPath: fileInfo.url,
+                logTag: "[antigravity-scan] timestamp fallback"
+            ) { dbPath in
+                try AntigravityStepTimestampReader.timestamps(
+                    dbPath: dbPath,
+                    stepIndices: missingIndices
+                )
+            }
+        } catch {
+            logWarn("[antigravity-scan] timestamp fallback failed: \(error.localizedDescription)")
+            return events
+        }
+
+        var recovered = 0
+        let mapped = events.map { event in
+            guard event.timestamp == nil,
+                  let timestamp = (event.stepIndices ?? [])
+                    .compactMap({ timestamps[$0] })
+                    .min() else {
+                return event
+            }
+            recovered = SaturatingArithmetic.add(recovered, 1)
+            return event.withTimestamp(timestamp)
+        }
+        if recovered > 0 {
+            logInfo("[antigravity-scan] timestamp fallback recovered \(recovered) events from SQLite step metadata")
+        }
+        return mapped
+    }
+
     /// `nonisolated static`：file I/O 不碰 self，可在 background 跑。
     nonisolated static func ensureCacheDirectoriesExist(cacheDir: URL, fileManager: FileManagerBox) throws {
         try fileManager.createPrivateDirectory(at: cacheDir)

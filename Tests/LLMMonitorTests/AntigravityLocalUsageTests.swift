@@ -533,6 +533,132 @@ final class AntigravityLocalUsageTests: XCTestCase {
         )
     }
 
+    func testStepTimestampReaderParsesMetadataTimestamp() {
+        func varint(_ value: UInt64) -> [UInt8] {
+            var value = value
+            var bytes: [UInt8] = []
+            repeat {
+                var byte = UInt8(value & 0x7F)
+                value >>= 7
+                if value != 0 { byte |= 0x80 }
+                bytes.append(byte)
+            } while value != 0
+            return bytes
+        }
+
+        let seconds = UInt64(1_787_054_898)
+        let nanos = UInt64(123_000_000)
+        let timestampMessage = [UInt8(0x08)] + varint(seconds) + [UInt8(0x10)] + varint(nanos)
+        let metadata = Data([0x0A, UInt8(timestampMessage.count)] + timestampMessage)
+        let parsed = AntigravityStepTimestampReader.timestampForTest(from: metadata)
+
+        XCTAssertEqual(parsed?.timeIntervalSince1970 ?? 0, 1_787_054_898.123, accuracy: 0.001)
+        XCTAssertNil(AntigravityStepTimestampReader.timestampForTest(from: Data([0x08, 0x01])))
+    }
+
+    func testStepTimestampReaderReadsOnlyMatchingLLMSteps() throws {
+        let dbURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("antigravity-step-timestamp-\(UUID().uuidString).db")
+        defer { try? FileManager.default.removeItem(at: dbURL) }
+
+        var database: OpaquePointer?
+        XCTAssertEqual(
+            sqlite3_open_v2(
+                dbURL.path,
+                &database,
+                SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE,
+                nil
+            ),
+            SQLITE_OK
+        )
+        guard let database else {
+            XCTFail("failed to create SQLite fixture")
+            return
+        }
+        defer { sqlite3_close(database) }
+        XCTAssertEqual(
+            sqlite3_exec(
+                database,
+                "CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, metadata BLOB);",
+                nil,
+                nil,
+                nil
+            ),
+            SQLITE_OK
+        )
+
+        func varint(_ value: UInt64) -> [UInt8] {
+            var value = value
+            var bytes: [UInt8] = []
+            repeat {
+                var byte = UInt8(value & 0x7F)
+                value >>= 7
+                if value != 0 { byte |= 0x80 }
+                bytes.append(byte)
+            } while value != 0
+            return bytes
+        }
+
+        let timestampMessage = [UInt8(0x08)] + varint(1_787_054_898)
+        let metadata = Data([0x0A, UInt8(timestampMessage.count)] + timestampMessage)
+        var statement: OpaquePointer?
+        XCTAssertEqual(
+            sqlite3_prepare_v2(database, "INSERT INTO steps VALUES (?, ?, ?);", -1, &statement, nil),
+            SQLITE_OK
+        )
+        guard let statement else {
+            XCTFail("failed to prepare SQLite fixture insert")
+            return
+        }
+        defer { sqlite3_finalize(statement) }
+        let transient = unsafeBitCast(Int(-1), to: sqlite3_destructor_type.self)
+        metadata.withUnsafeBytes { bytes in
+            sqlite3_bind_int64(statement, 1, 42)
+            sqlite3_bind_int64(statement, 2, 15)
+            sqlite3_bind_blob(statement, 3, bytes.baseAddress, Int32(metadata.count), transient)
+        }
+        XCTAssertEqual(sqlite3_step(statement), SQLITE_DONE)
+
+        let timestamps = try AntigravityStepTimestampReader.timestamps(
+            dbPath: dbURL,
+            stepIndices: [42, 99]
+        )
+        XCTAssertEqual(timestamps.count, 1)
+        XCTAssertEqual(timestamps[42]?.timeIntervalSince1970 ?? 0, 1_787_054_898, accuracy: 0.001)
+        XCTAssertNil(timestamps[99])
+
+        let event = AntigravityFetcher.UsageEvent(
+            timestamp: nil,
+            model: "gemini-3.7-flash",
+            inputTokens: 100,
+            outputTokens: 20,
+            cacheReadTokens: 0,
+            cacheWriteTokens: 0,
+            reasoningTokens: 0,
+            totalTokens: 120,
+            stepIndices: [42]
+        )
+        let fileInfo = AntigravityDBFileInfo(
+            url: dbURL,
+            sizeBytes: 0,
+            mtimeMs: 0,
+            walSizeBytes: 0,
+            walMtimeMs: 0,
+            format: .sqlite
+        )
+        let recovered = AntigravityLocalUsageScanner.recoverMissingTimestamps(
+            [event],
+            fileInfo: fileInfo
+        )
+        XCTAssertEqual(recovered.count, 1)
+        XCTAssertEqual(
+            recovered[0].timestamp?.timeIntervalSince1970 ?? 0,
+            1_787_054_898,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(recovered[0].inputTokens, 100)
+    }
+
     func testEventCountCountsOnlyTimestampedEventsLikeDaily() {
         // 语义统一：eventCount = 成功进入日统计（有 timestamp）的 event 数。
         // 无 timestamp 的 event 不进 daily/turns/rounds/samples，也不得计入
