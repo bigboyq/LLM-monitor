@@ -20,6 +20,11 @@ build/
 .zcode/
 /.worktrees/
 
+# Personal working notes (audit execution plans, scratch plans, etc.).
+# `docs/plans/` would otherwise risk being tracked accidentally; the explicit
+# pattern prevents surprise inclusion of any future planning markdown.
+docs/plans/
+
 # Editor temp files
 *.swp
 *.swo
