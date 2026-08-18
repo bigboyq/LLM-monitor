@@ -100,12 +100,12 @@ final class OpencodeDBReader {
             return (provider, dayKey, rounds, turns, tin, tout, trsn, tcr, tcw)
         }
         for (provider, dayKey, rounds, turns, tin, tout, trsn, tcr, tcw) in rows {
-            guard let dayStart = Self.parseDayKey(dayKey, calendar: calendar) else { continue }
-            let inNN = Self.nnClamp(tin)
-            let outNN = Self.nnClamp(tout)
-            let crNN = Self.nnClamp(tcr)
-            let cwNN = Self.nnClamp(tcw)
-            let rsnNN = Self.nnClamp(trsn)
+            guard let dayStart = LocalUsageDayKey.parse(dayKey, calendar: calendar) else { continue }
+            let inNN = SQLiteConnection.nnClamp(tin)
+            let outNN = SQLiteConnection.nnClamp(tout)
+            let crNN = SQLiteConnection.nnClamp(tcr)
+            let cwNN = SQLiteConnection.nnClamp(tcw)
+            let rsnNN = SQLiteConnection.nnClamp(trsn)
             let usage = OpencodeDailyUsage(
                 dayStart: dayStart,
                 inputTokens: inNN,
@@ -194,12 +194,7 @@ final class OpencodeDBReader {
         let cutoffMs = cutoff.map { Int64($0.timeIntervalSince1970 * 1000) }
         let rows: [(String, String, Int64, String, String?, String?, Int64, Int64, Int64, Int64)] = try connection.query(
             sql: sql,
-            bind: { stmt in
-                let first = cutoffMs.map { sqlite3_bind_int64(stmt, 1, $0) } ?? sqlite3_bind_null(stmt, 1)
-                guard first == SQLITE_OK else { return first }
-                if let cutoffMs { return sqlite3_bind_int64(stmt, 2, cutoffMs) }
-                return sqlite3_bind_null(stmt, 2)
-            },
+            bind: SQLiteConnection.bindNullableMsCutoff(cutoffMs, startingAt: 1),
             map: { stmt in
                 let messageID = try SQLiteConnection.requiredText(stmt, column: 0)
                 let sessionID = try SQLiteConnection.requiredText(stmt, column: 1)
@@ -219,8 +214,8 @@ final class OpencodeDBReader {
         for (messageID, sessionID, timestamp, provider, parent, model, input, output, reasoning, cacheRead) in rows {
             let promptComponent = parent ?? "event-\(messageID)"
             // R9: 读取层非负饱和；input = nn(input) + nn(cacheRead)。
-            let inNN = Self.nnClamp(input)
-            let crNN = Self.nnClamp(cacheRead)
+            let inNN = SQLiteConnection.nnClamp(input)
+            let crNN = SQLiteConnection.nnClamp(cacheRead)
             // OpenCode raw input is uncached; preserve the sample contract by
             // combining it with cache-read only at this compatibility boundary.
             let sample = LocalTokenUsageSample(
@@ -229,19 +224,12 @@ final class OpencodeDBReader {
                 promptID: "\(sessionID):\(promptComponent)",
                 inputTokens: SaturatingArithmetic.add(inNN, crNN),
                 cachedInputTokens: crNN,
-                outputTokens: Self.nnClamp(output),
-                reasoningOutputTokens: Self.nnClamp(reasoning)
+                outputTokens: SQLiteConnection.nnClamp(output),
+                reasoningOutputTokens: SQLiteConnection.nnClamp(reasoning)
             )
             samplesByProvider[provider, default: []].append(sample)
         }
         return samplesByProvider
-    }
-
-    /// R9: Int64? → 非负 Int 饱和（NULL 当 0，负值当 0，超出 Int 范围封顶）。
-    @inline(__always)
-    private static func nnClamp(_ x: Int64?) -> Int {
-        let v = Int(clamping: x ?? 0)
-        return v < 0 ? 0 : v
     }
 
     /// per-provider 见过的 modelID（去重）。
@@ -264,12 +252,5 @@ final class OpencodeDBReader {
             models[provider, default: []].insert(model)
         }
         return models.mapValues { $0.sorted() }
-    }
-
-    /// 'yyyy-MM-dd' → 本地午夜 Date。
-    private static func parseDayKey(_ dayKey: String, calendar: Calendar) -> Date? {
-        let parts = dayKey.split(separator: "-").compactMap { Int($0) }
-        guard parts.count == 3 else { return nil }
-        return calendar.date(from: DateComponents(year: parts[0], month: parts[1], day: parts[2]))
     }
 }

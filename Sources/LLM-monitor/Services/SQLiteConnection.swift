@@ -108,6 +108,39 @@ final class SQLiteConnection {
         return String(cString: pointer)
     }
 
+    // MARK: - 三个 DB reader 共享的小工具（此前各自持有一份逐字相同的实现）
+
+    /// SQLITE_TRANSIENT 析构器：绑定临时 buffer 时让 SQLite 自行复制内容。
+    static let sqliteTransientDestructor = unsafeBitCast(
+        Int(-1), to: sqlite3_destructor_type.self
+    )
+
+    /// R9: Int64? → 非负 Int 饱和（NULL 当 0，负值当 0，超出 Int 范围封顶）。
+    /// SQL 聚合列进入业务模型的统一边界。
+    @inline(__always)
+    static func nnClamp(_ x: Int64?) -> Int {
+        let v = Int(clamping: x ?? 0)
+        return v < 0 ? 0 : v
+    }
+
+    /// `(? IS NULL OR column >= ?)` 双占位时间下界的统一绑定。SQLite 不支持把
+    /// 一个值绑到多个占位符，两个位置各绑同一个 cutoff 毫秒值；cutoff 为 nil
+    /// 时两处都绑 NULL（谓词恒真，退化为无下界）。
+    static func bindNullableMsCutoff(
+        _ cutoffMs: Int64?,
+        startingAt index: Int32
+    ) -> (OpaquePointer) -> Int32 {
+        { stmt in
+            let first: Int32 = cutoffMs.map {
+                sqlite3_bind_int64(stmt, index, $0)
+            } ?? sqlite3_bind_null(stmt, index)
+            guard first == SQLITE_OK else { return first }
+            return cutoffMs.map {
+                sqlite3_bind_int64(stmt, index + 1, $0)
+            } ?? sqlite3_bind_null(stmt, index + 1)
+        }
+    }
+
     // MARK: - 通用 query
 
     /// 通用 SELECT helper：

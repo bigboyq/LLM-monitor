@@ -120,10 +120,7 @@ final class GlmZcodeDBReader {
             bind: { stmt in
                 let provider = Self.bindProviders(to: stmt, index: 1)
                 guard provider == SQLITE_OK else { return provider }
-                let first = cutoffMs.map { sqlite3_bind_int64(stmt, 3, $0) } ?? sqlite3_bind_null(stmt, 3)
-                guard first == SQLITE_OK else { return first }
-                if let cutoffMs { return sqlite3_bind_int64(stmt, 4, cutoffMs) }
-                return sqlite3_bind_null(stmt, 4)
+                return SQLiteConnection.bindNullableMsCutoff(cutoffMs, startingAt: 3)(stmt)
             },
             map: { stmt in
             let dayKey = try SQLiteConnection.requiredText(stmt, column: 0)
@@ -138,12 +135,12 @@ final class GlmZcodeDBReader {
             }
         )
         for (dayKey, rounds, turns, tin, tout, trsn, tcr, tcw) in rows {
-            guard let dayStart = Self.parseDayKey(dayKey, calendar: calendar) else { continue }
+            guard let dayStart = LocalUsageDayKey.parse(dayKey, calendar: calendar) else { continue }
             // R9: 读取层再做非负饱和（单行 MAX 已在 SQL 内 clamp，这里作第二层防御）。
-            let toutNN = Self.nnClamp(tout)
-            let trsnNN = Self.nnClamp(trsn)
-            let tcrNN = Self.nnClamp(tcr)
-            let tcwNN = Self.nnClamp(tcw)
+            let toutNN = SQLiteConnection.nnClamp(tout)
+            let trsnNN = SQLiteConnection.nnClamp(trsn)
+            let tcrNN = SQLiteConnection.nnClamp(tcr)
+            let tcwNN = SQLiteConnection.nnClamp(tcw)
             // uncached input = max(input_raw - cacheRead, 0)，用原始 Int64 饱和减法
             let uncachedInput = Int(clamping: max(SaturatingArithmetic.subtract(tin, tcr), 0))
             // total = uncached + cacheRead + output + reason（用 uncached 重算，
@@ -248,10 +245,7 @@ final class GlmZcodeDBReader {
             bind: { stmt in
                 let provider = Self.bindProviders(to: stmt, index: 1)
                 guard provider == SQLITE_OK else { return provider }
-                let first = cutoffMs.map { sqlite3_bind_int64(stmt, 3, $0) } ?? sqlite3_bind_null(stmt, 3)
-                guard first == SQLITE_OK else { return first }
-                if let cutoffMs { return sqlite3_bind_int64(stmt, 4, cutoffMs) }
-                return sqlite3_bind_null(stmt, 4)
+                return SQLiteConnection.bindNullableMsCutoff(cutoffMs, startingAt: 3)(stmt)
             },
             map: { stmt in
                 let id = try SQLiteConnection.requiredText(stmt, column: 0)
@@ -272,8 +266,8 @@ final class GlmZcodeDBReader {
         for (id, sessionID, timestamp, turn, model, input, output, reasoning, cacheRead, providerID) in rows {
             let promptComponent = turn ?? "event-\(id)"
             // R9: 读取层非负饱和；input 用 nn(input)，cachedInput 用 nn(cacheRead)。
-            let inNN = Self.nnClamp(input)
-            let crNN = Self.nnClamp(cacheRead)
+            let inNN = SQLiteConnection.nnClamp(input)
+            let crNN = SQLiteConnection.nnClamp(cacheRead)
             // ZCode raw input is cache-inclusive and the reader has already
             // applied Method A to output/reasoning. Do not subtract cache or
             // split reasoning again in the sample path.
@@ -283,8 +277,8 @@ final class GlmZcodeDBReader {
                 promptID: "\(sessionID):\(promptComponent)",
                 inputTokens: inNN,
                 cachedInputTokens: crNN,
-                outputTokens: Self.nnClamp(output),
-                reasoningOutputTokens: Self.nnClamp(reasoning),
+                outputTokens: SQLiteConnection.nnClamp(output),
+                reasoningOutputTokens: SQLiteConnection.nnClamp(reasoning),
                 sourceProviderID: providerID
             )
             samples.append(sample)
@@ -308,33 +302,16 @@ final class GlmZcodeDBReader {
         return rows.sorted()
     }
 
-    /// 'yyyy-MM-dd' → 本地午夜 Date。
-    private static func parseDayKey(_ dayKey: String, calendar: Calendar) -> Date? {
-        let parts = dayKey.split(separator: "-").compactMap { Int($0) }
-        guard parts.count == 3 else { return nil }
-        return calendar.date(from: DateComponents(year: parts[0], month: parts[1], day: parts[2]))
-    }
-
-    /// R9: Int64? → 非负 Int 饱和（NULL 当 0，负值当 0，超出 Int 范围封顶）。
-    @inline(__always)
-    private static func nnClamp(_ x: Int64?) -> Int {
-        let v = Int(clamping: x ?? 0)
-        return v < 0 ? 0 : v
-    }
-
-    private static let sqliteTransientDestructor = unsafeBitCast(
-        Int(-1), to: sqlite3_destructor_type.self
-    )
-
     /// 绑定 GLM Coding Plan 与闲时任务两个 provider（`provider_id IN (?, ?)`）。
     /// `index` 为第一个 `?` 的位置，第二个紧跟其后。
     private static func bindProviders(to statement: OpaquePointer, index: Int32) -> Int32 {
+        let transient = SQLiteConnection.sqliteTransientDestructor
         let first = sqlite3_bind_text(
             statement,
             index,
             (glmProviderID as NSString).utf8String,
             -1,
-            sqliteTransientDestructor
+            transient
         )
         guard first == SQLITE_OK else { return first }
         return sqlite3_bind_text(
@@ -342,7 +319,7 @@ final class GlmZcodeDBReader {
             index + 1,
             (offPeakProviderID as NSString).utf8String,
             -1,
-            sqliteTransientDestructor
+            transient
         )
     }
 }

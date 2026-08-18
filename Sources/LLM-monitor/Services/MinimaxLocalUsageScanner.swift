@@ -45,10 +45,14 @@ import os.log
 ///   `local_runtime_token_usage` 里，SQL 一次 `COUNT(DISTINCT turn_id)` 算完。
 /// - **不删 -shm**：跟 antigravity 一样 copy `.db`+`.db-wal`+`.db-shm` 到 /tmp 副本上 read。
 @MainActor
-final class MinimaxLocalUsageScanner: ObservableObject, @unchecked Sendable {
-    @Published private(set) var lastResult: MinimaxLocalUsage?
-    @Published private(set) var isScanning: Bool = false
-    @Published private(set) var lastError: String?
+final class MinimaxLocalUsageScanner: LocalUsageScannerBase<MinimaxLocalUsage>, @unchecked Sendable {
+    nonisolated static let scanLogTag = "[minimax-scan]"
+
+    /// 整个 `performScanPure` pipeline 串行化。cancel+rescan 时两个 worker
+    /// 会 race cache 写（新 worker 读到旧 disk 状态，算完写入 = 回滚新 worker
+    /// 的 view）。用 async-aware 的 AsyncMutex 串行整个 pipeline，老的 worker
+    /// 跑完才让新 worker 开始，彻底消除 revert 风险。
+    nonisolated static let pipelineMutex = AsyncMutex()
 
     /// v2 runtime-state db 路径（热路径，活跃 session）— 唯一支持、唯一扫描的源
     nonisolated static let defaultRuntimeDBURL: URL = {
@@ -71,18 +75,6 @@ final class MinimaxLocalUsageScanner: ObservableObject, @unchecked Sendable {
     private let fileManager: FileManagerBox
     private let calendar: Calendar
     private let now: @Sendable () -> Date
-
-    private var inFlightTask: Task<Void, Never>?
-    /// 每次 `scan()` / `cancelInFlight()` 递增 generation token。
-    /// runScan 结束时跟 latest generation 比对, 不一致就丢弃结果,
-    /// 防止旧 generation 的 task 在新 generation 启动后写回状态。
-    private var latestGeneration: UInt64 = 0
-    /// 整个 `performScanPure` pipeline 串行化. cancel+rescan 时两个 worker
-    /// 会 race cache 写 (新 worker 读到旧 disk 状态, 算完写入 = 回滚新 worker
-    /// 的 view). 用 async-aware 的 AsyncMutex 串行整个 pipeline, 老的 worker
-    /// 跑完才让新 worker 开始, 彻底消除 revert 风险. "并发 RPC" 收益在
-    /// cancel+rescan 时也用不上 (新 worker 等老 worker 几秒可接受).
-    nonisolated static let pipelineMutex = AsyncMutex()
 
     /// 最近一次成功写入 index.json 的 generation. 旧 worker 即使晚到 mutex,
     /// `startedGeneration > self.lastCommittedGeneration` 才写盘, 否则 saveIndex
@@ -116,12 +108,35 @@ final class MinimaxLocalUsageScanner: ObservableObject, @unchecked Sendable {
         self.fileManager = fileManager
         self.calendar = calendar
         self.now = now
-        self.lastResult = Self.loadCachedResult(
-            cacheDir: cacheDir,
-            fileManager: fileManager,
-            calendar: calendar,
-            now: Date()
+        super.init(
+            logTag: Self.scanLogTag,
+            cachedResult: Self.loadCachedResult(
+                cacheDir: cacheDir,
+                fileManager: fileManager,
+                calendar: calendar,
+                now: Date()
+            )
         )
+    }
+
+    /// performScanPure 的 pipeline：mutex 串行 + lastCommittedGeneration 守门。
+    override func makeWork(startedGeneration: UInt64) -> @Sendable () async throws -> MinimaxLocalUsage {
+        let runtimeDBURL = self.runtimeDBURL
+        let cacheDir = self.cacheDir
+        let fileManager = self.fileManager
+        let calendar = self.calendar
+        let now = self.now
+        return {
+            try await Self.performScanPure(
+                runtimeDBURL: runtimeDBURL,
+                cacheDir: cacheDir,
+                fileManager: fileManager,
+                calendar: calendar,
+                now: now,
+                startedGeneration: startedGeneration,
+                scanner: self
+            )
+        }
     }
 
     /// performScanPure 在 mutex 内读 + 写本实例的 lastCommittedGeneration
@@ -138,91 +153,6 @@ final class MinimaxLocalUsageScanner: ObservableObject, @unchecked Sendable {
     /// 只给 performScanPure 用, 外部不可见.
     @MainActor fileprivate func writeLastCommittedGeneration(_ value: UInt64) {
         self.lastCommittedGeneration = value
-    }
-
-    /// 触发一次扫描。如果上一次还在跑，直接忽略（dedup）。
-    func scan() {
-        guard inFlightTask == nil else { return }
-        isScanning = true
-        latestGeneration &+= 1
-        let startedGeneration = latestGeneration
-        inFlightTask = Task { [weak self] in
-            await self?.runScan(startedGeneration: startedGeneration)
-        }
-    }
-
-    /// 取消当前 in-flight scan。配置变更 / AppState.stop() 调用,
-    /// 防止旧扫描结果写回新状态。
-    /// 实际效果:
-    /// 1. generation 递增 —— 旧 runScan 完成时 generation 比对失败, 主动 return
-    /// 2. Task.cancel() —— 让继承取消状态的扫描工作尽快抛 CancellationError
-    /// 3. isScanning 立即清 false —— 防止"cancel 后不 rescan"时 UI 永远显示
-    ///    "scanning..." (P6 fix 的 defer generation 守门本意是"不让旧任务 defer
-    ///    干扰新任务", 但 cancel 不 rescan 时旧任务 defer 因 generation 不匹配
-    ///    跳过清理, isScanning 卡在 true, 这个守门的副作用要 cancel 主动补)
-    /// 双保险, 即便 runScan 已过了 generation check, 也会被 cancel 中断。
-    func cancelInFlight() {
-        latestGeneration &+= 1
-        isScanning = false
-        inFlightTask?.cancel()
-        inFlightTask = nil
-    }
-
-
-    private func runScan(startedGeneration: UInt64) async {
-        defer {
-            // 关键: 只在当前 generation 仍是 latest 时清 isScanning / inFlightTask.
-            // 避免 cancel + rescan 期间, 旧 gen=1 的 defer 把 isScanning 设 false
-            // 但 gen=3 还在跑, UI 闪一下 '不在扫描' 然后 gen=3 又设回 true.
-            // 同时避免旧任务的 defer 抢着清掉新任务的 inFlightTask 引用.
-            if startedGeneration == self.latestGeneration {
-                self.isScanning = false
-                self.inFlightTask = nil
-            } else {
-                logInfo("[minimax-scan] 旧任务 (gen=\(startedGeneration)) defer 跳过状态清理: latest=\(self.latestGeneration)")
-            }
-        }
-        // 重 I/O 全部在 background 执行（SQL 聚合、文件遍历、缓存读写）。
-        // 这是用 @MainActor class 的关键：scanner 实例的 @Published 状态
-        // 只在主线程被改；performScanPure 是 nonisolated static 不碰 self。
-        //
-        // 先把所有依赖复制到本地变量，再交给非 actor-isolated runner 执行，
-        // 避免重 I/O 占用 MainActor。
-        let runtimeDBURL = self.runtimeDBURL
-        let cacheDir = self.cacheDir
-        let fileManager = self.fileManager
-        let calendar = self.calendar
-        let now = self.now
-        // cancel + rescan 期间，Task 取消会沿当前任务传播；AsyncMutex 仍保证
-        // pipeline/cache 写串行。generation 和 lastCommittedGeneration 是第二层
-        // 守门，防止已经越过取消检查的旧 worker 回写状态或磁盘。
-        let work: @Sendable () async throws -> MinimaxLocalUsage = {
-            try await Self.performScanPure(
-                runtimeDBURL: runtimeDBURL,
-                cacheDir: cacheDir,
-                fileManager: fileManager,
-                calendar: calendar,
-                now: now,
-                startedGeneration: startedGeneration,
-                scanner: self
-            )
-        }
-        let applyResult: @MainActor (MinimaxLocalUsage) -> Void = { result in
-            self.lastResult = result
-            self.lastError = nil
-        }
-        let applyError: @MainActor (String) -> Void = { message in
-            // 失败时保留上次的 lastResult（如果之前有），UI 不闪空白
-            self.lastError = message
-        }
-        await LocalUsageScanRunner.run(
-            logTag: "[minimax-scan]",
-            startedGeneration: startedGeneration,
-            latestGeneration: { self.latestGeneration },
-            work: work,
-            applyResult: applyResult,
-            applyError: applyError
-        )
     }
 
     /// 纯计算 + I/O，不直接修改 self；由非 actor-isolated runner 执行。

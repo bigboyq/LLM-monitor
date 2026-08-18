@@ -200,10 +200,5 @@ extension MinimaxLocalUsageScanner {
 
 // MARK: - LocalUsageScanner 协议
 
-/// 把 `@Published lastResult` / `@Published isScanning` 暴露成 AnyPublisher，
-/// 让 LocalUsageCoordinator 跨具体类型 wire up Combine sink。
-extension MinimaxLocalUsageScanner: LocalUsageScanner {
-    typealias Usage = MinimaxLocalUsage
-    var lastResultPublisher: AnyPublisher<MinimaxLocalUsage?, Never> { $lastResult.eraseToAnyPublisher() }
-    var isScanningPublisher: AnyPublisher<Bool, Never> { $isScanning.eraseToAnyPublisher() }
-}
+// LocalUsageScanner conformance（lastResultPublisher / isScanningPublisher）
+// 由 LocalUsageScannerBase 提供。

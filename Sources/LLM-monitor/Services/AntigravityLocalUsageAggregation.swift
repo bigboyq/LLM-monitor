@@ -214,9 +214,4 @@ extension AntigravityLocalUsageScanner {
 }
 
 // MARK: - LocalUsageScanner 协议
-
-extension AntigravityLocalUsageScanner: LocalUsageScanner {
-    typealias Usage = AntigravityLocalUsage
-    var lastResultPublisher: AnyPublisher<AntigravityLocalUsage?, Never> { $lastResult.eraseToAnyPublisher() }
-    var isScanningPublisher: AnyPublisher<Bool, Never> { $isScanning.eraseToAnyPublisher() }
-}
+// conformance（lastResultPublisher / isScanningPublisher）由 LocalUsageScannerBase 提供。

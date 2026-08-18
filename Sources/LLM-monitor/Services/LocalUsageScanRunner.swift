@@ -31,8 +31,8 @@ import Foundation
 /// ```
 ///
 /// 保留各 scanner 自己的 mutex / cache / 静态 helper 与
-/// `performScanPure` 测试表面，只把生命周期 boilerplate
-/// 抽出来。完整 base-class 重构需要重写测试，留给后续大版本。
+/// `performScanPure` 测试表面。生命周期外壳已收口到 `LocalUsageScannerBase`，
+/// 本 runner 只负责单次运行的守门与日志。
 enum LocalUsageScanRunner {
     /// 跑一次 scanner 生命周期。
     ///

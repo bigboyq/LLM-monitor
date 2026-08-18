@@ -91,9 +91,6 @@ private struct TotalsRow {
 /// 只保留 minimax v2 领域 SQL（`aggregate(calendar:)`）。
 final class MinimaxDBReader {
     private let conn: SQLiteConnection
-    private static let sqliteTransientDestructor = unsafeBitCast(
-        Int(-1), to: sqlite3_destructor_type.self
-    )
     var path: String { conn.path }
 
     /// Test-only: 统计字符聚合被尝试的次数，验证 degraded source 的强制重试语义。
@@ -177,20 +174,11 @@ final class MinimaxDBReader {
             """
         let rows = try conn.query(
             sql: perDaySQL,
-            bind: { stmt in
-                if let cutoffMs {
-                    let first = sqlite3_bind_int64(stmt, 1, cutoffMs)
-                    guard first == SQLITE_OK else { return first }
-                    return sqlite3_bind_int64(stmt, 2, cutoffMs)
-                }
-                let first = sqlite3_bind_null(stmt, 1)
-                guard first == SQLITE_OK else { return first }
-                return sqlite3_bind_null(stmt, 2)
-            }
+            bind: SQLiteConnection.bindNullableMsCutoff(cutoffMs, startingAt: 1)
         ) { stmt -> PerDayRow in
             let dayKey = try SQLiteConnection.requiredText(stmt, column: 0)
-            let rounds = Self.nonNegativeInt(sqlite3_column_int64(stmt, 1))
-            let turns = Self.nonNegativeInt(sqlite3_column_int64(stmt, 2))
+            let rounds = SQLiteConnection.nnClamp(sqlite3_column_int64(stmt, 1))
+            let turns = SQLiteConnection.nnClamp(sqlite3_column_int64(stmt, 2))
             let input = Self.nonNegativeInt(sqlite3_column_double(stmt, 3))
             let output = Self.nonNegativeInt(sqlite3_column_double(stmt, 4))
             let reasoning = Self.nonNegativeInt(sqlite3_column_double(stmt, 5))
@@ -240,8 +228,8 @@ final class MinimaxDBReader {
             WHERE ts IS NOT NULL
             """
         let totals = try conn.query(sql: totalsSQL) { stmt -> TotalsRow in
-            let sessions = Self.nonNegativeInt(sqlite3_column_int64(stmt, 0))
-            let events = Self.nonNegativeInt(sqlite3_column_int64(stmt, 1))
+            let sessions = SQLiteConnection.nnClamp(sqlite3_column_int64(stmt, 0))
+            let events = SQLiteConnection.nnClamp(sqlite3_column_int64(stmt, 1))
             return TotalsRow(sessions: sessions, events: events)
         }
         let sessionCount = totals.first?.sessions ?? 0
@@ -312,7 +300,7 @@ final class MinimaxDBReader {
                         nextIndex,
                         (uniqueObservedModel as NSString).utf8String,
                         -1,
-                        Self.sqliteTransientDestructor
+                        SQLiteConnection.sqliteTransientDestructor
                     )
                     guard code == SQLITE_OK else { return code }
                     nextIndex += 1
@@ -339,13 +327,13 @@ final class MinimaxDBReader {
                 let sessionID = try SQLiteConnection.requiredText(stmt, column: 0)
                 let turnID = optionalText(1)
                 let modelName = optionalText(2)
-                let timestampMs = Self.nonNegativeInt(
+                let timestampMs = SQLiteConnection.nnClamp(
                     try SQLiteConnection.requiredInt64(stmt, column: 3)
                 )
-                let uncachedInput = Self.nonNegativeInt(sqlite3_column_int64(stmt, 4))
-                let output = Self.nonNegativeInt(sqlite3_column_int64(stmt, 5))
-                let reasoning = Self.nonNegativeInt(sqlite3_column_int64(stmt, 6))
-                let cachedInput = Self.nonNegativeInt(sqlite3_column_int64(stmt, 7))
+                let uncachedInput = SQLiteConnection.nnClamp(sqlite3_column_int64(stmt, 4))
+                let output = SQLiteConnection.nnClamp(sqlite3_column_int64(stmt, 5))
+                let reasoning = SQLiteConnection.nnClamp(sqlite3_column_int64(stmt, 6))
+                let cachedInput = SQLiteConnection.nnClamp(sqlite3_column_int64(stmt, 7))
                 let promptComponent = turnID ?? "event-\(timestampMs)"
                 // MiniMax raw input is uncached and cache-read is separate;
                 // samples deliberately store their legacy cache-inclusive
@@ -443,14 +431,11 @@ final class MinimaxDBReader {
         }
         let rows = try conn.query(
             sql: sql,
-            bind: cutoffMs == nil ? nil : { stmt in
-                let first = sqlite3_bind_int64(stmt, 1, cutoffMs!)
-                guard first == SQLITE_OK else { return first }
-                return sqlite3_bind_int64(stmt, 2, cutoffMs!)
-            }
+            // cutoff 为 nil 时谓词整个不进 SQL（无占位符），必须传 bind: nil。
+            bind: cutoffMs == nil ? nil : SQLiteConnection.bindNullableMsCutoff(cutoffMs, startingAt: 1)
         ) { stmt -> Row in
             let dayKey = try SQLiteConnection.requiredText(stmt, column: 0)
-            let messageCount = Self.nonNegativeInt(sqlite3_column_int64(stmt, 1))
+            let messageCount = SQLiteConnection.nnClamp(sqlite3_column_int64(stmt, 1))
             let reasonChars = Self.nonNegativeInt(sqlite3_column_double(stmt, 2))
             let outputChars = Self.nonNegativeInt(sqlite3_column_double(stmt, 3))
             return Row(dayKey: dayKey, messageCount: messageCount,
@@ -471,15 +456,9 @@ final class MinimaxDBReader {
 
     // MARK: - helpers
 
-    /// SQLite 聚合列进入业务模型的统一边界：计数不允许为负，并对不同 Int
-    /// 位宽做饱和转换。当前 macOS 为 64-bit，合法数据数值保持不变。
-    private static func nonNegativeInt(_ value: Int64) -> Int {
-        guard value > 0 else { return 0 }
-        return Int(clamping: value)
-    }
-
     /// `TOTAL()` 返回 Double：正常计数截断到整数，超出平台 Int 或 +∞ 时饱和。
-    /// NaN / 负值没有业务含义，统一归零。
+    /// NaN / 负值没有业务含义，统一归零。（Int64 列的非负饱和走
+    /// `SQLiteConnection.nnClamp`。）
     private static func nonNegativeInt(_ value: Double) -> Int {
         guard !value.isNaN, value > 0 else { return 0 }
         guard value.isFinite, value < Double(Int.max) else { return Int.max }

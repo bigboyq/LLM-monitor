@@ -22,10 +22,11 @@ struct DshLocalUsageScanLimits: Sendable {
     let maxRecentSamples: Int
 }
 @MainActor
-final class DshLocalUsageScanner: ObservableObject, @unchecked Sendable {
-    @Published private(set) var lastResult: DshLocalUsage?
-    @Published private(set) var isScanning: Bool = false
-    @Published private(set) var lastError: String?
+final class DshLocalUsageScanner: LocalUsageScannerBase<DshLocalUsage>, @unchecked Sendable {
+    nonisolated static let scanLogTag = "[dsh-scan]"
+
+    /// 整个扫描 pipeline 的串行锁（跨实例共享）。
+    nonisolated static let pipelineMutex = AsyncMutex()
 
     nonisolated static let defaultSessionsRoot: URL = {
         let environment = ProcessInfo.processInfo.environment
@@ -52,9 +53,6 @@ final class DshLocalUsageScanner: ObservableObject, @unchecked Sendable {
     private let calendar: Calendar
     private let now: @Sendable () -> Date
     private let decompressor: Decompressor
-    private var inFlightTask: Task<Void, Never>?
-    private var latestGeneration: UInt64 = 0
-    nonisolated static let pipelineMutex = AsyncMutex()
 
     init(
         sessionsRoot: URL = DshLocalUsageScanner.defaultSessionsRoot,
@@ -70,11 +68,14 @@ final class DshLocalUsageScanner: ObservableObject, @unchecked Sendable {
         self.calendar = calendar
         self.now = now
         self.decompressor = decompressor
-        self.lastResult = Self.loadCachedResult(
-            cacheDir: cacheDir,
-            fileManager: fileManager,
-            calendar: calendar,
-            now: Date()
+        super.init(
+            logTag: Self.scanLogTag,
+            cachedResult: Self.loadCachedResult(
+                cacheDir: cacheDir,
+                fileManager: fileManager,
+                calendar: calendar,
+                now: Date()
+            )
         )
     }
 
@@ -89,40 +90,15 @@ final class DshLocalUsageScanner: ObservableObject, @unchecked Sendable {
         return rebaseCached(snapshot, calendar: calendar, now: now)
     }
 
-    func scan() {
-        guard inFlightTask == nil else { return }
-        isScanning = true
-        latestGeneration &+= 1
-        let startedGeneration = latestGeneration
-        inFlightTask = Task { [weak self] in
-            await self?.runScan(startedGeneration: startedGeneration)
-        }
-    }
-
-    func cancelInFlight() {
-        latestGeneration &+= 1
-        isScanning = false
-        inFlightTask?.cancel()
-        inFlightTask = nil
-    }
-
-    private func runScan(startedGeneration: UInt64) async {
-        defer {
-            if startedGeneration == latestGeneration {
-                isScanning = false
-                inFlightTask = nil
-            } else {
-                logInfo("[dsh-scan] 旧任务 (gen=\(startedGeneration)) defer 跳过状态清理: latest=\(latestGeneration)")
-            }
-        }
-
+    /// dsh 的 pipeline：mutex 串行 + detached utility 任务承载纯文件系统扫描。
+    override func makeWork(startedGeneration: UInt64) -> @Sendable () async throws -> DshLocalUsage {
         let sessionsRoot = self.sessionsRoot
         let cacheDir = self.cacheDir
         let fileManager = self.fileManager
         let calendar = self.calendar
         let now = self.now
         let decompressor = self.decompressor
-        let work: @Sendable () async throws -> DshLocalUsage = {
+        return {
             try await Self.pipelineMutex.withLock {
                 try await Task.detached(priority: .utility) {
                     try Self.performScanPure(
@@ -137,20 +113,6 @@ final class DshLocalUsageScanner: ObservableObject, @unchecked Sendable {
                 }.value
             }
         }
-
-        await LocalUsageScanRunner.run(
-            logTag: "[dsh-scan]",
-            startedGeneration: startedGeneration,
-            latestGeneration: { [weak self] in self?.latestGeneration ?? 0 },
-            work: work,
-            applyResult: { result in
-                self.lastResult = result
-                self.lastError = nil
-            },
-            applyError: { message in
-                self.lastError = message
-            }
-        )
     }
 
     /// Pure filesystem scan. The `AsyncMutex` keeps cache read/decode/write and a
@@ -355,16 +317,7 @@ final class DshLocalUsageScanner: ObservableObject, @unchecked Sendable {
 }
 
 // MARK: - LocalUsageScanner conformance
-
-extension DshLocalUsageScanner: LocalUsageScanner {
-    var lastResultPublisher: AnyPublisher<DshLocalUsage?, Never> {
-        $lastResult.eraseToAnyPublisher()
-    }
-
-    var isScanningPublisher: AnyPublisher<Bool, Never> {
-        $isScanning.eraseToAnyPublisher()
-    }
-}
+// conformance（lastResultPublisher / isScanningPublisher）由 LocalUsageScannerBase 提供。
 
 // MARK: - Parsed data
 
