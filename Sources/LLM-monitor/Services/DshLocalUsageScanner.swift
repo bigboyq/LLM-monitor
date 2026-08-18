@@ -1164,24 +1164,6 @@ enum DshLogDecoder {
         }
     }
 
-    nonisolated static func decompress(_ data: Data) throws -> Data {
-        let fm = FileManagerBox()
-        if let zstd = existingExecutable(named: "zstd", preferred: ["/opt/homebrew/bin/zstd", "/usr/local/bin/zstd"]) {
-            do {
-                return try runZstd(data: data, executable: zstd, fileManager: fm)
-            } catch {
-                logWarn("[dsh-scan] zstd CLI 解压失败，尝试 Node zlib: \(error.localizedDescription)")
-            }
-        }
-        if let node = existingExecutable(
-            named: "node",
-            preferred: ["/opt/homebrew/bin/node", "/usr/local/bin/node"]
-        ) {
-            return try runNode(data: data, executable: node, fileManager: fm)
-        }
-        throw DecoderError.unavailable
-    }
-
     /// Stream decompressed output into a private temporary file. The scanner then
     /// parses that file in bounded chunks instead of keeping compressed input and
     /// decompressed JSONL in the application heap at the same time.
@@ -1208,33 +1190,6 @@ enum DshLogDecoder {
         throw DecoderError.unavailable
     }
 
-    private static func runZstd(
-        data: Data,
-        executable: URL,
-        fileManager: FileManagerBox
-    ) throws -> Data {
-        let temporary = fileManager.temporaryURL()
-        try fileManager.writePrivate(data, to: temporary)
-        defer { try? fileManager.removeItem(at: temporary) }
-        let result = try ProcessRunner.run(
-            executable: executable,
-            arguments: ["-q", "-d", "-c", temporary.path],
-            timeout: 30
-        )
-        guard result.terminationStatus == 0 else {
-            throw DecoderError.commandFailed(
-                executable: executable.lastPathComponent,
-                status: result.terminationStatus,
-                stderr: result.standardError
-            )
-        }
-        guard let output = result.standardOutput.data(using: .utf8) else {
-            throw DecoderError.unsupportedData
-        }
-        try checkOutputSize(output.count)
-        return output
-    }
-
     private static func runZstdToFile(
         input: URL,
         output: URL,
@@ -1255,38 +1210,6 @@ enum DshLogDecoder {
             )
         }
         try checkOutputSize(fileManager.attributesOfItem(atPath: output.path)[.size] as? NSNumber)
-    }
-
-    private static func runNode(
-        data: Data,
-        executable: URL,
-        fileManager: FileManagerBox
-    ) throws -> Data {
-        let temporary = fileManager.temporaryURL()
-        try fileManager.writePrivate(data, to: temporary)
-        defer { try? fileManager.removeItem(at: temporary) }
-        let script = """
-        const fs = require("node:fs");
-        const zlib = require("node:zlib");
-        process.stdout.write(zlib.zstdDecompressSync(fs.readFileSync(process.argv[1])));
-        """
-        let result = try ProcessRunner.run(
-            executable: executable,
-            arguments: ["-e", script, temporary.path],
-            timeout: 30
-        )
-        guard result.terminationStatus == 0 else {
-            throw DecoderError.commandFailed(
-                executable: executable.lastPathComponent,
-                status: result.terminationStatus,
-                stderr: result.standardError
-            )
-        }
-        guard let output = result.standardOutput.data(using: .utf8) else {
-            throw DecoderError.unsupportedData
-        }
-        try checkOutputSize(output.count)
-        return output
     }
 
     private static func runNodeToFile(
@@ -1336,12 +1259,11 @@ enum DshLogDecoder {
         return nil
     }
 
-    private static func checkOutputSize(_ bytes: Int) throws {
-        let maximum = 256 * 1024 * 1024
-        guard bytes <= maximum else { throw DecoderError.outputTooLarge(bytes: bytes) }
-    }
-
     private static func checkOutputSize(_ bytes: NSNumber?) throws {
-        try checkOutputSize(bytes?.intValue ?? 0)
+        guard let bytes else { throw DecoderError.unsupportedData }
+        let maximum = 256 * 1024 * 1024
+        guard bytes.intValue <= maximum else {
+            throw DecoderError.outputTooLarge(bytes: bytes.intValue)
+        }
     }
 }
