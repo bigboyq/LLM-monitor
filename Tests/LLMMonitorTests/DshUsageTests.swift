@@ -8,6 +8,46 @@ final class DshUsageTests: XCTestCase {
         return calendar
     }
 
+    func testDshCacheWriteIsReportedSeparatelyAndExcludedFromTotal() throws {
+        // spec/providers/dsh.md：cacheWrite 单独成桶，不计入 totalTokens。
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let calendar = makeUTCGregorianCalendar()
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("llm-monitor-dsh-cache-write-\(UUID().uuidString)", isDirectory: true)
+        let cache = root.appendingPathComponent(".token-monitor", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let lines: [String] = [
+            #"{"type":"session","version":0,"id":"session-cachewrite","createdAt":1700000000000,"cwd":"/tmp","delegationDepth":0}"#,
+            #"{"type":"request/context","seq":1,"time":1700000000000,"data":{"provider":"deepseek-official","model":"deepseek-v4-flash","contextWindow":1000000}}"#,
+            #"{"type":"assistant/message","seq":2,"time":1700000001000,"data":{"turn":1,"step":0,"usage":{"inputTokens":100,"cacheReadTokens":50,"cacheWriteTokens":777,"outputTokens":30,"reasoningTokens":10}}}"#
+        ]
+        try writeSessionLog(
+            root: root.appendingPathComponent("sessions", isDirectory: true),
+            sessionID: "session-cachewrite",
+            body: lines.joined(separator: "\n") + "\n"
+        )
+
+        let snapshot = try DshLocalUsageScanner.performScanPure(
+            sessionsRoot: root.appendingPathComponent("sessions", isDirectory: true),
+            cacheDir: cache,
+            fileManager: FileManagerBox(),
+            calendar: calendar,
+            now: { base },
+            decompressor: { $0 },
+            limits: DshLocalUsageScanLimits.production
+        )
+
+        let deepseek = try XCTUnwrap(snapshot.byProvider["deepseek-official"])
+        let today = try XCTUnwrap(deepseek.today)
+        XCTAssertEqual(today.inputTokens, 100)
+        XCTAssertEqual(today.cacheReadTokens, 50)
+        XCTAssertEqual(today.cacheWriteTokens, 777)
+        XCTAssertEqual(today.outputTokens, 20)
+        XCTAssertEqual(today.reasoningTokens, 10)
+        XCTAssertEqual(today.totalTokens, 180)
+    }
+
     @discardableResult
     private func writeSessionLog(
         root: URL,
@@ -156,215 +196,159 @@ final class DshUsageTests: XCTestCase {
         XCTAssertEqual(minimax.recentSamples.first?.reasoningOutputTokens, 0)
     }
 
-    func testDshMergerSelectsDeepSeekSliceAndAddsOpencode() throws {
-        let dayStart = Date(timeIntervalSince1970: 1_700_000_000)
-        let dshUsage = DshLocalUsage(
-            byProvider: [
-                "deepseek-official": DshProviderUsage(
-                    today: DshDailyUsage(
-                        dayStart: dayStart,
-                        inputTokens: 100,
-
-                        outputTokens: 20,
-
-                        cacheReadTokens: 50,
-                        reasoningTokens: 10,
-                        totalTokens: 170,
-                        turns: 1,
-                        rounds: 2
-                    ),
-                    dailyTokenUsage: [],
-                    sessionCount: 1,
-                    roundCount: 2,
-                    recentSamples: []
-                ),
-                "minimax-cn": DshProviderUsage(
-                    today: DshDailyUsage(
-                        dayStart: dayStart,
-                        inputTokens: 10,
-                        outputTokens: 5,
-                        totalTokens: 15,
-                        turns: 1,
-                        rounds: 1
-                    ),
-                    dailyTokenUsage: [],
-                    sessionCount: 1,
-                    roundCount: 1,
-                    recentSamples: []
-                )
-            ],
-            modelsByProvider: ["deepseek-official": ["deepseek-v4-flash"]],
-            sessionsRoot: "/tmp/.dsh/sessions",
-            sessionCount: 2,
-            eventCount: 3,
-            scannedAt: Date()
+    private func makeDshProvider(
+        dayStart: Date,
+        inputTokens: Int,
+        outputTokens: Int,
+        cacheReadTokens: Int = 0,
+        reasoningTokens: Int = 0,
+        totalTokens: Int,
+        rounds: Int
+    ) -> DshProviderUsage {
+        let today = DshDailyUsage(
+            dayStart: dayStart,
+            inputTokens: inputTokens,
+            outputTokens: outputTokens,
+            cacheReadTokens: cacheReadTokens,
+            reasoningTokens: reasoningTokens,
+            totalTokens: totalTokens,
+            turns: 1,
+            rounds: rounds
         )
-
-        let merged = try XCTUnwrap(DshUsageMerger.mergeDeepseek(dsh: dshUsage, opencode: nil))
-        XCTAssertEqual(merged.roundCount, 2)
-        let today = try XCTUnwrap(merged.today)
-        XCTAssertEqual(today.inputTokens, 100)
-        XCTAssertEqual(today.outputTokens, 20)
-        XCTAssertEqual(today.reasoningTokens, 10)
+        return DshProviderUsage(
+            today: today,
+            dailyTokenUsage: [],
+            sessionCount: 1,
+            roundCount: rounds,
+            recentSamples: []
+        )
     }
 
-    func testDshCacheWriteIsReportedSeparatelyAndExcludedFromTotal() throws {
-        // spec/providers/dsh.md 明示：cacheWrite 单独成桶，不计入 totalTokens。
-        // 这条测试构造一行同时含 cacheWrite 的 assistant/message，验证
-        // 1) cacheWriteTokens 字段被正确保留；2) totalTokens 只 sum input + cacheRead + output + reasoning。
-        let base = Date(timeIntervalSince1970: 1_700_000_000)
-        let calendar = makeUTCGregorianCalendar()
-        let root = FileManager.default.temporaryDirectory
-            .appendingPathComponent("llm-monitor-dsh-cache-write-\(UUID().uuidString)", isDirectory: true)
-        let cache = root.appendingPathComponent(".token-monitor", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: root) }
-
-        let lines: [String] = [
-            #"{"type":"session","version":0,"id":"session-cachewrite","createdAt":1700000000000,"cwd":"/tmp","delegationDepth":0}"#,
-            #"{"type":"request/context","seq":1,"time":1700000000000,"data":{"provider":"deepseek-official","model":"deepseek-v4-flash","contextWindow":1000000}}"#,
-            // cacheWrite = 777，理论应被 totalTokens 排除但保留到 cacheWriteTokens 字段。
-            #"{"type":"assistant/message","seq":2,"time":1700000001000,"data":{"turn":1,"step":0,"usage":{"inputTokens":100,"cacheReadTokens":50,"cacheWriteTokens":777,"outputTokens":30,"reasoningTokens":10}}}"#
+    func testDshMergersSelectOnlyTheirProviderAliases() throws {
+        let dayStart = Date(timeIntervalSince1970: 1_700_000_000)
+        let cases: [(
+            name: String,
+            usage: DshLocalUsage,
+            merge: (DshLocalUsage) -> OpencodeProviderUsage?,
+            inputTokens: Int,
+            cacheReadTokens: Int,
+            outputTokens: Int,
+            reasoningTokens: Int,
+            roundCount: Int
+        )] = [
+            (
+                name: "deepseek",
+                usage: DshLocalUsage(
+                    byProvider: [
+                        "deepseek-official": makeDshProvider(
+                            dayStart: dayStart,
+                            inputTokens: 100,
+                            outputTokens: 20,
+                            cacheReadTokens: 50,
+                            reasoningTokens: 10,
+                            totalTokens: 170,
+                            rounds: 2
+                        ),
+                        "minimax-cn": makeDshProvider(
+                            dayStart: dayStart,
+                            inputTokens: 999,
+                            outputTokens: 999,
+                            totalTokens: 999,
+                            rounds: 1
+                        )
+                    ],
+                    modelsByProvider: ["deepseek-official": ["deepseek-v4-flash"]],
+                    sessionsRoot: "/tmp/.dsh/sessions",
+                    sessionCount: 2,
+                    eventCount: 3,
+                    scannedAt: Date()
+                ),
+                merge: { DshUsageMerger.mergeDeepseek(dsh: $0, opencode: nil) },
+                inputTokens: 100,
+                cacheReadTokens: 50,
+                outputTokens: 20,
+                reasoningTokens: 10,
+                roundCount: 2
+            ),
+            (
+                name: "glm",
+                usage: DshLocalUsage(
+                    byProvider: [
+                        "zhipuai": makeDshProvider(
+                            dayStart: dayStart,
+                            inputTokens: 50,
+                            outputTokens: 10,
+                            cacheReadTokens: 25,
+                            reasoningTokens: 5,
+                            totalTokens: 80,
+                            rounds: 2
+                        ),
+                        "minimax-cn": makeDshProvider(
+                            dayStart: dayStart,
+                            inputTokens: 999,
+                            outputTokens: 999,
+                            totalTokens: 999,
+                            rounds: 1
+                        )
+                    ],
+                    modelsByProvider: ["zhipuai": ["GLM-4.5"]],
+                    sessionsRoot: "/tmp/.dsh/sessions",
+                    sessionCount: 2,
+                    eventCount: 3,
+                    scannedAt: Date()
+                ),
+                merge: { DshUsageMerger.mergeGlm(dsh: $0) },
+                inputTokens: 50,
+                cacheReadTokens: 25,
+                outputTokens: 10,
+                reasoningTokens: 5,
+                roundCount: 2
+            ),
+            (
+                name: "minimax",
+                usage: DshLocalUsage(
+                    byProvider: [
+                        "minimax": makeDshProvider(
+                            dayStart: dayStart,
+                            inputTokens: 100,
+                            outputTokens: 15,
+                            cacheReadTokens: 20,
+                            reasoningTokens: 5,
+                            totalTokens: 130,
+                            rounds: 3
+                        ),
+                        "zhipu": makeDshProvider(
+                            dayStart: dayStart,
+                            inputTokens: 888,
+                            outputTokens: 888,
+                            totalTokens: 888,
+                            rounds: 1
+                        )
+                    ],
+                    modelsByProvider: ["minimax": ["MiniMax-M3"]],
+                    sessionsRoot: "/tmp/.dsh/sessions",
+                    sessionCount: 2,
+                    eventCount: 4,
+                    scannedAt: Date()
+                ),
+                merge: { DshUsageMerger.mergeMinimax(dsh: $0) },
+                inputTokens: 100,
+                cacheReadTokens: 20,
+                outputTokens: 15,
+                reasoningTokens: 5,
+                roundCount: 3
+            )
         ]
-        try writeSessionLog(
-            root: root.appendingPathComponent("sessions", isDirectory: true),
-            sessionID: "session-cachewrite",
-            body: lines.joined(separator: "\n") + "\n"
-        )
 
-        let snapshot = try DshLocalUsageScanner.performScanPure(
-            sessionsRoot: root.appendingPathComponent("sessions", isDirectory: true),
-            cacheDir: cache,
-            fileManager: FileManagerBox(),
-            calendar: calendar,
-            now: { base },
-            decompressor: { $0 },
-            limits: DshLocalUsageScanLimits.production
-        )
-
-        let deepseek = try XCTUnwrap(snapshot.byProvider["deepseek-official"])
-        let today = try XCTUnwrap(deepseek.today)
-        XCTAssertEqual(today.inputTokens, 100)
-        XCTAssertEqual(today.cacheReadTokens, 50)
-        XCTAssertEqual(today.cacheWriteTokens, 777, "cacheWrite 必须保留到独立字段，不能丢弃")
-        XCTAssertEqual(today.outputTokens, 20, "output = 30 - reasoning 10")
-        XCTAssertEqual(today.reasoningTokens, 10)
-        // totalTokens = input + cacheRead + rawOutput（含 reasoning）= 100 + 50 + 30 = 180，
-        // 不应包含 cacheWrite (777)。
-        XCTAssertEqual(today.totalTokens, 180)
-    }
-
-    func testDshMergerSelectsGlmSliceAndAddsOpencode() throws {
-        // 与 deepseek 分片测试对称：构造同时含 glm 和 minimax provider 的 DSH snapshot，
-        // 验证 mergeGlm 只合并 glm 别名集合里的 provider，并保留 roundCount。
-        // merger 的 slice() 直接采纳 scanner 已算好的 today 字段（scanner 内部已把
-        // visibleOutput = output - reasoning 处理过），所以这里的 outputTokens 就是 UI 值。
-        let dayStart = Date(timeIntervalSince1970: 1_700_000_000)
-        let dshUsage = DshLocalUsage(
-            byProvider: [
-                "zhipuai": DshProviderUsage(
-                    today: DshDailyUsage(
-                        dayStart: dayStart,
-                        inputTokens: 50,
-
-                        outputTokens: 10,
-
-                        cacheReadTokens: 25,
-                        reasoningTokens: 5,
-                        totalTokens: 80,
-                        turns: 1,
-                        rounds: 2
-                    ),
-                    dailyTokenUsage: [],
-                    sessionCount: 1,
-                    roundCount: 2,
-                    recentSamples: []
-                ),
-                "minimax-cn": DshProviderUsage(
-                    today: DshDailyUsage(
-                        dayStart: dayStart,
-                        inputTokens: 999, // 故意放大，验证不会泄漏进 glm 分片
-                        outputTokens: 999,
-                        totalTokens: 999,
-                        turns: 1,
-                        rounds: 1
-                    ),
-                    dailyTokenUsage: [],
-                    sessionCount: 1,
-                    roundCount: 1,
-                    recentSamples: []
-                )
-            ],
-            modelsByProvider: ["zhipuai": ["GLM-4.5"]],
-            sessionsRoot: "/tmp/.dsh/sessions",
-            sessionCount: 2,
-            eventCount: 3,
-            scannedAt: Date()
-        )
-
-        let merged = try XCTUnwrap(DshUsageMerger.mergeGlm(dsh: dshUsage))
-        XCTAssertEqual(merged.roundCount, 2)
-        let today = try XCTUnwrap(merged.today)
-        XCTAssertEqual(today.inputTokens, 50)
-        XCTAssertEqual(today.cacheReadTokens, 25)
-        XCTAssertEqual(today.outputTokens, 10)
-        XCTAssertEqual(today.reasoningTokens, 5)
-        // minimax-cn 的 999 不能漏进 glm 卡片
-        XCTAssertNotEqual(today.inputTokens, 999)
-    }
-
-    func testDshMergerSelectsMinimaxSliceAndAddsOpencode() throws {
-        // 验证 mergeMinimax 只合并 minimax alias 集合，并排除 glm provider。
-        let dayStart = Date(timeIntervalSince1970: 1_700_000_000)
-        let dshUsage = DshLocalUsage(
-            byProvider: [
-                "minimax": DshProviderUsage(
-                    today: DshDailyUsage(
-                        dayStart: dayStart,
-                        inputTokens: 100,
-
-                        outputTokens: 15,
-
-                        cacheReadTokens: 20,
-                        reasoningTokens: 5,
-                        totalTokens: 130,
-                        turns: 1,
-                        rounds: 3
-                    ),
-                    dailyTokenUsage: [],
-                    sessionCount: 1,
-                    roundCount: 3,
-                    recentSamples: []
-                ),
-                "zhipu": DshProviderUsage(
-                    today: DshDailyUsage(
-                        dayStart: dayStart,
-                        inputTokens: 888,
-                        outputTokens: 888,
-                        totalTokens: 888,
-                        turns: 1,
-                        rounds: 1
-                    ),
-                    dailyTokenUsage: [],
-                    sessionCount: 1,
-                    roundCount: 1,
-                    recentSamples: []
-                )
-            ],
-            modelsByProvider: ["minimax": ["MiniMax-M3"]],
-            sessionsRoot: "/tmp/.dsh/sessions",
-            sessionCount: 2,
-            eventCount: 4,
-            scannedAt: Date()
-        )
-
-        let merged = try XCTUnwrap(DshUsageMerger.mergeMinimax(dsh: dshUsage))
-        XCTAssertEqual(merged.roundCount, 3)
-        let today = try XCTUnwrap(merged.today)
-        XCTAssertEqual(today.inputTokens, 100)
-        XCTAssertEqual(today.cacheReadTokens, 20)
-        XCTAssertEqual(today.outputTokens, 15)
-        XCTAssertEqual(today.reasoningTokens, 5)
-        XCTAssertNotEqual(today.inputTokens, 888)
+        for testCase in cases {
+            let merged = try XCTUnwrap(testCase.merge(testCase.usage), testCase.name)
+            let today = try XCTUnwrap(merged.today, testCase.name)
+            XCTAssertEqual(merged.roundCount, testCase.roundCount, testCase.name)
+            XCTAssertEqual(today.inputTokens, testCase.inputTokens, testCase.name)
+            XCTAssertEqual(today.cacheReadTokens, testCase.cacheReadTokens, testCase.name)
+            XCTAssertEqual(today.outputTokens, testCase.outputTokens, testCase.name)
+            XCTAssertEqual(today.reasoningTokens, testCase.reasoningTokens, testCase.name)
+        }
     }
 
     @discardableResult
@@ -608,7 +592,6 @@ final class DshUsageTests: XCTestCase {
 
     func testDshSelectionPrefersNewestFilesWhenOverFileLimit() throws {
         // spec：文件数超限时必须按 mtime 最新优先，而不是路径字典序截断。
-        let calendar = makeUTCGregorianCalendar()
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("llm-monitor-dsh-select-mtime-\(UUID().uuidString)", isDirectory: true)
         let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
@@ -638,7 +621,7 @@ final class DshUsageTests: XCTestCase {
             maxJSONLLineBytes: 8 * 1024 * 1024,
             maxRecentSamples: 65_536
         )
-        let selection = try DshLocalUsageScanner.selectSessionSnapshots(
+        let selection = DshLocalUsageScanner.selectSessionSnapshots(
             filePaths: try DshLocalUsageScanner.sessionFileURLs(in: sessionsRoot, fileManager: FileManagerBox()),
             fileManager: FileManagerBox(),
             limits: limits
@@ -684,7 +667,7 @@ final class DshUsageTests: XCTestCase {
             maxJSONLLineBytes: 8 * 1024 * 1024,
             maxRecentSamples: 65_536
         )
-        let selection = try DshLocalUsageScanner.selectSessionSnapshots(
+        let selection = DshLocalUsageScanner.selectSessionSnapshots(
             filePaths: try DshLocalUsageScanner.sessionFileURLs(in: sessionsRoot, fileManager: FileManagerBox()),
             fileManager: FileManagerBox(),
             limits: limits
@@ -721,7 +704,7 @@ final class DshUsageTests: XCTestCase {
             maxJSONLLineBytes: 8 * 1024 * 1024,
             maxRecentSamples: 65_536
         )
-        let selection = try DshLocalUsageScanner.selectSessionSnapshots(
+        let selection = DshLocalUsageScanner.selectSessionSnapshots(
             filePaths: try DshLocalUsageScanner.sessionFileURLs(in: sessionsRoot, fileManager: FileManagerBox()),
             fileManager: FileManagerBox(),
             limits: limits

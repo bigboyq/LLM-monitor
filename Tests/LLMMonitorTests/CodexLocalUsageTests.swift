@@ -343,10 +343,6 @@ final class CodexLocalUsageTests: XCTestCase {
         // 第 3 行残行被丢弃，保留第 4、5 行（input_tokens = 4、5）。
         let byteLimit = 2 * lineBytes + lineBytes / 2
         let snap = f2MakeSnapshot(url: url, fileSize: total)
-        let limits = CodexLocalScanLimits(
-            maxSessionFiles: 8, maxEventsPerFile: 100, maxTotalParsedBytes: 64 * 1024 * 1024,
-            maxJSONLLineBytes: 8 * 1024 * 1024, readChunkBytes: 32
-        )
         // 注入小 byteLimit：直接走解析路径，用一个超大总预算但限制单文件预算。
         // cachedSessionEvents 用 perFileByteLimit = min(fileSize, remainingBudget)。
         // 为精确控制单文件预算，把 maxTotalParsedBytes 设为 byteLimit。
