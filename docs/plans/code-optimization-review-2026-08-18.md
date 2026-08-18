@@ -74,10 +74,18 @@ Antigravity dirty session RPC 改为最多 4 路有界并发，并保持聚合�
 同时移除无效的临时 fixture 变量和多余 `try`，让测试编译零 warning。测试总数从 376
 降为 374，但保留的断言场景不变。
 
+**阶段 8（af0d1d1）**：定位到 ChatGPT quota hover
+同时使用 `CodexUsageDetails.primary/secondary` 与同一批 session samples 重新计算的
+`localUsage`，随后通过 `UsageMetricSummary +` 相加；两者不是不同来源，而是同一份本地
+数据的预聚合结果和原始样本，因此 cached/input/output/reasoning 全部重复。修复为详情存在
+时优先使用详情，仅在详情缺失时从 samples 回退；同时使用 `@autoclosure`，命中详情时不再
+重复执行本地聚合。新增 2 个回归测试：369M cached + 183M 未缓存不得被加倍，以及详情缺失
+时仍正确回退。测试总数 374→376。
+
 ### 遗留建议（后续可选）
-1. 阶段 6 后续：Dsh zstd 解压改流式/分块读取（降低压缩文件峰值内存）、
-   GlmZcode readOffPeakWindows 纳入指纹，并以真实设备数据评估 SQLiteTempCopy 的
-   渐进 backup 接口。
+1. 阶段 6 后续：Dsh zstd 解压改流式/分块读取（降低压缩文件峰值内存），并以真实设备
+   数据评估 SQLiteTempCopy 的渐进 backup 接口。GLM off-peak 已在缓存命中 rebase 时
+   每轮重新读取，无需再纳入 DB 指纹。
 2. Minimax/Antigravity performScanPure 迁到实例方法并入基座（需重写其静态测试
    表面，预计再 -200 行）。
 3. codex detail task 提取为独立 coordinator（AppState 再 -120 行）。
