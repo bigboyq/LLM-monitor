@@ -33,7 +33,7 @@ struct ChatGPTPlanModelRow: View {
             }
 
             if hasPrimaryWindow && hasSecondaryWindow {
-                ChatGPTCombinedQuotaUsageRow(
+                QuotaCombinedUsageRow(
                     model: model,
                     primaryLabel: primaryLabel,
                     secondaryLabel: secondaryLabel,
@@ -41,24 +41,32 @@ struct ChatGPTPlanModelRow: View {
                     secondaryUsage: secondaryUsage,
                     tint: tint,
                     weeklyEquivalentMultiplier: 6,
-                    hasSecondaryWindow: true
+                    missingUsageIsLoading: true,
+                    primaryCreditUsage: nil,
+                    secondaryCreditUsage: nil
                 )
             } else if hasPrimaryWindow {
-                ChatGPTSingleQuotaUsageRow(
+                QuotaSingleUsageRow(
+                    title: "ChatGPT Plan",
                     label: primaryLabel,
                     percent: model.intervalRemainingPercent,
                     resetsAt: model.intervalResetsAt,
                     usage: primaryUsage,
                     tint: tint,
+                    missingUsageIsLoading: true,
+                    creditUsage: nil,
                     timeRemainingFraction: model.intervalTimeRemainingFraction
                 )
             } else if hasSecondaryWindow {
-                ChatGPTSingleQuotaUsageRow(
+                QuotaSingleUsageRow(
+                    title: "ChatGPT Plan",
                     label: secondaryLabel,
                     percent: model.weeklyRemainingPercent,
                     resetsAt: model.weeklyResetsAt,
                     usage: secondaryUsage,
                     tint: tint,
+                    missingUsageIsLoading: true,
+                    creditUsage: nil,
                     timeRemainingFraction: model.weeklyTimeRemainingFraction
                 )
             } else {
@@ -475,58 +483,6 @@ struct HoverMetricLine: View {
 
             Spacer(minLength: 0)
         }
-    }
-}
-
-/// ChatGPT 将两个配额窗口收成一条；hover 内按短周期、周的顺序展示本地 token 汇总。
-struct ChatGPTCombinedQuotaUsageRow: View {
-    let model: ModelQuota
-    let primaryLabel: String
-    let secondaryLabel: String
-    let primaryUsage: UsageMetricSummary?
-    let secondaryUsage: UsageMetricSummary?
-    let tint: Color
-    let weeklyEquivalentMultiplier: Int
-    let hasSecondaryWindow: Bool
-
-    var body: some View {
-        QuotaCombinedUsageRow(
-            model: model,
-            primaryLabel: primaryLabel,
-            secondaryLabel: secondaryLabel,
-            primaryUsage: primaryUsage,
-            secondaryUsage: secondaryUsage,
-            tint: tint,
-            weeklyEquivalentMultiplier: weeklyEquivalentMultiplier,
-            missingUsageIsLoading: true,
-            primaryCreditUsage: nil,
-            secondaryCreditUsage: nil
-        )
-    }
-}
-
-/// ChatGPT 只返回一个窗口时（例如活动期间取消 5h 限制），只展示该窗口，避免伪造第二条额度。
-struct ChatGPTSingleQuotaUsageRow: View {
-    let label: String
-    let percent: Double
-    let resetsAt: Date?
-    let usage: UsageMetricSummary?
-    let tint: Color
-    /// 顶部红三角位置。call site 区分 5h / 周，5h 传 nil。
-    let timeRemainingFraction: Double?
-
-    var body: some View {
-        QuotaSingleUsageRow(
-            title: "ChatGPT Plan",
-            label: label,
-            percent: percent,
-            resetsAt: resetsAt,
-            usage: usage,
-            tint: tint,
-            missingUsageIsLoading: true,
-            creditUsage: nil,
-            timeRemainingFraction: timeRemainingFraction
-        )
     }
 }
 

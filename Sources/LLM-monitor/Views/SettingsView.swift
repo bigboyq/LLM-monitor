@@ -2,86 +2,6 @@ import SwiftUI
 import UniformTypeIdentifiers
 import AppKit
 
-enum SettingsSaveTransactionError: LocalizedError, Equatable {
-    case loginItemUpdateFailed(String)
-    case configSaveFailed(String)
-    case configSaveFailedAndLoginItemRolledBack(String)
-    case configSaveFailedAndLoginItemRollbackFailed(
-        configError: String,
-        rollbackError: String
-    )
-
-    var errorDescription: String? {
-        switch self {
-        case .loginItemUpdateFailed(let message):
-            return "配置尚未应用；无法更新开机自启动设置：\(message)"
-        case .configSaveFailed(let message):
-            return "配置保存失败；开机自启动设置未变更：\(message)"
-        case .configSaveFailedAndLoginItemRolledBack(let message):
-            return "配置保存失败，开机自启动设置已恢复：\(message)"
-        case .configSaveFailedAndLoginItemRollbackFailed(
-            let configError,
-            let rollbackError
-        ):
-            return """
-            配置保存失败（\(configError)），且无法恢复开机自启动设置（\(rollbackError)）。\
-            请检查系统设置中的登录项状态。
-            """
-        }
-    }
-}
-
-struct LoginItemUpdateOutcome: Equatable {
-    let isEnabled: Bool
-    let errorMessage: String?
-    /// 注册已被系统接受，但仍需用户在系统设置中批准。
-    let requiresApproval: Bool
-}
-
-/// 设置保存的事务边界：登录项先变更，配置随后落盘；配置失败时回滚登录项。
-///
-/// 依赖通过 closure 注入，视图只负责构造 AppConfig 草稿和展示最终错误。
-@MainActor
-enum SettingsSaveTransaction {
-    static func execute(
-        previousLaunchAtLogin: Bool,
-        requestedLaunchAtLogin: Bool,
-        updateLoginItem: (Bool) async -> LoginItemUpdateOutcome,
-        saveConfig: () throws -> Void
-    ) async throws {
-        let shouldUpdateLoginItem = requestedLaunchAtLogin != previousLaunchAtLogin
-        if shouldUpdateLoginItem {
-            let update = await updateLoginItem(requestedLaunchAtLogin)
-            let acceptedPendingApproval = requestedLaunchAtLogin && update.requiresApproval
-            guard update.isEnabled == requestedLaunchAtLogin || acceptedPendingApproval else {
-                throw SettingsSaveTransactionError.loginItemUpdateFailed(
-                    update.errorMessage ?? "系统未接受状态变更"
-                )
-            }
-        }
-
-        do {
-            try saveConfig()
-        } catch {
-            let configError = error.localizedDescription
-
-            guard shouldUpdateLoginItem else {
-                throw SettingsSaveTransactionError.configSaveFailed(configError)
-            }
-
-            let rollback = await updateLoginItem(previousLaunchAtLogin)
-            guard rollback.isEnabled == previousLaunchAtLogin else {
-                throw SettingsSaveTransactionError.configSaveFailedAndLoginItemRollbackFailed(
-                    configError: configError,
-                    rollbackError: rollback.errorMessage ?? "系统未恢复到保存前状态"
-                )
-            }
-
-            throw SettingsSaveTransactionError.configSaveFailedAndLoginItemRolledBack(configError)
-        }
-    }
-}
-
 struct SettingsView: View {
 
     @ObservedObject var configStore: ConfigStore
@@ -90,45 +10,45 @@ struct SettingsView: View {
     /// provider 注册元信息（id 由 descriptors 拿，不再硬编码）。
     let descriptors: [FetcherDescriptor]
 
-    @State private var currentTab: SettingsTab = .general
+    @State var currentTab: SettingsTab = .general
 
-    @State private var globalInterval: Int = 300
-    @State private var launchAtLogin: Bool = false
-    @State private var statusBarIconStyle: StatusBarIconStyle = .chartBar
-    @State private var statusBarHealthDotEnabled: Bool = true
+    @State var globalInterval: Int = 300
+    @State var launchAtLogin: Bool = false
+    @State var statusBarIconStyle: StatusBarIconStyle = .chartBar
+    @State var statusBarHealthDotEnabled: Bool = true
 
-    @State private var minimaxEnabled: Bool = false
-    @State private var minimaxInterval: Int = 0
-    @State private var minimaxApiKey: String = ""
-    @State private var showMinimaxKey: Bool = false
+    @State var minimaxEnabled: Bool = false
+    @State var minimaxInterval: Int = 0
+    @State var minimaxApiKey: String = ""
+    @State var showMinimaxKey: Bool = false
 
-    @State private var chatgptEnabled: Bool = false
-    @State private var chatgptInterval: Int = 0
-    @State private var chatgptAuthPath: String = ""
+    @State var chatgptEnabled: Bool = false
+    @State var chatgptInterval: Int = 0
+    @State var chatgptAuthPath: String = ""
 
-    @State private var antigravityEnabled: Bool = false
-    @State private var antigravityInterval: Int = 0
-    @State private var glmEnabled: Bool = false
-    @State private var glmInterval: Int = 0
-    @State private var glmApiKey: String = ""
-    @State private var showGlmKey: Bool = false
-    @State private var glmPeakStart: Int = GlmPeakWindow.zhipuDefault.startHour
-    @State private var glmPeakEnd: Int = GlmPeakWindow.zhipuDefault.endHour
-    @State private var glmPeakWeekdays: Bool = GlmPeakWindow.zhipuDefault.weekdaysOnly
+    @State var antigravityEnabled: Bool = false
+    @State var antigravityInterval: Int = 0
+    @State var glmEnabled: Bool = false
+    @State var glmInterval: Int = 0
+    @State var glmApiKey: String = ""
+    @State var showGlmKey: Bool = false
+    @State var glmPeakStart: Int = GlmPeakWindow.zhipuDefault.startHour
+    @State var glmPeakEnd: Int = GlmPeakWindow.zhipuDefault.endHour
+    @State var glmPeakWeekdays: Bool = GlmPeakWindow.zhipuDefault.weekdaysOnly
 
-    @State private var deepseekEnabled: Bool = false
-    @State private var deepseekInterval: Int = 0
-    @State private var deepseekApiKey: String = ""
-    @State private var showDeepseekKey: Bool = false
-    @State private var deepseekPeakWeekdays: Bool = DeepseekPeakWindow.defaultWindow.weekdaysOnly
+    @State var deepseekEnabled: Bool = false
+    @State var deepseekInterval: Int = 0
+    @State var deepseekApiKey: String = ""
+    @State var showDeepseekKey: Bool = false
+    @State var deepseekPeakWeekdays: Bool = DeepseekPeakWindow.defaultWindow.weekdaysOnly
 
-    @State private var selectedClientID: String = ClientID.antigravity
-    @State private var providerCardOrder: [String] = []
+    @State var selectedClientID: String = ClientID.antigravity
+    @State var providerCardOrder: [String] = []
 
-    @State private var isSaving: Bool = false
-    @State private var saveErrorMessage: String?
+    @State var isSaving: Bool = false
+    @State var saveErrorMessage: String?
 
-    @Environment(\.dismiss) private var dismiss
+    @Environment(\.dismiss) var dismiss
 
     /// 侧栏 tab 模型。`.general` 是固定的"全局设置"；provider tab 从
     /// `descriptors` 派生（侧栏渲染时按 `descriptors` 顺序展开，标题/icon
@@ -188,11 +108,11 @@ struct SettingsView: View {
 
     /// 全部 tab（`.general` + descriptors 派生的 provider tab）。
     /// `Identifiable` 让 `ForEach` 走 `id` 区分，切换不会触发整列重渲染。
-    private var allTabs: [SettingsTab] {
+    var allTabs: [SettingsTab] {
         [.general] + sortedProviderDescriptors.map { .provider($0) } + [.clients]
     }
 
-    private var sortedProviderDescriptors: [FetcherDescriptor] {
+    var sortedProviderDescriptors: [FetcherDescriptor] {
         descriptors.sorted(by: providerDescriptorDisplayNameAscending)
     }
 
@@ -228,7 +148,7 @@ struct SettingsView: View {
         }
     }
 
-    private var sidebar: some View {
+    var sidebar: some View {
         VStack(spacing: 0) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 4) {
@@ -270,7 +190,7 @@ struct SettingsView: View {
     }
 
     @ViewBuilder
-    private var detailContent: some View {
+    var detailContent: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 SettingsPaneHeader(tab: currentTab)
@@ -292,7 +212,7 @@ struct SettingsView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
-    private var bottomActionBar: some View {
+    var bottomActionBar: some View {
         HStack(spacing: 12) {
             if let saveErrorMessage {
                 Text(saveErrorMessage)
@@ -327,7 +247,7 @@ struct SettingsView: View {
         .padding(.vertical, 12)
     }
 
-    private var generalPane: some View {
+    var generalPane: some View {
         VStack(alignment: .leading, spacing: 20) {
             SettingsSection(
                 title: "全局刷新间隔",
@@ -406,7 +326,7 @@ struct SettingsView: View {
         }
     }
 
-    private var providerCardOrderEditor: some View {
+    var providerCardOrderEditor: some View {
         let providers = providerDescriptorsInCardOrder
         return VStack(spacing: 0) {
             ForEach(Array(providers.enumerated()), id: \.element.id) { index, descriptor in
@@ -442,7 +362,7 @@ struct SettingsView: View {
         }
     }
 
-    private var providerDescriptorsInCardOrder: [FetcherDescriptor] {
+    var providerDescriptorsInCardOrder: [FetcherDescriptor] {
         DisplayOrder.ordered(
             descriptors,
             preferredIDs: providerCardOrder,
@@ -451,7 +371,7 @@ struct SettingsView: View {
         )
     }
 
-    private func providerDescriptorDisplayNameAscending(
+    func providerDescriptorDisplayNameAscending(
         _ lhs: FetcherDescriptor,
         _ rhs: FetcherDescriptor
     ) -> Bool {
@@ -462,7 +382,7 @@ struct SettingsView: View {
         return lhs.id < rhs.id
     }
 
-    private func moveProviderCard(from index: Int, offset: Int) {
+    func moveProviderCard(from index: Int, offset: Int) {
         var order = providerDescriptorsInCardOrder.map { $0.kind.quotaProviderID }
         let destination = index + offset
         guard order.indices.contains(index), order.indices.contains(destination) else { return }
@@ -470,288 +390,11 @@ struct SettingsView: View {
         providerCardOrder = order
     }
 
-    private var clientsPane: some View {
-        let clients = sortedClientDescriptors
-        // Build every provider projection once for this settings render. The
-        // previous implementation recomputed all projections once for the
-        // selected panel and once again for every client-count badge.
-        let usageByClient = clientProviderUsageByClient()
-
-        return VStack(alignment: .leading, spacing: 16) {
-            clientTabBar(clients, usageByClient: usageByClient)
-
-            if let client = clients.first(where: { $0.id == selectedClientID }) {
-                let providers = usageByClient[client.id] ?? []
-                SettingsSection(
-                    title: "已识别的 Provider",
-                    footer: providers.isEmpty
-                        ? "暂未发现这个客户端产生的本地 Token 数据。使用客户端完成一次模型调用后，重新扫描即可显示。"
-                        : "仅显示最近扫描到实际 Token 活动的 Provider。展开行可查看总 Token、缓存命中率和按公开 API 单价估算的价值。"
-                ) {
-                    if providers.isEmpty {
-                        emptyClientState(client)
-                    } else {
-                        ForEach(providers) { provider in
-                            clientProviderDisclosure(provider)
-                        }
-                    }
-                }
-            }
-        }
-        .onAppear {
-            if sortedClientDescriptors.contains(where: { $0.id == selectedClientID }) == false {
-                selectedClientID = sortedClientDescriptors.first?.id ?? ClientID.antigravity
-            }
-        }
-    }
-
-    private var sortedClientDescriptors: [ClientDescriptor] {
-        ClientDescriptor.all.sorted {
-            $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
-        }
-    }
-
-    private func clientTabBar(
-        _ clients: [ClientDescriptor],
-        usageByClient: [String: [ClientProviderUsageSummary]]
-    ) -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
-                ForEach(clients) { client in
-                    let selected = selectedClientID == client.id
-                    let providerCount = usageByClient[client.id]?.count ?? 0
-                    Button {
-                        selectedClientID = client.id
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: client.iconSystemName)
-                                .font(.system(size: 12, weight: .medium))
-                            Text(client.displayName)
-                                .font(SettingsTypography.metadata)
-                            if providerCount > 0 {
-                                Text("\(providerCount)")
-                                    .font(.system(size: 9, weight: .semibold).monospacedDigit())
-                                    .foregroundStyle(selected ? Color.accentColor : .secondary)
-                                    .padding(.horizontal, 4)
-                                    .padding(.vertical, 1)
-                                    .background(
-                                        Capsule(style: .continuous)
-                                            .fill(selected ? Color.accentColor.opacity(0.14) : Color.secondary.opacity(0.12))
-                                    )
-                            }
-                        }
-                        .foregroundStyle(selected ? Color.accentColor : .secondary)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 7)
-                        .background(
-                            Capsule(style: .continuous)
-                                .fill(selected ? Color.accentColor.opacity(0.14) : Color.clear)
-                        )
-                        .overlay(
-                            Capsule(style: .continuous)
-                                .stroke(selected ? Color.accentColor.opacity(0.35) : Color.secondary.opacity(0.18), lineWidth: 0.5)
-                        )
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(.vertical, 2)
-        }
-    }
-
-    private func clientProviderUsageByClient() -> [String: [ClientProviderUsageSummary]] {
-        var rowsByClient: [String: [ClientProviderUsageSummary]] = [:]
-        for status in state.statuses {
-            let projection = status.usageProjection(for: status.lastSuccess)
-            for contribution in projection.contributions {
-                guard contribution.hasActivity else { continue }
-                if contribution.clientID == ClientID.antigravity, status.kind == .antigravity {
-                    rowsByClient[contribution.clientID, default: []].append(
-                        contentsOf: antigravityUsageRows(status: status, contribution: contribution)
-                    )
-                } else {
-                    rowsByClient[contribution.clientID, default: []].append(
-                        ClientProviderUsageSummary(
-                            clientID: contribution.clientID,
-                            quotaProviderID: status.kind.quotaProviderID,
-                            providerName: status.displayName,
-                            usageGroupID: status.kind.quotaProviderID,
-                            dailyTokenUsage: contribution.dailyTokenUsage,
-                            recentSamples: contribution.recentSamples,
-                            scannedAt: contribution.scannedAt,
-                            deepseekPeakWindow: status.deepseekPeakWindow ?? .defaultWindow
-                        )
-                    )
-                }
-            }
-        }
-        return rowsByClient.mapValues { rows in
-            rows.sorted {
-                if $0.providerName != $1.providerName {
-                    return $0.providerName.localizedCaseInsensitiveCompare($1.providerName) == .orderedAscending
-                }
-                return $0.usageGroupID < $1.usageGroupID
-            }
-        }
-    }
-
-    /// Antigravity owns one quota account but can produce several billable model
-    /// families. Split the settings rows using the model name recorded in each
-    /// local sample so each row gets its own token totals and price estimate.
-    private func antigravityUsageRows(
-        status: ProviderStatus,
-        contribution: ClientUsageContribution
-    ) -> [ClientProviderUsageSummary] {
-        let groups: [AntigravityUsageGroup: [LocalTokenUsageSample]]
-        if contribution.recentSamples.isEmpty {
-            groups = [.other: []]
-        } else {
-            groups = Dictionary(grouping: contribution.recentSamples) {
-                AntigravityUsageGroup.classify(modelName: $0.modelName)
-            }
-        }
-
-        return groups.keys.sorted {
-            let comparison = $0.displayName.localizedCaseInsensitiveCompare($1.displayName)
-            if comparison != .orderedSame { return comparison == .orderedAscending }
-            return $0.rawValue < $1.rawValue
-        }.map { group in
-            let samples = groups[group] ?? []
-            let daily = samples.isEmpty
-                ? contribution.dailyTokenUsage
-                : dailyUsage(for: samples, matching: contribution.dailyTokenUsage)
-            return ClientProviderUsageSummary(
-                clientID: ClientID.antigravity,
-                quotaProviderID: status.kind.quotaProviderID,
-                providerName: group.displayName,
-                usageGroupID: group.rawValue,
-                dailyTokenUsage: daily,
-                recentSamples: samples,
-                scannedAt: contribution.scannedAt,
-                deepseekPeakWindow: status.deepseekPeakWindow ?? .defaultWindow
-            )
-        }
-    }
-
-    private func dailyUsage(
-        for samples: [LocalTokenUsageSample],
-        matching template: [UnifiedDailyTokenUsage]
-    ) -> [UnifiedDailyTokenUsage] {
-        let calendar = Calendar.current
-        var byDay = Dictionary(
-            uniqueKeysWithValues: template.map { day in
-                (calendar.startOfDay(for: day.dayStart), UnifiedDailyTokenUsage(dayStart: day.dayStart))
-            }
-        )
-
-        for usage in UnifiedTokenUsageAggregator.days(from: samples, calendar: calendar) {
-            let dayStart = calendar.startOfDay(for: usage.dayStart)
-            byDay[dayStart] = byDay[dayStart].map { $0 + usage } ?? usage
-        }
-        return byDay.values.sorted { $0.dayStart < $1.dayStart }
-    }
-
-    private func emptyClientState(_ client: ClientDescriptor) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Image(systemName: client.iconSystemName)
-                .font(.system(size: 22, weight: .medium))
-                .foregroundStyle(.tertiary)
-            Text("尚未识别到 \(client.displayName) 的 Token 用量")
-                .font(SettingsTypography.rowEmphasis)
-            Text(client.subtitle)
-                .font(SettingsTypography.metadata)
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.vertical, 12)
-    }
-
-    private func clientProviderDisclosure(_ provider: ClientProviderUsageSummary) -> some View {
-        DisclosureGroup {
-            VStack(alignment: .leading, spacing: 10) {
-                SevenDayTokenUsageHoverView(
-                    days: provider.dailyTokenUsage,
-                    scannedAt: provider.scannedAt,
-                    isScanning: false,
-                    priceByDay: provider.priceTextByDay
-                )
-
-                // 第 1 行：聚合指标（总 Token / 命中率 / 价值），放在一起做整体评估。
-                HStack(alignment: .top, spacing: 16) {
-                    usageMetric(label: "总 Token", value: Formatters.formatTokenCountCompact(provider.totalTokens))
-                    usageMetric(label: "命中率", value: provider.cacheHitRate.map { String(format: "%.1f%%", $0 * 100) } ?? "—")
-                    usageMetric(label: "价值", value: costText(provider.costEstimate))
-                }
-
-                // 第 2 行：分项 Token 桶，让 cache / output / reason 的相对比例一眼可读。
-                HStack(alignment: .top, spacing: 16) {
-                    usageMetric(label: "Input", value: Formatters.formatTokenCountCompact(provider.inputTokens))
-                    usageMetric(label: "Cache", value: Formatters.formatTokenCountCompact(provider.cacheReadTokens))
-                    usageMetric(label: "Output", value: Formatters.formatTokenCountCompact(provider.outputTokens))
-                    usageMetric(label: "Reason", value: Formatters.formatTokenCountCompact(provider.reasoningTokens))
-                }
-
-                if provider.unpricedModelUsage.isEmpty == false {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("未定价模型")
-                            .font(SettingsTypography.metadata)
-                            .foregroundStyle(.orange)
-                        ForEach(provider.unpricedModelUsage) { model in
-                            Text("\(model.modelName) · \(Formatters.formatTokenCountCompact(model.totalTokens)) tokens · \(model.sampleCount) 次")
-                                .font(SettingsTypography.metadata)
-                                .foregroundStyle(.orange)
-                        }
-                    }
-                }
-                if provider.costEstimate.pricedModelNames.isEmpty == false {
-                    Text("计价模型：\(provider.costEstimate.pricedModelNames.joined(separator: ", ")) · 价格目录更新于 \(ModelPricingCatalog.lastUpdated)")
-                        .font(SettingsTypography.metadata)
-                        .foregroundStyle(.tertiary)
-                }
-                if let scannedAt = provider.scannedAt {
-                    Text("最近扫描：\(Formatters.formatAbsolute(scannedAt))")
-                        .font(SettingsTypography.metadata)
-                        .foregroundStyle(.tertiary)
-                }
-            }
-            .padding(.top, 8)
-        } label: {
-            HStack(spacing: 8) {
-                Image(systemName: "circle.fill")
-                    .font(.system(size: 6))
-                    .foregroundStyle(Color.accentColor)
-                Text(provider.providerName)
-                    .font(SettingsTypography.rowEmphasis)
-                Spacer()
-                Text(Formatters.formatTokenCountCompact(provider.totalTokens) + " tokens")
-                    .font(SettingsTypography.numericValue)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .font(SettingsTypography.metadata)
-    }
-
-    private func usageMetric(label: String, value: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(label)
-                .font(SettingsTypography.metadata)
-                .foregroundStyle(.secondary)
-            Text(value)
-                .font(SettingsTypography.numericValue)
-        }
-    }
-
-    private func costText(_ estimate: ModelCostEstimate) -> String {
-        // 设置页保留未定价模型明细（unpricedModelUsage），金额文案与菜单共用
-        // displayText 的覆盖度语义。
-        estimate.displayText
-    }
-
     /// `providerPane` 派发：把 `ProviderKind` 路由到对应 provider 的设置 UI。
     /// 加新 provider：在 `FetcherDescriptor` 加一个 + 在 `LLMMonitorApp.makeDescriptors()`
     /// 注册，**这里** 加一个 `case` 写 pane view。`SettingsTab` 不用改。
     @ViewBuilder
-    private func providerPane(for kind: ProviderKind) -> some View {
+    func providerPane(for kind: ProviderKind) -> some View {
         switch kind {
         case .minimaxTokenPlan: minimaxPane
         case .codexChatGpt:     chatgptPane
@@ -761,7 +404,7 @@ struct SettingsView: View {
         }
     }
 
-    private var minimaxPane: some View {
+    var minimaxPane: some View {
         VStack(alignment: .leading, spacing: 20) {
             SettingsSection {
                 SettingsToggleRow(label: "启用 minimax Token Plan 监测", isOn: $minimaxEnabled)
@@ -782,7 +425,7 @@ struct SettingsView: View {
         }
     }
 
-    private var chatgptPane: some View {
+    var chatgptPane: some View {
         VStack(alignment: .leading, spacing: 20) {
             SettingsSection {
                 SettingsToggleRow(label: "启用 ChatGPT Plan 监测", isOn: $chatgptEnabled)
@@ -814,7 +457,7 @@ struct SettingsView: View {
         }
     }
 
-    private var antigravityPane: some View {
+    var antigravityPane: some View {
         VStack(alignment: .leading, spacing: 20) {
             SettingsSection {
                 SettingsToggleRow(label: "启用 Antigravity 监测", isOn: $antigravityEnabled)
@@ -831,7 +474,7 @@ struct SettingsView: View {
         }
     }
 
-    private var glmPane: some View {
+    var glmPane: some View {
         VStack(alignment: .leading, spacing: 20) {
             SettingsSection {
                 SettingsToggleRow(label: "启用 GLM Coding Plan 监测", isOn: $glmEnabled)
@@ -865,7 +508,7 @@ struct SettingsView: View {
         }
     }
 
-    private var deepseekPane: some View {
+    var deepseekPane: some View {
         VStack(alignment: .leading, spacing: 20) {
             SettingsSection {
                 SettingsToggleRow(label: "启用 DeepSeek 监测", isOn: $deepseekEnabled)
@@ -909,7 +552,7 @@ struct SettingsView: View {
     }
 
     /// 高峰期小时选择行：Stepper 限定在 [min, max]，显示 "HH:00"。
-    private func peakHourRow(
+    func peakHourRow(
         label: String,
         value: Binding<Int>,
         min: Int = 0,
@@ -923,7 +566,7 @@ struct SettingsView: View {
         }
     }
 
-    private var glmApiKeyField: some View {
+    var glmApiKeyField: some View {
         HStack(spacing: 8) {
             Group {
                 if showGlmKey {
@@ -946,7 +589,7 @@ struct SettingsView: View {
         .frame(width: 320, alignment: .leading)
     }
 
-    private func intervalSliderField(label: String, value: Binding<Int>) -> some View {
+    func intervalSliderField(label: String, value: Binding<Int>) -> some View {
         SettingsControlRow(label, alignment: .top) {
             VStack(alignment: .trailing, spacing: 6) {
                 Slider(
@@ -975,7 +618,7 @@ struct SettingsView: View {
         .padding(.vertical, 4)
     }
 
-    private func apiKeyField(text: Binding<String>, isVisible: Binding<Bool>) -> some View {
+    func apiKeyField(text: Binding<String>, isVisible: Binding<Bool>) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
                 Group {
@@ -1013,7 +656,7 @@ struct SettingsView: View {
         value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().hasPrefix("bearer ")
     }
 
-    private func selectAuthFile() {
+    func selectAuthFile() {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = true
@@ -1027,7 +670,7 @@ struct SettingsView: View {
         }
     }
 
-    private func loadCurrentConfig() {
+    func loadCurrentConfig() {
         let config = configStore.config
         globalInterval = config.refreshIntervalSeconds
         launchAtLogin = loginItemService.isEnabled
@@ -1082,7 +725,7 @@ struct SettingsView: View {
         }
     }
 
-    private func saveAndApply() async throws {
+    func saveAndApply() async throws {
         let previousLaunchAtLogin = loginItemService.isEnabled
 
         var config = configStore.config
@@ -1169,30 +812,30 @@ struct SettingsView: View {
     }
 
     /// 通过 descriptors 拿实际 provider id — 不再硬编码。
-    private func providerID(for kind: ProviderKind) -> String? {
+    func providerID(for kind: ProviderKind) -> String? {
         descriptors.first(where: { $0.kind == kind })?.id
     }
 
-    private func providerRefreshInterval(from value: Int) -> Int? {
+    func providerRefreshInterval(from value: Int) -> Int? {
         value == 0 ? nil : value
     }
 
-    private func trimmedString(_ value: String) -> String? {
+    func trimmedString(_ value: String) -> String? {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
     }
 
-    private func roundedInterval(from value: Double) -> Int {
+    func roundedInterval(from value: Double) -> Int {
         let rounded = Int((value / 10).rounded() * 10)
         return min(3600, max(10, rounded))
     }
 
-    private func roundedProviderInterval(from value: Double) -> Int {
+    func roundedProviderInterval(from value: Double) -> Int {
         let rounded = Int((value / 10).rounded() * 10)
         return min(3600, max(0, rounded))
     }
 
-    private func tildePath(for path: String) -> String {
+    func tildePath(for path: String) -> String {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         if path == home {
             return "~"

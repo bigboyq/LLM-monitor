@@ -57,7 +57,11 @@ final class MenuBarRightClickHandler: NSObject, NSMenuDelegate {
     }
     
     private func findStatusButton() -> NSButton? {
-        // 方案 1: 在 app 的所有窗口中寻找类型包含 "StatusBarWindow" 的窗口，并查找其内部的 NSButton (即 NSStatusBarButton)
+        // 在 app 的所有窗口中寻找类型包含 "StatusBarWindow" 的窗口，并查找其
+        // 内部的 NSButton（即 NSStatusBarButton）。
+        // 注：MenuBarExtra 没有公开 API 暴露 status button，类名嗅探是目前
+        // 社区通用做法；不使用 KVC `NSStatusBar.system.value(forKey: "items")`
+        // 之类的私有 API（上架审核风险），找不到就放弃右键增强（左键功能不受影响）。
         for window in NSApplication.shared.windows {
             let className = String(describing: type(of: window))
             if className.contains("StatusBarWindow") || className.contains("StatusItem") {
@@ -66,17 +70,6 @@ final class MenuBarRightClickHandler: NSObject, NSMenuDelegate {
                 }
             }
         }
-        
-        // 方案 2: 作为备用，通过 KVC 获取系统状态栏的 items (如果在沙盒环境或系统升级后不可用，会回退到此并记录 warning)
-        if let items = NSStatusBar.system.value(forKey: "items") as? [NSStatusItem] {
-            if let item = items.first(where: { $0.button != nil }),
-               let button = item.button {
-                return button
-            }
-        } else {
-            logWarn("RightClickHandler: 方案 1 与 KVC 备用方案均未成功获取到 status items")
-        }
-        
         return nil
     }
     
