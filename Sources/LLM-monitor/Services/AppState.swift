@@ -39,10 +39,9 @@ final class AppState: ObservableObject {
     /// 之前是 `externalAuthAvailability` + `authProbeTasks` 两个 dict + 3 个方法，
     /// 现在统一交给 `AuthProber` 打理。
     private var authProber: AuthProber!
-    /// provider 的延迟详情补齐任务（当前用于 codex 本地 usage 明细）
-    private var detailTasks: [String: Task<Void, Never>] = [:]
-    /// 防止被取消的旧 Codex detail task 清掉新任务的扫描状态。
-    private var detailTaskTokens: [String: UUID] = [:]
+    /// Codex quota 成功后的本地 usage 明细任务与 token 守门。
+    /// lazy：coordinator 的 delegate 捕获 self。
+    private lazy var codexUsageDetails = CodexUsageDetailsCoordinator(delegate: self)
     /// 显式 full refresh 与 background refresh 的合并协议（pending/waiter/claim）。
     private let manualRefreshGate = ManualRefreshGate()
     /// 远程额度恢复通知；通过协议注入，测试不会触碰系统通知中心。
@@ -823,56 +822,23 @@ final class AppState: ObservableObject {
         fetchedAt: Date,
         configurationGeneration: Int
     ) {
-        cancelDetailTask(for: providerID)
-        guard let model else { return }
-
-        let taskToken = UUID()
-        detailTaskTokens[providerID] = taskToken
-        setScanningState(true, for: providerID)
-
-        let task = Task { [weak self] in
-            let details = await CodexFetcher.loadUsageDetailsAsync(
-                authPath: providerConfig.authPath,
-                model: model
-            )
-            guard !Task.isCancelled else {
-                await MainActor.run {
-                    self?.finishCodexDetailTaskIfCurrent(
-                        providerID: providerID,
-                        taskToken: taskToken
-                    )
-                }
-                return
-            }
-            await MainActor.run {
-                self?.applyCodexUsageDetails(
-                    details,
-                    providerID: providerID,
-                    fetchedAt: fetchedAt,
-                    configurationGeneration: configurationGeneration,
-                    taskToken: taskToken
-                )
-            }
-        }
-        detailTasks[providerID] = task
+        codexUsageDetails.schedule(
+            providerID: providerID,
+            authPath: providerConfig.authPath,
+            model: model,
+            fetchedAt: fetchedAt,
+            configurationGeneration: configurationGeneration
+        )
     }
 
     @MainActor
-    private func applyCodexUsageDetails(
+    func applyCodexUsageDetails(
         _ details: CodexUsageDetails?,
         providerID: String,
         fetchedAt: Date,
-        configurationGeneration: Int,
-        taskToken: UUID
+        configurationGeneration: Int
     ) {
         logDebug("[codex/detail] applyCodexUsageDetails: providerID=\(providerID), details is nil?=\(details == nil)")
-        guard detailTaskTokens[providerID] == taskToken else {
-            logDebug("[codex/detail] apply aborted: stale task token")
-            return
-        }
-        detailTaskTokens.removeValue(forKey: providerID)
-        detailTasks.removeValue(forKey: providerID)
-        setScanningState(false, for: providerID)
         guard configurationGeneration == self.configurationGeneration else {
             logDebug("[codex/detail] apply aborted: configurationGeneration mismatch (\(configurationGeneration) != \(self.configurationGeneration))")
             return
@@ -938,17 +904,7 @@ final class AppState: ObservableObject {
 
     @MainActor
     private func cancelDetailTask(for providerID: String) {
-        detailTasks[providerID]?.cancel()
-        detailTasks.removeValue(forKey: providerID)
-        detailTaskTokens.removeValue(forKey: providerID)
-        setScanningState(false, for: providerID)
-    }
-
-    private func finishCodexDetailTaskIfCurrent(providerID: String, taskToken: UUID) {
-        guard detailTaskTokens[providerID] == taskToken else { return }
-        detailTaskTokens.removeValue(forKey: providerID)
-        detailTasks.removeValue(forKey: providerID)
-        setScanningState(false, for: providerID)
+        codexUsageDetails.cancel(providerID: providerID)
     }
 
     @MainActor
@@ -966,9 +922,7 @@ final class AppState: ObservableObject {
     }
 
     private func cancelAllDetailTasks() {
-        for task in detailTasks.values { task.cancel() }
-        detailTasks.removeAll()
-        detailTaskTokens.removeAll()
+        codexUsageDetails.cancelAll()
     }
 
     private static func loadPersistedRefreshTimes(from url: URL) -> [String: Date] {
@@ -1131,3 +1085,4 @@ struct PreservedStatusFields {
 // MARK: - LocalUsageStatusWriting（本地扫描结果回写）
 
 extension AppState: LocalUsageStatusWriting {}
+extension AppState: CodexUsageDetailsCoordinatorDelegate {}
