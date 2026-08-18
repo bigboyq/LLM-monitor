@@ -93,4 +93,3 @@ struct GlmLocalUsage: Equatable, Codable, Sendable {
             && lhs.offPeakWindows == rhs.offPeakWindows
     }
 }
-

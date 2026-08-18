@@ -54,4 +54,3 @@ struct DshProviderUsage: Equatable, Codable, Sendable {
     let roundCount: Int
     let recentSamples: [LocalTokenUsageSample]
 }
-
