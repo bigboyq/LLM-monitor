@@ -312,6 +312,10 @@ struct ProviderConfig: Codable, Equatable {
         self.deepseekPeakWeekdaysOnly = deepseekPeakWeekdaysOnly
     }
 
+    /// 自定义 decode 只为一个默认值：`enabled` 缺失按 true 处理（编译器合成的
+    /// Codable 会在缺 key 时直接抛错，把整份配置送进损坏恢复流程）。
+    /// encode 走编译器合成：optional 字段自动 encodeIfPresent，与 nil 字段
+    /// 不写盘的约定一致。
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
@@ -324,21 +328,6 @@ struct ProviderConfig: Codable, Equatable {
         self.peakWeekdaysOnly = try c.decodeIfPresent(Bool.self, forKey: .peakWeekdaysOnly)
         self.mergeOpencodeUsage = try c.decodeIfPresent(Bool.self, forKey: .mergeOpencodeUsage)
         self.deepseekPeakWeekdaysOnly = try c.decodeIfPresent(Bool.self, forKey: .deepseekPeakWeekdaysOnly)
-    }
-
-    /// 自定义 encode：nil 字段不写出来
-    func encode(to encoder: Encoder) throws {
-        var c = encoder.container(keyedBy: CodingKeys.self)
-        try c.encode(enabled, forKey: .enabled)
-        try c.encodeIfPresent(apiKey, forKey: .apiKey)
-        try c.encodeIfPresent(displayName, forKey: .displayName)
-        try c.encodeIfPresent(refreshIntervalSeconds, forKey: .refreshIntervalSeconds)
-        try c.encodeIfPresent(authPath, forKey: .authPath)
-        try c.encodeIfPresent(peakStartHour, forKey: .peakStartHour)
-        try c.encodeIfPresent(peakEndHour, forKey: .peakEndHour)
-        try c.encodeIfPresent(peakWeekdaysOnly, forKey: .peakWeekdaysOnly)
-        try c.encodeIfPresent(mergeOpencodeUsage, forKey: .mergeOpencodeUsage)
-        try c.encodeIfPresent(deepseekPeakWeekdaysOnly, forKey: .deepseekPeakWeekdaysOnly)
     }
 }
 

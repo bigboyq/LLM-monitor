@@ -33,8 +33,15 @@ struct StatusIndicator: View {
 }
 
 /// provider 卡片 — 一个 provider 的全部信息
-struct ProviderCardView: View {
+///
+/// `Equatable`：卡片渲染只依赖 `status`（值类型）。配合调用点的 `.equatable()`，
+/// 任一 provider 的任一状态变化只会重算真正变化的那几张卡，而不是整个菜单面板。
+struct ProviderCardView: View, Equatable {
     let status: ProviderStatus
+
+    static func == (lhs: ProviderCardView, rhs: ProviderCardView) -> Bool {
+        lhs.status == rhs.status
+    }
 
     var body: some View {
         // A single card render used to rebuild the same provider-neutral

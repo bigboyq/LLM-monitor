@@ -104,26 +104,33 @@ struct CodexFetcher: QuotaFetcher {
         let auth = try loadAuth()
         let headers = try Self.authHeaders(from: auth)
 
-        // 1. 拿实时 rate_limit
-        let usage = try await fetchUsage(headers: headers)
-        let model = try Self.parseUsage(usage)
-
-        // 2. 拿 reset credits 详情（失败不阻塞主流程，但 warn 出来）
+        // full 模式下 usage 与 reset-credits 两个 GET 用 async let 并行，省一个 RTT；
+        // background 模式按设计跳过 reset-credits。reset 失败不阻塞主流程：
+        // 先 await usage（主流程错误优先抛出），再单独 catch reset 的错误。
         // R3: reset credits 有独立新鲜度。full 成功时记录实际抓取时间、清失败标志；
         // full 失败或 background 跳过时这里返回 nil，由 CodexFillingMissingMerger 根据
         // mode 区分"失败（标记过期）"与"按设计跳过（保持原样新鲜度）"。
-        var resetCredits: ResetCreditsInfo? = nil
+        let usageResponse: UsageResponse
+        let resetCredits: ResetCreditsInfo?
         if mode == .full {
+            async let usageTask = fetchUsage(headers: headers)
+            async let resetTask = fetchResetCredits(headers: headers)
+            usageResponse = try await usageTask
             do {
-                let reset = try await fetchResetCredits(headers: headers)
+                let reset = try await resetTask
                 resetCredits = reset.toInfo(fetchedAt: Date())
                 logInfo("[codex] reset credits: 可用 \(resetCredits?.availableCount ?? 0) / 共 \(resetCredits?.entries.count ?? 0) 条")
             } catch {
+                // usage 抛错时 resetTask 已随作用域隐式取消，不会走到这里。
                 logWarn("[codex] reset-credits 拉取失败: \(error.localizedDescription)，忽略")
+                resetCredits = nil
             }
         } else {
             logDebug("[codex] background refresh: 跳过 reset credits 请求")
+            usageResponse = try await fetchUsage(headers: headers)
+            resetCredits = nil
         }
+        let model = try Self.parseUsage(usageResponse)
 
         return QuotaInfo(
             models: [model],

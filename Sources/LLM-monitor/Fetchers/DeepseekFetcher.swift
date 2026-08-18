@@ -40,10 +40,6 @@ struct DeepseekFetcher: QuotaFetcher {
         self.client = HTTPClient(session: session, logTag: Self.logTag, defaultTimeout: HTTPTimeouts.request)
     }
 
-    func hasLocalAuth() -> Bool {
-        return true
-    }
-
     func fetch(mode: RefreshMode) async throws -> QuotaInfo {
         let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedKey.isEmpty else { throw QuotaError.missingAPIKey }

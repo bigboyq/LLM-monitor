@@ -132,6 +132,9 @@ final class MinimaxDBReader {
     ///   （对比 antigravity `64ca68b` 修过的间歇性 R/T 空白）
     /// - **空 turn_id 处理**：`NULL` 跟空串都会被 `COUNT(DISTINCT)` 跳过（SQL 标准）；
     ///   实测 minimax 数据里 `turn_id` 全部非 NULL 非空，不需要特殊处理
+    /// - **cutoff**：per-day 聚合与字符聚合都带时间下界（对齐 GlmZcode reader 的
+    ///   口径）。UI 只消费最近 7 天；dirty 重扫时无下界的全表 GROUP BY 是纯浪费。
+    ///   总 session/event 计数仍是全历史口径，不受 cutoff 影响。
     ///
     /// v2 source (runtime-state) 的 `local_runtime_token_usage.turn_id` 是 UUID 格式,跟
     /// `local_runtime_message_rows.msg_id` (msg_xxx 格式)**不匹配**,
@@ -142,9 +145,11 @@ final class MinimaxDBReader {
     /// 极端边界 (token_usage 完成在 23:59:58,message_rows 落盘在 00:00:01):
     /// 直接 SQL 聚合 v2 的 `local_runtime_token_usage` 表 → per-day MinimaxDailyUsage + 总 session/event/turn 数。
     func aggregate(calendar: Calendar = .current,
-                   sampleCutoff: Date? = nil) throws -> MinimaxDBAggregate {
+                   cutoff: Date? = nil) throws -> MinimaxDBAggregate {
         let resolvedTableName = Self.runtimeTableName
+        let cutoffMs = cutoff.map { Int64($0.timeIntervalSince1970 * 1000) }
         let safeRawExpr = "CASE WHEN json_valid(t.raw) THEN t.raw ELSE '{}' END"
+        let dayCutoffPredicate = " AND (? IS NULL OR t.ts >= ?)"
         func nonNegativeTotal(_ expression: String) -> String {
             "TOTAL(MAX(CAST(COALESCE(\(expression), 0) AS REAL), 0.0))"
         }
@@ -166,11 +171,23 @@ final class MinimaxDBReader {
               \(nonNegativeTotal("t.cache_read_tokens"))  AS cache_read,
               \(nonNegativeTotal("t.cache_write_tokens")) AS cache_write
             FROM \(resolvedTableName) t
-            WHERE t.ts IS NOT NULL
+            WHERE t.ts IS NOT NULL\(dayCutoffPredicate)
             GROUP BY day_key
             ORDER BY day_key
             """
-        let rows = try conn.query(sql: perDaySQL) { stmt -> PerDayRow in
+        let rows = try conn.query(
+            sql: perDaySQL,
+            bind: { stmt in
+                if let cutoffMs {
+                    let first = sqlite3_bind_int64(stmt, 1, cutoffMs)
+                    guard first == SQLITE_OK else { return first }
+                    return sqlite3_bind_int64(stmt, 2, cutoffMs)
+                }
+                let first = sqlite3_bind_null(stmt, 1)
+                guard first == SQLITE_OK else { return first }
+                return sqlite3_bind_null(stmt, 2)
+            }
+        ) { stmt -> PerDayRow in
             let dayKey = try SQLiteConnection.requiredText(stmt, column: 0)
             let rounds = Self.nonNegativeInt(sqlite3_column_int64(stmt, 1))
             let turns = Self.nonNegativeInt(sqlite3_column_int64(stmt, 2))
@@ -232,7 +249,7 @@ final class MinimaxDBReader {
 
         // 逐次调用只保留 UI 需要的最近窗口。inputTokens 归一为
         // uncached + cacheRead，和 Codex UsageMetricSummary 的语义一致。
-        let sampleWhere = sampleCutoff == nil
+        let sampleWhere = cutoffMs == nil
             ? "WHERE t.ts IS NOT NULL"
             : "WHERE t.ts IS NOT NULL AND t.ts >= ?"
         // 旧版/测试 fixture 可能还没有 `model` 列。额度统计本身不依赖它；
@@ -286,7 +303,6 @@ final class MinimaxDBReader {
             \(sampleWhere)
             ORDER BY t.ts
         """
-        let cutoffMs = sampleCutoff.map { Int64($0.timeIntervalSince1970 * 1000) }
         let sampleBind: ((OpaquePointer) -> Int32)? = (uniqueObservedModel != nil || cutoffMs != nil)
             ? { stmt in
                 var nextIndex: Int32 = 1
@@ -355,7 +371,7 @@ final class MinimaxDBReader {
         #endif
         var charAggregationDegraded = false
         do {
-            perDayChars = try runtimePerDayCharAggregate(calendar: calendar)
+            perDayChars = try runtimePerDayCharAggregate(calendar: calendar, cutoffMs: cutoffMs)
         } catch {
             charAggregationDegraded = true
             perDayChars = [:]
@@ -379,12 +395,16 @@ final class MinimaxDBReader {
     /// v2 路径: 独立 per-day 字符聚合 (不 join token_usage)
     /// 从 `local_runtime_message_rows` (或 `session_messages` 测试兼容表) 按 day 桶聚合
     /// thinking_content + msg_content 字符数, 跟 runtime token rows 按日配对。
-    private func runtimePerDayCharAggregate(calendar: Calendar) throws -> [Date: MinimaxCharCounts] {
+    /// cutoff 与 token per-day 聚合同口径：只聚合最近窗口内的行。
+    private func runtimePerDayCharAggregate(calendar: Calendar, cutoffMs: Int64?) throws -> [Date: MinimaxCharCounts] {
         let hasRuntimeTable = try !conn.query(sql: "PRAGMA table_info(local_runtime_message_rows)") { stmt in
             try SQLiteConnection.requiredText(stmt, column: 1)
         }.isEmpty
         guard hasRuntimeTable else { return [:] }
 
+        let cutoffPredicate = cutoffMs == nil
+            ? ""
+            : " AND (? IS NULL OR created_at_ms >= ?)"
         let sql = """
             WITH safe_messages AS (
               SELECT
@@ -412,6 +432,7 @@ final class MinimaxDBReader {
                     ) j
                   )) AS output_chars
             FROM safe_messages
+            WHERE 1=1\(cutoffPredicate)
             GROUP BY day_key
             """
         struct Row {
@@ -420,7 +441,14 @@ final class MinimaxDBReader {
             let reasonChars: Int
             let outputChars: Int
         }
-        let rows = try conn.query(sql: sql) { stmt -> Row in
+        let rows = try conn.query(
+            sql: sql,
+            bind: cutoffMs == nil ? nil : { stmt in
+                let first = sqlite3_bind_int64(stmt, 1, cutoffMs!)
+                guard first == SQLITE_OK else { return first }
+                return sqlite3_bind_int64(stmt, 2, cutoffMs!)
+            }
+        ) { stmt -> Row in
             let dayKey = try SQLiteConnection.requiredText(stmt, column: 0)
             let messageCount = Self.nonNegativeInt(sqlite3_column_int64(stmt, 1))
             let reasonChars = Self.nonNegativeInt(sqlite3_column_double(stmt, 2))

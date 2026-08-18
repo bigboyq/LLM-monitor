@@ -357,7 +357,7 @@ final class MinimaxLocalUsageScanner: ObservableObject, @unchecked Sendable {
                 let aggregate = try Self.aggregateFromDB(
                     dbPath: info.url,
                     calendar: calendar,
-                    sampleCutoff: now().addingTimeInterval(-8 * 24 * 60 * 60)
+                    cutoff: now().addingTimeInterval(-8 * 24 * 60 * 60)
                 )
 
                 // 字符分摊 outputTokens → reasoningTokens。raw.reasoning 永远 0 时
@@ -687,14 +687,14 @@ extension MinimaxLocalUsageScanner {
     nonisolated static func aggregateFromDB(
         dbPath: URL,
         calendar: Calendar,
-        sampleCutoff: Date? = nil
+        cutoff: Date? = nil
     ) throws -> MinimaxDBAggregate {
         try SQLiteTempCopy.read(dbPath: dbPath, logTag: "[minimax-scan]") { url in
             let reader = try MinimaxDBReader(path: url, readOnly: url.path == dbPath.path)
             defer { reader.close() }
             return try reader.aggregate(
                 calendar: calendar,
-                sampleCutoff: sampleCutoff
+                cutoff: cutoff
             )
         }
     }

@@ -42,6 +42,7 @@ enum ScannerIndexIO {
     }
 
     /// 把索引写入 `cacheDir/index.json`（0o600 权限）。
+    /// 紧凑格式：index 含数万条 recentSamples 时 `.prettyPrinted` 每轮多写数 MB。
     nonisolated static func saveIndex<Index: Encodable>(
         _ index: Index,
         cacheDir: URL,
@@ -50,7 +51,7 @@ enum ScannerIndexIO {
         let url = cacheDir.appendingPathComponent("index.json")
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.outputFormatting = [.sortedKeys]
         let data = try encoder.encode(index)
         try fileManager.writePrivate(data, to: url)
     }

@@ -95,18 +95,23 @@ struct SevenDayTokenUsageHoverView<Daily: LocalUsageDaily>: View {
     let isScanning: Bool
     /// Optional per-day cost text. Client settings passes this so the table
     /// reads `Reason → 价值`; provider cards keep the historical 6-column view.
-    let priceByDay: [Date: String]
+    ///
+    /// `@autoclosure`：`HoverInfoRow` 在 init 时就会求值 detail 闭包，若这里直接
+    /// 收 `[Date: String]`，卡片 footer 的每次 body 重算都会白跑一遍
+    /// `ModelPricingCatalog` 定价估算——即使 hover 图从未打开。收闭包并只在
+    /// 本 view 的 body 内调用，定价计算才真正惰性化。
+    private let priceByDayProvider: () -> [Date: String]
 
     init(
         days: [Daily],
         scannedAt: Date?,
         isScanning: Bool,
-        priceByDay: [Date: String] = [:]
+        priceByDay: @autoclosure @escaping () -> [Date: String] = [:]
     ) {
         self.days = days
         self.scannedAt = scannedAt
         self.isScanning = isScanning
-        self.priceByDay = priceByDay
+        self.priceByDayProvider = priceByDay
     }
 
     private let inputColor = Color(red: 0.16, green: 0.47, blue: 0.91)
@@ -116,6 +121,7 @@ struct SevenDayTokenUsageHoverView<Daily: LocalUsageDaily>: View {
 
     var body: some View {
         let chartScale = LocalUsageChartScale(days: days)
+        let priceByDay = priceByDayProvider()
 
         VStack(alignment: .leading, spacing: 9) {
             HStack(alignment: .firstTextBaseline) {

@@ -79,6 +79,13 @@ extension QuotaFetcher {
         try await fetch(mode: .full)
     }
 
+    /// 默认实现：auth 由 config.json 的 apiKey 字段管理（AppState 用
+    /// `usableAPIKey` 判断 ready），fetcher 自身没有独立的本地 auth 状态。
+    /// 自管 auth 的 fetcher（如 codex 读 ~/.codex/auth.json）重写此方法。
+    func hasLocalAuth() -> Bool {
+        true
+    }
+
     func checkLocalAuth() async -> Bool {
         hasLocalAuth()
     }

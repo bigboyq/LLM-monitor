@@ -55,12 +55,6 @@ struct GlmCodingPlanFetcher: QuotaFetcher {
         self.client = HTTPClient(session: session, logTag: Self.logTag, defaultTimeout: HTTPTimeouts.request)
     }
 
-    func hasLocalAuth() -> Bool {
-        // Coding Plan Key 存在 config.json 的 apiKey 字段，不由 fetcher 自管；
-        // AppState 用 config.usableAPIKey 判断 ready，这里始终返回 true。
-        return true
-    }
-
     func fetch(mode: RefreshMode) async throws -> QuotaInfo {
         guard !apiKey.isEmpty else { throw QuotaError.missingAPIKey }
 

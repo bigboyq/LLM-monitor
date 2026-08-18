@@ -122,6 +122,7 @@ struct MenuContentView: View {
                     }
                     ForEach(cards) { status in
                         ProviderCardView(status: status)
+                            .equatable()
                             .contextMenu {
                                 Button("立即刷新") {
                                     Task { await state.refreshOne(providerID: status.id) }

@@ -48,12 +48,6 @@ struct MinimaxTokenPlanFetcher: QuotaFetcher {
         self.client = HTTPClient(session: session, logTag: Self.logTag, defaultTimeout: HTTPTimeouts.request)
     }
 
-    func hasLocalAuth() -> Bool {
-        // minimax 的 auth 在 config.json 的 apiKey 字段，不由 fetcher 自管
-        // AppState 用 config.apiKey 判断 ready，这里始终返回 true
-        return true
-    }
-
     func fetch(mode: RefreshMode) async throws -> QuotaInfo {
         guard !apiKey.isEmpty else { throw QuotaError.missingAPIKey }
 
@@ -79,16 +73,15 @@ struct MinimaxTokenPlanFetcher: QuotaFetcher {
     static func parse(data: Data) throws -> QuotaInfo {
         logInfo("\(logTag) parse: \(data.count) bytes")
 
-        // JSONDecoder 会接受 `1.0` 这类可精确转成 Int 的浮点 token。额度计数
-        // 属于服务端账本字段，不能静默截断或宽松转换；先从原始 JSON 类型严格
-        // 审核四个 count 字段，再交给 Decodable 构造响应模型。
-        try validateModelCountJSONTypes(data)
-
-        // 1. 用 JSONDecoder 解码，跟 CodexFetcher/AntigravityFetcher 一致
+        // 1. 用 JSONDecoder 解码（count 字段的"非负整数"校验在
+        // `MinimaxModelRemain.init(from:)` 内完成，只解析一遍）
         let decoder = JSONDecoder()
         let response: MinimaxResponse
         do {
             response = try decoder.decode(MinimaxResponse.self, from: data)
+        } catch let error as QuotaError {
+            // 模型层（strictNonnegativeCount）已给出具体业务错误，直接透传。
+            throw error
         } catch {
             logError("\(logTag) JSON 解析失败: \(error.localizedDescription)")
             throw QuotaError.decodingError("minimax 返回的 JSON 无法解析")
@@ -221,62 +214,6 @@ struct MinimaxTokenPlanFetcher: QuotaFetcher {
     }
 
 
-    /// 原始 JSON 数字类型检查。缺少 count 字段仍按历史兼容路径视为 0；
-    /// 字段一旦出现，则只接受非负、Int 可表示的整数 token。
-    private static func validateModelCountJSONTypes(_ data: Data) throws {
-        let json: Any
-        do {
-            json = try JSONSerialization.jsonObject(with: data)
-        } catch {
-            throw QuotaError.decodingError("minimax 返回的 JSON 无法解析")
-        }
-        guard let root = json as? [String: Any],
-              let rawEntries = root["model_remains"] as? [Any] else {
-            return // 结构错误交给下面的 JSONDecoder 给出统一错误。
-        }
-
-        let countKeys = [
-            "current_interval_total_count",
-            "current_interval_usage_count",
-            "current_weekly_total_count",
-            "current_weekly_usage_count",
-        ]
-        for (index, rawEntry) in rawEntries.enumerated() {
-            guard let entry = rawEntry as? [String: Any] else { continue }
-            // 无名记录按既有业务规则整体跳过；其中的无关脏字段不能让其他合法
-            // model 的额度全部不可用。
-            guard let modelName = entry["model_name"] as? String,
-                  !modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                continue
-            }
-            for key in countKeys {
-                guard let rawValue = entry[key] else { continue }
-                guard strictNonnegativeJSONInteger(rawValue) != nil else {
-                    throw QuotaError.decodingError(
-                        "model_remains[#\(index)].\(key) 不是合法非负整数"
-                    )
-                }
-            }
-        }
-    }
-
-    private static func strictNonnegativeJSONInteger(_ raw: Any) -> Int? {
-        guard let number = raw as? NSNumber,
-              !DateParser.isBoolean(number) else {
-            return nil
-        }
-
-        // JSONSerialization 用浮点 NSNumber 表示含小数点或指数的 number token；
-        // 即使值恰好等于整数（1.0 / 1e0）也拒绝，避免 schema 漂移被隐藏。
-        let type = String(cString: number.objCType)
-        guard type != "f", type != "d", type != "D",
-              let value = Int(number.stringValue),
-              value >= 0 else {
-            return nil
-        }
-        return value
-    }
-
     private static func validatedCounts(
         total: Int?,
         usage: Int?,
@@ -374,16 +311,45 @@ struct MinimaxModelRemain: Decodable {
 
         // 字段可以缺失，但字段一旦存在就必须保持正确类型；`try?` 会把 schema
         // 漂移静默降级成 nil，最终显示成真实的 0%，因此这里使用 decodeIfPresent。
-        self.intervalTotalCount = try c.decodeIfPresent(Int.self, forKey: .intervalTotalCount)
-        self.intervalUsageCount = try c.decodeIfPresent(Int.self, forKey: .intervalUsageCount)
+        // 四个 count 字段额外走 strictNonnegativeCount：必须是可精确表示的非负整数。
+        self.intervalTotalCount = try Self.strictNonnegativeCount(c, .intervalTotalCount)
+        self.intervalUsageCount = try Self.strictNonnegativeCount(c, .intervalUsageCount)
         self.intervalRemainingPercent = try c.decodeIfPresent(Double.self, forKey: .intervalRemainingPercent)
         self.intervalStatus = try c.decodeIfPresent(Int.self, forKey: .intervalStatus)
         self.endTime = try c.decodeIfPresent(Int.self, forKey: .endTime)
-        self.weeklyTotalCount = try c.decodeIfPresent(Int.self, forKey: .weeklyTotalCount)
-        self.weeklyUsageCount = try c.decodeIfPresent(Int.self, forKey: .weeklyUsageCount)
+        self.weeklyTotalCount = try Self.strictNonnegativeCount(c, .weeklyTotalCount)
+        self.weeklyUsageCount = try Self.strictNonnegativeCount(c, .weeklyUsageCount)
         self.weeklyRemainingPercent = try c.decodeIfPresent(Double.self, forKey: .weeklyRemainingPercent)
         self.weeklyStatus = try c.decodeIfPresent(Int.self, forKey: .weeklyStatus)
         self.weeklyEndTime = try c.decodeIfPresent(Int.self, forKey: .weeklyEndTime)
+    }
+
+    /// 原始 JSON 数字严格校验：字段可以缺失（按历史兼容路径视为 0），但一旦出现
+    /// 就必须是可用 Int 精确表示的非负整数（拒绝小数 / 负数 / 溢出 / 布尔 /
+    /// 字符串）。额度计数属于服务端账本字段，不能静默截断或宽松转换。
+    private static func strictNonnegativeCount(
+        _ container: KeyedDecodingContainer<CodingKeys>,
+        _ key: CodingKeys
+    ) throws -> Int? {
+        let raw: Double
+        do {
+            raw = try container.decodeIfPresent(Double.self, forKey: key) ?? .nan
+        } catch {
+            throw QuotaError.decodingError(
+                "model_remains.\(key.stringValue) 不是合法非负整数"
+            )
+        }
+        // NaN 作为"字段缺失"的哨兵值；decode 成功的 Double 永远不会是 NaN。
+        guard !raw.isNaN else { return nil }
+        guard raw.isFinite,
+              raw >= 0,
+              raw <= Double(Int.max),
+              raw == raw.rounded() else {
+            throw QuotaError.decodingError(
+                "model_remains.\(key.stringValue) 不是合法非负整数"
+            )
+        }
+        return Int(raw)
     }
 }
 

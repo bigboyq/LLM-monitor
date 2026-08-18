@@ -181,6 +181,8 @@ final class AppState: ObservableObject {
 
     private var configMonitorSource: DispatchSourceFileSystemObject?
     private var configReloadTask: Task<Void, Never>?
+    /// config.json 被删除/替换后重新挂载 watcher 的重试 task（带退避）。
+    private var configWatcherRetryTask: Task<Void, Never>?
     private var cancellables = Set<AnyCancellable>()
     /// 只持久化远程 quota 最近成功时间；quota 本体仍不落盘，避免把完整响应当作用户缓存。
     private let refreshTimestampsURL: URL
@@ -322,6 +324,8 @@ final class AppState: ObservableObject {
         nextRefreshAt = nil
         configReloadTask?.cancel()
         configReloadTask = nil
+        configWatcherRetryTask?.cancel()
+        configWatcherRetryTask = nil
         configMonitorSource?.cancel()
         configMonitorSource = nil
     }
@@ -436,36 +440,53 @@ final class AppState: ObservableObject {
 
     private func startConfigWatcher() {
         configMonitorSource?.cancel()
-        
-        let configDirURL = configStore.configURL.deletingLastPathComponent()
-        let fd = open(configDirURL.path, O_EVTONLY)
+        configWatcherRetryTask?.cancel()
+        configWatcherRetryTask = nil
+
+        // 只监听 config.json 单文件本身，而不是整个配置目录：log.txt 与
+        // last-refresh.json 就在同一个目录里，目录级 `.write` 监听会让每条日志
+        // append / 每次时间戳落盘都触发一轮 debounce + 读盘 + 指纹比对。
+        let fd = open(configStore.configURL.path, O_EVTONLY)
         guard fd >= 0 else {
-            logError("无法打开配置目录以进行文件监听: \(configDirURL.path)")
+            // 编辑器"先删后写"或瞬时替换会让文件短暂不存在；带退避重试，
+            // 直到文件重新可打开。open() 失败只是一个 syscall，成本可忽略。
+            logWarn("AppState: 配置文件暂不可监听（可能正被替换），稍后重试: \(configStore.configURL.path)")
+            configWatcherRetryTask = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(2))
+                guard !Task.isCancelled else { return }
+                await MainActor.run { self?.startConfigWatcher() }
+            }
             return
         }
         let source = DispatchSource.makeFileSystemObjectSource(
             fileDescriptor: fd,
-            eventMask: .write,
+            eventMask: [.write, .delete, .rename, .revoke],
             queue: .main
         )
-        
+
         source.setEventHandler { [weak self] in
             guard let self else { return }
+            // 本应用的 writePrivate 与多数编辑器都用"临时文件 + rename"原子替换：
+            // fd 仍指向旧 inode，必须重新打开新文件，否则后续变更全部丢失。
+            let events = source.data
+            if events.contains(.delete) || events.contains(.rename) || events.contains(.revoke) {
+                self.startConfigWatcher()
+            }
             self.scheduleConfigReload()
         }
-        
+
         source.setCancelHandler {
             close(fd)
         }
-        
+
         source.resume()
         self.configMonitorSource = source
-        logInfo("AppState: 配置文件监听启动 (基于 DispatchSourceFileSystemObject 目录监听)")
+        logInfo("AppState: 配置文件监听启动 (基于 config.json 单文件 DispatchSource)")
     }
 
-    /// 目录 watcher 会同时收到 log、last-refresh 以及编辑器临时文件的事件。
-    /// 先 debounce，再把配置文件读取放到 utility task，避免每个目录事件都在
-    /// MainActor 上同步读盘；最终的 config 解码和发布仍回到 MainActor。
+    /// 编辑器保存时可能连发多个事件（写 + 原子替换）。先 debounce，再把配置文件
+    /// 读取放到 utility task，避免每个事件都在 MainActor 上同步读盘；最终的
+    /// config 解码和发布仍回到 MainActor。
     private func scheduleConfigReload() {
         configReloadTask?.cancel()
         let configURL = configStore.configURL

@@ -221,6 +221,69 @@ final class LLMMonitorTests: XCTestCase {
         XCTAssertEqual(info.models[1].intervalRemainingPercent, 70.0)
     }
 
+    /// 计数字段的严格 JSON 数字校验（在 `MinimaxModelRemain.init(from:)` 内完成）：
+    /// - 小数（1.5）/ 负数 / 布尔 / 字符串 → 抛 decodingError
+    /// - 缺失 → 按历史兼容路径视为 0，整体解析成功
+    func testMinimaxParseStrictCountValidation() throws {
+        func makeData(countField: String, value: String) -> Data {
+            """
+            {
+              "model_remains": [
+                {
+                  "model_name": "general",
+                  "end_time": 1783252800000,
+                  "weekly_end_time": 1783267200000,
+                  "current_interval_remaining_percent": 50,
+                  "current_weekly_remaining_percent": 60,
+                  "\(countField)": \(value)
+                }
+              ],
+              "base_resp": { "status_code": 0, "status_msg": "success" }
+            }
+            """.data(using: .utf8)!
+        }
+
+        // 非法值一律拒绝
+        for (field, value) in [
+            ("current_interval_total_count", "1.5"),
+            ("current_interval_total_count", "-3"),
+            ("current_interval_total_count", "true"),
+            ("current_interval_total_count", "\"12\""),
+            ("current_weekly_usage_count", "1e400")
+        ] {
+            do {
+                _ = try MinimaxTokenPlanFetcher.parse(data: makeData(countField: field, value: value))
+                XCTFail("expected decodingError for \(field)=\(value)")
+            } catch let error as QuotaError {
+                guard case .decodingError(let msg) = error,
+                      msg.contains("非负整数") else {
+                    XCTFail("unexpected error for \(field)=\(value): \(error)")
+                    return
+                }
+            }
+        }
+
+        // 整数值合法；字段缺失仍按 0 处理
+        let info = try MinimaxTokenPlanFetcher.parse(data: makeData(countField: "current_interval_total_count", value: "120"))
+        XCTAssertEqual(info.models.first?.intervalTotalCount, 120)
+        let missingJSON = """
+        {
+          "model_remains": [
+            {
+              "model_name": "general",
+              "end_time": 1783252800000,
+              "weekly_end_time": 1783267200000,
+              "current_interval_remaining_percent": 50,
+              "current_weekly_remaining_percent": 60
+            }
+          ],
+          "base_resp": { "status_code": 0, "status_msg": "success" }
+        }
+        """
+        let missing = try MinimaxTokenPlanFetcher.parse(data: missingJSON.data(using: .utf8)!)
+        XCTAssertEqual(missing.models.first?.intervalTotalCount, 0)
+    }
+
     // MARK: - Binding Reset Date & Window Label Consolidation Tests
 
     func testBindingResetDateRules() {
