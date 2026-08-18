@@ -551,6 +551,61 @@ final class DshUsageTests: XCTestCase {
         XCTAssertEqual(second.eventCount, 1, "好文件数据在重试轮次仍要保留")
     }
 
+    func testDshReusesUnchangedFileParseWhenAnotherSessionChanges() throws {
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let calendar = makeUTCGregorianCalendar()
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("llm-monitor-dsh-per-file-cache-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let cache = root.appendingPathComponent(".token-monitor", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let context = #"{"type":"request/context","seq":1,"time":1700000000000,"data":{"provider":"deepseek-official","model":"deepseek-v4-flash"}}"#
+        let firstLine = #"{"type":"assistant/message","seq":2,"time":1700000001000,"data":{"turn":1,"step":0,"usage":{"inputTokens":10,"outputTokens":1}}}"#
+        let secondLine = #"{"type":"assistant/message","seq":3,"time":1700000002000,"data":{"turn":2,"step":0,"usage":{"inputTokens":20,"outputTokens":1}}}"#
+        let firstURL = try writeRawSessionArtifact(
+            root: sessionsRoot,
+            sessionID: "session-first",
+            fileName: "session.jsonl.zst",
+            body: Data((context + "\n" + firstLine + "\n").utf8)
+        )
+        _ = try writeRawSessionArtifact(
+            root: sessionsRoot,
+            sessionID: "session-second",
+            fileName: "session.jsonl.zst",
+            body: Data((context + "\n" + secondLine + "\n").utf8)
+        )
+
+        let counter = DshDecompressorCallCounter.Box()
+        let decompressor: DshLocalUsageScanner.Decompressor = { data in
+            counter.increment()
+            return data
+        }
+        let first = try DshLocalUsageScanner.performScanPure(
+            sessionsRoot: sessionsRoot,
+            cacheDir: cache,
+            fileManager: FileManagerBox(),
+            calendar: calendar,
+            now: { base },
+            decompressor: decompressor
+        )
+        XCTAssertEqual(first.eventCount, 2)
+        XCTAssertEqual(counter.value, 2)
+
+        try Data((context + "\n" + firstLine + "\n" + secondLine + "\n").utf8).write(to: firstURL)
+        let second = try DshLocalUsageScanner.performScanPure(
+            sessionsRoot: sessionsRoot,
+            cacheDir: cache,
+            fileManager: FileManagerBox(),
+            calendar: calendar,
+            now: { base },
+            decompressor: decompressor
+        )
+
+        XCTAssertEqual(second.eventCount, 3)
+        XCTAssertEqual(counter.value, 3, "另一个 session 变化时，未变化文件不得再次解压")
+    }
+
     func testDshSelectionPrefersNewestFilesWhenOverFileLimit() throws {
         // spec：文件数超限时必须按 mtime 最新优先，而不是路径字典序截断。
         let calendar = makeUTCGregorianCalendar()

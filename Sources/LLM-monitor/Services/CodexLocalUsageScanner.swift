@@ -768,52 +768,35 @@ extension CodexFetcher {
                 if let cutoff {
                     guard modifiedAt >= cutoff else { continue }
                 }
-                insertRecentSnapshot(
+                files.append(
                     CodexSessionFileSnapshot(
                         fileURL: fileURL,
                         modifiedAt: modifiedAt,
                         fileSize: max(values.fileSize ?? 0, 0)
-                    ),
-                    into: &files,
-                    maximumCount: limits.maxSessionFiles
+                    )
                 )
             }
         }
 
-        return files
+        // 先完整收集，再一次排序截断；避免目录文件数接近上限时逐个插入导致
+        // O(n × maxSessionFiles) 的重复搬移。
+        return mostRecentSnapshots(files, maximumCount: limits.maxSessionFiles)
     }
 
     private nonisolated static func mostRecentSnapshots(
         _ snapshots: [CodexSessionFileSnapshot],
         maximumCount: Int
     ) -> [CodexSessionFileSnapshot] {
-        var selected: [CodexSessionFileSnapshot] = []
-        selected.reserveCapacity(min(snapshots.count, maximumCount))
-        for snapshot in snapshots {
-            insertRecentSnapshot(
-                snapshot,
-                into: &selected,
-                maximumCount: maximumCount
-            )
-        }
-        return selected
-    }
-
-    private nonisolated static func insertRecentSnapshot(
-        _ snapshot: CodexSessionFileSnapshot,
-        into snapshots: inout [CodexSessionFileSnapshot],
-        maximumCount: Int
-    ) {
-        let insertionIndex = snapshots.firstIndex {
-            if $0.modifiedAt != snapshot.modifiedAt {
-                return $0.modifiedAt < snapshot.modifiedAt
+        guard maximumCount > 0 else { return [] }
+        return snapshots
+            .sorted {
+                if $0.modifiedAt != $1.modifiedAt {
+                    return $0.modifiedAt > $1.modifiedAt
+                }
+                return $0.fileURL.path < $1.fileURL.path
             }
-            return $0.fileURL.path < snapshot.fileURL.path
-        } ?? snapshots.endIndex
-        snapshots.insert(snapshot, at: insertionIndex)
-        if snapshots.count > maximumCount {
-            snapshots.removeLast()
-        }
+            .prefix(maximumCount)
+            .map { $0 }
     }
 
     /// 以固定大小 chunk 读取 JSONL，避免大型活跃 session 被一次性载入内存。

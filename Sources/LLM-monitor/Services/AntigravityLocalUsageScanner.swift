@@ -18,8 +18,9 @@ import os.log
 ///    在 `index.dailyBySession`；changed session 只替换自己的缓存贡献，
 ///    全局汇总继续复用未变化 session 的缓存。
 /// 3. **in-flight dedup**：`scan()` 调用时如果上一次还在跑，直接忽略。
-/// 4. **serial RPC**：dirty session 串行拉 RPC（`fetchAll` 内部 for 循环）。
-///    本地 session 文件只用于发现和指纹比较，不参与内容解析。
+/// 4. **bounded RPC**：dirty session 以固定并发度拉 RPC，避免单个 session 阻塞整批，
+///    同时不给本地 language server 制造无界请求洪峰。本地 session 文件只用于发现和
+///    指纹比较，不参与内容解析。
 /// 5. **失败不重试**：RPC 失败或返回空事件时保留 last-good cache，
 ///    由下次外部 triggerAntigravityLocalUsageScan 调用（来自 antigravity 主 quota
 ///    refresh timer，默认 60s）自然重试。
@@ -160,6 +161,18 @@ final class AntigravityLocalUsageScanner: LocalUsageScannerBase<AntigravityLocal
         }
     }
 
+}
+
+private struct DirtySessionFetchError: Error, Sendable {
+    let message: String
+
+    var localizedDescription: String { message }
+}
+
+private struct DirtySessionFetchResult: Sendable {
+    let index: Int
+    let sessionID: String
+    let result: Result<[AntigravityFetcher.UsageEvent], DirtySessionFetchError>
 }
 
 // MARK: - Cache + index types
@@ -347,15 +360,15 @@ extension AntigravityLocalUsageScanner {
             return nil
         }
 
-        // 3. 串行拉 dirty sessions
+        // 3. 有界并发拉 dirty sessions
         var failedCount = 0
         let nowDate = now()
         if !dirty.isEmpty {
             let results = try await fetchAll(fetcher: fetcher, dirty: dirty)
             let dirtyByID = Dictionary(uniqueKeysWithValues: dirty.map { ($0.0, $0.1) })
-            for (_, entry) in results.enumerated() {
-                let sessionId = entry.0
-                switch entry.1 {
+            for entry in results {
+                let sessionId = entry.sessionID
+                switch entry.result {
                 case .success(let events):
                     guard isTrustworthyRPCResult(events) else {
                         failedCount = SaturatingArithmetic.add(failedCount, 1)
@@ -416,7 +429,7 @@ extension AntigravityLocalUsageScanner {
                     }
                 case .failure(let error):
                     failedCount = SaturatingArithmetic.add(failedCount, 1)
-                    logWarn("[antigravity-scan] session=\(sessionId) ✗ RPC 失败: \(error.localizedDescription)")
+                    logWarn("[antigravity-scan] session=\(sessionId) ✗ RPC 失败: \(error)")
                 }
             }
         }
@@ -464,35 +477,88 @@ extension AntigravityLocalUsageScanner {
         !events.isEmpty
     }
 
-    /// 串行拉多个 session 的 metadata。
+    /// 以固定并发度拉多个 session 的 metadata。
     /// `nonisolated static`：fetcher 通过参数传，不碰 self，可在 background 跑。
-    nonisolated static func fetchAll(
+    fileprivate nonisolated static func fetchAll(
         fetcher: AntigravityFetcher,
         dirty: [(String, AntigravityDBFileInfo)]
-    ) async throws -> [(String, Result<[AntigravityFetcher.UsageEvent], Error>)] {
+    ) async throws -> [DirtySessionFetchResult] {
         logInfo("[antigravity-scan] dirty sessions: \(dirty.count) — \(dirty.prefix(5).map { $0.0 }.joined(separator: ", "))\(dirty.count > 5 ? "…" : "")")
         try Task.checkCancellation()
         // 进程/端口发现对整次扫描只做一次，所有 session 复用同一快照。
         let servers = fetcher.discoverMetadataServers()
-        var results: [(String, Result<[AntigravityFetcher.UsageEvent], Error>)] = []
+        guard !servers.isEmpty else {
+            return dirty.enumerated().map { index, item in
+                DirtySessionFetchResult(
+                    index: index,
+                    sessionID: item.0,
+                    result: .failure(DirtySessionFetchError(
+                        message: "未发现 Antigravity IDE 或 agy CLI 进程，请先启动 Antigravity 并完成登录"
+                    ))
+                )
+            }
+        }
+
+        let concurrency = min(4, max(dirty.count, 1))
+        var nextIndex = 0
+        var results: [DirtySessionFetchResult] = []
         results.reserveCapacity(dirty.count)
-        for (sessionId, _) in dirty {
-            try Task.checkCancellation()
-            let result: Result<[AntigravityFetcher.UsageEvent], Error>
-            do {
-                let events = try await fetcher.getTrajectoryMetadata(
-                    sessionId: sessionId,
+
+        return try await withThrowingTaskGroup(of: DirtySessionFetchResult.self) { group in
+            for _ in 0..<concurrency {
+                guard nextIndex < dirty.count else { break }
+                addFetchTask(
+                    to: &group,
+                    index: nextIndex,
+                    dirty: dirty,
+                    fetcher: fetcher,
                     servers: servers
                 )
-                result = .success(events)
+                nextIndex += 1
+            }
+
+            while let result = try await group.next() {
+                results.append(result)
+                guard nextIndex < dirty.count else { continue }
+                addFetchTask(
+                    to: &group,
+                    index: nextIndex,
+                    dirty: dirty,
+                    fetcher: fetcher,
+                    servers: servers
+                )
+                nextIndex += 1
+            }
+            return results.sorted { $0.index < $1.index }
+        }
+    }
+
+    private nonisolated static func addFetchTask(
+        to group: inout ThrowingTaskGroup<DirtySessionFetchResult, Error>,
+        index: Int,
+        dirty: [(String, AntigravityDBFileInfo)],
+        fetcher: AntigravityFetcher,
+        servers: [AntigravityFetcher.ServerInfo]
+    ) {
+        let sessionID = dirty[index].0
+        group.addTask {
+            try Task.checkCancellation()
+            do {
+                let events = try await fetcher.getTrajectoryMetadata(
+                    sessionId: sessionID,
+                    servers: servers
+                )
+                return DirtySessionFetchResult(index: index, sessionID: sessionID, result: .success(events))
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
-                result = .failure(error)
+                return DirtySessionFetchResult(
+                    index: index,
+                    sessionID: sessionID,
+                    result: .failure(DirtySessionFetchError(message: error.localizedDescription))
+                )
             }
-            results.append((sessionId, result))
         }
-        return results
     }
 }
 

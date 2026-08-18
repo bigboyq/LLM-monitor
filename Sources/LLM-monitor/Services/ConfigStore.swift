@@ -638,6 +638,7 @@ final class ConfigStore: ObservableObject {
     private var configReloadTask: Task<Void, Never>?
     /// config.json 被删除/替换后重新挂载 watcher 的重试 task（带退避）。
     private var configWatcherRetryTask: Task<Void, Never>?
+    private var configWatcherRetryAttempt = 0
 
     /// 启动配置文件监听（幂等）。AppState.start() 调用；编辑器保存（含原子替换）、
     /// 手工编辑都会触发 debounce 后的 reload。
@@ -651,6 +652,7 @@ final class ConfigStore: ObservableObject {
         configReloadTask = nil
         configWatcherRetryTask?.cancel()
         configWatcherRetryTask = nil
+        configWatcherRetryAttempt = 0
         configMonitorSource?.cancel()
         configMonitorSource = nil
     }
@@ -664,9 +666,16 @@ final class ConfigStore: ObservableObject {
         guard fd >= 0 else {
             // 编辑器"先删后写"或瞬时替换会让文件短暂不存在；带退避重试，
             // 直到文件重新可打开。open() 失败只是一个 syscall，成本可忽略。
-            logWarn("ConfigStore: 配置文件暂不可监听（可能正被替换），稍后重试: \(configURL.path)")
+            let attempt = configWatcherRetryAttempt
+            configWatcherRetryAttempt = min(attempt + 1, 5)
+            if attempt == 0 {
+                logWarn("ConfigStore: 配置文件暂不可监听（可能正被替换），稍后重试: \(configURL.path)")
+            } else {
+                logDebug("ConfigStore: 配置文件监听重试第 \(attempt + 1) 次")
+            }
+            let delaySeconds = min(1 << min(attempt, 5), 30)
             configWatcherRetryTask = Task { [weak self] in
-                try? await Task.sleep(for: .seconds(2))
+                try? await Task.sleep(for: .seconds(delaySeconds))
                 guard !Task.isCancelled else { return }
                 await MainActor.run { self?.startConfigWatcher() }
             }
@@ -695,6 +704,7 @@ final class ConfigStore: ObservableObject {
 
         source.resume()
         self.configMonitorSource = source
+        configWatcherRetryAttempt = 0
         logInfo("ConfigStore: 配置文件监听启动 (基于 config.json 单文件 DispatchSource)")
     }
 

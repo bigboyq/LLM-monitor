@@ -21,12 +21,24 @@ struct DshLocalUsageScanLimits: Sendable {
     let maxJSONLLineBytes: Int
     let maxRecentSamples: Int
 }
+
+private extension DshLocalUsageScanLimits {
+    var cacheKey: String {
+        "\(maxSessionFiles):\(maxTotalRawBytes):\(maxJSONLLineBytes):\(maxRecentSamples)"
+    }
+}
 @MainActor
 final class DshLocalUsageScanner: LocalUsageScannerBase<DshLocalUsage>, @unchecked Sendable {
     nonisolated static let scanLogTag = "[dsh-scan]"
 
     /// 整个扫描 pipeline 的串行锁（跨实例共享）。
     nonisolated static let pipelineMutex = AsyncMutex()
+
+    /// DSH 的 session 文件通常是 append-only。扫描时如果只有一个活跃文件变化，
+    /// 其余文件的解压和 JSONL 解析结果可以直接复用；这里保留一个有界进程内 LRU，
+    /// 避免每 60 秒把整批历史文件重新解压一遍。它不改变 index.json 格式，应用重启
+    /// 后仍由现有快照缓存提供冷启动快路径。
+    nonisolated private static let parsedFileCache = DshParsedFileCache(maximumEntryCount: 256)
 
     nonisolated static let defaultSessionsRoot: URL = {
         let environment = ProcessInfo.processInfo.environment
@@ -432,6 +444,74 @@ private struct DshFileParseResult: Sendable {
     let activeProviders: Set<String>
 }
 
+/// 只缓存解析结果，不缓存聚合结果：聚合仍然会从每个文件的结果重新计算，
+/// 因而文件新增、删除、窗口变化和失败重试都不会受到旧聚合状态污染。
+private final class DshParsedFileCache: @unchecked Sendable {
+    private struct Entry {
+        let fingerprint: DshLogFileFingerprint
+        let limitsKey: String
+        let result: DshFileParseResult
+    }
+
+    private let lock = NSLock()
+    private let maximumEntryCount: Int
+    private var entries: [String: Entry] = [:]
+    private var recency: [String] = []
+
+    init(maximumEntryCount: Int) {
+        self.maximumEntryCount = max(maximumEntryCount, 1)
+    }
+
+    func value(
+        for snapshot: DshLogFileSnapshot,
+        limits: DshLocalUsageScanLimits
+    ) -> DshFileParseResult? {
+        let key = snapshot.url.path
+        lock.lock()
+        defer { lock.unlock() }
+        guard let entry = entries[key],
+              entry.fingerprint == snapshot.fingerprint,
+              entry.limitsKey == limits.cacheKey else {
+            return nil
+        }
+        touch(key)
+        return entry.result
+    }
+
+    func store(
+        _ result: DshFileParseResult,
+        for snapshot: DshLogFileSnapshot,
+        limits: DshLocalUsageScanLimits
+    ) {
+        let key = snapshot.url.path
+        lock.lock()
+        defer { lock.unlock() }
+        entries[key] = Entry(
+            fingerprint: snapshot.fingerprint,
+            limitsKey: limits.cacheKey,
+            result: result
+        )
+        touch(key)
+        while recency.count > maximumEntryCount {
+            entries.removeValue(forKey: recency.removeFirst())
+        }
+    }
+
+    func removeAll(except paths: Set<String>) {
+        lock.lock()
+        defer { lock.unlock() }
+        entries = entries.filter { paths.contains($0.key) }
+        recency.removeAll { !paths.contains($0) }
+    }
+
+    private func touch(_ key: String) {
+        if let index = recency.firstIndex(of: key) {
+            recency.remove(at: index)
+        }
+        recency.append(key)
+    }
+}
+
 private struct DshMutableProviderAggregate: Sendable {
     var daily: [Date: DshDailyUsage] = [:]
     var turnsByDay: [Date: Set<String>] = [:]
@@ -467,21 +547,31 @@ private extension DshLocalUsageScanner {
         limits: DshLocalUsageScanLimits
     ) throws -> DshFileAggregationOutcome {
         var outcome = DshFileAggregationOutcome()
+        parsedFileCache.removeAll(except: Set(snapshots.map { $0.url.path }))
         for snapshot in snapshots.sorted(by: { $0.modifiedAt > $1.modifiedAt }) {
             try Task.checkCancellation()
             do {
-                let data: Data
-                if snapshot.url.lastPathComponent.lowercased().hasSuffix(".zstd")
-                    || snapshot.url.lastPathComponent.lowercased().hasSuffix(".zst") {
-                    data = try decompressor(try Data(contentsOf: snapshot.url))
-                } else {
-                    data = try Data(contentsOf: snapshot.url)
-                }
-                let result = try parseFile(
-                    data: data,
-                    sessionID: snapshot.url.deletingLastPathComponent().lastPathComponent,
+                let result: DshFileParseResult
+                if let cached = parsedFileCache.value(
+                    for: snapshot,
                     limits: limits
-                )
+                ) {
+                    result = cached
+                } else {
+                    let data: Data
+                    if snapshot.url.lastPathComponent.lowercased().hasSuffix(".zstd")
+                        || snapshot.url.lastPathComponent.lowercased().hasSuffix(".zst") {
+                        data = try decompressor(try Data(contentsOf: snapshot.url))
+                    } else {
+                        data = try Data(contentsOf: snapshot.url)
+                    }
+                    result = try parseFile(
+                        data: data,
+                        sessionID: snapshot.url.deletingLastPathComponent().lastPathComponent,
+                        limits: limits
+                    )
+                    parsedFileCache.store(result, for: snapshot, limits: limits)
+                }
                 outcome.processedFingerprints.append(snapshot.fingerprint)
                 guard !result.usages.isEmpty else { continue }
                 for usage in result.usages {
