@@ -21,13 +21,10 @@ import Darwin
 ///      串行化（scanner 走 `AsyncMutex.pipelineMutex` 保证）
 ///    - 跨 instance 不共享（每个 scanner 自己 new 一个）
 ///
-/// 3. **使用入口白名单** —— 当前调用方：
-///    - `MinimaxLocalUsageScanner.performScanPure`（+ 它的 .impl 子函数）
-///    - `AntigravityLocalUsageScanner.performScanPure`（+ 它的 .impl 子函数）
-///    - 上面两个 scanner 都跑在各自的 `AsyncMutex.pipelineMutex` 内
-///    - `ConfigStore.persist` / `ConfigStore.writeTemplate`：整个 `ConfigStore`
-///      受 `@MainActor` 隔离；每次写入使用独立 `FileManagerBox`
-///    - 任何新调用方必须同样在 mutex 内，或证明单线程 / actor 隔离
+/// 3. **使用入口约束** —— 当前调用方（scanner 全家 + ConfigStore + Dsh 解码等
+///    多个文件）：scanner 跑在各自的 `pipelineMutex` 内，ConfigStore 受
+///    `@MainActor` 隔离。任何新调用方必须同样在 mutex 内，或证明单线程 /
+///    actor 隔离。
 ///
 /// ## 为什么不直接用 `actor`
 ///
@@ -52,21 +49,6 @@ extension FileManagerBox {
         fileManager.fileExists(atPath: path)
     }
 
-    /// Recursively discover dsh session artifacts without exposing the wrapped
-    /// `FileManager` instance outside this access-controlled extension.
-    func sessionFileURLs(in root: URL) throws -> [URL] {
-        let relativePaths = try fileManager.subpathsOfDirectory(atPath: root.path)
-        return relativePaths
-            .filter { relativePath in
-                let name = URL(fileURLWithPath: relativePath).lastPathComponent.lowercased()
-                return name == "session.jsonl"
-                    || name.hasSuffix(".jsonl.zstd")
-                    || name.hasSuffix(".jsonl.zst")
-            }
-            .map { root.appendingPathComponent($0) }
-            .sorted { $0.path < $1.path }
-    }
-
     /// Create a private, unique temporary file URL used by local decoders.
     func temporaryURL() -> URL {
         fileManager.temporaryDirectory
@@ -86,6 +68,11 @@ extension FileManagerBox {
             [.posixPermissions: NSNumber(value: 0o700)],
             ofItemAtPath: url.path
         )
+    }
+
+    /// 递归列出目录下全部相对路径（dsh session 发现用）。
+    func subpathsOfDirectory(atPath path: String) throws -> [String] {
+        try fileManager.subpathsOfDirectory(atPath: path)
     }
 
     func contentsOfDirectory(

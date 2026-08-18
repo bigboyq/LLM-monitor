@@ -79,6 +79,24 @@ final class DshLocalUsageScanner: LocalUsageScannerBase<DshLocalUsage>, @uncheck
         )
     }
 
+    /// 递归发现 dsh session 产物文件（session.jsonl / *.jsonl.zstd / *.jsonl.zst），
+    /// 按路径排序。dsh 领域专用逻辑，放在 dsh scanner 而不是通用 FileManagerBox。
+    nonisolated static func sessionFileURLs(
+        in root: URL,
+        fileManager: FileManagerBox
+    ) throws -> [URL] {
+        let relativePaths = try fileManager.subpathsOfDirectory(atPath: root.path)
+        return relativePaths
+            .filter { relativePath in
+                let name = URL(fileURLWithPath: relativePath).lastPathComponent.lowercased()
+                return name == "session.jsonl"
+                    || name.hasSuffix(".jsonl.zstd")
+                    || name.hasSuffix(".jsonl.zst")
+            }
+            .map { root.appendingPathComponent($0) }
+            .sorted { $0.path < $1.path }
+    }
+
     nonisolated static func loadCachedResult(
         cacheDir: URL,
         fileManager: FileManagerBox,
@@ -140,7 +158,7 @@ final class DshLocalUsageScanner: LocalUsageScannerBase<DshLocalUsage>, @uncheck
         }
         try fileManager.createPrivateDirectory(at: cacheDir)
 
-        let filePaths = try fileManager.sessionFileURLs(in: sessionsRoot)
+        let filePaths = try Self.sessionFileURLs(in: sessionsRoot, fileManager: fileManager)
         let selection = selectSessionSnapshots(
             filePaths: filePaths,
             fileManager: fileManager,

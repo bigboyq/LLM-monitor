@@ -584,7 +584,7 @@ final class DshUsageTests: XCTestCase {
             maxRecentSamples: 65_536
         )
         let selection = try DshLocalUsageScanner.selectSessionSnapshots(
-            filePaths: try FileManagerBox().sessionFileURLs(in: sessionsRoot),
+            filePaths: try DshLocalUsageScanner.sessionFileURLs(in: sessionsRoot, fileManager: FileManagerBox()),
             fileManager: FileManagerBox(),
             limits: limits
         )
@@ -630,7 +630,7 @@ final class DshUsageTests: XCTestCase {
             maxRecentSamples: 65_536
         )
         let selection = try DshLocalUsageScanner.selectSessionSnapshots(
-            filePaths: try FileManagerBox().sessionFileURLs(in: sessionsRoot),
+            filePaths: try DshLocalUsageScanner.sessionFileURLs(in: sessionsRoot, fileManager: FileManagerBox()),
             fileManager: FileManagerBox(),
             limits: limits
         )
@@ -667,7 +667,7 @@ final class DshUsageTests: XCTestCase {
             maxRecentSamples: 65_536
         )
         let selection = try DshLocalUsageScanner.selectSessionSnapshots(
-            filePaths: try FileManagerBox().sessionFileURLs(in: sessionsRoot),
+            filePaths: try DshLocalUsageScanner.sessionFileURLs(in: sessionsRoot, fileManager: FileManagerBox()),
             fileManager: FileManagerBox(),
             limits: limits
         )

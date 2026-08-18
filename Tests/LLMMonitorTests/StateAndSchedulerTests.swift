@@ -60,24 +60,30 @@ final class StateAndSchedulerTests: XCTestCase {
     func testGlmLocalUsagePeriodicTriggerWiredInStartAndStop() throws {
         let url = URL(fileURLWithPath: #filePath)
         let packageRoot = url.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        let appStatePath = packageRoot
-            .appendingPathComponent("Sources/LLM-monitor/Services/AppState.swift").path
-        let source = try String(contentsOfFile: appStatePath, encoding: .utf8)
+        func source(_ path: String) throws -> String {
+            try String(contentsOfFile: packageRoot.appendingPathComponent(path).path, encoding: .utf8)
+        }
+        let appState = try source("Sources/LLM-monitor/Services/AppState.swift")
+        let orchestration = try source("Sources/LLM-monitor/Services/LocalUsageOrchestration.swift")
 
-        // start() 里调用启动
+        // start() 里经由编排层调用启动
         XCTAssertTrue(
-            source.contains("startGlmLocalUsagePeriodicTrigger()"),
-            "AppState.start() 应调用 startGlmLocalUsagePeriodicTrigger()"
+            appState.contains("localUsage.startGlmPeriodicTrigger("),
+            "AppState.start() 应调用 localUsage.startGlmPeriodicTrigger()"
         )
-        // stop() 里 cancel 对应 task
+        // stop() 里 cancel 全部本地扫描（含 GLM 定期 task）
         XCTAssertTrue(
-            source.contains("glmLocalUsagePeriodicTask?.cancel()"),
-            "AppState.stop() 应 cancel glmLocalUsagePeriodicTask"
+            appState.contains("localUsage.cancelInFlightAll()"),
+            "AppState.stop() 应调用 localUsage.cancelInFlightAll()"
         )
-        // 独立 task 字段存在
+        // 编排层持有独立 task 并在重建前 cancel 旧的
         XCTAssertTrue(
-            source.contains("var glmLocalUsagePeriodicTask: Task<Void, Never>?"),
-            "AppState 应有 glmLocalUsagePeriodicTask 字段"
+            orchestration.contains("var glmPeriodicTask: Task<Void, Never>?"),
+            "LocalUsageOrchestration 应有 glmPeriodicTask 字段"
+        )
+        XCTAssertTrue(
+            orchestration.contains("glmPeriodicTask?.cancel()"),
+            "LocalUsageOrchestration 重建定期触发前应 cancel 旧 task"
         )
     }
 
@@ -1771,9 +1777,8 @@ final class StateAndSchedulerTests: XCTestCase {
         defer { state.stop() }
 
         let backgroundTask = Task { @MainActor in
-            await state.refreshProviderDirectly(
-                providerID: fetcher.providerID,
-                mode: .background
+            await state.refreshScheduler.runRefresh(
+                fetcher.providerID, mode: .background
             )
         }
         await fetcher.gate.waitUntilReached()
@@ -2268,8 +2273,8 @@ final class StateAndSchedulerTests: XCTestCase {
         //    refreshOne 走 background mode：会触发 fetcher.fetch（计数 +1），
         //    然后 hold 在 gate 上。
         let backgroundTask = Task { @MainActor in
-            await state.refreshProviderDirectly(
-                providerID: fetcher.providerID, mode: .background
+            await state.refreshScheduler.runRefresh(
+                fetcher.providerID, mode: .background
             )
         }
         await fetcher.gate.waitUntilReached()

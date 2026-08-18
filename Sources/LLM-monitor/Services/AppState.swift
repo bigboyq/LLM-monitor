@@ -43,86 +43,17 @@ final class AppState: ObservableObject {
     private var detailTasks: [String: Task<Void, Never>] = [:]
     /// 防止被取消的旧 Codex detail task 清掉新任务的扫描状态。
     private var detailTaskTokens: [String: UUID] = [:]
-    /// background 请求进行中时收到的显式 full refresh 请求。当前请求完成后只补跑一次。
-    private var pendingFullRefreshIDs: Set<String> = []
-    /// 仍在等待同一 background 请求的 full refresh 调用数。用于取消时只撤销
-    /// 当前调用的 pending 标记，不影响其他仍在等待的调用。
-    private var pendingFullRefreshWaiterCounts: [String: Int] = [:]
+    /// 显式 full refresh 与 background refresh 的合并协议（pending/waiter/claim）。
+    private let manualRefreshGate = ManualRefreshGate()
     /// 远程额度恢复通知；通过协议注入，测试不会触碰系统通知中心。
     private let quotaUpdateNotifier: any QuotaUpdateNotifying
 
-    /// GLM（ZCode）本地 scanner 的独立定期触发 task。
-    ///
-    /// scanner 只读本地 `.db`，不依赖远端 quota，但它跟 quota 绑定触发（quota 成功
-    /// 后才 scan）有一个盲区：quota 持续失败时（Key 过期 / 网络问题）scanner 永远不跑，
-    /// 用户在 ZCode 里产生的新 token 消耗进不来，柱图卡在旧数据。
-    ///
-    /// 这个 task 用 GLM provider 的 `refreshIntervalSeconds`（与 quota 同节奏）独立
-    /// 定期触发 scan，不依赖 quota 是否成功。scanner 内部的 db+WAL 指纹检查保证
-    /// 指纹没变时只做一次 `stat()`（微秒级），指纹变了才跑 SQL（~1.5ms），零额外负担。
-    private var glmLocalUsagePeriodicTask: Task<Void, Never>?
+    /// 5 组本地 scanner 的编排（lazy 构造 / 触发 / 启动策略 / GLM 定期任务）。
+    /// 扫描结果通过 `LocalUsageStatusWriting` 回写本类型。lazy：构造需要捕获 self。
+    private lazy var localUsage = LocalUsageOrchestration(writer: self)
 
     /// 推进 `healthEvaluationDate`，让高峰窗口跨越分钟边界时能更新菜单栏颜色。
     private var healthClockTask: Task<Void, Never>?
-
-    /// Antigravity 本地 token 用量 scanner：通过 `LocalUsageCoordinator` 包装
-    /// singleton + Combine wire-up 逻辑，避免在 AppState 里重复 30+ 行。
-    /// `lazy`：只在首次需要时构造（disable 状态下永不会触发）。
-    private lazy var antigravityLocalUsageCoordinator = LocalUsageCoordinator<AntigravityLocalUsage>(
-        providerID: providerID(for: .antigravity) ?? "",
-        logTag: "antigravity",
-        makeScanner: { AntigravityLocalUsageScanner(fetcher: AntigravityFetcher()) },
-        apply: { [weak self] usage in self?.applyAntigravityLocalUsage(usage) },
-        setScanning: { [weak self] isScanning in
-            self?.setScanningState(isScanning, for: self?.providerID(for: .antigravity) ?? "")
-        }
-    )
-
-    /// Minimax 本地 token 用量 scanner：只读取 v2 `runtime-state.sqlite`。
-    /// 通过 `LocalUsageCoordinator` 统一 scanner 构造、trigger、扫描状态和结果 apply。
-    private lazy var minimaxLocalUsageCoordinator = LocalUsageCoordinator<MinimaxLocalUsage>(
-        providerID: providerID(for: .minimaxTokenPlan) ?? "",
-        logTag: "minimax",
-        makeScanner: { MinimaxLocalUsageScanner() },
-        apply: { [weak self] usage in self?.applyMinimaxLocalUsage(usage) },
-        setScanning: { [weak self] isScanning in
-            self?.setScanningState(isScanning, for: self?.providerID(for: .minimaxTokenPlan) ?? "")
-        }
-    )
-
-    /// GLM 本地 token 用量 scanner：读 ZCode（智谱官方 CLI）的 ~/.zcode/cli/db/db.sqlite
-    /// `model_usage` 表。模式跟 minimax / opencode scanner 镜像。
-    private lazy var glmLocalUsageCoordinator = LocalUsageCoordinator<GlmLocalUsage>(
-        providerID: providerID(for: .glmCodingPlan) ?? "",
-        logTag: "glm-local",
-        makeScanner: { GlmZcodeLocalUsageScanner() },
-        apply: { [weak self] usage in self?.applyGlmLocalUsage(usage) },
-        setScanning: { [weak self] isScanning in
-            self?.setScanningState(isScanning, for: self?.providerID(for: .glmCodingPlan) ?? "")
-        }
-    )
-
-    /// opencode 本地用量 scanner（共享后台数据源，由四张卡各自的合并开关决定是否消费）。
-    /// opencode 自身不是 menu bar provider，不挂独立 scanning 状态；启动时以及
-    /// Minimax / GLM quota refresh 成功后都会触发（in-flight 去重）。
-    private lazy var opencodeUsageCoordinator = LocalUsageCoordinator<OpencodeLocalUsage>(
-        providerID: "opencode",
-        logTag: "opencode",
-        makeScanner: { OpencodeUsageScanner() },
-        apply: { [weak self] usage in self?.applyOpencodeUsage(usage) },
-        setScanning: { _ in /* opencode 不暴露 scanning 状态 */ }
-    )
-
-    /// dsh 本地 session token 用量 scanner。dsh 不是菜单栏 provider；它会扫描
-    /// `$DSH_HOME/sessions`（默认 `~/.dsh/sessions`），按 session 中记录的 provider
-    /// 分片，结果通过 `usageProjection` 自动并入 MiniMax / GLM / DeepSeek 三张卡。
-    /// dsh 自身不暴露 scanning 状态（没有 UI 消费者），所以不传 `setScanning`。
-    private lazy var dshUsageCoordinator = LocalUsageCoordinator<DshLocalUsage>(
-        providerID: "dsh",
-        logTag: "dsh",
-        makeScanner: { DshLocalUsageScanner() },
-        apply: { [weak self] usage in self?.applyDshUsage(usage) }
-    )
 
     /// 统一的 statuses 广播通道。
     ///
@@ -179,10 +110,6 @@ final class AppState: ObservableObject {
         return levels.min()
     }
 
-    private var configMonitorSource: DispatchSourceFileSystemObject?
-    private var configReloadTask: Task<Void, Never>?
-    /// config.json 被删除/替换后重新挂载 watcher 的重试 task（带退避）。
-    private var configWatcherRetryTask: Task<Void, Never>?
     private var cancellables = Set<AnyCancellable>()
     /// 只持久化远程 quota 最近成功时间；quota 本体仍不落盘，避免把完整响应当作用户缓存。
     private let refreshTimestampsURL: URL
@@ -191,6 +118,9 @@ final class AppState: ObservableObject {
     private let lastRefreshStore: LastRefreshStore
     /// 配置变更后递增。旧请求即使稍后完成，也不能覆盖新配置派生出的状态。
     private var configurationGeneration = 0
+    /// rebuildStatuses 派生时顺带缓存的 "auth 就绪" 结论，供 shouldAutoRefresh
+    /// 复用，避免同一次 rebuild 内为同一 provider 二次构造 fetcher + auth stat。
+    private var authReadyCache: [String: Bool] = [:]
 
     init(
         descriptors: [FetcherDescriptor],
@@ -254,23 +184,21 @@ final class AppState: ObservableObject {
     }
 
     /// 给定 provider kind 查 descriptors 拿实际 id。新增 provider 时只改 `LLMMonitorApp.makeDescriptors()`。
-    private func providerID(for kind: ProviderKind) -> String? {
+    func providerID(for kind: ProviderKind) -> String? {
         descriptors.first(where: { $0.kind == kind })?.id
     }
 
     /// 本地用量 scanner 的启动策略：Minimax / GLM 的数据库可直接读取，
     /// Antigravity 需要等本地 IDE 服务和主 quota 首次成功。
     nonisolated static func localUsageScanStartsImmediately(for kind: ProviderKind) -> Bool {
-        kind == .minimaxTokenPlan || kind == .glmCodingPlan
+        LocalUsageOrchestration.scanStartsImmediately(for: kind)
     }
 
     // MARK: - 生命周期
 
     func start() {
-        // `stop()` 也会取消配置目录 watcher；允许生命周期重启时恢复配置热加载。
-        if configMonitorSource == nil {
-            startConfigWatcher()
-        }
+        // `stop()` 也会取消配置 watcher；允许生命周期重启时恢复配置热加载。
+        configStore.startWatching()
 
         // 为每个 enabled + auth 就绪的 provider 调度独立 timer
         cancelAllRefreshTasks()
@@ -281,53 +209,33 @@ final class AppState: ObservableObject {
             if should {
                 scheduleRefresh(for: status.id)
             }
-            // 本地用量 scanner 的启动时机按 provider 特性分两种：
-            // - minimax：扫描器只读本地 `.db`，跟远端 quota 无关，进 app 立即
-            //   触发一次，用户首屏就看到本地历史。
-            // - glm（ZCode）：同上，只读本地 `.db`，进 app 立即触发一次。
-            // - antigravity：依赖本地 pgrep/lsof 探到的 Antigravity IDE 进程，
-            //   进程未起时 scan 会失败；等到主 quota 首次成功（authProber.markAvailable）
-            //   才触发更稳。
-            // 保留这种差异是有意的（见 `testLocalUsageScanTriggerTimingPolicy` 防退化）。
-            if status.isConfigured, Self.localUsageScanStartsImmediately(for: status.kind) {
-                if status.kind == .minimaxTokenPlan {
-                    triggerMinimaxLocalUsageScan()
-                } else if status.kind == .glmCodingPlan {
-                    triggerGlmLocalUsageScan()
-                }
-            }
         }
-        // opencode 是共享数据源，不依赖某个 quota provider 是否启用；启动时主动扫描一次，
-        // 让设置页诊断和已有 GLM/minimax 卡片尽早拿到本地历史。
-        triggerOpencodeUsageScan()
-        triggerDshUsageScan()
-        // GLM 本地 scanner 的独立定期触发（不依赖 quota 成功）
-        startGlmLocalUsagePeriodicTrigger()
+        // 本地 scanner 启动时机（minimax/glm 立即、antigravity 等 quota 首胜、
+        // opencode/dsh 共享源启动即扫）由 LocalUsageOrchestration 统一决策。
+        localUsage.startInitialScans(descriptors: descriptors)
+        localUsage.startGlmPeriodicTrigger(
+            descriptors: descriptors,
+            isProviderEnabled: { [configStore] providerID in
+                configStore.config.providers[providerID]?.enabled ?? false
+            },
+            interval: configStore.config.effectiveRefreshInterval(
+                for: descriptors.first(where: { $0.kind == .glmCodingPlan })?.id
+                    ?? ProviderKind.glmCodingPlan.providerID
+            )
+        )
         startHealthClock()
     }
 
     func stop() {
         cancelAllRefreshTasks()
-        pendingFullRefreshIDs.removeAll()
-        pendingFullRefreshWaiterCounts.removeAll()
+        manualRefreshGate.reset()
         cancelAllDetailTasks()
         authProber.cancelAll()
-        antigravityLocalUsageCoordinator.cancelInFlight()
-        minimaxLocalUsageCoordinator.cancelInFlight()
-        glmLocalUsageCoordinator.cancelInFlight()
-        opencodeUsageCoordinator.cancelInFlight()
-        dshUsageCoordinator.cancelInFlight()
-        glmLocalUsagePeriodicTask?.cancel()
-        glmLocalUsagePeriodicTask = nil
+        localUsage.cancelInFlightAll()
         healthClockTask?.cancel()
         healthClockTask = nil
         nextRefreshAt = nil
-        configReloadTask?.cancel()
-        configReloadTask = nil
-        configWatcherRetryTask?.cancel()
-        configWatcherRetryTask = nil
-        configMonitorSource?.cancel()
-        configMonitorSource = nil
+        configStore.stopWatching()
     }
 
     /// 重新调度所有 timer（配置变更后调用）
@@ -379,52 +287,34 @@ final class AppState: ObservableObject {
     private func refreshProviderFully(providerID: String) async {
         if let activeMode = refreshScheduler.inFlightMode(for: providerID) {
             if activeMode == .background {
-                pendingFullRefreshIDs.insert(providerID)
-                pendingFullRefreshWaiterCounts[providerID, default: 0] += 1
+                manualRefreshGate.registerPending(providerID)
             }
             do {
                 try await refreshScheduler.waitUntilNotInFlight(providerID)
-            } catch is CancellationError {
-                if activeMode == .background {
-                    removePendingFullRefreshWaiter(providerID)
-                }
-                return
             } catch {
-                // R18: generic catch（非取消错误）也必须清理 waiter count 与 claim set，
-                // 否则会泄漏并可能误触发第二次 full refresh。与 CancellationError 路径一致。
+                // R18: 取消与非取消错误都必须撤销本次 pending 登记，否则会泄漏并
+                // 可能在 background 结束后误触发第二次 full refresh。
                 if activeMode == .background {
-                    removePendingFullRefreshWaiter(providerID)
+                    manualRefreshGate.withdrawPending(providerID)
                 }
                 return
             }
 
             guard !Task.isCancelled else {
                 if activeMode == .background {
-                    removePendingFullRefreshWaiter(providerID)
+                    manualRefreshGate.withdrawPending(providerID)
                 }
                 return
             }
 
             // Set 的 remove 是 MainActor 上的单次 claim：多个等待者只会有一个
             // 真正补跑 full refresh，其余等待者自然返回。
-            if pendingFullRefreshIDs.remove(providerID) != nil {
-                pendingFullRefreshWaiterCounts.removeValue(forKey: providerID)
-                _ = await refreshProviderDirectly(providerID: providerID, mode: .full)
+            if manualRefreshGate.claimPendingFullRefresh(providerID) {
+                _ = await refreshScheduler.runRefresh(providerID, mode: .full)
             }
             return
         }
-        _ = await refreshProviderDirectly(providerID: providerID, mode: .full)
-    }
-
-    /// 撤销一个在 background refresh 上挂起的 full refresh 请求。
-    private func removePendingFullRefreshWaiter(_ providerID: String) {
-        let remaining = (pendingFullRefreshWaiterCounts[providerID] ?? 1) - 1
-        if remaining > 0 {
-            pendingFullRefreshWaiterCounts[providerID] = remaining
-        } else {
-            pendingFullRefreshWaiterCounts.removeValue(forKey: providerID)
-            pendingFullRefreshIDs.remove(providerID)
-        }
+        _ = await refreshScheduler.runRefresh(providerID, mode: .full)
     }
 
     func openConfigFile() {
@@ -438,77 +328,6 @@ final class AppState: ObservableObject {
 
     // MARK: - 配置变化监听
 
-    private func startConfigWatcher() {
-        configMonitorSource?.cancel()
-        configWatcherRetryTask?.cancel()
-        configWatcherRetryTask = nil
-
-        // 只监听 config.json 单文件本身，而不是整个配置目录：log.txt 与
-        // last-refresh.json 就在同一个目录里，目录级 `.write` 监听会让每条日志
-        // append / 每次时间戳落盘都触发一轮 debounce + 读盘 + 指纹比对。
-        let fd = open(configStore.configURL.path, O_EVTONLY)
-        guard fd >= 0 else {
-            // 编辑器"先删后写"或瞬时替换会让文件短暂不存在；带退避重试，
-            // 直到文件重新可打开。open() 失败只是一个 syscall，成本可忽略。
-            logWarn("AppState: 配置文件暂不可监听（可能正被替换），稍后重试: \(configStore.configURL.path)")
-            configWatcherRetryTask = Task { [weak self] in
-                try? await Task.sleep(for: .seconds(2))
-                guard !Task.isCancelled else { return }
-                await MainActor.run { self?.startConfigWatcher() }
-            }
-            return
-        }
-        let source = DispatchSource.makeFileSystemObjectSource(
-            fileDescriptor: fd,
-            eventMask: [.write, .delete, .rename, .revoke],
-            queue: .main
-        )
-
-        source.setEventHandler { [weak self] in
-            guard let self else { return }
-            // 本应用的 writePrivate 与多数编辑器都用"临时文件 + rename"原子替换：
-            // fd 仍指向旧 inode，必须重新打开新文件，否则后续变更全部丢失。
-            let events = source.data
-            if events.contains(.delete) || events.contains(.rename) || events.contains(.revoke) {
-                self.startConfigWatcher()
-            }
-            self.scheduleConfigReload()
-        }
-
-        source.setCancelHandler {
-            close(fd)
-        }
-
-        source.resume()
-        self.configMonitorSource = source
-        logInfo("AppState: 配置文件监听启动 (基于 config.json 单文件 DispatchSource)")
-    }
-
-    /// 编辑器保存时可能连发多个事件（写 + 原子替换）。先 debounce，再把配置文件
-    /// 读取放到 utility task，避免每个事件都在 MainActor 上同步读盘；最终的
-    /// config 解码和发布仍回到 MainActor。
-    private func scheduleConfigReload() {
-        configReloadTask?.cancel()
-        let configURL = configStore.configURL
-        configReloadTask = Task { @MainActor [weak self] in
-            do {
-                try await Task.sleep(for: .milliseconds(250))
-            } catch {
-                return
-            }
-
-            let data = await Task.detached(priority: .utility) {
-                ConfigStore.dataForWatcher(from: configURL)
-            }.value
-
-            guard !Task.isCancelled, let self else { return }
-            self.configReloadTask = nil
-            guard self.configStore.hasChangedSinceLastRead(using: data) else { return }
-            logInfo("AppState: 检测到配置文件更新，触发 reload")
-            self.configStore.reload(using: data)
-        }
-    }
-
     private func setupConfigSubscription() {
         configStore.$config
             .dropFirst()
@@ -517,6 +336,7 @@ final class AppState: ObservableObject {
                 guard let self else { return }
                 logInfo("AppState: 检测到配置变更，开始重建状态并重新调度任务")
                 self.configurationGeneration &+= 1
+                self.authReadyCache.removeAll()
                 self.authProber.reset()
                 self.rebuildStatuses()
                 self.rescheduleAll()
@@ -538,6 +358,11 @@ final class AppState: ObservableObject {
                 authProber: authProber,
                 hintProvider: externalAuthHint(for:config:)
             )
+            if d.kind.usesExternalAuth {
+                authReadyCache[d.id] = (derived == .ready)
+            } else {
+                authReadyCache[d.id] = (pc?.usableAPIKey != nil)
+            }
             // auth 还 ok（derived == .ready）就保留旧 status 的 `.ok/.loading/.failed`
             // 状态 —— 旧 data 跟着旧 state 走，UI 不会闪白。
             // auth 失效（derived == .notConfigured）就重置成 derived 状态，
@@ -555,12 +380,16 @@ final class AppState: ObservableObject {
                 let lastInfo = previous.flatMap { Self.lastSuccessInfo(from: $0) }
                 finalState = .failed(message: message, lastSuccess: lastInfo)
             default:
-                finalState = Self.deriveState(
-                    descriptor: d,
-                    providerConfig: pc,
-                    authProber: authProber,
-                    hintProvider: externalAuthHint(for:config:)
-                )
+                // 复用上面已算出的 derived，不再走 deriveState 二次派生；
+                // 折叠规则与 deriveState 一致：serviceOffline → notConfigured。
+                switch derived {
+                case .ready:
+                    finalState = .ready
+                case .notConfigured(let reason):
+                    finalState = .notConfigured(reason: reason)
+                case .serviceOffline(let message):
+                    finalState = .notConfigured(reason: message)
+                }
             }
             // 与 ProviderRefreshScheduler 共用同一份 effective interval；外部手改配置为
             // 小于 10 秒时，卡片新鲜度与实际调度都按 10 秒计算。
@@ -626,18 +455,12 @@ final class AppState: ObservableObject {
     /// - 不进任何 group / semaphore
     /// - 直接 fetch + 直接写自己的 status[idx]
     /// - 多个 provider 调用此方法时**完全并行，互不阻塞**
+    /// in-flight 标记与成败记录由 `ProviderRefreshScheduler.runRefresh` 统一负责
+    /// （本方法是 scheduler 的 refreshHandler）。
     /// `internal` 便于并发刷新状态机做无网络回归测试；产品调用仍经 scheduler/公开刷新入口。
     @MainActor
     func refreshProviderDirectly(providerID: String, mode: RefreshMode) async -> ProviderRefreshOutcome {
-        guard refreshScheduler.markInFlight(providerID, mode: mode) else {
-            logDebug("refreshProviderDirectly[\(providerID)]: 已有请求进行中，合并本次触发")
-            return .deferred
-        }
-        defer {
-            refreshScheduler.markNotInFlight(providerID)
-            updateGlobalRefreshingState()
-        }
-
+        defer { updateGlobalRefreshingState() }
         guard let idx = statuses.firstIndex(where: { $0.id == providerID }) else {
             logWarn("refreshProviderDirectly: 找不到 provider \(providerID) 的 idx")
             return .deferred
@@ -754,30 +577,10 @@ final class AppState: ObservableObject {
             }
             if descriptor.kind == .antigravity {
                 authProber.markAvailable(providerID)
-                // 主 quota 拿到后，异步触发本地 token 用量扫描
-                // （mtime diff + JSONL cache 复用，跟 quota 同节奏）
-                triggerAntigravityLocalUsageScan()
             }
-            if descriptor.kind == .minimaxTokenPlan {
-                // minimax 主 quota 拿到后，异步触发 v2 runtime-state 单源扫描
-                // （mtime diff + WAL 增量）
-                triggerMinimaxLocalUsageScan()
-                // 同时触发 opencode 扫描，供各卡合并开关与诊断页更新
-                triggerOpencodeUsageScan()
-                triggerDshUsageScan()
-            }
-            if descriptor.kind == .glmCodingPlan {
-                // GLM 主 quota 拿到后，触发 native ZCode + opencode 双扫描
-                triggerGlmLocalUsageScan()
-                triggerOpencodeUsageScan()
-                triggerDshUsageScan()
-            }
-            if descriptor.kind == .deepseek {
-                // DeepSeek quota 刷新后补扫 dsh，便利在没有 API Key / 余额请求失败时
-                // 仍能看到 harness 自身的 token 活动。
-                triggerDshUsageScan()
-            }
-            refreshScheduler.recordSuccess(providerID)
+            // 主 quota 拿到后触发的本地扫描（opencode / dsh 共享源、native scanner）
+            // 由触发表驱动：新增 provider 不再往这里加 if 分支。
+            localUsage.handleRefreshSuccess(kind: descriptor.kind)
             let resetDates = info.models.flatMap { [$0.intervalResetsAt, $0.weeklyResetsAt] }.compactMap { $0 }
             refreshScheduler.scheduleMidCycleResetRefreshes(for: providerID, resetsAtDates: resetDates)
             return .completed(success: true)
@@ -803,7 +606,6 @@ final class AppState: ObservableObject {
                                    lastSuccess: statuses[newIdx].lastSuccess)
             }
             lastRefreshAt = Date()
-            refreshScheduler.recordFailure(providerID)
             if descriptor.kind == .antigravity {
                 authProber.scheduleProbe(for: providerID)
             }
@@ -844,6 +646,11 @@ final class AppState: ObservableObject {
     /// 现在统一用 `usableAPIKey != nil`，跟 fetch 实际行为对齐。
     private func shouldAutoRefresh(providerID: String) -> Bool {
         guard let pc = configStore.config.providers[providerID], pc.enabled else { return false }
+        // rebuildStatuses 派生时已算过 auth 就绪结论（含 fetcher 构造 + auth stat），
+        // 直接复用，避免主线程三重构造 fetcher。
+        if let cached = authReadyCache[providerID] {
+            return cached
+        }
         guard let descriptor = descriptors.first(where: { $0.id == providerID }) else { return false }
         if descriptor.kind.usesExternalAuth {
             return descriptor.makeFetcher(pc).hasLocalAuth()
@@ -868,18 +675,8 @@ final class AppState: ObservableObject {
 
     // MARK: - Antigravity local usage scanner
 
-    /// 触发一次扫描。scanner 由 `LocalUsageCoordinator` 负责 lazy 构造 + wire-up。
-    /// 失败时保留上次的 lastResult（scanner 内部已经做这个保护）。
-    private func triggerAntigravityLocalUsageScan() {
-        // logDebug：跟 LocalUsageCoordinator.sink 的 [apply] sink fired 一致；
-        // 60s 一次的 trigger 不需要污染 release 日志。scanner 内部的 [antigravity-scan] 日志
-        // 仍然走 logInfo，保留诊断价值。
-        logDebug("[antigravity/apply] triggerAntigravityLocalUsageScan called")
-        antigravityLocalUsageCoordinator.trigger()
-    }
-
     @MainActor
-    private func applyAntigravityLocalUsage(_ usage: AntigravityLocalUsage?) {
+    func applyAntigravityLocalUsage(_ usage: AntigravityLocalUsage?) {
         applyLocalUsage(
             kind: .antigravity,
             field: \.antigravityLocalUsage,
@@ -891,15 +688,8 @@ final class AppState: ObservableObject {
 
     // MARK: - minimax local usage scanner
 
-    /// 触发一次扫描。scanner 由 `LocalUsageCoordinator` 负责 lazy 构造 + wire-up。
-    /// 失败时保留上次的 lastResult（scanner 内部已经做这个保护）。
-    private func triggerMinimaxLocalUsageScan() {
-        logDebug("[minimax/apply] triggerMinimaxLocalUsageScan called")
-        minimaxLocalUsageCoordinator.trigger()
-    }
-
     @MainActor
-    private func applyMinimaxLocalUsage(_ usage: MinimaxLocalUsage?) {
+    func applyMinimaxLocalUsage(_ usage: MinimaxLocalUsage?) {
         applyLocalUsage(
             kind: .minimaxTokenPlan,
             field: \.minimaxLocalUsage,
@@ -911,45 +701,8 @@ final class AppState: ObservableObject {
 
     // MARK: - GLM (ZCode) local usage scanner
 
-    /// 触发一次扫描。scanner 由 `LocalUsageCoordinator` 负责 lazy 构造 + wire-up。
-    /// 失败时保留上次的 lastResult（scanner 内部已经做这个保护）。
-    private func triggerGlmLocalUsageScan() {
-        logDebug("[glm-local/apply] triggerGlmLocalUsageScan called")
-        glmLocalUsageCoordinator.trigger()
-    }
-
-    /// 启动 GLM 本地 scanner 的独立定期触发。用 GLM provider 的 `refreshIntervalSeconds`
-    /// 做节奏（与 quota 同间隔），但**不依赖 quota 是否成功**——这样 GLM quota 持续失败时，
-    /// 用户在 ZCode 里产生的新 token 消耗仍能定期进柱图。scanner 内部 db+WAL 指纹保证
-    /// 指纹没变时只 stat()（微秒级），变了才跑 SQL。
-    ///
-    /// 只在 GLM provider 配置且启用时启动；配置变更后 `stop()` + `start()` 会重建本 task。
-    private func startGlmLocalUsagePeriodicTrigger() {
-        glmLocalUsagePeriodicTask?.cancel()
-        let glmID = providerID(for: .glmCodingPlan) ?? ProviderKind.glmCodingPlan.providerID
-        // 仅在 GLM provider 存在且启用时定期触发（未启用没必要空跑）
-        let isConfigured = descriptors.contains { $0.kind == .glmCodingPlan }
-            && (configStore.config.providers[glmID]?.enabled ?? false)
-        guard isConfigured else { return }
-
-        let interval = configStore.config.effectiveRefreshInterval(for: glmID)
-        glmLocalUsagePeriodicTask = Task { [weak self] in
-            while !Task.isCancelled {
-                do {
-                    try await Task.sleep(for: .seconds(interval))
-                } catch {
-                    // 取消（配置变更 / stop）正常退出
-                    return
-                }
-                guard let self, !Task.isCancelled else { return }
-                await MainActor.run { self.triggerGlmLocalUsageScan() }
-            }
-        }
-        logInfo("[glm-local] 独立定期触发已启动，间隔=\(Int(interval))s（不依赖 quota 成功）")
-    }
-
     @MainActor
-    private func applyGlmLocalUsage(_ usage: GlmLocalUsage?) {
+    func applyGlmLocalUsage(_ usage: GlmLocalUsage?) {
         applyLocalUsage(
             kind: .glmCodingPlan,
             field: \.glmLocalUsage,
@@ -961,13 +714,8 @@ final class AppState: ObservableObject {
 
     // MARK: - dsh local usage scanner（共享 session 日志 + 诊断页）
 
-    private func triggerDshUsageScan() {
-        logDebug("[dsh/apply] triggerDshUsageScan called")
-        dshUsageCoordinator.trigger()
-    }
-
     @MainActor
-    private func applyDshUsage(_ usage: DshLocalUsage?) {
+    func applyDshUsage(_ usage: DshLocalUsage?) {
         var copy = statuses
         var changed = false
         for idx in copy.indices {
@@ -984,15 +732,10 @@ final class AppState: ObservableObject {
 
     // MARK: - opencode local usage scanner（GLM 卡 + 诊断页）
 
-    private func triggerOpencodeUsageScan() {
-        logDebug("[opencode/apply] triggerOpencodeUsageScan called")
-        opencodeUsageCoordinator.trigger()
-    }
-
     /// 把 opencode 扫描结果分发到四个可能的 consumer provider status。
     /// opencode 自身不是 provider，所以 coordinator 的 setScanning 闭包是 no-op。
     @MainActor
-    private func applyOpencodeUsage(_ usage: OpencodeLocalUsage?) {
+    func applyOpencodeUsage(_ usage: OpencodeLocalUsage?) {
         // 每张卡自己决定是否合并；这里统一挂快照，关闭开关时仍可在诊断页查看。
         var copy = statuses
         var changed = false
@@ -1209,7 +952,7 @@ final class AppState: ObservableObject {
     }
 
     @MainActor
-    private func setScanningState(_ isScanning: Bool, for providerID: String) {
+    func setScanningState(_ isScanning: Bool, for providerID: String) {
         guard let idx = statuses.firstIndex(where: { $0.id == providerID }),
               statuses[idx].isScanningLocalUsage != isScanning else {
             return
@@ -1384,3 +1127,7 @@ struct PreservedStatusFields {
     let opencodeUsage: OpencodeLocalUsage?
     let dshUsage: DshLocalUsage?
 }
+
+// MARK: - LocalUsageStatusWriting（本地扫描结果回写）
+
+extension AppState: LocalUsageStatusWriting {}

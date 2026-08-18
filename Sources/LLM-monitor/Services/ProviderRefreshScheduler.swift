@@ -121,7 +121,7 @@ final class ProviderRefreshScheduler {
                 } else {
                     mode = .background
                 }
-                let result = await self.refreshHandler(providerID, mode)
+                let result = await self.runRefresh(providerID, mode: mode)
                 guard !Task.isCancelled else { break }
 
                 if case .deferred = result {
@@ -216,7 +216,7 @@ final class ProviderRefreshScheduler {
                 try? await self?.sleep(sleepSeconds)
                 guard let self, !Task.isCancelled else { return }
                 logInfo("ProviderRefreshScheduler: [\(providerID)] 触发 resetTime 补刷新")
-                _ = await self.refreshHandler(providerID, .background)
+                _ = await self.runRefresh(providerID, mode: .background)
             }
             newTasks.append(task)
         }
@@ -227,6 +227,29 @@ final class ProviderRefreshScheduler {
     }
 
     // MARK: - in-flight dedup（给 refreshHandler 入口用）
+
+    /// 统一的刷新执行入口：in-flight 标记、handler 调用、成败记录全部由调度器
+    /// 自身完成（handler 返回即自动结算），调用方不再手动 mark/record —— 消灭
+    /// 原来"AppState 驱动调度器内部状态"的回调环。
+    func runRefresh(_ providerID: String, mode: RefreshMode) async -> ProviderRefreshOutcome {
+        guard markInFlight(providerID, mode: mode) else {
+            logDebug("ProviderRefreshScheduler: [\(providerID)] 已有请求进行中，合并本次触发")
+            return .deferred
+        }
+        defer { markNotInFlight(providerID) }
+        let outcome = await refreshHandler(providerID, mode)
+        switch outcome {
+        case .completed(let success):
+            if success {
+                recordSuccess(providerID)
+            } else {
+                recordFailure(providerID)
+            }
+        case .deferred:
+            break
+        }
+        return outcome
+    }
 
     /// 在 fetch 入口调用。返回 true 表示成功加入 in-flight 集合；
     /// 返回 false 表示已有同一 provider 的 fetch 在进行中，外层应直接返回 `.deferred`。
