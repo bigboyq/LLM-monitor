@@ -648,6 +648,14 @@ final class AppState: ObservableObject {
         // rebuildStatuses 派生时已算过 auth 就绪结论（含 fetcher 构造 + auth stat），
         // 直接复用，避免主线程三重构造 fetcher。
         if let cached = authReadyCache[providerID] {
+            // Antigravity 的本地服务可能在 LLM Monitor 之后才启动。
+            // 探测到离线时仍需保留刷新任务，才能在服务稍后启动后自动恢复；
+            // 否则 rescheduleAll() 会把它永久过滤掉，手动“刷新全部”也无法触发。
+            if cached == false,
+               descriptors.first(where: { $0.id == providerID })?.kind == .antigravity {
+                logDebug("shouldAutoRefresh[\(providerID)]: 本地服务暂时离线，保留恢复重试")
+                return true
+            }
             return cached
         }
         guard let descriptor = descriptors.first(where: { $0.id == providerID }) else { return false }
