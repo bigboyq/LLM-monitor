@@ -181,20 +181,12 @@ final class SystemQuotaUpdateNotifier: NSObject, QuotaUpdateNotifying,
     private static func messageLine(_ increase: QuotaIncrease) -> String {
         var changes: [String] = []
         if let interval = increase.interval {
-            changes.append("短周期 \(percent(interval.previousPercent)) → \(percent(interval.currentPercent))")
+            changes.append("短周期 \(Formatters.formatQuotaPercent(interval.previousPercent)) → \(Formatters.formatQuotaPercent(interval.currentPercent))")
         }
         if let weekly = increase.weekly {
-            changes.append("周额度 \(percent(weekly.previousPercent)) → \(percent(weekly.currentPercent))")
+            changes.append("周额度 \(Formatters.formatQuotaPercent(weekly.previousPercent)) → \(Formatters.formatQuotaPercent(weekly.currentPercent))")
         }
         return "\(increase.displayName)：\(changes.joined(separator: "，"))"
-    }
-
-    private static func percent(_ value: Double) -> String {
-        let rounded = value.rounded()
-        if abs(value - rounded) < 0.05 {
-            return "\(Int(rounded))%"
-        }
-        return String(format: "%.1f%%", value)
     }
 
     func userNotificationCenter(

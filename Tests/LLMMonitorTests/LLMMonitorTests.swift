@@ -30,6 +30,31 @@ final class LLMMonitorTests: XCTestCase {
         XCTAssertEqual(Formatters.formatPercent(0.6432, digits: 1), "64.3%")
     }
 
+    /// formatQuotaPercent：距离整数 < 0.05 显示整数，否则 1 位小数。
+    /// 取代原本主面板 / hover / 通知 / 日志四处各不相同的舍入语义。
+    func testFormattersQuotaPercent() {
+        // 整数附近：明确 < 0.05 → 整数
+        XCTAssertEqual(Formatters.formatQuotaPercent(80.0), "80%")
+        XCTAssertEqual(Formatters.formatQuotaPercent(80.04), "80%")         // 距 80 仅 0.04
+        XCTAssertEqual(Formatters.formatQuotaPercent(79.96), "80%")         // 距 80 仅 0.04
+        XCTAssertEqual(Formatters.formatQuotaPercent(100.0), "100%")
+        XCTAssertEqual(Formatters.formatQuotaPercent(0.0), "0%")
+        XCTAssertEqual(Formatters.formatQuotaPercent(0.04), "0%")
+
+        // 远离整数：明确 ≥ 0.05 → 1 位小数
+        XCTAssertEqual(Formatters.formatQuotaPercent(80.4), "80.4%")
+        XCTAssertEqual(Formatters.formatQuotaPercent(79.6), "79.6%")
+        XCTAssertEqual(Formatters.formatQuotaPercent(99.9), "99.9%")
+        XCTAssertEqual(Formatters.formatQuotaPercent(33.33), "33.3%")
+
+        // 距离整数 0.5+ 的整数舍入值：仍走 1 位小数分支
+        // （如 79.5 距离 80 是 0.5，远大于 0.05 阈值）
+        XCTAssertEqual(Formatters.formatQuotaPercent(79.5), "79.5%")
+
+        // 数值 > 100：和原行为一致，不做 clamp
+        XCTAssertEqual(Formatters.formatQuotaPercent(100.4), "100.4%")
+    }
+
     /// 时间格式化 2 in 1：formatResetSuffix (5 阶梯压缩) + formatClock (跨日切月日)
     func testFormattersTime() {
         let now = Date(timeIntervalSince1970: 1_000_000)

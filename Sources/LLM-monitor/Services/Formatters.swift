@@ -92,6 +92,18 @@ enum Formatters {
         return (formatterCache.decimal(pct, maximumFractionDigits: digits) ?? "\(Int(pct))") + "%"
     }
 
+    /// 统一的额度剩余百分比格式化：距离整数 < 0.05 显示整数，否则 1 位小数。
+    /// 用于主面板、hover、通知文案、日志摘要共四条路径，避免出现
+    /// "主面板四舍五入 / 通知智能 / 日志截断"三套语义产生 ±1% 的视觉抖动。
+    /// - Parameter value: 已乘 100 的百分比（如 `80.0` 表示 80%），不是 0-1 的小数。
+    static func formatQuotaPercent(_ value: Double) -> String {
+        let rounded = value.rounded()
+        if abs(value - rounded) < 0.05 {
+            return "\(Int(rounded))%"
+        }
+        return String(format: "%.1f%%", value)
+    }
+
     // MARK: - 相对时间
     //
     // 金额格式化链路暂不保留；未来需要展示余额时再同步增加币种字段。

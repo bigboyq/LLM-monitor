@@ -77,11 +77,11 @@ struct QuotaWindowsHoverView: View {
     }
 
     private var effectiveAvailabilityText: String {
-        let percentage = Int(effectivePrimaryPercent.rounded())
+        let percentage = Formatters.formatQuotaPercent(effectivePrimaryPercent)
         if effectivePrimaryPercent < safePrimaryPercent {
-            return "当前 \(primaryLabel) 实际可用 \(percentage)%（受周额度限制）"
+            return "当前 \(primaryLabel) 实际可用 \(percentage)（受周额度限制）"
         }
-        return "当前 \(primaryLabel) 实际可用 \(percentage)%"
+        return "当前 \(primaryLabel) 实际可用 \(percentage)"
     }
 }
 

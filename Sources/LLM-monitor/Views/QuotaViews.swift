@@ -461,7 +461,7 @@ struct HoverMetricLine: View {
                 .foregroundStyle(.secondary)
                 .frame(width: 18, alignment: .leading)
 
-            Text("\(Int(percent.rounded()))%")
+            Text(Formatters.formatQuotaPercent(percent))
                 .font(.system(size: 11, weight: .semibold).monospacedDigit())
                 .foregroundStyle(summaryColor(for: percent))
                 .frame(width: 40, alignment: .leading)
@@ -681,9 +681,9 @@ private struct CombinedQuotaMetadataLine: View {
         HStack(spacing: 4) {
             Text(label)
                 .foregroundStyle(Color.primaryLabel)
-            Text("\(Int(percent.rounded()))%")
+            Text(Formatters.formatQuotaPercent(percent))
                 .foregroundStyle(summaryColor(for: percent, timeFraction: timeFraction))
-                .frame(width: 32, alignment: .trailing)
+                .frame(width: 40, alignment: .trailing)
         }
         .font(.system(size: 10, weight: .semibold).monospacedDigit())
     }
@@ -699,9 +699,9 @@ private struct SingleQuotaMetadataLine: View {
             HStack(spacing: 4) {
                 Text(label)
                     .foregroundStyle(Color.primaryLabel)
-                Text("\(Int(percent.rounded()))%")
+                Text(Formatters.formatQuotaPercent(percent))
                     .foregroundStyle(summaryColor(for: percent))
-                    .frame(width: 32, alignment: .trailing)
+                    .frame(width: 40, alignment: .trailing)
             }
             .font(.system(size: 10, weight: .semibold).monospacedDigit())
             .frame(width: quotaDataColumnWidth, alignment: .leading)

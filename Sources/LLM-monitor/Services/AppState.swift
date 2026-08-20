@@ -525,13 +525,13 @@ final class AppState: ObservableObject {
             logInfo("  [\(providerID)] 刷新成功，\(info.models.count) 个 model (\(Int(Date().timeIntervalSince(startedAt) * 1000))ms)")
             for m in info.models {
                 if descriptor.kind == .codexChatGpt {
-                    var summary = "    - \(m.modelName): primary=\(Int(m.intervalRemainingPercent))%"
+                    var summary = "    - \(m.modelName): primary=\(Formatters.formatQuotaPercent(m.intervalRemainingPercent))"
                     if m.hasWeeklyWindow {
-                        summary += ", secondary=\(Int(m.weeklyRemainingPercent))%"
+                        summary += ", secondary=\(Formatters.formatQuotaPercent(m.weeklyRemainingPercent))"
                     }
                     logInfo(summary)
                 } else {
-                    logInfo("    - \(m.modelName): 5h=\(Int(m.intervalRemainingPercent))%, 周=\(Int(m.weeklyRemainingPercent))%")
+                    logInfo("    - \(m.modelName): 5h=\(Formatters.formatQuotaPercent(m.intervalRemainingPercent)), 周=\(Formatters.formatQuotaPercent(m.weeklyRemainingPercent))")
                 }
             }
             if descriptor.kind == .antigravity {
