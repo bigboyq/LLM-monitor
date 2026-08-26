@@ -80,7 +80,7 @@ struct UnpricedModelUsage: Equatable, Sendable, Identifiable {
 /// summary. It is deliberately static: local usage must remain available when
 /// offline, and unknown model names are reported instead of guessed.
 enum ModelPricingCatalog {
-    static let lastUpdated = "2026-08-17"
+    static let lastUpdated = "2026-08-26"
 
     static func estimate(
         samples: [LocalTokenUsageSample],
@@ -251,6 +251,9 @@ enum ModelPricingCatalog {
             }
 
         case QuotaProviderID.zhipu:
+            if model.contains("glm-5.3-flash") || model.contains("glm-5.3flash") {
+                return ModelTokenPricing(modelLabel: modelName ?? "GLM-5.3-Flash", currency: .cny, inputPerMillion: 0.8, cacheReadPerMillion: 0.23, outputPerMillion: 2.8)
+            }
             if model.contains("glm-5.2") || model.contains("glm-5.3") {
                 return ModelTokenPricing(modelLabel: modelName ?? "GLM-5.2/5.3", currency: .cny, inputPerMillion: 8, cacheReadPerMillion: 2, outputPerMillion: 28)
             }

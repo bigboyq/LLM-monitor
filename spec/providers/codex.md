@@ -144,6 +144,56 @@ secondary window remains `.present` even when its remaining percentage is `0%`.
 
 ## Local Usage Aggregation
 
+### Official daily date, reporting window, and freshness
+
+The following date semantics were confirmed by aligning the official day-level API responses
+with the local Codex session JSONL data (August 2026, when Pacific Time is PDT):
+
+| Item | Confirmed behavior |
+|---|---|
+| Official daily boundary | `01:00 UTC`, which is `18:00 PT` on the previous calendar day and `09:00` in China (`Asia/Shanghai`) |
+| Official daily window | `[01:00 UTC, next-day 01:00 UTC)`, equivalently `[09:00 China time, next-day 09:00 China time)` |
+| Local alignment boundary | Use an explicit `Asia/Shanghai` 09:00 boundary when reproducing the official date labels; do not use the local calendar midnight boundary |
+| Typical freshness lag | About 3 hours between the official `data_freshness_ts` snapshot and the time the response is retrieved |
+
+Observed freshness examples:
+
+- A response retrieved at China time 10:00 reported `data_freshness_ts = 23:00 UTC`,
+  which is China time 07:00: approximately 3 hours of freshness lag.
+- A response retrieved at China time 11:00 reported `data_freshness_ts = 00:00 UTC`,
+  which is China time 08:00: again approximately 3 hours of freshness lag.
+
+`data_freshness_ts` describes the latest official aggregation snapshot available to the
+endpoint. It establishes an observed reporting/freshness delay, but should not be interpreted
+as proof of a specific database-ingestion delay. A date whose official snapshot has not reached
+the next `01:00 UTC` boundary is incomplete and must not be compared with a complete local day.
+
+The official API is account-wide and may include work surfaces, other devices, and other clients.
+Local JSONL aggregation is client-local; if multiple Codex accounts share the scanned session
+roots, their usage must be separated before comparing it with one official account.
+
+### August 2026 Team weekly value estimate
+
+For the August 2026 Team plan, the observed value of one weekly quota window is approximately
+**$58** under the following comparison convention:
+
+| Model family | Valuation convention |
+|---|---|
+| Terra / Luna | Use the normal model prices in [`ModelPricingCatalog.swift`](../../Sources/LLM-monitor/Models/ModelPricingCatalog.swift) |
+| SOL | Apply an effective value discount coefficient of `0.55` to the normal price-equivalent value |
+
+This is an inferred usage-value estimate, not an official invoice amount. In the 2026-08-15 to
+2026-08-19 sample, assuming the reported usage represented approximately 20% of the weekly
+window, the adjusted value is:
+
+```text
+(SOL value × 0.55 + Luna value + Terra value) ÷ 0.20 ≈ $58.1
+```
+
+The estimate is valid only when the same model mix and pricing assumptions are used. The sample's
+2026-08-19 snapshot was incomplete, so this should be treated as an approximate calibration
+target rather than a hard quota or billing limit.
+
 ### Accounting contract
 
 Codex 的 raw `inputTokens` 是包含 cache-read 的完整输入，`cachedInputTokens` 是其子集；

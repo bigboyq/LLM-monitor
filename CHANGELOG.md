@@ -8,7 +8,7 @@
 
 - 新增 DeepSeek Harness (dsh) 客户端用量监控：扫描 `~/.dsh/sessions` 中的 JSONL session 日志（zstd / Node 22+ zlib 双解压路径），按 `request/context` 中的 provider 自动合并到 MiniMax / GLM / DeepSeek 三张卡片。
 - 新增"设置 > 客户端"tab：按客户端维度（Antigravity / Codex / DSH / MiniMax Code / OpenCode / ZCode）展示本地 token 用量、最近 7 天柱图、缓存命中率与按公开 API 单价估算的价值。
-- 新增 `ModelPricingCatalog`：模型价目快照（MiniMax-M3 直接使用公开 CNY 价格、DeepSeek 高峰期 2× 倍率、DSH 独立 uncached-input / cache-read bucket 计价）；客户端 tab 标注目录更新日期 `lastUpdated`。
+- 新增 `ModelPricingCatalog`：模型价目快照（MiniMax-M3 直接使用公开 CNY 价格、DeepSeek 高峰期 2× 倍率、DSH 独立 uncached-input / cache-read bucket 计价、新增 GLM-5.3-Flash 定价规则）；客户端 tab 标注目录更新日期 `lastUpdated`。
 - 客户端 tab 中未定价模型显式列出名称、token 数与调用次数，不再静默归零。
 - 主菜单 Provider 卡片可自定义顺序：设置 → 通用 → 主菜单 Provider 顺序段提供上下按钮拖拽，按 Provider 显示名称排序。客户端 tab、设置页 Provider tabs 与 Client tab 内的 Provider 行仍按显示名称字母顺序排列；`providerCardOrder` 仅作用于主菜单。
 

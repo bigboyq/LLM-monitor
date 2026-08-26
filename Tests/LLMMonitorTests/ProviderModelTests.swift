@@ -319,6 +319,12 @@ final class ProviderModelTests: XCTestCase {
         XCTAssertEqual(glm52?.cacheReadPerMillion, glm53?.cacheReadPerMillion)
         XCTAssertEqual(glm52?.outputPerMillion, glm53?.outputPerMillion)
 
+        let glm53Flash = ModelPricingCatalog.pricing(for: "GLM-5.3-Flash", quotaProviderID: QuotaProviderID.zhipu)
+        XCTAssertEqual(glm53Flash?.currency, .cny)
+        XCTAssertEqual(glm53Flash?.inputPerMillion, 0.8)
+        XCTAssertEqual(glm53Flash?.cacheReadPerMillion, 0.23)
+        XCTAssertEqual(glm53Flash?.outputPerMillion, 2.8)
+
         let deepseekFlash = ModelPricingCatalog.pricing(
             for: "deepseek-v4-flash", quotaProviderID: QuotaProviderID.deepseek
         )
@@ -333,7 +339,7 @@ final class ProviderModelTests: XCTestCase {
         XCTAssertEqual(deepseekPro?.inputPerMillion, 4.5)
         XCTAssertEqual(deepseekPro?.cacheReadPerMillion, 0.15)
         XCTAssertEqual(deepseekPro?.outputPerMillion, 13.5)
-        XCTAssertEqual(ModelPricingCatalog.lastUpdated, "2026-08-17")
+        XCTAssertEqual(ModelPricingCatalog.lastUpdated, "2026-08-26")
     }
 
     func testDeepseekPricingUsesOffPeakBaseAndDoublesAtPeak() {
