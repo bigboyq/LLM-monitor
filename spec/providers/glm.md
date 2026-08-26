@@ -23,7 +23,7 @@ through the matching `clientBindings[]` entry.
 | Quota unit | Remaining credit percent, derived from `remaining / usage` (NOT the response `percentage` field, which is *used* percent) |
 | Windows | 5h (interval) + weekly — classified by window metadata, with reset-time fallback |
 | Plan tier | `data.level` → capitalized pill (`lite` → `Lite`) |
-| Local token source | native ZCode `~/.zcode/cli/db/db.sqlite` (`model_usage`, `provider_id='builtin:bigmodel-coding-plan'`); optional OpenCode `zhipuai-coding-plan` slice merged on top |
+| Local token source | Native ZCode `~/.zcode/cli/db/db.sqlite` (`model_usage`, `provider_id IN ('builtin:bigmodel-coding-plan', 'offpeak-idle-plan')`); DSH `~/.dsh/sessions` (`zhipu`/`glm` aliases, merged automatically); optional OpenCode `zhipuai-coding-plan` slice merged on top |
 
 ## Accounting contract
 
@@ -33,6 +33,21 @@ ZCode 的 `model_usage.input_tokens` 是包含 cache-read 的 raw input，
 归类：output/reasoning 进入统一层时已经互斥，不再二次相减。`cache_creation_input_tokens`
 只保留为 raw 诊断，不进入统一 total、图表或金额估算。见
 [`spec/accounting.md`](../accounting.md)。
+
+## Model Pricing Catalog
+
+设置面板“客户端”Tab 中的名义价值估算基于 [`ModelPricingCatalog.swift`](../../Sources/LLM-monitor/Models/ModelPricingCatalog.swift)（`QuotaProviderID.zhipu`）。价格目录使用智谱官方人民币公开价（CNY 直接计价）：
+
+| 模型匹配模式 | 归一化标签 (`modelLabel`) | 未缓存输入 (Input / 1M) | 缓存读取 (CacheRead / 1M) | 输出/思考 (Output / 1M) | 币种 |
+|---|---|---|---|---|---|
+| `glm-5.3-flash` / `glm-5.3flash` | `GLM-5.3-Flash` | **¥0.80** | **¥0.23** | **¥2.80** | CNY (¥) |
+| `glm-5.2` / `glm-5.3` | `GLM-5.2/5.3` | **¥8.00** | **¥2.00** | **¥28.00** | CNY (¥) |
+| `glm-4.5` | `GLM-4.5` | **¥0.80** | **¥0.00** | **¥2.00** | CNY (¥) |
+| `glm-4.7` | `GLM-4.7` | **¥0.80** | **¥0.00** | **¥2.00** | CNY (¥) |
+
+- **日志匹配规则**：匹配不区分大小写。ZCode 日志中的 `GLM-5.2`、OpenCode 中的 `glm-5.2`、DSH 中的 `GLM-5.3-Flash` 均可直接命中。
+- **目录更新时间**：记录于 `ModelPricingCatalog.lastUpdated`（当前为 `2026-08-26`）。
+- **未定价模型**：未收录的罕见或未来模型在客户端 Tab 中明确列出名称和 Token 量，不静默归零。
 
 ## Config
 

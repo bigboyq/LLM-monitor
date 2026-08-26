@@ -253,7 +253,7 @@ provider; unknown models are explicitly marked as unpriced rather than assigned 
 fallback price. The OpenAI/Codex catalog recognizes GPT-5.5 and GPT-5.6 Sol/Terra/Luna;
 legacy GPT-4, o1, o3, and generic GPT-5 names remain unpriced. Antigravity's
 independent GPT pricing rules are not affected. The built-in catalog records its update date in
-`ModelPricingCatalog.lastUpdated` (currently `2026-08-17`). Codex local events keep
+`ModelPricingCatalog.lastUpdated` (currently `2026-08-26`). Codex local events keep
 the model from `turn_context` so GPT-5.6 Sol/Terra/Luna can be priced separately.
 
 The main provider card footer also shows today's token total, cache hit rate, and
