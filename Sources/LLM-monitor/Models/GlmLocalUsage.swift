@@ -3,13 +3,14 @@ import Foundation
 /// GLM 官方客户端（ZCode CLI）本地 token 用量聚合（同构 MinimaxLocalUsage）。
 ///
 /// 数据来源：ZCode 的 SQLite `~/.zcode/cli/db/db.sqlite` `model_usage` 表 ——
-/// 每行一次模型请求，带 `provider_id='builtin:bigmodel-coding-plan'` + `model_id='GLM-5.2'`
+/// 每行一次模型请求，带智谱系 `provider_id`（`builtin:bigmodel-coding-plan` /
+/// `offpeak-idle-plan` / 其余 `builtin:bigmodel-%`）+ `model_id`（如 `GLM-5.3`）
 /// + 5 类 token（`input_tokens` / `output_tokens` / `reasoning_tokens` /
 /// `cache_creation_input_tokens` / `cache_read_input_tokens`）+ 原生 `turn_id`。
 ///
 /// 跟 minimax / opencode 的关键区别：
 /// - **单源**（一个 zcode db），不是双源 union
-/// - **原生 reasoning**（GLM-5.2 账单自带 reasoning tokens），不需要字符分摊
+/// - **原生 reasoning**（GLM 账单自带 reasoning tokens），不需要字符分摊
 /// - **原生 turn_id**：turns 直接 `COUNT(DISTINCT turn_id)`（ZCode 一次 user prompt
 ///   触发的多次模型调用共享同一个 turn_id）；rounds = `COUNT(*)`（每行 = 一次模型请求，
 ///   含主 agent / subagent / retry / title 生成）

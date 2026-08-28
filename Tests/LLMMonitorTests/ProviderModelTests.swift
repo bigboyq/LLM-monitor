@@ -312,12 +312,30 @@ final class ProviderModelTests: XCTestCase {
         XCTAssertEqual(AntigravityUsageGroup.classify(modelName: "claude-opus-4-6"), .claudeAndGPT)
         XCTAssertEqual(AntigravityUsageGroup.classify(modelName: "gpt-oss-120b"), .claudeAndGPT)
 
-        let glm52 = ModelPricingCatalog.pricing(for: "GLM-5.2", quotaProviderID: QuotaProviderID.zhipu)
+        // GLM-5.3 保留独立高价（8/2/28）；GLM-5.2 与 5.3 拆开后不再共用条目。
         let glm53 = ModelPricingCatalog.pricing(for: "GLM-5.3", quotaProviderID: QuotaProviderID.zhipu)
-        XCTAssertEqual(glm52?.currency, glm53?.currency)
-        XCTAssertEqual(glm52?.inputPerMillion, glm53?.inputPerMillion)
-        XCTAssertEqual(glm52?.cacheReadPerMillion, glm53?.cacheReadPerMillion)
-        XCTAssertEqual(glm52?.outputPerMillion, glm53?.outputPerMillion)
+        XCTAssertEqual(glm53?.currency, .cny)
+        XCTAssertEqual(glm53?.inputPerMillion, 8)
+        XCTAssertEqual(glm53?.cacheReadPerMillion, 2)
+        XCTAssertEqual(glm53?.outputPerMillion, 28)
+        XCTAssertEqual(glm53?.modelLabel, "GLM-5.3")
+
+        // GLM-5.2 及以下已退休：历史模型与未来未知模型统一按 GLM-5.3-Flash 兜底。
+        for retired in ["GLM-5.2", "GLM-4.5", "GLM-4.7", "GLM-6-future"] {
+            let pricing = ModelPricingCatalog.pricing(for: retired, quotaProviderID: QuotaProviderID.zhipu)
+            XCTAssertEqual(pricing?.currency, .cny, retired)
+            XCTAssertEqual(pricing?.inputPerMillion, 0.8, retired)
+            XCTAssertEqual(pricing?.cacheReadPerMillion, 0.23, retired)
+            XCTAssertEqual(pricing?.outputPerMillion, 2.8, retired)
+            XCTAssertEqual(pricing?.modelLabel, retired, retired)
+        }
+        // 模型名缺失（未知模型）同样走 Flash 兜底，zhipu 分支永远有价。
+        let unknownGlm = ModelPricingCatalog.pricing(for: nil, quotaProviderID: QuotaProviderID.zhipu)
+        XCTAssertEqual(unknownGlm?.currency, .cny)
+        XCTAssertEqual(unknownGlm?.inputPerMillion, 0.8)
+        XCTAssertEqual(unknownGlm?.cacheReadPerMillion, 0.23)
+        XCTAssertEqual(unknownGlm?.outputPerMillion, 2.8)
+        XCTAssertEqual(unknownGlm?.modelLabel, "GLM-5.3-Flash(兜底)")
 
         let glm53Flash = ModelPricingCatalog.pricing(for: "GLM-5.3-Flash", quotaProviderID: QuotaProviderID.zhipu)
         XCTAssertEqual(glm53Flash?.currency, .cny)
@@ -339,7 +357,7 @@ final class ProviderModelTests: XCTestCase {
         XCTAssertEqual(deepseekPro?.inputPerMillion, 4.5)
         XCTAssertEqual(deepseekPro?.cacheReadPerMillion, 0.15)
         XCTAssertEqual(deepseekPro?.outputPerMillion, 13.5)
-        XCTAssertEqual(ModelPricingCatalog.lastUpdated, "2026-08-26")
+        XCTAssertEqual(ModelPricingCatalog.lastUpdated, "2026-08-28")
     }
 
     func testDeepseekPricingUsesOffPeakBaseAndDoublesAtPeak() {

@@ -358,7 +358,7 @@ This is currently used for:
 ### GLM Coding Plan
 
 - 卡片标题 = `GLM Coding Plan`（provider 名），右边的 pill = 套餐档位（`data.level` 首字母大写：`lite` → `Lite` / `Pro` / `Max`），跟 ChatGPT 的 `Team` / Antigravity 的 `AI Pro` 完全对称。
-- 单条 `GLM-5.2` 模型行：智谱 Coding Plan 的 5h + 周积分是套餐共享池，合成一条展示，标题右侧显示 `5h × 5 = 周`（周积分 = 5 × 5h 积分：Lite 2000/10000、Pro 12000/60000、Max 28000/140000）。
+- 单条 `GLM Coding Plan` 模型行（`QuotaInfo.displayName`，不再硬编码具体模型名）：智谱 Coding Plan 的 5h + 周积分是套餐共享池，合成一条展示，标题右侧显示 `5h × 5 = 周`（周积分 = 5 × 5h 积分：Lite 2000/10000、Pro 12000/60000、Max 28000/140000）。
 - 数据来源：远程 `GET open.bigmodel.cn/api/monitor/usage/quota/limit`，Coding Plan Key 作裸 token 放 `Authorization`。鉴权失败（HTTP 200 + `code:1000`）在 parse 阶段捕获并映射成 401 语义。
 - **高峰期提示**：额度行下方一行，纯本地时区计算（与 API 无关）。颜色分 3 档：高峰期 🔥 红色 `高峰期 · 还剩 X`；非高峰期距高峰 < 1 小时 ❄️ 橙色、≥ 1 小时 ❄️ 绿色 `距高峰期 X · 非高峰 5 折`。默认 Mon–Fri 14–18（官方规则：高峰全价、非高峰 50% 折），窗口可在设置面板自定义。`TimelineView(.periodic(by: 60))` 让倒计时在菜单打开时每分钟刷新。
 - **OpenCode 数据合并**：`zhipuai-coding-plan` 绑定默认开启（`clientBindings[]`）。卡片底部展示 native ZCode 与 OpenCode 合并后的今日与最近 7 天 Input / Cache / Output / Reason 以及 R/T；绑定关闭后只显示 native ZCode local Scanner 数据。设置页没有该开关，调整方式见下节。

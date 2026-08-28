@@ -24,9 +24,17 @@ struct GlmZcodeDBAggregate: Equatable, Sendable {
 
 /// 读 ZCode 的 `~/.zcode/cli/db/db.sqlite` `model_usage` 表。
 ///
-/// 每行 = 一次模型请求，带 `provider_id='builtin:bigmodel-coding-plan'`（智谱官方
-/// provider）+ `model_id='GLM-5.2'` + 5 类 token 列 + 原生 `turn_id`。查询拿到
-/// per-day 5 类 token、round/turn、recent samples、totals + models + sessions。
+/// 每行 = 一次模型请求。查询覆盖两类智谱来源（`builtin:bigmodel-%` 前缀通配 +
+/// `offpeak-idle-plan` 精确匹配），行上带 `provider_id` + `model_id`（如 GLM-5.3 /
+/// GLM-5.3-Flash）+ 5 类 token 列 + 原生 `turn_id`，查询拿到 per-day 5 类 token、
+/// round/turn、recent samples、totals + models + sessions。
+///
+/// **provider 三分类**（sample 保留 `provider_id`，额度窗口口径在
+/// `LocalUsageSummaryBuilder` 白名单层判定）：
+/// - `builtin:bigmodel-coding-plan` → 正常任务（唯一计入额度窗口的来源）
+/// - `offpeak-idle-plan` → 闲时任务
+/// - 其余 `builtin:bigmodel-%`（如体验套餐 `builtin:bigmodel-start-plan`）→ 其他任务；
+///   未来智谱新套餐自动落进该类，非智谱 provider 不带前缀、不会被误算进 GLM 卡
 ///
 /// 直接 read 原 .db；CANTOPEN / BUSY 时由调用方（`SQLiteTempCopy.read`）走 /tmp 副本。
 final class GlmZcodeDBReader {
@@ -102,7 +110,7 @@ final class GlmZcodeDBReader {
           SUM(MAX(COALESCE(mu.cache_read_input_tokens, 0), 0)) AS tcr,
           SUM(MAX(COALESCE(mu.cache_creation_input_tokens, 0), 0)) AS tcw
         FROM model_usage mu
-        WHERE mu.provider_id IN (?, ?)
+        WHERE (mu.provider_id LIKE ? OR mu.provider_id = ?)
           AND mu.status = 'completed'
           AND (
             COALESCE(mu.input_tokens,0)
@@ -173,7 +181,7 @@ final class GlmZcodeDBReader {
           COUNT(*) AS calls,
           COUNT(DISTINCT session_id) AS sessions
         FROM model_usage
-        WHERE provider_id IN (?, ?)
+        WHERE (provider_id LIKE ? OR provider_id = ?)
           AND status = 'completed'
           AND (
             COALESCE(input_tokens,0)
@@ -228,7 +236,7 @@ final class GlmZcodeDBReader {
           mu.cache_read_input_tokens,
           mu.provider_id
         FROM model_usage mu
-        WHERE mu.provider_id IN (?, ?)
+        WHERE (mu.provider_id LIKE ? OR mu.provider_id = ?)
           AND mu.status = 'completed'
           AND (
             COALESCE(mu.input_tokens,0)
@@ -291,7 +299,7 @@ final class GlmZcodeDBReader {
         let sql = """
         SELECT DISTINCT model_id
         FROM model_usage
-        WHERE provider_id IN (?, ?)
+        WHERE (provider_id LIKE ? OR provider_id = ?)
           AND model_id IS NOT NULL
         """
         let rows: [String] = try connection.query(sql: sql, bind: { stmt in
@@ -302,14 +310,16 @@ final class GlmZcodeDBReader {
         return rows.sorted()
     }
 
-    /// 绑定 GLM Coding Plan 与闲时任务两个 provider（`provider_id IN (?, ?)`）。
+    /// 绑定智谱系 provider 通配（`builtin:bigmodel-%`，覆盖 coding-plan、体验套餐
+    /// 及未来新套餐）与闲时任务 provider（`offpeak-idle-plan`）。
     /// `index` 为第一个 `?` 的位置，第二个紧跟其后。
     private static func bindProviders(to statement: OpaquePointer, index: Int32) -> Int32 {
         let transient = SQLiteConnection.sqliteTransientDestructor
+        let prefixPattern = OpencodeLocalUsage.zcodeBigmodelProviderPrefix + "%"
         let first = sqlite3_bind_text(
             statement,
             index,
-            (glmProviderID as NSString).utf8String,
+            (prefixPattern as NSString).utf8String,
             -1,
             transient
         )

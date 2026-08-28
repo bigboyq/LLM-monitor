@@ -23,7 +23,7 @@ through the matching `clientBindings[]` entry.
 | Quota unit | Remaining credit percent, derived from `remaining / usage` (NOT the response `percentage` field, which is *used* percent) |
 | Windows | 5h (interval) + weekly — classified by window metadata, with reset-time fallback |
 | Plan tier | `data.level` → capitalized pill (`lite` → `Lite`) |
-| Local token source | Native ZCode `~/.zcode/cli/db/db.sqlite` (`model_usage`, `provider_id IN ('builtin:bigmodel-coding-plan', 'offpeak-idle-plan')`); DSH `~/.dsh/sessions` (`zhipu`/`glm` aliases, merged automatically); optional OpenCode `zhipuai-coding-plan` slice merged on top |
+| Local token source | Native ZCode `~/.zcode/cli/db/db.sqlite` (`model_usage`, `provider_id LIKE 'builtin:bigmodel-%' OR provider_id = 'offpeak-idle-plan'`); DSH `~/.dsh/sessions` (`zhipu`/`glm` aliases, merged automatically); optional OpenCode `zhipuai-coding-plan` slice merged on top |
 
 ## Accounting contract
 
@@ -41,13 +41,14 @@ ZCode 的 `model_usage.input_tokens` 是包含 cache-read 的 raw input，
 | 模型匹配模式 | 归一化标签 (`modelLabel`) | 未缓存输入 (Input / 1M) | 缓存读取 (CacheRead / 1M) | 输出/思考 (Output / 1M) | 币种 |
 |---|---|---|---|---|---|
 | `glm-5.3-flash` / `glm-5.3flash` | `GLM-5.3-Flash` | **¥0.80** | **¥0.23** | **¥2.80** | CNY (¥) |
-| `glm-5.2` / `glm-5.3` | `GLM-5.2/5.3` | **¥8.00** | **¥2.00** | **¥28.00** | CNY (¥) |
-| `glm-4.5` | `GLM-4.5` | **¥0.80** | **¥0.00** | **¥2.00** | CNY (¥) |
-| `glm-4.7` | `GLM-4.7` | **¥0.80** | **¥0.00** | **¥2.00** | CNY (¥) |
+| `glm-5.3` | `GLM-5.3` | **¥8.00** | **¥2.00** | **¥28.00** | CNY (¥) |
+| 兜底：其余一切模型（含缺失模型名） | 原始模型名，缺失时 `GLM-5.3-Flash(兜底)` | **¥0.80** | **¥0.23** | **¥2.80** | CNY (¥) |
 
-- **日志匹配规则**：匹配不区分大小写。ZCode 日志中的 `GLM-5.2`、OpenCode 中的 `glm-5.2`、DSH 中的 `GLM-5.3-Flash` 均可直接命中。
-- **目录更新时间**：记录于 `ModelPricingCatalog.lastUpdated`（当前为 `2026-08-26`）。
-- **未定价模型**：未收录的罕见或未来模型在客户端 Tab 中明确列出名称和 Token 量，不静默归零。
+- **GLM-5.2 及以下已退休**：`glm-5.2` / `glm-4.5` / `glm-4.7` 不再单独定价，出现即按
+  GLM-5.3-Flash 兜底计价（估计值，不对应真实账单）。兜底使 zhipu 分支永远有价。
+- **日志匹配规则**：匹配不区分大小写。ZCode 日志中的 `GLM-5.3`、OpenCode 中的 `glm-5.3`、DSH 中的 `GLM-5.3-Flash` 均可直接命中。
+- **目录更新时间**：记录于 `ModelPricingCatalog.lastUpdated`（当前为 `2026-08-28`）。
+- **未定价模型**：zhipu 分支因兜底永远全覆盖，"未定价 / 部分计价"提示对该 provider 不再出现；其他 provider 维持明确列出未收录模型的既有口径。
 
 ## Config
 
@@ -189,7 +190,7 @@ Processing steps:
    window is treated as exhausted (`remainingPercent = 0`) instead of failing the whole
    provider refresh. Otherwise `remaining <= total` is required, and the parser computes
    `remainingPercent = remaining / total * 100` (clamped to [0, 100]).
-6. Build a single `ModelQuota` (modelName `glm_coding_plan`, displayName `GLM-5.2`) with
+6. Build a single `ModelQuota` (modelName `glm_coding_plan`, displayName `GLM Coding Plan`) with
    interval (5h) + weekly windows; present limits map to `QuotaWindowStatus.present`,
    missing weekly limits map to `.absent`, and `intervalWindowSeconds = 18000`,
    `weeklyWindowSeconds = 604800`.
@@ -282,7 +283,7 @@ optional overlay on top (controlled by `clientBindings[]`, default on).
 |---|---|
 | Database | `~/.zcode/cli/db/db.sqlite` (WAL mode, active `-wal`) |
 | Tables | `model_usage` (one row per model request) + `part` (looked up via `model_usage.assistant_message_id` for round-level reasoning classification) |
-| Included rows | `provider_id IN ('builtin:bigmodel-coding-plan', 'offpeak-idle-plan')` AND `status = 'completed'` AND (`input + output + reasoning + cache_read`) > 0 |
+| Included rows | (`provider_id LIKE 'builtin:bigmodel-%'` OR `provider_id = 'offpeak-idle-plan'`) AND `status = 'completed'` AND (`input + output + reasoning + cache_read`) > 0 |
 | Cache | `~/.zcode/cli/.token-monitor/index.json` (versioned, db+WAL fingerprint) |
 | Daily window | Seven local calendar days, including today |
 
@@ -296,7 +297,7 @@ model_id                       # diagnosis + Last Prompt model match
 assistant_message_id           # FK to message.id; NULL for session_title, otherwise used
                                #   to test whether a reasoning part exists
 input_tokens                   # FULL input (cacheRead is a subset, NOT uncached)
-output_tokens                  # generation (includes folded reasoning for GLM-5.2)
+output_tokens                  # generation (includes folded reasoning for reasoning models)
 reasoning_tokens               # native value when supplied; otherwise Method A may classify output by part type
 cache_read_input_tokens        # cache hit
 cache_creation_input_tokens    # cache write (bookkeeping, not in total)
@@ -398,28 +399,47 @@ the full input masquerading as new input.
 
 ### Off-peak tasks (闲时任务)
 
+### Provider 三分类（正常 / 闲时 / 其他）与额度窗口白名单
+
+ZCode 的 `model_usage` 表是共享账本，GLM 卡按 `provider_id` 三分类：
+
+| 分类 | `provider_id` | 典型来源 | 计入额度窗口 | 计入 token 柱图 |
+|---|---|---|---|---|
+| 正常任务 | `builtin:bigmodel-coding-plan` | 交互式 Coding Plan 调用 | **是**（唯一计入来源） | 是 |
+| 闲时任务 | `offpeak-idle-plan` | 系统赠送的后台任务 | 否 | 是 |
+| 其他任务 | 其余 `builtin:bigmodel-%` | 体验套餐 `builtin:bigmodel-start-plan` 及未来智谱新套餐 | 否 | 是 |
+| （不进 GLM 卡） | 不带 `builtin:bigmodel-` 前缀的一切 provider | 未来 ZCode 接入的非智谱服务 | — | — |
+
+「其他」任务（如体验套餐）不消耗 Coding Plan 积分，额度窗口统计排除，避免高估消耗；
+token 柱图保留真实消耗。前缀通配保证未来智谱新套餐自动落进「其他」，非智谱 provider
+不会被误算进 GLM 卡。
+
 ZCode 的闲时任务是系统赠送的、**不消耗 Coding Plan 积分**的后台任务（需提前排队）。
 它的 `model_usage` 行写在同一张表，但 **`provider_id` 是独立的 `offpeak-idle-plan`**
 （不是 `builtin:bigmodel-coding-plan`）；落在 `off_peak_tasks.[started_at, ended_at]`
 时间窗口内的调用不扣积分。
 
-| 位置 | 是否包含闲时任务 token |
+| 位置 | 是否包含闲时 / 其他任务 token |
 |---|---|
 | 今日 / 7 天本地 token 柱图（footer） | **包含**（真实 token 消耗，按日聚合不经过窗口过滤） |
 | 5h / week 额度窗口 hover（`primaryUsage` / `weeklyUsage`） | **排除**（不消耗积分，计入会高估额度消耗） |
 
-实现：`GlmZcodeDBReader` 同时读 `builtin:bigmodel-coding-plan` 与 `offpeak-idle-plan`
-两个 provider 的 `model_usage` 行（`provider_id IN (?, ?)`），让闲时任务的真实消耗进入
+实现：`GlmZcodeDBReader` 读 `builtin:bigmodel-%` 前缀通配 + `offpeak-idle-plan`
+（`provider_id LIKE ? OR provider_id = ?`），让闲时与其他任务的真实消耗进入
 今日 / 7 天柱图。scanner 每次扫描额外读 `~/.zcode/v2/tasks-index.sqlite` 的
 `off_peak_tasks` 表（`status='completed'` 且 `started_at` / `ended_at` 都非空），产出
 `[GlmOffPeakWindow]` 挂在 `GlmLocalUsage.offPeakWindows`。`LocalUsageSummaryBuilder.summary`
-的额度窗口路径优先读取 sample 上保存的原始 `provider_id`：只有
-`offpeak-idle-plan` 精确归为闲时；同一时间窗口内的正常 Coding Plan 调用不会被误排除。
-旧缓存没有来源字段时，才回退到 `completedAt` 是否落入闲时窗口（闭区间 + 2 秒容差）。
-OpenCode 合并 sample 带独立命名空间，始终视为正常消耗。
+的额度窗口路径是**白名单**口径：sample 上的原始 `provider_id` 精确判定——
+`offpeak-idle-plan` 归为闲时（`isGlmOffPeakSample`），其余 `builtin:bigmodel-%` 前缀
+（非 coding-plan）归为其他（`isGlmOtherPlanSample`），两者都不计入额度窗口；同一时间
+窗口内的正常 Coding Plan 调用不会被误排除。旧缓存没有来源字段时，才回退到
+`completedAt` 是否落入闲时窗口（闭区间 + 2 秒容差）。
+OpenCode / DSH 合并 sample（`zhipuai-coding-plan`、`dsh:glm` 等）不带 bigmodel 前缀，
+始终视为正常消耗。
 
-> 缓存版本 8：v7 已覆盖双 provider，但 recent sample 没有 `sourceProviderID`；升级后
-> 即使 db 指纹没变也会重扫，确保额度窗口使用精确 provider 归属。
+> 缓存版本 9：v8 已带 `sourceProviderID` 精确 provider 归属，但额度窗口仍是"仅排除
+> 闲时"的黑名单口径——v8 期间入库的其他套餐样本（如体验套餐）被错误算进窗口；
+> 升版强制重扫纠正。
 
 ### Implementation map
 

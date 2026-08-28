@@ -3,8 +3,9 @@ import Foundation
 /// 扫描 ZCode（智谱官方 CLI）的 `~/.zcode/cli/db/db.sqlite`，产出 `GlmLocalUsage`。
 ///
 /// GLM Coding Plan 卡片的 **native 本地数据源**：读取 `model_usage` 表中
-/// `provider_id='builtin:bigmodel-coding-plan'`（正常交互）与
-/// `provider_id='offpeak-idle-plan'`（闲时任务，不消耗积分）的 5 类 token，按本地自然日聚合 +
+/// 智谱系 provider 的 5 类 token —— `builtin:bigmodel-coding-plan`（正常交互）、
+/// `offpeak-idle-plan`（闲时任务，不消耗积分）与其余 `builtin:bigmodel-%` 前缀
+/// （其他智谱套餐，如体验套餐，不消耗积分），按本地自然日聚合 +
 /// 7 天窗口 + 最近 8 天逐次调用样本。Reasoning 归类在 `GlmZcodeDBReader.queryPerDay`
 /// 的 SQL `CASE` 内一次性走 Method A 完成（`reasoning_tokens` priority + `EXISTS` part 表
 /// `type='reasoning'` 的整轮归类），不再有 scanner 端字符分摊步骤。
@@ -15,10 +16,11 @@ import Foundation
 @MainActor
 final class GlmZcodeLocalUsageScanner: SingleDBSnapshotScanner<GlmLocalUsage>, @unchecked Sendable {
     nonisolated static let scanLogTag = "[glm-zcode-scan]"
-    /// 缓存版本 8：recentSamples 新增 `sourceProviderID`，用于精确区分
-    /// coding-plan 与 offpeak-idle-plan。v7 快照缺少来源标记，必须重扫，避免
-    /// 并发正常请求仅凭时间窗口被误判成闲时。
-    nonisolated static let cacheIndexVersion = 8
+    /// 缓存版本 9：额度窗口口径从「排除闲时」改为「仅 coding-plan 计入」——
+    /// `builtin:bigmodel-` 前缀的其他智谱套餐（如体验套餐 `builtin:bigmodel-start-plan`）
+    /// 样本不再计入额度窗口。v8 快照已把这些样本错误算进窗口，必须重扫纠正。
+    /// （v8 本身：recentSamples 新增 `sourceProviderID`，用于精确区分 provider 来源。）
+    nonisolated static let cacheIndexVersion = 9
 
     /// 整个扫描 pipeline 的串行锁（跨实例共享）。
     nonisolated static let pipelineMutex = AsyncMutex()

@@ -33,6 +33,12 @@ struct OpencodeLocalUsage: Equatable, Codable, Sendable {
     /// ZCode 中闲时任务（off-peak idle task）的 providerID。系统赠送的后台任务，
     /// 不消耗 Coding Plan 积分，`model_usage` 行写在同一张表但用独立 provider 区分。
     static let zcodeOffPeakProviderID = "offpeak-idle-plan"
+    /// ZCode 中智谱系 provider 的统一前缀。coding-plan 与 offpeak 之外的智谱
+    /// 套餐（如体验套餐 `builtin:bigmodel-start-plan`，以及未来新套餐）都落在
+    /// 这个前缀下：GLM 卡按前缀通配归入「其他」任务，token 柱图计入真实消耗，
+    /// 额度窗口统计排除（不消耗 Coding Plan 积分）。非智谱 provider 不带该前缀，
+    /// 不会被误算进 GLM 卡。
+    static let zcodeBigmodelProviderPrefix = "builtin:bigmodel-"
     /// minimax 在 opencode 里的 providerID
     static let minimaxProviderID = "minimax"
     /// Minimax Token Plan 在 opencode 里的 providerID

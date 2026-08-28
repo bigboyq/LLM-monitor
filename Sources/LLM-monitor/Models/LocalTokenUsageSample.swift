@@ -79,10 +79,12 @@ enum LocalUsageSummaryBuilder {
         ).filter { sample in
             if let effectiveStart, sample.completedAt < effectiveStart { return false }
             if let end, sample.completedAt >= end { return false }
-            // 闲时任务（off-peak）不消耗积分，额度窗口统计排除其 token，避免高估消耗。
-            // 本地 token 柱图不走这条路径，仍保留闲时任务的真实消耗。
+            // 闲时任务（off-peak）与其他智谱套餐任务（如体验套餐）都不消耗积分，
+            // 额度窗口统计排除其 token，避免高估消耗。本地 token 柱图不走这条
+            // 路径，仍保留这些任务的真实消耗。
             if (excludeGlmOffPeak || !excludeWindows.isEmpty),
-               isGlmOffPeakSample(sample, fallbackWindows: excludeWindows) { return false }
+               isGlmOffPeakSample(sample, fallbackWindows: excludeWindows)
+                    || isGlmOtherPlanSample(sample) { return false }
             return true
         }
         guard !matching.isEmpty else { return nil }
@@ -152,6 +154,17 @@ enum LocalUsageSummaryBuilder {
         }
         guard !sample.promptID.hasPrefix("opencode:") else { return false }
         return fallbackWindows.contains(where: { $0.contains(sample.completedAt) })
+    }
+
+    /// 「其他」智谱任务：`builtin:bigmodel-` 前缀但不是 coding-plan 的 provider
+    ///（如体验套餐 `builtin:bigmodel-start-plan`，以及未来智谱新套餐）。这类任务
+    /// 不消耗 Coding Plan 积分，额度窗口统计排除；token 柱图保留真实消耗。
+    /// OpenCode / DSH 来源（`zhipuai-coding-plan`、`dsh:glm` 等）不带该前缀，
+    /// 不受影响。缺 `sourceProviderID` 的旧缓存保持原时间窗口回退语义。
+    nonisolated static func isGlmOtherPlanSample(_ sample: LocalTokenUsageSample) -> Bool {
+        guard let sourceProviderID = sample.sourceProviderID else { return false }
+        return sourceProviderID.hasPrefix(OpencodeLocalUsage.zcodeBigmodelProviderPrefix)
+            && sourceProviderID != OpencodeLocalUsage.zcodeGlmProviderID
     }
 
     nonisolated static func windowStart(

@@ -80,7 +80,7 @@ struct UnpricedModelUsage: Equatable, Sendable, Identifiable {
 /// summary. It is deliberately static: local usage must remain available when
 /// offline, and unknown model names are reported instead of guessed.
 enum ModelPricingCatalog {
-    static let lastUpdated = "2026-08-26"
+    static let lastUpdated = "2026-08-28"
 
     static func estimate(
         samples: [LocalTokenUsageSample],
@@ -150,6 +150,23 @@ enum ModelPricingCatalog {
         }
     }
 
+    /// GLM Coding Plan 计价：模型三层分类 GLM-5.3-Flash / GLM-5.3 / 其他。
+    ///
+    /// **GLM-5.2 及以下已退休**：历史 GLM-5.2/4.x 与未来未知模型不再单独定价，
+    /// 统一按 GLM-5.3-Flash 兜底（用户口径：兜底金额是估计值，不对应真实账单）。
+    /// 兜底保证 zhipu 分支永远返回价格 —— 包括模型名缺失（未知模型）的样本，
+    /// 因此"未定价模型 / 部分计价"提示对该 provider 结构性消失。
+    private static func zhipuPricing(model: String, modelName: String?) -> ModelTokenPricing {
+        if model.contains("glm-5.3-flash") || model.contains("glm-5.3flash") {
+            return ModelTokenPricing(modelLabel: modelName ?? "GLM-5.3-Flash", currency: .cny, inputPerMillion: 0.8, cacheReadPerMillion: 0.23, outputPerMillion: 2.8)
+        }
+        if model.contains("glm-5.3") {
+            return ModelTokenPricing(modelLabel: modelName ?? "GLM-5.3", currency: .cny, inputPerMillion: 8, cacheReadPerMillion: 2, outputPerMillion: 28)
+        }
+        let label = modelName.flatMap { $0.isEmpty ? nil : $0 } ?? "GLM-5.3-Flash(兜底)"
+        return ModelTokenPricing(modelLabel: label, currency: .cny, inputPerMillion: 0.8, cacheReadPerMillion: 0.23, outputPerMillion: 2.8)
+    }
+
     /// 用户给定的是非高峰价；现有 DeepSeek 高峰窗口规则规定高峰统一乘 2。
     private static func pricingMultiplier(
         quotaProviderID: String,
@@ -179,6 +196,11 @@ enum ModelPricingCatalog {
         quotaProviderID: String
     ) -> ModelTokenPricing? {
         let model = modelName?.lowercased() ?? ""
+        // zhipu 分支永远有价（GLM-5.2 及以下已退休，未知模型也按 Flash 兜底），
+        // 包括模型名缺失的样本 —— 必须放在通用 empty guard 之前。
+        if quotaProviderID == QuotaProviderID.zhipu {
+            return zhipuPricing(model: model, modelName: modelName)
+        }
         guard !model.isEmpty else { return nil }
 
         switch quotaProviderID {
@@ -248,20 +270,6 @@ enum ModelPricingCatalog {
             }
             if model.contains("gpt-4.1") {
                 return ModelTokenPricing(modelLabel: modelName ?? "GPT-4.1", currency: .usd, inputPerMillion: 2, cacheReadPerMillion: 0.5, outputPerMillion: 8)
-            }
-
-        case QuotaProviderID.zhipu:
-            if model.contains("glm-5.3-flash") || model.contains("glm-5.3flash") {
-                return ModelTokenPricing(modelLabel: modelName ?? "GLM-5.3-Flash", currency: .cny, inputPerMillion: 0.8, cacheReadPerMillion: 0.23, outputPerMillion: 2.8)
-            }
-            if model.contains("glm-5.2") || model.contains("glm-5.3") {
-                return ModelTokenPricing(modelLabel: modelName ?? "GLM-5.2/5.3", currency: .cny, inputPerMillion: 8, cacheReadPerMillion: 2, outputPerMillion: 28)
-            }
-            if model.contains("glm-4.5") {
-                return ModelTokenPricing(modelLabel: modelName ?? "GLM-4.5", currency: .cny, inputPerMillion: 0.8, cacheReadPerMillion: 0, outputPerMillion: 2)
-            }
-            if model.contains("glm-4.7") {
-                return ModelTokenPricing(modelLabel: modelName ?? "GLM-4.7", currency: .cny, inputPerMillion: 0.8, cacheReadPerMillion: 0, outputPerMillion: 2)
             }
 
         case QuotaProviderID.deepseek:

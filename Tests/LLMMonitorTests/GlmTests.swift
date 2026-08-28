@@ -34,7 +34,7 @@ final class GlmTests: XCTestCase {
         XCTAssertEqual(info.models.count, 1)
         let model = try XCTUnwrap(info.models.first)
         XCTAssertEqual(model.modelName, "glm_coding_plan")
-        XCTAssertEqual(model.displayName, "GLM-5.2")
+        XCTAssertEqual(model.displayName, "GLM Coding Plan")
         XCTAssertEqual(model.intervalTotalCount, 2000)
         XCTAssertEqual(model.weeklyTotalCount, 10_000)
 
@@ -544,7 +544,9 @@ final class GlmTests: XCTestCase {
             recentSamples: []
         )
         let index = GlmZcodeLocalUsageScanner.CacheIndex(
-            version: 8,
+            // 引用当前版本常量：升版后旧缓存必须被拒读（触发重扫），冷启动恢复
+            // 只对当前版本的缓存生效。
+            version: GlmZcodeLocalUsageScanner.cacheIndexVersion,
             dbMtimeMs: 1,
             dbSizeBytes: 2,
             walMtimeMs: 0,
@@ -691,6 +693,102 @@ final class GlmTests: XCTestCase {
         )
         XCTAssertEqual(idleSummary?.rounds, 1)
         XCTAssertEqual(idleSummary?.inputTokens, 500)
+    }
+
+    /// 「其他」智谱套餐（`builtin:bigmodel-` 前缀但非 coding-plan，如体验套餐
+    /// `builtin:bigmodel-start-plan`）不消耗 Coding Plan 积分：额度窗口统计必须
+    /// 排除，且不能误伤同期的正常任务 / OpenCode / DSH 合并样本。
+    func testGlmSummaryExcludesOtherBigmodelPlans() {
+        func sample(_ providerID: String?, promptID: String, input: Int) -> LocalTokenUsageSample {
+            LocalTokenUsageSample(
+                completedAt: Date(timeIntervalSince1970: 1_050),
+                modelName: "GLM-5.3-Flash",
+                promptID: promptID,
+                inputTokens: input,
+                cachedInputTokens: 0,
+                outputTokens: 1,
+                reasoningOutputTokens: 0,
+                sourceProviderID: providerID
+            )
+        }
+
+        let normal = sample(OpencodeLocalUsage.zcodeGlmProviderID, promptID: "normal:t1", input: 100)
+        let trial = sample("builtin:bigmodel-start-plan", promptID: "trial:t1", input: 500)
+        let future = sample("builtin:bigmodel-weekend-plan", promptID: "future:t1", input: 700)
+        let opencode = sample("dsh:zhipuai-coding-plan", promptID: "opencode:zhipuai-coding-plan:p1", input: 200)
+
+        XCTAssertTrue(LocalUsageSummaryBuilder.isGlmOtherPlanSample(trial))
+        XCTAssertTrue(LocalUsageSummaryBuilder.isGlmOtherPlanSample(future))
+        XCTAssertFalse(LocalUsageSummaryBuilder.isGlmOtherPlanSample(normal))
+        XCTAssertFalse(LocalUsageSummaryBuilder.isGlmOtherPlanSample(opencode))
+        // 旧缓存没有来源标记 → 保持时间窗口回退语义，不算「其他」
+        XCTAssertFalse(
+            LocalUsageSummaryBuilder.isGlmOtherPlanSample(sample(nil, promptID: "legacy:t1", input: 1))
+        )
+
+        let summary = LocalUsageSummaryBuilder.summary(
+            samples: [normal, trial, future, opencode],
+            providerKind: .glmCodingPlan,
+            quotaModelName: "glm_coding_plan",
+            start: nil,
+            end: nil,
+            excludeGlmOffPeak: true
+        )
+        XCTAssertEqual(summary?.rounds, 2)
+        XCTAssertEqual(summary?.inputTokens, 300, "start-plan 等其他智谱套餐不计入额度窗口")
+
+        // 无排除口径时全部计入（与闲时任务的柱图口径一致）
+        let allSummary = LocalUsageSummaryBuilder.summary(
+            samples: [normal, trial, future, opencode],
+            providerKind: .glmCodingPlan,
+            quotaModelName: "glm_coding_plan",
+            start: nil,
+            end: nil
+        )
+        XCTAssertEqual(allSummary?.rounds, 4)
+        XCTAssertEqual(allSummary?.inputTokens, 1_500)
+    }
+
+    /// DB reader 按 `builtin:bigmodel-%` 前缀通配覆盖未来智谱套餐（体验套餐等）：
+    /// 这些行的 token 计入柱图聚合、样本保留 provider 身份；非智谱 provider
+    /// （不带前缀）即使模型名带 glm 也不能进 GLM 卡。
+    func testGlmZcodeDBReaderIncludesBigmodelPrefixPlans() throws {
+        let db = try makeDatabase()
+        defer { try? FileManager.default.removeItem(atPath: db) }
+        let day = Self.todayMidnight(calendar: utcCalendar())
+        let ts = ms(day)
+        let cal = utcCalendar()
+
+        try insert(databaseURL: db, id: "cp", sessionID: "s1", turnID: "t1", timestamp: ts,
+                   input: 100, output: 10, model: "GLM-5.3", provider: "builtin:bigmodel-coding-plan")
+        try insert(databaseURL: db, id: "trial", sessionID: "s2", turnID: "t2", timestamp: ts + 1,
+                   input: 500, output: 20, model: "GLM-5.3-Flash", provider: "builtin:bigmodel-start-plan")
+        try insert(databaseURL: db, id: "future", sessionID: "s3", turnID: "t3", timestamp: ts + 2,
+                   input: 700, output: 30, model: "GLM-6", provider: "builtin:bigmodel-future-plan")
+        try insert(databaseURL: db, id: "offpeak", sessionID: "s4", turnID: "t4", timestamp: ts + 3,
+                   input: 900, output: 40, model: "GLM-5.3", provider: "offpeak-idle-plan")
+        try insert(databaseURL: db, id: "foreign", sessionID: "s5", turnID: "t5", timestamp: ts + 4,
+                   input: 5_000, output: 50, model: "GLM-5.3", provider: "some-other-provider")
+
+        let aggregate = try GlmZcodeLocalUsageScanner.aggregateFromDB(dbPath: URL(fileURLWithPath: db), calendar: cal)
+        let today = try XCTUnwrap(aggregate.perDay[day])
+
+        // 柱图口径：coding-plan + start-plan + future-plan + offpeak 全部计入，foreign 排除
+        XCTAssertEqual(today.inputTokens, 100 + 500 + 700 + 900)
+        XCTAssertEqual(aggregate.roundCount, 4)
+        XCTAssertEqual(aggregate.sessionCount, 4)
+
+        // 样本保留 provider 身份，供额度窗口白名单判定
+        let providerIDs = Set(aggregate.samples.map { $0.sourceProviderID ?? "nil" })
+        XCTAssertEqual(
+            providerIDs,
+            [
+                "builtin:bigmodel-coding-plan",
+                "builtin:bigmodel-start-plan",
+                "builtin:bigmodel-future-plan",
+                "offpeak-idle-plan"
+            ]
+        )
     }
 
     /// "今日闲时" 单独展示：只取今日落在 off_peak 窗口内的 native 样本；
