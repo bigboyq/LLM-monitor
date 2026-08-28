@@ -145,7 +145,8 @@ enum LocalUsageSummaryBuilder {
     /// 优先使用 ZCode `model_usage.provider_id` 精确识别闲时样本。只有旧缓存或
     /// 手工构造的 sample 没有来源标记时，才回退到历史时间窗口算法；OpenCode
     /// 合并样本始终是正常消耗，不能因与后台任务并发而被排除。
-    private nonisolated static func isGlmOffPeakSample(
+    /// （internal：`GlmUsageCategory.classify` 复用同一判定。）
+    nonisolated static func isGlmOffPeakSample(
         _ sample: LocalTokenUsageSample,
         fallbackWindows: [GlmOffPeakWindow]
     ) -> Bool {
@@ -265,5 +266,37 @@ enum LocalUsageSummaryBuilder {
             outputTokens: SaturatingArithmetic.sum(samples.lazy.map(\.outputTokens)),
             reasoningOutputTokens: SaturatingArithmetic.sum(samples.lazy.map(\.reasoningOutputTokens))
         )
+    }
+}
+
+/// GLM 本地任务的 provider 三分类（与 GLM 卡额度窗口白名单同一口径）。
+/// 弹窗卡片维持三合一汇总；设置 → 客户端 → ZCode 按此分类拆行展示
+/// （对齐 Antigravity 按模型分组拆行的模式）。
+enum GlmUsageCategory: String, CaseIterable, Sendable {
+    /// 日常任务（`builtin:bigmodel-coding-plan`，唯一计入额度窗口的来源）
+    case normal
+    /// 闲时任务（`offpeak-idle-plan`，不消耗积分）
+    case offPeak
+    /// 其他智谱套餐（其余 `builtin:bigmodel-%`，如体验套餐，不消耗积分）
+    case other
+
+    var displayName: String {
+        switch self {
+        case .normal: return "日常任务"
+        case .offPeak: return "闲时任务"
+        case .other: return "其他任务"
+        }
+    }
+
+    /// sample → 分类。无来源标记（旧缓存 / 手工构造）与 OpenCode / DSH 合并
+    /// 样本都归日常 —— 与额度窗口白名单的兼容回退语义保持一致。
+    nonisolated static func classify(_ sample: LocalTokenUsageSample) -> GlmUsageCategory {
+        if LocalUsageSummaryBuilder.isGlmOffPeakSample(sample, fallbackWindows: []) {
+            return .offPeak
+        }
+        if LocalUsageSummaryBuilder.isGlmOtherPlanSample(sample) {
+            return .other
+        }
+        return .normal
     }
 }

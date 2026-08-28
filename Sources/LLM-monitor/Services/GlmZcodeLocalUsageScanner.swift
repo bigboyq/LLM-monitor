@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// 扫描 ZCode（智谱官方 CLI）的 `~/.zcode/cli/db/db.sqlite`，产出 `GlmLocalUsage`。
 ///
@@ -9,6 +10,10 @@ import Foundation
 /// 7 天窗口 + 最近 8 天逐次调用样本。Reasoning 归类在 `GlmZcodeDBReader.queryPerDay`
 /// 的 SQL `CASE` 内一次性走 Method A 完成（`reasoning_tokens` priority + `EXISTS` part 表
 /// `type='reasoning'` 的整轮归类），不再有 scanner 端字符分摊步骤。
+///
+/// 开启 `parseZcodeBalanceLog` 设置后，每次构建快照还会 tail 读 ZCode 余额轮询
+/// 日志（`GlmZcodeBalanceLogReader`），把活动套餐（zcode-plan，如周末体验套餐）
+/// 的 used/remaining/expires_at 挂到 `GlmLocalUsage.activityPlanBalances`。
 ///
 /// 生命周期外壳、db+WAL 指纹、快照缓存与 7 天 rebase 都在
 /// `SingleDBSnapshotScanner` 基座；本类型只声明路径、缓存版本与三个 pipeline hook
@@ -38,6 +43,14 @@ final class GlmZcodeLocalUsageScanner: SingleDBSnapshotScanner<GlmLocalUsage>, @
     /// ZCode tasks-index db（off_peak_tasks 表来源）
     let tasksDBURL: URL
 
+    /// ZCode 余额轮询日志目录（`billing/balance 请求完成` 行的来源）
+    nonisolated let balanceLogDirectoryURL: URL
+
+    /// 活动套餐余额日志解析开关（设置 `parseZcodeBalanceLog`）。AppState 在配置
+    /// 加载/变更时经 LocalUsageOrchestration 推送；扫描在后台线程执行，用 unfair
+    /// lock 保证跨线程可见。
+    private let balanceLogParsingEnabled = OSAllocatedUnfairLock<Bool>(initialState: false)
+
     nonisolated static let defaultTasksDBURL: URL = {
         URL(fileURLWithPath: NSHomeDirectory())
             .appendingPathComponent(".zcode", isDirectory: true)
@@ -55,10 +68,12 @@ final class GlmZcodeLocalUsageScanner: SingleDBSnapshotScanner<GlmLocalUsage>, @
     init(dbURL: URL = GlmZcodeLocalUsageScanner.defaultDBURL,
          tasksDBURL: URL = GlmZcodeLocalUsageScanner.defaultTasksDBURL,
          cacheDir: URL = GlmZcodeLocalUsageScanner.defaultCacheDir,
+         balanceLogDirectory: URL = GlmZcodeBalanceLogReader.defaultLogDirectoryURL,
          fileManager: FileManagerBox = FileManagerBox(),
          calendar: Calendar = .autoupdatingCurrent,
          now: @escaping @Sendable () -> Date = { Date() }) {
         self.tasksDBURL = tasksDBURL
+        self.balanceLogDirectoryURL = balanceLogDirectory
         super.init(
             dbURL: dbURL,
             cacheDir: cacheDir,
@@ -68,6 +83,15 @@ final class GlmZcodeLocalUsageScanner: SingleDBSnapshotScanner<GlmLocalUsage>, @
             logTag: Self.scanLogTag,
             cacheIndexVersion: Self.cacheIndexVersion
         )
+    }
+
+    /// 设置层开关 → scanner。线程安全，可在任意时刻调用。
+    nonisolated func setBalanceLogParsingEnabled(_ enabled: Bool) {
+        balanceLogParsingEnabled.withLock { $0 = enabled }
+    }
+
+    nonisolated private var isBalanceLogParsingEnabled: Bool {
+        balanceLogParsingEnabled.withLock { $0 }
     }
 
     // MARK: - pipeline hooks
@@ -86,24 +110,29 @@ final class GlmZcodeLocalUsageScanner: SingleDBSnapshotScanner<GlmLocalUsage>, @
             calendar: calendar,
             sampleCutoff: now.addingTimeInterval(-8 * 24 * 60 * 60)
         )
+        let activityPlanBalances = readActivityPlanBalances(now: now)
         let snapshot = Self.buildSnapshot(
             adjustedPerDay: aggregate.perDay,
             sessionCount: aggregate.sessionCount,
             roundCount: aggregate.roundCount,
             samples: aggregate.samples,
             offPeakWindows: offPeakWindows,
+            activityPlanBalances: activityPlanBalances,
             calendar: calendar,
             now: now
         )
-        logInfo("\(logTag) ✓ rounds=\(aggregate.roundCount) sessions=\(aggregate.sessionCount) offPeak=\(offPeakWindows.count)")
+        logInfo("\(logTag) ✓ rounds=\(aggregate.roundCount) sessions=\(aggregate.sessionCount) offPeak=\(offPeakWindows.count) activityPlans=\(activityPlanBalances?.count ?? -1)")
         return snapshot
     }
 
     override nonisolated func rebaseSnapshot(_ snapshot: GlmLocalUsage, now: Date) throws -> GlmLocalUsage {
         var rebased = Self.rebaseCachedSnapshot(snapshot, calendar: calendar, now: now)
-        // 闲时窗口可能在新一轮 scan 间期变化（新任务完成），rebase 时同步刷新。
+        // 闲时窗口 / 活动套餐余额都可能在新一轮 scan 间期变化（新任务完成、ZCode
+        // 轮询日志更新），rebase 时同步刷新。
         let offPeakWindows = readOffPeakWindowsWithFallback()
-        if rebased.offPeakWindows != offPeakWindows {
+        let activityPlanBalances = readActivityPlanBalances(now: now)
+        if rebased.offPeakWindows != offPeakWindows
+            || rebased.activityPlanBalances != activityPlanBalances {
             rebased = GlmLocalUsage(
                 today: rebased.today,
                 dailyTokenUsage: rebased.dailyTokenUsage,
@@ -112,10 +141,26 @@ final class GlmZcodeLocalUsageScanner: SingleDBSnapshotScanner<GlmLocalUsage>, @
                 eventCount: rebased.eventCount,
                 failedSessionCount: rebased.failedSessionCount,
                 recentSamples: rebased.recentSamples,
-                offPeakWindows: offPeakWindows
+                offPeakWindows: offPeakWindows,
+                activityPlanBalances: activityPlanBalances ?? rebased.activityPlanBalances
             )
         }
         return rebased
+    }
+
+    /// 开关开启时解析 ZCode 余额轮询日志；关闭或解析失败返回 nil（UI 按空处理，
+    /// 快照保留 nil 语义，与「未解析」一致）。
+    nonisolated private func readActivityPlanBalances(now: Date) -> [GlmActivityPlanBalance]? {
+        guard isBalanceLogParsingEnabled else { return nil }
+        let balances = GlmZcodeBalanceLogReader.latestBalances(
+            logDirectory: balanceLogDirectoryURL,
+            now: now,
+            calendar: calendar
+        )
+        if balances == nil {
+            logDebug("\(logTag) 活动套餐余额日志未解析到 billing/balance 行")
+        }
+        return balances
     }
 
     private nonisolated func readOffPeakWindowsWithFallback() -> [GlmOffPeakWindow] {
@@ -156,6 +201,7 @@ final class GlmZcodeLocalUsageScanner: SingleDBSnapshotScanner<GlmLocalUsage>, @
         roundCount: Int,
         samples: [LocalTokenUsageSample],
         offPeakWindows: [GlmOffPeakWindow],
+        activityPlanBalances: [GlmActivityPlanBalance]? = nil,
         calendar: Calendar,
         now: Date
     ) -> GlmLocalUsage {
@@ -173,7 +219,8 @@ final class GlmZcodeLocalUsageScanner: SingleDBSnapshotScanner<GlmLocalUsage>, @
             eventCount: roundCount,
             failedSessionCount: 0,
             recentSamples: samples,
-            offPeakWindows: offPeakWindows
+            offPeakWindows: offPeakWindows,
+            activityPlanBalances: activityPlanBalances
         )
     }
 
@@ -215,7 +262,8 @@ final class GlmZcodeLocalUsageScanner: SingleDBSnapshotScanner<GlmLocalUsage>, @
             eventCount: snapshot.eventCount,
             failedSessionCount: snapshot.failedSessionCount,
             recentSamples: (snapshot.recentSamples ?? []).filter { $0.completedAt >= sampleCutoff },
-            offPeakWindows: snapshot.offPeakWindows
+            offPeakWindows: snapshot.offPeakWindows,
+            activityPlanBalances: snapshot.activityPlanBalances
         )
     }
 

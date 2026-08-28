@@ -284,10 +284,15 @@ struct ProviderConfig: Codable, Equatable {
     /// nil = 使用 provider 的默认值：GLM 默认开启，其余 provider 默认关闭。
     var mergeOpencodeUsage: Bool?
 
+    /// 是否解析 ZCode 余额轮询日志，在 GLM 卡显示活动套餐（zcode-plan，如周末
+    /// 体验套餐）的用量 / 剩余 / 过期时间。nil（字段不存在）= 关闭，不读日志。
+    var parseZcodeBalanceLog: Bool?
+
     enum CodingKeys: String, CodingKey {
         case enabled, apiKey, displayName, refreshIntervalSeconds, authPath
         case peakStartHour, peakEndHour, peakWeekdaysOnly, mergeOpencodeUsage
         case deepseekPeakWeekdaysOnly
+        case parseZcodeBalanceLog
     }
 
     init(enabled: Bool = true,
@@ -299,7 +304,8 @@ struct ProviderConfig: Codable, Equatable {
          peakEndHour: Int? = nil,
          peakWeekdaysOnly: Bool? = nil,
          mergeOpencodeUsage: Bool? = nil,
-         deepseekPeakWeekdaysOnly: Bool? = nil) {
+         deepseekPeakWeekdaysOnly: Bool? = nil,
+         parseZcodeBalanceLog: Bool? = nil) {
         self.enabled = enabled
         self.apiKey = apiKey
         self.displayName = displayName
@@ -310,6 +316,7 @@ struct ProviderConfig: Codable, Equatable {
         self.peakWeekdaysOnly = peakWeekdaysOnly
         self.mergeOpencodeUsage = mergeOpencodeUsage
         self.deepseekPeakWeekdaysOnly = deepseekPeakWeekdaysOnly
+        self.parseZcodeBalanceLog = parseZcodeBalanceLog
     }
 
     /// 自定义 decode 只为一个默认值：`enabled` 缺失按 true 处理（编译器合成的
@@ -328,6 +335,7 @@ struct ProviderConfig: Codable, Equatable {
         self.peakWeekdaysOnly = try c.decodeIfPresent(Bool.self, forKey: .peakWeekdaysOnly)
         self.mergeOpencodeUsage = try c.decodeIfPresent(Bool.self, forKey: .mergeOpencodeUsage)
         self.deepseekPeakWeekdaysOnly = try c.decodeIfPresent(Bool.self, forKey: .deepseekPeakWeekdaysOnly)
+        self.parseZcodeBalanceLog = try c.decodeIfPresent(Bool.self, forKey: .parseZcodeBalanceLog)
     }
 }
 

@@ -344,6 +344,11 @@ final class AppState: ObservableObject {
     }
 
     func rebuildStatuses() {
+        // GLM 活动套餐余额日志解析开关跟随配置（init 与每次配置变更都会走到这里）。
+        localUsage.updateGlmBalanceLogParsing(
+            enabled: configStore.config.providers[providerID(for: .glmCodingPlan)
+                ?? ProviderKind.glmCodingPlan.providerID]?.parseZcodeBalanceLog ?? false
+        )
         statuses = descriptors.map { d in
             let pc = configStore.config.providers[d.id]
             // 抓一份"老的" status 用来保留 UI 状态（lastRefreshedAt /

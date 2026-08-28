@@ -103,6 +103,11 @@ extension SettingsView {
                     rowsByClient[contribution.clientID, default: []].append(
                         contentsOf: antigravityUsageRows(status: status, contribution: contribution)
                     )
+                } else if contribution.clientID == ClientID.zcode, status.kind == .glmCodingPlan,
+                          !contribution.recentSamples.isEmpty {
+                    rowsByClient[contribution.clientID, default: []].append(
+                        contentsOf: glmUsageRows(status: status, contribution: contribution)
+                    )
                 } else {
                     rowsByClient[contribution.clientID, default: []].append(
                         ClientProviderUsageSummary(
@@ -160,6 +165,32 @@ extension SettingsView {
                 providerName: group.displayName,
                 usageGroupID: group.rawValue,
                 dailyTokenUsage: daily,
+                recentSamples: samples,
+                scannedAt: contribution.scannedAt,
+                deepseekPeakWindow: status.deepseekPeakWindow ?? .defaultWindow
+            )
+        }
+    }
+
+    /// ZCode 一次扫描覆盖智谱系全部 provider 任务（日常 / 闲时 / 其他智谱套餐）。
+    /// 按样本上的 `sourceProviderID` 三分类拆行，各自独立 token 柱图与计价——
+    /// 对齐 Antigravity 按模型分组拆行的模式；弹窗卡片维持三合一汇总不拆。
+    /// 样本为空（旧缓存 / 无样本）时保持整行不拆，避免把聚合值错标成某一分类。
+    func glmUsageRows(
+        status: ProviderStatus,
+        contribution: ClientUsageContribution
+    ) -> [ClientProviderUsageSummary] {
+        let groups = Dictionary(grouping: contribution.recentSamples) {
+            GlmUsageCategory.classify($0)
+        }
+        return GlmUsageCategory.allCases.compactMap { category in
+            guard let samples = groups[category], !samples.isEmpty else { return nil }
+            return ClientProviderUsageSummary(
+                clientID: ClientID.zcode,
+                quotaProviderID: status.kind.quotaProviderID,
+                providerName: category.displayName,
+                usageGroupID: category.rawValue,
+                dailyTokenUsage: dailyUsage(for: samples, matching: contribution.dailyTokenUsage),
                 recentSamples: samples,
                 scannedAt: contribution.scannedAt,
                 deepseekPeakWindow: status.deepseekPeakWindow ?? .defaultWindow

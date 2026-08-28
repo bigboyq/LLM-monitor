@@ -200,6 +200,9 @@ struct ProviderCardView: View, Equatable {
                 if status.kind == .glmCodingPlan, let peak = status.glmPeakWindow {
                     GlmPeakIndicatorView(window: peak)
                 }
+                if status.kind == .glmCodingPlan {
+                    GlmActivityPlanBalancesView(balances: status.glmLocalUsage?.activityPlanBalances)
+                }
                 localUsageFooter(projection: projection)
             }
         case .failed(let message, let lastSuccess):

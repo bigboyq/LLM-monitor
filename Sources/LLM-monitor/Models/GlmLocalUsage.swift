@@ -46,6 +46,12 @@ struct GlmLocalUsage: Equatable, Codable, Sendable {
     /// 来源字段时的兼容回退。本地 token 柱图始终保留闲时任务的真实消耗。
     let offPeakWindows: [GlmOffPeakWindow]
 
+    /// ZCode 活动套餐（zcode-plan，如周末体验套餐）余额快照，来自
+    /// `GlmZcodeBalanceLogReader` 对 ZCode 余额轮询日志的解析。
+    /// optional 让旧缓存/关闭开关的快照仍可解码：nil = 未解析（开关关闭或
+    /// 尚未扫到），`[]` = 解析成功但当前无活动套餐。UI 按空数组处理 nil。
+    let activityPlanBalances: [GlmActivityPlanBalance]?
+
     static let empty = GlmLocalUsage(
         today: nil,
         dailyTokenUsage: [],
@@ -65,7 +71,8 @@ struct GlmLocalUsage: Equatable, Codable, Sendable {
         eventCount: Int,
         failedSessionCount: Int,
         recentSamples: [LocalTokenUsageSample]? = nil,
-        offPeakWindows: [GlmOffPeakWindow] = []
+        offPeakWindows: [GlmOffPeakWindow] = [],
+        activityPlanBalances: [GlmActivityPlanBalance]? = nil
     ) {
         self.today = today
         self.dailyTokenUsage = dailyTokenUsage
@@ -75,6 +82,7 @@ struct GlmLocalUsage: Equatable, Codable, Sendable {
         self.failedSessionCount = failedSessionCount
         self.recentSamples = recentSamples
         self.offPeakWindows = offPeakWindows
+        self.activityPlanBalances = activityPlanBalances
     }
 
     /// 自定义 `==` 排除 `scannedAt` —— `scannedAt` 是 metadata（每次扫描都是新 `Date`），
@@ -82,7 +90,7 @@ struct GlmLocalUsage: Equatable, Codable, Sendable {
     /// 导致 `AppState.apply*LocalUsage` 的 no-op 检查形同虚设：
     /// 每次都打 logInfo + 触发 `@Published` willSet 无意义 UI reload。
     /// 业务字段（`today` / `dailyTokenUsage` / `sessionCount` / `eventCount` /
-    /// `failedSessionCount` / `offPeakWindows`）决定内容是否真变。
+    /// `failedSessionCount` / `offPeakWindows` / `activityPlanBalances`）决定内容是否真变。
     /// Codable 自动合成的 CodingKeys 不受影响 —— `scannedAt` 仍然被编解码。
     static func == (lhs: GlmLocalUsage, rhs: GlmLocalUsage) -> Bool {
         lhs.today == rhs.today
@@ -92,5 +100,6 @@ struct GlmLocalUsage: Equatable, Codable, Sendable {
             && lhs.failedSessionCount == rhs.failedSessionCount
             && lhs.recentSamples == rhs.recentSamples
             && lhs.offPeakWindows == rhs.offPeakWindows
+            && lhs.activityPlanBalances == rhs.activityPlanBalances
     }
 }

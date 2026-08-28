@@ -63,7 +63,8 @@ Full config shape:
       "apiKey": "your-coding-plan-key-id.secret",
       "peakStartHour": 14,
       "peakEndHour": 18,
-      "peakWeekdaysOnly": true
+      "peakWeekdaysOnly": true,
+      "parseZcodeBalanceLog": true
     }
   }
 }
@@ -80,6 +81,7 @@ Supported provider fields:
 | `peakStartHour` | Peak window start hour (24h, local tz). Default `14`. |
 | `peakEndHour` | Peak window end hour (24h, half-open, must be > `peakStartHour`). Default `18`. |
 | `peakWeekdaysOnly` | `true` = Mon–Fri only; `false` = every day. Default `true`. |
+| `parseZcodeBalanceLog` | Parse ZCode's balance polling log and show activity-plan (zcode-plan, e.g. weekend trial) balances on the GLM card. Absent/false = off. |
 | `clientBindings[]` | Canonical client-to-quota binding for the optional OpenCode `zhipuai-coding-plan` slice. GLM defaults to enabled; the legacy provider-level field is migration compatibility only. |
 
 Peak fields are optional; when omitted (or when `peakEndHour ≤ peakStartHour`) the window
@@ -322,8 +324,9 @@ part.data                      # JSON: {"type": "reasoning"|"text", ...}
 `uncached_input + cache_read + output + reasoning`; `cache_write` is reported separately
 and is not included in the consumption total.
 
-**Reasoning 口径（方案 A — 按 Round 整轮归类）**：GLM-5.2 是 reasoning model。ZCode 的账单层
-`model_usage.reasoning_tokens` 列恒为 0 且 `raw_usage_json` 不含 reasoning 字段 —— 但 ZCode
+**Reasoning 口径（方案 A — 按 Round 整轮归类）**：GLM 系列是 reasoning model。ZCode 的账单层
+`model_usage.reasoning_tokens` 列实测恒为 0（GLM-5.2 / 5.3 / 5.3-Flash 均如此，2026-08-28 复核
+2636 行 GLM-5.3 亦全部走 part 表）—— 但 ZCode
 **实际把思考文本存到了 `part` 表**（`type='reasoning'` 的 part，`text` 字段是完整思考过程）。
 
 归类规则（**Method A — 100% 基于账单列和 part 表 JSON 直接判断，不做任何字符/token 换算**）：
@@ -414,6 +417,11 @@ ZCode 的 `model_usage` 表是共享账本，GLM 卡按 `provider_id` 三分类�
 token 柱图保留真实消耗。前缀通配保证未来智谱新套餐自动落进「其他」，非智谱 provider
 不会被误算进 GLM 卡。
 
+设置 → 客户端 → ZCode 按 `GlmUsageCategory.classify`（与额度窗口白名单同一判定）把
+ZCode 贡献的样本拆成日常 / 闲时 / 其他三行，各自独立 token 柱图与计价——对齐
+Antigravity 按模型分组拆行的模式；弹窗卡片维持三合一汇总不拆。样本为空时不拆行，
+避免把聚合值错标成某一分类。
+
 ZCode 的闲时任务是系统赠送的、**不消耗 Coding Plan 积分**的后台任务（需提前排队）。
 它的 `model_usage` 行写在同一张表，但 **`provider_id` 是独立的 `offpeak-idle-plan`**
 （不是 `builtin:bigmodel-coding-plan`）；落在 `off_peak_tasks.[started_at, ended_at]`
@@ -441,6 +449,27 @@ OpenCode / DSH 合并 sample（`zhipuai-coding-plan`、`dsh:glm` 等）不带 bi
 > 闲时"的黑名单口径——v8 期间入库的其他套餐样本（如体验套餐）被错误算进窗口；
 > 升版强制重扫纠正。
 
+### Activity plan balances（活动套餐余额，可选）
+
+zcode SaaS 活动套餐（如周末体验套餐 `ZCode Weekend Build`）的 used/remaining/expires
+**不在** open.bigmodel.cn monitor 接口里，也不宜直调 `zcode.z.ai/api/v1/zcode-plan/billing/balance`
+（需要 ZCode OAuth token set，token 按 provider 轮换，静态凭证实测 401）。可行路径是
+解析 ZCode 自己的轮询日志：ZCode 桌面端每 ~60s 请求一次 balance 接口，并把**完整
+响应 JSON** 写进 `~/.zcode/v2/logs/YYYY-MM-DD.log`（行内标记 `billing/balance 请求完成`）。
+
+| 项 | 值 |
+|---|---|
+| 数据源 | `~/.zcode/v2/logs/YYYY-MM-DD.log` 尾部（≤512KB）最后一条 `billing/balance 请求完成` 行 |
+| 文件回退 | 今天无标记行 → 读昨天的；两天都没有 → `nil`（未解析） |
+| 解析 | `payload.data.plans[]`（plan_id→name）+ `payload.data.balances[]`（entitlement 级 total/used/remaining/expires_at/capabilities） |
+| 过期口径 | `expires_at <= now` 的条目直接剔除（"plan expire 就不显示"）；服务端对未领取/失效套餐返回空 `balances` |
+| 开关 | `providers.glm_coding_plan.parseZcodeBalanceLog`（缺省关闭；关闭时不读日志）。`LocalUsageOrchestration.updateGlmBalanceLogParsing` 在 `rebuildStatuses`（init + 每次配置变更）推送，开启即触发一次扫描 |
+| 展示 | `GlmActivityPlanBalancesView`：每条 entitlement 一行 `🎁 套餐名 94% (283M/300M) 08-31 09:00`——剩余占比（与额度窗口同一取整口径）+ 可用/总量 + 过期时间，全部行内显示（菜单栏弹层里 `.help` 悬浮不生效）。挂在 GLM 卡额度行下方；balances 空则整块不渲染 |
+| 单位 | `*_units` 是 token（`unit_type: "token"`）；`expires_at` 是 unix **秒** |
+
+边界：ZCode 未运行时不产生新快照，UI 展示日志中最近一次观测值（`observedAt` 记录
+日志行时间）；日志格式无官方契约，解析失败静默降级为「无活动套餐」。
+
 ### Implementation map
 
 | Responsibility | Source |
@@ -449,6 +478,7 @@ OpenCode / DSH 合并 sample（`zhipuai-coding-plan`、`dsh:glm` 等）不带 bi
 | SQLite reader | `Sources/LLM-monitor/Services/GlmZcodeDBReader.swift` |
 | Off-peak window reader | `Sources/LLM-monitor/Services/GlmZcodeOffPeakReader.swift` |
 | Scanner, cache, and seven-day snapshot | `Sources/LLM-monitor/Services/GlmZcodeLocalUsageScanner.swift` |
+| Activity-plan balance log reader | `Sources/LLM-monitor/Services/GlmZcodeBalanceLogReader.swift` |
 | Provider-neutral projection with OpenCode | `Sources/LLM-monitor/Models/ProviderClientModel.swift` (`ProviderStatus.usageProjection`) + `DshUsageMerger` |
 | Window summary + off-peak exclusion | `Sources/LLM-monitor/Models/LocalTokenUsageSample.swift` (`summary(excludeGlmOffPeak:)`) |
 | Card integration | `Sources/LLM-monitor/Views/ProviderCardView.swift` + `QuotaViews.swift` |

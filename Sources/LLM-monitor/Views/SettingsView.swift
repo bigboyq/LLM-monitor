@@ -35,6 +35,7 @@ struct SettingsView: View {
     @State var glmPeakStart: Int = GlmPeakWindow.zhipuDefault.startHour
     @State var glmPeakEnd: Int = GlmPeakWindow.zhipuDefault.endHour
     @State var glmPeakWeekdays: Bool = GlmPeakWindow.zhipuDefault.weekdaysOnly
+    @State var glmBalanceLogParsing: Bool = false
 
     @State var deepseekEnabled: Bool = false
     @State var deepseekInterval: Int = 0
@@ -504,6 +505,13 @@ struct SettingsView: View {
                     Divider().padding(.vertical, 4)
                     SettingsToggleRow(label: "仅工作日（周一–周五）", isOn: $glmPeakWeekdays)
                 }
+
+                SettingsSection(
+                    title: "活动套餐余额",
+                    footer: "解析 ZCode 本地日志（~/.zcode/v2/logs）中活动套餐（如周末体验套餐）的余额轮询记录，在 GLM 卡片显示用量 / 剩余 / 过期时间。只读取本地文件，不发起网络请求；ZCode 未运行时展示最近一次快照。默认关闭。"
+                ) {
+                    SettingsToggleRow(label: "解析活动套餐余额日志", isOn: $glmBalanceLogParsing)
+                }
             }
         }
     }
@@ -715,6 +723,7 @@ struct SettingsView: View {
                 23
             )
             glmPeakWeekdays = glm.peakWeekdaysOnly ?? GlmPeakWindow.zhipuDefault.weekdaysOnly
+            glmBalanceLogParsing = glm.parseZcodeBalanceLog ?? false
         }
 
         if let id = providerID(for: .deepseek), let deepseek = config.providers[id] {
@@ -781,6 +790,8 @@ struct SettingsView: View {
             glm.peakStartHour = clampedStart == d.startHour ? nil : clampedStart
             glm.peakEndHour = clampedEnd == d.endHour ? nil : clampedEnd
             glm.peakWeekdaysOnly = glmPeakWeekdays == d.weekdaysOnly ? nil : glmPeakWeekdays
+            // 关闭时写 nil（配置文件不落该字段），与「字段不存在 = 不解析」一致。
+            glm.parseZcodeBalanceLog = glmBalanceLogParsing ? true : nil
             config.providers[id] = glm
         }
 

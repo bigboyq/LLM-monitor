@@ -76,6 +76,13 @@ final class LocalUsageCoordinator<Usage: Equatable> {
         scanner?.cancelInFlight()
     }
 
+    /// 已构造的 scanner 上执行副作用（如推送运行时开关）；未构造时 no-op。
+    /// 构造期的初值应由 makeScanner 闭包自己应用，不依赖本方法。
+    func withLoadedScanner(_ body: (any LocalUsageScanner<Usage>) -> Void) {
+        guard let scanner else { return }
+        body(scanner)
+    }
+
     private func wireSinks(_ s: any LocalUsageScanner<Usage>) {
         s.lastResultPublisher
             .receive(on: DispatchQueue.main)
