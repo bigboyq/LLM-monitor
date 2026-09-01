@@ -468,7 +468,60 @@ zcode SaaS 活动套餐（如周末体验套餐 `ZCode Weekend Build`）的 used
 | 单位 | `*_units` 是 token（`unit_type: "token"`）；`expires_at` 是 unix **秒** |
 
 边界：ZCode 未运行时不产生新快照，UI 展示日志中最近一次观测值（`observedAt` 记录
-日志行时间）；日志格式无官方契约，解析失败静默降级为「无活动套餐」。
+日志行时间）；日志格式无官方契约，解析失败静默降级为「无活动套餐」。billing/balance
+**不含**额度重置卡（见下节）。
+
+### 额度重置卡（调研记录，未接入）
+
+> 2026-08-28 调研结论。私有接口，LLM-monitor **有意不接入**；本节只记录发现，
+> 供未来官方开放 API 或 ZCode 行为变化时参考。
+
+**机制**（[官方使用统计文档](https://zcode.z.ai/cn/docs/usage-stats)）：额度重置卡分
+5 小时 / 每周两类，在有效期内使用可把对应额度立即恢复到 100%。ZCode 会在闲时自动向
+Coding Plan 用户下发 5 小时卡（闲时时段 + 5h 用量超阈值 + 当日下发次数未达上限）；
+其他活动的重置卡也在端内一并显示。多张卡时自动使用最早获得的。**只发给登录 ZCode
+并连接账号 Coding Plan 的用户**——纯 API Key 接入或未开通 Coding Plan 的账号没有卡，
+因此 API key 维度的 monitor 接口设计上就不含此数据。
+
+**接口**（ZCode 3.10.1 二进制逆向，`/api/v1/coding-plan/reset/*`，host 与
+billing/balance 同为 `zcode.z.ai`）：
+
+| 端点 | 方法 | 说明 |
+|---|---|---|
+| `/api/v1/coding-plan/reset/status` | GET | 可用重置卡列表 + 使用历史（面板数据源） |
+| `/api/v1/coding-plan/reset/use` | POST | 用卡，body `{idempotency_key, reset_type}` |
+| `/api/v1/coding-plan/reset/opportunity` | POST | 闲时申领 5h 卡；业务码 `3301` = 未中签（`data.next_try_at`） |
+| `/api/v1/coding-plan/reset/history/read` | POST | 标记历史已读 |
+
+`GET /status` 响应（envelope `{code, msg, data}`，时间均为 unix **秒**）：
+
+```json
+{
+  "available_five_hour_resets": [ { "expire_at": 1790870340 } ],
+  "available_week_resets":      [ { "expire_at": 1790870340 } ],
+  "latest_five_hour_reset_history": { "used_at": 1787900000 },
+  "latest_week_reset_history": null,
+  "has_unread_history": true
+}
+```
+
+鉴权为**双头**（缺一不可）：
+
+```
+Authorization: Bearer <zcodejwttoken>            # ZCode 活跃 JWT（按 provider 轮换）
+X-Bigmodel-Authorization: <bigmodel access token> # oauth:bigmodel:access_token（zai 账号则 oauth:zai:access_token）
+Bigmodel-Target-Type: PERSONAL                    # 团队套餐为 TEAM + Bigmodel-Organization / Bigmodel-Project
+```
+
+**不接入的原因**（三条独立成立）：① 私有接口，无契约，随 ZCode 版本变化；
+② 双 token 都在 ZCode OAuth token set 内按 provider 轮换，本地静态凭证实测 401
+（与 billing/balance 直调同一堵墙，且多一个必填头）；③ ZCode **不记录**该接口的
+调用与响应（全部历史日志检索 `coding-plan/reset` / `available_*_resets` 零命中），
+活动套餐的日志解析路线对重置卡不可行。
+
+**可观测副作用**：用卡成功后 monitor 接口对应窗口的 `remaining` 立即回满、
+`nextResetTime` 重新滚动——LLM-monitor 不做「疑似用卡」推断展示，卡片只反映
+接口原始值。
 
 ### Implementation map
 
@@ -529,6 +582,9 @@ provider-specific interval can be set via `refreshIntervalSeconds`.
 - Only the `open.bigmodel.cn` host is wired. The same monitor API is mirrored at
   `api.z.ai` (Z.ai) per the official plugin; supporting it would be a config-driven
   endpoint change.
+- ZCode 侧的 zcode-plan / coding-plan-reset 接口（`zcode.z.ai`）均未接入：活动套餐走
+  日志解析（见「Activity plan balances」），额度重置卡为私有接口有意不接入
+  （见「额度重置卡（调研记录，未接入）」）。
 
 ## Test Coverage
 
