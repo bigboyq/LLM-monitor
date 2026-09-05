@@ -2741,6 +2741,66 @@ final class StateAndSchedulerTests: XCTestCase {
         // 150ms 内至少能完成 3+ 拍完整扫描（即 >= 18 次检查）
         XCTAssertGreaterThanOrEqual(recorder.count, 18, "循环 B 必须持续运行，不得在首拍休眠后挂死")
     }
+
+    /// codex 本地明细的 usage window 定义来自 quota 响应；quota 首胜前循环 B
+    /// 必须以短间隔探测（而非干等一个全局周期），拿到模型后回到全局节奏。
+    @MainActor
+    func testLoopBCodexEnrichmentShortRetriesUntilQuotaModelArrives() async throws {
+        final class StubWriter: LocalUsageStatusWriting {
+            var target: (providerID: String, authPath: String?, model: ModelQuota?, fetchedAt: Date, generation: Int)?
+            func providerID(for kind: ProviderKind) -> String? { nil }
+            func setScanningState(_ isScanning: Bool, for providerID: String) {}
+            func applyAntigravityLocalUsage(_ usage: AntigravityLocalUsage?) {}
+            func applyMinimaxLocalUsage(_ usage: ProviderLocalUsage?) {}
+            func applyGlmLocalUsage(_ usage: GlmLocalUsage?) {}
+            func applyOpencodeUsage(_ usage: OpencodeLocalUsage?) {}
+            func applyDshUsage(_ usage: DshLocalUsage?) {}
+            func codexEnrichmentTarget() -> (providerID: String, authPath: String?, model: ModelQuota?, fetchedAt: Date, generation: Int)? { target }
+            func applyCodexUsageDetails(_ details: CodexUsageDetails?, providerID: String, fetchedAt: Date, configurationGeneration: Int) {}
+        }
+
+        let writer = StubWriter()
+        writer.target = (providerID: "codex_chatgpt", authPath: nil, model: nil, fetchedAt: Date(), generation: 0)
+        let orchestration = LocalUsageOrchestration(writer: writer)
+        defer { orchestration.cancelInFlightAll() }
+
+        let requestedIntervals = RecordedIntervals()
+        orchestration.testSleepOverride = { interval in
+            await MainActor.run { requestedIntervals.record(interval) }
+            try await Task.sleep(nanoseconds: 1_000_000) // 1ms，压缩真实等待
+        }
+        // 只有 codex 就绪；其余客户端未安装，验证不影响 codex 探测节奏
+        orchestration.testReadinessOverride = { clientID in clientID == "codex" }
+
+        orchestration.startUsageLoop { 0.05 } // 全局节奏 50ms
+
+        // 阶段 1：quota 模型未到位 → 全部请求短重试间隔 5s
+        try await Task.sleep(nanoseconds: 30_000_000)
+        let pendingIntervals = await MainActor.run { requestedIntervals.all }
+        XCTAssertFalse(pendingIntervals.isEmpty, "挂起期间至少应有一拍")
+        XCTAssertTrue(pendingIntervals.allSatisfy { $0 == LocalUsageOrchestration.codexEnrichmentPendingRetryInterval },
+                      "quota 首胜前应以 \(LocalUsageOrchestration.codexEnrichmentPendingRetryInterval)s 探测，实际 \(pendingIntervals)")
+
+        // 阶段 2：quota 给出模型 → 回到全局节奏
+        await MainActor.run {
+            writer.target = (providerID: "codex_chatgpt", authPath: nil, model: ModelQuota(modelName: "chatgpt_plan", intervalTotalCount: 0, intervalUsageCount: 0, intervalRemainingPercent: 100, intervalStatus: .present, intervalResetsAt: nil, intervalWindowSeconds: nil, weeklyTotalCount: 0, weeklyUsageCount: 0, weeklyRemainingPercent: 0, weeklyStatus: .absent, weeklyResetsAt: nil, weeklyWindowSeconds: nil), fetchedAt: Date(), generation: 0)
+        }
+        try await Task.sleep(nanoseconds: 30_000_000)
+        let intervalsAfterModel = await MainActor.run { requestedIntervals.all }
+        XCTAssertTrue(intervalsAfterModel.contains { $0 == 0.05 }, "quota 模型到位后应回到全局节奏，实际 \(intervalsAfterModel)")
+    }
+}
+
+/// 线程安全记录 loop B 请求的休眠间隔（override 闭包在任意执行上下文调用）
+private final class RecordedIntervals: @unchecked Sendable {
+    private var values: [TimeInterval] = []
+    private let lock = NSLock()
+    func record(_ value: TimeInterval) {
+        lock.lock(); values.append(value); lock.unlock()
+    }
+    var all: [TimeInterval] {
+        lock.lock(); defer { lock.unlock() }; return values
+    }
 }
 
 private struct TestQuotaFetcher: QuotaFetcher {
