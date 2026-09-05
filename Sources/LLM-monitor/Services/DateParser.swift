@@ -62,13 +62,17 @@ enum DateParser {
         switch raw {
         case let s as String:
             let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
-            // 1. 数字字符串直接当 ms（minimax 旧行为）
-            if let ms = Double(trimmed) {
-                return makeDate(seconds: ms / 1000.0)
-            }
-            // 2. 否则按 ISO8601 解析
-            let normalized = trimmed.replacingOccurrences(of: "Z", with: "+00:00")
-            return iso8601Parser.parse(normalized)
+        // 1. 数字字符串直接当 ms（minimax 旧行为）
+        if let ms = Double(trimmed) {
+            return makeDate(seconds: ms / 1000.0)
+        }
+        // 2. 否则按 ISO8601 解析；只有尾缀 Z 需要归一成 +00:00，先判断可省去
+        //    数字字符串等高频路径的整串替换分配。中部的 Z 本就无法通过 ISO8601 解析，
+        //    是否替换不影响解析结果。
+        let normalized = trimmed.hasSuffix("Z")
+            ? trimmed.replacingOccurrences(of: "Z", with: "+00:00")
+            : trimmed
+        return iso8601Parser.parse(normalized)
         case let n as NSNumber:
             guard !isBoolean(n) else { return nil }
             return makeDate(seconds: n.doubleValue / 1000.0)
@@ -83,7 +87,11 @@ enum DateParser {
 
     private static func parseString(_ s: String) -> Date? {
         let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
-        let normalized = trimmed.replacingOccurrences(of: "Z", with: "+00:00")
+        // 只有尾缀 Z 需要归一成 +00:00；先判断可省去数字字符串等高频路径的
+        // 整串替换分配。中部的 Z 本就无法通过 ISO8601 解析，是否替换不影响结果。
+        let normalized = trimmed.hasSuffix("Z")
+            ? trimmed.replacingOccurrences(of: "Z", with: "+00:00")
+            : trimmed
         if let date = iso8601Parser.parse(normalized) { return date }
         // 数字字符串和数值走同一套单位判断，避免毫秒字符串被当成 unix 秒。
         if let value = Double(trimmed) {

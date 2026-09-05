@@ -89,6 +89,9 @@ final class LocalUsageOrchestration {
     private var usageLoopTask: Task<Void, Never>?
     /// 循环 B 睡眠等待时的休眠 Task（wakeLoop() 时精确 cancel 提前唤醒，杜绝 continuation 悬挂）
     private var sleepTask: Task<Void, any Error>?
+    /// 立即全量扫描请求标志：triggerImmediateScanAll 置位，循环 B 在下一拍消费。
+    /// 读写都在 @MainActor 上串行发生，无需加锁。
+    private var immediateScanRequested = false
     /// 客户端就绪状态缓存，用于日志去噪（仅在状态变动时记录日志）
     private var clientReadinessCache: [String: Bool] = [:]
     /// 仅供测试注入客户端就绪判定覆写
@@ -138,6 +141,8 @@ final class LocalUsageOrchestration {
     /// 启动循环 B：以全局刷新间隔迭代所有客户端。首拍立即执行一次全量扫描。
     func startUsageLoop(intervalProvider: @escaping () -> TimeInterval) {
         stopUsageLoop()
+        // 丢弃上一轮循环遗留的立即扫描请求；新循环首拍本身就会立即扫描。
+        immediateScanRequested = false
         logInfo("[usage-loop] 启动用量循环 B，首拍立即扫描，后续由全局刷新间隔驱动")
         usageLoopTask = Task { @MainActor [weak self] in
             guard let self else { return }
@@ -145,8 +150,17 @@ final class LocalUsageOrchestration {
             await self.scanAllClients()
 
             while !Task.isCancelled {
-                await self.interruptibleSleep(intervalProvider())
-                guard !Task.isCancelled else { break }
+                // 消费立即扫描请求（在下一拍扫描前清零，避免请求自我延续成死循环）：
+                // - wake 到达时循环正在扫描中会被吞掉，靠这里的标志立即补一拍（不睡眠）；
+                // - wake 到达时循环正在睡眠，wakeLoop 已提前打断睡眠，标志在本拍被
+                //   消费后直接扫描，不会再多跑一拍。
+                // 扫描期间新到的请求会重新置位，由再下一拍立即处理，同批触发自动归一。
+                let runImmediately = self.immediateScanRequested
+                self.immediateScanRequested = false
+                if !runImmediately {
+                    await self.interruptibleSleep(intervalProvider())
+                    guard !Task.isCancelled else { break }
+                }
                 await self.scanAllClients()
             }
         }
@@ -159,10 +173,12 @@ final class LocalUsageOrchestration {
         wakeLoop()
     }
 
-    /// 手动 refreshAll 或系统唤醒时调用：立即触发一拍全量用量扫描，并重置睡眠计时
+    /// 手动 refreshAll 或系统唤醒时调用：置位立即扫描请求并重置睡眠计时，
+    /// 由循环 B 统一执行这一拍。不在调用方并发 scanAllClients，避免与被唤醒的
+    /// 循环在同一时刻对同一批文件开两拍并发扫描。
     func triggerImmediateScanAll() async {
+        immediateScanRequested = true
         wakeLoop()
-        await scanAllClients()
     }
 
     /// 单拍迭代全部 6 个客户端，条目级隔离

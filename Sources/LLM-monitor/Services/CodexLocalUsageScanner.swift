@@ -100,7 +100,9 @@ struct CodexLocalScanLimits: Sendable {
         maxEventsPerFile: 10_000,
         maxTotalParsedBytes: 256 * 1024 * 1024,
         maxJSONLLineBytes: 8 * 1024 * 1024,
-        readChunkBytes: 64 * 1024,
+        // 1MB 分块：Data 切片次数与 seek 开销随块变大摊薄，同时内存峰值仍有界
+        //（单行上限仍由 maxJSONLLineBytes 约束）。
+        readChunkBytes: 1024 * 1024,
         maxEventCacheEntries: 256,
         maxRecentSamples: 65_536
     )
@@ -563,6 +565,12 @@ extension CodexFetcher {
         return sessionFiles
     }
 
+    /// 一级过滤 marker 的字节形态：与行级 `String.contains` 的条件逐字一致。
+    /// marker 为纯 ASCII，不会出现在 UTF-8 多字节序列内部，因此字节级命中
+    /// 与字符串级 contains 严格等价（不会漏判）。
+    private static let eventMsgMarker = Data("event_msg".utf8)
+    private static let turnContextMarker = Data("turn_context".utf8)
+
     private nonisolated static func parseSessionEvents(
         from fileURL: URL,
         fileSize: Int,
@@ -585,10 +593,15 @@ extension CodexFetcher {
             byteLimit: byteLimit,
             maxLineBytes: limits.maxJSONLLineBytes,
             readChunkBytes: limits.readChunkBytes
-        ) { line in
+        ) { lineData in
             guard !Task.isCancelled else { return false }
-            // Performance optimization: skip JSON deserialization for non-event or irrelevant lines
-            guard line.contains("event_msg") || line.contains("turn_context") else { return true }
+            // 一级过滤在字节层完成：marker 未命中的行不构造 String、不进 JSON 解析
+            //（字节级 memmem 比字符串 contains 快一个数量级以上）。命中的行才解码，
+            // 继续走原有的二级判断与 JSON 路径；误命中（marker 出现在字符串值中间）
+            // 只是多解析一行，不影响正确性。
+            guard lineData.range(of: eventMsgMarker) != nil
+                || lineData.range(of: turnContextMarker) != nil else { return true }
+            let line = String(decoding: lineData, as: UTF8.self)
             guard line.contains("task_started") || line.contains("task_complete") || line.contains("token_count") || line.contains("turn_context") else { return true }
 
             guard let object = parseJSONObject(from: line),
@@ -796,7 +809,9 @@ extension CodexFetcher {
     /// 以固定大小 chunk 读取 JSONL，避免大型活跃 session 被一次性载入内存。
     /// 只读取文件尾部 `byteLimit` 字节以优先保留近期事件；起点落在行中时丢弃
     /// 到第一个换行符，从下一完整行开始解析。单行超限会被丢弃至下一个换行符。
-    /// pending、单文件读取量和整个扫描读取量都有明确硬上限。handler 返回 false
+    /// pending、单文件读取量和整个扫描读取量都有明确硬上限。handler 以原始
+    /// 字节行回调（不含换行符），仅在本次调用内有效，不得逃逸保存——pending
+    /// 缓冲会被复用；是否解码为 String 由 handler 决定。handler 返回 false
     /// 时立刻停止，供任务取消快速退出。seek/读取失败给出明确诊断并返回 0，而不是
     /// 静默退化为从文件头读取（那样会保留最旧事件，与“保留近期事件”语义相反）。
     @discardableResult
@@ -806,7 +821,7 @@ extension CodexFetcher {
         byteLimit: Int,
         maxLineBytes: Int,
         readChunkBytes: Int,
-        handler: (String) -> Bool
+        handler: (Data) -> Bool
     ) -> Int {
         guard let handle = try? FileHandle(forReadingFrom: fileURL) else {
             logWarn("[codex/local] 打开 session 文件失败，跳过: \(fileURL.lastPathComponent)")
@@ -865,9 +880,8 @@ extension CodexFetcher {
                     discardingOversizedLine = false
                 } else if segment.count <= maxLineBytes - pending.count {
                     pending.append(segment)
-                    let line = String(decoding: pending, as: UTF8.self)
+                    if !handler(pending) { return bytesRead }
                     pending.removeAll(keepingCapacity: true)
-                    if !handler(line) { return bytesRead }
                 } else {
                     pending.removeAll(keepingCapacity: false)
                     logWarn("[codex/local] 跳过超限 JSONL 行（上限 \(maxLineBytes) bytes）")
@@ -890,7 +904,7 @@ extension CodexFetcher {
            !discardingInitialPartialLine,
            !discardingOversizedLine,
            !pending.isEmpty {
-            _ = handler(String(decoding: pending, as: UTF8.self))
+            _ = handler(pending)
         }
         return bytesRead
     }

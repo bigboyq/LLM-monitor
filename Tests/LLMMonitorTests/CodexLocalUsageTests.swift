@@ -589,4 +589,64 @@ final class CodexLocalUsageTests: XCTestCase {
         XCTAssertEqual(sample.modelName, "gpt-5.6-terra")
         XCTAssertEqual(sample.completedAt, newerDate)
     }
+
+    // MARK: - 字节级一级过滤与行级过滤等价
+
+    /// 混合行文本下的一级过滤等价性：含 marker 的正常事件行全部产出事件；
+    /// marker 只出现在 JSON 字符串值中的行允许进入解析（误命中只是多解析一行）
+    /// 但不得产出事件；无 marker 的行与空行不产出事件。配合极小 readChunkBytes
+    /// 让每行跨多个读取分块，验证字节缓冲跨块拼接后 marker 仍可命中（不会漏判）。
+    func testByteLevelPrefilterMatchesLineFilterSemantics() async throws {
+        let fm = FileManager.default
+        let url = fm.temporaryDirectory
+            .appendingPathComponent("codex-prefilter-\(UUID().uuidString).jsonl")
+        defer { try? fm.removeItem(at: url) }
+
+        var content = ""
+        content += "{\"type\":\"session_meta\",\"payload\":{\"id\":\"s1\"}}\n"
+        content += "\n"
+        // marker 只出现在字符串值中：进入解析但不产出事件
+        content += "{\"type\":\"response_item\",\"timestamp\":\"2026-08-12T00:00:00Z\",\"payload\":{\"text\":\"讨论了 event_msg 与 turn_context 的处理\"}}\n"
+        // 多字节 UTF-8 内容且不含 marker：字节层直接跳过
+        content += "{\"type\":\"response_item\",\"timestamp\":\"2026-08-12T00:00:00Z\",\"payload\":{\"text\":\"普通会话内容，不含任何标记\"}}\n"
+        content += "{\"type\":\"turn_context\",\"timestamp\":\"2026-08-12T00:00:01Z\",\"payload\":{\"model\":\"gpt-5.6-pf\"}}\n"
+        content += "{\"type\":\"event_msg\",\"timestamp\":\"2026-08-12T00:00:02Z\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"turn-pf\"}}\n"
+        content += "{\"type\":\"event_msg\",\"timestamp\":\"2026-08-12T00:00:03Z\",\"payload\":{\"type\":\"token_count\",\"info\":{\"last_token_usage\":{\"input_tokens\":7,\"cached_input_tokens\":2,\"output_tokens\":3,\"reasoning_output_tokens\":1}}}}\n"
+        // 末行不带换行符
+        content += "{\"type\":\"event_msg\",\"timestamp\":\"2026-08-12T00:00:04Z\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"turn-pf\"}}"
+
+        try content.write(to: url, atomically: true, encoding: .utf8)
+        let snap = f2MakeSnapshot(url: url, fileSize: content.utf8.count)
+        let limits = CodexLocalScanLimits(
+            maxSessionFiles: 8, maxEventsPerFile: 100, maxTotalParsedBytes: 64 * 1024 * 1024,
+            maxJSONLLineBytes: 8 * 1024 * 1024, readChunkBytes: 24
+        )
+        let files = await CodexFetcher.cachedSessionEvents(for: [snap], limits: limits)
+        let events = files.first?.events ?? []
+
+        var models: [String] = []
+        var turns: [String] = []
+        var usages: [CodexTokenUsageEvent] = []
+        for event in events {
+            switch event {
+            case .modelContext(_, let modelName):
+                models.append(modelName)
+            case .taskStarted(_, let turnID):
+                turns.append("start:\(turnID)")
+            case .taskCompleted(_, let turnID):
+                turns.append("complete:\(turnID)")
+            case .tokenCount(_, let usage):
+                usages.append(usage)
+            }
+        }
+
+        XCTAssertEqual(models, ["gpt-5.6-pf"], "只有真正的 turn_context 行产出 modelContext")
+        XCTAssertEqual(turns, ["start:turn-pf", "complete:turn-pf"], "task_started/task_complete 按序产出，无尾换行的末行不丢失")
+        XCTAssertEqual(usages.count, 1, "只有真正的 token_count 行产出用量事件")
+        XCTAssertEqual(usages.first?.inputTokens, 7)
+        XCTAssertEqual(usages.first?.cachedInputTokens, 2)
+        XCTAssertEqual(usages.first?.outputTokens, 3)
+        XCTAssertEqual(usages.first?.reasoningOutputTokens, 1)
+        XCTAssertEqual(events.count, 4, "marker 出现在字符串值中的行、无 marker 行与空行都不得产出事件")
+    }
 }
