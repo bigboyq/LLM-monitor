@@ -18,6 +18,7 @@
 - Codex 本地账本从 `turn_context` 解析 model 名称，让 GPT-5.6 Sol / Terra / Luna 在公开价目中可被独立计价；新增 `recentSamples` 字段把逐次调用样本带入客户端 tab 的价值估算。
 - minimax v2 SQLite reader 增加 model 回退链：row-level `model` → session-level `record_json.effectiveModel` → ledger 唯一模型；多模型时不再猜测。
 - 客户端 tab tab 标题新增 provider 数量徽标：每个客户端 tab 后显示该客户端已识别的 Provider 数（如"Antigravity 3"），让用户一眼看到哪些 Provider 在产生数据。
+- OpenAI 模型定价升级：新增 GPT-6 Astra 价格（Input $10 / Cached Input $1 / Output $50），GPT-5.6 Sol 价格更新为 $4 / $0.4 / $20（原 $5 / $0.5 / $30），模型匹配从 `contains` 宽匹配改为小写后精确相等，避免同系列不同价模型被误吞；价目快照日期更新为 `2026-09-05`。
 
 ### Fixed
 

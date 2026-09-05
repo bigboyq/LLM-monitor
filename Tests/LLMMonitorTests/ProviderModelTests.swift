@@ -65,7 +65,7 @@ final class ProviderModelTests: XCTestCase {
         XCTAssertEqual(summary.reasoningTokens, 10)
         XCTAssertEqual(summary.cacheHitRate ?? -1, 0.2, accuracy: 0.0001)
         XCTAssertEqual(summary.costEstimate.currency, .usd)
-        XCTAssertEqual(summary.costEstimate.value ?? -1, 0.00161, accuracy: 0.000001)
+        XCTAssertEqual(summary.costEstimate.value ?? -1, 0.001128, accuracy: 0.000001)
         XCTAssertEqual(summary.priceTextByDay[day], "$0.00")
     }
 
@@ -246,16 +246,26 @@ final class ProviderModelTests: XCTestCase {
         XCTAssertEqual(summary.unpricedModelUsage.first?.sampleCount, 1)
     }
 
-    func testPricingAliasesAndAugust17Snapshot() {
+    func testPricingAliasesAndPriceSnapshot() {
         let codexPrices = [
             ModelPricingCatalog.pricing(for: "gpt-5.5", quotaProviderID: QuotaProviderID.openAI),
             ModelPricingCatalog.pricing(for: "gpt-5.6-sol", quotaProviderID: QuotaProviderID.openAI),
             ModelPricingCatalog.pricing(for: "gpt-5.6-terra", quotaProviderID: QuotaProviderID.openAI),
-            ModelPricingCatalog.pricing(for: "gpt-5.6-luna", quotaProviderID: QuotaProviderID.openAI)
+            ModelPricingCatalog.pricing(for: "gpt-5.6-luna", quotaProviderID: QuotaProviderID.openAI),
+            ModelPricingCatalog.pricing(for: "gpt-6-astra", quotaProviderID: QuotaProviderID.openAI)
         ].compactMap { $0 }
-        XCTAssertEqual(codexPrices.map(\.inputPerMillion), [5, 5, 2, 0.2])
-        XCTAssertEqual(codexPrices.map(\.cacheReadPerMillion), [0.5, 0.5, 0.2, 0.02])
-        XCTAssertEqual(codexPrices.map(\.outputPerMillion), [30, 30, 12, 1.2])
+        XCTAssertEqual(codexPrices.map(\.inputPerMillion), [5, 4, 2, 0.2, 10])
+        XCTAssertEqual(codexPrices.map(\.cacheReadPerMillion), [0.5, 0.4, 0.2, 0.02, 1])
+        XCTAssertEqual(codexPrices.map(\.outputPerMillion), [30, 20, 12, 1.2, 50])
+
+        // 精确匹配回归：带变体后缀的 slug 不再被 contains 误吞，
+        // 必须显式加入目录后才会被计价。
+        XCTAssertNil(
+            ModelPricingCatalog.pricing(for: "gpt-5.6-sol-codex", quotaProviderID: QuotaProviderID.openAI)
+        )
+        XCTAssertNil(
+            ModelPricingCatalog.pricing(for: "gpt-6-astra-beta", quotaProviderID: QuotaProviderID.openAI)
+        )
 
         for legacyModel in ["gpt-4", "gpt-4.1", "gpt-4o", "o1", "o1-mini", "o3", "o3-mini", "gpt-5", "gpt-5-mini"] {
             XCTAssertNil(
@@ -357,7 +367,7 @@ final class ProviderModelTests: XCTestCase {
         XCTAssertEqual(deepseekPro?.inputPerMillion, 4.5)
         XCTAssertEqual(deepseekPro?.cacheReadPerMillion, 0.15)
         XCTAssertEqual(deepseekPro?.outputPerMillion, 13.5)
-        XCTAssertEqual(ModelPricingCatalog.lastUpdated, "2026-08-28")
+        XCTAssertEqual(ModelPricingCatalog.lastUpdated, "2026-09-05")
     }
 
     func testDeepseekPricingUsesOffPeakBaseAndDoublesAtPeak() {

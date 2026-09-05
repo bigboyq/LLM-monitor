@@ -80,7 +80,7 @@ struct UnpricedModelUsage: Equatable, Sendable, Identifiable {
 /// summary. It is deliberately static: local usage must remain available when
 /// offline, and unknown model names are reported instead of guessed.
 enum ModelPricingCatalog {
-    static let lastUpdated = "2026-08-28"
+    static let lastUpdated = "2026-09-05"
 
     static func estimate(
         samples: [LocalTokenUsageSample],
@@ -230,17 +230,22 @@ enum ModelPricingCatalog {
             }
 
         case QuotaProviderID.openAI:
-            if model.contains("gpt-5.5") {
-                return ModelTokenPricing(modelLabel: modelName ?? "GPT-5.5", currency: .usd, inputPerMillion: 5, cacheReadPerMillion: 0.5, outputPerMillion: 30)
+            // 精确匹配：避免 contains 误吞未来 gpt-6/gpt-5 系列不同价模型。
+            // Cached Write 官方有价但 Codex 不上报该字段，目录不建模。
+            if model == "gpt-6-astra" {
+                return ModelTokenPricing(modelLabel: modelName ?? "GPT-6 Astra", currency: .usd, inputPerMillion: 10, cacheReadPerMillion: 1, outputPerMillion: 50)
             }
-            if model.contains("gpt-5.6-sol") {
-                return ModelTokenPricing(modelLabel: modelName ?? "GPT-5.6 Sol", currency: .usd, inputPerMillion: 5, cacheReadPerMillion: 0.5, outputPerMillion: 30)
+            if model == "gpt-5.6-sol" {
+                return ModelTokenPricing(modelLabel: modelName ?? "GPT-5.6 Sol", currency: .usd, inputPerMillion: 4, cacheReadPerMillion: 0.4, outputPerMillion: 20)
             }
-            if model.contains("gpt-5.6-terra") {
+            if model == "gpt-5.6-terra" {
                 return ModelTokenPricing(modelLabel: modelName ?? "GPT-5.6 Terra", currency: .usd, inputPerMillion: 2, cacheReadPerMillion: 0.2, outputPerMillion: 12)
             }
-            if model.contains("gpt-5.6-luna") {
+            if model == "gpt-5.6-luna" {
                 return ModelTokenPricing(modelLabel: modelName ?? "GPT-5.6 Luna", currency: .usd, inputPerMillion: 0.2, cacheReadPerMillion: 0.02, outputPerMillion: 1.2)
+            }
+            if model == "gpt-5.5" {
+                return ModelTokenPricing(modelLabel: modelName ?? "GPT-5.5", currency: .usd, inputPerMillion: 5, cacheReadPerMillion: 0.5, outputPerMillion: 30)
             }
         case QuotaProviderID.antigravity:
             if model.contains("gemini-3.7-flash") || model.contains("gemini-3.6-flash") {

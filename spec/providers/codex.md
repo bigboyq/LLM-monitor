@@ -18,7 +18,7 @@ This provider reads the local Codex authentication file and calls ChatGPT backen
 | Reset credits | Parsed and displayed when entries exist |
 | Plan label | Parsed from `id_token` JWT when available |
 | Local usage details | Aggregated from local Codex session logs |
-| Local pricing models | GPT-5.5, GPT-5.6 Sol, GPT-5.6 Terra, GPT-5.6 Luna |
+| Local pricing models | GPT-5.5, GPT-5.6 Sol, GPT-5.6 Terra, GPT-5.6 Luna, GPT-6 Astra |
 
 ## Config
 
@@ -142,6 +142,23 @@ If `rate_limit` or its primary window is missing/invalid, parsing fails instead 
 healthy quota. A missing or invalid secondary window maps to `weeklyStatus = .absent`; a valid
 secondary window remains `.present` even when its remaining percentage is `0%`.
 
+## Local Pricing Snapshot (2026-09-05)
+
+`ModelPricingCatalog` 对 OpenAI/Codex 建立的本地价目快照（USD per 1M tokens）：
+
+| Model | Input | Cached Input | Output |
+|---|---|---|---|
+| gpt-5.5 | 5.00 | 0.50 | 30.00 |
+| gpt-5.6-sol | 4.00 | 0.40 | 20.00 |
+| gpt-5.6-terra | 2.00 | 0.20 | 12.00 |
+| gpt-5.6-luna | 0.20 | 0.02 | 1.20 |
+| gpt-6-astra | 10.00 | 1.00 | 50.00 |
+
+两条约束：
+
+1. 匹配规则是精确相等（model 小写后 `==`），不是 `contains`；未来带变体后缀的 slug 需要显式加入目录后才会被计价。
+2. Cached Write 官方虽有定价，但 Codex 不上报 cache write 字段，目录不建模。
+
 ## Local Usage Aggregation
 
 ### Official daily date, reporting window, and freshness
@@ -193,6 +210,8 @@ window, the adjusted value is:
 The estimate is valid only when the same model mix and pricing assumptions are used. The sample's
 2026-08-19 snapshot was incomplete, so this should be treated as an approximate calibration
 target rather than a hard quota or billing limit.
+
+该 ≈$58 估值基于 Terra/Luna/SOL 组合，GPT-6 Astra 尚未纳入，待实际用量校准后再更新。
 
 ### Accounting contract
 
