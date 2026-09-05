@@ -617,6 +617,13 @@ extension CodexFetcher {
     /// 与字符串级 contains 严格等价（不会漏判）。
     private static let eventMsgMarker = Data("event_msg".utf8)
     private static let turnContextMarker = Data("turn_context".utf8)
+    /// 二级类型过滤 marker：真实数据里 level-1 命中行含大量 CJK prompt 文本，
+    /// `String.contains` 在其上走慢路径（实测 ~11MB/s，占冷扫描 95% 耗时）；
+    /// 四个类型标记均为纯 ASCII，memmem 命中与 contains 严格等价，且只有
+    /// 二级命中的行（约 5% 字节）才需要解码 String 与 JSON 解析。
+    private static let taskStartedMarker = Data("task_started".utf8)
+    private static let taskCompleteMarker = Data("task_complete".utf8)
+    private static let tokenCountMarker = Data("token_count".utf8)
 
     nonisolated static func parseSessionEvents(
         from fileURL: URL,
@@ -653,8 +660,14 @@ extension CodexFetcher {
             // 只是多解析一行，不影响正确性。
             guard lineData.range(of: eventMsgMarker) != nil
                 || lineData.range(of: turnContextMarker) != nil else { return true }
+            // 二级类型过滤同样在字节层完成（理由见 marker 声明处）；命中的行才解码，
+            // 继续走 JSON 路径。误命中（marker 出现在字符串值中间）只是多解析一行，
+            // 不影响正确性。
+            guard lineData.range(of: taskStartedMarker) != nil
+                || lineData.range(of: taskCompleteMarker) != nil
+                || lineData.range(of: tokenCountMarker) != nil
+                || lineData.range(of: turnContextMarker) != nil else { return true }
             let line = String(decoding: lineData, as: UTF8.self)
-            guard line.contains("task_started") || line.contains("task_complete") || line.contains("token_count") || line.contains("turn_context") else { return true }
 
             guard let object = parseJSONObject(from: line),
                   let timestamp = DateParser.parse(object["timestamp"]),
