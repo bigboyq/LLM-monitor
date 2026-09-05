@@ -144,7 +144,9 @@ secondary window remains `.present` even when its remaining percentage is `0%`.
 
 ## Local Pricing Snapshot (2026-09-05)
 
-`ModelPricingCatalog` 对 OpenAI/Codex 建立的本地价目快照（USD per 1M tokens）：
+`ModelPricingCatalog` 对 OpenAI/Codex 建立的本地价目快照（USD per 1M tokens）。价格
+数据已迁移到随 app 打包的
+[`Sources/LLM-monitor/Resources/ModelPricing.json`](../../Sources/LLM-monitor/Resources/ModelPricing.json)（`ModelPricingCatalog` 启动时加载，调价 / 增删模型只改 JSON），下表仍然有效：
 
 | Model | Input | Cached Input | Output |
 |---|---|---|---|
@@ -196,7 +198,7 @@ For the August 2026 Team plan, the observed value of one weekly quota window is 
 
 | Model family | Valuation convention |
 |---|---|
-| Terra / Luna | Use the normal model prices in [`ModelPricingCatalog.swift`](../../Sources/LLM-monitor/Models/ModelPricingCatalog.swift) |
+| Terra / Luna | Use the normal model prices in [`ModelPricing.json`](../../Sources/LLM-monitor/Resources/ModelPricing.json) |
 | SOL | Apply an effective value discount coefficient of `0.55` to the normal price-equivalent value |
 
 This is an inferred usage-value estimate, not an official invoice amount. In the 2026-08-15 to

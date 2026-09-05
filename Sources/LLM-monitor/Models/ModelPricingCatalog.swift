@@ -3,11 +3,15 @@ import Foundation
 // 定价子系统 —— 从 ProviderClientModel.swift 拆出的独立文件。
 // 依赖方向：ModelPricingCatalog 只消费 LocalTokenUsageSample / TokenUsageBuckets /
 // PeakWindow，被 ProviderClientModel / Views / SettingsView 消费。
+// 价格数据全部来自随 app 打包的 Resources/ModelPricing.json（Package.swift 以
+// process resource 声明）：调价 / 新增 / 退休模型只改 JSON，并同步测试与 spec；
+// 本文件只保留匹配引擎、zhipu 兜底顺序与 DeepSeek 高峰倍率逻辑。
 
 /// The currencies used by the public API price lists. Values are intentionally
 /// kept in their published currency instead of silently applying an exchange
 /// rate that could make a cost estimate look more precise than it is.
-enum ModelPriceCurrency: String, Equatable, Sendable {
+/// Codable 供 ModelPricing.json 反序列化使用（rawValue 即 JSON 中的币种字符串）。
+enum ModelPriceCurrency: String, Codable, Equatable, Sendable {
     case usd = "USD"
     case cny = "CNY"
 
@@ -76,11 +80,83 @@ struct UnpricedModelUsage: Equatable, Sendable, Identifiable {
     var id: String { modelName }
 }
 
+// MARK: - ModelPricing.json 反序列化模型（随 app 打包的唯一价格数据源）
+
+/// ModelPricing.json 的顶层结构；`providers` 以 QuotaProviderID 字符串为 key。
+private struct PricingCatalogDocument: Decodable, Sendable {
+    let lastUpdated: String
+    let providers: [String: ProviderPricing]
+}
+
+/// 单个 provider 的价目。
+private struct ProviderPricing: Decodable, Sendable {
+    /// 条目数组顺序即求值顺序，首条命中即返回（zhipu Flash 先于 GLM-5.3、
+    /// minimax M3 先于 M2.x 的顺序敏感语义依赖这一点）。
+    let models: [PricingEntry]
+    /// 匹配前把模型名中的 `_` 替换为 `-`（antigravity 的 gpt_oss_120b 需要）。
+    let normalizeUnderscores: Bool?
+    /// 兜底价：条目全部未命中时返回（zhipu 的"GLM-5.3-Flash(兜底)"）。
+    let fallback: PricingEntry?
+}
+
+/// 价目条目：`keywords`（OR 语义，`match` 决定 contains / exact）与可选
+/// `matchAll`（AND 语义 contains 数组）两组匹配机制并存，任一命中即匹配。
+private struct PricingEntry: Decodable, Sendable {
+    enum MatchMode: String, Decodable, Sendable {
+        case exact
+        case contains
+    }
+
+    let match: MatchMode?
+    let keywords: [String]?
+    let matchAll: [String]?
+    let label: String
+    let currency: ModelPriceCurrency
+    let inputPerMillion: Double
+    let cacheReadPerMillion: Double
+    let outputPerMillion: Double
+
+    /// 在已 lowercased（必要时已做下划线归一化）的模型名上求值。
+    /// keywords 比较统一在小写域进行，因此 JSON 中 keywords 必须是小写 slug。
+    func matches(lowercasedModel: String) -> Bool {
+        let mode = match ?? .contains
+        if let keywords, !keywords.isEmpty,
+           keywords.contains(where: { mode == .exact ? lowercasedModel == $0 : lowercasedModel.contains($0) }) {
+            return true
+        }
+        if let matchAll, !matchAll.isEmpty,
+           matchAll.allSatisfy({ lowercasedModel.contains($0) }) {
+            return true
+        }
+        return false
+    }
+}
+
 /// A small, reviewable snapshot of public model prices used by the settings
-/// summary. It is deliberately static: local usage must remain available when
-/// offline, and unknown model names are reported instead of guessed.
+/// summary. Prices live in the bundled `ModelPricing.json` so that price
+/// changes, new or retired models only touch that file (plus tests and spec
+/// docs); local usage must remain available when offline, and unknown model
+/// names are reported instead of guessed.
 enum ModelPricingCatalog {
-    static let lastUpdated = "2026-09-05"
+    /// 解析失败策略：bundle 内 JSON 是开发者受控资源且有测试守门
+    /// （ModelPricingJSONTests 校验可解析性与 schema 完整性），解析失败属于
+    /// 打包 / 数据错误而非运行环境问题，因此直接崩溃暴露问题，而不是静默
+    /// 降级成"全部未定价"——那会让所有 provider 显示未定价并掩盖真正的错误。
+    private static let catalog: PricingCatalogDocument = loadCatalog()
+
+    static let lastUpdated = catalog.lastUpdated
+
+    private static func loadCatalog() -> PricingCatalogDocument {
+        guard let url = Bundle.module.url(forResource: "ModelPricing", withExtension: "json") else {
+            preconditionFailure("ModelPricing.json 缺失：Bundle.module 中找不到定价目录资源，请检查 Package.swift 的 resources 声明")
+        }
+        do {
+            let data = try Data(contentsOf: url)
+            return try JSONDecoder().decode(PricingCatalogDocument.self, from: data)
+        } catch {
+            preconditionFailure("ModelPricing.json 解析失败：\(error)。定价 JSON 随 app 打包、由测试守门，解析失败说明数据或 schema 损坏；直接崩溃暴露问题，不做静默降级")
+        }
+    }
 
     static func estimate(
         samples: [LocalTokenUsageSample],
@@ -150,23 +226,6 @@ enum ModelPricingCatalog {
         }
     }
 
-    /// GLM Coding Plan 计价：模型三层分类 GLM-5.3-Flash / GLM-5.3 / 其他。
-    ///
-    /// **GLM-5.2 及以下已退休**：历史 GLM-5.2/4.x 与未来未知模型不再单独定价，
-    /// 统一按 GLM-5.3-Flash 兜底（用户口径：兜底金额是估计值，不对应真实账单）。
-    /// 兜底保证 zhipu 分支永远返回价格 —— 包括模型名缺失（未知模型）的样本，
-    /// 因此"未定价模型 / 部分计价"提示对该 provider 结构性消失。
-    private static func zhipuPricing(model: String, modelName: String?) -> ModelTokenPricing {
-        if model.contains("glm-5.3-flash") || model.contains("glm-5.3flash") {
-            return ModelTokenPricing(modelLabel: modelName ?? "GLM-5.3-Flash", currency: .cny, inputPerMillion: 0.8, cacheReadPerMillion: 0.23, outputPerMillion: 2.8)
-        }
-        if model.contains("glm-5.3") {
-            return ModelTokenPricing(modelLabel: modelName ?? "GLM-5.3", currency: .cny, inputPerMillion: 8, cacheReadPerMillion: 2, outputPerMillion: 28)
-        }
-        let label = modelName.flatMap { $0.isEmpty ? nil : $0 } ?? "GLM-5.3-Flash(兜底)"
-        return ModelTokenPricing(modelLabel: label, currency: .cny, inputPerMillion: 0.8, cacheReadPerMillion: 0.23, outputPerMillion: 2.8)
-    }
-
     /// 用户给定的是非高峰价；现有 DeepSeek 高峰窗口规则规定高峰统一乘 2。
     private static func pricingMultiplier(
         quotaProviderID: String,
@@ -199,100 +258,44 @@ enum ModelPricingCatalog {
         // zhipu 分支永远有价（GLM-5.2 及以下已退休，未知模型也按 Flash 兜底），
         // 包括模型名缺失的样本 —— 必须放在通用 empty guard 之前。
         if quotaProviderID == QuotaProviderID.zhipu {
-            return zhipuPricing(model: model, modelName: modelName)
+            return resolvedPricing(
+                provider: catalog.providers[QuotaProviderID.zhipu],
+                model: model,
+                modelName: modelName
+            )
         }
         guard !model.isEmpty else { return nil }
+        return resolvedPricing(provider: catalog.providers[quotaProviderID], model: model, modelName: modelName)
+    }
 
-        switch quotaProviderID {
-        case QuotaProviderID.minimax:
-            if model.contains("m3") {
-                // MiniMax-M3 和 minimax/MiniMax-M3 是同一模型。价格为 MiniMax
-                // 中文官方公开价（CNY 直接给出，不再用 USD × 汇率换算，避免汇率
-                // 漂移让估算值跟官方对不上）。>512K 高价档不参与：本地账本不
-                // 保留请求上下文长度。
-                return ModelTokenPricing(
-                    modelLabel: modelName ?? "MiniMax-M3",
-                    currency: .cny,
-                    inputPerMillion: 2.1,
-                    cacheReadPerMillion: 0.42,
-                    outputPerMillion: 8.4
-                )
-            }
-            if model.contains("m2.7") || model.contains("m2.5") || model.contains("m2.1") || model == "m2" {
-                let highspeed = model.contains("highspeed")
-                return ModelTokenPricing(
-                    modelLabel: modelName ?? "MiniMax",
-                    currency: .cny,
-                    inputPerMillion: highspeed ? 4.2 : 2.1,
-                    cacheReadPerMillion: 0.21,
-                    outputPerMillion: highspeed ? 16.8 : 8.4
-                )
-            }
-
-        case QuotaProviderID.openAI:
-            // 精确匹配：避免 contains 误吞未来 gpt-6/gpt-5 系列不同价模型。
-            // Cached Write 官方有价但 Codex 不上报该字段，目录不建模。
-            if model == "gpt-6-astra" {
-                return ModelTokenPricing(modelLabel: modelName ?? "GPT-6 Astra", currency: .usd, inputPerMillion: 10, cacheReadPerMillion: 1, outputPerMillion: 50)
-            }
-            if model == "gpt-5.6-sol" {
-                return ModelTokenPricing(modelLabel: modelName ?? "GPT-5.6 Sol", currency: .usd, inputPerMillion: 4, cacheReadPerMillion: 0.4, outputPerMillion: 20)
-            }
-            if model == "gpt-5.6-terra" {
-                return ModelTokenPricing(modelLabel: modelName ?? "GPT-5.6 Terra", currency: .usd, inputPerMillion: 2, cacheReadPerMillion: 0.2, outputPerMillion: 12)
-            }
-            if model == "gpt-5.6-luna" {
-                return ModelTokenPricing(modelLabel: modelName ?? "GPT-5.6 Luna", currency: .usd, inputPerMillion: 0.2, cacheReadPerMillion: 0.02, outputPerMillion: 1.2)
-            }
-            if model == "gpt-5.5" {
-                return ModelTokenPricing(modelLabel: modelName ?? "GPT-5.5", currency: .usd, inputPerMillion: 5, cacheReadPerMillion: 0.5, outputPerMillion: 30)
-            }
-        case QuotaProviderID.antigravity:
-            if model.contains("gemini-3.7-flash") || model.contains("gemini-3.6-flash") {
-                return ModelTokenPricing(modelLabel: modelName ?? "Gemini Flash 3.x", currency: .usd, inputPerMillion: 0.75, cacheReadPerMillion: 0.075, outputPerMillion: 3.75)
-            }
-            if model.contains("gemini-2.5-pro") {
-                return ModelTokenPricing(modelLabel: modelName ?? "Gemini 2.5 Pro", currency: .usd, inputPerMillion: 1.25, cacheReadPerMillion: 0.3125, outputPerMillion: 10)
-            }
-            if model.contains("gemini-2.5-flash") {
-                return ModelTokenPricing(modelLabel: modelName ?? "Gemini 2.5 Flash", currency: .usd, inputPerMillion: 0.3, cacheReadPerMillion: 0.03, outputPerMillion: 2.5)
-            }
-            if model.contains("claude-opus-4.6") || model.contains("claude-opus-4-6") {
-                return ModelTokenPricing(modelLabel: modelName ?? "Claude Opus 4.6", currency: .usd, inputPerMillion: 5, cacheReadPerMillion: 0.5, outputPerMillion: 25)
-            }
-            if model.contains("claude-sonnet-4.6") || model.contains("claude-sonnet-4-6") {
-                return ModelTokenPricing(modelLabel: modelName ?? "Claude Sonnet 4.6", currency: .usd, inputPerMillion: 3, cacheReadPerMillion: 0.3, outputPerMillion: 15)
-            }
-            let normalizedModel = model.replacingOccurrences(of: "_", with: "-")
-            if normalizedModel.contains("gpt-oss-120b") {
-                return ModelTokenPricing(modelLabel: modelName ?? "gpt-oss-120b", currency: .usd, inputPerMillion: 0.09, cacheReadPerMillion: 0.009, outputPerMillion: 0.36)
-            }
-            if model.contains("claude-4") || model.contains("claude-3.7-sonnet") {
-                return ModelTokenPricing(modelLabel: modelName ?? "Claude Sonnet", currency: .usd, inputPerMillion: 3, cacheReadPerMillion: 0.3, outputPerMillion: 15)
-            }
-            if model.contains("claude-3.5-haiku") {
-                return ModelTokenPricing(modelLabel: modelName ?? "Claude Haiku", currency: .usd, inputPerMillion: 0.8, cacheReadPerMillion: 0.08, outputPerMillion: 4)
-            }
-            if model.contains("gpt-4.1") {
-                return ModelTokenPricing(modelLabel: modelName ?? "GPT-4.1", currency: .usd, inputPerMillion: 2, cacheReadPerMillion: 0.5, outputPerMillion: 8)
-            }
-
-        case QuotaProviderID.deepseek:
-            // User-specified 2026-08-17 RMB off-peak prices. High-peak samples
-            // are multiplied by 2 in pricingMultiplier above.
-            if model.contains("deepseek-v4-flash")
-                || model.contains("deepseek-chat")
-                || model.contains("deepseek-reasoner")
-                || (model.contains("deepseek") && model.contains("flash")) {
-                return ModelTokenPricing(modelLabel: modelName ?? "DeepSeek Flash", currency: .cny, inputPerMillion: 1.5, cacheReadPerMillion: 0.05, outputPerMillion: 4.5)
-            }
-            if model.contains("deepseek-v4-pro") || (model.contains("deepseek") && model.contains("pro")) {
-                return ModelTokenPricing(modelLabel: modelName ?? "DeepSeek Pro", currency: .cny, inputPerMillion: 4.5, cacheReadPerMillion: 0.15, outputPerMillion: 13.5)
-            }
-
-        default:
-            break
+    /// 按条目数组顺序求值，首条命中即返回；条目全部未命中时回退 provider 级
+    /// 兜底价。普通条目的 modelLabel 用样本原始模型名（保留大小写），兜底条目
+    /// 在模型名缺失 / 为空时才用 JSON 兜底 label。
+    private static func resolvedPricing(
+        provider: ProviderPricing?,
+        model: String,
+        modelName: String?
+    ) -> ModelTokenPricing? {
+        guard let provider else { return nil }
+        let normalizedModel = provider.normalizeUnderscores == true
+            ? model.replacingOccurrences(of: "_", with: "-")
+            : model
+        for entry in provider.models where entry.matches(lowercasedModel: normalizedModel) {
+            return ModelTokenPricing(
+                modelLabel: modelName ?? entry.label,
+                currency: entry.currency,
+                inputPerMillion: entry.inputPerMillion,
+                cacheReadPerMillion: entry.cacheReadPerMillion,
+                outputPerMillion: entry.outputPerMillion
+            )
         }
-        return nil
+        guard let fallback = provider.fallback else { return nil }
+        return ModelTokenPricing(
+            modelLabel: modelName.flatMap { $0.isEmpty ? nil : $0 } ?? fallback.label,
+            currency: fallback.currency,
+            inputPerMillion: fallback.inputPerMillion,
+            cacheReadPerMillion: fallback.cacheReadPerMillion,
+            outputPerMillion: fallback.outputPerMillion
+        )
     }
 }

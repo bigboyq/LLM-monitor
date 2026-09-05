@@ -30,6 +30,30 @@ output/reasoning 也是独立字段。daily 直接进入统一 `Input / Cache re
 [`spec/accounting.md`](../accounting.md)。
 | Configurable install path | Removed — fully auto-discovered via process scan |
 
+## Model Pricing
+
+客户端 tab 的名义价值估算基于随 app 打包的价格目录
+[`Sources/LLM-monitor/Resources/ModelPricing.json`](../../Sources/LLM-monitor/Resources/ModelPricing.json)
+（`ModelPricingCatalog` 启动时加载，调价只改 JSON）。Antigravity 的条目（USD per 1M
+tokens，模型名小写 + `_` 归一为 `-` 后按 contains 匹配，数组顺序即求值顺序）：
+
+| 模型 | Input | Cached Input | Output |
+|---|---|---|---|
+| Gemini Flash 3.x（`gemini-3.6-flash` / `gemini-3.7-flash` / `gemini-3.8-flash`） | 0.75 | 0.075 | 3.75 |
+| `gemini-2.5-pro` | 1.25 | 0.3125 | 10 |
+| `gemini-2.5-flash` | 0.30 | 0.03 | 2.50 |
+| `claude-opus-4.6` / `claude-opus-4-6` | 5.00 | 0.50 | 25.00 |
+| `claude-sonnet-4.6` / `claude-sonnet-4-6` | 3.00 | 0.30 | 15.00 |
+| `gpt-oss-120b` | 0.09 | 0.009 | 0.36 |
+| `claude-4` / `claude-3.7-sonnet`（旧 Claude 家族） | 3.00 | 0.30 | 15.00 |
+| `claude-3.5-haiku` | 0.80 | 0.08 | 4.00 |
+| `gpt-4.1` | 2.00 | 0.50 | 8.00 |
+
+- **Gemini 3.8 Flash**：官方价与 3.7 Flash 完全相同（introductory 定价至 2026-12-31），
+  因此共用 "Gemini Flash 3.x" 同一条目。
+- Antigravity 没有兜底价：未知模型保持"未定价"并在客户端 tab 明确列出（与 zhipu 的
+  永远兜底口径不同）。
+
 ## Config
 
 Full config shape:

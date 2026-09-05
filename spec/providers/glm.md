@@ -36,7 +36,7 @@ ZCode 的 `model_usage.input_tokens` 是包含 cache-read 的 raw input，
 
 ## Model Pricing Catalog
 
-设置面板“客户端”Tab 中的名义价值估算基于 [`ModelPricingCatalog.swift`](../../Sources/LLM-monitor/Models/ModelPricingCatalog.swift)（`QuotaProviderID.zhipu`）。价格目录使用智谱官方人民币公开价（CNY 直接计价）：
+设置面板“客户端”Tab 中的名义价值估算基于随 app 打包的价格目录 [`ModelPricing.json`](../../Sources/LLM-monitor/Resources/ModelPricing.json)（`ModelPricingCatalog` 启动时加载，`QuotaProviderID.zhipu` 条目；调价只改 JSON）。价格目录使用智谱官方人民币公开价（CNY 直接计价）：
 
 | 模型匹配模式 | 归一化标签 (`modelLabel`) | 未缓存输入 (Input / 1M) | 缓存读取 (CacheRead / 1M) | 输出/思考 (Output / 1M) | 币种 |
 |---|---|---|---|---|---|
@@ -47,7 +47,7 @@ ZCode 的 `model_usage.input_tokens` 是包含 cache-read 的 raw input，
 - **GLM-5.2 及以下已退休**：`glm-5.2` / `glm-4.5` / `glm-4.7` 不再单独定价，出现即按
   GLM-5.3-Flash 兜底计价（估计值，不对应真实账单）。兜底使 zhipu 分支永远有价。
 - **日志匹配规则**：匹配不区分大小写。ZCode 日志中的 `GLM-5.3`、OpenCode 中的 `glm-5.3`、DSH 中的 `GLM-5.3-Flash` 均可直接命中。
-- **目录更新时间**：记录于 `ModelPricingCatalog.lastUpdated`（当前为 `2026-08-28`）。
+- **目录更新时间**：记录于 `ModelPricingCatalog.lastUpdated`（即 JSON 顶层 `lastUpdated`，当前为 `2026-09-05`）。
 - **未定价模型**：zhipu 分支因兜底永远全覆盖，"未定价 / 部分计价"提示对该 provider 不再出现；其他 provider 维持明确列出未收录模型的既有口径。
 
 ## Config

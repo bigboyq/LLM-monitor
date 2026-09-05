@@ -9,6 +9,7 @@
 - 新增 DeepSeek Harness (dsh) 客户端用量监控：扫描 `~/.dsh/sessions` 中的 JSONL session 日志（zstd / Node 22+ zlib 双解压路径），按 `request/context` 中的 provider 自动合并到 MiniMax / GLM / DeepSeek 三张卡片。
 - 新增"设置 > 客户端"tab：按客户端维度（Antigravity / Codex / DSH / MiniMax Code / OpenCode / ZCode）展示本地 token 用量、最近 7 天柱图、缓存命中率与按公开 API 单价估算的价值。
 - 新增 `ModelPricingCatalog`：模型价目快照（MiniMax-M3 直接使用公开 CNY 价格、DeepSeek 高峰期 2× 倍率、DSH 独立 uncached-input / cache-read bucket 计价、新增 GLM-5.3-Flash 定价规则）；客户端 tab 标注目录更新日期 `lastUpdated`。
+- Antigravity 新增 Gemini 3.8 Flash 定价：官方价与 3.7 Flash 完全相同（Input $0.75 / Cached Input $0.075 / Output $3.75，introductory 价至 2026-12-31）。
 - 客户端 tab 中未定价模型显式列出名称、token 数与调用次数，不再静默归零。
 - 主菜单 Provider 卡片可自定义顺序：设置 → 通用 → 主菜单 Provider 顺序段提供上下按钮拖拽，按 Provider 显示名称排序。客户端 tab、设置页 Provider tabs 与 Client tab 内的 Provider 行仍按显示名称字母顺序排列；`providerCardOrder` 仅作用于主菜单。
 
@@ -19,6 +20,7 @@
 - minimax v2 SQLite reader 增加 model 回退链：row-level `model` → session-level `record_json.effectiveModel` → ledger 唯一模型；多模型时不再猜测。
 - 客户端 tab tab 标题新增 provider 数量徽标：每个客户端 tab 后显示该客户端已识别的 Provider 数（如"Antigravity 3"），让用户一眼看到哪些 Provider 在产生数据。
 - OpenAI 模型定价升级：新增 GPT-6 Astra 价格（Input $10 / Cached Input $1 / Output $50），GPT-5.6 Sol 价格更新为 $4 / $0.4 / $20（原 $5 / $0.5 / $30），模型匹配从 `contains` 宽匹配改为小写后精确相等，避免同系列不同价模型被误吞；价目快照日期更新为 `2026-09-05`。
+- 模型价格目录 JSON 化：全部价格数据从 Swift 代码迁移到随 app 打包的 `Sources/LLM-monitor/Resources/ModelPricing.json`，未来调价 / 新增 / 退休模型只改该文件（同步测试与 spec）；`ModelPricingCatalog` 启动时加载 JSON，公开 API（`pricing` / `estimate` / `estimateByDay` / `tokenComponents` / `lastUpdated`）签名与语义不变。
 
 ### Fixed
 

@@ -1,0 +1,248 @@
+{
+  "lastUpdated": "2026-09-05",
+  "providers": {
+    "minimax": {
+      "models": [
+        {
+          "match": "contains",
+          "keywords": ["m3"],
+          "label": "MiniMax-M3",
+          "currency": "CNY",
+          "inputPerMillion": 2.1,
+          "cacheReadPerMillion": 0.42,
+          "outputPerMillion": 8.4
+        },
+        {
+          "matchAll": ["m2.7", "highspeed"],
+          "label": "MiniMax",
+          "currency": "CNY",
+          "inputPerMillion": 4.2,
+          "cacheReadPerMillion": 0.21,
+          "outputPerMillion": 16.8
+        },
+        {
+          "matchAll": ["m2.5", "highspeed"],
+          "label": "MiniMax",
+          "currency": "CNY",
+          "inputPerMillion": 4.2,
+          "cacheReadPerMillion": 0.21,
+          "outputPerMillion": 16.8
+        },
+        {
+          "matchAll": ["m2.1", "highspeed"],
+          "label": "MiniMax",
+          "currency": "CNY",
+          "inputPerMillion": 4.2,
+          "cacheReadPerMillion": 0.21,
+          "outputPerMillion": 16.8
+        },
+        {
+          "match": "contains",
+          "keywords": ["m2.7", "m2.5", "m2.1"],
+          "label": "MiniMax",
+          "currency": "CNY",
+          "inputPerMillion": 2.1,
+          "cacheReadPerMillion": 0.21,
+          "outputPerMillion": 8.4
+        },
+        {
+          "match": "exact",
+          "keywords": ["m2"],
+          "label": "MiniMax",
+          "currency": "CNY",
+          "inputPerMillion": 2.1,
+          "cacheReadPerMillion": 0.21,
+          "outputPerMillion": 8.4
+        }
+      ]
+    },
+    "openai": {
+      "models": [
+        {
+          "match": "exact",
+          "keywords": ["gpt-6-astra"],
+          "label": "GPT-6 Astra",
+          "currency": "USD",
+          "inputPerMillion": 10,
+          "cacheReadPerMillion": 1,
+          "outputPerMillion": 50
+        },
+        {
+          "match": "exact",
+          "keywords": ["gpt-5.6-sol"],
+          "label": "GPT-5.6 Sol",
+          "currency": "USD",
+          "inputPerMillion": 4,
+          "cacheReadPerMillion": 0.4,
+          "outputPerMillion": 20
+        },
+        {
+          "match": "exact",
+          "keywords": ["gpt-5.6-terra"],
+          "label": "GPT-5.6 Terra",
+          "currency": "USD",
+          "inputPerMillion": 2,
+          "cacheReadPerMillion": 0.2,
+          "outputPerMillion": 12
+        },
+        {
+          "match": "exact",
+          "keywords": ["gpt-5.6-luna"],
+          "label": "GPT-5.6 Luna",
+          "currency": "USD",
+          "inputPerMillion": 0.2,
+          "cacheReadPerMillion": 0.02,
+          "outputPerMillion": 1.2
+        },
+        {
+          "match": "exact",
+          "keywords": ["gpt-5.5"],
+          "label": "GPT-5.5",
+          "currency": "USD",
+          "inputPerMillion": 5,
+          "cacheReadPerMillion": 0.5,
+          "outputPerMillion": 30
+        }
+      ]
+    },
+    "antigravity": {
+      "normalizeUnderscores": true,
+      "models": [
+        {
+          "match": "contains",
+          "keywords": ["gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.8-flash"],
+          "label": "Gemini Flash 3.x",
+          "currency": "USD",
+          "inputPerMillion": 0.75,
+          "cacheReadPerMillion": 0.075,
+          "outputPerMillion": 3.75
+        },
+        {
+          "match": "contains",
+          "keywords": ["gemini-2.5-pro"],
+          "label": "Gemini 2.5 Pro",
+          "currency": "USD",
+          "inputPerMillion": 1.25,
+          "cacheReadPerMillion": 0.3125,
+          "outputPerMillion": 10
+        },
+        {
+          "match": "contains",
+          "keywords": ["gemini-2.5-flash"],
+          "label": "Gemini 2.5 Flash",
+          "currency": "USD",
+          "inputPerMillion": 0.3,
+          "cacheReadPerMillion": 0.03,
+          "outputPerMillion": 2.5
+        },
+        {
+          "match": "contains",
+          "keywords": ["claude-opus-4.6", "claude-opus-4-6"],
+          "label": "Claude Opus 4.6",
+          "currency": "USD",
+          "inputPerMillion": 5,
+          "cacheReadPerMillion": 0.5,
+          "outputPerMillion": 25
+        },
+        {
+          "match": "contains",
+          "keywords": ["claude-sonnet-4.6", "claude-sonnet-4-6"],
+          "label": "Claude Sonnet 4.6",
+          "currency": "USD",
+          "inputPerMillion": 3,
+          "cacheReadPerMillion": 0.3,
+          "outputPerMillion": 15
+        },
+        {
+          "match": "contains",
+          "keywords": ["gpt-oss-120b"],
+          "label": "gpt-oss-120b",
+          "currency": "USD",
+          "inputPerMillion": 0.09,
+          "cacheReadPerMillion": 0.009,
+          "outputPerMillion": 0.36
+        },
+        {
+          "match": "contains",
+          "keywords": ["claude-4", "claude-3.7-sonnet"],
+          "label": "Claude Sonnet",
+          "currency": "USD",
+          "inputPerMillion": 3,
+          "cacheReadPerMillion": 0.3,
+          "outputPerMillion": 15
+        },
+        {
+          "match": "contains",
+          "keywords": ["claude-3.5-haiku"],
+          "label": "Claude Haiku",
+          "currency": "USD",
+          "inputPerMillion": 0.8,
+          "cacheReadPerMillion": 0.08,
+          "outputPerMillion": 4
+        },
+        {
+          "match": "contains",
+          "keywords": ["gpt-4.1"],
+          "label": "GPT-4.1",
+          "currency": "USD",
+          "inputPerMillion": 2,
+          "cacheReadPerMillion": 0.5,
+          "outputPerMillion": 8
+        }
+      ]
+    },
+    "zhipu": {
+      "models": [
+        {
+          "match": "contains",
+          "keywords": ["glm-5.3-flash", "glm-5.3flash"],
+          "label": "GLM-5.3-Flash",
+          "currency": "CNY",
+          "inputPerMillion": 0.8,
+          "cacheReadPerMillion": 0.23,
+          "outputPerMillion": 2.8
+        },
+        {
+          "match": "contains",
+          "keywords": ["glm-5.3"],
+          "label": "GLM-5.3",
+          "currency": "CNY",
+          "inputPerMillion": 8,
+          "cacheReadPerMillion": 2,
+          "outputPerMillion": 28
+        }
+      ],
+      "fallback": {
+        "label": "GLM-5.3-Flash(兜底)",
+        "currency": "CNY",
+        "inputPerMillion": 0.8,
+        "cacheReadPerMillion": 0.23,
+        "outputPerMillion": 2.8
+      }
+    },
+    "deepseek": {
+      "models": [
+        {
+          "match": "contains",
+          "keywords": ["deepseek-v4-flash", "deepseek-chat", "deepseek-reasoner"],
+          "matchAll": ["deepseek", "flash"],
+          "label": "DeepSeek Flash",
+          "currency": "CNY",
+          "inputPerMillion": 1.5,
+          "cacheReadPerMillion": 0.05,
+          "outputPerMillion": 4.5
+        },
+        {
+          "match": "contains",
+          "keywords": ["deepseek-v4-pro"],
+          "matchAll": ["deepseek", "pro"],
+          "label": "DeepSeek Pro",
+          "currency": "CNY",
+          "inputPerMillion": 4.5,
+          "cacheReadPerMillion": 0.15,
+          "outputPerMillion": 13.5
+        }
+      ]
+    }
+  }
+}

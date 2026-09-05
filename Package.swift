@@ -13,7 +13,8 @@ let package = Package(
             path: "Sources/LLM-monitor",
             exclude: ["Resources/AppIcon.icns"],
             resources: [
-                .process("Resources/BrandLogos")
+                .process("Resources/BrandLogos"),
+                .process("Resources/ModelPricing.json")
             ],
             linkerSettings: [
                 .linkedLibrary("sqlite3")
