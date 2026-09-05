@@ -11,19 +11,15 @@ enum ProviderRefreshOutcome: Sendable, Equatable {
     case completed(success: Bool)
 }
 
-/// 集中管理 per-provider 的定时刷新：
-/// - 每个 provider 一个独立 Task，独立 fetch，互不阻塞
-/// - 同一 provider 重复触发走 in-flight dedup（`markInFlight` 返回 false）
-/// - 连续失败按指数退避（从 2× 开始：2×, 4×, 8×, 16×, 32×，封顶 30 分钟 + ±10% jitter）
-/// - `.deferred` outcome 按 1s 短重试节奏继续轮询，避让配置刚变化或手动刷新期间
+/// 循环 A（额度循环）：集中管理所有 provider 的定时刷新。
 ///
-/// 这个类**只**管 timer + in-flight + 退避 + 失败计数。不做：
-/// - fetcher 构造（依赖 config / descriptor，留在 AppState）
-/// - 状态写回（`statuses[idx] = ...`，依赖 ProviderStatus，留在 AppState）
-/// - 后置副作用（codex detail refresh、antigravity/minimax local usage 触发）
-///
-/// 配合 `AppState.configurationGeneration` 丢弃旧配置下的结果——逻辑在
-/// `refreshHandler` 闭包里用 generation 对比实现，调度器不感知 generation。
+/// 架构升级为单一 Task 循环：
+/// - 单一常驻 Task 循环，维护每个 provider 的 nextDue 时间与失败计数；
+/// - 循环睡眠到"最早的下一个截止时间"（min(各 provider nextDue, mid-cycle reset 时刻)）；
+/// - 醒来后并发刷新所有到期的 provider（TaskGroup + 条目级 do-catch 隔离，互不阻塞）；
+/// - 既有语义逐条保留：启动首拍 .full、之后 .background、每 20 次 background 补一次 full、
+///   失败指数退避（封顶 30min ±10% jitter）、.deferred 1s 短重试早醒、
+///   mid-cycle reset+15s 一次性补刷新、ManualRefreshGate 与在飞刷新合并、配置热加载 stop+reschedule。
 @MainActor
 final class ProviderRefreshScheduler {
     /// 实际 fetch 的回调。`AppState.refreshProviderDirectly` 是这个闭包。
@@ -34,10 +30,28 @@ final class ProviderRefreshScheduler {
     /// 让外部把 `earliestNextRefresh` 重新 publish 到 `@Published nextRefreshAt`。
     typealias NextRefreshChangeCallback = () -> Void
 
-    // MARK: - 内部状态（替代 AppState 里 4 个 dict）
+    // MARK: - 内部状态
 
-    /// 每个 provider 独立的 refresh task（独立 timer + 独立间隔）
-    private var tasks: [String: Task<Void, Never>] = [:]
+    /// 单一常驻额度调度循环 Task
+    private var loopTask: Task<Void, Never>?
+    /// 睡眠等待时的休眠 Task（wake() 时精确 cancel 提前唤醒，无 continuation 悬挂风险）
+    private var sleepTask: Task<Void, any Error>?
+    /// 上一次休眠正常走满的目标截止时刻（在注入了极速测试 sleep 时，作为虚拟时间推进标记）
+    private var lastCompletedTargetWakeDate: Date?
+
+    /// 当前受管的所有 provider 标识
+    private var managedProviders: Set<String> = []
+    /// 各 provider 常规刷新的下一次触发时间。UI footer 展示其中最早的一个。
+    private var nextRefreshDates: [String: Date] = [:]
+    /// 连续失败计数，用于每个 provider 独立的指数退避。
+    private var failureCounts: [String: Int] = [:]
+    /// 已执行的 background 刷新次数；每 periodicFullEveryN 次补一次 .full。
+    private var backgroundsSinceFull: [String: Int] = [:]
+    /// 已经完成过首次常规刷新的 provider 集合（未完成过的首拍用 .full）。
+    private var hasDoneFirstRefresh: Set<String> = []
+    /// 各子窗口 reset time 产生的中间补刷新 Task（reset 发生 15s 后触发，不重置常规刷新节奏）
+    private var midCycleTasks: [String: [Task<Void, Never>]] = [:]
+
     /// 正在进行网络请求的 provider。手动刷新、菜单打开、定时器可能同时触发，
     /// 这里保证同一个 provider 同一时刻只会发出一个请求。
     private var inFlightModes: [String: RefreshMode] = [:]
@@ -48,12 +62,6 @@ final class ProviderRefreshScheduler {
         let continuation: CheckedContinuation<Void, Error>
     }
     private var inFlightWaiters: [String: [InFlightWaiter]] = [:]
-    /// 各独立定时器的下一次触发时间。footer 展示其中最早的一个。
-    private var nextRefreshDates: [String: Date] = [:]
-    /// 连续失败计数，用于每个 provider 独立的指数退避。
-    private var failureCounts: [String: Int] = [:]
-    /// 各子窗口 reset time 产生的中间补刷新 Task（reset 发生 15s 后触发，不重置常规刷新节奏）
-    private var midCycleTasks: [String: [Task<Void, Never>]] = [:]
 
     // MARK: - 依赖注入
 
@@ -99,104 +107,173 @@ final class ProviderRefreshScheduler {
 
     // MARK: - 生命周期
 
-    /// 给 provider 调度独立 timer。新调度前会先取消旧 task。
+    /// 注册 provider 进入单循环。若该 provider 之前未设置 nextRefreshDate，则立即安排首拍。
     func schedule(for providerID: String) {
-        cancel(providerID: providerID)
+        managedProviders.insert(providerID)
         let interval = intervalProvider(providerID)
-        logInfo("ProviderRefreshScheduler: 为 [\(providerID)] 调度独立 timer，间隔 \(Int(interval))s")
-        // 显式 @MainActor：避免 Swift 6 Task 默认不继承 MainActor 导致的 actor hop 时序问题
-        let task = Task { @MainActor [weak self] in
-            guard let self else { return }
-            var isFirstRefresh = true
-            // 已执行的 background 次数；每 periodicFullEveryN 次补一次 .full，
-            // 让 reset credits 等只在 full 抓取的字段周期性更新。
-            var backgroundsSinceFull = 0
-            while !Task.isCancelled {
-                let mode: RefreshMode
-                if isFirstRefresh {
-                    mode = .full
-                } else if self.periodicFullEveryN > 0 && backgroundsSinceFull >= self.periodicFullEveryN {
-                    // 每 N 次 background 后补一次 full（仍走常规 deadline，不重置退避）。
-                    mode = .full
-                } else {
-                    mode = .background
-                }
-                let result = await self.runRefresh(providerID, mode: mode)
-                guard !Task.isCancelled else { break }
+        logInfo("ProviderRefreshScheduler: 将 [\(providerID)] 纳入额度循环，基础间隔 \(Int(interval))s")
 
-                if case .deferred = result {
-                    // 配置刚变更或用户正手动刷新时，短暂重试，避免错过新配置后的首次刷新。
-                    // 不更新计数器——本次并未真正完成。
-                    try? await Task.sleep(for: .seconds(1))
-                    continue
-                }
-                // 只在实际完成（非 deferred）后才更新计数：full 清零，background +1。
-                if mode == .full {
-                    backgroundsSinceFull = 0
-                } else {
-                    backgroundsSinceFull += 1
-                }
-                isFirstRefresh = false
-                let succeeded: Bool
-                if case .completed(let success) = result {
-                    succeeded = success
-                } else {
-                    succeeded = false
-                }
-                let delay = self.nextDelay(for: providerID, baseInterval: interval, succeeded: succeeded)
-                self.nextRefreshDates[providerID] = self.now().addingTimeInterval(delay)
-                self.onNextRefreshChange()
-                // 用可注入的 sleep（默认实现是真实 Task.sleep，生产行为不变；
-                // 测试可注入立即返回的实现，避免等待真实间隔）。
-                try? await self.sleep(delay)
-            }
+        if nextRefreshDates[providerID] == nil {
+            nextRefreshDates[providerID] = now()
         }
-        tasks[providerID] = task
-    }
-
-    func cancel(providerID: String) {
-        tasks[providerID]?.cancel()
-        tasks.removeValue(forKey: providerID)
-        cancelMidCycleTasks(for: providerID)
-        nextRefreshDates.removeValue(forKey: providerID)
+        ensureLoopRunning()
         onNextRefreshChange()
+        wake()
     }
 
+    /// 从单循环中移除指定的 provider
+    func cancel(providerID: String) {
+        managedProviders.remove(providerID)
+        nextRefreshDates.removeValue(forKey: providerID)
+        cancelMidCycleTasks(for: providerID)
+        failureCounts.removeValue(forKey: providerID)
+        backgroundsSinceFull.removeValue(forKey: providerID)
+        hasDoneFirstRefresh.remove(providerID)
+        onNextRefreshChange()
+        wake()
+    }
+
+    /// 停止单循环，重置所有受管状态与定时器
     func cancelAll() {
-        for task in tasks.values { task.cancel() }
-        tasks.removeAll()
+        loopTask?.cancel()
+        loopTask = nil
+        wake()
+        managedProviders.removeAll()
+        nextRefreshDates.removeAll()
         for taskList in midCycleTasks.values {
             taskList.forEach { $0.cancel() }
         }
         midCycleTasks.removeAll()
-        nextRefreshDates.removeAll()
         failureCounts.removeAll()
+        backgroundsSinceFull.removeAll()
+        hasDoneFirstRefresh.removeAll()
         onNextRefreshChange()
+    }
+
+    // MARK: - 循环 A 主驱动
+
+    private func ensureLoopRunning() {
+        guard loopTask == nil else { return }
+        loopTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.runLoop()
+        }
+    }
+
+    private func runLoop() async {
+        while !Task.isCancelled {
+            let nowDate = now()
+            let effectiveWakeDate = max(nowDate, lastCompletedTargetWakeDate ?? nowDate)
+            lastCompletedTargetWakeDate = nil
+
+            // 1. 收集到期项：常规刷新到期
+            var regularDue: [String] = []
+            for id in managedProviders {
+                let due = nextRefreshDates[id] ?? nowDate
+                if due <= effectiveWakeDate {
+                    regularDue.append(id)
+                }
+            }
+
+            // 2. 并发调度到期项（TaskGroup + 条目级隔离）
+            if !regularDue.isEmpty {
+                await withTaskGroup(of: (String, ProviderRefreshOutcome, RefreshMode).self) { group in
+                    for id in regularDue {
+                        let mode: RefreshMode
+                        if !hasDoneFirstRefresh.contains(id) {
+                            mode = .full
+                        } else if periodicFullEveryN > 0 && (backgroundsSinceFull[id] ?? 0) >= periodicFullEveryN {
+                            mode = .full
+                        } else {
+                            mode = .background
+                        }
+                        group.addTask { @MainActor [weak self] in
+                            guard let self else { return (id, .deferred, mode) }
+                            let outcome = await self.runRefresh(id, mode: mode)
+                            return (id, outcome, mode)
+                        }
+                    }
+                    for await (id, outcome, mode) in group {
+                        self.processOutcome(providerID: id, outcome: outcome, mode: mode)
+                    }
+                }
+                onNextRefreshChange()
+            }
+
+            guard !Task.isCancelled else { break }
+
+            // 3. 计算下一次最早截止时刻并休眠
+            let managedDates = nextRefreshDates.filter { managedProviders.contains($0.key) }
+            guard let nextWake = managedDates.values.min() else {
+                _ = await interruptibleSleep(3600, targetWakeDate: nil)
+                continue
+            }
+
+            let sleepSeconds = max(nextWake.timeIntervalSince(now()), 0)
+            let completed = await interruptibleSleep(sleepSeconds, targetWakeDate: nextWake)
+            if completed {
+                lastCompletedTargetWakeDate = nextWake
+            }
+        }
+    }
+
+    private func processOutcome(providerID: String, outcome: ProviderRefreshOutcome, mode: RefreshMode) {
+        guard managedProviders.contains(providerID) else { return }
+
+        switch outcome {
+        case .deferred:
+            nextRefreshDates[providerID] = now().addingTimeInterval(1.0)
+        case .completed(let success):
+            hasDoneFirstRefresh.insert(providerID)
+            if mode == .full {
+                backgroundsSinceFull[providerID] = 0
+            } else {
+                backgroundsSinceFull[providerID, default: 0] += 1
+            }
+            let baseInterval = intervalProvider(providerID)
+            let delay = nextDelay(for: providerID, baseInterval: baseInterval, succeeded: success)
+            nextRefreshDates[providerID] = now().addingTimeInterval(delay)
+        }
+    }
+
+    @discardableResult
+    private func interruptibleSleep(_ seconds: TimeInterval, targetWakeDate: Date?) async -> Bool {
+        guard seconds > 0 else { return true }
+        let task = Task { [weak self] in
+            guard let self else { return }
+            try await self.sleep(seconds)
+        }
+        self.sleepTask = task
+        do {
+            try await task.value
+            self.sleepTask = nil
+            return true
+        } catch {
+            self.sleepTask = nil
+            return false
+        }
+    }
+
+    private func wake() {
+        sleepTask?.cancel()
+        sleepTask = nil
     }
 
     // MARK: - Mid-Cycle Reset Time 补刷新 (reset 发生 15s 后额外触发一次，不打乱 regular nextRefreshDate)
 
     private func cancelMidCycleTasks(for providerID: String) {
-        if let existing = midCycleTasks.removeValue(forKey: providerID) {
-            existing.forEach { $0.cancel() }
+        if let oldTasks = midCycleTasks.removeValue(forKey: providerID) {
+            for task in oldTasks { task.cancel() }
         }
     }
 
     /// 针对各子窗口的 reset time：
     /// 如果 reset time 与下一次常规刷新时间差距在 1 分钟（60 秒）以上，
     /// 则在 reset time 发生 15 秒后强制/额外刷新一次（.background 模式）。
-    /// 注意：中间补刷新不会更新或修改下一次常规刷新时间 `nextRefreshDates`，不打乱整体 refresh 节奏。
-    ///
-    /// F3：首次成功刷新时 `nextRefreshDates[providerID]` 尚未写入（它在 handler
-    /// 返回后才赋值），而本方法正是在 handler 内被调用。此时使用
-    /// `now + intervalProvider(providerID)` 作为本次比较用的 provisional deadline，
-    /// 不写回 `nextRefreshDates`，保持"成功/失败与退避后再算正式 deadline"的现有流程。
     func scheduleMidCycleResetRefreshes(for providerID: String, resetsAtDates: [Date]) {
         cancelMidCycleTasks(for: providerID)
 
         let nowDate = now()
-        // 字典无值时（首次刷新）用 now + interval 作为比较用的 provisional deadline；
-        // 该值只用于本函数的比较，绝不写回 nextRefreshDates。
         let provisionalDeadline = nowDate.addingTimeInterval(intervalProvider(providerID))
         let nextRefreshDate = nextRefreshDates[providerID] ?? provisionalDeadline
 
@@ -204,7 +281,6 @@ final class ProviderRefreshScheduler {
         var newTasks: [Task<Void, Never>] = []
 
         for resetTime in uniqueResets {
-            // 检查 reset time 与 nextRefreshDate 差距在 1 分钟（60 秒）以上
             guard nextRefreshDate.timeIntervalSince(resetTime) > 60 else { continue }
             let targetDate = resetTime.addingTimeInterval(midCycleResetDelay)
             let sleepSeconds = targetDate.timeIntervalSince(nowDate)
@@ -328,9 +404,9 @@ final class ProviderRefreshScheduler {
 
     // MARK: - 观察
 
-    /// 给 UI footer "下次自动刷新时间" 用。所有 provider 中最早的下一次触发时间。
+    /// 给 UI footer "下次自动刷新时间" 用。所有受管 provider 中最早的下一次常规触发时间。
     var earliestNextRefresh: Date? {
-        nextRefreshDates.values.min()
+        managedProviders.compactMap { nextRefreshDates[$0] }.min()
     }
 
     /// 当前 in-flight 集合的快照（测试 / debug 用）

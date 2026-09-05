@@ -16,7 +16,7 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 | Runtime log | `~/Library/Application Support/LLM-monitor/log.txt` plus stdout and `os.Logger` (privacy `.private`, Console.app 默认脱敏) |
 | Quota Providers | `minimax_token_plan`, `codex_chatgpt`, `antigravity`, `glm_coding_plan`, `deepseek` |
 | Clients | Codex, Antigravity, ZCode, OpenCode, DSH, MiniMax Code; clients may contribute to multiple quota providers |
-| Refresh | Independent timer per enabled provider |
+| Refresh | Dual-loop scheduling: Loop A (quota loop for all providers) + Loop B (local usage loop for all clients) |
 | Config reload | Event-driven via `DispatchSourceFileSystemObject` (no polling) |
 | Window lifetime | Menu closes on focus loss or after 30s of inactivity; any in-menu interaction resets the timer |
 
@@ -66,7 +66,8 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 | `Sources/LLM-monitor/Services/Formatters.swift` | token / percent / 时间 / codex window 标签格式化 |
 | `Sources/LLM-monitor/Services/HTTPClient.swift` | 共享 HTTP 客户端（minimax / codex 三个 fetch 路径） |
 | `Sources/LLM-monitor/Services/LocalUsageCoordinator.swift` | scanner 协议 + Combine wire-up 容器 |
-| `Sources/LLM-monitor/Services/ProviderRefreshScheduler.swift` | per-provider timer + in-flight dedup + 退避 + 失败计数（5 个 provider dict） |
+| `Sources/LLM-monitor/Services/ProviderRefreshScheduler.swift` | 循环 A（额度循环）：单一 Task 管理所有 Provider 的 quota 定时与退避，睡眠至最早截止时间，并发刷新 + 条目级隔离 |
+| `Sources/LLM-monitor/Services/LocalUsageOrchestration.swift` | 循环 B（用量循环）：单一 Task 按全局间隔迭代全部 6 个客户端，就绪探测 + 日志去噪，独立于 quota 结果 |
 | `Sources/LLM-monitor/Services/AuthProber.swift` | 异步探测本地服务（antigravity）是否还活着 + 缓存 + 离/在线变化回调 |
 | `Sources/LLM-monitor/Fetchers/RefreshResultMergers.swift` | `CodexFillingMissingMerger` 等 per-provider 合并策略（Minimax 使用默认 `IdentityRefreshResultMerger`） |
 | `Sources/LLM-monitor/Services/DateParser.swift` | ISO8601 / unix timestamp 统一解析 |
@@ -125,14 +126,15 @@ flowchart TD
   ProviderCardView --> HoverPanel["floating hover panel\nNSPanel + parent-child"]
 
   AppState --> Statuses["[ProviderStatus]"]
-  AppState --> Scheduler["ProviderRefreshScheduler\n(timer / dedup / 退避)"]
+  AppState --> LoopA["循环 A: ProviderRefreshScheduler\n(单 Task 额度循环 / 最早截止时间休眠 / 并发隔离)"]
+  AppState --> LoopB["循环 B: LocalUsageOrchestration\n(单 Task 用量循环 / 全局间隔 / 全客户端迭代)"]
   AppState --> Prober["AuthProber\n(async 本地服务探测)"]
   AppState --> Watcher["DispatchSource directory watcher\nevent-driven"]
   AppState --> Fetchers["QuotaFetcher implementations"]
 
-  Scheduler --> Timers["per-provider refresh Tasks"]
-  Prober --> ProbeTasks["per-provider auth probe Tasks"]
-  AppState -. refresh + auth probe .-> Fetchers
+  LoopA -. 并发抓取额度 .-> Fetchers
+  Prober -. 本地认证探测 .-> Fetchers
+  LoopB -. 独立扫描本地账本 .-> Scanners["Local Scanners\n(Minimax / GLM / OpenCode / DSH / Antigravity / Codex)"]
 
   Fetchers --> Minimax["MinimaxTokenPlanFetcher"]
   Fetchers --> Codex["CodexFetcher"]
@@ -140,9 +142,7 @@ flowchart TD
   Fetchers --> GLM["GlmCodingPlanFetcher"]
   Fetchers --> Deepseek["DeepseekFetcher"]
 
-  AppState --> OpenCode["OpencodeUsageScanner\n(shared local ledger)"]
-  OpenCode --> OpenCodeDB["~/.local/share/opencode/opencode.db"]
-  OpenCode --> Projection["ProviderStatus.usageProjection\n(clientBindings 控制 OpenCode 贡献)"]
+  Scanners --> Projection["ProviderStatus.usageProjection\n(clientBindings 归因并入卡片)"]
   Projection --> ProviderCard["ProviderCardView"]
 
   ConfigStore --> ConfigFile["~/Library/Application Support/\nLLM-monitor/config.json"]

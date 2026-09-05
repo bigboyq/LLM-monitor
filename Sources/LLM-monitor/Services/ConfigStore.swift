@@ -193,6 +193,11 @@ struct AppConfig: Codable, Equatable {
         self.providerCardOrder = try? container.decode([String].self, forKey: .providerCardOrder)
     }
 
+    /// 全局生效的刷新间隔：clamp 到 10s...30d（供循环 B 等使用）。
+    var effectiveGlobalRefreshInterval: TimeInterval {
+        TimeInterval(min(max(refreshIntervalSeconds, 10), Self.maximumRefreshIntervalSeconds))
+    }
+
     /// 实际生效的刷新间隔：优先用 provider 自己的，否则用全局，最后 clamp 到 10s...30d。
     ///
     /// 之前 AppState.scheduleRefresh 直接用 `TimeInterval(pc?.refreshIntervalSeconds ?? ...)`，

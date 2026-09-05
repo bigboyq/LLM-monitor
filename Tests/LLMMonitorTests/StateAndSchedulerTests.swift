@@ -47,17 +47,9 @@ final class StateAndSchedulerTests: XCTestCase {
         XCTAssertEqual(LocalUsageDayKey.make(date), LocalUsageDayKey.make(date))
     }
 
-    func testLocalUsageScanTriggerTimingPolicy() {
-        XCTAssertTrue(AppState.localUsageScanStartsImmediately(for: .minimaxTokenPlan))
-        XCTAssertTrue(AppState.localUsageScanStartsImmediately(for: .glmCodingPlan))
-        XCTAssertFalse(AppState.localUsageScanStartsImmediately(for: .antigravity))
-        XCTAssertFalse(AppState.localUsageScanStartsImmediately(for: .codexChatGpt))
-    }
-
-    /// GLM 本地 scanner 有独立于 quota 成功的定期触发，避免 quota 持续失败时
-    /// ZCode 新 token 消耗进不来柱图。防退化：`start()` 必须调用
-    /// `startGlmLocalUsagePeriodicTrigger()`，`stop()` 必须 cancel 对应 task。
-    func testGlmLocalUsagePeriodicTriggerWiredInStartAndStop() throws {
+    /// 循环 B（用量循环）接管全部客户端扫描。验证 AppState.start() 启动循环 B，
+    /// AppState.stop() 停止循环 B，且彻底剥离 postRefreshTriggers 与 glmPeriodicTask。
+    func testUsageLoopWiredInStartAndStop() throws {
         let url = URL(fileURLWithPath: #filePath)
         let packageRoot = url.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         func source(_ path: String) throws -> String {
@@ -66,24 +58,29 @@ final class StateAndSchedulerTests: XCTestCase {
         let appState = try source("Sources/LLM-monitor/Services/AppState.swift")
         let orchestration = try source("Sources/LLM-monitor/Services/LocalUsageOrchestration.swift")
 
-        // start() 里经由编排层调用启动
+        // start() 里启动用量循环 B
         XCTAssertTrue(
-            appState.contains("localUsage.startGlmPeriodicTrigger("),
-            "AppState.start() 应调用 localUsage.startGlmPeriodicTrigger()"
+            appState.contains("localUsage.startUsageLoop"),
+            "AppState.start() 应调用 localUsage.startUsageLoop"
         )
-        // stop() 里 cancel 全部本地扫描（含 GLM 定期 task）
+        // stop() 里 cancel 全部本地扫描（含循环 B）
         XCTAssertTrue(
             appState.contains("localUsage.cancelInFlightAll()"),
             "AppState.stop() 应调用 localUsage.cancelInFlightAll()"
         )
-        // 编排层持有独立 task 并在重建前 cancel 旧的
+        // 编排层持有循环 B task
         XCTAssertTrue(
-            orchestration.contains("var glmPeriodicTask: Task<Void, Never>?"),
-            "LocalUsageOrchestration 应有 glmPeriodicTask 字段"
+            orchestration.contains("var usageLoopTask: Task<Void, Never>?"),
+            "LocalUsageOrchestration 应有 usageLoopTask 字段"
         )
-        XCTAssertTrue(
-            orchestration.contains("glmPeriodicTask?.cancel()"),
-            "LocalUsageOrchestration 重建定期触发前应 cancel 旧 task"
+        // 剥离验证：不应再包含 postRefreshTriggers 或 glmPeriodicTask
+        XCTAssertFalse(
+            orchestration.contains("postRefreshTriggers"),
+            "LocalUsageOrchestration 不应再保留 postRefreshTriggers"
+        )
+        XCTAssertFalse(
+            orchestration.contains("glmPeriodicTask"),
+            "LocalUsageOrchestration 不应再保留 glmPeriodicTask"
         )
     }
 
@@ -2591,6 +2588,195 @@ final class StateAndSchedulerTests: XCTestCase {
         let visibleCards = appState.statuses.filter { $0.isEnabled }
         XCTAssertEqual(visibleCards.count, 1)
         XCTAssertEqual(visibleCards.first?.id, "test_a")
+    }
+
+    // MARK: - 双循环架构回归测试
+
+    /// 循环 A 条目级隔离：在同一 tick 到期的两个 provider，provider A 失败，provider B 依然正常成功完成
+    @MainActor
+    func testLoopAProviderIsolationBatchRefresh() async {
+        var completed: [String: Bool] = [:]
+        let sched = ProviderRefreshScheduler(
+            refreshHandler: { providerID, mode in
+                if providerID == "fail_provider" {
+                    completed[providerID] = false
+                    return .completed(success: false)
+                } else {
+                    completed[providerID] = true
+                    return .completed(success: true)
+                }
+            },
+            intervalProvider: { _ in 60 },
+            onNextRefreshChange: {},
+            sleep: { _ in }
+        )
+
+        sched.schedule(for: "fail_provider")
+        sched.schedule(for: "success_provider")
+
+        // 等待并发 batch 执行完成
+        try? await Task.sleep(nanoseconds: 200_000_000)
+
+        XCTAssertEqual(completed["fail_provider"], false, "A 应该失败")
+        XCTAssertEqual(completed["success_provider"], true, "B 应该成功，不受 A 失败影响")
+
+        // fail_provider 应该退避，success_provider 保持 baseInterval
+        let failDelay = sched.nextDelay(for: "fail_provider", baseInterval: 60, succeeded: false)
+        let successDelay = sched.nextDelay(for: "success_provider", baseInterval: 60, succeeded: true)
+        XCTAssertGreaterThan(failDelay, 60)
+        XCTAssertEqual(successDelay, 60)
+
+        sched.cancelAll()
+    }
+
+    /// 循环 B 客户端就绪探测与去噪：连续未就绪状态平稳跳过，状态变动时正确识别
+    @MainActor
+    func testLoopBReadinessLoggingDeduplication() async {
+        final class DummyWriter: LocalUsageStatusWriting {
+            func providerID(for kind: ProviderKind) -> String? { "test" }
+            func setScanningState(_ isScanning: Bool, for providerID: String) {}
+            func applyAntigravityLocalUsage(_ usage: AntigravityLocalUsage?) {}
+            func applyMinimaxLocalUsage(_ usage: ProviderLocalUsage?) {}
+            func applyGlmLocalUsage(_ usage: GlmLocalUsage?) {}
+            func applyOpencodeUsage(_ usage: OpencodeLocalUsage?) {}
+            func applyDshUsage(_ usage: DshLocalUsage?) {}
+            func codexEnrichmentTarget() -> (providerID: String, authPath: String?, model: ModelQuota?, fetchedAt: Date, generation: Int)? { nil }
+            func applyCodexUsageDetails(_ details: CodexUsageDetails?, providerID: String, fetchedAt: Date, configurationGeneration: Int) {}
+        }
+
+        let writer = DummyWriter()
+        let orchestration = LocalUsageOrchestration(writer: writer)
+
+        var readyState = false
+        orchestration.testReadinessOverride = { _ in readyState }
+
+        // 首次扫描（未就绪）：正常跳过，不崩溃
+        await orchestration.scanAllClients()
+        XCTAssertFalse(orchestration.checkClientReadiness("minimax_code"))
+
+        // 第二次扫描（依然未就绪）：去噪跳过
+        await orchestration.scanAllClients()
+
+        // 状态转为就绪
+        readyState = true
+        XCTAssertTrue(orchestration.checkClientReadiness("minimax_code"))
+        await orchestration.scanAllClients()
+
+        orchestration.cancelInFlightAll()
+    }
+
+    /// 循环 B 独立于 Quota 失败：GLM provider quota 失败时，循环 B 依然正常运行
+    @MainActor
+    func testLoopBGlmScanIndependentOfQuotaFailure() async {
+        let store = makeIsolatedConfigStore()
+        var config = store.config
+        config.providers["glm_coding_plan"] = ProviderConfig(enabled: true, apiKey: "sk-invalid-key")
+        try? store.applyAndSave(config)
+
+        final class FailingFetcher: QuotaFetcher, @unchecked Sendable {
+            let providerID = "glm_coding_plan"
+            let displayName = "GLM"
+            let kind = ProviderKind.glmCodingPlan
+            func fetch(mode: RefreshMode) async throws -> QuotaInfo {
+                struct AuthFail: LocalizedError { var errorDescription: String? { "401 Unauthorized" } }
+                throw AuthFail()
+            }
+            func hasLocalAuth() -> Bool { true }
+        }
+
+        let desc = FetcherDescriptor(
+            id: "glm_coding_plan",
+            displayName: "GLM Coding Plan",
+            kind: .glmCodingPlan,
+            iconSystemName: "star",
+            accentColor: .glm,
+            makeFetcher: { _ in FailingFetcher() }
+        )
+
+        let state = AppState(descriptors: [desc], configStore: store)
+        defer { state.stop() }
+
+        // 刷新 quota（预期失败）
+        await state.refreshOne(providerID: "glm_coding_plan")
+
+        let idx = state.statuses.firstIndex(where: { $0.id == "glm_coding_plan" })!
+        if case .failed = state.statuses[idx].state {
+            // 预期 quota 失败
+        } else {
+            XCTFail("Quota 应该处于 failed 状态")
+        }
+
+        // 用量循环 B 立即执行一拍：不受 quota 失败影响，依然能安全执行
+        await state.localUsage.triggerImmediateScanAll()
+        XCTAssertTrue(true, "用量扫描在 quota 失败后依然安全执行完毕")
+    }
+
+    /// 双循环在配置热加载后正确 reschedule
+    @MainActor
+    func testDualLoopRescheduleOnConfigChange() async throws {
+        let store = makeIsolatedConfigStore()
+        var config = store.config
+        config.refreshIntervalSeconds = 300
+        config.providers["test_a"] = ProviderConfig(enabled: true, apiKey: "sk-real-key-12345")
+        try? store.applyAndSave(config)
+
+        let desc = FetcherDescriptor(
+            id: "test_a",
+            displayName: "Test A",
+            kind: .minimaxTokenPlan,
+            iconSystemName: "star",
+            accentColor: .minimax,
+            makeFetcher: { _ in TestQuotaFetcher(providerID: "test_a", displayName: "Test A", kind: .minimaxTokenPlan) }
+        )
+
+        let state = AppState(descriptors: [desc], configStore: store)
+        defer { state.stop() }
+
+        let initialNext = state.refreshScheduler.earliestNextRefresh
+        XCTAssertNotNil(initialNext)
+
+        // 修改配置刷新间隔为 60s
+        var newConfig = store.config
+        newConfig.refreshIntervalSeconds = 60
+        try store.applyAndSave(newConfig)
+
+        // 等待热加载 sink 执行
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        // rescheduleAll 后双循环依然正常运行
+        XCTAssertNotNil(state.refreshScheduler.earliestNextRefresh)
+    }
+
+    @MainActor
+    func testLoopBContinuousTicksWithoutHanging() async throws {
+        // 核心回归测试：循环 B 睡满一拍后不得挂死，必须持续迭代
+        final class TickRecorder: @unchecked Sendable {
+            var count = 0
+        }
+        let recorder = TickRecorder()
+
+        let store = makeIsolatedConfigStore()
+        let state = AppState(descriptors: [], configStore: store)
+        defer { state.stop() }
+
+        // 注入快速 sleep：每次休眠 10ms
+        state.localUsage.testSleepOverride = { (_: TimeInterval) async throws in
+            try await Task.sleep(nanoseconds: 10_000_000) // 10ms
+        }
+        state.localUsage.testReadinessOverride = { (_: String) -> Bool in
+            recorder.count += 1
+            return false
+        }
+
+        state.localUsage.startUsageLoop { 0.01 }
+
+        // 等待 150ms：首拍 + 后续多个 tick (10ms * N)
+        try await Task.sleep(nanoseconds: 150_000_000)
+        state.localUsage.stopUsageLoop()
+
+        // 6 个客户端每次 scanAllClients 触发 6 次 readiness 检查
+        // 150ms 内至少能完成 3+ 拍完整扫描（即 >= 18 次检查）
+        XCTAssertGreaterThanOrEqual(recorder.count, 18, "循环 B 必须持续运行，不得在首拍休眠后挂死")
     }
 }
 

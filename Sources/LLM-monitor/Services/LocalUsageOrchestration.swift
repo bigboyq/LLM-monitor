@@ -1,35 +1,21 @@
 import Foundation
 
-/// 本地用量扫描编排 —— 从 AppState 拆出的第 5 组 coordinator：
-/// 5 个本地 scanner（antigravity / minimax / glm-zcode / opencode / dsh）的
-/// lazy 构造、触发、取消、启动时机策略与 GLM 独立定期任务。
+/// 循环 B（用量循环）与本地用量扫描编排：
+/// 单一 Task 循环负责所有客户端（codex / zcode-glm / opencode / dsh / minimax_code / antigravity）
+/// 的本地 token 用量刷新，按全局 refreshIntervalSeconds 统一节奏运行。
+/// 彻底剥离 quota 依赖：quota 刷新成功不再触发任何本地用量扫描。
 ///
 /// 状态写入（ProviderStatus 字段）通过 `LocalUsageStatusWriting` 协议回调
 /// AppState，保持单向依赖：orchestration → writer(AppState)。
 @MainActor
 final class LocalUsageOrchestration {
-    /// 本地扫描的种类标识（post-refresh 触发表用）。
+    /// 本地扫描的种类标识。
     enum ScanKind: String, CaseIterable, Sendable {
         case antigravity
         case minimax
         case glm
         case opencode
         case dsh
-    }
-
-    /// provider 主 quota 刷新成功后需要顺带触发的本地扫描 + auth 标记。
-    /// 新增 provider 时在表里追加一行即可，不再往刷新 handler 里堆 if 分支。
-    static let postRefreshTriggers: [ProviderKind: [ScanKind]] = [
-        .antigravity: [.antigravity],
-        .minimaxTokenPlan: [.minimax, .opencode, .dsh],
-        .glmCodingPlan: [.glm, .opencode, .dsh],
-        .deepseek: [.dsh]
-    ]
-
-    /// 本地用量 scanner 的启动策略：Minimax / GLM 的数据库可直接读取，
-    /// 进 app 立即触发；Antigravity 需要等本地 IDE 服务和主 quota 首次成功。
-    nonisolated static func scanStartsImmediately(for kind: ProviderKind) -> Bool {
-        kind == .minimaxTokenPlan || kind == .glmCodingPlan
     }
 
     private let writer: any LocalUsageStatusWriting
@@ -97,16 +83,18 @@ final class LocalUsageOrchestration {
         apply: { [weak writer] usage in writer?.applyDshUsage(usage) }
     )
 
-    /// GLM（ZCode）本地 scanner 的独立定期触发 task。
-    ///
-    /// scanner 只读本地 `.db`，不依赖远端 quota，但它跟 quota 绑定触发有一个
-    /// 盲区：quota 持续失败时（Key 过期 / 网络问题）scanner 永远不跑，用户在
-    /// ZCode 里产生的新 token 消耗进不来，柱图卡在旧数据。
-    ///
-    /// 这个 task 用 GLM provider 的 `refreshIntervalSeconds`（与 quota 同节奏）
-    /// 独立定期触发 scan，不依赖 quota 是否成功。scanner 内部的 db+WAL 指纹
-    /// 检查保证指纹没变时只做一次 `stat()`（微秒级），零额外负担。
-    private var glmPeriodicTask: Task<Void, Never>?
+    // MARK: - 循环 B 内部状态
+
+    /// 单一常驻本地用量扫描循环 Task
+    private var usageLoopTask: Task<Void, Never>?
+    /// 循环 B 睡眠等待时的休眠 Task（wakeLoop() 时精确 cancel 提前唤醒，杜绝 continuation 悬挂）
+    private var sleepTask: Task<Void, any Error>?
+    /// 客户端就绪状态缓存，用于日志去噪（仅在状态变动时记录日志）
+    private var clientReadinessCache: [String: Bool] = [:]
+    /// 仅供测试注入客户端就绪判定覆写
+    var testReadinessOverride: ((String) -> Bool)?
+    /// 仅供测试注入休眠闭包
+    var testSleepOverride: ((TimeInterval) async throws -> Void)?
 
     init(writer: any LocalUsageStatusWriting) {
         self.writer = writer
@@ -124,23 +112,13 @@ final class LocalUsageOrchestration {
         }
     }
 
-    /// provider 主 quota 刷新成功后的后置触发（配置表驱动）。
-    /// codex 的 auth 标记与 antigravity 的 probe 标记留在 AppState（属于 auth 域）。
-    func handleRefreshSuccess(kind: ProviderKind) {
-        guard let triggers = Self.postRefreshTriggers[kind] else { return }
-        for scanKind in triggers {
-            trigger(scanKind)
-        }
-    }
-
     func cancelInFlightAll() {
         antigravityCoordinator.cancelInFlight()
         minimaxCoordinator.cancelInFlight()
         glmCoordinator.cancelInFlight()
         opencodeCoordinator.cancelInFlight()
         dshCoordinator.cancelInFlight()
-        glmPeriodicTask?.cancel()
-        glmPeriodicTask = nil
+        stopUsageLoop()
     }
 
     /// 推送「活动套餐余额日志解析」开关（设置 `parseZcodeBalanceLog`）。
@@ -155,50 +133,153 @@ final class LocalUsageOrchestration {
         }
     }
 
-    // MARK: - 生命周期
+    // MARK: - 循环 B（用量循环）生命周期与调度
 
-    /// 启动时立即触发可直读数据库的 scanner（首屏就有本地历史）；
-    /// opencode / dsh 是共享数据源，不依赖某个 quota provider 是否启用。
-    func startInitialScans(descriptors: [FetcherDescriptor]) {
-        for descriptor in descriptors where Self.scanStartsImmediately(for: descriptor.kind) {
-            switch descriptor.kind {
-            case .minimaxTokenPlan: trigger(.minimax)
-            case .glmCodingPlan: trigger(.glm)
-            default: break
+    /// 启动循环 B：以全局刷新间隔迭代所有客户端。首拍立即执行一次全量扫描。
+    func startUsageLoop(intervalProvider: @escaping () -> TimeInterval) {
+        stopUsageLoop()
+        logInfo("[usage-loop] 启动用量循环 B，首拍立即扫描，后续由全局刷新间隔驱动")
+        usageLoopTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            // 首拍即扫全部客户端
+            await self.scanAllClients()
+
+            while !Task.isCancelled {
+                let interval = intervalProvider()
+                await self.interruptibleSleep(interval)
+                guard !Task.isCancelled else { break }
+                await self.scanAllClients()
             }
         }
-        trigger(.opencode)
-        trigger(.dsh)
     }
 
-    /// GLM 本地 scanner 的独立定期触发。只在 GLM provider 配置且启用时启动；
-    /// 配置变更后 `cancelInFlightAll()` + 重调本方法会重建 task。
-    func startGlmPeriodicTrigger(
-        descriptors: [FetcherDescriptor],
-        isProviderEnabled: (String) -> Bool,
-        interval: TimeInterval
-    ) {
-        glmPeriodicTask?.cancel()
-        let glmID = descriptors.first(where: { $0.kind == .glmCodingPlan })?.id
-            ?? ProviderKind.glmCodingPlan.providerID
-        // 仅在 GLM provider 存在且启用时定期触发（未启用没必要空跑）
-        let isConfigured = descriptors.contains { $0.kind == .glmCodingPlan }
-            && isProviderEnabled(glmID)
-        guard isConfigured else { return }
+    /// 停止用量循环 B
+    func stopUsageLoop() {
+        usageLoopTask?.cancel()
+        usageLoopTask = nil
+        wakeLoop()
+    }
 
-        glmPeriodicTask = Task { [weak self] in
-            while !Task.isCancelled {
-                do {
-                    try await Task.sleep(for: .seconds(interval))
-                } catch {
-                    // 取消（配置变更 / stop）正常退出
-                    return
-                }
-                guard let self, !Task.isCancelled else { return }
-                self.trigger(.glm)
+    /// 手动 refreshAll 或系统唤醒时调用：立即触发一拍全量用量扫描，并重置睡眠计时
+    func triggerImmediateScanAll() async {
+        wakeLoop()
+        await scanAllClients()
+    }
+
+    /// 单拍迭代全部 6 个客户端，条目级隔离
+    func scanAllClients() async {
+        // 1. Minimax Code
+        scanClientIfReady(clientID: "minimax_code") { [weak self] in
+            self?.minimaxCoordinator.trigger()
+        }
+
+        // 2. ZCode (GLM)
+        scanClientIfReady(clientID: "zcode-glm") { [weak self] in
+            self?.glmCoordinator.trigger()
+        }
+
+        // 3. OpenCode
+        scanClientIfReady(clientID: "opencode") { [weak self] in
+            self?.opencodeCoordinator.trigger()
+        }
+
+        // 4. DSH
+        scanClientIfReady(clientID: "dsh") { [weak self] in
+            self?.dshCoordinator.trigger()
+        }
+
+        // 5. Antigravity (轻量本地就绪判断，不依赖 quota)
+        scanClientIfReady(clientID: "antigravity") { [weak self] in
+            self?.antigravityCoordinator.trigger()
+        }
+
+        // 6. Codex (包含 usage details enrichment)
+        let codexReady = checkClientReadiness("codex")
+        updateReadinessAndLog(for: "codex", isReady: codexReady)
+        if codexReady {
+            await scanCodexUsageDetails()
+        }
+    }
+
+    private func scanClientIfReady(clientID: String, action: () -> Void) {
+        let isReady = checkClientReadiness(clientID)
+        updateReadinessAndLog(for: clientID, isReady: isReady)
+        guard isReady else { return }
+        action()
+    }
+
+    private func scanCodexUsageDetails() async {
+        guard let target = writer.codexEnrichmentTarget() else { return }
+        guard let model = target.model else { return }
+
+        writer.setScanningState(true, for: target.providerID)
+        defer { writer.setScanningState(false, for: target.providerID) }
+
+        let details = await CodexFetcher.loadUsageDetailsAsync(
+            authPath: target.authPath,
+            model: model
+        )
+        guard !Task.isCancelled else { return }
+        writer.applyCodexUsageDetails(
+            details,
+            providerID: target.providerID,
+            fetchedAt: target.fetchedAt,
+            configurationGeneration: target.generation
+        )
+    }
+
+    func checkClientReadiness(_ clientID: String) -> Bool {
+        if let override = testReadinessOverride {
+            return override(clientID)
+        }
+        let fileManager = FileManager.default
+        switch clientID {
+        case "minimax_code":
+            return fileManager.fileExists(atPath: MinimaxLocalUsageScanner.defaultRuntimeDBURL.path)
+        case "zcode-glm":
+            return fileManager.fileExists(atPath: GlmZcodeLocalUsageScanner.defaultDBURL.path)
+        case "opencode":
+            return fileManager.fileExists(atPath: OpencodeUsageScanner.defaultDBURL.path)
+        case "dsh":
+            return fileManager.fileExists(atPath: DshLocalUsageScanner.defaultSessionsRoot.path)
+        case "antigravity":
+            return AntigravityFetcher().hasLocalAuth()
+        case "codex":
+            let codexDir = NSString(string: "~/.codex").expandingTildeInPath
+            return fileManager.fileExists(atPath: codexDir)
+        default:
+            return false
+        }
+    }
+
+    private func updateReadinessAndLog(for clientID: String, isReady: Bool) {
+        let previous = clientReadinessCache[clientID]
+        if previous != isReady {
+            clientReadinessCache[clientID] = isReady
+            if !isReady {
+                logInfo("[usage-loop] 客户端 [\(clientID)] 未就绪或未安装，跳过扫描")
+            } else if previous != nil {
+                logInfo("[usage-loop] 客户端 [\(clientID)] 已就绪，恢复扫描")
             }
         }
-        logInfo("[glm-local] 独立定期触发已启动，间隔=\(Int(interval))s（不依赖 quota 成功）")
+    }
+
+    private func interruptibleSleep(_ seconds: TimeInterval) async {
+        guard seconds > 0 else { return }
+        let sleepClosure = self.testSleepOverride ?? { sec in
+            try await Task.sleep(for: .seconds(sec))
+        }
+        let task = Task {
+            try await sleepClosure(seconds)
+        }
+        self.sleepTask = task
+        _ = try? await task.value
+        self.sleepTask = nil
+    }
+
+    private func wakeLoop() {
+        sleepTask?.cancel()
+        sleepTask = nil
     }
 }
 
@@ -213,4 +294,6 @@ protocol LocalUsageStatusWriting: AnyObject {
     func applyGlmLocalUsage(_ usage: GlmLocalUsage?)
     func applyOpencodeUsage(_ usage: OpencodeLocalUsage?)
     func applyDshUsage(_ usage: DshLocalUsage?)
+    func codexEnrichmentTarget() -> (providerID: String, authPath: String?, model: ModelQuota?, fetchedAt: Date, generation: Int)?
+    func applyCodexUsageDetails(_ details: CodexUsageDetails?, providerID: String, fetchedAt: Date, configurationGeneration: Int)
 }

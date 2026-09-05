@@ -47,9 +47,10 @@ final class AppState: ObservableObject {
     /// 远程额度恢复通知；通过协议注入，测试不会触碰系统通知中心。
     private let quotaUpdateNotifier: any QuotaUpdateNotifying
 
-    /// 5 组本地 scanner 的编排（lazy 构造 / 触发 / 启动策略 / GLM 定期任务）。
+    /// 5 组本地 scanner 的编排（lazy 构造 / 循环 B / 条目隔离 / 去噪）。
     /// 扫描结果通过 `LocalUsageStatusWriting` 回写本类型。lazy：构造需要捕获 self。
-    private lazy var localUsage = LocalUsageOrchestration(writer: self)
+    /// `internal`（非 `private`）让测试能直接触发或观测用量循环。
+    lazy var localUsage = LocalUsageOrchestration(writer: self)
 
     /// 推进 `healthEvaluationDate`，让高峰窗口跨越分钟边界时能更新菜单栏颜色。
     private var healthClockTask: Task<Void, Never>?
@@ -187,19 +188,13 @@ final class AppState: ObservableObject {
         descriptors.first(where: { $0.kind == kind })?.id
     }
 
-    /// 本地用量 scanner 的启动策略：Minimax / GLM 的数据库可直接读取，
-    /// Antigravity 需要等本地 IDE 服务和主 quota 首次成功。
-    nonisolated static func localUsageScanStartsImmediately(for kind: ProviderKind) -> Bool {
-        LocalUsageOrchestration.scanStartsImmediately(for: kind)
-    }
-
     // MARK: - 生命周期
 
     func start() {
         // `stop()` 也会取消配置 watcher；允许生命周期重启时恢复配置热加载。
         configStore.startWatching()
 
-        // 为每个 enabled + auth 就绪的 provider 调度独立 timer
+        // 循环 A：将所有 enabled + auth 就绪的 provider 纳入额度循环
         cancelAllRefreshTasks()
         logInfo("AppState.start: 检查 \(statuses.count) 个 status")
         for status in statuses {
@@ -209,19 +204,10 @@ final class AppState: ObservableObject {
                 scheduleRefresh(for: status.id)
             }
         }
-        // 本地 scanner 启动时机（minimax/glm 立即、antigravity 等 quota 首胜、
-        // opencode/dsh 共享源启动即扫）由 LocalUsageOrchestration 统一决策。
-        localUsage.startInitialScans(descriptors: descriptors)
-        localUsage.startGlmPeriodicTrigger(
-            descriptors: descriptors,
-            isProviderEnabled: { [configStore] providerID in
-                configStore.config.providers[providerID]?.enabled ?? false
-            },
-            interval: configStore.config.effectiveRefreshInterval(
-                for: descriptors.first(where: { $0.kind == .glmCodingPlan })?.id
-                    ?? ProviderKind.glmCodingPlan.providerID
-            )
-        )
+        // 循环 B：启动用量循环，以全局刷新间隔迭代全部客户端（首拍即扫）
+        localUsage.startUsageLoop { [configStore] in
+            configStore.config.effectiveGlobalRefreshInterval
+        }
         startHealthClock()
     }
 
@@ -268,14 +254,16 @@ final class AppState: ObservableObject {
             .filter { shouldAutoRefresh(providerID: $0.id) }
             .map(\.id)
 
-        // 每个 provider 仍然并行；refreshScheduler.markInFlight 会合并重复触发。
-        await withTaskGroup(of: Void.self) { group in
+        // 额度循环与用量循环同时立即各跑一拍（额度 full + 用量即扫），保证用户感知的"刷新=全部新鲜"
+        async let quotaRefresh: Void = withTaskGroup(of: Void.self) { group in
             for providerID in providerIDs {
                 group.addTask { [self, providerID] in
                     await self.refreshProviderFully(providerID: providerID)
                 }
             }
         }
+        async let usageScan: Void = localUsage.triggerImmediateScanAll()
+        _ = await (quotaRefresh, usageScan)
     }
 
     func refreshOne(providerID: String) async {
@@ -569,23 +557,9 @@ final class AppState: ObservableObject {
             }
             lastRefreshAt = Date()
 
-            if descriptor.kind == .codexChatGpt {
-                scheduleCodexUsageDetailsRefresh(
-                    providerID: providerID,
-                    providerConfig: pc,
-                    model: info.models.first,
-                    fetchedAt: info.fetchedAt,
-                    configurationGeneration: startedAtGeneration
-                )
-            } else {
-                cancelDetailTask(for: providerID)
-            }
             if descriptor.kind == .antigravity {
                 authProber.markAvailable(providerID)
             }
-            // 主 quota 拿到后触发的本地扫描（opencode / dsh 共享源、native scanner）
-            // 由触发表驱动：新增 provider 不再往这里加 if 分支。
-            localUsage.handleRefreshSuccess(kind: descriptor.kind)
             let resetDates = info.models.flatMap { [$0.intervalResetsAt, $0.weeklyResetsAt] }.compactMap { $0 }
             refreshScheduler.scheduleMidCycleResetRefreshes(for: providerID, resetsAtDates: resetDates)
             return .completed(success: true)
@@ -829,19 +803,20 @@ final class AppState: ObservableObject {
     }
 
     @MainActor
-    private func scheduleCodexUsageDetailsRefresh(
-        providerID: String,
-        providerConfig: ProviderConfig,
-        model: ModelQuota?,
-        fetchedAt: Date,
-        configurationGeneration: Int
-    ) {
-        codexUsageDetails.schedule(
-            providerID: providerID,
-            authPath: providerConfig.authPath,
-            model: model,
-            fetchedAt: fetchedAt,
-            configurationGeneration: configurationGeneration
+    func codexEnrichmentTarget() -> (providerID: String, authPath: String?, model: ModelQuota?, fetchedAt: Date, generation: Int)? {
+        guard let codexID = providerID(for: .codexChatGpt),
+              let idx = statuses.firstIndex(where: { $0.id == codexID }),
+              let pc = configStore.config.providers[codexID],
+              pc.enabled else {
+            return nil
+        }
+        let lastSuccess = statuses[idx].lastSuccess
+        return (
+            providerID: codexID,
+            authPath: pc.authPath,
+            model: lastSuccess?.models.first,
+            fetchedAt: lastSuccess?.fetchedAt ?? Date(),
+            generation: configurationGeneration
         )
     }
 
