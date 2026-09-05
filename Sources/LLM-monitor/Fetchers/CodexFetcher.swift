@@ -142,7 +142,7 @@ struct CodexFetcher: QuotaFetcher {
         )
     }
 
-    nonisolated static func loadUsageDetailsAsync(authPath: String?, model: ModelQuota) async -> CodexUsageDetails? {
+    nonisolated static func loadUsageDetailsAsync(authPath: String?, model: ModelQuota?) async -> CodexUsageDetails? {
         let authURL: URL
         if let authPath, !authPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             authURL = resolveAuthFileURL(from: URL(fileURLWithPath: NSString(string: authPath).expandingTildeInPath))
@@ -155,7 +155,8 @@ struct CodexFetcher: QuotaFetcher {
 
         let windows = makeUsageWindows(from: model)
         if windows.isEmpty {
-            logDebug("[codex/local] 无可用 usage window，跳过本地明细扫描")
+            // quota 首胜前没有窗口定义：扫描照常进行，仅产出 7day/today 与 Last Prompt
+            logDebug("[codex/local] 无可用 usage window，本轮仅输出 7day/today 与 Last Prompt")
         } else {
             let briefDescriptions = windows
                 .map { key, window in
@@ -169,7 +170,7 @@ struct CodexFetcher: QuotaFetcher {
             logDebug("[codex/local] usage window ranges (UTC): \(debugUsageWindowDescriptions(windows))")
         }
 
-        guard !windows.isEmpty, !Task.isCancelled else { return nil }
+        guard !Task.isCancelled else { return nil }
         let dailyWindows = recentDailyUsageWindows()
         logDebug("[codex/local] daily window ranges (UTC): \(debugDailyWindowDescriptions(dailyWindows))")
         let earliestWindowStart = (windows.values.map(\.startDate) + dailyWindows.map(\.startDate)).min()

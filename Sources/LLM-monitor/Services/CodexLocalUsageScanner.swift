@@ -264,7 +264,10 @@ extension CodexFetcher {
         let scannedFileCount: Int
     }
 
-    nonisolated static func makeUsageWindows(from model: ModelQuota) -> [String: ActiveUsageWindow] {
+    nonisolated static func makeUsageWindows(from model: ModelQuota?) -> [String: ActiveUsageWindow] {
+        // model 为 nil（quota 首胜前）或无 reset 信息时返回空窗口：
+        // 本地扫描照常进行，仅产出 7day/today 与 Last Prompt，窗口用量缺省。
+        guard let model else { return [:] }
         var windows: [String: ActiveUsageWindow] = [:]
 
         if let resetDate = model.intervalResetsAt {
@@ -292,17 +295,8 @@ extension CodexFetcher {
         sessionFiles: [CodexSessionFileEvents],
         limits: CodexLocalScanLimits = .production
     ) -> LocalUsageScanResult {
-        guard !windows.isEmpty else {
-            return LocalUsageScanResult(
-                usageSummaries: [:],
-                dailyTokenUsage: [],
-                recentSamples: [],
-                latestPromptFile: nil,
-                latestPromptTurnID: nil,
-                latestPromptCompletedAt: nil,
-                scannedFileCount: 0
-            )
-        }
+        // windows 为空（quota 首胜前）不再整体放弃：daily/lastPrompt 是纯本地信息，
+        // 照常产出，仅窗口用量（usageSummaries）缺省。
 
         var tokenSummaries = Dictionary(
             uniqueKeysWithValues: windows.keys.map { ($0, MutableUsageSummary()) }
@@ -350,7 +344,7 @@ extension CodexFetcher {
                     if activeTurnID == turnID {
                         activeTurnID = nil
                     }
-                    guard !matchingKeys.isEmpty else { continue }
+                    // Last Prompt 取全局最近完成的 turn：无窗口（quota 首胜前）也照常产出
                     if latestPromptCompletedAt == nil || timestamp > latestPromptCompletedAt! {
                         latestPromptCompletedAt = timestamp
                         latestPromptFile = sessionFile.fileURL

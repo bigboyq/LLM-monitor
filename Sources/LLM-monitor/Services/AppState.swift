@@ -839,40 +839,30 @@ final class AppState: ObservableObject {
 
         var changed = false
 
-        // Enrich active state if it holds a QuotaInfo matching fetchedAt.
-        // 之前是双写（_lastSuccess + state）—— 拆出来两个分支：`_lastSuccess` 跟
-        // `state` 都要 enrich 才能让 UI 跟 healthLevel 一致。State 自身持有
-        // QuotaInfo（.ok / .loading(lastSuccess:) / .failed(_, lastSuccess:)）
-        // 之后，只 enrich state 即可，single source of truth。
+        // Enrich 当前 state 持有的 QuotaInfo。循环 B 与额度刷新解耦后，details 的
+        // 产出时机与 quota 更新时序无关：不再要求 fetchedAt 严格相等——扫描使用的
+        // reset 时间来自数据层存量（可能有半拍滞后），循环 B 下一拍自动对齐新窗口。
+        // State 自身持有 QuotaInfo（.ok / .loading(lastSuccess:) / .failed(_, lastSuccess:)），
+        // 只 enrich state 即可，single source of truth。
         switch statuses[idx].state {
         case .ok(let info):
-            if info.fetchedAt == fetchedAt {
-                if info.codexUsageDetails != details {
-                    mutateStatus(at: idx) { $0.state = .ok(info.enriched(with: details)) }
-                    changed = true
-                }
-            } else {
-                logDebug("[codex/detail] active state fetchedAt mismatch: info.fetchedAt(\(info.fetchedAt)) != fetchedAt(\(fetchedAt))")
+            if info.codexUsageDetails != details {
+                mutateStatus(at: idx) { $0.state = .ok(info.enriched(with: details)) }
+                changed = true
             }
         case .failed(let message, let lastSuccess):
-            if let last = lastSuccess, last.fetchedAt == fetchedAt {
-                if last.codexUsageDetails != details {
-                    mutateStatus(at: idx) {
-                        $0.state = .failed(message: message, lastSuccess: last.enriched(with: details))
-                    }
-                    changed = true
+            if let last = lastSuccess, last.codexUsageDetails != details {
+                mutateStatus(at: idx) {
+                    $0.state = .failed(message: message, lastSuccess: last.enriched(with: details))
                 }
+                changed = true
             }
         case .loading(let lastSuccess):
-            if let prev = lastSuccess, prev.fetchedAt == fetchedAt {
-                if prev.codexUsageDetails != details {
-                    mutateStatus(at: idx) {
-                        $0.state = .loading(lastSuccess: prev.enriched(with: details))
-                    }
-                    changed = true
+            if let prev = lastSuccess, prev.codexUsageDetails != details {
+                mutateStatus(at: idx) {
+                    $0.state = .loading(lastSuccess: prev.enriched(with: details))
                 }
-            } else {
-                logDebug("[codex/detail] loading state has no matching lastSuccess")
+                changed = true
             }
         case .notConfigured, .ready:
             logDebug("[codex/detail] active state is \(statuses[idx].state), no QuotaInfo to enrich")
@@ -881,7 +871,7 @@ final class AppState: ObservableObject {
         if changed {
             logDebug("[codex/detail] apply succeeded!")
         } else {
-            logDebug("[codex/detail] apply skipped: no changes or mismatch")
+            logDebug("[codex/detail] apply skipped: no changes")
         }
     }
 

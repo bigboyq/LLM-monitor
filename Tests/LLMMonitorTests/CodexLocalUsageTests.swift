@@ -83,6 +83,43 @@ final class CodexLocalUsageTests: XCTestCase {
         XCTAssertEqual(windows["secondary"]?.startDate, reset.addingTimeInterval(10_000 - 7_200))
     }
 
+    func testMakeUsageWindowsWithNilModelReturnsEmpty() {
+        // quota 首胜前没有模型数据：窗口定义缺省，但不阻塞本地扫描
+        XCTAssertTrue(CodexFetcher.makeUsageWindows(from: nil).isEmpty)
+    }
+
+    func testSummarizeLocalUsageWithoutWindowsStillProducesDailyAndLastPrompt() throws {
+        // 循环 B 与额度解耦：无 reset 时间（windows 为空）时，daily 与 Last Prompt
+        // 是纯本地信息照常产出，仅窗口用量（usageSummaries）缺省。
+        let base = Date(timeIntervalSince1970: 24_000)
+        let fileURL = URL(fileURLWithPath: "/tmp/codex-local-no-window-test.jsonl")
+        let events: [CodexSessionEvent] = [
+            .taskStarted(timestamp: base, turnID: "turn-a"),
+            .tokenCount(
+                timestamp: base.addingTimeInterval(10),
+                usage: CodexTokenUsageEvent(inputTokens: 10, cachedInputTokens: 2, outputTokens: 5, reasoningOutputTokens: 1)
+            ),
+            .taskCompleted(timestamp: base.addingTimeInterval(20), turnID: "turn-a")
+        ]
+        let files = [CodexSessionFileEvents(fileURL: fileURL, events: events)]
+        let daily = [CodexFetcher.DailyUsageWindow(
+            startDate: base.addingTimeInterval(-1),
+            endDate: base.addingTimeInterval(60)
+        )]
+
+        let result = CodexFetcher.summarizeLocalUsage(
+            windows: [:],
+            dailyWindows: daily,
+            sessionFiles: files
+        )
+
+        XCTAssertTrue(result.usageSummaries.isEmpty)
+        XCTAssertEqual(result.dailyTokenUsage.first?.turns, 1)
+        XCTAssertEqual(result.dailyTokenUsage.first?.inputTokens, 10)
+        XCTAssertEqual(result.latestPromptTurnID, "turn-a")
+        XCTAssertEqual(result.scannedFileCount, 1)
+    }
+
     func testSummarizeLocalUsageSplitsQuotaAndDailyWindows() throws {
         let base = Date(timeIntervalSince1970: 20_000)
         let fileURL = URL(fileURLWithPath: "/tmp/codex-local-usage-test.jsonl")

@@ -91,12 +91,6 @@ final class LocalUsageOrchestration {
     private var sleepTask: Task<Void, any Error>?
     /// 客户端就绪状态缓存，用于日志去噪（仅在状态变动时记录日志）
     private var clientReadinessCache: [String: Bool] = [:]
-    /// 上一拍 codex enrichment 是否因等待首个 quota 模型而挂起。
-    /// codex 本地明细的 usage window 定义来自 quota 响应，quota 首胜前无法扫描；
-    /// 此期间循环 B 以短间隔探测（纯本地文件检查，无网络请求），拿到模型后回到全局节奏。
-    private var codexEnrichmentPending = false
-    /// codex enrichment 挂起期间的探测间隔（秒）。
-    nonisolated static let codexEnrichmentPendingRetryInterval: TimeInterval = 5
     /// 仅供测试注入客户端就绪判定覆写
     var testReadinessOverride: ((String) -> Bool)?
     /// 仅供测试注入休眠闭包
@@ -151,11 +145,7 @@ final class LocalUsageOrchestration {
             await self.scanAllClients()
 
             while !Task.isCancelled {
-                // codex enrichment 等待首个 quota 模型期间用短间隔探测，其余按全局节奏
-                let interval: TimeInterval = codexEnrichmentPending
-                    ? Self.codexEnrichmentPendingRetryInterval
-                    : intervalProvider()
-                await self.interruptibleSleep(interval)
+                await self.interruptibleSleep(intervalProvider())
                 guard !Task.isCancelled else { break }
                 await self.scanAllClients()
             }
@@ -218,23 +208,16 @@ final class LocalUsageOrchestration {
     }
 
     private func scanCodexUsageDetails() async {
-        guard let target = writer.codexEnrichmentTarget() else {
-            codexEnrichmentPending = false
-            return
-        }
-        guard let model = target.model else {
-            // quota 首胜前没有 usage window 定义；置挂起标记，循环以短间隔探测
-            codexEnrichmentPending = true
-            return
-        }
-        codexEnrichmentPending = false
+        // 纯本地信息：quota 模型缺失（首胜前）也照常扫描，仅窗口用量缺省。
+        // model 从共享数据层（statuses.lastSuccess）读取，是数据依赖而非事件依赖。
+        guard let target = writer.codexEnrichmentTarget() else { return }
 
         writer.setScanningState(true, for: target.providerID)
         defer { writer.setScanningState(false, for: target.providerID) }
 
         let details = await CodexFetcher.loadUsageDetailsAsync(
             authPath: target.authPath,
-            model: model
+            model: target.model
         )
         guard !Task.isCancelled else { return }
         writer.applyCodexUsageDetails(

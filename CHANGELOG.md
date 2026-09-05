@@ -20,6 +20,7 @@
   - 循环 A（额度循环）：单一 Task 管理全部 Provider 的 Quota 抓取，睡眠至最早截止时间，到期批次通过 `TaskGroup` 并发调度并保持严格的条目级隔离；保留启动首拍 full、每 20 次 background 补 full、指数退避、1s 短重试早醒、mid-cycle reset+15s 补刷新及手动刷新合并等既有语义。
   - 循环 B（用量循环）：单一 Task 按全局刷新间隔迭代全部 6 个客户端（Codex、Antigravity、ZCode/GLM、OpenCode、DSH、MiniMax Code），就绪探测短路并增加状态跃迁去噪日志；Codex usage-details 读取并入本循环。
   - 彻底剥离 Quota 成功对本地用量扫描的触发依赖（删除 `postRefreshTriggers` 表与成功回调），移除 GLM 专属定时任务（由循环 B 全面覆盖）。手动 `refreshAll` 与系统唤醒同时触发双循环立即执行一拍。
+  - Codex 本地明细与额度数据解耦：quota 首胜前扫描照常进行（产出 7day/today 与 Last Prompt，窗口用量 `primary`/`secondary` 为 nil，UI 悬浮窗条件渲染）；窗口定义从数据层存量 reset 时间读取，quota 刷新后下一拍自动对齐；`applyCodexUsageDetails` 移除 `fetchedAt` 严格匹配门槛，本地数据写入独立触发 UI 刷新。
 - 重构客户端 ↔ quota provider 关系：引入 `ClientDescriptor` / `ClientProviderBinding`，把 provider-level `mergeOpencodeUsage` 字段抽象为 `clientBindings[]`；schema 升级到 v2，旧 v1 配置自动迁移。
 - Codex 本地账本从 `turn_context` 解析 model 名称，让 GPT-5.6 Sol / Terra / Luna 在公开价目中可被独立计价；新增 `recentSamples` 字段把逐次调用样本带入客户端 tab 的价值估算。
 - minimax v2 SQLite reader 增加 model 回退链：row-level `model` → session-level `record_json.effectiveModel` → ledger 唯一模型；多模型时不再猜测。

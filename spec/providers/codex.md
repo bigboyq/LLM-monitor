@@ -218,6 +218,20 @@ target rather than a hard quota or billing limit.
 
 该 ≈$58 估值基于 Terra/Luna/SOL 组合，GPT-6 Astra 尚未纳入，待实际用量校准后再更新。
 
+### Loop-B decoupling (2026-09-05)
+
+Codex local usage details are produced by usage loop B (`LocalUsageOrchestration`) and no longer
+wait for a quota fetch success:
+
+- The session scan runs whenever `~/.codex` exists, on the global refresh interval.
+- Window summaries (`primary` / `secondary`) are derived from the reset times stored in the
+  shared data layer (the most recent successful quota fetch). Before the first quota success
+  they are `nil`, and the scan still produces `dailyTokenUsage` (7 days), the recent samples,
+  and the Last Prompt row.
+- `applyCodexUsageDetails` enriches whatever quota info the data layer currently holds; the
+  strict `fetchedAt` match is gone. After a quota refresh, the next loop-B tick re-derives the
+  windows from the new reset times.
+
 ### Accounting contract
 
 Codex 的 raw `inputTokens` 是包含 cache-read 的完整输入，`cachedInputTokens` 是其子集；
