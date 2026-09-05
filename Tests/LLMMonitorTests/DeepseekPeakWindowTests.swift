@@ -87,7 +87,7 @@ final class DeepseekPeakWindowTests: XCTestCase {
         }
     }
 
-    // MARK: - 周末平价（weekdaysOnly）
+    // MARK: - 周末平价（官方口径：高峰永不含周末，weekdaysOnly 固定 true）
 
     func testDeepseekWeekendSaturdayIsOffPeakByDefault() {
         let window = DeepseekPeakWindow.defaultWindow   // weekdaysOnly = true
@@ -116,21 +116,6 @@ final class DeepseekPeakWindowTests: XCTestCase {
             XCTAssertEqual(start, expectedStart)
         } else {
             XCTFail("Sunday 16:30 should be offPeak when weekdaysOnly")
-        }
-    }
-
-    func testDeepseekWeekendSaturdayIsPeakWhenWeekdaysOnlyFalse() {
-        // 关闭周末平价：每天（含周末）都执行高峰时段（即现状）
-        let window = DeepseekPeakWindow(slots: DeepseekPeakWindow.defaultWindow.slots, weekdaysOnly: false)
-        // 北京时间 2026-08-08（周六）10:15 —— 落在第一高峰 slot(9–12)
-        let now = makeBeijingDate(year: 2026, month: 8, day: 8, hour: 10, minute: 15)
-        let status = window.status(at: now, calendar: PeakWindow.beijingCalendar)
-
-        if case .peak(until: let end) = status {
-            let expectedEnd = makeBeijingDate(year: 2026, month: 8, day: 8, hour: 12, minute: 0)
-            XCTAssertEqual(end, expectedEnd)
-        } else {
-            XCTFail("Saturday 10:15 should be peak when weekdaysOnly=false")
         }
     }
 }

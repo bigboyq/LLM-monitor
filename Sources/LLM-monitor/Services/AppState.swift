@@ -427,9 +427,10 @@ final class AppState: ObservableObject {
             statusItem.glmPeakWindow = d.kind == .glmCodingPlan
                 ? (pc?.glmPeakWindow ?? .zhipuDefault)
                 : nil
-            // DeepSeek 高峰期窗口同理（基于北京时间 + 周末平价开关）。
+            // DeepSeek 高峰期窗口同理：官方固定口径（北京时间工作日 9–12 / 14–18，
+            // 高峰永不含周末），无 config 字段可调，直接用默认窗口。
             statusItem.deepseekPeakWindow = d.kind == .deepseek
-                ? (pc?.deepseekPeakWindow ?? .defaultWindow)
+                ? .defaultWindow
                 : nil
             return statusItem
         }

@@ -91,7 +91,7 @@ private struct PricingCatalogDocument: Decodable, Sendable {
 /// 单个 provider 的价目。
 private struct ProviderPricing: Decodable, Sendable {
     /// 条目数组顺序即求值顺序，首条命中即返回（zhipu Flash 先于 GLM-5.3、
-    /// minimax M3 先于 M2.x 的顺序敏感语义依赖这一点）。
+    /// deepseek Flash 先于 Pro 的顺序敏感语义依赖这一点）。
     let models: [PricingEntry]
     /// 匹配前把模型名中的 `_` 替换为 `-`（antigravity 的 gpt_oss_120b 需要）。
     let normalizeUnderscores: Bool?

@@ -372,6 +372,7 @@ final class ProviderModelTests: XCTestCase {
 
     func testDeepseekPricingUsesOffPeakBaseAndDoublesAtPeak() {
         let calendar = DeepseekPeakWindow.beijingCalendar
+        // 2026-08-05 是周三：10:00 落在工作日 9–12 高峰 slot，13:00 是工作日非高峰。
         let day = calendar.date(from: DateComponents(year: 2026, month: 8, day: 5, hour: 10))!
         let peak = day
         let offPeak = day.addingTimeInterval(3 * 60 * 60)
@@ -407,6 +408,28 @@ final class ProviderModelTests: XCTestCase {
             deepseekPeakWindow: .defaultWindow
         )
         XCTAssertEqual(offPeakEstimate.value ?? -1, 1.66, accuracy: 0.000001)
+
+        // 官方口径：高峰永不含周末 —— 周六（2026-08-08）/ 周日（2026-08-09）
+        // 落在北京时间 9–12 窗口内也按平价 1× 计价。
+        for (weekday, dayOffset) in [("周六", 8), ("周日", 9)] {
+            let weekend = calendar.date(from: DateComponents(year: 2026, month: 8, day: dayOffset, hour: 10))!
+            let weekendSample = LocalTokenUsageSample(
+                completedAt: weekend,
+                modelName: "deepseek-v4-flash",
+                promptID: "weekend-\(weekday)",
+                inputTokens: 1_000_000,
+                cachedInputTokens: 200_000,
+                outputTokens: 100_000,
+                reasoningOutputTokens: 0
+            )
+            let weekendEstimate = ModelPricingCatalog.estimate(
+                samples: [weekendSample],
+                quotaProviderID: QuotaProviderID.deepseek,
+                deepseekPeakWindow: .defaultWindow
+            )
+            XCTAssertEqual(weekendEstimate.value ?? -1, 1.66, accuracy: 0.000001,
+                           "\(weekday) 高峰 slot 内必须按平价（1×）计价")
+        }
     }
 
     func testDeepseekDshPricingKeepsSeparateCacheReadBucket() {
@@ -667,6 +690,26 @@ final class ProviderModelTests: XCTestCase {
         let json = String(data: data, encoding: .utf8) ?? ""
         XCTAssertFalse(json.contains("serverPath"), "encode 不应写出已删除字段: \(json)")
         XCTAssertTrue(json.contains("\"enabled\""))
+    }
+
+    func testProviderConfigDecodeIgnoresDeepseekPeakWeekdaysOnly() throws {
+        // DeepSeek「仅工作日」开关已移除（高峰永不含周末为官方固定口径）：
+        // 旧版 config.json 残留的 deepseekPeakWeekdaysOnly 字段应被忽略而非报错，
+        // 也不会再被写回。
+        let json = """
+        {
+          "enabled": true,
+          "deepseekPeakWeekdaysOnly": false,
+          "refreshIntervalSeconds": 60
+        }
+        """.data(using: .utf8)!
+        let config = try JSONDecoder().decode(ProviderConfig.self, from: json)
+        XCTAssertTrue(config.enabled)
+        XCTAssertEqual(config.refreshIntervalSeconds, 60)
+
+        let data = try JSONEncoder().encode(config)
+        let encoded = String(data: data, encoding: .utf8) ?? ""
+        XCTAssertFalse(encoded.contains("deepseekPeakWeekdaysOnly"), "encode 不应写出已删除字段: \(encoded)")
     }
 
     func testMinimaxLocalUsageEqualityIgnoresScannedAt() {

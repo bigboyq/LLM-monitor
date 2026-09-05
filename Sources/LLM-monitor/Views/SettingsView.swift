@@ -41,7 +41,6 @@ struct SettingsView: View {
     @State var deepseekInterval: Int = 0
     @State var deepseekApiKey: String = ""
     @State var showDeepseekKey: Bool = false
-    @State var deepseekPeakWeekdays: Bool = DeepseekPeakWindow.defaultWindow.weekdaysOnly
 
     @State var selectedClientID: String = ClientID.antigravity
     @State var providerCardOrder: [String] = []
@@ -539,7 +538,7 @@ struct SettingsView: View {
 
                 SettingsSection(
                     title: "高峰期提示",
-                    footer: "DeepSeek API 采用峰谷定价策略，高峰时段价格为平时价格的 2 倍（适用于所有计费项）。系统将自动换算北京时间并实时提示倒计时。高峰时段：北京时间工作日 9:00–12:00 和 14:00–18:00。开启「仅工作日」后，周六、周日全天按平价（1×）计费。"
+                    footer: "DeepSeek API 采用峰谷定价策略，高峰价格为平价（1×）的 2 倍（适用于所有计费项）。系统将自动换算北京时间并实时提示倒计时。高峰时段为北京时间工作日 9:00–12:00 和 14:00–18:00，周六、周日全天平价（1×）。"
                 ) {
                     SettingsControlRow("高峰时段定义") {
                         Text("北京时间工作日 9:00–12:00, 14:00–18:00")
@@ -552,8 +551,6 @@ struct SettingsView: View {
                             .font(SettingsTypography.numericValue)
                             .foregroundStyle(.red)
                     }
-                    Divider().padding(.vertical, 4)
-                    SettingsToggleRow(label: "仅工作日（周一–周五）", isOn: $deepseekPeakWeekdays)
                 }
             }
         }
@@ -730,7 +727,6 @@ struct SettingsView: View {
             deepseekEnabled = deepseek.enabled
             deepseekApiKey = deepseek.apiKey ?? ""
             deepseekInterval = deepseek.refreshIntervalSeconds ?? 0
-            deepseekPeakWeekdays = deepseek.deepseekPeakWeekdaysOnly ?? DeepseekPeakWindow.defaultWindow.weekdaysOnly
         }
     }
 
@@ -800,8 +796,6 @@ struct SettingsView: View {
             deepseek.enabled = deepseekEnabled
             deepseek.apiKey = trimmedString(deepseekApiKey)
             deepseek.refreshIntervalSeconds = providerRefreshInterval(from: deepseekInterval)
-            let ds = DeepseekPeakWindow.defaultWindow
-            deepseek.deepseekPeakWeekdaysOnly = deepseekPeakWeekdays == ds.weekdaysOnly ? nil : deepseekPeakWeekdays
             config.providers[id] = deepseek
         }
 

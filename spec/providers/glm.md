@@ -36,7 +36,7 @@ ZCode 的 `model_usage.input_tokens` 是包含 cache-read 的 raw input，
 
 ## Model Pricing Catalog
 
-设置面板“客户端”Tab 中的名义价值估算基于随 app 打包的价格目录 [`ModelPricing.json`](../../Sources/LLM-monitor/Resources/ModelPricing.json)（`ModelPricingCatalog` 启动时加载，`QuotaProviderID.zhipu` 条目；调价只改 JSON）。价格目录使用智谱官方人民币公开价（CNY 直接计价）：
+设置面板“客户端”Tab 中的名义价值估算基于随 app 打包的价格目录 [`ModelPricing.json`](../../Sources/LLM-monitor/Resources/ModelPricing.json)（`ModelPricingCatalog` 启动时加载，`QuotaProviderID.zhipu` 条目）。调价 / 增删模型需改 JSON，并同步 `ModelPricingJSONTests` / `ProviderModelTests` 的价格断言与本 spec 的价格表。价格目录使用智谱官方人民币公开价（CNY 直接计价）：
 
 | 模型匹配模式 | 归一化标签 (`modelLabel`) | 未缓存输入 (Input / 1M) | 缓存读取 (CacheRead / 1M) | 输出/思考 (Output / 1M) | 币种 |
 |---|---|---|---|---|---|

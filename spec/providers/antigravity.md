@@ -34,14 +34,15 @@ output/reasoning 也是独立字段。daily 直接进入统一 `Input / Cache re
 
 客户端 tab 的名义价值估算基于随 app 打包的价格目录
 [`Sources/LLM-monitor/Resources/ModelPricing.json`](../../Sources/LLM-monitor/Resources/ModelPricing.json)
-（`ModelPricingCatalog` 启动时加载，调价只改 JSON）。Antigravity 的条目（USD per 1M
+（`ModelPricingCatalog` 启动时加载）。Antigravity 的条目（USD per 1M
 tokens，模型名小写 + `_` 归一为 `-` 后按 contains 匹配，数组顺序即求值顺序）：
+调价 / 增删模型需改 JSON，并同步 `ModelPricingJSONTests` / `ProviderModelTests` 的
+价格断言与本 spec 的价格表。
 
-| 模型 | Input | Cached Input | Output |
+| 模型 | Input | Cache read | Output |
 |---|---|---|---|
 | Gemini Flash 3.x（`gemini-3.6-flash` / `gemini-3.7-flash` / `gemini-3.8-flash`） | 0.75 | 0.075 | 3.75 |
-| `gemini-2.5-pro` | 1.25 | 0.3125 | 10 |
-| `gemini-2.5-flash` | 0.30 | 0.03 | 2.50 |
+| `gemini-3.1-pro` | 2.00 | 0.20 | 12.00 |
 | `claude-opus-4.6` / `claude-opus-4-6` | 5.00 | 0.50 | 25.00 |
 | `claude-sonnet-4.6` / `claude-sonnet-4-6` | 3.00 | 0.30 | 15.00 |
 | `gpt-oss-120b` | 0.09 | 0.009 | 0.36 |
@@ -49,6 +50,10 @@ tokens，模型名小写 + `_` 归一为 `-` 后按 contains 匹配，数组顺�
 | `claude-3.5-haiku` | 0.80 | 0.08 | 4.00 |
 | `gpt-4.1` | 2.00 | 0.50 | 8.00 |
 
+- **Gemini 支持清单**：仅 `gemini-3.1-pro` 与 3.6 / 3.7 / 3.8 Flash 有价。
+  **Gemini 2.5 系列（Pro / Flash）已退休**：条目已删除，历史用量显示"未定价"（有意行为）。
+- **Gemini 3.1 Pro**：按标准档（≤200K 上下文）定价；>200K 的长上下文档不建模 ——
+  本地账本不保留请求上下文长度，与 MiniMax >512K 档不参与同一口径。
 - **Gemini 3.8 Flash**：官方价与 3.7 Flash 完全相同（introductory 定价至 2026-12-31），
   因此共用 "Gemini Flash 3.x" 同一条目。
 - Antigravity 没有兜底价：未知模型保持"未定价"并在客户端 tab 明确列出（与 zhipu 的

@@ -45,7 +45,7 @@ ZCode 的任务按 provider 分为日常（Coding Plan）/ 闲时 / 其他智谱
 
 ### DeepSeek
 
-填写 `sk-...` 格式的 DeepSeek API Key。卡片显示账户余额；DeepSeek 没有 native 本地账本，只有启用 OpenCode 合并（`config.json` 的 `clientBindings`）后才会显示本地 token 图表。高峰提示按北京时间计算，默认周末平价。
+填写 `sk-...` 格式的 DeepSeek API Key。卡片显示账户余额；DeepSeek 没有 native 本地账本，只有启用 OpenCode 合并（`config.json` 的 `clientBindings`）后才会显示本地 token 图表。高峰提示按北京时间计算，高峰仅在工作日（周一至周五 9:00–12:00、14:00–18:00）执行，周六、周日全天平价。
 
 ### OpenCode 合并
 

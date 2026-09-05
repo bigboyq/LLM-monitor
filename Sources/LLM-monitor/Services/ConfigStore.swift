@@ -277,9 +277,6 @@ struct ProviderConfig: Codable, Equatable {
     /// GLM Coding Plan 高峰期是否仅工作日（周一–周五）。nil = 默认 true
     var peakWeekdaysOnly: Bool?
 
-    /// DeepSeek 高峰期是否仅工作日（周一–周五，周末全天平价）。nil = 默认 true
-    var deepseekPeakWeekdaysOnly: Bool?
-
     /// 是否把对应的 OpenCode provider 用量合并到菜单栏卡片。
     /// nil = 使用 provider 的默认值：GLM 默认开启，其余 provider 默认关闭。
     var mergeOpencodeUsage: Bool?
@@ -291,7 +288,6 @@ struct ProviderConfig: Codable, Equatable {
     enum CodingKeys: String, CodingKey {
         case enabled, apiKey, displayName, refreshIntervalSeconds, authPath
         case peakStartHour, peakEndHour, peakWeekdaysOnly, mergeOpencodeUsage
-        case deepseekPeakWeekdaysOnly
         case parseZcodeBalanceLog
     }
 
@@ -304,7 +300,6 @@ struct ProviderConfig: Codable, Equatable {
          peakEndHour: Int? = nil,
          peakWeekdaysOnly: Bool? = nil,
          mergeOpencodeUsage: Bool? = nil,
-         deepseekPeakWeekdaysOnly: Bool? = nil,
          parseZcodeBalanceLog: Bool? = nil) {
         self.enabled = enabled
         self.apiKey = apiKey
@@ -315,7 +310,6 @@ struct ProviderConfig: Codable, Equatable {
         self.peakEndHour = peakEndHour
         self.peakWeekdaysOnly = peakWeekdaysOnly
         self.mergeOpencodeUsage = mergeOpencodeUsage
-        self.deepseekPeakWeekdaysOnly = deepseekPeakWeekdaysOnly
         self.parseZcodeBalanceLog = parseZcodeBalanceLog
     }
 
@@ -334,7 +328,6 @@ struct ProviderConfig: Codable, Equatable {
         self.peakEndHour = try c.decodeIfPresent(Int.self, forKey: .peakEndHour)
         self.peakWeekdaysOnly = try c.decodeIfPresent(Bool.self, forKey: .peakWeekdaysOnly)
         self.mergeOpencodeUsage = try c.decodeIfPresent(Bool.self, forKey: .mergeOpencodeUsage)
-        self.deepseekPeakWeekdaysOnly = try c.decodeIfPresent(Bool.self, forKey: .deepseekPeakWeekdaysOnly)
         self.parseZcodeBalanceLog = try c.decodeIfPresent(Bool.self, forKey: .parseZcodeBalanceLog)
     }
 }
@@ -377,13 +370,6 @@ extension ProviderConfig {
             return d
         }
         return GlmPeakWindow(startHour: start, endHour: end, weekdaysOnly: weekdays)
-    }
-
-    /// 解析为 DeepSeek 高峰期窗口。nil 字段回退官方默认（9–12 & 14–18 / 仅工作日）。
-    var deepseekPeakWindow: DeepseekPeakWindow {
-        let d = DeepseekPeakWindow.defaultWindow
-        let weekdays = deepseekPeakWeekdaysOnly ?? d.weekdaysOnly
-        return DeepseekPeakWindow(slots: d.slots, weekdaysOnly: weekdays)
     }
 }
 

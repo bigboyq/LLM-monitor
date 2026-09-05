@@ -10,6 +10,7 @@
 - 新增"设置 > 客户端"tab：按客户端维度（Antigravity / Codex / DSH / MiniMax Code / OpenCode / ZCode）展示本地 token 用量、最近 7 天柱图、缓存命中率与按公开 API 单价估算的价值。
 - 新增 `ModelPricingCatalog`：模型价目快照（MiniMax-M3 直接使用公开 CNY 价格、DeepSeek 高峰期 2× 倍率、DSH 独立 uncached-input / cache-read bucket 计价、新增 GLM-5.3-Flash 定价规则）；客户端 tab 标注目录更新日期 `lastUpdated`。
 - Antigravity 新增 Gemini 3.8 Flash 定价：官方价与 3.7 Flash 完全相同（Input $0.75 / Cached Input $0.075 / Output $3.75，introductory 价至 2026-12-31）。
+- Antigravity 新增 Gemini 3.1 Pro 定价：Input $2 / Cache read $0.2 / Output $12（USD）。按标准档（≤200K 上下文）建模，>200K 的长上下文档不参与计价口径。
 - 客户端 tab 中未定价模型显式列出名称、token 数与调用次数，不再静默归零。
 - 主菜单 Provider 卡片可自定义顺序：设置 → 通用 → 主菜单 Provider 顺序段提供上下按钮拖拽，按 Provider 显示名称排序。客户端 tab、设置页 Provider tabs 与 Client tab 内的 Provider 行仍按显示名称字母顺序排列；`providerCardOrder` 仅作用于主菜单。
 
@@ -21,6 +22,11 @@
 - 客户端 tab tab 标题新增 provider 数量徽标：每个客户端 tab 后显示该客户端已识别的 Provider 数（如"Antigravity 3"），让用户一眼看到哪些 Provider 在产生数据。
 - OpenAI 模型定价升级：新增 GPT-6 Astra 价格（Input $10 / Cached Input $1 / Output $50），GPT-5.6 Sol 价格更新为 $4 / $0.4 / $20（原 $5 / $0.5 / $30），模型匹配从 `contains` 宽匹配改为小写后精确相等，避免同系列不同价模型被误吞；价目快照日期更新为 `2026-09-05`。
 - 模型价格目录 JSON 化：全部价格数据从 Swift 代码迁移到随 app 打包的 `Sources/LLM-monitor/Resources/ModelPricing.json`，未来调价 / 新增 / 退休模型只改该文件（同步测试与 spec）；`ModelPricingCatalog` 启动时加载 JSON，公开 API（`pricing` / `estimate` / `estimateByDay` / `tokenComponents` / `lastUpdated`）签名与语义不变。
+
+### Removed
+
+- 定价退休：移除 Antigravity 的 Gemini 2.5 系列（Pro / Flash）与 MiniMax M2 系列（M2.7 / M2.5 / M2.1 及 highspeed 档）价格条目，MiniMax 仅保留 M3；被退休模型的历史用量将显示"未定价"（有意行为）。
+- 移除 DeepSeek「仅工作日」设置开关及 `deepseekPeakWeekdaysOnly` 配置键：高峰时段固定为北京时间周一至周五 9:00–12:00 与 14:00–18:00（官方口径，高峰永不含周末），周六、周日全天平价（1×），高峰价格为平价的 2 倍；旧配置文件中残留的该键会被静默忽略。
 
 ### Fixed
 

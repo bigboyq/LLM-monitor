@@ -31,7 +31,9 @@ struct PeakWindow: Equatable, Sendable, Codable {
     /// 智谱官方默认：Mon–Fri 14:00–18:00（本地时区）
     static let zhipuDefault = PeakWindow(startHour: 14, endHour: 18, weekdaysOnly: true)
 
-    /// DeepSeek 官方默认：每日 9:00–12:00 & 14:00–18:00，周末平价（北京时间）
+    /// DeepSeek 官方口径：周一至周五 9:00–12:00 & 14:00–18:00（北京时间）为高峰，
+    /// 周六、周日全天平价 —— 高峰永不含周末，`weekdaysOnly` 固定为 true 且无
+    /// 用户可调开关。
     static let deepseekDefault = PeakWindow(
         slots: [
             Slot(startHour: 9, endHour: 12),

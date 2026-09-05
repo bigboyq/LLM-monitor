@@ -33,9 +33,13 @@ final class ModelPricingJSONTests: XCTestCase {
     }
 
     private func loadPricingJSON() throws -> CatalogProbe {
+        // 测试 target 没有自己的 resource bundle accessor：这里的 Bundle.module
+        // 经 @testable import LLM_monitor 解析到 app target 生成的 accessor，
+        // 因此实际校验的是 ModelPricing.json 随 app target 打包（Package.swift
+        // 的 resources 声明），而不是测试 target 自己的资源。
         let url = try XCTUnwrap(
             Bundle.module.url(forResource: "ModelPricing", withExtension: "json"),
-            "ModelPricing.json 必须随 target 打包（Package.swift resources 声明）"
+            "ModelPricing.json 必须随 app target 打包（Package.swift resources 声明）"
         )
         let data = try Data(contentsOf: url)
         return try JSONDecoder().decode(CatalogProbe.self, from: data)
@@ -94,13 +98,25 @@ final class ModelPricingJSONTests: XCTestCase {
                         seenKeywords.insert(keyword.lowercased()).inserted,
                         "\(providerID) 内 keyword \(keyword) 重复"
                     )
-                    if entry.match == "exact" {
-                        XCTAssertEqual(keyword, keyword.lowercased(),
-                                       "exact 条目的关键词必须与小写 slug 全等：\(keyword)")
-                    }
+                    // 引擎统一在小写域匹配：大写 contains 关键词永远命中不了（死条目），
+                    // 大写 exact 关键词更会直接失配，因此所有 keywords 都必须是小写 slug。
+                    XCTAssertEqual(keyword, keyword.lowercased(),
+                                   "\(providerID)/\(entry.label) keyword 必须是小写 slug：\(keyword)")
                 }
+                if entry.match == "exact" {
+                    XCTAssertEqual(
+                        keywords.count, 1,
+                        "\(providerID)/\(entry.label) exact 条目只应携带一个全等关键词"
+                    )
+                }
+                // 已知盲区（有意为之）：matchAll 组合关键词暂不参与跨条目去重检测 ——
+                // 不同条目的 matchAll 条件之间、matchAll 与其他条目 keywords 之间的
+                // 跨条目重复不在本测试覆盖范围内。
                 for condition in matchAll {
                     XCTAssertFalse(condition.isEmpty, "\(providerID)/\(entry.label) matchAll 含空条件")
+                    // 与 keywords 同理：matchAll 也在小写域求值，大写条件是死条件。
+                    XCTAssertEqual(condition, condition.lowercased(),
+                                   "\(providerID)/\(entry.label) matchAll 条件必须是小写 slug：\(condition)")
                 }
             }
 
@@ -217,59 +233,61 @@ final class ModelPricingJSONTests: XCTestCase {
         XCTAssertEqual(pro?.outputPerMillion, 13.5)
     }
 
-    // MARK: - minimax highspeed 与非 highspeed 命中不同条目
+    // MARK: - DeepSeek 条目顺序：flash 条目先于 pro 条目
 
-    func testMinimaxHighspeedAndStandardHitDistinctEntries() {
-        let highspeed = ModelPricingCatalog.pricing(for: "MiniMax-M2.5-highspeed", quotaProviderID: QuotaProviderID.minimax)
-        XCTAssertEqual(highspeed?.currency, .cny)
-        XCTAssertEqual(highspeed?.inputPerMillion, 4.2)
-        XCTAssertEqual(highspeed?.cacheReadPerMillion, 0.21)
-        XCTAssertEqual(highspeed?.outputPerMillion, 16.8)
-        XCTAssertEqual(highspeed?.modelLabel, "MiniMax-M2.5-highspeed")
+    /// `deepseek-pro-flash` 同时满足 Flash 与 Pro 两组 matchAll 条件；JSON 中
+    /// flash 条目先于 pro 条目，"首条命中"语义必须让它落在 Flash 价（1.5/0.05/4.5）。
+    /// 若调换 JSON 中两条目的顺序，本测试必须变红。
+    func testDeepseekProFlashHitsFlashPriceByEntryOrder() {
+        let pricing = ModelPricingCatalog.pricing(for: "deepseek-pro-flash", quotaProviderID: QuotaProviderID.deepseek)
+        XCTAssertNotNil(pricing, "deepseek-pro-flash 必须命中 Flash 条目（数组顺序敏感）")
+        XCTAssertEqual(pricing?.currency, .cny)
+        XCTAssertEqual(pricing?.inputPerMillion, 1.5)
+        XCTAssertEqual(pricing?.cacheReadPerMillion, 0.05)
+        XCTAssertEqual(pricing?.outputPerMillion, 4.5)
+    }
 
-        // matchAll AND 语义回归：highspeed 只有叠加在 m2.x 家族上才有价，
-        // 纯 *highspeed* 模型（旧代码在 m2 分支外直接落到 nil）不得被计价。
-        XCTAssertNil(
-            ModelPricingCatalog.pricing(for: "minimax-video-highspeed", quotaProviderID: QuotaProviderID.minimax),
-            "不含 m2.x 的 *highspeed* 模型必须保持未定价"
-        )
-        XCTAssertNil(
-            ModelPricingCatalog.pricing(for: "highspeed", quotaProviderID: QuotaProviderID.minimax),
-            "裸 highspeed 字符串必须保持未定价"
-        )
+    // MARK: - minimax 只保留 M3：M2 系列退休（历史用量显示未定价，有意行为）
 
-        let m27Highspeed = ModelPricingCatalog.pricing(for: "MiniMax-M2.7-highspeed", quotaProviderID: QuotaProviderID.minimax)
-        XCTAssertEqual(m27Highspeed?.inputPerMillion, 4.2)
-        XCTAssertEqual(m27Highspeed?.cacheReadPerMillion, 0.21)
-        XCTAssertEqual(m27Highspeed?.outputPerMillion, 16.8)
+    func testMinimaxRetiredM2SeriesAreUnpricedAndM3StillPriced() {
+        // M2 系列已退休：highspeed / 标准 / 精确 "m2" 一律不再有价。
+        // matchAll AND 语义（highspeed 只有叠加在 m2.x 家族上才有价）由
+        // testDeepseekMatchAllKeepsAndSemantics 继续守门。
+        for retired in ["MiniMax-M2.7-highspeed", "MiniMax-M2.5-highspeed", "MiniMax-M2.1-highspeed",
+                        "MiniMax-M2.7", "MiniMax-M2.5", "MiniMax-M2.1", "M2"] {
+            XCTAssertNil(
+                ModelPricingCatalog.pricing(for: retired, quotaProviderID: QuotaProviderID.minimax),
+                "\(retired) 已退休，必须保持未定价"
+            )
+        }
 
-        // 无分隔符变体（"m2.7highspeed"）同样同时包含两个 AND 条件，命中 highspeed 档。
-        let noSeparator = ModelPricingCatalog.pricing(for: "minimax-m2.7highspeed", quotaProviderID: QuotaProviderID.minimax)
-        XCTAssertEqual(noSeparator?.inputPerMillion, 4.2)
-        XCTAssertEqual(noSeparator?.cacheReadPerMillion, 0.21)
-        XCTAssertEqual(noSeparator?.outputPerMillion, 16.8)
-
-        let standard = ModelPricingCatalog.pricing(for: "MiniMax-M2.7", quotaProviderID: QuotaProviderID.minimax)
-        XCTAssertEqual(standard?.inputPerMillion, 2.1)
-        XCTAssertEqual(standard?.cacheReadPerMillion, 0.21)
-        XCTAssertEqual(standard?.outputPerMillion, 8.4)
-
-        let standard21 = ModelPricingCatalog.pricing(for: "MiniMax-M2.1", quotaProviderID: QuotaProviderID.minimax)
-        XCTAssertEqual(standard21?.inputPerMillion, 2.1)
-        XCTAssertEqual(standard21?.cacheReadPerMillion, 0.21)
-        XCTAssertEqual(standard21?.outputPerMillion, 8.4)
-        XCTAssertEqual(standard21?.modelLabel, "MiniMax-M2.1")
-
-        // 精确匹配 "m2" 单独命中标准档。
-        let bare = ModelPricingCatalog.pricing(for: "M2", quotaProviderID: QuotaProviderID.minimax)
-        XCTAssertEqual(bare?.inputPerMillion, 2.1)
-        XCTAssertEqual(bare?.cacheReadPerMillion, 0.21)
-        XCTAssertEqual(bare?.outputPerMillion, 8.4)
-
-        // M3 条目先于 M2 家族求值（顺序敏感），M3 不含 highspeed 语义。
+        // M3 条目仍在（含 "minimax/" 前缀的原始模型名也能 contains 命中）。
         let m3 = ModelPricingCatalog.pricing(for: "minimax/MiniMax-M3", quotaProviderID: QuotaProviderID.minimax)
         XCTAssertEqual(m3?.inputPerMillion, 2.1)
         XCTAssertEqual(m3?.cacheReadPerMillion, 0.42)
         XCTAssertEqual(m3?.outputPerMillion, 8.4)
+    }
+
+    // MARK: - 新增模型：Gemini 3.1 Pro；Gemini 2.5 系列退休
+
+    func testAntigravityGemini31ProPricingAndRetiredGemini25Series() {
+        let pro = ModelPricingCatalog.pricing(for: "gemini-3.1-pro", quotaProviderID: QuotaProviderID.antigravity)
+        XCTAssertEqual(pro?.currency, .usd)
+        XCTAssertEqual(pro?.inputPerMillion, 2)
+        XCTAssertEqual(pro?.cacheReadPerMillion, 0.2)
+        XCTAssertEqual(pro?.outputPerMillion, 12)
+        XCTAssertEqual(pro?.modelLabel, "gemini-3.1-pro", "modelLabel 必须保留样本原始模型名")
+
+        // 引擎在小写域匹配，大写写法同样命中同一条目。
+        let upper = ModelPricingCatalog.pricing(for: "GEMINI-3.1-Pro", quotaProviderID: QuotaProviderID.antigravity)
+        XCTAssertEqual(upper?.inputPerMillion, 2)
+
+        // Gemini 2.5 系列已退休：历史用量显示未定价（有意行为），含下划线变体。
+        for retired in ["gemini-2.5-pro", "gemini-2.5-flash", "google_gemini_2_5_flash"] {
+            XCTAssertNil(
+                ModelPricingCatalog.pricing(for: retired, quotaProviderID: QuotaProviderID.antigravity),
+                "\(retired) 已退休，必须保持未定价"
+            )
+        }
     }
 }

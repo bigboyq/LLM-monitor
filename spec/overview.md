@@ -36,12 +36,13 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 | `Sources/LLM-monitor/LLMMonitorApp.swift` | App entry point, lifecycle delegate, `FetcherDescriptor` registry, fixed menu bar label |
 | `Sources/LLM-monitor/Services/AppInstanceLock.swift` | Per-user single-instance lock held for the process lifetime |
 | `Sources/LLM-monitor/Models/FetcherDescriptor.swift` | `FetcherDescriptor` (provider 注册元信息 single source of truth) |
-| `Sources/LLM-monitor/Models/ProviderClientModel.swift` | quota Provider / Client IDs, explicit bindings, and provider-neutral usage projection |
+| `Sources/LLM-monitor/Models/ProviderClientModel.swift` | quota Provider / Client IDs、显式绑定、provider 中立 usage projection 与设置页摘要模型 |
+| `Sources/LLM-monitor/Models/ModelPricingCatalog.swift` | 计价引擎：加载 `Resources/ModelPricing.json`（首条命中 / exact / matchAll / zhipu 兜底 / 下划线归一化）并应用 DeepSeek 高峰倍率 |
+| `Sources/LLM-monitor/Resources/ModelPricing.json` | 价格数据：随 app 打包的唯一价格源（`ModelPricingJSONTests` 守门 schema 完整性） |
 | `Sources/LLM-monitor/Models/ProviderStatus.swift` | UI-facing provider state + `ProviderKind` / `AccentColor` 枚举 |
 | `Sources/LLM-monitor/Models/QuotaInfo.swift` | Provider-neutral quota 和 reset-credit 模型 |
 | `Sources/LLM-monitor/Models/AnyJSON.swift` | 弱类型 JSON（Antigravity 递归解析用） |
 | `Sources/LLM-monitor/Models/LocalUsageDaily.swift` | Antigravity / Codex / Minimax / GLM / DSH / OpenCode 共享的 7-day chart 协议 + 默认实现 |
-| `Sources/LLM-monitor/Models/ProviderClientModel.swift` | Client/Quota Provider 关系、Provider usage projection、模型价格目录与设置页摘要模型 |
 | `Sources/LLM-monitor/Models/DisplayOrder.swift` | Stable-ID ordering helper for configurable Provider cards and alphabetical fallback lists |
 | `Sources/LLM-monitor/Models/OpencodeLocalUsage.swift` | OpenCode provider 分片、今日 / 7 天聚合与逐次 samples |
 | `Sources/LLM-monitor/Models/OpencodeUsageMerger.swift` | OpenCode sample 的 `opencode:<provider>:` promptID 命名空间 helper（卡片合并入口是 `ProviderStatus.usageProjection`） |
@@ -57,8 +58,7 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 | `Sources/LLM-monitor/Fetchers/AntigravityFetcher.swift` | Antigravity 进程发现 + 本地 RPC + protobuf-like 解析 |
 | `Sources/LLM-monitor/Fetchers/GlmCodingPlanFetcher.swift` | GLM Coding Plan 额度与 reset time 抓取 |
 | `Sources/LLM-monitor/Fetchers/DeepseekFetcher.swift` | DeepSeek 账户余额抓取（`/user/balance`）+ 解析 |
-| `Sources/LLM-monitor/Models/GlmPeakWindow.swift` | GLM 可配置高峰窗口（本机时区）判定 |
-| `Sources/LLM-monitor/Models/DeepseekPeakWindow.swift` | DeepSeek 高峰窗口（北京时间 + 周末平价开关）判定 |
+| `Sources/LLM-monitor/Models/PeakWindow.swift` | GLM / DeepSeek 共用的参数化高峰窗口判定（`slots` × `weekdaysOnly`；GLM 本机时区单窗口可配置，DeepSeek 北京时间双窗口固定、高峰永不含周末） |
 | `Sources/LLM-monitor/Services/AppState.swift` | 全局状态派生、config watcher、scanner wire-up、per-provider 协调（timer / auth probe / 本地 scanner 都委托给专门类） |
 | `Sources/LLM-monitor/Services/AppLog.swift` | stdout / 文件 (5MB rotate) / os.Logger (`.private`) 三路日志 |
 | `Sources/LLM-monitor/Services/ConfigStore.swift` | config.json 读写 + 内容指纹跟踪 + 模板生成 |
@@ -675,9 +675,9 @@ Adding a provider currently requires:
 
 **已落地案例**：`DeepSeek` 完整走上述 1–8 步（无本地用量 scanner，跳过 9–12），
 且是唯一一个 **post-fetch 无副作用** 的 provider（`refreshProviderDirectly` 的
-kind 派发链里没有 `.deepseek` 分支）。它的高峰窗口为北京时间工作日 9–12 / 14–18
-（`DeepseekPeakWindow.defaultWindow`），时段固定不可调；周末平价开关（`weekdaysOnly`）
-可配置，与 GLM 的「仅工作日」语义对齐。详见 [`spec/providers/deepseek.md`](providers/deepseek.md)。
+kind 派发链里没有 `.deepseek` 分支）。它的高峰窗口为北京时间周一至周五 9–12 / 14–18
+（`DeepseekPeakWindow.defaultWindow`），时段固定不可调；高峰永不含周末，周六、周日
+全天平价。详见 [`spec/providers/deepseek.md`](providers/deepseek.md)。
 
 Lookup pattern in the rest of the code:
 

@@ -142,13 +142,13 @@ If `rate_limit` or its primary window is missing/invalid, parsing fails instead 
 healthy quota. A missing or invalid secondary window maps to `weeklyStatus = .absent`; a valid
 secondary window remains `.present` even when its remaining percentage is `0%`.
 
-## Local Pricing Snapshot (2026-09-05)
+## Local Pricing Snapshot
 
 `ModelPricingCatalog` 对 OpenAI/Codex 建立的本地价目快照（USD per 1M tokens）。价格
 数据已迁移到随 app 打包的
-[`Sources/LLM-monitor/Resources/ModelPricing.json`](../../Sources/LLM-monitor/Resources/ModelPricing.json)（`ModelPricingCatalog` 启动时加载，调价 / 增删模型只改 JSON），下表仍然有效：
+[`Sources/LLM-monitor/Resources/ModelPricing.json`](../../Sources/LLM-monitor/Resources/ModelPricing.json)（`ModelPricingCatalog` 启动时加载；快照更新时间以 JSON 顶层 `lastUpdated` 字段为准，即 `ModelPricingCatalog.lastUpdated`）。调价 / 增删模型需改 JSON，并同步 `ModelPricingJSONTests` / `ProviderModelTests` 的价格断言与本 spec 的价格表。下表仍然有效：
 
-| Model | Input | Cached Input | Output |
+| Model | Input | Cache read | Output |
 |---|---|---|---|
 | gpt-5.5 | 5.00 | 0.50 | 30.00 |
 | gpt-5.6-sol | 4.00 | 0.40 | 20.00 |

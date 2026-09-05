@@ -11,48 +11,6 @@
           "inputPerMillion": 2.1,
           "cacheReadPerMillion": 0.42,
           "outputPerMillion": 8.4
-        },
-        {
-          "matchAll": ["m2.7", "highspeed"],
-          "label": "MiniMax",
-          "currency": "CNY",
-          "inputPerMillion": 4.2,
-          "cacheReadPerMillion": 0.21,
-          "outputPerMillion": 16.8
-        },
-        {
-          "matchAll": ["m2.5", "highspeed"],
-          "label": "MiniMax",
-          "currency": "CNY",
-          "inputPerMillion": 4.2,
-          "cacheReadPerMillion": 0.21,
-          "outputPerMillion": 16.8
-        },
-        {
-          "matchAll": ["m2.1", "highspeed"],
-          "label": "MiniMax",
-          "currency": "CNY",
-          "inputPerMillion": 4.2,
-          "cacheReadPerMillion": 0.21,
-          "outputPerMillion": 16.8
-        },
-        {
-          "match": "contains",
-          "keywords": ["m2.7", "m2.5", "m2.1"],
-          "label": "MiniMax",
-          "currency": "CNY",
-          "inputPerMillion": 2.1,
-          "cacheReadPerMillion": 0.21,
-          "outputPerMillion": 8.4
-        },
-        {
-          "match": "exact",
-          "keywords": ["m2"],
-          "label": "MiniMax",
-          "currency": "CNY",
-          "inputPerMillion": 2.1,
-          "cacheReadPerMillion": 0.21,
-          "outputPerMillion": 8.4
         }
       ]
     },
@@ -119,21 +77,12 @@
         },
         {
           "match": "contains",
-          "keywords": ["gemini-2.5-pro"],
-          "label": "Gemini 2.5 Pro",
+          "keywords": ["gemini-3.1-pro"],
+          "label": "Gemini 3.1 Pro",
           "currency": "USD",
-          "inputPerMillion": 1.25,
-          "cacheReadPerMillion": 0.3125,
-          "outputPerMillion": 10
-        },
-        {
-          "match": "contains",
-          "keywords": ["gemini-2.5-flash"],
-          "label": "Gemini 2.5 Flash",
-          "currency": "USD",
-          "inputPerMillion": 0.3,
-          "cacheReadPerMillion": 0.03,
-          "outputPerMillion": 2.5
+          "inputPerMillion": 2,
+          "cacheReadPerMillion": 0.2,
+          "outputPerMillion": 12
         },
         {
           "match": "contains",
