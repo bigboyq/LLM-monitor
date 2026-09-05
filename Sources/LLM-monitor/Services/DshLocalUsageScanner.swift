@@ -11,10 +11,12 @@ import Combine
 struct DshLocalUsageScanLimits: Sendable {
     static let production = DshLocalUsageScanLimits(
         maxSessionFiles: 1_024,
-        maxTotalRawBytes: 256 * 1024 * 1024,
+        // 压缩产物字节口径（zstd 压缩比高，磁盘 1GB 约对应数 GB 明文）；
+        // 触顶按 mtime 最新优先截断，最旧 session 被挤出 7 天统计。
+        maxTotalRawBytes: 1024 * 1024 * 1024,
         maxJSONLLineBytes: 8 * 1024 * 1024,
         maxRecentSamples: 65_536,
-        readChunkBytes: 64 * 1024
+        readChunkBytes: 1024 * 1024
     )
 
     let maxSessionFiles: Int
@@ -763,6 +765,13 @@ private extension DshLocalUsageScanner {
         return DshFileParseResult(usages: usages, activeProviders: activeProviders)
     }
 
+    /// 一级过滤 marker 的字节形态：只有这两类行会被 `consumeLine` 消费，
+    /// 其余行（assistant/chunk、tool-call 等占解压后字节的绝大多数）无需进
+    /// JSONDecoder。marker 为纯 ASCII，不会出现在 UTF-8 多字节序列内部，
+    /// 字节级命中与解码后的 type 判断一致，不会漏判。
+    private nonisolated static let requestContextMarker = Data("request/context".utf8)
+    private nonisolated static let assistantMessageMarker = Data("assistant/message".utf8)
+
     private nonisolated static func consumeLine(
         _ line: Data,
         sessionID: String,
@@ -775,6 +784,10 @@ private extension DshLocalUsageScanner {
     ) {
         guard line.isEmpty == false,
               line.count <= limits.maxJSONLLineBytes,
+              // 字节级预过滤：与用量无关的行不进 JSONDecoder（解压后逐行
+              // decode 是 DSH 扫描的主要 CPU 成本）
+              line.range(of: requestContextMarker) != nil
+                  || line.range(of: assistantMessageMarker) != nil,
               let event = try? decoder.decode(DshRawEvent.self, from: line) else {
             return
         }

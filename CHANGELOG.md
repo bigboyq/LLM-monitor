@@ -22,6 +22,7 @@
   - 彻底剥离 Quota 成功对本地用量扫描的触发依赖（删除 `postRefreshTriggers` 表与成功回调），移除 GLM 专属定时任务（由循环 B 全面覆盖）。手动 `refreshAll` 与系统唤醒同时触发双循环立即执行一拍。
   - Codex 本地明细与额度数据解耦：quota 首胜前扫描照常进行（产出 7day/today 与 Last Prompt，窗口用量 `primary`/`secondary` 为 nil，UI 悬浮窗条件渲染）；窗口定义从数据层存量 reset 时间读取，quota 刷新后下一拍自动对齐；`applyCodexUsageDetails` 移除 `fetchedAt` 严格匹配门槛，本地数据写入独立触发 UI 刷新。
   - Codex 扫描性能优化：行过滤下沉到字节层（memmem 预过滤替代逐行 `String.contains`，冷扫描约 12× 提速）、读取分块 64KB→1MB、`refreshAll` 触发去重（不再与被唤醒的循环 B 并发双扫），并引入程序生命周期内的 append-only 增量解析——会话文件增长时只解析新增尾部（每拍从秒级降到毫秒级），截断/替换按文件整体重扫自愈，App 重启即冷全扫；不写入任何磁盘索引。
+  - DSH 扫描同步优化：`consumeLine` 增加字节级 marker 预过滤（只有 `request/context` / `assistant/message` 行进入 JSONDecoder，占解压后字节绝大多数的 `assistant/chunk` 等噪声行被跳过）、读取分块 64KB→1MB；Codex 与 DSH 的字节总预算上限从 256MB 统一放宽到 1024MB（增量解析后预算只约束 I/O，重度七天用量不再静默挤出最旧 session）。
 - 重构客户端 ↔ quota provider 关系：引入 `ClientDescriptor` / `ClientProviderBinding`，把 provider-level `mergeOpencodeUsage` 字段抽象为 `clientBindings[]`；schema 升级到 v2，旧 v1 配置自动迁移。
 - Codex 本地账本从 `turn_context` 解析 model 名称，让 GPT-5.6 Sol / Terra / Luna 在公开价目中可被独立计价；新增 `recentSamples` 字段把逐次调用样本带入客户端 tab 的价值估算。
 - minimax v2 SQLite reader 增加 model 回退链：row-level `model` → session-level `record_json.effectiveModel` → ledger 唯一模型；多模型时不再猜测。

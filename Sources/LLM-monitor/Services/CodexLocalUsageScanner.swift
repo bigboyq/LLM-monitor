@@ -98,7 +98,9 @@ struct CodexLocalScanLimits: Sendable {
     static let production = CodexLocalScanLimits(
         maxSessionFiles: 1_024,
         maxEventsPerFile: 10_000,
-        maxTotalParsedBytes: 256 * 1024 * 1024,
+        // 增量解析后预算真实约束的只是 I/O 读取量（内存缓存只存事件，增量拍只读
+        // 尾部）；1024MB 对应重度七天用量，触顶仍按 mtime 最新优先截断。
+        maxTotalParsedBytes: 1024 * 1024 * 1024,
         maxJSONLLineBytes: 8 * 1024 * 1024,
         // 1MB 分块：Data 切片次数与 seek 开销随块变大摊薄，同时内存峰值仍有界
         //（单行上限仍由 maxJSONLLineBytes 约束）。
