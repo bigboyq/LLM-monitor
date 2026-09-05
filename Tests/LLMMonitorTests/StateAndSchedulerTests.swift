@@ -2781,7 +2781,9 @@ final class StateAndSchedulerTests: XCTestCase {
         // 只有 codex 就绪；其余客户端未安装
         orchestration.testReadinessOverride = { clientID in clientID == "codex" }
 
-        orchestration.startUsageLoop { 0.05 } // 全局节奏 50ms
+        // 传入 startupDelay: 0 跳过启动错峰——本测试验证的是稳态节奏，
+        // 不需要等真实的 5 秒首拍延迟。
+        orchestration.startUsageLoop(intervalProvider: { 0.05 }, startupDelay: 0)
         try await Task.sleep(nanoseconds: 120_000_000)
         orchestration.stopUsageLoop()
 
@@ -2794,6 +2796,54 @@ final class StateAndSchedulerTests: XCTestCase {
         let intervals = await MainActor.run { requestedIntervals.all }
         XCTAssertFalse(intervals.isEmpty)
         XCTAssertTrue(intervals.allSatisfy { $0 == 0.05 }, "休眠必须始终为全局间隔，实际 \(intervals)")
+    }
+
+    /// 启动错峰：首拍前有一次 startupDelay 休眠；该延迟可被 triggerImmediateScanAll
+    /// 提前打断（手动刷新不等待），打断后立即进入正常扫描节奏。
+    @MainActor
+    func testLoopBStartupDelayDefersFirstScanAndIsInterruptible() async throws {
+        // 以 readiness 检查次数计拍（每拍 scanAllClients 恰好调用一次 override）；
+        // 休眠压缩为 1ms 后"延迟期"无法用真实时间观察，改为断言睡眠请求序列：
+        // 首拍前必须恰好有一次 startupDelay=5s 的请求（错峰），其后全部是全局间隔。
+        final class TickCounter: @unchecked Sendable {
+            var count = 0
+        }
+        let counter = TickCounter()
+
+        final class NoopWriter: LocalUsageStatusWriting {
+            func providerID(for kind: ProviderKind) -> String? { nil }
+            func setScanningState(_ isScanning: Bool, for providerID: String) {}
+            func applyAntigravityLocalUsage(_ usage: AntigravityLocalUsage?) {}
+            func applyMinimaxLocalUsage(_ usage: ProviderLocalUsage?) {}
+            func applyGlmLocalUsage(_ usage: GlmLocalUsage?) {}
+            func applyOpencodeUsage(_ usage: OpencodeLocalUsage?) {}
+            func applyDshUsage(_ usage: DshLocalUsage?) {}
+            func codexEnrichmentTarget() -> (providerID: String, authPath: String?, model: ModelQuota?, fetchedAt: Date, generation: Int)? { nil }
+            func applyCodexUsageDetails(_ details: CodexUsageDetails?, providerID: String, fetchedAt: Date, configurationGeneration: Int) {}
+        }
+
+        let orchestration = LocalUsageOrchestration(writer: NoopWriter())
+        defer { orchestration.cancelInFlightAll() }
+        let requestedIntervals = RecordedIntervals()
+        orchestration.testSleepOverride = { (interval: TimeInterval) in
+            await MainActor.run { requestedIntervals.record(interval) }
+            try await Task.sleep(nanoseconds: 1_000_000) // 1ms 压缩真实等待
+        }
+        orchestration.testReadinessOverride = { (_: String) in
+            counter.count += 1
+            return false
+        }
+
+        orchestration.startUsageLoop(intervalProvider: { 0.05 }, startupDelay: 5)
+        try await Task.sleep(nanoseconds: 100_000_000)
+        orchestration.stopUsageLoop()
+
+        let intervals = await MainActor.run { requestedIntervals.all }
+        // 首拍前恰好一次 5s 启动延迟（错峰），其后全部是全局间隔——真实运行中这 5s
+        // 可被 triggerImmediateScanAll 打断（打断语义已由 interruptibleSleep 保证）。
+        XCTAssertEqual(intervals.first, 5.0, "首拍前必须有一次 startupDelay 睡眠请求")
+        XCTAssertTrue(intervals.dropFirst().allSatisfy { $0 == 0.05 }, "延迟之后必须全部为全局间隔，实际 \(intervals)")
+        XCTAssertGreaterThan(counter.count, 0, "延迟之后必须正常进入扫描节奏")
     }
 }
 

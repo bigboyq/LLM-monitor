@@ -138,14 +138,25 @@ final class LocalUsageOrchestration {
 
     // MARK: - 循环 B（用量循环）生命周期与调度
 
-    /// 启动循环 B：以全局刷新间隔迭代所有客户端。首拍立即执行一次全量扫描。
-    func startUsageLoop(intervalProvider: @escaping () -> TimeInterval) {
+    /// 启动循环 B：以全局刷新间隔迭代所有客户端。
+    /// 启动后先延迟 `startupDelay`（默认 5s）再跑首拍——与循环 A 的首次额度刷新
+    /// 错峰，让 codex 明细扫描时数据层大概率已有存量 reset 时间（首拍即能产出
+    /// 窗口用量），同时避免两条循环同一时刻并发扫描。延迟可被
+    /// `triggerImmediateScanAll`（手动刷新/系统唤醒）提前打断，不会让用户等待。
+    func startUsageLoop(
+        intervalProvider: @escaping () -> TimeInterval,
+        startupDelay: TimeInterval = 5
+    ) {
         stopUsageLoop()
         // 丢弃上一轮循环遗留的立即扫描请求；新循环首拍本身就会立即扫描。
         immediateScanRequested = false
-        logInfo("[usage-loop] 启动用量循环 B，首拍立即扫描，后续由全局刷新间隔驱动")
+        logInfo("[usage-loop] 启动用量循环 B，\(Int(startupDelay))s 后跑首拍（与额度循环错峰），后续由全局刷新间隔驱动")
         usageLoopTask = Task { @MainActor [weak self] in
             guard let self else { return }
+            if startupDelay > 0 {
+                await self.interruptibleSleep(startupDelay)
+                guard !Task.isCancelled else { return }
+            }
             // 首拍即扫全部客户端
             await self.scanAllClients()
 

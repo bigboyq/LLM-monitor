@@ -549,7 +549,13 @@ extension CodexFetcher {
             if cached.lastModifiedAt == snapshot.modifiedAt, cached.parsedFileSize == snapshot.fileSize {
                 return (cached.events, min(cached.parsedByteCount, remainingByteBudget), false)
             }
-            if snapshot.fileSize > cached.resumeOffset {
+            // 增长判定必须以"上一拍已解析的文件全长"为界，而不是 resumeOffset：
+            // resumeOffset 可能因尾部残行小于 parsedFileSize。若用 resumeOffset 判定，
+            // 同尺寸改写（fileSize == parsedFileSize 但内容已变）或截断到 resumeOffset
+            // 之后的文件会误入增量分支，0..resumeOffset 之间被改写的内容被静默忽略。
+            // parsedFileSize >= resumeOffset 恒成立，因此 > parsedFileSize 蕴含
+            // > resumeOffset，同时严格排除上述两类异常。
+            if snapshot.fileSize > cached.parsedFileSize {
                 // append-only 增长：只解析新增尾部。读取量封顶剩余预算——预算不足时
                 // resume 停在预算内最后一条完整行，下一拍从那里续读。
                 let tailBytes = snapshot.fileSize - cached.resumeOffset

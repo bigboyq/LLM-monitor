@@ -274,6 +274,33 @@ final class CodexLocalUsageTests: XCTestCase {
         XCTAssertEqual(modelNames(in: after.events), ["gpt-5.6-terra"])
     }
 
+    func testSameSizeRewriteTriggersFullRescan() async throws {
+        // 回归：增长判定以 parsedFileSize 为界。带尾部残行的缓存条目
+        // （resumeOffset < parsedFileSize）在同尺寸改写时不得误入增量分支，
+        // 否则 0..resumeOffset 之间被改写的内容会被静默忽略。
+        let limits = makeIncrementalTestLimits()
+        let url = makeTempJSONLFile()
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        // 首扫：完整 turn + 无换行的残行开头 → resumeOffset 停在残行前
+        let turnA = codexTurnLines(baseSeconds: 28_000, turnID: "turn-a", model: "gpt-5.6-terra", inputTokens: 10, cachedInputTokens: 2, outputTokens: 5, reasoningOutputTokens: 1)
+        let rewrittenPrefix = "{\"timestamp\":\"2026-09-05T03:30:00.000Z\",\"type\":\"turn_context\",\"payload\":{\"model\":\""
+        try rewrite(turnA + rewrittenPrefix, to: url)
+        let initial = await CodexFetcher.resolveSessionEvents(
+            for: try snapshotFor(url), parsingFingerprint: "test", limits: limits, remainingByteBudget: 4 * 1024 * 1024
+        )
+        XCTAssertEqual(initial.events.count, 4)
+
+        // 同尺寸改写：残行起点之后换成完全不同的合法内容（总长度不变）
+        let sameSizeTail = String(repeating: "x", count: rewrittenPrefix.count)
+        try rewrite(turnA + sameSizeTail, to: url)
+        let after = await CodexFetcher.resolveSessionEvents(
+            for: try snapshotFor(url), parsingFingerprint: "test", limits: limits, remainingByteBudget: 4 * 1024 * 1024
+        )
+        XCTAssertTrue(after.didParse, "同尺寸改写必须整体重扫，不得误入增量分支")
+        XCTAssertEqual(after.events.count, 4)
+    }
+
     func testPartialTailLineParsedExactlyOnceAfterCompletion() async throws {
         let limits = makeIncrementalTestLimits()
         let url = makeTempJSONLFile()
