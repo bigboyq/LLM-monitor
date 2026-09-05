@@ -5,7 +5,7 @@
 ## Requirements
 
 - macOS 14 Sonoma or later.
-- Apple Silicon and Intel Macs are supported.
+- Apple Silicon Macs (arm64) are supported.
 - Network access is required for remote quota checks. Local token scanners do not upload client databases.
 
 ## Install and first launch

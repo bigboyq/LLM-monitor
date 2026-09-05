@@ -22,6 +22,7 @@
 - 客户端 tab tab 标题新增 provider 数量徽标：每个客户端 tab 后显示该客户端已识别的 Provider 数（如"Antigravity 3"），让用户一眼看到哪些 Provider 在产生数据。
 - OpenAI 模型定价升级：新增 GPT-6 Astra 价格（Input $10 / Cached Input $1 / Output $50），GPT-5.6 Sol 价格更新为 $4 / $0.4 / $20（原 $5 / $0.5 / $30），模型匹配从 `contains` 宽匹配改为小写后精确相等，避免同系列不同价模型被误吞；价目快照日期更新为 `2026-09-05`。
 - 模型价格目录 JSON 化：全部价格数据从 Swift 代码迁移到随 app 打包的 `Sources/LLM-monitor/Resources/ModelPricing.json`，未来调价 / 新增 / 退休模型只改该文件（同步测试与 spec）；`ModelPricingCatalog` 启动时加载 JSON，公开 API（`pricing` / `estimate` / `estimateByDay` / `tokenComponents` / `lastUpdated`）签名与语义不变。
+- 打包产物瘦身：`.app` 从 14.3MB 降到 3.5MB（-75%）。构建从 universal 双架构改为 arm64-only；打包前先导出 `build/LLM-monitor.dSYM`（约 13MB，留在 .app 外，保留线上崩溃符号化能力），再 strip .app 内二进制符号表（主二进制 12.2MB → 2.9MB）；应用图标去除 icns 内逐字节重复图层（256px/512px 各存两份）并用 pngquant 压缩图层（2.1MB → 0.6MB），原始源图不做任何修改，仅压缩进入 iconset 的副本。
 
 ### Removed
 

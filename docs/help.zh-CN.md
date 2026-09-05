@@ -5,7 +5,7 @@
 ## 系统要求
 
 - macOS 14 Sonoma 或更高版本。
-- Apple Silicon 与 Intel Mac 均可运行。
+- 需要 Apple Silicon Mac（arm64）。
 - 菜单栏需要有足够空间显示应用图标。
 - 远程额度查询需要网络；本地 token 扫描本身不会上传本地会话数据库。
 

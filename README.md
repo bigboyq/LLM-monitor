@@ -4,7 +4,7 @@
 
 适用于 macOS 14 及以上版本的菜单栏额度与本地用量监视器。一个入口集中查看 Minimax、ChatGPT/Codex、Antigravity、GLM Coding Plan 与 DeepSeek，并可选择合并 OpenCode 与 DeepSeek Harness (dsh) 的本地 token 账本。
 
-> 当前版本：**1.4.2** · 支持 Apple Silicon 与 Intel Mac · 所有凭据和用量缓存只保存在本机
+> 当前版本：**1.4.2** · 支持 Apple Silicon (arm64) · 所有凭据和用量缓存只保存在本机
 
 ## 下载与安装
 
@@ -89,7 +89,7 @@ swift build
 ./scripts/audit.sh
 ```
 
-构建 universal `.app`、DMG 和 SHA-256 校验文件：
+构建 arm64 `.app`（含 dSYM 符号文件）、DMG 和 SHA-256 校验文件：
 
 ```bash
 ./scripts/build-release.sh 1.4.2 95

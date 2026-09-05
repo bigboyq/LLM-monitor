@@ -4,7 +4,7 @@
 
 LLM Monitor is a macOS 14+ menu bar app for viewing quota, balance, reset times, health, and local token usage across multiple LLM services.
 
-> Current version: **1.4.2** · Apple Silicon and Intel · Credentials and usage caches stay on your Mac
+> Current version: **1.4.2** · Apple Silicon (arm64) · Credentials and usage caches stay on your Mac
 
 ## Download
 

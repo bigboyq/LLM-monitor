@@ -101,7 +101,7 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 | `Sources/LLM-monitor/Views/BrandLogoView.swift` | provider 品牌 logo 资源加载 + SF Symbol fallback |
 | `Sources/LLM-monitor/Views/LocalUsageHoverViews.swift` | 7-day 泛型 chart + 泛型 footer |
 | `Sources/LLM-monitor/Views/SettingsView.swift` | 设置面板 |
-| `scripts/build-app.sh` | Release universal `.app` bundle build 和 ad-hoc signing |
+| `scripts/build-app.sh` | Release arm64 `.app` bundle build（dSYM 导出 + strip）和 ad-hoc signing |
 | `scripts/build-dmg.sh` | DMG packaging from the built `.app` |
 | `scripts/test.sh` | 运行 `swift test`；仅显式设置 `INCREMENT_BUILD_NUMBER=1` 时递增 build 编号 |
 | `scripts/audit.sh` | Shell syntax、Package、测试、Release 和 Swift 6 门禁 |

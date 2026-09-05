@@ -6,7 +6,8 @@
 # 未提供 build-number 时自动递增 .build_number；同时提供两个参数可做可重复构建。
 #
 # 输出：
-#   build/LLM-monitor.app          (可双击运行)
+#   build/LLM-monitor.app          (可双击运行，arm64-only，二进制已 strip)
+#   build/LLM-monitor.dSYM         (未 strip 的调试符号，用于线上崩溃符号化)
 set -euo pipefail
 
 # ── 参数与版本管理 ───────────────────────────────────────────────────────
@@ -118,9 +119,14 @@ cd "$ROOT_DIR"
 export CLANG_MODULE_CACHE_PATH="${CLANG_MODULE_CACHE_PATH:-$ROOT_DIR/.build/clang-module-cache}"
 mkdir -p "$CLANG_MODULE_CACHE_PATH"
 
-echo "==> [1/4] swift build -c release"
-swift build -c release --arch arm64 --arch x86_64
-BINARY_PATH="$ROOT_DIR/.build/apple/Products/Release/$APP_NAME"
+echo "==> [1/4] swift build -c release (arm64)"
+swift build -c release --arch arm64
+# 单架构（--arch arm64）产物在 triple 目录；apple/Products 与 .build/release
+# 仅作旧布局兼容回退，避免误拾历史 universal 构建留下的陈旧二进制。
+BINARY_PATH="$ROOT_DIR/.build/arm64-apple-macosx/release/$APP_NAME"
+if [ ! -f "$BINARY_PATH" ]; then
+    BINARY_PATH="$ROOT_DIR/.build/apple/Products/Release/$APP_NAME"
+fi
 if [ ! -f "$BINARY_PATH" ]; then
     # 兼容 Swift < 5.9 的路径
     BINARY_PATH="$ROOT_DIR/.build/release/$APP_NAME"
@@ -131,11 +137,11 @@ if [ ! -f "$BINARY_PATH" ]; then
 fi
 echo "    Binary: $BINARY_PATH"
 
-# Q7: universal build 架构门禁——缺任一架构立即失败，避免静默产出单架构二进制。
+# 架构门禁：产物必须是 arm64-only；混入 x86_64 立即失败，避免静默产出 universal 二进制。
 ARCHS=$(lipo -archs "$BINARY_PATH" 2>/dev/null || true)
-echo "    Architectures: ${ARCHS:-<unknown>}"
-if ! echo "$ARCHS" | grep -qw arm64 || ! echo "$ARCHS" | grep -qw x86_64; then
-    echo "ERROR: release 二进制必须同时包含 arm64 和 x86_64，实际: '${ARCHS:-<none>}'" >&2
+echo "    Architectures: ${ARCHS:-<unknown>} (arm64-only)"
+if ! echo "$ARCHS" | grep -qw arm64 || echo "$ARCHS" | grep -qw x86_64; then
+    echo "ERROR: release 二进制必须是 arm64-only，实际: '${ARCHS:-<none>}'" >&2
     exit 1
 fi
 
@@ -149,12 +155,27 @@ mkdir -p "$APP/Contents/Resources"
 cp "$BINARY_PATH" "$APP/Contents/MacOS/$APP_NAME"
 chmod +x "$APP/Contents/MacOS/$APP_NAME"
 
+# strip 前先导出 dSYM（保留线上崩溃符号化能力）；dSYM 留在 build/ 下，不打进 .app。
+# 只 strip .app 内的副本，.build 中的原二进制保持未 strip，便于增量构建与审计。
+APP_BIN="$APP/Contents/MacOS/$APP_NAME"
+DSYM_PATH="$BUILD_DIR/$APP_NAME.dSYM"
+STRIP_BEFORE=$(wc -c < "$APP_BIN" | tr -d ' ')
+if dsymutil "$APP_BIN" -o "$DSYM_PATH" 2>/dev/null && [ -d "$DSYM_PATH" ]; then
+    echo "    dSYM: $DSYM_PATH ($(du -sk "$DSYM_PATH" | cut -f1) KB)"
+else
+    rm -rf "$DSYM_PATH"
+    echo "    WARNING: dSYM 导出失败，线上崩溃将无法符号化" >&2
+fi
+strip "$APP_BIN"
+STRIP_AFTER=$(wc -c < "$APP_BIN" | tr -d ' ')
+echo "    Stripped binary: $STRIP_BEFORE -> $STRIP_AFTER bytes"
+
 # SwiftPM 的 Bundle.module 资源必须随 .app 一起分发，否则首次加载品牌
 # SVG/WebP 等资源时会因找不到 LLM-monitor_LLM-monitor.bundle 直接退出。
-RESOURCE_BUNDLE="$ROOT_DIR/.build/apple/Products/Release/${APP_NAME}_${APP_NAME}.bundle"
+# 单架构构建的 bundle 在 triple 目录；apple/Products 仅作旧布局兼容回退。
+RESOURCE_BUNDLE="$ROOT_DIR/.build/arm64-apple-macosx/release/${APP_NAME}_${APP_NAME}.bundle"
 if [ ! -d "$RESOURCE_BUNDLE" ]; then
-    echo "ERROR: 找不到 SwiftPM 资源 bundle: $RESOURCE_BUNDLE"
-    exit 1
+    RESOURCE_BUNDLE="$ROOT_DIR/.build/apple/Products/Release/${APP_NAME}_${APP_NAME}.bundle"
 fi
 echo "    Copying SwiftPM resource bundle"
 cp -R "$RESOURCE_BUNDLE" "$APP/Contents/Resources/"
@@ -206,5 +227,6 @@ fi
 codesign "${CODESIGN_ARGS[@]}" "$APP" 2>&1 | sed 's/^/    /'
 codesign --verify --strict --verbose=2 "$APP" 2>&1 | sed 's/^/    /'
 echo
-echo "✓ Done: $APP"
+echo "✓ Done: $APP (arm64-only, stripped)"
+echo "  dSYM: $BUILD_DIR/$APP_NAME.dSYM"
 echo "  Open with: open '$APP'"
