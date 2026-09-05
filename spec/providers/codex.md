@@ -199,7 +199,10 @@ For the August 2026 Team plan, the observed value of one weekly quota window is 
 | Model family | Valuation convention |
 |---|---|
 | Terra / Luna | Use the normal model prices in [`ModelPricing.json`](../../Sources/LLM-monitor/Resources/ModelPricing.json) |
-| SOL | Apply an effective value discount coefficient of `0.55` to the normal price-equivalent value |
+| SOL | Apply an effective value discount coefficient of `0.64` to the normal price-equivalent value |
+
+`0.64` is effective from 2026-09-01; before that date the coefficient was `0.55`. The August 2026
+calibration below still uses the old `0.55` coefficient.
 
 This is an inferred usage-value estimate, not an official invoice amount. In the 2026-08-15 to
 2026-08-19 sample, assuming the reported usage represented approximately 20% of the weekly
