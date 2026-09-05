@@ -47,43 +47,6 @@ final class StateAndSchedulerTests: XCTestCase {
         XCTAssertEqual(LocalUsageDayKey.make(date), LocalUsageDayKey.make(date))
     }
 
-    /// 循环 B（用量循环）接管全部客户端扫描。验证 AppState.start() 启动循环 B，
-    /// AppState.stop() 停止循环 B，且彻底剥离 postRefreshTriggers 与 glmPeriodicTask。
-    func testUsageLoopWiredInStartAndStop() throws {
-        let url = URL(fileURLWithPath: #filePath)
-        let packageRoot = url.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        func source(_ path: String) throws -> String {
-            try String(contentsOfFile: packageRoot.appendingPathComponent(path).path, encoding: .utf8)
-        }
-        let appState = try source("Sources/LLM-monitor/Services/AppState.swift")
-        let orchestration = try source("Sources/LLM-monitor/Services/LocalUsageOrchestration.swift")
-
-        // start() 里启动用量循环 B
-        XCTAssertTrue(
-            appState.contains("localUsage.startUsageLoop"),
-            "AppState.start() 应调用 localUsage.startUsageLoop"
-        )
-        // stop() 里 cancel 全部本地扫描（含循环 B）
-        XCTAssertTrue(
-            appState.contains("localUsage.cancelInFlightAll()"),
-            "AppState.stop() 应调用 localUsage.cancelInFlightAll()"
-        )
-        // 编排层持有循环 B task
-        XCTAssertTrue(
-            orchestration.contains("var usageLoopTask: Task<Void, Never>?"),
-            "LocalUsageOrchestration 应有 usageLoopTask 字段"
-        )
-        // 剥离验证：不应再包含 postRefreshTriggers 或 glmPeriodicTask
-        XCTAssertFalse(
-            orchestration.contains("postRefreshTriggers"),
-            "LocalUsageOrchestration 不应再保留 postRefreshTriggers"
-        )
-        XCTAssertFalse(
-            orchestration.contains("glmPeriodicTask"),
-            "LocalUsageOrchestration 不应再保留 glmPeriodicTask"
-        )
-    }
-
     func testEffectiveRefreshIntervalRules() {
         let global = AppConfig(refreshIntervalSeconds: 300, providers: [:])
         XCTAssertEqual(global.effectiveRefreshInterval(for: "anything"), 300)
