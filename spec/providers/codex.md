@@ -244,10 +244,19 @@ reasoning 是独立字段，直接映射为 `Output` / `Reason`。统一 total �
 
 Codex local usage intentionally does not use the Minimax/Antigravity three-layer scanner model.
 It parses the CLI's append-only JSONL sessions on demand and keeps parsed events in an in-memory
-cache keyed by file fingerprint; there is no provider-owned incremental SQLite index whose writes
+cache keyed by file path; there is no provider-owned incremental SQLite index whose writes
 could race during cancel-and-rescan. Cancellation checks at scan boundaries plus the shared local
 usage lifecycle/generation guard are therefore sufficient, and a separate `lastCommittedGeneration`
 layer or dedicated cancel-and-rescan persistence test would not describe the Codex data path.
+
+Since 2026-09-06 the in-memory cache also carries a per-file resume offset: while the app is
+running, a grown session file is re-parsed only from its last complete line (append-only
+incremental parsing, ms-level per tick). The incremental state lives purely in the process —
+an app restart starts from an empty cache and performs a full cold scan (~1.3s after the
+byte-level line prefilter), and a truncated or same-size-but-modified file falls back to a full
+re-parse of that file. No disk index is written; the byte-level line prefilter
+(`event_msg` / `turn_context` markers matched via memmem before any String decoding) keeps the
+cold scan itself an order of magnitude cheaper than a naive `String.contains` pass.
 
 The provider also computes local usage summaries from:
 

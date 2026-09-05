@@ -120,6 +120,201 @@ final class CodexLocalUsageTests: XCTestCase {
         XCTAssertEqual(result.scannedFileCount, 1)
     }
 
+    // MARK: - 生命周期 append-only 增量解析
+
+    private func codexJSONLine(timestamp: String, type: String, payload: [String: Any]) -> String {
+        let object: [String: Any] = ["timestamp": timestamp, "type": type, "payload": payload]
+        let data = try! JSONSerialization.data(withJSONObject: object)
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    private func codexTurnLines(
+        baseSeconds: Double,
+        turnID: String,
+        model: String,
+        inputTokens: Int,
+        cachedInputTokens: Int,
+        outputTokens: Int,
+        reasoningOutputTokens: Int
+    ) -> String {
+        func iso(_ seconds: Double) -> String {
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            return formatter.string(from: Date(timeIntervalSince1970: seconds))
+        }
+        return [
+            codexJSONLine(timestamp: iso(baseSeconds), type: "turn_context", payload: ["model": model]),
+            codexJSONLine(timestamp: iso(baseSeconds + 1), type: "event_msg", payload: ["type": "task_started", "turn_id": turnID]),
+            codexJSONLine(
+                timestamp: iso(baseSeconds + 2),
+                type: "event_msg",
+                payload: ["type": "token_count", "info": ["last_token_usage": [
+                    "input_tokens": inputTokens,
+                    "cached_input_tokens": cachedInputTokens,
+                    "output_tokens": outputTokens,
+                    "reasoning_output_tokens": reasoningOutputTokens,
+                ]]]
+            ),
+            codexJSONLine(timestamp: iso(baseSeconds + 3), type: "event_msg", payload: ["type": "task_complete", "turn_id": turnID]),
+        ]
+        .joined(separator: "\n")
+        .appending("\n")
+    }
+
+    private func makeIncrementalTestLimits() -> CodexLocalScanLimits {
+        // 小 readChunkBytes 强制跨分块行拼接路径也被覆盖
+        CodexLocalScanLimits(
+            maxSessionFiles: 16,
+            maxEventsPerFile: 1_000,
+            maxTotalParsedBytes: 4 * 1024 * 1024,
+            maxJSONLLineBytes: 1024 * 1024,
+            readChunkBytes: 64
+        )
+    }
+
+    private func makeTempJSONLFile() -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codex-incr-\(UUID().uuidString).jsonl")
+        FileManager.default.createFile(atPath: url.path, contents: nil)
+        return url
+    }
+
+    private func rewrite(_ text: String, to url: URL) throws {
+        try Data(text.utf8).write(to: url, options: .atomic)
+    }
+
+    private func append(_ text: String, to url: URL) throws {
+        let handle = try FileHandle(forWritingTo: url)
+        defer { try? handle.close() }
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data(text.utf8))
+    }
+
+    private func snapshotFor(_ url: URL) throws -> CodexSessionFileSnapshot {
+        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        return CodexSessionFileSnapshot(
+            fileURL: url,
+            modifiedAt: attributes[.modificationDate] as! Date,
+            fileSize: attributes[.size] as! Int
+        )
+    }
+
+    private func modelNames(in events: [CodexSessionEvent]) -> [String] {
+        events.compactMap { event in
+            if case .modelContext(_, let modelName) = event { return modelName }
+            return nil
+        }
+    }
+
+    func testIncrementalAppendMatchesFullRescan() async throws {
+        let limits = makeIncrementalTestLimits()
+        let url = makeTempJSONLFile()
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        try rewrite(codexTurnLines(baseSeconds: 24_000, turnID: "turn-a", model: "gpt-5.6-terra", inputTokens: 10, cachedInputTokens: 2, outputTokens: 5, reasoningOutputTokens: 1), to: url)
+
+        let first = await CodexFetcher.resolveSessionEvents(
+            for: try snapshotFor(url), parsingFingerprint: "test", limits: limits, remainingByteBudget: 4 * 1024 * 1024
+        )
+        XCTAssertTrue(first.didParse)
+        XCTAssertEqual(first.events.count, 4)
+
+        // append-only 增长：新 turn 切换模型
+        try append(codexTurnLines(baseSeconds: 24_100, turnID: "turn-b", model: "gpt-5.6-luna", inputTokens: 20, cachedInputTokens: 4, outputTokens: 8, reasoningOutputTokens: 2), to: url)
+
+        let incremental = await CodexFetcher.resolveSessionEvents(
+            for: try snapshotFor(url), parsingFingerprint: "test", limits: limits, remainingByteBudget: 4 * 1024 * 1024
+        )
+        XCTAssertTrue(incremental.didParse)
+
+        // 未变化的文件：完全复用，不再解析（须在指纹被全量重扫覆盖前断言）
+        let unchanged = await CodexFetcher.resolveSessionEvents(
+            for: try snapshotFor(url), parsingFingerprint: "test", limits: limits, remainingByteBudget: 4 * 1024 * 1024
+        )
+        XCTAssertFalse(unchanged.didParse)
+        XCTAssertEqual(unchanged.events, incremental.events)
+
+        // 全量重扫（新 parsingFingerprint 强制冷解析）作为等价性基准
+        let fullFingerprint = "test-full-\(UUID().uuidString)"
+        let full = await CodexFetcher.resolveSessionEvents(
+            for: try snapshotFor(url), parsingFingerprint: fullFingerprint, limits: limits, remainingByteBudget: 4 * 1024 * 1024
+        )
+
+        XCTAssertEqual(incremental.events, full.events, "增量结果必须与全新全量解析逐事件一致")
+        XCTAssertEqual(modelNames(in: incremental.events), ["gpt-5.6-terra", "gpt-5.6-luna"])
+        XCTAssertEqual(incremental.events.count, 8)
+
+        // 同指纹再次调用：命中全量重扫写入的缓存，完全复用
+        let reusedAfterFull = await CodexFetcher.resolveSessionEvents(
+            for: try snapshotFor(url), parsingFingerprint: fullFingerprint, limits: limits, remainingByteBudget: 4 * 1024 * 1024
+        )
+        XCTAssertFalse(reusedAfterFull.didParse)
+        XCTAssertEqual(reusedAfterFull.events, full.events)
+    }
+
+    func testTruncatedFileTriggersFullRescan() async throws {
+        let limits = makeIncrementalTestLimits()
+        let url = makeTempJSONLFile()
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        try rewrite(codexTurnLines(baseSeconds: 25_000, turnID: "turn-a", model: "gpt-5.6-terra", inputTokens: 10, cachedInputTokens: 2, outputTokens: 5, reasoningOutputTokens: 1)
+                    + codexTurnLines(baseSeconds: 25_100, turnID: "turn-b", model: "gpt-5.6-luna", inputTokens: 20, cachedInputTokens: 4, outputTokens: 8, reasoningOutputTokens: 2), to: url)
+        let initial = await CodexFetcher.resolveSessionEvents(
+            for: try snapshotFor(url), parsingFingerprint: "test", limits: limits, remainingByteBudget: 4 * 1024 * 1024
+        )
+        XCTAssertEqual(initial.events.count, 8)
+
+        // 截断：文件被整体替换为更短的新内容
+        try rewrite(codexTurnLines(baseSeconds: 26_000, turnID: "turn-c", model: "gpt-5.6-terra", inputTokens: 30, cachedInputTokens: 6, outputTokens: 9, reasoningOutputTokens: 3), to: url)
+        let after = await CodexFetcher.resolveSessionEvents(
+            for: try snapshotFor(url), parsingFingerprint: "test", limits: limits, remainingByteBudget: 4 * 1024 * 1024
+        )
+        XCTAssertTrue(after.didParse)
+        XCTAssertEqual(after.events.count, 4, "截断后必须整体重扫，不得残留旧事件")
+        XCTAssertEqual(modelNames(in: after.events), ["gpt-5.6-terra"])
+    }
+
+    func testPartialTailLineParsedExactlyOnceAfterCompletion() async throws {
+        let limits = makeIncrementalTestLimits()
+        let url = makeTempJSONLFile()
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        // turn-a 完整 + turn-b 的前两行完整 + token_count 行只有前半段（无换行）
+        let turnA = codexTurnLines(baseSeconds: 27_000, turnID: "turn-a", model: "gpt-5.6-terra", inputTokens: 10, cachedInputTokens: 2, outputTokens: 5, reasoningOutputTokens: 1)
+        let turnBHead =
+            codexJSONLine(timestamp: "2026-09-05T03:10:00.000Z", type: "turn_context", payload: ["model": "gpt-5.6-luna"]) + "\n"
+            + codexJSONLine(timestamp: "2026-09-05T03:10:01.000Z", type: "event_msg", payload: ["type": "task_started", "turn_id": "turn-b"]) + "\n"
+        let partialTokenLine = "{\"timestamp\":\"2026-09-05T03:10:02.000Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\""
+        try rewrite(turnA + turnBHead + partialTokenLine, to: url)
+
+        let first = await CodexFetcher.resolveSessionEvents(
+            for: try snapshotFor(url), parsingFingerprint: "test", limits: limits, remainingByteBudget: 4 * 1024 * 1024
+        )
+        XCTAssertEqual(first.events.count, 6, "残行必须整行跳过，不得产出半个事件")
+
+        // 补全残行并追加 task_complete
+        let remainder = ",\"info\":{\"last_token_usage\":{\"input_tokens\":20,\"cached_input_tokens\":4,\"output_tokens\":8,\"reasoning_output_tokens\":2}}}}\n"
+            + codexJSONLine(timestamp: "2026-09-05T03:10:03.000Z", type: "event_msg", payload: ["type": "task_complete", "turn_id": "turn-b"]) + "\n"
+        try append(remainder, to: url)
+
+        let second = await CodexFetcher.resolveSessionEvents(
+            for: try snapshotFor(url), parsingFingerprint: "test", limits: limits, remainingByteBudget: 4 * 1024 * 1024
+        )
+        XCTAssertTrue(second.didParse)
+        // turn-a 4 个事件 + turn-b 4 个事件（modelContext/taskStarted 在首拍，
+        // tokenCount/taskComplete 在残行补全后的增量拍）
+        XCTAssertEqual(second.events.count, 8, "补全后恰好解析一次，不得重复")
+        let tokenCounts = second.events.filter { if case .tokenCount = $0 { return true }; return false }
+        XCTAssertEqual(tokenCounts.count, 2)
+
+        // 无变化：完全复用，事件不增不减
+        let third = await CodexFetcher.resolveSessionEvents(
+            for: try snapshotFor(url), parsingFingerprint: "test", limits: limits, remainingByteBudget: 4 * 1024 * 1024
+        )
+        XCTAssertFalse(third.didParse)
+        XCTAssertEqual(third.events, second.events)
+    }
+
     func testSummarizeLocalUsageSplitsQuotaAndDailyWindows() throws {
         let base = Date(timeIntervalSince1970: 20_000)
         let fileURL = URL(fileURLWithPath: "/tmp/codex-local-usage-test.jsonl")
