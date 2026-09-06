@@ -173,7 +173,8 @@ Left status text:
 | `nextRefreshAt != nil` | `下次 <HH:mm or MM-dd HH:mm>` |
 | otherwise | `就绪` |
 
-`nextRefreshAt` is the earliest next time among enabled providers' independent timers. After
+`nextRefreshAt` is the earliest next due time across enabled providers, published by the
+single `ProviderRefreshScheduler` Task (no per-provider timers). After
 the first request completes, the footer therefore shows a useful next-refresh time even when
 providers use different intervals.
 

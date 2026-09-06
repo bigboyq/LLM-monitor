@@ -103,7 +103,7 @@ final class GlmZcodeLocalUsageScanner: SingleDBSnapshotScanner<GlmLocalUsage>, @
     override nonisolated func buildSnapshot(now: Date) throws -> GlmLocalUsage {
         // 闲时任务窗口每次扫描都读（off_peak_tasks 表小且稳定，单次 SELECT 开销
         // 可忽略）。不参与 db 指纹缓存判定 —— off_peak 表变更不触发 model_usage
-        // 指纹变化，但下次 quota refresh 成功后自然会触发新一轮 scan。
+        // 指纹变化，但用量循环 B 的下一拍自然会触发新一轮 scan。
         let offPeakWindows = readOffPeakWindowsWithFallback()
         let aggregate = try Self.aggregateFromDB(
             dbPath: dbURL,

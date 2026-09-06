@@ -276,7 +276,7 @@ value when local model samples are available.
 7. `ConfigStore.ensureProvidersPresent(descriptors:)` adds missing provider blocks without overwriting existing blocks.
 8. `LoginItemService` snapshots the current launch-at-login status from `SMAppService.mainApp`.
 9. `AppState` derives `ProviderStatus` values from descriptors plus config.
-10. `AppState.start()` schedules one refresh task per enabled provider that has usable auth.
+10. `AppState.start()` registers each enabled provider with usable auth in `ProviderRefreshScheduler` — a single long-lived Task that wakes on the earliest due date and runs due refreshes concurrently (no per-provider timer).
 11. `AppState.startConfigWatcher()` opens the config directory via `open(O_EVTONLY)` and installs a `DispatchSource.makeFileSystemObjectSource` listener — config edits trigger an event-driven reload in milliseconds (no polling).
 
 The lifecycle delegate calls `AppState.stop()` during normal application termination
@@ -322,12 +322,13 @@ deriveState 返回 `.notConfigured` 时整个 state 重置，lastSuccess 跟着�
 
 ## Refresh Behavior
 
-每个 enabled provider 由 `ProviderRefreshScheduler` 管理独立 timer：
+所有 enabled provider 由单一 `ProviderRefreshScheduler` Task 统一调度（无 per-provider timer）：
 
-1. scheduler 立即调用 `refreshHandler(providerID, .full)` → AppState 的 `refreshProviderDirectly`
-2. 成功后 sleep `providers.<id>.refreshIntervalSeconds ?? refreshIntervalSeconds`（后续轮询用 `.background` mode）
-3. 失败走指数退避（`baseInterval × 2^failures`，cap 5 次，30 分钟封顶，±10% jitter）
-4. 任务被 cancel → 退出循环
+1. 注册时立即调用 `refreshHandler(providerID, .full)` → AppState 的 `refreshProviderDirectly`
+2. 每次唤醒取"最早到期时刻"，到期的 provider 用 TaskGroup 并发刷新（首轮 `.full`，后续轮询用 `.background` mode）
+3. 成功后按 `providers.<id>.refreshIntervalSeconds ?? refreshIntervalSeconds` 计算下次到期
+4. 失败走指数退避（`baseInterval × 2^failures`，cap 5 次，30 分钟封顶，±10% jitter）
+5. 任务被 cancel → 退出循环
 
 **周期 full（reset credits 等“只在 full 抓取”的字段）**：`ProviderRefreshScheduler` 每累计
 `periodicFullEveryN`（默认 20）次 `.background` 后，下一次补跑一次 `.full`（走常规 deadline，
