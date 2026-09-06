@@ -216,7 +216,25 @@ The estimate is valid only when the same model mix and pricing assumptions are u
 2026-08-19 snapshot was incomplete, so this should be treated as an approximate calibration
 target rather than a hard quota or billing limit.
 
-该 ≈$58 估值基于 Terra/Luna/SOL 组合，GPT-6 Astra 尚未纳入，待实际用量校准后再更新。
+### September 2026 valuation convention (Astra included)
+
+Effective 2026-09-06, GPT-6 Astra joins the valuation with a discount coefficient of `0.6`
+(applied to Astra's price-equivalent usage value; Terra / Luna stay at normal prices, SOL
+follows the 2026-09-01 coefficient above). The window value anchors are also explicit from
+this date:
+
+| Window | Value anchor |
+|---|---|
+| 5h | `$10` |
+| Weekly | `$60` |
+
+These anchors replace the August 20% extrapolation: the estimated window value is the
+coefficient-adjusted usage sum calibrated against the `$60` weekly anchor (six 5h windows at
+`$10` each). They are valuation anchors only — unrelated to the token prices in
+[`ModelPricing.json`](../../Sources/LLM-monitor/Resources/ModelPricing.json).
+
+自 2026-09-06 起 GPT-6 Astra 已纳入估值（折扣系数 0.6，窗口锚点 5h $10 / 周 $60）；上方 ≈$58 的
+August 校准仅适用于 2026-09-01 之前（当时系数 0.56）。
 
 ### Loop-B decoupling (2026-09-05)
 
