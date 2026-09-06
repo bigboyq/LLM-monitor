@@ -199,17 +199,17 @@ For the August 2026 Team plan, the observed value of one weekly quota window is 
 | Model family | Valuation convention |
 |---|---|
 | Terra / Luna | Use the normal model prices in [`ModelPricing.json`](../../Sources/LLM-monitor/Resources/ModelPricing.json) |
-| SOL | Apply an effective value discount coefficient of `0.64` to the normal price-equivalent value |
+| SOL | Apply an effective value discount coefficient of `0.7` to the normal price-equivalent value |
 
-`0.64` is effective from 2026-09-01; before that date the coefficient was `0.55`. The August 2026
-calibration below still uses the old `0.55` coefficient.
+`0.7` is effective from 2026-09-01; before that date the coefficient was `0.56`. The August 2026
+calibration below still uses the old `0.56` coefficient.
 
 This is an inferred usage-value estimate, not an official invoice amount. In the 2026-08-15 to
 2026-08-19 sample, assuming the reported usage represented approximately 20% of the weekly
 window, the adjusted value is:
 
 ```text
-(SOL value × 0.55 + Luna value + Terra value) ÷ 0.20 ≈ $58.1
+(SOL value × 0.56 + Luna value + Terra value) ÷ 0.20 ≈ $58
 ```
 
 The estimate is valid only when the same model mix and pricing assumptions are used. The sample's
@@ -223,7 +223,13 @@ target rather than a hard quota or billing limit.
 Codex local usage details are produced by usage loop B (`LocalUsageOrchestration`) and no longer
 wait for a quota fetch success:
 
-- The session scan runs whenever `~/.codex` exists, on the global refresh interval.
+- The session scan runs whenever the codex home directory exists — resolved via config
+  `authPath` → `CODEX_HOME` → `~/.codex`, the same chain `CodexFetcher` uses — on the
+  global refresh interval. Readiness is diagnostics-only; when a source disappears, one
+  transition beat lets the scanner publish an empty snapshot and clear stale UI.
+- Scan results produced before the first quota success cannot be enriched (no `QuotaInfo`
+  to attach them to yet); the first successful quota fetch wakes loop B for a hydration
+  beat so window summaries don't wait a full interval.
 - Window summaries (`primary` / `secondary`) are derived from the reset times stored in the
   shared data layer (the most recent successful quota fetch). Before the first quota success
   they are `nil`, and the scan still produces `dailyTokenUsage` (7 days), the recent samples,
