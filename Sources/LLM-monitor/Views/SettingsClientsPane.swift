@@ -233,53 +233,8 @@ extension SettingsView {
 
     func clientProviderDisclosure(_ provider: ClientProviderUsageSummary) -> some View {
         DisclosureGroup {
-            VStack(alignment: .leading, spacing: 10) {
-                SevenDayTokenUsageHoverView(
-                    days: provider.dailyTokenUsage,
-                    scannedAt: provider.scannedAt,
-                    isScanning: false,
-                    priceByDay: provider.priceTextByDay
-                )
-
-                // 第 1 行：聚合指标（总 Token / 命中率 / 价值），放在一起做整体评估。
-                HStack(alignment: .top, spacing: 16) {
-                    usageMetric(label: "总 Token", value: Formatters.formatTokenCountCompact(provider.totalTokens))
-                    usageMetric(label: "命中率", value: provider.cacheHitRate.map { String(format: "%.1f%%", $0 * 100) } ?? "—")
-                    usageMetric(label: "价值", value: costText(provider.costEstimate))
-                }
-
-                // 第 2 行：分项 Token 桶，让 cache / output / reason 的相对比例一眼可读。
-                HStack(alignment: .top, spacing: 16) {
-                    usageMetric(label: "Input", value: Formatters.formatTokenCountCompact(provider.inputTokens))
-                    usageMetric(label: "Cache", value: Formatters.formatTokenCountCompact(provider.cacheReadTokens))
-                    usageMetric(label: "Output", value: Formatters.formatTokenCountCompact(provider.outputTokens))
-                    usageMetric(label: "Reason", value: Formatters.formatTokenCountCompact(provider.reasoningTokens))
-                }
-
-                if provider.unpricedModelUsage.isEmpty == false {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("未定价模型")
-                            .font(SettingsTypography.metadata)
-                            .foregroundStyle(.orange)
-                        ForEach(provider.unpricedModelUsage) { model in
-                            Text("\(model.modelName) · \(Formatters.formatTokenCountCompact(model.totalTokens)) tokens · \(model.sampleCount) 次")
-                                .font(SettingsTypography.metadata)
-                                .foregroundStyle(.orange)
-                        }
-                    }
-                }
-                if provider.costEstimate.pricedModelNames.isEmpty == false {
-                    Text("计价模型：\(provider.costEstimate.pricedModelNames.joined(separator: ", ")) · 价格目录更新于 \(ModelPricingCatalog.lastUpdated)")
-                        .font(SettingsTypography.metadata)
-                        .foregroundStyle(.tertiary)
-                }
-                if let scannedAt = provider.scannedAt {
-                    Text("最近扫描：\(Formatters.formatAbsolute(scannedAt))")
-                        .font(SettingsTypography.metadata)
-                        .foregroundStyle(.tertiary)
-                }
-            }
-            .padding(.top, 8)
+            ClientProviderExpandedContent(provider: provider)
+                .padding(.top, 8)
         } label: {
             HStack(spacing: 8) {
                 Image(systemName: "circle.fill")
@@ -295,8 +250,63 @@ extension SettingsView {
         }
         .font(SettingsTypography.metadata)
     }
+}
 
-    func usageMetric(label: String, value: String) -> some View {
+/// DisclosureGroup 展开行的完整内容。content 闭包求值出的视图值会被整体拷贝进
+/// AttributeGraph 节点；这里曾以内联深层匿名 TupleView 承载（柱图 + 7 列指标 +
+/// 条件文本），并在该拷贝路径上命中一次系统级 swift_retain bad-pointer 崩溃
+/// （栈：initializeWithCopy for DisclosureGroup + 三层嵌套 tuple 拷贝）。改用
+/// 具名 struct：节点只保存一个小值，子树在自身节点求值。
+private struct ClientProviderExpandedContent: View {
+    let provider: ClientProviderUsageSummary
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            SevenDayTokenUsageHoverView(
+                days: provider.dailyTokenUsage,
+                scannedAt: provider.scannedAt,
+                isScanning: false,
+                priceByDay: provider.priceTextByDay
+            )
+
+            // 单行并排：聚合指标（总 Token / 命中率 / 价值）+ 分项 Token 桶，
+            // caption 字号 + 紧凑数值下 7 列约 380pt，minWidth 720 的内容区放得下。
+            HStack(alignment: .top, spacing: 16) {
+                usageMetric(label: "总 Token", value: Formatters.formatTokenCountCompact(provider.totalTokens))
+                usageMetric(label: "命中率", value: provider.cacheHitRate.map { String(format: "%.1f%%", $0 * 100) } ?? "—")
+                usageMetric(label: "价值", value: costText(provider.costEstimate))
+                usageMetric(label: "Input", value: Formatters.formatTokenCountCompact(provider.inputTokens))
+                usageMetric(label: "Cache", value: Formatters.formatTokenCountCompact(provider.cacheReadTokens))
+                usageMetric(label: "Output", value: Formatters.formatTokenCountCompact(provider.outputTokens))
+                usageMetric(label: "Reason", value: Formatters.formatTokenCountCompact(provider.reasoningTokens))
+            }
+
+            if provider.unpricedModelUsage.isEmpty == false {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("未定价模型")
+                        .font(SettingsTypography.metadata)
+                        .foregroundStyle(.orange)
+                    ForEach(provider.unpricedModelUsage) { model in
+                        Text("\(model.modelName) · \(Formatters.formatTokenCountCompact(model.totalTokens)) tokens · \(model.sampleCount) 次")
+                            .font(SettingsTypography.metadata)
+                            .foregroundStyle(.orange)
+                    }
+                }
+            }
+            if provider.costEstimate.pricedModelNames.isEmpty == false {
+                Text("计价模型：\(provider.costEstimate.pricedModelNames.joined(separator: ", ")) · 价格目录更新于 \(ModelPricingCatalog.lastUpdated)")
+                    .font(SettingsTypography.metadata)
+                    .foregroundStyle(.tertiary)
+            }
+            if let scannedAt = provider.scannedAt {
+                Text("最近扫描：\(Formatters.formatAbsolute(scannedAt))")
+                    .font(SettingsTypography.metadata)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+    }
+
+    private func usageMetric(label: String, value: String) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(label)
                 .font(SettingsTypography.metadata)
@@ -306,10 +316,9 @@ extension SettingsView {
         }
     }
 
-    func costText(_ estimate: ModelCostEstimate) -> String {
+    private func costText(_ estimate: ModelCostEstimate) -> String {
         // 设置页保留未定价模型明细（unpricedModelUsage），金额文案与菜单共用
         // displayText 的覆盖度语义。
         estimate.displayText
     }
-
 }
