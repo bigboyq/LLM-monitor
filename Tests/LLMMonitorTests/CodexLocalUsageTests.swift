@@ -275,9 +275,10 @@ final class CodexLocalUsageTests: XCTestCase {
     }
 
     func testSameSizeRewriteTriggersFullRescan() async throws {
-        // 回归：增长判定以 parsedFileSize 为界。带尾部残行的缓存条目
-        // （resumeOffset < parsedFileSize）在同尺寸改写时不得误入增量分支，
-        // 否则 0..resumeOffset 之间被改写的内容会被静默忽略。
+        // 回归：带尾部残行的缓存条目（resumeOffset < parsedFileSize）在同尺寸
+        // 改写时不得误入增量分支——同尺寸续读的安全由 mtime 判定保证，改写后
+        // mtime 变化必须落全量重扫，否则 0..resumeOffset 之间被改写的内容会被
+        // 静默忽略。
         let limits = makeIncrementalTestLimits()
         let url = makeTempJSONLFile()
         defer { try? FileManager.default.removeItem(at: url) }
@@ -335,6 +336,180 @@ final class CodexLocalUsageTests: XCTestCase {
         XCTAssertEqual(tokenCounts.count, 2)
 
         // 无变化：完全复用，事件不增不减
+        let third = await CodexFetcher.resolveSessionEvents(
+            for: try snapshotFor(url), parsingFingerprint: "test", limits: limits, remainingByteBudget: 4 * 1024 * 1024
+        )
+        XCTAssertFalse(third.didParse)
+        XCTAssertEqual(third.events, second.events)
+    }
+
+    private func tokenInputs(in events: [CodexSessionEvent]) -> [Int] {
+        events.compactMap { event in
+            if case .tokenCount(_, let usage) = event { return usage.inputTokens }
+            return nil
+        }
+    }
+
+    func testTrailingCompleteJSONLineCountedExactlyOnceAcrossAppend() async throws {
+        // Bug 1 回归：无换行的尾部完整 JSON 行必须提交（endOffset 推进到 EOF）。
+        // 旧语义下事件已计入但 endOffset 回退到行首，文件一增长就从行首重读
+        // 同一事件 → token_count 重复且一直留在缓存。
+        let limits = makeIncrementalTestLimits()
+        let url = makeTempJSONLFile()
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        // turn-a 完整（含末尾换行）+ 尾行 token_count 无换行
+        let turnA = codexTurnLines(baseSeconds: 29_000, turnID: "turn-a", model: "gpt-5.6-terra", inputTokens: 10, cachedInputTokens: 2, outputTokens: 5, reasoningOutputTokens: 1)
+        let trailingTokenLine = codexJSONLine(
+            timestamp: "2026-09-05T04:00:02.000Z",
+            type: "event_msg",
+            payload: ["type": "token_count", "info": ["last_token_usage": [
+                "input_tokens": 20, "cached_input_tokens": 4,
+                "output_tokens": 8, "reasoning_output_tokens": 2,
+            ]]]
+        )
+        try rewrite(turnA + trailingTokenLine, to: url)
+
+        let first = await CodexFetcher.resolveSessionEvents(
+            for: try snapshotFor(url), parsingFingerprint: "test", limits: limits, remainingByteBudget: 4 * 1024 * 1024
+        )
+        XCTAssertEqual(first.events.count, 5, "无换行的完整 JSON 尾行必须产出事件")
+        XCTAssertEqual(tokenInputs(in: first.events), [10, 20])
+
+        // 尾行已提交 → resumeOffset == fileSize，同指纹必须精确命中
+        let unchanged = await CodexFetcher.resolveSessionEvents(
+            for: try snapshotFor(url), parsingFingerprint: "test", limits: limits, remainingByteBudget: 4 * 1024 * 1024
+        )
+        XCTAssertFalse(unchanged.didParse)
+        XCTAssertEqual(unchanged.events, first.events)
+
+        // 文件增长：先补上尾行缺失的换行符，再追加 turn-b 收尾。
+        // 旧语义下增量拍会从尾行行首重读 → token_count(20) 出现两次。
+        let turnBComplete = codexJSONLine(
+            timestamp: "2026-09-05T04:00:03.000Z",
+            type: "event_msg",
+            payload: ["type": "task_complete", "turn_id": "turn-b"]
+        ) + "\n"
+        try append("\n" + turnBComplete, to: url)
+
+        let second = await CodexFetcher.resolveSessionEvents(
+            for: try snapshotFor(url), parsingFingerprint: "test", limits: limits, remainingByteBudget: 4 * 1024 * 1024
+        )
+        XCTAssertTrue(second.didParse)
+        XCTAssertEqual(second.events.count, 6, "追加后不得重复计入无换行尾行")
+        XCTAssertEqual(tokenInputs(in: second.events), [10, 20], "无换行尾行跨 append 只能计一次")
+    }
+
+    func testUncommittedTrailingPartialRereadOnUnchangedFile() async throws {
+        // 尾部半行未提交时（resumeOffset < fileSize），同尺寸同 mtime 的下一拍
+        // 必须续读半行而不走精确命中：内容未变（mtime 判定），重读只是补齐未
+        // 消费尾部——事件不重复，且按 committed delta 计费不重复扣预算。
+        let limits = makeIncrementalTestLimits()
+        let url = makeTempJSONLFile()
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let turnA = codexTurnLines(baseSeconds: 32_000, turnID: "turn-a", model: "gpt-5.6-terra", inputTokens: 10, cachedInputTokens: 2, outputTokens: 5, reasoningOutputTokens: 1)
+        let partial = "{\"timestamp\":\"2026-09-05T06:00:00.000Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_cou"
+        try rewrite(turnA + partial, to: url)
+
+        let first = await CodexFetcher.resolveSessionEvents(
+            for: try snapshotFor(url), parsingFingerprint: "test", limits: limits, remainingByteBudget: 4 * 1024 * 1024
+        )
+        XCTAssertEqual(first.events.count, 4, "半行不得产出事件")
+
+        // 文件未变：不满足精确命中（resumeOffset < fileSize），走续读重读半行
+        let second = await CodexFetcher.resolveSessionEvents(
+            for: try snapshotFor(url), parsingFingerprint: "test", limits: limits, remainingByteBudget: 4 * 1024 * 1024
+        )
+        XCTAssertTrue(second.didParse, "未消费到 EOF 时文件未变也必须续读，不得精确命中")
+        XCTAssertEqual(second.events, first.events, "半行重读不得产生重复事件")
+        XCTAssertEqual(second.parsedByteCount, 0, "重读未提交半行按 committed delta 计费，不得重复扣预算")
+
+        // 半行补全：续读后恰好计一次
+        try append("nt\",\"info\":{\"last_token_usage\":{\"input_tokens\":20,\"cached_input_tokens\":4,\"output_tokens\":8,\"reasoning_output_tokens\":2}}}}\n", to: url)
+        let third = await CodexFetcher.resolveSessionEvents(
+            for: try snapshotFor(url), parsingFingerprint: "test", limits: limits, remainingByteBudget: 4 * 1024 * 1024
+        )
+        XCTAssertTrue(third.didParse)
+        XCTAssertEqual(third.events.count, 5)
+        XCTAssertEqual(tokenInputs(in: third.events), [10, 20], "补全后的 token_count 恰好计一次")
+    }
+
+    func testBudgetTruncatedIncrementalReadResumesOnUnchangedFile() async throws {
+        // Bug 2 回归：增量尾读被 remainingByteBudget 截断时缓存仍记录完整
+        // parsedFileSize。旧实现下一拍精确命中（mtime + size 一致）→ 未读尾部
+        // 被永久跳过；新实现精确命中要求 resumeOffset == fileSize，文件未变也
+        // 必须续读补齐。
+        let limits = makeIncrementalTestLimits()
+        let url = makeTempJSONLFile()
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        try rewrite(codexTurnLines(baseSeconds: 30_000, turnID: "turn-a", model: "gpt-5.6-terra", inputTokens: 10, cachedInputTokens: 2, outputTokens: 5, reasoningOutputTokens: 1), to: url)
+
+        // 第一拍：预算充足，完整消费到 EOF
+        let first = await CodexFetcher.resolveSessionEvents(
+            for: try snapshotFor(url), parsingFingerprint: "test", limits: limits, remainingByteBudget: 4 * 1024 * 1024
+        )
+        XCTAssertEqual(first.events.count, 4)
+
+        let turnBModel = codexJSONLine(timestamp: "2026-09-05T05:00:00.000Z", type: "turn_context", payload: ["model": "gpt-5.6-luna"]) + "\n"
+        let turnBStart = codexJSONLine(timestamp: "2026-09-05T05:00:01.000Z", type: "event_msg", payload: ["type": "task_started", "turn_id": "turn-b"]) + "\n"
+        let turnBToken = codexJSONLine(timestamp: "2026-09-05T05:00:02.000Z", type: "event_msg", payload: ["type": "token_count", "info": ["last_token_usage": [
+            "input_tokens": 20, "cached_input_tokens": 4,
+            "output_tokens": 8, "reasoning_output_tokens": 2,
+        ]]]) + "\n"
+        let turnBComplete = codexJSONLine(timestamp: "2026-09-05T05:00:03.000Z", type: "event_msg", payload: ["type": "task_complete", "turn_id": "turn-b"]) + "\n"
+        try append(turnBModel + turnBStart + turnBToken + turnBComplete, to: url)
+
+        // 第二拍：预算只够 turn-b 前两行 → 增量尾读恰在行边界被预算截断
+        let truncatedBudget = turnBModel.utf8.count + turnBStart.utf8.count
+        let second = await CodexFetcher.resolveSessionEvents(
+            for: try snapshotFor(url), parsingFingerprint: "test", limits: limits, remainingByteBudget: truncatedBudget
+        )
+        XCTAssertTrue(second.didParse)
+        XCTAssertEqual(second.events.count, 6, "预算内只能解析 turn-b 前两行")
+
+        // 第三拍：文件未变（mtime/size 相同）。旧实现在此精确命中 → 尾部两行
+        // 永久丢失；新实现必须续读补齐。
+        let third = await CodexFetcher.resolveSessionEvents(
+            for: try snapshotFor(url), parsingFingerprint: "test", limits: limits, remainingByteBudget: 4 * 1024 * 1024
+        )
+        XCTAssertTrue(third.didParse, "未消费到 EOF 时文件未变也必须续读，不得精确命中")
+        XCTAssertEqual(third.events.count, 8, "上一拍未读到的尾部必须在本拍补齐")
+        XCTAssertEqual(tokenInputs(in: third.events), [10, 20])
+
+        // 第四拍：已消费到 EOF → 精确命中复用
+        let fourth = await CodexFetcher.resolveSessionEvents(
+            for: try snapshotFor(url), parsingFingerprint: "test", limits: limits, remainingByteBudget: 4 * 1024 * 1024
+        )
+        XCTAssertFalse(fourth.didParse, "完整消费后同指纹复用必须精确命中")
+        XCTAssertEqual(fourth.events, third.events)
+    }
+
+    func testZeroBudgetFullParseDoesNotPoisonCache() async throws {
+        // Bug 2b 回归：预算为 0 的全量解析读不到任何字节，不得把空事件列表写成
+        // 可精确命中的缓存（旧实现 resumeOffset == fileSize + parsedFileSize ==
+        // fileSize，空缓存永久遮蔽真实内容）。
+        let limits = makeIncrementalTestLimits()
+        let url = makeTempJSONLFile()
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        try rewrite(codexTurnLines(baseSeconds: 31_000, turnID: "turn-a", model: "gpt-5.6-terra", inputTokens: 10, cachedInputTokens: 2, outputTokens: 5, reasoningOutputTokens: 1), to: url)
+
+        let zero = await CodexFetcher.resolveSessionEvents(
+            for: try snapshotFor(url), parsingFingerprint: "test", limits: limits, remainingByteBudget: 0
+        )
+        XCTAssertTrue(zero.events.isEmpty)
+
+        // 下一拍预算恢复：必须真正全量解析出事件
+        let second = await CodexFetcher.resolveSessionEvents(
+            for: try snapshotFor(url), parsingFingerprint: "test", limits: limits, remainingByteBudget: 4 * 1024 * 1024
+        )
+        XCTAssertTrue(second.didParse, "空缓存不得被写入，下一拍必须全量重扫")
+        XCTAssertEqual(second.events.count, 4)
+        XCTAssertEqual(tokenInputs(in: second.events), [10])
+
+        // 再下一拍：已消费到 EOF → 精确命中
         let third = await CodexFetcher.resolveSessionEvents(
             for: try snapshotFor(url), parsingFingerprint: "test", limits: limits, remainingByteBudget: 4 * 1024 * 1024
         )
