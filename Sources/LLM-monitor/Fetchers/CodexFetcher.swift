@@ -94,6 +94,19 @@ struct CodexFetcher: QuotaFetcher {
         return pathURL
     }
 
+    /// 与 init 相同的解析链（config authPath → CODEX_HOME → ~/.codex/auth.json），
+    /// 返回 codex home 目录（auth.json 所在目录）。供编排层 readiness 诊断使用，
+    /// 保持与实际扫描（`loadUsageDetailsAsync`）一致的自定义路径判定。
+    nonisolated static func codexHomeDirectory(authPath: String?) -> URL {
+        let authURL: URL
+        if let authPath, !authPath.isEmpty {
+            authURL = resolveAuthFileURL(from: URL(fileURLWithPath: NSString(string: authPath).expandingTildeInPath))
+        } else {
+            authURL = defaultAuthFileURL()
+        }
+        return authURL.deletingLastPathComponent()
+    }
+
     // MARK: - QuotaFetcher
 
     func hasLocalAuth() -> Bool {

@@ -192,45 +192,57 @@ final class LocalUsageOrchestration {
         wakeLoop()
     }
 
-    /// 单拍迭代全部 6 个客户端，条目级隔离
+    /// 单拍迭代全部 6 个客户端，条目级隔离。
+    /// readiness 检查仅用于日志/诊断，不拦截就绪客户端的常规扫描；唯一例外是
+    /// 数据源从"存在"变为"消失"的过渡拍要补扫一次，让 scanner 发布空/nil 快照
+    /// 清掉 UI 里的旧用量（否则数据源删除后 UI 永远停在旧用量）。从未安装的
+    /// 客户端不做每拍空扫，单测注入 false override 时也不会触发真实扫描。
     func scanAllClients() async {
         // 1. Minimax Code
-        scanClientIfReady(clientID: "minimax_code") { [weak self] in
+        scanClient("minimax_code") { [weak self] in
             self?.minimaxCoordinator.trigger()
         }
 
         // 2. ZCode (GLM)
-        scanClientIfReady(clientID: "zcode-glm") { [weak self] in
+        scanClient("zcode-glm") { [weak self] in
             self?.glmCoordinator.trigger()
         }
 
         // 3. OpenCode
-        scanClientIfReady(clientID: "opencode") { [weak self] in
+        scanClient("opencode") { [weak self] in
             self?.opencodeCoordinator.trigger()
         }
 
         // 4. DSH
-        scanClientIfReady(clientID: "dsh") { [weak self] in
+        scanClient("dsh") { [weak self] in
             self?.dshCoordinator.trigger()
         }
 
         // 5. Antigravity (轻量本地就绪判断，不依赖 quota)
-        scanClientIfReady(clientID: "antigravity") { [weak self] in
+        scanClient("antigravity") { [weak self] in
             self?.antigravityCoordinator.trigger()
         }
 
-        // 6. Codex (包含 usage details enrichment)
+        // 6. Codex (包含 usage details enrichment)。扫描入口的守门是
+        //    codexEnrichmentTarget()（config 派生，provider 未配置/未启用时跳过）；
+        //    readiness 与其它客户端一致：只记日志 + 过渡拍补扫。
         let codexReady = checkClientReadiness("codex")
+        let codexWasReady = clientReadinessCache["codex"] == true
         updateReadinessAndLog(for: "codex", isReady: codexReady)
-        if codexReady {
+        if codexReady || codexWasReady {
             await scanCodexUsageDetails()
         }
     }
 
-    private func scanClientIfReady(clientID: String, action: () -> Void) {
+    /// 记录客户端 readiness 日志（去噪）并按需触发扫描动作。
+    /// readiness 本身不是扫描门槛：就绪照常扫；数据源"存在→消失"的过渡拍补扫
+    /// 一次（scanner 发布空/nil 快照清掉 UI 旧值）；从未就绪的客户端保持跳过，
+    /// 避免每拍空扫，也保证注入 false override 的单测不触发真实扫描。
+    private func scanClient(_ clientID: String, action: () -> Void) {
         let isReady = checkClientReadiness(clientID)
+        let wasReady = clientReadinessCache[clientID] == true
         updateReadinessAndLog(for: clientID, isReady: isReady)
-        guard isReady else { return }
+        guard isReady || wasReady else { return }
         action()
     }
 
@@ -272,8 +284,11 @@ final class LocalUsageOrchestration {
         case "antigravity":
             return AntigravityFetcher().hasLocalAuth()
         case "codex":
-            let codexDir = NSString(string: "~/.codex").expandingTildeInPath
-            return fileManager.fileExists(atPath: codexDir)
+            // 与 CodexFetcher 相同的解析链（config authPath → CODEX_HOME → ~/.codex），
+            // 自定义 CODEX_HOME 的用户也能被正确判定。
+            return fileManager.fileExists(
+                atPath: CodexFetcher.codexHomeDirectory(authPath: writer.codexConfiguredAuthPath()).path
+            )
         default:
             return false
         }
@@ -284,9 +299,9 @@ final class LocalUsageOrchestration {
         if previous != isReady {
             clientReadinessCache[clientID] = isReady
             if !isReady {
-                logInfo("[usage-loop] 客户端 [\(clientID)] 未就绪或未安装，跳过扫描")
+                logInfo("[usage-loop] 客户端 [\(clientID)] 数据源缺失，跳过常规扫描（刚消失的过渡拍会补扫一次清旧数据）")
             } else if previous != nil {
-                logInfo("[usage-loop] 客户端 [\(clientID)] 已就绪，恢复扫描")
+                logInfo("[usage-loop] 客户端 [\(clientID)] 数据源已就绪")
             }
         }
     }
@@ -322,5 +337,8 @@ protocol LocalUsageStatusWriting: AnyObject {
     func applyOpencodeUsage(_ usage: OpencodeLocalUsage?)
     func applyDshUsage(_ usage: DshLocalUsage?)
     func codexEnrichmentTarget() -> (providerID: String, authPath: String?, model: ModelQuota?, fetchedAt: Date, generation: Int)?
+    /// codex 在 config.json 中配置的 authPath（未配置 provider 时返回 nil，不要求
+    /// enabled / lastSuccess）—— 供 readiness 沿 CodexFetcher 的解析链定位 codex home。
+    func codexConfiguredAuthPath() -> String?
     func applyCodexUsageDetails(_ details: CodexUsageDetails?, providerID: String, fetchedAt: Date, configurationGeneration: Int)
 }

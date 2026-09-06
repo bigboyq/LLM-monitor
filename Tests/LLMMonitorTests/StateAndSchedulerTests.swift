@@ -2592,7 +2592,8 @@ final class StateAndSchedulerTests: XCTestCase {
         sched.cancelAll()
     }
 
-    /// 循环 B 客户端就绪探测与去噪：连续未就绪状态平稳跳过，状态变动时正确识别
+    /// 循环 B 客户端 readiness 探测与去噪：readiness 仅驱动诊断日志（不再拦截
+    /// 就绪客户端的扫描），状态变动时正确识别
     @MainActor
     func testLoopBReadinessLoggingDeduplication() async {
         final class DummyWriter: LocalUsageStatusWriting {
@@ -2604,6 +2605,7 @@ final class StateAndSchedulerTests: XCTestCase {
             func applyOpencodeUsage(_ usage: OpencodeLocalUsage?) {}
             func applyDshUsage(_ usage: DshLocalUsage?) {}
             func codexEnrichmentTarget() -> (providerID: String, authPath: String?, model: ModelQuota?, fetchedAt: Date, generation: Int)? { nil }
+            func codexConfiguredAuthPath() -> String? { nil }
             func applyCodexUsageDetails(_ details: CodexUsageDetails?, providerID: String, fetchedAt: Date, configurationGeneration: Int) {}
         }
 
@@ -2626,6 +2628,46 @@ final class StateAndSchedulerTests: XCTestCase {
         await orchestration.scanAllClients()
 
         orchestration.cancelInFlightAll()
+    }
+
+    /// codex readiness 走 CodexFetcher 的解析链（config authPath → CODEX_HOME →
+    /// ~/.codex）：配置了自定义 authPath 时按该路径判定，而不是硬编码 ~/.codex
+    @MainActor
+    func testCodexReadinessResolvesConfiguredAuthPath() async throws {
+        final class PathWriter: LocalUsageStatusWriting {
+            var authPath: String?
+            func providerID(for kind: ProviderKind) -> String? { "test" }
+            func setScanningState(_ isScanning: Bool, for providerID: String) {}
+            func applyAntigravityLocalUsage(_ usage: AntigravityLocalUsage?) {}
+            func applyMinimaxLocalUsage(_ usage: ProviderLocalUsage?) {}
+            func applyGlmLocalUsage(_ usage: GlmLocalUsage?) {}
+            func applyOpencodeUsage(_ usage: OpencodeLocalUsage?) {}
+            func applyDshUsage(_ usage: DshLocalUsage?) {}
+            func codexEnrichmentTarget() -> (providerID: String, authPath: String?, model: ModelQuota?, fetchedAt: Date, generation: Int)? { nil }
+            func codexConfiguredAuthPath() -> String? { authPath }
+            func applyCodexUsageDetails(_ details: CodexUsageDetails?, providerID: String, fetchedAt: Date, configurationGeneration: Int) {}
+        }
+
+        let writer = PathWriter()
+        let orchestration = LocalUsageOrchestration(writer: writer)
+        defer { orchestration.cancelInFlightAll() }
+
+        let customHome = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codex-readiness-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: customHome) }
+
+        // 自定义 authPath 指向的目录不存在 → 未就绪（旧实现硬编码 ~/.codex，
+        // 在有 ~/.codex 的机器上会误判为就绪）
+        writer.authPath = customHome.path
+        XCTAssertFalse(orchestration.checkClientReadiness("codex"))
+
+        // 目录创建后 → 就绪
+        try FileManager.default.createDirectory(at: customHome, withIntermediateDirectories: false)
+        XCTAssertTrue(orchestration.checkClientReadiness("codex"))
+
+        // authPath 是文件路径时按其所在目录判定（与 loadUsageDetailsAsync 一致）
+        writer.authPath = customHome.appendingPathComponent("auth.json").path
+        XCTAssertTrue(orchestration.checkClientReadiness("codex"))
     }
 
     /// 循环 B 独立于 Quota 失败：GLM provider quota 失败时，循环 B 依然正常运行
@@ -2757,6 +2799,7 @@ final class StateAndSchedulerTests: XCTestCase {
             func applyOpencodeUsage(_ usage: OpencodeLocalUsage?) {}
             func applyDshUsage(_ usage: DshLocalUsage?) {}
             func codexEnrichmentTarget() -> (providerID: String, authPath: String?, model: ModelQuota?, fetchedAt: Date, generation: Int)? { target }
+            func codexConfiguredAuthPath() -> String? { target?.authPath }
             func applyCodexUsageDetails(_ details: CodexUsageDetails?, providerID: String, fetchedAt: Date, configurationGeneration: Int) {
                 appliedDetails = details
             }
@@ -2819,6 +2862,7 @@ final class StateAndSchedulerTests: XCTestCase {
             func applyOpencodeUsage(_ usage: OpencodeLocalUsage?) {}
             func applyDshUsage(_ usage: DshLocalUsage?) {}
             func codexEnrichmentTarget() -> (providerID: String, authPath: String?, model: ModelQuota?, fetchedAt: Date, generation: Int)? { nil }
+            func codexConfiguredAuthPath() -> String? { nil }
             func applyCodexUsageDetails(_ details: CodexUsageDetails?, providerID: String, fetchedAt: Date, configurationGeneration: Int) {}
         }
 

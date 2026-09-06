@@ -204,7 +204,7 @@ final class AppState: ObservableObject {
                 scheduleRefresh(for: status.id)
             }
         }
-        // 循环 B：启动用量循环，以全局刷新间隔迭代全部客户端（首拍即扫）
+        // 循环 B：启动用量循环，以全局刷新间隔迭代全部客户端（首拍延迟 5s 与循环 A 错峰）
         localUsage.startUsageLoop { [configStore] in
             configStore.config.effectiveGlobalRefreshInterval
         }
@@ -818,6 +818,16 @@ final class AppState: ObservableObject {
             fetchedAt: lastSuccess?.fetchedAt ?? Date(),
             generation: configurationGeneration
         )
+    }
+
+    /// codex 在 config.json 中配置的 authPath（~ 开头不在此展开，由
+    /// CodexFetcher.codexHomeDirectory 按统一解析链处理）。provider 未在 config
+    /// 中配置时返回 nil；不要求 enabled / lastSuccess —— readiness 仅做诊断，
+    /// 门槛由 codexEnrichmentTarget() 的 config 派生守门负责。
+    @MainActor
+    func codexConfiguredAuthPath() -> String? {
+        guard let codexID = providerID(for: .codexChatGpt) else { return nil }
+        return configStore.config.providers[codexID]?.authPath
     }
 
     @MainActor
