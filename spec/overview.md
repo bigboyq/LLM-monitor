@@ -668,10 +668,11 @@ Adding a provider currently requires:
 11. 在 `AppState` 加一个 `lazy var xxxLocalUsageCoordinator = LocalUsageCoordinator<XxxLocalUsage>(...)`
     （参考 `antigravityLocalUsageCoordinator`），apply 闭包走 `applyLocalUsage<T: Equatable>(kind:field:...)`
     通用函数（**不**要再写镜像的 `applyXxxLocalUsage`）。
-12. `refreshProviderDirectly` 的 `.ok` 成功分支加一行 `triggerXxxLocalUsageScan()`。
-    该处**还有** kind-specific post-fetch 分支（codex 走 detail task、antigravity
-    走 local scan + auth probe markAvailable、minimax 走 local scan），抽象有泄漏
-    risk，目前不抽 ADR；新 provider 加自己的 post-fetch 副作用要 follow 现有模式。
+12. 本地用量扫描**无需**在 `refreshProviderDirectly` 的成功分支接线：循环 B
+    （`LocalUsageOrchestration.scanAllClients`）按全局刷新间隔迭代全部客户端，
+    与 quota 结果彻底解耦。新客户端只需在 `LocalUsageOrchestration.checkClientReadiness`
+    登记数据源就绪判断（仅用于诊断日志；数据源从存在变为消失的过渡拍会补扫
+    一次，由 scanner 发布空快照清掉旧值）。
 
 **已落地案例**：`DeepSeek` 完整走上述 1–8 步（无本地用量 scanner，跳过 9–12），
 且是唯一一个 **post-fetch 无副作用** 的 provider（`refreshProviderDirectly` 的
@@ -743,7 +744,10 @@ NOTARIZE=1 NOTARY_PROFILE="llm-monitor" ./scripts/build-dmg.sh
 
 脚本会签名 DMG，等待 Apple 审核结果、staple ticket 并执行 `stapler validate`；普通本地构建默认不签名 DMG，也不访问 notarization 服务。
 
-`build-app.sh` compiles a release universal binary for `arm64` and `x86_64`, creates `build/LLM-monitor.app`, writes `Info.plist`, sets `LSUIElement=true`, and ad-hoc signs the app.
+`build-app.sh` compiles an arm64-only release binary (`swift build -c release --arch arm64`,
+preferring the triple-specific product path so stale universal artifacts under
+`.build/apple/Products` are never picked up), creates `build/LLM-monitor.app`, writes
+`Info.plist`, sets `LSUIElement=true`, and ad-hoc signs the app.
 
 ## Current Design Boundaries
 

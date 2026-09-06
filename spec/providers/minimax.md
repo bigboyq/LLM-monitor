@@ -69,7 +69,7 @@ Supported provider fields:
 | `refreshIntervalSeconds` | Optional independent refresh interval (overrides global default of 300s). |
 | `displayName` | Optional card title override. |
 
-`MinimaxTokenPlanFetcher.hasLocalAuth()` always returns `true`; `AppState` validates the config `apiKey`. After every successful quota refresh, `AppState` triggers `triggerMinimaxLocalUsageScan()` (mtime diff + per-source cache).
+`MinimaxTokenPlanFetcher.hasLocalAuth()` always returns `true`; `AppState` validates the config `apiKey`. The scanner runs on usage loop B every global refresh interval (mtime diff + per-source cache), independent of quota refresh success.
 
 ## API Request
 
@@ -190,8 +190,8 @@ QuotaInfo(
 
 ## Local Token Usage Scanner
 
-`MinimaxLocalUsageScanner` runs in the background after every successful quota
-refresh (same cadence, typically 5 min). It scans the **v2 runtime** `.db` file
+`MinimaxLocalUsageScanner` runs in the background on usage loop B (the global
+refresh interval, typically 5 min). It scans the **v2 runtime** `.db` file
 as its only supported source,
 compares mtime + size against a cached index, and re-aggregates only the
 dirty source via direct SQLite queries on the `local_runtime_token_usage` table.

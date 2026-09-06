@@ -95,20 +95,13 @@ where R is rounds and T is turns.
 
 ## Refresh timing
 
-OpenCode **不挂自己的独立 timer**,扫描由 consumer provider 的 quota 刷新触发:
-- 应用启动时主动扫一次(让设置页诊断和已有 GLM/minimax/DeepSeek 卡片尽早拿到本地历史)
-- minimax 主 quota 刷新成功时(`refreshProviderDirectly` 在成功路径触发 `triggerOpencodeUsageScan`)
-- GLM 主 quota 刷新成功时(同上,加 native ZCode + opencode 双扫描)
-- Codex / Antigravity 主 quota 刷新成功时(同上路径)
+OpenCode 不挂自己的独立 timer,也没有 quota 依赖:由用量循环 B(`LocalUsageOrchestration`)
+按全局刷新间隔统一扫描,与其它客户端同拍迭代。启动后首拍延迟 ~5s 与额度循环错峰;手动
+refreshAll / 系统唤醒会置位 `triggerImmediateScanAll`,提前打断睡眠、下一拍立即扫描。
 
-**实际刷新频率 ≈ min(各 consumer provider 的 refreshIntervalSeconds)**。OpenCode 设置页
-"刷新时机" 一行明确展示这个触发逻辑。如需更密集的 OpenCode 扫描,加快任一 consumer
-provider 的刷新间隔即可——不需要也不存在 OpenCode 自己的独立配置项。
-
-> 决策依据:OpenCode 是"跨 provider 共享账本",不是用户主动查询的服务。给它一个独立
-> timer 会导致 consumer 还在静默时 OpenCode 已经扫了,反而造成"看 OpenCode 卡片
-> 的 prompt 时间"和"看各 quota 卡片的 prompt 时间"对不上的诡异感。
-> piggyback consumer provider 是最自然的同步点。
+> 决策依据:OpenCode 是"跨 provider 共享账本"。用量循环 B 的全局间隔与各 quota 卡片的
+> 刷新节奏一致,"看 OpenCode 卡片的 prompt 时间"和"看各 quota 卡片的 prompt 时间"天然
+> 对齐,不需要也不存在 OpenCode 自己的独立触发配置。
 
 ## Implementation map
 

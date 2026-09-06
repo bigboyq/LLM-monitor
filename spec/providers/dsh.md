@@ -84,10 +84,12 @@ to the next line, so a replayed event can never stall the scan.
 
 ## Scanner behavior
 
-- Scans at app startup, and after MiniMax / GLM / DeepSeek quota refresh success.
+- Scanned by the periodic usage loop (loop B) on the global refresh interval; the first
+  beat runs ~5 s after launch, staggered with the quota loop. Quota refresh success does
+  not trigger scans.
 - Uses file mtime + size fingerprints; if nothing changed it only rebases the cached
   seven-day window after midnight.
-- Limits: 1,024 session files, 256 MiB of compressed input, 8 MiB per JSONL line, and
+- Limits: 1,024 session files, 1 GiB of input, 8 MiB per JSONL line, and
   at most 65,536 recent samples per provider within the last 8 calendar days (today
   plus the previous 7). Full scans and cached midnight rebases apply the same
   window/cap contract, so a fingerprint hit and a fresh scan produce equivalent
@@ -95,6 +97,9 @@ to the next line, so a replayed event can never stall the scan.
   ordered newest-first (mtime descending, path ascending as a stable tie-breaker)
   *before* the caps are applied, so the most recent sessions are always preferred; the
   scan logs a warning with selected/available counts whenever truncation happens.
+- Parsing streams from disk with a line buffer bounded by the 8 MiB line cap — plain
+  JSONL and streamed archive decompression alike never load a whole file into memory;
+  a single session's decompressed archive output is capped at 1 GiB.
 - A corrupt or unreadable log does not abort the whole scan; it is skipped with a
   warning (path + error summary) and the next scan retries it. Failed files are
   excluded from the success fingerprint in `index.json`, so a lingering bad file

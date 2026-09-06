@@ -22,8 +22,7 @@ import os.log
 ///    同时不给本地 language server 制造无界请求洪峰。本地 session 文件只用于发现和
 ///    指纹比较，不参与内容解析。
 /// 5. **失败不重试**：RPC 失败或返回空事件时保留 last-good cache，
-///    由下次外部 triggerAntigravityLocalUsageScan 调用（来自 antigravity 主 quota
-///    refresh timer，默认 60s）自然重试。
+///    由用量循环 B 的下一拍（全局刷新间隔）自然重试。
 /// 6. **failure 不更新 mtime**：RPC 失败的 session 在 `index.sessions` 里
 ///    mtime 保持不变，下次扫描会自然重试，不留"假成功"状态。
 @MainActor

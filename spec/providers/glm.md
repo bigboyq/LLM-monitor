@@ -603,22 +603,16 @@ and OpenCode merge tests are consolidated in one file:
 | `testGlmReaderAppliesRecentCutoffToDailyAggregation` | Recent cutoff applies to daily aggregation and samples |
 | usageProjection GLM client contribution tests | OpenCode GLM usage projection and sample namespace |
 
-`StateAndSchedulerTests.testLocalUsageScanTriggerTimingPolicy` covers the startup timing
-policy.
+The native ZCode scanner and OpenCode merge coverage is included above.
 
-The native ZCode scanner and OpenCode merge coverage is included above. The scan-trigger timing
-is locked by `StateAndSchedulerTests.testLocalUsageScanTriggerTimingPolicy`: Minimax and GLM
-scan immediately on app start, while Antigravity waits for main-quota success.
+### Scan trigger
 
-### Independent periodic trigger
+All local scanners — GLM included — are driven by usage loop B
+(`LocalUsageOrchestration.startUsageLoop`): a single Task iterates every client on the
+global refresh interval, fully decoupled from quota refresh success. The first beat runs
+~5 s after launch, staggered with the quota loop; manual refresh or system wake interrupts
+the sleep for an immediate beat. GLM's former dedicated periodic trigger
+(`AppState.glmLocalUsagePeriodicTask`) has been removed — loop B supersedes it.
 
-All local scanners normally only fire after their provider's quota refresh **succeeds**.
-For GLM this creates a blind spot: when the GLM quota keeps failing (expired key, network),
-the scanner never runs and new ZCode token consumption never reaches the chart.
-
-To close this gap, GLM has a dedicated periodic trigger (`AppState.glmLocalUsagePeriodicTask`)
-that fires `triggerGlmLocalUsageScan()` on the GLM provider's `refreshIntervalSeconds` (same
-cadence as quota), **independent of quota success**. The scanner's db+WAL fingerprint check
-ensures that when nothing changed only a `stat()` runs (microseconds); SQL (~1.5ms) only runs
-when the WAL actually moved. Wired in `AppState.start()` / cancelled in `stop()`; the wiring
-is locked by `StateAndSchedulerTests.testGlmLocalUsagePeriodicTriggerWiredInStartAndStop`.
+The scanner's db+WAL fingerprint check is unchanged: when nothing changed only a `stat()`
+runs (microseconds); SQL (~1.5ms) only runs when the WAL actually moved.

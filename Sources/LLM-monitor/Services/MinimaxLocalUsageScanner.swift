@@ -24,8 +24,8 @@ import os.log
 /// 4. **serial SQL**：扫描单一 v2 数据库；copy 策略已经把 .db 读到 /tmp
 ///    隔离 runtime 锁。
 /// 5. **失败不重试**：aggregate 单次尝试，失败就 logInfo 放弃。
-///    期望下次外部 triggerMinimaxLocalUsageScan 调用（来自 minimax 主 quota
-///    refresh timer，默认 60s）会再跑一次，runtime 通常那时已经暂停写。
+///    期望用量循环 B 的下一拍（全局刷新间隔）会再跑一次，runtime 通常
+///    那时已经暂停写。
 /// 6. **failure 不更新 mtime**：SQL 失败的 source 在 `index.sources` 里
 ///    mtime 保持不变，下次扫描会自然重试，不留"假成功"状态。
 /// 7. **数据覆盖保护**：先建 newDaily 再覆盖旧 index 时判
