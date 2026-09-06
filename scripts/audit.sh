@@ -33,8 +33,16 @@ swift build -c release
 
 echo "==> Building release (arm64) with arch gate"
 swift build -c release --arch arm64
-RELEASE_BIN="$ROOT_DIR/.build/apple/Products/Release/LLM-monitor"
-[ -f "$RELEASE_BIN" ] || RELEASE_BIN="$ROOT_DIR/.build/release/LLM-monitor"
+# 单架构（--arch arm64）产物在 triple 目录；apple/Products 与 .build/release
+# 仅作旧布局兼容回退，避免误拾上一步普通构建留下的 universal 二进制。
+RELEASE_BIN="$ROOT_DIR/.build/arm64-apple-macosx/release/LLM-monitor"
+if [ ! -f "$RELEASE_BIN" ]; then
+    RELEASE_BIN="$ROOT_DIR/.build/apple/Products/Release/LLM-monitor"
+fi
+if [ ! -f "$RELEASE_BIN" ]; then
+    # 兼容 Swift < 5.9 的路径
+    RELEASE_BIN="$ROOT_DIR/.build/release/LLM-monitor"
+fi
 RELEASE_ARCHS=$(lipo -archs "$RELEASE_BIN" 2>/dev/null || true)
 echo "    Architectures: ${RELEASE_ARCHS:-<unknown>}"
 echo "$RELEASE_ARCHS" | grep -qw arm64
