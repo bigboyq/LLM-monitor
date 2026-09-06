@@ -546,7 +546,7 @@ extension ProviderStatus {
     /// 每个 quota 卡消费的客户端来源注册表（配置表驱动，取代 per-kind switch）：
     /// `[kind: [contribution 工厂]]`，工厂返回 nil 表示该来源当前无数据。
     /// 新增 provider 只需在这里追加工厂，不再往 switch 里堆分支。
-    static let usageContributionFactories: [ProviderKind: [(ProviderStatus, QuotaInfo?) -> ClientUsageContribution?]] = [
+    static let usageContributionFactories: [ProviderKind: [@Sendable (ProviderStatus, QuotaInfo?) -> ClientUsageContribution?]] = [
         .codexChatGpt: [
             { status, info in
                 guard let details = info?.codexUsageDetails,
@@ -607,8 +607,8 @@ extension ProviderStatus {
     private static func nativeContribution(
         clientID: String,
         displayName: String,
-        _ usage: @escaping (ProviderStatus) -> ProviderLocalUsage?
-    ) -> (ProviderStatus, QuotaInfo?) -> ClientUsageContribution? {
+        _ usage: @escaping @Sendable (ProviderStatus) -> ProviderLocalUsage?
+    ) -> @Sendable (ProviderStatus, QuotaInfo?) -> ClientUsageContribution? {
         { status, _ in
             guard let snapshot = usage(status) else { return nil }
             return ClientUsageContribution(
@@ -626,9 +626,9 @@ extension ProviderStatus {
     private static func mergedContribution(
         clientID: String,
         displayName: String,
-        make: @escaping (ProviderStatus) -> OpencodeProviderUsage?,
-        scannedAt: @escaping (ProviderStatus) -> Date?
-    ) -> (ProviderStatus, QuotaInfo?) -> ClientUsageContribution? {
+        make: @escaping @Sendable (ProviderStatus) -> OpencodeProviderUsage?,
+        scannedAt: @escaping @Sendable (ProviderStatus) -> Date?
+    ) -> @Sendable (ProviderStatus, QuotaInfo?) -> ClientUsageContribution? {
         { status, _ in
             guard let usage = make(status) else { return nil }
             return ClientUsageContribution(
@@ -643,9 +643,9 @@ extension ProviderStatus {
 
     /// OpenCode 合并来源：`mergeOpencodeUsage` 开关 + 对应 provider 分片。
     private static func opencodeContribution(
-        slice: @escaping (ProviderStatus) -> OpencodeProviderUsage?,
+        slice: @escaping @Sendable (ProviderStatus) -> OpencodeProviderUsage?,
         sourceProviderID: String
-    ) -> (ProviderStatus, QuotaInfo?) -> ClientUsageContribution? {
+    ) -> @Sendable (ProviderStatus, QuotaInfo?) -> ClientUsageContribution? {
         { status, _ in
             guard status.mergeOpencodeUsage, let usage = slice(status) else { return nil }
             return ClientUsageContribution(

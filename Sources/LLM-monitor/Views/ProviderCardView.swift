@@ -39,7 +39,9 @@ struct StatusIndicator: View {
 struct ProviderCardView: View, Equatable {
     let status: ProviderStatus
 
-    static func == (lhs: ProviderCardView, rhs: ProviderCardView) -> Bool {
+    // nonisolated：View 结构体因 View 协议推断为 @MainActor，而 Equatable 的 ==
+    //  witnesses 必须可从任意隔离域调用；status 是 Sendable 值类型，非隔离比较安全。
+    nonisolated static func == (lhs: ProviderCardView, rhs: ProviderCardView) -> Bool {
         lhs.status == rhs.status
     }
 

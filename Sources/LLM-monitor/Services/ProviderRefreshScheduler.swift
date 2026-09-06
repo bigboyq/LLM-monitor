@@ -187,11 +187,17 @@ final class ProviderRefreshScheduler {
                         } else {
                             mode = .background
                         }
-                        group.addTask { @MainActor [weak self] in
-                            guard let self else { return (id, .deferred, mode) }
+                        // 把 MainActor 隔离的任务体先做成隔离闭包值（隔离闭包值本身
+                        // 是 Sendable），child task 只捕获这个 Sendable 值、调用时再
+                        // 跳回 MainActor。直接给 addTask 传 `@MainActor` 闭包会触发
+                        // region-based isolation checker 的已知误报，Swift 6 门禁
+                        // 编译失败。strong capture：runLoop 本身就强持有 self，
+                        // group 在同一 await 内全部消费完，weak 不会延长生命周期。
+                        let run: @MainActor () async -> (String, ProviderRefreshOutcome, RefreshMode) = {
                             let outcome = await self.runRefresh(id, mode: mode)
                             return (id, outcome, mode)
                         }
+                        group.addTask { await run() }
                     }
                     for await (id, outcome, mode) in group {
                         self.processOutcome(providerID: id, outcome: outcome, mode: mode)
