@@ -2670,6 +2670,142 @@ final class StateAndSchedulerTests: XCTestCase {
         XCTAssertTrue(orchestration.checkClientReadiness("codex"))
     }
 
+    /// (a) 睡眠期间到达的立即扫描请求：waiter 只能被消费该请求的那一拍恢复——
+    /// 返回时刻该拍已完成（readiness 检查数 = 2 拍 × 6 客户端），不得提前返回。
+    @MainActor
+    func testImmediateScanWaiterWaitsForFulfillingBeat() async {
+        let orchestration = LocalUsageOrchestration(writer: LoopBNoopWriter())
+        defer { orchestration.cancelInFlightAll() }
+        let probe = BeatProbe()
+        orchestration.testReadinessOverride = { _ in probe.checks += 1; return false }
+        orchestration.testSleepOverride = { [weak orchestration] _ in
+            guard let orchestration else { return }
+            if !probe.requested {
+                probe.requested = true
+                Task { [orchestration] in
+                    await orchestration.triggerImmediateScanAll()
+                    await MainActor.run { probe.checksAtWaiterReturn = probe.checks }
+                }
+                try await Task.sleep(nanoseconds: 2_000_000) // 2ms 后被请求打断
+            } else {
+                try await Task.sleep(nanoseconds: 3_600_000_000_000) // 1h：不再产生新拍
+            }
+        }
+        orchestration.startUsageLoop(intervalProvider: { 60 }, startupDelay: 0)
+
+        for _ in 0..<100 where probe.checksAtWaiterReturn == nil {
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+        XCTAssertEqual(probe.checksAtWaiterReturn, 12, "waiter 必须随满足拍（beat 2）返回，不得提前")
+    }
+
+    /// (b) 扫描进行中到达的立即扫描请求：不得被当前拍收尾提前恢复——waiter 返回
+    /// 时必须是下一拍（beat 2）已完成（checks == 12）；被当前拍（6 checks）提前
+    /// 恢复即为回归。
+    @MainActor
+    func testImmediateScanRequestDuringBeatNotResumedEarly() async {
+        let orchestration = LocalUsageOrchestration(writer: LoopBNoopWriter())
+        defer { orchestration.cancelInFlightAll() }
+        let probe = BeatProbe()
+        orchestration.testReadinessOverride = { _ in probe.checks += 1; return false }
+        orchestration.testMidBeatHook = { [weak orchestration] in
+            guard let orchestration, !probe.requested else { return }
+            probe.requested = true
+            Task { [orchestration] in
+                await orchestration.triggerImmediateScanAll()
+                await MainActor.run { probe.checksAtWaiterReturn = probe.checks }
+            }
+        }
+        orchestration.testSleepOverride = { _ in
+            try await Task.sleep(nanoseconds: 3_600_000_000_000) // 拍间不产生新拍
+        }
+        orchestration.startUsageLoop(intervalProvider: { 60 }, startupDelay: 0)
+
+        for _ in 0..<100 where probe.checksAtWaiterReturn == nil {
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+        XCTAssertEqual(probe.checksAtWaiterReturn, 12, "beat 1 收尾不得恢复 beat 1 进行中登记的 waiter")
+    }
+
+    /// (c) 启动延迟期间到达的立即扫描请求：打断启动睡眠后由首拍满足，不得
+    /// "首拍 + 立即拍"连扫两拍。
+    @MainActor
+    func testImmediateRequestDuringStartupDelayRunsSingleBeat() async {
+        let orchestration = LocalUsageOrchestration(writer: LoopBNoopWriter())
+        defer { orchestration.cancelInFlightAll() }
+        let probe = BeatProbe()
+        orchestration.testReadinessOverride = { _ in probe.checks += 1; return false }
+        orchestration.testSleepOverride = { [weak orchestration] _ in
+            guard let orchestration else { return }
+            if !probe.requested {
+                probe.requested = true
+                Task { [orchestration] in
+                    await orchestration.triggerImmediateScanAll()
+                    await MainActor.run { probe.checksAtWaiterReturn = probe.checks }
+                }
+                try await Task.sleep(nanoseconds: 2_000_000) // 启动睡眠 2ms 后被请求打断
+            } else {
+                try await Task.sleep(nanoseconds: 3_600_000_000_000)
+            }
+        }
+        orchestration.startUsageLoop(intervalProvider: { 60 }, startupDelay: 5)
+
+        for _ in 0..<100 where probe.checksAtWaiterReturn == nil {
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+        XCTAssertEqual(probe.checksAtWaiterReturn, 6, "waiter 随首拍返回")
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(probe.checks, 6, "启动延迟期间到达的请求不得引发第二拍")
+    }
+
+    /// (d) refreshAll 契约：返回前 post-quota 的用量补拍已完成并 enrich——codex
+    /// 窗口用量依赖刚落地的 reset 时间；旧实现两拍并发，beat 先于 quota 完成时
+    /// enrichment 被 .ready 丢弃，返回时 details 为空（确定性回归）。
+    @MainActor
+    func testRefreshAllWaitsForPostQuotaUsageBeat() async throws {
+        final class SlowCodexFetcher: QuotaFetcher {
+            let providerID = "codex_chatgpt"
+            let displayName = "Codex"
+            let kind = ProviderKind.codexChatGpt
+            func fetch(mode: RefreshMode) async throws -> QuotaInfo {
+                try? await Task.sleep(nanoseconds: 80_000_000)
+                return QuotaInfo(models: [], resetCredits: nil, planLabel: nil, accountEmail: nil, codexUsageDetails: nil, fetchedAt: Date())
+            }
+            func hasLocalAuth() -> Bool { true }
+        }
+
+        let store = makeIsolatedConfigStore()
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codex-refresh-all-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        try Data("{}".utf8).write(to: home.appendingPathComponent("auth.json"))
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        var config = store.config
+        config.providers["codex_chatgpt"] = ProviderConfig(enabled: true, apiKey: "sk-real-key-12345", authPath: home.path)
+        try? store.applyAndSave(config)
+
+        let desc = FetcherDescriptor(
+            id: "codex_chatgpt",
+            displayName: "Codex",
+            kind: .codexChatGpt,
+            iconSystemName: "star",
+            accentColor: .chatgpt,
+            makeFetcher: { _ in SlowCodexFetcher() }
+        )
+        let state = AppState(descriptors: [desc], configStore: store)
+        defer { state.stop() }
+
+        await state.refreshAll()
+
+        let idx = state.statuses.firstIndex(where: { $0.id == "codex_chatgpt" })!
+        guard case .ok(let info) = state.statuses[idx].state else {
+            XCTFail("quota 应该成功，实际 \(state.statuses[idx].state)")
+            return
+        }
+        XCTAssertNotNil(info.codexUsageDetails, "refreshAll 返回前 post-quota 用量补拍必须已完成并 enrich")
+    }
+
     /// 循环 B 独立于 Quota 失败：GLM provider quota 失败时，循环 B 依然正常运行
     @MainActor
     func testLoopBGlmScanIndependentOfQuotaFailure() async {
@@ -2913,6 +3049,29 @@ private struct TestQuotaFetcher: QuotaFetcher {
     }
 
     func hasLocalAuth() -> Bool { true }
+}
+
+/// Loop B waiter 语义测试共用：无副作用的 LocalUsageStatusWriting 桩。
+@MainActor
+private final class LoopBNoopWriter: LocalUsageStatusWriting {
+    func providerID(for kind: ProviderKind) -> String? { nil }
+    func setScanningState(_ isScanning: Bool, for providerID: String) {}
+    func applyAntigravityLocalUsage(_ usage: AntigravityLocalUsage?) {}
+    func applyMinimaxLocalUsage(_ usage: ProviderLocalUsage?) {}
+    func applyGlmLocalUsage(_ usage: GlmLocalUsage?) {}
+    func applyOpencodeUsage(_ usage: OpencodeLocalUsage?) {}
+    func applyDshUsage(_ usage: DshLocalUsage?) {}
+    func codexEnrichmentTarget() -> (providerID: String, authPath: String?, model: ModelQuota?, fetchedAt: Date, generation: Int)? { nil }
+    func codexConfiguredAuthPath() -> String? { nil }
+    func applyCodexUsageDetails(_ details: CodexUsageDetails?, providerID: String, fetchedAt: Date, configurationGeneration: Int) {}
+}
+
+/// 线程安全探针：readiness 检查计数（每拍 6 次）+ waiter 返回时刻的计数快照。
+/// `requested` 防止 sleep/hook 注入点重复触发请求。
+private final class BeatProbe: @unchecked Sendable {
+    var checks = 0
+    var requested = false
+    var checksAtWaiterReturn: Int?
 }
 
 /// 让 NSWindow 在测试里能伪造 isKeyWindow。`NSWindow` 的 isKeyWindow 是

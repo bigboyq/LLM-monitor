@@ -89,15 +89,27 @@ final class LocalUsageOrchestration {
     private var usageLoopTask: Task<Void, Never>?
     /// 循环 B 睡眠等待时的休眠 Task（wakeLoop() 时精确 cancel 提前唤醒，杜绝 continuation 悬挂）
     private var sleepTask: Task<Void, any Error>?
-    /// 立即全量扫描请求标志：triggerImmediateScanAll 置位，循环 B 在下一拍消费。
-    /// 读写都在 @MainActor 上串行发生，无需加锁。
-    private var immediateScanRequested = false
+    /// 下一拍将使用的 beat 序号（单调递增）。waiter 以登记时刻的 nextBeatID 为
+    /// 目标，只有目标 beat 完成才恢复——扫描进行中到达的请求不会被当前拍提前
+    /// 恢复（当前拍收尾时 waiter.target > lastFinishedBeatID）。
+    private var nextBeatID: UInt64 = 1
+    /// 最近一次完成的 beat 序号。
+    private var lastFinishedBeatID: UInt64 = 0
+    /// 等待目标 beat 完成的续体。triggerImmediateScanAll 挂起调用方，目标拍收尾
+    /// 时恢复，让 refreshAll 能真正等到本地扫描完成（兑现"刷新=全部新鲜"）。
+    /// stopUsageLoop 时全部恢复，避免循环停止后调用方悬挂。
+    /// 未满足的 waiter 本身就是"有待处理立即扫描"的状态（target > 已完成拍），
+    /// 拍间决策据此决定是否跳过睡眠，不再需要独立的请求标志。
+    private var pendingBeatContinuations: [(target: UInt64, continuation: CheckedContinuation<Void, Never>)] = []
     /// 客户端就绪状态缓存，用于日志去噪（仅在状态变动时记录日志）
     private var clientReadinessCache: [String: Bool] = [:]
     /// 仅供测试注入客户端就绪判定覆写
     var testReadinessOverride: ((String) -> Bool)?
     /// 仅供测试注入休眠闭包
     var testSleepOverride: ((TimeInterval) async throws -> Void)?
+    /// 仅供测试：beat 中段（5 个 scanClient 之后、codex 分支之前）的注入点，
+    /// 用于确定性构造"扫描进行中收到立即扫描请求"的场景。
+    var testMidBeatHook: (() -> Void)?
 
     init(writer: any LocalUsageStatusWriting) {
         self.writer = writer
@@ -148,8 +160,10 @@ final class LocalUsageOrchestration {
         startupDelay: TimeInterval = 5
     ) {
         stopUsageLoop()
-        // 丢弃上一轮循环遗留的立即扫描请求；新循环首拍本身就会立即扫描。
-        immediateScanRequested = false
+        // 重置 beat 计数；等待方已在 stopUsageLoop 里全部恢复。新循环首拍本身
+        // 就会立即扫描。
+        nextBeatID = 1
+        lastFinishedBeatID = 0
         logInfo("[usage-loop] 启动用量循环 B，\(Int(startupDelay))s 后跑首拍（与额度循环错峰），后续由全局刷新间隔驱动")
         usageLoopTask = Task { @MainActor [weak self] in
             guard let self else { return }
@@ -157,22 +171,22 @@ final class LocalUsageOrchestration {
                 await self.interruptibleSleep(startupDelay)
                 guard !Task.isCancelled else { return }
             }
-            // 首拍即扫全部客户端
-            await self.scanAllClients()
-
             while !Task.isCancelled {
-                // 消费立即扫描请求（在下一拍扫描前清零，避免请求自我延续成死循环）：
-                // - wake 到达时循环正在扫描中会被吞掉，靠这里的标志立即补一拍（不睡眠）；
-                // - wake 到达时循环正在睡眠，wakeLoop 已提前打断睡眠，标志在本拍被
-                //   消费后直接扫描，不会再多跑一拍。
-                // 扫描期间新到的请求会重新置位，由再下一拍立即处理，同批触发自动归一。
-                let runImmediately = self.immediateScanRequested
-                self.immediateScanRequested = false
-                if !runImmediately {
-                    await self.interruptibleSleep(intervalProvider())
-                    guard !Task.isCancelled else { break }
-                }
+                let beatID = self.nextBeatID
+                self.nextBeatID += 1
+
                 await self.scanAllClients()
+                self.finishBeat(through: beatID)
+
+                // 拍间决策：还有未满足的立即扫描请求（target > 刚完成的拍，即扫描
+                // 进行中到达的请求）→ 不睡眠，立即跑它们的满足拍。睡眠/启动延迟
+                // 期间到达的请求已由刚完成的拍满足（target == 该拍），自然落入
+                // 睡眠分支，不会"首拍 + 立即拍"连扫两拍。
+                if pendingBeatContinuations.contains(where: { $0.target > beatID }) {
+                    continue
+                }
+                await self.interruptibleSleep(intervalProvider())
+                guard !Task.isCancelled else { break }
             }
         }
     }
@@ -182,14 +196,49 @@ final class LocalUsageOrchestration {
         usageLoopTask?.cancel()
         usageLoopTask = nil
         wakeLoop()
+        // 循环停止后不会再有 beat 收尾，恢复所有等待方避免悬挂
+        resumeAllBeatWaiters()
     }
 
-    /// 手动 refreshAll 或系统唤醒时调用：置位立即扫描请求并重置睡眠计时，
-    /// 由循环 B 统一执行这一拍。不在调用方并发 scanAllClients，避免与被唤醒的
-    /// 循环在同一时刻对同一批文件开两拍并发扫描。
+    /// 手动 refreshAll 或系统唤醒时调用：请求循环 B 在下一拍立即全量扫描，并
+    /// 等待该拍扫描完成后才返回——refreshAll 依赖这一点兑现"刷新=全部新鲜"；
+    /// 系统唤醒等 fire-and-forget 调用方多等一个 beat 也无害。
+    /// 不在调用方并发 scanAllClients，避免与被唤醒的循环在同一时刻对同一批文件
+    /// 开两拍并发扫描。循环未运行时直接返回。
     func triggerImmediateScanAll() async {
-        immediateScanRequested = true
-        wakeLoop()
+        guard usageLoopTask != nil else { return }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            // 目标 = 登记时刻的下一拍：扫描进行中登记的请求由下一拍满足；睡眠/
+            // 启动延迟期间登记的请求由即将开始的这一拍满足。不再需要独立请求
+            // 标志——未满足的 waiter 本身就是"有待处理请求"的状态，且登记
+            // （同步段）必然先于 wakeLoop，不存在丢唤醒。
+            pendingBeatContinuations.append((target: nextBeatID, continuation: continuation))
+            wakeLoop()
+        }
+    }
+
+    /// 一拍收尾：恢复目标 beat 已完成的等待方；未达目标的继续等待（它们请求的
+    /// 是正在进行的扫描之后的下一拍）。
+    private func finishBeat(through finishedBeatID: UInt64) {
+        lastFinishedBeatID = finishedBeatID
+        var remaining: [(target: UInt64, continuation: CheckedContinuation<Void, Never>)] = []
+        for waiter in pendingBeatContinuations {
+            if waiter.target <= finishedBeatID {
+                waiter.continuation.resume()
+            } else {
+                remaining.append(waiter)
+            }
+        }
+        pendingBeatContinuations = remaining
+    }
+
+    /// 恢复所有 beat 等待方（循环停止后不会再有 beat 收尾）。
+    private func resumeAllBeatWaiters() {
+        let waiters = pendingBeatContinuations
+        pendingBeatContinuations.removeAll()
+        for waiter in waiters {
+            waiter.continuation.resume()
+        }
     }
 
     /// 单拍迭代全部 6 个客户端，条目级隔离。
@@ -222,6 +271,9 @@ final class LocalUsageOrchestration {
         scanClient("antigravity") { [weak self] in
             self?.antigravityCoordinator.trigger()
         }
+
+        // 测试钩子：beat 中段的确定性注入点（构造"扫描进行中收到立即扫描请求"）
+        testMidBeatHook?()
 
         // 6. Codex (包含 usage details enrichment)。扫描入口的守门是
         //    codexEnrichmentTarget()（config 派生，provider 未配置/未启用时跳过）；

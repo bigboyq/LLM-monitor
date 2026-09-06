@@ -31,7 +31,8 @@ final class AppState: ObservableObject {
 
     /// 公开给 SettingsView / 调试 — 真正的 single source of truth。
     let descriptors: [FetcherDescriptor]
-    /// per-provider timer + in-flight dedup + 退避 + 失败计数。
+    /// 单 Task 调度器（最早到期唤醒 + TaskGroup 并发刷新，无 per-provider timer）
+    /// + in-flight dedup + 退避 + 失败计数。
     /// 之前这 4 个 dict 散在 AppState 里，现在统一交给 `ProviderRefreshScheduler` 打理。
     /// `internal`（非 `private`）让测试能直接观察 `nextDelay` 等状态机行为。
     var refreshScheduler: ProviderRefreshScheduler!
@@ -254,16 +255,18 @@ final class AppState: ObservableObject {
             .filter { shouldAutoRefresh(providerID: $0.id) }
             .map(\.id)
 
-        // 额度循环与用量循环同时立即各跑一拍（额度 full + 用量即扫），保证用户感知的"刷新=全部新鲜"
-        async let quotaRefresh: Void = withTaskGroup(of: Void.self) { group in
+        // 手动刷新是明确契约："刷新=全部新鲜"。顺序执行：先等额度循环跑完这一拍
+        // （quota 窗口 / reset 时间就位），再请求并等待一次用量循环补拍——codex
+        // 窗口用量依赖刚落地的 reset 时间，两拍并发跑就可能用旧窗口出结果。
+        // 自动定时节拍不受影响：两条循环仍各自独立运行。
+        await withTaskGroup(of: Void.self) { group in
             for providerID in providerIDs {
                 group.addTask { [self, providerID] in
                     await self.refreshProviderFully(providerID: providerID)
                 }
             }
         }
-        async let usageScan: Void = localUsage.triggerImmediateScanAll()
-        _ = await (quotaRefresh, usageScan)
+        await localUsage.triggerImmediateScanAll()
     }
 
     func refreshOne(providerID: String) async {
@@ -537,6 +540,14 @@ final class AppState: ObservableObject {
             mutateStatus(at: newIdx) {
                 $0.state = .ok(info)
                 $0.lastRefreshedAt = info.fetchedAt
+            }
+            // codex 冷启动补水：loop B 首拍（5s 错峰）若先于首次 quota 成功，扫描
+            // 结果会因状态仍是 .ready/.failed(无 lastSuccess) 而"无 QuotaInfo 可
+            // enrich"被丢弃。首次成功且详情尚缺时唤醒 loop B 补一拍，让窗口用量
+            // 不必等下一个全局刷新周期；稳态（详情已随 merger 带入）不唤醒，保持
+            // quota 与扫描节律解耦。
+            if descriptor.kind == .codexChatGpt, info.codexUsageDetails == nil {
+                Task { await self.localUsage.triggerImmediateScanAll() }
             }
             let quotaIncreases = QuotaIncreaseDetector.detect(
                 current: info,
@@ -885,8 +896,8 @@ final class AppState: ObservableObject {
         }
     }
 
-    /// 给单个 provider 调度独立 timer（间隔由 scheduler 通过 effectiveRefreshInterval 获取）
-    /// 委托给 `ProviderRefreshScheduler`，本地不再维护 timer state。
+    /// 把 provider 登记进 `ProviderRefreshScheduler`（单 Task 调度器，到期即并发
+    /// 刷新，无独立 timer）；本地不再维护 timer state。
     private func scheduleRefresh(for providerID: String) {
         refreshScheduler.schedule(for: providerID)
     }
