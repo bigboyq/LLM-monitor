@@ -611,8 +611,12 @@ private extension DshLocalUsageScanner {
                             )
                         }
                     } else {
+                        // 明文 JSONL 同样走流式解析：maxTotalRawBytes 已放宽到
+                        // 1GB，单个大文件若用 Data(contentsOf:) 全量读入会一次性
+                        // 占满整个字节预算的堆内存；parseFile(fileURL:) 的行缓冲
+                        // 受 maxJSONLLineBytes 约束，峰值内存与文件大小无关。
                         result = try parseFile(
-                            data: try Data(contentsOf: snapshot.url),
+                            fileURL: snapshot.url,
                             sessionID: snapshot.url.deletingLastPathComponent().lastPathComponent,
                             limits: limits
                         )
@@ -645,6 +649,9 @@ private extension DshLocalUsageScanner {
         return String(text.prefix(200))
     }
 
+    /// 内存全量解析变体。生产路径（明文 JSONL 与流式解压）已统一走
+    /// `parseFile(fileURL:)`；这里仅供注入的内存解压器（测试场景）使用，
+    /// 行级语义与流式变体保持一致。
     private nonisolated static func parseFile(
         data: Data,
         sessionID: String,
@@ -688,6 +695,10 @@ private extension DshLocalUsageScanner {
 
     /// Parse a decompressed artifact directly from disk. The line buffer is bounded by
     /// `maxJSONLLineBytes`, so the full decompressed session never exists in memory.
+    /// 行级语义（换行切分、超长行跳过、行数上限、dedup seen-set）与 `parseFile(data:)`
+    /// 保持一致；取消检查按读取分块进行（粒度受 readChunkBytes 约束），且取消必须
+    /// 抛出 CancellationError 而不是静默返回半解析结果——否则半结果会被当作成功
+    /// 写入 parsedFileCache，后续扫描命中缓存后永远缺失该文件的尾部数据。
     private nonisolated static func parseFile(
         fileURL: URL,
         sessionID: String,
@@ -706,7 +717,8 @@ private extension DshLocalUsageScanner {
         var discardingOversizedLine = false
         var lineCount = 0
 
-        while !Task.isCancelled {
+        while true {
+            try Task.checkCancellation()
             guard let chunk = try handle.read(upToCount: limits.readChunkBytes), !chunk.isEmpty else {
                 break
             }
@@ -716,6 +728,12 @@ private extension DshLocalUsageScanner {
                 }
                 pending.append(chunk[chunk.index(after: newline)...])
                 discardingOversizedLine = false
+                // 跨块超长行同样计入行数上限（与 parseFile(data:) 一致），
+                // 防止用无换行的超长行无限填充绕过行数预算。
+                lineCount += 1
+                if lineCount > limits.maxSessionFiles * 10_000 {
+                    return DshFileParseResult(usages: usages, activeProviders: activeProviders)
+                }
             } else {
                 pending.append(chunk)
             }
@@ -1274,9 +1292,14 @@ enum DshLogDecoder {
 
     private static func checkOutputSize(_ bytes: NSNumber?) throws {
         guard let bytes else { throw DecoderError.unsupportedData }
-        let maximum = 256 * 1024 * 1024
-        guard bytes.intValue <= maximum else {
-            throw DecoderError.outputTooLarge(bytes: bytes.intValue)
+        // 流式解压的单文件解压结果上限。maxTotalRawBytes（1GB）是按压缩字节
+        // 口径的整轮扫描预算；zstd 压缩比高，这里允许单个 session 解压后达到
+        // 同量级（1GB 明文），否则大 session 会以 outputTooLarge 永久失败
+        // （文件被隔离且每轮重试，永远进不了统计）。
+        // 用 int64Value 比较：intValue 是 Int32，超过 2GB 时会溢出为负数绕过上限。
+        let maximum = 1024 * 1024 * 1024
+        guard bytes.int64Value <= Int64(maximum) else {
+            throw DecoderError.outputTooLarge(bytes: Int(bytes.int64Value))
         }
     }
 }

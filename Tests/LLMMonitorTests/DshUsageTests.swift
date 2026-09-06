@@ -634,6 +634,64 @@ final class DshUsageTests: XCTestCase {
         XCTAssertEqual(snapshot.byProvider["deepseek-official"]?.today?.inputTokens, 100)
     }
 
+    func testDshPlainJSONLStreamingParserMatchesFullReadSemantics() throws {
+        // 等价性：明文 JSONL 改走 parseFile(fileURL:) 流式解析后，行级语义必须
+        // 与内存全量解析一致——超长行（含跨读取分块的）整行跳过且不污染统计、
+        // 空行忽略、末行无换行符仍解析。极小 readChunkBytes 迫使每行跨多个分块。
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let calendar = makeUTCGregorianCalendar()
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("llm-monitor-dsh-plain-stream-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let cache = root.appendingPathComponent(".token-monitor", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        // 含合法 usage 的超长行：一旦超长跳过失效，其中的 inputTokens 会污染统计。
+        let oversizedPad = String(repeating: "x", count: 150)
+        let oversizedWithinBudget = String(
+            makeUsageLine(seq: 9, turn: 9, step: 0, timeMs: 1_700_000_009_000, input: 999).dropLast(1)
+        ) + #","pad":"\#(oversizedPad)"}"#
+        let spanningPad = String(repeating: "x", count: 900)
+        let oversizedSpanningChunks = String(
+            makeUsageLine(seq: 10, turn: 10, step: 0, timeMs: 1_700_000_010_000, input: 888).dropLast(1)
+        ) + #","pad":"\#(spanningPad)"}"#
+
+        let lines = [
+            #"{"type":"request/context","seq":1,"time":1700000000000,"data":{"provider":"deepseek-official","model":"deepseek-v4-flash"}}"#,
+            makeUsageLine(seq: 2, turn: 1, step: 0, timeMs: 1_700_000_001_000, input: 100),
+            oversizedWithinBudget,
+            oversizedSpanningChunks,
+            makeUsageLine(seq: 3, turn: 1, step: 1, timeMs: 1_700_000_002_000, input: 200),
+            "",
+            makeUsageLine(seq: 4, turn: 2, step: 0, timeMs: 1_700_000_003_000, input: 10)
+        ]
+        // 末行不带换行符
+        try writeSessionLog(root: sessionsRoot, sessionID: "session-plain-stream", body: lines.joined(separator: "\n"))
+
+        let limits = DshLocalUsageScanLimits(
+            maxSessionFiles: 8,
+            maxTotalRawBytes: 1024 * 1024,
+            maxJSONLLineBytes: 256,
+            maxRecentSamples: 100,
+            readChunkBytes: 32
+        )
+        let snapshot = try DshLocalUsageScanner.performScanPure(
+            sessionsRoot: sessionsRoot,
+            cacheDir: cache,
+            fileManager: FileManagerBox(),
+            calendar: calendar,
+            now: { base },
+            limits: limits
+        )
+
+        XCTAssertEqual(snapshot.eventCount, 3, "超长行必须整行跳过，空行忽略，末行无换行符仍要解析")
+        let deepseek = try XCTUnwrap(snapshot.byProvider["deepseek-official"])
+        XCTAssertEqual(deepseek.today?.inputTokens, 310, "超长行中的 usage 不得计入聚合")
+        XCTAssertEqual(deepseek.today?.turns, 2)
+        XCTAssertEqual(deepseek.today?.rounds, 3)
+        XCTAssertEqual(deepseek.recentSamples.count, 3)
+    }
+
     func testDshSelectionPrefersNewestFilesWhenOverFileLimit() throws {
         // spec：文件数超限时必须按 mtime 最新优先，而不是路径字典序截断。
         let root = FileManager.default.temporaryDirectory
