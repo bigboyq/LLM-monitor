@@ -588,8 +588,13 @@ extension CodexFetcher {
                 guard !Task.isCancelled else {
                     return (cached.events, 0, false)
                 }
-                // 预算按已提交的增量扣减而不是原始读取字节数：重读未提交的尾部
-                // 半行不应重复扣预算；缓存里仍保留累计口径。
+                // 两个口径分开：
+                // - 缓存累计值按 committedDelta 累加：重读未提交的尾部半行不应
+                //   重复累积，否则静态文件的半行会让缓存口径逐拍虚增。
+                // - 本拍预算扣减返回实际读取字节数（parsed.parsedByteCount）：
+                //   remainingByteBudget 是本拍 I/O 硬上限，committedDelta 可能
+                //   为 0（残行未提交），按它扣会让多个带残行文件的实读 I/O
+                //   合计突破字节上限。
                 let committedDelta = max(parsed.resumeOffset - cached.resumeOffset, 0)
                 await CodexSessionEventCache.shared.store(
                     CodexSessionEventCache.Entry(
@@ -603,7 +608,7 @@ extension CodexFetcher {
                     for: fileURL,
                     maximumEntryCount: limits.maxEventCacheEntries
                 )
-                return (parsed.events, committedDelta, true)
+                return (parsed.events, parsed.parsedByteCount, true)
             }
             // size 缩小（截断/轮转）或同尺寸但 mtime 变化（异常改写）→ 落到全量重扫
         }
@@ -756,7 +761,7 @@ extension CodexFetcher {
         }
         // 总扫描预算必须按实际读取字节扣减，而不是只计算匹配到的 event 行。
         // 否则大量无关/损坏内容可以让每个文件都重复享用完整预算，失去 CPU/I/O
-        // DoS 硬上界。production 的 256 MiB 仍足以覆盖正常七天 session 集。
+        // DoS 硬上界。production 的 1 GiB 仍足以覆盖正常七天 session 集。
         if events.count > maxEvents {
             events.removeFirst(events.count - maxEvents)
         }

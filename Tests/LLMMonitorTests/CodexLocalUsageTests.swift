@@ -403,7 +403,8 @@ final class CodexLocalUsageTests: XCTestCase {
     func testUncommittedTrailingPartialRereadOnUnchangedFile() async throws {
         // 尾部半行未提交时（resumeOffset < fileSize），同尺寸同 mtime 的下一拍
         // 必须续读半行而不走精确命中：内容未变（mtime 判定），重读只是补齐未
-        // 消费尾部——事件不重复，且按 committed delta 计费不重复扣预算。
+        // 消费尾部——事件不重复。缓存累计按 committed delta 累加（半行不虚增），
+        // 预算扣减按本拍实际读取字节（I/O 硬上限口径），此处即半行长度。
         let limits = makeIncrementalTestLimits()
         let url = makeTempJSONLFile()
         defer { try? FileManager.default.removeItem(at: url) }
@@ -423,7 +424,7 @@ final class CodexLocalUsageTests: XCTestCase {
         )
         XCTAssertTrue(second.didParse, "未消费到 EOF 时文件未变也必须续读，不得精确命中")
         XCTAssertEqual(second.events, first.events, "半行重读不得产生重复事件")
-        XCTAssertEqual(second.parsedByteCount, 0, "重读未提交半行按 committed delta 计费，不得重复扣预算")
+        XCTAssertEqual(second.parsedByteCount, partial.utf8.count, "预算扣减按本拍实际读取字节（I/O 上限口径），此处即重读的半行长度")
 
         // 半行补全：续读后恰好计一次
         try append("nt\",\"info\":{\"last_token_usage\":{\"input_tokens\":20,\"cached_input_tokens\":4,\"output_tokens\":8,\"reasoning_output_tokens\":2}}}}\n", to: url)
