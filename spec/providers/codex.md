@@ -282,6 +282,16 @@ re-parse of that file. No disk index is written; the byte-level line prefilter
 (`event_msg` / `turn_context` markers matched via memmem before any String decoding) keeps the
 cold scan itself an order of magnitude cheaper than a naive `String.contains` pass.
 
+The scan selects at most 1,024 recent files and retains event caches for the newest 256;
+older selected files are still scanned within the I/O budget but cannot evict that hot set.
+The 1 GiB per-scan budget counts only bytes actually read, not cache hits. Cached events
+remain available after the read budget is exhausted. Budget-truncated incremental tails
+and files skipped for lack of budget remain pending, so the aggregate summary is not cached
+until those reads finish on a later refresh. Cold scans still use the existing bounded tail
+window (discarding older content is intentional). A natural EOF with an incomplete JSON line
+is stable while the file is unchanged; its resume offset stays at the line start so an append
+can complete that line without duplicating events.
+
 The provider also computes local usage summaries from:
 
 - `~/.codex/sessions/**/*.jsonl`

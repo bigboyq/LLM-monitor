@@ -1,6 +1,6 @@
 import Foundation
 
-/// 以窗口范围和 session 文件指纹缓存本地统计，避免每 60 秒重复读取、解析同一批 JSONL。
+/// 以窗口范围和 session 文件指纹缓存本地统计，避免每次刷新重复读取、解析同一批 JSONL。
 actor CodexUsageDetailsCache {
     static let shared = CodexUsageDetailsCache()
     private static let maximumEntryCount = 16
@@ -80,6 +80,13 @@ struct CodexSessionFileEvents: Sendable {
     let events: [CodexSessionEvent]
 }
 
+struct CodexSessionScanResult: Sendable {
+    let files: [CodexSessionFileEvents]
+    let hasPendingReads: Bool
+    let parsedFileCount: Int
+    let parsedByteCount: Int
+}
+
 /// 枚举 session 时一次性捕获后续缓存、排序都会用到的元数据，避免对同一文件
 /// 在过滤、排序、source fingerprint 和单文件 cache 阶段重复执行 resourceValues。
 struct CodexSessionFileSnapshot: Sendable {
@@ -151,8 +158,8 @@ actor CodexSessionEventCache {
         /// 不计入，留给下一拍续读。
         let resumeOffset: Int
         let events: [CodexSessionEvent]
-        /// 预算口径：本文件累计读取的字节数（全量 + 历次增量）。
-        let parsedByteCount: Int
+        /// 是否已读到实际 EOF；尾部半行未提交也可以已到 EOF，文件变化后再续读。
+        let reachedEOF: Bool
     }
 
     private var entries: [String: Entry] = [:]
@@ -493,40 +500,44 @@ extension CodexFetcher {
         for snapshots: [CodexSessionFileSnapshot],
         limits: CodexLocalScanLimits = .production
     ) async -> [CodexSessionFileEvents] {
+        await scanSessionEvents(for: snapshots, limits: limits).files
+    }
+
+    nonisolated static func scanSessionEvents(
+        for snapshots: [CodexSessionFileSnapshot],
+        limits: CodexLocalScanLimits = .production
+    ) async -> CodexSessionScanResult {
         let selectedSnapshots = mostRecentSnapshots(
             snapshots,
             maximumCount: limits.maxSessionFiles
         )
-        await CodexSessionEventCache.shared.removeAll(
-            except: Set(selectedSnapshots.map(\.fileURL.path))
-        )
+        // 固定保留最新的有界热集，避免顺序扫描超过容量时冷文件逐个驱逐热文件。
+        let cachedPaths = Set(selectedSnapshots.prefix(limits.maxEventCacheEntries).map(\.fileURL.path))
+        await CodexSessionEventCache.shared.removeAll(except: cachedPaths)
+
+        // 不包含读取预算：增量读取量随剩余预算变化，不应令事件缓存失效。
+        let parsingFingerprint = [
+            "v9",
+            String(limits.maxEventsPerFile),
+            String(limits.maxJSONLLineBytes),
+        ].joined(separator: ":")
 
         var sessionFiles: [CodexSessionFileEvents] = []
         var parsedFileCount = 0
+        var hasPendingReads = false
         var remainingByteBudget = limits.maxTotalParsedBytes
         for snapshot in selectedSnapshots {
-            guard !Task.isCancelled else { break }
-            guard remainingByteBudget > 0 else { break }
-            // parsingFingerprint 不包含 perFileByteLimit——增量续读的读取量随文件
-            // 增长与剩余预算变化，把它放进指纹会让缓存每拍失效。预算封顶仍由
-            // byteLimit 参数硬约束（读取量有上界），仅当七天总量超过
-            // maxTotalParsedBytes 时才可能出现"预算内截断读取"。
-            // v8 → v9：v8 条目沿用旧的尾部提交语义（无换行尾部事件已计入但
-            // endOffset 回退到行首），新的续读逻辑会将其整行重读 → 事件重复；
-            // 升版强制做一次干净的全量重扫。
-            let parsingFingerprint = [
-                "v9",
-                String(limits.maxEventsPerFile),
-                String(limits.maxJSONLLineBytes),
-            ].joined(separator: ":")
+            guard !Task.isCancelled else { hasPendingReads = true; break }
             let resolved = await resolveSessionEvents(
                 for: snapshot,
                 parsingFingerprint: parsingFingerprint,
                 limits: limits,
-                remainingByteBudget: remainingByteBudget
+                remainingByteBudget: remainingByteBudget,
+                cacheResult: cachedPaths.contains(snapshot.fileURL.path)
             )
-            guard !Task.isCancelled else { break }
+            guard !Task.isCancelled else { hasPendingReads = true; break }
             remainingByteBudget -= min(resolved.parsedByteCount, remainingByteBudget)
+            hasPendingReads = hasPendingReads || resolved.hasPendingReads
             if resolved.didParse { parsedFileCount += 1 }
             sessionFiles.append(CodexSessionFileEvents(fileURL: snapshot.fileURL, events: resolved.events))
         }
@@ -534,31 +545,34 @@ extension CodexFetcher {
             "[codex/local] session cache: selected=\(selectedSnapshots.count), "
                 + "loaded=\(sessionFiles.count), parsed=\(parsedFileCount)"
         )
-        return sessionFiles
+        return CodexSessionScanResult(
+            files: sessionFiles,
+            hasPendingReads: hasPendingReads,
+            parsedFileCount: parsedFileCount,
+            parsedByteCount: limits.maxTotalParsedBytes - remainingByteBudget
+        )
     }
 
     /// 解析单个 session 文件的事件（缓存判定 + 增量/全量解析 + 回写缓存）：
-    /// - 缓存未变（mtime + size 一致且上一拍已消费到 EOF，即 resumeOffset ==
-    ///   fileSize）→ 直接复用；
+    /// - 缓存未变（mtime + size 一致且上一拍已读到 EOF）→ 直接复用，不扣 I/O 预算；
     /// - append-only 增长（size 超过上次解析全长），或 mtime 未变但上一拍未消费
-    ///   到 EOF（预算截断 / 尾部半行未提交）→ 从上次收尾偏移只解析未读尾部；
+    ///   到 EOF（预算截断）→ 从上次收尾偏移只解析未读尾部；
     /// - 截断 / 同尺寸但 mtime 变化（异常改写）/ 缓存缺失 → 全量解析。
     /// 增量状态仅存活于进程生命周期，App 重启即缓存为空、全量冷扫。
     nonisolated static func resolveSessionEvents(
         for snapshot: CodexSessionFileSnapshot,
         parsingFingerprint: String,
         limits: CodexLocalScanLimits,
-        remainingByteBudget: Int
-    ) async -> (events: [CodexSessionEvent], parsedByteCount: Int, didParse: Bool) {
+        remainingByteBudget: Int,
+        cacheResult: Bool = true
+    ) async -> (events: [CodexSessionEvent], parsedByteCount: Int, didParse: Bool, hasPendingReads: Bool) {
         let fileURL = snapshot.fileURL
         if let cached = await CodexSessionEventCache.shared.state(for: fileURL, parsingFingerprint: parsingFingerprint) {
-            // 精确命中要求上一拍已消费到 EOF：预算截断或尾部半行未提交时
-            // resumeOffset < fileSize，此时若按 mtime + size 直接复用，未读尾部
-            // 在文件不再变化时就永远不会被解析（永久漏读）。
+            // 区分预算截断与自然 EOF 的半行：后者内容未变时无需反复读取。
             if cached.lastModifiedAt == snapshot.modifiedAt,
                cached.parsedFileSize == snapshot.fileSize,
-               cached.resumeOffset == snapshot.fileSize {
-                return (cached.events, min(cached.parsedByteCount, remainingByteBudget), false)
+               cached.reachedEOF {
+                return (cached.events, 0, false, false)
             }
             // 增长判定必须以"上一拍已解析的文件全长"为界，而不是 resumeOffset：
             // resumeOffset 可能因尾部残行小于 parsedFileSize。若用 resumeOffset 判定，
@@ -575,7 +589,7 @@ extension CodexFetcher {
                 // 预算不足时 resume 停在预算内的已提交行边界，下一拍从那里续读。
                 let tailLimit = max(min(snapshot.fileSize - cached.resumeOffset, remainingByteBudget), 0)
                 guard tailLimit > 0 else {
-                    return (cached.events, 0, false)
+                    return (cached.events, 0, false, true)
                 }
                 let parsed = parseSessionEvents(
                     from: fileURL,
@@ -586,31 +600,29 @@ extension CodexFetcher {
                     existingEvents: cached.events
                 )
                 guard !Task.isCancelled else {
-                    return (cached.events, 0, false)
+                    return (cached.events, 0, false, true)
                 }
-                // 两个口径分开：
-                // - 缓存累计值按 committedDelta 累加：重读未提交的尾部半行不应
-                //   重复累积，否则静态文件的半行会让缓存口径逐拍虚增。
-                // - 本拍预算扣减返回实际读取字节数（parsed.parsedByteCount）：
-                //   remainingByteBudget 是本拍 I/O 硬上限，committedDelta 可能
-                //   为 0（残行未提交），按它扣会让多个带残行文件的实读 I/O
-                //   合计突破字节上限。
-                let committedDelta = max(parsed.resumeOffset - cached.resumeOffset, 0)
-                await CodexSessionEventCache.shared.store(
-                    CodexSessionEventCache.Entry(
-                        parsingFingerprint: parsingFingerprint,
-                        lastModifiedAt: snapshot.modifiedAt,
-                        parsedFileSize: snapshot.fileSize,
-                        resumeOffset: parsed.resumeOffset,
-                        events: parsed.events,
-                        parsedByteCount: cached.parsedByteCount + committedDelta
-                    ),
-                    for: fileURL,
-                    maximumEntryCount: limits.maxEventCacheEntries
-                )
-                return (parsed.events, parsed.parsedByteCount, true)
+                // 预算仅扣本拍实际读取量，包括重读未提交半行的字节。
+                if cacheResult, parsed.parsedByteCount > 0 || parsed.reachedEOF {
+                    await CodexSessionEventCache.shared.store(
+                        CodexSessionEventCache.Entry(
+                            parsingFingerprint: parsingFingerprint,
+                            lastModifiedAt: snapshot.modifiedAt,
+                            parsedFileSize: snapshot.fileSize,
+                            resumeOffset: parsed.resumeOffset,
+                            events: parsed.events,
+                            reachedEOF: parsed.reachedEOF
+                        ),
+                        for: fileURL,
+                        maximumEntryCount: limits.maxEventCacheEntries
+                    )
+                }
+                return (parsed.events, parsed.parsedByteCount, true, !parsed.reachedEOF)
             }
             // size 缩小（截断/轮转）或同尺寸但 mtime 变化（异常改写）→ 落到全量重扫
+        }
+        guard remainingByteBudget > 0 || snapshot.fileSize == 0 else {
+            return ([], 0, false, true)
         }
         let parsed = parseSessionEvents(
             from: fileURL,
@@ -618,13 +630,9 @@ extension CodexFetcher {
             byteLimit: min(max(snapshot.fileSize, 0), remainingByteBudget),
             limits: limits
         )
-        guard !Task.isCancelled else { return ([], 0, false) }
-        // 预算耗尽（byteLimit == 0）或读取失败时 parsedByteCount == 0，但
-        // enumerateUTF8Lines 返回的 endOffset 可能已等于全长：若照常写缓存，空
-        // 事件列表会以"已完整消费"精确命中，文件不再变化时就永远解析不到内容。
-        // 此时跳过缓存写入，下一拍有预算时自然全量重扫；空文件（fileSize == 0）
-        // 不受影响，照常缓存。
-        if parsed.parsedByteCount > 0 || snapshot.fileSize == 0 {
+        guard !Task.isCancelled else { return ([], 0, false, true) }
+        // 无预算或读取失败时不写入空缓存；成功读到 EOF 的空文件可以正常缓存。
+        if cacheResult, parsed.parsedByteCount > 0 || parsed.reachedEOF {
             await CodexSessionEventCache.shared.store(
                 CodexSessionEventCache.Entry(
                     parsingFingerprint: parsingFingerprint,
@@ -632,13 +640,13 @@ extension CodexFetcher {
                     parsedFileSize: snapshot.fileSize,
                     resumeOffset: parsed.resumeOffset,
                     events: parsed.events,
-                    parsedByteCount: parsed.parsedByteCount
+                    reachedEOF: parsed.reachedEOF
                 ),
                 for: fileURL,
                 maximumEntryCount: limits.maxEventCacheEntries
             )
         }
-        return (parsed.events, parsed.parsedByteCount, true)
+        return (parsed.events, parsed.parsedByteCount, true, !parsed.reachedEOF)
     }
 
     /// 一级过滤 marker 的字节形态：与行级 `String.contains` 的条件逐字一致。
@@ -661,7 +669,7 @@ extension CodexFetcher {
         limits: CodexLocalScanLimits,
         startOffset: Int? = nil,
         existingEvents: [CodexSessionEvent] = []
-    ) -> (events: [CodexSessionEvent], parsedByteCount: Int, resumeOffset: Int) {
+    ) -> (events: [CodexSessionEvent], parsedByteCount: Int, resumeOffset: Int, reachedEOF: Bool) {
         // F2: 不在收集到 N 个事件时提前停止——否则读取文件头部时会保留最旧 N 个。
         // 改用容量为 maxEventsPerFile 的有界缓冲，仅保留最后 N 个已解析相关事件。
         // 超量时批量裁剪，摊销 O(1)，缓冲瞬时最多持有 2N 个紧凑事件。
@@ -768,7 +776,7 @@ extension CodexFetcher {
         // resumeOffset = 已提交内容之后的绝对偏移：无换行尾部为完整 JSON 且
         // handler 未取消时按完整行提交计入；半行不计入，留给下一次增量续读
         //（残行在 JSON 层必然无效，重复读取无副作用）。
-        return (events, read.bytesRead, read.endOffset)
+        return (events, read.bytesRead, read.endOffset, read.reachedEOF)
     }
 
 
@@ -917,7 +925,8 @@ extension CodexFetcher {
     /// 增量续读，起点必须落在行边界——即上次解析返回的 endOffset）。
     /// 返回实际读取字节数与已提交行边界的绝对偏移：无换行的尾部 chunk 能解析成
     /// 完整 JSON 且 handler 未取消时按完整行提交计入；否则不计入，偏移回退到
-    /// 残行行首，留给下次续读。
+    /// 残行行首，留给下次续读。reachedEOF 单独记录实际读取是否到达文件末尾，
+    /// 不依赖半行是否提交，用于区分预算截断与自然 EOF。
     private nonisolated static func enumerateUTF8Lines(
         in fileURL: URL,
         fileSize: Int,
@@ -926,10 +935,10 @@ extension CodexFetcher {
         readChunkBytes: Int,
         startOffset: Int? = nil,
         handler: (Data) -> Bool
-    ) -> (bytesRead: Int, endOffset: Int) {
+    ) -> (bytesRead: Int, endOffset: Int, reachedEOF: Bool) {
         guard let handle = try? FileHandle(forReadingFrom: fileURL) else {
             logWarn("[codex/local] 打开 session 文件失败，跳过: \(fileURL.lastPathComponent)")
-            return (0, 0)
+            return (0, 0, false)
         }
         defer { try? handle.close() }
 
@@ -940,7 +949,7 @@ extension CodexFetcher {
             actualEndOffset = end
         } else {
             logWarn("[codex/local] 无法确定 session 文件长度，跳过: \(fileURL.lastPathComponent)")
-            return (0, 0)
+            return (0, 0, false)
         }
         let actualLength = Int(actualEndOffset)
         let resolvedStartOffset: Int
@@ -957,7 +966,9 @@ extension CodexFetcher {
             resolvedStartOffset = actualLength - safeByteLimit
             discardingInitialPartialLine = resolvedStartOffset > 0
         }
-        guard safeByteLimit > 0 else { return (0, resolvedStartOffset) }
+        guard safeByteLimit > 0 else {
+            return (0, resolvedStartOffset, actualLength == 0 || startOffset == actualLength)
+        }
 
         // 注意：上面 seekToEnd() 把文件指针移到了末尾，必须显式 seek 回起点，
         // 否则后续 read 立刻 EOF。
@@ -965,7 +976,7 @@ extension CodexFetcher {
             try handle.seek(toOffset: UInt64(resolvedStartOffset))
         } catch {
             logWarn("[codex/local] seek 到文件尾部失败，跳过: \(fileURL.lastPathComponent)")
-            return (0, resolvedStartOffset)
+            return (0, resolvedStartOffset, false)
         }
         _ = fileSize  // 保留参数以稳定签名，实际限额以 handle 实测长度为准
 
@@ -993,7 +1004,7 @@ extension CodexFetcher {
                     discardingOversizedLine = false
                 } else if segment.count <= maxLineBytes - pending.count {
                     pending.append(segment)
-                    if !handler(pending) { return (bytesRead, resolvedStartOffset + bytesRead) }
+                    if !handler(pending) { return (bytesRead, resolvedStartOffset + bytesRead, false) }
                     pending.removeAll(keepingCapacity: true)
                 } else {
                     pending.removeAll(keepingCapacity: false)
@@ -1035,7 +1046,11 @@ extension CodexFetcher {
         }
         // endOffset = 已提交内容之后的绝对偏移：已提交的无换行尾部计入（终点即
         // EOF 或预算截断处的行边界），未提交的残行不计入、回退到行首留给下次续读
-        return (bytesRead, resolvedStartOffset + bytesRead - trailingPartialBytes)
+        return (
+            bytesRead,
+            resolvedStartOffset + bytesRead - trailingPartialBytes,
+            !Task.isCancelled && resolvedStartOffset + bytesRead == actualLength
+        )
     }
 
     private nonisolated static func parseJSONObject(from line: String) -> [String: Any]? {

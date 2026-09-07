@@ -400,11 +400,8 @@ final class CodexLocalUsageTests: XCTestCase {
         XCTAssertEqual(tokenInputs(in: second.events), [10, 20], "无换行尾行跨 append 只能计一次")
     }
 
-    func testUncommittedTrailingPartialRereadOnUnchangedFile() async throws {
-        // 尾部半行未提交时（resumeOffset < fileSize），同尺寸同 mtime 的下一拍
-        // 必须续读半行而不走精确命中：内容未变（mtime 判定），重读只是补齐未
-        // 消费尾部——事件不重复。缓存累计按 committed delta 累加（半行不虚增），
-        // 预算扣减按本拍实际读取字节（I/O 硬上限口径），此处即半行长度。
+    func testUncommittedTrailingPartialReusedUntilFileChanges() async throws {
+        // 自然 EOF 的半行无需在文件未变时重读，但补全后必须从行首续读。
         let limits = makeIncrementalTestLimits()
         let url = makeTempJSONLFile()
         defer { try? FileManager.default.removeItem(at: url) }
@@ -418,13 +415,14 @@ final class CodexLocalUsageTests: XCTestCase {
         )
         XCTAssertEqual(first.events.count, 4, "半行不得产出事件")
 
-        // 文件未变：不满足精确命中（resumeOffset < fileSize），走续读重读半行
+        XCTAssertFalse(first.hasPendingReads)
+        // 文件未变：即使 resumeOffset 留在半行行首，也可以复用。
         let second = await CodexFetcher.resolveSessionEvents(
             for: try snapshotFor(url), parsingFingerprint: "test", limits: limits, remainingByteBudget: 4 * 1024 * 1024
         )
-        XCTAssertTrue(second.didParse, "未消费到 EOF 时文件未变也必须续读，不得精确命中")
-        XCTAssertEqual(second.events, first.events, "半行重读不得产生重复事件")
-        XCTAssertEqual(second.parsedByteCount, partial.utf8.count, "预算扣减按本拍实际读取字节（I/O 上限口径），此处即重读的半行长度")
+        XCTAssertFalse(second.didParse)
+        XCTAssertEqual(second.events, first.events)
+        XCTAssertEqual(second.parsedByteCount, 0)
 
         // 半行补全：续读后恰好计一次
         try append("nt\",\"info\":{\"last_token_usage\":{\"input_tokens\":20,\"cached_input_tokens\":4,\"output_tokens\":8,\"reasoning_output_tokens\":2}}}}\n", to: url)
@@ -439,7 +437,7 @@ final class CodexLocalUsageTests: XCTestCase {
     func testBudgetTruncatedIncrementalReadResumesOnUnchangedFile() async throws {
         // Bug 2 回归：增量尾读被 remainingByteBudget 截断时缓存仍记录完整
         // parsedFileSize。旧实现下一拍精确命中（mtime + size 一致）→ 未读尾部
-        // 被永久跳过；新实现精确命中要求 resumeOffset == fileSize，文件未变也
+        // 被永久跳过；新实现精确命中要求已读到实际 EOF，文件未变也
         // 必须续读补齐。
         let limits = makeIncrementalTestLimits()
         let url = makeTempJSONLFile()
@@ -469,6 +467,7 @@ final class CodexLocalUsageTests: XCTestCase {
         )
         XCTAssertTrue(second.didParse)
         XCTAssertEqual(second.events.count, 6, "预算内只能解析 turn-b 前两行")
+        XCTAssertTrue(second.hasPendingReads)
 
         // 第三拍：文件未变（mtime/size 相同）。旧实现在此精确命中 → 尾部两行
         // 永久丢失；新实现必须续读补齐。
@@ -478,6 +477,7 @@ final class CodexLocalUsageTests: XCTestCase {
         XCTAssertTrue(third.didParse, "未消费到 EOF 时文件未变也必须续读，不得精确命中")
         XCTAssertEqual(third.events.count, 8, "上一拍未读到的尾部必须在本拍补齐")
         XCTAssertEqual(tokenInputs(in: third.events), [10, 20])
+        XCTAssertFalse(third.hasPendingReads)
 
         // 第四拍：已消费到 EOF → 精确命中复用
         let fourth = await CodexFetcher.resolveSessionEvents(
@@ -516,6 +516,91 @@ final class CodexLocalUsageTests: XCTestCase {
         )
         XCTAssertFalse(third.didParse)
         XCTAssertEqual(third.events, second.events)
+    }
+
+    func testScanBudgetOnlyChargesReadsAndCatchesUpUnchangedFiles() async throws {
+        let urls = (0..<3).map { _ in makeTempJSONLFile() }
+        defer { for url in urls { try? FileManager.default.removeItem(at: url) } }
+        let body = codexTurnLines(baseSeconds: 31_000, turnID: "turn-a", model: "gpt-5.6-terra", inputTokens: 10, cachedInputTokens: 2, outputTokens: 5, reasoningOutputTokens: 1)
+        for url in urls { try rewrite(body, to: url) }
+        let snapshots = try urls.enumerated().map { index, url in
+            CodexSessionFileSnapshot(fileURL: url, modifiedAt: Date(timeIntervalSince1970: Double(3 - index)), fileSize: try snapshotFor(url).fileSize)
+        }
+        let limits = CodexLocalScanLimits(maxSessionFiles: 3, maxEventsPerFile: 100, maxTotalParsedBytes: body.utf8.count * 2, maxJSONLLineBytes: 1024)
+        let first = await CodexFetcher.scanSessionEvents(for: snapshots, limits: limits)
+        XCTAssertEqual(first.files.flatMap(\.events).count, 8)
+        XCTAssertTrue(first.hasPendingReads)
+        XCTAssertEqual(first.parsedByteCount, limits.maxTotalParsedBytes)
+
+        let second = await CodexFetcher.scanSessionEvents(for: snapshots, limits: limits)
+        XCTAssertEqual(second.files.flatMap(\.events).count, 12)
+        XCTAssertFalse(second.hasPendingReads)
+        XCTAssertEqual(second.parsedFileCount, 1)
+        XCTAssertEqual(second.parsedByteCount, body.utf8.count)
+
+        // 最新文件追加内容耗尽整拍预算，较旧的缓存仍必须纳入统计。
+        try append(String(repeating: "\n", count: limits.maxTotalParsedBytes), to: urls[0])
+        var changed = snapshots
+        changed[0] = CodexSessionFileSnapshot(fileURL: urls[0], modifiedAt: snapshots[0].modifiedAt, fileSize: try snapshotFor(urls[0]).fileSize)
+        let third = await CodexFetcher.scanSessionEvents(for: changed, limits: limits)
+        XCTAssertEqual(third.files.flatMap(\.events).count, 12)
+        XCTAssertFalse(third.hasPendingReads)
+        XCTAssertEqual(third.parsedFileCount, 1)
+        XCTAssertEqual(third.parsedByteCount, limits.maxTotalParsedBytes)
+
+        let fourth = await CodexFetcher.scanSessionEvents(for: changed, limits: limits)
+        XCTAssertEqual(fourth.files.flatMap(\.events).count, 12)
+        XCTAssertEqual(fourth.parsedByteCount, 0)
+    }
+
+    func testSummaryCacheAllowsBudgetTruncatedTailToCatchUp() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let sessions = root.appendingPathComponent("sessions")
+        try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = sessions.appendingPathComponent("one.jsonl")
+        let body = codexJSONLine(timestamp: ISO8601DateFormatter().string(from: Date().addingTimeInterval(-60)), type: "event_msg", payload: [
+            "type": "token_count", "info": ["last_token_usage": [
+                "input_tokens": 10, "cached_input_tokens": 0, "output_tokens": 0, "reasoning_output_tokens": 0,
+            ]],
+        ]) + "\n"
+        let limits = CodexLocalScanLimits(maxSessionFiles: 10, maxEventsPerFile: 100, maxTotalParsedBytes: body.utf8.count * 2, maxJSONLLineBytes: 1024)
+        try rewrite(body, to: url)
+        let first = await CodexFetcher.loadUsageDetailsAsync(authPath: root.path, model: nil, limits: limits)
+        XCTAssertEqual(first?.recentSamples?.count, 1)
+        try append(String(repeating: body, count: 3), to: url)
+        let partial = await CodexFetcher.loadUsageDetailsAsync(authPath: root.path, model: nil, limits: limits)
+        XCTAssertEqual(partial?.recentSamples?.count, 3)
+        let next = await CodexFetcher.loadUsageDetailsAsync(authPath: root.path, model: nil, limits: limits)
+        XCTAssertEqual(next?.recentSamples?.count, 4)
+        let cached = await CodexFetcher.loadUsageDetailsAsync(authPath: root.path, model: nil, limits: limits)
+        XCTAssertEqual(cached, next, "补读完成后应正常复用汇总缓存")
+    }
+
+    func testScanningBeyondCacheCapacityRetainsNewestHotSet() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let body = codexTurnLines(baseSeconds: 31_000, turnID: "turn-a", model: "gpt-5.6-terra", inputTokens: 10, cachedInputTokens: 2, outputTokens: 5, reasoningOutputTokens: 1)
+        var snapshots: [CodexSessionFileSnapshot] = []
+        for index in 0..<257 {
+            let url = root.appendingPathComponent("\(index).jsonl")
+            try rewrite(body, to: url)
+            snapshots.append(CodexSessionFileSnapshot(fileURL: url, modifiedAt: Date(timeIntervalSince1970: Double(1000 - index)), fileSize: body.utf8.count))
+        }
+        let limits = CodexLocalScanLimits(maxSessionFiles: 257, maxEventsPerFile: 100, maxTotalParsedBytes: 1_000_000, maxJSONLLineBytes: 1024, maxEventCacheEntries: 256)
+        let first = await CodexFetcher.scanSessionEvents(for: snapshots, limits: limits)
+        XCTAssertEqual(first.parsedFileCount, 257)
+        let second = await CodexFetcher.scanSessionEvents(for: snapshots, limits: limits)
+        XCTAssertEqual(second.parsedFileCount, 1, "只有容量外最旧文件需要重新解析")
+        XCTAssertEqual(second.files.flatMap(\.events), first.files.flatMap(\.events))
+
+        try append(body, to: snapshots[0].fileURL)
+        snapshots[0] = CodexSessionFileSnapshot(fileURL: snapshots[0].fileURL, modifiedAt: snapshots[0].modifiedAt, fileSize: body.utf8.count * 2)
+        let third = await CodexFetcher.scanSessionEvents(for: snapshots, limits: limits)
+        XCTAssertEqual(third.parsedFileCount, 2, "仅增量活跃文件与容量外冷文件需要读取")
+        XCTAssertEqual(third.parsedByteCount, body.utf8.count * 2)
+        XCTAssertEqual(third.files.flatMap(\.events).count, 258 * 4)
     }
 
     func testSummarizeLocalUsageSplitsQuotaAndDailyWindows() throws {

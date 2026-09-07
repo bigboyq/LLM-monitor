@@ -155,7 +155,9 @@ struct CodexFetcher: QuotaFetcher {
         )
     }
 
-    nonisolated static func loadUsageDetailsAsync(authPath: String?, model: ModelQuota?) async -> CodexUsageDetails? {
+    nonisolated static func loadUsageDetailsAsync(
+        authPath: String?, model: ModelQuota?, limits: CodexLocalScanLimits = .production
+    ) async -> CodexUsageDetails? {
         let authURL: URL
         if let authPath, !authPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             authURL = resolveAuthFileURL(from: URL(fileURLWithPath: NSString(string: authPath).expandingTildeInPath))
@@ -189,6 +191,9 @@ struct CodexFetcher: QuotaFetcher {
         let earliestWindowStart = (windows.values.map(\.startDate) + dailyWindows.map(\.startDate)).min()
         let candidateFiles = sessionFiles(codexHome: codexHome, modifiedSince: earliestWindowStart)
         let windowFingerprint = localUsageWindowFingerprint(windows, dailyWindows: dailyWindows)
+            + ":\(limits.maxSessionFiles):\(limits.maxEventsPerFile):\(limits.maxTotalParsedBytes)"
+            + ":\(limits.maxJSONLLineBytes):\(limits.maxEventCacheEntries)"
+            + ":\(limits.maxRecentSamples)"
         let sourceFingerprint = localUsageSourceFingerprint(candidateFiles)
 
         if let cached = await CodexUsageDetailsCache.shared.value(
@@ -201,12 +206,14 @@ struct CodexFetcher: QuotaFetcher {
         }
 
         guard !Task.isCancelled else { return nil }
-        let sessionFiles = await cachedSessionEvents(for: candidateFiles)
+        let scan = await scanSessionEvents(for: candidateFiles, limits: limits)
+        let sessionFiles = scan.files
         guard !Task.isCancelled else { return nil }
         let summaries = summarizeLocalUsage(
             windows: windows,
             dailyWindows: dailyWindows,
-            sessionFiles: sessionFiles
+            sessionFiles: sessionFiles,
+            limits: limits
         )
         guard !Task.isCancelled else { return nil }
         let lastPrompt = latestPromptUsage(
@@ -225,12 +232,15 @@ struct CodexFetcher: QuotaFetcher {
             recentSamples: summaries.recentSamples,
             scannedAt: Date()
         )
-        await CodexUsageDetailsCache.shared.store(
-            details,
-            for: codexHome,
-            windowFingerprint: windowFingerprint,
-            sourceFingerprint: sourceFingerprint
-        )
+        // 预算截断后仍需下一拍补读，不能让汇总缓存遮蔽单文件的续读状态。
+        if !scan.hasPendingReads {
+            await CodexUsageDetailsCache.shared.store(
+                details,
+                for: codexHome,
+                windowFingerprint: windowFingerprint,
+                sourceFingerprint: sourceFingerprint
+            )
+        }
         return details
     }
 
