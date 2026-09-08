@@ -90,7 +90,8 @@ struct ChatGPTPlanModelRow: View {
         )
         return Self.preferUsageDetails(
             usageDetails?.primary,
-            localUsage(start: bounds?.start, end: bounds?.end)
+            localUsage(start: bounds?.start, end: bounds?.end),
+            externalUsage: openCodeUsage(start: bounds?.start, end: bounds?.end)
         )
     }
 
@@ -102,7 +103,8 @@ struct ChatGPTPlanModelRow: View {
         )
         return Self.preferUsageDetails(
             usageDetails?.secondary,
-            localUsage(start: bounds?.start, end: bounds?.end)
+            localUsage(start: bounds?.start, end: bounds?.end),
+            externalUsage: openCodeUsage(start: bounds?.start, end: bounds?.end)
         )
     }
 
@@ -124,14 +126,44 @@ struct ChatGPTPlanModelRow: View {
         )
     }
 
+    private func openCodeUsage(start: Date?, end: Date?) -> UsageMetricSummary? {
+        Self.openCodeUsageSummary(
+            samples: localSamples,
+            quotaModelName: model.modelName,
+            start: start,
+            end: end
+        )
+    }
+
+    static func openCodeUsageSummary(
+        samples: [LocalTokenUsageSample],
+        quotaModelName: String,
+        start: Date?,
+        end: Date?
+    ) -> UsageMetricSummary? {
+        let prefix = "opencode:\(OpencodeLocalUsage.openAIProviderID):"
+        let openCodeSamples = samples.filter { $0.promptID.hasPrefix(prefix) }
+        guard openCodeSamples.isEmpty == false else { return nil }
+        return LocalUsageSummaryBuilder.summary(
+            samples: openCodeSamples,
+            providerKind: .codexChatGpt,
+            quotaModelName: quotaModelName,
+            start: start,
+            end: end
+        )
+    }
+
     /// `usageDetails` 已由同一批 Codex session samples 聚合而来；不能再与
     /// `localUsage` 相加，否则窗口内的 input/cache/output 会全部重复计算。
-    /// 只有详情尚未生成时，才从当前 samples 回退计算。
+    /// 有详情时仅追加已启用的 OpenCode 来源；详情尚未生成时从合并 samples 回退。
     static func preferUsageDetails(
         _ usageDetails: UsageMetricSummary?,
-        _ localFallback: @autoclosure () -> UsageMetricSummary?
+        _ localFallback: @autoclosure () -> UsageMetricSummary?,
+        externalUsage: @autoclosure () -> UsageMetricSummary? = nil
     ) -> UsageMetricSummary? {
-        usageDetails ?? localFallback()
+        guard let usageDetails else { return localFallback() }
+        guard let externalUsage = externalUsage() else { return usageDetails }
+        return usageDetails + externalUsage
     }
 }
 

@@ -241,8 +241,11 @@ Providers using the default alphabetical order.
 Settings > Clients uses horizontally scrollable client tabs sorted by display name
 (Antigravity, Codex, DSH, MiniMax Code, OpenCode, ZCode). Each tab only renders quota
 providers with observed local token activity. Provider rows are collapsed by default;
-expanding one opens the shared seven-day token chart. Its daily table keeps the
-columns `R/T → Input → Cache → Output → Reason → 价值`; the value column is shown
+expanding one opens the shared seven-day token chart. It uses the same seven local
+calendar days as the provider chart: the extra retained samples
+for quota-window calculations must not add an eighth day or an out-of-window model
+group to the client view. Group totals and price estimates use this same window.
+The daily table keeps the columns `R/T → Input → Cache → Output → Reason → 价值`; the value column is shown
 when the client scanner has per-call model samples. Below the chart, aggregate
 tokens, the Input/Cache/Output/Reason breakdown, cache hit rate, and the seven-day
 estimated public-API value remain visible. Values are displayed to two decimal

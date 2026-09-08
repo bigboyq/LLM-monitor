@@ -141,11 +141,22 @@ extension SettingsView {
         status: ProviderStatus,
         contribution: ClientUsageContribution
     ) -> [ClientProviderUsageSummary] {
+        // OpenCode/native recent samples can span eight days while the
+        // settings chart is deliberately padded to seven calendar days.  Do
+        // the windowing before classifying samples; otherwise an out-of-window
+        // model can create a phantom group (and its cost estimate).
+        let displayedSamples = samplesInDisplayedWindow(
+            contribution.recentSamples,
+            matching: contribution.dailyTokenUsage
+        )
         let groups: [AntigravityUsageGroup: [LocalTokenUsageSample]]
-        if contribution.recentSamples.isEmpty {
-            groups = [.other: []]
+        if displayedSamples.isEmpty {
+            let hasDisplayedDailyActivity = contribution.dailyTokenUsage.contains {
+                $0.totalTokens > 0 || $0.turns > 0 || $0.rounds > 0
+            }
+            groups = hasDisplayedDailyActivity ? [.other: []] : [:]
         } else {
-            groups = Dictionary(grouping: contribution.recentSamples) {
+            groups = Dictionary(grouping: displayedSamples) {
                 AntigravityUsageGroup.classify(modelName: $0.modelName)
             }
         }
@@ -180,7 +191,11 @@ extension SettingsView {
         status: ProviderStatus,
         contribution: ClientUsageContribution
     ) -> [ClientProviderUsageSummary] {
-        let groups = Dictionary(grouping: contribution.recentSamples) {
+        let displayedSamples = samplesInDisplayedWindow(
+            contribution.recentSamples,
+            matching: contribution.dailyTokenUsage
+        )
+        let groups = Dictionary(grouping: displayedSamples) {
             GlmUsageCategory.classify($0)
         }
         return GlmUsageCategory.allCases.compactMap { category in
@@ -209,11 +224,29 @@ extension SettingsView {
             }
         )
 
-        for usage in UnifiedTokenUsageAggregator.days(from: samples, calendar: calendar) {
+        // `recentSamples` intentionally keeps one extra day for quota-window
+        // calculations.  The settings chart, however, is keyed by the seven
+        // days in `template`; do not let that extra day grow the chart or its
+        // grouped totals.
+        let displayedSamples = samplesInDisplayedWindow(samples, matching: template)
+        for usage in UnifiedTokenUsageAggregator.days(from: displayedSamples, calendar: calendar) {
             let dayStart = calendar.startOfDay(for: usage.dayStart)
             byDay[dayStart] = byDay[dayStart].map { $0 + usage } ?? usage
         }
         return byDay.values.sorted { $0.dayStart < $1.dayStart }
+    }
+
+    private func samplesInDisplayedWindow(
+        _ samples: [LocalTokenUsageSample],
+        matching dailyUsage: [UnifiedDailyTokenUsage]
+    ) -> [LocalTokenUsageSample] {
+        // Scanner 的日窗口连续且已补零；按时间边界过滤，避免对每个样本重复换算日历。
+        guard let start = dailyUsage.map(\.dayStart).min(),
+              let lastDay = dailyUsage.map(\.dayStart).max(),
+              let end = Calendar.current.date(byAdding: .day, value: 1, to: lastDay) else { return [] }
+        return samples.filter {
+            $0.completedAt >= start && $0.completedAt < end
+        }
     }
 
     func emptyClientState(_ client: ClientDescriptor) -> some View {

@@ -385,6 +385,11 @@ contribution appears. OpenCode rounds are tokenized assistant messages. Turns ar
 distinct user-prompt parents. The 7-day chart shows R/T alongside Input, Cache,
 Output, and Reason.
 
+ChatGPT's 5h / weekly summaries retain the preaggregated native Codex totals and
+add only the enabled OpenCode contribution. The native samples already represented
+by those totals are not added a second time; when native details are unavailable,
+the row falls back to aggregating the available combined samples.
+
 ### Failed
 
 Layout:
