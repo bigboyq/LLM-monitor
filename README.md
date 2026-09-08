@@ -4,11 +4,11 @@
 
 适用于 macOS 14 及以上版本的菜单栏额度与本地用量监视器。一个入口集中查看 Minimax、ChatGPT/Codex、Antigravity、GLM Coding Plan 与 DeepSeek，并可选择合并 OpenCode 与 DeepSeek Harness (dsh) 的本地 token 账本。
 
-> 当前版本：**1.4.2** · 支持 Apple Silicon (arm64) · 所有凭据和用量缓存只保存在本机
+> 当前版本：**1.5.0** · 支持 Apple Silicon (arm64) · 所有凭据和用量缓存只保存在本机
 
 ## 下载与安装
 
-1. 从 [GitHub Releases](https://github.com/bigboyq/LLM-monitor/releases/latest) 下载 `LLM-monitor-1.4.2.dmg`。
+1. 从 [GitHub Releases](https://github.com/bigboyq/LLM-monitor/releases/latest) 下载 `LLM-monitor-1.5.0.dmg`。
 2. 打开 DMG，将 **LLM-monitor.app** 拖到 **Applications**。
 3. 启动应用，点击菜单栏图标，进入“设置”启用并配置需要的 Provider。
 
@@ -92,7 +92,7 @@ swift build
 构建 arm64 `.app`（含 dSYM 符号文件）、DMG 和 SHA-256 校验文件：
 
 ```bash
-./scripts/build-release.sh 1.4.2 95
+./scripts/build-release.sh 1.5.0 95
 ```
 
 `build-app.sh` 的参数决定是否会修改仓库内的 `.build_number`：
