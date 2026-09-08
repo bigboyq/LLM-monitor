@@ -137,13 +137,13 @@ final class LocalUsageOrchestration {
     }
 
     /// 推送「活动套餐余额日志解析」开关（设置 `parseZcodeBalanceLog`）。
-    /// 同时覆盖构造期初值与已加载实例；开关打开时立即触发一次 GLM 扫描，
-    /// 让卡片不用等下一个刷新周期就能出现余额块。
+    /// 同时覆盖构造期初值与已加载实例；开关变化时立即触发一次 GLM 扫描，
+    /// 让开启时不用等下一个刷新周期就能出现余额块，关闭时也能及时清除旧余额。
     func updateGlmBalanceLogParsing(enabled: Bool) {
         let changed = glmBalanceLogParsingEnabled != enabled
         glmBalanceLogParsingEnabled = enabled
         glmCoordinator.withLoadedScanner { ($0 as? GlmZcodeLocalUsageScanner)?.setBalanceLogParsingEnabled(enabled) }
-        if changed, enabled {
+        if changed {
             trigger(.glm)
         }
     }

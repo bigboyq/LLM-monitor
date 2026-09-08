@@ -130,9 +130,16 @@ final class GlmZcodeLocalUsageScanner: SingleDBSnapshotScanner<GlmLocalUsage>, @
         // 闲时窗口 / 活动套餐余额都可能在新一轮 scan 间期变化（新任务完成、ZCode
         // 轮询日志更新），rebase 时同步刷新。
         let offPeakWindows = readOffPeakWindowsWithFallback()
-        let activityPlanBalances = readActivityPlanBalances(now: now)
+        let parsingEnabled = isBalanceLogParsingEnabled
+        let activityPlanBalances = parsingEnabled ? readActivityPlanBalances(now: now) : nil
+        // A disabled parser is an explicit user choice and must clear cached
+        // balances.  When parsing remains enabled, a transient read failure is
+        // different: retain the last good cached value.
+        let effectiveActivityPlanBalances = parsingEnabled
+            ? (activityPlanBalances ?? rebased.activityPlanBalances)
+            : nil
         if rebased.offPeakWindows != offPeakWindows
-            || rebased.activityPlanBalances != activityPlanBalances {
+            || rebased.activityPlanBalances != effectiveActivityPlanBalances {
             rebased = GlmLocalUsage(
                 today: rebased.today,
                 dailyTokenUsage: rebased.dailyTokenUsage,
@@ -142,7 +149,7 @@ final class GlmZcodeLocalUsageScanner: SingleDBSnapshotScanner<GlmLocalUsage>, @
                 failedSessionCount: rebased.failedSessionCount,
                 recentSamples: rebased.recentSamples,
                 offPeakWindows: offPeakWindows,
-                activityPlanBalances: activityPlanBalances ?? rebased.activityPlanBalances
+                activityPlanBalances: effectiveActivityPlanBalances
             )
         }
         return rebased

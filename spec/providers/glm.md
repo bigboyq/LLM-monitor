@@ -463,7 +463,7 @@ zcode SaaS 活动套餐（如周末体验套餐 `ZCode Weekend Build`）的 used
 | 文件回退 | 今天无标记行 → 读昨天的；两天都没有 → `nil`（未解析） |
 | 解析 | `payload.data.plans[]`（plan_id→name）+ `payload.data.balances[]`（entitlement 级 total/used/remaining/expires_at/capabilities） |
 | 过期口径 | `expires_at <= now` 的条目直接剔除（"plan expire 就不显示"）；服务端对未领取/失效套餐返回空 `balances` |
-| 开关 | `providers.glm_coding_plan.parseZcodeBalanceLog`（缺省关闭；关闭时不读日志）。`LocalUsageOrchestration.updateGlmBalanceLogParsing` 在 `rebuildStatuses`（init + 每次配置变更）推送，开启即触发一次扫描 |
+| 开关 | `providers.glm_coding_plan.parseZcodeBalanceLog`（缺省关闭；关闭时不读日志，并清除已显示的缓存余额，不依赖用量数据库发生变化）。`LocalUsageOrchestration.updateGlmBalanceLogParsing` 在 `rebuildStatuses`（init + 每次配置变更）推送 |
 | 展示 | `GlmActivityPlanBalancesView`：每条 entitlement 一行 `🎁 套餐名 94% (283M/300M) 08-31 09:00`——剩余占比（与额度窗口同一取整口径）+ 可用/总量 + 过期时间，全部行内显示（菜单栏弹层里 `.help` 悬浮不生效）。挂在 GLM 卡额度行下方；balances 空则整块不渲染 |
 | 单位 | `*_units` 是 token（`unit_type: "token"`）；`expires_at` 是 unix **秒** |
 

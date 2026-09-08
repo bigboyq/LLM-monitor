@@ -281,7 +281,16 @@ final class ProviderRefreshScheduler {
 
         let nowDate = now()
         let provisionalDeadline = nowDate.addingTimeInterval(intervalProvider(providerID))
-        let nextRefreshDate = nextRefreshDates[providerID] ?? provisionalDeadline
+        // The regular refresh handler calls this before processOutcome records the
+        // next regular deadline.  At that point the existing date is the deadline
+        // that just fired, so it must not make a reset that is well inside the next
+        // interval look like it is already too close to the regular refresh.
+        let nextRefreshDate: Date
+        if let scheduled = nextRefreshDates[providerID], scheduled > nowDate {
+            nextRefreshDate = scheduled
+        } else {
+            nextRefreshDate = provisionalDeadline
+        }
 
         let uniqueResets = Set(resetsAtDates.compactMap { $0 })
         var newTasks: [Task<Void, Never>] = []
