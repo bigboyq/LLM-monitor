@@ -2,7 +2,7 @@
 
 本文件记录面向用户的版本变化；审计、重构和测试补强只在影响使用行为时摘要记录。
 
-## [Unreleased]
+## [1.5.0] - 2026-09-08
 
 ### Added
 
@@ -23,6 +23,7 @@
   - Codex 本地明细与额度数据解耦：quota 首胜前扫描照常进行（产出 7day/today 与 Last Prompt，窗口用量 `primary`/`secondary` 为 nil，UI 悬浮窗条件渲染）；窗口定义从数据层存量 reset 时间读取，quota 刷新后下一拍自动对齐；`applyCodexUsageDetails` 移除 `fetchedAt` 严格匹配门槛，本地数据写入独立触发 UI 刷新。
   - Codex 扫描性能优化：行过滤下沉到字节层（memmem 预过滤替代逐行 `String.contains`，冷扫描约 12× 提速）、读取分块 64KB→1MB、`refreshAll` 触发去重（不再与被唤醒的循环 B 并发双扫），并引入程序生命周期内的 append-only 增量解析——会话文件增长时只解析新增尾部（每拍从秒级降到毫秒级），截断/替换按文件整体重扫自愈，App 重启即冷全扫；不写入任何磁盘索引。
   - DSH 扫描同步优化：`consumeLine` 增加字节级 marker 预过滤（只有 `request/context` / `assistant/message` 行进入 JSONDecoder，占解压后字节绝大多数的 `assistant/chunk` 等噪声行被跳过）、读取分块 64KB→1MB；Codex 与 DSH 的字节总预算上限从 256MB 统一放宽到 1024MB（增量解析后预算只约束 I/O，重度七天用量不再静默挤出最旧 session）。
+- DSH 扫描缓存保留最新会话：按 mtime 保留最新 256 个 session 文件的解析结果（hot set），历史/冷文件不再每轮全量重解压，只有 mtime/size 变化的热文件会重新解析；被挤出选中集或删除的文件自动失效，不产生脏读。
 - 重构客户端 ↔ quota provider 关系：引入 `ClientDescriptor` / `ClientProviderBinding`，把 provider-level `mergeOpencodeUsage` 字段抽象为 `clientBindings[]`；schema 升级到 v2，旧 v1 配置自动迁移。
 - Codex 本地账本从 `turn_context` 解析 model 名称，让 GPT-5.6 Sol / Terra / Luna 在公开价目中可被独立计价；新增 `recentSamples` 字段把逐次调用样本带入客户端 tab 的价值估算。
 - minimax v2 SQLite reader 增加 model 回退链：row-level `model` → session-level `record_json.effectiveModel` → ledger 唯一模型；多模型时不再猜测。
@@ -50,6 +51,9 @@
 - Provider 卡片和设置页复用同一次 `usageProjection` 快照，避免一次 SwiftUI 渲染重复聚合相同本地样本。
 - DSH 坏文件、文件选择顺序、replay dedup、缓存样本边界和 MiniMax 字符聚合失败路径增加隔离与重试诊断。
 - 修复 DSH 路由 MiniMax-M3 模型时 reasoning token 始终显示为 `0` 的问题：DSH session 日志的 MiniMax-M3 路径经常缺少 `reasoningTokens` 字段，scanner 现在读取同一 `assistant/message` 事件下的 `reasoning`、`text`、`tool-call.arguments` 内容块，按字符比例估算 Reason，并保持 `Output + Reason = raw outputTokens`。其他模型、其他 provider 或没有可用内容块时仍按 `Reason = 0` 处理。升级 DSH cache 到 `v5` 触发全量重建。
+- 修复常规刷新路径的 mid-cycle 补刷新从未生效的问题：截止时间在处理完成前仍是已过期的旧值，被 60 秒 guard 一律跳过；现在过期登记回退到 `now + 刷新间隔` 推导补刷新时点，手动刷新与未来截止时间的行为不变。
+- 修复关闭 ZCode「活动/余额解析」开关后仍残留已展示余额的问题：开关关闭时立即清除缓存余额并落盘（冷启动不复活），日志读取失败仍保留上次好值，不因瞬时失败误清。
+- 修复客户端 tab 七天柱图与分组把第 8 天样本计入的问题：分组与组内总量严格限定为展示窗口内的 7 个自然日；同时补齐 ChatGPT (Codex) 卡片在开启 OpenCode 合并后的 token 与金额叠加（此前 hover 明细不含 OpenCode 部分）。
 
 ## [1.4.2] - 2026-08-12
 
