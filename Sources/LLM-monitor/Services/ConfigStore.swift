@@ -8,6 +8,7 @@ enum StatusBarIconStyle: String, Codable, Sendable, CaseIterable, Identifiable {
     case sparkles = "sparkles"
     case brain = "brain"
     case cpu = "cpu"
+    case quotaLogo = "quotaLogo"
 
     var id: String { rawValue }
 
@@ -17,6 +18,7 @@ enum StatusBarIconStyle: String, Codable, Sendable, CaseIterable, Identifiable {
         case .sparkles: return "AI 星光"
         case .brain:    return "智能大脑"
         case .cpu:      return "芯片"
+        case .quotaLogo: return "App 图标"
         }
     }
 
@@ -26,7 +28,85 @@ enum StatusBarIconStyle: String, Codable, Sendable, CaseIterable, Identifiable {
         case .sparkles: return "sparkles"
         case .brain:    return "brain.head.profile"
         case .cpu:      return "cpu.fill"
+        case .quotaLogo: return "chart.donut.fill"
         }
+    }
+
+    /// 非 SF Symbol 的状态栏图标资源名。nil 表示使用 `systemImageName`。
+    var bundledResourceName: String? {
+        switch self {
+        case .quotaLogo: return "llm-quota-730-2-menubar"
+        case .chartBar, .sparkles, .brain, .cpu: return nil
+        }
+    }
+
+    /// App 图标根据健康度切换水位；nil 用静态 Logo 作为未配置状态的预览 / 兜底。
+    func bundledResourceName(for health: HealthLevel?) -> String? {
+        guard self == .quotaLogo else { return bundledResourceName }
+        switch health {
+        case .healthy: return "llm-quota-730-2-menubar-healthy"
+        case .warning: return "llm-quota-730-2-menubar-warning"
+        case .critical: return "llm-quota-730-2-menubar-critical"
+        case nil: return bundledResourceName
+        }
+    }
+}
+
+/// 状态栏健康度圆点颜色。用固定 sRGB 十六进制值保存，避免系统动态颜色在
+/// 不同外观 / 显示器上被重新解释，也让手工编辑 config.json 仍然直观可读。
+struct StatusBarHealthColors: Codable, Equatable, Sendable {
+    var healthyHex: String
+    var warningHex: String
+    var criticalHex: String
+
+    static let `default` = StatusBarHealthColors(
+        healthyHex: "#34C759",
+        warningHex: "#FFD60A",
+        criticalHex: "#FF453A"
+    )
+
+    var healthyColor: NSColor { color(from: healthyHex) ?? .systemGreen }
+    var warningColor: NSColor { color(from: warningHex) ?? .systemYellow }
+    var criticalColor: NSColor { color(from: criticalHex) ?? .systemRed }
+
+    func color(for health: HealthLevel?) -> NSColor? {
+        switch health {
+        case .healthy: return healthyColor
+        case .warning: return warningColor
+        case .critical: return criticalColor
+        case nil: return nil
+        }
+    }
+
+    func color(forHex hex: String) -> NSColor? {
+        color(from: hex)
+    }
+
+    func hexValue(for health: HealthLevel?) -> String? {
+        let rawValue: String?
+        switch health {
+        case .healthy: rawValue = healthyHex
+        case .warning: rawValue = warningHex
+        case .critical: rawValue = criticalHex
+        case nil: rawValue = nil
+        }
+        guard let rawValue else { return nil }
+        let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "#", with: "")
+        guard value.count == 6, UInt64(value, radix: 16) != nil else { return nil }
+        return "#" + value.uppercased()
+    }
+
+    private func color(from hex: String) -> NSColor? {
+        let value = hex.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "#", with: "")
+        guard value.count == 6, let number = UInt64(value, radix: 16) else { return nil }
+        return NSColor(
+            srgbRed: CGFloat((number >> 16) & 0xFF) / 255,
+            green: CGFloat((number >> 8) & 0xFF) / 255,
+            blue: CGFloat(number & 0xFF) / 255,
+            alpha: 1
+        )
     }
 }
 
@@ -75,6 +155,9 @@ struct AppConfig: Codable, Equatable {
     /// 是否显示状态栏健康度圆点 (nil = 默认开启)
     var statusBarHealthDotEnabled: Bool?
 
+    /// 状态栏健康度圆点颜色 (nil = 默认绿 / 黄 / 红)
+    var statusBarHealthColors: StatusBarHealthColors?
+
     /// 主菜单 Provider 卡片的自定义顺序。nil 或空数组表示使用默认的
     /// Provider 显示名称字母顺序；这里只保存 canonical QuotaProviderID，不保存显示名。
     var providerCardOrder: [String]?
@@ -89,6 +172,10 @@ struct AppConfig: Codable, Equatable {
 
     var effectiveStatusBarHealthDotEnabled: Bool {
         statusBarHealthDotEnabled ?? true
+    }
+
+    var effectiveStatusBarHealthColors: StatusBarHealthColors {
+        statusBarHealthColors ?? .default
     }
 
     static let `default` = AppConfig(
@@ -150,6 +237,7 @@ struct AppConfig: Codable, Equatable {
         statusBarIconStyle: StatusBarIconStyle? = nil,
         statusBarIndicatorMode: StatusBarIndicatorMode? = nil,
         statusBarHealthDotEnabled: Bool? = nil,
+        statusBarHealthColors: StatusBarHealthColors? = nil,
         providerCardOrder: [String]? = nil
     ) {
         self.schemaVersion = schemaVersion
@@ -159,12 +247,14 @@ struct AppConfig: Codable, Equatable {
         self.statusBarIconStyle = statusBarIconStyle
         self.statusBarIndicatorMode = statusBarIndicatorMode
         self.statusBarHealthDotEnabled = statusBarHealthDotEnabled
+        self.statusBarHealthColors = statusBarHealthColors
         self.providerCardOrder = providerCardOrder
     }
 
     private enum CodingKeys: String, CodingKey {
         case schemaVersion, refreshIntervalSeconds, providers, clientBindings
         case statusBarIconStyle, statusBarIndicatorMode, statusBarHealthDotEnabled
+        case statusBarHealthColors
         case providerCardOrder
     }
 
@@ -190,6 +280,10 @@ struct AppConfig: Codable, Equatable {
         self.statusBarIndicatorMode = (try? container.decode(String.self, forKey: .statusBarIndicatorMode))
             .flatMap(StatusBarIndicatorMode.init(rawValue:))
         self.statusBarHealthDotEnabled = try? container.decode(Bool.self, forKey: .statusBarHealthDotEnabled)
+        self.statusBarHealthColors = try? container.decode(
+            StatusBarHealthColors.self,
+            forKey: .statusBarHealthColors
+        )
         self.providerCardOrder = try? container.decode([String].self, forKey: .providerCardOrder)
     }
 

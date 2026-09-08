@@ -16,6 +16,7 @@ struct SettingsView: View {
     @State var launchAtLogin: Bool = false
     @State var statusBarIconStyle: StatusBarIconStyle = .chartBar
     @State var statusBarHealthDotEnabled: Bool = true
+    @State var statusBarHealthColors: StatusBarHealthColors = .default
 
     @State var minimaxEnabled: Bool = false
     @State var minimaxInterval: Int = 0
@@ -278,12 +279,24 @@ struct SettingsView: View {
                 }
             }
 
-            SettingsSection(title: "状态栏图标", footer: "右下角状态圆点：绿色表示额度健康，橙色表示预警，红色表示异常。") {
+            SettingsSection(title: "状态栏图标", footer: "可自定义正常、预警、异常三种状态颜色；系统图标使用状态圆点，App 图标使用相同颜色的水位。默认是绿色、黄色、红色。") {
                 VStack(alignment: .leading, spacing: 16) {
                     SettingsControlRow("图标主题") {
                         Picker("", selection: $statusBarIconStyle) {
                             ForEach(StatusBarIconStyle.allCases) { style in
-                                Label(style.displayName, systemImage: style.systemImageName)
+                                HStack(spacing: 8) {
+                                    Image(nsImage: MenuBarLabel.composedMenuBarImage(
+                                        iconStyle: style,
+                                        health: nil,
+                                        showsHealthDot: false
+                                    ))
+                                    .renderingMode(.original)
+                                    .resizable()
+                                    .interpolation(.high)
+                                    .frame(width: 18, height: 18)
+
+                                    Text(style.displayName)
+                                }
                                     .tag(style)
                             }
                         }
@@ -292,6 +305,33 @@ struct SettingsView: View {
                     }
 
                     SettingsToggleRow(label: "显示状态圆点", isOn: $statusBarHealthDotEnabled)
+
+                    SettingsControlRow("正常颜色") {
+                        ColorPicker(
+                            "",
+                            selection: statusBarColorBinding(for: \.healthyHex),
+                            supportsOpacity: false
+                        )
+                        .labelsHidden()
+                    }
+
+                    SettingsControlRow("预警颜色") {
+                        ColorPicker(
+                            "",
+                            selection: statusBarColorBinding(for: \.warningHex),
+                            supportsOpacity: false
+                        )
+                        .labelsHidden()
+                    }
+
+                    SettingsControlRow("异常颜色") {
+                        ColorPicker(
+                            "",
+                            selection: statusBarColorBinding(for: \.criticalHex),
+                            supportsOpacity: false
+                        )
+                        .labelsHidden()
+                    }
                 }
             }
 
@@ -681,6 +721,7 @@ struct SettingsView: View {
         launchAtLogin = loginItemService.isEnabled
         statusBarIconStyle = config.effectiveStatusBarIconStyle
         statusBarHealthDotEnabled = config.effectiveStatusBarHealthDotEnabled
+        statusBarHealthColors = config.effectiveStatusBarHealthColors
         providerCardOrder = DisplayOrder.normalizedIDs(
             descriptors,
             preferredIDs: config.providerCardOrder,
@@ -737,6 +778,9 @@ struct SettingsView: View {
         config.refreshIntervalSeconds = globalInterval
         config.statusBarIconStyle = statusBarIconStyle
         config.statusBarHealthDotEnabled = statusBarHealthDotEnabled
+        config.statusBarHealthColors = statusBarHealthColors == .default
+            ? nil
+            : statusBarHealthColors
         let defaultProviderOrder = descriptors
             .sorted(by: providerDescriptorDisplayNameAscending)
             .map { $0.kind.quotaProviderID }
@@ -838,6 +882,36 @@ struct SettingsView: View {
     func roundedProviderInterval(from value: Double) -> Int {
         let rounded = Int((value / 10).rounded() * 10)
         return min(3600, max(0, rounded))
+    }
+
+    private func statusBarColorBinding(
+        for keyPath: WritableKeyPath<StatusBarHealthColors, String>
+    ) -> Binding<Color> {
+        Binding(
+            get: {
+                Color(nsColor: statusBarHealthColors.color(
+                    forHex: statusBarHealthColors[keyPath: keyPath]
+                ) ?? .systemGray)
+            },
+            set: { newColor in
+                statusBarHealthColors[keyPath: keyPath] = hexString(from: NSColor(newColor))
+            }
+        )
+    }
+
+    private func hexString(from color: NSColor) -> String {
+        let resolved = color.usingColorSpace(.sRGB) ?? NSColor.systemGray
+        var red: CGFloat = 0
+        var green: CGFloat = 0
+        var blue: CGFloat = 0
+        var alpha: CGFloat = 0
+        resolved.getRed(&red, green: &green, blue: &blue, alpha: &alpha)
+        return String(
+            format: "#%02X%02X%02X",
+            Int((red * 255).rounded()),
+            Int((green * 255).rounded()),
+            Int((blue * 255).rounded())
+        )
     }
 
     func tildePath(for path: String) -> String {

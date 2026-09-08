@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+<title id="title">LLM quota monitor — light, outer 7:30 inner 2</title>
+<desc id="desc">Thin orange weekly ring, clockwise gap from 12 to 7:30. Thick teal 5-hour ring, clockwise gap from 12 to 2. Rose waterline aligned with inner endpoint center. Transparent background.</desc>
+<path d="M 285.72583 738.27417 A 320 320 0 0 1 512 192" fill="none" stroke="#C65B12" stroke-width="26" stroke-linecap="round"/>
+<path d="M 719.84610 392.00000 A 240 240 0 1 1 512 272" fill="none" stroke="#0D8278" stroke-width="46" stroke-linecap="round"/>
+<path d="M 364.69080 392.00000 H 659.30920 A 190 190 0 1 1 364.69080 392.00000 Z" fill="#C83C62"/>
+</svg>

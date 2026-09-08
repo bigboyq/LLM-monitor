@@ -14,6 +14,11 @@ final class StatusBarIconTests: XCTestCase {
         config.statusBarIconStyle = .sparkles
         config.statusBarIndicatorMode = .monochrome
         config.statusBarHealthDotEnabled = false
+        config.statusBarHealthColors = StatusBarHealthColors(
+            healthyHex: "#123456",
+            warningHex: "#ABCDEF",
+            criticalHex: "#654321"
+        )
 
         let encoder = JSONEncoder()
         let data = try encoder.encode(config)
@@ -24,9 +29,11 @@ final class StatusBarIconTests: XCTestCase {
         XCTAssertEqual(decoded.statusBarIconStyle, .sparkles)
         XCTAssertEqual(decoded.statusBarIndicatorMode, .monochrome)
         XCTAssertEqual(decoded.statusBarHealthDotEnabled, false)
+        XCTAssertEqual(decoded.statusBarHealthColors, config.statusBarHealthColors)
         XCTAssertEqual(decoded.effectiveStatusBarIconStyle, .sparkles)
         XCTAssertEqual(decoded.effectiveStatusBarIndicatorMode, .monochrome)
         XCTAssertFalse(decoded.effectiveStatusBarHealthDotEnabled)
+        XCTAssertEqual(decoded.effectiveStatusBarHealthColors, config.statusBarHealthColors)
     }
 
     func testStatusBarIconStyleEnumProperties() {
@@ -34,11 +41,13 @@ final class StatusBarIconTests: XCTestCase {
         XCTAssertEqual(StatusBarIconStyle.sparkles.systemImageName, "sparkles")
         XCTAssertEqual(StatusBarIconStyle.brain.systemImageName, "brain.head.profile")
         XCTAssertEqual(StatusBarIconStyle.cpu.systemImageName, "cpu.fill")
+        XCTAssertEqual(StatusBarIconStyle.quotaLogo.bundledResourceName, "llm-quota-730-2-menubar")
 
         XCTAssertEqual(StatusBarIconStyle.chartBar.displayName, "柱状图")
         XCTAssertEqual(StatusBarIconStyle.sparkles.displayName, "AI 星光")
         XCTAssertEqual(StatusBarIconStyle.brain.displayName, "智能大脑")
         XCTAssertEqual(StatusBarIconStyle.cpu.displayName, "芯片")
+        XCTAssertEqual(StatusBarIconStyle.quotaLogo.displayName, "App 图标")
 
         XCTAssertEqual(StatusBarIndicatorMode.colored.displayName, "健康度着色")
         XCTAssertEqual(StatusBarIndicatorMode.monochrome.displayName, "单色模版")
@@ -46,9 +55,28 @@ final class StatusBarIconTests: XCTestCase {
 
     func testStatusBarHealthDots() {
         XCTAssertNil(MenuBarLabel.statusDotColor(for: nil))
-        XCTAssertEqual(MenuBarLabel.statusDotColor(for: .healthy), .systemGreen)
-        XCTAssertEqual(MenuBarLabel.statusDotColor(for: .warning), .systemOrange)
-        XCTAssertEqual(MenuBarLabel.statusDotColor(for: .critical), .systemRed)
+        XCTAssertEqual(
+            MenuBarLabel.statusDotColor(for: .healthy),
+            StatusBarHealthColors.default.healthyColor
+        )
+        XCTAssertEqual(
+            MenuBarLabel.statusDotColor(for: .warning),
+            StatusBarHealthColors.default.warningColor
+        )
+        XCTAssertEqual(
+            MenuBarLabel.statusDotColor(for: .critical),
+            StatusBarHealthColors.default.criticalColor
+        )
+
+        let customColors = StatusBarHealthColors(
+            healthyHex: "#112233",
+            warningHex: "#445566",
+            criticalHex: "#778899"
+        )
+        XCTAssertEqual(
+            MenuBarLabel.statusDotColor(for: .warning, colors: customColors),
+            customColors.warningColor
+        )
 
         let image = MenuBarLabel.composedMenuBarImage(
             iconStyle: .chartBar,
@@ -73,6 +101,51 @@ final class StatusBarIconTests: XCTestCase {
             health: nil
         )
         XCTAssertEqual(hiddenDotImage.tiffRepresentation, unconfiguredImage.tiffRepresentation)
+
+        let quotaLogoImage = MenuBarLabel.composedMenuBarImage(
+            iconStyle: .quotaLogo,
+            health: nil,
+            showsHealthDot: false
+        )
+        XCTAssertEqual(quotaLogoImage.size.width, 22)
+        XCTAssertEqual(quotaLogoImage.size.height, 22)
+        XCTAssertFalse(quotaLogoImage.isTemplate)
+        XCTAssertNotNil(quotaLogoImage.tiffRepresentation)
+
+        let healthyQuotaLogo = MenuBarLabel.composedMenuBarImage(
+            iconStyle: .quotaLogo,
+            health: .healthy
+        )
+        let warningQuotaLogo = MenuBarLabel.composedMenuBarImage(
+            iconStyle: .quotaLogo,
+            health: .warning
+        )
+        let criticalQuotaLogo = MenuBarLabel.composedMenuBarImage(
+            iconStyle: .quotaLogo,
+            health: .critical
+        )
+        XCTAssertNotEqual(healthyQuotaLogo.tiffRepresentation, warningQuotaLogo.tiffRepresentation)
+        XCTAssertNotEqual(warningQuotaLogo.tiffRepresentation, criticalQuotaLogo.tiffRepresentation)
+        XCTAssertNotEqual(
+            healthyQuotaLogo.tiffRepresentation,
+            MenuBarLabel.composedMenuBarImage(
+                iconStyle: .quotaLogo,
+                health: .healthy,
+                healthColors: customColors
+            ).tiffRepresentation
+        )
+        XCTAssertEqual(
+            MenuBarLabel.composedMenuBarImage(
+                iconStyle: .quotaLogo,
+                health: .healthy,
+                showsHealthDot: true
+            ).tiffRepresentation,
+            MenuBarLabel.composedMenuBarImage(
+                iconStyle: .quotaLogo,
+                health: .healthy,
+                showsHealthDot: false
+            ).tiffRepresentation
+        )
     }
 
     func testUnknownStatusBarValuesFallBackWithoutDroppingProviders() throws {

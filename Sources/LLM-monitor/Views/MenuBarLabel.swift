@@ -25,6 +25,7 @@ struct MenuBarLabel: View {
         let iconStyle: StatusBarIconStyle
         let health: HealthLevel?
         let showsHealthDot: Bool
+        let healthColors: StatusBarHealthColors
         let isRefreshing: Bool
         let colorScheme: ColorScheme
     }
@@ -34,9 +35,15 @@ struct MenuBarLabel: View {
         // 部分 macOS 版本会因此持续重建 status item 图像，导致 CPU/内存失控。
         let iconStyle = configStore.config.effectiveStatusBarIconStyle
         let showsHealthDot = configStore.config.effectiveStatusBarHealthDotEnabled
+        let healthColors = configStore.config.effectiveStatusBarHealthColors
         let health = state.systemHealthLevel(at: state.healthEvaluationDate)
 
-        content(iconStyle: iconStyle, health: health, showsHealthDot: showsHealthDot)
+        content(
+            iconStyle: iconStyle,
+            health: health,
+            showsHealthDot: showsHealthDot,
+            healthColors: healthColors
+        )
             .frame(width: 22, height: 22)
             .accessibilityLabel(accessibilityTitle(health: health))
             .onAppear {
@@ -54,7 +61,8 @@ struct MenuBarLabel: View {
     private func content(
         iconStyle: StatusBarIconStyle,
         health: HealthLevel?,
-        showsHealthDot: Bool
+        showsHealthDot: Bool,
+        healthColors: StatusBarHealthColors
     ) -> some View {
         if state.isRefreshing {
             Image(systemName: "arrow.triangle.2.circlepath")
@@ -71,7 +79,8 @@ struct MenuBarLabel: View {
             Image(nsImage: Self.composedMenuBarImage(
                 iconStyle: iconStyle,
                 health: health,
-                showsHealthDot: showsHealthDot
+                showsHealthDot: showsHealthDot,
+                healthColors: healthColors
             ))
                 .renderingMode(.original)
                 .accessibilityHidden(true)
@@ -83,6 +92,7 @@ struct MenuBarLabel: View {
             iconStyle: configStore.config.effectiveStatusBarIconStyle,
             health: state.systemHealthLevel(at: state.healthEvaluationDate),
             showsHealthDot: configStore.config.effectiveStatusBarHealthDotEnabled,
+            healthColors: configStore.config.effectiveStatusBarHealthColors,
             isRefreshing: state.isRefreshing,
             colorScheme: colorScheme
         )
@@ -91,7 +101,8 @@ struct MenuBarLabel: View {
         cachedImage = Self.composedMenuBarImage(
             iconStyle: signature.iconStyle,
             health: signature.health,
-            showsHealthDot: signature.showsHealthDot
+            showsHealthDot: signature.showsHealthDot,
+            healthColors: signature.healthColors
         )
         statusRevision &+= 1
     }
@@ -99,20 +110,35 @@ struct MenuBarLabel: View {
     static func composedMenuBarImage(
         iconStyle: StatusBarIconStyle,
         health: HealthLevel?,
-        showsHealthDot: Bool = true
+        showsHealthDot: Bool = true,
+        healthColors: StatusBarHealthColors = .default
     ) -> NSImage {
         let canvasSize = NSSize(width: 22, height: 22)
-        let baseConfiguration = NSImage.SymbolConfiguration(pointSize: 14, weight: .regular)
-            .applying(NSImage.SymbolConfiguration(paletteColors: [.labelColor]))
-        let baseImage = NSImage(
-            systemSymbolName: iconStyle.systemImageName,
-            accessibilityDescription: nil
-        )?.withSymbolConfiguration(baseConfiguration)
+        let baseImage: NSImage?
+        if let resourceName = iconStyle.bundledResourceName(for: health),
+           let url = Bundle.module.url(forResource: resourceName, withExtension: "svg") {
+            baseImage = Self.loadBundledImage(
+                from: url,
+                iconStyle: iconStyle,
+                health: health,
+                healthColors: healthColors
+            )
+        } else {
+            let baseConfiguration = NSImage.SymbolConfiguration(pointSize: 14, weight: .regular)
+                .applying(NSImage.SymbolConfiguration(paletteColors: [.labelColor]))
+            baseImage = NSImage(
+                systemSymbolName: iconStyle.systemImageName,
+                accessibilityDescription: nil
+            )?.withSymbolConfiguration(baseConfiguration)
+        }
 
         let image = NSImage(size: canvasSize, flipped: false) { _ in
+            // 专用 SVG 已裁掉原图透明留白；系统符号仍沿用原来的 20pt 画布。
             baseImage?.draw(in: NSRect(x: 1, y: 1, width: 20, height: 20))
 
-            if showsHealthDot, let dotColor = statusDotColor(for: health) {
+            // App 图标模式已经用水位表达状态，不再叠加小圆点。
+            let shouldShowHealthDot = showsHealthDot && iconStyle != .quotaLogo
+            if shouldShowHealthDot, let dotColor = statusDotColor(for: health, colors: healthColors) {
                 dotColor.setFill()
                 // AppKit 坐标原点在左下角，因此 x=16、y=0 对齐右下角。
                 NSBezierPath(ovalIn: NSRect(x: 16, y: 0, width: 6, height: 6)).fill()
@@ -124,17 +150,35 @@ struct MenuBarLabel: View {
         return image
     }
 
-    static func statusDotColor(for health: HealthLevel?) -> NSColor? {
-        switch health {
-        case .healthy:
-            return .systemGreen
-        case .warning:
-            return .systemOrange
-        case .critical:
-            return .systemRed
-        case nil:
-            return nil
+    private static func loadBundledImage(
+        from url: URL,
+        iconStyle: StatusBarIconStyle,
+        health: HealthLevel?,
+        healthColors: StatusBarHealthColors
+    ) -> NSImage? {
+        guard iconStyle == .quotaLogo,
+              let health,
+              let configuredHex = healthColors.hexValue(for: health),
+              let defaultHex = StatusBarHealthColors.default.hexValue(for: health),
+              let data = try? Data(contentsOf: url),
+              var svg = String(data: data, encoding: .utf8) else {
+            return NSImage(contentsOf: url)
         }
+
+        // 水位 SVG 使用默认颜色作为模板；这里只替换内层水位的 fill，
+        // 外侧两条环保持 Logo 原本的橙色 / 青色。
+        svg = svg.replacingOccurrences(
+            of: "fill=\"\(defaultHex)\"",
+            with: "fill=\"\(configuredHex)\""
+        )
+        return NSImage(data: Data(svg.utf8))
+    }
+
+    static func statusDotColor(
+        for health: HealthLevel?,
+        colors: StatusBarHealthColors = .default
+    ) -> NSColor? {
+        colors.color(for: health)
     }
 
     private func accessibilityTitle(health: HealthLevel?) -> String {
