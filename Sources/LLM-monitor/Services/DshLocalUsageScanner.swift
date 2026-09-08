@@ -53,8 +53,8 @@ final class DshLocalUsageScanner: LocalUsageScannerBase<DshLocalUsage>, @uncheck
     nonisolated static let pipelineMutex = AsyncMutex()
 
     /// DSH 的 session 文件通常是 append-only。扫描时如果只有一个活跃文件变化，
-    /// 其余文件的解压和 JSONL 解析结果可以直接复用；这里保留一个有界进程内 LRU，
-    /// 避免每 60 秒把整批历史文件重新解压一遍。它不改变 index.json 格式，应用重启
+    /// 其余文件的解压和 JSONL 解析结果可以直接复用；进程内缓存保留最新 256 个
+    /// 文件，容量外文件不会驱逐它们，避免每次刷新重解压整批历史。它不改变 index.json 格式，应用重启
     /// 后仍由现有快照缓存提供冷启动快路径。
     nonisolated private static let parsedFileCache = DshParsedFileCache(maximumEntryCount: 256)
 
@@ -493,6 +493,8 @@ private final class DshParsedFileCache: @unchecked Sendable {
         self.maximumEntryCount = max(maximumEntryCount, 1)
     }
 
+    var capacity: Int { maximumEntryCount }
+
     func value(
         for snapshot: DshLogFileSnapshot,
         limits: DshLocalUsageScanLimits
@@ -580,8 +582,21 @@ private extension DshLocalUsageScanner {
         limits: DshLocalUsageScanLimits
     ) throws -> DshFileAggregationOutcome {
         var outcome = DshFileAggregationOutcome()
-        parsedFileCache.removeAll(except: Set(snapshots.map { $0.url.path }))
-        for snapshot in snapshots.sorted(by: { $0.modifiedAt > $1.modifiedAt }) {
+        // Keep the newest cache-capacity files as a fixed hot set. Files beyond
+        // that set are still parsed and aggregated, but are deliberately not
+        // inserted into the cache so they cannot evict any hot entry while a
+        // scan walks the complete (potentially much larger) selected set.
+        let orderedSnapshots = snapshots.sorted {
+            if $0.modifiedAt != $1.modifiedAt {
+                return $0.modifiedAt > $1.modifiedAt
+            }
+            return $0.url.path < $1.url.path
+        }
+        let hotCachePaths = Set(
+            orderedSnapshots.prefix(parsedFileCache.capacity).map { $0.url.path }
+        )
+        parsedFileCache.removeAll(except: hotCachePaths)
+        for snapshot in orderedSnapshots {
             try Task.checkCancellation()
             do {
                 let result: DshFileParseResult
@@ -621,7 +636,9 @@ private extension DshLocalUsageScanner {
                             limits: limits
                         )
                     }
-                    parsedFileCache.store(result, for: snapshot, limits: limits)
+                    if hotCachePaths.contains(snapshot.url.path) {
+                        parsedFileCache.store(result, for: snapshot, limits: limits)
+                    }
                 }
                 outcome.processedFingerprints.append(snapshot.fingerprint)
                 guard !result.usages.isEmpty else { continue }

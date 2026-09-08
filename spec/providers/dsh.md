@@ -89,6 +89,10 @@ to the next line, so a replayed event can never stall the scan.
   not trigger scans.
 - Uses file mtime + size fingerprints; if nothing changed it only rebases the cached
   seven-day window after midnight.
+- When files change, an in-memory cache retains parsed results for the newest 256
+  selected files. Older selected files are still parsed and included, but cannot
+  evict that hot set. Adding a new session first removes entries outside the new
+  hot set, so it does not cause a chain of cache misses across unchanged history.
 - Limits: 1,024 session files, 1 GiB of input, 8 MiB per JSONL line, and
   at most 65,536 recent samples per provider within the last 8 calendar days (today
   plus the previous 7). Full scans and cached midnight rebases apply the same
