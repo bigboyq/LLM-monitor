@@ -41,7 +41,7 @@ final class StatusBarIconTests: XCTestCase {
         XCTAssertEqual(StatusBarIconStyle.sparkles.systemImageName, "sparkles")
         XCTAssertEqual(StatusBarIconStyle.brain.systemImageName, "brain.head.profile")
         XCTAssertEqual(StatusBarIconStyle.cpu.systemImageName, "cpu.fill")
-        XCTAssertEqual(StatusBarIconStyle.quotaLogo.bundledResourceName, "llm-quota-730-2-menubar")
+        XCTAssertEqual(StatusBarIconStyle.quotaLogo.systemImageName, "chart.donut.fill")
 
         XCTAssertEqual(StatusBarIconStyle.chartBar.displayName, "柱状图")
         XCTAssertEqual(StatusBarIconStyle.sparkles.displayName, "AI 星光")
@@ -326,4 +326,280 @@ final class StatusBarIconTests: XCTestCase {
         XCTAssertEqual(appState.systemHealthLevel(at: duringPeak), .warning)
         XCTAssertEqual(appState.systemHealthLevel(at: afterPeak), .healthy)
     }
+
+    func testQuotaLogoSVGBuilderArcAndWaterCalculations() {
+        let outer = QuotaRingMetrics(minAvailable: 0.3, avgAvailable: 0.7, colorHex: "#FB923C")
+        let middle = QuotaRingMetrics(minAvailable: 0.5, avgAvailable: 0.8, colorHex: "#2DD4BF")
+        let svg = QuotaLogoSVGBuilder.buildSVG(
+            outer: outer,
+            middle: middle,
+            waterPercent: 0.5,
+            waterColor: "#34C759"
+        )
+
+        // 验证 viewBox 对称且足够容纳外圈，包含两个实线段与两个虚线段
+        XCTAssertTrue(svg.contains("viewBox=\"160 160 704 704\""))
+        XCTAssertTrue(svg.contains("stroke-dasharray=\"32 64\""))
+        XCTAssertTrue(svg.contains("clip-path=\"url(#cup)\""))
+        // 验证逆时针绘制（sweep-flag 为 0）
+        XCTAssertTrue(svg.contains("A 320 320 0 0 0"))
+        // 验证 50% 水位换算：waterHeight = 310 * 0.5 = 155.00, y = 702 - 155 = 547.00
+        XCTAssertTrue(svg.contains("height=\"155.00\""))
+        XCTAssertTrue(svg.contains("y=\"547.00\""))
+        XCTAssertTrue(svg.contains("fill=\"#34C759\""))
+
+        // 验证图像生成
+        let image = QuotaLogoSVGBuilder.buildImage(
+            outer: outer,
+            middle: middle,
+            waterPercent: 0.5,
+            waterColor: "#34C759"
+        )
+        XCTAssertNotNil(image)
+        XCTAssertEqual(image?.size.width, 22)
+        XCTAssertEqual(image?.size.height, 22)
+    }
+
+    @MainActor
+    func testStatusBarQuotaMetricsWithWeeklyTimeFactor() {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let store = ConfigStore(configURL: dir.appendingPathComponent("config.json"))
+        var cfg = store.config
+        cfg.providers["test_a"] = ProviderConfig(enabled: true, apiKey: "key_a")
+        cfg.providers["test_b"] = ProviderConfig(enabled: true, apiKey: "key_b")
+        try? store.applyAndSave(cfg)
+
+        let descA = FetcherDescriptor(
+            id: "test_a",
+            displayName: "Test A",
+            kind: .codexChatGpt,
+            iconSystemName: "star",
+            accentColor: .chatgpt,
+            makeFetcher: { _ in CodexFetcher(authPath: nil) }
+        )
+        let descB = FetcherDescriptor(
+            id: "test_b",
+            displayName: "Test B",
+            kind: .glmCodingPlan,
+            iconSystemName: "sparkles",
+            accentColor: .glm,
+            makeFetcher: { _ in GlmCodingPlanFetcher(apiKey: "key") }
+        )
+
+        let appState = AppState(descriptors: [descA, descB], configStore: store)
+        appState.stop()
+
+        let now = Date()
+        let totalWeekSeconds = 7.0 * 24 * 3600
+
+        // 模型 A：5h 剩余 40%；周剩余 30%，但还剩 60% 的时间 (30% / 60% = 50% 可用度)
+        let resetA = now.addingTimeInterval(totalWeekSeconds * 0.6)
+        let modelA = ModelQuota(
+            modelName: "model_a",
+            intervalTotalCount: 100,
+            intervalUsageCount: 60,
+            intervalRemainingPercent: 40.0,
+            intervalStatus: .present,
+            intervalResetsAt: now.addingTimeInterval(3600),
+            intervalWindowSeconds: 5 * 3600,
+            weeklyTotalCount: 100,
+            weeklyUsageCount: 70,
+            weeklyRemainingPercent: 30.0,
+            weeklyStatus: .present,
+            weeklyResetsAt: resetA,
+            weeklyWindowSeconds: Int(totalWeekSeconds)
+        )
+
+        // 模型 B：5h 剩余 80%；周剩余 40%，但只剩 20% 的时间 (40% / 20% = 200% -> 封顶 100%)
+        let resetB = now.addingTimeInterval(totalWeekSeconds * 0.2)
+        let modelB = ModelQuota(
+            modelName: "model_b",
+            intervalTotalCount: 100,
+            intervalUsageCount: 20,
+            intervalRemainingPercent: 80.0,
+            intervalStatus: .present,
+            intervalResetsAt: now.addingTimeInterval(3600),
+            intervalWindowSeconds: 5 * 3600,
+            weeklyTotalCount: 100,
+            weeklyUsageCount: 60,
+            weeklyRemainingPercent: 40.0,
+            weeklyStatus: .present,
+            weeklyResetsAt: resetB,
+            weeklyWindowSeconds: Int(totalWeekSeconds)
+        )
+
+        appState.mutateStatus(for: "test_a") { st in
+            st.state = .ok(QuotaInfo(models: [modelA], resetCredits: nil, planLabel: nil, accountEmail: nil, codexUsageDetails: nil, fetchedAt: now))
+        }
+        appState.mutateStatus(for: "test_b") { st in
+            st.state = .ok(QuotaInfo(models: [modelB], resetCredits: nil, planLabel: nil, accountEmail: nil, codexUsageDetails: nil, fetchedAt: now))
+        }
+
+        let metrics = appState.statusBarQuotaMetrics(at: now)
+
+        // 5h 额度：纯原始比例。min = 40% (0.4), avg = (40 + 80) / 2 = 60% (0.6)
+        XCTAssertEqual(metrics.interval.minAvailable, 0.4, accuracy: 0.001)
+        XCTAssertEqual(metrics.interval.avgAvailable, 0.6, accuracy: 0.001)
+
+        // 周额度：恢复为纯原始百分比，不带时间系数。
+        // A: 30% (0.3)
+        // B: 40% (0.4)
+        // min = 0.3, avg = (0.3 + 0.4) / 2 = 0.35
+        XCTAssertEqual(metrics.weekly.minAvailable, 0.3, accuracy: 0.001)
+        XCTAssertEqual(metrics.weekly.avgAvailable, 0.35, accuracy: 0.001)
+    }
+
+    func testComposedMenuBarImageWithDynamicMetrics() {
+        let fullMetrics = StatusBarQuotaMetrics.full
+        let customMetrics = StatusBarQuotaMetrics(
+            weekly: QuotaRingMetrics(minAvailable: 0.3, avgAvailable: 0.6, colorHex: "#FB923C"),
+            interval: QuotaRingMetrics(minAvailable: 0.2, avgAvailable: 0.5, colorHex: "#2DD4BF")
+        )
+
+        let fullImage = MenuBarLabel.composedMenuBarImage(
+            iconStyle: .quotaLogo,
+            health: .healthy,
+            quotaMetrics: fullMetrics
+        )
+        let customImage = MenuBarLabel.composedMenuBarImage(
+            iconStyle: .quotaLogo,
+            health: .healthy,
+            quotaMetrics: customMetrics
+        )
+
+        XCTAssertNotEqual(fullImage.tiffRepresentation, customImage.tiffRepresentation)
+    }
+
+    @MainActor
+    func testStatusBarWaterHealthLevels() {
+        let descriptors = [
+            FetcherDescriptor(
+                id: "test_a",
+                displayName: "Test A",
+                kind: .minimaxTokenPlan,
+                iconSystemName: "bubble.left",
+                accentColor: .minimax,
+                makeFetcher: { _ in MinimaxTokenPlanFetcher(apiKey: "key") }
+            ),
+            FetcherDescriptor(
+                id: "test_b",
+                displayName: "Test B",
+                kind: .codexChatGpt,
+                iconSystemName: "sparkles",
+                accentColor: .chatgpt,
+                makeFetcher: { _ in CodexFetcher(authPath: nil) }
+            ),
+            FetcherDescriptor(
+                id: "test_glm",
+                displayName: "Test GLM",
+                kind: .glmCodingPlan,
+                iconSystemName: "bolt",
+                accentColor: .glm,
+                makeFetcher: { _ in GlmCodingPlanFetcher(apiKey: "key") }
+            )
+        ]
+
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let configURL = dir.appendingPathComponent("config.json")
+        let store = ConfigStore(configURL: configURL)
+
+        var cfg = store.config
+        cfg.providers["test_a"] = ProviderConfig(enabled: true, apiKey: "key_a")
+        cfg.providers["test_b"] = ProviderConfig(enabled: true, apiKey: "key_b")
+        cfg.providers["test_glm"] = ProviderConfig(
+            enabled: true,
+            apiKey: "key_glm",
+            peakStartHour: 14,
+            peakEndHour: 18,
+            peakWeekdaysOnly: false
+        )
+        try? store.applyAndSave(cfg)
+
+        let appState = AppState(descriptors: descriptors, configStore: store)
+
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .current
+        let day = DateComponents(year: 2026, month: 8, day: 10)
+        let offPeakTime = calendar.date(from: DateComponents(
+            year: day.year, month: day.month, day: day.day, hour: 10, minute: 0
+        ))!
+        let peakTime = calendar.date(from: DateComponents(
+            year: day.year, month: day.month, day: day.day, hour: 15, minute: 0
+        ))!
+
+        func makeModel(percent: Double) -> ModelQuota {
+            ModelQuota(
+                modelName: "model",
+                intervalTotalCount: 100,
+                intervalUsageCount: Int(100.0 - percent),
+                intervalRemainingPercent: percent,
+                intervalStatus: .present,
+                intervalResetsAt: offPeakTime.addingTimeInterval(3600),
+                intervalWindowSeconds: 18000,
+                weeklyTotalCount: 100,
+                weeklyUsageCount: 20,
+                weeklyRemainingPercent: 80.0,
+                weeklyStatus: .present,
+                weeklyResetsAt: offPeakTime.addingTimeInterval(86400 * 7),
+                weeklyWindowSeconds: 86400 * 7
+            )
+        }
+
+        func setQuotas(aPercent: Double, bPercent: Double) {
+            appState.mutateStatus(for: "test_a") { st in
+                st.state = ProviderStatus.State.ok(QuotaInfo(models: [makeModel(percent: aPercent)], resetCredits: nil, planLabel: nil, accountEmail: nil, codexUsageDetails: nil, fetchedAt: offPeakTime))
+            }
+            appState.mutateStatus(for: "test_b") { st in
+                st.state = ProviderStatus.State.ok(QuotaInfo(models: [makeModel(percent: bPercent)], resetCredits: nil, planLabel: nil, accountEmail: nil, codexUsageDetails: nil, fetchedAt: offPeakTime))
+            }
+        }
+
+        // 1. 默认绿色：min >= 40%, avg >= 60%, 非高峰
+        // a=70%, b=90% -> min=70%, avg=80%
+        setQuotas(aPercent: 70.0, bPercent: 90.0)
+        var metrics = appState.statusBarQuotaMetrics(at: offPeakTime)
+        XCTAssertEqual(metrics.waterHealth, HealthLevel.healthy)
+
+        // 2. 黄色场景 A：任意 5h 额度 < 40%
+        // a=35%, b=85% -> min=35% (< 40%), avg=60%
+        setQuotas(aPercent: 35.0, bPercent: 85.0)
+        metrics = appState.statusBarQuotaMetrics(at: offPeakTime)
+        XCTAssertEqual(metrics.waterHealth, HealthLevel.warning)
+
+        // 3. 黄色场景 B：avg_5h < 60%（且 min >= 40%）
+        // a=50%, b=60% -> min=50%, avg=55% (< 60%)
+        setQuotas(aPercent: 50.0, bPercent: 60.0)
+        metrics = appState.statusBarQuotaMetrics(at: offPeakTime)
+        XCTAssertEqual(metrics.waterHealth, HealthLevel.warning)
+
+        // 4. 黄色场景 C：有高峰价格（即使额度全部 100%）
+        setQuotas(aPercent: 100.0, bPercent: 100.0)
+        metrics = appState.statusBarQuotaMetrics(at: peakTime)
+        XCTAssertEqual(metrics.waterHealth, HealthLevel.warning)
+
+        // 5. 红色场景 A：任意 5h 额度 < 10%
+        // a=8%, b=80% -> min=8% (< 10%), avg=44%
+        setQuotas(aPercent: 8.0, bPercent: 80.0)
+        metrics = appState.statusBarQuotaMetrics(at: offPeakTime)
+        XCTAssertEqual(metrics.waterHealth, HealthLevel.critical)
+
+        // 6. 红色场景 B：avg_5h < 40%
+        // a=20%, b=30% -> min=20%, avg=25% (< 40%)
+        setQuotas(aPercent: 20.0, bPercent: 30.0)
+        metrics = appState.statusBarQuotaMetrics(at: offPeakTime)
+        XCTAssertEqual(metrics.waterHealth, HealthLevel.critical)
+
+        // 7. 优先级：红 > 黄（例如 min < 10% 且处于高峰期时，判定为红色）
+        setQuotas(aPercent: 5.0, bPercent: 90.0)
+        metrics = appState.statusBarQuotaMetrics(at: peakTime)
+        XCTAssertEqual(metrics.waterHealth, HealthLevel.critical)
+    }
 }
+
+

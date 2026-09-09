@@ -109,6 +109,10 @@ struct ModelQuota: Equatable, Codable, Sendable {
     /// windowSeconds 写死成 nil，但 weeklyEndTime 一定有）。
     /// 5h 窗口不参与计算（用户偏好：进度条上只看周）。
     var weeklyTimeRemainingFraction: Double? {
+        weeklyTimeRemainingFraction(at: Date())
+    }
+
+    func weeklyTimeRemainingFraction(at now: Date) -> Double? {
         guard hasWeeklyWindow else { return nil }
         guard let end = weeklyResetsAt else {
             logWarn("[quota] model \(modelName) weekly window is present but reset time is missing")
@@ -117,7 +121,7 @@ struct ModelQuota: Equatable, Codable, Sendable {
         }
         let length = weeklyWindowSeconds ?? (7 * 24 * 60 * 60)
         guard length > 0 else { return nil }
-        let remaining = end.timeIntervalSinceNow
+        let remaining = end.timeIntervalSince(now)
         return min(max(remaining / TimeInterval(length), 0), 1)
     }
 

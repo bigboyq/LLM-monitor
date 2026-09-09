@@ -111,6 +111,94 @@ final class AppState: ObservableObject {
         return levels.min()
     }
 
+    /// 计算当前状态栏配额指标（外圈周额度与中圈 5h 额度均使用原始物理剩余百分比，中心水位映射 5h 最低值与警报状态）
+    func statusBarQuotaMetrics(at now: Date = Date()) -> StatusBarQuotaMetrics {
+        let enabled = statuses.filter(\.isEnabled)
+        var allActiveModels: [ModelQuota] = []
+        for status in enabled {
+            switch status.state {
+            case .ok(let info), .loading(lastSuccess: let info?), .failed(message: _, lastSuccess: let info?):
+                allActiveModels.append(contentsOf: info.activeModels)
+            case .notConfigured, .ready, .loading(lastSuccess: nil), .failed(message: _, lastSuccess: nil):
+                break
+            }
+        }
+
+        // 1. 5h 窗口 (原始值，不带时间系数)
+        let intervalModels = allActiveModels.filter(\.hasIntervalWindow)
+        let intervalMetrics: QuotaRingMetrics
+        if intervalModels.isEmpty {
+            intervalMetrics = QuotaRingMetrics(
+                minAvailable: 1.0,
+                avgAvailable: 1.0,
+                colorHex: QuotaLogoSVGBuilder.defaultMiddleColor
+            )
+        } else {
+            let pcts = intervalModels.map { min(max($0.intervalRemainingPercent / 100.0, 0.0), 1.0) }
+            let minVal = pcts.min() ?? 1.0
+            let avgVal = pcts.reduce(0.0, +) / Double(pcts.count)
+            intervalMetrics = QuotaRingMetrics(
+                minAvailable: minVal,
+                avgAvailable: avgVal,
+                colorHex: QuotaLogoSVGBuilder.defaultMiddleColor
+            )
+        }
+
+        // 2. 周窗口 (原始百分比，不带时间系数)
+        let weeklyModels = allActiveModels.filter(\.hasWeeklyWindow)
+        let weeklyMetrics: QuotaRingMetrics
+        if weeklyModels.isEmpty {
+            weeklyMetrics = QuotaRingMetrics(
+                minAvailable: 1.0,
+                avgAvailable: 1.0,
+                colorHex: QuotaLogoSVGBuilder.defaultOuterColor
+            )
+        } else {
+            let pcts = weeklyModels.map { min(max($0.weeklyRemainingPercent / 100.0, 0.0), 1.0) }
+            let minVal = pcts.min() ?? 1.0
+            let avgVal = pcts.reduce(0.0, +) / Double(pcts.count)
+            weeklyMetrics = QuotaRingMetrics(
+                minAvailable: minVal,
+                avgAvailable: avgVal,
+                colorHex: QuotaLogoSVGBuilder.defaultOuterColor
+            )
+        }
+
+        // 3. 高峰价格判定
+        let isPeakPrice = enabled.contains { status in
+            if let glmPeak = status.glmPeakWindow, case .peak = glmPeak.status(at: now) {
+                return true
+            }
+            if let deepseekPeak = status.deepseekPeakWindow, case .peak = deepseekPeak.status(at: now) {
+                return true
+            }
+            return false
+        }
+
+        // 4. 中心水位健康度颜色等级：
+        // 默认绿色，如果有任意5h额度<40%，或有高峰价格，或avg_5h<60%，黄色。
+        // 如果有任意5h额度<10%，或avg_5h<40%，红色。
+        let waterHealth: HealthLevel?
+        if allActiveModels.isEmpty && !enabled.contains(where: { $0.lastSuccess != nil }) {
+            waterHealth = nil
+        } else {
+            let epsilon = 1e-6
+            if intervalMetrics.minAvailable < (0.10 - epsilon) || intervalMetrics.avgAvailable < (0.40 - epsilon) {
+                waterHealth = .critical
+            } else if intervalMetrics.minAvailable < (0.40 - epsilon) || isPeakPrice || intervalMetrics.avgAvailable < (0.60 - epsilon) {
+                waterHealth = .warning
+            } else {
+                waterHealth = .healthy
+            }
+        }
+
+        return StatusBarQuotaMetrics(
+            weekly: weeklyMetrics,
+            interval: intervalMetrics,
+            waterHealth: waterHealth
+        )
+    }
+
     private var cancellables = Set<AnyCancellable>()
     /// 只持久化远程 quota 最近成功时间；quota 本体仍不落盘，避免把完整响应当作用户缓存。
     private let refreshTimestampsURL: URL

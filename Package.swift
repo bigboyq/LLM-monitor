@@ -14,7 +14,6 @@ let package = Package(
             exclude: ["Resources/AppIcon.icns"],
             resources: [
                 .process("Resources/BrandLogos"),
-                .process("Resources/StatusBarIcons"),
                 .process("Resources/ModelPricing.json")
             ],
             linkerSettings: [

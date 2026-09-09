@@ -31,25 +31,6 @@ enum StatusBarIconStyle: String, Codable, Sendable, CaseIterable, Identifiable {
         case .quotaLogo: return "chart.donut.fill"
         }
     }
-
-    /// 非 SF Symbol 的状态栏图标资源名。nil 表示使用 `systemImageName`。
-    var bundledResourceName: String? {
-        switch self {
-        case .quotaLogo: return "llm-quota-730-2-menubar"
-        case .chartBar, .sparkles, .brain, .cpu: return nil
-        }
-    }
-
-    /// App 图标根据健康度切换水位；nil 用静态 Logo 作为未配置状态的预览 / 兜底。
-    func bundledResourceName(for health: HealthLevel?) -> String? {
-        guard self == .quotaLogo else { return bundledResourceName }
-        switch health {
-        case .healthy: return "llm-quota-730-2-menubar-healthy"
-        case .warning: return "llm-quota-730-2-menubar-warning"
-        case .critical: return "llm-quota-730-2-menubar-critical"
-        case nil: return bundledResourceName
-        }
-    }
 }
 
 /// 状态栏健康度圆点颜色。用固定 sRGB 十六进制值保存，避免系统动态颜色在

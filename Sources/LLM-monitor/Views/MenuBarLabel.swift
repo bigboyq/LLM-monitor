@@ -24,6 +24,7 @@ struct MenuBarLabel: View {
     struct RenderSignature: Equatable {
         let iconStyle: StatusBarIconStyle
         let health: HealthLevel?
+        let quotaMetrics: StatusBarQuotaMetrics?
         let showsHealthDot: Bool
         let healthColors: StatusBarHealthColors
         let isRefreshing: Bool
@@ -37,10 +38,12 @@ struct MenuBarLabel: View {
         let showsHealthDot = configStore.config.effectiveStatusBarHealthDotEnabled
         let healthColors = configStore.config.effectiveStatusBarHealthColors
         let health = state.systemHealthLevel(at: state.healthEvaluationDate)
+        let quotaMetrics = state.statusBarQuotaMetrics(at: state.healthEvaluationDate)
 
         content(
             iconStyle: iconStyle,
             health: health,
+            quotaMetrics: quotaMetrics,
             showsHealthDot: showsHealthDot,
             healthColors: healthColors
         )
@@ -55,12 +58,16 @@ struct MenuBarLabel: View {
             .onReceive(configStore.$config.dropFirst()) { _ in
                 rerenderIfNeeded()
             }
+            .onReceive(state.$healthEvaluationDate.dropFirst()) { _ in
+                rerenderIfNeeded()
+            }
     }
 
     @ViewBuilder
     private func content(
         iconStyle: StatusBarIconStyle,
         health: HealthLevel?,
+        quotaMetrics: StatusBarQuotaMetrics,
         showsHealthDot: Bool,
         healthColors: StatusBarHealthColors
     ) -> some View {
@@ -79,6 +86,7 @@ struct MenuBarLabel: View {
             Image(nsImage: Self.composedMenuBarImage(
                 iconStyle: iconStyle,
                 health: health,
+                quotaMetrics: quotaMetrics,
                 showsHealthDot: showsHealthDot,
                 healthColors: healthColors
             ))
@@ -91,6 +99,7 @@ struct MenuBarLabel: View {
         let signature = RenderSignature(
             iconStyle: configStore.config.effectiveStatusBarIconStyle,
             health: state.systemHealthLevel(at: state.healthEvaluationDate),
+            quotaMetrics: state.statusBarQuotaMetrics(at: state.healthEvaluationDate),
             showsHealthDot: configStore.config.effectiveStatusBarHealthDotEnabled,
             healthColors: configStore.config.effectiveStatusBarHealthColors,
             isRefreshing: state.isRefreshing,
@@ -101,6 +110,7 @@ struct MenuBarLabel: View {
         cachedImage = Self.composedMenuBarImage(
             iconStyle: signature.iconStyle,
             health: signature.health,
+            quotaMetrics: signature.quotaMetrics ?? .full,
             showsHealthDot: signature.showsHealthDot,
             healthColors: signature.healthColors
         )
@@ -110,18 +120,27 @@ struct MenuBarLabel: View {
     static func composedMenuBarImage(
         iconStyle: StatusBarIconStyle,
         health: HealthLevel?,
+        quotaMetrics: StatusBarQuotaMetrics = .full,
         showsHealthDot: Bool = true,
         healthColors: StatusBarHealthColors = .default
     ) -> NSImage {
         let canvasSize = NSSize(width: 22, height: 22)
         let baseImage: NSImage?
-        if let resourceName = iconStyle.bundledResourceName(for: health),
-           let url = Bundle.module.url(forResource: resourceName, withExtension: "svg") {
-            baseImage = Self.loadBundledImage(
-                from: url,
-                iconStyle: iconStyle,
-                health: health,
-                healthColors: healthColors
+        if iconStyle == .quotaLogo {
+            let waterColor: String
+            let healthLevel = quotaMetrics.waterHealth ?? health
+            if let configured = healthColors.hexValue(for: healthLevel) {
+                waterColor = configured
+            } else if let defaultColor = StatusBarHealthColors.default.hexValue(for: healthLevel) {
+                waterColor = defaultColor
+            } else {
+                waterColor = QuotaLogoSVGBuilder.defaultUnconfiguredColor
+            }
+            baseImage = QuotaLogoSVGBuilder.buildImage(
+                outer: quotaMetrics.weekly,
+                middle: quotaMetrics.interval,
+                waterPercent: quotaMetrics.interval.minAvailable,
+                waterColor: waterColor
             )
         } else {
             let baseConfiguration = NSImage.SymbolConfiguration(pointSize: 14, weight: .regular)
@@ -148,30 +167,6 @@ struct MenuBarLabel: View {
         // 保留状态圆点颜色；主图标只使用动态 labelColor。
         image.isTemplate = false
         return image
-    }
-
-    private static func loadBundledImage(
-        from url: URL,
-        iconStyle: StatusBarIconStyle,
-        health: HealthLevel?,
-        healthColors: StatusBarHealthColors
-    ) -> NSImage? {
-        guard iconStyle == .quotaLogo,
-              let health,
-              let configuredHex = healthColors.hexValue(for: health),
-              let defaultHex = StatusBarHealthColors.default.hexValue(for: health),
-              let data = try? Data(contentsOf: url),
-              var svg = String(data: data, encoding: .utf8) else {
-            return NSImage(contentsOf: url)
-        }
-
-        // 水位 SVG 使用默认颜色作为模板；这里只替换内层水位的 fill，
-        // 外侧两条环保持 Logo 原本的橙色 / 青色。
-        svg = svg.replacingOccurrences(
-            of: "fill=\"\(defaultHex)\"",
-            with: "fill=\"\(configuredHex)\""
-        )
-        return NSImage(data: Data(svg.utf8))
     }
 
     static func statusDotColor(
