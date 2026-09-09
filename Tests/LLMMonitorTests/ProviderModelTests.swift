@@ -360,14 +360,14 @@ final class ProviderModelTests: XCTestCase {
             for: "deepseek-v4-pro", quotaProviderID: QuotaProviderID.deepseek
         )
         XCTAssertEqual(deepseekFlash?.currency, .cny)
-        XCTAssertEqual(deepseekFlash?.inputPerMillion, 1.5)
-        XCTAssertEqual(deepseekFlash?.cacheReadPerMillion, 0.05)
-        XCTAssertEqual(deepseekFlash?.outputPerMillion, 4.5)
+        XCTAssertEqual(deepseekFlash?.inputPerMillion, 1)
+        XCTAssertEqual(deepseekFlash?.cacheReadPerMillion, 0.02)
+        XCTAssertEqual(deepseekFlash?.outputPerMillion, 4)
         XCTAssertEqual(deepseekPro?.currency, .cny)
         XCTAssertEqual(deepseekPro?.inputPerMillion, 4.5)
         XCTAssertEqual(deepseekPro?.cacheReadPerMillion, 0.15)
         XCTAssertEqual(deepseekPro?.outputPerMillion, 13.5)
-        XCTAssertEqual(ModelPricingCatalog.lastUpdated, "2026-09-05")
+        XCTAssertEqual(ModelPricingCatalog.lastUpdated, "2026-09-09")
     }
 
     func testDeepseekPricingUsesOffPeakBaseAndDoublesAtPeak() {
@@ -391,7 +391,7 @@ final class ProviderModelTests: XCTestCase {
             quotaProviderID: QuotaProviderID.deepseek,
             deepseekPeakWindow: .defaultWindow
         )
-        XCTAssertEqual(peakEstimate.value ?? -1, 3.32, accuracy: 0.000001)
+        XCTAssertEqual(peakEstimate.value ?? -1, 2.408, accuracy: 0.000001)
 
         let offPeakSample = LocalTokenUsageSample(
             completedAt: offPeak,
@@ -407,7 +407,7 @@ final class ProviderModelTests: XCTestCase {
             quotaProviderID: QuotaProviderID.deepseek,
             deepseekPeakWindow: .defaultWindow
         )
-        XCTAssertEqual(offPeakEstimate.value ?? -1, 1.66, accuracy: 0.000001)
+        XCTAssertEqual(offPeakEstimate.value ?? -1, 1.204, accuracy: 0.000001)
 
         // 官方口径：高峰永不含周末 —— 周六（2026-08-08）/ 周日（2026-08-09）
         // 落在北京时间 9–12 窗口内也按平价 1× 计价。
@@ -427,7 +427,7 @@ final class ProviderModelTests: XCTestCase {
                 quotaProviderID: QuotaProviderID.deepseek,
                 deepseekPeakWindow: .defaultWindow
             )
-            XCTAssertEqual(weekendEstimate.value ?? -1, 1.66, accuracy: 0.000001,
+            XCTAssertEqual(weekendEstimate.value ?? -1, 1.204, accuracy: 0.000001,
                            "\(weekday) 高峰 slot 内必须按平价（1×）计价")
         }
     }
@@ -450,7 +450,7 @@ final class ProviderModelTests: XCTestCase {
             deepseekPeakWindow: DeepseekPeakWindow(slots: [], weekdaysOnly: true)
         )
 
-        XCTAssertEqual(estimate.value ?? -1, 3.3165, accuracy: 0.000001)
+        XCTAssertEqual(estimate.value ?? -1, 1.762, accuracy: 0.000001)
         XCTAssertEqual(estimate.currency, .cny)
     }
 

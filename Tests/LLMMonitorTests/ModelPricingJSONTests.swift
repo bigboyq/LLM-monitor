@@ -59,7 +59,7 @@ final class ModelPricingJSONTests: XCTestCase {
 
     func testPricingJSONIntegrity() throws {
         let catalog = try loadPricingJSON()
-        XCTAssertEqual(catalog.lastUpdated, "2026-09-05")
+        XCTAssertEqual(catalog.lastUpdated, "2026-09-09")
 
         let requiredProviders = ["minimax", "openai", "antigravity", "zhipu", "deepseek"]
         for providerID in requiredProviders {
@@ -212,18 +212,18 @@ final class ModelPricingJSONTests: XCTestCase {
         // 同时含 deepseek 与 flash 的组合命中 Flash 档。
         let combo = ModelPricingCatalog.pricing(for: "deepseek-lake-flash", quotaProviderID: QuotaProviderID.deepseek)
         XCTAssertEqual(combo?.currency, .cny)
-        XCTAssertEqual(combo?.inputPerMillion, 1.5)
-        XCTAssertEqual(combo?.cacheReadPerMillion, 0.05)
-        XCTAssertEqual(combo?.outputPerMillion, 4.5)
+        XCTAssertEqual(combo?.inputPerMillion, 1)
+        XCTAssertEqual(combo?.cacheReadPerMillion, 0.02)
+        XCTAssertEqual(combo?.outputPerMillion, 4)
 
         // keywords（OR）机制保持：显式 slug 直接命中。
         XCTAssertEqual(
             ModelPricingCatalog.pricing(for: "deepseek-chat", quotaProviderID: QuotaProviderID.deepseek)?.inputPerMillion,
-            1.5
+            1
         )
         XCTAssertEqual(
             ModelPricingCatalog.pricing(for: "deepseek-reasoner", quotaProviderID: QuotaProviderID.deepseek)?.inputPerMillion,
-            1.5
+            1
         )
 
         // pro 组合同样要求 AND。
@@ -236,15 +236,15 @@ final class ModelPricingJSONTests: XCTestCase {
     // MARK: - DeepSeek 条目顺序：flash 条目先于 pro 条目
 
     /// `deepseek-pro-flash` 同时满足 Flash 与 Pro 两组 matchAll 条件；JSON 中
-    /// flash 条目先于 pro 条目，"首条命中"语义必须让它落在 Flash 价（1.5/0.05/4.5）。
+    /// flash 条目先于 pro 条目，"首条命中"语义必须让它落在 Flash 价（1/0.02/4）。
     /// 若调换 JSON 中两条目的顺序，本测试必须变红。
     func testDeepseekProFlashHitsFlashPriceByEntryOrder() {
         let pricing = ModelPricingCatalog.pricing(for: "deepseek-pro-flash", quotaProviderID: QuotaProviderID.deepseek)
         XCTAssertNotNil(pricing, "deepseek-pro-flash 必须命中 Flash 条目（数组顺序敏感）")
         XCTAssertEqual(pricing?.currency, .cny)
-        XCTAssertEqual(pricing?.inputPerMillion, 1.5)
-        XCTAssertEqual(pricing?.cacheReadPerMillion, 0.05)
-        XCTAssertEqual(pricing?.outputPerMillion, 4.5)
+        XCTAssertEqual(pricing?.inputPerMillion, 1)
+        XCTAssertEqual(pricing?.cacheReadPerMillion, 0.02)
+        XCTAssertEqual(pricing?.outputPerMillion, 4)
     }
 
     // MARK: - minimax 只保留 M3：M2 系列退休（历史用量显示未定价，有意行为）

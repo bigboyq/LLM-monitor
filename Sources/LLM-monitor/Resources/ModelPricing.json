@@ -1,5 +1,5 @@
 {
-  "lastUpdated": "2026-09-05",
+  "lastUpdated": "2026-09-09",
   "providers": {
     "minimax": {
       "models": [
@@ -177,9 +177,9 @@
           "matchAll": ["deepseek", "flash"],
           "label": "DeepSeek Flash",
           "currency": "CNY",
-          "inputPerMillion": 1.5,
-          "cacheReadPerMillion": 0.05,
-          "outputPerMillion": 4.5
+          "inputPerMillion": 1,
+          "cacheReadPerMillion": 0.02,
+          "outputPerMillion": 4
         },
         {
           "match": "contains",

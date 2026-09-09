@@ -44,7 +44,7 @@ ZCode tasks fall into three provider categories — Normal (Coding Plan) / Off-p
 
 ### DeepSeek
 
-Enter a DeepSeek `sk-...` API key. The card displays account balance. DeepSeek has no native local ledger, so local token charts require the OpenCode merge (`clientBindings` in `config.json`). Peak-period status uses Beijing time; peak hours apply on weekdays only (Mon–Fri 9:00–12:00 and 14:00–18:00), and weekends are off-peak all day.
+Enter a DeepSeek `sk-...` API key. The card displays account balance. DeepSeek has no native local ledger, so local token charts require the OpenCode merge (`clientBindings` in `config.json`). DeepSeek Flash local cost estimates use ¥1 per million input tokens, ¥0.02 per million cached-read tokens, and ¥4 per million output tokens. Beijing-time weekday busy hours (Mon–Fri 9:00–12:00 and 14:00–18:00) are charged at 2×; weekends are off-peak all day.
 
 ### OpenCode merge
 
