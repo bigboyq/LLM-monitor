@@ -19,14 +19,10 @@ CODESIGN_ENTITLEMENTS="${CODESIGN_ENTITLEMENTS:-}"
 DISTRIBUTION_BUILD="${DISTRIBUTION_BUILD:-0}"
 BUNDLE_ID="${BUNDLE_ID:-com.yaktype.llm-monitor}"
 BUILD_TMP_FILE=""
-ICON_BUILD_DIR=""
 
 cleanup() {
     if [ -n "$BUILD_TMP_FILE" ]; then
         rm -f -- "$BUILD_TMP_FILE"
-    fi
-    if [ -n "$ICON_BUILD_DIR" ]; then
-        rm -rf -- "$ICON_BUILD_DIR"
     fi
 }
 trap cleanup EXIT
@@ -184,28 +180,8 @@ fi
 echo "    Copying SwiftPM resource bundle"
 cp -R "$RESOURCE_BUNDLE" "$APP/Contents/Resources/"
 
-ICON_FILE="AppIcon"
-ICON_COMPOSER_ENABLED=0
-ICON_COMPOSER_PATH="$ROOT_DIR/images/LLMMenu.icon"
-if [ -d "$ICON_COMPOSER_PATH" ]; then
-    echo "    Compiling layered LLMMenu.icon with actool"
-    ICON_BUILD_DIR="$(mktemp -d "${TMPDIR:-/tmp}/llm-monitor-app-icon.XXXXXX")"
-    xcrun actool \
-        --compile "$ICON_BUILD_DIR" \
-        --platform macosx \
-        --minimum-deployment-target "$MIN_OS" \
-        --app-icon LLMMenu \
-        --output-partial-info-plist "$ICON_BUILD_DIR/partial.plist" \
-        "$ICON_COMPOSER_PATH"
-    if [ ! -f "$ICON_BUILD_DIR/Assets.car" ] || [ ! -f "$ICON_BUILD_DIR/LLMMenu.icns" ]; then
-        fail "actool 未生成完整的 Icon Composer 产物"
-    fi
-    cp "$ICON_BUILD_DIR/Assets.car" "$APP/Contents/Resources/Assets.car"
-    cp "$ICON_BUILD_DIR/LLMMenu.icns" "$APP/Contents/Resources/LLMMenu.icns"
-    ICON_FILE="LLMMenu"
-    ICON_COMPOSER_ENABLED=1
-elif [ -f "$ROOT_DIR/Sources/LLM-monitor/Resources/AppIcon.icns" ]; then
-    echo "    Copying static AppIcon.icns fallback"
+if [ -f "$ROOT_DIR/Sources/LLM-monitor/Resources/AppIcon.icns" ]; then
+    echo "    Copying AppIcon.icns"
     cp "$ROOT_DIR/Sources/LLM-monitor/Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 fi
 
@@ -214,10 +190,7 @@ echo "==> [3/4] Writing Info.plist"
 INFO_PLIST="$APP/Contents/Info.plist"
 /usr/bin/plutil -create xml1 "$INFO_PLIST"
 /usr/bin/plutil -insert CFBundleExecutable -string "$APP_NAME" "$INFO_PLIST"
-/usr/bin/plutil -insert CFBundleIconFile -string "$ICON_FILE" "$INFO_PLIST"
-if [ "$ICON_COMPOSER_ENABLED" = "1" ]; then
-    /usr/bin/plutil -insert CFBundleIconName -string "$ICON_FILE" "$INFO_PLIST"
-fi
+/usr/bin/plutil -insert CFBundleIconFile -string "AppIcon" "$INFO_PLIST"
 /usr/bin/plutil -insert CFBundleIdentifier -string "$BUNDLE_ID" "$INFO_PLIST"
 /usr/bin/plutil -insert CFBundleInfoDictionaryVersion -string "6.0" "$INFO_PLIST"
 /usr/bin/plutil -insert CFBundleName -string "$DISPLAY_NAME" "$INFO_PLIST"
