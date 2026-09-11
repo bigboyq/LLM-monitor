@@ -336,6 +336,8 @@ The `cache_read_tokens` column is the dominant cost — for a typical M3 session
 
 Cache reads are 30-40× uncached input — M3's prompt cache is heavily hit. This is **the** reason a per-day breakdown matters: showing only "remaining quota" (the API) hides the fact that you're actually using far more tokens than the API's "remaining %" implies.
 
+**5h-window cache_read distribution** (August 2026, M3 only, post-Token-Plan): a steady-state 5h window accumulates **~50M cache_read tokens** (median 49.2M, max 65.6M) which is ~97% of the window's 51M total tokens and ~91% of the window's ¥24 cost. This 5h cache_read volume is the **primary signal** for "are you approaching the 5h rate-limit waterline" — see [Rate Limits § Server-side 5h rolling window](#server-side-5h-rolling-window--observed-waterline) for the cost-side analysis.
+
 ### Lazy .db write — sessions don't flush while open
 
 The v2 `.db` is written by the `MiniMax` process (PID visible via `lsof`). While the runtime is alive:
@@ -662,6 +664,8 @@ semantic used by GLM; other non-zero business codes remain decoding errors.
 
 ## Rate Limits
 
+### Client-side backoff
+
 The provider has no client-side backoff beyond the configured refresh interval. If minimax returns rate-limit or service errors, `AppState` moves the provider to `.failed` and shows the previous `QuotaInfo` from `state.lastSuccess` if available.
 
 Default global refresh interval is 300 seconds. A provider-specific interval can be set:
@@ -677,6 +681,47 @@ Default global refresh interval is 300 seconds. A provider-specific interval can
   }
 }
 ```
+
+### Server-side 5h rolling window — the limit is **cost**, not tokens
+
+The M3 Token Plan enforces a **5-hour rolling quota window** that snaps to the day boundaries 00:00 / 05:00 / 10:00 / 15:00 / 20:00 local time. This produces 5 fixed 5h slots per day (the API field is `current_interval_*` per [`model_remains[]`](#api-response-schema)). The window resets at the next boundary, not at "now − 5h".
+
+**The hard constraint is cost, not token count.** Two independent clients (Mavis and DSH) both converge on a **5h cost ceiling of ~¥24** when measuring 5h windows that hit the natural throttle. The equivalent token count is a **secondary effect** of the cache_read / input / output mix in the workload:
+
+| Workload | cache_read share | Tokens that fit in ¥24 | Notes |
+|---|---:|---:|---|
+| Mavis (Aug 1–14, M3) | ~97% | **~50M** (49.2–52.7M) | long-running task loops |
+| DSH (Aug 16–27, M3) | ~98% | **~50M** (49.6–55.0M stable) | the windows that triggered RATE_LIMIT |
+| DSH 2026-08-17 10:00+5h | ~99% | 68.2M → **¥30.02** | single long session over-shooting the ceiling — see credit rail below |
+
+The window cost formula uses the M3 prices from `ModelPricing.json`:
+
+```
+cost(¥) = input * 2.10 + cacheRead * 0.42 + (output + reasoning) * 8.40  (per 1M tokens)
+```
+
+#### Evidence the ceiling is cost, not tokens
+
+1. **Mavis local `.db` M3 usage, 2026-08-01 ~ 2026-08-14, 24 windows (post-Token-Plan tier change)**: 10 of the 24 windows sit in the **¥23.49 – ¥25.38** band with token totals 49.2M–52.7M and rounds 254–570. Mavis' long-running task loops naturally cap at this level even when the underlying M3 quota API has remaining capacity.
+2. **DSH 13 windows, 2026-08-16 ~ 2026-08-27**: the 5 stable RATE_LIMIT-triggering windows all sit at **¥23.80 – ¥30.02** / tokens 49.6M–68.2M. The un-triggered window max is ¥29.37 / 66.2M / 422 calls.
+3. **DSH 2026-08-23 00:00+5h** is the disambiguating case: 8 subagent sessions fire 4-second-spaced turn-1 calls in parallel; window cost is only **¥9.50 / 17.9M / 128 calls**, but 8 RATE_LIMIT events fire. If the limit were tokens, a 17.9M-token window (one third of the steady-state) would never trip; the fact that it does shows the throttle is on a **rate dimension** independent of the cumulative cost ceiling.
+4. **DSH 2026-08-17 10:00+5h** is the over-shoot case: a single long session (`session-b00aa5`, 1078 calls over 44h) consumes 68.2M tokens / ¥30.02 in 54 minutes. This is **¥24 plan + ¥6 credits**, not a misclassification — the user burned through the in-plan allowance and kept going on the credit rail.
+
+#### What this means for the data
+
+The "5h cost ceiling ¥24" should be treated as the **primary** limit signal in the UI and the spec. The "5h token total ~50M" is a **secondary** indicator that depends on the cache_read / input / output mix and should not be quoted as the limit. If a future workload drops the cache_read share (e.g. more cold-context tasks), the same ¥24 ceiling will correspond to far fewer tokens (~12M for a 100% input workload at ¥2.10/M), not more.
+
+#### Out-of-plan rail (credit / pay-as-you-go)
+
+When `current_interval_remaining_percent` hits `0` and a request still goes through, the consumed tokens are on the **credit rail** (additional cost beyond the monthly Token Plan fee). The cleanest split is:
+
+```
+cost_in_plan     = sum( tokens consumed while current_interval_remaining_percent > 0 )
+cost_out_of_plan = sum( tokens consumed while current_interval_remaining_percent == 0 )
+total_5h_cost    = cost_in_plan + cost_out_of_plan
+```
+
+A working hypothesis (DSH 2026-08-17 10:00+5h): `cost_in_plan ≈ ¥24`, `cost_out_of_plan ≈ ¥6`, `total ≈ ¥30`. To realize this split empirically, see Open Questions § 5h-quota cross-window attribution — it requires persisting every quota snapshot.
 
 ## Known Limitations
 
@@ -724,3 +769,19 @@ reasoning maximum, character aggregation, and output conservation.
 - Should scanner cache `cost_usd` (currently discarded — only `input/output/cache/rounds/turns` are kept)?
 - Should 7-day window become configurable (`recentDays: 7 | 14 | 30`)?
 - Should the scanner use `local_runtime_ledger_watermarks.last_seq` for incremental v2 sync instead of mtime + full re-aggregate?
+- **5h-quota cross-window attribution** — the DSH 2026-08-17 10:00+5h window hit ¥30.02 in 54 minutes from a single long session; in the local `.db` the 5h window cost of a busy Mavis day (e.g. 2026-08-02) sits at ¥23.88 / 50.4M tokens. Two competing explanations, neither currently verifiable from the data we can read:
+  1. **Cross-window session attribution** — the 5h wall-clock windows 00/05/10/15/20 don't match the `interval_start_time` / `interval_end_time` returned by `minimax /v1/token_plan/remains`, so a session straddling a boundary may be double-counted or split. The fetcher does not record these boundaries historically; only the most recent fetch is kept in `ModelQuota`.
+  2. **Point credits / quota top-up** — `minimax` may allow top-up credits that augment the 5h quota, or roll unused quota into the next window, or have a per-request cache-read ceiling independent of the 5h percent. The `token_plan/remains` response exposes `current_interval_total_count` / `current_interval_usage_count` but historically these are `0` for percent-only plans (see [API Response Schema](#api-response-schema) row "`*_total_count` / `*_usage_count`"). No `points` or `credits` field is currently exposed by the fetcher; the local `.db` records `cost_usd` only (and is `0` for Mavis post-2026-07-11 because the user is on Token Plan).
+  - **What we need to disambiguate**: log the raw `model_remains[].start_time` / `end_time` / `*_total_count` / `*_usage_count` alongside the `Quotinferred` 5h window assignments for ~30 days, then re-derive the 5h cost from the `*_usage_count` delta. If the deltas correlate with the `.db` 5h cost, the window boundary hypothesis is wrong; if they don't, point credits are augmenting the quota. This requires schema work in `local_runtime_token_usage` (a `quota_snapshot_id` column) and a new `local_runtime_quota_snapshots` table.
+
+  - **Cleanest split using `current_interval_remaining_percent`**: when the API field is `> 0`, every token consumed is **inside the Token Plan** (no extra cost beyond the monthly fee). When the field hits `0`, the 5h window is **exhausted** and any further token usage is **on the credit / pay-as-you-go rail**. So the 5h window's total cost decomposes as:
+
+    ```
+    cost_in_plan     = sum( tokens consumed while current_interval_remaining_percent > 0 )
+    cost_out_of_plan = sum( tokens consumed while current_interval_remaining_percent == 0 )
+    total_5h_cost    = cost_in_plan + cost_out_of_plan
+    ```
+
+    This is more informative than the current 5h cost number because it separates "the plan's natural ceiling" from "any overflow that the user paid for via credits". A working hypothesis: the 5h plan ceiling sits at **¥24 / ~50M tokens** (the steady-state value across Mavis + DSH), and any window above that (e.g. DSH 2026-08-17 10:00+5h at ¥30.02) is **¥24 plan + ¥6 credits**, not a misclassification.
+
+    To realize this split, the fetcher must persist every `current_interval_remaining_percent` sample with a timestamp. Currently it only stores the most recent value in `ModelQuota`; a `local_runtime_quota_snapshots(model_name, ts, interval_remaining_percent, weekly_remaining_percent, interval_total_count, interval_usage_count, weekly_total_count, weekly_usage_count)` table is needed, and `local_runtime_token_usage` should gain a `quota_snapshot_id` so each row can be tagged "inside plan" vs "credits".
