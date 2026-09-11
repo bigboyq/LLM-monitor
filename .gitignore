@@ -25,6 +25,10 @@ build/
 # pattern prevents surprise inclusion of any future planning markdown.
 docs/plans/
 
+# Python tooling leftovers
+__pycache__/
+*.pyc
+
 # Editor temp files
 *.swp
 *.swo
