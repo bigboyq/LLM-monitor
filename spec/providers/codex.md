@@ -216,25 +216,73 @@ The estimate is valid only when the same model mix and pricing assumptions are u
 2026-08-19 snapshot was incomplete, so this should be treated as an approximate calibration
 target rather than a hard quota or billing limit.
 
-### September 2026 valuation convention (Astra included)
+### September 2026 valuation convention & empirical calibration (2026-09-09)
 
-Effective 2026-09-06, GPT-6 Astra joins the valuation with a discount coefficient of `0.7`
-(applied to Astra's price-equivalent usage value; Terra / Luna stay at normal prices, SOL
-follows the 2026-09-01 coefficient above). The window value anchors are also explicit from
-this date:
+#### Historical evolution
+- **2026-09-06 (Initial hypothesis)**: GPT-6 Astra was tentatively modeled with a discount coefficient of `0.7` alongside SOL `0.7`, with nominal window anchors of 5h `$10` / weekly `$60`.
+- **2026-09-09 (Empirical calibration)**: Two complete 100% depletion cycles on the same day (afternoon 441 turns, evening 148 turns) provided hard server telemetry that refuted the initial `0.7` guess for Astra and established the canonical parameters.
 
-| Window | Value anchor |
-|---|---|
-| 5h | `$10` |
-| Weekly | `$60` |
+#### Canonical valuation model ($Q = \$10.00$)
 
-These anchors replace the August 20% extrapolation: the estimated window value is the
-coefficient-adjusted usage sum calibrated against the `$60` weekly anchor (six 5h windows at
-`$10` each). They are valuation anchors only — unrelated to the token prices in
-[`ModelPricing.json`](../../Sources/LLM-monitor/Resources/ModelPricing.json).
+| Model family | Valuation coefficient | Rationale |
+|---|---|---|
+| **GPT-6 Astra** | **`1.00`** (100%) | Flagship model, billed at full price (no platform subsidy). |
+| **GPT-5.6 Sol** | **`0.70`** (70%) | Platform workhorse model, 30% subsidy (consistent with the 2026-09-01 update). |
+| **GPT-5.6 Luna** | **`1.00`** (100%) | Ultra-cheap tier ($0.02/1M cached), billed at full price. |
+| **GPT-5.6 Terra** | **`1.00`** (100%) | Normal price in `ModelPricing.json`. |
+| **5h Window Anchor** | **`$10.00`** | Base quota capacity, strictly aligning with the weekly anchor ($6 \times \$10 = \$60$). |
+| **Weekly Window Anchor**| **`$60.00`** | Six 5h windows per weekly quota. |
 
-自 2026-09-06 起 GPT-6 Astra 已纳入估值（折扣系数 0.7，窗口锚点 5h $10 / 周 $60）；上方 ≈$58 的
-August 校准仅适用于 2026-09-01 之前（当时系数 0.56）。
+#### Empirical dual-cycle validation (2026-09-09)
+
+Two complete 100% depletion cycles were monitored and logged in session JSONL files on 2026-09-09:
+
+1. **Cycle 1 (Afternoon, 441 turns, Sol-dominated)**:
+   - Window: 09:10 to 11:17 UTC (17:10 to 19:17 Beijing).
+   - Raw total: `$12.1553` (Sol raw `$9.39`, Astra raw `$1.87`, Luna raw `$0.90`).
+   - Adjusted total under canonical model: `$9.32` pre-cutoff, overshooting to `$10.28` after a heavy final turn.
+
+2. **Cycle 2 (Evening, 148 turns, Astra/Sol mixed, 100% pure closed test)**:
+   - Window: 13:43 to 15:42 UTC (21:43 to 23:42 Beijing). Total duration 1h59m (< 5h rolling window, zero token expiration).
+   - Raw total: `$12.2287` (Sol raw `$7.5515`, Astra raw `$4.6135`, Luna raw `$0.0638`).
+   - **Adjusted total under canonical model**: **`$9.9633`** out of `$10.00` (**99.63%** precision, only $0.036 difference).
+   - Turn-by-turn MAE across all 148 turns: **1.45%**.
+   - **Weekly secondary window increment**: Exactly `+16.0%` (from 30.0% to 46.0%), matching $1/6$ of the weekly window ($\approx 16.67\%$).
+
+#### Empirical quota & rate-limit discoveries
+
+1. **Server `rate_limits` telemetry discovered in session JSONL**:
+   Codex session logs (`token_count` events) carry live OpenAI server rate-limit headers:
+   ```json
+   "rate_limits": {
+     "limit_id": "codex",
+     "plan_type": "team",
+     "primary": {
+       "used_percent": 100.0,
+       "window_minutes": 300,
+       "resets_at": 1788979411
+     },
+     "secondary": {
+       "used_percent": 46.0,
+       "window_minutes": 10080,
+       "resets_at": 1789436632
+     }
+   }
+   ```
+   - Confirms `primary.window_minutes = 300` (exact 5-hour rolling window).
+   - Confirms `secondary.window_minutes = 10080` (7-day / weekly rolling window).
+   - Confirms `plan_type = "team"`.
+
+2. **Pre-execution admission check & overshoot mechanics (`T-1 < 100%, T >= 100%`)**:
+   - The rate-limiting gate verifies quota before a turn starts:
+     - **$T-1$**: Server evaluates `floor(used_percent) < 100%` (e.g. 99.0%). Because usage is strictly below 100%, turn $T$ is admitted.
+     - **$T$**: Turn $T$ runs to completion regardless of token size (even for large 100k+ token completions costing $0.05 ~ $0.50). This pushes cumulative usage across the $10.00 mark (observable overshoot up to $10.05 ~ $10.70).
+     - **$T+1$**: Subsequent request is immediately blocked with `"codex_error_info": "usage_limit_exceeded"` (`Your workspace is out of credits. Add credits to continue.`).
+   - **Overshoot clarification**: The apparent cumulative consumption of ~$10.50 ~ $11.00 at hard block is an artifact of the pre-execution admission policy, not an $11 nominal quota. The true rate-limiting anchor is $10.00.
+
+3. **Rounding & UI Quantization**:
+   - **Server admission**: Uses `floor()` semantics on usage percentage to protect users from early cutoff (e.g. 99.79% is held at 99.0%).
+   - **Client UI**: Formats remaining quota using standard `round()` (e.g. 81.04% used $\implies 81\%$ used, displaying exactly 19% remaining).
 
 ### Loop-B decoupling (2026-09-05)
 
