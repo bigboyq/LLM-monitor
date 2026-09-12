@@ -50,6 +50,7 @@ struct SettingsView: View {
     @State var barkServerURL: String = BarkConfig.defaultServerURL
     @State var barkDeviceKey: String = ""
     @State var barkSound: String = ""
+    @State var barkGroup: String = ""
     @State var barkSkipWhenUnlocked: Bool = false
     @State var isSendingBarkTest: Bool = false
     @State var barkTestMessage: String?
@@ -386,6 +387,12 @@ struct SettingsView: View {
 
                     SettingsControlRow("铃声（可选）") {
                         TextField("", text: $barkSound, prompt: Text("默认"))
+                            .frame(width: 280)
+                            .disabled(!barkEnabled)
+                    }
+
+                    SettingsControlRow("分组（可选）") {
+                        TextField("", text: $barkGroup, prompt: Text(BarkConfig.defaultGroup))
                             .frame(width: 280)
                             .disabled(!barkEnabled)
                     }
@@ -831,6 +838,7 @@ struct SettingsView: View {
         barkServerURL = config.bark?.serverURL ?? BarkConfig.defaultServerURL
         barkDeviceKey = config.bark?.deviceKey ?? ""
         barkSound = config.bark?.sound ?? ""
+        barkGroup = config.bark?.group ?? ""
         barkSkipWhenUnlocked = config.bark?.skipWhenUnlocked ?? false
         barkTestMessage = nil
 
@@ -925,7 +933,8 @@ struct SettingsView: View {
                 serverURL: trimmedBarkServer,
                 deviceKey: trimmedBarkKey ?? "",
                 sound: trimmedBarkSound,
-                skipWhenUnlocked: barkSkipWhenUnlocked ? true : nil
+                skipWhenUnlocked: barkSkipWhenUnlocked ? true : nil,
+                group: trimmedString(barkGroup)
             )
         } else {
             config.bark = nil

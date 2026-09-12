@@ -118,8 +118,13 @@ struct BarkConfig: Codable, Equatable, Sendable {
     /// 非锁屏时跳过 Bark 推送（只推手机不在手边、人不在电脑前的场景）。
     /// nil（字段不存在）= 不跳过，始终推送。
     var skipWhenUnlocked: Bool?
+    /// Bark 通知分组：相同 group 的通知在 iOS 通知中心折叠为一组。
+    /// nil 或空白 = 不携带 group 参数（不在通知中心折叠）。
+    var group: String?
 
     static let defaultServerURL = "https://api.day.app"
+    /// group 留空时 UI 展示的占位默认值。
+    static let defaultGroup = "LLMMonitor"
 }
 
 struct AppConfig: Codable, Equatable {

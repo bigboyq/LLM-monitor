@@ -4,6 +4,9 @@ import CoreGraphics
 /// 通过自建或官方 Bark 服务器把额度事件推送到 iPhone。
 /// 复用系统通知的文案生成逻辑，保持两端提示一致。
 ///
+/// 合并规则：一次刷新里同一个模型的多个事件合并为一条推送，渠道取该模型
+/// 全部事件渠道的并集（任一事件配了 Bark 就推送）。
+///
 /// 配置读取器抽象：Bark 开关保存在 ConfigStore 里，但通知发生在刷新路径，
 /// 每次发送前实时读取，用户在设置页保存后无需重启即可生效。
 @MainActor
@@ -43,8 +46,15 @@ final class BarkQuotaNotifier: @preconcurrency QuotaUpdateNotifying {
             return
         }
 
-        let barkEvents = events.filter { channels.channel(for: $0.kind).sendsBarkPush }
-        guard !barkEvents.isEmpty else { return }
+        // 模型级合并：同一模型的事件合成一条推送，渠道取并集。
+        let groups = QuotaEventBatch(
+            providerID: providerID,
+            providerName: providerName,
+            events: events,
+            channels: channels
+        ).modelGroups
+        let barkGroups = groups.filter(\.sendsBark)
+        guard !barkGroups.isEmpty else { return }
 
         // 用户选择「非锁屏时跳过」且当前会话未锁屏时，直接跳过推送。
         if bark.skipWhenUnlocked ?? false, !screenIsLocked() {
@@ -52,9 +62,33 @@ final class BarkQuotaNotifier: @preconcurrency QuotaUpdateNotifying {
             return
         }
 
-        let body = barkEvents.map(SystemQuotaUpdateNotifier.messageLine).joined(separator: "\n")
-        guard let url = Self.buildURL(config: bark, providerName: providerName, body: body) else {
-            logWarn("[bark] \(providerID) 推送 URL 构造失败或超长，跳过 Bark 推送")
+        for group in barkGroups {
+            send(
+                config: bark,
+                providerName: providerName,
+                model: group.displayName,
+                body: group.lines.joined(separator: "\n"),
+                notificationID: group.barkNotificationID,
+                eventCount: group.events.count
+            )
+        }
+    }
+
+    private func send(
+        config: BarkConfig,
+        providerName: String,
+        model: String,
+        body: String,
+        notificationID: String,
+        eventCount: Int
+    ) {
+        guard let url = Self.buildURL(
+            config: config,
+            providerName: providerName,
+            body: body,
+            notificationID: notificationID
+        ) else {
+            logWarn("[bark] 推送 URL 构造失败或超长，跳过 \(model) 的 Bark 推送")
             return
         }
 
@@ -66,19 +100,19 @@ final class BarkQuotaNotifier: @preconcurrency QuotaUpdateNotifying {
             do {
                 let (data, response) = try await session.data(for: request)
                 guard let http = response as? HTTPURLResponse else {
-                    logWarn("[bark] \(providerID) Bark 推送返回非 HTTP 响应")
+                    logWarn("[bark] Bark 推送返回非 HTTP 响应（\(model)）")
                     return
                 }
                 guard (200..<300).contains(http.statusCode) else {
                     let detail = String(data: data.prefix(200), encoding: .utf8) ?? ""
-                    logWarn("[bark] \(providerID) Bark 推送失败: HTTP \(http.statusCode) \(detail)")
+                    logWarn("[bark] Bark 推送失败: HTTP \(http.statusCode) \(detail)（\(model)）")
                     return
                 }
-                logInfo("[bark] 已发送 \(providerID) Bark 推送（\(barkEvents.count) 个事件）")
+                logInfo("[bark] 已发送 \(model) 的 Bark 推送（\(eventCount) 个事件合并）")
             } catch is CancellationError {
                 // 外部取消不算失败。
             } catch {
-                logWarn("[bark] \(providerID) Bark 推送请求失败: \(error.localizedDescription)")
+                logWarn("[bark] Bark 推送请求失败: \(error.localizedDescription)（\(model)）")
             }
         }
     }
@@ -104,10 +138,18 @@ final class BarkQuotaNotifier: @preconcurrency QuotaUpdateNotifying {
     /// 拼接 `GET {server}/{key}/{title}/{body}` 形式的推送 URL。路径段逐段
     /// percent-encode（不含段内 `/`），通过 `percentEncodedPath` 写入避免
     /// URLComponents 对 `%` 二次编码；文案里的 `→`、换行、空格都能安全传输。
+    ///
+    /// `id` 使用稳定字符串：相同 id 的新推送会覆盖手机上的旧通知（需 Bark
+    /// v1.5.2+ / bark-server v2.2.5+）。`group` 取用户配置，留空则不携带。
     nonisolated private static let pathSegmentAllowed = CharacterSet.urlPathAllowed
         .subtracting(CharacterSet(charactersIn: "/"))
 
-    nonisolated static func buildURL(config: BarkConfig, providerName: String, body: String) -> URL? {
+    nonisolated static func buildURL(
+        config: BarkConfig,
+        providerName: String,
+        body: String,
+        notificationID: String? = nil
+    ) -> URL? {
         guard var components = URLComponents(string: config.serverURL) else { return nil }
         // 相对引用（如 "not a url"）也能被 URLComponents 解析；这里要求
         // scheme + host 齐全才算合法的 Bark 服务端。
@@ -122,7 +164,12 @@ final class BarkQuotaNotifier: @preconcurrency QuotaUpdateNotifying {
         if let sound = config.sound?.trimmingCharacters(in: .whitespacesAndNewlines), !sound.isEmpty {
             queryItems.append(URLQueryItem(name: "sound", value: sound))
         }
-        queryItems.append(URLQueryItem(name: "group", value: "LLMMonitor"))
+        if let group = config.group?.trimmingCharacters(in: .whitespacesAndNewlines), !group.isEmpty {
+            queryItems.append(URLQueryItem(name: "group", value: group))
+        }
+        if let notificationID, !notificationID.isEmpty {
+            queryItems.append(URLQueryItem(name: "id", value: notificationID))
+        }
         components.queryItems = queryItems
         guard let url = components.url, url.absoluteString.count <= maximumURLLength else { return nil }
         return url

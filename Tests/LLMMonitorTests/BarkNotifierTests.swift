@@ -74,10 +74,12 @@ final class BarkNotifierTests: XCTestCase {
                 enabled: true,
                 serverURL: "https://api.day.app",
                 deviceKey: "abc123",
-                sound: "minuet"
+                sound: "minuet",
+                group: "我的额度"
             ),
             providerName: "GLM Coding Plan",
-            body: "短周期 10% → 100%，周额度 40% → 90%"
+            body: "短周期 10% → 100%，周额度 40% → 90%",
+            notificationID: "llmmonitor-glm-general-intervalRestored"
         ))
 
         XCTAssertEqual(url.host, "api.day.app")
@@ -85,7 +87,82 @@ final class BarkNotifierTests: XCTestCase {
         XCTAssertFalse(url.absoluteString.contains("→"))
         XCTAssertTrue(url.absoluteString.contains("%E7%9F%AD"))
         XCTAssertTrue(url.absoluteString.contains("sound=minuet"))
-        XCTAssertTrue(url.absoluteString.contains("group=LLMMonitor"))
+        XCTAssertTrue(url.absoluteString.contains("group="))
+        XCTAssertTrue(url.absoluteString.contains("id=llmmonitor-glm-general-intervalRestored"))
+    }
+
+    func testBuildURLOmitsOptionalParamsWhenUnset() throws {
+        let url = try XCTUnwrap(BarkQuotaNotifier.buildURL(
+            config: BarkConfig(
+                enabled: true, serverURL: "https://api.day.app", deviceKey: "k",
+                sound: nil, group: "  "
+            ),
+            providerName: "P",
+            body: "b"
+        ))
+        // group / sound 留空时不携带对应 query 参数。
+        XCTAssertFalse(url.query?.contains("group=") ?? false)
+        XCTAssertFalse(url.absoluteString.contains("sound="))
+    }
+
+    @MainActor
+    func testMergesSameModelEventsIntoSinglePushWithUnionChannel() {
+        let notifier = BarkQuotaNotifier(
+            configProvider: StubConfigProvider(BarkConfig(
+                enabled: true, serverURL: "https://api.day.app", deviceKey: "k1", sound: nil
+            )),
+            session: stubbedSession
+        )
+        // 同一模型两个事件：恢复走 bark+system、耗尽走 system（合并后渠道并集
+        // 含 Bark，两条文案合进一条推送）。
+        notifier.notify(
+            providerID: "p", providerName: "P",
+            events: [Self.event(.intervalRestored), Self.event(.weeklyExhausted)],
+            channels: QuotaNotifyChannels(
+                intervalRestored: .barkAndSystem,
+                intervalExhausted: .system,
+                weeklyRestored: nil,
+                weeklyExhausted: nil
+            )
+        )
+        RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+        XCTAssertEqual(RecordingURLProtocol.requests.count, 1)
+        // URL.path 返回解码后的文本，直接匹配中文即可。
+        let body = RecordingURLProtocol.requests.first?.url?.path ?? "<no request>"
+        XCTAssertTrue(body.contains("已用完"), "耗尽文案应在同一条推送里: \(body)")
+    }
+
+    @MainActor
+    func testDifferentModelsGetSeparatePushes() {
+        let notifier = BarkQuotaNotifier(
+            configProvider: StubConfigProvider(BarkConfig(
+                enabled: true, serverURL: "https://api.day.app", deviceKey: "k1", sound: nil
+            )),
+            session: stubbedSession
+        )
+        let first = Self.event(.intervalRestored)
+        let second = QuotaEvent(
+            modelName: "video",
+            displayName: "video",
+            kind: .intervalRestored,
+            previousPercent: 10,
+            currentPercent: 100
+        )
+        notifier.notify(
+            providerID: "p", providerName: "P",
+            events: [first, second],
+            channels: allBarkChannels
+        )
+        RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+        XCTAssertEqual(RecordingURLProtocol.requests.count, 2)
+        // 同类事件各自带稳定的覆盖 id，且不同模型的 id 不同。
+        let ids = RecordingURLProtocol.requests.compactMap {
+            URLComponents(url: $0.url!, resolvingAgainstBaseURL: false)?
+                .queryItems?.first { $0.name == "id" }?.value
+        }
+        XCTAssertEqual(ids.count, 2)
+        XCTAssertNotEqual(ids[0], ids[1])
+        XCTAssertTrue(ids.allSatisfy { $0.hasPrefix("llmmonitor-p-") })
     }
 
     func testBuildURLRejectsInvalidServerAndOverlongURL() {
