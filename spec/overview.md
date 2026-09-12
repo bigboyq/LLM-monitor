@@ -753,11 +753,40 @@ preferring the triple-specific product path so stale universal artifacts under
 `.build/apple/Products` are never picked up), creates `build/LLM-monitor.app`, writes
 `Info.plist`, sets `LSUIElement=true`, and ad-hoc signs the app.
 
+### App icon packaging（双路线设计，已裁定勿再翻转）
+
+`build-app.sh` 按固定优先级选择图标路线（`scripts/build-app.sh` 的 `[3/4]` 之前步骤）：
+
+1. **Icon Composer 路线（主路线）**：仓库存在 `images/LLMMenu.icon` 工程源时，用
+   `xcrun actool` 编译出 `Assets.car` + `LLMMenu.icns` 放入 `Contents/Resources/`，
+   `Info.plist` 写 `CFBundleIconFile=LLMMenu` 与 `CFBundleIconName=LLMMenu`。
+2. **静态回退路线**：没有 `.icon` 目录时，复制 `Sources/LLM-monitor/Resources/AppIcon.icns`，
+   `CFBundleIconFile=AppIcon`。
+
+**职责划分（这是设计意图，不是缺陷）**：
+
+- `Assets.car` 是新版系统（支持 Icon Composer layered icon 的 macOS）的**主要图标方案**，
+  提供分层/自适应渲染。
+- `.icns` **只为兼容旧系统而存在**（旧系统不读 `Assets.car`，经 `CFBundleIconFile` 回退）。
+  icns 的存在不代表主方案被降级；同理，不要以"icns 才是官方图标"为由移除 car 路线。
+- 静态 `AppIcon.icns` 分辨率覆盖是完整的：经 `iconutil -c iconset` 反推核实，内含
+  `icon_256x256@2x.png`（512px）与 `icon_512x512@2x.png`（1024px）表示，旧系统大尺寸
+  场景（Dock 放大 / Finder 大图标 / DMG 展示）不会拿到低清位图。
+
+**历史分歧备注**：1.6.0 前夕 `478f322` 曾以"打包产物异常"为由移除 Icon Composer 路线，
+`0f1a7b8` 又将其恢复。本节即为最终裁定：**双路线并存是既定设计**，两条路线的产物各有
+职责、互不替代。今后改动图标打包方案前，先修订本节并说明理由，不要再单方面翻转。
+
 ## Current Design Boundaries
 
 These are documented product boundaries:
 
-- The menu bar label is fixed (`chart.bar.fill`) and does not reflect health.
+- The menu bar label defaults to the `chart.bar.fill` SF Symbol style; the optional
+  `quotaLogo` style (`statusBarIconStyle` in config / "App 图标" in Settings) renders a
+  live quota dashboard (outer ring = weekly min/avg, inner ring = 5h min/avg,
+  counter-clockwise arcs with a 2-4-2 dashed segment, center water level = lowest 5h
+  remaining) with health-colored water (red > yellow > green, colors configurable via
+  `statusBarHealthColors`). See `QuotaLogoSVGBuilder.swift` and `MenuBarLabel.swift`.
 - Local usage scanners restore their last-good `index.json` snapshot on cold start; the
   remote quota refresh timestamp is persisted separately in `last-refresh.json`.
 - `MenuContentView` sizes to its content (window = header + cards + footer) so all cards
