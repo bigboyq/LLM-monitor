@@ -1,26 +1,85 @@
 import Foundation
 import UserNotifications
 
-/// 单个模型在一次远程刷新中恢复的额度窗口。
-struct QuotaIncrease: Equatable, Sendable {
-    struct Window: Equatable, Sendable {
-        let previousPercent: Double
-        let currentPercent: Double
+/// 通知渠道。`barkAndSystem` 表示 Bark 推送和系统通知同时发送。
+enum QuotaNotifyChannel: String, Codable, CaseIterable, Identifiable, Sendable {
+    case none
+    case system
+    case barkAndSystem
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .none: return "不通知"
+        case .system: return "系统通知"
+        case .barkAndSystem: return "Bark + 系统通知"
+        }
     }
 
+    var sendsSystemNotification: Bool {
+        self == .system || self == .barkAndSystem
+    }
+
+    var sendsBarkPush: Bool {
+        self == .barkAndSystem
+    }
+}
+
+/// 四类通知事件：5 小时 / 周额度窗口的恢复与耗尽。
+enum QuotaNotificationKind: String, Codable, CaseIterable, Identifiable, Sendable {
+    case intervalRestored
+    case intervalExhausted
+    case weeklyRestored
+    case weeklyExhausted
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .intervalRestored: return "5 小时额度已恢复"
+        case .intervalExhausted: return "5 小时额度已耗尽"
+        case .weeklyRestored: return "周额度已恢复"
+        case .weeklyExhausted: return "周额度已耗尽"
+        }
+    }
+}
+
+/// 一次刷新中单个模型的单个窗口发生变化的事件。
+struct QuotaEvent: Equatable, Sendable {
     let modelName: String
     let displayName: String
-    let interval: Window?
-    let weekly: Window?
+    let kind: QuotaNotificationKind
+    let previousPercent: Double
+    let currentPercent: Double
+}
+
+/// 每个 provider 的四类事件 → 渠道映射。nil 字段使用默认渠道。
+struct QuotaNotifyChannels: Equatable, Sendable {
+    var intervalRestored: QuotaNotifyChannel?
+    var intervalExhausted: QuotaNotifyChannel?
+    var weeklyRestored: QuotaNotifyChannel?
+    var weeklyExhausted: QuotaNotifyChannel?
+
+    func channel(for kind: QuotaNotificationKind) -> QuotaNotifyChannel {
+        switch kind {
+        case .intervalRestored: return intervalRestored ?? .system
+        case .intervalExhausted: return intervalExhausted ?? .none
+        case .weeklyRestored: return weeklyRestored ?? .system
+        case .weeklyExhausted: return weeklyExhausted ?? .none
+        }
+    }
 }
 
 /// 比较两次成功的远程额度快照。只有两边都存在的窗口才参与比较，避免首次出现
-/// model/window 时把“没有基线”误判成恢复。
-enum QuotaIncreaseDetector {
+/// model/window 时把“没有基线”误判成恢复或耗尽。
+enum QuotaEventDetector {
     /// 百分比来自不同服务的浮点响应；忽略小于 0.01 个百分点的数值噪声。
-    private static let minimumIncrease = 0.01
+    private static let minimumDelta = 0.01
+    /// 剩余百分比低于该值视为“已耗尽”。
+    private static let exhaustedThreshold = 0.01
 
-    nonisolated static func detect(current: QuotaInfo, previous: QuotaInfo?) -> [QuotaIncrease] {
+    nonisolated static func detect(current: QuotaInfo, previous: QuotaInfo?) -> [QuotaEvent] {
         guard let previous else { return [] }
 
         let previousByName = Dictionary(
@@ -28,62 +87,128 @@ enum QuotaIncreaseDetector {
             uniquingKeysWith: { first, _ in first }
         )
 
-        return current.models.compactMap { model in
-            guard let old = previousByName[model.modelName.lowercased()] else { return nil }
+        return current.models.flatMap { model -> [QuotaEvent] in
+            guard let old = previousByName[model.modelName.lowercased()] else { return [] }
 
-            let interval = increase(
+            var events: [QuotaEvent] = []
+            if let event = windowEvent(
+                kind: .intervalRestored,
+                exhaustedKind: .intervalExhausted,
                 previousPercent: old.intervalRemainingPercent,
                 currentPercent: model.intervalRemainingPercent,
                 previousPresent: old.hasIntervalWindow,
-                currentPresent: model.hasIntervalWindow
-            )
-            let weekly = increase(
+                currentPresent: model.hasIntervalWindow,
+                modelName: model.modelName,
+                displayName: model.displayName
+            ) {
+                events.append(event)
+            }
+            if let event = windowEvent(
+                kind: .weeklyRestored,
+                exhaustedKind: .weeklyExhausted,
                 previousPercent: old.weeklyRemainingPercent,
                 currentPercent: model.weeklyRemainingPercent,
                 previousPresent: old.hasWeeklyWindow,
-                currentPresent: model.hasWeeklyWindow
-            )
-            guard interval != nil || weekly != nil else { return nil }
-
-            return QuotaIncrease(
+                currentPresent: model.hasWeeklyWindow,
                 modelName: model.modelName,
-                displayName: model.displayName,
-                interval: interval,
-                weekly: weekly
-            )
+                displayName: model.displayName
+            ) {
+                events.append(event)
+            }
+            return events
         }
     }
 
-    private nonisolated static func increase(
+    /// 恢复：当前比上次高至少 minimumDelta；耗尽：上次还有余量、本次降到阈值以下。
+    private nonisolated static func windowEvent(
+        kind: QuotaNotificationKind,
+        exhaustedKind: QuotaNotificationKind,
         previousPercent: Double,
         currentPercent: Double,
         previousPresent: Bool,
-        currentPresent: Bool
-    ) -> QuotaIncrease.Window? {
+        currentPresent: Bool,
+        modelName: String,
+        displayName: String
+    ) -> QuotaEvent? {
         guard previousPresent,
               currentPresent,
               previousPercent.isFinite,
-              currentPercent.isFinite,
-              currentPercent - previousPercent >= minimumIncrease else {
+              currentPercent.isFinite else {
             return nil
         }
-        return QuotaIncrease.Window(
-            previousPercent: previousPercent,
-            currentPercent: currentPercent
-        )
+
+        if currentPercent - previousPercent >= minimumDelta {
+            return QuotaEvent(
+                modelName: modelName,
+                displayName: displayName,
+                kind: kind,
+                previousPercent: previousPercent,
+                currentPercent: currentPercent
+            )
+        }
+
+        if previousPercent > exhaustedThreshold,
+           currentPercent <= exhaustedThreshold {
+            return QuotaEvent(
+                modelName: modelName,
+                displayName: displayName,
+                kind: exhaustedKind,
+                previousPercent: previousPercent,
+                currentPercent: currentPercent
+            )
+        }
+
+        return nil
     }
 }
 
 protocol QuotaUpdateNotifying: AnyObject {
-    func notify(providerID: String, providerName: String, increases: [QuotaIncrease])
+    /// `channels` 由调用方（AppState）按 provider 配置计算好；通知器只按
+    /// 自身渠道（系统 / Bark）过滤后发送。
+    func notify(
+        providerID: String,
+        providerName: String,
+        events: [QuotaEvent],
+        channels: QuotaNotifyChannels
+    )
+}
+
+/// 把额度恢复通知分发给所有启用的通知渠道（系统通知 + Bark 等）。
+final class CompositeQuotaUpdateNotifier: QuotaUpdateNotifying {
+    private let notifiers: [any QuotaUpdateNotifying]
+
+    init(notifiers: [any QuotaUpdateNotifying]) {
+        self.notifiers = notifiers
+    }
+
+    func notify(
+        providerID: String,
+        providerName: String,
+        events: [QuotaEvent],
+        channels: QuotaNotifyChannels
+    ) {
+        for notifier in notifiers {
+            notifier.notify(
+                providerID: providerID,
+                providerName: providerName,
+                events: events,
+                channels: channels
+            )
+        }
+    }
 }
 
 /// 测试和不需要系统通知的调用方使用；产品入口显式注入 SystemQuotaUpdateNotifier。
 final class NoopQuotaUpdateNotifier: QuotaUpdateNotifying {
-    func notify(providerID: String, providerName: String, increases: [QuotaIncrease]) {}
+    func notify(
+        providerID: String,
+        providerName: String,
+        events: [QuotaEvent],
+        channels: QuotaNotifyChannels
+    ) {}
 }
 
-/// macOS 本地通知。应用启动时检查授权状态；如果启动检查尚未完成，额度恢复路径
+/// macOS 本地通知。应用启动时检查授权状态；如果启动检查尚未完成，额度变化路径
 /// 仍会自行申请权限并在授权后继续发送当次通知。
 final class SystemQuotaUpdateNotifier: NSObject, QuotaUpdateNotifying,
                                        UNUserNotificationCenterDelegate, @unchecked Sendable {
@@ -130,37 +255,43 @@ final class SystemQuotaUpdateNotifier: NSObject, QuotaUpdateNotifying,
         }
     }
 
-    func notify(providerID: String, providerName: String, increases: [QuotaIncrease]) {
-        guard !increases.isEmpty, let center else { return }
+    func notify(
+        providerID: String,
+        providerName: String,
+        events: [QuotaEvent],
+        channels: QuotaNotifyChannels
+    ) {
+        let systemEvents = events.filter { channels.channel(for: $0.kind).sendsSystemNotification }
+        guard !systemEvents.isEmpty, let center else { return }
 
         center.getNotificationSettings { [weak self] settings in
             guard let self else { return }
             switch settings.authorizationStatus {
             case .authorized, .provisional:
-                self.enqueue(providerID: providerID, providerName: providerName, increases: increases)
+                self.enqueue(providerID: providerID, providerName: providerName, events: systemEvents)
             case .notDetermined:
                 center.requestAuthorization(options: [.alert, .sound]) { [weak self] granted, error in
                     if let error {
                         logWarn("[quota-notification] 请求通知权限失败: \(error.localizedDescription)")
                     }
                     guard granted, let self else { return }
-                    self.enqueue(providerID: providerID, providerName: providerName, increases: increases)
+                    self.enqueue(providerID: providerID, providerName: providerName, events: systemEvents)
                 }
             case .denied:
                 logDebug("[quota-notification] 系统通知权限未开启，跳过 \(providerID) 额度更新通知")
             case .ephemeral:
-                self.enqueue(providerID: providerID, providerName: providerName, increases: increases)
+                self.enqueue(providerID: providerID, providerName: providerName, events: systemEvents)
             @unknown default:
                 logWarn("[quota-notification] 未知通知授权状态，跳过 \(providerID) 额度更新通知")
             }
         }
     }
 
-    private func enqueue(providerID: String, providerName: String, increases: [QuotaIncrease]) {
+    private func enqueue(providerID: String, providerName: String, events: [QuotaEvent]) {
         guard let center else { return }
         let content = UNMutableNotificationContent()
         content.title = "\(providerName) 额度已更新"
-        content.body = increases.map(Self.messageLine).joined(separator: "\n")
+        content.body = events.map(Self.messageLine).joined(separator: "\n")
         content.sound = .default
         content.threadIdentifier = "quota-update-\(providerID)"
 
@@ -173,20 +304,21 @@ final class SystemQuotaUpdateNotifier: NSObject, QuotaUpdateNotifying,
             if let error {
                 logWarn("[quota-notification] 发送 \(providerID) 通知失败: \(error.localizedDescription)")
             } else {
-                logInfo("[quota-notification] 已发送 \(providerID) 额度更新通知（\(increases.count) 个模型）")
+                logInfo("[quota-notification] 已发送 \(providerID) 额度更新通知（\(events.count) 个事件）")
             }
         }
     }
 
-    private static func messageLine(_ increase: QuotaIncrease) -> String {
-        var changes: [String] = []
-        if let interval = increase.interval {
-            changes.append("短周期 \(Formatters.formatQuotaPercent(interval.previousPercent)) → \(Formatters.formatQuotaPercent(interval.currentPercent))")
+    static func messageLine(_ event: QuotaEvent) -> String {
+        switch event.kind {
+        case .intervalRestored, .weeklyRestored:
+            let window = event.kind == .intervalRestored ? "短周期" : "周额度"
+            return "\(event.displayName)：\(window) \(Formatters.formatQuotaPercent(event.previousPercent)) → \(Formatters.formatQuotaPercent(event.currentPercent))"
+        case .intervalExhausted:
+            return "\(event.displayName)：5 小时额度已用完（剩 \(Formatters.formatQuotaPercent(event.currentPercent))）"
+        case .weeklyExhausted:
+            return "\(event.displayName)：周额度已用完（剩 \(Formatters.formatQuotaPercent(event.currentPercent))）"
         }
-        if let weekly = increase.weekly {
-            changes.append("周额度 \(Formatters.formatQuotaPercent(weekly.previousPercent)) → \(Formatters.formatQuotaPercent(weekly.currentPercent))")
-        }
-        return "\(increase.displayName)：\(changes.joined(separator: "，"))"
     }
 
     func userNotificationCenter(

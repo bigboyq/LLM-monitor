@@ -637,15 +637,22 @@ final class AppState: ObservableObject {
             if descriptor.kind == .codexChatGpt, info.codexUsageDetails == nil {
                 Task { await self.localUsage.triggerImmediateScanAll() }
             }
-            let quotaIncreases = QuotaIncreaseDetector.detect(
+            let quotaEvents = QuotaEventDetector.detect(
                 current: info,
                 previous: previousInfo
             )
-            if !quotaIncreases.isEmpty {
+            if !quotaEvents.isEmpty {
+                let notifyConfig = configStore.config.providers[providerID]
                 quotaUpdateNotifier.notify(
                     providerID: providerID,
                     providerName: statuses[newIdx].displayName,
-                    increases: quotaIncreases
+                    events: quotaEvents,
+                    channels: QuotaNotifyChannels(
+                        intervalRestored: notifyConfig?.notifyIntervalRestored,
+                        intervalExhausted: notifyConfig?.notifyIntervalExhausted,
+                        weeklyRestored: notifyConfig?.notifyWeeklyRestored,
+                        weeklyExhausted: notifyConfig?.notifyWeeklyExhausted
+                    )
                 )
             }
             persistedRefreshTimes[providerID] = info.fetchedAt

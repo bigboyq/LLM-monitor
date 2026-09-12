@@ -82,10 +82,13 @@ struct LLMMonitorApp: App {
         configStore.ensureProvidersPresent(descriptors: descriptors)
         
         let quotaUpdateNotifier = SystemQuotaUpdateNotifier()
+        let barkNotifier = BarkQuotaNotifier(configProvider: configStore)
         let state = AppState(
             descriptors: descriptors,
             configStore: configStore,
-            quotaUpdateNotifier: quotaUpdateNotifier
+            quotaUpdateNotifier: CompositeQuotaUpdateNotifier(
+                notifiers: [quotaUpdateNotifier, barkNotifier]
+            )
         )
         _configStore = StateObject(wrappedValue: configStore)
         _state = StateObject(wrappedValue: state)
