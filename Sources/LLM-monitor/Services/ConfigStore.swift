@@ -118,6 +118,9 @@ struct BarkConfig: Codable, Equatable, Sendable {
     /// 人在电脑前时跳过 Bark 推送：屏幕亮着且未锁屏才跳过；显示器休眠
     /// （人离开后闲置）或已锁屏都正常推送。nil（字段不存在）= 不跳过。
     var skipWhenAwakeAndUnlocked: Bool?
+    /// 消息有效期（秒）：过期后手机客户端自动删除该消息。nil 或 <= 0 =
+    /// 不携带 ttl 参数（Bark 默认行为，消息不自动过期）。
+    var ttl: Int?
     /// Bark 通知分组：相同 group 的通知在 iOS 通知中心折叠为一组。
     /// nil 或空白 = 不携带 group 参数（不在通知中心折叠）。
     var group: String?
@@ -125,6 +128,14 @@ struct BarkConfig: Codable, Equatable, Sendable {
     static let defaultServerURL = "https://api.day.app"
     /// group 留空时 UI 展示的占位默认值。
     static let defaultGroup = "LLMMonitor"
+
+    /// 解析设置页草稿里的 TTL 文本：去空白后必须是正整数；空 / 非数字 /
+    /// <= 0 一律返回 nil（不落盘、不携带参数）。
+    static func parseTTL(_ raw: String) -> Int? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let ttl = Int(trimmed), ttl > 0 else { return nil }
+        return ttl
+    }
 }
 
 struct AppConfig: Codable, Equatable {

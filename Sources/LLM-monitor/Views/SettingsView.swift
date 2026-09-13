@@ -51,6 +51,7 @@ struct SettingsView: View {
     @State var barkDeviceKey: String = ""
     @State var barkSound: String = ""
     @State var barkGroup: String = ""
+    @State var barkTTL: String = ""
     @State var barkSkipWhenAwakeAndUnlocked: Bool = false
     @State var showBarkDeviceKey: Bool = false
     @State var isSendingBarkTest: Bool = false
@@ -393,6 +394,12 @@ struct SettingsView: View {
 
                     SettingsControlRow("分组（可选）") {
                         TextField("", text: $barkGroup, prompt: Text(BarkConfig.defaultGroup))
+                            .frame(width: 280)
+                            .disabled(!barkEnabled)
+                    }
+
+                    SettingsControlRow("消息有效期 TTL（秒，可选）") {
+                        TextField("", text: $barkTTL, prompt: Text("0 = 不过期"))
                             .frame(width: 280)
                             .disabled(!barkEnabled)
                     }
@@ -867,6 +874,7 @@ struct SettingsView: View {
         barkDeviceKey = config.bark?.deviceKey ?? ""
         barkSound = config.bark?.sound ?? ""
         barkGroup = config.bark?.group ?? ""
+        barkTTL = config.bark?.ttl.map(String.init) ?? ""
         barkSkipWhenAwakeAndUnlocked = config.bark?.skipWhenAwakeAndUnlocked ?? false
         barkTestMessage = nil
 
@@ -962,6 +970,8 @@ struct SettingsView: View {
                 deviceKey: trimmedBarkKey ?? "",
                 sound: trimmedBarkSound,
                 skipWhenAwakeAndUnlocked: barkSkipWhenAwakeAndUnlocked ? true : nil,
+                // 空 / 非数字 / <= 0 归一化为 nil：不落盘、推送不携带 ttl。
+                ttl: BarkConfig.parseTTL(barkTTL),
                 group: trimmedString(barkGroup)
             )
         } else {
@@ -1057,6 +1067,7 @@ struct SettingsView: View {
             deviceKey: barkDeviceKey,
             sound: barkSound,
             skipWhenAwakeAndUnlocked: barkSkipWhenAwakeAndUnlocked ? true : nil,
+            ttl: BarkConfig.parseTTL(barkTTL),
             group: barkGroup
         )
         isSendingBarkTest = true

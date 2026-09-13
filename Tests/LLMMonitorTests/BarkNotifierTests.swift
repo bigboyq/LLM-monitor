@@ -165,7 +165,8 @@ final class BarkNotifierTests: XCTestCase {
     }
 
     /// URLProtocol 里 httpBody 会变成 httpBodyStream，这里统一读出来。
-    private func jsonPayload(of request: URLRequest) throws -> [String: String] {
+    /// payload 值混合字符串与数字（如 ttl），按弱类型字典解。
+    private func jsonPayload(of request: URLRequest) throws -> [String: Any] {
         let data: Data
         if let body = request.httpBody {
             data = body
@@ -185,7 +186,7 @@ final class BarkNotifierTests: XCTestCase {
             data = Data()
         }
         let object = try XCTUnwrap(
-            JSONSerialization.jsonObject(with: data) as? [String: String],
+            JSONSerialization.jsonObject(with: data) as? [String: Any],
             "POST body 应是字符串 JSON 对象: \(String(data: data, encoding: .utf8) ?? "<nil>")"
         )
         return object
@@ -215,11 +216,32 @@ final class BarkNotifierTests: XCTestCase {
         )
         let payload = try jsonPayload(of: request)
         // 中文 / 箭头 / 换行经 JSON 传输，无需 URL percent encode。
-        XCTAssertEqual(payload["title"], "GLM Coding Plan")
-        XCTAssertEqual(payload["body"], "短周期 10% → 100%，周额度 40% → 90%")
-        XCTAssertEqual(payload["sound"], "minuet")
-        XCTAssertEqual(payload["group"], "我的额度")
-        XCTAssertEqual(payload["id"], "llmmonitor-glm-general")
+        XCTAssertEqual(payload["title"] as? String, "GLM Coding Plan")
+        XCTAssertEqual(payload["body"] as? String, "短周期 10% → 100%，周额度 40% → 90%")
+        XCTAssertEqual(payload["sound"] as? String, "minuet")
+        XCTAssertEqual(payload["group"] as? String, "我的额度")
+        XCTAssertEqual(payload["id"] as? String, "llmmonitor-glm-general")
+        XCTAssertNil(payload["ttl"], "未配置 ttl 时不携带该参数")
+    }
+
+    func testBuildRequestIncludesTTLOnlyWhenPositive() throws {
+        // 2026-09-13 裁定：ttl > 0 按数字携带；0 / nil 一律不带。
+        func payloadWith(ttl: Int?) throws -> [String: Any] {
+            let request = try XCTUnwrap(BarkQuotaNotifier.buildRequest(
+                config: BarkConfig(
+                    enabled: true, serverURL: "https://api.day.app", deviceKey: "k",
+                    sound: nil, skipWhenAwakeAndUnlocked: nil, ttl: ttl, group: nil
+                ),
+                providerName: "P",
+                body: "b"
+            ))
+            return try jsonPayload(of: request)
+        }
+        XCTAssertEqual(try payloadWith(ttl: 3600)["ttl"] as? Int, 3600, "ttl > 0 应按 JSON 数字携带")
+        XCTAssertNotNil(try payloadWith(ttl: 1)["ttl"], "最小正整数也应携带")
+        XCTAssertNil(try payloadWith(ttl: 0)["ttl"], "ttl = 0 不携带")
+        XCTAssertNil(try payloadWith(ttl: nil)["ttl"], "ttl 缺省不携带")
+        XCTAssertNil(try payloadWith(ttl: -5)["ttl"], "负值按未配置处理")
     }
 
     func testBuildRequestPreservesServerBasePath() throws {
@@ -301,7 +323,7 @@ final class BarkNotifierTests: XCTestCase {
         XCTAssertEqual(sent.url?.host, "api.day.app")
         XCTAssertEqual(sent.url?.path, "/k1")
         let payload = try jsonPayload(of: sent)
-        XCTAssertEqual(payload["body"]?.contains("短周期"), true)
+        XCTAssertTrue((payload["body"] as? String)?.contains("短周期") ?? false)
     }
 
     @MainActor
@@ -324,8 +346,8 @@ final class BarkNotifierTests: XCTestCase {
         )
         await expectRequestCount(1)
         let payload = try jsonPayload(of: RecordingURLProtocol.requests[0])
-        XCTAssertTrue(payload["body"]?.contains("短周期") ?? false, "恢复文案应存在: \(payload["body"] ?? "")")
-        XCTAssertFalse(payload["body"]?.contains("已用完") ?? true, "禁用（不通知）的耗尽事件不得混入: \(payload["body"] ?? "")")
+        XCTAssertTrue((payload["body"] as? String)?.contains("短周期") ?? false, "恢复文案应存在: \(payload["body"] ?? "")")
+        XCTAssertFalse((payload["body"] as? String)?.contains("已用完") ?? true, "禁用（不通知）的耗尽事件不得混入: \(payload["body"] ?? "")")
     }
 
     @MainActor
@@ -340,7 +362,7 @@ final class BarkNotifierTests: XCTestCase {
             channels: allBarkChannels
         )
         await expectRequestCount(2)
-        let ids = try RecordingURLProtocol.requests.map { try jsonPayload(of: $0)["id"] ?? "" }
+        let ids = try RecordingURLProtocol.requests.map { (try jsonPayload(of: $0)["id"] as? String) ?? "" }
         XCTAssertEqual(ids.count, 2)
         XCTAssertEqual(ids[0], "llmmonitor-p-general")
         XCTAssertEqual(ids[1], "llmmonitor-p-video")
@@ -703,8 +725,8 @@ final class BarkNotifierTests: XCTestCase {
         XCTAssertEqual(sent.url?.host, "api.day.app")
         XCTAssertEqual(sent.url?.path, "/k1", "device key 应被规范化")
         let payload = try jsonPayload(of: sent)
-        XCTAssertEqual(payload["id"], BarkQuotaNotifier.testNotificationID)
-        XCTAssertEqual(payload["group"], "我的额度")
+        XCTAssertEqual(payload["id"] as? String, BarkQuotaNotifier.testNotificationID)
+        XCTAssertEqual(payload["group"] as? String, "我的额度")
     }
 
     @MainActor
@@ -738,18 +760,31 @@ final class BarkNotifierTests: XCTestCase {
 
     // MARK: - 配置持久化
 
+    func testParseTTLNormalizesInput() {
+        // 设置页草稿是文本：去空白后必须能解析为正整数，否则按未配置处理。
+        XCTAssertEqual(BarkConfig.parseTTL("3600"), 3600)
+        XCTAssertEqual(BarkConfig.parseTTL(" 60 "), 60)
+        XCTAssertNil(BarkConfig.parseTTL(""))
+        XCTAssertNil(BarkConfig.parseTTL("   "))
+        XCTAssertNil(BarkConfig.parseTTL("abc"))
+        XCTAssertNil(BarkConfig.parseTTL("3.5"))
+        XCTAssertNil(BarkConfig.parseTTL("0"), "0 = 不过期，归一化为 nil（不携带参数）")
+        XCTAssertNil(BarkConfig.parseTTL("-5"))
+    }
+
     func testBarkConfigCodingTolerantDecode() throws {
         let json = """
         {
           "schemaVersion": 2,
           "refreshIntervalSeconds": 300,
           "providers": {},
-          "bark": {"enabled": true, "serverURL": "https://api.day.app", "deviceKey": "k", "skipWhenAwakeAndUnlocked": true, "group": "g"}
+          "bark": {"enabled": true, "serverURL": "https://api.day.app", "deviceKey": "k", "skipWhenAwakeAndUnlocked": true, "ttl": 3600, "group": "g"}
         }
         """
         let config = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
         XCTAssertEqual(config.bark?.deviceKey, "k")
         XCTAssertEqual(config.bark?.skipWhenAwakeAndUnlocked, true)
+        XCTAssertEqual(config.bark?.ttl, 3600)
         XCTAssertEqual(config.bark?.group, "g")
         XCTAssertNil(config.bark?.sound)
 

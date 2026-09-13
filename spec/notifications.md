@@ -120,9 +120,11 @@ DeepSeek 不参与：余额被二值化为 0/100 percent，无窗口语义；其
 
 ### 4.3 Bark（`BarkQuotaNotifier` + `BarkSendQueue`）
 
-- 传输：`POST {server}/{key}`，JSON body（title/body/sound/group/id），规避 GET 的
+- 传输：`POST {server}/{key}`，JSON body（title/body/sound/group/id/ttl），规避 GET 的
   URL 编码与 2048 限制；server URL 的 base path 原样保留（反向代理子路径可用）。
   scheme 白名单：https + 本机 loopback http（`localhost`/`127.0.0.1`/`::1`）。
+  `ttl`（消息有效期秒数，过期后手机端自动删除）仅在该值 > 0 时按 JSON 数字携带；
+  0 / 未配置 = 不携带参数（Bark 默认行为，不自动过期）。
 - 配置规范化（trim）先于校验与请求；`serverURL`/`deviceKey` 不全 → 渠道不可用，
   触发 `.barkAndSystem` 时降级为只发系统通知（不丢通知）。
 - **屏幕跳过**（`skipWhenAwakeAndUnlocked`，2026-09-13 裁定）：
@@ -157,6 +159,7 @@ DeepSeek 不参与：余额被二值化为 0/100 percent，无窗口语义；其
     "deviceKey": "…",
     "sound": "minuet",                       // 可选
     "skipWhenAwakeAndUnlocked": true,        // 可选，nil = 不跳过
+    "ttl": 3600,                             // 可选，消息有效期秒数；缺失/<=0 = 不携带
     "group": "LLMMonitor"                    // 可选，nil = 不携带 group
   },
   "providers": {
@@ -178,7 +181,8 @@ DeepSeek 不参与：余额被二值化为 0/100 percent，无窗口语义；其
 ## 6. 设置 UI
 
 - **全局**（设置 > 常规 > 「Bark 推送」节）：启用开关、服务端地址、Device Key
-  （SecureField + 显示开关）、铃声、分组、「人在电脑前时跳过推送」、发送测试推送
+  （SecureField + 显示开关）、铃声、分组、消息有效期 TTL（秒；空/0/负数归一化为
+  不携带，`BarkConfig.parseTTL`）、「人在电脑前时跳过推送」、发送测试推送
   （读当前草稿、复用规范化/构造/屏幕策略、绕过队列冷却、行内返回结果文案）。
 - **每 Provider**（窗口类 pane 顶部、「认证与刷新」之前）：「通知配置」节，四行
   `QuotaNotificationKind` × 渠道 Picker（不通知 / 系统通知 / Bark + 系统通知），
