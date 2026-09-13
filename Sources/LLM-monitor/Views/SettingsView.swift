@@ -52,6 +52,7 @@ struct SettingsView: View {
     @State var barkSound: String = ""
     @State var barkGroup: String = ""
     @State var barkSkipWhenUnlocked: Bool = false
+    @State var showBarkDeviceKey: Bool = false
     @State var isSendingBarkTest: Bool = false
     @State var barkTestMessage: String?
 
@@ -380,9 +381,8 @@ struct SettingsView: View {
                     }
 
                     SettingsControlRow("Device Key") {
-                        TextField("", text: $barkDeviceKey)
-                            .frame(width: 280)
-                            .disabled(!barkEnabled)
+                        // 与 API Key 同级的推送凭证，用掩码输入 + 显示开关。
+                        secretField(text: $barkDeviceKey, isVisible: $showBarkDeviceKey, prompt: "从 Bark App 复制")
                     }
 
                     SettingsControlRow("铃声（可选）") {
@@ -779,6 +779,30 @@ struct SettingsView: View {
         .padding(.vertical, 4)
     }
 
+    /// 通用掩码输入框（SecureField + 显示开关），用于 Device Key 等推送凭证。
+    func secretField(text: Binding<String>, isVisible: Binding<Bool>, prompt: String) -> some View {
+        HStack(spacing: 8) {
+            Group {
+                if isVisible.wrappedValue {
+                    TextField("", text: text, prompt: Text(prompt))
+                } else {
+                    SecureField("", text: text, prompt: Text(prompt))
+                }
+            }
+            .textFieldStyle(.roundedBorder)
+
+            Button {
+                isVisible.wrappedValue.toggle()
+            } label: {
+                Image(systemName: isVisible.wrappedValue ? "eye.slash" : "eye")
+                    .frame(width: 18, height: 18)
+            }
+            .buttonStyle(.borderless)
+            .help(isVisible.wrappedValue ? "隐藏" : "显示")
+        }
+        .frame(width: 320, alignment: .leading)
+    }
+
     func apiKeyField(text: Binding<String>, isVisible: Binding<Bool>) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
@@ -1022,40 +1046,21 @@ struct SettingsView: View {
         )
     }
 
-    /// 用当前表单草稿（未保存的配置也行）直接发一条 Bark 测试推送。
+    /// 用当前表单草稿（未保存的配置也行）发一条 Bark 测试推送。
+    /// 复用正式推送的规范化、URL 构造与锁屏策略（BarkQuotaNotifier.sendTestPush）。
     func sendBarkTest() {
-        guard let server = trimmedString(barkServerURL), !server.isEmpty,
-              let key = trimmedString(barkDeviceKey), !key.isEmpty else {
-            barkTestMessage = "请先填写服务端地址和 Device Key"
-            return
-        }
-        isSendingBarkTest = true
-        barkTestMessage = nil
         let config = BarkConfig(
             enabled: true,
-            serverURL: server,
-            deviceKey: key,
-            sound: trimmedString(barkSound)
+            serverURL: barkServerURL,
+            deviceKey: barkDeviceKey,
+            sound: barkSound,
+            skipWhenUnlocked: barkSkipWhenUnlocked ? true : nil,
+            group: barkGroup
         )
-        guard let url = BarkQuotaNotifier.buildURL(
-            config: config,
-            providerName: "LLM Monitor",
-            body: "这是一条测试推送 🎉"
-        ) else {
-            isSendingBarkTest = false
-            barkTestMessage = "URL 构造失败，请检查服务端地址"
-            return
-        }
+        isSendingBarkTest = true
+        barkTestMessage = nil
         Task {
-            do {
-                let (data, response) = try await URLSession.shared.data(for: URLRequest(url: url))
-                let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-                barkTestMessage = (200..<300).contains(status)
-                    ? "测试推送已发送，请在手机上查看"
-                    : "推送失败：HTTP \(status) \(String(data: data.prefix(120), encoding: .utf8) ?? "")"
-            } catch {
-                barkTestMessage = "推送请求失败：\(error.localizedDescription)"
-            }
+            barkTestMessage = await BarkQuotaNotifier.sendTestPush(config: config)
             isSendingBarkTest = false
         }
     }

@@ -162,20 +162,28 @@ enum QuotaEventDetector {
     }
 }
 
-/// 一次刷新的事件批次：按模型把事件合并成组，渠道取组内并集。
-/// 系统通知与 Bark 共用，保证两端通知粒度和渠道判定一致。
+/// 一次刷新的事件批次：按模型把事件合并成组，并按渠道拆分事件正文。
+///
+/// 语义：每个渠道只包含该渠道已启用的事件文案 —— 「不通知」的事件不会混进
+/// 同模型其它渠道的通知里，保证每类事件的独立配置真正生效。系统通知与
+/// Bark 共用本结构，保证两端通知粒度和渠道判定一致。
 struct QuotaEventBatch: Equatable, Sendable {
-    /// 单个模型的合并结果：一个模型一次刷新只产生一条通知。
+    /// 单个模型的合并结果：一个模型一次刷新在单个渠道至多产生一条通知。
     struct ModelGroup: Equatable, Sendable {
         let modelName: String
         let displayName: String
-        let events: [QuotaEvent]
-        let sendsSystem: Bool
-        let sendsBark: Bool
-        /// 合并后的文案行（每行一个事件，顺序与 detector 输出一致）。
-        let lines: [String]
-        /// Bark 覆盖通知 id：provider + 模型 + 事件类型，同类新推送覆盖旧推送。
+        /// 渠道配置为「系统通知 / Bark + 系统通知」的事件。
+        let systemEvents: [QuotaEvent]
+        /// 渠道配置为「Bark + 系统通知」的事件。
+        let barkEvents: [QuotaEvent]
+        /// Bark 覆盖通知 id：provider + 模型，与本次事件组合无关，同类或
+        /// 不同组合的新推送都覆盖手机上该模型的旧推送。
         let barkNotificationID: String
+
+        var sendsSystem: Bool { !systemEvents.isEmpty }
+        var sendsBark: Bool { !barkEvents.isEmpty }
+        var systemLines: [String] { systemEvents.map(SystemQuotaUpdateNotifier.messageLine) }
+        var barkLines: [String] { barkEvents.map(SystemQuotaUpdateNotifier.messageLine) }
     }
 
     let providerID: String
@@ -208,28 +216,28 @@ struct QuotaEventBatch: Equatable, Sendable {
             return ModelGroup(
                 modelName: key,
                 displayName: displayName,
-                events: modelEvents,
-                sendsSystem: modelEvents.contains { channels.channel(for: $0.kind).sendsSystemNotification },
-                sendsBark: modelEvents.contains { channels.channel(for: $0.kind).sendsBarkPush },
-                lines: modelEvents.map(SystemQuotaUpdateNotifier.messageLine),
+                systemEvents: modelEvents.filter {
+                    channels.channel(for: $0.kind).sendsSystemNotification
+                },
+                barkEvents: modelEvents.filter {
+                    channels.channel(for: $0.kind).sendsBarkPush
+                },
                 barkNotificationID: Self.barkNotificationID(
                     providerID: providerID,
-                    modelName: key,
-                    kinds: modelEvents.map(\.kind)
+                    modelName: key
                 )
             )
         }
     }
 
-    /// 稳定的覆盖 id：`llmmonitor-{providerID}-{model}-{kinds}`。事件类型
-    /// 排序后拼接，同类事件刷新多次只会互相覆盖，不同类型互不影响。
+    /// 稳定的覆盖 id：`llmmonitor-{providerID}-{model}`。不掺入事件类型，
+    /// 事件组合变化（单事件 ↔ 多事件）时 id 保持不变，始终覆盖该模型的
+    /// 上一条 Bark 通知，避免历史通知堆积。
     private static func barkNotificationID(
         providerID: String,
-        modelName: String,
-        kinds: [QuotaNotificationKind]
+        modelName: String
     ) -> String {
-        let sortedKinds = kinds.map(\.rawValue).sorted().joined(separator: "-")
-        return "llmmonitor-\(providerID)-\(modelName)-\(sortedKinds)"
+        "llmmonitor-\(providerID)-\(modelName)"
     }
 }
 
@@ -332,7 +340,7 @@ final class SystemQuotaUpdateNotifier: NSObject, QuotaUpdateNotifying,
         events: [QuotaEvent],
         channels: QuotaNotifyChannels
     ) {
-        // 模型级合并：同一模型的事件合成一条系统通知，渠道取并集。
+        // 模型级合并：同一模型的事件合成一条系统通知，正文只含系统渠道事件。
         let systemGroups = QuotaEventBatch(
             providerID: providerID,
             providerName: providerName,
@@ -345,47 +353,58 @@ final class SystemQuotaUpdateNotifier: NSObject, QuotaUpdateNotifying,
             guard let self else { return }
             switch settings.authorizationStatus {
             case .authorized, .provisional:
-                self.enqueue(providerName: providerName, groups: systemGroups)
+                self.enqueue(providerID: providerID, providerName: providerName, groups: systemGroups)
             case .notDetermined:
                 center.requestAuthorization(options: [.alert, .sound]) { [weak self] granted, error in
                     if let error {
                         logWarn("[quota-notification] 请求通知权限失败: \(error.localizedDescription)")
                     }
                     guard granted, let self else { return }
-                    self.enqueue(providerName: providerName, groups: systemGroups)
+                    self.enqueue(providerID: providerID, providerName: providerName, groups: systemGroups)
                 }
             case .denied:
                 logDebug("[quota-notification] 系统通知权限未开启，跳过 \(providerID) 额度更新通知")
             case .ephemeral:
-                self.enqueue(providerName: providerName, groups: systemGroups)
+                self.enqueue(providerID: providerID, providerName: providerName, groups: systemGroups)
             @unknown default:
                 logWarn("[quota-notification] 未知通知授权状态，跳过 \(providerID) 额度更新通知")
             }
         }
     }
 
-    private func enqueue(providerName: String, groups: [QuotaEventBatch.ModelGroup]) {
+    private func enqueue(providerID: String, providerName: String, groups: [QuotaEventBatch.ModelGroup]) {
         guard let center else { return }
         for group in groups {
+            let lines = group.systemLines
             let content = UNMutableNotificationContent()
             content.title = "\(providerName) 额度已更新"
-            content.body = group.lines.joined(separator: "\n")
+            content.body = lines.joined(separator: "\n")
             content.sound = .default
-            content.threadIdentifier = "quota-update-\(group.modelName)"
+            // 线程带 provider 维度：不同 Provider 的同名模型不会串进同一个
+            // macOS 通知线程。
+            content.threadIdentifier = Self.threadIdentifier(
+                providerID: providerID,
+                modelName: group.modelName
+            )
 
             let request = UNNotificationRequest(
-                identifier: "quota-update-\(group.modelName)-\(UUID().uuidString)",
+                identifier: "\(content.threadIdentifier)-\(UUID().uuidString)",
                 content: content,
                 trigger: nil
             )
             center.add(request) { error in
                 if let error {
-                    logWarn("[quota-notification] 发送 \(group.displayName) 通知失败: \(error.localizedDescription)")
+                    logWarn("[quota-notification] 发送 \(providerName)/\(group.displayName) 通知失败: \(error.localizedDescription)")
                 } else {
-                    logInfo("[quota-notification] 已发送 \(group.displayName) 额度更新通知（\(group.events.count) 个事件合并）")
+                    logInfo("[quota-notification] 已发送 \(providerName)/\(group.displayName) 额度更新通知（\(lines.count) 个事件合并）")
                 }
             }
         }
+    }
+
+    /// macOS 通知线程标识：provider + 模型，避免不同 Provider 的同名模型互串。
+    static func threadIdentifier(providerID: String, modelName: String) -> String {
+        "quota-update-\(providerID)-\(modelName)"
     }
 
     static func messageLine(_ event: QuotaEvent) -> String {

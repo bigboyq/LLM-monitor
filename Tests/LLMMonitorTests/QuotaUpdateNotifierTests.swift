@@ -130,6 +130,18 @@ final class QuotaUpdateNotifierTests: XCTestCase {
         XCTAssertEqual(defaults.channel(for: .weeklyExhausted), .none)
     }
 
+    func testSystemThreadIdentifierIncludesProvider() {
+        // R3: 不同 Provider 的同名模型不能共享 macOS 通知线程。
+        let minimax = SystemQuotaUpdateNotifier.threadIdentifier(
+            providerID: "minimax_token_plan", modelName: "general"
+        )
+        let antigravity = SystemQuotaUpdateNotifier.threadIdentifier(
+            providerID: "antigravity", modelName: "general"
+        )
+        XCTAssertEqual(minimax, "quota-update-minimax_token_plan-general")
+        XCTAssertNotEqual(minimax, antigravity)
+    }
+
     @MainActor
     func testAppStateNotifiesAfterSecondSuccessfulRefreshIncreasesQuota() async throws {
         final class TwoSnapshotFetcher: QuotaFetcher, @unchecked Sendable {
