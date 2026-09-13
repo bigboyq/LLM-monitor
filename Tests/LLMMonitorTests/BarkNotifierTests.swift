@@ -52,6 +52,36 @@ private final class RecordingURLProtocol: URLProtocol {
     override func stopLoading() {}
 }
 
+/// 始终抛指定 URLError 的 URLProtocol 桩，验证失败 / 重试路径。
+private final class FailingURLProtocol: URLProtocol {
+    private static let lock = NSLock()
+    private static var _attempts = 0
+    static var attempts: Int {
+        lock.lock(); defer { lock.unlock() }
+        return _attempts
+    }
+    /// 使用的错误码；瞬时错误应触发重试，非瞬时错误不应重试。
+    static var errorCode: URLError.Code = .timedOut
+
+    static func reset(errorCode: URLError.Code) {
+        lock.lock(); defer { lock.unlock() }
+        _attempts = 0
+        self.errorCode = errorCode
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        Self.lock.lock()
+        Self._attempts += 1
+        Self.lock.unlock()
+        client?.urlProtocol(self, didFailWithError: URLError(Self.errorCode))
+    }
+
+    override func stopLoading() {}
+}
+
 final class BarkNotifierTests: XCTestCase {
     @MainActor
     private final class StubConfigProvider: BarkConfigProviding {
@@ -71,21 +101,22 @@ final class BarkNotifierTests: XCTestCase {
         RecordingURLProtocol.reset()
     }
 
-    private var stubbedSession: URLSession {
+    private func sessionWith(_ type: URLProtocol.Type) -> URLSession {
         let config = URLSessionConfiguration.ephemeral
-        config.protocolClasses = [RecordingURLProtocol.self]
+        config.protocolClasses = [type]
         return URLSession(configuration: config)
     }
 
     @MainActor
     private func makeNotifier(
         _ bark: BarkConfig,
+        session: URLSession? = nil,
         screenIsLocked: @escaping () -> Bool = { false }
     ) -> BarkQuotaNotifier {
         BarkQuotaNotifier(
             configProvider: StubConfigProvider(bark),
             screenIsLocked: screenIsLocked,
-            sendQueue: BarkSendQueue(session: stubbedSession)
+            sendQueue: BarkSendQueue(session: session ?? sessionWith(RecordingURLProtocol.self))
         )
     }
 
@@ -102,20 +133,43 @@ final class BarkNotifierTests: XCTestCase {
     /// 等待累计收到第 n 个请求（1-based）。
     private func expectRequestCount(_ count: Int, timeout: TimeInterval = 5) async {
         let exp = expectation(description: "收到 \(count) 个请求")
-        let lock = NSLock()
         RecordingURLProtocol.onReceive = { _ in
-            lock.lock()
-            let done = RecordingURLProtocol.requests.count >= count
-            lock.unlock()
-            if done { exp.fulfill() }
+            if RecordingURLProtocol.requests.count >= count { exp.fulfill() }
         }
         await fulfillment(of: [exp], timeout: timeout)
     }
 
-    // MARK: - URL 构造
+    /// URLProtocol 里 httpBody 会变成 httpBodyStream，这里统一读出来。
+    private func jsonPayload(of request: URLRequest) throws -> [String: String] {
+        let data: Data
+        if let body = request.httpBody {
+            data = body
+        } else if let stream = request.httpBodyStream {
+            stream.open()
+            defer { stream.close() }
+            var collected = Data()
+            let bufferSize = 4096
+            var buffer = [UInt8](repeating: 0, count: bufferSize)
+            while stream.hasBytesAvailable {
+                let read = stream.read(&buffer, maxLength: bufferSize)
+                guard read > 0 else { break }
+                collected.append(buffer, count: read)
+            }
+            data = collected
+        } else {
+            data = Data()
+        }
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data) as? [String: String],
+            "POST body 应是字符串 JSON 对象: \(String(data: data, encoding: .utf8) ?? "<nil>")"
+        )
+        return object
+    }
 
-    func testBuildURLPercentEncodesPathSegmentsAndAppendsQuery() throws {
-        let url = try XCTUnwrap(BarkQuotaNotifier.buildURL(
+    // MARK: - 请求构造（POST JSON）
+
+    func testBuildRequestPostsJSONPayload() throws {
+        let request = try XCTUnwrap(BarkQuotaNotifier.buildRequest(
             config: BarkConfig(
                 enabled: true,
                 serverURL: "https://api.day.app",
@@ -128,18 +182,24 @@ final class BarkNotifierTests: XCTestCase {
             notificationID: "llmmonitor-glm-general"
         ))
 
-        XCTAssertEqual(url.host, "api.day.app")
-        // 中文与箭头必须被 percent-encode，不能裸露在 URL 里。
-        XCTAssertFalse(url.absoluteString.contains("→"))
-        XCTAssertTrue(url.absoluteString.contains("%E7%9F%AD"))
-        XCTAssertTrue(url.absoluteString.contains("sound=minuet"))
-        XCTAssertTrue(url.absoluteString.contains("group="))
-        XCTAssertTrue(url.absoluteString.contains("id=llmmonitor-glm-general"))
+        XCTAssertEqual(request.httpMethod, "POST")
+        XCTAssertEqual(request.url?.host, "api.day.app")
+        XCTAssertEqual(request.url?.path, "/abc123")
+        XCTAssertTrue(
+            request.value(forHTTPHeaderField: "Content-Type")?.contains("application/json") ?? false
+        )
+        let payload = try jsonPayload(of: request)
+        // 中文 / 箭头 / 换行经 JSON 传输，无需 URL percent encode。
+        XCTAssertEqual(payload["title"], "GLM Coding Plan")
+        XCTAssertEqual(payload["body"], "短周期 10% → 100%，周额度 40% → 90%")
+        XCTAssertEqual(payload["sound"], "minuet")
+        XCTAssertEqual(payload["group"], "我的额度")
+        XCTAssertEqual(payload["id"], "llmmonitor-glm-general")
     }
 
-    func testBuildURLPreservesServerBasePath() throws {
+    func testBuildRequestPreservesServerBasePath() throws {
         // R4: 自建服务部署在反向代理子路径下时，base path 不能被丢弃。
-        let url = try XCTUnwrap(BarkQuotaNotifier.buildURL(
+        let request = try XCTUnwrap(BarkQuotaNotifier.buildRequest(
             config: BarkConfig(
                 enabled: true, serverURL: "https://example.com/bark/", deviceKey: "k",
                 sound: nil, group: nil
@@ -147,31 +207,26 @@ final class BarkNotifierTests: XCTestCase {
             providerName: "P",
             body: "b"
         ))
-        XCTAssertEqual(url.path, "/bark/k/P/b")
+        XCTAssertEqual(request.url?.path, "/bark/k")
     }
 
-    func testBuildURLRejectsInvalidServerAndScheme() {
+    func testBuildRequestRejectsInvalidServerAndScheme() {
         func make(_ server: String) -> BarkConfig {
             BarkConfig(enabled: true, serverURL: server, deviceKey: "k", sound: nil, group: nil)
         }
         // 相对引用 / 无 host。
-        XCTAssertNil(BarkQuotaNotifier.buildURL(config: make("not a url"), providerName: "p", body: "b"))
+        XCTAssertNil(BarkQuotaNotifier.buildRequest(config: make("not a url"), providerName: "p", body: "b"))
         // scheme 白名单：只允许 https 和本机 http。
-        XCTAssertNil(BarkQuotaNotifier.buildURL(config: make("ftp://example.com"), providerName: "p", body: "b"))
-        XCTAssertNil(BarkQuotaNotifier.buildURL(config: make("file:///tmp"), providerName: "p", body: "b"))
-        XCTAssertNil(BarkQuotaNotifier.buildURL(config: make("http://example.com"), providerName: "p", body: "b"))
+        XCTAssertNil(BarkQuotaNotifier.buildRequest(config: make("ftp://example.com"), providerName: "p", body: "b"))
+        XCTAssertNil(BarkQuotaNotifier.buildRequest(config: make("file:///tmp"), providerName: "p", body: "b"))
+        XCTAssertNil(BarkQuotaNotifier.buildRequest(config: make("http://example.com"), providerName: "p", body: "b"))
         // 本机 http 调试放行。
-        XCTAssertNotNil(BarkQuotaNotifier.buildURL(config: make("http://localhost:8080"), providerName: "p", body: "b"))
-        XCTAssertNotNil(BarkQuotaNotifier.buildURL(config: make("http://127.0.0.1:8080"), providerName: "p", body: "b"))
-        // R4 之外的长度上限仍然生效。
-        let long = String(repeating: "很", count: 1100)
-        XCTAssertNil(BarkQuotaNotifier.buildURL(
-            config: make("https://api.day.app"), providerName: long, body: long
-        ))
+        XCTAssertNotNil(BarkQuotaNotifier.buildRequest(config: make("http://localhost:8080"), providerName: "p", body: "b"))
+        XCTAssertNotNil(BarkQuotaNotifier.buildRequest(config: make("http://127.0.0.1:8080"), providerName: "p", body: "b"))
     }
 
-    func testBuildURLOmitsOptionalParamsWhenUnset() throws {
-        let url = try XCTUnwrap(BarkQuotaNotifier.buildURL(
+    func testBuildRequestOmitsOptionalParamsWhenUnset() throws {
+        let request = try XCTUnwrap(BarkQuotaNotifier.buildRequest(
             config: BarkConfig(
                 enabled: true, serverURL: "https://api.day.app", deviceKey: "k",
                 sound: "  ", group: "  "
@@ -179,11 +234,12 @@ final class BarkNotifierTests: XCTestCase {
             providerName: "P",
             body: "b"
         ))
-        // sound / group 留空（或纯空白）时不携带对应 query 参数。
-        XCTAssertFalse(url.query?.contains("sound=") ?? false)
-        XCTAssertFalse(url.query?.contains("group=") ?? false)
-        let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
-        XCTAssertNil(components?.queryItems?.first { $0.name == "id" })
+        // sound / group 留空（或纯空白）时不出现在 JSON payload 里。
+        let payload = try jsonPayload(of: request)
+        XCTAssertNil(payload["sound"])
+        XCTAssertNil(payload["group"])
+        XCTAssertNil(payload["id"])
+        XCTAssertEqual(request.timeoutInterval, BarkQuotaNotifier.requestTimeout)
     }
 
     // MARK: - 发送行为
@@ -205,7 +261,7 @@ final class BarkNotifierTests: XCTestCase {
 
     @MainActor
     func testEnabledConfigSendsRequestWithNormalizedConfig() async throws {
-        // R5: 手工配置里的首尾空白会被规范化，不会编码进 URL。
+        // R5: 手工配置里的首尾空白会被规范化，不会出现在请求里。
         let notifier = makeNotifier(BarkConfig(
             enabled: true, serverURL: " https://api.day.app ", deviceKey: " k1 ",
             sound: nil, group: nil
@@ -218,7 +274,9 @@ final class BarkNotifierTests: XCTestCase {
         await expectRequestCount(1)
         let sent = RecordingURLProtocol.requests[0]
         XCTAssertEqual(sent.url?.host, "api.day.app")
-        XCTAssertTrue(sent.url?.path.hasPrefix("/k1/") ?? false)
+        XCTAssertEqual(sent.url?.path, "/k1")
+        let payload = try jsonPayload(of: sent)
+        XCTAssertEqual(payload["body"]?.contains("短周期"), true)
     }
 
     @MainActor
@@ -240,9 +298,9 @@ final class BarkNotifierTests: XCTestCase {
             )
         )
         await expectRequestCount(1)
-        let body = RecordingURLProtocol.requests[0].url?.path ?? "<no request>"
-        XCTAssertTrue(body.contains("短周期"), "恢复文案应存在: \(body)")
-        XCTAssertFalse(body.contains("已用完"), "禁用（不通知）的耗尽事件不得混入: \(body)")
+        let payload = try jsonPayload(of: RecordingURLProtocol.requests[0])
+        XCTAssertTrue(payload["body"]?.contains("短周期") ?? false, "恢复文案应存在: \(payload["body"] ?? "")")
+        XCTAssertFalse(payload["body"]?.contains("已用完") ?? true, "禁用（不通知）的耗尽事件不得混入: \(payload["body"] ?? "")")
     }
 
     @MainActor
@@ -257,12 +315,8 @@ final class BarkNotifierTests: XCTestCase {
             channels: allBarkChannels
         )
         await expectRequestCount(2)
-        let ids = RecordingURLProtocol.requests.compactMap {
-            URLComponents(url: $0.url!, resolvingAgainstBaseURL: false)?
-                .queryItems?.first { $0.name == "id" }?.value
-        }
+        let ids = try RecordingURLProtocol.requests.map { try jsonPayload(of: $0)["id"] ?? "" }
         XCTAssertEqual(ids.count, 2)
-        XCTAssertNotEqual(ids[0], ids[1])
         XCTAssertEqual(ids[0], "llmmonitor-p-general")
         XCTAssertEqual(ids[1], "llmmonitor-p-video")
     }
@@ -313,6 +367,13 @@ final class BarkNotifierTests: XCTestCase {
         XCTAssertEqual(group.barkEvents.map(\.kind), [.weeklyRestored])
         XCTAssertTrue(group.sendsSystem)
         XCTAssertTrue(group.sendsBark)
+        // 渠道正文按各自的事件列表生成，互不混入。
+        XCTAssertEqual(group.systemLines.count, 2)
+        XCTAssertTrue(group.systemLines[0].contains("短周期"))
+        XCTAssertTrue(group.systemLines[1].contains("周额度"))
+        XCTAssertEqual(group.barkLines.count, 1)
+        XCTAssertTrue(group.barkLines[0].contains("周额度"))
+        XCTAssertFalse(group.barkLines[0].contains("短周期"))
     }
 
     @MainActor
@@ -377,12 +438,8 @@ final class BarkNotifierTests: XCTestCase {
             sound: nil, group: nil
         ))
         let exp = expectation(description: "第二次请求（重试）")
-        let lock = NSLock()
         RecordingURLProtocol.onReceive = { _ in
-            lock.lock()
-            let count = RecordingURLProtocol.requests.count
-            lock.unlock()
-            if count >= 2 { exp.fulfill() }
+            if RecordingURLProtocol.requests.count >= 2 { exp.fulfill() }
         }
         notifier.notify(
             providerID: "p", providerName: "P",
@@ -395,6 +452,72 @@ final class BarkNotifierTests: XCTestCase {
         XCTAssertEqual(RecordingURLProtocol.requests.count, 2)
     }
 
+    @MainActor
+    func testTransientNetworkErrorRetriesOnce() async throws {
+        // 测试清单 7：瞬时网络错误（timedOut）重试一次。
+        FailingURLProtocol.reset(errorCode: .timedOut)
+        let notifier = makeNotifier(
+            BarkConfig(
+                enabled: true, serverURL: "https://api.day.app", deviceKey: "k1",
+                sound: nil, group: nil
+            ),
+            session: sessionWith(FailingURLProtocol.self)
+        )
+        notifier.notify(
+            providerID: "p", providerName: "P",
+            events: [Self.event(.intervalRestored)],
+            channels: allBarkChannels
+        )
+        let exp = expectation(description: "第二次尝试")
+        let poll = Task {
+            while FailingURLProtocol.attempts < 2 {
+                try? await Task.sleep(nanoseconds: 50_000_000)
+            }
+            exp.fulfill()
+        }
+        await fulfillment(of: [exp], timeout: 10)
+        poll.cancel()
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(FailingURLProtocol.attempts, 2, "瞬时错误重试一次后放弃")
+    }
+
+    @MainActor
+    func testNonTransientErrorDoesNotRetry() async throws {
+        // 测试清单 7：非瞬时错误不重试，只尝试一次。
+        FailingURLProtocol.reset(errorCode: .badServerResponse)
+        let notifier = makeNotifier(
+            BarkConfig(
+                enabled: true, serverURL: "https://api.day.app", deviceKey: "k1",
+                sound: nil, group: nil
+            ),
+            session: sessionWith(FailingURLProtocol.self)
+        )
+        notifier.notify(
+            providerID: "p", providerName: "P",
+            events: [Self.event(.intervalRestored)],
+            channels: allBarkChannels
+        )
+        try await Task.sleep(nanoseconds: 500_000_000)
+        XCTAssertEqual(FailingURLProtocol.attempts, 1, "非瞬时错误不应重试")
+    }
+
+    @MainActor
+    func testCancelAllClearsPendingBacklog() async throws {
+        // R6: 队列可取消 —— 清空积压，未开始的推送不再发出。
+        let notifier = makeNotifier(BarkConfig(
+            enabled: true, serverURL: "https://api.day.app", deviceKey: "k1",
+            sound: nil, group: nil
+        ))
+        let models = (0..<5).map { Self.event(.intervalRestored, model: "model-\($0)") }
+        notifier.notify(providerID: "p", providerName: "P", events: models, channels: allBarkChannels)
+        notifier.cancelPendingSends()
+        try await Task.sleep(nanoseconds: 500_000_000)
+        // 取消后至多完成取消前已开始的一个请求，积压里的 4 个不会发出。
+        XCTAssertLessThanOrEqual(RecordingURLProtocol.requests.count, 1)
+        let remaining = await notifier.sendQueue.pendingCount()
+        XCTAssertEqual(remaining, 0)
+    }
+
     // MARK: - 测试推送（R7：与正式推送共用参数）
 
     @MainActor
@@ -405,16 +528,16 @@ final class BarkNotifierTests: XCTestCase {
                 enabled: true, serverURL: "https://api.day.app", deviceKey: " k1 ",
                 sound: nil, skipWhenUnlocked: false, group: "我的额度"
             ),
-            session: stubbedSession,
+            session: sessionWith(RecordingURLProtocol.self),
             screenIsLocked: { false }
         )
         XCTAssertEqual(message, "测试推送已发送，请在手机上查看")
         let sent = try XCTUnwrap(RecordingURLProtocol.requests.first)
         XCTAssertEqual(sent.url?.host, "api.day.app")
-        XCTAssertTrue(sent.url?.path.hasPrefix("/k1/") ?? false, "device key 应被规范化")
-        let components = try XCTUnwrap(URLComponents(url: sent.url!, resolvingAgainstBaseURL: false))
-        XCTAssertEqual(components.queryItems?.first { $0.name == "id" }?.value, BarkQuotaNotifier.testNotificationID)
-        XCTAssertEqual(components.queryItems?.first { $0.name == "group" }?.value, "我的额度")
+        XCTAssertEqual(sent.url?.path, "/k1", "device key 应被规范化")
+        let payload = try jsonPayload(of: sent)
+        XCTAssertEqual(payload["id"], BarkQuotaNotifier.testNotificationID)
+        XCTAssertEqual(payload["group"], "我的额度")
     }
 
     @MainActor
@@ -425,7 +548,7 @@ final class BarkNotifierTests: XCTestCase {
                 enabled: true, serverURL: "https://api.day.app", deviceKey: "k1",
                 sound: nil, skipWhenUnlocked: true, group: nil
             ),
-            session: stubbedSession,
+            session: sessionWith(RecordingURLProtocol.self),
             screenIsLocked: { false }
         )
         XCTAssertTrue(message.contains("未锁屏"))
@@ -440,7 +563,7 @@ final class BarkNotifierTests: XCTestCase {
                 enabled: true, serverURL: "https://api.day.app", deviceKey: "   ",
                 sound: nil, group: nil
             ),
-            session: stubbedSession
+            session: sessionWith(RecordingURLProtocol.self)
         )
         XCTAssertTrue(message.contains("请先填写"))
         XCTAssertTrue(RecordingURLProtocol.requests.isEmpty)

@@ -6,6 +6,7 @@ import Darwin
 final class AppLifecycleDelegate: NSObject, NSApplicationDelegate {
     weak var appState: AppState?
     var quotaUpdateNotifier: SystemQuotaUpdateNotifier?
+    var barkNotifier: BarkQuotaNotifier?
     private var wakeObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -26,6 +27,7 @@ final class AppLifecycleDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         appState?.stop()
+        barkNotifier?.cancelPendingSends()
         if let wakeObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver)
             self.wakeObserver = nil
@@ -44,6 +46,7 @@ struct LLMMonitorApp: App {
 
     private let instanceLock: AppInstanceLock
     private let rightClickHandler = MenuBarRightClickHandler()
+    private var barkNotifier: BarkQuotaNotifier?
 
     init() {
         let instanceLock: AppInstanceLock
@@ -83,6 +86,7 @@ struct LLMMonitorApp: App {
         
         let quotaUpdateNotifier = SystemQuotaUpdateNotifier()
         let barkNotifier = BarkQuotaNotifier(configProvider: configStore)
+        self.barkNotifier = barkNotifier
         let state = AppState(
             descriptors: descriptors,
             configStore: configStore,
@@ -96,6 +100,7 @@ struct LLMMonitorApp: App {
 
         appDelegate.appState = state
         appDelegate.quotaUpdateNotifier = quotaUpdateNotifier
+        appDelegate.barkNotifier = barkNotifier
         rightClickHandler.setup(state: state)
         // R12: 启动时清理 SQLite 专属临时目录内超过 24 小时的残留副本（best-effort）。
         SQLiteTempCopy.sweepStaleCopies()

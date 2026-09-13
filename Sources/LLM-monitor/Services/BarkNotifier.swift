@@ -27,6 +27,10 @@ extension BarkConfig {
 /// 合并规则：一次刷新里同一个模型的多个事件合并为一条推送，但每个渠道只
 /// 包含该渠道已启用的事件文案（「不通知」的事件不会混进其它渠道的通知）。
 ///
+/// 传输采用官方文档的 POST JSON 形式（`POST {server}/{key}`，参数放 JSON
+/// body）：标题 / 正文 / group / id 不再拼进 URL，规避 URL 编码与 2048
+/// 长度限制，自建服务的 base path 也只需原样保留。
+///
 /// 配置读取器抽象：Bark 开关保存在 ConfigStore 里，但通知发生在刷新路径，
 /// 每次发送前实时读取，用户在设置页保存后无需重启即可生效。
 @MainActor
@@ -37,11 +41,14 @@ protocol BarkConfigProviding: AnyObject {
 @MainActor
 final class BarkQuotaNotifier: @preconcurrency QuotaUpdateNotifying {
     static let testNotificationID = "llmmonitor-test-push"
+    /// 单次推送请求超时；正式推送与测试推送共用。
+    nonisolated static let requestTimeout: TimeInterval = 15
 
     private let configProvider: BarkConfigProviding
     private let screenIsLocked: () -> Bool
-    /// 所有推送经共享串行队列发出：有界积压 + 冷却 + 有限重试。
-    private let sendQueue: BarkSendQueue
+    /// 所有推送经共享串行队列发出：有界积压 + 冷却 + 有限重试 + 可取消。
+    /// internal 供 @testable 查询积压状态。
+    let sendQueue: BarkSendQueue
 
     init(
         configProvider: BarkConfigProviding,
@@ -51,6 +58,11 @@ final class BarkQuotaNotifier: @preconcurrency QuotaUpdateNotifying {
         self.configProvider = configProvider
         self.screenIsLocked = screenIsLocked
         self.sendQueue = sendQueue
+    }
+
+    /// App 退出（applicationWillTerminate）时取消未完成的推送。
+    func cancelPendingSends() {
+        Task { await sendQueue.cancelAll() }
     }
 
     func notify(
@@ -82,19 +94,15 @@ final class BarkQuotaNotifier: @preconcurrency QuotaUpdateNotifying {
         }
 
         for group in barkGroups {
-            let body = group.barkLines.joined(separator: "\n")
-            guard let url = Self.buildURL(
+            guard let request = Self.buildRequest(
                 config: bark,
                 providerName: providerName,
-                body: body,
+                body: group.barkLines.joined(separator: "\n"),
                 notificationID: group.barkNotificationID
             ) else {
-                logWarn("[bark] \(providerName)/\(group.displayName) 推送 URL 构造失败或超长，跳过")
+                logWarn("[bark] \(providerName)/\(group.displayName) 推送请求构造失败，跳过")
                 continue
             }
-            var request = URLRequest(url: url)
-            request.httpMethod = "GET"
-            request.timeoutInterval = 15
             let operation = BarkSendQueue.Operation(
                 request: request,
                 cooldownKey: group.barkNotificationID,
@@ -105,7 +113,7 @@ final class BarkQuotaNotifier: @preconcurrency QuotaUpdateNotifying {
         }
     }
 
-    /// 设置页测试推送：与正式推送走同一套配置规范化、URL 构造和锁屏策略，
+    /// 设置页测试推送：与正式推送走同一套配置规范化、请求构造和锁屏策略，
     /// 仅绕过发送队列的冷却（允许连续点击验证）。返回面向用户的提示文案。
     static func sendTestPush(
         config draft: BarkConfig,
@@ -119,18 +127,16 @@ final class BarkQuotaNotifier: @preconcurrency QuotaUpdateNotifying {
         if config.skipWhenUnlocked ?? false, !screenIsLocked() {
             return "当前未锁屏，已按「非锁屏时跳过推送」跳过本次测试；配置本身无误。"
         }
-        guard let url = buildURL(
+        guard let request = buildRequest(
             config: config,
             providerName: "LLM Monitor",
             body: "这是一条测试推送 🎉",
             notificationID: testNotificationID
         ) else {
-            return "URL 构造失败：请检查服务端地址（支持 https 或本机 http）"
+            return "请求构造失败：请检查服务端地址（支持 https 或本机 http）"
         }
 
         do {
-            var request = URLRequest(url: url)
-            request.timeoutInterval = 15
             let (_, response) = try await session.data(for: request)
             guard let http = response as? HTTPURLResponse else {
                 return "推送失败：服务端返回非 HTTP 响应"
@@ -165,26 +171,23 @@ final class BarkQuotaNotifier: @preconcurrency QuotaUpdateNotifying {
         return normalized
     }
 
-    // MARK: - URL 构造
+    // MARK: - 请求构造
 
-    /// 拼接 `GET {server}/{key}/{title}/{body}` 形式的推送 URL。
+    /// 构造 `POST {server}/{key}` 请求，参数放 JSON body（Bark 官方文档支持）：
+    /// 标题 / 正文 / sound / group / id 全部经 JSON 传输，无需 URL percent
+    /// encode，也没有 GET 的 2048 长度上限；自建服务 base path 原样保留。
     ///
-    /// - 保留自建服务 server URL 里的 base path（如 `https://example.com/bark`），
-    ///   反向代理子路径部署也能工作；
-    /// - 路径段逐段 percent-encode（不含段内 `/`），经 `percentEncodedPath`
-    ///   写入避免 URLComponents 对 `%` 二次编码；
-    /// - scheme 仅允许 https（本机调试允许 http）；
-    /// - `id` 使用稳定字符串：相同 id 的新推送覆盖手机上的旧通知（需 Bark
-    ///   v1.5.2+ / bark-server v2.2.5+）；`group` 取用户配置，留空则不携带。
+    /// scheme 仅允许 https（本机调试允许 http），`id` 使用稳定字符串：相同
+    /// id 的新推送覆盖手机上的旧通知（需 Bark v1.5.2+ / bark-server v2.2.5+）。
     nonisolated private static let pathSegmentAllowed = CharacterSet.urlPathAllowed
         .subtracting(CharacterSet(charactersIn: "/"))
 
-    nonisolated static func buildURL(
+    nonisolated static func buildRequest(
         config rawConfig: BarkConfig,
         providerName: String,
         body: String,
         notificationID: String? = nil
-    ) -> URL? {
+    ) -> URLRequest? {
         // 统一规范化（trim），避免调用方传入带空白的原始配置。
         let config = rawConfig.normalized
         guard var components = URLComponents(string: config.serverURL) else { return nil }
@@ -200,34 +203,43 @@ final class BarkQuotaNotifier: @preconcurrency QuotaUpdateNotifying {
             return nil
         }
 
-        // 保留 server URL 的 base path（去掉尾部斜杠）再拼接推送段。
+        // 保留 server URL 的 base path（去掉尾部斜杠）再拼 device key 段。
         var basePath = components.percentEncodedPath
         while basePath.hasSuffix("/") { basePath.removeLast() }
-        let segments = [config.deviceKey, providerName, body]
-            .map { $0.addingPercentEncoding(withAllowedCharacters: pathSegmentAllowed) ?? $0 }
-        components.percentEncodedPath = basePath + "/" + segments.joined(separator: "/")
+        let keySegment = config.deviceKey
+            .addingPercentEncoding(withAllowedCharacters: pathSegmentAllowed) ?? config.deviceKey
+        components.percentEncodedPath = basePath + "/" + keySegment
+        guard let url = components.url else { return nil }
 
-        var queryItems: [URLQueryItem] = []
+        var payload: [String: String] = [
+            "title": providerName,
+            "body": body,
+        ]
         if let sound = config.sound, !sound.isEmpty {
-            queryItems.append(URLQueryItem(name: "sound", value: sound))
+            payload["sound"] = sound
         }
         if let group = config.group, !group.isEmpty {
-            queryItems.append(URLQueryItem(name: "group", value: group))
+            payload["group"] = group
         }
         if let notificationID, !notificationID.isEmpty {
-            queryItems.append(URLQueryItem(name: "id", value: notificationID))
+            payload["id"] = notificationID
         }
-        components.queryItems = queryItems
+        guard let bodyData = try? JSONSerialization.data(withJSONObject: payload) else {
+            return nil
+        }
 
-        // Bark 官方文档限制推送 URL 长度（含 query）在 2048 以内。
-        guard let url = components.url, url.absoluteString.count <= 2048 else { return nil }
-        return url
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = requestTimeout
+        request.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
+        request.httpBody = bodyData
+        return request
     }
 }
 
 /// 串行发送队列：避免多模型同轮事件 / 短刷新间隔 / 阈值反复波动造成的请求
 /// 突发。单并发 + 有界积压 + 每个 notificationID 的冷却窗口 + 瞬时错误一次
-/// 重试。sends 都是短 GET，不做任务取消。
+/// 重试；积压可查询、可整体取消（App 退出时调用）。
 actor BarkSendQueue {
     struct Operation {
         let request: URLRequest
@@ -246,6 +258,7 @@ actor BarkSendQueue {
 
     private var pending: [Operation] = []
     private var draining = false
+    private var currentTask: Task<Void, Never>?
     private var lastSentAt: [String: Date] = [:]
     private let session: URLSession
 
@@ -263,7 +276,22 @@ actor BarkSendQueue {
             pending.removeFirst()
             logWarn("[bark] 发送队列积压超过 \(Self.maximumPending)，丢弃最旧的推送")
         }
-        Task { await self.drain() }
+        if !draining {
+            draining = true
+            currentTask = Task { await self.drain() }
+        }
+    }
+
+    /// 当前积压的待发送数量（测试与诊断用）。
+    func pendingCount() -> Int {
+        pending.count
+    }
+
+    /// 清空积压并取消进行中的发送（App 退出时调用）。
+    func cancelAll() {
+        pending.removeAll()
+        currentTask?.cancel()
+        currentTask = nil
     }
 
     private func isCoolingDown(_ key: String) -> Bool {
@@ -272,10 +300,11 @@ actor BarkSendQueue {
     }
 
     private func drain() async {
-        guard !draining else { return }
-        draining = true
-        defer { draining = false }
-        while !pending.isEmpty {
+        defer {
+            draining = false
+            currentTask = nil
+        }
+        while !pending.isEmpty, !Task.isCancelled {
             let operation = pending.removeFirst()
             if let key = operation.cooldownKey {
                 lastSentAt[key] = Date()
@@ -308,6 +337,9 @@ actor BarkSendQueue {
             } catch is CancellationError {
                 return
             } catch {
+                if Task.isCancelled {
+                    return
+                }
                 if attempt == 1, Self.isTransient(error) {
                     logWarn("[bark] \(operation.label) 网络错误 \(error.localizedDescription)，\(Int(Self.retryDelay))s 后重试")
                     try? await Task.sleep(nanoseconds: UInt64(Self.retryDelay * 1_000_000_000))
