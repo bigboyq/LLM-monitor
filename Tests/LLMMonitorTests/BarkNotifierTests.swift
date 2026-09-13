@@ -8,6 +8,9 @@ private final class RecordingURLProtocol: URLProtocol {
     private static var _requests: [URLRequest] = []
     private static var _statusCode = 200
     private static var _onReceive: (@Sendable (URLRequest) -> Void)?
+    /// hold 模式：请求挂起直到 releaseHold，用于构造"发送进行中"的确定性时序。
+    private static var _hold = false
+    private static let holdSemaphore = DispatchSemaphore(value: 0)
 
     static var requests: [URLRequest] {
         lock.lock(); defer { lock.unlock() }
@@ -25,6 +28,16 @@ private final class RecordingURLProtocol: URLProtocol {
         _requests = []
         _statusCode = statusCode
         _onReceive = nil
+        _hold = false
+        while holdSemaphore.wait(wallTimeout: .now()) == .success {}
+    }
+
+    static func setHold(_ enabled: Bool) {
+        lock.lock(); _hold = enabled; lock.unlock()
+        if !enabled {
+            while holdSemaphore.wait(wallTimeout: .now()) == .success {}
+            holdSemaphore.signal()
+        }
     }
 
     override class func canInit(with request: URLRequest) -> Bool { true }
@@ -35,7 +48,12 @@ private final class RecordingURLProtocol: URLProtocol {
         Self._requests.append(request)
         let statusCode = Self._statusCode
         let callback = Self._onReceive
+        let hold = Self._hold
         Self.lock.unlock()
+
+        if hold {
+            _ = Self.holdSemaphore.wait(wallTimeout: .now() + 5)
+        }
 
         let response = HTTPURLResponse(
             url: request.url!,
@@ -130,11 +148,14 @@ final class BarkNotifierTests: XCTestCase {
         )
     }
 
-    /// 等待累计收到第 n 个请求（1-based）。
+    /// 等待累计收到第 n 个请求（1-based）；fulfill 一次后自动摘除回调。
     private func expectRequestCount(_ count: Int, timeout: TimeInterval = 5) async {
         let exp = expectation(description: "收到 \(count) 个请求")
         RecordingURLProtocol.onReceive = { _ in
-            if RecordingURLProtocol.requests.count >= count { exp.fulfill() }
+            if RecordingURLProtocol.requests.count >= count {
+                RecordingURLProtocol.onReceive = nil
+                exp.fulfill()
+            }
         }
         await fulfillment(of: [exp], timeout: timeout)
     }
@@ -503,19 +524,116 @@ final class BarkNotifierTests: XCTestCase {
 
     @MainActor
     func testCancelAllClearsPendingBacklog() async throws {
-        // R6: 队列可取消 —— 清空积压，未开始的推送不再发出。
+        // R6: 队列可取消 —— hold 住第一个请求（发送进行中），其余积压在
+        // cancelAll 后必须全部取消。
         let notifier = makeNotifier(BarkConfig(
             enabled: true, serverURL: "https://api.day.app", deviceKey: "k1",
             sound: nil, group: nil
         ))
+        RecordingURLProtocol.setHold(true)
+        defer { RecordingURLProtocol.setHold(false) }
+
         let models = (0..<5).map { Self.event(.intervalRestored, model: "model-\($0)") }
         notifier.notify(providerID: "p", providerName: "P", events: models, channels: allBarkChannels)
+        await expectRequestCount(1)
+
         notifier.cancelPendingSends()
+        // 释放挂起的请求；被取消的 data 调用会抛 CancellationError。
+        RecordingURLProtocol.setHold(false)
         try await Task.sleep(nanoseconds: 500_000_000)
-        // 取消后至多完成取消前已开始的一个请求，积压里的 4 个不会发出。
-        XCTAssertLessThanOrEqual(RecordingURLProtocol.requests.count, 1)
+        XCTAssertEqual(RecordingURLProtocol.requests.count, 1, "积压里的 4 个不应发出")
         let remaining = await notifier.sendQueue.pendingCount()
         XCTAssertEqual(remaining, 0)
+    }
+
+    @MainActor
+    func testEnqueueAfterCancelAllStillDrains() async throws {
+        // D1 回归：cancelAll 命中进行中的发送后，新入队的推送必须能被新的
+        // drain 消费，而不是静默卡死。
+        let notifier = makeNotifier(BarkConfig(
+            enabled: true, serverURL: "https://api.day.app", deviceKey: "k1",
+            sound: nil, group: nil
+        ))
+        notifier.notify(
+            providerID: "p", providerName: "P",
+            events: [Self.event(.intervalRestored)],
+            channels: allBarkChannels
+        )
+        await expectRequestCount(1)
+        await notifier.sendQueue.awaitIdle()
+
+        // 复现缺陷时序：cancelAll 紧跟新入队（不同模型避免命中冷却）。
+        notifier.cancelPendingSends()
+        notifier.notify(
+            providerID: "p", providerName: "P",
+            events: [Self.event(.intervalRestored, model: "video")],
+            channels: allBarkChannels
+        )
+        await expectRequestCount(2, timeout: 5)
+        let remaining = await notifier.sendQueue.pendingCount()
+        XCTAssertEqual(remaining, 0)
+    }
+
+    func testCompactByCooldownKeyKeepsLatestPerModel() {
+        // D3: 溢出合并 —— 每个模型保留最新一条，且不丢失任何模型。
+        func op(_ model: String, body: String) -> BarkSendQueue.Operation {
+            BarkSendQueue.Operation(
+                request: URLRequest(url: URL(string: "https://api.day.app/k")!),
+                cooldownKey: "llmmonitor-p-\(model)",
+                label: model,
+                eventCount: 1
+            )
+        }
+        let ops = [
+            op("a", body: "a-old"),
+            op("b", body: "b-old"),
+            op("a", body: "a-new"),
+            op("c", body: "c"),
+            op("b", body: "b-new"),
+            op("d", body: "d"),
+        ]
+        let compacted = BarkSendQueue.compactByCooldownKey(ops, limit: 4)
+        XCTAssertEqual(compacted.count, 4)
+        // 顺序按各键最新一次出现的位置排列（a@0, c@3, b@4, d@5）。
+        let keys = compacted.map { $0.cooldownKey ?? "" }
+        XCTAssertEqual(keys, ["llmmonitor-p-a", "llmmonitor-p-c", "llmmonitor-p-b", "llmmonitor-p-d"])
+        // 同键保留的是最新一条。
+        XCTAssertEqual(compacted[0].label, "a")
+        XCTAssertEqual(BarkSendQueue.compactByCooldownKey(ops, limit: 2).count, 2)
+    }
+
+    @MainActor
+    func testFailedSendDoesNotStartCooldown() async throws {
+        // D4: 发送失败（500 两次尝试均失败）不进入冷却，同一模型下一轮可
+        // 立即重发；成功之后才冷却。
+        RecordingURLProtocol.reset(statusCode: 500)
+        let notifier = makeNotifier(BarkConfig(
+            enabled: true, serverURL: "https://api.day.app", deviceKey: "k1",
+            sound: nil, group: nil
+        ))
+        notifier.notify(
+            providerID: "p", providerName: "P",
+            events: [Self.event(.intervalRestored)],
+            channels: allBarkChannels
+        )
+        // 先等首个请求落地（避免 awaitIdle 在入队 Task 启动前空转返回），
+        // 再等队列彻底空闲（覆盖 1s 退避后的重试）。
+        await expectRequestCount(1)
+        await notifier.sendQueue.awaitIdle()
+        let failedAttempts = RecordingURLProtocol.requests.count
+        XCTAssertEqual(failedAttempts, 2, "500 应重试一次")
+
+        RecordingURLProtocol.reset(statusCode: 200)
+        let events = [Self.event(.intervalRestored)]
+        notifier.notify(providerID: "p", providerName: "P", events: events, channels: allBarkChannels)
+        await expectRequestCount(1)
+        await notifier.sendQueue.awaitIdle()
+
+        // 成功后同模型再触发应命中冷却。
+        RecordingURLProtocol.onReceive = nil
+        notifier.notify(providerID: "p", providerName: "P", events: events, channels: allBarkChannels)
+        try await Task.sleep(nanoseconds: 500_000_000)
+        XCTAssertEqual(RecordingURLProtocol.requests.count, 1, "成功后的冷却窗口内不应重发")
     }
 
     // MARK: - 测试推送（R7：与正式推送共用参数）

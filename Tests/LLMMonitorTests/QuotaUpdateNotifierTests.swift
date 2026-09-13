@@ -2,6 +2,7 @@ import XCTest
 @testable import LLM_monitor
 
 final class QuotaUpdateNotifierTests: XCTestCase {
+    @MainActor
     private final class SpyNotifier: QuotaUpdateNotifying {
         struct Event {
             let providerID: String
@@ -140,6 +141,63 @@ final class QuotaUpdateNotifierTests: XCTestCase {
         )
         XCTAssertEqual(minimax, "quota-update-minimax_token_plan-general")
         XCTAssertNotEqual(minimax, antigravity)
+    }
+
+    func testSystemNotificationCooldownSuppressesRapidRepeat() {
+        // D2: 同一模型 60s 冷却窗口内的重复系统通知被抑制；不同模型不受影响。
+        var lastNotified: [String: Date] = [:]
+        let group = QuotaEventBatch.ModelGroup(
+            modelName: "general",
+            displayName: "general",
+            systemEvents: [],
+            barkEvents: [],
+            barkNotificationID: "llmmonitor-p-general"
+        )
+        let other = QuotaEventBatch.ModelGroup(
+            modelName: "video",
+            displayName: "video",
+            systemEvents: [],
+            barkEvents: [],
+            barkNotificationID: "llmmonitor-p-video"
+        )
+
+        let first = SystemQuotaUpdateNotifier.groupsAfterCooldown(
+            [group], providerID: "p", now: Date(timeIntervalSince1970: 1000),
+            lastNotifiedAt: &lastNotified
+        )
+        XCTAssertEqual(first.count, 1)
+
+        let tooSoon = SystemQuotaUpdateNotifier.groupsAfterCooldown(
+            [group], providerID: "p", now: Date(timeIntervalSince1970: 1030),
+            lastNotifiedAt: &lastNotified
+        )
+        XCTAssertTrue(tooSoon.isEmpty, "冷却窗口内的重复通知应被过滤")
+
+        let afterWindow = SystemQuotaUpdateNotifier.groupsAfterCooldown(
+            [group], providerID: "p", now: Date(timeIntervalSince1970: 1061),
+            lastNotifiedAt: &lastNotified
+        )
+        XCTAssertEqual(afterWindow.count, 1, "冷却窗口过后应恢复通知")
+
+        let otherModel = SystemQuotaUpdateNotifier.groupsAfterCooldown(
+            [other], providerID: "p", now: Date(timeIntervalSince1970: 1030),
+            lastNotifiedAt: &lastNotified
+        )
+        XCTAssertEqual(otherModel.count, 1, "其它模型不受同 provider 冷却影响")
+    }
+
+    @MainActor
+    func testSetNotifyChannelNormalizesDefaultsToNil() {
+        // O2: 与默认渠道一致时归一化为 nil，默认值唯一来源是 QuotaNotifyChannels。
+        var pc = ProviderConfig(enabled: true)
+        pc.setNotifyChannel(.system, for: .intervalRestored)
+        XCTAssertNil(pc.notifyIntervalRestored)
+        pc.setNotifyChannel(.barkAndSystem, for: .intervalRestored)
+        XCTAssertEqual(pc.notifyIntervalRestored, .barkAndSystem)
+        pc.setNotifyChannel(.none, for: .weeklyExhausted)
+        XCTAssertNil(pc.notifyWeeklyExhausted)
+        pc.setNotifyChannel(.system, for: .weeklyExhausted)
+        XCTAssertEqual(pc.notifyWeeklyExhausted, .system)
     }
 
     @MainActor

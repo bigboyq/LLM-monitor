@@ -1,5 +1,5 @@
 import Foundation
-import UserNotifications
+@preconcurrency import UserNotifications
 
 /// 通知渠道。`barkAndSystem` 表示 Bark 推送和系统通知同时发送。
 enum QuotaNotifyChannel: String, Codable, CaseIterable, Identifiable, Sendable {
@@ -241,9 +241,12 @@ struct QuotaEventBatch: Equatable, Sendable {
     }
 }
 
-/// 通知都由 @MainActor 的 AppState 发起。`channels` 由调用方（AppState）按
-/// provider 配置计算好；通知器只按自身渠道（系统 / Bark）过滤后发送。
+/// 通知器由 @MainActor 的 AppState 持有与调用，协议整体限定 MainActor，
+/// 避免用 @preconcurrency 掩盖隔离不匹配。
+@MainActor
 protocol QuotaUpdateNotifying: AnyObject {
+    /// `channels` 由调用方（AppState）按 provider 配置计算好；通知器只按
+    /// 自身渠道（系统 / Bark）过滤后发送。
     func notify(
         providerID: String,
         providerName: String,
@@ -252,7 +255,7 @@ protocol QuotaUpdateNotifying: AnyObject {
     )
 }
 
-/// 把额度恢复通知分发给所有启用的通知渠道（系统通知 + Bark 等）。
+@MainActor
 final class CompositeQuotaUpdateNotifier: QuotaUpdateNotifying {
     private let notifiers: [any QuotaUpdateNotifying]
 
@@ -278,6 +281,7 @@ final class CompositeQuotaUpdateNotifier: QuotaUpdateNotifying {
 }
 
 /// 测试和不需要系统通知的调用方使用；产品入口显式注入 SystemQuotaUpdateNotifier。
+@MainActor
 final class NoopQuotaUpdateNotifier: QuotaUpdateNotifying {
     func notify(
         providerID: String,
@@ -289,7 +293,11 @@ final class NoopQuotaUpdateNotifier: QuotaUpdateNotifying {
 
 /// macOS 本地通知。应用启动时检查授权状态；如果启动检查尚未完成，额度变化路径
 /// 仍会自行申请权限并在授权后继续发送当次通知。
-final class SystemQuotaUpdateNotifier: NSObject, QuotaUpdateNotifying,
+///
+/// 协议一致性放在文件尾部的 @MainActor 扩展上：类本体保持非隔离，
+/// UNUserNotificationCenterDelegate 回调（后台线程）不受全局 actor 推断影响；
+/// 仅 `notify` / `enqueue` 显式 MainActor（由 MainActor 的 AppState 调用）。
+final class SystemQuotaUpdateNotifier: NSObject,
                                        UNUserNotificationCenterDelegate, @unchecked Sendable {
     /// `LLMMonitorApp.init()` 发生在 NSApplication 完成启动之前。此时直接调用
     /// `UNUserNotificationCenter.current()` 会在部分 macOS 版本中触发运行时异常。
@@ -334,6 +342,7 @@ final class SystemQuotaUpdateNotifier: NSObject, QuotaUpdateNotifying,
         }
     }
 
+@MainActor
     func notify(
         providerID: String,
         providerName: String,
@@ -341,37 +350,52 @@ final class SystemQuotaUpdateNotifier: NSObject, QuotaUpdateNotifying,
         channels: QuotaNotifyChannels
     ) {
         // 模型级合并：同一模型的事件合成一条系统通知，正文只含系统渠道事件。
-        let systemGroups = QuotaEventBatch(
+        var lastNotified = lastNotifiedAt
+        let systemGroups = Self.groupsAfterCooldown(
+            QuotaEventBatch(
+                providerID: providerID,
+                providerName: providerName,
+                events: events,
+                channels: channels
+            ).modelGroups.filter(\.sendsSystem),
             providerID: providerID,
-            providerName: providerName,
-            events: events,
-            channels: channels
-        ).modelGroups.filter(\.sendsSystem)
-        guard !systemGroups.isEmpty, let center else { return }
+            now: Date(),
+            lastNotifiedAt: &lastNotified
+        )
+        guard !systemGroups.isEmpty else { return }
+        lastNotifiedAt = lastNotified
+        guard let center else { return }
 
         center.getNotificationSettings { [weak self] settings in
             guard let self else { return }
             switch settings.authorizationStatus {
             case .authorized, .provisional:
-                self.enqueue(providerID: providerID, providerName: providerName, groups: systemGroups)
+                Task { @MainActor [weak self] in
+                    self?.enqueue(providerID: providerID, providerName: providerName, groups: systemGroups)
+                }
             case .notDetermined:
                 center.requestAuthorization(options: [.alert, .sound]) { [weak self] granted, error in
                     if let error {
                         logWarn("[quota-notification] 请求通知权限失败: \(error.localizedDescription)")
                     }
-                    guard granted, let self else { return }
-                    self.enqueue(providerID: providerID, providerName: providerName, groups: systemGroups)
+                    guard granted else { return }
+                    Task { @MainActor [weak self] in
+                        self?.enqueue(providerID: providerID, providerName: providerName, groups: systemGroups)
+                    }
                 }
             case .denied:
                 logDebug("[quota-notification] 系统通知权限未开启，跳过 \(providerID) 额度更新通知")
             case .ephemeral:
-                self.enqueue(providerID: providerID, providerName: providerName, groups: systemGroups)
+                Task { @MainActor [weak self] in
+                    self?.enqueue(providerID: providerID, providerName: providerName, groups: systemGroups)
+                }
             @unknown default:
                 logWarn("[quota-notification] 未知通知授权状态，跳过 \(providerID) 额度更新通知")
             }
         }
     }
 
+    @MainActor
     private func enqueue(providerID: String, providerName: String, groups: [QuotaEventBatch.ModelGroup]) {
         guard let center else { return }
         for group in groups {
@@ -407,6 +431,33 @@ final class SystemQuotaUpdateNotifier: NSObject, QuotaUpdateNotifying,
         "quota-update-\(providerID)-\(modelName)"
     }
 
+    // MARK: - 冷却（与 Bark 队列同口径，抑制阈值抖动刷屏）
+
+    /// 同一模型两条系统通知的最小间隔。
+    nonisolated static let cooldownInterval: TimeInterval = 60
+
+    /// 最近一次系统通知时间，键 = threadIdentifier。仅 notify（MainActor）读写。
+    private var lastNotifiedAt: [String: Date] = [:]
+
+    /// 纯函数：按冷却窗口过滤分组并记录发送时间。测试直接构造调用。
+    nonisolated static func groupsAfterCooldown(
+        _ groups: [QuotaEventBatch.ModelGroup],
+        providerID: String,
+        now: Date,
+        lastNotifiedAt: inout [String: Date]
+    ) -> [QuotaEventBatch.ModelGroup] {
+        groups.filter { group in
+            let key = threadIdentifier(providerID: providerID, modelName: group.modelName)
+            if let last = lastNotifiedAt[key],
+               now.timeIntervalSince(last) < cooldownInterval {
+                logDebug("[quota-notification] \(key) 命中冷却窗口，跳过本次系统通知")
+                return false
+            }
+            lastNotifiedAt[key] = now
+            return true
+        }
+    }
+
     static func messageLine(_ event: QuotaEvent) -> String {
         switch event.kind {
         case .intervalRestored, .weeklyRestored:
@@ -428,3 +479,6 @@ final class SystemQuotaUpdateNotifier: NSObject, QuotaUpdateNotifying,
         completionHandler([.banner, .sound])
     }
 }
+
+@MainActor
+extension SystemQuotaUpdateNotifier: QuotaUpdateNotifying {}

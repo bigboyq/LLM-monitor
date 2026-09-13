@@ -292,8 +292,14 @@ struct AppConfig: Codable, Equatable {
             forKey: .statusBarHealthColors
         )
         self.providerCardOrder = try? container.decode([String].self, forKey: .providerCardOrder)
-        // Bark 字段手工配置容错：类型不匹配按缺失处理，不进损坏恢复流程。
-        self.bark = try? container.decode(BarkConfig.self, forKey: .bark)
+        // Bark 字段手工配置容错：类型不匹配按缺失处理，不进损坏恢复流程；
+        // 但 serverURL / deviceKey 等必填 key 缺失会让整块配置失效，记录告警。
+        do {
+            self.bark = try container.decodeIfPresent(BarkConfig.self, forKey: .bark)
+        } catch {
+            logWarn("[config] bark 字段解析失败，已按未配置处理：\(error.localizedDescription)")
+            self.bark = nil
+        }
     }
 
     /// 全局生效的刷新间隔：clamp 到 10s...30d（供循环 B 等使用）。
@@ -501,6 +507,22 @@ extension ProviderConfig {
             weeklyExhausted: notifyWeeklyExhausted
         )
         return channels.channel(for: kind)
+    }
+
+    /// 保存设置时的归一化入口：与默认渠道一致写 nil，保持 config.json 干净。
+    /// 默认值的唯一来源是 `QuotaNotifyChannels.channel(for:)`，避免两处硬编码漂移。
+    mutating func setNotifyChannel(
+        _ channel: QuotaNotifyChannel,
+        for kind: QuotaNotificationKind
+    ) {
+        let isDefault = channel == QuotaNotifyChannels().channel(for: kind)
+        let value: QuotaNotifyChannel? = isDefault ? nil : channel
+        switch kind {
+        case .intervalRestored: notifyIntervalRestored = value
+        case .intervalExhausted: notifyIntervalExhausted = value
+        case .weeklyRestored: notifyWeeklyRestored = value
+        case .weeklyExhausted: notifyWeeklyExhausted = value
+        }
     }
 
     /// 解析为 GLM 高峰期窗口。nil 字段回退官方默认（14–18 / 仅工作日）；

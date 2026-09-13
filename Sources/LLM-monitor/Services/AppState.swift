@@ -214,11 +214,13 @@ final class AppState: ObservableObject {
     init(
         descriptors: [FetcherDescriptor],
         configStore: ConfigStore,
-        quotaUpdateNotifier: any QuotaUpdateNotifying = NoopQuotaUpdateNotifier()
+        // 默认参数在非隔离上下文求值，不能直接构造 @MainActor 的 Noop；
+        // 这里传 nil 由 MainActor init 兜底。
+        quotaUpdateNotifier: (any QuotaUpdateNotifying)? = nil
     ) {
         self.descriptors = descriptors
         self.configStore = configStore
-        self.quotaUpdateNotifier = quotaUpdateNotifier
+        self.quotaUpdateNotifier = quotaUpdateNotifier ?? NoopQuotaUpdateNotifier()
         self.refreshTimestampsURL = configStore.configURL
             .deletingLastPathComponent()
             .appendingPathComponent("last-refresh.json")

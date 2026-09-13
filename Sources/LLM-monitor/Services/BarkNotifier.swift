@@ -39,7 +39,7 @@ protocol BarkConfigProviding: AnyObject {
 }
 
 @MainActor
-final class BarkQuotaNotifier: @preconcurrency QuotaUpdateNotifying {
+final class BarkQuotaNotifier: QuotaUpdateNotifying {
     static let testNotificationID = "llmmonitor-test-push"
     /// 单次推送请求超时；正式推送与测试推送共用。
     nonisolated static let requestTimeout: TimeInterval = 15
@@ -93,7 +93,8 @@ final class BarkQuotaNotifier: @preconcurrency QuotaUpdateNotifying {
             return
         }
 
-        for group in barkGroups {
+        // 批量入队：单 Task 保持入队顺序，也避免每组各起一个 Task。
+        let operations = barkGroups.compactMap { group -> BarkSendQueue.Operation? in
             guard let request = Self.buildRequest(
                 config: bark,
                 providerName: providerName,
@@ -101,15 +102,20 @@ final class BarkQuotaNotifier: @preconcurrency QuotaUpdateNotifying {
                 notificationID: group.barkNotificationID
             ) else {
                 logWarn("[bark] \(providerName)/\(group.displayName) 推送请求构造失败，跳过")
-                continue
+                return nil
             }
-            let operation = BarkSendQueue.Operation(
+            return BarkSendQueue.Operation(
                 request: request,
                 cooldownKey: group.barkNotificationID,
                 label: "\(providerName)/\(group.displayName)",
                 eventCount: group.barkEvents.count
             )
-            Task { await sendQueue.enqueue(operation) }
+        }
+        guard !operations.isEmpty else { return }
+        Task { [sendQueue] in
+            for operation in operations {
+                await sendQueue.enqueue(operation)
+            }
         }
     }
 
@@ -259,6 +265,9 @@ actor BarkSendQueue {
     private var pending: [Operation] = []
     private var draining = false
     private var currentTask: Task<Void, Never>?
+    /// drain 代际：cancelAll 递增使进行中的旧 drain 失效退出，保证取消后
+    /// 新积压总能被新 drain 消费（否则会静默卡死直到下一次 enqueue）。
+    private var generation = 0
     private var lastSentAt: [String: Date] = [:]
     private let session: URLSession
 
@@ -273,12 +282,16 @@ actor BarkSendQueue {
         }
         pending.append(operation)
         if pending.count > Self.maximumPending {
-            pending.removeFirst()
-            logWarn("[bark] 发送队列积压超过 \(Self.maximumPending)，丢弃最旧的推送")
+            // 溢出时按冷却键合并、保留每个模型最新一条：detector 的比较基线
+            // 在刷新后已更新，直接丢最旧会永久丢掉该模型的通知。
+            pending = Self.compactByCooldownKey(pending, limit: Self.maximumPending)
+            logWarn("[bark] 发送队列积压超过 \(Self.maximumPending)，已按模型合并到最新一条")
         }
-        if !draining {
+        if !draining || currentTask?.isCancelled == true {
             draining = true
-            currentTask = Task { await self.drain() }
+            generation += 1
+            let gen = generation
+            currentTask = Task { await self.drain(generation: gen) }
         }
     }
 
@@ -287,11 +300,18 @@ actor BarkSendQueue {
         pending.count
     }
 
+    /// 等待队列清空且不再有进行中的 drain（测试用）。
+    func awaitIdle() async {
+        while draining || !pending.isEmpty {
+            await Task.yield()
+        }
+    }
+
     /// 清空积压并取消进行中的发送（App 退出时调用）。
     func cancelAll() {
         pending.removeAll()
         currentTask?.cancel()
-        currentTask = nil
+        generation += 1
     }
 
     private func isCoolingDown(_ key: String) -> Bool {
@@ -299,21 +319,24 @@ actor BarkSendQueue {
         return Date().timeIntervalSince(last) < Self.cooldownInterval
     }
 
-    private func drain() async {
+    private func drain(generation gen: Int) async {
         defer {
-            draining = false
-            currentTask = nil
-        }
-        while !pending.isEmpty, !Task.isCancelled {
-            let operation = pending.removeFirst()
-            if let key = operation.cooldownKey {
-                lastSentAt[key] = Date()
+            // 只有仍然有效的代际才清理运行标记；被取消的旧 drain 不得
+            // 重置新 drain 的状态。
+            if gen == self.generation {
+                draining = false
+                currentTask = nil
             }
-            await Self.send(operation, session: session)
+        }
+        while !pending.isEmpty, !Task.isCancelled, gen == self.generation {
+            let operation = pending.removeFirst()
+            await send(operation)
         }
     }
 
-    private nonisolated static func send(_ operation: Operation, session: URLSession) async {
+    /// 发送单个操作；成功后才写入冷却表，失败/取消的发送不冷却，
+    /// 下一轮刷新（或重启后的首次刷新）可尽快重试。
+    private func send(_ operation: Operation) async {
         for attempt in 1...2 {
             do {
                 let (_, response) = try await session.data(for: operation.request)
@@ -332,6 +355,9 @@ actor BarkSendQueue {
                     logWarn("[bark] \(operation.label) Bark 推送失败: HTTP \(http.statusCode)（\(operation.eventCount) 个事件）")
                     return
                 }
+                if let key = operation.cooldownKey {
+                    lastSentAt[key] = Date()
+                }
                 logInfo("[bark] 已发送 \(operation.label) 的 Bark 推送（\(operation.eventCount) 个事件合并）")
                 return
             } catch is CancellationError {
@@ -349,6 +375,31 @@ actor BarkSendQueue {
                 return
             }
         }
+    }
+
+    /// 溢出合并：保留每个冷却键最新一条，无键操作原样保留，按原顺序排列后
+    /// 截断到 limit。internal 供 @testable 直接验证。
+    nonisolated static func compactByCooldownKey(
+        _ operations: [Operation],
+        limit: Int
+    ) -> [Operation] {
+        var latestByKey: [String: (index: Int, operation: Operation)] = [:]
+        var keyOrder: [String] = []
+        var keyless: [(index: Int, operation: Operation)] = []
+        for (index, operation) in operations.enumerated() {
+            guard let key = operation.cooldownKey else {
+                keyless.append((index, operation))
+                continue
+            }
+            if latestByKey[key] == nil {
+                keyOrder.append(key)
+            }
+            latestByKey[key] = (index, operation)
+        }
+        let merged = (keyless + keyOrder.compactMap { latestByKey[$0] })
+            .sorted { $0.index < $1.index }
+            .map { $0.operation }
+        return Array(merged.suffix(limit))
     }
 
     private nonisolated static func isTransient(_ error: Error) -> Bool {

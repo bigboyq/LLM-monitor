@@ -968,15 +968,17 @@ struct SettingsView: View {
             config.bark = nil
         }
 
-        // 四类通知渠道：与默认一致时写 nil，保持 config.json 干净。
+        // 四类通知渠道：归一化逻辑收敛在 ProviderConfig.setNotifyChannel，
+        // 与默认一致时写 nil，保持 config.json 干净。
         for kind in ProviderKind.windowedKinds {
             guard let id = providerID(for: kind) else { continue }
             var pc = config.providers[id] ?? ProviderConfig(enabled: false)
             let channels = notifyChannels[id] ?? [:]
-            pc.notifyIntervalRestored = channels[.intervalRestored] == .system ? nil : channels[.intervalRestored]
-            pc.notifyIntervalExhausted = channels[.intervalExhausted] == QuotaNotifyChannel.none ? nil : channels[.intervalExhausted]
-            pc.notifyWeeklyRestored = channels[.weeklyRestored] == .system ? nil : channels[.weeklyRestored]
-            pc.notifyWeeklyExhausted = channels[.weeklyExhausted] == QuotaNotifyChannel.none ? nil : channels[.weeklyExhausted]
+            for notifyKind in QuotaNotificationKind.allCases {
+                if let channel = channels[notifyKind] {
+                    pc.setNotifyChannel(channel, for: notifyKind)
+                }
+            }
             config.providers[id] = pc
         }
 
