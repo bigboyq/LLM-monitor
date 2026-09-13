@@ -522,6 +522,8 @@ struct SettingsView: View {
             }
 
             if minimaxEnabled {
+                notifySection(providerID: providerID(for: .minimaxTokenPlan) ?? "")
+
                 SettingsSection(title: "认证与刷新") {
                     SettingsControlRow("API Key") {
                         apiKeyField(text: $minimaxApiKey, isVisible: $showMinimaxKey)
@@ -577,6 +579,8 @@ struct SettingsView: View {
             }
 
             if antigravityEnabled {
+                notifySection(providerID: providerID(for: .antigravity) ?? "")
+
                 SettingsSection(
                     title: "刷新频率",
                     footer: "Antigravity 走自动发现：扫描 `language_server`（IDE）与 `agy` / `antigravity-cli`（CLI）进程，复用它们的本地登录态，无需任何配置。"
