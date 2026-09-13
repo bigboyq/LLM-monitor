@@ -4,11 +4,11 @@
 
 适用于 macOS 14 及以上版本的菜单栏额度与本地用量监视器。一个入口集中查看 Minimax、ChatGPT/Codex、Antigravity、GLM Coding Plan 与 DeepSeek，并可选择合并 OpenCode 与 DeepSeek Harness (dsh) 的本地 token 账本。
 
-> 当前版本：**1.6.0** · 支持 Apple Silicon (arm64) · 所有凭据和用量缓存只保存在本机
+> 当前版本：**1.7.0** · 支持 Apple Silicon (arm64) · 所有凭据和用量缓存只保存在本机
 
 ## 下载与安装
 
-1. 从 [GitHub Releases](https://github.com/bigboyq/LLM-monitor/releases/latest) 下载 `LLM-monitor-1.6.0.dmg`。
+1. 从 [GitHub Releases](https://github.com/bigboyq/LLM-monitor/releases/latest) 下载 `LLM-monitor-1.7.0.dmg`。
 2. 打开 DMG，将 **LLM-monitor.app** 拖到 **Applications**。
 3. 启动应用，点击菜单栏图标，进入“设置”启用并配置需要的 Provider。
 
@@ -18,7 +18,8 @@
 
 - 在菜单栏集中查看额度、余额、重置时间、健康状态和最近刷新结果。
 - 保留用户选择的菜单栏主图标，并可通过右下角绿、橙、红色圆点快速识别整体健康状态。
-- 当同一模型的剩余额度较上一次成功请求增加时发送 macOS 通知；应用启动时检查通知权限。
+- 额度通知细分为四类事件（5 小时 / 周额度 × 恢复 / 耗尽），每类可独立选择系统通知或 Bark 推送；恢复判定为回升超过 5 个百分点或回到 98% 以上，耗尽为边沿触发，检测基线跨重启持久化。
+- Bark 推送支持官方或自建服务端（POST JSON、覆盖 ID、串行队列、冷却与重试），可配置「人在电脑前时跳过推送」（屏幕亮且未锁屏才跳过）；应用启动时检查通知权限。
 - 汇总 Codex、Minimax、Antigravity、ZCode、OpenCode 与 DeepSeek Harness (dsh) 的本地 token 用量。
 - 支持每个 Provider 独立刷新、失败退避、手动刷新和配置热重载。
 - 提供 GLM/DeepSeek 高峰时段提示、最近 7 天图表和开机自启动。
@@ -92,7 +93,7 @@ swift build
 构建 arm64 `.app`（含 dSYM 符号文件）、DMG 和 SHA-256 校验文件：
 
 ```bash
-./scripts/build-release.sh 1.6.0 95
+./scripts/build-release.sh 1.7.0 143
 ```
 
 `build-app.sh` 的参数决定是否会修改仓库内的 `.build_number`：

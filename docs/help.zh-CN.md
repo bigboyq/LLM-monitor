@@ -57,9 +57,26 @@ ZCode 的任务按 provider 分为日常（Coding Plan）/ 闲时 / 其他智谱
 - 点击右上角刷新按钮：立即刷新全部 Provider。
 - 右键单张卡片：刷新该 Provider 或打开配置文件。
 - 悬停卡片标题、额度行或底部用量：查看账号、窗口、最近请求及七天图表。
-- 设置 → 通用：修改刷新间隔、状态栏图标、状态圆点显示开关和开机自启动。状态栏图标支持系统符号和 App 图标；系统符号使用状态圆点，App 图标使用水位（满、半、低）表达正常、预警、异常，并跟随设置中的三种提示颜色。
+- 设置 → 常规：修改刷新间隔、状态栏图标、状态圆点显示开关和开机自启动。状态栏图标支持系统符号和 App 图标；系统符号使用状态圆点，App 图标使用水位（满、半、低）表达正常、预警、异常，并跟随设置中的三种提示颜色。
 - 禁用的 Provider 不会显示卡片，也不会发起网络请求。
 - 客户端用量价值只覆盖有公开价格的模型；如果同一段用量包含未知模型，菜单和 7 天表格会显示“部分计价”。
+
+## 通知与 Bark 推送
+
+有窗口额度的 Provider（ChatGPT/Codex、GLM、Minimax、Antigravity）支持四类额度事件，每类可独立选择通知渠道（不通知 / 仅系统通知 / 系统通知 + Bark）：
+
+| 事件 | 触发时机 |
+|---|---|
+| 5 小时额度恢复 | 剩余比例回升超过 5 个百分点，或回到 98% 以上 |
+| 5 小时额度耗尽 | 剩余比例降到约 0%（边沿触发一次，不重复提醒） |
+| 周额度恢复 / 耗尽 | 同上，作用于周窗口 |
+
+- 每个窗口类 Provider 的设置页顶部有「通知配置」节；默认恢复 → 系统通知、耗尽 → 不通知，与历史行为一致。
+- 系统通知由 macOS 投递，前台也会显示横幅；权限在应用启动且状态为“未决定”时才申请。若之前选择了拒绝，请到“系统设置 → 通知 → LLM Monitor”重新允许。
+- Bark 推送在「设置 → 常规 → Bark 推送」配置：服务端地址（默认官方 `api.day.app`，支持自建 https 地址，可保留反向代理子路径）、Device Key（从 Bark App 复制）、可选铃声与分组。保存后可用“发送测试推送”验证。
+- Bark 推送按 Provider + 模型生成稳定覆盖 ID：同一模型的新推送会覆盖手机上的旧通知，不会堆积历史提醒。
+- 「人在电脑前时跳过推送」开启后，屏幕亮着且未锁屏时跳过 Bark（此时看得到系统通知）；显示器休眠或已锁屏（人不在）时正常推送。
+- 事件检测基于持久化的基线文件：应用没有运行期间发生的耗尽 / 恢复，会在启动后第一次刷新时补报一次。
 
 ## 配置与本地文件
 
@@ -68,6 +85,7 @@ ZCode 的任务按 provider 分为日常（Coding Plan）/ 闲时 / 其他智谱
 | 配置 | `~/Library/Application Support/LLM-monitor/config.json` |
 | 日志 | `~/Library/Application Support/LLM-monitor/log.txt` |
 | 远程额度最近成功状态 | `~/Library/Application Support/LLM-monitor/last-refresh.json` |
+| 通知触发器基线 | `~/Library/Application Support/LLM-monitor/notification-state.json` |
 | Minimax scanner 缓存 | `~/.minimax/.token-monitor/` |
 | Antigravity scanner 缓存 | `~/.gemini/antigravity/.token-monitor/` |
 | ZCode scanner 缓存 | `~/.zcode/cli/.token-monitor/` |
@@ -97,6 +115,10 @@ ZCode 的任务按 provider 分为日常（Coding Plan）/ 闲时 / 其他智谱
 ### 无法开启“开机自启动”
 
 先把应用移动到 `/Applications`。若 macOS 显示需要批准，请前往“系统设置 → 通用 → 登录项”完成授权。
+
+### 收不到 Bark 推送
+
+依次确认：Bark 已启用且服务端地址、Device Key 填写完整；用“发送测试推送”验证连通性（仅支持 https 与本机 http 调试地址）；对应事件的渠道选了「Bark + 系统通知」；若开启了「人在电脑前时跳过推送」，屏幕亮着且未锁屏时会被有意跳过。Bark 服务端需 v2.2.5+、Bark App 需 v1.5.2+ 才支持覆盖 ID。发送失败会在 `log.txt` 记录状态码（不含凭据）。
 
 ### macOS 阻止打开应用
 

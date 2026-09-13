@@ -60,6 +60,23 @@ The app reads `~/.local/share/opencode/opencode.db` and separates rows by `provi
 - Disabled providers are hidden and do not make network requests.
 - Cost estimates cover only models with a published price. If a usage window also contains unknown models, the menu and seven-day table show “partially priced.”
 
+## Notifications & Bark push
+
+Windowed providers (ChatGPT/Codex, GLM, Minimax, Antigravity) support four quota events, each with an independent channel (off / system only / system + Bark):
+
+| Event | Fires when |
+|---|---|
+| 5-hour quota restored | remaining share rises by more than 5 pp, or climbs back above 98% |
+| 5-hour quota exhausted | remaining share drops to about 0% (edge-triggered once, no repeats) |
+| weekly quota restored / exhausted | same rules applied to the weekly window |
+
+- Each windowed provider's settings pane has a "通知配置" (notification) section; defaults are restored → system notification, exhausted → off, matching the historical behavior.
+- System notifications are delivered by macOS and also appear as banners in the foreground; permission is requested at launch only when the status is "not determined". If you previously denied it, re-enable under "System Settings → Notifications → LLM Monitor".
+- Bark push is configured under Settings → General → "Bark 推送": server URL (official `api.day.app` by default; self-hosted https URLs keep their base path), device key (copied from the Bark app), optional sound and group. Use "发送测试推送" to verify after saving.
+- Bark pushes carry a stable per provider+model overwrite ID: a new push for the same model replaces the old one on your phone instead of piling up.
+- With "人在电脑前时跳过推送" enabled, Bark is skipped while the display is awake and the session is unlocked (you can see system notifications anyway); display sleep or a locked screen both deliver.
+- Detection baselines are persisted: exhaustion/recovery events that happen while the app is not running are reported once on the first refresh after relaunch.
+
 ## Privacy and local files
 
 | Data | Path |
@@ -67,6 +84,7 @@ The app reads `~/.local/share/opencode/opencode.db` and separates rows by `provi
 | Configuration | `~/Library/Application Support/LLM-monitor/config.json` |
 | Logs | `~/Library/Application Support/LLM-monitor/log.txt` |
 | Last successful remote state | `~/Library/Application Support/LLM-monitor/last-refresh.json` |
+| Notification trigger baselines | `~/Library/Application Support/LLM-monitor/notification-state.json` |
 | Minimax scanner cache | `~/.minimax/.token-monitor/` |
 | Antigravity scanner cache | `~/.gemini/antigravity/.token-monitor/` |
 | ZCode scanner cache | `~/.zcode/cli/.token-monitor/` |
@@ -98,6 +116,10 @@ The corresponding client must have generated session data. Confirm that the data
 ### Launch at login cannot be enabled
 
 Move the app to `/Applications`. If macOS requires approval, open **System Settings → General → Login Items**.
+
+### Bark pushes never arrive
+
+Check, in order: Bark is enabled with a complete server URL and device key; "发送测试推送" succeeds (https and local http debug addresses only); the event's channel is set to "Bark + 系统通知"; and if "人在电脑前时跳过推送" is on, pushes are intentionally skipped while the display is awake and the session is unlocked. Overwrite IDs require Bark server v2.2.5+ and Bark app v1.5.2+. Delivery failures are logged in `log.txt` with status codes (no credentials).
 
 ### macOS blocks the app
 
