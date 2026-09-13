@@ -107,8 +107,7 @@ enum ProviderKind: String, Codable, Sendable, CaseIterable {
 
     /// Stable configuration/status identifier. Keep this separate from `rawValue`
     /// so enum naming/serialization can evolve without changing existing config keys.
-    var providerID: String {
-        switch self {
+    var providerID: String {        switch self {
         case .minimaxTokenPlan: return "minimax_token_plan"
         case .codexChatGpt:     return "codex_chatgpt"
         case .antigravity:      return "antigravity"
@@ -116,6 +115,15 @@ enum ProviderKind: String, Codable, Sendable, CaseIterable {
         case .deepseek:         return "deepseek"
         }
     }
+
+    /// 有窗口额度（5 小时 / 周额度）的 provider，配置四类通知渠道的入口。
+    /// DeepSeek 填的是余额百分比而非时间窗口，暂不接入。
+    static let windowedKinds: [ProviderKind] = [
+        .codexChatGpt,
+        .glmCodingPlan,
+        .minimaxTokenPlan,
+        .antigravity,
+    ]
 
     /// 短 log tag（无方括号，无 `/`）。
     /// `AppState.applyLocalUsage` 用这个构造 `[<tag>/apply]` 日志前缀。

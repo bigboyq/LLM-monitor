@@ -46,6 +46,20 @@ struct SettingsView: View {
     @State var selectedClientID: String = ClientID.antigravity
     @State var providerCardOrder: [String] = []
 
+    @State var barkEnabled: Bool = false
+    @State var barkServerURL: String = BarkConfig.defaultServerURL
+    @State var barkDeviceKey: String = ""
+    @State var barkSound: String = ""
+    @State var barkGroup: String = ""
+    @State var barkSkipWhenUnlocked: Bool = false
+    @State var showBarkDeviceKey: Bool = false
+    @State var isSendingBarkTest: Bool = false
+    @State var barkTestMessage: String?
+
+    /// 有 5 小时 / 周额度窗口的 provider（ChatGPT、GLM）的四类通知渠道草稿。
+    /// key = providerID，value = kind → 渠道；缺失的 kind 使用默认渠道。
+    @State var notifyChannels: [String: [QuotaNotificationKind: QuotaNotifyChannel]] = [:]
+
     @State var isSaving: Bool = false
     @State var saveErrorMessage: String?
 
@@ -350,6 +364,63 @@ struct SettingsView: View {
             }
 
             SettingsSection(
+                title: "Bark 推送",
+                footer: "按各 Provider 的通知配置，把 5 小时 / 周额度的恢复与耗尽事件推送到 iPhone。服务端默认官方 api.day.app，也可填自建地址；Device Key 从 Bark App 复制。保存后生效。"
+            ) {
+                VStack(alignment: .leading, spacing: 16) {
+                    SettingsToggleRow(label: "启用 Bark 推送", isOn: $barkEnabled)
+
+                    SettingsControlRow("服务端地址") {
+                        TextField(
+                            "",
+                            text: $barkServerURL,
+                            prompt: Text(BarkConfig.defaultServerURL)
+                        )
+                        .frame(width: 280)
+                        .disabled(!barkEnabled)
+                    }
+
+                    SettingsControlRow("Device Key") {
+                        // 与 API Key 同级的推送凭证，用掩码输入 + 显示开关。
+                        secretField(text: $barkDeviceKey, isVisible: $showBarkDeviceKey, prompt: "从 Bark App 复制")
+                    }
+
+                    SettingsControlRow("铃声（可选）") {
+                        TextField("", text: $barkSound, prompt: Text("默认"))
+                            .frame(width: 280)
+                            .disabled(!barkEnabled)
+                    }
+
+                    SettingsControlRow("分组（可选）") {
+                        TextField("", text: $barkGroup, prompt: Text(BarkConfig.defaultGroup))
+                            .frame(width: 280)
+                            .disabled(!barkEnabled)
+                    }
+
+                    SettingsToggleRow(
+                        label: "非锁屏时跳过推送",
+                        isOn: $barkSkipWhenUnlocked
+                    )
+                    .disabled(!barkEnabled)
+
+                    HStack(spacing: 12) {
+                        Button("发送测试推送") {
+                            sendBarkTest()
+                        }
+                        .disabled(!barkEnabled || isSendingBarkTest)
+
+                        if let barkTestMessage {
+                            Text(barkTestMessage)
+                                .font(SettingsTypography.status)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                        }
+                        Spacer()
+                    }
+                }
+            }
+
+            SettingsSection(
                 title: "主菜单 Provider 顺序",
                 footer: "未配置时按 Provider 名称排序。这里只调整主菜单卡片；客户端和设置页保持字母排序。"
             ) {
@@ -451,6 +522,8 @@ struct SettingsView: View {
             }
 
             if minimaxEnabled {
+                notifySection(providerID: providerID(for: .minimaxTokenPlan) ?? "")
+
                 SettingsSection(title: "认证与刷新") {
                     SettingsControlRow("API Key") {
                         apiKeyField(text: $minimaxApiKey, isVisible: $showMinimaxKey)
@@ -472,6 +545,8 @@ struct SettingsView: View {
             }
 
             if chatgptEnabled {
+                notifySection(providerID: providerID(for: .codexChatGpt) ?? "")
+
                 SettingsSection(
                     title: "认证与刷新",
                     footer: "`authPath` 支持填写 `auth.json` 文件，或它所在目录；也可以直接点“选择…”。"
@@ -504,6 +579,8 @@ struct SettingsView: View {
             }
 
             if antigravityEnabled {
+                notifySection(providerID: providerID(for: .antigravity) ?? "")
+
                 SettingsSection(
                     title: "刷新频率",
                     footer: "Antigravity 走自动发现：扫描 `language_server`（IDE）与 `agy` / `antigravity-cli`（CLI）进程，复用它们的本地登录态，无需任何配置。"
@@ -521,6 +598,8 @@ struct SettingsView: View {
             }
 
             if glmEnabled {
+                notifySection(providerID: providerID(for: .glmCodingPlan) ?? "")
+
                 SettingsSection(
                     title: "认证与刷新",
                     footer: "填写智谱 GLM Coding Plan 的 API Key（格式 `id.secret`，在 bigmodel.cn 套餐概览页新建）。该 Key 也是 Anthropic / OpenAI 协议接入用的同一个 Key。"
@@ -596,6 +675,43 @@ struct SettingsView: View {
         }
     }
 
+    /// 四类额度事件的通知渠道配置（ChatGPT / GLM 等 5 小时 + 周额度 provider）。
+    func notifySection(providerID: String) -> some View {
+        SettingsSection(
+            title: "通知配置",
+            footer: "5 小时 / 周额度恢复或耗尽时的提醒方式。Bark 推送需要在「常规」里启用并配置 Bark。"
+        ) {
+            ForEach(QuotaNotificationKind.allCases) { kind in
+                SettingsControlRow(kind.displayName) {
+                    Picker("", selection: notifyChannelBinding(providerID: providerID, kind: kind)) {
+                        ForEach(QuotaNotifyChannel.allCases) { channel in
+                            Text(channel.displayName).tag(channel)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .frame(width: 180, alignment: .trailing)
+                }
+            }
+        }
+    }
+
+    private func notifyChannelBinding(
+        providerID: String,
+        kind: QuotaNotificationKind
+    ) -> Binding<QuotaNotifyChannel> {
+        Binding(
+            get: {
+                notifyChannels[providerID]?[kind]
+                    ?? QuotaNotifyChannels().channel(for: kind)
+            },
+            set: { newValue in
+                var entry = notifyChannels[providerID] ?? [:]
+                entry[kind] = newValue
+                notifyChannels[providerID] = entry
+            }
+        )
+    }
+
     /// 高峰期小时选择行：Stepper 限定在 [min, max]，显示 "HH:00"。
     func peakHourRow(
         label: String,
@@ -663,6 +779,30 @@ struct SettingsView: View {
         .padding(.vertical, 4)
     }
 
+    /// 通用掩码输入框（SecureField + 显示开关），用于 Device Key 等推送凭证。
+    func secretField(text: Binding<String>, isVisible: Binding<Bool>, prompt: String) -> some View {
+        HStack(spacing: 8) {
+            Group {
+                if isVisible.wrappedValue {
+                    TextField("", text: text, prompt: Text(prompt))
+                } else {
+                    SecureField("", text: text, prompt: Text(prompt))
+                }
+            }
+            .textFieldStyle(.roundedBorder)
+
+            Button {
+                isVisible.wrappedValue.toggle()
+            } label: {
+                Image(systemName: isVisible.wrappedValue ? "eye.slash" : "eye")
+                    .frame(width: 18, height: 18)
+            }
+            .buttonStyle(.borderless)
+            .help(isVisible.wrappedValue ? "隐藏" : "显示")
+        }
+        .frame(width: 320, alignment: .leading)
+    }
+
     func apiKeyField(text: Binding<String>, isVisible: Binding<Bool>) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
@@ -722,6 +862,24 @@ struct SettingsView: View {
         statusBarIconStyle = config.effectiveStatusBarIconStyle
         statusBarHealthDotEnabled = config.effectiveStatusBarHealthDotEnabled
         statusBarHealthColors = config.effectiveStatusBarHealthColors
+        barkEnabled = config.bark?.enabled ?? false
+        barkServerURL = config.bark?.serverURL ?? BarkConfig.defaultServerURL
+        barkDeviceKey = config.bark?.deviceKey ?? ""
+        barkSound = config.bark?.sound ?? ""
+        barkGroup = config.bark?.group ?? ""
+        barkSkipWhenUnlocked = config.bark?.skipWhenUnlocked ?? false
+        barkTestMessage = nil
+
+        notifyChannels = [:]
+        for kind in ProviderKind.windowedKinds {
+            guard let id = providerID(for: kind), let pc = config.providers[id] else { continue }
+            notifyChannels[id] = [
+                .intervalRestored: pc.notifyIntervalRestored ?? .system,
+                .intervalExhausted: pc.notifyIntervalExhausted ?? .none,
+                .weeklyRestored: pc.notifyWeeklyRestored ?? .system,
+                .weeklyExhausted: pc.notifyWeeklyExhausted ?? .none,
+            ]
+        }
         providerCardOrder = DisplayOrder.normalizedIDs(
             descriptors,
             preferredIDs: config.providerCardOrder,
@@ -794,6 +952,36 @@ struct SettingsView: View {
             ? nil
             : effectiveProviderOrder
 
+        let trimmedBarkServer = trimmedString(barkServerURL) ?? BarkConfig.defaultServerURL
+        let trimmedBarkKey = trimmedString(barkDeviceKey)
+        let trimmedBarkSound = trimmedString(barkSound)
+        if barkEnabled || trimmedBarkKey != nil {
+            config.bark = BarkConfig(
+                enabled: barkEnabled,
+                serverURL: trimmedBarkServer,
+                deviceKey: trimmedBarkKey ?? "",
+                sound: trimmedBarkSound,
+                skipWhenUnlocked: barkSkipWhenUnlocked ? true : nil,
+                group: trimmedString(barkGroup)
+            )
+        } else {
+            config.bark = nil
+        }
+
+        // 四类通知渠道：归一化逻辑收敛在 ProviderConfig.setNotifyChannel，
+        // 与默认一致时写 nil，保持 config.json 干净。
+        for kind in ProviderKind.windowedKinds {
+            guard let id = providerID(for: kind) else { continue }
+            var pc = config.providers[id] ?? ProviderConfig(enabled: false)
+            let channels = notifyChannels[id] ?? [:]
+            for notifyKind in QuotaNotificationKind.allCases {
+                if let channel = channels[notifyKind] {
+                    pc.setNotifyChannel(channel, for: notifyKind)
+                }
+            }
+            config.providers[id] = pc
+        }
+
         if let id = providerID(for: .minimaxTokenPlan) {
             var minimax = config.providers[id] ?? ProviderConfig(enabled: false)
             minimax.enabled = minimaxEnabled
@@ -858,6 +1046,25 @@ struct SettingsView: View {
                 try configStore.applyAndSave(config)
             }
         )
+    }
+
+    /// 用当前表单草稿（未保存的配置也行）发一条 Bark 测试推送。
+    /// 复用正式推送的规范化、URL 构造与锁屏策略（BarkQuotaNotifier.sendTestPush）。
+    func sendBarkTest() {
+        let config = BarkConfig(
+            enabled: true,
+            serverURL: barkServerURL,
+            deviceKey: barkDeviceKey,
+            sound: barkSound,
+            skipWhenUnlocked: barkSkipWhenUnlocked ? true : nil,
+            group: barkGroup
+        )
+        isSendingBarkTest = true
+        barkTestMessage = nil
+        Task {
+            barkTestMessage = await BarkQuotaNotifier.sendTestPush(config: config)
+            isSendingBarkTest = false
+        }
     }
 
     /// 通过 descriptors 拿实际 provider id — 不再硬编码。

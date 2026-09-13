@@ -107,6 +107,26 @@ enum StatusBarIndicatorMode: String, Codable, Sendable, CaseIterable, Identifiab
 }
 
 /// 应用配置 — 从 ~/Library/Application Support/LLM-monitor/config.json 读
+/// Bark 推送配置。nil 等价于未启用；serverURL 允许自建服务，deviceKey 是
+/// Bark App 里复制的推送 key。
+struct BarkConfig: Codable, Equatable, Sendable {
+    var enabled: Bool
+    var serverURL: String
+    var deviceKey: String
+    /// 可选 Bark 自定义铃声名；nil 时用 App 默认。
+    var sound: String?
+    /// 非锁屏时跳过 Bark 推送（只推手机不在手边、人不在电脑前的场景）。
+    /// nil（字段不存在）= 不跳过，始终推送。
+    var skipWhenUnlocked: Bool?
+    /// Bark 通知分组：相同 group 的通知在 iOS 通知中心折叠为一组。
+    /// nil 或空白 = 不携带 group 参数（不在通知中心折叠）。
+    var group: String?
+
+    static let defaultServerURL = "https://api.day.app"
+    /// group 留空时 UI 展示的占位默认值。
+    static let defaultGroup = "LLMMonitor"
+}
+
 struct AppConfig: Codable, Equatable {
     /// 当前配置 schema。缺失该字段的历史配置按 schema 0 解码并规范化到当前版本；
     /// schema 1 的 provider-level OpenCode 开关会迁移到 clientBindings。
@@ -142,6 +162,9 @@ struct AppConfig: Codable, Equatable {
     /// 主菜单 Provider 卡片的自定义顺序。nil 或空数组表示使用默认的
     /// Provider 显示名称字母顺序；这里只保存 canonical QuotaProviderID，不保存显示名。
     var providerCardOrder: [String]?
+
+    /// Bark 推送配置。nil 或 enabled=false 都表示不推送。
+    var bark: BarkConfig?
 
     var effectiveStatusBarIconStyle: StatusBarIconStyle {
         statusBarIconStyle ?? .chartBar
@@ -219,7 +242,8 @@ struct AppConfig: Codable, Equatable {
         statusBarIndicatorMode: StatusBarIndicatorMode? = nil,
         statusBarHealthDotEnabled: Bool? = nil,
         statusBarHealthColors: StatusBarHealthColors? = nil,
-        providerCardOrder: [String]? = nil
+        providerCardOrder: [String]? = nil,
+        bark: BarkConfig? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.refreshIntervalSeconds = refreshIntervalSeconds
@@ -230,6 +254,7 @@ struct AppConfig: Codable, Equatable {
         self.statusBarHealthDotEnabled = statusBarHealthDotEnabled
         self.statusBarHealthColors = statusBarHealthColors
         self.providerCardOrder = providerCardOrder
+        self.bark = bark
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -237,6 +262,7 @@ struct AppConfig: Codable, Equatable {
         case statusBarIconStyle, statusBarIndicatorMode, statusBarHealthDotEnabled
         case statusBarHealthColors
         case providerCardOrder
+        case bark
     }
 
     init(from decoder: Decoder) throws {
@@ -266,6 +292,14 @@ struct AppConfig: Codable, Equatable {
             forKey: .statusBarHealthColors
         )
         self.providerCardOrder = try? container.decode([String].self, forKey: .providerCardOrder)
+        // Bark 字段手工配置容错：类型不匹配按缺失处理，不进损坏恢复流程；
+        // 但 serverURL / deviceKey 等必填 key 缺失会让整块配置失效，记录告警。
+        do {
+            self.bark = try container.decodeIfPresent(BarkConfig.self, forKey: .bark)
+        } catch {
+            logWarn("[config] bark 字段解析失败，已按未配置处理：\(error.localizedDescription)")
+            self.bark = nil
+        }
     }
 
     /// 全局生效的刷新间隔：clamp 到 10s...30d（供循环 B 等使用）。
@@ -365,10 +399,20 @@ struct ProviderConfig: Codable, Equatable {
     /// 体验套餐）的用量 / 剩余 / 过期时间。nil（字段不存在）= 关闭，不读日志。
     var parseZcodeBalanceLog: Bool?
 
+    /// 四类额度事件的通知渠道（5 小时 / 周额度 × 恢复 / 耗尽）。
+    /// nil（字段不存在）= 使用默认渠道（恢复 → 系统通知，耗尽 → 不通知），
+    /// 与引入通知配置前的行为一致。
+    var notifyIntervalRestored: QuotaNotifyChannel?
+    var notifyIntervalExhausted: QuotaNotifyChannel?
+    var notifyWeeklyRestored: QuotaNotifyChannel?
+    var notifyWeeklyExhausted: QuotaNotifyChannel?
+
     enum CodingKeys: String, CodingKey {
         case enabled, apiKey, displayName, refreshIntervalSeconds, authPath
         case peakStartHour, peakEndHour, peakWeekdaysOnly, mergeOpencodeUsage
         case parseZcodeBalanceLog
+        case notifyIntervalRestored, notifyIntervalExhausted
+        case notifyWeeklyRestored, notifyWeeklyExhausted
     }
 
     init(enabled: Bool = true,
@@ -380,7 +424,11 @@ struct ProviderConfig: Codable, Equatable {
          peakEndHour: Int? = nil,
          peakWeekdaysOnly: Bool? = nil,
          mergeOpencodeUsage: Bool? = nil,
-         parseZcodeBalanceLog: Bool? = nil) {
+         parseZcodeBalanceLog: Bool? = nil,
+         notifyIntervalRestored: QuotaNotifyChannel? = nil,
+         notifyIntervalExhausted: QuotaNotifyChannel? = nil,
+         notifyWeeklyRestored: QuotaNotifyChannel? = nil,
+         notifyWeeklyExhausted: QuotaNotifyChannel? = nil) {
         self.enabled = enabled
         self.apiKey = apiKey
         self.displayName = displayName
@@ -391,6 +439,10 @@ struct ProviderConfig: Codable, Equatable {
         self.peakWeekdaysOnly = peakWeekdaysOnly
         self.mergeOpencodeUsage = mergeOpencodeUsage
         self.parseZcodeBalanceLog = parseZcodeBalanceLog
+        self.notifyIntervalRestored = notifyIntervalRestored
+        self.notifyIntervalExhausted = notifyIntervalExhausted
+        self.notifyWeeklyRestored = notifyWeeklyRestored
+        self.notifyWeeklyExhausted = notifyWeeklyExhausted
     }
 
     /// 自定义 decode 只为一个默认值：`enabled` 缺失按 true 处理（编译器合成的
@@ -409,6 +461,15 @@ struct ProviderConfig: Codable, Equatable {
         self.peakWeekdaysOnly = try c.decodeIfPresent(Bool.self, forKey: .peakWeekdaysOnly)
         self.mergeOpencodeUsage = try c.decodeIfPresent(Bool.self, forKey: .mergeOpencodeUsage)
         self.parseZcodeBalanceLog = try c.decodeIfPresent(Bool.self, forKey: .parseZcodeBalanceLog)
+        // 渠道枚举值写错时按缺失处理，不让整份配置进入损坏恢复流程。
+        self.notifyIntervalRestored = (try? c.decode(String.self, forKey: .notifyIntervalRestored))
+            .flatMap(QuotaNotifyChannel.init(rawValue:))
+        self.notifyIntervalExhausted = (try? c.decode(String.self, forKey: .notifyIntervalExhausted))
+            .flatMap(QuotaNotifyChannel.init(rawValue:))
+        self.notifyWeeklyRestored = (try? c.decode(String.self, forKey: .notifyWeeklyRestored))
+            .flatMap(QuotaNotifyChannel.init(rawValue:))
+        self.notifyWeeklyExhausted = (try? c.decode(String.self, forKey: .notifyWeeklyExhausted))
+            .flatMap(QuotaNotifyChannel.init(rawValue:))
     }
 }
 
@@ -436,6 +497,34 @@ extension ProviderConfig {
         return key
     }
 
+    /// 四类额度事件的通知渠道，含默认值：恢复 → 系统通知（与引入通知配置前
+    /// 的行为一致），耗尽 → 不通知。
+    func notifyChannel(for kind: QuotaNotificationKind) -> QuotaNotifyChannel {
+        let channels = QuotaNotifyChannels(
+            intervalRestored: notifyIntervalRestored,
+            intervalExhausted: notifyIntervalExhausted,
+            weeklyRestored: notifyWeeklyRestored,
+            weeklyExhausted: notifyWeeklyExhausted
+        )
+        return channels.channel(for: kind)
+    }
+
+    /// 保存设置时的归一化入口：与默认渠道一致写 nil，保持 config.json 干净。
+    /// 默认值的唯一来源是 `QuotaNotifyChannels.channel(for:)`，避免两处硬编码漂移。
+    mutating func setNotifyChannel(
+        _ channel: QuotaNotifyChannel,
+        for kind: QuotaNotificationKind
+    ) {
+        let isDefault = channel == QuotaNotifyChannels().channel(for: kind)
+        let value: QuotaNotifyChannel? = isDefault ? nil : channel
+        switch kind {
+        case .intervalRestored: notifyIntervalRestored = value
+        case .intervalExhausted: notifyIntervalExhausted = value
+        case .weeklyRestored: notifyWeeklyRestored = value
+        case .weeklyExhausted: notifyWeeklyExhausted = value
+        }
+    }
+
     /// 解析为 GLM 高峰期窗口。nil 字段回退官方默认（14–18 / 仅工作日）；
     /// 非法配置（end ≤ start 或越界）整体回退默认，避免 UI 误判成永久高峰/非高峰。
     var glmPeakWindow: GlmPeakWindow {
@@ -455,7 +544,7 @@ extension ProviderConfig {
 
 /// 配置文件读写 + 文件变化监听
 @MainActor
-final class ConfigStore: ObservableObject {
+final class ConfigStore: ObservableObject, BarkConfigProviding {
     enum PersistenceError: LocalizedError {
         case corruptConfigBackupFailed(URL)
 
@@ -468,6 +557,9 @@ final class ConfigStore: ObservableObject {
     }
 
     @Published private(set) var config: AppConfig
+
+    /// BarkQuotaNotifier 每次推送前实时读取，设置保存后无需重启即生效。
+    var bark: BarkConfig? { config.bark }
 
     /// 配置文件绝对路径
     let configURL: URL
