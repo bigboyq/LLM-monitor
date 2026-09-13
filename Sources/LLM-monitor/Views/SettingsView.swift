@@ -51,7 +51,7 @@ struct SettingsView: View {
     @State var barkDeviceKey: String = ""
     @State var barkSound: String = ""
     @State var barkGroup: String = ""
-    @State var barkSkipWhenUnlocked: Bool = false
+    @State var barkSkipWhenAwakeAndUnlocked: Bool = false
     @State var showBarkDeviceKey: Bool = false
     @State var isSendingBarkTest: Bool = false
     @State var barkTestMessage: String?
@@ -398,8 +398,8 @@ struct SettingsView: View {
                     }
 
                     SettingsToggleRow(
-                        label: "非锁屏时跳过推送",
-                        isOn: $barkSkipWhenUnlocked
+                        label: "人在电脑前时跳过推送",
+                        isOn: $barkSkipWhenAwakeAndUnlocked
                     )
                     .disabled(!barkEnabled)
 
@@ -867,7 +867,7 @@ struct SettingsView: View {
         barkDeviceKey = config.bark?.deviceKey ?? ""
         barkSound = config.bark?.sound ?? ""
         barkGroup = config.bark?.group ?? ""
-        barkSkipWhenUnlocked = config.bark?.skipWhenUnlocked ?? false
+        barkSkipWhenAwakeAndUnlocked = config.bark?.skipWhenAwakeAndUnlocked ?? false
         barkTestMessage = nil
 
         notifyChannels = [:]
@@ -961,7 +961,7 @@ struct SettingsView: View {
                 serverURL: trimmedBarkServer,
                 deviceKey: trimmedBarkKey ?? "",
                 sound: trimmedBarkSound,
-                skipWhenUnlocked: barkSkipWhenUnlocked ? true : nil,
+                skipWhenAwakeAndUnlocked: barkSkipWhenAwakeAndUnlocked ? true : nil,
                 group: trimmedString(barkGroup)
             )
         } else {
@@ -1049,14 +1049,14 @@ struct SettingsView: View {
     }
 
     /// 用当前表单草稿（未保存的配置也行）发一条 Bark 测试推送。
-    /// 复用正式推送的规范化、URL 构造与锁屏策略（BarkQuotaNotifier.sendTestPush）。
+    /// 复用正式推送的规范化、URL 构造与屏幕跳过策略（BarkQuotaNotifier.sendTestPush）。
     func sendBarkTest() {
         let config = BarkConfig(
             enabled: true,
             serverURL: barkServerURL,
             deviceKey: barkDeviceKey,
             sound: barkSound,
-            skipWhenUnlocked: barkSkipWhenUnlocked ? true : nil,
+            skipWhenAwakeAndUnlocked: barkSkipWhenAwakeAndUnlocked ? true : nil,
             group: barkGroup
         )
         isSendingBarkTest = true

@@ -82,6 +82,7 @@ Supported provider fields:
 | `peakEndHour` | Peak window end hour (24h, half-open, must be > `peakStartHour`). Default `18`. |
 | `peakWeekdaysOnly` | `true` = Mon–Fri only; `false` = every day. Default `true`. |
 | `parseZcodeBalanceLog` | Parse ZCode's balance polling log and show activity-plan (zcode-plan, e.g. weekend trial) balances on the GLM card. Absent/false = off. |
+| `notifyIntervalRestored` etc. (4 fields) | Optional per-event notification channels (5h/weekly × restored/exhausted): `none` / `system` / `barkAndSystem`. Defaults: restored → `system`, exhausted → `none`. See `spec/notifications.md`. |
 | `clientBindings[]` | Canonical client-to-quota binding for the optional OpenCode `zhipuai-coding-plan` slice. GLM defaults to enabled; the legacy provider-level field is migration compatibility only. |
 
 Peak fields are optional; when omitted (or when `peakEndHour ≤ peakStartHour`) the window

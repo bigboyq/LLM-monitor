@@ -51,6 +51,11 @@ private final class RecordingURLProtocol: URLProtocol {
         let hold = Self._hold
         Self.lock.unlock()
 
+        // 请求进入即记录并回调（先于 hold）：测试能确定性地等到“请求已发出
+        // 且正被挂起”，而不是等 hold 的 5s 信号量超时；也避免被 hold 卡住的
+        // startLoading 把记录串扰到下一个测试的窗口里。
+        callback?(request)
+
         if hold {
             _ = Self.holdSemaphore.wait(wallTimeout: .now() + 5)
         }
@@ -64,7 +69,6 @@ private final class RecordingURLProtocol: URLProtocol {
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: Data("{}".utf8))
         client?.urlProtocolDidFinishLoading(self)
-        callback?(request)
     }
 
     override func stopLoading() {}
@@ -129,11 +133,11 @@ final class BarkNotifierTests: XCTestCase {
     private func makeNotifier(
         _ bark: BarkConfig,
         session: URLSession? = nil,
-        screenIsLocked: @escaping () -> Bool = { false }
+        screenInActiveUse: @escaping () -> Bool = { false }
     ) -> BarkQuotaNotifier {
         BarkQuotaNotifier(
             configProvider: StubConfigProvider(bark),
-            screenIsLocked: screenIsLocked,
+            screenInActiveUse: screenInActiveUse,
             sendQueue: BarkSendQueue(session: session ?? sessionWith(RecordingURLProtocol.self))
         )
     }
@@ -416,21 +420,49 @@ final class BarkNotifierTests: XCTestCase {
     }
 
     @MainActor
-    func testSkipWhenUnlockedSuppressesPushOnUnlockedSession() async throws {
-        let notifier = makeNotifier(
-            BarkConfig(
-                enabled: true, serverURL: "https://api.day.app", deviceKey: "k1",
-                sound: nil, skipWhenUnlocked: true, group: nil
-            ),
-            screenIsLocked: { false }
+    func testSkipWhenAwakeAndUnlockedSuppressesPushOnlyWhenInActiveUse() async throws {
+        // 屏幕谓词（2026-09-13 裁定）：亮屏 + 未锁屏（人在电脑前）→ 跳过；
+        // 显示器休眠或已锁屏（人不在）→ 正常推送。通知器只看组合结论
+        // screenInActiveUse（= 亮屏 && 未锁屏）。
+        let config = BarkConfig(
+            enabled: true, serverURL: "https://api.day.app", deviceKey: "k1",
+            sound: nil, skipWhenAwakeAndUnlocked: true, group: nil
         )
-        notifier.notify(
+
+        // 人在电脑前 → 跳过。
+        let away = makeNotifier(config, screenInActiveUse: { true })
+        away.notify(
             providerID: "p", providerName: "P",
             events: [Self.event(.intervalRestored)],
             channels: allBarkChannels
         )
         try await Task.sleep(nanoseconds: 300_000_000)
         XCTAssertTrue(RecordingURLProtocol.requests.isEmpty)
+
+        // 不在电脑前（休眠或锁屏）→ 推送。
+        let present = makeNotifier(config, screenInActiveUse: { false })
+        present.notify(
+            providerID: "p", providerName: "P",
+            events: [Self.event(.intervalRestored)],
+            channels: allBarkChannels
+        )
+        await expectRequestCount(1)
+
+        // 开关关闭时人在电脑前也推送。
+        RecordingURLProtocol.reset()
+        let disabled = makeNotifier(
+            BarkConfig(
+                enabled: true, serverURL: "https://api.day.app", deviceKey: "k1",
+                sound: nil, skipWhenAwakeAndUnlocked: nil, group: nil
+            ),
+            screenInActiveUse: { true }
+        )
+        disabled.notify(
+            providerID: "p", providerName: "P",
+            events: [Self.event(.intervalRestored)],
+            channels: allBarkChannels
+        )
+        await expectRequestCount(1)
     }
 
     @MainActor
@@ -443,6 +475,9 @@ final class BarkNotifierTests: XCTestCase {
         let events = [Self.event(.intervalRestored)]
         notifier.notify(providerID: "p", providerName: "P", events: events, channels: allBarkChannels)
         await expectRequestCount(1)
+        // 冷却表在发送成功后才写入；等队列彻底空闲（首条已完成），再触发
+        // 第二次，否则第二次可能在冷却生效前入队（竞态）。
+        await notifier.sendQueue.awaitIdle()
 
         RecordingURLProtocol.onReceive = nil
         notifier.notify(providerID: "p", providerName: "P", events: events, channels: allBarkChannels)
@@ -537,10 +572,24 @@ final class BarkNotifierTests: XCTestCase {
         notifier.notify(providerID: "p", providerName: "P", events: models, channels: allBarkChannels)
         await expectRequestCount(1)
 
-        notifier.cancelPendingSends()
+        // 先等 4 个积压全部入队（1 个在途被 hold），消除 cancelAll 与入队 Task
+        // 的竞态：否则 cancelAll 之后仍可能有操作继续入队并被发送。
+        let backlogFull = expectation(description: "4 个操作全部入队")
+        let poll = Task {
+            while await notifier.sendQueue.pendingCount() < 4 {
+                try? await Task.sleep(nanoseconds: 10_000_000)
+            }
+            backlogFull.fulfill()
+        }
+        await fulfillment(of: [backlogFull], timeout: 5)
+        poll.cancel()
+
+        // 直接 await 队列的 cancelAll（cancelPendingSends 是 fire-and-forget
+        // 包装），保证取消在释放 hold 之前生效，时序确定。
+        await notifier.sendQueue.cancelAll()
         // 释放挂起的请求；被取消的 data 调用会抛 CancellationError。
         RecordingURLProtocol.setHold(false)
-        try await Task.sleep(nanoseconds: 500_000_000)
+        await notifier.sendQueue.awaitIdle()
         XCTAssertEqual(RecordingURLProtocol.requests.count, 1, "积压里的 4 个不应发出")
         let remaining = await notifier.sendQueue.pendingCount()
         XCTAssertEqual(remaining, 0)
@@ -644,10 +693,10 @@ final class BarkNotifierTests: XCTestCase {
         let message = await BarkQuotaNotifier.sendTestPush(
             config: BarkConfig(
                 enabled: true, serverURL: "https://api.day.app", deviceKey: " k1 ",
-                sound: nil, skipWhenUnlocked: false, group: "我的额度"
+                sound: nil, skipWhenAwakeAndUnlocked: false, group: "我的额度"
             ),
             session: sessionWith(RecordingURLProtocol.self),
-            screenIsLocked: { false }
+            screenInActiveUse: { false }
         )
         XCTAssertEqual(message, "测试推送已发送，请在手机上查看")
         let sent = try XCTUnwrap(RecordingURLProtocol.requests.first)
@@ -659,17 +708,17 @@ final class BarkNotifierTests: XCTestCase {
     }
 
     @MainActor
-    func testTestPushHonorsSkipWhenUnlocked() async {
+    func testTestPushHonorsSkipWhenAwakeAndUnlocked() async {
         RecordingURLProtocol.reset()
         let message = await BarkQuotaNotifier.sendTestPush(
             config: BarkConfig(
                 enabled: true, serverURL: "https://api.day.app", deviceKey: "k1",
-                sound: nil, skipWhenUnlocked: true, group: nil
+                sound: nil, skipWhenAwakeAndUnlocked: true, group: nil
             ),
             session: sessionWith(RecordingURLProtocol.self),
-            screenIsLocked: { false }
+            screenInActiveUse: { true }
         )
-        XCTAssertTrue(message.contains("未锁屏"))
+        XCTAssertTrue(message.contains("正在使用电脑"))
         XCTAssertTrue(RecordingURLProtocol.requests.isEmpty)
     }
 
@@ -695,12 +744,12 @@ final class BarkNotifierTests: XCTestCase {
           "schemaVersion": 2,
           "refreshIntervalSeconds": 300,
           "providers": {},
-          "bark": {"enabled": true, "serverURL": "https://api.day.app", "deviceKey": "k", "skipWhenUnlocked": true, "group": "g"}
+          "bark": {"enabled": true, "serverURL": "https://api.day.app", "deviceKey": "k", "skipWhenAwakeAndUnlocked": true, "group": "g"}
         }
         """
         let config = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
         XCTAssertEqual(config.bark?.deviceKey, "k")
-        XCTAssertEqual(config.bark?.skipWhenUnlocked, true)
+        XCTAssertEqual(config.bark?.skipWhenAwakeAndUnlocked, true)
         XCTAssertEqual(config.bark?.group, "g")
         XCTAssertNil(config.bark?.sound)
 

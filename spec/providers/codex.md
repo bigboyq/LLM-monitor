@@ -44,6 +44,7 @@ Supported provider fields:
 | `refreshIntervalSeconds` | Optional independent refresh interval. |
 | `displayName` | Optional card title override. |
 | `authPath` | Optional custom auth location. Accepts either an `auth.json` file path or its parent directory. |
+| `notifyIntervalRestored` etc. (4 fields) | Optional per-event notification channels (5h/weekly × restored/exhausted): `none` / `system` / `barkAndSystem`. Defaults: restored → `system`, exhausted → `none`. See `spec/notifications.md`. |
 
 ## Auth File
 

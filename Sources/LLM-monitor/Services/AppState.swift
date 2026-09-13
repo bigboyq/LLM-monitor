@@ -205,6 +205,9 @@ final class AppState: ObservableObject {
     private var persistedRefreshTimes: [String: Date]
     /// R1: last-refresh.json 的写盘移到独立 actor，MainActor 不再做 encode/fsync。
     private let lastRefreshStore: LastRefreshStore
+    /// 通知触发器基线（notification-state.json）：检测 previous 的持久源，
+    /// 跨重启连续 —— 停机期间的耗尽/恢复事件重启后第一刷即可补报。
+    private let triggerStateStore: TriggerStateStore
     /// 配置变更后递增。旧请求即使稍后完成，也不能覆盖新配置派生出的状态。
     private var configurationGeneration = 0
     /// rebuildStatuses 派生时顺带缓存的 "auth 就绪" 结论，供 shouldAutoRefresh
@@ -230,6 +233,7 @@ final class AppState: ObservableObject {
                 .appendingPathComponent("last-refresh.json")
         )
         self.lastRefreshStore = LastRefreshStore(url: self.refreshTimestampsURL)
+        self.triggerStateStore = TriggerStateStore(configURL: configStore.configURL)
         self.refreshScheduler = ProviderRefreshScheduler(
             refreshHandler: { [weak self] providerID, mode in
                 guard let self else { return .deferred }
@@ -312,6 +316,7 @@ final class AppState: ObservableObject {
         healthClockTask = nil
         nextRefreshAt = nil
         configStore.stopWatching()
+        triggerStateStore.flushNow()
     }
 
     /// 重新调度所有 timer（配置变更后调用）
@@ -480,6 +485,11 @@ final class AppState: ObservableObject {
             // 小于 10 秒时，卡片新鲜度与实际调度都按 10 秒计算。
             let interval = Int(configStore.config.effectiveRefreshInterval(for: d.id))
 
+            if case .notConfigured = finalState {
+                // 触发器基线跟着状态一起清：重新配置后回到"首帧只建基线"语义。
+                triggerStateStore.reset(providerID: d.id)
+            }
+
             var statusItem = ProviderStatus(
                 id: d.id,
                 displayName: pc?.displayName ?? d.displayName,
@@ -639,10 +649,20 @@ final class AppState: ObservableObject {
             if descriptor.kind == .codexChatGpt, info.codexUsageDetails == nil {
                 Task { await self.localUsage.triggerImmediateScanAll() }
             }
-            let quotaEvents = QuotaEventDetector.detect(
-                current: info,
-                previous: previousInfo
-            )
+            // 通知检测只对窗口类 provider 生效：DeepSeek 的余额口径被二值化为
+            // 0/100，不具备窗口语义（余额触发器暂不接入）。previous 取持久化
+            // 基线而非内存 lastSuccess——重启后仍能捕捉停机期间的事件；每次
+            // 成功刷新后无条件回写基线（与是否配置触发器无关）。
+            let quotaEvents: [QuotaEvent]
+            if ProviderKind.windowedKinds.contains(descriptor.kind) {
+                quotaEvents = QuotaEventDetector.detect(
+                    current: info,
+                    previousSnapshot: triggerStateStore.snapshot(for: providerID)
+                )
+                triggerStateStore.update(providerID: providerID, info: info)
+            } else {
+                quotaEvents = []
+            }
             if !quotaEvents.isEmpty {
                 let notifyConfig = configStore.config.providers[providerID]
                 quotaUpdateNotifier.notify(

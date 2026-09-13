@@ -73,22 +73,28 @@ struct QuotaNotifyChannels: Equatable, Sendable {
 
 /// 比较两次成功的远程额度快照。只有两边都存在的窗口才参与比较，避免首次出现
 /// model/window 时把“没有基线”误判成恢复或耗尽。
+/// previous 支持两种来源：内存 `QuotaInfo`（测试便利入口）与持久化
+/// `QuotaSnapshot`（AppState 主路径，跨重启连续）。
 enum QuotaEventDetector {
-    /// 百分比来自不同服务的浮点响应；忽略小于 0.01 个百分点的数值噪声。
-    private static let minimumDelta = 0.01
+    /// 恢复判定（2026-09-13 裁定）：回升超过 5 个百分点，或额度回到 98% 以上
+    /// 且确实在回升。`rise > 0` 守门是刻意的：parked 在 100%（闲置 provider）
+    /// 不算“回升”，否则每次刷新都会报一次“已恢复”。
+    nonisolated private static let restoredHighWatermark = 98.0
+    nonisolated private static let restoredMinimumRise = 5.0
     /// 剩余百分比低于该值视为“已耗尽”。
-    private static let exhaustedThreshold = 0.01
+    nonisolated private static let exhaustedThreshold = 0.01
 
     nonisolated static func detect(current: QuotaInfo, previous: QuotaInfo?) -> [QuotaEvent] {
         guard let previous else { return [] }
+        return detect(current: current, previousSnapshot: QuotaSnapshot(from: previous))
+    }
 
-        let previousByName = Dictionary(
-            previous.models.map { ($0.modelName.lowercased(), $0) },
-            uniquingKeysWith: { first, _ in first }
-        )
+    /// AppState 主路径：previous 来自 TriggerStateStore 的持久化基线。
+    nonisolated static func detect(current: QuotaInfo, previousSnapshot: QuotaSnapshot?) -> [QuotaEvent] {
+        guard let previousSnapshot else { return [] }
 
         return current.models.flatMap { model -> [QuotaEvent] in
-            guard let old = previousByName[model.modelName.lowercased()] else { return [] }
+            guard let old = previousSnapshot.models[model.modelName.lowercased()] else { return [] }
 
             var events: [QuotaEvent] = []
             if let event = windowEvent(
@@ -96,7 +102,7 @@ enum QuotaEventDetector {
                 exhaustedKind: .intervalExhausted,
                 previousPercent: old.intervalRemainingPercent,
                 currentPercent: model.intervalRemainingPercent,
-                previousPresent: old.hasIntervalWindow,
+                previousPresent: old.intervalPresent,
                 currentPresent: model.hasIntervalWindow,
                 modelName: model.modelName,
                 displayName: model.displayName
@@ -108,7 +114,7 @@ enum QuotaEventDetector {
                 exhaustedKind: .weeklyExhausted,
                 previousPercent: old.weeklyRemainingPercent,
                 currentPercent: model.weeklyRemainingPercent,
-                previousPresent: old.hasWeeklyWindow,
+                previousPresent: old.weeklyPresent,
                 currentPresent: model.hasWeeklyWindow,
                 modelName: model.modelName,
                 displayName: model.displayName
@@ -119,7 +125,8 @@ enum QuotaEventDetector {
         }
     }
 
-    /// 恢复：当前比上次高至少 minimumDelta；耗尽：上次还有余量、本次降到阈值以下。
+    /// 恢复：回升 > 5pp，或回到 98% 以上且严格回升；
+    /// 耗尽：上次还有余量、本次降到阈值以下。
     private nonisolated static func windowEvent(
         kind: QuotaNotificationKind,
         exhaustedKind: QuotaNotificationKind,
@@ -137,7 +144,9 @@ enum QuotaEventDetector {
             return nil
         }
 
-        if currentPercent - previousPercent >= minimumDelta {
+        let rise = currentPercent - previousPercent
+        if rise > restoredMinimumRise
+            || (currentPercent > restoredHighWatermark && rise > 0) {
             return QuotaEvent(
                 modelName: modelName,
                 displayName: displayName,
@@ -401,7 +410,10 @@ final class SystemQuotaUpdateNotifier: NSObject,
         for group in groups {
             let lines = group.systemLines
             let content = UNMutableNotificationContent()
-            content.title = "\(providerName) 额度已更新"
+            content.title = Self.notificationTitle(
+                providerName: providerName,
+                events: group.systemEvents
+            )
             content.body = lines.joined(separator: "\n")
             content.sound = .default
             // 线程带 provider 维度：不同 Provider 的同名模型不会串进同一个
@@ -456,6 +468,19 @@ final class SystemQuotaUpdateNotifier: NSObject,
             lastNotifiedAt[key] = now
             return true
         }
+    }
+
+    /// 通知标题跟随事件类型：纯耗尽 →「已用完」，纯恢复 →「已恢复」，
+    /// 混合（如 5h 耗尽 + 周恢复同帧）→ 中性「额度提醒」。
+    nonisolated static func notificationTitle(providerName: String, events: [QuotaEvent]) -> String {
+        let kinds = Set(events.map(\.kind))
+        if kinds.isSubset(of: [.intervalExhausted, .weeklyExhausted]) {
+            return "\(providerName) 额度已用完"
+        }
+        if kinds.isSubset(of: [.intervalRestored, .weeklyRestored]) {
+            return "\(providerName) 额度已恢复"
+        }
+        return "\(providerName) 额度提醒"
     }
 
     static func messageLine(_ event: QuotaEvent) -> String {

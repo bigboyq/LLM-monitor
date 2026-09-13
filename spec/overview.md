@@ -60,6 +60,9 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 | `Sources/LLM-monitor/Fetchers/DeepseekFetcher.swift` | DeepSeek 账户余额抓取（`/user/balance`）+ 解析 |
 | `Sources/LLM-monitor/Models/PeakWindow.swift` | GLM / DeepSeek 共用的参数化高峰窗口判定（`slots` × `weekdaysOnly`；GLM 本机时区单窗口可配置，DeepSeek 北京时间双窗口固定、高峰永不含周末） |
 | `Sources/LLM-monitor/Services/AppState.swift` | 全局状态派生、config watcher、scanner wire-up、per-provider 协调（timer / auth probe / 本地 scanner 都委托给专门类） |
+| `Sources/LLM-monitor/Services/QuotaUpdateNotifier.swift` | 额度通知引擎：`QuotaEventDetector`（四类窗口事件边沿判定）+ `QuotaEventBatch`（按模型×渠道合并）+ 系统通知渠道 + `CompositeQuotaUpdateNotifier` 渠道扇出 |
+| `Sources/LLM-monitor/Services/BarkNotifier.swift` | Bark 推送渠道：POST JSON 传输、稳定覆盖 id、锁屏/亮屏跳过判定、有界串行发送队列（冷却 / 重试 / 可取消） |
+| `Sources/LLM-monitor/Services/TriggerStateStore.swift` | 通知触发器基线持久化（`notification-state.json`），检测 previous 的跨重启单一来源 |
 | `Sources/LLM-monitor/Services/AppLog.swift` | stdout / 文件 (5MB rotate) / os.Logger (`.private`) 三路日志 |
 | `Sources/LLM-monitor/Services/ConfigStore.swift` | config.json 读写 + 内容指纹跟踪 + 模板生成 |
 | `Sources/LLM-monitor/Services/LoginItemService.swift` | `SMAppService.mainApp` 包装 + 状态显示 |
@@ -714,6 +717,7 @@ pane UI（默认模板：enabled toggle + 独立刷新间隔；特殊字段如 A
 | File | Purpose |
 |---|---|
 | `~/Library/Application Support/LLM-monitor/config.json` | User-editable config |
+| `~/Library/Application Support/LLM-monitor/notification-state.json` | 通知触发器基线（每次成功刷新回写，供边沿检测跨重启连续） |
 | `~/Library/Application Support/LLM-monitor/log.txt` | Rotated runtime log (5 MB 上限 rotate, 保留 active + .1 + .2 共 3 份) |
 
 The footer has buttons to open the config file and reveal the log file in Finder.
@@ -816,6 +820,7 @@ These are documented product boundaries:
 
 - Automatic generation of arbitrary provider-specific settings forms.
 - Provider deletion from UI.
-- Push notifications.
+- Push notifications beyond the Bark channel (no APNs integration, no third-party push
+  services). See `spec/notifications.md`.
 - Usage history or cost analytics.
 - Automatic provider discovery from remote sources.

@@ -107,7 +107,8 @@ enum ProviderKind: String, Codable, Sendable, CaseIterable {
 
     /// Stable configuration/status identifier. Keep this separate from `rawValue`
     /// so enum naming/serialization can evolve without changing existing config keys.
-    var providerID: String {        switch self {
+    var providerID: String {
+        switch self {
         case .minimaxTokenPlan: return "minimax_token_plan"
         case .codexChatGpt:     return "codex_chatgpt"
         case .antigravity:      return "antigravity"

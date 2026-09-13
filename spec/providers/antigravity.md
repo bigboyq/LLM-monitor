@@ -82,6 +82,7 @@ Supported provider fields:
 | `enabled` | Enables/disables this provider. |
 | `refreshIntervalSeconds` | Optional independent refresh interval. |
 | `displayName` | Optional card title override. |
+| `notifyIntervalRestored` etc. (4 fields) | Optional per-event notification channels (5h/weekly × restored/exhausted): `none` / `system` / `barkAndSystem`. Defaults: restored → `system`, exhausted → `none`. See `spec/notifications.md`. |
 
 `authPath`, `apiKey`, and `serverPath` are not used.
 

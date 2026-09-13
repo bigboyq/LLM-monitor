@@ -115,9 +115,9 @@ struct BarkConfig: Codable, Equatable, Sendable {
     var deviceKey: String
     /// 可选 Bark 自定义铃声名；nil 时用 App 默认。
     var sound: String?
-    /// 非锁屏时跳过 Bark 推送（只推手机不在手边、人不在电脑前的场景）。
-    /// nil（字段不存在）= 不跳过，始终推送。
-    var skipWhenUnlocked: Bool?
+    /// 人在电脑前时跳过 Bark 推送：屏幕亮着且未锁屏才跳过；显示器休眠
+    /// （人离开后闲置）或已锁屏都正常推送。nil（字段不存在）= 不跳过。
+    var skipWhenAwakeAndUnlocked: Bool?
     /// Bark 通知分组：相同 group 的通知在 iOS 通知中心折叠为一组。
     /// nil 或空白 = 不携带 group 参数（不在通知中心折叠）。
     var group: String?

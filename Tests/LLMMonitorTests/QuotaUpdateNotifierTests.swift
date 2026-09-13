@@ -122,6 +122,54 @@ final class QuotaUpdateNotifierTests: XCTestCase {
         XCTAssertTrue(QuotaEventDetector.detect(current: current, previous: previous).isEmpty)
     }
 
+    func testRestoredRuleFollowsConfiguredThresholds() {
+        // 2026-09-13 裁定：恢复 = 回升 > 5pp，或回到 98% 以上且严格回升。
+        func detect(_ old: Double, _ new: Double) -> [QuotaEvent] {
+            QuotaEventDetector.detect(
+                current: info([model("g", interval: new, weekly: 0, weeklyStatus: .absent)]),
+                previous: info([model("g", interval: old, weekly: 0, weeklyStatus: .absent)])
+            )
+        }
+        // 0 → 3：小幅回升（3 < 98 且 +3 ≤ 5），不报。
+        XCTAssertTrue(detect(0, 3).isEmpty)
+        // 50 → 54：+4 ≤ 5 且 54 < 98，不报。
+        XCTAssertTrue(detect(50, 54).isEmpty)
+        // 10 → 20：+10 > 5，报。
+        XCTAssertEqual(detect(10, 20).first?.kind, .intervalRestored)
+        // 96 → 100：+4 但回到 98+ 且严格回升，报。
+        XCTAssertEqual(detect(96, 100).first?.kind, .intervalRestored)
+        // 99 → 100：98+ 区间内的回升，按字面公式报。
+        XCTAssertEqual(detect(99, 100).first?.kind, .intervalRestored)
+        // 100 → 100：parked（没有回升），不报——否则闲置 provider 每刷必响。
+        XCTAssertTrue(detect(100, 100).isEmpty)
+    }
+
+    func testSystemNotificationTitleReflectsEventKinds() {
+        func event(_ kind: QuotaNotificationKind) -> QuotaEvent {
+            QuotaEvent(
+                modelName: "general", displayName: "general", kind: kind,
+                previousPercent: 10,
+                currentPercent: kind == .intervalExhausted || kind == .weeklyExhausted ? 0 : 100
+            )
+        }
+        XCTAssertEqual(
+            SystemQuotaUpdateNotifier.notificationTitle(providerName: "Codex", events: [event(.intervalExhausted)]),
+            "Codex 额度已用完"
+        )
+        XCTAssertEqual(
+            SystemQuotaUpdateNotifier.notificationTitle(
+                providerName: "Codex", events: [event(.intervalRestored), event(.weeklyRestored)]
+            ),
+            "Codex 额度已恢复"
+        )
+        XCTAssertEqual(
+            SystemQuotaUpdateNotifier.notificationTitle(
+                providerName: "Codex", events: [event(.intervalExhausted), event(.weeklyRestored)]
+            ),
+            "Codex 额度提醒"
+        )
+    }
+
     func testChannelDefaultsPreserveLegacyBehavior() {
         // 默认渠道：恢复 → 系统通知，耗尽 → 不通知（与历史行为一致）。
         let defaults = QuotaNotifyChannels()

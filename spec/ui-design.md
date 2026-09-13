@@ -486,19 +486,39 @@ Reset time color (`summaryColor(for:)`):
 | `> 80` | green |
 | otherwise | primary |
 
-## Quota Update Notifications
+## Quota Notifications (system + Bark)
 
-After each successful remote quota request, the app compares the result with that provider's
-previous successful snapshot. A macOS notification is sent when an existing model and window
-has increased by at least 0.01 percentage points. The first snapshot, a newly appearing model
-or window, decreases, and smaller floating-point noise do not notify. Multiple model changes
-from one provider refresh are combined into one notification.
+After each successful remote quota request for a windowed provider (`ProviderKind.windowedKinds`:
+ChatGPT, GLM, minimax, Antigravity), `QuotaEventDetector` compares the result with that
+provider's persisted baseline (`TriggerStateStore`, `notification-state.json` — survives
+restarts, so exhaustion/recovery events that happen while the app is down are reported on the
+first refresh after relaunch). Four event kinds, each with an independently configurable
+channel (`off` / `system` / `bark+system`, defaults: restored → system, exhausted → off):
+
+| Kind | Edge |
+|---|---|
+| restored (5h / weekly) | rise > 5 pp, or back above 98% with a strict rise (parking at 100% is not a rise) |
+| exhausted (5h / weekly) | remaining percent crosses below 0.01% |
+
+The first snapshot, a newly appearing model or window, and decreases do not notify. Per-model
+merging applies: one refresh produces at most one system notification and one Bark push per
+model, and each channel's body only contains events routed to that channel. System titles
+reflect the event kind (「额度已用完 / 已恢复 / 额度提醒」); Bark carries a stable per
+provider+model overwrite `id` so new pushes replace old ones on the phone. Both channels
+apply a 60-second per-model cooldown. DeepSeek is balance-based (binarized 0/100) and has no
+window triggers; a balance threshold trigger is future work (see `spec/notifications.md`).
 
 At application launch, notification authorization is requested only when the system status is
 `.notDetermined`; an existing allow or deny choice is not prompted again. Notifications remain
 visible as a banner with sound while the menu app is in the foreground. UserNotifications is
 available only from a packaged `.app` with a Bundle Identifier, so raw `swift run` / SwiftPM
-executables disable this feature safely.
+executables disable the system-notification channel safely (Bark, being plain HTTP, still
+works there).
+
+The optional Bark push (Settings > General > Bark 推送) posts JSON to
+`POST {server}/{key}` and is skipped when the user is at the Mac: with
+`skipWhenAwakeAndUnlocked` enabled, Bark is skipped only when the display is awake **and**
+the session is unlocked; display sleep or a locked screen (user away) both deliver.
 
 ## Reset Credits
 

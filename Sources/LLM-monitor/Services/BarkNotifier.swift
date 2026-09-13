@@ -10,7 +10,7 @@ extension BarkConfig {
             serverURL: serverURL.trimmingCharacters(in: .whitespacesAndNewlines),
             deviceKey: deviceKey.trimmingCharacters(in: .whitespacesAndNewlines),
             sound: sound?.trimmingCharacters(in: .whitespacesAndNewlines),
-            skipWhenUnlocked: skipWhenUnlocked,
+            skipWhenAwakeAndUnlocked: skipWhenAwakeAndUnlocked,
             group: group?.trimmingCharacters(in: .whitespacesAndNewlines)
         )
     }
@@ -45,18 +45,19 @@ final class BarkQuotaNotifier: QuotaUpdateNotifying {
     nonisolated static let requestTimeout: TimeInterval = 15
 
     private let configProvider: BarkConfigProviding
-    private let screenIsLocked: () -> Bool
+    /// 「人在电脑前」判定（屏幕亮且未锁屏）。注入以便测试。
+    private let screenInActiveUse: () -> Bool
     /// 所有推送经共享串行队列发出：有界积压 + 冷却 + 有限重试 + 可取消。
     /// internal 供 @testable 查询积压状态。
     let sendQueue: BarkSendQueue
 
     init(
         configProvider: BarkConfigProviding,
-        screenIsLocked: @escaping () -> Bool = BarkQuotaNotifier.defaultScreenIsLocked,
+        screenInActiveUse: @escaping () -> Bool = BarkQuotaNotifier.defaultScreenInActiveUse,
         sendQueue: BarkSendQueue = BarkSendQueue()
     ) {
         self.configProvider = configProvider
-        self.screenIsLocked = screenIsLocked
+        self.screenInActiveUse = screenInActiveUse
         self.sendQueue = sendQueue
     }
 
@@ -87,9 +88,10 @@ final class BarkQuotaNotifier: QuotaUpdateNotifying {
         let barkGroups = groups.filter(\.sendsBark)
         guard !barkGroups.isEmpty else { return }
 
-        // 用户选择「非锁屏时跳过」且当前会话未锁屏时，直接跳过推送。
-        if bark.skipWhenUnlocked ?? false, !screenIsLocked() {
-            logDebug("[bark] 会话未锁屏，按配置跳过 \(providerID) Bark 推送")
+        // 「人在电脑前时跳过」：屏幕亮着且未锁屏才跳过；显示器休眠（人离开后
+        // 闲置）或已锁屏都视为不在电脑前，正常推送。
+        if bark.skipWhenAwakeAndUnlocked ?? false, screenInActiveUse() {
+            logDebug("[bark] 人在电脑前（屏幕亮且未锁屏），按配置跳过 \(providerID) Bark 推送")
             return
         }
 
@@ -119,19 +121,19 @@ final class BarkQuotaNotifier: QuotaUpdateNotifying {
         }
     }
 
-    /// 设置页测试推送：与正式推送走同一套配置规范化、请求构造和锁屏策略，
+    /// 设置页测试推送：与正式推送走同一套配置规范化、请求构造和屏幕策略，
     /// 仅绕过发送队列的冷却（允许连续点击验证）。返回面向用户的提示文案。
     static func sendTestPush(
         config draft: BarkConfig,
         session: URLSession = .shared,
-        screenIsLocked: @escaping () -> Bool = BarkQuotaNotifier.defaultScreenIsLocked
+        screenInActiveUse: @escaping () -> Bool = BarkQuotaNotifier.defaultScreenInActiveUse
     ) async -> String {
         let config = draft.normalized
         guard config.enabled, config.isComplete else {
             return "请先填写服务端地址和 Device Key"
         }
-        if config.skipWhenUnlocked ?? false, !screenIsLocked() {
-            return "当前未锁屏，已按「非锁屏时跳过推送」跳过本次测试；配置本身无误。"
+        if config.skipWhenAwakeAndUnlocked ?? false, screenInActiveUse() {
+            return "当前正在使用电脑（屏幕亮且未锁屏），已按「人在电脑前时跳过推送」跳过本次测试；配置本身无误。"
         }
         guard let request = buildRequest(
             config: config,
@@ -159,9 +161,22 @@ final class BarkQuotaNotifier: QuotaUpdateNotifying {
         }
     }
 
+    /// 「人在电脑前」= 屏幕亮着且会话未锁屏。显示器休眠（人离开后闲置）或
+    /// 已锁屏（含屏保锁定）都返回 false → 正常推送 Bark。
+    nonisolated static func defaultScreenInActiveUse() -> Bool {
+        !isDisplayAsleep() && !isSessionLocked()
+    }
+
+    /// 显示器是否休眠。查询失败（无显示器等异常环境）按"亮屏"处理，
+    /// 宁可漏 Bark 不误发。
+    nonisolated static func isDisplayAsleep() -> Bool {
+        CGDisplayIsAsleep(CGMainDisplayID()) != 0
+    }
+
     /// macOS 会话锁屏状态。`CGSessionCopyCurrentDictionary` 返回当前登录会话
     /// 的字典，`kCGSSessionScreenIsLocked` 在锁屏（含屏保锁定）时为 true。
-    nonisolated static func defaultScreenIsLocked() -> Bool {
+    /// 拿不到会话字典时按"未锁屏"处理（与显示器判定叠加后仍偏保守）。
+    nonisolated static func isSessionLocked() -> Bool {
         guard let session = CGSessionCopyCurrentDictionary() as? [String: Any] else {
             return false
         }
@@ -312,6 +327,10 @@ actor BarkSendQueue {
         pending.removeAll()
         currentTask?.cancel()
         generation += 1
+        // 被取消的旧 drain 在 defer 里因代际不匹配不会清 draining；这里直接清，
+        // 否则 cancelAll 之后若无新 enqueue，awaitIdle 会永久等待。进行中的
+        // 旧 drain 退出时 defer 同样跳过清理（draining 已为 false），无副作用。
+        draining = false
     }
 
     private func isCoolingDown(_ key: String) -> Bool {

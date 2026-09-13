@@ -68,6 +68,7 @@ Supported provider fields:
 | `apiKey` | Token Plan API key. Empty values and `sk-cp-REPLACE...` placeholders are treated as missing. |
 | `refreshIntervalSeconds` | Optional independent refresh interval (overrides global default of 300s). |
 | `displayName` | Optional card title override. |
+| `notifyIntervalRestored` etc. (4 fields) | Optional per-event notification channels (5h/weekly × restored/exhausted): `none` / `system` / `barkAndSystem`. Defaults: restored → `system`, exhausted → `none`. See `spec/notifications.md`. |
 
 `MinimaxTokenPlanFetcher.hasLocalAuth()` always returns `true`; `AppState` validates the config `apiKey`. The scanner runs on usage loop B every global refresh interval (mtime diff + per-source cache), independent of quota refresh success.
 
