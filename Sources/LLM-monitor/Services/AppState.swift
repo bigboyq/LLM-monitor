@@ -219,11 +219,14 @@ final class AppState: ObservableObject {
         configStore: ConfigStore,
         // 默认参数在非隔离上下文求值，不能直接构造 @MainActor 的 Noop；
         // 这里传 nil 由 MainActor init 兜底。
-        quotaUpdateNotifier: (any QuotaUpdateNotifying)? = nil
+        quotaUpdateNotifier: (any QuotaUpdateNotifying)? = nil,
+        // 同上：注入用于测试观察基线 reset；产品路径传 nil 由 init 构造。
+        triggerStateStore: TriggerStateStore? = nil
     ) {
         self.descriptors = descriptors
         self.configStore = configStore
         self.quotaUpdateNotifier = quotaUpdateNotifier ?? NoopQuotaUpdateNotifier()
+        self.triggerStateStore = triggerStateStore ?? TriggerStateStore(configURL: configStore.configURL)
         self.refreshTimestampsURL = configStore.configURL
             .deletingLastPathComponent()
             .appendingPathComponent("last-refresh.json")
@@ -233,7 +236,6 @@ final class AppState: ObservableObject {
                 .appendingPathComponent("last-refresh.json")
         )
         self.lastRefreshStore = LastRefreshStore(url: self.refreshTimestampsURL)
-        self.triggerStateStore = TriggerStateStore(configURL: configStore.configURL)
         self.refreshScheduler = ProviderRefreshScheduler(
             refreshHandler: { [weak self] providerID, mode in
                 guard let self else { return .deferred }
@@ -316,7 +318,6 @@ final class AppState: ObservableObject {
         healthClockTask = nil
         nextRefreshAt = nil
         configStore.stopWatching()
-        triggerStateStore.flushNow()
     }
 
     /// 重新调度所有 timer（配置变更后调用）

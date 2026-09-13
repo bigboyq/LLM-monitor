@@ -234,7 +234,7 @@ final class BarkQuotaNotifier: QuotaUpdateNotifying {
         guard let url = components.url else { return nil }
 
         // ttl 是数值参数（消息有效期秒数，过期后手机端自动删除），
-        // 按数字传输；0 / 未配置 = 不携带，走 Bark 默认（不自动过期）。
+        // 按数字传输；0 = 不携带，走 Bark 默认（不自动过期）。
         var payload: [String: Any] = [
             "title": providerName,
             "body": body,
@@ -245,8 +245,8 @@ final class BarkQuotaNotifier: QuotaUpdateNotifying {
         if let group = config.group, !group.isEmpty {
             payload["group"] = group
         }
-        if let ttl = config.ttl, ttl > 0 {
-            payload["ttl"] = ttl
+        if config.ttl > 0 {
+            payload["ttl"] = config.ttl
         }
         if let notificationID, !notificationID.isEmpty {
             payload["id"] = notificationID

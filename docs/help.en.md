@@ -70,7 +70,7 @@ Windowed providers (ChatGPT/Codex, GLM, Minimax, Antigravity) support four quota
 | 5-hour quota exhausted | remaining share drops to about 0% (edge-triggered once, no repeats) |
 | weekly quota restored / exhausted | same rules applied to the weekly window |
 
-- Each windowed provider's settings pane has a "通知配置" (notification) section; defaults are restored → system notification, exhausted → off, matching the historical behavior.
+- Each windowed provider's settings pane has a "通知配置" (notification) section; default channels match the historical behavior (restored → system notification, exhausted → off; the restored thresholds themselves are new, see the table above).
 - System notifications are delivered by macOS and also appear as banners in the foreground; permission is requested at launch only when the status is "not determined". If you previously denied it, re-enable under "System Settings → Notifications → LLM Monitor".
 - Bark push is configured under Settings → General → "Bark 推送": server URL (official `api.day.app` by default; self-hosted https URLs keep their base path), device key (copied from the Bark app), optional sound, group, and message TTL (seconds; a positive value makes the phone auto-delete the message once expired, while empty/0 never expires). Use "发送测试推送" to verify after saving.
 - Bark pushes carry a stable per provider+model overwrite ID: a new push for the same model replaces the old one on your phone instead of piling up.

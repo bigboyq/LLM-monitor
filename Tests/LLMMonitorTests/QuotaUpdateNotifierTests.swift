@@ -318,4 +318,127 @@ final class QuotaUpdateNotifierTests: XCTestCase {
         XCTAssertEqual(notifier.recorded[0].channels.channel(for: .intervalRestored), .barkAndSystem)
         XCTAssertEqual(notifier.recorded[0].channels.channel(for: .weeklyRestored), .system)
     }
+
+    /// 按调用顺序吐出预设快照的 fetcher（多快照集成测试共用）。
+    private final class ScriptedQuotaFetcher: QuotaFetcher, @unchecked Sendable {
+        let providerID: String
+        let displayName = "Notify Test"
+        let kind: ProviderKind
+        let logTag = "[notify-test]"
+        private var snapshots: [QuotaInfo]
+
+        init(providerID: String, kind: ProviderKind, snapshots: [QuotaInfo]) {
+            self.providerID = providerID
+            self.kind = kind
+            self.snapshots = snapshots
+        }
+
+        func fetch(mode: RefreshMode) async throws -> QuotaInfo {
+            guard !snapshots.isEmpty else { throw QuotaError.invalidResponse }
+            return snapshots.removeFirst()
+        }
+
+        func hasLocalAuth() -> Bool { true }
+        func checkLocalAuth() async -> Bool { true }
+    }
+
+    @MainActor
+    private func makeScriptedState(
+        fetcher: ScriptedQuotaFetcher,
+        notifier: SpyNotifier,
+        apiKey: String
+    ) throws -> (state: AppState, configStore: ConfigStore, store: TriggerStateStore, directory: URL) {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("llm-monitor-notify-trigger-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let configURL = directory.appendingPathComponent("config.json")
+        // 注入 store：测试直接观察基线，不依赖调度器行为（配置变更会触发
+        // rescheduleAll 自动刷新，消耗脚本快照造成非确定时序）。
+        let store = TriggerStateStore(configURL: configURL)
+        let configStore = ConfigStore(configURL: configURL)
+        var config = configStore.config
+        config.providers[fetcher.providerID] = ProviderConfig(enabled: true, apiKey: apiKey)
+        try configStore.applyAndSave(config)
+
+        let descriptor = FetcherDescriptor(
+            id: fetcher.providerID,
+            displayName: "Notify Test",
+            kind: fetcher.kind,
+            iconSystemName: "star",
+            accentColor: .minimax,
+            makeFetcher: { _ in fetcher }
+        )
+        let state = AppState(
+            descriptors: [descriptor],
+            configStore: configStore,
+            quotaUpdateNotifier: notifier,
+            triggerStateStore: store
+        )
+        return (state, configStore, store, directory)
+    }
+
+    @MainActor
+    func testBaselineResetWhenProviderBecomesNotConfigured() async throws {
+        // 缺口①：provider 转入 .notConfigured（API Key 清空）时 rebuildStatuses
+        // 必须清掉持久化基线；重新配置后回到"首帧只建基线"语义，下一刷重建。
+        let fetcher = ScriptedQuotaFetcher(providerID: "minimax_notify_test", kind: .minimaxTokenPlan, snapshots: [
+            info([model("general", interval: 10, weekly: 40)]),
+        ])
+        let notifier = SpyNotifier()
+        let (state, configStore, store, directory) = try makeScriptedState(
+            fetcher: fetcher, notifier: notifier, apiKey: "sk-notify-test-key"
+        )
+        state.stop()
+        defer {
+            state.stop()
+            try? FileManager.default.removeItem(at: directory)
+        }
+
+        _ = await state.refreshProviderDirectly(providerID: fetcher.providerID, mode: .full)
+        XCTAssertTrue(notifier.recorded.isEmpty, "首帧只建基线")
+        let baseline = try XCTUnwrap(store.snapshot(for: fetcher.providerID))
+        XCTAssertEqual(baseline.models["general"]?.intervalRemainingPercent, 10)
+
+        // API Key 清空 → .notConfigured → rebuildStatuses 触发基线 reset。
+        var config = configStore.config
+        config.providers[fetcher.providerID]?.apiKey = ""
+        try configStore.applyAndSave(config)
+        state.rebuildStatuses()
+        XCTAssertNil(store.snapshot(for: fetcher.providerID), "notConfigured 时基线应被清空")
+
+        // 重新配置：基线保持为空，回到"首帧只建基线"语义（首帧行为已由
+        // testFirstSnapshotDoesNotNotify 与集成测试覆盖）。此处不断言重配后
+        // 的刷新：applyAndSave 的 RunLoop sink 会递增 configurationGeneration
+        // 并触发调度器自动刷新，显式刷新的 fetch 结果会被当作陈旧丢弃——
+        // 这是生产行为的正确设计，测试里时序不可确定。
+        config = configStore.config
+        config.providers[fetcher.providerID]?.apiKey = "sk-notify-test-key"
+        try configStore.applyAndSave(config)
+        state.rebuildStatuses()
+        XCTAssertNil(store.snapshot(for: fetcher.providerID))
+    }
+
+    @MainActor
+    func testNonWindowedProviderDoesNotEmitQuotaEvents() async throws {
+        // 缺口②：DeepSeek 等余额类 provider（windowedKinds 门控之外）不产生
+        // 窗口事件。其余额口径被二值化为 0/100，若未门控，余额耗尽
+        // （100 → 0）会误报「5 小时额度已耗尽」。
+        let fetcher = ScriptedQuotaFetcher(providerID: "deepseek_test", kind: .deepseek, snapshots: [
+            info([model("deepseek_balance", interval: 100, weekly: 0, weeklyStatus: .absent)]),
+            info([model("deepseek_balance", interval: 0, weekly: 0, weeklyStatus: .absent)]),
+        ])
+        let notifier = SpyNotifier()
+        let (state, _, _, directory) = try makeScriptedState(
+            fetcher: fetcher, notifier: notifier, apiKey: "sk-notify-test-key"
+        )
+        state.stop()
+        defer {
+            state.stop()
+            try? FileManager.default.removeItem(at: directory)
+        }
+
+        _ = await state.refreshProviderDirectly(providerID: fetcher.providerID, mode: .full)
+        _ = await state.refreshProviderDirectly(providerID: fetcher.providerID, mode: .full)
+        XCTAssertTrue(notifier.recorded.isEmpty, "非窗口类 provider 任何情况下都不发额度事件")
+    }
 }

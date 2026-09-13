@@ -225,8 +225,8 @@ final class BarkNotifierTests: XCTestCase {
     }
 
     func testBuildRequestIncludesTTLOnlyWhenPositive() throws {
-        // 2026-09-13 裁定：ttl > 0 按数字携带；0 / nil 一律不带。
-        func payloadWith(ttl: Int?) throws -> [String: Any] {
+        // 2026-09-13 裁定：ttl > 0 按数字携带；0 / 负值一律不带（0 = 不过期）。
+        func payloadWith(ttl: Int) throws -> [String: Any] {
             let request = try XCTUnwrap(BarkQuotaNotifier.buildRequest(
                 config: BarkConfig(
                     enabled: true, serverURL: "https://api.day.app", deviceKey: "k",
@@ -240,8 +240,7 @@ final class BarkNotifierTests: XCTestCase {
         XCTAssertEqual(try payloadWith(ttl: 3600)["ttl"] as? Int, 3600, "ttl > 0 应按 JSON 数字携带")
         XCTAssertNotNil(try payloadWith(ttl: 1)["ttl"], "最小正整数也应携带")
         XCTAssertNil(try payloadWith(ttl: 0)["ttl"], "ttl = 0 不携带")
-        XCTAssertNil(try payloadWith(ttl: nil)["ttl"], "ttl 缺省不携带")
-        XCTAssertNil(try payloadWith(ttl: -5)["ttl"], "负值按未配置处理")
+        XCTAssertNil(try payloadWith(ttl: -5)["ttl"], "负值不携带")
     }
 
     func testBuildRequestPreservesServerBasePath() throws {
@@ -761,15 +760,47 @@ final class BarkNotifierTests: XCTestCase {
     // MARK: - 配置持久化
 
     func testParseTTLNormalizesInput() {
-        // 设置页草稿是文本：去空白后必须能解析为正整数，否则按未配置处理。
+        // 设置页草稿是文本：去空白后必须能解析为正整数，否则归一化为 0。
         XCTAssertEqual(BarkConfig.parseTTL("3600"), 3600)
         XCTAssertEqual(BarkConfig.parseTTL(" 60 "), 60)
-        XCTAssertNil(BarkConfig.parseTTL(""))
-        XCTAssertNil(BarkConfig.parseTTL("   "))
-        XCTAssertNil(BarkConfig.parseTTL("abc"))
-        XCTAssertNil(BarkConfig.parseTTL("3.5"))
-        XCTAssertNil(BarkConfig.parseTTL("0"), "0 = 不过期，归一化为 nil（不携带参数）")
-        XCTAssertNil(BarkConfig.parseTTL("-5"))
+        XCTAssertEqual(BarkConfig.parseTTL(""), 0)
+        XCTAssertEqual(BarkConfig.parseTTL("   "), 0)
+        XCTAssertEqual(BarkConfig.parseTTL("abc"), 0)
+        XCTAssertEqual(BarkConfig.parseTTL("3.5"), 0)
+        XCTAssertEqual(BarkConfig.parseTTL("0"), 0, "0 = 不过期")
+        XCTAssertEqual(BarkConfig.parseTTL("-5"), 0)
+    }
+
+    func testBarkConfigPerFieldTolerantDecode() throws {
+        // P2 回归：单个字段类型写错只回退该字段默认值，其余字段保留。
+        let json = """
+        {
+          "schemaVersion": 2,
+          "refreshIntervalSeconds": 300,
+          "providers": {},
+          "bark": {"enabled": true, "serverURL": "https://api.day.app", "deviceKey": "k", "ttl": "abc"}
+        }
+        """
+        let config = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+        let bark = try XCTUnwrap(config.bark, "单字段类型错误不应拖垮整个 bark 块")
+        XCTAssertEqual(bark.deviceKey, "k", "deviceKey 应保留")
+        XCTAssertEqual(bark.serverURL, "https://api.day.app")
+        XCTAssertEqual(bark.ttl, 0, "非法 ttl 归一化为 0（不携带参数）")
+        XCTAssertNil(bark.sound)
+
+        // 编码省略零值 / nil 字段：默认配置不产生 ttl 键。
+        let encoded = String(data: try JSONEncoder().encode(bark), encoding: .utf8) ?? ""
+        XCTAssertFalse(encoded.contains("\"ttl\""), "ttl = 0 时不应写盘: \(encoded)")
+
+        // 负值解码钳制为 0；结构级错误（bark 不是对象）仍按未配置处理。
+        let negative = """
+        {"schemaVersion": 2, "refreshIntervalSeconds": 300, "providers": {}, "bark": {"enabled": true, "serverURL": "https://api.day.app", "deviceKey": "k", "ttl": -9}}
+        """
+        XCTAssertEqual(try JSONDecoder().decode(AppConfig.self, from: Data(negative.utf8)).bark?.ttl, 0)
+        let broken = """
+        {"schemaVersion": 2, "refreshIntervalSeconds": 300, "providers": {}, "bark": "oops"}
+        """
+        XCTAssertNil(try JSONDecoder().decode(AppConfig.self, from: Data(broken.utf8)).bark)
     }
 
     func testBarkConfigCodingTolerantDecode() throws {

@@ -874,7 +874,7 @@ struct SettingsView: View {
         barkDeviceKey = config.bark?.deviceKey ?? ""
         barkSound = config.bark?.sound ?? ""
         barkGroup = config.bark?.group ?? ""
-        barkTTL = config.bark?.ttl.map(String.init) ?? ""
+        barkTTL = config.bark.map { $0.ttl > 0 ? String($0.ttl) : "" } ?? ""
         barkSkipWhenAwakeAndUnlocked = config.bark?.skipWhenAwakeAndUnlocked ?? false
         barkTestMessage = nil
 

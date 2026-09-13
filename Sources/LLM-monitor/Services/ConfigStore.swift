@@ -109,6 +109,10 @@ enum StatusBarIndicatorMode: String, Codable, Sendable, CaseIterable, Identifiab
 /// 应用配置 — 从 ~/Library/Application Support/LLM-monitor/config.json 读
 /// Bark 推送配置。nil 等价于未启用；serverURL 允许自建服务，deviceKey 是
 /// Bark App 里复制的推送 key。
+///
+/// 解码逐字段容错（`init(from:)`）：手工配置里单个字段类型写错只丢该字段、
+/// 回退默认值，不再拖垮整个 bark 块（曾导致手改 `ttl` 类型后 deviceKey 一并
+/// 失效）。结构级错误（bark 不是对象）仍由 AppConfig 的整块 catch 兜底。
 struct BarkConfig: Codable, Equatable, Sendable {
     var enabled: Bool
     var serverURL: String
@@ -118,9 +122,9 @@ struct BarkConfig: Codable, Equatable, Sendable {
     /// 人在电脑前时跳过 Bark 推送：屏幕亮着且未锁屏才跳过；显示器休眠
     /// （人离开后闲置）或已锁屏都正常推送。nil（字段不存在）= 不跳过。
     var skipWhenAwakeAndUnlocked: Bool?
-    /// 消息有效期（秒）：过期后手机客户端自动删除该消息。nil 或 <= 0 =
-    /// 不携带 ttl 参数（Bark 默认行为，消息不自动过期）。
-    var ttl: Int?
+    /// 消息有效期（秒）：过期后手机客户端自动删除该消息。0 = 不携带 ttl
+    /// 参数（Bark 默认行为，消息不自动过期）。非法输入解码时归一化为 0。
+    var ttl: Int = 0
     /// Bark 通知分组：相同 group 的通知在 iOS 通知中心折叠为一组。
     /// nil 或空白 = 不携带 group 参数（不在通知中心折叠）。
     var group: String?
@@ -130,11 +134,41 @@ struct BarkConfig: Codable, Equatable, Sendable {
     static let defaultGroup = "LLMMonitor"
 
     /// 解析设置页草稿里的 TTL 文本：去空白后必须是正整数；空 / 非数字 /
-    /// <= 0 一律返回 nil（不落盘、不携带参数）。
-    static func parseTTL(_ raw: String) -> Int? {
+    /// <= 0 一律归一化为 0（不落盘、不携带参数）。
+    static func parseTTL(_ raw: String) -> Int {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let ttl = Int(trimmed), ttl > 0 else { return nil }
+        guard let ttl = Int(trimmed), ttl > 0 else { return 0 }
         return ttl
+    }
+}
+
+extension BarkConfig {
+    private enum CodingKeys: String, CodingKey {
+        case enabled, serverURL, deviceKey, sound, skipWhenAwakeAndUnlocked, ttl, group
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        enabled = (try? c.decode(Bool.self, forKey: .enabled)) ?? false
+        serverURL = (try? c.decode(String.self, forKey: .serverURL)) ?? ""
+        deviceKey = (try? c.decode(String.self, forKey: .deviceKey)) ?? ""
+        sound = (try? c.decodeIfPresent(String.self, forKey: .sound)) ?? nil
+        skipWhenAwakeAndUnlocked = (try? c.decodeIfPresent(Bool.self, forKey: .skipWhenAwakeAndUnlocked)) ?? nil
+        ttl = max(0, (try? c.decodeIfPresent(Int.self, forKey: .ttl)) ?? 0)
+        group = (try? c.decodeIfPresent(String.self, forKey: .group)) ?? nil
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(enabled, forKey: .enabled)
+        try c.encode(serverURL, forKey: .serverURL)
+        try c.encode(deviceKey, forKey: .deviceKey)
+        try c.encodeIfPresent(sound, forKey: .sound)
+        try c.encodeIfPresent(skipWhenAwakeAndUnlocked, forKey: .skipWhenAwakeAndUnlocked)
+        if ttl > 0 {
+            try c.encode(ttl, forKey: .ttl)
+        }
+        try c.encodeIfPresent(group, forKey: .group)
     }
 }
 

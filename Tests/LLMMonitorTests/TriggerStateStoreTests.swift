@@ -48,7 +48,6 @@ final class TriggerStateStoreTests: XCTestCase {
         let store = TriggerStateStore(configURL: configURL)
         XCTAssertNil(store.snapshot(for: "p"), "冷启动无基线")
         store.update(providerID: "p", info: info([model("General", interval: 12.5, weekly: 40)]))
-        store.flushNow()
 
         let reloaded = TriggerStateStore(configURL: configURL)
         let baseline = try XCTUnwrap(reloaded.snapshot(for: "p"))
@@ -71,7 +70,6 @@ final class TriggerStateStoreTests: XCTestCase {
 
         let first = TriggerStateStore(configURL: configURL)
         first.update(providerID: "p", info: info([model("general", interval: 30, weekly: 80)]))
-        first.flushNow()
 
         let restarted = TriggerStateStore(configURL: configURL)
         let events = QuotaEventDetector.detect(
@@ -107,9 +105,7 @@ final class TriggerStateStoreTests: XCTestCase {
 
         let store = TriggerStateStore(configURL: configURL)
         store.update(providerID: "p", info: info([model("general", interval: 30, weekly: 80)]))
-        store.flushNow()
         store.reset(providerID: "p")
-        store.flushNow()
 
         XCTAssertNil(TriggerStateStore(configURL: configURL).snapshot(for: "p"))
         // 重复 reset 是无害的 no-op。

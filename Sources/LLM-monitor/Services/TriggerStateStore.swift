@@ -43,16 +43,17 @@ struct QuotaSnapshot: Codable, Equatable, Sendable {
 ///
 /// 通知检测的 previous 单一来源：相比内存 `statuses.lastSuccess`，基线跨重启
 /// 连续 —— app 停机期间发生的耗尽/恢复事件，重启后第一次刷新即可补报，而不是
-/// 静默重建基线漏掉。写盘走 250ms 合并 + `FileManagerBox.writePrivate`
-/// （0600 / 原子 rename / fsync），模式与 `LastRefreshStore` 一致；坏文件
-/// 容错降级为空基线，不进损坏恢复流程。
+/// 静默重建基线漏掉。写盘用 `FileManagerBox.writePrivate`
+/// （0600 / 临时文件 / fsync / rename 原子替换）；坏文件容错降级为空基线，
+/// 不进损坏恢复流程。
+///
+/// 写入策略（2026-09-14 裁定）：**每次更新同步直写，不做防抖合并**。频率只有
+/// 每 provider 每刷新周期一次（refreshAll 突发也就 4 次）、文件 ~2KB，主线程
+/// 直写成本可忽略；同步顺序写从构造上消除并发写竞态，比防抖 + 后台写更简单。
 @MainActor
 final class TriggerStateStore {
     private let fileURL: URL
     private var snapshots: [String: QuotaSnapshot]
-    private var saveTask: Task<Void, Never>?
-    /// 合并窗口：refreshAll 一次唤醒多个 provider，避免逐个 encode/fsync。
-    nonisolated private static let saveDebounce: Duration = .milliseconds(250)
 
     init(configURL: URL) {
         self.fileURL = configURL.deletingLastPathComponent()
@@ -64,39 +65,18 @@ final class TriggerStateStore {
         snapshots[providerID]
     }
 
-    /// 成功刷新后更新基线。无条件写（与是否配置了触发器无关），保证
-    /// “先开监控、后开触发器”的边沿语义一致。
+    /// 成功刷新后更新基线并立即落盘。无条件写（与是否配置了触发器无关），
+    /// 保证"先开监控、后开触发器"的边沿语义一致。
     func update(providerID: String, info: QuotaInfo) {
         snapshots[providerID] = QuotaSnapshot(from: info)
-        scheduleSave()
-    }
-
-    /// provider 进入 `.notConfigured` 时丢弃基线：重新配置后回到
-    /// “首帧只建基线不通知”语义，不拿陈旧基线误报。
-    func reset(providerID: String) {
-        guard snapshots.removeValue(forKey: providerID) != nil else { return }
-        scheduleSave()
-    }
-
-    /// 停机同步落盘（文件很小，主线程直写可接受），避免最后 250ms 内的
-    /// 基线更新随进程退出丢失。
-    func flushNow() {
-        saveTask?.cancel()
-        saveTask = nil
         Self.write(snapshots, to: fileURL)
     }
 
-    private func scheduleSave() {
-        saveTask?.cancel()
-        saveTask = Task { [weak self] in
-            try? await Task.sleep(for: Self.saveDebounce)
-            guard let self, !Task.isCancelled else { return }
-            let payload = self.snapshots
-            let url = self.fileURL
-            await Task.detached {
-                Self.write(payload, to: url)
-            }.value
-        }
+    /// provider 进入 `.notConfigured` 时丢弃基线：重新配置后回到
+    /// "首帧只建基线不通知"语义，不拿陈旧基线误报。
+    func reset(providerID: String) {
+        guard snapshots.removeValue(forKey: providerID) != nil else { return }
+        Self.write(snapshots, to: fileURL)
     }
 
     private nonisolated static func write(_ snapshots: [String: QuotaSnapshot], to url: URL) {
