@@ -2,8 +2,8 @@ import Foundation
 
 /// 本地用量 reconcile 与扫描编排：
 /// provider batch settled 或显式操作驱动一次性扫描 Task；不持有常驻 Timer/beat
-/// loop。首次 reconcile 与日切使用 full，其余 reconcile 由 scanner 内部 fingerprint
-/// 决定是否复用缓存或执行增量计算。
+/// loop。首次 reconcile 与日切使用 full（强制重建缓存），其余 reconcile 由 scanner
+/// 内部 fingerprint 决定是否复用缓存或执行增量计算。
 /// 彻底剥离 quota 依赖：quota 刷新成功不再直接 await 本地扫描。
 ///
 /// 状态写入（ProviderStatus 字段）通过 `LocalUsageStatusWriting` 协议回调
@@ -110,12 +110,11 @@ final class LocalUsageOrchestration {
     /// LocalUsage 不再拥有常驻 beat/timer。一次 reconcile 由 provider batch settled
     /// 事件或显式手动刷新投递，完成后 Task 即释放。
     private var reconcileTask: Task<Void, Never>?
+    private var pendingReconcile = false
     private var pendingFullReconcile = false
     private var didCompleteInitialFullScan = false
     private var lastFullScanDay: Date?
-    private var codexDirty = true
-    private var codexEventGeneration: UInt64 = 0
-    private var codexFileSystemWatcher: LocalFSEventsWatcher?
+    private var codexSourceLifecycle: LocalUsageSourceLifecycle?
     private var codexWatchedHome: URL?
     private let calendar: Calendar
     private let now: @Sendable () -> Date
@@ -142,7 +141,11 @@ final class LocalUsageOrchestration {
         dshCoordinator.cancelInFlight()
         reconcileTask?.cancel()
         reconcileTask = nil
+        pendingReconcile = false
+        pendingFullReconcile = false
         stopCodexWatcher()
+        codexSourceLifecycle = nil
+        codexWatchedHome = nil
     }
 
     /// 推送「活动套餐余额日志解析」开关（设置 `parseZcodeBalanceLog`）。
@@ -172,7 +175,8 @@ final class LocalUsageOrchestration {
     /// 不会把本地扫描 await 到 ProviderRefreshScheduler 的主循环。
     func scheduleReconcile() {
         guard reconcileTask == nil else {
-            logDebug("[local-usage] reconcile skipped: previous reconcile is still active")
+            pendingReconcile = true
+            logDebug("[local-usage] reconcile queued: previous reconcile is still active")
             return
         }
         let mode = nextReconcileMode
@@ -182,6 +186,10 @@ final class LocalUsageOrchestration {
             await self.performReconcile(mode: mode)
             if !Task.isCancelled {
                 self.reconcileTask = nil
+                if self.pendingReconcile {
+                    self.pendingReconcile = false
+                    self.scheduleReconcile()
+                }
             }
         }
     }
@@ -196,11 +204,18 @@ final class LocalUsageOrchestration {
     /// 不传时使用首次 full、日切 full、否则 dirty 的状态机结果。
     func reconcile(mode requestedMode: LocalUsageScanMode? = nil) async {
         if let active = reconcileTask {
-            if requestedMode == .full { pendingFullReconcile = true }
+            if requestedMode == .full {
+                pendingFullReconcile = true
+            } else {
+                pendingReconcile = true
+            }
             await active.value
             if requestedMode == .full, pendingFullReconcile {
                 pendingFullReconcile = false
                 await reconcile(mode: .full)
+            } else if requestedMode == nil, pendingReconcile {
+                pendingReconcile = false
+                await reconcile()
             }
             return
         }
@@ -217,6 +232,9 @@ final class LocalUsageOrchestration {
         if pendingFullReconcile {
             pendingFullReconcile = false
             await reconcile(mode: .full)
+        } else if pendingReconcile {
+            pendingReconcile = false
+            await reconcile()
         }
     }
 
@@ -226,37 +244,54 @@ final class LocalUsageOrchestration {
         await reconcile(mode: .full)
     }
 
-    /// 执行一个本地 pass。full 与普通 reconcile 都会检查所有已就绪 source；
-    /// 区别只在于 full 用于首次扫描/日切，普通 reconcile 由 scanner 内部的
-    /// fingerprint 决定是否复用缓存或执行增量计算。
+    /// 执行一个本地 pass。各 source 之间没有数据依赖，因此并行启动；每个
+    /// scanner 自己仍通过 pipeline mutex 串行其内部扫描。
     func scanAllClients(mode: LocalUsageScanMode = .full) async {
-        await scanClient("minimax_code", mode: mode) { [self] in
-            minimaxCoordinator
+        let minimax: @MainActor () async -> Void = { [weak self] in
+            guard let self else { return }
+            await self.scanClient("minimax_code", mode: mode) { self.minimaxCoordinator }
         }
-        guard !Task.isCancelled else { return }
-        await scanClient("zcode-glm", mode: mode) { [self] in
-            glmCoordinator
+        let glm: @MainActor () async -> Void = { [weak self] in
+            guard let self else { return }
+            await self.scanClient("zcode-glm", mode: mode) { self.glmCoordinator }
         }
-        guard !Task.isCancelled else { return }
-        await scanClient("opencode", mode: mode) { [self] in
-            opencodeCoordinator
+        let opencode: @MainActor () async -> Void = { [weak self] in
+            guard let self else { return }
+            await self.scanClient("opencode", mode: mode) { self.opencodeCoordinator }
         }
-        guard !Task.isCancelled else { return }
-        await scanClient("dsh", mode: mode) { [self] in
-            dshCoordinator
+        let dsh: @MainActor () async -> Void = { [weak self] in
+            guard let self else { return }
+            await self.scanClient("dsh", mode: mode) { self.dshCoordinator }
         }
-        guard !Task.isCancelled else { return }
-        await scanClient("antigravity", mode: mode) { [self] in
-            antigravityCoordinator
+        let antigravity: @MainActor () async -> Void = { [weak self] in
+            guard let self else { return }
+            await self.scanClient("antigravity", mode: mode) { self.antigravityCoordinator }
+        }
+        let codex: @MainActor () async -> Void = { [weak self] in
+            await self?.scanCodexClient(mode: mode)
         }
 
+        // Keep independent sources concurrent, but cap disk/RPC pressure. The
+        // largest source (Antigravity) should not compete with every parser at
+        // once on a user's machine.
+        let jobs: [@MainActor () async -> Void] = [minimax, glm, opencode, dsh, antigravity, codex]
+        for start in stride(from: 0, to: jobs.count, by: 3) {
+            let end = min(start + 3, jobs.count)
+            await withTaskGroup(of: Void.self) { group in
+                for index in start..<end {
+                    let job = jobs[index]
+                    group.addTask { await job() }
+                }
+            }
+        }
+    }
+
+    private func scanCodexClient(mode: LocalUsageScanMode) async {
         let codexReady = checkClientReadiness("codex")
         let codexWasReady = clientReadinessCache["codex"] == true
         updateReadinessAndLog(for: "codex", isReady: codexReady)
-        let codexTransitionedToMissing = codexWasReady && !codexReady
-        if codexTransitionedToMissing { codexDirty = true }
         if codexReady || codexWasReady {
-            _ = await scanCodexUsageDetails()
+            _ = await scanCodexUsageDetails(mode: mode)
         }
     }
 
@@ -289,15 +324,15 @@ final class LocalUsageOrchestration {
         lastFullScanDay = calendar.startOfDay(for: now())
     }
 
-    private func scanCodexUsageDetails() async -> Bool {
+    private func scanCodexUsageDetails(mode: LocalUsageScanMode) async -> Bool {
         // 纯本地信息：quota 模型缺失（首胜前）也照常扫描，仅窗口用量缺省。
         // model 从共享数据层（statuses.lastSuccess）读取，是数据依赖而非事件依赖。
         guard let target = writer.codexEnrichmentTarget() else { return false }
 
         // Codex local parsing can touch session metadata while it reads. Keep
         // the source watcher stopped for the same scan window as other clients.
+        let startedEventGeneration = codexSourceLifecycle?.eventGeneration ?? 0
         stopCodexWatcher()
-        let startedEventGeneration = codexEventGeneration
 
         writer.setScanningState(true, for: target.providerID)
         defer {
@@ -307,7 +342,8 @@ final class LocalUsageOrchestration {
 
         let details = await CodexFetcher.loadUsageDetailsAsync(
             authPath: target.authPath,
-            model: target.model
+            model: target.model,
+            forceFull: mode == .full
         )
         guard !Task.isCancelled else { return false }
         writer.applyCodexUsageDetails(
@@ -316,42 +352,39 @@ final class LocalUsageOrchestration {
             fetchedAt: target.fetchedAt,
             configurationGeneration: target.generation
         )
-        if codexEventGeneration == startedEventGeneration {
-            codexDirty = false
+        if codexSourceLifecycle?.eventGeneration == startedEventGeneration {
             writer.setLocalUsageFreshness(.clean, for: .codex)
         }
         return true
     }
 
     /// Codex local usage is implemented by `CodexFetcher` rather than the
-    /// generic scanner base, so its source-owned watcher lives beside that
-    /// enrichment coordinator. It still follows the same rule: FSEvents only
-    /// invalidates the snapshot; the next Provider batch performs the scan.
+    /// generic usage scanner base, but uses the same source lifecycle as every
+    /// filesystem-backed scanner.
     private func startCodexWatcher(authPath: String?) {
         let home = CodexFetcher.codexHomeDirectory(authPath: authPath)
-        if codexWatchedHome == home, codexFileSystemWatcher?.isRunning == true { return }
+        if codexWatchedHome == home, let lifecycle = codexSourceLifecycle {
+            lifecycle.start()
+            return
+        }
 
-        codexFileSystemWatcher?.stop()
+        codexSourceLifecycle?.stop()
         codexWatchedHome = home
-        codexFileSystemWatcher = LocalFSEventsWatcher(
+        codexSourceLifecycle = LocalUsageSourceLifecycle(
             paths: [
                 home.appendingPathComponent("sessions", isDirectory: true),
                 home.appendingPathComponent("archived_sessions", isDirectory: true)
             ]
-        ) { [weak self] _ in
+        ) { [weak self] in
             guard let self else { return }
-            self.codexEventGeneration &+= 1
-            self.codexDirty = true
             self.writer.setLocalUsageFreshness(.dirty, for: .codex)
         }
         logInfo("[local-usage] Codex watcher configured home=\(home.path)")
-        codexFileSystemWatcher?.start()
+        codexSourceLifecycle?.start()
     }
 
     private func stopCodexWatcher() {
-        codexFileSystemWatcher?.stop()
-        codexFileSystemWatcher = nil
-        codexWatchedHome = nil
+        codexSourceLifecycle?.stop()
     }
 
     func checkClientReadiness(_ clientID: String) -> Bool {

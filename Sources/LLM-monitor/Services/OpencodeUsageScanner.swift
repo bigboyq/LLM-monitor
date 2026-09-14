@@ -17,12 +17,6 @@ final class OpencodeUsageScanner: SingleDBSnapshotScanner<OpencodeLocalUsage>, @
 
     override nonisolated var pipelineLock: AsyncMutex { Self.pipelineMutex }
 
-    private var fileSystemWatcher: LocalFSEventsWatcher? = nil
-    /// FSEvents only invalidates the snapshot; SQLite work stays in scan().
-    private(set) var requiresFullScan = true
-    private var eventGeneration: UInt64 = 0
-    var onFileSystemEvent: LocalFSEventsWatcher.EventHandler?
-
     nonisolated static let defaultDBURL: URL = {
         URL(fileURLWithPath: NSHomeDirectory())
             .appendingPathComponent(".local", isDirectory: true)
@@ -53,55 +47,7 @@ final class OpencodeUsageScanner: SingleDBSnapshotScanner<OpencodeLocalUsage>, @
             logTag: Self.scanLogTag,
             cacheIndexVersion: Self.cacheIndexVersion
         )
-        fileSystemWatcher = LocalFSEventsWatcher(
-            paths: [dbURL.deletingLastPathComponent()]
-        ) { [weak self] event in
-            self?.handleFileSystemEvent(event)
-        }
-    }
-
-    func startWatchingIfNeeded() {
-        fileSystemWatcher?.start()
-    }
-
-    override func restartWatching() {
-        startWatchingIfNeeded()
-    }
-
-    override func stopWatching() {
-        fileSystemWatcher?.stop()
-        requiresFullScan = true
-    }
-
-    func markFullScanCompleted() {
-        markFresh()
-        requiresFullScan = false
-    }
-
-    private func handleFileSystemEvent(_ event: LocalFSEventsEvent) {
-        eventGeneration &+= 1
-        markDirty()
-        if event.requiresFullScan {
-            requiresFullScan = true
-        }
-        onFileSystemEvent?(event)
-    }
-
-    private func acknowledgeFullScan(at generation: UInt64) {
-        guard eventGeneration == generation else { return }
-        requiresFullScan = false
-    }
-
-    override func makeWork(startedGeneration: UInt64) -> @Sendable () async throws -> OpencodeLocalUsage {
-        let eventGeneration = self.eventGeneration
-        let work = super.makeWork(startedGeneration: startedGeneration)
-        return {
-            let result = try await work()
-            await MainActor.run { [weak self] in
-                self?.acknowledgeFullScan(at: eventGeneration)
-            }
-            return result
-        }
+        configureSourceLifecycle(paths: [dbURL.deletingLastPathComponent()])
     }
 
     // MARK: - pipeline hooks

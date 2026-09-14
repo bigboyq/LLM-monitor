@@ -505,7 +505,8 @@ extension CodexFetcher {
 
     nonisolated static func scanSessionEvents(
         for snapshots: [CodexSessionFileSnapshot],
-        limits: CodexLocalScanLimits = .production
+        limits: CodexLocalScanLimits = .production,
+        forceFull: Bool = false
     ) async -> CodexSessionScanResult {
         let selectedSnapshots = mostRecentSnapshots(
             snapshots,
@@ -533,7 +534,8 @@ extension CodexFetcher {
                 parsingFingerprint: parsingFingerprint,
                 limits: limits,
                 remainingByteBudget: remainingByteBudget,
-                cacheResult: cachedPaths.contains(snapshot.fileURL.path)
+                cacheResult: cachedPaths.contains(snapshot.fileURL.path),
+                forceFull: forceFull
             )
             guard !Task.isCancelled else { hasPendingReads = true; break }
             remainingByteBudget -= min(resolved.parsedByteCount, remainingByteBudget)
@@ -564,10 +566,12 @@ extension CodexFetcher {
         parsingFingerprint: String,
         limits: CodexLocalScanLimits,
         remainingByteBudget: Int,
-        cacheResult: Bool = true
+        cacheResult: Bool = true,
+        forceFull: Bool = false
     ) async -> (events: [CodexSessionEvent], parsedByteCount: Int, didParse: Bool, hasPendingReads: Bool) {
         let fileURL = snapshot.fileURL
-        if let cached = await CodexSessionEventCache.shared.state(for: fileURL, parsingFingerprint: parsingFingerprint) {
+        if !forceFull,
+           let cached = await CodexSessionEventCache.shared.state(for: fileURL, parsingFingerprint: parsingFingerprint) {
             // 区分预算截断与自然 EOF 的半行：后者内容未变时无需反复读取。
             if cached.lastModifiedAt == snapshot.modifiedAt,
                cached.parsedFileSize == snapshot.fileSize,

@@ -11,29 +11,13 @@ struct LocalFSEventsEvent: Sendable, Equatable {
     let eventID: UInt64
     let flags: UInt32
 
-    /// Flags which mean that the event history cannot safely be treated as a
-    /// complete list of changed paths.  The next scan must be a full scan.
-    var requiresFullScan: Bool {
-        flags & LocalFSEventsWatcher.fullScanFlags != 0
-    }
 }
 
 /// Reusable, per-scanner FSEvents watcher.  It owns exactly the paths supplied by
 /// its scanner; there is intentionally no process-wide source/path registry.
-final class LocalFSEventsWatcher: @unchecked Sendable {
+@MainActor
+final class LocalFSEventsWatcher {
     typealias EventHandler = @MainActor @Sendable (LocalFSEventsEvent) -> Void
-
-    // These are the flags which invalidate any assumption that the stream
-    // delivered every change.  MustScanSubDirs and RootChanged also require the
-    // consumer to rediscover its complete source tree.
-    static let fullScanFlags: UInt32 =
-        UInt32(kFSEventStreamEventFlagMustScanSubDirs)
-        | UInt32(kFSEventStreamEventFlagUserDropped)
-        | UInt32(kFSEventStreamEventFlagKernelDropped)
-        | UInt32(kFSEventStreamEventFlagEventIdsWrapped)
-        | UInt32(kFSEventStreamEventFlagRootChanged)
-        | UInt32(kFSEventStreamEventFlagMount)
-        | UInt32(kFSEventStreamEventFlagUnmount)
 
     private let paths: [String]
     private let preExistingRootPaths: Set<String>
@@ -53,10 +37,15 @@ final class LocalFSEventsWatcher: @unchecked Sendable {
         paths: [URL],
         eventHandler: @escaping EventHandler
     ) {
-        // FSEvents accepts directory roots.  Deduplication is local to this
-        // scanner instance and avoids duplicate callbacks when two SQLite files
-        // share a parent directory.
-        self.paths = Array(Set(paths.map(Self.canonicalPath))).sorted()
+        // FSEvents accepts directory roots. Deduplication is local to this
+        // scanner instance. Keep only the highest root when roots overlap;
+        // otherwise one child event can be delivered once per nested root.
+        let canonicalPaths = Array(Set(paths.map(Self.canonicalPath))).sorted()
+        self.paths = canonicalPaths.filter { candidate in
+            !canonicalPaths.contains { other in
+                other != candidate && Self.isDescendant(candidate, of: other)
+            }
+        }
         self.preExistingRootPaths = Set(self.paths.filter {
             FileManager.default.fileExists(atPath: $0)
         })
@@ -67,6 +56,11 @@ final class LocalFSEventsWatcher: @unchecked Sendable {
 
     func start() {
         guard stream == nil, !paths.isEmpty else { return }
+
+        // A scanner reuses its lifecycle object after every scan. Startup root
+        // filtering must therefore be armed for each new stream, not only for
+        // the first registration of this object.
+        ignoredInitialRootPaths.removeAll()
 
         logInfo("[local-fsevents] starting paths=\(paths.joined(separator: ", "))")
 
@@ -119,7 +113,11 @@ final class LocalFSEventsWatcher: @unchecked Sendable {
     }
 
     deinit {
-        stop()
+        if let stream {
+            FSEventStreamStop(stream)
+            FSEventStreamInvalidate(stream)
+            FSEventStreamRelease(stream)
+        }
     }
 
     private func handleEvent(path: String, eventID: FSEventStreamEventId, flags: FSEventStreamEventFlags) {
@@ -134,8 +132,8 @@ final class LocalFSEventsWatcher: @unchecked Sendable {
             flags: UInt32(flags)
         )
         logDebug("[local-fsevents] event id=\(event.eventID) flags=0x\(String(event.flags, radix: 16)) path=\(event.path)")
-        Task { @MainActor [event, eventHandler] in
-            eventHandler(event)
+        Task { @MainActor [weak self, event] in
+            self?.eventHandler(event)
         }
     }
 
@@ -155,6 +153,11 @@ final class LocalFSEventsWatcher: @unchecked Sendable {
 
     private static func canonicalPath(_ url: URL) -> String {
         url.standardizedFileURL.resolvingSymlinksInPath().path
+    }
+
+    private static func isDescendant(_ path: String, of root: String) -> Bool {
+        let prefix = root.hasSuffix("/") ? root : root + "/"
+        return path.hasPrefix(prefix)
     }
 
     private static let eventCallback: FSEventStreamCallback = {

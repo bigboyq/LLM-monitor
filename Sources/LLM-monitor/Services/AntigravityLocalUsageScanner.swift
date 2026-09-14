@@ -74,14 +74,6 @@ final class AntigravityLocalUsageScanner: LocalUsageScannerBase<AntigravityLocal
     private let fileManager: FileManagerBox
     private let calendar: Calendar
     private let now: @Sendable () -> Date
-    private var fileSystemWatcher: LocalFSEventsWatcher? = nil
-
-    /// FSEvents is only an invalidation hint.  The next lifecycle scan decides
-    /// how to refresh the source; the stream callback never performs RPC/SQL.
-    private(set) var requiresFullScan = true
-    private var eventGeneration: UInt64 = 0
-    var onFileSystemEvent: LocalFSEventsWatcher.EventHandler?
-
     /// 最近一次成功写入 index.json 的 generation. 旧 worker 即使晚到 mutex,
     /// `startedGeneration > self.lastCommittedGeneration` 才写盘, 否则 saveIndex
     /// 跳过保留新 worker 的 view. read + write 都在 `performScanPure` 内部, 跨
@@ -127,45 +119,7 @@ final class AntigravityLocalUsageScanner: LocalUsageScannerBase<AntigravityLocal
                 now: Date()
             )
         )
-        fileSystemWatcher = LocalFSEventsWatcher(paths: conversationsDirs) { [weak self] event in
-            self?.handleFileSystemEvent(event)
-        }
-    }
-
-    func startWatchingIfNeeded() {
-        fileSystemWatcher?.start()
-    }
-
-    override func restartWatching() {
-        startWatchingIfNeeded()
-    }
-
-    override func stopWatching() {
-        fileSystemWatcher?.stop()
-        // The stream starts at "now" when restarted; changes during the pause
-        // are therefore covered by the next fingerprint-based scan.
-        requiresFullScan = true
-    }
-
-    /// Explicit acknowledgement for a lifecycle adapter after a successful
-    /// full scan.  Normal scans are acknowledged by the existing base runner.
-    func markFullScanCompleted() {
-        markFresh()
-        requiresFullScan = false
-    }
-
-    private func handleFileSystemEvent(_ event: LocalFSEventsEvent) {
-        eventGeneration &+= 1
-        markDirty()
-        if event.requiresFullScan {
-            requiresFullScan = true
-        }
-        onFileSystemEvent?(event)
-    }
-
-    private func acknowledgeFullScan(at generation: UInt64) {
-        guard eventGeneration == generation else { return }
-        requiresFullScan = false
+        configureSourceLifecycle(paths: conversationsDirs)
     }
 
     /// performScanPure 在 mutex 内读 + 写本实例的 lastCommittedGeneration
@@ -187,16 +141,19 @@ final class AntigravityLocalUsageScanner: LocalUsageScannerBase<AntigravityLocal
     /// performScanPure 的 pipeline：mutex 串行 + lastCommittedGeneration 守门。
     /// 重 I/O + RPC 全部在 background 执行（文件元数据、文件遍历、HTTP RPC、
     /// 缓存读写），菜单栏 UI 不会被 I/O 阻塞。
-    override func makeWork(startedGeneration: UInt64) -> @Sendable () async throws -> AntigravityLocalUsage {
+    override func makeWork(
+        startedGeneration: UInt64,
+        mode: LocalUsageScanMode
+    ) -> @Sendable () async throws -> AntigravityLocalUsage {
         let fetcher = self.fetcher
         let conversationsDirs = self.conversationsDirs
         let cacheDir = self.cacheDir
         let fileManager = self.fileManager
         let calendar = self.calendar
         let now = self.now
-        let eventGeneration = self.eventGeneration
+        let forceFull = mode == .full
         return {
-            let result = try await Self.performScanPure(
+            try await Self.performScanPure(
                 fetcher: fetcher,
                 conversationsDirs: conversationsDirs,
                 cacheDir: cacheDir,
@@ -204,12 +161,9 @@ final class AntigravityLocalUsageScanner: LocalUsageScannerBase<AntigravityLocal
                 calendar: calendar,
                 now: now,
                 startedGeneration: startedGeneration,
-                scanner: self
+                scanner: self,
+                forceFull: forceFull
             )
-            await MainActor.run { [weak self] in
-                self?.acknowledgeFullScan(at: eventGeneration)
-            }
-            return result
         }
     }
 
@@ -314,7 +268,8 @@ extension AntigravityLocalUsageScanner {
         calendar: Calendar,
         now: @escaping @Sendable () -> Date,
         startedGeneration: UInt64,
-        scanner: AntigravityLocalUsageScanner
+        scanner: AntigravityLocalUsageScanner,
+        forceFull: Bool = false
     ) async throws -> AntigravityLocalUsage {
         // Test-only: 让测试精确控制 worker 在做什么 (在 RPC / SQL / cache 写前
         // 阻塞等 cancel 触发). 生产环境 (release build) 没这个字段, 编译期消除.
@@ -348,7 +303,8 @@ extension AntigravityLocalUsageScanner {
                 calendar: calendar,
                 now: now,
                 shouldSave: shouldSave,
-                saveIndexHook: saveIndexHook
+                saveIndexHook: saveIndexHook,
+                forceFull: forceFull
             )
             if shouldSave {
                 // 写盘成功 → 主 actor 更新本实例. 仍持有 mutex, 下一个 worker
@@ -373,7 +329,8 @@ extension AntigravityLocalUsageScanner {
         calendar: Calendar,
         now: @escaping @Sendable () -> Date,
         shouldSave: Bool,
-        saveIndexHook: (@Sendable () -> Void)? = nil
+        saveIndexHook: (@Sendable () -> Void)? = nil,
+        forceFull: Bool = false
     ) async throws -> AntigravityLocalUsage {
         try ensureCacheDirectoriesExist(cacheDir: cacheDir, fileManager: fileManager)
 
@@ -400,7 +357,7 @@ extension AntigravityLocalUsageScanner {
 
         // 2. 找出 dirty sessions（文件/WAL 指纹变化，或缺少纯 RPC 的逐次调用缓存）。
         let dirty: [(String, AntigravityDBFileInfo)] = dbFiles.compactMap { (sessionId, info) in
-            guard let cached = index.sessions[sessionId] else {
+            guard !forceFull, let cached = index.sessions[sessionId] else {
                 return (sessionId, info)
             }
             if index.samplesBySession?[sessionId] == nil {

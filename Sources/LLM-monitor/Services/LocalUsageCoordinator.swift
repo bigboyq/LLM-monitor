@@ -4,7 +4,7 @@ import Combine
 /// 统一的本地用量 scanner wire-up 容器。
 ///
 /// 适用：任何暴露 `@Published var lastResult: Usage?` + `@Published var isScanning: Bool`
-/// + `func scan()` 的本地 scanner（当前：Antigravity、Minimax、GLM ZCode、OpenCode 四类）。
+/// + `func scan()` 的本地 scanner（当前：Antigravity、Minimax、GLM ZCode、OpenCode、DSH）。
 ///
 /// 设计动机（9-commit refactor #9）：
 /// - 之前 AppState 中四类本地 scanner 各自维护近镜像的 30+ 行：singleton cache + 2 个
@@ -112,12 +112,6 @@ final class LocalUsageCoordinator<Usage: Equatable> {
         scanner?.isDirty ?? true
     }
 
-    /// Watcher/adapter may require the next pass to rediscover the complete
-    /// source set (for example after a dropped FSEvents range).
-    var requiresFullScan: Bool {
-        scanner?.requiresFullScan ?? true
-    }
-
     var lastFreshAt: Date? {
         scanner?.lastFreshAt
     }
@@ -171,7 +165,7 @@ final class LocalUsageCoordinator<Usage: Equatable> {
 /// 本地用量 scanner 协议：把 `@Published lastResult` + `@Published isScanning`
 /// 暴露成 `AnyPublisher`，方便 LocalUsageCoordinator 跨具体类型工作。
 ///
-/// 适用：Antigravity、Minimax、GLM ZCode、OpenCode scanner（都是 @MainActor）
+/// 适用：Antigravity、Minimax、GLM ZCode、OpenCode、DSH scanner（都是 @MainActor）
 /// 不适用：QuotaFetcher（外部接口，不是本地 scanner）
 ///
 /// 标 `@MainActor` 是因为：所有具体 scanner 都是 `@MainActor`（它们是
@@ -189,7 +183,6 @@ protocol LocalUsageScanner<Usage>: AnyObject {
     func scan()
     func scan(mode: LocalUsageScanMode)
     var isDirty: Bool { get }
-    var requiresFullScan: Bool { get }
     var lastFreshAt: Date? { get }
     func markDirty()
     func markFresh(at date: Date)
@@ -206,7 +199,6 @@ extension LocalUsageScanner {
         scan()
     }
     var isDirty: Bool { true }
-    var requiresFullScan: Bool { false }
     var lastFreshAt: Date? { nil }
     func markDirty() {}
     func markFresh(at date: Date) {}

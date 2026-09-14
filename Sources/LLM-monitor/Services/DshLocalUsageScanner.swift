@@ -85,14 +85,6 @@ final class DshLocalUsageScanner: LocalUsageScannerBase<DshLocalUsage>, @uncheck
     private let now: @Sendable () -> Date
     private let decompressor: Decompressor?
     private let streamingDecompressor: StreamingDecompressor
-    private var fileSystemWatcher: LocalFSEventsWatcher? = nil
-
-    /// FSEvents only invalidates the cached view; decompression/JSON parsing is
-    /// kept in the existing scan pipeline.
-    private(set) var requiresFullScan = true
-    private var eventGeneration: UInt64 = 0
-    var onFileSystemEvent: LocalFSEventsWatcher.EventHandler?
-
     init(
         sessionsRoot: URL = DshLocalUsageScanner.defaultSessionsRoot,
         cacheDir: URL = DshLocalUsageScanner.defaultCacheDir,
@@ -120,41 +112,7 @@ final class DshLocalUsageScanner: LocalUsageScannerBase<DshLocalUsage>, @uncheck
                 now: Date()
             )
         )
-        fileSystemWatcher = LocalFSEventsWatcher(paths: [sessionsRoot]) { [weak self] event in
-            self?.handleFileSystemEvent(event)
-        }
-    }
-
-    func startWatchingIfNeeded() {
-        fileSystemWatcher?.start()
-    }
-
-    override func restartWatching() {
-        startWatchingIfNeeded()
-    }
-
-    override func stopWatching() {
-        fileSystemWatcher?.stop()
-        requiresFullScan = true
-    }
-
-    func markFullScanCompleted() {
-        markFresh()
-        requiresFullScan = false
-    }
-
-    private func handleFileSystemEvent(_ event: LocalFSEventsEvent) {
-        eventGeneration &+= 1
-        markDirty()
-        if event.requiresFullScan {
-            requiresFullScan = true
-        }
-        onFileSystemEvent?(event)
-    }
-
-    private func acknowledgeFullScan(at generation: UInt64) {
-        guard eventGeneration == generation else { return }
-        requiresFullScan = false
+        configureSourceLifecycle(paths: [sessionsRoot])
     }
 
     /// 递归发现 dsh session 产物文件（session.jsonl / *.jsonl.zstd / *.jsonl.zst），
@@ -187,7 +145,10 @@ final class DshLocalUsageScanner: LocalUsageScannerBase<DshLocalUsage>, @uncheck
     }
 
     /// dsh 的 pipeline：mutex 串行 + detached utility 任务承载纯文件系统扫描。
-    override func makeWork(startedGeneration: UInt64) -> @Sendable () async throws -> DshLocalUsage {
+    override func makeWork(
+        startedGeneration: UInt64,
+        mode: LocalUsageScanMode
+    ) -> @Sendable () async throws -> DshLocalUsage {
         let sessionsRoot = self.sessionsRoot
         let cacheDir = self.cacheDir
         let fileManager = self.fileManager
@@ -195,9 +156,9 @@ final class DshLocalUsageScanner: LocalUsageScannerBase<DshLocalUsage>, @uncheck
         let now = self.now
         let decompressor = self.decompressor
         let streamingDecompressor = self.streamingDecompressor
-        let eventGeneration = self.eventGeneration
+        let forceFull = mode == .full
         return {
-            let result = try await Self.pipelineMutex.withLock {
+            try await Self.pipelineMutex.withLock {
                 try await Task.detached(priority: .utility) {
                     try Self.performScanPure(
                         sessionsRoot: sessionsRoot,
@@ -207,14 +168,11 @@ final class DshLocalUsageScanner: LocalUsageScannerBase<DshLocalUsage>, @uncheck
                         now: now,
                         decompressor: decompressor,
                         streamingDecompressor: streamingDecompressor,
-                        limits: DshLocalUsageScanLimits.production
+                        limits: DshLocalUsageScanLimits.production,
+                        forceFull: forceFull
                     )
                 }.value
             }
-            await MainActor.run { [weak self] in
-                self?.acknowledgeFullScan(at: eventGeneration)
-            }
-            return result
         }
     }
 
@@ -231,7 +189,8 @@ final class DshLocalUsageScanner: LocalUsageScannerBase<DshLocalUsage>, @uncheck
         streamingDecompressor: @escaping StreamingDecompressor = {
             try DshLogDecoder.decompressToFile(input: $0, output: $1, fileManager: $2)
         },
-        limits: DshLocalUsageScanLimits = .production
+        limits: DshLocalUsageScanLimits = .production,
+        forceFull: Bool = false
     ) throws -> DshLocalUsage {
         guard fileManager.fileExists(atPath: sessionsRoot.path) else {
             logInfo("[dsh-scan] sessions 目录不存在: \(sessionsRoot.path)")
@@ -279,7 +238,7 @@ final class DshLocalUsageScanner: LocalUsageScannerBase<DshLocalUsage>, @uncheck
 
         let fingerprint = CacheFingerprint(files: snapshots.map(\.fingerprint))
         var index = try loadIndex(cacheDir: cacheDir, fileManager: fileManager)
-        if index.matches(fingerprint), let cached = index.snapshot {
+        if !forceFull, index.matches(fingerprint), let cached = index.snapshot {
             let scanNow = now()
             let rebased = rebaseCached(cached, calendar: calendar, now: scanNow)
             if rebased != cached {
@@ -297,7 +256,8 @@ final class DshLocalUsageScanner: LocalUsageScannerBase<DshLocalUsage>, @uncheck
             calendar: calendar,
             decompressor: decompressor,
             streamingDecompressor: streamingDecompressor,
-            limits: limits
+            limits: limits,
+            forceFull: forceFull
         )
         let snapshot = buildSnapshot(
             aggregate: outcome.aggregate,
@@ -626,7 +586,8 @@ private extension DshLocalUsageScanner {
         calendar: Calendar,
         decompressor: Decompressor?,
         streamingDecompressor: @escaping StreamingDecompressor,
-        limits: DshLocalUsageScanLimits
+        limits: DshLocalUsageScanLimits,
+        forceFull: Bool
     ) throws -> DshFileAggregationOutcome {
         var outcome = DshFileAggregationOutcome()
         // Keep the newest cache-capacity files as a fixed hot set. Files beyond
@@ -647,7 +608,7 @@ private extension DshLocalUsageScanner {
             try Task.checkCancellation()
             do {
                 let result: DshFileParseResult
-                if let cached = parsedFileCache.value(
+                if !forceFull, let cached = parsedFileCache.value(
                     for: snapshot,
                     limits: limits
                 ) {

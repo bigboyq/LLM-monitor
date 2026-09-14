@@ -43,8 +43,9 @@ struct SnapshotCacheIndex<Usage: Equatable & Codable & Sendable>: Equatable, Cod
 
 /// 单一 SQLite db 的快照扫描器基座（当前：glm-zcode / opencode）。
 ///
-/// 管线：stat db+WAL 指纹 → 指纹未变则复用缓存快照并按当前本地日重切 7 天窗口
-/// （跨午夜滚动），指纹已变则重新聚合 + 写缓存。db 不存在返回子类的空快照。
+/// 管线：stat db+WAL 指纹 → dirty 模式下指纹未变则复用缓存快照并按当前本地日
+/// 重切 7 天窗口（跨午夜滚动），full 模式强制重新聚合 + 写缓存。db 不存在返回
+/// 子类的空快照。
 ///
 /// 子类实现三个 hook：
 /// - `emptySnapshot`：db 缺失时的空结果
@@ -91,10 +92,13 @@ class SingleDBSnapshotScanner<Usage: Equatable & Codable & Sendable>: LocalUsage
         )
     }
 
-    override func makeWork(startedGeneration: UInt64) -> @Sendable () async throws -> Usage {
+    override func makeWork(
+        startedGeneration: UInt64,
+        mode: LocalUsageScanMode
+    ) -> @Sendable () async throws -> Usage {
         { [self] in
             try await pipelineLock.withLock {
-                try performScanLocked(nowDate: now())
+                try performScanLocked(nowDate: now(), forceFull: mode == .full)
             }
         }
     }
@@ -120,7 +124,7 @@ class SingleDBSnapshotScanner<Usage: Equatable & Codable & Sendable>: LocalUsage
     // MARK: - 共享管线
 
     /// 纯 I/O + 计算。在 `pipelineMutex` 内串行执行。
-    nonisolated private func performScanLocked(nowDate: Date) throws -> Usage {
+    nonisolated private func performScanLocked(nowDate: Date, forceFull: Bool = false) throws -> Usage {
         try fileManager.createPrivateDirectory(at: cacheDir)
 
         // 1. db + WAL 指纹
@@ -136,7 +140,7 @@ class SingleDBSnapshotScanner<Usage: Equatable & Codable & Sendable>: LocalUsage
             cacheDir: cacheDir, fileManager: fileManager,
             logTag: logTag, currentVersion: cacheIndexVersion
         )
-        if index.matches(fingerprint), let snapshot = index.snapshot {
+        if !forceFull, index.matches(fingerprint), let snapshot = index.snapshot {
             logDebug("\(logTag) 指纹未变，复用缓存快照")
             let rebased = try rebaseSnapshot(snapshot, now: nowDate)
             if rebased != snapshot {

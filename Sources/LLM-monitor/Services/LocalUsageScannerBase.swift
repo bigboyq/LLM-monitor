@@ -16,8 +16,9 @@ enum LocalUsageScanMode: Sendable, Equatable {
 /// - `LocalUsageScanRunner` 接线（启动/完成/出错的 generation check + 取消过滤）
 /// - `LocalUsageScanner` 协议 conformance（`lastResultPublisher` / `isScanningPublisher`）
 ///
-/// 子类只需实现 `makeWork(startedGeneration:)`，返回包好各自 mutex + `performScanPure`
-/// 的工作闭包。pipeline 语义（缓存格式、指纹、lastCommittedGeneration 守门）留在子类。
+/// 子类实现 mode-aware 的 `makeWork(startedGeneration:mode:)`，返回包好各自 mutex
+/// + `performScanPure` 的工作闭包。pipeline 语义（缓存格式、指纹、
+/// lastCommittedGeneration 守门）留在子类。
 ///
 /// `pipelineLock`（默认 fatalError）返回子类的 `static let pipelineMutex`——泛型类
 /// 不能持有 static 存储属性，mutex 由每个 concrete 子类声明并跨实例共享。
@@ -27,10 +28,9 @@ class LocalUsageScannerBase<Usage: Equatable>: ObservableObject, @unchecked Send
     @Published private(set) var isScanning: Bool = false
     @Published private(set) var lastError: String?
 
-    /// Lifecycle hooks installed by LocalUsageCoordinator.  A scanner owns its
-    /// FSEvents stream and calls `markDirty()` from that stream; the hook lets
-    /// the coordinator project that source-level transition to the UI without
-    /// maintaining a global watcher registry.
+    /// Lifecycle hooks installed by LocalUsageCoordinator. A scanner owns its
+    /// source lifecycle and calls `markDirty()` from that lifecycle; the hook
+    /// lets the coordinator project the source-level transition to the UI.
     var onDirty: (@MainActor () -> Void)?
     var onFresh: (@MainActor () -> Void)?
 
@@ -38,6 +38,7 @@ class LocalUsageScannerBase<Usage: Equatable>: ObservableObject, @unchecked Send
     nonisolated let logTag: String
 
     private var inFlightTask: Task<Void, Never>?
+    private var sourceLifecycle: LocalUsageSourceLifecycle?
     private struct ScanWaiter {
         let id: UUID
         let continuation: CheckedContinuation<Void, Error>
@@ -155,14 +156,23 @@ class LocalUsageScannerBase<Usage: Equatable>: ObservableObject, @unchecked Send
         resumeAllScanWaiters()
     }
 
-    /// Concrete scanners override this to stop their own FSEvents stream.
-    /// Keeping the lifecycle hook on the scanner base prevents a process-wide
-    /// watcher registry and lets AppState stop all source streams on shutdown.
-    func stopWatching() {}
+    /// Configure the source-owned watcher once the concrete scanner has loaded
+    /// its source paths. The scanner base owns the stop/restart lifecycle so all
+    /// filesystem-backed scanners follow the same rules.
+    func configureSourceLifecycle(paths: [URL]) {
+        sourceLifecycle?.stop()
+        sourceLifecycle = LocalUsageSourceLifecycle(paths: paths) { [weak self] in
+            self?.markDirty()
+        }
+    }
 
-    /// Concrete scanners recreate their per-source FSEvents stream after a
-    /// scan. The default keeps non-filesystem adapters source-compatible.
-    func restartWatching() {}
+    func stopWatching() {
+        sourceLifecycle?.stop()
+    }
+
+    func restartWatching() {
+        sourceLifecycle?.start()
+    }
 
     private func runScan(
         startedGeneration: UInt64,
@@ -224,8 +234,8 @@ class LocalUsageScannerBase<Usage: Equatable>: ObservableObject, @unchecked Send
         fatalError("\(type(of: self)): subclass must override makeWork(startedGeneration:)")
     }
 
-    /// 新 mode-aware scanner 的适配点。默认转发到旧接口，具体 scanner 可以
-    /// 分批迁移而不需要一次性修改所有实现文件。
+    /// 新 mode-aware scanner 的适配点。默认转发到旧接口，兼容不需要强制
+    /// full scan 的外部 scanner。
     func makeWork(
         startedGeneration: UInt64,
         mode: LocalUsageScanMode

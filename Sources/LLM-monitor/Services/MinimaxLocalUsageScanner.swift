@@ -75,13 +75,6 @@ final class MinimaxLocalUsageScanner: LocalUsageScannerBase<MinimaxLocalUsage>, 
     private let fileManager: FileManagerBox
     private let calendar: Calendar
     private let now: @Sendable () -> Date
-    private var fileSystemWatcher: LocalFSEventsWatcher? = nil
-
-    /// FSEvents only invalidates the cached view; SQL stays in the scan work.
-    private(set) var requiresFullScan = true
-    private var eventGeneration: UInt64 = 0
-    var onFileSystemEvent: LocalFSEventsWatcher.EventHandler?
-
     /// 最近一次成功写入 index.json 的 generation. 旧 worker 即使晚到 mutex,
     /// `startedGeneration > self.lastCommittedGeneration` 才写盘, 否则 saveIndex
     /// 跳过保留新 worker 的 view. read + write 都在 `performScanPure` 内部, 跨
@@ -125,67 +118,31 @@ final class MinimaxLocalUsageScanner: LocalUsageScannerBase<MinimaxLocalUsage>, 
                 now: Date()
             )
         )
-        fileSystemWatcher = LocalFSEventsWatcher(
-            paths: [runtimeDBURL.deletingLastPathComponent()]
-        ) { [weak self] event in
-            self?.handleFileSystemEvent(event)
-        }
-    }
-
-    func startWatchingIfNeeded() {
-        fileSystemWatcher?.start()
-    }
-
-    override func restartWatching() {
-        startWatchingIfNeeded()
-    }
-
-    override func stopWatching() {
-        fileSystemWatcher?.stop()
-        requiresFullScan = true
-    }
-
-    func markFullScanCompleted() {
-        markFresh()
-        requiresFullScan = false
-    }
-
-    private func handleFileSystemEvent(_ event: LocalFSEventsEvent) {
-        eventGeneration &+= 1
-        markDirty()
-        if event.requiresFullScan {
-            requiresFullScan = true
-        }
-        onFileSystemEvent?(event)
-    }
-
-    private func acknowledgeFullScan(at generation: UInt64) {
-        guard eventGeneration == generation else { return }
-        requiresFullScan = false
+        configureSourceLifecycle(paths: [runtimeDBURL.deletingLastPathComponent()])
     }
 
     /// performScanPure 的 pipeline：mutex 串行 + lastCommittedGeneration 守门。
-    override func makeWork(startedGeneration: UInt64) -> @Sendable () async throws -> MinimaxLocalUsage {
+    override func makeWork(
+        startedGeneration: UInt64,
+        mode: LocalUsageScanMode
+    ) -> @Sendable () async throws -> MinimaxLocalUsage {
         let runtimeDBURL = self.runtimeDBURL
         let cacheDir = self.cacheDir
         let fileManager = self.fileManager
         let calendar = self.calendar
         let now = self.now
-        let eventGeneration = self.eventGeneration
+        let forceFull = mode == .full
         return {
-            let result = try await Self.performScanPure(
+            try await Self.performScanPure(
                 runtimeDBURL: runtimeDBURL,
                 cacheDir: cacheDir,
                 fileManager: fileManager,
                 calendar: calendar,
                 now: now,
                 startedGeneration: startedGeneration,
-                scanner: self
+                scanner: self,
+                forceFull: forceFull
             )
-            await MainActor.run { [weak self] in
-                self?.acknowledgeFullScan(at: eventGeneration)
-            }
-            return result
         }
     }
 
@@ -221,7 +178,8 @@ final class MinimaxLocalUsageScanner: LocalUsageScannerBase<MinimaxLocalUsage>, 
         calendar: Calendar,
         now: @escaping @Sendable () -> Date,
         startedGeneration: UInt64,
-        scanner: MinimaxLocalUsageScanner
+        scanner: MinimaxLocalUsageScanner,
+        forceFull: Bool = false
     ) async throws -> MinimaxLocalUsage {
         // Test-only: 让测试精确控制 worker 在做什么 (在 SQL / cache 写前阻塞等
         // cancel 触发). 生产环境 (release build) 没这个字段, 编译期消除.
@@ -254,7 +212,8 @@ final class MinimaxLocalUsageScanner: LocalUsageScannerBase<MinimaxLocalUsage>, 
                 calendar: calendar,
                 now: now,
                 shouldSave: shouldSave,
-                saveIndexHook: saveIndexHook
+                saveIndexHook: saveIndexHook,
+                forceFull: forceFull
             )
             if shouldSave {
                 // 写盘成功 → 主 actor 更新本实例. 仍持有 mutex, 下一个 worker
@@ -278,7 +237,8 @@ final class MinimaxLocalUsageScanner: LocalUsageScannerBase<MinimaxLocalUsage>, 
         calendar: Calendar,
         now: @escaping @Sendable () -> Date,
         shouldSave: Bool,
-        saveIndexHook: (@Sendable () -> Void)? = nil
+        saveIndexHook: (@Sendable () -> Void)? = nil,
+        forceFull: Bool = false
     ) throws -> MinimaxLocalUsage {
         try Self.ensureCacheDirectoriesExist(cacheDir: cacheDir, fileManager: fileManager)
 
@@ -317,7 +277,9 @@ final class MinimaxLocalUsageScanner: LocalUsageScannerBase<MinimaxLocalUsage>, 
 
         var dirty: [(key: String, info: MinimaxDBFileInfo)] = []
         for (key, info) in currentSourceInfo {
-            if let cached = index.sources[key] {
+            if forceFull {
+                dirty.append((key, info))
+            } else if let cached = index.sources[key] {
                 if cached.charSplitDegraded == true {
                     logInfo("[minimax-scan] source=\(key) 上次字符聚合 degraded，强制重扫重试")
                     dirty.append((key, info))

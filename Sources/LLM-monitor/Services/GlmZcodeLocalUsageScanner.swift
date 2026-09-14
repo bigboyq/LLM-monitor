@@ -50,14 +50,6 @@ final class GlmZcodeLocalUsageScanner: SingleDBSnapshotScanner<GlmLocalUsage>, @
     /// 加载/变更时经 LocalUsageOrchestration 推送；扫描在后台线程执行，用 unfair
     /// lock 保证跨线程可见。
     private let balanceLogParsingEnabled = OSAllocatedUnfairLock<Bool>(initialState: false)
-    private var fileSystemWatcher: LocalFSEventsWatcher? = nil
-
-    /// FSEvents only invalidates the snapshot; SQL/log parsing remains in the
-    /// existing scan pipeline.
-    private(set) var requiresFullScan = true
-    private var eventGeneration: UInt64 = 0
-    var onFileSystemEvent: LocalFSEventsWatcher.EventHandler?
-
     nonisolated static let defaultTasksDBURL: URL = {
         URL(fileURLWithPath: NSHomeDirectory())
             .appendingPathComponent(".zcode", isDirectory: true)
@@ -90,59 +82,11 @@ final class GlmZcodeLocalUsageScanner: SingleDBSnapshotScanner<GlmLocalUsage>, @
             logTag: Self.scanLogTag,
             cacheIndexVersion: Self.cacheIndexVersion
         )
-        fileSystemWatcher = LocalFSEventsWatcher(
-            paths: [
-                dbURL.deletingLastPathComponent(),
-                tasksDBURL.deletingLastPathComponent(),
-                balanceLogDirectory
-            ]
-        ) { [weak self] event in
-            self?.handleFileSystemEvent(event)
-        }
-    }
-
-    func startWatchingIfNeeded() {
-        fileSystemWatcher?.start()
-    }
-
-    override func restartWatching() {
-        startWatchingIfNeeded()
-    }
-
-    override func stopWatching() {
-        fileSystemWatcher?.stop()
-        requiresFullScan = true
-    }
-
-    func markFullScanCompleted() {
-        markFresh()
-        requiresFullScan = false
-    }
-
-    private func handleFileSystemEvent(_ event: LocalFSEventsEvent) {
-        eventGeneration &+= 1
-        markDirty()
-        if event.requiresFullScan {
-            requiresFullScan = true
-        }
-        onFileSystemEvent?(event)
-    }
-
-    private func acknowledgeFullScan(at generation: UInt64) {
-        guard eventGeneration == generation else { return }
-        requiresFullScan = false
-    }
-
-    override func makeWork(startedGeneration: UInt64) -> @Sendable () async throws -> GlmLocalUsage {
-        let eventGeneration = self.eventGeneration
-        let work = super.makeWork(startedGeneration: startedGeneration)
-        return {
-            let result = try await work()
-            await MainActor.run { [weak self] in
-                self?.acknowledgeFullScan(at: eventGeneration)
-            }
-            return result
-        }
+        configureSourceLifecycle(paths: [
+            dbURL.deletingLastPathComponent(),
+            tasksDBURL.deletingLastPathComponent(),
+            balanceLogDirectory
+        ])
     }
 
     /// 设置层开关 → scanner。线程安全，可在任意时刻调用。

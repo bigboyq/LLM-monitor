@@ -156,7 +156,10 @@ struct CodexFetcher: QuotaFetcher {
     }
 
     nonisolated static func loadUsageDetailsAsync(
-        authPath: String?, model: ModelQuota?, limits: CodexLocalScanLimits = .production
+        authPath: String?,
+        model: ModelQuota?,
+        limits: CodexLocalScanLimits = .production,
+        forceFull: Bool = false
     ) async -> CodexUsageDetails? {
         let authURL: URL
         if let authPath, !authPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -196,17 +199,22 @@ struct CodexFetcher: QuotaFetcher {
             + ":\(limits.maxRecentSamples)"
         let sourceFingerprint = localUsageSourceFingerprint(candidateFiles)
 
-        if let cached = await CodexUsageDetailsCache.shared.value(
-            for: codexHome,
-            windowFingerprint: windowFingerprint,
-            sourceFingerprint: sourceFingerprint
-        ) {
+        if !forceFull,
+           let cached = await CodexUsageDetailsCache.shared.value(
+               for: codexHome,
+               windowFingerprint: windowFingerprint,
+               sourceFingerprint: sourceFingerprint
+           ) {
             logInfo("[codex/local] 使用缓存：session files=\(candidateFiles.count)")
             return cached
         }
 
         guard !Task.isCancelled else { return nil }
-        let scan = await scanSessionEvents(for: candidateFiles, limits: limits)
+        let scan = await scanSessionEvents(
+            for: candidateFiles,
+            limits: limits,
+            forceFull: forceFull
+        )
         let sessionFiles = scan.files
         guard !Task.isCancelled else { return nil }
         let summaries = summarizeLocalUsage(
