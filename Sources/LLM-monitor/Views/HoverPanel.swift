@@ -25,7 +25,7 @@ struct HoverInfoRow<Content: View, Detail: View>: View {
                         HoverPanelController.shared.hoverMoved(
                             detail: AnyView(detail),
                             sample: sample,
-                            delay: 0.15
+                            delay: 0.22
                         )
                     },
                     onExit: {
@@ -171,21 +171,19 @@ final class HoverPanelController {
         pendingDetail = detail
         pendingSample = sample
 
-        if panel?.isVisible == true {
-            present(detail: detail, sample: sample)
-            return
-        }
+        // 如果浮层已可见，切换到新浮层时增加 80ms 微小防抖缓冲，
+        // 避免鼠标从上到下划过紧邻的多个 HoverInfoRow 时产生快速连环重绘闪烁。
+        let effectiveDelay: TimeInterval = (panel?.isVisible == true) ? 0.08 : delay
 
-        if showWorkItem == nil {
-            let item = DispatchWorkItem { [weak self] in
-                self?.showWorkItem = nil
-                guard let detail = self?.pendingDetail,
-                      let sample = self?.pendingSample else { return }
-                self?.present(detail: detail, sample: sample)
-            }
-            showWorkItem = item
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
+        showWorkItem?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            self?.showWorkItem = nil
+            guard let detail = self?.pendingDetail,
+                  let sample = self?.pendingSample else { return }
+            self?.present(detail: detail, sample: sample)
         }
+        showWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + effectiveDelay, execute: item)
     }
 
     func hide() {

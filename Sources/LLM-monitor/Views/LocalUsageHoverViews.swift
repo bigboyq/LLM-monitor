@@ -420,19 +420,19 @@ struct LocalUsageFooterView<Daily: LocalUsageDaily>: View {
             }
         } else {
             Text("今日暂无 Token 活动")
-                .font(.system(size: 10))
-                .foregroundStyle(.tertiary)
+                .font(MenuTypography.hint)
+                .foregroundStyle(.secondary)
         }
     }
 
     private func todayMetric(label: String, value: String) -> some View {
         HStack(spacing: 3) {
             Text(label)
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.secondary)
             Text(value)
                 .foregroundStyle(Color.secondaryLabel)
         }
-        .font(.system(size: 10, weight: .medium).monospacedDigit())
+        .font(MenuTypography.metricValue)
         .lineLimit(1)
     }
 
@@ -441,8 +441,8 @@ struct LocalUsageFooterView<Daily: LocalUsageDaily>: View {
             HoverInfoRow {
                 HStack(spacing: 5) {
                     Image(systemName: "chart.line.uptrend.xyaxis")
-                        .font(.system(size: 9, weight: .medium))
-                        .foregroundStyle(.tertiary)
+                        .font(MenuTypography.footer)
+                        .foregroundStyle(.secondary)
                     todayMetrics
                 }
             } detail: {
@@ -467,12 +467,12 @@ struct LocalUsageFooterView<Daily: LocalUsageDaily>: View {
                     .scaleEffect(0.6)
             } else {
                 Image(systemName: "chart.line.uptrend.xyaxis")
-                    .font(.system(size: 9, weight: .medium))
+                    .font(MenuTypography.footer)
                     .foregroundStyle(.quaternary)
             }
             Text(placeholderText)
-                .font(.system(size: 10))
-                .foregroundStyle(.tertiary)
+                .font(MenuTypography.hint)
+                .foregroundStyle(.secondary)
                 .lineLimit(1)
         }
     }

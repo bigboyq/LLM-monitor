@@ -16,38 +16,38 @@ struct AccountHoverView: View {
                 Image(systemName: "person.crop.circle")
                     .foregroundStyle(.secondary)
                 Text(title)
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(MenuTypography.hoverTitle)
             }
 
             if let accountEmail, !accountEmail.isEmpty {
                 HStack(spacing: 4) {
                     Image(systemName: "envelope")
-                        .font(.system(size: 10, weight: .medium))
+                        .font(MenuTypography.hoverCaptionEmphasis)
                         .foregroundStyle(.tertiary)
                     Text(accountEmail)
-                        .font(.system(size: 11, weight: .medium).monospacedDigit())
+                        .font(MenuTypography.hoverBodyMonospaced)
                         .foregroundStyle(.primary)
                         .textSelection(.enabled)
                 }
             } else {
                 Text("未拿到账号邮箱（首次刷新后会显示）")
-                    .font(.system(size: 10))
+                    .font(MenuTypography.hoverCaption)
                     .foregroundStyle(.tertiary)
             }
 
             if let planLabel, !planLabel.isEmpty {
                 HStack(spacing: 4) {
                     Image(systemName: "rosette")
-                        .font(.system(size: 10, weight: .medium))
+                        .font(MenuTypography.hoverCaptionEmphasis)
                         .foregroundStyle(.tertiary)
                     Text(planLabel)
-                        .font(.system(size: 11, weight: .medium))
+                        .font(MenuTypography.hoverBody)
                         .foregroundStyle(.secondary)
                 }
             }
 
             Text(sourceNote)
-                .font(.system(size: 9))
+                .font(MenuTypography.hoverFootnote)
                 .foregroundStyle(.tertiary)
         }
         .frame(width: 240, alignment: .leading)

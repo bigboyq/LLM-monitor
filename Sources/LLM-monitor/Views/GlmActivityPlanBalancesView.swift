@@ -25,17 +25,17 @@ struct GlmActivityPlanBalancesView: View {
     private func row(for balance: GlmActivityPlanBalance) -> some View {
         HStack(spacing: 4) {
             Image(systemName: "gift.fill")
-                .font(.system(size: 9))
+                .font(MenuTypography.badge)
             Text(displayTitle(balance))
-                .font(.system(size: 10, weight: .medium))
+                .font(MenuTypography.metricLabel)
                 .lineLimit(1)
             Text(remainingPercent(balance))
-                .font(.system(size: 10))
+                .font(MenuTypography.metricValue)
             Text("(\(Formatters.formatTokenCountCompact(balance.remainingUnits))/\(Formatters.formatTokenCountCompact(balance.totalUnits)))")
-                .font(.system(size: 10))
+                .font(MenuTypography.metricValue)
             if let expiresAt = balance.expiresAt {
                 Text(Formatters.formatMonthDayMinute(expiresAt))
-                    .font(.system(size: 9))
+                    .font(MenuTypography.timeSuffix)
                     .foregroundStyle(.tertiary)
             }
         }

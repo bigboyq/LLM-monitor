@@ -53,10 +53,10 @@ struct MenuContentView: View {
     private var headerBar: some View {
         HStack(spacing: 8) {
             Image(systemName: "chart.bar.xaxis")
-                .font(.system(size: 13, weight: .semibold))
+                .font(MenuTypography.headerTitle)
                 .foregroundStyle(.secondary)
             Text("LLM Monitor")
-                .font(.system(size: 13, weight: .semibold))
+                .font(MenuTypography.headerTitle)
                 .foregroundStyle(Color.primaryLabel)
             Spacer()
             if state.isRefreshing {
@@ -202,7 +202,11 @@ struct MenuContentView: View {
                 }
                 .help("打开设置面板")
             footerSeparator
-            FooterActionButton(icon: "powersleep", title: "节能", dotColor: energyDotColor) {
+            FooterActionButton(
+                icon: state.sleepHealth.isKeepAwakeOn ? "cup.and.saucer.fill" : "powersleep",
+                title: state.sleepHealth.isKeepAwakeOn ? "防休眠" : "节能",
+                dotColor: energyDotColor
+            ) {
                 state.sleepHealth.setKeepAwake(!state.sleepHealth.isKeepAwakeOn)
                 energyUpdateTick &+= 1
             }
@@ -236,7 +240,7 @@ struct MenuContentView: View {
     /// 「节能」按钮提示语：单击直接就地切换防休眠模式；排障可从旁边的「设置」进入。
     private var energyActionTooltip: String {
         if state.sleepHealth.isKeepAwakeOn {
-            return "单击关闭防休眠模式（恢复系统自动睡眠）"
+            return "当前已开启防休眠模式；单击恢复系统自动睡眠"
         }
         switch state.sleepHealth.report?.status {
         case .blockedByAssertions:
@@ -253,20 +257,23 @@ struct MenuContentView: View {
     private var footerStatus: some View {
         HStack(spacing: 4) {
             Image(systemName: "clock")
-                .font(.system(size: 9, weight: .medium))
+                .font(MenuTypography.footer)
             if let last = state.lastRefreshAt {
                 Text("更新于 \(Formatters.formatClock(last))")
+                    .font(MenuTypography.footerNumber)
             } else if let next = state.nextRefreshAt {
                 Text("下次 \(Formatters.formatClock(next))")
+                    .font(MenuTypography.footerNumber)
             } else {
                 Text("就绪")
+                    .font(MenuTypography.footer)
             }
             
             footerSeparator
             
             Text("自启 \(loginItemService.isEnabled ? "✓" : "✗")")
+                .font(MenuTypography.footer)
         }
-        .font(.system(size: 9, weight: .medium))
         .foregroundStyle(Color.secondary.opacity(0.75))
     }
 
@@ -373,17 +380,21 @@ private struct FooterActionButton: View {
         Button(action: action) {
             HStack(spacing: 4) {
                 Image(systemName: icon)
-                    .font(.system(size: 9, weight: .medium))
+                    .font(MenuTypography.footer)
                     .overlay(alignment: .topTrailing) {
                         if let dotColor {
                             Circle()
                                 .fill(Color(nsColor: dotColor))
-                                .frame(width: 5, height: 5)
-                                .offset(x: 2, y: -1)
+                                .frame(width: 6.5, height: 6.5)
+                                .overlay(
+                                    Circle()
+                                        .stroke(Color.primary.opacity(0.12), lineWidth: 0.5)
+                                )
+                                .offset(x: 3, y: -2)
                         }
                     }
                 Text(title)
-                    .font(.system(size: 9, weight: .medium))
+                    .font(MenuTypography.footer)
             }
             .foregroundStyle(Color.secondary.opacity(0.82))
             .contentShape(Rectangle())

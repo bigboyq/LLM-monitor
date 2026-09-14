@@ -970,19 +970,39 @@ final class ProviderModelTests: XCTestCase {
         XCTAssertNil(q.intervalTimeRemainingFraction, "没有 intervalWindowSeconds 就不能 fallback 到 modelName=chatgpt_plan")
     }
 
+    func testBindingWindowDecisionBranches() {
+        let weeklyDecision = EquivalentQuotaAllocation.bindingWindow(
+            primaryFraction: 0.90, weeklyFraction: 0.10, segments: 5
+        )
+        XCTAssertEqual(weeklyDecision, .weekly)
+
+        let primaryDecision = EquivalentQuotaAllocation.bindingWindow(
+            primaryFraction: 0.20, weeklyFraction: 0.10, segments: 5
+        )
+        XCTAssertEqual(primaryDecision, .primary)
+    }
+
     func testBindingConstraintTextBothBranches() {
         let weeklyBindingText = QuotaWindowsHoverPresentation.bindingConstraintText(
-            primaryLabel: "5h", weeklyIsBinding: true, weeklyEquivalentMultiplier: 5, weeklyLabel: "周额度"
+            primaryLabel: "5h", bindingWindow: .weekly, weeklyEquivalentMultiplier: 5, weeklyLabel: "周额度"
         )
-        XCTAssertTrue(weeklyBindingText.contains("取周额度"))
-        XCTAssertTrue(weeklyBindingText.contains("5h还有余量但周额度已先耗尽"))
-        XCTAssertFalse(weeklyBindingText.contains("取5h是 binding constraint"))
+        // 周受限分支：应包含周与主窗口标签，且不泄露工程黑话
+        XCTAssertTrue(weeklyBindingText.contains("周额度"))
+        XCTAssertTrue(weeklyBindingText.contains("5h"))
+        XCTAssertFalse(weeklyBindingText.contains("binding constraint"))
+        XCTAssertFalse(weeklyBindingText.contains("reset time"))
 
         let primaryBindingText = QuotaWindowsHoverPresentation.bindingConstraintText(
-            primaryLabel: "5h", weeklyIsBinding: false, weeklyEquivalentMultiplier: 5, weeklyLabel: "周"
+            primaryLabel: "5h", bindingWindow: .primary, weeklyEquivalentMultiplier: 5, weeklyLabel: "周"
         )
-        XCTAssertTrue(primaryBindingText.contains("取5h窗口"))
-        XCTAssertTrue(primaryBindingText.contains("5h是 binding constraint"))
+        // 主周期受限分支：应包含主窗口标签与周标签，且不泄露工程黑话
+        XCTAssertTrue(primaryBindingText.contains("5h"))
+        XCTAssertTrue(primaryBindingText.contains("周"))
+        XCTAssertFalse(primaryBindingText.contains("binding constraint"))
+        XCTAssertFalse(primaryBindingText.contains("reset time"))
+
+        // 两个分支生成的语义文本必须具有区分度
+        XCTAssertNotEqual(weeklyBindingText, primaryBindingText)
     }
 
     func testEquivalentQuotaAllocationSegmentFillsBoundaryConditions() {

@@ -220,10 +220,15 @@ struct EnergyPaneContent: View {
         ) {
             if let report = service.report {
                 if let powerConfig = report.powerConfig {
-                    matrixHeader
-                    ForEach(matrixRows(ac: powerConfig.ac, battery: powerConfig.battery)) { row in
-                        matrixRow(row)
+                    VStack(alignment: .leading, spacing: 12) {
+                        matrixHeader
+                        Divider()
+                            .opacity(0.4)
+                        ForEach(matrixRows(ac: powerConfig.ac, battery: powerConfig.battery)) { row in
+                            matrixRow(row)
+                        }
                     }
+                    .frame(maxWidth: 540, alignment: .leading)
                 } else {
                     Text("本次未能读取电源参数（pmset -g custom）。")
                         .font(SettingsTypography.metadata)

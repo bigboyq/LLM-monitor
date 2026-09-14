@@ -20,9 +20,9 @@ struct GlmPeakIndicatorView: View {
                 // 高峰期：积分按 1× 扣（全价）→ 红色
                 HStack(spacing: 4) {
                     Image(systemName: "flame.fill")
-                        .font(.system(size: 9))
+                        .font(MenuTypography.badge)
                     Text("高峰期 · 还剩 \(formatPeakDuration(end.timeIntervalSinceNow))")
-                        .font(.system(size: 10, weight: .medium))
+                        .font(MenuTypography.metricValue)
                 }
                 .foregroundStyle(.red)
             },
@@ -30,15 +30,15 @@ struct GlmPeakIndicatorView: View {
                 // 非高峰期：积分按 50% 抵扣。距高峰期 < 1 小时 → 橙色（临近）；
                 // ≥ 1 小时 → 绿色（余量充足）。
                 let secs = start.timeIntervalSinceNow
-                let tier: Color = secs < 3600 ? .orange : .green
+                let tier: Color = secs < 3600 ? Color.warningTint : .green
                 HStack(spacing: 4) {
                     Image(systemName: "snowflake")
-                        .font(.system(size: 9))
+                        .font(MenuTypography.badge)
                     Text("距高峰期 \(formatPeakDuration(secs))")
-                        .font(.system(size: 10))
+                        .font(MenuTypography.metricLabel)
                     Text("· 非高峰 5 折")
-                        .font(.system(size: 9))
-                        .foregroundStyle(.tertiary)
+                        .font(MenuTypography.badge)
+                        .foregroundStyle(.secondary)
                 }
                 .foregroundStyle(tier)
             }

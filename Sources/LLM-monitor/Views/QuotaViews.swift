@@ -489,26 +489,26 @@ struct HoverMetricLine: View {
     var body: some View {
         HStack(spacing: 6) {
             Text(label)
-                .font(.system(size: 10, weight: .medium))
+                .font(MenuTypography.dataLabel)
                 .foregroundStyle(.secondary)
                 .frame(width: 18, alignment: .leading)
 
             Text(Formatters.formatQuotaPercent(percent))
-                .font(.system(size: 11, weight: .semibold).monospacedDigit())
+                .font(MenuTypography.dataValue)
                 .foregroundStyle(summaryColor(for: percent))
                 .frame(width: 40, alignment: .leading)
 
             if let resetsAt {
                 Text(Formatters.formatMonthDayMinute(resetsAt))
-                    .font(.system(size: 10).monospacedDigit())
+                    .font(MenuTypography.resetDate)
                     .foregroundStyle(.primary)
 
                 Text(Formatters.formatRelativeShort(from: resetsAt))
-                    .font(.system(size: 10))
+                    .font(MenuTypography.timeSuffix)
                     .foregroundStyle(.secondary)
             } else {
                 Text("重置时间 —")
-                    .font(.system(size: 10))
+                    .font(MenuTypography.hint)
                     .foregroundStyle(.tertiary)
             }
 
@@ -526,31 +526,31 @@ struct QuotaWindowTitle: View {
     var body: some View {
         HStack(spacing: 6) {
             Text(title)
-                .font(.system(size: 11, weight: .semibold))
+                .font(MenuTypography.modelTitle)
                 .foregroundStyle(tint)
             Spacer(minLength: 0)
             if let weeklyEquivalentMultiplier {
                 Text("周倍率：\(weeklyEquivalentMultiplier)")
-                    .font(.system(size: 10, weight: .medium).monospacedDigit())
+                    .font(MenuTypography.multiplier)
                     .foregroundStyle(.secondary)
                     .help(multiplierTooltipText(weeklyEquivalentMultiplier))
             }
         }
     }
 
-    /// 解释"周倍率 N"的含义：N 段额度格 = "1 段当前主窗口 + (N-1) 段等价的周额度"，
-    /// 方便用户理解"为什么是 5 段 / 6 段 / 10 段"。
+    /// 解释"周倍率 N"的含义：精炼为面向普通用户的自然语言
     private func multiplierTooltipText(_ n: Int) -> String {
         let segments = max(n, 1)
         if segments <= 1 {
-            return "周倍率：1（仅 1 个窗口,无分段）"
+            return "周倍率：1（仅单窗口，无分段）"
         }
-        return "周倍率：\(segments)（分段条按 1 段当前\(primaryLabel) + \(segments - 1) 段等价的周额度渲染）"
+        return "额度结构：当前 \(primaryLabel) + 等价周额度（共 \(segments) 等份配额池）"
     }
 }
 
-/// 数据列固定宽度，让所有重置时间从同一 x 位置开始。
-private let quotaDataColumnWidth: CGFloat = 160
+/// 数据列宽度：双窗口数据列定宽 152pt 确保对齐，单窗口紧凑定宽 80pt 避免留白过大
+private let quotaCombinedDataColumnWidth: CGFloat = 152
+private let quotaSingleDataColumnWidth: CGFloat = 80
 
 /// 统一的双窗口交互：
 /// - 额度条 hover：额度窗口内 token 用量
@@ -704,7 +704,7 @@ private struct CombinedQuotaMetadataLine: View {
                 quotaValue(label: primaryLabel, percent: primaryPercent, timeFraction: primaryTimeFraction)
                 quotaValue(label: secondaryLabel, percent: secondaryPercent, timeFraction: secondaryTimeFraction)
             }
-            .frame(width: quotaDataColumnWidth, alignment: .leading)
+            .frame(width: quotaCombinedDataColumnWidth, alignment: .leading)
             ResetTimeSummary(resetsAt: resetsAt)
         }
     }
@@ -712,12 +712,13 @@ private struct CombinedQuotaMetadataLine: View {
     private func quotaValue(label: String, percent: Double, timeFraction: Double?) -> some View {
         HStack(spacing: 4) {
             Text(label)
+                .font(MenuTypography.dataLabel)
                 .foregroundStyle(Color.primaryLabel)
             Text(Formatters.formatQuotaPercent(percent))
+                .font(MenuTypography.dataValue)
                 .foregroundStyle(summaryColor(for: percent, timeFraction: timeFraction))
                 .frame(width: 40, alignment: .trailing)
         }
-        .font(.system(size: 10, weight: .semibold).monospacedDigit())
     }
 }
 
@@ -730,13 +731,14 @@ private struct SingleQuotaMetadataLine: View {
         HStack(spacing: 6) {
             HStack(spacing: 4) {
                 Text(label)
+                    .font(MenuTypography.dataLabel)
                     .foregroundStyle(Color.primaryLabel)
                 Text(Formatters.formatQuotaPercent(percent))
+                    .font(MenuTypography.dataValue)
                     .foregroundStyle(summaryColor(for: percent))
                     .frame(width: 40, alignment: .trailing)
             }
-            .font(.system(size: 10, weight: .semibold).monospacedDigit())
-            .frame(width: quotaDataColumnWidth, alignment: .leading)
+            .frame(width: quotaSingleDataColumnWidth, alignment: .leading)
             ResetTimeSummary(resetsAt: resetsAt)
         }
     }
@@ -751,17 +753,17 @@ private struct ResetTimeSummary: View {
                 Image(systemName: "clock.arrow.circlepath")
                     .font(.system(size: 10, weight: .semibold))
                 Text(Formatters.formatMonthDayMinute(resetsAt))
-                    .font(.system(size: 10, weight: .semibold).monospacedDigit())
+                    .font(MenuTypography.resetDate)
                     .lineLimit(1)
                 Text("(\(Formatters.formatResetSuffix(from: resetsAt)))")
-                    .font(.system(size: 9, weight: .medium).monospacedDigit())
+                    .font(MenuTypography.timeSuffix)
                     .foregroundStyle(.tertiary)
                     .lineLimit(1)
             }
             .foregroundStyle(Color.primaryLabel)
         } else {
             Text("—")
-                .font(.system(size: 10))
+                .font(MenuTypography.hint)
                 .foregroundStyle(.tertiary)
         }
     }
@@ -769,26 +771,22 @@ private struct ResetTimeSummary: View {
 
 // MARK: - Tooltip helpers
 
-/// 进度条 hover 说明：分段构成 + 红三角语义。
-///
-/// - 第一格（亮色）= 当前 5h 窗口剩余
-/// - 后续 N-1 格（72% 不透明）= 等价的周额度剩余
-/// - 顶部红三角 ▼ = 周 reset 进度（0 = 即将过期, 1 = 刚重置）,5h 进度条不画
+/// 进度条 hover 说明：精炼为清晰的配额与重置时间解释
 func segmentedBarTooltipText(segments: Int, hasTriangle: Bool) -> String {
     let n = max(segments, 1)
     let parts: String
     if n == 1 {
-        parts = "单一窗口进度"
+        parts = "单一窗口可用进度"
     } else {
-        parts = "第 1 格 = 当前 5h 剩余;后续 \(n - 1) 格 = 等价的周额度剩余"
+        parts = "第 1 格为当前窗口余量；后续 \(n - 1) 格为等价周额度余量"
     }
     let triangle: String
     if hasTriangle {
-        triangle = "\n顶部 ▼ = 周 reset 进度（0 = 即将过期, 1 = 刚重置）"
+        triangle = "\n顶部 ▼ 标记周重置时间进度（左侧即将重置，右侧刚重置）"
     } else {
         triangle = ""
     }
-    return "分段条:\n\(parts)。\(triangle)"
+    return "分段额度：\n\(parts)。\(triangle)"
 }
 
 // MARK: - DeepSeek API 余额专用行
@@ -810,7 +808,7 @@ struct DeepseekBalanceRow: View {
                         .fill(tint)
                         .frame(width: 6, height: 6)
                     Text("API 账户余额")
-                        .font(.system(size: 12, weight: .semibold))
+                        .font(MenuTypography.hoverTitle)
                         .foregroundStyle(Color.primaryLabel)
                 }
 
@@ -834,13 +832,13 @@ struct DeepseekBalanceRow: View {
                     // R16: 明细单行截断，hover 看完整文本；layoutPriority 让 PeakIndicator 不被遮挡。
                     HStack(spacing: 8) {
                         Text(toppedUpText)
-                            .font(.system(size: 10, weight: .medium))
+                            .font(MenuTypography.metricLabel)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                             .truncationMode(.tail)
                             .help(toppedUpText)
                         Text(grantedText)
-                            .font(.system(size: 10, weight: .medium))
+                            .font(MenuTypography.metricLabel)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                             .truncationMode(.tail)

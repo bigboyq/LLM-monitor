@@ -314,7 +314,7 @@ struct SettingsView: View {
                             .font(SettingsTypography.numericValue)
                             .foregroundStyle(.secondary)
                     }
-                    .frame(width: 320)
+                    .frame(width: SettingsLayout.standardControlWidth)
                 }
             }
 
@@ -340,7 +340,7 @@ struct SettingsView: View {
                             }
                         }
                         .pickerStyle(.menu)
-                        .frame(width: 160, alignment: .trailing)
+                        .frame(width: SettingsLayout.standardControlWidth, alignment: .trailing)
                     }
 
                     SettingsToggleRow(label: "显示状态圆点", isOn: $statusBarHealthDotEnabled)
@@ -401,7 +401,7 @@ struct SettingsView: View {
                             text: $barkServerURL,
                             prompt: Text(BarkConfig.defaultServerURL)
                         )
-                        .frame(width: 280)
+                        .frame(width: SettingsLayout.standardControlWidth)
                         .disabled(!barkEnabled)
                     }
 
@@ -412,19 +412,19 @@ struct SettingsView: View {
 
                     SettingsControlRow("铃声（可选）") {
                         TextField("", text: $barkSound, prompt: Text("默认"))
-                            .frame(width: 280)
+                            .frame(width: SettingsLayout.standardControlWidth)
                             .disabled(!barkEnabled)
                     }
 
                     SettingsControlRow("分组（可选）") {
                         TextField("", text: $barkGroup, prompt: Text(BarkConfig.defaultGroup))
-                            .frame(width: 280)
+                            .frame(width: SettingsLayout.standardControlWidth)
                             .disabled(!barkEnabled)
                     }
 
                     SettingsControlRow("消息有效期 TTL（秒，可选）") {
                         TextField("", text: $barkTTL, prompt: Text("0 = 不过期"))
-                            .frame(width: 280)
+                            .frame(width: SettingsLayout.standardControlWidth)
                             .disabled(!barkEnabled)
                     }
 
@@ -591,7 +591,7 @@ struct SettingsView: View {
                                 selectAuthFile()
                             }
                         }
-                        .frame(width: 320)
+                        .frame(width: SettingsLayout.standardControlWidth)
                     }
 
                     Divider()
@@ -720,7 +720,7 @@ struct SettingsView: View {
                         }
                     }
                     .pickerStyle(.menu)
-                    .frame(width: 180, alignment: .trailing)
+                    .frame(width: SettingsLayout.standardControlWidth, alignment: .trailing)
                 }
             }
         }
@@ -778,7 +778,7 @@ struct SettingsView: View {
             .buttonStyle(.borderless)
             .help(showGlmKey ? "隐藏 API Key" : "显示 API Key")
         }
-        .frame(width: 320, alignment: .leading)
+        .frame(width: SettingsLayout.standardControlWidth, alignment: .leading)
     }
 
     func intervalSliderField(label: String, value: Binding<Int>) -> some View {
@@ -805,7 +805,7 @@ struct SettingsView: View {
                     .font(SettingsTypography.numericValue)
                     .foregroundStyle(.secondary)
             }
-            .frame(width: 320)
+            .frame(width: SettingsLayout.standardControlWidth)
         }
         .padding(.vertical, 4)
     }
@@ -831,7 +831,7 @@ struct SettingsView: View {
             .buttonStyle(.borderless)
             .help(isVisible.wrappedValue ? "隐藏" : "显示")
         }
-        .frame(width: 320, alignment: .leading)
+        .frame(width: SettingsLayout.standardControlWidth, alignment: .leading)
     }
 
     func apiKeyField(text: Binding<String>, isVisible: Binding<Bool>) -> some View {
@@ -864,7 +864,7 @@ struct SettingsView: View {
                     .help("若你是从 Authorization 头里复制的，去掉 “Bearer ” 前缀只保留 Key 本体通常更合适。")
             }
         }
-        .frame(width: 320, alignment: .leading)
+        .frame(width: SettingsLayout.standardControlWidth, alignment: .leading)
     }
 
     /// Q8: 判断是否误粘贴了 `Bearer ` 前缀（不记录 key，仅布尔判定）。

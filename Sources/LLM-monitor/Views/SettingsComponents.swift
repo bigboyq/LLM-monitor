@@ -21,6 +21,12 @@ enum SettingsTypography {
     }
 }
 
+/// 设置窗口标准布局与对齐规范，保证右侧控件对齐在统一垂直参考线上。
+enum SettingsLayout {
+    /// 标准控件宽度（Slider、输入框、下拉菜单统一使用 300pt 对齐）
+    static let standardControlWidth: CGFloat = 300
+}
+
 /// 设置项统一采用“左侧标签、右侧控件或值”的横向布局。
 struct SettingsControlRow<Control: View>: View {
     let label: String

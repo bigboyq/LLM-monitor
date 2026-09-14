@@ -18,12 +18,11 @@ struct SegmentedQuotaProgressBar: View {
 
     private let triangleSize = CGSize(width: 6, height: 4)
     private let triangleGap: CGFloat = 1
-    /// 只有当有时间标记时才在 bar 顶部腾出空间。
-    /// 没有标记时（5h-only / weekly 数据缺失）整体高度仍是 8pt，
-    /// 不会让 bar 看起来「上半截没了」。
-    private var hasMarker: Bool { timeRemainingFraction != nil }
-    private var markerHeight: CGFloat { hasMarker ? triangleSize.height + triangleGap : 0 }
-    private var totalHeight: CGFloat { height + markerHeight }
+    /// 槽位统一固定高度（8pt 进度条 + 4pt 标记三角 + 1pt 间距），
+    /// 避免因单窗口无时间标记导致相邻卡片行高在 8pt 与 13pt 之间晃动。
+    static let standardSlotHeight: CGFloat = 13
+    private var markerHeight: CGFloat { triangleSize.height + triangleGap }
+    private var totalHeight: CGFloat { Self.standardSlotHeight }
 
     /// 把外部传入的 timeRemainingFraction 限制在 [0, 1]，给 barColor / 三角位置共用。
     private var clampedFraction: Double? {
@@ -112,7 +111,7 @@ struct SegmentedQuotaProgressBar: View {
     private func color(for level: HealthLevel) -> Color {
         switch level {
         case .critical: return .red
-        case .warning:  return .yellow
+        case .warning:  return .warningTint
         case .healthy:  return tint
         }
     }
@@ -133,6 +132,14 @@ struct SegmentedQuotaProgressBar: View {
     }
 }
 
+/// 额度窗口瓶颈判定结果：指示哪个时间窗口的配额将优先耗尽
+enum BindingQuotaWindow: Equatable, Sendable {
+    /// 主短周期窗口（如 5h、日）为瓶颈
+    case primary
+    /// 周周期窗口为瓶颈
+    case weekly
+}
+
 /// 将同时生效的短周期、周配额投影到等价短周期格。首格专属当前窗口；若周额度更高，
 /// 周剩余的余数格紧随其后，再接整格，避免截断周余额。
 enum EquivalentQuotaAllocation {
@@ -145,22 +152,36 @@ enum EquivalentQuotaAllocation {
         return min(normalizedPrimary, weeklyUnits)
     }
 
-    /// 哪个窗口是 binding constraint：min(5h, wk × N)。
-    /// 返回该窗口的 reset time，另一个窗口作为兜底。
-    /// - 5h 更小 → 显示 5h reset（5h 即将重置，醒来就能继续用）
-    /// - wk × N 更小 → 显示 wk reset（不管 5h 还剩多少，wk 撑死了没法用）
-    /// - 相等时按约定落到 5h（与 effectivePrimaryFraction 的 min 在并列时取前值的实现一致）。
+    /// 核心决策逻辑：判定哪一个窗口是约束瓶颈（Binding Window）。
+    /// - min(5h, wk × N)；
+    /// - 5h 更小 → .primary（主短周期额度先耗尽）
+    /// - wk × N 更小 → .weekly（周额度先耗尽）
+    /// - 相等时约定落到 .primary（与 min 在并列时取前值的约定一致）。
+    static func bindingWindow(
+        primaryFraction: Double,
+        weeklyFraction: Double,
+        segments: Int
+    ) -> BindingQuotaWindow {
+        let segmentCount = max(segments, 1)
+        let normalizedPrimary = min(max(primaryFraction, 0), 1)
+        let weeklyUnits = min(max(weeklyFraction, 0), 1) * Double(segmentCount)
+        return weeklyUnits < normalizedPrimary ? .weekly : .primary
+    }
+
+    /// 根据决策结果获取重置时间，另一个窗口作为缺失兜底。
     static func bindingResetDate(primaryFraction: Double,
                                  weeklyFraction: Double,
                                  primaryResetsAt: Date?,
                                  weeklyResetsAt: Date?,
                                  segments: Int) -> Date? {
-        let segmentCount = max(segments, 1)
-        let normalizedPrimary = min(max(primaryFraction, 0), 1)
-        let weeklyUnits = min(max(weeklyFraction, 0), 1) * Double(segmentCount)
-        let weeklyIsBinding = weeklyUnits < normalizedPrimary
-        return (weeklyIsBinding ? weeklyResetsAt : primaryResetsAt)
-            ?? (weeklyIsBinding ? primaryResetsAt : weeklyResetsAt)
+        let binding = bindingWindow(
+            primaryFraction: primaryFraction,
+            weeklyFraction: weeklyFraction,
+            segments: segments
+        )
+        let primaryChoice = primaryResetsAt ?? weeklyResetsAt
+        let weeklyChoice = weeklyResetsAt ?? primaryResetsAt
+        return binding == .weekly ? weeklyChoice : primaryChoice
     }
 
     static func segmentFills(primaryFraction: Double,
@@ -206,7 +227,7 @@ enum EquivalentQuotaAllocation {
 func summaryColor(for percent: Double, timeFraction: Double? = nil) -> Color {
     switch ModelQuota.colorLevel(percent: percent, timeFraction: timeFraction) {
     case .critical: return .red
-    case .warning:  return .yellow
+    case .warning:  return .warningTint
     case .healthy:
         // summary 没有 tint 上下文，用 primary 当基线；> 80% 额外加绿色信号
         return percent > 80 ? .green : .primary

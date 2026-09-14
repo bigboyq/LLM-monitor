@@ -353,28 +353,58 @@ final class LLMMonitorTests: XCTestCase {
         XCTAssertEqual(QuotaSummary.primaryWindowLabel(providerKind: .codexChatGpt, model: makeModel(name: "chatgpt_plan")), "5h")
     }
 
-    func testQuotaHoverPrimaryBindingTextUsesOrdinaryWindowLabel() {
+    func testEquivalentQuotaAllocationBindingWindowDecisions() {
+        // 1. 周额度先耗尽：weeklyFraction * segments < primaryFraction
         XCTAssertEqual(
-            QuotaWindowsHoverPresentation.bindingConstraintText(
-                primaryLabel: "5h",
-                weeklyIsBinding: false,
-                weeklyEquivalentMultiplier: 10,
-                weeklyLabel: "周"
-            ),
-            "主行 reset time 取5h窗口（5h是 binding constraint,比周额度先耗尽）。顶部红三角 ▼ = 周 reset 进度,仅作时间标记"
+            EquivalentQuotaAllocation.bindingWindow(primaryFraction: 0.80, weeklyFraction: 0.12, segments: 6),
+            .weekly
+        )
+
+        // 2. 主短周期先耗尽：primaryFraction < weeklyFraction * segments
+        XCTAssertEqual(
+            EquivalentQuotaAllocation.bindingWindow(primaryFraction: 0.08, weeklyFraction: 0.10, segments: 6),
+            .primary
+        )
+
+        // 3. 并列持平：约定优先主短周期
+        XCTAssertEqual(
+            EquivalentQuotaAllocation.bindingWindow(primaryFraction: 0.60, weeklyFraction: 0.10, segments: 6),
+            .primary
+        )
+
+        // 4. 边界数值截断与保护
+        XCTAssertEqual(
+            EquivalentQuotaAllocation.bindingWindow(primaryFraction: 1.5, weeklyFraction: 0.10, segments: 6),
+            .weekly
         )
     }
 
-    func testQuotaHoverPrimaryBindingTextUsesVideoDayWindowLabel() {
-        XCTAssertEqual(
-            QuotaWindowsHoverPresentation.bindingConstraintText(
-                primaryLabel: "日",
-                weeklyIsBinding: false,
-                weeklyEquivalentMultiplier: 7,
-                weeklyLabel: "周"
-            ),
-            "主行 reset time 取日窗口（日是 binding constraint,比周额度先耗尽）。顶部红三角 ▼ = 周 reset 进度,仅作时间标记"
+    func testQuotaHoverPrimaryBindingTextUsesOrdinaryWindowLabel() {
+        let text = QuotaWindowsHoverPresentation.bindingConstraintText(
+            primaryLabel: "5h",
+            bindingWindow: .primary,
+            weeklyEquivalentMultiplier: 10,
+            weeklyLabel: "周"
         )
+        // 校验语义决策输出：必须包含主窗口标签 "5h" 与周标签 "周"，且杜绝工程黑话
+        XCTAssertTrue(text.contains("5h"))
+        XCTAssertTrue(text.contains("周"))
+        XCTAssertFalse(text.contains("binding constraint"))
+        XCTAssertFalse(text.contains("reset time"))
+    }
+
+    func testQuotaHoverPrimaryBindingTextUsesVideoDayWindowLabel() {
+        let text = QuotaWindowsHoverPresentation.bindingConstraintText(
+            primaryLabel: "日",
+            bindingWindow: .primary,
+            weeklyEquivalentMultiplier: 7,
+            weeklyLabel: "周"
+        )
+        // 校验视频模型特化的 "日" 窗口标签正确注入展示层
+        XCTAssertTrue(text.contains("日"))
+        XCTAssertTrue(text.contains("周"))
+        XCTAssertFalse(text.contains("binding constraint"))
+        XCTAssertFalse(text.contains("reset time"))
     }
 
     func testQuotaHoverNormalizesNonFinitePercentForSafePresentation() {

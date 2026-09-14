@@ -118,7 +118,7 @@ struct ProviderCardView: View, Equatable {
             StatusIndicator(level: status.healthLevel)
             BrandLogoView(kind: status.kind)
             Text(displayTitle)
-                .font(.system(size: 14, weight: .bold))
+                .font(MenuTypography.cardTitle)
                 .foregroundStyle(Color.primaryLabel)
                 // R15: 长 displayName 不撑破 360pt 宽度，单行尾部截断，hover 看完整文本。
                 .lineLimit(1)
@@ -126,7 +126,7 @@ struct ProviderCardView: View, Equatable {
                 .help(displayTitle)
             if let pillLabel {
                 Text(pillLabel)
-                    .font(.system(size: 9, weight: .semibold))
+                    .font(MenuTypography.pill)
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 3)
@@ -299,11 +299,11 @@ struct ProviderCardView: View, Equatable {
                 .foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 2) {
                 Text(reason)
-                    .font(.system(size: 11))
+                    .font(MenuTypography.caption)
                     .foregroundStyle(.secondary)
-                Text("编辑 config.json 启用")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
+                Text("前往设置启用并配置")
+                    .font(MenuTypography.hint)
+                    .foregroundStyle(.secondary)
             }
         }
         .padding(.vertical, 4)
@@ -311,7 +311,7 @@ struct ProviderCardView: View, Equatable {
 
     private func placeholder(_ text: String) -> some View {
         Text(text)
-            .font(.system(size: 11))
+            .font(MenuTypography.caption)
             .foregroundStyle(.secondary)
             .padding(.vertical, 4)
     }
@@ -377,7 +377,7 @@ struct ProviderStateLabel: View {
             let color = color(for: presentation.tone)
 
             Text(presentation.title)
-                .font(.system(size: 9, weight: .semibold).monospacedDigit())
+                .font(MenuTypography.badge)
                 .foregroundStyle(color)
                 .padding(.horizontal, 6)
                 .padding(.vertical, 3)
@@ -389,7 +389,7 @@ struct ProviderStateLabel: View {
         switch tone {
         case .secondary: return .secondary
         case .green: return .green
-        case .yellow: return .yellow
+        case .yellow: return .warningTint
         case .red: return .red
         }
     }

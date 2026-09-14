@@ -24,9 +24,9 @@ struct DeepseekPeakIndicatorView: View {
                 // 高峰期：价格为平时 2 倍 → 红色高亮提示
                 HStack(spacing: 3) {
                     Image(systemName: "flame.fill")
-                        .font(.system(size: 8))
+                        .font(MenuTypography.badge)
                     Text("高峰 2× · 还剩 \(formatPeakDuration(end.timeIntervalSinceNow))")
-                        .font(.system(size: 10, weight: .semibold))
+                        .font(MenuTypography.metricValue)
                 }
                 .foregroundStyle(.red)
                 .padding(.horizontal, 6)
@@ -36,12 +36,12 @@ struct DeepseekPeakIndicatorView: View {
             offPeakRow: { start in
                 // 非高峰期：平时 1× 价格。距下一轮高峰 < 1 小时 → 橙色（临近）；≥ 1 小时 → 绿色（余量充足）。
                 let secs = start.timeIntervalSinceNow
-                let tier: Color = secs < 3600 ? .orange : .green
+                let tier: Color = secs < 3600 ? Color.warningTint : .green
                 HStack(spacing: 3) {
                     Image(systemName: "snowflake")
-                        .font(.system(size: 8))
+                        .font(MenuTypography.badge)
                     Text("距高峰 \(formatPeakDuration(secs))")
-                        .font(.system(size: 10, weight: .medium))
+                        .font(MenuTypography.metricLabel)
                 }
                 .foregroundStyle(tier)
                 .padding(.horizontal, 6)

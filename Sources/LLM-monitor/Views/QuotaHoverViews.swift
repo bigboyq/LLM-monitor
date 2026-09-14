@@ -6,16 +6,34 @@ enum QuotaWindowsHoverPresentation {
         return min(max(percent, 0), 100)
     }
 
+    /// 根据计算决策结果生成面向用户的提示文案（纯展示层）
+    static func bindingConstraintText(
+        primaryLabel: String,
+        bindingWindow: BindingQuotaWindow,
+        weeklyEquivalentMultiplier: Int,
+        weeklyLabel: String
+    ) -> String {
+        switch bindingWindow {
+        case .weekly:
+            return "主行展示 \(weeklyLabel) 重置倒计时（\(primaryLabel) 尚有余量，但周额度已达上限优先耗尽）。顶部 ▼ 为周重置时间标记"
+        case .primary:
+            return "主行展示 \(primaryLabel) 重置倒计时（\(primaryLabel) 额度将优先耗尽）。顶部 ▼ 为周重置时间标记"
+        }
+    }
+
+    /// 便捷重载：兼容布尔入参
     static func bindingConstraintText(
         primaryLabel: String,
         weeklyIsBinding: Bool,
         weeklyEquivalentMultiplier: Int,
         weeklyLabel: String
     ) -> String {
-        if weeklyIsBinding {
-            return "主行 reset time 取\(weeklyLabel)（\(primaryLabel)还有余量但周额度已先耗尽）。顶部红三角 ▼ = 周 reset 进度,与主行 reset 含义不同"
-        }
-        return "主行 reset time 取\(primaryLabel)窗口（\(primaryLabel)是 binding constraint,比周额度先耗尽）。顶部红三角 ▼ = 周 reset 进度,仅作时间标记"
+        bindingConstraintText(
+            primaryLabel: primaryLabel,
+            bindingWindow: weeklyIsBinding ? .weekly : .primary,
+            weeklyEquivalentMultiplier: weeklyEquivalentMultiplier,
+            weeklyLabel: weeklyLabel
+        )
     }
 }
 
@@ -32,23 +50,24 @@ struct QuotaWindowsHoverView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title)
-                .font(.system(size: 11, weight: .semibold))
+                .font(MenuTypography.hoverRowEmphasis)
             Text("周倍率：\(weeklyEquivalentMultiplier)（等价额度分段）")
-                .font(.system(size: 9))
+                .font(MenuTypography.hoverFootnote)
                 .foregroundStyle(.secondary)
             Text(effectiveAvailabilityText)
-                .font(.system(size: 9, weight: .medium).monospacedDigit())
-                .foregroundStyle(effectivePrimaryPercent < safePrimaryPercent ? .orange : .secondary)
+                .font(MenuTypography.hoverCaptionEmphasis.monospacedDigit())
+                .foregroundStyle(effectivePrimaryPercent < safePrimaryPercent ? Color.warningTint : .secondary)
             Text(
                 QuotaWindowsHoverPresentation.bindingConstraintText(
                     primaryLabel: primaryLabel,
-                    weeklyIsBinding: weeklyIsBinding,
+                    bindingWindow: bindingWindow,
                     weeklyEquivalentMultiplier: weeklyEquivalentMultiplier,
                     weeklyLabel: secondaryLabel
                 )
             )
-            .font(.system(size: 8))
-            .foregroundStyle(.tertiary)
+            .font(MenuTypography.hoverCaption)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
             HoverMetricLine(label: primaryLabel, percent: safePrimaryPercent, resetsAt: primaryResetsAt)
             Divider().opacity(0.45)
             HoverMetricLine(label: secondaryLabel, percent: safeWeeklyPercent, resetsAt: weeklyResetsAt)
@@ -63,9 +82,16 @@ struct QuotaWindowsHoverView: View {
         QuotaWindowsHoverPresentation.normalizedPercent(weeklyPercent)
     }
 
+    private var bindingWindow: BindingQuotaWindow {
+        EquivalentQuotaAllocation.bindingWindow(
+            primaryFraction: safePrimaryPercent / 100.0,
+            weeklyFraction: safeWeeklyPercent / 100.0,
+            segments: weeklyEquivalentMultiplier
+        )
+    }
+
     private var weeklyIsBinding: Bool {
-        let weeklyUnits = (safeWeeklyPercent / 100.0) * Double(max(weeklyEquivalentMultiplier, 1))
-        return weeklyUnits < (safePrimaryPercent / 100.0)
+        bindingWindow == .weekly
     }
 
     private var effectivePrimaryPercent: Double {
@@ -103,10 +129,10 @@ struct QuotaUsageWindowsHoverView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title)
-                .font(.system(size: 11, weight: .semibold))
+                .font(MenuTypography.hoverRowEmphasis)
             if let weeklyEquivalentMultiplier {
                 Text("周倍率：\(weeklyEquivalentMultiplier)（本地会话统计）")
-                    .font(.system(size: 9))
+                    .font(MenuTypography.hoverFootnote)
                     .foregroundStyle(.secondary)
             }
 
@@ -126,7 +152,7 @@ struct QuotaUsageWindowsHoverView: View {
                         showPromptCount: true
                     )
                     Text("ZCode 闲时任务真实消耗；不影响 5h / 周积分余额")
-                        .font(.system(size: 9))
+                        .font(MenuTypography.hoverFootnote)
                         .foregroundStyle(.tertiary)
                 }
             }
@@ -147,7 +173,7 @@ struct QuotaUsageWindowsHoverView: View {
                     Text("\(Formatters.formatGroupedInt(max(creditUsage.used, 0)))/\(Formatters.formatGroupedInt(creditUsage.total))")
                         .foregroundStyle(.primary)
                 }
-                .font(.system(size: 11).monospacedDigit())
+                .font(MenuTypography.hoverBodyMonospaced)
             }
 
             if let usage {
@@ -166,7 +192,7 @@ struct QuotaUsageWindowsHoverView: View {
                             ? "\(label) 用量生成中…"
                             : "\(label) 额度窗口内暂无本地 token 记录"
                     )
-                    .font(.system(size: 10))
+                    .font(MenuTypography.hoverCaption)
                     .foregroundStyle(.secondary)
                 }
             }
@@ -183,7 +209,7 @@ struct SingleQuotaWindowHoverView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("\(title) 重置时间")
-                .font(.system(size: 11, weight: .semibold))
+                .font(MenuTypography.hoverRowEmphasis)
             HoverMetricLine(
                 label: label,
                 percent: QuotaWindowsHoverPresentation.normalizedPercent(percent),
@@ -202,7 +228,7 @@ struct UsageMetricHoverSummaryView: View {
         VStack(alignment: .leading, spacing: 6) {
             if !title.isEmpty {
                 Text(title)
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(MenuTypography.hoverRowEmphasis)
                     .foregroundStyle(.primary)
             }
 
@@ -215,7 +241,7 @@ struct UsageMetricHoverSummaryView: View {
                     Text(" (\(Formatters.formatGroupedInt(usage.rounds)) rounds)")
                         .foregroundStyle(.secondary)
                 }
-                .font(.system(size: 11).monospacedDigit())
+                .font(MenuTypography.hoverBodyMonospaced)
             } else {
                 metricLine(label: "rounds", value: Formatters.formatGroupedInt(usage.rounds))
             }
@@ -246,7 +272,7 @@ struct UsageMetricHoverSummaryView: View {
             Text(value)
                 .foregroundStyle(.primary)
         }
-        .font(.system(size: 11).monospacedDigit())
+        .font(MenuTypography.hoverBodyMonospaced)
     }
 }
 
@@ -256,11 +282,11 @@ struct LastPromptHoverSummaryView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Last Prompt")
-                .font(.system(size: 11, weight: .semibold))
+                .font(MenuTypography.hoverRowEmphasis)
                 .foregroundStyle(.primary)
 
             Text(Formatters.formatYearMonthDayMinute(lastPrompt.completedAt))
-                .font(.system(size: 10).monospacedDigit())
+                .font(MenuTypography.hoverCaptionEmphasis.monospacedDigit())
                 .foregroundStyle(.secondary)
 
             UsageMetricHoverSummaryView(
