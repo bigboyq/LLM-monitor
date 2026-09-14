@@ -75,15 +75,18 @@ struct SettingsView: View {
     /// 整列重渲染；选中态判断用 `currentTab.id == tab.id`。
     enum SettingsTab: Identifiable {
         case general
+        case energy
         case provider(FetcherDescriptor)
         case clients
 
         static let generalID = "general"
+        static let energyID = "energy"
         static let clientsID = "clients"
 
         var id: String {
             switch self {
             case .general: return Self.generalID
+            case .energy: return Self.energyID
             case .provider(let d): return d.id
             case .clients: return Self.clientsID
             }
@@ -92,6 +95,7 @@ struct SettingsView: View {
         var displayTitle: String {
             switch self {
             case .general: return "常规"
+            case .energy: return "节能"
             case .provider(let d): return d.settingsTabTitle ?? d.displayName
             case .clients: return "客户端"
             }
@@ -100,6 +104,7 @@ struct SettingsView: View {
         var iconSystemName: String {
             switch self {
             case .general: return "gearshape"
+            case .energy: return "powersleep"
             case .provider(let d): return d.iconSystemName
             case .clients: return "terminal"
             }
@@ -108,6 +113,7 @@ struct SettingsView: View {
         var brandAsset: BrandLogoAsset? {
             switch self {
             case .general: return nil
+            case .energy: return nil
             case .provider(let d): return .provider(d.kind)
             case .clients: return nil
             }
@@ -116,16 +122,17 @@ struct SettingsView: View {
         var subtitle: String {
             switch self {
             case .general: return "刷新节奏与应用启动行为"
+            case .energy: return "系统睡眠健康度与防止休眠"
             case .provider(let d): return d.settingsTabSubtitle ?? ""
             case .clients: return "本地客户端用量与 Provider 映射"
             }
         }
     }
 
-    /// 全部 tab（`.general` + descriptors 派生的 provider tab）。
+    /// 全部 tab（`.general` / `.energy` + descriptors 派生的 provider tab）。
     /// `Identifiable` 让 `ForEach` 走 `id` 区分，切换不会触发整列重渲染。
     var allTabs: [SettingsTab] {
-        [.general] + sortedProviderDescriptors.map { .provider($0) } + [.clients]
+        [.general, .energy] + sortedProviderDescriptors.map { .provider($0) } + [.clients]
     }
 
     var sortedProviderDescriptors: [FetcherDescriptor] {
@@ -153,6 +160,12 @@ struct SettingsView: View {
         .onAppear {
             loadCurrentConfig()
             loginItemService.refreshStatus()
+            // 主面板 footer「节能」等入口可能在窗口创建前就置了跳转信号；
+            // 出现时兜底消费一次，规避订阅时机竞态。
+            consumePendingSettingsTab()
+        }
+        .onReceive(state.$pendingSettingsTab) { _ in
+            consumePendingSettingsTab()
         }
         .onReceive(configStore.$config.dropFirst()) { _ in
             // 外部编辑配置文件时，刷新设置页；保存过程中保留用户正在编辑的草稿。
@@ -162,6 +175,15 @@ struct SettingsView: View {
         .onDisappear {
             NSApp.setActivationPolicy(.accessory)
         }
+    }
+
+    /// 消费主面板的设置跳转信号：切到目标 tab 并清空。
+    /// onAppear + onReceive 双兜底：信号可能在设置窗口尚未创建（订阅未挂上）
+    /// 时就被置值，窗口出现后靠 onAppear 再消费一次。
+    func consumePendingSettingsTab() {
+        guard let pending = state.pendingSettingsTab else { return }
+        currentTab = pending
+        state.pendingSettingsTab = nil
     }
 
     var sidebar: some View {
@@ -214,6 +236,8 @@ struct SettingsView: View {
                 switch currentTab {
                 case .general:
                     generalPane
+                case .energy:
+                    energyPane
                 case .provider(let d):
                     // 派发到对应 provider 的 pane view。`providerPane(for:)` 是
                     // kind 派发，加新 provider 只需在那加一个 case，**不要**在这里

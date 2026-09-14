@@ -27,6 +27,15 @@ final class AppState: ObservableObject {
     /// 配置文件路径（UI 用）
     let configStore: ConfigStore
 
+    /// 「节能」模块数据源：睡眠健康度评估 + 本 App 防休眠断言管理。
+    /// 主面板健康灯与设置页节能 pane 直接观察它的 @Published。
+    let sleepHealth = SleepHealthService()
+
+    /// 设置窗口跳转信号：主面板 footer「节能」按钮先置 `.energy` 再打开设置
+    /// 窗口；SettingsView 在出现 / 值变化时消费并清 nil（双兜底规避窗口
+    /// 尚未创建时的订阅竞态）。
+    @Published var pendingSettingsTab: SettingsView.SettingsTab?
+
     // MARK: - 内部
 
     /// 公开给 SettingsView / 调试 — 真正的 single source of truth。
@@ -291,6 +300,9 @@ final class AppState: ObservableObject {
         // `stop()` 也会取消配置 watcher；允许生命周期重启时恢复配置热加载。
         configStore.startWatching()
 
+        // 循环 C：「节能」睡眠健康度周期评估（首次立即评估）。
+        sleepHealth.start()
+
         // 循环 A：将所有 enabled + auth 就绪的 provider 纳入额度循环
         cancelAllRefreshTasks()
         logInfo("AppState.start: 检查 \(statuses.count) 个 status")
@@ -317,6 +329,7 @@ final class AppState: ObservableObject {
         healthClockTask?.cancel()
         healthClockTask = nil
         nextRefreshAt = nil
+        sleepHealth.stop()
         configStore.stopWatching()
     }
 

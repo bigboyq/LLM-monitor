@@ -38,6 +38,10 @@ struct MenuContentView: View {
         // AppState 的所有 status 变更入口（mutateStatus / rebuildStatuses / setScanningState /
         // apply*LocalUsage）都 fire `statusDidChange`，view 端挂这一个就够了。
         .onReceive(state.statusDidChange) { _ in }
+        // 「节能」健康灯的数据在 SleepHealthService（AppState 之外的嵌套
+        // ObservableObject）上；沿用上面的 onReceive 兜底，让 report 变化时
+        // body 重新求值、圆点颜色及时更新。
+        .onReceive(state.sleepHealth.objectWillChange) { _ in }
     }
 
     // MARK: - header（紧凑 padding）
@@ -194,6 +198,14 @@ struct MenuContentView: View {
                 }
                 .help("打开设置面板")
             footerSeparator
+            FooterActionButton(icon: "powersleep", title: "节能", dotColor: energyDotColor) {
+                // 先置跳转信号再开窗：设置窗口可能尚未创建，SettingsView 侧靠
+                // onAppear + onReceive 双兜底消费。
+                state.pendingSettingsTab = .energy
+                openSettingsWindow()
+            }
+                .help("查看系统睡眠健康度")
+            footerSeparator
             FooterActionButton(icon: "doc.text.magnifyingglass", title: "日志") {
                 state.revealLogFile()
             }
@@ -205,6 +217,14 @@ struct MenuContentView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 7)
+    }
+
+    /// 「节能」入口的三色健康灯：颜色 = 睡眠健康度经菜单栏同款配色实例换算；
+    /// report 尚未生成（首次评估未完成）时不画点。
+    private var energyDotColor: NSColor? {
+        state.configStore.config.effectiveStatusBarHealthColors.color(
+            for: state.sleepHealth.report?.status.healthLevel
+        )
     }
 
     private var footerStatus: some View {
@@ -321,6 +341,9 @@ private enum SettingsWindowActivator {
 private struct FooterActionButton: View {
     let icon: String
     let title: String
+    /// 可选状态圆点（如「节能」的三色健康灯）：非 nil 时叠在图标右上角；
+    /// 默认 nil 不画，原有按钮（设置 / 日志 / 退出）不受影响。
+    var dotColor: NSColor? = nil
     let action: () -> Void
 
     var body: some View {
@@ -328,6 +351,14 @@ private struct FooterActionButton: View {
             HStack(spacing: 4) {
                 Image(systemName: icon)
                     .font(.system(size: 9, weight: .medium))
+                    .overlay(alignment: .topTrailing) {
+                        if let dotColor {
+                            Circle()
+                                .fill(Color(nsColor: dotColor))
+                                .frame(width: 5, height: 5)
+                                .offset(x: 2, y: -1)
+                        }
+                    }
                 Text(title)
                     .font(.system(size: 9, weight: .medium))
             }
