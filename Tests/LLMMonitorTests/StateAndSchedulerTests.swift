@@ -2731,6 +2731,70 @@ final class StateAndSchedulerTests: XCTestCase {
         orchestration.cancelInFlightAll()
     }
 
+    @MainActor
+    func testLocalUsageScheduleReconcileRequeuesPendingBatch() async {
+        let probe = ReconcilePassProbe()
+        let orchestration = LocalUsageOrchestration(writer: LoopBNoopWriter())
+        orchestration.testReconcilePass = { mode in
+            await probe.run(mode)
+        }
+        defer { orchestration.cancelInFlightAll() }
+
+        orchestration.scheduleReconcile()
+        await probe.waitForFirstStart()
+        orchestration.scheduleReconcile()
+        await probe.releaseFirst()
+        await probe.waitForCount(2)
+
+        let modes = await probe.snapshot()
+        XCTAssertEqual(modes, [.full, .dirty])
+    }
+
+    @MainActor
+    func testLocalUsageExplicitFullReconcileIsNotDowngradedByActiveSchedule() async {
+        let probe = ReconcilePassProbe()
+        let orchestration = LocalUsageOrchestration(writer: LoopBNoopWriter())
+        orchestration.testReconcilePass = { mode in
+            await probe.run(mode)
+        }
+        defer { orchestration.cancelInFlightAll() }
+
+        orchestration.scheduleReconcile()
+        await probe.waitForFirstStart()
+        let explicitFull = Task { @MainActor in
+            await orchestration.reconcile(mode: .full)
+        }
+        await Task.yield()
+        await Task.yield()
+        await probe.releaseFirst()
+        await explicitFull.value
+        await probe.waitForCount(2)
+
+        let modes = await probe.snapshot()
+        XCTAssertEqual(modes, [.full, .full])
+    }
+
+    @MainActor
+    func testLocalUsageReconcileCancellationAllowsNewSchedule() async {
+        var passCount = 0
+        let orchestration = LocalUsageOrchestration(writer: LoopBNoopWriter())
+        orchestration.testReconcilePass = { _ in
+            passCount += 1
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+        }
+        defer { orchestration.cancelInFlightAll() }
+
+        orchestration.scheduleReconcile()
+        try? await Task.sleep(nanoseconds: 20_000_000)
+        orchestration.cancelInFlightAll()
+        orchestration.scheduleReconcile()
+
+        for _ in 0..<100 where passCount < 2 {
+            try? await Task.sleep(nanoseconds: 1_000_000)
+        }
+        XCTAssertEqual(passCount, 2)
+    }
+
     /// (d) refreshAll 契约：返回前 post-quota 的用量补拍已完成并 enrich——codex
     /// 窗口用量依赖刚落地的 reset 时间；旧实现两拍并发，beat 先于 quota 完成时
     /// enrichment 被 .ready 丢弃，返回时 details 为空（确定性回归）。
@@ -2861,6 +2925,52 @@ final class StateAndSchedulerTests: XCTestCase {
         XCTAssertNotNil(state.refreshScheduler.earliestNextRefresh)
     }
 
+}
+
+private actor ReconcilePassProbe {
+    private var modes: [LocalUsageScanMode] = []
+    private var firstStartContinuation: CheckedContinuation<Void, Never>?
+    private var firstReleaseContinuation: CheckedContinuation<Void, Never>?
+    private var countWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
+
+    func run(_ mode: LocalUsageScanMode) async {
+        modes.append(mode)
+        resumeCountWaiters()
+        if modes.count == 1 {
+            firstStartContinuation?.resume()
+            firstStartContinuation = nil
+            await withCheckedContinuation { continuation in
+                firstReleaseContinuation = continuation
+            }
+        }
+    }
+
+    func waitForFirstStart() async {
+        guard modes.isEmpty else { return }
+        await withCheckedContinuation { continuation in
+            firstStartContinuation = continuation
+        }
+    }
+
+    func releaseFirst() {
+        firstReleaseContinuation?.resume()
+        firstReleaseContinuation = nil
+    }
+
+    func waitForCount(_ expected: Int) async {
+        guard modes.count < expected else { return }
+        await withCheckedContinuation { continuation in
+            countWaiters.append((expected, continuation))
+        }
+    }
+
+    func snapshot() -> [LocalUsageScanMode] { modes }
+
+    private func resumeCountWaiters() {
+        let ready = countWaiters.filter { modes.count >= $0.0 }
+        countWaiters.removeAll { modes.count >= $0.0 }
+        ready.forEach { $0.1.resume() }
+    }
 }
 
 private struct TestQuotaFetcher: QuotaFetcher {

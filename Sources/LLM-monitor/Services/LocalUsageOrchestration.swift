@@ -110,8 +110,12 @@ final class LocalUsageOrchestration {
     /// LocalUsage 不再拥有常驻 beat/timer。一次 reconcile 由 provider batch settled
     /// 事件或显式手动刷新投递，完成后 Task 即释放。
     private var reconcileTask: Task<Void, Never>?
+    /// Provider batch 到达时已有 reconcile 在运行，合并为完成后的下一次普通 reconcile。
     private var pendingReconcile = false
+    /// 显式 full 请求撞上已有 reconcile，不能被普通 reconcile 降级，必须补跑一次 full。
     private var pendingFullReconcile = false
+    /// 防止已取消的旧 Task 在稍后结束时清理或覆盖新一轮 reconcile。
+    private var reconcileGeneration: UInt64 = 0
     private var didCompleteInitialFullScan = false
     private var lastFullScanDay: Date?
     private var codexSourceLifecycle: LocalUsageSourceLifecycle?
@@ -122,6 +126,8 @@ final class LocalUsageOrchestration {
     private var clientReadinessCache: [String: Bool] = [:]
     /// 仅供测试注入客户端就绪判定覆写
     var testReadinessOverride: ((String) -> Bool)?
+    /// 测试用 reconcile pass 注入点；生产路径仍使用 `scanAllClients(mode:)`。
+    var testReconcilePass: (@MainActor (LocalUsageScanMode) async -> Void)?
 
     init(
         writer: any LocalUsageStatusWriting,
@@ -134,6 +140,7 @@ final class LocalUsageOrchestration {
     }
 
     func cancelInFlightAll() {
+        reconcileGeneration &+= 1
         antigravityCoordinator.cancelInFlight()
         minimaxCoordinator.cancelInFlight()
         glmCoordinator.cancelInFlight()
@@ -180,16 +187,18 @@ final class LocalUsageOrchestration {
             return
         }
         let mode = nextReconcileMode
+        reconcileGeneration &+= 1
+        let generation = reconcileGeneration
         logInfo("[local-usage] reconcile scheduled mode=\(mode == .full ? "full" : "dirty")")
         reconcileTask = Task { @MainActor [weak self] in
             guard let self else { return }
             await self.performReconcile(mode: mode)
-            if !Task.isCancelled {
-                self.reconcileTask = nil
-                if self.pendingReconcile {
-                    self.pendingReconcile = false
-                    self.scheduleReconcile()
-                }
+            guard self.reconcileGeneration == generation else { return }
+            self.reconcileTask = nil
+            guard !Task.isCancelled else { return }
+            if self.pendingReconcile {
+                self.pendingReconcile = false
+                self.scheduleReconcile()
             }
         }
     }
@@ -221,12 +230,15 @@ final class LocalUsageOrchestration {
         }
 
         let mode = requestedMode ?? nextReconcileMode
+        reconcileGeneration &+= 1
+        let generation = reconcileGeneration
         let task = Task { @MainActor [weak self] in
             guard let self else { return }
             await self.performReconcile(mode: mode)
         }
         reconcileTask = task
         await task.value
+        guard reconcileGeneration == generation else { return }
         reconcileTask = nil
 
         if pendingFullReconcile {
@@ -248,26 +260,27 @@ final class LocalUsageOrchestration {
     /// scanner 自己仍通过 pipeline mutex 串行其内部扫描。
     func scanAllClients(mode: LocalUsageScanMode = .full) async {
         let minimax: @MainActor () async -> Void = { [weak self] in
-            guard let self else { return }
+            guard let self, !Task.isCancelled else { return }
             await self.scanClient("minimax_code", mode: mode) { self.minimaxCoordinator }
         }
         let glm: @MainActor () async -> Void = { [weak self] in
-            guard let self else { return }
+            guard let self, !Task.isCancelled else { return }
             await self.scanClient("zcode-glm", mode: mode) { self.glmCoordinator }
         }
         let opencode: @MainActor () async -> Void = { [weak self] in
-            guard let self else { return }
+            guard let self, !Task.isCancelled else { return }
             await self.scanClient("opencode", mode: mode) { self.opencodeCoordinator }
         }
         let dsh: @MainActor () async -> Void = { [weak self] in
-            guard let self else { return }
+            guard let self, !Task.isCancelled else { return }
             await self.scanClient("dsh", mode: mode) { self.dshCoordinator }
         }
         let antigravity: @MainActor () async -> Void = { [weak self] in
-            guard let self else { return }
+            guard let self, !Task.isCancelled else { return }
             await self.scanClient("antigravity", mode: mode) { self.antigravityCoordinator }
         }
         let codex: @MainActor () async -> Void = { [weak self] in
+            guard !Task.isCancelled else { return }
             await self?.scanCodexClient(mode: mode)
         }
 
@@ -276,6 +289,7 @@ final class LocalUsageOrchestration {
         // once on a user's machine.
         let jobs: [@MainActor () async -> Void] = [minimax, glm, opencode, dsh, antigravity, codex]
         for start in stride(from: 0, to: jobs.count, by: 3) {
+            guard !Task.isCancelled else { return }
             let end = min(start + 3, jobs.count)
             await withTaskGroup(of: Void.self) { group in
                 for index in start..<end {
@@ -302,6 +316,7 @@ final class LocalUsageOrchestration {
         mode: LocalUsageScanMode,
         coordinator: () -> LocalUsageCoordinator<Usage>
     ) async {
+        guard !Task.isCancelled else { return }
         let isReady = checkClientReadiness(clientID)
         let wasReady = clientReadinessCache[clientID] == true
         updateReadinessAndLog(for: clientID, isReady: isReady)
@@ -312,12 +327,17 @@ final class LocalUsageOrchestration {
         // FSEvents 的 dirty 状态只负责 UI freshness。每次 Provider batch 都要
         // 给 scanner 一次机会执行原有的 fingerprint 检查，否则文件在保持打开
         // 时 mtime/size 已变化但尚未产生 FSEvents，原有增量逻辑会被跳过。
+        guard !Task.isCancelled else { return }
         current.trigger(mode: mode, markDirty: false)
         try? await current.waitUntilSettled()
     }
 
     private func performReconcile(mode: LocalUsageScanMode) async {
-        await scanAllClients(mode: mode)
+        if let testReconcilePass {
+            await testReconcilePass(mode)
+        } else {
+            await scanAllClients(mode: mode)
+        }
         guard !Task.isCancelled else { return }
         guard mode == .full else { return }
         didCompleteInitialFullScan = true
