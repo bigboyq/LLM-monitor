@@ -74,20 +74,65 @@ enum SleepHealthEvaluator {
             let heldSeconds = snapshot.creationDate.map { max(0, now.timeIntervalSince($0)) } ?? 0
             offenders.append(
                 SleepAssertionOffender(
+                    assertionId: snapshot.assertionId,
                     pid: snapshot.pid ?? 0,
                     processName: snapshot.ownerName ?? "未知",
                     assertionType: snapshot.assertionType,
                     detail: snapshot.detailName ?? "",
-                    heldSeconds: heldSeconds
+                    heldSeconds: heldSeconds,
+                    creationDate: snapshot.creationDate
                 )
             )
         }
         return offenders.sorted { $0.heldSeconds > $1.heldSeconds }
     }
 
-    // MARK: - 检查项 2：pmset -g custom 输出解析
+    // MARK: - 检查项 2：电源配置解析
 
-    /// 解析 `pmset -g custom` 的 stdout 为 AC / Battery 双份电源配置。
+    /// 解析单一供电配置字典（由 IOPMCopyPMPreferences 提供）
+    private static func parsePowerProfileDict(_ dict: [AnyHashable: Any]) -> PowerProfileSettings {
+        func intVal(_ key: String) -> Int? {
+            if let n = dict[key] as? Int { return n }
+            if let num = dict[key] as? NSNumber { return num.intValue }
+            if let str = dict[key] as? String { return Int(str) }
+            return nil
+        }
+
+        return PowerProfileSettings(
+            sleepMinutes: intVal("System Sleep Timer"),
+            womp: intVal("Wake On LAN"),
+            tcpkeepalive: intVal("TCPKeepAlivePref"),
+            powernap: intVal("DarkWakeBackgroundTasks"),
+            displaysleepMinutes: intVal("Display Sleep Timer")
+        )
+    }
+
+    /// 解析 `IOPMCopyPMPreferences()` 的字典输出为 AC / Battery 双份电源配置。
+    /// - 顶层按 "AC Power" / "Battery Power" 提取子字典
+    /// - 字段名对齐 Apple IOPMKeys.h 官方常量（System Sleep Timer 等）
+    /// - 台式机没有 Battery 节 → battery = nil；两节都找不到才返回 nil
+    static func parsePmPreferencesDictionary(_ dict: [AnyHashable: Any]) -> PowerConfigSnapshot? {
+        var acDict: [AnyHashable: Any]?
+        var batteryDict: [AnyHashable: Any]?
+
+        for (k, v) in dict {
+            guard let keyStr = (k as? String)?.lowercased(), let sub = v as? [AnyHashable: Any] else {
+                continue
+            }
+            if keyStr == "ac power" || keyStr == "ac" {
+                acDict = sub
+            } else if keyStr == "battery power" || keyStr == "battery" {
+                batteryDict = sub
+            }
+        }
+
+        guard acDict != nil || batteryDict != nil else { return nil }
+        let ac = acDict.map { parsePowerProfileDict($0) } ?? PowerProfileSettings.defaults()
+        let battery = batteryDict.map { parsePowerProfileDict($0) }
+        return PowerConfigSnapshot(ac: ac, battery: battery)
+    }
+
+    /// 解析 `pmset -g custom` 的 stdout 为 AC / Battery 双份电源配置（备用兜底解析器）。
     /// - 按 "Battery Power:" / "AC Power:" 分节（大小写不敏感、容忍前后空白）
     /// - 每节解析 sleep/womp/tcpkeepalive/powernap/displaysleep 为 Int
     /// - "Sleep On Power Button 1"、hibernatefile 路径等行必须忽略

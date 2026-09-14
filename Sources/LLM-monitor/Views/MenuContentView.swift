@@ -5,6 +5,8 @@ struct MenuContentView: View {
     @ObservedObject var state: AppState
     @ObservedObject var loginItemService: LoginItemService
     @Environment(\.openSettings) private var openSettings
+    /// 强制本地 UI 重渲染计数（用于同步响应 sleepHealth 状态变更）
+    @State private var energyUpdateTick = 0
 
     var body: some View {
         VStack(spacing: 0) {
@@ -39,9 +41,11 @@ struct MenuContentView: View {
         // apply*LocalUsage）都 fire `statusDidChange`，view 端挂这一个就够了。
         .onReceive(state.statusDidChange) { _ in }
         // 「节能」健康灯的数据在 SleepHealthService（AppState 之外的嵌套
-        // ObservableObject）上；沿用上面的 onReceive 兜底，让 report 变化时
-        // body 重新求值、圆点颜色及时更新。
-        .onReceive(state.sleepHealth.objectWillChange) { _ in }
+        // ObservableObject）上；通过改变 @State 强制触发 body 重 eval，
+        // 保证圆点颜色即时更新。
+        .onReceive(state.sleepHealth.objectWillChange) { _ in
+            energyUpdateTick &+= 1
+        }
     }
 
     // MARK: - header（紧凑 padding）
@@ -199,12 +203,10 @@ struct MenuContentView: View {
                 .help("打开设置面板")
             footerSeparator
             FooterActionButton(icon: "powersleep", title: "节能", dotColor: energyDotColor) {
-                // 先置跳转信号再开窗：设置窗口可能尚未创建，SettingsView 侧靠
-                // onAppear + onReceive 双兜底消费。
-                state.pendingSettingsTab = .energy
-                openSettingsWindow()
+                state.sleepHealth.setKeepAwake(!state.sleepHealth.isKeepAwakeOn)
+                energyUpdateTick &+= 1
             }
-                .help("查看系统睡眠健康度")
+                .help(energyActionTooltip)
             footerSeparator
             FooterActionButton(icon: "doc.text.magnifyingglass", title: "日志") {
                 state.revealLogFile()
@@ -220,11 +222,32 @@ struct MenuContentView: View {
     }
 
     /// 「节能」入口的三色健康灯：颜色 = 睡眠健康度经菜单栏同款配色实例换算；
-    /// report 尚未生成（首次评估未完成）时不画点。
+    /// 防休眠开启时立即返回 critical（红色）；report 尚未生成时不画点。
     private var energyDotColor: NSColor? {
-        state.configStore.config.effectiveStatusBarHealthColors.color(
-            for: state.sleepHealth.report?.status.healthLevel
-        )
+        let level: HealthLevel?
+        if state.sleepHealth.isKeepAwakeOn {
+            level = .critical
+        } else {
+            level = state.sleepHealth.report?.status.healthLevel
+        }
+        return state.configStore.config.effectiveStatusBarHealthColors.color(for: level)
+    }
+
+    /// 「节能」按钮提示语：单击直接就地切换防休眠模式；排障可从旁边的「设置」进入。
+    private var energyActionTooltip: String {
+        if state.sleepHealth.isKeepAwakeOn {
+            return "单击关闭防休眠模式（恢复系统自动睡眠）"
+        }
+        switch state.sleepHealth.report?.status {
+        case .blockedByAssertions:
+            return "单击开启防休眠（当前有应用阻止休眠，详情见设置）"
+        case .acSleepDisabled:
+            return "单击开启防休眠（当前 AC 休眠已关闭，详情见设置）"
+        case .healthy:
+            return "单击开启防休眠模式（防止电脑休眠）"
+        default:
+            return "单击切换防休眠模式"
+        }
     }
 
     private var footerStatus: some View {

@@ -70,7 +70,7 @@ height: content-driven, fixedSize(vertical: true)
 | ...                                            |
 |                                                |
 +------------------------------------------------+
-| 自启 ✓|✗   更新于 HH:mm / 就绪  设置 日志 退出 |
+| 自启 ✓|✗  更新于 HH:mm / 就绪  设置 节能 日志 退出 |
 +------------------------------------------------+
 ```
 
@@ -78,13 +78,18 @@ The provider area scrolls when needed. There is currently no `ScrollView.maxHeig
 cap, so a very long provider list could push the menu off-screen; this is documented
 in `spec/overview.md` under "Current Design Boundaries".
 
-The 开机自启动 toggle was moved into the Settings panel in Round 5; the menu footer
-shows its status only (`自启 ✓` / `自启 ✗`).
+The menu footer contains:
+- `自启 ✓` / `自启 ✗` login item status indicator
+- refresh status (`更新于 HH:mm` / `下次 HH:mm` / `就绪`)
+- `设置` (opens native Settings window)
+- `节能` (1-click keep-awake in-memory toggle; overlay dot reflects tri-color sleep health)
+- `日志` (reveals `log.txt` in Finder)
+- `退出` (`NSApp.terminate`)
 
 ## Settings Window
 
 The native Settings window has a 220pt sidebar and a scrollable detail pane. Its minimum
-size is `720x480pt`, with an ideal size of `760x520pt`. General, provider, and OpenCode
+size is `720x480pt`, with an ideal size of `760x520pt`. General, Energy, provider, and Clients
 pages share the same visual hierarchy and reusable section components.
 
 Settings layout rules:

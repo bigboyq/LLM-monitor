@@ -157,7 +157,8 @@ final class LocalUsageOrchestration {
     /// `triggerImmediateScanAll`（手动刷新/系统唤醒）提前打断，不会让用户等待。
     func startUsageLoop(
         intervalProvider: @escaping () -> TimeInterval,
-        startupDelay: TimeInterval = 5
+        startupDelay: TimeInterval = 5,
+        onBeat: (@MainActor () -> Void)? = nil
     ) {
         stopUsageLoop()
         // 重置 beat 计数；等待方已在 stopUsageLoop 里全部恢复。新循环首拍本身
@@ -176,6 +177,7 @@ final class LocalUsageOrchestration {
                 self.nextBeatID += 1
 
                 await self.scanAllClients()
+                onBeat?()
                 self.finishBeat(through: beatID)
 
                 // 拍间决策：还有未满足的立即扫描请求（target > 刚完成的拍，即扫描

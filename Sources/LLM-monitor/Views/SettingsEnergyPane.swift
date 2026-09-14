@@ -71,21 +71,39 @@ struct EnergyPaneContent: View {
         case .healthy:
             EmptyView()
 
-        case .blockedByAssertions(let offenders):
-            VStack(alignment: .leading, spacing: 6) {
-                ForEach(offenders) { offender in
-                    Text(offenderRowText(offender))
+        case .blockedByAssertions, .acSleepDisabled:
+            let hasOffenders = !report.offenders.isEmpty
+            let isAcZero = report.acSleepMinutes == 0
+
+            VStack(alignment: .leading, spacing: 8) {
+                if hasOffenders {
+                    if isAcZero {
+                        Text("1. 阻止休眠的第三方应用：")
+                            .font(SettingsTypography.metadata)
+                            .foregroundStyle(.secondary)
+                    }
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(report.offenders) { offender in
+                            Text(offenderRowText(offender))
+                                .font(SettingsTypography.metadata)
+                                .foregroundStyle(.orange)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+
+                if isAcZero {
+                    if hasOffenders {
+                        Text("2. AC 自动休眠配置：")
+                            .font(SettingsTypography.metadata)
+                            .foregroundStyle(.secondary)
+                    }
+                    Text("修复方式：系统设置 → 电池 → 选项…，关闭“当显示器关闭时，在电源适配器上防止自动睡眠”；或在终端执行 sudo pmset -c sleep 15。")
                         .font(SettingsTypography.metadata)
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
-
-        case .acSleepDisabled:
-            Text("修复方式：系统设置 → 电池 → 选项…，关闭“当显示器关闭时，在电源适配器上防止自动睡眠”；或在终端执行 sudo pmset -c sleep 15。")
-                .font(SettingsTypography.metadata)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
 
         case .keepAwake:
             // 红色态：一键关闭 + 检查项 1/2 明细区结构照常展示（判定顺序上红色
@@ -134,9 +152,13 @@ struct EnergyPaneContent: View {
         switch report.status {
         case .healthy:
             return "系统休眠机制正常，可按设定时间自动进入睡眠。"
-        case .blockedByAssertions:
-            return "以下应用正在阻止休眠，建议退出或保存状态："
-        case .acSleepDisabled:
+        case .blockedByAssertions, .acSleepDisabled:
+            if !report.offenders.isEmpty && report.acSleepMinutes == 0 {
+                return "系统休眠受阻，检测到多项异常："
+            }
+            if !report.offenders.isEmpty {
+                return "以下应用正在阻止休眠，建议退出或保存状态："
+            }
             return "AC 供电下自动休眠已关闭。"
         case .keepAwake:
             return "当前已手动开启【防止睡眠】模式，电脑将持续保持唤醒。"
@@ -144,7 +166,8 @@ struct EnergyPaneContent: View {
     }
 
     private func offenderRowText(_ offender: SleepAssertionOffender) -> String {
-        "\(offender.processName) · PID \(offender.pid) · \(assertionDisplayName(offender.assertionType)) · 已持续 \(formatHeldDuration(offender.heldSeconds))"
+        let duration = offender.creationDate.map { max(0, Date().timeIntervalSince($0)) } ?? offender.heldSeconds
+        return "\(offender.processName) · PID \(offender.pid) · \(assertionDisplayName(offender.assertionType)) · 已持续 \(formatHeldDuration(duration))"
     }
 
     private func assertionDisplayName(_ type: String) -> String {

@@ -57,8 +57,19 @@ The app reads `~/.local/share/opencode/opencode.db` and separates rows by `provi
 - Control-click a provider card to refresh it or open the config file.
 - Hover over titles, quota rows, and local-usage footers for account details, window details, recent prompts, and seven-day charts.
 - Use Settings → General for refresh intervals, icon style, health-dot visibility, and launch at login. When enabled, a 6 pt status dot appears at the lower-right: green for healthy, orange for warning, and red for critical.
+- Footer "节能" (Energy) button: 1-click in-memory toggle to prevent system sleep (the corner status dot reflects tri-color sleep health); open Settings → Energy for complete diagnostics.
 - Disabled providers are hidden and do not make network requests.
 - Cost estimates cover only models with a published price. If a usage window also contains unknown models, the menu and seven-day table show “partially priced.”
+
+## Sleep Health and Energy Management
+
+The app provides an "节能" (Energy) quick-action button in the menu footer (with a tri-color status indicator dot) and a dedicated "Energy" tab under Settings:
+- **Quick Keep-Awake Toggle**: Click the "节能" button in the menu footer to toggle "Prevent Sleep" mode on the spot. The red indicator dot confirms that the keep-awake assertion is active. This is an in-memory assertion that automatically resets when the app quits or restarts.
+- **Tri-Color Sleep Health**:
+  - 🟢 **Healthy**: Normal sleep operation; no third-party blockers and automatic sleep is enabled;
+  - 🟡 **Warning**: Sleep blocked (external processes holding sleep assertions, or `ac_sleep=0` on AC power);
+  - 🔴 **Active**: Manual keep-awake mode is active.
+- **Diagnostics & Power Settings**: Navigate to "Settings → Energy" to see the full list of external blocking processes (with PID and elapsed duration) and read-only system power parameters (`sleep`, `womp`, `tcpkeepalive`, `powernap`, `displaysleep`) with GUI and CLI remediation guides.
 
 ## Notifications & Bark push
 

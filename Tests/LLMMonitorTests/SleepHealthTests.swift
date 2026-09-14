@@ -43,6 +43,7 @@ final class SleepHealthTests: XCTestCase {
 
     /// 快照构造便捷方法
     private func snapshot(
+        assertionId: UInt32? = nil,
         type: String,
         detail: String? = nil,
         owner: String? = "TestApp",
@@ -51,6 +52,7 @@ final class SleepHealthTests: XCTestCase {
         levelOn: Bool = true
     ) -> SleepAssertionSnapshot {
         SleepAssertionSnapshot(
+            assertionId: assertionId,
             assertionType: type,
             detailName: detail,
             ownerName: owner,
@@ -318,5 +320,81 @@ final class SleepHealthTests: XCTestCase {
             ),
             .healthy
         )
+    }
+
+    func testParsePmPreferencesDictionary() throws {
+        let dict: [AnyHashable: Any] = [
+            "AC Power": [
+                "System Sleep Timer": 15,
+                "Wake On LAN": 1,
+                "TCPKeepAlivePref": 0,
+                "DarkWakeBackgroundTasks": 1,
+                "Display Sleep Timer": 120
+            ],
+            "Battery Power": [
+                "System Sleep Timer": 5,
+                "Wake On LAN": 0,
+                "TCPKeepAlivePref": 0,
+                "DarkWakeBackgroundTasks": 0,
+                "Display Sleep Timer": 15
+            ]
+        ]
+        let config = try XCTUnwrap(SleepHealthEvaluator.parsePmPreferencesDictionary(dict))
+        XCTAssertEqual(config.ac.sleepMinutes, 15)
+        XCTAssertEqual(config.ac.womp, 1)
+        XCTAssertEqual(config.ac.tcpkeepalive, 0)
+        XCTAssertEqual(config.ac.powernap, 1)
+        XCTAssertEqual(config.ac.displaysleepMinutes, 120)
+
+        let battery = try XCTUnwrap(config.battery)
+        XCTAssertEqual(battery.sleepMinutes, 5)
+        XCTAssertEqual(battery.womp, 0)
+        XCTAssertEqual(battery.tcpkeepalive, 0)
+        XCTAssertEqual(battery.powernap, 0)
+        XCTAssertEqual(battery.displaysleepMinutes, 15)
+    }
+
+    func testOffenderIdPrioritizesAssertionIdToAvoidCollisions() {
+        let s1 = snapshot(
+            assertionId: 12345,
+            type: "NoIdleSleepAssertion",
+            detail: "Electron",
+            owner: "AppA",
+            pid: 500
+        )
+        let s2 = snapshot(
+            assertionId: 12346,
+            type: "NoIdleSleepAssertion",
+            detail: "Electron",
+            owner: "AppA",
+            pid: 500
+        )
+
+        let offenders = SleepHealthEvaluator.filterOffenders(
+            snapshots: [s1, s2],
+            ownPID: 1,
+            now: now,
+            pathProvider: { _ in nil }
+        )
+
+        XCTAssertEqual(offenders.count, 2)
+        XCTAssertEqual(offenders[0].id, "12345")
+        XCTAssertEqual(offenders[1].id, "12346")
+        XCTAssertNotEqual(offenders[0].id, offenders[1].id, "同一进程相同类型的多条断言不应产生重复 id")
+    }
+
+    @MainActor
+    func testSleepHealthServiceStopReleasesAssertion() {
+        let service = SleepHealthService(
+            now: { self.now },
+            assertionProbe: { [] },
+            pmsetCustomReader: { "AC Power:\n sleep 15\n" }
+        )
+
+        service.setKeepAwake(true)
+        XCTAssertTrue(service.isKeepAwakeOn)
+
+        service.stop()
+        XCTAssertFalse(service.isKeepAwakeOn, "stop() 必须对称复位并释放断言")
     }
 }

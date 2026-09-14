@@ -64,6 +64,7 @@ final class AppState: ObservableObject {
 
     /// 推进 `healthEvaluationDate`，让高峰窗口跨越分钟边界时能更新菜单栏颜色。
     private var healthClockTask: Task<Void, Never>?
+    private var sleepHealthCancellable: AnyCancellable?
 
     /// 统一的 statuses 广播通道。
     ///
@@ -284,6 +285,12 @@ final class AppState: ObservableObject {
             logInfo("  - fetcher: \(d.id) (\(d.displayName))")
         }
 
+        // 转发 sleepHealth 的变化到 AppState 与 statusDidChange 通道，保证主菜单与设置页即时重渲染
+        self.sleepHealthCancellable = sleepHealth.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+            self?.statusDidChange.send()
+        }
+
         rebuildStatuses()
         start()
         setupConfigSubscription()
@@ -300,8 +307,8 @@ final class AppState: ObservableObject {
         // `stop()` 也会取消配置 watcher；允许生命周期重启时恢复配置热加载。
         configStore.startWatching()
 
-        // 循环 C：「节能」睡眠健康度周期评估（首次立即评估）。
-        sleepHealth.start()
+        // 启动时立即对「节能」睡眠健康度进行一次首评（不等错峰延迟，立即展示健康灯）
+        sleepHealth.refreshNow()
 
         // 循环 A：将所有 enabled + auth 就绪的 provider 纳入额度循环
         cancelAllRefreshTasks()
@@ -313,10 +320,16 @@ final class AppState: ObservableObject {
                 scheduleRefresh(for: status.id)
             }
         }
-        // 循环 B：启动用量循环，以全局刷新间隔迭代全部客户端（首拍延迟 5s 与循环 A 错峰）
-        localUsage.startUsageLoop { [configStore] in
-            configStore.config.effectiveGlobalRefreshInterval
-        }
+        // 循环 B：启动用量循环，以全局刷新间隔迭代全部客户端（首拍延迟 5s 与循环 A 错峰）；
+        // 睡眠健康度随循环 B 的每一拍同步更新，不再维持独立 60s 定时器。
+        localUsage.startUsageLoop(
+            intervalProvider: { [configStore] in
+                configStore.config.effectiveGlobalRefreshInterval
+            },
+            onBeat: { [weak self] in
+                self?.sleepHealth.refreshNow()
+            }
+        )
         startHealthClock()
     }
 

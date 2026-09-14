@@ -35,6 +35,7 @@ The public snapshot is ad-hoc signed and is not Apple-notarized. If macOS blocks
 - GLM and DeepSeek peak-period indicators.
 - Optional OpenCode usage merging per provider.
 - Launch-at-login support when the app is installed in `/Applications`.
+- macOS sleep health diagnosis and keep-awake management: 1-click in-memory keep-awake toggle on the menu footer (with tri-color indicator dot); dedicated "Energy" settings tab displaying sleep blockers and system power parameter matrix (backed by native IOKit C API with zero subprocess overhead).
 - Private local storage: configuration directories use mode `0700`; config and log files use `0600`.
 
 ## Screenshots

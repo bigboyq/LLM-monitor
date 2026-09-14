@@ -6,6 +6,8 @@ import Foundation
 
 /// 原始断言快照：由 IOKit 断言枚举映射而来，供白名单过滤与单元测试使用
 struct SleepAssertionSnapshot: Equatable {
+    /// 断言 ID（系统唯一自增标识，如 33575）
+    var assertionId: UInt32?
     /// 断言类型，如 PreventUserIdleSystemSleep / NoIdleSleepAssertion / PreventSystemSleep
     var assertionType: String
     /// named: 详情字段，如 "Electron"、"com.apple.BTStack"
@@ -22,13 +24,38 @@ struct SleepAssertionSnapshot: Equatable {
 
 /// 违规持有睡眠锁的第三方进程条目（检查项 1 的输出）
 struct SleepAssertionOffender: Identifiable, Equatable {
+    let assertionId: UInt32?
     let pid: Int32
     let processName: String
     let assertionType: String
     let detail: String
     let heldSeconds: TimeInterval
+    let creationDate: Date?
 
-    var id: String { "\(pid)-\(assertionType)-\(detail)" }
+    init(
+        assertionId: UInt32? = nil,
+        pid: Int32,
+        processName: String,
+        assertionType: String,
+        detail: String,
+        heldSeconds: TimeInterval,
+        creationDate: Date? = nil
+    ) {
+        self.assertionId = assertionId
+        self.pid = pid
+        self.processName = processName
+        self.assertionType = assertionType
+        self.detail = detail
+        self.heldSeconds = heldSeconds
+        self.creationDate = creationDate
+    }
+
+    var id: String {
+        if let assertionId, assertionId > 0 {
+            return "\(assertionId)"
+        }
+        return "\(pid)-\(assertionType)-\(detail)"
+    }
 }
 
 /// 单一供电配置下的关键电源参数（nil 表示 pmset 未报告该项）
