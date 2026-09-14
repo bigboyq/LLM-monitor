@@ -21,7 +21,6 @@ final class SleepHealthService: ObservableObject, SleepHealthReporting {
 
     /// 本 App 持有的防休眠断言 ID；0 表示当前未持有
     private var keepAwakeAssertionID: IOPMAssertionID = 0
-    private var pollTask: Task<Void, Never>?
 
     /// 本 App 自身 PID（过滤自查自报用）；进程内不变
     private let ownPID = Int32(ProcessInfo.processInfo.processIdentifier)
@@ -177,26 +176,7 @@ final class SleepHealthService: ObservableObject, SleepHealthReporting {
         refreshNow()
     }
 
-    /// 启动周期轮询（首次立即评估；节奏与本地用量扫描循环保持同一量级）
-    func start(interval: TimeInterval = 60) {
-        pollTask?.cancel()
-        pollTask = Task { @MainActor [weak self] in
-            self?.refreshNow()
-            while !Task.isCancelled {
-                do {
-                    try await Task.sleep(for: .seconds(interval))
-                } catch {
-                    return // cancel 打断睡眠，直接退出循环
-                }
-                guard let self, !Task.isCancelled else { return }
-                self.refreshNow()
-            }
-        }
-    }
-
     func stop() {
-        pollTask?.cancel()
-        pollTask = nil
         if keepAwakeAssertionID != 0 {
             let status = IOPMAssertionRelease(keepAwakeAssertionID)
             if status != 0 {
