@@ -70,7 +70,6 @@ final class OpencodeUsageScanner: SingleDBSnapshotScanner<OpencodeLocalUsage>, @
 
     override func stopWatching() {
         fileSystemWatcher?.stop()
-        markDirty()
         requiresFullScan = true
     }
 

@@ -196,7 +196,10 @@ class LocalUsageScannerBase<Usage: Equatable>: ObservableObject, @unchecked Send
                 }
             },
             applyError: { message in
-                // 失败时保留上次的 lastResult（如果之前有），UI 不闪空白
+                // 失败时保留上次的 lastResult（如果之前有），UI 不闪空白；
+                // 未被 FSEvents 提前标记的失败也必须保持 dirty，避免继续展示
+                // 一个无法确认新鲜度的快照。
+                self.markDirty()
                 self.lastError = message
             }
         )

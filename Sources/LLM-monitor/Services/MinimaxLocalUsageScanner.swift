@@ -142,7 +142,6 @@ final class MinimaxLocalUsageScanner: LocalUsageScannerBase<MinimaxLocalUsage>, 
 
     override func stopWatching() {
         fileSystemWatcher?.stop()
-        markDirty()
         requiresFullScan = true
     }
 

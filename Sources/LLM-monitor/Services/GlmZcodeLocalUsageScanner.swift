@@ -111,7 +111,6 @@ final class GlmZcodeLocalUsageScanner: SingleDBSnapshotScanner<GlmLocalUsage>, @
 
     override func stopWatching() {
         fileSystemWatcher?.stop()
-        markDirty()
         requiresFullScan = true
     }
 

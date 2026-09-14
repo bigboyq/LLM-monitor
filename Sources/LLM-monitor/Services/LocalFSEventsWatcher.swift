@@ -68,6 +68,8 @@ final class LocalFSEventsWatcher: @unchecked Sendable {
     func start() {
         guard stream == nil, !paths.isEmpty else { return }
 
+        logInfo("[local-fsevents] starting paths=\(paths.joined(separator: ", "))")
+
         var context = FSEventStreamContext(
             version: 0,
             info: Unmanaged.passUnretained(self).toOpaque(),
@@ -98,15 +100,18 @@ final class LocalFSEventsWatcher: @unchecked Sendable {
         stream = created
         FSEventStreamSetDispatchQueue(created, callbackQueue)
         guard FSEventStreamStart(created) else {
+            logError("[local-fsevents] failed to start paths=\(paths.joined(separator: ", "))")
             FSEventStreamInvalidate(created)
             FSEventStreamRelease(created)
             stream = nil
             return
         }
+        logInfo("[local-fsevents] started paths=\(paths.joined(separator: ", "))")
     }
 
     func stop() {
         guard let stream else { return }
+        logInfo("[local-fsevents] stopping paths=\(paths.joined(separator: ", "))")
         FSEventStreamStop(stream)
         FSEventStreamInvalidate(stream)
         FSEventStreamRelease(stream)

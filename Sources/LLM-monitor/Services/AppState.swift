@@ -260,6 +260,7 @@ final class AppState: ObservableObject {
             onBatchSettled: { [weak self] in
                 // Provider quota values (including the 5h window) are settled
                 // before LocalUsage chooses full versus dirty reconciliation.
+                logInfo("[local-usage] Provider batch settled → reconcile")
                 self?.localUsage.reconcileAfterProviderBatch()
             }
         )

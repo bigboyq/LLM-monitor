@@ -65,16 +65,20 @@ final class LocalUsageCoordinator<Usage: Equatable> {
     private let onDirty: FreshnessChange?
     private let onFresh: FreshnessChange?
 
-    /// 触发一次 dirty 扫描。首次调用时 lazy 构造 scanner 并 wire 2 个 Combine
-    /// sink；之后复用。
+    /// 触发一次显式 dirty 扫描。首次调用时 lazy 构造 scanner 并 wire 2 个
+    /// Combine sink；之后复用。
     func trigger() {
         trigger(mode: .dirty)
     }
 
     /// 触发指定模式的扫描。scanner 仍由自身负责 in-flight dedup。
-    func trigger(mode: LocalUsageScanMode) {
+    ///
+    /// `markDirty` 只用于显式失效（例如 FSEvents 或手动刷新）。Provider
+    /// batch 驱动的普通 reconcile 必须传 false，让 scanner 内部继续通过
+    /// mtime/size fingerprint 判断是否真的需要增量计算。
+    func trigger(mode: LocalUsageScanMode, markDirty: Bool = true) {
         if let s = scanner {
-            s.markDirty()
+            if markDirty { s.markDirty() }
             s.scan(mode: mode)
             return
         }
@@ -86,7 +90,7 @@ final class LocalUsageCoordinator<Usage: Equatable> {
         }
         wireSinks(s)
         logInfo("[\(logTag)] LocalUsageCoordinator: scanner wired up (providerID=\(providerID))")
-        s.markDirty()
+        if markDirty { s.markDirty() }
         s.scan(mode: mode)
     }
 

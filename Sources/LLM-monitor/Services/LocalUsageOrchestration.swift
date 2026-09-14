@@ -2,7 +2,8 @@ import Foundation
 
 /// 本地用量 reconcile 与扫描编排：
 /// provider batch settled 或显式操作驱动一次性扫描 Task；不持有常驻 Timer/beat
-/// loop。首次 reconcile 与日切使用 full，其余 reconcile 只消费 dirty sources。
+/// loop。首次 reconcile 与日切使用 full，其余 reconcile 由 scanner 内部 fingerprint
+/// 决定是否复用缓存或执行增量计算。
 /// 彻底剥离 quota 依赖：quota 刷新成功不再直接 await 本地扫描。
 ///
 /// 状态写入（ProviderStatus 字段）通过 `LocalUsageStatusWriting` 协议回调
@@ -158,8 +159,9 @@ final class LocalUsageOrchestration {
 
     // MARK: - Reconcile lifecycle
 
-    /// 当前应执行的下一种 reconcile。首次扫描与本地日切为 full，其余时候只
-    /// 处理 scanner 自己标记为 dirty 的 source。
+    /// 当前应执行的下一种 reconcile。首次扫描与本地日切为 full，其余时候走
+    /// 普通 reconcile；普通 reconcile 是否真的需要重算由各 scanner 原有的
+    /// mtime/size fingerprint 决定。
     var nextReconcileMode: LocalUsageScanMode {
         let today = calendar.startOfDay(for: now())
         guard didCompleteInitialFullScan, lastFullScanDay == today else { return .full }
@@ -169,8 +171,12 @@ final class LocalUsageOrchestration {
     /// provider batch settled 后调用的非阻塞入口。它只投递一个短生命周期 Task，
     /// 不会把本地扫描 await 到 ProviderRefreshScheduler 的主循环。
     func scheduleReconcile() {
-        guard reconcileTask == nil else { return }
+        guard reconcileTask == nil else {
+            logDebug("[local-usage] reconcile skipped: previous reconcile is still active")
+            return
+        }
         let mode = nextReconcileMode
+        logInfo("[local-usage] reconcile scheduled mode=\(mode == .full ? "full" : "dirty")")
         reconcileTask = Task { @MainActor [weak self] in
             guard let self else { return }
             await self.performReconcile(mode: mode)
@@ -220,8 +226,9 @@ final class LocalUsageOrchestration {
         await reconcile(mode: .full)
     }
 
-    /// 执行一个本地 pass。full 会检查所有已就绪 source；dirty 只触发 dirty
-    /// source，且仍保留 ready→missing 的一次清空过渡扫描。
+    /// 执行一个本地 pass。full 与普通 reconcile 都会检查所有已就绪 source；
+    /// 区别只在于 full 用于首次扫描/日切，普通 reconcile 由 scanner 内部的
+    /// fingerprint 决定是否复用缓存或执行增量计算。
     func scanAllClients(mode: LocalUsageScanMode = .full) async {
         await scanClient("minimax_code", mode: mode) { [self] in
             minimaxCoordinator
@@ -248,8 +255,7 @@ final class LocalUsageOrchestration {
         updateReadinessAndLog(for: "codex", isReady: codexReady)
         let codexTransitionedToMissing = codexWasReady && !codexReady
         if codexTransitionedToMissing { codexDirty = true }
-        let shouldScanCodex = mode == .full || codexDirty || codexTransitionedToMissing
-        if (codexReady || codexWasReady) && shouldScanCodex {
+        if codexReady || codexWasReady {
             _ = await scanCodexUsageDetails()
         }
     }
@@ -268,10 +274,10 @@ final class LocalUsageOrchestration {
         let becameMissing = wasReady && !isReady
         let current = coordinator()
         if becameMissing { current.markDirty() }
-        guard mode == .full || current.isDirty || becameMissing else { return }
-        let effectiveMode: LocalUsageScanMode =
-            mode == .full || current.requiresFullScan ? .full : .dirty
-        current.trigger(mode: effectiveMode)
+        // FSEvents 的 dirty 状态只负责 UI freshness。每次 Provider batch 都要
+        // 给 scanner 一次机会执行原有的 fingerprint 检查，否则文件在保持打开
+        // 时 mtime/size 已变化但尚未产生 FSEvents，原有增量逻辑会被跳过。
+        current.trigger(mode: mode, markDirty: false)
         try? await current.waitUntilSettled()
     }
 
@@ -338,6 +344,7 @@ final class LocalUsageOrchestration {
             self.codexDirty = true
             self.writer.setLocalUsageFreshness(.dirty, for: .codex)
         }
+        logInfo("[local-usage] Codex watcher configured home=\(home.path)")
         codexFileSystemWatcher?.start()
     }
 

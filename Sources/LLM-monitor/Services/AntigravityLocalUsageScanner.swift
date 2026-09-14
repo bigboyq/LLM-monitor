@@ -143,8 +143,7 @@ final class AntigravityLocalUsageScanner: LocalUsageScannerBase<AntigravityLocal
     override func stopWatching() {
         fileSystemWatcher?.stop()
         // The stream starts at "now" when restarted; changes during the pause
-        // are therefore covered by the next full scan.
-        markDirty()
+        // are therefore covered by the next fingerprint-based scan.
         requiresFullScan = true
     }
 

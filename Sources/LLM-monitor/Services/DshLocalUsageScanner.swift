@@ -135,7 +135,6 @@ final class DshLocalUsageScanner: LocalUsageScannerBase<DshLocalUsage>, @uncheck
 
     override func stopWatching() {
         fileSystemWatcher?.stop()
-        markDirty()
         requiresFullScan = true
     }
 
