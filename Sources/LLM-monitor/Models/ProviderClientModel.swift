@@ -310,6 +310,7 @@ struct ProviderUsageProjection: Equatable, Sendable {
     let dailyTokenUsage: [UnifiedDailyTokenUsage]
     let recentSamples: [LocalTokenUsageSample]
     let scannedAt: Date?
+    let localUsageFreshness: LocalUsageFreshness
 
     var clientIDs: [String] { contributions.map(\.clientID) }
     var hasActivity: Bool {
@@ -318,7 +319,10 @@ struct ProviderUsageProjection: Equatable, Sendable {
         } || !recentSamples.isEmpty
     }
 
-    init(contributions: [ClientUsageContribution]) {
+    init(
+        contributions: [ClientUsageContribution],
+        localUsageFreshness: LocalUsageFreshness = .clean
+    ) {
         self.contributions = contributions
 
         var dailyByDate: [Date: UnifiedDailyTokenUsage] = [:]
@@ -330,6 +334,7 @@ struct ProviderUsageProjection: Equatable, Sendable {
         self.dailyTokenUsage = dailyByDate.values.sorted { $0.dayStart < $1.dayStart }
         self.recentSamples = contributions.flatMap(\.recentSamples)
         self.scannedAt = contributions.compactMap(\.scannedAt).max()
+        self.localUsageFreshness = localUsageFreshness
     }
 }
 
@@ -539,7 +544,8 @@ extension ProviderStatus {
     func usageProjection(for info: QuotaInfo?) -> ProviderUsageProjection {
         let factories = Self.usageContributionFactories[kind] ?? []
         return ProviderUsageProjection(
-            contributions: factories.compactMap { $0(self, info) }
+            contributions: factories.compactMap { $0(self, info) },
+            localUsageFreshness: effectiveLocalUsageFreshness
         )
     }
 

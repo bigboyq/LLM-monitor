@@ -285,18 +285,19 @@ Two complete 100% depletion cycles were monitored and logged in session JSONL fi
    - **Server admission**: Uses `floor()` semantics on usage percentage to protect users from early cutoff (e.g. 99.79% is held at 99.0%).
    - **Client UI**: Formats remaining quota using standard `round()` (e.g. 81.04% used $\implies 81\%$ used, displaying exactly 19% remaining).
 
-### Loop-B decoupling (2026-09-05)
+### Provider-batch reconciliation (2026-09-14)
 
-Codex local usage details are produced by usage loop B (`LocalUsageOrchestration`) and no longer
-wait for a quota fetch success:
+Codex local usage details are produced by `LocalUsageOrchestration.reconcile()` after a
+Provider batch settles and no longer wait for a successful quota fetch:
 
 - The session scan runs whenever the codex home directory exists — resolved via config
-  `authPath` → `CODEX_HOME` → `~/.codex`, the same chain `CodexFetcher` uses — on the
-  global refresh interval. Readiness is diagnostics-only; when a source disappears, one
-  transition beat lets the scanner publish an empty snapshot and clear stale UI.
-- Scan results produced before the first quota success cannot be enriched (no `QuotaInfo`
-  to attach them to yet); the first successful quota fetch wakes loop B for a hydration
-  beat so window summaries don't wait a full interval.
+  `authPath` → `CODEX_HOME` → `~/.codex`, the same chain `CodexFetcher` uses. Readiness is
+  diagnostics-only; when a source disappears, one transition reconcile lets the scanner
+  publish an empty snapshot and clear stale UI.
+- The first reconcile and each natural-day rollover are Full Scans. Later reconciles only
+  run when Codex's source-owned FSEvents watcher has marked the session roots dirty.
+- Scan results produced before the first quota success can still be collected; the normal
+  post-Provider reconcile enriches them when the 5h window is available.
 - Window summaries (`primary` / `secondary`) are derived from the reset times stored in the
   shared data layer (the most recent successful quota fetch). Before the first quota success
   they are `nil`, and the scan still produces `dailyTokenUsage` (7 days), the recent samples,

@@ -38,6 +38,13 @@ struct ProviderStatus: Identifiable, Equatable, Sendable {
     var state: State
     var lastRefreshedAt: Date?
     var isScanningLocalUsage: Bool = false
+
+    /// Freshness of each local usage source consumed by this card.
+    ///
+    /// This is intentionally separate from `healthLevel`. AppState can write
+    /// the same `.dsh` / `.opencode` entry to every consumer status, and the
+    /// provider-neutral projection below will resolve it for each card.
+    var localUsageFreshness: LocalUsageFreshnessSnapshot = .clean
     /// Antigravity 本地 token 用量聚合（来自 AntigravityLocalUsageScanner）
     /// 只在 `kind == .antigravity` 时使用；其他 provider 永远 nil。
     var antigravityLocalUsage: AntigravityLocalUsage?
@@ -94,6 +101,39 @@ struct ProviderStatus: Identifiable, Equatable, Sendable {
     /// - 其他情况取最新一次成功数据的 healthLevel。
     var healthLevel: HealthLevel? {
         lastSuccess?.healthLevel
+    }
+
+    /// Effective freshness for the local usage footer. The legacy scanning
+    /// flag remains a compatibility fallback until AppState writes the source
+    /// transition itself; source-level `.scanning` also works for shared data.
+    var effectiveLocalUsageFreshness: LocalUsageFreshness {
+        if isScanningLocalUsage { return .scanning }
+        return localUsageFreshness.resolved(for: localUsageSources)
+    }
+
+    /// Main-thread write helper for the future AppState transition points.
+    /// No scanner or orchestration layer needs to know about this model API.
+    @MainActor
+    mutating func setLocalUsageFreshness(
+        _ freshness: LocalUsageFreshness,
+        for source: LocalUsageSource
+    ) {
+        localUsageFreshness[source] = freshness
+    }
+
+    private var localUsageSources: [LocalUsageSource] {
+        switch kind {
+        case .codexChatGpt:
+            return [.codex] + (mergeOpencodeUsage ? [.opencode] : [])
+        case .antigravity:
+            return [.antigravity] + (mergeOpencodeUsage ? [.opencode] : [])
+        case .minimaxTokenPlan:
+            return [.minimaxCode, .dsh] + (mergeOpencodeUsage ? [.opencode] : [])
+        case .glmCodingPlan:
+            return [.zcode, .dsh] + (mergeOpencodeUsage ? [.opencode] : [])
+        case .deepseek:
+            return [.dsh] + (mergeOpencodeUsage ? [.opencode] : [])
+        }
     }
 }
 

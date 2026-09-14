@@ -25,6 +25,7 @@ import Combine
 final class LocalUsageCoordinator<Usage: Equatable> {
     typealias Apply = (Usage?) -> Void
     typealias SetScanning = (Bool) -> Void
+    typealias FreshnessChange = () -> Void
 
     private let providerID: String
     private let logTag: String
@@ -48,32 +49,88 @@ final class LocalUsageCoordinator<Usage: Equatable> {
         logTag: String,
         makeScanner: @escaping () -> any LocalUsageScanner<Usage>,
         apply: @escaping Apply,
-        setScanning: SetScanning? = nil
+        setScanning: SetScanning? = nil,
+        onDirty: FreshnessChange? = nil,
+        onFresh: FreshnessChange? = nil
     ) {
         self.providerID = providerID
         self.logTag = logTag
         self.makeScanner = makeScanner
         self.apply = apply
         self.setScanning = setScanning
+        self.onDirty = onDirty
+        self.onFresh = onFresh
     }
 
-    /// 触发一次扫描。首次调用时 lazy 构造 scanner 并 wire 2 个 Combine sink；之后复用。
+    private let onDirty: FreshnessChange?
+    private let onFresh: FreshnessChange?
+
+    /// 触发一次 dirty 扫描。首次调用时 lazy 构造 scanner 并 wire 2 个 Combine
+    /// sink；之后复用。
     func trigger() {
+        trigger(mode: .dirty)
+    }
+
+    /// 触发指定模式的扫描。scanner 仍由自身负责 in-flight dedup。
+    func trigger(mode: LocalUsageScanMode) {
         if let s = scanner {
-            s.scan()
+            s.markDirty()
+            s.scan(mode: mode)
             return
         }
         let s = makeScanner()
         scanner = s
+        if let base = s as? LocalUsageScannerBase<Usage> {
+            base.onDirty = { [weak self] in self?.onDirty?() }
+            base.onFresh = { [weak self] in self?.onFresh?() }
+        }
         wireSinks(s)
         logInfo("[\(logTag)] LocalUsageCoordinator: scanner wired up (providerID=\(providerID))")
-        s.scan()
+        s.markDirty()
+        s.scan(mode: mode)
+    }
+
+    /// 触发并等待当前 scan settle。用于手动刷新契约；自动 batch 回调应使用
+    /// `trigger(mode:)` 后投递独立 Task，不在 Provider scheduler 中 await。
+    func triggerAndWait(mode: LocalUsageScanMode) async throws {
+        trigger(mode: mode)
+        guard let scanner else { return }
+        try await scanner.waitUntilSettled()
+    }
+
+    func waitUntilSettled() async throws {
+        guard let scanner else { return }
+        try await scanner.waitUntilSettled()
+    }
+
+    /// coordinator 尚未 lazy 构造时视作 dirty，以确保首次 reconcile 必定建并扫描。
+    var isDirty: Bool {
+        scanner?.isDirty ?? true
+    }
+
+    /// Watcher/adapter may require the next pass to rediscover the complete
+    /// source set (for example after a dropped FSEvents range).
+    var requiresFullScan: Bool {
+        scanner?.requiresFullScan ?? true
+    }
+
+    var lastFreshAt: Date? {
+        scanner?.lastFreshAt
+    }
+
+    func markDirty() {
+        scanner?.markDirty()
+    }
+
+    func markFresh(at date: Date = Date()) {
+        scanner?.markFresh(at: date)
     }
 
     /// 取消当前 in-flight scan（如果有）。配置变更 / AppState.stop() 调用,
     /// 防止旧 generation 写回新状态。
     func cancelInFlight() {
         scanner?.cancelInFlight()
+        (scanner as? LocalUsageScannerBase<Usage>)?.stopWatching()
     }
 
     /// 已构造的 scanner 上执行副作用（如推送运行时开关）；未构造时 no-op。
@@ -126,7 +183,28 @@ protocol LocalUsageScanner<Usage>: AnyObject {
     var lastResultPublisher: AnyPublisher<Usage?, Never> { get }
     var isScanningPublisher: AnyPublisher<Bool, Never> { get }
     func scan()
+    func scan(mode: LocalUsageScanMode)
+    var isDirty: Bool { get }
+    var requiresFullScan: Bool { get }
+    var lastFreshAt: Date? { get }
+    func markDirty()
+    func markFresh(at date: Date)
+    func waitUntilSettled() async throws
     /// 取消当前 in-flight scan（如果有）。配置变更 / stop 时调用,
     /// 防止旧扫描结果写回新状态。
     func cancelInFlight()
+}
+
+/// 允许尚未迁移到 `LocalUsageScannerBase` 的 scanner 先接入 coordinator。
+@MainActor
+extension LocalUsageScanner {
+    func scan(mode: LocalUsageScanMode) {
+        scan()
+    }
+    var isDirty: Bool { true }
+    var requiresFullScan: Bool { false }
+    var lastFreshAt: Date? { nil }
+    func markDirty() {}
+    func markFresh(at date: Date) {}
+    func waitUntilSettled() async throws {}
 }

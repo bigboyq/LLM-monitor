@@ -347,7 +347,7 @@ struct AppConfig: Codable, Equatable {
         }
     }
 
-    /// 全局生效的刷新间隔：clamp 到 10s...30d（供循环 B 等使用）。
+    /// 全局生效的刷新间隔：clamp 到 10s...30d（供 Provider scheduler 使用）。
     var effectiveGlobalRefreshInterval: TimeInterval {
         TimeInterval(min(max(refreshIntervalSeconds, 10), Self.maximumRefreshIntervalSeconds))
     }

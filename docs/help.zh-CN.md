@@ -100,7 +100,7 @@ ZCode 的任务按 provider 分为日常（Coding Plan）/ 闲时 / 其他智谱
 | Minimax scanner 缓存 | `~/.minimax/.token-monitor/` |
 | Antigravity scanner 缓存 | `~/.gemini/antigravity/.token-monitor/` |
 | ZCode scanner 缓存 | `~/.zcode/cli/.token-monitor/` |
-| OpenCode scanner 缓存 | `~/.local/share/opencode/.token-monitor/` |
+| OpenCode scanner 缓存 | `~/Library/Application Support/LLM-monitor/token-monitor/` |
 | DSH scanner 缓存 | `~/.dsh/.token-monitor/` |
 
 配置保存后会自动重载。若配置无法解析，应用会先备份为同目录的 `config.json.corrupt-*.json`，再恢复默认配置。请勿把真实 API Key 提交到 Git 仓库、issue 或日志附件中。

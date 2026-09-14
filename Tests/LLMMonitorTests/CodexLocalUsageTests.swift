@@ -89,7 +89,7 @@ final class CodexLocalUsageTests: XCTestCase {
     }
 
     func testSummarizeLocalUsageWithoutWindowsStillProducesDailyAndLastPrompt() throws {
-        // 循环 B 与额度解耦：无 reset 时间（windows 为空）时，daily 与 Last Prompt
+        // LocalUsage 与额度解耦：无 reset 时间（windows 为空）时，daily 与 Last Prompt
         // 是纯本地信息照常产出，仅窗口用量（usageSummaries）缺省。
         let base = Date(timeIntervalSince1970: 24_000)
         let fileURL = URL(fileURLWithPath: "/tmp/codex-local-no-window-test.jsonl")

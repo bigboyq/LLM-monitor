@@ -24,7 +24,7 @@ import os.log
 /// 4. **serial SQL**：扫描单一 v2 数据库；copy 策略已经把 .db 读到 /tmp
 ///    隔离 runtime 锁。
 /// 5. **失败不重试**：aggregate 单次尝试，失败就 logInfo 放弃。
-///    期望用量循环 B 的下一拍（全局刷新间隔）会再跑一次，runtime 通常
+///    由下一次 Provider batch settle 后的 reconcile 再次尝试；runtime 通常
 ///    那时已经暂停写。
 /// 6. **failure 不更新 mtime**：SQL 失败的 source 在 `index.sources` 里
 ///    mtime 保持不变，下次扫描会自然重试，不留"假成功"状态。
@@ -75,6 +75,12 @@ final class MinimaxLocalUsageScanner: LocalUsageScannerBase<MinimaxLocalUsage>, 
     private let fileManager: FileManagerBox
     private let calendar: Calendar
     private let now: @Sendable () -> Date
+    private var fileSystemWatcher: LocalFSEventsWatcher? = nil
+
+    /// FSEvents only invalidates the cached view; SQL stays in the scan work.
+    private(set) var requiresFullScan = true
+    private var eventGeneration: UInt64 = 0
+    var onFileSystemEvent: LocalFSEventsWatcher.EventHandler?
 
     /// 最近一次成功写入 index.json 的 generation. 旧 worker 即使晚到 mutex,
     /// `startedGeneration > self.lastCommittedGeneration` 才写盘, 否则 saveIndex
@@ -95,7 +101,9 @@ final class MinimaxLocalUsageScanner: LocalUsageScannerBase<MinimaxLocalUsage>, 
     #if DEBUG
     nonisolated(unsafe) static var testGate: (@Sendable () async -> Void)?
     /// Test-only observer for deterministic cache-write assertions.
-    nonisolated(unsafe) static var testSaveIndexHook: (@Sendable () -> Void)?
+    /// Per-instance rather than static so parallel XCTest cases cannot observe
+    /// or overwrite one another's cache-write counter.
+    nonisolated(unsafe) var testSaveIndexHook: (@Sendable () -> Void)?
     #endif
 
     init(runtimeDBURL: URL = MinimaxLocalUsageScanner.defaultRuntimeDBURL,
@@ -117,6 +125,44 @@ final class MinimaxLocalUsageScanner: LocalUsageScannerBase<MinimaxLocalUsage>, 
                 now: Date()
             )
         )
+        fileSystemWatcher = LocalFSEventsWatcher(
+            paths: [runtimeDBURL.deletingLastPathComponent()]
+        ) { [weak self] event in
+            self?.handleFileSystemEvent(event)
+        }
+    }
+
+    func startWatchingIfNeeded() {
+        fileSystemWatcher?.start()
+    }
+
+    override func restartWatching() {
+        startWatchingIfNeeded()
+    }
+
+    override func stopWatching() {
+        fileSystemWatcher?.stop()
+        markDirty()
+        requiresFullScan = true
+    }
+
+    func markFullScanCompleted() {
+        markFresh()
+        requiresFullScan = false
+    }
+
+    private func handleFileSystemEvent(_ event: LocalFSEventsEvent) {
+        eventGeneration &+= 1
+        markDirty()
+        if event.requiresFullScan {
+            requiresFullScan = true
+        }
+        onFileSystemEvent?(event)
+    }
+
+    private func acknowledgeFullScan(at generation: UInt64) {
+        guard eventGeneration == generation else { return }
+        requiresFullScan = false
     }
 
     /// performScanPure 的 pipeline：mutex 串行 + lastCommittedGeneration 守门。
@@ -126,8 +172,9 @@ final class MinimaxLocalUsageScanner: LocalUsageScannerBase<MinimaxLocalUsage>, 
         let fileManager = self.fileManager
         let calendar = self.calendar
         let now = self.now
+        let eventGeneration = self.eventGeneration
         return {
-            try await Self.performScanPure(
+            let result = try await Self.performScanPure(
                 runtimeDBURL: runtimeDBURL,
                 cacheDir: cacheDir,
                 fileManager: fileManager,
@@ -136,6 +183,10 @@ final class MinimaxLocalUsageScanner: LocalUsageScannerBase<MinimaxLocalUsage>, 
                 startedGeneration: startedGeneration,
                 scanner: self
             )
+            await MainActor.run { [weak self] in
+                self?.acknowledgeFullScan(at: eventGeneration)
+            }
+            return result
         }
     }
 
@@ -179,6 +230,9 @@ final class MinimaxLocalUsageScanner: LocalUsageScannerBase<MinimaxLocalUsage>, 
         if let gate = Self.testGate {
             await gate()
         }
+        let saveIndexHook = scanner.testSaveIndexHook
+        #else
+        let saveIndexHook: (@Sendable () -> Void)? = nil
         #endif
         // 整个 pipeline 在 AsyncMutex 里串行跑. 老的 worker 跑完 (包括
         // saveIndex) 才让新 worker 开始, 避免两个 worker 并发 loadIndex/saveIndex
@@ -200,7 +254,8 @@ final class MinimaxLocalUsageScanner: LocalUsageScannerBase<MinimaxLocalUsage>, 
                 fileManager: fileManager,
                 calendar: calendar,
                 now: now,
-                shouldSave: shouldSave
+                shouldSave: shouldSave,
+                saveIndexHook: saveIndexHook
             )
             if shouldSave {
                 // 写盘成功 → 主 actor 更新本实例. 仍持有 mutex, 下一个 worker
@@ -223,7 +278,8 @@ final class MinimaxLocalUsageScanner: LocalUsageScannerBase<MinimaxLocalUsage>, 
         fileManager: FileManagerBox,
         calendar: Calendar,
         now: @escaping @Sendable () -> Date,
-        shouldSave: Bool
+        shouldSave: Bool,
+        saveIndexHook: (@Sendable () -> Void)? = nil
     ) throws -> MinimaxLocalUsage {
         try Self.ensureCacheDirectoriesExist(cacheDir: cacheDir, fileManager: fileManager)
 
@@ -350,7 +406,7 @@ final class MinimaxLocalUsageScanner: LocalUsageScannerBase<MinimaxLocalUsage>, 
         //    shouldSave=false (旧 generation) 跳过, 保留新 worker 的 cache.
         if shouldSave {
             index.lastScannedAt = now()
-            try Self.saveIndex(index, cacheDir: cacheDir, fileManager: fileManager)
+            try Self.saveIndex(index, cacheDir: cacheDir, fileManager: fileManager, hook: saveIndexHook)
         }
 
         // 5. 合并 daily
@@ -566,9 +622,14 @@ extension MinimaxLocalUsageScanner {
         )
     }
 
-    nonisolated static func saveIndex(_ index: CacheIndex, cacheDir: URL, fileManager: FileManagerBox) throws {
+    nonisolated static func saveIndex(
+        _ index: CacheIndex,
+        cacheDir: URL,
+        fileManager: FileManagerBox,
+        hook: (@Sendable () -> Void)? = nil
+    ) throws {
         #if DEBUG
-        Self.testSaveIndexHook?()
+        hook?()
         #endif
         try ScannerIndexIO.saveIndex(index, cacheDir: cacheDir, fileManager: fileManager)
     }

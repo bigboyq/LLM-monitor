@@ -70,7 +70,10 @@ Supported provider fields:
 | `displayName` | Optional card title override. |
 | `notifyIntervalRestored` etc. (4 fields) | Optional per-event notification channels (5h/weekly × restored/exhausted): `none` / `system` / `barkAndSystem`. Defaults: restored → `system`, exhausted → `none`. See `spec/notifications.md`. |
 
-`MinimaxTokenPlanFetcher.hasLocalAuth()` always returns `true`; `AppState` validates the config `apiKey`. The scanner runs on usage loop B every global refresh interval (mtime diff + per-source cache), independent of quota refresh success.
+`MinimaxTokenPlanFetcher.hasLocalAuth()` always returns `true`; `AppState` validates the config `apiKey`.
+The scanner is reconciled after each Provider batch: the first pass/day rollover is Full,
+and later passes use the scanner-owned FSEvents dirty bit plus the mtime cache to avoid
+re-reading an unchanged database.
 
 ## API Request
 
@@ -191,8 +194,7 @@ QuotaInfo(
 
 ## Local Token Usage Scanner
 
-`MinimaxLocalUsageScanner` runs in the background on usage loop B (the global
-refresh interval, typically 5 min). It scans the **v2 runtime** `.db` file
+`MinimaxLocalUsageScanner` runs after a settled Provider batch. It scans the **v2 runtime** `.db` file
 as its only supported source,
 compares mtime + size against a cached index, and re-aggregates only the
 dirty source via direct SQLite queries on the `local_runtime_token_usage` table.

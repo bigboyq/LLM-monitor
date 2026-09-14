@@ -5,10 +5,26 @@ final class ScannerAndLoggingTests: XCTestCase {
 
     override func tearDown() {
         MinimaxLocalUsageScanner.testGate = nil
-        MinimaxLocalUsageScanner.testSaveIndexHook = nil
         AntigravityLocalUsageScanner.testGate = nil
-        AntigravityLocalUsageScanner.testSaveIndexHook = nil
         super.tearDown()
+    }
+
+    @MainActor
+    func testLocalFSEventsWatcherDoesNotEmitSyntheticEventOnStart() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("llm-monitor-fsevents-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var events: [LocalFSEventsEvent] = []
+        let watcher = LocalFSEventsWatcher(paths: [root]) { event in
+            events.append(event)
+        }
+        watcher.start()
+        try await Task.sleep(nanoseconds: 500_000_000)
+        watcher.stop()
+
+        XCTAssertTrue(events.isEmpty, "注册 watcher 不应凭空产生 dirty event: \(events)")
     }
 
     // MARK: - AppLog 0600 权限 / 轮转决策 / 轮转行为
@@ -450,8 +466,8 @@ final class ScannerAndLoggingTests: XCTestCase {
             now: now
         )
         let saveCounter = SaveCounter()
-        AntigravityLocalUsageScanner.testSaveIndexHook = { saveCounter.increment() }
-        defer { AntigravityLocalUsageScanner.testSaveIndexHook = nil }
+        scanner.testSaveIndexHook = { saveCounter.increment() }
+        defer { scanner.testSaveIndexHook = nil }
 
         try await runP1RegressionTest(
             cacheDirName: cacheDirName,
@@ -498,8 +514,6 @@ final class ScannerAndLoggingTests: XCTestCase {
             Task { await gate.reset() }
         }
         let saveCounter = SaveCounter()
-        MinimaxLocalUsageScanner.testSaveIndexHook = { saveCounter.increment() }
-        defer { MinimaxLocalUsageScanner.testSaveIndexHook = nil }
 
         let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("scanner-p1-flow-\(UUID().uuidString)", isDirectory: true)
@@ -510,6 +524,8 @@ final class ScannerAndLoggingTests: XCTestCase {
             runtimeDBURL: tempDir.appendingPathComponent("runtime.sqlite"),
             cacheDir: tempDir.appendingPathComponent("cache")
         )
+        scanner.testSaveIndexHook = { saveCounter.increment() }
+        defer { scanner.testSaveIndexHook = nil }
         // Step 1: A 启动 (gen=1), 阻塞在 gate
         scanner.scan()
         await gate.waitForArrival(1)
@@ -551,8 +567,6 @@ final class ScannerAndLoggingTests: XCTestCase {
             Task { await gate.reset() }
         }
         let saveCounter = SaveCounter()
-        AntigravityLocalUsageScanner.testSaveIndexHook = { saveCounter.increment() }
-        defer { AntigravityLocalUsageScanner.testSaveIndexHook = nil }
 
         let tempDir = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("scanner-p1-flow-antigravity-\(UUID().uuidString)", isDirectory: true)
@@ -567,6 +581,8 @@ final class ScannerAndLoggingTests: XCTestCase {
             conversationsDirs: [conversationsDir],
             cacheDir: tempDir.appendingPathComponent("cache")
         )
+        scanner.testSaveIndexHook = { saveCounter.increment() }
+        defer { scanner.testSaveIndexHook = nil }
         // Step 1-4: 跟 Minimax 测试同样的 cancel+rescan 序列
         scanner.scan()
         await gate.waitForArrival(1)
@@ -669,8 +685,8 @@ final class ScannerAndLoggingTests: XCTestCase {
             now: now
         )
         let saveCounter = SaveCounter()
-        MinimaxLocalUsageScanner.testSaveIndexHook = { saveCounter.increment() }
-        defer { MinimaxLocalUsageScanner.testSaveIndexHook = nil }
+        scanner.testSaveIndexHook = { saveCounter.increment() }
+        defer { scanner.testSaveIndexHook = nil }
 
         // 1. 模拟 "新 worker B 先跑 (gen=5)": 写盘, scanner.lastCommitted=5
         let r1 = try await MinimaxLocalUsageScanner.performScanPure(

@@ -16,7 +16,7 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 | Runtime log | `~/Library/Application Support/LLM-monitor/log.txt` plus stdout and `os.Logger` (privacy `.private`, Console.app 默认脱敏) |
 | Quota Providers | `minimax_token_plan`, `codex_chatgpt`, `antigravity`, `glm_coding_plan`, `deepseek` |
 | Clients | Codex, Antigravity, ZCode, OpenCode, DSH, MiniMax Code; clients may contribute to multiple quota providers |
-| Refresh | Dual-loop scheduling: Loop A (quota loop for all providers) + Loop B (local usage loop for all clients) |
+| Refresh | Provider scheduler drives quota refreshes and settled-batch LocalUsage reconcile; scanners use FSEvents dirty invalidation |
 | Config reload | Event-driven via `DispatchSourceFileSystemObject` (no polling) |
 | Window lifetime | Menu closes on focus loss or after 30s of inactivity; any in-menu interaction resets the timer |
 
@@ -59,7 +59,7 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 | `Sources/LLM-monitor/Fetchers/GlmCodingPlanFetcher.swift` | GLM Coding Plan 额度与 reset time 抓取 |
 | `Sources/LLM-monitor/Fetchers/DeepseekFetcher.swift` | DeepSeek 账户余额抓取（`/user/balance`）+ 解析 |
 | `Sources/LLM-monitor/Models/PeakWindow.swift` | GLM / DeepSeek 共用的参数化高峰窗口判定（`slots` × `weekdaysOnly`；GLM 本机时区单窗口可配置，DeepSeek 北京时间双窗口固定、高峰永不含周末） |
-| `Sources/LLM-monitor/Services/AppState.swift` | 全局状态派生、config watcher、scanner wire-up、per-provider 协调（timer / auth probe / 本地 scanner 都委托给专门类） |
+| `Sources/LLM-monitor/Services/AppState.swift` | 全局状态派生、config watcher、scanner wire-up、Provider batch 与 LocalUsage reconcile 接线 |
 | `Sources/LLM-monitor/Services/QuotaUpdateNotifier.swift` | 额度通知引擎：`QuotaEventDetector`（四类窗口事件边沿判定）+ `QuotaEventBatch`（按模型×渠道合并）+ 系统通知渠道 + `CompositeQuotaUpdateNotifier` 渠道扇出 |
 | `Sources/LLM-monitor/Services/BarkNotifier.swift` | Bark 推送渠道：POST JSON 传输、稳定覆盖 id、锁屏/亮屏跳过判定、有界串行发送队列（冷却 / 重试 / 可取消） |
 | `Sources/LLM-monitor/Services/TriggerStateStore.swift` | 通知触发器基线持久化（`notification-state.json`），检测 previous 的跨重启单一来源 |
@@ -70,7 +70,8 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 | `Sources/LLM-monitor/Services/HTTPClient.swift` | 共享 HTTP 客户端（minimax / codex 三个 fetch 路径） |
 | `Sources/LLM-monitor/Services/LocalUsageCoordinator.swift` | scanner 协议 + Combine wire-up 容器 |
 | `Sources/LLM-monitor/Services/ProviderRefreshScheduler.swift` | 循环 A（额度循环）：单一 Task 管理所有 Provider 的 quota 定时与退避，睡眠至最早截止时间，并发刷新 + 条目级隔离 |
-| `Sources/LLM-monitor/Services/LocalUsageOrchestration.swift` | 循环 B（用量循环）：单一 Task 按全局间隔迭代全部 6 个客户端，就绪探测 + 日志去噪，独立于 quota 结果 |
+| `Sources/LLM-monitor/Services/LocalUsageOrchestration.swift` | LocalUsage reconcile：Provider batch settled 后执行首次/日切 Full Scan，否则只消费 dirty sources；不持有 Timer |
+| `Sources/LLM-monitor/Services/LocalFSEventsWatcher.swift` | 可复用的单 scanner FSEvents 封装；每个 scanner 自己持有 watcher 与源路径，不维护全局路径表 |
 | `Sources/LLM-monitor/Services/AuthProber.swift` | 异步探测本地服务（antigravity）是否还活着 + 缓存 + 离/在线变化回调 |
 | `Sources/LLM-monitor/Fetchers/RefreshResultMergers.swift` | `CodexFillingMissingMerger` 等 per-provider 合并策略（Minimax 使用默认 `IdentityRefreshResultMerger`） |
 | `Sources/LLM-monitor/Services/DateParser.swift` | ISO8601 / unix timestamp 统一解析 |
@@ -130,14 +131,15 @@ flowchart TD
 
   AppState --> Statuses["[ProviderStatus]"]
   AppState --> LoopA["循环 A: ProviderRefreshScheduler\n(单 Task 额度循环 / 最早截止时间休眠 / 并发隔离)"]
-  AppState --> LoopB["循环 B: LocalUsageOrchestration\n(单 Task 用量循环 / 全局间隔 / 全客户端迭代)"]
+  AppState --> Reconcile["LocalUsage reconcile\n(Provider batch settled 后 / Full 或 dirty scan)"]
   AppState --> Prober["AuthProber\n(async 本地服务探测)"]
   AppState --> Watcher["DispatchSource directory watcher\nevent-driven"]
   AppState --> Fetchers["QuotaFetcher implementations"]
 
   LoopA -. 并发抓取额度 .-> Fetchers
   Prober -. 本地认证探测 .-> Fetchers
-  LoopB -. 独立扫描本地账本 .-> Scanners["Local Scanners\n(Minimax / GLM / OpenCode / DSH / Antigravity / Codex)"]
+  Reconcile -. 扫描本地账本 .-> Scanners["Local Scanners\n(Minimax / GLM / OpenCode / DSH / Antigravity / Codex)"]
+  Scanners -. 各自 FSEvents 标记 dirty .-> Reconcile
 
   Fetchers --> Minimax["MinimaxTokenPlanFetcher"]
   Fetchers --> Codex["CodexFetcher"]
@@ -675,11 +677,13 @@ Adding a provider currently requires:
 11. 在 `AppState` 加一个 `lazy var xxxLocalUsageCoordinator = LocalUsageCoordinator<XxxLocalUsage>(...)`
     （参考 `antigravityLocalUsageCoordinator`），apply 闭包走 `applyLocalUsage<T: Equatable>(kind:field:...)`
     通用函数（**不**要再写镜像的 `applyXxxLocalUsage`）。
-12. 本地用量扫描**无需**在 `refreshProviderDirectly` 的成功分支接线：循环 B
-    （`LocalUsageOrchestration.scanAllClients`）按全局刷新间隔迭代全部客户端，
-    与 quota 结果彻底解耦。新客户端只需在 `LocalUsageOrchestration.checkClientReadiness`
-    登记数据源就绪判断（仅用于诊断日志；数据源从存在变为消失的过渡拍会补扫
-    一次，由 scanner 发布空快照清掉旧值）。
+12. 本地用量扫描由 `ProviderRefreshScheduler` 的 `onBatchSettled` 驱动：每批 Provider
+    请求全部返回后（不论成功/失败）执行一次 `LocalUsageOrchestration.reconcile()`。
+    首次启动与自然日切换执行 Full Scan，其他时候只处理各 scanner 自己通过 FSEvents
+    标记的 dirty source。即使 Provider 全部禁用，调度器也会完成一次空 pass，保证
+    首次 Full Scan 仍能拿到 Provider 流程产出的窗口输入；之后没有 Provider batch
+    就不会触发 Dirty Scan。新客户端需要在自己的 scanner 内注册 watcher，并在
+    `LocalUsageOrchestration.checkClientReadiness` 登记数据源就绪判断。
 
 **已落地案例**：`DeepSeek` 完整走上述 1–8 步（无本地用量 scanner，跳过 9–12），
 且是唯一一个 **post-fetch 无副作用** 的 provider（`refreshProviderDirectly` 的

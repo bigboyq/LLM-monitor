@@ -85,6 +85,13 @@ final class DshLocalUsageScanner: LocalUsageScannerBase<DshLocalUsage>, @uncheck
     private let now: @Sendable () -> Date
     private let decompressor: Decompressor?
     private let streamingDecompressor: StreamingDecompressor
+    private var fileSystemWatcher: LocalFSEventsWatcher? = nil
+
+    /// FSEvents only invalidates the cached view; decompression/JSON parsing is
+    /// kept in the existing scan pipeline.
+    private(set) var requiresFullScan = true
+    private var eventGeneration: UInt64 = 0
+    var onFileSystemEvent: LocalFSEventsWatcher.EventHandler?
 
     init(
         sessionsRoot: URL = DshLocalUsageScanner.defaultSessionsRoot,
@@ -113,6 +120,42 @@ final class DshLocalUsageScanner: LocalUsageScannerBase<DshLocalUsage>, @uncheck
                 now: Date()
             )
         )
+        fileSystemWatcher = LocalFSEventsWatcher(paths: [sessionsRoot]) { [weak self] event in
+            self?.handleFileSystemEvent(event)
+        }
+    }
+
+    func startWatchingIfNeeded() {
+        fileSystemWatcher?.start()
+    }
+
+    override func restartWatching() {
+        startWatchingIfNeeded()
+    }
+
+    override func stopWatching() {
+        fileSystemWatcher?.stop()
+        markDirty()
+        requiresFullScan = true
+    }
+
+    func markFullScanCompleted() {
+        markFresh()
+        requiresFullScan = false
+    }
+
+    private func handleFileSystemEvent(_ event: LocalFSEventsEvent) {
+        eventGeneration &+= 1
+        markDirty()
+        if event.requiresFullScan {
+            requiresFullScan = true
+        }
+        onFileSystemEvent?(event)
+    }
+
+    private func acknowledgeFullScan(at generation: UInt64) {
+        guard eventGeneration == generation else { return }
+        requiresFullScan = false
     }
 
     /// 递归发现 dsh session 产物文件（session.jsonl / *.jsonl.zstd / *.jsonl.zst），
@@ -153,8 +196,9 @@ final class DshLocalUsageScanner: LocalUsageScannerBase<DshLocalUsage>, @uncheck
         let now = self.now
         let decompressor = self.decompressor
         let streamingDecompressor = self.streamingDecompressor
+        let eventGeneration = self.eventGeneration
         return {
-            try await Self.pipelineMutex.withLock {
+            let result = try await Self.pipelineMutex.withLock {
                 try await Task.detached(priority: .utility) {
                     try Self.performScanPure(
                         sessionsRoot: sessionsRoot,
@@ -168,6 +212,10 @@ final class DshLocalUsageScanner: LocalUsageScannerBase<DshLocalUsage>, @uncheck
                     )
                 }.value
             }
+            await MainActor.run { [weak self] in
+                self?.acknowledgeFullScan(at: eventGeneration)
+            }
+            return result
         }
     }
 

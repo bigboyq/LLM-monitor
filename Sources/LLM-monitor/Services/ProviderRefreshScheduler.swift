@@ -29,6 +29,11 @@ final class ProviderRefreshScheduler {
     /// 任何会改 `nextRefreshDates` / `failureCounts` 的路径都会触发一次，
     /// 让外部把 `earliestNextRefresh` 重新 publish 到 `@Published nextRefreshAt`。
     typealias NextRefreshChangeCallback = () -> Void
+    /// 一批到期 provider 已全部返回，并且其 outcome 已写入调度状态后的通知。
+    ///
+    /// 该回调是同步的、非 async 的：调用方若要启动本地用量 reconcile，应当
+    /// 在回调中投递一个独立 Task，不能把本地扫描 await 到额度循环里。
+    typealias BatchSettledCallback = @MainActor () -> Void
 
     // MARK: - 内部状态
 
@@ -68,6 +73,7 @@ final class ProviderRefreshScheduler {
     private let refreshHandler: RefreshHandler
     private let intervalProvider: IntervalProvider
     private let onNextRefreshChange: NextRefreshChangeCallback
+    private let onBatchSettled: BatchSettledCallback
     /// 可注入的时钟，生产默认为真实时间。用于 mid-cycle 补刷新计算等待时长，
     /// 也用于 schedule(for:) 写入 nextRefreshDates。
     private let now: @Sendable () -> Date
@@ -89,6 +95,7 @@ final class ProviderRefreshScheduler {
         refreshHandler: @escaping RefreshHandler,
         intervalProvider: @escaping IntervalProvider,
         onNextRefreshChange: @escaping NextRefreshChangeCallback = {},
+        onBatchSettled: @escaping BatchSettledCallback = {},
         now: @escaping @Sendable () -> Date = { Date() },
         midCycleResetDelay: TimeInterval = 15,
         periodicFullEveryN: Int = ProviderRefreshScheduler.periodicFullEveryNDefault,
@@ -99,6 +106,7 @@ final class ProviderRefreshScheduler {
         self.refreshHandler = refreshHandler
         self.intervalProvider = intervalProvider
         self.onNextRefreshChange = onNextRefreshChange
+        self.onBatchSettled = onBatchSettled
         self.now = now
         self.midCycleResetDelay = midCycleResetDelay
         self.periodicFullEveryN = max(periodicFullEveryN, 0)
@@ -106,6 +114,14 @@ final class ProviderRefreshScheduler {
     }
 
     // MARK: - 生命周期
+
+    /// 启动调度循环。即使当前没有 managed provider，也会完成一次空的初始
+    /// batch，并触发 `onBatchSettled`。后续 provider 可通过 `schedule(for:)`
+    /// 动态加入。
+    func start() {
+        ensureLoopRunning()
+        wake()
+    }
 
     /// 注册 provider 进入单循环。若该 provider 之前未设置 nextRefreshDate，则立即安排首拍。
     func schedule(for providerID: String) {
@@ -161,6 +177,7 @@ final class ProviderRefreshScheduler {
     }
 
     private func runLoop() async {
+        var initialBatchPending = true
         while !Task.isCancelled {
             let nowDate = now()
             let effectiveWakeDate = max(nowDate, lastCompletedTargetWakeDate ?? nowDate)
@@ -204,6 +221,14 @@ final class ProviderRefreshScheduler {
                     }
                 }
                 onNextRefreshChange()
+                // 必须在 TaskGroup 完成、且每个 outcome 都已 process 后通知。
+                onBatchSettled()
+                initialBatchPending = false
+            } else if initialBatchPending {
+                // 空 provider 集合也有一个可观察的初始 pass，避免调用方永远
+                // 等不到“第一批已结算”的信号。
+                initialBatchPending = false
+                onBatchSettled()
             }
 
             guard !Task.isCancelled else { break }
@@ -308,6 +333,10 @@ final class ProviderRefreshScheduler {
                 guard let self, !Task.isCancelled else { return }
                 logInfo("ProviderRefreshScheduler: [\(providerID)] 触发 resetTime 补刷新")
                 _ = await self.runRefresh(providerID, mode: .background)
+                // reset-time 补刷新也是一个完整的 Provider batch（只是只有
+                // 一个 provider），因此同样必须在 outcome 结算后驱动 reconcile。
+                guard !Task.isCancelled else { return }
+                self.onBatchSettled()
             }
             newTasks.append(task)
         }

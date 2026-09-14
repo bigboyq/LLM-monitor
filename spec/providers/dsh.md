@@ -84,9 +84,10 @@ to the next line, so a replayed event can never stall the scan.
 
 ## Scanner behavior
 
-- Scanned by the periodic usage loop (loop B) on the global refresh interval; the first
-  beat runs ~5 s after launch, staggered with the quota loop. Quota refresh success does
-  not trigger scans.
+- Reconciled after each settled Provider batch; the first reconcile and each natural-day
+  rollover run a Full Scan, while later reconciles only run when the DSH scanner's
+  source-owned FSEvents watcher marks the sessions root dirty. The watcher is stopped
+  during scanning and independently rebuilt after the scan settles.
 - Uses file mtime + size fingerprints; if nothing changed it only rebases the cached
   seven-day window after midnight.
 - When files change, an in-memory cache retains parsed results for the newest 256

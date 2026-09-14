@@ -339,6 +339,7 @@ struct LocalUsageFooterView<Daily: LocalUsageDaily>: View {
     let deepseekPeakWindow: DeepseekPeakWindow
     let scannedAt: Date?
     let isScanning: Bool
+    let freshness: LocalUsageFreshness
     let isReady: Bool
     /// "本机无 Antigravity 会话数据（~/.gemini/antigravity/conversations 为空）" 等
     /// provider 特定的"扫描完毕但还没数据"提示
@@ -351,6 +352,7 @@ struct LocalUsageFooterView<Daily: LocalUsageDaily>: View {
         deepseekPeakWindow: DeepseekPeakWindow = .defaultWindow,
         scannedAt: Date?,
         isScanning: Bool,
+        freshness: LocalUsageFreshness = .clean,
         isReady: Bool,
         emptyHint: String
     ) {
@@ -360,6 +362,7 @@ struct LocalUsageFooterView<Daily: LocalUsageDaily>: View {
         self.deepseekPeakWindow = deepseekPeakWindow
         self.scannedAt = scannedAt
         self.isScanning = isScanning
+        self.freshness = freshness
         self.isReady = isReady
         self.emptyHint = emptyHint
     }
@@ -430,10 +433,21 @@ struct LocalUsageFooterView<Daily: LocalUsageDaily>: View {
             Text(label)
                 .foregroundStyle(.secondary)
             Text(value)
-                .foregroundStyle(Color.secondaryLabel)
+                .foregroundStyle(metricValueColor)
         }
         .font(MenuTypography.metricValue)
         .lineLimit(1)
+    }
+
+    private var metricValueColor: Color {
+        switch freshness {
+        case .clean:
+            return Color.secondaryLabel
+        case .dirty, .scanning:
+            return .yellow
+        case .failed:
+            return .red
+        }
     }
 
     var body: some View {

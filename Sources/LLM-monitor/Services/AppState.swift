@@ -57,7 +57,7 @@ final class AppState: ObservableObject {
     /// 远程额度恢复通知；通过协议注入，测试不会触碰系统通知中心。
     private let quotaUpdateNotifier: any QuotaUpdateNotifying
 
-    /// 5 组本地 scanner 的编排（lazy 构造 / 循环 B / 条目隔离 / 去噪）。
+    /// 5 组本地 scanner 的编排（lazy 构造 / Provider batch reconcile / 条目隔离 / 去噪）。
     /// 扫描结果通过 `LocalUsageStatusWriting` 回写本类型。lazy：构造需要捕获 self。
     /// `internal`（非 `private`）让测试能直接触发或观测用量循环。
     lazy var localUsage = LocalUsageOrchestration(writer: self)
@@ -256,6 +256,11 @@ final class AppState: ObservableObject {
             },
             onNextRefreshChange: { [weak self] in
                 self?.nextRefreshAt = self?.refreshScheduler.earliestNextRefresh
+            },
+            onBatchSettled: { [weak self] in
+                // Provider quota values (including the 5h window) are settled
+                // before LocalUsage chooses full versus dirty reconciliation.
+                self?.localUsage.reconcileAfterProviderBatch()
             }
         )
         self.authProber = AuthProber(
@@ -320,16 +325,9 @@ final class AppState: ObservableObject {
                 scheduleRefresh(for: status.id)
             }
         }
-        // 循环 B：启动用量循环，以全局刷新间隔迭代全部客户端（首拍延迟 5s 与循环 A 错峰）；
-        // 睡眠健康度随循环 B 的每一拍同步更新，不再维持独立 60s 定时器。
-        localUsage.startUsageLoop(
-            intervalProvider: { [configStore] in
-                configStore.config.effectiveGlobalRefreshInterval
-            },
-            onBeat: { [weak self] in
-                self?.sleepHealth.refreshNow()
-            }
-        )
+        // 即使没有任何启用的 Provider，也要完成一次空 pass，
+        // 这样 LocalUsage 才能在 Provider 流程之后执行首次 Full Scan。
+        refreshScheduler.start()
         startHealthClock()
     }
 
@@ -527,7 +525,8 @@ final class AppState: ObservableObject {
                 isEnabled: pc?.enabled ?? true,
                 state: finalState,
                 lastRefreshedAt: preserved.lastRefreshedAt ?? persistedRefreshTimes[d.id],
-                isScanningLocalUsage: preserved.isScanningLocalUsage
+                isScanningLocalUsage: preserved.isScanningLocalUsage,
+                localUsageFreshness: preserved.localUsageFreshness
             )
             // OpenCode is a Client; keep the old ProviderStatus field as a
             // compatibility projection while reading the new client binding
@@ -667,14 +666,6 @@ final class AppState: ObservableObject {
             mutateStatus(at: newIdx) {
                 $0.state = .ok(info)
                 $0.lastRefreshedAt = info.fetchedAt
-            }
-            // codex 冷启动补水：loop B 首拍（5s 错峰）若先于首次 quota 成功，扫描
-            // 结果会因状态仍是 .ready/.failed(无 lastSuccess) 而"无 QuotaInfo 可
-            // enrich"被丢弃。首次成功且详情尚缺时唤醒 loop B 补一拍，让窗口用量
-            // 不必等下一个全局刷新周期；稳态（详情已随 merger 带入）不唤醒，保持
-            // quota 与扫描节律解耦。
-            if descriptor.kind == .codexChatGpt, info.codexUsageDetails == nil {
-                Task { await self.localUsage.triggerImmediateScanAll() }
             }
             // 通知检测只对窗口类 provider 生效：DeepSeek 的余额口径被二值化为
             // 0/100，不具备窗口语义（余额触发器暂不接入）。previous 取持久化
@@ -1004,9 +995,10 @@ final class AppState: ObservableObject {
 
         var changed = false
 
-        // Enrich 当前 state 持有的 QuotaInfo。循环 B 与额度刷新解耦后，details 的
+        // Enrich 当前 state 持有的 QuotaInfo。LocalUsage reconcile 与额度刷新解耦后，details 的
         // 产出时机与 quota 更新时序无关：不再要求 fetchedAt 严格相等——扫描使用的
-        // reset 时间来自数据层存量（可能有半拍滞后），循环 B 下一拍自动对齐新窗口。
+        // reset 时间来自数据层存量（可能有半拍滞后），下一次 Provider batch 后的
+        // reconcile 自动对齐新窗口。
         // State 自身持有 QuotaInfo（.ok / .loading(lastSuccess:) / .failed(_, lastSuccess:)），
         // 只 enrich state 即可，single source of truth。
         switch statuses[idx].state {
@@ -1061,6 +1053,38 @@ final class AppState: ObservableObject {
         mutateStatus(at: idx) { $0.isScanningLocalUsage = isScanning }
     }
 
+    /// Project a scanner-owned freshness transition onto every card that
+    /// consumes that source. Shared sources (DSH/OpenCode) therefore stay
+    /// consistent without a global watcher/path registry.
+    @MainActor
+    func setLocalUsageFreshness(_ freshness: LocalUsageFreshness, for source: LocalUsageSource) {
+        let affectedKinds: Set<ProviderKind>
+        switch source {
+        case .codex:
+            affectedKinds = [.codexChatGpt]
+        case .antigravity:
+            affectedKinds = [.antigravity]
+        case .minimaxCode:
+            affectedKinds = [.minimaxTokenPlan]
+        case .zcode:
+            affectedKinds = [.glmCodingPlan]
+        case .dsh, .opencode:
+            affectedKinds = Set(ProviderKind.allCases)
+        }
+
+        var copy = statuses
+        var changed = false
+        for idx in copy.indices where affectedKinds.contains(copy[idx].kind) {
+            guard copy[idx].localUsageFreshness[source] != freshness else { continue }
+            logDebug("[local-usage] \(copy[idx].id) source=\(source.rawValue) freshness=\(freshness.rawValue)")
+            copy[idx].localUsageFreshness[source] = freshness
+            changed = true
+        }
+        guard changed else { return }
+        statuses = copy
+        statusDidChange.send()
+    }
+
     private func cancelAllRefreshTasks() {
         refreshScheduler.cancelAll()
     }
@@ -1103,6 +1127,7 @@ final class AppState: ObservableObject {
             return PreservedStatusFields(
                 lastRefreshedAt: nil,
                 isScanningLocalUsage: false,
+                localUsageFreshness: .clean,
                 previousState: nil,
                 antigravityLocalUsage: nil,
                 minimaxLocalUsage: nil,
@@ -1114,6 +1139,7 @@ final class AppState: ObservableObject {
         return PreservedStatusFields(
             lastRefreshedAt: old.lastRefreshedAt,
             isScanningLocalUsage: old.isScanningLocalUsage,
+            localUsageFreshness: old.localUsageFreshness,
             previousState: old.state,
             antigravityLocalUsage: old.antigravityLocalUsage,
             minimaxLocalUsage: old.minimaxLocalUsage,
@@ -1214,6 +1240,7 @@ final class AppState: ObservableObject {
 struct PreservedStatusFields {
     let lastRefreshedAt: Date?
     let isScanningLocalUsage: Bool
+    let localUsageFreshness: LocalUsageFreshnessSnapshot
     /// 旧 `state`，供 `rebuildStatuses` 决定是否复用（auth 还 ok 时直接保留
     /// `.ok/.loading/.failed` 状态 + 它的 QuotaInfo 数据）。
     let previousState: ProviderStatus.State?

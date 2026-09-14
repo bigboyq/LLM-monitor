@@ -379,8 +379,15 @@ population — it counts only events that successfully entered the daily statist
 
 ## Local Token Usage Scanner
 
-`AntigravityLocalUsageScanner` runs in the background on the periodic usage loop (loop B,
-global refresh interval), independent of quota refresh success. It scans both supported conversation directories, accepts `.db` and `.pb` session files, compares file metadata (mtime/size plus WAL mtime/size for `.db`) against a cached index, and re-fetches only dirty sessions via `GetCascadeTrajectoryGeneratorMetadata`. Token values always come from RPC; for SQLite events that lack a timestamp, the scanner reads only the matching step metadata timestamp as a fallback.
+`AntigravityLocalUsageScanner` runs after a settled Provider batch, independent of quota
+refresh success. The first reconcile and each natural-day rollover are Full Scans; later
+reconciles only run when its source-owned FSEvents watcher marks the conversation roots
+dirty. The watcher is stopped for the scan and rebuilt by this scanner after it settles.
+It scans both supported conversation directories, accepts `.db` and `.pb` session files,
+compares file metadata (mtime/size plus WAL mtime/size for `.db`) against a cached index,
+and re-fetches only dirty sessions via `GetCascadeTrajectoryGeneratorMetadata`. Token
+values always come from RPC; for SQLite events that lack a timestamp, the scanner reads
+only the matching step metadata timestamp as a fallback.
 
 ### Storage layout
 
@@ -644,7 +651,8 @@ The following SQLite investigation describes the removed implementation and is r
 
 4. **单次尝试，失败丢给下次 scan**
    - 不在 scanner 内维护 5s retry timer（额外状态机 + 抢 IDE 资源的本质没变）
-   - 失败就 `logInfo` + 保留旧 R/T 数据；下一拍用量循环 B（全局刷新间隔）会再扫一次
+   - 失败就 `logInfo` + 保留旧 R/T 数据；下一次 Provider batch settle 后，若 FSEvents
+     仍标记 source dirty，再由 reconcile 执行 Dirty Scan
    - IDE 通常那时已暂停写 → .db 副本 copy 成功率高
 
 5. **Off-main-thread**：所有 SQLite 读 + RPC 都在 `nonisolated static performScanPure`

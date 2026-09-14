@@ -10,7 +10,7 @@ optionally merged into the Minimax, ChatGPT, Antigravity, GLM, and DeepSeek card
 | Database | `~/.local/share/opencode/opencode.db` |
 | Table | `message` |
 | Included rows | `role = assistant`, non-null `providerID`, non-null `tokens`, positive token total |
-| Cache | `~/.local/share/opencode/.token-monitor/` |
+| Cache | `~/Library/Application Support/LLM-monitor/token-monitor/` |
 | Daily window | Seven local calendar days, including today |
 
 The scanner reads the following fields from each assistant message:
@@ -95,13 +95,13 @@ where R is rounds and T is turns.
 
 ## Refresh timing
 
-OpenCode 不挂自己的独立 timer,也没有 quota 依赖:由用量循环 B(`LocalUsageOrchestration`)
-按全局刷新间隔统一扫描,与其它客户端同拍迭代。启动后首拍延迟 ~5s 与额度循环错峰;手动
-refreshAll / 系统唤醒会置位 `triggerImmediateScanAll`,提前打断睡眠、下一拍立即扫描。
+OpenCode 不挂自己的独立 timer，也没有 quota 依赖：由 `ProviderRefreshScheduler` 每批
+Provider 请求结算后的 `LocalUsageOrchestration.reconcile()` 驱动。首次启动和自然日切换
+执行 Full Scan；其余批次只在 OpenCode scanner 自己的 FSEvents watcher 标记 source dirty
+时执行 Dirty Scan。手动 refreshAll 仍显式等待一次 Full Scan。
 
-> 决策依据:OpenCode 是"跨 provider 共享账本"。用量循环 B 的全局间隔与各 quota 卡片的
-> 刷新节奏一致,"看 OpenCode 卡片的 prompt 时间"和"看各 quota 卡片的 prompt 时间"天然
-> 对齐,不需要也不存在 OpenCode 自己的独立触发配置。
+> 决策依据：OpenCode 是“跨 provider 共享账本”。FSEvents 只负责把它标记为 dirty，
+> 实际扫描仍挂在 Provider batch 之后；因此不需要也不存在 OpenCode 自己的独立触发配置。
 
 ## Implementation map
 

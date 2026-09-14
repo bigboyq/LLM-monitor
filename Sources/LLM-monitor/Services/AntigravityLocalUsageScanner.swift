@@ -22,7 +22,7 @@ import os.log
 ///    同时不给本地 language server 制造无界请求洪峰。本地 session 文件只用于发现和
 ///    指纹比较，不参与内容解析。
 /// 5. **失败不重试**：RPC 失败或返回空事件时保留 last-good cache，
-///    由用量循环 B 的下一拍（全局刷新间隔）自然重试。
+///    由下一次 Provider batch settle 后、source 仍 dirty 时的 reconcile 重试。
 /// 6. **failure 不更新 mtime**：RPC 失败的 session 在 `index.sessions` 里
 ///    mtime 保持不变，下次扫描会自然重试，不留"假成功"状态。
 @MainActor
@@ -74,6 +74,13 @@ final class AntigravityLocalUsageScanner: LocalUsageScannerBase<AntigravityLocal
     private let fileManager: FileManagerBox
     private let calendar: Calendar
     private let now: @Sendable () -> Date
+    private var fileSystemWatcher: LocalFSEventsWatcher? = nil
+
+    /// FSEvents is only an invalidation hint.  The next lifecycle scan decides
+    /// how to refresh the source; the stream callback never performs RPC/SQL.
+    private(set) var requiresFullScan = true
+    private var eventGeneration: UInt64 = 0
+    var onFileSystemEvent: LocalFSEventsWatcher.EventHandler?
 
     /// 最近一次成功写入 index.json 的 generation. 旧 worker 即使晚到 mutex,
     /// `startedGeneration > self.lastCommittedGeneration` 才写盘, 否则 saveIndex
@@ -94,7 +101,9 @@ final class AntigravityLocalUsageScanner: LocalUsageScannerBase<AntigravityLocal
     #if DEBUG
     nonisolated(unsafe) static var testGate: (@Sendable () async -> Void)?
     /// Test-only observer for deterministic cache-write assertions.
-    nonisolated(unsafe) static var testSaveIndexHook: (@Sendable () -> Void)?
+    /// Per-instance rather than static so parallel XCTest cases cannot observe
+    /// or overwrite one another's cache-write counter.
+    nonisolated(unsafe) var testSaveIndexHook: (@Sendable () -> Void)?
     #endif
 
     init(fetcher: AntigravityFetcher,
@@ -118,6 +127,46 @@ final class AntigravityLocalUsageScanner: LocalUsageScannerBase<AntigravityLocal
                 now: Date()
             )
         )
+        fileSystemWatcher = LocalFSEventsWatcher(paths: conversationsDirs) { [weak self] event in
+            self?.handleFileSystemEvent(event)
+        }
+    }
+
+    func startWatchingIfNeeded() {
+        fileSystemWatcher?.start()
+    }
+
+    override func restartWatching() {
+        startWatchingIfNeeded()
+    }
+
+    override func stopWatching() {
+        fileSystemWatcher?.stop()
+        // The stream starts at "now" when restarted; changes during the pause
+        // are therefore covered by the next full scan.
+        markDirty()
+        requiresFullScan = true
+    }
+
+    /// Explicit acknowledgement for a lifecycle adapter after a successful
+    /// full scan.  Normal scans are acknowledged by the existing base runner.
+    func markFullScanCompleted() {
+        markFresh()
+        requiresFullScan = false
+    }
+
+    private func handleFileSystemEvent(_ event: LocalFSEventsEvent) {
+        eventGeneration &+= 1
+        markDirty()
+        if event.requiresFullScan {
+            requiresFullScan = true
+        }
+        onFileSystemEvent?(event)
+    }
+
+    private func acknowledgeFullScan(at generation: UInt64) {
+        guard eventGeneration == generation else { return }
+        requiresFullScan = false
     }
 
     /// performScanPure 在 mutex 内读 + 写本实例的 lastCommittedGeneration
@@ -146,8 +195,9 @@ final class AntigravityLocalUsageScanner: LocalUsageScannerBase<AntigravityLocal
         let fileManager = self.fileManager
         let calendar = self.calendar
         let now = self.now
+        let eventGeneration = self.eventGeneration
         return {
-            try await Self.performScanPure(
+            let result = try await Self.performScanPure(
                 fetcher: fetcher,
                 conversationsDirs: conversationsDirs,
                 cacheDir: cacheDir,
@@ -157,6 +207,10 @@ final class AntigravityLocalUsageScanner: LocalUsageScannerBase<AntigravityLocal
                 startedGeneration: startedGeneration,
                 scanner: self
             )
+            await MainActor.run { [weak self] in
+                self?.acknowledgeFullScan(at: eventGeneration)
+            }
+            return result
         }
     }
 
@@ -269,6 +323,9 @@ extension AntigravityLocalUsageScanner {
         if let gate = Self.testGate {
             await gate()
         }
+        let saveIndexHook = scanner.testSaveIndexHook
+        #else
+        let saveIndexHook: (@Sendable () -> Void)? = nil
         #endif
         // 整个 pipeline 在 AsyncMutex 里串行跑. 老的 worker 跑完 (包括
         // saveIndex) 才让新 worker 开始, 避免两个 worker 并发 loadIndex/saveIndex
@@ -291,7 +348,8 @@ extension AntigravityLocalUsageScanner {
                 fileManager: fileManager,
                 calendar: calendar,
                 now: now,
-                shouldSave: shouldSave
+                shouldSave: shouldSave,
+                saveIndexHook: saveIndexHook
             )
             if shouldSave {
                 // 写盘成功 → 主 actor 更新本实例. 仍持有 mutex, 下一个 worker
@@ -315,7 +373,8 @@ extension AntigravityLocalUsageScanner {
         fileManager: FileManagerBox,
         calendar: Calendar,
         now: @escaping @Sendable () -> Date,
-        shouldSave: Bool
+        shouldSave: Bool,
+        saveIndexHook: (@Sendable () -> Void)? = nil
     ) async throws -> AntigravityLocalUsage {
         try ensureCacheDirectoriesExist(cacheDir: cacheDir, fileManager: fileManager)
 
@@ -438,7 +497,7 @@ extension AntigravityLocalUsageScanner {
         //    shouldSave=false (旧 generation) 跳过, 保留新 worker 的 cache.
         if shouldSave {
             index.lastScannedAt = nowDate
-            try Self.saveIndex(index, cacheDir: cacheDir, fileManager: fileManager)
+            try Self.saveIndex(index, cacheDir: cacheDir, fileManager: fileManager, hook: saveIndexHook)
         }
 
         // 5. 汇总全局 daily + 过滤最近 7 天
@@ -814,9 +873,14 @@ extension AntigravityLocalUsageScanner {
         )
     }
 
-    nonisolated static func saveIndex(_ index: CacheIndex, cacheDir: URL, fileManager: FileManagerBox) throws {
+    nonisolated static func saveIndex(
+        _ index: CacheIndex,
+        cacheDir: URL,
+        fileManager: FileManagerBox,
+        hook: (@Sendable () -> Void)? = nil
+    ) throws {
         #if DEBUG
-        Self.testSaveIndexHook?()
+        hook?()
         #endif
         try ScannerIndexIO.saveIndex(index, cacheDir: cacheDir, fileManager: fileManager)
     }

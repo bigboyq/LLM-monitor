@@ -608,12 +608,13 @@ The native ZCode scanner and OpenCode merge coverage is included above.
 
 ### Scan trigger
 
-All local scanners — GLM included — are driven by usage loop B
-(`LocalUsageOrchestration.startUsageLoop`): a single Task iterates every client on the
-global refresh interval, fully decoupled from quota refresh success. The first beat runs
-~5 s after launch, staggered with the quota loop; manual refresh or system wake interrupts
-the sleep for an immediate beat. GLM's former dedicated periodic trigger
-(`AppState.glmLocalUsagePeriodicTask`) has been removed — loop B supersedes it.
+All local scanners — GLM included — are driven by
+`LocalUsageOrchestration.reconcile()` after each Provider batch settles. The first
+reconcile and each natural-day rollover perform a Full Scan; later reconciles only run
+when the scanner's own FSEvents watcher has marked the source dirty. This remains fully
+independent of whether the quota batch succeeded. Manual refresh explicitly waits for
+one Full Scan. GLM's former dedicated periodic trigger
+(`AppState.glmLocalUsagePeriodicTask`) has been removed.
 
 The scanner's db+WAL fingerprint check is unchanged: when nothing changed only a `stat()`
 runs (microseconds); SQL (~1.5ms) only runs when the WAL actually moved.

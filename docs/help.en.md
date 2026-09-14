@@ -99,7 +99,7 @@ Windowed providers (ChatGPT/Codex, GLM, Minimax, Antigravity) support four quota
 | Minimax scanner cache | `~/.minimax/.token-monitor/` |
 | Antigravity scanner cache | `~/.gemini/antigravity/.token-monitor/` |
 | ZCode scanner cache | `~/.zcode/cli/.token-monitor/` |
-| OpenCode scanner cache | `~/.local/share/opencode/.token-monitor/` |
+| OpenCode scanner cache | `~/Library/Application Support/LLM-monitor/token-monitor/` |
 | DSH scanner cache | `~/.dsh/.token-monitor/` |
 
 Configuration changes are reloaded automatically. If the file is invalid, the app first creates a `config.json.corrupt-*.json` backup and then restores defaults. Never post real API keys in a repository, issue, or log attachment.
