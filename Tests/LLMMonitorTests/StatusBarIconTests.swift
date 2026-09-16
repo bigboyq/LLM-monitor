@@ -112,17 +112,33 @@ final class StatusBarIconTests: XCTestCase {
         XCTAssertFalse(quotaLogoImage.isTemplate)
         XCTAssertNotNil(quotaLogoImage.tiffRepresentation)
 
+        let healthyMetrics = StatusBarQuotaMetrics.full
+        let warningMetrics = StatusBarQuotaMetrics(
+            weekly: .default(minAvailable: 1, avgAvailable: 1, defaultColor: "#FB923C"),
+            interval: .default(minAvailable: 1, avgAvailable: 1, defaultColor: "#2DD4BF"),
+            lowestAvailable: 1,
+            quotaHealthLevels: [.warning]
+        )
+        let criticalMetrics = StatusBarQuotaMetrics(
+            weekly: .default(minAvailable: 1, avgAvailable: 1, defaultColor: "#FB923C"),
+            interval: .default(minAvailable: 1, avgAvailable: 1, defaultColor: "#2DD4BF"),
+            lowestAvailable: 1,
+            quotaHealthLevels: [.critical]
+        )
         let healthyQuotaLogo = MenuBarLabel.composedMenuBarImage(
             iconStyle: .quotaLogo,
-            health: .healthy
+            health: .healthy,
+            quotaMetrics: healthyMetrics
         )
         let warningQuotaLogo = MenuBarLabel.composedMenuBarImage(
             iconStyle: .quotaLogo,
-            health: .warning
+            health: .warning,
+            quotaMetrics: warningMetrics
         )
         let criticalQuotaLogo = MenuBarLabel.composedMenuBarImage(
             iconStyle: .quotaLogo,
-            health: .critical
+            health: .critical,
+            quotaMetrics: criticalMetrics
         )
         XCTAssertNotEqual(healthyQuotaLogo.tiffRepresentation, warningQuotaLogo.tiffRepresentation)
         XCTAssertNotEqual(warningQuotaLogo.tiffRepresentation, criticalQuotaLogo.tiffRepresentation)
@@ -327,33 +343,38 @@ final class StatusBarIconTests: XCTestCase {
         XCTAssertEqual(appState.systemHealthLevel(at: afterPeak), .healthy)
     }
 
-    func testQuotaLogoSVGBuilderArcAndWaterCalculations() {
+    func testQuotaLogoSVGBuilderDashboardGeometry() {
         let outer = QuotaRingMetrics(minAvailable: 0.3, avgAvailable: 0.7, colorHex: "#FB923C")
         let middle = QuotaRingMetrics(minAvailable: 0.5, avgAvailable: 0.8, colorHex: "#2DD4BF")
+        let metrics = StatusBarQuotaMetrics(
+            weekly: outer,
+            interval: middle,
+            lowestAvailable: 0.3,
+            quotaHealthLevels: [.healthy, .warning, .critical]
+        )
         let svg = QuotaLogoSVGBuilder.buildSVG(
-            outer: outer,
-            middle: middle,
-            waterPercent: 0.5,
-            waterColor: "#34C759"
+            metrics: metrics,
+            energyHealth: .warning
         )
 
-        // 验证 viewBox 对称且足够容纳外圈，包含两个实线段与两个虚线段
-        XCTAssertTrue(svg.contains("viewBox=\"160 160 704 704\""))
-        XCTAssertTrue(svg.contains("stroke-dasharray=\"32 64\""))
-        XCTAssertTrue(svg.contains("clip-path=\"url(#cup)\""))
-        // 验证逆时针绘制（sweep-flag 为 0）
-        XCTAssertTrue(svg.contains("A 320 320 0 0 0"))
-        // 验证 50% 水位换算：waterHeight = 310 * 0.5 = 155.00, y = 702 - 155 = 547.00
-        XCTAssertTrue(svg.contains("height=\"155.00\""))
-        XCTAssertTrue(svg.contains("y=\"547.00\""))
-        XCTAssertTrue(svg.contains("fill=\"#34C759\""))
+        XCTAssertTrue(svg.contains("viewBox=\"0 0 704 704\""))
+        XCTAssertTrue(svg.contains("id=\"interval-available\""))
+        XCTAssertTrue(svg.contains("stroke-dasharray=\"800.00 1000\""))
+        XCTAssertTrue(svg.contains("id=\"weekly-available\""))
+        XCTAssertTrue(svg.contains("stroke-dasharray=\"700.00 1000\""))
+        XCTAssertFalse(svg.contains("stroke-dasharray=\"32 64\""), "新版额度段应为连续实线")
+        XCTAssertEqual(svg.components(separatedBy: "data-divider-length=\"32\"").count - 1, 2)
+        XCTAssertTrue(svg.contains("stroke=\"#FF453A\""), "最低值分界线使用红色")
+        XCTAssertTrue(svg.contains("id=\"minimum-value\" data-value=\"30\""), "中心应展示最低套餐额度")
+        XCTAssertTrue(svg.contains("fill=\"#FFD60A\""), "顶部闪电应显示节能健康色")
+        XCTAssertTrue(svg.contains("cx=\"250\" cy=\"622\" r=\"18\" fill=\"#FF453A\""))
+        XCTAssertTrue(svg.contains("cx=\"318\" cy=\"622\" r=\"18\" fill=\"#FFD60A\""))
+        XCTAssertTrue(svg.contains("cx=\"386\" cy=\"622\" r=\"18\" fill=\"#34C759\""))
+        XCTAssertTrue(svg.contains("cx=\"454\" cy=\"622\" r=\"18\" fill=\"#34C759\""))
 
-        // 验证图像生成
         let image = QuotaLogoSVGBuilder.buildImage(
-            outer: outer,
-            middle: middle,
-            waterPercent: 0.5,
-            waterColor: "#34C759"
+            metrics: metrics,
+            energyHealth: .warning
         )
         XCTAssertNotNil(image)
         XCTAssertEqual(image?.size.width, 22)
@@ -450,13 +471,17 @@ final class StatusBarIconTests: XCTestCase {
         // min = 0.3, avg = (0.3 + 0.4) / 2 = 0.35
         XCTAssertEqual(metrics.weekly.minAvailable, 0.3, accuracy: 0.001)
         XCTAssertEqual(metrics.weekly.avgAvailable, 0.35, accuracy: 0.001)
+        XCTAssertEqual(metrics.lowestAvailable ?? -1, 0.3, accuracy: 0.001)
+        XCTAssertEqual(metrics.quotaHealthLevels, [.warning, .healthy, .healthy, .healthy])
     }
 
     func testComposedMenuBarImageWithDynamicMetrics() {
         let fullMetrics = StatusBarQuotaMetrics.full
         let customMetrics = StatusBarQuotaMetrics(
             weekly: QuotaRingMetrics(minAvailable: 0.3, avgAvailable: 0.6, colorHex: "#FB923C"),
-            interval: QuotaRingMetrics(minAvailable: 0.2, avgAvailable: 0.5, colorHex: "#2DD4BF")
+            interval: QuotaRingMetrics(minAvailable: 0.2, avgAvailable: 0.5, colorHex: "#2DD4BF"),
+            lowestAvailable: 0.2,
+            quotaHealthLevels: [.critical, .warning]
         )
 
         let fullImage = MenuBarLabel.composedMenuBarImage(
@@ -471,6 +496,20 @@ final class StatusBarIconTests: XCTestCase {
         )
 
         XCTAssertNotEqual(fullImage.tiffRepresentation, customImage.tiffRepresentation)
+
+        let keepAwakeImage = MenuBarLabel.composedMenuBarImage(
+            iconStyle: .quotaLogo,
+            health: .healthy,
+            quotaMetrics: customMetrics,
+            energyHealth: .critical
+        )
+        let energySavingImage = MenuBarLabel.composedMenuBarImage(
+            iconStyle: .quotaLogo,
+            health: .healthy,
+            quotaMetrics: customMetrics,
+            energyHealth: .healthy
+        )
+        XCTAssertNotEqual(keepAwakeImage.tiffRepresentation, energySavingImage.tiffRepresentation)
     }
 
     @MainActor

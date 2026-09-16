@@ -26,6 +26,14 @@ Icon Styles (`statusBarIconStyle`):
 - `sparkles` (`sparkles`)
 - `brain` (`brain.head.profile`)
 - `cpu` (`cpu.fill`)
+- `quotaLogo` (`App 图标` - live quota dashboard)
+
+The `quotaLogo` dashboard uses a left 5h arc and right weekly arc. Each arc is a
+continuous solid segment up to the aggregate average, with a 2px red marker at the
+minimum and an empty track after the average. Its center shows the lowest remaining
+percentage across all active windows. Four bottom dots show active-model health sorted
+red > yellow > green and padded with green; the top bolt mirrors the Energy module's
+sleep-health state (green / yellow / red, gray while unknown).
 
 The base icon keeps the standard macOS foreground appearance. A 6 pt status dot is
 drawn at the lower-right when `statusBarHealthDotEnabled` is enabled (the default): green

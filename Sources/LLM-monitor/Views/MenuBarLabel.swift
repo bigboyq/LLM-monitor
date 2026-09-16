@@ -25,6 +25,7 @@ struct MenuBarLabel: View {
         let iconStyle: StatusBarIconStyle
         let health: HealthLevel?
         let quotaMetrics: StatusBarQuotaMetrics?
+        let energyHealth: HealthLevel?
         let showsHealthDot: Bool
         let healthColors: StatusBarHealthColors
         let isRefreshing: Bool
@@ -39,11 +40,13 @@ struct MenuBarLabel: View {
         let healthColors = configStore.config.effectiveStatusBarHealthColors
         let health = state.systemHealthLevel(at: state.healthEvaluationDate)
         let quotaMetrics = state.statusBarQuotaMetrics(at: state.healthEvaluationDate)
+        let energyHealth = currentEnergyHealth
 
         content(
             iconStyle: iconStyle,
             health: health,
             quotaMetrics: quotaMetrics,
+            energyHealth: energyHealth,
             showsHealthDot: showsHealthDot,
             healthColors: healthColors
         )
@@ -53,7 +56,12 @@ struct MenuBarLabel: View {
                 rerenderIfNeeded()
             }
             .onReceive(state.statusDidChange) { _ in
-                rerenderIfNeeded()
+                // SleepHealthService 的 @Published/objectWillChange 会在属性写入前发出。
+                // 延到下一轮主队列，确保闪电读取到新 report / keep-awake 值；普通
+                // provider 状态变化同样安全地合并为一次最终渲染。
+                DispatchQueue.main.async {
+                    rerenderIfNeeded()
+                }
             }
             .onReceive(configStore.$config.dropFirst()) { _ in
                 rerenderIfNeeded()
@@ -68,6 +76,7 @@ struct MenuBarLabel: View {
         iconStyle: StatusBarIconStyle,
         health: HealthLevel?,
         quotaMetrics: StatusBarQuotaMetrics,
+        energyHealth: HealthLevel?,
         showsHealthDot: Bool,
         healthColors: StatusBarHealthColors
     ) -> some View {
@@ -87,6 +96,7 @@ struct MenuBarLabel: View {
                 iconStyle: iconStyle,
                 health: health,
                 quotaMetrics: quotaMetrics,
+                energyHealth: energyHealth,
                 showsHealthDot: showsHealthDot,
                 healthColors: healthColors
             ))
@@ -100,6 +110,7 @@ struct MenuBarLabel: View {
             iconStyle: configStore.config.effectiveStatusBarIconStyle,
             health: state.systemHealthLevel(at: state.healthEvaluationDate),
             quotaMetrics: state.statusBarQuotaMetrics(at: state.healthEvaluationDate),
+            energyHealth: currentEnergyHealth,
             showsHealthDot: configStore.config.effectiveStatusBarHealthDotEnabled,
             healthColors: configStore.config.effectiveStatusBarHealthColors,
             isRefreshing: state.isRefreshing,
@@ -111,6 +122,7 @@ struct MenuBarLabel: View {
             iconStyle: signature.iconStyle,
             health: signature.health,
             quotaMetrics: signature.quotaMetrics ?? .full,
+            energyHealth: signature.energyHealth,
             showsHealthDot: signature.showsHealthDot,
             healthColors: signature.healthColors
         )
@@ -121,26 +133,17 @@ struct MenuBarLabel: View {
         iconStyle: StatusBarIconStyle,
         health: HealthLevel?,
         quotaMetrics: StatusBarQuotaMetrics = .full,
+        energyHealth: HealthLevel? = nil,
         showsHealthDot: Bool = true,
         healthColors: StatusBarHealthColors = .default
     ) -> NSImage {
         let canvasSize = NSSize(width: 22, height: 22)
         let baseImage: NSImage?
         if iconStyle == .quotaLogo {
-            let waterColor: String
-            let healthLevel = quotaMetrics.waterHealth ?? health
-            if let configured = healthColors.hexValue(for: healthLevel) {
-                waterColor = configured
-            } else if let defaultColor = StatusBarHealthColors.default.hexValue(for: healthLevel) {
-                waterColor = defaultColor
-            } else {
-                waterColor = QuotaLogoSVGBuilder.defaultUnconfiguredColor
-            }
             baseImage = QuotaLogoSVGBuilder.buildImage(
-                outer: quotaMetrics.weekly,
-                middle: quotaMetrics.interval,
-                waterPercent: quotaMetrics.interval.minAvailable,
-                waterColor: waterColor
+                metrics: quotaMetrics,
+                healthColors: healthColors,
+                energyHealth: energyHealth
             )
         } else {
             let baseConfiguration = NSImage.SymbolConfiguration(pointSize: 14, weight: .regular)
@@ -155,7 +158,7 @@ struct MenuBarLabel: View {
             // 专用 SVG 已裁掉原图透明留白；系统符号仍沿用原来的 20pt 画布。
             baseImage?.draw(in: NSRect(x: 1, y: 1, width: 20, height: 20))
 
-            // App 图标模式已经用水位表达状态，不再叠加小圆点。
+            // App 图标模式已经内置四个套餐健康点，不再叠加系统图标圆点。
             let shouldShowHealthDot = showsHealthDot && iconStyle != .quotaLogo
             if shouldShowHealthDot, let dotColor = statusDotColor(for: health, colors: healthColors) {
                 dotColor.setFill()
@@ -167,6 +170,15 @@ struct MenuBarLabel: View {
         // 保留状态圆点颜色；主图标只使用动态 labelColor。
         image.isTemplate = false
         return image
+    }
+
+    /// 顶部闪电复用「节能」模块的三色语义：正常休眠为绿，睡眠受阻为黄，
+    /// 本 App 开启防休眠为红；首轮探测完成前为灰色。
+    private var currentEnergyHealth: HealthLevel? {
+        if state.sleepHealth.isKeepAwakeOn {
+            return .critical
+        }
+        return state.sleepHealth.report?.status.healthLevel
     }
 
     static func statusDotColor(

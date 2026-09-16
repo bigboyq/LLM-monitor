@@ -318,7 +318,7 @@ struct SettingsView: View {
                 }
             }
 
-            SettingsSection(title: "状态栏图标", footer: "可自定义正常、预警、异常三种状态颜色；系统图标使用状态圆点，App 图标使用相同颜色的水位。默认是绿色、黄色、红色。") {
+            SettingsSection(title: "状态栏图标", footer: "可自定义正常、预警、异常三种状态颜色；系统图标使用状态圆点，App 图标显示左右额度弧、最低剩余量、四个套餐状态点与节能闪电。") {
                 VStack(alignment: .leading, spacing: 16) {
                     SettingsControlRow("图标主题") {
                         Picker("", selection: $statusBarIconStyle) {

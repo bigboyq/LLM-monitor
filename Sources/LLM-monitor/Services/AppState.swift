@@ -115,7 +115,8 @@ final class AppState: ObservableObject {
         return levels.min()
     }
 
-    /// 计算当前状态栏配额指标（外圈周额度与中圈 5h 额度均使用原始物理剩余百分比，中心水位映射 5h 最低值与警报状态）
+    /// 计算当前状态栏配额指标：左弧 5h、右弧周额度、中间全局最低剩余量，
+    /// 底部四点按套餐健康度红 > 黄 > 绿排列。
     func statusBarQuotaMetrics(at now: Date = Date()) -> StatusBarQuotaMetrics {
         let enabled = statuses.filter(\.isEnabled)
         var allActiveModels: [ModelQuota] = []
@@ -168,7 +169,23 @@ final class AppState: ObservableObject {
             )
         }
 
-        // 3. 高峰价格判定
+        // 3. 中心数字取所有有效套餐、所有存在窗口中的最低物理剩余量。
+        // 底部点按每个有效套餐自身最差窗口的健康度汇总；构造器负责排序、
+        // 截断到四个并用默认绿色补齐。
+        let allWindowAvailability = allActiveModels.flatMap { model -> [Double] in
+            var values: [Double] = []
+            if model.hasIntervalWindow {
+                values.append(min(max(model.intervalRemainingPercent / 100.0, 0.0), 1.0))
+            }
+            if model.hasWeeklyWindow {
+                values.append(min(max(model.weeklyRemainingPercent / 100.0, 0.0), 1.0))
+            }
+            return values
+        }
+        let lowestAvailable = allWindowAvailability.min()
+        let quotaHealthLevels = allActiveModels.map(\.healthLevel)
+
+        // 4. 高峰价格判定
         let isPeakPrice = enabled.contains { status in
             if let glmPeak = status.glmPeakWindow, case .peak = glmPeak.status(at: now) {
                 return true
@@ -179,7 +196,7 @@ final class AppState: ObservableObject {
             return false
         }
 
-        // 4. 中心水位健康度颜色等级：
+        // 5. 额度弧健康度颜色等级：
         // 默认绿色，如果有任意5h额度<40%，或有高峰价格，或avg_5h<60%，黄色。
         // 如果有任意5h额度<10%，或avg_5h<40%，红色。
         let waterHealth: HealthLevel?
@@ -199,6 +216,8 @@ final class AppState: ObservableObject {
         return StatusBarQuotaMetrics(
             weekly: weeklyMetrics,
             interval: intervalMetrics,
+            lowestAvailable: lowestAvailable,
+            quotaHealthLevels: quotaHealthLevels,
             waterHealth: waterHealth
         )
     }

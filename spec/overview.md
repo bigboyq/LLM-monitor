@@ -791,10 +791,13 @@ These are documented product boundaries:
 
 - The menu bar label defaults to the `chart.bar.fill` SF Symbol style; the optional
   `quotaLogo` style (`statusBarIconStyle` in config / "App 图标" in Settings) renders a
-  live quota dashboard (outer ring = weekly min/avg, inner ring = 5h min/avg,
-  counter-clockwise arcs with a 2-4-2 dashed segment, center water level = lowest 5h
-  remaining) with health-colored water (red > yellow > green, colors configurable via
-  `statusBarHealthColors`). See `QuotaLogoSVGBuilder.swift` and `MenuBarLabel.swift`.
+  live quota dashboard: the left arc is 5h and the right arc is weekly; each continuous
+  solid segment reaches the average remaining percentage, with a fixed 2px red marker at
+  the minimum and an empty track after the average. The center shows the lowest remaining
+  percentage across all active windows. Four bottom dots summarize active-model health in
+  red > yellow > green order (green-padded), and the top bolt mirrors sleep/energy health.
+  Colors remain configurable through `statusBarHealthColors`. See
+  `QuotaLogoSVGBuilder.swift` and `MenuBarLabel.swift`.
 - Local usage scanners restore their last-good `index.json` snapshot on cold start; the
   remote quota refresh timestamp is persisted separately in `last-refresh.json`.
 - `MenuContentView` sizes to its content (window = header + cards + footer) so all cards
