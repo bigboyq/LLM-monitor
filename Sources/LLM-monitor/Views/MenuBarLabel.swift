@@ -158,7 +158,7 @@ struct MenuBarLabel: View {
             // 专用 SVG 已裁掉原图透明留白；系统符号仍沿用原来的 20pt 画布。
             baseImage?.draw(in: NSRect(x: 1, y: 1, width: 20, height: 20))
 
-            // App 图标模式已经内置四个套餐健康点，不再叠加系统图标圆点。
+            // App 图标模式已经内置三个套餐健康点，不再叠加系统图标圆点。
             let shouldShowHealthDot = showsHealthDot && iconStyle != .quotaLogo
             if shouldShowHealthDot, let dotColor = statusDotColor(for: health, colors: healthColors) {
                 dotColor.setFill()

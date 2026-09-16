@@ -318,7 +318,7 @@ struct SettingsView: View {
                 }
             }
 
-            SettingsSection(title: "状态栏图标", footer: "可自定义正常、预警、异常三种状态颜色；系统图标使用状态圆点，App 图标显示左右额度弧、最低剩余量、四个套餐状态点与节能闪电。") {
+            SettingsSection(title: "状态栏图标", footer: "可自定义正常、预警、异常三种状态颜色；系统图标使用状态圆点，App 图标显示左右额度弧、最低剩余量、三个套餐状态点与顶部节能状态圆点。中心扇形按最低剩余比例动态显示 0～360°。") {
                 VStack(alignment: .leading, spacing: 16) {
                     SettingsControlRow("图标主题") {
                         Picker("", selection: $statusBarIconStyle) {

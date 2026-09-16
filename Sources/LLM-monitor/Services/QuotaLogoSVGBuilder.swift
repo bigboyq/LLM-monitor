@@ -3,14 +3,17 @@ import AppKit
 
 /// 描述单侧额度弧（周额度 / 5h 额度）的聚合数据。
 struct QuotaRingMetrics: Equatable, Sendable {
-    /// 所有套餐中的最低可用量（0.0 ... 1.0），红色短线标记这个位置。
+    /// 是否存在这类额度窗口。缺失窗口只显示底轨，不显示可用额度段。
+    var isAvailable: Bool
+    /// 所有套餐中的最低可用量（0.0 ... 1.0）。
     var minAvailable: Double
     /// 所有套餐的平均可用量（0.0 ... 1.0），决定连续实线的总长度。
     var avgAvailable: Double
     /// 兼容旧配置与调用方保留的强调色；新版仪表统一使用健康色绘制额度弧。
     var colorHex: String
 
-    init(minAvailable: Double, avgAvailable: Double, colorHex: String) {
+    init(minAvailable: Double, avgAvailable: Double, colorHex: String, isAvailable: Bool = true) {
+        self.isAvailable = isAvailable
         let clampedMin = min(max(minAvailable, 0.0), 1.0)
         let clampedAvg = min(max(avgAvailable, 0.0), 1.0)
         self.minAvailable = clampedMin
@@ -33,7 +36,7 @@ struct StatusBarQuotaMetrics: Equatable, Sendable {
     var lowestAvailable: Double?
     /// 套餐健康点，已按红 > 黄 > 绿排序并补齐到三个。
     var quotaHealthLevels: [HealthLevel]
-    /// 兼容旧调用方保留的综合状态；新版图标用它作为弧线健康色。
+    /// 兼容旧调用方保留的综合状态；quotaLogo 的各部件直接使用各自的 standard 状态。
     var waterHealth: HealthLevel?
 
     init(
@@ -125,7 +128,7 @@ enum QuotaLogoSVGBuilder {
 
         let leftSpan = 104.0 * metrics.interval.avgAvailable
         let leftAvail: String
-        if leftSpan > 0.5 {
+        if metrics.interval.isAvailable && leftSpan > 0.5 {
             let leftAvailEnd = point(degree: 140.0 + leftSpan, radius: outerRadius)
             leftAvail = String(
                 format: "\n  <path id=\"interval-available\" d=\"M %.2f %.2f A %.2f %.2f 0 0 1 %.2f %.2f\" fill=\"none\" stroke=\"%@\" stroke-width=\"%.2f\" stroke-linecap=\"round\"/>",
@@ -145,7 +148,7 @@ enum QuotaLogoSVGBuilder {
 
         let rightSpan = 104.0 * metrics.weekly.avgAvailable
         let rightAvail: String
-        if rightSpan > 0.5 {
+        if metrics.weekly.isAvailable && rightSpan > 0.5 {
             let rightAvailEnd = point(degree: 40.0 - rightSpan, radius: outerRadius)
             rightAvail = String(
                 format: "\n  <path id=\"weekly-available\" d=\"M %.2f %.2f A %.2f %.2f 0 0 0 %.2f %.2f\" fill=\"none\" stroke=\"%@\" stroke-width=\"%.2f\" stroke-linecap=\"round\"/>",

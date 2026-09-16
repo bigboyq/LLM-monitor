@@ -68,6 +68,19 @@ struct ModelQuota: Equatable, Codable, Sendable {
         hasIntervalWindow || hasWeeklyWindow
     }
 
+    /// 状态栏套餐点使用的固定阈值健康度。只计算实际存在的窗口，避免复用
+    /// `healthLevel` 的动态剩余时间阈值导致弧线与套餐点颜色不一致。
+    var statusBarHealthLevel: HealthLevel {
+        var levels: [HealthLevel] = []
+        if hasIntervalWindow {
+            levels.append(HealthLevel.standard(forPercent: intervalRemainingPercent))
+        }
+        if hasWeeklyWindow {
+            levels.append(HealthLevel.standard(forPercent: weeklyRemainingPercent))
+        }
+        return levels.min() ?? .critical
+    }
+
     /// "差" 的健康度（红 > 黄 > 绿）。只有明确存在的窗口才参与计算；
     /// 如果没有任何有效窗口，保守返回 critical。
     var healthLevel: HealthLevel {

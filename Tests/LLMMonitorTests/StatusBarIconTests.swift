@@ -374,6 +374,32 @@ final class StatusBarIconTests: XCTestCase {
         XCTAssertTrue(svg.contains("r=\"36\""), "点半径放大至 r=36")
         XCTAssertTrue(svg.contains("fill=\"#FF453A\""), "包含红色状态点或周额度异常色")
 
+        // 缺失窗口只绘制灰色底轨，不得伪装成 100% 可用。
+        let weeklyOnly = StatusBarQuotaMetrics(
+            weekly: QuotaRingMetrics(minAvailable: 0.5, avgAvailable: 0.5, colorHex: "#FB923C"),
+            interval: QuotaRingMetrics(minAvailable: 0, avgAvailable: 0, colorHex: "#2DD4BF", isAvailable: false),
+            lowestAvailable: 0.5
+        )
+        let weeklyOnlySVG = QuotaLogoSVGBuilder.buildSVG(metrics: weeklyOnly)
+        XCTAssertFalse(weeklyOnlySVG.contains("id=\"interval-available\""))
+        XCTAssertTrue(weeklyOnlySVG.contains("id=\"weekly-available\""))
+
+        let intervalOnly = StatusBarQuotaMetrics(
+            weekly: QuotaRingMetrics(minAvailable: 0, avgAvailable: 0, colorHex: "#FB923C", isAvailable: false),
+            interval: QuotaRingMetrics(minAvailable: 0.5, avgAvailable: 0.5, colorHex: "#2DD4BF"),
+            lowestAvailable: 0.5
+        )
+        let intervalOnlySVG = QuotaLogoSVGBuilder.buildSVG(metrics: intervalOnly)
+        XCTAssertTrue(intervalOnlySVG.contains("id=\"interval-available\""))
+        XCTAssertFalse(intervalOnlySVG.contains("id=\"weekly-available\""))
+
+        let unknownSVG = QuotaLogoSVGBuilder.buildSVG(metrics: StatusBarQuotaMetrics(
+            weekly: QuotaRingMetrics(minAvailable: 0, avgAvailable: 0, colorHex: "#FB923C", isAvailable: false),
+            interval: QuotaRingMetrics(minAvailable: 0, avgAvailable: 0, colorHex: "#2DD4BF", isAvailable: false)
+        ))
+        XCTAssertTrue(unknownSVG.contains("id=\"center-sector\""))
+        XCTAssertTrue(unknownSVG.contains("stroke=\"#8E8E93\""), "无数据时中心保持灰色环")
+
         // 验证统一红黄绿标准
         XCTAssertEqual(HealthLevel.standard(forFraction: 0.50), .healthy)
         XCTAssertEqual(HealthLevel.standard(forFraction: 0.40), .warning)
@@ -514,7 +540,100 @@ final class StatusBarIconTests: XCTestCase {
         XCTAssertEqual(metrics.weekly.minAvailable, 0.3, accuracy: 0.001)
         XCTAssertEqual(metrics.weekly.avgAvailable, 0.35, accuracy: 0.001)
         XCTAssertEqual(metrics.lowestAvailable ?? -1, 0.3, accuracy: 0.001)
-        XCTAssertEqual(metrics.quotaHealthLevels, [.warning, .healthy, .healthy])
+        XCTAssertEqual(metrics.quotaHealthLevels, [.warning, .warning, .healthy])
+
+        // 状态栏统一使用固定 standard 阈值：短窗口 35% 同时为黄，15% 同时为红。
+        func makeStandardModel(intervalPercent: Double) -> ModelQuota {
+            ModelQuota(
+                modelName: "standard-model",
+                intervalTotalCount: 100,
+                intervalUsageCount: Int(100.0 - intervalPercent),
+                intervalRemainingPercent: intervalPercent,
+                intervalStatus: .present,
+                intervalResetsAt: now.addingTimeInterval(3600),
+                intervalWindowSeconds: 5 * 3600,
+                weeklyTotalCount: 100,
+                weeklyUsageCount: 20,
+                weeklyRemainingPercent: 80.0,
+                weeklyStatus: .present,
+                weeklyResetsAt: now.addingTimeInterval(totalWeekSeconds),
+                weeklyWindowSeconds: Int(totalWeekSeconds)
+            )
+        }
+
+        func setStandardQuota(_ intervalPercent: Double) {
+            let info = QuotaInfo(
+                models: [makeStandardModel(intervalPercent: intervalPercent)],
+                resetCredits: nil,
+                planLabel: nil,
+                accountEmail: nil,
+                codexUsageDetails: nil,
+                fetchedAt: now
+            )
+            appState.mutateStatus(for: "test_a") { $0.state = .ok(info) }
+            appState.mutateStatus(for: "test_b") { $0.state = .ok(info) }
+        }
+
+        setStandardQuota(35.0)
+        let warningMetrics = appState.statusBarQuotaMetrics(at: now)
+        XCTAssertEqual(warningMetrics.quotaHealthLevels, [.warning, .warning, .healthy])
+        let warningSVG = QuotaLogoSVGBuilder.buildSVG(metrics: warningMetrics)
+        XCTAssertTrue(warningSVG.contains("id=\"interval-available\""))
+        XCTAssertTrue(warningSVG.contains("id=\"interval-available\" d="), "35% 短窗口弧线仍显示可用段")
+        XCTAssertTrue(warningSVG.contains("stroke=\"#FFD60A\""), "35% 短窗口弧线和套餐点均为黄色")
+
+        setStandardQuota(15.0)
+        let criticalMetrics = appState.statusBarQuotaMetrics(at: now)
+        XCTAssertEqual(criticalMetrics.quotaHealthLevels, [.critical, .critical, .healthy])
+        let criticalSVG = QuotaLogoSVGBuilder.buildSVG(metrics: criticalMetrics)
+        XCTAssertTrue(criticalSVG.contains("stroke=\"#FF453A\""), "15% 短窗口弧线为红色")
+
+        func makeWindowPresenceModel(intervalStatus: QuotaWindowStatus, weeklyStatus: QuotaWindowStatus) -> ModelQuota {
+            ModelQuota(
+                modelName: "presence-model",
+                intervalTotalCount: 100,
+                intervalUsageCount: 50,
+                intervalRemainingPercent: 50,
+                intervalStatus: intervalStatus,
+                intervalResetsAt: intervalStatus.isPresent ? now.addingTimeInterval(3600) : nil,
+                intervalWindowSeconds: intervalStatus.isPresent ? 5 * 3600 : nil,
+                weeklyTotalCount: 100,
+                weeklyUsageCount: 50,
+                weeklyRemainingPercent: 50,
+                weeklyStatus: weeklyStatus,
+                weeklyResetsAt: weeklyStatus.isPresent ? now.addingTimeInterval(totalWeekSeconds) : nil,
+                weeklyWindowSeconds: weeklyStatus.isPresent ? Int(totalWeekSeconds) : nil
+            )
+        }
+
+        func setWindowPresence(intervalStatus: QuotaWindowStatus, weeklyStatus: QuotaWindowStatus) {
+            let info = QuotaInfo(
+                models: [makeWindowPresenceModel(intervalStatus: intervalStatus, weeklyStatus: weeklyStatus)],
+                resetCredits: nil,
+                planLabel: nil,
+                accountEmail: nil,
+                codexUsageDetails: nil,
+                fetchedAt: now
+            )
+            appState.mutateStatus(for: "test_a") { $0.state = .ok(info) }
+            appState.mutateStatus(for: "test_b") { $0.state = .ok(info) }
+        }
+
+        setWindowPresence(intervalStatus: .absent, weeklyStatus: .present)
+        let weeklyOnlyMetrics = appState.statusBarQuotaMetrics(at: now)
+        XCTAssertFalse(weeklyOnlyMetrics.interval.isAvailable)
+        XCTAssertTrue(weeklyOnlyMetrics.weekly.isAvailable)
+        let weeklyOnlyStateSVG = QuotaLogoSVGBuilder.buildSVG(metrics: weeklyOnlyMetrics)
+        XCTAssertFalse(weeklyOnlyStateSVG.contains("id=\"interval-available\""))
+        XCTAssertTrue(weeklyOnlyStateSVG.contains("id=\"weekly-available\""))
+
+        setWindowPresence(intervalStatus: .present, weeklyStatus: .absent)
+        let intervalOnlyMetrics = appState.statusBarQuotaMetrics(at: now)
+        XCTAssertTrue(intervalOnlyMetrics.interval.isAvailable)
+        XCTAssertFalse(intervalOnlyMetrics.weekly.isAvailable)
+        let intervalOnlyStateSVG = QuotaLogoSVGBuilder.buildSVG(metrics: intervalOnlyMetrics)
+        XCTAssertTrue(intervalOnlyStateSVG.contains("id=\"interval-available\""))
+        XCTAssertFalse(intervalOnlyStateSVG.contains("id=\"weekly-available\""))
     }
 
     func testComposedMenuBarImageWithDynamicMetrics() {

@@ -116,7 +116,7 @@ final class AppState: ObservableObject {
     }
 
     /// 计算当前状态栏配额指标：左弧 5h、右弧周额度、中间全局最低剩余量，
-    /// 底部四点按套餐健康度红 > 黄 > 绿排列。
+    /// 底部三点按套餐健康度红 > 黄 > 绿排列。
     func statusBarQuotaMetrics(at now: Date = Date()) -> StatusBarQuotaMetrics {
         let enabled = statuses.filter(\.isEnabled)
         var allActiveModels: [ModelQuota] = []
@@ -134,9 +134,10 @@ final class AppState: ObservableObject {
         let intervalMetrics: QuotaRingMetrics
         if intervalModels.isEmpty {
             intervalMetrics = QuotaRingMetrics(
-                minAvailable: 1.0,
-                avgAvailable: 1.0,
-                colorHex: QuotaLogoSVGBuilder.defaultMiddleColor
+                minAvailable: 0.0,
+                avgAvailable: 0.0,
+                colorHex: QuotaLogoSVGBuilder.defaultMiddleColor,
+                isAvailable: false
             )
         } else {
             let pcts = intervalModels.map { min(max($0.intervalRemainingPercent / 100.0, 0.0), 1.0) }
@@ -145,7 +146,8 @@ final class AppState: ObservableObject {
             intervalMetrics = QuotaRingMetrics(
                 minAvailable: minVal,
                 avgAvailable: avgVal,
-                colorHex: QuotaLogoSVGBuilder.defaultMiddleColor
+                colorHex: QuotaLogoSVGBuilder.defaultMiddleColor,
+                isAvailable: true
             )
         }
 
@@ -154,9 +156,10 @@ final class AppState: ObservableObject {
         let weeklyMetrics: QuotaRingMetrics
         if weeklyModels.isEmpty {
             weeklyMetrics = QuotaRingMetrics(
-                minAvailable: 1.0,
-                avgAvailable: 1.0,
-                colorHex: QuotaLogoSVGBuilder.defaultOuterColor
+                minAvailable: 0.0,
+                avgAvailable: 0.0,
+                colorHex: QuotaLogoSVGBuilder.defaultOuterColor,
+                isAvailable: false
             )
         } else {
             let pcts = weeklyModels.map { min(max($0.weeklyRemainingPercent / 100.0, 0.0), 1.0) }
@@ -165,13 +168,14 @@ final class AppState: ObservableObject {
             weeklyMetrics = QuotaRingMetrics(
                 minAvailable: minVal,
                 avgAvailable: avgVal,
-                colorHex: QuotaLogoSVGBuilder.defaultOuterColor
+                colorHex: QuotaLogoSVGBuilder.defaultOuterColor,
+                isAvailable: true
             )
         }
 
-        // 3. 中心数字取所有有效套餐、所有存在窗口中的最低物理剩余量。
-        // 底部点按每个有效套餐自身最差窗口的健康度汇总；构造器负责排序、
-        // 截断到四个并用默认绿色补齐。
+        // 3. 中心扇形取所有有效套餐、所有存在窗口中的最低物理剩余量。
+        // 底部点按每个有效套餐自身存在窗口的 standard 健康度汇总；构造器负责排序、
+        // 截断到三个并用默认绿色补齐。
         let allWindowAvailability = allActiveModels.flatMap { model -> [Double] in
             var values: [Double] = []
             if model.hasIntervalWindow {
@@ -183,7 +187,7 @@ final class AppState: ObservableObject {
             return values
         }
         let lowestAvailable = allWindowAvailability.min()
-        let quotaHealthLevels = allActiveModels.map(\.healthLevel)
+        let quotaHealthLevels = allActiveModels.map(\.statusBarHealthLevel)
 
         // 4. 高峰价格判定
         let isPeakPrice = enabled.contains { status in
@@ -196,7 +200,7 @@ final class AppState: ObservableObject {
             return false
         }
 
-        // 5. 额度弧健康度颜色等级：
+        // 5. 兼容旧调用方保留的综合状态；quotaLogo 各部件不再使用该值着色：
         // 默认绿色，如果有任意5h额度<40%，或有高峰价格，或avg_5h<60%，黄色。
         // 如果有任意5h额度<10%，或avg_5h<40%，红色。
         let waterHealth: HealthLevel?

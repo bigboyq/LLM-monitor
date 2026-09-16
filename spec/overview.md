@@ -793,13 +793,15 @@ These are documented product boundaries:
     `quotaLogo` style (`statusBarIconStyle` in config / "App 图标" in Settings) renders a
     live quota dashboard: the left arc is 5h and the right arc is weekly; both are concentric
     circular arcs growing from the bottom with dark gray background tracks and health-colored
-    available segments. The center is a symmetrical circular sector anchored at the top (12 o'clock)
+    available segments (a missing window keeps only its gray track). The center is a symmetrical circular sector anchored at the top (12 o'clock)
     that opens left and right from the bottom (6 o'clock) as quota depletes (full 360° circle at 100%, 180° dome semicircle at 50%,
-    empty red ring at 0%). Three bottom dots (enlarged to r=36) follow the circle's arc to summarize active-model health
+    empty red ring at 0%; there is no numeric label). Three bottom dots (enlarged to r=36) follow the circle's arc to summarize active-model health
     prioritized strictly in red > yellow > green order (if 3 reds, yellow/green omitted), and the top dot (enlarged to r=48) mirrors sleep/energy health (red/yellow/green).
     The window top edge is snapped to `screen.visibleFrame.maxY + 10` on every presentation, absorbing system popover margins to stay flush with the menu bar bottom.
     Colors remain configurable through `statusBarHealthColors`. See
     `QuotaLogoSVGBuilder.swift` and `MenuBarLabel.swift`.
+    All quotaLogo red/yellow/green decisions use fixed `HealthLevel.standard` thresholds
+    (>40% green, >15% and <=40% yellow, <=15% red), independent of reset-time factors.
 - Local usage scanners restore their last-good `index.json` snapshot on cold start; the
   remote quota refresh timestamp is persisted separately in `last-refresh.json`.
 - `MenuContentView` sizes to its content (window = header + cards + footer) so all cards
