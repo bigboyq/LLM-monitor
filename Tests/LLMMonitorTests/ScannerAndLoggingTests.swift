@@ -285,7 +285,17 @@ final class ScannerAndLoggingTests: XCTestCase {
         )
         // Fixed path consumes one slot. Touch first with a real vnode write,
         // then discover third: the untouched second path must be evicted.
-        let firstGeneration = source.eventGeneration
+        // The FSEvents stream may deliver registration-time topology events
+        // after init, so use the monitor's recency seam to wait specifically
+        // for the vnode callback rather than using the source dirty counter.
+        let watcherDeadline = Date().addingTimeInterval(2)
+        while (!monitor.watchedPaths.contains(first.path)
+            || !monitor.watchedPaths.contains(second.path)) && Date() < watcherDeadline {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(monitor.watchedPaths.contains(first.path))
+        XCTAssertTrue(monitor.watchedPaths.contains(second.path))
+        let firstSequence = monitor.accessSequence(for: first) ?? 0
         let fd = open(first.path, O_WRONLY | O_APPEND)
         XCTAssertGreaterThanOrEqual(fd, 0)
         guard fd >= 0 else { source.stop(); return }
@@ -294,10 +304,10 @@ final class ScannerAndLoggingTests: XCTestCase {
         XCTAssertEqual(withUnsafePointer(to: &byte) { Darwin.write(fd, $0, 1) }, 1)
         XCTAssertEqual(fsync(fd), 0)
         let deadline = Date().addingTimeInterval(2)
-        while source.eventGeneration == firstGeneration && Date() < deadline {
+        while (monitor.accessSequence(for: first) ?? 0) <= firstSequence && Date() < deadline {
             try? await Task.sleep(nanoseconds: 10_000_000)
         }
-        XCTAssertGreaterThan(source.eventGeneration, firstGeneration)
+        XCTAssertGreaterThan(monitor.accessSequence(for: first) ?? 0, firstSequence)
         FileManager.default.createFile(atPath: third.path, contents: Data())
         monitor.handleTopologyEventForTesting(
             path: third.path,

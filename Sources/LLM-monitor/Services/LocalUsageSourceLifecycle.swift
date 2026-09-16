@@ -40,6 +40,10 @@ final class LocalUsageFileMonitor {
     #if DEBUG
     var watchedPaths: Set<String> { Set(vnodeWatchers.keys) }
 
+    func accessSequence(for path: URL) -> UInt64? {
+        recency[Self.canonicalPath(path)]
+    }
+
     func handleTopologyEventForTesting(path: String, flags: UInt32) {
         let event = LocalFSEventsEvent(path: path, eventID: 0, flags: flags)
         for id in Array(registrations.keys) {
@@ -127,6 +131,7 @@ final class LocalUsageFileMonitor {
         registration.onEvent()
         let path = event.path
         if isDynamicCandidate(path, registration: registration),
+           !registration.dynamicPaths.contains(path),
            FileManager.default.fileExists(atPath: path) {
             addDynamicPath(path, to: registrationID)
         }
