@@ -1,5 +1,56 @@
 import XCTest
+import CoreServices
+import Darwin
 @testable import LLM_monitor
+
+private actor ScanGate {
+    private var started = false
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+    private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+    private var released = false
+
+    func enter() async {
+        started = true
+        startWaiters.forEach { $0.resume() }
+        startWaiters.removeAll()
+        if !released {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                releaseWaiters.append(continuation)
+            }
+        }
+    }
+
+    func waitUntilStarted() async {
+        if started { return }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            startWaiters.append(continuation)
+        }
+    }
+
+    func release() {
+        released = true
+        releaseWaiters.forEach { $0.resume() }
+        releaseWaiters.removeAll()
+    }
+}
+
+@MainActor
+private final class DirtyDuringScanProbe: LocalUsageScannerBase<Int>, @unchecked Sendable {
+    private let gate: ScanGate
+
+    init(gate: ScanGate) {
+        self.gate = gate
+        super.init(logTag: "[scan-probe]", cachedResult: nil)
+    }
+
+    override func makeWork(startedGeneration: UInt64) -> @Sendable () async throws -> Int {
+        let gate = self.gate
+        return {
+            await gate.enter()
+            return 1
+        }
+    }
+}
 
 final class ScannerAndLoggingTests: XCTestCase {
 
@@ -25,6 +76,263 @@ final class ScannerAndLoggingTests: XCTestCase {
         watcher.stop()
 
         XCTAssertTrue(events.isEmpty, "注册 watcher 不应凭空产生 dirty event: \(events)")
+    }
+
+    @MainActor
+    func testLocalVnodeWriteWatcherSeesAppendWhileWriterRemainsOpen() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("llm-monitor-vnode-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("runtime.sqlite")
+        FileManager.default.createFile(atPath: file.path, contents: Data())
+
+        let changed = expectation(description: "vnode write")
+        let vnode = LocalVnodeWriteWatcher(path: file) {
+            changed.fulfill()
+        }
+        vnode.start()
+        let fd = open(file.path, O_WRONLY | O_APPEND)
+        XCTAssertGreaterThanOrEqual(fd, 0)
+        guard fd >= 0 else { return }
+        defer {
+            vnode.stop()
+            if fd >= 0 { close(fd) }
+        }
+        let bytes = Array("append\n".utf8)
+        let written = bytes.withUnsafeBytes { (buffer: UnsafeRawBufferPointer) -> Int in
+            Darwin.write(fd, buffer.baseAddress, bytes.count)
+        }
+        XCTAssertEqual(written, bytes.count)
+        XCTAssertEqual(fsync(fd), 0)
+        // Keep fd open until after this assertion: this is the regression case
+        // that FSEvents alone cannot reliably surface.
+        await fulfillment(of: [changed], timeout: 2)
+        let fileSize = (try FileManager.default.attributesOfItem(atPath: file.path)[.size] as? NSNumber)?.intValue ?? 0
+        XCTAssertGreaterThan(fileSize, 0)
+    }
+
+    @MainActor
+    func testGlobalMonitorSharesVnodeOwnerAndRoutesDirty() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("llm-monitor-shared-vnode-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("session.jsonl")
+        FileManager.default.createFile(atPath: file.path, contents: Data())
+        let monitor = LocalUsageFileMonitor(maxVnodeWatchers: 3, autoDiscoveryEnabled: false)
+        let first = expectation(description: "first source dirty")
+        first.assertForOverFulfill = false
+        let second = expectation(description: "second source dirty")
+        second.assertForOverFulfill = false
+        let source1 = LocalUsageSourceLifecycle(
+            paths: [root], seedDynamicFiles: [file], dynamicExtensions: ["jsonl"], monitor: monitor,
+            onDirty: { first.fulfill() }
+        )
+        let source2 = LocalUsageSourceLifecycle(
+            paths: [root], seedDynamicFiles: [file], dynamicExtensions: ["jsonl"], monitor: monitor,
+            onDirty: { second.fulfill() }
+        )
+        XCTAssertEqual(monitor.vnodeWatcherCount, 1)
+        let fd = open(file.path, O_WRONLY | O_APPEND)
+        XCTAssertGreaterThanOrEqual(fd, 0)
+        guard fd >= 0 else { return }
+        defer { close(fd); source1.stop(); source2.stop() }
+        var byte: UInt8 = 1
+        XCTAssertEqual(withUnsafePointer(to: &byte) { Darwin.write(fd, $0, 1) }, 1)
+        XCTAssertEqual(fsync(fd), 0)
+        await fulfillment(of: [first, second], timeout: 2)
+
+        source1.stop()
+        XCTAssertEqual(monitor.vnodeWatcherCount, 1)
+        let generationBeforeSecondWrite = source2.eventGeneration
+        let secondFDWrite = withUnsafePointer(to: &byte) { Darwin.write(fd, $0, 1) }
+        XCTAssertEqual(secondFDWrite, 1)
+        XCTAssertEqual(fsync(fd), 0)
+        let deadline = Date().addingTimeInterval(2)
+        while source2.eventGeneration == generationBeforeSecondWrite && Date() < deadline {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertGreaterThan(source2.eventGeneration, generationBeforeSecondWrite)
+        XCTAssertEqual(monitor.vnodeWatcherCount, 1)
+    }
+
+    @MainActor
+    func testLocalUsageLifecycleReentrantStartAndBoundedHotSet() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("llm-monitor-lifecycle-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixed = root.appendingPathComponent("runtime.sqlite")
+        FileManager.default.createFile(atPath: fixed.path, contents: Data())
+        let old = root.appendingPathComponent("old.jsonl")
+        let newest = root.appendingPathComponent("new.jsonl")
+        FileManager.default.createFile(atPath: old.path, contents: Data())
+        FileManager.default.createFile(atPath: newest.path, contents: Data())
+
+        var dirtyCount = 0
+        let monitor = LocalUsageFileMonitor(maxVnodeWatchers: 3, autoDiscoveryEnabled: false)
+        let lifecycle = LocalUsageSourceLifecycle(
+            paths: [root],
+            watchedFiles: [fixed],
+            seedDynamicFiles: [old, newest],
+            dynamicExtensions: ["jsonl"],
+            monitor: monitor,
+            onDirty: { dirtyCount += 1 }
+        )
+        lifecycle.start()
+        XCTAssertEqual(monitor.vnodeWatcherCount, 3)
+        lifecycle.start()
+        XCTAssertEqual(monitor.vnodeWatcherCount, 3)
+        XCTAssertEqual(dirtyCount, 0)
+
+        let added = root.appendingPathComponent("added.jsonl")
+        FileManager.default.createFile(atPath: added.path, contents: Data())
+        monitor.handleTopologyEventForTesting(
+            path: added.path,
+            flags: UInt32(kFSEventStreamEventFlagItemCreated)
+        )
+        XCTAssertEqual(monitor.vnodeWatcherCount, 3)
+        XCTAssertFalse(monitor.watchedPaths.contains(old.path))
+        XCTAssertTrue(monitor.watchedPaths.contains(added.path))
+
+        try FileManager.default.removeItem(at: added)
+        monitor.handleTopologyEventForTesting(
+            path: added.path,
+            flags: UInt32(kFSEventStreamEventFlagItemRemoved)
+        )
+        XCTAssertFalse(monitor.watchedPaths.contains(added.path))
+        XCTAssertEqual(monitor.vnodeWatcherCount, 2)
+        lifecycle.stop()
+    }
+
+    @MainActor
+    func testLocalUsageLifecycleExcludesCacheEvents() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("llm-monitor-exclusion-\(UUID().uuidString)", isDirectory: true)
+        let cache = root.appendingPathComponent(".token-monitor", isDirectory: true)
+        try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let cacheFile = cache.appendingPathComponent("index.json")
+        FileManager.default.createFile(atPath: cacheFile.path, contents: Data())
+        var dirtyCount = 0
+        let monitor = LocalUsageFileMonitor(maxVnodeWatchers: 3, autoDiscoveryEnabled: false)
+        let lifecycle = LocalUsageSourceLifecycle(
+            paths: [root],
+            dynamicExtensions: ["json"],
+            excludedPaths: [cache],
+            monitor: monitor,
+            onDirty: { dirtyCount += 1 }
+        )
+        lifecycle.start()
+        let before = lifecycle.eventGeneration
+        monitor.handleTopologyEventForTesting(
+            path: cacheFile.path,
+            flags: UInt32(kFSEventStreamEventFlagItemCreated)
+        )
+        XCTAssertEqual(lifecycle.eventGeneration, before)
+        XCTAssertEqual(monitor.vnodeWatcherCount, 0)
+        XCTAssertEqual(dirtyCount, 0)
+        lifecycle.stop()
+    }
+
+    @MainActor
+    func testGlobalMonitorRoutesEventsOnlyToMatchingRoots() throws {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("llm-monitor-routing-\(UUID().uuidString)", isDirectory: true)
+        let rootA = base.appendingPathComponent("a", isDirectory: true)
+        let rootB = base.appendingPathComponent("b", isDirectory: true)
+        try FileManager.default.createDirectory(at: rootA, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: rootB, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let monitor = LocalUsageFileMonitor(maxVnodeWatchers: 4, autoDiscoveryEnabled: false)
+        let fileA = rootA.appendingPathComponent("a.jsonl")
+        FileManager.default.createFile(atPath: fileA.path, contents: Data())
+        let sourceA = LocalUsageSourceLifecycle(
+            paths: [rootA], seedDynamicFiles: [fileA], dynamicExtensions: ["jsonl"], monitor: monitor, onDirty: {}
+        )
+        let sourceB = LocalUsageSourceLifecycle(
+            paths: [rootB], dynamicExtensions: ["jsonl"], monitor: monitor, onDirty: {}
+        )
+        monitor.handleTopologyEventForTesting(
+            path: fileA.path,
+            flags: UInt32(kFSEventStreamEventFlagItemCreated)
+        )
+        XCTAssertGreaterThan(sourceA.eventGeneration, 0)
+        XCTAssertEqual(sourceB.eventGeneration, 0)
+        sourceA.stop()
+        sourceB.stop()
+    }
+
+    @MainActor
+    func testGlobalMonitorLRURefreshesOnHotFileTouchAndProtectsPinned() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("llm-monitor-lru-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixed = root.appendingPathComponent("runtime.sqlite")
+        let first = root.appendingPathComponent("first.jsonl")
+        let second = root.appendingPathComponent("second.jsonl")
+        let third = root.appendingPathComponent("third.jsonl")
+        for file in [fixed, first, second] {
+            FileManager.default.createFile(atPath: file.path, contents: Data())
+        }
+
+        let monitor = LocalUsageFileMonitor(maxVnodeWatchers: 3, autoDiscoveryEnabled: false)
+        let source = LocalUsageSourceLifecycle(
+            paths: [root], watchedFiles: [fixed], seedDynamicFiles: [first, second],
+            dynamicExtensions: ["jsonl"], monitor: monitor, onDirty: {}
+        )
+        // Fixed path consumes one slot. Touch first with a real vnode write,
+        // then discover third: the untouched second path must be evicted.
+        let firstGeneration = source.eventGeneration
+        let fd = open(first.path, O_WRONLY | O_APPEND)
+        XCTAssertGreaterThanOrEqual(fd, 0)
+        guard fd >= 0 else { source.stop(); return }
+        defer { close(fd); source.stop() }
+        var byte: UInt8 = 1
+        XCTAssertEqual(withUnsafePointer(to: &byte) { Darwin.write(fd, $0, 1) }, 1)
+        XCTAssertEqual(fsync(fd), 0)
+        let deadline = Date().addingTimeInterval(2)
+        while source.eventGeneration == firstGeneration && Date() < deadline {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertGreaterThan(source.eventGeneration, firstGeneration)
+        FileManager.default.createFile(atPath: third.path, contents: Data())
+        monitor.handleTopologyEventForTesting(
+            path: third.path,
+            flags: UInt32(kFSEventStreamEventFlagItemCreated)
+        )
+        XCTAssertEqual(monitor.vnodeWatcherCount, 3)
+        XCTAssertTrue(monitor.watchedPaths.contains(fixed.path))
+        XCTAssertTrue(monitor.watchedPaths.contains(first.path))
+        XCTAssertFalse(monitor.watchedPaths.contains(second.path))
+
+        let pinnedOnlyMonitor = LocalUsageFileMonitor(maxVnodeWatchers: 1, autoDiscoveryEnabled: false)
+        let pinnedSource = LocalUsageSourceLifecycle(
+            paths: [root], watchedFiles: [fixed], dynamicExtensions: ["jsonl"],
+            monitor: pinnedOnlyMonitor, onDirty: {}
+        )
+        pinnedSource.touchHotFiles([third])
+        XCTAssertEqual(pinnedOnlyMonitor.vnodeWatcherCount, 1)
+        XCTAssertTrue(pinnedOnlyMonitor.watchedPaths.contains(fixed.path))
+        pinnedSource.stop()
+    }
+
+    @MainActor
+    func testDirtyDuringScanRemainsDirtyWithoutImmediateRescan() async throws {
+        let gate = ScanGate()
+        let scanner = DirtyDuringScanProbe(gate: gate)
+        scanner.scan()
+        await gate.waitUntilStarted()
+        scanner.markFresh()
+        scanner.markDirty()
+        await gate.release()
+        try await scanner.waitUntilSettled()
+
+        XCTAssertEqual(scanner.lastResult, 1)
+        XCTAssertTrue(scanner.isDirty, "扫描期间的新 dirty revision 不应被成功结果清掉")
+        XCTAssertFalse(scanner.isScanning)
     }
 
     // MARK: - AppLog 0600 权限 / 轮转决策 / 轮转行为

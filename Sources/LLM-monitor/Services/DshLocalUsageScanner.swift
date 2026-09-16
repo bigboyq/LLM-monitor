@@ -112,7 +112,10 @@ final class DshLocalUsageScanner: LocalUsageScannerBase<DshLocalUsage>, @uncheck
                 now: Date()
             )
         )
-        configureSourceLifecycle(paths: [sessionsRoot])
+        configureSourceLifecycle(
+            paths: [sessionsRoot],
+            dynamicExtensions: ["jsonl", "zst", "zstd"]
+        )
     }
 
     /// 递归发现 dsh session 产物文件（session.jsonl / *.jsonl.zstd / *.jsonl.zst），

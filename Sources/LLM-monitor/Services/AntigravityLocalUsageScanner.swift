@@ -119,7 +119,10 @@ final class AntigravityLocalUsageScanner: LocalUsageScannerBase<AntigravityLocal
                 now: Date()
             )
         )
-        configureSourceLifecycle(paths: conversationsDirs)
+        configureSourceLifecycle(
+            paths: conversationsDirs,
+            dynamicExtensions: ["db", "db-wal", "pb"]
+        )
     }
 
     /// performScanPure 在 mutex 内读 + 写本实例的 lastCommittedGeneration

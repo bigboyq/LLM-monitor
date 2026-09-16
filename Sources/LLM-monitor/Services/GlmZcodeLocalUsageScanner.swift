@@ -82,11 +82,20 @@ final class GlmZcodeLocalUsageScanner: SingleDBSnapshotScanner<GlmLocalUsage>, @
             logTag: Self.scanLogTag,
             cacheIndexVersion: Self.cacheIndexVersion
         )
-        configureSourceLifecycle(paths: [
-            dbURL.deletingLastPathComponent(),
-            tasksDBURL.deletingLastPathComponent(),
-            balanceLogDirectory
-        ])
+        configureSourceLifecycle(
+            paths: [
+                dbURL.deletingLastPathComponent(),
+                tasksDBURL.deletingLastPathComponent(),
+                balanceLogDirectory
+            ],
+            watchedFiles: [
+                dbURL,
+                URL(fileURLWithPath: dbURL.path + "-wal"),
+                tasksDBURL,
+                URL(fileURLWithPath: tasksDBURL.path + "-wal")
+            ],
+            excludedPaths: [cacheDir]
+        )
     }
 
     /// 设置层开关 → scanner。线程安全，可在任意时刻调用。

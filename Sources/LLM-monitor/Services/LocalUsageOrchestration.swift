@@ -349,15 +349,15 @@ final class LocalUsageOrchestration {
         // model 从共享数据层（statuses.lastSuccess）读取，是数据依赖而非事件依赖。
         guard let target = writer.codexEnrichmentTarget() else { return false }
 
-        // Codex local parsing can touch session metadata while it reads. Keep
-        // the source watcher stopped for the same scan window as other clients.
+        // The Codex source watcher remains attached while parsing. Its
+        // generation gate below preserves dirty state when a write lands during
+        // this scan; the next provider cycle consumes it.
+        startCodexWatcher(authPath: target.authPath)
         let startedEventGeneration = codexSourceLifecycle?.eventGeneration ?? 0
-        stopCodexWatcher()
 
         writer.setScanningState(true, for: target.providerID)
         defer {
             writer.setScanningState(false, for: target.providerID)
-            startCodexWatcher(authPath: target.authPath)
         }
 
         let details = await CodexFetcher.loadUsageDetailsAsync(
@@ -372,6 +372,7 @@ final class LocalUsageOrchestration {
             fetchedAt: target.fetchedAt,
             configurationGeneration: target.generation
         )
+        codexSourceLifecycle?.refreshHotFiles()
         if codexSourceLifecycle?.eventGeneration == startedEventGeneration {
             writer.setLocalUsageFreshness(.clean, for: .codex)
         }
@@ -394,7 +395,8 @@ final class LocalUsageOrchestration {
             paths: [
                 home.appendingPathComponent("sessions", isDirectory: true),
                 home.appendingPathComponent("archived_sessions", isDirectory: true)
-            ]
+            ],
+            dynamicExtensions: ["jsonl"]
         ) { [weak self] in
             guard let self else { return }
             self.writer.setLocalUsageFreshness(.dirty, for: .codex)

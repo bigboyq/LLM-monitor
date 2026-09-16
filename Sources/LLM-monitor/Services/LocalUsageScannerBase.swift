@@ -76,10 +76,9 @@ class LocalUsageScannerBase<Usage: Equatable>: ObservableObject, @unchecked Send
     /// 旧 scanner 只需继续实现原有的 makeWork 接口即可工作。
     func scan(mode: LocalUsageScanMode) {
         guard inFlightTask == nil else { return }
-        // The scanner must not observe its own reads or cache writes as source
-        // mutations. Concrete scanners stop their stream here and recreate it
-        // after this scan settles.
-        stopWatching()
+        // Source watchers stay attached during a scan. Starting here also
+        // reattaches them after an explicit lifecycle cancellation.
+        sourceLifecycle?.start()
         isScanning = true
         latestGeneration &+= 1
         let startedGeneration = latestGeneration
@@ -156,14 +155,25 @@ class LocalUsageScannerBase<Usage: Equatable>: ObservableObject, @unchecked Send
         resumeAllScanWaiters()
     }
 
-    /// Configure the source-owned watcher once the concrete scanner has loaded
-    /// its source paths. The scanner base owns the stop/restart lifecycle so all
-    /// filesystem-backed scanners follow the same rules.
-    func configureSourceLifecycle(paths: [URL]) {
+    /// Configure the source registration once the concrete scanner has loaded
+    /// its source paths. The process-wide monitor owns FSEvents/vnode state;
+    /// this base only retains the lightweight freshness handle.
+    func configureSourceLifecycle(
+        paths: [URL],
+        watchedFiles: [URL] = [],
+        dynamicExtensions: Set<String> = [],
+        excludedPaths: [URL] = []
+    ) {
         sourceLifecycle?.stop()
-        sourceLifecycle = LocalUsageSourceLifecycle(paths: paths) { [weak self] in
+        sourceLifecycle = LocalUsageSourceLifecycle(
+            paths: paths,
+            watchedFiles: watchedFiles,
+            dynamicExtensions: dynamicExtensions,
+            excludedPaths: excludedPaths
+        ) { [weak self] in
             self?.markDirty()
         }
+        sourceLifecycle?.start()
     }
 
     func stopWatching() {
@@ -187,7 +197,6 @@ class LocalUsageScannerBase<Usage: Equatable>: ObservableObject, @unchecked Send
                 isScanning = false
                 inFlightTask = nil
                 resumeAllScanWaiters()
-                restartWatching()
             } else {
                 logInfo("\(logTag) 旧任务 (gen=\(startedGeneration)) defer 跳过状态清理: latest=\(latestGeneration)")
             }
@@ -201,6 +210,7 @@ class LocalUsageScannerBase<Usage: Equatable>: ObservableObject, @unchecked Send
             applyResult: { result in
                 self.lastResult = result
                 self.lastError = nil
+                self.sourceLifecycle?.refreshHotFiles()
                 if self.dirtyRevision == startedDirtyRevision {
                     self.markFresh()
                 }

@@ -118,7 +118,10 @@ final class MinimaxLocalUsageScanner: LocalUsageScannerBase<MinimaxLocalUsage>, 
                 now: Date()
             )
         )
-        configureSourceLifecycle(paths: [runtimeDBURL.deletingLastPathComponent()])
+        configureSourceLifecycle(
+            paths: [runtimeDBURL.deletingLastPathComponent()],
+            watchedFiles: [runtimeDBURL, URL(fileURLWithPath: runtimeDBURL.path + "-wal")]
+        )
     }
 
     /// performScanPure 的 pipeline：mutex 串行 + lastCommittedGeneration 守门。

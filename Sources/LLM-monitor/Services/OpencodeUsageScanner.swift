@@ -47,7 +47,10 @@ final class OpencodeUsageScanner: SingleDBSnapshotScanner<OpencodeLocalUsage>, @
             logTag: Self.scanLogTag,
             cacheIndexVersion: Self.cacheIndexVersion
         )
-        configureSourceLifecycle(paths: [dbURL.deletingLastPathComponent()])
+        configureSourceLifecycle(
+            paths: [dbURL.deletingLastPathComponent()],
+            watchedFiles: [dbURL, URL(fileURLWithPath: dbURL.path + "-wal")]
+        )
     }
 
     // MARK: - pipeline hooks
