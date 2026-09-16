@@ -6,11 +6,11 @@
 
 ## 路径
 
-- 用户配置 → `~/Library/Application Support/LLM-monitor/config.json` [ConfigStore.swift:182](../../Sources/LLM-monitor/Services/ConfigStore.swift:182)
-- 实例锁 → `…/LLM-monitor/instance.lock` [AppInstanceLock.swift:19](../../Sources/LLM-monitor/Services/AppInstanceLock.swift:19)
-- 损坏配置备份 → `config.json.corrupt-<UUID>.json` [ConfigStore.swift:395](../../Sources/LLM-monitor/Services/ConfigStore.swift:395)
-- 日志 → `…/LLM-monitor/log.txt`（rotated `.1` / `.2`）[AppLog.swift:33](../../Sources/LLM-monitor/Services/AppLog.swift:33)
-- 5× scanner cache: `~/.minimax/.token-monitor/index.json` (v14, [Minimax:632](../../Sources/LLM-monitor/Services/MinimaxLocalUsageScanner.swift:632)) · `~/.gemini/antigravity/.token-monitor/index.json` (v6, [Antigravity:741](../../Sources/LLM-monitor/Services/AntigravityLocalUsageScanner.swift:741)) · `~/Library/Application Support/LLM-monitor/token-monitor/index.json` (v2, [Opencode:333](../../Sources/LLM-monitor/Services/OpencodeUsageScanner.swift:333)) · `~/.zcode/cli/.token-monitor/index.json` (v9, [GlmZcodeLocalUsageScanner:28](../../Sources/LLM-monitor/Services/GlmZcodeLocalUsageScanner.swift:28)) · `~/.dsh/.token-monitor/index.json` (v5, [DSH:910](../../Sources/LLM-monitor/Services/DshLocalUsageScanner.swift:910))
+- 用户配置 → `~/Library/Application Support/LLM-monitor/config.json` [ConfigStore.swift:583](../../Sources/LLM-monitor/Services/ConfigStore.swift:583)
+- 实例锁 → `…/LLM-monitor/instance.lock` [AppInstanceLock.swift:42](../../Sources/LLM-monitor/Services/AppInstanceLock.swift:42)
+- 损坏配置备份 → `config.json.corrupt-<UUID>.json` [ConfigStore.swift:925](../../Sources/LLM-monitor/Services/ConfigStore.swift:925)
+- 日志 → `…/LLM-monitor/log.txt`（rotated `.1` / `.2`）[AppLog.swift:34](../../Sources/LLM-monitor/Services/AppLog.swift:34)
+- 5× scanner cache: `~/.minimax/.token-monitor/index.json` (v14, [Minimax:477](../../Sources/LLM-monitor/Services/MinimaxLocalUsageScanner.swift:477)) · `~/.gemini/antigravity/.token-monitor/index.json` (v6, [Antigravity:243](../../Sources/LLM-monitor/Services/AntigravityLocalUsageScanner.swift:243)) · `~/Library/Application Support/LLM-monitor/token-monitor/index.json` (v2, [Opencode:13](../../Sources/LLM-monitor/Services/OpencodeUsageScanner.swift:13)) · `~/.zcode/cli/.token-monitor/index.json` (v9, [GlmZcodeLocalUsageScanner:28](../../Sources/LLM-monitor/Services/GlmZcodeLocalUsageScanner.swift:28)) · `~/.dsh/.token-monitor/index.json` (v5, [DSH:1163](../../Sources/LLM-monitor/Services/DshLocalUsageScanner.swift:1163))
 - SQLite 临时副本 → `NSTemporaryDirectory()/llm-monitor-<UUID>.sqlite`
 
 > **Override**：`LLM_MONITOR_LOG_PATH` 改日志位置 [AppLog.swift:22](../../Sources/LLM-monitor/Services/AppLog.swift:22)；
@@ -18,7 +18,7 @@
 
 ## 权限 & 原子写
 
-[`FileManagerBox.writePrivate`](../../Sources/LLM-monitor/Services/FileManagerBox.swift:98) 是
+[`FileManagerBox.writePrivate`](../../Sources/LLM-monitor/Services/FileManagerBox.swift:106) 是
 项目所有敏感文件写入的**唯一**入口：同目录 `.<basename>.<UUID>.tmp` →
 `O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC` + `S_IRUSR | S_IWUSR`（0600 from birth）→
 完整 `write()` 循环（`EINTR` 重试）→ `fchmod` 0600 → `fsync` → `rename` 原子替换 →
@@ -40,7 +40,7 @@
 规范化到 v2，后续保存会写出版本字段。未来不支持的版本会拒绝加载，并禁止旧版本
 自动写回，避免覆盖新版本配置。`ProviderConfig` 仍对可选字段使用 `decodeIfPresent`，
 保留字段级向前兼容。损坏配置兜底（
-[ConfigStore.swift:236](../../Sources/LLM-monitor/Services/ConfigStore.swift:236)）：解析失败
+[ConfigStore.swift:653](../../Sources/LLM-monitor/Services/ConfigStore.swift:653)）：解析失败
 → 备份到 `config.json.corrupt-<UUID>.json`（0600）→ 备份成功用 `.default` 空配置运行
 （不覆盖原文件）→ 备份失败 `persistenceAllowed = false` 禁止自动写回。
 5× scanner 用 `ScannerIndexIO` 版本不匹配 → 重扫（v14/v6/v2/v9/v5）。

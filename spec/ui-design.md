@@ -339,6 +339,7 @@ Hover details are implemented as a separate floating `NSPanel`, not a SwiftUI ov
 Current behavior:
 
 - show after 0.22s hover delay
+- when the panel is already visible, switching to a neighboring row re-shows after a 0.08s debounce (`HoverPanel.swift` 的 `effectiveDelay`)
 - anchor to mouse position
 - keep a 6px cursor gap
 - prefer mouse as top-left
@@ -470,7 +471,7 @@ Quota summary line:
 
 按这样分级，避免字号跳跃（之前 8pt / 10pt / 11pt 混着用）。
 
-The `5h × N = 周` label expresses a provider-specific equivalent quota ratio, not a conversion of elapsed time. If reset time is missing, the line shows `—`.
+The 周倍率 label（`周倍率：N`，标题右侧）expresses a provider-specific equivalent quota ratio, not a conversion of elapsed time. If reset time is missing, the line shows `—`.
 
 **Hover tooltip 文案（解释视觉元素）**：
 

@@ -1,18 +1,18 @@
 # 并发模型（Concurrency Policy）
 
-Swift 6 strict-concurrency（[`-swift-version 6`](../../scripts/audit.sh:36)）分三类：
+Swift 6 strict-concurrency（[`-swift-version 6`](../../scripts/audit.sh:55)）分三类：
 `@unchecked Sendable`（调用方契约）、`actor`（runtime 隔离）、`@MainActor`（UI / 状态机）。
 决策规则：状态简单 + 调方已串行化 → `@unchecked Sendable`；需 runtime 保护 → `actor`；绑定 UI / `@Published` → `@MainActor`。
 
 ## `@unchecked Sendable`
 
-- `HTTPClient` [HTTPClient.swift:79](../../Sources/LLM-monitor/Services/HTTPClient.swift:79) — `URLSession` 自身 thread-safe
+- `HTTPClient` [HTTPClient.swift:173](../../Sources/LLM-monitor/Services/HTTPClient.swift:173) — `URLSession` 自身 thread-safe
 - `AppLog` [AppLog.swift:6](../../Sources/LLM-monitor/Services/AppLog.swift:6) — 内部 `DispatchQueue` 串行
 - `AppInstanceLock` [AppInstanceLock.swift:6](../../Sources/LLM-monitor/Services/AppInstanceLock.swift:6) — `flock(fd)` 内核锁
-- `FileManagerBox` [FileManagerBox.swift:38](../../Sources/LLM-monitor/Services/FileManagerBox.swift:38) — `private fileManager` + 调方 `AsyncMutex`/`@MainActor`
-- 4× `NSLock` 容器 — [Formatters:5](../../Sources/LLM-monitor/Services/Formatters.swift:5) / [DateParser:17](../../Sources/LLM-monitor/Services/DateParser.swift:17) / [BrandLogoView:8](../../Sources/LLM-monitor/Views/BrandLogoView.swift:8) / [ProcessRunner:27](../../Sources/LLM-monitor/Services/ProcessRunner.swift:27)
-- `ObserverStore` [MenuWindowAutoCloseBridge.swift:24](../../Sources/LLM-monitor/Views/MenuWindowAutoCloseBridge.swift:24) — Coordinator 主线程访问
-- 5× scanner — [Minimax:48](../../Sources/LLM-monitor/Services/MinimaxLocalUsageScanner.swift:48) / [Antigravity:27](../../Sources/LLM-monitor/Services/AntigravityLocalUsageScanner.swift:27) / [Opencode:17](../../Sources/LLM-monitor/Services/OpencodeUsageScanner.swift:17) / [GlmZcode:26](../../Sources/LLM-monitor/Services/GlmZcodeLocalUsageScanner.swift:26) / [DSH:30](../../Sources/LLM-monitor/Services/DshLocalUsageScanner.swift:30) — `@MainActor` + `AsyncMutex.pipelineMutex`
+- `FileManagerBox` [FileManagerBox.swift:35](../../Sources/LLM-monitor/Services/FileManagerBox.swift:35) — `private fileManager` + 调方 `AsyncMutex`/`@MainActor`
+- 4× `NSLock` 容器 — [Formatters:6](../../Sources/LLM-monitor/Services/Formatters.swift:6) / [DateParser:18](../../Sources/LLM-monitor/Services/DateParser.swift:18) / [BrandLogoView:33](../../Sources/LLM-monitor/Views/BrandLogoView.swift:33) / [ProcessRunner:28](../../Sources/LLM-monitor/Services/ProcessRunner.swift:28)
+- `ObserverStore` [MenuWindowAutoCloseBridge.swift:97](../../Sources/LLM-monitor/Views/MenuWindowAutoCloseBridge.swift:97) — Coordinator 主线程访问
+- 5× scanner — [Minimax:48](../../Sources/LLM-monitor/Services/MinimaxLocalUsageScanner.swift:48) / [Antigravity:29](../../Sources/LLM-monitor/Services/AntigravityLocalUsageScanner.swift:29) / [Opencode:11](../../Sources/LLM-monitor/Services/OpencodeUsageScanner.swift:11) / [GlmZcode:22](../../Sources/LLM-monitor/Services/GlmZcodeLocalUsageScanner.swift:22) / [DSH:49](../../Sources/LLM-monitor/Services/DshLocalUsageScanner.swift:49) — `@MainActor` + `AsyncMutex.pipelineMutex`
 
 ## `actor` 清册
 
@@ -26,8 +26,8 @@ pipeline（load → RPC → SQL → save）安全持锁。`acquire()` 注册
 ## `nonisolated(unsafe)` 清册
 
 测试专用（`#if DEBUG` 隔离，release 编译期消除）：Minimax/Antigravity scanner 的
-`testGate` / `testSaveIndexHook` [Minimax:104,106](../../Sources/LLM-monitor/Services/MinimaxLocalUsageScanner.swift:104) /
-[Antigravity:102,104](../../Sources/LLM-monitor/Services/AntigravityLocalUsageScanner.swift:102)，
+`testGate` / `testSaveIndexHook` [Minimax:95,99](../../Sources/LLM-monitor/Services/MinimaxLocalUsageScanner.swift:95) /
+[Antigravity:94,98](../../Sources/LLM-monitor/Services/AntigravityLocalUsageScanner.swift:94)，
 `AuthProber.testAfterCancellationCheck` [AuthProber.swift:50](../../Sources/LLM-monitor/Services/AuthProber.swift:50) — 精确
 控制 SQL/RPC/apply 之间 cancel 时序。
 `MenuBarRightClickHandler.eventMonitor` [MenuBarRightClickHandler.swift:14](../../Sources/LLM-monitor/Services/MenuBarRightClickHandler.swift:14)
@@ -35,14 +35,14 @@ pipeline（load → RPC → SQL → save）安全持锁。`acquire()` 注册
 
 ## `@MainActor` & Cancellation 模式
 
-`ConfigStore` [ConfigStore.swift:155](../../Sources/LLM-monitor/Services/ConfigStore.swift:155) ·
-`ProviderRefreshScheduler` [ProviderRefreshScheduler.swift:27](../../Sources/LLM-monitor/Services/ProviderRefreshScheduler.swift:27) ·
+`ConfigStore` [ConfigStore.swift:554](../../Sources/LLM-monitor/Services/ConfigStore.swift:554) ·
+`ProviderRefreshScheduler` [ProviderRefreshScheduler.swift:26](../../Sources/LLM-monitor/Services/ProviderRefreshScheduler.swift:26) ·
 `AuthProber` [AuthProber.swift:28](../../Sources/LLM-monitor/Services/AuthProber.swift:28) · 5 scanner。模板同构：
 `@MainActor` + `nonisolated static performScanPure` + `AsyncMutex.pipelineMutex` 串行。
-[`ProviderRefreshScheduler`](../../Sources/LLM-monitor/Services/ProviderRefreshScheduler.swift:27)
+[`ProviderRefreshScheduler`](../../Sources/LLM-monitor/Services/ProviderRefreshScheduler.swift:26)
 用单一可中断 deadline driver 同时服务 regular 与 reset+delay 截止时间；到期网络
 batch 独立投递，driver 不在网络请求期间阻塞。
-[`ProviderRefreshScheduler.waitUntilNotInFlight`](../../Sources/LLM-monitor/Services/ProviderRefreshScheduler.swift:145)
+[`ProviderRefreshScheduler.waitUntilNotInFlight`](../../Sources/LLM-monitor/Services/ProviderRefreshScheduler.swift:566)
 和 [`AsyncMutex.acquire`](../../Sources/LLM-monitor/Services/AsyncMutex.swift:97) 是 cancellation
 范式：guard + `withCheckedThrowingContinuation` + `withTaskCancellationHandler`，cancel
 handler 投回 actor 精确移除 waiter；release 与 cancel 通过 actor 串行化防止 continuation

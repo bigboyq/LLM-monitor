@@ -30,8 +30,8 @@ release 设 `.info`，入口 guard 决定是否求值 `@autoclosure`。格式 `[
 
 **永不进入日志**：API key 值或前缀（只记录 `key length=N`）、`Authorization` 完整值、URL
 `userinfo/query/fragment`、响应 body 全文（`includeBodyInError: false` 默认）。
-[`HTTPRequestLogSanitizer.sanitizedURL`](../../Sources/LLM-monitor/Services/HTTPClient.swift:6)
-剥除 userinfo/query/fragment；`.networkErrorDescription` [HTTPClient.swift:28](../../Sources/LLM-monitor/Services/HTTPClient.swift:28)
+[`HTTPRequestLogSanitizer.sanitizedURL`](../../Sources/LLM-monitor/Services/HTTPClient.swift:100)
+剥除 userinfo/query/fragment；`.networkErrorDescription` [HTTPClient.swift:122](../../Sources/LLM-monitor/Services/HTTPClient.swift:122)
 把 `URLError.code` 翻译成稳定中文。**允许进入日志**：HTTP 状态码 + 字节数、解析摘要、
 key 长度、文件 `lastPathComponent`、provider id / model name / 错误堆栈、DB fingerprint。
 
@@ -40,7 +40,7 @@ key 长度、文件 `lastPathComponent`、provider id / model name / 错误堆�
 `[minimax]` [MinimaxTokenPlanFetcher:36](../../Sources/LLM-monitor/Fetchers/MinimaxTokenPlanFetcher.swift:36) ·
 `[glm]` [GlmCodingPlanFetcher:43](../../Sources/LLM-monitor/Fetchers/GlmCodingPlanFetcher.swift:43) ·
 `[codex]` / `[codex/usage]` / `[codex/reset-credits]` [CodexFetcher:51](../../Sources/LLM-monitor/Fetchers/CodexFetcher.swift:51) ·
-`[antigravity]` [AntigravityFetcher:419](../../Sources/LLM-monitor/Fetchers/AntigravityFetcher.swift:419) ·
+`[antigravity]` [AntigravityFetcher:193](../../Sources/LLM-monitor/Fetchers/AntigravityFetcher.swift:193) ·
 5× `[*-scan]`（各 scanner，包含 DSH）。敏感字段在 HTTP 层和各 fetcher 的日志组装入口脱敏。
 `ScannerAndLoggingTests` 覆盖 log 0600 权限、
 rotate、min-level release/DEBUG 区分、`osLogPrivate` 标签。

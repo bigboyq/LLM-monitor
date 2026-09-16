@@ -506,7 +506,7 @@ Card metadata:
 Quota rows:
 
 ```text
-ChatGPT Plan                              5h × 6 = 周
+ChatGPT Plan                              周倍率：6
 5h <remaining>%  周 <remaining>%  [weekly bar in 6 segments]  <weekly reset time>
 ```
 
@@ -518,7 +518,7 @@ Hover details:
 If `secondary_window` is absent (for example, a promotion temporarily removes the 5-hour
 limit), the app displays the single `primary_window` using its actual `limit_window_seconds` label
 and only aggregates local usage for that window. It does not synthesize a second window or apply
-the `5h × 6` presentation.
+the `周倍率：6` presentation.
 
 Reset credits, when present:
 
@@ -615,10 +615,3 @@ To compare or sum daily usage across both providers, normalize both into a singl
 | `rounds` | `rounds` |
 
 After normalization, cross-provider sum, average, and chart rendering can treat the two providers as a single data source.
-
----
-
-## Open Questions
-
-- Should missing `rate_limit` produce an empty model list, a not-configured state, or the current `100%` fallback?
-- Should the UI show `planLabel` near the card title?

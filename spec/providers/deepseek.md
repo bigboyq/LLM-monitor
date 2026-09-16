@@ -81,6 +81,15 @@ The DeepSeek balance endpoint returns per-currency entries. The fetcher uses the
 0/100% 的"百分比"不会被当作进度条展示：`ProviderCardView.shouldUseDeepseekBalanceRow`
 对 `.deepseek` 直接路由到 `DeepseekBalanceRow`（余额金额行），绕过百分比进度条。
 
+### Aggregation & notification semantics（纯余额口径）
+
+DeepSeek 为纯余额语义（无配额窗口）：quotaLogo 仪表盘聚合与通知管道均已排除
+DeepSeek——`AppState.statusBarQuotaMetrics` 的循环以 `where status.kind != .deepseek`
+过滤，通知侧由 `ProviderKind.windowedKinds` 门控（余额 0/100 二值化不具备窗口语义，
+余额触发器暂不接入）。但传统 SF Symbol 图标样式的健康圆点（`AppState.systemHealthLevel`）
+当前仍**有意**计入 DeepSeek 余额健康度（余额为 0 → critical）。此口径差异为保留
+设计，未来改进可能统一（见 `AppState.swift` 中 `statusBarQuotaMetrics` 处的代码注释）。
+
 ## Peak hours (北京时间)
 
 DeepSeek 官方定价规则：**北京时间周一至周五 9:00–12:00 与 14:00–18:00** 为高峰，高峰

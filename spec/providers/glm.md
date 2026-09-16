@@ -47,7 +47,7 @@ ZCode 的 `model_usage.input_tokens` 是包含 cache-read 的 raw input，
 - **GLM-5.2 及以下已退休**：`glm-5.2` / `glm-4.5` / `glm-4.7` 不再单独定价，出现即按
   GLM-5.3-Flash 兜底计价（估计值，不对应真实账单）。兜底使 zhipu 分支永远有价。
 - **日志匹配规则**：匹配不区分大小写。ZCode 日志中的 `GLM-5.3`、OpenCode 中的 `glm-5.3`、DSH 中的 `GLM-5.3-Flash` 均可直接命中。
-- **目录更新时间**：记录于 `ModelPricingCatalog.lastUpdated`（即 JSON 顶层 `lastUpdated`，当前为 `2026-09-05`）。
+- **目录更新时间**：记录于 `ModelPricingCatalog.lastUpdated`（即 JSON 顶层 `lastUpdated`，当前为 `2026-09-09`）。
 - **未定价模型**：zhipu 分支因兜底永远全覆盖，"未定价 / 部分计价"提示对该 provider 不再出现；其他 provider 维持明确列出未收录模型的既有口径。
 
 ## Config
@@ -236,11 +236,12 @@ Card metadata:
 | Field | Value |
 |---|---|
 | `displayName` | `GLM Coding Plan` unless overridden |
-| `iconSystemName` | `chevron.left.forwardslash.chevron.right` (`</>`) — no bundled brand asset yet, so `BrandLogoView` falls back to this SF Symbol |
+| `iconSystemName` | `chevron.left.forwardslash.chevron.right` (`</>`) — 仅是 bundled 资源缺失时的防御性兜底符号；`Resources/BrandLogos/glm.svg` 已内置（1.4.2 起），卡片正常渲染品牌 logo，实际无 SF Symbol 回退 |
 | `accentColor` | `glm` mapped to `.glmBrand` (indigo) |
 
 Window multiplier (`QuotaSummary.weeklyEquivalentMultiplier`): **5** — renders as
-`5h × 5 = 周`, matching the tier credit ratio (weekly = 5× the 5h credits).
+`周倍率：5`（`QuotaViews.swift` 的 `QuotaWindowTitle`），matching the tier credit ratio
+(weekly = 5× the 5h credits).
 
 The card shows the standard two-window layout (5h + weekly remaining %, reset countdown)
 and a tier pill (`Lite` / `Pro` / `Max`). The footer renders the shared seven-day
@@ -264,7 +265,7 @@ needed.
 
 | Aspect | Behavior |
 |---|---|
-| Model | `Models/GlmPeakWindow.swift` — `status(at:calendar:)` 返回 `.peak(until:)` / `.offPeak(until:)` |
+| Model | `Models/PeakWindow.swift`（`GlmPeakWindow` 为兼容 typealias，:127）— `status(at:calendar:)` 返回 `.peak(until:)` / `.offPeak(until:)` |
 | Time basis | `Calendar.current`（用户本地时区），与 GLM API 无关 —— refresh 失败也能显示 |
 | Live countdown | `Views/GlmPeakIndicatorView.swift` 用 `TimelineView(.periodic(by: 60))`，菜单打开时每分钟自动刷新；关闭时零开销 |
 | Window source | `ProviderConfig.glmPeakWindow`（config 派生，`rebuildStatuses` 时挂在 `ProviderStatus.glmPeakWindow`） |

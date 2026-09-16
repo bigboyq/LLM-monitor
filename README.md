@@ -23,7 +23,7 @@
 - 汇总 Codex、Minimax、Antigravity、ZCode、OpenCode 与 DeepSeek Harness (dsh) 的本地 token 用量。
 - 支持每个 Provider 独立刷新、失败退避、手动刷新和配置热重载。
 - 提供 GLM/DeepSeek 高峰时段提示、最近 7 天图表和开机自启动。
-- 主菜单 Provider 卡片可自定义显示顺序（设置 → 通用 → 主菜单 Provider 顺序）；客户端 tab、设置页 Provider tabs 与 Client tab 内的 Provider 行按显示名称字母顺序排列，仅主菜单卡片读取 `providerCardOrder`。
+- 主菜单 Provider 卡片可自定义显示顺序（设置 → 常规 → 主菜单 Provider 顺序）；客户端 tab、设置页 Provider tabs 与 Client tab 内的 Provider 行按显示名称字母顺序排列，仅主菜单卡片读取 `providerCardOrder`。
 - 提供 macOS 系统睡眠健康度与防休眠管理：主面板 Footer 一键就地切换「防止休眠」临时内存开关（带三色指示灯）；设置页「节能」Tab 展示健康度状态、霸占休眠锁的违规应用明细与系统电源参数矩阵（直通 IOKit 原生 API，免子进程开销）。
 - 配置目录权限为 `0700`，配置、日志与凭据文件权限为 `0600`。
 
@@ -94,7 +94,7 @@ swift build
 构建 arm64 `.app`（含 dSYM 符号文件）、DMG 和 SHA-256 校验文件：
 
 ```bash
-./scripts/build-release.sh 1.7.0 143
+./scripts/build-release.sh 1.9.0 151
 ```
 
 `build-app.sh` 的参数决定是否会修改仓库内的 `.build_number`：
