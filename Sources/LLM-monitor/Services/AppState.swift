@@ -91,6 +91,13 @@ final class AppState: ObservableObject {
 
         var levels: [HealthLevel] = []
 
+        // DeepSeek is balance-only and intentionally has no quota window
+        // semantics; the quotaLogo aggregate below (and the notification
+        // pipeline) exclude it accordingly. This aggregate feeds the health
+        // dot of the legacy SF Symbol icon style and deliberately still
+        // counts DeepSeek's balance health (balance ¥0 → .critical). The
+        // scope difference is an intentional, known divergence that a future
+        // refinement may unify.
         for status in enabled {
             switch status.state {
             case .failed(message: _, lastSuccess: nil):

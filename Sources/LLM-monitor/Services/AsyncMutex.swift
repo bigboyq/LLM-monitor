@@ -133,7 +133,7 @@ actor AsyncMutex {
 
     /// 放锁. 如果有等待者, 把锁传递给它 (locked 保持 true); 否则清 locked.
     /// resume 走的是 `waiter.continuation`（CheckedContinuation<Void, Error>），
-    /// 用 `returning: ()` 不会抛错 —— 出错路径（cancel）已经在 `cancelWaiter` 走。
+    /// 用 `returning: ()`不会抛错 —— 出错路径（cancel）已经在 `cancelWaiter` 走。
     private func release() {
         if let next = waiters.first {
             waiters.removeFirst()
@@ -141,15 +141,6 @@ actor AsyncMutex {
             // locked 保持 true, 锁"传递给"下一个 worker
         } else {
             locked = false
-        }
-    }
-
-    /// 测试同步点：等待显式 FIFO 中至少出现指定数量的 waiter。
-    /// `Task.yield()` 让 actor 可重入处理正在到达的 acquire，不依赖墙钟 sleep 猜时序。
-    func waitUntilQueuedWaiterCountForTesting(_ minimumCount: Int) async {
-        precondition(minimumCount >= 0)
-        while waiters.count < minimumCount {
-            await Task.yield()
         }
     }
 }

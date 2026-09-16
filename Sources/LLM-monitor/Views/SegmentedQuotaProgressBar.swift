@@ -91,7 +91,10 @@ struct SegmentedQuotaProgressBar: View {
     /// - combined 模式：只用 primaryLevel，不受 weekly 影响
     /// - singleInterval：只看 primaryLevel
     /// - singleWeekly：降级为 weeklySegmentColor（此时 index 0 就是 weekly 格）
-    private var intervalSegmentColor: Color {
+    ///
+    /// `internal`（非 `private`）：纯计算、无渲染依赖，让测试能直接断言
+    /// 各窗口模式的取色输入选择。
+    var intervalSegmentColor: Color {
         switch windowMode {
         case .singleWeekly:
             return color(for: ModelQuota.colorLevel(percent: weeklyFraction * 100.0, timeFraction: clampedFraction))
@@ -104,7 +107,7 @@ struct SegmentedQuotaProgressBar: View {
     /// - combined 模式：只用 weekLevel，与 5h 格独立
     /// - singleWeekly：同 intervalSegmentColor
     /// - singleInterval：不应有后续格，兜底到 intervalSegmentColor
-    private var weeklySegmentColor: Color {
+    var weeklySegmentColor: Color {
         color(for: ModelQuota.colorLevel(percent: weeklyFraction * 100.0, timeFraction: clampedFraction))
     }
 

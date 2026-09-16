@@ -2934,7 +2934,7 @@ final class StateAndSchedulerTests: XCTestCase {
     /// 状态变动时正确识别。扫描本身由其他临时目录测试覆盖；本测试不应因验证
     /// readiness 而构造生产路径 scanner。
     @MainActor
-    func testLoopBReadinessLoggingDeduplication() async {
+    func testReconcileReadinessLoggingDeduplication() async {
         final class DummyWriter: LocalUsageStatusWriting {
             func providerID(for kind: ProviderKind) -> String? { "test" }
             func setScanningState(_ isScanning: Bool, for providerID: String) {}
@@ -3010,7 +3010,7 @@ final class StateAndSchedulerTests: XCTestCase {
 
     @MainActor
     func testLocalUsageReconcileTransitionsFromFullToDirty() async {
-        let orchestration = LocalUsageOrchestration(writer: LoopBNoopWriter())
+        let orchestration = LocalUsageOrchestration(writer: ReconcileNoopWriter())
         orchestration.testReadinessOverride = { _ in false }
 
         XCTAssertEqual(orchestration.nextReconcileMode, .full)
@@ -3042,7 +3042,7 @@ final class StateAndSchedulerTests: XCTestCase {
     @MainActor
     func testLocalUsageScheduleReconcileRequeuesPendingBatch() async {
         let probe = ReconcilePassProbe()
-        let orchestration = LocalUsageOrchestration(writer: LoopBNoopWriter())
+        let orchestration = LocalUsageOrchestration(writer: ReconcileNoopWriter())
         orchestration.testReconcilePass = { mode in
             await probe.run(mode)
         }
@@ -3061,7 +3061,7 @@ final class StateAndSchedulerTests: XCTestCase {
     @MainActor
     func testLocalUsageExplicitFullReconcileIsNotDowngradedByActiveSchedule() async {
         let probe = ReconcilePassProbe()
-        let orchestration = LocalUsageOrchestration(writer: LoopBNoopWriter())
+        let orchestration = LocalUsageOrchestration(writer: ReconcileNoopWriter())
         orchestration.testReconcilePass = { mode in
             await probe.run(mode)
         }
@@ -3085,7 +3085,7 @@ final class StateAndSchedulerTests: XCTestCase {
     @MainActor
     func testLocalUsageReconcileCancellationAllowsNewSchedule() async {
         var passCount = 0
-        let orchestration = LocalUsageOrchestration(writer: LoopBNoopWriter())
+        let orchestration = LocalUsageOrchestration(writer: ReconcileNoopWriter())
         orchestration.testReconcilePass = { _ in
             passCount += 1
             try? await Task.sleep(nanoseconds: 5_000_000_000)
@@ -3153,7 +3153,7 @@ final class StateAndSchedulerTests: XCTestCase {
 
     /// LocalUsage reconcile 独立于 Quota 失败：GLM provider quota 失败时仍能安全运行
     @MainActor
-    func testLoopBGlmScanIndependentOfQuotaFailure() async {
+    func testReconcileGlmScanIndependentOfQuotaFailure() async {
         let store = makeIsolatedConfigStore()
         var config = store.config
         config.providers["glm_coding_plan"] = ProviderConfig(enabled: true, apiKey: "sk-invalid-key")
@@ -3370,8 +3370,10 @@ private struct TestQuotaFetcher: QuotaFetcher {
     func hasLocalAuth() -> Bool { true }
 }
 
+/// LocalUsage reconcile（provider-batch 架构）测试里的空写入者：只满足
+/// `LocalUsageOrchestration` 的构造协议表面，不产生任何状态写入。
 @MainActor
-private final class LoopBNoopWriter: LocalUsageStatusWriting {
+private final class ReconcileNoopWriter: LocalUsageStatusWriting {
     func providerID(for kind: ProviderKind) -> String? { nil }
     func setScanningState(_ isScanning: Bool, for providerID: String) {}
     func applyAntigravityLocalUsage(_ usage: AntigravityLocalUsage?) {}
