@@ -8,6 +8,8 @@ final class AppLifecycleDelegate: NSObject, NSApplicationDelegate {
     var quotaUpdateNotifier: SystemQuotaUpdateNotifier?
     var barkNotifier: BarkQuotaNotifier?
     private var wakeObserver: NSObjectProtocol?
+    private var systemClockObserver: NSObjectProtocol?
+    private var systemTimeZoneObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         quotaUpdateNotifier?.checkAuthorizationAtLaunch()
@@ -23,6 +25,24 @@ final class AppLifecycleDelegate: NSObject, NSApplicationDelegate {
                 await appState.handleSystemWake()
             }
         }
+        systemClockObserver = NotificationCenter.default.addObserver(
+            forName: .NSSystemClockDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.appState?.handleSystemClockOrTimeZoneChange()
+            }
+        }
+        systemTimeZoneObserver = NotificationCenter.default.addObserver(
+            forName: .NSSystemTimeZoneDidChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.appState?.handleSystemClockOrTimeZoneChange()
+            }
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -31,6 +51,14 @@ final class AppLifecycleDelegate: NSObject, NSApplicationDelegate {
         if let wakeObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver)
             self.wakeObserver = nil
+        }
+        if let systemClockObserver {
+            NotificationCenter.default.removeObserver(systemClockObserver)
+            self.systemClockObserver = nil
+        }
+        if let systemTimeZoneObserver {
+            NotificationCenter.default.removeObserver(systemTimeZoneObserver)
+            self.systemTimeZoneObserver = nil
         }
     }
 }

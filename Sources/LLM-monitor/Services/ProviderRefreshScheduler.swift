@@ -15,12 +15,13 @@ enum ProviderRefreshOutcome: Sendable, Equatable {
 ///
 /// 架构升级为单一 Task 循环：
 /// - 单一常驻 Task 循环，维护每个 provider 的 nextDue 时间与失败计数；
-/// - 循环睡眠到"最早的下一个截止时间"（min(各 provider nextDue, mid-cycle reset 时刻)）；
+/// - 循环睡眠到"最早的下一个截止时间"（regular、mid-cycle reset 或非网络辅助 deadline）；
 /// - 醒来后并发刷新所有到期的 provider（TaskGroup + 条目级 do-catch 隔离，互不阻塞）；
 /// - 既有语义逐条保留：启动首拍 .full、之后 .background、每 20 次 background 补一次 full、
 ///   失败指数退避（封顶 30min ±10% jitter）、.deferred 1s 短重试早醒、
-///   mid-cycle reset+15s 一次性补刷新（与 regular 共用 deadline driver）、ManualRefreshGate
-///   与在飞刷新合并、配置热加载 stop+reschedule。
+///   mid-cycle reset+15s 一次性补刷新（与 regular 共用 deadline driver）、健康窗口边界
+///   （只回调 UI，不发网络请求）、ManualRefreshGate 与在飞刷新合并、配置热加载
+///   stop+reschedule。`earliestNextRefresh` 仍只暴露 regular deadline。
 @MainActor
 final class ProviderRefreshScheduler {
     /// 实际 fetch 的回调。`AppState.refreshProviderDirectly` 是这个闭包。
@@ -35,6 +36,9 @@ final class ProviderRefreshScheduler {
     /// 该回调是同步的、非 async 的：调用方若要启动本地用量 reconcile，应当
     /// 在回调中投递一个独立 Task，不能把本地扫描 await 到额度循环里。
     typealias BatchSettledCallback = @MainActor () -> Void
+    /// 非网络辅助 deadline 到期通知。回调只应更新派生 UI 状态；它不会进入
+    /// provider batch，也不会触发 refresh / failure / LocalUsage reconcile。
+    typealias HealthBoundaryCallback = @MainActor (Date) -> Void
 
     // MARK: - 内部状态
 
@@ -61,6 +65,9 @@ final class ProviderRefreshScheduler {
         let date: Date
     }
     private var midCycleDeadlines: [String: [ResetDeadline]] = [:]
+    /// 全局健康窗口边界。它与 regular/reset 共用 driver 的睡眠，但不属于任一
+    /// provider 的网络刷新，因此不会污染 `nextRefreshDates`。
+    private var healthBoundaryDate: Date?
     private var runningProviders: Set<String> = []
     /// Wake callers waiting for a deadline batch whose task has been
     /// dispatched but whose handler has not yet entered `runRefresh`.
@@ -97,6 +104,7 @@ final class ProviderRefreshScheduler {
     private let intervalProvider: IntervalProvider
     private let onNextRefreshChange: NextRefreshChangeCallback
     private let onBatchSettled: BatchSettledCallback
+    private let onHealthBoundary: HealthBoundaryCallback
     /// 可注入的时钟，生产默认为真实时间。用于 mid-cycle 补刷新计算等待时长，
     /// 也用于 schedule(for:) 写入 nextRefreshDates。
     private let now: @Sendable () -> Date
@@ -120,6 +128,7 @@ final class ProviderRefreshScheduler {
         intervalProvider: @escaping IntervalProvider,
         onNextRefreshChange: @escaping NextRefreshChangeCallback = {},
         onBatchSettled: @escaping BatchSettledCallback = {},
+        onHealthBoundary: @escaping HealthBoundaryCallback = { _ in },
         now: @escaping @Sendable () -> Date = { Date() },
         midCycleResetDelay: TimeInterval = 15,
         periodicFullEveryN: Int = ProviderRefreshScheduler.periodicFullEveryNDefault,
@@ -132,6 +141,7 @@ final class ProviderRefreshScheduler {
         self.intervalProvider = intervalProvider
         self.onNextRefreshChange = onNextRefreshChange
         self.onBatchSettled = onBatchSettled
+        self.onHealthBoundary = onHealthBoundary
         self.now = now
         self.midCycleResetDelay = midCycleResetDelay
         self.periodicFullEveryN = max(periodicFullEveryN, 0)
@@ -181,6 +191,17 @@ final class ProviderRefreshScheduler {
         wake()
     }
 
+    /// 注册或清除全局非网络健康边界。该日期只参与 driver 的下一次唤醒，
+    /// 不会出现在 `earliestNextRefresh`，也不会触发 provider refresh batch。
+    func scheduleHealthBoundary(at date: Date?) {
+        healthBoundaryDate = date
+        // 生命周期仍由 start() / cancelAll() 管理；重排已运行的 driver 时
+        // 只需提前打断当前 sleep。这样初始化阶段注册边界不会偷偷启动循环。
+        if loopTask != nil {
+            wake()
+        }
+    }
+
     /// 停止单循环，重置所有受管状态与定时器
     func cancelAll() {
         loopTask?.cancel()
@@ -192,6 +213,7 @@ final class ProviderRefreshScheduler {
         managedProviders.removeAll()
         nextRefreshDates.removeAll()
         midCycleDeadlines.removeAll()
+        healthBoundaryDate = nil
         runningProviders.removeAll()
         resumeAllRunningWaiters()
         pendingRegularProviders.removeAll()
@@ -258,6 +280,13 @@ final class ProviderRefreshScheduler {
                 }
             }
 
+            // 健康窗口边界是 driver 的辅助 deadline：消费后清掉当前日期，
+            // 由回调根据最新状态注册下一个未来边界。它永远不进入 `due`。
+            if let boundary = healthBoundaryDate, boundary <= effectiveWakeDate {
+                healthBoundaryDate = nil
+                onHealthBoundary(effectiveWakeDate)
+            }
+
             if !due.isEmpty {
                 due.forEach { runningProviders.insert($0.id) }
                 let batch = due
@@ -298,7 +327,8 @@ final class ProviderRefreshScheduler {
                 }
                 .values
                 .flatMap { $0.map(\.date) }
-            guard let nextWake = (Array(regularDates) + resetDates).min() else {
+            let auxiliaryDates = healthBoundaryDate.map { [$0] } ?? []
+            guard let nextWake = (Array(regularDates) + resetDates + auxiliaryDates).min() else {
                 _ = await interruptibleSleep(3600, targetWakeDate: nil)
                 continue
             }
@@ -665,6 +695,9 @@ final class ProviderRefreshScheduler {
     var earliestNextRefresh: Date? {
         managedProviders.compactMap { nextRefreshDates[$0] }.min()
     }
+
+    /// 当前已注册的健康边界（测试 / debug 用）。不对外映射为 nextRefreshAt。
+    var scheduledHealthBoundary: Date? { healthBoundaryDate }
 
     /// 当前 in-flight 集合的快照（测试 / debug 用）
     var inFlightProviderIDs: Set<String> { Set(inFlightModes.keys) }

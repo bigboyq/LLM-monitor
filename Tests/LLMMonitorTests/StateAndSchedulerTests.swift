@@ -3191,6 +3191,75 @@ final class StateAndSchedulerTests: XCTestCase {
         XCTAssertNotNil(state.refreshScheduler.earliestNextRefresh)
     }
 
+    @MainActor
+    func testHealthBoundaryUsesDriverWithoutNetworkBatchAndContinuesOnce() async {
+        let clock = SchedulerTestClock(date: Date(timeIntervalSince1970: 1_000))
+        var refreshCalls = 0
+        var settledBatches = 0
+        var boundaryCalls = 0
+        var scheduler: ProviderRefreshScheduler!
+        scheduler = ProviderRefreshScheduler(
+            refreshHandler: { _, _ in
+                refreshCalls += 1
+                return .completed(success: true)
+            },
+            intervalProvider: { _ in 300 },
+            onBatchSettled: { settledBatches += 1 },
+            onHealthBoundary: { _ in
+                boundaryCalls += 1
+                if boundaryCalls == 1 {
+                    scheduler.scheduleHealthBoundary(at: clock.date.addingTimeInterval(10))
+                } else {
+                    scheduler.cancelAll()
+                }
+            },
+            now: { clock.date },
+            sleep: { seconds in clock.advance(by: seconds) }
+        )
+
+        scheduler.scheduleHealthBoundary(at: clock.date.addingTimeInterval(10))
+        scheduler.start()
+        for _ in 0..<20 { await Task.yield() }
+
+        XCTAssertEqual(refreshCalls, 0, "健康边界不应触发网络 refresh")
+        XCTAssertEqual(boundaryCalls, 2, "每个健康边界只能回调一次，并应继续调度下一边界")
+        XCTAssertEqual(settledBatches, 1, "健康边界不应额外触发 batch settled（仅保留空循环初始 pass）")
+    }
+
+    @MainActor
+    func testHealthBoundaryDoesNotPolluteEarliestNextRefreshAndCancelClearsIt() {
+        let clock = SchedulerTestClock(date: Date(timeIntervalSince1970: 2_000))
+        let scheduler = ProviderRefreshScheduler(
+            refreshHandler: { _, _ in .deferred },
+            intervalProvider: { _ in 300 },
+            now: { clock.date },
+            sleep: { _ in }
+        )
+        scheduler.schedule(for: "provider")
+        let regularDate = scheduler.earliestNextRefresh
+        scheduler.scheduleHealthBoundary(at: clock.date.addingTimeInterval(1))
+
+        XCTAssertEqual(scheduler.earliestNextRefresh, regularDate,
+                       "健康边界不得污染 UI 展示的 regular nextRefreshAt")
+        XCTAssertEqual(scheduler.scheduledHealthBoundary, clock.date.addingTimeInterval(1))
+
+        scheduler.cancelAll()
+        XCTAssertNil(scheduler.scheduledHealthBoundary, "cancelAll 后不得残留健康边界")
+        XCTAssertNil(scheduler.earliestNextRefresh)
+    }
+
+}
+
+private final class SchedulerTestClock: @unchecked Sendable {
+    var date: Date
+
+    init(date: Date) {
+        self.date = date
+    }
+
+    func advance(by seconds: TimeInterval) {
+        date = date.addingTimeInterval(seconds)
+    }
 }
 
 private actor ReconcilePassProbe {

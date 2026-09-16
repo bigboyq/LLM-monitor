@@ -19,9 +19,8 @@ final class AppState: ObservableObject {
     /// 下次自动刷新时间
     @Published private(set) var nextRefreshAt: Date?
 
-    /// 菜单栏健康度的时间基准。由 AppState 的稳定定时任务每分钟推进，避免在
-    /// `MenuBarExtra` label 内嵌 `TimelineView`；后者在部分 macOS 版本上会在
-    /// status item 初始化时形成持续重绘循环。
+    /// 菜单栏健康度的时间基准。由 Provider deadline driver 在高峰窗口边界、
+    /// 状态重建和系统唤醒时推进；不再使用常驻 60 秒轮询。
     @Published private(set) var healthEvaluationDate = Date()
 
     /// 配置文件路径（UI 用）
@@ -59,8 +58,6 @@ final class AppState: ObservableObject {
     /// `internal`（非 `private`）让测试能直接触发或观测用量循环。
     lazy var localUsage = LocalUsageOrchestration(writer: self)
 
-    /// 推进 `healthEvaluationDate`，让高峰窗口跨越分钟边界时能更新菜单栏颜色。
-    private var healthClockTask: Task<Void, Never>?
     private var sleepHealthCancellable: AnyCancellable?
 
     /// 统一的 statuses 广播通道。
@@ -259,6 +256,9 @@ final class AppState: ObservableObject {
                 // before LocalUsage chooses full versus dirty reconciliation.
                 logInfo("[local-usage] Provider batch settled → reconcile")
                 self?.localUsage.reconcileAfterProviderBatch()
+            },
+            onHealthBoundary: { [weak self] boundary in
+                self?.handleHealthBoundary(at: boundary)
             }
         )
         self.authProber = AuthProber(
@@ -326,7 +326,7 @@ final class AppState: ObservableObject {
         // 即使没有任何启用的 Provider，也要完成一次空 pass，
         // 这样 LocalUsage 才能在 Provider 流程之后执行首次 Full Scan。
         refreshScheduler.start()
-        startHealthClock()
+        rescheduleHealthBoundary(updateEvaluationDate: true)
     }
 
     func stop() {
@@ -334,8 +334,6 @@ final class AppState: ObservableObject {
         manualRefreshGate.reset()
         authProber.cancelAll()
         localUsage.cancelInFlightAll()
-        healthClockTask?.cancel()
-        healthClockTask = nil
         nextRefreshAt = nil
         sleepHealth.stop()
         configStore.stopWatching()
@@ -344,25 +342,6 @@ final class AppState: ObservableObject {
     /// 重新调度所有 timer（配置变更后调用）
     func rescheduleAll() {
         start()
-    }
-
-    /// `TimelineView` 放在 `MenuBarExtra` 的 label 中会让某些 AppKit/SwiftUI 组合
-    /// 反复执行 `MenuBarExtraController.updateButton`，造成主线程满载和内存暴涨。
-    /// 用 AppState 持有的单一定时任务发布分钟脉冲，label 只消费一个普通 Date 值。
-    private func startHealthClock() {
-        healthClockTask?.cancel()
-        healthEvaluationDate = Date()
-        healthClockTask = Task { @MainActor [weak self] in
-            while !Task.isCancelled {
-                do {
-                    try await Task.sleep(for: .seconds(60))
-                } catch {
-                    return
-                }
-                guard let self, !Task.isCancelled else { return }
-                self.healthEvaluationDate = Date()
-            }
-        }
     }
 
     // MARK: - 公开操作
@@ -390,6 +369,9 @@ final class AppState: ObservableObject {
     /// 只等待已有请求并合并到它，不登记 ManualRefreshGate pending full。
     /// 无论额度是否被合并，唤醒都要等待一次本地 full reconcile。
     func handleSystemWake() async {
+        // 睡眠期间可能跨过多个窗口边界；先用当前墙钟更新一次健康 UI，
+        // 再安排下一个未来边界。Provider refresh 仍沿用自己的 wake 合并协议。
+        rescheduleHealthBoundary(updateEvaluationDate: true)
         let providerIDs = statuses
             .filter { shouldAutoRefresh(providerID: $0.id) }
             .map(\.id)
@@ -401,6 +383,12 @@ final class AppState: ObservableObject {
             }
         }
         await localUsage.triggerImmediateScanAll()
+    }
+
+    /// 系统时钟或时区改变后重排本地窗口边界。该路径只影响健康 UI deadline，
+    /// 不触发 Provider 网络刷新。
+    func handleSystemClockOrTimeZoneChange() {
+        rescheduleHealthBoundary(updateEvaluationDate: true)
     }
 
     func refreshOne(providerID: String) async {
@@ -573,6 +561,56 @@ final class AppState: ObservableObject {
         statusDidChange.send()
         updateGlobalRefreshingState()
         scheduleExternalAuthProbes()
+        rescheduleHealthBoundary(updateEvaluationDate: true)
+    }
+
+    /// 取所有启用 Provider 的最近高峰窗口边界。GLM 使用本地日历，DeepSeek
+    /// 使用北京时间日历；重复的绝对时刻通过 Set 自然合并。边界是显示/UI
+    /// deadline，不属于任何 Provider 的 regular/reset 网络刷新。
+    private func nextHealthBoundary(after date: Date) -> Date? {
+        var candidates = Set<Date>()
+        for status in statuses where status.isEnabled {
+            if let window = status.glmPeakWindow,
+               case .peak(until: let boundary) = window.status(at: date, calendar: .current),
+               boundary > date {
+                candidates.insert(boundary)
+            }
+            if let window = status.deepseekPeakWindow,
+               case .peak(until: let boundary) = window.status(at: date, calendar: PeakWindow.beijingCalendar),
+               boundary > date {
+                candidates.insert(boundary)
+            }
+            if let window = status.glmPeakWindow,
+               case .offPeak(until: let boundary) = window.status(at: date, calendar: .current),
+               boundary > date {
+                candidates.insert(boundary)
+            }
+            if let window = status.deepseekPeakWindow,
+               case .offPeak(until: let boundary) = window.status(at: date, calendar: PeakWindow.beijingCalendar),
+               boundary > date {
+                candidates.insert(boundary)
+            }
+        }
+        return candidates.min()
+    }
+
+    private func rescheduleHealthBoundary(updateEvaluationDate: Bool, referenceDate: Date = Date()) {
+        let current = referenceDate
+        if updateEvaluationDate {
+            healthEvaluationDate = current
+        }
+        refreshScheduler.scheduleHealthBoundary(at: nextHealthBoundary(after: current))
+    }
+
+    private func handleHealthBoundary(at boundary: Date) {
+        // Scheduler 已消费并清除了旧 deadline；更新 UI 时间基准后，基于新的
+        // 半开区间状态注册下一边界，保证同一边界只回调一次。
+        // 使用 driver 实际到达的 deadline，避免墙钟在边界附近轻微倒退时重新
+        // 注册同一个 `until` 并造成重复回调。
+        rescheduleHealthBoundary(
+            updateEvaluationDate: true,
+            referenceDate: max(Date(), boundary)
+        )
     }
 
     /// `.ok / .loading(lastSuccess:) / .failed(_, lastSuccess:)` 都算"有上次成功数据"——
