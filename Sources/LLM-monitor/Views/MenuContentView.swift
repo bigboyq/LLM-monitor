@@ -1,10 +1,67 @@
 import SwiftUI
 
+private struct MenuDisplayDateKey: EnvironmentKey {
+    static let defaultValue = Date()
+}
+
+extension EnvironmentValues {
+    /// A value environment (rather than an EnvironmentObject) keeps small
+    /// display components safe when rendered in isolation, such as previews
+    /// and focused tests. MenuContentView supplies the live shared value.
+    var menuDisplayDate: Date {
+        get { self[MenuDisplayDateKey.self] }
+        set { self[MenuDisplayDateKey.self] = newValue }
+    }
+}
+
+/// 菜单打开期间的单一展示时钟。只让实际需要倒计时/新鲜度的消费者订阅，
+/// 避免每张卡片各自创建 TimelineView。
+@MainActor
+final class MenuDisplayClock: ObservableObject {
+    @Published private(set) var date = Date()
+    private var task: Task<Void, Never>?
+    private let tickIntervalNanoseconds: UInt64
+    private(set) var startCount = 0
+    private(set) var tickCount = 0
+
+    init(tickIntervalNanoseconds: UInt64 = 1_000_000_000) {
+        self.tickIntervalNanoseconds = tickIntervalNanoseconds
+    }
+
+    var isRunning: Bool { task != nil }
+
+    func start() {
+        guard task == nil else { return }
+        startCount += 1
+        date = Date()
+        task = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(nanoseconds: self?.tickIntervalNanoseconds ?? 1_000_000_000)
+                } catch {
+                    return
+                }
+                guard let self, !Task.isCancelled else { return }
+                self.tickCount += 1
+                self.date = Date()
+            }
+        }
+    }
+
+    func stop() {
+        task?.cancel()
+        task = nil
+    }
+
+    deinit { task?.cancel() }
+}
+
 /// MenuBarExtra 点开后看到的主面板 — **纯展示**，无 sheet 无交互弹窗
 struct MenuContentView: View {
     @ObservedObject var state: AppState
     @ObservedObject var loginItemService: LoginItemService
     @Environment(\.openSettings) private var openSettings
+    @StateObject private var displayClock = MenuDisplayClock()
     /// 强制本地 UI 重渲染计数（用于同步响应 sleepHealth 状态变更）
     @State private var energyUpdateTick = 0
 
@@ -25,7 +82,10 @@ struct MenuContentView: View {
         // 卡片多到超过 70%→窗口封顶，内部 ScrollView 滚动。
         .background(MenuPanelHeightBridge())
         .fixedSize(horizontal: false, vertical: true)
+        .environmentObject(displayClock)
+        .environment(\.menuDisplayDate, displayClock.date)
         .onAppear {
+            displayClock.start()
             let needsFetch = state.statuses.contains { s in
                 if case .ready = s.state { return true }
                 return false
@@ -35,6 +95,7 @@ struct MenuContentView: View {
             }
             loginItemService.refreshStatus()
         }
+        .onDisappear { displayClock.stop() }
         // 显式 .onReceive 强制 SwiftUI 订阅 publisher，绕开 MenuBarExtra 的 view 缓存
         // （@ObservedObject 在 MenuBarExtra 上有时不触发 body 重 eval）。
         // AppState 的所有 status 变更入口（mutateStatus / rebuildStatuses / setScanningState /

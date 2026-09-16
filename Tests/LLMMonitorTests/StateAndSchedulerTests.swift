@@ -164,6 +164,56 @@ final class StateAndSchedulerTests: XCTestCase {
     }
 
     @MainActor
+    func testLocalUsageCoordinatorActiveResolverGatesAndReactivatesSource() {
+        let usage = MinimaxLocalUsage(
+            today: nil, dailyTokenUsage: [], scannedAt: Date(),
+            sessionCount: 0, eventCount: 0, failedSessionCount: 0
+        )
+        var factoryCalledCount = 0
+        let coordinator = LocalUsageCoordinator<MinimaxLocalUsage>(
+            providerID: "test", logTag: "test",
+            makeScanner: {
+                factoryCalledCount += 1
+                return FakeLocalScanner(usage: usage)
+            },
+            apply: { _ in }
+        )
+
+        coordinator.setActive(false)
+        coordinator.trigger()
+        XCTAssertEqual(factoryCalledCount, 0, "停用 source 时不应构造 scanner")
+        coordinator.setActive(true)
+        coordinator.trigger()
+        XCTAssertEqual(factoryCalledCount, 1, "重新启用后下一次 batch 应允许构造 scanner")
+    }
+
+    func testActiveLocalUsageResolverUsesEffectiveStatusDefaults() {
+        // ProviderStatus defaults to enabled when a provider has no explicit
+        // config entry. The resolver must preserve that source instead of
+        // looking up the raw config dictionary.
+        var defaultEnabled = ProviderStatus(
+            id: "minimax_token_plan", displayName: "MiniMax",
+            kind: .minimaxTokenPlan, iconSystemName: "circle",
+            accentColor: .minimax, refreshIntervalSeconds: 60, state: .ready
+        )
+        defaultEnabled.mergeOpencodeUsage = true
+        let explicitlyDisabled = ProviderStatus(
+            id: "glm_coding_plan", displayName: "GLM",
+            kind: .glmCodingPlan, iconSystemName: "circle",
+            accentColor: .glm, refreshIntervalSeconds: 60,
+            isEnabled: false, state: .ready
+        )
+
+        let active = LocalUsageOrchestration.activeSources(
+            for: [defaultEnabled, explicitlyDisabled]
+        )
+        XCTAssertTrue(active.minimax)
+        XCTAssertTrue(active.dsh, "共享 DSH source 应由有效启用的 MiniMax consumer 保留")
+        XCTAssertFalse(active.glm)
+        XCTAssertTrue(active.opencode)
+    }
+
+    @MainActor
     func testLocalUsageCoordinatorReusesScannerAcrossTriggers() async {
         let usage = MinimaxLocalUsage(
             today: nil,
@@ -389,6 +439,222 @@ final class StateAndSchedulerTests: XCTestCase {
         scheduler.markNotInFlight("a")
         XCTAssertTrue(scheduler.markInFlight("a"), "markNotInFlight 后应能重新加入")
         XCTAssertEqual(scheduler.inFlightProviderIDs, ["a"])
+    }
+
+    @MainActor
+    func testSchedulerSystemWakeCoalescesInFlightAndRecentRefresh() async {
+        var calls = 0
+        let scheduler = ProviderRefreshScheduler(
+            refreshHandler: { _, _ in
+                calls += 1
+                return .completed(success: true)
+            },
+            intervalProvider: { _ in 60 },
+            onNextRefreshChange: {},
+            systemWakeCoalesceWindow: 0.2
+        )
+
+        // A wake waiting on an existing request must not register a manual gate
+        // or issue another full request.
+        XCTAssertTrue(scheduler.markInFlight("p"))
+        let waitingWake = Task { @MainActor in
+            await scheduler.refreshForSystemWake("p")
+        }
+        try? await Task.sleep(nanoseconds: 10_000_000)
+        scheduler.markNotInFlight("p")
+        await waitingWake.value
+        XCTAssertEqual(calls, 0)
+
+        // A wake immediately following a completed request is also satisfied by
+        // that request; after the injectable collision window it runs one full.
+        _ = await scheduler.runRefresh("p", mode: .background)
+        XCTAssertEqual(calls, 1)
+        await scheduler.refreshForSystemWake("p")
+        XCTAssertEqual(calls, 1)
+        try? await Task.sleep(nanoseconds: 250_000_000)
+        await scheduler.refreshForSystemWake("p")
+        XCTAssertEqual(calls, 2)
+        scheduler.cancelAll()
+    }
+
+    @MainActor
+    func testSchedulerWakeFirstSatisfiesAlreadyDueRegularDeadline() async {
+        var calls = 0
+        var releaseWake = false
+        var nextRefreshChanges = 0
+        var settledBatches = 0
+        let scheduler = ProviderRefreshScheduler(
+            refreshHandler: { _, _ in
+                calls += 1
+                if calls == 2 {
+                    while !releaseWake {
+                        try? await Task.sleep(nanoseconds: 1_000_000)
+                    }
+                }
+                return .completed(success: true)
+            },
+            intervalProvider: { _ in 0.15 },
+            onNextRefreshChange: { nextRefreshChanges += 1 },
+            onBatchSettled: { settledBatches += 1 }
+        )
+        scheduler.schedule(for: "p")
+        for _ in 0..<100 where calls < 1 {
+            try? await Task.sleep(nanoseconds: 1_000_000)
+        }
+        XCTAssertEqual(calls, 1)
+        try? await Task.sleep(nanoseconds: 10_000_000)
+        let baselineNextRefreshChanges = nextRefreshChanges
+        let baselineSettledBatches = settledBatches
+        let previousNextRefresh = scheduler.earliestNextRefresh
+
+        // Start wake before the regular deadline. The regular driver will see
+        // the wake request in flight when its deadline arrives and must settle
+        // it, rather than dispatching a deferred third request.
+        try? await Task.sleep(nanoseconds: 30_000_000)
+        let wake = Task { @MainActor in
+            await scheduler.refreshForSystemWake("p")
+        }
+        for _ in 0..<100 where calls < 2 {
+            try? await Task.sleep(nanoseconds: 1_000_000)
+        }
+        XCTAssertEqual(calls, 2)
+        try? await Task.sleep(nanoseconds: 220_000_000)
+        XCTAssertEqual(calls, 2, "wake 与 regular deadline 碰撞时只能有一次实际 fetch")
+        releaseWake = true
+        await wake.value
+        try? await Task.sleep(nanoseconds: 20_000_000)
+        XCTAssertEqual(calls, 2)
+        XCTAssertEqual(nextRefreshChanges, baselineNextRefreshChanges + 1)
+        XCTAssertEqual(settledBatches, baselineSettledBatches + 1)
+        XCTAssertGreaterThan(
+            scheduler.earliestNextRefresh ?? .distantPast,
+            previousNextRefresh ?? .distantPast,
+            "外部请求结算 regular deadline 后必须推进 next refresh"
+        )
+        scheduler.cancelAll()
+    }
+
+    @MainActor
+    func testSchedulerWakeCoalescesBeforeScheduledHandlerMarksInFlight() async {
+        var calls = 0
+        var releaseInitial = false
+        let scheduler = ProviderRefreshScheduler(
+            refreshHandler: { _, _ in
+                calls += 1
+                while !releaseInitial {
+                    try? await Task.sleep(nanoseconds: 1_000_000)
+                }
+                return .completed(success: true)
+            },
+            intervalProvider: { _ in 60 },
+            onNextRefreshChange: {}
+        )
+        scheduler.schedule(for: "p")
+        for _ in 0..<100 where scheduler.runningProviderIDs.isEmpty {
+            await Task.yield()
+        }
+        XCTAssertTrue(
+            scheduler.runningProviderIDs.contains("p"),
+            "deadline driver 应在投递 batch 前登记 running provider"
+        )
+
+        let wake = Task { @MainActor in
+            await scheduler.refreshForSystemWake("p")
+        }
+        try? await Task.sleep(nanoseconds: 20_000_000)
+        XCTAssertEqual(calls, 1, "wake 应等待已投递 batch，而不是再开一个请求")
+        releaseInitial = true
+        await wake.value
+        XCTAssertEqual(calls, 1)
+        scheduler.cancelAll()
+    }
+
+    @MainActor
+    func testSchedulerCancellingRunningWakeWaiterDoesNotHang() async {
+        var releaseInitial = false
+        let scheduler = ProviderRefreshScheduler(
+            refreshHandler: { _, _ in
+                while !releaseInitial {
+                    try? await Task.sleep(nanoseconds: 1_000_000)
+                }
+                return .completed(success: true)
+            },
+            intervalProvider: { _ in 60 },
+            onNextRefreshChange: {}
+        )
+        scheduler.schedule(for: "p")
+        for _ in 0..<100 where scheduler.runningProviderIDs.isEmpty {
+            await Task.yield()
+        }
+
+        let wake = Task { @MainActor in
+            await scheduler.refreshForSystemWake("p")
+        }
+        try? await Task.sleep(nanoseconds: 5_000_000)
+        scheduler.cancel(providerID: "p")
+        releaseInitial = true
+
+        // If cancel failed to resume the running continuation this await would
+        // hang indefinitely; the bounded task gives the assertion a clear
+        // failure instead.
+        let finished = await withTaskGroup(of: Bool.self) { group -> Bool in
+            group.addTask {
+                await wake.value
+                return true
+            }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                return false
+            }
+            let result = await group.next() ?? false
+            group.cancelAll()
+            return result
+        }
+        XCTAssertTrue(finished)
+        scheduler.cancelAll()
+    }
+
+    @MainActor
+    func testSchedulerResetDueDuringLongRequestIsSettledOnceAfterwards() async {
+        var calls = 0
+        var releaseInitial = false
+        let scheduler = ProviderRefreshScheduler(
+            refreshHandler: { _, _ in
+                calls += 1
+                if calls == 1 {
+                    while !releaseInitial {
+                        try? await Task.sleep(nanoseconds: 1_000_000)
+                    }
+                }
+                return .completed(success: true)
+            },
+            intervalProvider: { _ in 300 },
+            onNextRefreshChange: {},
+            midCycleResetDelay: 0.05
+        )
+        scheduler.schedule(for: "p")
+        for _ in 0..<100 where calls < 1 {
+            try? await Task.sleep(nanoseconds: 1_000_000)
+        }
+        XCTAssertEqual(calls, 1)
+
+        // This target is just ahead of now while still well before the next
+        // regular deadline, so it becomes due while the initial request stays
+        // in flight.
+        scheduler.scheduleMidCycleResetRefreshes(
+            for: "p", resetsAtDates: [Date().addingTimeInterval(-0.04)]
+        )
+        try? await Task.sleep(nanoseconds: 150_000_000)
+        XCTAssertEqual(calls, 1, "running provider 的过期 reset 不应重复派发或 busy-loop")
+
+        releaseInitial = true
+        for _ in 0..<200 where calls < 2 {
+            try? await Task.sleep(nanoseconds: 1_000_000)
+        }
+        XCTAssertEqual(calls, 2, "请求完成后该 reset 最多补一次")
+        try? await Task.sleep(nanoseconds: 30_000_000)
+        XCTAssertEqual(calls, 2)
+        scheduler.cancelAll()
     }
 
     @MainActor

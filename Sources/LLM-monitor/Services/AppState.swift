@@ -49,9 +49,6 @@ final class AppState: ObservableObject {
     /// 之前是 `externalAuthAvailability` + `authProbeTasks` 两个 dict + 3 个方法，
     /// 现在统一交给 `AuthProber` 打理。
     private var authProber: AuthProber!
-    /// Codex quota 成功后的本地 usage 明细任务与 token 守门。
-    /// lazy：coordinator 的 delegate 捕获 self。
-    private lazy var codexUsageDetails = CodexUsageDetailsCoordinator(delegate: self)
     /// 显式 full refresh 与 background refresh 的合并协议（pending/waiter/claim）。
     private let manualRefreshGate = ManualRefreshGate()
     /// 远程额度恢复通知；通过协议注入，测试不会触碰系统通知中心。
@@ -335,7 +332,6 @@ final class AppState: ObservableObject {
     func stop() {
         cancelAllRefreshTasks()
         manualRefreshGate.reset()
-        cancelAllDetailTasks()
         authProber.cancelAll()
         localUsage.cancelInFlightAll()
         healthClockTask?.cancel()
@@ -384,6 +380,23 @@ final class AppState: ObservableObject {
             for providerID in providerIDs {
                 group.addTask { [self, providerID] in
                     await self.refreshProviderFully(providerID: providerID)
+                }
+            }
+        }
+        await localUsage.triggerImmediateScanAll()
+    }
+
+    /// 系统从睡眠唤醒后的刷新。与用户手动 full 不同，紧邻定时/补刷新时
+    /// 只等待已有请求并合并到它，不登记 ManualRefreshGate pending full。
+    /// 无论额度是否被合并，唤醒都要等待一次本地 full reconcile。
+    func handleSystemWake() async {
+        let providerIDs = statuses
+            .filter { shouldAutoRefresh(providerID: $0.id) }
+            .map(\.id)
+        await withTaskGroup(of: Void.self) { group in
+            for providerID in providerIDs {
+                group.addTask { [self, providerID] in
+                    await self.refreshScheduler.refreshForSystemWake(providerID)
                 }
             }
         }
@@ -552,6 +565,10 @@ final class AppState: ObservableObject {
                 : nil
             return statusItem
         }
+        // `ProviderStatus.isEnabled` is the effective value: a missing
+        // provider config intentionally defaults to enabled.  Deriving from
+        // the raw config dictionary would incorrectly stop default sources.
+        localUsage.updateActiveSources(LocalUsageOrchestration.activeSources(for: statuses))
         logInfo("AppState: 派生 \(statuses.count) 个 status，其中 enabled=\(statuses.filter { $0.isConfigured }.count)")
         statusDidChange.send()
         updateGlobalRefreshingState()
@@ -1040,11 +1057,6 @@ final class AppState: ObservableObject {
     }
 
     @MainActor
-    private func cancelDetailTask(for providerID: String) {
-        codexUsageDetails.cancel(providerID: providerID)
-    }
-
-    @MainActor
     func setScanningState(_ isScanning: Bool, for providerID: String) {
         guard let idx = statuses.firstIndex(where: { $0.id == providerID }),
               statuses[idx].isScanningLocalUsage != isScanning else {
@@ -1088,10 +1100,6 @@ final class AppState: ObservableObject {
 
     private func cancelAllRefreshTasks() {
         refreshScheduler.cancelAll()
-    }
-
-    private func cancelAllDetailTasks() {
-        codexUsageDetails.cancelAll()
     }
 
     private static func loadPersistedRefreshTimes(from url: URL) -> [String: Date] {
@@ -1257,4 +1265,3 @@ struct PreservedStatusFields {
 // MARK: - LocalUsageStatusWriting（本地扫描结果回写）
 
 extension AppState: LocalUsageStatusWriting {}
-extension AppState: CodexUsageDetailsCoordinatorDelegate {}

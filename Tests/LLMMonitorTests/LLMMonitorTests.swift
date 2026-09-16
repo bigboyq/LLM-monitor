@@ -6,6 +6,25 @@ import AppKit
 
 final class LLMMonitorTests: XCTestCase {
 
+    @MainActor
+    func testMenuDisplayClockStartIsIdempotentAndStopCancels() async {
+        let clock = MenuDisplayClock(tickIntervalNanoseconds: 1_000_000)
+        clock.start()
+        clock.start()
+        XCTAssertTrue(clock.isRunning)
+        XCTAssertEqual(clock.startCount, 1, "重复 start 不应创建第二个 display task")
+
+        // Let at least one tick happen, then ensure cancellation prevents any
+        // later ticks after the menu lifecycle ends.
+        try? await Task.sleep(nanoseconds: 10_000_000)
+        XCTAssertGreaterThan(clock.tickCount, 0)
+        clock.stop()
+        XCTAssertFalse(clock.isRunning)
+        let ticksAfterStop = clock.tickCount
+        try? await Task.sleep(nanoseconds: 10_000_000)
+        XCTAssertEqual(clock.tickCount, ticksAfterStop)
+    }
+
     func testBuiltInProviderIDsAreStableConfigurationKeys() {
         XCTAssertEqual(ProviderKind.minimaxTokenPlan.providerID, "minimax_token_plan")
         XCTAssertEqual(ProviderKind.codexChatGpt.providerID, "codex_chatgpt")

@@ -20,7 +20,7 @@ final class AppLifecycleDelegate: NSObject, NSApplicationDelegate {
             Task { @MainActor [weak self] in
                 guard let self, let appState = self.appState else { return }
                 logInfo("AppLifecycleDelegate: 系统唤醒，触发 provider 刷新")
-                await appState.refreshAll()
+                await appState.handleSystemWake()
             }
         }
     }

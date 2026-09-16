@@ -334,12 +334,13 @@ struct ProviderStateLabel: View {
     }
 
     /// 最小刷新间隔为 10 秒，其中第一个新鲜度阈值只有 3 秒。
-    /// 每秒 tick 可确保菜单持续打开时不会跨过阈值却仍保留旧颜色。
+    /// 菜单打开期间由共享 MenuDisplayClock 每秒 tick，确保不会跨过阈值却仍保留旧颜色。
     nonisolated static let timelineIntervalSeconds: TimeInterval = 1
 
     let status: ProviderStatus
+    @Environment(\.menuDisplayDate) private var displayDate
 
-    /// 给定时刻的纯展示模型，既让 `TimelineView` 驱动实时更新，也方便精确验证边界。
+    /// 给定时刻的纯展示模型，方便精确验证边界；实际时钟由菜单共享注入。
     nonisolated func presentation(at now: Date) -> Presentation {
         switch status.state {
         case .notConfigured:
@@ -375,17 +376,15 @@ struct ProviderStateLabel: View {
     }
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: Self.timelineIntervalSeconds)) { context in
-            let presentation = presentation(at: context.date)
-            let color = color(for: presentation.tone)
+        let presentation = presentation(at: displayDate)
+        let color = color(for: presentation.tone)
 
-            Text(presentation.title)
-                .font(MenuTypography.badge)
-                .foregroundStyle(color)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 3)
-                .background(color.opacity(0.1), in: Capsule())
-        }
+        Text(presentation.title)
+            .font(MenuTypography.badge)
+            .foregroundStyle(color)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(color.opacity(0.1), in: Capsule())
     }
 
     private func color(for tone: Tone) -> Color {

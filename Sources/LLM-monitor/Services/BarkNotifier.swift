@@ -371,7 +371,11 @@ actor BarkSendQueue {
                 }
                 if (500...599).contains(http.statusCode), attempt == 1 {
                     logWarn("[bark] \(operation.label) Bark 服务端 HTTP \(http.statusCode)，\(Int(Self.retryDelay))s 后重试")
-                    try? await Task.sleep(nanoseconds: UInt64(Self.retryDelay * 1_000_000_000))
+                    do {
+                        try await Task.sleep(nanoseconds: UInt64(Self.retryDelay * 1_000_000_000))
+                    } catch {
+                        return
+                    }
                     continue
                 }
                 guard (200..<300).contains(http.statusCode) else {
@@ -393,7 +397,11 @@ actor BarkSendQueue {
                 }
                 if attempt == 1, Self.isTransient(error) {
                     logWarn("[bark] \(operation.label) 网络错误 \(error.localizedDescription)，\(Int(Self.retryDelay))s 后重试")
-                    try? await Task.sleep(nanoseconds: UInt64(Self.retryDelay * 1_000_000_000))
+                    do {
+                        try await Task.sleep(nanoseconds: UInt64(Self.retryDelay * 1_000_000_000))
+                    } catch {
+                        return
+                    }
                     continue
                 }
                 logWarn("[bark] \(operation.label) Bark 推送请求失败: \(error.localizedDescription)")

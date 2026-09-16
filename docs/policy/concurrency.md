@@ -39,6 +39,9 @@ pipeline（load → RPC → SQL → save）安全持锁。`acquire()` 注册
 `ProviderRefreshScheduler` [ProviderRefreshScheduler.swift:27](../../Sources/LLM-monitor/Services/ProviderRefreshScheduler.swift:27) ·
 `AuthProber` [AuthProber.swift:28](../../Sources/LLM-monitor/Services/AuthProber.swift:28) · 5 scanner。模板同构：
 `@MainActor` + `nonisolated static performScanPure` + `AsyncMutex.pipelineMutex` 串行。
+[`ProviderRefreshScheduler`](../../Sources/LLM-monitor/Services/ProviderRefreshScheduler.swift:27)
+用单一可中断 deadline driver 同时服务 regular 与 reset+delay 截止时间；到期网络
+batch 独立投递，driver 不在网络请求期间阻塞。
 [`ProviderRefreshScheduler.waitUntilNotInFlight`](../../Sources/LLM-monitor/Services/ProviderRefreshScheduler.swift:145)
 和 [`AsyncMutex.acquire`](../../Sources/LLM-monitor/Services/AsyncMutex.swift:97) 是 cancellation
 范式：guard + `withCheckedThrowingContinuation` + `withTaskCancellationHandler`，cancel

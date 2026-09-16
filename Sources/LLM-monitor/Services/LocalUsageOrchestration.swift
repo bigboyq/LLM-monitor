@@ -10,6 +10,36 @@ import Foundation
 /// AppState，保持单向依赖：orchestration → writer(AppState)。
 @MainActor
 final class LocalUsageOrchestration {
+    struct ActiveSources: Equatable, Sendable {
+        var codex = true
+        var antigravity = true
+        var minimax = true
+        var glm = true
+        var dsh = true
+        var opencode = true
+    }
+
+    /// Derive source ownership from the effective provider statuses.  This is
+    /// intentionally pure so config-default semantics (`isEnabled == true`
+    /// when a provider has no explicit config) cannot drift between AppState
+    /// and tests.
+    nonisolated static func activeSources(for statuses: [ProviderStatus]) -> ActiveSources {
+        let enabledKinds = Set(statuses.filter(\.isEnabled).map(\.kind))
+        let hasOpenCodeConsumer = statuses.contains {
+            $0.isEnabled && $0.mergeOpencodeUsage
+        }
+        return ActiveSources(
+            codex: enabledKinds.contains(.codexChatGpt),
+            antigravity: enabledKinds.contains(.antigravity),
+            minimax: enabledKinds.contains(.minimaxTokenPlan),
+            glm: enabledKinds.contains(.glmCodingPlan),
+            dsh: enabledKinds.contains(.minimaxTokenPlan)
+                || enabledKinds.contains(.glmCodingPlan)
+                || enabledKinds.contains(.deepseek),
+            opencode: hasOpenCodeConsumer
+        )
+    }
+
     private let writer: any LocalUsageStatusWriting
 
     /// Antigravity 本地 token 用量 scanner：通过 `LocalUsageCoordinator` 包装
@@ -124,6 +154,7 @@ final class LocalUsageOrchestration {
     private let now: @Sendable () -> Date
     /// 客户端就绪状态缓存，用于日志去噪（仅在状态变动时记录日志）
     private var clientReadinessCache: [String: Bool] = [:]
+    private var activeSources = ActiveSources()
     /// 仅供测试注入客户端就绪判定覆写
     var testReadinessOverride: ((String) -> Bool)?
     /// 测试用 reconcile pass 注入点；生产路径仍使用 `scanAllClients(mode:)`。
@@ -153,6 +184,23 @@ final class LocalUsageOrchestration {
         stopCodexWatcher()
         codexSourceLifecycle = nil
         codexWatchedHome = nil
+    }
+
+    /// Resolve source lifetime from enabled consumers. Shared DSH/OpenCode remain
+    /// active only while their explicit consumer set is non-empty; scanner/cache
+    /// values themselves are retained when a source is disabled.
+    func updateActiveSources(_ active: ActiveSources) {
+        activeSources = active
+        antigravityCoordinator.setActive(active.antigravity)
+        minimaxCoordinator.setActive(active.minimax)
+        glmCoordinator.setActive(active.glm)
+        dshCoordinator.setActive(active.dsh)
+        opencodeCoordinator.setActive(active.opencode)
+        if !active.codex {
+            stopCodexWatcher()
+        } else if codexSourceLifecycle != nil {
+            codexSourceLifecycle?.start()
+        }
     }
 
     /// 推送「活动套餐余额日志解析」开关（设置 `parseZcodeBalanceLog`）。
@@ -301,6 +349,7 @@ final class LocalUsageOrchestration {
     }
 
     private func scanCodexClient(mode: LocalUsageScanMode) async {
+        guard activeSources.codex else { return }
         let codexReady = checkClientReadiness("codex")
         let codexWasReady = clientReadinessCache["codex"] == true
         updateReadinessAndLog(for: "codex", isReady: codexReady)
@@ -317,6 +366,7 @@ final class LocalUsageOrchestration {
         coordinator: () -> LocalUsageCoordinator<Usage>
     ) async {
         guard !Task.isCancelled else { return }
+        guard coordinator().active else { return }
         let isReady = checkClientReadiness(clientID)
         let wasReady = clientReadinessCache[clientID] == true
         updateReadinessAndLog(for: clientID, isReady: isReady)

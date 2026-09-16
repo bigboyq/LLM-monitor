@@ -530,6 +530,25 @@ final class BarkNotifierTests: XCTestCase {
     }
 
     @MainActor
+    func testCancellingRetrySleepDoesNotIssueSecondRequest() async throws {
+        RecordingURLProtocol.reset(statusCode: 500)
+        let notifier = makeNotifier(BarkConfig(
+            enabled: true, serverURL: "https://api.day.app", deviceKey: "k1",
+            sound: nil, group: nil
+        ))
+        let first = expectation(description: "首个请求")
+        RecordingURLProtocol.onReceive = { _ in first.fulfill() }
+        notifier.notify(
+            providerID: "p", providerName: "P",
+            events: [Self.event(.intervalRestored)], channels: allBarkChannels
+        )
+        await fulfillment(of: [first], timeout: 2)
+        await notifier.sendQueue.cancelAll()
+        try await Task.sleep(nanoseconds: 1_200_000_000)
+        XCTAssertEqual(RecordingURLProtocol.requests.count, 1, "取消重试等待后不得发第二次请求")
+    }
+
+    @MainActor
     func testTransientNetworkErrorRetriesOnce() async throws {
         // 测试清单 7：瞬时网络错误（timedOut）重试一次。
         FailingURLProtocol.reset(errorCode: .timedOut)

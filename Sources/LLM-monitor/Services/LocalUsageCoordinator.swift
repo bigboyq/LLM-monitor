@@ -35,6 +35,7 @@ final class LocalUsageCoordinator<Usage: Equatable> {
 
     private var scanner: (any LocalUsageScanner<Usage>)?
     private var cancellables = Set<AnyCancellable>()
+    private var isActive = true
 
     /// - Parameters:
     ///   - providerID: 用于日志 prefix（"antigravity" / "minimax"）
@@ -77,6 +78,7 @@ final class LocalUsageCoordinator<Usage: Equatable> {
     /// batch 驱动的普通 reconcile 必须传 false，让 scanner 内部继续通过
     /// mtime/size fingerprint 判断是否真的需要增量计算。
     func trigger(mode: LocalUsageScanMode, markDirty: Bool = true) {
+        guard isActive else { return }
         if let s = scanner {
             if markDirty { s.markDirty() }
             s.scan(mode: mode)
@@ -130,6 +132,27 @@ final class LocalUsageCoordinator<Usage: Equatable> {
         scanner?.cancelInFlight()
         (scanner as? LocalUsageScannerBase<Usage>)?.stopWatching()
     }
+
+    /// Source activity follows the explicit AppState consumer resolver. An inactive
+    /// source releases its vnode/FSEvents registration but keeps scanner/cache state;
+    /// reactivation only reattaches the watcher and the next batch decides whether
+    /// the fingerprint requires work.
+    func setActive(_ active: Bool) {
+        guard isActive != active else {
+            if active { (scanner as? LocalUsageScannerBase<Usage>)?.restartWatching() }
+            return
+        }
+        isActive = active
+        guard let base = scanner as? LocalUsageScannerBase<Usage> else { return }
+        if active {
+            base.restartWatching()
+        } else {
+            base.cancelInFlight()
+            base.stopWatching()
+        }
+    }
+
+    var active: Bool { isActive }
 
     /// 已构造的 scanner 上执行副作用（如推送运行时开关）；未构造时 no-op。
     /// 构造期的初值应由 makeScanner 闭包自己应用，不依赖本方法。
