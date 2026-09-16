@@ -89,7 +89,7 @@ struct MenuContentView: View {
             content
             footerBar
         }
-        .frame(width: 360)
+        .frame(width: MenuPanelHeightBridge.width)
         .background {
             MenuPanelSurface()
         }
@@ -294,9 +294,8 @@ struct MenuContentView: View {
 
 
     private var footerBar: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
             footerStatus
-            Spacer()
             FooterActionButton(icon: "gearshape", title: "设置") {
                     openSettingsWindow()
                 }
@@ -374,6 +373,9 @@ struct MenuContentView: View {
             Text("自启 \(loginItemService.isEnabled ? "✓" : "✗")")
                 .font(MenuTypography.footer)
         }
+        .lineLimit(1)
+        .fixedSize(horizontal: true, vertical: false)
+        .layoutPriority(1)
         .foregroundStyle(Color.secondary.opacity(0.75))
     }
 
@@ -524,6 +526,8 @@ private struct FooterActionButton: View {
                 Text(title)
                     .font(MenuTypography.footer)
             }
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
             .foregroundStyle(Color.secondary.opacity(0.82))
             .contentShape(Rectangle())
         }

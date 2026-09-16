@@ -52,8 +52,8 @@ final class MenuPanelHeightBridgeTests: XCTestCase {
         XCTAssertLessThan(f, 0.85, "高度上限 > 85% 会贴顶/贴 Dock 风险")
     }
 
-    /// 宽度固定 360pt 跟 `applyMaxSize` 里 `NSSize(width: 360, ...)` 一致。
-    /// 改这里需要同步改 spec/overview.md 的"F4 fixed width 360pt"行。
+    /// 宽度固定 360pt 跟 `applyMaxSize` 使用的 `MenuPanelHeightBridge.width` 一致。
+    /// 改这里需要同步改 spec/ui-design.md 的窗口宽度。
     func testWidthIs360() {
         XCTAssertEqual(MenuPanelHeightBridge.width, 360, "宽度固定 360pt；改这里请同步 spec")
     }
