@@ -12,6 +12,9 @@ final class AppLifecycleDelegate: NSObject, NSApplicationDelegate {
     private var systemTimeZoneObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // 双重守门：正式 app bundle 由 LSUIElement 隐藏 Dock 图标，运行时仍固定
+        // accessory policy，避免窗口激活流程或开发构建把应用提升为 regular app。
+        NSApp.setActivationPolicy(MenuBarAppActivation.policy)
         quotaUpdateNotifier?.checkAuthorizationAtLaunch()
         wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification,

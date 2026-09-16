@@ -173,7 +173,7 @@ struct SettingsView: View {
             loadCurrentConfig()
         }
         .onDisappear {
-            NSApp.setActivationPolicy(.accessory)
+            NSApp.setActivationPolicy(MenuBarAppActivation.policy)
         }
     }
 

@@ -345,6 +345,15 @@ final class StateAndSchedulerTests: XCTestCase {
 
     // MARK: - SettingsWindowFocusBridge: 焦点门控
 
+    @MainActor
+    func testSettingsWindowKeepsMenuBarAccessoryPolicy() {
+        XCTAssertEqual(
+            MenuBarAppActivation.policy,
+            .accessory,
+            "设置窗口可激活并抢焦点，但菜单栏 App 不得切到会显示 Dock 图标的 regular policy"
+        )
+    }
+
     /// 验证 `shouldActivate` 不会在用户已经在 Settings 窗口内交互时再激活一次。
     /// 模拟 SwiftUI 每次重绘都触发 updateNSView 的场景，确保不会再走 NSApp.activate。
     @MainActor

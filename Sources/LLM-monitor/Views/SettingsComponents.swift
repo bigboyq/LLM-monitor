@@ -69,7 +69,19 @@ struct SettingsToggleRow: View {
     }
 }
 
-/// 把 Settings 窗口从 menu-bar app 的 `.accessory` 政策里拽出来、置前并抢焦点。
+/// Menu-bar app 打开独立窗口时仍须保持 `.accessory`，否则 `.regular` 会让 App
+/// 图标出现在 Dock。Accessory app 仍可主动激活并让自己的窗口成为 key window。
+@MainActor
+enum MenuBarAppActivation {
+    static let policy: NSApplication.ActivationPolicy = .accessory
+
+    static func activateForWindowPresentation() {
+        NSApp.setActivationPolicy(policy)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+}
+
+/// 把 Settings 窗口置前并抢焦点，但不改变 menu-bar app 的 accessory 身份。
 /// 仅在首次进入窗口或窗口失去 key 状态后重新激活，避免 SwiftUI 重绘导致焦点跳动。
 struct SettingsWindowFocusBridge: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -106,8 +118,7 @@ struct SettingsWindowFocusBridge: NSViewRepresentable {
         }
 
         private func activate(window: NSWindow) {
-            NSApp.setActivationPolicy(.regular)
-            NSApp.activate(ignoringOtherApps: true)
+            MenuBarAppActivation.activateForWindowPresentation()
             window.level = .normal
             window.orderFrontRegardless()
             window.makeMain()

@@ -285,7 +285,7 @@ struct MenuContentView: View {
     }
 
     private func openSettingsWindow() {
-        SettingsWindowActivator.prepareForOpening()
+        MenuBarAppActivation.activateForWindowPresentation()
         openSettings()
     }
 
@@ -487,14 +487,6 @@ struct MenuPanelHeightBridge: NSViewRepresentable {
             // 确保下拉窗口上边缘紧贴菜单栏底边并吸收系统 popover 顶部留白（+10pt），彻底消除空白空间缝隙
             MenuWindowAlignment.align(window: window, cardsHeight: measuredCardsHeight)
         }
-    }
-}
-
-@MainActor
-private enum SettingsWindowActivator {
-    static func prepareForOpening() {
-        NSApp.setActivationPolicy(.regular)
-        NSApp.activate(ignoringOtherApps: true)
     }
 }
 
