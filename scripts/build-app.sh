@@ -125,18 +125,14 @@ mkdir -p "$CLANG_MODULE_CACHE_PATH"
 
 echo "==> [1/4] swift build -c release (arm64)"
 swift build -c release --arch arm64
-# 单架构（--arch arm64）产物在 triple 目录；apple/Products 与 .build/release
-# 仅作旧布局兼容回退，避免误拾历史 universal 构建留下的陈旧二进制。
-BINARY_PATH="$ROOT_DIR/.build/arm64-apple-macosx/release/$APP_NAME"
+# SwiftPM 的实际 products 目录会随 toolchain / build system 改变（例如
+# `.build/arm64-apple-macosx/release` 或 `.build/out/Products/Release`）。必须查询
+# 本次构建的真实目录，不能按历史路径优先级猜测，否则旧目录残留时会把陈旧
+# 二进制重新打进一个时间戳全新的 .app。
+SWIFT_BIN_DIR="$(swift build -c release --arch arm64 --show-bin-path)"
+BINARY_PATH="$SWIFT_BIN_DIR/$APP_NAME"
 if [ ! -f "$BINARY_PATH" ]; then
-    BINARY_PATH="$ROOT_DIR/.build/apple/Products/Release/$APP_NAME"
-fi
-if [ ! -f "$BINARY_PATH" ]; then
-    # 兼容 Swift < 5.9 的路径
-    BINARY_PATH="$ROOT_DIR/.build/release/$APP_NAME"
-fi
-if [ ! -f "$BINARY_PATH" ]; then
-    echo "ERROR: 找不到 release 二进制"
+    echo "ERROR: 找不到本次 SwiftPM release 二进制: $BINARY_PATH"
     exit 1
 fi
 echo "    Binary: $BINARY_PATH"
@@ -176,10 +172,11 @@ echo "    Stripped binary: $STRIP_BEFORE -> $STRIP_AFTER bytes"
 
 # SwiftPM 的 Bundle.module 资源必须随 .app 一起分发，否则首次加载品牌
 # SVG/WebP 等资源时会因找不到 LLM-monitor_LLM-monitor.bundle 直接退出。
-# 单架构构建的 bundle 在 triple 目录；apple/Products 仅作旧布局兼容回退。
-RESOURCE_BUNDLE="$ROOT_DIR/.build/arm64-apple-macosx/release/${APP_NAME}_${APP_NAME}.bundle"
+# 资源 bundle 与可执行文件来自同一个本次构建 products 目录，避免二者版本错配。
+RESOURCE_BUNDLE="$SWIFT_BIN_DIR/${APP_NAME}_${APP_NAME}.bundle"
 if [ ! -d "$RESOURCE_BUNDLE" ]; then
-    RESOURCE_BUNDLE="$ROOT_DIR/.build/apple/Products/Release/${APP_NAME}_${APP_NAME}.bundle"
+    echo "ERROR: 找不到本次 SwiftPM resource bundle: $RESOURCE_BUNDLE" >&2
+    exit 1
 fi
 echo "    Copying SwiftPM resource bundle"
 cp -R "$RESOURCE_BUNDLE" "$APP/Contents/Resources/"
