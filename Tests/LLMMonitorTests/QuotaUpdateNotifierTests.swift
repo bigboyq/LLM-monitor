@@ -304,6 +304,7 @@ final class QuotaUpdateNotifierTests: XCTestCase {
             quotaUpdateNotifier: notifier
         )
         state.stop()
+        state.localUsage.testReadinessOverride = { _ in false }
         defer { state.stop() }
 
         _ = await state.refreshProviderDirectly(providerID: fetcher.providerID, mode: .full)
@@ -374,6 +375,11 @@ final class QuotaUpdateNotifierTests: XCTestCase {
             quotaUpdateNotifier: notifier,
             triggerStateStore: store
         )
+        // Quota notifier tests do not exercise LocalUsage. Keep their fake
+        // provider from constructing the production MiniMax scanner during a
+        // provider-batch reconcile.
+        state.stop()
+        state.localUsage.testReadinessOverride = { _ in false }
         return (state, configStore, store, directory)
     }
 

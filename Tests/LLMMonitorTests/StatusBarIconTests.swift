@@ -233,6 +233,7 @@ final class StatusBarIconTests: XCTestCase {
         }
         try? store.applyAndSave(initialConfig)
         let appState = AppState(descriptors: descriptors, configStore: store)
+        defer { appState.stop() }
 
         // 默认全未启用 -> nil
         XCTAssertNil(appState.systemHealthLevel)
@@ -561,6 +562,7 @@ final class StatusBarIconTests: XCTestCase {
         try? store.applyAndSave(cfg)
 
         let appState = AppState(descriptors: descriptors, configStore: store)
+        defer { appState.stop() }
 
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = .current
@@ -640,5 +642,3 @@ final class StatusBarIconTests: XCTestCase {
         XCTAssertEqual(metrics.waterHealth, HealthLevel.critical)
     }
 }
-
-

@@ -309,23 +309,43 @@ final class LocalUsageOrchestration {
     func scanAllClients(mode: LocalUsageScanMode = .full) async {
         let minimax: @MainActor () async -> Void = { [weak self] in
             guard let self, !Task.isCancelled else { return }
-            await self.scanClient("minimax_code", mode: mode) { self.minimaxCoordinator }
+            await self.scanClient(
+                "minimax_code",
+                mode: mode,
+                isActive: { self.activeSources.minimax }
+            ) { self.minimaxCoordinator }
         }
         let glm: @MainActor () async -> Void = { [weak self] in
             guard let self, !Task.isCancelled else { return }
-            await self.scanClient("zcode-glm", mode: mode) { self.glmCoordinator }
+            await self.scanClient(
+                "zcode-glm",
+                mode: mode,
+                isActive: { self.activeSources.glm }
+            ) { self.glmCoordinator }
         }
         let opencode: @MainActor () async -> Void = { [weak self] in
             guard let self, !Task.isCancelled else { return }
-            await self.scanClient("opencode", mode: mode) { self.opencodeCoordinator }
+            await self.scanClient(
+                "opencode",
+                mode: mode,
+                isActive: { self.activeSources.opencode }
+            ) { self.opencodeCoordinator }
         }
         let dsh: @MainActor () async -> Void = { [weak self] in
             guard let self, !Task.isCancelled else { return }
-            await self.scanClient("dsh", mode: mode) { self.dshCoordinator }
+            await self.scanClient(
+                "dsh",
+                mode: mode,
+                isActive: { self.activeSources.dsh }
+            ) { self.dshCoordinator }
         }
         let antigravity: @MainActor () async -> Void = { [weak self] in
             guard let self, !Task.isCancelled else { return }
-            await self.scanClient("antigravity", mode: mode) { self.antigravityCoordinator }
+            await self.scanClient(
+                "antigravity",
+                mode: mode,
+                isActive: { self.activeSources.antigravity }
+            ) { self.antigravityCoordinator }
         }
         let codex: @MainActor () async -> Void = { [weak self] in
             guard !Task.isCancelled else { return }
@@ -363,16 +383,21 @@ final class LocalUsageOrchestration {
     private func scanClient<Usage: Equatable>(
         _ clientID: String,
         mode: LocalUsageScanMode,
+        isActive: () -> Bool,
         coordinator: () -> LocalUsageCoordinator<Usage>
     ) async {
         guard !Task.isCancelled else { return }
-        guard coordinator().active else { return }
+        // Check source ownership before evaluating the lazy coordinator.  Apart
+        // from avoiding needless construction, this keeps an inactive source
+        // from touching its production default path during a reconcile.
+        guard isActive() else { return }
         let isReady = checkClientReadiness(clientID)
         let wasReady = clientReadinessCache[clientID] == true
         updateReadinessAndLog(for: clientID, isReady: isReady)
         guard isReady || wasReady else { return }
         let becameMissing = wasReady && !isReady
         let current = coordinator()
+        guard current.active else { return }
         if becameMissing { current.markDirty() }
         // FSEvents 的 dirty 状态只负责 UI freshness。每次 Provider batch 都要
         // 给 scanner 一次机会执行原有的 fingerprint 检查，否则文件在保持打开

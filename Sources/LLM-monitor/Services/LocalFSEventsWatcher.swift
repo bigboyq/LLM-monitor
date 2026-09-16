@@ -13,8 +13,9 @@ struct LocalFSEventsEvent: Sendable, Equatable {
 
 }
 
-/// Reusable, per-scanner FSEvents watcher.  It owns exactly the paths supplied by
-/// its scanner; there is intentionally no process-wide source/path registry.
+/// Reusable, per-registration FSEvents watcher. It owns exactly the paths
+/// supplied by the shared process-wide LocalUsageFileMonitor; registration
+/// filtering and vnode ownership are handled by that monitor.
 @MainActor
 final class LocalFSEventsWatcher {
     typealias EventHandler = @MainActor @Sendable (LocalFSEventsEvent) -> Void

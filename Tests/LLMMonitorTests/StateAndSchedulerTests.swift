@@ -1577,6 +1577,12 @@ final class StateAndSchedulerTests: XCTestCase {
     @MainActor
     private func makeTestAppState() -> AppState {
         let configStore = makeIsolatedConfigStore()
+        // This helper only tests the status broadcast shape. Disable the
+        // provider explicitly so AppState.start() cannot lazily construct the
+        // production Antigravity scanner and walk ~/.gemini during the test.
+        var config = configStore.config
+        config.providers["antigravity"] = ProviderConfig(enabled: false)
+        try! configStore.applyAndSave(config)
         let descriptors: [FetcherDescriptor] = [
             FetcherDescriptor(
                 id: "antigravity",
@@ -2855,6 +2861,9 @@ final class StateAndSchedulerTests: XCTestCase {
         )
 
         let appState = AppState(descriptors: [descA, descB], configStore: configStore)
+        // This assertion only inspects derived status; do not leave the
+        // scheduler alive long enough to trigger the production local scanner.
+        appState.stop()
 
         XCTAssertEqual(appState.statuses.count, 2)
         XCTAssertTrue(appState.statuses.first(where: { $0.id == "test_a" })?.isEnabled ?? false)
@@ -2904,8 +2913,9 @@ final class StateAndSchedulerTests: XCTestCase {
         sched.cancelAll()
     }
 
-    /// LocalUsage reconcile 的客户端 readiness 探测与去噪：readiness 仅驱动诊断日志（不再拦截
-    /// 就绪客户端的扫描），状态变动时正确识别
+    /// LocalUsage reconcile 的客户端 readiness 探测与去噪：readiness 仅驱动诊断日志，
+    /// 状态变动时正确识别。扫描本身由其他临时目录测试覆盖；本测试不应因验证
+    /// readiness 而构造生产路径 scanner。
     @MainActor
     func testLoopBReadinessLoggingDeduplication() async {
         final class DummyWriter: LocalUsageStatusWriting {
@@ -2937,7 +2947,6 @@ final class StateAndSchedulerTests: XCTestCase {
         // 状态转为就绪
         readyState = true
         XCTAssertTrue(orchestration.checkClientReadiness("minimax_code"))
-        await orchestration.scanAllClients()
 
         orchestration.cancelInFlightAll()
     }
@@ -3138,6 +3147,10 @@ final class StateAndSchedulerTests: XCTestCase {
         )
 
         let state = AppState(descriptors: [desc], configStore: store)
+        // Keep the quota-failure assertion, but prevent the explicit local
+        // reconcile below from constructing the production ~/.zcode scanner.
+        state.stop()
+        state.localUsage.testReadinessOverride = { _ in false }
         defer { state.stop() }
 
         // 刷新 quota（预期失败）
@@ -3174,6 +3187,10 @@ final class StateAndSchedulerTests: XCTestCase {
         )
 
         let state = AppState(descriptors: [desc], configStore: store)
+        // This test observes scheduler rescheduling only. All local usage
+        // readiness checks are forced false so no default-path scanner can be
+        // constructed by a background settle while the scheduler is running.
+        state.localUsage.testReadinessOverride = { _ in false }
         defer { state.stop() }
 
         let initialNext = state.refreshScheduler.earliestNextRefresh

@@ -69,12 +69,14 @@ final class RefreshBalanceRegressionTests: XCTestCase {
         let cacheDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("glm-refresh-balance-cache-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: cacheDir) }
+        let missingRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("glm-refresh-balance-missing-\(UUID().uuidString)", isDirectory: true)
 
         let scanner = GlmZcodeLocalUsageScanner(
-            dbURL: URL(fileURLWithPath: "/missing-glm-db-\(UUID().uuidString)"),
-            tasksDBURL: URL(fileURLWithPath: "/missing-glm-tasks-\(UUID().uuidString)"),
+            dbURL: missingRoot.appendingPathComponent("db.sqlite"),
+            tasksDBURL: missingRoot.appendingPathComponent("tasks.sqlite"),
             cacheDir: cacheDir,
-            balanceLogDirectory: URL(fileURLWithPath: "/missing-glm-logs-\(UUID().uuidString)")
+            balanceLogDirectory: missingRoot.appendingPathComponent("logs", isDirectory: true)
         )
         let balance = GlmActivityPlanBalance(
             planID: "plan", planName: "Plan", entitlementID: "entitlement",

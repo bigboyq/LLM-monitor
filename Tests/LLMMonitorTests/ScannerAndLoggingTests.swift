@@ -237,6 +237,115 @@ final class ScannerAndLoggingTests: XCTestCase {
     }
 
     @MainActor
+    func testLocalUsageLifecycleFiltersMetadataAndSQLiteShmEvents() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("llm-monitor-fsevent-filter-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let minimaxDB = root.appendingPathComponent("runtime-state.sqlite")
+        let minimaxSHM = root.appendingPathComponent("runtime-state.sqlite-shm")
+        let antigravityDB = root.appendingPathComponent("session.db")
+        let unrelated = root.appendingPathComponent("notes.txt")
+        for file in [minimaxDB, minimaxSHM, antigravityDB, unrelated] {
+            FileManager.default.createFile(atPath: file.path, contents: Data())
+        }
+
+        let monitor = LocalUsageFileMonitor(maxVnodeWatchers: 8, autoDiscoveryEnabled: false)
+        var minimaxDirty = 0
+        var antigravityDirty = 0
+        let minimax = LocalUsageSourceLifecycle(
+            paths: [root], watchedFiles: [minimaxDB], monitor: monitor,
+            onDirty: { minimaxDirty += 1 }
+        )
+        let antigravity = LocalUsageSourceLifecycle(
+            paths: [root], dynamicExtensions: ["db", "db-wal", "pb"], monitor: monitor,
+            onDirty: { antigravityDirty += 1 }
+        )
+        defer { minimax.stop(); antigravity.stop() }
+
+        let shmMetadata = UInt32(0x10400) // ItemIsFile | ItemInodeMetaMod
+        let shmMetadataAndModified = UInt32(0x11400) // + ItemModified
+        monitor.handleTopologyEventForTesting(path: minimaxSHM.path, flags: shmMetadata)
+        monitor.handleTopologyEventForTesting(path: minimaxSHM.path, flags: shmMetadataAndModified)
+        XCTAssertEqual(minimaxDirty, 0, "SQLite -shm 元数据/写入事件不应让 Minimax dirty")
+        XCTAssertEqual(antigravityDirty, 0, "SQLite -shm 不属于 Antigravity session source")
+
+        monitor.handleTopologyEventForTesting(
+            path: minimaxDB.path,
+            flags: UInt32(kFSEventStreamEventFlagItemIsFile)
+                | UInt32(kFSEventStreamEventFlagItemInodeMetaMod)
+        )
+        XCTAssertEqual(minimaxDirty, 0, "纯 inode metadata 不应让 fixed file dirty")
+        monitor.handleTopologyEventForTesting(
+            path: minimaxDB.path,
+            flags: UInt32(kFSEventStreamEventFlagItemIsFile)
+                | UInt32(kFSEventStreamEventFlagItemModified)
+        )
+        XCTAssertEqual(minimaxDirty, 1, "fixed sqlite 的真实修改应标记 dirty")
+
+        monitor.handleTopologyEventForTesting(
+            path: antigravityDB.path,
+            flags: UInt32(kFSEventStreamEventFlagItemIsFile)
+                | UInt32(kFSEventStreamEventFlagItemXattrMod)
+        )
+        XCTAssertEqual(antigravityDirty, 0, "纯 xattr 修改不应让动态 session dirty")
+        monitor.handleTopologyEventForTesting(
+            path: unrelated.path,
+            flags: UInt32(kFSEventStreamEventFlagItemIsFile)
+                | UInt32(kFSEventStreamEventFlagItemModified)
+        )
+        XCTAssertEqual(antigravityDirty, 0, "无关扩展不应让动态 source dirty")
+        monitor.handleTopologyEventForTesting(
+            path: root.path,
+            flags: UInt32(kFSEventStreamEventFlagItemIsDir)
+                | UInt32(kFSEventStreamEventFlagItemInodeMetaMod)
+        )
+        XCTAssertEqual(antigravityDirty, 0, "目录 metadata 不应直接让 source dirty")
+    }
+
+    @MainActor
+    func testLocalUsageLifecycleDiscoversCompoundWALAndRecoveryInvalidates() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("llm-monitor-fsevent-topology-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let db = root.appendingPathComponent("session.db")
+        let wal = root.appendingPathComponent("session.db-wal")
+        let protobuf = root.appendingPathComponent("session.pb")
+        for file in [db, wal, protobuf] {
+            FileManager.default.createFile(atPath: file.path, contents: Data())
+        }
+
+        let monitor = LocalUsageFileMonitor(maxVnodeWatchers: 8, autoDiscoveryEnabled: false)
+        var dirtyCount = 0
+        let lifecycle = LocalUsageSourceLifecycle(
+            paths: [root], dynamicExtensions: ["db", "db-wal", "pb"], monitor: monitor,
+            onDirty: { dirtyCount += 1 }
+        )
+        defer { lifecycle.stop() }
+
+        let created = UInt32(kFSEventStreamEventFlagItemIsFile)
+            | UInt32(kFSEventStreamEventFlagItemCreated)
+        monitor.handleTopologyEventForTesting(path: db.path, flags: created)
+        monitor.handleTopologyEventForTesting(path: wal.path, flags: created)
+        monitor.handleTopologyEventForTesting(path: protobuf.path, flags: created)
+        XCTAssertEqual(dirtyCount, 3, "db/db-wal/pb 创建都应标记 dirty")
+        XCTAssertTrue(monitor.watchedPaths.contains(db.path))
+        XCTAssertTrue(monitor.watchedPaths.contains(wal.path), "compound .db-wal 应被发现并进入 vnode LRU")
+        XCTAssertTrue(monitor.watchedPaths.contains(protobuf.path))
+
+        let beforeRecovery = lifecycle.eventGeneration
+        monitor.handleTopologyEventForTesting(
+            path: root.path,
+            flags: UInt32(kFSEventStreamEventFlagMustScanSubDirs)
+                | UInt32(kFSEventStreamEventFlagItemIsDir)
+        )
+        XCTAssertGreaterThan(lifecycle.eventGeneration, beforeRecovery, "FSEvents 丢失/恢复事件应保守 invalidation")
+    }
+
+    @MainActor
     func testGlobalMonitorRoutesEventsOnlyToMatchingRoots() throws {
         let base = FileManager.default.temporaryDirectory
             .appendingPathComponent("llm-monitor-routing-\(UUID().uuidString)", isDirectory: true)

@@ -1,9 +1,10 @@
 import CoreServices
 import Foundation
 
-/// Process-wide realtime file monitor. FSEvents discovers topology while one
-/// shared vnode source per path reports in-place writes. The 128-entry limit is
-/// deliberately a notification cache; scanner fingerprints remain authoritative.
+/// Process-wide realtime file monitor. Per-registration FSEvents discovers
+/// relevant topology and non-hot-file changes, while one shared vnode source
+/// per path reports in-place writes. The 128-entry limit is deliberately a
+/// notification cache; scanner fingerprints remain authoritative.
 @MainActor
 final class LocalUsageFileMonitor {
     static let shared = LocalUsageFileMonitor()
@@ -128,7 +129,37 @@ final class LocalUsageFileMonitor {
               !isExcluded(event.path, by: registration.excludedPaths) else {
             return
         }
-        registration.onEvent()
+
+        let isRecoveryEvent = event.flags & Self.recoveryEventMask != 0
+        let isDirectory = event.flags & UInt32(kFSEventStreamEventFlagItemIsDir) != 0
+        let isRelevantPath = registration.fixedPaths.contains(event.path)
+            || isDynamicCandidate(event.path, registration: registration)
+
+        // A dropped/wrapped stream cannot tell us which file changed. Keep the
+        // source conservatively dirty and restart discovery, but do not treat
+        // the recovery marker's path as a normal file mutation.
+        if isRecoveryEvent {
+            registration.onEvent()
+            scheduleDiscovery(for: registrationID)
+        } else if isRelevantPath,
+                  event.flags & Self.contentMutationMask != 0,
+                  (!isDirectory
+                    || (registration.fixedPaths.contains(event.path)
+                        && event.flags & Self.topologyEventMask != 0)) {
+            // Only relevant file content/topology changes invalidate a source.
+            // In particular, SQLite -shm files and directory/metadata events
+            // must not make a scan dirty as a side effect of reading it. A
+            // fixed file path turning into a directory is still a structural
+            // change to the watched file and therefore remains conservative.
+            registration.onEvent()
+        } else if isDirectory,
+                  event.flags & Self.topologyEventMask != 0 {
+            // Directory changes are discovery hints only. Enumeration decides
+            // whether a candidate belongs to this registration; no dirty state
+            // is emitted until a relevant file event or fingerprint diff exists.
+            scheduleDiscovery(for: registrationID)
+        }
+
         let path = event.path
         if isDynamicCandidate(path, registration: registration),
            !registration.dynamicPaths.contains(path),
@@ -281,7 +312,7 @@ final class LocalUsageFileMonitor {
             for case let url as URL in enumerator {
                 guard !Task.isCancelled else { return [] }
                 let path = Self.canonicalPath(url)
-                guard snapshot.extensions.contains(url.pathExtension.lowercased()),
+                guard Self.matchesDynamicExtension(path, extensions: snapshot.extensions),
                       !Self.isExcluded(path, by: snapshot.exclusions),
                       snapshot.rootPaths.contains(where: { rootPath in
                           path.hasPrefix(rootPath.hasSuffix("/") ? rootPath : rootPath + "/")
@@ -298,9 +329,21 @@ final class LocalUsageFileMonitor {
     }
 
     private func isDynamicCandidate(_ path: String, registration: Registration) -> Bool {
-        guard registration.dynamicExtensions.contains(URL(fileURLWithPath: path).pathExtension.lowercased()),
+        guard Self.matchesDynamicExtension(path, extensions: registration.dynamicExtensions),
               !isExcluded(path, by: registration.excludedPaths) else { return false }
         return isWithinRoots(path, registration: registration)
+    }
+
+    /// Supports both ordinary extensions (`.db`, `.pb`) and compound suffixes
+    /// (`.db-wal`). URL.pathExtension would reduce the latter to just `wal`,
+    /// which would make WAL changes invisible to a registration that explicitly
+    /// opted into the compound suffix.
+    nonisolated private static func matchesDynamicExtension(
+        _ path: String,
+        extensions: Set<String>
+    ) -> Bool {
+        let lowercasedPath = path.lowercased()
+        return extensions.contains { lowercasedPath.hasSuffix("." + $0) }
     }
 
     private func isWithinRoots(_ path: String, registration: Registration) -> Bool {
@@ -334,6 +377,26 @@ final class LocalUsageFileMonitor {
         UInt32(kFSEventStreamEventFlagItemCreated)
             | UInt32(kFSEventStreamEventFlagItemRemoved)
             | UInt32(kFSEventStreamEventFlagItemRenamed)
+
+    /// Flags that indicate an event's path may no longer describe the complete
+    /// change set. These events require conservative invalidation and a fresh
+    /// dynamic-file discovery pass.
+    private static let recoveryEventMask: UInt32 =
+        UInt32(kFSEventStreamEventFlagMustScanSubDirs)
+            | UInt32(kFSEventStreamEventFlagUserDropped)
+            | UInt32(kFSEventStreamEventFlagKernelDropped)
+            | UInt32(kFSEventStreamEventFlagEventIdsWrapped)
+            | UInt32(kFSEventStreamEventFlagRootChanged)
+            | UInt32(kFSEventStreamEventFlagMount)
+            | UInt32(kFSEventStreamEventFlagUnmount)
+
+    /// FSEvents content/topology flags which are meaningful for a relevant
+    /// file. Metadata-only flags are intentionally absent: scanners use their
+    /// own fingerprints and a read/scan must not self-invalidate the source.
+    private static let contentMutationMask: UInt32 =
+        UInt32(kFSEventStreamEventFlagItemModified)
+            | topologyEventMask
+            | UInt32(kFSEventStreamEventFlagItemCloned)
 
     nonisolated private static func canonicalPath(_ url: URL) -> String {
         url.standardizedFileURL.resolvingSymlinksInPath().path
