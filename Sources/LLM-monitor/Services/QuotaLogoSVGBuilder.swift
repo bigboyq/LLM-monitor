@@ -31,7 +31,7 @@ struct StatusBarQuotaMetrics: Equatable, Sendable {
     var interval: QuotaRingMetrics
     /// 所有有效套餐、所有有效窗口中的最低剩余比例；nil 表示暂无额度数据。
     var lowestAvailable: Double?
-    /// 套餐健康点，已按红 > 黄 > 绿排序并补齐到四个。
+    /// 套餐健康点，已按红 > 黄 > 绿排序并补齐到三个。
     var quotaHealthLevels: [HealthLevel]
     /// 兼容旧调用方保留的综合状态；新版图标用它作为弧线健康色。
     var waterHealth: HealthLevel?
@@ -40,179 +40,199 @@ struct StatusBarQuotaMetrics: Equatable, Sendable {
         weekly: QuotaRingMetrics,
         interval: QuotaRingMetrics,
         lowestAvailable: Double? = nil,
-        quotaHealthLevels: [HealthLevel] = Array(repeating: .healthy, count: 4),
+        quotaHealthLevels: [HealthLevel] = Array(repeating: .healthy, count: 3),
         waterHealth: HealthLevel? = nil
     ) {
         self.weekly = weekly
         self.interval = interval
         self.lowestAvailable = lowestAvailable.map { min(max($0, 0.0), 1.0) }
-        self.quotaHealthLevels = Array(
-            (quotaHealthLevels.sorted() + Array(repeating: .healthy, count: 4)).prefix(4)
-        )
+        self.quotaHealthLevels = Self.resolveTopThreeHealthLevels(quotaHealthLevels)
         self.waterHealth = waterHealth
+    }
+
+    /// 优先显示红色（.critical），其次黄色（.warning），最后绿色（.healthy）；
+    /// 若有 3 个红色，则直接占满 3 个位置，无需显示黄色和绿色。
+    static func resolveTopThreeHealthLevels(_ levels: [HealthLevel]) -> [HealthLevel] {
+        let sorted = levels.sorted()
+        return Array((sorted + Array(repeating: .healthy, count: 3)).prefix(3))
     }
 
     static let full = StatusBarQuotaMetrics(
         weekly: QuotaRingMetrics(minAvailable: 1.0, avgAvailable: 1.0, colorHex: QuotaLogoSVGBuilder.defaultOuterColor),
         interval: QuotaRingMetrics(minAvailable: 1.0, avgAvailable: 1.0, colorHex: QuotaLogoSVGBuilder.defaultMiddleColor),
         lowestAvailable: 1.0,
-        quotaHealthLevels: Array(repeating: .healthy, count: 4),
+        quotaHealthLevels: Array(repeating: .healthy, count: 3),
         waterHealth: .healthy
     )
 }
 
 /// 22pt 菜单栏额度仪表 SVG 构建器。
 ///
-/// 左弧显示 5h，右弧显示周额度。每条弧从底部向顶部增长：连续实线长度代表
-/// 平均剩余量，固定 2px 的红色短段标出最低剩余量，之后的灰色轨道代表空量。
-/// 中间是全局最低剩余百分比，底部四点汇总套餐健康度，顶部闪电显示节能状态。
+/// 正圆几何构图：
+/// - 左弧显示 5h，右弧显示周额度，从底部沿圆弧向上充盈；深灰色底槽与健康色填充弧平滑贴合。
+/// - 左弧颜色由 5h 平均剩余量根据统一标准决定；右弧颜色由周平均剩余量决定。
+/// - 顶部为节能模式状态圆点（半径放大为 r=48，红/黄/绿显示）。
+/// - 底部 3 个状态点沿圆弧轨迹排布（115°、90°、65°，半径 r=36），汇总各套餐健康度（红 > 黄 > 绿优先）。
+/// - 中心为扇形圆，满额度为 360° 正圆，随着额度消耗从 6 点钟（底端）向左右对称打开；
+///   剩余面积保留在 12 点钟（顶端）；50% 额度时呈现 180° 上半圆；额度耗尽时呈现红色空心圆环。
 enum QuotaLogoSVGBuilder {
     static let defaultOuterColor = "#FB923C"
     static let defaultMiddleColor = "#2DD4BF"
     static let defaultUnconfiguredColor = "#8E8E93"
 
-    private static let strokeWidth = 54.0
-    /// 704 SVG units / 22pt / 2 Retina pixels-per-point = 16 units per pixel。
-    private static let dividerLength = 32.0
+    private static let center = 352.0
+    private static let outerRadius = 270.0
+    /// 翻倍后的线段宽度（56px），确保在 22pt 菜单栏 Retina 屏上清晰醒目。
+    private static let strokeWidth = 56.0
+    private static let innerRadius = 135.0
 
-    private struct Point {
-        var x: Double
-        var y: Double
+    private static func point(degree: Double, radius: Double) -> (x: Double, y: Double) {
+        let rad = degree * Double.pi / 180.0
+        return (
+            center + radius * cos(rad),
+            center + radius * sin(rad)
+        )
     }
-
-    private struct CubicCurve {
-        let start: Point
-        let control1: Point
-        let control2: Point
-        let end: Point
-
-        var pathData: String {
-            String(
-                format: "M %.2f %.2f C %.2f %.2f %.2f %.2f %.2f %.2f",
-                start.x, start.y,
-                control1.x, control1.y,
-                control2.x, control2.y,
-                end.x, end.y
-            )
-        }
-
-        func point(at rawT: Double) -> Point {
-            let t = min(max(rawT, 0), 1)
-            let u = 1 - t
-            let x = u * u * u * start.x
-                + 3 * u * u * t * control1.x
-                + 3 * u * t * t * control2.x
-                + t * t * t * end.x
-            let y = u * u * u * start.y
-                + 3 * u * u * t * control1.y
-                + 3 * u * t * t * control2.y
-                + t * t * t * end.y
-            return Point(x: x, y: y)
-        }
-
-        func tangent(at rawT: Double) -> Point {
-            let t = min(max(rawT, 0), 1)
-            let u = 1 - t
-            return Point(
-                x: 3 * u * u * (control1.x - start.x)
-                    + 6 * u * t * (control2.x - control1.x)
-                    + 3 * t * t * (end.x - control2.x),
-                y: 3 * u * u * (control1.y - start.y)
-                    + 6 * u * t * (control2.y - control1.y)
-                    + 3 * t * t * (end.y - control2.y)
-            )
-        }
-    }
-
-    private static let intervalCurve = CubicCurve(
-        start: Point(x: 154, y: 526),
-        control1: Point(x: 142, y: 368),
-        control2: Point(x: 205, y: 208),
-        end: Point(x: 306, y: 158)
-    )
-
-    private static let weeklyCurve = CubicCurve(
-        start: Point(x: 550, y: 526),
-        control1: Point(x: 562, y: 368),
-        control2: Point(x: 499, y: 208),
-        end: Point(x: 398, y: 158)
-    )
 
     static func buildSVG(
         metrics: StatusBarQuotaMetrics,
         healthColors: StatusBarHealthColors = .default,
         energyHealth: HealthLevel? = nil
     ) -> String {
-        let trackColor = "#5A5A5F"
-        // 两侧额度弧始终用正常色；红色只承担 min/avg 分界，保证低额度时
-        // 分割线也不会和整条弧融成同色。
-        let quotaColor = resolvedHex(for: .healthy, colors: healthColors)
-        let dividerColor = resolvedHex(for: .critical, colors: healthColors)
-        let centerText = metrics.lowestAvailable.map {
-            String(Int(($0 * 100.0).rounded()))
-        } ?? "--"
+        let trackColor = "#48484A"
+        // 统一标准：左弧颜色由 5h avg 决定，右弧颜色由周 avg 决定
+        let leftQuotaLevel = HealthLevel.standard(forFraction: metrics.interval.avgAvailable)
+        let rightQuotaLevel = HealthLevel.standard(forFraction: metrics.weekly.avgAvailable)
+        let leftColor = resolvedHex(for: leftQuotaLevel, colors: healthColors)
+        let rightColor = resolvedHex(for: rightQuotaLevel, colors: healthColors)
         let energyColor = energyHealth.map { resolvedHex(for: $0, colors: healthColors) }
             ?? defaultUnconfiguredColor
-        let dots = metrics.quotaHealthLevels.enumerated().map { index, level in
-            let x = 250 + index * 68
+
+        // 1. 顶部节能模式状态点（半径 r=48，红黄绿显示）
+        let topEnergyPoint = point(degree: 270.0, radius: outerRadius)
+        let energyDot = String(
+            format: "<circle id=\"energy-dot\" cx=\"%.2f\" cy=\"%.2f\" r=\"48\" fill=\"%@\"/>",
+            topEnergyPoint.x, topEnergyPoint.y, energyColor
+        )
+
+        // 2. 左弧（5h 额度）：从 140° (底) 到 244° (顶)，顺时针跨度 104°
+        let leftTrackStart = point(degree: 140, radius: outerRadius)
+        let leftTrackEnd = point(degree: 244, radius: outerRadius)
+        let leftTrack = String(
+            format: "<path id=\"interval-track\" d=\"M %.2f %.2f A %.2f %.2f 0 0 1 %.2f %.2f\" fill=\"none\" stroke=\"%@\" stroke-width=\"%.2f\" stroke-linecap=\"round\"/>",
+            leftTrackStart.x, leftTrackStart.y, outerRadius, outerRadius, leftTrackEnd.x, leftTrackEnd.y, trackColor, strokeWidth
+        )
+
+        let leftSpan = 104.0 * metrics.interval.avgAvailable
+        let leftAvail: String
+        if leftSpan > 0.5 {
+            let leftAvailEnd = point(degree: 140.0 + leftSpan, radius: outerRadius)
+            leftAvail = String(
+                format: "\n  <path id=\"interval-available\" d=\"M %.2f %.2f A %.2f %.2f 0 0 1 %.2f %.2f\" fill=\"none\" stroke=\"%@\" stroke-width=\"%.2f\" stroke-linecap=\"round\"/>",
+                leftTrackStart.x, leftTrackStart.y, outerRadius, outerRadius, leftAvailEnd.x, leftAvailEnd.y, leftColor, strokeWidth
+            )
+        } else {
+            leftAvail = ""
+        }
+
+        // 3. 右弧（周额度）：从 40° (底) 到 296° (顶)，逆时针跨度 104°
+        let rightTrackStart = point(degree: 40, radius: outerRadius)
+        let rightTrackEnd = point(degree: 296, radius: outerRadius)
+        let rightTrack = String(
+            format: "<path id=\"weekly-track\" d=\"M %.2f %.2f A %.2f %.2f 0 0 0 %.2f %.2f\" fill=\"none\" stroke=\"%@\" stroke-width=\"%.2f\" stroke-linecap=\"round\"/>",
+            rightTrackStart.x, rightTrackStart.y, outerRadius, outerRadius, rightTrackEnd.x, rightTrackEnd.y, trackColor, strokeWidth
+        )
+
+        let rightSpan = 104.0 * metrics.weekly.avgAvailable
+        let rightAvail: String
+        if rightSpan > 0.5 {
+            let rightAvailEnd = point(degree: 40.0 - rightSpan, radius: outerRadius)
+            rightAvail = String(
+                format: "\n  <path id=\"weekly-available\" d=\"M %.2f %.2f A %.2f %.2f 0 0 0 %.2f %.2f\" fill=\"none\" stroke=\"%@\" stroke-width=\"%.2f\" stroke-linecap=\"round\"/>",
+                rightTrackStart.x, rightTrackStart.y, outerRadius, outerRadius, rightAvailEnd.x, rightAvailEnd.y, rightColor, strokeWidth
+            )
+        } else {
+            rightAvail = ""
+        }
+
+        // 4. 底部 3 个沿圆弧排布的状态点（半径放大为 r=36，分布在 115°、90°、65°）
+        let dotAngles = [115.0, 90.0, 65.0]
+        var dots: [String] = []
+        for (index, angle) in dotAngles.enumerated() {
+            let p = point(degree: angle, radius: outerRadius)
+            let level = index < metrics.quotaHealthLevels.count ? metrics.quotaHealthLevels[index] : .healthy
             let color = resolvedHex(for: level, colors: healthColors)
-            return "<circle cx=\"\(x)\" cy=\"622\" r=\"18\" fill=\"\(color)\"/>"
-        }.joined(separator: "\n  ")
+            dots.append(String(
+                format: "<circle id=\"quota-dot-%d\" cx=\"%.2f\" cy=\"%.2f\" r=\"36\" fill=\"%@\"/>",
+                index, p.x, p.y, color
+            ))
+        }
+        let dotsStr = dots.joined(separator: "\n  ")
+
+        // 5. 中心扇形圆：以 12 点钟为顶，从 6 点钟底端向左右对称打开
+        let centerSVG = buildCenterSectorSVG(
+            lowestAvailable: metrics.lowestAvailable,
+            healthColors: healthColors
+        )
 
         return """
         <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 704 704" role="img" aria-label="LLM quota monitor">
-          <path d="M 360 10 L 334 50 H 351 L 342 104 L 378 45 H 360 L 368 10 Z" fill="\(energyColor)"/>
-          \(arcSVG(curve: intervalCurve, metrics: metrics.interval, trackColor: trackColor, quotaColor: quotaColor, dividerColor: dividerColor, id: "interval"))
-          \(arcSVG(curve: weeklyCurve, metrics: metrics.weekly, trackColor: trackColor, quotaColor: quotaColor, dividerColor: dividerColor, id: "weekly"))
-          \(bitmapValueSVG(centerText))
-          \(dots)
+          \(energyDot)
+          \(leftTrack)\(leftAvail)
+          \(rightTrack)\(rightAvail)
+          \(centerSVG)
+          \(dotsStr)
         </svg>
         """
     }
 
-    /// 3×5 像素字模比 5pt 文本在 22pt 的最终 1x NSImage 中更清晰，避免双位数
-    /// 被字体抗锯齿糊成一块。菜单栏在 Retina 屏上仍会自然获得 2x 插值。
-    private static func bitmapValueSVG(_ value: String) -> String {
-        let glyphs: [Character: [String]] = [
-            "0": ["111", "101", "101", "101", "111"],
-            "1": ["010", "110", "010", "010", "111"],
-            "2": ["111", "001", "111", "100", "111"],
-            "3": ["111", "001", "111", "001", "111"],
-            "4": ["101", "101", "111", "001", "001"],
-            "5": ["111", "100", "111", "001", "111"],
-            "6": ["111", "100", "111", "101", "111"],
-            "7": ["111", "001", "010", "010", "010"],
-            "8": ["111", "101", "111", "101", "111"],
-            "9": ["111", "101", "111", "001", "111"],
-            "-": ["000", "000", "111", "000", "000"]
-        ]
-        let characters = Array(value)
-        let pixelSize = 28
-        let cellStep = 32
-        let glyphWidth = 92
-        let glyphGap = 12
-        let totalWidth = characters.count * glyphWidth + max(characters.count - 1, 0) * glyphGap
-        let originX = 352 - totalWidth / 2
-        let originY = 302
-        var pixels: [String] = []
-
-        for (glyphIndex, character) in characters.enumerated() {
-            guard let rows = glyphs[character] else { continue }
-            let glyphX = originX + glyphIndex * (glyphWidth + glyphGap)
-            for (row, pattern) in rows.enumerated() {
-                for (column, bit) in pattern.enumerated() where bit == "1" {
-                    pixels.append(
-                        "<rect x=\"\(glyphX + column * cellStep)\" y=\"\(originY + row * cellStep)\" width=\"\(pixelSize)\" height=\"\(pixelSize)\" rx=\"3\"/>"
-                    )
-                }
-            }
+    private static func buildCenterSectorSVG(
+        lowestAvailable: Double?,
+        healthColors: StatusBarHealthColors
+    ) -> String {
+        let bgDisc = "<circle id=\"center-track\" cx=\"352\" cy=\"352\" r=\"135\" fill=\"#2C2C2E\" fill-opacity=\"0.6\"/>"
+        guard let pRaw = lowestAvailable else {
+            let emptyColor = defaultUnconfiguredColor
+            return """
+            \(bgDisc)
+              <circle id=\"center-sector\" cx=\"352\" cy=\"352\" r=\"135\" fill=\"none\" stroke=\"\(emptyColor)\" stroke-width=\"8\"/>
+            """
         }
 
-        return """
-        <g id="minimum-value" data-value="\(value)" fill="#F2F2F7">
-            \(pixels.joined(separator: "\n    "))
-          </g>
-        """
+        let p = min(max(pRaw, 0.0), 1.0)
+        let healthLevel = HealthLevel.standard(forFraction: p)
+        let sectorColor = resolvedHex(for: healthLevel, colors: healthColors)
+        let percentValue = Int((p * 100).rounded())
+
+        if p >= 0.999 {
+            return """
+            \(bgDisc)
+              <circle id=\"center-sector\" data-value=\"\(percentValue)\" cx=\"352\" cy=\"352\" r=\"135\" fill=\"\(sectorColor)\"/>
+            """
+        } else if p <= 0.005 {
+            return """
+            \(bgDisc)
+              <circle id=\"center-sector\" data-value=\"0\" cx=\"352\" cy=\"352\" r=\"135\" fill=\"none\" stroke=\"\(sectorColor)\" stroke-width=\"8\"/>
+            """
+        } else {
+            // 锚定 12 点钟（3π/2），随着额度消耗从 6 点钟（底端）向左右对称打开
+            let alpha = Double.pi * p
+            let a1 = 3.0 * Double.pi / 2.0 - alpha
+            let a2 = 3.0 * Double.pi / 2.0 + alpha
+            let x1 = center + innerRadius * cos(a1)
+            let y1 = center + innerRadius * sin(a1)
+            let x2 = center + innerRadius * cos(a2)
+            let y2 = center + innerRadius * sin(a2)
+            let largeArc = p > 0.5 ? 1 : 0
+            let path = String(
+                format: "<path id=\"center-sector\" data-value=\"%d\" d=\"M %.2f %.2f L %.2f %.2f A %.2f %.2f 0 %d 1 %.2f %.2f Z\" fill=\"%@\"/>",
+                percentValue, center, center, x1, y1, innerRadius, innerRadius, largeArc, x2, y2, sectorColor
+            )
+            return """
+            \(bgDisc)
+              \(path)
+            """
+        }
     }
 
     private static func resolvedHex(
@@ -222,34 +242,6 @@ enum QuotaLogoSVGBuilder {
         colors.hexValue(for: level)
             ?? StatusBarHealthColors.default.hexValue(for: level)
             ?? defaultUnconfiguredColor
-    }
-
-    private static func arcSVG(
-        curve: CubicCurve,
-        metrics: QuotaRingMetrics,
-        trackColor: String,
-        quotaColor: String,
-        dividerColor: String,
-        id: String
-    ) -> String {
-        let filledLength = metrics.avgAvailable * 1000.0
-        var elements = """
-        <path id="\(id)-track" d="\(curve.pathData)" pathLength="1000" fill="none" stroke="\(trackColor)" stroke-opacity="0.72" stroke-width="\(strokeWidth)" stroke-linecap="round"/>
-          <path id="\(id)-available" d="\(curve.pathData)" pathLength="1000" fill="none" stroke="\(quotaColor)" stroke-width="\(strokeWidth)" stroke-linecap="round" stroke-dasharray="\(String(format: "%.2f", filledLength)) 1000"/>
-        """
-
-        if metrics.avgAvailable - metrics.minAvailable > 0.005 {
-            let point = curve.point(at: metrics.minAvailable)
-            let tangent = curve.tangent(at: metrics.minAvailable)
-            let magnitude = max(hypot(tangent.x, tangent.y), 0.001)
-            let dx = tangent.x / magnitude * dividerLength / 2
-            let dy = tangent.y / magnitude * dividerLength / 2
-            elements += """
-
-              <line id="\(id)-minimum" data-divider-length="32" x1="\(String(format: "%.2f", point.x - dx))" y1="\(String(format: "%.2f", point.y - dy))" x2="\(String(format: "%.2f", point.x + dx))" y2="\(String(format: "%.2f", point.y + dy))" stroke="\(dividerColor)" stroke-width="\(strokeWidth)" stroke-linecap="butt"/>
-            """
-        }
-        return elements
     }
 
     static func buildImage(

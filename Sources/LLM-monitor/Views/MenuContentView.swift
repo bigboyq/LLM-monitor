@@ -64,6 +64,24 @@ struct MenuContentView: View {
     @StateObject private var displayClock = MenuDisplayClock()
     /// 强制本地 UI 重渲染计数（用于同步响应 sleepHealth 状态变更）
     @State private var energyUpdateTick = 0
+    /// 动态测量卡片列表的自然排版高度
+    @State private var measuredCardsHeight: CGFloat = 0
+    /// 菜单所在屏幕的可用高度（从顶部菜单栏到屏幕底部的实际空间）
+    @State private var screenAvailableHeight: CGFloat = 0
+    /// 菜单所在屏幕的可见高度（扣除 Dock 等后的可见区域，用于 70% 封顶）
+    @State private var screenVisibleHeight: CGFloat = 0
+
+    /// “如果屏幕能展示就展示，不能展示按屏幕大小 70% 做”
+    private var maxScrollViewHeight: CGFloat? {
+        guard screenAvailableHeight > 0, measuredCardsHeight > 0 else { return nil }
+        let totalNaturalHeight = measuredCardsHeight + MenuPanelHeightBridge.chromeHeight
+        if totalNaturalHeight <= screenAvailableHeight {
+            return nil // 能展示就展示：无高度上限，全部自然展开
+        }
+        // 不能展示，按屏幕大小 70% 做：
+        let budget = MenuPanelHeightBridge.cappedHeight(screenVisibleHeight) - MenuPanelHeightBridge.chromeHeight
+        return max(budget, 120)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -76,12 +94,22 @@ struct MenuContentView: View {
             MenuPanelSurface()
         }
         .background(MenuWindowAutoCloseBridge())
-        // F4: 高度上限直接施加在 NSWindow 上（contentMaxSize），不靠 SwiftUI
-        // frame 拼凑。下面 fixedSize 让窗口按内容自然决定高度；window 的
-        // contentMaxSize 限制它不超过屏幕可见高度的 70%。卡片少→窗口矮，全显示；
-        // 卡片多到超过 70%→窗口封顶，内部 ScrollView 滚动。
-        .background(MenuPanelHeightBridge())
+        // F4: 窗口高度与位置由 MenuWindowAlignment 基于卡片真实内容高度与
+        // 屏幕可用高度及 70% 封顶动态驱动：能展示就自然展开，超标则封顶 70% 并在内部滚动。
+        .background(MenuPanelHeightBridge(measuredCardsHeight: measuredCardsHeight) { availH, visH in
+            if abs(screenAvailableHeight - availH) > 0.5 || abs(screenVisibleHeight - visH) > 0.5 {
+                DispatchQueue.main.async {
+                    screenAvailableHeight = availH
+                    screenVisibleHeight = visH
+                }
+            }
+        })
         .fixedSize(horizontal: false, vertical: true)
+        .onPreferenceChange(CardsContentHeightKey.self) { h in
+            if h > 0 && abs(measuredCardsHeight - h) > 0.5 {
+                measuredCardsHeight = h
+            }
+        }
         .environmentObject(displayClock)
         .environment(\.menuDisplayDate, displayClock.date)
         .onAppear {
@@ -183,6 +211,11 @@ struct MenuContentView: View {
             .frame(maxWidth: .infinity)
             .padding(.horizontal, 16)
             .padding(.vertical, 16)
+            .background(
+                GeometryReader { geo in
+                    Color.clear.preference(key: CardsContentHeightKey.self, value: geo.size.height)
+                }
+            )
         } else {
             ScrollView(.vertical, showsIndicators: false) {
                 LazyVStack(spacing: 14) {
@@ -204,7 +237,13 @@ struct MenuContentView: View {
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
+                .background(
+                    GeometryReader { geo in
+                        Color.clear.preference(key: CardsContentHeightKey.self, value: geo.size.height)
+                    }
+                )
             }
+            .frame(maxHeight: maxScrollViewHeight)
         }
     }
 
@@ -378,30 +417,45 @@ struct MenuPanelHeightBridge: NSViewRepresentable {
     static let heightCapFraction: CGFloat = 0.70
     /// F4: 菜单固定宽度。改这里会改所有 menu 卡片列宽。
     static let width: CGFloat = 360
+    /// header (~38pt) + footer (~27pt) 的总固定高度。
+    /// 所有需要将"卡片列表高度"换算为"窗口总高度"的位置统一引用此常量，
+    /// 避免多处硬编码导致改一漏一。
+    static let chromeHeight: CGFloat = 65
 
     /// F4: 给定 `screen.visibleFrame.height`，算 floor 后的 max content height。
     /// 抽成 pure function 让单测不需要 fake NSWindow/NSScreen。
     static func cappedHeight(_ visibleFrameHeight: CGFloat) -> CGFloat {
         floor(visibleFrameHeight * heightCapFraction)
     }
+
+    var measuredCardsHeight: CGFloat = 0
+    var onScreenDimensions: ((CGFloat, CGFloat) -> Void)? = nil
+
     func makeNSView(context: Context) -> HeightProbeView {
-        HeightProbeView()
+        let view = HeightProbeView()
+        view.measuredCardsHeight = measuredCardsHeight
+        view.onScreenDimensions = onScreenDimensions
+        return view
     }
 
     func updateNSView(_ nsView: HeightProbeView, context: Context) {
+        nsView.measuredCardsHeight = measuredCardsHeight
+        nsView.onScreenDimensions = onScreenDimensions
         nsView.applyMaxSize()
     }
 
     final class HeightProbeView: NSView {
+        var measuredCardsHeight: CGFloat = 0
+        var onScreenDimensions: ((CGFloat, CGFloat) -> Void)? = nil
         private var lastMaxHeight: CGFloat = 0
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
             // 每次菜单窗口出现（viewDidMoveToWindow）都按当前所在屏重算 contentMaxSize。
-            // MenuBarExtra popover 失焦即关、下次在当前屏重新出现，所以不需要单独监听
-            // didChangeScreenNotification（也避免了 Swift 6 下 deinit 访问非 Sendable
-            // observer token 的严格并发问题）。
             applyMaxSize()
+            DispatchQueue.main.async { [weak self] in
+                self?.applyMaxSize()
+            }
         }
 
         override func updateTrackingAreas() {
@@ -411,12 +465,25 @@ struct MenuPanelHeightBridge: NSViewRepresentable {
         }
 
         func applyMaxSize() {
-            guard let window, let screen = window.screen else { return }
-            let maxHeight = MenuPanelHeightBridge.cappedHeight(screen.visibleFrame.height)
-            guard maxHeight != lastMaxHeight else { return }
-            lastMaxHeight = maxHeight
-            // contentMaxSize 限制窗口最大 content 尺寸；宽度固定 360。
-            window.contentMaxSize = NSSize(width: MenuPanelHeightBridge.width, height: maxHeight)
+            guard let window else { return }
+            let screen = MenuWindowAlignment.effectiveScreen(for: window)
+            let visibleHeight = screen.visibleFrame.height
+            // 真实可用高度：从顶部菜单栏到屏幕底部的实际空间
+            let availableHeight = max(visibleHeight, screen.frame.height - 35)
+            onScreenDimensions?(availableHeight, visibleHeight)
+
+            let maxHeight = MenuPanelHeightBridge.cappedHeight(visibleHeight)
+            let totalNaturalHeight = measuredCardsHeight > 0 ? (measuredCardsHeight + MenuPanelHeightBridge.chromeHeight) : 0
+            // 能放下时允许自然撑开至 availableHeight；超标放不下时才封顶 maxHeight (70%)
+            let windowMaxHeight = totalNaturalHeight > availableHeight ? maxHeight : availableHeight
+
+            if windowMaxHeight != lastMaxHeight {
+                lastMaxHeight = windowMaxHeight
+                window.contentMaxSize = NSSize(width: MenuPanelHeightBridge.width, height: windowMaxHeight)
+            }
+
+            // 确保下拉窗口上边缘紧贴菜单栏底边并吸收系统 popover 顶部留白（+10pt），彻底消除空白空间缝隙
+            MenuWindowAlignment.align(window: window, cardsHeight: measuredCardsHeight)
         }
     }
 }
@@ -461,5 +528,12 @@ private struct FooterActionButton: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+}
+
+private struct CardsContentHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
     }
 }

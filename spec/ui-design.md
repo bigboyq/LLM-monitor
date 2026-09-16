@@ -28,12 +28,15 @@ Icon Styles (`statusBarIconStyle`):
 - `cpu` (`cpu.fill`)
 - `quotaLogo` (`App 图标` - live quota dashboard)
 
-The `quotaLogo` dashboard uses a left 5h arc and right weekly arc. Each arc is a
-continuous solid segment up to the aggregate average, with a 2px red marker at the
-minimum and an empty track after the average. Its center shows the lowest remaining
-percentage across all active windows. Four bottom dots show active-model health sorted
-red > yellow > green and padded with green; the top bolt mirrors the Energy module's
-sleep-health state (green / yellow / red, gray while unknown).
+The `quotaLogo` dashboard uses a left 5h arc and right weekly arc, both being concentric
+circular arcs growing from the bottom with dark gray background tracks and health-colored
+available segments. The center is a symmetrical circular sector anchored at the top (12 o'clock)
+that opens left and right from the bottom (6 o'clock) as quota depletes (full 360° circle at 100%,
+180° dome semicircle at 50%, empty red ring at 0%). Three bottom dots (enlarged to r=36) follow
+the circle's arc to show active-model health prioritized strictly as red > yellow > green (if 3 reds,
+yellow and green are omitted); the top dot (enlarged to r=48) mirrors the Energy module's sleep-health state (green / yellow / red, gray while unknown).
+The popover window top edge is snapped to `screen.visibleFrame.maxY + 10` on every presentation, absorbing popover margins to stay flush
+with the bottom edge of the macOS menu bar.
 
 The base icon keeps the standard macOS foreground appearance. A 6 pt status dot is
 drawn at the lower-right when `statusBarHealthDotEnabled` is enabled (the default): green

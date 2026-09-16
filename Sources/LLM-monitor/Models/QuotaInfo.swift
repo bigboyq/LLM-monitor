@@ -513,6 +513,25 @@ enum HealthLevel: String, Sendable, Comparable {
     static func < (lhs: HealthLevel, rhs: HealthLevel) -> Bool {
         lhs.rank < rhs.rank
     }
+
+    /// 统一额度健康度阈值标准：
+    /// - 剩余 > 40%：健康（绿）
+    /// - 剩余 15% ~ 40%：预警（黄）
+    /// - 剩余 <= 15%：异常（红）
+    static func standard(forFraction fraction: Double) -> HealthLevel {
+        let epsilon = 1e-6
+        if fraction > 0.40 + epsilon {
+            return .healthy
+        } else if fraction > 0.15 + epsilon {
+            return .warning
+        } else {
+            return .critical
+        }
+    }
+
+    static func standard(forPercent percent: Double) -> HealthLevel {
+        standard(forFraction: percent / 100.0)
+    }
 }
 
 extension QuotaInfo {

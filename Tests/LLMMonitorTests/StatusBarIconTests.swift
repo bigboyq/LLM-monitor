@@ -345,12 +345,12 @@ final class StatusBarIconTests: XCTestCase {
     }
 
     func testQuotaLogoSVGBuilderDashboardGeometry() {
-        let outer = QuotaRingMetrics(minAvailable: 0.3, avgAvailable: 0.7, colorHex: "#FB923C")
-        let middle = QuotaRingMetrics(minAvailable: 0.5, avgAvailable: 0.8, colorHex: "#2DD4BF")
+        let outer = QuotaRingMetrics(minAvailable: 0.1, avgAvailable: 0.15, colorHex: "#FB923C") // <= 15% -> critical
+        let middle = QuotaRingMetrics(minAvailable: 0.2, avgAvailable: 0.35, colorHex: "#2DD4BF") // 15%..40% -> warning
         let metrics = StatusBarQuotaMetrics(
             weekly: outer,
             interval: middle,
-            lowestAvailable: 0.3,
+            lowestAvailable: 0.5, // > 40% -> healthy
             quotaHealthLevels: [.healthy, .warning, .critical]
         )
         let svg = QuotaLogoSVGBuilder.buildSVG(
@@ -359,19 +359,60 @@ final class StatusBarIconTests: XCTestCase {
         )
 
         XCTAssertTrue(svg.contains("viewBox=\"0 0 704 704\""))
+        XCTAssertTrue(svg.contains("id=\"interval-track\""))
         XCTAssertTrue(svg.contains("id=\"interval-available\""))
-        XCTAssertTrue(svg.contains("stroke-dasharray=\"800.00 1000\""))
+        XCTAssertTrue(svg.contains("id=\"weekly-track\""))
         XCTAssertTrue(svg.contains("id=\"weekly-available\""))
-        XCTAssertTrue(svg.contains("stroke-dasharray=\"700.00 1000\""))
-        XCTAssertFalse(svg.contains("stroke-dasharray=\"32 64\""), "新版额度段应为连续实线")
-        XCTAssertEqual(svg.components(separatedBy: "data-divider-length=\"32\"").count - 1, 2)
-        XCTAssertTrue(svg.contains("stroke=\"#FF453A\""), "最低值分界线使用红色")
-        XCTAssertTrue(svg.contains("id=\"minimum-value\" data-value=\"30\""), "中心应展示最低套餐额度")
-        XCTAssertTrue(svg.contains("fill=\"#FFD60A\""), "顶部闪电应显示节能健康色")
-        XCTAssertTrue(svg.contains("cx=\"250\" cy=\"622\" r=\"18\" fill=\"#FF453A\""))
-        XCTAssertTrue(svg.contains("cx=\"318\" cy=\"622\" r=\"18\" fill=\"#FFD60A\""))
-        XCTAssertTrue(svg.contains("cx=\"386\" cy=\"622\" r=\"18\" fill=\"#34C759\""))
-        XCTAssertTrue(svg.contains("cx=\"454\" cy=\"622\" r=\"18\" fill=\"#34C759\""))
+        XCTAssertTrue(svg.contains("id=\"energy-dot\""))
+        XCTAssertTrue(svg.contains("r=\"48\""), "顶部节能点半径放大至 r=48")
+        XCTAssertTrue(svg.contains("fill=\"#FFD60A\""), "顶部节能点或左弧预警状态使用黄色")
+        XCTAssertTrue(svg.contains("id=\"center-sector\" data-value=\"50\""), "中心扇形展示 50% 额度")
+        XCTAssertTrue(svg.contains("id=\"quota-dot-0\""))
+        XCTAssertTrue(svg.contains("id=\"quota-dot-1\""))
+        XCTAssertTrue(svg.contains("id=\"quota-dot-2\""))
+        XCTAssertFalse(svg.contains("id=\"quota-dot-3\""), "已调整为 3 个点，不再有第 4 个点")
+        XCTAssertTrue(svg.contains("r=\"36\""), "点半径放大至 r=36")
+        XCTAssertTrue(svg.contains("fill=\"#FF453A\""), "包含红色状态点或周额度异常色")
+
+        // 验证统一红黄绿标准
+        XCTAssertEqual(HealthLevel.standard(forFraction: 0.50), .healthy)
+        XCTAssertEqual(HealthLevel.standard(forFraction: 0.40), .warning)
+        XCTAssertEqual(HealthLevel.standard(forFraction: 0.25), .warning)
+        XCTAssertEqual(HealthLevel.standard(forFraction: 0.15), .critical)
+        XCTAssertEqual(HealthLevel.standard(forFraction: 0.05), .critical)
+
+        // 验证三点优先级：红 > 黄 > 绿；如果有 3 个红，则不显示黄绿
+        let threeRedsMetrics = StatusBarQuotaMetrics(
+            weekly: .default(minAvailable: 1, avgAvailable: 1, defaultColor: "#FB923C"),
+            interval: .default(minAvailable: 1, avgAvailable: 1, defaultColor: "#2DD4BF"),
+            lowestAvailable: 0.8,
+            quotaHealthLevels: [.critical, .warning, .critical, .healthy, .critical]
+        )
+        XCTAssertEqual(threeRedsMetrics.quotaHealthLevels, [.critical, .critical, .critical])
+
+        let mixedMetrics = StatusBarQuotaMetrics(
+            weekly: .default(minAvailable: 1, avgAvailable: 1, defaultColor: "#FB923C"),
+            interval: .default(minAvailable: 1, avgAvailable: 1, defaultColor: "#2DD4BF"),
+            lowestAvailable: 0.8,
+            quotaHealthLevels: [.healthy, .critical, .warning]
+        )
+        XCTAssertEqual(mixedMetrics.quotaHealthLevels, [.critical, .warning, .healthy])
+
+        // 验证全满状态（360度整圆）
+        let fullSvg = QuotaLogoSVGBuilder.buildSVG(metrics: .full, energyHealth: .healthy)
+        XCTAssertTrue(fullSvg.contains("<circle id=\"center-sector\" data-value=\"100\""))
+
+        // 验证 3 个红点全耗尽状态
+        let allExhaustedMetrics = StatusBarQuotaMetrics(
+            weekly: .default(minAvailable: 0, avgAvailable: 0, defaultColor: "#FB923C"),
+            interval: .default(minAvailable: 0, avgAvailable: 0, defaultColor: "#2DD4BF"),
+            lowestAvailable: 0.0,
+            quotaHealthLevels: [.critical, .critical, .critical]
+        )
+        let exhaustedSvg = QuotaLogoSVGBuilder.buildSVG(metrics: allExhaustedMetrics)
+        XCTAssertTrue(exhaustedSvg.contains("<circle id=\"center-sector\" data-value=\"0\""))
+        XCTAssertTrue(exhaustedSvg.contains("stroke=\"#FF453A\""), "中心呈现红色空心警示环")
+        XCTAssertEqual(exhaustedSvg.components(separatedBy: "fill=\"#FF453A\"").count - 1, 3, "底部固定 3 个红点")
 
         let image = QuotaLogoSVGBuilder.buildImage(
             metrics: metrics,
@@ -473,7 +514,7 @@ final class StatusBarIconTests: XCTestCase {
         XCTAssertEqual(metrics.weekly.minAvailable, 0.3, accuracy: 0.001)
         XCTAssertEqual(metrics.weekly.avgAvailable, 0.35, accuracy: 0.001)
         XCTAssertEqual(metrics.lowestAvailable ?? -1, 0.3, accuracy: 0.001)
-        XCTAssertEqual(metrics.quotaHealthLevels, [.warning, .healthy, .healthy, .healthy])
+        XCTAssertEqual(metrics.quotaHealthLevels, [.warning, .healthy, .healthy])
     }
 
     func testComposedMenuBarImageWithDynamicMetrics() {

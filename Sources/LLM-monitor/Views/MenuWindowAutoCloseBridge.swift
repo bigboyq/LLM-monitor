@@ -1,6 +1,76 @@
 import SwiftUI
 import AppKit
 
+/// 统一管理下拉菜单窗口与菜单栏底边的吸附对齐及尺寸同步
+@MainActor
+enum MenuWindowAlignment {
+    /// 吸收系统 popover 顶部 ~10pt 的透明留白/阴影，使菜单深色 header 严丝合缝贴紧 macOS 菜单栏底边，消除空白缝隙
+    static let topOffset: CGFloat = 10.0
+    private static var isAligning = false
+
+    /// 精确解析窗口当前所在屏幕（多屏环境下通过窗口位置、相交矩形及鼠标落点稳健识别，杜绝多屏误判）
+    static func effectiveScreen(for window: NSWindow) -> NSScreen {
+        if let screen = window.screen {
+            return screen
+        }
+        if let screen = NSScreen.screens.first(where: { NSIntersectsRect(window.frame, $0.frame) }) {
+            return screen
+        }
+        let mouseLoc = NSEvent.mouseLocation
+        if let screen = NSScreen.screens.first(where: { NSMouseInRect(mouseLoc, $0.frame, false) }) {
+            return screen
+        }
+        return NSScreen.main ?? NSScreen.screens.first ?? NSScreen()
+    }
+
+    static func align(window: NSWindow, cardsHeight: CGFloat = 0) {
+        guard !isAligning else { return }
+        let screen = effectiveScreen(for: window)
+        isAligning = true
+        defer { isAligning = false }
+
+        let visible = screen.visibleFrame
+        let targetTopY = visible.maxY + topOffset
+
+        // 卡片尚未就绪时仅做顶部吸附，绝不缩减窗口高度避免卡片坍缩
+        guard cardsHeight > 0 else {
+            if abs(window.frame.maxY - targetTopY) > 0.5 {
+                window.setFrameTopLeftPoint(NSPoint(x: window.frame.origin.x, y: targetTopY))
+            }
+            return
+        }
+
+        // 真实可用高度：从顶部菜单栏到屏幕底部的实际可用垂直空间（解决小屏幕如 MacBook Retina 下 5 张卡片完全能放下却被误判超标的问题）
+        let availableScreen = max(visible.height, screen.frame.height - 35)
+        let maxHeight70 = MenuPanelHeightBridge.cappedHeight(visible.height)
+        let totalNaturalHeight = cardsHeight + MenuPanelHeightBridge.chromeHeight
+        let contentFitting = window.contentView?.fittingSize.height ?? 0
+
+        // 逻辑：“如果屏幕能展示就展示，不能展示按屏幕大小 70% 做”
+        let targetHeight: CGFloat
+        if totalNaturalHeight <= availableScreen {
+            if contentFitting > 100 && abs(contentFitting - totalNaturalHeight) < 50 {
+                targetHeight = contentFitting
+            } else {
+                targetHeight = totalNaturalHeight
+            }
+        } else {
+            targetHeight = maxHeight70
+        }
+
+        let targetRect = NSRect(
+            x: window.frame.origin.x,
+            y: targetTopY - targetHeight,
+            width: MenuPanelHeightBridge.width,
+            height: targetHeight
+        )
+
+        if abs(window.frame.height - targetHeight) > 0.5 || abs(window.frame.maxY - targetTopY) > 0.5 {
+            window.setFrame(targetRect, display: true)
+        }
+    }
+}
+
 /// 监控 MenuBarExtra 主窗口：
 /// 1. 失焦（窗口 resign key / app resign active）立即关闭
 /// 2. 连续 30 秒“无交互”关闭：attach 时启动计时；菜单窗口内的
@@ -55,6 +125,15 @@ struct MenuWindowAutoCloseBridge: NSViewRepresentable {
             }
         }
 
+        private var isAligning = false
+
+        func alignToMenuBar(window: NSWindow) {
+            guard !isAligning else { return }
+            isAligning = true
+            MenuWindowAlignment.align(window: window)
+            isAligning = false
+        }
+
         func attach(window: NSWindow?) {
             guard let window, self.window !== window else { return }
             self.window = window
@@ -65,6 +144,49 @@ struct MenuWindowAutoCloseBridge: NSViewRepresentable {
             // 鼠标移动事件默认只对有 tracking area 的视图投递；开启后 local monitor
             // 才能收到 mouseMoved，用于“持续滚动/移动不关闭”。
             window.acceptsMouseMovedEvents = true
+
+            // 附着并立即执行顶部菜单栏底边吸附，确保不会掉入屏幕居中位置
+            alignToMenuBar(window: window)
+            DispatchQueue.main.async { [weak self, weak window] in
+                guard let self, let window else { return }
+                self.alignToMenuBar(window: window)
+            }
+
+            observerStore.values.append(NotificationCenter.default.addObserver(
+                forName: NSWindow.didBecomeKeyNotification,
+                object: window,
+                queue: .main
+            ) { [weak self, weak window] _ in
+                Task { @MainActor [weak self] in
+                    if let window {
+                        self?.alignToMenuBar(window: window)
+                    }
+                }
+            })
+
+            observerStore.values.append(NotificationCenter.default.addObserver(
+                forName: NSWindow.didMoveNotification,
+                object: window,
+                queue: .main
+            ) { [weak self, weak window] _ in
+                Task { @MainActor [weak self] in
+                    if let window {
+                        self?.alignToMenuBar(window: window)
+                    }
+                }
+            })
+
+            observerStore.values.append(NotificationCenter.default.addObserver(
+                forName: NSWindow.didChangeScreenNotification,
+                object: window,
+                queue: .main
+            ) { [weak self, weak window] _ in
+                Task { @MainActor [weak self] in
+                    if let window {
+                        self?.alignToMenuBar(window: window)
+                    }
+                }
+            })
 
             observerStore.values.append(NotificationCenter.default.addObserver(
                 forName: NSWindow.didResignKeyNotification,
