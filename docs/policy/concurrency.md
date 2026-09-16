@@ -17,7 +17,7 @@ Swift 6 strict-concurrency（[`-swift-version 6`](../../scripts/audit.sh:36)）�
 ## `actor` 清册
 
 - `AsyncMutex` [AsyncMutex.swift:55](../../Sources/LLM-monitor/Services/AsyncMutex.swift:55) — FIFO `CheckedContinuation` 队列，跨 await 持锁，cancellation-aware
-- `CodexUsageDetailsCache` [CodexLocalUsageScanner.swift:4](../../Sources/LLM-monitor/Fetchers/CodexLocalUsageScanner.swift:4) — cache 读写串行
+- `CodexUsageDetailsCache` [CodexLocalUsageScanner.swift:4](../../Sources/LLM-monitor/Services/CodexLocalUsageScanner.swift:4) — cache 读写串行
 
 `NSLock` 跨 await 在 Swift 6 mode 报 `unlock() is unavailable`；`AsyncMutex` 替代后整
 pipeline（load → RPC → SQL → save）安全持锁。`acquire()` 注册

@@ -29,10 +29,11 @@ class LocalUsageScannerBase<Usage: Equatable>: ObservableObject, @unchecked Send
     @Published private(set) var lastError: String?
 
     /// Lifecycle hooks installed by LocalUsageCoordinator. A scanner owns its
-    /// source lifecycle and calls `markDirty()` from that lifecycle; the hook
-    /// lets the coordinator project the source-level transition to the UI.
+    /// source lifecycle and projects dirty/clean/failed transitions through
+    /// these hooks so the coordinator can update the UI freshness model.
     var onDirty: (@MainActor () -> Void)?
     var onFresh: (@MainActor () -> Void)?
+    var onFailed: (@MainActor () -> Void)?
 
     /// 日志前缀（如 `"[minimax-scan]"`）。生命周期日志统一用它，子类不再各自拼写。
     nonisolated let logTag: String
@@ -221,6 +222,7 @@ class LocalUsageScannerBase<Usage: Equatable>: ObservableObject, @unchecked Send
                 // 一个无法确认新鲜度的快照。
                 self.markDirty()
                 self.lastError = message
+                self.onFailed?()
             }
         )
     }

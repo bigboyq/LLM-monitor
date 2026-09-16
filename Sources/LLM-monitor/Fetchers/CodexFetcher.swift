@@ -362,10 +362,6 @@ struct CodexFetcher: QuotaFetcher {
         return JWTPayloadInfo(planType: plan, email: email)
     }
 
-    private nonisolated static func planTypeFromJWT(_ jwt: String) -> String? {
-        parseJWT(jwt).planType
-    }
-
     private nonisolated static func planLabel(from auth: AuthFile) -> String? {
         guard let plan = auth.planType, !plan.isEmpty else { return nil }
         return plan.capitalized   // "team" → "Team"

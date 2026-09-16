@@ -177,6 +177,10 @@ final class SleepHealthService: ObservableObject, SleepHealthReporting {
     }
 
     func stop() {
+        // Invalidate a detached probe that may still be returning. Without
+        // advancing the generation, a stop/restart boundary could publish a
+        // stale report after the service has already been torn down.
+        refreshGeneration &+= 1
         if keepAwakeAssertionID != 0 {
             let status = IOPMAssertionRelease(keepAwakeAssertionID)
             if status != 0 {

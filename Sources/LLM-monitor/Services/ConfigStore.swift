@@ -91,21 +91,6 @@ struct StatusBarHealthColors: Codable, Equatable, Sendable {
     }
 }
 
-/// 状态栏健康度指示模式
-enum StatusBarIndicatorMode: String, Codable, Sendable, CaseIterable, Identifiable {
-    case colored = "colored"
-    case monochrome = "monochrome"
-
-    var id: String { rawValue }
-
-    var displayName: String {
-        switch self {
-        case .colored:    return "健康度着色"
-        case .monochrome: return "单色模版"
-        }
-    }
-}
-
 /// 应用配置 — 从 ~/Library/Application Support/LLM-monitor/config.json 读
 /// Bark 推送配置。nil 等价于未启用；serverURL 允许自建服务，deviceKey 是
 /// Bark App 里复制的推送 key。
@@ -195,9 +180,6 @@ struct AppConfig: Codable, Equatable {
     /// 状态栏图标风格 (nil = 默认 chartBar)
     var statusBarIconStyle: StatusBarIconStyle?
 
-    /// 状态栏指示模式 (nil = 默认 colored)
-    var statusBarIndicatorMode: StatusBarIndicatorMode?
-
     /// 是否显示状态栏健康度圆点 (nil = 默认开启)
     var statusBarHealthDotEnabled: Bool?
 
@@ -213,10 +195,6 @@ struct AppConfig: Codable, Equatable {
 
     var effectiveStatusBarIconStyle: StatusBarIconStyle {
         statusBarIconStyle ?? .chartBar
-    }
-
-    var effectiveStatusBarIndicatorMode: StatusBarIndicatorMode {
-        statusBarIndicatorMode ?? .colored
     }
 
     var effectiveStatusBarHealthDotEnabled: Bool {
@@ -284,7 +262,6 @@ struct AppConfig: Codable, Equatable {
         providers: [String: ProviderConfig],
         clientBindings: [ClientProviderBinding] = AppConfig.defaultClientBindings,
         statusBarIconStyle: StatusBarIconStyle? = nil,
-        statusBarIndicatorMode: StatusBarIndicatorMode? = nil,
         statusBarHealthDotEnabled: Bool? = nil,
         statusBarHealthColors: StatusBarHealthColors? = nil,
         providerCardOrder: [String]? = nil,
@@ -295,7 +272,6 @@ struct AppConfig: Codable, Equatable {
         self.providers = providers
         self.clientBindings = clientBindings
         self.statusBarIconStyle = statusBarIconStyle
-        self.statusBarIndicatorMode = statusBarIndicatorMode
         self.statusBarHealthDotEnabled = statusBarHealthDotEnabled
         self.statusBarHealthColors = statusBarHealthColors
         self.providerCardOrder = providerCardOrder
@@ -304,7 +280,7 @@ struct AppConfig: Codable, Equatable {
 
     private enum CodingKeys: String, CodingKey {
         case schemaVersion, refreshIntervalSeconds, providers, clientBindings
-        case statusBarIconStyle, statusBarIndicatorMode, statusBarHealthDotEnabled
+        case statusBarIconStyle, statusBarHealthDotEnabled
         case statusBarHealthColors
         case providerCardOrder
         case bark
@@ -329,8 +305,6 @@ struct AppConfig: Codable, Equatable {
         // 整份 provider 配置进入损坏恢复流程。未知值和类型不匹配均按缺失处理。
         self.statusBarIconStyle = (try? container.decode(String.self, forKey: .statusBarIconStyle))
             .flatMap(StatusBarIconStyle.init(rawValue:))
-        self.statusBarIndicatorMode = (try? container.decode(String.self, forKey: .statusBarIndicatorMode))
-            .flatMap(StatusBarIndicatorMode.init(rawValue:))
         self.statusBarHealthDotEnabled = try? container.decode(Bool.self, forKey: .statusBarHealthDotEnabled)
         self.statusBarHealthColors = try? container.decode(
             StatusBarHealthColors.self,
@@ -540,18 +514,6 @@ extension ProviderConfig {
             return nil
         }
         return key
-    }
-
-    /// 四类额度事件的通知渠道，含默认值：恢复 → 系统通知（与引入通知配置前
-    /// 的行为一致），耗尽 → 不通知。
-    func notifyChannel(for kind: QuotaNotificationKind) -> QuotaNotifyChannel {
-        let channels = QuotaNotifyChannels(
-            intervalRestored: notifyIntervalRestored,
-            intervalExhausted: notifyIntervalExhausted,
-            weeklyRestored: notifyWeeklyRestored,
-            weeklyExhausted: notifyWeeklyExhausted
-        )
-        return channels.channel(for: kind)
     }
 
     /// 保存设置时的归一化入口：与默认渠道一致写 nil，保持 config.json 干净。

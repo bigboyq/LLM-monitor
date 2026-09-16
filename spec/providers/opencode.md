@@ -108,7 +108,7 @@ Provider 请求结算后的 `LocalUsageOrchestration.reconcile()` 驱动。首�
 | Responsibility | Source |
 |---|---|
 | Data model and provider slices | `Sources/LLM-monitor/Models/OpencodeLocalUsage.swift` |
-| OpenCode sample promptID 命名空间 | `Sources/LLM-monitor/Models/OpencodeUsageMerger.swift`（卡片合并入口是 `ProviderStatus.usageProjection`，历史 `merge*` 函数已删除） |
+| OpenCode sample promptID 命名空间 | `Sources/LLM-monitor/Services/OpencodeUsageMerger.swift`（卡片合并入口是 `ProviderStatus.usageProjection`，历史 `merge*` 函数已删除） |
 | SQLite reader | `Sources/LLM-monitor/Services/OpencodeDBReader.swift` |
 | Scanner, cache, and seven-day snapshot | `Sources/LLM-monitor/Services/OpencodeUsageScanner.swift` |
 | Merge 控制（无设置页开关） | `config.json` 的 `clientBindings[]`（唯一事实源；legacy config 由 `legacyClientBindings` 从 `ProviderConfig.mergeOpencodeUsage` 迁移） |

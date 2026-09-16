@@ -527,7 +527,8 @@ Reset credits, when present:
 最早过期：yyyy-MM-dd HH:mm
 ```
 
-The UI still does not currently display `planLabel`.
+The card title displays `planLabel` as a compact pill when the JWT provides one;
+the account hover also includes the full plan label.
 
 ## Errors
 

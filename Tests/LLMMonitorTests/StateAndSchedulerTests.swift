@@ -123,6 +123,14 @@ final class StateAndSchedulerTests: XCTestCase {
             resultSubject.send(usage)
         }
 
+        func scan(mode: LocalUsageScanMode) { scan() }
+
+        var isDirty: Bool { false }
+        var lastFreshAt: Date? { nil }
+        func markDirty() {}
+        func markFresh(at date: Date) {}
+        func waitUntilSettled() async throws {}
+
         func cancelInFlight() {
             // 测试 fake: no-op (没有 in-flight task 概念)
         }
@@ -3004,6 +3012,22 @@ final class StateAndSchedulerTests: XCTestCase {
             "首次 Full Scan 完成后，后续 reconcile 应只消费 dirty source"
         )
         orchestration.cancelInFlightAll()
+    }
+
+    @MainActor
+    func testAppStateSchedulesSleepHealthRefreshOnSharedDeadlineDriver() {
+        let store = makeIsolatedConfigStore()
+        let state = AppState(descriptors: [], configStore: store)
+        defer { state.stop() }
+
+        let deadline = state.refreshScheduler.scheduledHealthBoundary
+        XCTAssertNotNil(deadline)
+        XCTAssertGreaterThan(deadline ?? .distantPast, Date())
+        XCTAssertLessThanOrEqual(
+            deadline?.timeIntervalSinceNow ?? .infinity,
+            5 * 60 + 1,
+            "睡眠健康度应复用共享 deadline driver 周期刷新"
+        )
     }
 
     @MainActor

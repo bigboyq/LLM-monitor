@@ -111,16 +111,6 @@ struct ProviderStatus: Identifiable, Equatable, Sendable {
         return localUsageFreshness.resolved(for: localUsageSources)
     }
 
-    /// Main-thread write helper for the future AppState transition points.
-    /// No scanner or orchestration layer needs to know about this model API.
-    @MainActor
-    mutating func setLocalUsageFreshness(
-        _ freshness: LocalUsageFreshness,
-        for source: LocalUsageSource
-    ) {
-        localUsageFreshness[source] = freshness
-    }
-
     private var localUsageSources: [LocalUsageSource] {
         switch kind {
         case .codexChatGpt:

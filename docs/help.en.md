@@ -56,7 +56,7 @@ The app reads `~/.local/share/opencode/opencode.db` and separates rows by `provi
 - Use the refresh button to refresh all enabled providers now.
 - Control-click a provider card to refresh it or open the config file.
 - Hover over titles, quota rows, and local-usage footers for account details, window details, recent prompts, and seven-day charts.
-- Use Settings → General for refresh intervals, icon style, health-dot visibility, and launch at login. When enabled, a 6 pt status dot appears at the lower-right: green for healthy, orange for warning, and red for critical.
+- Use Settings → General for refresh intervals, icon style, health-dot visibility, and launch at login. Standard SF Symbol styles use a lower-right health dot (green, orange, or red). The App Icon (`quotaLogo`) style is a live quota dashboard: the left and right arcs represent 5-hour and weekly quota, the center sector represents the smallest remaining quota, the bottom dots summarize up to three model health levels, and the top lightning dot represents sleep/energy health.
 - Footer "节能" (Energy) button: 1-click in-memory toggle to prevent system sleep (the corner status dot reflects tri-color sleep health); open Settings → Energy for complete diagnostics.
 - Disabled providers are hidden and do not make network requests.
 - Cost estimates cover only models with a published price. If a usage window also contains unknown models, the menu and seven-day table show “partially priced.”

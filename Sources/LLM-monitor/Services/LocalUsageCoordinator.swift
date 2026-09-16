@@ -52,7 +52,8 @@ final class LocalUsageCoordinator<Usage: Equatable> {
         apply: @escaping Apply,
         setScanning: SetScanning? = nil,
         onDirty: FreshnessChange? = nil,
-        onFresh: FreshnessChange? = nil
+        onFresh: FreshnessChange? = nil,
+        onFailed: FreshnessChange? = nil
     ) {
         self.providerID = providerID
         self.logTag = logTag
@@ -61,13 +62,15 @@ final class LocalUsageCoordinator<Usage: Equatable> {
         self.setScanning = setScanning
         self.onDirty = onDirty
         self.onFresh = onFresh
+        self.onFailed = onFailed
     }
 
     private let onDirty: FreshnessChange?
     private let onFresh: FreshnessChange?
+    private let onFailed: FreshnessChange?
 
-    /// 触发一次显式 dirty 扫描。首次调用时 lazy 构造 scanner 并 wire 2 个
-    /// Combine sink；之后复用。
+    /// 触发一次显式 dirty 扫描。首次调用时 lazy 构造 scanner 并 wire 状态与
+    /// freshness hooks；之后复用。
     func trigger() {
         trigger(mode: .dirty)
     }
@@ -89,19 +92,12 @@ final class LocalUsageCoordinator<Usage: Equatable> {
         if let base = s as? LocalUsageScannerBase<Usage> {
             base.onDirty = { [weak self] in self?.onDirty?() }
             base.onFresh = { [weak self] in self?.onFresh?() }
+            base.onFailed = { [weak self] in self?.onFailed?() }
         }
         wireSinks(s)
         logInfo("[\(logTag)] LocalUsageCoordinator: scanner wired up (providerID=\(providerID))")
         if markDirty { s.markDirty() }
         s.scan(mode: mode)
-    }
-
-    /// 触发并等待当前 scan settle。用于手动刷新契约；自动 batch 回调应使用
-    /// `trigger(mode:)` 后投递独立 Task，不在 Provider scheduler 中 await。
-    func triggerAndWait(mode: LocalUsageScanMode) async throws {
-        trigger(mode: mode)
-        guard let scanner else { return }
-        try await scanner.waitUntilSettled()
     }
 
     func waitUntilSettled() async throws {
@@ -213,17 +209,4 @@ protocol LocalUsageScanner<Usage>: AnyObject {
     /// 取消当前 in-flight scan（如果有）。配置变更 / stop 时调用,
     /// 防止旧扫描结果写回新状态。
     func cancelInFlight()
-}
-
-/// 允许尚未迁移到 `LocalUsageScannerBase` 的 scanner 先接入 coordinator。
-@MainActor
-extension LocalUsageScanner {
-    func scan(mode: LocalUsageScanMode) {
-        scan()
-    }
-    var isDirty: Bool { true }
-    var lastFreshAt: Date? { nil }
-    func markDirty() {}
-    func markFresh(at date: Date) {}
-    func waitUntilSettled() async throws {}
 }

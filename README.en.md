@@ -4,11 +4,11 @@
 
 LLM Monitor is a macOS 14+ menu bar app for viewing quota, balance, reset times, health, and local token usage across multiple LLM services.
 
-> Current version: **1.8.0** · Apple Silicon (arm64) · Credentials and usage caches stay on your Mac
+> Current version: **1.9.0** · Apple Silicon (arm64) · Credentials and usage caches stay on your Mac
 
 ## Download
 
-1. Download `LLM-monitor-1.8.0.dmg` from [GitHub Releases](https://github.com/bigboyq/LLM-monitor/releases/latest).
+1. Download `LLM-monitor-1.9.0.dmg` from [GitHub Releases](https://github.com/bigboyq/LLM-monitor/releases/latest).
 2. Open the DMG and drag **LLM-monitor.app** to **Applications**.
 3. Launch the app, click its menu bar icon, open Settings, and enable the providers you use.
 
@@ -24,13 +24,19 @@ The public snapshot is ad-hoc signed and is not Apple-notarized. If macOS blocks
 | GLM Coding Plan | GLM quota API | ZCode SQLite; optional OpenCode merge | Coding Plan key |
 | DeepSeek | Account balance API | Optional OpenCode merge | DeepSeek API key |
 
+DeepSeek Harness (DSH) is not a separate menu-bar provider. It is a shared local
+session ledger, partitioned by the provider recorded in each `request/context`
+event and automatically merged into the Minimax, GLM, and DeepSeek cards. All
+client-local usage can be inspected under Settings → Clients.
+
 ## Highlights
 
 - Quota, balance, health, reset time, and manual refresh in one menu.
-- The selected menu bar icon stays intact, with an optional green, orange, or red health dot at its lower-right corner.
+- The menu bar icon can use a standard SF Symbol or the `quotaLogo` live dashboard: 5-hour and weekly quota arcs, a center remaining-quota sector, three model-health dots, and a sleep-health dot above it.
 - Quota notifications split into four events (5-hour / weekly × restored / exhausted), each with an independent channel: system notification or Bark push. Restored fires on a rise above 5 pp or climbing back above 98%; exhausted is edge-triggered. Detection baselines persist across relaunches.
 - Bark push supports the official or self-hosted server (POST JSON, overwrite IDs, serial queue with cooldown and retry) plus an optional "skip while you are at the Mac" policy (display awake and session unlocked); notification permission is checked at app launch.
 - Local token totals and seven-day charts for supported clients.
+- The main menu provider cards can be arranged with a custom order under Settings → General → Main Menu Provider Order; other provider and client lists remain alphabetized.
 - Per-provider refresh intervals, exponential retry backoff, and live config reload.
 - GLM and DeepSeek peak-period indicators.
 - Optional OpenCode usage merging per provider.
@@ -62,7 +68,7 @@ The public snapshot is ad-hoc signed and is not Apple-notarized. If macOS blocks
 - Setup, everyday controls, and troubleshooting: [English user guide](docs/help.en.md) · [中文帮助文档](docs/help.zh-CN.md)
 - Interface structure and interaction rules: [UI design specification](spec/ui-design.md)
 - Architecture, state machine, refresh behavior, and data model: [project specification](spec/overview.md)
-- Provider data sources and accounting rules: [Minimax](spec/providers/minimax.md) · [ChatGPT/Codex](spec/providers/codex.md) · [Antigravity](spec/providers/antigravity.md) · [GLM](spec/providers/glm.md) · [DeepSeek](spec/providers/deepseek.md) · [OpenCode](spec/providers/opencode.md)
+- Provider data sources and accounting rules: [Minimax](spec/providers/minimax.md) · [ChatGPT/Codex](spec/providers/codex.md) · [Antigravity](spec/providers/antigravity.md) · [GLM](spec/providers/glm.md) · [DeepSeek](spec/providers/deepseek.md) · [OpenCode](spec/providers/opencode.md) · [DSH](spec/providers/dsh.md)
 - Engineering policies: [concurrency](docs/policy/concurrency.md) · [errors](docs/policy/error.md) · [logging](docs/policy/logging.md) · [performance](docs/policy/performance.md) · [persistence](docs/policy/persistence.md)
 - Version history: [changelog](CHANGELOG.md) · [release notes](docs/releases/)
 
@@ -89,8 +95,20 @@ Run the test and audit gates:
 Create a deterministic release app, DMG, and checksum file:
 
 ```bash
-./scripts/build-release.sh 1.7.0 143
+./scripts/build-release.sh 1.9.0 151
 ```
+
+`build-app.sh` controls whether the repository's `.build_number` changes:
+
+| Command | Version source | Increments `.build_number` |
+|---|---|---|
+| `./scripts/build-app.sh` | `VERSION` file | Yes (local build increments automatically) |
+| `./scripts/build-app.sh 1.4.1` | Version argument | Yes (a version-only argument still increments) |
+| `./scripts/build-app.sh 1.4.1 94` | Version and build arguments | No (reproducible build) |
+
+`build-release.sh [version] [build-number]` never increments `.build_number`;
+when arguments are omitted it reads the current value, which is suitable for
+reproducible release builds.
 
 The default build is ad-hoc signed. For Developer ID signing and notarization, set `CODESIGN_IDENTITY`, `NOTARIZE=1`, and `NOTARY_PROFILE` as described in the comments in `scripts/build-app.sh` and `scripts/build-dmg.sh`.
 

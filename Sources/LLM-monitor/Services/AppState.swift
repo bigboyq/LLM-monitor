@@ -20,7 +20,7 @@ final class AppState: ObservableObject {
     @Published private(set) var nextRefreshAt: Date?
 
     /// 菜单栏健康度的时间基准。由 Provider deadline driver 在高峰窗口边界、
-    /// 状态重建和系统唤醒时推进；不再使用常驻 60 秒轮询。
+    /// 睡眠健康度刷新边界、状态重建和系统唤醒时推进；不再使用独立常驻 Timer。
     @Published private(set) var healthEvaluationDate = Date()
 
     /// 配置文件路径（UI 用）
@@ -120,7 +120,10 @@ final class AppState: ObservableObject {
     func statusBarQuotaMetrics(at now: Date = Date()) -> StatusBarQuotaMetrics {
         let enabled = statuses.filter(\.isEnabled)
         var allActiveModels: [ModelQuota] = []
-        for status in enabled {
+        // DeepSeek is balance-only and intentionally has no quota window
+        // semantics; it is excluded from the quotaLogo aggregate just as the
+        // notification pipeline excludes non-windowed providers.
+        for status in enabled where status.kind != .deepseek {
             switch status.state {
             case .ok(let info), .loading(lastSuccess: let info?), .failed(message: _, lastSuccess: let info?):
                 allActiveModels.append(contentsOf: info.activeModels)
@@ -204,7 +207,10 @@ final class AppState: ObservableObject {
         // 默认绿色，如果有任意5h额度<40%，或有高峰价格，或avg_5h<60%，黄色。
         // 如果有任意5h额度<10%，或avg_5h<40%，红色。
         let waterHealth: HealthLevel?
-        if allActiveModels.isEmpty && !enabled.contains(where: { $0.lastSuccess != nil }) {
+        let hasWindowedQuotaData = enabled.contains {
+            $0.kind != .deepseek && $0.lastSuccess != nil
+        }
+        if allActiveModels.isEmpty && !hasWindowedQuotaData {
             waterHealth = nil
         } else {
             let epsilon = 1e-6
@@ -394,6 +400,7 @@ final class AppState: ObservableObject {
     func handleSystemWake() async {
         // 睡眠期间可能跨过多个窗口边界；先用当前墙钟更新一次健康 UI，
         // 再安排下一个未来边界。Provider refresh 仍沿用自己的 wake 合并协议。
+        sleepHealth.refreshNow()
         rescheduleHealthBoundary(updateEvaluationDate: true)
         let providerIDs = statuses
             .filter { shouldAutoRefresh(providerID: $0.id) }
@@ -614,6 +621,10 @@ final class AppState: ObservableObject {
                 candidates.insert(boundary)
             }
         }
+        // SleepHealthService 读取本机断言和 AC 电源配置，两者都可能在 App
+        // 运行期间变化。复用 ProviderRefreshScheduler 的单一 deadline driver，
+        // 避免重新引入一个无法统一取消/唤醒的常驻 Timer。
+        candidates.insert(date.addingTimeInterval(5 * 60))
         return candidates.min()
     }
 
@@ -630,6 +641,7 @@ final class AppState: ObservableObject {
         // 半开区间状态注册下一边界，保证同一边界只回调一次。
         // 使用 driver 实际到达的 deadline，避免墙钟在边界附近轻微倒退时重新
         // 注册同一个 `until` 并造成重复回调。
+        sleepHealth.refreshNow()
         rescheduleHealthBoundary(
             updateEvaluationDate: true,
             referenceDate: max(Date(), boundary)
@@ -793,7 +805,7 @@ final class AppState: ObservableObject {
             // 不应设置 .failed、计入失败数、触发 auth probe / 退避。
             // HTTPClient 已经 re-throw CancellationError / URLError.cancelled，
             // 这里在 catch 入口再守一道，确保任何取消路径都走 .deferred。
-            // 统一 filter 在 `CancellationFilter`，三个调用方共用。
+            // 统一 filter 在 `CancellationFilter`，与 LocalUsageScanRunner 共用。
             if CancellationFilter.shouldIgnore(error, isTaskCancelled: Task.isCancelled) {
                 logDebug("refreshProviderDirectly[\(providerID)]: 请求被取消，丢弃结果")
                 return .deferred

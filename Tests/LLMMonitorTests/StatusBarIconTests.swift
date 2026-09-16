@@ -8,11 +8,9 @@ final class StatusBarIconTests: XCTestCase {
     func testStatusBarConfigEncodingAndDecoding() throws {
         var config = AppConfig.default
         XCTAssertEqual(config.effectiveStatusBarIconStyle, .chartBar)
-        XCTAssertEqual(config.effectiveStatusBarIndicatorMode, .colored)
         XCTAssertTrue(config.effectiveStatusBarHealthDotEnabled)
 
         config.statusBarIconStyle = .sparkles
-        config.statusBarIndicatorMode = .monochrome
         config.statusBarHealthDotEnabled = false
         config.statusBarHealthColors = StatusBarHealthColors(
             healthyHex: "#123456",
@@ -27,11 +25,9 @@ final class StatusBarIconTests: XCTestCase {
         let decoded = try decoder.decode(AppConfig.self, from: data)
 
         XCTAssertEqual(decoded.statusBarIconStyle, .sparkles)
-        XCTAssertEqual(decoded.statusBarIndicatorMode, .monochrome)
         XCTAssertEqual(decoded.statusBarHealthDotEnabled, false)
         XCTAssertEqual(decoded.statusBarHealthColors, config.statusBarHealthColors)
         XCTAssertEqual(decoded.effectiveStatusBarIconStyle, .sparkles)
-        XCTAssertEqual(decoded.effectiveStatusBarIndicatorMode, .monochrome)
         XCTAssertFalse(decoded.effectiveStatusBarHealthDotEnabled)
         XCTAssertEqual(decoded.effectiveStatusBarHealthColors, config.statusBarHealthColors)
     }
@@ -49,8 +45,6 @@ final class StatusBarIconTests: XCTestCase {
         XCTAssertEqual(StatusBarIconStyle.cpu.displayName, "芯片")
         XCTAssertEqual(StatusBarIconStyle.quotaLogo.displayName, "App 图标")
 
-        XCTAssertEqual(StatusBarIndicatorMode.colored.displayName, "健康度着色")
-        XCTAssertEqual(StatusBarIndicatorMode.monochrome.displayName, "单色模版")
     }
 
     func testStatusBarHealthDots() {
@@ -183,7 +177,6 @@ final class StatusBarIconTests: XCTestCase {
 
         let decoded = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
         XCTAssertEqual(decoded.effectiveStatusBarIconStyle, .chartBar)
-        XCTAssertEqual(decoded.effectiveStatusBarIndicatorMode, .colored)
         XCTAssertTrue(decoded.effectiveStatusBarHealthDotEnabled)
         XCTAssertEqual(decoded.providers["minimax_token_plan"]?.enabled, true)
         XCTAssertEqual(decoded.providers["minimax_token_plan"]?.apiKey, "real-key")
@@ -447,6 +440,61 @@ final class StatusBarIconTests: XCTestCase {
         XCTAssertNotNil(image)
         XCTAssertEqual(image?.size.width, 22)
         XCTAssertEqual(image?.size.height, 22)
+    }
+
+    @MainActor
+    func testDeepSeekBalanceDoesNotEnterQuotaLogoAggregate() {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let store = ConfigStore(configURL: dir.appendingPathComponent("config.json"))
+        var config = store.config
+        config.providers["deepseek"] = ProviderConfig(enabled: true, apiKey: "key")
+        try? store.applyAndSave(config)
+        let descriptor = FetcherDescriptor(
+            id: "deepseek",
+            displayName: "DeepSeek",
+            kind: .deepseek,
+            iconSystemName: "flame",
+            accentColor: .deepseek,
+            makeFetcher: { _ in DeepseekFetcher(apiKey: "key") }
+        )
+        let state = AppState(descriptors: [descriptor], configStore: store)
+        defer { state.stop() }
+
+        let zeroBalance = ModelQuota(
+            modelName: "deepseek_balance",
+            intervalTotalCount: 0,
+            intervalUsageCount: 0,
+            intervalRemainingPercent: 0,
+            intervalStatus: .present,
+            intervalResetsAt: nil,
+            intervalWindowSeconds: nil,
+            weeklyTotalCount: 0,
+            weeklyUsageCount: 0,
+            weeklyRemainingPercent: 0,
+            weeklyStatus: .absent,
+            weeklyResetsAt: nil,
+            weeklyWindowSeconds: nil
+        )
+        state.mutateStatus(for: "deepseek") {
+            $0.state = .ok(QuotaInfo(
+                models: [zeroBalance],
+                resetCredits: nil,
+                planLabel: "¥0.00",
+                accountEmail: nil,
+                codexUsageDetails: nil,
+                fetchedAt: Date()
+            ))
+        }
+
+        let metrics = state.statusBarQuotaMetrics()
+        XCTAssertFalse(metrics.interval.isAvailable)
+        XCTAssertFalse(metrics.weekly.isAvailable)
+        XCTAssertNil(metrics.lowestAvailable)
+        XCTAssertNil(metrics.waterHealth)
+        XCTAssertEqual(metrics.quotaHealthLevels, [.healthy, .healthy, .healthy])
     }
 
     @MainActor

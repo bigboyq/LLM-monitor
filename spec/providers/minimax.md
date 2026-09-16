@@ -5,7 +5,7 @@ Provider id: `minimax_token_plan`
 Implementation:
 - API fetcher: `Sources/LLM-monitor/Fetchers/MinimaxTokenPlanFetcher.swift`
 - Local `.db` scanner: `Sources/LLM-monitor/Services/MinimaxLocalUsageScanner.swift` + `MinimaxDBReader.swift`
-- Local usage model: `Sources/LLM-monitor/Models/MinimaxLocalUsage.swift`
+- Local usage model: `Sources/LLM-monitor/Models/ProviderLocalUsage.swift` (`MinimaxLocalUsage` is a compatibility typealias)
 - Shared 7-day hover view: `Sources/LLM-monitor/Views/LocalUsageHoverViews.swift`
 
 This provider covers two distinct data sources:

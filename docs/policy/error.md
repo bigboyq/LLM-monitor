@@ -1,9 +1,9 @@
 # 错误映射策略（Error Mapping Policy）
 
-所有 fetcher 抛统一 [`QuotaError`](../../Sources/LLM-monitor/Fetchers/QuotaError.swift:4)；
+所有 fetcher 抛统一 [`QuotaError`](../../Sources/LLM-monitor/Services/QuotaError.swift:4)；
 HTTP 错误集中在 [`HTTPClient.send()`](../../Sources/LLM-monitor/Services/HTTPClient.swift:110)，
 decoder 错误由各 fetcher 自管。UI 层用
-[`userFacingDescription(for:providerKind:)`](../../Sources/LLM-monitor/Fetchers/QuotaError.swift:32)
+[`userFacingDescription(for:providerKind:)`](../../Sources/LLM-monitor/Services/QuotaError.swift:36)
 把 401 翻译成"重新登录"引导文案。
 
 ## 错误分类
@@ -43,4 +43,4 @@ minimax / GLM 业务级错误走 HTTP 200 + body `code`（不在 HTTP 层处理�
 
 中文优先；401 由 `userFacingDescription` 翻译成 per-provider 操作引导；API key 永不出现，
 日志只记录 `key length=N`；路径只保留 `lastPathComponent`；`errorDescription` 自动剥除
-`"HTTP N: HTTP N..."` 双重状态码 [QuotaError.swift:18](../../Sources/LLM-monitor/Fetchers/QuotaError.swift:18)。
+`"HTTP N: HTTP N..."` 双重状态码 [QuotaError.swift:21](../../Sources/LLM-monitor/Services/QuotaError.swift:21)。

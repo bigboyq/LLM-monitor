@@ -57,6 +57,9 @@ final class LocalUsageOrchestration {
         },
         onFresh: { [weak writer] in
             writer?.setLocalUsageFreshness(.clean, for: .antigravity)
+        },
+        onFailed: { [weak writer] in
+            writer?.setLocalUsageFreshness(.failed, for: .antigravity)
         }
     )
 
@@ -74,6 +77,9 @@ final class LocalUsageOrchestration {
         },
         onFresh: { [weak writer] in
             writer?.setLocalUsageFreshness(.clean, for: .minimaxCode)
+        },
+        onFailed: { [weak writer] in
+            writer?.setLocalUsageFreshness(.failed, for: .minimaxCode)
         }
     )
 
@@ -97,6 +103,9 @@ final class LocalUsageOrchestration {
         },
         onFresh: { [weak writer] in
             writer?.setLocalUsageFreshness(.clean, for: .zcode)
+        },
+        onFailed: { [weak writer] in
+            writer?.setLocalUsageFreshness(.failed, for: .zcode)
         }
     )
 
@@ -117,6 +126,9 @@ final class LocalUsageOrchestration {
         },
         onFresh: { [weak writer] in
             writer?.setLocalUsageFreshness(.clean, for: .opencode)
+        },
+        onFailed: { [weak writer] in
+            writer?.setLocalUsageFreshness(.failed, for: .opencode)
         }
     )
 
@@ -132,6 +144,9 @@ final class LocalUsageOrchestration {
         },
         onFresh: { [weak writer] in
             writer?.setLocalUsageFreshness(.clean, for: .dsh)
+        },
+        onFailed: { [weak writer] in
+            writer?.setLocalUsageFreshness(.failed, for: .dsh)
         }
     )
 
@@ -441,6 +456,7 @@ final class LocalUsageOrchestration {
             forceFull: mode == .full
         )
         guard !Task.isCancelled else { return false }
+        guard let details else { return false }
         writer.applyCodexUsageDetails(
             details,
             providerID: target.providerID,

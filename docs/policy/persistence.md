@@ -10,7 +10,7 @@
 - 实例锁 → `…/LLM-monitor/instance.lock` [AppInstanceLock.swift:19](../../Sources/LLM-monitor/Services/AppInstanceLock.swift:19)
 - 损坏配置备份 → `config.json.corrupt-<UUID>.json` [ConfigStore.swift:395](../../Sources/LLM-monitor/Services/ConfigStore.swift:395)
 - 日志 → `…/LLM-monitor/log.txt`（rotated `.1` / `.2`）[AppLog.swift:33](../../Sources/LLM-monitor/Services/AppLog.swift:33)
-- 5× scanner cache: `~/.minimax/.token-monitor/index.json` (v14, [Minimax:632](../../Sources/LLM-monitor/Services/MinimaxLocalUsageScanner.swift:632)) · `~/.gemini/antigravity/.token-monitor/index.json` (v6, [Antigravity:741](../../Sources/LLM-monitor/Services/AntigravityLocalUsageScanner.swift:741)) · `~/Library/Application Support/LLM-monitor/token-monitor/index.json` (v2, [Opencode:333](../../Sources/LLM-monitor/Services/OpencodeUsageScanner.swift:333)) · `~/.zcode/cli/.token-monitor/index.json` (v8, [GlmZcode:397](../../Sources/LLM-monitor/Services/GlmZcodeLocalUsageScanner.swift:397)) · `~/.dsh/.token-monitor/index.json` (v5, [DSH:910](../../Sources/LLM-monitor/Services/DshLocalUsageScanner.swift:910))
+- 5× scanner cache: `~/.minimax/.token-monitor/index.json` (v14, [Minimax:632](../../Sources/LLM-monitor/Services/MinimaxLocalUsageScanner.swift:632)) · `~/.gemini/antigravity/.token-monitor/index.json` (v6, [Antigravity:741](../../Sources/LLM-monitor/Services/AntigravityLocalUsageScanner.swift:741)) · `~/Library/Application Support/LLM-monitor/token-monitor/index.json` (v2, [Opencode:333](../../Sources/LLM-monitor/Services/OpencodeUsageScanner.swift:333)) · `~/.zcode/cli/.token-monitor/index.json` (v9, [GlmZcodeLocalUsageScanner:28](../../Sources/LLM-monitor/Services/GlmZcodeLocalUsageScanner.swift:28)) · `~/.dsh/.token-monitor/index.json` (v5, [DSH:910](../../Sources/LLM-monitor/Services/DshLocalUsageScanner.swift:910))
 - SQLite 临时副本 → `NSTemporaryDirectory()/llm-monitor-<UUID>.sqlite`
 
 > **Override**：`LLM_MONITOR_LOG_PATH` 改日志位置 [AppLog.swift:22](../../Sources/LLM-monitor/Services/AppLog.swift:22)；
@@ -43,6 +43,6 @@
 [ConfigStore.swift:236](../../Sources/LLM-monitor/Services/ConfigStore.swift:236)）：解析失败
 → 备份到 `config.json.corrupt-<UUID>.json`（0600）→ 备份成功用 `.default` 空配置运行
 （不覆盖原文件）→ 备份失败 `persistenceAllowed = false` 禁止自动写回。
-5× scanner 用 `ScannerIndexIO` 版本不匹配 → 重扫（v14/v6/v2/v8/v5）。
+5× scanner 用 `ScannerIndexIO` 版本不匹配 → 重扫（v14/v6/v2/v9/v5）。
 `SQLiteTempCopy.read` 把生产 `.db` 复制到 `NSTemporaryDirectory()` 绕开 IDE/Antigravity WAL
 锁（`CANTOPEN`/`BUSY`），per-scan UUID，权限 0600。

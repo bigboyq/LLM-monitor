@@ -1,7 +1,7 @@
 import Foundation
 
-/// 本地用量 scanner 共享的"扫描生命周期"helper —— 抽取 antigravity / minimax 两个
-/// scanner 镜像的 4 段 boilerplate：
+/// 本地用量 scanner 共享的"扫描生命周期"helper —— 供
+/// `LocalUsageScannerBase` 运行一次扫描时复用：
 ///
 /// 1. `startedAt` + `defer` 块打印耗时摘要
 /// 2. 启动时 `startedGeneration == latestGeneration` 守门（防止旧 worker 启动）
@@ -75,7 +75,7 @@ enum LocalUsageScanRunner {
             await MainActor.run { applyResult(result) }
         } catch {
             // 跟 AppState 一样: 取消请求不污染 lastError.
-            // 统一 filter 在 `CancellationFilter`, 跟 AppState / Antigravity scanner 共用.
+            // 统一 filter 在 `CancellationFilter`，与 AppState 的 quota catch 共用。
             if CancellationFilter.shouldIgnore(error, isTaskCancelled: Task.isCancelled) {
                 logDebug("\(logTag) 任务被取消 (gen=\(startedGeneration)), 不写 lastError")
                 return

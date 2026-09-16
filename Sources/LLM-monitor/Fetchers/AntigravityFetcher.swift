@@ -642,14 +642,6 @@ struct AntigravityFetcher: QuotaFetcher {
 // MARK: - Test surface
 
 extension AntigravityFetcher {
-    /// 从 raw JSON Data 解析账号信息（仅用于单元测试）。
-    /// 让测试不需要直接构造 `UserStatus` 等内部类型。
-    nonisolated static func parseAccountFromJSON(_ data: Data, fallbackTier: String?) -> AccountInfo? {
-        let decoder = JSONDecoder()
-        guard let envelope = try? decoder.decode(UserStatusEnvelope.self, from: data) else { return nil }
-        return parseAccount(userStatus: envelope.userStatus, fallbackTier: fallbackTier)
-    }
-
     /// 从 `AnyJSON` 直接调用 `parseUsageEvent`（仅测试用，跳过 Data → JSON 解析层）
     nonisolated static func parseUsageEventForTest(_ json: AnyJSON) -> UsageEvent? {
         parseUsageEvent(from: json)

@@ -4,7 +4,7 @@ Provider id: `deepseek`
 
 Implementation:
 - API fetcher: `Sources/LLM-monitor/Fetchers/DeepseekFetcher.swift`
-- Peak window: `Sources/LLM-monitor/Models/DeepseekPeakWindow.swift`
+- Peak window: `Sources/LLM-monitor/Models/PeakWindow.swift` (`DeepseekPeakWindow` is a compatibility typealias)
 - Tests: `Tests/LLMMonitorTests/DeepseekFetcherTests.swift`, `Tests/LLMMonitorTests/DeepseekPeakWindowTests.swift`
 
 DeepSeek 余额来自官方开放接口，展示为"账户剩余余额"（货币金额），不是 5h / 周积分窗口。
@@ -125,7 +125,7 @@ OpenCode 的 `deepseek` provider 分片作为可选叠加源，由 `config.json`
 | Responsibility | Source |
 |---|---|
 | Balance fetcher + parse | `Sources/LLM-monitor/Fetchers/DeepseekFetcher.swift` |
-| Peak window (Beijing time) | `Sources/LLM-monitor/Models/DeepseekPeakWindow.swift` |
+| Peak window (Beijing time) | `Sources/LLM-monitor/Models/PeakWindow.swift` (`DeepseekPeakWindow` is a compatibility typealias) |
 | Balance row + peak indicator | `Sources/LLM-monitor/Views/QuotaViews.swift`、`Views/DeepseekPeakIndicatorView.swift` |
 | Account hover | `Sources/LLM-monitor/Views/DeepseekAccountView.swift` |
 | Settings pane | `Sources/LLM-monitor/Views/SettingsView.swift`（`deepseekPane`） |

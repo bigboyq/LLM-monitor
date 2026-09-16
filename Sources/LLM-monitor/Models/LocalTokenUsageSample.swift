@@ -168,20 +168,6 @@ enum LocalUsageSummaryBuilder {
             && sourceProviderID != OpencodeLocalUsage.zcodeGlmProviderID
     }
 
-    nonisolated static func windowStart(
-        resetsAt: Date?,
-        explicitWindowSeconds: Int?,
-        fallbackSeconds: TimeInterval,
-        now: Date = Date()
-    ) -> Date? {
-        windowBounds(
-            resetsAt: resetsAt,
-            explicitWindowSeconds: explicitWindowSeconds,
-            fallbackSeconds: fallbackSeconds,
-            now: now
-        )?.start
-    }
-
     /// 构造本地用量窗口。reset time 缺失时采用 `now + duration` 的临时结束时间，
     /// 保持当前统计仍然有明确边界；UI 的 reset 展示仍使用原始 API 值，不伪造服务端时间。
     nonisolated static func windowBounds(

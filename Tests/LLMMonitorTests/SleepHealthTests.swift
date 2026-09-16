@@ -397,4 +397,26 @@ final class SleepHealthTests: XCTestCase {
         service.stop()
         XCTAssertFalse(service.isKeepAwakeOn, "stop() 必须对称复位并释放断言")
     }
+
+    @MainActor
+    func testSleepHealthServiceStopInvalidatesInFlightProbe() async {
+        let entered = expectation(description: "probe starts")
+        let release = DispatchSemaphore(value: 0)
+        let service = SleepHealthService(
+            assertionProbe: {
+                entered.fulfill()
+                release.wait()
+                return []
+            },
+            powerConfigProbe: { nil }
+        )
+
+        service.refreshNow()
+        await fulfillment(of: [entered], timeout: 1)
+        service.stop()
+        release.signal()
+        try? await Task.sleep(for: .milliseconds(50))
+
+        XCTAssertNil(service.report, "stop() 后已返回的旧 probe 不应发布 report")
+    }
 }

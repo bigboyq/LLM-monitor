@@ -17,7 +17,8 @@ extension SettingsView {
             healthColors: state.configStore.config.effectiveStatusBarHealthColors
         )
         .onAppear {
-            // 打开页面即刷新一次，不等周期轮询。
+            // 打开页面立即刷新；后台还会由 AppState 复用 provider deadline
+            // driver 周期性刷新，避免健康灯长期停留在旧快照。
             state.sleepHealth.refreshNow()
         }
     }

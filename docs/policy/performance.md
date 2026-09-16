@@ -16,8 +16,8 @@ macOS 菜单栏常驻 app（所有 provider 默认 5 分钟/300s 一刷）。以
 | Provider | 默认间隔 | 失败退避 |
 | --- | --- | --- |
 | minimax / GLM / Codex / Antigravity / DeepSeek | 300s | 2×, 4×, …, 30min + ±10% jitter |
-| 5 协议 scanner（minimax / antigravity / glm / opencode / dsh） | 跟随对应主 quota 刷新后触发；minimax/glm/opencode/dsh 进 app 即扫一次 | single attempt，失败不重试，下次主刷新自然重试 |
-| Codex JSONL 本地用量 | 主 quota 抓取时按需读取（无独立 timer/退避） | on-demand，失败由下次 quota 抓取自然重试 |
+| 5 协议 scanner（minimax / antigravity / glm / opencode / dsh） | 在每批 Provider 刷新 settled 后由独立 reconcile pass 触发；首次启动与自然日切换做 Full Scan，其他批次按 scanner 的 dirty/fingerprint 状态决定是否重算 | single attempt，失败由下一批 settled reconcile 自然重试；FSEvents 只负责标记 dirty |
+| Codex JSONL 本地用量 | 与同一批 Provider settled 后的 LocalUsage reconcile 一起按需读取；Codex 源文件 watcher 标记 dirty | on-demand，失败由下一次 reconcile 自然重试 |
 
 [`AppConfig.effectiveRefreshInterval`](../../Sources/LLM-monitor/Services/ConfigStore.swift)
 clamp 到 10s～30d：下限防止 0/负数导致 `Task.sleep` 立即返回 → 高速循环 / CPU 100%，

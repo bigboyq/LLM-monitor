@@ -2,8 +2,8 @@
 
 DSH (`dsh`) is DeepSeek Harness, a local agent harness that persists every session as
 an append-only JSONL log. It is not a menu-bar provider. It is a shared local token
-ledger that can be merged into the MiniMax, GLM, and DeepSeek cards, and is also shown
-in its own Settings diagnostic tab.
+ledger that can be merged into the MiniMax, GLM, and DeepSeek cards. Its diagnostics
+are shown under Settings → Clients alongside the other local clients.
 
 ## Data source
 
@@ -52,7 +52,7 @@ output + reasoning == raw dsh outputTokens
 ## Provider mapping
 
 Each dsh session records its provider/model in `request/context` events. The scanner
-keeps the raw provider string and the Settings DSH tab shows every provider found.
+keeps the raw provider string and the Settings → Clients view shows every provider found.
 Card merging uses these aliases:
 
 | Card | dsh provider aliases |
@@ -116,9 +116,9 @@ to the next line, so a replayed event can never stall the scan.
 | Responsibility | Source |
 |---|---|
 | Data model and provider slices | `Sources/LLM-monitor/Models/DshLocalUsage.swift` |
-| Field-level merge and format conversion | `Sources/LLM-monitor/Models/DshUsageMerger.swift` |
+| Field-level merge and format conversion | `Sources/LLM-monitor/Services/DshUsageMerger.swift` |
 | JSONL/zstd scanner, cache, and seven-day snapshot | `Sources/LLM-monitor/Services/DshLocalUsageScanner.swift` |
 | File discovery | `Sources/LLM-monitor/Services/FileManagerBox.swift` |
-| Settings diagnostic tab | `Sources/LLM-monitor/Views/SettingsView.swift` |
+| Client diagnostics | `Sources/LLM-monitor/Views/SettingsClientsPane.swift` |
 | Card integration | `Sources/LLM-monitor/Views/ProviderCardView.swift` |
 | Regression tests | `Tests/LLMMonitorTests/DshUsageTests.swift` |

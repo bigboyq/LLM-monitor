@@ -726,9 +726,12 @@ final class ScannerAndLoggingTests: XCTestCase {
                 runtimeDBURL: URL(fileURLWithPath: "/nonexistent/\(UUID().uuidString).db"),
                 cacheDir: brokenCacheDir
             )
+            var freshnessFailed = false
+            scanner.onFailed = { freshnessFailed = true }
             scanner.scan()
             await waitUntil(message: "failed scan should settle") { !scanner.isScanning }
             XCTAssertNotNil(scanner.lastError, "broken cacheDir 应让 scan 失败并写 lastError")
+            XCTAssertTrue(freshnessFailed, "扫描失败应投影为 LocalUsageFreshness.failed，而不是仅 dirty")
 
             scanner.cancelInFlight()
             scanner.scan()

@@ -40,12 +40,14 @@ with the bottom edge of the macOS menu bar.
 All quotaLogo red/yellow/green decisions use fixed `HealthLevel.standard` thresholds
 (>40% green, >15% and <=40% yellow, <=15% red), independent of reset-time factors.
 
-The base icon keeps the standard macOS foreground appearance. A 6 pt status dot is
-drawn at the lower-right when `statusBarHealthDotEnabled` is enabled (the default): green
-for healthy, orange for warning, and red for critical. The legacy
-`statusBarIndicatorMode` configuration field is still decoded for compatibility but no
-longer changes rendering. Unknown or type-mismatched icon values in a hand-edited config
-fall back to the default without discarding the provider configuration.
+The base icon keeps the standard macOS foreground appearance. For standard SF Symbol
+styles, a 6 pt status dot is drawn at the lower-right when `statusBarHealthDotEnabled`
+is enabled (the default): green for healthy, orange for warning, and red for critical.
+The `quotaLogo` style includes its own quota and health dots and does not add this
+legacy lower-right dot. The retired `statusBarIndicatorMode` key is ignored when
+encountered in an old hand-edited config; it is not part of the current schema.
+Unknown or type-mismatched icon values in a hand-edited config fall back to the default
+without discarding the provider configuration.
 
 Health State Mapping:
 
@@ -83,13 +85,14 @@ height: content-driven, fixedSize(vertical: true)
 | ...                                            |
 |                                                |
 +------------------------------------------------+
-| 自启 ✓|✗  更新于 HH:mm / 就绪  设置 节能 日志 退出 |
+| 更新于 HH:mm / 下次 HH:mm / 就绪  自启 ✓|✗  设置 节能 日志 退出 |
 +------------------------------------------------+
 ```
 
-The provider area scrolls when needed. There is currently no `ScrollView.maxHeight`
-cap, so a very long provider list could push the menu off-screen; this is documented
-in `spec/overview.md` under "Current Design Boundaries".
+The provider area scrolls when needed. `MenuPanelHeightBridge` caps the menu window at
+70% of the screen's visible height; when the cap is reached, only the provider list
+scrolls while the header and footer remain fixed. The cap is applied at the native
+window layer and the list uses the remaining content height.
 
 The menu footer contains:
 - `自启 ✓` / `自启 ✗` login item status indicator
@@ -335,7 +338,7 @@ Hover details are implemented as a separate floating `NSPanel`, not a SwiftUI ov
 
 Current behavior:
 
-- show after 150ms hover delay
+- show after 0.22s hover delay
 - anchor to mouse position
 - keep a 6px cursor gap
 - prefer mouse as top-left
@@ -453,7 +456,7 @@ Quota summary line:
 | Part | Style |
 |---|---|
 | Progress bar | **整行宽**（约 312pt，跟随卡片内容宽度），8pt height。The first segment is `min(5h remaining, weekly remaining × N)`；若周额度尚有余量，下一格先显示 `(weekly remaining × N - 5h remaining) mod 1`，再显示整格周额度 |
-| Data column | `5h X%  周 Y%` 固定 **160pt** 宽，左对齐（用 `quotaDataColumnWidth` 常量）。固定宽度让后面的 reset time 从同一 x 位置开始，跨行对齐。32pt 的内部 per-percent 框保持 "5h" 和 "周" 列对齐。160pt 来自 Antigravity 行的实际占用测试：reset time 文字 + 紧凑后缀最长约 110pt，加 50pt 留白 |
+| Data column | 双窗口 `5h X%  周 Y%` 使用 `quotaCombinedDataColumnWidth` 固定 **152pt** 宽，单窗口使用 `quotaSingleDataColumnWidth` 固定 **80pt** 宽；两者均左对齐，让 reset time 从一致的 x 位置开始。内部 per-percent 框保持 "5h" 和 "周" 列对齐 |
 | Labels (`5h`, `周`) | 10pt semibold, secondary |
 | Percent | 10pt semibold monospaced digit，每个用 32pt 固定右对齐宽 |
 | Clock icon | `clock.arrow.circlepath`, 10pt semibold |
@@ -487,7 +490,8 @@ The `5h × N = 周` label expresses a provider-specific equivalent quota ratio, 
 
 ## Progress And Health Colors
 
-Progress bar fill (`SegmentedQuotaProgressBar.barColor` and `ModelQuota.colorLevel`):
+Progress bar fill (`SegmentedQuotaProgressBar.intervalSegmentColor` /
+`weeklySegmentColor` and `ModelQuota.colorLevel`):
 
 | Remaining percent | Health Level | Color |
 |---|---|---|
@@ -598,5 +602,3 @@ The UI intentionally hides reset-credit id, title, description, and grant time.
 ## UI Follow-Ups
 
 These are useful future changes if the app grows:
-
-- Add a scrollable max-height content area for many providers.
