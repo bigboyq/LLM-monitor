@@ -146,7 +146,11 @@ struct SettingsView: View {
         guard let url = Bundle.module.url(forResource: "llm-quota-730-2-dark", withExtension: "svg") else {
             return nil
         }
-        return NSImage(contentsOf: url)
+        guard let image = NSImage(contentsOf: url) else { return nil }
+        // 设计稿固有尺寸为 1024×1024，归一到与其他选项预览相同的 22pt 画布，
+        // 避免在 picker 里显得比其他图标大；SVG 为矢量，缩小后依然清晰。
+        image.size = NSSize(width: 22, height: 22)
+        return image
     }()
 
     /// 图标主题 picker 每行的预览图。

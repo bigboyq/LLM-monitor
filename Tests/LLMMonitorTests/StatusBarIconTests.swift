@@ -843,12 +843,15 @@ final class StatusBarIconTests: XCTestCase {
     func testQuotaLogoPickerPreviewUsesDesignAsset() {
         let preview = SettingsView.quotaLogoPreviewImage
         XCTAssertNotNil(preview, "设计稿 SVG 未打入资源包，picker 将回退到现生成预览")
+        // 归一到与其他选项预览一致的 22pt 画布。
+        XCTAssertEqual(preview?.size.width, 22)
+        XCTAssertEqual(preview?.size.height, 22)
         XCTAssertEqual(
             SettingsView.previewImage(for: .quotaLogo).tiffRepresentation,
             preview?.tiffRepresentation
         )
         // 其余样式始终走现生成逻辑。
-        XCTAssertNotNil(SettingsView.previewImage(for: .iconDuo))
+        XCTAssertEqual(SettingsView.previewImage(for: .iconDuo).size.width, 22)
     }
 
     @MainActor
