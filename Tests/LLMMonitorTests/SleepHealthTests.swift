@@ -419,4 +419,66 @@ final class SleepHealthTests: XCTestCase {
 
         XCTAssertNil(service.report, "stop() 后已返回的旧 probe 不应发布 report")
     }
+
+    /// header 悬浮清单与设置页节能 Tab 共用的行文案格式化。
+    func testSleepAssertionOffenderRowText() {
+        let now = Date()
+        let offender = SleepAssertionOffender(
+            pid: 1234,
+            processName: "Electron",
+            assertionType: "PreventUserIdleSystemSleep",
+            detail: "Electron",
+            heldSeconds: 0,
+            creationDate: now.addingTimeInterval(-90)
+        )
+        XCTAssertEqual(
+            offender.rowText(now: now),
+            "Electron · PID 1234 · 阻止空闲休眠 · 已持续 01:30"
+        )
+
+        // 超过 1 小时按 h:mm:ss。
+        let longHeld = SleepAssertionOffender(
+            pid: 1234,
+            processName: "Electron",
+            assertionType: "PreventUserIdleSystemSleep",
+            detail: "Electron",
+            heldSeconds: 0,
+            creationDate: now.addingTimeInterval(-90 * 60)
+        )
+        XCTAssertEqual(
+            longHeld.rowText(now: now),
+            "Electron · PID 1234 · 阻止空闲休眠 · 已持续 1:30:00"
+        )
+
+        // 优先按创建时间实时推算；无创建时间时回退快照的已持有时长。
+        let snapshotOnly = SleepAssertionOffender(
+            pid: 8,
+            processName: "SomeApp",
+            assertionType: "PreventSystemSleep",
+            detail: "",
+            heldSeconds: 3605,
+            creationDate: nil
+        )
+        XCTAssertEqual(
+            snapshotOnly.rowText(now: now),
+            "SomeApp · PID 8 · 阻止系统休眠 · 已持续 1:00:05"
+        )
+
+        // 未知断言类型原样展示；负时长钳到 0。
+        let unknown = SleepAssertionOffender(
+            pid: 2,
+            processName: "Mystery",
+            assertionType: "FutureAssertion",
+            detail: "",
+            heldSeconds: 0,
+            creationDate: now.addingTimeInterval(60)
+        )
+        XCTAssertEqual(
+            unknown.rowText(now: now),
+            "Mystery · PID 2 · FutureAssertion · 已持续 00:00"
+        )
+        XCTAssertEqual(SleepAssertionOffender.formatHeldDuration(-5), "00:00")
+        XCTAssertEqual(SleepAssertionOffender.formatHeldDuration(59), "00:59")
+        XCTAssertEqual(SleepAssertionOffender.formatHeldDuration(3600), "1:00:00")
+    }
 }

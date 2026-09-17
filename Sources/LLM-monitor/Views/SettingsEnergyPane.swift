@@ -85,7 +85,7 @@ struct EnergyPaneContent: View {
                     }
                     VStack(alignment: .leading, spacing: 6) {
                         ForEach(report.offenders) { offender in
-                            Text(offenderRowText(offender))
+                            Text(offender.rowText())
                                 .font(SettingsTypography.metadata)
                                 .foregroundStyle(.orange)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -130,7 +130,7 @@ struct EnergyPaneContent: View {
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                     ForEach(report.offenders) { offender in
-                        Text(offenderRowText(offender))
+                        Text(offender.rowText())
                             .font(SettingsTypography.metadata)
                             .foregroundStyle(.orange)
                             .fixedSize(horizontal: false, vertical: true)
@@ -164,29 +164,6 @@ struct EnergyPaneContent: View {
         case .keepAwake:
             return "当前已手动开启【防止睡眠】模式，电脑将持续保持唤醒。"
         }
-    }
-
-    private func offenderRowText(_ offender: SleepAssertionOffender) -> String {
-        let duration = offender.creationDate.map { max(0, Date().timeIntervalSince($0)) } ?? offender.heldSeconds
-        return "\(offender.processName) · PID \(offender.pid) · \(assertionDisplayName(offender.assertionType)) · 已持续 \(formatHeldDuration(duration))"
-    }
-
-    private func assertionDisplayName(_ type: String) -> String {
-        switch type {
-        case "PreventUserIdleSystemSleep": return "阻止空闲休眠"
-        case "NoIdleSleepAssertion": return "阻止空闲休眠（NoIdleSleep）"
-        case "PreventSystemSleep": return "阻止系统休眠"
-        default: return type
-        }
-    }
-
-    /// 断言已持续时长：不足 1 小时用 mm:ss，超过用 h:mm:ss。
-    private func formatHeldDuration(_ seconds: TimeInterval) -> String {
-        let total = max(0, Int(seconds.rounded()))
-        if total >= 3600 {
-            return String(format: "%d:%02d:%02d", total / 3600, (total % 3600) / 60, total % 60)
-        }
-        return String(format: "%02d:%02d", total / 60, total % 60)
     }
 
     private func acSleepCheckText(for report: SleepHealthReport) -> String {

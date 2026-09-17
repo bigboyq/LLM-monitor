@@ -156,6 +156,9 @@ struct MenuContentView: View {
             Text("LLM Monitor")
                 .font(MenuTypography.headerTitle)
                 .foregroundStyle(Color.primaryLabel)
+            if let report = state.sleepHealth.report, !report.offenders.isEmpty {
+                headerSleepBlockersNotice(offenders: report.offenders)
+            }
             Spacer()
             if state.isRefreshing {
                 ProgressView()
@@ -178,6 +181,20 @@ struct MenuContentView: View {
         .padding(.leading, 14)
         .padding(.trailing, 12)
         .padding(.vertical, 7)
+    }
+
+    /// 标题旁的睡眠锁提示：有第三方应用阻止休眠时显示数量，悬浮展开
+    /// 应用清单（与设置页节能 Tab 检查项一同源）；无应用时整体隐藏。
+    /// 仅 hover 展示、不可点击，与主面板其他 hover 区域行为一致。
+    private func headerSleepBlockersNotice(offenders: [SleepAssertionOffender]) -> some View {
+        HoverInfoRow {
+            Text("\(offenders.count) 个应用正在阻止休眠")
+                .font(MenuTypography.metricLabel)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        } detail: {
+            SleepOffendersHoverView(offenders: offenders)
+        }
     }
 
     // MARK: - content（卡片过多时滚动，避免菜单超出屏幕）
