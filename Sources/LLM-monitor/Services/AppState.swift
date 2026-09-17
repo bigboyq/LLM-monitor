@@ -209,9 +209,10 @@ final class AppState: ObservableObject {
             return false
         }
 
-        // 5. 兼容旧调用方保留的综合状态；quotaLogo 各部件不再使用该值着色：
-        // 默认绿色，如果有任意5h额度<40%，或有高峰价格，或avg_5h<60%，黄色。
-        // 如果有任意5h额度<10%，或avg_5h<40%，红色。
+        // 5. 中心水位综合状态（经典 App 图标消费）：默认绿色，如果有任意5h额度
+        // <40%，或有高峰价格，或avg_5h<60%，黄色；如果有任意5h额度<10%，或
+        // avg_5h<40%，红色。缺失 5h 窗口沿用上一版语义按满量（1.0）参与判定，
+        // 避免「无数据」被误判为「耗尽」。
         let waterHealth: HealthLevel?
         let hasWindowedQuotaData = enabled.contains {
             $0.kind != .deepseek && $0.lastSuccess != nil
@@ -220,9 +221,11 @@ final class AppState: ObservableObject {
             waterHealth = nil
         } else {
             let epsilon = 1e-6
-            if intervalMetrics.minAvailable < (0.10 - epsilon) || intervalMetrics.avgAvailable < (0.40 - epsilon) {
+            let effectiveMin = intervalMetrics.isAvailable ? intervalMetrics.minAvailable : 1.0
+            let effectiveAvg = intervalMetrics.isAvailable ? intervalMetrics.avgAvailable : 1.0
+            if effectiveMin < (0.10 - epsilon) || effectiveAvg < (0.40 - epsilon) {
                 waterHealth = .critical
-            } else if intervalMetrics.minAvailable < (0.40 - epsilon) || isPeakPrice || intervalMetrics.avgAvailable < (0.60 - epsilon) {
+            } else if effectiveMin < (0.40 - epsilon) || isPeakPrice || effectiveAvg < (0.60 - epsilon) {
                 waterHealth = .warning
             } else {
                 waterHealth = .healthy

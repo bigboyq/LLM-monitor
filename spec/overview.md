@@ -95,7 +95,8 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 | `Sources/LLM-monitor/Services/SQLiteTempCopy.swift` | CANTOPEN/BUSY 时 `/tmp` 副本 fallback |
 | `Sources/LLM-monitor/Views/Color+Theme.swift` | 品牌色常量 |
 | `Sources/LLM-monitor/Services/MenuBarRightClickHandler.swift` | 状态栏按钮右键菜单（best-effort） |
-| `Sources/LLM-monitor/Services/QuotaLogoSVGBuilder.swift` | quotaLogo 状态栏仪表盘的参数化 SVG 生成（左右额度弧 / 中心扇形 / 底部模型健康点 / 顶部节能点） |
+| `Sources/LLM-monitor/Services/QuotaLogoSVGBuilder.swift` | 经典 App 图标（quotaLogo）SVG 生成：逆时针双环（实线到最低、刻度虚线到平均）+ 中心水位杯，共享额度指标结构也定义于此 |
+| `Sources/LLM-monitor/Services/IconDuoSVGBuilder.swift` | Icon Duo 状态栏额度仪表盘的参数化 SVG 生成（左右额度弧 / 中心扇形 / 底部模型健康点 / 顶部节能点） |
 | `Sources/LLM-monitor/Services/MinimaxDBReader.swift` | 读 minimax v2 `local_runtime_token_usage` 表 |
 | `Sources/LLM-monitor/Services/MinimaxLocalUsageScanner.swift` | minimax v2 `runtime-state.sqlite` 单源 scanner（AsyncMutex + lastCommittedGeneration 串行化）|
 | `Sources/LLM-monitor/Services/MinimaxLocalUsageAggregation.swift` | minimax reasoning 字符分摊比例回写 sample 与 per-day 聚合纯函数 |
@@ -123,7 +124,7 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 | `Sources/LLM-monitor/Models/SleepHealthModels.swift` | 「节能」模块 UI 与服务实现之间的稳定数据契约（断言快照 / 电源参数 / 健康度结果） |
 | `Sources/LLM-monitor/Services/SleepHealthService.swift` | 睡眠健康度快照、防休眠断言与周期健康边界刷新 |
 | `Sources/LLM-monitor/Services/SleepHealthEvaluator.swift` | 睡眠锁与系统电源参数的健康度评估 |
-| `Sources/LLM-monitor/Views/MenuBarLabel.swift` | 菜单栏 label 视图（可见输入签名去重重绘 + 分钟时钟监听，quotaLogo / SF Symbol 双样式） |
+| `Sources/LLM-monitor/Views/MenuBarLabel.swift` | 菜单栏 label 视图（可见输入签名去重重绘 + 分钟时钟监听，App 图标 / Icon Duo / SF Symbol 多样式） |
 | `Sources/LLM-monitor/Views/MenuContentView.swift` | 主面板（header / content / footer） |
 | `Sources/LLM-monitor/Views/MenuTypography.swift` | 菜单面板与悬浮层统一排版常量（语义角色，禁止散落硬编码字号） |
 | `Sources/LLM-monitor/Views/MenuWindowAutoCloseBridge.swift` | 失焦立即关 + 30s 无交互关闭（菜单内 mouse/scroll/key 重置计时）|
@@ -653,7 +654,7 @@ the interval and weekly windows.
 | `.failed(_, let last)` | `last?.healthLevel`（无则 nil） |
 | `.ready` / `.notConfigured` | `nil`（UI 显示灰点，不归类为"健康"） |
 
-`nil` 让 UI 端的 `StatusIndicator` 用 secondary 灰色渲染，明确区分"没数据"和"有数据但健康"。菜单栏的 `quotaLogo` 会随整体额度健康度和节能/睡眠健康度变化；标准 SF Symbol 样式则保留右下角状态点与刷新中的图标替换。卡片状态点和进度颜色同样反映健康度。
+`nil` 让 UI 端的 `StatusIndicator` 用 secondary 灰色渲染，明确区分"没数据"和"有数据但健康"。菜单栏的 `iconDuo` 仪表盘会随额度指标与节能/睡眠健康度变化，经典 `quotaLogo` 的水位颜色随 `waterHealth`（无值回退整体健康度）变化；标准 SF Symbol 样式则保留右下角状态点与刷新中的图标替换。卡片状态点和进度颜色同样反映健康度。
 
 ## Error And Fallback
 
@@ -832,9 +833,17 @@ preferring the triple-specific product path so stale universal artifacts under
 
 These are documented product boundaries:
 
-- The menu bar label defaults to the `chart.bar.fill` SF Symbol style; the optional
-    `quotaLogo` style (`statusBarIconStyle` in config / "App 图标" in Settings) renders a
-    live quota dashboard: the left arc is 5h and the right arc is weekly; both are concentric
+- The menu bar label defaults to the `chart.bar.fill` SF Symbol style; two optional
+    SVG dashboard styles are driven by `statusBarIconStyle`. The classic `quotaLogo`
+    style (config `quotaLogo` / "App 图标" in Settings, the pre-1.9.0 look restored)
+    renders an outer weekly ring and an inner 5h ring growing counter-clockwise from
+    12 o'clock (solid arc to the minimum remaining, 2-4 px ticked dashed arc to the
+    average) plus a center water cup whose height maps the 5h minimum remaining; its
+    water color follows `waterHealth` (falling back to overall health), and missing
+    windows render as full rings per the legacy semantics. See
+    `QuotaLogoSVGBuilder.swift`.
+    The `iconDuo` style (config `iconDuo` / "Icon Duo" in Settings, the 1.9.0+ redesign)
+    renders a live quota dashboard: the left arc is 5h and the right arc is weekly; both are concentric
     circular arcs growing from the bottom with dark gray background tracks and health-colored
     available segments (a missing window keeps only its gray track). The center uses the minimum
     5h remaining percentage across active models, falling back to the weekly minimum only when no
@@ -844,8 +853,8 @@ These are documented product boundaries:
     prioritized strictly in red > yellow > green order (if 3 reds, yellow/green omitted), and the top dot (enlarged to r=48) mirrors sleep/energy health (red/yellow/green).
     The window top edge is snapped to `screen.visibleFrame.maxY + 10` on every presentation, absorbing system popover margins to stay flush with the menu bar bottom.
     Colors remain configurable through `statusBarHealthColors`. See
-    `QuotaLogoSVGBuilder.swift` and `MenuBarLabel.swift`.
-    All quotaLogo red/yellow/green decisions use fixed `HealthLevel.standard` thresholds
+    `IconDuoSVGBuilder.swift` and `MenuBarLabel.swift`.
+    All `iconDuo` red/yellow/green decisions use fixed `HealthLevel.standard` thresholds
     (>40% green, >15% and <=40% yellow, <=15% red), independent of reset-time factors.
 - Local usage scanners restore their last-good `index.json` snapshot on cold start; the
   remote quota refresh timestamp is persisted separately in `last-refresh.json`.

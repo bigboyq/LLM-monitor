@@ -9,6 +9,7 @@ enum StatusBarIconStyle: String, Codable, Sendable, CaseIterable, Identifiable {
     case brain = "brain"
     case cpu = "cpu"
     case quotaLogo = "quotaLogo"
+    case iconDuo = "iconDuo"
 
     var id: String { rawValue }
 
@@ -19,6 +20,7 @@ enum StatusBarIconStyle: String, Codable, Sendable, CaseIterable, Identifiable {
         case .brain:    return "智能大脑"
         case .cpu:      return "芯片"
         case .quotaLogo: return "App 图标"
+        case .iconDuo: return "Icon Duo"
         }
     }
 
@@ -29,7 +31,14 @@ enum StatusBarIconStyle: String, Codable, Sendable, CaseIterable, Identifiable {
         case .brain:    return "brain.head.profile"
         case .cpu:      return "cpu.fill"
         case .quotaLogo: return "chart.donut.fill"
+        case .iconDuo: return "circle.circle"
         }
+    }
+
+    /// 两种 SVG 仪表盘样式均为自包含图标，内部已表达健康度，不再叠加
+    /// 通用右下角状态圆点。
+    var isDashboardStyle: Bool {
+        self == .quotaLogo || self == .iconDuo
     }
 }
 

@@ -26,9 +26,18 @@ Icon Styles (`statusBarIconStyle`):
 - `sparkles` (`sparkles`)
 - `brain` (`brain.head.profile`)
 - `cpu` (`cpu.fill`)
-- `quotaLogo` (`App 图标` - live quota dashboard)
+- `quotaLogo` (`App 图标` - classic dual-ring water gauge, the pre-1.9.0 style)
+- `iconDuo` (`Icon Duo` - live quota dashboard, the 1.9.0+ redesign)
 
-The `quotaLogo` dashboard uses a left 5h arc and right weekly arc, both being concentric
+The classic `quotaLogo` style (`QuotaLogoSVGBuilder`) draws an outer weekly ring and an
+inner 5h ring, both growing counter-clockwise from 12 o'clock: a solid arc fills up to
+the minimum remaining and a 2-4 px ticked dashed arc extends to the average. The center
+is a water cup: the water height maps the 5h minimum remaining and the water color
+follows `waterHealth` (falling back to overall provider health when unset). Missing
+windows keep the legacy semantics and render as full rings / a full cup, unlike the
+`iconDuo` missing-window gray tracks.
+
+The `iconDuo` dashboard (`IconDuoSVGBuilder`) uses a left 5h arc and right weekly arc, both being concentric
 circular arcs growing from the bottom with dark gray background tracks and health-colored
 available segments (a missing window keeps only its gray track). The center uses the minimum
 5h remaining percentage across active models, falling back to the weekly minimum only when no
@@ -39,14 +48,15 @@ the circle's arc to show active-model health prioritized strictly as red > yello
 yellow and green are omitted); the top dot (enlarged to r=48) mirrors the Energy module's sleep-health state (green / yellow / red, gray while unknown).
 The popover window top edge is snapped to `screen.visibleFrame.maxY + 10` on every presentation, absorbing popover margins to stay flush
 with the bottom edge of the macOS menu bar.
-All quotaLogo red/yellow/green decisions use fixed `HealthLevel.standard` thresholds
+All `iconDuo` red/yellow/green decisions use fixed `HealthLevel.standard` thresholds
 (>40% green, >15% and <=40% yellow, <=15% red), independent of reset-time factors.
 
 The base icon keeps the standard macOS foreground appearance. For standard SF Symbol
 styles, a 6 pt status dot is drawn at the lower-right when `statusBarHealthDotEnabled`
 is enabled (the default): green for healthy, orange for warning, and red for critical.
-The `quotaLogo` style includes its own quota and health dots and does not add this
-legacy lower-right dot. The retired `statusBarIndicatorMode` key is ignored when
+Both `quotaLogo` and `iconDuo` dashboard styles are self-contained (rings/water and
+quota/health dots respectively) and do not add this legacy lower-right dot. The retired
+`statusBarIndicatorMode` key is ignored when
 encountered in an old hand-edited config; it is not part of the current schema.
 Unknown or type-mismatched icon values in a hand-edited config fall back to the default
 without discarding the provider configuration.

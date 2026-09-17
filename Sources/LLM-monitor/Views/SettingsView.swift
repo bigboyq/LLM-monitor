@@ -318,7 +318,7 @@ struct SettingsView: View {
                 }
             }
 
-            SettingsSection(title: "状态栏图标", footer: "可自定义正常、预警、异常三种状态颜色；系统图标使用状态圆点，App 图标显示左右额度弧、最低剩余量、三个套餐状态点与顶部节能状态圆点。中心扇形按最低剩余比例动态显示 0～360°。") {
+            SettingsSection(title: "状态栏图标", footer: "可自定义正常、预警、异常三种状态颜色；系统图标使用状态圆点。App 图标为经典双环水位样式：外环周额度、内环 5 小时额度（实线充盈到最低剩余量、虚线延伸到平均值，逆时针绘制），中心水位映射 5 小时最低剩余与警报颜色。Icon Duo 为额度仪表盘：左右弧线显示 5 小时与周额度，中心扇形按最低剩余比例动态显示 0～360°，底部三个套餐状态点与顶部节能状态圆点。") {
                 VStack(alignment: .leading, spacing: 16) {
                     SettingsControlRow("图标主题") {
                         Picker("", selection: $statusBarIconStyle) {

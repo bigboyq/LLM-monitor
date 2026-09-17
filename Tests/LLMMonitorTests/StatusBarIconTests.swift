@@ -38,13 +38,19 @@ final class StatusBarIconTests: XCTestCase {
         XCTAssertEqual(StatusBarIconStyle.brain.systemImageName, "brain.head.profile")
         XCTAssertEqual(StatusBarIconStyle.cpu.systemImageName, "cpu.fill")
         XCTAssertEqual(StatusBarIconStyle.quotaLogo.systemImageName, "chart.donut.fill")
+        XCTAssertEqual(StatusBarIconStyle.iconDuo.systemImageName, "circle.circle")
 
         XCTAssertEqual(StatusBarIconStyle.chartBar.displayName, "柱状图")
         XCTAssertEqual(StatusBarIconStyle.sparkles.displayName, "AI 星光")
         XCTAssertEqual(StatusBarIconStyle.brain.displayName, "智能大脑")
         XCTAssertEqual(StatusBarIconStyle.cpu.displayName, "芯片")
         XCTAssertEqual(StatusBarIconStyle.quotaLogo.displayName, "App 图标")
+        XCTAssertEqual(StatusBarIconStyle.iconDuo.displayName, "Icon Duo")
 
+        // 两种 SVG 仪表盘样式均为自包含图标，不叠加通用状态圆点。
+        XCTAssertFalse(StatusBarIconStyle.chartBar.isDashboardStyle)
+        XCTAssertTrue(StatusBarIconStyle.quotaLogo.isDashboardStyle)
+        XCTAssertTrue(StatusBarIconStyle.iconDuo.isDashboardStyle)
     }
 
     func testStatusBarHealthDots() {
@@ -156,6 +162,31 @@ final class StatusBarIconTests: XCTestCase {
                 showsHealthDot: false
             ).tiffRepresentation
         )
+
+        // Icon Duo 同样为自包含仪表盘：不叠加通用状态圆点。
+        let iconDuoImage = MenuBarLabel.composedMenuBarImage(
+            iconStyle: .iconDuo,
+            health: nil,
+            showsHealthDot: false
+        )
+        XCTAssertEqual(iconDuoImage.size.width, 22)
+        XCTAssertEqual(iconDuoImage.size.height, 22)
+        XCTAssertFalse(iconDuoImage.isTemplate)
+        XCTAssertNotNil(iconDuoImage.tiffRepresentation)
+        XCTAssertEqual(
+            MenuBarLabel.composedMenuBarImage(
+                iconStyle: .iconDuo,
+                health: .healthy,
+                showsHealthDot: true
+            ).tiffRepresentation,
+            MenuBarLabel.composedMenuBarImage(
+                iconStyle: .iconDuo,
+                health: .healthy,
+                showsHealthDot: false
+            ).tiffRepresentation
+        )
+        // 两种仪表盘样式渲染结果互不相同。
+        XCTAssertNotEqual(quotaLogoImage.tiffRepresentation, iconDuoImage.tiffRepresentation)
     }
 
     func testUnknownStatusBarValuesFallBackWithoutDroppingProviders() throws {
@@ -180,6 +211,13 @@ final class StatusBarIconTests: XCTestCase {
         XCTAssertTrue(decoded.effectiveStatusBarHealthDotEnabled)
         XCTAssertEqual(decoded.providers["minimax_token_plan"]?.enabled, true)
         XCTAssertEqual(decoded.providers["minimax_token_plan"]?.apiKey, "real-key")
+
+        // 新方案 raw value 可正常解码。
+        let iconDuoJSON = """
+        {"schemaVersion": 1, "refreshIntervalSeconds": 300, "statusBarIconStyle": "iconDuo", "providers": {}}
+        """
+        let iconDuoConfig = try JSONDecoder().decode(AppConfig.self, from: Data(iconDuoJSON.utf8))
+        XCTAssertEqual(iconDuoConfig.effectiveStatusBarIconStyle, .iconDuo)
     }
 
     @MainActor
@@ -337,7 +375,7 @@ final class StatusBarIconTests: XCTestCase {
         XCTAssertEqual(appState.systemHealthLevel(at: afterPeak), .healthy)
     }
 
-    func testQuotaLogoSVGBuilderDashboardGeometry() {
+    func testIconDuoSVGBuilderDashboardGeometry() {
         let outer = QuotaRingMetrics(minAvailable: 0.1, avgAvailable: 0.15, colorHex: "#FB923C") // <= 15% -> critical
         let middle = QuotaRingMetrics(minAvailable: 0.2, avgAvailable: 0.35, colorHex: "#2DD4BF") // 15%..40% -> warning
         let metrics = StatusBarQuotaMetrics(
@@ -346,7 +384,7 @@ final class StatusBarIconTests: XCTestCase {
             centerAvailable: 0.5, // > 40% -> healthy
             quotaHealthLevels: [.healthy, .warning, .critical]
         )
-        let svg = QuotaLogoSVGBuilder.buildSVG(
+        let svg = IconDuoSVGBuilder.buildSVG(
             metrics: metrics,
             energyHealth: .warning
         )
@@ -373,7 +411,7 @@ final class StatusBarIconTests: XCTestCase {
             interval: middle,
             centerAvailable: 0.695
         )
-        let currentQuotaSVG = QuotaLogoSVGBuilder.buildSVG(metrics: currentQuotaMetrics)
+        let currentQuotaSVG = IconDuoSVGBuilder.buildSVG(metrics: currentQuotaMetrics)
         XCTAssertTrue(currentQuotaSVG.contains("id=\"center-sector\" data-value=\"70\""))
         XCTAssertTrue(
             currentQuotaSVG.contains("A 135.00 135.00 0 1 1"),
@@ -386,7 +424,7 @@ final class StatusBarIconTests: XCTestCase {
             interval: QuotaRingMetrics(minAvailable: 0, avgAvailable: 0, colorHex: "#2DD4BF", isAvailable: false),
             centerAvailable: 0.5
         )
-        let weeklyOnlySVG = QuotaLogoSVGBuilder.buildSVG(metrics: weeklyOnly)
+        let weeklyOnlySVG = IconDuoSVGBuilder.buildSVG(metrics: weeklyOnly)
         XCTAssertFalse(weeklyOnlySVG.contains("id=\"interval-available\""))
         XCTAssertTrue(weeklyOnlySVG.contains("id=\"weekly-available\""))
 
@@ -395,11 +433,11 @@ final class StatusBarIconTests: XCTestCase {
             interval: QuotaRingMetrics(minAvailable: 0.5, avgAvailable: 0.5, colorHex: "#2DD4BF"),
             centerAvailable: 0.5
         )
-        let intervalOnlySVG = QuotaLogoSVGBuilder.buildSVG(metrics: intervalOnly)
+        let intervalOnlySVG = IconDuoSVGBuilder.buildSVG(metrics: intervalOnly)
         XCTAssertTrue(intervalOnlySVG.contains("id=\"interval-available\""))
         XCTAssertFalse(intervalOnlySVG.contains("id=\"weekly-available\""))
 
-        let unknownSVG = QuotaLogoSVGBuilder.buildSVG(metrics: StatusBarQuotaMetrics(
+        let unknownSVG = IconDuoSVGBuilder.buildSVG(metrics: StatusBarQuotaMetrics(
             weekly: QuotaRingMetrics(minAvailable: 0, avgAvailable: 0, colorHex: "#FB923C", isAvailable: false),
             interval: QuotaRingMetrics(minAvailable: 0, avgAvailable: 0, colorHex: "#2DD4BF", isAvailable: false)
         ))
@@ -431,7 +469,7 @@ final class StatusBarIconTests: XCTestCase {
         XCTAssertEqual(mixedMetrics.quotaHealthLevels, [.critical, .warning, .healthy])
 
         // 验证全满状态（360度整圆）
-        let fullSvg = QuotaLogoSVGBuilder.buildSVG(metrics: .full, energyHealth: .healthy)
+        let fullSvg = IconDuoSVGBuilder.buildSVG(metrics: .full, energyHealth: .healthy)
         XCTAssertTrue(fullSvg.contains("<circle id=\"center-sector\" data-value=\"100\""))
 
         // 验证 3 个红点全耗尽状态
@@ -441,12 +479,12 @@ final class StatusBarIconTests: XCTestCase {
             centerAvailable: 0.0,
             quotaHealthLevels: [.critical, .critical, .critical]
         )
-        let exhaustedSvg = QuotaLogoSVGBuilder.buildSVG(metrics: allExhaustedMetrics)
+        let exhaustedSvg = IconDuoSVGBuilder.buildSVG(metrics: allExhaustedMetrics)
         XCTAssertTrue(exhaustedSvg.contains("<circle id=\"center-sector\" data-value=\"0\""))
         XCTAssertTrue(exhaustedSvg.contains("stroke=\"#FF453A\""), "中心呈现红色空心警示环")
         XCTAssertEqual(exhaustedSvg.components(separatedBy: "fill=\"#FF453A\"").count - 1, 3, "底部固定 3 个红点")
 
-        let image = QuotaLogoSVGBuilder.buildImage(
+        let image = IconDuoSVGBuilder.buildImage(
             metrics: metrics,
             energyHealth: .warning
         )
@@ -643,7 +681,7 @@ final class StatusBarIconTests: XCTestCase {
         setStandardQuota(35.0)
         let warningMetrics = appState.statusBarQuotaMetrics(at: now)
         XCTAssertEqual(warningMetrics.quotaHealthLevels, [.warning, .warning, .healthy])
-        let warningSVG = QuotaLogoSVGBuilder.buildSVG(metrics: warningMetrics)
+        let warningSVG = IconDuoSVGBuilder.buildSVG(metrics: warningMetrics)
         XCTAssertTrue(warningSVG.contains("id=\"interval-available\""))
         XCTAssertTrue(warningSVG.contains("id=\"interval-available\" d="), "35% 短窗口弧线仍显示可用段")
         XCTAssertTrue(warningSVG.contains("stroke=\"#FFD60A\""), "35% 短窗口弧线和套餐点均为黄色")
@@ -651,7 +689,7 @@ final class StatusBarIconTests: XCTestCase {
         setStandardQuota(15.0)
         let criticalMetrics = appState.statusBarQuotaMetrics(at: now)
         XCTAssertEqual(criticalMetrics.quotaHealthLevels, [.critical, .critical, .healthy])
-        let criticalSVG = QuotaLogoSVGBuilder.buildSVG(metrics: criticalMetrics)
+        let criticalSVG = IconDuoSVGBuilder.buildSVG(metrics: criticalMetrics)
         XCTAssertTrue(criticalSVG.contains("stroke=\"#FF453A\""), "15% 短窗口弧线为红色")
 
         func makeWindowPresenceModel(intervalStatus: QuotaWindowStatus, weeklyStatus: QuotaWindowStatus) -> ModelQuota {
@@ -689,7 +727,7 @@ final class StatusBarIconTests: XCTestCase {
         let weeklyOnlyMetrics = appState.statusBarQuotaMetrics(at: now)
         XCTAssertFalse(weeklyOnlyMetrics.interval.isAvailable)
         XCTAssertTrue(weeklyOnlyMetrics.weekly.isAvailable)
-        let weeklyOnlyStateSVG = QuotaLogoSVGBuilder.buildSVG(metrics: weeklyOnlyMetrics)
+        let weeklyOnlyStateSVG = IconDuoSVGBuilder.buildSVG(metrics: weeklyOnlyMetrics)
         XCTAssertFalse(weeklyOnlyStateSVG.contains("id=\"interval-available\""))
         XCTAssertTrue(weeklyOnlyStateSVG.contains("id=\"weekly-available\""))
 
@@ -697,7 +735,7 @@ final class StatusBarIconTests: XCTestCase {
         let intervalOnlyMetrics = appState.statusBarQuotaMetrics(at: now)
         XCTAssertTrue(intervalOnlyMetrics.interval.isAvailable)
         XCTAssertFalse(intervalOnlyMetrics.weekly.isAvailable)
-        let intervalOnlyStateSVG = QuotaLogoSVGBuilder.buildSVG(metrics: intervalOnlyMetrics)
+        let intervalOnlyStateSVG = IconDuoSVGBuilder.buildSVG(metrics: intervalOnlyMetrics)
         XCTAssertTrue(intervalOnlyStateSVG.contains("id=\"interval-available\""))
         XCTAssertFalse(intervalOnlyStateSVG.contains("id=\"weekly-available\""))
     }
@@ -711,32 +749,93 @@ final class StatusBarIconTests: XCTestCase {
             quotaHealthLevels: [.critical, .warning]
         )
 
+        // Icon Duo 随额度指标变化。
         let fullImage = MenuBarLabel.composedMenuBarImage(
-            iconStyle: .quotaLogo,
+            iconStyle: .iconDuo,
             health: .healthy,
             quotaMetrics: fullMetrics
         )
         let customImage = MenuBarLabel.composedMenuBarImage(
-            iconStyle: .quotaLogo,
+            iconStyle: .iconDuo,
             health: .healthy,
             quotaMetrics: customMetrics
         )
 
         XCTAssertNotEqual(fullImage.tiffRepresentation, customImage.tiffRepresentation)
 
+        // Icon Duo 顶部点随节能/睡眠健康度变化。
         let keepAwakeImage = MenuBarLabel.composedMenuBarImage(
-            iconStyle: .quotaLogo,
+            iconStyle: .iconDuo,
             health: .healthy,
             quotaMetrics: customMetrics,
             energyHealth: .critical
         )
         let energySavingImage = MenuBarLabel.composedMenuBarImage(
-            iconStyle: .quotaLogo,
+            iconStyle: .iconDuo,
             health: .healthy,
             quotaMetrics: customMetrics,
             energyHealth: .healthy
         )
         XCTAssertNotEqual(keepAwakeImage.tiffRepresentation, energySavingImage.tiffRepresentation)
+    }
+
+    /// 经典 App 图标（上一版样式）：逆时针双环 + 中心水位杯。
+    func testQuotaLogoSVGBuilderArcAndWaterCalculations() {
+        let outer = QuotaRingMetrics(minAvailable: 0.3, avgAvailable: 0.7, colorHex: "#FB923C")
+        let middle = QuotaRingMetrics(minAvailable: 0.5, avgAvailable: 0.8, colorHex: "#2DD4BF")
+        let metrics = StatusBarQuotaMetrics(weekly: outer, interval: middle, waterHealth: nil)
+
+        // waterHealth 缺失时回退整体健康度（.healthy → 绿色水体）。
+        let svg = QuotaLogoSVGBuilder.buildSVG(
+            metrics: metrics,
+            fallbackHealth: .healthy
+        )
+
+        // 验证 viewBox 对称且足够容纳外圈，包含刻度虚线与水位杯裁剪。
+        XCTAssertTrue(svg.contains("viewBox=\"160 160 704 704\""))
+        XCTAssertTrue(svg.contains("stroke-dasharray=\"32 64\""))
+        XCTAssertTrue(svg.contains("clip-path=\"url(#cup)\""))
+        // 验证逆时针绘制（sweep-flag 为 0）。
+        XCTAssertTrue(svg.contains("A 320 320 0 0 0"))
+        // 水位取 5h 最低剩余量 0.5：waterHeight = 310 * 0.5 = 155.00, y = 702 - 155 = 547.00。
+        XCTAssertTrue(svg.contains("height=\"155.00\""))
+        XCTAssertTrue(svg.contains("y=\"547.00\""))
+        XCTAssertTrue(svg.contains("fill=\"#34C759\""))
+
+        // waterHealth 优先于整体健康度：红色水位。
+        let criticalSVG = QuotaLogoSVGBuilder.buildSVG(
+            metrics: StatusBarQuotaMetrics(weekly: outer, interval: middle, waterHealth: .critical)
+        )
+        XCTAssertTrue(criticalSVG.contains("fill=\"#FF453A\""))
+
+        // 缺失窗口沿用上一版语义按满环呈现：无 5h 窗口 → 满水位；
+        // 无周窗口 → 外环绘制为完整圆。
+        let missingInterval = QuotaLogoSVGBuilder.buildSVG(
+            metrics: StatusBarQuotaMetrics(
+                weekly: outer,
+                interval: QuotaRingMetrics(minAvailable: 0, avgAvailable: 0, colorHex: "#2DD4BF", isAvailable: false),
+                waterHealth: .healthy
+            )
+        )
+        XCTAssertTrue(missingInterval.contains("height=\"310.00\""))
+        XCTAssertTrue(missingInterval.contains("y=\"392.00\""))
+
+        let missingWeekly = QuotaLogoSVGBuilder.buildSVG(
+            metrics: StatusBarQuotaMetrics(
+                weekly: QuotaRingMetrics(minAvailable: 0, avgAvailable: 0, colorHex: "#FB923C", isAvailable: false),
+                interval: middle,
+                waterHealth: .healthy
+            )
+        )
+        XCTAssertTrue(missingWeekly.contains("<circle cx=\"512\" cy=\"512\" r=\"320.0\""))
+
+        let image = QuotaLogoSVGBuilder.buildImage(
+            metrics: metrics,
+            fallbackHealth: .healthy
+        )
+        XCTAssertNotNil(image)
+        XCTAssertEqual(image?.size.width, 22)
+        XCTAssertEqual(image?.size.height, 22)
     }
 
     @MainActor

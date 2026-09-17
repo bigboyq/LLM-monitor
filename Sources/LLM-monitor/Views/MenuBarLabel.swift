@@ -139,13 +139,23 @@ struct MenuBarLabel: View {
     ) -> NSImage {
         let canvasSize = NSSize(width: 22, height: 22)
         let baseImage: NSImage?
-        if iconStyle == .quotaLogo {
+        switch iconStyle {
+        case .quotaLogo:
+            // 经典「App 图标」：逆时针双环 + 中心水位杯，水位颜色由
+            // waterHealth（无值时回退整体健康度）决定。
             baseImage = QuotaLogoSVGBuilder.buildImage(
+                metrics: quotaMetrics,
+                fallbackHealth: health,
+                healthColors: healthColors
+            )
+        case .iconDuo:
+            // 「Icon Duo」仪表盘：左右额度弧、中心扇形、底部套餐点与顶部节能点。
+            baseImage = IconDuoSVGBuilder.buildImage(
                 metrics: quotaMetrics,
                 healthColors: healthColors,
                 energyHealth: energyHealth
             )
-        } else {
+        default:
             let baseConfiguration = NSImage.SymbolConfiguration(pointSize: 14, weight: .regular)
                 .applying(NSImage.SymbolConfiguration(paletteColors: [.labelColor]))
             baseImage = NSImage(
@@ -158,8 +168,8 @@ struct MenuBarLabel: View {
             // 专用 SVG 已裁掉原图透明留白；系统符号仍沿用原来的 20pt 画布。
             baseImage?.draw(in: NSRect(x: 1, y: 1, width: 20, height: 20))
 
-            // App 图标模式已经内置三个套餐健康点，不再叠加系统图标圆点。
-            let shouldShowHealthDot = showsHealthDot && iconStyle != .quotaLogo
+            // 两种仪表盘样式已内置额度与健康点表达，不再叠加系统图标圆点。
+            let shouldShowHealthDot = showsHealthDot && !iconStyle.isDashboardStyle
             if shouldShowHealthDot, let dotColor = statusDotColor(for: health, colors: healthColors) {
                 dotColor.setFill()
                 // AppKit 坐标原点在左下角，因此 x=16、y=0 对齐右下角。
