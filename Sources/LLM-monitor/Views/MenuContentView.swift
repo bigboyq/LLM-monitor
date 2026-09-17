@@ -153,11 +153,15 @@ struct MenuContentView: View {
                     .font(MenuTypography.headerTitle)
                     .foregroundStyle(.secondary)
             }
-            Text("LLM Monitor")
-                .font(MenuTypography.headerTitle)
-                .foregroundStyle(Color.primaryLabel)
-            if let report = state.sleepHealth.report, !report.offenders.isEmpty {
-                headerSleepBlockersNotice(offenders: report.offenders)
+            // 标题与睡眠锁提示按文字基线对齐，小字标注落在标题同一底线，
+            // 不随外层（图标 / 刷新按钮）垂直居中。
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                Text("LLM Monitor")
+                    .font(MenuTypography.headerTitle)
+                    .foregroundStyle(Color.primaryLabel)
+                if let report = state.sleepHealth.report, !report.offenders.isEmpty {
+                    headerSleepBlockersNotice(offenders: report.offenders)
+                }
             }
             Spacer()
             if state.isRefreshing {
