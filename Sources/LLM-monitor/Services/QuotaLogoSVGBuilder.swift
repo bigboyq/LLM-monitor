@@ -32,8 +32,9 @@ struct StatusBarQuotaMetrics: Equatable, Sendable {
     var weekly: QuotaRingMetrics
     /// 左弧：5 小时额度（原始物理剩余比例，无时间系数）。
     var interval: QuotaRingMetrics
-    /// 所有有效套餐、所有有效窗口中的最低剩余比例；nil 表示暂无额度数据。
-    var lowestAvailable: Double?
+    /// 中心扇形显示的剩余比例：优先取所有 5h 窗口中的最低值；没有 5h
+    /// 窗口时回退到周窗口最低值。nil 表示暂无额度数据。
+    var centerAvailable: Double?
     /// 套餐健康点，已按红 > 黄 > 绿排序并补齐到三个。
     var quotaHealthLevels: [HealthLevel]
     /// 兼容旧调用方保留的综合状态；quotaLogo 的各部件直接使用各自的 standard 状态。
@@ -42,13 +43,13 @@ struct StatusBarQuotaMetrics: Equatable, Sendable {
     init(
         weekly: QuotaRingMetrics,
         interval: QuotaRingMetrics,
-        lowestAvailable: Double? = nil,
+        centerAvailable: Double? = nil,
         quotaHealthLevels: [HealthLevel] = Array(repeating: .healthy, count: 3),
         waterHealth: HealthLevel? = nil
     ) {
         self.weekly = weekly
         self.interval = interval
-        self.lowestAvailable = lowestAvailable.map { min(max($0, 0.0), 1.0) }
+        self.centerAvailable = centerAvailable.map { min(max($0, 0.0), 1.0) }
         self.quotaHealthLevels = Self.resolveTopThreeHealthLevels(quotaHealthLevels)
         self.waterHealth = waterHealth
     }
@@ -63,7 +64,7 @@ struct StatusBarQuotaMetrics: Equatable, Sendable {
     static let full = StatusBarQuotaMetrics(
         weekly: QuotaRingMetrics(minAvailable: 1.0, avgAvailable: 1.0, colorHex: QuotaLogoSVGBuilder.defaultOuterColor),
         interval: QuotaRingMetrics(minAvailable: 1.0, avgAvailable: 1.0, colorHex: QuotaLogoSVGBuilder.defaultMiddleColor),
-        lowestAvailable: 1.0,
+        centerAvailable: 1.0,
         quotaHealthLevels: Array(repeating: .healthy, count: 3),
         waterHealth: .healthy
     )
@@ -174,7 +175,7 @@ enum QuotaLogoSVGBuilder {
 
         // 5. 中心扇形圆：以 12 点钟为顶，从 6 点钟底端向左右对称打开
         let centerSVG = buildCenterSectorSVG(
-            lowestAvailable: metrics.lowestAvailable,
+            centerAvailable: metrics.centerAvailable,
             healthColors: healthColors
         )
 
@@ -190,11 +191,11 @@ enum QuotaLogoSVGBuilder {
     }
 
     private static func buildCenterSectorSVG(
-        lowestAvailable: Double?,
+        centerAvailable: Double?,
         healthColors: StatusBarHealthColors
     ) -> String {
         let bgDisc = "<circle id=\"center-track\" cx=\"352\" cy=\"352\" r=\"135\" fill=\"#2C2C2E\" fill-opacity=\"0.6\"/>"
-        guard let pRaw = lowestAvailable else {
+        guard let pRaw = centerAvailable else {
             let emptyColor = defaultUnconfiguredColor
             return """
             \(bgDisc)

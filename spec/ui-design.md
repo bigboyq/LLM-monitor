@@ -30,7 +30,9 @@ Icon Styles (`statusBarIconStyle`):
 
 The `quotaLogo` dashboard uses a left 5h arc and right weekly arc, both being concentric
 circular arcs growing from the bottom with dark gray background tracks and health-colored
-available segments (a missing window keeps only its gray track). The center is a symmetrical circular sector anchored at the top (12 o'clock)
+available segments (a missing window keeps only its gray track). The center uses the minimum
+5h remaining percentage across active models, falling back to the weekly minimum only when no
+5h window exists. It is a symmetrical circular sector anchored at the top (12 o'clock)
 that opens left and right from the bottom (6 o'clock) as quota depletes (full 360° circle at 100%,
 180° dome semicircle at 50%, empty red ring at 0%; there is no numeric label). Three bottom dots (enlarged to r=36) follow
 the circle's arc to show active-model health prioritized strictly as red > yellow > green (if 3 reds,

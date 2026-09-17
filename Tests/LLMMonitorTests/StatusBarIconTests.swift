@@ -110,13 +110,13 @@ final class StatusBarIconTests: XCTestCase {
         let warningMetrics = StatusBarQuotaMetrics(
             weekly: .default(minAvailable: 1, avgAvailable: 1, defaultColor: "#FB923C"),
             interval: .default(minAvailable: 1, avgAvailable: 1, defaultColor: "#2DD4BF"),
-            lowestAvailable: 1,
+            centerAvailable: 1,
             quotaHealthLevels: [.warning]
         )
         let criticalMetrics = StatusBarQuotaMetrics(
             weekly: .default(minAvailable: 1, avgAvailable: 1, defaultColor: "#FB923C"),
             interval: .default(minAvailable: 1, avgAvailable: 1, defaultColor: "#2DD4BF"),
-            lowestAvailable: 1,
+            centerAvailable: 1,
             quotaHealthLevels: [.critical]
         )
         let healthyQuotaLogo = MenuBarLabel.composedMenuBarImage(
@@ -343,7 +343,7 @@ final class StatusBarIconTests: XCTestCase {
         let metrics = StatusBarQuotaMetrics(
             weekly: outer,
             interval: middle,
-            lowestAvailable: 0.5, // > 40% -> healthy
+            centerAvailable: 0.5, // > 40% -> healthy
             quotaHealthLevels: [.healthy, .warning, .critical]
         )
         let svg = QuotaLogoSVGBuilder.buildSVG(
@@ -367,11 +367,24 @@ final class StatusBarIconTests: XCTestCase {
         XCTAssertTrue(svg.contains("r=\"36\""), "点半径放大至 r=36")
         XCTAssertTrue(svg.contains("fill=\"#FF453A\""), "包含红色状态点或周额度异常色")
 
+        // 69.5% 必须走 SVG large-arc，绘制约 250°，不能错误显示成不足四分之一。
+        let currentQuotaMetrics = StatusBarQuotaMetrics(
+            weekly: outer,
+            interval: middle,
+            centerAvailable: 0.695
+        )
+        let currentQuotaSVG = QuotaLogoSVGBuilder.buildSVG(metrics: currentQuotaMetrics)
+        XCTAssertTrue(currentQuotaSVG.contains("id=\"center-sector\" data-value=\"70\""))
+        XCTAssertTrue(
+            currentQuotaSVG.contains("A 135.00 135.00 0 1 1"),
+            "超过 50% 的中心扇形必须使用 large-arc，69.5% 应约为 250°"
+        )
+
         // 缺失窗口只绘制灰色底轨，不得伪装成 100% 可用。
         let weeklyOnly = StatusBarQuotaMetrics(
             weekly: QuotaRingMetrics(minAvailable: 0.5, avgAvailable: 0.5, colorHex: "#FB923C"),
             interval: QuotaRingMetrics(minAvailable: 0, avgAvailable: 0, colorHex: "#2DD4BF", isAvailable: false),
-            lowestAvailable: 0.5
+            centerAvailable: 0.5
         )
         let weeklyOnlySVG = QuotaLogoSVGBuilder.buildSVG(metrics: weeklyOnly)
         XCTAssertFalse(weeklyOnlySVG.contains("id=\"interval-available\""))
@@ -380,7 +393,7 @@ final class StatusBarIconTests: XCTestCase {
         let intervalOnly = StatusBarQuotaMetrics(
             weekly: QuotaRingMetrics(minAvailable: 0, avgAvailable: 0, colorHex: "#FB923C", isAvailable: false),
             interval: QuotaRingMetrics(minAvailable: 0.5, avgAvailable: 0.5, colorHex: "#2DD4BF"),
-            lowestAvailable: 0.5
+            centerAvailable: 0.5
         )
         let intervalOnlySVG = QuotaLogoSVGBuilder.buildSVG(metrics: intervalOnly)
         XCTAssertTrue(intervalOnlySVG.contains("id=\"interval-available\""))
@@ -404,7 +417,7 @@ final class StatusBarIconTests: XCTestCase {
         let threeRedsMetrics = StatusBarQuotaMetrics(
             weekly: .default(minAvailable: 1, avgAvailable: 1, defaultColor: "#FB923C"),
             interval: .default(minAvailable: 1, avgAvailable: 1, defaultColor: "#2DD4BF"),
-            lowestAvailable: 0.8,
+            centerAvailable: 0.8,
             quotaHealthLevels: [.critical, .warning, .critical, .healthy, .critical]
         )
         XCTAssertEqual(threeRedsMetrics.quotaHealthLevels, [.critical, .critical, .critical])
@@ -412,7 +425,7 @@ final class StatusBarIconTests: XCTestCase {
         let mixedMetrics = StatusBarQuotaMetrics(
             weekly: .default(minAvailable: 1, avgAvailable: 1, defaultColor: "#FB923C"),
             interval: .default(minAvailable: 1, avgAvailable: 1, defaultColor: "#2DD4BF"),
-            lowestAvailable: 0.8,
+            centerAvailable: 0.8,
             quotaHealthLevels: [.healthy, .critical, .warning]
         )
         XCTAssertEqual(mixedMetrics.quotaHealthLevels, [.critical, .warning, .healthy])
@@ -425,7 +438,7 @@ final class StatusBarIconTests: XCTestCase {
         let allExhaustedMetrics = StatusBarQuotaMetrics(
             weekly: .default(minAvailable: 0, avgAvailable: 0, defaultColor: "#FB923C"),
             interval: .default(minAvailable: 0, avgAvailable: 0, defaultColor: "#2DD4BF"),
-            lowestAvailable: 0.0,
+            centerAvailable: 0.0,
             quotaHealthLevels: [.critical, .critical, .critical]
         )
         let exhaustedSvg = QuotaLogoSVGBuilder.buildSVG(metrics: allExhaustedMetrics)
@@ -492,7 +505,7 @@ final class StatusBarIconTests: XCTestCase {
         let metrics = state.statusBarQuotaMetrics()
         XCTAssertFalse(metrics.interval.isAvailable)
         XCTAssertFalse(metrics.weekly.isAvailable)
-        XCTAssertNil(metrics.lowestAvailable)
+        XCTAssertNil(metrics.centerAvailable)
         XCTAssertNil(metrics.waterHealth)
         XCTAssertEqual(metrics.quotaHealthLevels, [.healthy, .healthy, .healthy])
     }
@@ -587,7 +600,12 @@ final class StatusBarIconTests: XCTestCase {
         // min = 0.3, avg = (0.3 + 0.4) / 2 = 0.35
         XCTAssertEqual(metrics.weekly.minAvailable, 0.3, accuracy: 0.001)
         XCTAssertEqual(metrics.weekly.avgAvailable, 0.35, accuracy: 0.001)
-        XCTAssertEqual(metrics.lowestAvailable ?? -1, 0.3, accuracy: 0.001)
+        XCTAssertEqual(
+            metrics.centerAvailable ?? -1,
+            0.4,
+            accuracy: 0.001,
+            "中心应使用 5h 最低值 40%，不能被更低的周额度 30% 压低"
+        )
         XCTAssertEqual(metrics.quotaHealthLevels, [.warning, .warning, .healthy])
 
         // 状态栏统一使用固定 standard 阈值：短窗口 35% 同时为黄，15% 同时为红。
@@ -689,7 +707,7 @@ final class StatusBarIconTests: XCTestCase {
         let customMetrics = StatusBarQuotaMetrics(
             weekly: QuotaRingMetrics(minAvailable: 0.3, avgAvailable: 0.6, colorHex: "#FB923C"),
             interval: QuotaRingMetrics(minAvailable: 0.2, avgAvailable: 0.5, colorHex: "#2DD4BF"),
-            lowestAvailable: 0.2,
+            centerAvailable: 0.2,
             quotaHealthLevels: [.critical, .warning]
         )
 

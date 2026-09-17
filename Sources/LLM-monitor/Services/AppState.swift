@@ -122,7 +122,7 @@ final class AppState: ObservableObject {
         return levels.min()
     }
 
-    /// 计算当前状态栏配额指标：左弧 5h、右弧周额度、中间全局最低剩余量，
+    /// 计算当前状态栏配额指标：左弧 5h、右弧周额度、中间 5h 最低剩余量，
     /// 底部三点按套餐健康度红 > 黄 > 绿排列。
     func statusBarQuotaMetrics(at now: Date = Date()) -> StatusBarQuotaMetrics {
         let enabled = statuses.filter(\.isEnabled)
@@ -183,20 +183,19 @@ final class AppState: ObservableObject {
             )
         }
 
-        // 3. 中心扇形取所有有效套餐、所有存在窗口中的最低物理剩余量。
+        // 3. 中心扇形优先取所有有效套餐的 5h 最低物理剩余量；只有完全没有
+        // 5h 窗口时才回退到周额度最低值。左右弧已分别表达两种窗口，中心继续
+        // 强调更即时的 5h 压力，避免较低的周额度让中心看起来与 5h 数字矛盾。
         // 底部点按每个有效套餐自身存在窗口的 standard 健康度汇总；构造器负责排序、
         // 截断到三个并用默认绿色补齐。
-        let allWindowAvailability = allActiveModels.flatMap { model -> [Double] in
-            var values: [Double] = []
-            if model.hasIntervalWindow {
-                values.append(min(max(model.intervalRemainingPercent / 100.0, 0.0), 1.0))
-            }
-            if model.hasWeeklyWindow {
-                values.append(min(max(model.weeklyRemainingPercent / 100.0, 0.0), 1.0))
-            }
-            return values
+        let centerAvailable: Double?
+        if intervalMetrics.isAvailable {
+            centerAvailable = intervalMetrics.minAvailable
+        } else if weeklyMetrics.isAvailable {
+            centerAvailable = weeklyMetrics.minAvailable
+        } else {
+            centerAvailable = nil
         }
-        let lowestAvailable = allWindowAvailability.min()
         let quotaHealthLevels = allActiveModels.map(\.statusBarHealthLevel)
 
         // 4. 高峰价格判定
@@ -233,7 +232,7 @@ final class AppState: ObservableObject {
         return StatusBarQuotaMetrics(
             weekly: weeklyMetrics,
             interval: intervalMetrics,
-            lowestAvailable: lowestAvailable,
+            centerAvailable: centerAvailable,
             quotaHealthLevels: quotaHealthLevels,
             waterHealth: waterHealth
         )
