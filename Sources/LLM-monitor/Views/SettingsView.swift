@@ -139,6 +139,28 @@ struct SettingsView: View {
         descriptors.sorted(by: providerDescriptorDisplayNameAscending)
     }
 
+    /// 「App 图标」选项的预览图：直接使用设计稿 SVG（与 App 实际图标同源），
+    /// 不再用 .full 示例指标现生成；资源缺失或解析失败时回退到现生成逻辑。
+    /// SwiftPM 会把 .copy 资源打平到 bundle Resources 根目录，与 BrandLogo 同款查找方式。
+    static let quotaLogoPreviewImage: NSImage? = {
+        guard let url = Bundle.module.url(forResource: "llm-quota-730-2-dark", withExtension: "svg") else {
+            return nil
+        }
+        return NSImage(contentsOf: url)
+    }()
+
+    /// 图标主题 picker 每行的预览图。
+    static func previewImage(for style: StatusBarIconStyle) -> NSImage {
+        if style == .quotaLogo, let preview = quotaLogoPreviewImage {
+            return preview
+        }
+        return MenuBarLabel.composedMenuBarImage(
+            iconStyle: style,
+            health: nil,
+            showsHealthDot: false
+        )
+    }
+
     var body: some View {
         HStack(spacing: 0) {
             sidebar
@@ -324,11 +346,7 @@ struct SettingsView: View {
                         Picker("", selection: $statusBarIconStyle) {
                             ForEach(StatusBarIconStyle.allCases) { style in
                                 HStack(spacing: 8) {
-                                    Image(nsImage: MenuBarLabel.composedMenuBarImage(
-                                        iconStyle: style,
-                                        health: nil,
-                                        showsHealthDot: false
-                                    ))
+                                    Image(nsImage: Self.previewImage(for: style))
                                     .renderingMode(.original)
                                     .resizable()
                                     .interpolation(.high)

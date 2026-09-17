@@ -838,6 +838,19 @@ final class StatusBarIconTests: XCTestCase {
         XCTAssertEqual(image?.size.height, 22)
     }
 
+    /// 设置页 picker 的「App 图标」预览使用打包的设计稿 SVG；
+    /// 加载失败会静默回退到现生成图，这里钉住资源打包不回退。
+    func testQuotaLogoPickerPreviewUsesDesignAsset() {
+        let preview = SettingsView.quotaLogoPreviewImage
+        XCTAssertNotNil(preview, "设计稿 SVG 未打入资源包，picker 将回退到现生成预览")
+        XCTAssertEqual(
+            SettingsView.previewImage(for: .quotaLogo).tiffRepresentation,
+            preview?.tiffRepresentation
+        )
+        // 其余样式始终走现生成逻辑。
+        XCTAssertNotNil(SettingsView.previewImage(for: .iconDuo))
+    }
+
     @MainActor
     func testStatusBarWaterHealthLevels() {
         let descriptors = [
