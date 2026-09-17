@@ -838,12 +838,12 @@ final class StatusBarIconTests: XCTestCase {
         XCTAssertEqual(image?.size.height, 22)
     }
 
-    /// 设置页 picker 的「App 图标」预览使用打包的设计稿 SVG；
-    /// 加载失败会静默回退到现生成图，这里钉住资源打包不回退。
+    /// 设置页 picker 与主面板 header 使用的 App 图标设计稿必须能从资源包加载；
+    /// 加载失败会静默回退，这里钉住资源打包不回退。
     func testQuotaLogoPickerPreviewUsesDesignAsset() {
-        let preview = SettingsView.quotaLogoPreviewImage
-        XCTAssertNotNil(preview, "设计稿 SVG 未打入资源包，picker 将回退到现生成预览")
-        // 归一到与其他选项预览一致的 22pt 画布。
+        let preview = MenuBarLabel.appIconDesignImage
+        XCTAssertNotNil(preview, "设计稿 SVG 未打入资源包，picker 与 header 将回退")
+        // 归一到与各处预览一致的 22pt 画布。
         XCTAssertEqual(preview?.size.width, 22)
         XCTAssertEqual(preview?.size.height, 22)
         XCTAssertEqual(

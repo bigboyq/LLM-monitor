@@ -141,9 +141,18 @@ struct MenuContentView: View {
 
     private var headerBar: some View {
         HStack(spacing: 8) {
-            Image(systemName: "chart.bar.xaxis")
-                .font(MenuTypography.headerTitle)
-                .foregroundStyle(.secondary)
+            // 主面板左上角使用 App 图标设计稿；加载失败兜底回原系统符号。
+            if let appIcon = MenuBarLabel.appIconDesignImage {
+                Image(nsImage: appIcon)
+                    .renderingMode(.original)
+                    .resizable()
+                    .interpolation(.high)
+                    .frame(width: 16, height: 16)
+            } else {
+                Image(systemName: "chart.bar.xaxis")
+                    .font(MenuTypography.headerTitle)
+                    .foregroundStyle(.secondary)
+            }
             Text("LLM Monitor")
                 .font(MenuTypography.headerTitle)
                 .foregroundStyle(Color.primaryLabel)

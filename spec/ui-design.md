@@ -139,7 +139,7 @@ Implemented in `MenuContentView.headerBar`.
 
 | Element | Current behavior |
 |---|---|
-| Leading icon | `chart.bar.xaxis`, 13pt semibold, secondary |
+| Leading icon | App icon design asset (`llm-quota-730-2-dark.svg`, 16×16, original colors; falls back to `chart.bar.xaxis` 13pt semibold secondary if the asset fails to load) |
 | Title | `LLM Monitor`, 13pt semibold |
 | Refresh control | Plain button with `arrow.clockwise`, tooltip `立即刷新全部` |
 | Spinner | Shows while at least one provider request is in flight; the refresh button is replaced to prevent accidental duplicate requests |

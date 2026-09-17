@@ -139,23 +139,11 @@ struct SettingsView: View {
         descriptors.sorted(by: providerDescriptorDisplayNameAscending)
     }
 
-    /// 「App 图标」选项的预览图：直接使用设计稿 SVG（与 App 实际图标同源），
-    /// 不再用 .full 示例指标现生成；资源缺失或解析失败时回退到现生成逻辑。
-    /// SwiftPM 会把 .copy 资源打平到 bundle Resources 根目录，与 BrandLogo 同款查找方式。
-    static let quotaLogoPreviewImage: NSImage? = {
-        guard let url = Bundle.module.url(forResource: "llm-quota-730-2-dark", withExtension: "svg") else {
-            return nil
-        }
-        guard let image = NSImage(contentsOf: url) else { return nil }
-        // 设计稿固有尺寸为 1024×1024，归一到与其他选项预览相同的 22pt 画布，
-        // 避免在 picker 里显得比其他图标大；SVG 为矢量，缩小后依然清晰。
-        image.size = NSSize(width: 22, height: 22)
-        return image
-    }()
-
+    /// 「App 图标」选项的预览图：直接使用 App 图标设计稿（与实际图标同源），
+    /// 不再用 .full 示例指标现生成；设计稿加载失败时回退到现生成逻辑。
     /// 图标主题 picker 每行的预览图。
     static func previewImage(for style: StatusBarIconStyle) -> NSImage {
-        if style == .quotaLogo, let preview = quotaLogoPreviewImage {
+        if style == .quotaLogo, let preview = MenuBarLabel.appIconDesignImage {
             return preview
         }
         return MenuBarLabel.composedMenuBarImage(
