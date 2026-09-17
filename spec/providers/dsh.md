@@ -58,7 +58,7 @@ Card merging uses these aliases:
 | Card | dsh provider aliases |
 |---|---|
 | MiniMax Token Plan | `minimax`, `minimax-cn`, `minimax-cn-coding-plan` |
-| GLM Coding Plan | `glm`, `zhipu`, `zhipuai`, `bigmodel`, `builtin:bigmodel-coding-plan` |
+| GLM Coding Plan | `glm`, `zhipu`, `zhipuai`, `bigmodel`, `builtin:bigmodel-coding-plan`, `account:bigmodel-individual-coding-plan` |
 | DeepSeek | `deepseek`, `deepseek-official`, `deepseek-cn`, `deepseek-v4` |
 
 Unlike OpenCode, DSH data is merged automatically when present. It is a native harness

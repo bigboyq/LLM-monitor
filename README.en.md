@@ -4,11 +4,11 @@
 
 LLM Monitor is a macOS 14+ menu bar app for viewing quota, balance, reset times, health, and local token usage across multiple LLM services.
 
-> Current version: **1.10.0** · Apple Silicon (arm64) · Credentials and usage caches stay on your Mac
+> Current version: **1.10.1** · Apple Silicon (arm64) · Credentials and usage caches stay on your Mac
 
 ## Download
 
-1. Download `LLM-monitor-1.10.0.dmg` from [GitHub Releases](https://github.com/bigboyq/LLM-monitor/releases/latest).
+1. Download `LLM-monitor-1.10.1.dmg` from [GitHub Releases](https://github.com/bigboyq/LLM-monitor/releases/latest).
 2. Open the DMG and drag **LLM-monitor.app** to **Applications**.
 3. Launch the app, click its menu bar icon, open Settings, and enable the providers you use.
 
@@ -95,7 +95,7 @@ Run the test and audit gates:
 Create a deterministic release app, DMG, and checksum file:
 
 ```bash
-./scripts/build-release.sh 1.10.0 153
+./scripts/build-release.sh 1.10.1 154
 ```
 
 `build-app.sh` controls whether the repository's `.build_number` changes:
