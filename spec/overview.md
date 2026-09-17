@@ -79,7 +79,7 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 | `Sources/LLM-monitor/Services/Formatters.swift` | token / percent / 时间 / codex window 标签格式化 |
 | `Sources/LLM-monitor/Services/HTTPClient.swift` | 共享 HTTP 客户端（minimax / codex 三个 fetch 路径） |
 | `Sources/LLM-monitor/Services/LocalUsageCoordinator.swift` | scanner 协议 + Combine wire-up 容器 |
-| `Sources/LLM-monitor/Services/ProviderRefreshScheduler.swift` | 循环 A（额度循环）：单一 Task 管理所有 Provider 的 quota 定时与退避，睡眠至最早截止时间，并发刷新 + 条目级隔离 |
+| `Sources/LLM-monitor/Services/ProviderRefreshScheduler.swift` | 循环 A（额度循环）：单一 Task 管理所有 Provider 的 quota 定时排期，睡眠至最早截止时间，并发刷新 + 条目级隔离 |
 | `Sources/LLM-monitor/Services/ManualRefreshGate.swift` | 手动 full refresh 与 in-flight background refresh 的合并协议（pending 登记 / 取消撤销 / 一次性补跑） |
 | `Sources/LLM-monitor/Services/LocalUsageOrchestration.swift` | LocalUsage reconcile：Provider batch settled 后执行首次/日切 Full Scan，否则只消费 dirty sources；不持有 Timer |
 | `Sources/LLM-monitor/Services/LocalFSEventsWatcher.swift` | 可复用的单 scanner FSEvents 封装；每个 scanner 自己持有 watcher 与源路径，不维护全局路径表 |
@@ -111,7 +111,7 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 | `Sources/LLM-monitor/Services/AsyncMutex.swift` | actor-based async-aware mutex（scanner pipeline 互斥；支持 caller cancellation propagation — acquire 前 / 排队中 / acquire 后执行前三阶段均检查取消）|
 | `Sources/LLM-monitor/Services/CancellationFilter.swift` | 统一"取消错误"判断（`Task.isCancelled` / `CancellationError` / `URLError.cancelled`），AppState 与 LocalUsageScanRunner 的两个 catch 入口共用 |
 | `Sources/LLM-monitor/Services/FileManagerBox.swift` | `FileManager` 的 `@unchecked Sendable` 包装 + `fileManager` 字段 `private`（同文件 extension 之外不能直接拿到底层 `FileManager`）。`Tests/LLMMonitorTests/StateAndSchedulerTests.swift` 验证该访问约束 |
-| `Sources/LLM-monitor/Services/HTTPTimeouts.swift` | HTTP timeout 集中地（之前散落在 minimax/codex/antigravity 三个 fetcher），改一处全局生效 |
+| `Sources/LLM-monitor/Services/HTTPTimeouts.swift` | HTTP timeout 集中地（国内 domestic 10s / 海外 overseas 15s / antigravity 本机回环），改一处全局生效 |
 | `Sources/LLM-monitor/Services/LocalUsageScanRunner.swift` | 本地用量 scanner 共享的 lifecycle helper（generation 守门 / cancellation filter / defer generation 守门），消除镜像 boilerplate |
 | `Sources/LLM-monitor/Services/SingleDBSnapshotScanner.swift` | 单库全量快照 scanner 基座（db + WAL 双维指纹与缓存 index；GLM / OpenCode scanner 复用） |
 | `Sources/LLM-monitor/Services/DailyUsageAggregation.swift` | minimax / antigravity 共享的 per-day 聚合（补零填充 + 跨 source 合并） |
@@ -378,28 +378,28 @@ deriveState 返回 `.notConfigured` 时整个 state 重置，lastSuccess 跟着�
 1. 注册时立即调用 `refreshHandler(providerID, .full)` → AppState 的 `refreshProviderDirectly`
 2. 每次唤醒取"最早到期时刻"，到期的 provider 用 TaskGroup 并发刷新（首轮 `.full`，后续轮询用 `.background` mode）
 3. 成功后按 `providers.<id>.refreshIntervalSeconds ?? refreshIntervalSeconds` 计算下次到期
-4. 失败走指数退避（`baseInterval × 2^failures`，cap 5 次，30 分钟封顶，±10% jitter）
+4. 失败按同一个 baseInterval 固定间隔随下一定时周期重试（不做指数退避：后台固定间隔刷新下，拉长重试间隔只会推迟恢复）
 5. 任务被 cancel → 退出循环
 
 **周期 full（reset credits 等“只在 full 抓取”的字段）**：`ProviderRefreshScheduler` 每累计
 `periodicFullEveryN`（默认 20）次 `.background` 后，下一次补跑一次 `.full`（走常规 deadline，
-不重置退避）。这样 Codex 的 reset credits 不需要用户手动刷新也能周期性更新：默认 300s 间隔下
+不改变常规排期节奏）。这样 Codex 的 reset credits 不需要用户手动刷新也能周期性更新：默认 300s 间隔下
 约每 `20×300s ≈ 100min` 自动 full 一次。`.background` 仍只抓主 quota，不抓 reset credits。
 
-scheduler 集中持有 5 个 dict：`tasks` / `inFlightModes` / `inFlightWaiters` / `nextRefreshDates` / `failureCounts`。
+scheduler 集中持有排期与 in-flight 状态：`nextRefreshDates` / `midCycleDeadlines` / `inFlightModes` / `inFlightWaiters` 等。
 in-flight dedup：`markInFlight(providerID)` 返回 false 时直接 `.deferred`（已被 timer /
 manual / menu-open 任一路径占住）。手动 full refresh 若遇到 background 请求，会通过
 `waitUntilNotInFlight` 等待；该等待支持 cancellation，取消时会移除带 UUID 的 waiter，
 不会留下悬挂 continuation。多个 full refresh waiter 由 `pendingFullRefreshIDs` 做一次性
 claim，当前 background 请求完成后最多补跑一次 full refresh。
-成功 / 失败时 `recordSuccess(providerID)` / `recordFailure(providerID)` 计入 failureCounts。
+成功与失败都直接按 baseInterval 写入 `nextRefreshDates`。
 UI 通过 `earliestNextRefresh` 拿到所有 provider 中最早的下次触发时间，pub 到 `nextRefreshAt`。
 
 `AppState.refreshProviderDirectly` 是 scheduler 的 refreshHandler 闭包：
 1. 入口 `markInFlight` dedup，失败 `.deferred` 退出
 2. fetch + 应用到 `statuses[idx]` + 通知 `statusDidChange` 广播
 3. `defer { markNotInFlight }` 在 `await` 路径任何退出都执行
-4. 失败时调 `recordFailure` + antigravity 走 `AuthProber.scheduleProbe` 重新探测
+4. 失败时只记录 `.failed` 状态 + antigravity 走 `AuthProber.scheduleProbe` 重新探测（排期仍按 baseInterval）
 5. config 变更时 generation mismatch 直接丢弃旧结果
 
 The `effectiveRefreshInterval(for:)` helper clamps the interval to `10s...30d` to prevent

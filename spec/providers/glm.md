@@ -19,7 +19,7 @@ through the matching `clientBindings[]` entry.
 | Auth source | `providers.glm_coding_plan.apiKey` |
 | Required key type | GLM Coding Plan Key, format `<id>.<secret>` (the same key used for Anthropic / OpenAI protocol access) |
 | Quota endpoint | `GET https://open.bigmodel.cn/api/monitor/usage/quota/limit` |
-| Quota timeout | 15 seconds (`HTTPTimeouts.request`) |
+| Quota timeout | 10 seconds (`HTTPTimeouts.domestic`) |
 | Quota unit | Remaining credit percent, derived from `remaining / usage` (NOT the response `percentage` field, which is *used* percent) |
 | Windows | 5h (interval) + weekly — classified by window metadata, with reset-time fallback |
 | Plan tier | `data.level` → capitalized pill (`lite` → `Lite`) |

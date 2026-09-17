@@ -25,7 +25,7 @@ sample/daily accounting。若合并 OpenCode，使用 OpenCode 的统一四桶�
 | Auth source | `providers.deepseek.apiKey` |
 | Required key type | DeepSeek 开放平台 (platform.deepseek.com) API Key，格式 `sk-...` |
 | Balance endpoint | `GET https://api.deepseek.com/user/balance` |
-| Quota timeout | 15 seconds (`HTTPTimeouts.request`) |
+| Quota timeout | 10 seconds (`HTTPTimeouts.domestic`) |
 | Balance unit | `is_available` + `balance_infos[]`（`currency` / `total_balance` / `granted_balance` / `topped_up_balance`） |
 | Display | 总余额 → `planLabel`（`¥100.50`）；充值 / 赠金明细 → hover（`充值: ¥90.50 | 赠金: ¥10.00`） |
 | Remaining percent | `100` if `is_available` 且 `total_balance > 0`，否则 `0` |

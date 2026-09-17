@@ -208,7 +208,7 @@ final class HTTPAndSQLiteTests: XCTestCase {
 
     /// 之前 `HTTPClient.send` 把 `CancellationError` / `URLError.cancelled` 包装成
     /// `QuotaError.networkError`，配置变更 / 停止刷新时取消请求会被记成 provider failed、
-    /// 增加 failure 计数（污染指数退避）。修后必须透传 `CancellationError`。
+    /// 走失败排期。修后必须透传 `CancellationError`。
     func testHTTPClientSurfacesCancellationError() async throws {
         let cancellableURL = URL(string: "https://example.invalid/slow")!
         let client = HTTPClient(

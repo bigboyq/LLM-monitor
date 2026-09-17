@@ -4,8 +4,8 @@ import Foundation
 ///
 /// - `deferred`: 请求未实际发起（已有 in-flight / 配置刚变化 / auth 缺失），
 ///   timer 循环里按 1s 短重试节奏继续轮询。
-/// - `completed(success:)`: 请求真的完成了。`success=false` 时调度器计入失败计数
-///   并按指数退避延长下次间隔。
+/// - `completed(success:)`: 请求真的完成了。成功与失败都按 baseInterval 排下一拍
+///   （失败不退避：固定间隔后台刷新下，拉长重试间隔只会推迟恢复）。
 enum ProviderRefreshOutcome: Sendable, Equatable {
     case deferred
     case completed(success: Bool)
@@ -14,11 +14,11 @@ enum ProviderRefreshOutcome: Sendable, Equatable {
 /// 循环 A（额度循环）：集中管理所有 provider 的定时刷新。
 ///
 /// 架构升级为单一 Task 循环：
-/// - 单一常驻 Task 循环，维护每个 provider 的 nextDue 时间与失败计数；
+/// - 单一常驻 Task 循环，维护每个 provider 的 nextDue 时间；
 /// - 循环睡眠到"最早的下一个截止时间"（regular、mid-cycle reset 或非网络辅助 deadline）；
 /// - 醒来后并发刷新所有到期的 provider（TaskGroup + 条目级 do-catch 隔离，互不阻塞）；
 /// - 既有语义逐条保留：启动首拍 .full、之后 .background、每 20 次 background 补一次 full、
-///   失败指数退避（封顶 30min ±10% jitter）、.deferred 1s 短重试早醒、
+///   失败按 baseInterval 固定间隔随下一定时周期重试（不指数退避）、.deferred 1s 短重试早醒、
 ///   mid-cycle reset+15s 一次性补刷新（与 regular 共用 deadline driver）、健康窗口边界
 ///   （只回调 UI，不发网络请求）、ManualRefreshGate 与在飞刷新合并、配置热加载
 ///   stop+reschedule。`earliestNextRefresh` 仍只暴露 regular deadline。
@@ -28,7 +28,7 @@ final class ProviderRefreshScheduler {
     typealias RefreshHandler = (String, RefreshMode) async -> ProviderRefreshOutcome
     /// 取一个 provider 的基础刷新间隔（秒）。通常 `configStore.config.effectiveRefreshInterval(for:)`。
     typealias IntervalProvider = (String) -> TimeInterval
-    /// 任何会改 `nextRefreshDates` / `failureCounts` 的路径都会触发一次，
+    /// 任何会改 `nextRefreshDates` 的路径都会触发一次，
     /// 让外部把 `earliestNextRefresh` 重新 publish 到 `@Published nextRefreshAt`。
     typealias NextRefreshChangeCallback = () -> Void
     /// 一批到期 provider 已全部返回，并且其 outcome 已写入调度状态后的通知。
@@ -53,8 +53,6 @@ final class ProviderRefreshScheduler {
     private var managedProviders: Set<String> = []
     /// 各 provider 常规刷新的下一次触发时间。UI footer 展示其中最早的一个。
     private var nextRefreshDates: [String: Date] = [:]
-    /// 连续失败计数，用于每个 provider 独立的指数退避。
-    private var failureCounts: [String: Int] = [:]
     /// 已执行的 background 刷新次数；每 periodicFullEveryN 次补一次 .full。
     private var backgroundsSinceFull: [String: Int] = [:]
     /// 已经完成过首次常规刷新的 provider 集合（未完成过的首拍用 .full）。
@@ -183,7 +181,6 @@ final class ProviderRefreshScheduler {
         resumeRunningWaiters(for: providerID)
         pendingRegularProviders.remove(providerID)
         providerGenerations[providerID, default: 0] &+= 1
-        failureCounts.removeValue(forKey: providerID)
         backgroundsSinceFull.removeValue(forKey: providerID)
         hasDoneFirstRefresh.remove(providerID)
         lastRefreshActivity.removeValue(forKey: providerID)
@@ -218,7 +215,6 @@ final class ProviderRefreshScheduler {
         resumeAllRunningWaiters()
         pendingRegularProviders.removeAll()
         providerGenerations.removeAll()
-        failureCounts.removeAll()
         backgroundsSinceFull.removeAll()
         hasDoneFirstRefresh.removeAll()
         lastRefreshActivity.removeAll()
@@ -392,9 +388,13 @@ final class ProviderRefreshScheduler {
             } else {
                 backgroundsSinceFull[providerID, default: 0] += 1
             }
+            // 失败不退避：后台固定间隔刷新下，拉长重试间隔只会推迟恢复；
+            // 失败 provider 直接随下一定时周期重试（与成功完全相同的排期）。
             let baseInterval = intervalProvider(providerID)
-            let delay = nextDelay(for: providerID, baseInterval: baseInterval, succeeded: success)
-            nextRefreshDates[providerID] = now().addingTimeInterval(delay)
+            if !success {
+                logWarn("ProviderRefreshScheduler: [\(providerID)] 刷新失败，\(Int(baseInterval)) 秒后随下一定时周期重试")
+            }
+            nextRefreshDates[providerID] = now().addingTimeInterval(baseInterval)
         }
     }
 
@@ -490,16 +490,6 @@ final class ProviderRefreshScheduler {
         defer { markNotInFlight(providerID) }
         let outcome = await refreshHandler(providerID, mode)
         lastRefreshActivity[providerID] = now()
-        switch outcome {
-        case .completed(let success):
-            if success {
-                recordSuccess(providerID)
-            } else {
-                recordFailure(providerID)
-            }
-        case .deferred:
-            break
-        }
         if pendingRegularProviders.remove(providerID) != nil,
            providerGenerations[providerID] != nil {
             // The request that was already in flight fulfilled the regular
@@ -677,18 +667,6 @@ final class ProviderRefreshScheduler {
         wake()
     }
 
-    // MARK: - 成功 / 失败记录（给 refreshHandler 出口用）
-
-    func recordSuccess(_ providerID: String) {
-        failureCounts[providerID] = 0
-    }
-
-    func recordFailure(_ providerID: String) {
-        // R17: 饱和加法，避免理论上的 Int 溢出。
-        let current = failureCounts[providerID, default: 0]
-        failureCounts[providerID] = SaturatingArithmetic.add(current, 1)
-    }
-
     // MARK: - 观察
 
     /// 给 UI footer "下次自动刷新时间" 用。所有受管 provider 中最早的下一次常规触发时间。
@@ -713,23 +691,5 @@ final class ProviderRefreshScheduler {
 
     func inFlightMode(for providerID: String) -> RefreshMode? {
         inFlightModes[providerID]
-    }
-
-    // MARK: - 退避策略
-
-    /// 计算下次刷新延迟：
-    /// - 成功 → 直接用 baseInterval
-    /// - 失败 → baseInterval × 2^failures（封顶 5 次叠加），再 cap 30 分钟，套 ±10% jitter
-    ///
-    /// R17: 退避指数单独用 min(actual, 5)，日志显示真实连续失败次数（不能把封顶值说成实际次数）。
-    func nextDelay(for providerID: String, baseInterval: TimeInterval, succeeded: Bool) -> TimeInterval {
-        guard !succeeded else { return baseInterval }
-        let actualFailures = failureCounts[providerID, default: 1]
-        let exponent = min(actualFailures, 5)
-        let cappedDelay = min(baseInterval * pow(2, Double(exponent)), 30 * 60)
-        let jitter = Double.random(in: 0.9...1.1)
-        let delay = cappedDelay * jitter
-        logWarn("ProviderRefreshScheduler: [\(providerID)] 连续失败 \(actualFailures) 次（退避级别封顶 5），\(Int(delay)) 秒后重试")
-        return delay
     }
 }

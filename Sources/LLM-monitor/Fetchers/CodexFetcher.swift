@@ -48,8 +48,8 @@ struct CodexFetcher: QuotaFetcher {
         self.resetCreditsURL = resetCreditsURL
         // session 不再存为 stored property——HTTPClient 持 URLSession，不需要在 fetcher
         // 里保留 reference。init 参数保留是为了方便测试时注入 mock URLSession。
-        self.usageClient = HTTPClient(session: session, logTag: "[codex/usage]", defaultTimeout: HTTPTimeouts.codex)
-        self.resetCreditsClient = HTTPClient(session: session, logTag: "[codex/reset-credits]", defaultTimeout: HTTPTimeouts.codex)
+        self.usageClient = HTTPClient(session: session, logTag: "[codex/usage]", defaultTimeout: HTTPTimeouts.overseas)
+        self.resetCreditsClient = HTTPClient(session: session, logTag: "[codex/reset-credits]", defaultTimeout: HTTPTimeouts.overseas)
     }
 
     nonisolated static func defaultAuthFileURL() -> URL {

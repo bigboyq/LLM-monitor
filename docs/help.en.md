@@ -120,7 +120,7 @@ Make sure the provider is enabled, the credential is not a template placeholder,
 
 ### Remote refresh fails
 
-Check connectivity, credentials, subscription type, and local login state. The app retries with backoff, and you can Control-click the card to retry immediately. Inspect `log.txt` for details and redact it before sharing.
+Check connectivity, credentials, subscription type, and local login state. The app retries automatically at the regular refresh interval, and you can Control-click the card to retry immediately. Inspect `log.txt` for details and redact it before sharing.
 
 ### Local token usage is empty
 

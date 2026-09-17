@@ -11,20 +11,25 @@ macOS 菜单栏常驻 app（所有 provider 默认 5 分钟/300s 一刷）。以
 | 日志 | 5 MB × 3 = ~15 MB 上限 | `ls -lh ~/Library/Application\ Support/LLM-monitor/log.txt*` |
 | 冷启动 | 避免同步网络与重 I/O | Instruments / Time Profiler |
 
-## 刷新间隔 & 退避
+## 刷新间隔 & 失败重试
 
-| Provider | 默认间隔 | 失败退避 |
+| Provider | 默认间隔 | 失败重试 |
 | --- | --- | --- |
-| minimax / GLM / Codex / Antigravity / DeepSeek | 300s | 2×, 4×, …, 30min + ±10% jitter |
+| minimax / GLM / Codex / Antigravity / DeepSeek | 300s | 固定间隔：失败后仍按 baseInterval 随下一定时周期重试（不做指数退避，拉长重试间隔只会推迟恢复） |
 | 5 协议 scanner（minimax / antigravity / glm / opencode / dsh） | 在每批 Provider 刷新 settled 后由独立 reconcile pass 触发；首次启动与自然日切换做 Full Scan，其他批次按 scanner 的 dirty/fingerprint 状态决定是否重算 | single attempt，失败由下一批 settled reconcile 自然重试；FSEvents 只负责标记 dirty |
 | Codex JSONL 本地用量 | 与同一批 Provider settled 后的 LocalUsage reconcile 一起按需读取；Codex 源文件 watcher 标记 dirty | on-demand，失败由下一次 reconcile 自然重试 |
 
 [`AppConfig.effectiveRefreshInterval`](../../Sources/LLM-monitor/Services/ConfigStore.swift)
 clamp 到 10s～30d：下限防止 0/负数导致 `Task.sleep` 立即返回 → 高速循环 / CPU 100%，
 上限防止极大手工配置在 `TimeInterval` / `Int` 转换时溢出或让刷新近似永久停摆。
-[`ProviderRefreshScheduler.nextDelay`](../../Sources/LLM-monitor/Services/ProviderRefreshScheduler.swift)：
-成功 → `baseInterval`；失败 → `baseInterval × 2^failures`（封顶 5 次）→ cap 30 min → ±10%
-jitter。
+[`ProviderRefreshScheduler.processOutcome`](../../Sources/LLM-monitor/Services/ProviderRefreshScheduler.swift)：
+成功与失败都按 `baseInterval` 写入下一次 `nextRefreshDates`。
+
+### HTTP 超时（`HTTPTimeouts`）
+
+国内 quota 端点（minimax / GLM / DeepSeek）`10s`：实测 600+ 样本 p99 ≤ 0.8s、最慢 ~1.8s，
+可扛 TCP SYN 重传（~1s/3s/7s）；海外跨网路径（codex）`15s`；Antigravity 本机回环 RPC
+`15s`/`20s`（request/resource）。
 
 ## 主线程约束
 

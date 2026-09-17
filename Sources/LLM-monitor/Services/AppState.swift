@@ -40,9 +40,9 @@ final class AppState: ObservableObject {
     /// 公开给 SettingsView / 调试 — 真正的 single source of truth。
     let descriptors: [FetcherDescriptor]
     /// 单 Task 调度器（最早到期唤醒 + TaskGroup 并发刷新，无 per-provider timer）
-    /// + in-flight dedup + 退避 + 失败计数。
+    /// + in-flight dedup；失败按 baseInterval 固定间隔随下一定时周期重试。
     /// 之前这 4 个 dict 散在 AppState 里，现在统一交给 `ProviderRefreshScheduler` 打理。
-    /// `internal`（非 `private`）让测试能直接观察 `nextDelay` 等状态机行为。
+    /// `internal`（非 `private`）让测试能直接观察 `nextRefreshDates` 等状态机行为。
     var refreshScheduler: ProviderRefreshScheduler!
     /// 异步探测本地服务（antigravity / codex）是否还活着 + 缓存结果。
     /// 之前是 `externalAuthAvailability` + `authProbeTasks` 两个 dict + 3 个方法，
@@ -809,7 +809,7 @@ final class AppState: ObservableObject {
             return .completed(success: true)
         } catch {
             // 取消请求不能误判为失败：配置变更 / 停止刷新 / 窗口关闭时取消，
-            // 不应设置 .failed、计入失败数、触发 auth probe / 退避。
+            // 不应设置 .failed、触发 auth probe；取消走 .deferred，不进入失败排期。
             // HTTPClient 已经 re-throw CancellationError / URLError.cancelled，
             // 这里在 catch 入口再守一道，确保任何取消路径都走 .deferred。
             // 统一 filter 在 `CancellationFilter`，与 LocalUsageScanRunner 共用。

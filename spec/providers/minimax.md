@@ -24,7 +24,7 @@ This provider covers two distinct data sources:
 | Auth source | `providers.minimax_token_plan.apiKey` |
 | Required key type | Token Plan key, usually `sk-cp-...` |
 | Quota endpoint | `GET https://www.minimaxi.com/v1/token_plan/remains` |
-| Quota timeout | 15 seconds |
+| Quota timeout | 10 seconds (`HTTPTimeouts.domestic`) |
 | Quota unit | Remaining percent, not token count |
 | Local token source | `~/.minimax/v2/sqlite/runtime-state.sqlite` (**v2-only**) |
 | Local table | `local_runtime_token_usage` |

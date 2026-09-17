@@ -44,27 +44,40 @@ final class RobustnessBoundaryTests: XCTestCase {
         }
     }
 
-    // MARK: - R17: backoff 日志显示真实失败次数
+    // MARK: - R17: 失败不拉长刷新间隔（固定间隔重试）
 
+    /// 连续失败时每个定时周期都照常重试，且下次刷新始终按 baseInterval 排——
+    /// 不存在 2^n 退避（旧实现第 1 次失败即翻倍到 120s、封顶 30min，0.3s 内
+    /// 只会有 1 次调用）。
     @MainActor
-    func testR17NextDelayCapsExponentAtFiveButKeepsActualCount() {
+    func testR17RepeatedFailuresKeepFixedInterval() async {
+        var calls = 0
         let scheduler = ProviderRefreshScheduler(
-            refreshHandler: { _, _ in .deferred },
+            refreshHandler: { _, _ in
+                calls += 1
+                return .completed(success: false)
+            },
             intervalProvider: { _ in 60 },
-            onNextRefreshChange: {}
+            onNextRefreshChange: {},
+            sleep: { _ in try? await Task.sleep(nanoseconds: 1) }
         )
-        // 第 1、5、10 次失败的 delay 都不应崩溃；指数封顶 5。
-        // 第 1 次：60 * 2^1 = 120；第 5 次：60 * 2^5 = 1920；第 10 次：仍 60*2^5（封顶）。
-        scheduler.recordFailure("a")  // 1
-        let d1 = scheduler.nextDelay(for: "a", baseInterval: 60, succeeded: false)
-        XCTAssertGreaterThan(d1, 0)
-        for _ in 2...5 { scheduler.recordFailure("a") }
-        let d5 = scheduler.nextDelay(for: "a", baseInterval: 60, succeeded: false)
-        for _ in 6...10 { scheduler.recordFailure("a") }
-        let d10 = scheduler.nextDelay(for: "a", baseInterval: 60, succeeded: false)
-        // 第 5 次和第 10 次都封顶 30 分钟（±10% jitter），不应继续翻倍。
-        XCTAssertLessThanOrEqual(d5, 30 * 60 * 1.1)
-        XCTAssertLessThanOrEqual(d10, 30 * 60 * 1.1)
+        scheduler.schedule(for: "a")
+        // 失败循环持续跑 0.3s（远超旧退避下第 2 次重试所需的 120s）
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        let earliest = scheduler.earliestNextRefresh
+        scheduler.cancelAll()
+
+        XCTAssertGreaterThanOrEqual(
+            calls, 10,
+            "失败应随每个定时周期重试（旧指数退避下 0.3s 内最多 1 次调用）"
+        )
+        guard let earliest else {
+            XCTFail("失败 provider 也必须有下一次刷新排期")
+            return
+        }
+        let remaining = earliest.timeIntervalSinceNow
+        XCTAssertLessThanOrEqual(remaining, 65, "失败后的下次刷新应按 baseInterval(60s) 排，不指数退避")
+        XCTAssertGreaterThanOrEqual(remaining, 55, "失败后的下次刷新不应早于 baseInterval")
     }
 
     // MARK: - R14: Codex auth.json 有界读取

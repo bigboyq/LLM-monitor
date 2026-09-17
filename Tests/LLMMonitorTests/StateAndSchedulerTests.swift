@@ -414,7 +414,7 @@ final class StateAndSchedulerTests: XCTestCase {
         )
     }
 
-    // MARK: - ProviderRefreshScheduler: 退避 / dedup / 取消
+    // MARK: - ProviderRefreshScheduler: 排期 / dedup / 取消
 
     /// 跨 actor 边界的轻量计数器。让 refreshHandler 闭包能异步记录被调次数。
     private actor CallCounter {
@@ -674,51 +674,43 @@ final class StateAndSchedulerTests: XCTestCase {
         scheduler.cancelAll()
     }
 
+    /// 失败不指数退避：连续失败 8 轮（突破旧退避的封顶 5）再到成功，每一拍的
+    /// 排期都精确落在上一拍 + baseInterval 上——失败与成功的排期完全一致。
+    /// 近零 sleep 让 deadline driver 借 lastCompletedTargetWakeDate 立即续拍，
+    /// 而 nextRefreshDates 仍按真实时钟写入，可精确断言排期偏移量。
     @MainActor
-    func testSchedulerRecordSuccessResetsFailureCount() {
-        let scheduler = ProviderRefreshScheduler(
-            refreshHandler: { _, _ in .deferred },
+    func testSchedulerFailureDoesNotStretchInterval() async {
+        var callDates: [Date] = []
+        /// 每拍入口读到的"上一拍写下的排期"相对上一拍调用时刻的偏移
+        var scheduledGaps: [TimeInterval] = []
+        let holder = WeakSchedulerHolder()
+        let sched = ProviderRefreshScheduler(
+            refreshHandler: { _, _ in
+                if let previous = callDates.last, let next = holder.sched?.earliestNextRefresh {
+                    scheduledGaps.append(next.timeIntervalSince(previous))
+                }
+                callDates.append(Date())
+                if callDates.count >= 12 { holder.sched?.cancelAll() }
+                // 前 8 次失败，之后成功：失败→成功的过渡排期必须无差别
+                return callDates.count > 8 ? .completed(success: true) : .completed(success: false)
+            },
             intervalProvider: { _ in 60 },
-            onNextRefreshChange: {}
+            onNextRefreshChange: {},
+            sleep: { _ in try? await Task.sleep(nanoseconds: 1) }
         )
-        scheduler.recordFailure("a")
-        scheduler.recordFailure("a")
-        scheduler.recordFailure("a")
-        // 走 1 次失败 → delay = baseInterval * 2^1 = 120s（外加 jitter）
-        let failedDelay = scheduler.nextDelay(for: "a", baseInterval: 60, succeeded: false)
-        XCTAssertGreaterThan(failedDelay, 60, "失败后 delay 应 > baseInterval")
+        holder.sched = sched
+        sched.schedule(for: "a")
+        try? await Task.sleep(nanoseconds: 500_000_000)
+        sched.cancelAll()
 
-        scheduler.recordSuccess("a")
-        let afterSuccess = scheduler.nextDelay(for: "a", baseInterval: 60, succeeded: true)
-        XCTAssertEqual(afterSuccess, 60, "recordSuccess 应清零失败计数，下次成功时回到 baseInterval")
-    }
-
-    @MainActor
-    func testSchedulerRecordFailureIncrementsAndCaps() {
-        let scheduler = ProviderRefreshScheduler(
-            refreshHandler: { _, _ in .deferred },
-            intervalProvider: { _ in 60 },
-            onNextRefreshChange: {}
-        )
-        // 6 次失败（cap at 5 in nextDelay），第 6 次记入 state 但 delay 计算用 5
-        for _ in 0..<6 {
-            scheduler.recordFailure("a")
+        XCTAssertEqual(callDates.count, 12, "应正好跑 12 轮后自行 cancel，实际 \(callDates.count)")
+        XCTAssertEqual(scheduledGaps.count, 11)
+        for (index, gap) in scheduledGaps.enumerated() {
+            XCTAssertEqual(
+                gap, 60, accuracy: 1.0,
+                "第 \(index + 1) 拍的排期必须恒为 baseInterval(60s)，不允许 2^n 退避"
+            )
         }
-        let delay = scheduler.nextDelay(for: "a", baseInterval: 60, succeeded: false)
-        // baseInterval(60) * 2^5 = 1920, 封顶 30*60=1800。jitter ±10% → 1620~1980
-        XCTAssertLessThanOrEqual(delay, 30 * 60 * 1.1, "5 次以上失败应封顶 30 分钟")
-        XCTAssertGreaterThan(delay, 30 * 60 * 0.9, "封顶 30 分钟，jitter 范围内")
-    }
-
-    @MainActor
-    func testSchedulerDelayForSuccessReturnsBaseInterval() {
-        let scheduler = ProviderRefreshScheduler(
-            refreshHandler: { _, _ in .deferred },
-            intervalProvider: { _ in 60 },
-            onNextRefreshChange: {}
-        )
-        let delay = scheduler.nextDelay(for: "a", baseInterval: 300, succeeded: true)
-        XCTAssertEqual(delay, 300, "成功时直接用 baseInterval")
     }
 
     @MainActor
@@ -752,15 +744,13 @@ final class StateAndSchedulerTests: XCTestCase {
             intervalProvider: { _ in 60 },
             onNextRefreshChange: {}
         )
-        // 直接灌数据：markInFlight + recordFailure 各两次模拟两个 provider 有活动
+        // 直接灌数据：markInFlight 模拟两个 provider 有活动
         scheduler.markInFlight("a")
         scheduler.markInFlight("b")
-        scheduler.recordFailure("a")
-        scheduler.recordFailure("b")
         XCTAssertEqual(scheduler.inFlightProviderIDs, ["a", "b"])
 
         scheduler.cancelAll()
-        // cancelAll 清的是 timer 相关状态（tasks / nextRefreshDates / failureCounts）。
+        // cancelAll 清的是 timer 相关状态（tasks / nextRefreshDates）。
         // inFlightIDs 由各 request 的 `defer { markNotInFlight }` 自然清空——
         // 让 in-flight 完成的请求继续标记自己为未在飞，避免请求被吞但 set 状态错乱。
         XCTAssertEqual(scheduler.inFlightProviderIDs, ["a", "b"], "cancelAll 不应清 in-flight 集合")
@@ -1038,7 +1028,7 @@ final class StateAndSchedulerTests: XCTestCase {
 
     @MainActor
     func testSchedulerDeferredOutcomeCausesShortRetry() async {
-        // refreshHandler 一直返回 .deferred → timer 走 1s 短重试节奏（不计入 failure 计数）
+        // refreshHandler 一直返回 .deferred → timer 走 1s 短重试节奏（不进入失败排期）
         let counter = CallCounter()
         let sched = ProviderRefreshScheduler(
             refreshHandler: { _, mode in
@@ -1052,33 +1042,48 @@ final class StateAndSchedulerTests: XCTestCase {
         // 等 ~1.5s：.full（首次）+ 至少 1 次 .deferred 重试
         try? await Task.sleep(nanoseconds: 1_500_000_000)
         sched.cancel(providerID: "a")
-        // 验证：handler 被多次调用（说明 timer 在循环而不是退避后等 60s）
+        // 验证：handler 被多次调用（说明 timer 在循环而不是等满 baseInterval）
         let calls = await counter.calls
         XCTAssertGreaterThanOrEqual(calls, 2, "连续 .deferred 应触发 1s 短重试，至少 2 次调用（首次 + 1 次重试）")
-        // 验证：deferred 期间 failure 计数始终为 0（不会污染退避）
-        let delayAfterDeferred = sched.nextDelay(for: "a", baseInterval: 60, succeeded: false)
-        // 没 recordFailure → failureCounts[providerID, default: 1] = 1 → delay = 60 * 2 = 120 + jitter
-        // 关键是没有 recordFailure 的话 recordFailure 不会自动被调，状态保持干净
-        XCTAssertGreaterThan(delayAfterDeferred, 60, "无 recordFailure 时 default=1，delay 翻倍")
     }
 
     @MainActor
-    func testSchedulerDifferentProvidersIndependent() {
-        // 验证 A 失败不影响 B 的成功退避
-        let scheduler = ProviderRefreshScheduler(
-            refreshHandler: { _, _ in .deferred },
+    func testSchedulerDifferentProvidersIndependent() async {
+        // A 持续失败、B 成功：失败没有独立退避状态，两者的下次排期都仍是
+        // baseInterval，互不影响。
+        var results: [String: Bool] = [:]
+        let sched = ProviderRefreshScheduler(
+            refreshHandler: { providerID, _ in
+                let success = providerID != "fail_provider"
+                results[providerID] = success
+                return .completed(success: success)
+            },
             intervalProvider: { _ in 60 },
             onNextRefreshChange: {}
         )
-        scheduler.recordFailure("a")
-        scheduler.recordFailure("a")
-        scheduler.recordFailure("a")
-        scheduler.recordSuccess("b")  // B 没失败过
+        sched.schedule(for: "fail_provider")
+        sched.schedule(for: "success_provider")
+        // 等第一批 batch 结算（两个 provider 各完成一次刷新）
+        try? await Task.sleep(nanoseconds: 300_000_000)
 
-        let aDelay = scheduler.nextDelay(for: "a", baseInterval: 60, succeeded: false)
-        let bDelay = scheduler.nextDelay(for: "b", baseInterval: 60, succeeded: true)
-        XCTAssertEqual(bDelay, 60, "B 没失败过，succeeded=true 时直接用 baseInterval")
-        XCTAssertGreaterThan(aDelay, 60, "A 3 次失败后 delay 应 > baseInterval")
+        XCTAssertEqual(results["fail_provider"], false, "A 应该失败")
+        XCTAssertEqual(results["success_provider"], true, "B 应该成功")
+
+        // 取消 B 后 earliest 就是失败 provider 的排期：仍按 baseInterval 排（不退避）；
+        // B 存在时 earliest 一直覆盖成功 provider 的同节奏排期（min ≈ now + 60）。
+        let baseline = Date()
+        sched.cancel(providerID: "success_provider")
+        let failNext = sched.earliestNextRefresh
+        sched.cancel(providerID: "fail_provider")
+        XCTAssertNil(sched.earliestNextRefresh, "两个 provider 都取消后不应再有排期")
+
+        guard let failNext else {
+            XCTFail("失败 provider 也必须有下一次刷新排期")
+            return
+        }
+        let failOffset = failNext.timeIntervalSince(baseline)
+        XCTAssertGreaterThanOrEqual(failOffset, 55, "失败 provider 仍按 baseInterval(60s) 排下次刷新，不退避")
+        XCTAssertLessThanOrEqual(failOffset, 65, "失败 provider 的下次刷新不应晚于 baseInterval")
     }
 
     @MainActor
@@ -2125,22 +2130,10 @@ final class StateAndSchedulerTests: XCTestCase {
         // 验证：
         // 1. fetcher 真的被调了
         XCTAssertEqual(fetcher.fetchCallCount, 1, "fetcher 至少应被调 1 次")
-        // 2. 状态不是 .failed
+        // 2. 状态不是 .failed（取消走 .deferred，不进入失败排期）
         if case .failed = state.statuses[idx].state {
             XCTFail("CancellationError 不应导致 .failed 状态，实际：\(state.statuses[idx].state)")
         }
-        // 3. failure count 仍是 0
-        let delayAfterCancel = state.refreshScheduler
-            .nextDelay(for: providerID, baseInterval: 300, succeeded: false)
-        // 没 recordFailure → nextDelay 默认 failureCounts[_, default: 1] = 1
-        // 但如果 recordFailure 被错误调用了，会 > 1
-        // 更直接：scheduler 没有公开 failureCount 字段，但通过 nextDelay 间接验证
-        // nextDelay 在 failures=1 时 = baseInterval * 2 = 600s (含 jitter)
-        // 如果 recordFailure 被调 1 次以上（错误），failures=2+ → delay > 1200s
-        XCTAssertLessThan(
-            delayAfterCancel, 800,
-            "取消请求不应触发 recordFailure（delay 应 ≤ 2×baseInterval+小幅 jitter）"
-        )
     }
 
     @MainActor
@@ -2193,8 +2186,8 @@ final class StateAndSchedulerTests: XCTestCase {
     }
 
     @MainActor
-    func testAppStateRefreshSchedulerFailureCountAfterCancellation() async {
-        // 4. 多次连续取消 → failure count 仍应是 0（不是 1+）
+    func testAppStateRepeatedCancellationsNeverMarkFailed() async {
+        // 4. 多次连续取消 → 每次都走 .deferred（取消不是失败，没有可累积的失败状态）
         let fetcher = ErrorThrowingFetcher(
             providerID: "test_multi_cancel",
             errorToThrow: CancellationError()
@@ -2204,20 +2197,17 @@ final class StateAndSchedulerTests: XCTestCase {
             fetcher: fetcher
         )
         let providerID = "test_multi_cancel"
+        let idx = state.statuses.firstIndex(where: { $0.id == providerID })!
 
         // 连续 3 次取消
         for _ in 0..<3 {
             await state.refreshOne(providerID: providerID)
         }
 
-        // failure count 应仍是 0 (默认是 1) → nextDelay = baseInterval * 2^1 = 600s
-        // 如果被错误地 recordFailure 3 次 → 2^4 = 4800s，远大于 800
-        let delay = state.refreshScheduler
-            .nextDelay(for: providerID, baseInterval: 300, succeeded: false)
-        XCTAssertLessThan(
-            delay, 800,
-            "3 次连续取消不应累计 failure count（delay 应保持 2×baseInterval 默认）"
-        )
+        XCTAssertEqual(fetcher.fetchCallCount, 3, "每次取消后都应允许再次发起刷新")
+        if case .failed = state.statuses[idx].state {
+            XCTFail("连续取消也不应导致 .failed 状态")
+        }
     }
 
     // MARK: - Config Store Template & Descriptor Alignment Tests
@@ -2921,13 +2911,21 @@ final class StateAndSchedulerTests: XCTestCase {
         XCTAssertEqual(completed["fail_provider"], false, "A 应该失败")
         XCTAssertEqual(completed["success_provider"], true, "B 应该成功，不受 A 失败影响")
 
-        // fail_provider 应该退避，success_provider 保持 baseInterval
-        let failDelay = sched.nextDelay(for: "fail_provider", baseInterval: 60, succeeded: false)
-        let successDelay = sched.nextDelay(for: "success_provider", baseInterval: 60, succeeded: true)
-        XCTAssertGreaterThan(failDelay, 60)
-        XCTAssertEqual(successDelay, 60)
-
+        // 失败也按 baseInterval 排下一拍（不退避）：取消成功 provider 后，
+        // earliest 就是失败 provider 的排期，应 ≈ now + baseInterval(60s)。
+        try? await Task.sleep(nanoseconds: 100_000_000)  // 确保 batch 完全结算
+        let baseline = Date()
+        sched.cancel(providerID: "success_provider")
+        let failNext = sched.earliestNextRefresh
         sched.cancelAll()
+
+        guard let failNext else {
+            XCTFail("失败 provider 也必须有下一次刷新排期")
+            return
+        }
+        let failOffset = failNext.timeIntervalSince(baseline)
+        XCTAssertGreaterThanOrEqual(failOffset, 55, "失败 provider 仍按 baseInterval(60s) 排下次刷新，不退避")
+        XCTAssertLessThanOrEqual(failOffset, 65, "失败 provider 的下次刷新不应晚于 baseInterval")
     }
 
     /// LocalUsage reconcile 的客户端 readiness 探测与去噪：readiness 仅驱动诊断日志，

@@ -45,7 +45,7 @@ struct MinimaxTokenPlanFetcher: QuotaFetcher {
          session: URLSession = .shared) {
         self.apiKey = apiKey
         self.endpoint = endpoint
-        self.client = HTTPClient(session: session, logTag: Self.logTag, defaultTimeout: HTTPTimeouts.request)
+        self.client = HTTPClient(session: session, logTag: Self.logTag, defaultTimeout: HTTPTimeouts.domestic)
     }
 
     func fetch(mode: RefreshMode) async throws -> QuotaInfo {
