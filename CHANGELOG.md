@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Zcode 升级执行 `0020_provider_model_selection` 数据库迁移后，新的 GLM 用量改写 `account:bigmodel-` 前缀（如 `account:bigmodel-individual-coding-plan`），本地统计曾静默漏采这些行；现已同时识别 `builtin:` / `account:` 两种前缀，账号套餐（`*-coding-plan`）与旧 Coding Plan 同等计入额度窗口，`account:` 前缀的体验套餐归入「其他任务」；扫描缓存升版强制重扫补齐迁移日之后的数据。
+
 ## [1.10.0] - 2026-09-17
 
 ### Changed

@@ -264,6 +264,56 @@ final class GlmTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(today.totalTokens, 0)
     }
 
+    /// 2026-09-17 Zcode `0020_provider_model_selection` 迁移：登录账号套餐改写
+    /// `account:bigmodel-` 前缀。同一天新旧前缀混写（真实迁移日的形态）时，
+    /// 聚合 / totals / 样本都必须把两种前缀的智谱行都算进来，非智谱行仍排除；
+    /// `account:bigmodel-*-coding-plan` 归日常任务，`account:` 体验套餐归其他。
+    func testGlmZcodeReaderIncludesAccountPrefixAfterMigration() throws {
+        let db = try makeDatabase()
+        defer { try? FileManager.default.removeItem(atPath: db) }
+        let day = Self.todayMidnight(calendar: utcCalendar())
+        let ts = ms(day)
+        let cal = utcCalendar()
+
+        // 迁移前后各 2 行正式 Coding Plan（builtin: / account:）
+        try insert(databaseURL: db, id: "b1", sessionID: "s1", turnID: "t1", timestamp: ts,
+                   input: 100, output: 10, provider: "builtin:bigmodel-coding-plan")
+        try insert(databaseURL: db, id: "b2", sessionID: "s1", turnID: "t2", timestamp: ts + 1,
+                   input: 100, output: 10, provider: "builtin:bigmodel-coding-plan")
+        try insert(databaseURL: db, id: "a1", sessionID: "s2", turnID: "t3", timestamp: ts + 2,
+                   input: 200, output: 20, provider: "account:bigmodel-individual-coding-plan")
+        try insert(databaseURL: db, id: "a2", sessionID: "s2", turnID: "t4", timestamp: ts + 3,
+                   input: 200, output: 20, provider: "account:bigmodel-individual-coding-plan")
+        // account: 前缀的体验套餐 → 柱图计入，额度窗口归「其他」
+        try insert(databaseURL: db, id: "a3", sessionID: "s3", turnID: "t5", timestamp: ts + 4,
+                   input: 1000, output: 5, provider: "account:bigmodel-start-plan")
+        // 闲时任务照旧精确匹配
+        try insert(databaseURL: db, id: "o1", sessionID: "s3", turnID: "t6", timestamp: ts + 5,
+                   input: 500, output: 5, provider: "offpeak-idle-plan")
+        // 非智谱 provider 不得进入 GLM 卡
+        try insert(databaseURL: db, id: "x1", sessionID: "s4", turnID: "t7", timestamp: ts + 6,
+                   input: 999, output: 99, provider: "builtin:other-provider")
+
+        let aggregate = try GlmZcodeLocalUsageScanner.aggregateFromDB(dbPath: URL(fileURLWithPath: db), calendar: cal)
+        let today = try XCTUnwrap(aggregate.perDay[day])
+
+        // 6 行智谱全计入（x1 排除）：rounds / input / output
+        XCTAssertEqual(today.rounds, 6, "account: 前缀的行不得被漏采")
+        XCTAssertEqual(today.inputTokens, 100 + 100 + 200 + 200 + 1000 + 500)
+        XCTAssertEqual(today.outputTokens, 10 + 10 + 20 + 20 + 5 + 5)
+        // totals 同口径：roundCount 含 account: 行，session 去重 s1/s2/s3
+        XCTAssertEqual(aggregate.roundCount, 6)
+        XCTAssertEqual(aggregate.sessionCount, 3)
+
+        // 样本层分类：account coding-plan 归日常，account 体验套餐归其他
+        let samplesByProvider = Dictionary(aggregate.samples.map { ($0.sourceProviderID ?? "", $0) }, uniquingKeysWith: { first, _ in first })
+        XCTAssertEqual(GlmUsageCategory.classify(samplesByProvider["account:bigmodel-individual-coding-plan"]!), .normal)
+        XCTAssertEqual(GlmUsageCategory.classify(samplesByProvider["account:bigmodel-start-plan"]!), .other)
+        XCTAssertEqual(GlmUsageCategory.classify(samplesByProvider["builtin:bigmodel-coding-plan"]!), .normal)
+        XCTAssertEqual(GlmUsageCategory.classify(samplesByProvider["offpeak-idle-plan"]!), .offPeak)
+        XCTAssertNil(samplesByProvider["builtin:other-provider"], "非智谱 provider 不应产出样本")
+    }
+
     /// 合并测试：native reasoning 聚合 + sample 分配 + snapshot 7 天 padding。
     /// 覆盖：账单层 reasoning_tokens 优先级（per-day + samples 同步）、promptID 命名（turn vs event fallback）、
     /// buildSnapshot 7 天窗口、today 挑选、recentSamples 保留。
@@ -716,10 +766,15 @@ final class GlmTests: XCTestCase {
         let trial = sample("builtin:bigmodel-start-plan", promptID: "trial:t1", input: 500)
         let future = sample("builtin:bigmodel-weekend-plan", promptID: "future:t1", input: 700)
         let opencode = sample("dsh:zhipuai-coding-plan", promptID: "opencode:zhipuai-coding-plan:p1", input: 200)
+        // 0020_provider_model_selection 迁移后的 account: 前缀形态
+        let accountNormal = sample("account:bigmodel-individual-coding-plan", promptID: "account:t1", input: 300)
+        let accountTrial = sample("account:bigmodel-start-plan", promptID: "account-trial:t1", input: 400)
 
         XCTAssertTrue(LocalUsageSummaryBuilder.isGlmOtherPlanSample(trial))
         XCTAssertTrue(LocalUsageSummaryBuilder.isGlmOtherPlanSample(future))
+        XCTAssertTrue(LocalUsageSummaryBuilder.isGlmOtherPlanSample(accountTrial))
         XCTAssertFalse(LocalUsageSummaryBuilder.isGlmOtherPlanSample(normal))
+        XCTAssertFalse(LocalUsageSummaryBuilder.isGlmOtherPlanSample(accountNormal))
         XCTAssertFalse(LocalUsageSummaryBuilder.isGlmOtherPlanSample(opencode))
         // 旧缓存没有来源标记 → 保持时间窗口回退语义，不算「其他」
         XCTAssertFalse(
@@ -1052,6 +1107,11 @@ final class GlmTests: XCTestCase {
         XCTAssertEqual(GlmUsageCategory.classify(sample(OpencodeLocalUsage.zcodeOffPeakProviderID)), .offPeak)
         XCTAssertEqual(GlmUsageCategory.classify(sample("builtin:bigmodel-start-plan")), .other)
         XCTAssertEqual(GlmUsageCategory.classify(sample("builtin:bigmodel-future-plan")), .other)
+        // 0020_provider_model_selection 迁移后的 account: 前缀：
+        // 账号套餐 *-coding-plan 归日常，体验套餐归其他
+        XCTAssertEqual(GlmUsageCategory.classify(sample("account:bigmodel-individual-coding-plan")), .normal)
+        XCTAssertEqual(GlmUsageCategory.classify(sample("account:bigmodel-team-coding-plan")), .normal)
+        XCTAssertEqual(GlmUsageCategory.classify(sample("account:bigmodel-start-plan")), .other)
         // OpenCode / DSH 合并样本与旧缓存无标记样本 → 日常
         XCTAssertEqual(GlmUsageCategory.classify(sample("dsh:zhipuai-coding-plan")), .normal)
         XCTAssertEqual(GlmUsageCategory.classify(sample(nil, promptID: "opencode:zhipuai-coding-plan:p1")), .normal)

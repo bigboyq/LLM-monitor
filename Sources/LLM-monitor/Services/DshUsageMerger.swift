@@ -8,7 +8,7 @@ import Foundation
 enum DshUsageMerger {
     static let deepseekProviderIDs = ["deepseek", "deepseek-official", "deepseek-cn", "deepseek-v4"]
     static let minimaxProviderIDs = ["minimax", "minimax-cn", "minimax-cn-coding-plan"]
-    static let glmProviderIDs = ["glm", "zhipu", "zhipuai", "bigmodel", "builtin:bigmodel-coding-plan"]
+    static let glmProviderIDs = ["glm", "zhipu", "zhipuai", "bigmodel", "builtin:bigmodel-coding-plan", "account:bigmodel-individual-coding-plan"]
 
     static func deepseekSlice(_ usage: DshLocalUsage?) -> DshProviderUsage? {
         slice(usage, matching: deepseekProviderIDs)

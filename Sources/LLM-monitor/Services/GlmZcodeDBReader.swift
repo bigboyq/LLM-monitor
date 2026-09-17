@@ -24,16 +24,18 @@ struct GlmZcodeDBAggregate: Equatable, Sendable {
 
 /// 读 ZCode 的 `~/.zcode/cli/db/db.sqlite` `model_usage` 表。
 ///
-/// 每行 = 一次模型请求。查询覆盖两类智谱来源（`builtin:bigmodel-%` 前缀通配 +
-/// `offpeak-idle-plan` 精确匹配），行上带 `provider_id` + `model_id`（如 GLM-5.3 /
-/// GLM-5.3-Flash）+ 5 类 token 列 + 原生 `turn_id`，查询拿到 per-day 5 类 token、
-/// round/turn、recent samples、totals + models + sessions。
+/// 每行 = 一次模型请求。查询覆盖两类智谱来源（`builtin:bigmodel-%` /
+/// `account:bigmodel-%` 前缀通配 + `offpeak-idle-plan` 精确匹配），行上带
+/// `provider_id` + `model_id`（如 GLM-5.3 / GLM-5.3-Flash）+ 5 类 token 列 +
+/// 原生 `turn_id`，查询拿到 per-day 5 类 token、round/turn、recent samples、
+/// totals + models + sessions。
 ///
 /// **provider 三分类**（sample 保留 `provider_id`，额度窗口口径在
 /// `LocalUsageSummaryBuilder` 白名单层判定）：
-/// - `builtin:bigmodel-coding-plan` → 正常任务（唯一计入额度窗口的来源）
+/// - 正式 Coding Plan（`builtin:bigmodel-coding-plan` 及 `account:bigmodel-*-coding-plan`）
+///   → 正常任务（唯一计入额度窗口的来源）
 /// - `offpeak-idle-plan` → 闲时任务
-/// - 其余 `builtin:bigmodel-%`（如体验套餐 `builtin:bigmodel-start-plan`）→ 其他任务；
+/// - 其余智谱前缀（如体验套餐 `builtin:bigmodel-start-plan`）→ 其他任务；
 ///   未来智谱新套餐自动落进该类，非智谱 provider 不带前缀、不会被误算进 GLM 卡
 ///
 /// 直接 read 原 .db；CANTOPEN / BUSY 时由调用方（`SQLiteTempCopy.read`）走 /tmp 副本。
@@ -110,7 +112,7 @@ final class GlmZcodeDBReader {
           SUM(MAX(COALESCE(mu.cache_read_input_tokens, 0), 0)) AS tcr,
           SUM(MAX(COALESCE(mu.cache_creation_input_tokens, 0), 0)) AS tcw
         FROM model_usage mu
-        WHERE (mu.provider_id LIKE ? OR mu.provider_id = ?)
+        WHERE \(Self.providerFilterSQL("mu.provider_id"))
           AND mu.status = 'completed'
           AND (
             COALESCE(mu.input_tokens,0)
@@ -128,7 +130,7 @@ final class GlmZcodeDBReader {
             bind: { stmt in
                 let provider = Self.bindProviders(to: stmt, index: 1)
                 guard provider == SQLITE_OK else { return provider }
-                return SQLiteConnection.bindNullableMsCutoff(cutoffMs, startingAt: 3)(stmt)
+                return SQLiteConnection.bindNullableMsCutoff(cutoffMs, startingAt: 1 + Self.providerFilterParameterCount)(stmt)
             },
             map: { stmt in
             let dayKey = try SQLiteConnection.requiredText(stmt, column: 0)
@@ -181,7 +183,7 @@ final class GlmZcodeDBReader {
           COUNT(*) AS calls,
           COUNT(DISTINCT session_id) AS sessions
         FROM model_usage
-        WHERE (provider_id LIKE ? OR provider_id = ?)
+        WHERE \(Self.providerFilterSQL("provider_id"))
           AND status = 'completed'
           AND (
             COALESCE(input_tokens,0)
@@ -236,7 +238,7 @@ final class GlmZcodeDBReader {
           mu.cache_read_input_tokens,
           mu.provider_id
         FROM model_usage mu
-        WHERE (mu.provider_id LIKE ? OR mu.provider_id = ?)
+        WHERE \(Self.providerFilterSQL("mu.provider_id"))
           AND mu.status = 'completed'
           AND (
             COALESCE(mu.input_tokens,0)
@@ -253,7 +255,7 @@ final class GlmZcodeDBReader {
             bind: { stmt in
                 let provider = Self.bindProviders(to: stmt, index: 1)
                 guard provider == SQLITE_OK else { return provider }
-                return SQLiteConnection.bindNullableMsCutoff(cutoffMs, startingAt: 3)(stmt)
+                return SQLiteConnection.bindNullableMsCutoff(cutoffMs, startingAt: 1 + Self.providerFilterParameterCount)(stmt)
             },
             map: { stmt in
                 let id = try SQLiteConnection.requiredText(stmt, column: 0)
@@ -299,7 +301,7 @@ final class GlmZcodeDBReader {
         let sql = """
         SELECT DISTINCT model_id
         FROM model_usage
-        WHERE (provider_id LIKE ? OR provider_id = ?)
+        WHERE \(Self.providerFilterSQL("provider_id"))
           AND model_id IS NOT NULL
         """
         let rows: [String] = try connection.query(sql: sql, bind: { stmt in
@@ -310,23 +312,43 @@ final class GlmZcodeDBReader {
         return rows.sorted()
     }
 
-    /// 绑定智谱系 provider 通配（`builtin:bigmodel-%`，覆盖 coding-plan、体验套餐
-    /// 及未来新套餐）与闲时任务 provider（`offpeak-idle-plan`）。
-    /// `index` 为第一个 `?` 的位置，第二个紧跟其后。
+    /// `provider_id` 过滤谓词：每个智谱前缀一个 `LIKE ?`，加闲时任务精确 `= ?`。
+    /// 谓词文本与 `bindProviders` 的绑定都由 `zcodeBigmodelProviderPrefixes`
+    /// 生成，前缀增减时二者自动同步，不会漂移。
+    private static func providerFilterSQL(_ column: String) -> String {
+        let likes = OpencodeLocalUsage.zcodeBigmodelProviderPrefixes
+            .map { _ in "\(column) LIKE ?" }
+            .joined(separator: " OR ")
+        return "(\(likes) OR \(column) = ?)"
+    }
+
+    /// provider 过滤占用的 `?` 参数个数（前缀数 + 1 个 offpeak 精确匹配），
+    /// 供后续 cutoff 等参数确定起始下标。
+    private static var providerFilterParameterCount: Int32 {
+        Int32(OpencodeLocalUsage.zcodeBigmodelProviderPrefixes.count + 1)
+    }
+
+    /// 绑定智谱系 provider 通配（`builtin:bigmodel-%` / `account:bigmodel-%`，覆盖
+    /// coding-plan、体验套餐及未来新套餐）与闲时任务 provider（`offpeak-idle-plan`）。
+    /// `index` 为第一个 `?` 的位置，其余参数按 `zcodeBigmodelProviderPrefixes`
+    /// 顺序紧跟其后，与 `providerFilterSQL` 的谓词结构一一对应。
     private static func bindProviders(to statement: OpaquePointer, index: Int32) -> Int32 {
         let transient = SQLiteConnection.sqliteTransientDestructor
-        let prefixPattern = OpencodeLocalUsage.zcodeBigmodelProviderPrefix + "%"
-        let first = sqlite3_bind_text(
-            statement,
-            index,
-            (prefixPattern as NSString).utf8String,
-            -1,
-            transient
-        )
-        guard first == SQLITE_OK else { return first }
+        var currentIndex = index
+        for prefix in OpencodeLocalUsage.zcodeBigmodelProviderPrefixes {
+            let code = sqlite3_bind_text(
+                statement,
+                currentIndex,
+                ((prefix + "%") as NSString).utf8String,
+                -1,
+                transient
+            )
+            guard code == SQLITE_OK else { return code }
+            currentIndex += 1
+        }
         return sqlite3_bind_text(
             statement,
-            index + 1,
+            currentIndex,
             (offPeakProviderID as NSString).utf8String,
             -1,
             transient
