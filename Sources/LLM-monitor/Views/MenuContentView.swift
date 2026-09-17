@@ -140,14 +140,14 @@ struct MenuContentView: View {
     // MARK: - header（紧凑 padding）
 
     private var headerBar: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 4) {
             // 主面板左上角使用 App 图标设计稿；加载失败兜底回原系统符号。
             if let appIcon = MenuBarLabel.appIconDesignImage {
                 Image(nsImage: appIcon)
                     .renderingMode(.original)
                     .resizable()
                     .interpolation(.high)
-                    .frame(width: 16, height: 16)
+                    .frame(width: 24, height: 24)
             } else {
                 Image(systemName: "chart.bar.xaxis")
                     .font(MenuTypography.headerTitle)
@@ -376,9 +376,9 @@ struct MenuContentView: View {
                 Text("就绪")
                     .font(MenuTypography.footer)
             }
-            
+
             footerSeparator
-            
+
             Text("自启 \(loginItemService.isEnabled ? "✓" : "✗")")
                 .font(MenuTypography.footer)
         }
