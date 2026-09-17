@@ -8,6 +8,7 @@
 
 ### Fixed
 
+- 状态栏额度仪表盘的中心扇形改为优先显示所有套餐中最低的 5 小时窗口剩余比例（此前取全部窗口——含周窗口——的最低值，周窗口余量低时会拖低中心扇形）；没有 5 小时窗口的套餐才回退到周窗口最低值，与左侧 5 小时弧线语义对齐。
 - Zcode 升级执行 `0020_provider_model_selection` 数据库迁移后，新的 GLM 用量改写 `account:bigmodel-` 前缀（如 `account:bigmodel-individual-coding-plan`），本地统计曾静默漏采这些行；现已同时识别 `builtin:` / `account:` 两种前缀，账号套餐（`*-coding-plan`）与旧 Coding Plan 同等计入额度窗口，`account:` 前缀的体验套餐归入「其他任务」；扫描缓存升版强制重扫补齐迁移日之后的数据。
 
 ## [1.10.0] - 2026-09-17
