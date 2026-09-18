@@ -62,7 +62,7 @@ struct AntigravityAccountHoverView: View {
     var body: some View {
         AccountHoverView(
             title: "Google Antigravity 账号",
-            sourceNote: "数据来源：本机 Antigravity IDE / agy CLI 的 language_server",
+            sourceNote: "数据来源：本机 Antigravity / agy CLI 的 language_server",
             planLabel: planLabel,
             accountEmail: accountEmail
         )

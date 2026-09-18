@@ -5,7 +5,7 @@ extension AntigravityFetcher {
 
     /// Antigravity 后端进程种类。
     ///
-    /// - `ide`: Antigravity IDE 自带的 `language_server`（需要 `--csrf_token` 鉴权）
+    /// - `ide`: `Antigravity.app` 自带的 `language_server`（需要 `--csrf_token` 鉴权）
     /// - `cli`: Antigravity CLI（`agy` / `antigravity-cli`，内嵌 language_server，不暴露 CSRF）
     enum ProcessKind: String, Sendable {
         case ide
@@ -29,7 +29,7 @@ extension AntigravityFetcher {
         try Task.checkCancellation()
         let candidates = discoverProcessCandidates()
         guard !candidates.isEmpty else {
-            throw QuotaError.networkError("未发现 Antigravity IDE 或 agy CLI 进程，请先启动 Antigravity 并完成登录")
+            throw QuotaError.networkError("未发现 Antigravity 或 agy CLI 进程，请先启动 Antigravity 并完成登录")
         }
 
         for candidate in candidates {
@@ -49,7 +49,7 @@ extension AntigravityFetcher {
             }
         }
 
-        throw QuotaError.networkError("发现 Antigravity 进程但未监听本地端口，请确认 IDE 或 CLI 已完成登录")
+        throw QuotaError.networkError("发现 Antigravity 进程但未监听本地端口，请确认 Antigravity 或 CLI 已完成登录")
     }
 
     /// 分类只回答“是否像 Antigravity 进程”；真正用于 RPC 还必须满足认证前提。
@@ -137,8 +137,12 @@ extension AntigravityFetcher {
     }
 
     /// 命令行分类：返回 nil 表示与 Antigravity 无关。
+    ///
+    /// `Antigravity IDE.app`（`--app_data_dir antigravity-ide`）已剥离支持，
+    /// 命中其产品特征的命令先行排除，不再作为 quota / RPC 候选。
     nonisolated static func classify(command: String) -> ProcessKind? {
         let lower = command.lowercased()
+        guard !isUnsupportedIDEAppCommand(lower) else { return nil }
         if isLanguageServerBinary(lower), lower.contains("antigravity") {
             return .ide
         }
@@ -148,55 +152,29 @@ extension AntigravityFetcher {
         return nil
     }
 
-    /// 已知的 Antigravity IDE `language_server` 二进制名（不含 `.exe` / 后缀）。
+    /// 识别已剥离支持的 `Antigravity IDE.app` 产品特征。
     ///
-    /// 历史上有两个产品形态：
-    ///
-    /// - 旧版 `Antigravity.app`（无空格，2025 年）→ 二进制是裸名 `language_server`，
-    ///   装在 `Contents/Resources/bin/language_server`。
-    /// - 新版 `Antigravity IDE.app`（带空格，2026 年）→ 二进制带架构后缀，
-    ///   Apple Silicon 装 `language_server_macos_arm`，路径在
-    ///   `Contents/Resources/app/extensions/antigravity/bin/`。
-    ///
-    /// 后续若出现其他架构（如 `language_server_macos_x64` / `language_server_linux_arm64`），
-    /// 加进这里即可——下面的 `isLanguageServerBinary` 会同时走候选集合 + 后缀兜底正则。
-    static let knownLanguageServerBinaries: [String] = [
-        "language_server",          // 旧版 Antigravity.app（macOS / Linux 通用）
-        "language_server_macos_arm" // 新版 Antigravity IDE.app（macOS Apple Silicon）
-    ]
+    /// 该产品的 language_server 一定带 `--app_data_dir antigravity-ide` 或运行在
+    /// `Antigravity IDE.app` bundle 内；带架构后缀的二进制名
+    /// （`language_server_macos_arm` 等）也只存在于该产品——旧版 `Antigravity.app`
+    /// 始终使用裸名 `language_server`，由 `isLanguageServerBinary` 自然排除。
+    nonisolated static func isUnsupportedIDEAppCommand(_ lowerCommand: String) -> Bool {
+        lowerCommand.contains("antigravity ide.app")
+            || lowerCommand.contains("antigravity-ide")
+            || lowerCommand.range(
+                of: #"(^|[/\\])language[-_]server(_[a-z0-9]+)+"#,
+                options: .regularExpression
+            ) != nil
+    }
 
-    /// 识别 Antigravity IDE 自带的 `language_server` 二进制。
-    /// 匹配 `language_server`、`language-server`、`language_server_macos_arm`、`language_server.exe` 等。
+    /// 识别 `Antigravity.app` 自带的 `language_server` 二进制（裸名，可带 `.exe`），
+    /// 装在 `Contents/Resources/bin/language_server`。
     ///
-    /// 优先匹配已知候选集合（白名单），未命中再走"任意 `_xxx` 后缀"兜底正则
-    /// （向后兼容未来可能的新后缀/新平台）。
+    /// 带架构/平台后缀的二进制（`language_server_macos_arm`、
+    /// `language_server_macos_x64` 等）是 `Antigravity IDE.app` 专属形态，
+    /// 该产品已剥离支持，这里不再识别；见 `isUnsupportedIDEAppCommand`。
     nonisolated static func isLanguageServerBinary(_ lowerCommand: String) -> Bool {
-        // 路径锚定的"取 basename 后跟空白/行尾"通用匹配
-        let separator: Set<Character> = ["/", "\\", " ", "\t", "\n", "\0"]
-        for binary in knownLanguageServerBinaries {
-            // 命令行里以 `/binary` 或 `binary ` 或 `binary<行尾>` 出现（路径锚定，
-            // 避免 `strlanguage_server` 之类误匹配）
-            var searchStart = lowerCommand.startIndex
-            while searchStart < lowerCommand.endIndex,
-                  let found = lowerCommand.range(of: binary, range: searchStart..<lowerCommand.endIndex) {
-                let beforeOK = found.lowerBound == lowerCommand.startIndex
-                    || separator.contains(lowerCommand[lowerCommand.index(before: found.lowerBound)])
-                let afterIdx = found.upperBound
-                let afterOK = afterIdx == lowerCommand.endIndex
-                    || separator.contains(lowerCommand[afterIdx])
-                if beforeOK && afterOK { return true }
-                searchStart = found.upperBound
-            }
-        }
-
-        // 兜底：未来若有新后缀（`language_server_macos_arm` / `language_server_linux_arm64` 等），
-        // 保留 `_xxx` 多段后缀正则匹配，避免被锁定到已知列表。
-        //
-        // 注意：单 segment 正则 `([._][a-z0-9]+)?` 匹配不到 `_macos_arm` / `_x64` 等
-        // 多个 segment 的后缀——这是历史 bug 的根因（Antigravity IDE 升级到带空格
-        // 的 `Antigravity IDE.app` 后，新 binary `language_server_macos_arm` 一直
-        // 没被识别，造成 silent failure）。多段 `(([._][a-z0-9]+)+)?` 修复。
-        let pattern = #"(^|[/\\])language[-_]server(([._][a-z0-9]+)+)?(\.exe)?(\s|$)"#
+        let pattern = #"(^|[/\\])language[-_]server(\.exe)?(\s|$)"#
         return lowerCommand.range(of: pattern, options: .regularExpression) != nil
     }
 

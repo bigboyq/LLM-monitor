@@ -35,7 +35,7 @@ Sign in with the Codex CLI and make sure `~/.codex/auth.json` exists. The defaul
 
 ### Antigravity
 
-Start and sign in to Antigravity IDE or the `agy` CLI. LLM Monitor discovers the local `language_server` and uses loopback RPC for account, quota, and trajectory token data. If the service is shown as offline, keep Antigravity running and confirm its login state.
+Start and sign in to Antigravity or the `agy` CLI. LLM Monitor discovers the local `language_server` and uses loopback RPC for account, quota, and trajectory token data. If the service is shown as offline, keep Antigravity running and confirm its login state.
 
 ### GLM Coding Plan
 

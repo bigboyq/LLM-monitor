@@ -501,7 +501,7 @@ extension AntigravityLocalUsageScanner {
                     index: index,
                     sessionID: item.0,
                     result: .failure(DirtySessionFetchError(
-                        message: "未发现 Antigravity IDE 或 agy CLI 进程，请先启动 Antigravity 并完成登录"
+                        message: "未发现 Antigravity 或 agy CLI 进程，请先启动 Antigravity 并完成登录"
                     ))
                 )
             }
@@ -592,7 +592,7 @@ struct AntigravityDBFileListing: Sendable {
     let isComplete: Bool
 }
 
-/// Antigravity IDE 把每个 cascade 存成本地文件，扩展名用于识别文件格式和
+/// Antigravity 把每个 cascade 存成本地文件，扩展名用于识别文件格式和
 /// 决定是否检查 SQLite WAL 指纹。Token 数据仍只来自 RPC；SQLite 仅在 RPC
 /// 缺少时间戳时读取匹配 step metadata 做回填：
 ///

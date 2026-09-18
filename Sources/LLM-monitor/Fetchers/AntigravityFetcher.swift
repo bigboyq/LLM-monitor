@@ -165,7 +165,7 @@ struct AntigravityFetcher: QuotaFetcher {
         servers: [ServerInfo]
     ) async throws -> [UsageEvent] {
         guard !servers.isEmpty else {
-            throw QuotaError.networkError("未发现 Antigravity IDE 或 agy CLI 进程，请先启动 Antigravity 并完成登录")
+            throw QuotaError.networkError("未发现 Antigravity 或 agy CLI 进程，请先启动 Antigravity 并完成登录")
         }
 
         struct Request: Encodable {

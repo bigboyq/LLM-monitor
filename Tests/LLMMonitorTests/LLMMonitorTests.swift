@@ -499,12 +499,21 @@ final class LLMMonitorTests: XCTestCase {
         // Process Classification (.ide, .cli, nil)
         let ideCommands = [
             "/Applications/Antigravity.app/Contents/Resources/bin/language_server --app_data_dir /Users/me/.config/Antigravity --csrf_token abc123 --enable_lsp",
-            "/Applications/Antigravity IDE.app/Contents/Resources/app/extensions/antigravity/bin/language_server_macos_arm --csrf_token abc123 --subclient_type ide",
-            "/Applications/Antigravity IDE.app/Contents/Resources/app/extensions/antigravity/bin/language_server_macos_x64 --csrf_token abc --app_data_dir antigravity-ide",
             "/Applications/Antigravity.app/Contents/Resources/bin/language_server --app_data_dir /Users/me/.gemini/antigravity"
         ]
         for cmd in ideCommands {
             XCTAssertEqual(AntigravityFetcher.classify(command: cmd), .ide, "command: \(cmd)")
+        }
+
+        // Antigravity IDE.app 已剥离支持：命中其产品特征的命令不再识别
+        let strippedIDEAppCommands = [
+            "/Applications/Antigravity IDE.app/Contents/Resources/app/extensions/antigravity/bin/language_server_macos_arm --csrf_token abc123 --subclient_type ide",
+            "/Applications/Antigravity IDE.app/Contents/Resources/app/extensions/antigravity/bin/language_server_macos_x64 --csrf_token abc --app_data_dir antigravity-ide",
+            "/opt/tools/language_server_macos_arm --csrf_token abc --app_data_dir antigravity-ide",
+            "/Applications/Antigravity.app/Contents/Resources/bin/language_server --app_data_dir /Users/me/.gemini/antigravity-ide"
+        ]
+        for cmd in strippedIDEAppCommands {
+            XCTAssertNil(AntigravityFetcher.classify(command: cmd), "command: \(cmd)")
         }
 
         let cliCommands = [
@@ -521,15 +530,15 @@ final class LLMMonitorTests: XCTestCase {
         XCTAssertNil(AntigravityFetcher.classify(command: "/usr/bin/stragytool --run"))
         XCTAssertNil(AntigravityFetcher.classify(command: ""))
 
-        // Binary match strictness
+        // Binary match strictness（只接受裸名 language_server / language-server，可带 .exe）
         XCTAssertTrue(AntigravityFetcher.isLanguageServerBinary("/Applications/Antigravity.app/Contents/Resources/bin/language_server --csrf_token x"))
         XCTAssertTrue(AntigravityFetcher.isLanguageServerBinary("/path/to/language-server --flag"))
+        XCTAssertTrue(AntigravityFetcher.isLanguageServerBinary("/opt/tools/language_server.exe --flag"))
         XCTAssertFalse(AntigravityFetcher.isLanguageServerBinary("/usr/bin/strlanguage_server --flag"))
-
-        // Known binaries spec contract
-        let known = AntigravityFetcher.knownLanguageServerBinaries
-        XCTAssertTrue(known.contains("language_server"))
-        XCTAssertTrue(known.contains("language_server_macos_arm"))
+        // 带架构后缀的二进制是已剥离的 Antigravity IDE.app 专属形态
+        XCTAssertFalse(AntigravityFetcher.isLanguageServerBinary("/Applications/Antigravity IDE.app/Contents/Resources/app/extensions/antigravity/bin/language_server_macos_arm --csrf_token x"))
+        XCTAssertFalse(AntigravityFetcher.isLanguageServerBinary("/opt/tools/language_server_macos_x64 --flag"))
+        XCTAssertNil(AntigravityFetcher.classify(command: "/Applications/Antigravity IDE.app/Contents/Resources/app/extensions/antigravity/bin/language_server_macos_arm --csrf_token x"))
 
         // parseProcessLine
         let matchIde = AntigravityFetcher.parseProcessLine("12345 /Applications/Antigravity.app/Contents/Resources/bin/language_server --csrf_token secret", defaultKind: .ide)
