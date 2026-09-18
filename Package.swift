@@ -15,7 +15,8 @@ let package = Package(
             resources: [
                 .process("Resources/BrandLogos"),
                 .process("Resources/ModelPricing.json"),
-                .copy("Resources/IconPreview/llm-quota-730-2-dark.svg")
+                .copy("Resources/IconPreview/llm-quota-730-2-dark.svg"),
+                .copy("Resources/IconPreview/icon-master.png")
             ],
             linkerSettings: [
                 .linkedLibrary("sqlite3")

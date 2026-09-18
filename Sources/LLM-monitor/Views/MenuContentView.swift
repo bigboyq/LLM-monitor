@@ -141,8 +141,8 @@ struct MenuContentView: View {
 
     private var headerBar: some View {
         HStack(spacing: 4) {
-            // 主面板左上角使用 App 图标设计稿；加载失败兜底回原系统符号。
-            if let appIcon = MenuBarLabel.appIconDesignImage {
+            // 主面板左上角使用完整 App 图标（icon-master.png）；加载失败兜底回原系统符号。
+            if let appIcon = MenuBarLabel.appIconMasterImage {
                 Image(nsImage: appIcon)
                     .renderingMode(.original)
                     .resizable()

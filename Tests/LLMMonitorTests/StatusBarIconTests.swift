@@ -854,6 +854,14 @@ final class StatusBarIconTests: XCTestCase {
         XCTAssertEqual(SettingsView.previewImage(for: .iconDuo).size.width, 22)
     }
 
+    /// 主面板 header 使用的完整 App 图标（icon-master.png）必须能从资源包加载。
+    func testHeaderAppIconMasterImageLoads() {
+        let master = MenuBarLabel.appIconMasterImage
+        XCTAssertNotNil(master, "icon-master.png 未打入资源包，header 将回退到系统符号")
+        XCTAssertEqual(master?.size.width, 22)
+        XCTAssertEqual(master?.size.height, 22)
+    }
+
     @MainActor
     func testStatusBarWaterHealthLevels() {
         let descriptors = [

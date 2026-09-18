@@ -198,12 +198,23 @@ struct MenuBarLabel: View {
         colors.color(for: health)
     }
 
-    /// App 图标设计稿（llm-quota-730-2-dark.svg）：设置页 picker 预览与主面板
-    /// header 共用。SwiftPM 会把 .copy 资源打平到 bundle Resources 根目录，
+    /// App 图标设计稿（llm-quota-730-2-dark.svg）：设置页 picker 预览使用。
+    /// SwiftPM 会把 .copy 资源打平到 bundle Resources 根目录，
     /// 与 BrandLogo 同款查找方式；设计稿固有 1024×1024，归一到 22pt 画布与
     /// 其他图标预览一致，矢量缩放不失真。加载失败返回 nil，由调用方兜底。
     static let appIconDesignImage: NSImage? = {
         guard let url = Bundle.module.url(forResource: "llm-quota-730-2-dark", withExtension: "svg") else {
+            return nil
+        }
+        guard let image = NSImage(contentsOf: url) else { return nil }
+        image.size = NSSize(width: 22, height: 22)
+        return image
+    }()
+
+    /// 完整 App 图标（icon-master.png，含圆角底与渐变背景）：主面板 header 使用。
+    /// 与设计稿同样归一到 22pt 画布，由调用方按需缩放。
+    static let appIconMasterImage: NSImage? = {
+        guard let url = Bundle.module.url(forResource: "icon-master", withExtension: "png") else {
             return nil
         }
         guard let image = NSImage(contentsOf: url) else { return nil }
