@@ -109,7 +109,7 @@ or, if a process is found but no port:
 发现 Antigravity 进程但未监听本地端口，请确认 IDE 或 CLI 已完成登录
 ```
 
-or, if process + port are healthy but `~/.gemini/antigravity-ide/conversations/` is empty (CLI-only user with no IDE activity):
+or, if process + port are healthy but `~/.gemini/antigravity/conversations/` is empty (CLI-only user with no IDE activity):
 
 ```text
 今日用量：扫描中…   (in the footer line — hovering the title shows scan state)
@@ -466,12 +466,11 @@ For `.pb` sessions, the scanner fetches the same per-event token numbers and `st
 
 ### Directories scanned (`defaultConversationsDirs`)
 
-The scanner walks both:
+The scanner walks a single directory:
 
-1. `~/.gemini/antigravity-ide/conversations/` — Antigravity IDE.app (`--app_data_dir antigravity-ide`)
-2. `~/.gemini/antigravity/conversations/` — Antigravity.app (`--app_data_dir antigravity`)
+1. `~/.gemini/antigravity/conversations/` — Antigravity.app (`--app_data_dir antigravity`)
 
-Same `sessionId` (UUID) in both directories is deduped to the **first** entry (Antigravity IDE.app wins). This lets a user with both applications installed see fresh data from the active workspace without being shadowed by stale data.
+`~/.gemini/antigravity-ide/` (Antigravity IDE.app, `--app_data_dir antigravity-ide`) was previously scanned as a second root but support for it has been removed; the scanner no longer reads that directory. The directory list itself is still an array, kept as a test/injection seam for multi-root enumeration.
 
 ## Historical `.db` Schema Insights — Rounds / Turns / Tool calls
 

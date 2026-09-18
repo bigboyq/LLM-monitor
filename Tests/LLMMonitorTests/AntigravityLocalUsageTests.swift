@@ -243,15 +243,13 @@ final class AntigravityLocalUsageTests: XCTestCase {
 
     // MARK: - AntigravityLocalUsageScanner: defaultConversationsDirs 候选路径
 
-    func testDefaultConversationsDirsContainsBothIDEInstalls() {
+    func testDefaultConversationsDirsOnlyContainsAntigravityDir() {
         let dirs = AntigravityLocalUsageScanner.defaultConversationsDirs
-        XCTAssertEqual(dirs.count, 2)
-        // 新版 Antigravity IDE.app 优先
-        XCTAssertTrue(dirs[0].path.contains(".gemini/antigravity-ide/conversations"),
-                      "新版 IDE 目录必须排第一: \(dirs[0].path)")
-        // 旧版 Antigravity.app 兜底
-        XCTAssertTrue(dirs[1].path.contains(".gemini/antigravity/conversations"),
-                      "旧版 IDE 目录必须兜底: \(dirs[1].path)")
+        XCTAssertEqual(dirs.count, 1, "antigravity-ide 已剥离，默认只扫一个目录")
+        XCTAssertTrue(dirs[0].path.contains(".gemini/antigravity/conversations"),
+                      "必须指向 antigravity 数据目录: \(dirs[0].path)")
+        XCTAssertFalse(dirs[0].path.contains("antigravity-ide"),
+                       "不应再扫描 antigravity-ide: \(dirs[0].path)")
     }
 
     // MARK: - AntigravityLocalUsageScanner: listDBFiles 多目录 + 多格式
@@ -306,33 +304,33 @@ final class AntigravityLocalUsageTests: XCTestCase {
             XCTAssertEqual(result.count, 3)
             XCTAssertEqual(result["shared"]?.url.standardizedFileURL,
                            tmp1.appendingPathComponent("shared.pb").standardizedFileURL,
-                           "同 sessionId 优先用第一个目录（新版 IDE）")
+                           "同 sessionId 优先用第一个目录")
             XCTAssertEqual(result["only-new"]?.format, .sqlite)
             XCTAssertEqual(result["only-old"]?.format, .sqlite)
         }
-        // 3. 真实 IDE 路径（antigravity-ide + antigravity 双目录）
+        // 3. 多目录扫描（注入两个 conversations root，全部 session 都要被收录；目录名仅为 fixture）
         do {
             let tmp = fm.temporaryDirectory.appendingPathComponent("llm-monitor-real-\(UUID().uuidString)", isDirectory: true)
-            let ideDir = tmp.appendingPathComponent("antigravity-ide/conversations", isDirectory: true)
-            let oldDir = tmp.appendingPathComponent("antigravity/conversations", isDirectory: true)
-            try fm.createDirectory(at: ideDir, withIntermediateDirectories: true)
-            try fm.createDirectory(at: oldDir, withIntermediateDirectories: true)
+            let dirA = tmp.appendingPathComponent("root-a/conversations", isDirectory: true)
+            let dirB = tmp.appendingPathComponent("root-b/conversations", isDirectory: true)
+            try fm.createDirectory(at: dirA, withIntermediateDirectories: true)
+            try fm.createDirectory(at: dirB, withIntermediateDirectories: true)
             defer { try? fm.removeItem(at: tmp) }
 
-            try Data().write(to: ideDir.appendingPathComponent("ide-session-1.db"))
-            try Data().write(to: ideDir.appendingPathComponent("ide-session-2.db"))
-            try Data().write(to: ideDir.appendingPathComponent("ide-session-3.pb"))
-            try Data().write(to: oldDir.appendingPathComponent("old-session-1.pb"))
-            try Data().write(to: oldDir.appendingPathComponent("old-session-2.pb"))
-            try Data().write(to: oldDir.appendingPathComponent("old-session-3.pb"))
+            try Data().write(to: dirA.appendingPathComponent("a-session-1.db"))
+            try Data().write(to: dirA.appendingPathComponent("a-session-2.db"))
+            try Data().write(to: dirA.appendingPathComponent("a-session-3.pb"))
+            try Data().write(to: dirB.appendingPathComponent("b-session-1.pb"))
+            try Data().write(to: dirB.appendingPathComponent("b-session-2.pb"))
+            try Data().write(to: dirB.appendingPathComponent("b-session-3.pb"))
 
             let result = AntigravityLocalUsageScanner.listDBFilesWithStatus(
-                conversationsDirs: [ideDir, oldDir],
+                conversationsDirs: [dirA, dirB],
                 fileManager: FileManagerBox(fm)
             ).files
             XCTAssertEqual(result.count, 6, "两个目录的 session 都要被收录")
-            XCTAssertEqual(result["ide-session-1"]?.format, .sqlite)
-            XCTAssertEqual(result["old-session-1"]?.format, .protobuf)
+            XCTAssertEqual(result["a-session-1"]?.format, .sqlite)
+            XCTAssertEqual(result["b-session-1"]?.format, .protobuf)
         }
     }
 
