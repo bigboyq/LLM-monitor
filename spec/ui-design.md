@@ -141,7 +141,7 @@ Implemented in `MenuContentView.headerBar`.
 |---|---|
 | Leading icon | Full app icon (`icon-master.png`, 24×24, original colors; falls back to `chart.bar.xaxis` 13pt semibold secondary if the asset fails to load) |
 | Title | `LLM Monitor`, 13pt semibold |
-| Sleep-blocker notice | `N 个应用正在阻止休眠`, 10pt medium secondary after the title, rendered only when `sleepHealth.report.offenders` is non-empty; hovering opens the offender list (`SleepOffendersHoverView`, same rows as Settings → Energy check 1), hidden otherwise, hover-only with no click action |
+| Sleep-blocker notice | `N 个应用正在阻止休眠`, 10pt medium `Color.secondaryLabel` (fixed NSColor — the glass panel's vibrancy washes out hierarchical `.secondary`, especially in light mode), after the title, rendered only when `sleepHealth.report.offenders` is non-empty; hovering opens the offender list (`SleepOffendersHoverView`, same rows as Settings → Energy check 1), hidden otherwise, hover-only with no click action |
 | Refresh control | Plain button with `arrow.clockwise`, tooltip `立即刷新全部` |
 | Spinner | Shows while at least one provider request is in flight; the refresh button is replaced to prevent accidental duplicate requests |
 

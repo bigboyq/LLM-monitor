@@ -140,7 +140,7 @@ struct MenuContentView: View {
     // MARK: - header（紧凑 padding）
 
     private var headerBar: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 8) {
             // 主面板左上角使用完整 App 图标（icon-master.png）；加载失败兜底回原系统符号。
             if let appIcon = MenuBarLabel.appIconMasterImage {
                 Image(nsImage: appIcon)
@@ -194,7 +194,9 @@ struct MenuContentView: View {
         HoverInfoRow {
             Text("\(offenders.count) 个应用正在阻止休眠")
                 .font(MenuTypography.metricLabel)
-                .foregroundStyle(.secondary)
+                // 面板为玻璃材质，层级色 .secondary 会被 vibrancy 混得偏淡
+                // （浅色下尤其明显）；用与标题同体系的固定 NSColor 次级色。
+                .foregroundStyle(Color.secondaryLabel)
                 .lineLimit(1)
         } detail: {
             SleepOffendersHoverView(offenders: offenders)
