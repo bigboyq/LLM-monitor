@@ -449,7 +449,7 @@ AppState.fetch 成功后调 `fetcher.resultMerger.merge(new:previous:mode:)` 合
 
 ## Auth Probing
 
-Antigravity 是用本地 Antigravity IDE / agy CLI 的 `language_server`，进程可能中途崩。
+Antigravity 是用本地 Antigravity / agy CLI 的 `language_server`，进程可能中途崩。
 `AuthProber` 异步探测 `fetcher.checkLocalAuth()` 并缓存结果：
 
 - `scheduleProbe(for: providerID)`：启动探测（fetcher.hasLocalAuth() false 时不发）

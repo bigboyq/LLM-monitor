@@ -106,7 +106,7 @@ If any of those conditions fail, `AppState` surfaces:
 or, if a process is found but no port:
 
 ```text
-发现 Antigravity 进程但未监听本地端口，请确认 IDE 或 CLI 已完成登录
+发现 Antigravity 进程但未监听本地端口，请确认 Antigravity 或 CLI 已完成登录
 ```
 
 or, if process + port are healthy but `~/.gemini/antigravity/conversations/` is empty (CLI-only user with no IDE activity):

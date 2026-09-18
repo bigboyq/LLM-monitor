@@ -319,7 +319,7 @@ Reasons currently produced by `AppState`:
 | `已在 config.json 中禁用` | `enabled == false` |
 | `API Key 未填写` | API-key provider has empty/template key |
 | `外部 auth 缺失：~/.codex/auth.json` | external-auth provider probe failed |
-| `请先启动 Antigravity 并完成登录` | Antigravity IDE / agy CLI 进程未发现或未监听本地端口 |
+| `请先启动 Antigravity 并完成登录` | Antigravity / agy CLI 进程未发现或未监听本地端口 |
 
 ### Ready
 

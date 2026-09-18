@@ -596,8 +596,9 @@ struct AntigravityDBFileListing: Sendable {
 /// 决定是否检查 SQLite WAL 指纹。Token 数据仍只来自 RPC；SQLite 仅在 RPC
 /// 缺少时间戳时读取匹配 step metadata 做回填：
 ///
-/// - `.db`（SQLite）：旧版 + 新版 IDE 早期格式；读取文件/WAL 指纹，必要时读取时间 metadata。
-/// - `.pb`（protobuf）：新版 IDE 近期格式；只读取文件指纹，不做 protobuf 解析。
+/// - `.db`（SQLite）：读取文件/WAL 指纹，必要时读取时间 metadata。
+/// - `.pb`（protobuf）：只读取文件指纹，不做 protobuf 解析。该格式最初由已剥离的
+///   Antigravity IDE.app 引入，`~/.gemini/antigravity/` 中同样会出现，故保留支持。
 ///   两种格式都依赖 RPC 提供 Token、时间和 stepIndices，再推算 R/T。
 enum SessionStoreFormat: String, Sendable {
     case sqlite        // .db
