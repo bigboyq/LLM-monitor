@@ -93,7 +93,12 @@ struct MenuContentView: View {
         .background {
             MenuPanelSurface()
         }
-        .background(MenuWindowAutoCloseBridge())
+        // 面板每次打开即时刷新睡眠健康度：健康灯红黄绿必须在用户点开面板的
+        // 瞬间反映最新断言状态，而不是等下一个 60s 轮询周期（用户刚退出了
+        // 霸占睡眠锁的应用时，旧状态会误导）。
+        .background(MenuWindowAutoCloseBridge(onPanelOpen: {
+            state.sleepHealth.refreshNow()
+        }))
         // F4: 窗口高度与位置由 MenuWindowAlignment 基于卡片真实内容高度与
         // 屏幕可用高度及 70% 封顶动态驱动：能展示就自然展开，超标则封顶 70% 并在内部滚动。
         .background(MenuPanelHeightBridge(measuredCardsHeight: measuredCardsHeight) { availH, visH in
@@ -122,6 +127,8 @@ struct MenuContentView: View {
                 Task { await state.refreshAll() }
             }
             loginItemService.refreshStatus()
+            // onAppear 兜底：首次创建面板时 become key 回调可能尚未挂接完成
+            state.sleepHealth.refreshNow()
         }
         .onDisappear { displayClock.stop() }
         // 显式 .onReceive 强制 SwiftUI 订阅 publisher，绕开 MenuBarExtra 的 view 缓存
