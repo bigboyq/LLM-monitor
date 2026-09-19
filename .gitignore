@@ -11,6 +11,10 @@ CODE_REVIEW_*.md
 build/
 .swiftpm/
 
+# 本地构建号（scripts/build-app.sh 自动递增，随构建频繁变化，不再入库）
+.build_number
+.build_number.tmp.*
+
 # Packaged app artifacts
 *.app
 *.dmg
