@@ -92,6 +92,13 @@ fi
 validate_version "$VERSION"
 validate_bundle_id "$BUNDLE_ID"
 
+# 图标资产前置校验：IconPreview 副本与回退 AppIcon.icns 必须与源资产同步
+# （曾发生过 icns 停留在旧版多日无人发现的 drift）。release 必须从已提交
+# 状态构建，这里只校验、不自动重生成；drift 时先跑同步脚本并提交再构建。
+if ! "$ROOT_DIR/scripts/sync-icon-assets.sh" --check; then
+    fail "图标资产与源不同步，请先运行 ./scripts/sync-icon-assets.sh 并提交同步产物后再构建"
+fi
+
 if [ "$INCREMENT_BUILD" = "1" ]; then
     validate_build_number "$CURRENT_BUILD_NUMBER"
     BUILD_NUMBER=$((10#$CURRENT_BUILD_NUMBER + 1))
