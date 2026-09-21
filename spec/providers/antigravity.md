@@ -10,7 +10,7 @@ This provider does not call Google quota APIs with a saved OAuth access token. I
 
 | Item | Current implementation |
 |---|---|
-| Auth source | Running Antigravity IDE **or** agy CLI; their local authenticated language_server |
+| Auth source | Running Antigravity **or** agy CLI; their local authenticated language_server |
 | Direct OAuth token use | Avoided; stale `state.vscdb` tokens may return `401` |
 | Process discovery | `pgrep -fal language_server` (IDE) + `pgrep -fal agy` / `antigravity-cli` (CLI), command-line keyword filter |
 | CSRF | IDE requires `--csrf_token`; CLI does not require any |
@@ -92,7 +92,7 @@ Supported provider fields:
 
 For this provider to work:
 
-1. Antigravity IDE **or** agy CLI must already be running.
+1. Antigravity **or** agy CLI must already be running.
 2. The user must already be logged in.
 3. The local language server (embedded in either backend) must be healthy and listening on localhost.
 4. The conversation directory is optional: without local session files, quota/account data still works and local-history totals remain empty.
@@ -100,16 +100,16 @@ For this provider to work:
 If any of those conditions fail, `AppState` surfaces:
 
 ```text
-未发现 Antigravity IDE 或 agy CLI 进程，请先启动 Antigravity 并完成登录
+未发现 Antigravity 或 agy CLI 进程，请先启动 Antigravity 并完成登录
 ```
 
 or, if a process is found but no port:
 
 ```text
-发现 Antigravity 进程但未监听本地端口，请确认 IDE 或 CLI 已完成登录
+发现 Antigravity 进程但未监听本地端口，请确认 Antigravity 或 CLI 已完成登录
 ```
 
-or, if process + port are healthy but `~/.gemini/antigravity-ide/conversations/` is empty (CLI-only user with no IDE activity):
+or, if process + port are healthy but `~/.gemini/antigravity/conversations/` is empty (CLI-only user with no IDE activity):
 
 ```text
 今日用量：扫描中…   (in the footer line — hovering the title shows scan state)
@@ -117,18 +117,17 @@ or, if process + port are healthy but `~/.gemini/antigravity-ide/conversations/`
 
 ## Discovery Flow
 
-The fetcher scans for **two** kinds of Antigravity backends and picks the best one (IDE first, then CLI):
+The fetcher scans for **two** kinds of Antigravity backends and picks the best one (app-embedded `language_server` first, then CLI).
 
-### 1. `pgrep -fal language_server` (IDE candidates)
+`Antigravity IDE.app` is no longer a supported backend: commands matching `AntigravityFetcher.isUnsupportedIDEAppCommand` (the `Antigravity IDE.app` bundle path, `--app_data_dir antigravity-ide`, or its arch-suffixed `language_server_<suffix>` binaries) are rejected before classification.
+
+### 1. `pgrep -fal language_server` (app-embedded candidates)
 
 For each match, run `classify(command:)`:
 
-- Must contain a known Antigravity IDE `language_server` binary as a basename (path-anchored, followed by whitespace or end-of-string). Known binaries (see `AntigravityFetcher.knownLanguageServerBinaries`):
-  - `language_server` — `Antigravity.app`（无空格，独立应用），路径示例 `/Applications/Antigravity.app/Contents/Resources/bin/language_server`
-  - `language_server_macos_arm` — `Antigravity IDE.app`（带空格，独立应用），路径示例 `/Applications/Antigravity IDE.app/Contents/Resources/app/extensions/antigravity/bin/language_server_macos_arm`
-  - 兜底：仍允许 `language[-_]server<._多段后缀>` 的任意后缀匹配（向后兼容未来新增的架构/平台后缀，如 `language_server_macos_x64` / `language_server_linux_arm64`）
-- The lowercased command must also contain `antigravity` (typically via `--app_data_dir <antigravity path>` or the install path `/Applications/Antigravity.app/...` / `/Applications/Antigravity IDE.app/...`)
-- IDE processes must additionally have `--csrf_token` in their command line; otherwise the candidate is rejected (tokenless matches are not used — a later valid one is preferred)
+- Must contain the bare `language[-_]server` binary as a basename (path-anchored, followed by whitespace or end-of-string; `.exe` allowed) — `Antigravity.app`（无空格，独立应用），路径示例 `/Applications/Antigravity.app/Contents/Resources/bin/language_server`
+- The lowercased command must also contain `antigravity` (typically via `--app_data_dir <antigravity path>` or the install path `/Applications/Antigravity.app/...`)
+- App processes must additionally have `--csrf_token` in their command line; otherwise the candidate is rejected (tokenless matches are not used — a later valid one is preferred)
 
 ### 2. `pgrep -fal agy` / `antigravity-cli` (CLI candidates)
 
@@ -470,7 +469,7 @@ only the matching step metadata timestamp as a fallback.
 
 ```
 ~/.gemini/antigravity/
-├── conversations/                         ← Antigravity IDE native (read-only input)
+├── conversations/                         ← Antigravity native (read-only input)
 │   ├── {sessionId}.db                      ← discovered/fingerprinted; timestamp metadata may be read
 │   └── {sessionId}.pb                      ← discovered and fingerprinted, not decoded
 └── .token-monitor/                        ← scanner's own cache
@@ -530,7 +529,7 @@ In the daily aggregate (`AntigravityDailyUsage`), the 5 categories are summed pe
 
 ## Session file formats (`.db` vs `.pb`)
 
-Antigravity IDE has used two on-disk formats for per-cascade session files. The scanner accepts both via `SessionStoreFormat` and the file extension. Token data comes from the local `GetCascadeTrajectoryGeneratorMetadata` RPC for both formats. SQLite `.db` files additionally provide a narrow timestamp fallback: `stepIndices` select `step_type=15` rows and the scanner reads only their protobuf Timestamp metadata; `.pb` files remain discovery/fingerprint-only.
+Antigravity has used two on-disk formats for per-cascade session files. The scanner accepts both via `SessionStoreFormat` and the file extension. Token data comes from the local `GetCascadeTrajectoryGeneratorMetadata` RPC for both formats. SQLite `.db` files additionally provide a narrow timestamp fallback: `stepIndices` select `step_type=15` rows and the scanner reads only their protobuf Timestamp metadata; `.pb` files remain discovery/fingerprint-only.
 
 | Extension | Format | Runtime use | R/T computation | Token computation |
 |---|---|---|---|---|
@@ -543,12 +542,11 @@ For `.pb` sessions, the scanner fetches the same per-event token numbers and `st
 
 ### Directories scanned (`defaultConversationsDirs`)
 
-The scanner walks both:
+The scanner walks a single directory:
 
-1. `~/.gemini/antigravity-ide/conversations/` — Antigravity IDE.app (`--app_data_dir antigravity-ide`)
-2. `~/.gemini/antigravity/conversations/` — Antigravity.app (`--app_data_dir antigravity`)
+1. `~/.gemini/antigravity/conversations/` — Antigravity.app (`--app_data_dir antigravity`)
 
-Same `sessionId` (UUID) in both directories is deduped to the **first** entry (Antigravity IDE.app wins). This lets a user with both applications installed see fresh data from the active workspace without being shadowed by stale data.
+`~/.gemini/antigravity-ide/` (Antigravity IDE.app, `--app_data_dir antigravity-ide`) was previously scanned as a second root but support for it has been removed; the scanner no longer reads that directory. The directory list itself is still an array, kept as a test/injection seam for multi-root enumeration.
 
 ## Historical `.db` Schema Insights — Rounds / Turns / Tool calls
 
@@ -662,7 +660,7 @@ def get_round_text(payload):
 - false positives in protobuf noise (e.g. `cache_read=0` matches every blob because the single-byte varint `0x00` is everywhere)
 - matches in `step_payload` are text that the LLM happened to write containing the same number (e.g. the LLM writing "Output: 3182 tokens" in its response)
 
-**Token data lives only in the `language_server` process memory** and is exposed via the RPC. Restarting Antigravity IDE clears all per-round token history; only the conversation flow (steps) and structure (metadata blobs) survive in `.db`.
+**Token data lives only in the `language_server` process memory** and is exposed via the RPC. Restarting Antigravity clears all per-round token history; only the conversation flow (steps) and structure (metadata blobs) survive in `.db`.
 
 ### Lazy .db write — sessions don't flush while open
 
@@ -829,7 +827,7 @@ A `HoverInfoRow` wraps the entire header. The detail panel shows:
 
 - Login email (from `GetUserStatus.userStatus.email`)
 - Plan name (tier, repeated for clarity when different from the card pill)
-- Source note: "数据来源：本机 Antigravity IDE / agy CLI 的 language_server"
+- Source note: "数据来源：本机 Antigravity / agy CLI 的 language_server"
 
 Panel header is `Google Antigravity 账号` for consistency with the card title.
 
@@ -895,7 +893,7 @@ Claude and GPT models                                  5h × 3 = 周
 
 | Situation | Current behavior |
 |---|---|
-| `pgrep` finds no IDE `language_server` and no agy CLI | `网络错误：未发现 Antigravity IDE 或 agy CLI 进程...` |
+| `pgrep` finds no Antigravity `language_server` and no agy CLI | `网络错误：未发现 Antigravity 或 agy CLI 进程...` |
 | Processes found but none listen on localhost | `网络错误：发现 Antigravity 进程但未监听本地端口...` |
 | IDE candidate without `--csrf_token` | Silently rejected; later valid candidates still considered |
 | `lsof` fails | Wrapped in `网络错误：无法启动 lsof: <msg>` |

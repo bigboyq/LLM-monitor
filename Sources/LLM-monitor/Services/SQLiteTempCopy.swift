@@ -5,7 +5,7 @@ import Darwin
 /// SQLite 读策略：快路径直接 read 原 .db，file-level 错误（SQLITE_CANTOPEN=14 /
 /// SQLITE_BUSY=5）时 copy .db + .db-wal + .db-shm 到 /tmp 副本上 read。
 ///
-/// 适用：任何读 IDE / runtime 实时写入的 .db（antigravity IDE、minimax runtime），
+/// 适用：任何读 IDE / runtime 实时写入的 .db（antigravity、minimax runtime），
 /// IDE 侧的 -shm 可能跟系统 dylib 不兼容导致直接 read CANTOPEN，copy 到 /tmp
 /// 后完全隔离 IDE 实时 -shm 状态。
 ///

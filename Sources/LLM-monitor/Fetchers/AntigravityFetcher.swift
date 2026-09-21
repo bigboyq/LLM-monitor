@@ -11,6 +11,7 @@ import Foundation
 /// 1. 用 `pgrep` 扫描所有 `language_server` 进程 + `agy` / `antigravity-cli` 进程
 /// 2. 根据命令行分类：
 ///    - **IDE**：`language_server` 二进制 + 命令行含 `antigravity` 字样 + 需要 `--csrf_token`
+///      （`Antigravity IDE.app` 的进程已剥离支持，见 `isUnsupportedIDEAppCommand`）
 ///    - **CLI**：`agy` / `antigravity-cli` 二进制（路径锚定，避免 `stragy` 误匹配），无 CSRF
 /// 3. 用 `lsof` 找到该进程监听的 HTTPS 端口
 /// 4. 调本地受保护接口：
@@ -171,7 +172,7 @@ struct AntigravityFetcher: QuotaFetcher {
         servers: [ServerInfo]
     ) async throws -> [UsageEvent] {
         guard !servers.isEmpty else {
-            throw QuotaError.networkError("未发现 Antigravity IDE 或 agy CLI 进程，请先启动 Antigravity 并完成登录")
+            throw QuotaError.networkError("未发现 Antigravity 或 agy CLI 进程，请先启动 Antigravity 并完成登录")
         }
 
         struct Request: Encodable {

@@ -2,7 +2,7 @@ import Foundation
 import Combine
 import os.log
 
-/// 扫描 `~/.gemini/<antigravity|antigravity-ide>/conversations/`，只读取本地
+/// 扫描 `~/.gemini/antigravity/conversations/`，只读取本地
 /// session 文件的路径、扩展名和 mtime/size 指纹；token 数据不从 `.db` / `.pb` 内容读取。
 /// 对 dirty session 通过 `AntigravityFetcher.getTrajectoryMetadata` RPC 拉取
 /// per-event token 用量和结构信息，聚合后写入正式的 `index.json` daily cache。
@@ -34,15 +34,11 @@ final class AntigravityLocalUsageScanner: LocalUsageScannerBase<AntigravityLocal
     /// 的 view）。用 async-aware 的 AsyncMutex 串行整个 pipeline。
     nonisolated static let pipelineMutex = AsyncMutex()
 
-    /// 默认 cache 目录，跟 ddarkr/token-monitor 对齐
+    /// 默认扫描目录：`Antigravity.app` 的数据目录
+    /// `~/.gemini/antigravity/`（`--app_data_dir antigravity`）。
     ///
-    /// 历史上有两个 Antigravity IDE 产品的数据目录：
-    ///
-    /// 1. 旧版 `Antigravity.app`（2025 年起，`--app_data_dir antigravity`）→ `~/.gemini/antigravity/`
-    /// 2. 新版 `Antigravity IDE.app`（2026 年起，`--app_data_dir antigravity-ide`）→ `~/.gemini/antigravity-ide/`
-    ///
-    /// scanner 同时扫两个目录（按顺序合并去重），新版的优先让新活跃数据先被 mtime diff 命中，
-    /// 旧版数据兜底兼容老用户。
+    /// `Antigravity IDE.app` 的 `~/.gemini/antigravity-ide/` 曾被同时扫描，
+    /// 现已剥离，不再支持。目录列表保留数组形态，作为测试注入多个 root 的接缝。
     ///
     /// 同时也接受两种 session 文件格式：`.db` 和 `.pb`。
     /// 两者都只用于文件发现与指纹比较，Token 和 Turn/Round 均走本地 RPC。
@@ -50,11 +46,6 @@ final class AntigravityLocalUsageScanner: LocalUsageScannerBase<AntigravityLocal
         let gemini = URL(fileURLWithPath: NSHomeDirectory())
             .appendingPathComponent(".gemini", isDirectory: true)
         return [
-            // 新版 IDE（Antigravity IDE.app 2026+，带空格）
-            gemini
-                .appendingPathComponent("antigravity-ide", isDirectory: true)
-                .appendingPathComponent("conversations", isDirectory: true),
-            // 旧版 IDE（Antigravity.app 2025，无空格）—— 兜底兼容
             gemini
                 .appendingPathComponent("antigravity", isDirectory: true)
                 .appendingPathComponent("conversations", isDirectory: true)
@@ -510,7 +501,7 @@ extension AntigravityLocalUsageScanner {
                     index: index,
                     sessionID: item.0,
                     result: .failure(DirtySessionFetchError(
-                        message: "未发现 Antigravity IDE 或 agy CLI 进程，请先启动 Antigravity 并完成登录"
+                        message: "未发现 Antigravity 或 agy CLI 进程，请先启动 Antigravity 并完成登录"
                     ))
                 )
             }
@@ -601,12 +592,13 @@ struct AntigravityDBFileListing: Sendable {
     let isComplete: Bool
 }
 
-/// Antigravity IDE 把每个 cascade 存成本地文件，扩展名用于识别文件格式和
+/// Antigravity 把每个 cascade 存成本地文件，扩展名用于识别文件格式和
 /// 决定是否检查 SQLite WAL 指纹。Token 数据仍只来自 RPC；SQLite 仅在 RPC
 /// 缺少时间戳时读取匹配 step metadata 做回填：
 ///
-/// - `.db`（SQLite）：旧版 + 新版 IDE 早期格式；读取文件/WAL 指纹，必要时读取时间 metadata。
-/// - `.pb`（protobuf）：新版 IDE 近期格式；只读取文件指纹，不做 protobuf 解析。
+/// - `.db`（SQLite）：读取文件/WAL 指纹，必要时读取时间 metadata。
+/// - `.pb`（protobuf）：只读取文件指纹，不做 protobuf 解析。该格式最初由已剥离的
+///   Antigravity IDE.app 引入，`~/.gemini/antigravity/` 中同样会出现，故保留支持。
 ///   两种格式都依赖 RPC 提供 Token、时间和 stepIndices，再推算 R/T。
 enum SessionStoreFormat: String, Sendable {
     case sqlite        // .db
@@ -701,8 +693,8 @@ extension AntigravityLocalUsageScanner {
         var result: [String: AntigravityDBFileInfo] = [:]
         var isComplete = true
         for conversationsDir in conversationsDirs {
-            // 用父目录名当 tag：antigravity-ide / antigravity，让日志能区分
-            // "新 IDE 目录扫到多少 session" vs "旧 IDE 目录扫到多少"。
+            // 用父目录名当 tag，让日志能区分各 conversations root 各扫到多少
+            // session（默认只有一个 antigravity 目录；测试会注入多个）。
             let dirTag = conversationsDir.deletingLastPathComponent().lastPathComponent
             let entries: [URL]
             do {
@@ -741,7 +733,7 @@ extension AntigravityLocalUsageScanner {
                 guard let format = SessionStoreFormat(fileExtension: url.pathExtension) else { continue }
                 let sessionId = url.deletingPathExtension().lastPathComponent
                 guard !sessionId.isEmpty else { continue }
-                // 同 sessionId 只接受第一个出现（新 IDE 目录在前优先）
+                // 同 sessionId 只接受第一个出现（目录列表顺序优先）
                 guard result[sessionId] == nil else { continue }
                 let values: URLResourceValues
                 do {

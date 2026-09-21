@@ -35,7 +35,7 @@ shasum -a 256 -c SHA256SUMS.txt
 
 ### Antigravity
 
-先启动并登录 Antigravity IDE 或 `agy` CLI。应用自动发现本机 `language_server`，通过 loopback RPC 获取账号、额度和 trajectory token 信息。若显示服务离线，请确认 Antigravity 仍在运行并已完成登录。
+先启动并登录 Antigravity 或 `agy` CLI。应用自动发现本机 `language_server`，通过 loopback RPC 获取账号、额度和 trajectory token 信息。若显示服务离线，请确认 Antigravity 仍在运行并已完成登录。
 
 ### GLM Coding Plan
 
