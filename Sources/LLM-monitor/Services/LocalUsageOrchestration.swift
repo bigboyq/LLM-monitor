@@ -515,7 +515,10 @@ final class LocalUsageOrchestration {
         case "dsh":
             return fileManager.fileExists(atPath: DshLocalUsageScanner.defaultSessionsRoot.path)
         case "antigravity":
-            return AntigravityFetcher().hasLocalAuth()
+            // 等价于 AntigravityFetcher().hasLocalAuth() 的常量语义：真正的本地
+            // 探测（pgrep/lsof 进程发现）推迟到 async fetch()，这里直接短路，
+            // 避免每轮 reconcile 都构造一个 fetcher。
+            return true
         case "codex":
             // 与 CodexFetcher 相同的解析链（config authPath → CODEX_HOME → ~/.codex），
             // 自定义 CODEX_HOME 的用户也能被正确判定。

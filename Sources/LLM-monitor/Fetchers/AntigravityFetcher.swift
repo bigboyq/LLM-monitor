@@ -22,7 +22,21 @@ struct AntigravityFetcher: QuotaFetcher {
     let displayName = "Antigravity"
     let kind: ProviderKind = .antigravity
 
-    private let session: URLSession
+    /// 带 delegate 的 URLSession 会被系统强持有到 invalidate / 进程退出；本
+    /// fetcher 是按需构造的轻量 struct（每轮刷新、reconcile、auth 探测都会新建
+    /// 一个），session 必须进程级共享，否则每次构造都泄漏一套 session + delegate。
+    /// LocalhostTrustDelegate 只做无状态的 localhost 信任评估，跨实例复用安全。
+    private static let session: URLSession = {
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = HTTPTimeouts.antigravityRequest
+        config.timeoutIntervalForResource = HTTPTimeouts.antigravityResource
+        return URLSession(
+            configuration: config,
+            delegate: LocalhostTrustDelegate(),
+            delegateQueue: nil
+        )
+    }()
+
     private let metadataServerDiscovery: @Sendable () -> [ServerInfo]
 
     init(
@@ -30,14 +44,6 @@ struct AntigravityFetcher: QuotaFetcher {
             AntigravityFetcher.defaultMetadataServers()
         }
     ) {
-        let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = HTTPTimeouts.antigravityRequest
-        config.timeoutIntervalForResource = HTTPTimeouts.antigravityResource
-        self.session = URLSession(
-            configuration: config,
-            delegate: LocalhostTrustDelegate(),
-            delegateQueue: nil
-        )
         self.metadataServerDiscovery = metadataServerDiscovery
     }
 
@@ -482,7 +488,7 @@ struct AntigravityFetcher: QuotaFetcher {
         do {
             let (downloaded, http) = try await CappedDownloader.data(
                 for: request,
-                session: session,
+                session: Self.session,
                 maxBytes: maxBytes,
                 redactedPath: redactedPath
             )
@@ -646,6 +652,10 @@ extension AntigravityFetcher {
     nonisolated static func parseUsageEventForTest(_ json: AnyJSON) -> UsageEvent? {
         parseUsageEvent(from: json)
     }
+
+    /// 暴露本实例实际使用的 URLSession（仅测试用：验证多个 fetcher 实例共享
+    /// 同一个进程级 session，防止退回"每次构造新建 delegate session"的泄漏）。
+    var sessionForTest: URLSession { Self.session }
 
     /// 从 quota response JSON 构造模型（仅用于验证 bucket presence/status 契约）。
     nonisolated static func parseQuotaModelsForTest(_ data: Data) throws -> [ModelQuota] {
