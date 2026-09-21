@@ -20,6 +20,10 @@ enum ScannerIndexIO {
         guard fileManager.fileExists(atPath: url.path) else {
             return empty
         }
+        // 量级评估：索引内容由硬上限约束（dsh 的 recentSamples 上限 65,536 条、
+        // antigravity 的 samples 只保留 8 天窗口），实测各 provider 的 index.json
+        // 在数百 KB 量级，理论上限（dsh 全量 samples）约十几 MB。JSONDecoder 需要
+        // 完整文档，此量级保留一次性读入，不做流式拆解。
         let data = try Data(contentsOf: url)
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
