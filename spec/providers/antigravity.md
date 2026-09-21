@@ -377,6 +377,83 @@ is excluded from daily tokens, turns, rounds, and samples. `eventCount` uses the
 population — it counts only events that successfully entered the daily statistics
 (`AntigravityLocalUsageScanner.accountedEventStats`).
 
+### Incremental trajectory metadata (verified on Antigravity 2.15.1)
+
+The local `language_server` implementation exposes more request fields than the
+current monitor sends. The request accepted by
+`GetCascadeTrajectoryGeneratorMetadata` is:
+
+```json
+{
+  "cascadeId": "<session-id>",
+  "generatorMetadataOffset": 0,
+  "includeMessages": false
+}
+```
+
+`cascadeId` is required. `generatorMetadataOffset` is an offset into the
+`generatorMetadata` sequence, not a generic `stepIndex` and not a timestamp. On a
+local Antigravity 2.15.1 instance, the same cascade returned:
+
+| `generatorMetadataOffset` | returned metadata entries |
+|---:|---:|
+| 0 | 69 |
+| 1 | 68 |
+| 10 | 59 |
+| 68 | 1 |
+| 69 | 0 |
+| 1000 | 0 |
+
+This confirms suffix-style incremental retrieval: after successfully accounting for
+`N` generator metadata entries, the next request can use
+`generatorMetadataOffset: N` to retrieve only later entries. The current monitor does
+not use this field; its existing mtime/size/WAL cache only decides whether a session is
+dirty, then re-fetches the complete generator-metadata sequence.
+
+The same local service also exposes offset-based companion RPCs:
+
+| RPC | request range field | verified behavior |
+|---|---|---|
+| `GetCascadeTrajectory` | full trajectory request | returns trajectory plus total step/metadata counts |
+| `GetCascadeTrajectorySteps` | `stepOffset` | suffix retrieval; observed 147 entries at 0 and 47 at 100 |
+| `GetCascadeTrajectoryExecutorMetadatas` | `executorMetadataOffset` | offset-based executor metadata retrieval |
+| `GetAllCascadeTrajectories` | `excludeSubtrajectories` | trajectory summaries, no metadata offset |
+| `GetUserTrajectory` | `trajectoryId` | single trajectory lookup |
+
+No evidence has been found for timestamp ranges, `pageToken`, `pageSize`, `limit`,
+`since/until`, or an independent delta token. Strings such as
+`GetGeneratorMetadatasPageBounds` and `GetStartGeneratorMetadataIndex` were found in
+the binary, but have not been confirmed as public RPC endpoints.
+
+These observations were made against the locally installed arm64 Antigravity
+`2.15.1` (`/Applications/Antigravity.app/.../language_server`) using its binary
+descriptors and live localhost RPC responses. This is a private, version-sensitive
+interface; future Antigravity versions may change field names or semantics.
+
+#### Revised monitor strategy
+
+The preferred next implementation is offset-based fetching before generic JSON
+streaming:
+
+1. Persist, per session, the number of successfully accounted generator metadata
+   entries (and enough metadata to detect a reset/rewrite).
+2. On a dirty session, request `generatorMetadataOffset` from that count instead of
+   requesting the full sequence.
+3. Append only the returned suffix to the session's aggregate/sample state, with
+   deduplication and a conservative fallback when the session is rewritten, the
+   offset becomes invalid, or the response is empty unexpectedly.
+4. Keep `includeMessages: false`; message bodies are not needed for token, model,
+   timestamp, or turn/round accounting.
+5. Retain a bounded response cap and bounded concurrency. Streaming JSON parsing is
+   still useful as a defense for a single unexpectedly large suffix, but it is no
+   longer the primary fix for normal growth: the normal request should be small
+   because it asks only for newly appended generator metadata.
+
+The offset must be treated as a generator-metadata count, not derived directly from
+the maximum `stepIndex`. The first version should record the returned entry count and
+only advance the persisted offset after the suffix has been parsed, aggregated, and
+saved successfully.
+
 ## Local Token Usage Scanner
 
 `AntigravityLocalUsageScanner` runs after a settled Provider batch, independent of quota
