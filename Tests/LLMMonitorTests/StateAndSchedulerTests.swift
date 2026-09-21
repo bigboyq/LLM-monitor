@@ -896,7 +896,7 @@ final class StateAndSchedulerTests: XCTestCase {
         scheduler.cancelAll()
     }
 
-    /// Reset 的两个边界按实际 executionAt 严格比较：30 秒本身跳过，超过 30 秒才允许。
+    /// Reset 的 prev 侧边界：30 秒以内不丢弃，而是把执行点钳到 prev+30s。
     @MainActor
     func testResetWindowUsesStrictThirtySecondBoundary() async {
         let fixedNow = Date(timeIntervalSince1970: 1_700_000_000)
@@ -926,9 +926,69 @@ final class StateAndSchedulerTests: XCTestCase {
         let belowBoundary = await run(resetExecutionOffset: 29.999)
         let atBoundary = await run(resetExecutionOffset: 30.0)
         let aboveBoundary = await run(resetExecutionOffset: 30.001)
-        XCTAssertFalse(belowBoundary)
-        XCTAssertFalse(atBoundary)
+        XCTAssertTrue(belowBoundary)
+        XCTAssertTrue(atBoundary)
         XCTAssertTrue(aboveBoundary)
+    }
+
+    @MainActor
+    func testStaggeredStartPointsSeparateInitialProviderRefreshes() async {
+        let fixedNow = Date(timeIntervalSince1970: 1_700_000_000)
+        var order: [String] = []
+        var scheduler: ProviderRefreshScheduler!
+        scheduler = ProviderRefreshScheduler(
+            refreshHandler: { providerID, _ in
+                order.append(providerID)
+                if order.count == 2 { scheduler.cancelAll() }
+                return .completed(success: true)
+            },
+            intervalProvider: { _ in 300 },
+            onNextRefreshChange: {},
+            now: { fixedNow },
+            sleep: { _ in }
+        )
+        scheduler.schedule(for: "a")
+        scheduler.schedule(for: "b")
+        scheduler.staggerInitialRefreshes(at: fixedNow)
+        scheduler.start()
+        for _ in 0..<100 where order.count < 2 {
+            await Task.yield()
+        }
+        XCTAssertEqual(order, ["a", "b"])
+    }
+
+    @MainActor
+    func testResetNextIntervalBoundaryUsesStrictLessThan() async {
+        let fixedNow = Date(timeIntervalSince1970: 1_700_000_000)
+
+        func run(resetExecutionOffset: TimeInterval) async -> Bool {
+            var modes: [RefreshMode] = []
+            let scheduler = ProviderRefreshScheduler(
+                refreshHandler: { _, mode in
+                    modes.append(mode)
+                    return .completed(success: true)
+                },
+                intervalProvider: { _ in 300 },
+                onNextRefreshChange: {},
+                now: { fixedNow },
+                midCycleResetDelay: 0,
+                sleep: { _ in }
+            )
+            scheduler.scheduleMidCycleResetRefreshes(
+                for: "p",
+                resetsAtDates: [fixedNow.addingTimeInterval(resetExecutionOffset)]
+            )
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            scheduler.cancelAll()
+            return modes.contains(.background)
+        }
+
+        let belowNextBoundary = await run(resetExecutionOffset: 270.001)
+        let atNextBoundary = await run(resetExecutionOffset: 270.0)
+        let aboveNextBoundary = await run(resetExecutionOffset: 269.999)
+        XCTAssertFalse(belowNextBoundary)
+        XCTAssertTrue(atNextBoundary)
+        XCTAssertTrue(aboveNextBoundary)
     }
 
     @MainActor

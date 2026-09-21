@@ -374,6 +374,7 @@ final class AppState: ObservableObject {
                 scheduleRefresh(for: status.id)
             }
         }
+        refreshScheduler.staggerInitialRefreshes(at: Date())
         // 即使没有任何启用的 Provider，也要完成一次空 pass，
         // 这样 LocalUsage 才能在 Provider 流程之后执行首次 Full Scan。
         refreshScheduler.start()

@@ -54,6 +54,8 @@ final class ProviderRefreshScheduler {
 
     /// 当前受管的所有 provider 标识
     private var managedProviders: Set<String> = []
+    /// Provider 的稳定注册顺序，用于 startup/manual/wakeup 的 2 秒错峰。
+    private var managedProviderOrder: [String] = []
     /// 各 provider 常规刷新的下一次触发时间。UI footer 展示其中最早的一个。
     private var nextRefreshDates: [String: Date] = [:]
     /// 已执行的 background 刷新次数；每 periodicFullEveryN 次补一次 .full。
@@ -174,6 +176,9 @@ final class ProviderRefreshScheduler {
     /// 注册 provider 进入单循环。若该 provider 之前未设置 nextRefreshDate，则立即安排首拍。
     func schedule(for providerID: String) {
         managedProviders.insert(providerID)
+        if !managedProviderOrder.contains(providerID) {
+            managedProviderOrder.append(providerID)
+        }
         let interval = intervalProvider(providerID)
         logInfo("ProviderRefreshScheduler: 将 [\(providerID)] 纳入额度循环，基础间隔 \(Int(interval))s")
 
@@ -208,6 +213,7 @@ final class ProviderRefreshScheduler {
     /// 从单循环中移除指定的 provider
     func cancel(providerID: String) {
         managedProviders.remove(providerID)
+        managedProviderOrder.removeAll { $0 == providerID }
         nextRefreshDates.removeValue(forKey: providerID)
         resetCandidates.removeValue(forKey: providerID)
         lastIntervalFinishedDates.removeValue(forKey: providerID)
@@ -242,6 +248,7 @@ final class ProviderRefreshScheduler {
         schedulerGeneration &+= 1
         wake()
         managedProviders.removeAll()
+        managedProviderOrder.removeAll()
         nextRefreshDates.removeAll()
         resetCandidates.removeAll()
         lastIntervalFinishedDates.removeAll()
@@ -513,12 +520,18 @@ final class ProviderRefreshScheduler {
         var candidates = Set<ResetCandidate>()
 
         for resetTime in uniqueResets {
-            let executionAt = resetTime.addingTimeInterval(midCycleResetDelay)
-            guard executionAt > nowDate,
-                  executionAt.timeIntervalSince(lastIntervalFinished) > 30,
-                  nextRefreshDate.timeIntervalSince(executionAt) > 30 else { continue }
+            let proposedExecutionAt = resetTime.addingTimeInterval(midCycleResetDelay)
+            guard proposedExecutionAt > nowDate,
+                  nextRefreshDate.timeIntervalSince(proposedExecutionAt) >= 30 else { continue }
+            let executionAt: Date
+            if proposedExecutionAt.timeIntervalSince(lastIntervalFinished) <= 30 {
+                executionAt = lastIntervalFinished.addingTimeInterval(30)
+            } else {
+                executionAt = proposedExecutionAt
+            }
+            guard nextRefreshDate.timeIntervalSince(executionAt) >= 30 else { continue }
 
-            logInfo("ProviderRefreshScheduler: 为 [\(providerID)] 调度 reset 补刷新，执行时间距上次 Interval/下次 Interval 均超过 30s")
+            logInfo("ProviderRefreshScheduler: 为 [\(providerID)] 调度 reset 补刷新，执行点已按前后 Interval 窗口归一化")
 
             candidates.insert(ResetCandidate(executionAt: executionAt))
         }
@@ -538,10 +551,18 @@ final class ProviderRefreshScheduler {
             let interval = intervalProvider(providerID)
             let last = lastIntervalFinishedDates[providerID] ?? now()
             let next = nextRefreshDates[providerID] ?? date.addingTimeInterval(interval)
-            let valid = candidates.filter {
-                interval > 60
-                    && $0.executionAt.timeIntervalSince(last) > 30
-                    && next.timeIntervalSince($0.executionAt) > 30
+            guard interval > 60 else {
+                resetCandidates.removeValue(forKey: providerID)
+                continue
+            }
+            var valid = Set<ResetCandidate>()
+            for candidate in candidates {
+                guard next.timeIntervalSince(candidate.executionAt) >= 30 else { continue }
+                let executionAt = candidate.executionAt.timeIntervalSince(last) <= 30
+                    ? last.addingTimeInterval(30)
+                    : candidate.executionAt
+                guard next.timeIntervalSince(executionAt) >= 30 else { continue }
+                valid.insert(ResetCandidate(executionAt: executionAt))
             }
             if valid.isEmpty {
                 resetCandidates.removeValue(forKey: providerID)
@@ -561,15 +582,16 @@ final class ProviderRefreshScheduler {
         at finishedAt: Date,
         resetDatesByProvider: [String: [Date]]
     ) {
-        for providerID in managedProviders {
-            nextRefreshDates[providerID] = finishedAt.addingTimeInterval(intervalProvider(providerID))
+        for providerID in managedProviderOrder where managedProviders.contains(providerID) {
+            let startPoint = finishedAt.addingTimeInterval(startPointDefer(for: providerID))
+            nextRefreshDates[providerID] = startPoint.addingTimeInterval(intervalProvider(providerID))
             lastIntervalFinishedDates[providerID] = finishedAt
             backgroundsSinceFull[providerID] = 0
             hasDoneFirstRefresh.insert(providerID)
             pendingRegularProviders.remove(providerID)
             resetCandidates.removeValue(forKey: providerID)
         }
-        for providerID in managedProviders {
+        for providerID in managedProviderOrder where managedProviders.contains(providerID) {
             scheduleMidCycleResetRefreshes(
                 for: providerID,
                 resetsAtDates: resetDatesByProvider[providerID] ?? []
@@ -577,6 +599,23 @@ final class ProviderRefreshScheduler {
         }
         onNextRefreshChange()
         wake()
+    }
+
+    /// Startup 的首拍也使用同一组稳定错峰。首拍本身按 startPoint 执行，
+    /// 完成后普通 Interval 继续从实际完成时间计算。
+    func staggerInitialRefreshes(at anchor: Date) {
+        for providerID in managedProviderOrder where managedProviders.contains(providerID) {
+            let startPoint = anchor.addingTimeInterval(startPointDefer(for: providerID))
+            nextRefreshDates[providerID] = startPoint
+            lastIntervalFinishedDates[providerID] = anchor
+        }
+        onNextRefreshChange()
+        wake()
+    }
+
+    private func startPointDefer(for providerID: String) -> TimeInterval {
+        guard let index = managedProviderOrder.firstIndex(of: providerID) else { return 0 }
+        return TimeInterval(index * 2)
     }
 
     // MARK: - in-flight dedup（给 refreshHandler 入口用）
