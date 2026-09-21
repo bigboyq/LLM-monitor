@@ -3,12 +3,19 @@ import Foundation
 /// 单个 provider 一次 refresh 的结果。
 ///
 /// - `deferred`: 请求未实际发起（已有 in-flight / 配置刚变化 / auth 缺失），
-///   timer 循环里按 1s 短重试节奏继续轮询。
+///   本轮按正常 Interval 排期，避免离线 provider 形成短重试风暴。
 /// - `completed(success:)`: 请求真的完成了。成功与失败都按 baseInterval 排下一拍
 ///   （失败不退避：固定间隔后台刷新下，拉长重试间隔只会推迟恢复）。
 enum ProviderRefreshOutcome: Sendable, Equatable {
     case deferred
     case completed(success: Bool)
+}
+
+/// 一个刷新事务的所有权凭证。只有创建它的 scheduler generation 仍然有效时，
+/// 外部调用方才可以提交事务结果或释放全局 gate。
+struct RefreshJobToken: Equatable, Sendable {
+    fileprivate let schedulerGeneration: UInt64
+    fileprivate let id: UUID
 }
 
 /// 循环 A（额度循环）：集中管理所有 provider 的定时刷新。
@@ -18,7 +25,7 @@ enum ProviderRefreshOutcome: Sendable, Equatable {
 /// - 循环睡眠到"最早的下一个截止时间"（regular、mid-cycle reset 或非网络辅助 deadline）；
 /// - 醒来后并发刷新所有到期的 provider（TaskGroup + 条目级 do-catch 隔离，互不阻塞）；
 /// - 既有语义逐条保留：启动首拍 .full、之后 .background、每 20 次 background 补一次 full、
-///   失败按 baseInterval 固定间隔随下一定时周期重试（不指数退避）、.deferred 1s 短重试早醒、
+///   失败与 deferred 都按 baseInterval 固定间隔随下一定时周期重试（不指数退避）、
 ///   mid-cycle reset+15s 一次性补刷新（与 regular 共用 deadline driver）、健康窗口边界
 ///   （只回调 UI，不发网络请求）、ManualRefreshGate 与在飞刷新合并、配置热加载
 ///   stop+reschedule。`earliestNextRefresh` 仍只暴露 regular deadline。
@@ -33,9 +40,12 @@ final class ProviderRefreshScheduler {
     typealias NextRefreshChangeCallback = () -> Void
     /// 一批到期 provider 已全部返回，并且其 outcome 已写入调度状态后的通知。
     ///
-    /// 该回调是同步的、非 async 的：调用方若要启动本地用量 reconcile，应当
-    /// 在回调中投递一个独立 Task，不能把本地扫描 await 到额度循环里。
+    /// 保留同步回调以兼容 scheduler 的轻量测试/观察者。
     typealias BatchSettledCallback = @MainActor () -> Void
+    /// 生产路径使用 async 回调，把本地 reconcile 纳入同一个全局刷新事务。
+    typealias BatchSettledAsyncCallback = @MainActor (Set<String>) async -> Void
+    /// 全局刷新事务开始/结束通知。Manual/Wakeup 与自动 batch 共用这一个 gate。
+    typealias JobActivityChangeCallback = @MainActor (Bool) -> Void
     /// 非网络辅助 deadline 到期通知。回调只应更新派生 UI 状态；它不会进入
     /// provider batch，也不会触发 refresh / failure / LocalUsage reconcile。
     typealias HealthBoundaryCallback = @MainActor (Date) -> Void
@@ -51,6 +61,8 @@ final class ProviderRefreshScheduler {
 
     /// 当前受管的所有 provider 标识
     private var managedProviders: Set<String> = []
+    /// Provider 的稳定注册顺序，用于 startup/manual/wakeup 的 2 秒错峰。
+    private var managedProviderOrder: [String] = []
     /// 各 provider 常规刷新的下一次触发时间。UI footer 展示其中最早的一个。
     private var nextRefreshDates: [String: Date] = [:]
     /// 已执行的 background 刷新次数；每 periodicFullEveryN 次补一次 .full。
@@ -59,10 +71,13 @@ final class ProviderRefreshScheduler {
     private var hasDoneFirstRefresh: Set<String> = []
     /// reset+delay 截止时间。和常规 deadline 一样由唯一 driver 服务；到期项
     /// 会先标记为 running，再投递独立 batch task，避免 driver 在网络请求期间阻塞。
-    private struct ResetDeadline: Sendable {
-        let date: Date
+    private struct ResetCandidate: Hashable, Sendable {
+        let executionAt: Date
     }
-    private var midCycleDeadlines: [String: [ResetDeadline]] = [:]
+    private var resetCandidates: [String: Set<ResetCandidate>] = [:]
+    /// 最近一次常规 Interval 事务完成时间。Reset 的两个 30 秒边界都以它和
+    /// 下一次 Interval 为准，而不是以某个全局固定 interval 为准。
+    private var lastIntervalFinishedDates: [String: Date] = [:]
     /// 全局健康窗口边界。它与 regular/reset 共用 driver 的睡眠，但不属于任一
     /// provider 的网络刷新，因此不会污染 `nextRefreshDates`。
     private var healthBoundaryDate: Date?
@@ -75,11 +90,13 @@ final class ProviderRefreshScheduler {
     }
     private var runningWaiters: [String: [RunningWaiter]] = [:]
     /// regular deadline 到期但 provider 已有外部请求时暂存；该请求完成后
-    /// 直接结算 regular deadline，不再以 deferred+1s 重新发一遍。
+    /// 直接结算 regular deadline，不再重复发起一遍。
     private var pendingRegularProviders: Set<String> = []
     private var providerGenerations: [String: UInt64] = [:]
     private var schedulerGeneration: UInt64 = 0
     private var batchTasks: [UUID: Task<Void, Never>] = [:]
+    /// 全局排他刷新事务的所有权。Bool 不足以区分 stop/config reload 前后的两个 job。
+    private var activeJobToken: RefreshJobToken?
 
     /// 正在进行网络请求的 provider。手动刷新、菜单打开、定时器可能同时触发，
     /// 这里保证同一个 provider 同一时刻只会发出一个请求。
@@ -102,6 +119,8 @@ final class ProviderRefreshScheduler {
     private let intervalProvider: IntervalProvider
     private let onNextRefreshChange: NextRefreshChangeCallback
     private let onBatchSettled: BatchSettledCallback
+    private let onBatchSettledAsync: BatchSettledAsyncCallback?
+    private let onJobActivityChange: JobActivityChangeCallback
     private let onHealthBoundary: HealthBoundaryCallback
     /// 可注入的时钟，生产默认为真实时间。用于 mid-cycle 补刷新计算等待时长，
     /// 也用于 schedule(for:) 写入 nextRefreshDates。
@@ -126,6 +145,8 @@ final class ProviderRefreshScheduler {
         intervalProvider: @escaping IntervalProvider,
         onNextRefreshChange: @escaping NextRefreshChangeCallback = {},
         onBatchSettled: @escaping BatchSettledCallback = {},
+        onBatchSettledAsync: BatchSettledAsyncCallback? = nil,
+        onJobActivityChange: @escaping JobActivityChangeCallback = { _ in },
         onHealthBoundary: @escaping HealthBoundaryCallback = { _ in },
         now: @escaping @Sendable () -> Date = { Date() },
         midCycleResetDelay: TimeInterval = 15,
@@ -139,6 +160,8 @@ final class ProviderRefreshScheduler {
         self.intervalProvider = intervalProvider
         self.onNextRefreshChange = onNextRefreshChange
         self.onBatchSettled = onBatchSettled
+        self.onBatchSettledAsync = onBatchSettledAsync
+        self.onJobActivityChange = onJobActivityChange
         self.onHealthBoundary = onHealthBoundary
         self.now = now
         self.midCycleResetDelay = midCycleResetDelay
@@ -160,6 +183,9 @@ final class ProviderRefreshScheduler {
     /// 注册 provider 进入单循环。若该 provider 之前未设置 nextRefreshDate，则立即安排首拍。
     func schedule(for providerID: String) {
         managedProviders.insert(providerID)
+        if !managedProviderOrder.contains(providerID) {
+            managedProviderOrder.append(providerID)
+        }
         let interval = intervalProvider(providerID)
         logInfo("ProviderRefreshScheduler: 将 [\(providerID)] 纳入额度循环，基础间隔 \(Int(interval))s")
 
@@ -172,11 +198,38 @@ final class ProviderRefreshScheduler {
         wake()
     }
 
+    /// 尝试开始一个由 AppState 托管的 Manual/Wakeup 全局事务。
+    /// 返回 false 表示当前已有自动或外部刷新事务；调用方不得清理 pending schedule。
+    @discardableResult
+    func beginExternalJob() -> RefreshJobToken? {
+        guard activeJobToken == nil else { return nil }
+        let token = RefreshJobToken(schedulerGeneration: schedulerGeneration, id: UUID())
+        activeJobToken = token
+        onJobActivityChange(true)
+        wake()
+        return token
+    }
+
+    /// 结束 Manual/Wakeup 事务。调用方应在所有 quota 与本地 full reconcile 完成后调用。
+    func endExternalJob(_ token: RefreshJobToken) {
+        guard isCurrentJob(token) else { return }
+        activeJobToken = nil
+        onJobActivityChange(false)
+        wake()
+    }
+
+    /// 外部事务在每个 await 后验证所有权，避免 stop/config reload 后旧任务继续改排期。
+    func isCurrentJob(_ token: RefreshJobToken) -> Bool {
+        activeJobToken == token && token.schedulerGeneration == schedulerGeneration
+    }
+
     /// 从单循环中移除指定的 provider
     func cancel(providerID: String) {
         managedProviders.remove(providerID)
+        managedProviderOrder.removeAll { $0 == providerID }
         nextRefreshDates.removeValue(forKey: providerID)
-        midCycleDeadlines.removeValue(forKey: providerID)
+        resetCandidates.removeValue(forKey: providerID)
+        lastIntervalFinishedDates.removeValue(forKey: providerID)
         runningProviders.remove(providerID)
         resumeRunningWaiters(for: providerID)
         pendingRegularProviders.remove(providerID)
@@ -208,8 +261,10 @@ final class ProviderRefreshScheduler {
         schedulerGeneration &+= 1
         wake()
         managedProviders.removeAll()
+        managedProviderOrder.removeAll()
         nextRefreshDates.removeAll()
-        midCycleDeadlines.removeAll()
+        resetCandidates.removeAll()
+        lastIntervalFinishedDates.removeAll()
         healthBoundaryDate = nil
         runningProviders.removeAll()
         resumeAllRunningWaiters()
@@ -218,6 +273,10 @@ final class ProviderRefreshScheduler {
         backgroundsSinceFull.removeAll()
         hasDoneFirstRefresh.removeAll()
         lastRefreshActivity.removeAll()
+        if activeJobToken != nil {
+            activeJobToken = nil
+            onJobActivityChange(false)
+        }
         onNextRefreshChange()
     }
 
@@ -234,9 +293,14 @@ final class ProviderRefreshScheduler {
     private func runLoop() async {
         var initialBatchPending = true
         while !Task.isCancelled {
+            if activeJobToken != nil {
+                _ = await interruptibleSleep(3600, targetWakeDate: nil)
+                continue
+            }
             let nowDate = now()
             let effectiveWakeDate = max(nowDate, lastCompletedTargetWakeDate ?? nowDate)
             lastCompletedTargetWakeDate = nil
+            discardIneligibleResetCandidates(at: effectiveWakeDate)
 
             // 1. 收集到期项：常规 / reset deadline 到期。先把 provider 标记
             // running，driver 随即继续睡眠/服务其他 deadline，不 await 网络请求。
@@ -260,19 +324,17 @@ final class ProviderRefreshScheduler {
                 }
             }
 
-            for id in Array(midCycleDeadlines.keys) {
-                guard let deadlines = midCycleDeadlines[id] else { continue }
-                guard !runningProviders.contains(id) else { continue }
-                let dueResets = deadlines.filter { $0.date <= effectiveWakeDate }
-                guard !dueResets.isEmpty else { continue }
-                midCycleDeadlines[id] = deadlines.filter { $0.date > effectiveWakeDate }
-                // Any real request already in flight satisfies this reset
-                // deadline. Do not dispatch a duplicate supplementary request.
-                if inFlightModes[id] != nil {
-                    continue
-                }
-                if !due.contains(where: { $0.id == id }) {
-                    due.append((id, .background, providerGenerations[id] ?? 0, false))
+            if let earliestReset = nextResetCandidate,
+               earliestReset.executionAt <= effectiveWakeDate {
+                for id in Set(managedProviders).union(resetCandidates.keys) {
+                    guard let candidates = resetCandidates[id],
+                          candidates.contains(earliestReset),
+                          !runningProviders.contains(id) else { continue }
+                    resetCandidates[id]?.remove(earliestReset)
+                    guard inFlightModes[id] == nil else { continue }
+                    if !due.contains(where: { $0.id == id }) {
+                        due.append((id, .background, providerGenerations[id] ?? 0, false))
+                    }
                 }
             }
 
@@ -285,11 +347,13 @@ final class ProviderRefreshScheduler {
 
             if !due.isEmpty {
                 due.forEach { runningProviders.insert($0.id) }
-                let batch = due
-                let batchGeneration = schedulerGeneration
                 let batchID = UUID()
+                let batchToken = RefreshJobToken(schedulerGeneration: schedulerGeneration, id: batchID)
+                activeJobToken = batchToken
+                onJobActivityChange(true)
+                let batch = due
                 let task = Task { @MainActor [weak self] in
-                    await self?.executeBatch(batch, schedulerGeneration: batchGeneration)
+                    await self?.executeBatch(batch, jobToken: batchToken)
                 self?.batchTasks.removeValue(forKey: batchID)
                 }
                 batchTasks[batchID] = task
@@ -298,7 +362,15 @@ final class ProviderRefreshScheduler {
                 // 空 provider 集合也有一个可观察的初始 pass，避免调用方永远
                 // 等不到“第一批已结算”的信号。
                 initialBatchPending = false
-                onBatchSettled()
+                let initialGeneration = schedulerGeneration
+                let initialToken = RefreshJobToken(schedulerGeneration: initialGeneration, id: UUID())
+                activeJobToken = initialToken
+                onJobActivityChange(true)
+                await settleBatchCallback(regularProviderIDs: [])
+                if isCurrentJob(initialToken) {
+                    activeJobToken = nil
+                    onJobActivityChange(false)
+                }
             }
 
             guard !Task.isCancelled else { break }
@@ -316,13 +388,7 @@ final class ProviderRefreshScheduler {
                         && inFlightModes[$0.key] == nil
                 }
                 .values
-            let resetDates = midCycleDeadlines
-                .filter {
-                    !runningProviders.contains($0.key)
-                        && inFlightModes[$0.key] == nil
-                }
-                .values
-                .flatMap { $0.map(\.date) }
+            let resetDates = nextResetCandidate.map { [$0.executionAt] } ?? []
             let auxiliaryDates = healthBoundaryDate.map { [$0] } ?? []
             guard let nextWake = (Array(regularDates) + resetDates + auxiliaryDates).min() else {
                 _ = await interruptibleSleep(3600, targetWakeDate: nil)
@@ -339,7 +405,7 @@ final class ProviderRefreshScheduler {
 
     private func executeBatch(
         _ batch: [(id: String, mode: RefreshMode, generation: UInt64, isRegular: Bool)],
-        schedulerGeneration: UInt64
+        jobToken: RefreshJobToken
     ) async {
         var settledCount = 0
         await withTaskGroup(of: (String, ProviderRefreshOutcome, RefreshMode, UInt64, Bool).self) { group in
@@ -363,16 +429,40 @@ final class ProviderRefreshScheduler {
             }
         }
         for entry in batch {
-            if self.schedulerGeneration == schedulerGeneration,
+            if self.schedulerGeneration == jobToken.schedulerGeneration,
                self.providerGenerations[entry.id] == entry.generation {
                 self.runningProviders.remove(entry.id)
                 self.resumeRunningWaiters(for: entry.id)
             }
         }
-        guard self.schedulerGeneration == schedulerGeneration, settledCount > 0 else { return }
+        guard self.schedulerGeneration == jobToken.schedulerGeneration, settledCount > 0 else {
+            if isCurrentJob(jobToken) {
+                activeJobToken = nil
+                onJobActivityChange(false)
+                wake()
+            }
+            return
+        }
+        await settleBatchCallback(
+            regularProviderIDs: Set(batch.filter(\.isRegular).map(\.id))
+        )
+        guard isCurrentJob(jobToken) else {
+            return
+        }
+        let transactionFinishedAt = now()
+        settleRegularIntervals(for: batch, at: transactionFinishedAt)
         onNextRefreshChange()
-        onBatchSettled()
+        activeJobToken = nil
+        onJobActivityChange(false)
         wake()
+    }
+
+    private func settleBatchCallback(regularProviderIDs: Set<String>) async {
+        if let onBatchSettledAsync {
+            await onBatchSettledAsync(regularProviderIDs)
+        } else {
+            onBatchSettled()
+        }
     }
 
     private func processOutcome(providerID: String, outcome: ProviderRefreshOutcome, mode: RefreshMode) {
@@ -380,7 +470,7 @@ final class ProviderRefreshScheduler {
 
         switch outcome {
         case .deferred:
-            nextRefreshDates[providerID] = now().addingTimeInterval(1.0)
+            logDebug("ProviderRefreshScheduler: [\(providerID)] 本轮刷新 deferred，按正常 Interval 排期，避免 1s 重试风暴")
         case .completed(let success):
             hasDoneFirstRefresh.insert(providerID)
             if mode == .full {
@@ -394,7 +484,21 @@ final class ProviderRefreshScheduler {
             if !success {
                 logWarn("ProviderRefreshScheduler: [\(providerID)] 刷新失败，\(Int(baseInterval)) 秒后随下一定时周期重试")
             }
-            nextRefreshDates[providerID] = now().addingTimeInterval(baseInterval)
+        }
+    }
+
+    /// regular Interval 的下一次触发必须从完整事务（quota + local reconcile）完成时刻
+    /// 计算，避免本地扫描耗时把下一拍推到事务结束前。
+    private func settleRegularIntervals(
+        for batch: [(id: String, mode: RefreshMode, generation: UInt64, isRegular: Bool)],
+        at finishedAt: Date
+    ) {
+        for entry in batch where entry.isRegular {
+            guard managedProviders.contains(entry.id),
+                  providerGenerations[entry.id] == entry.generation else { continue }
+            let interval = intervalProvider(entry.id)
+            lastIntervalFinishedDates[entry.id] = finishedAt
+            nextRefreshDates[entry.id] = finishedAt.addingTimeInterval(interval)
         }
     }
 
@@ -423,44 +527,126 @@ final class ProviderRefreshScheduler {
 
     // MARK: - Mid-Cycle Reset Time 补刷新 (reset 发生 15s 后额外触发一次，不打乱 regular nextRefreshDate)
 
-    /// 针对各子窗口的 reset time：
-    /// 如果 reset time 与下一次常规刷新时间差距在 1 分钟（60 秒）以上，
-    /// 则在 reset time 发生 15 秒后强制/额外刷新一次（.background 模式）。
+    /// 针对一个 Provider 的 reset candidates：
+    /// - Interval <= 60 秒时完全跳过 reset；
+    /// - 以 resetAt + delay 作为实际执行时间；
+    /// - 实际执行时间距离上次 Interval 完成、下一次 Interval 都必须严格大于 30 秒。
     func scheduleMidCycleResetRefreshes(for providerID: String, resetsAtDates: [Date]) {
-        midCycleDeadlines.removeValue(forKey: providerID)
+        resetCandidates.removeValue(forKey: providerID)
 
         let nowDate = now()
-        let provisionalDeadline = nowDate.addingTimeInterval(intervalProvider(providerID))
-        // The regular refresh handler calls this before processOutcome records the
-        // next regular deadline.  At that point the existing date is the deadline
-        // that just fired, so it must not make a reset that is well inside the next
-        // interval look like it is already too close to the regular refresh.
+        let interval = max(intervalProvider(providerID), 0)
+        guard interval > 60 else { return }
+
+        let provisionalDeadline = nowDate.addingTimeInterval(interval)
         let nextRefreshDate: Date
         if let scheduled = nextRefreshDates[providerID], scheduled > nowDate {
             nextRefreshDate = scheduled
         } else {
             nextRefreshDate = provisionalDeadline
         }
+        let lastIntervalFinished = lastIntervalFinishedDates[providerID] ?? nowDate
 
         let uniqueResets = Set(resetsAtDates.compactMap { $0 })
-        var deadlines: [ResetDeadline] = []
+        var candidates = Set<ResetCandidate>()
 
         for resetTime in uniqueResets {
-            guard nextRefreshDate.timeIntervalSince(resetTime) > 60 else { continue }
-            let targetDate = resetTime.addingTimeInterval(midCycleResetDelay)
-            let sleepSeconds = targetDate.timeIntervalSince(nowDate)
-            guard sleepSeconds > 0 else { continue }
+            let proposedExecutionAt = resetTime.addingTimeInterval(midCycleResetDelay)
+            guard proposedExecutionAt > nowDate,
+                  nextRefreshDate.timeIntervalSince(proposedExecutionAt) >= 30 else { continue }
+            let executionAt: Date
+            if proposedExecutionAt.timeIntervalSince(lastIntervalFinished) <= 30 {
+                executionAt = lastIntervalFinished.addingTimeInterval(30)
+            } else {
+                executionAt = proposedExecutionAt
+            }
+            guard nextRefreshDate.timeIntervalSince(executionAt) >= 30 else { continue }
 
-            logInfo("ProviderRefreshScheduler: 为 [\(providerID)] 调度 resetTime 补刷新，将在 \(Int(sleepSeconds))s 后（reset后\(Int(midCycleResetDelay))s）触发")
+            logInfo("ProviderRefreshScheduler: 为 [\(providerID)] 调度 reset 补刷新，执行点已按前后 Interval 窗口归一化")
 
-            deadlines.append(ResetDeadline(date: targetDate))
+            candidates.insert(ResetCandidate(executionAt: executionAt))
         }
 
-        if !deadlines.isEmpty {
-            midCycleDeadlines[providerID] = deadlines
+        if !candidates.isEmpty {
+            resetCandidates[providerID] = candidates
             ensureLoopRunning()
             wake()
         }
+    }
+
+    /// 丢弃已经错过或因时间线变化而不再合法的 reset；这样一次 Manual/Wakeup
+    /// 重锚后不会有旧 candidate 穿透新的 Interval 时间线。
+    private func discardIneligibleResetCandidates(at date: Date) {
+        for providerID in Array(resetCandidates.keys) {
+            guard let candidates = resetCandidates[providerID] else { continue }
+            let interval = intervalProvider(providerID)
+            let last = lastIntervalFinishedDates[providerID] ?? now()
+            let next = nextRefreshDates[providerID] ?? date.addingTimeInterval(interval)
+            guard interval > 60 else {
+                resetCandidates.removeValue(forKey: providerID)
+                continue
+            }
+            var valid = Set<ResetCandidate>()
+            for candidate in candidates {
+                guard next.timeIntervalSince(candidate.executionAt) >= 30 else { continue }
+                let executionAt = candidate.executionAt.timeIntervalSince(last) <= 30
+                    ? last.addingTimeInterval(30)
+                    : candidate.executionAt
+                guard next.timeIntervalSince(executionAt) >= 30 else { continue }
+                valid.insert(ResetCandidate(executionAt: executionAt))
+            }
+            if valid.isEmpty {
+                resetCandidates.removeValue(forKey: providerID)
+            } else {
+                resetCandidates[providerID] = valid
+            }
+        }
+    }
+
+    private var nextResetCandidate: ResetCandidate? {
+        resetCandidates.values.flatMap { $0 }.min { $0.executionAt < $1.executionAt }
+    }
+
+    /// Manual/Wakeup 在本地 full reconcile 完成后调用：所有 Provider 的 Interval
+    /// 和 Reset 时间线同时从同一个事务完成时刻重新开始。
+    func reanchorAllProviders(
+        at finishedAt: Date,
+        resetDatesByProvider: [String: [Date]]
+    ) {
+        for providerID in managedProviderOrder where managedProviders.contains(providerID) {
+            let startPoint = finishedAt.addingTimeInterval(startPointDefer(for: providerID))
+            nextRefreshDates[providerID] = startPoint.addingTimeInterval(intervalProvider(providerID))
+            lastIntervalFinishedDates[providerID] = finishedAt
+            backgroundsSinceFull[providerID] = 0
+            hasDoneFirstRefresh.insert(providerID)
+            pendingRegularProviders.remove(providerID)
+            resetCandidates.removeValue(forKey: providerID)
+        }
+        for providerID in managedProviderOrder where managedProviders.contains(providerID) {
+            scheduleMidCycleResetRefreshes(
+                for: providerID,
+                resetsAtDates: resetDatesByProvider[providerID] ?? []
+            )
+        }
+        onNextRefreshChange()
+        wake()
+    }
+
+    /// Startup 的首拍也使用同一组稳定错峰。首拍本身按 startPoint 执行，
+    /// 完成后普通 Interval 继续从实际完成时间计算。
+    func staggerInitialRefreshes(at anchor: Date) {
+        for providerID in managedProviderOrder where managedProviders.contains(providerID) {
+            let startPoint = anchor.addingTimeInterval(startPointDefer(for: providerID))
+            nextRefreshDates[providerID] = startPoint
+            lastIntervalFinishedDates[providerID] = anchor
+        }
+        onNextRefreshChange()
+        wake()
+    }
+
+    private func startPointDefer(for providerID: String) -> TimeInterval {
+        guard let index = managedProviderOrder.firstIndex(of: providerID) else { return 0 }
+        return TimeInterval(index * 2)
     }
 
     // MARK: - in-flight dedup（给 refreshHandler 入口用）
@@ -482,7 +668,7 @@ final class ProviderRefreshScheduler {
            let regularDate = nextRefreshDates[providerID], regularDate <= now() {
             // A manual or wake-triggered request can win the race with the
             // driver at an already-due regular deadline. Let that real request
-            // advance the regular schedule instead of producing a deferred 1s
+            // advance the regular schedule instead of producing a duplicate
             // retry after it completes.
             pendingRegularProviders.insert(providerID)
         }
@@ -662,6 +848,10 @@ final class ProviderRefreshScheduler {
     ) {
         guard managedProviders.contains(providerID) else { return }
         processOutcome(providerID: providerID, outcome: outcome, mode: mode)
+        settleRegularIntervals(
+            for: [(providerID, mode, providerGenerations[providerID] ?? 0, true)],
+            at: now()
+        )
         onNextRefreshChange()
         onBatchSettled()
         wake()

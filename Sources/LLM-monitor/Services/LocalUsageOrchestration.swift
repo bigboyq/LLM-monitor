@@ -241,8 +241,8 @@ final class LocalUsageOrchestration {
         return .dirty
     }
 
-    /// provider batch settled 后调用的非阻塞入口。它只投递一个短生命周期 Task，
-    /// 不会把本地扫描 await 到 ProviderRefreshScheduler 的主循环。
+    /// 文件事件等后台来源调用的非阻塞入口。它只投递一个短生命周期 Task，
+    /// 不会阻塞当前事件处理者。
     func scheduleReconcile() {
         guard reconcileTask == nil else {
             pendingReconcile = true
@@ -264,12 +264,6 @@ final class LocalUsageOrchestration {
                 self.scheduleReconcile()
             }
         }
-    }
-
-    /// ProviderRefreshScheduler 的 batch-settled 接线点。回调只需调用本方法，
-    /// 本地扫描会在独立 Task 中运行。
-    func reconcileAfterProviderBatch() {
-        scheduleReconcile()
     }
 
     /// 执行一次 reconcile 并等待完成。`mode` 仅供手动/集成调用覆盖状态机选择；
@@ -515,7 +509,10 @@ final class LocalUsageOrchestration {
         case "dsh":
             return fileManager.fileExists(atPath: DshLocalUsageScanner.defaultSessionsRoot.path)
         case "antigravity":
-            return AntigravityFetcher().hasLocalAuth()
+            // 等价于 AntigravityFetcher().hasLocalAuth() 的常量语义：真正的本地
+            // 探测（pgrep/lsof 进程发现）推迟到 async fetch()，这里直接短路，
+            // 避免每轮 reconcile 都构造一个 fetcher。
+            return true
         case "codex":
             // 与 CodexFetcher 相同的解析链（config authPath → CODEX_HOME → ~/.codex），
             // 自定义 CODEX_HOME 的用户也能被正确判定。

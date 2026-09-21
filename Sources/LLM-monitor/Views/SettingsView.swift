@@ -142,15 +142,29 @@ struct SettingsView: View {
     /// 「App 图标」选项的预览图：直接使用 App 图标设计稿（与实际图标同源），
     /// 不再用 .full 示例指标现生成；设计稿加载失败时回退到现生成逻辑。
     /// 图标主题 picker 每行的预览图。
-    static func previewImage(for style: StatusBarIconStyle) -> NSImage {
-        if style == .quotaLogo, let preview = MenuBarLabel.appIconDesignImage {
-            return preview
+    ///
+    /// 本调用点的输入全部固定（健康度 nil、满额度样例、默认健康色、不显示
+    /// 圆点；SF 符号的动态 labelColor 由绘制闭包在绘制期解析，不会在合成时
+    /// 烤进位图），预览图只随 style 变化。而设置页 body 会因拖动 Slider /
+    /// ColorPicker（binding 直写 @State）高频重求值，不缓存会每 tick 重建
+    /// SVG 与 NSImage。样式枚举有限（6 种），首次访问时一次性构建不可变
+    /// 字典即可，天然有界；SwiftUI body 只在主线程求值，普通字典无需加锁。
+    private static let previewImageCache: [StatusBarIconStyle: NSImage] =
+        StatusBarIconStyle.allCases.reduce(into: [:]) { cache, style in
+            if style == .quotaLogo, let preview = MenuBarLabel.appIconDesignImage {
+                cache[style] = preview
+            } else {
+                cache[style] = MenuBarLabel.composedMenuBarImage(
+                    iconStyle: style,
+                    health: nil,
+                    showsHealthDot: false
+                )
+            }
         }
-        return MenuBarLabel.composedMenuBarImage(
-            iconStyle: style,
-            health: nil,
-            showsHealthDot: false
-        )
+
+    static func previewImage(for style: StatusBarIconStyle) -> NSImage {
+        previewImageCache[style]
+            ?? MenuBarLabel.composedMenuBarImage(iconStyle: style, health: nil, showsHealthDot: false)
     }
 
     var body: some View {

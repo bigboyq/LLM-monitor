@@ -13,6 +13,10 @@ final class AppState: ObservableObject {
     /// 是否正在刷新（任意 provider）
     @Published private(set) var isRefreshing: Bool = false
 
+    /// 是否处于全局刷新事务。它覆盖 quota fetch 与本地 full reconcile，
+    /// UI/入口据此禁止 Manual，避免只看 loading 状态导致本地扫描期间重复刷新。
+    @Published private(set) var isRefreshJobActive: Bool = false
+
     /// 最近一次 provider 请求完成时间（用于 footer 显示，不限定为 full refresh）
     @Published private(set) var lastRefreshAt: Date?
 
@@ -52,6 +56,11 @@ final class AppState: ObservableObject {
     private let manualRefreshGate = ManualRefreshGate()
     /// 远程额度恢复通知；通过协议注入，测试不会触碰系统通知中心。
     private let quotaUpdateNotifier: any QuotaUpdateNotifying
+    /// 自动刷新期间到达的 wakeup 最多合并为一次，待当前事务完成后执行。
+    private var pendingWakeup = false
+    /// Startup 错峰期间先等待所有首拍 quota 结算，再只做一次 full reconcile。
+    private var startupReconcilePendingProviderIDs: Set<String> = []
+    private var startupReconcileCompleted = false
 
     /// 5 组本地 scanner 的编排（lazy 构造 / Provider batch reconcile / 条目隔离 / 去噪）。
     /// 扫描结果通过 `LocalUsageStatusWriting` 回写本类型。lazy：构造需要捕获 self。
@@ -289,11 +298,27 @@ final class AppState: ObservableObject {
             onNextRefreshChange: { [weak self] in
                 self?.nextRefreshAt = self?.refreshScheduler.earliestNextRefresh
             },
-            onBatchSettled: { [weak self] in
-                // Provider quota values (including the 5h window) are settled
-                // before LocalUsage chooses full versus dirty reconciliation.
-                logInfo("[local-usage] Provider batch settled → reconcile")
-                self?.localUsage.reconcileAfterProviderBatch()
+            onBatchSettledAsync: { [weak self] regularProviderIDs in
+                guard let self else { return }
+                if !self.startupReconcileCompleted {
+                    self.startupReconcilePendingProviderIDs.subtract(regularProviderIDs)
+                    guard self.startupReconcilePendingProviderIDs.isEmpty else { return }
+                    self.startupReconcileCompleted = true
+                    logInfo("[local-usage] Startup quota batches settled → one full reconcile")
+                    await self.localUsage.triggerImmediateScanAll()
+                } else {
+                    // Automatic Interval/Reset only uses the normal reconcile mode;
+                    // Manual/Wakeup explicitly call triggerImmediateScanAll() below.
+                    logInfo("[local-usage] Provider batch settled → reconcile")
+                    await self.localUsage.reconcile()
+                }
+            },
+            onJobActivityChange: { [weak self] active in
+                guard let self else { return }
+                self.isRefreshJobActive = active
+                guard !active, self.pendingWakeup else { return }
+                self.pendingWakeup = false
+                Task { await self.handleSystemWake() }
             },
             onHealthBoundary: { [weak self] boundary in
                 self?.handleHealthBoundary(at: boundary)
@@ -354,13 +379,17 @@ final class AppState: ObservableObject {
         // 循环 A：将所有 enabled + auth 就绪的 provider 纳入额度循环
         cancelAllRefreshTasks()
         logInfo("AppState.start: 检查 \(statuses.count) 个 status")
+        startupReconcilePendingProviderIDs = []
+        startupReconcileCompleted = false
         for status in statuses {
             let should = shouldAutoRefresh(providerID: status.id)
             logInfo("  [\(status.id)] shouldAutoRefresh=\(should)")
             if should {
+                startupReconcilePendingProviderIDs.insert(status.id)
                 scheduleRefresh(for: status.id)
             }
         }
+        refreshScheduler.staggerInitialRefreshes(at: Date())
         // 即使没有任何启用的 Provider，也要完成一次空 pass，
         // 这样 LocalUsage 才能在 Provider 流程之后执行首次 Full Scan。
         refreshScheduler.start()
@@ -368,6 +397,7 @@ final class AppState: ObservableObject {
     }
 
     func stop() {
+        pendingWakeup = false
         cancelAllRefreshTasks()
         manualRefreshGate.reset()
         authProber.cancelAll()
@@ -385,6 +415,12 @@ final class AppState: ObservableObject {
     // MARK: - 公开操作
 
     func refreshAll() async {
+        guard let token = refreshScheduler.beginExternalJob() else {
+            logDebug("AppState.refreshAll: 已有刷新事务进行中，忽略本次 Manual")
+            return
+        }
+        defer { refreshScheduler.endExternalJob(token) }
+
         let providerIDs = statuses
             .filter { shouldAutoRefresh(providerID: $0.id) }
             .map(\.id)
@@ -395,20 +431,34 @@ final class AppState: ObservableObject {
         // 自动定时节拍不受影响：两条循环仍各自独立运行。
         await withTaskGroup(of: Void.self) { group in
             for providerID in providerIDs {
-                group.addTask { [self, providerID] in
-                    await self.refreshProviderFully(providerID: providerID)
+                group.addTask { @MainActor [self, providerID] in
+                    await self.refreshProviderFully(providerID: providerID, jobToken: token)
                 }
             }
         }
+        guard refreshScheduler.isCurrentJob(token) else { return }
         await localUsage.triggerImmediateScanAll()
+        guard refreshScheduler.isCurrentJob(token) else { return }
+        startupReconcilePendingProviderIDs.removeAll()
+        startupReconcileCompleted = true
+        refreshScheduler.reanchorAllProviders(
+            at: Date(),
+            resetDatesByProvider: currentResetDatesByProvider()
+        )
     }
 
     /// 系统从睡眠唤醒后的刷新。与用户手动 full 不同，紧邻定时/补刷新时
     /// 只等待已有请求并合并到它，不登记 ManualRefreshGate pending full。
     /// 无论额度是否被合并，唤醒都要等待一次本地 full reconcile。
     func handleSystemWake() async {
+        guard let token = refreshScheduler.beginExternalJob() else {
+            pendingWakeup = true
+            return
+        }
+        defer { refreshScheduler.endExternalJob(token) }
+
         // 睡眠期间可能跨过多个窗口边界；先用当前墙钟更新一次健康 UI，
-        // 再安排下一个未来边界。Provider refresh 仍沿用自己的 wake 合并协议。
+        // 再安排下一个未来边界。Wakeup 是一次全局排他事务。
         sleepHealth.refreshNow()
         rescheduleHealthBoundary(updateEvaluationDate: true)
         let providerIDs = statuses
@@ -416,12 +466,25 @@ final class AppState: ObservableObject {
             .map(\.id)
         await withTaskGroup(of: Void.self) { group in
             for providerID in providerIDs {
-                group.addTask { [self, providerID] in
-                    await self.refreshScheduler.refreshForSystemWake(providerID)
+                group.addTask { @MainActor [self, providerID] in
+                    guard self.refreshScheduler.isCurrentJob(token) else { return }
+                    _ = await self.refreshScheduler.runRefresh(
+                        providerID,
+                        mode: .full,
+                        satisfiesRegularDeadline: false
+                    )
                 }
             }
         }
+        guard refreshScheduler.isCurrentJob(token) else { return }
         await localUsage.triggerImmediateScanAll()
+        guard refreshScheduler.isCurrentJob(token) else { return }
+        startupReconcilePendingProviderIDs.removeAll()
+        startupReconcileCompleted = true
+        refreshScheduler.reanchorAllProviders(
+            at: Date(),
+            resetDatesByProvider: currentResetDatesByProvider()
+        )
     }
 
     /// 系统时钟或时区改变后重排本地窗口边界。该路径只影响健康 UI deadline，
@@ -431,11 +494,28 @@ final class AppState: ObservableObject {
     }
 
     func refreshOne(providerID: String) async {
-        await refreshProviderFully(providerID: providerID)
+        guard let token = refreshScheduler.beginExternalJob() else {
+            logDebug("AppState.refreshOne: 已有刷新事务进行中，忽略本次 Manual")
+            return
+        }
+        defer { refreshScheduler.endExternalJob(token) }
+        await refreshProviderFully(providerID: providerID, jobToken: token)
+        guard refreshScheduler.isCurrentJob(token) else { return }
+        await localUsage.triggerImmediateScanAll()
+        guard refreshScheduler.isCurrentJob(token) else { return }
+        startupReconcilePendingProviderIDs.removeAll()
+        startupReconcileCompleted = true
+        refreshScheduler.reanchorAllProviders(
+            at: Date(),
+            resetDatesByProvider: currentResetDatesByProvider()
+        )
     }
 
     /// 显式刷新不能被正在进行的 background refresh 吞掉。
-    private func refreshProviderFully(providerID: String) async {
+    private func refreshProviderFully(
+        providerID: String,
+        jobToken: RefreshJobToken
+    ) async {
         if let activeMode = refreshScheduler.inFlightMode(for: providerID) {
             if activeMode == .background {
                 manualRefreshGate.registerPending(providerID)
@@ -451,7 +531,7 @@ final class AppState: ObservableObject {
                 return
             }
 
-            guard !Task.isCancelled else {
+            guard refreshScheduler.isCurrentJob(jobToken), !Task.isCancelled else {
                 if activeMode == .background {
                     manualRefreshGate.withdrawPending(providerID)
                 }
@@ -461,11 +541,32 @@ final class AppState: ObservableObject {
             // Set 的 remove 是 MainActor 上的单次 claim：多个等待者只会有一个
             // 真正补跑 full refresh，其余等待者自然返回。
             if manualRefreshGate.claimPendingFullRefresh(providerID) {
-                _ = await refreshScheduler.runRefresh(providerID, mode: .full)
+                guard refreshScheduler.isCurrentJob(jobToken) else { return }
+                _ = await refreshScheduler.runRefresh(
+                    providerID,
+                    mode: .full,
+                    satisfiesRegularDeadline: false
+                )
+                guard refreshScheduler.isCurrentJob(jobToken) else { return }
             }
             return
         }
-        _ = await refreshScheduler.runRefresh(providerID, mode: .full)
+        guard refreshScheduler.isCurrentJob(jobToken), !Task.isCancelled else { return }
+        _ = await refreshScheduler.runRefresh(
+            providerID,
+            mode: .full,
+            satisfiesRegularDeadline: false
+        )
+        guard refreshScheduler.isCurrentJob(jobToken) else { return }
+    }
+
+    private func currentResetDatesByProvider() -> [String: [Date]] {
+        Dictionary(uniqueKeysWithValues: statuses.map { status in
+            let dates = status.lastSuccess?.models
+                .flatMap { [$0.intervalResetsAt, $0.weeklyResetsAt] }
+                .compactMap { $0 } ?? []
+            return (status.id, dates)
+        })
     }
 
     func openConfigFile() {
@@ -867,8 +968,8 @@ final class AppState: ObservableObject {
     ///
     /// 之前只判 `apiKey?.isEmpty`，但 `refreshProviderDirectly` 实际用 `usableAPIKey`
     /// 拒绝空白 / 模板占位符（如 `REPLACE-WITH-YOUR-KEY`），结果：
-    /// `shouldAutoRefresh = true` → `refresh = deferred` → 1s 后重试 → 死循环
-    /// 现在统一用 `usableAPIKey != nil`，跟 fetch 实际行为对齐。
+    /// `shouldAutoRefresh = true` → `refresh = deferred` 时仍保留任务，
+    /// 但 scheduler 按正常 Interval 重试，避免离线 provider 形成死循环。
     private func shouldAutoRefresh(providerID: String) -> Bool {
         guard let pc = configStore.config.providers[providerID], pc.enabled else { return false }
         // rebuildStatuses 派生时已算过 auth 就绪结论（含 fetcher 构造 + auth stat），

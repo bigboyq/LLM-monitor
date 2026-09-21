@@ -620,7 +620,15 @@ private extension DshLocalUsageScanner {
                     if snapshot.url.lastPathComponent.lowercased().hasSuffix(".zstd")
                         || snapshot.url.lastPathComponent.lowercased().hasSuffix(".zst") {
                         if let decompressor {
-                            let data = try decompressor(try Data(contentsOf: snapshot.url))
+                            // 注入式内存解压器是测试注入点（生产 decompressor 恒为 nil，
+                            // 走下方流式解压）。输入必须分块读入并受 maxTotalRawBytes 硬
+                            // 上限约束：selection 只保证 stat 时刻的字节数，读取期间文件可
+                            // 能被继续追加，不能把超预算的整文件一次性载入堆；解压结果与
+                            // 流式路径共用同一上限，超限按单文件失败隔离、下一轮重试，
+                            // 与 decompressToFile 的 outputTooLarge 语义一致。
+                            let compressed = try readCompressedInput(from: snapshot.url, limits: limits)
+                            let data = try decompressor(compressed)
+                            try DshLogDecoder.checkDecompressedByteCount(data.count)
                             result = try parseFile(
                                 data: data,
                                 sessionID: snapshot.url.deletingLastPathComponent().lastPathComponent,
@@ -675,6 +683,37 @@ private extension DshLocalUsageScanner {
     private nonisolated static func errorSummary(_ error: Error) -> String {
         let text = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
         return String(text.prefix(200))
+    }
+
+    /// 注入式内存解压器的输入读取：FileHandle 分块读入，受 maxTotalRawBytes
+    /// 硬上限约束（selection 按读取前的 stat 截断，读取期间文件继续增长时在
+    /// 预算处停止并抛错，由 aggregateFiles 按单文件失败隔离；截断的压缩前缀
+    /// 本身也无法解压，不按前缀继续）。取消检查按分块进行，与
+    /// parseFile(fileURL:) 的粒度一致。
+    private nonisolated static func readCompressedInput(
+        from url: URL,
+        limits: DshLocalUsageScanLimits
+    ) throws -> Data {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+
+        var data = Data()
+        while true {
+            try Task.checkCancellation()
+            let remaining = limits.maxTotalRawBytes - data.count
+            guard remaining > 0 else {
+                // 预算读满后仍有剩余字节，说明文件已超过单轮扫描的压缩字节预算。
+                guard let extra = try handle.read(upToCount: 1), extra.isEmpty else {
+                    throw DshLogDecoder.DecoderError.inputTooLarge(bytes: data.count)
+                }
+                return data
+            }
+            guard let chunk = try handle.read(upToCount: min(limits.readChunkBytes, remaining)),
+                  !chunk.isEmpty else {
+                return data
+            }
+            data.append(chunk)
+        }
     }
 
     /// 内存全量解析变体。生产路径（明文 JSONL 与流式解压）已统一走
@@ -1206,6 +1245,7 @@ enum DshLogDecoder {
         case unavailable
         case commandFailed(executable: String, status: Int32, stderr: String)
         case outputTooLarge(bytes: Int)
+        case inputTooLarge(bytes: Int)
         case unsupportedData
 
         var errorDescription: String? {
@@ -1217,9 +1257,25 @@ enum DshLogDecoder {
                 return "zstd 解压失败（\(executable)，状态 \(status)）\(detail.isEmpty ? "" : "：\(detail)")"
             case .outputTooLarge(let bytes):
                 return "zstd 解压结果过大（\(bytes) bytes）"
+            case .inputTooLarge(let bytes):
+                return "zstd 压缩输入过大（\(bytes) bytes）"
             case .unsupportedData:
                 return "无法读取 dsh session 数据"
             }
+        }
+    }
+
+    /// 流式与注入式解压共用的单文件解压结果上限。maxTotalRawBytes（1GB）是按
+    /// 压缩字节口径的整轮扫描预算；zstd 压缩比高，这里允许单个 session 解压后
+    /// 达到同量级（1GB 明文），否则大 session 会以 outputTooLarge 永久失败
+    /// （文件被隔离且每轮重试，永远进不了统计）。
+    nonisolated static let maximumDecompressedBytes = 1024 * 1024 * 1024
+
+    /// 注入式内存解压的结果校验：与流式路径的 checkOutputSize 同一上限，
+    /// 防止测试外的注入点把无界解压结果整体载入堆。
+    nonisolated static func checkDecompressedByteCount(_ count: Int) throws {
+        guard count <= maximumDecompressedBytes else {
+            throw DecoderError.outputTooLarge(bytes: count)
         }
     }
 
@@ -1320,13 +1376,8 @@ enum DshLogDecoder {
 
     private static func checkOutputSize(_ bytes: NSNumber?) throws {
         guard let bytes else { throw DecoderError.unsupportedData }
-        // 流式解压的单文件解压结果上限。maxTotalRawBytes（1GB）是按压缩字节
-        // 口径的整轮扫描预算；zstd 压缩比高，这里允许单个 session 解压后达到
-        // 同量级（1GB 明文），否则大 session 会以 outputTooLarge 永久失败
-        // （文件被隔离且每轮重试，永远进不了统计）。
         // 用 int64Value 比较：intValue 是 Int32，超过 2GB 时会溢出为负数绕过上限。
-        let maximum = 1024 * 1024 * 1024
-        guard bytes.int64Value <= Int64(maximum) else {
+        guard bytes.int64Value <= Int64(maximumDecompressedBytes) else {
             throw DecoderError.outputTooLarge(bytes: Int(bytes.int64Value))
         }
     }

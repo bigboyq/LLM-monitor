@@ -71,6 +71,7 @@ The app provides an "节能" (Energy) quick-action button in the menu footer (wi
   - 🟢 **Healthy**: Normal sleep operation; no third-party blockers and automatic sleep is enabled;
   - 🟡 **Warning**: Sleep blocked (external processes holding sleep assertions, or `ac_sleep=0` on AC power);
   - 🔴 **Active**: Manual keep-awake mode is active.
+- **When the status refreshes**: Sleep health is re-evaluated instantly when the main panel opens, when the "Settings → Energy" tab appears, on system wake, and at scheduler health boundaries (e.g. peak-window switches); the footer dot and the header sleep-blocker notice always reflect the latest state with no manual refresh needed.
 - **Diagnostics & Power Settings**: Navigate to "Settings → Energy" to see the full list of external blocking processes (with PID and elapsed duration) and read-only system power parameters (`sleep`, `womp`, `tcpkeepalive`, `powernap`, `displaysleep`) with GUI and CLI remediation guides.
 
 ## Notifications & Bark push

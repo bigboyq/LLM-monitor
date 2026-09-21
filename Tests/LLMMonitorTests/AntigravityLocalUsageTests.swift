@@ -424,6 +424,16 @@ final class AntigravityLocalUsageTests: XCTestCase {
         )
     }
 
+    /// fetcher 是按需构造的轻量 struct；带 delegate 的 URLSession 会被系统强持有
+    /// 到进程退出，多次构造必须复用同一个进程级 session，否则每次构造都泄漏一套
+    /// session + delegate（内存持续增长的回归点）。
+    func testFetcherConstructionsShareOneSession() {
+        XCTAssertTrue(
+            AntigravityFetcher().sessionForTest === AntigravityFetcher().sessionForTest,
+            "AntigravityFetcher 每次构造不得新建 URLSession"
+        )
+    }
+
     func testDiscoverServersDoesNotCrash() {
         // 单元测试不读取用户机器上的真实进程表；进程执行器与分类器分别测试。
         let expected = AntigravityFetcher.ServerInfo(

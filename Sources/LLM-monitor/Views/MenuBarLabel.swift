@@ -212,14 +212,29 @@ struct MenuBarLabel: View {
     }()
 
     /// 完整 App 图标（icon-master.png，含圆角底与渐变背景）：主面板 header 使用。
-    /// 与设计稿同样归一到 22pt 画布，由调用方按需缩放。
+    /// 与设计稿同样归一到 22pt 画布，由调用方按需缩放。源 PNG 为 1024px，但
+    /// header 仅以 24pt 显示（Retina @3x 也只 72px），直接持有会让约 4MB 的
+    /// 解码位图终生常驻；这里绘制进 128px 位图再持有（约 64KB），对该显示
+    /// 尺寸视觉无损，且没有任何调用方把它放大使用。
     static let appIconMasterImage: NSImage? = {
         guard let url = Bundle.module.url(forResource: "icon-master", withExtension: "png") else {
             return nil
         }
-        guard let image = NSImage(contentsOf: url) else { return nil }
-        image.size = NSSize(width: 22, height: 22)
-        return image
+        guard let source = NSImage(contentsOf: url) else { return nil }
+        let edge = 128
+        guard let context = CGContext(
+            data: nil, width: edge, height: edge,
+            bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+        context.interpolationQuality = .high
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: false)
+        source.draw(in: NSRect(x: 0, y: 0, width: edge, height: edge))
+        NSGraphicsContext.restoreGraphicsState()
+        guard let cgImage = context.makeImage() else { return nil }
+        return NSImage(cgImage: cgImage, size: NSSize(width: 22, height: 22))
     }()
 
     private func accessibilityTitle(health: HealthLevel?) -> String {

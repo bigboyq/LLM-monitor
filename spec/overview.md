@@ -153,7 +153,8 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 | `scripts/audit.sh` | Shell syntax、Package、测试、Release 和 Swift 6 门禁 |
 | `scripts/archive-source.sh` | 从 Git HEAD 生成源码归档 |
 | `scripts/export-antigravity-quota.sh` | 导出 Antigravity 本地 quota 数据 |
-| `scripts/generate-icns.sh` | 生成应用图标资源 |
+| `scripts/generate-icns.sh` | 从源图生成 AppIcon.icns（由 sync-icon-assets.sh 调用，也可独立使用） |
+| `scripts/sync-icon-assets.sh` | 图标资产唯一同步入口：IconPreview 副本 + 回退 icns 重生成 + sidecar 新鲜度记录；`--check` 供构建前置校验 |
 
 ## Architecture
 
@@ -824,6 +825,19 @@ preferring the triple-specific product path so stale universal artifacts under
 - 静态 `AppIcon.icns` 分辨率覆盖是完整的：经 `iconutil -c iconset` 反推核实，内含
   `icon_256x256@2x.png`（512px）与 `icon_512x512@2x.png`（1024px）表示，旧系统大尺寸
   场景（Dock 放大 / Finder 大图标 / DMG 展示）不会拿到低清位图。
+
+**图标资产同步（单一入口，不再手工 cp / 手工跑 generate-icns.sh）**：源资产为
+`Assets/icon-master.png` 与 `images/llm-quota-730-2-dark.svg`；SwiftPM `.copy` 打包
+副本（`Sources/LLM-monitor/Resources/IconPreview/` 下两文件，结构性无法消除）与
+回退 `AppIcon.icns` 统一由 `scripts/sync-icon-assets.sh` 同步：cp 两份副本、调用
+`generate-icns.sh` 重生成 icns、写 sidecar `Assets/AppIcon.icns.source.sha256`
+（sha256sum 兼容格式，记录 icns 由哪个版本的 master 生成；sidecar 哈希 == 当前
+master 哈希即 icns 新鲜度的确定性判据，不用 mtime）。`build-app.sh` 在版本号解析
+后调用 `sync-icon-assets.sh --check` 做构建前置校验（只校验不重生成——release 必
+须从已提交状态构建，不能在构建中悄悄改二进制）；副本一致性另由
+`Tests/LLMMonitorTests/IconAssetSyncTests.swift` 钉住。脚本覆盖范围之外的手工步骤：
+Icon Composer 里更新 `images/LLMMenu.icon` 工程；若菜单栏 quotaLogo 几何也要变，
+改 `QuotaLogoSVGBuilder` 并跑一致性测试；spec 文档同步。
 
 **历史分歧备注**：1.6.0 前夕 `478f322` 曾以"打包产物异常"为由移除 Icon Composer 路线，
 `0f1a7b8` 又将其恢复。本节即为最终裁定：**双路线并存是既定设计**，两条路线的产物各有

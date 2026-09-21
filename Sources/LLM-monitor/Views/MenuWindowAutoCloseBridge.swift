@@ -75,9 +75,15 @@ enum MenuWindowAlignment {
 /// 1. 失焦（窗口 resign key / app resign active）立即关闭
 /// 2. 连续 30 秒“无交互”关闭：attach 时启动计时；菜单窗口内的
 ///    mouse move/down、scroll、key down 重置计时（F4 锁定语义）。
+/// 3. 每次面板打开（窗口 become key）回调 `onPanelOpen`：MenuBarExtra 的
+///    onAppear 只保证首次创建时触发，无法作为「每次打开」的可靠信号，而
+///    become key 与关闭路径的 resign key 是对称事件，每次打开必触发。
 ///
 /// 计时状态机抽出到可单测的 `MenuInactivityTimer`，事件监听只在生产 bridge 里安装。
 struct MenuWindowAutoCloseBridge: NSViewRepresentable {
+    /// 面板每次打开（窗口 become key）时的回调，如「节能」健康灯的即时刷新；默认 nil。
+    var onPanelOpen: (() -> Void)? = nil
+
     func makeCoordinator() -> Coordinator {
         Coordinator()
     }
@@ -85,11 +91,13 @@ struct MenuWindowAutoCloseBridge: NSViewRepresentable {
     func makeNSView(context: Context) -> TrackingNSView {
         let view = TrackingNSView()
         view.coordinator = context.coordinator
+        view.onPanelOpen = onPanelOpen
         return view
     }
 
     func updateNSView(_ nsView: TrackingNSView, context: Context) {
         nsView.coordinator = context.coordinator
+        nsView.onPanelOpen = onPanelOpen
     }
 
     @MainActor
@@ -106,6 +114,8 @@ struct MenuWindowAutoCloseBridge: NSViewRepresentable {
         private var localMonitor: Any?
         private let inactivityInterval: TimeInterval
         private let timer: MenuInactivityTimer
+        /// 面板每次打开（become key）时的回调；由 TrackingNSView 转发赋值。
+        var onPanelOpen: (() -> Void)?
 
         init(inactivityInterval: TimeInterval = 30,
              scheduler: (any InactivityScheduler)? = nil) {
@@ -161,6 +171,7 @@ struct MenuWindowAutoCloseBridge: NSViewRepresentable {
                     if let window {
                         self?.alignToMenuBar(window: window)
                     }
+                    self?.onPanelOpen?()
                 }
             })
 
@@ -274,6 +285,10 @@ struct MenuWindowAutoCloseBridge: NSViewRepresentable {
 extension MenuWindowAutoCloseBridge {
     final class TrackingNSView: NSView {
         weak var coordinator: Coordinator?
+        /// 透传 bridge 的面板打开回调；updateNSView 时刷新，窗口附着后生效。
+        var onPanelOpen: (() -> Void)? {
+            didSet { coordinator?.onPanelOpen = onPanelOpen }
+        }
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()

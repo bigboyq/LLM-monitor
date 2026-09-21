@@ -655,9 +655,8 @@ final class StateAndSchedulerTests: XCTestCase {
         }
         XCTAssertEqual(calls, 1)
 
-        // This target is just ahead of now while still well before the next
-        // regular deadline, so it becomes due while the initial request stays
-        // in flight.
+        // 新规则要求 reset executionAt 距上次 Interval 完成严格超过 30 秒。
+        // 首次 Interval 尚未完成时，过期/临近 reset 直接跳过，不得补发请求。
         scheduler.scheduleMidCycleResetRefreshes(
             for: "p", resetsAtDates: [Date().addingTimeInterval(-0.04)]
         )
@@ -665,12 +664,12 @@ final class StateAndSchedulerTests: XCTestCase {
         XCTAssertEqual(calls, 1, "running provider 的过期 reset 不应重复派发或 busy-loop")
 
         releaseInitial = true
-        for _ in 0..<200 where calls < 2 {
+        for _ in 0..<200 where calls < 1 {
             try? await Task.sleep(nanoseconds: 1_000_000)
         }
-        XCTAssertEqual(calls, 2, "请求完成后该 reset 最多补一次")
+        XCTAssertEqual(calls, 1, "不满足前置 30 秒窗口的 reset 必须跳过")
         try? await Task.sleep(nanoseconds: 30_000_000)
-        XCTAssertEqual(calls, 2)
+        XCTAssertEqual(calls, 1)
         scheduler.cancelAll()
     }
 
@@ -897,6 +896,207 @@ final class StateAndSchedulerTests: XCTestCase {
         scheduler.cancelAll()
     }
 
+    /// Reset 的 prev 侧边界：30 秒以内不丢弃，而是把执行点钳到 prev+30s。
+    @MainActor
+    func testResetWindowUsesStrictThirtySecondBoundary() async {
+        let fixedNow = Date(timeIntervalSince1970: 1_700_000_000)
+
+        func run(resetExecutionOffset: TimeInterval) async -> Bool {
+            var modes: [RefreshMode] = []
+            let scheduler = ProviderRefreshScheduler(
+                refreshHandler: { _, mode in
+                    modes.append(mode)
+                    return .completed(success: true)
+                },
+                intervalProvider: { _ in 300 },
+                onNextRefreshChange: {},
+                now: { fixedNow },
+                midCycleResetDelay: 0,
+                sleep: { _ in }
+            )
+            scheduler.scheduleMidCycleResetRefreshes(
+                for: "p",
+                resetsAtDates: [fixedNow.addingTimeInterval(resetExecutionOffset)]
+            )
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            scheduler.cancelAll()
+            return modes.contains(.background)
+        }
+
+        let belowBoundary = await run(resetExecutionOffset: 29.999)
+        let atBoundary = await run(resetExecutionOffset: 30.0)
+        let aboveBoundary = await run(resetExecutionOffset: 30.001)
+        XCTAssertTrue(belowBoundary)
+        XCTAssertTrue(atBoundary)
+        XCTAssertTrue(aboveBoundary)
+    }
+
+    @MainActor
+    func testStaggeredStartPointsSeparateInitialProviderRefreshes() async {
+        let fixedNow = Date(timeIntervalSince1970: 1_700_000_000)
+        var order: [String] = []
+        var scheduler: ProviderRefreshScheduler!
+        scheduler = ProviderRefreshScheduler(
+            refreshHandler: { providerID, _ in
+                order.append(providerID)
+                if order.count == 2 { scheduler.cancelAll() }
+                return .completed(success: true)
+            },
+            intervalProvider: { _ in 300 },
+            onNextRefreshChange: {},
+            now: { fixedNow },
+            sleep: { _ in }
+        )
+        scheduler.schedule(for: "a")
+        scheduler.schedule(for: "b")
+        scheduler.staggerInitialRefreshes(at: fixedNow)
+        scheduler.start()
+        for _ in 0..<100 where order.count < 2 {
+            await Task.yield()
+        }
+        XCTAssertEqual(order, ["a", "b"])
+    }
+
+    @MainActor
+    func testResetNextIntervalBoundaryUsesStrictLessThan() async {
+        let fixedNow = Date(timeIntervalSince1970: 1_700_000_000)
+
+        func run(resetExecutionOffset: TimeInterval) async -> Bool {
+            var modes: [RefreshMode] = []
+            let scheduler = ProviderRefreshScheduler(
+                refreshHandler: { _, mode in
+                    modes.append(mode)
+                    return .completed(success: true)
+                },
+                intervalProvider: { _ in 300 },
+                onNextRefreshChange: {},
+                now: { fixedNow },
+                midCycleResetDelay: 0,
+                sleep: { _ in }
+            )
+            scheduler.scheduleMidCycleResetRefreshes(
+                for: "p",
+                resetsAtDates: [fixedNow.addingTimeInterval(resetExecutionOffset)]
+            )
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            scheduler.cancelAll()
+            return modes.contains(.background)
+        }
+
+        let belowNextBoundary = await run(resetExecutionOffset: 270.001)
+        let atNextBoundary = await run(resetExecutionOffset: 270.0)
+        let aboveNextBoundary = await run(resetExecutionOffset: 269.999)
+        XCTAssertFalse(belowNextBoundary)
+        XCTAssertTrue(atNextBoundary)
+        XCTAssertTrue(aboveNextBoundary)
+    }
+
+    @MainActor
+    func testResetIsSkippedWhenProviderIntervalIsAtMostSixtySeconds() async {
+        let fixedNow = Date(timeIntervalSince1970: 1_700_000_000)
+        var modes: [RefreshMode] = []
+        let scheduler = ProviderRefreshScheduler(
+            refreshHandler: { _, mode in
+                modes.append(mode)
+                return .completed(success: true)
+            },
+            intervalProvider: { _ in 60 },
+            onNextRefreshChange: {},
+            now: { fixedNow },
+            midCycleResetDelay: 0,
+            sleep: { _ in }
+        )
+        scheduler.scheduleMidCycleResetRefreshes(
+            for: "p",
+            resetsAtDates: [fixedNow.addingTimeInterval(45)]
+        )
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertFalse(modes.contains(.background))
+        scheduler.cancelAll()
+    }
+
+    @MainActor
+    func testExternalJobBlocksAutomaticBatchUntilItEnds() async {
+        var refreshCount = 0
+        let scheduler = ProviderRefreshScheduler(
+            refreshHandler: { _, _ in
+                refreshCount += 1
+                return .completed(success: true)
+            },
+            intervalProvider: { _ in 300 },
+            onNextRefreshChange: {}
+        )
+        scheduler.schedule(for: "p")
+        let token = scheduler.beginExternalJob()
+        XCTAssertNotNil(token)
+        try? await Task.sleep(nanoseconds: 30_000_000)
+        XCTAssertEqual(refreshCount, 0)
+        XCTAssertNil(scheduler.beginExternalJob())
+        if let token { scheduler.endExternalJob(token) }
+        for _ in 0..<100 where refreshCount == 0 {
+            await Task.yield()
+        }
+        XCTAssertEqual(refreshCount, 1)
+        scheduler.cancelAll()
+    }
+
+    @MainActor
+    func testStaleExternalJobTokenCannotReleaseNewGeneration() {
+        let scheduler = ProviderRefreshScheduler(
+            refreshHandler: { _, _ in .completed(success: true) },
+            intervalProvider: { _ in 300 },
+            onNextRefreshChange: {}
+        )
+        guard let staleToken = scheduler.beginExternalJob() else {
+            XCTFail("初始 external job 应成功获取 token")
+            return
+        }
+        scheduler.cancelAll()
+        guard let currentToken = scheduler.beginExternalJob() else {
+            XCTFail("cancelAll 后新 generation 应允许创建 external job")
+            return
+        }
+
+        scheduler.endExternalJob(staleToken)
+        XCTAssertNil(
+            scheduler.beginExternalJob(),
+            "旧 token 不得释放新 generation 的 job"
+        )
+        scheduler.endExternalJob(currentToken)
+        XCTAssertNotNil(scheduler.beginExternalJob())
+        scheduler.cancelAll()
+    }
+
+    @MainActor
+    func testRegularIntervalStartsAfterBatchReconcileCompletes() async {
+        let initialNow = Date(timeIntervalSince1970: 1_700_000_000)
+        let clock = SchedulerTestClock(date: initialNow)
+        var settled = 0
+        let scheduler = ProviderRefreshScheduler(
+            refreshHandler: { _, _ in .completed(success: true) },
+            intervalProvider: { _ in 300 },
+            onNextRefreshChange: {},
+            onBatchSettledAsync: { _ in
+                clock.advance(by: 100)
+                settled += 1
+            },
+            now: { clock.date }
+        )
+        scheduler.schedule(for: "p")
+        scheduler.start()
+        for _ in 0..<100 where settled == 0 {
+            await Task.yield()
+        }
+
+        XCTAssertEqual(
+            scheduler.earliestNextRefresh?.timeIntervalSince(clock.date) ?? .nan,
+            300,
+            accuracy: 0.001,
+            "下一次 Interval 必须从 quota + local reconcile 完成时间开始"
+        )
+        scheduler.cancelAll()
+    }
+
     /// 已过期的 reset time（targetDate ≤ now）不安排补刷新。
     @MainActor
     func testF3NoMidCycleForPastReset() async {
@@ -1027,8 +1227,8 @@ final class StateAndSchedulerTests: XCTestCase {
     }
 
     @MainActor
-    func testSchedulerDeferredOutcomeCausesShortRetry() async {
-        // refreshHandler 一直返回 .deferred → timer 走 1s 短重试节奏（不进入失败排期）
+    func testSchedulerDeferredOutcomeUsesNormalIntervalWithoutStorm() async {
+        // refreshHandler 一直返回 .deferred → 不得进入 1s 重试风暴，按正常 Interval 排期。
         let counter = CallCounter()
         let sched = ProviderRefreshScheduler(
             refreshHandler: { _, mode in
@@ -1039,12 +1239,12 @@ final class StateAndSchedulerTests: XCTestCase {
             onNextRefreshChange: {}
         )
         sched.schedule(for: "a")
-        // 等 ~1.5s：.full（首次）+ 至少 1 次 .deferred 重试
+        // 等 ~1.5s：只应完成首次请求，下一次应在 60s 后。
         try? await Task.sleep(nanoseconds: 1_500_000_000)
         sched.cancel(providerID: "a")
-        // 验证：handler 被多次调用（说明 timer 在循环而不是等满 baseInterval）
+        // 验证：没有每秒重复调用。
         let calls = await counter.calls
-        XCTAssertGreaterThanOrEqual(calls, 2, "连续 .deferred 应触发 1s 短重试，至少 2 次调用（首次 + 1 次重试）")
+        XCTAssertEqual(calls, 1, "deferred 不应触发 1s 重试风暴")
     }
 
     @MainActor
@@ -2574,15 +2774,16 @@ final class StateAndSchedulerTests: XCTestCase {
         let waiter2 = Task { @MainActor in
             await state.refreshOne(providerID: fetcher.providerID)
         }
-        // 等两个 waiter 都挂到 waitUntilNotInFlight 上
+        // 全局 Manual gate 只允许第一个 Manual 进入；第二个点击必须立即拒绝，
+        // 不得再往 in-flight waiter 队列堆积。
         for _ in 0..<200
-        where state.refreshScheduler.inFlightWaiterCount(for: fetcher.providerID) < 2 {
+        where state.refreshScheduler.inFlightWaiterCount(for: fetcher.providerID) < 1 {
             await Task.yield()
         }
         XCTAssertEqual(
             state.refreshScheduler.inFlightWaiterCount(for: fetcher.providerID),
-            2,
-            "两个 full refresh waiter 都应挂到 waitUntilNotInFlight 上"
+            1,
+            "全局 Manual gate 只应保留一个等待中的 Manual"
         )
 
         // 3. 释放 background —— fetcher.fetch 第一次返回，markNotInFlight 会唤醒
