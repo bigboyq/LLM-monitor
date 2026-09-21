@@ -171,7 +171,7 @@ struct MenuContentView: View {
                 }
             }
             Spacer()
-            if state.isRefreshing {
+            if state.isRefreshJobActive {
                 ProgressView()
                     .controlSize(.small)
                     .frame(width: 26, height: 24, alignment: .trailing)
@@ -268,6 +268,7 @@ struct MenuContentView: View {
                                 Button("立即刷新") {
                                     Task { await state.refreshOne(providerID: status.id) }
                                 }
+                                .disabled(state.isRefreshJobActive)
                                 Button("打开配置文件…") {
                                     state.openConfigFile()
                                 }
