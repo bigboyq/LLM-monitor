@@ -3,12 +3,19 @@ import Foundation
 /// 单个 provider 一次 refresh 的结果。
 ///
 /// - `deferred`: 请求未实际发起（已有 in-flight / 配置刚变化 / auth 缺失），
-///   timer 循环里按 1s 短重试节奏继续轮询。
+///   本轮按正常 Interval 排期，避免离线 provider 形成短重试风暴。
 /// - `completed(success:)`: 请求真的完成了。成功与失败都按 baseInterval 排下一拍
 ///   （失败不退避：固定间隔后台刷新下，拉长重试间隔只会推迟恢复）。
 enum ProviderRefreshOutcome: Sendable, Equatable {
     case deferred
     case completed(success: Bool)
+}
+
+/// 一个刷新事务的所有权凭证。只有创建它的 scheduler generation 仍然有效时，
+/// 外部调用方才可以提交事务结果或释放全局 gate。
+struct RefreshJobToken: Equatable, Sendable {
+    fileprivate let schedulerGeneration: UInt64
+    fileprivate let id: UUID
 }
 
 /// 循环 A（额度循环）：集中管理所有 provider 的定时刷新。
@@ -18,7 +25,7 @@ enum ProviderRefreshOutcome: Sendable, Equatable {
 /// - 循环睡眠到"最早的下一个截止时间"（regular、mid-cycle reset 或非网络辅助 deadline）；
 /// - 醒来后并发刷新所有到期的 provider（TaskGroup + 条目级 do-catch 隔离，互不阻塞）；
 /// - 既有语义逐条保留：启动首拍 .full、之后 .background、每 20 次 background 补一次 full、
-///   失败按 baseInterval 固定间隔随下一定时周期重试（不指数退避）、.deferred 1s 短重试早醒、
+///   失败与 deferred 都按 baseInterval 固定间隔随下一定时周期重试（不指数退避）、
 ///   mid-cycle reset+15s 一次性补刷新（与 regular 共用 deadline driver）、健康窗口边界
 ///   （只回调 UI，不发网络请求）、ManualRefreshGate 与在飞刷新合并、配置热加载
 ///   stop+reschedule。`earliestNextRefresh` 仍只暴露 regular deadline。
@@ -35,8 +42,8 @@ final class ProviderRefreshScheduler {
     ///
     /// 保留同步回调以兼容 scheduler 的轻量测试/观察者。
     typealias BatchSettledCallback = @MainActor () -> Void
-    /// 生产路径使用 async 回调，把本地 full reconcile 纳入同一个全局刷新事务。
-    typealias BatchSettledAsyncCallback = @MainActor () async -> Void
+    /// 生产路径使用 async 回调，把本地 reconcile 纳入同一个全局刷新事务。
+    typealias BatchSettledAsyncCallback = @MainActor (Set<String>) async -> Void
     /// 全局刷新事务开始/结束通知。Manual/Wakeup 与自动 batch 共用这一个 gate。
     typealias JobActivityChangeCallback = @MainActor (Bool) -> Void
     /// 非网络辅助 deadline 到期通知。回调只应更新派生 UI 状态；它不会进入
@@ -83,13 +90,13 @@ final class ProviderRefreshScheduler {
     }
     private var runningWaiters: [String: [RunningWaiter]] = [:]
     /// regular deadline 到期但 provider 已有外部请求时暂存；该请求完成后
-    /// 直接结算 regular deadline，不再以 deferred+1s 重新发一遍。
+    /// 直接结算 regular deadline，不再重复发起一遍。
     private var pendingRegularProviders: Set<String> = []
     private var providerGenerations: [String: UInt64] = [:]
     private var schedulerGeneration: UInt64 = 0
     private var batchTasks: [UUID: Task<Void, Never>] = [:]
-    /// 全局排他刷新事务：自动 batch、Manual、Wakeup 只能有一个处于活动状态。
-    private var refreshJobActive = false
+    /// 全局排他刷新事务的所有权。Bool 不足以区分 stop/config reload 前后的两个 job。
+    private var activeJobToken: RefreshJobToken?
 
     /// 正在进行网络请求的 provider。手动刷新、菜单打开、定时器可能同时触发，
     /// 这里保证同一个 provider 同一时刻只会发出一个请求。
@@ -194,20 +201,26 @@ final class ProviderRefreshScheduler {
     /// 尝试开始一个由 AppState 托管的 Manual/Wakeup 全局事务。
     /// 返回 false 表示当前已有自动或外部刷新事务；调用方不得清理 pending schedule。
     @discardableResult
-    func beginExternalJob() -> Bool {
-        guard !refreshJobActive else { return false }
-        refreshJobActive = true
+    func beginExternalJob() -> RefreshJobToken? {
+        guard activeJobToken == nil else { return nil }
+        let token = RefreshJobToken(schedulerGeneration: schedulerGeneration, id: UUID())
+        activeJobToken = token
         onJobActivityChange(true)
         wake()
-        return true
+        return token
     }
 
     /// 结束 Manual/Wakeup 事务。调用方应在所有 quota 与本地 full reconcile 完成后调用。
-    func endExternalJob() {
-        guard refreshJobActive else { return }
-        refreshJobActive = false
+    func endExternalJob(_ token: RefreshJobToken) {
+        guard isCurrentJob(token) else { return }
+        activeJobToken = nil
         onJobActivityChange(false)
         wake()
+    }
+
+    /// 外部事务在每个 await 后验证所有权，避免 stop/config reload 后旧任务继续改排期。
+    func isCurrentJob(_ token: RefreshJobToken) -> Bool {
+        activeJobToken == token && token.schedulerGeneration == schedulerGeneration
     }
 
     /// 从单循环中移除指定的 provider
@@ -260,8 +273,8 @@ final class ProviderRefreshScheduler {
         backgroundsSinceFull.removeAll()
         hasDoneFirstRefresh.removeAll()
         lastRefreshActivity.removeAll()
-        if refreshJobActive {
-            refreshJobActive = false
+        if activeJobToken != nil {
+            activeJobToken = nil
             onJobActivityChange(false)
         }
         onNextRefreshChange()
@@ -280,7 +293,7 @@ final class ProviderRefreshScheduler {
     private func runLoop() async {
         var initialBatchPending = true
         while !Task.isCancelled {
-            if refreshJobActive {
+            if activeJobToken != nil {
                 _ = await interruptibleSleep(3600, targetWakeDate: nil)
                 continue
             }
@@ -334,13 +347,13 @@ final class ProviderRefreshScheduler {
 
             if !due.isEmpty {
                 due.forEach { runningProviders.insert($0.id) }
-                refreshJobActive = true
+                let batchID = UUID()
+                let batchToken = RefreshJobToken(schedulerGeneration: schedulerGeneration, id: batchID)
+                activeJobToken = batchToken
                 onJobActivityChange(true)
                 let batch = due
-                let batchGeneration = schedulerGeneration
-                let batchID = UUID()
                 let task = Task { @MainActor [weak self] in
-                    await self?.executeBatch(batch, schedulerGeneration: batchGeneration)
+                    await self?.executeBatch(batch, jobToken: batchToken)
                 self?.batchTasks.removeValue(forKey: batchID)
                 }
                 batchTasks[batchID] = task
@@ -350,11 +363,12 @@ final class ProviderRefreshScheduler {
                 // 等不到“第一批已结算”的信号。
                 initialBatchPending = false
                 let initialGeneration = schedulerGeneration
-                refreshJobActive = true
+                let initialToken = RefreshJobToken(schedulerGeneration: initialGeneration, id: UUID())
+                activeJobToken = initialToken
                 onJobActivityChange(true)
-                await settleBatchCallback()
-                if schedulerGeneration == initialGeneration, refreshJobActive {
-                    refreshJobActive = false
+                await settleBatchCallback(regularProviderIDs: [])
+                if isCurrentJob(initialToken) {
+                    activeJobToken = nil
                     onJobActivityChange(false)
                 }
             }
@@ -391,7 +405,7 @@ final class ProviderRefreshScheduler {
 
     private func executeBatch(
         _ batch: [(id: String, mode: RefreshMode, generation: UInt64, isRegular: Bool)],
-        schedulerGeneration: UInt64
+        jobToken: RefreshJobToken
     ) async {
         var settledCount = 0
         await withTaskGroup(of: (String, ProviderRefreshOutcome, RefreshMode, UInt64, Bool).self) { group in
@@ -415,33 +429,37 @@ final class ProviderRefreshScheduler {
             }
         }
         for entry in batch {
-            if self.schedulerGeneration == schedulerGeneration,
+            if self.schedulerGeneration == jobToken.schedulerGeneration,
                self.providerGenerations[entry.id] == entry.generation {
                 self.runningProviders.remove(entry.id)
                 self.resumeRunningWaiters(for: entry.id)
             }
         }
-        guard self.schedulerGeneration == schedulerGeneration, settledCount > 0 else {
-            if self.schedulerGeneration == schedulerGeneration, refreshJobActive {
-                refreshJobActive = false
+        guard self.schedulerGeneration == jobToken.schedulerGeneration, settledCount > 0 else {
+            if isCurrentJob(jobToken) {
+                activeJobToken = nil
                 onJobActivityChange(false)
                 wake()
             }
             return
         }
-        onNextRefreshChange()
-        await settleBatchCallback()
-        guard self.schedulerGeneration == schedulerGeneration, refreshJobActive else {
+        await settleBatchCallback(
+            regularProviderIDs: Set(batch.filter(\.isRegular).map(\.id))
+        )
+        guard isCurrentJob(jobToken) else {
             return
         }
-        refreshJobActive = false
+        let transactionFinishedAt = now()
+        settleRegularIntervals(for: batch, at: transactionFinishedAt)
+        onNextRefreshChange()
+        activeJobToken = nil
         onJobActivityChange(false)
         wake()
     }
 
-    private func settleBatchCallback() async {
+    private func settleBatchCallback(regularProviderIDs: Set<String>) async {
         if let onBatchSettledAsync {
-            await onBatchSettledAsync()
+            await onBatchSettledAsync(regularProviderIDs)
         } else {
             onBatchSettled()
         }
@@ -452,7 +470,7 @@ final class ProviderRefreshScheduler {
 
         switch outcome {
         case .deferred:
-            nextRefreshDates[providerID] = now().addingTimeInterval(1.0)
+            logDebug("ProviderRefreshScheduler: [\(providerID)] 本轮刷新 deferred，按正常 Interval 排期，避免 1s 重试风暴")
         case .completed(let success):
             hasDoneFirstRefresh.insert(providerID)
             if mode == .full {
@@ -463,11 +481,24 @@ final class ProviderRefreshScheduler {
             // 失败不退避：后台固定间隔刷新下，拉长重试间隔只会推迟恢复；
             // 失败 provider 直接随下一定时周期重试（与成功完全相同的排期）。
             let baseInterval = intervalProvider(providerID)
-            lastIntervalFinishedDates[providerID] = now()
             if !success {
                 logWarn("ProviderRefreshScheduler: [\(providerID)] 刷新失败，\(Int(baseInterval)) 秒后随下一定时周期重试")
             }
-            nextRefreshDates[providerID] = now().addingTimeInterval(baseInterval)
+        }
+    }
+
+    /// regular Interval 的下一次触发必须从完整事务（quota + local reconcile）完成时刻
+    /// 计算，避免本地扫描耗时把下一拍推到事务结束前。
+    private func settleRegularIntervals(
+        for batch: [(id: String, mode: RefreshMode, generation: UInt64, isRegular: Bool)],
+        at finishedAt: Date
+    ) {
+        for entry in batch where entry.isRegular {
+            guard managedProviders.contains(entry.id),
+                  providerGenerations[entry.id] == entry.generation else { continue }
+            let interval = intervalProvider(entry.id)
+            lastIntervalFinishedDates[entry.id] = finishedAt
+            nextRefreshDates[entry.id] = finishedAt.addingTimeInterval(interval)
         }
     }
 
@@ -637,7 +668,7 @@ final class ProviderRefreshScheduler {
            let regularDate = nextRefreshDates[providerID], regularDate <= now() {
             // A manual or wake-triggered request can win the race with the
             // driver at an already-due regular deadline. Let that real request
-            // advance the regular schedule instead of producing a deferred 1s
+            // advance the regular schedule instead of producing a duplicate
             // retry after it completes.
             pendingRegularProviders.insert(providerID)
         }
@@ -817,6 +848,10 @@ final class ProviderRefreshScheduler {
     ) {
         guard managedProviders.contains(providerID) else { return }
         processOutcome(providerID: providerID, outcome: outcome, mode: mode)
+        settleRegularIntervals(
+            for: [(providerID, mode, providerGenerations[providerID] ?? 0, true)],
+            at: now()
+        )
         onNextRefreshChange()
         onBatchSettled()
         wake()

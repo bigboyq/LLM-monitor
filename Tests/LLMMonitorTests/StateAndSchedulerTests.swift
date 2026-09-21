@@ -1027,15 +1027,73 @@ final class StateAndSchedulerTests: XCTestCase {
             onNextRefreshChange: {}
         )
         scheduler.schedule(for: "p")
-        XCTAssertTrue(scheduler.beginExternalJob())
+        let token = scheduler.beginExternalJob()
+        XCTAssertNotNil(token)
         try? await Task.sleep(nanoseconds: 30_000_000)
         XCTAssertEqual(refreshCount, 0)
-        XCTAssertFalse(scheduler.beginExternalJob())
-        scheduler.endExternalJob()
+        XCTAssertNil(scheduler.beginExternalJob())
+        if let token { scheduler.endExternalJob(token) }
         for _ in 0..<100 where refreshCount == 0 {
             await Task.yield()
         }
         XCTAssertEqual(refreshCount, 1)
+        scheduler.cancelAll()
+    }
+
+    @MainActor
+    func testStaleExternalJobTokenCannotReleaseNewGeneration() {
+        let scheduler = ProviderRefreshScheduler(
+            refreshHandler: { _, _ in .completed(success: true) },
+            intervalProvider: { _ in 300 },
+            onNextRefreshChange: {}
+        )
+        guard let staleToken = scheduler.beginExternalJob() else {
+            XCTFail("初始 external job 应成功获取 token")
+            return
+        }
+        scheduler.cancelAll()
+        guard let currentToken = scheduler.beginExternalJob() else {
+            XCTFail("cancelAll 后新 generation 应允许创建 external job")
+            return
+        }
+
+        scheduler.endExternalJob(staleToken)
+        XCTAssertNil(
+            scheduler.beginExternalJob(),
+            "旧 token 不得释放新 generation 的 job"
+        )
+        scheduler.endExternalJob(currentToken)
+        XCTAssertNotNil(scheduler.beginExternalJob())
+        scheduler.cancelAll()
+    }
+
+    @MainActor
+    func testRegularIntervalStartsAfterBatchReconcileCompletes() async {
+        let initialNow = Date(timeIntervalSince1970: 1_700_000_000)
+        let clock = SchedulerTestClock(date: initialNow)
+        var settled = 0
+        let scheduler = ProviderRefreshScheduler(
+            refreshHandler: { _, _ in .completed(success: true) },
+            intervalProvider: { _ in 300 },
+            onNextRefreshChange: {},
+            onBatchSettledAsync: { _ in
+                clock.advance(by: 100)
+                settled += 1
+            },
+            now: { clock.date }
+        )
+        scheduler.schedule(for: "p")
+        scheduler.start()
+        for _ in 0..<100 where settled == 0 {
+            await Task.yield()
+        }
+
+        XCTAssertEqual(
+            scheduler.earliestNextRefresh?.timeIntervalSince(clock.date) ?? .nan,
+            300,
+            accuracy: 0.001,
+            "下一次 Interval 必须从 quota + local reconcile 完成时间开始"
+        )
         scheduler.cancelAll()
     }
 
@@ -1169,8 +1227,8 @@ final class StateAndSchedulerTests: XCTestCase {
     }
 
     @MainActor
-    func testSchedulerDeferredOutcomeCausesShortRetry() async {
-        // refreshHandler 一直返回 .deferred → timer 走 1s 短重试节奏（不进入失败排期）
+    func testSchedulerDeferredOutcomeUsesNormalIntervalWithoutStorm() async {
+        // refreshHandler 一直返回 .deferred → 不得进入 1s 重试风暴，按正常 Interval 排期。
         let counter = CallCounter()
         let sched = ProviderRefreshScheduler(
             refreshHandler: { _, mode in
@@ -1181,12 +1239,12 @@ final class StateAndSchedulerTests: XCTestCase {
             onNextRefreshChange: {}
         )
         sched.schedule(for: "a")
-        // 等 ~1.5s：.full（首次）+ 至少 1 次 .deferred 重试
+        // 等 ~1.5s：只应完成首次请求，下一次应在 60s 后。
         try? await Task.sleep(nanoseconds: 1_500_000_000)
         sched.cancel(providerID: "a")
-        // 验证：handler 被多次调用（说明 timer 在循环而不是等满 baseInterval）
+        // 验证：没有每秒重复调用。
         let calls = await counter.calls
-        XCTAssertGreaterThanOrEqual(calls, 2, "连续 .deferred 应触发 1s 短重试，至少 2 次调用（首次 + 1 次重试）")
+        XCTAssertEqual(calls, 1, "deferred 不应触发 1s 重试风暴")
     }
 
     @MainActor
