@@ -862,6 +862,192 @@ final class StatusBarIconTests: XCTestCase {
         XCTAssertEqual(master?.size.height, 22)
     }
 
+    // MARK: - quotaLogo 设计稿与生成器几何一致性
+
+    /// 单条圆弧的几何骨架（与绘制方向无关的归一化表达，端点按字典序排序）。
+    private struct SVGArcSkeleton: Equatable {
+        var radius: Double
+        var strokeWidth: Double
+        var largeArcFlag: Int
+        var endpoints: [String]
+        var lineCap: String
+        var stroke: String
+    }
+
+    /// quotaLogo 的双源一致性守门：菜单栏真实图标由 QuotaLogoSVGBuilder 运行时
+    /// 生成，设置页预览却来自手写设计稿（llm-quota-730-2-dark.svg），几何常量
+    /// 改一侧不改另一侧会静默漂移。这里用能复现设计稿姿态的代表性输入
+    /// （外环 12 点逆时针 3/8 圈即 7:30 方向、内环 5/6 圈即 2 点方向、avg = min
+    /// 不产生刻度虚线段）让生成器产出同款双弧，再与资源文件逐项比较。
+    ///
+    /// 比较范围：两条弧的半径 / 端点 / large-arc 标志 / stroke-width / linecap /
+    /// 描边色，以及杯型路径（生成器是 clipPath、设计稿是满杯填充，本应是同
+    /// 一条 d）。不比较 viewBox——生成器裁掉透明留白用 704，设计稿保留完整
+    /// 1024 画布，但两者坐标系同为 1024 设计空间，元素坐标可直接对齐；不比较
+    /// 水位 rect——水位高度属动态语义（随指标变化），设计稿以满杯形状表达，
+    /// 生成器用 rect + clipPath 表达，水位数值本应允许不同。
+    func testQuotaLogoDesignAssetGeometryMatchesBuilder() throws {
+        let metrics = StatusBarQuotaMetrics(
+            weekly: QuotaRingMetrics(
+                minAvailable: 0.375, avgAvailable: 0.375,
+                colorHex: QuotaLogoSVGBuilder.defaultOuterColor
+            ),
+            interval: QuotaRingMetrics(
+                minAvailable: 5.0 / 6.0, avgAvailable: 5.0 / 6.0,
+                colorHex: QuotaLogoSVGBuilder.defaultMiddleColor
+            )
+        )
+        let generated = QuotaLogoSVGBuilder.buildSVG(metrics: metrics)
+
+        let designURL = try XCTUnwrap(
+            Bundle.module.url(forResource: "llm-quota-730-2-dark", withExtension: "svg"),
+            "设计稿 SVG 必须随 app target 打包（Package.swift resources 声明）"
+        )
+        let design = try String(contentsOf: designURL, encoding: .utf8)
+
+        let generatedArcs = try Self.strokedArcSkeletons(in: generated)
+        let designArcs = try Self.strokedArcSkeletons(in: design)
+        XCTAssertEqual(generatedArcs.count, 2, "生成器应产出外环 + 内环两条弧，实际 \(generatedArcs.count) 条")
+        XCTAssertEqual(designArcs.count, 2, "设计稿应包含外环 + 内环两条弧，实际 \(designArcs.count) 条")
+
+        // 两侧都按半径降序配对：首条为外环（r=320），次条为内环（r=240）。
+        for (index, pair) in zip(generatedArcs, designArcs).enumerated() {
+            let (generatedArc, designArc) = pair
+            XCTAssertEqual(
+                generatedArc.radius, designArc.radius, accuracy: 0.5,
+                "第 \(index) 条弧半径不一致：生成器 \(generatedArc.radius) vs 设计稿 \(designArc.radius)"
+            )
+            XCTAssertEqual(
+                generatedArc.strokeWidth, designArc.strokeWidth, accuracy: 0.5,
+                "第 \(index) 条弧 stroke-width 不一致：生成器 \(generatedArc.strokeWidth) vs 设计稿 \(designArc.strokeWidth)"
+            )
+            XCTAssertEqual(
+                generatedArc.largeArcFlag, designArc.largeArcFlag,
+                "第 \(index) 条弧 large-arc 标志不一致：生成器 \(generatedArc.largeArcFlag) vs 设计稿 \(designArc.largeArcFlag)"
+            )
+            XCTAssertEqual(
+                generatedArc.endpoints, designArc.endpoints,
+                "第 \(index) 条弧端点不一致（已归一为 2 位小数、忽略绘制方向）：生成器 \(generatedArc.endpoints) vs 设计稿 \(designArc.endpoints)"
+            )
+            XCTAssertEqual(
+                generatedArc.lineCap, designArc.lineCap,
+                "第 \(index) 条弧 linecap 不一致：生成器 \(generatedArc.lineCap) vs 设计稿 \(designArc.lineCap)"
+            )
+            XCTAssertEqual(
+                generatedArc.stroke, designArc.stroke,
+                "第 \(index) 条弧描边色不一致：生成器 \(generatedArc.stroke) vs 设计稿 \(designArc.stroke)"
+            )
+        }
+
+        // 杯型路径：生成器在 clipPath 内、设计稿是唯一的无 stroke 填充路径。
+        let generatedCup = try Self.cupPathD(in: generated)
+        let designCup = try Self.cupPathD(in: design)
+        XCTAssertEqual(
+            Self.normalizedPathGeometry(generatedCup), Self.normalizedPathGeometry(designCup),
+            "杯型 clipPath 路径不一致（数值已归一为 3 位小数）：生成器 \(generatedCup) vs 设计稿 \(designCup)"
+        )
+    }
+
+    /// 提取 SVG 中所有带 stroke 且 fill="none" 的 <path> 圆弧段，按半径降序。
+    /// 属性按名读取，不依赖属性出现顺序；对注释 / 空白不敏感。
+    private static func strokedArcSkeletons(in svg: String) throws -> [SVGArcSkeleton] {
+        try allMatches(of: #"<path\b[^>]*/>"#, in: svg).compactMap { element in
+            guard let stroke = attribute("stroke", in: element),
+                  attribute("fill", in: element) == "none" else { return nil }
+            guard let d = attribute("d", in: element) else { return nil }
+            let arc = try parseArcD(d)
+            return SVGArcSkeleton(
+                radius: arc.radius,
+                strokeWidth: Double(attribute("stroke-width", in: element) ?? "") ?? 0,
+                largeArcFlag: arc.largeArc,
+                endpoints: arc.endpoints,
+                lineCap: attribute("stroke-linecap", in: element) ?? "",
+                stroke: stroke
+            )
+        }
+        .sorted { $0.radius > $1.radius }
+    }
+
+    /// 解析单条圆弧 path d（"M x1 y1 A rx ry rot large sweep x2 y2"）。
+    /// 端点归一为 2 位小数并按字典序排序：设计稿与生成器绘制方向相反
+    /// （设计稿顺时针 sweep=1、生成器逆时针 sweep=0），同一段弧端点互换。
+    private static func parseArcD(_ d: String) throws -> (radius: Double, largeArc: Int, endpoints: [String]) {
+        let pattern = #"M\s+(-?[\d.]+)\s+(-?[\d.]+)\s+A\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(\d)\s+(\d)\s+(-?[\d.]+)\s+(-?[\d.]+)"#
+        let regex = try NSRegularExpression(pattern: pattern)
+        let nsd = d as NSString
+        guard let match = regex.firstMatch(in: d, range: NSRange(d.startIndex..., in: d)),
+              match.numberOfRanges == 10,
+              let radius = Double(nsd.substring(with: match.range(at: 3))),
+              let largeArc = Int(nsd.substring(with: match.range(at: 6))) else {
+            XCTFail("无法按圆弧格式解析 path d：\(d)")
+            throw NSError(domain: "SVGGeometry", code: 1)
+        }
+        let points = [match.range(at: 1), match.range(at: 2), match.range(at: 8), match.range(at: 9)]
+            .compactMap { Range($0, in: d).flatMap { Double(d[$0]) } }
+            .map { String(format: "%.2f", ($0 * 100).rounded() / 100) }
+        guard points.count == 4 else {
+            XCTFail("圆弧端点数量异常：\(d)")
+            throw NSError(domain: "SVGGeometry", code: 2)
+        }
+        return (radius, largeArc, [points[0] + "," + points[1], points[2] + "," + points[3]].sorted())
+    }
+
+    /// 提取杯型路径 d：优先取生成器 clipPath 内的 path；设计稿没有 clipPath，
+    /// 回退取唯一的无 stroke 填充 <path>。
+    private static func cupPathD(in svg: String) throws -> String {
+        if let d = firstCapture(of: #"<clipPath\b[^>]*>\s*<path\b[^>]*?\bd="([^"]+)""#, in: svg) {
+            return d
+        }
+        let filled = try allMatches(of: #"<path\b[^>]*/>"#, in: svg).filter {
+            attribute("stroke", in: $0) == nil && attribute("d", in: $0) != nil
+        }
+        guard filled.count == 1, let d = attribute("d", in: filled[0]) else {
+            XCTFail("无法唯一定位设计稿杯型填充路径，候选 \(filled.count) 条")
+            throw NSError(domain: "SVGGeometry", code: 3)
+        }
+        return d
+    }
+
+    private static func firstCapture(of pattern: String, in text: String) -> String? {
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+              let range = Range(match.range(at: 1), in: text) else { return nil }
+        return String(text[range])
+    }
+
+    /// 数值归一：折叠空白、把所有数字统一为 3 位小数书写，让「392.00000」与
+    /// 「392.00」这类书写差异不影响比较，几何数值本身仍敏感。
+    private static func normalizedPathGeometry(_ d: String) -> String {
+        let collapsed = d.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+        let regex = try! NSRegularExpression(pattern: #"-?\d+(?:\.\d+)?"#)
+        let matches = regex.matches(in: collapsed, range: NSRange(collapsed.startIndex..., in: collapsed))
+        var result = ""
+        var cursor = collapsed.startIndex
+        for match in matches {
+            guard let range = Range(match.range, in: collapsed) else { continue }
+            result += collapsed[cursor..<range.lowerBound]
+            result += Double(collapsed[range]).map { String(format: "%.3f", $0) } ?? String(collapsed[range])
+            cursor = range.upperBound
+        }
+        result += collapsed[cursor...]
+        return result
+    }
+
+    private static func allMatches(of pattern: String, in text: String) throws -> [String] {
+        let regex = try NSRegularExpression(pattern: pattern)
+        return regex.matches(in: text, range: NSRange(text.startIndex..., in: text))
+            .compactMap { Range($0.range, in: text).map { String(text[$0]) } }
+    }
+
+    /// 按属性名读取元素属性值；前缀断言避免 stroke 误读 stroke-width。
+    private static func attribute(_ name: String, in element: String) -> String? {
+        let pattern = #"(?<![\w-])\#(name)="([^"]*)""#
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: element, range: NSRange(element.startIndex..., in: element)),
+              let range = Range(match.range(at: 1), in: element) else { return nil }
+        return String(element[range])
+    }
+
     @MainActor
     func testStatusBarWaterHealthLevels() {
         let descriptors = [
