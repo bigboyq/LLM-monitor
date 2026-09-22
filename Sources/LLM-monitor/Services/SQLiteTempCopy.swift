@@ -3,7 +3,8 @@ import SQLite3
 import Darwin
 
 /// SQLite 读策略：优先直接 read 原 .db，file-level 错误（SQLITE_CANTOPEN=14 /
-/// SQLITE_BUSY=5）时 copy .db + .db-wal + .db-shm 到私有临时副本上 read。
+/// SQLITE_BUSY=5 / SQLITE_READONLY=8 家族 / SQLITE_IOERR=10）时 copy .db +
+/// .db-wal + .db-shm 到私有临时副本上 read。
 ///
 /// 适用：任何读 IDE / runtime 实时写入的 .db（antigravity、minimax runtime），
 /// IDE 侧的 -shm 可能跟系统 dylib 不兼容导致直接 read CANTOPEN，copy 到 /tmp
@@ -59,7 +60,8 @@ enum SQLiteTempCopy {
 
     /// 跑 `action(URL)`：
     /// 1. 先用原 .db 路径
-    /// 2. 如果是 file-level 错误（SQLITE_CANTOPEN / SQLITE_BUSY），copy 到 /tmp 副本再试
+    /// 2. 如果是 file-level 错误（SQLITE_CANTOPEN / SQLITE_BUSY / SQLITE_READONLY
+    ///    家族含 READONLY_RECOVERY(264) 等扩展码 / SQLITE_IOERR），copy 到 /tmp 副本再试
     /// 3. 其他错误（NOTADB / SQL 错误等）copy 救不了，直接 propagate
     ///
     /// - Parameter logTag: 日志前缀（例如 `[antigravity-scan]`），用于 fallback 提示
@@ -88,10 +90,31 @@ enum SQLiteTempCopy {
             }
             // raw 值跟 SQLite3 C header 一致
             let baseCode = code & 0xFF
-            guard baseCode == SQLITE_CANTOPEN || baseCode == SQLITE_BUSY else {
+            // 可回退白名单：只收"file-level、拷贝副本确实可能救"的错误，逐条理由：
+            // - CANTOPEN(14)：IDE 遗留的 -shm 与本进程 dylib 不兼容等，直连打不开；
+            //   副本完全隔离源 -shm/WAL 状态。
+            // - BUSY(5)：IDE 短写锁 busy_timeout(300ms) 内没等到；副本上无竞争。
+            // - READONLY(8)：直读路径以 SQLITE_OPEN_READONLY 打开（见
+            //   SQLiteConnection），写入方崩溃遗留需要 recovery 的 -shm/WAL 时，
+            //   只读连接抛扩展码 SQLITE_READONLY_RECOVERY(264) /
+            //   READONLY_CANTINIT 等，& 0xFF 后主码都是 8——这正是副本最该兜住的
+            //   场景：副本以 READWRITE 打开，可以在副本上完成 WAL recovery。
+            // - IOERR(10)：保守纳入。源被短暂锁住 / -shm 状态异常（IOERR_SHMOPEN、
+            //   IOERR_SHMLOCK 等扩展码）时，拷到本地 /tmp 换一条干净 I/O 路径可能
+            //   救回；副本路径仍失败则错误照常上抛，最坏代价只是多一次尝试。
+            // 救不了的维持上抛：NOTADB（文件本身不是数据库，拷贝无用）、CORRUPT /
+            // SQL / 绑定等逻辑错误（换路径结果一样）。
+            guard baseCode == SQLITE_CANTOPEN || baseCode == SQLITE_BUSY
+                || baseCode == SQLITE_READONLY || baseCode == SQLITE_IOERR else {
                 throw error
             }
-            let kind = baseCode == SQLITE_CANTOPEN ? "CANTOPEN" : "BUSY"
+            let kind: String
+            switch baseCode {
+            case SQLITE_CANTOPEN: kind = "CANTOPEN"
+            case SQLITE_BUSY: kind = "BUSY"
+            case SQLITE_READONLY: kind = "READONLY"
+            default: kind = "IOERR"
+            }
             logInfo("\(logTag) 直接 read \(kind) (code=\(code))，fallback 到 /tmp 副本")
         }
 

@@ -57,6 +57,32 @@ final class HTTPAndSQLiteTests: XCTestCase {
         XCTAssertEqual(callCount, 2, "遇到 CANTOPEN prepare 错误时，应当重试/回退到临时副本（调用次数应为 2）")
     }
 
+    func testSQLiteTempCopyFallsBackOnOpenFailedWithReadOnlyRecovery() throws {
+        let srcDB = try makeTempDB()
+        defer { try? FileManager.default.removeItem(at: srcDB) }
+
+        var callCount = 0
+        let result = try SQLiteTempCopy.read(dbPath: srcDB, logTag: "[test]") { url in
+            callCount += 1
+            if callCount == 1 {
+                // 模拟直读（SQLITE_OPEN_READONLY）遇到写入方崩溃遗留的 dirty
+                // -shm/WAL：open 阶段抛 SQLITE_READONLY_RECOVERY(264)，
+                // & 0xFF 后主码是 SQLITE_READONLY(8)，应触发副本回退
+                // （副本以 READWRITE 打开，可在副本上完成 WAL recovery）。
+                throw SQLiteConnectionError.openFailed(
+                    path: srcDB.path,
+                    code: SQLITE_READONLY,
+                    extendedCode: SQLITE_READONLY | (1 << 8),
+                    message: "attempt to write a readonly database"
+                )
+            }
+            return "success"
+        }
+
+        XCTAssertEqual(result, "success")
+        XCTAssertEqual(callCount, 2, "READONLY_RECOVERY(264) 应回退到临时副本（调用次数应为 2）")
+    }
+
     func testSQLiteTempCopyUsesSourceWhenDirectReadSucceeds() throws {
         let srcDB = try makeTempDB()
         defer { try? FileManager.default.removeItem(at: srcDB) }
