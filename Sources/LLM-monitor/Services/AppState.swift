@@ -487,11 +487,21 @@ final class AppState: ObservableObject {
         )
     }
 
-    /// 系统时钟或时区改变后重排本地窗口边界，并让本地日桶执行一次 full
-    /// 重建；之后恢复普通 dirty/rebase 路径。不触发 Provider 网络刷新。
+    /// 系统时区改变后重排本地窗口边界，并让本地日桶执行一次 full 重建；
+    /// 之后恢复普通 dirty/rebase 路径。不触发 Provider 网络刷新。时区变化
+    /// 会移动 UTC 偏移，事件归入哪个"日"可能改变，因此走 cold rebuild。
     func handleSystemClockOrTimeZoneChange() {
         rescheduleHealthBoundary(updateEvaluationDate: true)
         localUsage.invalidateForCalendarChange()
+    }
+
+    /// 纯系统时钟平移（不改时区）：所有日桶按事件时间戳 + 当前时区归日，
+    /// 时钟平移不改变归桶，无需代价最高的 cold rebuild——只需重排健康边界，
+    /// 并安排一次普通 reconcile 重切 today/7 天窗口（启动未完成时状态机自动
+    /// 保留 full 兜底）。
+    func handleSystemClockChange() {
+        rescheduleHealthBoundary(updateEvaluationDate: true)
+        localUsage.scheduleReconcile()
     }
 
     func refreshOne(providerID: String) async {
@@ -515,14 +525,16 @@ final class AppState: ObservableObject {
     /// Settings-page recovery action: rebuild Antigravity's local token cache
     /// under the same global gate as Manual/Wakeup/automatic refresh jobs.
     /// It intentionally does not issue a quota refresh or rescan other clients.
+    /// 返回值透传编排层的真实结果：只有 hard 扫描确实启动并 settle 完成才算
+    /// 成功，取消 / 被其他刷新事务抢占都如实报失败。
     @discardableResult
     func hardRefreshAntigravityLocalUsage() async -> Bool {
         guard let token = refreshScheduler.beginExternalJob() else {
             return false
         }
         defer { refreshScheduler.endExternalJob(token) }
-        await localUsage.triggerAntigravityHardFull()
-        return refreshScheduler.isCurrentJob(token)
+        let completed = await localUsage.triggerAntigravityHardFull()
+        return completed && refreshScheduler.isCurrentJob(token)
     }
 
     /// 显式刷新不能被正在进行的 background refresh 吞掉。

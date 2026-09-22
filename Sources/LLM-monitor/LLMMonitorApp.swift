@@ -34,7 +34,9 @@ final class AppLifecycleDelegate: NSObject, NSApplicationDelegate {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
-                self?.appState?.handleSystemClockOrTimeZoneChange()
+                // 纯时钟平移不改变事件按"时区 + 时间戳"的归桶，走轻量路径：
+                // 重排边界 + 普通 reconcile；只有时区变化才 cold rebuild。
+                self?.appState?.handleSystemClockChange()
             }
         }
         systemTimeZoneObserver = NotificationCenter.default.addObserver(

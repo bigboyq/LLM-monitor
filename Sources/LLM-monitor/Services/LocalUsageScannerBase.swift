@@ -68,6 +68,10 @@ class LocalUsageScannerBase<Usage: Equatable>: ObservableObject, @unchecked Send
     nonisolated let logTag: String
 
     private var inFlightTask: Task<Void, Never>?
+    /// in-flight 扫描期间到达的扫描请求待执行槽位。参考编排层的 pendingMode：
+    /// 请求不丢弃，而是按 hardFull > full > dirty 合并，当前扫描收尾时若槽位
+    /// 非空立即以合并后的模式接续一轮（与编排层的合并是两层防御，不冲突）。
+    private var pendingUpgradeMode: LocalUsageScanMode?
     private var sourceLifecycle: LocalUsageSourceLifecycle?
     private struct ScanWaiter {
         let id: UUID
@@ -102,10 +106,20 @@ class LocalUsageScannerBase<Usage: Equatable>: ObservableObject, @unchecked Send
         scan(mode: .dirty)
     }
 
-    /// 触发指定模式的扫描。如果上一次还在跑，直接合并到现有 in-flight scan。
-    /// 旧 scanner 只需继续实现原有的 makeWork 接口即可工作。
+    /// 触发指定模式的扫描。如果上一次还在跑，请求不会被丢弃：合并进待执行
+    /// 槽位（更强模式优先，如 in-flight dirty + 请求 hardFull → 接续一轮
+    /// hardFull），当前扫描结束后立即以合并后的模式再扫一轮。旧 scanner 只需
+    /// 继续实现原有的 makeWork 接口即可工作。
     func scan(mode: LocalUsageScanMode) {
-        guard inFlightTask == nil else { return }
+        guard inFlightTask == nil else {
+            pendingUpgradeMode = pendingUpgradeMode.map { LocalUsageScanMode.merged($0, mode) } ?? mode
+            logDebug("\(logTag) in-flight 期间收到 \(mode.displayName) 请求，合并进待执行槽位")
+            return
+        }
+        startScan(mode: mode)
+    }
+
+    private func startScan(mode: LocalUsageScanMode) {
         // Source watchers stay attached during a scan. Starting here also
         // reattaches them after an explicit lifecycle cancellation.
         sourceLifecycle?.start()
@@ -188,6 +202,9 @@ class LocalUsageScannerBase<Usage: Equatable>: ObservableObject, @unchecked Send
         isScanning = false
         inFlightTask?.cancel()
         inFlightTask = nil
+        // 取消语义与编排层 cancelInFlightAll 清 pendingMode 一致：配置变更 /
+        // 停机时的取消，不允许已排队的接续扫描再浮出来。
+        pendingUpgradeMode = nil
         resumeAllScanWaiters()
     }
 
@@ -230,9 +247,16 @@ class LocalUsageScannerBase<Usage: Equatable>: ObservableObject, @unchecked Send
             // 避免 cancel + rescan 期间，旧 gen 的 defer 把 isScanning 设 false
             // 但新 gen 还在跑，UI 闪一下"不在扫描"然后又设回 true。
             if startedGeneration == latestGeneration {
-                isScanning = false
                 inFlightTask = nil
-                resumeAllScanWaiters()
+                if let pending = takePendingUpgradeMode() {
+                    // in-flight 期间有请求排队（如显式 hardFull）：不闪
+                    // isScanning=false，立即以合并后的模式接续一轮；仍在等待的
+                    // waiter 不提前唤醒，继续等待新这轮扫描 settle。
+                    startScan(mode: pending)
+                } else {
+                    isScanning = false
+                    resumeAllScanWaiters()
+                }
             } else {
                 logInfo("\(logTag) 旧任务 (gen=\(startedGeneration)) defer 跳过状态清理: latest=\(latestGeneration)")
             }
@@ -279,6 +303,12 @@ class LocalUsageScannerBase<Usage: Equatable>: ObservableObject, @unchecked Send
         guard let index = scanWaiters.firstIndex(where: { $0.id == waiterID }) else { return }
         let waiter = scanWaiters.remove(at: index)
         waiter.continuation.resume(throwing: CancellationError())
+    }
+
+    /// 单次认领待执行槽位：取出后立即清空，保证排队的请求只接续一轮。
+    private func takePendingUpgradeMode() -> LocalUsageScanMode? {
+        defer { pendingUpgradeMode = nil }
+        return pendingUpgradeMode
     }
 
     private func resumeAllScanWaiters() {

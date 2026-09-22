@@ -47,7 +47,12 @@ final class LocalUsageOrchestration {
     private lazy var antigravityCoordinator = LocalUsageCoordinator<AntigravityLocalUsage>(
         providerID: writer.providerID(for: .antigravity) ?? "",
         logTag: "antigravity",
-        makeScanner: { AntigravityLocalUsageScanner(fetcher: AntigravityFetcher()) },
+        makeScanner: { [weak self] in
+            if let factory = self?.testAntigravityScannerFactory {
+                return factory()
+            }
+            return AntigravityLocalUsageScanner(fetcher: AntigravityFetcher())
+        },
         apply: { [weak writer] usage in writer?.applyAntigravityLocalUsage(usage) },
         setScanning: { [weak writer] isScanning in
             writer?.setScanningState(isScanning, for: writer?.providerID(for: .antigravity) ?? "")
@@ -181,6 +186,10 @@ final class LocalUsageOrchestration {
     /// 测试用 teardown 注入点：模拟 chain 已经取到空 pending 后，另一个
     /// MainActor 事件在 owner 收尾前投递新请求。生产路径不设置此 hook。
     var testReconcileChainTeardownHook: (@MainActor () -> Void)?
+    /// 测试注入点：替换 Antigravity scanner 的构造闭包，使 hard rebuild 的
+    /// 等待/取消语义可以在不触碰生产 Antigravity 源的前提下验证。
+    /// 生产路径保持 nil。
+    var testAntigravityScannerFactory: (@MainActor () -> any LocalUsageScanner<AntigravityLocalUsage>)?
 
     init(
         writer: any LocalUsageStatusWriting,
@@ -311,15 +320,31 @@ final class LocalUsageOrchestration {
     /// Rebuild only Antigravity's local token cache. This is deliberately not
     /// a global reconcile: the settings-page action is an explicit recovery
     /// tool for the RPC-backed source and should not rescan unrelated clients.
-    func triggerAntigravityHardFull() async {
-        guard activeSources.antigravity else { return }
+    ///
+    /// Returns `true` only when the hard scan was issued and settled to
+    /// completion. If the caller is cancelled while waiting for an in-flight
+    /// scan (e.g. a SwiftUI `.task` torn down with its view), the hard request
+    /// is still issued — the scanner merges it into its pending upgrade slot
+    /// instead of dropping it — but the function returns `false` because it
+    /// did not observe the result.
+    func triggerAntigravityHardFull() async -> Bool {
+        guard activeSources.antigravity else { return false }
         // A filesystem event or provider reconcile may already have started a
-        // normal scan. Let it settle before issuing the hard request; the
-        // coordinator deduplicates in-flight scans and would otherwise silently
-        // turn this explicit action into a no-op.
-        try? await antigravityCoordinator.waitUntilSettled()
+        // normal scan. Let it settle before issuing the hard request; a
+        // cancelled wait must not silently swallow the explicit action.
+        do {
+            try await antigravityCoordinator.waitUntilSettled()
+        } catch {
+            antigravityCoordinator.trigger(mode: .hardFull)
+            return false
+        }
         antigravityCoordinator.trigger(mode: .hardFull)
-        try? await antigravityCoordinator.waitUntilSettled()
+        do {
+            try await antigravityCoordinator.waitUntilSettled()
+        } catch {
+            return false
+        }
+        return true
     }
 
     /// Force exactly one full local pass after the system calendar or time zone

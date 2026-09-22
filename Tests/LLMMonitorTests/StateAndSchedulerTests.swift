@@ -3441,6 +3441,70 @@ final class StateAndSchedulerTests: XCTestCase {
         XCTAssertEqual(failedCount, 0)
     }
 
+    /// P1 回归：in-flight 期间到达的显式 hardFull 请求必须排队，并在当前扫描
+    /// 结束后实际执行（旧实现直接丢弃）；期间到达的普通请求合并进同一槽位，
+    /// 只接续一轮更强扫描。
+    @MainActor
+    func testHardFullRequestedDuringInFlightScanRunsAfterCurrentScan() async throws {
+        let gate = ScannerTestGate()
+        let scanner = ModeProbeScanner(gates: [gate])
+
+        scanner.scan(mode: .dirty)
+        await gate.waitForEntered()
+
+        scanner.scan(mode: .full)
+        scanner.scan(mode: .hardFull)
+
+        await gate.release()
+        try await scanner.waitUntilSettled()
+
+        XCTAssertEqual(
+            scanner.recordedModes, [.dirty, .hardFull],
+            "hardFull 不能被 in-flight dedup 丢弃；full/hardFull 应合并为一轮 hardFull"
+        )
+        XCTAssertFalse(scanner.isScanning)
+    }
+
+    /// 排队升级的接续扫描期间，waitUntilSettled 的 waiter 不得被提前唤醒，
+    /// 必须等接续扫描也 settle 后才返回。
+    @MainActor
+    func testWaiterStaysPendingThroughQueuedUpgradeScan() async throws {
+        let firstGate = ScannerTestGate()
+        let secondGate = ScannerTestGate()
+        let scanner = ModeProbeScanner(gates: [firstGate, secondGate])
+
+        scanner.scan(mode: .dirty)
+        await firstGate.waitForEntered()
+        scanner.scan(mode: .hardFull)
+
+        let waiter = Task { @MainActor () -> Bool in
+            do {
+                try await scanner.waitUntilSettled()
+                return true
+            } catch {
+                return false
+            }
+        }
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        await firstGate.release()
+        await secondGate.waitForEntered()
+        var waiterReturned = false
+        let observer = Task { @MainActor in
+            await waiter.value
+            waiterReturned = true
+        }
+        try? await Task.sleep(nanoseconds: 20_000_000)
+        XCTAssertFalse(waiterReturned, "接续的 hardFull 扫描仍在跑，waiter 不得被提前唤醒")
+
+        await secondGate.release()
+        let settled = await waiter.value
+        await observer.value
+        XCTAssertTrue(waiterReturned)
+        XCTAssertTrue(settled, "waiter 应正常 settle，而不是以取消/错误收场")
+        XCTAssertEqual(scanner.recordedModes, [.dirty, .hardFull])
+    }
+
     @MainActor
     func testCalendarInvalidationDuringReconcileQueuesHardFullAfterCurrentPass() async {
         let probe = ReconcilePassProbe()
@@ -3459,6 +3523,149 @@ final class StateAndSchedulerTests: XCTestCase {
         let modes = await probe.snapshot()
         XCTAssertEqual(modes, [.full, .hardFull])
         XCTAssertEqual(orchestration.nextReconcileMode, .dirty)
+    }
+
+    /// P2 回归：等待被取消时（如 SwiftUI .task 随视图消失），hard 请求仍必须
+    /// 发出（scanner 排队而非丢弃），但函数不得谎报成功。先完整走一遍让
+    /// coordinator 构造出 scanner，第二次调用的第一次等待才真正挂起，
+    /// 从而精确覆盖"等待被取消 → 仍补发 trigger"分支。
+    @MainActor
+    func testTriggerAntigravityHardFullStillIssuesTriggerWhenCancelled() async {
+        let scanner = BlockingAntigravityScanner()
+        let orchestration = LocalUsageOrchestration(writer: ReconcileNoopWriter())
+        orchestration.testAntigravityScannerFactory = { scanner }
+        defer { orchestration.cancelInFlightAll() }
+
+        // Warmup：scanner 未构造时首次等待立即返回，trigger 构造 scanner 后
+        // 挂起等 settle。settle 后第一轮完整成功。
+        let warmup = Task { @MainActor in
+            await orchestration.triggerAntigravityHardFull()
+        }
+        for _ in 0..<200 where scanner.waiterCount == 0 {
+            await Task.yield()
+        }
+        XCTAssertEqual(scanner.waiterCount, 1, "warmup 应已挂起等 hard 扫描 settle")
+        scanner.settle()
+        let warmupResult = await warmup.value
+        XCTAssertTrue(warmupResult)
+
+        // 第二次调用：第一次等待真正挂起，此时取消调用方。
+        let cancelled = Task { @MainActor in
+            await orchestration.triggerAntigravityHardFull()
+        }
+        for _ in 0..<200 {
+            if scanner.waiterCount == 1 { break }
+            await Task.yield()
+        }
+        XCTAssertEqual(scanner.waiterCount, 1, "第二次调用的等待应已挂起")
+        cancelled.cancel()
+        let result = await cancelled.value
+
+        XCTAssertFalse(result, "被取消的调用不得谎报 hard 重建成功")
+        XCTAssertEqual(
+            scanner.recordedModes, [.hardFull, .hardFull],
+            "取消后 hard 请求仍必须补发（每轮调用各一次），不能静默丢失"
+        )
+    }
+
+    /// P2 语义：只有 hard 扫描确实启动并 settle 完成（等待未被取消），
+    /// triggerAntigravityHardFull 才返回 true。
+    @MainActor
+    func testTriggerAntigravityHardFullReturnsTrueOnlyAfterHardScanSettles() async {
+        let scanner = BlockingAntigravityScanner()
+        let orchestration = LocalUsageOrchestration(writer: ReconcileNoopWriter())
+        orchestration.testAntigravityScannerFactory = { scanner }
+        defer { orchestration.cancelInFlightAll() }
+
+        let hardFull = Task { @MainActor in
+            await orchestration.triggerAntigravityHardFull()
+        }
+        // scanner 未构造时首次等待立即返回；hard trigger 构造 scanner 并发出
+        // 请求后，第二次等待挂起直到 hard 扫描 settle。
+        for _ in 0..<200 where scanner.waiterCount == 0 {
+            await Task.yield()
+        }
+        XCTAssertEqual(scanner.waiterCount, 1, "hard trigger 后应等待扫描 settle")
+        XCTAssertEqual(scanner.recordedModes, [.hardFull])
+
+        var result: Bool?
+        let observer = Task { @MainActor in
+            result = await hardFull.value
+        }
+        try? await Task.sleep(nanoseconds: 20_000_000)
+        XCTAssertNil(result, "hard 扫描 settle 前 triggerAntigravityHardFull 不得返回")
+
+        scanner.settle()
+        await observer.value
+        XCTAssertEqual(result, true)
+        XCTAssertEqual(scanner.recordedModes, [.hardFull])
+    }
+
+    /// inactive source 的 hard 重建入口必须如实返回 false，且不构造 scanner。
+    @MainActor
+    func testTriggerAntigravityHardFullSkipsInactiveSource() async {
+        var factoryCalls = 0
+        let orchestration = LocalUsageOrchestration(writer: ReconcileNoopWriter())
+        orchestration.testAntigravityScannerFactory = {
+            factoryCalls += 1
+            return BlockingAntigravityScanner()
+        }
+        defer { orchestration.cancelInFlightAll() }
+
+        var sources = LocalUsageOrchestration.ActiveSources()
+        sources.antigravity = false
+        orchestration.updateActiveSources(sources)
+
+        let result = await orchestration.triggerAntigravityHardFull()
+
+        XCTAssertFalse(result)
+        XCTAssertEqual(factoryCalls, 0, "inactive source 不应构造 scanner")
+    }
+
+    /// P3 回归：纯时钟平移不触发日历签名失效（hardFull），只补一次普通
+    /// reconcile；时区变化仍走 invalidateForCalendarChange 的 cold rebuild。
+    @MainActor
+    func testSystemClockChangeSchedulesPlainReconcileWithoutCalendarInvalidation() async {
+        let store = makeIsolatedConfigStore()
+        let state = AppState(descriptors: [], configStore: store)
+        // 阻断 init 期的空 batch settle → 启动 full reconcile，避免与断言竞争
+        state.stop()
+        state.localUsage.testReadinessOverride = { _ in false }
+        defer { state.stop() }
+
+        var modes: [LocalUsageScanMode] = []
+        state.localUsage.testReconcilePass = { mode in
+            modes.append(mode)
+        }
+        // 排空 init 期可能已投递的 pass，取基准
+        try? await Task.sleep(nanoseconds: 30_000_000)
+        let baseline = modes.count
+
+        state.handleSystemClockChange()
+        for _ in 0..<200 where modes.count == baseline {
+            try? await Task.sleep(nanoseconds: 2_000_000)
+        }
+        let clockPasses = Array(modes[baseline...])
+        XCTAssertFalse(clockPasses.isEmpty, "时钟平移应补一次普通 reconcile")
+        XCTAssertFalse(
+            clockPasses.contains(.hardFull),
+            "纯时钟平移不得触发 hardFull cold rebuild，实际 \(clockPasses)"
+        )
+        XCTAssertLessThanOrEqual(clockPasses.count, 1, "时钟平移只应补一次 reconcile")
+        XCTAssertNotEqual(
+            state.localUsage.nextReconcileMode, .hardFull,
+            "时钟平移不得设置日历失效签名"
+        )
+
+        state.handleSystemClockOrTimeZoneChange()
+        for _ in 0..<200 where !modes[baseline...].contains(.hardFull) {
+            try? await Task.sleep(nanoseconds: 2_000_000)
+        }
+        XCTAssertTrue(
+            modes[baseline...].contains(.hardFull),
+            "时区变化必须走 hardFull cold rebuild，实际 \(modes)"
+        )
+        XCTAssertEqual(state.localUsage.nextReconcileMode, .dirty)
     }
 
     @MainActor
@@ -3811,6 +4018,90 @@ private final class LifecycleProbeScanner: LocalUsageScannerBase<Int>, @unchecke
             return 1
         }
     }
+}
+
+/// 记录每轮扫描 mode 的探针 scanner：按轮次取用 gates 让第 N 轮扫描阻塞在
+/// 扫描中段，供测试在 in-flight 期间注入更强请求；未提供 gate 的轮次立即完成。
+@MainActor
+private final class ModeProbeScanner: LocalUsageScannerBase<Int>, @unchecked Sendable {
+    private let lock = AsyncMutex()
+    nonisolated override var pipelineLock: AsyncMutex { lock }
+
+    private(set) var recordedModes: [LocalUsageScanMode] = []
+    private let gates: [ScannerTestGate]
+
+    init(gates: [ScannerTestGate]) {
+        self.gates = gates
+        super.init(logTag: "[mode-probe-scanner]", cachedResult: nil)
+    }
+
+    override func makeWork(
+        startedGeneration: UInt64,
+        mode: LocalUsageScanMode
+    ) -> @Sendable () async throws -> Int {
+        recordedModes.append(mode)
+        let gate = recordedModes.count <= gates.count ? gates[recordedModes.count - 1] : nil
+        return {
+            if let gate { await gate.wait() }
+            return 1
+        }
+    }
+}
+
+/// Antigravity scanner 的测试替身：scan(mode:) 只记录请求模式，不产生 I/O；
+/// waitUntilSettled 挂起直到 settle()/cancelInFlight() 放行，可精确模拟
+/// "in-flight 扫描未结束"与"调用方被取消"的组合。
+@MainActor
+private final class BlockingAntigravityScanner: LocalUsageScanner {
+    let resultSubject = CurrentValueSubject<AntigravityLocalUsage?, Never>(nil)
+    let scanningSubject = CurrentValueSubject<Bool, Never>(false)
+    private(set) var recordedModes: [LocalUsageScanMode] = []
+    private var waiters: [CheckedContinuation<Void, Error>] = []
+
+    var waiterCount: Int { waiters.count }
+
+    func scan() { scan(mode: .dirty) }
+
+    func scan(mode: LocalUsageScanMode) {
+        recordedModes.append(mode)
+    }
+
+    var isDirty: Bool { false }
+    var lastFreshAt: Date? { nil }
+    func markDirty() {}
+    func markFresh(at date: Date) {}
+
+    func waitUntilSettled() async throws {
+        try Task.checkCancellation()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                waiters.append(continuation)
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in
+                self?.resumeWaiters { $0.resume(throwing: CancellationError()) }
+            }
+        }
+        try Task.checkCancellation()
+    }
+
+    func cancelInFlight() {
+        resumeWaiters { $0.resume(returning: ()) }
+    }
+
+    /// 放行所有等待者，模拟 in-flight 扫描 settle 完成。
+    func settle() {
+        resumeWaiters { $0.resume(returning: ()) }
+    }
+
+    private func resumeWaiters(_ resume: (CheckedContinuation<Void, Error>) -> Void) {
+        let pending = waiters
+        waiters.removeAll()
+        pending.forEach(resume)
+    }
+
+    var lastResultPublisher: AnyPublisher<AntigravityLocalUsage?, Never> { resultSubject.eraseToAnyPublisher() }
+    var isScanningPublisher: AnyPublisher<Bool, Never> { scanningSubject.eraseToAnyPublisher() }
 }
 
 private struct TestQuotaFetcher: QuotaFetcher {
