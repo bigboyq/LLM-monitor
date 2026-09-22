@@ -170,7 +170,11 @@ private struct DirtySessionFetchError: Error, Sendable {
 }
 
 private enum DirtySessionFetchPayload: Sendable {
-    case events(events: [AntigravityFetcher.UsageEvent], wasIncremental: Bool)
+    case events(
+        events: [AntigravityFetcher.UsageEvent],
+        metadataEntryCount: Int,
+        wasIncremental: Bool
+    )
     case noNewEvents
 }
 
@@ -428,8 +432,11 @@ extension AntigravityLocalUsageScanner {
                         cached.fetchedAt = nowDate
                         index.sessions[sessionId] = cached
                     }
-                case .success(.events(let events, let wasIncremental)):
-                    guard isTrustworthyRPCResult(events) else {
+                case .success(.events(let events, let metadataEntryCount, let wasIncremental)):
+                    guard isTrustworthyRPCResult(
+                        events,
+                        metadataEntryCount: metadataEntryCount
+                    ) else {
                         failedCount = SaturatingArithmetic.add(failedCount, 1)
                         logWarn("[antigravity-scan] session=\(sessionId) RPC 返回空 events，保留 last-good cache 并于下次重试")
                         continue
@@ -445,12 +452,12 @@ extension AntigravityLocalUsageScanner {
                     if eventStats.droppedTimestampless > 0 {
                         logWarn(
                             "[antigravity-scan] session=\(sessionId) 丢弃无 timestamp 的 usage event: "
-                                + "accounted=\(eventStats.accounted), dropped=\(eventStats.droppedTimestampless), raw=\(events.count)"
+                                + "accounted=\(eventStats.accounted), dropped=\(eventStats.droppedTimestampless), parsed=\(events.count), rawMetadata=\(metadataEntryCount)"
                         )
                     }
 
                     if wasIncremental, let cached = index.sessions[sessionId] {
-                        logDebug("[antigravity-scan] session=\(sessionId) ✓ 增量 events=\(events.count) (accounted=\(eventStats.accounted)) input=\(inputTotal) output=\(outputTotal) cacheR=\(cacheReadTotal)")
+                        logDebug("[antigravity-scan] session=\(sessionId) ✓ 增量 metadata=\(metadataEntryCount), events=\(events.count) (accounted=\(eventStats.accounted)) input=\(inputTotal) output=\(outputTotal) cacheR=\(cacheReadTotal)")
                         let details = Self.computeTurnRoundDetails(
                             sessionID: sessionId,
                             events: recoveredEvents,
@@ -480,12 +487,15 @@ extension AntigravityLocalUsageScanner {
                             walSizeBytes: info.walSizeBytes,
                             fetchedAt: nowDate,
                             eventCount: SaturatingArithmetic.add(cached.eventCount, eventStats.accounted),
-                            generatorMetadataOffset: SaturatingArithmetic.add(cached.generatorMetadataOffset, events.count),
+                            generatorMetadataOffset: Self.advanceGeneratorMetadataOffset(
+                                cached.generatorMetadataOffset,
+                                by: metadataEntryCount
+                            ),
                             lastMaxStepIndex: details.lastMaxStepIndex ?? cached.lastMaxStepIndex,
                             lastTurnIndex: details.lastTurnIndex
                         )
                     } else {
-                        logDebug("[antigravity-scan] session=\(sessionId) ✓ 全量 events=\(events.count) (accounted=\(eventStats.accounted)) input=\(inputTotal) output=\(outputTotal) cacheR=\(cacheReadTotal)")
+                        logDebug("[antigravity-scan] session=\(sessionId) ✓ 全量 metadata=\(metadataEntryCount), events=\(events.count) (accounted=\(eventStats.accounted)) input=\(inputTotal) output=\(outputTotal) cacheR=\(cacheReadTotal)")
                         let details = Self.computeTurnRoundDetails(
                             sessionID: sessionId,
                             events: recoveredEvents,
@@ -513,7 +523,7 @@ extension AntigravityLocalUsageScanner {
                             walSizeBytes: info.walSizeBytes,
                             fetchedAt: nowDate,
                             eventCount: eventStats.accounted,
-                            generatorMetadataOffset: events.count,
+                            generatorMetadataOffset: metadataEntryCount,
                             lastMaxStepIndex: details.lastMaxStepIndex,
                             lastTurnIndex: details.lastTurnIndex
                         )
@@ -556,9 +566,22 @@ extension AntigravityLocalUsageScanner {
     /// 只有非空事件列表才足以更新成功指纹。空列表既可能是 RPC 暂时未准备好，
     /// 也可能来自错误的本地 server/workspace，必须保留旧缓存并重试。
     nonisolated static func isTrustworthyRPCResult(
-        _ events: [AntigravityFetcher.UsageEvent]
+        _ events: [AntigravityFetcher.UsageEvent],
+        metadataEntryCount: Int? = nil
     ) -> Bool {
-        !events.isEmpty
+        if let metadataEntryCount {
+            return metadataEntryCount > 0
+        }
+        return !events.isEmpty
+    }
+
+    /// The protocol offset advances by raw generatorMetadata entries, including
+    /// entries that do not contain a usable token event and are filtered out.
+    nonisolated static func advanceGeneratorMetadataOffset(
+        _ current: Int,
+        by metadataEntryCount: Int
+    ) -> Int {
+        SaturatingArithmetic.add(max(current, 0), max(metadataEntryCount, 0))
     }
 
     struct DirtySessionPlan: Sendable {
@@ -640,53 +663,65 @@ extension AntigravityLocalUsageScanner {
             try Task.checkCancellation()
             do {
                 if isIncremental {
-                    let suffixEvents = try await fetcher.getTrajectoryMetadata(
+                    let suffixPage = try await fetcher.getTrajectoryMetadata(
                         sessionId: sessionID,
                         offset: offset,
                         servers: servers
                     )
-                    if !suffixEvents.isEmpty {
+                    if suffixPage.metadataEntryCount > 0 {
                         return DirtySessionFetchResult(
                             index: index,
                             sessionID: sessionID,
-                            result: .success(.events(events: suffixEvents, wasIncremental: true))
+                            result: .success(.events(
+                                events: suffixPage.events,
+                                metadataEntryCount: suffixPage.metadataEntryCount,
+                                wasIncremental: true
+                            ))
                         )
                     }
 
                     // suffix 为空：发起 offset=0 兜底验证，确认是否为无新事件、或者会话被截断/清空
                     logInfo("[antigravity-scan] session=\(sessionID) 增量 offset=\(offset) 返回空，发起全量检查兜底")
-                    let fullEvents = try await fetcher.getTrajectoryMetadata(
+                    let fullPage = try await fetcher.getTrajectoryMetadata(
                         sessionId: sessionID,
                         offset: 0,
                         servers: servers
                     )
-                    if fullEvents.count == offset {
+                    if fullPage.metadataEntryCount == offset {
                         // 确认没有产生新的 LLM 调用（只是 WAL 变更）
-                        logInfo("[antigravity-scan] session=\(sessionID) 经全量核验确无新事件 (count=\(fullEvents.count))，仅更新文件指纹")
+                        logInfo("[antigravity-scan] session=\(sessionID) 经全量核验确无新 metadata entries (count=\(fullPage.metadataEntryCount))，仅更新文件指纹")
                         return DirtySessionFetchResult(
                             index: index,
                             sessionID: sessionID,
                             result: .success(.noNewEvents)
                         )
-                    } else if fullEvents.count < offset {
+                    } else if fullPage.metadataEntryCount < offset {
                         // 会话截断/清空重写，按全量结果重置
-                        logWarn("[antigravity-scan] session=\(sessionID) 检测到会话截断重写 (\(fullEvents.count) < \(offset))，重置该 session 缓存")
+                        logWarn("[antigravity-scan] session=\(sessionID) 检测到会话截断重写 (\(fullPage.metadataEntryCount) < \(offset))，重置该 session 缓存")
                         return DirtySessionFetchResult(
                             index: index,
                             sessionID: sessionID,
-                            result: .success(.events(events: fullEvents, wasIncremental: false))
+                            result: .success(.events(
+                                events: fullPage.events,
+                                metadataEntryCount: fullPage.metadataEntryCount,
+                                wasIncremental: false
+                            ))
                         )
                     } else {
                         // fullEvents.count > offset 但 suffix 返回空（服务端 offset 异常），安全降级为全量结果
-                        logWarn("[antigravity-scan] session=\(sessionID) 增量失真 (\(fullEvents.count) > \(offset))，降级为全量同步")
+                        logWarn("[antigravity-scan] session=\(sessionID) 增量失真 (\(fullPage.metadataEntryCount) > \(offset))，降级为全量同步")
                         return DirtySessionFetchResult(
                             index: index,
                             sessionID: sessionID,
-                            result: .success(.events(events: fullEvents, wasIncremental: false))
+                            result: .success(.events(
+                                events: fullPage.events,
+                                metadataEntryCount: fullPage.metadataEntryCount,
+                                wasIncremental: false
+                            ))
                         )
                     }
                 } else {
-                    let events = try await fetcher.getTrajectoryMetadata(
+                    let page = try await fetcher.getTrajectoryMetadata(
                         sessionId: sessionID,
                         offset: 0,
                         servers: servers
@@ -694,7 +729,11 @@ extension AntigravityLocalUsageScanner {
                     return DirtySessionFetchResult(
                         index: index,
                         sessionID: sessionID,
-                        result: .success(.events(events: events, wasIncremental: false))
+                        result: .success(.events(
+                            events: page.events,
+                            metadataEntryCount: page.metadataEntryCount,
+                            wasIncremental: false
+                        ))
                     )
                 }
             } catch is CancellationError {

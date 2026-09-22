@@ -561,6 +561,25 @@ final class AntigravityLocalUsageTests: XCTestCase {
         )
     }
 
+    func testRawMetadataCountAdvancesOffsetEvenWhenEventsAreFiltered() {
+        XCTAssertTrue(
+            AntigravityLocalUsageScanner.isTrustworthyRPCResult(
+                [],
+                metadataEntryCount: 3
+            ),
+            "有原始 metadata 条目但没有可入账 UsageEvent 时，仍应消费该 RPC page"
+        )
+        XCTAssertEqual(
+            AntigravityLocalUsageScanner.advanceGeneratorMetadataOffset(10, by: 3),
+            13,
+            "offset 必须按原始 metadata 条目数推进，而不是按 parsed events 数量推进"
+        )
+        XCTAssertEqual(
+            AntigravityLocalUsageScanner.advanceGeneratorMetadataOffset(10, by: 0),
+            10
+        )
+    }
+
     func testStepTimestampReaderParsesMetadataTimestamp() {
         func varint(_ value: UInt64) -> [UInt8] {
             var value = value

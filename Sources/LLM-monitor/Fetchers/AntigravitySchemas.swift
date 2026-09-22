@@ -17,7 +17,8 @@ struct UserStatusRequest: Encodable {
 
 /// `GetCascadeTrajectoryGeneratorMetadata` 的 request body。
 /// - `includeMessages: false`：避免服务端序列化并回传长会话消息正文。
-/// - `generatorMetadataOffset`：后缀增量拉取偏移量（基于已入账的 generatorMetadata 条目数），
+/// - `generatorMetadataOffset`：后缀增量拉取偏移量（基于已成功消费的原始
+///   generatorMetadata 条目数，而不是过滤后的 UsageEvent 数量），
 ///   nil 时拉取完整列表。
 struct TrajectoryMetadataRequest: Encodable, Equatable {
     let cascadeId: String
@@ -119,4 +120,3 @@ final class LocalhostTrustDelegate: NSObject, URLSessionDelegate {
         completionHandler(.useCredential, URLCredential(trust: trust))
     }
 }
-

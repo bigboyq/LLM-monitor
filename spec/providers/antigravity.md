@@ -407,8 +407,9 @@ local Antigravity 2.15.1 instance, the same cascade returned:
 | 69 | 0 |
 | 1000 | 0 |
 
-This confirms suffix-style incremental retrieval: after successfully accounting for
-`N` generator metadata entries, the next request can use
+This confirms suffix-style incremental retrieval: after successfully consuming
+`N` raw generator metadata entries (including entries that may be filtered out of
+the app's `UsageEvent` list), the next request can use
 `generatorMetadataOffset: N` to retrieve only later entries. The current monitor does
 not use this field; its existing mtime/size/WAL cache only decides whether a session is
 dirty, then re-fetches the complete generator-metadata sequence.
@@ -452,10 +453,10 @@ streaming:
    longer the primary fix for normal growth: the normal request should be small
    because it asks only for newly appended generator metadata.
 
-The offset must be treated as a generator-metadata count, not derived directly from
-the maximum `stepIndex`. The first version should record the returned entry count and
-only advance the persisted offset after the suffix has been parsed, aggregated, and
-saved successfully.
+The offset must be treated as a raw generator-metadata count, not derived from the
+number of parsed usage events or the maximum `stepIndex`. The persisted offset must
+advance by the returned raw entry count, and only after the suffix has been parsed,
+aggregated, and saved successfully.
 
 ## Local Token Usage Scanner
 

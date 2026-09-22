@@ -151,12 +151,20 @@ struct AntigravityFetcher: QuotaFetcher {
         }
     }
 
+    /// A response page keeps the raw generator-metadata entry count separate from
+    /// parsed usage events. The RPC offset is based on the former; parsing may
+    /// legitimately discard entries without token fields.
+    struct TrajectoryMetadataPage: Equatable, Sendable {
+        let events: [UsageEvent]
+        let metadataEntryCount: Int
+    }
+
     /// 单个 trajectory / session 的 generatorMetadata 列表。
     /// 失败/没有数据 → 返回空数组（不抛错，让 scanner 决定怎么标记 failed）。
     func getTrajectoryMetadata(
         sessionId: String,
         offset: Int? = nil
-    ) async throws -> [UsageEvent] {
+    ) async throws -> TrajectoryMetadataPage {
         let servers = discoverMetadataServers()
         return try await getTrajectoryMetadata(sessionId: sessionId, offset: offset, servers: servers)
     }
@@ -174,7 +182,7 @@ struct AntigravityFetcher: QuotaFetcher {
         sessionId: String,
         offset: Int? = nil,
         servers: [ServerInfo]
-    ) async throws -> [UsageEvent] {
+    ) async throws -> TrajectoryMetadataPage {
         guard !servers.isEmpty else {
             throw QuotaError.networkError("未发现 Antigravity 或 agy CLI 进程，请先启动 Antigravity 并完成登录")
         }
@@ -201,10 +209,13 @@ struct AntigravityFetcher: QuotaFetcher {
                     continue
                 }
                 let events = rawEvents.compactMap { Self.parseUsageEvent(from: $0) }
-                if !events.isEmpty {
+                if !rawEvents.isEmpty {
                     let offsetTag = offset.map { " (offset=\($0))" } ?? ""
-                    logInfo("[antigravity] session=\(sessionId)\(offsetTag) 成功从 pid=\(server.pid) port=\(server.httpsPort) 获取到 \(events.count) 个 events")
-                    return events
+                    logInfo("[antigravity] session=\(sessionId)\(offsetTag) 成功从 pid=\(server.pid) port=\(server.httpsPort) 获取到 \(rawEvents.count) 个 metadata entries，解析出 \(events.count) 个 events")
+                    return TrajectoryMetadataPage(
+                        events: events,
+                        metadataEntryCount: rawEvents.count
+                    )
                 }
             } catch {
                 lastError = error
@@ -214,7 +225,7 @@ struct AntigravityFetcher: QuotaFetcher {
         if !hadSuccessfulResponse {
             throw lastError ?? QuotaError.invalidResponse
         }
-        return []
+        return TrajectoryMetadataPage(events: [], metadataEntryCount: 0)
     }
 
     /// 递归遍历 JSON，按 key 名正则把 token 计数归类到 `UsageEvent`。
