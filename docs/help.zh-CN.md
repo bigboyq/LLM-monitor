@@ -99,11 +99,7 @@ ZCode 的任务按 provider 分为日常（Coding Plan）/ 闲时 / 其他智谱
 | 日志 | `~/Library/Application Support/LLM-monitor/log.txt` |
 | 远程额度最近成功状态 | `~/Library/Application Support/LLM-monitor/last-refresh.json` |
 | 通知触发器基线 | `~/Library/Application Support/LLM-monitor/notification-state.json` |
-| Minimax scanner 缓存 | `~/.minimax/.token-monitor/` |
-| Antigravity scanner 缓存 | `~/.gemini/antigravity/.token-monitor/` |
-| ZCode scanner 缓存 | `~/.zcode/cli/.token-monitor/` |
-| OpenCode scanner 缓存 | `~/Library/Application Support/LLM-monitor/token-monitor/` |
-| DSH scanner 缓存 | `~/.dsh/.token-monitor/` |
+| 本地 scanner 缓存根目录 | `~/Library/Application Support/LLM-monitor/token-monitor/`（按 provider 分目录） |
 
 配置保存后会自动重载。若配置无法解析，应用会先备份为同目录的 `config.json.corrupt-*.json`，再恢复默认配置。请勿把真实 API Key 提交到 Git 仓库、issue 或日志附件中。
 
@@ -142,7 +138,7 @@ ZCode 的任务按 provider 分为日常（Coding Plan）/ 闲时 / 其他智谱
 1. 在设置中关闭开机自启动并退出应用。
 2. 删除 `/Applications/LLM-monitor.app`。
 3. 如需同时清除设置和日志，删除 `~/Library/Application Support/LLM-monitor/`。
-4. 各客户端的原始数据库不会被删除；`.token-monitor` 缓存目录可按上表单独移除，并可由应用重新生成。
+4. 各客户端的原始数据库不会被删除；`token-monitor` 缓存目录可单独移除，并可由应用重新生成。旧版本各客户端目录下的 `.token-monitor` 会在首次启动时复制迁移，不会删除。
 
 ## 隐私说明
 

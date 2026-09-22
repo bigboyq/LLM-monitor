@@ -3223,6 +3223,26 @@ final class StateAndSchedulerTests: XCTestCase {
     }
 
     @MainActor
+    func testManualAndDayBoundaryReconcileReuseDirtyModeAfterStartupFull() async {
+        var modes: [LocalUsageScanMode] = []
+        let orchestration = LocalUsageOrchestration(writer: ReconcileNoopWriter())
+        orchestration.testReconcilePass = { mode in
+            modes.append(mode)
+        }
+        defer { orchestration.cancelInFlightAll() }
+
+        await orchestration.triggerStartupFullScanAll()
+        await orchestration.triggerImmediateScanAll()
+
+        XCTAssertEqual(
+            modes,
+            [.full, .dirty],
+            "启动首拍保留 full；手工及日切后的普通 reconcile 应复用 dirty/offset 路径"
+        )
+        XCTAssertEqual(orchestration.nextReconcileMode, .dirty)
+    }
+
+    @MainActor
     func testAppStateSchedulesSleepHealthRefreshOnSharedDeadlineDriver() {
         let store = makeIsolatedConfigStore()
         let state = AppState(descriptors: [], configStore: store)

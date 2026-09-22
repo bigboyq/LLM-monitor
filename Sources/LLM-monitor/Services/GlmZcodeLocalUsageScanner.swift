@@ -59,7 +59,10 @@ final class GlmZcodeLocalUsageScanner: SingleDBSnapshotScanner<GlmLocalUsage>, @
             .appendingPathComponent("tasks-index.sqlite")
     }()
 
-    nonisolated static let defaultCacheDir: URL = {
+    nonisolated static let defaultCacheDir: URL =
+        TokenMonitorPaths.cacheDirectory(for: .glmZcode)
+
+    nonisolated static let legacyCacheDir: URL = {
         URL(fileURLWithPath: NSHomeDirectory())
             .appendingPathComponent(".zcode", isDirectory: true)
             .appendingPathComponent("cli", isDirectory: true)
@@ -75,6 +78,13 @@ final class GlmZcodeLocalUsageScanner: SingleDBSnapshotScanner<GlmLocalUsage>, @
          now: @escaping @Sendable () -> Date = { Date() }) {
         self.tasksDBURL = tasksDBURL
         self.balanceLogDirectoryURL = balanceLogDirectory
+        if cacheDir.standardizedFileURL.path == Self.defaultCacheDir.standardizedFileURL.path {
+            TokenMonitorPaths.migrateLegacyIndexIfNeeded(
+                from: Self.legacyCacheDir,
+                to: cacheDir,
+                fileManager: fileManager
+            )
+        }
         super.init(
             dbURL: dbURL,
             cacheDir: cacheDir,

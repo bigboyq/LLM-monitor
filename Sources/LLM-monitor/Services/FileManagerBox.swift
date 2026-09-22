@@ -91,6 +91,14 @@ extension FileManagerBox {
         try fileManager.removeItem(at: url)
     }
 
+    func copyItem(at source: URL, to destination: URL) throws {
+        try fileManager.copyItem(at: source, to: destination)
+        try fileManager.setAttributes(
+            [.posixPermissions: NSNumber(value: 0o600)],
+            ofItemAtPath: destination.path
+        )
+    }
+
     func attributesOfItem(atPath path: String) throws -> [FileAttributeKey: Any] {
         try fileManager.attributesOfItem(atPath: path)
     }

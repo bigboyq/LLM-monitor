@@ -2,8 +2,8 @@ import Foundation
 
 /// 本地用量 reconcile 与扫描编排：
 /// provider batch settled 或显式操作驱动一次性扫描 Task；不持有常驻 Timer/beat
-/// loop。首次 reconcile 与日切使用 full（强制重建缓存），其余 reconcile 由 scanner
-/// 内部 fingerprint 决定是否复用缓存或执行增量计算。
+/// loop。仅应用启动后的首个 reconcile 使用 full（强制重建缓存），其余 reconcile
+/// 由 scanner 内部 fingerprint 决定是否复用缓存或执行增量计算，日切也复用 offset。
 /// 彻底剥离 quota 依赖：quota 刷新成功不再直接 await 本地扫描。
 ///
 /// 状态写入（ProviderStatus 字段）通过 `LocalUsageStatusWriting` 协议回调
@@ -162,7 +162,6 @@ final class LocalUsageOrchestration {
     /// 防止已取消的旧 Task 在稍后结束时清理或覆盖新一轮 reconcile。
     private var reconcileGeneration: UInt64 = 0
     private var didCompleteInitialFullScan = false
-    private var lastFullScanDay: Date?
     private var codexSourceLifecycle: LocalUsageSourceLifecycle?
     private var codexWatchedHome: URL?
     private let calendar: Calendar
@@ -232,13 +231,11 @@ final class LocalUsageOrchestration {
 
     // MARK: - Reconcile lifecycle
 
-    /// 当前应执行的下一种 reconcile。首次扫描与本地日切为 full，其余时候走
-    /// 普通 reconcile；普通 reconcile 是否真的需要重算由各 scanner 原有的
-    /// mtime/size fingerprint 决定。
+    /// 当前应执行的下一种 reconcile。只有本进程启动后的首个 pass 使用 full；
+    /// 手工、唤醒、自动 interval/reset 和日切都走 dirty，由各 scanner 的
+    /// mtime/size fingerprint 决定是否需要 RPC 以及是否使用 offset。
     var nextReconcileMode: LocalUsageScanMode {
-        let today = calendar.startOfDay(for: now())
-        guard didCompleteInitialFullScan, lastFullScanDay == today else { return .full }
-        return .dirty
+        didCompleteInitialFullScan ? .dirty : .full
     }
 
     /// 文件事件等后台来源调用的非阻塞入口。它只投递一个短生命周期 Task，
@@ -266,8 +263,8 @@ final class LocalUsageOrchestration {
         }
     }
 
-    /// 执行一次 reconcile 并等待完成。`mode` 仅供手动/集成调用覆盖状态机选择；
-    /// 不传时使用首次 full、日切 full、否则 dirty 的状态机结果。
+    /// 执行一次 reconcile 并等待完成。`mode` 仅供启动或测试等需要明确 full
+    /// 语义的调用覆盖状态机选择；不传时使用首拍 full、后续 dirty 的状态机结果。
     func reconcile(mode requestedMode: LocalUsageScanMode? = nil) async {
         if let active = reconcileTask {
             if requestedMode == .full {
@@ -307,9 +304,16 @@ final class LocalUsageOrchestration {
         }
     }
 
-    /// 手动 refreshAll 或系统唤醒时强制一次 full reconcile，并等待所有本地
-    /// scanner settle；不要求存在 resident loop。
+    /// 手动 refreshAll、单 Provider 手工刷新或系统唤醒时执行一次普通 reconcile。
+    /// 已完成启动首拍后，这会让 changed session 使用 offset；未完成首拍时仍由
+    /// 状态机自动保留 full 兜底。
     func triggerImmediateScanAll() async {
+        await reconcile()
+    }
+
+    /// 启动阶段专用的 full reconcile。启动 quota 错峰结束后只执行这一拍，
+    /// 后续手工、唤醒、自动和日切均不得复用这个入口。
+    func triggerStartupFullScanAll() async {
         await reconcile(mode: .full)
     }
 
@@ -425,7 +429,6 @@ final class LocalUsageOrchestration {
         guard !Task.isCancelled else { return }
         guard mode == .full else { return }
         didCompleteInitialFullScan = true
-        lastFullScanDay = calendar.startOfDay(for: now())
     }
 
     private func scanCodexUsageDetails(mode: LocalUsageScanMode) async -> Bool {

@@ -71,6 +71,10 @@ final class DshLocalUsageScanner: LocalUsageScannerBase<DshLocalUsage>, @uncheck
     }()
 
     nonisolated static let defaultCacheDir: URL = {
+        TokenMonitorPaths.cacheDirectory(for: .dsh)
+    }()
+
+    nonisolated static let legacyCacheDir: URL = {
         let root = defaultSessionsRoot.deletingLastPathComponent()
         return root.appendingPathComponent(".token-monitor", isDirectory: true)
     }()
@@ -103,6 +107,13 @@ final class DshLocalUsageScanner: LocalUsageScannerBase<DshLocalUsage>, @uncheck
         self.now = now
         self.decompressor = decompressor
         self.streamingDecompressor = streamingDecompressor
+        if cacheDir.standardizedFileURL.path == Self.defaultCacheDir.standardizedFileURL.path {
+            TokenMonitorPaths.migrateLegacyIndexIfNeeded(
+                from: Self.legacyCacheDir,
+                to: cacheDir,
+                fileManager: fileManager
+            )
+        }
         super.init(
             logTag: Self.scanLogTag,
             cachedResult: Self.loadCachedResult(

@@ -2,8 +2,8 @@
 """
 Antigravity Opus 5h window cost aggregation.
 
-Source: ~/.gemini/antigravity/.token-monitor/index.json
-  (Mavis-maintained cache; reads per-session samples from Antigravity RPC)
+Source: ~/Library/Application Support/LLM-monitor/token-monitor/antigravity/index.json
+  (LLM-monitor-maintained cache; reads per-session samples from Antigravity RPC)
 
 Opus model: claude-opus-4-6-thinking (169 samples)
 Sonnet model: claude-sonnet-4-6 (97 samples)
@@ -14,10 +14,19 @@ Pricing reference (Anthropic public list):
   (These are list prices; Antigravity subscription may negotiate different rates.)
 """
 import json
+from pathlib import Path
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
-INDEX = "/Users/zhebinqiu/.gemini/antigravity/.token-monitor/index.json"
+INDEX = (
+    Path.home()
+    / "Library"
+    / "Application Support"
+    / "LLM-monitor"
+    / "token-monitor"
+    / "antigravity"
+    / "index.json"
+)
 TZ = timezone(timedelta(hours=8))
 WINDOWS = (0, 5, 10, 15, 20)
 

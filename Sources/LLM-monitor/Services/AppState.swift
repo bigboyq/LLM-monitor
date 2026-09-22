@@ -305,10 +305,10 @@ final class AppState: ObservableObject {
                     guard self.startupReconcilePendingProviderIDs.isEmpty else { return }
                     self.startupReconcileCompleted = true
                     logInfo("[local-usage] Startup quota batches settled → one full reconcile")
-                    await self.localUsage.triggerImmediateScanAll()
+                    await self.localUsage.triggerStartupFullScanAll()
                 } else {
-                    // Automatic Interval/Reset only uses the normal reconcile mode;
-                    // Manual/Wakeup explicitly call triggerImmediateScanAll() below.
+                    // Automatic Interval/Reset uses the normal reconcile mode;
+                    // Manual/Wakeup also use the same dirty/offset-aware path.
                     logInfo("[local-usage] Provider batch settled → reconcile")
                     await self.localUsage.reconcile()
                 }
@@ -447,9 +447,9 @@ final class AppState: ObservableObject {
         )
     }
 
-    /// 系统从睡眠唤醒后的刷新。与用户手动 full 不同，紧邻定时/补刷新时
-    /// 只等待已有请求并合并到它，不登记 ManualRefreshGate pending full。
-    /// 无论额度是否被合并，唤醒都要等待一次本地 full reconcile。
+    /// 系统从睡眠唤醒后的刷新。与用户手动刷新一样，紧邻定时/补刷新时
+    /// 只等待已有请求并合并到它，不登记 ManualRefreshGate pending full；
+    /// 本地用量复用 dirty/offset 路径，只有进程启动首拍才是 full。
     func handleSystemWake() async {
         guard let token = refreshScheduler.beginExternalJob() else {
             pendingWakeup = true

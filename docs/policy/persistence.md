@@ -10,7 +10,7 @@
 - 实例锁 → `…/LLM-monitor/instance.lock` [AppInstanceLock.swift:42](../../Sources/LLM-monitor/Services/AppInstanceLock.swift:42)
 - 损坏配置备份 → `config.json.corrupt-<UUID>.json` [ConfigStore.swift:925](../../Sources/LLM-monitor/Services/ConfigStore.swift:925)
 - 日志 → `…/LLM-monitor/log.txt`（rotated `.1` / `.2`）[AppLog.swift:34](../../Sources/LLM-monitor/Services/AppLog.swift:34)
-- 5× scanner cache: `~/.minimax/.token-monitor/index.json` (v14, [Minimax:477](../../Sources/LLM-monitor/Services/MinimaxLocalUsageScanner.swift:477)) · `~/.gemini/antigravity/.token-monitor/index.json` (v6, [Antigravity:243](../../Sources/LLM-monitor/Services/AntigravityLocalUsageScanner.swift:243)) · `~/Library/Application Support/LLM-monitor/token-monitor/index.json` (v2, [Opencode:13](../../Sources/LLM-monitor/Services/OpencodeUsageScanner.swift:13)) · `~/.zcode/cli/.token-monitor/index.json` (v9, [GlmZcodeLocalUsageScanner:28](../../Sources/LLM-monitor/Services/GlmZcodeLocalUsageScanner.swift:28)) · `~/.dsh/.token-monitor/index.json` (v5, [DSH:1163](../../Sources/LLM-monitor/Services/DshLocalUsageScanner.swift:1163))
+- 5× scanner cache: `~/Library/Application Support/LLM-monitor/token-monitor/{minimax,antigravity,opencode,glm-zcode,dsh}/index.json`（provider 子目录隔离；旧版各客户端 `.token-monitor/index.json` 首次启动时复制迁移，原文件保留）
 - SQLite 临时副本 → `NSTemporaryDirectory()/llm-monitor-<UUID>.sqlite`
 
 > **Override**：`LLM_MONITOR_LOG_PATH` 改日志位置 [AppLog.swift:22](../../Sources/LLM-monitor/Services/AppLog.swift:22)；

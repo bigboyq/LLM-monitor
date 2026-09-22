@@ -19,7 +19,7 @@ This provider does not call Google quota APIs with a saved OAuth access token. I
 | Model groups | `Gemini Models`, `Claude and GPT models` |
 | Window types | `5h`, `weekly` |
 | Reset credits | Not used |
-| **Local token usage history** | ✅ Pure RPC architecture: per-event input / output / cacheRead / cacheWrite / reasoning, aggregated to last 7 local days, persisted to `~/.gemini/antigravity/.token-monitor/` |
+| **Local token usage history** | ✅ Pure RPC architecture: per-event input / output / cacheRead / cacheWrite / reasoning, aggregated to last 7 local days, persisted to `~/Library/Application Support/LLM-monitor/token-monitor/antigravity/` |
 
 ## Accounting contract
 
@@ -410,9 +410,9 @@ local Antigravity 2.15.1 instance, the same cascade returned:
 This confirms suffix-style incremental retrieval: after successfully consuming
 `N` raw generator metadata entries (including entries that may be filtered out of
 the app's `UsageEvent` list), the next request can use
-`generatorMetadataOffset: N` to retrieve only later entries. The current monitor does
-not use this field; its existing mtime/size/WAL cache only decides whether a session is
-dirty, then re-fetches the complete generator-metadata sequence.
+`generatorMetadataOffset: N` to retrieve only later entries. The monitor uses this
+field after the cached mtime/size/WAL fingerprint marks a session dirty, so
+append-only changes fetch only the suffix.
 
 The same local service also exposes offset-based companion RPCs:
 
@@ -436,22 +436,21 @@ interface; future Antigravity versions may change field names or semantics.
 
 #### Revised monitor strategy
 
-The preferred next implementation is offset-based fetching before generic JSON
-streaming:
+The monitor uses offset-based fetching before generic JSON streaming:
 
 1. Persist, per session, the number of successfully accounted generator metadata
    entries (and enough metadata to detect a reset/rewrite).
 2. On a dirty session, request `generatorMetadataOffset` from that count instead of
    requesting the full sequence.
 3. Append only the returned suffix to the session's aggregate/sample state, with
-   deduplication and a conservative fallback when the session is rewritten, the
-   offset becomes invalid, or the response is empty unexpectedly.
+   a full fallback when the session or WAL shrinks. An empty suffix on a
+   non-shrinking dirty file only updates the fingerprint; it does not trigger a
+   duplicate full RPC.
 4. Keep `includeMessages: false`; message bodies are not needed for token, model,
    timestamp, or turn/round accounting.
-5. Retain a bounded response cap and bounded concurrency. Streaming JSON parsing is
-   still useful as a defense for a single unexpectedly large suffix, but it is no
-   longer the primary fix for normal growth: the normal request should be small
-   because it asks only for newly appended generator metadata.
+5. Retain a bounded response cap and adaptive concurrency. The response envelope is
+   walked incrementally and each generator-metadata entry is decoded independently,
+   so a large full response does not create a second full `[AnyJSON]` tree.
 
 The offset must be treated as a raw generator-metadata count, not derived from the
 number of parsed usage events or the maximum `stepIndex`. The persisted offset must
@@ -461,9 +460,9 @@ aggregated, and saved successfully.
 ## Local Token Usage Scanner
 
 `AntigravityLocalUsageScanner` runs after a settled Provider batch, independent of quota
-refresh success. The first reconcile and each natural-day rollover are Full Scans; later
-reconciles only run when its source-owned FSEvents watcher marks the conversation roots
-dirty. The watcher is stopped for the scan and rebuilt by this scanner after it settles.
+refresh success. The startup reconcile is a Full Scan; manual refresh, wake-up, interval
+refresh and natural-day rollover use dirty/offset mode after startup. The watcher is
+stopped for the scan and rebuilt by this scanner after it settles.
 It scans both supported conversation directories, accepts `.db` and `.pb` session files,
 compares file metadata (mtime/size plus WAL mtime/size for `.db`) against a cached index,
 and re-fetches only dirty sessions via `GetCascadeTrajectoryGeneratorMetadata`. Token
@@ -477,8 +476,10 @@ only the matching step metadata timestamp as a fallback.
 ├── conversations/                         ← Antigravity native (read-only input)
 │   ├── {sessionId}.db                      ← discovered/fingerprinted; timestamp metadata may be read
 │   └── {sessionId}.pb                      ← discovered and fingerprinted, not decoded
-└── .token-monitor/                        ← scanner's own cache
-    └── index.json                         ← top-level state and per-session cache (fast load)
+└── ...                                    ← scanner 不在客户端目录写缓存
+
+~/Library/Application Support/LLM-monitor/token-monitor/antigravity/
+└── index.json                             ← top-level state and per-session cache (fast load)
 ```
 
 `index.json` schema:
@@ -521,7 +522,9 @@ The scanner does heavy work in the background and is built for low-cost re-runs:
 2. **Per-session incremental aggregation**: `index.dailyBySession` stores each session's day-keyed breakdown. When a session changes, only that session's cached entry is replaced — other sessions' entries are untouched.
 3. **In-flight dedup**: if `scan()` is called while a previous scan is still running, the new call is a no-op (the previous one will publish its result via `@Published`).
 4. **Off-main-thread I/O**: the scanner class is `@MainActor` for state mutation, while the heavy pipeline lives in `nonisolated static performScanPure(...)` and runs through the non-actor-isolated `LocalUsageScanRunner`. It inherits caller cancellation and only assigns the result back on MainActor.
-5. **Serial RPC for dirty sessions**: dirty sessions are fetched one at a time via `nonisolated static func fetchAll(fetcher:dirty:)` (a plain `for` loop, not `withTaskGroup`). This bounds local RPC load and keeps cache updates deterministic.
+5. **Bounded/adaptive RPC**: dirty sessions use four concurrent suffix requests, while
+   any batch containing full requests is limited to two. Results are reduced in small
+   batches so parsed events from all sessions are not retained until the final RPC.
 6. **Failure is non-fatal**: RPC failures don't update `index.sessions[id].mtimeMs` — the next scan naturally retries. `failedSessionCount` is surfaced in the result so the UI can show a warning.
 7. **In-flight / offline tolerance**: if every entry in `defaultConversationsDirs` doesn't exist (CLI-only or no IDE activity), `listDBFiles()` returns `[]` and the scan completes cleanly with `sessionCount: 0` — no exception.
 8. **Index parse failure recovery**: a corrupted `index.json` is logged + reset to `.empty` rather than failing the whole scan.

@@ -25,19 +25,25 @@ final class OpencodeUsageScanner: SingleDBSnapshotScanner<OpencodeLocalUsage>, @
             .appendingPathComponent("opencode.db")
     }()
 
-    nonisolated static let defaultCacheDir: URL = {
-        URL(fileURLWithPath: NSHomeDirectory())
-            .appendingPathComponent("Library", isDirectory: true)
-            .appendingPathComponent("Application Support", isDirectory: true)
-            .appendingPathComponent("LLM-monitor", isDirectory: true)
-            .appendingPathComponent("token-monitor", isDirectory: true)
-    }()
+    nonisolated static let defaultCacheDir: URL =
+        TokenMonitorPaths.cacheDirectory(for: .opencode)
+
+    /// Before centralization OpenCode stored `index.json` directly under the
+    /// shared root. Copy it into the provider subdirectory before loading.
+    nonisolated static let legacyCacheDir: URL = TokenMonitorPaths.root
 
     init(dbURL: URL = OpencodeUsageScanner.defaultDBURL,
          cacheDir: URL = OpencodeUsageScanner.defaultCacheDir,
          fileManager: FileManagerBox = FileManagerBox(),
          calendar: Calendar = .autoupdatingCurrent,
          now: @escaping @Sendable () -> Date = { Date() }) {
+        if cacheDir.standardizedFileURL.path == Self.defaultCacheDir.standardizedFileURL.path {
+            TokenMonitorPaths.migrateLegacyIndexIfNeeded(
+                from: Self.legacyCacheDir,
+                to: cacheDir,
+                fileManager: fileManager
+            )
+        }
         super.init(
             dbURL: dbURL,
             cacheDir: cacheDir,

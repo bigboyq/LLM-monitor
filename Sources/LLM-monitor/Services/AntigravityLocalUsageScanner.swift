@@ -52,7 +52,10 @@ final class AntigravityLocalUsageScanner: LocalUsageScannerBase<AntigravityLocal
         ]
     }()
 
-    nonisolated static let defaultCacheDir: URL = {
+    nonisolated static let defaultCacheDir: URL =
+        TokenMonitorPaths.cacheDirectory(for: .antigravity)
+
+    nonisolated static let legacyCacheDir: URL = {
         URL(fileURLWithPath: NSHomeDirectory())
             .appendingPathComponent(".gemini", isDirectory: true)
             .appendingPathComponent("antigravity", isDirectory: true)
@@ -101,6 +104,13 @@ final class AntigravityLocalUsageScanner: LocalUsageScannerBase<AntigravityLocal
         self.fileManager = fileManager
         self.calendar = calendar
         self.now = now
+        if cacheDir.standardizedFileURL.path == Self.defaultCacheDir.standardizedFileURL.path {
+            TokenMonitorPaths.migrateLegacyIndexIfNeeded(
+                from: Self.legacyCacheDir,
+                to: cacheDir,
+                fileManager: fileManager
+            )
+        }
         super.init(
             logTag: Self.scanLogTag,
             cachedResult: Self.loadCachedResult(
@@ -241,7 +251,7 @@ extension AntigravityLocalUsageScanner {
         }
     }
 
-    /// 顶层 index 状态，存到 `~/.gemini/antigravity/.token-monitor/index.json`。
+    /// 顶层 index 状态，存到应用统一的 `token-monitor/antigravity/` 子目录。
     /// - `sessions`：所有已扫描过的本地 sessionId → session 文件及可选 WAL 的 mtime/size + 上次拉 RPC 的时间
     /// - `dailyBySession`：每个 session 按本地自然日拆开的 token 聚合
     ///   （让 changed session 只需要替换自己的贡献，不用重新拉取其他 session）
@@ -371,6 +381,30 @@ extension AntigravityLocalUsageScanner {
             index.samplesBySession?.removeValue(forKey: removedId)
         }
 
+        // Antigravity can leave a placeholder cascade at 0 bytes. Its mtime
+        // may still move during IDE housekeeping, but there is no metadata to
+        // fetch until the file grows. Heal the cached fingerprint locally so a
+        // zero-event placeholder cannot create a recurring full-RPC loop.
+        for (sessionID, info) in dbFiles {
+            guard info.sizeBytes == 0,
+                  info.walSizeBytes == 0,
+                  var cached = index.sessions[sessionID],
+                  cached.sizeBytes == 0,
+                  cached.walSizeBytes == 0,
+                  cached.eventCount == 0,
+                  cached.generatorMetadataOffset == 0,
+                  cached.mtimeMs != info.mtimeMs || cached.walMtimeMs != info.walMtimeMs else {
+                continue
+            }
+            cached.mtimeMs = info.mtimeMs
+            cached.sizeBytes = info.sizeBytes
+            cached.walMtimeMs = info.walMtimeMs
+            cached.walSizeBytes = info.walSizeBytes
+            cached.fetchedAt = now()
+            index.sessions[sessionID] = cached
+            logDebug("[antigravity-scan] session=\(sessionID) 空 placeholder 仅更新 fingerprint，跳过 RPC")
+        }
+
         // 2. 找出 dirty sessions（文件/WAL 指纹变化，或缺少纯 RPC 的逐次调用缓存）。
         let dirtyPlans: [DirtySessionPlan] = dbFiles.compactMap { (sessionId, info) in
             guard !forceFull, let cached = index.sessions[sessionId] else {
@@ -394,7 +428,9 @@ extension AntigravityLocalUsageScanner {
                 || cached.sizeBytes != info.sizeBytes
                 || cached.walMtimeMs != info.walMtimeMs
                 || cached.walSizeBytes != info.walSizeBytes {
-                if info.sizeBytes < cached.sizeBytes || cached.generatorMetadataOffset <= 0 {
+                if info.sizeBytes < cached.sizeBytes
+                    || info.walSizeBytes < cached.walSizeBytes
+                    || cached.generatorMetadataOffset <= 0 {
                     return DirtySessionPlan(
                         sessionID: sessionId,
                         fileInfo: info,
@@ -417,9 +453,16 @@ extension AntigravityLocalUsageScanner {
         var failedCount = 0
         let nowDate = now()
         if !dirtyPlans.isEmpty {
-            let results = try await fetchAll(fetcher: fetcher, plans: dirtyPlans)
-            let dirtyByID = Dictionary(uniqueKeysWithValues: dirtyPlans.map { ($0.sessionID, $0.fileInfo) })
-            for entry in results {
+            // Keep only a small completed batch of parsed events alive. The old
+            // implementation retained all 166 result arrays until the last RPC
+            // completed, which amplified the full-scan peak.
+            let batchSize = 8
+            for batchStart in stride(from: 0, to: dirtyPlans.count, by: batchSize) {
+                let batchEnd = min(batchStart + batchSize, dirtyPlans.count)
+                let batch = Array(dirtyPlans[batchStart..<batchEnd])
+                let results = try await fetchAll(fetcher: fetcher, plans: batch)
+                let dirtyByID = Dictionary(uniqueKeysWithValues: batch.map { ($0.sessionID, $0.fileInfo) })
+                for entry in results {
                 let sessionId = entry.sessionID
                 guard let info = dirtyByID[sessionId] else { continue }
                 switch entry.result {
@@ -532,6 +575,7 @@ extension AntigravityLocalUsageScanner {
                     failedCount = SaturatingArithmetic.add(failedCount, 1)
                     logWarn("[antigravity-scan] session=\(sessionId) ✗ RPC 失败: \(error)")
                 }
+                }
             }
         }
 
@@ -613,7 +657,13 @@ extension AntigravityLocalUsageScanner {
             }
         }
 
-        let concurrency = min(4, max(plans.count, 1))
+        // Full responses are much more expensive than suffixes: each in-flight
+        // request temporarily holds Data plus the per-entry decode objects. Keep
+        // startup/recovery full scans at two and allow four only for small
+        // incremental suffixes.
+        let hasFullPlan = plans.contains { !$0.isIncremental }
+        let concurrencyLimit = hasFullPlan ? 2 : 4
+        let concurrency = min(concurrencyLimit, max(plans.count, 1))
         var nextIndex = 0
         var results: [DirtySessionFetchResult] = []
         results.reserveCapacity(plans.count)
@@ -680,46 +730,16 @@ extension AntigravityLocalUsageScanner {
                         )
                     }
 
-                    // suffix 为空：发起 offset=0 兜底验证，确认是否为无新事件、或者会话被截断/清空
-                    logInfo("[antigravity-scan] session=\(sessionID) 增量 offset=\(offset) 返回空，发起全量检查兜底")
-                    let fullPage = try await fetcher.getTrajectoryMetadata(
-                        sessionId: sessionID,
-                        offset: 0,
-                        servers: servers
+                    // The plan already turns a main-file/WAL shrink into a full
+                    // fetch. For an append-only dirty file, an empty suffix is a
+                    // valid result: usually only SQLite/WAL metadata changed.
+                    // Do not immediately download the same large trajectory again.
+                    logInfo("[antigravity-scan] session=\(sessionID) 增量 offset=\(offset) 无新增 metadata，仅更新文件指纹")
+                    return DirtySessionFetchResult(
+                        index: index,
+                        sessionID: sessionID,
+                        result: .success(.noNewEvents)
                     )
-                    if fullPage.metadataEntryCount == offset {
-                        // 确认没有产生新的 LLM 调用（只是 WAL 变更）
-                        logInfo("[antigravity-scan] session=\(sessionID) 经全量核验确无新 metadata entries (count=\(fullPage.metadataEntryCount))，仅更新文件指纹")
-                        return DirtySessionFetchResult(
-                            index: index,
-                            sessionID: sessionID,
-                            result: .success(.noNewEvents)
-                        )
-                    } else if fullPage.metadataEntryCount < offset {
-                        // 会话截断/清空重写，按全量结果重置
-                        logWarn("[antigravity-scan] session=\(sessionID) 检测到会话截断重写 (\(fullPage.metadataEntryCount) < \(offset))，重置该 session 缓存")
-                        return DirtySessionFetchResult(
-                            index: index,
-                            sessionID: sessionID,
-                            result: .success(.events(
-                                events: fullPage.events,
-                                metadataEntryCount: fullPage.metadataEntryCount,
-                                wasIncremental: false
-                            ))
-                        )
-                    } else {
-                        // fullEvents.count > offset 但 suffix 返回空（服务端 offset 异常），安全降级为全量结果
-                        logWarn("[antigravity-scan] session=\(sessionID) 增量失真 (\(fullPage.metadataEntryCount) > \(offset))，降级为全量同步")
-                        return DirtySessionFetchResult(
-                            index: index,
-                            sessionID: sessionID,
-                            result: .success(.events(
-                                events: fullPage.events,
-                                metadataEntryCount: fullPage.metadataEntryCount,
-                                wasIncremental: false
-                            ))
-                        )
-                    }
                 } else {
                     let page = try await fetcher.getTrajectoryMetadata(
                         sessionId: sessionID,

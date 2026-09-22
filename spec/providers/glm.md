@@ -288,7 +288,7 @@ optional overlay on top (controlled by `clientBindings[]`, default on).
 | Database | `~/.zcode/cli/db/db.sqlite` (WAL mode, active `-wal`) |
 | Tables | `model_usage` (one row per model request) + `part` (looked up via `model_usage.assistant_message_id` for round-level reasoning classification) |
 | Included rows | (`provider_id LIKE 'builtin:bigmodel-%'` OR `provider_id LIKE 'account:bigmodel-%'` OR `provider_id = 'offpeak-idle-plan'`) AND `status = 'completed'` AND (`input + output + reasoning + cache_read`) > 0 |
-| Cache | `~/.zcode/cli/.token-monitor/index.json` (versioned, db+WAL fingerprint) |
+| Cache | `~/Library/Application Support/LLM-monitor/token-monitor/glm-zcode/index.json` (versioned, db+WAL fingerprint; old `.token-monitor/index.json` is copied on first launch) |
 | Daily window | Seven local calendar days, including today |
 
 The scanner reads the following columns from each GLM `model_usage` row:
@@ -611,11 +611,10 @@ The native ZCode scanner and OpenCode merge coverage is included above.
 ### Scan trigger
 
 All local scanners — GLM included — are driven by
-`LocalUsageOrchestration.reconcile()` after each Provider batch settles. The first
-reconcile and each natural-day rollover perform a Full Scan; later reconciles only run
-when the scanner's own FSEvents watcher has marked the source dirty. This remains fully
-independent of whether the quota batch succeeded. Manual refresh explicitly waits for
-one Full Scan. GLM's former dedicated periodic trigger
+`LocalUsageOrchestration.reconcile()` after each Provider batch settles. Startup performs
+a Full Scan; manual, wake-up, interval and natural-day reconciles use dirty mode after
+startup and only reprocess changed source data. This remains fully independent of
+whether the quota batch succeeded. GLM's former dedicated periodic trigger
 (`AppState.glmLocalUsagePeriodicTask`) has been removed.
 
 The scanner's db+WAL fingerprint check is unchanged: when nothing changed only a `stat()`

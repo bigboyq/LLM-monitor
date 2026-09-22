@@ -187,15 +187,15 @@ struct AntigravityFetcher: QuotaFetcher {
             throw QuotaError.networkError("未发现 Antigravity 或 agy CLI 进程，请先启动 Antigravity 并完成登录")
         }
 
-        struct Envelope: Decodable {
-            let generatorMetadata: [AnyJSON]?
-        }
-
         var hadSuccessfulResponse = false
         var lastError: Error?
         for server in servers {
             do {
-                let envelope: Envelope = try await post(
+                // Decode one generatorMetadata entry at a time. The response
+                // Data is still bounded and retained until this method returns,
+                // but we no longer build a second in-memory `[AnyJSON]` tree for
+                // all entries in a large trajectory.
+                let (data, response) = try await rawPost(
                     server: server,
                     path: "/exa.language_server_pb.LanguageServerService/GetCascadeTrajectoryGeneratorMetadata",
                     body: TrajectoryMetadataRequest(
@@ -204,19 +204,26 @@ struct AntigravityFetcher: QuotaFetcher {
                         generatorMetadataOffset: offset
                     )
                 )
+                try Self.checkHTTP(response: response, data: data)
                 hadSuccessfulResponse = true
-                guard let rawEvents = envelope.generatorMetadata, !rawEvents.isEmpty else {
-                    continue
-                }
-                let events = rawEvents.compactMap { Self.parseUsageEvent(from: $0) }
-                if !rawEvents.isEmpty {
-                    let offsetTag = offset.map { " (offset=\($0))" } ?? ""
-                    logInfo("[antigravity] session=\(sessionId)\(offsetTag) 成功从 pid=\(server.pid) port=\(server.httpsPort) 获取到 \(rawEvents.count) 个 metadata entries，解析出 \(events.count) 个 events")
-                    return TrajectoryMetadataPage(
-                        events: events,
-                        metadataEntryCount: rawEvents.count
+                var events: [UsageEvent] = []
+                let metadataEntryCount: Int
+                do {
+                    metadataEntryCount = try Self.decodeTrajectoryMetadata(data, into: &events)
+                } catch {
+                    throw QuotaError.decodingError(
+                        "Antigravity trajectory 响应无法解析，响应 \(data.count) bytes"
                     )
                 }
+                guard metadataEntryCount > 0 else {
+                    continue
+                }
+                let offsetTag = offset.map { " (offset=\($0))" } ?? ""
+                logInfo("[antigravity] session=\(sessionId)\(offsetTag) 成功从 pid=\(server.pid) port=\(server.httpsPort) 获取到 \(metadataEntryCount) 个 metadata entries，解析出 \(events.count) 个 events")
+                return TrajectoryMetadataPage(
+                    events: events,
+                    metadataEntryCount: metadataEntryCount
+                )
             } catch {
                 lastError = error
                 logInfo("[antigravity] session=\(sessionId) pid=\(server.pid) 查询失败，尝试下一个 server: \(error.localizedDescription)")
@@ -226,6 +233,25 @@ struct AntigravityFetcher: QuotaFetcher {
             throw lastError ?? QuotaError.invalidResponse
         }
         return TrajectoryMetadataPage(events: [], metadataEntryCount: 0)
+    }
+
+    /// Selectively decodes the top-level `generatorMetadata` array. Unknown
+    /// envelope fields are skipped byte-wise; each array item is decoded and
+    /// released before the next item is visited. This preserves the existing
+    /// tolerant AnyJSON field matching without retaining the full response tree.
+    private nonisolated static func decodeTrajectoryMetadata(
+        _ data: Data,
+        into events: inout [UsageEvent]
+    ) throws -> Int {
+        var parser = TrajectoryMetadataStreamParser(data: data)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try parser.decodeGeneratorMetadata { entryData in
+            let entry = try decoder.decode(AnyJSON.self, from: entryData)
+            if let event = Self.parseUsageEvent(from: entry) {
+                events.append(event)
+            }
+        }
     }
 
     /// 递归遍历 JSON，按 key 名正则把 token 计数归类到 `UsageEvent`。
@@ -663,12 +689,187 @@ struct AntigravityFetcher: QuotaFetcher {
     }
 }
 
+/// Minimal byte walker used only for the trajectory envelope. It deliberately
+/// does not build a generic JSON tree: unknown values are skipped, and one
+/// generator-metadata object is handed to JSONDecoder at a time.
+private struct TrajectoryMetadataStreamParser {
+    private let data: Data
+    private var index: Int = 0
+
+    init(data: Data) {
+        self.data = data
+    }
+
+    mutating func decodeGeneratorMetadata(
+        _ consume: (Data) throws -> Void
+    ) throws -> Int {
+        skipWhitespace()
+        try expect(utf8: 123) // {
+        while true {
+            skipWhitespace()
+            if consumeByte(125) { return 0 } // empty envelope
+            let key = try readString()
+            skipWhitespace()
+            try expect(utf8: 58) // :
+            skipWhitespace()
+            if key == "generatorMetadata", peek() == 91 {
+                return try readMetadataArray(consume)
+            }
+            try skipValue(depth: 0)
+            skipWhitespace()
+            if consumeByte(125) { return 0 }
+            try expect(utf8: 44) // ,
+        }
+    }
+
+    private mutating func readMetadataArray(
+        _ consume: (Data) throws -> Void
+    ) throws -> Int {
+        try expect(utf8: 91) // [
+        skipWhitespace()
+        if consumeByte(93) { return 0 }
+
+        var count = 0
+        while true {
+            skipWhitespace()
+            let start = index
+            try skipValue(depth: 0)
+            let end = index
+            guard end > start else {
+                throw parseError("generatorMetadata entry 为空")
+            }
+            try consume(Data(data[start..<end]))
+            count = SaturatingArithmetic.add(count, 1)
+            skipWhitespace()
+            if consumeByte(93) { return count }
+            try expect(utf8: 44) // ,
+        }
+    }
+
+    private mutating func skipValue(depth: Int) throws {
+        guard depth < 64 else { throw parseError("JSON 嵌套深度超过 64") }
+        skipWhitespace()
+        switch peek() {
+        case 34: try skipString()
+        case 123: try skipObject(depth: depth + 1)
+        case 91: try skipArray(depth: depth + 1)
+        case 116: try skipLiteral("true")
+        case 102: try skipLiteral("false")
+        case 110: try skipLiteral("null")
+        default: try skipNumber()
+        }
+    }
+
+    private mutating func skipObject(depth: Int) throws {
+        try expect(utf8: 123)
+        skipWhitespace()
+        if consumeByte(125) { return }
+        while true {
+            skipWhitespace()
+            try skipString()
+            skipWhitespace()
+            try expect(utf8: 58)
+            try skipValue(depth: depth)
+            skipWhitespace()
+            if consumeByte(125) { return }
+            try expect(utf8: 44)
+        }
+    }
+
+    private mutating func skipArray(depth: Int) throws {
+        try expect(utf8: 91)
+        skipWhitespace()
+        if consumeByte(93) { return }
+        while true {
+            try skipValue(depth: depth)
+            skipWhitespace()
+            if consumeByte(93) { return }
+            try expect(utf8: 44)
+        }
+    }
+
+    private mutating func skipString() throws {
+        try expect(utf8: 34)
+        while index < data.count {
+            let byte = data[index]
+            index += 1
+            if byte == 34 { return }
+            if byte == 92 {
+                guard index < data.count else { throw parseError("JSON 字符串转义不完整") }
+                index += 1
+            }
+        }
+        throw parseError("JSON 字符串未闭合")
+    }
+
+    private mutating func readString() throws -> String {
+        let start = index
+        try skipString()
+        return try JSONDecoder().decode(String.self, from: Data(data[start..<index]))
+    }
+
+    private mutating func skipLiteral(_ literal: String) throws {
+        for expected in literal.utf8 {
+            try expect(utf8: expected)
+        }
+    }
+
+    private mutating func skipNumber() throws {
+        let start = index
+        while index < data.count {
+            switch data[index] {
+            case 9, 10, 13, 32, 44, 93, 125:
+                break
+            default:
+                index += 1
+                continue
+            }
+            break
+        }
+        guard index > start else { throw parseError("JSON 值无效") }
+    }
+
+    private mutating func expect(utf8 expected: UInt8) throws {
+        guard consumeByte(expected) else {
+            throw parseError("JSON 结构无效，期望字节 \(expected)")
+        }
+    }
+
+    private mutating func consumeByte(_ expected: UInt8) -> Bool {
+        guard index < data.count, data[index] == expected else { return false }
+        index += 1
+        return true
+    }
+
+    private func peek() -> UInt8? {
+        index < data.count ? data[index] : nil
+    }
+
+    private mutating func skipWhitespace() {
+        while index < data.count, [9, 10, 13, 32].contains(data[index]) {
+            index += 1
+        }
+    }
+
+    private func parseError(_ message: String) -> QuotaError {
+        .decodingError("Antigravity trajectory JSON: \(message) at byte \(index)")
+    }
+}
+
 // MARK: - Test surface
 
 extension AntigravityFetcher {
     /// 从 `AnyJSON` 直接调用 `parseUsageEvent`（仅测试用，跳过 Data → JSON 解析层）
     nonisolated static func parseUsageEventForTest(_ json: AnyJSON) -> UsageEvent? {
         parseUsageEvent(from: json)
+    }
+
+    nonisolated static func decodeTrajectoryMetadataForTest(
+        _ data: Data
+    ) throws -> TrajectoryMetadataPage {
+        var events: [UsageEvent] = []
+        let count = try decodeTrajectoryMetadata(data, into: &events)
+        return TrajectoryMetadataPage(events: events, metadataEntryCount: count)
     }
 
     /// 暴露本实例实际使用的 URLSession（仅测试用：验证多个 fetcher 实例共享

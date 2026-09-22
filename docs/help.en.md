@@ -99,11 +99,7 @@ Windowed providers (ChatGPT/Codex, GLM, Minimax, Antigravity) support four quota
 | Logs | `~/Library/Application Support/LLM-monitor/log.txt` |
 | Last successful remote state | `~/Library/Application Support/LLM-monitor/last-refresh.json` |
 | Notification trigger baselines | `~/Library/Application Support/LLM-monitor/notification-state.json` |
-| Minimax scanner cache | `~/.minimax/.token-monitor/` |
-| Antigravity scanner cache | `~/.gemini/antigravity/.token-monitor/` |
-| ZCode scanner cache | `~/.zcode/cli/.token-monitor/` |
-| OpenCode scanner cache | `~/Library/Application Support/LLM-monitor/token-monitor/` |
-| DSH scanner cache | `~/.dsh/.token-monitor/` |
+| Local scanner cache root | `~/Library/Application Support/LLM-monitor/token-monitor/` (one subdirectory per provider) |
 
 Configuration changes are reloaded automatically. If the file is invalid, the app first creates a `config.json.corrupt-*.json` backup and then restores defaults. Never post real API keys in a repository, issue, or log attachment.
 
@@ -144,4 +140,4 @@ This Release is an ad-hoc-signed snapshot. Verify its SHA-256, then Control-clic
 1. Disable launch at login in Settings and quit the app.
 2. Remove `/Applications/LLM-monitor.app`.
 3. To remove settings and logs, delete `~/Library/Application Support/LLM-monitor/`.
-4. Original client databases are never removed. The `.token-monitor` cache directories listed above may be deleted separately and will be rebuilt when needed.
+4. Original client databases are never removed. The `token-monitor` cache directory may be deleted separately and will be rebuilt when needed. Legacy `.token-monitor` indexes are copied on first launch and are not deleted.

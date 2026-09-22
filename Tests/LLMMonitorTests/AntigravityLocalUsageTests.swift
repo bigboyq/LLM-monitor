@@ -454,6 +454,15 @@ final class AntigravityLocalUsageTests: XCTestCase {
         XCTAssertEqual(json["generatorMetadataOffset"] as? Int, 42)
     }
 
+    func testTrajectoryMetadataStreamDecoderDoesNotRequireEnvelopeArrayMaterialization() throws {
+        let data = Data(#"{"ignored":{"x":[1,2,3]},"generatorMetadata":[{"timestamp":"2026-09-22T00:00:00Z","model":"gemini-2.5-pro","inputTokens":10,"outputTokens":5},{"timestamp":"2026-09-22T00:01:00Z","model":"gemini-2.5-pro","inputTokens":20,"outputTokens":7}],"tail":true}"#.utf8)
+        let page = try AntigravityFetcher.decodeTrajectoryMetadataForTest(data)
+        XCTAssertEqual(page.metadataEntryCount, 2)
+        XCTAssertEqual(page.events.count, 2)
+        XCTAssertEqual(page.events.map(\.inputTokens), [10, 20])
+        XCTAssertEqual(page.events.map(\.outputTokens), [5, 7])
+    }
+
     func testDiscoverServersDoesNotCrash() {
         // 单元测试不读取用户机器上的真实进程表；进程执行器与分类器分别测试。
         let expected = AntigravityFetcher.ServerInfo(
@@ -559,6 +568,81 @@ final class AntigravityLocalUsageTests: XCTestCase {
                 )
             ])
         )
+    }
+
+    @MainActor
+    func testEmptyPlaceholderFingerprintChangeSkipsRPCUntilFileGrows() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory
+            .appendingPathComponent("antigravity-empty-placeholder-\(UUID().uuidString)", isDirectory: true)
+        let conversations = root.appendingPathComponent("conversations", isDirectory: true)
+        let cache = root.appendingPathComponent("cache", isDirectory: true)
+        defer { try? fm.removeItem(at: root) }
+        try fm.createDirectory(at: conversations, withIntermediateDirectories: true)
+        try fm.createDirectory(at: cache, withIntermediateDirectories: true)
+
+        let sessionID = "empty-placeholder"
+        try Data().write(to: conversations.appendingPathComponent("\(sessionID).db"))
+        let index = AntigravityLocalUsageScanner.CacheIndex(
+            version: 7,
+            lastScannedAt: Date(),
+            sessions: [sessionID: .init(
+                mtimeMs: 1,
+                sizeBytes: 0,
+                walMtimeMs: 1,
+                walSizeBytes: 0,
+                fetchedAt: Date(),
+                eventCount: 0,
+                generatorMetadataOffset: 0
+            )],
+            dailyBySession: [:],
+            samplesBySession: [sessionID: []]
+        )
+        try AntigravityLocalUsageScanner.saveIndex(index, cacheDir: cache, fileManager: FileManagerBox(fm))
+
+        let fetcher = AntigravityFetcher(metadataServerDiscovery: { [] })
+        let scanner = AntigravityLocalUsageScanner(
+            fetcher: fetcher,
+            conversationsDirs: [conversations],
+            cacheDir: cache,
+            fileManager: FileManagerBox(fm)
+        )
+        let result = try awaitScan(
+            fetcher: fetcher,
+            conversationsDirs: [conversations],
+            cacheDir: cache,
+            scanner: scanner,
+            fileManager: fm
+        )
+        XCTAssertEqual(result.failedSessionCount, 0)
+        XCTAssertEqual(result.sessionCount, 1)
+    }
+
+    @MainActor
+    private func awaitScan(
+        fetcher: AntigravityFetcher,
+        conversationsDirs: [URL],
+        cacheDir: URL,
+        scanner: AntigravityLocalUsageScanner,
+        fileManager: FileManager
+    ) throws -> AntigravityLocalUsage {
+        let expectation = XCTestExpectation(description: "empty placeholder scan completes")
+        var result: AntigravityLocalUsage?
+        Task {
+            result = try? await AntigravityLocalUsageScanner.performScanPure(
+                fetcher: fetcher,
+                conversationsDirs: conversationsDirs,
+                cacheDir: cacheDir,
+                fileManager: FileManagerBox(fileManager),
+                calendar: .current,
+                now: { Date() },
+                startedGeneration: 1,
+                scanner: scanner
+            )
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 5.0)
+        return try XCTUnwrap(result)
     }
 
     func testRawMetadataCountAdvancesOffsetEvenWhenEventsAreFiltered() {

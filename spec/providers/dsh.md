@@ -13,7 +13,7 @@ are shown under Settings → Clients alongside the other local clients.
 | Artifact | `<project-dir>/<session-id>/session.jsonl.zstd` (or `session.jsonl` when compression is disabled) |
 | Format | Append-only JSONL; first line is a session header; later lines are session events or packed chunk rows |
 | Decoder | Prefer `zstd` CLI; fall back to Node 22+ `node:zlib.zstdDecompressSync` |
-| Cache | `~/.dsh/.token-monitor/` (fingerprint + versioned `index.json`) |
+| Cache | `~/Library/Application Support/LLM-monitor/token-monitor/dsh/` (fingerprint + versioned `index.json`) |
 | Daily window | Seven local calendar days, including today |
 
 The scanner reads provider-billed usage from every `assistant/message` event:
