@@ -175,9 +175,6 @@ struct AntigravityFetcher: QuotaFetcher {
             throw QuotaError.networkError("未发现 Antigravity 或 agy CLI 进程，请先启动 Antigravity 并完成登录")
         }
 
-        struct Request: Encodable {
-            let cascadeId: String
-        }
         struct Envelope: Decodable {
             let generatorMetadata: [AnyJSON]?
         }
@@ -189,7 +186,7 @@ struct AntigravityFetcher: QuotaFetcher {
                 let envelope: Envelope = try await post(
                     server: server,
                     path: "/exa.language_server_pb.LanguageServerService/GetCascadeTrajectoryGeneratorMetadata",
-                    body: Request(cascadeId: sessionId)
+                    body: TrajectoryMetadataRequest(cascadeId: sessionId, includeMessages: false)
                 )
                 hadSuccessfulResponse = true
                 guard let rawEvents = envelope.generatorMetadata, !rawEvents.isEmpty else {

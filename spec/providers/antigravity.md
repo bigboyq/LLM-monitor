@@ -170,7 +170,8 @@ x-codeium-csrf-token: <csrf_token>   # only set when server has one
 Bodies:
 
 - `GetUserStatus`: `{ "metadata": { "ideName": "antigravity", "extensionName": "antigravity", "ideVersion": "unknown", "locale": "en" } }`
-- `GetLoadCodeAssist`, `RetrieveUserQuotaSummary`, `GetCascadeTrajectoryGeneratorMetadata`: `{}` / `{ cascadeId: "<sessionId>" }`
+- `GetCascadeTrajectoryGeneratorMetadata`: `{ "cascadeId": "<sessionId>", "includeMessages": false }`
+- `GetLoadCodeAssist`, `RetrieveUserQuotaSummary`: `{}`
 
 The session trusts localhost TLS for `127.0.0.1` and `localhost`.
 
@@ -317,7 +318,10 @@ Used by `AntigravityLocalUsageScanner` to extract per-event token usage for a si
 Request body:
 
 ```json
-{ "cascadeId": "<sessionId>" }
+{
+  "cascadeId": "<sessionId>",
+  "includeMessages": false
+}
 ```
 
 Response shape (field names may vary between Antigravity versions; parser walks the tree recursively and matches key names against regex patterns):

@@ -15,6 +15,18 @@ struct UserStatusRequest: Encodable {
     let metadata: Metadata
 }
 
+/// `GetCascadeTrajectoryGeneratorMetadata` 的 request body。
+/// 显式传入 `includeMessages: false` 避免服务端序列化并回传长会话消息正文。
+struct TrajectoryMetadataRequest: Encodable, Equatable {
+    let cascadeId: String
+    let includeMessages: Bool
+
+    init(cascadeId: String, includeMessages: Bool = false) {
+        self.cascadeId = cascadeId
+        self.includeMessages = includeMessages
+    }
+}
+
 // MARK: - Response Models
 
 struct LoadCodeAssistEnvelope: Decodable {

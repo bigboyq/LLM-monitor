@@ -434,6 +434,14 @@ final class AntigravityLocalUsageTests: XCTestCase {
         )
     }
 
+    func testTrajectoryMetadataRequestEncoding() throws {
+        let request = TrajectoryMetadataRequest(cascadeId: "test-session-123", includeMessages: false)
+        let data = try JSONEncoder().encode(request)
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(json["cascadeId"] as? String, "test-session-123")
+        XCTAssertEqual(json["includeMessages"] as? Bool, false)
+    }
+
     func testDiscoverServersDoesNotCrash() {
         // 单元测试不读取用户机器上的真实进程表；进程执行器与分类器分别测试。
         let expected = AntigravityFetcher.ServerInfo(
