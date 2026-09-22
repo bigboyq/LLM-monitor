@@ -601,7 +601,8 @@ final class GlmTests: XCTestCase {
             dbSizeBytes: 2,
             walMtimeMs: 0,
             walSizeBytes: 0,
-            snapshot: snapshot
+            snapshot: snapshot,
+            calendarSignature: LocalUsageCalendarSignature.make(.autoupdatingCurrent)
         )
         try GlmZcodeLocalUsageScanner.saveIndex(index, cacheDir: cacheDir, fileManager: fileManager)
         defer { try? FileManager.default.removeItem(at: cacheDir) }

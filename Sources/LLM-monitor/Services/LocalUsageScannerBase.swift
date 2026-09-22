@@ -26,6 +26,14 @@ enum LocalUsageScanMode: Sendable, Equatable {
         case .hardFull: return "hard-full"
         }
     }
+
+    /// Merge queued reconcile requests without allowing a stronger request to
+    /// be downgraded by a later ordinary dirty event.
+    static func merged(_ lhs: Self, _ rhs: Self) -> Self {
+        if lhs == .hardFull || rhs == .hardFull { return .hardFull }
+        if lhs == .full || rhs == .full { return .full }
+        return .dirty
+    }
 }
 
 /// 本地用量 scanner 的共享生命周期基座 —— 5 个 scanner（antigravity / minimax /
@@ -134,6 +142,12 @@ class LocalUsageScannerBase<Usage: Equatable>: ObservableObject, @unchecked Send
         onFresh?()
     }
 
+    /// A scanner may return a usable last-good/partial view while still having
+    /// retryable work. Such a result must not make the source appear fresh.
+    /// Concrete scanners override this for provider-specific completeness
+    /// counters or partial-result markers.
+    nonisolated func scanResultIsComplete(_ result: Usage) -> Bool { true }
+
     /// 等待当前扫描 settle。没有 in-flight 时立即返回；调用方取消时抛出
     /// CancellationError。取消 scanner 本身会恢复所有 waiter，避免停机悬挂。
     func waitUntilSettled() async throws {
@@ -233,8 +247,21 @@ class LocalUsageScannerBase<Usage: Equatable>: ObservableObject, @unchecked Send
                 self.lastResult = result
                 self.lastError = nil
                 self.sourceLifecycle?.refreshHotFiles()
-                if self.dirtyRevision == startedDirtyRevision {
+                if !self.scanResultIsComplete(result) {
+                    // Keep the applied last-good/partial view visible, but do
+                    // not acknowledge freshness until the retryable source
+                    // work succeeds in a later reconcile.
+                    self.markDirty()
+                    self.lastError = "扫描结果不完整，等待下一轮重试"
+                    self.onFailed?()
+                } else if self.dirtyRevision == startedDirtyRevision {
                     self.markFresh()
+                } else {
+                    // The scan itself completed successfully, but a source
+                    // event arrived while it was running. Preserve the dirty
+                    // state for the next pass without manufacturing a failure
+                    // or incrementing dirtyRevision a second time.
+                    logDebug("\(self.logTag) 扫描期间 source 发生变化，保留 dirty 等待下一轮")
                 }
             },
             applyError: { message in

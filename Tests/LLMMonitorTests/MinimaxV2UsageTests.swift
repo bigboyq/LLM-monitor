@@ -27,7 +27,8 @@ final class MinimaxV2UsageTests: XCTestCase {
                 scannedAt: now, eventCount: 2, sessionCount: 1
             )],
             dailyBySource: ["runtime": [LocalUsageDayKey.make(day, calendar: calendar): usage]],
-            samplesBySource: nil
+            samplesBySource: nil,
+            calendarSignature: LocalUsageCalendarSignature.make(calendar)
         )
         try MinimaxLocalUsageScanner.saveIndex(index, cacheDir: cacheDir, fileManager: fileManager)
         defer { try? FileManager.default.removeItem(at: cacheDir) }

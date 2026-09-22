@@ -491,48 +491,129 @@ final class DshUsageTests: XCTestCase {
             root: sessionsRoot,
             sessionID: "session-bad",
             fileName: "session.jsonl.zst",
-            body: Data([0xDE, 0xAD])
+            body: Data((goodLines.joined(separator: "\n") + "\n").utf8)
         )
 
         let counter = DshDecompressorCallCounter.Box()
-        let failingDecompressor: DshLocalUsageScanner.Decompressor = { _ in
+        let decompressor: DshLocalUsageScanner.Decompressor = { data in
             counter.increment()
-            throw DshDecompressorCallCounter.DecompressError()
+            if data == Data([0xDE, 0xAD]) {
+                throw DshDecompressorCallCounter.DecompressError()
+            }
+            return data
         }
 
-        _ = try DshLocalUsageScanner.performScanPure(
+        let initial = try DshLocalUsageScanner.performScanPure(
             sessionsRoot: sessionsRoot,
             cacheDir: cache,
             fileManager: FileManagerBox(),
             calendar: calendar,
             now: { base },
-            decompressor: failingDecompressor,
+            decompressor: decompressor,
             limits: DshLocalUsageScanLimits.production
         )
-        XCTAssertEqual(counter.value, 1)
+        XCTAssertEqual(initial.eventCount, 2)
+        XCTAssertEqual(counter.value, 1, "只有压缩的 bad session 需要调用 decompressor")
 
-        // 坏文件不能进入“成功指纹”：index.json 里不得出现坏文件路径。
-        let indexJSON = try XCTUnwrap(String(
-            data: Data(contentsOf: cache.appendingPathComponent("index.json")),
-            encoding: .utf8
-        ))
-        XCTAssertFalse(
-            indexJSON.contains(badURL.path),
-            "失败文件不得写入成功指纹，否则下一轮缓存命中会跳过重试"
+        // 先让一个已经成功提交的文件在下一轮解压失败，验证 partial
+        // 结果不会把旧 snapshot 与新 fingerprint 拆成两份不相干的索引。
+        try Data([0xDE, 0xAD]).write(to: badURL)
+        try FileManager.default.setAttributes(
+            [.modificationDate: base.addingTimeInterval(1)],
+            ofItemAtPath: badURL.path
         )
 
-        // 文件无任何变化时的第二次扫描必须再次尝试坏文件（缓存不得命中）。
+        // 失败时保留完整 last-good snapshot，并保持原 index 不变。
         let second = try DshLocalUsageScanner.performScanPure(
             sessionsRoot: sessionsRoot,
             cacheDir: cache,
             fileManager: FileManagerBox(),
             calendar: calendar,
             now: { base },
-            decompressor: failingDecompressor,
+            decompressor: decompressor,
             limits: DshLocalUsageScanLimits.production
         )
         XCTAssertEqual(counter.value, 2, "坏文件在下一轮扫描必须被重试")
-        XCTAssertEqual(second.eventCount, 1, "好文件数据在重试轮次仍要保留")
+        XCTAssertEqual(second.eventCount, initial.eventCount, "失败轮次仍展示完整 last-good aggregate")
+
+        // 如果失败轮次曾经写入 files=[good]、snapshot=[good+bad]，此处
+        // 删除 bad 后会错误命中旧 aggregate。索引保持自洽时必须重新结算。
+        try FileManager.default.removeItem(at: badURL)
+        let afterDeletion = try DshLocalUsageScanner.performScanPure(
+            sessionsRoot: sessionsRoot,
+            cacheDir: cache,
+            fileManager: FileManagerBox(),
+            calendar: calendar,
+            now: { base },
+            decompressor: decompressor,
+            limits: DshLocalUsageScanLimits.production
+        )
+        XCTAssertEqual(afterDeletion.eventCount, 1, "删除失败文件后不得继续复用包含它的旧 aggregate")
+    }
+
+    func testStatFailureRetainsLastGoodIndexForPartialAndAllFailedFiles() throws {
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let calendar = makeUTCGregorianCalendar()
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("llm-monitor-dsh-stat-failure-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let cache = root.appendingPathComponent(".token-monitor", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let body = #"{"type":"assistant/message","seq":1,"time":1700000001000,"data":{"turn":1,"step":0,"usage":{"inputTokens":10,"outputTokens":1}}}"# + "\n"
+        try writeSessionLog(root: sessionsRoot, sessionID: "session-a", body: body)
+        try writeSessionLog(root: sessionsRoot, sessionID: "session-b", body: body)
+        let initial = try DshLocalUsageScanner.performScanPure(
+            sessionsRoot: sessionsRoot,
+            cacheDir: cache,
+            fileManager: FileManagerBox(),
+            calendar: calendar,
+            now: { base },
+            decompressor: { $0 },
+            limits: DshLocalUsageScanLimits.production
+        )
+        let committedIndex = try Data(contentsOf: cache.appendingPathComponent("index.json"))
+
+        let onlyBStatFails = try DshLocalUsageScanner.performScanPure(
+            sessionsRoot: sessionsRoot,
+            cacheDir: cache,
+            fileManager: FileManagerBox(),
+            calendar: calendar,
+            now: { base },
+            decompressor: { $0 },
+            limits: DshLocalUsageScanLimits.production,
+            snapshotReader: { url in
+                if url.path.contains("session-b") {
+                    throw CocoaError(.fileReadNoPermission)
+                }
+                return try DshLogFileSnapshot(url: url, fileManager: FileManagerBox())
+            }
+        )
+        XCTAssertEqual(onlyBStatFails.eventCount, initial.eventCount)
+        XCTAssertEqual(onlyBStatFails.isPartial, true)
+        XCTAssertEqual(
+            try Data(contentsOf: cache.appendingPathComponent("index.json")),
+            committedIndex,
+            "stat 失败不能用缺文件 aggregate 覆盖 last-good index"
+        )
+
+        let allStatFails = try DshLocalUsageScanner.performScanPure(
+            sessionsRoot: sessionsRoot,
+            cacheDir: cache,
+            fileManager: FileManagerBox(),
+            calendar: calendar,
+            now: { base },
+            decompressor: { $0 },
+            limits: DshLocalUsageScanLimits.production,
+            snapshotReader: { _ in throw CocoaError(.fileReadNoPermission) }
+        )
+        XCTAssertEqual(allStatFails.eventCount, initial.eventCount)
+        XCTAssertEqual(allStatFails.isPartial, true)
+        XCTAssertEqual(
+            try Data(contentsOf: cache.appendingPathComponent("index.json")),
+            committedIndex,
+            "全部 stat 失败也不能清空 last-good index"
+        )
     }
 
     func testDshReusesUnchangedFileParseWhenAnotherSessionChanges() throws {

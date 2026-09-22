@@ -26,6 +26,9 @@ struct DshLocalUsage: Equatable, Codable, Sendable {
     let sessionCount: Int
     let eventCount: Int
     let scannedAt: Date?
+    /// Optional so older persisted snapshots decode unchanged. A partial
+    /// result is displayable but must not be promoted to clean freshness.
+    var isPartial: Bool? = nil
 
     static let empty = DshLocalUsage(
         byProvider: [:],

@@ -161,6 +161,10 @@ final class AntigravityLocalUsageScanner: LocalUsageScannerBase<AntigravityLocal
         }
     }
 
+    override nonisolated func scanResultIsComplete(_ result: AntigravityLocalUsage) -> Bool {
+        result.failedSessionCount == 0
+    }
+
 }
 
 private struct DirtySessionFetchError: Error, Sendable {
@@ -261,13 +265,17 @@ extension AntigravityLocalUsageScanner {
         var sessions: [String: SessionIndexEntry]
         var dailyBySession: [String: [String: AntigravityDailyUsage]]
         var samplesBySession: [String: [LocalTokenUsageSample]]?
+        /// Optional for backward decoding; nil deliberately invalidates the
+        /// cached day buckets until this source completes one current-calendar scan.
+        var calendarSignature: String? = nil
 
         static let empty = CacheIndex(
             version: 7,
             lastScannedAt: Date(timeIntervalSince1970: 0),
             sessions: [:],
             dailyBySession: [:],
-            samplesBySession: [:]
+            samplesBySession: [:],
+            calendarSignature: nil
         )
     }
 }
@@ -356,14 +364,22 @@ extension AntigravityLocalUsageScanner {
         now: @escaping @Sendable () -> Date,
         shouldSave: Bool,
         saveIndexHook: (@Sendable () -> Void)? = nil,
-        forceFull: Bool = false
+        forceFull: Bool = false,
+        directoryContents: ((URL) throws -> [URL])? = nil
     ) async throws -> AntigravityLocalUsage {
         try ensureCacheDirectoriesExist(cacheDir: cacheDir, fileManager: fileManager)
 
         var index = try loadIndex(cacheDir: cacheDir, fileManager: fileManager)
+        let currentCalendarSignature = LocalUsageCalendarSignature.make(calendar)
+        let calendarChanged = index.calendarSignature != currentCalendarSignature
+        let requiresColdRebuild = forceFull || calendarChanged
+        if calendarChanged {
+            logInfo("[antigravity-scan] calendar signature changed，所有可读 session 重新建立日桶")
+        }
         let listing = listDBFilesWithStatus(
             conversationsDirs: conversationsDirs,
-            fileManager: fileManager
+            fileManager: fileManager,
+            directoryContents: directoryContents
         )
         let dbFiles = listing.files
 
@@ -423,7 +439,7 @@ extension AntigravityLocalUsageScanner {
         let nowDate = now()
         let dirtyPlans: [DirtySessionPlan] = dbFiles.compactMap { (sessionId, info) in
             guard info.sizeBytes > 0 || info.walSizeBytes > 0 else { return nil }
-            guard !forceFull, let cached = index.sessions[sessionId] else {
+            guard !requiresColdRebuild, let cached = index.sessions[sessionId] else {
                 return DirtySessionPlan(
                     sessionID: sessionId,
                     fileInfo: info,
@@ -470,7 +486,10 @@ extension AntigravityLocalUsageScanner {
         }
 
         // 3. 有界并发拉 dirty sessions
-        var failedCount = 0
+        // An incomplete root/file enumeration is retryable work even when all
+        // visible session RPCs succeed. Otherwise a calendar rebuild could
+        // advance its signature while silently omitting cached sessions.
+        var failedCount = listing.isComplete ? 0 : 1
         if !dirtyPlans.isEmpty {
             // Keep only a small completed batch of parsed events alive. The old
             // implementation retained all 166 result arrays until the last RPC
@@ -601,6 +620,12 @@ extension AntigravityLocalUsageScanner {
         //    shouldSave=false (旧 generation) 跳过, 保留新 worker 的 cache.
         if shouldSave {
             index.lastScannedAt = nowDate
+            // A partial calendar rebuild must not claim that old-calendar
+            // sessions are current. It will remain mismatched and retry cold
+            // on the next reconcile.
+            if failedCount == 0 {
+                index.calendarSignature = currentCalendarSignature
+            }
             try Self.saveIndex(index, cacheDir: cacheDir, fileManager: fileManager, hook: saveIndexHook)
         }
 
@@ -1065,6 +1090,11 @@ extension AntigravityLocalUsageScanner {
         do {
             let index = try loadIndex(cacheDir: cacheDir, fileManager: fileManager)
             guard !index.sessions.isEmpty, index.lastScannedAt.timeIntervalSince1970 > 0 else {
+                return nil
+            }
+            let signature = LocalUsageCalendarSignature.make(calendar)
+            guard index.calendarSignature == signature else {
+                logInfo("[antigravity-scan] 冷启动缓存 calendar signature 不匹配，等待当前日历重建")
                 return nil
             }
             let allDaily = computeGlobalDaily(from: index.dailyBySession, calendar: calendar)

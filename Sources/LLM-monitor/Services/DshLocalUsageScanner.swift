@@ -142,7 +142,8 @@ final class DshLocalUsageScanner: LocalUsageScannerBase<DshLocalUsage>, @uncheck
         now: Date
     ) -> DshLocalUsage? {
         guard let index = try? loadIndex(cacheDir: cacheDir, fileManager: fileManager),
-              let snapshot = index.snapshot else { return nil }
+              let snapshot = index.snapshot,
+              index.calendarSignature == LocalUsageCalendarSignature.make(calendar) else { return nil }
         return rebaseCached(snapshot, calendar: calendar, now: now)
     }
 
@@ -195,7 +196,8 @@ final class DshLocalUsageScanner: LocalUsageScannerBase<DshLocalUsage>, @uncheck
             try DshLogDecoder.decompressToFile(input: $0, output: $1, fileManager: $2)
         },
         limits: DshLocalUsageScanLimits = .production,
-        forceFull: Bool = false
+        forceFull: Bool = false,
+        snapshotReader: ((URL) throws -> DshLogFileSnapshot)? = nil
     ) throws -> DshLocalUsage {
         guard fileManager.fileExists(atPath: sessionsRoot.path) else {
             logInfo("[dsh-scan] sessions 目录不存在: \(sessionsRoot.path)")
@@ -214,7 +216,8 @@ final class DshLocalUsageScanner: LocalUsageScannerBase<DshLocalUsage>, @uncheck
         let selection = selectSessionSnapshots(
             filePaths: filePaths,
             fileManager: fileManager,
-            limits: limits
+            limits: limits,
+            snapshotReader: snapshotReader
         )
         if selection.truncatedByFileLimit || selection.byteLimited {
             logWarn(
@@ -224,6 +227,25 @@ final class DshLocalUsageScanner: LocalUsageScannerBase<DshLocalUsage>, @uncheck
             )
         }
         let snapshots = selection.snapshots
+        var index = try loadIndex(cacheDir: cacheDir, fileManager: fileManager)
+        let currentCalendarSignature = LocalUsageCalendarSignature.make(calendar)
+        if selection.failedFileCount > 0 {
+            // A file that cannot be stat'ed is not evidence of deletion. Keep
+            // the previous self-consistent index and expose its last-good view
+            // as partial so the next reconcile retries the file.
+            let scanNow = now()
+            let fallback = index.snapshot.map {
+                rebaseCached($0, calendar: calendar, now: scanNow)
+            } ?? DshLocalUsage(
+                byProvider: [:],
+                modelsByProvider: [:],
+                sessionsRoot: sessionsRoot.path,
+                sessionCount: 0,
+                eventCount: 0,
+                scannedAt: scanNow
+            )
+            return Self.markPartial(fallback)
+        }
         guard !snapshots.isEmpty else {
             let empty = DshLocalUsage(
                 byProvider: [:],
@@ -234,7 +256,12 @@ final class DshLocalUsageScanner: LocalUsageScannerBase<DshLocalUsage>, @uncheck
                 scannedAt: now()
             )
             try saveIndex(
-                DshCacheIndex(version: 5, files: [], snapshot: empty),
+                DshCacheIndex(
+                    version: 5,
+                    files: [],
+                    snapshot: empty,
+                    calendarSignature: LocalUsageCalendarSignature.make(calendar)
+                ),
                 cacheDir: cacheDir,
                 fileManager: fileManager
             )
@@ -242,8 +269,11 @@ final class DshLocalUsageScanner: LocalUsageScannerBase<DshLocalUsage>, @uncheck
         }
 
         let fingerprint = CacheFingerprint(files: snapshots.map(\.fingerprint))
-        var index = try loadIndex(cacheDir: cacheDir, fileManager: fileManager)
-        if !forceFull, index.matches(fingerprint), let cached = index.snapshot {
+        let calendarChanged = index.calendarSignature != currentCalendarSignature
+        if calendarChanged {
+            logInfo("[dsh-scan] calendar signature changed，重新解析文件以重建当前日桶")
+        }
+        if !forceFull, !calendarChanged, index.matches(fingerprint), let cached = index.snapshot {
             let scanNow = now()
             let rebased = rebaseCached(cached, calendar: calendar, now: scanNow)
             if rebased != cached {
@@ -254,7 +284,7 @@ final class DshLocalUsageScanner: LocalUsageScannerBase<DshLocalUsage>, @uncheck
         }
 
         let scanNow = now()
-        let outcome = try aggregateFiles(
+        var outcome = try aggregateFiles(
             snapshots: snapshots,
             sessionsRoot: sessionsRoot,
             fileManager: fileManager,
@@ -264,6 +294,7 @@ final class DshLocalUsageScanner: LocalUsageScannerBase<DshLocalUsage>, @uncheck
             limits: limits,
             forceFull: forceFull
         )
+        outcome.failedFileCount += selection.failedFileCount
         let snapshot = buildSnapshot(
             aggregate: outcome.aggregate,
             sessionsRoot: sessionsRoot,
@@ -271,7 +302,26 @@ final class DshLocalUsageScanner: LocalUsageScannerBase<DshLocalUsage>, @uncheck
             now: scanNow,
             limits: limits
         )
-        index = DshCacheIndex(version: 5, files: outcome.processedFingerprints, snapshot: snapshot)
+        if outcome.failedFileCount > 0 {
+            // Never replace a complete last-good snapshot with an aggregate
+            // that silently omits failed files. Keep the old view visible and
+            // return an explicitly partial result so the base lifecycle keeps
+            // the source dirty/failed for the next reconcile.
+            // Keep the index completely unchanged. The file fingerprints and
+            // aggregate snapshot must describe the same source set; advancing
+            // only successful fingerprints would allow a later deletion to
+            // falsely hit the old aggregate forever.
+            let lastGood = index.snapshot.map {
+                rebaseCached($0, calendar: calendar, now: scanNow)
+            } ?? snapshot
+            return Self.markPartial(lastGood)
+        }
+        index = DshCacheIndex(
+            version: 5,
+            files: outcome.processedFingerprints,
+            snapshot: snapshot,
+            calendarSignature: currentCalendarSignature
+        )
         try saveIndex(index, cacheDir: cacheDir, fileManager: fileManager)
         logInfo(
             "[dsh-scan] ✓ sessions=\(snapshot.sessionCount), providers=\(snapshot.byProvider.count), "
@@ -279,6 +329,16 @@ final class DshLocalUsageScanner: LocalUsageScannerBase<DshLocalUsage>, @uncheck
                 + (outcome.failedFileCount > 0 ? ", skippedFailedFiles=\(outcome.failedFileCount)" : "")
         )
         return snapshot
+    }
+
+    override nonisolated func scanResultIsComplete(_ result: DshLocalUsage) -> Bool {
+        result.isPartial != true
+    }
+
+    private nonisolated static func markPartial(_ snapshot: DshLocalUsage) -> DshLocalUsage {
+        var partial = snapshot
+        partial.isPartial = true
+        return partial
     }
 
     /// Select which session files participate in a scan. All valid snapshots are
@@ -289,14 +349,26 @@ final class DshLocalUsageScanner: LocalUsageScannerBase<DshLocalUsage>, @uncheck
     nonisolated static func selectSessionSnapshots(
         filePaths: [URL],
         fileManager: FileManagerBox,
-        limits: DshLocalUsageScanLimits
+        limits: DshLocalUsageScanLimits,
+        snapshotReader: ((URL) throws -> DshLogFileSnapshot)? = nil
     ) -> DshFileSelection {
         var candidates: [DshLogFileSnapshot] = []
         candidates.reserveCapacity(filePaths.count)
+        var failedFileURLs: [URL] = []
         for url in filePaths {
-            guard let snapshot = try? DshLogFileSnapshot(url: url, fileManager: fileManager) else {
+            let snapshot: DshLogFileSnapshot?
+            do {
+                snapshot = try snapshotReader.map { try $0(url) }
+                    ?? DshLogFileSnapshot(url: url, fileManager: fileManager)
+            } catch {
+                failedFileURLs.append(url)
+                logWarn(
+                    "[dsh-scan] 无法读取 session 文件属性，保留 last-good cache: "
+                        + "\(url.path), error: \(errorSummary(error))"
+                )
                 continue
             }
+            guard let snapshot else { continue }
             guard snapshot.sizeBytes > 0 else { continue }
             candidates.append(snapshot)
         }
@@ -322,7 +394,8 @@ final class DshLocalUsageScanner: LocalUsageScannerBase<DshLocalUsage>, @uncheck
         return DshFileSelection(
             snapshots: selected,
             availableCount: candidates.count,
-            byteLimited: byteLimited
+            byteLimited: byteLimited,
+            failedFileCount: failedFileURLs.count
         )
     }
 
@@ -423,6 +496,8 @@ struct DshFileSelection: Sendable {
     let availableCount: Int
     /// True when the raw-byte cap dropped at least one otherwise-selected file.
     let byteLimited: Bool
+    /// Number of files whose fingerprint/stat read failed before selection.
+    let failedFileCount: Int
 
     var truncatedByFileLimit: Bool { snapshots.count < availableCount }
 }
@@ -1205,6 +1280,7 @@ private struct DshCacheIndex: Codable, Equatable, Sendable {
     let version: Int
     let files: [DshLogFileFingerprint]
     var snapshot: DshLocalUsage?
+    var calendarSignature: String?
 }
 
 private extension DshCacheIndex {
@@ -1222,7 +1298,7 @@ private extension DshLocalUsageScanner {
             cacheDir: cacheDir,
             fileManager: fileManager,
             currentVersion: 5,
-            empty: DshCacheIndex(version: 5, files: [], snapshot: nil),
+            empty: DshCacheIndex(version: 5, files: [], snapshot: nil, calendarSignature: nil),
             version: { $0.version },
             logTag: "[dsh-scan]"
         )

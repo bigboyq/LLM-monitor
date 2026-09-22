@@ -3256,6 +3256,9 @@ final class StateAndSchedulerTests: XCTestCase {
         XCTAssertEqual(LocalUsageScanMode.full.displayName, "cache-assisted-full")
         XCTAssertEqual(LocalUsageScanMode.dirty.displayName, "dirty-reconcile")
         XCTAssertEqual(LocalUsageScanMode.hardFull.displayName, "hard-full")
+        XCTAssertEqual(LocalUsageScanMode.merged(.dirty, .full), .full)
+        XCTAssertEqual(LocalUsageScanMode.merged(.full, .hardFull), .hardFull)
+        XCTAssertEqual(LocalUsageScanMode.merged(.hardFull, .dirty), .hardFull)
     }
 
     @MainActor
@@ -3315,6 +3318,147 @@ final class StateAndSchedulerTests: XCTestCase {
 
         let modes = await probe.snapshot()
         XCTAssertEqual(modes, [.full, .full])
+    }
+
+    @MainActor
+    func testAwaitedReconcileWaitsForCoalescedFollowUpToFinish() async {
+        let probe = ReconcilePassProbe()
+        await probe.setBlockSecondPass(true)
+        let orchestration = LocalUsageOrchestration(writer: ReconcileNoopWriter())
+        orchestration.testReconcilePass = { mode in
+            await probe.run(mode)
+        }
+        defer { orchestration.cancelInFlightAll() }
+
+        orchestration.scheduleReconcile()
+        await probe.waitForFirstStart()
+        let explicitFull = Task { @MainActor in
+            await orchestration.reconcile(mode: .full)
+        }
+        await probe.releaseFirst()
+        await probe.waitForSecondStart()
+
+        var explicitReturned = false
+        let observer = Task { @MainActor in
+            await explicitFull.value
+            explicitReturned = true
+        }
+        try? await Task.sleep(nanoseconds: 20_000_000)
+        XCTAssertFalse(explicitReturned)
+
+        await probe.releaseSecond()
+        await explicitFull.value
+        await observer.value
+        XCTAssertTrue(explicitReturned)
+        let finalModes = await probe.snapshot()
+        XCTAssertEqual(finalModes, [.full, .full])
+    }
+
+    @MainActor
+    func testConcurrentSynchronousReconcilesShareOneCompletionChain() async {
+        let probe = ReconcilePassProbe()
+        await probe.setBlockSecondPass(true)
+        let orchestration = LocalUsageOrchestration(writer: ReconcileNoopWriter())
+        orchestration.testReconcilePass = { mode in
+            await probe.run(mode)
+        }
+        defer { orchestration.cancelInFlightAll() }
+
+        let first = Task { @MainActor in
+            await orchestration.reconcile(mode: .full)
+        }
+        await probe.waitForFirstStart()
+        let second = Task { @MainActor in
+            await orchestration.reconcile(mode: .full)
+        }
+        await probe.releaseFirst()
+        await probe.waitForSecondStart()
+
+        var firstReturned = false
+        var secondReturned = false
+        let firstObserver = Task { @MainActor in
+            await first.value
+            firstReturned = true
+        }
+        let secondObserver = Task { @MainActor in
+            await second.value
+            secondReturned = true
+        }
+        try? await Task.sleep(nanoseconds: 20_000_000)
+        XCTAssertFalse(firstReturned)
+        XCTAssertFalse(secondReturned)
+
+        await probe.releaseSecond()
+        await first.value
+        await second.value
+        await firstObserver.value
+        await secondObserver.value
+        XCTAssertTrue(firstReturned)
+        XCTAssertTrue(secondReturned)
+    }
+
+    @MainActor
+    func testReconcileTeardownConsumesRequestQueuedBeforeOwnerRelease() async {
+        var modes: [LocalUsageScanMode] = []
+        var injected = false
+        var orchestration: LocalUsageOrchestration!
+        orchestration = LocalUsageOrchestration(writer: ReconcileNoopWriter())
+        orchestration.testReconcilePass = { mode in
+            modes.append(mode)
+        }
+        orchestration.testReconcileChainTeardownHook = {
+            guard !injected else { return }
+            injected = true
+            orchestration.scheduleReconcile(mode: .dirty)
+        }
+        defer { orchestration.cancelInFlightAll() }
+
+        await orchestration.reconcile(mode: .full)
+
+        XCTAssertEqual(
+            modes,
+            [.full, .dirty],
+            "请求在 chain 收尾时到达也必须被后续 pass 消费，不能因 owner 清理而丢失"
+        )
+    }
+
+    @MainActor
+    func testSuccessfulScanWithMidScanDirtyDoesNotReportFailure() async throws {
+        let gate = ScannerTestGate()
+        let scanner = LifecycleProbeScanner(gate: gate)
+        var failedCount = 0
+        scanner.onFailed = { failedCount += 1 }
+
+        scanner.scan()
+        await gate.waitForEntered()
+        scanner.markDirty()
+        await gate.release()
+        try await scanner.waitUntilSettled()
+
+        XCTAssertEqual(scanner.lastResult, 1)
+        XCTAssertTrue(scanner.isDirty)
+        XCTAssertNil(scanner.lastError)
+        XCTAssertEqual(failedCount, 0)
+    }
+
+    @MainActor
+    func testCalendarInvalidationDuringReconcileQueuesHardFullAfterCurrentPass() async {
+        let probe = ReconcilePassProbe()
+        let orchestration = LocalUsageOrchestration(writer: ReconcileNoopWriter())
+        orchestration.testReconcilePass = { mode in
+            await probe.run(mode)
+        }
+        defer { orchestration.cancelInFlightAll() }
+
+        orchestration.scheduleReconcile()
+        await probe.waitForFirstStart()
+        orchestration.invalidateForCalendarChange()
+        await probe.releaseFirst()
+        await probe.waitForCount(2)
+
+        let modes = await probe.snapshot()
+        XCTAssertEqual(modes, [.full, .hardFull])
+        XCTAssertEqual(orchestration.nextReconcileMode, .dirty)
     }
 
     @MainActor
@@ -3549,8 +3693,11 @@ private final class SchedulerTestClock: @unchecked Sendable {
 
 private actor ReconcilePassProbe {
     private var modes: [LocalUsageScanMode] = []
+    private var blockSecondPass = false
     private var firstStartContinuation: CheckedContinuation<Void, Never>?
     private var firstReleaseContinuation: CheckedContinuation<Void, Never>?
+    private var secondStartContinuation: CheckedContinuation<Void, Never>?
+    private var secondReleaseContinuation: CheckedContinuation<Void, Never>?
     private var countWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
 
     func run(_ mode: LocalUsageScanMode) async {
@@ -3561,6 +3708,12 @@ private actor ReconcilePassProbe {
             firstStartContinuation = nil
             await withCheckedContinuation { continuation in
                 firstReleaseContinuation = continuation
+            }
+        } else if modes.count == 2, blockSecondPass {
+            secondStartContinuation?.resume()
+            secondStartContinuation = nil
+            await withCheckedContinuation { continuation in
+                secondReleaseContinuation = continuation
             }
         }
     }
@@ -3577,6 +3730,22 @@ private actor ReconcilePassProbe {
         firstReleaseContinuation = nil
     }
 
+    func setBlockSecondPass(_ block: Bool) {
+        blockSecondPass = block
+    }
+
+    func waitForSecondStart() async {
+        guard modes.count < 2 else { return }
+        await withCheckedContinuation { continuation in
+            secondStartContinuation = continuation
+        }
+    }
+
+    func releaseSecond() {
+        secondReleaseContinuation?.resume()
+        secondReleaseContinuation = nil
+    }
+
     func waitForCount(_ expected: Int) async {
         guard modes.count < expected else { return }
         await withCheckedContinuation { continuation in
@@ -3590,6 +3759,57 @@ private actor ReconcilePassProbe {
         let ready = countWaiters.filter { modes.count >= $0.0 }
         countWaiters.removeAll { modes.count >= $0.0 }
         ready.forEach { $0.1.resume() }
+    }
+}
+
+private actor ScannerTestGate {
+    private var entered = false
+    private var enteredContinuation: CheckedContinuation<Void, Never>?
+    private var releaseContinuation: CheckedContinuation<Void, Never>?
+
+    func wait() async {
+        entered = true
+        enteredContinuation?.resume()
+        enteredContinuation = nil
+        await withCheckedContinuation { continuation in
+            releaseContinuation = continuation
+        }
+    }
+
+    func waitForEntered() async {
+        guard !entered else { return }
+        await withCheckedContinuation { continuation in
+            enteredContinuation = continuation
+        }
+    }
+
+    func release() {
+        releaseContinuation?.resume()
+        releaseContinuation = nil
+    }
+}
+
+@MainActor
+private final class LifecycleProbeScanner: LocalUsageScannerBase<Int>, @unchecked Sendable {
+    private let gate: ScannerTestGate
+    private let lock = AsyncMutex()
+
+    nonisolated override var pipelineLock: AsyncMutex { lock }
+
+    init(gate: ScannerTestGate) {
+        self.gate = gate
+        super.init(logTag: "[test-scanner]", cachedResult: nil)
+    }
+
+    override func makeWork(
+        startedGeneration: UInt64,
+        mode: LocalUsageScanMode
+    ) -> @Sendable () async throws -> Int {
+        let gate = self.gate
+        return {
+            await gate.wait()
+            return 1
+        }
     }
 }
 

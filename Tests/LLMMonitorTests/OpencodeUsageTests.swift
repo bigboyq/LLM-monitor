@@ -20,7 +20,8 @@ final class OpencodeUsageTests: XCTestCase {
             dbSizeBytes: 1,
             walMtimeMs: 0,
             walSizeBytes: 0,
-            snapshot: snapshot
+            snapshot: snapshot,
+            calendarSignature: LocalUsageCalendarSignature.make(.autoupdatingCurrent)
         )
         try FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
         try OpencodeUsageScanner.saveIndex(index, cacheDir: cacheDir, fileManager: FileManagerBox())

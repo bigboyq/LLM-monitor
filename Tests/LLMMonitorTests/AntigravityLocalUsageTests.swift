@@ -411,6 +411,56 @@ final class AntigravityLocalUsageTests: XCTestCase {
         }
     }
 
+    func testCalendarMismatchWithUnreadableRootStaysIncompleteAndDoesNotAdvanceSignature() async throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory
+            .appendingPathComponent("antigravity-calendar-unreadable-\(UUID().uuidString)", isDirectory: true)
+        let cache = root.appendingPathComponent("cache", isDirectory: true)
+        let unreadable = root.appendingPathComponent("unreadable", isDirectory: true)
+        defer { try? fm.removeItem(at: root) }
+        try fm.createDirectory(at: cache, withIntermediateDirectories: true)
+        try fm.createDirectory(at: unreadable, withIntermediateDirectories: true)
+
+        var oldCalendar = Calendar(identifier: .gregorian)
+        oldCalendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        var newCalendar = oldCalendar
+        newCalendar.timeZone = TimeZone(identifier: "Asia/Shanghai")!
+        let oldSignature = LocalUsageCalendarSignature.make(oldCalendar)
+        let index = AntigravityLocalUsageScanner.CacheIndex(
+            version: 7,
+            lastScannedAt: Date(),
+            sessions: ["cached-session": .init(
+                mtimeMs: 1,
+                sizeBytes: 1,
+                fetchedAt: Date(),
+                eventCount: 10
+            )],
+            dailyBySession: [:],
+            samplesBySession: ["cached-session": []],
+            calendarSignature: oldSignature
+        )
+        try AntigravityLocalUsageScanner.saveIndex(index, cacheDir: cache, fileManager: FileManagerBox(fm))
+
+        let result = try await AntigravityLocalUsageScanner.performScanPureImpl(
+            fetcher: AntigravityFetcher(metadataServerDiscovery: { [] }),
+            conversationsDirs: [unreadable],
+            cacheDir: cache,
+            fileManager: FileManagerBox(fm),
+            calendar: newCalendar,
+            now: { Date(timeIntervalSince1970: 1_700_000_000) },
+            shouldSave: true,
+            forceFull: true,
+            directoryContents: { _ in throw CocoaError(.fileReadNoPermission) }
+        )
+
+        XCTAssertEqual(result.failedSessionCount, 1)
+        XCTAssertEqual(
+            try AntigravityLocalUsageScanner.loadIndex(cacheDir: cache, fileManager: FileManagerBox(fm)).calendarSignature,
+            oldSignature,
+            "calendar mismatch plus incomplete enumeration must not advance the new signature"
+        )
+    }
+
     /// confirmedRemovedSessionIDs 纯函数：listing.isComplete=true 时, 不在 listing 的 cached 视为已删
     func testListDBFilesConfirmedRemovedSessionIDs() {
         let current = AntigravityDBFileInfo(
@@ -1191,7 +1241,8 @@ final class AntigravityLocalUsageTests: XCTestCase {
                 mtimeMs: 1, sizeBytes: 2, fetchedAt: now, eventCount: 2
             )],
             dailyBySession: ["session-1": [LocalUsageDayKey.make(day, calendar: calendar): usage]],
-            samplesBySession: nil
+            samplesBySession: nil,
+            calendarSignature: LocalUsageCalendarSignature.make(calendar)
         )
         try AntigravityLocalUsageScanner.saveIndex(index, cacheDir: cacheDir, fileManager: fileManager)
         defer { try? FileManager.default.removeItem(at: cacheDir) }

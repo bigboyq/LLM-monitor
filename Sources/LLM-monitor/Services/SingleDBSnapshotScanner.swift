@@ -15,7 +15,7 @@ struct DBFileFingerprint: Equatable, Sendable {
 }
 
 /// 单库快照扫描器的 on-disk index（version + db/WAL 指纹 + 完整快照）。
-/// 字段与各 scanner 原来的 `CacheIndex` 完全一致，旧缓存文件无需迁移。
+/// 字段与各 scanner 原来的 `CacheIndex` 完全一致；旧缓存可解码，但缺少日历签名时会被视为失效并重建。
 struct SnapshotCacheIndex<Usage: Equatable & Codable & Sendable>: Equatable, Codable, Sendable {
     var version: Int
     var dbMtimeMs: Double
@@ -23,21 +23,30 @@ struct SnapshotCacheIndex<Usage: Equatable & Codable & Sendable>: Equatable, Cod
     var walMtimeMs: Double
     var walSizeBytes: Int
     var snapshot: Usage?
+    /// Optional for backward decoding. Missing/old signatures are treated as
+    /// invalid so a source scan rebuilds before showing a cached day bucket.
+    var calendarSignature: String? = nil
 
-    func matches(_ fp: DBFileFingerprint) -> Bool {
+    func matches(_ fp: DBFileFingerprint, calendarSignature: String) -> Bool {
         fp.exists
             && dbMtimeMs == fp.mtimeMs
             && dbSizeBytes == fp.sizeBytes
             && walMtimeMs == fp.walMtimeMs
             && walSizeBytes == fp.walSizeBytes
+            && self.calendarSignature == calendarSignature
     }
 
-    mutating func update(fingerprint: DBFileFingerprint, snapshot newSnapshot: Usage) {
+    mutating func update(
+        fingerprint: DBFileFingerprint,
+        snapshot newSnapshot: Usage,
+        calendarSignature: String
+    ) {
         dbMtimeMs = fingerprint.mtimeMs
         dbSizeBytes = fingerprint.sizeBytes
         walMtimeMs = fingerprint.walMtimeMs
         walSizeBytes = fingerprint.walSizeBytes
         snapshot = newSnapshot
+        self.calendarSignature = calendarSignature
     }
 }
 
@@ -81,13 +90,15 @@ class SingleDBSnapshotScanner<Usage: Equatable & Codable & Sendable>: LocalUsage
         self.calendar = calendar
         self.now = now
         self.cacheIndexVersion = cacheIndexVersion
+        let calendarSignature = LocalUsageCalendarSignature.make(calendar)
         super.init(
             logTag: logTag,
             cachedResult: Self.loadCachedResult(
                 cacheDir: cacheDir,
                 fileManager: fileManager,
                 logTag: logTag,
-                currentVersion: cacheIndexVersion
+                currentVersion: cacheIndexVersion,
+                calendarSignature: calendarSignature
             )
         )
     }
@@ -126,6 +137,7 @@ class SingleDBSnapshotScanner<Usage: Equatable & Codable & Sendable>: LocalUsage
     /// 纯 I/O + 计算。在 `pipelineMutex` 内串行执行。
     nonisolated private func performScanLocked(nowDate: Date, forceFull: Bool = false) throws -> Usage {
         try ScannerIndexIO.ensureCacheDirectory(for: cacheDir, fileManager: fileManager)
+        let calendarSignature = LocalUsageCalendarSignature.make(calendar)
 
         // 1. db + WAL 指纹
         let fingerprint = try Self.statFingerprint(dbURL: dbURL, fileManager: fileManager)
@@ -140,11 +152,15 @@ class SingleDBSnapshotScanner<Usage: Equatable & Codable & Sendable>: LocalUsage
             cacheDir: cacheDir, fileManager: fileManager,
             logTag: logTag, currentVersion: cacheIndexVersion
         )
-        if !forceFull, index.matches(fingerprint), let snapshot = index.snapshot {
+        if !forceFull, index.matches(fingerprint, calendarSignature: calendarSignature), let snapshot = index.snapshot {
             logDebug("\(logTag) 指纹未变，复用缓存快照")
             let rebased = try rebaseSnapshot(snapshot, now: nowDate)
             if rebased != snapshot {
-                index.update(fingerprint: fingerprint, snapshot: rebased)
+                index.update(
+                    fingerprint: fingerprint,
+                    snapshot: rebased,
+                    calendarSignature: calendarSignature
+                )
                 try Self.saveIndex(index, cacheDir: cacheDir, fileManager: fileManager)
             }
             return rebased
@@ -152,7 +168,11 @@ class SingleDBSnapshotScanner<Usage: Equatable & Codable & Sendable>: LocalUsage
 
         // 3. 聚合 + 写缓存
         let snapshot = try buildSnapshot(now: nowDate)
-        index.update(fingerprint: fingerprint, snapshot: snapshot)
+        index.update(
+            fingerprint: fingerprint,
+            snapshot: snapshot,
+            calendarSignature: calendarSignature
+        )
         try Self.saveIndex(index, cacheDir: cacheDir, fileManager: fileManager)
         return snapshot
     }
@@ -202,7 +222,8 @@ class SingleDBSnapshotScanner<Usage: Equatable & Codable & Sendable>: LocalUsage
         cacheDir: URL,
         fileManager: FileManagerBox,
         logTag: String,
-        currentVersion: Int
+        currentVersion: Int,
+        calendarSignature: String? = nil
     ) throws -> CacheIndex {
         try ScannerIndexIO.loadIndex(
             cacheDir: cacheDir, fileManager: fileManager,
@@ -224,13 +245,20 @@ class SingleDBSnapshotScanner<Usage: Equatable & Codable & Sendable>: LocalUsage
         cacheDir: URL,
         fileManager: FileManagerBox,
         logTag: String,
-        currentVersion: Int
+        currentVersion: Int,
+        calendarSignature: String? = nil
     ) -> Usage? {
         do {
-            return try loadIndex(
+            let index = try loadIndex(
                 cacheDir: cacheDir, fileManager: fileManager,
-                logTag: logTag, currentVersion: currentVersion
-            ).snapshot
+                logTag: logTag, currentVersion: currentVersion,
+                calendarSignature: calendarSignature
+            )
+            if let calendarSignature, index.calendarSignature != calendarSignature {
+                logInfo("\(logTag) 冷启动缓存 calendar signature 不匹配，等待当前日历重建")
+                return nil
+            }
+            return index.snapshot
         } catch {
             logWarn("\(logTag) 冷启动恢复 index 失败: \(error.localizedDescription)")
             return nil
@@ -240,7 +268,8 @@ class SingleDBSnapshotScanner<Usage: Equatable & Codable & Sendable>: LocalUsage
     private nonisolated static func emptyIndex(version: Int) -> CacheIndex {
         CacheIndex(
             version: version, dbMtimeMs: 0, dbSizeBytes: 0,
-            walMtimeMs: 0, walSizeBytes: 0, snapshot: nil
+            walMtimeMs: 0, walSizeBytes: 0, snapshot: nil,
+            calendarSignature: nil
         )
     }
 }

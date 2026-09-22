@@ -291,13 +291,15 @@ final class GlmZcodeLocalUsageScanner: SingleDBSnapshotScanner<GlmLocalUsage>, @
     /// 冷启动缓存读取（保持既有两参数测试签名）。
     nonisolated static func loadCachedResult(
         cacheDir: URL,
-        fileManager: FileManagerBox
+        fileManager: FileManagerBox,
+        calendar: Calendar = .autoupdatingCurrent
     ) -> GlmLocalUsage? {
         loadCachedResult(
             cacheDir: cacheDir,
             fileManager: fileManager,
             logTag: scanLogTag,
-            currentVersion: cacheIndexVersion
+            currentVersion: cacheIndexVersion,
+            calendarSignature: LocalUsageCalendarSignature.make(calendar)
         )
     }
 }

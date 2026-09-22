@@ -36,14 +36,16 @@ Provider 策略层
 
 FSEvents/vnode 只负责把 source 标记为 dirty 和驱动 freshness UI；它不直接启动一个新的扫描，也不决定扫描范围。Provider batch settled 后由唯一的 reconcile 协调器消费这个状态。
 
+协调器只有一个待处理模式槽位，优先级为 `dirty < full < hardFull`；运行期间到达的请求只提升这个槽位，不再创建并行 reconcile。日历/时区失效使用单调 revision 标记：如果失效发生在当前事务期间，当前事务不能消费这次失效，事务结束后必须再执行一次 `hardFull`。
+
 ## Provider 策略矩阵
 
 | Provider | 变化识别 | 普通/启动策略 | 不安全变化的兜底 |
 | --- | --- | --- | --- |
-| Antigravity | session + WAL `mtime/size`，并校验枚举是否完整 | 未变化复用 `antigravity.json`；append 使用 generator metadata offset；只替换 dirty session 的 daily/sample 贡献 | shrink、缺 cache、枚举不完整、RPC 失败保留 last-good；设置页 hard-full 才逐 session cold RPC |
-| MiniMax | runtime DB + WAL 指纹，逐 source cache | 未变化复用；变化 source 重聚合最近窗口，保留 sample cache | stat/SQL 不确定时保留 last-good，不推进成功指纹 |
-| GLM / OpenCode | DB + WAL 指纹 | 未变化 rebase 本地日窗口；变化时重建单库 snapshot | DB/WAL 不可读或 cache 版本不匹配时重建；失败不覆盖 last-good |
-| DSH | session 文件集合和每文件 fingerprint | 未变化复用；只解析变化文件，复用 parsed-file cache | 删除/压缩重写/预算截断等不安全状态回退单文件或受限全量 |
+| Antigravity | session + WAL `mtime/size`，并校验枚举是否完整；缓存带日历签名 | 未变化复用 `antigravity.json`；append 使用 generator metadata offset；只替换 dirty session 的 daily/sample 贡献 | shrink、缺 cache、日历变化、枚举不完整、RPC 失败保留 last-good；设置页 hard-full 才逐 session cold RPC，结果不完整时保持 dirty |
+| MiniMax | runtime DB + WAL 指纹，逐 source cache；缓存带日历签名 | 未变化复用；变化 source 重聚合最近窗口，保留 sample cache | stat/SQL 不确定、日历变化或 session 失败时保留 last-good，不推进成功指纹，结果不完整时保持 dirty |
+| GLM / OpenCode | DB + WAL 指纹，快照带日历签名 | 未变化 rebase 本地日窗口；变化时重建单库 snapshot | DB/WAL 不可读、日历变化或 cache 版本不匹配时重建；失败不覆盖 last-good |
+| DSH | session 文件集合和每文件 fingerprint；聚合快照带日历签名 | 未变化复用；只解析变化文件，复用 parsed-file cache | 删除/压缩重写/预算截断等不安全状态回退单文件或受限全量；单文件失败时整份 index 保持 last-good 且保持 dirty，避免 fingerprint 与 aggregate 不一致 |
 | Codex | session JSONL per-file `mtime/size`，并检测 append/truncate/rewrite | 进程内未变化复用；append 从 offset 续读；启动 cache 缺失时冷扫一次 | truncate、同尺寸改写、部分行或预算未读保留 pending，下一拍续读/重扫；当前事件 cache 不跨进程持久化 |
 
 ## 事务和并发契约
@@ -53,6 +55,7 @@ FSEvents/vnode 只负责把 source 标记为 dirty 和驱动 freshness UI；它�
 3. `refreshOne` 也必须经过同一个全局事务入口；它不能绕过 LocalUsage reconcile 或 gate。
 4. regular Interval 从完整事务完成时间结算；旧 generation 在取消、stop、配置重载后不能写回新的 deadline、freshness 或 cache。
 5. 自动 batch 只触发一次 reconcile；启动错峰 quota 结束后只触发一次 cache-assisted-full。Provider 之间可以分批控制内存峰值，但不能把每个 Provider 拆成一次全局 full scan。
+6. Scanner 的结果必须区分完整和可重试的 partial；partial 可以暂时展示，但不能推进 freshness、日历签名或成功 fingerprint。旧 generation 不能释放新 generation 的 gate，也不能覆盖新的 deadline、freshness 或 cache。
 
 ## 执行阶段
 
@@ -62,6 +65,9 @@ FSEvents/vnode 只负责把 source 标记为 dirty 和驱动 freshness UI；它�
 - MiniMax、GLM、OpenCode、DSH、Codex 不再因为启动 `full` 无条件绕过自身缓存。
 - 日历/时区失效进入 `hardFull`；手工、唤醒、自动和普通日切保留 dirty/offset 路径。
 - 保留 Antigravity 设置页显式 hard-full，不扩大为全局硬全量。
+- 所有可持久化的日窗口快照都绑定 calendar/time-zone signature；冷启动遇到缺失或不匹配的签名会重建。
+- Antigravity、MiniMax 和 DSH 的 partial/文件失败不会被标记为 fresh；DSH 在失败轮次不改动 index，保留上一份自洽的成功聚合和 fingerprint。
+- reconcile 使用单一 `pendingMode` 和 calendar revision，保证 in-flight 的 `hardFull` 不被 dirty 降级或吞掉。
 
 ### 下一阶段
 

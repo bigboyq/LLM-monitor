@@ -246,6 +246,11 @@ final class MinimaxLocalUsageScanner: LocalUsageScannerBase<MinimaxLocalUsage>, 
         try Self.ensureCacheDirectoriesExist(cacheDir: cacheDir, fileManager: fileManager)
 
         var index = try Self.loadIndex(cacheDir: cacheDir, fileManager: fileManager)
+        let currentCalendarSignature = LocalUsageCalendarSignature.make(calendar)
+        let calendarChanged = index.calendarSignature != currentCalendarSignature
+        if calendarChanged {
+            logInfo("[minimax-scan] calendar signature changed，重新聚合当前日桶")
+        }
 
         let sources: [(key: String, path: URL)] = [
             ("runtime", runtimeDBURL)
@@ -280,7 +285,7 @@ final class MinimaxLocalUsageScanner: LocalUsageScannerBase<MinimaxLocalUsage>, 
 
         var dirty: [(key: String, info: MinimaxDBFileInfo)] = []
         for (key, info) in currentSourceInfo {
-            if forceFull {
+            if forceFull || calendarChanged {
                 dirty.append((key, info))
             } else if let cached = index.sources[key] {
                 if cached.charSplitDegraded == true {
@@ -370,6 +375,9 @@ final class MinimaxLocalUsageScanner: LocalUsageScannerBase<MinimaxLocalUsage>, 
         //    shouldSave=false (旧 generation) 跳过, 保留新 worker 的 cache.
         if shouldSave {
             index.lastScannedAt = now()
+            if failedKeys.isEmpty {
+                index.calendarSignature = currentCalendarSignature
+            }
             try Self.saveIndex(index, cacheDir: cacheDir, fileManager: fileManager, hook: saveIndexHook)
         }
 
@@ -413,6 +421,10 @@ final class MinimaxLocalUsageScanner: LocalUsageScannerBase<MinimaxLocalUsage>, 
             failedSessionCount: failedCount,
             recentSamples: recentSamples
         )
+    }
+
+    override nonisolated func scanResultIsComplete(_ result: MinimaxLocalUsage) -> Bool {
+        result.failedSessionCount == 0
     }
 }
 // MARK: - Cache + index types
@@ -472,13 +484,17 @@ extension MinimaxLocalUsageScanner {
         var sources: [String: SourceIndexEntry]
         var dailyBySource: [String: [String: MinimaxDailyUsage]]
         var samplesBySource: [String: [LocalTokenUsageSample]]?
+        /// Optional for backward decoding; old day buckets are not valid until
+        /// a scan completes under the current calendar/time zone.
+        var calendarSignature: String? = nil
 
         static let empty = CacheIndex(
             version: 14, // v14 重新规范化 inputTokens 为 uncached + cached
             lastScannedAt: Date(timeIntervalSince1970: 0),
             sources: [:],
             dailyBySource: [:],
-            samplesBySource: [:]
+            samplesBySource: [:],
+            calendarSignature: nil
         )
     }
 }
@@ -608,6 +624,11 @@ extension MinimaxLocalUsageScanner {
         do {
             let index = try loadIndex(cacheDir: cacheDir, fileManager: fileManager)
             guard !index.sources.isEmpty, index.lastScannedAt.timeIntervalSince1970 > 0 else {
+                return nil
+            }
+            let signature = LocalUsageCalendarSignature.make(calendar)
+            guard index.calendarSignature == signature else {
+                logInfo("[minimax-scan] 冷启动缓存 calendar signature 不匹配，等待当前日历重建")
                 return nil
             }
             let allDaily = computeGlobalDaily(from: index.dailyBySource, calendar: calendar)

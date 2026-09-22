@@ -155,17 +155,18 @@ final class LocalUsageOrchestration {
     /// LocalUsage 不再拥有常驻 beat/timer。一次 reconcile 由 provider batch settled
     /// 事件或显式手动刷新投递，完成后 Task 即释放。
     private var reconcileTask: Task<Void, Never>?
-    /// Provider batch 到达时已有 reconcile 在运行，合并为完成后的下一次普通 reconcile。
-    private var pendingReconcile = false
-    /// 显式 full 请求撞上已有 reconcile，不能被普通 reconcile 降级，必须补跑一次 full。
-    private var pendingFullReconcile = false
+    /// All queued reconcile requests collapse into one mode. Priority is
+    /// dirty < full < hardFull, so a calendar invalidation cannot be lost when
+    /// it arrives during startup or another reconcile.
+    private var pendingMode: LocalUsageScanMode?
     /// 防止已取消的旧 Task 在稍后结束时清理或覆盖新一轮 reconcile。
     private var reconcileGeneration: UInt64 = 0
     private var didCompleteInitialFullScan = false
-    /// A calendar/time-zone change invalidates persisted day buckets once. This
-    /// avoids restoring a snapshot grouped under the old local-day boundary
-    /// while keeping normal midnight transitions on the dirty/rebase path.
-    private var fullReconcileRequired = false
+    /// Monotonic revision for calendar invalidations. A reconcile may only
+    /// consume the revision it observed at its start; an invalidation arriving
+    /// while it is running remains pending for a hard-full pass.
+    private var calendarInvalidationRevision: UInt64 = 0
+    private var handledCalendarInvalidationRevision: UInt64 = 0
     private var codexSourceLifecycle: LocalUsageSourceLifecycle?
     private var codexWatchedHome: URL?
     private let calendar: Calendar
@@ -177,6 +178,9 @@ final class LocalUsageOrchestration {
     var testReadinessOverride: ((String) -> Bool)?
     /// 测试用 reconcile pass 注入点；生产路径仍使用 `scanAllClients(mode:)`。
     var testReconcilePass: (@MainActor (LocalUsageScanMode) async -> Void)?
+    /// 测试用 teardown 注入点：模拟 chain 已经取到空 pending 后，另一个
+    /// MainActor 事件在 owner 收尾前投递新请求。生产路径不设置此 hook。
+    var testReconcileChainTeardownHook: (@MainActor () -> Void)?
 
     init(
         writer: any LocalUsageStatusWriting,
@@ -197,8 +201,7 @@ final class LocalUsageOrchestration {
         dshCoordinator.cancelInFlight()
         reconcileTask?.cancel()
         reconcileTask = nil
-        pendingReconcile = false
-        pendingFullReconcile = false
+        pendingMode = nil
         stopCodexWatcher()
         codexSourceLifecycle = nil
         codexWatchedHome = nil
@@ -243,7 +246,7 @@ final class LocalUsageOrchestration {
     /// 手工、唤醒、自动 interval/reset 和普通日切都走 dirty，由各 scanner
     /// 决定是否需要 RPC、SQL 或 offset。
     var nextReconcileMode: LocalUsageScanMode {
-        if fullReconcileRequired {
+        if calendarInvalidationRevision > handledCalendarInvalidationRevision {
             return .hardFull
         }
         return didCompleteInitialFullScan ? .dirty : .full
@@ -251,26 +254,19 @@ final class LocalUsageOrchestration {
 
     /// 文件事件等后台来源调用的非阻塞入口。它只投递一个短生命周期 Task，
     /// 不会阻塞当前事件处理者。
-    func scheduleReconcile() {
+    func scheduleReconcile(mode requestedMode: LocalUsageScanMode? = nil) {
         guard reconcileTask == nil else {
-            pendingReconcile = true
+            enqueuePending(requestedMode ?? .dirty)
             logDebug("[local-usage] reconcile queued: previous reconcile is still active")
             return
         }
-        let mode = nextReconcileMode
+        let mode = requestedMode ?? nextReconcileMode
         reconcileGeneration &+= 1
         let generation = reconcileGeneration
         logInfo("[local-usage] reconcile scheduled mode=\(mode.displayName)")
         reconcileTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            await self.performReconcile(mode: mode)
-            guard self.reconcileGeneration == generation else { return }
-            self.reconcileTask = nil
-            guard !Task.isCancelled else { return }
-            if self.pendingReconcile {
-                self.pendingReconcile = false
-                self.scheduleReconcile()
-            }
+            await self.runReconcileChain(initialMode: mode, generation: generation)
         }
     }
 
@@ -278,19 +274,13 @@ final class LocalUsageOrchestration {
     /// 语义的调用覆盖状态机选择；不传时使用首拍 full、后续 dirty 的状态机结果。
     func reconcile(mode requestedMode: LocalUsageScanMode? = nil) async {
         if let active = reconcileTask {
-            if requestedMode == .full {
-                pendingFullReconcile = true
-            } else {
-                pendingReconcile = true
-            }
+            enqueuePending(requestedMode ?? .dirty)
+            // The active task owns the entire coalesced chain, including any
+            // pending follow-up. Await that one ticket; do not inspect
+            // reconcileTask again after it completes, because another waiter
+            // may otherwise re-await the same completed Task forever while the
+            // original owner is still doing its cleanup.
             await active.value
-            if requestedMode == .full, pendingFullReconcile {
-                pendingFullReconcile = false
-                await reconcile(mode: .full)
-            } else if requestedMode == nil, pendingReconcile {
-                pendingReconcile = false
-                await reconcile()
-            }
             return
         }
 
@@ -299,20 +289,10 @@ final class LocalUsageOrchestration {
         let generation = reconcileGeneration
         let task = Task { @MainActor [weak self] in
             guard let self else { return }
-            await self.performReconcile(mode: mode)
+            await self.runReconcileChain(initialMode: mode, generation: generation)
         }
         reconcileTask = task
         await task.value
-        guard reconcileGeneration == generation else { return }
-        reconcileTask = nil
-
-        if pendingFullReconcile {
-            pendingFullReconcile = false
-            await reconcile(mode: .full)
-        } else if pendingReconcile {
-            pendingReconcile = false
-            await reconcile()
-        }
     }
 
     /// 手动 refreshAll、单 Provider 手工刷新或系统唤醒时执行一次普通 reconcile。
@@ -345,8 +325,17 @@ final class LocalUsageOrchestration {
     /// Force exactly one full local pass after the system calendar or time zone
     /// changes. The next ordinary reconcile consumes the flag.
     func invalidateForCalendarChange() {
-        fullReconcileRequired = true
-        scheduleReconcile()
+        calendarInvalidationRevision &+= 1
+        scheduleReconcile(mode: .hardFull)
+    }
+
+    private func enqueuePending(_ mode: LocalUsageScanMode) {
+        pendingMode = pendingMode.map { LocalUsageScanMode.merged($0, mode) } ?? mode
+    }
+
+    private func takePendingMode() -> LocalUsageScanMode? {
+        defer { pendingMode = nil }
+        return pendingMode
     }
 
     /// 执行一个本地 pass。各 source 之间没有数据依赖，因此并行启动；每个
@@ -458,15 +447,60 @@ final class LocalUsageOrchestration {
     }
 
     private func performReconcile(mode: LocalUsageScanMode) async {
+        let calendarRevisionAtStart = calendarInvalidationRevision
         if let testReconcilePass {
             await testReconcilePass(mode)
         } else {
             await scanAllClients(mode: mode)
         }
         guard !Task.isCancelled else { return }
-        guard mode == .full || mode == .hardFull else { return }
-        didCompleteInitialFullScan = true
-        fullReconcileRequired = false
+        if mode == .full || mode == .hardFull {
+            didCompleteInitialFullScan = true
+        }
+        if mode == .hardFull,
+           calendarInvalidationRevision == calendarRevisionAtStart {
+            handledCalendarInvalidationRevision = calendarRevisionAtStart
+        }
+    }
+
+    /// One task owns a whole coalesced reconcile chain. Keeping pending-mode
+    /// consumption inside the task makes `reconcile()` waiters share one
+    /// completion ticket instead of racing over the same completed Task.
+    private func runReconcileChain(
+        initialMode: LocalUsageScanMode,
+        generation: UInt64
+    ) async {
+        var mode = initialMode
+        while !Task.isCancelled {
+            await performReconcile(mode: mode)
+            guard let nextMode = finishReconcilePass(generation: generation) else { return }
+            mode = nextMode
+        }
+    }
+
+    /// Finish one chain pass and either claim its coalesced follow-up or release
+    /// the owner. This method intentionally contains no `await`: checking
+    /// pending work and clearing `reconcileTask` must be one MainActor turn so
+    /// a new request cannot land between those two operations and get lost.
+    private func finishReconcilePass(generation: UInt64) -> LocalUsageScanMode? {
+        guard reconcileGeneration == generation else { return nil }
+
+        let pending = takePendingMode()
+        testReconcileChainTeardownHook?()
+
+        // The hook models a MainActor event that arrives after the first
+        // pending check. Re-checking also documents the invariant that the
+        // owner must consume every request before it releases the task slot.
+        guard reconcileGeneration == generation else { return nil }
+        if let pending {
+            return pending
+        }
+        if let latePending = takePendingMode() {
+            return latePending
+        }
+
+        reconcileTask = nil
+        return nil
     }
 
     private func scanCodexUsageDetails(mode: LocalUsageScanMode) async -> Bool {
