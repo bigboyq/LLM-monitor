@@ -619,12 +619,49 @@ final class AntigravityLocalUsageTests: XCTestCase {
     }
 
     @MainActor
+    func testNewEmptyPlaceholderSkipsStartupFullRPC() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory
+            .appendingPathComponent("antigravity-new-empty-placeholder-\(UUID().uuidString)", isDirectory: true)
+        let conversations = root.appendingPathComponent("conversations", isDirectory: true)
+        let cache = root.appendingPathComponent("cache", isDirectory: true)
+        defer { try? fm.removeItem(at: root) }
+        try fm.createDirectory(at: conversations, withIntermediateDirectories: true)
+        try fm.createDirectory(at: cache, withIntermediateDirectories: true)
+        try Data().write(to: conversations.appendingPathComponent("new-empty.db"))
+
+        let fetcher = AntigravityFetcher(metadataServerDiscovery: { [] })
+        let scanner = AntigravityLocalUsageScanner(
+            fetcher: fetcher,
+            conversationsDirs: [conversations],
+            cacheDir: cache,
+            fileManager: FileManagerBox(fm)
+        )
+        let result = try awaitScan(
+            fetcher: fetcher,
+            conversationsDirs: [conversations],
+            cacheDir: cache,
+            scanner: scanner,
+            fileManager: fm,
+            forceFull: true
+        )
+        XCTAssertEqual(result.failedSessionCount, 0)
+        XCTAssertEqual(result.sessionCount, 1)
+        let index = try AntigravityLocalUsageScanner.loadIndex(
+            cacheDir: cache,
+            fileManager: FileManagerBox(fm)
+        )
+        XCTAssertEqual(index.sessions["new-empty"]?.eventCount, 0)
+    }
+
+    @MainActor
     private func awaitScan(
         fetcher: AntigravityFetcher,
         conversationsDirs: [URL],
         cacheDir: URL,
         scanner: AntigravityLocalUsageScanner,
-        fileManager: FileManager
+        fileManager: FileManager,
+        forceFull: Bool = false
     ) throws -> AntigravityLocalUsage {
         let expectation = XCTestExpectation(description: "empty placeholder scan completes")
         var result: AntigravityLocalUsage?
@@ -637,7 +674,8 @@ final class AntigravityLocalUsageTests: XCTestCase {
                 calendar: .current,
                 now: { Date() },
                 startedGeneration: 1,
-                scanner: scanner
+                scanner: scanner,
+                forceFull: forceFull
             )
             expectation.fulfill()
         }

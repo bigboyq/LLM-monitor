@@ -171,7 +171,10 @@ private enum DirtySessionFetchPayload: Sendable {
         metadataEntryCount: Int,
         wasIncremental: Bool
     )
-    case noNewEvents
+    /// An incremental suffix returned no metadata. Keep the session dirty and
+    /// retry with backoff; a transiently stale language server must not be
+    /// turned into a successful fingerprint update.
+    case emptyIncremental
 }
 
 private struct DirtySessionFetchResult: Sendable {
@@ -194,6 +197,10 @@ extension AntigravityLocalUsageScanner {
         var generatorMetadataOffset: Int
         var lastMaxStepIndex: Int?
         var lastTurnIndex: Int?
+        /// Last transient empty incremental response. The file fingerprint is
+        /// intentionally not advanced in that case; this timestamp only
+        /// prevents hot-loop retries while the local server catches up.
+        var lastEmptySuffixAt: Date?
 
         init(
             mtimeMs: Double,
@@ -204,7 +211,8 @@ extension AntigravityLocalUsageScanner {
             eventCount: Int,
             generatorMetadataOffset: Int = 0,
             lastMaxStepIndex: Int? = nil,
-            lastTurnIndex: Int? = nil
+            lastTurnIndex: Int? = nil,
+            lastEmptySuffixAt: Date? = nil
         ) {
             self.mtimeMs = mtimeMs
             self.sizeBytes = sizeBytes
@@ -215,11 +223,12 @@ extension AntigravityLocalUsageScanner {
             self.generatorMetadataOffset = generatorMetadataOffset
             self.lastMaxStepIndex = lastMaxStepIndex
             self.lastTurnIndex = lastTurnIndex
+            self.lastEmptySuffixAt = lastEmptySuffixAt
         }
 
         private enum CodingKeys: String, CodingKey {
             case mtimeMs, sizeBytes, walMtimeMs, walSizeBytes, fetchedAt, eventCount
-            case generatorMetadataOffset, lastMaxStepIndex, lastTurnIndex
+            case generatorMetadataOffset, lastMaxStepIndex, lastTurnIndex, lastEmptySuffixAt
         }
 
         init(from decoder: Decoder) throws {
@@ -234,6 +243,7 @@ extension AntigravityLocalUsageScanner {
             generatorMetadataOffset = try container.decodeIfPresent(Int.self, forKey: .generatorMetadataOffset) ?? 0
             lastMaxStepIndex = try container.decodeIfPresent(Int.self, forKey: .lastMaxStepIndex)
             lastTurnIndex = try container.decodeIfPresent(Int.self, forKey: .lastTurnIndex)
+            lastEmptySuffixAt = try container.decodeIfPresent(Date.self, forKey: .lastEmptySuffixAt)
         }
     }
 
@@ -369,30 +379,46 @@ extension AntigravityLocalUsageScanner {
 
         // Antigravity can leave a placeholder cascade at 0 bytes. Its mtime
         // may still move during IDE housekeeping, but there is no metadata to
-        // fetch until the file grows. Heal the cached fingerprint locally so a
-        // zero-event placeholder cannot create a recurring full-RPC loop.
+        // fetch until the file grows. Heal both existing and newly discovered
+        // placeholders locally, including during startup full mode.
         for (sessionID, info) in dbFiles {
-            guard info.sizeBytes == 0,
-                  info.walSizeBytes == 0,
-                  var cached = index.sessions[sessionID],
-                  cached.sizeBytes == 0,
-                  cached.walSizeBytes == 0,
-                  cached.eventCount == 0,
-                  cached.generatorMetadataOffset == 0,
-                  cached.mtimeMs != info.mtimeMs || cached.walMtimeMs != info.walMtimeMs else {
+            guard info.sizeBytes == 0, info.walSizeBytes == 0 else { continue }
+            if var cached = index.sessions[sessionID],
+               cached.sizeBytes == 0,
+               cached.walSizeBytes == 0,
+               cached.eventCount == 0,
+               cached.generatorMetadataOffset == 0 {
+                guard cached.mtimeMs != info.mtimeMs || cached.walMtimeMs != info.walMtimeMs else {
+                    continue
+                }
+                cached.mtimeMs = info.mtimeMs
+                cached.sizeBytes = info.sizeBytes
+                cached.walMtimeMs = info.walMtimeMs
+                cached.walSizeBytes = info.walSizeBytes
+                cached.fetchedAt = now()
+                index.sessions[sessionID] = cached
+            } else if index.sessions[sessionID] == nil {
+                index.sessions[sessionID] = SessionIndexEntry(
+                    mtimeMs: info.mtimeMs,
+                    sizeBytes: info.sizeBytes,
+                    walMtimeMs: info.walMtimeMs,
+                    walSizeBytes: info.walSizeBytes,
+                    fetchedAt: now(),
+                    eventCount: 0,
+                    generatorMetadataOffset: 0
+                )
+            } else {
                 continue
             }
-            cached.mtimeMs = info.mtimeMs
-            cached.sizeBytes = info.sizeBytes
-            cached.walMtimeMs = info.walMtimeMs
-            cached.walSizeBytes = info.walSizeBytes
-            cached.fetchedAt = now()
-            index.sessions[sessionID] = cached
+            index.dailyBySession.removeValue(forKey: sessionID)
+            index.samplesBySession?[sessionID] = []
             logDebug("[antigravity-scan] session=\(sessionID) 空 placeholder 仅更新 fingerprint，跳过 RPC")
         }
 
         // 2. 找出 dirty sessions（文件/WAL 指纹变化，或缺少纯 RPC 的逐次调用缓存）。
+        let nowDate = now()
         let dirtyPlans: [DirtySessionPlan] = dbFiles.compactMap { (sessionId, info) in
+            guard info.sizeBytes > 0 || info.walSizeBytes > 0 else { return nil }
             guard !forceFull, let cached = index.sessions[sessionId] else {
                 return DirtySessionPlan(
                     sessionID: sessionId,
@@ -424,6 +450,10 @@ extension AntigravityLocalUsageScanner {
                         isIncremental: false
                     )
                 }
+                if let lastEmptySuffixAt = cached.lastEmptySuffixAt,
+                   nowDate.timeIntervalSince(lastEmptySuffixAt) < 30 {
+                    return nil
+                }
                 return DirtySessionPlan(
                     sessionID: sessionId,
                     fileInfo: info,
@@ -437,12 +467,11 @@ extension AntigravityLocalUsageScanner {
 
         // 3. 有界并发拉 dirty sessions
         var failedCount = 0
-        let nowDate = now()
         if !dirtyPlans.isEmpty {
             // Keep only a small completed batch of parsed events alive. The old
             // implementation retained all 166 result arrays until the last RPC
             // completed, which amplified the full-scan peak.
-            let batchSize = 8
+            let batchSize = dirtyPlans.contains(where: { !$0.isIncremental }) ? 2 : 4
             for batchStart in stride(from: 0, to: dirtyPlans.count, by: batchSize) {
                 let batchEnd = min(batchStart + batchSize, dirtyPlans.count)
                 let batch = Array(dirtyPlans[batchStart..<batchEnd])
@@ -452,15 +481,13 @@ extension AntigravityLocalUsageScanner {
                 let sessionId = entry.sessionID
                 guard let info = dirtyByID[sessionId] else { continue }
                 switch entry.result {
-                case .success(.noNewEvents):
+                case .success(.emptyIncremental):
+                    failedCount = SaturatingArithmetic.add(failedCount, 1)
                     if var cached = index.sessions[sessionId] {
-                        cached.mtimeMs = info.mtimeMs
-                        cached.sizeBytes = info.sizeBytes
-                        cached.walMtimeMs = info.walMtimeMs
-                        cached.walSizeBytes = info.walSizeBytes
-                        cached.fetchedAt = nowDate
+                        cached.lastEmptySuffixAt = nowDate
                         index.sessions[sessionId] = cached
                     }
+                    logWarn("[antigravity-scan] session=\(sessionId) 增量 suffix 暂时为空，保留 dirty 并延迟重试")
                 case .success(.events(let events, let metadataEntryCount, let wasIncremental)):
                     guard isTrustworthyRPCResult(
                         events,
@@ -716,15 +743,15 @@ extension AntigravityLocalUsageScanner {
                         )
                     }
 
-                    // The plan already turns a main-file/WAL shrink into a full
-                    // fetch. For an append-only dirty file, an empty suffix is a
-                    // valid result: usually only SQLite/WAL metadata changed.
-                    // Do not immediately download the same large trajectory again.
-                    logInfo("[antigravity-scan] session=\(sessionID) 增量 offset=\(offset) 无新增 metadata，仅更新文件指纹")
+                    // Do not mark the file fingerprint successful: a server can
+                    // transiently return an empty suffix before its trajectory
+                    // index catches up. The plan-level timestamp throttles the
+                    // retry without falling back to another large full fetch.
+                    logInfo("[antigravity-scan] session=\(sessionID) 增量 offset=\(offset) 暂无 metadata，保留 dirty")
                     return DirtySessionFetchResult(
                         index: index,
                         sessionID: sessionID,
-                        result: .success(.noNewEvents)
+                        result: .success(.emptyIncremental)
                     )
                 } else {
                     let page = try await fetcher.getTrajectoryMetadata(

@@ -162,6 +162,10 @@ final class LocalUsageOrchestration {
     /// 防止已取消的旧 Task 在稍后结束时清理或覆盖新一轮 reconcile。
     private var reconcileGeneration: UInt64 = 0
     private var didCompleteInitialFullScan = false
+    /// A calendar/time-zone change invalidates persisted day buckets once. This
+    /// avoids restoring a snapshot grouped under the old local-day boundary
+    /// while keeping normal midnight transitions on the dirty/rebase path.
+    private var fullReconcileRequired = false
     private var codexSourceLifecycle: LocalUsageSourceLifecycle?
     private var codexWatchedHome: URL?
     private let calendar: Calendar
@@ -235,7 +239,7 @@ final class LocalUsageOrchestration {
     /// 手工、唤醒、自动 interval/reset 和日切都走 dirty，由各 scanner 的
     /// mtime/size fingerprint 决定是否需要 RPC 以及是否使用 offset。
     var nextReconcileMode: LocalUsageScanMode {
-        didCompleteInitialFullScan ? .dirty : .full
+        didCompleteInitialFullScan && !fullReconcileRequired ? .dirty : .full
     }
 
     /// 文件事件等后台来源调用的非阻塞入口。它只投递一个短生命周期 Task，
@@ -317,6 +321,13 @@ final class LocalUsageOrchestration {
         await reconcile(mode: .full)
     }
 
+    /// Force exactly one full local pass after the system calendar or time zone
+    /// changes. The next ordinary reconcile consumes the flag.
+    func invalidateForCalendarChange() {
+        fullReconcileRequired = true
+        scheduleReconcile()
+    }
+
     /// 执行一个本地 pass。各 source 之间没有数据依赖，因此并行启动；每个
     /// scanner 自己仍通过 pipeline mutex 串行其内部扫描。
     func scanAllClients(mode: LocalUsageScanMode = .full) async {
@@ -365,16 +376,21 @@ final class LocalUsageOrchestration {
             await self?.scanCodexClient(mode: mode)
         }
 
-        // Keep independent sources concurrent, but cap disk/RPC pressure. The
-        // largest source (Antigravity) should not compete with every parser at
-        // once on a user's machine.
-        let jobs: [@MainActor () async -> Void] = [minimax, glm, opencode, dsh, antigravity, codex]
-        for start in stride(from: 0, to: jobs.count, by: 3) {
+        // Keep the small SQLite snapshots concurrent, but never overlap the
+        // three heavyweight parsers. DSH can ingest a very large compressed
+        // history, Antigravity holds trajectory response Data, and Codex scans
+        // a large JSONL corpus; running them in one batch recreates the peak
+        // memory pressure this pass is designed to remove.
+        let batches: [[@MainActor () async -> Void]] = [
+            [minimax, glm, opencode],
+            [dsh],
+            [antigravity],
+            [codex]
+        ]
+        for batch in batches {
             guard !Task.isCancelled else { return }
-            let end = min(start + 3, jobs.count)
             await withTaskGroup(of: Void.self) { group in
-                for index in start..<end {
-                    let job = jobs[index]
+                for job in batch {
                     group.addTask { await job() }
                 }
             }
@@ -429,6 +445,7 @@ final class LocalUsageOrchestration {
         guard !Task.isCancelled else { return }
         guard mode == .full else { return }
         didCompleteInitialFullScan = true
+        fullReconcileRequired = false
     }
 
     private func scanCodexUsageDetails(mode: LocalUsageScanMode) async -> Bool {

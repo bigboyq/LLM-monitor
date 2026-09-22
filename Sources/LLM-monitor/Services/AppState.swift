@@ -487,10 +487,11 @@ final class AppState: ObservableObject {
         )
     }
 
-    /// 系统时钟或时区改变后重排本地窗口边界。该路径只影响健康 UI deadline，
-    /// 不触发 Provider 网络刷新。
+    /// 系统时钟或时区改变后重排本地窗口边界，并让本地日桶执行一次 full
+    /// 重建；之后恢复普通 dirty/rebase 路径。不触发 Provider 网络刷新。
     func handleSystemClockOrTimeZoneChange() {
         rescheduleHealthBoundary(updateEvaluationDate: true)
+        localUsage.invalidateForCalendarChange()
     }
 
     func refreshOne(providerID: String) async {
