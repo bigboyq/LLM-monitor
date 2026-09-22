@@ -2,8 +2,8 @@ import Foundation
 import SQLite3
 import Darwin
 
-/// SQLite 读策略：快路径直接 read 原 .db，file-level 错误（SQLITE_CANTOPEN=14 /
-/// SQLITE_BUSY=5）时 copy .db + .db-wal + .db-shm 到 /tmp 副本上 read。
+/// SQLite 读策略：优先直接 read 原 .db，file-level 错误（SQLITE_CANTOPEN=14 /
+/// SQLITE_BUSY=5）时 copy .db + .db-wal + .db-shm 到私有临时副本上 read。
 ///
 /// 适用：任何读 IDE / runtime 实时写入的 .db（antigravity、minimax runtime），
 /// IDE 侧的 -shm 可能跟系统 dylib 不兼容导致直接 read CANTOPEN，copy 到 /tmp
@@ -64,7 +64,11 @@ enum SQLiteTempCopy {
     ///
     /// - Parameter logTag: 日志前缀（例如 `[antigravity-scan]`），用于 fallback 提示
     /// - Parameter action: 拿到 URL 后做实际读，抛错会被外层 catch
-    static func read<T>(dbPath: URL, logTag: String, _ action: (URL) throws -> T) throws -> T {
+    static func read<T>(
+        dbPath: URL,
+        logTag: String,
+        _ action: (URL) throws -> T
+    ) throws -> T {
         // 1. 快路径：直接 read 原 .db
         do {
             return try action(dbPath)

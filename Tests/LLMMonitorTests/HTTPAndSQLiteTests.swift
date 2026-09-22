@@ -57,6 +57,21 @@ final class HTTPAndSQLiteTests: XCTestCase {
         XCTAssertEqual(callCount, 2, "遇到 CANTOPEN prepare 错误时，应当重试/回退到临时副本（调用次数应为 2）")
     }
 
+    func testSQLiteTempCopyUsesSourceWhenDirectReadSucceeds() throws {
+        let srcDB = try makeTempDB()
+        defer { try? FileManager.default.removeItem(at: srcDB) }
+
+        let before = try currentAppTempEntries()
+        let result = try SQLiteTempCopy.read(dbPath: srcDB, logTag: "[test]") { url in
+            XCTAssertEqual(url.path, srcDB.path)
+            return "source"
+        }
+        let after = try currentAppTempEntries()
+
+        XCTAssertEqual(result, "source")
+        XCTAssertTrue(after.isSubset(of: before), "直读成功时不应创建临时副本")
+    }
+
     private func makeTempDB() throws -> URL {
         let srcDB = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("sqlite-temp-copy-test-\(UUID().uuidString).db")
