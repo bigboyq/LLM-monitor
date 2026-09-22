@@ -169,10 +169,15 @@ private struct DirtySessionFetchError: Error, Sendable {
     var localizedDescription: String { message }
 }
 
+private enum DirtySessionFetchPayload: Sendable {
+    case events(events: [AntigravityFetcher.UsageEvent], wasIncremental: Bool)
+    case noNewEvents
+}
+
 private struct DirtySessionFetchResult: Sendable {
     let index: Int
     let sessionID: String
-    let result: Result<[AntigravityFetcher.UsageEvent], DirtySessionFetchError>
+    let result: Result<DirtySessionFetchPayload, DirtySessionFetchError>
 }
 
 // MARK: - Cache + index types
@@ -186,6 +191,9 @@ extension AntigravityLocalUsageScanner {
         var walSizeBytes: Int
         var fetchedAt: Date?
         var eventCount: Int
+        var generatorMetadataOffset: Int
+        var lastMaxStepIndex: Int?
+        var lastTurnIndex: Int?
 
         init(
             mtimeMs: Double,
@@ -193,7 +201,10 @@ extension AntigravityLocalUsageScanner {
             walMtimeMs: Double = 0,
             walSizeBytes: Int = 0,
             fetchedAt: Date?,
-            eventCount: Int
+            eventCount: Int,
+            generatorMetadataOffset: Int = 0,
+            lastMaxStepIndex: Int? = nil,
+            lastTurnIndex: Int? = nil
         ) {
             self.mtimeMs = mtimeMs
             self.sizeBytes = sizeBytes
@@ -201,10 +212,14 @@ extension AntigravityLocalUsageScanner {
             self.walSizeBytes = walSizeBytes
             self.fetchedAt = fetchedAt
             self.eventCount = eventCount
+            self.generatorMetadataOffset = generatorMetadataOffset
+            self.lastMaxStepIndex = lastMaxStepIndex
+            self.lastTurnIndex = lastTurnIndex
         }
 
         private enum CodingKeys: String, CodingKey {
             case mtimeMs, sizeBytes, walMtimeMs, walSizeBytes, fetchedAt, eventCount
+            case generatorMetadataOffset, lastMaxStepIndex, lastTurnIndex
         }
 
         init(from decoder: Decoder) throws {
@@ -216,6 +231,9 @@ extension AntigravityLocalUsageScanner {
             walSizeBytes = try container.decodeIfPresent(Int.self, forKey: .walSizeBytes) ?? 0
             fetchedAt = try container.decodeIfPresent(Date.self, forKey: .fetchedAt)
             eventCount = try container.decode(Int.self, forKey: .eventCount)
+            generatorMetadataOffset = try container.decodeIfPresent(Int.self, forKey: .generatorMetadataOffset) ?? 0
+            lastMaxStepIndex = try container.decodeIfPresent(Int.self, forKey: .lastMaxStepIndex)
+            lastTurnIndex = try container.decodeIfPresent(Int.self, forKey: .lastTurnIndex)
         }
     }
 
@@ -231,7 +249,7 @@ extension AntigravityLocalUsageScanner {
         var samplesBySession: [String: [LocalTokenUsageSample]]?
 
         static let empty = CacheIndex(
-            version: 6,
+            version: 7,
             lastScannedAt: Date(timeIntervalSince1970: 0),
             sessions: [:],
             dailyBySession: [:],
@@ -350,19 +368,42 @@ extension AntigravityLocalUsageScanner {
         }
 
         // 2. 找出 dirty sessions（文件/WAL 指纹变化，或缺少纯 RPC 的逐次调用缓存）。
-        let dirty: [(String, AntigravityDBFileInfo)] = dbFiles.compactMap { (sessionId, info) in
+        let dirtyPlans: [DirtySessionPlan] = dbFiles.compactMap { (sessionId, info) in
             guard !forceFull, let cached = index.sessions[sessionId] else {
-                return (sessionId, info)
+                return DirtySessionPlan(
+                    sessionID: sessionId,
+                    fileInfo: info,
+                    requestedOffset: 0,
+                    isIncremental: false
+                )
             }
             if index.samplesBySession?[sessionId] == nil {
                 logDebug("[antigravity-scan] session=\(sessionId) 缺少逐次调用缓存，强制重扫")
-                return (sessionId, info)
+                return DirtySessionPlan(
+                    sessionID: sessionId,
+                    fileInfo: info,
+                    requestedOffset: 0,
+                    isIncremental: false
+                )
             }
             if cached.mtimeMs != info.mtimeMs
                 || cached.sizeBytes != info.sizeBytes
                 || cached.walMtimeMs != info.walMtimeMs
                 || cached.walSizeBytes != info.walSizeBytes {
-                return (sessionId, info)
+                if info.sizeBytes < cached.sizeBytes || cached.generatorMetadataOffset <= 0 {
+                    return DirtySessionPlan(
+                        sessionID: sessionId,
+                        fileInfo: info,
+                        requestedOffset: 0,
+                        isIncremental: false
+                    )
+                }
+                return DirtySessionPlan(
+                    sessionID: sessionId,
+                    fileInfo: info,
+                    requestedOffset: cached.generatorMetadataOffset,
+                    isIncremental: true
+                )
             }
 
             return nil
@@ -371,13 +412,23 @@ extension AntigravityLocalUsageScanner {
         // 3. 有界并发拉 dirty sessions
         var failedCount = 0
         let nowDate = now()
-        if !dirty.isEmpty {
-            let results = try await fetchAll(fetcher: fetcher, dirty: dirty)
-            let dirtyByID = Dictionary(uniqueKeysWithValues: dirty.map { ($0.0, $0.1) })
+        if !dirtyPlans.isEmpty {
+            let results = try await fetchAll(fetcher: fetcher, plans: dirtyPlans)
+            let dirtyByID = Dictionary(uniqueKeysWithValues: dirtyPlans.map { ($0.sessionID, $0.fileInfo) })
             for entry in results {
                 let sessionId = entry.sessionID
+                guard let info = dirtyByID[sessionId] else { continue }
                 switch entry.result {
-                case .success(let events):
+                case .success(.noNewEvents):
+                    if var cached = index.sessions[sessionId] {
+                        cached.mtimeMs = info.mtimeMs
+                        cached.sizeBytes = info.sizeBytes
+                        cached.walMtimeMs = info.walMtimeMs
+                        cached.walSizeBytes = info.walSizeBytes
+                        cached.fetchedAt = nowDate
+                        index.sessions[sessionId] = cached
+                    }
+                case .success(.events(let events, let wasIncremental)):
                     guard isTrustworthyRPCResult(events) else {
                         failedCount = SaturatingArithmetic.add(failedCount, 1)
                         logWarn("[antigravity-scan] session=\(sessionId) RPC 返回空 events，保留 last-good cache 并于下次重试")
@@ -385,54 +436,86 @@ extension AntigravityLocalUsageScanner {
                     }
                     let recoveredEvents = Self.recoverMissingTimestamps(
                         events,
-                        fileInfo: dirtyByID[sessionId]
+                        fileInfo: info
                     )
                     let inputTotal = SaturatingArithmetic.sum(recoveredEvents.lazy.map(\.inputTokens))
                     let outputTotal = SaturatingArithmetic.sum(recoveredEvents.lazy.map(\.outputTokens))
                     let cacheReadTotal = SaturatingArithmetic.sum(recoveredEvents.lazy.map(\.cacheReadTokens))
-                    logDebug("[antigravity-scan] session=\(sessionId) ✓ events=\(events.count) input=\(inputTotal) output=\(outputTotal) cacheR=\(cacheReadTotal)")
-
-                    // F1: 只计算一次 turn/round 明细。aggregateDaily 通过预计算的 counts
-                    // 写入 turns/rounds，samples 直接复用 details.samples；不得再把同一份
-                    // counts 叠加进 newDaily（旧实现会造成 turns/rounds 双倍计数）。
-                    let details = Self.computeTurnRoundDetails(
-                        sessionID: sessionId,
-                        events: recoveredEvents,
-                        calendar: calendar
-                    )
-                    let newDaily = Self.aggregateDaily(
-                        events: recoveredEvents,
-                        calendar: calendar,
-                        counts: details.counts
-                    )
-                    let newSamples = details.samples
-                    logDebug("[antigravity-scan] session=\(sessionId) R/T: turns=\(details.counts.totalTurns) rounds=\(details.counts.totalRounds) days=\(details.counts.perDay.count)")
-
-                    index.dailyBySession[sessionId] = newDaily
-                    if index.dailyBySession[sessionId]?.isEmpty == true {
-                        index.dailyBySession.removeValue(forKey: sessionId)
+                    let eventStats = Self.accountedEventStats(recoveredEvents)
+                    if eventStats.droppedTimestampless > 0 {
+                        logWarn(
+                            "[antigravity-scan] session=\(sessionId) 丢弃无 timestamp 的 usage event: "
+                                + "accounted=\(eventStats.accounted), dropped=\(eventStats.droppedTimestampless), raw=\(events.count)"
+                        )
                     }
-                    var samplesBySession = index.samplesBySession ?? [:]
-                    samplesBySession[sessionId] = newSamples.filter {
-                        $0.completedAt >= nowDate.addingTimeInterval(-8 * 24 * 60 * 60)
-                    }
-                    index.samplesBySession = samplesBySession
 
-                    if let info = dirtyByID[sessionId] {
-                        let eventStats = Self.accountedEventStats(recoveredEvents)
-                        if eventStats.droppedTimestampless > 0 {
-                            logWarn(
-                                "[antigravity-scan] session=\(sessionId) 丢弃无 timestamp 的 usage event: "
-                                    + "accounted=\(eventStats.accounted), dropped=\(eventStats.droppedTimestampless), raw=\(events.count)"
-                            )
+                    if wasIncremental, let cached = index.sessions[sessionId] {
+                        logDebug("[antigravity-scan] session=\(sessionId) ✓ 增量 events=\(events.count) (accounted=\(eventStats.accounted)) input=\(inputTotal) output=\(outputTotal) cacheR=\(cacheReadTotal)")
+                        let details = Self.computeTurnRoundDetails(
+                            sessionID: sessionId,
+                            events: recoveredEvents,
+                            calendar: calendar,
+                            initialPrevMaxStepIndex: cached.lastMaxStepIndex,
+                            initialTurnIndex: cached.lastTurnIndex ?? 0
+                        )
+                        let incDaily = Self.aggregateDaily(
+                            events: recoveredEvents,
+                            calendar: calendar,
+                            counts: details.counts
+                        )
+                        let existingDaily = index.dailyBySession[sessionId] ?? [:]
+                        index.dailyBySession[sessionId] = Self.mergeDaily(existing: existingDaily, incremental: incDaily)
+
+                        let existingSamples = index.samplesBySession?[sessionId] ?? []
+                        var samplesBySession = index.samplesBySession ?? [:]
+                        samplesBySession[sessionId] = (existingSamples + details.samples).filter {
+                            $0.completedAt >= nowDate.addingTimeInterval(-8 * 24 * 60 * 60)
                         }
+                        index.samplesBySession = samplesBySession
+
                         index.sessions[sessionId] = SessionIndexEntry(
                             mtimeMs: info.mtimeMs,
                             sizeBytes: info.sizeBytes,
                             walMtimeMs: info.walMtimeMs,
                             walSizeBytes: info.walSizeBytes,
                             fetchedAt: nowDate,
-                            eventCount: eventStats.accounted
+                            eventCount: SaturatingArithmetic.add(cached.eventCount, eventStats.accounted),
+                            generatorMetadataOffset: SaturatingArithmetic.add(cached.generatorMetadataOffset, events.count),
+                            lastMaxStepIndex: details.lastMaxStepIndex ?? cached.lastMaxStepIndex,
+                            lastTurnIndex: details.lastTurnIndex
+                        )
+                    } else {
+                        logDebug("[antigravity-scan] session=\(sessionId) ✓ 全量 events=\(events.count) (accounted=\(eventStats.accounted)) input=\(inputTotal) output=\(outputTotal) cacheR=\(cacheReadTotal)")
+                        let details = Self.computeTurnRoundDetails(
+                            sessionID: sessionId,
+                            events: recoveredEvents,
+                            calendar: calendar
+                        )
+                        let newDaily = Self.aggregateDaily(
+                            events: recoveredEvents,
+                            calendar: calendar,
+                            counts: details.counts
+                        )
+                        index.dailyBySession[sessionId] = newDaily
+                        if index.dailyBySession[sessionId]?.isEmpty == true {
+                            index.dailyBySession.removeValue(forKey: sessionId)
+                        }
+                        var samplesBySession = index.samplesBySession ?? [:]
+                        samplesBySession[sessionId] = details.samples.filter {
+                            $0.completedAt >= nowDate.addingTimeInterval(-8 * 24 * 60 * 60)
+                        }
+                        index.samplesBySession = samplesBySession
+
+                        index.sessions[sessionId] = SessionIndexEntry(
+                            mtimeMs: info.mtimeMs,
+                            sizeBytes: info.sizeBytes,
+                            walMtimeMs: info.walMtimeMs,
+                            walSizeBytes: info.walSizeBytes,
+                            fetchedAt: nowDate,
+                            eventCount: eventStats.accounted,
+                            generatorMetadataOffset: events.count,
+                            lastMaxStepIndex: details.lastMaxStepIndex,
+                            lastTurnIndex: details.lastTurnIndex
                         )
                     }
                 case .failure(let error):
@@ -450,23 +533,16 @@ extension AntigravityLocalUsageScanner {
             try Self.saveIndex(index, cacheDir: cacheDir, fileManager: fileManager, hook: saveIndexHook)
         }
 
-        // 5. 汇总全局 daily + 过滤最近 7 天
-        let allDaily = Self.computeGlobalDaily(from: index.dailyBySession, calendar: calendar)
-        let todayStart = Self.todayCutoff(now: nowDate, calendar: calendar)
-        let today = allDaily.first(where: { $0.dayStart == todayStart })
-        let recent7 = Self.filterLast7Days(
-            allDaily: allDaily,
-            today: todayStart,
-            calendar: calendar
-        )
-        let recentSamples = (index.samplesBySession ?? [:])
-            .values
+        // 5. 组装 AntigravityLocalUsage（只算自然日已入账的 tokens）
+        let allDaily = computeGlobalDaily(from: index.dailyBySession, calendar: calendar)
+        let todayStart = todayCutoff(now: nowDate, calendar: calendar)
+        let recent7 = filterLast7Days(allDaily: allDaily, today: todayStart, calendar: calendar)
+        let recentSamples = (index.samplesBySession ?? [:]).values
             .flatMap { $0 }
             .filter { $0.completedAt >= nowDate.addingTimeInterval(-8 * 24 * 60 * 60) }
             .sorted { $0.completedAt < $1.completedAt }
-
         return AntigravityLocalUsage(
-            today: today,
+            today: allDaily.first(where: { $0.dayStart == todayStart }),
             dailyTokenUsage: recent7,
             scannedAt: nowDate,
             // sessionCount 描述本次发现的本地 session，不应因首次 RPC 失败而少算。
@@ -485,21 +561,28 @@ extension AntigravityLocalUsageScanner {
         !events.isEmpty
     }
 
+    struct DirtySessionPlan: Sendable {
+        let sessionID: String
+        let fileInfo: AntigravityDBFileInfo
+        let requestedOffset: Int
+        let isIncremental: Bool
+    }
+
     /// 以固定并发度拉多个 session 的 metadata。
     /// `nonisolated static`：fetcher 通过参数传，不碰 self，可在 background 跑。
     fileprivate nonisolated static func fetchAll(
         fetcher: AntigravityFetcher,
-        dirty: [(String, AntigravityDBFileInfo)]
+        plans: [DirtySessionPlan]
     ) async throws -> [DirtySessionFetchResult] {
-        logInfo("[antigravity-scan] dirty sessions: \(dirty.count) — \(dirty.prefix(5).map { $0.0 }.joined(separator: ", "))\(dirty.count > 5 ? "…" : "")")
+        logInfo("[antigravity-scan] dirty sessions: \(plans.count) — \(plans.prefix(5).map { "\($0.sessionID)\($0.isIncremental ? "(inc)" : "(full)")" }.joined(separator: ", "))\(plans.count > 5 ? "…" : "")")
         try Task.checkCancellation()
         // 进程/端口发现对整次扫描只做一次，所有 session 复用同一快照。
         let servers = fetcher.discoverMetadataServers()
         guard !servers.isEmpty else {
-            return dirty.enumerated().map { index, item in
+            return plans.enumerated().map { index, item in
                 DirtySessionFetchResult(
                     index: index,
-                    sessionID: item.0,
+                    sessionID: item.sessionID,
                     result: .failure(DirtySessionFetchError(
                         message: "未发现 Antigravity 或 agy CLI 进程，请先启动 Antigravity 并完成登录"
                     ))
@@ -507,18 +590,18 @@ extension AntigravityLocalUsageScanner {
             }
         }
 
-        let concurrency = min(4, max(dirty.count, 1))
+        let concurrency = min(4, max(plans.count, 1))
         var nextIndex = 0
         var results: [DirtySessionFetchResult] = []
-        results.reserveCapacity(dirty.count)
+        results.reserveCapacity(plans.count)
 
         return try await withThrowingTaskGroup(of: DirtySessionFetchResult.self) { group in
             for _ in 0..<concurrency {
-                guard nextIndex < dirty.count else { break }
+                guard nextIndex < plans.count else { break }
                 addFetchTask(
                     to: &group,
                     index: nextIndex,
-                    dirty: dirty,
+                    plans: plans,
                     fetcher: fetcher,
                     servers: servers
                 )
@@ -527,11 +610,11 @@ extension AntigravityLocalUsageScanner {
 
             while let result = try await group.next() {
                 results.append(result)
-                guard nextIndex < dirty.count else { continue }
+                guard nextIndex < plans.count else { continue }
                 addFetchTask(
                     to: &group,
                     index: nextIndex,
-                    dirty: dirty,
+                    plans: plans,
                     fetcher: fetcher,
                     servers: servers
                 )
@@ -544,19 +627,76 @@ extension AntigravityLocalUsageScanner {
     private nonisolated static func addFetchTask(
         to group: inout ThrowingTaskGroup<DirtySessionFetchResult, Error>,
         index: Int,
-        dirty: [(String, AntigravityDBFileInfo)],
+        plans: [DirtySessionPlan],
         fetcher: AntigravityFetcher,
         servers: [AntigravityFetcher.ServerInfo]
     ) {
-        let sessionID = dirty[index].0
+        let plan = plans[index]
+        let sessionID = plan.sessionID
+        let offset = plan.requestedOffset
+        let isIncremental = plan.isIncremental
+
         group.addTask {
             try Task.checkCancellation()
             do {
-                let events = try await fetcher.getTrajectoryMetadata(
-                    sessionId: sessionID,
-                    servers: servers
-                )
-                return DirtySessionFetchResult(index: index, sessionID: sessionID, result: .success(events))
+                if isIncremental {
+                    let suffixEvents = try await fetcher.getTrajectoryMetadata(
+                        sessionId: sessionID,
+                        offset: offset,
+                        servers: servers
+                    )
+                    if !suffixEvents.isEmpty {
+                        return DirtySessionFetchResult(
+                            index: index,
+                            sessionID: sessionID,
+                            result: .success(.events(events: suffixEvents, wasIncremental: true))
+                        )
+                    }
+
+                    // suffix 为空：发起 offset=0 兜底验证，确认是否为无新事件、或者会话被截断/清空
+                    logInfo("[antigravity-scan] session=\(sessionID) 增量 offset=\(offset) 返回空，发起全量检查兜底")
+                    let fullEvents = try await fetcher.getTrajectoryMetadata(
+                        sessionId: sessionID,
+                        offset: 0,
+                        servers: servers
+                    )
+                    if fullEvents.count == offset {
+                        // 确认没有产生新的 LLM 调用（只是 WAL 变更）
+                        logInfo("[antigravity-scan] session=\(sessionID) 经全量核验确无新事件 (count=\(fullEvents.count))，仅更新文件指纹")
+                        return DirtySessionFetchResult(
+                            index: index,
+                            sessionID: sessionID,
+                            result: .success(.noNewEvents)
+                        )
+                    } else if fullEvents.count < offset {
+                        // 会话截断/清空重写，按全量结果重置
+                        logWarn("[antigravity-scan] session=\(sessionID) 检测到会话截断重写 (\(fullEvents.count) < \(offset))，重置该 session 缓存")
+                        return DirtySessionFetchResult(
+                            index: index,
+                            sessionID: sessionID,
+                            result: .success(.events(events: fullEvents, wasIncremental: false))
+                        )
+                    } else {
+                        // fullEvents.count > offset 但 suffix 返回空（服务端 offset 异常），安全降级为全量结果
+                        logWarn("[antigravity-scan] session=\(sessionID) 增量失真 (\(fullEvents.count) > \(offset))，降级为全量同步")
+                        return DirtySessionFetchResult(
+                            index: index,
+                            sessionID: sessionID,
+                            result: .success(.events(events: fullEvents, wasIncremental: false))
+                        )
+                    }
+                } else {
+                    let events = try await fetcher.getTrajectoryMetadata(
+                        sessionId: sessionID,
+                        offset: 0,
+                        servers: servers
+                    )
+                    return DirtySessionFetchResult(
+                        index: index,
+                        sessionID: sessionID,
+                        result: .success(.events(events: events, wasIncremental: false))
+                    )
+                }
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
@@ -806,18 +946,20 @@ extension AntigravityLocalUsageScanner {
         try ScannerIndexIO.loadIndex(
             cacheDir: cacheDir,
             fileManager: fileManager,
-            currentVersion: 6,
+            currentVersion: 7,
             empty: .empty,
             version: { $0.version },
             migrate: { idx in
-                guard (2...5).contains(idx.version) else { return false }
-                idx.version = 6
-                // v5 及更早版本的 per-session samples / daily R/T 可能来自
-                // 旧版本的 samples / R/T 结果可能来自 SQLite 读取路径。纯 RPC
-                // 版本的 stepIndices 推断结果不能与旧结果混用；清空逐次调用索引，使每个现有 session 都因
-                // samplesBySession?[sessionId] == nil 而强制重新走 RPC。
-                // dailyBySession 保留为 RPC 失败时的 last-good fallback。
-                idx.samplesBySession = [:]
+                guard (2...6).contains(idx.version) else { return false }
+                if idx.version <= 5 {
+                    // v5 及更早版本的 per-session samples / daily R/T 可能来自
+                    // 旧版本的 samples / R/T 结果可能来自 SQLite 读取路径。纯 RPC
+                    // 版本的 stepIndices 推断结果不能与旧结果混用；清空逐次调用索引，使每个现有 session 都因
+                    // samplesBySession?[sessionId] == nil 而强制重新走 RPC。
+                    // dailyBySession 保留为 RPC 失败时的 last-good fallback。
+                    idx.samplesBySession = [:]
+                }
+                idx.version = 7
                 return true
             },
             logTag: "[antigravity-scan]"

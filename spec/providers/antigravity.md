@@ -484,14 +484,17 @@ only the matching step metadata timestamp as a fallback.
 
 ```json
 {
-  "version": 6,
+  "version": 7,
   "lastScannedAt": "2026-07-15T02:00:00Z",
   "sessions": {
     "41272769-fe7d-4802-a174-b5b28b526ade": {
       "mtimeMs": 1752542400000.0,
       "sizeBytes": 8421376,
       "fetchedAt": "2026-07-15T02:00:00Z",
-      "eventCount": 50
+      "eventCount": 50,
+      "generatorMetadataOffset": 50,
+      "lastMaxStepIndex": 120,
+      "lastTurnIndex": 15
     }
   },
   "dailyBySession": {

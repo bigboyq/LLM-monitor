@@ -24,6 +24,20 @@ extension AntigravityLocalUsageScanner {
     struct TurnRoundDetails: Equatable, Sendable {
         let counts: AntigravityTurnRoundCounts
         let samples: [LocalTokenUsageSample]
+        let lastMaxStepIndex: Int?
+        let lastTurnIndex: Int
+
+        init(
+            counts: AntigravityTurnRoundCounts,
+            samples: [LocalTokenUsageSample],
+            lastMaxStepIndex: Int? = nil,
+            lastTurnIndex: Int = 0
+        ) {
+            self.counts = counts
+            self.samples = samples
+            self.lastMaxStepIndex = lastMaxStepIndex
+            self.lastTurnIndex = lastTurnIndex
+        }
     }
 
     /// eventCount 的统一口径：只有带 timestamp、真正进入日统计的事件才计数。
@@ -38,6 +52,22 @@ extension AntigravityLocalUsageScanner {
             accounted = SaturatingArithmetic.add(accounted, 1)
         }
         return (accounted, events.count - accounted)
+    }
+
+    /// 合并已有每日使用量与增量每日使用量（按日相加）。
+    nonisolated static func mergeDaily(
+        existing: [String: AntigravityDailyUsage],
+        incremental: [String: AntigravityDailyUsage]
+    ) -> [String: AntigravityDailyUsage] {
+        var merged = existing
+        for (key, incUsage) in incremental {
+            if let base = merged[key] {
+                merged[key] = base + incUsage
+            } else {
+                merged[key] = incUsage
+            }
+        }
+        return merged
     }
 
     /// 把 events 按本地自然日分组聚合。
@@ -80,12 +110,16 @@ extension AntigravityLocalUsageScanner {
     nonisolated static func computeTurnRoundCounts(
         sessionID: String,
         events: [AntigravityFetcher.UsageEvent],
-        calendar: Calendar
+        calendar: Calendar,
+        initialPrevMaxStepIndex: Int? = nil,
+        initialTurnIndex: Int = 0
     ) -> AntigravityTurnRoundCounts {
         computeTurnRoundDetails(
             sessionID: sessionID,
             events: events,
-            calendar: calendar
+            calendar: calendar,
+            initialPrevMaxStepIndex: initialPrevMaxStepIndex,
+            initialTurnIndex: initialTurnIndex
         ).counts
     }
 
@@ -94,14 +128,17 @@ extension AntigravityLocalUsageScanner {
     nonisolated static func computeTurnRoundDetails(
         sessionID: String,
         events: [AntigravityFetcher.UsageEvent],
-        calendar: Calendar
+        calendar: Calendar,
+        initialPrevMaxStepIndex: Int? = nil,
+        initialTurnIndex: Int = 0
     ) -> TurnRoundDetails {
         let sortedEvents = events
             .filter { $0.timestamp != nil }
             .sorted { $0.timestamp! < $1.timestamp! }
 
         var perDay: [Date: DailyTurnRound] = [:]
-        var prevMaxStepIndex: Int? = nil
+        var prevMaxStepIndex: Int? = initialPrevMaxStepIndex
+        var turnIndex = initialTurnIndex
 
         for event in sortedEvents {
             guard let ts = event.timestamp else { continue }
@@ -122,29 +159,42 @@ extension AntigravityLocalUsageScanner {
                 isNewTurn = true
             }
 
+            if isNewTurn {
+                turnIndex += 1
+            }
+
             perDay[day] = DailyTurnRound(
                 turns: SaturatingArithmetic.add(existing.turns, isNewTurn ? 1 : 0),
                 rounds: SaturatingArithmetic.add(existing.rounds, 1)
             )
         }
 
-        let samples = fallbackSamples(sessionID: sessionID, events: sortedEvents)
+        let samples = fallbackSamples(
+            sessionID: sessionID,
+            events: sortedEvents,
+            initialPrevMaxStepIndex: initialPrevMaxStepIndex,
+            initialTurnIndex: initialTurnIndex
+        )
         return TurnRoundDetails(
             counts: AntigravityTurnRoundCounts(perDay: perDay),
-            samples: samples
+            samples: samples,
+            lastMaxStepIndex: prevMaxStepIndex,
+            lastTurnIndex: turnIndex
         )
     }
 
     nonisolated static func fallbackSamples(
         sessionID: String,
-        events: [AntigravityFetcher.UsageEvent]
+        events: [AntigravityFetcher.UsageEvent],
+        initialPrevMaxStepIndex: Int? = nil,
+        initialTurnIndex: Int = 0
     ) -> [LocalTokenUsageSample] {
         let sortedEvents = events
             .filter { $0.timestamp != nil }
             .sorted { $0.timestamp! < $1.timestamp! }
 
-        var turnIndex = 0
-        var prevMaxStepIndex: Int? = nil
+        var turnIndex = initialTurnIndex
+        var prevMaxStepIndex: Int? = initialPrevMaxStepIndex
 
         return sortedEvents.map { event in
             var isNewTurn = false

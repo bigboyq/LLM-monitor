@@ -16,14 +16,18 @@ struct UserStatusRequest: Encodable {
 }
 
 /// `GetCascadeTrajectoryGeneratorMetadata` 的 request body。
-/// 显式传入 `includeMessages: false` 避免服务端序列化并回传长会话消息正文。
+/// - `includeMessages: false`：避免服务端序列化并回传长会话消息正文。
+/// - `generatorMetadataOffset`：后缀增量拉取偏移量（基于已入账的 generatorMetadata 条目数），
+///   nil 时拉取完整列表。
 struct TrajectoryMetadataRequest: Encodable, Equatable {
     let cascadeId: String
     let includeMessages: Bool
+    let generatorMetadataOffset: Int?
 
-    init(cascadeId: String, includeMessages: Bool = false) {
+    init(cascadeId: String, includeMessages: Bool = false, generatorMetadataOffset: Int? = nil) {
         self.cascadeId = cascadeId
         self.includeMessages = includeMessages
+        self.generatorMetadataOffset = generatorMetadataOffset
     }
 }
 

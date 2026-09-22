@@ -153,9 +153,12 @@ struct AntigravityFetcher: QuotaFetcher {
 
     /// 单个 trajectory / session 的 generatorMetadata 列表。
     /// 失败/没有数据 → 返回空数组（不抛错，让 scanner 决定怎么标记 failed）。
-    func getTrajectoryMetadata(sessionId: String) async throws -> [UsageEvent] {
+    func getTrajectoryMetadata(
+        sessionId: String,
+        offset: Int? = nil
+    ) async throws -> [UsageEvent] {
         let servers = discoverMetadataServers()
-        return try await getTrajectoryMetadata(sessionId: sessionId, servers: servers)
+        return try await getTrajectoryMetadata(sessionId: sessionId, offset: offset, servers: servers)
     }
 
     func discoverMetadataServers() -> [ServerInfo] {
@@ -169,6 +172,7 @@ struct AntigravityFetcher: QuotaFetcher {
     /// 调用和兼容旧调用方使用。
     func getTrajectoryMetadata(
         sessionId: String,
+        offset: Int? = nil,
         servers: [ServerInfo]
     ) async throws -> [UsageEvent] {
         guard !servers.isEmpty else {
@@ -186,7 +190,11 @@ struct AntigravityFetcher: QuotaFetcher {
                 let envelope: Envelope = try await post(
                     server: server,
                     path: "/exa.language_server_pb.LanguageServerService/GetCascadeTrajectoryGeneratorMetadata",
-                    body: TrajectoryMetadataRequest(cascadeId: sessionId, includeMessages: false)
+                    body: TrajectoryMetadataRequest(
+                        cascadeId: sessionId,
+                        includeMessages: false,
+                        generatorMetadataOffset: offset
+                    )
                 )
                 hadSuccessfulResponse = true
                 guard let rawEvents = envelope.generatorMetadata, !rawEvents.isEmpty else {
@@ -194,7 +202,8 @@ struct AntigravityFetcher: QuotaFetcher {
                 }
                 let events = rawEvents.compactMap { Self.parseUsageEvent(from: $0) }
                 if !events.isEmpty {
-                    logInfo("[antigravity] session=\(sessionId) 成功从 pid=\(server.pid) port=\(server.httpsPort) 获取到 \(events.count) 个 events")
+                    let offsetTag = offset.map { " (offset=\($0))" } ?? ""
+                    logInfo("[antigravity] session=\(sessionId)\(offsetTag) 成功从 pid=\(server.pid) port=\(server.httpsPort) 获取到 \(events.count) 个 events")
                     return events
                 }
             } catch {
