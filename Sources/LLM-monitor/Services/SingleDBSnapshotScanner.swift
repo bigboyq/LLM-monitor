@@ -43,8 +43,8 @@ struct SnapshotCacheIndex<Usage: Equatable & Codable & Sendable>: Equatable, Cod
 
 /// 单一 SQLite db 的快照扫描器基座（当前：glm-zcode / opencode）。
 ///
-/// 管线：stat db+WAL 指纹 → dirty 模式下指纹未变则复用缓存快照并按当前本地日
-/// 重切 7 天窗口（跨午夜滚动），full 模式强制重新聚合 + 写缓存。db 不存在返回
+/// 管线：stat db+WAL 指纹 → cache-assisted/dirty 模式下指纹未变则复用缓存快照并按当前本地日
+/// 重切 7 天窗口（跨午夜滚动），hardFull 模式才强制重新聚合 + 写缓存。db 不存在返回
 /// 子类的空快照。
 ///
 /// 子类实现三个 hook：
@@ -98,7 +98,7 @@ class SingleDBSnapshotScanner<Usage: Equatable & Codable & Sendable>: LocalUsage
     ) -> @Sendable () async throws -> Usage {
         { [self] in
             try await pipelineLock.withLock {
-                try performScanLocked(nowDate: now(), forceFull: mode == .full)
+                try performScanLocked(nowDate: now(), forceFull: mode.bypassesProviderCache)
             }
         }
     }

@@ -3243,6 +3243,22 @@ final class StateAndSchedulerTests: XCTestCase {
     }
 
     @MainActor
+    func testReconcileModesKeepCacheAssistedFullSeparateFromHardFull() {
+        XCTAssertFalse(
+            LocalUsageScanMode.full.bypassesProviderCache,
+            "startup full must let each Provider validate and reuse its own cache"
+        )
+        XCTAssertFalse(LocalUsageScanMode.dirty.bypassesProviderCache)
+        XCTAssertTrue(
+            LocalUsageScanMode.hardFull.bypassesProviderCache,
+            "only explicit hard-full invalidates Provider caches"
+        )
+        XCTAssertEqual(LocalUsageScanMode.full.displayName, "cache-assisted-full")
+        XCTAssertEqual(LocalUsageScanMode.dirty.displayName, "dirty-reconcile")
+        XCTAssertEqual(LocalUsageScanMode.hardFull.displayName, "hard-full")
+    }
+
+    @MainActor
     func testAppStateSchedulesSleepHealthRefreshOnSharedDeadlineDriver() {
         let store = makeIsolatedConfigStore()
         let state = AppState(descriptors: [], configStore: store)

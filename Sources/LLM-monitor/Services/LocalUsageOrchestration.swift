@@ -235,11 +235,18 @@ final class LocalUsageOrchestration {
 
     // MARK: - Reconcile lifecycle
 
-    /// 当前应执行的下一种 reconcile。只有本进程启动后的首个 pass 使用 full；
-    /// 手工、唤醒、自动 interval/reset 和日切都走 dirty，由各 scanner 的
-    /// mtime/size fingerprint 决定是否需要 RPC 以及是否使用 offset。
+    /// 当前应执行的下一种 reconcile。
+    ///
+    /// `.full` 是 cache-assisted full：只代表这次需要建立/验证完整的
+    /// source inventory，并不代表每个 Provider 都要无条件重算。
+    /// `.hardFull` 才绕过 Provider 自己的 fingerprint/offset/cache。
+    /// 手工、唤醒、自动 interval/reset 和普通日切都走 dirty，由各 scanner
+    /// 决定是否需要 RPC、SQL 或 offset。
     var nextReconcileMode: LocalUsageScanMode {
-        didCompleteInitialFullScan && !fullReconcileRequired ? .dirty : .full
+        if fullReconcileRequired {
+            return .hardFull
+        }
+        return didCompleteInitialFullScan ? .dirty : .full
     }
 
     /// 文件事件等后台来源调用的非阻塞入口。它只投递一个短生命周期 Task，
@@ -253,7 +260,7 @@ final class LocalUsageOrchestration {
         let mode = nextReconcileMode
         reconcileGeneration &+= 1
         let generation = reconcileGeneration
-        logInfo("[local-usage] reconcile scheduled mode=\(mode == .full ? "full" : "dirty")")
+        logInfo("[local-usage] reconcile scheduled mode=\(mode.displayName)")
         reconcileTask = Task { @MainActor [weak self] in
             guard let self else { return }
             await self.performReconcile(mode: mode)
@@ -457,7 +464,7 @@ final class LocalUsageOrchestration {
             await scanAllClients(mode: mode)
         }
         guard !Task.isCancelled else { return }
-        guard mode == .full else { return }
+        guard mode == .full || mode == .hardFull else { return }
         didCompleteInitialFullScan = true
         fullReconcileRequired = false
     }
@@ -481,7 +488,10 @@ final class LocalUsageOrchestration {
         let details = await CodexFetcher.loadUsageDetailsAsync(
             authPath: target.authPath,
             model: target.model,
-            forceFull: mode == .full
+            // Codex owns a per-file event cache with append/truncate/rewrite
+            // detection. Startup `.full` must be allowed to reuse it; only
+            // `.hardFull` requests a cold parse of every selected file.
+            forceFull: mode.bypassesProviderCache
         )
         guard !Task.isCancelled else { return false }
         guard let details else { return false }

@@ -132,7 +132,9 @@ final class MinimaxLocalUsageScanner: LocalUsageScannerBase<MinimaxLocalUsage>, 
         let fileManager = self.fileManager
         let calendar = self.calendar
         let now = self.now
-        let forceFull = mode == .full
+        // Startup `.full` is cache-assisted. Only `.hardFull` is allowed to
+        // invalidate the source fingerprint decision and rebuild the ledger.
+        let forceFull = mode.bypassesProviderCache
         return {
             try await Self.performScanPure(
                 runtimeDBURL: runtimeDBURL,

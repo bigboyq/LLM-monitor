@@ -158,7 +158,10 @@ final class DshLocalUsageScanner: LocalUsageScannerBase<DshLocalUsage>, @uncheck
         let now = self.now
         let decompressor = self.decompressor
         let streamingDecompressor = self.streamingDecompressor
-        let forceFull = mode == .full
+        // DSH already has per-file fingerprints and parsed-file caches. Keep
+        // those caches active for startup `.full`; only explicit hard-full
+        // recovery bypasses them.
+        let forceFull = mode.bypassesProviderCache
         return {
             try await Self.pipelineMutex.withLock {
                 try await Task.detached(priority: .utility) {

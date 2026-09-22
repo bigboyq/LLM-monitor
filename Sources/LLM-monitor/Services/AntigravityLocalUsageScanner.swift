@@ -145,7 +145,7 @@ final class AntigravityLocalUsageScanner: LocalUsageScannerBase<AntigravityLocal
         // sessions reuse antigravity.json and changed append-only sessions
         // use their persisted offset. Only the settings-page action asks
         // for a true RPC rebuild.
-        let forceFull = mode == .hardFull
+        let forceFull = mode.bypassesProviderCache
         return {
             try await Self.performScanPure(
                 fetcher: fetcher,

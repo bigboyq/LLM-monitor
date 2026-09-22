@@ -3,11 +3,29 @@ import Combine
 
 /// 扫描请求的覆盖范围。
 enum LocalUsageScanMode: Sendable, Equatable {
+    /// Cache-assisted validation pass. The coordinator uses this for the
+    /// startup pass; a concrete scanner must still fingerprint its source and
+    /// may reuse an unchanged cache entry.
     case full
+    /// Normal source reconcile. Dirty is a freshness hint, not an instruction
+    /// to rebuild: the provider scanner decides whether the source changed.
     case dirty
-    /// Explicit operator-requested rebuild. Concrete scanners may give this
-    /// stronger semantics than the normal startup full pass.
+    /// Explicit rebuild that bypasses provider caches. This is reserved for
+    /// operator recovery and invalidation paths, not for every startup/full
+    /// reconcile.
     case hardFull
+
+    var bypassesProviderCache: Bool {
+        self == .hardFull
+    }
+
+    var displayName: String {
+        switch self {
+        case .full: return "cache-assisted-full"
+        case .dirty: return "dirty-reconcile"
+        case .hardFull: return "hard-full"
+        }
+    }
 }
 
 /// 本地用量 scanner 的共享生命周期基座 —— 5 个 scanner（antigravity / minimax /
