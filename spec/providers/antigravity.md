@@ -444,8 +444,10 @@ The monitor uses offset-based fetching before generic JSON streaming:
    requesting the full sequence.
 3. Append only the returned suffix to the session's aggregate/sample state, with
    a full fallback when the session or WAL shrinks. An empty suffix on a
-   non-shrinking dirty file only updates the fingerprint; it does not trigger a
-   duplicate full RPC.
+   non-shrinking dirty file keeps the session dirty and is retried under a 30s
+   throttle; after two consecutive empty suffixes the session escalates to an
+   offset=0 verification full and can converge as a success — see
+   "Bounded convergence" below.
 4. Keep `includeMessages: false`; message bodies are not needed for token, model,
    timestamp, or turn/round accounting.
 5. Retain a bounded response cap and adaptive concurrency. The response envelope is
@@ -456,6 +458,89 @@ The offset must be treated as a raw generator-metadata count, not derived from t
 number of parsed usage events or the maximum `stepIndex`. The persisted offset must
 advance by the returned raw entry count, and only after the suffix has been parsed,
 aggregated, and saved successfully.
+
+#### Bounded convergence (empty suffixes / zero-metadata fulls)
+
+Two server-side failure modes used to be unbounded retry loops that pinned
+`failedSessionCount ≥ 1` forever and (via the all-or-nothing calendar signature)
+dragged every session through full-plan RPC rounds each scan:
+
+- **A. Empty suffix forever**: the file fingerprint changed (IDE touching mtime, a
+  non-usage write) but the server's metadata total never moved, so the same
+  suffix offset returned empty on every retry.
+- **B. Zero-metadata full forever**: a full result with `metadataEntryCount == 0`
+  (wrong server/workspace, or a language server restart that lost trajectory
+  memory) is not trustworthy, so the session never got an index entry / stayed
+  dirty and re-ran the full RPC every scan.
+
+Both are now finite windows with terminal states. The persisted state is additive
+and optional in `index.json` (still version 7 — unknown keys are ignored by old
+readers, and new fields decode with defaults via `decodeIfPresent`):
+
+| New state | Where | Meaning |
+|---|---|---|
+| `consecutiveEmptySuffixes` | `sessions[id]` | consecutive empty suffix responses |
+| `lastEmptySuffixAt` | `sessions[id]` | 30s retry throttle for empty suffixes (existed before) |
+| `emptyFullStrikesBySession` | top level | per-session consecutive zero-metadata full count |
+
+**A. Empty suffix → offset=0 verification full.** Empty suffixes keep the session
+dirty under the existing 30s throttle and increment `consecutiveEmptySuffixes`.
+At 2 (`emptySuffixVerificationThreshold` — two suffixes across at least one
+throttle window, giving a lagging server two chances to catch up) the next dirty
+plan is an offset=0 *verification* fetch (`DirtySessionPlan.isVerification`; on
+the wire it is an ordinary full request):
+
+- `metadataEntryCount == cached.generatorMetadataOffset` → "确无新事件" confirmed.
+  The scan **converges as a success**: the file fingerprint (mtime/size + WAL)
+  advances to the current file, `consecutiveEmptySuffixes` / `lastEmptySuffixAt`
+  reset, `failedSessionCount` is *not* incremented, and the cached daily /
+  samples / offset state is untouched. The re-delivered events are deliberately
+  discarded — they are already accounted for, and re-aggregating would
+  double-count.
+- any other non-zero total (server caught up or truncated) → the normal full
+  path runs: the offset=0 refetch re-aggregates and replaces the day buckets
+  wholesale, which is correct by construction.
+- zero entries → handled by strike rule B below.
+
+**B. Zero-metadata full → 3-strike terminal state.** A full (or verification)
+page with `metadataEntryCount == 0` retains last-good data and increments
+`failedSessionCount` (it genuinely did not succeed), and increments
+`emptyFullStrikesBySession[sessionId]`. At 3 (`zeroMetadataFullStrikeLimit`) the
+session converges as a success for that round:
+
+- **with last-good data** (`sessions[id]` exists): the entry is rewritten with
+  the *current* file fingerprint while `eventCount`, `generatorMetadataOffset`,
+  daily buckets and samples keep their last-good values — zero metadata never
+  clears user-visible history. (For migrated v6/v7 entries `offset` may stay 0;
+  the next real file change then takes the full-plan path, the correct re-fetch
+  form.)
+- **with no data at all**: a terminal empty entry (`eventCount: 0`, `offset: 0`,
+  current fingerprint, empty samples) is written so the session stops being
+  dirty.
+
+Any later non-zero metadata result clears the strike count, and a converged
+session whose file changes again is planned normally (suffix when
+`generatorMetadataOffset > 0`, full otherwise), so real new events are picked
+up as usual.
+
+**Residual risk for A (bounded, accepted):** if the server publishes the events
+only *after* the verification full and the file never changes again, those
+events stay missing until any later file change, the settings-page hard full,
+or a calendar rollover rebuild re-triggers a scan. The same bounded acceptance
+applies to a B-converged session: any file change re-plans it normally.
+
+**C. Why `calendarSignature` needs no per-session signature.** The signature
+still advances only on a round with `failedSessionCount == 0` (all-or-nothing;
+incomplete directory enumeration correctly keeps blocking it). Both persistent
+failure sources above are now bounded — empty suffixes escalate to verification
+after 2 attempts, zero-metadata fulls converge after 3 strikes — and converged
+sessions no longer count as failures. So the number of rounds in which
+`failedSessionCount > 0` (and therefore *all* sessions re-run the full plan at
+batch size 2) is finite, typically ≤ 3, after which the signature advances and
+the scanner returns to cheap dirty/offset mode. RPC transport errors and
+incomplete enumeration remain ordinary retryable failures by design. A
+per-session signature scheme would add a cache migration without buying
+anything this bound does not already provide.
 
 ## Local Token Usage Scanner
 
@@ -500,7 +585,8 @@ only the matching step metadata timestamp as a fallback.
       "eventCount": 50,
       "generatorMetadataOffset": 50,
       "lastMaxStepIndex": 120,
-      "lastTurnIndex": 15
+      "lastTurnIndex": 15,
+      "consecutiveEmptySuffixes": 0
     }
   },
   "dailyBySession": {
@@ -512,11 +598,14 @@ only the matching step metadata timestamp as a fallback.
     "41272769-fe7d-4802-a174-b5b28b526ade": [
       { "completedAt": "...", "promptID": "...", "inputTokens": 1000, "outputTokens": 800 }
     ]
-  }
+  },
+  "emptyFullStrikesBySession": {}
 }
 ```
 
 `dailyBySession` keeps each session's per-day token breakdown, while `samplesBySession` keeps recent per-event samples. A changed session replaces only its own entries; unchanged sessions remain cached. The source events are not persisted as JSONL — they are fetched again from RPC whenever the file fingerprint is dirty.
+
+`consecutiveEmptySuffixes` (per session) and `emptyFullStrikesBySession` (top level) drive bounded convergence; both are optional and default to 0 / absent when absent — see "Bounded convergence" above. They exist purely for retry bookkeeping and never alter the accounting fields.
 
 ### Optimizations
 
@@ -529,7 +618,7 @@ The scanner does heavy work in the background and is built for low-cost re-runs:
 5. **Bounded/adaptive RPC**: dirty sessions use four concurrent suffix requests, while
    any batch containing full requests is limited to two. Results are reduced in small
    batches so parsed events from all sessions are not retained until the final RPC.
-6. **Failure is non-fatal**: RPC failures don't update `index.sessions[id].mtimeMs` — the next scan naturally retries. `failedSessionCount` is surfaced in the result so the UI can show a warning.
+6. **Failure is non-fatal, and bounded**: RPC failures don't update `index.sessions[id].mtimeMs` — the next scan naturally retries. Persistent non-successes are bounded: empty suffixes escalate to a verification full after 2 attempts and zero-metadata fulls converge after 3 strikes (see "Bounded convergence"), and converged sessions do not count toward `failedSessionCount`, which is surfaced in the result so the UI can show a warning.
 7. **In-flight / offline tolerance**: if every entry in `defaultConversationsDirs` doesn't exist (CLI-only or no IDE activity), `listDBFiles()` returns `[]` and the scan completes cleanly with `sessionCount: 0` — no exception.
 8. **Index parse failure recovery**: a corrupted `index.json` is logged + reset to `.empty` rather than failing the whole scan.
 9. **Pipeline serialization via `AsyncMutex` + `lastCommittedGeneration`**: 整个 `performScanPure` 包在 `try await pipelineMutex.withLock { ... }` 里, 旧 worker 跑完整个 pipeline 才让新 worker 开始. 配合 `lastCommittedGeneration` 守门, cancel+rescan 期间旧 worker 即使晚到 mutex, `startedGeneration < lastCommittedGeneration` 时也跳过 saveIndex, 杜绝 cache revert. **P1 invariant**: read + write-to-disk + update 全在 mutex 内 atomic (跨 @MainActor hop `await scanner.read.../write...` 持锁执行), 不能拆到 mutex 外. 详见 `spec/overview.md` "Scanner Concurrency" 段.
@@ -697,7 +786,7 @@ This means: a `step_type=15` row at `.db idx = N` is the LLM call that produced 
 2. **RPC fetch** — for each dirty session, call `GetCascadeTrajectoryGeneratorMetadata` and parse model, token fields, timestamp, and `stepIndices` from each event. Token values always come from RPC. If a SQLite-backed event has `stepIndices` but no timestamp, read only the matching `steps.step_type=15` metadata from the `.db` to recover its timestamp; `.pb` has no fallback.
 3. **Round aggregation** — count recovered/timestamped events as rounds and bucket token totals by the local calendar day.
 4. **Turn inference** — sort events by timestamp and start a new inferred turn when the next event's minimum `stepIndices` value has a gap after the previous maximum. This is best-effort and can overcount when tool-call steps create gaps.
-5. **Cache update** — only a non-empty RPC result advances the file fingerprint and replaces the session's daily/sample cache. Failed or empty RPC responses retain last-good data and remain dirty for a later scan.
+5. **Cache update** — only a non-empty RPC result advances the file fingerprint and replaces the session's daily/sample cache. Failed or empty RPC responses retain last-good data and remain dirty for a later scan, with bounded convergence: consecutive empty suffixes escalate to an offset=0 verification full, and consecutive zero-metadata fulls converge after 3 strikes while keeping last-good data (see "Bounded convergence" under "Incremental trajectory metadata").
 
 ## Historical SQLite reader investigation
 

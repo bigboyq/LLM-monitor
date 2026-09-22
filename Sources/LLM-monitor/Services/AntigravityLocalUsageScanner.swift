@@ -21,8 +21,11 @@ import os.log
 /// 4. **bounded RPC**：dirty session 以固定并发度拉 RPC，避免单个 session 阻塞整批，
 ///    同时不给本地 language server 制造无界请求洪峰。本地 session 文件只用于发现和
 ///    指纹比较，不参与内容解析。
-/// 5. **失败不重试**：RPC 失败或返回空事件时保留 last-good cache，
+/// 5. **失败有界重试**：RPC 失败或返回空事件时保留 last-good cache，
 ///    由下一次 Provider batch settle 后、source 仍 dirty 时的 reconcile 重试。
+///    重试是有界的：连续空 suffix 2 次后升级 offset=0 全量核验并可按成功
+///    收敛推进指纹；零 metadata 全量结果 3 轮打击后收敛（保留 last-good）。
+///    收敛不计失败，calendar 签名因此可以在全部 session 成功/收敛后推进。
 /// 6. **failure 不更新 mtime**：RPC 失败的 session 在 `index.sessions` 里
 ///    mtime 保持不变，下次扫描会自然重试，不留"假成功"状态。
 @MainActor
@@ -209,6 +212,11 @@ extension AntigravityLocalUsageScanner {
         /// intentionally not advanced in that case; this timestamp only
         /// prevents hot-loop retries while the local server catches up.
         var lastEmptySuffixAt: Date?
+        /// 连续空 suffix 计数。达到 `emptySuffixVerificationThreshold` 后，该
+        /// session 的下一个 dirty plan 升级为 offset=0 全量核验；核验确认
+        /// metadata 总数未变则按成功收敛并清零。计数跨至少一次 30s 节流，
+        /// 相当于给滞后的 language server 两次追赶机会。
+        var consecutiveEmptySuffixes: Int
 
         init(
             mtimeMs: Double,
@@ -220,7 +228,8 @@ extension AntigravityLocalUsageScanner {
             generatorMetadataOffset: Int = 0,
             lastMaxStepIndex: Int? = nil,
             lastTurnIndex: Int? = nil,
-            lastEmptySuffixAt: Date? = nil
+            lastEmptySuffixAt: Date? = nil,
+            consecutiveEmptySuffixes: Int = 0
         ) {
             self.mtimeMs = mtimeMs
             self.sizeBytes = sizeBytes
@@ -232,11 +241,13 @@ extension AntigravityLocalUsageScanner {
             self.lastMaxStepIndex = lastMaxStepIndex
             self.lastTurnIndex = lastTurnIndex
             self.lastEmptySuffixAt = lastEmptySuffixAt
+            self.consecutiveEmptySuffixes = consecutiveEmptySuffixes
         }
 
         private enum CodingKeys: String, CodingKey {
             case mtimeMs, sizeBytes, walMtimeMs, walSizeBytes, fetchedAt, eventCount
             case generatorMetadataOffset, lastMaxStepIndex, lastTurnIndex, lastEmptySuffixAt
+            case consecutiveEmptySuffixes
         }
 
         init(from decoder: Decoder) throws {
@@ -252,6 +263,7 @@ extension AntigravityLocalUsageScanner {
             lastMaxStepIndex = try container.decodeIfPresent(Int.self, forKey: .lastMaxStepIndex)
             lastTurnIndex = try container.decodeIfPresent(Int.self, forKey: .lastTurnIndex)
             lastEmptySuffixAt = try container.decodeIfPresent(Date.self, forKey: .lastEmptySuffixAt)
+            consecutiveEmptySuffixes = try container.decodeIfPresent(Int.self, forKey: .consecutiveEmptySuffixes) ?? 0
         }
     }
 
@@ -268,6 +280,13 @@ extension AntigravityLocalUsageScanner {
         /// Optional for backward decoding; nil deliberately invalidates the
         /// cached day buckets until this source completes one current-calendar scan.
         var calendarSignature: String? = nil
+        /// 零 metadata 全量结果的连续打击计数（按 session）。全量/核验页返回
+        /// 0 条 raw metadata（连错 server/workspace，或 language server 重启后
+        /// 丢失 trajectory 记忆）时 +1；达到 `zeroMetadataFullStrikeLimit`
+        /// 后该 session 按成功收敛：有 last-good 的保留 last-good 并采用当前
+        /// 指纹，无数据的写空终结条目。拿到非零 metadata 即清零。可选字段，
+        /// 旧 index.json decode 时默认 nil，保证向后兼容。
+        var emptyFullStrikesBySession: [String: Int]? = nil
 
         static let empty = CacheIndex(
             version: 7,
@@ -351,10 +370,20 @@ extension AntigravityLocalUsageScanner {
         }
     }
 
+    /// Test-only RPC 替身（仅 `performScanPureImpl` 的注入接缝）：非 nil 时替代
+    /// 真实的 `GetCascadeTrajectoryGeneratorMetadata` 网络请求，参数为
+    /// `(sessionID, offset)`，返回该页解析出的 events 与 raw metadata 条数。
+    /// offset=0 即全量/核验请求。生产路径恒传 nil，零开销。
+    typealias TrajectoryMetadataFetch = @Sendable (
+        _ sessionID: String,
+        _ offset: Int
+    ) async throws -> (events: [AntigravityFetcher.UsageEvent], metadataEntryCount: Int)
+
     /// `performScanPure` 的纯 sync 实现. 不含 testGate / AsyncMutex wrap, 在 mutex
     /// 内部跑. 调用方负责保证"同时间只有一个 worker 调这个".
     /// - `shouldSave`: 旧 generation worker 传 false, 跳过 saveIndex 让新 worker
     ///   的 view 留在磁盘.
+    /// - `metadataFetch`: 仅测试用的 RPC 替身，见 `TrajectoryMetadataFetch`。
     nonisolated static func performScanPureImpl(
         fetcher: AntigravityFetcher,
         conversationsDirs: [URL],
@@ -365,7 +394,8 @@ extension AntigravityLocalUsageScanner {
         shouldSave: Bool,
         saveIndexHook: (@Sendable () -> Void)? = nil,
         forceFull: Bool = false,
-        directoryContents: ((URL) throws -> [URL])? = nil
+        directoryContents: ((URL) throws -> [URL])? = nil,
+        metadataFetch: TrajectoryMetadataFetch? = nil
     ) async throws -> AntigravityLocalUsage {
         try ensureCacheDirectoriesExist(cacheDir: cacheDir, fileManager: fileManager)
 
@@ -395,6 +425,7 @@ extension AntigravityLocalUsageScanner {
             index.sessions.removeValue(forKey: removedId)
             index.dailyBySession.removeValue(forKey: removedId)
             index.samplesBySession?.removeValue(forKey: removedId)
+            index.emptyFullStrikesBySession?.removeValue(forKey: removedId)
         }
 
         // Antigravity can leave a placeholder cascade at 0 bytes. Its mtime
@@ -474,6 +505,19 @@ extension AntigravityLocalUsageScanner {
                    nowDate.timeIntervalSince(lastEmptySuffixAt) < 30 {
                     return nil
                 }
+                if cached.consecutiveEmptySuffixes >= Self.emptySuffixVerificationThreshold {
+                    // 连续两次空 suffix（跨至少一次 30s 节流）：不再盲目重试同一
+                    // suffix，升级为 offset=0 全量核验。核验若确认 raw metadata
+                    // 总数未变则按成功收敛推进指纹；若 server 追上/截断则走正常
+                    // 全量重算；若返回 0 条则进入零 metadata 打击计数（有界）。
+                    return DirtySessionPlan(
+                        sessionID: sessionId,
+                        fileInfo: info,
+                        requestedOffset: 0,
+                        isIncremental: false,
+                        isVerification: true
+                    )
+                }
                 return DirtySessionPlan(
                     sessionID: sessionId,
                     fileInfo: info,
@@ -498,8 +542,13 @@ extension AntigravityLocalUsageScanner {
             for batchStart in stride(from: 0, to: dirtyPlans.count, by: batchSize) {
                 let batchEnd = min(batchStart + batchSize, dirtyPlans.count)
                 let batch = Array(dirtyPlans[batchStart..<batchEnd])
-                let results = try await fetchAll(fetcher: fetcher, plans: batch)
+                let results = try await fetchAll(
+                    fetcher: fetcher,
+                    plans: batch,
+                    metadataFetch: metadataFetch
+                )
                 let dirtyByID = Dictionary(uniqueKeysWithValues: batch.map { ($0.sessionID, $0.fileInfo) })
+                let verificationByID = Set(batch.filter(\.isVerification).map(\.sessionID))
                 for entry in results {
                 let sessionId = entry.sessionID
                 guard let info = dirtyByID[sessionId] else { continue }
@@ -508,10 +557,93 @@ extension AntigravityLocalUsageScanner {
                     failedCount = SaturatingArithmetic.add(failedCount, 1)
                     if var cached = index.sessions[sessionId] {
                         cached.lastEmptySuffixAt = nowDate
+                        cached.consecutiveEmptySuffixes = SaturatingArithmetic.add(
+                            cached.consecutiveEmptySuffixes, 1
+                        )
                         index.sessions[sessionId] = cached
+                        logWarn("[antigravity-scan] session=\(sessionId) 增量 suffix 暂时为空，保留 dirty 并延迟重试（连续空 suffix \(cached.consecutiveEmptySuffixes)/\(Self.emptySuffixVerificationThreshold)）")
+                    } else {
+                        logWarn("[antigravity-scan] session=\(sessionId) 增量 suffix 暂时为空，保留 dirty 并延迟重试")
                     }
-                    logWarn("[antigravity-scan] session=\(sessionId) 增量 suffix 暂时为空，保留 dirty 并延迟重试")
                 case .success(.events(let events, let metadataEntryCount, let wasIncremental)):
+                    // 零 raw metadata 的全量/核验页不可信（连错 server/workspace，
+                    // 或 language server 重启后丢失 trajectory 记忆）。保留
+                    // last-good 并累计打击计数，连续 `zeroMetadataFullStrikeLimit`
+                    // 轮后按成功收敛，终结"每轮全量 RPC 无限重试"。
+                    if metadataEntryCount == 0 {
+                        var strikes = index.emptyFullStrikesBySession ?? [:]
+                        let strikeCount = SaturatingArithmetic.add(strikes[sessionId] ?? 0, 1)
+                        if strikeCount >= Self.zeroMetadataFullStrikeLimit {
+                            if let cached = index.sessions[sessionId] {
+                                // 已有 last-good：采用当前文件指纹，但完整保留
+                                // eventCount / offset / daily / samples —— 零
+                                // metadata 绝不清空用户可见的历史数据。文件再
+                                // 变化会重新触发扫描纠偏。
+                                index.sessions[sessionId] = SessionIndexEntry(
+                                    mtimeMs: info.mtimeMs,
+                                    sizeBytes: info.sizeBytes,
+                                    walMtimeMs: info.walMtimeMs,
+                                    walSizeBytes: info.walSizeBytes,
+                                    fetchedAt: nowDate,
+                                    eventCount: cached.eventCount,
+                                    generatorMetadataOffset: cached.generatorMetadataOffset,
+                                    lastMaxStepIndex: cached.lastMaxStepIndex,
+                                    lastTurnIndex: cached.lastTurnIndex
+                                )
+                                if index.samplesBySession?[sessionId] == nil {
+                                    var samplesBySession = index.samplesBySession ?? [:]
+                                    samplesBySession[sessionId] = []
+                                    index.samplesBySession = samplesBySession
+                                }
+                                logInfo("[antigravity-scan] session=\(sessionId) 连续 \(strikeCount) 轮零 metadata 全量结果，收敛并保留 last-good 缓存（eventCount=\(cached.eventCount)）")
+                            } else {
+                                // 从无数据：写空终结条目，让该 session 脱离
+                                // dirty 集合；文件再变化时按 full plan 正常重扫。
+                                index.sessions[sessionId] = SessionIndexEntry(
+                                    mtimeMs: info.mtimeMs,
+                                    sizeBytes: info.sizeBytes,
+                                    walMtimeMs: info.walMtimeMs,
+                                    walSizeBytes: info.walSizeBytes,
+                                    fetchedAt: nowDate,
+                                    eventCount: 0,
+                                    generatorMetadataOffset: 0
+                                )
+                                var samplesBySession = index.samplesBySession ?? [:]
+                                samplesBySession[sessionId] = []
+                                index.samplesBySession = samplesBySession
+                                logInfo("[antigravity-scan] session=\(sessionId) 连续 \(strikeCount) 轮零 metadata 全量结果，收敛为空 session 终结态")
+                            }
+                            Self.clearEmptyFullStrikes(for: sessionId, on: &index)
+                            continue
+                        }
+                        strikes[sessionId] = strikeCount
+                        index.emptyFullStrikesBySession = strikes
+                        failedCount = SaturatingArithmetic.add(failedCount, 1)
+                        logWarn("[antigravity-scan] session=\(sessionId) RPC 返回空 events（全量），保留 last-good cache 并重试（strike \(strikeCount)/\(Self.zeroMetadataFullStrikeLimit)）")
+                        continue
+                    }
+                    // 空后缀核验收敛：offset=0 全量核验返回的 raw metadata 总数
+                    // 与缓存一致 → "确无新事件"。按成功收敛：只推进文件指纹并
+                    // 清零空 suffix 状态，不计失败；核验页重新交付的 events 已在
+                    // 缓存中入账，直接丢弃，重复聚合会双算。
+                    if verificationByID.contains(sessionId),
+                       let cached = index.sessions[sessionId],
+                       metadataEntryCount == cached.generatorMetadataOffset {
+                        index.sessions[sessionId] = SessionIndexEntry(
+                            mtimeMs: info.mtimeMs,
+                            sizeBytes: info.sizeBytes,
+                            walMtimeMs: info.walMtimeMs,
+                            walSizeBytes: info.walSizeBytes,
+                            fetchedAt: nowDate,
+                            eventCount: cached.eventCount,
+                            generatorMetadataOffset: cached.generatorMetadataOffset,
+                            lastMaxStepIndex: cached.lastMaxStepIndex,
+                            lastTurnIndex: cached.lastTurnIndex
+                        )
+                        Self.clearEmptyFullStrikes(for: sessionId, on: &index)
+                        logInfo("[antigravity-scan] session=\(sessionId) 全量核验确认 metadata 总数未变（offset=\(metadataEntryCount)），按成功收敛推进指纹")
+                        continue
+                    }
                     guard isTrustworthyRPCResult(
                         events,
                         metadataEntryCount: metadataEntryCount
@@ -520,6 +652,9 @@ extension AntigravityLocalUsageScanner {
                         logWarn("[antigravity-scan] session=\(sessionId) RPC 返回空 events，保留 last-good cache 并于下次重试")
                         continue
                     }
+                    // 拿到非零 metadata：该 session 的零 metadata 打击计数清零，
+                    // 回到正常路径。
+                    Self.clearEmptyFullStrikes(for: sessionId, on: &index)
                     let recoveredEvents = Self.recoverMissingTimestamps(
                         events,
                         fileInfo: info
@@ -623,6 +758,14 @@ extension AntigravityLocalUsageScanner {
             // A partial calendar rebuild must not claim that old-calendar
             // sessions are current. It will remain mismatched and retry cold
             // on the next reconcile.
+            //
+            // 签名保持 all-or-nothing，不需要按 session 签名：A/B 落地后，
+            // 持久失败源全部变成有界收敛——空 suffix 连续 2 次后升级核验并可
+            // 收敛，零 metadata 全量 3 轮打击后收敛，且收敛不计失败——所以
+            // `failedCount > 0`（进而所有 session 以 batch=2 走 full plan）的
+            // 轮数是有界的（通常 ≤ 3），之后 failedCount 归零、签名自然推进、
+            // 回到便宜的 dirty/offset 模式。枚举不完整仍阻塞签名推进（正确：
+            // 那代表本轮可能漏扫 session），保持原样。
             if failedCount == 0 {
                 index.calendarSignature = currentCalendarSignature
             }
@@ -661,6 +804,28 @@ extension AntigravityLocalUsageScanner {
         return !events.isEmpty
     }
 
+    /// 连续空 suffix 达到该次数后，下一个 dirty plan 升级为 offset=0 全量核验。
+    /// 两次空 suffix 之间至少隔着一次 30s 节流，给滞后的 server 两次追赶机会。
+    nonisolated static let emptySuffixVerificationThreshold = 2
+
+    /// 零 metadata 全量结果的连续打击上限：达到后该 session 按成功收敛
+    /// （有 last-good 保留 last-good，无数据写空终结条目）。3 轮观察期兼顾
+    /// "连错 server 需要观察"与"不能被拖入永久全量循环"。
+    nonisolated static let zeroMetadataFullStrikeLimit = 3
+
+    /// 清除 session 的零 metadata 打击计数（拿到非零 metadata 或收敛时）。
+    /// 字典清空后写回 nil，避免 index.json 长期残留空对象。
+    private nonisolated static func clearEmptyFullStrikes(
+        for sessionID: String,
+        on index: inout CacheIndex
+    ) {
+        guard let strikes = index.emptyFullStrikesBySession,
+              strikes[sessionID] != nil else { return }
+        var updated = strikes
+        updated.removeValue(forKey: sessionID)
+        index.emptyFullStrikesBySession = updated.isEmpty ? nil : updated
+    }
+
     /// The protocol offset advances by raw generatorMetadata entries, including
     /// entries that do not contain a usable token event and are filtered out.
     nonisolated static func advanceGeneratorMetadataOffset(
@@ -675,15 +840,25 @@ extension AntigravityLocalUsageScanner {
         let fileInfo: AntigravityDBFileInfo
         let requestedOffset: Int
         let isIncremental: Bool
+        /// offset=0 全量核验计划：由连续空 suffix 升级而来。线上请求形态与
+        /// full plan 相同（`isIncremental == false`），只影响结果归约：核验页
+        /// 若确认 metadata 总数未变，则按成功收敛并推进指纹，而不是重放已
+        /// 入账的 events（重复聚合会双算）。
+        var isVerification: Bool = false
     }
 
     /// 以固定并发度拉多个 session 的 metadata。
     /// `nonisolated static`：fetcher 通过参数传，不碰 self，可在 background 跑。
     fileprivate nonisolated static func fetchAll(
         fetcher: AntigravityFetcher,
-        plans: [DirtySessionPlan]
+        plans: [DirtySessionPlan],
+        metadataFetch: TrajectoryMetadataFetch? = nil
     ) async throws -> [DirtySessionFetchResult] {
-        logInfo("[antigravity-scan] dirty sessions: \(plans.count) — \(plans.prefix(5).map { "\($0.sessionID)\($0.isIncremental ? "(inc)" : "(full)")" }.joined(separator: ", "))\(plans.count > 5 ? "…" : "")")
+        let planTags = plans.prefix(5).map { plan -> String in
+            if plan.isVerification { return "\(plan.sessionID)(verify)" }
+            return "\(plan.sessionID)\(plan.isIncremental ? "(inc)" : "(full)")"
+        }.joined(separator: ", ")
+        logInfo("[antigravity-scan] dirty sessions: \(plans.count) — \(planTags)\(plans.count > 5 ? "…" : "")")
         try Task.checkCancellation()
         // 进程/端口发现对整次扫描只做一次，所有 session 复用同一快照。
         let servers = fetcher.discoverMetadataServers()
@@ -718,7 +893,8 @@ extension AntigravityLocalUsageScanner {
                     index: nextIndex,
                     plans: plans,
                     fetcher: fetcher,
-                    servers: servers
+                    servers: servers,
+                    metadataFetch: metadataFetch
                 )
                 nextIndex += 1
             }
@@ -731,7 +907,8 @@ extension AntigravityLocalUsageScanner {
                     index: nextIndex,
                     plans: plans,
                     fetcher: fetcher,
-                    servers: servers
+                    servers: servers,
+                    metadataFetch: metadataFetch
                 )
                 nextIndex += 1
             }
@@ -744,7 +921,8 @@ extension AntigravityLocalUsageScanner {
         index: Int,
         plans: [DirtySessionPlan],
         fetcher: AntigravityFetcher,
-        servers: [AntigravityFetcher.ServerInfo]
+        servers: [AntigravityFetcher.ServerInfo],
+        metadataFetch: TrajectoryMetadataFetch? = nil
     ) {
         let plan = plans[index]
         let sessionID = plan.sessionID
@@ -754,19 +932,30 @@ extension AntigravityLocalUsageScanner {
         group.addTask {
             try Task.checkCancellation()
             do {
-                if isIncremental {
-                    let suffixPage = try await fetcher.getTrajectoryMetadata(
+                let requestedOffset = isIncremental ? offset : 0
+                let page: AntigravityFetcher.TrajectoryMetadataPage
+                if let metadataFetch {
+                    // Test-only 替身路径：不出网，按 (sessionID, offset) 返回。
+                    let stubbed = try await metadataFetch(sessionID, requestedOffset)
+                    page = AntigravityFetcher.TrajectoryMetadataPage(
+                        events: stubbed.events,
+                        metadataEntryCount: stubbed.metadataEntryCount
+                    )
+                } else {
+                    page = try await fetcher.getTrajectoryMetadata(
                         sessionId: sessionID,
-                        offset: offset,
+                        offset: requestedOffset,
                         servers: servers
                     )
-                    if suffixPage.metadataEntryCount > 0 {
+                }
+                if isIncremental {
+                    if page.metadataEntryCount > 0 {
                         return DirtySessionFetchResult(
                             index: index,
                             sessionID: sessionID,
                             result: .success(.events(
-                                events: suffixPage.events,
-                                metadataEntryCount: suffixPage.metadataEntryCount,
+                                events: page.events,
+                                metadataEntryCount: page.metadataEntryCount,
                                 wasIncremental: true
                             ))
                         )
@@ -783,11 +972,6 @@ extension AntigravityLocalUsageScanner {
                         result: .success(.emptyIncremental)
                     )
                 } else {
-                    let page = try await fetcher.getTrajectoryMetadata(
-                        sessionId: sessionID,
-                        offset: 0,
-                        servers: servers
-                    )
                     return DirtySessionFetchResult(
                         index: index,
                         sessionID: sessionID,

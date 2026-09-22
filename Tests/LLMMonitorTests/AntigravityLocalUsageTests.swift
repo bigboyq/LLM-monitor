@@ -1797,4 +1797,355 @@ final class AntigravityLocalUsageTests: XCTestCase {
         XCTAssertEqual(result.last?.dayStart, today)
         XCTAssertEqual(result.last?.totalTokens, 99)
     }
+
+    // MARK: - 空后缀 / 零 metadata 收敛（问题 A/B/C）
+
+    /// RPC 替身：线程安全地记录 (sessionID, offset) 调用并按 handler 返回。
+    /// handler 可在扫描轮次之间替换，模拟 server 从"滞后"恢复到"有数据"。
+    private final class MetadataStub: @unchecked Sendable {
+        typealias Page = (events: [AntigravityFetcher.UsageEvent], metadataEntryCount: Int)
+
+        private let lock = NSLock()
+        private var handler: @Sendable (String, Int) async -> Page
+        private var calls: [(sessionID: String, offset: Int)] = []
+
+        init(handler: @escaping @Sendable (String, Int) async -> Page) {
+            self.handler = handler
+        }
+
+        func setHandler(_ handler: @escaping @Sendable (String, Int) async -> Page) {
+            lock.withLock { self.handler = handler }
+        }
+
+        func fetch(sessionID: String, offset: Int) async throws -> Page {
+            let current = lock.withLock {
+                calls.append((sessionID, offset))
+                return handler
+            }
+            return await current(sessionID, offset)
+        }
+
+        var callCount: Int { lock.withLock { calls.count } }
+
+        var lastOffset: Int? { lock.withLock { calls.last?.offset } }
+    }
+
+    private struct ConvergenceFixture {
+        let root: URL
+        let conversations: URL
+        let cache: URL
+        let sessionID: String
+        let dbPath: URL
+        let liveMtimeMs: Double
+        let liveSizeBytes: Int
+        let dayKey: String
+        let dayStart: Date
+        let fm: FileManager
+    }
+
+    /// 单 session 收敛测试夹具：non-empty `.db` + 带 last-good（offset/事件数可配、
+    /// 当日 daily 桶 input=500、空 samples）但指纹过期的 v7 index。calendarSignature
+    /// 与 testCalendar 一致，避免触发冷重建全量路径。
+    private func makeConvergenceFixture(
+        cachedOffset: Int,
+        cachedEventCount: Int
+    ) throws -> ConvergenceFixture {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory
+            .appendingPathComponent("antigravity-converge-\(UUID().uuidString)", isDirectory: true)
+        let conversations = root.appendingPathComponent("conversations", isDirectory: true)
+        let cache = root.appendingPathComponent("cache", isDirectory: true)
+        try fm.createDirectory(at: conversations, withIntermediateDirectories: true)
+        try fm.createDirectory(at: cache, withIntermediateDirectories: true)
+
+        let sessionID = "converge-session"
+        let dbPath = conversations.appendingPathComponent("\(sessionID).db")
+        try Data(repeating: 1, count: 128).write(to: dbPath)
+        let values = try dbPath.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+        let liveMtimeMs = try XCTUnwrap(values.contentModificationDate).timeIntervalSince1970 * 1000
+        let liveSizeBytes = try XCTUnwrap(values.fileSize)
+
+        let dayStart = testCalendar.startOfDay(for: Date(timeIntervalSince1970: 1_789_996_800))
+        let dayKey = LocalUsageDayKey.make(dayStart, calendar: testCalendar)
+        let seededAt = Date(timeIntervalSince1970: 1_789_990_000)
+        let index = AntigravityLocalUsageScanner.CacheIndex(
+            version: 7,
+            lastScannedAt: seededAt,
+            sessions: [sessionID: .init(
+                mtimeMs: liveMtimeMs - 60_000,              // 过期指纹 → dirty
+                sizeBytes: liveSizeBytes - 10,              // 小于当前 → 非 shrink
+                walMtimeMs: 0,
+                walSizeBytes: 0,
+                fetchedAt: seededAt,
+                eventCount: cachedEventCount,
+                generatorMetadataOffset: cachedOffset
+            )],
+            dailyBySession: [sessionID: [
+                dayKey: AntigravityDailyUsage(dayStart: dayStart, inputTokens: 500, totalTokens: 500)
+            ]],
+            samplesBySession: [sessionID: []],
+            calendarSignature: LocalUsageCalendarSignature.make(testCalendar)
+        )
+        try AntigravityLocalUsageScanner.saveIndex(index, cacheDir: cache, fileManager: FileManagerBox(fm))
+
+        return ConvergenceFixture(
+            root: root,
+            conversations: conversations,
+            cache: cache,
+            sessionID: sessionID,
+            dbPath: dbPath,
+            liveMtimeMs: liveMtimeMs,
+            liveSizeBytes: liveSizeBytes,
+            dayKey: dayKey,
+            dayStart: dayStart,
+            fm: fm
+        )
+    }
+
+    private func runConvergenceScan(
+        fixture: ConvergenceFixture,
+        now: Date,
+        stub: MetadataStub
+    ) async throws -> AntigravityLocalUsage {
+        try await AntigravityLocalUsageScanner.performScanPureImpl(
+            fetcher: AntigravityFetcher(metadataServerDiscovery: {
+                // 替身路径不真正出网，但 discovery 必须非空才能进入 fetch 阶段。
+                [AntigravityFetcher.ServerInfo(pid: 1, httpsPort: 1, csrfToken: nil, kind: .ide)]
+            }),
+            conversationsDirs: [fixture.conversations],
+            cacheDir: fixture.cache,
+            fileManager: FileManagerBox(fixture.fm),
+            calendar: testCalendar,
+            now: { now },
+            shouldSave: true,
+            metadataFetch: { sessionID, offset in
+                try await stub.fetch(sessionID: sessionID, offset: offset)
+            }
+        )
+    }
+
+    private func loadConvergenceIndex(_ fixture: ConvergenceFixture) throws -> AntigravityLocalUsageScanner.CacheIndex {
+        try AntigravityLocalUsageScanner.loadIndex(
+            cacheDir: fixture.cache,
+            fileManager: FileManagerBox(fixture.fm)
+        )
+    }
+
+    /// 问题 A：连续两次空 suffix 后升级 offset=0 全量核验；核验确认 metadata
+    /// 总数未变 → 按成功收敛（不计失败、指纹推进、计数清零），之后文件不再
+    /// 变化就不再发 RPC；文件真实变化时增量 suffix 照常抓到新事件。
+    func testEmptySuffixEscalatesToVerificationAndConverges() async throws {
+        let fixture = try makeConvergenceFixture(cachedOffset: 5, cachedEventCount: 5)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+        let stub = MetadataStub { _, offset in
+            (events: [], metadataEntryCount: offset == 5 ? 0 : 5)
+        }
+        let base = Date(timeIntervalSince1970: 1_790_000_000)
+
+        // 第 1、2 轮：空 suffix → 计数递增、计失败、保留 last-good。
+        let scan1 = try await runConvergenceScan(fixture: fixture, now: base, stub: stub)
+        XCTAssertEqual(scan1.failedSessionCount, 1)
+        var index = try loadConvergenceIndex(fixture)
+        XCTAssertEqual(index.sessions[fixture.sessionID]?.consecutiveEmptySuffixes, 1)
+        XCTAssertNotNil(index.sessions[fixture.sessionID]?.lastEmptySuffixAt)
+        XCTAssertEqual(index.sessions[fixture.sessionID]?.generatorMetadataOffset, 5, "空 suffix 不得推进 offset/指纹")
+
+        _ = try await runConvergenceScan(fixture: fixture, now: base.addingTimeInterval(60), stub: stub)
+        index = try loadConvergenceIndex(fixture)
+        XCTAssertEqual(index.sessions[fixture.sessionID]?.consecutiveEmptySuffixes, 2)
+
+        // 第 3 轮：升级为 offset=0 核验，总数仍为 5 → 收敛。
+        let callsBeforeVerification = stub.callCount
+        let scan3 = try await runConvergenceScan(fixture: fixture, now: base.addingTimeInterval(120), stub: stub)
+        XCTAssertEqual(stub.callCount, callsBeforeVerification + 1, "核验轮只发一次 RPC")
+        XCTAssertEqual(stub.lastOffset, 0, "核验请求必须使用 offset=0")
+        XCTAssertEqual(scan3.failedSessionCount, 0, "核验收敛不计失败")
+        index = try loadConvergenceIndex(fixture)
+        let converged = try XCTUnwrap(index.sessions[fixture.sessionID])
+        XCTAssertEqual(converged.mtimeMs, fixture.liveMtimeMs, "收敛必须推进文件指纹")
+        XCTAssertEqual(converged.sizeBytes, fixture.liveSizeBytes)
+        XCTAssertEqual(converged.consecutiveEmptySuffixes, 0, "收敛必须清零空 suffix 计数")
+        XCTAssertNil(converged.lastEmptySuffixAt)
+        XCTAssertEqual(converged.generatorMetadataOffset, 5, "收敛不得改变 offset")
+        XCTAssertEqual(converged.eventCount, 5)
+        XCTAssertEqual(
+            index.dailyBySession[fixture.sessionID]?[fixture.dayKey]?.inputTokens, 500,
+            "last-good daily 必须保留"
+        )
+
+        // 第 4 轮：指纹已推进且文件未变 → 不再发 RPC（source fresh）。
+        let callsAfterConverge = stub.callCount
+        let scan4 = try await runConvergenceScan(fixture: fixture, now: base.addingTimeInterval(180), stub: stub)
+        XCTAssertEqual(stub.callCount, callsAfterConverge, "收敛后不得再发 RPC")
+        XCTAssertEqual(scan4.failedSessionCount, 0)
+
+        // 第 5 轮：文件真实变化 → 增量 suffix 正常抓到新事件（验收约束 3）。
+        try Data(repeating: 2, count: 256).write(to: fixture.dbPath)
+        // 注意：URL 对象会缓存已取过的 resource values，必须走 FileManager 拿新 size。
+        let grownAttributes = try FileManager.default.attributesOfItem(atPath: fixture.dbPath.path)
+        let grownSize = (grownAttributes[.size] as? NSNumber)?.intValue ?? 0
+        let eventDate = fixture.dayStart.addingTimeInterval(3_600)
+        let newEvents = [makeEvent(timestamp: eventDate, input: 100, total: 100)]
+        await stub.setHandler { _, offset in
+            (events: offset == 5 ? newEvents : [], metadataEntryCount: offset == 5 ? 1 : 0)
+        }
+        let scan5 = try await runConvergenceScan(fixture: fixture, now: base.addingTimeInterval(240), stub: stub)
+        XCTAssertEqual(scan5.failedSessionCount, 0)
+        index = try loadConvergenceIndex(fixture)
+        let updated = try XCTUnwrap(index.sessions[fixture.sessionID])
+        XCTAssertEqual(updated.generatorMetadataOffset, 6)
+        XCTAssertEqual(updated.eventCount, 6)
+        XCTAssertEqual(updated.sizeBytes, grownSize)
+        XCTAssertEqual(
+            index.dailyBySession[fixture.sessionID]?[fixture.dayKey]?.inputTokens, 600,
+            "收敛后再变化必须能正常增量入账"
+        )
+    }
+
+    /// 问题 A 的另一分支：核验发现 server 端总数已变化（追上或截断）→ 走正常
+    /// 全量重算路径，整体替换 daily/samples 并推进 offset，不产生失败。
+    func testVerificationWithChangedMetadataTotalRunsNormalFullRebuild() async throws {
+        let fixture = try makeConvergenceFixture(cachedOffset: 5, cachedEventCount: 5)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+        let stub = MetadataStub { _, _ in
+            (events: [], metadataEntryCount: 0)  // 前两轮：空 suffix
+        }
+        let base = Date(timeIntervalSince1970: 1_790_000_000)
+
+        _ = try await runConvergenceScan(fixture: fixture, now: base, stub: stub)
+        _ = try await runConvergenceScan(fixture: fixture, now: base.addingTimeInterval(60), stub: stub)
+
+        // 第 3 轮核验：server 追上，raw 总数 8（其中 3 个可入账 event）。
+        let eventDate = fixture.dayStart.addingTimeInterval(3_600)
+        let fullEvents = (0..<3).map {
+            makeEvent(timestamp: eventDate.addingTimeInterval(Double($0 * 60)), input: 10, output: 5, total: 15)
+        }
+        await stub.setHandler { _, _ in
+            (events: fullEvents, metadataEntryCount: 8)
+        }
+        let scan3 = try await runConvergenceScan(fixture: fixture, now: base.addingTimeInterval(120), stub: stub)
+        XCTAssertEqual(scan3.failedSessionCount, 0, "正常全量重算是成功轮")
+
+        let index = try loadConvergenceIndex(fixture)
+        let entry = try XCTUnwrap(index.sessions[fixture.sessionID])
+        XCTAssertEqual(entry.generatorMetadataOffset, 8, "offset 必须按 raw metadata 总数重置")
+        XCTAssertEqual(entry.eventCount, 3)
+        XCTAssertEqual(entry.consecutiveEmptySuffixes, 0)
+        XCTAssertEqual(
+            index.dailyBySession[fixture.sessionID]?[fixture.dayKey]?.inputTokens, 30,
+            "offset=0 全量重算必须整体替换旧日桶（500 → 30）"
+        )
+        XCTAssertNil(index.emptyFullStrikesBySession)
+    }
+
+    /// 问题 B：零 metadata 全量结果保留 last-good 并累计打击；连续 3 轮后按
+    /// 成功收敛——指纹采用当前文件、eventCount/daily 保留，不再计失败，
+    /// 之后文件不变就不再发全量 RPC。
+    func testZeroMetadataFullConvergesAfterThreeStrikesKeepingLastGood() async throws {
+        let fixture = try makeConvergenceFixture(cachedOffset: 0, cachedEventCount: 5)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+        let stub = MetadataStub { _, _ in
+            (events: [], metadataEntryCount: 0)
+        }
+        let base = Date(timeIntervalSince1970: 1_790_000_000)
+
+        let scan1 = try await runConvergenceScan(fixture: fixture, now: base, stub: stub)
+        XCTAssertEqual(scan1.failedSessionCount, 1)
+        var index = try loadConvergenceIndex(fixture)
+        XCTAssertEqual(index.emptyFullStrikesBySession?[fixture.sessionID], 1)
+        XCTAssertEqual(
+            index.sessions[fixture.sessionID]?.mtimeMs, fixture.liveMtimeMs - 60_000,
+            "strike 轮不得推进指纹"
+        )
+        XCTAssertEqual(index.dailyBySession[fixture.sessionID]?[fixture.dayKey]?.inputTokens, 500, "last-good 保留")
+
+        _ = try await runConvergenceScan(fixture: fixture, now: base.addingTimeInterval(60), stub: stub)
+        index = try loadConvergenceIndex(fixture)
+        XCTAssertEqual(index.emptyFullStrikesBySession?[fixture.sessionID], 2)
+
+        let scan3 = try await runConvergenceScan(fixture: fixture, now: base.addingTimeInterval(120), stub: stub)
+        XCTAssertEqual(scan3.failedSessionCount, 0, "第 3 轮收敛，不计失败")
+        index = try loadConvergenceIndex(fixture)
+        XCTAssertNil(index.emptyFullStrikesBySession, "收敛后打击计数清零")
+        let entry = try XCTUnwrap(index.sessions[fixture.sessionID])
+        XCTAssertEqual(entry.mtimeMs, fixture.liveMtimeMs, "收敛采用当前文件指纹")
+        XCTAssertEqual(entry.eventCount, 5, "last-good eventCount 保留")
+        XCTAssertEqual(entry.generatorMetadataOffset, 0)
+        XCTAssertEqual(index.dailyBySession[fixture.sessionID]?[fixture.dayKey]?.inputTokens, 500, "last-good daily 保留")
+
+        let callsAfterConverge = stub.callCount
+        let scan4 = try await runConvergenceScan(fixture: fixture, now: base.addingTimeInterval(180), stub: stub)
+        XCTAssertEqual(stub.callCount, callsAfterConverge, "收敛后文件不变不得再发 RPC")
+        XCTAssertEqual(scan4.failedSessionCount, 0)
+    }
+
+    /// 问题 B：打击观察期内任一轮拿到非零 metadata → 计数清零，回到正常路径。
+    func testZeroMetadataStrikesClearWhenDataArrives() async throws {
+        let fixture = try makeConvergenceFixture(cachedOffset: 0, cachedEventCount: 5)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+        let stub = MetadataStub { _, _ in
+            (events: [], metadataEntryCount: 0)
+        }
+        let base = Date(timeIntervalSince1970: 1_790_000_000)
+
+        _ = try await runConvergenceScan(fixture: fixture, now: base, stub: stub)
+        var index = try loadConvergenceIndex(fixture)
+        XCTAssertEqual(index.emptyFullStrikesBySession?[fixture.sessionID], 1)
+
+        // 第 2 轮 server 恢复：全量拿到数据。
+        let fullEvents = [makeEvent(timestamp: fixture.dayStart.addingTimeInterval(3_600), input: 7, total: 7)]
+        await stub.setHandler { _, _ in
+            (events: fullEvents, metadataEntryCount: 6)
+        }
+        let scan2 = try await runConvergenceScan(fixture: fixture, now: base.addingTimeInterval(60), stub: stub)
+        XCTAssertEqual(scan2.failedSessionCount, 0)
+        index = try loadConvergenceIndex(fixture)
+        XCTAssertNil(index.emptyFullStrikesBySession, "拿到非零 metadata 必须清零打击计数")
+        XCTAssertEqual(index.sessions[fixture.sessionID]?.generatorMetadataOffset, 6)
+        XCTAssertEqual(index.dailyBySession[fixture.sessionID]?[fixture.dayKey]?.inputTokens, 7)
+    }
+
+    /// 缓存向后兼容（验收约束 5）：旧 v7 index（无收敛字段）可被新代码读取，
+    /// 新字段 decodeIfPresent 提供默认值；新字段写入后 encode/decode 保真。
+    func testConvergenceFieldsDecodeWithBackwardCompatibility() throws {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let entryJSON = """
+        {"mtimeMs":1.0,"sizeBytes":2,"walMtimeMs":0.0,"walSizeBytes":0,"eventCount":5,"generatorMetadataOffset":5}
+        """
+        let entry = try decoder.decode(
+            AntigravityLocalUsageScanner.SessionIndexEntry.self,
+            from: Data(entryJSON.utf8)
+        )
+        XCTAssertEqual(entry.consecutiveEmptySuffixes, 0, "旧缓存无空 suffix 计数字段时默认 0")
+        XCTAssertNil(entry.lastEmptySuffixAt)
+
+        let indexJSON = """
+        {"version":7,"lastScannedAt":"2026-09-22T00:00:00Z","sessions":{},"dailyBySession":{}}
+        """
+        let index = try decoder.decode(
+            AntigravityLocalUsageScanner.CacheIndex.self,
+            from: Data(indexJSON.utf8)
+        )
+        XCTAssertNil(index.emptyFullStrikesBySession, "旧缓存无打击计数字段时默认 nil")
+
+        var withStrikes = index
+        withStrikes.emptyFullStrikesBySession = ["s1": 2]
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let redecoded = try decoder.decode(
+            AntigravityLocalUsageScanner.CacheIndex.self,
+            from: try encoder.encode(withStrikes)
+        )
+        XCTAssertEqual(redecoded.emptyFullStrikesBySession?["s1"], 2, "新字段 round-trip 保真")
+        let withCounter = try decoder.decode(
+            AntigravityLocalUsageScanner.SessionIndexEntry.self,
+            from: try encoder.encode(entry)
+        )
+        XCTAssertEqual(withCounter.consecutiveEmptySuffixes, 0)
+    }
 }
