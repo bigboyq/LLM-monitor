@@ -5,13 +5,27 @@ import SQLite3
 /// Token usage remains RPC-only; this is a timestamp fallback for RPC events
 /// whose newer schema omits `chatStartMetadata.createdAt`.
 enum AntigravityStepTimestampReader {
+    /// 直读原 .db 路径必须 READONLY：这是 IDE 正在实时写入的活动库，可写连接
+    /// 可能触发 WAL recovery / checkpoint 写副作用。与 GLM/Minimax/Opencode
+    /// reader 的 `readOnly: url.path == 原路径` 约定一致；只读连接撞上需要
+    /// recovery 的 -shm/WAL 时抛 READONLY(8)/CANTOPEN(14) 家族错误，正是
+    /// `SQLiteTempCopy` 白名单兜底到 /tmp 副本的场景。SQLiteTempCopy 的 /tmp
+    /// 副本路径保持 READWRITE：副本上可能需要完成 WAL recovery。
+    ///
+    /// 暴露为 internal 是测试接缝：不打开数据库即可断言"原路径只读、副本可写"
+    /// 的判定正确（SQLiteConnection 不暴露 open flags，无法事后内省）。
+    static func opensReadOnly(dbPath: URL) -> Bool {
+        let tempCopyDir = SQLiteTempCopy.appTempDir().standardizedFileURL.path
+        return !dbPath.standardizedFileURL.path.hasPrefix(tempCopyDir + "/")
+    }
+
     static func timestamps(
         dbPath: URL,
         stepIndices: Set<Int>
     ) throws -> [Int: Date] {
         guard !stepIndices.isEmpty else { return [:] }
 
-        let connection = try SQLiteConnection(path: dbPath)
+        let connection = try SQLiteConnection(path: dbPath, readOnly: opensReadOnly(dbPath: dbPath))
         let sortedIndices = stepIndices.sorted()
         let placeholders = Array(repeating: "?", count: sortedIndices.count).joined(separator: ",")
         let sql = """

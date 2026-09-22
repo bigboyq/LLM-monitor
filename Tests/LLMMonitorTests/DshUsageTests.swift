@@ -616,6 +616,295 @@ final class DshUsageTests: XCTestCase {
         )
     }
 
+    func testBudgetTruncatedScanMarksResultAsTruncated() throws {
+        // 预算截断（文件数上限挤出最旧 session）必须在结果上可见：
+        // isTruncated == true，且统计只包含 mtime 最新的文件。
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let calendar = makeUTCGregorianCalendar()
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("llm-monitor-dsh-truncated-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let cache = root.appendingPathComponent(".token-monitor", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let spec: [(sessionID: String, tokens: Int, mtime: Date)] = [
+            ("session-old", 100, Date(timeIntervalSince1970: 1_600_000_000)),
+            ("session-new", 300, Date(timeIntervalSince1970: 1_700_000_000))
+        ]
+        for entry in spec {
+            let body = #"{"type":"assistant/message","seq":1,"time":1700000001000,"data":{"turn":1,"step":0,"usage":{"inputTokens":\#(entry.tokens),"outputTokens":1}}}"# + "\n"
+            let url = try writeSessionLog(root: sessionsRoot, sessionID: entry.sessionID, body: body)
+            try FileManager.default.setAttributes(
+                [.modificationDate: entry.mtime],
+                ofItemAtPath: url.path
+            )
+        }
+
+        let limits = DshLocalUsageScanLimits(
+            maxSessionFiles: 1,
+            maxTotalRawBytes: 1024 * 1024,
+            maxJSONLLineBytes: 8 * 1024 * 1024,
+            maxRecentSamples: 65_536
+        )
+        let truncated = try DshLocalUsageScanner.performScanPure(
+            sessionsRoot: sessionsRoot,
+            cacheDir: cache,
+            fileManager: FileManagerBox(),
+            calendar: calendar,
+            now: { base },
+            decompressor: { $0 },
+            limits: limits
+        )
+        XCTAssertEqual(truncated.isTruncated, true, "预算截断必须在结果上置位")
+        XCTAssertEqual(truncated.eventCount, 1, "只有 mtime 最新的文件参与统计")
+        let deepseek = try XCTUnwrap(truncated.byProvider["unknown"])
+        XCTAssertEqual(deepseek.today?.inputTokens, 300, "被挤出的最旧 session 不得计入")
+    }
+
+    func testByteCappedScanAlsoMarksResultAsTruncated() throws {
+        // 字节预算截断与文件数截断同样置位 isTruncated。
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let calendar = makeUTCGregorianCalendar()
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("llm-monitor-dsh-byte-truncated-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let cache = root.appendingPathComponent(".token-monitor", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let spec: [(sessionID: String, mtime: Date)] = [
+            ("session-old", Date(timeIntervalSince1970: 1_600_000_000)),
+            ("session-new", Date(timeIntervalSince1970: 1_700_000_000))
+        ]
+        for entry in spec {
+            let body = "{\"pad\":\"\(String(repeating: "x", count: 400))\"}\n"
+            let url = try writeSessionLog(root: sessionsRoot, sessionID: entry.sessionID, body: body)
+            try FileManager.default.setAttributes(
+                [.modificationDate: entry.mtime],
+                ofItemAtPath: url.path
+            )
+        }
+        let newSize = try FileManager.default.attributesOfItem(
+            atPath: sessionsRoot.appendingPathComponent("--Project--/session-new/session.jsonl").path
+        )[.size] as! Int
+        let limits = DshLocalUsageScanLimits(
+            maxSessionFiles: 100,
+            maxTotalRawBytes: newSize,
+            maxJSONLLineBytes: 8 * 1024 * 1024,
+            maxRecentSamples: 65_536
+        )
+
+        let truncated = try DshLocalUsageScanner.performScanPure(
+            sessionsRoot: sessionsRoot,
+            cacheDir: cache,
+            fileManager: FileManagerBox(),
+            calendar: calendar,
+            now: { base },
+            decompressor: { $0 },
+            limits: limits
+        )
+        XCTAssertEqual(truncated.isTruncated, true, "字节预算截断也必须在结果上置位")
+    }
+
+    func testUntruncatedScanReportsIsTruncatedFalse() throws {
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let calendar = makeUTCGregorianCalendar()
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("llm-monitor-dsh-untruncated-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let cache = root.appendingPathComponent(".token-monitor", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let body = #"{"type":"assistant/message","seq":1,"time":1700000001000,"data":{"turn":1,"step":0,"usage":{"inputTokens":10,"outputTokens":1}}}"# + "\n"
+        try writeSessionLog(root: sessionsRoot, sessionID: "session-a", body: body)
+
+        let snapshot = try DshLocalUsageScanner.performScanPure(
+            sessionsRoot: sessionsRoot,
+            cacheDir: cache,
+            fileManager: FileManagerBox(),
+            calendar: calendar,
+            now: { base },
+            decompressor: { $0 },
+            limits: DshLocalUsageScanLimits.production
+        )
+        XCTAssertEqual(snapshot.isTruncated, false, "未截断的扫描必须显式置 false")
+    }
+
+    func testHardFullScanRetriesRecoveredStatFailureAndClearsPartial() throws {
+        // 逃生口主场景：stat 失败进入 partial 后，hardFull 扫描且 stat 已恢复
+        // → partial 解除，完整聚合写回 index。
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let calendar = makeUTCGregorianCalendar()
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("llm-monitor-dsh-hardfull-recover-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let cache = root.appendingPathComponent(".token-monitor", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let body = #"{"type":"assistant/message","seq":1,"time":1700000001000,"data":{"turn":1,"step":0,"usage":{"inputTokens":10,"outputTokens":1}}}"# + "\n"
+        try writeSessionLog(root: sessionsRoot, sessionID: "session-a", body: body)
+        try writeSessionLog(root: sessionsRoot, sessionID: "session-b", body: body)
+        let initial = try DshLocalUsageScanner.performScanPure(
+            sessionsRoot: sessionsRoot,
+            cacheDir: cache,
+            fileManager: FileManagerBox(),
+            calendar: calendar,
+            now: { base },
+            decompressor: { $0 },
+            limits: DshLocalUsageScanLimits.production
+        )
+        XCTAssertNil(initial.isPartial)
+
+        let statFailed = try DshLocalUsageScanner.performScanPure(
+            sessionsRoot: sessionsRoot,
+            cacheDir: cache,
+            fileManager: FileManagerBox(),
+            calendar: calendar,
+            now: { base },
+            decompressor: { $0 },
+            limits: DshLocalUsageScanLimits.production,
+            snapshotReader: { url in
+                if url.path.contains("session-b") {
+                    throw CocoaError(.fileReadNoPermission)
+                }
+                return try DshLogFileSnapshot(url: url, fileManager: FileManagerBox())
+            }
+        )
+        XCTAssertEqual(statFailed.isPartial, true)
+
+        let recovered = try DshLocalUsageScanner.performScanPure(
+            sessionsRoot: sessionsRoot,
+            cacheDir: cache,
+            fileManager: FileManagerBox(),
+            calendar: calendar,
+            now: { base },
+            decompressor: { $0 },
+            limits: DshLocalUsageScanLimits.production,
+            forceFull: true
+        )
+        XCTAssertNil(recovered.isPartial, "hardFull 强制重试成功后 partial 必须解除")
+        XCTAssertEqual(recovered.eventCount, initial.eventCount, "恢复的文件必须重新参与聚合")
+
+        let dirty = try DshLocalUsageScanner.performScanPure(
+            sessionsRoot: sessionsRoot,
+            cacheDir: cache,
+            fileManager: FileManagerBox(),
+            calendar: calendar,
+            now: { base },
+            decompressor: { $0 },
+            limits: DshLocalUsageScanLimits.production
+        )
+        XCTAssertNil(dirty.isPartial, "恢复后的 dirty reconcile 必须保持 clean")
+    }
+
+    func testHardFullScanIgnoresPersistentStatFailureMemory() throws {
+        // 逃生口语义：hardFull 是对失败文件的强制重试。stat 仍然失败时，
+        // hardFull 忽略失败记忆、用仍可读的文件集重建并提交（不是无界扫描，
+        // 仍受 selection 预算约束）；之后 stat 恢复，dirty reconcile 因
+        // fingerprint 变化自动把文件重新纳入。
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let calendar = makeUTCGregorianCalendar()
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("llm-monitor-dsh-hardfull-persistent-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let cache = root.appendingPathComponent(".token-monitor", isDirectory: true)
+        let indexURL = cache.appendingPathComponent("index.json")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let body = #"{"type":"assistant/message","seq":1,"time":1700000001000,"data":{"turn":1,"step":0,"usage":{"inputTokens":10,"outputTokens":1}}}"# + "\n"
+        try writeSessionLog(root: sessionsRoot, sessionID: "session-a", body: body)
+        try writeSessionLog(root: sessionsRoot, sessionID: "session-b", body: body)
+        _ = try DshLocalUsageScanner.performScanPure(
+            sessionsRoot: sessionsRoot,
+            cacheDir: cache,
+            fileManager: FileManagerBox(),
+            calendar: calendar,
+            now: { base },
+            decompressor: { $0 },
+            limits: DshLocalUsageScanLimits.production
+        )
+        let fullIndex = try Data(contentsOf: indexURL)
+
+        let forced = try DshLocalUsageScanner.performScanPure(
+            sessionsRoot: sessionsRoot,
+            cacheDir: cache,
+            fileManager: FileManagerBox(),
+            calendar: calendar,
+            now: { base },
+            decompressor: { $0 },
+            limits: DshLocalUsageScanLimits.production,
+            forceFull: true,
+            snapshotReader: { url in
+                if url.path.contains("session-b") {
+                    throw CocoaError(.fileReadNoPermission)
+                }
+                return try DshLogFileSnapshot(url: url, fileManager: FileManagerBox())
+            }
+        )
+        XCTAssertNil(forced.isPartial, "hardFull 忽略 stat 失败记忆，不返回 partial")
+        XCTAssertEqual(forced.eventCount, 1, "仅聚合仍可 stat 的文件")
+        XCTAssertNotEqual(
+            try Data(contentsOf: indexURL),
+            fullIndex,
+            "hardFull 必须提交当前可读集合的指纹（自洽：指纹与聚合同一文件集）"
+        )
+
+        let afterRecovery = try DshLocalUsageScanner.performScanPure(
+            sessionsRoot: sessionsRoot,
+            cacheDir: cache,
+            fileManager: FileManagerBox(),
+            calendar: calendar,
+            now: { base },
+            decompressor: { $0 },
+            limits: DshLocalUsageScanLimits.production
+        )
+        XCTAssertNil(afterRecovery.isPartial)
+        XCTAssertEqual(afterRecovery.eventCount, 2, "恢复后的 dirty reconcile 重新纳入该文件")
+    }
+
+    func testHardFullScanKeepsPartialWhenEveryFileStatFails() throws {
+        // 安全阀：hardFull 只在仍有至少一个可读文件时忽略失败记忆；整个
+        // sessions 根都不可读时维持 partial last-good，不得发布"干净空快照"。
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let calendar = makeUTCGregorianCalendar()
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("llm-monitor-dsh-hardfull-all-fail-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let cache = root.appendingPathComponent(".token-monitor", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let body = #"{"type":"assistant/message","seq":1,"time":1700000001000,"data":{"turn":1,"step":0,"usage":{"inputTokens":10,"outputTokens":1}}}"# + "\n"
+        try writeSessionLog(root: sessionsRoot, sessionID: "session-a", body: body)
+        _ = try DshLocalUsageScanner.performScanPure(
+            sessionsRoot: sessionsRoot,
+            cacheDir: cache,
+            fileManager: FileManagerBox(),
+            calendar: calendar,
+            now: { base },
+            decompressor: { $0 },
+            limits: DshLocalUsageScanLimits.production
+        )
+        let committedIndex = try Data(contentsOf: cache.appendingPathComponent("index.json"))
+
+        let allFailHardFull = try DshLocalUsageScanner.performScanPure(
+            sessionsRoot: sessionsRoot,
+            cacheDir: cache,
+            fileManager: FileManagerBox(),
+            calendar: calendar,
+            now: { base },
+            decompressor: { $0 },
+            limits: DshLocalUsageScanLimits.production,
+            forceFull: true,
+            snapshotReader: { _ in throw CocoaError(.fileReadNoPermission) }
+        )
+        XCTAssertEqual(allFailHardFull.isPartial, true, "全部 stat 失败时 hardFull 仍返回 partial")
+        XCTAssertEqual(allFailHardFull.eventCount, 1, "保留 last-good 聚合，不得清空")
+        XCTAssertEqual(
+            try Data(contentsOf: cache.appendingPathComponent("index.json")),
+            committedIndex,
+            "全部 stat 失败时 hardFull 不得覆盖 last-good index"
+        )
+    }
+
     func testDshReusesUnchangedFileParseWhenAnotherSessionChanges() throws {
         let base = Date(timeIntervalSince1970: 1_700_000_000)
         let calendar = makeUTCGregorianCalendar()

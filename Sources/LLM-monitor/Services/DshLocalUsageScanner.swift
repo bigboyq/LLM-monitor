@@ -227,9 +227,22 @@ final class DshLocalUsageScanner: LocalUsageScannerBase<DshLocalUsage>, @uncheck
             )
         }
         let snapshots = selection.snapshots
+        // 预算截断（文件数/字节上限挤出最旧 session）是"完整扫描了被故意缩减
+        // 的文件集"，与读取失败（isPartial）是两回事；在结果上置位，让被挤出
+        // 的历史对 UI/结果层可感知，而不是只留在日志里。
+        let isBudgetTruncated = selection.truncatedByFileLimit || selection.byteLimited
         var index = try loadIndex(cacheDir: cacheDir, fileManager: fileManager)
         let currentCalendarSignature = LocalUsageCalendarSignature.make(calendar)
-        if selection.failedFileCount > 0 {
+        // stat 失败的记忆只在 dirty/full 模式消费：保留 last-good cache 并返回
+        // partial，等下一轮 reconcile 重试。`.hardFull`（forceFull）是操作者的
+        // 显式强制重试——忽略失败记忆，用当前可 stat 的文件集重建；本轮仍
+        // stat 失败的文件按不存在处理（selectSessionSnapshots 已逐个 logWarn，
+        // 且选择仍受文件数/字节预算约束，逃生口是"重试失败文件"，不是无界
+        // 扫描）。仅当整个 sessions 根一个可读文件都不剩时维持 partial，避免
+        // 用"干净空快照"覆盖 last-good。恢复后的下一轮 dirty reconcile 会因
+        // fingerprint 变化自动把该文件重新纳入。
+        let hardFullBypassesFailureMemory = forceFull && !snapshots.isEmpty
+        if selection.failedFileCount > 0, !hardFullBypassesFailureMemory {
             // A file that cannot be stat'ed is not evidence of deletion. Keep
             // the previous self-consistent index and expose its last-good view
             // as partial so the next reconcile retries the file.
@@ -253,7 +266,8 @@ final class DshLocalUsageScanner: LocalUsageScannerBase<DshLocalUsage>, @uncheck
                 sessionsRoot: sessionsRoot.path,
                 sessionCount: 0,
                 eventCount: 0,
-                scannedAt: now()
+                scannedAt: now(),
+                isTruncated: isBudgetTruncated
             )
             try saveIndex(
                 DshCacheIndex(
@@ -294,13 +308,18 @@ final class DshLocalUsageScanner: LocalUsageScannerBase<DshLocalUsage>, @uncheck
             limits: limits,
             forceFull: forceFull
         )
-        outcome.failedFileCount += selection.failedFileCount
+        // hardFull 逃生口只豁免 stat 失败记忆；文件解析失败（读取/解压/解码
+        // 错误）在所有模式下仍按失败处理，保持 partial 语义不变。
+        if !hardFullBypassesFailureMemory {
+            outcome.failedFileCount += selection.failedFileCount
+        }
         let snapshot = buildSnapshot(
             aggregate: outcome.aggregate,
             sessionsRoot: sessionsRoot,
             calendar: calendar,
             now: scanNow,
-            limits: limits
+            limits: limits,
+            isTruncated: isBudgetTruncated
         )
         if outcome.failedFileCount > 0 {
             // Never replace a complete last-good snapshot with an aggregate
@@ -451,13 +470,17 @@ final class DshLocalUsageScanner: LocalUsageScannerBase<DshLocalUsage>, @uncheck
                 )
             )
         }
+        // isTruncated 描述的是聚合数字本身的口径（是否被预算截断），不是新鲜
+        // 度标记，所以窗口重算时保留；isPartial 是新鲜度标记，刻意不在此保留，
+        // 由各扫描路径按当轮结果重新置位（markPartial）。
         return DshLocalUsage(
             byProvider: rebasedProviders,
             modelsByProvider: snapshot.modelsByProvider,
             sessionsRoot: snapshot.sessionsRoot,
             sessionCount: snapshot.sessionCount,
             eventCount: snapshot.eventCount,
-            scannedAt: snapshot.scannedAt
+            scannedAt: snapshot.scannedAt,
+            isTruncated: snapshot.isTruncated
         )
     }
 }
@@ -1071,7 +1094,8 @@ private extension DshLocalUsageScanner {
         sessionsRoot: URL,
         calendar: Calendar,
         now: Date,
-        limits: DshLocalUsageScanLimits = .production
+        limits: DshLocalUsageScanLimits = .production,
+        isTruncated: Bool = false
     ) -> DshLocalUsage {
         let today = calendar.startOfDay(for: now)
         var providers: [String: DshProviderUsage] = [:]
@@ -1102,7 +1126,8 @@ private extension DshLocalUsageScanner {
             sessionsRoot: sessionsRoot.path,
             sessionCount: aggregate.sessions.count,
             eventCount: aggregate.eventCount,
-            scannedAt: now
+            scannedAt: now,
+            isTruncated: isTruncated
         )
     }
 

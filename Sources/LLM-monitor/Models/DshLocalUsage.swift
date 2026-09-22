@@ -29,6 +29,14 @@ struct DshLocalUsage: Equatable, Codable, Sendable {
     /// Optional so older persisted snapshots decode unchanged. A partial
     /// result is displayable but must not be promoted to clean freshness.
     var isPartial: Bool? = nil
+    /// Optional so older persisted snapshots decode unchanged. True when the
+    /// session-file count or raw-byte budget cut the scanned source set short
+    /// (oldest sessions excluded), so the totals below undercount what is on
+    /// disk. Unlike `isPartial` — which marks failed reads — a truncated scan
+    /// is a normal, complete scan of a deliberately reduced file set, so it is
+    /// part of the result's meaning rather than a freshness flag (and unlike
+    /// `isPartial` it participates in `==`).
+    var isTruncated: Bool? = nil
 
     static let empty = DshLocalUsage(
         byProvider: [:],
@@ -40,13 +48,18 @@ struct DshLocalUsage: Equatable, Codable, Sendable {
     )
 
     /// Exclude scan metadata from equality so a successful re-scan does not publish a
-    /// new UI state solely because `scannedAt` changed.
+    /// new UI state solely because `scannedAt` changed. `isPartial` is excluded too:
+    /// partialness travels through the freshness channel (`scanResultIsComplete`),
+    /// not result content. `isTruncated` stays in equality because there is no such
+    /// side channel — it qualifies the numbers themselves, so a truncation flip must
+    /// be able to republish.
     static func == (lhs: DshLocalUsage, rhs: DshLocalUsage) -> Bool {
         lhs.byProvider == rhs.byProvider
             && lhs.modelsByProvider == rhs.modelsByProvider
             && lhs.sessionsRoot == rhs.sessionsRoot
             && lhs.sessionCount == rhs.sessionCount
             && lhs.eventCount == rhs.eventCount
+            && lhs.isTruncated == rhs.isTruncated
     }
 }
 

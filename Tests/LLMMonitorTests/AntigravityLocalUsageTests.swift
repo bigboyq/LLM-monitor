@@ -775,6 +775,25 @@ final class AntigravityLocalUsageTests: XCTestCase {
         XCTAssertNil(AntigravityStepTimestampReader.timestampForTest(from: Data([0x08, 0x01])))
     }
 
+    func testStepTimestampReaderOpensOriginalPathReadOnlyAndTempCopyWritable() throws {
+        // 直读原 .db 必须 READONLY（IDE 活动库，杜绝 WAL recovery/checkpoint
+        // 写副作用）；SQLiteTempCopy 的 /tmp 副本保持 READWRITE（副本上可能
+        // 需要完成 WAL recovery）。
+        let original = FileManager.default.temporaryDirectory
+            .appendingPathComponent("antigravity-step-timestamp-original-\(UUID().uuidString).db")
+        XCTAssertTrue(
+            AntigravityStepTimestampReader.opensReadOnly(dbPath: original),
+            "原路径必须以只读连接打开"
+        )
+
+        let tempCopy = SQLiteTempCopy.appTempDir()
+            .appendingPathComponent("\(UUID().uuidString).db")
+        XCTAssertFalse(
+            AntigravityStepTimestampReader.opensReadOnly(dbPath: tempCopy),
+            "/tmp 副本路径必须保持可写以完成 WAL recovery"
+        )
+    }
+
     func testStepTimestampReaderReadsOnlyMatchingLLMSteps() throws {
         let dbURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("antigravity-step-timestamp-\(UUID().uuidString).db")
