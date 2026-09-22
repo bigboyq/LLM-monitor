@@ -2,7 +2,7 @@ import Foundation
 
 /// 本地用量 reconcile 与扫描编排：
 /// provider batch settled 或显式操作驱动一次性扫描 Task；不持有常驻 Timer/beat
-/// loop。仅应用启动后的首个 reconcile 使用 full（强制重建缓存），其余 reconcile
+/// loop。仅应用启动后的首个 reconcile 使用 full（缓存优先校验），其余 reconcile
 /// 由 scanner 内部 fingerprint 决定是否复用缓存或执行增量计算，日切也复用 offset。
 /// 彻底剥离 quota 依赖：quota 刷新成功不再直接 await 本地扫描。
 ///
@@ -319,6 +319,20 @@ final class LocalUsageOrchestration {
     /// 后续手工、唤醒、自动和日切均不得复用这个入口。
     func triggerStartupFullScanAll() async {
         await reconcile(mode: .full)
+    }
+
+    /// Rebuild only Antigravity's local token cache. This is deliberately not
+    /// a global reconcile: the settings-page action is an explicit recovery
+    /// tool for the RPC-backed source and should not rescan unrelated clients.
+    func triggerAntigravityHardFull() async {
+        guard activeSources.antigravity else { return }
+        // A filesystem event or provider reconcile may already have started a
+        // normal scan. Let it settle before issuing the hard request; the
+        // coordinator deduplicates in-flight scans and would otherwise silently
+        // turn this explicit action into a no-op.
+        try? await antigravityCoordinator.waitUntilSettled()
+        antigravityCoordinator.trigger(mode: .hardFull)
+        try? await antigravityCoordinator.waitUntilSettled()
     }
 
     /// Force exactly one full local pass after the system calendar or time zone

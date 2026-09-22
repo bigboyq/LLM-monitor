@@ -29,6 +29,8 @@ struct SettingsView: View {
 
     @State var antigravityEnabled: Bool = false
     @State var antigravityInterval: Int = 0
+    @State var isAntigravityHardFullRunning: Bool = false
+    @State var antigravityHardFullMessage: String?
     @State var glmEnabled: Bool = false
     @State var glmInterval: Int = 0
     @State var glmApiKey: String = ""
@@ -641,6 +643,40 @@ struct SettingsView: View {
                     footer: "Antigravity 走自动发现：扫描 `language_server`（IDE）与 `agy` / `antigravity-cli`（CLI）进程，复用它们的本地登录态，无需任何配置。"
                 ) {
                     intervalSliderField(label: "独立刷新频率", value: $antigravityInterval)
+                }
+
+                SettingsSection(
+                    title: "本地用量缓存",
+                    footer: "启动扫描会优先复用 antigravity.json：未变化 session 直接使用缓存，追加变化使用 offset。只有这里的操作会对所有 session 强制重新请求 trajectory metadata，适合数据异常时恢复。"
+                ) {
+                    HStack(spacing: 12) {
+                        Button {
+                            isAntigravityHardFullRunning = true
+                            antigravityHardFullMessage = nil
+                            Task { @MainActor in
+                                let started = await state.hardRefreshAntigravityLocalUsage()
+                                isAntigravityHardFullRunning = false
+                                antigravityHardFullMessage = started
+                                    ? "强制全量重建已完成"
+                                    : "当前有其他刷新任务运行，请稍后再试"
+                            }
+                        } label: {
+                            if isAntigravityHardFullRunning {
+                                ProgressView()
+                                    .controlSize(.small)
+                                Text("正在重建…")
+                            } else {
+                                Text("强制全量重建本地缓存")
+                            }
+                        }
+                        .disabled(isAntigravityHardFullRunning || state.isRefreshJobActive)
+
+                        if let antigravityHardFullMessage {
+                            Text(antigravityHardFullMessage)
+                                .font(SettingsTypography.status)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                 }
             }
         }

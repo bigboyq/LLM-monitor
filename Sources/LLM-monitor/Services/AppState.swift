@@ -512,6 +512,19 @@ final class AppState: ObservableObject {
         )
     }
 
+    /// Settings-page recovery action: rebuild Antigravity's local token cache
+    /// under the same global gate as Manual/Wakeup/automatic refresh jobs.
+    /// It intentionally does not issue a quota refresh or rescan other clients.
+    @discardableResult
+    func hardRefreshAntigravityLocalUsage() async -> Bool {
+        guard let token = refreshScheduler.beginExternalJob() else {
+            return false
+        }
+        defer { refreshScheduler.endExternalJob(token) }
+        await localUsage.triggerAntigravityHardFull()
+        return refreshScheduler.isCurrentJob(token)
+    }
+
     /// 显式刷新不能被正在进行的 background refresh 吞掉。
     private func refreshProviderFully(
         providerID: String,

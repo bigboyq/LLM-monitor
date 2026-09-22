@@ -141,7 +141,11 @@ final class AntigravityLocalUsageScanner: LocalUsageScannerBase<AntigravityLocal
         let fileManager = self.fileManager
         let calendar = self.calendar
         let now = self.now
-        let forceFull = mode == .full
+        // Startup `.full` is a cache-assisted validation pass: unchanged
+        // sessions reuse antigravity.json and changed append-only sessions
+        // use their persisted offset. Only the settings-page action asks
+        // for a true RPC rebuild.
+        let forceFull = mode == .hardFull
         return {
             try await Self.performScanPure(
                 fetcher: fetcher,

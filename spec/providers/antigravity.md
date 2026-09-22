@@ -460,8 +460,12 @@ aggregated, and saved successfully.
 ## Local Token Usage Scanner
 
 `AntigravityLocalUsageScanner` runs after a settled Provider batch, independent of quota
-refresh success. The startup reconcile is a Full Scan; manual refresh, wake-up, interval
-refresh and natural-day rollover use dirty/offset mode after startup. The watcher is
+refresh success. The startup reconcile is a cache-assisted Full Scan: it enumerates every
+session and validates fingerprints, but unchanged sessions reuse `antigravity.json` and
+append-only changes use offset. Manual refresh, wake-up, interval refresh and natural-day
+rollover use dirty/offset mode after startup. The settings page exposes a separate explicit
+hard-full action for rebuilding every non-empty session through RPC when the cache is suspect.
+The watcher is
 stopped for the scan and rebuilt by this scanner after it settles.
 It scans both supported conversation directories, accepts `.db` and `.pb` session files,
 compares file metadata (mtime/size plus WAL mtime/size for `.db`) against a cached index,
@@ -518,7 +522,7 @@ only the matching step metadata timestamp as a fallback.
 
 The scanner does heavy work in the background and is built for low-cost re-runs:
 
-1. **File + WAL fingerprint diff**: each scan starts with directory/resource metadata only. A `.db` session is re-fetched when its file mtime/size or WAL mtime/size changes; a `.pb` session uses its file mtime/size.
+1. **File + WAL fingerprint diff**: each scan starts with directory/resource metadata only. A `.db` session is re-fetched when its file mtime/size or WAL mtime/size changes; a `.pb` session uses its file mtime/size. Startup full is cache-assisted; only the explicit settings-page hard full bypasses this check for every non-empty session.
 2. **Per-session incremental aggregation**: `index.dailyBySession` stores each session's day-keyed breakdown. When a session changes, only that session's cached entry is replaced — other sessions' entries are untouched.
 3. **In-flight dedup**: if `scan()` is called while a previous scan is still running, the new call is a no-op (the previous one will publish its result via `@Published`).
 4. **Off-main-thread I/O**: the scanner class is `@MainActor` for state mutation, while the heavy pipeline lives in `nonisolated static performScanPure(...)` and runs through the non-actor-isolated `LocalUsageScanRunner`. It inherits caller cancellation and only assigns the result back on MainActor.

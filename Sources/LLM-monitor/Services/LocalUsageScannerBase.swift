@@ -5,6 +5,9 @@ import Combine
 enum LocalUsageScanMode: Sendable, Equatable {
     case full
     case dirty
+    /// Explicit operator-requested rebuild. Concrete scanners may give this
+    /// stronger semantics than the normal startup full pass.
+    case hardFull
 }
 
 /// 本地用量 scanner 的共享生命周期基座 —— 5 个 scanner（antigravity / minimax /
