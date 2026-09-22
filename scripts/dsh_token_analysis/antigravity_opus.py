@@ -2,7 +2,7 @@
 """
 Antigravity Opus 5h window cost aggregation.
 
-Source: ~/Library/Application Support/LLM-monitor/token-monitor/antigravity/index.json
+Source: ~/Library/Application Support/LLM-monitor/token-monitor/antigravity.json
   (LLM-monitor-maintained cache; reads per-session samples from Antigravity RPC)
 
 Opus model: claude-opus-4-6-thinking (169 samples)
@@ -24,8 +24,7 @@ INDEX = (
     / "Application Support"
     / "LLM-monitor"
     / "token-monitor"
-    / "antigravity"
-    / "index.json"
+    / "antigravity.json"
 )
 TZ = timezone(timedelta(hours=8))
 WINDOWS = (0, 5, 10, 15, 20)

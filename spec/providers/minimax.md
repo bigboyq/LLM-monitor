@@ -223,8 +223,8 @@ dirty source via direct SQLite queries on the `local_runtime_token_usage` table.
 │   └── observability/logs/...
 └── ...                        ← scanner 不在客户端目录写缓存
 
-~/Library/Application Support/LLM-monitor/token-monitor/minimax/
-└── index.json                 ← top-level state (runtime mtime + per-day aggregate)
+~/Library/Application Support/LLM-monitor/token-monitor/
+└── minimax.json               ← top-level state (runtime mtime + per-day aggregate)
 ```
 
 `index.json` schema (per-source version, NOT per-session like Antigravity — runtime is the only source):

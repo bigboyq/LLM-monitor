@@ -66,13 +66,7 @@ final class MinimaxLocalUsageScanner: LocalUsageScannerBase<MinimaxLocalUsage>, 
     /// All scanner indexes share the app-owned cache root; provider subdirectories
     /// keep their historical `index.json` names independent.
     nonisolated static let defaultCacheDir: URL =
-        TokenMonitorPaths.cacheDirectory(for: .minimax)
-
-    nonisolated static let legacyCacheDir: URL = {
-        URL(fileURLWithPath: NSHomeDirectory())
-            .appendingPathComponent(".minimax", isDirectory: true)
-            .appendingPathComponent(".token-monitor", isDirectory: true)
-    }()
+        TokenMonitorPaths.cacheFile(for: .minimax)
 
     private let runtimeDBURL: URL
     private let cacheDir: URL
@@ -113,13 +107,6 @@ final class MinimaxLocalUsageScanner: LocalUsageScannerBase<MinimaxLocalUsage>, 
         self.fileManager = fileManager
         self.calendar = calendar
         self.now = now
-        if cacheDir.standardizedFileURL.path == Self.defaultCacheDir.standardizedFileURL.path {
-            TokenMonitorPaths.migrateLegacyIndexIfNeeded(
-                from: Self.legacyCacheDir,
-                to: cacheDir,
-                fileManager: fileManager
-            )
-        }
         super.init(
             logTag: Self.scanLogTag,
             cachedResult: Self.loadCachedResult(
@@ -473,7 +460,7 @@ extension MinimaxLocalUsageScanner {
         var charSplitDegraded: Bool? = nil
     }
 
-    /// 顶层 index 状态，存到应用统一的 `token-monitor/minimax/` 子目录。
+    /// 顶层 index 状态，存到应用统一的 `token-monitor/minimax.json`。
     /// - `sources`：v2 runtime .db → 它的 mtime/size + 上次聚合时间
     /// - `dailyBySource`：每个 source 按本地自然日拆开的 token 聚合
     ///   （让 changed source 只需要换它自己的 daily 集合，不用 merge 其他 source）
@@ -583,7 +570,7 @@ private extension MinimaxLocalUsageScanner {
 extension MinimaxLocalUsageScanner {
     /// `nonisolated static`：不依赖 self，background 安全。
     nonisolated static func ensureCacheDirectoriesExist(cacheDir: URL, fileManager: FileManagerBox) throws {
-        try fileManager.createPrivateDirectory(at: cacheDir)
+        try ScannerIndexIO.ensureCacheDirectory(for: cacheDir, fileManager: fileManager)
     }
 
     nonisolated static func loadIndex(cacheDir: URL, fileManager: FileManagerBox) throws -> CacheIndex {

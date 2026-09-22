@@ -288,7 +288,7 @@ optional overlay on top (controlled by `clientBindings[]`, default on).
 | Database | `~/.zcode/cli/db/db.sqlite` (WAL mode, active `-wal`) |
 | Tables | `model_usage` (one row per model request) + `part` (looked up via `model_usage.assistant_message_id` for round-level reasoning classification) |
 | Included rows | (`provider_id LIKE 'builtin:bigmodel-%'` OR `provider_id LIKE 'account:bigmodel-%'` OR `provider_id = 'offpeak-idle-plan'`) AND `status = 'completed'` AND (`input + output + reasoning + cache_read`) > 0 |
-| Cache | `~/Library/Application Support/LLM-monitor/token-monitor/glm-zcode/index.json` (versioned, db+WAL fingerprint; old `.token-monitor/index.json` is copied on first launch) |
+| Cache | `~/Library/Application Support/LLM-monitor/token-monitor/glm-zcode.json` (versioned, db+WAL fingerprint) |
 | Daily window | Seven local calendar days, including today |
 
 The scanner reads the following columns from each GLM `model_usage` row:

@@ -10,7 +10,7 @@ optionally merged into the Minimax, ChatGPT, Antigravity, GLM, and DeepSeek card
 | Database | `~/.local/share/opencode/opencode.db` |
 | Table | `message` |
 | Included rows | `role = assistant`, non-null `providerID`, non-null `tokens`, positive token total |
-| Cache | `~/Library/Application Support/LLM-monitor/token-monitor/` |
+| Cache | `~/Library/Application Support/LLM-monitor/token-monitor/opencode.json` |
 | Daily window | Seven local calendar days, including today |
 
 The scanner reads the following fields from each assistant message:

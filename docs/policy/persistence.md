@@ -10,7 +10,7 @@
 - 实例锁 → `…/LLM-monitor/instance.lock` [AppInstanceLock.swift:42](../../Sources/LLM-monitor/Services/AppInstanceLock.swift:42)
 - 损坏配置备份 → `config.json.corrupt-<UUID>.json` [ConfigStore.swift:925](../../Sources/LLM-monitor/Services/ConfigStore.swift:925)
 - 日志 → `…/LLM-monitor/log.txt`（rotated `.1` / `.2`）[AppLog.swift:34](../../Sources/LLM-monitor/Services/AppLog.swift:34)
-- 5× scanner cache: `~/Library/Application Support/LLM-monitor/token-monitor/{minimax,antigravity,opencode,glm-zcode,dsh}/index.json`（provider 子目录隔离；旧版各客户端 `.token-monitor/index.json` 首次启动时复制迁移，原文件保留）
+- 5× scanner cache: `~/Library/Application Support/LLM-monitor/token-monitor/{minimax,antigravity,opencode,glm-zcode,dsh}.json`
 - SQLite 临时副本 → `NSTemporaryDirectory()/llm-monitor-<UUID>.sqlite`
 
 > **Override**：`LLM_MONITOR_LOG_PATH` 改日志位置 [AppLog.swift:22](../../Sources/LLM-monitor/Services/AppLog.swift:22)；

@@ -19,7 +19,7 @@ This provider does not call Google quota APIs with a saved OAuth access token. I
 | Model groups | `Gemini Models`, `Claude and GPT models` |
 | Window types | `5h`, `weekly` |
 | Reset credits | Not used |
-| **Local token usage history** | ✅ Pure RPC architecture: per-event input / output / cacheRead / cacheWrite / reasoning, aggregated to last 7 local days, persisted to `~/Library/Application Support/LLM-monitor/token-monitor/antigravity/` |
+| **Local token usage history** | ✅ Pure RPC architecture: per-event input / output / cacheRead / cacheWrite / reasoning, aggregated to last 7 local days, persisted to `~/Library/Application Support/LLM-monitor/token-monitor/antigravity.json` |
 
 ## Accounting contract
 
@@ -478,8 +478,8 @@ only the matching step metadata timestamp as a fallback.
 │   └── {sessionId}.pb                      ← discovered and fingerprinted, not decoded
 └── ...                                    ← scanner 不在客户端目录写缓存
 
-~/Library/Application Support/LLM-monitor/token-monitor/antigravity/
-└── index.json                             ← top-level state and per-session cache (fast load)
+~/Library/Application Support/LLM-monitor/token-monitor/
+└── antigravity.json                        ← top-level state and per-session cache (fast load)
 ```
 
 `index.json` schema:

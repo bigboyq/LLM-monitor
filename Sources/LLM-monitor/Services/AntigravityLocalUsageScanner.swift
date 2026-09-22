@@ -53,14 +53,7 @@ final class AntigravityLocalUsageScanner: LocalUsageScannerBase<AntigravityLocal
     }()
 
     nonisolated static let defaultCacheDir: URL =
-        TokenMonitorPaths.cacheDirectory(for: .antigravity)
-
-    nonisolated static let legacyCacheDir: URL = {
-        URL(fileURLWithPath: NSHomeDirectory())
-            .appendingPathComponent(".gemini", isDirectory: true)
-            .appendingPathComponent("antigravity", isDirectory: true)
-            .appendingPathComponent(".token-monitor", isDirectory: true)
-    }()
+        TokenMonitorPaths.cacheFile(for: .antigravity)
 
     private let fetcher: AntigravityFetcher
     private let conversationsDirs: [URL]
@@ -104,13 +97,6 @@ final class AntigravityLocalUsageScanner: LocalUsageScannerBase<AntigravityLocal
         self.fileManager = fileManager
         self.calendar = calendar
         self.now = now
-        if cacheDir.standardizedFileURL.path == Self.defaultCacheDir.standardizedFileURL.path {
-            TokenMonitorPaths.migrateLegacyIndexIfNeeded(
-                from: Self.legacyCacheDir,
-                to: cacheDir,
-                fileManager: fileManager
-            )
-        }
         super.init(
             logTag: Self.scanLogTag,
             cachedResult: Self.loadCachedResult(
@@ -251,7 +237,7 @@ extension AntigravityLocalUsageScanner {
         }
     }
 
-    /// 顶层 index 状态，存到应用统一的 `token-monitor/antigravity/` 子目录。
+    /// 顶层 index 状态，存到应用统一的 `token-monitor/antigravity.json`。
     /// - `sessions`：所有已扫描过的本地 sessionId → session 文件及可选 WAL 的 mtime/size + 上次拉 RPC 的时间
     /// - `dailyBySession`：每个 session 按本地自然日拆开的 token 聚合
     ///   （让 changed session 只需要替换自己的贡献，不用重新拉取其他 session）
@@ -865,11 +851,12 @@ extension AntigravityLocalUsageScanner {
 
     /// `nonisolated static`：file I/O 不碰 self，可在 background 跑。
     nonisolated static func ensureCacheDirectoriesExist(cacheDir: URL, fileManager: FileManagerBox) throws {
-        try fileManager.createPrivateDirectory(at: cacheDir)
+        try ScannerIndexIO.ensureCacheDirectory(for: cacheDir, fileManager: fileManager)
         // v3 以前曾额外写 `rpc-cache/v1/<session>/usage.jsonl|manifest.json`，但
-        // 生产读取始终只使用 index.json。升级后主动清理这份重复的历史明细；
-        // 删除失败不阻断扫描，下次扫描仍会继续尝试。
-        let legacyRPCCache = cacheDir.appendingPathComponent("rpc-cache", isDirectory: true)
+        // 生产读取始终只使用顶层 JSON。清理这份重复的历史明细；删除失败不
+        // 阻断扫描，下次扫描仍会继续尝试。
+        let legacyRPCCache = ScannerIndexIO.directoryURL(for: cacheDir)
+            .appendingPathComponent("rpc-cache", isDirectory: true)
         if fileManager.fileExists(atPath: legacyRPCCache.path) {
             do {
                 try fileManager.removeItem(at: legacyRPCCache)

@@ -60,14 +60,7 @@ final class GlmZcodeLocalUsageScanner: SingleDBSnapshotScanner<GlmLocalUsage>, @
     }()
 
     nonisolated static let defaultCacheDir: URL =
-        TokenMonitorPaths.cacheDirectory(for: .glmZcode)
-
-    nonisolated static let legacyCacheDir: URL = {
-        URL(fileURLWithPath: NSHomeDirectory())
-            .appendingPathComponent(".zcode", isDirectory: true)
-            .appendingPathComponent("cli", isDirectory: true)
-            .appendingPathComponent(".token-monitor", isDirectory: true)
-    }()
+        TokenMonitorPaths.cacheFile(for: .glmZcode)
 
     init(dbURL: URL = GlmZcodeLocalUsageScanner.defaultDBURL,
          tasksDBURL: URL = GlmZcodeLocalUsageScanner.defaultTasksDBURL,
@@ -78,13 +71,6 @@ final class GlmZcodeLocalUsageScanner: SingleDBSnapshotScanner<GlmLocalUsage>, @
          now: @escaping @Sendable () -> Date = { Date() }) {
         self.tasksDBURL = tasksDBURL
         self.balanceLogDirectoryURL = balanceLogDirectory
-        if cacheDir.standardizedFileURL.path == Self.defaultCacheDir.standardizedFileURL.path {
-            TokenMonitorPaths.migrateLegacyIndexIfNeeded(
-                from: Self.legacyCacheDir,
-                to: cacheDir,
-                fileManager: fileManager
-            )
-        }
         super.init(
             dbURL: dbURL,
             cacheDir: cacheDir,
@@ -106,7 +92,7 @@ final class GlmZcodeLocalUsageScanner: SingleDBSnapshotScanner<GlmLocalUsage>, @
                 tasksDBURL,
                 URL(fileURLWithPath: tasksDBURL.path + "-wal")
             ],
-            excludedPaths: [cacheDir]
+            excludedPaths: [TokenMonitorPaths.root]
         )
     }
 

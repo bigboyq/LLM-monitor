@@ -125,7 +125,7 @@ class SingleDBSnapshotScanner<Usage: Equatable & Codable & Sendable>: LocalUsage
 
     /// 纯 I/O + 计算。在 `pipelineMutex` 内串行执行。
     nonisolated private func performScanLocked(nowDate: Date, forceFull: Bool = false) throws -> Usage {
-        try fileManager.createPrivateDirectory(at: cacheDir)
+        try ScannerIndexIO.ensureCacheDirectory(for: cacheDir, fileManager: fileManager)
 
         // 1. db + WAL 指纹
         let fingerprint = try Self.statFingerprint(dbURL: dbURL, fileManager: fileManager)
