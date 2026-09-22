@@ -5,9 +5,12 @@ import AppKit
 ///
 /// 正圆几何构图：
 /// - 左弧显示 5h，右弧显示周额度，从底部沿圆弧向上充盈；深灰色底槽与健康色填充弧平滑贴合。
-/// - 左弧颜色由 5h 平均剩余量根据统一标准决定；右弧颜色由周平均剩余量决定。
+/// - 左弧颜色由 5h 平均剩余量按 `colorLevel` 决定（短窗口固定 30% 黄线）；右弧颜色
+///   由周平均剩余量 + 全部周窗口中最宽的剩余时间比例（动态黄线 min(time%, 50)）决定。
 /// - 顶部为节能模式状态圆点（半径放大为 r=48，红/黄/绿显示）。
-/// - 底部 3 个状态点沿圆弧轨迹排布（115°、90°、65°，半径 r=36），汇总各套餐健康度（红 > 黄 > 绿优先）。
+/// - 底部 3 个状态点沿圆弧轨迹排布（115°、90°、65°，半径 r=36），按统一
+///   `colorLevel`（实际可用口径）汇总各套餐健康度（红 > 黄 > 绿优先）；GLM 高峰期
+///   对应套餐保底黄色，floor 只作用于底部三点与卡片头部点，弧线与中心不参与。
 /// - 中心为扇形圆，满额度为 360° 正圆，随着额度消耗从 6 点钟（底端）向左右对称打开；
 ///   剩余面积保留在 12 点钟（顶端）；50% 额度时呈现 180° 上半圆；额度耗尽时呈现红色空心圆环。
 enum IconDuoSVGBuilder {
@@ -35,9 +38,12 @@ enum IconDuoSVGBuilder {
         energyHealth: HealthLevel? = nil
     ) -> String {
         let trackColor = "#48484A"
-        // 统一标准：左弧颜色由 5h avg 决定，右弧颜色由周 avg 决定
-        let leftQuotaLevel = HealthLevel.standard(forFraction: metrics.interval.avgAvailable)
-        let rightQuotaLevel = HealthLevel.standard(forFraction: metrics.weekly.avgAvailable)
+        // 统一 colorLevel 判定（方案 A）：左弧 = 5h avg，短窗口固定 30% 黄线
+        // （timeFraction 传 nil）；右弧 = 周 avg + 最宽周剩余时间比例（动态黄线
+        // min(time%, 50)）。弧线不参与高峰 floor——高峰只作用于底部三点与卡片
+        // 头部点（见 `ModelQuota.aggregateHealthLevel`）。
+        let leftQuotaLevel = ModelQuota.colorLevel(percent: metrics.interval.avgAvailable * 100, timeFraction: nil)
+        let rightQuotaLevel = ModelQuota.colorLevel(percent: metrics.weekly.avgAvailable * 100, timeFraction: metrics.weeklyTimeFraction)
         let leftColor = resolvedHex(for: leftQuotaLevel, colors: healthColors)
         let rightColor = resolvedHex(for: rightQuotaLevel, colors: healthColors)
         let energyColor = energyHealth.map { resolvedHex(for: $0, colors: healthColors) }
@@ -107,6 +113,7 @@ enum IconDuoSVGBuilder {
         // 5. 中心扇形圆：以 12 点钟为顶，从 6 点钟底端向左右对称打开
         let centerSVG = buildCenterSectorSVG(
             centerAvailable: metrics.centerAvailable,
+            centerTimeFraction: metrics.centerTimeFraction,
             healthColors: healthColors
         )
 
@@ -123,6 +130,7 @@ enum IconDuoSVGBuilder {
 
     private static func buildCenterSectorSVG(
         centerAvailable: Double?,
+        centerTimeFraction: Double?,
         healthColors: StatusBarHealthColors
     ) -> String {
         let bgDisc = "<circle id=\"center-track\" cx=\"352\" cy=\"352\" r=\"135\" fill=\"#2C2C2E\" fill-opacity=\"0.6\"/>"
@@ -135,7 +143,10 @@ enum IconDuoSVGBuilder {
         }
 
         let p = min(max(pRaw, 0.0), 1.0)
-        let healthLevel = HealthLevel.standard(forFraction: p)
+        // 中心与底部三点同用统一 colorLevel：输入是「实际可用」最小值（由
+        // AppState 计算），timeFraction 透传产生该最小值的套餐在其瓶颈窗口上的
+        // 剩余时间比例（5h 短窗口瓶颈时为 nil → 固定 30% 黄线）。
+        let healthLevel = ModelQuota.colorLevel(percent: p * 100, timeFraction: centerTimeFraction)
         let sectorColor = resolvedHex(for: healthLevel, colors: healthColors)
         let percentValue = Int((p * 100).rounded())
 

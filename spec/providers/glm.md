@@ -239,7 +239,7 @@ Card metadata:
 | `iconSystemName` | `chevron.left.forwardslash.chevron.right` (`</>`) — 仅是 bundled 资源缺失时的防御性兜底符号；`Resources/BrandLogos/glm.svg` 已内置（1.4.2 起），卡片正常渲染品牌 logo，实际无 SF Symbol 回退 |
 | `accentColor` | `glm` mapped to `.glmBrand` (indigo) |
 
-Window multiplier (`QuotaSummary.weeklyEquivalentMultiplier`): **5** — renders as
+Window multiplier (`ModelQuota.weeklyEquivalentMultiplier`): **5** — renders as
 `周倍率：5`（`QuotaViews.swift` 的 `QuotaWindowTitle`），matching the tier credit ratio
 (weekly = 5× the 5h credits).
 

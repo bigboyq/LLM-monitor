@@ -40,16 +40,29 @@ windows keep the legacy semantics and render as full rings / a full cup, unlike 
 The `iconDuo` dashboard (`IconDuoSVGBuilder`) uses a left 5h arc and right weekly arc, both being concentric
 circular arcs growing from the bottom with dark gray background tracks and health-colored
 available segments (a missing window keeps only its gray track). The center uses the minimum
-5h remaining percentage across active models, falling back to the weekly minimum only when no
-5h window exists. It is a symmetrical circular sector anchored at the top (12 o'clock)
+actual available ratio across active models — per model, `min(5h remaining, weekly remaining × N)`
+with the provider-specific weekly equivalent multiplier N (`ModelQuota.weeklyEquivalentMultiplier`,
+the same caliber as the card's segmented progress bar); a model with only one window contributes
+just that window (weekly-only models contribute weekly × N, clamped to 1.0), and the center stays
+nil when no model has any window. It is a symmetrical circular sector anchored at the top (12 o'clock)
 that opens left and right from the bottom (6 o'clock) as quota depletes (full 360° circle at 100%,
 180° dome semicircle at 50%, empty red ring at 0%; there is no numeric label). Three bottom dots (enlarged to r=36) follow
 the circle's arc to show active-model health prioritized strictly as red > yellow > green (if 3 reds,
 yellow and green are omitted); the top dot (enlarged to r=48) mirrors the Energy module's sleep-health state (green / yellow / red, gray while unknown).
 The popover window top edge is snapped to `screen.visibleFrame.maxY + 10` on every presentation, absorbing popover margins to stay flush
 with the bottom edge of the macOS menu bar.
-All `iconDuo` red/yellow/green decisions use fixed `HealthLevel.standard` thresholds
-(>40% green, >15% and <=40% yellow, <=15% red), independent of reset-time factors.
+All `iconDuo` red/yellow/green decisions — the three bottom dots, both arcs, and the
+center sector — go through the time-aware `ModelQuota.colorLevel` thresholds (`< 15` red;
+`< 30` for short windows / `< min(time%, 50)` for long windows yellow; otherwise green),
+the same rule the provider cards use, replacing the retired fixed `HealthLevel.standard`
+thresholds. Composite elements (the bottom dots and the center sector) read the
+"actual available" caliber — per model `min(5h, weekly × N)` via
+`ModelQuota.aggregateActualAvailable` / `aggregateHealthLevel` — while the left/right
+arcs keep their raw per-window averages (the weekly arc uses the widest remaining-time
+fraction across models for its dynamic yellow threshold). During GLM peak hours a peak
+floor raises a provider's composite status to at least `.warning` (red wins); the floor
+only applies to the iconDuo bottom dots and the card header dots — arcs and the center
+sector are exempt.
 
 The base icon keeps the standard macOS foreground appearance. For standard SF Symbol
 styles, a 6 pt status dot is drawn at the lower-right when `statusBarHealthDotEnabled`

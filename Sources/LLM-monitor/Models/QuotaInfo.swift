@@ -68,17 +68,61 @@ struct ModelQuota: Equatable, Codable, Sendable {
         hasIntervalWindow || hasWeeklyWindow
     }
 
-    /// 状态栏套餐点使用的固定阈值健康度。只计算实际存在的窗口，避免复用
-    /// `healthLevel` 的动态剩余时间阈值导致弧线与套餐点颜色不一致。
-    var statusBarHealthLevel: HealthLevel {
-        var levels: [HealthLevel] = []
-        if hasIntervalWindow {
-            levels.append(HealthLevel.standard(forPercent: intervalRemainingPercent))
+    /// 综合指示器（Icon Duo 底部三点、Icon Duo 中心扇形、卡片头部点）共用的
+    /// 健康度判定 —— 与卡片分段条同一套 `colorLevel` 时间感知阈值（方案 A 统一，
+    /// 取代原先状态栏专用的固定阈值 `statusBarHealthLevel`）。
+    ///
+    /// 输入口径 = 「实际可用」：对本套餐存在的窗口取
+    /// min(5h 剩余%, 周剩余% × 周等效倍率 N)，瓶颈窗口的剩余时间比例作为
+    /// timeFraction 参与长窗口动态黄线（详见 `aggregateActualAvailable`）。
+    /// `isPeakPrice`（GLM 高峰期）时该套餐状态保底 `.warning`（红色优先）；
+    /// 没有任何窗口时保守返回 .critical。
+    func aggregateHealthLevel(providerKind: ProviderKind, isPeakPrice: Bool = false) -> HealthLevel {
+        guard let reading = aggregateActualAvailable(providerKind: providerKind) else {
+            return .critical
         }
-        if hasWeeklyWindow {
-            levels.append(HealthLevel.standard(forPercent: weeklyRemainingPercent))
+        let level = Self.colorLevel(percent: reading.percent, timeFraction: reading.bindingTimeFraction)
+        // HealthLevel 的 Comparable 方向：rank 越大越健康（critical 0 < warning 1 <
+        // healthy 2），min 取两者中更差的一档 → healthy 被压到 .warning，而
+        // .warning / .critical 保持不变（红色优先，floor 不吞掉红色）。
+        return isPeakPrice ? min(level, .warning) : level
+    }
+
+    /// 「实际可用」单套餐读数，综合指示器的统一输入口径：
+    /// - `percent` = min(5h 剩余, 周剩余 × 周等效倍率 N)，每项先 clamp 到 [0, 100]；
+    /// - `bindingTimeFraction` = 取到 min 的瓶颈窗口的剩余时间比例。并列取 5h
+    ///   （对齐 `EquivalentQuotaAllocation.bindingWindow` 的并列 → .primary 约定）；
+    ///   瓶颈是 5h 短窗口时按现有规则为 nil（固定 30% 黄线）。
+    ///
+    /// 没有任何窗口时返回 nil。状态栏中心扇形（`AppState.statusBarQuotaMetrics`）
+    /// 与 `aggregateHealthLevel` 共用这一份实现，避免两处口径漂移。
+    func aggregateActualAvailable(
+        providerKind: ProviderKind,
+        at now: Date = Date()
+    ) -> (percent: Double, bindingTimeFraction: Double?)? {
+        let intervalPercent: Double? = hasIntervalWindow
+            ? min(max(intervalRemainingPercent, 0), 100)
+            : nil
+        let weeklyUnits: Double? = hasWeeklyWindow
+            ? min(
+                max(weeklyRemainingPercent, 0)
+                    * Double(ModelQuota.weeklyEquivalentMultiplier(providerKind: providerKind, model: self)),
+                100
+            )
+            : nil
+        switch (intervalPercent, weeklyUnits) {
+        case let (interval?, weekly?):
+            // 并列取 5h：weeklyUnits < interval 才算周瓶颈（bindingWindow 同款约定）。
+            return weekly < interval
+                ? (percent: weekly, bindingTimeFraction: weeklyTimeRemainingFraction(at: now))
+                : (percent: interval, bindingTimeFraction: intervalTimeRemainingFraction)
+        case let (interval?, nil):
+            return (percent: interval, bindingTimeFraction: intervalTimeRemainingFraction)
+        case let (nil, weekly?):
+            return (percent: weekly, bindingTimeFraction: weeklyTimeRemainingFraction(at: now))
+        case (nil, nil):
+            return nil
         }
-        return levels.min() ?? .critical
     }
 
     /// "差" 的健康度（红 > 黄 > 绿）。只有明确存在的窗口才参与计算；
@@ -114,6 +158,26 @@ struct ModelQuota: Equatable, Codable, Sendable {
         let yellowThreshold = timeFraction.map { min($0 * 100.0, 50.0) } ?? 30.0
         if percent < yellowThreshold { return .warning }
         return .healthy
+    }
+
+    /// Provider 的周等效倍率 N：把周窗口剩余比例换算成与 5h（video 为日）窗口
+    /// 同量纲的等价额度份数。卡片分段条（`QuotaSummary`）与状态栏聚合
+    /// （中心扇形的 min(5h, 周 × N) 实际可用口径）共用这一份映射，避免两处漂移。
+    static func weeklyEquivalentMultiplier(providerKind: ProviderKind, model: ModelQuota) -> Int {
+        switch providerKind {
+        case .minimaxTokenPlan:
+            // video 用日窗口 → 1 天 ≈ 1/7 周；其他模型（general 等）走 5h 窗口 → 1/10 周
+            return model.modelName.lowercased() == "video" ? 7 : 10
+        case .codexChatGpt:
+            return 6
+        case .antigravity:
+            return model.modelName.lowercased() == AntigravityModelKind.claudeAndGptModels.rawValue ? 3 : 6
+        case .glmCodingPlan:
+            // GLM Coding Plan：5h 积分 × 5 = 周积分（Lite 2000/10000、Pro 12000/60000、Max 28000/140000）
+            return 5
+        case .deepseek:
+            return 1
+        }
     }
 
     /// 周窗口剩余时间比例。0.0 = 即将过期，1.0 = 刚重置。
@@ -525,25 +589,6 @@ enum HealthLevel: String, Sendable, Comparable {
 
     static func < (lhs: HealthLevel, rhs: HealthLevel) -> Bool {
         lhs.rank < rhs.rank
-    }
-
-    /// 统一额度健康度阈值标准：
-    /// - 剩余 > 40%：健康（绿）
-    /// - 剩余 15% ~ 40%：预警（黄）
-    /// - 剩余 <= 15%：异常（红）
-    static func standard(forFraction fraction: Double) -> HealthLevel {
-        let epsilon = 1e-6
-        if fraction > 0.40 + epsilon {
-            return .healthy
-        } else if fraction > 0.15 + epsilon {
-            return .warning
-        } else {
-            return .critical
-        }
-    }
-
-    static func standard(forPercent percent: Double) -> HealthLevel {
-        standard(forFraction: percent / 100.0)
     }
 }
 

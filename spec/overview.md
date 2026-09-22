@@ -860,16 +860,25 @@ These are documented product boundaries:
     renders a live quota dashboard: the left arc is 5h and the right arc is weekly; both are concentric
     circular arcs growing from the bottom with dark gray background tracks and health-colored
     available segments (a missing window keeps only its gray track). The center uses the minimum
-    5h remaining percentage across active models, falling back to the weekly minimum only when no
-    5h window exists. It is a symmetrical circular sector anchored at the top (12 o'clock)
+    actual available ratio across active models — per model, `min(5h remaining, weekly remaining × N)`
+    with the provider-specific weekly equivalent multiplier `N` (`ModelQuota.weeklyEquivalentMultiplier`,
+    the same caliber as the card's segmented progress bar); weekly-only models contribute
+    weekly × N clamped to 1.0, and the center stays nil when no model has any window.
+    It is a symmetrical circular sector anchored at the top (12 o'clock)
     that opens left and right from the bottom (6 o'clock) as quota depletes (full 360° circle at 100%, 180° dome semicircle at 50%,
     empty red ring at 0%; there is no numeric label). Three bottom dots (enlarged to r=36) follow the circle's arc to summarize active-model health
     prioritized strictly in red > yellow > green order (if 3 reds, yellow/green omitted), and the top dot (enlarged to r=48) mirrors sleep/energy health (red/yellow/green).
     The window top edge is snapped to `screen.visibleFrame.maxY + 10` on every presentation, absorbing system popover margins to stay flush with the menu bar bottom.
     Colors remain configurable through `statusBarHealthColors`. See
     `IconDuoSVGBuilder.swift` and `MenuBarLabel.swift`.
-    All `iconDuo` red/yellow/green decisions use fixed `HealthLevel.standard` thresholds
-    (>40% green, >15% and <=40% yellow, <=15% red), independent of reset-time factors.
+    All `iconDuo` red/yellow/green decisions — the three bottom dots, both arcs, and the
+    center sector — go through the time-aware `ModelQuota.colorLevel` thresholds
+    (`< 15` red; `< 30` for short windows / `< min(time%, 50)` for long windows yellow;
+    otherwise green). Composite elements (bottom dots and the center sector) read the
+    "actual available" caliber `min(5h, weekly × N)` (`ModelQuota.aggregateHealthLevel`),
+    while the arcs keep their raw per-window averages. During GLM peak hours a peak floor
+    raises a provider's composite status to at least `.warning` (red wins); it only applies
+    to the iconDuo bottom dots and the card header dots — arcs and the center sector are exempt.
 - Local usage scanners restore their last-good `index.json` snapshot on cold start; the
   remote quota refresh timestamp is persisted separately in `last-refresh.json`.
 - `MenuContentView` sizes to its content (window = header + cards + footer) so all cards

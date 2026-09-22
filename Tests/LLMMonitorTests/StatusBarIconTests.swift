@@ -376,14 +376,19 @@ final class StatusBarIconTests: XCTestCase {
     }
 
     func testIconDuoSVGBuilderDashboardGeometry() {
-        let outer = QuotaRingMetrics(minAvailable: 0.1, avgAvailable: 0.15, colorHex: "#FB923C") // <= 15% -> critical
-        let middle = QuotaRingMetrics(minAvailable: 0.2, avgAvailable: 0.35, colorHex: "#2DD4BF") // 15%..40% -> warning
+        // colorLevel 统一判定：周 avg 15% → 15 不小于 15、小于固定黄线 30 → warning；
+        // 5h avg 35% → ≥ 30 → healthy；中心 50% → healthy。
+        let outer = QuotaRingMetrics(minAvailable: 0.1, avgAvailable: 0.15, colorHex: "#FB923C") // < 30 → warning
+        let middle = QuotaRingMetrics(minAvailable: 0.2, avgAvailable: 0.35, colorHex: "#2DD4BF") // >= 30 → healthy
         let metrics = StatusBarQuotaMetrics(
             weekly: outer,
             interval: middle,
-            centerAvailable: 0.5, // > 40% -> healthy
+            centerAvailable: 0.5, // >= 30 → healthy
             quotaHealthLevels: [.healthy, .warning, .critical]
         )
+        // 新字段默认 nil：既有构造点不被破坏，弧线/中心退回固定 30% 黄线。
+        XCTAssertNil(metrics.weeklyTimeFraction)
+        XCTAssertNil(metrics.centerTimeFraction)
         let svg = IconDuoSVGBuilder.buildSVG(
             metrics: metrics,
             energyHealth: .warning
@@ -396,14 +401,14 @@ final class StatusBarIconTests: XCTestCase {
         XCTAssertTrue(svg.contains("id=\"weekly-available\""))
         XCTAssertTrue(svg.contains("id=\"energy-dot\""))
         XCTAssertTrue(svg.contains("r=\"48\""), "顶部节能点半径放大至 r=48")
-        XCTAssertTrue(svg.contains("fill=\"#FFD60A\""), "顶部节能点或左弧预警状态使用黄色")
+        XCTAssertTrue(svg.contains("fill=\"#FFD60A\""), "顶部节能点（warning）或右弧预警色使用黄色")
         XCTAssertTrue(svg.contains("id=\"center-sector\" data-value=\"50\""), "中心扇形展示 50% 额度")
         XCTAssertTrue(svg.contains("id=\"quota-dot-0\""))
         XCTAssertTrue(svg.contains("id=\"quota-dot-1\""))
         XCTAssertTrue(svg.contains("id=\"quota-dot-2\""))
         XCTAssertFalse(svg.contains("id=\"quota-dot-3\""), "已调整为 3 个点，不再有第 4 个点")
         XCTAssertTrue(svg.contains("r=\"36\""), "点半径放大至 r=36")
-        XCTAssertTrue(svg.contains("fill=\"#FF453A\""), "包含红色状态点或周额度异常色")
+        XCTAssertTrue(svg.contains("fill=\"#FF453A\""), "包含红色状态点（critical 套餐点）")
 
         // 69.5% 必须走 SVG large-arc，绘制约 250°，不能错误显示成不足四分之一。
         let currentQuotaMetrics = StatusBarQuotaMetrics(
@@ -443,13 +448,6 @@ final class StatusBarIconTests: XCTestCase {
         ))
         XCTAssertTrue(unknownSVG.contains("id=\"center-sector\""))
         XCTAssertTrue(unknownSVG.contains("stroke=\"#8E8E93\""), "无数据时中心保持灰色环")
-
-        // 验证统一红黄绿标准
-        XCTAssertEqual(HealthLevel.standard(forFraction: 0.50), .healthy)
-        XCTAssertEqual(HealthLevel.standard(forFraction: 0.40), .warning)
-        XCTAssertEqual(HealthLevel.standard(forFraction: 0.25), .warning)
-        XCTAssertEqual(HealthLevel.standard(forFraction: 0.15), .critical)
-        XCTAssertEqual(HealthLevel.standard(forFraction: 0.05), .critical)
 
         // 验证三点优先级：红 > 黄 > 绿；如果有 3 个红，则不显示黄绿
         let threeRedsMetrics = StatusBarQuotaMetrics(
@@ -642,11 +640,20 @@ final class StatusBarIconTests: XCTestCase {
             metrics.centerAvailable ?? -1,
             0.4,
             accuracy: 0.001,
-            "中心应使用 5h 最低值 40%，不能被更低的周额度 30% 压低"
+            "中心应取实际可用 min(5h, 周×N) 的最低值：A = min(40%, 30%×6=180%) = 40%，B = min(80%, 40%×5=200%) = 80%，两者取 min 仍为 40%"
         )
-        XCTAssertEqual(metrics.quotaHealthLevels, [.warning, .warning, .healthy])
+        // 套餐点统一 colorLevel（实际可用口径）：A = min(5h 40%, 周 30%×6→100) = 40，
+        // 瓶颈 5h → 固定 30% 黄线 → healthy；B = min(5h 80%, 周 40%×5→100) = 80 → healthy。
+        // （旧 standard 阈值下 A/B 均为 warning。）
+        XCTAssertEqual(metrics.quotaHealthLevels, [.healthy, .healthy, .healthy])
 
-        // 状态栏统一使用固定 standard 阈值：短窗口 35% 同时为黄，15% 同时为红。
+        // 聚合右弧的动态黄线输入取所有周窗口剩余时间比例的最大值：A = 0.6、B = 0.2 → 0.6。
+        XCTAssertEqual(metrics.weeklyTimeFraction ?? -1, 0.6, accuracy: 0.001)
+        // 中心 argmin 是套餐 A（40% < 80%），瓶颈为 5h 短窗口 → timeFraction 为 nil。
+        XCTAssertNil(metrics.centerTimeFraction)
+
+        // 状态栏统一 colorLevel：短窗口固定 30% 黄线 → 20% 为黄、10% 为红
+        // （旧 standard 阈值下 35% 黄 / 15% 红，现已随统一规则重算）。
         func makeStandardModel(intervalPercent: Double) -> ModelQuota {
             ModelQuota(
                 modelName: "standard-model",
@@ -678,19 +685,19 @@ final class StatusBarIconTests: XCTestCase {
             appState.mutateStatus(for: "test_b") { $0.state = .ok(info) }
         }
 
-        setStandardQuota(35.0)
+        setStandardQuota(20.0)
         let warningMetrics = appState.statusBarQuotaMetrics(at: now)
         XCTAssertEqual(warningMetrics.quotaHealthLevels, [.warning, .warning, .healthy])
         let warningSVG = IconDuoSVGBuilder.buildSVG(metrics: warningMetrics)
         XCTAssertTrue(warningSVG.contains("id=\"interval-available\""))
-        XCTAssertTrue(warningSVG.contains("id=\"interval-available\" d="), "35% 短窗口弧线仍显示可用段")
-        XCTAssertTrue(warningSVG.contains("stroke=\"#FFD60A\""), "35% 短窗口弧线和套餐点均为黄色")
+        XCTAssertTrue(warningSVG.contains("id=\"interval-available\" d="), "20% 短窗口弧线仍显示可用段")
+        XCTAssertTrue(warningSVG.contains("stroke=\"#FFD60A\""), "20% 短窗口弧线和套餐点均为黄色")
 
-        setStandardQuota(15.0)
+        setStandardQuota(10.0)
         let criticalMetrics = appState.statusBarQuotaMetrics(at: now)
         XCTAssertEqual(criticalMetrics.quotaHealthLevels, [.critical, .critical, .healthy])
         let criticalSVG = IconDuoSVGBuilder.buildSVG(metrics: criticalMetrics)
-        XCTAssertTrue(criticalSVG.contains("stroke=\"#FF453A\""), "15% 短窗口弧线为红色")
+        XCTAssertTrue(criticalSVG.contains("stroke=\"#FF453A\""), "10% 短窗口弧线为红色")
 
         func makeWindowPresenceModel(intervalStatus: QuotaWindowStatus, weeklyStatus: QuotaWindowStatus) -> ModelQuota {
             ModelQuota(
@@ -738,6 +745,207 @@ final class StatusBarIconTests: XCTestCase {
         let intervalOnlyStateSVG = IconDuoSVGBuilder.buildSVG(metrics: intervalOnlyMetrics)
         XCTAssertTrue(intervalOnlyStateSVG.contains("id=\"interval-available\""))
         XCTAssertFalse(intervalOnlyStateSVG.contains("id=\"weekly-available\""))
+    }
+
+    /// 中心扇形的「实际可用」口径：每个套餐按自身存在的窗口取
+    /// min(5h 剩余, 周剩余 × 周等效倍率 N)，与卡片分段条一致。
+    @MainActor
+    func testStatusBarQuotaMetricsCenterUsesActualAvailable() {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let store = ConfigStore(configURL: dir.appendingPathComponent("config.json"))
+        var cfg = store.config
+        cfg.providers["test_a"] = ProviderConfig(enabled: true, apiKey: "key_a")
+        cfg.providers["test_b"] = ProviderConfig(enabled: true, apiKey: "key_b")
+        try? store.applyAndSave(cfg)
+
+        // 两个 provider 覆盖不同周倍率：glmCodingPlan N=5、codexChatGpt N=6。
+        let descA = FetcherDescriptor(
+            id: "test_a",
+            displayName: "Test A",
+            kind: .glmCodingPlan,
+            iconSystemName: "sparkles",
+            accentColor: .glm,
+            makeFetcher: { _ in GlmCodingPlanFetcher(apiKey: "key") }
+        )
+        let descB = FetcherDescriptor(
+            id: "test_b",
+            displayName: "Test B",
+            kind: .codexChatGpt,
+            iconSystemName: "star",
+            accentColor: .chatgpt,
+            makeFetcher: { _ in CodexFetcher(authPath: nil) }
+        )
+
+        let appState = AppState(descriptors: [descA, descB], configStore: store)
+        appState.stop()
+
+        let now = Date()
+        let totalWeekSeconds = 7.0 * 24 * 3600
+
+        func makeModel(modelName: String, intervalPercent: Double?, weeklyPercent: Double?) -> ModelQuota {
+            ModelQuota(
+                modelName: modelName,
+                intervalTotalCount: 100,
+                intervalUsageCount: 100 - Int(intervalPercent ?? 0),
+                intervalRemainingPercent: intervalPercent ?? 0,
+                intervalStatus: intervalPercent != nil ? .present : .absent,
+                intervalResetsAt: intervalPercent != nil ? now.addingTimeInterval(3600) : nil,
+                intervalWindowSeconds: intervalPercent != nil ? 5 * 3600 : nil,
+                weeklyTotalCount: 100,
+                weeklyUsageCount: 100 - Int(weeklyPercent ?? 0),
+                weeklyRemainingPercent: weeklyPercent ?? 0,
+                weeklyStatus: weeklyPercent != nil ? .present : .absent,
+                weeklyResetsAt: weeklyPercent != nil ? now.addingTimeInterval(totalWeekSeconds) : nil,
+                weeklyWindowSeconds: weeklyPercent != nil ? Int(totalWeekSeconds) : nil
+            )
+        }
+
+        func setQuotas(a: ModelQuota?, b: ModelQuota?) {
+            appState.mutateStatus(for: "test_a") {
+                $0.state = .ok(QuotaInfo(models: a.map { [$0] } ?? [], resetCredits: nil, planLabel: nil, accountEmail: nil, codexUsageDetails: nil, fetchedAt: now))
+            }
+            appState.mutateStatus(for: "test_b") {
+                $0.state = .ok(QuotaInfo(models: b.map { [$0] } ?? [], resetCredits: nil, planLabel: nil, accountEmail: nil, codexUsageDetails: nil, fetchedAt: now))
+            }
+        }
+
+        // 1. 周 × N < 5h：周额度是瓶颈。GLM 5h=80%、周=10%（10%×5=50%）；
+        //    codex 5h=90%、周=15%（15%×6=90%）。中心取两套餐最低 50%。
+        setQuotas(
+            a: makeModel(modelName: "glm_coding_plan", intervalPercent: 80, weeklyPercent: 10),
+            b: makeModel(modelName: "chatgpt_plan", intervalPercent: 90, weeklyPercent: 15)
+        )
+        var metrics = appState.statusBarQuotaMetrics(at: now)
+        XCTAssertEqual(
+            metrics.centerAvailable ?? -1,
+            0.50,
+            accuracy: 0.001,
+            "周×N(50%) 先于 5h(80%) 耗尽时，中心应显示实际可用 50%"
+        )
+        // 左右弧仍为原始物理剩余，不受实际可用口径影响。
+        XCTAssertEqual(metrics.interval.minAvailable, 0.80, accuracy: 0.001)
+        XCTAssertEqual(metrics.weekly.minAvailable, 0.10, accuracy: 0.001)
+        // 中心 argmin 是套餐 A（50% < 90%），瓶颈为周窗口且刚重置 → timeFraction = 1.0
+        // 透传给中心 colorLevel（动态黄线 min(time%, 50)）。
+        XCTAssertEqual(metrics.centerTimeFraction ?? -1, 1.0, accuracy: 0.001)
+
+        // 2. 周 × N ≥ 5h：5h 仍是瓶颈。GLM 5h=30%、周=50%（250% ≥ 30%）；
+        //    codex 5h=40%、周=20%（120% ≥ 40%）。中心取最低 30%。
+        setQuotas(
+            a: makeModel(modelName: "glm_coding_plan", intervalPercent: 30, weeklyPercent: 50),
+            b: makeModel(modelName: "chatgpt_plan", intervalPercent: 40, weeklyPercent: 20)
+        )
+        metrics = appState.statusBarQuotaMetrics(at: now)
+        XCTAssertEqual(
+            metrics.centerAvailable ?? -1,
+            0.30,
+            accuracy: 0.001,
+            "周×N 仍有余量时，中心不应被压到 5h 剩余以下"
+        )
+
+        // 3. 仅周窗口：按 周 × N 参与。GLM 周=20%（×5 = 100% 封顶）、
+        //    codex 周=10%（×6 = 60%）。中心取最低 60%。
+        setQuotas(
+            a: makeModel(modelName: "glm_coding_plan", intervalPercent: nil, weeklyPercent: 20),
+            b: makeModel(modelName: "chatgpt_plan", intervalPercent: nil, weeklyPercent: 10)
+        )
+        metrics = appState.statusBarQuotaMetrics(at: now)
+        XCTAssertEqual(
+            metrics.centerAvailable ?? -1,
+            0.60,
+            accuracy: 0.001,
+            "仅周窗口按 周×N 参与中心：20%×5 封顶为 100%，10%×6 = 60%"
+        )
+
+        // 4. 仅周窗口且 周 × N 超过 1：clamp 到 1.0，不产生超过满格的中心值。
+        setQuotas(
+            a: makeModel(modelName: "glm_coding_plan", intervalPercent: nil, weeklyPercent: 40),
+            b: makeModel(modelName: "chatgpt_plan", intervalPercent: nil, weeklyPercent: 30)
+        )
+        metrics = appState.statusBarQuotaMetrics(at: now)
+        XCTAssertEqual(
+            metrics.centerAvailable ?? -1,
+            1.0,
+            accuracy: 0.001,
+            "40%×5 与 30%×6 均超过满格，中心应 clamp 到 100%"
+        )
+
+        // 5. 仅 5h 窗口：直接按 5h 剩余参与，与原语义一致；瓶颈是 5h 短窗口
+        //    → 中心 timeFraction 保持 nil（固定 30% 黄线）。
+        setQuotas(
+            a: makeModel(modelName: "glm_coding_plan", intervalPercent: 25, weeklyPercent: nil),
+            b: makeModel(modelName: "chatgpt_plan", intervalPercent: 35, weeklyPercent: nil)
+        )
+        metrics = appState.statusBarQuotaMetrics(at: now)
+        XCTAssertEqual(metrics.centerAvailable ?? -1, 0.25, accuracy: 0.001)
+        XCTAssertNil(metrics.centerTimeFraction)
+
+        // 6. 所有套餐都没有任何窗口：中心保持 nil。
+        setQuotas(a: nil, b: nil)
+        metrics = appState.statusBarQuotaMetrics(at: now)
+        XCTAssertNil(metrics.centerAvailable, "所有套餐都没有任何窗口时中心应保持 nil")
+        XCTAssertNil(metrics.centerTimeFraction)
+    }
+
+    /// 中心扇形的 timeFraction 透传：周瓶颈且临近重置（late window）时，
+    /// 动态黄线 min(time%, 50) 收紧，中心不能按「无时间系数的固定 30%」虚黄。
+    @MainActor
+    func testCenterTimeFractionWeeklyBindingPassthrough() {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let store = ConfigStore(configURL: dir.appendingPathComponent("config.json"))
+        var cfg = store.config
+        cfg.providers["test_a"] = ProviderConfig(enabled: true, apiKey: "key_a")
+        try? store.applyAndSave(cfg)
+
+        let descA = FetcherDescriptor(
+            id: "test_a",
+            displayName: "Test A",
+            kind: .codexChatGpt,
+            iconSystemName: "star",
+            accentColor: .chatgpt,
+            makeFetcher: { _ in CodexFetcher(authPath: nil) }
+        )
+        let appState = AppState(descriptors: [descA], configStore: store)
+        appState.stop()
+
+        let now = Date()
+        let totalWeekSeconds = 7.0 * 24 * 3600
+        // 仅周窗口：周剩余 4%（codex ×6 = 24%），窗口只剩 20% 时间。
+        // colorLevel(24, tf=0.2)：黄线 = min(20, 50) = 20 → 24 ≥ 20 → 绿。
+        // 若 timeFraction 未透传（nil → 固定 30% 黄线），24 < 30 会虚黄。
+        let model = ModelQuota(
+            modelName: "chatgpt_plan",
+            intervalTotalCount: 0,
+            intervalUsageCount: 0,
+            intervalRemainingPercent: 0,
+            intervalStatus: .absent,
+            intervalResetsAt: nil,
+            intervalWindowSeconds: nil,
+            weeklyTotalCount: 100,
+            weeklyUsageCount: 96,
+            weeklyRemainingPercent: 4,
+            weeklyStatus: .present,
+            weeklyResetsAt: now.addingTimeInterval(totalWeekSeconds * 0.2),
+            weeklyWindowSeconds: Int(totalWeekSeconds)
+        )
+        appState.mutateStatus(for: "test_a") {
+            $0.state = .ok(QuotaInfo(models: [model], resetCredits: nil, planLabel: nil, accountEmail: nil, codexUsageDetails: nil, fetchedAt: now))
+        }
+
+        let metrics = appState.statusBarQuotaMetrics(at: now)
+        XCTAssertEqual(metrics.centerAvailable ?? -1, 0.24, accuracy: 0.001)
+        XCTAssertEqual(metrics.centerTimeFraction ?? -1, 0.2, accuracy: 0.001)
+
+        let svg = IconDuoSVGBuilder.buildSVG(metrics: metrics)
+        XCTAssertTrue(svg.contains("id=\"center-sector\" data-value=\"24\""))
+        XCTAssertFalse(svg.contains("#FFD60A"), "周瓶颈 late-window 时中心按动态黄线应为绿色，不得虚黄（无任何黄色元素）")
+        XCTAssertTrue(svg.contains("#34C759"), "中心应为绿色")
     }
 
     func testComposedMenuBarImageWithDynamicMetrics() {
@@ -1175,5 +1383,277 @@ final class StatusBarIconTests: XCTestCase {
         setQuotas(aPercent: 5.0, bPercent: 90.0)
         metrics = appState.statusBarQuotaMetrics(at: peakTime)
         XCTAssertEqual(metrics.waterHealth, HealthLevel.critical)
+    }
+
+    // MARK: - 统一 colorLevel 判定（方案 A）
+
+    /// `ModelQuota.aggregateHealthLevel`：binding 选择与并列取 5h、周 × N 折算、
+    /// 高峰 floor、无窗口 .critical。
+    func testModelQuotaAggregateHealthLevel() {
+        let week = 7.0 * 24 * 3600
+
+        func makeModel(
+            intervalPercent: Double?,
+            weeklyPercent: Double?,
+            weeklyTimeFraction: Double = 1.0
+        ) -> ModelQuota {
+            ModelQuota(
+                modelName: "model",
+                intervalTotalCount: 100,
+                intervalUsageCount: 100 - Int(intervalPercent ?? 0),
+                intervalRemainingPercent: intervalPercent ?? 0,
+                intervalStatus: intervalPercent != nil ? .present : .absent,
+                intervalResetsAt: intervalPercent != nil ? Date().addingTimeInterval(3600) : nil,
+                intervalWindowSeconds: intervalPercent != nil ? 5 * 3600 : nil,
+                weeklyTotalCount: 100,
+                weeklyUsageCount: 100 - Int(weeklyPercent ?? 0),
+                weeklyRemainingPercent: weeklyPercent ?? 0,
+                weeklyStatus: weeklyPercent != nil ? .present : .absent,
+                weeklyResetsAt: weeklyPercent != nil
+                    ? Date().addingTimeInterval(week * weeklyTimeFraction)
+                    : nil,
+                weeklyWindowSeconds: weeklyPercent != nil ? Int(week) : nil
+            )
+        }
+
+        // 1. 无任何窗口 → .critical（对齐 statusBarHealthLevel 的历史语义）。
+        XCTAssertEqual(
+            makeModel(intervalPercent: nil, weeklyPercent: nil)
+                .aggregateHealthLevel(providerKind: .glmCodingPlan),
+            .critical
+        )
+
+        // 2. 仅 5h 短窗口：固定 30% 黄线、< 15 红。35% 绿 / 25% 黄 / 10% 红。
+        XCTAssertEqual(makeModel(intervalPercent: 35, weeklyPercent: nil).aggregateHealthLevel(providerKind: .glmCodingPlan), .healthy)
+        XCTAssertEqual(makeModel(intervalPercent: 25, weeklyPercent: nil).aggregateHealthLevel(providerKind: .glmCodingPlan), .warning)
+        XCTAssertEqual(makeModel(intervalPercent: 10, weeklyPercent: nil).aggregateHealthLevel(providerKind: .glmCodingPlan), .critical)
+
+        // 3. 仅周窗口：周 × N 折算参与。GLM N=5：周 8% → 40%，瓶颈周（tf≈1 →
+        //    黄线 50）→ 黄。若未折算，8% 会直接落进 < 15 的红区。
+        XCTAssertEqual(
+            makeModel(intervalPercent: nil, weeklyPercent: 8).aggregateHealthLevel(providerKind: .glmCodingPlan),
+            .warning
+        )
+        // codex N=6：周 6% → 36% → 黄（原始 6% 为红，折算改变判定）。
+        XCTAssertEqual(
+            makeModel(intervalPercent: nil, weeklyPercent: 6).aggregateHealthLevel(providerKind: .codexChatGpt),
+            .warning
+        )
+
+        // 4. 双窗口并列（5h 40% = 周 8%×5）：并列取 5h → tf 为 nil（固定 30% 黄线）
+        //    → 40% 绿。若错误地取周瓶颈（tf≈1 → 黄线 50），40% 会是黄。
+        XCTAssertEqual(
+            makeModel(intervalPercent: 40, weeklyPercent: 8).aggregateHealthLevel(providerKind: .glmCodingPlan),
+            .healthy
+        )
+
+        // 5. 高峰 floor：healthy 被压到 warning；critical 保持 critical（红色优先）。
+        XCTAssertEqual(
+            makeModel(intervalPercent: 80, weeklyPercent: nil)
+                .aggregateHealthLevel(providerKind: .glmCodingPlan, isPeakPrice: true),
+            .warning
+        )
+        XCTAssertEqual(
+            makeModel(intervalPercent: 80, weeklyPercent: nil)
+                .aggregateHealthLevel(providerKind: .glmCodingPlan, isPeakPrice: false),
+            .healthy
+        )
+        XCTAssertEqual(
+            makeModel(intervalPercent: 10, weeklyPercent: nil)
+                .aggregateHealthLevel(providerKind: .glmCodingPlan, isPeakPrice: true),
+            .critical
+        )
+    }
+
+    /// `ProviderStatus.aggregateHealthLevel`：nil 透传（灰点）、空窗口 .critical、
+    /// deepseek 余额卡头点与旧 `healthLevel` 行为一致、GLM 高峰 floor。
+    func testProviderStatusAggregateHealthLevel() {
+        func makeBalanceModel(percent: Double) -> ModelQuota {
+            ModelQuota(
+                modelName: "deepseek_balance",
+                intervalTotalCount: 0,
+                intervalUsageCount: 0,
+                intervalRemainingPercent: percent,
+                intervalStatus: .present,
+                intervalResetsAt: nil,
+                intervalWindowSeconds: nil,
+                weeklyTotalCount: 0,
+                weeklyUsageCount: 0,
+                weeklyRemainingPercent: 0,
+                weeklyStatus: .absent,
+                weeklyResetsAt: nil,
+                weeklyWindowSeconds: nil
+            )
+        }
+
+        func makeStatus(
+            kind: ProviderKind,
+            state: ProviderStatus.State,
+            glmPeakWindow: PeakWindow? = nil
+        ) -> ProviderStatus {
+            var status = ProviderStatus(
+                id: "t", displayName: "T", kind: kind,
+                iconSystemName: "c", accentColor: .minimax,
+                refreshIntervalSeconds: 60, state: state
+            )
+            status.glmPeakWindow = glmPeakWindow
+            return status
+        }
+
+        // 1. lastSuccess 为 nil → nil（保持灰点语义）。
+        XCTAssertNil(makeStatus(kind: .codexChatGpt, state: .ready).aggregateHealthLevel())
+        XCTAssertNil(
+            makeStatus(kind: .glmCodingPlan, state: .loading(lastSuccess: nil)).aggregateHealthLevel()
+        )
+
+        // 2. deepseek 余额模型：新路径与旧 `healthLevel` 完全一致（50% 绿 / 0% 红），
+        //    卡头点现状颜色不变。
+        for percent in [50.0, 0.0] {
+            let status = makeStatus(
+                kind: .deepseek,
+                state: .ok(QuotaInfo(
+                    models: [makeBalanceModel(percent: percent)],
+                    resetCredits: nil, planLabel: nil, accountEmail: nil,
+                    codexUsageDetails: nil, fetchedAt: Date()
+                ))
+            )
+            XCTAssertEqual(status.aggregateHealthLevel(), status.healthLevel)
+        }
+        XCTAssertEqual(
+            makeStatus(
+                kind: .deepseek,
+                state: .ok(QuotaInfo(
+                    models: [makeBalanceModel(percent: 50)],
+                    resetCredits: nil, planLabel: nil, accountEmail: nil,
+                    codexUsageDetails: nil, fetchedAt: Date()
+                ))
+            ).aggregateHealthLevel(),
+            .healthy
+        )
+
+        // 3. 有数据但 models 为空（无有效窗口 model）→ .critical（对齐 QuotaInfo.healthLevel 现状）。
+        XCTAssertEqual(
+            makeStatus(
+                kind: .minimaxTokenPlan,
+                state: .ok(QuotaInfo(
+                    models: [],
+                    resetCredits: nil, planLabel: nil, accountEmail: nil,
+                    codexUsageDetails: nil, fetchedAt: Date()
+                ))
+            ).aggregateHealthLevel(),
+            .critical
+        )
+
+        // 4. GLM 高峰 floor：高峰时 healthy → warning；非高峰保持 healthy。
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .current
+        let offPeak = calendar.date(from: DateComponents(year: 2026, month: 8, day: 11, hour: 10))!
+        let peak = calendar.date(from: DateComponents(year: 2026, month: 8, day: 11, hour: 15))!
+        let glmHealthy = makeStatus(
+            kind: .glmCodingPlan,
+            state: .ok(QuotaInfo(
+                models: [ModelQuota(
+                    modelName: "glm_coding_plan",
+                    intervalTotalCount: 100, intervalUsageCount: 20,
+                    intervalRemainingPercent: 80,
+                    intervalStatus: .present,
+                    intervalResetsAt: Date().addingTimeInterval(3600),
+                    intervalWindowSeconds: 5 * 3600,
+                    weeklyTotalCount: 0, weeklyUsageCount: 0,
+                    weeklyRemainingPercent: 0, weeklyStatus: .absent,
+                    weeklyResetsAt: nil, weeklyWindowSeconds: nil
+                )],
+                resetCredits: nil, planLabel: nil, accountEmail: nil,
+                codexUsageDetails: nil, fetchedAt: Date()
+            )),
+            glmPeakWindow: PeakWindow(startHour: 14, endHour: 18, weekdaysOnly: false)
+        )
+        XCTAssertEqual(glmHealthy.aggregateHealthLevel(at: offPeak), .healthy)
+        XCTAssertEqual(glmHealthy.aggregateHealthLevel(at: peak), .warning, "高峰时卡头点保底黄色")
+    }
+
+    /// Icon Duo 底部三点的高峰 floor：GLM 高峰时对应套餐点至少黄色（另一套餐的
+    /// 红色仍优先）；floor 只作用于三点，弧线/中心不参与。
+    @MainActor
+    func testPeakFloorAppliesToQuotaDots() {
+        let descriptors = [
+            FetcherDescriptor(
+                id: "test_a",
+                displayName: "Test A",
+                kind: .codexChatGpt,
+                iconSystemName: "star",
+                accentColor: .chatgpt,
+                makeFetcher: { _ in CodexFetcher(authPath: nil) }
+            ),
+            FetcherDescriptor(
+                id: "test_glm",
+                displayName: "Test GLM",
+                kind: .glmCodingPlan,
+                iconSystemName: "bolt",
+                accentColor: .glm,
+                makeFetcher: { _ in GlmCodingPlanFetcher(apiKey: "key") }
+            )
+        ]
+
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let store = ConfigStore(configURL: dir.appendingPathComponent("config.json"))
+        var cfg = store.config
+        cfg.providers["test_a"] = ProviderConfig(enabled: true, apiKey: "key_a")
+        cfg.providers["test_glm"] = ProviderConfig(
+            enabled: true,
+            apiKey: "key_glm",
+            peakStartHour: 14,
+            peakEndHour: 18,
+            peakWeekdaysOnly: false
+        )
+        try? store.applyAndSave(cfg)
+
+        let appState = AppState(descriptors: descriptors, configStore: store)
+        defer { appState.stop() }
+
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .current
+        let offPeakTime = calendar.date(from: DateComponents(year: 2026, month: 8, day: 11, hour: 10))!
+        let peakTime = calendar.date(from: DateComponents(year: 2026, month: 8, day: 11, hour: 15))!
+
+        func setQuotas(codexPercent: Double, glmPercent: Double) {
+            func makeModel(percent: Double) -> ModelQuota {
+                ModelQuota(
+                    modelName: "model",
+                    intervalTotalCount: 100,
+                    intervalUsageCount: Int(100.0 - percent),
+                    intervalRemainingPercent: percent,
+                    intervalStatus: .present,
+                    intervalResetsAt: offPeakTime.addingTimeInterval(3600),
+                    intervalWindowSeconds: 5 * 3600,
+                    weeklyTotalCount: 0,
+                    weeklyUsageCount: 0,
+                    weeklyRemainingPercent: 0,
+                    weeklyStatus: .absent,
+                    weeklyResetsAt: nil,
+                    weeklyWindowSeconds: nil
+                )
+            }
+            appState.mutateStatus(for: "test_a") {
+                $0.state = .ok(QuotaInfo(models: [makeModel(percent: codexPercent)], resetCredits: nil, planLabel: nil, accountEmail: nil, codexUsageDetails: nil, fetchedAt: offPeakTime))
+            }
+            appState.mutateStatus(for: "test_glm") {
+                $0.state = .ok(QuotaInfo(models: [makeModel(percent: glmPercent)], resetCredits: nil, planLabel: nil, accountEmail: nil, codexUsageDetails: nil, fetchedAt: offPeakTime))
+            }
+        }
+
+        // 1. 非高峰：两边 80% 都为绿。
+        setQuotas(codexPercent: 80, glmPercent: 80)
+        XCTAssertEqual(appState.statusBarQuotaMetrics(at: offPeakTime).quotaHealthLevels, [.healthy, .healthy, .healthy])
+
+        // 2. 高峰：GLM 点被 floor 成黄色，codex 点保持绿色。
+        XCTAssertEqual(appState.statusBarQuotaMetrics(at: peakTime).quotaHealthLevels, [.warning, .healthy, .healthy])
+
+        // 3. 高峰 + 另一套餐红色：红色优先排在最前，GLM 点仍为黄色。
+        setQuotas(codexPercent: 10, glmPercent: 80)
+        XCTAssertEqual(appState.statusBarQuotaMetrics(at: peakTime).quotaHealthLevels, [.critical, .warning, .healthy])
     }
 }

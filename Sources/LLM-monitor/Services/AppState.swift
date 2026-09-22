@@ -131,22 +131,36 @@ final class AppState: ObservableObject {
         return levels.min()
     }
 
-    /// 计算当前状态栏配额指标：左弧 5h、右弧周额度、中间 5h 最低剩余量，
-    /// 底部三点按套餐健康度红 > 黄 > 绿排列。
+    /// 计算当前状态栏配额指标：左弧 5h、右弧周额度、中间为所有有效套餐
+    /// 「实际可用」比例（min(5h, 周 × N)）的最低值，底部三点按统一 colorLevel
+    /// 判定（实际可用口径 + 高峰 floor）红 > 黄 > 绿排列。
     func statusBarQuotaMetrics(at now: Date = Date()) -> StatusBarQuotaMetrics {
         let enabled = statuses.filter(\.isEnabled)
-        var allActiveModels: [ModelQuota] = []
+        // (kind, model, isPeak) 三元组：中心扇形与底部三点的「实际可用」口径需要
+        // provider 的周等效倍率 N（与卡片分段条 min(5h, 周 × N) 同源），高峰 floor
+        // 也按 provider 维度取 kind 对应的高峰状态，收集时顺带记录。deepseek 已被
+        // 下面过滤器排除（其 deepseekPeakWindow 无需处理）；其他 kind 的
+        // glmPeakWindow 为 nil，自然不算高峰。
+        var activeWindowedModels: [(kind: ProviderKind, model: ModelQuota, isPeak: Bool)] = []
         // DeepSeek is balance-only and intentionally has no quota window
         // semantics; it is excluded from the quotaLogo aggregate just as the
         // notification pipeline excludes non-windowed providers.
         for status in enabled where status.kind != .deepseek {
+            // 高峰判定跟随 systemHealthLevel 现状：glmPeakWindow 命中 .peak 即 true。
+            let isPeak: Bool
+            if let glmPeak = status.glmPeakWindow, case .peak = glmPeak.status(at: now) {
+                isPeak = true
+            } else {
+                isPeak = false
+            }
             switch status.state {
             case .ok(let info), .loading(lastSuccess: let info?), .failed(message: _, lastSuccess: let info?):
-                allActiveModels.append(contentsOf: info.activeModels)
+                activeWindowedModels.append(contentsOf: info.activeModels.map { (kind: status.kind, model: $0, isPeak: isPeak) })
             case .notConfigured, .ready, .loading(lastSuccess: nil), .failed(message: _, lastSuccess: nil):
                 break
             }
         }
+        let allActiveModels = activeWindowedModels.map(\.model)
 
         // 1. 5h 窗口 (原始值，不带时间系数)
         let intervalModels = allActiveModels.filter(\.hasIntervalWindow)
@@ -192,20 +206,35 @@ final class AppState: ObservableObject {
             )
         }
 
-        // 3. 中心扇形优先取所有有效套餐的 5h 最低物理剩余量；只有完全没有
-        // 5h 窗口时才回退到周额度最低值。左右弧已分别表达两种窗口，中心继续
-        // 强调更即时的 5h 压力，避免较低的周额度让中心看起来与 5h 数字矛盾。
-        // 底部点按每个有效套餐自身存在窗口的 standard 健康度汇总；构造器负责排序、
-        // 截断到三个并用默认绿色补齐。
-        let centerAvailable: Double?
-        if intervalMetrics.isAvailable {
-            centerAvailable = intervalMetrics.minAvailable
-        } else if weeklyMetrics.isAvailable {
-            centerAvailable = weeklyMetrics.minAvailable
-        } else {
-            centerAvailable = nil
+        // 3. 中心扇形 = 所有有效套餐「实际可用」比例的最低值，与卡片分段条的
+        // min(5h, 周 × N) 口径一致：每个套餐按自身存在的窗口取
+        // min(5h 剩余, 周剩余 × 周等效倍率 N)——仅 5h 按 5h 参与、仅周按 周 × N
+        // 参与，单套餐结果 clamp 到 [0, 1] 后取全局最小，所有套餐都没有任何
+        // 窗口时保持 nil。顺带记录产生最小值的套餐（argmin，并列保留先出现者）
+        // 及其瓶颈窗口的剩余时间比例，作为中心扇形 colorLevel 的动态黄线输入。
+        // 左右弧仍分别表达两种窗口的原始物理剩余；底部三点按统一 colorLevel
+        // 判定（实际可用口径 + 高峰 floor），构造器负责排序、截断到三个并用
+        // 默认绿色补齐。
+        var centerBest: (value: Double, bindingTimeFraction: Double?)?
+        for entry in activeWindowedModels {
+            guard let reading = entry.model.aggregateActualAvailable(providerKind: entry.kind, at: now) else { continue }
+            let value = reading.percent / 100.0
+            if centerBest == nil || value < centerBest!.value {
+                centerBest = (value, reading.bindingTimeFraction)
+            }
         }
-        let quotaHealthLevels = allActiveModels.map(\.statusBarHealthLevel)
+        let centerAvailable = centerBest?.value
+        let centerTimeFraction = centerBest?.bindingTimeFraction
+        let quotaHealthLevels = activeWindowedModels.map {
+            $0.model.aggregateHealthLevel(providerKind: $0.kind, isPeakPrice: $0.isPeak)
+        }
+        // 聚合右弧的动态黄线输入：所有周窗口套餐剩余时间比例的最大值。聚合弧画
+        // 的是多套餐平均，取最宽（max）的剩余时间比例可避免任一临近重置的套餐把
+        // 整条弧压成黄色（逐套餐最紧阈值会让弧色比分段条更早变黄）；没有任何周
+        // 窗口（或全部缺 reset 时间）时为 nil，弧线退回固定 30% 黄线。
+        let weeklyTimeFraction = allActiveModels
+            .compactMap { $0.weeklyTimeRemainingFraction(at: now) }
+            .max()
 
         // 4. 高峰价格判定
         let isPeakPrice = enabled.contains { status in
@@ -246,7 +275,9 @@ final class AppState: ObservableObject {
             interval: intervalMetrics,
             centerAvailable: centerAvailable,
             quotaHealthLevels: quotaHealthLevels,
-            waterHealth: waterHealth
+            waterHealth: waterHealth,
+            weeklyTimeFraction: weeklyTimeFraction,
+            centerTimeFraction: centerTimeFraction
         )
     }
 

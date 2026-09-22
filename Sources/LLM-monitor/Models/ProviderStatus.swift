@@ -103,6 +103,28 @@ struct ProviderStatus: Identifiable, Equatable, Sendable {
         lastSuccess?.healthLevel
     }
 
+    /// 卡片头部点使用的综合健康度（统一 colorLevel 口径，方案 A）。
+    /// - `lastSuccess` 为 nil → nil（保持灰点语义：没数据 ≠ 健康）。
+    /// - 有数据但没有有效窗口 model → .critical（对齐 `QuotaInfo.healthLevel` 现状）。
+    /// - 否则取各 model `aggregateHealthLevel`（实际可用口径 min(5h, 周 × N)）的最差值。
+    ///
+    /// 高峰判定跟随 `AppState.systemHealthLevel` 现状：`glmPeakWindow` 命中 .peak
+    /// 即保底 .warning（红色优先，floor 不吞掉红色）；`deepseekPeakWindow` 不参与
+    /// 卡头点 floor。deepseek 余额模型只有 5h 形态的窗口且无 reset 时间，走本方法
+    /// 与走旧 `healthLevel` 的 colorLevel 输入完全一致，颜色行为不变。
+    func aggregateHealthLevel(at now: Date = Date()) -> HealthLevel? {
+        guard let info = lastSuccess else { return nil }
+        let isPeak: Bool
+        if let glmPeak = glmPeakWindow, case .peak = glmPeak.status(at: now) {
+            isPeak = true
+        } else {
+            isPeak = false
+        }
+        return info.activeModels
+            .map { $0.aggregateHealthLevel(providerKind: kind, isPeakPrice: isPeak) }
+            .min() ?? .critical
+    }
+
     /// Effective freshness for the local usage footer. The legacy scanning
     /// flag remains a compatibility fallback until AppState writes the source
     /// transition itself; source-level `.scanning` also works for shared data.

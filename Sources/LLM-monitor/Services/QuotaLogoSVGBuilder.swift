@@ -32,13 +32,25 @@ struct StatusBarQuotaMetrics: Equatable, Sendable {
     var weekly: QuotaRingMetrics
     /// 左弧：5 小时额度（原始物理剩余比例，无时间系数）。
     var interval: QuotaRingMetrics
-    /// Icon Duo 中心扇形显示的剩余比例：优先取所有 5h 窗口中的最低值；没有
-    /// 5h 窗口时回退到周窗口最低值。nil 表示暂无额度数据。
+    /// Icon Duo 中心扇形显示的剩余比例：所有有效套餐「实际可用」的最低值——
+    /// 每个套餐按自身存在的窗口取 min(5h 剩余, 周剩余 × 周等效倍率 N)（与卡片
+    /// 分段条同口径；仅 5h 按 5h、仅周按 周 × N，均 clamp 到 1.0），任何套餐
+    /// 都没有窗口时为 nil。nil 表示暂无额度数据。
     var centerAvailable: Double?
-    /// 套餐健康点，已按红 > 黄 > 绿排序并补齐到三个。
+    /// 套餐健康点，已按红 > 黄 > 绿排序并补齐到三个。判定输入来自
+    /// `ModelQuota.aggregateHealthLevel`（统一 colorLevel + 高峰 floor）。
     var quotaHealthLevels: [HealthLevel]
-    /// 经典 App 图标中心水位的综合健康状态；Icon Duo 的各部件直接使用
-    /// 各自的 standard 状态，不消费该值。
+    /// 右弧（聚合周弧）颜色的动态黄线输入：所有周窗口套餐
+    /// `weeklyTimeRemainingFraction` 的最大值。聚合弧画的是多套餐平均，取最宽的
+    /// 剩余时间比例可避免任一临近重置的套餐把整条弧压成黄色；没有任何周窗口
+    /// （或全部缺 reset 时间）时为 nil，弧线退回固定 30% 黄线。
+    var weeklyTimeFraction: Double?
+    /// 中心扇形颜色的动态黄线输入：产生中心最小值的套餐在其瓶颈（binding）
+    /// 窗口上的剩余时间比例；瓶颈是 5h 短窗口（或缺 reset 时间）时为 nil，
+    /// 中心退回固定 30% 黄线。
+    var centerTimeFraction: Double?
+    /// 经典 App 图标中心水位的综合健康状态；Icon Duo 的各部件按统一 colorLevel
+    /// 规则自行取色，不消费该值。
     var waterHealth: HealthLevel?
 
     init(
@@ -46,13 +58,17 @@ struct StatusBarQuotaMetrics: Equatable, Sendable {
         interval: QuotaRingMetrics,
         centerAvailable: Double? = nil,
         quotaHealthLevels: [HealthLevel] = Array(repeating: .healthy, count: 3),
-        waterHealth: HealthLevel? = nil
+        waterHealth: HealthLevel? = nil,
+        weeklyTimeFraction: Double? = nil,
+        centerTimeFraction: Double? = nil
     ) {
         self.weekly = weekly
         self.interval = interval
         self.centerAvailable = centerAvailable.map { min(max($0, 0.0), 1.0) }
         self.quotaHealthLevels = Self.resolveTopThreeHealthLevels(quotaHealthLevels)
         self.waterHealth = waterHealth
+        self.weeklyTimeFraction = weeklyTimeFraction
+        self.centerTimeFraction = centerTimeFraction
     }
 
     /// 优先显示红色（.critical），其次黄色（.warning），最后绿色（.healthy）；

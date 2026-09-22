@@ -115,7 +115,7 @@ struct ProviderCardView: View, Equatable {
 
     private var headerContent: some View {
         HStack(spacing: 8) {
-            StatusIndicator(level: status.healthLevel)
+            StatusIndicator(level: status.aggregateHealthLevel())
             BrandLogoView(kind: status.kind)
             Text(displayTitle)
                 .font(MenuTypography.cardTitle)
@@ -493,21 +493,10 @@ struct QuotaSummary: View {
         return planLabel
     }
 
+    /// 视图层兼容入口：倍率映射已下沉到 `ModelQuota`，让卡片分段条与状态栏
+    /// 聚合（中心扇形的 min(5h, 周 × N)）共用同一份逻辑，现有调用点保持不动。
     nonisolated static func weeklyEquivalentMultiplier(providerKind: ProviderKind, model: ModelQuota) -> Int {
-        switch providerKind {
-        case .minimaxTokenPlan:
-            // video 用日窗口 → 1 天 ≈ 1/7 周；其他模型（general 等）走 5h 窗口 → 1/10 周
-            return model.modelName.lowercased() == "video" ? 7 : 10
-        case .codexChatGpt:
-            return 6
-        case .antigravity:
-            return model.modelName.lowercased() == AntigravityModelKind.claudeAndGptModels.rawValue ? 3 : 6
-        case .glmCodingPlan:
-            // GLM Coding Plan：5h 积分 × 5 = 周积分（Lite 2000/10000、Pro 12000/60000、Max 28000/140000）
-            return 5
-        case .deepseek:
-            return 1
-        }
+        ModelQuota.weeklyEquivalentMultiplier(providerKind: providerKind, model: model)
     }
 
     private func accentColor(for model: ModelQuota) -> Color {

@@ -576,7 +576,7 @@ Card metadata:
 | `iconSystemName` | `bubble.left.and.text.bubble.right.fill` |
 | `accentColor` | `minimax` mapped to purple |
 
-**Per-model window / multiplier**（`QuotaSummary.weeklyEquivalentMultiplier` + `primaryWindowLabel` 按 model 名分）：
+**Per-model window / multiplier**（`ModelQuota.weeklyEquivalentMultiplier` + `primaryWindowLabel` 按 model 名分）：
 
 | Model name | 主窗口 label | 周倍率 N | 等价比例 |
 |---|---|---|---|
