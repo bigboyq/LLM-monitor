@@ -769,6 +769,9 @@ extension AntigravityLocalUsageScanner {
             if failedCount == 0 {
                 index.calendarSignature = currentCalendarSignature
             }
+            // 落盘前裁掉严格早于 8 天窗口的日桶（消费面只有 today/7 天窗口，
+            // eventCount 独立于日桶），防止 index.json 随历史 session 无界增长。
+            Self.pruneStaleDailyBuckets(index: &index, now: nowDate)
             try Self.saveIndex(index, cacheDir: cacheDir, fileManager: fileManager, hook: saveIndexHook)
         }
 
@@ -824,6 +827,41 @@ extension AntigravityLocalUsageScanner {
         var updated = strikes
         updated.removeValue(forKey: sessionID)
         index.emptyFullStrikesBySession = updated.isEmpty ? nil : updated
+    }
+
+    /// 写回 index 前裁剪 `dailyBySession` 中严格早于 8 天窗口的日期桶（与
+    /// samples 的 `-8 * 24 * 60 * 60` 谓词同式，按桶的 `dayStart` 比较）。
+    /// 日桶只有 today / 最近 7 天两个消费出口（`computeGlobalDaily` → today +
+    /// `filterLast7Days`），session 级 `eventCount` 独立保存在 `sessions` 条目
+    /// 里，因此旧桶删除不影响任何用户可见数字，只防止长期使用后 index.json
+    /// 无界增长。全桶被裁的 session 条目一并移除。
+    nonisolated static func pruneStaleDailyBuckets(
+        index: inout CacheIndex,
+        now: Date
+    ) {
+        let cutoff = now.addingTimeInterval(-8 * 24 * 60 * 60)
+        var removedBuckets = 0
+        var removedSessions = 0
+        for (sessionID, byDay) in index.dailyBySession {
+            var kept: [String: AntigravityDailyUsage] = [:]
+            kept.reserveCapacity(byDay.count)
+            for (dayKey, usage) in byDay where usage.dayStart >= cutoff {
+                kept[dayKey] = usage
+            }
+            removedBuckets += byDay.count - kept.count
+            if kept.isEmpty {
+                index.dailyBySession.removeValue(forKey: sessionID)
+                removedSessions += 1
+            } else if kept.count != byDay.count {
+                index.dailyBySession[sessionID] = kept
+            }
+        }
+        if removedBuckets > 0 || removedSessions > 0 {
+            logInfo(
+                "[antigravity-scan] 已裁剪 \(removedBuckets) 个超过 8 天窗口的日桶"
+                    + "（清空 \(removedSessions) 个 session 的日桶缓存）"
+            )
+        }
     }
 
     /// The protocol offset advances by raw generatorMetadata entries, including

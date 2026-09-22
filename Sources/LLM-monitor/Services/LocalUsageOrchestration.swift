@@ -261,8 +261,13 @@ final class LocalUsageOrchestration {
         return didCompleteInitialFullScan ? .dirty : .full
     }
 
-    /// 文件事件等后台来源调用的非阻塞入口。它只投递一个短生命周期 Task，
-    /// 不会阻塞当前事件处理者。
+    /// 非阻塞投递一次 reconcile：已有 chain 在跑时把请求合并进 pending 槽位，
+    /// 由在跑的 chain 收尾消费；否则启动一个短生命周期 Task，不阻塞调用者。
+    ///
+    /// 当前生产调用方只有两个：`invalidateForCalendarChange`（时区/日历变化，
+    /// 请求 hardFull）与 `AppState.handleSystemClockChange`（系统时钟平移）。
+    /// 文件系统事件（FSEvents）不走这里——它们只把 source 标为 dirty（UI
+    /// 新鲜度），真正的 reconcile 由 provider batch settle 驱动。
     func scheduleReconcile(mode requestedMode: LocalUsageScanMode? = nil) {
         guard reconcileTask == nil else {
             enqueuePending(requestedMode ?? .dirty)
@@ -513,13 +518,16 @@ final class LocalUsageOrchestration {
         let pending = takePendingMode()
         testReconcileChainTeardownHook?()
 
-        // The hook models a MainActor event that arrives after the first
-        // pending check. Re-checking also documents the invariant that the
-        // owner must consume every request before it releases the task slot.
         guard reconcileGeneration == generation else { return nil }
         if let pending {
             return pending
         }
+        // 本次复查在生产路径当前不可达：本方法没有 await（hook 是同步
+        // @MainActor 闭包），takePendingMode 与这里之间不会有新请求落地。
+        // 它只在未来这两步之间插入 await 时才 load-bearing；测试
+        // testReconcileTeardownConsumesRequestQueuedBeforeOwnerRelease 通过
+        // teardown hook 模拟"复查前到达的新请求"，保证真出现该窗口时
+        // 请求也不会随 owner 释放而丢失。
         if let latePending = takePendingMode() {
             return latePending
         }

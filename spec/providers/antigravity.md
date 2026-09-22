@@ -603,7 +603,7 @@ only the matching step metadata timestamp as a fallback.
 }
 ```
 
-`dailyBySession` keeps each session's per-day token breakdown, while `samplesBySession` keeps recent per-event samples. A changed session replaces only its own entries; unchanged sessions remain cached. The source events are not persisted as JSONL — they are fetched again from RPC whenever the file fingerprint is dirty.
+`dailyBySession` keeps each session's per-day token breakdown, while `samplesBySession` keeps recent per-event samples. A changed session replaces only its own entries; unchanged sessions remain cached. The source events are not persisted as JSONL — they are fetched again from RPC whenever the file fingerprint is dirty. Day buckets are retention-bounded: before each index write-back, buckets strictly older than the 8-day window (`dayStart < now - 8d`, the same predicate as `samplesBySession`) are pruned, along with sessions whose buckets are all pruned. The only consumers of day buckets are the today value and the 7-day window (`computeGlobalDaily` → `filterLast7Days`), and per-session `eventCount` lives in `sessions`, so pruning never changes any reported number.
 
 `consecutiveEmptySuffixes` (per session) and `emptyFullStrikesBySession` (top level) drive bounded convergence; both are optional and default to 0 / absent when absent — see "Bounded convergence" above. They exist purely for retry bookkeeping and never alter the accounting fields.
 

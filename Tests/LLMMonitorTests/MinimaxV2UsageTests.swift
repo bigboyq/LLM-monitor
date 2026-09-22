@@ -49,6 +49,107 @@ final class MinimaxV2UsageTests: XCTestCase {
         XCTAssertEqual(restored.scannedAt, now)
     }
 
+    /// 卫生清理：写回 index 前裁剪严格早于 8 天窗口的日桶（与 samples 的
+    /// `-8 * 24 * 60 * 60` 谓词同式）。构造含 10 天前桶的缓存且 source 指纹
+    /// 新鲜（不 dirty、不走 SQL 聚合，dailyBySource 不会被整体替换），扫描后
+    /// 旧桶被裁、7 天内的桶与 samples 不受影响、eventCount 不变。
+    func testPrunesDailyBucketsOlderThanEightDayWindowOnSave() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("minimax-prune-\(UUID().uuidString)", isDirectory: true)
+        let runtimeURL = root.appendingPathComponent("v2/runtime-state.sqlite")
+        let cacheDir = root.appendingPathComponent("cache", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: runtimeURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
+        try Data(repeating: 4, count: 64).write(to: runtimeURL)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let attributes = try FileManager.default.attributesOfItem(atPath: runtimeURL.path)
+        let modifiedAt = try XCTUnwrap(attributes[.modificationDate] as? Date)
+        let mtimeMs = modifiedAt.timeIntervalSince1970 * 1000
+        let sizeBytes = try XCTUnwrap((attributes[.size] as? NSNumber)?.intValue)
+
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let oldDayStart = try XCTUnwrap(
+            calendar.date(byAdding: .day, value: -10, to: now).map { calendar.startOfDay(for: $0) }
+        )
+        let recentDayStart = try XCTUnwrap(
+            calendar.date(byAdding: .day, value: -2, to: now).map { calendar.startOfDay(for: $0) }
+        )
+        let oldDayKey = LocalUsageDayKey.make(oldDayStart, calendar: calendar)
+        let recentDayKey = LocalUsageDayKey.make(recentDayStart, calendar: calendar)
+
+        let seededSample = LocalTokenUsageSample(
+            completedAt: recentDayStart.addingTimeInterval(3_600),
+            modelName: "MiniMax-M3",
+            promptID: "runtime:turn-1",
+            inputTokens: 9,
+            cachedInputTokens: 0,
+            outputTokens: 5,
+            reasoningOutputTokens: 0
+        )
+        let index = MinimaxLocalUsageScanner.CacheIndex(
+            version: 14,
+            lastScannedAt: now.addingTimeInterval(-60),
+            sources: ["runtime": MinimaxLocalUsageScanner.SourceIndexEntry(
+                mtimeMs: mtimeMs,              // 新鲜指纹 → 不 dirty、不走 SQL
+                sizeBytes: sizeBytes,
+                walMtimeMs: 0,
+                walSizeBytes: 0,
+                scannedAt: now.addingTimeInterval(-60),
+                eventCount: 3,
+                sessionCount: 1
+            )],
+            dailyBySource: ["runtime": [
+                oldDayKey: MinimaxDailyUsage(
+                    dayStart: oldDayStart, inputTokens: 100, outputTokens: 50,
+                    cacheReadTokens: 2, reasoningTokens: 1, totalTokens: 153,
+                    turns: 2, rounds: 4
+                ),
+                recentDayKey: MinimaxDailyUsage(
+                    dayStart: recentDayStart, inputTokens: 10, outputTokens: 5,
+                    cacheReadTokens: 2, reasoningTokens: 1, totalTokens: 18,
+                    turns: 1, rounds: 2
+                )
+            ]],
+            samplesBySource: ["runtime": [seededSample]],
+            calendarSignature: LocalUsageCalendarSignature.make(calendar)
+        )
+        try MinimaxLocalUsageScanner.saveIndex(index, cacheDir: cacheDir, fileManager: FileManagerBox())
+
+        let result = try MinimaxLocalUsageScanner.performScanPureImpl(
+            runtimeDBURL: runtimeURL,
+            cacheDir: cacheDir,
+            fileManager: FileManagerBox(),
+            calendar: calendar,
+            now: { now },
+            shouldSave: true
+        )
+
+        let saved = try MinimaxLocalUsageScanner.loadIndex(cacheDir: cacheDir, fileManager: FileManagerBox())
+        let byDay = try XCTUnwrap(saved.dailyBySource["runtime"])
+        XCTAssertNil(byDay[oldDayKey], "10 天前的日桶必须在写回前被裁剪")
+        XCTAssertEqual(byDay[recentDayKey]?.inputTokens, 10, "7 天内的日桶不受影响")
+        XCTAssertEqual(
+            saved.sources["runtime"]?.eventCount, 3,
+            "eventCount 独立保存在 sources 条目里，不受日桶裁剪影响"
+        )
+        XCTAssertEqual(saved.samplesBySource?["runtime"]?.count, 1, "samples 不受日桶裁剪影响")
+
+        // 消费面不受影响：7 天窗口仍包含保留桶，eventCount / samples 原样输出。
+        XCTAssertEqual(result.failedSessionCount, 0)
+        XCTAssertEqual(result.eventCount, 3)
+        XCTAssertTrue(
+            result.dailyTokenUsage.contains { $0.dayStart == recentDayStart && $0.inputTokens == 10 },
+            "7 天窗口聚合必须保留未裁剪桶的数据"
+        )
+        XCTAssertEqual(result.recentSamples?.count, 1)
+    }
+
     private struct TokenRow {
         let sessionID: String
         let turnID: String?

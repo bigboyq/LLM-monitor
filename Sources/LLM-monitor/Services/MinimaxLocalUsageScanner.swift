@@ -374,10 +374,14 @@ final class MinimaxLocalUsageScanner: LocalUsageScannerBase<MinimaxLocalUsage>, 
         //    加锁; mutex 保证同时间只有一个 worker 在写 index.json).
         //    shouldSave=false (旧 generation) 跳过, 保留新 worker 的 cache.
         if shouldSave {
-            index.lastScannedAt = now()
+            let savedAt = now()
+            index.lastScannedAt = savedAt
             if failedKeys.isEmpty {
                 index.calendarSignature = currentCalendarSignature
             }
+            // 落盘前裁掉严格早于 8 天窗口的日桶（消费面只有 today/7 天窗口，
+            // eventCount 独立于日桶），防止 index.json 随历史日桶无界增长。
+            Self.pruneStaleDailyBuckets(index: &index, now: savedAt)
             try Self.saveIndex(index, cacheDir: cacheDir, fileManager: fileManager, hook: saveIndexHook)
         }
 
@@ -454,6 +458,42 @@ extension MinimaxLocalUsageScanner {
             || cached.sizeBytes != current.sizeBytes
             || cached.walMtimeMs != current.walMtimeMs
             || cached.walSizeBytes != current.walSizeBytes
+    }
+
+    /// 写回 index 前裁剪 `dailyBySource` 中严格早于 8 天窗口的日期桶（与
+    /// samples 的 `-8 * 24 * 60 * 60` 谓词同式，按桶的 `dayStart` 比较）。
+    /// 日桶只有 today / 最近 7 天两个消费出口（`computeGlobalDaily` → today +
+    /// `filterLast7Days`），source 级 `eventCount` 独立保存在 `sources` 条目里，
+    /// 因此旧桶删除不影响任何用户可见数字。SQL 聚合本身已按 8 天 cutoff 取数，
+    /// 这里兜底非 dirty 轮次长期保留的旧桶，防止 index.json 无界增长。
+    /// 全桶被裁的 source 条目一并移除。
+    nonisolated static func pruneStaleDailyBuckets(
+        index: inout CacheIndex,
+        now: Date
+    ) {
+        let cutoff = now.addingTimeInterval(-8 * 24 * 60 * 60)
+        var removedBuckets = 0
+        var removedSources = 0
+        for (sourceKey, byDay) in index.dailyBySource {
+            var kept: [String: MinimaxDailyUsage] = [:]
+            kept.reserveCapacity(byDay.count)
+            for (dayKey, usage) in byDay where usage.dayStart >= cutoff {
+                kept[dayKey] = usage
+            }
+            removedBuckets += byDay.count - kept.count
+            if kept.isEmpty {
+                index.dailyBySource.removeValue(forKey: sourceKey)
+                removedSources += 1
+            } else if kept.count != byDay.count {
+                index.dailyBySource[sourceKey] = kept
+            }
+        }
+        if removedBuckets > 0 || removedSources > 0 {
+            logInfo(
+                "[minimax-scan] 已裁剪 \(removedBuckets) 个超过 8 天窗口的日桶"
+                    + "（清空 \(removedSources) 个 source 的日桶缓存）"
+            )
+        }
     }
 
     struct SourceIndexEntry: Equatable, Codable, Sendable {

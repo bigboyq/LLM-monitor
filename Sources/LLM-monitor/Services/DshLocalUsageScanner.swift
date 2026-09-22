@@ -298,7 +298,7 @@ final class DshLocalUsageScanner: LocalUsageScannerBase<DshLocalUsage>, @uncheck
         }
 
         let scanNow = now()
-        var outcome = try aggregateFiles(
+        let outcome = try aggregateFiles(
             snapshots: snapshots,
             sessionsRoot: sessionsRoot,
             fileManager: fileManager,
@@ -308,11 +308,15 @@ final class DshLocalUsageScanner: LocalUsageScannerBase<DshLocalUsage>, @uncheck
             limits: limits,
             forceFull: forceFull
         )
-        // hardFull 逃生口只豁免 stat 失败记忆；文件解析失败（读取/解压/解码
-        // 错误）在所有模式下仍按失败处理，保持 partial 语义不变。
-        if !hardFullBypassesFailureMemory {
-            outcome.failedFileCount += selection.failedFileCount
-        }
+        // 不存在"部分失败继续聚合"路径：非 bypass 轮次 selection.failedFileCount
+        // > 0 已在上方提前 return，bypass 轮次又跳过 stat 失败记忆——因此走到
+        // 这里时 stat 失败数恒为 0，outcome.failedFileCount 只统计下方
+        // aggregateFiles 的文件解析失败（读取/解压/解码错误），所有模式下都
+        // 按失败处理，partial 语义不变。
+        assert(
+            selection.failedFileCount == 0 || hardFullBypassesFailureMemory,
+            "[dsh-scan] stat 失败必须在上方提前 return，不得混入本轮聚合"
+        )
         let snapshot = buildSnapshot(
             aggregate: outcome.aggregate,
             sessionsRoot: sessionsRoot,
@@ -1334,6 +1338,13 @@ private extension DshLocalUsageScanner {
         cacheDir: URL,
         fileManager: FileManagerBox
     ) throws {
+        // 不变量："partial 永不入盘"。isPartial 是新鲜度标记（markPartial 按轮
+        // 动态置位），落盘的 last-good snapshot 必须以 complete 形态保存；debug
+        // 断言守住 rebaseCached / 各扫描路径不会把 partial 写回 index.json。
+        assert(
+            index.snapshot?.isPartial != true,
+            "[dsh-scan] partial snapshot 不允许写入 index.json"
+        )
         try ScannerIndexIO.saveIndex(index, cacheDir: cacheDir, fileManager: fileManager)
     }
 }

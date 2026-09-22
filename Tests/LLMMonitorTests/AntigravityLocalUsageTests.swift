@@ -2128,6 +2128,98 @@ final class AntigravityLocalUsageTests: XCTestCase {
         XCTAssertEqual(index.dailyBySession[fixture.sessionID]?[fixture.dayKey]?.inputTokens, 7)
     }
 
+    /// 卫生清理：写回 index 前裁剪严格早于 8 天窗口的日桶（与 samples 的
+    /// `-8 * 24 * 60 * 60` 谓词同式）。构造含 10 天前桶的缓存且 session 指纹
+    /// 新鲜（不触发 RPC、日桶不会被重算替换），扫描后旧桶被裁、7 天内的桶与
+    /// samples 不受影响、eventCount 不变。
+    func testPrunesDailyBucketsOlderThanEightDayWindowOnSave() async throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory
+            .appendingPathComponent("antigravity-prune-\(UUID().uuidString)", isDirectory: true)
+        let conversations = root.appendingPathComponent("conversations", isDirectory: true)
+        let cache = root.appendingPathComponent("cache", isDirectory: true)
+        try fm.createDirectory(at: conversations, withIntermediateDirectories: true)
+        try fm.createDirectory(at: cache, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: root) }
+
+        let sessionID = "prune-session"
+        let dbPath = conversations.appendingPathComponent("\(sessionID).db")
+        try Data(repeating: 3, count: 128).write(to: dbPath)
+        let values = try dbPath.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+        let liveMtimeMs = try XCTUnwrap(values.contentModificationDate).timeIntervalSince1970 * 1000
+        let liveSizeBytes = try XCTUnwrap(values.fileSize)
+
+        let now = Date(timeIntervalSince1970: 1_790_000_000)
+        let oldDayStart = try XCTUnwrap(
+            testCalendar.date(byAdding: .day, value: -10, to: now).map { testCalendar.startOfDay(for: $0) }
+        )
+        let recentDayStart = try XCTUnwrap(
+            testCalendar.date(byAdding: .day, value: -2, to: now).map { testCalendar.startOfDay(for: $0) }
+        )
+        let oldDayKey = LocalUsageDayKey.make(oldDayStart, calendar: testCalendar)
+        let recentDayKey = LocalUsageDayKey.make(recentDayStart, calendar: testCalendar)
+
+        let seededSample = LocalTokenUsageSample(
+            completedAt: recentDayStart.addingTimeInterval(3_600),
+            modelName: "gemini-3-pro",
+            promptID: "\(sessionID):turn-1",
+            inputTokens: 11,
+            cachedInputTokens: 0,
+            outputTokens: 7,
+            reasoningOutputTokens: 0
+        )
+        let index = AntigravityLocalUsageScanner.CacheIndex(
+            version: 7,
+            lastScannedAt: now.addingTimeInterval(-60),
+            sessions: [sessionID: .init(
+                mtimeMs: liveMtimeMs,          // 新鲜指纹 → 不 dirty、不发 RPC
+                sizeBytes: liveSizeBytes,
+                walMtimeMs: 0,
+                walSizeBytes: 0,
+                fetchedAt: now.addingTimeInterval(-60),
+                eventCount: 4,
+                generatorMetadataOffset: 5
+            )],
+            dailyBySession: [sessionID: [
+                oldDayKey: AntigravityDailyUsage(dayStart: oldDayStart, inputTokens: 100, totalTokens: 100),
+                recentDayKey: AntigravityDailyUsage(dayStart: recentDayStart, inputTokens: 200, totalTokens: 200)
+            ]],
+            samplesBySession: [sessionID: [seededSample]],
+            calendarSignature: LocalUsageCalendarSignature.make(testCalendar)
+        )
+        try AntigravityLocalUsageScanner.saveIndex(index, cacheDir: cache, fileManager: FileManagerBox(fm))
+
+        let result = try await AntigravityLocalUsageScanner.performScanPureImpl(
+            fetcher: AntigravityFetcher(metadataServerDiscovery: { [] }),
+            conversationsDirs: [conversations],
+            cacheDir: cache,
+            fileManager: FileManagerBox(fm),
+            calendar: testCalendar,
+            now: { now },
+            shouldSave: true,
+            metadataFetch: { _, _ in (events: [], metadataEntryCount: 0) }
+        )
+
+        let saved = try AntigravityLocalUsageScanner.loadIndex(cacheDir: cache, fileManager: FileManagerBox(fm))
+        let byDay = try XCTUnwrap(saved.dailyBySession[sessionID])
+        XCTAssertNil(byDay[oldDayKey], "10 天前的日桶必须在写回前被裁剪")
+        XCTAssertEqual(byDay[recentDayKey]?.inputTokens, 200, "7 天内的日桶不受影响")
+        XCTAssertEqual(
+            saved.sessions[sessionID]?.eventCount, 4,
+            "eventCount 独立保存在 sessions 条目里，不受日桶裁剪影响"
+        )
+        XCTAssertEqual(saved.samplesBySession?[sessionID]?.count, 1, "samples 不受日桶裁剪影响")
+
+        // 消费面不受影响：7 天窗口仍包含保留桶，eventCount / samples 原样输出。
+        XCTAssertEqual(result.failedSessionCount, 0)
+        XCTAssertEqual(result.eventCount, 4)
+        XCTAssertTrue(
+            result.dailyTokenUsage.contains { $0.dayStart == recentDayStart && $0.inputTokens == 200 },
+            "7 天窗口聚合必须保留未裁剪桶的数据"
+        )
+        XCTAssertEqual(result.recentSamples?.count, 1)
+    }
+
     /// 缓存向后兼容（验收约束 5）：旧 v7 index（无收敛字段）可被新代码读取，
     /// 新字段 decodeIfPresent 提供默认值；新字段写入后 encode/decode 保真。
     func testConvergenceFieldsDecodeWithBackwardCompatibility() throws {
