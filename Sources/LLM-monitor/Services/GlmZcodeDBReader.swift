@@ -24,30 +24,31 @@ struct GlmZcodeDBAggregate: Equatable, Sendable {
 
 /// 读 ZCode 的 `~/.zcode/cli/db/db.sqlite` `model_usage` 表。
 ///
-/// 每行 = 一次模型请求。查询覆盖两类智谱来源（`builtin:bigmodel-%` /
-/// `account:bigmodel-%` 前缀通配 + `offpeak-idle-plan` 精确匹配），行上带
-/// `provider_id` + `model_id`（如 GLM-5.3 / GLM-5.3-Flash）+ 5 类 token 列 +
-/// 原生 `turn_id`，查询拿到 per-day 5 类 token、round/turn、recent samples、
-/// totals + models + sessions。
+/// 每行 = 一次模型请求。查询是 GLM 家族超集过滤：`builtin:bigmodel-%` /
+/// `account:bigmodel-%` / `account:zai-%` 前缀通配 + 迁移前历史裸值
+/// `offpeak-idle-plan` 精确匹配，行上带 `provider_id` + `model_id`
+/// （如 GLM-5.3 / GLM-5.3-Flash）+ 5 类 token 列 + 原生 `turn_id`，查询拿到
+/// per-day 5 类 token、round/turn、recent samples、totals + models + sessions。
 ///
-/// **provider 三分类**（sample 保留 `provider_id`，额度窗口口径在
-/// `LocalUsageSummaryBuilder` 白名单层判定）：
-/// - 正式 Coding Plan（`builtin:bigmodel-coding-plan` 及 `account:bigmodel-*-coding-plan`）
+/// **provider 三分类**（sample 保留 `provider_id`，按 `OpencodeLocalUsage` 的
+/// 显式枚举集合在 `LocalUsageSummaryBuilder` 白名单层判定）：
+/// - 正式 Coding Plan（`zcodeGlmCodingPlanProviderIDs` 显式全集）
 ///   → 正常任务（唯一计入额度窗口的来源）
-/// - `offpeak-idle-plan` → 闲时任务
-/// - 其余智谱前缀（如体验套餐 `builtin:bigmodel-start-plan`）→ 其他任务；
-///   未来智谱新套餐自动落进该类，非智谱 provider 不带前缀、不会被误算进 GLM 卡
+/// - 闲时（`zcodeOffPeakProviderIDs`：账号化新 ID 经前缀 LIKE 读入，历史裸值
+///   `offpeak-idle-plan` 经精确匹配读入）→ 闲时任务
+/// - 智谱前缀下未登记进上述两集合的 provider（体验套餐、未知新套餐）→
+///   其他任务；非智谱 provider 不带前缀、不会被误算进 GLM 卡
 ///
 /// 直接 read 原 .db；CANTOPEN / BUSY 时由调用方（`SQLiteTempCopy.read`）走 /tmp 副本。
 final class GlmZcodeDBReader {
-    /// ZCode 中 GLM Coding Plan 的 provider_id（智谱官方 CLI 固定值）。
-    /// 复用 `OpencodeLocalUsage.zcodeGlmProviderID` 作为单一事实源。
-    static let glmProviderID = OpencodeLocalUsage.zcodeGlmProviderID
-    /// ZCode 中闲时任务（off-peak idle task）的 provider_id。闲时任务是系统赠送的
-    /// 后台任务，不消耗 Coding Plan 积分，`model_usage` 行写在同一张表但用独立
+    /// ZCode 中闲时任务（off-peak idle task）的 provider_id —— 仅 0020 迁移前的
+    /// 历史裸值。迁移后的新 ID（`account:bigmodel-offpeak-idle-plan` /
+    /// `account:zai-offpeak-idle-plan`）由智谱前缀 LIKE 覆盖读入，分类在 sample
+    /// 层由 `OpencodeLocalUsage.isZcodeOffPeakProvider` 判定。闲时任务是系统赠送
+    /// 的后台任务，不消耗 Coding Plan 积分，`model_usage` 行写在同一张表但用独立
     /// provider 区分。今日 / 7 天柱图要包含其真实 token 消耗，额度窗口统计优先靠
     /// sample 保存的 provider 身份精确排除；时间窗口只用于兼容旧缓存。
-    static let offPeakProviderID = OpencodeLocalUsage.zcodeOffPeakProviderID
+    static let offPeakProviderID = "offpeak-idle-plan"
 
     private let connection: SQLiteConnection
 
@@ -312,9 +313,11 @@ final class GlmZcodeDBReader {
         return rows.sorted()
     }
 
-    /// `provider_id` 过滤谓词：每个智谱前缀一个 `LIKE ?`，加闲时任务精确 `= ?`。
-    /// 谓词文本与 `bindProviders` 的绑定都由 `zcodeBigmodelProviderPrefixes`
-    /// 生成，前缀增减时二者自动同步，不会漂移。
+    /// `provider_id` 过滤谓词：每个智谱前缀一个 `LIKE ?`（GLM 家族超集，新格式
+    /// offpeak 行也经前缀 LIKE 进来），加历史裸值闲时 `= ?` 精确匹配（只为
+    /// 0020 迁移前的 `offpeak-idle-plan` 遗留行）。谓词文本与 `bindProviders`
+    /// 的绑定都由 `zcodeBigmodelProviderPrefixes` 生成，前缀增减时二者自动
+    /// 同步，不会漂移。
     private static func providerFilterSQL(_ column: String) -> String {
         let likes = OpencodeLocalUsage.zcodeBigmodelProviderPrefixes
             .map { _ in "\(column) LIKE ?" }
@@ -328,8 +331,9 @@ final class GlmZcodeDBReader {
         Int32(OpencodeLocalUsage.zcodeBigmodelProviderPrefixes.count + 1)
     }
 
-    /// 绑定智谱系 provider 通配（`builtin:bigmodel-%` / `account:bigmodel-%`，覆盖
-    /// coding-plan、体验套餐及未来新套餐）与闲时任务 provider（`offpeak-idle-plan`）。
+    /// 绑定智谱系 provider 前缀通配（`builtin:bigmodel-%` / `account:bigmodel-%` /
+    /// `account:zai-%`，覆盖正式 Coding Plan、账号化闲时、体验套餐及未知新套餐）
+    /// 与历史裸值闲时 provider（`offpeak-idle-plan`，0020 迁移前的遗留行）。
     /// `index` 为第一个 `?` 的位置，其余参数按 `zcodeBigmodelProviderPrefixes`
     /// 顺序紧跟其后，与 `providerFilterSQL` 的谓词结构一一对应。
     private static func bindProviders(to statement: OpaquePointer, index: Int32) -> Int32 {

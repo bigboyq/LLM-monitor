@@ -142,31 +142,35 @@ enum LocalUsageSummaryBuilder {
         return aggregate(matching)
     }
 
-    /// 优先使用 ZCode `model_usage.provider_id` 精确识别闲时样本。只有旧缓存或
-    /// 手工构造的 sample 没有来源标记时，才回退到历史时间窗口算法；OpenCode
-    /// 合并样本始终是正常消耗，不能因与后台任务并发而被排除。
+    /// 优先使用 ZCode `model_usage.provider_id` 精确识别闲时样本（显式枚举判定
+    /// `OpencodeLocalUsage.isZcodeOffPeakProvider`，覆盖账号化新 ID 与历史裸值）。
+    /// 只有旧缓存或手工构造的 sample 没有来源标记时，才回退到历史时间窗口算法；
+    /// OpenCode 合并样本始终是正常消耗，不能因与后台任务并发而被排除。
     /// （internal：`GlmUsageCategory.classify` 复用同一判定。）
     nonisolated static func isGlmOffPeakSample(
         _ sample: LocalTokenUsageSample,
         fallbackWindows: [GlmOffPeakWindow]
     ) -> Bool {
         if let sourceProviderID = sample.sourceProviderID {
-            return sourceProviderID == OpencodeLocalUsage.zcodeOffPeakProviderID
+            return OpencodeLocalUsage.isZcodeOffPeakProvider(sourceProviderID)
         }
         guard !sample.promptID.hasPrefix("opencode:") else { return false }
         return fallbackWindows.contains(where: { $0.contains(sample.completedAt) })
     }
 
-    /// 「其他」智谱任务：智谱前缀（`builtin:bigmodel-` / `account:bigmodel-`）但不是
-    /// 正式 Coding Plan 的 provider（如体验套餐 `builtin:bigmodel-start-plan`，以及
-    /// 未来智谱新套餐）。这类任务不消耗 Coding Plan 积分，额度窗口统计排除；
-    /// token 柱图保留真实消耗。OpenCode / DSH 来源（`zhipuai-coding-plan`、
+    /// 「其他」智谱任务：智谱前缀（`builtin:bigmodel-` / `account:bigmodel-` /
+    /// `account:zai-`）但不属于任何已登记分类的 provider —— 体验套餐
+    /// （`*:start-plan`）、未登记新套餐（含未来 `*-coding-plan` 变体）等。这类任务
+    /// 不消耗 Coding Plan 积分，额度窗口统计排除；token 柱图保留真实消耗。闲时
+    /// provider（含账号化新 ID）虽也带智谱前缀，但已由 `isGlmOffPeakSample` 识别，
+    /// 这里显式排除以保持三桶互斥。OpenCode / DSH 来源（`zhipuai-coding-plan`、
     /// `dsh:glm` 等）不带这些前缀，不受影响。缺 `sourceProviderID` 的旧缓存
     /// 保持原时间窗口回退语义。
     nonisolated static func isGlmOtherPlanSample(_ sample: LocalTokenUsageSample) -> Bool {
         guard let sourceProviderID = sample.sourceProviderID else { return false }
         return OpencodeLocalUsage.zcodeBigmodelProviderPrefixes.contains(where: sourceProviderID.hasPrefix)
             && !OpencodeLocalUsage.isZcodeGlmCodingPlanProvider(sourceProviderID)
+            && !OpencodeLocalUsage.isZcodeOffPeakProvider(sourceProviderID)
     }
 
     /// 构造本地用量窗口。reset time 缺失时采用 `now + duration` 的临时结束时间，
@@ -260,12 +264,15 @@ enum LocalUsageSummaryBuilder {
 /// 弹窗卡片维持三合一汇总；设置 → 客户端 → ZCode 按此分类拆行展示
 /// （对齐 Antigravity 按模型分组拆行的模式）。
 enum GlmUsageCategory: String, CaseIterable, Sendable {
-    /// 日常任务（正式 Coding Plan：`builtin:bigmodel-coding-plan` 与
-    /// `account:bigmodel-*-coding-plan`，唯一计入额度窗口的来源）
+    /// 日常任务（正式 Coding Plan，显式全集见
+    /// `OpencodeLocalUsage.zcodeGlmCodingPlanProviderIDs`，唯一计入额度窗口的
+    /// 来源；无来源标记与 OpenCode / DSH 合并样本也归此类）
     case normal
-    /// 闲时任务（`offpeak-idle-plan`，不消耗积分）
+    /// 闲时任务（显式全集见 `OpencodeLocalUsage.zcodeOffPeakProviderIDs`，
+    /// 含账号化新 ID 与历史裸值，不消耗积分）
     case offPeak
-    /// 其他智谱套餐（其余智谱前缀，如体验套餐，不消耗积分）
+    /// 其他智谱套餐（智谱前缀下未登记进上述两个集合的 provider，如体验套餐与
+    /// 未来新套餐，不消耗积分）
     case other
 
     var displayName: String {

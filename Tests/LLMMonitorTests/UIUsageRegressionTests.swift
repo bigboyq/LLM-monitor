@@ -82,10 +82,10 @@ final class UIUsageRegressionTests: XCTestCase {
 
         var glmSamples = inWindow
         for index in glmSamples.indices {
-            glmSamples[index].sourceProviderID = OpencodeLocalUsage.zcodeGlmProviderID
+            glmSamples[index].sourceProviderID = "builtin:bigmodel-coding-plan"
         }
         var oldOffPeak = outsideWindow
-        oldOffPeak.sourceProviderID = OpencodeLocalUsage.zcodeOffPeakProviderID
+        oldOffPeak.sourceProviderID = "offpeak-idle-plan"
         let glmContribution = ClientUsageContribution(
             clientID: ClientID.zcode, displayName: "ZCode",
             dailyTokenUsage: template, recentSamples: glmSamples + [oldOffPeak]

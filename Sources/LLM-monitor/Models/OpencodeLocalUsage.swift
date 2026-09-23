@@ -28,30 +28,53 @@ struct OpencodeLocalUsage: Equatable, Codable, Sendable {
 
     /// GLM Coding Plan 在 opencode 里的 providerID
     static let glmProviderID = "zhipuai-coding-plan"
-    /// ZCode（智谱官方 CLI）中 GLM Coding Plan 的 providerID（native 源）
-    static let zcodeGlmProviderID = "builtin:bigmodel-coding-plan"
-    /// ZCode 中闲时任务（off-peak idle task）的 providerID。系统赠送的后台任务，
-    /// 不消耗 Coding Plan 积分，`model_usage` 行写在同一张表但用独立 provider 区分。
-    static let zcodeOffPeakProviderID = "offpeak-idle-plan"
-    /// ZCode 中智谱系 provider 的统一前缀集合。coding-plan 与 offpeak 之外的智谱
-    /// 套餐（如体验套餐 `builtin:bigmodel-start-plan`，以及未来新套餐）都落在
-    /// 这些前缀下：GLM 卡按前缀通配归入「其他」任务，token 柱图计入真实消耗，
-    /// 额度窗口统计排除（不消耗 Coding Plan 积分）。非智谱 provider 不带这些
-    /// 前缀，不会被误算进 GLM 卡。
+    /// ZCode（智谱官方 CLI）中消耗 Coding Plan 积分的正式套餐 provider_id 显式全集
+    /// （native 源，唯一计入额度窗口）。2026-09-17 `0020_provider_model_selection`
+    /// 迁移起 provider_id 账号化（`account:bigmodel-*` / `account:zai-*`），历史行
+    /// 保留 `builtin:bigmodel-coding-plan`。未登记的新套餐（包括未来任何
+    /// `*-coding-plan` 变体）一律不算正式套餐、落「其他」分类；上线新套餐时需在此显式登记。
+    static let zcodeGlmCodingPlanProviderIDs: Set<String> = [
+        "account:bigmodel-individual-coding-plan",
+        "account:bigmodel-team-coding-plan",
+        "account:zai-individual-coding-plan",
+        "account:zai-team-coding-plan",
+        // 0020 迁移前的历史行，库中仍需继续识别
+        "builtin:bigmodel-coding-plan",
+    ]
+    /// ZCode 中闲时任务（off-peak idle task）的 provider_id 全集。系统赠送的后台
+    /// 任务，不消耗 Coding Plan 积分，`model_usage` 行写在同一张表但用独立 provider
+    /// 区分。0020 迁移后新 ID 带账号前缀，历史行仍是裸值 `offpeak-idle-plan`。
+    static let zcodeOffPeakProviderIDs: Set<String> = [
+        "account:bigmodel-offpeak-idle-plan",
+        "account:zai-offpeak-idle-plan",
+        // 0020 迁移前的历史裸值
+        "offpeak-idle-plan",
+    ]
+    /// ZCode 中智谱系 provider 的统一前缀集合（GLM 家族超集）。现在只承担两个
+    /// 职责：(1) SQL 读取层超集过滤 —— `GlmZcodeDBReader` 按前缀 LIKE 把所有
+    /// 智谱系行读进来（含未知新套餐），token 柱图计入真实消耗；(2) 未知新套餐
+    /// 兜底归入「其他」任务，额度窗口统计排除。正式 normal / offPeak 分类已改为
+    /// 上方两个集合的显式枚举判定（`isZcodeGlmCodingPlanProvider` /
+    /// `isZcodeOffPeakProvider`），不再依赖前缀 + 后缀通配。非智谱 provider 不带
+    /// 这些前缀，不会被误算进 GLM 卡。
     ///
     /// 2026-09-17 Zcode `0020_provider_model_selection` 迁移起，登录账号套餐改写
-    /// `account:bigmodel-` 前缀（如个人套餐 `account:bigmodel-individual-coding-plan`），
-    /// 历史行仍是 `builtin:bigmodel-`；两个前缀都必须识别，否则升级后的新用量
-    /// 会被静默漏采。
-    static let zcodeBigmodelProviderPrefixes = ["builtin:bigmodel-", "account:bigmodel-"]
+    /// `account:bigmodel-` / `account:zai-` 前缀，历史行仍是 `builtin:bigmodel-`；
+    /// 三组前缀都必须识别，否则升级后的新用量会被静默漏采。
+    static let zcodeBigmodelProviderPrefixes = [
+        "builtin:bigmodel-", "account:bigmodel-", "account:zai-"
+    ]
 
     /// 是否 ZCode 中消耗 Coding Plan 积分的正式套餐 provider（唯一计入额度窗口）。
-    /// 旧命名精确匹配 `builtin:bigmodel-coding-plan`；`account:` 新命名带计划类型
-    /// 后缀，用「account:bigmodel- 前缀 + `-coding-plan` 后缀」覆盖 individual /
-    /// team 等账号套餐，同时把 `*-start-plan` 之类体验套餐留给「其他」分类。
+    /// 显式枚举 `zcodeGlmCodingPlanProviderIDs`（含 0020 迁移前历史 ID）；
+    /// 未登记的 ID 一律返回 false（落「其他」分类）。
     nonisolated static func isZcodeGlmCodingPlanProvider(_ providerID: String) -> Bool {
-        if providerID == zcodeGlmProviderID { return true }
-        return providerID.hasPrefix("account:bigmodel-") && providerID.hasSuffix("-coding-plan")
+        zcodeGlmCodingPlanProviderIDs.contains(providerID)
+    }
+    /// 是否 ZCode 闲时任务 provider（不消耗 Coding Plan 积分）。
+    /// 显式枚举 `zcodeOffPeakProviderIDs`（账号化新 ID + 历史裸值）。
+    nonisolated static func isZcodeOffPeakProvider(_ providerID: String) -> Bool {
+        zcodeOffPeakProviderIDs.contains(providerID)
     }
     /// minimax 在 opencode 里的 providerID
     static let minimaxProviderID = "minimax"
