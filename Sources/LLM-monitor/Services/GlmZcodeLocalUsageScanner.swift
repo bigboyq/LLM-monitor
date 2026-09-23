@@ -201,9 +201,9 @@ final class GlmZcodeLocalUsageScanner: SingleDBSnapshotScanner<GlmLocalUsage>, @
     ) throws -> [GlmOffPeakWindow] {
         // tasks-index db 不存在不算错误（旧 ZCode 版本）
         guard fileManager.fileExists(atPath: tasksDBURL.path) else { return [] }
-        // 先直读：ZCode 运行时通常有完整的 WAL/-shm，直读成功就不产生副本。
-        // ZCode 退出后若只剩 WAL 主库，readonly prepare 可能返回 CANTOPEN(14)，
-        // SQLiteTempCopy 再把 db + sidecar 复制到私有目录，用可写连接完成 recovery。
+        // 先直读：SQLiteConnection 在无 -shm 且无 dirty WAL 时走 immutable=1 直读，
+        // ZCode 未运行时 0ms 直读且不产生副本；ZCode 运行时走只读共享内存。
+        // 仅在 dirty WAL 需 recovery 或锁冲突等真实异常时，SQLiteTempCopy 才 fallback 到 /tmp 副本。
         return try SQLiteTempCopy.read(dbPath: tasksDBURL, logTag: "[glm-zcode-offpeak]") { url in
             let reader = try GlmZcodeOffPeakReader(path: url, readOnly: url.path == tasksDBURL.path)
             defer { reader.close() }

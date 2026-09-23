@@ -25,14 +25,23 @@ enum SQLiteConnectionError: Error, CustomStringConvertible {
     }
 }
 
+import Darwin
+
 /// 通用 SQLite3 connection（取代 AntigravityDBReader / MinimaxDBReader 里重复的
 /// init / close / open flag / busy_timeout / extended_result_codes / query 模板）
 ///
 /// 线程模型：单 instance 单线程使用。
 ///
-/// open flags 默认 SQLITE_OPEN_READWRITE（**不是** READONLY）：
-/// 对 /tmp/ 副本的 dirty WAL 状态，SQLite 必须能写回 WAL recovery，否则
-/// prepare 阶段会返回 SQLITE_CANTOPEN(14)。READONLY 在 dirty WAL 上必然 CANTOPEN。
+/// open flags 策略：
+/// 1. readOnly=true:
+///    - 若不存在 -shm 且不存在非空 -wal：说明写端（ZCode / IDE 等）未运行且主库已 checkpoint，
+///      使用 `file:<path>?immutable=1` URI 只读打开，绕过 SQLite 对 WAL 共享内存的检查，
+///      避免在无 -shm 时准备语句抛出 SQLITE_CANTOPEN(14)，避免无意义的 /tmp 拷贝。
+///    - 若存在 -shm 或非空 -wal：以标准 `SQLITE_OPEN_READONLY` 打开，尝试读取实时 WAL。
+///      若遇需要 recovery 的 dirty WAL 或锁冲突抛错，由外层 `SQLiteTempCopy` 捕获并回退到 /tmp 副本。
+/// 2. readOnly=false:
+///    - 默认 `SQLITE_OPEN_READWRITE`（**不是** READONLY）：用于 /tmp 副本，
+///      SQLite 必须能写回 WAL recovery，否则 prepare 阶段会返回 SQLITE_CANTOPEN(14)。
 ///
 /// busy_timeout(300) 等 IDE 释放短写锁。
 /// extended_result_codes(1) 拿 SQLITE_CANTOPEN_* 子类型诊断。
@@ -40,11 +49,47 @@ final class SQLiteConnection {
     private var handle: OpaquePointer?
     let path: String
 
+    /// 判断是否满足直接以 immutable=1 URI 只读打开的条件：
+    /// 仅在 readOnly=true 且不存在 -shm 且不存在非空 -wal 时成立。
+    ///
+    /// 语义：
+    /// - 没有 -shm：表示写进程（ZCode / IDE 等）未运行或已干净退出。
+    /// - 没有非空 -wal：表示没有待回放/checkpoint 的未落盘数据。
+    /// 此时主库处于完全静止且一致的状态。使用 immutable=1 可以让 SQLite 完全跳过
+    /// WAL 共享内存（-shm）检查，直接只读读取主库 pages，避免在无 -shm 时抛出
+    /// SQLITE_CANTOPEN(14) 误触发 /tmp 副本拷贝。
+    static func canOpenImmutable(path: URL, readOnly: Bool) -> Bool {
+        guard readOnly else { return false }
+        let shmPath = path.path + "-shm"
+        let walPath = path.path + "-wal"
+        var shmStat = stat()
+        let shmExists = stat(shmPath, &shmStat) == 0
+        guard !shmExists else { return false }
+        var walStat = stat()
+        let walHasData = (stat(walPath, &walStat) == 0) && (walStat.st_size > 0)
+        return !walHasData
+    }
+
     init(path: URL, readOnly: Bool = false) throws {
         self.path = path.path
         var db: OpaquePointer?
-        let flags = readOnly ? SQLITE_OPEN_READONLY : SQLITE_OPEN_READWRITE
-        let code = sqlite3_open_v2(self.path, &db, flags, nil)
+        let targetPath: String
+        let flags: Int32
+
+        if Self.canOpenImmutable(path: path, readOnly: readOnly) {
+            if var components = URLComponents(url: path, resolvingAgainstBaseURL: false) {
+                components.queryItems = (components.queryItems ?? []) + [URLQueryItem(name: "immutable", value: "1")]
+                targetPath = components.string ?? (path.absoluteString + "?immutable=1")
+            } else {
+                targetPath = path.absoluteString + "?immutable=1"
+            }
+            flags = SQLITE_OPEN_READONLY | SQLITE_OPEN_URI
+        } else {
+            targetPath = self.path
+            flags = readOnly ? SQLITE_OPEN_READONLY : SQLITE_OPEN_READWRITE
+        }
+
+        let code = sqlite3_open_v2(targetPath, &db, flags, nil)
         if code != SQLITE_OK {
             let msg = db.flatMap { String(cString: sqlite3_errmsg($0)) } ?? "unknown"
             let extCode = db.map { sqlite3_extended_errcode($0) } ?? code

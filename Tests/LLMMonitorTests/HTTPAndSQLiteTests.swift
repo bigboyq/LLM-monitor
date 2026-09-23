@@ -98,6 +98,112 @@ final class HTTPAndSQLiteTests: XCTestCase {
         XCTAssertTrue(after.isSubset(of: before), "直读成功时不应创建临时副本")
     }
 
+    func testCanOpenImmutableDecisionLogic() throws {
+        let baseDir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("can-open-immutable-test-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: baseDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: baseDir) }
+
+        let dbURL = baseDir.appendingPathComponent("test.db")
+        let shmURL = baseDir.appendingPathComponent("test.db-shm")
+        let walURL = baseDir.appendingPathComponent("test.db-wal")
+        try Data("dummy-db".utf8).write(to: dbURL)
+
+        // 1. readOnly=false 永远返回 false（副本写连接）
+        XCTAssertFalse(SQLiteConnection.canOpenImmutable(path: dbURL, readOnly: false))
+
+        // 2. readOnly=true, 无 -shm, 无 -wal -> true
+        XCTAssertTrue(SQLiteConnection.canOpenImmutable(path: dbURL, readOnly: true))
+
+        // 3. readOnly=true, 无 -shm, -wal 为 0 字节 -> true
+        try Data().write(to: walURL)
+        XCTAssertTrue(SQLiteConnection.canOpenImmutable(path: dbURL, readOnly: true))
+
+        // 4. readOnly=true, 无 -shm, -wal 有未落盘数据 (>0 bytes) -> false
+        try Data("dirty-wal-frame".utf8).write(to: walURL)
+        XCTAssertFalse(SQLiteConnection.canOpenImmutable(path: dbURL, readOnly: true))
+
+        // 5. readOnly=true, 有 -shm, 无论 -wal 如何 -> false
+        try? FileManager.default.removeItem(at: walURL)
+        try Data("shm-content".utf8).write(to: shmURL)
+        XCTAssertFalse(SQLiteConnection.canOpenImmutable(path: dbURL, readOnly: true))
+
+        // 6. readOnly=true, 有 -shm 且有非空 -wal -> false
+        try Data("dirty-wal-frame".utf8).write(to: walURL)
+        XCTAssertFalse(SQLiteConnection.canOpenImmutable(path: dbURL, readOnly: true))
+    }
+
+    func testSQLiteConnectionDirectReadOnCleanWALDatabaseWithoutShm() throws {
+        let baseDir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("clean-wal-test-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: baseDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: baseDir) }
+
+        let dbURL = baseDir.appendingPathComponent("clean_wal.sqlite")
+
+        // 建立 WAL 模式数据库并写入数据
+        var db: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(dbURL.path, &db), SQLITE_OK)
+        XCTAssertEqual(sqlite3_exec(db, "PRAGMA journal_mode=WAL;", nil, nil, nil), SQLITE_OK)
+        XCTAssertEqual(sqlite3_exec(db, "CREATE TABLE items (id INT, name TEXT);", nil, nil, nil), SQLITE_OK)
+        XCTAssertEqual(sqlite3_exec(db, "INSERT INTO items VALUES (1, 'item1'), (2, 'item2');", nil, nil, nil), SQLITE_OK)
+        XCTAssertEqual(sqlite3_close(db), SQLITE_OK)
+
+        // 确保 -shm 和 -wal 被清理（模拟写端已完全退出且已 checkpoint）
+        try? FileManager.default.removeItem(atPath: dbURL.path + "-shm")
+        try? FileManager.default.removeItem(atPath: dbURL.path + "-wal")
+
+        // 验证 SQLiteConnection(readOnly: true) 能直接以 immutable=1 打开并成功查询
+        let conn = try SQLiteConnection(path: dbURL, readOnly: true)
+        let rows = try conn.query(sql: "SELECT id, name FROM items ORDER BY id ASC") { stmt in
+            let id = sqlite3_column_int(stmt, 0)
+            let name = try SQLiteConnection.requiredText(stmt, column: 1)
+            return (id, name)
+        }
+        conn.close()
+
+        XCTAssertEqual(rows.count, 2)
+        XCTAssertEqual(rows[0].0, 1)
+        XCTAssertEqual(rows[0].1, "item1")
+        XCTAssertEqual(rows[1].0, 2)
+        XCTAssertEqual(rows[1].1, "item2")
+    }
+
+    func testSQLiteTempCopyDirectReadSucceedsWithoutCreatingTempFilesForCleanDB() throws {
+        let baseDir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("clean-wal-tempcopy-test-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: baseDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: baseDir) }
+
+        let dbURL = baseDir.appendingPathComponent("clean_wal.sqlite")
+
+        var db: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(dbURL.path, &db), SQLITE_OK)
+        XCTAssertEqual(sqlite3_exec(db, "PRAGMA journal_mode=WAL; CREATE TABLE t (cnt INT); INSERT INTO t VALUES (99);", nil, nil, nil), SQLITE_OK)
+        XCTAssertEqual(sqlite3_close(db), SQLITE_OK)
+
+        try? FileManager.default.removeItem(atPath: dbURL.path + "-shm")
+        try? FileManager.default.removeItem(atPath: dbURL.path + "-wal")
+
+        let before = try currentAppTempEntries()
+
+        // 通过 SQLiteTempCopy.read 执行直读
+        let value = try SQLiteTempCopy.read(dbPath: dbURL, logTag: "[test-clean-wal]") { url in
+            XCTAssertEqual(url.path, dbURL.path, "直读应传入原始路径而非临时副本路径")
+            let conn = try SQLiteConnection(path: url, readOnly: url.path == dbURL.path)
+            defer { conn.close() }
+            let rows = try conn.query(sql: "SELECT cnt FROM t") { stmt in
+                sqlite3_column_int(stmt, 0)
+            }
+            return rows.first ?? 0
+        }
+
+        let after = try currentAppTempEntries()
+
+        XCTAssertEqual(value, 99)
+        XCTAssertTrue(after.isSubset(of: before), "clean WAL 直读成功时不应创建任何临时副本")
+    }
+
     private func makeTempDB() throws -> URL {
         let srcDB = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("sqlite-temp-copy-test-\(UUID().uuidString).db")
