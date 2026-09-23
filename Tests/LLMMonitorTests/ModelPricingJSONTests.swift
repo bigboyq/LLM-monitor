@@ -59,7 +59,7 @@ final class ModelPricingJSONTests: XCTestCase {
 
     func testPricingJSONIntegrity() throws {
         let catalog = try loadPricingJSON()
-        XCTAssertEqual(catalog.lastUpdated, "2026-09-09")
+        XCTAssertEqual(catalog.lastUpdated, "2026-09-23")
 
         let requiredProviders = ["minimax", "openai", "antigravity", "zhipu", "deepseek"]
         for providerID in requiredProviders {
@@ -289,5 +289,23 @@ final class ModelPricingJSONTests: XCTestCase {
                 "\(retired) 已退休，必须保持未定价"
             )
         }
+    }
+
+    // MARK: - 新增模型：GPT-6 Sol 与 GPT-6 Luna
+
+    func testOpenAIGPT6SolAndLunaPricing() {
+        let sol = ModelPricingCatalog.pricing(for: "gpt-6-sol", quotaProviderID: QuotaProviderID.openAI)
+        XCTAssertEqual(sol?.currency, .usd)
+        XCTAssertEqual(sol?.inputPerMillion, 2)
+        XCTAssertEqual(sol?.cacheReadPerMillion, 0.2)
+        XCTAssertEqual(sol?.outputPerMillion, 10)
+        XCTAssertEqual(sol?.modelLabel, "gpt-6-sol")
+
+        let luna = ModelPricingCatalog.pricing(for: "gpt-6-luna", quotaProviderID: QuotaProviderID.openAI)
+        XCTAssertEqual(luna?.currency, .usd)
+        XCTAssertEqual(luna?.inputPerMillion, 0.1)
+        XCTAssertEqual(luna?.cacheReadPerMillion, 0.01)
+        XCTAssertEqual(luna?.outputPerMillion, 0.5)
+        XCTAssertEqual(luna?.modelLabel, "gpt-6-luna")
     }
 }

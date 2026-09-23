@@ -302,15 +302,15 @@ The estimate uses recognized model names and the published currency for that
 provider; unknown models are explicitly marked as unpriced rather than assigned a
 fallback price (zhipu/GLM is the one deliberate exception: its catalog always falls
 back to GLM-5.3-Flash pricing). The OpenAI/Codex catalog recognizes GPT-5.5, GPT-5.6 Sol/Terra/Luna,
-and GPT-6 Astra by exact (lowercased) name match; legacy GPT-4, o1, o3, and generic
+and GPT-6 Astra/Sol/Luna by exact (lowercased) name match; legacy GPT-4, o1, o3, and generic
 GPT-5 names remain unpriced. Antigravity's
 independent GPT pricing rules are not affected. All price data lives in the bundled
 `Sources/LLM-monitor/Resources/ModelPricing.json`, which `ModelPricingCatalog` loads
 at startup (entries evaluated in array order, first hit wins; parse failures crash
 loudly because the file is a developer-controlled, test-guarded resource). The
 catalog records its update date in
-`ModelPricingCatalog.lastUpdated` (currently `2026-09-09`, read from the JSON). Codex local events keep
-the model from `turn_context` so GPT-5.6 Sol/Terra/Luna can be priced separately.
+`ModelPricingCatalog.lastUpdated` (currently `2026-09-23`, read from the JSON). Codex local events keep
+the model from `turn_context` so GPT-5.6 / GPT-6 variants can be priced separately.
 
 The main provider card footer also shows today's token total, cache hit rate, and
 value when local model samples are available.

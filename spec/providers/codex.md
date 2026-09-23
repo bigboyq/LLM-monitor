@@ -18,7 +18,7 @@ This provider reads the local Codex authentication file and calls ChatGPT backen
 | Reset credits | Parsed and displayed when entries exist |
 | Plan label | Parsed from `id_token` JWT when available |
 | Local usage details | Aggregated from local Codex session logs |
-| Local pricing models | GPT-5.5, GPT-5.6 Sol, GPT-5.6 Terra, GPT-5.6 Luna, GPT-6 Astra |
+| Local pricing models | GPT-5.5, GPT-5.6 Sol, GPT-5.6 Terra, GPT-5.6 Luna, GPT-6 Astra, GPT-6 Sol, GPT-6 Luna |
 
 ## Config
 
@@ -155,6 +155,8 @@ secondary window remains `.present` even when its remaining percentage is `0%`.
 | gpt-5.6-sol | 4.00 | 0.40 | 20.00 |
 | gpt-5.6-terra | 2.00 | 0.20 | 12.00 |
 | gpt-5.6-luna | 0.20 | 0.02 | 1.20 |
+| gpt-6-sol | 2.00 | 0.20 | 10.00 |
+| gpt-6-luna | 0.10 | 0.01 | 0.50 |
 | gpt-6-astra | 10.00 | 1.00 | 50.00 |
 
 两条约束：

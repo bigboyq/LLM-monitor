@@ -252,16 +252,24 @@ final class ProviderModelTests: XCTestCase {
             ModelPricingCatalog.pricing(for: "gpt-5.6-sol", quotaProviderID: QuotaProviderID.openAI),
             ModelPricingCatalog.pricing(for: "gpt-5.6-terra", quotaProviderID: QuotaProviderID.openAI),
             ModelPricingCatalog.pricing(for: "gpt-5.6-luna", quotaProviderID: QuotaProviderID.openAI),
+            ModelPricingCatalog.pricing(for: "gpt-6-sol", quotaProviderID: QuotaProviderID.openAI),
+            ModelPricingCatalog.pricing(for: "gpt-6-luna", quotaProviderID: QuotaProviderID.openAI),
             ModelPricingCatalog.pricing(for: "gpt-6-astra", quotaProviderID: QuotaProviderID.openAI)
         ].compactMap { $0 }
-        XCTAssertEqual(codexPrices.map(\.inputPerMillion), [5, 4, 2, 0.2, 10])
-        XCTAssertEqual(codexPrices.map(\.cacheReadPerMillion), [0.5, 0.4, 0.2, 0.02, 1])
-        XCTAssertEqual(codexPrices.map(\.outputPerMillion), [30, 20, 12, 1.2, 50])
+        XCTAssertEqual(codexPrices.map(\.inputPerMillion), [5, 4, 2, 0.2, 2, 0.1, 10])
+        XCTAssertEqual(codexPrices.map(\.cacheReadPerMillion), [0.5, 0.4, 0.2, 0.02, 0.2, 0.01, 1])
+        XCTAssertEqual(codexPrices.map(\.outputPerMillion), [30, 20, 12, 1.2, 10, 0.5, 50])
 
         // 精确匹配回归：带变体后缀的 slug 不再被 contains 误吞，
         // 必须显式加入目录后才会被计价。
         XCTAssertNil(
             ModelPricingCatalog.pricing(for: "gpt-5.6-sol-codex", quotaProviderID: QuotaProviderID.openAI)
+        )
+        XCTAssertNil(
+            ModelPricingCatalog.pricing(for: "gpt-6-sol-preview", quotaProviderID: QuotaProviderID.openAI)
+        )
+        XCTAssertNil(
+            ModelPricingCatalog.pricing(for: "gpt-6-luna-mini", quotaProviderID: QuotaProviderID.openAI)
         )
         XCTAssertNil(
             ModelPricingCatalog.pricing(for: "gpt-6-astra-beta", quotaProviderID: QuotaProviderID.openAI)
@@ -367,7 +375,7 @@ final class ProviderModelTests: XCTestCase {
         XCTAssertEqual(deepseekPro?.inputPerMillion, 4.5)
         XCTAssertEqual(deepseekPro?.cacheReadPerMillion, 0.15)
         XCTAssertEqual(deepseekPro?.outputPerMillion, 13.5)
-        XCTAssertEqual(ModelPricingCatalog.lastUpdated, "2026-09-09")
+        XCTAssertEqual(ModelPricingCatalog.lastUpdated, "2026-09-23")
     }
 
     func testDeepseekPricingUsesOffPeakBaseAndDoublesAtPeak() {
