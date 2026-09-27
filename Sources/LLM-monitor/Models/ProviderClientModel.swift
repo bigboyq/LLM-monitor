@@ -276,6 +276,9 @@ struct ClientUsageContribution: Equatable, Sendable {
     let dailyTokenUsage: [UnifiedDailyTokenUsage]
     let recentSamples: [LocalTokenUsageSample]
     let scannedAt: Date?
+    /// 来源快照的统计口径被截断（如 DSH 文件数/字节预算挤出最旧 session）。
+    /// true 时 UI 必须提示"数字不完整"；无截断概念的来源保持 false。
+    let isTruncated: Bool
 
     var hasActivity: Bool {
         dailyTokenUsage.contains {
@@ -288,7 +291,8 @@ struct ClientUsageContribution: Equatable, Sendable {
         displayName: String,
         dailyTokenUsage: [Daily],
         recentSamples: [LocalTokenUsageSample] = [],
-        scannedAt: Date? = nil
+        scannedAt: Date? = nil,
+        isTruncated: Bool = false
     ) {
         self.clientID = clientID
         self.displayName = displayName
@@ -299,6 +303,7 @@ struct ClientUsageContribution: Equatable, Sendable {
             samples: recentSamples
         )
         self.scannedAt = scannedAt
+        self.isTruncated = isTruncated
     }
 }
 
@@ -317,6 +322,10 @@ struct ProviderUsageProjection: Equatable, Sendable {
         dailyTokenUsage.contains {
             $0.totalTokens > 0 || $0.turns > 0 || $0.rounds > 0
         } || !recentSamples.isEmpty
+    }
+    /// 截断标志的聚合规则：任一贡献来源截断即整卡按截断处理（保守取 true）。
+    var isTruncated: Bool {
+        contributions.contains(where: \.isTruncated)
     }
 
     init(
@@ -348,6 +357,8 @@ struct ClientProviderUsageSummary: Identifiable, Equatable, Sendable {
     let dailyTokenUsage: [UnifiedDailyTokenUsage]
     let recentSamples: [LocalTokenUsageSample]
     let scannedAt: Date?
+    /// 展示的统计口径被来源截断（如 DSH 预算截断）：展开行需提示数字不完整。
+    let isTruncated: Bool
     let deepseekPeakWindow: DeepseekPeakWindow
 
     // These values are derived entirely from the immutable summary inputs. Keep
@@ -368,6 +379,7 @@ struct ClientProviderUsageSummary: Identifiable, Equatable, Sendable {
         dailyTokenUsage: [UnifiedDailyTokenUsage],
         recentSamples: [LocalTokenUsageSample],
         scannedAt: Date?,
+        isTruncated: Bool = false,
         deepseekPeakWindow: DeepseekPeakWindow = .defaultWindow
     ) {
         self.clientID = clientID
@@ -381,6 +393,7 @@ struct ClientProviderUsageSummary: Identifiable, Equatable, Sendable {
         )
         self.dailyTokenUsage = normalizedDaily
         self.scannedAt = scannedAt
+        self.isTruncated = isTruncated
         self.deepseekPeakWindow = deepseekPeakWindow
 
         let displayedSamples = Self.samplesInDisplayedWindow(
@@ -583,7 +596,8 @@ extension ProviderStatus {
             mergedContribution(
                 clientID: ClientID.dsh, displayName: "DSH",
                 make: { DshUsageMerger.mergeMinimax(dsh: $0.dshUsage) },
-                scannedAt: { $0.dshUsage?.scannedAt }),
+                scannedAt: { $0.dshUsage?.scannedAt },
+                isTruncated: { DshUsageMerger.isTruncated($0.dshUsage) }),
             opencodeContribution(slice: { $0.opencodeUsage?.minimaxCodingPlanSlice },
                                  sourceProviderID: OpencodeLocalUsage.minimaxCodingPlanProviderID)
         ],
@@ -595,7 +609,8 @@ extension ProviderStatus {
             mergedContribution(
                 clientID: ClientID.dsh, displayName: "DSH",
                 make: { DshUsageMerger.mergeGlm(dsh: $0.dshUsage) },
-                scannedAt: { $0.dshUsage?.scannedAt }),
+                scannedAt: { $0.dshUsage?.scannedAt },
+                isTruncated: { DshUsageMerger.isTruncated($0.dshUsage) }),
             opencodeContribution(slice: { $0.opencodeUsage?.glmSlice },
                                  sourceProviderID: OpencodeLocalUsage.glmProviderID)
         ],
@@ -603,7 +618,8 @@ extension ProviderStatus {
             mergedContribution(
                 clientID: ClientID.dsh, displayName: "DSH",
                 make: { DshUsageMerger.mergeDeepseek(dsh: $0.dshUsage, opencode: nil) },
-                scannedAt: { $0.dshUsage?.scannedAt }),
+                scannedAt: { $0.dshUsage?.scannedAt },
+                isTruncated: { DshUsageMerger.isTruncated($0.dshUsage) }),
             opencodeContribution(slice: { $0.opencodeUsage?.deepseekSlice },
                                  sourceProviderID: OpencodeLocalUsage.deepseekProviderID)
         ]
@@ -629,11 +645,15 @@ extension ProviderStatus {
 
     /// `DshUsageMerger` 产出（OpencodeProviderUsage 形态）→ contribution。
     /// minimax / GLM 的 native+dsh 双源、deepseek 的纯 dsh 都走这条路径。
+    /// 截断标志与 `scannedAt` 一样绕过合并产物、直接读快照——它是快照级口径，
+    /// 不随 provider 分片稀释；`DshUsageMerger.isTruncated` 负责多来源的
+    /// "任一截断即截断"合并规则。
     private static func mergedContribution(
         clientID: String,
         displayName: String,
         make: @escaping @Sendable (ProviderStatus) -> OpencodeProviderUsage?,
-        scannedAt: @escaping @Sendable (ProviderStatus) -> Date?
+        scannedAt: @escaping @Sendable (ProviderStatus) -> Date?,
+        isTruncated: @escaping @Sendable (ProviderStatus) -> Bool = { _ in false }
     ) -> @Sendable (ProviderStatus, QuotaInfo?) -> ClientUsageContribution? {
         { status, _ in
             guard let usage = make(status) else { return nil }
@@ -642,7 +662,8 @@ extension ProviderStatus {
                 displayName: displayName,
                 dailyTokenUsage: usage.dailyTokenUsage,
                 recentSamples: usage.recentSamples,
-                scannedAt: scannedAt(status)
+                scannedAt: scannedAt(status),
+                isTruncated: isTruncated(status)
             )
         }
     }

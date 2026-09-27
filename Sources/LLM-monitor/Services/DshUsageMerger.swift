@@ -66,6 +66,14 @@ enum DshUsageMerger {
         }
     }
 
+    /// DSH 预算截断标志（`DshLocalUsage.isTruncated`）的合并规则：截断是
+    /// 快照级口径（文件数/字节预算挤出了最旧 session），不随 provider 分片
+    /// 稀释——任一来源截断即整份展示数据按截断处理（保守取 true）。
+    /// `nil` 视为未截断/未知（旧缓存快照），不触发提示。
+    static func isTruncated(_ usages: DshLocalUsage?...) -> Bool {
+        usages.contains { $0?.isTruncated == true }
+    }
+
     private static func slice(
         _ usage: DshLocalUsage?,
         matching aliases: [String]
