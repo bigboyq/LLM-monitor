@@ -113,6 +113,10 @@ struct AntigravityFetcher: QuotaFetcher {
         let reasoningTokens: Int
         let totalTokens: Int
         let stepIndices: [Int]?
+        /// 仅部分命中分量且 total 采用 server 权威值时非 nil：该事件未命中的
+        /// 分量名（input/output/cacheRead/reasoning）。随事件带回调用方，由
+        /// scanner 聚合点按 session 去重后告警（本层不再逐事件 logWarn）。
+        let missingComponents: [String]?
 
         init(
             timestamp: Date?,
@@ -123,7 +127,8 @@ struct AntigravityFetcher: QuotaFetcher {
             cacheWriteTokens: Int,
             reasoningTokens: Int,
             totalTokens: Int,
-            stepIndices: [Int]? = nil
+            stepIndices: [Int]? = nil,
+            missingComponents: [String]? = nil
         ) {
             self.timestamp = timestamp
             self.model = model
@@ -134,6 +139,7 @@ struct AntigravityFetcher: QuotaFetcher {
             self.reasoningTokens = reasoningTokens
             self.totalTokens = totalTokens
             self.stepIndices = stepIndices
+            self.missingComponents = missingComponents
         }
 
         func withTimestamp(_ timestamp: Date) -> UsageEvent {
@@ -146,7 +152,8 @@ struct AntigravityFetcher: QuotaFetcher {
                 cacheWriteTokens: cacheWriteTokens,
                 reasoningTokens: reasoningTokens,
                 totalTokens: totalTokens,
-                stepIndices: stepIndices
+                stepIndices: stepIndices,
+                missingComponents: missingComponents
             )
         }
     }
@@ -371,7 +378,9 @@ struct AntigravityFetcher: QuotaFetcher {
         // 反过来，分量正则只命中一部分（如 token 字段改名后只剩 cacheRead）时
         // computed 缺分量、会系统性偏低，也不能用。口径按分量命中数三分：
         // - 全命中 → computed（分量和，应与 server total 一致）；
-        // - 部分命中 → server total 权威优先（logWarn 列出未命中分量），
+        // - 部分命中 → server total 权威优先（未命中分量以 missingComponents
+        //   随事件带回调用方，由 scanner 聚合点按 session 去重后告警，不再逐
+        //   事件 logWarn 冲刷轮转日志），
         //   server 缺失或为 0 时退回 computed（尽力而为，避免把真实事件算成 0 丢掉）；
         // - 全未命中 → server total（原语义）。
         let components = [inputTokens, outputTokens, cacheReadTokens, reasoningTokens]
@@ -379,17 +388,19 @@ struct AntigravityFetcher: QuotaFetcher {
         let computedTotal = components.reduce(0, Self.saturatingAdd)
         let matchedCount = componentsMatched.filter { $0 }.count
         let finalTotal: Int
+        var missingComponents: [String]? = nil
         if matchedCount == componentsMatched.count {
             finalTotal = computedTotal
         } else if matchedCount == 0 {
             // server 也没给 total 时 computedTotal 同为 0，事件由下方 guard 丢弃
             finalTotal = totalTokens
         } else if totalTokens > 0 {
-            let missing = ["input", "output", "cacheRead", "reasoning"].enumerated()
+            // 部分命中且采用 server 权威 total：未命中分量随事件带回调用方，
+            // 由 scanner 聚合点按 session 去重后打一条汇总（此前这里逐事件
+            // logWarn，token 字段改名场景下会把 5MB×3 轮转日志冲掉好几轮）。
+            missingComponents = ["input", "output", "cacheRead", "reasoning"].enumerated()
                 .filter { !componentsMatched[$0.offset] }
                 .map(\.element)
-                .joined(separator: "/")
-            logWarn("[antigravity] usage 事件仅命中部分 token 分量（未命中: \(missing)），total 采用 server 值 \(totalTokens) 而非 computed \(computedTotal)")
             finalTotal = totalTokens
         } else {
             finalTotal = computedTotal
@@ -408,7 +419,8 @@ struct AntigravityFetcher: QuotaFetcher {
             cacheWriteTokens: cacheWriteTokens,
             reasoningTokens: reasoningTokens,
             totalTokens: finalTotal,
-            stepIndices: extractedStepIndices
+            stepIndices: extractedStepIndices,
+            missingComponents: missingComponents
         )
     }
 

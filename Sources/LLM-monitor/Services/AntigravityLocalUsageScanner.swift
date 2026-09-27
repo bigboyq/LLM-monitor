@@ -318,6 +318,13 @@ extension AntigravityLocalUsageScanner {
         /// 增量页按 raw 条数消费、没有 count vs offset 的对账关系，不参与本
         /// 计数。可选字段，旧 index.json decode 时默认 nil，保证向后兼容。
         var offsetRegressionStrikesBySession: [String: Int]? = nil
+        /// 「部分命中分量」告警的去重状态（按 session）：记录该 session 上次
+        /// 已告警的未命中分量集合，集合不变时不重复告警（集合变化才再记）。
+        /// `parseUsageEvent` 的逐事件 logWarn 在部分命中高频场景（token 字段
+        /// 改名后多 session × 数千条 × 周期性重扫）会把轮转日志冲掉好几轮，
+        /// 告警上移到聚合点后按 session 收敛为一条汇总；持久化让重启后同样
+        /// 收敛。可选字段，旧 index.json decode 时默认 nil，保证向后兼容。
+        var partialHitWarnedBySession: [String: Set<String>]? = nil
 
         static let empty = CacheIndex(
             version: 7,
@@ -457,6 +464,7 @@ extension AntigravityLocalUsageScanner {
             index.dailyBySession.removeValue(forKey: removedId)
             index.samplesBySession?.removeValue(forKey: removedId)
             index.emptyFullStrikesBySession?.removeValue(forKey: removedId)
+            index.partialHitWarnedBySession?.removeValue(forKey: removedId)
             Self.clearZeroAccountedFullStrikes(for: removedId, on: &index)
             Self.clearOffsetRegressionStrikes(for: removedId, on: &index)
             Self.clearCalendarRebuildPending(for: removedId, on: &index)
@@ -875,6 +883,25 @@ extension AntigravityLocalUsageScanner {
                     // 拿到可入账 event：该 session 的零可计账打击计数清零（覆盖
                     // 全量/增量两种页），进入正常分叉路径。
                     Self.clearZeroAccountedFullStrikes(for: sessionId, on: &index)
+
+                    // 部分命中分量告警（替代 parseUsageEvent 的逐事件 logWarn）：
+                    // 按 session 聚合为一条汇总——记录该 session 本页观测到的
+                    // 未命中分量集合与涉及事件数，集合与上次已告警一致时不重复
+                    // 告警（去重状态见 CacheIndex.partialHitWarnedBySession）。
+                    var observedMissing = Set<String>()
+                    var partialHitEventCount = 0
+                    for event in recoveredEvents {
+                        guard let missing = event.missingComponents, !missing.isEmpty else { continue }
+                        partialHitEventCount += 1
+                        observedMissing.formUnion(missing)
+                    }
+                    if !observedMissing.isEmpty,
+                       index.partialHitWarnedBySession?[sessionId] != observedMissing {
+                        var warned = index.partialHitWarnedBySession ?? [:]
+                        warned[sessionId] = observedMissing
+                        index.partialHitWarnedBySession = warned
+                        logWarn("[antigravity-scan] session=\(sessionId) \(partialHitEventCount) 个 usage 事件仅命中部分 token 分量（未命中分量: \(observedMissing.sorted().joined(separator: "/"))），total 采用 server 权威值")
+                    }
 
                     if wasIncremental, let cached = index.sessions[sessionId] {
                         logDebug("[antigravity-scan] session=\(sessionId) ✓ 增量 metadata=\(metadataEntryCount), events=\(events.count) (accounted=\(eventStats.accounted)) input=\(inputTotal) output=\(outputTotal) cacheR=\(cacheReadTotal)")

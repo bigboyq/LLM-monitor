@@ -128,7 +128,8 @@ final class AntigravityLocalUsageTests: XCTestCase {
         cacheWrite: Int = 0,
         reasoning: Int = 0,
         total: Int = 0,
-        stepIndices: [Int]? = nil
+        stepIndices: [Int]? = nil,
+        missingComponents: [String]? = nil
     ) -> AntigravityFetcher.UsageEvent {
         AntigravityFetcher.UsageEvent(
             timestamp: timestamp,
@@ -139,7 +140,8 @@ final class AntigravityLocalUsageTests: XCTestCase {
             cacheWriteTokens: cacheWrite,
             reasoningTokens: reasoning,
             totalTokens: total,
-            stepIndices: stepIndices
+            stepIndices: stepIndices,
+            missingComponents: missingComponents
         )
     }
 
@@ -1879,6 +1881,7 @@ final class AntigravityLocalUsageTests: XCTestCase {
         )
         let mixedEvent = try XCTUnwrap(AntigravityFetcher.parseUsageEventForTest(mixed))
         XCTAssertEqual(mixedEvent.totalTokens, 180, "全部分量命中时取 computed（分量和），而非 server total")
+        XCTAssertNil(mixedEvent.missingComponents, "全命中无未命中分量，不携带告警信息")
     }
 
     /// 部分命中（如 token 字段改名后只剩 cacheRead）→ server total 权威优先，
@@ -1897,6 +1900,7 @@ final class AntigravityLocalUsageTests: XCTestCase {
         let event = try XCTUnwrap(AntigravityFetcher.parseUsageEventForTest(cacheReadOnly))
         XCTAssertEqual(event.cacheReadTokens, 300)
         XCTAssertEqual(event.totalTokens, 99999, "部分命中时必须采用 server 权威 total，而非退化为单分量和")
+        XCTAssertEqual(event.missingComponents, ["input", "output", "reasoning"], "未命中分量随事件带回调用方，由 scanner 聚合去重后告警")
 
         // 双分量命中、server total 也在：同样取 server total
         let inputOutputOnly = try JSONDecoder().decode(
@@ -1909,6 +1913,7 @@ final class AntigravityLocalUsageTests: XCTestCase {
         )
         let partialEvent = try XCTUnwrap(AntigravityFetcher.parseUsageEventForTest(inputOutputOnly))
         XCTAssertEqual(partialEvent.totalTokens, 123)
+        XCTAssertEqual(partialEvent.missingComponents, ["cacheRead", "reasoning"])
     }
 
     /// 部分命中但 server total 缺失（或字段存在但为 0，视为不可用）→ 退回
@@ -1925,6 +1930,7 @@ final class AntigravityLocalUsageTests: XCTestCase {
         )
         let event = try XCTUnwrap(AntigravityFetcher.parseUsageEventForTest(noServerTotal))
         XCTAssertEqual(event.totalTokens, 300, "server total 缺失时退回 computed")
+        XCTAssertNil(event.missingComponents, "回退 computed 路径沿用旧语义：仅在采用 server 权威 total 时标记未命中分量")
 
         // server total 为 0（字段存在但与命中的分量矛盾）→ 同样退回 computed
         let zeroServerTotal = try JSONDecoder().decode(
@@ -1952,6 +1958,7 @@ final class AntigravityLocalUsageTests: XCTestCase {
         )
         let event = try XCTUnwrap(AntigravityFetcher.parseUsageEventForTest(noComponents))
         XCTAssertEqual(event.totalTokens, 512, "分量全未命中时回退 server total")
+        XCTAssertNil(event.missingComponents, "全未命中沿用原语义，不携带部分命中告警信息")
 
         // 分量全未命中且 server total 也为 0：事件完全无 token 数据，应被丢弃
         let allZero = try JSONDecoder().decode(
@@ -3107,6 +3114,89 @@ final class AntigravityLocalUsageTests: XCTestCase {
         XCTAssertEqual(result.recentSamples?.count, 1)
     }
 
+    /// 部分命中分量告警去重：`parseUsageEvent` 不再逐事件 logWarn，scanner 聚合
+    /// 点按 session 记录本页观测到的未命中分量集合（`partialHitWarnedBySession`），
+    /// 集合不变不重复告警、集合变化才再记；total 口径（server 权威值）不受影响。
+    func testPartialHitWarningDedupStateRecordedPerSessionAndUpdatedOnSetChange() async throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory
+            .appendingPathComponent("antigravity-partial-hit-\(UUID().uuidString)", isDirectory: true)
+        let conversations = root.appendingPathComponent("conversations", isDirectory: true)
+        let cache = root.appendingPathComponent("cache", isDirectory: true)
+        try fm.createDirectory(at: conversations, withIntermediateDirectories: true)
+        try fm.createDirectory(at: cache, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: root) }
+
+        let sessionID = "partial-hit-session"
+        let dbPath = conversations.appendingPathComponent("\(sessionID).db")
+        let now = Date(timeIntervalSince1970: 1_790_000_000)
+
+        // 只有 cacheRead 命中：total 采用 server 权威值，未命中分量随事件带回调用方
+        let cacheReadOnly = [makeEvent(
+            timestamp: now,
+            cacheRead: 300,
+            total: 99_999,
+            missingComponents: ["input", "output", "reasoning"]
+        )]
+        // server 修复 input/output 后仅剩 reasoning 未命中：观测集合变化
+        let reasoningOnlyMissing = [makeEvent(
+            timestamp: now,
+            input: 40,
+            total: 500,
+            missingComponents: ["reasoning"]
+        )]
+
+        func runScan(bytes: Int, events: [AntigravityFetcher.UsageEvent]) async throws {
+            // 变更指纹（size 参与比较）→ session 重新 dirty → 聚合点重新执行
+            try Data(repeating: 7, count: bytes).write(to: dbPath)
+            _ = try await AntigravityLocalUsageScanner.performScanPureImpl(
+                fetcher: AntigravityFetcher(metadataServerDiscovery: {
+                    // 非空 server 列表让 fetchAll 通过前置检查；RPC 由
+                    // metadataFetch 替身接管，不出网。
+                    [AntigravityFetcher.ServerInfo(pid: 1, httpsPort: 1, csrfToken: nil, kind: .ide)]
+                }),
+                conversationsDirs: [conversations],
+                cacheDir: cache,
+                fileManager: FileManagerBox(fm),
+                calendar: testCalendar,
+                now: { now },
+                shouldSave: true,
+                metadataFetch: { _, _ in (events: events, metadataEntryCount: 1) }
+            )
+        }
+
+        try await runScan(bytes: 128, events: cacheReadOnly)
+        var saved = try AntigravityLocalUsageScanner.loadIndex(cacheDir: cache, fileManager: FileManagerBox(fm))
+        XCTAssertEqual(
+            saved.partialHitWarnedBySession,
+            [sessionID: ["input", "output", "reasoning"]],
+            "首次部分命中：记录该 session 观测到的未命中分量集合"
+        )
+        let dayKey = LocalUsageDayKey.make(testCalendar.startOfDay(for: now), calendar: testCalendar)
+        XCTAssertEqual(
+            saved.dailyBySession[sessionID]?[dayKey]?.totalTokens, 99_999,
+            "去重不改口径：total 仍采用 server 权威值"
+        )
+
+        // 集合不变（重新扫描同一形态的部分命中事件）：去重状态保持，不再重复告警
+        try await runScan(bytes: 256, events: cacheReadOnly)
+        saved = try AntigravityLocalUsageScanner.loadIndex(cacheDir: cache, fileManager: FileManagerBox(fm))
+        XCTAssertEqual(
+            saved.partialHitWarnedBySession,
+            [sessionID: ["input", "output", "reasoning"]],
+            "未命中分量集合不变时去重状态保持，不再重复告警"
+        )
+
+        // 集合变化：更新状态并再记一次
+        try await runScan(bytes: 384, events: reasoningOnlyMissing)
+        saved = try AntigravityLocalUsageScanner.loadIndex(cacheDir: cache, fileManager: FileManagerBox(fm))
+        XCTAssertEqual(
+            saved.partialHitWarnedBySession,
+            [sessionID: ["reasoning"]],
+            "未命中分量集合变化时更新状态并再记一次"
+        )
+    }
+
     /// 缓存向后兼容（验收约束 5）：旧 v7 index（无收敛字段）可被新代码读取，
     /// 新字段 decodeIfPresent 提供默认值；新字段写入后 encode/decode 保真。
     func testConvergenceFieldsDecodeWithBackwardCompatibility() throws {
@@ -3132,11 +3222,13 @@ final class AntigravityLocalUsageTests: XCTestCase {
         XCTAssertNil(index.emptyFullStrikesBySession, "旧缓存无打击计数字段时默认 nil")
         XCTAssertNil(index.calendarRebuildPendingSessions, "旧缓存无旧日历标记字段时默认 nil")
         XCTAssertNil(index.zeroAccountedFullStrikesBySession, "旧缓存无零可计账打击计数字段时默认 nil")
+        XCTAssertNil(index.partialHitWarnedBySession, "旧缓存无部分命中告警去重字段时默认 nil")
 
         var withStrikes = index
         withStrikes.emptyFullStrikesBySession = ["s1": 2]
         withStrikes.calendarRebuildPendingSessions = ["s1"]
         withStrikes.zeroAccountedFullStrikesBySession = ["s1": 1]
+        withStrikes.partialHitWarnedBySession = ["s1": ["reasoning"]]
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         let redecoded = try decoder.decode(
@@ -3151,6 +3243,10 @@ final class AntigravityLocalUsageTests: XCTestCase {
         XCTAssertEqual(
             redecoded.zeroAccountedFullStrikesBySession?["s1"], 1,
             "零可计账打击计数字段 round-trip 保真"
+        )
+        XCTAssertEqual(
+            redecoded.partialHitWarnedBySession?["s1"], ["reasoning"],
+            "部分命中告警去重字段 round-trip 保真"
         )
         let withCounter = try decoder.decode(
             AntigravityLocalUsageScanner.SessionIndexEntry.self,
