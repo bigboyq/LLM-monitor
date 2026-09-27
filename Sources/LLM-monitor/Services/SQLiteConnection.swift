@@ -77,20 +77,28 @@ final class SQLiteConnection {
     }
 
     /// FIX6（TOCTOU 收窄）：immutable=1 连接打开后、执行任何查询前的复检。
-    /// -shm 或 -wal **出现（任意大小，含 0 字节）**即返回 true——0 字节 -wal 也算
-    /// 命中：SQLite 在写端以 WAL 模式打开库的瞬间就会创建 0 字节 -wal，它存在即
-    /// 说明写进程刚刚出现，随时可能追加帧并 auto-checkpoint 原地改写主库；无锁的
-    /// immutable 直读此时必须放弃，由调用方（`SQLiteTempCopy.read`）改走一致性
-    /// 快照副本。
+    /// 判据与 `canOpenImmutable` 的 sidecar 语义完全对齐：
+    /// - -shm 存在 → true：写进程持有 WAL 共享内存索引，随时可能追加帧并
+    ///   auto-checkpoint 原地改写主库；
+    /// - -wal 存在且非空（st_size > 0）→ true：存在待回放帧，同上必须放弃直读；
+    /// - 0 字节 -wal → false：它没有任何帧，主库本身就是完整一致快照，immutable
+    ///   直读结果完全正确。写进程以 WAL 模式打开库但尚未写帧即退出（或崩溃）
+    /// 会留下残留的 0 字节 -wal；若按「文件存在即命中」，这类残留会把每次
+    /// immutable 直读确定性降级为 /tmp 全量拷贝（大库每轮扫描白拷 GB 级数据），
+    /// 却换不来任何正确性。
+    ///
+    /// 命中即由调用方（`SQLiteTempCopy.read`）改走一致性快照副本。
     ///
     /// 已知收窄：本复检与首次查询之间仍存在极小残余窗口（写进程可能在复检之后、
     /// 首查之前出现），无法彻底消除——彻底消除需要持共享锁，与 immutable=1 的
     /// 无锁前提矛盾；本复检把竞态窗口从「canOpenImmutable 的 stat → open」收窄
     /// 到「复检 → 首查」。
     static func immutableSidecarRaceDetected(path: URL) -> Bool {
-        var st = stat()
-        if stat(path.path + "-shm", &st) == 0 { return true }
-        return stat(path.path + "-wal", &st) == 0
+        var shmStat = stat()
+        if stat(path.path + "-shm", &shmStat) == 0 { return true }
+        var walStat = stat()
+        let walHasData = (stat(path.path + "-wal", &walStat) == 0) && (walStat.st_size > 0)
+        return walHasData
     }
 
     init(path: URL, readOnly: Bool = false) throws {
@@ -132,9 +140,10 @@ final class SQLiteConnection {
         sqlite3_busy_timeout(db, 300)
 
         // FIX6: immutable=1 直读的跨进程 TOCTOU 复检（见 immutableSidecarRaceDetected）。
-        // canOpenImmutable 的两次 stat 与 sqlite3_open_v2 之间写进程可能启动，或
-        // -wal 刚被创建为 0 字节（原判定拦不住）；命中即立即关闭并抛专用错误，
-        // 由 SQLiteTempCopy.read 路由进 /tmp 副本回退，绝不带上锁缺口执行查询。
+        // canOpenImmutable 的两次 stat 与 sqlite3_open_v2 之间写进程可能出现
+        // （-shm 被创建 / -wal 追加了帧）；命中即立即关闭并抛专用错误，由
+        // SQLiteTempCopy.read 路由进 /tmp 副本回退，绝不带上锁缺口执行查询。
+        // 判据与 canOpenImmutable 对齐：残留的 0 字节 -wal（无帧）不算命中。
         if openedImmutably, Self.immutableSidecarRaceDetected(path: path) {
             sqlite3_close(db)
             throw SQLiteConnectionError.lostImmutableRace(path: self.path)

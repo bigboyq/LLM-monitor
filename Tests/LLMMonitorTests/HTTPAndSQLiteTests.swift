@@ -206,7 +206,9 @@ final class HTTPAndSQLiteTests: XCTestCase {
 
     // MARK: - FIX6: immutable=1 打开后 -shm/-wal 竞态复检
 
-    /// 复检函数直测：-shm 或 -wal 出现（任意大小，含 0 字节）即判定竞态命中。
+    /// 复检函数直测：判据与 canOpenImmutable 对齐 —— -shm 存在或非空 -wal 命中；
+    /// 残留 0 字节 -wal 无帧，不算命中（否则每次 immutable 直读都会被确定性
+    /// 降级为 /tmp 全量拷贝）。
     func testImmutableSidecarRaceDetection() throws {
         let baseDir = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("immutable-race-detect-\(UUID().uuidString)")
@@ -221,11 +223,11 @@ final class HTTPAndSQLiteTests: XCTestCase {
         // 1. 无 sidecar → 无竞态
         XCTAssertFalse(SQLiteConnection.immutableSidecarRaceDetected(path: dbURL))
 
-        // 2. 0 字节 -wal 也命中：SQLite 在写端以 WAL 模式打开库的瞬间就会创建它
+        // 2. 残留 0 字节 -wal（写进程打开未写即退出）不命中：无帧，主库即完整一致快照
         try Data().write(to: walURL)
-        XCTAssertTrue(SQLiteConnection.immutableSidecarRaceDetected(path: dbURL))
+        XCTAssertFalse(SQLiteConnection.immutableSidecarRaceDetected(path: dbURL))
 
-        // 3. 非空 -wal 命中
+        // 3. 非空 -wal 命中（有待回放帧）
         try Data("frame".utf8).write(to: walURL)
         XCTAssertTrue(SQLiteConnection.immutableSidecarRaceDetected(path: dbURL))
 
@@ -239,9 +241,10 @@ final class HTTPAndSQLiteTests: XCTestCase {
         XCTAssertTrue(SQLiteConnection.immutableSidecarRaceDetected(path: dbURL))
     }
 
-    /// 连接行为：sidecar 出现（含 0 字节 -wal、活写进程持有的 -shm/-wal）时，
-    /// immutable 直读连接被拒绝并抛 lostImmutableRace；非 immutable 打开不受影响。
-    func testSQLiteConnectionRejectsImmutableOpenWhenSidecarsPresent() throws {
+    /// 连接行为：残留 0 字节 -wal（写进程打开未写即退出）时 immutable 直读应成功
+    /// 打开并可查询，不误抛 lostImmutableRace；活写进程（-shm 存在）仍走标准只读
+    /// 路径读实时数据；非 immutable 打开不受影响。
+    func testSQLiteConnectionOpensImmutableWithResidualZeroByteWAL() throws {
         let baseDir = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("immutable-race-open-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: baseDir, withIntermediateDirectories: true)
@@ -259,16 +262,21 @@ final class HTTPAndSQLiteTests: XCTestCase {
         try? FileManager.default.removeItem(atPath: dbURL.path + "-shm")
         try? FileManager.default.removeItem(atPath: dbURL.path + "-wal")
 
-        // (a) 0 字节 -wal：canOpenImmutable 决策仍放行（决策逻辑不变），
-        //     但打开后的复检必须拒绝 —— 这正是原 TOCTOU 拦不住的场景。
+        // (a) 残留 0 字节 -wal：canOpenImmutable 决策放行（无帧，主库即完整一致
+        //     快照），打开后的复检同判据放行 —— 连接应成功打开并完成查询，
+        //     不得把每次直读确定性降级为 lostImmutableRace → /tmp 全量拷贝。
         try Data().write(to: walURL)
         XCTAssertTrue(SQLiteConnection.canOpenImmutable(path: dbURL, readOnly: true))
-        XCTAssertThrowsError(try SQLiteConnection(path: dbURL, readOnly: true)) { error in
-            guard case SQLiteConnectionError.lostImmutableRace(let path) = error else {
-                XCTFail("expected lostImmutableRace, got \(error)")
-                return
+        XCTAssertFalse(SQLiteConnection.immutableSidecarRaceDetected(path: dbURL))
+        do {
+            let conn = try SQLiteConnection(path: dbURL, readOnly: true)
+            let rows = try conn.query(sql: "SELECT cnt FROM t ORDER BY cnt") { stmt in
+                sqlite3_column_int(stmt, 0)
             }
-            XCTAssertEqual(path, dbURL.path)
+            conn.close()
+            XCTAssertEqual(rows, [42], "immutable 直读应读到主库已 checkpoint 的数据")
+        } catch {
+            XCTFail("残留 0 字节 -wal 不应触发 lostImmutableRace，got \(error)")
         }
 
         // (b) 活写进程：-shm 存在时 canOpenImmutable 本来就返回 false、走标准只读
@@ -311,9 +319,11 @@ final class HTTPAndSQLiteTests: XCTestCase {
         XCTAssertEqual(callCount, 2, "lostImmutableRace 应路由进 /tmp 副本回退（调用次数应为 2）")
     }
 
-    /// 端到端：源库带 0 字节 -wal（写进程刚出现）→ 直连 immutable 打开被复检拒绝 →
-    /// 回退副本以 READWRITE 完成同一查询。
-    func testSQLiteTempCopyRoutesRealImmutableRaceToTempCopy() throws {
+    /// 端到端：源库残留 0 字节 -wal（写进程打开未写即退出 / 崩溃残留）→ 直连
+    /// immutable 打开应一次成功，不误判竞态回退 /tmp 全量副本（大库每轮扫描
+    /// 白拷 GB 级数据）。lostImmutableRace → /tmp 副本的回退路由由
+    /// testSQLiteTempCopyFallsBackOnLostImmutableRace 注入式覆盖。
+    func testSQLiteTempCopyDirectReadSucceedsWithResidualZeroByteWAL() throws {
         let baseDir = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("immutable-race-e2e-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: baseDir, withIntermediateDirectories: true)
@@ -326,9 +336,10 @@ final class HTTPAndSQLiteTests: XCTestCase {
         XCTAssertEqual(sqlite3_close(db), SQLITE_OK)
         try? FileManager.default.removeItem(atPath: dbURL.path + "-shm")
         try? FileManager.default.removeItem(atPath: dbURL.path + "-wal")
-        // 写进程刚出现的瞬间：0 字节 -wal
+        // 写进程崩溃残留：0 字节 -wal，无 -shm
         try Data().write(to: URL(fileURLWithPath: dbURL.path + "-wal"))
 
+        let before = try currentAppTempEntries()
         var visitedPaths: [String] = []
         let value = try SQLiteTempCopy.read(dbPath: dbURL, logTag: "[test-fix6]") { url in
             visitedPaths.append(url.path)
@@ -339,11 +350,12 @@ final class HTTPAndSQLiteTests: XCTestCase {
             }
             return rows.first ?? -1
         }
+        let after = try currentAppTempEntries()
 
         XCTAssertEqual(value, 99)
-        XCTAssertEqual(visitedPaths.count, 2, "第 1 次直连应被复检拒绝，第 2 次在副本上完成")
-        XCTAssertEqual(visitedPaths[0], dbURL.path)
-        XCTAssertNotEqual(visitedPaths[1], dbURL.path, "第 2 次应发生在 /tmp 副本上")
+        XCTAssertEqual(visitedPaths.count, 1, "残留 0 字节 -wal 不应触发 /tmp 副本回退，应一次直读完成")
+        XCTAssertEqual(visitedPaths[0], dbURL.path, "应直接在源库上完成读取")
+        XCTAssertTrue(after.isSubset(of: before), "直读成功时不应创建任何临时副本")
     }
 
     /// SQLITE_CORRUPT（主码 11）命中回退白名单：并发 checkpoint 撕裂页可能在
