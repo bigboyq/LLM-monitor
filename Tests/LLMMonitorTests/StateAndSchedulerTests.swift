@@ -472,7 +472,9 @@ final class StateAndSchedulerTests: XCTestCase {
         )
 
         // A wake waiting on an existing request must not register a manual gate
-        // or issue another full request.
+        // or issue a parallel second request; once that request settles without
+        // fresh activity the wake still issues exactly one full, so the wake
+        // refresh is never silently dropped.
         XCTAssertTrue(scheduler.markInFlight("p"))
         let waitingWake = Task { @MainActor in
             await scheduler.refreshForSystemWake("p")
@@ -480,18 +482,171 @@ final class StateAndSchedulerTests: XCTestCase {
         try? await Task.sleep(nanoseconds: 10_000_000)
         scheduler.markNotInFlight("p")
         await waitingWake.value
-        XCTAssertEqual(calls, 0)
+        XCTAssertEqual(calls, 1, "在飞请求结算后唤醒必须补发一次 full，不得静默丢弃")
 
-        // A wake immediately following a completed request is also satisfied by
+        // A wake immediately following a completed request is satisfied by
         // that request; after the injectable collision window it runs one full.
         _ = await scheduler.runRefresh("p", mode: .background)
-        XCTAssertEqual(calls, 1)
-        await scheduler.refreshForSystemWake("p")
-        XCTAssertEqual(calls, 1)
-        try? await Task.sleep(nanoseconds: 250_000_000)
+        XCTAssertEqual(calls, 2)
         await scheduler.refreshForSystemWake("p")
         XCTAssertEqual(calls, 2)
+        try? await Task.sleep(nanoseconds: 250_000_000)
+        await scheduler.refreshForSystemWake("p")
+        XCTAssertEqual(calls, 3)
         scheduler.cancelAll()
+    }
+
+    /// 生产路径的在飞请求都经 runRefresh 登记：唤醒等待其结算，而刚结算的
+    /// 请求自带新鲜活动记录，唤醒自动合并、不补发第二个 full。
+    @MainActor
+    func testSchedulerSystemWakeMergesIntoFreshInFlightRequest() async {
+        var calls = 0
+        var releaseRequest = false
+        let scheduler = ProviderRefreshScheduler(
+            refreshHandler: { _, _ in
+                calls += 1
+                while !releaseRequest {
+                    try? await Task.sleep(nanoseconds: 1_000_000)
+                }
+                return .completed(success: true)
+            },
+            intervalProvider: { _ in 60 },
+            onNextRefreshChange: {}
+        )
+
+        let request = Task { @MainActor in
+            _ = await scheduler.runRefresh("p", mode: .background)
+        }
+        for _ in 0..<100 where scheduler.inFlightMode(for: "p") == nil {
+            await Task.yield()
+        }
+        XCTAssertEqual(calls, 1)
+
+        let wake = Task { @MainActor in
+            await scheduler.refreshForSystemWake("p")
+        }
+        try? await Task.sleep(nanoseconds: 20_000_000)
+        XCTAssertEqual(calls, 1, "唤醒应等待在飞请求，而不是并发补发")
+        releaseRequest = true
+        await request.value
+        await wake.value
+        XCTAssertEqual(calls, 1, "结算后请求活动新鲜，唤醒合并不再补发 full")
+        scheduler.cancelAll()
+    }
+
+    /// 唤醒刷新只结算被刷新 provider 自己的时间线：未到期 provider 的常规
+    /// 排期与周期 full 计数必须原样保留（回归 a287e8d 的 reanchorAllProviders）。
+    @MainActor
+    func testSchedulerSystemWakeRefreshDoesNotDisturbOtherProviderSchedule() async {
+        let scheduler = ProviderRefreshScheduler(
+            refreshHandler: { _, _ in .completed(success: true) },
+            intervalProvider: { _ in 60 },
+            onNextRefreshChange: {},
+            systemWakeCoalesceWindow: 0
+        )
+        scheduler.schedule(for: "a")
+        scheduler.schedule(for: "b")
+        // 等首拍（两个 provider 同批 .full）结算，进入 60s 静默窗口。
+        try? await Task.sleep(nanoseconds: 500_000_000)
+        let baseA = scheduler.nextRefreshDate(for: "a")
+        let baseB = scheduler.nextRefreshDate(for: "b")
+        let baseCountA = scheduler.backgroundsSinceFullCount(for: "a")
+        let baseCountB = scheduler.backgroundsSinceFullCount(for: "b")
+        XCTAssertNotNil(baseA)
+        XCTAssertNotNil(baseB)
+
+        await scheduler.refreshForSystemWake("a")
+
+        XCTAssertEqual(
+            scheduler.nextRefreshDate(for: "a"),
+            baseA,
+            "未到期 provider 的唤醒 full 不得重排它自己的常规时间线"
+        )
+        XCTAssertEqual(
+            scheduler.nextRefreshDate(for: "b"),
+            baseB,
+            "唤醒刷新不得重排其他 provider 的常规排期"
+        )
+        XCTAssertEqual(scheduler.backgroundsSinceFullCount(for: "b"), baseCountB)
+        XCTAssertEqual(scheduler.backgroundsSinceFullCount(for: "a"), 0, "唤醒 full 结算后 a 的周期计数归零")
+        scheduler.cancelAll()
+    }
+
+    /// reanchorProvider 只重锚目标 provider：其他 provider 的常规排期与
+    /// reset candidates 必须原样保留。
+    @MainActor
+    func testReanchorProviderTouchesOnlyTargetProvider() async {
+        let scheduler = ProviderRefreshScheduler(
+            refreshHandler: { _, _ in .completed(success: true) },
+            intervalProvider: { _ in 120 },
+            onNextRefreshChange: {}
+        )
+        scheduler.schedule(for: "a")
+        scheduler.schedule(for: "b")
+        // 等首拍（两个 provider 同批 .full）结算，进入静默窗口。
+        try? await Task.sleep(nanoseconds: 500_000_000)
+        let baseA = scheduler.nextRefreshDate(for: "a")
+        let baseB = scheduler.nextRefreshDate(for: "b")
+        XCTAssertNotNil(baseA)
+        XCTAssertNotNil(baseB)
+
+        // 为 b 造一个 mid-cycle reset 补刷新点；a 保持没有。
+        scheduler.scheduleMidCycleResetRefreshes(for: "b", resetsAtDates: [Date()])
+        let baseResetB = scheduler.resetCandidateExecutionDates(for: "b")
+        XCTAssertFalse(baseResetB.isEmpty, "b 应成功登记 reset candidate")
+        XCTAssertTrue(scheduler.resetCandidateExecutionDates(for: "a").isEmpty)
+
+        scheduler.reanchorProvider("b", at: Date(), resetDatesByProvider: [:])
+
+        XCTAssertEqual(
+            scheduler.nextRefreshDate(for: "a"),
+            baseA,
+            "单 provider 重锚不得影响其他 provider 的常规排期"
+        )
+        XCTAssertTrue(scheduler.resetCandidateExecutionDates(for: "a").isEmpty)
+        XCTAssertTrue(
+            scheduler.resetCandidateExecutionDates(for: "b").isEmpty,
+            "目标 provider 的旧 reset candidates 应被清除（resetDatesByProvider 为空则不重排）"
+        )
+        XCTAssertNotEqual(scheduler.nextRefreshDate(for: "b"), baseB, "目标 provider 的常规时间线应被重锚")
+        XCTAssertGreaterThan(scheduler.nextRefreshDate(for: "b") ?? .distantPast, baseB ?? .distantPast)
+        XCTAssertEqual(scheduler.backgroundsSinceFullCount(for: "a"), 0)
+        scheduler.cancelAll()
+    }
+
+    /// reanchorProvider 清零目标 provider 的周期 full 计数：N=3 期望无重锚时
+    /// 第 5 拍进入 periodic full；在第 4 拍结算前重锚则第 5 拍仍是 background。
+    @MainActor
+    func testReanchorProviderResetsPeriodicFullCount() async {
+        let log = ModeLog()
+        let holder = WeakSchedulerHolder()
+        let sched = ProviderRefreshScheduler(
+            refreshHandler: { _, mode in
+                let n = await log.record(mode)
+                if n == 4 {
+                    await holder.sched?.reanchorProvider("p", at: Date(), resetDatesByProvider: [:])
+                }
+                return .completed(success: true)
+            },
+            intervalProvider: { _ in 60 },
+            onNextRefreshChange: {},
+            periodicFullEveryN: 3,
+            sleep: { _ in try? await Task.sleep(nanoseconds: 1) }
+        )
+        holder.sched = sched
+        sched.schedule(for: "p")
+        // 安全超时；与 testSchedulerPeriodicFullEveryNBackgrounds 相同的
+        // 虚拟时间节奏（注入 1ns sleep 让 deadline driver 立即续拍）。
+        try? await Task.sleep(nanoseconds: 1_000_000_000)
+        sched.cancelAll()
+
+        let seq = await log.snapshot()
+        XCTAssertGreaterThanOrEqual(seq.count, 6, "应至少跑满 6 拍，实际 \(seq.count)")
+        XCTAssertEqual(
+            Array(seq.prefix(5)),
+            [.full, .background, .background, .background, .background],
+            "第 4 拍结算前重锚应清零周期 full 计数：第 5 拍仍是 background 而不是 full"
+        )
     }
 
     @MainActor
@@ -3807,6 +3962,206 @@ final class StateAndSchedulerTests: XCTestCase {
             return
         }
         XCTAssertNotNil(info.codexUsageDetails, "refreshAll 返回前 post-quota 用量补拍必须已完成并 enrich")
+    }
+
+    /// refreshOne 的单 provider fetch stub：返回带未来 reset 时间的窗口数据，
+    /// 让 reanchor 后的 mid-cycle reset 重排有真实输入。
+    private final class RefreshOneStubFetcher: QuotaFetcher, @unchecked Sendable {
+        let providerID: String
+        let displayName: String
+        let kind = ProviderKind.codexChatGpt
+        init(providerID: String) {
+            self.providerID = providerID
+            self.displayName = providerID
+        }
+        func fetch(mode: RefreshMode) async throws -> QuotaInfo {
+            let model = ModelQuota(
+                modelName: "chatgpt_plan",
+                intervalTotalCount: 100,
+                intervalUsageCount: 0,
+                intervalRemainingPercent: 100,
+                intervalStatus: .present,
+                intervalResetsAt: Date().addingTimeInterval(120),
+                intervalWindowSeconds: 7 * 24 * 3600,
+                weeklyTotalCount: 0,
+                weeklyUsageCount: 0,
+                weeklyRemainingPercent: 0,
+                weeklyStatus: .absent,
+                weeklyResetsAt: nil,
+                weeklyWindowSeconds: nil
+            )
+            return QuotaInfo(
+                models: [model],
+                resetCredits: nil,
+                planLabel: nil,
+                accountEmail: nil,
+                codexUsageDetails: nil,
+                fetchedAt: Date()
+            )
+        }
+        func hasLocalAuth() -> Bool { true }
+    }
+
+    /// refreshOne(A) 只重锚 A（回归：旧实现 refreshOne 无条件 reanchorAllProviders，
+    /// 会把 B/C/D 的下一拍推后一个完整间隔、清零它们的周期 full 计数与 reset
+    /// 补刷新点）。A 自己的常规时间线从 refreshOne 完成时刻重算，周期 full 计数
+    /// 归零，reset candidates 按新数据重排。
+    @MainActor
+    func testRefreshOneReanchorsOnlyRefreshedProvider() async {
+        let ids = ["prov_a", "prov_b", "prov_c", "prov_d"]
+        let store = makeIsolatedConfigStore()
+        var config = store.config
+        config.refreshIntervalSeconds = 300
+        for id in ids {
+            config.providers[id] = ProviderConfig(
+                enabled: true,
+                authPath: store.configURL.deletingLastPathComponent()
+                    .appendingPathComponent("auth.json").path
+            )
+        }
+        try! store.applyAndSave(config)
+
+        let descriptors: [FetcherDescriptor] = ids.map { id in
+            FetcherDescriptor(
+                id: id,
+                displayName: id,
+                kind: .codexChatGpt,
+                iconSystemName: "star",
+                accentColor: .chatgpt,
+                makeFetcher: { _ in RefreshOneStubFetcher(providerID: id) }
+            )
+        }
+        let state = AppState(descriptors: descriptors, configStore: store)
+        state.localUsage.testReadinessOverride = { _ in false }
+        defer { state.stop() }
+
+        let scheduler = state.refreshScheduler!
+        // 等 prov_a（错峰 0s）首拍结算：nextRefreshDate 进入未来即已结算。
+        for _ in 0..<200 where (scheduler.nextRefreshDate(for: "prov_a") ?? .distantPast) <= Date() {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        // 把 b/c/d 推到远期，避免 2/4/6 秒错峰首拍干扰基线（用被测方法本身做
+        // setup 不影响结论：断言的是 refreshOne 不会再次改动它们）。
+        let setupAnchor = Date()
+        for id in ids.dropFirst() {
+            scheduler.reanchorProvider(id, at: setupAnchor, resetDatesByProvider: [:])
+        }
+        // 为 b 登记一个 reset candidate 基线（next(b)=setup+302，reset+15=setup+135，
+        // 距 next(b) 远大于 30s，candidate 一定成立）。
+        scheduler.scheduleMidCycleResetRefreshes(
+            for: "prov_b",
+            resetsAtDates: [setupAnchor.addingTimeInterval(120)]
+        )
+        let baseResetsB = scheduler.resetCandidateExecutionDates(for: "prov_b")
+        XCTAssertFalse(baseResetsB.isEmpty, "b 应成功登记 reset candidate 基线")
+        let baseNext = Dictionary(uniqueKeysWithValues: ids.map { ($0, scheduler.nextRefreshDate(for: $0)!) })
+        let baseCounts = Dictionary(uniqueKeysWithValues: ids.map { ($0, scheduler.backgroundsSinceFullCount(for: $0)) })
+
+        let refreshOneStart = Date()
+        await state.refreshOne(providerID: "prov_a")
+
+        // A：常规时间线从 refreshOne 完成时刻重算（ ≥ 调用前 + interval），即被重锚。
+        let nextA = scheduler.nextRefreshDate(for: "prov_a")
+        XCTAssertNotNil(nextA)
+        XCTAssertGreaterThan(
+            nextA!,
+            baseNext["prov_a"]!,
+            "a 的常规时间线应从 refreshOne 完成时刻重算"
+        )
+        XCTAssertGreaterThanOrEqual(
+            nextA!,
+            refreshOneStart.addingTimeInterval(299),
+            "a 的下一拍应落在 refreshOne 完成时刻 + interval 上"
+        )
+        XCTAssertEqual(
+            scheduler.backgroundsSinceFullCount(for: "prov_a"),
+            0,
+            "a 经 .full 刷新后周期 full 计数归零"
+        )
+        XCTAssertFalse(
+            scheduler.resetCandidateExecutionDates(for: "prov_a").isEmpty,
+            "a 的 reset candidates 应按刷新后的数据重排"
+        )
+
+        // B/C/D：排期、周期 full 计数、reset candidates 全部不变。
+        for id in ids.dropFirst() {
+            XCTAssertEqual(
+                scheduler.nextRefreshDate(for: id),
+                baseNext[id],
+                "\(id) 的常规排期不得被 refreshOne(prov_a) 改动"
+            )
+            XCTAssertEqual(
+                scheduler.backgroundsSinceFullCount(for: id),
+                baseCounts[id],
+                "\(id) 的周期 full 计数不得被 refreshOne(prov_a) 清零"
+            )
+        }
+        XCTAssertEqual(
+            scheduler.resetCandidateExecutionDates(for: "prov_b"),
+            baseResetsB,
+            "b 的 reset candidates 不得被 refreshOne(prov_a) 清除"
+        )
+    }
+
+    /// handleSystemWake 恢复 refreshForSystemWake 合并协议后：唤醒刷新不得重锚
+    /// 其他 provider 的排期（回归 a287e8d 结尾的 reanchorAllProviders）；合并
+    /// 窗口内的 provider 不重复发 full。
+    @MainActor
+    func testHandleSystemWakeDoesNotReanchorOtherProviders() async {
+        let store = makeIsolatedConfigStore()
+        var config = store.config
+        config.refreshIntervalSeconds = 300
+        for id in ["wake_a", "wake_b"] {
+            config.providers[id] = ProviderConfig(
+                enabled: true,
+                authPath: store.configURL.deletingLastPathComponent()
+                    .appendingPathComponent("auth.json").path
+            )
+        }
+        try! store.applyAndSave(config)
+
+        let descriptors: [FetcherDescriptor] = ["wake_a", "wake_b"].map { id in
+            FetcherDescriptor(
+                id: id,
+                displayName: id,
+                kind: .codexChatGpt,
+                iconSystemName: "star",
+                accentColor: .chatgpt,
+                makeFetcher: { _ in RefreshOneStubFetcher(providerID: id) }
+            )
+        }
+        let state = AppState(descriptors: descriptors, configStore: store)
+        state.localUsage.testReadinessOverride = { _ in false }
+        defer { state.stop() }
+
+        let scheduler = state.refreshScheduler!
+        // 等 wake_a（错峰 0s）首拍结算。
+        for _ in 0..<200 where (scheduler.nextRefreshDate(for: "wake_a") ?? .distantPast) <= Date() {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        // 把 wake_b 推到远期，避免 2 秒错峰首拍干扰基线。
+        scheduler.reanchorProvider("wake_b", at: Date(), resetDatesByProvider: [:])
+        let baseNextA = scheduler.nextRefreshDate(for: "wake_a")!
+        let baseNextB = scheduler.nextRefreshDate(for: "wake_b")!
+        let baseCountB = scheduler.backgroundsSinceFullCount(for: "wake_b")
+
+        await state.handleSystemWake()
+
+        XCTAssertEqual(
+            scheduler.nextRefreshDate(for: "wake_a"),
+            baseNextA,
+            "唤醒合并（活动窗口内）后 wake_a 的常规排期不变"
+        )
+        XCTAssertEqual(
+            scheduler.nextRefreshDate(for: "wake_b"),
+            baseNextB,
+            "唤醒刷新不得重排其他 provider 的常规排期"
+        )
+        XCTAssertEqual(
+            scheduler.backgroundsSinceFullCount(for: "wake_b"),
+            baseCountB,
+            "唤醒刷新不得清零其他 provider 的周期 full 计数"
+        )
     }
 
     /// LocalUsage reconcile 独立于 Quota 失败：GLM provider quota 失败时仍能安全运行

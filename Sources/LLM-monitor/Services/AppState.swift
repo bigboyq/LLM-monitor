@@ -478,9 +478,12 @@ final class AppState: ObservableObject {
         )
     }
 
-    /// 系统从睡眠唤醒后的刷新。与用户手动刷新一样，紧邻定时/补刷新时
-    /// 只等待已有请求并合并到它，不登记 ManualRefreshGate pending full；
-    /// 本地用量复用 dirty/offset 路径，只有进程启动首拍才是 full。
+    /// 系统从睡眠唤醒后的刷新。唤醒走 scheduler 的 refreshForSystemWake 合并
+    /// 协议：在飞请求先等待结算（不静默丢弃，也不并发补发第二个请求），刚完成
+    /// 过请求的 provider 在活动窗口内直接合并；只有真正需要补拍的 provider 才
+    /// 发一次 full，且该请求若赶上已到期的 regular deadline 会按现有协议只结算
+    /// 它自己的时间线。唤醒不重锚任何 provider 的排期——其他 provider 的下一拍
+    /// 保持原样，由各自的 deadline driver 接管。
     func handleSystemWake() async {
         guard let token = refreshScheduler.beginExternalJob() else {
             pendingWakeup = true
@@ -499,11 +502,7 @@ final class AppState: ObservableObject {
             for providerID in providerIDs {
                 group.addTask { @MainActor [self, providerID] in
                     guard self.refreshScheduler.isCurrentJob(token) else { return }
-                    _ = await self.refreshScheduler.runRefresh(
-                        providerID,
-                        mode: .full,
-                        satisfiesRegularDeadline: false
-                    )
+                    await self.refreshScheduler.refreshForSystemWake(providerID)
                 }
             }
         }
@@ -512,10 +511,6 @@ final class AppState: ObservableObject {
         guard refreshScheduler.isCurrentJob(token) else { return }
         startupReconcilePendingProviderIDs.removeAll()
         startupReconcileCompleted = true
-        refreshScheduler.reanchorAllProviders(
-            at: Date(),
-            resetDatesByProvider: currentResetDatesByProvider()
-        )
     }
 
     /// 系统时区改变后重排本地窗口边界，并让本地日桶执行一次 full 重建；
@@ -547,7 +542,10 @@ final class AppState: ObservableObject {
         guard refreshScheduler.isCurrentJob(token) else { return }
         startupReconcilePendingProviderIDs.removeAll()
         startupReconcileCompleted = true
-        refreshScheduler.reanchorAllProviders(
+        // 只重锚被刷新的 provider：刷新一张卡片不应把其他 provider 的下一拍
+        // 推后一个完整间隔，也不应清掉它们的周期 full 计数与 reset 补刷新点。
+        refreshScheduler.reanchorProvider(
+            providerID,
             at: Date(),
             resetDatesByProvider: currentResetDatesByProvider()
         )

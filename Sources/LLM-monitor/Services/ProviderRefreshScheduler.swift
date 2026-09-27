@@ -632,6 +632,33 @@ final class ProviderRefreshScheduler {
         wake()
     }
 
+    /// Manual 单 provider 刷新（refreshOne）完成后的重锚：副作用集合与
+    /// reanchorAllProviders 完全一致，但只作用于目标 provider——避免刷新一张
+    /// 卡片把其他 provider 的下一拍推后一个完整间隔、并清掉它们的周期 full
+    /// 计数与 reset 补刷新点。refreshOne 的刷新路径是 .full（refreshProviderFully
+    /// → runRefresh(mode: .full)），因此 backgroundsSinceFull=0 与 resetCandidates
+    /// 清除是正确语义。
+    func reanchorProvider(
+        _ providerID: String,
+        at finishedAt: Date,
+        resetDatesByProvider: [String: [Date]]
+    ) {
+        guard managedProviders.contains(providerID) else { return }
+        let startPoint = finishedAt.addingTimeInterval(startPointDefer(for: providerID))
+        nextRefreshDates[providerID] = startPoint.addingTimeInterval(intervalProvider(providerID))
+        lastIntervalFinishedDates[providerID] = finishedAt
+        backgroundsSinceFull[providerID] = 0
+        hasDoneFirstRefresh.insert(providerID)
+        pendingRegularProviders.remove(providerID)
+        resetCandidates.removeValue(forKey: providerID)
+        scheduleMidCycleResetRefreshes(
+            for: providerID,
+            resetsAtDates: resetDatesByProvider[providerID] ?? []
+        )
+        onNextRefreshChange()
+        wake()
+    }
+
     /// Startup 的首拍也使用同一组稳定错峰。首拍本身按 startPoint 执行，
     /// 完成后普通 Interval 继续从实际完成时间计算。
     func staggerInitialRefreshes(at anchor: Date) {
@@ -702,11 +729,20 @@ final class ProviderRefreshScheduler {
             }
         }
         if inFlightModes[providerID] != nil {
-            try? await waitUntilNotInFlight(providerID)
+            // 等待在飞请求结算而不是并发补发；取消时直接放弃本次唤醒刷新。
+            do {
+                try await waitUntilNotInFlight(providerID)
+            } catch {
+                return
+            }
             // runRefresh 的 defer 先唤醒 waiter，随后批次才处理 outcome；让
             // 调用方继续前主动让出一次 actor，确保 quota 状态先结算。
             await Task.yield()
-            return
+            // 结算后继续走下方活动窗口判定：生产路径的在飞请求都经
+            // runRefresh 登记，结算时会把 lastRefreshActivity 推进到当前
+            // 时刻，本次唤醒自动合并、不补发第二个 full。只有未经 runRefresh
+            // 登记的在飞请求（无活动记录，唤醒刷新会被静默丢掉的场景）才会
+            // 在这里真正补发一次 full。
         }
         if let activity = lastRefreshActivity[providerID],
            now().timeIntervalSince(activity) <= systemWakeWindow {
@@ -862,6 +898,21 @@ final class ProviderRefreshScheduler {
     /// 给 UI footer "下次自动刷新时间" 用。所有受管 provider 中最早的下一次常规触发时间。
     var earliestNextRefresh: Date? {
         managedProviders.compactMap { nextRefreshDates[$0] }.min()
+    }
+
+    /// 单 provider 的下一次常规刷新时间（测试 / debug 用）。
+    func nextRefreshDate(for providerID: String) -> Date? {
+        nextRefreshDates[providerID]
+    }
+
+    /// 单 provider 的周期 full 计数（测试 / debug 用）。
+    func backgroundsSinceFullCount(for providerID: String) -> Int {
+        backgroundsSinceFull[providerID] ?? 0
+    }
+
+    /// 单 provider 的 mid-cycle reset 补刷新执行点集合（测试 / debug 用）。
+    func resetCandidateExecutionDates(for providerID: String) -> Set<Date> {
+        Set((resetCandidates[providerID] ?? []).map(\.executionAt))
     }
 
     /// 当前已注册的健康边界（测试 / debug 用）。不对外映射为 nextRefreshAt。
