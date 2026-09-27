@@ -299,14 +299,14 @@ extension AntigravityLocalUsageScanner {
         /// 重规划，标记不会阻碍。可选字段，旧 index.json decode 时默认 nil，
         /// 保证向后兼容。
         var calendarRebuildPendingSessions: Set<String>? = nil
-        /// "有 raw metadata 但零可计账 event"全量页的连续打击计数（按 session）。
-        /// 解析损坏（token 字段改名/换层级）或天然全零 token 的 session 会让
-        /// 全量页持续零可计账；无界计失败会打破"所有持久失败模式有界收敛"的
-        /// 不变量（failedCount 永不归零 → 签名永不推进 → 每轮 reconcile 全量
-        /// 冷重建）。达到 `zeroAccountedFullStrikeLimit` 轮后按成功收敛：采用
-        /// 当前文件指纹并完整保留 last-good（offset 刻意不推进，文件再变化时
-        /// 用可能已修复的解析器重试）。拿到可入账 event 的 full 页即清零。
-        /// 可选字段，旧 index.json decode 时默认 nil，保证向后兼容。
+        /// "有 raw metadata 但零可计账 event"页（全量/增量 alike）的连续打击
+        /// 计数（按 session）。解析损坏（token 字段改名/换层级）或天然全零
+        /// token 的 session 会让页持续零可计账；无界计失败会打破"所有持久失败
+        /// 模式有界收敛"的不变量（failedCount 永不归零 → 签名永不推进 → 每轮
+        /// reconcile 全量冷重建）。达到 `zeroAccountedFullStrikeLimit` 轮后按
+        /// 成功收敛：采用当前文件指纹并完整保留 last-good（offset 刻意不推进，
+        /// 文件再变化时用可能已修复的解析器重试）。拿到可入账 event 的页即
+        /// 清零。可选字段，旧 index.json decode 时默认 nil，保证向后兼容。
         var zeroAccountedFullStrikesBySession: [String: Int]? = nil
 
         static let empty = CacheIndex(
@@ -711,6 +711,83 @@ extension AntigravityLocalUsageScanner {
                         )
                     }
 
+                    // 页级不可信防线（全量/增量 alike，上提到全量/增量分叉前统一
+                    // 覆盖两种页）：raw metadata 非零但可计账 event 为零（events
+                    // 为空，或 events 全部缺失 timestamp 且本地回填后仍为零）。多
+                    // 由 token 字段改名/换层级导致解析失败，此时若照常推进——全量
+                    // 替换会清零 last-good daily/samples/eventCount 且 offset 推进
+                    // 整页 raw 条数；增量合并则把 offset 推进 raw 条数——这批数据
+                    // 都会被永久跳过，除非再触发 full 否则不可恢复（生产里活跃
+                    // session 有缓存后永远走增量，见 plan 逻辑）。打击有界（镜像
+                    // 零 metadata 机制）：连续 `zeroAccountedFullStrikeLimit` 轮后
+                    // 按成功收敛——否则持续零可计账的 session 会让 failedCount 永
+                    // 不归零、签名永不推进、每轮 reconcile 全量冷重建。
+                    guard eventStats.accounted > 0 else {
+                        var strikes = index.zeroAccountedFullStrikesBySession ?? [:]
+                        let strikeCount = SaturatingArithmetic.add(strikes[sessionId] ?? 0, 1)
+                        if strikeCount >= Self.zeroAccountedFullStrikeLimit {
+                            if let cached = index.sessions[sessionId] {
+                                // 收敛：采用当前文件指纹，完整保留 eventCount /
+                                // offset / lastMaxStepIndex / lastTurnIndex 与
+                                // daily / samples。offset 刻意不推进——恢复路径
+                                // 是文件再变化时 session 重新 dirty，从保留
+                                // offset 重取同一批页、用（可能已修复的）解析器
+                                // 重试；下次日历失效的冷重建也会 offset=0 全量
+                                // 重来。补写空 samples 条目，避免"缺 samples
+                                // 缓存"分支让指纹未变的 session 反复吃 full plan。
+                                index.sessions[sessionId] = SessionIndexEntry(
+                                    mtimeMs: info.mtimeMs,
+                                    sizeBytes: info.sizeBytes,
+                                    walMtimeMs: info.walMtimeMs,
+                                    walSizeBytes: info.walSizeBytes,
+                                    fetchedAt: nowDate,
+                                    eventCount: cached.eventCount,
+                                    generatorMetadataOffset: cached.generatorMetadataOffset,
+                                    lastMaxStepIndex: cached.lastMaxStepIndex,
+                                    lastTurnIndex: cached.lastTurnIndex
+                                )
+                                if index.samplesBySession?[sessionId] == nil {
+                                    var samplesBySession = index.samplesBySession ?? [:]
+                                    samplesBySession[sessionId] = []
+                                    index.samplesBySession = samplesBySession
+                                }
+                                if calendarChanged {
+                                    var pending = index.calendarRebuildPendingSessions ?? []
+                                    pending.insert(sessionId)
+                                    index.calendarRebuildPendingSessions = pending
+                                }
+                                logInfo("[antigravity-scan] session=\(sessionId) 连续 \(strikeCount) 轮零可计账 event 页，收敛并保留 last-good 缓存（eventCount=\(cached.eventCount)，offset=\(cached.generatorMetadataOffset) 不推进）\(calendarChanged ? "；daily 仍为旧日历分桶，已标记待 full 重建" : "")")
+                            } else {
+                                // 从无数据：写空终结条目（offset=0，不消费未
+                                // 解析的 raw 条目），让该 session 脱离 dirty
+                                // 集合；文件再变化时按 full plan 正常重扫。
+                                index.sessions[sessionId] = SessionIndexEntry(
+                                    mtimeMs: info.mtimeMs,
+                                    sizeBytes: info.sizeBytes,
+                                    walMtimeMs: info.walMtimeMs,
+                                    walSizeBytes: info.walSizeBytes,
+                                    fetchedAt: nowDate,
+                                    eventCount: 0,
+                                    generatorMetadataOffset: 0
+                                )
+                                var samplesBySession = index.samplesBySession ?? [:]
+                                samplesBySession[sessionId] = []
+                                index.samplesBySession = samplesBySession
+                                logInfo("[antigravity-scan] session=\(sessionId) 连续 \(strikeCount) 轮零可计账 event 页，收敛为空 session 终结态")
+                            }
+                            Self.clearZeroAccountedFullStrikes(for: sessionId, on: &index)
+                            continue
+                        }
+                        strikes[sessionId] = strikeCount
+                        index.zeroAccountedFullStrikesBySession = strikes
+                        failedCount = SaturatingArithmetic.add(failedCount, 1)
+                        logWarn("[antigravity-scan] session=\(sessionId) 页有 \(metadataEntryCount) 条 raw metadata 但零可计账 event（parsed=\(events.count)，incremental=\(wasIncremental)），保留 last-good cache 并于下次重试（strike \(strikeCount)/\(Self.zeroAccountedFullStrikeLimit)）")
+                        continue
+                    }
+                    // 拿到可入账 event：该 session 的零可计账打击计数清零（覆盖
+                    // 全量/增量两种页），进入正常分叉路径。
+                    Self.clearZeroAccountedFullStrikes(for: sessionId, on: &index)
+
                     if wasIncremental, let cached = index.sessions[sessionId] {
                         logDebug("[antigravity-scan] session=\(sessionId) ✓ 增量 metadata=\(metadataEntryCount), events=\(events.count) (accounted=\(eventStats.accounted)) input=\(inputTotal) output=\(outputTotal) cacheR=\(cacheReadTotal)")
                         let details = Self.computeTurnRoundDetails(
@@ -750,77 +827,6 @@ extension AntigravityLocalUsageScanner {
                             lastTurnIndex: details.lastTurnIndex
                         )
                     } else {
-                        // 全量页不可信防线：raw metadata 非零但可计账 event 为零
-                        // （events 为空，或 events 全部缺失 timestamp 且本地回填后
-                        // 仍为零）。多由 token 字段改名/换层级导致解析失败，此时
-                        // 若照常走全量替换，会把 last-good daily/samples/eventCount
-                        // 清零且 offset 推进整页 raw 条数——增量永远跳过这批数据，
-                        // 除非再触发 full 否则不可恢复。打击有界（镜像零 metadata
-                        // 机制）：连续 `zeroAccountedFullStrikeLimit` 轮后按成功
-                        // 收敛——否则持续零可计账的 session 会让 failedCount 永不
-                        // 归零、签名永不推进、每轮 reconcile 全量冷重建。
-                        guard eventStats.accounted > 0 else {
-                            var strikes = index.zeroAccountedFullStrikesBySession ?? [:]
-                            let strikeCount = SaturatingArithmetic.add(strikes[sessionId] ?? 0, 1)
-                            if strikeCount >= Self.zeroAccountedFullStrikeLimit {
-                                if let cached = index.sessions[sessionId] {
-                                    // 收敛：采用当前文件指纹，完整保留 eventCount /
-                                    // offset / lastMaxStepIndex / lastTurnIndex 与
-                                    // daily / samples。offset 刻意不推进——恢复路径
-                                    // 是文件再变化时 session 重新 dirty，从保留
-                                    // offset 重取同一批页、用（可能已修复的）解析器
-                                    // 重试；下次日历失效的冷重建也会 offset=0 全量
-                                    // 重来。补写空 samples 条目，避免"缺 samples
-                                    // 缓存"分支让指纹未变的 session 反复吃 full plan。
-                                    index.sessions[sessionId] = SessionIndexEntry(
-                                        mtimeMs: info.mtimeMs,
-                                        sizeBytes: info.sizeBytes,
-                                        walMtimeMs: info.walMtimeMs,
-                                        walSizeBytes: info.walSizeBytes,
-                                        fetchedAt: nowDate,
-                                        eventCount: cached.eventCount,
-                                        generatorMetadataOffset: cached.generatorMetadataOffset,
-                                        lastMaxStepIndex: cached.lastMaxStepIndex,
-                                        lastTurnIndex: cached.lastTurnIndex
-                                    )
-                                    if index.samplesBySession?[sessionId] == nil {
-                                        var samplesBySession = index.samplesBySession ?? [:]
-                                        samplesBySession[sessionId] = []
-                                        index.samplesBySession = samplesBySession
-                                    }
-                                    if calendarChanged {
-                                        var pending = index.calendarRebuildPendingSessions ?? []
-                                        pending.insert(sessionId)
-                                        index.calendarRebuildPendingSessions = pending
-                                    }
-                                    logInfo("[antigravity-scan] session=\(sessionId) 连续 \(strikeCount) 轮全量页零可计账 event，收敛并保留 last-good 缓存（eventCount=\(cached.eventCount)，offset=\(cached.generatorMetadataOffset) 不推进）\(calendarChanged ? "；daily 仍为旧日历分桶，已标记待 full 重建" : "")")
-                                } else {
-                                    // 从无数据：写空终结条目（offset=0，不消费未
-                                    // 解析的 raw 条目），让该 session 脱离 dirty
-                                    // 集合；文件再变化时按 full plan 正常重扫。
-                                    index.sessions[sessionId] = SessionIndexEntry(
-                                        mtimeMs: info.mtimeMs,
-                                        sizeBytes: info.sizeBytes,
-                                        walMtimeMs: info.walMtimeMs,
-                                        walSizeBytes: info.walSizeBytes,
-                                        fetchedAt: nowDate,
-                                        eventCount: 0,
-                                        generatorMetadataOffset: 0
-                                    )
-                                    var samplesBySession = index.samplesBySession ?? [:]
-                                    samplesBySession[sessionId] = []
-                                    index.samplesBySession = samplesBySession
-                                    logInfo("[antigravity-scan] session=\(sessionId) 连续 \(strikeCount) 轮全量页零可计账 event，收敛为空 session 终结态")
-                                }
-                                Self.clearZeroAccountedFullStrikes(for: sessionId, on: &index)
-                                continue
-                            }
-                            strikes[sessionId] = strikeCount
-                            index.zeroAccountedFullStrikesBySession = strikes
-                            failedCount = SaturatingArithmetic.add(failedCount, 1)
-                            logWarn("[antigravity-scan] session=\(sessionId) 全量页有 \(metadataEntryCount) 条 raw metadata 但零可计账 event（parsed=\(events.count)），保留 last-good cache 并于下次重试（strike \(strikeCount)/\(Self.zeroAccountedFullStrikeLimit)）")
-                            continue
-                        }
                         logDebug("[antigravity-scan] session=\(sessionId) ✓ 全量 metadata=\(metadataEntryCount), events=\(events.count) (accounted=\(eventStats.accounted)) input=\(inputTotal) output=\(outputTotal) cacheR=\(cacheReadTotal)")
                         let details = Self.computeTurnRoundDetails(
                             sessionID: sessionId,
@@ -853,10 +859,9 @@ extension AntigravityLocalUsageScanner {
                             lastMaxStepIndex: details.lastMaxStepIndex,
                             lastTurnIndex: details.lastTurnIndex
                         )
-                        // full 成功已按当前日历重建日桶，旧日历待重建标记随之清除；
-                        // 零可计账打击计数一并清零（解析已恢复）。
+                        // full 成功已按当前日历重建日桶，旧日历待重建标记随之清除
+                        // （零可计账打击计数已在分叉前的统一清零点处理）。
                         Self.clearCalendarRebuildPending(for: sessionId, on: &index)
-                        Self.clearZeroAccountedFullStrikes(for: sessionId, on: &index)
                     }
                 case .failure(let error):
                     failedCount = SaturatingArithmetic.add(failedCount, 1)
@@ -873,8 +878,10 @@ extension AntigravityLocalUsageScanner {
             index.lastScannedAt = nowDate
             // 签名保持 all-or-nothing，不需要按 session 签名：持久失败源全部
             // 变成有界收敛——空 suffix 连续 2 次后升级核验并可收敛；零 metadata
-            // 全量 3 轮打击后收敛；有 raw metadata 但零可计账 event 的全量页
-            // 同样 3 轮打击后收敛（保留 last-good，offset 刻意不推进）；且收敛
+            // 全量 3 轮打击后收敛；有 raw metadata 但零可计账 event 的页（全量/
+            // 增量 alike，打击上提到分叉前统一覆盖，增量页同款，避免解析损坏时
+            // offset 被无条件推进、raw 条目被永久吞掉）同样 3 轮打击后收敛
+            // （保留 last-good，offset 刻意不推进）；且收敛
             // 不计失败——所以 `failedCount > 0`（进而所有 session 以 batch=2 走
             // full plan）的轮数是有界的（通常 ≤ 3），之后 failedCount 归零、
             // 签名自然推进、回到便宜的 dirty/offset 模式。枚举不完整仍阻塞
@@ -920,11 +927,10 @@ extension AntigravityLocalUsageScanner {
     /// 基线判据：未提供 raw metadata 计数时，空事件列表不可信——既可能是 RPC
     /// 暂时未准备好，也可能来自错误的本地 server/workspace，必须保留旧缓存并重试。
     /// 提供 `metadataEntryCount` 时（全量/核验页），非零 raw 条数即为通过：raw
-    /// 条目可以合法地不含 token 字段，offset 必须按 raw 条数推进。注意"raw 非零
-    /// 但可计账 event 为零"的全量页在此放行，由全量分支替换前的 accounted 检查
-    /// 拦截，并按 `zeroAccountedFullStrikeLimit` 有界打击收敛——增量 suffix 采用
-    /// 合并式更新（不整体替换），且 offset 消费以 raw 条数为准，不能在此拦截，
-    /// 否则合法的零 event suffix 会无限重试。
+    /// 条目可以合法地不含 token 字段，offset 必须按 raw 条数推进。raw 非零但
+    /// 可计账为零的页（全量与增量 alike）由归约处的零可计账打击机制有界收敛
+    /// ——合法的零 token 页代价是按文件变化的有界重试，换取解析损坏时不吞掉
+    /// suffix 的 offset。
     nonisolated static func isTrustworthyRPCResult(
         _ events: [AntigravityFetcher.UsageEvent],
         metadataEntryCount: Int? = nil
@@ -944,10 +950,10 @@ extension AntigravityLocalUsageScanner {
     /// "连错 server 需要观察"与"不能被拖入永久全量循环"。
     nonisolated static let zeroMetadataFullStrikeLimit = 3
 
-    /// "有 raw metadata 但零可计账 event"全量结果的连续打击上限：达到后该
-    /// session 按成功收敛（有 last-good 保留 last-good 且 offset 刻意不推进，
-    /// 无数据写空终结条目）。与 `zeroMetadataFullStrikeLimit` 同款，保证
-    /// "所有持久失败模式有界收敛"的不变量：解析损坏/天然全零 token 的
+    /// "有 raw metadata 但零可计账 event"页（全量/增量 alike）的连续打击上限：
+    /// 达到后该 session 按成功收敛（有 last-good 保留 last-good 且 offset 刻意
+    /// 不推进，无数据写空终结条目）。与 `zeroMetadataFullStrikeLimit` 同款，
+    /// 保证"所有持久失败模式有界收敛"的不变量：解析损坏/天然全零 token 的
     /// session 不能把 failedCount 拖成永久 > 0。
     nonisolated static let zeroAccountedFullStrikeLimit = 3
 
@@ -977,8 +983,9 @@ extension AntigravityLocalUsageScanner {
         index.calendarRebuildPendingSessions = pending.isEmpty ? nil : pending
     }
 
-    /// 清除 session 的零可计账全量页打击计数（full 页成功入账、收敛或 session
-    /// 被确认删除时）。字典清空后写回 nil，避免 index.json 长期残留空对象。
+    /// 清除 session 的零可计账页（全量/增量 alike）打击计数（页成功入账、收敛
+    /// 或 session 被确认删除时）。字典清空后写回 nil，避免 index.json 长期残留
+    /// 空对象。
     private nonisolated static func clearZeroAccountedFullStrikes(
         for sessionID: String,
         on index: inout CacheIndex

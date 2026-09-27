@@ -2351,6 +2351,87 @@ final class AntigravityLocalUsageTests: XCTestCase {
         XCTAssertEqual(index.samplesBySession?[fixture.sessionID]?.count, 1)
     }
 
+    /// 增量页同款防线：生产活跃 session 有缓存（offset>0、samples 完整）后永远
+    /// 走增量 plan——"raw 非零但零可计账 event"的增量页不得按 raw 条数无条件
+    /// 推进 offset（否则解析损坏期间这批 token 被永久吞掉）。与全量页统一走
+    /// 有界打击收敛：第 1/2 轮计失败、offset/指纹/last-good 不动；第 3 轮收敛
+    /// （采用当前指纹、offset 保留、不计失败、签名照常推进）；此后指纹不变不再
+    /// 发 RPC；文件再变化 → 从保留 offset 增量重取，解析恢复后正常入账、打击
+    /// 计数保持清空。
+    func testZeroAccountedIncrementalPageConvergesAfterThreeStrikes() async throws {
+        // samples 缓存保持存在（夹具默认）+ cachedOffset=5 > 0 → 走增量 plan。
+        let fixture = try makeConvergenceFixture(cachedOffset: 5, cachedEventCount: 5)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+        let stub = MetadataStub { _, _ in
+            (events: [], metadataEntryCount: 7)
+        }
+        let base = Date(timeIntervalSince1970: 1_790_000_000)
+
+        // 第 1、2 轮：计失败、保留 last-good（offset=5、旧指纹、daily=500）。
+        let scan1 = try await runConvergenceScan(fixture: fixture, now: base, stub: stub)
+        XCTAssertEqual(scan1.failedSessionCount, 1)
+        XCTAssertEqual(stub.lastOffset, 5, "活跃 session（samples 缓存完整）必须走增量 plan")
+        var index = try loadConvergenceIndex(fixture)
+        XCTAssertEqual(index.zeroAccountedFullStrikesBySession?[fixture.sessionID], 1)
+        XCTAssertEqual(index.sessions[fixture.sessionID]?.generatorMetadataOffset, 5, "零可计账增量页不得推进 offset")
+        XCTAssertEqual(index.sessions[fixture.sessionID]?.mtimeMs, fixture.liveMtimeMs - 60_000, "打击期内不得采用当前文件指纹")
+        XCTAssertEqual(index.dailyBySession[fixture.sessionID]?[fixture.dayKey]?.inputTokens, 500)
+        XCTAssertEqual(index.samplesBySession?[fixture.sessionID]?.count, 0)
+
+        _ = try await runConvergenceScan(fixture: fixture, now: base.addingTimeInterval(60), stub: stub)
+        index = try loadConvergenceIndex(fixture)
+        XCTAssertEqual(index.zeroAccountedFullStrikesBySession?[fixture.sessionID], 2)
+        XCTAssertEqual(index.sessions[fixture.sessionID]?.generatorMetadataOffset, 5)
+
+        // 第 3 轮：收敛——不计失败、打击清零、采用当前指纹、offset 刻意保留。
+        let scan3 = try await runConvergenceScan(fixture: fixture, now: base.addingTimeInterval(120), stub: stub)
+        XCTAssertEqual(scan3.failedSessionCount, 0, "收敛不计失败")
+        index = try loadConvergenceIndex(fixture)
+        XCTAssertNil(index.zeroAccountedFullStrikesBySession, "收敛后打击计数清零")
+        let converged = try XCTUnwrap(index.sessions[fixture.sessionID])
+        XCTAssertEqual(converged.mtimeMs, fixture.liveMtimeMs, "收敛采用当前文件指纹")
+        XCTAssertEqual(converged.generatorMetadataOffset, 5, "offset 刻意不推进，供恢复时重取")
+        XCTAssertEqual(converged.eventCount, 5)
+        XCTAssertEqual(index.dailyBySession[fixture.sessionID]?[fixture.dayKey]?.inputTokens, 500)
+        XCTAssertEqual(index.samplesBySession?[fixture.sessionID]?.count, 0)
+        XCTAssertNil(
+            index.calendarRebuildPendingSessions,
+            "非日历变更轮收敛不打旧日历标记"
+        )
+        XCTAssertEqual(
+            index.calendarSignature, LocalUsageCalendarSignature.make(testCalendar),
+            "收敛后签名照常推进"
+        )
+
+        // 第 4 轮：指纹未变 → 不再产生该 session 的 plan（有界收敛生效）。
+        let callsAfterConverge = stub.callCount
+        let scan4 = try await runConvergenceScan(fixture: fixture, now: base.addingTimeInterval(180), stub: stub)
+        XCTAssertEqual(stub.callCount, callsAfterConverge)
+        XCTAssertEqual(scan4.failedSessionCount, 0)
+
+        // 第 5 轮：文件再变化 → 从保留 offset=5 增量重取；解析恢复后正常增量
+        // 入账，打击计数保持清空。
+        try Data(repeating: 2, count: 256).write(to: fixture.dbPath)
+        let recoveredEvents = [makeEvent(timestamp: fixture.dayStart.addingTimeInterval(3_600), input: 42, total: 42)]
+        await stub.setHandler { _, _ in
+            (events: recoveredEvents, metadataEntryCount: 2)
+        }
+        let scan5 = try await runConvergenceScan(fixture: fixture, now: base.addingTimeInterval(240), stub: stub)
+        XCTAssertEqual(scan5.failedSessionCount, 0)
+        XCTAssertEqual(stub.lastOffset, 5, "恢复路径必须是保留 offset 的增量重取")
+        index = try loadConvergenceIndex(fixture)
+        let recovered = try XCTUnwrap(index.sessions[fixture.sessionID])
+        XCTAssertEqual(recovered.generatorMetadataOffset, 7, "5 + 2，增量消费恢复")
+        XCTAssertEqual(recovered.eventCount, 6, "5 + 1，合并式入账")
+        XCTAssertEqual(
+            index.dailyBySession[fixture.sessionID]?[fixture.dayKey]?.inputTokens, 542,
+            "500 + 42，增量合并入账"
+        )
+        XCTAssertNil(index.zeroAccountedFullStrikesBySession, "成功入账后打击计数保持清空")
+        XCTAssertEqual(index.samplesBySession?[fixture.sessionID]?.count, 1)
+    }
+
     /// 补强：打击观察期内任一轮 full 页恢复可入账 event → 计数清零并正常
     /// 全量重算（与零 metadata 机制的清零路径对称）。
     func testZeroAccountedStrikesClearWhenFullPageSucceeds() async throws {
