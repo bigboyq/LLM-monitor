@@ -7,14 +7,14 @@
 ### Added
 
 - 设置页 Antigravity 区新增「本地用量缓存」分区与「强制全量重建本地缓存」按钮：忽略缓存对所有 session 强制重新请求 trajectory metadata，用于数据异常后的恢复；有其他刷新任务运行时按钮禁用并提示稍后再试。
-- 新增 GPT-6 Sol 与 GPT-6 Luna 定价（Sol：Input $2 / Cached Input $0.2 / Output $10；Luna：Input $0.1 / Cached Input $0.01 / Output $5），价目快照日期更新为 2026-09-23。
+- 新增 GPT-6 Sol 与 GPT-6 Luna 定价（Sol：Input $2 / Cached Input $0.2 / Output $10；Luna：Input $0.1 / Cached Input $0.01 / Output $0.5），价目快照日期更新为 2026-09-23。
 
 ### Changed
 
 - 状态栏与卡片的红黄绿判定统一到 `ModelQuota` 的时间感知 `colorLevel` 阈值（< 15 红；5h 短窗口 < 30 黄、长窗口 < min(剩余时间%, 50) 黄；否则绿），取代状态栏原先固定的 40%/15% 阈值。综合指示元素——Icon Duo 底部三点、Icon Duo 中心扇形、Provider 卡片头部点——统一按「实际可用」口径判定（每套餐取 min(5h 剩余, 周剩余 × 周倍率)，瓶颈窗口的剩余时间比例参与动态黄线）；左右弧线保持各自窗口的原始平均剩余，右弧新增「所有周窗口中最宽的剩余时间比例」作为动态黄线输入。行为变化示例：5h 剩余 35%（原黄）现在为绿、15%（原红）现在为黄；周额度临近重置时右弧与中心会比原来更早变黄。
 - GLM 高峰期新增保底规则：高峰时段（默认工作日 14:00–18:00）对应套餐的综合状态不低于黄色（红色优先，floor 不会吞掉红色）。仅作用于 Icon Duo 底部三点与 Provider 卡片头部点；左右弧线、中心扇形与经典 App 图标不受影响。
 - Icon Duo 状态栏图标的中心扇形改为显示所有套餐中最低的「实际可用」额度：每个套餐按自身存在的窗口取 `min(5 小时剩余, 周剩余 × 周倍率)`（仅 5h 窗口按 5h、仅周窗口按 周 × 周倍率参与，封顶 100%），与 Provider 卡片分段进度条的口径一致；此前中心只看 5 小时窗口最低剩余（完全没有 5h 窗口时才回退周额度），周额度先耗尽时中心会显得过于乐观。左右弧线与底部套餐健康点语义不变。
-- 本地用量扫描的缓存根集中迁移到应用统一缓存目录 `~/Library/Application Support/LLM-monitor/token-monitor/`（Antigravity / minimax / GLM / OpenCode / DSH 各一个子目录）：首次运行自动拷贝旧目录的 `index.json`，旧目录保留不删以便回退；Antigravity 迁移前写在 `~/.gemini` 下的 legacy rpc-cache 清理基址同步对齐旧缓存根，升级用户的旧缓存文件不再永久残留。
+- 本地用量扫描的缓存根集中迁移到应用统一缓存目录 `~/Library/Application Support/LLM-monitor/token-monitor/`，五个 provider 各占一个平级文件（`{provider}.json`），此前分散在各自家目录的 `.token-monitor/index.json` 不再读取：升级后首次运行按新路径冷重建，本地用量从客户端原始数据重新扫一遍（重建完成前菜单暂不展示缓存值，客户端数据库本身不受影响），旧目录原地保留不删。Antigravity 例外——迁移前 v3 写在 `~/.gemini/antigravity/.token-monitor/rpc-cache/` 的 per-session RPC 明细从无读取方，清理基址已对齐该真实旧路径，不再永久残留。
 - 打包产物瘦身：应用图标打包副本从 1024px 降采样为 256px（运行时只绘制 128px 位图）、release 构建启用 `-Osize` 优化，App 包 5.9MB → 4.7MB（DMG 4.1MB → 3.3MB），下载体积相应减小。
 - 主面板 Provider 卡片 footer 的 7 天柱图 hover 新增与设置页一致的预算截断口径提示：来源快照被单轮扫描预算截断时，悬浮明细同步显示橙色提示，避免把截断数据当成完整用量。
 - SQLite 只读扫描启用 immutable 直读：本地库无写进程活跃（无 -shm 且 WAL 无脏帧）时跳过共享内存检查与锁争用直接读主库，写端未运行时不再误报 CANTOPEN 而回退 /tmp 全量拷贝，常规扫描少一次副本 I/O；活跃写入时维持原共享内存读取。
