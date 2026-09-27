@@ -775,6 +775,56 @@ final class AntigravityLocalUsageTests: XCTestCase {
         XCTAssertNil(AntigravityStepTimestampReader.timestampForTest(from: Data([0x08, 0x01])))
     }
 
+    /// protobuf 边界回归：varint 一律不得越过自己的上界（外层信封 data.count /
+    /// 子消息边界 end）。此前子消息末尾带续位的 varint 会吃掉后面的信封字节、
+    /// 把 cursor 推过 end，`UInt64(end - cursor)`（负数）前置条件直接 trap，
+    /// 进程不可恢复崩溃。断言一律返回 nil（测试能跑完即证明不再 trap）。
+    func testStepTimestampReaderRejectsVarintCrossingSubmessageBoundary() {
+        func varint(_ value: UInt64) -> [UInt8] {
+            var value = value
+            var bytes: [UInt8] = []
+            repeat {
+                var byte = UInt8(value & 0x7F)
+                value >>= 7
+                if value != 0 { byte |= 0x80 }
+                bytes.append(byte)
+            } while value != 0
+            return bytes
+        }
+
+        // 已验证的 trap 样例（7 字节）：field1 len=2 → end=4；子消息里 12 是
+        // field2 wireType=2，80 带续位让旧 readVarint 越界读到 data[4] 返回
+        // 128，cursor=5 > end=4 → UInt64(-1) trap。
+        XCTAssertNil(
+            AntigravityStepTimestampReader.timestampForTest(
+                from: Data([0x0A, 0x02, 0x12, 0x80, 0x01, 0xAA, 0xBB])
+            ),
+            "子消息末尾带续位的 length-delim varint 必须返回 nil 而不是 trap"
+        )
+
+        // 子消息末尾 varint 截断（续位无后继）：field1 wireType=0 的 0x80 带续位，
+        // 子消息在 end 处结束。
+        XCTAssertNil(
+            AntigravityStepTimestampReader.timestampForTest(from: Data([0x0A, 0x03, 0x08, 0x80])),
+            "子消息内截断的 varint 必须返回 nil"
+        )
+
+        // wireType 0 varint 跨越 end 边界：0x80 带续位，若无上界会吃掉子消息后
+        // 的 0x2A（越界解析）。
+        XCTAssertNil(
+            AntigravityStepTimestampReader.timestampForTest(from: Data([0x0A, 0x03, 0x08, 0x80, 0x2A])),
+            "varint 不得越过子消息边界继续读取"
+        )
+
+        // 边界正例：子消息里未知 length-delim 字段的 nestedLength 恰好等于剩余
+        // 字节数 → 合法跳过，seconds 正常解析。
+        let seconds = UInt64(1_787_054_898)
+        let submessage = [UInt8(0x08)] + varint(seconds) + [UInt8(0x12), 0x02, 0xAA, 0xBB]
+        let metadata = Data([0x0A, UInt8(submessage.count)] + submessage)
+        let parsed = AntigravityStepTimestampReader.timestampForTest(from: metadata)
+        XCTAssertEqual(parsed?.timeIntervalSince1970 ?? 0, 1_787_054_898, accuracy: 0.001)
+    }
+
     func testStepTimestampReaderOpensOriginalPathReadOnlyAndTempCopyWritable() throws {
         // 直读原 .db 必须 READONLY（IDE 活动库，杜绝 WAL recovery/checkpoint
         // 写副作用）；SQLiteTempCopy 的 /tmp 副本保持 READWRITE（副本上可能
@@ -1810,6 +1860,130 @@ final class AntigravityLocalUsageTests: XCTestCase {
         XCTAssertEqual(model.healthLevel, .critical)
     }
 
+    // MARK: - M2: totalTokens 计算口径（computed 优先、全零才回退 server total）
+
+    /// M2 回归网：任一分量命中（哪怕只有 cacheRead）时 totalTokens 必须取
+    /// computed（分量和），不得被 computedTotal > 0 的旧判断压成"丢弃 server
+    /// total"的反向退化 —— 旧实现只命中 cacheRead 时会把 total 错算成单分量。
+    func testUsageEventUsesComputedTotalWhenAnyComponentIsPresent() throws {
+        // 只有 cacheRead 命中，server total 给一个系统性偏高的干扰值
+        let cacheReadOnly = try JSONDecoder().decode(
+            AnyJSON.self,
+            from: Data(
+                """
+                { "cacheReadTokens": 300, "totalTokens": 99999 }
+                """.utf8
+            )
+        )
+        let event = try XCTUnwrap(AntigravityFetcher.parseUsageEventForTest(cacheReadOnly))
+        XCTAssertEqual(event.cacheReadTokens, 300)
+        XCTAssertEqual(event.totalTokens, 300, "任一分量非零时必须采用 computed total，而非 server total")
+
+        // 多分量命中：computed = input + output + cacheRead + reasoning
+        let mixed = try JSONDecoder().decode(
+            AnyJSON.self,
+            from: Data(
+                """
+                {
+                  "inputTokens": 100, "outputTokens": 50,
+                  "cacheReadTokens": 20, "reasoningTokens": 10,
+                  "totalTokens": 185
+                }
+                """.utf8
+            )
+        )
+        let mixedEvent = try XCTUnwrap(AntigravityFetcher.parseUsageEventForTest(mixed))
+        XCTAssertEqual(mixedEvent.totalTokens, 180)
+    }
+
+    /// M2 的另一面：四个分量完全缺失（全 0）时才回退 server total —— 对齐
+    /// "只有分量完全缺失时才采用 server total" 的注释约定。
+    func testUsageEventFallsBackToServerTotalOnlyWhenAllComponentsZero() throws {
+        let noComponents = try JSONDecoder().decode(
+            AnyJSON.self,
+            from: Data(
+                """
+                { "totalTokens": 512 }
+                """.utf8
+            )
+        )
+        let event = try XCTUnwrap(AntigravityFetcher.parseUsageEventForTest(noComponents))
+        XCTAssertEqual(event.totalTokens, 512, "分量全零时应回退 server total")
+
+        // 分量全零但 server total 也为零：事件完全无 token 数据，应被丢弃
+        let allZero = try JSONDecoder().decode(
+            AnyJSON.self,
+            from: Data(
+                """
+                { "totalTokens": 0 }
+                """.utf8
+            )
+        )
+        XCTAssertNil(AntigravityFetcher.parseUsageEventForTest(allZero))
+    }
+
+    // MARK: - M3: 单个 bucket 异常只跳过该 group，不作废整次刷新
+
+    /// M3 回归网：某个 group 的 bucket 缺 `remainingFraction` 时，只跳过该
+    /// group 并继续产出其余 group（对齐 postOptional 的部分可用语义），
+    /// 不再让整次 Antigravity 额度刷新 throw。
+    func testQuotaModelsSkipGroupWithMissingFractionButKeepOthers() throws {
+        let data = Data(
+            """
+            {
+              "groups": [
+                {
+                  "displayName": "Gemini",
+                  "buckets": [{
+                    "bucketId": "weekly-model",
+                    "window": "weekly",
+                    "remainingFraction": 0.75
+                  }]
+                },
+                {
+                  "displayName": "Claude",
+                  "buckets": [{
+                    "bucketId": "claude-5h",
+                    "window": "5h"
+                  }]
+                }
+              ]
+            }
+            """.utf8
+        )
+        let models = try AntigravityFetcher.parseQuotaModelsForTest(data)
+        XCTAssertEqual(models.count, 1, "缺 remainingFraction 的 group 应被跳过，其余照常产出")
+        XCTAssertEqual(models.first?.modelName, "gemini_models")
+        XCTAssertEqual(models.first?.weeklyRemainingPercent, 75)
+    }
+
+    /// M3 的另一面：全部 group 都不可用（都缺 fraction / 都无 bucket）时，
+    /// 仍抛 decodingError —— 部分可用语义不等于"静默返回空额度"。
+    func testQuotaModelsAllGroupsUnavailableStillThrows() {
+        let data = Data(
+            """
+            {
+              "groups": [
+                {
+                  "displayName": "Gemini",
+                  "buckets": [{ "bucketId": "gemini-5h", "window": "5h" }]
+                },
+                {
+                  "displayName": "Claude",
+                  "buckets": []
+                }
+              ]
+            }
+            """.utf8
+        )
+        XCTAssertThrowsError(try AntigravityFetcher.parseQuotaModelsForTest(data)) { error in
+            guard case QuotaError.decodingError = error else {
+                XCTFail("expected .decodingError, got \(error)")
+                return
+            }
+        }
+    }
+
     func testIDEWithoutCSRFIsNotAUsableServerCandidate() {
         let tokenlessIDE = AntigravityFetcher.ProcessMatch(pid: 10, command: "/Applications/Antigravity.app/Contents/Resources/bin/language_server --app_data_dir antigravity", kind: .ide)
         let authenticatedIDE = AntigravityFetcher.ProcessMatch(pid: 11, command: "/Applications/Antigravity.app/Contents/Resources/bin/language_server --csrf_token test-token", kind: .ide)
@@ -1854,15 +2028,16 @@ final class AntigravityLocalUsageTests: XCTestCase {
     private final class MetadataStub: @unchecked Sendable {
         typealias Page = (events: [AntigravityFetcher.UsageEvent], metadataEntryCount: Int)
 
+        // handler 允许抛错：.failure 分支（传输层失败）没有其他测试接缝。
         private let lock = NSLock()
-        private var handler: @Sendable (String, Int) async -> Page
+        private var handler: @Sendable (String, Int) async throws -> Page
         private var calls: [(sessionID: String, offset: Int)] = []
 
-        init(handler: @escaping @Sendable (String, Int) async -> Page) {
+        init(handler: @escaping @Sendable (String, Int) async throws -> Page) {
             self.handler = handler
         }
 
-        func setHandler(_ handler: @escaping @Sendable (String, Int) async -> Page) {
+        func setHandler(_ handler: @escaping @Sendable (String, Int) async throws -> Page) {
             lock.withLock { self.handler = handler }
         }
 
@@ -1871,7 +2046,7 @@ final class AntigravityLocalUsageTests: XCTestCase {
                 calls.append((sessionID, offset))
                 return handler
             }
-            return await current(sessionID, offset)
+            return try await current(sessionID, offset)
         }
 
         var callCount: Int { lock.withLock { calls.count } }
@@ -2487,6 +2662,225 @@ final class AntigravityLocalUsageTests: XCTestCase {
         XCTAssertNil(index.sessions[fixture.sessionID], "session 被确认删除")
         XCTAssertNil(index.dailyBySession[fixture.sessionID])
         XCTAssertNil(index.zeroAccountedFullStrikesBySession, "删除 session 时打击计数一并清除")
+    }
+
+    // MARK: - 提前 continue 分支的打击计数清零/保留
+
+    /// 零 metadata 全量页是"确定不是零可计账页"的页结果（raw 总数为 0，无从
+    /// 谈起解析失败）：到达即清零零可计账打击计数。否则旧计数残留进
+    /// index.json，下次零可计账事件从 3 起算、1 轮即收敛，丢失 3 轮观察期。
+    func testZeroMetadataFullPageClearsZeroAccountedStrikes() async throws {
+        let fixture = try makeConvergenceFixture(cachedOffset: 5, cachedEventCount: 5)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+        // 移除 samples 缓存 → 走 full plan（cachedOffset=5 > 0 且无日历变更时
+        // 的唯一 full plan 入口）；预置 2 轮零可计账打击（此前扫描残留）。
+        var seeded = try loadConvergenceIndex(fixture)
+        seeded.samplesBySession?[fixture.sessionID] = nil
+        seeded.zeroAccountedFullStrikesBySession = [fixture.sessionID: 2]
+        try AntigravityLocalUsageScanner.saveIndex(
+            seeded, cacheDir: fixture.cache, fileManager: FileManagerBox(fixture.fm)
+        )
+
+        let stub = MetadataStub { _, _ in
+            (events: [], metadataEntryCount: 0)
+        }
+        let scan = try await runConvergenceScan(
+            fixture: fixture,
+            now: Date(timeIntervalSince1970: 1_790_000_000),
+            stub: stub
+        )
+        XCTAssertEqual(scan.failedSessionCount, 1, "零 metadata 打击轮照常计失败")
+        let index = try loadConvergenceIndex(fixture)
+        XCTAssertNil(index.zeroAccountedFullStrikesBySession, "零 metadata 页必须清零零可计账打击计数")
+        XCTAssertEqual(index.emptyFullStrikesBySession?[fixture.sessionID], 1, "零 metadata 计数照常累计")
+        XCTAssertNil(index.offsetRegressionStrikesBySession, "count=0 页由零 metadata 机制处理，不进回归计数")
+        XCTAssertEqual(index.sessions[fixture.sessionID]?.generatorMetadataOffset, 5, "last-good offset 保留")
+        XCTAssertEqual(
+            index.dailyBySession[fixture.sessionID]?[fixture.dayKey]?.inputTokens, 500,
+            "last-good daily 保留"
+        )
+    }
+
+    /// 核验收敛页（raw 总数与缓存一致、events 已在缓存入账）同样不是零可计账
+    /// 页证据，到达即清零。
+    func testVerificationConvergenceClearsZeroAccountedStrikes() async throws {
+        let fixture = try makeConvergenceFixture(cachedOffset: 5, cachedEventCount: 5)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+        let stub = MetadataStub { _, offset in
+            (events: [], metadataEntryCount: offset == 5 ? 0 : 5)
+        }
+        let base = Date(timeIntervalSince1970: 1_790_000_000)
+
+        // 前两轮空 suffix → 升级核验。
+        _ = try await runConvergenceScan(fixture: fixture, now: base, stub: stub)
+        _ = try await runConvergenceScan(fixture: fixture, now: base.addingTimeInterval(60), stub: stub)
+
+        // 核验前预置 2 轮零可计账打击（此前扫描残留）。
+        var seeded = try loadConvergenceIndex(fixture)
+        seeded.zeroAccountedFullStrikesBySession = [fixture.sessionID: 2]
+        try AntigravityLocalUsageScanner.saveIndex(
+            seeded, cacheDir: fixture.cache, fileManager: FileManagerBox(fixture.fm)
+        )
+
+        // 第 3 轮：offset=0 核验返回 count=5 == 缓存 offset → 收敛并清零。
+        let scan3 = try await runConvergenceScan(fixture: fixture, now: base.addingTimeInterval(120), stub: stub)
+        XCTAssertEqual(scan3.failedSessionCount, 0, "核验收敛不计失败")
+        let index = try loadConvergenceIndex(fixture)
+        XCTAssertNil(index.zeroAccountedFullStrikesBySession, "核验收敛页必须清零零可计账打击计数")
+        XCTAssertEqual(index.sessions[fixture.sessionID]?.mtimeMs, fixture.liveMtimeMs, "收敛推进文件指纹")
+        XCTAssertEqual(index.sessions[fixture.sessionID]?.generatorMetadataOffset, 5)
+    }
+
+    /// 空 suffix（.emptyIncremental）是真实的页结果（增量页成功返回、suffix
+    /// 为空），不构成零可计账页证据，到达即清零。
+    func testEmptyIncrementalClearsZeroAccountedStrikes() async throws {
+        let fixture = try makeConvergenceFixture(cachedOffset: 5, cachedEventCount: 5)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+        var seeded = try loadConvergenceIndex(fixture)
+        seeded.zeroAccountedFullStrikesBySession = [fixture.sessionID: 2]
+        try AntigravityLocalUsageScanner.saveIndex(
+            seeded, cacheDir: fixture.cache, fileManager: FileManagerBox(fixture.fm)
+        )
+
+        // samples 缓存完整 + cachedOffset=5 → 走增量 plan，suffix 为空。
+        let stub = MetadataStub { _, _ in
+            (events: [], metadataEntryCount: 0)
+        }
+        let scan = try await runConvergenceScan(
+            fixture: fixture,
+            now: Date(timeIntervalSince1970: 1_790_000_000),
+            stub: stub
+        )
+        XCTAssertEqual(scan.failedSessionCount, 1)
+        let index = try loadConvergenceIndex(fixture)
+        XCTAssertNil(index.zeroAccountedFullStrikesBySession, "空 suffix 页必须清零零可计账打击计数")
+        XCTAssertEqual(index.sessions[fixture.sessionID]?.consecutiveEmptySuffixes, 1)
+        XCTAssertEqual(index.sessions[fixture.sessionID]?.generatorMetadataOffset, 5)
+    }
+
+    /// RPC .failure 是传输层结果、不含解析证据：刻意保留零可计账打击计数——
+    /// 网络抖动若也打断计数，"解析损坏 + 网络差"的 session 永远凑不满 3 轮
+    /// 观察期 → failedCount 永不归零 → 签名永不推进，破坏有界收敛不变量。
+    func testRPCFailureKeepsZeroAccountedStrikes() async throws {
+        let fixture = try makeConvergenceFixture(cachedOffset: 5, cachedEventCount: 5)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+        var seeded = try loadConvergenceIndex(fixture)
+        seeded.zeroAccountedFullStrikesBySession = [fixture.sessionID: 2]
+        try AntigravityLocalUsageScanner.saveIndex(
+            seeded, cacheDir: fixture.cache, fileManager: FileManagerBox(fixture.fm)
+        )
+
+        let stub = MetadataStub { _, _ in
+            throw NSError(domain: "test", code: 1)
+        }
+        let scan = try await runConvergenceScan(
+            fixture: fixture,
+            now: Date(timeIntervalSince1970: 1_790_000_000),
+            stub: stub
+        )
+        XCTAssertEqual(scan.failedSessionCount, 1)
+        let index = try loadConvergenceIndex(fixture)
+        XCTAssertEqual(
+            index.zeroAccountedFullStrikesBySession?[fixture.sessionID], 2,
+            "RPC 失败不得清零零可计账打击计数"
+        )
+        XCTAssertEqual(index.sessions[fixture.sessionID]?.generatorMetadataOffset, 5)
+        XCTAssertEqual(index.sessions[fixture.sessionID]?.mtimeMs, fixture.liveMtimeMs - 60_000)
+    }
+
+    // MARK: - 全量页 offset 回归防护
+
+    /// cachedOffset=5 的 session，全量页返回 count=3（< offset，server 丢数据/
+    /// 截断/连错 workspace）：不得照常全量替换覆盖 last-good——offset 保留 5、
+    /// eventCount/daily 不变，计失败并记回归打击（即使页内 events 可解析）；
+    /// 连续 3 轮后按成功收敛（采用当前指纹、offset 绝不回退到 3、不计失败）；
+    /// 随后 server 恢复（count=7 ≥ offset）→ 正常全量替换、回归计数清空。
+    func testFullPageOffsetRegressionKeepsLastGoodAndConvergesAfterThreeStrikes() async throws {
+        let fixture = try makeConvergenceFixture(cachedOffset: 5, cachedEventCount: 5)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+        // 移除 samples 缓存 → 每轮都走 full plan（cachedOffset=5 > 0 且无日历
+        // 变更时的唯一 full plan 入口）。
+        var seeded = try loadConvergenceIndex(fixture)
+        seeded.samplesBySession?[fixture.sessionID] = nil
+        try AntigravityLocalUsageScanner.saveIndex(
+            seeded, cacheDir: fixture.cache, fileManager: FileManagerBox(fixture.fm)
+        )
+
+        // 回归页的 events 完全可解析——即便如此也必须拒绝覆盖 last-good。
+        let truncatedEvents = [
+            makeEvent(timestamp: fixture.dayStart.addingTimeInterval(3_600), input: 10, total: 10)
+        ]
+        let stub = MetadataStub { _, _ in
+            (events: truncatedEvents, metadataEntryCount: 3)
+        }
+        let base = Date(timeIntervalSince1970: 1_790_000_000)
+
+        // 第 1、2 轮：回归页计失败、last-good 完整保留（offset 5、旧指纹）。
+        let scan1 = try await runConvergenceScan(fixture: fixture, now: base, stub: stub)
+        XCTAssertEqual(scan1.failedSessionCount, 1)
+        var index = try loadConvergenceIndex(fixture)
+        XCTAssertEqual(index.offsetRegressionStrikesBySession?[fixture.sessionID], 1)
+        XCTAssertEqual(index.sessions[fixture.sessionID]?.generatorMetadataOffset, 5, "回归页不得回退/覆盖 last-good offset")
+        XCTAssertEqual(index.sessions[fixture.sessionID]?.eventCount, 5, "last-good eventCount 保留")
+        XCTAssertEqual(index.sessions[fixture.sessionID]?.mtimeMs, fixture.liveMtimeMs - 60_000, "打击期内不得采用当前文件指纹")
+        XCTAssertEqual(
+            index.dailyBySession[fixture.sessionID]?[fixture.dayKey]?.inputTokens, 500,
+            "last-good daily 保留"
+        )
+        XCTAssertNil(index.zeroAccountedFullStrikesBySession, "可解析的回归页不进零可计账打击计数")
+        XCTAssertNil(index.emptyFullStrikesBySession, "count 非零不进零 metadata 打击计数")
+
+        _ = try await runConvergenceScan(fixture: fixture, now: base.addingTimeInterval(60), stub: stub)
+        index = try loadConvergenceIndex(fixture)
+        XCTAssertEqual(index.offsetRegressionStrikesBySession?[fixture.sessionID], 2)
+
+        // 第 3 轮：收敛——不计失败、指纹采用、offset 仍 5（绝不回退到 3）。
+        let scan3 = try await runConvergenceScan(fixture: fixture, now: base.addingTimeInterval(120), stub: stub)
+        XCTAssertEqual(scan3.failedSessionCount, 0, "收敛不计失败")
+        index = try loadConvergenceIndex(fixture)
+        XCTAssertNil(index.offsetRegressionStrikesBySession, "收敛后回归计数清空")
+        let converged = try XCTUnwrap(index.sessions[fixture.sessionID])
+        XCTAssertEqual(converged.mtimeMs, fixture.liveMtimeMs, "收敛采用当前文件指纹")
+        XCTAssertEqual(converged.generatorMetadataOffset, 5, "offset 保留 5，绝不回退")
+        XCTAssertEqual(converged.eventCount, 5)
+        XCTAssertEqual(index.dailyBySession[fixture.sessionID]?[fixture.dayKey]?.inputTokens, 500)
+        XCTAssertEqual(
+            index.calendarSignature, LocalUsageCalendarSignature.make(testCalendar),
+            "收敛后签名照常推进"
+        )
+
+        // 第 4 轮：server 恢复（count=7 ≥ offset）。缩小文件触发 shrink →
+        // full plan（offset=0），7 >= 5 无回归 → 正常全量替换、计数清空。
+        try Data(repeating: 3, count: 64).write(to: fixture.dbPath)
+        let recoveredEvents = (0..<7).map {
+            makeEvent(
+                timestamp: fixture.dayStart.addingTimeInterval(3_600 + Double($0 * 60)),
+                input: 1,
+                total: 1
+            )
+        }
+        await stub.setHandler { _, _ in
+            (events: recoveredEvents, metadataEntryCount: 7)
+        }
+        let scan4 = try await runConvergenceScan(fixture: fixture, now: base.addingTimeInterval(180), stub: stub)
+        XCTAssertEqual(scan4.failedSessionCount, 0)
+        index = try loadConvergenceIndex(fixture)
+        let recovered = try XCTUnwrap(index.sessions[fixture.sessionID])
+        XCTAssertEqual(recovered.generatorMetadataOffset, 7, "server 恢复后正常全量替换按 raw 总数重置 offset")
+        XCTAssertEqual(recovered.eventCount, 7)
+        XCTAssertEqual(
+            index.dailyBySession[fixture.sessionID]?[fixture.dayKey]?.inputTokens, 7,
+            "server 恢复后全量重算整体替换日桶"
+        )
+        XCTAssertEqual(index.samplesBySession?[fixture.sessionID]?.count, 7)
+        XCTAssertNil(index.offsetRegressionStrikesBySession, "无回归页清空回归计数")
+        XCTAssertNil(index.emptyFullStrikesBySession)
+        XCTAssertNil(index.zeroAccountedFullStrikesBySession)
     }
 
     // MARK: - 旧日历重建待办标记（修复 2）

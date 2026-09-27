@@ -192,8 +192,9 @@ struct ModelQuota: Equatable, Codable, Sendable {
     func weeklyTimeRemainingFraction(at now: Date) -> Double? {
         guard hasWeeklyWindow else { return nil }
         guard let end = weeklyResetsAt else {
+            // 各 fetcher 已保证 present ⇒ resetsAt 非 nil；这里只剩服务端 schema
+            // 漂移等防御路径。降级为 nil（固定 30% 黄线），不 trap 菜单栏 App。
             logWarn("[quota] model \(modelName) weekly window is present but reset time is missing")
-            assertionFailure("ModelQuota weekly window is present without weeklyResetsAt")
             return nil
         }
         let length = weeklyWindowSeconds ?? (7 * 24 * 60 * 60)

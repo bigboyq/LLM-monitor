@@ -128,11 +128,11 @@ struct MinimaxTokenPlanFetcher: QuotaFetcher {
                 fieldPrefix: "model_remains[\(modelName)].current_weekly"
             )
 
-            guard let intervalRemainingPercent = entry.intervalRemainingPercent,
-                  intervalRemainingPercent.isFinite,
-                  (0...100).contains(intervalRemainingPercent) else {
+            // percent 字段一旦存在就必须合法（5h 与周窗口同一校验强度）。
+            if let intervalPercent = entry.intervalRemainingPercent,
+               (!intervalPercent.isFinite || !(0...100).contains(intervalPercent)) {
                 throw QuotaError.decodingError(
-                    "model_remains[\(modelName)] 缺少或包含非法 current_interval_remaining_percent"
+                    "model_remains[\(modelName)] 包含非法 current_interval_remaining_percent"
                 )
             }
 
@@ -147,20 +147,40 @@ struct MinimaxTokenPlanFetcher: QuotaFetcher {
             // quota has reached 0. ModelQuota uses .present to mean that the
             // window exists, so normalize the exhausted-but-present state here;
             // otherwise the UI incorrectly falls back to the weekly window.
-            let intervalStatus = normalizedWindowStatus(entry.intervalStatus, defaultStatus: .present)
+            //
+            // percent 缺失的容忍语义 5h 与周窗口对齐：status 缺失/非激活且无
+            // percent 时窗口按 absent 处理（部分 model 的字段子集只有周窗口），
+            // 不再让整份 provider 刷新失败；声明 present（raw status 1/2）但
+            // 缺 percent 仍然拒绝。
+            let intervalStatus = normalizedWindowStatus(
+                entry.intervalStatus,
+                defaultStatus: entry.intervalRemainingPercent == nil ? .absent : .present
+            )
             let weeklyStatus = normalizedWindowStatus(
                 entry.weeklyStatus,
                 defaultStatus: entry.weeklyRemainingPercent == nil ? .absent : .present
             )
+            if intervalStatus.isPresent {
+                guard entry.intervalRemainingPercent != nil else {
+                    throw QuotaError.decodingError(
+                        "model_remains[\(modelName)] 声明 5h 窗口有效，但缺少合法 current_interval_remaining_percent"
+                    )
+                }
+            }
             if weeklyStatus.isPresent {
-                guard let weeklyPercent = entry.weeklyRemainingPercent,
-                      weeklyPercent.isFinite,
-                      (0...100).contains(weeklyPercent) else {
+                guard entry.weeklyRemainingPercent != nil else {
                     throw QuotaError.decodingError(
                         "model_remains[\(modelName)] 声明周窗口有效，但缺少合法 current_weekly_remaining_percent"
                     )
                 }
             }
+
+            // 周窗口声明 present 但缺 weekly_end_time 时，按 7 天窗口长度兜底
+            // 构造 reset 边界（与 GLM fetcher 5h 缺 reset 的兜底同款），避免
+            // weeklyStatus=.present 而 weeklyResetsAt=nil 的问题组合。
+            let weeklyResetsAt = entry.weeklyEndTime.flatMap(DateParser.parseMsTimestamp)
+                ?? (weeklyStatus.isPresent ? Date().addingTimeInterval(7 * 86_400) : nil)
+            let intervalRemainingPercent = entry.intervalRemainingPercent ?? 0
 
             let m = ModelQuota(
                 modelName: modelName,
@@ -174,7 +194,7 @@ struct MinimaxTokenPlanFetcher: QuotaFetcher {
                 weeklyUsageCount: weeklyCounts.usage,
                 weeklyRemainingPercent: entry.weeklyRemainingPercent ?? 0,
                 weeklyStatus: weeklyStatus,
-                weeklyResetsAt: entry.weeklyEndTime.flatMap(DateParser.parseMsTimestamp),
+                weeklyResetsAt: weeklyResetsAt,
                 weeklyWindowSeconds: nil
             )
             logDebug("\(logTag)   - \(m.modelName): 5h=\(m.intervalRemainingPercent)%, 周=\(m.weeklyRemainingPercent)%, resetsAt=\(m.intervalResetsAt?.description ?? "nil")")

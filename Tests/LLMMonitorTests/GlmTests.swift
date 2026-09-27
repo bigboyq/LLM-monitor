@@ -82,6 +82,40 @@ final class GlmTests: XCTestCase {
         XCTAssertEqual(model.weeklyResetsAt, Date(timeIntervalSince1970: 1_800_600_000))
     }
 
+    /// 周窗口缺 `nextResetTime` 时与 5h 缺 reset 同款兜底：按 7 天窗口长度构造
+    /// 明确边界。回归网：避免产出 weeklyStatus=.present 而 weeklyResetsAt=nil
+    /// 的组合 —— 该组合曾让 Debug 构建在 weeklyTimeRemainingFraction 断言 trap。
+    func testGlmMissingWeeklyResetUsesSevenDayFallback() throws {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let json = #"""
+        {
+          "code": 200,
+          "success": true,
+          "data": {
+            "level": "lite",
+            "limits": [
+              { "type": "CREDIT_LIMIT", "unit": 3, "number": 5,
+                "usage": 2000, "currentValue": 0, "remaining": 2000,
+                "nextResetTime": 1800600000000 },
+              { "type": "CREDIT_LIMIT", "unit": 6, "number": 1,
+                "usage": 10000, "currentValue": 0, "remaining": 10000 }
+            ]
+          }
+        }
+        """#
+
+        let model = try XCTUnwrap(
+            try GlmCodingPlanFetcher.parse(data: Data(json.utf8), now: now).models.first
+        )
+        XCTAssertEqual(model.weeklyStatus, .present)
+        XCTAssertEqual(model.weeklyResetsAt, now.addingTimeInterval(7 * 86_400))
+        // 5h 侧的既有兜底不受影响
+        XCTAssertEqual(model.intervalResetsAt, Date(timeIntervalSince1970: 1_800_600_000))
+
+        // 消费面契约：present 的周窗口必须能取到剩余时间比例（无 trap、无降级 nil）
+        XCTAssertNotNil(model.weeklyTimeRemainingFraction(at: now))
+    }
+
     // MARK: - GLM Peak Window Tests
 
     private var cal: Calendar {

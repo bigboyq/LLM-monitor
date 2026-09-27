@@ -840,6 +840,32 @@ final class ProviderModelTests: XCTestCase {
         XCTAssertNotNil(shortQuota.weeklyTimeRemainingFraction)
     }
 
+    /// M1 消费面防御回归网：周窗口 present 但 `weeklyResetsAt` 缺失（服务端
+    /// schema 漂移 / 旧缓存样本等防御路径）时，`weeklyTimeRemainingFraction`
+    /// 降级返回 nil（固定 30% 黄线），不再在 Debug(-Onone) 构建断言 trap
+    /// 菜单栏 App。注意：本用例在修复前的 Debug 测试下会直接 crash。
+    func testWeeklyTimeRemainingFractionDegradesGracefullyWhenResetMissing() {
+        let degraded = ModelQuota(
+            modelName: "general",
+            intervalTotalCount: 0,
+            intervalUsageCount: 0,
+            intervalRemainingPercent: 50,
+            intervalStatus: .absent,
+            intervalResetsAt: nil,
+            intervalWindowSeconds: nil,
+            weeklyTotalCount: 0,
+            weeklyUsageCount: 0,
+            weeklyRemainingPercent: 50,
+            weeklyStatus: .present,
+            weeklyResetsAt: nil,
+            weeklyWindowSeconds: nil
+        )
+        XCTAssertTrue(degraded.hasWeeklyWindow)
+        // 降级为 nil（固定 30% 黄线），而不是 trap
+        XCTAssertNil(degraded.weeklyTimeRemainingFraction)
+        XCTAssertNil(degraded.weeklyTimeRemainingFraction(at: Date(timeIntervalSince1970: 1_800_000_000)))
+    }
+
     func testHealthLevelNewThresholds() {
         let futureDate = Date().addingTimeInterval(3.5 * 24 * 60 * 60) // 50% time remaining (~3.5d of 7d)
 

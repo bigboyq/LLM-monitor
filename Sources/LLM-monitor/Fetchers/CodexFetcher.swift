@@ -135,6 +135,10 @@ struct CodexFetcher: QuotaFetcher {
                 logInfo("[codex] reset credits: 可用 \(resetCredits?.availableCount ?? 0) / 共 \(resetCredits?.entries.count ?? 0) 条")
             } catch {
                 // usage 抛错时 resetTask 已随作用域隐式取消，不会走到这里。
+                // reset 失败可能只是整个刷新任务被取消（URLError.cancelled /
+                // CancellationError），不能吞掉伪装成功 —— 与 Deepseek / GLM /
+                // minimax 的取消传播语义对齐，这里先检查再决定是否降级。
+                try Task.checkCancellation()
                 logWarn("[codex] reset-credits 拉取失败: \(error.localizedDescription)，忽略")
                 resetCredits = nil
             }
@@ -478,6 +482,14 @@ struct CodexFetcher: QuotaFetcher {
         }
         let intervalUsed = primary.usedPercent
         let weeklyUsed = usage.secondary?.usedPercent ?? 0
+        // secondary_window 存在但缺 reset_at 时，按窗口长度兜底构造 reset 边界
+        // （长度未知按 7 天），避免 weeklyStatus=.present 而 weeklyResetsAt=nil
+        // 的组合 —— 与 GLM / minimax fetcher 对周窗口缺 reset 的兜底同款。
+        let weeklyResetsAt = usage.secondary.map { window in
+            window.resetsAt ?? Date().addingTimeInterval(
+                TimeInterval(window.limitWindowSeconds ?? 7 * 24 * 60 * 60)
+            )
+        }
         return ModelQuota(
             modelName: "chatgpt_plan",
             intervalTotalCount: 0,
@@ -492,7 +504,7 @@ struct CodexFetcher: QuotaFetcher {
             // secondary_window 为 null 或缺少 used_percent 时 parseWindow 会返回 nil；
             // 用 status 保留“该窗口不存在”的信息，供 UI 决定是否渲染。
             weeklyStatus: usage.secondary == nil ? .absent : .present,
-            weeklyResetsAt: usage.secondary?.resetsAt,
+            weeklyResetsAt: weeklyResetsAt,
             weeklyWindowSeconds: usage.secondary?.limitWindowSeconds
         )
     }

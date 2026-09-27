@@ -26,11 +26,17 @@ final class CodexFetcherTests: XCTestCase {
         nonisolated(unsafe) static var capturedHeaders: [String: [String: String]] = [:]
         /// 记录每个 path 被请求的次数。
         nonisolated(unsafe) static var callCounts: [String: Int] = [:]
+        /// 取消传播测试用：path 在此集合中的请求只计数、永不回包 —— 请求保持
+        /// in-flight，取消（URLError.cancelled）成为唯一出口。注意不能在
+        /// startLoading 里阻塞等待：那会堵住 session 的串行回调队列，连
+        /// 取消完成事件都无法派发。
+        nonisolated(unsafe) static var neverRespondPaths: Set<String> = []
 
         static func reset() {
             responses.removeAll()
             capturedHeaders.removeAll()
             callCounts.removeAll()
+            neverRespondPaths.removeAll()
         }
 
         override class func canInit(with request: URLRequest) -> Bool {
@@ -52,6 +58,11 @@ final class CodexFetcherTests: XCTestCase {
                 captured[k] = v
             }
             Self.capturedHeaders[url.path] = captured
+
+            // callCount 已落地再返回：测试轮询 callCount 即可得知请求已发起
+            if Self.neverRespondPaths.contains(url.path) {
+                return
+            }
 
             let httpResponse = HTTPURLResponse(
                 url: url,
@@ -256,6 +267,95 @@ final class CodexFetcherTests: XCTestCase {
             info.resetCredits?.entries.filter { $0.status.lowercased() == "available" }.count,
             2
         )
+    }
+
+    /// M1 回归网：secondary_window 存在但缺 `reset_at` 时，按窗口长度兜底构造
+    /// reset 边界（长度未知按 7 天）。不得产出 weeklyStatus=.present 而
+    /// weeklyResetsAt=nil 的组合 —— 该组合曾让 Debug 构建在
+    /// `ModelQuota.weeklyTimeRemainingFraction` 断言 trap。
+    func testCodexWeeklyWindowWithoutResetAtFallsBackToWindowLength() throws {
+        func usageJSON(secondaryWindow: [String: Any]) -> Data {
+            try! JSONSerialization.data(withJSONObject: [
+                "rate_limit": [
+                    "primary_window": [
+                        "used_percent": 20,
+                        "limit_window_seconds": 1800,
+                        "reset_at": 1_900_000_000
+                    ],
+                    "secondary_window": secondaryWindow
+                ]
+            ])
+        }
+
+        // 1) 有窗口长度：兜底 = now + limit_window_seconds
+        let withWindow = try CodexFetcher.parseUsage(
+            try CodexFetcher.parseUsageData(usageJSON(secondaryWindow: [
+                "used_percent": 40, "limit_window_seconds": 604_800
+            ]))
+        )
+        XCTAssertEqual(withWindow.weeklyStatus, .present)
+        XCTAssertNotNil(withWindow.weeklyResetsAt, "present 周窗口缺 reset_at 时必须有兜底 reset 边界")
+        XCTAssertNotNil(withWindow.weeklyTimeRemainingFraction, "消费面契约：present 周窗口应能取到剩余时间比例")
+
+        // 2) 无窗口长度：按 7 天兜底，reset 边界仍非 nil
+        let withoutWindow = try CodexFetcher.parseUsage(
+            try CodexFetcher.parseUsageData(usageJSON(secondaryWindow: ["used_percent": 40]))
+        )
+        XCTAssertEqual(withoutWindow.weeklyStatus, .present)
+        XCTAssertNotNil(withoutWindow.weeklyResetsAt)
+        XCTAssertNotNil(withoutWindow.weeklyTimeRemainingFraction)
+    }
+
+    /// M5 回归网：full 模式下 reset-credits 请求因整个刷新任务被取消而失败时，
+    /// fetch 必须把取消传播出去（抛 CancellationError），而不是吞掉错误、
+    /// 返回 resetCredits=nil 的"成功"。与 Deepseek / GLM / minimax 的取消语义对齐。
+    func testCodexFetcherFetchFullModePropagatesTaskCancellationFromResetCredits() async throws {
+        let authURL = try makeAuthFile()
+        StubURLProtocol.responses[Self.usagePath] = .init(
+            statusCode: 200,
+            headers: ["Content-Type": "application/json"],
+            body: Self.validUsageJSON()
+        )
+        StubURLProtocol.responses[Self.resetPath] = .init(
+            statusCode: 200,
+            headers: ["Content-Type": "application/json"],
+            body: Self.validResetCreditsJSON(availableCount: 1, totalEarned: 1)
+        )
+        // reset-credits 永不回包：取消发生时该请求必然仍 in-flight
+        StubURLProtocol.neverRespondPaths.insert(Self.resetPath)
+        defer {
+            StubURLProtocol.neverRespondPaths.remove(Self.resetPath)
+        }
+
+        let fetcher = CodexFetcher(
+            authPath: authURL.path,
+            session: makeSession()
+        )
+
+        let task = Task { try await fetcher.fetch(mode: .full) }
+        // 等 usage 与 reset 都已发起；usage 无挂起、stub 同步回包，稍候即完成
+        for _ in 0..<500 where (StubURLProtocol.callCounts[Self.usagePath] ?? 0) == 0 {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        for _ in 0..<500 where (StubURLProtocol.callCounts[Self.resetPath] ?? 0) == 0 {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertEqual(StubURLProtocol.callCounts[Self.usagePath], 1, "usage 请求应已发起")
+        XCTAssertEqual(StubURLProtocol.callCounts[Self.resetPath], 1, "reset-credits 请求应已发起")
+        // 给 usage 响应完全落地留出余量，确保取消只打断 reset 子请求
+        try await Task.sleep(nanoseconds: 200_000_000)
+
+        task.cancel()
+
+        do {
+            _ = try await task.value
+            XCTFail("取消后的 full 抓取不应吞掉取消、伪装成功返回")
+        } catch {
+            XCTAssertTrue(
+                error is CancellationError,
+                "reset-credits 因取消失败时 fetch 应传播 CancellationError，实际: \(error)"
+            )
+        }
     }
 
     /// reset credits 响应里 `credits=[]` 但 `available_count=3`：

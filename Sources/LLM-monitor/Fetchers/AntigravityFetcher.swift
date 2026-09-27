@@ -358,7 +358,8 @@ struct AntigravityFetcher: QuotaFetcher {
         // 以各分量按约定计算，只有分量完全缺失时才采用 server total。
         let components = [inputTokens, outputTokens, cacheReadTokens, reasoningTokens]
         let computedTotal = components.reduce(0, Self.saturatingAdd)
-        let finalTotal = computedTotal > 0 ? computedTotal : totalTokens
+        // 与注释一致：只有四个分量完全缺失（全 0）时才回退 server total。
+        let finalTotal = components.allSatisfy { $0 == 0 } ? totalTokens : computedTotal
 
         // 完全没有 token 数据的事件跳过（避免空 entry 污染聚合）
         guard finalTotal > 0 || cacheWriteTokens > 0 else {
@@ -597,38 +598,47 @@ struct AntigravityFetcher: QuotaFetcher {
 
 
     private nonisolated static func makeModels(from response: RetrieveUserQuotaSummaryResponse) throws -> [ModelQuota] {
-        let models = try response.groups.compactMap { group -> ModelQuota? in
+        // 单个 group 的 bucket 数据异常（缺/非法 remainingFraction）只跳过该
+        // group 并记日志，不作废整次额度刷新 —— 对齐 postOptional 的部分可用
+        // 语义；全部 group 都不可用时仍然抛错。
+        var models: [ModelQuota] = []
+        for group in response.groups {
             let weekly = bucket(for: "weekly", in: group.buckets)
             let fiveHour = bucket(for: "5h", in: group.buckets)
 
-            guard weekly != nil || fiveHour != nil else { return nil }
+            guard weekly != nil || fiveHour != nil else { continue }
 
-            let fiveHourPercent = try percent(
-                from: fiveHour,
-                window: "5h",
-                groupName: group.displayName
-            )
-            let weeklyPercent = try percent(
-                from: weekly,
-                window: "weekly",
-                groupName: group.displayName
-            )
+            do {
+                let fiveHourPercent = try percent(
+                    from: fiveHour,
+                    window: "5h",
+                    groupName: group.displayName
+                )
+                let weeklyPercent = try percent(
+                    from: weekly,
+                    window: "weekly",
+                    groupName: group.displayName
+                )
 
-            return ModelQuota(
-                modelName: normalizedModelName(from: group),
-                intervalTotalCount: 0,
-                intervalUsageCount: 0,
-                intervalRemainingPercent: fiveHourPercent,
-                intervalStatus: fiveHour == nil ? .absent : .present,
-                intervalResetsAt: fiveHour?.resetTime,
-                intervalWindowSeconds: nil,
-                weeklyTotalCount: 0,
-                weeklyUsageCount: 0,
-                weeklyRemainingPercent: weeklyPercent,
-                weeklyStatus: weekly == nil ? .absent : .present,
-                weeklyResetsAt: weekly?.resetTime,
-                weeklyWindowSeconds: nil
-            )
+                models.append(ModelQuota(
+                    modelName: normalizedModelName(from: group),
+                    intervalTotalCount: 0,
+                    intervalUsageCount: 0,
+                    intervalRemainingPercent: fiveHourPercent,
+                    intervalStatus: fiveHour == nil ? .absent : .present,
+                    intervalResetsAt: fiveHour?.resetTime,
+                    intervalWindowSeconds: nil,
+                    weeklyTotalCount: 0,
+                    weeklyUsageCount: 0,
+                    weeklyRemainingPercent: weeklyPercent,
+                    weeklyStatus: weekly == nil ? .absent : .present,
+                    weeklyResetsAt: weekly?.resetTime,
+                    weeklyWindowSeconds: nil
+                ))
+            } catch {
+                logWarn("[antigravity] 跳过 \(group.displayName) group: \(error.localizedDescription)")
+                continue
+            }
         }
 
         guard !models.isEmpty else {
