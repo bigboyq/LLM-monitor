@@ -263,7 +263,9 @@ struct AntigravityFetcher: QuotaFetcher {
     /// - token 数字：每一类取递归遍历中出现的最大值，而不是把不同嵌套层相加。
     ///   RPC 的若干版本会在 wrapper 和 usage 对象中重复携带同一份计数；累加会
     ///   双重计数。单个 generatorMetadata entry 代表一次调用，因此每类的最大
-    ///   非负计数是更稳妥的兼容策略。
+    ///   非负计数是更稳妥的兼容策略。各分量的字段模式是否命中单独记录（字段
+    ///   存在即算，值为 0 也算），用于 total 口径判定：全命中 → 分量和，部分
+    ///   命中 → server 权威 total，全未命中 → server total（原语义）。
     private nonisolated static func parseUsageEvent(from json: AnyJSON) -> UsageEvent? {
         var inputTokens = 0
         var outputTokens = 0
@@ -271,6 +273,13 @@ struct AntigravityFetcher: QuotaFetcher {
         var cacheWriteTokens = 0
         var reasoningTokens = 0
         var totalTokens = 0
+        // 各分量正则是否命中（字段存在即算，值为 0 也算）。分量命中数决定
+        // finalTotal 口径：全命中 → computed；部分命中 → server 权威 total；
+        // 全未命中 → server total（原语义），见下方计算处。
+        var inputMatched = false
+        var outputMatched = false
+        var cacheReadMatched = false
+        var reasoningMatched = false
         var extractedStepIndices: [Int]? = nil
         var timestampCandidates: [(priority: Int, depth: Int, date: Date)] = []
         var modelCandidates: [(priority: Int, depth: Int, value: String)] = []
@@ -310,14 +319,18 @@ struct AntigravityFetcher: QuotaFetcher {
                     if let n = child.intValue, n >= 0 {
                         if Self.matches(lower, pattern: #"^(input|prompt).*token"#) {
                             inputTokens = max(inputTokens, n)
+                            inputMatched = true
                         } else if Self.matches(lower, pattern: #"^(output|completion).*token"#) {
                             outputTokens = max(outputTokens, n)
+                            outputMatched = true
                         } else if Self.matches(lower, pattern: #"cache.*read.*token"#) {
                             cacheReadTokens = max(cacheReadTokens, n)
+                            cacheReadMatched = true
                         } else if Self.matches(lower, pattern: #"cache.*write.*token"#) {
                             cacheWriteTokens = max(cacheWriteTokens, n)
                         } else if Self.matches(lower, pattern: #"(reasoning|thinking).*token"#) {
                             reasoningTokens = max(reasoningTokens, n)
+                            reasoningMatched = true
                         } else if lower == "totaltokens" || lower == "total_tokens" {
                             totalTokens = max(totalTokens, n)
                         }
@@ -355,11 +368,32 @@ struct AntigravityFetcher: QuotaFetcher {
 
         // cacheWrite 是缓存簿记量，不计入对外 token 总量。部分 RPC 版本的
         // totalTokens 会把 cacheWrite 算进去，所以不能直接信任 server total；
-        // 以各分量按约定计算，只有分量完全缺失时才采用 server total。
+        // 反过来，分量正则只命中一部分（如 token 字段改名后只剩 cacheRead）时
+        // computed 缺分量、会系统性偏低，也不能用。口径按分量命中数三分：
+        // - 全命中 → computed（分量和，应与 server total 一致）；
+        // - 部分命中 → server total 权威优先（logWarn 列出未命中分量），
+        //   server 缺失或为 0 时退回 computed（尽力而为，避免把真实事件算成 0 丢掉）；
+        // - 全未命中 → server total（原语义）。
         let components = [inputTokens, outputTokens, cacheReadTokens, reasoningTokens]
+        let componentsMatched = [inputMatched, outputMatched, cacheReadMatched, reasoningMatched]
         let computedTotal = components.reduce(0, Self.saturatingAdd)
-        // 与注释一致：只有四个分量完全缺失（全 0）时才回退 server total。
-        let finalTotal = components.allSatisfy { $0 == 0 } ? totalTokens : computedTotal
+        let matchedCount = componentsMatched.filter { $0 }.count
+        let finalTotal: Int
+        if matchedCount == componentsMatched.count {
+            finalTotal = computedTotal
+        } else if matchedCount == 0 {
+            // server 也没给 total 时 computedTotal 同为 0，事件由下方 guard 丢弃
+            finalTotal = totalTokens
+        } else if totalTokens > 0 {
+            let missing = ["input", "output", "cacheRead", "reasoning"].enumerated()
+                .filter { !componentsMatched[$0.offset] }
+                .map(\.element)
+                .joined(separator: "/")
+            logWarn("[antigravity] usage 事件仅命中部分 token 分量（未命中: \(missing)），total 采用 server 值 \(totalTokens) 而非 computed \(computedTotal)")
+            finalTotal = totalTokens
+        } else {
+            finalTotal = computedTotal
+        }
 
         // 完全没有 token 数据的事件跳过（避免空 entry 污染聚合）
         guard finalTotal > 0 || cacheWriteTokens > 0 else {

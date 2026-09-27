@@ -1860,26 +1860,11 @@ final class AntigravityLocalUsageTests: XCTestCase {
         XCTAssertEqual(model.healthLevel, .critical)
     }
 
-    // MARK: - M2: totalTokens 计算口径（computed 优先、全零才回退 server total）
+    // MARK: - M2: totalTokens 计算口径（分量命中数决定 computed / server total）
 
-    /// M2 回归网：任一分量命中（哪怕只有 cacheRead）时 totalTokens 必须取
-    /// computed（分量和），不得被 computedTotal > 0 的旧判断压成"丢弃 server
-    /// total"的反向退化 —— 旧实现只命中 cacheRead 时会把 total 错算成单分量。
-    func testUsageEventUsesComputedTotalWhenAnyComponentIsPresent() throws {
-        // 只有 cacheRead 命中，server total 给一个系统性偏高的干扰值
-        let cacheReadOnly = try JSONDecoder().decode(
-            AnyJSON.self,
-            from: Data(
-                """
-                { "cacheReadTokens": 300, "totalTokens": 99999 }
-                """.utf8
-            )
-        )
-        let event = try XCTUnwrap(AntigravityFetcher.parseUsageEventForTest(cacheReadOnly))
-        XCTAssertEqual(event.cacheReadTokens, 300)
-        XCTAssertEqual(event.totalTokens, 300, "任一分量非零时必须采用 computed total，而非 server total")
-
-        // 多分量命中：computed = input + output + cacheRead + reasoning
+    /// 全部分量正则命中 → computed（分量和）权威。分量和不重复计数，
+    /// 不包含 cacheWrite 簿记量。
+    func testUsageEventUsesComputedTotalWhenAllComponentsMatch() throws {
         let mixed = try JSONDecoder().decode(
             AnyJSON.self,
             from: Data(
@@ -1893,12 +1878,70 @@ final class AntigravityLocalUsageTests: XCTestCase {
             )
         )
         let mixedEvent = try XCTUnwrap(AntigravityFetcher.parseUsageEventForTest(mixed))
-        XCTAssertEqual(mixedEvent.totalTokens, 180)
+        XCTAssertEqual(mixedEvent.totalTokens, 180, "全部分量命中时取 computed（分量和），而非 server total")
     }
 
-    /// M2 的另一面：四个分量完全缺失（全 0）时才回退 server total —— 对齐
-    /// "只有分量完全缺失时才采用 server total" 的注释约定。
-    func testUsageEventFallsBackToServerTotalOnlyWhenAllComponentsZero() throws {
+    /// 部分命中（如 token 字段改名后只剩 cacheRead）→ server total 权威优先，
+    /// 不得退化为单分量值（旧 allSatisfy 判据的实质缺陷：丢掉服务端权威
+    /// total，日报口径系统性偏低且无日志）。
+    func testUsageEventPrefersServerTotalWhenOnlySomeComponentsMatch() throws {
+        // 只有 cacheRead 命中，server total 给一个系统性偏高的值
+        let cacheReadOnly = try JSONDecoder().decode(
+            AnyJSON.self,
+            from: Data(
+                """
+                { "cacheReadTokens": 300, "totalTokens": 99999 }
+                """.utf8
+            )
+        )
+        let event = try XCTUnwrap(AntigravityFetcher.parseUsageEventForTest(cacheReadOnly))
+        XCTAssertEqual(event.cacheReadTokens, 300)
+        XCTAssertEqual(event.totalTokens, 99999, "部分命中时必须采用 server 权威 total，而非退化为单分量和")
+
+        // 双分量命中、server total 也在：同样取 server total
+        let inputOutputOnly = try JSONDecoder().decode(
+            AnyJSON.self,
+            from: Data(
+                """
+                { "inputTokens": 10, "outputTokens": 5, "totalTokens": 123 }
+                """.utf8
+            )
+        )
+        let partialEvent = try XCTUnwrap(AntigravityFetcher.parseUsageEventForTest(inputOutputOnly))
+        XCTAssertEqual(partialEvent.totalTokens, 123)
+    }
+
+    /// 部分命中但 server total 缺失（或字段存在但为 0，视为不可用）→ 退回
+    /// computedTotal（尽力而为），事件本身不得被算成 0 而丢弃。
+    func testUsageEventFallsBackToComputedTotalWhenServerTotalMissingOnPartialMatch() throws {
+        // server total 字段缺失
+        let noServerTotal = try JSONDecoder().decode(
+            AnyJSON.self,
+            from: Data(
+                """
+                { "cacheReadTokens": 300 }
+                """.utf8
+            )
+        )
+        let event = try XCTUnwrap(AntigravityFetcher.parseUsageEventForTest(noServerTotal))
+        XCTAssertEqual(event.totalTokens, 300, "server total 缺失时退回 computed")
+
+        // server total 为 0（字段存在但与命中的分量矛盾）→ 同样退回 computed
+        let zeroServerTotal = try JSONDecoder().decode(
+            AnyJSON.self,
+            from: Data(
+                """
+                { "inputTokens": 100, "totalTokens": 0 }
+                """.utf8
+            )
+        )
+        let zeroEvent = try XCTUnwrap(AntigravityFetcher.parseUsageEventForTest(zeroServerTotal))
+        XCTAssertEqual(zeroEvent.totalTokens, 100, "server total 为 0 视为不可用，退回 computed")
+    }
+
+    /// 全部分量未命中 → server total（原语义）；server 也没有 → computedTotal
+    /// （= 0，事件由丢弃 guard 收掉）。
+    func testUsageEventFallsBackToServerTotalWhenNoComponentMatched() throws {
         let noComponents = try JSONDecoder().decode(
             AnyJSON.self,
             from: Data(
@@ -1908,9 +1951,9 @@ final class AntigravityLocalUsageTests: XCTestCase {
             )
         )
         let event = try XCTUnwrap(AntigravityFetcher.parseUsageEventForTest(noComponents))
-        XCTAssertEqual(event.totalTokens, 512, "分量全零时应回退 server total")
+        XCTAssertEqual(event.totalTokens, 512, "分量全未命中时回退 server total")
 
-        // 分量全零但 server total 也为零：事件完全无 token 数据，应被丢弃
+        // 分量全未命中且 server total 也为 0：事件完全无 token 数据，应被丢弃
         let allZero = try JSONDecoder().decode(
             AnyJSON.self,
             from: Data(
