@@ -811,6 +811,13 @@ final class ProviderModelTests: XCTestCase {
             XCTAssertGreaterThan(fraction, 0.45)
             XCTAssertLessThan(fraction, 0.55)
         }
+        // 可注入时间版本与计算属性一致（聚合口径用同一份 now）。
+        if let viaVar = chatgptQuota.intervalTimeRemainingFraction,
+           let viaAt = chatgptQuota.intervalTimeRemainingFraction(at: Date()) {
+            XCTAssertEqual(viaVar, viaAt, accuracy: 0.001)
+        } else {
+            XCTFail("ChatGPT Plan 单 7d 窗口应能取到 interval 剩余时间比例")
+        }
 
         // 2. 5h short interval window (18000s) -> should return nil for intervalTimeRemainingFraction
         let shortQuota = ModelQuota(
@@ -829,6 +836,7 @@ final class ProviderModelTests: XCTestCase {
             weeklyWindowSeconds: 7 * 24 * 60 * 60
         )
         XCTAssertNil(shortQuota.intervalTimeRemainingFraction)
+        XCTAssertNil(shortQuota.intervalTimeRemainingFraction(at: Date()))
         XCTAssertNotNil(shortQuota.weeklyTimeRemainingFraction)
     }
 

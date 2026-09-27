@@ -207,11 +207,18 @@ struct ModelQuota: Equatable, Codable, Sendable {
     /// 5h 短窗口 / `intervalWindowSeconds` 未知一律返回 nil。
     /// Caller（fetcher）负责把 windowSeconds 填好；这里不做 modelName 特判。
     var intervalTimeRemainingFraction: Double? {
+        intervalTimeRemainingFraction(at: Date())
+    }
+
+    /// `intervalTimeRemainingFraction` 的可注入时间版本：聚合口径
+    /// （`AppState.statusBarQuotaMetrics`）用它保证同一份 `now` 下各输入一致，
+    /// 与 `weeklyTimeRemainingFraction(at:)` 对称。
+    func intervalTimeRemainingFraction(at now: Date) -> Double? {
         guard hasIntervalWindow,
               let end = intervalResetsAt,
               let length = intervalWindowSeconds,
               length >= 86400 else { return nil }
-        let remaining = end.timeIntervalSinceNow
+        let remaining = end.timeIntervalSince(now)
         return min(max(remaining / TimeInterval(length), 0), 1)
     }
 }

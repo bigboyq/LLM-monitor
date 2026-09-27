@@ -45,6 +45,12 @@ struct StatusBarQuotaMetrics: Equatable, Sendable {
     /// 剩余时间比例可避免任一临近重置的套餐把整条弧压成黄色；没有任何周窗口
     /// （或全部缺 reset 时间）时为 nil，弧线退回固定 30% 黄线。
     var weeklyTimeFraction: Double?
+    /// 左弧（聚合 interval 弧）颜色的动态黄线输入：所有长 interval 窗口（≥24h，
+    /// 如 ChatGPT Plan 单主窗口）`intervalTimeRemainingFraction` 的最大值。与右弧
+    /// 同理——聚合弧画的是多套餐平均，取最宽的剩余时间比例可避免任一临近重置
+    /// 的套餐把整条弧压成黄色，并与中心扇形的动态黄线同向。只有 5h 短窗口
+    /// （或全部缺 reset 时间）时为 nil，左弧退回固定 30% 黄线。
+    var intervalTimeFraction: Double?
     /// 中心扇形颜色的动态黄线输入：产生中心最小值的套餐在其瓶颈（binding）
     /// 窗口上的剩余时间比例；瓶颈是 5h 短窗口（或缺 reset 时间）时为 nil，
     /// 中心退回固定 30% 黄线。
@@ -60,7 +66,8 @@ struct StatusBarQuotaMetrics: Equatable, Sendable {
         quotaHealthLevels: [HealthLevel] = Array(repeating: .healthy, count: 3),
         waterHealth: HealthLevel? = nil,
         weeklyTimeFraction: Double? = nil,
-        centerTimeFraction: Double? = nil
+        centerTimeFraction: Double? = nil,
+        intervalTimeFraction: Double? = nil
     ) {
         self.weekly = weekly
         self.interval = interval
@@ -69,6 +76,7 @@ struct StatusBarQuotaMetrics: Equatable, Sendable {
         self.waterHealth = waterHealth
         self.weeklyTimeFraction = weeklyTimeFraction
         self.centerTimeFraction = centerTimeFraction
+        self.intervalTimeFraction = intervalTimeFraction
     }
 
     /// 优先显示红色（.critical），其次黄色（.warning），最后绿色（.healthy）；

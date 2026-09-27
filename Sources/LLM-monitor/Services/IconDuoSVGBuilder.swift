@@ -4,8 +4,9 @@ import AppKit
 /// 「Icon Duo」额度仪表盘 SVG 构建器（原 quotaLogo 重写版，1.9.0 起的布局）。
 ///
 /// 正圆几何构图：
-/// - 左弧显示 5h，右弧显示周额度，从底部沿圆弧向上充盈；深灰色底槽与健康色填充弧平滑贴合。
-/// - 左弧颜色由 5h 平均剩余量按 `colorLevel` 决定（短窗口固定 30% 黄线）；右弧颜色
+/// - 左弧显示 5h / interval，右弧显示周额度，从底部沿圆弧向上充盈；深灰色底槽与健康色填充弧平滑贴合。
+/// - 左弧颜色由 interval 平均剩余量按 `colorLevel` 决定（5h 短窗口固定 30% 黄线；
+///   ≥24h 长 interval 窗口按最宽剩余时间比例走动态黄线 min(time%, 50)）；右弧颜色
 ///   由周平均剩余量 + 全部周窗口中最宽的剩余时间比例（动态黄线 min(time%, 50)）决定。
 /// - 顶部为节能模式状态圆点（半径放大为 r=48，红/黄/绿显示）。
 /// - 底部 3 个状态点沿圆弧轨迹排布（115°、90°、65°，半径 r=36），按统一
@@ -38,11 +39,16 @@ enum IconDuoSVGBuilder {
         energyHealth: HealthLevel? = nil
     ) -> String {
         let trackColor = "#48484A"
-        // 统一 colorLevel 判定（方案 A）：左弧 = 5h avg，短窗口固定 30% 黄线
-        // （timeFraction 传 nil）；右弧 = 周 avg + 最宽周剩余时间比例（动态黄线
-        // min(time%, 50)）。弧线不参与高峰 floor——高峰只作用于底部三点与卡片
-        // 头部点（见 `ModelQuota.aggregateHealthLevel`）。
-        let leftQuotaLevel = ModelQuota.colorLevel(percent: metrics.interval.avgAvailable * 100, timeFraction: nil)
+        // 统一 colorLevel 判定（方案 A）：左弧 = interval avg，5h 短窗口固定 30%
+        // 黄线（intervalTimeFraction 为 nil）；≥24h 长 interval 窗口（如 ChatGPT
+        // Plan 单主窗口）按最宽剩余时间比例走动态黄线 min(time%, 50)——与右弧、
+        // 中心扇形同规则，避免长窗口下左弧与中心扇形反向。右弧 = 周 avg + 最宽周
+        // 剩余时间比例（动态黄线 min(time%, 50)）。弧线不参与高峰 floor——高峰只
+        // 作用于底部三点与卡片头部点（见 `ModelQuota.aggregateHealthLevel`）。
+        let leftQuotaLevel = ModelQuota.colorLevel(
+            percent: metrics.interval.avgAvailable * 100,
+            timeFraction: metrics.intervalTimeFraction
+        )
         let rightQuotaLevel = ModelQuota.colorLevel(percent: metrics.weekly.avgAvailable * 100, timeFraction: metrics.weeklyTimeFraction)
         let leftColor = resolvedHex(for: leftQuotaLevel, colors: healthColors)
         let rightColor = resolvedHex(for: rightQuotaLevel, colors: healthColors)

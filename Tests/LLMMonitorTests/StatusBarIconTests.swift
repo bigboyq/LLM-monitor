@@ -948,6 +948,144 @@ final class StatusBarIconTests: XCTestCase {
         XCTAssertTrue(svg.contains("#34C759"), "中心应为绿色")
     }
 
+    /// 左弧的动态黄线透传（修复回归）：ChatGPT Plan 单 7d 主窗口下，左弧与
+    /// 中心扇形必须同向——20% 额度 + 20% 窗口时间时两者都按动态黄线
+    /// min(time%, 50) 判绿，而不是左弧固定 30% 黄线判黄、与中心反向。
+    /// 5h 短窗口（<24h）行为不变：固定 30% 黄线，20% 仍为黄。
+    @MainActor
+    func testIconDuoLeftArcUsesLongIntervalTimeFraction() {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let store = ConfigStore(configURL: dir.appendingPathComponent("config.json"))
+        var cfg = store.config
+        cfg.providers["test_a"] = ProviderConfig(enabled: true, apiKey: "key_a")
+        try? store.applyAndSave(cfg)
+
+        let descA = FetcherDescriptor(
+            id: "test_a",
+            displayName: "Test A",
+            kind: .codexChatGpt,
+            iconSystemName: "star",
+            accentColor: .chatgpt,
+            makeFetcher: { _ in CodexFetcher(authPath: nil) }
+        )
+        let appState = AppState(descriptors: [descA], configStore: store)
+        appState.stop()
+
+        let now = Date()
+        let sevenDays = 7.0 * 24 * 3600
+
+        func setChatGPTPlanQuota(intervalPercent: Double, windowSeconds: Double) {
+            let model = ModelQuota(
+                modelName: "chatgpt_plan",
+                intervalTotalCount: 100,
+                intervalUsageCount: 100 - Int(intervalPercent),
+                intervalRemainingPercent: intervalPercent,
+                intervalStatus: .present,
+                intervalResetsAt: now.addingTimeInterval(windowSeconds * 0.2),
+                intervalWindowSeconds: Int(windowSeconds),
+                weeklyTotalCount: 0,
+                weeklyUsageCount: 0,
+                weeklyRemainingPercent: 0,
+                weeklyStatus: .absent,
+                weeklyResetsAt: nil,
+                weeklyWindowSeconds: nil
+            )
+            appState.mutateStatus(for: "test_a") {
+                $0.state = .ok(QuotaInfo(
+                    models: [model],
+                    resetCredits: nil,
+                    planLabel: nil,
+                    accountEmail: nil,
+                    codexUsageDetails: nil,
+                    fetchedAt: now
+                ))
+            }
+        }
+
+        // 1. 长 interval 窗口（7d）：20% 额度 + 20% 窗口时间 → 左弧与中心同绿。
+        setChatGPTPlanQuota(intervalPercent: 20, windowSeconds: sevenDays)
+        let metrics = appState.statusBarQuotaMetrics(at: now)
+        XCTAssertEqual(metrics.interval.avgAvailable, 0.2, accuracy: 0.001)
+        XCTAssertEqual(metrics.intervalTimeFraction ?? -1, 0.2, accuracy: 0.001)
+        XCTAssertEqual(metrics.centerTimeFraction ?? -1, 0.2, accuracy: 0.001)
+        let svg = IconDuoSVGBuilder.buildSVG(metrics: metrics)
+        XCTAssertTrue(svg.contains("id=\"interval-available\""))
+        XCTAssertFalse(svg.contains("#FFD60A"), "长窗口 20%+20% 时左弧与中心都按动态黄线判绿，不得出现黄色")
+        XCTAssertTrue(svg.contains("#34C759"), "左弧应与中心扇形一致为绿色")
+
+        // 2. 短 interval 窗口（5h）：行为不变——固定 30% 黄线，20% 仍为黄。
+        setChatGPTPlanQuota(intervalPercent: 20, windowSeconds: 5 * 3600)
+        let shortMetrics = appState.statusBarQuotaMetrics(at: now)
+        XCTAssertNil(shortMetrics.intervalTimeFraction, "5h 短窗口不应产生 interval 剩余时间比例")
+        let shortSVG = IconDuoSVGBuilder.buildSVG(metrics: shortMetrics)
+        XCTAssertTrue(shortSVG.contains("#FFD60A"), "5h 短窗口 20% 左弧仍为固定 30% 黄线的黄色")
+    }
+
+    /// 修复回归：状态栏 SF Symbol 圆点（systemHealthLevel）与卡片头部点
+    /// （ProviderStatus.aggregateHealthLevel）必须同口径。GLM N=5 反例：
+    /// 5h 剩 40%（无 reset 时间）、周剩 8%（8%×5=40%，并列瓶颈取 5h →
+    /// 固定 30% 黄线 → 绿）；旧实现走逐窗口 healthLevel 时周 8% 直接判红，
+    /// 两处颜色反向。
+    @MainActor
+    func testSystemHealthLevelMatchesCardAggregateHealthLevel() {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let store = ConfigStore(configURL: dir.appendingPathComponent("config.json"))
+        var cfg = store.config
+        cfg.providers["test_glm"] = ProviderConfig(enabled: true, apiKey: "key")
+        try? store.applyAndSave(cfg)
+
+        let descriptors = [
+            FetcherDescriptor(
+                id: "test_glm",
+                displayName: "Test GLM",
+                kind: .glmCodingPlan,
+                iconSystemName: "bolt",
+                accentColor: .glm,
+                makeFetcher: { _ in GlmCodingPlanFetcher(apiKey: "key") }
+            )
+        ]
+        let appState = AppState(descriptors: descriptors, configStore: store)
+        defer { appState.stop() }
+
+        let glmModel = ModelQuota(
+            modelName: "glm_coding_plan",
+            intervalTotalCount: 100,
+            intervalUsageCount: 60,
+            intervalRemainingPercent: 40.0,
+            intervalStatus: .present,
+            intervalResetsAt: nil,
+            intervalWindowSeconds: nil,
+            weeklyTotalCount: 100,
+            weeklyUsageCount: 92,
+            weeklyRemainingPercent: 8.0,
+            weeklyStatus: .present,
+            weeklyResetsAt: Date().addingTimeInterval(7 * 24 * 3600),
+            weeklyWindowSeconds: 7 * 24 * 3600
+        )
+        let info = QuotaInfo(
+            models: [glmModel],
+            resetCredits: nil,
+            planLabel: nil,
+            accountEmail: nil,
+            codexUsageDetails: nil,
+            fetchedAt: Date()
+        )
+        appState.mutateStatus(for: "test_glm") { $0.state = .ok(info) }
+
+        let status = appState.statuses.first(where: { $0.id == "test_glm" })!
+        XCTAssertEqual(status.aggregateHealthLevel(), .healthy, "卡片头部点按实际可用口径（周 × 5，瓶颈 5h）应为绿")
+        // 旧逐窗口口径对该反例判红（周 8% < 15 直接 critical），保留交叉断言。
+        XCTAssertEqual(info.healthLevel, .critical)
+        XCTAssertEqual(appState.systemHealthLevel, status.aggregateHealthLevel(), "状态栏 SF Symbol 圆点必须与卡片头部点同色")
+        XCTAssertEqual(appState.systemHealthLevel, .healthy)
+    }
+
     func testComposedMenuBarImageWithDynamicMetrics() {
         let fullMetrics = StatusBarQuotaMetrics.full
         let customMetrics = StatusBarQuotaMetrics(

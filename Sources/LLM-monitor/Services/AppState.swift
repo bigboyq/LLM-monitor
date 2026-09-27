@@ -103,18 +103,27 @@ final class AppState: ObservableObject {
         // DeepSeek is balance-only and intentionally has no quota window
         // semantics; the quotaLogo aggregate below (and the notification
         // pipeline) exclude it accordingly. This aggregate feeds the health
-        // dot of the legacy SF Symbol icon style and deliberately still
-        // counts DeepSeek's balance health (balance ¥0 → .critical). The
-        // scope difference is an intentional, known divergence that a future
-        // refinement may unify.
+        // dot of the legacy SF Symbol icon style. It reads the same
+        // `ProviderStatus.aggregateHealthLevel` as the card header dot
+        // (unified colorLevel + 周 × N + GLM peak floor), so the SF Symbol
+        // dot and the card dot agree for every provider. DeepSeek's balance
+        // health is still counted here (balance ¥0 → .critical): its balance
+        // model has only a 5h-shaped window with no reset time, so
+        // aggregateHealthLevel gives it the same color the old per-window
+        // healthLevel did; the remaining known scope difference is that
+        // DeepSeek participates here while being excluded from the
+        // quotaLogo aggregate.
         for status in enabled {
             switch status.state {
             case .failed(message: _, lastSuccess: nil):
+                // 无缓存的失败仍是最严重档；aggregateHealthLevel 对
+                // lastSuccess == nil 返回 nil，需单独保留该语义。
                 return .critical
-            case .failed(message: _, lastSuccess: let info?):
-                levels.append(info.healthLevel)
-            case .ok(let info), .loading(lastSuccess: let info?):
-                levels.append(info.healthLevel)
+            case .ok, .loading(lastSuccess: .some), .failed(message: _, lastSuccess: .some):
+                // 与卡片头部点（ProviderCardView 的 StatusIndicator）同一口径。
+                if let level = status.aggregateHealthLevel(at: now) {
+                    levels.append(level)
+                }
             case .notConfigured, .ready, .loading(lastSuccess: nil):
                 break
             }
@@ -235,6 +244,13 @@ final class AppState: ObservableObject {
         let weeklyTimeFraction = allActiveModels
             .compactMap { $0.weeklyTimeRemainingFraction(at: now) }
             .max()
+        // 聚合左弧的动态黄线输入同理：所有长 interval 窗口（≥24h，如 ChatGPT Plan
+        // 单主窗口）剩余时间比例的最大值，使左弧与中心扇形的动态黄线同向；5h 短
+        // 窗口的 intervalTimeRemainingFraction 恒为 nil，自然不参与，左弧保持固定
+        // 30% 黄线。没有任何长 interval 窗口时为 nil。
+        let intervalTimeFraction = allActiveModels
+            .compactMap { $0.intervalTimeRemainingFraction(at: now) }
+            .max()
 
         // 4. 高峰价格判定
         let isPeakPrice = enabled.contains { status in
@@ -277,7 +293,8 @@ final class AppState: ObservableObject {
             quotaHealthLevels: quotaHealthLevels,
             waterHealth: waterHealth,
             weeklyTimeFraction: weeklyTimeFraction,
-            centerTimeFraction: centerTimeFraction
+            centerTimeFraction: centerTimeFraction,
+            intervalTimeFraction: intervalTimeFraction
         )
     }
 
