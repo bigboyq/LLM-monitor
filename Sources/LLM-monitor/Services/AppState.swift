@@ -215,25 +215,42 @@ final class AppState: ObservableObject {
             )
         }
 
-        // 3. 中心扇形 = 所有有效套餐「实际可用」比例的最低值，与卡片分段条的
-        // min(5h, 周 × N) 口径一致：每个套餐按自身存在的窗口取
+        // 3. 中心扇形 = 仍有剩余的套餐中「实际可用」比例的最低值，与卡片分段条
+        // 的 min(5h, 周 × N) 口径一致：每个套餐按自身存在的窗口取
         // min(5h 剩余, 周剩余 × 周等效倍率 N)——仅 5h 按 5h 参与、仅周按 周 × N
-        // 参与，单套餐结果 clamp 到 [0, 1] 后取全局最小，所有套餐都没有任何
-        // 窗口时保持 nil。顺带记录产生最小值的套餐（argmin，并列保留先出现者）
-        // 及其瓶颈窗口的剩余时间比例，作为中心扇形 colorLevel 的动态黄线输入。
-        // 左右弧仍分别表达两种窗口的原始物理剩余；底部三点按统一 colorLevel
-        // 判定（实际可用口径 + 高峰 floor），构造器负责排序、截断到三个并用
-        // 默认绿色补齐。
+        // 参与，单套餐结果 clamp 到 [0, 1]。多套餐接力场景下，已耗尽（实际可用
+        // 为 0）的套餐不参与取 min，中心跟随仍在服役的接力套餐的剩余量；全部
+        // 套餐耗尽时回退 0（红），所有套餐都没有任何窗口时保持 nil（灰）。
+        // 顺带记录产生最小值的套餐（argmin，并列保留先出现者）及其瓶颈窗口的
+        // 剩余时间比例，作为中心扇形 colorLevel 的动态黄线输入——0 值套餐被
+        // 排除导致胜出套餐变化时，timeFraction 一并跟随新胜出者。左右弧仍分别
+        // 表达两种窗口的原始物理剩余；底部三点按统一 colorLevel 判定（实际可用
+        // 口径 + 高峰 floor），不排除耗尽套餐（用完的套餐点保持红），构造器
+        // 负责排序、截断到三个并用默认绿色补齐。
         var centerBest: (value: Double, bindingTimeFraction: Double?)?
+        var hasAnyReading = false
         for entry in activeWindowedModels {
             guard let reading = entry.model.aggregateActualAvailable(providerKind: entry.kind, at: now) else { continue }
+            hasAnyReading = true
             let value = reading.percent / 100.0
+            // 接力：耗尽（实际可用为 0）的套餐不参与中心 min；底部三点仍计入。
+            guard value > 0 else { continue }
             if centerBest == nil || value < centerBest!.value {
                 centerBest = (value, reading.bindingTimeFraction)
             }
         }
-        let centerAvailable = centerBest?.value
-        let centerTimeFraction = centerBest?.bindingTimeFraction
+        let centerAvailable: Double?
+        let centerTimeFraction: Double?
+        if let best = centerBest {
+            centerAvailable = best.value
+            centerTimeFraction = best.bindingTimeFraction
+        } else {
+            // 有读数但全部耗尽 → 0（红色空心环）；无任何读数 → nil（未配置灰）。
+            // 全 0 时无胜出套餐，timeFraction 置 nil（colorLevel 对 0% 恒判红，
+            // 该值不影响渲染）。
+            centerAvailable = hasAnyReading ? 0.0 : nil
+            centerTimeFraction = nil
+        }
         let quotaHealthLevels = activeWindowedModels.map {
             $0.model.aggregateHealthLevel(providerKind: $0.kind, isPeakPrice: $0.isPeak)
         }

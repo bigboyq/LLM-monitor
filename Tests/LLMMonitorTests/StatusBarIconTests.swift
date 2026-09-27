@@ -890,6 +890,134 @@ final class StatusBarIconTests: XCTestCase {
         XCTAssertNil(metrics.centerTimeFraction)
     }
 
+    /// 中心扇形的多套餐接力：已耗尽（实际可用为 0）的套餐不参与中心 min，
+    /// 中心跟随仍在服役的接力套餐（含 timeFraction）；底部三点不排除耗尽
+    /// 套餐（用完的套餐点保持红）；全部套餐耗尽时中心回退 0（红）。
+    @MainActor
+    func testStatusBarQuotaMetricsCenterSkipsExhaustedPlans() {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let store = ConfigStore(configURL: dir.appendingPathComponent("config.json"))
+        var cfg = store.config
+        cfg.providers["test_a"] = ProviderConfig(enabled: true, apiKey: "key_a")
+        cfg.providers["test_b"] = ProviderConfig(enabled: true, apiKey: "key_b")
+        try? store.applyAndSave(cfg)
+
+        // 两个 provider 覆盖不同周倍率：glmCodingPlan N=5、codexChatGpt N=6。
+        let descA = FetcherDescriptor(
+            id: "test_a",
+            displayName: "Test A",
+            kind: .glmCodingPlan,
+            iconSystemName: "sparkles",
+            accentColor: .glm,
+            makeFetcher: { _ in GlmCodingPlanFetcher(apiKey: "key") }
+        )
+        let descB = FetcherDescriptor(
+            id: "test_b",
+            displayName: "Test B",
+            kind: .codexChatGpt,
+            iconSystemName: "star",
+            accentColor: .chatgpt,
+            makeFetcher: { _ in CodexFetcher(authPath: nil) }
+        )
+
+        let appState = AppState(descriptors: [descA, descB], configStore: store)
+        appState.stop()
+
+        let now = Date()
+        let totalWeekSeconds = 7.0 * 24 * 3600
+
+        func makeModel(
+            modelName: String,
+            intervalPercent: Double?,
+            weeklyPercent: Double?,
+            weeklyResetFraction: Double = 1.0
+        ) -> ModelQuota {
+            ModelQuota(
+                modelName: modelName,
+                intervalTotalCount: 100,
+                intervalUsageCount: 100 - Int(intervalPercent ?? 0),
+                intervalRemainingPercent: intervalPercent ?? 0,
+                intervalStatus: intervalPercent != nil ? .present : .absent,
+                intervalResetsAt: intervalPercent != nil ? now.addingTimeInterval(3600) : nil,
+                intervalWindowSeconds: intervalPercent != nil ? 5 * 3600 : nil,
+                weeklyTotalCount: 100,
+                weeklyUsageCount: 100 - Int(weeklyPercent ?? 0),
+                weeklyRemainingPercent: weeklyPercent ?? 0,
+                weeklyStatus: weeklyPercent != nil ? .present : .absent,
+                weeklyResetsAt: weeklyPercent != nil ? now.addingTimeInterval(totalWeekSeconds * weeklyResetFraction) : nil,
+                weeklyWindowSeconds: weeklyPercent != nil ? Int(totalWeekSeconds) : nil
+            )
+        }
+
+        func setQuotas(a: ModelQuota?, b: ModelQuota?) {
+            appState.mutateStatus(for: "test_a") {
+                $0.state = .ok(QuotaInfo(models: a.map { [$0] } ?? [], resetCredits: nil, planLabel: nil, accountEmail: nil, codexUsageDetails: nil, fetchedAt: now))
+            }
+            appState.mutateStatus(for: "test_b") {
+                $0.state = .ok(QuotaInfo(models: b.map { [$0] } ?? [], resetCredits: nil, planLabel: nil, accountEmail: nil, codexUsageDetails: nil, fetchedAt: now))
+            }
+        }
+
+        // 1. 接力：套餐 A 耗尽（5h 与周均 0），套餐 B 仍有 35%（仅 5h 窗口）。
+        //    中心 = B 的实际可用 35%，而非被 A 拖到 0；瓶颈是 B 的 5h 短窗口
+        //    → timeFraction 为 nil（固定 30% 黄线）。
+        setQuotas(
+            a: makeModel(modelName: "glm_coding_plan", intervalPercent: 0, weeklyPercent: 0),
+            b: makeModel(modelName: "chatgpt_plan", intervalPercent: 35, weeklyPercent: nil)
+        )
+        var metrics = appState.statusBarQuotaMetrics(at: now)
+        XCTAssertEqual(
+            metrics.centerAvailable ?? -1,
+            0.35,
+            accuracy: 0.001,
+            "接力场景：A 耗尽后中心应显示接力套餐 B 的实际可用 35%，而不是 0"
+        )
+        XCTAssertNil(metrics.centerTimeFraction, "B 的瓶颈为 5h 短窗口，中心 timeFraction 应为 nil")
+        // 底部三点不排除耗尽套餐：A 的点保持红，B 的点为绿。
+        XCTAssertEqual(metrics.quotaHealthLevels, [.critical, .healthy, .healthy])
+
+        // 2. timeFraction 跟随新胜出套餐：A 耗尽，B 仅周窗口 4%（codex ×6 = 24%）
+        //    且窗口只剩 20% 时间。中心 = 24%，timeFraction = 0.2 透传（动态黄线
+        //    min(20, 50) = 20 → 24 ≥ 20 绿色；若沿用被排除套餐的 nil/固定 30%
+        //    黄线会虚黄）。
+        setQuotas(
+            a: makeModel(modelName: "glm_coding_plan", intervalPercent: 0, weeklyPercent: 0),
+            b: makeModel(modelName: "chatgpt_plan", intervalPercent: nil, weeklyPercent: 4, weeklyResetFraction: 0.2)
+        )
+        metrics = appState.statusBarQuotaMetrics(at: now)
+        XCTAssertEqual(metrics.centerAvailable ?? -1, 0.24, accuracy: 0.001)
+        XCTAssertEqual(
+            metrics.centerTimeFraction ?? -1,
+            0.2,
+            accuracy: 0.001,
+            "中心 timeFraction 应取自接力套餐 B 的瓶颈周窗口"
+        )
+        let centerLine = IconDuoSVGBuilder.buildSVG(metrics: metrics)
+            .components(separatedBy: "\n")
+            .first { $0.contains("id=\"center-sector\"") } ?? ""
+        XCTAssertTrue(centerLine.contains("data-value=\"24\""))
+        XCTAssertTrue(centerLine.contains("fill=\"#34C759\""), "中心应按 B 的动态黄线判绿，不得虚黄")
+        XCTAssertEqual(metrics.quotaHealthLevels, [.critical, .healthy, .healthy])
+
+        // 3. 全部套餐耗尽：中心回退 0（红色空心环），无胜出套餐 → timeFraction nil。
+        setQuotas(
+            a: makeModel(modelName: "glm_coding_plan", intervalPercent: 0, weeklyPercent: 0),
+            b: makeModel(modelName: "chatgpt_plan", intervalPercent: 0, weeklyPercent: nil)
+        )
+        metrics = appState.statusBarQuotaMetrics(at: now)
+        XCTAssertEqual(metrics.centerAvailable ?? -1, 0.0, accuracy: 0.001, "全部套餐耗尽时中心应为 0（红）")
+        XCTAssertNil(metrics.centerTimeFraction)
+        XCTAssertEqual(metrics.quotaHealthLevels, [.critical, .critical, .healthy])
+        let exhaustedLine = IconDuoSVGBuilder.buildSVG(metrics: metrics)
+            .components(separatedBy: "\n")
+            .first { $0.contains("id=\"center-sector\"") } ?? ""
+        XCTAssertTrue(exhaustedLine.contains("data-value=\"0\""))
+        XCTAssertTrue(exhaustedLine.contains("stroke=\"#FF453A\""))
+    }
+
     /// 中心扇形的 timeFraction 透传：周瓶颈且临近重置（late window）时，
     /// 动态黄线 min(time%, 50) 收紧，中心不能按「无时间系数的固定 30%」虚黄。
     @MainActor

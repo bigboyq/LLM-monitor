@@ -32,10 +32,11 @@ struct StatusBarQuotaMetrics: Equatable, Sendable {
     var weekly: QuotaRingMetrics
     /// 左弧：5 小时额度（原始物理剩余比例，无时间系数）。
     var interval: QuotaRingMetrics
-    /// Icon Duo 中心扇形显示的剩余比例：所有有效套餐「实际可用」的最低值——
+    /// Icon Duo 中心扇形显示的剩余比例：仍有剩余的套餐中「实际可用」的最低值——
     /// 每个套餐按自身存在的窗口取 min(5h 剩余, 周剩余 × 周等效倍率 N)（与卡片
-    /// 分段条同口径；仅 5h 按 5h、仅周按 周 × N，均 clamp 到 1.0），任何套餐
-    /// 都没有窗口时为 nil。nil 表示暂无额度数据。
+    /// 分段条同口径；仅 5h 按 5h、仅周按 周 × N，均 clamp 到 1.0），已耗尽
+    /// （实际可用为 0）的套餐不参与（多套餐接力时中心不被拖到 0），全部套餐
+    /// 耗尽时为 0，任何套餐都没有窗口时为 nil。nil 表示暂无额度数据。
     var centerAvailable: Double?
     /// 套餐健康点，已按红 > 黄 > 绿排序并补齐到三个。判定输入来自
     /// `ModelQuota.aggregateHealthLevel`（统一 colorLevel + 高峰 floor）。
