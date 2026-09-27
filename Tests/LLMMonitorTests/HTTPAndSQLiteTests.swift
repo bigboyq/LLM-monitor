@@ -381,6 +381,69 @@ final class HTTPAndSQLiteTests: XCTestCase {
         XCTAssertEqual(callCount, 2, "CORRUPT 应命中回退白名单（调用次数应为 2）")
     }
 
+    // MARK: - L2: 持久损坏源库记忆
+
+    /// 直读 CORRUPT → /tmp 副本上的读取同样 CORRUPT：判定持久损坏并记忆；
+    /// 下一轮直读 CORRUPT 时跳过拷贝快速失败（不再每轮白付一次全量拷贝）。
+    func testPersistentCorruptDBSkipsTempCopyAfterCopyAlsoCorrupt() throws {
+        let srcDB = try makeTempDB()
+        defer { try? FileManager.default.removeItem(at: srcDB) }
+
+        let corrupt = SQLiteConnectionError.stepFailed(
+            code: SQLITE_CORRUPT,
+            extendedCode: SQLITE_CORRUPT,
+            message: "database disk image is malformed"
+        )
+        var callCount = 0
+        let corruptingAction: (URL) throws -> String = { _ in
+            callCount += 1
+            throw corrupt
+        }
+
+        // 第一轮：源库直读 CORRUPT → 回退拷贝 → 副本读取同样 CORRUPT → 记忆 + 上抛
+        XCTAssertThrowsError(
+            try SQLiteTempCopy.read(dbPath: srcDB, logTag: "[test-l2]", corruptingAction)
+        ) { error in
+            XCTAssertTrue(error is SQLiteConnectionError, "应上抛原 CORRUPT 错误: \(error)")
+        }
+        XCTAssertEqual(callCount, 2, "第一轮：源库直读 + 副本读取各一次")
+
+        // 第二轮：持久损坏记忆命中（源指纹未变）→ 跳过 /tmp 拷贝，只有直读一次
+        XCTAssertThrowsError(
+            try SQLiteTempCopy.read(dbPath: srcDB, logTag: "[test-l2]", corruptingAction)
+        )
+        XCTAssertEqual(callCount, 3, "记忆命中后不应再做 /tmp 全量拷贝")
+    }
+
+    /// 源文件变化（mtime/size 指纹变化）后记忆失效：恢复正常「直读 + 拷贝」回退。
+    func testPersistentCorruptionMemoryInvalidatedWhenSourceChanges() throws {
+        let srcDB = try makeTempDB()
+        defer { try? FileManager.default.removeItem(at: srcDB) }
+
+        let corrupt = SQLiteConnectionError.stepFailed(
+            code: SQLITE_CORRUPT,
+            extendedCode: SQLITE_CORRUPT,
+            message: "database disk image is malformed"
+        )
+        var callCount = 0
+        let corruptingAction: (URL) throws -> String = { _ in
+            callCount += 1
+            throw corrupt
+        }
+
+        XCTAssertThrowsError(
+            try SQLiteTempCopy.read(dbPath: srcDB, logTag: "[test-l2]", corruptingAction)
+        )
+        XCTAssertEqual(callCount, 2)
+
+        // 改写源文件（mtime 变化）→ 记忆失效 → 第二轮恢复拷贝回退（直读 + 副本）
+        try Data([0x09, 0x09]).write(to: srcDB)
+        XCTAssertThrowsError(
+            try SQLiteTempCopy.read(dbPath: srcDB, logTag: "[test-l2]", corruptingAction)
+        )
+        XCTAssertEqual(callCount, 4, "源文件变化后记忆失效，应恢复 /tmp 拷贝回退")
+    }
+
     // MARK: - FIX12: withTempCopy 逐文件指纹校验与失败清理
 
     /// 源指纹持续变化：每轮都在「db 拷完立即复验」处被放弃——wal/shm 永远不被

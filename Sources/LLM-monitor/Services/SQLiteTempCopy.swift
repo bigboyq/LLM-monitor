@@ -72,6 +72,8 @@ enum SQLiteTempCopy {
         logTag: String,
         _ action: (URL) throws -> T
     ) throws -> T {
+        // L2: 本轮入口是否为直读 CORRUPT（副本读取同样 CORRUPT 时据此记忆持久损坏）。
+        var directCorrupt = false
         // 1. 快路径：直接 read 原 .db
         do {
             return try action(dbPath)
@@ -97,6 +99,13 @@ enum SQLiteTempCopy {
             }
             // raw 值跟 SQLite3 C header 一致
             let baseCode = code & 0xFF
+            // L2: 直读 CORRUPT 且持久损坏记忆命中（上次副本读取同样 CORRUPT 且源
+            // 指纹未变）——真损坏而非竞态撕裂，跳过 /tmp 全量拷贝快速失败。
+            if baseCode == SQLITE_CORRUPT,
+               isPersistentCorruptionRemembered(dbPath: dbPath, fileManager: .default) {
+                logInfo("\(logTag) 直接 read CORRUPT (code=\(code))，且持久损坏记忆命中（源指纹未变），跳过 /tmp 拷贝快速失败")
+                throw error
+            }
             // 可回退白名单：只收"file-level、拷贝副本确实可能救"的错误，逐条理由：
             // - CANTOPEN(14)：IDE 遗留的 -shm 与本进程 dylib 不兼容等，直连打不开；
             //   副本完全隔离源 -shm/WAL 状态。
@@ -117,7 +126,8 @@ enum SQLiteTempCopy {
             // - CORRUPT(11)：并发写方的 auto-checkpoint 可能在直读进行到一半时原地
             //   改写/截断主库页，无锁 immutable 直读会把撕裂页读成 CORRUPT；此时源
             //   库本身通常完好，重拷一份一致快照即可自愈。若库真损坏，副本读取会在
-            //   同一位置同样失败并上抛，只是多付出一次有界的全量拷贝代价。
+            //   同一位置同样失败并上抛——首轮仍多付一次有界的全量拷贝代价，之后由
+            //   L2 的持久损坏记忆在后续轮次跳过拷贝（源指纹未变即快速失败）。
             // 救不了的维持上抛：NOTADB（文件本身不是数据库，拷贝无用）、SQL / 绑定
             // 等逻辑错误（换路径结果一样）。
             guard baseCode == SQLITE_CANTOPEN || baseCode == SQLITE_BUSY
@@ -134,10 +144,22 @@ enum SQLiteTempCopy {
             default: kind = "IOERR"
             }
             logInfo("\(logTag) 直接 read \(kind) (code=\(code))，fallback 到 /tmp 副本")
+            directCorrupt = baseCode == SQLITE_CORRUPT
         }
 
         // 2. 兜底：copy .db + .db-wal + .db-shm 到 /tmp 副本
-        return try withTempCopy(dbPath: dbPath, action)
+        do {
+            return try withTempCopy(dbPath: dbPath, action)
+        } catch let copyError as SQLiteConnectionError {
+            // L2: 本轮入口是直读 CORRUPT 且副本上的读取同样 CORRUPT → 判定为持久
+            // 损坏而非并发 checkpoint 撕裂（撕裂页重拷即自愈；真损坏重拷后仍在同一
+            // 位置失败）。按源库路径 + 源指纹（mtime/size）记忆，进程内不落盘，
+            // 文件变化即失效；后续轮次跳过 /tmp 拷贝快速失败。
+            guard directCorrupt, isCorrupt(copyError) else { throw copyError }
+            rememberPersistentCorruption(dbPath: dbPath, fileManager: .default)
+            logInfo("\(logTag) /tmp 副本上的读取同样 CORRUPT，判定持久损坏并记忆，后续轮次跳过拷贝")
+            throw copyError
+        }
     }
 
     /// 在 `/tmp` 下生成一个 `UUID.{db,db-wal,db-shm}` 三件套，defer 在闭包退出时
@@ -264,9 +286,78 @@ enum SQLiteTempCopy {
     /// FIX12 测试钩子（internal，仅测试注入；生产路径恒为 nil、零开销）：非 nil 时
     /// `sourceFingerprint` 改走注入实现，用于在测试中模拟「活跃写入下源指纹持续
     /// 变化」而无需真实并发写进程。
-    nonisolated(unsafe) static var sourceFingerprintOverride: (
-        (_ dbPath: URL, _ fileManager: FileManager) throws -> SourceFingerprint
-    )?
+    ///
+    /// L3: 原为无同步的可变全局 static——生产路径每次指纹采样都会读它，测试可能
+    /// 并发写入。改为 NSLock 保护的存取器，外部读/写/置 nil 的用法不变。
+    typealias SourceFingerprintProbe = (
+        _ dbPath: URL, _ fileManager: FileManager
+    ) throws -> SourceFingerprint
+
+    private nonisolated(unsafe) static var storedSourceFingerprintOverride: SourceFingerprintProbe?
+    private static let sourceFingerprintOverrideLock = NSLock()
+
+    nonisolated(unsafe) static var sourceFingerprintOverride: SourceFingerprintProbe? {
+        get { sourceFingerprintOverrideLock.withLock { storedSourceFingerprintOverride } }
+        set { sourceFingerprintOverrideLock.withLock { storedSourceFingerprintOverride = newValue } }
+    }
+
+    // MARK: - L2: 持久损坏源库记忆
+
+    /// L2: 持久损坏源库记忆（进程内、不落盘）：key = 源库路径，value = 记忆时的
+    /// 源指纹（db + -wal + -shm 的 mtime/size）。直读 CORRUPT 且源指纹与记忆一致
+    /// 时跳过 /tmp 拷贝快速失败；指纹变化（文件被替换/修复/追加写入）即失效。
+    /// 键按路径天然有界（App 只读固定的几个源库），无需淘汰。
+    private nonisolated(unsafe) static var persistentCorruptionMemory: [String: SourceFingerprint] = [:]
+    private static let corruptionMemoryLock = NSLock()
+
+    /// 错误主码是否 SQLITE_CORRUPT(11)（含扩展码）。
+    private static func isCorrupt(_ error: SQLiteConnectionError) -> Bool {
+        switch error {
+        case .lostImmutableRace, .bindFailed, .nullColumn:
+            return false
+        case .openFailed(_, let code, _, _),
+             .prepareFailed(let code, _, _, _),
+             .stepFailed(let code, _, _):
+            return code & 0xFF == SQLITE_CORRUPT
+        }
+    }
+
+    /// L2: 持久损坏记忆是否命中（源指纹与记忆一致）。指纹采样失败或源已变化
+    /// （记忆失效并移除）时返回 false，按正常回退处理——记忆只是跳拷贝的
+    /// 优化，任何不确定情形都退回「重拷一次」的保守路径。
+    private static func isPersistentCorruptionRemembered(
+        dbPath: URL,
+        fileManager: FileManager
+    ) -> Bool {
+        let remembered = corruptionMemoryLock.withLock {
+            persistentCorruptionMemory[dbPath.path]
+        }
+        guard let remembered else { return false }
+        guard let current = try? sourceFingerprint(dbPath: dbPath, fileManager: fileManager) else {
+            return false
+        }
+        if current != remembered {
+            // 源文件已变化：记忆失效（可能已被替换/修复），移除后恢复回退。
+            corruptionMemoryLock.withLock {
+                if persistentCorruptionMemory[dbPath.path] == remembered {
+                    persistentCorruptionMemory[dbPath.path] = nil
+                }
+            }
+            return false
+        }
+        return true
+    }
+
+    /// L2: 记录持久损坏源库（当前源指纹）。指纹采样失败时不记忆——下一轮仍按
+    /// 原路径重拷一次，与既有行为一致。
+    private static func rememberPersistentCorruption(dbPath: URL, fileManager: FileManager) {
+        guard let fingerprint = try? sourceFingerprint(dbPath: dbPath, fileManager: fileManager) else {
+            return
+        }
+        corruptionMemoryLock.withLock {
+            persistentCorruptionMemory[dbPath.path] = fingerprint
+        }
+    }
 
     private static func sourceFingerprint(
         dbPath: URL,
