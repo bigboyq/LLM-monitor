@@ -3,7 +3,8 @@ import SQLite3
 import Darwin
 
 /// SQLite 读策略：优先直接 read 原 .db，file-level 错误（SQLITE_CANTOPEN=14 /
-/// SQLITE_BUSY=5 / SQLITE_READONLY=8 家族 / SQLITE_IOERR=10）时 copy .db +
+/// SQLITE_BUSY=5 / SQLITE_READONLY=8 家族 / SQLITE_IOERR=10 / SQLITE_CORRUPT=11）
+/// 或 immutable=1 直读复检发现写进程出现（`lostImmutableRace`）时 copy .db +
 /// .db-wal + .db-shm 到私有临时副本上 read。
 ///
 /// 适用：任何读 IDE / runtime 实时写入的 .db（antigravity、minimax runtime），
@@ -77,6 +78,12 @@ enum SQLiteTempCopy {
         } catch let error as SQLiteConnectionError {
             let code: Int32
             switch error {
+            case .lostImmutableRace:
+                // FIX6: immutable=1 直读在打开后的复检中发现 -shm/-wal 出现（写进程刚
+                // 出现）。这不是扫描失败，而是「直读前提失效」——必须路由进 withTempCopy
+                // 用一致性快照副本完成本轮读取，而不是上抛导致整轮扫描失败。
+                logInfo("\(logTag) immutable=1 直读复检发现 -shm/-wal 出现（写进程刚出现），fallback 到 /tmp 副本")
+                return try withTempCopy(dbPath: dbPath, action)
             case .openFailed(_, let c, _, _):
                 code = c
             case .prepareFailed(let c, _, _, _):
@@ -99,13 +106,23 @@ enum SQLiteTempCopy {
             //   只读连接抛扩展码 SQLITE_READONLY_RECOVERY(264) /
             //   READONLY_CANTINIT 等，& 0xFF 后主码都是 8——这正是副本最该兜住的
             //   场景：副本以 READWRITE 打开，可以在副本上完成 WAL recovery。
-            // - IOERR(10)：保守纳入。源被短暂锁住 / -shm 状态异常（IOERR_SHMOPEN、
-            //   IOERR_SHMLOCK 等扩展码）时，拷到本地 /tmp 换一条干净 I/O 路径可能
-            //   救回；副本路径仍失败则错误照常上抛，最坏代价只是多一次尝试。
-            // 救不了的维持上抛：NOTADB（文件本身不是数据库，拷贝无用）、CORRUPT /
-            // SQL / 绑定等逻辑错误（换路径结果一样）。
+            // - IOERR(10)（含 IOERR_SHORT_READ 等扩展码）：保守纳入。源被短暂锁住 /
+            //   -shm 状态异常（IOERR_SHMOPEN、IOERR_SHMLOCK 等扩展码）时，拷到本地
+            //   /tmp 换一条干净 I/O 路径可能救回；副本路径仍失败则错误照常上抛。
+            //   注意回退的最坏代价并非「多一次尝试」：活跃持续写入下，每轮的 db
+            //   全量拷贝都可能在拷完的瞬间失效（withTempCopy 的逐文件指纹校验会立即
+            //   放弃该轮），最多重试 3 轮后抛 sourceChangedDuringSnapshot——最坏情况
+            //   是向 $TMPDIR 做 3 次 GB 级 db 全量拷贝后仍失败，调用方按本轮扫描
+            //   失败处理。
+            // - CORRUPT(11)：并发写方的 auto-checkpoint 可能在直读进行到一半时原地
+            //   改写/截断主库页，无锁 immutable 直读会把撕裂页读成 CORRUPT；此时源
+            //   库本身通常完好，重拷一份一致快照即可自愈。若库真损坏，副本读取会在
+            //   同一位置同样失败并上抛，只是多付出一次有界的全量拷贝代价。
+            // 救不了的维持上抛：NOTADB（文件本身不是数据库，拷贝无用）、SQL / 绑定
+            // 等逻辑错误（换路径结果一样）。
             guard baseCode == SQLITE_CANTOPEN || baseCode == SQLITE_BUSY
-                || baseCode == SQLITE_READONLY || baseCode == SQLITE_IOERR else {
+                || baseCode == SQLITE_READONLY || baseCode == SQLITE_IOERR
+                || baseCode == SQLITE_CORRUPT else {
                 throw error
             }
             let kind: String
@@ -113,6 +130,7 @@ enum SQLiteTempCopy {
             case SQLITE_CANTOPEN: kind = "CANTOPEN"
             case SQLITE_BUSY: kind = "BUSY"
             case SQLITE_READONLY: kind = "READONLY"
+            case SQLITE_CORRUPT: kind = "CORRUPT"
             default: kind = "IOERR"
             }
             logInfo("\(logTag) 直接 read \(kind) (code=\(code))，fallback 到 /tmp 副本")
@@ -125,6 +143,10 @@ enum SQLiteTempCopy {
     /// 在 `/tmp` 下生成一个 `UUID.{db,db-wal,db-shm}` 三件套，defer 在闭包退出时
     /// 不管成功失败都清理。defer 在第一次文件创建之前就注册：覆盖
     /// "复制 .db 成功 → 复制 -wal 失败" 这种半完成场景，确保残留文件被清理。
+    ///
+    /// FIX12: 拷贝循环带逐文件指纹校验——db（大文件）拷完立即复验源指纹，失效则
+    /// 立即放弃本轮剩余拷贝（wal/shm 不拷）进入下一轮；最多 3 轮，耗尽后抛
+    /// `sourceChangedDuringSnapshot`（defer 同样覆盖该失败路径，不留临时副本）。
     private static func withTempCopy<T>(
         dbPath: URL,
         _ action: (URL) throws -> T
@@ -150,21 +172,32 @@ enum SQLiteTempCopy {
             try? fileManager.removeItem(at: tempSHM)
 
             let before = try sourceFingerprint(dbPath: dbPath, fileManager: fileManager)
+            // FIX12: 本轮是否已在「db 拷完立即复验」处判定失效（wal/shm 不再拷贝）。
+            var roundAbandonedAfterDB = false
             do {
                 try copyPrivate(from: dbPath, to: tempDB, fileManager: fileManager)
-                if before.wal.exists {
-                    try copyPrivate(
-                        from: URL(fileURLWithPath: dbPath.path + "-wal"),
-                        to: tempWAL,
-                        fileManager: fileManager
-                    )
+                // FIX12: 逐文件指纹校验 —— db（大文件）拷完立即复验源指纹。活跃持续
+                // 写入下 db 拷贝可能耗时数秒，拷完即失效是常态而非例外；本轮已报废，
+                // 继续拷 wal/shm 纯属浪费（下一轮反正全部重来），立即放弃剩余拷贝。
+                if try sourceFingerprint(dbPath: dbPath, fileManager: fileManager) != before {
+                    roundAbandonedAfterDB = true
+                    logInfo("[sqlite-copy] db 拷贝后源指纹已变化，放弃本轮 wal/shm 拷贝，重试 \(attempt)/3")
                 }
-                if before.shm.exists {
-                    try copyPrivate(
-                        from: URL(fileURLWithPath: dbPath.path + "-shm"),
-                        to: tempSHM,
-                        fileManager: fileManager
-                    )
+                if !roundAbandonedAfterDB {
+                    if before.wal.exists {
+                        try copyPrivate(
+                            from: URL(fileURLWithPath: dbPath.path + "-wal"),
+                            to: tempWAL,
+                            fileManager: fileManager
+                        )
+                    }
+                    if before.shm.exists {
+                        try copyPrivate(
+                            from: URL(fileURLWithPath: dbPath.path + "-shm"),
+                            to: tempSHM,
+                            fileManager: fileManager
+                        )
+                    }
                 }
             } catch {
                 // checkpoint 可能在 stat 与 copy 之间删除 WAL/SHM。若源指纹确实
@@ -178,6 +211,13 @@ enum SQLiteTempCopy {
                 }
                 throw error
             }
+            if roundAbandonedAfterDB {
+                if attempt < 3 {
+                    Thread.sleep(forTimeInterval: 0.01)
+                    continue
+                }
+                break
+            }
             let after = try sourceFingerprint(dbPath: dbPath, fileManager: fileManager)
             if before == after {
                 copied = true
@@ -187,19 +227,24 @@ enum SQLiteTempCopy {
             Thread.sleep(forTimeInterval: 0.01)
         }
         guard copied else {
+            // FIX12: defer（注册于循环之前）同样覆盖本失败路径——3 轮耗尽抛错前，
+            // 本轮 tempDB/tempWAL/tempSHM 残留已被清理，不会在 $TMPDIR 留下
+            // GB 级垃圾。
             throw SQLiteTempCopyError.sourceChangedDuringSnapshot(path: dbPath.path)
         }
 
         return try action(tempDB)
     }
 
-    private struct FileState: Equatable {
+    // FIX12: internal（原 private）——测试钩子 sourceFingerprintOverride 需要构造
+    // 这两个值类型来模拟「源指纹持续变化」。
+    struct FileState: Equatable {
         let exists: Bool
         let size: UInt64
         let modificationTime: TimeInterval
     }
 
-    private struct SourceFingerprint: Equatable {
+    struct SourceFingerprint: Equatable {
         let db: FileState
         let wal: FileState
         let shm: FileState
@@ -216,11 +261,21 @@ enum SQLiteTempCopy {
         }
     }
 
+    /// FIX12 测试钩子（internal，仅测试注入；生产路径恒为 nil、零开销）：非 nil 时
+    /// `sourceFingerprint` 改走注入实现，用于在测试中模拟「活跃写入下源指纹持续
+    /// 变化」而无需真实并发写进程。
+    nonisolated(unsafe) static var sourceFingerprintOverride: (
+        (_ dbPath: URL, _ fileManager: FileManager) throws -> SourceFingerprint
+    )?
+
     private static func sourceFingerprint(
         dbPath: URL,
         fileManager: FileManager
     ) throws -> SourceFingerprint {
-        try SourceFingerprint(
+        if let override = sourceFingerprintOverride {
+            return try override(dbPath, fileManager)
+        }
+        return try SourceFingerprint(
             db: fileState(at: dbPath, fileManager: fileManager),
             wal: fileState(at: URL(fileURLWithPath: dbPath.path + "-wal"), fileManager: fileManager),
             shm: fileState(at: URL(fileURLWithPath: dbPath.path + "-shm"), fileManager: fileManager)

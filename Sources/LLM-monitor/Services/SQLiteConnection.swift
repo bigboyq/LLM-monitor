@@ -8,6 +8,10 @@ enum SQLiteConnectionError: Error, CustomStringConvertible {
     case bindFailed(code: Int32, extendedCode: Int32, message: String, sql: String)
     case nullColumn(index: Int)
     case stepFailed(code: Int32, extendedCode: Int32, message: String)
+    /// FIX6: immutable=1 直读连接在打开后的 -shm/-wal 复检中发现写进程出现。
+    /// 这不是 SQLite 自身的错误——调用方（`SQLiteTempCopy.read`）应把它路由进
+    /// withTempCopy 一致性快照回退，而不是当扫描失败上抛。
+    case lostImmutableRace(path: String)
 
     var description: String {
         switch self {
@@ -21,6 +25,8 @@ enum SQLiteConnectionError: Error, CustomStringConvertible {
             return "SQLiteConnection required column \(index) was NULL"
         case .stepFailed(let code, let extCode, let msg):
             return "SQLiteConnection step failed (code=\(code), extendedCode=\(extCode)): \(msg)"
+        case .lostImmutableRace(let path):
+            return "SQLiteConnection immutable=1 direct read aborted: -shm/-wal appeared after open (writer process started) for path=\(path)"
         }
     }
 }
@@ -70,11 +76,29 @@ final class SQLiteConnection {
         return !walHasData
     }
 
+    /// FIX6（TOCTOU 收窄）：immutable=1 连接打开后、执行任何查询前的复检。
+    /// -shm 或 -wal **出现（任意大小，含 0 字节）**即返回 true——0 字节 -wal 也算
+    /// 命中：SQLite 在写端以 WAL 模式打开库的瞬间就会创建 0 字节 -wal，它存在即
+    /// 说明写进程刚刚出现，随时可能追加帧并 auto-checkpoint 原地改写主库；无锁的
+    /// immutable 直读此时必须放弃，由调用方（`SQLiteTempCopy.read`）改走一致性
+    /// 快照副本。
+    ///
+    /// 已知收窄：本复检与首次查询之间仍存在极小残余窗口（写进程可能在复检之后、
+    /// 首查之前出现），无法彻底消除——彻底消除需要持共享锁，与 immutable=1 的
+    /// 无锁前提矛盾；本复检把竞态窗口从「canOpenImmutable 的 stat → open」收窄
+    /// 到「复检 → 首查」。
+    static func immutableSidecarRaceDetected(path: URL) -> Bool {
+        var st = stat()
+        if stat(path.path + "-shm", &st) == 0 { return true }
+        return stat(path.path + "-wal", &st) == 0
+    }
+
     init(path: URL, readOnly: Bool = false) throws {
         self.path = path.path
         var db: OpaquePointer?
         let targetPath: String
         let flags: Int32
+        var openedImmutably = false
 
         if Self.canOpenImmutable(path: path, readOnly: readOnly) {
             if var components = URLComponents(url: path, resolvingAgainstBaseURL: false) {
@@ -84,6 +108,7 @@ final class SQLiteConnection {
                 targetPath = path.absoluteString + "?immutable=1"
             }
             flags = SQLITE_OPEN_READONLY | SQLITE_OPEN_URI
+            openedImmutably = true
         } else {
             targetPath = self.path
             flags = readOnly ? SQLITE_OPEN_READONLY : SQLITE_OPEN_READWRITE
@@ -105,6 +130,15 @@ final class SQLiteConnection {
 
         // 300ms busy timeout：等 IDE 释放短写锁
         sqlite3_busy_timeout(db, 300)
+
+        // FIX6: immutable=1 直读的跨进程 TOCTOU 复检（见 immutableSidecarRaceDetected）。
+        // canOpenImmutable 的两次 stat 与 sqlite3_open_v2 之间写进程可能启动，或
+        // -wal 刚被创建为 0 字节（原判定拦不住）；命中即立即关闭并抛专用错误，
+        // 由 SQLiteTempCopy.read 路由进 /tmp 副本回退，绝不带上锁缺口执行查询。
+        if openedImmutably, Self.immutableSidecarRaceDetected(path: path) {
+            sqlite3_close(db)
+            throw SQLiteConnectionError.lostImmutableRace(path: self.path)
+        }
         self.handle = db
     }
 

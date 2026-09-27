@@ -204,11 +204,298 @@ final class HTTPAndSQLiteTests: XCTestCase {
         XCTAssertTrue(after.isSubset(of: before), "clean WAL 直读成功时不应创建任何临时副本")
     }
 
+    // MARK: - FIX6: immutable=1 打开后 -shm/-wal 竞态复检
+
+    /// 复检函数直测：-shm 或 -wal 出现（任意大小，含 0 字节）即判定竞态命中。
+    func testImmutableSidecarRaceDetection() throws {
+        let baseDir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("immutable-race-detect-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: baseDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: baseDir) }
+
+        let dbURL = baseDir.appendingPathComponent("test.db")
+        let shmURL = baseDir.appendingPathComponent("test.db-shm")
+        let walURL = baseDir.appendingPathComponent("test.db-wal")
+        try Data("dummy-db".utf8).write(to: dbURL)
+
+        // 1. 无 sidecar → 无竞态
+        XCTAssertFalse(SQLiteConnection.immutableSidecarRaceDetected(path: dbURL))
+
+        // 2. 0 字节 -wal 也命中：SQLite 在写端以 WAL 模式打开库的瞬间就会创建它
+        try Data().write(to: walURL)
+        XCTAssertTrue(SQLiteConnection.immutableSidecarRaceDetected(path: dbURL))
+
+        // 3. 非空 -wal 命中
+        try Data("frame".utf8).write(to: walURL)
+        XCTAssertTrue(SQLiteConnection.immutableSidecarRaceDetected(path: dbURL))
+
+        // 4. 仅 -shm 命中
+        try? FileManager.default.removeItem(at: walURL)
+        try Data("shm".utf8).write(to: shmURL)
+        XCTAssertTrue(SQLiteConnection.immutableSidecarRaceDetected(path: dbURL))
+
+        // 5. -shm 与 -wal 同时存在命中
+        try Data("frame".utf8).write(to: walURL)
+        XCTAssertTrue(SQLiteConnection.immutableSidecarRaceDetected(path: dbURL))
+    }
+
+    /// 连接行为：sidecar 出现（含 0 字节 -wal、活写进程持有的 -shm/-wal）时，
+    /// immutable 直读连接被拒绝并抛 lostImmutableRace；非 immutable 打开不受影响。
+    func testSQLiteConnectionRejectsImmutableOpenWhenSidecarsPresent() throws {
+        let baseDir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("immutable-race-open-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: baseDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: baseDir) }
+
+        let dbURL = baseDir.appendingPathComponent("race.sqlite")
+        let walURL = URL(fileURLWithPath: dbURL.path + "-wal")
+        let shmURL = URL(fileURLWithPath: dbURL.path + "-shm")
+
+        // 建立 WAL 模式库并写入数据，随后清理 sidecar（静止态）
+        var db: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(dbURL.path, &db), SQLITE_OK)
+        XCTAssertEqual(sqlite3_exec(db, "PRAGMA journal_mode=WAL; CREATE TABLE t (cnt INT); INSERT INTO t VALUES (42);", nil, nil, nil), SQLITE_OK)
+        XCTAssertEqual(sqlite3_close(db), SQLITE_OK)
+        try? FileManager.default.removeItem(atPath: dbURL.path + "-shm")
+        try? FileManager.default.removeItem(atPath: dbURL.path + "-wal")
+
+        // (a) 0 字节 -wal：canOpenImmutable 决策仍放行（决策逻辑不变），
+        //     但打开后的复检必须拒绝 —— 这正是原 TOCTOU 拦不住的场景。
+        try Data().write(to: walURL)
+        XCTAssertTrue(SQLiteConnection.canOpenImmutable(path: dbURL, readOnly: true))
+        XCTAssertThrowsError(try SQLiteConnection(path: dbURL, readOnly: true)) { error in
+            guard case SQLiteConnectionError.lostImmutableRace(let path) = error else {
+                XCTFail("expected lostImmutableRace, got \(error)")
+                return
+            }
+            XCTAssertEqual(path, dbURL.path)
+        }
+
+        // (b) 活写进程：-shm 存在时 canOpenImmutable 本来就返回 false、走标准只读
+        //     打开（读实时 WAL），复检不适用——验证新逻辑不会误伤这条正常路径。
+        try? FileManager.default.removeItem(at: walURL)
+        var writer: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(dbURL.path, &writer), SQLITE_OK)
+        XCTAssertEqual(sqlite3_exec(writer, "PRAGMA journal_mode=WAL; INSERT INTO t VALUES (43);", nil, nil, nil), SQLITE_OK)
+        defer { sqlite3_close(writer) }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: shmURL.path), "活写进程应持有 -shm")
+        XCTAssertFalse(SQLiteConnection.canOpenImmutable(path: dbURL, readOnly: true), "有 -shm 时决策应走标准只读路径")
+        let liveConn = try SQLiteConnection(path: dbURL, readOnly: true)
+        let liveRows = try liveConn.query(sql: "SELECT cnt FROM t ORDER BY cnt") { stmt in
+            sqlite3_column_int(stmt, 0)
+        }
+        liveConn.close()
+        XCTAssertEqual(liveRows, [42, 43], "活写进程场景应经标准只读路径读到实时数据")
+
+        // (c) 非 immutable 打开（副本写连接 / 有 sidecar 的标准只读打开）不受复检影响
+        let conn = try SQLiteConnection(path: dbURL, readOnly: false)
+        conn.close()
+    }
+
+    /// lostImmutableRace 从 action 直接抛出时，read 应路由进 withTempCopy 回退，
+    /// 而不是当扫描失败上抛。
+    func testSQLiteTempCopyFallsBackOnLostImmutableRace() throws {
+        let srcDB = try makeTempDB()
+        defer { try? FileManager.default.removeItem(at: srcDB) }
+
+        var callCount = 0
+        let result = try SQLiteTempCopy.read(dbPath: srcDB, logTag: "[test]") { url in
+            callCount += 1
+            if callCount == 1 {
+                throw SQLiteConnectionError.lostImmutableRace(path: srcDB.path)
+            }
+            return "success"
+        }
+
+        XCTAssertEqual(result, "success")
+        XCTAssertEqual(callCount, 2, "lostImmutableRace 应路由进 /tmp 副本回退（调用次数应为 2）")
+    }
+
+    /// 端到端：源库带 0 字节 -wal（写进程刚出现）→ 直连 immutable 打开被复检拒绝 →
+    /// 回退副本以 READWRITE 完成同一查询。
+    func testSQLiteTempCopyRoutesRealImmutableRaceToTempCopy() throws {
+        let baseDir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("immutable-race-e2e-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: baseDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: baseDir) }
+
+        let dbURL = baseDir.appendingPathComponent("race_e2e.sqlite")
+        var db: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(dbURL.path, &db), SQLITE_OK)
+        XCTAssertEqual(sqlite3_exec(db, "PRAGMA journal_mode=WAL; CREATE TABLE t (cnt INT); INSERT INTO t VALUES (99);", nil, nil, nil), SQLITE_OK)
+        XCTAssertEqual(sqlite3_close(db), SQLITE_OK)
+        try? FileManager.default.removeItem(atPath: dbURL.path + "-shm")
+        try? FileManager.default.removeItem(atPath: dbURL.path + "-wal")
+        // 写进程刚出现的瞬间：0 字节 -wal
+        try Data().write(to: URL(fileURLWithPath: dbURL.path + "-wal"))
+
+        var visitedPaths: [String] = []
+        let value = try SQLiteTempCopy.read(dbPath: dbURL, logTag: "[test-fix6]") { url in
+            visitedPaths.append(url.path)
+            let conn = try SQLiteConnection(path: url, readOnly: url.path == dbURL.path)
+            defer { conn.close() }
+            let rows = try conn.query(sql: "SELECT cnt FROM t") { stmt in
+                sqlite3_column_int(stmt, 0)
+            }
+            return rows.first ?? -1
+        }
+
+        XCTAssertEqual(value, 99)
+        XCTAssertEqual(visitedPaths.count, 2, "第 1 次直连应被复检拒绝，第 2 次在副本上完成")
+        XCTAssertEqual(visitedPaths[0], dbURL.path)
+        XCTAssertNotEqual(visitedPaths[1], dbURL.path, "第 2 次应发生在 /tmp 副本上")
+    }
+
+    /// SQLITE_CORRUPT（主码 11）命中回退白名单：并发 checkpoint 撕裂页可能在
+    /// 直读时表现为 CORRUPT，重拷一份一致快照可能自愈。
+    func testSQLiteTempCopyFallsBackOnCorrupt() throws {
+        let srcDB = try makeTempDB()
+        defer { try? FileManager.default.removeItem(at: srcDB) }
+
+        var callCount = 0
+        let result = try SQLiteTempCopy.read(dbPath: srcDB, logTag: "[test]") { url in
+            callCount += 1
+            if callCount == 1 {
+                throw SQLiteConnectionError.stepFailed(
+                    code: SQLITE_CORRUPT,
+                    extendedCode: SQLITE_CORRUPT,
+                    message: "database disk image is malformed"
+                )
+            }
+            return "success"
+        }
+
+        XCTAssertEqual(result, "success")
+        XCTAssertEqual(callCount, 2, "CORRUPT 应命中回退白名单（调用次数应为 2）")
+    }
+
+    // MARK: - FIX12: withTempCopy 逐文件指纹校验与失败清理
+
+    /// 源指纹持续变化：每轮都在「db 拷完立即复验」处被放弃——wal/shm 永远不被
+    /// 拷贝，3 轮耗尽后抛 sourceChangedDuringSnapshot，且临时副本被 defer 清理。
+    func testWithTempCopyAbandonsRoundAfterStaleDBCopyAndCleansUp() throws {
+        let srcDB = try makeTempDBWithSidecars()
+        defer {
+            try? FileManager.default.removeItem(at: srcDB)
+            try? FileManager.default.removeItem(atPath: srcDB.path + "-wal")
+            try? FileManager.default.removeItem(atPath: srcDB.path + "-shm")
+        }
+
+        let spy = FingerprintSpy()
+        SQLiteTempCopy.sourceFingerprintOverride = { _, _ in try spy.next() }
+        defer { SQLiteTempCopy.sourceFingerprintOverride = nil }
+
+        let before = try currentAppTempEntries()
+        do {
+            _ = try SQLiteTempCopy.read(dbPath: srcDB, logTag: "[test-fix12]") { url in
+                if url.path == srcDB.path {
+                    // 按既有测试模式注入 CANTOPEN，触发 withTempCopy 回退
+                    throw SQLiteConnectionError.prepareFailed(
+                        code: SQLITE_CANTOPEN, extendedCode: SQLITE_CANTOPEN,
+                        message: "unable to open database file", sql: "SELECT 1"
+                    )
+                }
+                XCTFail("指纹持续变化时 3 轮拷贝应全部失败，不应进入 action")
+                return "unreachable"
+            }
+            XCTFail("expected sourceChangedDuringSnapshot")
+        } catch {
+            let desc = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+            XCTAssertTrue(
+                desc.hasPrefix("SQLite source changed while copying snapshot"),
+                "expected sourceChangedDuringSnapshot, got \(desc)"
+            )
+        }
+        let after = try currentAppTempEntries()
+
+        XCTAssertTrue(after.isSubset(of: before), "3 轮耗尽抛错前必须清理本轮临时副本: \(after.subtracting(before))")
+        XCTAssertFalse(spy.sawTempSidecar, "逐文件提前放弃生效：任何一轮都不应拷贝 wal/shm 副本")
+        XCTAssertEqual(spy.calls, 6, "3 轮 × [before 采样 + db 拷后复验] = 6 次；无逐文件复验时每轮会有第 3 次 after 采样")
+    }
+
+    /// 瞬时变化后稳定：第 1 轮在 db 复验处放弃，第 2 轮完整拷贝成功并进入 action。
+    func testWithTempCopyRetriesAndSucceedsWhenSourceStabilizes() throws {
+        let srcDB = try makeTempDBWithSidecars()
+        defer {
+            try? FileManager.default.removeItem(at: srcDB)
+            try? FileManager.default.removeItem(atPath: srcDB.path + "-wal")
+            try? FileManager.default.removeItem(atPath: srcDB.path + "-shm")
+        }
+
+        // 采样序列：#1 → f1；#2（db 拷后复验）→ f2 ≠ f1，放弃第 1 轮；
+        // #3 → f2（before）；#4 → f2（复验通过）；#5 → f2（after == before）→ 成功。
+        let counter = CounterBox()
+        SQLiteTempCopy.sourceFingerprintOverride = { _, _ in
+            counter.calls += 1
+            let mtime = counter.calls == 1 ? 1.0 : 2.0
+            return SQLiteTempCopy.SourceFingerprint(
+                db: .init(exists: true, size: 1, modificationTime: mtime),
+                wal: .init(exists: true, size: 1, modificationTime: mtime),
+                shm: .init(exists: true, size: 1, modificationTime: mtime)
+            )
+        }
+        defer { SQLiteTempCopy.sourceFingerprintOverride = nil }
+
+        let before = try currentAppTempEntries()
+        var actionCalls = 0
+        let result = try SQLiteTempCopy.read(dbPath: srcDB, logTag: "[test-fix12]") { url in
+            if url.path == srcDB.path {
+                throw SQLiteConnectionError.prepareFailed(
+                    code: SQLITE_CANTOPEN, extendedCode: SQLITE_CANTOPEN,
+                    message: "unable to open database file", sql: "SELECT 1"
+                )
+            }
+            actionCalls += 1
+            return "snapshot"
+        }
+        let after = try currentAppTempEntries()
+
+        XCTAssertEqual(result, "snapshot", "瞬时变化后稳定的源应在第 2 轮拷贝成功")
+        XCTAssertEqual(actionCalls, 1, "action 应恰好在临时副本上执行一次")
+        XCTAssertEqual(counter.calls, 5, "第 1 轮放弃（2 次采样）+ 第 2 轮完整（before/复验/after = 3 次采样）")
+        XCTAssertTrue(after.isSubset(of: before), "成功路径应清理临时副本")
+    }
+
     private func makeTempDB() throws -> URL {
         let srcDB = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("sqlite-temp-copy-test-\(UUID().uuidString).db")
         try Data([0x00, 0x01]).write(to: srcDB)
         return srcDB
+    }
+
+    /// 带 -wal / -shm sidecar 的源库：配合 sourceFingerprintOverride 验证
+    /// 「db 复验失败时 wal/shm 不被拷贝」需要 sidecar 真实存在。
+    private func makeTempDBWithSidecars() throws -> URL {
+        let srcDB = try makeTempDB()
+        try Data("wal".utf8).write(to: URL(fileURLWithPath: srcDB.path + "-wal"))
+        try Data("shm".utf8).write(to: URL(fileURLWithPath: srcDB.path + "-shm"))
+        return srcDB
+    }
+
+    /// FIX12 测试间谍：每次指纹采样都返回不同值（= 源永远在变），并记录采样时
+    /// 专属临时目录是否出现过 .db-wal/.db-shm 副本——若实现未做逐文件提前放弃，
+    /// wal/shm 拷贝会发生在下一轮采样（after）之前而被观察到。
+    private final class FingerprintSpy {
+        private(set) var calls = 0
+        private(set) var sawTempSidecar = false
+
+        func next() throws -> SQLiteTempCopy.SourceFingerprint {
+            calls += 1
+            let entries = (try? FileManager.default.contentsOfDirectory(atPath: SQLiteTempCopy.appTempDir().path)) ?? []
+            if entries.contains(where: { $0.hasSuffix(".db-wal") || $0.hasSuffix(".db-shm") }) {
+                sawTempSidecar = true
+            }
+            let mtime = Double(calls)
+            return SQLiteTempCopy.SourceFingerprint(
+                db: .init(exists: true, size: 1, modificationTime: mtime),
+                wal: .init(exists: true, size: 1, modificationTime: mtime),
+                shm: .init(exists: true, size: 1, modificationTime: mtime)
+            )
+        }
+    }
+
+    private final class CounterBox {
+        var calls = 0
     }
 
     // MARK: - R12: 专属临时目录与清理
