@@ -442,7 +442,9 @@ ZCode 的闲时任务是系统赠送的、**不消耗 Coding Plan 积分**的后
 `off_peak_tasks` 表（`status='completed'` 且 `started_at` / `ended_at` 都非空），产出
 `[GlmOffPeakWindow]` 挂在 `GlmLocalUsage.offPeakWindows`。`LocalUsageSummaryBuilder.summary`
 的额度窗口路径是**白名单**口径：sample 上的原始 `provider_id` 精确判定——
-`offpeak-idle-plan` 归为闲时（`isGlmOffPeakSample`），其余智谱前缀
+闲时 ID（`account:bigmodel-offpeak-idle-plan`、`account:zai-offpeak-idle-plan`
+与历史裸值 `offpeak-idle-plan`，显式枚举于 `zcodeOffPeakProviderIDs`，经
+`isZcodeOffPeakProvider` 判定）归为闲时（`isGlmOffPeakSample`），其余智谱前缀
 （非正式 Coding Plan，`isZcodeGlmCodingPlanProvider` 判定）归为其他（`isGlmOtherPlanSample`），两者都不计入额度窗口；同一时间
 窗口内的正常 Coding Plan 调用不会被误排除。旧缓存没有来源字段时，才回退到
 `completedAt` 是否落入闲时窗口（闭区间 + 2 秒容差）。
