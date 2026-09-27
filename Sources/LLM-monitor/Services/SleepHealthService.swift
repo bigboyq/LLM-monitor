@@ -65,12 +65,14 @@ final class SleepHealthService: ObservableObject, SleepHealthReporting {
         let generation = refreshGeneration
 
         Task.detached { [weak self] in
-            // 检查项 1：断言扫描；探针抛错时按「无违规」降级，不让整体评估失败
-            var snapshots: [SleepAssertionSnapshot] = []
+            // 检查项 1：断言扫描。「探不到」≠「无违规」——探针抛错时无法判定
+            // 有无违规，按空快照继续评估会把失败包装成 .healthy（假绿）。与检查
+            // 项 2 的降级口径一致：本轮按未知处理，不发布健康结论。
+            var snapshots: [SleepAssertionSnapshot]? = nil
             do {
                 snapshots = try probe()
             } catch {
-                logWarn("睡眠健康度：断言扫描失败，按无违规处理：\(error)")
+                logWarn("睡眠健康度：断言扫描失败，本轮按未知处理，不发布健康结论：\(error)")
             }
 
             // 检查项 2：电源配置；读取/解析失败时置 nil（unknown 不得误判为 acSleepDisabled）
@@ -85,6 +87,17 @@ final class SleepHealthService: ObservableObject, SleepHealthReporting {
                 }
             } catch {
                 logWarn("睡眠健康度：电源配置读取失败，按未读取处理：\(error)")
+            }
+
+            // 断言扫描失败 → 本轮无健康结论：清除旧报告而不是沿用（旧报告可能
+            // 是失败前一轮的「绿」，继续展示同样是假绿）。UI 对 nil report 按
+            // 「评估中/未知」展示；防休眠红色由 isKeepAwakeOn 独立驱动，不受影响。
+            guard let snapshots else {
+                await MainActor.run { [weak self] in
+                    guard let self, self.refreshGeneration == generation else { return }
+                    self.report = nil
+                }
+                return
             }
 
             // 检查项 3 + 综合：三色状态判定。违规列表只过滤一次，状态判定与
@@ -181,6 +194,9 @@ final class SleepHealthService: ObservableObject, SleepHealthReporting {
         // advancing the generation, a stop/restart boundary could publish a
         // stale report after the service has already been torn down.
         refreshGeneration &+= 1
+        // L4: 清除旧报告——停止评估后不给任何健康结论，UI 不得继续显示停止前
+        // 的三色状态（含探针失败被误降级成「绿」的假绿风险）。
+        report = nil
         if keepAwakeAssertionID != 0 {
             let status = IOPMAssertionRelease(keepAwakeAssertionID)
             if status != 0 {
