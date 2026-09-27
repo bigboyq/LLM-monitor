@@ -300,6 +300,7 @@ private struct ClientProviderExpandedContent: View {
                 days: provider.dailyTokenUsage,
                 scannedAt: provider.scannedAt,
                 isScanning: false,
+                isTruncated: provider.isTruncated,
                 priceByDay: provider.priceTextByDay
             )
 
@@ -318,7 +319,7 @@ private struct ClientProviderExpandedContent: View {
             if provider.isTruncated {
                 // 来源快照被扫描预算截断（最旧 session 被挤出），上面的聚合数字
                 // 只是磁盘数据的一个最新优先子集，必须提示口径。
-                Text("会话文件超出单轮扫描预算，已按最新优先截断，最旧的历史用量未计入以上统计。")
+                Text(ClientUsageTruncationNotice.text)
                     .font(SettingsTypography.metadata)
                     .foregroundStyle(.orange)
             }

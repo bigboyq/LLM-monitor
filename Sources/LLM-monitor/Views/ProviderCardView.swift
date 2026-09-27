@@ -257,6 +257,7 @@ struct ProviderCardView: View, Equatable {
             isReady: projection.hasActivity
                 && (status.kind != .codexChatGpt || projection.dailyTokenUsage.count == 7),
             freshness: projection.localUsageFreshness,
+            isTruncated: projection.isTruncated,
             emptyHint: emptyUsageHint
         )
     }
@@ -280,6 +281,7 @@ struct ProviderCardView: View, Equatable {
         scannedAt: Date?,
         isReady: Bool,
         freshness: LocalUsageFreshness,
+        isTruncated: Bool,
         emptyHint: String
     ) -> some View {
         LocalUsageFooterView(
@@ -290,6 +292,7 @@ struct ProviderCardView: View, Equatable {
             scannedAt: scannedAt,
             isScanning: status.isScanningLocalUsage || freshness == .scanning,
             freshness: freshness,
+            isTruncated: isTruncated,
             isReady: isReady,
             emptyHint: emptyHint
         )

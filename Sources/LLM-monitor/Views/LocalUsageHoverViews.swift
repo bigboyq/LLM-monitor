@@ -93,6 +93,9 @@ struct SevenDayTokenUsageHoverView<Daily: LocalUsageDaily>: View {
     let days: [Daily]
     let scannedAt: Date?
     let isScanning: Bool
+    /// 来源快照被扫描预算截断（如 DSH 文件数/字节预算挤出最旧 session）时为 true：
+    /// 图内数字只是最新优先子集，底部需提示口径（与设置页展开行同一文案常量）。
+    let isTruncated: Bool
     /// Optional per-day cost text. Client settings passes this so the table
     /// reads `Reason → 价值`; provider cards keep the historical 6-column view.
     ///
@@ -106,11 +109,13 @@ struct SevenDayTokenUsageHoverView<Daily: LocalUsageDaily>: View {
         days: [Daily],
         scannedAt: Date?,
         isScanning: Bool,
+        isTruncated: Bool = false,
         priceByDay: @autoclosure @escaping () -> [Date: String] = [:]
     ) {
         self.days = days
         self.scannedAt = scannedAt
         self.isScanning = isScanning
+        self.isTruncated = isTruncated
         self.priceByDayProvider = priceByDay
     }
 
@@ -210,6 +215,12 @@ struct SevenDayTokenUsageHoverView<Daily: LocalUsageDaily>: View {
             Text("输入：Uncached 线性缩放（占最大高度 40%），Cache 按 Token^0.3 缩放（占最大高度 60%）；输出线性缩放。R/T = rounds / turns。")
                 .font(.system(size: 8))
                 .foregroundStyle(.tertiary)
+
+            if isTruncated {
+                Text(ClientUsageTruncationNotice.text)
+                    .font(.system(size: 8))
+                    .foregroundStyle(.orange)
+            }
         }
         .frame(width: priceByDay.isEmpty ? 390 : 420, alignment: .leading)
     }
@@ -340,6 +351,8 @@ struct LocalUsageFooterView<Daily: LocalUsageDaily>: View {
     let scannedAt: Date?
     let isScanning: Bool
     let freshness: LocalUsageFreshness
+    /// 来源快照被扫描预算截断时为 true，透传给 7 天柱图 hover 提示口径。
+    let isTruncated: Bool
     let isReady: Bool
     /// "本机无 Antigravity 会话数据（~/.gemini/antigravity/conversations 为空）" 等
     /// provider 特定的"扫描完毕但还没数据"提示
@@ -353,6 +366,7 @@ struct LocalUsageFooterView<Daily: LocalUsageDaily>: View {
         scannedAt: Date?,
         isScanning: Bool,
         freshness: LocalUsageFreshness = .clean,
+        isTruncated: Bool = false,
         isReady: Bool,
         emptyHint: String
     ) {
@@ -363,6 +377,7 @@ struct LocalUsageFooterView<Daily: LocalUsageDaily>: View {
         self.scannedAt = scannedAt
         self.isScanning = isScanning
         self.freshness = freshness
+        self.isTruncated = isTruncated
         self.isReady = isReady
         self.emptyHint = emptyHint
     }
@@ -464,6 +479,7 @@ struct LocalUsageFooterView<Daily: LocalUsageDaily>: View {
                     days: dailyTokenUsage,
                     scannedAt: scannedAt,
                     isScanning: isScanning,
+                    isTruncated: isTruncated,
                     priceByDay: priceByDay
                 )
             }

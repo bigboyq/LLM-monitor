@@ -810,6 +810,19 @@ final class DshUsageTests: XCTestCase {
         XCTAssertFalse(unknownContribution.isTruncated, "nil 视为未截断/未知，不显示提示")
         XCTAssertFalse(unknownProjection.isTruncated)
 
+        // 全部来源未截断 → 整卡不提示。
+        let allClear = ProviderUsageProjection(contributions: [
+            ClientUsageContribution(
+                clientID: ClientID.dsh, displayName: "DSH",
+                dailyTokenUsage: [UnifiedDailyTokenUsage]()
+            ),
+            ClientUsageContribution(
+                clientID: ClientID.openCode, displayName: "OpenCode",
+                dailyTokenUsage: [UnifiedDailyTokenUsage]()
+            )
+        ])
+        XCTAssertFalse(allClear.isTruncated)
+
         // 多来源聚合（DSH 截断 + 其他来源正常）→ 整卡截断。
         let mixed = ProviderUsageProjection(contributions: [
             ClientUsageContribution(

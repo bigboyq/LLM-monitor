@@ -269,6 +269,12 @@ enum UnifiedDailyUsageNormalizer {
     }
 }
 
+/// 截断口径提示的共享文案：设置页展开行与 7 天柱图 hover footer 都引用同一
+/// 常量，避免两处 UI 文案漂移。
+enum ClientUsageTruncationNotice {
+    static let text = "会话文件超出单轮扫描预算，已按最新优先截断，最旧的历史用量未计入以上统计。"
+}
+
 /// One client's contribution to a quota card.
 struct ClientUsageContribution: Equatable, Sendable {
     let clientID: String
