@@ -1289,12 +1289,26 @@ extension AntigravityLocalUsageScanner {
     }
 
     /// `nonisolated static`：file I/O 不碰 self，可在 background 跑。
-    nonisolated static func ensureCacheDirectoriesExist(cacheDir: URL, fileManager: FileManagerBox) throws {
+    ///
+    /// - Parameters:
+    ///   - cacheDir: 当前生效的 provider 缓存文件（`token-monitor/antigravity.json`）。
+    ///   - legacyRPCCacheRoot: 旧版 v3 rpc-cache 所在的旧缓存根。真实历史位置是
+    ///     a65dec3 时期的 cacheDir `~/.gemini/antigravity/.token-monitor`（即
+    ///     `TokenMonitorPaths.legacyAntigravityCacheDir`）；根迁移只搬了
+    ///     index.json、没有迁 rpc-cache，所以清理基址不能从当前 cacheDir 推导
+    ///     ——provider `.json` 时代由 `directoryURL(for:)` 推出的
+    ///     `.../token-monitor/rpc-cache` 从未存在过，清理因此失效。测试注入
+    ///     临时目录验证。
+    nonisolated static func ensureCacheDirectoriesExist(
+        cacheDir: URL,
+        fileManager: FileManagerBox,
+        legacyRPCCacheRoot: URL = TokenMonitorPaths.legacyAntigravityCacheDir
+    ) throws {
         try ScannerIndexIO.ensureCacheDirectory(for: cacheDir, fileManager: fileManager)
-        // v3 以前曾额外写 `rpc-cache/v1/<session>/usage.jsonl|manifest.json`，但
-        // 生产读取始终只使用顶层 JSON。清理这份重复的历史明细；删除失败不
-        // 阻断扫描，下次扫描仍会继续尝试。
-        let legacyRPCCache = ScannerIndexIO.directoryURL(for: cacheDir)
+        // v3 以前曾额外写 `<旧缓存根>/rpc-cache/v1/<session>/usage.jsonl|manifest.json`，
+        // 但生产读取始终只使用顶层 JSON。清理这份重复的历史明细；每次扫描
+        // 幂等重试（目录不存在即 no-op），删除失败不阻断扫描。
+        let legacyRPCCache = legacyRPCCacheRoot
             .appendingPathComponent("rpc-cache", isDirectory: true)
         if fileManager.fileExists(atPath: legacyRPCCache.path) {
             do {

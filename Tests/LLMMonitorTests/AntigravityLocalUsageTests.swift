@@ -930,26 +930,56 @@ final class AntigravityLocalUsageTests: XCTestCase {
     }
 
     func testCacheInitializationRemovesLegacyPerSessionArtifacts() throws {
+        // 清理基址必须是 rpc-cache 的真实历史位置（旧缓存根
+        // `~/.gemini/antigravity/.token-monitor`，b24f6f9 根迁移只搬了
+        // index.json、没有迁 rpc-cache），而不是从当前 provider `.json`
+        // cacheDir 推导（那个位置从未存在过 rpc-cache，清理曾因此失效）。
         let fm = FileManager.default
         let cacheDir = fm.temporaryDirectory
             .appendingPathComponent("antigravity-cache-\(UUID().uuidString)", isDirectory: true)
-        let legacySessionDir = cacheDir
+        let legacyCacheRoot = fm.temporaryDirectory
+            .appendingPathComponent("antigravity-legacy-root-\(UUID().uuidString)", isDirectory: true)
+        let legacySessionDir = legacyCacheRoot
             .appendingPathComponent("rpc-cache/v1/legacy-session", isDirectory: true)
         try fm.createDirectory(at: legacySessionDir, withIntermediateDirectories: true)
-        defer { try? fm.removeItem(at: cacheDir) }
+        defer {
+            try? fm.removeItem(at: cacheDir)
+            try? fm.removeItem(at: legacyCacheRoot)
+        }
         try Data("historical token detail".utf8).write(
             to: legacySessionDir.appendingPathComponent("usage.jsonl")
         )
 
         try AntigravityLocalUsageScanner.ensureCacheDirectoriesExist(
             cacheDir: cacheDir,
-            fileManager: FileManagerBox(fm)
+            fileManager: FileManagerBox(fm),
+            legacyRPCCacheRoot: legacyCacheRoot
         )
 
-        XCTAssertTrue(fm.fileExists(atPath: cacheDir.path))
+        XCTAssertTrue(fm.fileExists(atPath: cacheDir.path), "当前 provider 缓存目录仍要确保存在")
         XCTAssertFalse(
-            fm.fileExists(atPath: cacheDir.appendingPathComponent("rpc-cache").path),
+            fm.fileExists(atPath: legacyCacheRoot.appendingPathComponent("rpc-cache").path),
             "升级后应清理生产从不读取的历史 per-session 明细"
+        )
+    }
+
+    func testLegacyRPCCacheCleanupTargetResolvesToPreMigrationLegacyRoot() {
+        // 生产默认清理基址必须指向根迁移前的旧缓存根；rpc-cache 挂在其下。
+        let legacyRoot = TokenMonitorPaths.legacyAntigravityCacheDir
+        XCTAssertEqual(
+            legacyRoot.standardizedFileURL.path,
+            NSHomeDirectory() + "/.gemini/antigravity/.token-monitor",
+            "legacy 缓存根必须与 a65dec3 时期 scanner 写入 rpc-cache 的目录一致"
+        )
+        XCTAssertEqual(
+            legacyRoot.appendingPathComponent("rpc-cache", isDirectory: true).standardizedFileURL.path,
+            NSHomeDirectory() + "/.gemini/antigravity/.token-monitor/rpc-cache"
+        )
+        // 新根下的推导位置（旧实现的失效基址）不得再被使用。
+        XCTAssertNotEqual(
+            legacyRoot,
+            TokenMonitorPaths.root,
+            "legacy 根必须独立于集中式 token-monitor 新根"
         )
     }
 
