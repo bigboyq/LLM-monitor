@@ -67,8 +67,8 @@ enum AntigravityStepTimestampReader {
 
     private static func timestamp(from metadata: Data) -> Date? {
         var cursor = 0
-        guard readVarint(from: metadata, cursor: &cursor) == 10,
-              let length = readVarint(from: metadata, cursor: &cursor),
+        guard readVarint(from: metadata, cursor: &cursor, limit: metadata.count) == 10,
+              let length = readVarint(from: metadata, cursor: &cursor, limit: metadata.count),
               length <= UInt64(metadata.count - cursor),
               length <= UInt64(Int.max) else {
             return nil
@@ -78,13 +78,13 @@ enum AntigravityStepTimestampReader {
         var seconds: Int64?
         var nanos = 0
         while cursor < end {
-            guard let key = readVarint(from: metadata, cursor: &cursor) else { return nil }
+            guard let key = readVarint(from: metadata, cursor: &cursor, limit: end) else { return nil }
             let field = key >> 3
             let wireType = key & 7
 
             switch wireType {
             case 0:
-                guard let value = readVarint(from: metadata, cursor: &cursor) else { return nil }
+                guard let value = readVarint(from: metadata, cursor: &cursor, limit: end) else { return nil }
                 if field == 1 {
                     seconds = Int64(bitPattern: value)
                 } else if field == 2 {
@@ -95,7 +95,11 @@ enum AntigravityStepTimestampReader {
                 guard cursor <= end - 8 else { return nil }
                 cursor += 8
             case 2:
-                guard let nestedLength = readVarint(from: metadata, cursor: &cursor),
+                // 先比 cursor <= end 再比 nestedLength：双保险防止 readVarint
+                // 越过子消息边界后 end - cursor 变负、UInt64(负数) 前置条件
+                // 直接 trap（进程不可恢复崩溃）。
+                guard cursor <= end,
+                      let nestedLength = readVarint(from: metadata, cursor: &cursor, limit: end),
                       nestedLength <= UInt64(end - cursor),
                       nestedLength <= UInt64(Int.max) else { return nil }
                 cursor += Int(nestedLength)
@@ -114,10 +118,15 @@ enum AntigravityStepTimestampReader {
         return date
     }
 
-    private static func readVarint(from data: Data, cursor: inout Int) -> UInt64? {
+    /// `limit` 是本条 varint 允许读取的字节上界（不含）：外层信封传
+    /// `data.count`，子消息内传子消息边界 `end`。没有上界时，子消息末尾
+    /// 带续位的 varint 会吃掉后面的信封字节、把 cursor 推过 `end`——轻则
+    /// 越界解析，重则让调用方算出负的剩余长度、`UInt64(负数)` 直接 trap。
+    /// 撞上 limit 仍未终结（截断）时返回 nil，此时 cursor 可能已停在 limit。
+    private static func readVarint(from data: Data, cursor: inout Int, limit: Int) -> UInt64? {
         var value: UInt64 = 0
         var shift: UInt64 = 0
-        while cursor < data.count, shift < 64 {
+        while cursor < limit, shift < 64 {
             let byte = data[cursor]
             cursor += 1
             value |= UInt64(byte & 0x7F) << shift
