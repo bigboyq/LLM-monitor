@@ -359,20 +359,16 @@ final class SystemQuotaUpdateNotifier: NSObject,
         channels: QuotaNotifyChannels
     ) {
         // 模型级合并：同一模型的事件合成一条系统通知，正文只含系统渠道事件。
-        var lastNotified = lastNotifiedAt
-        let systemGroups = Self.groupsAfterCooldown(
-            QuotaEventBatch(
-                providerID: providerID,
-                providerName: providerName,
-                events: events,
-                channels: channels
-            ).modelGroups.filter(\.sendsSystem),
+        // L6: 冷却不在此时消耗——授权检查（异步）先行，只有确认会发送的路径
+        // 才写冷却表，避免未授权/拒绝路径白烧 60s 冷却窗口、把恢复授权后的
+        // 首个事件挡掉。
+        let systemGroups = QuotaEventBatch(
             providerID: providerID,
-            now: Date(),
-            lastNotifiedAt: &lastNotified
-        )
+            providerName: providerName,
+            events: events,
+            channels: channels
+        ).modelGroups.filter(\.sendsSystem)
         guard !systemGroups.isEmpty else { return }
-        lastNotifiedAt = lastNotified
         guard let center else { return }
 
         center.getNotificationSettings { [weak self] settings in
@@ -380,7 +376,7 @@ final class SystemQuotaUpdateNotifier: NSObject,
             switch settings.authorizationStatus {
             case .authorized, .provisional:
                 Task { @MainActor [weak self] in
-                    self?.enqueue(providerID: providerID, providerName: providerName, groups: systemGroups)
+                    self?.enqueueAfterCooldown(providerID: providerID, providerName: providerName, groups: systemGroups)
                 }
             case .notDetermined:
                 center.requestAuthorization(options: [.alert, .sound]) { [weak self] granted, error in
@@ -389,19 +385,52 @@ final class SystemQuotaUpdateNotifier: NSObject,
                     }
                     guard granted else { return }
                     Task { @MainActor [weak self] in
-                        self?.enqueue(providerID: providerID, providerName: providerName, groups: systemGroups)
+                        self?.enqueueAfterCooldown(providerID: providerID, providerName: providerName, groups: systemGroups)
                     }
                 }
             case .denied:
                 logDebug("[quota-notification] 系统通知权限未开启，跳过 \(providerID) 额度更新通知")
             case .ephemeral:
                 Task { @MainActor [weak self] in
-                    self?.enqueue(providerID: providerID, providerName: providerName, groups: systemGroups)
+                    self?.enqueueAfterCooldown(providerID: providerID, providerName: providerName, groups: systemGroups)
                 }
             @unknown default:
                 logWarn("[quota-notification] 未知通知授权状态，跳过 \(providerID) 额度更新通知")
             }
         }
+    }
+
+    /// 授权检查通过后的发送路径：先应用冷却窗口再入队。只有走到这里（确认
+    /// 可以发送）才写冷却表；被授权状态挡下的通知不消耗冷却窗口。
+    @MainActor
+    private func enqueueAfterCooldown(
+        providerID: String,
+        providerName: String,
+        groups: [QuotaEventBatch.ModelGroup]
+    ) {
+        let sendable = consumeCooldown(providerID: providerID, groups: groups, now: Date())
+        guard !sendable.isEmpty else { return }
+        enqueue(providerID: providerID, providerName: providerName, groups: sendable)
+    }
+
+    /// L6: 消耗冷却窗口并返回实际可发送的分组（internal 供 @testable 验证
+    /// 「冷却只在发送路径写入」）。MainActor 实例方法，与 lastNotifiedAt 的
+    /// 读写隔离一致。
+    @MainActor
+    func consumeCooldown(
+        providerID: String,
+        groups: [QuotaEventBatch.ModelGroup],
+        now: Date
+    ) -> [QuotaEventBatch.ModelGroup] {
+        var lastNotified = lastNotifiedAt
+        let sendable = Self.groupsAfterCooldown(
+            groups,
+            providerID: providerID,
+            now: now,
+            lastNotifiedAt: &lastNotified
+        )
+        lastNotifiedAt = lastNotified
+        return sendable
     }
 
     @MainActor

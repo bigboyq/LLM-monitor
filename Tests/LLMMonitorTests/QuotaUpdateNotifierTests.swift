@@ -234,6 +234,34 @@ final class QuotaUpdateNotifierTests: XCTestCase {
         XCTAssertEqual(otherModel.count, 1, "其它模型不受同 provider 冷却影响")
     }
 
+    /// L6: 冷却只在确认可发送的路径消耗——consumeCooldown 是授权检查通过后
+    /// 的唯一冷却入口；未授权/拒绝路径不会触碰冷却表，恢复授权后的首个事件
+    /// 不会被之前的白烧冷却挡掉。
+    @MainActor
+    func testCooldownConsumedOnlyOnSendPath() {
+        let notifier = SystemQuotaUpdateNotifier()
+        let group = QuotaEventBatch.ModelGroup(
+            modelName: "general",
+            displayName: "general",
+            systemEvents: [QuotaEvent(
+                modelName: "general", displayName: "general",
+                kind: .intervalRestored, previousPercent: 10, currentPercent: 100
+            )],
+            barkEvents: [],
+            barkNotificationID: "llmmonitor-p-general"
+        )
+
+        let first = notifier.consumeCooldown(
+            providerID: "p", groups: [group], now: Date(timeIntervalSince1970: 1000)
+        )
+        XCTAssertEqual(first.count, 1, "发送路径首次调用应放行并写入冷却表")
+
+        let tooSoon = notifier.consumeCooldown(
+            providerID: "p", groups: [group], now: Date(timeIntervalSince1970: 1030)
+        )
+        XCTAssertTrue(tooSoon.isEmpty, "60s 冷却窗口内的第二次调用应被过滤")
+    }
+
     @MainActor
     func testSetNotifyChannelNormalizesDefaultsToNil() {
         // O2: 与默认渠道一致时归一化为 nil，默认值唯一来源是 QuotaNotifyChannels。

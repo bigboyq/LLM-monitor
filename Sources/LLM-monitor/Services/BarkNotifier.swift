@@ -44,6 +44,9 @@ final class BarkQuotaNotifier: QuotaUpdateNotifying {
     static let testNotificationID = "llmmonitor-test-push"
     /// 单次推送请求超时；正式推送与测试推送共用。
     nonisolated static let requestTimeout: TimeInterval = 15
+    /// L5: 响应体硬上限，与 HTTPClient 默认值同源（serverURL 由用户 config
+    /// 控制，防止异常/恶意服务端的无界响应拖垮内存）。正式推送与测试推送共用。
+    nonisolated static let responseByteLimit = ResponseByteLimits.standardQuota
 
     private let configProvider: BarkConfigProviding
     /// 「人在电脑前」判定（屏幕亮且未锁屏）。注入以便测试。
@@ -146,13 +149,17 @@ final class BarkQuotaNotifier: QuotaUpdateNotifying {
         }
 
         do {
-            let (_, response) = try await session.data(for: request)
-            guard let http = response as? HTTPURLResponse else {
-                return "推送失败：服务端返回非 HTTP 响应"
-            }
-            guard (200..<300).contains(http.statusCode) else {
+            // L5: 响应体套用与 HTTPClient 相同的 8MiB 硬上限。
+            // CappedDownloader 保证返回 HTTPURLResponse（非 HTTP 响应抛 invalidResponse）。
+            let (_, response) = try await CappedDownloader.data(
+                for: request,
+                session: session,
+                maxBytes: Self.responseByteLimit,
+                redactedPath: HTTPRequestLogSanitizer.sanitizedURL(request.url)
+            )
+            guard (200..<300).contains(response.statusCode) else {
                 // 不回显服务端响应（可能包含 device key 等敏感内容）。
-                return "推送失败：HTTP \(http.statusCode)，请检查服务端地址与 Device Key"
+                return "推送失败：HTTP \(response.statusCode)，请检查服务端地址与 Device Key"
             }
             return "测试推送已发送，请在手机上查看"
         } catch is CancellationError {
@@ -364,13 +371,17 @@ actor BarkSendQueue {
     private func send(_ operation: Operation) async {
         for attempt in 1...2 {
             do {
-                let (_, response) = try await session.data(for: operation.request)
-                guard let http = response as? HTTPURLResponse else {
-                    logWarn("[bark] \(operation.label) Bark 推送返回非 HTTP 响应")
-                    return
-                }
-                if (500...599).contains(http.statusCode), attempt == 1 {
-                    logWarn("[bark] \(operation.label) Bark 服务端 HTTP \(http.statusCode)，\(Int(Self.retryDelay))s 后重试")
+                // L5: 响应体套用与 HTTPClient 相同的 8MiB 硬上限。超限抛
+                // responseTooLarge：非瞬时错误，不重试、不进冷却。
+                // CappedDownloader 保证返回 HTTPURLResponse（非 HTTP 响应抛 invalidResponse）。
+                let (_, response) = try await CappedDownloader.data(
+                    for: operation.request,
+                    session: session,
+                    maxBytes: BarkQuotaNotifier.responseByteLimit,
+                    redactedPath: HTTPRequestLogSanitizer.sanitizedURL(operation.request.url)
+                )
+                if (500...599).contains(response.statusCode), attempt == 1 {
+                    logWarn("[bark] \(operation.label) Bark 服务端 HTTP \(response.statusCode)，\(Int(Self.retryDelay))s 后重试")
                     do {
                         try await Task.sleep(nanoseconds: UInt64(Self.retryDelay * 1_000_000_000))
                     } catch {
@@ -378,10 +389,10 @@ actor BarkSendQueue {
                     }
                     continue
                 }
-                guard (200..<300).contains(http.statusCode) else {
+                guard (200..<300).contains(response.statusCode) else {
                     // 4xx 是配置/请求问题，重试无意义；只记状态码，不回显可能
                     // 包含 device key 的服务端响应或完整 URL。
-                    logWarn("[bark] \(operation.label) Bark 推送失败: HTTP \(http.statusCode)（\(operation.eventCount) 个事件）")
+                    logWarn("[bark] \(operation.label) Bark 推送失败: HTTP \(response.statusCode)（\(operation.eventCount) 个事件）")
                     return
                 }
                 if let key = operation.cooldownKey {
