@@ -2824,9 +2824,23 @@ final class AntigravityLocalUsageTests: XCTestCase {
         XCTAssertEqual(index.sessions[fixture.sessionID]?.generatorMetadataOffset, 5)
     }
 
-    /// 空 suffix（.emptyIncremental）是真实的页结果（增量页成功返回、suffix
-    /// 为空），不构成零可计账页证据，到达即清零。
-    func testEmptyIncrementalClearsZeroAccountedStrikes() async throws {
+    /// 空 suffix（.emptyIncremental）**不**清零零可计账打击计数。
+    ///
+    /// 计数回答的是"解析器能否产出可计账 event"，而空 suffix 页只有 0 条 raw
+    /// 条目可解析——它证明的是 RPC 正常到达（传输维度），对解析质量（另一维度）
+    /// 零信息，不能用来证明解析已恢复。
+    ///
+    /// 这一点与解析损坏的真实形态直接相关：若 token 字段改名导致解析失效，一个
+    /// 活跃但间歇使用的 session 天然会在"有 raw 但零可计账"（模型在用）与
+    /// "空闲无 suffix"（模型没用）之间交替。若每次空闲都清零计数，它永远凑不满
+    /// `zeroAccountedFullStrikeLimit` 轮观察期 → `failedCount` 恒 > 0 →
+    /// `calendarSignature` 永不推进 → 每轮 reconcile 全量冷重建，正是打击机制
+    /// 要守住的不变量。
+    ///
+    /// 对照：核验收敛页（`metadataEntryCount == cached offset`）**仍**清零——它
+    /// 是 offset=0 全量页且确认服务端没有新事件，解析结果不影响该结论，属于
+    /// 正面证据。
+    func testEmptyIncrementalPreservesZeroAccountedStrikes() async throws {
         let fixture = try makeConvergenceFixture(cachedOffset: 5, cachedEventCount: 5)
         defer { try? FileManager.default.removeItem(at: fixture.root) }
 
@@ -2847,7 +2861,10 @@ final class AntigravityLocalUsageTests: XCTestCase {
         )
         XCTAssertEqual(scan.failedSessionCount, 1)
         let index = try loadConvergenceIndex(fixture)
-        XCTAssertNil(index.zeroAccountedFullStrikesBySession, "空 suffix 页必须清零零可计账打击计数")
+        XCTAssertEqual(
+            index.zeroAccountedFullStrikesBySession?[fixture.sessionID], 2,
+            "空 suffix 不含解析证据，必须保留零可计账打击计数"
+        )
         XCTAssertEqual(index.sessions[fixture.sessionID]?.consecutiveEmptySuffixes, 1)
         XCTAssertEqual(index.sessions[fixture.sessionID]?.generatorMetadataOffset, 5)
     }

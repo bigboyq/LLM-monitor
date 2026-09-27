@@ -589,6 +589,20 @@ so a later file change re-fetches the same page with a possibly-fixed parser. Wi
 cached entry at all, a terminal empty entry is written instead. A page that produces
 accountable events clears the count on both page types.
 
+What does **not** clear the count: a transport failure, and an empty suffix page. Both
+carry no evidence about parse quality — the first never delivered a page, the second
+delivered zero raw entries to parse. Letting either reset the streak would let a
+session alternating between "raw non-zero but unparseable" and "empty suffix" reset the
+count forever, never reach the limit, keep `failedSessionCount > 0` permanently, and so
+block the signature forever — exactly the invariant the strike mechanism exists to
+protect. That alternation is the natural shape of a real failure: a session with a
+renamed token field is "unparseable" while the model is in use and "empty" while idle,
+so an intermittently used session would never converge. The recovery evidence is a page
+that produces accountable events — plus the verification-convergence page, which is an
+offset=0 full fetch confirming the server total is unchanged; its events are already
+accounted for and discarded, so the parse result does not bear on the "no new events"
+conclusion and it does count as evidence.
+
 **D. Offset regression → 3-strike terminal state.** A full or verification page whose
 `metadataEntryCount` is *smaller* than the cached `generatorMetadataOffset` means the
 server lost data, truncated, or answered from a different workspace. Treating it as a

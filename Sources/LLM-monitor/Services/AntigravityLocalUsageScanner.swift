@@ -614,12 +614,17 @@ extension AntigravityLocalUsageScanner {
                 case .success(.emptyIncremental):
                     failedCount = SaturatingArithmetic.add(failedCount, 1)
                     // 空 suffix 是真实的页结果（增量页成功返回、suffix 为空），
-                    // 不构成"raw 非零但零可计账"的页证据，到达即打破连续性。
-                    // 下面的 .failure 分支则刻意不清零：传输层失败不含解析证据，
-                    // 若网络抖动也打断计数，"解析损坏 + 网络差"的 session 永远
-                    // 凑不满 3 轮观察期 → failedCount 永不归零 → 签名永不推进，
-                    // 正好破坏打击机制守住的"持久失败有界收敛"不变量。
-                    Self.clearZeroAccountedFullStrikes(for: sessionId, on: &index)
+                    // 但它只有 0 条 raw 条目可解析，**不含任何解析证据**——与下面的
+                    // .failure 同理，不能用它证明解析已恢复。因此这里刻意不清零
+                    // 零可计账计数：若"raw 非零但零可计账"与"空 suffix"交替出现，
+                    // 计数会被反复清掉、永远凑不满 3 轮观察期 → failedCount 永不
+                    // 归零 → 签名永不推进 → 每轮 reconcile 全量冷重建，正好破坏
+                    // 打击机制守住的"持久失败有界收敛"不变量。
+                    //
+                    // 解析健康度的正面证据只有两类：产出可计账 event 的页（走分叉前
+                    // 的统一清零点），以及核验收敛页——后者是 offset=0 全量页且确认
+                    // 服务端总数未变，事件已在缓存入账故直接丢弃，解析结果不影响
+                    // "确无新事件"这一结论，属于对该 session 的有效证据。
                     if var cached = index.sessions[sessionId] {
                         cached.lastEmptySuffixAt = nowDate
                         cached.consecutiveEmptySuffixes = SaturatingArithmetic.add(
