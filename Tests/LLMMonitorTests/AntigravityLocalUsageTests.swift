@@ -1864,10 +1864,12 @@ final class AntigravityLocalUsageTests: XCTestCase {
 
     /// 单 session 收敛测试夹具：non-empty `.db` + 带 last-good（offset/事件数可配、
     /// 当日 daily 桶 input=500、空 samples）但指纹过期的 v7 index。calendarSignature
-    /// 与 testCalendar 一致，避免触发冷重建全量路径。
+    /// 默认与 testCalendar 一致（避免触发冷重建全量路径），可注入旧日历签名
+    /// 模拟时区变更冷重建。
     private func makeConvergenceFixture(
         cachedOffset: Int,
-        cachedEventCount: Int
+        cachedEventCount: Int,
+        seededCalendarSignature: String? = nil
     ) throws -> ConvergenceFixture {
         let fm = FileManager.default
         let root = fm.temporaryDirectory
@@ -1903,7 +1905,7 @@ final class AntigravityLocalUsageTests: XCTestCase {
                 dayKey: AntigravityDailyUsage(dayStart: dayStart, inputTokens: 500, totalTokens: 500)
             ]],
             samplesBySession: [sessionID: []],
-            calendarSignature: LocalUsageCalendarSignature.make(testCalendar)
+            calendarSignature: seededCalendarSignature ?? LocalUsageCalendarSignature.make(testCalendar)
         )
         try AntigravityLocalUsageScanner.saveIndex(index, cacheDir: cache, fileManager: FileManagerBox(fm))
 
@@ -2089,6 +2091,10 @@ final class AntigravityLocalUsageTests: XCTestCase {
         XCTAssertEqual(scan3.failedSessionCount, 0, "第 3 轮收敛，不计失败")
         index = try loadConvergenceIndex(fixture)
         XCTAssertNil(index.emptyFullStrikesBySession, "收敛后打击计数清零")
+        XCTAssertNil(
+            index.calendarRebuildPendingSessions,
+            "非日历变更轮收敛不打旧日历重建标记（daily 仍是当前日历分桶）"
+        )
         let entry = try XCTUnwrap(index.sessions[fixture.sessionID])
         XCTAssertEqual(entry.mtimeMs, fixture.liveMtimeMs, "收敛采用当前文件指纹")
         XCTAssertEqual(entry.eventCount, 5, "last-good eventCount 保留")
@@ -2126,6 +2132,339 @@ final class AntigravityLocalUsageTests: XCTestCase {
         XCTAssertNil(index.emptyFullStrikesBySession, "拿到非零 metadata 必须清零打击计数")
         XCTAssertEqual(index.sessions[fixture.sessionID]?.generatorMetadataOffset, 6)
         XCTAssertEqual(index.dailyBySession[fixture.sessionID]?[fixture.dayKey]?.inputTokens, 7)
+    }
+
+    // MARK: - 全量页零可计账 event 防护
+
+    /// 修复 1(a)：全量页有 raw metadata 但零可入账 event（如 token 字段改名 →
+    /// 每条 entry 解析为 nil）时不可信：计失败、完全保留 last-good
+    /// （daily/samples/eventCount/文件指纹），offset 不推进，签名不推进。
+    func testFullPageWithMetadataButZeroEventsIsUntrusted() async throws {
+        let fixture = try makeConvergenceFixture(cachedOffset: 0, cachedEventCount: 5)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+        let stub = MetadataStub { _, _ in
+            (events: [], metadataEntryCount: 7)
+        }
+        let base = Date(timeIntervalSince1970: 1_790_000_000)
+
+        let scan = try await runConvergenceScan(fixture: fixture, now: base, stub: stub)
+        XCTAssertEqual(scan.failedSessionCount, 1, "零可计账 event 的全量页必须计失败")
+
+        let index = try loadConvergenceIndex(fixture)
+        let entry = try XCTUnwrap(index.sessions[fixture.sessionID])
+        XCTAssertEqual(entry.generatorMetadataOffset, 0, "不可信全量页不得推进 offset，否则该批数据被增量永久跳过")
+        XCTAssertEqual(entry.eventCount, 5, "last-good eventCount 保留")
+        XCTAssertEqual(entry.mtimeMs, fixture.liveMtimeMs - 60_000, "不可信全量页不得推进文件指纹")
+        XCTAssertEqual(
+            index.dailyBySession[fixture.sessionID]?[fixture.dayKey]?.inputTokens, 500,
+            "last-good daily 保留，不得被空聚合整体替换"
+        )
+        XCTAssertEqual(
+            index.calendarSignature, LocalUsageCalendarSignature.make(testCalendar),
+            "failedCount > 0 时签名不得推进"
+        )
+        XCTAssertNil(index.emptyFullStrikesBySession, "raw metadata 非零不进零 metadata 打击计数")
+        XCTAssertEqual(
+            index.zeroAccountedFullStrikesBySession?[fixture.sessionID], 1,
+            "零可计账全量页进入有界打击计数"
+        )
+    }
+
+    /// 修复 1(b)：全量页 events 全部缺失 timestamp（本地回填后仍为零可计账）
+    /// 同样不可信——聚合产出为零时不得整体替换 last-good。
+    func testFullPageWithOnlyTimestamplessEventsIsUntrusted() async throws {
+        let fixture = try makeConvergenceFixture(cachedOffset: 0, cachedEventCount: 5)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+        let timestampless = [makeEvent(timestamp: nil, input: 300, output: 100, total: 400)]
+        let stub = MetadataStub { _, _ in
+            (events: timestampless, metadataEntryCount: 7)
+        }
+        let base = Date(timeIntervalSince1970: 1_790_000_000)
+
+        let scan = try await runConvergenceScan(fixture: fixture, now: base, stub: stub)
+        XCTAssertEqual(scan.failedSessionCount, 1, "零可计账 event 的全量页必须计失败")
+
+        let index = try loadConvergenceIndex(fixture)
+        let entry = try XCTUnwrap(index.sessions[fixture.sessionID])
+        XCTAssertEqual(entry.generatorMetadataOffset, 0)
+        XCTAssertEqual(entry.eventCount, 5)
+        XCTAssertEqual(
+            index.dailyBySession[fixture.sessionID]?[fixture.dayKey]?.inputTokens, 500,
+            "全部无 timestamp 的全量页不得清空日桶"
+        )
+        XCTAssertEqual(entry.mtimeMs, fixture.liveMtimeMs - 60_000, "不可信全量页不得推进文件指纹")
+    }
+
+    /// 修复 1(c)：可计账 event > 0 的正常全量页行为不变——整体替换 daily、
+    /// offset 按 raw 条数推进、eventCount 只计可入账 event、计成功。部分
+    /// event 缺 timestamp 也不影响可信判定。
+    func testFullPageWithAccountedEventsStillRebuildsNormally() async throws {
+        let fixture = try makeConvergenceFixture(cachedOffset: 0, cachedEventCount: 5)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+        let eventDate = fixture.dayStart.addingTimeInterval(3_600)
+        let fullEvents = [
+            makeEvent(timestamp: eventDate, input: 30, total: 30),
+            makeEvent(timestamp: nil, input: 500, total: 500),
+        ]
+        let stub = MetadataStub { _, _ in
+            (events: fullEvents, metadataEntryCount: 7)
+        }
+        let base = Date(timeIntervalSince1970: 1_790_000_000)
+
+        let scan = try await runConvergenceScan(fixture: fixture, now: base, stub: stub)
+        XCTAssertEqual(scan.failedSessionCount, 0)
+
+        let index = try loadConvergenceIndex(fixture)
+        let entry = try XCTUnwrap(index.sessions[fixture.sessionID])
+        XCTAssertEqual(entry.generatorMetadataOffset, 7, "offset 按 raw metadata 条数推进")
+        XCTAssertEqual(entry.eventCount, 1, "eventCount 只计可入账 event")
+        XCTAssertEqual(entry.mtimeMs, fixture.liveMtimeMs, "正常全量页推进文件指纹")
+        XCTAssertEqual(
+            index.dailyBySession[fixture.sessionID]?[fixture.dayKey]?.inputTokens, 30,
+            "全量成功整体替换 daily（500 → 30）"
+        )
+        XCTAssertEqual(index.samplesBySession?[fixture.sessionID]?.count, 1)
+        XCTAssertEqual(
+            index.calendarSignature, LocalUsageCalendarSignature.make(testCalendar),
+            "成功轮签名照常推进"
+        )
+    }
+
+    // MARK: - 零可计账全量页有界打击收敛
+
+    /// 补强：持续零可计账的 full 页（解析损坏/天然全零 token）必须有界收敛，
+    /// 否则 failedCount 永不归零 → 签名永不推进 → 每轮 reconcile 全量冷重建。
+    /// 第 1/2 轮计失败并保留 last-good；第 3 轮收敛：写入当前文件指纹、
+    /// offset 刻意保留（5）、daily/samples 保留、补写空 samples、不计失败、
+    /// 签名照常推进、不打旧日历标记（非日历变更轮）。此后指纹不变不再产生
+    /// plan；文件重新变化 → 重新 dirty 并从保留 offset=5 增量重取。
+    /// 用"缺 samples 缓存"分支触发 full plan（cachedOffset=5 > 0 且无日历
+    /// 变更时的唯一 full plan 入口），以隔离修复 2 的标记机制。
+    func testZeroAccountedFullPageConvergesAfterThreeStrikes() async throws {
+        let fixture = try makeConvergenceFixture(cachedOffset: 5, cachedEventCount: 5)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+        // 移除 samples 缓存 → 每轮都走 full plan（offset=0），即使指纹未变。
+        var seeded = try loadConvergenceIndex(fixture)
+        seeded.samplesBySession?[fixture.sessionID] = nil
+        try AntigravityLocalUsageScanner.saveIndex(
+            seeded, cacheDir: fixture.cache, fileManager: FileManagerBox(fixture.fm)
+        )
+
+        let stub = MetadataStub { _, _ in
+            (events: [], metadataEntryCount: 7)
+        }
+        let base = Date(timeIntervalSince1970: 1_790_000_000)
+
+        // 第 1、2 轮：计失败、last-good 保留、指纹/offset 不动。
+        let scan1 = try await runConvergenceScan(fixture: fixture, now: base, stub: stub)
+        XCTAssertEqual(scan1.failedSessionCount, 1)
+        var index = try loadConvergenceIndex(fixture)
+        XCTAssertEqual(index.zeroAccountedFullStrikesBySession?[fixture.sessionID], 1)
+        XCTAssertEqual(index.sessions[fixture.sessionID]?.generatorMetadataOffset, 5)
+        XCTAssertEqual(index.sessions[fixture.sessionID]?.mtimeMs, fixture.liveMtimeMs - 60_000)
+        XCTAssertEqual(index.dailyBySession[fixture.sessionID]?[fixture.dayKey]?.inputTokens, 500)
+        XCTAssertNil(index.samplesBySession?[fixture.sessionID])
+
+        _ = try await runConvergenceScan(fixture: fixture, now: base.addingTimeInterval(60), stub: stub)
+        index = try loadConvergenceIndex(fixture)
+        XCTAssertEqual(index.zeroAccountedFullStrikesBySession?[fixture.sessionID], 2)
+        XCTAssertEqual(index.sessions[fixture.sessionID]?.generatorMetadataOffset, 5)
+
+        // 第 3 轮：收敛——不计失败、指纹写入、offset 刻意保留、last-good 全保留。
+        let scan3 = try await runConvergenceScan(fixture: fixture, now: base.addingTimeInterval(120), stub: stub)
+        XCTAssertEqual(scan3.failedSessionCount, 0, "收敛不计失败")
+        index = try loadConvergenceIndex(fixture)
+        XCTAssertNil(index.zeroAccountedFullStrikesBySession, "收敛后打击计数清零")
+        let converged = try XCTUnwrap(index.sessions[fixture.sessionID])
+        XCTAssertEqual(converged.mtimeMs, fixture.liveMtimeMs, "收敛采用当前文件指纹")
+        XCTAssertEqual(converged.generatorMetadataOffset, 5, "offset 刻意不推进，供恢复时重取")
+        XCTAssertEqual(converged.eventCount, 5)
+        XCTAssertEqual(index.dailyBySession[fixture.sessionID]?[fixture.dayKey]?.inputTokens, 500)
+        XCTAssertEqual(index.samplesBySession?[fixture.sessionID]?.count, 0, "补写空 samples，避免反复触发缺缓存 full 重扫")
+        XCTAssertNil(
+            index.calendarRebuildPendingSessions,
+            "非日历变更轮收敛不打旧日历标记"
+        )
+        XCTAssertEqual(
+            index.calendarSignature, LocalUsageCalendarSignature.make(testCalendar),
+            "收敛后签名照常推进"
+        )
+
+        // 第 4 轮：指纹未变 → 不再产生该 session 的 plan（有界收敛生效）。
+        let callsAfterConverge = stub.callCount
+        let scan4 = try await runConvergenceScan(fixture: fixture, now: base.addingTimeInterval(180), stub: stub)
+        XCTAssertEqual(stub.callCount, callsAfterConverge)
+        XCTAssertEqual(scan4.failedSessionCount, 0)
+
+        // 第 5 轮：文件重新变化 → 重新 dirty，从保留 offset=5 增量重取（而非
+        // 再吃 full），解析恢复后正常入账。
+        try Data(repeating: 2, count: 256).write(to: fixture.dbPath)
+        let recoveredEvents = [makeEvent(timestamp: fixture.dayStart.addingTimeInterval(3_600), input: 42, total: 42)]
+        await stub.setHandler { _, _ in
+            (events: recoveredEvents, metadataEntryCount: 2)
+        }
+        let scan5 = try await runConvergenceScan(fixture: fixture, now: base.addingTimeInterval(240), stub: stub)
+        XCTAssertEqual(scan5.failedSessionCount, 0)
+        XCTAssertEqual(stub.lastOffset, 5, "恢复路径必须是保留 offset 的增量重取")
+        index = try loadConvergenceIndex(fixture)
+        let recovered = try XCTUnwrap(index.sessions[fixture.sessionID])
+        XCTAssertEqual(recovered.generatorMetadataOffset, 7, "5 + 2，增量消费恢复")
+        XCTAssertEqual(recovered.eventCount, 6, "5 + 1，合并式入账")
+        XCTAssertEqual(
+            index.dailyBySession[fixture.sessionID]?[fixture.dayKey]?.inputTokens, 542,
+            "500 + 42，last-good 与新事件合并"
+        )
+        XCTAssertEqual(index.samplesBySession?[fixture.sessionID]?.count, 1)
+    }
+
+    /// 补强：打击观察期内任一轮 full 页恢复可入账 event → 计数清零并正常
+    /// 全量重算（与零 metadata 机制的清零路径对称）。
+    func testZeroAccountedStrikesClearWhenFullPageSucceeds() async throws {
+        let fixture = try makeConvergenceFixture(cachedOffset: 0, cachedEventCount: 5)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+        let stub = MetadataStub { _, _ in
+            (events: [], metadataEntryCount: 7)
+        }
+        let base = Date(timeIntervalSince1970: 1_790_000_000)
+
+        let scan1 = try await runConvergenceScan(fixture: fixture, now: base, stub: stub)
+        XCTAssertEqual(scan1.failedSessionCount, 1)
+        var index = try loadConvergenceIndex(fixture)
+        XCTAssertEqual(index.zeroAccountedFullStrikesBySession?[fixture.sessionID], 1)
+
+        // 第 2 轮解析恢复：全量拿到可入账 event。
+        let fullEvents = [makeEvent(timestamp: fixture.dayStart.addingTimeInterval(3_600), input: 7, total: 7)]
+        await stub.setHandler { _, _ in
+            (events: fullEvents, metadataEntryCount: 6)
+        }
+        let scan2 = try await runConvergenceScan(fixture: fixture, now: base.addingTimeInterval(60), stub: stub)
+        XCTAssertEqual(scan2.failedSessionCount, 0)
+        index = try loadConvergenceIndex(fixture)
+        XCTAssertNil(index.zeroAccountedFullStrikesBySession, "full 页成功入账必须清零打击计数")
+        XCTAssertEqual(index.sessions[fixture.sessionID]?.generatorMetadataOffset, 6)
+        XCTAssertEqual(index.dailyBySession[fixture.sessionID]?[fixture.dayKey]?.inputTokens, 7)
+    }
+
+    /// 补强：session 被确认删除时，零可计账打击计数一并清除（镜像
+    /// emptyFullStrikesBySession 的清理），不留悬挂状态。
+    func testSessionRemovalClearsZeroAccountedStrikes() async throws {
+        let fixture = try makeConvergenceFixture(cachedOffset: 0, cachedEventCount: 5)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+        var index = try loadConvergenceIndex(fixture)
+        index.zeroAccountedFullStrikesBySession = [fixture.sessionID: 2]
+        try AntigravityLocalUsageScanner.saveIndex(
+            index, cacheDir: fixture.cache, fileManager: FileManagerBox(fixture.fm)
+        )
+
+        try FileManager.default.removeItem(at: fixture.dbPath)
+        let stub = MetadataStub { _, _ in
+            (events: [], metadataEntryCount: 0)
+        }
+        let scan = try await runConvergenceScan(
+            fixture: fixture,
+            now: Date(timeIntervalSince1970: 1_790_000_000),
+            stub: stub
+        )
+        XCTAssertEqual(scan.failedSessionCount, 0)
+        index = try loadConvergenceIndex(fixture)
+        XCTAssertNil(index.sessions[fixture.sessionID], "session 被确认删除")
+        XCTAssertNil(index.dailyBySession[fixture.sessionID])
+        XCTAssertNil(index.zeroAccountedFullStrikesBySession, "删除 session 时打击计数一并清除")
+    }
+
+    // MARK: - 旧日历重建待办标记（修复 2）
+
+    /// 修复 2：时区/日历变更冷重建中连续 3 轮零 metadata 收敛的 session——
+    /// 打旧日历待重建标记、签名照常推进、旧日历 daily 保留、文件不变不发
+    /// RPC；随后文件重新活跃（指纹变化）时排一次 offset=0 full，按当前
+    /// 日历重建日桶并清除标记（而非增量合并造成新旧日历混桶）。
+    func testCalendarRebuildConvergenceMarksPendingAndRebuildsOnReactivation() async throws {
+        let oldSignature = "gregorian|Asia/Shanghai"
+        let fixture = try makeConvergenceFixture(
+            cachedOffset: 5,
+            cachedEventCount: 5,
+            seededCalendarSignature: oldSignature
+        )
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+        let stub = MetadataStub { _, _ in
+            (events: [], metadataEntryCount: 0)
+        }
+        let base = Date(timeIntervalSince1970: 1_790_000_000)
+
+        // 第 1、2 轮：冷重建全量返回零 metadata → 打击计数递增、计失败、
+        // 签名停在旧值、last-good 保留、未收敛不打标记。
+        let scan1 = try await runConvergenceScan(fixture: fixture, now: base, stub: stub)
+        XCTAssertEqual(scan1.failedSessionCount, 1)
+        var index = try loadConvergenceIndex(fixture)
+        XCTAssertEqual(index.calendarSignature, oldSignature, "未收敛前签名不得推进")
+        XCTAssertEqual(index.emptyFullStrikesBySession?[fixture.sessionID], 1)
+        XCTAssertNil(index.calendarRebuildPendingSessions)
+
+        _ = try await runConvergenceScan(fixture: fixture, now: base.addingTimeInterval(60), stub: stub)
+        index = try loadConvergenceIndex(fixture)
+        XCTAssertEqual(index.calendarSignature, oldSignature)
+        XCTAssertEqual(index.emptyFullStrikesBySession?[fixture.sessionID], 2)
+
+        // 第 3 轮：收敛——签名照常推进、旧日历 daily 保留、打待重建标记。
+        let scan3 = try await runConvergenceScan(fixture: fixture, now: base.addingTimeInterval(120), stub: stub)
+        XCTAssertEqual(scan3.failedSessionCount, 0, "收敛不计失败")
+        index = try loadConvergenceIndex(fixture)
+        XCTAssertEqual(
+            index.calendarSignature, LocalUsageCalendarSignature.make(testCalendar),
+            "收敛后签名照常推进（不 hammering 设计）"
+        )
+        XCTAssertNil(index.emptyFullStrikesBySession)
+        XCTAssertEqual(
+            index.calendarRebuildPendingSessions, [fixture.sessionID],
+            "旧日历 session 必须打待重建标记"
+        )
+        let converged = try XCTUnwrap(index.sessions[fixture.sessionID])
+        XCTAssertEqual(converged.mtimeMs, fixture.liveMtimeMs, "收敛采用当前文件指纹")
+        XCTAssertEqual(converged.generatorMetadataOffset, 5, "收敛保留 last-good offset")
+        XCTAssertEqual(converged.eventCount, 5)
+        XCTAssertEqual(
+            index.dailyBySession[fixture.sessionID]?[fixture.dayKey]?.inputTokens, 500,
+            "旧日历 daily 保留"
+        )
+
+        // 第 4 轮：文件不变 → 不发 RPC（标记不引发额外扫描，保持"不 hammering"）。
+        let callsAfterConverge = stub.callCount
+        let scan4 = try await runConvergenceScan(fixture: fixture, now: base.addingTimeInterval(180), stub: stub)
+        XCTAssertEqual(stub.callCount, callsAfterConverge)
+        XCTAssertEqual(scan4.failedSessionCount, 0)
+
+        // 第 5 轮：文件重新活跃且 metadata 恢复 → 带标记 session 排 offset=0
+        // full（而非增量合并），按当前日历重建日桶并清除标记。
+        try Data(repeating: 2, count: 256).write(to: fixture.dbPath)
+        let nextDayEventDate = fixture.dayStart.addingTimeInterval(86_400 + 3_600)
+        let nextDayKey = LocalUsageDayKey.make(
+            testCalendar.startOfDay(for: nextDayEventDate),
+            calendar: testCalendar
+        )
+        let recoveredEvents = [makeEvent(timestamp: nextDayEventDate, input: 700, total: 700)]
+        await stub.setHandler { _, _ in
+            (events: recoveredEvents, metadataEntryCount: 9)
+        }
+        let scan5 = try await runConvergenceScan(fixture: fixture, now: base.addingTimeInterval(240), stub: stub)
+        XCTAssertEqual(scan5.failedSessionCount, 0)
+        XCTAssertEqual(stub.lastOffset, 0, "带标记 session 重新活跃必须排 offset=0 full")
+        index = try loadConvergenceIndex(fixture)
+        let rebuilt = try XCTUnwrap(index.sessions[fixture.sessionID])
+        XCTAssertEqual(rebuilt.generatorMetadataOffset, 9, "full 重算按 raw 总数重置 offset")
+        XCTAssertEqual(rebuilt.eventCount, 1, "full 重算整体替换（而非 5+1 增量合并）")
+        XCTAssertNil(index.dailyBySession[fixture.sessionID]?[fixture.dayKey], "旧日历日桶被重建替换")
+        XCTAssertEqual(
+            index.dailyBySession[fixture.sessionID]?[nextDayKey]?.inputTokens, 700,
+            "新日历日桶按当前日历重建"
+        )
+        XCTAssertNil(index.calendarRebuildPendingSessions, "full 成功后标记清除")
     }
 
     /// 卫生清理：写回 index 前裁剪严格早于 8 天窗口的日桶（与 samples 的
@@ -2243,9 +2582,13 @@ final class AntigravityLocalUsageTests: XCTestCase {
             from: Data(indexJSON.utf8)
         )
         XCTAssertNil(index.emptyFullStrikesBySession, "旧缓存无打击计数字段时默认 nil")
+        XCTAssertNil(index.calendarRebuildPendingSessions, "旧缓存无旧日历标记字段时默认 nil")
+        XCTAssertNil(index.zeroAccountedFullStrikesBySession, "旧缓存无零可计账打击计数字段时默认 nil")
 
         var withStrikes = index
         withStrikes.emptyFullStrikesBySession = ["s1": 2]
+        withStrikes.calendarRebuildPendingSessions = ["s1"]
+        withStrikes.zeroAccountedFullStrikesBySession = ["s1": 1]
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         let redecoded = try decoder.decode(
@@ -2253,6 +2596,14 @@ final class AntigravityLocalUsageTests: XCTestCase {
             from: try encoder.encode(withStrikes)
         )
         XCTAssertEqual(redecoded.emptyFullStrikesBySession?["s1"], 2, "新字段 round-trip 保真")
+        XCTAssertEqual(
+            redecoded.calendarRebuildPendingSessions, ["s1"],
+            "旧日历标记字段 round-trip 保真"
+        )
+        XCTAssertEqual(
+            redecoded.zeroAccountedFullStrikesBySession?["s1"], 1,
+            "零可计账打击计数字段 round-trip 保真"
+        )
         let withCounter = try decoder.decode(
             AntigravityLocalUsageScanner.SessionIndexEntry.self,
             from: try encoder.encode(entry)
