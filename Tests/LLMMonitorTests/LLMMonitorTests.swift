@@ -328,11 +328,11 @@ final class LLMMonitorTests: XCTestCase {
         XCTAssertEqual(missing.models.first?.intervalTotalCount, 0)
     }
 
-    /// M1 回归网：周窗口声明 present（status=1）但缺 `weekly_end_time` 时，按
-    /// 7 天窗口长度兜底构造 reset 边界。不得产出 weeklyStatus=.present 而
-    /// weeklyResetsAt=nil 的组合 —— 该组合曾让 Debug 构建在
-    /// `ModelQuota.weeklyTimeRemainingFraction` 断言 trap。
-    func testMinimaxParseWeeklyWindowMissingEndTimeUsesSevenDayFallback() throws {
+    /// M1 回归网：周窗口声明 present（status=1）但缺 `weekly_end_time` 时，
+    /// 窗口保持 present、reset 透传 nil —— 不按 7 天合成边界伪造 reset 时间
+    /// （合成值曾泄漏进 UI 阈值判定与本地分桶）。声明 present 必须给 percent
+    /// 的校验保持不变。
+    func testMinimaxParseWeeklyWindowMissingEndTimePassesThroughNil() throws {
         let json = """
         {
           "model_remains": [
@@ -351,11 +351,10 @@ final class LLMMonitorTests: XCTestCase {
         let info = try MinimaxTokenPlanFetcher.parse(data: json.data(using: .utf8)!)
         let model = try XCTUnwrap(info.models.first)
         XCTAssertEqual(model.weeklyStatus, .present)
-        XCTAssertNotNil(model.weeklyResetsAt, "present 周窗口缺 weekly_end_time 时必须有兜底 reset 边界")
-        // 兜底边界按 7 天窗口长度构造，应落在未来
-        XCTAssertGreaterThan(model.weeklyResetsAt ?? .distantPast, Date())
-        // 消费面契约：present 周窗口必须能取到剩余时间比例（无 trap、无降级 nil）
-        XCTAssertNotNil(model.weeklyTimeRemainingFraction)
+        XCTAssertEqual(model.weeklyRemainingPercent, 64, "present 周窗口的 percent 透传不受 reset 缺失影响")
+        XCTAssertNil(model.weeklyResetsAt, "缺 weekly_end_time 时不合成边界，透传 nil")
+        // 消费面契约：present 而 reset 缺失时降级为 nil（固定黄线），无 trap
+        XCTAssertNil(model.weeklyTimeRemainingFraction)
     }
 
     /// M4 回归网：5h 窗口缺 `current_interval_remaining_percent` 且未声明

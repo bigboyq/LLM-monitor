@@ -148,10 +148,9 @@ struct GlmCodingPlanFetcher: QuotaFetcher {
         // token 窗口一个明确边界，否则 summary 会把整个缓存样本集当成最近 5h。
         let intervalResetsAt = interval.resetsAt ?? now.addingTimeInterval(5 * 3600)
 
-        // 周窗口同样可能缺 nextResetTime：weeklyStatus=.present 而 resetsAt=nil
-        // 的组合会让 weeklyTimeRemainingFraction 降级（原实现还会在 Debug 断言
-        // trap）。与上面 5h 缺 reset 的兜底同款，按 7 天窗口长度构造明确边界。
-        let weeklyResetsAt = weekly.map { $0.resetsAt ?? now.addingTimeInterval(7 * 86_400) }
+        // 周窗口缺 nextResetTime 时透传 nil：消费面对 nil 安全降级（固定黄线、
+        // 本地窗口分桶跳过），不按 7 天合成边界伪造 reset 时间。
+        let weeklyResetsAt = weekly?.resetsAt
 
         return ModelQuota(
             modelName: "glm_coding_plan",

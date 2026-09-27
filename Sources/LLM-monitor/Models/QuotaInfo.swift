@@ -183,7 +183,8 @@ struct ModelQuota: Equatable, Codable, Sendable {
     /// 周窗口剩余时间比例。0.0 = 即将过期，1.0 = 刚重置。
     /// 仅在周窗口存在且 weeklyResetsAt 已知时返回有效值；
     /// `weeklyWindowSeconds` 缺失时按 7 天兜底（minimax fetcher 当前把
-    /// windowSeconds 写死成 nil，但 weeklyEndTime 一定有）。
+    /// windowSeconds 写死成 nil）。周窗口缺 reset 时间是允许的组合，
+    /// 此时同样降级为 nil（见下方 guard）。
     /// 5h 窗口不参与计算（用户偏好：进度条上只看周）。
     var weeklyTimeRemainingFraction: Double? {
         weeklyTimeRemainingFraction(at: Date())
@@ -192,8 +193,8 @@ struct ModelQuota: Equatable, Codable, Sendable {
     func weeklyTimeRemainingFraction(at now: Date) -> Double? {
         guard hasWeeklyWindow else { return nil }
         guard let end = weeklyResetsAt else {
-            // 各 fetcher 已保证 present ⇒ resetsAt 非 nil；这里只剩服务端 schema
-            // 漂移等防御路径。降级为 nil（固定 30% 黄线），不 trap 菜单栏 App。
+            // 各 fetcher 允许 present 而 resetsAt=nil 的组合（缺 reset 时间时
+            // 透传 nil）。降级为 nil（固定 30% 黄线），不 trap 菜单栏 App。
             logWarn("[quota] model \(modelName) weekly window is present but reset time is missing")
             return nil
         }

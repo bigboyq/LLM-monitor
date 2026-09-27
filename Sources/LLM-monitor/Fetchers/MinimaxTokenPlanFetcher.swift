@@ -175,11 +175,9 @@ struct MinimaxTokenPlanFetcher: QuotaFetcher {
                 }
             }
 
-            // 周窗口声明 present 但缺 weekly_end_time 时，按 7 天窗口长度兜底
-            // 构造 reset 边界（与 GLM fetcher 5h 缺 reset 的兜底同款），避免
-            // weeklyStatus=.present 而 weeklyResetsAt=nil 的问题组合。
+            // 周窗口缺 weekly_end_time 时透传 nil：消费面对 nil 安全降级（固定
+            // 黄线、本地窗口分桶跳过），不按 7 天合成边界伪造 reset 时间。
             let weeklyResetsAt = entry.weeklyEndTime.flatMap(DateParser.parseMsTimestamp)
-                ?? (weeklyStatus.isPresent ? Date().addingTimeInterval(7 * 86_400) : nil)
             let intervalRemainingPercent = entry.intervalRemainingPercent ?? 0
 
             let m = ModelQuota(

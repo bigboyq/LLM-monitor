@@ -88,6 +88,35 @@ final class CodexLocalUsageTests: XCTestCase {
         XCTAssertTrue(CodexFetcher.makeUsageWindows(from: nil).isEmpty)
     }
 
+    /// 回归网：周窗口 present 但 `weeklyResetsAt=nil`（各 fetcher 对缺 reset
+    /// 时间透传 nil）时，本地分桶不得为 secondary 窗口合成 reset 边界 ——
+    /// 合成边界会把 startDate 钉在本次抓取时刻，把窗口用量压成接近 0 的假数，
+    /// 且每次刷新边界前移、数字持续漂移。此时 secondary 窗口整体缺省（诚实
+    /// "无数据"），仅 primary 参与聚合。
+    func testMakeUsageWindowsSkipsSecondaryWindowWhenWeeklyResetIsMissing() {
+        let reset = Date(timeIntervalSince1970: 10_000)
+        let model = ModelQuota(
+            modelName: "chatgpt_plan",
+            intervalTotalCount: 1_000,
+            intervalUsageCount: 100,
+            intervalRemainingPercent: 90,
+            intervalStatus: .present,
+            intervalResetsAt: reset,
+            intervalWindowSeconds: 1_800,
+            weeklyTotalCount: 7_000,
+            weeklyUsageCount: 500,
+            weeklyRemainingPercent: 90,
+            weeklyStatus: .present,
+            weeklyResetsAt: nil,
+            weeklyWindowSeconds: 7 * 24 * 60 * 60
+        )
+
+        let windows = CodexFetcher.makeUsageWindows(from: model)
+        XCTAssertEqual(windows["primary"]?.resetDate, reset)
+        XCTAssertNil(windows["secondary"], "weeklyResetsAt=nil 时不得合成 secondary 窗口边界")
+        XCTAssertEqual(Set(windows.keys), ["primary"], "仅 primary 参与聚合，不产出合成的假数")
+    }
+
     func testSummarizeLocalUsageWithoutWindowsStillProducesDailyAndLastPrompt() throws {
         // LocalUsage 与额度解耦：无 reset 时间（windows 为空）时，daily 与 Last Prompt
         // 是纯本地信息照常产出，仅窗口用量（usageSummaries）缺省。

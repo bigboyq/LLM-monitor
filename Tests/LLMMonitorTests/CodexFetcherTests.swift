@@ -269,11 +269,10 @@ final class CodexFetcherTests: XCTestCase {
         )
     }
 
-    /// M1 回归网：secondary_window 存在但缺 `reset_at` 时，按窗口长度兜底构造
-    /// reset 边界（长度未知按 7 天）。不得产出 weeklyStatus=.present 而
-    /// weeklyResetsAt=nil 的组合 —— 该组合曾让 Debug 构建在
-    /// `ModelQuota.weeklyTimeRemainingFraction` 断言 trap。
-    func testCodexWeeklyWindowWithoutResetAtFallsBackToWindowLength() throws {
+    /// M1 回归网：secondary_window 存在但缺 `reset_at` 时透传 nil（保持
+    /// weeklyStatus=.present）。不按窗口长度合成边界 —— 合成值曾泄漏进 UI
+    /// 阈值判定与本地分桶。消费面对 nil 安全降级（固定黄线），不 trap。
+    func testCodexWeeklyWindowWithoutResetAtPassesThroughNil() throws {
         func usageJSON(secondaryWindow: [String: Any]) -> Data {
             try! JSONSerialization.data(withJSONObject: [
                 "rate_limit": [
@@ -287,23 +286,24 @@ final class CodexFetcherTests: XCTestCase {
             ])
         }
 
-        // 1) 有窗口长度：兜底 = now + limit_window_seconds
+        // 1) 有窗口长度：reset_at 缺失仍透传 nil，窗口长度照常透传
         let withWindow = try CodexFetcher.parseUsage(
             try CodexFetcher.parseUsageData(usageJSON(secondaryWindow: [
                 "used_percent": 40, "limit_window_seconds": 604_800
             ]))
         )
         XCTAssertEqual(withWindow.weeklyStatus, .present)
-        XCTAssertNotNil(withWindow.weeklyResetsAt, "present 周窗口缺 reset_at 时必须有兜底 reset 边界")
-        XCTAssertNotNil(withWindow.weeklyTimeRemainingFraction, "消费面契约：present 周窗口应能取到剩余时间比例")
+        XCTAssertNil(withWindow.weeklyResetsAt, "缺 reset_at 时不合成边界，透传 nil")
+        XCTAssertEqual(withWindow.weeklyWindowSeconds, 604_800)
+        XCTAssertNil(withWindow.weeklyTimeRemainingFraction, "消费面契约：reset 缺失时降级为 nil（固定黄线）")
 
-        // 2) 无窗口长度：按 7 天兜底，reset 边界仍非 nil
+        // 2) 无窗口长度：同样透传 nil
         let withoutWindow = try CodexFetcher.parseUsage(
             try CodexFetcher.parseUsageData(usageJSON(secondaryWindow: ["used_percent": 40]))
         )
         XCTAssertEqual(withoutWindow.weeklyStatus, .present)
-        XCTAssertNotNil(withoutWindow.weeklyResetsAt)
-        XCTAssertNotNil(withoutWindow.weeklyTimeRemainingFraction)
+        XCTAssertNil(withoutWindow.weeklyResetsAt)
+        XCTAssertNil(withoutWindow.weeklyTimeRemainingFraction)
     }
 
     /// M5 回归网：full 模式下 reset-credits 请求因整个刷新任务被取消而失败时，

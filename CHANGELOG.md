@@ -34,7 +34,7 @@
 - 修复 Antigravity 步级时间戳解析在 metadata blob 损坏 / 异构（子消息末尾 varint 带续位越界）时的进程级崩溃：protobuf varint 解析加子消息边界上界，越界改为安全拒绝（该条目按无时间戳处理），单个损坏行不再可能 trap 整个进程。
 - 修复 FSEvents 回调绕过 actor 隔离的数据竞争：启动期 root 去重账本与流启停统一在主 actor 串行，stop / start 周期下的在途回调不再可能触发 Set 写入崩溃或把真实事件误当启动噪声丢弃。
 - Antigravity 全量页 offset 对账：server 返回的 metadata 总数小于本地已入账 offset（服务端丢数据 / 连错工作区）时不再覆盖本地 last-good 统计，按 3 轮打击收敛保留待恢复；零可计账打击计数在核验收敛 / 零 metadata / 空 suffix 路径下正确清零，不再残留导致后续事件提前收敛。
-- 额度刷新韧性：Antigravity 单个模型组缺 remainingFraction 不再作废整份刷新（跳过该组继续）；minimax 5h 窗口缺百分比不再炸整份 provider 刷新（对齐周窗口的缺失容忍）；周窗口缺 reset 时间不再在 Debug 构建 trap / Release 静默降级为固定黄线（GLM / minimax / Codex 对齐 5h 的 7 天兜底）。
+- 额度刷新韧性：Antigravity 单个模型组缺 remainingFraction 不再作废整份刷新（跳过该组继续）；minimax 5h 窗口缺百分比不再炸整份 provider 刷新（对齐周窗口的缺失容忍）；周窗口缺 reset 时间不再在 Debug 构建 trap：GLM / minimax / Codex 保持周窗口 present、reset 留空，消费面安全降级为固定黄线，Codex 本地用量分桶在 reset 未知时跳过 secondary 窗口（不合成 reset 边界、不产出假数）。
 - Codex full 模式刷新被取消时不再误清已缓存的 reset credits（Task 取消正确向上传播，与 DeepSeek / GLM / minimax 一致）。
 - 睡眠健康断言探针失败不再产出假绿：「探不到」按未知处理并清除旧报告，不再把扫描失败包装成健康；停止评估后同样清除残留报告。
 - 持久损坏的本地 SQLite 库不再每轮白付 /tmp 全量拷贝：副本上读取同样 CORRUPT 时按源指纹记忆，后续轮次跳过拷贝快速失败，文件变化后自动恢复重试（并发 checkpoint 撕裂的重拷自愈路径不受影响）。

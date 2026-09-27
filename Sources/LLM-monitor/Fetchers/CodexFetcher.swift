@@ -482,14 +482,6 @@ struct CodexFetcher: QuotaFetcher {
         }
         let intervalUsed = primary.usedPercent
         let weeklyUsed = usage.secondary?.usedPercent ?? 0
-        // secondary_window 存在但缺 reset_at 时，按窗口长度兜底构造 reset 边界
-        // （长度未知按 7 天），避免 weeklyStatus=.present 而 weeklyResetsAt=nil
-        // 的组合 —— 与 GLM / minimax fetcher 对周窗口缺 reset 的兜底同款。
-        let weeklyResetsAt = usage.secondary.map { window in
-            window.resetsAt ?? Date().addingTimeInterval(
-                TimeInterval(window.limitWindowSeconds ?? 7 * 24 * 60 * 60)
-            )
-        }
         return ModelQuota(
             modelName: "chatgpt_plan",
             intervalTotalCount: 0,
@@ -504,7 +496,9 @@ struct CodexFetcher: QuotaFetcher {
             // secondary_window 为 null 或缺少 used_percent 时 parseWindow 会返回 nil；
             // 用 status 保留“该窗口不存在”的信息，供 UI 决定是否渲染。
             weeklyStatus: usage.secondary == nil ? .absent : .present,
-            weeklyResetsAt: weeklyResetsAt,
+            // 缺 reset_at 时透传 nil：消费面（weeklyTimeRemainingFraction /
+            // CodexLocalUsageScanner）对 nil 安全降级，不合成边界伪造窗口数据。
+            weeklyResetsAt: usage.secondary?.resetsAt,
             weeklyWindowSeconds: usage.secondary?.limitWindowSeconds
         )
     }
