@@ -163,7 +163,9 @@ class LocalUsageScannerBase<Usage: Equatable>: ObservableObject, @unchecked Send
     nonisolated func scanResultIsComplete(_ result: Usage) -> Bool { true }
 
     /// 等待当前扫描 settle。没有 in-flight 时立即返回；调用方取消时抛出
-    /// CancellationError。取消 scanner 本身会恢复所有 waiter，避免停机悬挂。
+    /// CancellationError。取消 scanner 本身（`cancelInFlight`）也会以
+    /// CancellationError 恢复所有 waiter —— 等待方必须能区分"扫描完成"与
+    /// "扫描被取消"，否则 hardFull 重建等入口会把取消误报成成功。
     func waitUntilSettled() async throws {
         try Task.checkCancellation()
         guard inFlightTask != nil else { return }
@@ -205,7 +207,10 @@ class LocalUsageScannerBase<Usage: Equatable>: ObservableObject, @unchecked Send
         // 取消语义与编排层 cancelInFlightAll 清 pendingMode 一致：配置变更 /
         // 停机时的取消，不允许已排队的接续扫描再浮出来。
         pendingUpgradeMode = nil
-        resumeAllScanWaiters()
+        // 用错误唤醒 waiter：cancel 后 in-flight 任务不会再产出结果，等待方
+        // （如 hardFull 重建入口）必须把这次唤醒当作"扫描被取消"而不是正常
+        // settle，否则会谎报"已完成"。
+        resumeAllScanWaiters(throwing: CancellationError())
     }
 
     /// Configure the source registration once the concrete scanner has loaded
@@ -311,10 +316,19 @@ class LocalUsageScannerBase<Usage: Equatable>: ObservableObject, @unchecked Send
         return pendingUpgradeMode
     }
 
-    private func resumeAllScanWaiters() {
+    /// 唤醒所有 waiter。正常 settle 路径（runScan 收尾）用成功值；只有
+    /// `cancelInFlight` 传 `throwing:` —— 两种唤醒必须可区分，等待方才能如实
+    /// 上报"扫描被取消"。
+    private func resumeAllScanWaiters(throwing error: Error? = nil) {
         let waiters = scanWaiters
         scanWaiters.removeAll()
-        waiters.forEach { $0.continuation.resume(returning: ()) }
+        waiters.forEach { waiter in
+            if let error {
+                waiter.continuation.resume(throwing: error)
+            } else {
+                waiter.continuation.resume(returning: ())
+            }
+        }
     }
 
     /// 子类构造实际的工作闭包：通常包一层 `Self.pipelineMutex` + 调用自己的

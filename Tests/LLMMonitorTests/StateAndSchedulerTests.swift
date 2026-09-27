@@ -3622,6 +3622,78 @@ final class StateAndSchedulerTests: XCTestCase {
         XCTAssertEqual(factoryCalls, 0, "inactive source 不应构造 scanner")
     }
 
+    /// Fix 回归：cancelInFlight（配置变更 / 停机 / source 失活）必须以错误唤醒
+    /// waiter，而不是用成功值放行 —— 否则等待方无法区分"扫描完成"与"扫描被
+    /// 取消"，hardFull 重建入口会把被取消的扫描谎报成"已完成"。
+    @MainActor
+    func testCancelInFlightThrowsToWaitersInsteadOfSuccessResume() async throws {
+        let gate = ScannerTestGate()
+        let scanner = ModeProbeScanner(gates: [gate])
+
+        scanner.scan(mode: .dirty)
+        await gate.waitForEntered()
+
+        let waiter = Task { @MainActor () -> Bool in
+            do {
+                try await scanner.waitUntilSettled()
+                return true
+            } catch {
+                return false
+            }
+        }
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        scanner.cancelInFlight()
+        let settled = await waiter.value
+        XCTAssertFalse(settled, "cancelInFlight 应以错误唤醒 waiter，而不是正常返回")
+        XCTAssertFalse(scanner.isScanning)
+        XCTAssertEqual(scanner.recordedModes, [.dirty], "取消路径不得把 pending 槽位的扫描再放出来")
+
+        // 放行仍卡在 gate 的旧 worker，让被取消的 in-flight task 正常退出。
+        await gate.release()
+    }
+
+    /// Fix 回归：scanner 端 cancelInFlight 唤醒等待时，hard 重建入口必须返回
+    /// false（并补发 hard 请求避免丢失），不得谎报成功。覆盖真实
+    /// LocalUsageScannerBase 的 resume(throwing:) 路径 → 编排层 catch → false。
+    @MainActor
+    func testTriggerAntigravityHardFullReturnsFalseWhenScannerCancelInFlightWakesWaiter() async {
+        let scanner = BlockingAntigravityScanner()
+        let orchestration = LocalUsageOrchestration(writer: ReconcileNoopWriter())
+        orchestration.testAntigravityScannerFactory = { scanner }
+        defer { orchestration.cancelInFlightAll() }
+
+        // Warmup：构造 scanner 并完整成功一轮，使后续调用的第一次等待真正挂起。
+        let warmup = Task { @MainActor in
+            await orchestration.triggerAntigravityHardFull()
+        }
+        for _ in 0..<200 where scanner.waiterCount == 0 {
+            await Task.yield()
+        }
+        XCTAssertEqual(scanner.waiterCount, 1, "warmup 应已挂起等 hard 扫描 settle")
+        scanner.settle()
+        let warmupResult = await warmup.value
+        XCTAssertTrue(warmupResult, "正常 trigger→settle 路径仍必须返回 true")
+
+        // 第二次调用挂在第一次等待上；模拟配置变更/停机触发的 scanner 端取消。
+        let hardFull = Task { @MainActor in
+            await orchestration.triggerAntigravityHardFull()
+        }
+        for _ in 0..<200 where scanner.waiterCount == 0 {
+            await Task.yield()
+        }
+        XCTAssertEqual(scanner.waiterCount, 1, "第二次调用的等待应已挂起")
+
+        scanner.cancelInFlight()
+        let result = await hardFull.value
+
+        XCTAssertFalse(result, "cancelInFlight 唤醒的等待不得谎报 hard 重建成功")
+        XCTAssertEqual(
+            scanner.recordedModes, [.hardFull, .hardFull],
+            "取消唤醒后 hard 请求仍必须补发，不能静默丢失"
+        )
+    }
+
     /// P3 回归：纯时钟平移不触发日历签名失效（hardFull），只补一次普通
     /// reconcile；时区变化仍走 invalidateForCalendarChange 的 cold rebuild。
     @MainActor
@@ -4085,8 +4157,10 @@ private final class BlockingAntigravityScanner: LocalUsageScanner {
         try Task.checkCancellation()
     }
 
+    /// 与真实 LocalUsageScannerBase 合约对齐：cancelInFlight 以错误唤醒 waiter，
+    /// 与 settle() 的成功唤醒可区分（等待方不得把"扫描被取消"误报成"已完成"）。
     func cancelInFlight() {
-        resumeWaiters { $0.resume(returning: ()) }
+        resumeWaiters { $0.resume(throwing: CancellationError()) }
     }
 
     /// 放行所有等待者，模拟 in-flight 扫描 settle 完成。

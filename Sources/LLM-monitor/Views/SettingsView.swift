@@ -656,9 +656,12 @@ struct SettingsView: View {
                             Task { @MainActor in
                                 let started = await state.hardRefreshAntigravityLocalUsage()
                                 isAntigravityHardFullRunning = false
+                                // 失败可能是"被其他刷新事务占用"，也可能是等待中
+                                // 扫描被取消（配置变更/停机）—— 统一给诚实的重试
+                                // 文案，不谎报"已完成"。
                                 antigravityHardFullMessage = started
                                     ? "强制全量重建已完成"
-                                    : "当前有其他刷新任务运行，请稍后再试"
+                                    : "强制全量重建未完成（被其他任务占用或中途取消），请稍后重试"
                             }
                         } label: {
                             if isAntigravityHardFullRunning {
