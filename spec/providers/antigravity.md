@@ -364,13 +364,32 @@ Field name resolution (case-insensitive, snake_case or camelCase both accepted):
 | `cache.*read.*token` or `cache_read_tokens` | `cacheReadTokens` |
 | `cache.*write.*token` or `cache_write_tokens` | `cacheWriteTokens` |
 | `(reasoning\|thinking).*token` or `reasoning_tokens` | `reasoningTokens` |
-| `totalTokens` or `total_tokens` | `totalTokens` (fallback: sum of the above) |
+| `totalTokens` or `total_tokens` | `totalTokens` (used or ignored depending on how many component patterns matched — see "Total caliber" below) |
 | `stepIndices` or `step_indices` | `stepIndices` (used for best-effort turn inference) |
 | `apiProvider` or `api_provider` | model fallback when no higher-priority model field is present |
 
 Model field is selected from explicit `model`-named keys first, with `apiProvider` as a lower-priority fallback (so unrelated strings such as timestamps are not misread as the model name). Values prefixed with `MODEL_PLACEHOLDER_` are dropped.
 
 Events with no token fields at all (just a timestamp + model) are skipped — they don't contribute to the aggregate.
+
+**Total caliber.** `cacheWrite` is bookkeeping and never counts toward the exposed
+total. Some RPC versions fold it into `totalTokens`, so the server value cannot be
+trusted blindly; the *reverse* mistake is just as bad — after a field rename only a
+subset of the four component patterns may still match, and trusting the component
+sum then reports a systematically low total. The rule is therefore three-way on the
+number of component patterns that **matched** (a match means the field was read, even
+when its value is 0):
+
+| Component hits | `totalTokens` used | Why |
+|---|---|---|
+| all four | no — component sum wins | the sum excludes `cacheWrite`; server values may not |
+| some (1–3) | yes, when non-zero | the sum is known-incomplete; the server is authoritative. If the server total is absent or 0, fall back to the sum rather than scoring a real event as 0 |
+| none | yes | the components carry nothing; this is the original behavior |
+
+A partial-hit event carries its missing component names on
+`UsageEvent.missingComponents`; the scanner aggregates them per session and logs one
+summary line per distinct set (persisted in `partialHitWarnedBySession`) instead of one
+line per event, so a renamed field cannot flood the rotating log.
 
 **Timestampless events**: the scanner first tries to recover a missing timestamp for
 SQLite sessions from the matching `steps.step_type=15` metadata selected by
@@ -482,6 +501,22 @@ readers, and new fields decode with defaults via `decodeIfPresent`):
 | `consecutiveEmptySuffixes` | `sessions[id]` | consecutive empty suffix responses |
 | `lastEmptySuffixAt` | `sessions[id]` | 30s retry throttle for empty suffixes (existed before) |
 | `emptyFullStrikesBySession` | top level | per-session consecutive zero-metadata full count |
+| `zeroAccountedFullStrikesBySession` | top level | per-session consecutive "page had raw metadata but zero accountable events" count (full **and** incremental pages) |
+| `offsetRegressionStrikesBySession` | top level | per-session consecutive "non-verification full page reported fewer raw entries than the cached offset" count |
+| `calendarRebuildPendingSessions` | top level | sessions whose last-good daily buckets are still grouped under a superseded calendar |
+| `partialHitWarnedBySession` | top level | per-session set of already-logged missing-component sets (log de-duplication only) |
+
+All five are optional top-level maps decoded via `decodeIfPresent`, so an older
+`index.json` simply decodes without them. The three strike counters are written on the
+paths that accumulate a strike, which `continue` **before** `sessions[id]` is created —
+a brand-new session whose very first page comes back empty writes a strike count and
+returns without ever creating an entry. Session removal must therefore consider the
+union of `sessions.keys` and all of these maps' keys — see `trackedSessionIDs(in:)`.
+Considering `sessions.keys` alone leaves a strike count behind forever; the same id
+reappearing then resumes from the stale count, converges one or two rounds early into a
+terminal empty entry, and silently drops that fingerprint cycle's data. The other two
+maps are included in the union defensively; they are written in rounds that also create
+the session entry.
 
 **A. Empty suffix → offset=0 verification full.** Empty suffixes keep the session
 dirty under the existing 30s throttle and increment `consecutiveEmptySuffixes`.
@@ -529,11 +564,51 @@ events stay missing until any later file change, the settings-page hard full,
 or a calendar rollover rebuild re-triggers a scan. The same bounded acceptance
 applies to a B-converged session: any file change re-plans it normally.
 
-**C. Why `calendarSignature` needs no per-session signature.** The signature
+**C. Page with raw metadata but zero accountable events → 3-strike terminal state.**
+A page can report a non-zero `metadataEntryCount` while producing **no** accountable
+event — every entry fails to parse (a renamed / relocated token field), or every event
+lacks a recoverable timestamp. The trustworthiness gate is deliberately keyed on the
+*raw* count (raw entries may legitimately carry no token fields, and the offset must
+advance by raw count), so this case slips past it.
+
+It must therefore be caught before the full page replaces anything. The check is
+hoisted **above the full/incremental fork** and covers both page types:
+
+- full page: the wholesale replacement of `dailyBySession[id]` / `samplesBySession[id]`
+  would zero the session's visible history, and the offset would then jump past the
+  whole page so no incremental fetch ever revisits it;
+- incremental page: the merge is additive, but the offset would still advance past
+  entries that were never accounted, so a later parser fix could never recover them.
+
+Rounds 1 and 2 count as failures (`failedSessionCount` increments, last-good is kept
+untouched) and bump `zeroAccountedFullStrikesBySession[id]`. At 3
+(`zeroAccountedFullStrikeLimit`) the session converges for the round: the current file
+fingerprint is adopted while `eventCount`, `generatorMetadataOffset`, daily buckets and
+samples keep their last-good values — and the offset is **deliberately not advanced**,
+so a later file change re-fetches the same page with a possibly-fixed parser. With no
+cached entry at all, a terminal empty entry is written instead. A page that produces
+accountable events clears the count on both page types.
+
+**D. Offset regression → 3-strike terminal state.** A full or verification page whose
+`metadataEntryCount` is *smaller* than the cached `generatorMetadataOffset` means the
+server lost data, truncated, or answered from a different workspace. Treating it as a
+normal full replacement would overwrite good local history with a smaller aggregate and
+then advance the offset backwards. Such a page counts as a failure and bumps
+`offsetRegressionStrikesBySession[id]`; at 3 the session converges as a success with the
+current fingerprint and the full last-good state (including the offset) preserved. Two
+cases never reach this check because an earlier branch already settled them: a
+zero-entry page is strike rule B, and a verification page whose count *equals* the
+cached offset converges as "no new events" in rule A. Incremental pages are excluded
+outright — they consume by raw count and have no count-versus-offset relation to
+reconcile. A regression page is rejected before any parsing or aggregation, so it also
+clears the zero-metadata and zero-accountable counts for the session.
+
+**E. Why `calendarSignature` needs no per-session signature.** The signature
 still advances only on a round with `failedSessionCount == 0` (all-or-nothing;
-incomplete directory enumeration correctly keeps blocking it). Both persistent
-failure sources above are now bounded — empty suffixes escalate to verification
-after 2 attempts, zero-metadata fulls converge after 3 strikes — and converged
+incomplete directory enumeration correctly keeps blocking it). Every persistent
+failure source above is now bounded — empty suffixes escalate to verification
+after 2 attempts, and zero-metadata fulls, zero-accountable pages and offset
+regressions all converge after 3 strikes — and converged
 sessions no longer count as failures. So the number of rounds in which
 `failedSessionCount > 0` (and therefore *all* sessions re-run the full plan at
 batch size 2) is finite, typically ≤ 3, after which the signature advances and

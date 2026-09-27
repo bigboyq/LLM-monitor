@@ -64,6 +64,20 @@ floor raises a provider's composite status to at least `.warning` (red wins); th
 only applies to the iconDuo bottom dots and the card header dots — arcs and the center
 sector are exempt.
 
+**Center sector relay semantics.** The center sector takes the *lowest* "actually
+available" ratio across plans, but a plan whose value is exactly 0 is excluded from that
+comparison. This models plan hand-off: once a plan is spent, it would otherwise pin the
+ring to 0 and hide the plan now serving you, so the ring follows the one still in
+service (its `timeFraction` follows with it, keeping the yellow line consistent with the
+displayed plan). Boundaries are distinguished deliberately: readings exist but every
+plan is exhausted → `0` (red empty ring, `timeFraction` nil since `colorLevel` treats 0%
+as critical regardless); no plan has any window at all → `nil` (gray, "not configured"
+is not "exhausted"). Ties keep the first plan encountered. The bottom dots and the card
+header dots are unaffected — they still cover every plan, so a spent plan stays red
+there. The notification pipeline is a separate concept: it keys off per-window remaining
+crossing a 1% threshold, so "plan A's 5-hour window ran out" and "the ring now shows plan
+B" are complementary rather than contradictory.
+
 The base icon keeps the standard macOS foreground appearance. For standard SF Symbol
 styles, a 6 pt status dot is drawn at the lower-right when `statusBarHealthDotEnabled`
 is enabled (the default): green for healthy, orange for warning, and red for critical.
