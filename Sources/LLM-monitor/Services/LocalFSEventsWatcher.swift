@@ -113,7 +113,10 @@ final class LocalFSEventsWatcher {
         self.stream = nil
     }
 
-    deinit {
+    // isolated deinit：stream 是 MainActor 隔离属性，非隔离 deinit 访问它在
+    // Swift 6 严格并发下是错误；本类全部引用都在 MainActor 上释放，deinit
+    // 实际本就运行在主 actor，标注后流销毁与 start()/stop() 完全串行。
+    isolated deinit {
         if let stream {
             FSEventStreamStop(stream)
             FSEventStreamInvalidate(stream)
@@ -121,20 +124,20 @@ final class LocalFSEventsWatcher {
         }
     }
 
-    private func handleEvent(path: String, eventID: FSEventStreamEventId, flags: FSEventStreamEventFlags) {
-        let canonicalPath = Self.canonicalPath(URL(fileURLWithPath: path))
-        if shouldIgnoreInitialRootEvent(path: canonicalPath, flags: flags) {
-            logDebug("[local-fsevents] ignore startup root event path=\(canonicalPath)")
-            return
-        }
-        let event = LocalFSEventsEvent(
-            path: canonicalPath,
-            eventID: UInt64(eventID),
-            flags: UInt32(flags)
-        )
-        logDebug("[local-fsevents] event id=\(event.eventID) flags=0x\(String(event.flags, radix: 16)) path=\(event.path)")
-        Task { @MainActor [weak self, event] in
-            self?.eventHandler(event)
+    /// 主 actor 串行的投递入口。启动期 root 去重要变更可变状态
+    /// （ignoredInitialRootPaths），必须与 start()/stop() 在同一 actor 上串行；
+    /// C 回调只负责打包，状态判定与投递统一在这里完成。
+    private func deliver(_ events: [LocalFSEventsEvent]) {
+        for event in events {
+            if shouldIgnoreInitialRootEvent(
+                path: event.path,
+                flags: FSEventStreamEventFlags(event.flags)
+            ) {
+                logDebug("[local-fsevents] ignore startup root event path=\(event.path)")
+                continue
+            }
+            logDebug("[local-fsevents] event id=\(event.eventID) flags=0x\(String(event.flags, radix: 16)) path=\(event.path)")
+            eventHandler(event)
         }
     }
 
@@ -152,7 +155,9 @@ final class LocalFSEventsWatcher {
         return true
     }
 
-    private static func canonicalPath(_ url: URL) -> String {
+    /// 纯函数、不触碰任何 watcher 状态；C 回调在 FSEvents 队列上调用它完成
+    /// 路径规范化，因此必须保持 nonisolated。
+    private nonisolated static func canonicalPath(_ url: URL) -> String {
         url.standardizedFileURL.resolvingSymlinksInPath().path
     }
 
@@ -170,12 +175,21 @@ final class LocalFSEventsWatcher {
             .fromOpaque(clientCallBackInfo)
             .takeUnretainedValue()
         let paths = eventPaths.assumingMemoryBound(to: UnsafePointer<CChar>.self)
+        // C 回调运行在 FSEvents 的 utility 队列上（非隔离）：这里只做字符串
+        // 拷贝与事件打包，全部使用回调参数的局部值，不触碰 watcher 的可变
+        // 状态；启动期 root 去重（ignoredInitialRootPaths）与最终投递统一
+        // hop 到主 actor 串行执行，避免与 start() 的 removeAll() 无锁并发。
+        var events: [LocalFSEventsEvent] = []
+        events.reserveCapacity(numberOfEvents)
         for index in 0..<numberOfEvents {
-            watcher.handleEvent(
-                path: String(cString: paths[index]),
-                eventID: eventIDs[index],
-                flags: eventFlags[index]
-            )
+            events.append(LocalFSEventsEvent(
+                path: canonicalPath(URL(fileURLWithPath: String(cString: paths[index]))),
+                eventID: UInt64(eventIDs[index]),
+                flags: UInt32(eventFlags[index])
+            ))
+        }
+        Task { @MainActor [weak watcher] in
+            watcher?.deliver(events)
         }
     }
 }

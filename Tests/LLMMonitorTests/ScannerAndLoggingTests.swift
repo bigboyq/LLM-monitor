@@ -112,6 +112,148 @@ final class ScannerAndLoggingTests: XCTestCase {
         XCTAssertGreaterThan(fileSize, 0)
     }
 
+    /// M8 合并窗口：首事件即时投递；窗口内后续事件合并为窗口结束时的一次
+    /// 投递；窗口空闲后的新写入再次即时投递。窗口注入 0.8s（生产默认 0.25s），
+    /// 让多次 100ms 间隔的 append 稳定落在同一窗口内。到达性断言用 waitUntil
+    /// 轮询（不人为设投递时延上限），合并/不投递断言保持严格相等——那才是
+    /// 被测语义。
+    @MainActor
+    func testLocalVnodeWriteWatcherCoalescesRapidAppendsIntoSingleDelivery() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("llm-monitor-vnode-coalesce-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("runtime.jsonl")
+        FileManager.default.createFile(atPath: file.path, contents: Data())
+
+        var deliveries = 0
+        let vnode = LocalVnodeWriteWatcher(path: file, coalescingWindow: 0.8) {
+            deliveries += 1
+        }
+        vnode.start()
+        let fd = open(file.path, O_WRONLY | O_APPEND)
+        XCTAssertGreaterThanOrEqual(fd, 0)
+        guard fd >= 0 else { return }
+        defer { vnode.stop(); close(fd) }
+        var byte: UInt8 = 1
+        XCTAssertEqual(withUnsafePointer(to: &byte) { Darwin.write(fd, $0, 1) }, 1)
+        XCTAssertEqual(fsync(fd), 0)
+        await waitUntil(timeout: 2, message: "首事件应即时投递") { deliveries == 1 }
+
+        // 窗口内再写两次：只记账合并，不逐条投递
+        for _ in 0..<2 {
+            XCTAssertEqual(withUnsafePointer(to: &byte) { Darwin.write(fd, $0, 1) }, 1)
+            XCTAssertEqual(fsync(fd), 0)
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        XCTAssertEqual(deliveries, 1, "窗口内的连续 append 不应逐条投递，实际 \(deliveries)")
+
+        // 窗口（0.8s）结束时，窗口内的后续 append 合并为一次投递
+        await waitUntil(timeout: 2, message: "窗口内的后续 append 应合并为一次投递") { deliveries == 2 }
+
+        // 第二个窗口（0.8s）空闲到期：不应产生追加投递
+        try await Task.sleep(nanoseconds: 1_000_000_000)
+        XCTAssertEqual(deliveries, 2)
+        XCTAssertEqual(withUnsafePointer(to: &byte) { Darwin.write(fd, $0, 1) }, 1)
+        XCTAssertEqual(fsync(fd), 0)
+        await waitUntil(timeout: 2, message: "窗口空闲后的新写入应再次投递") { deliveries == 3 }
+    }
+
+    /// M8 停止安全：stop() 取消合并窗口，窗口内被合并的事件不投递幽灵事件。
+    @MainActor
+    func testLocalVnodeWriteWatcherDropsPendingDeliveryOnStop() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("llm-monitor-vnode-stop-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("runtime.jsonl")
+        FileManager.default.createFile(atPath: file.path, contents: Data())
+
+        var deliveries = 0
+        let vnode = LocalVnodeWriteWatcher(path: file, coalescingWindow: 2.0) {
+            deliveries += 1
+        }
+        vnode.start()
+        let fd = open(file.path, O_WRONLY | O_APPEND)
+        XCTAssertGreaterThanOrEqual(fd, 0)
+        guard fd >= 0 else { return }
+        defer { close(fd) }
+        var byte: UInt8 = 1
+        XCTAssertEqual(withUnsafePointer(to: &byte) { Darwin.write(fd, $0, 1) }, 1)
+        XCTAssertEqual(fsync(fd), 0)
+        await waitUntil(timeout: 2, message: "首事件应即时投递") { deliveries == 1 }
+        // 窗口内再写一次：被合并，等待窗口结束时投递
+        XCTAssertEqual(withUnsafePointer(to: &byte) { Darwin.write(fd, $0, 1) }, 1)
+        XCTAssertEqual(fsync(fd), 0)
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(deliveries, 1, "窗口内的后续写入应被合并，实际 \(deliveries)")
+        // stop() 取消窗口：被合并的事件不应再投递
+        vnode.stop()
+        // 越过 2s 窗口后确认无幽灵投递
+        try await Task.sleep(nanoseconds: 2_500_000_000)
+        XCTAssertEqual(deliveries, 1, "stop 后窗口内的合并事件不应投递幽灵事件")
+    }
+
+    /// M7 去抖：注册触发的全量递归枚举不立即执行，250ms 去抖后合并为一次
+    /// 枚举（与 ConfigStore.scheduleConfigReload 同语义）；扫描成功后的
+    /// refreshHotFiles 走同一调度入口，同样被去抖覆盖并正常落地。
+    ///
+    /// 候选文件在注册前 >=1.2s 创建：FSEvents 的 sinceNow 边界有 fseventsd
+    /// 处理延迟，紧贴流创建的写入事件会"漏进"流里并触发即时
+    /// addDynamicPath（与去抖无关的合法路径）；预留远大于处理延迟的静置期
+    /// 后，该事件确定性地落在流开始之前，"进入 vnode LRU" 只能由去抖后的
+    /// discovery 完成。去抖窗口内检查点取 100ms < 250ms，为确定性下界。
+    @MainActor
+    func testDiscoveryDebounceDelaysEnumeration() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("llm-monitor-discovery-debounce-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let candidate = root.appendingPathComponent("session.jsonl")
+        FileManager.default.createFile(atPath: candidate.path, contents: Data())
+        // 让候选文件的创建事件彻底成为"过去"（见 doc comment），排除事件
+        // 即时路径对去抖断言的干扰。
+        try await Task.sleep(nanoseconds: 1_200_000_000)
+
+        let monitor = LocalUsageFileMonitor() // autoDiscoveryEnabled 默认 true
+        let source = LocalUsageSourceLifecycle(
+            paths: [root], dynamicExtensions: ["jsonl"], monitor: monitor, onDirty: {}
+        )
+        defer { source.stop() }
+
+        // 去抖窗口内（100ms < 250ms）：枚举尚未执行，候选未进入 vnode LRU
+        try await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertFalse(
+            monitor.watchedPaths.contains(candidate.path),
+            "去抖窗口内不应立即执行全量枚举: \(monitor.watchedPaths)"
+        )
+
+        // 去抖到期后：一次枚举把注册前已存在的候选补齐
+        let deadline = Date().addingTimeInterval(2)
+        while !monitor.watchedPaths.contains(candidate.path) && Date() < deadline {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(
+            monitor.watchedPaths.contains(candidate.path),
+            "去抖到期后应由一次枚举发现候选文件: \(monitor.watchedPaths)"
+        )
+        XCTAssertEqual(monitor.vnodeWatcherCount, 1)
+
+        // 扫描成功后的 refreshHotFiles 走同一 scheduleDiscovery 入口：去抖
+        // 到期后再次枚举并 re-touch（addDynamicPath 对已在册路径也会记账）。
+        let sequenceBeforeRefresh = monitor.accessSequence(for: candidate) ?? 0
+        source.refreshHotFiles()
+        let refreshDeadline = Date().addingTimeInterval(2)
+        while (monitor.accessSequence(for: candidate) ?? 0) <= sequenceBeforeRefresh
+            && Date() < refreshDeadline {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertGreaterThan(
+            monitor.accessSequence(for: candidate) ?? 0, sequenceBeforeRefresh,
+            "refreshHotFiles 的去抖调度应完成一次枚举并 re-touch 热文件"
+        )
+    }
+
     @MainActor
     func testGlobalMonitorSharesVnodeOwnerAndRoutesDirty() async throws {
         let root = FileManager.default.temporaryDirectory
@@ -1186,20 +1328,66 @@ final class ScannerAndLoggingTests: XCTestCase {
 
     // MARK: - AsyncMutex Tests
 
+    /// AsyncMutex 取消规则 2 in 1（cancellation-aware acquire 的两条文档化路径）：
+    /// - 快速路径：任务在 acquire 前已被取消 → 不得取得空闲锁，抛 CancellationError
+    /// - 排队路径：任务挂进 waiters 队列后被取消 → 立即抛 CancellationError，不拿锁
+    /// 旧版直接 `task.cancel()` 后断言：无竞争 withLock 可能在 cancel 落地前就
+    /// 跑完，断言退化为掷硬币（套件里实测出现过偶发 fail）。现在用确定性构造：
+    /// ScanGate 保证 cancel 先于 withLock；持锁 fixture 保证任务无法在取消前
+    /// 完成 acquire（先入队被 cancelWaiter 唤醒、或 fast path 检查点抛出，二者
+    /// 都返回 true）。
     func testAsyncMutexAcquireCancellationRules() async throws {
-        let mutex = AsyncMutex()
-        let task = Task<Bool, Never> { @Sendable in
-            do {
-                _ = try await mutex.withLock { true }
-                return false
-            } catch is CancellationError {
-                return true
-            } catch {
-                return false
+        // 1. 快速路径：先取消、后 acquire
+        do {
+            let mutex = AsyncMutex()
+            let gate = ScanGate()
+            let task = Task<Bool, Never> { @Sendable in
+                do {
+                    await gate.enter()
+                    _ = try await mutex.withLock { true }
+                    return false
+                } catch is CancellationError {
+                    return true
+                } catch {
+                    return false
+                }
             }
+            await gate.waitUntilStarted()
+            task.cancel()
+            await gate.release()
+            let wasCancelled = await task.value
+            XCTAssertTrue(wasCancelled, "已取消任务不得取得空闲锁（fast path checkCancellation）")
         }
-        task.cancel()
-        let wasCancelled = await task.value
-        XCTAssertTrue(wasCancelled, "Task should throw CancellationError when cancelled")
+        // 2. 排队路径：锁被 holder 持有，任务在 waiters 队列中被取消
+        do {
+            let mutex = AsyncMutex()
+            let holder = Task<Bool, Never> { @Sendable in
+                do {
+                    return try await mutex.withLock {
+                        try? await Task.sleep(nanoseconds: 500_000_000)
+                        return true
+                    }
+                } catch {
+                    return false
+                }
+            }
+            try await Task.sleep(nanoseconds: 100_000_000) // holder 稳定持锁
+            let task = Task<Bool, Never> { @Sendable in
+                do {
+                    _ = try await mutex.withLock { true }
+                    return false
+                } catch is CancellationError {
+                    return true
+                } catch {
+                    return false
+                }
+            }
+            try await Task.sleep(nanoseconds: 100_000_000) // task 已挂进 waiters
+            task.cancel()
+            let wasCancelled = await task.value
+            XCTAssertTrue(wasCancelled, "排队中的 waiter 被取消应立即抛 CancellationError")
+            let holderKept = await holder.value
+            XCTAssertTrue(holderKept, "fixture: holder 应成功持有并释放锁")
+        }
     }
 }

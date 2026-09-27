@@ -264,6 +264,12 @@ final class LocalUsageFileMonitor {
         let exclusions: Set<String>
     }
 
+    /// 全量递归枚举的最小触发间隔（debounce）。目录拓扑事件与每次扫描成功后
+    /// 的 refreshHotFiles 都会走到这里，短时间内常连发；对齐 ConfigStore
+    /// .scheduleConfigReload 的 250ms 先例，去抖期间再次调度 → 取消上一轮并
+    /// 重新计时，连续事件合并为一次枚举。
+    private static let discoveryDebounceInterval: Duration = .milliseconds(250)
+
     private func scheduleDiscovery(for id: UUID) {
         guard autoDiscoveryEnabled, var registration = registrations[id],
               !registration.dynamicExtensions.isEmpty else { return }
@@ -278,6 +284,15 @@ final class LocalUsageFileMonitor {
         )
         registration.discoveryTask?.cancel()
         registration.discoveryTask = Task { [weak self] in
+            // 250ms 去抖：连续的目录拓扑事件（以及每次扫描成功后的
+            // refreshHotFiles）合并为一次全量枚举；去抖期间再次调度会取消本
+            // 任务并重新计时（与 ConfigStore.scheduleConfigReload 语义一致）。
+            // 取消安全：睡眠被打断时 worker 尚未创建，直接静默返回即可。
+            do {
+                try await Task.sleep(for: Self.discoveryDebounceInterval)
+            } catch {
+                return
+            }
             let worker = Task.detached(priority: .utility) {
                 Self.discover(snapshot)
             }
