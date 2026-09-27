@@ -158,13 +158,32 @@ extension AntigravityFetcher {
     /// `Antigravity IDE.app` bundle 内；带架构后缀的二进制名
     /// （`language_server_macos_arm` 等）也只存在于该产品——旧版 `Antigravity.app`
     /// 始终使用裸名 `language_server`，由 `isLanguageServerBinary` 自然排除。
+    ///
+    /// 全部特征锚定到其所在位置匹配，避免工作区路径里偶然包含同样子串的无关
+    /// 进程被误排除（如 `--workspace_id /Users/me/dev/antigravity-ide-notes/…`）：
+    /// - bundle 路径：`antigravity ide.app` 必须是独立路径成分（前后锚定到
+    ///   路径分隔符/空白/引号/串首串尾）
+    /// - 数据目录标记：只看 `--app_data_dir` 的值，且其末位路径组件必须精确
+    ///   等于 `antigravity-ide`（其他 flag 的值、父级路径组件命中均不算）
     nonisolated static func isUnsupportedIDEAppCommand(_ lowerCommand: String) -> Bool {
-        lowerCommand.contains("antigravity ide.app")
-            || lowerCommand.contains("antigravity-ide")
-            || lowerCommand.range(
-                of: #"(^|[/\\])language[-_]server(_[a-z0-9]+)+"#,
-                options: .regularExpression
-            ) != nil
+        if lowerCommand.range(
+            of: #"(^|[\s/\\])antigravity ide\.app([/\s\\"]|$)"#,
+            options: .regularExpression
+        ) != nil {
+            return true
+        }
+        if let dataDir = extractFlag(named: "--app_data_dir", from: lowerCommand) {
+            let lastComponent = dataDir
+                .split(omittingEmptySubsequences: true) { $0 == "/" || $0 == "\\" }
+                .last
+            if lastComponent == "antigravity-ide" {
+                return true
+            }
+        }
+        return lowerCommand.range(
+            of: #"(^|[/\\])language[-_]server(_[a-z0-9]+)+"#,
+            options: .regularExpression
+        ) != nil
     }
 
     /// 识别 `Antigravity.app` 自带的 `language_server` 二进制（裸名，可带 `.exe`），
@@ -231,10 +250,37 @@ extension AntigravityFetcher {
             .contains { extractPort(from: $0) == server.httpsPort }
     }
 
-    private nonisolated static func extractFlag(named name: String, from command: String) -> String? {
-        guard let range = command.range(of: "\(name) ") else { return nil }
-        let value = command[range.upperBound...]
-        return value.split(separator: " ", maxSplits: 1).first.map(String.init)
+    /// 从命令行提取 `name` 后随的值 token（internal 供 @testable 直接验证）。
+    ///
+    /// - flag name 必须是独立 token：前界为串首/空白，后界为空白/串尾。既有实现
+    ///   要求 name 后紧跟空格，分隔符是 tab 或 name 是 argv 末位 token（后界为
+    ///   串尾）时取不到值；更长 token 的子串（如 `x--csrf_token`）也不再误匹配。
+    /// - 值取到下一个空白或串尾；成对包裹的引号（`"…"` / `'…'`）会被剥离，
+    ///   引号内的空白属于值本身。引号不成对时按字面返回 token（不剥引号）。
+    nonisolated static func extractFlag(named name: String, from command: String) -> String? {
+        let namePattern = NSRegularExpression.escapedPattern(for: name)
+        guard let nameRange = command.range(
+            of: "(^|\\s)" + namePattern + "(\\s|$)",
+            options: .regularExpression
+        ) else {
+            return nil
+        }
+
+        // 跳过 name 后的空白取值；值是 argv 末位 token 时取到串尾。
+        let remainder = command[nameRange.upperBound...].drop(
+            while: { $0 == " " || $0 == "\t" }
+        )
+        guard let first = remainder.first else { return nil }
+
+        // 成对引号：引号内的空白属于值本身，返回剥掉引号后的内容。
+        if first == "\"" || first == "'" {
+            let inner = remainder.dropFirst()
+            if let closing = inner.firstIndex(of: first) {
+                return String(inner[..<closing])
+            }
+        }
+        let token = remainder.prefix(while: { $0 != " " && $0 != "\t" })
+        return token.isEmpty ? nil : String(token)
     }
 
     private nonisolated static func extractPort(from line: String) -> Int? {
