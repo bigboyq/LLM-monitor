@@ -18,6 +18,7 @@
 - 打包产物瘦身：应用图标打包副本从 1024px 降采样为 256px（运行时只绘制 128px 位图）、release 构建启用 `-Osize` 优化，App 包 5.9MB → 4.7MB（DMG 4.1MB → 3.3MB），下载体积相应减小。
 - 主面板 Provider 卡片 footer 的 7 天柱图 hover 新增与设置页一致的预算截断口径提示：来源快照被单轮扫描预算截断时，悬浮明细同步显示橙色提示，避免把截断数据当成完整用量。
 - SQLite 只读扫描启用 immutable 直读：本地库无写进程活跃（无 -shm 且 WAL 无脏帧）时跳过共享内存检查与锁争用直接读主库，写端未运行时不再误报 CANTOPEN 而回退 /tmp 全量拷贝，常规扫描少一次副本 I/O；活跃写入时维持原共享内存读取。
+- 本地用量文件监听限流：目录拓扑事件触发的全量递归枚举加 250ms 去抖（连续事件合并为一次，与配置重载去抖同一先例）；vnode 写事件按 0.25 秒窗口合并投递（首次写入即时、窗口内后续写入合并为窗口尾一次），持续增长的本地库 / 日志文件不再以海量微小任务淹没主线程。
 
 ### Fixed
 
@@ -30,6 +31,15 @@
 - GLM 本地用量识别 0020 迁移后的账号化闲时 provider_id（`account:bigmodel-offpeak-idle-plan` / `account:zai-offpeak-idle-plan`）：此前只精确匹配历史裸值 `offpeak-idle-plan`，升级后闲时任务被误归「其他」；正常 / 闲时 / 其他三分类判定改为显式枚举，历史裸值继续识别，未登记的新套餐（含未来 `*-coding-plan` 变体）归「其他」。
 - SQLite immutable 直读加固：打开连接后、首查前复检 -shm / -wal，写进程在打开间隙出现的竞态窗口收窄（命中即回退 /tmp 一致性快照）；CORRUPT 纳入副本回退（并发 checkpoint 撕裂页重拷一份一致快照即可自愈）；/tmp 副本拷贝逐文件校验源指纹，失效即放弃本轮拷贝。
 - SQLite immutable 直读的打开后复检对齐 `canOpenImmutable` 语义：残留 0 字节 -wal（无帧）不再被误判为写进程竞态而每轮降级 /tmp 全量拷贝。
+- 修复 Antigravity 步级时间戳解析在 metadata blob 损坏 / 异构（子消息末尾 varint 带续位越界）时的进程级崩溃：protobuf varint 解析加子消息边界上界，越界改为安全拒绝（该条目按无时间戳处理），单个损坏行不再可能 trap 整个进程。
+- 修复 FSEvents 回调绕过 actor 隔离的数据竞争：启动期 root 去重账本与流启停统一在主 actor 串行，stop / start 周期下的在途回调不再可能触发 Set 写入崩溃或把真实事件误当启动噪声丢弃。
+- Antigravity 全量页 offset 对账：server 返回的 metadata 总数小于本地已入账 offset（服务端丢数据 / 连错工作区）时不再覆盖本地 last-good 统计，按 3 轮打击收敛保留待恢复；零可计账打击计数在核验收敛 / 零 metadata / 空 suffix 路径下正确清零，不再残留导致后续事件提前收敛。
+- 额度刷新韧性：Antigravity 单个模型组缺 remainingFraction 不再作废整份刷新（跳过该组继续）；minimax 5h 窗口缺百分比不再炸整份 provider 刷新（对齐周窗口的缺失容忍）；周窗口缺 reset 时间不再在 Debug 构建 trap / Release 静默降级为固定黄线（GLM / minimax / Codex 对齐 5h 的 7 天兜底）。
+- Codex full 模式刷新被取消时不再误清已缓存的 reset credits（Task 取消正确向上传播，与 DeepSeek / GLM / minimax 一致）。
+- 睡眠健康断言探针失败不再产出假绿：「探不到」按未知处理并清除旧报告，不再把扫描失败包装成健康；停止评估后同样清除残留报告。
+- 持久损坏的本地 SQLite 库不再每轮白付 /tmp 全量拷贝：副本上读取同样 CORRUPT 时按源指纹记忆，后续轮次跳过拷贝快速失败，文件变化后自动恢复重试（并发 checkpoint 撕裂的重拷自愈路径不受影响）。
+- Antigravity 进程识别锚定：`antigravity-ide` 特征只匹配 `--app_data_dir` 值的末位路径组件与 `Antigravity IDE.app` bundle 成分，工作区路径恰好包含该子串的无关进程不再被误排除；`--csrf_token` 值解析支持引号与参数末位形态。
+- 通知冷却不再在授权检查前消耗：未授权 / 拒绝时不再白烧同模型 60 秒冷却窗口，恢复授权后的首个事件可正常通知。
 
 ## [1.11.0] - 2026-09-21
 
