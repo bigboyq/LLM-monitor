@@ -454,7 +454,12 @@ extension AntigravityLocalUsageScanner {
         // 1. 只有所有 conversations root 都成功枚举（或明确不存在），且每个候选
         //    文件的属性都成功读取时，才能把未出现的 session 判为已删除。权限/TCC/
         //    瞬时 I/O 错误时保留 last-good cache，避免一次失败清空历史。
-        let cachedIds = Set(index.sessions.keys)
+        // 用「被跟踪的 sessionId」而不是只有 `sessions.keys`：全新 session 首轮就
+        // 返回 0 条 metadata 时，打击计数先于 `sessions` 条目落盘（`continue`
+        // 发生在建条目之前）。若只按 `sessions.keys` 判定删除，这类 id 永远进不了
+        // removedIds，打击计数永久残留在 index.json；同 sessionId 复活时从残留值
+        // 续算，1~2 轮即提前收敛成「空终结条目」，静默丢弃该指纹周期的数据。
+        let cachedIds = trackedSessionIDs(in: index)
         let removedIds = confirmedRemovedSessionIDs(cachedIds: cachedIds, listing: listing)
         if !listing.isComplete {
             logWarn("[antigravity-scan] conversations 枚举不完整，保留所有未发现 session 的 last-good cache")
@@ -1577,7 +1582,26 @@ extension AntigravityLocalUsageScanner {
         return AntigravityDBFileListing(files: result, isComplete: isComplete)
     }
 
-    /// 枚举完整时，未出现的缓存 session 才能被确认删除。
+    /// 本 index 里被跟踪的全部 sessionId = `sessions` 的键 ∪ 全部 per-session
+    /// 状态字段的键。
+    ///
+    /// 打击计数（空 suffix / 零可计账 / offset 回归）、部分命中告警去重与旧日历
+    /// 待重建标记，都会在写 `index.sessions[id]` **之前**被写入——那些分支
+    /// `continue` 得早，先攒计数、后建条目。只按 `sessions.keys` 算「已跟踪」会
+    /// 漏掉仅有打击计数的 session：文件删除时清理循环看不到它的键，残留永久留在
+    /// index.json；同 sessionId 复活时从残留值续算，1~2 轮即提前收敛成「空终结
+    /// 条目」，把该指纹周期的数据静默丢掉。
+    nonisolated static func trackedSessionIDs(in index: CacheIndex) -> Set<String> {
+        var ids = Set(index.sessions.keys)
+        if let strikes = index.emptyFullStrikesBySession { ids.formUnion(strikes.keys) }
+        if let strikes = index.zeroAccountedFullStrikesBySession { ids.formUnion(strikes.keys) }
+        if let strikes = index.offsetRegressionStrikesBySession { ids.formUnion(strikes.keys) }
+        if let warned = index.partialHitWarnedBySession { ids.formUnion(warned.keys) }
+        ids.formUnion(index.calendarRebuildPendingSessions ?? [])
+        return ids
+    }
+
+    /// 枚举完整时，未出现的被跟踪 session 才能被确认删除。
     nonisolated static func confirmedRemovedSessionIDs(
         cachedIds: Set<String>,
         listing: AntigravityDBFileListing

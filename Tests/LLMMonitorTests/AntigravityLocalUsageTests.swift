@@ -478,6 +478,47 @@ final class AntigravityLocalUsageTests: XCTestCase {
         )
     }
 
+    /// 仅有打击计数、没有 `sessions` 条目的 session 也必须算「被跟踪」。
+    ///
+    /// 全新 session 首轮就返回 0 条 metadata 时，打击计数先于 `sessions` 条目落盘
+    /// （`continue` 发生在建条目之前）。若删除判定只看 `sessions.keys`，这类 id
+    /// 永远进不了 removedIds → 打击计数永久残留在 index.json → 同 sessionId 复活
+    /// 时从残留值续算，1~2 轮即提前收敛成「空终结条目」，静默丢弃该指纹周期的数据。
+    func testTrackedSessionIDsIncludesStrikeOnlySessions() {
+        var index = AntigravityLocalUsageScanner.CacheIndex(
+            version: 7,
+            lastScannedAt: Date(),
+            sessions: [:],
+            dailyBySession: [:]
+        )
+        index.emptyFullStrikesBySession = ["strikeOnly": 1]
+        index.zeroAccountedFullStrikesBySession = ["zeroOnly": 2]
+        index.offsetRegressionStrikesBySession = ["offsetOnly": 1]
+        index.partialHitWarnedBySession = ["partialOnly": ["input"]]
+        index.calendarRebuildPendingSessions = ["pendingOnly"]
+
+        let expected: Set<String> = [
+            "strikeOnly", "zeroOnly", "offsetOnly", "partialOnly", "pendingOnly"
+        ]
+        XCTAssertEqual(
+            AntigravityLocalUsageScanner.trackedSessionIDs(in: index),
+            expected,
+            "各类 per-session 状态字段的键都必须进入被跟踪集合"
+        )
+
+        // listing 完整且不含这些文件（= 已删除）时，它们必须进入删除清理集合，
+        // 否则残留计数会跨 sessionId 复活泄漏。
+        let listing = AntigravityDBFileListing(files: [:], isComplete: true)
+        XCTAssertEqual(
+            AntigravityLocalUsageScanner.confirmedRemovedSessionIDs(
+                cachedIds: AntigravityLocalUsageScanner.trackedSessionIDs(in: index),
+                listing: listing
+            ),
+            expected,
+            "仅有打击计数的 session 消失后必须被判为已删除从而被清理"
+        )
+    }
+
     /// fetcher 是按需构造的轻量 struct；带 delegate 的 URLSession 会被系统强持有
     /// 到进程退出，多次构造必须复用同一个进程级 session，否则每次构造都泄漏一套
     /// session + delegate（内存持续增长的回归点）。
