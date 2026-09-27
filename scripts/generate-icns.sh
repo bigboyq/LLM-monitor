@@ -29,8 +29,14 @@ fi
 
 TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/llm-monitor-icon.XXXXXX")"
 ICONSET_DIR="$TEMP_DIR/AppIcon.iconset"
+# FIX10: 最终 icns 先写同目录临时文件、iconutil 成功后 mv 到位（同目录 mv 原子），
+# 避免 iconutil 中途失败在最终路径留下截断的 icns。临时文件名随进程号唯一。
+ICNS_TMP=""
 cleanup() {
     rm -rf "$TEMP_DIR"
+    if [ -n "$ICNS_TMP" ]; then
+        rm -f "$ICNS_TMP"
+    fi
 }
 trap cleanup EXIT
 mkdir -p "$ICONSET_DIR"
@@ -74,6 +80,12 @@ fi
 
 echo "==> Creating icns file..."
 mkdir -p "$OUT_DIR"
-iconutil -c icns "$ICONSET_DIR" -o "$OUT_DIR/AppIcon.icns"
+# FIX10: iconutil 先输出到同目录临时文件（保证 mv 在同一文件系统上原子生效；
+# 文件名必须以 .icns 结尾，iconutil 会校验扩展名）；set -e 下 iconutil 失败即
+# 整体退出且最终路径保持原样，成功后才 mv 到位。
+ICNS_TMP="$OUT_DIR/.AppIcon.$$.icns"
+iconutil -c icns "$ICONSET_DIR" -o "$ICNS_TMP"
+mv "$ICNS_TMP" "$OUT_DIR/AppIcon.icns"
+ICNS_TMP=""
 
 echo "✓ Successfully generated $OUT_DIR/AppIcon.icns"

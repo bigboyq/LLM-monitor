@@ -11,9 +11,10 @@
 #       （SwiftPM .copy 资源要求文件位于 Sources 内，这两份副本结构性无法消除）
 #   (c) 调用 scripts/generate-icns.sh 从 master png 重生成回退图标
 #       Sources/LLM-monitor/Resources/AppIcon.icns（供无 Icon Composer 支持的旧 macOS 用）
-#   (d) 写 sidecar Assets/AppIcon.icns.source.sha256（sha256sum 兼容格式），记录
-#       「当前 icns 由哪个版本的 master png 生成」——sidecar 哈希 == 当前 master 哈希
-#       即 icns 新鲜度的确定性判据（跨机器稳定，不用 mtime）。
+#   (d) 写 sidecar Assets/AppIcon.icns.source.sha256（sha256sum 兼容格式，两行），
+#       第一行记录「当前 icns 由哪个版本的 master png 生成」，第二行记录「icns
+#       本身的 sha256」——两行分别与当前 master 哈希、现存 icns 哈希一致，即
+#       icns 新鲜度 + 完整性的确定性判据（跨机器稳定，不用 mtime）。
 #
 # 剩余的手工清单（本脚本有意不覆盖）：
 #   1. Icon Composer 工程 images/LLMMenu.icon 是主打包路线（Assets.car）的源，
@@ -62,10 +63,19 @@ master_sha() {
     shasum -a 256 "$MASTER_PNG" | awk '{print $1}'
 }
 
-# sidecar 为 sha256sum 兼容格式：<sha256>␣␣<相对仓库根的源路径>。
-# 内容不变则不重写，避免无意义的 mtime 变化。
+icns_sha() {
+    shasum -a 256 "$ICNS" | awk '{print $1}'
+}
+
+# sidecar 为 sha256sum 兼容格式（两行）：
+#   <master png sha256>␣␣Assets/icon-master.png
+#   <AppIcon.icns sha256>␣␣Sources/LLM-monitor/Resources/AppIcon.icns
+# 第一行判 icns 新鲜度（由哪个版本的 master 生成），第二行判 icns 完整性
+# （--check 据此捕获 icns 被截断/损坏）。内容不变则不重写，避免无意义的
+# mtime 变化。
 write_sidecar() {
-    local content="${1}  Assets/icon-master.png"
+    local content="${1}  Assets/icon-master.png
+${2}  Sources/LLM-monitor/Resources/AppIcon.icns"
     if [ ! -f "$SIDECAR" ] || [ "$(cat "$SIDECAR")" != "$content" ]; then
         printf '%s\n' "$content" > "$SIDECAR"
         echo "==> Updated $SIDECAR"
@@ -137,12 +147,25 @@ run_checks() {
         echo "DRIFT: Assets/AppIcon.icns.source.sha256 不存在，icns 新鲜度无从判定"
         failed=$((failed + 1))
     else
-        local recorded current
-        recorded="$(awk '{print $1}' "$SIDECAR")"
-        current="$(master_sha)"
-        if [ "$recorded" != "$current" ]; then
-            echo "DRIFT: AppIcon.icns 已过期 —— sidecar 记录的 master sha256 ($recorded) != 当前 $rel_master 的 sha256 ($current)"
+        local recorded_master recorded_icns current_master current_icns
+        recorded_master="$(awk '$2 == "Assets/icon-master.png" {print $1}' "$SIDECAR")"
+        current_master="$(master_sha)"
+        if [ "$recorded_master" != "$current_master" ]; then
+            echo "DRIFT: AppIcon.icns 已过期 —— sidecar 记录的 master sha256 ($recorded_master) != 当前 $rel_master 的 sha256 ($current_master)"
             failed=$((failed + 1))
+        fi
+        # FIX10: 校验现存 icns 内容与 sidecar 记录一致，捕获 icns 被截断/损坏
+        # （旧判定只查存在性 + master 新鲜度，截断 icns 照样全绿）。
+        recorded_icns="$(awk '$2 == "Sources/LLM-monitor/Resources/AppIcon.icns" {print $1}' "$SIDECAR")"
+        if [ -z "$recorded_icns" ]; then
+            echo "DRIFT: sidecar 缺少 AppIcon.icns 的 sha256 记录（旧版 sidecar），请运行 ./scripts/sync-icon-assets.sh 重写"
+            failed=$((failed + 1))
+        elif [ -f "$ICNS" ]; then
+            current_icns="$(icns_sha)"
+            if [ "$recorded_icns" != "$current_icns" ]; then
+                echo "DRIFT: AppIcon.icns 内容与 sidecar 记录不一致（icns 可能被截断/损坏）—— sidecar 记录 ($recorded_icns) != 当前 sha256 ($current_icns)"
+                failed=$((failed + 1))
+            fi
         fi
     fi
 
@@ -165,7 +188,10 @@ else
     # 回退 icns 每次都从 master png 重生成：同机同工具链下逐字节可复现，
     # 无条件重生成可兜住「icns 被陈旧版本手工覆盖但 sidecar 巧合一致」的情况。
     "$GENERATE_ICNS" "$ICNS_OUT_DIR"
-    write_sidecar "$(master_sha)"
+    # FIX10: 生成成功（set -e 下 iconutil 失败即整体退出、sidecar 保持原样）后
+    # 才计算 icns sha 并写 sidecar —— 保持「iconutil 失败则不写 sidecar」的
+    # 顺序语义。
+    write_sidecar "$(master_sha)" "$(icns_sha)"
 
     # 同步结束后的自检与 --check 共用同一套判定，防止「同步即静默」。
     if run_checks; then
