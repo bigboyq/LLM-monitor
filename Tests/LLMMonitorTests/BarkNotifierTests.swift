@@ -729,13 +729,11 @@ final class BarkNotifierTests: XCTestCase {
 
     /// L5: Bark 正式推送与测试推送的响应体上限与 HTTPClient 默认上限同源。
     ///
-    /// 说明：上限的实际执行（CappedDownloadDelegate 的提前拒绝/溢出取消）依赖
-    /// URLSession 把 didReceive response / didReceive data 回调投递给 per-task
-    /// delegate——而 async `data(for:delegate:)` 便捷 API 在当前系统上不投递这类
-    /// 内容回调（macOS 27 实测，URLProtocol 桩与真实网络均不触发；这是 R2 既有
-    /// 机制在所有调用方上的共同局限，见 HTTPClient/CappedDownloader）。端到端的
-    /// 「超大响应体报错」因此无法经 URLSession 构造，这里只钉住上限常量同源，
-    /// delegate 级的限额语义由 ResponseCapTests 直接验证。
+    /// 说明：async `data(for:delegate:)` 便捷 API 在当前系统上不向 per-task
+    /// delegate 投递 didReceive response / data 内容回调，delegate 的流式计数
+    /// 不执行；实际生效的上限是 CappedDownloader 在响应体返回后的字节校验
+    /// （见 HTTPClient/CappedDownloader，端到端语义由 ResponseCapTests 验证），
+    /// 超限抛 responseTooLarge：非瞬时错误，Bark 不重试、不进冷却。
     func testBarkRequestsUseStandardResponseByteLimit() {
         XCTAssertEqual(BarkQuotaNotifier.responseByteLimit, ResponseByteLimits.standardQuota)
         XCTAssertEqual(BarkQuotaNotifier.responseByteLimit, 8 * 1024 * 1024)

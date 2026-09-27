@@ -141,6 +141,49 @@ final class ResponseCapTests: XCTestCase {
         XCTAssertEqual(String(data: data, encoding: .utf8), "err")
     }
 
+    // MARK: - 后置字节校验（async data(for:delegate:) 不投递内容回调）
+
+    /// async `session.data(for:delegate:)` 在当前系统上不向 per-task delegate
+    /// 投递 didReceive response / data 内容回调，delegate 的流式计数不执行；
+    /// 实际生效的上限是返回后的字节校验：URLProtocol 桩返回超过上限的响应体
+    /// → 抛 responseTooLarge（携带上限/实际字节数/脱敏路径）。
+    func testOversizedBodyThrowsResponseTooLargeAfterReturn() async {
+        let session = makeSession()
+        TestURLProtocol.responder = { proto in
+            proto.send(status: 200, body: Data(repeating: 0x41, count: 1_000_001), contentLength: nil)
+        }
+        do {
+            _ = try await CappedDownloader.data(
+                for: URLRequest(url: testURL), session: session, maxBytes: 1_000_000, redactedPath: redacted
+            )
+            XCTFail("超过上限的响应体应抛 responseTooLarge")
+        } catch let error as QuotaError {
+            XCTAssertEqual(
+                error,
+                .responseTooLarge(limit: 1_000_000, actual: 1_000_001, redactedPath: redacted)
+            )
+        } catch {
+            XCTFail("应抛 QuotaError.responseTooLarge，实际 \(error)")
+        }
+    }
+
+    /// HTTPClient.send 走同一后置校验：超限透传 responseTooLarge（QuotaError
+    /// catch 直通，不被改写成 networkError / httpError）。
+    func testHTTPClientSendPropagatesResponseTooLarge() async {
+        let client = HTTPClient(session: makeSession(), logTag: "[test/cap]", maxResponseBytes: 1_000)
+        TestURLProtocol.responder = { proto in
+            proto.send(status: 200, body: Data(repeating: 0x41, count: 1_001), contentLength: nil)
+        }
+        do {
+            _ = try await client.send(URLRequest(url: testURL))
+            XCTFail("超过上限的响应体应抛 responseTooLarge")
+        } catch let error as QuotaError {
+            XCTAssertEqual(error, .responseTooLarge(limit: 1_000, actual: 1_001, redactedPath: redacted))
+        } catch {
+            XCTFail("应抛 QuotaError.responseTooLarge，实际 \(error)")
+        }
+    }
+
     // MARK: - 常量与默认值
 
     func testHTTPClientDefaultLimitIs8MiB() {
