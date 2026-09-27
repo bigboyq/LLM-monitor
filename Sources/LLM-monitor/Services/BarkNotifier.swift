@@ -45,7 +45,10 @@ final class BarkQuotaNotifier: QuotaUpdateNotifying {
     /// 单次推送请求超时；正式推送与测试推送共用。
     nonisolated static let requestTimeout: TimeInterval = 15
     /// L5: 响应体硬上限，与 HTTPClient 默认值同源（serverURL 由用户 config
-    /// 控制，防止异常/恶意服务端的无界响应拖垮内存）。正式推送与测试推送共用。
+    /// 控制，防止异常/恶意服务端的超限响应进入后续处理）。单次响应的峰值
+    /// 内存仍由 URLSession 缓冲决定，本校验只保证超限响应不进入解析链路；
+    /// 要真正约束峰值需改用回调系任务 + delegate 流式计数（delegate 已保留
+    /// 待该用途）。正式推送与测试推送共用。
     nonisolated static let responseByteLimit = ResponseByteLimits.standardQuota
 
     private let configProvider: BarkConfigProviding

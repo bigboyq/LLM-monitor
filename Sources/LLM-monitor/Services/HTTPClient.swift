@@ -15,8 +15,10 @@ enum ResponseByteLimits {
 /// `session.data(for:delegate:)` 便捷 API 在当前系统上不投递 didReceive
 /// response / data 内容回调（macOS 27 实测，URLProtocol 桩与真实网络均不触发），
 /// 本 delegate 的计数实际不会执行。真正生效的上限是 `CappedDownloader.data`
-/// 在响应体返回后的字节校验：超限抛错、不进入调用方解析链路，进程内存不随
-/// 无限响应增长。
+/// 在响应体返回后的字节校验：超限抛错、不进入调用方解析链路。单次响应的
+/// 峰值内存仍由 URLSession 缓冲决定，该校验只保证超限响应不进入解析链路；
+/// 要真正约束峰值需改用回调系任务 + delegate 流式计数（本 delegate 已保留
+/// 待该用途）。
 ///
 /// Content-Length 只用于“提前拒绝”（didReceive response 阶段），不能代替实际字节
 /// 累计——服务端可能伪造或省略 Content-Length，也可能分块超限。保留本 delegate
@@ -70,7 +72,9 @@ enum CappedDownloader {
     /// 实际生效的保证是响应体返回后的字节校验：async `session.data(for:delegate:)`
     /// 不向 per-task delegate 投递内容回调（见 `CappedDownloadDelegate` 注释），
     /// delegate 的流式计数/取消不会执行，超限响应体在返回后立即抛错，不进入
-    /// 调用方解析链路，进程内存不随无限响应增长。
+    /// 调用方解析链路。单次响应的峰值内存仍由 URLSession 缓冲决定，本校验只
+    /// 保证超限响应不进入解析链路；要真正约束峰值需改用回调系任务 + delegate
+    /// 流式计数（delegate 已保留待该用途）。
     ///
     /// `redactedPath` 仅用于错误日志与错误对象，不含 userinfo/query。
     static func data(
@@ -250,8 +254,8 @@ final class HTTPClient: @unchecked Sendable {
         let url = HTTPRequestLogSanitizer.sanitizedURL(request.url)
         logInfo("\(logTag) \(method) \(url)")
 
-        // R2: 响应体套用硬上限（返回后校验，见 CappedDownloader），
-        // 避免无限/伪造大响应拖垮内存。
+        // R2: 响应体套用硬上限（返回后校验，见 CappedDownloader）：超限响应不
+        // 进入解析链路；单次响应的峰值内存仍由 URLSession 缓冲决定。
         let data: Data
         let http: HTTPURLResponse
         do {

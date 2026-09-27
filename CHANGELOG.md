@@ -42,7 +42,7 @@
 - Antigravity 进程识别锚定：`antigravity-ide` 特征只匹配 `--app_data_dir` 值的末位路径组件与 `Antigravity IDE.app` bundle 成分，工作区路径恰好包含该子串的无关进程不再被误排除；`--csrf_token` 值解析支持引号与参数末位形态。
 - 通知冷却不再在授权检查前消耗：未授权 / 拒绝时不再白烧同模型 60 秒冷却窗口，恢复授权后的首个事件可正常通知。
 - Antigravity usage 事件仅命中部分 token 分量（如 token 字段改名后只剩 cacheRead 命中）时，总量改用服务端权威 totalTokens 并打日志列出未命中分量，不再退化为「已命中分量之和」导致日报与价值口径系统性偏低；全部分量命中仍用分量和，全未命中沿用服务端 total。
-- HTTP 响应体大小上限实际生效：此前经 URLSession delegate 实现的上限在 async `data(for:)` 路径上不投递内容回调、从未执行，超限响应可无界进入内存；现改为返回后按上限校验，超限抛 responseTooLarge（Bark 等全部调用方覆盖，Bark 超限归入非瞬时错误不重试、不进冷却）。
+- HTTP 响应体大小上限实际生效：此前经 URLSession delegate 实现的上限在 async `data(for:)` 路径上不投递内容回调、从未执行，超限响应不做校验直接进入解析链路；现改为返回后按上限校验并抛 responseTooLarge，超限响应不再进入调用方解析链路，单次响应峰值内存仍由 URLSession 缓冲决定（Bark 等全部调用方覆盖，Bark 超限归入非瞬时错误不重试、不进冷却）。
 
 ## [1.11.0] - 2026-09-21
 
