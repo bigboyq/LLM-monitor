@@ -202,8 +202,18 @@ struct AppConfig: Codable, Equatable {
     /// Bark 推送配置。nil 或 enabled=false 都表示不推送。
     var bark: BarkConfig?
 
+    /// 屏幕边缘状态窗配置。nil / enabled=false 都表示不显示。
+    /// 与 statusBar* 同为纯外观字段，手改出错按缺失处理，不进损坏恢复流程。
+    var edgeDock: EdgeDockConfig?
+
     var effectiveStatusBarIconStyle: StatusBarIconStyle {
         statusBarIconStyle ?? .chartBar
+    }
+
+    /// 边缘窗配置归一化后再交给几何层：手改 `"offset": 42` 不该产生一个
+    /// 永远画在屏幕外、再也拖不回来的窗口。
+    var effectiveEdgeDockConfig: EdgeDockConfig {
+        (edgeDock ?? .default).normalized
     }
 
     var effectiveStatusBarHealthDotEnabled: Bool {
@@ -274,7 +284,8 @@ struct AppConfig: Codable, Equatable {
         statusBarHealthDotEnabled: Bool? = nil,
         statusBarHealthColors: StatusBarHealthColors? = nil,
         providerCardOrder: [String]? = nil,
-        bark: BarkConfig? = nil
+        bark: BarkConfig? = nil,
+        edgeDock: EdgeDockConfig? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.refreshIntervalSeconds = refreshIntervalSeconds
@@ -285,6 +296,7 @@ struct AppConfig: Codable, Equatable {
         self.statusBarHealthColors = statusBarHealthColors
         self.providerCardOrder = providerCardOrder
         self.bark = bark
+        self.edgeDock = edgeDock
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -293,6 +305,7 @@ struct AppConfig: Codable, Equatable {
         case statusBarHealthColors
         case providerCardOrder
         case bark
+        case edgeDock
     }
 
     init(from decoder: Decoder) throws {
@@ -320,6 +333,8 @@ struct AppConfig: Codable, Equatable {
             forKey: .statusBarHealthColors
         )
         self.providerCardOrder = try? container.decode([String].self, forKey: .providerCardOrder)
+        // 边缘窗同属外观字段：坏值按"没配过"处理，不能拖垮整份 provider 配置。
+        self.edgeDock = try? container.decode(EdgeDockConfig.self, forKey: .edgeDock)
         // Bark 字段手工配置容错：类型不匹配按缺失处理，不进损坏恢复流程；
         // 但 serverURL / deviceKey 等必填 key 缺失会让整块配置失效，记录告警。
         do {

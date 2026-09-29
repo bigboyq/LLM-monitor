@@ -17,16 +17,30 @@ enum BrandLogoAsset: Hashable, Sendable {
 
 /// Provider 与本地数据源的真实品牌标志。资源统一按小尺寸展示，不再用无关的 SF Symbol 代替。
 struct BrandLogoView: View {
+    /// 菜单卡片 / 设置页的常规边长（pt）。
+    static let defaultSize: CGFloat = 18
+
     let asset: BrandLogoAsset
+    /// 实际绘制边长（pt）。
+    ///
+    /// **必须由视图自己消费掉这个尺寸**，不能指望调用方在外层套一个
+    /// `.frame(width:height:)` 就变小：SwiftUI 的 `frame` 只是把尺寸当作
+    /// *proposal* 递给子视图，子视图若自己带固定 `frame`（见 `body` 末尾），
+    /// 就会按自己的尺寸返回，外层那个 frame 只是把这块更大的内容**居中摆放**——
+    /// 既不缩放也不裁剪。dock 的中心图标曾经就是这样把 6pt 的意图画成 18pt、
+    /// 压到内环上的（见 `EdgeDockGeometry.iconSize`）。
+    let size: CGFloat
 
     @Environment(\.colorScheme) private var colorScheme
 
-    init(kind: ProviderKind) {
+    init(kind: ProviderKind, size: CGFloat = BrandLogoView.defaultSize) {
         asset = .provider(kind)
+        self.size = size
     }
 
-    init(asset: BrandLogoAsset) {
+    init(asset: BrandLogoAsset, size: CGFloat = BrandLogoView.defaultSize) {
         self.asset = asset
+        self.size = size
     }
 
     private final class ImageCache: @unchecked Sendable {
@@ -65,7 +79,11 @@ struct BrandLogoView: View {
                 case .deepseek:
                     return loadSvg("deepseek")
                 case .glmCodingPlan:
-                    return loadSvg("glm")
+                    // glm-mini：官方 mini 版单色横向标志（34×27，纯白路径），
+                    // 取代原先带深色底的方形徽章——小尺寸（尤其 dock 内 8pt）下
+                    // 徽章里的细节会糊成一片。单色 asset 必须走 template 渲染，
+                    // 否则浅色模式下白路径在浅色卡片上不可见。
+                    return loadSvg("glm-mini")
                 }
             }
         }
@@ -108,10 +126,21 @@ struct BrandLogoView: View {
 
     private static let imageCache = ImageCache()
 
+    /// 单色 asset 走 template 渲染（跟随 `primaryLabel` 前景色，明暗外观都可读）；
+    /// 带底色/配色的 asset 保持 original。
+    private var rendersAsTemplate: Bool {
+        switch asset {
+        case .provider(.codexChatGpt), .provider(.glmCodingPlan):
+            return true
+        default:
+            return false
+        }
+    }
+
     var body: some View {
         Group {
             if let image = Self.imageCache.image(for: asset, darkMode: colorScheme == .dark) {
-                if asset == .provider(.codexChatGpt) {
+                if rendersAsTemplate {
                     Image(nsImage: image)
                         .renderingMode(.template)
                         .resizable()
@@ -126,13 +155,13 @@ struct BrandLogoView: View {
                 }
             } else if let symbol = Self.ImageCache.fallbackSymbol(for: asset) {
                 Image(systemName: symbol)
-                    .font(.system(size: 13, weight: .medium))
-                    .frame(width: 18, height: 18)
+                    .font(.system(size: size * 0.72, weight: .medium))
+                    .frame(width: size, height: size)
             } else {
                 Color.clear
             }
         }
-        .frame(width: 18, height: 18)
+        .frame(width: size, height: size)
         .accessibilityHidden(true)
     }
 }

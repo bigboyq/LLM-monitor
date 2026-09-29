@@ -39,10 +39,27 @@ struct StatusIndicator: View {
 struct ProviderCardView: View, Equatable {
     let status: ProviderStatus
 
+    /// 卡片自身表面的画法。
+    ///
+    /// - `.system`：菜单里的默认样子（半透明控件底色 + 品牌描边）。
+    /// - `.transparent`：不画表面，让**调用方**的背景透上来。
+    ///   边缘状态窗的浮层用这个：背板已经是纯黑，卡片再叠一层半透明白/黑
+    ///   会糊成灰块，而直接改共享视图的默认样式会连带改掉主菜单。
+    enum Surface {
+        case system
+        case transparent
+    }
+
+    var surface: Surface = .system
+
+    /// 卡片内容层四周的内边距。`EdgeDockTheme.popoverWidth` 推导宽度时要加上
+    /// 这一层的两侧，所以提出成常量，避免两处各写一个 12 改一漏一。
+    static let contentPadding: CGFloat = 12
+
     // nonisolated：View 结构体因 View 协议推断为 @MainActor，而 Equatable 的 ==
     //  witnesses 必须可从任意隔离域调用；status 是 Sendable 值类型，非隔离比较安全。
     nonisolated static func == (lhs: ProviderCardView, rhs: ProviderCardView) -> Bool {
-        lhs.status == rhs.status
+        lhs.status == rhs.status && lhs.surface == rhs.surface
     }
 
     var body: some View {
@@ -56,16 +73,29 @@ struct ProviderCardView: View, Equatable {
             header
             content(projection: projection)
         }
-        .padding(12)
-        .background(
+        .padding(Self.contentPadding)
+        .background(cardBackground)
+        .overlay(cardBorder)
+    }
+
+    @ViewBuilder
+    private var cardBackground: some View {
+        switch surface {
+        case .system:
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 // 卡片属于内容层，使用更稳定的系统控件底色，减少透出外层玻璃的折射。
                 .fill(Color(NSColor.controlBackgroundColor).opacity(0.60))
-        )
-        .overlay(
+        case .transparent:
+            Color.clear
+        }
+    }
+
+    @ViewBuilder
+    private var cardBorder: some View {
+        if surface == .system {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .strokeBorder(accentColor.opacity(0.25), lineWidth: 1)
-        )
+        }
     }
 
     private var accentColor: Color {

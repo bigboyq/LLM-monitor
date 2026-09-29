@@ -13,7 +13,14 @@ enum DisplayOrder {
         id: (Item) -> String,
         by defaultComparator: (Item, Item) -> Bool
     ) -> [Item] {
-        let itemsByID = Dictionary(uniqueKeysWithValues: items.map { (id($0), $0) })
+        // 逐个塞而不是 `Dictionary(uniqueKeysWithValues:)`：后者遇到重复 id 直接
+        // trap（`Fatal error: Duplicate values for key`），而 id 重复不该让整条
+        // 渲染/命中链路崩掉。保留**先出现**的那个，与字典语义一致。
+        var itemsByID: [String: Item] = [:]
+        itemsByID.reserveCapacity(items.count)
+        for item in items where itemsByID[id(item)] == nil {
+            itemsByID[id(item)] = item
+        }
         var result: [Item] = []
         var seen = Set<String>()
 

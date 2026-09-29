@@ -76,6 +76,20 @@ struct LocalUsageChartScale: Equatable {
     }
 }
 
+/// 7 天 token 图表的固定宽度常量。
+///
+/// 这是浮层宽度的**推导源头**：dock popover 与主菜单 hover 浮层都以这里为基准
+/// 算自己的宽度（见 `EdgeDockTheme.popoverWidth` / `HoverPanelController`）。
+/// 图表 frame 装不下柱区时不会报错——柱只是安静地溢出 frame、被浮层边缘裁掉，
+/// 表现为"7 天的横向展示缺了首尾两天"。
+enum SevenDayUsageChartMetrics {
+    /// 柱区自然宽度：7 根柱 × 55pt + 6 个 5pt 间距 = 415。图表 frame 的下限。
+    static let barsWidth: CGFloat = 55 * 7 + 5 * 6
+    /// 带价格列时的图表宽度。表格（34+48+58×4+62 + 间距 18 ≈ 394）比柱区窄，
+    /// 仍以柱区为下限再留一点余量。
+    static let pricedWidth: CGFloat = 420
+}
+
 /// 7-day token 用量 hover 图表（泛型）—— 4 类 provider 数据共用。
 ///
 /// 取代了原来 3 个几乎一样的 view，并接入 OpenCode daily 数据：
@@ -211,7 +225,13 @@ struct SevenDayTokenUsageHoverView<Daily: LocalUsageDaily>: View {
                 .font(.system(size: 8))
                 .foregroundStyle(.tertiary)
         }
-        .frame(width: priceByDay.isEmpty ? 390 : 420, alignment: .leading)
+        // 宽度必须装下柱区（415）：旧的 390 会让首尾两天的柱溢出 frame 被浮层裁掉。
+        .frame(
+            width: priceByDay.isEmpty
+                ? SevenDayUsageChartMetrics.barsWidth
+                : SevenDayUsageChartMetrics.pricedWidth,
+            alignment: .leading
+        )
     }
 
     private func tableHeader(_ title: String, width: CGFloat, alignment: Alignment) -> some View {
