@@ -258,7 +258,7 @@ Two rings per row, each a **track** plus an **arc**:
 | Part | Rule |
 |---|---|
 | Track | `EdgeDockTheme.ringTrack`, drawn **unconditionally**. It is the only cue that "there is a ring here, the number just isn't readable yet" while loading, on first fetch, or for providers with no quota window. Never skip it because `fraction == nil` — the track and the arc are two separate draws |
-| Track colour | `Color.primary` @ 18%, **not** a fixed white and not `Color.secondary`. The dock's backplate is a material that follows the system appearance, so the track must resolve to the opposite side of it in both modes; a fixed white disappears on light material, and a track that disappears is read as "the ring is broken", not as "half left" |
+| Track colour | `Color.primary` @ 18%, **not** a fixed white and not `Color.secondary`. The dock is force-rendered in `\.colorScheme = .dark`, so `primary` is reliably light against the dark glass; the point of the semantic colour is only that the old "dock never changes appearance, so hardcode white" special case no longer has to be maintained |
 | Arc | `EdgeDockGeometry.arcTrimRange(fraction:)`, which returns `nil` for `nil` and `0` (a zero-length round-capped stroke would leave a dot on an empty ring) and `[1 - fraction, 1]` otherwise |
 | Direction | **Depletes clockwise.** The clockwise end is pinned at 12 o'clock and the free end sweeps clockwise toward it, so the gap opens at 12 o'clock and grows clockwise. The common `[0, fraction]` fills clockwise from 12 and retracts *counter*-clockwise on the way down — that reads as "progress", not "remaining" |
 
@@ -290,7 +290,7 @@ go through the single `HoverInfoRow` wrapper, which is where the behaviour branc
 | Host | `hoverRevealMode` | Behaviour |
 |---|---|---|
 | Main menu | `.onHover` (the default) | Independent `NSPanel` after a delay |
-| Edge dock popover | `.alwaysVisible` | Each section expands **in place**, separated by a hairline |
+| Edge dock popover | `.alwaysVisible` | Each section expands **in place**; the two groups (quota / 7-day usage) are additionally split into two cards, see *Two cards, titles outside* |
 
 The switch is an `Environment` value rather than a parameter threaded through each
 call site: there are a dozen `HoverInfoRow` uses across `ProviderCardView`,
@@ -436,42 +436,36 @@ interior center.
 
 ### Background
 
-The two surfaces **share** one background implementation:
+The two surfaces are deliberately **not** the same, and that difference is the point:
 
 | Surface | Fill | Why |
 |---|---|---|
-| Dock | `.regularMaterial`, clipped by `EdgeDockTab` | Permanently on screen, so it must not be the one piece of UI that looks like a different app |
-| Hover popover | the same material, `popoverCornerRadius` | Exists for a few seconds on demand; sampling the desktop behind it is the whole point |
-| Menu panel | AppKit's own glass for the `MenuBarExtra(.window)` window | The reference the other two are matched to |
+| Dock | **dark liquid glass**, fixed — `glassEffect` on macOS 26+, `ultraThinMaterial` + a black 0.34 layer below that, clipped by `EdgeDockTab` | It is permanently on screen next to the menu bar. Pinning it dark means the panel does not change character twice a day as the user switches the system appearance, and the rings' contrast is decided by one backdrop instead of two |
+| Hover popover | `.regularMaterial`, following the system appearance, `popoverCornerRadius` | It is a temporary overlay the user asked for, and it is matched to the menu popup: same system material, same `ProviderCardView(status:)` sitting on top of it |
+| Menu panel | AppKit's own glass for the `MenuBarExtra(.window)` window | The reference the popover is matched to |
 
-The dock was once solid opaque black on purpose: it is permanently on screen, and a
-38pt-wide always-on window doing live wallpaper refraction costs power and lets the
-rings' legibility drift with whatever wallpaper is behind it. That trade is now taken
-the other way, so that the dock, the popover and the menu panel all read as the same
-material. If power or ring contrast becomes a problem, this is the knob to turn back:
-the dock is the always-on surface and the popover is not, so keeping only the popover
-on a material is the cheap half-measure.
+The dock was once solid opaque black, and both were briefly one shared system material.
+Neither is the current design: the dock stays dark on purpose, the popover follows the
+system on purpose.
 
 Both windows stay **transparent** at the window level (`isOpaque = false`, clear
 background) and paint their fill in SwiftUI. For the dock this is because an opaque
 window background would fill the whole window rect and hide the notch's rounded corner
-outline; for the popover it is because **the material samples what is behind the
-window** — an opaque panel turns it into a dead grey slab.
+outline, and because glass samples what is behind the window; for the popover it is
+because **the material samples what is behind the window** — an opaque panel turns it
+into a dead grey slab.
 
-One implementation, no OS branching: both surfaces fill their shape with
-`.regularMaterial` through `edgeDockSystemMaterialBackground(in:)` (the popover passes
-`popoverCornerRadius`). The menu's glass is supplied by AppKit for the
-`MenuBarExtra(.window)` window specifically and is not inherited by a self-built
-borderless `NSPanel`, where `Color.clear` would be plain transparency with no blur — so
-the material is requested explicitly. Depth is entirely the system's: the same
-`regularMaterial` resolves light or dark from the app appearance, and neither surface
-carries a hand-tuned tint. There is no `#available` branch, hence nothing to log.
+The menu's glass is supplied by AppKit for the `MenuBarExtra(.window)` window
+specifically and is not inherited by a self-built borderless `NSPanel`, where
+`Color.clear` would be plain transparency with no blur — so both surfaces request their
+backdrop explicitly (`edgeDockDarkGlassBackground` / `edgeDockPopoverSystemMaterialBackground`).
 
-**Appearance is inherited, not forced.** The popover sets no
-`NSAppearance(named: .vibrantDark)`, and the content does not override `\.colorScheme`:
-a material resolves its appearance from the view's, so forcing only the SwiftUI
-environment paints light content over a dark slab. In a light system the popover and the
-dock are two light materials side by side, matching the menu.
+**Forcing the dock dark takes two coordinated settings, never one.** The panel pins
+`NSAppearance(named: .vibrantDark)` so the *material* resolves dark, and the hosted
+content is wrapped in `\.colorScheme = .dark` so semantic colours (`Color.primary` in
+the ring track, the number label) resolve light. Doing only the first yields dark text
+on a dark slab; only the second yields light text on a light slab. The popover does
+neither, and that asymmetry is intentional.
 
 `EdgeDockTheme` remains the single place these values live.
 
@@ -488,7 +482,7 @@ would inevitably drift apart. Hover alone only highlights the circle (the 1.08×
 |---|---|
 | Dock window | Fixed size while expanded. Only the hovered **circle** scales to `EdgeDockGeometry.hoverScale` (1.08×) inside its fixed row — the row frame, the number label and the window never move |
 | Popover trigger | **Click** (`selectedIndex`), not hover (`hoveredIndex`). Clicking a circle pins its card; clicking the same circle again (or the padding area) unpins it; clicking another circle switches. Hovering across circles while a card is pinned only moves the highlight — the card does not follow, otherwise one click degrades back into hover-switching. The click is decided at *mouse-up*: `dragMoved` gates on a 4pt threshold, so a press that never moves that far releases as a click and a press that crosses it becomes a real drag (which unpins the card immediately) |
-| Popover | Second `NSPanel`, `ignoresMouseEvents = true` (read-only, never steals focus), level `.popUpMenu` so it sits above the dock. Renders `ProviderCardView(status:surface: .transparent)` — the card skips its own translucent surface so it sits directly on the glass instead of muddying into grey. A pinned card is re-rendered on every status broadcast (`reconcile`'s no-op-frame branch refreshes it), because a click-opened card is read far longer than a hover one and stale numbers would be guaranteed, not rare |
+| Popover | Second `NSPanel`, `ignoresMouseEvents = true` (read-only, never steals focus), level `.popUpMenu` so it sits above the dock. Renders the same `ProviderCardView(status:)` the menu renders — so the dock's popover and the menu popup are the same object, not two near-identical ones. In the dock it lays out as **two cards with their titles outside**, see *Two cards, titles outside* below. A pinned card is re-rendered on every status broadcast (`reconcile`'s no-op-frame branch refreshes it), because a click-opened card is read far longer than a hover one and stale numbers would be guaranteed, not rare |
 | Hit test | `EdgeDockController.rowIndex(at:measured:)` — exact containment first, then nearest row centre within one diameter, so the gaps between rows resolve to a neighbour instead of flickering to nil. Rows come from `resolveRowRects` (measured, with a `EdgeDockGeometry` fallback). Never recomputed from constants alone — see *Edge status dock → Layout* |
 | Anchor | Vertically centred on the clicked circle, opening **inward** (docked right → opens left) |
 | Size | **Fixed width** `EdgeDockTheme.popoverWidth` (derived from the 7-day chart, see *Popover width*), height = natural card size clamped to 70% of screen height; a `ScrollView` replaces the plain card only when it exceeds the height cap, so overflow scrolls instead of being clipped |
@@ -498,6 +492,56 @@ Because both windows participate in the same capture region, moving the cursor
 onto the popover keeps it open — and the popover's host status is looked up by
 **provider ID**, not array index, because the projection filters out disabled
 providers and the two indices can drift apart.
+
+#### Two cards, titles outside
+
+The dock popover is **two cards**, each with its title drawn *outside and above* it —
+`ProviderCardLayout.splitsIntoTwoCards` turns this on for `.alwaysVisible` only; the menu
+keeps one card with the header inside it, because a menu column of short cards cannot
+afford twice the card spacing plus two title rows per card.
+
+| | Title row (outside, above the card) | Card |
+|---|---|---|
+| 1 | brand logo + provider name + plan capsule, with the refresh time / state label on the right — **no status dot**; the dot sits right next to the brand logo and the two small circles read as "the logo with a green pip", while the capsule on the same row already states the status | metadata line (`5h 100% 周 16% … 重置时间`), the progress bar, reset credits, the peak-window countdown, a divider, then the Last Prompt / 5h / 周 statistics and the local-usage **summary** row (`📈 今天 …`) |
+| 2 | `最近7天token用量`, with the local-usage freshness as a **capsule** (`更新于 HH:mm` / `计算中…`) on the right — same font, weight and colour as title 1, because the two rows are the same kind of thing: the name of their card | the 7-day chart, its usage table and the footnote |
+
+**Card 1 reads top-to-bottom as summary → statistics.** The metadata line moved
+*above* the bar (read the description, then the graphic), the bar now keeps vertical
+breathing room, and the reset/peak rows moved *below* the bar, above a divider that
+separates them from the table — they are context for the quota, not statistics. Those
+two rows are provider-level but sit in the middle of a per-model block, so they travel
+through `QuotaSummary.betweenBarAndColumns` → the model row → `ModelQuotaDockBlock.between`
+(type-erased as `AnyView`, only the first model row receives a non-empty value). The
+divider is the same one the chart uses below itself (`Divider().opacity(0.45)`, full
+content width, no extra horizontal inset).
+
+**Type scale inside the two cards: 13 / 11 / 10.** Card titles are
+`MenuTypography.cardTitle`; values and body text are 11 (`hoverBody*`, and `hoverTitle`
+was pulled down to 11 so a sub-title is no longer bigger than the values under it);
+labels, captions, footnotes, day labels, chart annotations and table cells are 10 —
+the 8pt and 9pt sizes that used to live in the chart and the table are gone
+(`timeSuffix` and `hoverFootnote` moved from 9 to 10). Capsules keep `badge` at 9pt,
+since a pill is a different kind of mark, not body copy.
+
+The cut is not arbitrary: the quota group is "now" and the 7-day group is "history", and
+`HoverInfoRow` already drew a separator between them. The card boundary replaces that
+separator, so the lower half stops reading as a table appended to the upper card. The
+split rides on `LocalUsagePart` (`.summary` into card 1, `.detail` into card 2,
+`.combined` for the menu), which is also why the chart no longer draws its own title row
+in `.alwaysVisible`: the title and the freshness badge moved up into title row 2.
+
+Two knock-on details, both easy to miss:
+
+- The reset-credit row starts with a `Divider` when it sits under the header in the menu.
+  Once it moves between the bar and the statistics that divider would hang a line in the
+  middle of the summary block, so the row takes `divides:` and the dock passes `false`.
+- Both cards use `.frame(maxWidth: .infinity)`. Sized to their content they would have
+  different widths (card 2 is only the chart) and the stack would show two misaligned
+  plates.
+
+Non-`.ok` states (loading / failed / not configured) fall back to a single card: there
+are no two groups to cut, and splitting anyway would leave a second card holding nothing
+but a placeholder.
 
 ### Auto-hide mode (compact dock)
 

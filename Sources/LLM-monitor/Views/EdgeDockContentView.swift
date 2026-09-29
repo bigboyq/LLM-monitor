@@ -90,8 +90,10 @@ struct EdgeDockContentView: View {
                 ? EdgeDockGeometry.compactPadding
                 : EdgeDockGeometry.padding
         )
-        // 系统材质，深浅交给系统——和菜单面板同源，不在这里手调浓度。
-        .edgeDockSystemMaterialBackground(in: EdgeDockTab(edge: controller.config.edge))
+        // 常驻暗色液态玻璃，**不跟系统外观翻转**：dock 和菜单栏一起长在桌面上，
+        // 一天变两次观感没有意义；面板侧另有 vibrantDark + 强制 dark colorScheme
+        // 与它配对（见 `ensurePanel`）。
+        .edgeDockDarkGlassBackground(in: EdgeDockTab(edge: controller.config.edge))
         // 撑满宿主并朝贴靠边对齐：展开 / 收起变形期间内容小于窗口（展开时窗口
         // 先行扩大、收起时窗口等内容收完再缩小），锚在左上角的话贴右边时背板
         // 会先出现在屏幕内侧、贴边侧露出透明缝。锚到贴靠边后背板始终粘着屏幕
@@ -241,8 +243,9 @@ struct EdgeDockContentView: View {
         Text(labelText(for: entry))
             .font(.system(size: 10, weight: .medium, design: .rounded))
             .monospacedDigit()
-            // 语义色：深色外观下解析成浅字、浅色外观下解析成深字，
-            // 始终与玻璃底色相反。写死白色在浅色玻璃上等于隐形。
+            // dock 内容被强制在 dark colorScheme 下渲染（见 ensurePanel），
+            // `primary` 因此恒为浅色；语义色而不是写死白色，只是不再需要那个
+            // "因为不随外观变化所以写死"的特例。
             .foregroundStyle(Color.primary.opacity(0.9))
             .lineLimit(1)
             .fixedSize(horizontal: true, vertical: false)
@@ -259,9 +262,9 @@ struct EdgeDockContentView: View {
     /// 额度窗口时，槽是"这里有一个环，只是读不到数"的唯一提示。槽和弧是两次独立
     /// 绘制，不能因为 `fraction == nil` 就把整个环连槽一起跳过。
     ///
-    /// 用语义色而不是写死白色：dock 背板是随系统外观的系统材质，
-    /// `Color.primary` 在深色外观下解析成浅色、浅色外观下解析成深色，始终落在
-    /// 材质的对面；写死的白在浅色材质上等于隐形。
+    /// 底槽颜色见 `EdgeDockTheme.ringTrack`：dock 强制暗色，`Color.primary` 恒为
+    /// 浅色，所以底槽在深色玻璃上始终看得见。底槽看不见会被读成"环画断了"，
+    /// 那是**错的**数据，不只是难看的界面。
     private func ring(
         fraction: Double?,
         diameter: CGFloat,

@@ -9,6 +9,9 @@ struct ChatGPTPlanModelRow: View {
     let usageDetails: CodexUsageDetails?
     let localSamples: [LocalTokenUsageSample]
     let tint: Color
+    /// 夹在进度条块与三列统计之间的卡片级信息（重置卡、高峰期），见
+    /// `ModelQuotaDockBlock.between`。只有第一个 model 行会拿到非空值。
+    var between: AnyView = AnyView(EmptyView())
     /// dock 详情浮层把进度条提到标题上方；菜单保持原顺序（见 `CombinedQuotaWindowRow`）。
     @Environment(\.hoverRevealMode) private var revealMode
 
@@ -54,7 +57,8 @@ struct ChatGPTPlanModelRow: View {
                     hasSecondaryWindow: true,
                     missingUsageIsLoading: true
                 ),
-                footnote: EmptyView()
+                footnote: EmptyView(),
+                between: between
             )
         } else if hasPrimaryWindow {
             ModelQuotaDockBlock(
@@ -76,7 +80,8 @@ struct ChatGPTPlanModelRow: View {
                     hasSecondaryWindow: false,
                     missingUsageIsLoading: true
                 ),
-                footnote: EmptyView()
+                footnote: EmptyView(),
+                between: between
             )
         } else if hasSecondaryWindow {
             ModelQuotaDockBlock(
@@ -98,7 +103,8 @@ struct ChatGPTPlanModelRow: View {
                     hasSecondaryWindow: false,
                     missingUsageIsLoading: true
                 ),
-                footnote: EmptyView()
+                footnote: EmptyView(),
+                between: between
             )
         } else {
             Text("额度窗口不可用")
@@ -321,9 +327,9 @@ struct CompactResetCreditsRow: View {
                 // R3: reset credits 子接口失败或数据过旧，显示过期提示（不只靠透明度/颜色）。
                 HStack(spacing: 3) {
                     Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.system(size: 9, weight: .semibold))
+                        .font(.system(size: 10, weight: .semibold))
                     Text(staleText)
-                        .font(.system(size: 9, weight: .semibold).monospacedDigit())
+                        .font(.system(size: 10, weight: .semibold).monospacedDigit())
                         .lineLimit(1)
                 }
                 .foregroundStyle(.orange)
@@ -447,6 +453,9 @@ struct CombinedQuotaWindowRow: View {
     let localSamples: [LocalTokenUsageSample]
     /// 额度窗口 hover 统计排除的时间窗口（GLM 闲时任务不消耗积分）。
     var excludeWindows: [GlmOffPeakWindow] = []
+    /// 夹在进度条块与三列统计之间的卡片级信息（重置卡、高峰期），见
+    /// `ModelQuotaDockBlock.between`。只有第一个 model 行会拿到非空值。
+    var between: AnyView = AnyView(EmptyView())
     /// dock 详情浮层把进度条提到标题上方；菜单保持原顺序。
     @Environment(\.hoverRevealMode) private var revealMode
 
@@ -497,7 +506,8 @@ struct CombinedQuotaWindowRow: View {
                     hasSecondaryWindow: true,
                     missingUsageIsLoading: false
                 ),
-                footnote: offPeakFootnote
+                footnote: offPeakFootnote,
+                between: between
             )
         } else if model.hasIntervalWindow {
             ModelQuotaDockBlock(
@@ -519,7 +529,8 @@ struct CombinedQuotaWindowRow: View {
                     hasSecondaryWindow: false,
                     missingUsageIsLoading: false
                 ),
-                footnote: offPeakFootnote
+                footnote: offPeakFootnote,
+                between: between
             )
         } else if model.hasWeeklyWindow {
             ModelQuotaDockBlock(
@@ -541,7 +552,8 @@ struct CombinedQuotaWindowRow: View {
                     hasSecondaryWindow: false,
                     missingUsageIsLoading: false
                 ),
-                footnote: offPeakFootnote
+                footnote: offPeakFootnote,
+                between: between
             )
         } else {
             Text("额度窗口不可用")
@@ -856,23 +868,40 @@ struct ModelQuotaDockBlock<Bar: View, Columns: View, Footnote: View>: View {
     /// 不给默认值：Swift 无法从默认属性值反推泛型参数，调用点漏写就成了
     /// "generic parameter could not be inferred" 这种与意图无关的编译错误。
     var footnote: Footnote
+    /// 夹在「进度条块」与「三列统计」之间的**卡片级**信息（重置卡、高峰期倒计时）。
+    ///
+    /// 用 `AnyView` 而不是第四个泛型参数：它的来源在卡片层（`ProviderCardView`），
+    /// 要一路穿过 `QuotaSummary` → 各个 model 行视图才到得了这里，四个泛型参数的
+    /// 传递会把整条链都染上类型参数，而这里只需要"一段不透明的内容"。
+    /// 有默认值，所以三处 menu 调用点不用改。
+    var between: AnyView = AnyView(EmptyView())
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
+        VStack(alignment: .leading, spacing: 6) {
             bar
+            between
+            // 统计表与上面的"额度概览"分开：上面回答"还剩多少、什么时候重置"，
+            // 下面才是 Last Prompt / 5h / 周的明细。与 7 天图表下方那条同款
+            // （同色、同不透明度、同样整行宽、不额外缩进），上下间距也对齐到 9pt
+            // （本 VStack spacing 6 + 这里的 3），两条线在屏幕上读起来是同一条。
+            Divider().opacity(0.45).padding(.vertical, 3)
             columns
             footnote
         }
     }
 }
 
-/// 一个 model 的「进度条 + 元信息行」。两者是同一份数字的两种画法（条是图形、
-/// 行是文字），所以合成一个视图，必须贴在一起。
+/// 一个 model 的「元信息行 + 进度条」。两者是同一份数字的两种画法（行是文字、
+/// 条是图形），所以合成一个视图，必须贴在一起。
 ///
-/// 它就坐在**该 model 自己的**三列明细正上方，不提到卡片头部：Antigravity 有
-/// 两个 model，把两条条并到头部就得给每条加一个名称 label 才知道谁是谁，
-/// 而有了 label 它和下面那行模型名就重了；各归各的则"条 ↔ 下面的三列"是紧邻的
-/// 同一块，读者不用回头找对应关系。
+/// **行在条的上方**：那行写的是"这条条代表哪两个窗口、各剩多少、什么时候重置"，
+/// 先读说明再读图形；反过来读者得先猜这根条是什么、再回头找它的注解。条本身
+/// 上下各留一点间距，不贴着相邻内容。
+///
+/// 它就坐在**该 model 自己的**三列明细正上方（中间隔一条分隔线与卡片级信息），
+/// 不提到卡片头部：Antigravity 有两个 model，把两条条并到头部就得给每条加一个
+/// 名称 label 才知道谁是谁，而有了 label 它和下面那行模型名就重了；各归各的则
+/// "条 ↔ 下面的三列"仍然同属一块，读者不用回头找对应关系。
 struct QuotaBarWithMetadata: View {
     let model: ModelQuota
     let primaryLabel: String
@@ -881,13 +910,8 @@ struct QuotaBarWithMetadata: View {
     let tint: Color
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
+        VStack(alignment: .leading, spacing: 6) {
             if model.hasIntervalWindow, model.hasWeeklyWindow {
-                CombinedQuotaBar(
-                    model: model,
-                    tint: tint,
-                    weeklyEquivalentMultiplier: weeklyEquivalentMultiplier
-                )
                 CombinedQuotaMetadataLine(
                     primaryLabel: primaryLabel,
                     primaryPercent: model.intervalRemainingPercent,
@@ -903,28 +927,36 @@ struct QuotaBarWithMetadata: View {
                         segments: weeklyEquivalentMultiplier
                     )
                 )
-            } else if model.hasIntervalWindow {
-                SingleQuotaBar(
-                    percent: model.intervalRemainingPercent,
+                CombinedQuotaBar(
+                    model: model,
                     tint: tint,
-                    timeRemainingFraction: nil
+                    weeklyEquivalentMultiplier: weeklyEquivalentMultiplier
                 )
+                .padding(.vertical, 3)
+            } else if model.hasIntervalWindow {
                 SingleQuotaMetadataLine(
                     label: primaryLabel,
                     percent: model.intervalRemainingPercent,
                     resetsAt: model.intervalResetsAt
                 )
-            } else if model.hasWeeklyWindow {
                 SingleQuotaBar(
-                    percent: model.weeklyRemainingPercent,
+                    percent: model.intervalRemainingPercent,
                     tint: tint,
-                    timeRemainingFraction: model.weeklyTimeRemainingFraction
+                    timeRemainingFraction: nil
                 )
+                .padding(.vertical, 3)
+            } else if model.hasWeeklyWindow {
                 SingleQuotaMetadataLine(
                     label: secondaryLabel,
                     percent: model.weeklyRemainingPercent,
                     resetsAt: model.weeklyResetsAt
                 )
+                SingleQuotaBar(
+                    percent: model.weeklyRemainingPercent,
+                    tint: tint,
+                    timeRemainingFraction: model.weeklyTimeRemainingFraction
+                )
+                .padding(.vertical, 3)
             }
         }
     }
@@ -1248,8 +1280,20 @@ struct DeepseekBalanceRow: View {
     let peakWindow: DeepseekPeakWindow
     /// 高峰期倒计时已提到卡片头部时置 false（dock 详情浮层）。
     var showsPeakIndicator: Bool = true
+    /// 夹在余额块与三列统计之间的卡片级信息（重置卡、高峰期倒计时），见
+    /// `ModelQuotaDockBlock.between`。DeepSeek 没有独立的三列统计块，所以它排在
+    /// 余额块正下方——位置等价，"额度概览在上、统计在下"的读法不变。
+    var between: AnyView = AnyView(EmptyView())
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            balanceBlock
+            between
+        }
+        .padding(.vertical, 2)
+    }
+
+    private var balanceBlock: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline) {
                 HStack(spacing: 6) {
@@ -1307,6 +1351,5 @@ struct DeepseekBalanceRow: View {
                 }
             }
         }
-        .padding(.vertical, 2)
     }
 }

@@ -65,11 +65,20 @@ enum ProviderCardLayout {
         mode == .alwaysVisible
     }
 
-    /// 高峰期倒计时画在**卡片头部**而非额度区（dock）。
+    /// 高峰期倒计时由**卡片**画（dock），不在额度行里。
     ///
-    /// 它回答"现在能不能便宜用"，属于一眼要看的东西；留在额度区会被一堆
-    /// 百分比和明细挤到下面。头部那行本来就常驻状态，新用户第一眼就会看到。
-    static func showsPeakIndicatorInHeader(mode: HoverRevealMode) -> Bool {
+    /// 它回答"现在能不能便宜用"，是这一屏额度概览的一部分；留在额度行里会被
+    /// 一堆百分比和明细挤到下面。dock 侧它跟重置卡一起排在进度条下方、统计表
+    /// 上方（见 `ProviderCardView.dockQuotaSummaryRows`）。
+    static func hoistsPeakIndicator(mode: HoverRevealMode) -> Bool {
+        mode == .alwaysVisible
+    }
+
+    /// 标题行不画状态点（dock）。
+    ///
+    /// 它紧挨着品牌图标，两个小圆挤在一起读起来是"图标带了个绿点"；状态本身在
+    /// 同一行右侧那颗胶囊里已经写清楚了。菜单侧保留：那里没有右侧胶囊的替代。
+    static func hidesHeaderStatusDot(mode: HoverRevealMode) -> Bool {
         mode == .alwaysVisible
     }
 
@@ -90,36 +99,16 @@ enum ProviderCardLayout {
         mode == .alwaysVisible
     }
 
-    /// 详情浮层把内容分成「额度」「本地用量」两个带标题的 section（dock）。
+    /// dock 详情浮层把内容拆成**两张卡片**，各自的标题画在卡片**外面**的上方。
     ///
-    /// 这两块是**两套独立数据源**：额度来自 provider 接口（还有重置倒计时），
-    /// 本地用量来自本机会话扫描（可能为空、可能在扫描中）。挤在一列里、只用
-    /// 一条细分隔线，读者分不清哪几行归哪一边——尤其是本地用量为空时，
-    /// "扫描尚未完成"会被当成额度那部分的脚注。
+    /// 切分点不是新划的：额度那一组是"现在"、7 天用量那一组是"历史"，两者之间
+    /// 本来就有 `HoverInfoRow` 的那条分隔线。卡片边界取代它之后，两组各自是一张
+    /// 有边界的卡，下半截不会再被读成上半截的附表。
     ///
-    /// 菜单侧不加：主菜单卡片是折叠的，每张卡都很矮，两个标题行会让整列菜单
-    /// 多出 30pt 以上，密度失控。菜单靠 `hoverRevealMode` 默认值保持原样。
-    static func showsDetailSections(mode: HoverRevealMode) -> Bool {
+    /// 菜单侧不拆：主菜单卡片是折叠的，每张卡都很矮，拆成两张只会让整列菜单
+    /// 多出一倍的卡片间距与标题行。菜单靠 `hoverRevealMode` 默认值保持原样。
+    static func splitsIntoTwoCards(mode: HoverRevealMode) -> Bool {
         mode == .alwaysVisible
-    }
-}
-
-/// 详情浮层里的一个 section：小标题 + 内容。
-///
-/// 标题用 `MenuTypography.dataLabel`（10pt semibold）而不是更大的字号：这个浮层
-/// 全部展开之后已经很长了，标题的作用是**分组**而不是吸引注意，做大反而变成
-/// 第三个视觉重点，和卡片标题打架。
-struct ProviderCardSection<Content: View>: View {
-    let title: String
-    @ViewBuilder var content: Content
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title)
-                .font(MenuTypography.dataLabel)
-                .foregroundStyle(.secondary)
-            content
-        }
     }
 }
 
@@ -129,18 +118,6 @@ struct ProviderCardSection<Content: View>: View {
 /// 任一 provider 的任一状态变化只会重算真正变化的那几张卡，而不是整个菜单面板。
 struct ProviderCardView: View, Equatable {
     let status: ProviderStatus
-
-    /// 卡片自身表面的画法。
-    ///
-    /// - `.system`：菜单里的默认样子（半透明控件底色 + 品牌描边）。
-    /// - `.transparent`：不画表面，让**调用方**的背景透上来。dock 详情浮层用它：
-    ///   背板已经是系统材质，卡片再叠一层半透明底色只会把材质压灰。
-    enum Surface {
-        case system
-        case transparent
-    }
-
-    var surface: Surface = .system
 
     /// 宿主决定详情是折叠（主菜单 hover 浮层）还是就地展开（dock 详情浮层）。
     /// 两种形态的排版差别都挂在这个值上，见 `header` / `content`。
@@ -153,7 +130,7 @@ struct ProviderCardView: View, Equatable {
     // nonisolated：View 结构体因 View 协议推断为 @MainActor，而 Equatable 的 ==
     //  witnesses 必须可从任意隔离域调用；status 是 Sendable 值类型，非隔离比较安全。
     nonisolated static func == (lhs: ProviderCardView, rhs: ProviderCardView) -> Bool {
-        lhs.status == rhs.status && lhs.surface == rhs.surface
+        lhs.status == rhs.status
     }
 
     var body: some View {
@@ -163,6 +140,15 @@ struct ProviderCardView: View, Equatable {
         // once and pass the value down to both consumers.
         let projection = status.usageProjection(for: status.lastSuccess)
 
+        if ProviderCardLayout.splitsIntoTwoCards(mode: revealMode) {
+            dockBody(projection: projection)
+        } else {
+            menuBody(projection: projection)
+        }
+    }
+
+    /// 菜单：**一整张卡片**，标题（`header`）在卡片里面，和主菜单的信息密度一致。
+    private func menuBody(projection: ProviderUsageProjection) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             header
             content(projection: projection)
@@ -172,24 +158,104 @@ struct ProviderCardView: View, Equatable {
         .overlay(cardBorder)
     }
 
+    /// dock 详情浮层：**两张卡片**，各自的标题画在卡片**外面**的上方。
+    ///
+    /// 标题 1 就是卡片头部那一行（状态点 + 品牌图标 + provider 名 + 套餐胶囊，
+    /// 右侧是刷新时间/状态），它被提到卡外，于是"第一张卡是什么"由它回答，
+    /// 不再需要额外的「额度」小标题。
+    ///
+    /// 标题 2 是「最近7天token用量」，右侧同一行放数据新鲜度（更新于 / 计算中…），
+    /// 因此图表自己那行标题在 dock 形态下不画（见 `SevenDayTokenUsageHoverView`）。
+    ///
+    /// 非 `.ok` 状态（读取中 / 失败 / 未配置）没有这两组可切，退回单卡：硬拆会
+    /// 得到"第二张卡片只有一个占位提示"的空壳。
+    @ViewBuilder
+    private func dockBody(projection: ProviderUsageProjection) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            headerContent
+            if case .ok(let info) = status.state {
+                dockCard {
+                    quotaSection(info: info, projection: projection, between: AnyView(dockQuotaSummaryRows))
+                    localUsage(projection: projection, part: .summary)
+                }
+                dockSectionTitle(projection: projection)
+                dockCard {
+                    localUsage(projection: projection, part: .detail)
+                }
+            } else {
+                dockCard {
+                    content(projection: projection)
+                }
+            }
+        }
+    }
+
+    /// 夹在「元信息行 + 进度条」与「三列统计」之间的卡片级信息（dock）。
+    ///
+    /// 顺序是这一屏的读法：先看还剩多少（条），再看这批额度什么时候重置、现在
+    /// 是不是高峰期，最后才是 Last Prompt / 5h / 周的明细。它们此前排在进度条
+    /// **上方**，等于让人先读脚注再看正文。
+    ///
+    /// 这两行之所以要"夹进去"而不是留在卡片顶层：顶层只能排在整块额度内容之前
+    /// 或之后，而它们的位置在中间（条之下、统计之上），只有交给 model 行去摆。
+    @ViewBuilder
+    private var dockQuotaSummaryRows: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            resetCreditsRow(divides: false)
+            peakIndicator
+        }
+    }
+
+    /// 一张卡片：内容 + 内边距 + 表面 + 描边。两张卡片共用同一份实现，
+    /// 否则"两张卡长得不一样"这种偏差只能靠肉眼发现。
+    ///
+    /// `maxWidth: .infinity`：两张卡各自按内容宽度收缩时宽度会不一样（第二张
+    /// 只有图表），堆在一起就是两块对齐不上的底；撑满浮层宽度才对齐。
+    private func dockCard<C: View>(@ViewBuilder _ content: () -> C) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            content()
+        }
+        .padding(Self.contentPadding)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(cardBackground)
+        .overlay(cardBorder)
+    }
+
+    /// 第二张卡片的标题行：标题 + 同一行右侧的数据新鲜度胶囊。
+    ///
+    /// **两个标题行同一套字体与样式**（`MenuTypography.cardTitle` + `primaryLabel`）：
+    /// 它们是同一层级的东西——各自那张卡的名字。第二张曾经用更小的 `dataLabel`
+    /// 加次要色，读起来像正文里的一句小标题，而不是与第一张并列的卡片标题。
+    private func dockSectionTitle(projection: ProviderUsageProjection) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text("最近7天token用量")
+                .font(MenuTypography.cardTitle)
+                .foregroundStyle(Color.primaryLabel)
+            Spacer(minLength: 8)
+            LocalUsageFreshnessBadge(
+                scannedAt: projection.scannedAt,
+                isScanning: status.isScanningLocalUsage || projection.localUsageFreshness == .scanning
+            )
+        }
+        .padding(.top, 4)
+    }
+
+    /// 卡片表面：半透明系统控件底色 + 品牌色描边。
+    ///
+    /// 曾经有第二套画法（`.transparent`：不画表面，直接坐在宿主的材质上），
+    /// 只给 dock 的详情浮层用。那条路已经撤掉了——dock 浮层现在和菜单弹出用
+    /// **同一张卡片**，"卡片长什么样"不该再有一个按调用方分叉的开关。
     @ViewBuilder
     private var cardBackground: some View {
-        switch surface {
-        case .system:
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                // 卡片属于内容层，使用更稳定的系统控件底色，减少透出外层玻璃的折射。
-                .fill(Color(NSColor.controlBackgroundColor).opacity(0.60))
-        case .transparent:
-            Color.clear
-        }
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+            // 卡片属于内容层，使用更稳定的系统控件底色，减少透出外层玻璃的折射。
+            .fill(Color(NSColor.controlBackgroundColor).opacity(0.60))
     }
 
     @ViewBuilder
     private var cardBorder: some View {
-        if surface == .system {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(accentColor.opacity(0.25), lineWidth: 1)
-        }
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .strokeBorder(accentColor.opacity(0.25), lineWidth: 1)
     }
 
     private var accentColor: Color {
@@ -203,25 +269,13 @@ struct ProviderCardView: View, Equatable {
         }
     }
 
+    /// 菜单卡片的头部：标题行 + 账号信息的 hover 折叠区。
+    ///
+    /// dock 详情浮层不走这里——它的标题行直接用 `headerContent`，账号折叠区因为
+    /// 面板 `ignoresMouseEvents` 永远展不开，所以干脆不画（见 `dockBody`）。
     @ViewBuilder
     private var header: some View {
-        if ProviderCardLayout.expandsAccountSection(mode: revealMode) {
-            // dock 详情浮层：不展开账号折叠区。那里是"悬停标题看账号"的细节，
-            // 而这个浮层整体不接受鼠标事件（`ignoresMouseEvents`），没有人会去
-            // 悬停它——就地展开只会把邮箱 / 数据来源这类低频信息塞进最抢眼的位置。
-            // 往上提的是两样"一眼要看"的东西：
-            //   高峰期倒计时 —— "现在能不能便宜用"。
-            //   重置卡       —— 总数 + 最近一张到期时间；每张卡的明细同样因为不吃
-            //                   鼠标事件而保持折叠。
-            // 额度条**不**提到头部：Antigravity 有两个 model，提到一起就得给每条
-            // 加名称 label 才分得清谁是谁，而那个 label 和下面原本那行模型名重了。
-            // 进度条留在各自分块里、紧贴自己的三列，对应关系靠位置就够。
-            VStack(alignment: .leading, spacing: 6) {
-                headerContent
-                headerPeakIndicator
-                headerResetCredits
-            }
-        } else if status.kind == .antigravity {
+        if status.kind == .antigravity {
             HoverInfoRow {
                 headerContent
             } detail: {
@@ -253,9 +307,12 @@ struct ProviderCardView: View, Equatable {
         }
     }
 
-    /// dock 详情浮层头部下方的**高峰期倒计时**。只 GLM 与 DeepSeek 有窗口概念。
+    /// **高峰期倒计时**。只 GLM 与 DeepSeek 有窗口概念。
+    ///
+    /// dock 里它排在进度条下方（`dockQuotaSummaryRows`）：它回答"现在能不能便宜
+    /// 用"，属于这一屏的额度概览，而不是卡片标题的一部分。
     @ViewBuilder
-    private var headerPeakIndicator: some View {
+    private var peakIndicator: some View {
         switch status.kind {
         case .glmCodingPlan:
             if let peak = status.glmPeakWindow {
@@ -268,17 +325,21 @@ struct ProviderCardView: View, Equatable {
         }
     }
 
-    /// dock 详情浮层头部的**重置卡**，折叠态：只总数 + 最近一张到期时间。
+    /// **重置卡**，折叠态：只总数 + 最近一张到期时间。
     ///
     /// 与菜单同一行组件，但 `revealsDetail: false`——那个浮层不吃鼠标事件，
     /// `HoverInfoRow` 在 `alwaysVisible` 下又总会展开，每张卡的明细会变成常驻。
     /// 折叠态那一句才是该常驻的信息。
+    ///
+    /// - Parameter divides: 是否在前面画一条分隔线。菜单里它紧跟在标题行后面，
+    ///   需要那条线；dock 的第一张卡片里它是**卡片的第一个元素**，卡片边界已经
+    ///   在分隔，再画一条线就是卡片顶部悬着一条横线。
     @ViewBuilder
-    private var headerResetCredits: some View {
+    private func resetCreditsRow(divides: Bool) -> some View {
         if let info = status.lastSuccess,
            let resets = info.resetCredits,
            resets.shouldDisplay {
-            Divider().opacity(0.3)
+            if divides { Divider().opacity(0.3) }
             CompactResetCreditsRow(
                 resets: resets,
                 refreshIntervalSeconds: status.refreshIntervalSeconds,
@@ -289,7 +350,11 @@ struct ProviderCardView: View, Equatable {
 
     private var headerContent: some View {
         HStack(spacing: 8) {
-            StatusIndicator(level: status.aggregateHealthLevel())
+            // dock 的标题行不画状态点：它紧挨着品牌图标，两个小圆挤在一起读起来
+            // 是"图标带了个绿点"，而状态本身在右侧那颗胶囊里已经写清楚了。
+            if !ProviderCardLayout.hidesHeaderStatusDot(mode: revealMode) {
+                StatusIndicator(level: status.aggregateHealthLevel())
+            }
             BrandLogoView(kind: status.kind)
             Text(displayTitle)
                 .font(MenuTypography.cardTitle)
@@ -357,28 +422,15 @@ struct ProviderCardView: View, Equatable {
                         deepseekPeakWindow: status.deepseekPeakWindow ?? .defaultWindow
                     )
                     .opacity(0.5)
-                    localUsageFooter(projection: projection)
+                    localUsage(projection: projection, part: .combined)
                 }
             } else {
                 placeholder("正在获取…")
             }
         case .ok(let info):
-            if ProviderCardLayout.showsDetailSections(mode: revealMode) {
-                // dock 详情浮层：额度与本地用量分成两个带标题的 section。
-                VStack(alignment: .leading, spacing: 10) {
-                    ProviderCardSection(title: "额度") {
-                        quotaSection(info: info, projection: projection)
-                    }
-                    Divider().opacity(0.3)
-                    ProviderCardSection(title: "本地用量") {
-                        localUsageFooter(projection: projection)
-                    }
-                }
-            } else {
-                VStack(alignment: .leading, spacing: 6) {
-                    quotaSection(info: info, projection: projection)
-                    localUsageFooter(projection: projection)
-                }
+            VStack(alignment: .leading, spacing: 6) {
+                quotaSection(info: info, projection: projection)
+                localUsage(projection: projection, part: .combined)
             }
         case .failed(let message, let lastSuccess):
             VStack(alignment: .leading, spacing: 6) {
@@ -405,7 +457,7 @@ struct ProviderCardView: View, Equatable {
                         deepseekPeakWindow: status.deepseekPeakWindow ?? .defaultWindow
                     )
                         .opacity(0.55)
-                        localUsageFooter(projection: projection)
+                        localUsage(projection: projection, part: .combined)
                 }
             }
         }
@@ -413,8 +465,8 @@ struct ProviderCardView: View, Equatable {
 
     /// 「额度」这一段：额度窗口 + GLM 闲时峰值 + GLM 活动套餐余额。
     ///
-    /// 抽出来只为一件事：让"dock 加 section 标题、菜单不加"这个分叉落在**这一段
-    /// 的外面**。`.ok` 一条分支内两种排版各写一遍 `QuotaSummary` 调用，改参数时
+    /// 抽出来只为一件事：让"dock 把它放进第一张卡片、菜单放进唯一那张卡片"这个
+    /// 分叉落在**这一段的外面**。两种排版各写一遍 `QuotaSummary` 调用，改参数时
     /// 漏一处不会编译报错，只会让某一种形态悄悄少一个参数。
     ///
     /// `.loading` / `.failed` 两条分支不用它：它们各自要在额度行前面加状态说明
@@ -423,7 +475,8 @@ struct ProviderCardView: View, Equatable {
     @ViewBuilder
     private func quotaSection(
         info: QuotaInfo,
-        projection: ProviderUsageProjection
+        projection: ProviderUsageProjection,
+        between: AnyView = AnyView(EmptyView())
     ) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             QuotaSummary(
@@ -433,12 +486,13 @@ struct ProviderCardView: View, Equatable {
                 localSamples: projection.recentSamples,
                 refreshIntervalSeconds: status.refreshIntervalSeconds,
                 excludeWindows: excludeWindows,
-                deepseekPeakWindow: status.deepseekPeakWindow ?? .defaultWindow
+                deepseekPeakWindow: status.deepseekPeakWindow ?? .defaultWindow,
+                betweenBarAndColumns: between
             )
             if status.kind == .glmCodingPlan,
                let peak = status.glmPeakWindow,
-               !ProviderCardLayout.showsPeakIndicatorInHeader(mode: revealMode) {
-                // dock 详情浮层里它已经升到头部（见 `headerPeakIndicator`），
+               !ProviderCardLayout.hoistsPeakIndicator(mode: revealMode) {
+                // dock 里它已经排到进度条下方（见 `dockQuotaSummaryRows`），
                 // 这里再画一遍就是同一个倒计时出现两次。
                 GlmPeakIndicatorView(window: peak)
             }
@@ -456,8 +510,11 @@ struct ProviderCardView: View, Equatable {
 
     /// 所有卡片统一展示 quota provider 关联的客户端 token 汇总；客户端来源
     /// 只保留在 hover 明细中，避免卡片主体出现复杂的多来源信息。
+    ///
+    /// - Parameter part: dock 把这一块拆进两张卡片（汇总进上一张、图表进下一张），
+    ///   菜单侧走 `.combined`。拆法见 `LocalUsagePart`。
     @ViewBuilder
-    private func localUsageFooter(projection: ProviderUsageProjection) -> some View {
+    private func localUsage(projection: ProviderUsageProjection, part: LocalUsagePart) -> some View {
         makeLocalUsageFooter(
             dailyTokenUsage: projection.dailyTokenUsage,
             recentSamples: projection.recentSamples,
@@ -467,7 +524,8 @@ struct ProviderCardView: View, Equatable {
             isReady: projection.hasActivity
                 && (status.kind != .codexChatGpt || projection.dailyTokenUsage.count == 7),
             freshness: projection.localUsageFreshness,
-            emptyHint: emptyUsageHint
+            emptyHint: emptyUsageHint,
+            part: part
         )
     }
 
@@ -490,7 +548,8 @@ struct ProviderCardView: View, Equatable {
         scannedAt: Date?,
         isReady: Bool,
         freshness: LocalUsageFreshness,
-        emptyHint: String
+        emptyHint: String,
+        part: LocalUsagePart
     ) -> some View {
         LocalUsageFooterView(
             dailyTokenUsage: dailyTokenUsage,
@@ -501,7 +560,8 @@ struct ProviderCardView: View, Equatable {
             isScanning: status.isScanningLocalUsage || freshness == .scanning,
             freshness: freshness,
             isReady: isReady,
-            emptyHint: emptyHint
+            emptyHint: emptyHint,
+            part: part
         )
     }
 
@@ -620,17 +680,20 @@ struct QuotaSummary: View {
     var excludeWindows: [GlmOffPeakWindow] = []
     /// DeepSeek 高峰期窗口（仅 `.deepseek` 用到；其余 provider 用默认值占位）。
     var deepseekPeakWindow: DeepseekPeakWindow = .defaultWindow
+    /// dock：夹在「进度条块」与「三列统计」之间的卡片级信息（重置卡、高峰期），
+    /// 由 `ProviderCardView.dockBody` 组装。菜单不传，默认空。
+    var betweenBarAndColumns: AnyView = AnyView(EmptyView())
     /// dock 详情浮层把高峰期倒计时提到卡片头部；菜单保持它在余额行里。
     @Environment(\.hoverRevealMode) private var revealMode
 
-    /// 重置卡是否画在这一块。dock 侧画在卡片头部（`ProviderCardView.headerResetCredits`），
+    /// 重置卡是否画在这一块。dock 侧画在卡片头部（`ProviderCardView.resetCreditsRow`），
     /// 两处都画就是同一张卡出现两次。
     private var showsResetCredits: Bool {
         !ProviderCardLayout.expandsAccountSection(mode: revealMode)
     }
 
     private var showsPeakIndicator: Bool {
-        !ProviderCardLayout.showsPeakIndicatorInHeader(mode: revealMode)
+        !ProviderCardLayout.hoistsPeakIndicator(mode: revealMode)
     }
 
     private var displayedModels: [ModelQuota] {
@@ -640,12 +703,17 @@ struct QuotaSummary: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             ForEach(Array(displayedModels.enumerated()), id: \.offset) { index, model in
+                // 卡片级信息（重置卡、高峰期）只在**第一个** model 行上出现一次：
+                // 它讲的是这个 provider 的整体情况，不是每个 model 一份；跟着每个
+                // model 重复一次会读成"每个 model 各有一组重置卡"。
+                let between = index == 0 ? betweenBarAndColumns : AnyView(EmptyView())
                 if Self.shouldUseChatGPTPlanRow(providerKind: providerKind, model: model) {
                     ChatGPTPlanModelRow(
                         model: model,
                         usageDetails: info.codexUsageDetails,
                         localSamples: localSamples,
-                        tint: accentColor(for: model)
+                        tint: accentColor(for: model),
+                        between: between
                     )
                 } else if Self.shouldUseDeepseekBalanceRow(providerKind: providerKind, model: model) {
                     DeepseekBalanceRow(
@@ -654,7 +722,8 @@ struct QuotaSummary: View {
                         balanceDetail: info.balanceDetail,
                         tint: accentColor(for: model),
                         peakWindow: deepseekPeakWindow,
-                        showsPeakIndicator: showsPeakIndicator
+                        showsPeakIndicator: showsPeakIndicator,
+                        between: between
                     )
                 } else {
                     CombinedQuotaWindowRow(
@@ -664,7 +733,8 @@ struct QuotaSummary: View {
                         weeklyEquivalentMultiplier: Self.weeklyEquivalentMultiplier(providerKind: providerKind, model: model),
                         providerKind: providerKind,
                         localSamples: localSamples,
-                        excludeWindows: excludeWindows
+                        excludeWindows: excludeWindows,
+                        between: between
                     )
                 }
 

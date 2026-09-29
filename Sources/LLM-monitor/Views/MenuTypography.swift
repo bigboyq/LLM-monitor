@@ -20,7 +20,7 @@ enum MenuTypography {
     /// 重置时间主体
     static let resetDate = Font.system(size: 10, weight: .semibold).monospacedDigit()
     /// 紧凑剩余时间后缀 (如 (3h20m))
-    static let timeSuffix = Font.system(size: 9, weight: .medium).monospacedDigit()
+    static let timeSuffix = Font.system(size: 10, weight: .medium).monospacedDigit()
     /// 底部 Footer 状态文本与操作按钮
     static let footer = Font.system(size: 9, weight: .medium)
     static let footerNumber = Font.system(size: 9, weight: .medium).monospacedDigit()
@@ -35,7 +35,7 @@ enum MenuTypography {
 
     // MARK: - 悬浮面板 (Hover Panel) 排版角色
     /// 悬浮面板标题
-    static let hoverTitle = Font.system(size: 12, weight: .semibold)
+    static let hoverTitle = Font.system(size: 11, weight: .semibold)
     /// 悬浮面板正文重点
     static let hoverRowEmphasis = Font.system(size: 11, weight: .semibold)
     /// 悬浮面板正文/数值
@@ -45,5 +45,5 @@ enum MenuTypography {
     static let hoverCaption = Font.system(size: 10, weight: .regular)
     static let hoverCaptionEmphasis = Font.system(size: 10, weight: .medium)
     /// 悬浮面板微型注释与来源脚注
-    static let hoverFootnote = Font.system(size: 9, weight: .regular)
+    static let hoverFootnote = Font.system(size: 10, weight: .regular)
 }

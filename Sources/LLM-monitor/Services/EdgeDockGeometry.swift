@@ -439,46 +439,80 @@ enum EdgeDockTheme {
     /// 这样 popover 里的卡片宽度与菜单里的卡片**逐像素相同**。
     static var popoverPadding: CGFloat { MenuPanelHeightBridge.cardHorizontalPadding }
 
+    /// dock 液态玻璃的暗色压深。
+    ///
+    /// dock **钉死暗色**，不跟系统外观走：它和菜单栏图标、菜单面板一起常驻在
+    /// 桌面上，跟着系统在白天/晚上翻转会让同一块边缘窗一天变两次观感，而环与
+    /// 数值的对比度本来就应该只由一种底色决定。
+    ///
+    /// 0.34 是把"亮壁纸"和"暗壁纸"两种最坏情况都算过之后定的：更浅会在亮壁纸上
+    /// 糊成一块灰、环的可读性随壁纸漂移；更深会把折射和描边细节整个盖掉，等于
+    /// 又退回一块纯色板。
+    static let dockGlassTint = Color.black.opacity(0.34)
+
     /// 圆环底槽（进度弧画在它上面）。
     ///
-    /// 用 `Color.primary` 而不是写死白色。dock 背板现在是随系统外观的液态玻璃，
-    /// 写死的白在浅色玻璃上等于隐形——空槽消失之后，50% 会被读成"环画断了"
-    /// 而不是"还剩一半"，用户读到的是**错的**数据而不只是难看的界面。
-    /// `primary` 在深色外观下解析成浅色、浅色外观下解析成深色，两边都落在
-    /// 玻璃的对面，对比度自动成立。
+    /// 用 `Color.primary` 而不是写死白色：dock 的内容被强制在 `colorScheme = .dark`
+    /// 下渲染（见 `ensurePanel`），`primary` 因此恒解析成浅色，和旧的写死白色等价，
+    /// 但不再需要维护一个"因为 dock 不随外观变化所以写死"的特例。空槽消失之后，
+    /// 50% 会被读成"环画断了"而不是"还剩一半"——用户读到的是**错的**数据，
+    /// 而不只是难看的界面，所以底槽必须始终看得见。
     ///
-    /// 不透明度 0.18（原来 0.16）：0.16 在浅色玻璃上偏淡。定这个值时把
-    /// "浅色玻璃 + 亮壁纸"和"深色玻璃 + 亮壁纸"两种最坏情况都算进去了。
+    /// 不透明度 0.18（原来 0.16）：0.16 在亮壁纸透上来的玻璃上偏淡。
     static let ringTrack = Color.primary.opacity(0.18)
 
 }
 
 extension View {
-    /// dock 背板：**系统材质**，深浅完全交给系统。
+    /// dock 背板：**常驻暗色液态玻璃**，不跟随系统外观。
     ///
-    /// 目标是"和菜单面板一样"——菜单那层是 `MenuBarExtra(.window)` 窗口自带的
-    /// 系统玻璃（`MenuPanelSurface` 因此只写 `Color.clear`）。但那个玻璃是 AppKit
-    /// 给**那个特定窗口**的，自建的 borderless `NSPanel` 不会自动获得：写
-    /// `Color.clear` 只会得到完全透明，背后直接是壁纸，没有模糊、没有玻璃。
-    /// 所以这里显式挂上 `.regularMaterial`——那就是菜单在旧系统上的回退材质，
-    /// 由系统决定深浅，跟着 `colorScheme` 自动变，**不需要任何手调浓度**。
+    /// 与 popover 的区别是刻意的，不是没对齐：dock 常驻屏幕边缘，popover 是用户
+    /// 点出来的临时浮层。前者固定暗色、后者跟随系统（见
+    /// `edgeDockPopoverSystemMaterialBackground`）。
     ///
-    /// 用 `Shape.fill(Material)` 而不是 `glassEffect`：前者是系统材质、形状由
-    /// `EdgeDockTab` 的 path 裁切；后者是 App 自己画的液态玻璃，得自己配 tint，
-    /// 而"自己配"正是要摆脱的东西。
-    func edgeDockSystemMaterialBackground<S: Shape>(in shape: S) -> some View {
-        background { shape.fill(.regularMaterial) }
+    /// macOS 26 及以上走 `glassEffect`——真正的液态玻璃，含折射与系统描边；
+    /// 更早的系统没有这个 API，用 `ultraThinMaterial` 磨砂 + 一层暗色压深近似：
+    /// 材质在下负责模糊，压深在上负责变暗，两层叠在同一个 ZStack 里。
+    ///
+    /// 玻璃要采样窗口**背后**的内容，所以前提是窗口透明（`isOpaque = false` +
+    /// clear 背景）：不透明底色会让玻璃退化成一块死板的实色，`EdgeDockTab` 的
+    /// 直角与圆角轮廓也看不见。
+    ///
+    /// 光这一层还不够：面板必须同时钉 `NSAppearance.vibrantDark`，内容必须同时
+    /// 强制 `colorScheme = .dark`。只改 SwiftUI 环境不会让材质本身按暗色解析；
+    /// 只改面板外观则 `Color.primary` 仍按系统浅色翻成深色——深底深字直接看不见。
+    ///
+    /// `@ViewBuilder`：两个分支（`glassEffect` / `background`）返回的是两个不同的
+    /// 具体类型，只有 ViewBuilder 才能把它们合成 `_ConditionalContent`。
+    @ViewBuilder
+    func edgeDockDarkGlassBackground<S: Shape>(in shape: S) -> some View {
+        if #available(macOS 26.0, *) {
+            glassEffect(.regular.tint(EdgeDockTheme.dockGlassTint), in: shape)
+        } else {
+            background {
+                ZStack {
+                    shape.fill(.ultraThinMaterial)
+                    shape.fill(EdgeDockTheme.dockGlassTint)
+                }
+            }
+        }
     }
 
-    /// popover 背板：同一个系统材质，圆角用 `popoverCornerRadius`。
+    /// popover 背板：**系统材质**，跟随系统外观，圆角用 `popoverCornerRadius`。
     ///
-    /// 与 dock 共用 `edgeDockSystemMaterialBackground` 而不是各写一遍：现在两处
-    /// 都不需要手调 tint（popover 曾经需要，是因为上面压着 0.60 的半透明卡片；
-    /// 卡片去掉之后那个理由就不成立了），共用一份实现才不会出现"dock 改了
-    /// 忘了同步浮层"这种只有肉眼能发现的偏差。
+    /// 目标是"和菜单弹出的一模一样"——菜单那层是 `MenuBarExtra(.window)` 窗口自带
+    /// 的系统玻璃（`MenuPanelSurface` 因此只写 `Color.clear`）。但那个玻璃是 AppKit
+    /// 给**那个特定窗口**的，自建的 borderless `NSPanel` 不会自动获得：写
+    /// `Color.clear` 只会得到完全透明，背后直接是壁纸，没有模糊、没有玻璃。
+    /// 所以这里显式挂 `.regularMaterial`——由系统决定深浅，跟着 `colorScheme`
+    /// 自动变，**不需要任何手调浓度**。
+    ///
+    /// 卡片（`ProviderCardView`）画在它上面，和菜单那一屏共用同一套卡片表面，
+    /// 所以这里只管材质，不再画自己的边界。
     func edgeDockPopoverSystemMaterialBackground() -> some View {
-        edgeDockSystemMaterialBackground(
-            in: RoundedRectangle(cornerRadius: EdgeDockTheme.popoverCornerRadius, style: .continuous)
-        )
+        background {
+            RoundedRectangle(cornerRadius: EdgeDockTheme.popoverCornerRadius, style: .continuous)
+                .fill(.regularMaterial)
+        }
     }
 }

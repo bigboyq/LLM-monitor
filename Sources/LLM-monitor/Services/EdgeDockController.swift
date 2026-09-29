@@ -303,6 +303,15 @@ final class EdgeDockController: ObservableObject {
         // 直角与圆角轮廓也看不见。
         panel.hasShadow = false
         panel.backgroundColor = .clear
+        // **钉死暗色**，不跟系统外观走：dock 和菜单栏图标、菜单面板一起常驻在
+        // 桌面上，跟着系统在白天/晚上翻转会让它一天变两次观感。
+        //
+        // 这里和内容侧的 `.environment(\.colorScheme, .dark)` 是**两件必须同时
+        // 做的事**，缺一不可：面板外观决定材质（`glassEffect` /
+        // `ultraThinMaterial`）按暗色还是浅色解析，SwiftUI 的环境决定
+        // `Color.primary` 这类语义色翻成浅色还是深色。只做前者会得到"深底深字"，
+        // 只做后者会得到"浅底浅字"，两种都看不见。
+        panel.appearance = NSAppearance(named: .vibrantDark)
         // 拖动不走系统的自由移动：窗口位置由 `applyDrag` 按鼠标直接驱动，
         // 始终钉在贴靠边上（见该方法说明）。
         panel.isMovableByWindowBackground = false
@@ -312,6 +321,8 @@ final class EdgeDockController: ObservableObject {
         let hosting = NSHostingView(
             rootView: AnyView(
                 EdgeDockContentView(controller: self, state: state, configStore: configStore)
+                    // 与 `panel.appearance` 配对，理由见上。
+                    .environment(\.colorScheme, .dark)
             )
         )
         hosting.translatesAutoresizingMaskIntoConstraints = false
@@ -881,22 +892,20 @@ final class EdgeDockController: ObservableObject {
         let width = min(EdgeDockTheme.popoverWidth, max(visibleFrame.width - 80, 240))
         let cardContentWidth = max(width - backdrop * 2, 120)
 
-        /// 系统材质背板 + 卡片内容直接浮在上面（**不画卡片表面**）。
+        /// 系统材质背板 + 和菜单那一屏**同一张卡片**浮在上面。
         ///
-        /// `surface: .transparent`：中间那一层半透明卡片去掉，内容直接坐在
-        /// 材质上。去掉之后"卡片"只剩 `contentPadding` 那一圈内边距，看起来
-        /// 就是一块纯材质的浮层。
-        ///
-        /// 这层中间卡片一度是 `.system`（和主菜单同源），理由是"要有个卡片
-        /// 边界、和菜单对得上"。现在材质本身已经是系统材质，再夹一层 0.60 的
-        /// `controlBackgroundColor` 只会把材质压灰、折射细节被盖掉。
+        /// 卡片曾经被去掉（`surface: .transparent`，内容直接坐在材质上），理由是
+        /// "材质本身已经是系统材质，再夹一层半透明底色会把它压灰"。结果是 dock
+        /// 的浮层和菜单弹出长得不一样：同一张 `ProviderCardView` 在两个宿主里
+        /// 一个没有边界、一个有。现在按"和菜单弹出的一样"来——卡片回来，材质只
+        /// 负责垫底。
         ///
         /// 宽度**固定**并与主菜单同源，不再按内容自然尺寸伸缩：自然尺寸下每张
         /// 卡片宽度都不一样，同一张 `ProviderCardView` 在不同 provider 之间换行
         /// 位置会跳。固定宽度才和菜单那一屏看起来是同一个东西。
         @ViewBuilder
         func card() -> some View {
-            ProviderCardView(status: status, surface: .transparent)
+            ProviderCardView(status: status)
                 .frame(width: cardContentWidth)
                 .padding(backdrop)
                 .edgeDockPopoverSystemMaterialBackground()
@@ -936,15 +945,14 @@ final class EdgeDockController: ObservableObject {
 
     /// popover 内容**跟随系统外观** + 折叠区常展。
     ///
-    /// 曾经强制暗色（SwiftUI 侧 `colorScheme` + 面板侧 `NSAppearance.vibrantDark`
-    /// 两处），理由是"浅色系统下弹出一块灰白磨砂，和旁边恒为纯黑的 dock 并排
-    /// 会很脏"。dock 换成随外观的液态玻璃之后，这个理由就不成立了：两边都
-    /// 跟随系统，浅色系统下是两块浅色玻璃并排，反而是一致的。强制暗色反而会
-    /// 让浮层和 dock、和主菜单三处各不相同。
+    /// 和 dock 的**固定暗色**是刻意的对照，不是漏配：dock 常驻屏幕边缘，跟菜单栏
+    /// 一起长在桌面上；popover 是用户点出来的临时浮层，按"和菜单弹出的一样"来做，
+    /// 所以它跟随系统，和菜单那一屏同进同出。
     ///
-    /// 面板侧的 `appearance` 同样不能留：只改 SwiftUI 的 `colorScheme` 不会让
-    /// **材质本身**跟着变，`glassEffect` / `ultraThinMaterial` 仍按 App 的外观
-    /// 解析，结果是"内容按浅色画、底板按深色画"——比不改更糟。
+    /// 面板侧不设 `appearance`、这里也不覆盖 `colorScheme`：两者必须一致，只改
+    /// SwiftUI 的 `colorScheme` 不会让**材质本身**跟着变（`ultraThinMaterial` /
+    /// `glassEffect` 按面板外观解析），结果是"内容按浅色画、底板按深色画"——
+    /// 比不改更糟。
     ///
     /// `hoverRevealMode = .alwaysVisible`：这个浮层本身就是"用户主动点击某个圆"
     /// 才出现的详情，面板还 `ignoresMouseEvents = true`（根本收不到 hover），
@@ -976,11 +984,9 @@ final class EdgeDockController: ObservableObject {
         // 这里一旦改成不透明，磨砂会直接退化成一块死板的灰。
         popover.hasShadow = false
         popover.backgroundColor = .clear
-        // **不设** appearance：材质按 App 的外观解析，跟主菜单保持一致。
-        // 曾经在这里钉 `vibrantDark`，是为了配"恒为纯黑"的 dock；dock 换成随外观
-        // 的液态玻璃之后，钉死暗色只会让浮层和 dock、和菜单三处各不相同。
-        // 浅色系统下想要暗色浮层，正确做法是**应用整体切浅色**，不是单独把这块
-        // 面板掰成另一个外观。
+        // **不设** appearance：材质按系统外观解析，和菜单弹出保持一致。dock 那边
+        // 是相反的（钉 vibrantDark + 强制 dark colorScheme），两者刻意不同——dock
+        // 常驻，popover 跟菜单走。
         // 只读展示：不接管点击，保持"app 永不抢焦点"的设计前提。
         popover.ignoresMouseEvents = true
 
