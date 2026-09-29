@@ -233,7 +233,7 @@ func summaryColor(for percent: Double, timeFraction: Double? = nil) -> Color {
     case .warning:  return .warningTint
     case .healthy:
         // summary 没有 tint 上下文，用 primary 当基线；> 80% 额外加绿色信号
-        return percent > 80 ? .green : .primary
+        return percent > 80 ? .healthyTint : .primary
     }
 }
 

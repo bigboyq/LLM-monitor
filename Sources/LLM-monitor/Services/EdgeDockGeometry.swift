@@ -41,12 +41,12 @@ enum EdgeDockGeometry {
     /// 外环（5 小时窗口）直径。
     static let outerRingDiameter = diameter
     /// 内环（周窗口）直径。
-    static let innerRingDiameter = diameter * 0.6
+    static let innerRingDiameter = diameter * 0.72
     /// 中心品牌图标边长（pt）。
     ///
     /// 上限受内环内沿约束（当前内环内沿半径 ≈ 8.9pt，即图标最大约 17pt），
     /// 再大就会盖住环线；6pt 为当前观感取值。
-    static let iconSize: CGFloat = 12
+    static let iconSize: CGFloat = 14
     /// 环线宽（pt）。
     static let ringLineWidth: CGFloat = 3.5
 

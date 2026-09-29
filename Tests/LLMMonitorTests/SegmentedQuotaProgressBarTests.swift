@@ -97,19 +97,27 @@ final class SegmentedQuotaProgressBarTests: XCTestCase {
     // MARK: - summaryColor
 
     /// summaryColor：critical → 红，warning 档（动态橙色），healthy 基线 primary，
-    /// >80% 额外给绿色信号
+    /// >80% 额外给一个"健康"色信号。
+    ///
+    /// 绿色信号钉的是 `Color.healthyTint`（`systemGreen`）而不是 SwiftUI 的
+    /// `.green`：后者是**固定色**，不随外观变化，在浅色卡片上刺眼。这里顺带把
+    /// "不能退回固定绿"钉住——它正是这个 bug 重新长出来的入口。
     func testSummaryColorMappingIncludesGreenBoostAbove80() {
         XCTAssertEqual(summaryColor(for: 5), Color.red)
         XCTAssertEqual(summaryColor(for: 50), Color.primary)
-        XCTAssertEqual(summaryColor(for: 80), Color.primary, "80% 是边界，不含 > 80 的绿色加成")
-        XCTAssertEqual(summaryColor(for: 90), Color.green)
+        XCTAssertEqual(summaryColor(for: 80), Color.primary, "80% 是边界，不含 > 80 的加成")
+        XCTAssertEqual(summaryColor(for: 90), Color.healthyTint)
+        XCTAssertNotEqual(
+            summaryColor(for: 90), Color.green,
+            "健康色必须走随外观变化的 healthyTint，不能退回固定 .green"
+        )
 
         // 20% + 无时间系数 → 30% 固定黄阈值 → warning 档
-        //（排除 red / primary / green 唯一锁定 warningTint）
+        //（排除 red / primary / healthyTint 唯一锁定 warningTint）
         let warning = summaryColor(for: 20)
         XCTAssertNotEqual(warning, Color.red)
         XCTAssertNotEqual(warning, Color.primary)
-        XCTAssertNotEqual(warning, Color.green)
+        XCTAssertNotEqual(warning, Color.healthyTint)
     }
 
     // MARK: - 三角标记几何

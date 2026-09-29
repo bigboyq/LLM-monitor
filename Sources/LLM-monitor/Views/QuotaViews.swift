@@ -12,6 +12,11 @@ struct ChatGPTPlanModelRow: View {
     /// 夹在进度条块与三列统计之间的卡片级信息（重置卡、高峰期），见
     /// `ModelQuotaDockBlock.between`。只有第一个 model 行会拿到非空值。
     var between: AnyView = AnyView(EmptyView())
+    /// 第二个及以后的 model 行把三列明细默认折叠，见
+    /// `ModelQuotaDockBlock.collapsibleGroupIndex`。菜单侧不读这两个参数。
+    var collapsibleGroupIndex: Int? = nil
+    var expandedGroups: Binding<Set<Int>>? = nil
+    var onMeasureDisclosure: ((Int, CGRect) -> Void)? = nil
     /// dock 详情浮层把进度条提到标题上方；菜单保持原顺序（见 `CombinedQuotaWindowRow`）。
     @Environment(\.hoverRevealMode) private var revealMode
 
@@ -58,7 +63,10 @@ struct ChatGPTPlanModelRow: View {
                     missingUsageIsLoading: true
                 ),
                 footnote: EmptyView(),
-                between: between
+                between: between,
+                collapsibleGroupIndex: collapsibleGroupIndex,
+                expandedGroups: expandedGroups,
+                onMeasureDisclosure: onMeasureDisclosure
             )
         } else if hasPrimaryWindow {
             ModelQuotaDockBlock(
@@ -81,7 +89,10 @@ struct ChatGPTPlanModelRow: View {
                     missingUsageIsLoading: true
                 ),
                 footnote: EmptyView(),
-                between: between
+                between: between,
+                collapsibleGroupIndex: collapsibleGroupIndex,
+                expandedGroups: expandedGroups,
+                onMeasureDisclosure: onMeasureDisclosure
             )
         } else if hasSecondaryWindow {
             ModelQuotaDockBlock(
@@ -104,7 +115,10 @@ struct ChatGPTPlanModelRow: View {
                     missingUsageIsLoading: true
                 ),
                 footnote: EmptyView(),
-                between: between
+                between: between,
+                collapsibleGroupIndex: collapsibleGroupIndex,
+                expandedGroups: expandedGroups,
+                onMeasureDisclosure: onMeasureDisclosure
             )
         } else {
             Text("额度窗口不可用")
@@ -408,7 +422,7 @@ struct CompactResetCreditsRow: View {
     private var summaryColor: Color {
         if resets.availableCount == 0 { return .red }
         if resets.availableCount == 1 { return .orange }
-        return .green
+        return .healthyTint
     }
 }
 
@@ -419,7 +433,7 @@ struct CreditEntryRow: View {
     var body: some View {
         HStack(spacing: 6) {
             Circle()
-                .fill(.green)
+                .fill(Color.healthyTint)
                 .frame(width: 5, height: 5)
 
             if let expiresAt = entry.expiresAt {
@@ -456,6 +470,11 @@ struct CombinedQuotaWindowRow: View {
     /// 夹在进度条块与三列统计之间的卡片级信息（重置卡、高峰期），见
     /// `ModelQuotaDockBlock.between`。只有第一个 model 行会拿到非空值。
     var between: AnyView = AnyView(EmptyView())
+    /// 第二个及以后的 model 行把三列明细默认折叠，见
+    /// `ModelQuotaDockBlock.collapsibleGroupIndex`。菜单侧不读这两个参数。
+    var collapsibleGroupIndex: Int? = nil
+    var expandedGroups: Binding<Set<Int>>? = nil
+    var onMeasureDisclosure: ((Int, CGRect) -> Void)? = nil
     /// dock 详情浮层把进度条提到标题上方；菜单保持原顺序。
     @Environment(\.hoverRevealMode) private var revealMode
 
@@ -504,10 +523,14 @@ struct CombinedQuotaWindowRow: View {
                     secondaryUsage: weeklyUsage,
                     secondaryCreditUsage: weeklyCreditUsage,
                     hasSecondaryWindow: true,
-                    missingUsageIsLoading: false
+                    missingUsageIsLoading: false,
+                    showsLastPromptColumn: shouldShowLastPrompt
                 ),
                 footnote: offPeakFootnote,
-                between: between
+                between: between,
+                collapsibleGroupIndex: collapsibleGroupIndex,
+                expandedGroups: expandedGroups,
+                onMeasureDisclosure: onMeasureDisclosure
             )
         } else if model.hasIntervalWindow {
             ModelQuotaDockBlock(
@@ -527,10 +550,14 @@ struct CombinedQuotaWindowRow: View {
                     secondaryUsage: nil,
                     secondaryCreditUsage: nil,
                     hasSecondaryWindow: false,
-                    missingUsageIsLoading: false
+                    missingUsageIsLoading: false,
+                    showsLastPromptColumn: shouldShowLastPrompt
                 ),
                 footnote: offPeakFootnote,
-                between: between
+                between: between,
+                collapsibleGroupIndex: collapsibleGroupIndex,
+                expandedGroups: expandedGroups,
+                onMeasureDisclosure: onMeasureDisclosure
             )
         } else if model.hasWeeklyWindow {
             ModelQuotaDockBlock(
@@ -550,10 +577,14 @@ struct CombinedQuotaWindowRow: View {
                     secondaryUsage: nil,
                     secondaryCreditUsage: nil,
                     hasSecondaryWindow: false,
-                    missingUsageIsLoading: false
+                    missingUsageIsLoading: false,
+                    showsLastPromptColumn: shouldShowLastPrompt
                 ),
                 footnote: offPeakFootnote,
-                between: between
+                between: between,
+                collapsibleGroupIndex: collapsibleGroupIndex,
+                expandedGroups: expandedGroups,
+                onMeasureDisclosure: onMeasureDisclosure
             )
         } else {
             Text("额度窗口不可用")
@@ -875,18 +906,75 @@ struct ModelQuotaDockBlock<Bar: View, Columns: View, Footnote: View>: View {
     /// 传递会把整条链都染上类型参数，而这里只需要"一段不透明的内容"。
     /// 有默认值，所以三处 menu 调用点不用改。
     var between: AnyView = AnyView(EmptyView())
+    /// 把三列明细折叠成一条可点击的标题行。传分组下标（`nil` = 不折叠）。
+    ///
+    /// 只给**第二个及以后的** model 行开（Antigravity 两条条、ChatGPT 多套餐同理）：
+    /// 第一个条上方的卡片级信息（重置卡、高峰期）和它下面的明细是同一组信息的两面，
+    /// 展开着才读得完整；而第二个条已经是补充，展开后要多占一百多 pt，
+    /// 浮层高度直接被它顶到要滚动。
+    var collapsibleGroupIndex: Int? = nil
+    /// 展开状态由控制器持有（点击不在这里判定，见
+    /// `EdgeDockController.ensurePopoverPanel`），所以是 binding 而不是 `@State`。
+    var expandedGroups: Binding<Set<Int>>? = nil
+    /// 上报折叠头矩形的回调。`nil`（菜单侧）时只是不画折叠交互，不影响其余排版。
+    var onMeasureDisclosure: ((Int, CGRect) -> Void)? = nil
+
+    private var isColumnsExpanded: Bool {
+        guard let collapsibleGroupIndex, let expandedGroups else { return true }
+        return expandedGroups.wrappedValue.contains(collapsibleGroupIndex)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             bar
             between
-            // 统计表与上面的"额度概览"分开：上面回答"还剩多少、什么时候重置"，
-            // 下面才是 Last Prompt / 5h / 周的明细。与 7 天图表下方那条同款
-            // （同色、同不透明度、同样整行宽、不额外缩进），上下间距也对齐到 9pt
-            // （本 VStack spacing 6 + 这里的 3），两条线在屏幕上读起来是同一条。
-            Divider().opacity(0.45).padding(.vertical, 3)
-            columns
+            if let collapsibleGroupIndex {
+                columnsDisclosure(index: collapsibleGroupIndex)
+            } else {
+                columnDivider
+                columns
+            }
             footnote
+        }
+    }
+
+    /// 统计表与上面的"额度概览"分开：上面回答"还剩多少、什么时候重置"，
+    /// 下面才是 Last Prompt / 5h / 周的明细。与 7 天图表下方那条同款
+    /// （同色、同不透明度、同样整行宽、不额外缩进），上下间距也对齐到 9pt
+    /// （本 VStack spacing 6 + 这里的 3），两条线在屏幕上读起来是同一条。
+    @ViewBuilder
+    private var columnDivider: some View {
+        Divider().opacity(0.45).padding(.vertical, 3)
+    }
+
+    private func columnsDisclosure(index: Int) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 4) {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 8, weight: .bold))
+                    .rotationEffect(.degrees(isColumnsExpanded ? 90 : 0))
+                Text("用量明细")
+                    .font(MenuTypography.hoverRowEmphasis)
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(.secondary)
+            // 命中判定在控制器那边做（和圆环同一套），这里只负责把矩形报上去。
+            // **不能**用 SwiftUI `Button`：详情浮层是完全穿透的窗口，收不到点击，
+            // 写在 SwiftUI 里的按钮不报错也不置灰，只是永远按不动。
+            .background {
+                GeometryReader { geo in
+                    Color.clear
+                        .onAppear { onMeasureDisclosure?(index, geo.frame(in: .global)) }
+                        .onChange(of: geo.frame(in: .global)) { _, rect in
+                            onMeasureDisclosure?(index, rect)
+                        }
+                }
+            }
+
+            if isColumnsExpanded {
+                columnDivider
+                columns
+            }
         }
     }
 }
@@ -968,7 +1056,30 @@ struct QuotaBarWithMetadata: View {
 /// 时间 + 一组 token 指标——横排才能横向对比（"这次 prompt 花了多少，比这周
 /// 窗口多还是少"）；上下堆着时读者只能在三段之间来回跳。
 ///
-/// 没有 Last Prompt 时三列变两列，剩下两列平分宽度（`maxWidth: .infinity`）。
+/// Last Prompt 那一列。有数据时是完整明细，支持但还没数据时**保留标题**、
+/// 正文换成"额度窗口内暂无本地数据"——和 5h / 周两列的空态处理是同一条规则。
+///
+/// 整列不画的情况由调用方在 `QuotaDetailColumns` 里判掉了：那里能拿到
+/// "支不支持"，这里只管"有数据还是没有"。
+struct LastPromptDockColumn: View {
+    let lastPrompt: LastPromptUsage?
+
+    var body: some View {
+        if let lastPrompt {
+            LastPromptHoverSummaryView(lastPrompt: lastPrompt)
+        } else {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("Last Prompt")
+                    .font(MenuTypography.hoverRowEmphasis)
+                    .foregroundStyle(.primary)
+                Text("额度窗口内暂无本地数据")
+                    .font(MenuTypography.hoverCaption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+}
+
 struct QuotaDetailColumns: View {
     let lastPrompt: LastPromptUsage?
     let primaryLabel: String
@@ -979,11 +1090,18 @@ struct QuotaDetailColumns: View {
     let secondaryCreditUsage: QuotaCountUsage?
     let hasSecondaryWindow: Bool
     let missingUsageIsLoading: Bool
+    /// 这个 provider/model 是否**支持** last prompt。与 `lastPrompt == nil` 区分开：
+    /// 前者是"永远不会有"，后者是"支持但还没拉到"，空态文案只对后者成立。
+    var showsLastPromptColumn: Bool = true
 
     var body: some View {
         HStack(alignment: .top, spacing: 14) {
-            if let lastPrompt {
-                LastPromptHoverSummaryView(lastPrompt: lastPrompt)
+            // 有 last prompt 就完整画；支持但还没数据 → 保留标题 + 空态文案；
+            // 这个 provider 压根不提供 → 整列不画。三者必须分开：都画"暂无数据"
+            // 是在对 GLM 这类永远不会有 last prompt 的 provider 撒谎，而且是一句
+            // 永远兑现不了的谎。
+            if showsLastPromptColumn {
+                LastPromptDockColumn(lastPrompt: lastPrompt)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
 
@@ -1175,6 +1293,10 @@ private struct CombinedQuotaMetadataLine: View {
                 quotaValue(label: secondaryLabel, percent: secondaryPercent, timeFraction: secondaryTimeFraction)
             }
             .frame(width: quotaCombinedDataColumnWidth, alignment: .leading)
+            // 重置时间靠右：它和左侧两个百分比不是一组数字——百分比回答"还剩
+            // 多少"，重置时间回答"什么时候换一轮"，放在紧挨着的位置会被读成
+            // "5h 那一格的时间"。推到行尾，两个问题在视觉上分属两端。
+            Spacer(minLength: 12)
             ResetTimeSummary(resetsAt: resetsAt)
         }
     }
@@ -1225,9 +1347,12 @@ private struct ResetTimeSummary: View {
                 Text(Formatters.formatMonthDayMinute(resetsAt))
                     .font(MenuTypography.resetDate)
                     .lineLimit(1)
+                // 倒计时用次要色而不是 tertiary：tertiary 在浅色材质上已经淡到
+                // 接近不可读，而"还剩多久"是这行里读者真正要拿走的第二个信息
+                // （第一个是重置时刻），不该比同一行的时钟图标还弱。
                 Text("(\(Formatters.formatResetSuffix(from: resetsAt)))")
                     .font(MenuTypography.timeSuffix)
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
             .foregroundStyle(Color.primaryLabel)

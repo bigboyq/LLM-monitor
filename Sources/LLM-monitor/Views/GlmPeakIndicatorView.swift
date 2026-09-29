@@ -30,7 +30,7 @@ struct GlmPeakIndicatorView: View {
                 // 非高峰期：积分按 50% 抵扣。距高峰期 < 1 小时 → 橙色（临近）；
                 // ≥ 1 小时 → 绿色（余量充足）。
                 let secs = start.timeIntervalSinceNow
-                let tier: Color = secs < 3600 ? Color.warningTint : .green
+                let tier: Color = secs < 3600 ? Color.warningTint : .healthyTint
                 HStack(spacing: 4) {
                     Image(systemName: "snowflake")
                         .font(MenuTypography.badge)

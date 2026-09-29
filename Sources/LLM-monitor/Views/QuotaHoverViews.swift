@@ -204,6 +204,10 @@ struct QuotaUsageWindowColumn: View {
     let creditUsage: QuotaCountUsage?
     var missingUsageIsLoading: Bool = false
 
+    /// 有数据与空态**共用**的标题。两边必须逐字相同：三列并排时任何一字之差
+    /// 都会让"标签宽度 / 换行点"对不上，空态那列看起来就像另起了一种排版。
+    private var columnTitle: String { "\(label) 本地 token 用量" }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             if let creditUsage {
@@ -218,22 +222,29 @@ struct QuotaUsageWindowColumn: View {
 
             if let usage {
                 UsageMetricHoverSummaryView(
-                    title: "\(label) 本地 token 用量",
+                    title: columnTitle,
                     usage: usage,
                     showPromptCount: true
                 )
             } else {
-                HStack(spacing: 6) {
-                    if missingUsageIsLoading {
-                        ProgressView().controlSize(.mini)
+                // 空态**保留标题**，只把正文换成一句话。
+                //
+                // 此前空态直接渲染成一句"5h 额度窗口内暂无本地 token 记录"，没有
+                // 标题行。三列并排时这一列就比旁边两列**矮一整行**，正文和别人的
+                // 标题挤在同一高度上，读起来像列没对齐，而不是像"这一列没数据"。
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(columnTitle)
+                        .font(MenuTypography.hoverRowEmphasis)
+                        .foregroundStyle(.primary)
+
+                    HStack(spacing: 6) {
+                        if missingUsageIsLoading {
+                            ProgressView().controlSize(.mini)
+                        }
+                        Text(missingUsageIsLoading ? "用量生成中…" : "额度窗口内暂无本地数据")
+                            .font(MenuTypography.hoverCaption)
+                            .foregroundStyle(.secondary)
                     }
-                    Text(
-                        missingUsageIsLoading
-                            ? "\(label) 用量生成中…"
-                            : "\(label) 额度窗口内暂无本地 token 记录"
-                    )
-                    .font(MenuTypography.hoverCaption)
-                    .foregroundStyle(.secondary)
                 }
             }
         }

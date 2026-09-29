@@ -145,6 +145,17 @@ final class EdgeDockController: ObservableObject {
     ///
     /// 坐标系换算由控制器统一做，视图只报自己的矩形 —— 视图不该知道屏幕的存在。
     private var measuredRowRectsByID: [String: CGRect] = [:]
+    /// 详情浮层里**已展开**的 model 分组（按 `displayedModels` 的下标）。
+    ///
+    /// 状态放在控制器而不是视图的 `@State` 里：卡片的点击由 `handleMouseEvent`
+    /// 做命中判定驱动，视图自己收不到点击（见 `ensurePopoverPanel` 的说明），
+    /// `@State` 没有第二个写入口。
+    @Published private var expandedDetailGroups: Set<Int> = []
+    /// 「用量明细」折叠头的实测矩形（视图坐标系），按下标索引。
+    private var detailDisclosureRects: [Int: CGRect] = [:]
+    /// 上一次渲染浮层时的 `selectedIndex`。切换 provider 时用它判断"换卡片了"，
+    /// 见 `updatePopover`。
+    private var lastPopoverIndex: Int?
     /// 本帧命中实际采用的来源，切换时写日志。
     ///
     /// 这一行日志是有意加的：实测路径一旦失效（例如坐标系换算错了），界面表现为
@@ -275,7 +286,7 @@ final class EdgeDockController: ObservableObject {
         statusCancellable?.cancel()
         evaluationCancellable?.cancel()
         configCancellable?.cancel()
-        popoverPanel?.orderOut(nil)
+        hidePopover()
         panel?.orderOut(nil)
     }
 
@@ -525,6 +536,9 @@ final class EdgeDockController: ObservableObject {
     private func handleMouseEvent(_ type: NSEvent.EventType) {
         switch type {
         case .leftMouseDown:
+            // 卡片里的「用量明细」先判：它和圆环不在同一个窗口上，而下面的拖拽
+            // 分支只看 dock 的 frame，两者互不重叠，所以不会互相抢。
+            if toggleDetailGroup(at: NSEvent.mouseLocation) { return }
             // 只有按在 dock 本身上才起拖；按在 popover 上不应该把圆环拖走。
             // isVisible：隐藏路径只 orderOut，frame 还留着旧位置——全屏 / 关开关
             // 期间点到那个位置，不该把看不见的 dock 拖走再把新位置写进配置。
@@ -576,6 +590,19 @@ final class EdgeDockController: ObservableObject {
     }
 
     /// 松手的统一收尾：无位移 = 点击（切换详情），有位移 = 拖动（吸附 + 记住位置）。
+    /// 命中「用量明细」折叠头则切换该分组的展开状态，返回是否命中。
+    private func toggleDetailGroup(at point: CGPoint) -> Bool {
+        let rects = resolvedDetailDisclosureRects()
+        guard let index = rects.first(where: { $0.value.contains(point) })?.key else { return false }
+        if expandedDetailGroups.contains(index) {
+            expandedDetailGroups.remove(index)
+        } else {
+            expandedDetailGroups.insert(index)
+        }
+        updatePopover()
+        return true
+    }
+
     private func finishPressOrDrag(at mouse: CGPoint) {
         guard isDragging else { return }
         isDragging = false
@@ -757,6 +784,22 @@ final class EdgeDockController: ObservableObject {
     }
 
     /// 视图逐行直报自己的实测矩形（视图坐标系）。
+    /// 视图上报「用量明细」折叠头的实测矩形（视图坐标系）。
+    ///
+    /// 换算到屏幕坐标放在**读取时**（`resolvedDetailDisclosureRects`），和
+    /// `resolvedRowRects` 同一个理由：浮层每次出现都可能被重摆到别的位置，
+    /// "上报时就换算"会留下上一个位置的陈旧矩形。
+    func updateDetailDisclosureRect(index: Int, rect: CGRect) {
+        guard detailDisclosureRects[index] != rect else { return }
+        detailDisclosureRects[index] = rect
+    }
+
+    /// 本帧用于命中的折叠头矩形（屏幕坐标）。
+    private func resolvedDetailDisclosureRects() -> [Int: CGRect] {
+        guard let hosting = popoverHostingView, popoverPanel?.isVisible == true else { return [:] }
+        return detailDisclosureRects.mapValues { convertToScreen($0, in: hosting) }
+    }
+
     func updateMeasuredRowRect(id: String, rect: CGRect) {
         guard measuredRowRectsByID[id] != rect else { return }
         measuredRowRectsByID[id] = rect
@@ -869,7 +912,7 @@ final class EdgeDockController: ObservableObject {
               let index = selectedIndex,
               config.enabled, !isHiddenByFullscreen
         else {
-            popoverPanel?.orderOut(nil)
+            hidePopover()
             return
         }
 
@@ -880,8 +923,18 @@ final class EdgeDockController: ObservableObject {
         guard index >= 0, index < entries.count,
               let status = statuses.first(where: { $0.id == entries[index].id })
         else {
-            popoverPanel?.orderOut(nil)
+            hidePopover()
             return
+        }
+
+        // 展开状态和矩形都按 `displayedModels` 的**下标**索引，而每个 provider 的
+        // model 列表完全不同。点另一个圆环切卡片时走的是同一条路径（不经过
+        // `hidePopover`），所以必须在这里比对下标：漏了这一步，"Antigravity 第 2 组
+        // 展开"会原样落到下一个 provider 的第 2 组上。
+        if lastPopoverIndex != index {
+            lastPopoverIndex = index
+            if !expandedDetailGroups.isEmpty { expandedDetailGroups.removeAll() }
+            if !detailDisclosureRects.isEmpty { detailDisclosureRects.removeAll() }
         }
 
         let visibleFrame = Self.targetScreen.visibleFrame
@@ -905,7 +958,16 @@ final class EdgeDockController: ObservableObject {
         /// 位置会跳。固定宽度才和菜单那一屏看起来是同一个东西。
         @ViewBuilder
         func card() -> some View {
-            ProviderCardView(status: status)
+            ProviderCardView(
+                status: status,
+                expandedDetailGroups: Binding(
+                    get: { [weak self] in self?.expandedDetailGroups ?? [] },
+                    set: { [weak self] newValue in self?.expandedDetailGroups = newValue }
+                ),
+                onMeasureDisclosure: { [weak self] index, rect in
+                    self?.updateDetailDisclosureRect(index: index, rect: rect)
+                }
+            )
                 .frame(width: cardContentWidth)
                 .padding(backdrop)
                 .edgeDockPopoverSystemMaterialBackground()
@@ -943,6 +1005,18 @@ final class EdgeDockController: ObservableObject {
         popover.orderFrontRegardless()
     }
 
+    /// 收起详情窗。收回点击穿透**再** `orderOut`：
+    /// `orderOut` 只是把窗口藏起来，命中测试不再命中它，但万一之后有人漏了
+    /// 一次 `orderFront`（比如异常路径），一个看不见却仍吃点击的窗口最难查。
+    private func hidePopover() {
+        popoverPanel?.ignoresMouseEvents = true
+        popoverPanel?.orderOut(nil)
+        // 展开状态和矩形都按下标索引，跨 provider 不通用：换一个 provider 就必须
+        // 清空，否则"第 1 组展开"会落到另一个 provider 的第 1 组头上。
+        if !expandedDetailGroups.isEmpty { expandedDetailGroups.removeAll() }
+        if !detailDisclosureRects.isEmpty { detailDisclosureRects.removeAll() }
+    }
+
     /// popover 内容**跟随系统外观** + 折叠区常展。
     ///
     /// 和 dock 的**固定暗色**是刻意的对照，不是漏配：dock 常驻屏幕边缘，跟菜单栏
@@ -955,9 +1029,13 @@ final class EdgeDockController: ObservableObject {
     /// 比不改更糟。
     ///
     /// `hoverRevealMode = .alwaysVisible`：这个浮层本身就是"用户主动点击某个圆"
-    /// 才出现的详情，面板还 `ignoresMouseEvents = true`（根本收不到 hover），
-    /// 里面再藏一层"悬停才展开"等于要求一个收不到鼠标的窗口被悬停 —— 那些
-    /// section 在这里永远也展不开，等于整段信息静默丢失。
+    /// 才出现的详情，**靠鼠标移开来收起**而不是靠移出某个区域。里面再藏一层
+    /// "悬停才展开"等于要求一个正在被移开的窗口被悬停 —— 那些 section 永远
+    /// 展不开，等于整段信息静默丢失。
+    ///
+    /// 真正的点击交互（第二组 model 的「用量明细」展开/收起）靠的是**接管鼠标**，
+    /// 见 `ensurePopoverPanel` 里 `ignoresMouseEvents` 那段：两者的区别是
+    /// "收不到 hover" 与 "收得到点击"，前者必须靠常展，后者只要窗口在屏上。
     private func popoverContent<C: View>(_ content: C) -> some View {
         content
             .environment(\.hoverRevealMode, .alwaysVisible)
@@ -987,7 +1065,23 @@ final class EdgeDockController: ObservableObject {
         // **不设** appearance：材质按系统外观解析，和菜单弹出保持一致。dock 那边
         // 是相反的（钉 vibrantDark + 强制 dark colorScheme），两者刻意不同——dock
         // 常驻，popover 跟菜单走。
-        // 只读展示：不接管点击，保持"app 永不抢焦点"的设计前提。
+        // **保持完全穿透**，卡片的点击不走这里。
+        //
+        // 这是**故意**设的，不是能力限制：`ignoresMouseEvents` 控制的是"这个窗口
+        // 参不参与命中测试"，true = 整个窗口对鼠标透明，点击原样穿到下层。菜单栏
+        // 常驻的透明小窗、以及任何桌面悬浮件都用它。dock 尤其需要：它常驻在屏幕
+        // 边缘还带着 padding，如果它吃点击，用户在屏幕边上点任何东西都会被它拦下。
+        //
+        // 试过改成 `false` 让卡片里的 SwiftUI `Button` 直接响应——**没有生效**，
+        // 点击仍然什么都不发生。至于**为什么**没生效，我没有验证过：非激活面板
+        // （`.nonactivatingPanel` + accessory app 不抢焦点）里的 SwiftUI 交互是否
+        // 需要窗口成为 key、还是命中区域算错、还是别的原因，这里说不准。
+        // 所以这条注释只记观察到的结果，不记猜测的成因。
+        //
+        // 当前实现不依赖那个未知原因：点击一律由 `handleMouseEvent` 拿
+        // `NSEvent.mouseLocation` 做命中判定，和圆环的点击完全同源——dock 从来
+        // 没用过 SwiftUI Button。代价是这次点击**同时**落到卡片后面的 App 上，
+        // 那是穿透窗口的固有行为，不是新引入的。
         popover.ignoresMouseEvents = true
 
         let hosting = NSHostingView(rootView: AnyView(EmptyView()))
