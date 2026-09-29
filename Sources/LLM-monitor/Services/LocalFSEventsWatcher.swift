@@ -27,7 +27,11 @@ final class LocalFSEventsWatcher {
         label: "com.llm-monitor.fsevents",
         qos: .utility
     )
-    private var stream: FSEventStreamRef?
+    /// `nonisolated(unsafe)`：`deinit` 在 Swift 6 里是非隔离的，而 `FSEventStreamRef`
+    /// 不是 Sendable，读这个属性会直接编译失败。这个指针只在 `start()` / `stop()` /
+    /// `deinit` 里被碰，`deinit` 执行时已经不存在其他引用，实际不存在并发访问；
+    /// 用 `(unsafe)` 明确接下这个"编译器证明不了、但由生命周期保证"的事实。
+    nonisolated(unsafe) private var stream: FSEventStreamRef?
     /// FSEvents may flush a root-directory creation event after the stream is
     /// attached even when the directory existed before registration.  Consume
     /// that one startup artifact per root; later root events remain real dirty
