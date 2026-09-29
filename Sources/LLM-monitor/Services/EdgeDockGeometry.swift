@@ -420,18 +420,6 @@ struct EdgeDockTab: Shape {
 ///
 /// 集中在这里而不是散在各个 View 里：换主题时只改这一处，dock 与 popover 会一起变。
 enum EdgeDockTheme {
-    /// dock 背板：纯黑、不透明。
-    ///
-    /// 刻意保持窗口**透明**、只把背景填成不透明黑：如果把 NSPanel 设成
-    /// `isOpaque = true` + 黑色窗口底色，窗口矩形会整个变黑，
-    /// `EdgeDockTab` 的轮廓就看不见了——纯黑与轮廓只能二选一时，
-    /// 轮廓更值得留。
-    ///
-    /// dock **不用**玻璃：它常态贴在屏幕边缘，玻璃要采样背后的桌面壁纸，
-    /// 一个 34pt 宽的常驻窗口做实时折射既费电又会让圆环的可读性随壁纸漂移。
-    /// 玻璃只给「用户主动悬停才出现」的 popover。
-    static let background = Color.black
-
     /// popover 背板的圆角。
     static let popoverCornerRadius: CGFloat = 12
 
@@ -453,53 +441,44 @@ enum EdgeDockTheme {
 
     /// 圆环底槽（进度弧画在它上面）。
     ///
-    /// 固定白色而非 `Color.secondary`：dock 恒为纯黑、不随系统外观变化，语义色却
-    /// 会翻转，浅色系统下会把底槽压到几乎不可见。
-    static let ringTrack = Color.white.opacity(0.16)
-
-    /// popover 玻璃的暗色调：macOS 26+ 作为 `Glass.tint`，更早的系统作为压深层。
+    /// 用 `Color.primary` 而不是写死白色。dock 背板现在是随系统外观的液态玻璃，
+    /// 写死的白在浅色玻璃上等于隐形——空槽消失之后，50% 会被读成"环画断了"
+    /// 而不是"还剩一半"，用户读到的是**错的**数据而不只是难看的界面。
+    /// `primary` 在深色外观下解析成浅色、浅色外观下解析成深色，两边都落在
+    /// 玻璃的对面，对比度自动成立。
     ///
-    /// 玻璃本身跟随系统外观，但 popover **强制暗色**（`NSAppearance.vibrantDark` +
-    /// `colorScheme`），所以这里的黑不是为了适配浅色，而是把磨砂压到足够深——
-    /// 卡片文字是浅色的，玻璃太亮会直接吃掉对比度。
-    static let glassTint = Color.black.opacity(0.34)
-}
+    /// 不透明度 0.18（原来 0.16）：0.16 在浅色玻璃上偏淡。定这个值时把
+    /// "浅色玻璃 + 亮壁纸"和"深色玻璃 + 亮壁纸"两种最坏情况都算进去了。
+    static let ringTrack = Color.primary.opacity(0.18)
 
-/// popover 的暗色液态玻璃背板。
-///
-/// 玻璃要采样窗口**背后**的内容，所以前提是 popover 面板透明
-/// （`isOpaque = false` + clear 背景）——`ensurePopoverPanel` 已经保证这一点。
-/// 面板若改成不透明，玻璃会退化成一块死板的灰。
-struct EdgeDockGlassSurface: ViewModifier {
-    func body(content: Content) -> some View {
-        if #available(macOS 26.0, *) {
-            content.glassEffect(
-                .regular.tint(EdgeDockTheme.glassTint),
-                in: RoundedRectangle(
-                    cornerRadius: EdgeDockTheme.popoverCornerRadius, style: .continuous
-                )
-            )
-        } else {
-            // 旧系统没有液态玻璃，用 ultraThinMaterial 磨砂 + 一层暗色压深近似。
-            // 两层叠在同一个 ZStack 里：材质在下负责模糊，压深在上负责变暗。
-            content.background {
-                ZStack {
-                    RoundedRectangle(
-                        cornerRadius: EdgeDockTheme.popoverCornerRadius, style: .continuous
-                    )
-                    .fill(.ultraThinMaterial)
-                    RoundedRectangle(
-                        cornerRadius: EdgeDockTheme.popoverCornerRadius, style: .continuous
-                    )
-                    .fill(EdgeDockTheme.glassTint)
-                }
-            }
-        }
-    }
 }
 
 extension View {
-    func edgeDockGlassBackground() -> some View {
-        modifier(EdgeDockGlassSurface())
+    /// dock 背板：**系统材质**，深浅完全交给系统。
+    ///
+    /// 目标是"和菜单面板一样"——菜单那层是 `MenuBarExtra(.window)` 窗口自带的
+    /// 系统玻璃（`MenuPanelSurface` 因此只写 `Color.clear`）。但那个玻璃是 AppKit
+    /// 给**那个特定窗口**的，自建的 borderless `NSPanel` 不会自动获得：写
+    /// `Color.clear` 只会得到完全透明，背后直接是壁纸，没有模糊、没有玻璃。
+    /// 所以这里显式挂上 `.regularMaterial`——那就是菜单在旧系统上的回退材质，
+    /// 由系统决定深浅，跟着 `colorScheme` 自动变，**不需要任何手调浓度**。
+    ///
+    /// 用 `Shape.fill(Material)` 而不是 `glassEffect`：前者是系统材质、形状由
+    /// `EdgeDockTab` 的 path 裁切；后者是 App 自己画的液态玻璃，得自己配 tint，
+    /// 而"自己配"正是要摆脱的东西。
+    func edgeDockSystemMaterialBackground<S: Shape>(in shape: S) -> some View {
+        background { shape.fill(.regularMaterial) }
+    }
+
+    /// popover 背板：同一个系统材质，圆角用 `popoverCornerRadius`。
+    ///
+    /// 与 dock 共用 `edgeDockSystemMaterialBackground` 而不是各写一遍：现在两处
+    /// 都不需要手调 tint（popover 曾经需要，是因为上面压着 0.60 的半透明卡片；
+    /// 卡片去掉之后那个理由就不成立了），共用一份实现才不会出现"dock 改了
+    /// 忘了同步浮层"这种只有肉眼能发现的偏差。
+    func edgeDockPopoverSystemMaterialBackground() -> some View {
+        edgeDockSystemMaterialBackground(
+            in: RoundedRectangle(cornerRadius: EdgeDockTheme.popoverCornerRadius, style: .continuous)
+        )
     }
 }

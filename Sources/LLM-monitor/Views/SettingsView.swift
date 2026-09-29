@@ -21,6 +21,7 @@ struct SettingsView: View {
     @State var edgeDockEnabled: Bool = false
     @State var edgeDockEdge: DockEdge = EdgeDockConfig.default.edge
     @State var edgeDockAutoHide: Bool = EdgeDockConfig.default.autoHideMode
+    @State var edgeDockHideInFullscreen: Bool = EdgeDockConfig.default.hideInFullscreen
 
     @State var minimaxEnabled: Bool = false
     @State var minimaxInterval: Int = 0
@@ -401,28 +402,31 @@ struct SettingsView: View {
                         )
                         .labelsHidden()
                     }
+
+                    SettingsControlRow("恢复默认颜色") {
+                        Button("恢复默认") {
+                            statusBarHealthColors = .default
+                        }
+                        .controlSize(.small)
+                        // 三个颜色都还是默认值时按钮没有意义，也不该看着可点。
+                        // 放在 disabled 而不是直接隐藏：控件位置会随三色是否被改过
+                        // 而跳动，读起来像是设置页自己变了。
+                        .disabled(statusBarHealthColors == .default)
+                    }
                 }
             }
 
             SettingsSection(
                 title: "边缘状态窗",
-                footer: "在屏幕边缘常驻一个小型圆环窗，每个已启用的 Provider 一个双环圆——外环是 5 小时额度剩余比例，内环是周额度剩余比例（各取该 Provider 内最吃紧的套餐），中心是品牌图标，环的颜色沿用上方状态栏三色。鼠标默认穿透不挡点击，移上去才接管；点击某个圆环会在旁边展开与主菜单相同的 Provider 卡片（再次点击或移开鼠标收起）。可直接拖到任意边缘，位置会记住。前台 App 进入全屏时自动隐藏。开启「自动隐藏模式」后，平时收起为紧贴边缘的简版小圆环列（无数字、无图标，单环只显示 5 小时额度剩余），鼠标靠近时展开为完整圆环窗。"
+                footer: "在屏幕边缘常驻一个小型圆环窗，每个已启用的 Provider 一个双环圆——外环是 5 小时额度剩余比例，内环是周额度剩余比例（各取该 Provider 内最吃紧的套餐），中心是品牌图标，环的颜色沿用上方状态栏三色。鼠标默认穿透不挡点击，移上去才接管；点击某个圆环会在旁边展开与主菜单相同的 Provider 卡片（再次点击或移开鼠标收起）。可直接拖到任意边缘，位置会记住——贴靠哪一边由拖动决定，这里没有下拉框。全屏时是否隐藏可单独关闭。开启「自动隐藏模式」后，平时收起为紧贴边缘的简版小圆环列（无数字、无图标，单环只显示 5 小时额度剩余），鼠标靠近时展开为完整圆环窗。"
             ) {
                 VStack(alignment: .leading, spacing: 16) {
                     SettingsToggleRow(label: "显示边缘状态窗", isOn: $edgeDockEnabled)
 
-                    SettingsControlRow("贴靠屏幕") {
-                        Picker("", selection: $edgeDockEdge) {
-                            ForEach(DockEdge.allCases) { edge in
-                                Text(edge.displayName).tag(edge)
-                            }
-                        }
-                        .pickerStyle(.menu)
-                        .disabled(!edgeDockEnabled)
-                        .frame(width: SettingsLayout.standardControlWidth, alignment: .trailing)
-                    }
-
                     SettingsToggleRow(label: "自动隐藏模式（收起为小圆环）", isOn: $edgeDockAutoHide)
+                        .disabled(!edgeDockEnabled)
+
+                    SettingsToggleRow(label: "全屏时不显示", isOn: $edgeDockHideInFullscreen)
                         .disabled(!edgeDockEnabled)
                 }
             }
@@ -984,6 +988,7 @@ struct SettingsView: View {
         edgeDockEnabled = edgeDock.enabled
         edgeDockEdge = edgeDock.edge
         edgeDockAutoHide = edgeDock.autoHideMode
+        edgeDockHideInFullscreen = edgeDock.hideInFullscreen
         barkEnabled = config.bark?.enabled ?? false
         barkServerURL = config.bark?.serverURL ?? BarkConfig.defaultServerURL
         barkDeviceKey = config.bark?.deviceKey ?? ""
@@ -1062,15 +1067,16 @@ struct SettingsView: View {
         config.statusBarHealthColors = statusBarHealthColors == .default
             ? nil
             : statusBarHealthColors
-        // 边缘窗：位置（edge + 归一化 offset）由拖拽实时写盘，这里只带开关、贴边方向
-        // 与自动隐藏模式，offset 沿用已存的值，避免在设置页点一下"保存"就把用户
-        // 拖好的位置抹回中间。
+        // 边缘窗：位置（edge + 归一化 offset）由拖拽实时写盘，这里只带开关、
+        // 贴边方向、自动隐藏与全屏隐藏，offset 沿用已存的值，避免在设置页点一下
+        // "保存"就把用户拖好的位置抹回中间。
         let existingEdgeDock = configStore.config.edgeDock
         let nextEdgeDock = EdgeDockConfig(
             enabled: edgeDockEnabled,
             edge: edgeDockEdge,
             offset: existingEdgeDock?.offset ?? EdgeDockConfig.default.offset,
-            autoHideMode: edgeDockAutoHide
+            autoHideMode: edgeDockAutoHide,
+            hideInFullscreen: edgeDockHideInFullscreen
         )
         let defaultEdgeDock = EdgeDockConfig.default
         config.edgeDock = (nextEdgeDock == defaultEdgeDock) ? nil : nextEdgeDock

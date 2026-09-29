@@ -136,7 +136,7 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 | `Sources/LLM-monitor/Models/EdgeDockEntry.swift` | `EdgeDockEntry` + `EdgeDockProjection`：已启用 Provider → 双环条目（5h / 周 各自最低剩余比例 + 健康档位 + 品牌 kind），纯函数 |
 | `Sources/LLM-monitor/Models/EdgeDockConfig.swift` | `DockEdge` / `EdgeDockConfig`：贴边方向 + 归一化位置（存比例不存绝对坐标），含手改值归一化 |
 | `Sources/LLM-monitor/Services/EdgeDockGeometry.swift` | 边缘窗纯几何：行高/尺寸、贴边 frame、offset 往返换算、最近边吸附、hover 行命中、popover 定位、沿边拖拽换算、贴屏侧直边的非对称标签形状 |
-| `Sources/LLM-monitor/Services/FullscreenProbe.swift` | 前台 App 全屏判定（`CGWindowList` 只读窗口边框，fail-open，不需要辅助功能权限） |
+| `Sources/LLM-monitor/Services/FullscreenProbe.swift` | 当前 Space 全屏判定（`CGWindowList` 只读窗口边框 + 桌面装饰是否存在，fail-open，不需要辅助功能权限） |
 | `Sources/LLM-monitor/Services/EdgeDockController.swift` | 边缘窗 `NSPanel` 生命周期、鼠标穿透接管、拖拽吸附、位置持久化、全屏门控 |
 | `Sources/LLM-monitor/Views/EdgeDockContentView.swift` | 边缘窗视图（外环=5h、内环=周、中心=Provider 品牌图标，刘海式背景） |
 | `Sources/LLM-monitor/Views/TokenChart.swift` | 7-day 柱图基础组件（`StackedTokenBar` / `TokenChartScale`） |

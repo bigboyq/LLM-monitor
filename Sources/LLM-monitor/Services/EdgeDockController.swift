@@ -38,7 +38,10 @@ final class EdgeDockController: ObservableObject {
     /// 位置（中心沿边连续移动），内容负责行 / 环的插值。任一层单独先行都会
     /// 露出破绽：只动画窗口 = 收起时缩掉的全是透明区域（瞬间跳变）；只动画
     /// 内容 = 窗口尺寸不变，结束后必须瞬移重定位（跳闪一下）。
-    static let contentMorphDuration: TimeInterval = 0.25
+    /// `nonisolated`：这个值被 SwiftUI/AppKit 的非隔离动画上下文读取（见
+    /// `DockTransition.duration`），它本身是 Sendable 的纯常量，没有理由要求
+    /// main actor。Swift 6 语言模式下少了它就是一个编译错误（audit 门禁会跑）。
+    nonisolated static let contentMorphDuration: TimeInterval = 0.25
 
     /// dock 窗口 frame 过渡的种类：决定动画时长与互斥规则。
     private enum DockTransition {
@@ -100,6 +103,7 @@ final class EdgeDockController: ObservableObject {
     private var configCancellable: AnyCancellable?
     private var screenObserver: NSObjectProtocol?
     private var activationObserver: NSObjectProtocol?
+    private var spaceObserver: NSObjectProtocol?
     private var globalMouseMonitor: Any?
     private var localMouseMonitor: Any?
     private var captureTimer: Timer?
@@ -107,7 +111,7 @@ final class EdgeDockController: ObservableObject {
     /// 实际生效配置。`@Published`：外观（完整/简版）由它派生，设置页翻转
     /// 自动隐藏开关时视图必须立即跟随，否则窗口缩了、内容排版还停在旧形态。
     @Published private(set) var config: EdgeDockConfig = .default
-    private var isFrontmostFullscreen = false
+    private var isFullscreenSpace = false
     private var isDragging = false
     /// 拖拽开始时取一次的条目数，供逐事件的 `applyDrag` 复用。
     private var dragEntryCount = 0
@@ -120,6 +124,8 @@ final class EdgeDockController: ObservableObject {
     /// 或状态变化（拖动 / 隐藏 / 释放接管）则取消。是**固定 deadline** 而不是
     /// 防抖：巡检定时器每 0.2s 会重复走"还在外面"的分支，防抖式重排会让
     /// deadline 永远被推后、收起永不发生。
+    /// Space 切换后阶梯式补测全屏的挂起任务。见 `scheduleFullscreenRechecks`。
+    private var fullscreenRetryWorkItems: [DispatchWorkItem] = []
     private var collapseWorkItem: DispatchWorkItem?
     /// 形态过渡进行中标记 + 到期解除任务：期间标准过渡（刷新广播等）不得碰
     /// 窗口 frame——按动画中间态帧重算并 setFrame 会打断正在播放的窗口动画，
@@ -182,16 +188,22 @@ final class EdgeDockController: ObservableObject {
                 let next = newConfig.effectiveEdgeDockConfig
                 let visibilityChanged = next.enabled != self.config.enabled
                 let autoHideChanged = next.autoHideMode != self.config.autoHideMode
+                let fullscreenPolicyChanged = next.hideInFullscreen != self.config.hideInFullscreen
                 self.config = next
                 // 开关翻转时清掉缓存的全屏判定：重新开启要从"当前不在全屏"开始，
                 // 否则会拿退出全屏时的旧状态直接判隐藏。
-                if visibilityChanged { self.isFrontmostFullscreen = false }
+                if visibilityChanged { self.isFullscreenSpace = false }
                 // 自动隐藏开关翻转时回到收起形态（关掉自动隐藏则恢复常驻完整 dock）。
                 // 只在翻转时复位：拖拽落点也会走一次持久化广播，鼠标正悬停时
                 // 不该因此闪一次收起。
                 if visibilityChanged || autoHideChanged { self.isExpanded = false }
                 self.reconcile(animated: true)
-                if visibilityChanged { self.evaluateFullscreen() }
+                // 全屏隐藏开关翻转也必须重新探测：用户很可能**正在全屏里**改这个
+                // 设置。少了这次探测就会拿一个可能已经过期的 `isFullscreenSpace`
+                // 去套新策略——表现是"开关拨了没反应，要退出全屏再来一次"。
+                if visibilityChanged || fullscreenPolicyChanged {
+                    self.evaluateFullscreen()
+                }
             }
 
         screenObserver = NotificationCenter.default.addObserver(
@@ -214,12 +226,39 @@ final class EdgeDockController: ObservableObject {
             Task { @MainActor [weak self] in self?.evaluateFullscreen() }
         }
 
+        // 进/出全屏的**本体**信号：全屏会切到一个新的 Space，所以真正对应这件事的
+        // 通知是 `activeSpaceDidChange`，而不是上面那两个。
+        //
+        // 之前只靠 `didActivateApplication`，等于在赌"进全屏时系统会顺带发一次
+        // App 激活"——而用户点全屏时那个 App 本来就已经是前台的，根本不会重新
+        // 激活。结果是 `isFullscreenSpace` 停在旧值：默认配置下 dock 该藏
+        // 没藏（既有 bug），关掉"全屏隐藏"时则是因为状态压根没更新才碰巧对。
+        spaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.activeSpaceDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.evaluateFullscreen()
+                self?.scheduleFullscreenRechecks()
+            }
+        }
+
         installMouseMonitors()
+        // 启动时先判一次全屏，再 reconcile：attach 之前用户可能就已经待在全屏 Space 里，
+        // 而那条路径上不会有任何 Space 切换 / App 激活通知（`activeSpaceDidChange` 只在
+        // 切换时发）。少了这一次，dock 会在启动的头一瞬间挂在全屏窗口上，一直等到用户
+        // 切走再切回来才消失。
+        //
+        // 放在 reconcile 之前：判定为全屏时它自己会走一次 `reconcile(animated: false)`，
+        // 窗口直接以隐藏状态创建；反过来先 reconcile 就会先显示、再隐藏，闪一下。
+        evaluateFullscreen()
         reconcile(animated: false)
     }
 
     func teardown() {
         cancelPendingCollapse()
+        cancelFullscreenRechecks()
         cancelFormMorphGuard()
         if let globalMouseMonitor { NSEvent.removeMonitor(globalMouseMonitor) }
         if let localMouseMonitor { NSEvent.removeMonitor(localMouseMonitor) }
@@ -229,8 +268,10 @@ final class EdgeDockController: ObservableObject {
         captureTimer = nil
         if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
         if let activationObserver { NSWorkspace.shared.notificationCenter.removeObserver(activationObserver) }
+        if let spaceObserver { NSWorkspace.shared.notificationCenter.removeObserver(spaceObserver) }
         screenObserver = nil
         activationObserver = nil
+        spaceObserver = nil
         statusCancellable?.cancel()
         evaluationCancellable?.cancel()
         configCancellable?.cancel()
@@ -257,8 +298,9 @@ final class EdgeDockController: ObservableObject {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
         panel.hidesOnDeactivate = false
         panel.isOpaque = false
-        // 纯黑由 SwiftUI 的 `EdgeDockTheme.background` 填充，窗口底色保持透明：
-        // 设成不透明黑会让整个窗口矩形变黑，`EdgeDockTab` 的直角与圆角就看不见了。
+        // 底色保持透明、背板由 SwiftUI 的液态玻璃填：玻璃要采样背后的桌面壁纸，
+        // 设成不透明底色会让整个窗口矩形变成一块死板的实色，`EdgeDockTab` 的
+        // 直角与圆角轮廓也看不见。
         panel.hasShadow = false
         panel.backgroundColor = .clear
         // 拖动不走系统的自由移动：窗口位置由 `applyDrag` 按鼠标直接驱动，
@@ -294,7 +336,10 @@ final class EdgeDockController: ObservableObject {
 
     /// 唯一的布局/显隐收口：算条目 → 决定显隐 → 定尺寸 → 贴边 → 排序。
     private func reconcile(animated: Bool, transition: DockTransition = .standard) {
-        guard let state else { return }
+        // 只做"接没接线"的存在性检查，不绑定 `state` 本身：下面一律经
+        // `orderedEntries()` 取数据（它自己也读 `state`），接出一个用不上的局部量
+        // 只会招来 unused 警告。
+        guard state != nil else { return }
 
         let entries = orderedEntries()
         let entryCount = entries.count
@@ -315,11 +360,11 @@ final class EdgeDockController: ObservableObject {
 
         // 开关关闭、前台 App 全屏、或一个 provider 都没开监控 → 不出现。
         // 挂一个空壳在屏幕边缘只会让人以为程序坏了。
-        guard config.enabled, !isFrontmostFullscreen, entryCount > 0 else {
+        guard config.enabled, !isHiddenByFullscreen, entryCount > 0 else {
             logVisibilityChange(
                 enabled: config.enabled,
                 entryCount: entryCount,
-                fullscreen: isFrontmostFullscreen,
+                fullscreen: isFullscreenSpace,
                 shown: false,
                 frame: .zero
             )
@@ -393,7 +438,7 @@ final class EdgeDockController: ObservableObject {
         logVisibilityChange(
             enabled: config.enabled,
             entryCount: entryCount,
-            fullscreen: isFrontmostFullscreen,
+            fullscreen: isFullscreenSpace,
             shown: true,
             frame: target
         )
@@ -549,7 +594,7 @@ final class EdgeDockController: ObservableObject {
     /// 每帧巡检鼠标：决定命中哪个圆、要不要接管、popover 挂在哪。
     private func probeMouse(at mouse: CGPoint) {
         guard let panel = self.panel,
-              config.enabled, !isFrontmostFullscreen, !isDragging else { return }
+              config.enabled, !isHiddenByFullscreen, !isDragging else { return }
 
         let inDock = panel.frame.insetBy(dx: -Self.hoverPadding, dy: -Self.hoverPadding).contains(mouse)
         // 卡片**不可见时不参与判定**：`orderOut` 只把窗口藏起来，frame 还留在
@@ -655,7 +700,7 @@ final class EdgeDockController: ObservableObject {
     /// 不放进 `releaseMouseCapture`：那里还被 reconcile 的隐藏分支调用，若它再触发
     /// reconcile 会形成一次无意义的重入（隐藏条件不会变，但白跑一遍）。
     private func collapseExpandedDockIfNeeded() {
-        guard isExpanded, config.enabled, !isFrontmostFullscreen, !isDragging else { return }
+        guard isExpanded, config.enabled, !isHiddenByFullscreen, !isDragging else { return }
         isExpanded = false
         reconcile(animated: true, transition: .collapse)
     }
@@ -811,7 +856,7 @@ final class EdgeDockController: ObservableObject {
         guard let panel,
               let state,
               let index = selectedIndex,
-              config.enabled, !isFrontmostFullscreen
+              config.enabled, !isHiddenByFullscreen
         else {
             popoverPanel?.orderOut(nil)
             return
@@ -836,20 +881,25 @@ final class EdgeDockController: ObservableObject {
         let width = min(EdgeDockTheme.popoverWidth, max(visibleFrame.width - 80, 240))
         let cardContentWidth = max(width - backdrop * 2, 120)
 
-        /// 暗色液态玻璃背板 + 卡片浮在上面。dock 仍是纯黑不透明——两者并排时
-        /// 一深一浅是刻意的层次：dock 是常驻的实心块，popover 是临时浮层。
+        /// 系统材质背板 + 卡片内容直接浮在上面（**不画卡片表面**）。
+        ///
+        /// `surface: .transparent`：中间那一层半透明卡片去掉，内容直接坐在
+        /// 材质上。去掉之后"卡片"只剩 `contentPadding` 那一圈内边距，看起来
+        /// 就是一块纯材质的浮层。
+        ///
+        /// 这层中间卡片一度是 `.system`（和主菜单同源），理由是"要有个卡片
+        /// 边界、和菜单对得上"。现在材质本身已经是系统材质，再夹一层 0.60 的
+        /// `controlBackgroundColor` 只会把材质压灰、折射细节被盖掉。
         ///
         /// 宽度**固定**并与主菜单同源，不再按内容自然尺寸伸缩：自然尺寸下每张
         /// 卡片宽度都不一样，同一张 `ProviderCardView` 在不同 provider 之间换行
         /// 位置会跳。固定宽度才和菜单那一屏看起来是同一个东西。
         @ViewBuilder
         func card() -> some View {
-            // `.transparent`：卡片不画自己的半透明表面，直接坐在玻璃背板上，
-            // 否则控件底色再叠一层磨砂会糊成一坨。
             ProviderCardView(status: status, surface: .transparent)
                 .frame(width: cardContentWidth)
                 .padding(backdrop)
-                .edgeDockGlassBackground()
+                .edgeDockPopoverSystemMaterialBackground()
         }
 
         hosting.rootView = AnyView(popoverContent(card()))
@@ -884,21 +934,24 @@ final class EdgeDockController: ObservableObject {
         popover.orderFrontRegardless()
     }
 
-    /// popover 内容统一套暗色外观 + 折叠区常展。
+    /// popover 内容**跟随系统外观** + 折叠区常展。
     ///
-    /// 玻璃本身跟随系统外观，但这里要的是**暗色**玻璃：系统浅色模式下弹出一块
-    /// 灰白磨砂，和旁边恒为纯黑的 dock 并排会很脏。强制暗色顺带把卡片里的语义色
-    /// 拉到浅色一套——深底浅字才读得清，这是 legibility 而不是纯审美选择。
-    /// 面板侧另外设了 `NSAppearance.vibrantDark`，让**材质本身**也解析成暗色，
-    /// 只改 SwiftUI 环境不会改变 `ultraThinMaterial` / `glassEffect` 的外观。
+    /// 曾经强制暗色（SwiftUI 侧 `colorScheme` + 面板侧 `NSAppearance.vibrantDark`
+    /// 两处），理由是"浅色系统下弹出一块灰白磨砂，和旁边恒为纯黑的 dock 并排
+    /// 会很脏"。dock 换成随外观的液态玻璃之后，这个理由就不成立了：两边都
+    /// 跟随系统，浅色系统下是两块浅色玻璃并排，反而是一致的。强制暗色反而会
+    /// 让浮层和 dock、和主菜单三处各不相同。
     ///
-    /// `hoverRealMode = .alwaysVisible`：这个浮层本身就是"用户主动点击某个圆"
+    /// 面板侧的 `appearance` 同样不能留：只改 SwiftUI 的 `colorScheme` 不会让
+    /// **材质本身**跟着变，`glassEffect` / `ultraThinMaterial` 仍按 App 的外观
+    /// 解析，结果是"内容按浅色画、底板按深色画"——比不改更糟。
+    ///
+    /// `hoverRevealMode = .alwaysVisible`：这个浮层本身就是"用户主动点击某个圆"
     /// 才出现的详情，面板还 `ignoresMouseEvents = true`（根本收不到 hover），
     /// 里面再藏一层"悬停才展开"等于要求一个收不到鼠标的窗口被悬停 —— 那些
     /// section 在这里永远也展不开，等于整段信息静默丢失。
     private func popoverContent<C: View>(_ content: C) -> some View {
         content
-            .environment(\.colorScheme, .dark)
             .environment(\.hoverRevealMode, .alwaysVisible)
     }
 
@@ -923,9 +976,11 @@ final class EdgeDockController: ObservableObject {
         // 这里一旦改成不透明，磨砂会直接退化成一块死板的灰。
         popover.hasShadow = false
         popover.backgroundColor = .clear
-        // 强制暗色外观：材质（`ultraThinMaterial` / `glassEffect`）按外观解析，
-        // 不设的话浅色系统下会弹出灰白玻璃。SwiftUI 侧的 colorScheme 另设。
-        popover.appearance = NSAppearance(named: .vibrantDark)
+        // **不设** appearance：材质按 App 的外观解析，跟主菜单保持一致。
+        // 曾经在这里钉 `vibrantDark`，是为了配"恒为纯黑"的 dock；dock 换成随外观
+        // 的液态玻璃之后，钉死暗色只会让浮层和 dock、和菜单三处各不相同。
+        // 浅色系统下想要暗色浮层，正确做法是**应用整体切浅色**，不是单独把这块
+        // 面板掰成另一个外观。
         // 只读展示：不接管点击，保持"app 永不抢焦点"的设计前提。
         popover.ignoresMouseEvents = true
 
@@ -935,18 +990,7 @@ final class EdgeDockController: ObservableObject {
 
         popoverPanel = popover
         popoverHostingView = hosting
-        logInfo("EdgeDock: popover 玻璃=\(Self.glassBackendName) appearance=vibrantDark")
         return (popover, hosting)
-    }
-
-    /// 实际生效的玻璃实现。
-    ///
-    /// 写进日志而不是只写在注释里：玻璃在 borderless 透明 NSPanel 里能不能真正
-    /// 渲染出来，肉眼看很容易和"材质没生效"混为一谈，而"看起来没变"是没有
-    /// 任何报错的 silent failure。日志能区分"走的是回退路径"和"走了新路径但没渲染"。
-    private static var glassBackendName: String {
-        if #available(macOS 26.0, *) { return "glassEffect" }
-        return "ultraThinMaterial(回退)"
     }
 
     /// 接管后持续巡检：鼠标移出就交还。
@@ -1020,20 +1064,70 @@ final class EdgeDockController: ObservableObject {
 
     // MARK: - 全屏门控
 
+    /// 全屏是否**应该**让 dock 消失。探测结果（`isFullscreenSpace`）是事实，
+    /// 策略本身在 `EdgeDockConfig.hidesInFullscreen` 上（可单测）。
+    ///
+    /// 单独拎出来而不是在四个 guard 里各写一次：多写一次不会编译报错，只会让
+    /// 某一处（比如 popover 的显示判断）漏掉这个开关，表现是"dock 在全屏里还
+    /// 开着、点开详情却什么都没有"。
+    private var isHiddenByFullscreen: Bool {
+        config.hidesInFullscreen(isFullscreenSpace: isFullscreenSpace)
+    }
+
+    /// Space 切换后**阶梯式**补测全屏，各档延迟。
+    ///
+    /// 单次补测不够，因为"进/出全屏"和"滑动 Space"是两种时长完全不同的过渡：
+    ///
+    /// - 滑动 Space：瞬时，0.25s 后就稳定了
+    /// - 进/出全屏：约 1s 的窗口动画。0.25s 时窗口还在**长大**，`covers()`
+    ///   读到的中间态盖不满整屏 → 判成"没全屏"
+    ///
+    /// 而 `evaluateFullscreen` 对"值没变"是直接 return 的，也就是**一次读错就被
+    /// 永久缓存**，直到下一次无关事件才可能纠正。这正是实测症状的成因：
+    /// 浏览器刚进全屏时 dock 留着（0.25s 读到动画中间态），等关掉另一个全屏
+    /// 窗口再滑回来反而正常（滑动没有动画，0.25s 足够）。
+    ///
+    /// 阶梯覆盖到 2.8s，够任何真实过渡走完。重复执行无害——判定本身幂等，
+    /// 只有真正翻转时才 reconcile。成本是每次 Space 切换多 5 次窗口列表读取。
+    private static let fullscreenRetryLadder: [TimeInterval] = [0.25, 0.6, 1.1, 1.8, 2.8]
+
+    private func scheduleFullscreenRechecks() {
+        cancelFullscreenRechecks()
+        fullscreenRetryWorkItems = Self.fullscreenRetryLadder.map { delay in
+            let work = DispatchWorkItem { [weak self] in
+                self?.evaluateFullscreen()
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+            return work
+        }
+    }
+
+    private func cancelFullscreenRechecks() {
+        fullscreenRetryWorkItems.forEach { $0.cancel() }
+        fullscreenRetryWorkItems.removeAll()
+    }
+
     private func evaluateFullscreen() {
         guard config.enabled else {
-            isFrontmostFullscreen = false
+            isFullscreenSpace = false
             reconcile(animated: false)
             return
         }
         // fail-open：探测失败返回 false，窗口照常显示。
-        let fullscreen = FullscreenProbe.isFrontmostAppFullscreen(
+        //
+        // 判据问的是"当前 Space 上有没有铺满整屏的窗口"，不是"前台 App 有没有"——
+        // 滑动 Space 不触发 App 激活，按前台过滤会漏判出非前台 App 的全屏 Space。
+        let fullscreen = FullscreenProbe.isAnyFullscreenWindow(
             on: Self.targetScreen,
-            excludingWindowNumber: panel?.windowNumber
+            excludingProcessIdentifier: ProcessInfo.processInfo.processIdentifier
         )
-        guard fullscreen != isFrontmostFullscreen else { return }
-        isFrontmostFullscreen = fullscreen
-        logInfo(fullscreen ? "EdgeDock: 前台 App 进入全屏，隐藏" : "EdgeDock: 退出全屏，恢复显示")
+        guard fullscreen != isFullscreenSpace else { return }
+        isFullscreenSpace = fullscreen
+        logInfo(fullscreen
+            ? (config.hideInFullscreen
+                ? "EdgeDock: 检测到全屏，隐藏"
+                : "EdgeDock: 检测到全屏（已关闭全屏隐藏，继续显示）")
+            : "EdgeDock: 退出全屏，恢复显示")
         reconcile(animated: false)
     }
 }

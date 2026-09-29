@@ -687,6 +687,67 @@ final class EdgeDockTests: XCTestCase {
         XCTAssertTrue(decoded.normalized.autoHideMode, "normalized 必须原样保留自动隐藏开关")
     }
 
+    // MARK: - 全屏隐藏开关：配置兼容
+
+    func testHideInFullscreenDefaultsOn() {
+        // 这一条和 autoHideMode 的默认值**方向相反**，是故意的：
+        // 全屏隐藏是"从没有开关"变成"有开关"，功能一直存在、默认一直是开。
+        // 如果这里给 false，等于升级后所有已开启 dock 的用户立刻在全屏里
+        // 多出一个窗口——那不是新功能，是行为突变。
+        XCTAssertTrue(EdgeDockConfig.default.hideInFullscreen)
+    }
+
+    func testLegacyConfigJSONWithoutHideInFullscreenStillDecodes() throws {
+        // 同 autoHideMode：缺字段不能让整块解码失败。外层 ConfigStore 用 try?，
+        // 失败 = 用户已开启的边缘窗被静默重置回默认关闭。
+        let legacy = #"{"enabled":true,"edge":"top","offset":0.2,"autoHideMode":true}"#
+        let decoded = try JSONDecoder().decode(EdgeDockConfig.self, from: Data(legacy.utf8))
+        XCTAssertTrue(decoded.enabled)
+        XCTAssertEqual(decoded.edge, .top)
+        XCTAssertTrue(decoded.autoHideMode)
+        XCTAssertTrue(decoded.hideInFullscreen, "缺失该字段时必须回落到默认开启")
+    }
+
+    func testHideInFullscreenRoundTripsThroughJSON() throws {
+        let off = EdgeDockConfig(enabled: true, edge: .left, offset: 0.9, hideInFullscreen: false)
+        let offDecoded = try JSONDecoder().decode(EdgeDockConfig.self, from: try JSONEncoder().encode(off))
+        XCTAssertEqual(offDecoded, off)
+        XCTAssertFalse(offDecoded.normalized.hideInFullscreen, "normalized 必须原样保留关闭状态")
+
+        let on = EdgeDockConfig(enabled: true, edge: .left, offset: 0.9, hideInFullscreen: true)
+        let onDecoded = try JSONDecoder().decode(EdgeDockConfig.self, from: try JSONEncoder().encode(on))
+        XCTAssertTrue(onDecoded.normalized.hideInFullscreen)
+    }
+
+    func testFullscreenHidingRespectsTheToggle() {
+        // 策略本身：探测到全屏 + 开关开着 → 隐藏；开关关掉 → 一律不隐藏。
+        // 这两行曾经散在控制器四个 guard 里各写一次，任何一处漏掉都不会编译报错。
+        let hiding = EdgeDockConfig(enabled: true, edge: .right, offset: 0.5, hideInFullscreen: true)
+        XCTAssertTrue(hiding.hidesInFullscreen(isFullscreenSpace: true))
+        XCTAssertFalse(hiding.hidesInFullscreen(isFullscreenSpace: false), "不在全屏时永远不隐藏")
+
+        let showing = EdgeDockConfig(enabled: true, edge: .right, offset: 0.5, hideInFullscreen: false)
+        XCTAssertFalse(
+            showing.hidesInFullscreen(isFullscreenSpace: true),
+            "关掉开关后，即使前台 App 全屏也不该隐藏——这正是这个选项的意义"
+        )
+    }
+
+    func testEdgeSurvivesSettingsSaveEvenThoughThereIsNoEdgePicker() {
+        // 设置页不再有"贴靠边"下拉框，但保存时仍然要把**已存的值**原样写回去。
+        // 贴边方向由拖动实时写盘；如果这里改成 `EdgeDockConfig.default.edge`，
+        // 用户在设置页点一下"保存"就会把拖好的位置打回右侧，而且没有任何提示。
+        let stored = EdgeDockConfig(enabled: true, edge: .bottom, offset: 0.42, hideInFullscreen: false)
+        let rebuilt = EdgeDockConfig(
+            enabled: stored.enabled,
+            edge: stored.edge,
+            offset: stored.offset,
+            autoHideMode: stored.autoHideMode,
+            hideInFullscreen: stored.hideInFullscreen
+        )
+        XCTAssertEqual(rebuilt, stored)
+    }
+
     // MARK: - 配置归一化
 
     func testNormalizedClampsHandEditedOffset() {
@@ -1625,6 +1686,182 @@ final class EdgeDockTests: XCTestCase {
         let appKitTop = CGRect(x: 0, y: 1030, width: 100, height: 50)
         let cgTop = FullscreenProbe.cgRect(fromAppKitRect: appKitTop, primaryScreenHeight: primary)
         XCTAssertEqual(cgTop.minY, 0, accuracy: 0.001, "贴 AppKit 顶部 = CG 顶部坐标 0")
+    }
+
+    // MARK: - 全屏判定：当前 Space 局部，而非"前台 App"
+
+    private static let probeScreen = CGRect(x: 0, y: 0, width: 1920, height: 1080)
+    private static let probePrimary: CGFloat = 1080
+    private static let probeOwnPID: pid_t = 4242
+
+    private func probe(
+        _ entries: [FullscreenProbe.WindowEntry],
+        own: pid_t = EdgeDockTests.probeOwnPID
+    ) -> Bool {
+        FullscreenProbe.containsFullscreenWindow(
+            among: entries,
+            screenFrame: EdgeDockTests.probeScreen,
+            primaryScreenHeight: EdgeDockTests.probePrimary,
+            ownProcessIdentifier: own
+        )
+    }
+
+    private func window(
+        _ pid: pid_t, layer: Int = 0, _ rect: CGRect
+    ) -> FullscreenProbe.WindowEntry {
+        .init(ownerPID: pid, layer: layer, bounds: rect)
+    }
+
+    /// 这条钉的就是"滑动桌面后 dock 留在全屏里"那个 bug。
+    ///
+    /// 全屏窗口属于 PID 777，但**前台 App 不是它**——滑动 Space 不触发 App 激活，
+    /// 所以前台 PID 仍然是别的进程。旧实现按前台 PID 过滤，整个窗口列表里挑不出
+    /// 任何属于前台的窗口 → 判定"没全屏" → dock 留在全屏 Space 上不消失。
+    func testFullscreenWindowIsDetectedEvenWhenItIsNotTheFrontmostApp() {
+        let full = CGRect(x: 0, y: 0, width: 1920, height: 1080)
+        let entries = [
+            window(777, full),                  // 别人家的全屏窗口，就在当前 Space 上
+            window(1234, CGRect(x: 10, y: 10, width: 400, height: 300)),  // 前台 App 的普通小窗
+        ]
+        XCTAssertTrue(
+            probe(entries, own: EdgeDockTests.probeOwnPID),
+            "只要当前 Space 上有铺满整屏的窗口就该判定全屏——不能因为它不属于前台 App 而漏判"
+        )
+    }
+
+    func testMaximizedWindowIsNotFullscreen() {
+        // 菜单栏可见时最大化窗口被挤在 visibleFrame 里（这里 y=25 留给菜单栏），
+        // 盖不满整块显示区。误报防护来自覆盖判据，**不是**进程过滤——
+        // 所以去掉进程过滤不会换来"窗口铺满就藏 dock"。
+        let maximized = CGRect(x: 0, y: 25, width: 1920, height: 1030)
+        XCTAssertFalse(probe([window(777, maximized)]))
+    }
+
+    // MARK: - 全屏判定：桌面装饰区分「真全屏」与「缩放」
+
+    /// 单独那条覆盖判据挡不住的误判：菜单栏和 Dock 都设成自动隐藏时
+    /// `visibleFrame == frame`，缩放 / 最大化出来的窗口正好盖满 `screen.frame`。
+    /// 桌面装饰还在 = 普通 Space，不能算全屏。
+    func testZoomedWindowCoveringWholeScreenOnNormalSpaceIsNotFullscreen() {
+        let full = CGRect(x: 0, y: 0, width: 1920, height: 1080)
+        let entries = [
+            window(777, full),
+            window(744, layer: FullscreenProbe.desktopChromeLayer, full),
+        ]
+        XCTAssertFalse(
+            probe(entries),
+            "桌面装饰还在，说明这是普通 Space，铺满的窗口只是被缩放到 visibleFrame 的大窗口"
+        )
+    }
+
+    /// 真全屏 Space 上没有桌面装饰：同样铺满，判定必须为真。
+    /// 与上一条一起钉住「覆盖面积 + 桌面装饰」这对判据，缺一条就退化成旧行为。
+    func testWholeScreenWindowWithoutDesktopChromeIsFullscreen() {
+        let full = CGRect(x: 0, y: 0, width: 1920, height: 1080)
+        XCTAssertTrue(probe([window(777, full)]))
+    }
+
+    /// 副屏的桌面装饰不在本屏上，不能压掉本屏的全屏判定。
+    func testDesktopChromeOnAnotherScreenDoesNotSuppressFullscreen() {
+        let full = CGRect(x: 0, y: 0, width: 1920, height: 1080)
+        let otherScreen = CGRect(x: 0, y: -1200, width: 1920, height: 1200)
+        XCTAssertTrue(
+            probe([
+                window(777, full),
+                window(744, layer: FullscreenProbe.desktopChromeLayer, otherScreen),
+            ]),
+            "桌面装饰必须按目标屏比对，副屏那一份与本屏无关"
+        )
+    }
+
+    /// 判据必须**精确等于** `kCGDesktopIconWindowLevel`。桌面那一带上还有窗口服务器
+    /// 与 WindowManager 的常驻窗口（壁纸后板、Space 切换层等），全屏时它们照样在；
+    /// 一旦放宽成"层 <= 桌面图标层"，真全屏就会被判成普通 Space（漏判，dock 留在
+    /// 全屏里）。
+    func testOnlyTheDesktopIconLevelCountsAsDesktopChrome() {
+        let full = CGRect(x: 0, y: 0, width: 1920, height: 1080)
+        let neighbours = [
+            FullscreenProbe.desktopChromeLayer - 1,
+            FullscreenProbe.desktopChromeLayer + 1,
+            Int(CGWindowLevelForKey(.desktopWindow)),
+        ]
+        for layer in neighbours {
+            XCTAssertTrue(
+                probe([window(777, full), window(410, layer: layer, full)]),
+                "层 \(layer) 不是桌面装饰层，不该压掉全屏判定"
+            )
+        }
+        XCTAssertFalse(
+            probe([window(777, full), window(744, layer: FullscreenProbe.desktopChromeLayer, full)]),
+            "桌面图标层本身仍必须被认成桌面装饰"
+        )
+    }
+
+    func testOwnProcessWindowsNeverCountAsFullscreen() {
+        // 自己铺满屏幕的任何窗口都不能触发隐藏，否则边缘窗会自己把自己藏掉，
+        // 而且没有任何手段把它弄回来。
+        let full = CGRect(x: 0, y: 0, width: 1920, height: 1080)
+        XCTAssertFalse(
+            probe([window(EdgeDockTests.probeOwnPID, full)]),
+            "本进程窗口铺满屏幕时必须返回 false"
+        )
+        XCTAssertTrue(
+            probe([window(EdgeDockTests.probeOwnPID, full), window(777, full)], own: EdgeDockTests.probeOwnPID),
+            "本进程有满屏窗口时，仍然要看别人的"
+        )
+    }
+
+    func testNonNormalWindowLayersNeverCountAsFullscreen() {
+        // 菜单 / tooltip / 阴影层铺满屏幕不代表全屏。
+        let full = CGRect(x: 0, y: 0, width: 1920, height: 1080)
+        for layer in [1, 2, 3, -1] {
+            XCTAssertFalse(probe([window(777, layer: layer, full)]), "layer \(layer) 不该被判成全屏")
+        }
+        XCTAssertTrue(probe([window(777, layer: 0, full)]))
+    }
+
+    func testEmptyWindowListIsNotFullscreen() {
+        XCTAssertFalse(probe([]), "探测不到任何窗口时必须 fail-open（返回 false，窗口照常显示）")
+    }
+
+    /// 副屏排在主屏**上方**时，翻转出来的 CG 原点是**负 y**——这是正确的全局坐标，
+    /// 不是 bug。
+    ///
+    /// 这一条存在的原因是它极易被"修"坏：判据拿窗口坐标和 `screen.frame` 翻转后的
+    /// 坐标比对，而两者不同源时覆盖判据会恒假；恒假的表现和"窗口没被报出来"一样，
+    /// 于是很可能有人看到负 y 就加一次取绝对值 / 改成主屏高度当偏移。那样多屏布置
+    /// 在主屏上方或左侧的机器上会静默失效，而单屏开发机永远复现不出来。
+    ///
+    /// 真实数据（本机，主屏 1440×900、上方副屏 1920×1080）：副屏窗口的
+    /// `kCGWindowBounds` 是 `y = -1080`，对应 AppKit 的 `y = 900...1980`。
+    func testCgRectFlipIsCorrectForScreensAboveAndBelowThePrimary() {
+        let primary: CGFloat = 900
+
+        // 主屏上方：AppKit y 从主屏高度往上长 → CG y 为负。
+        let above = FullscreenProbe.cgRect(
+            fromAppKitRect: CGRect(x: 0, y: 900, width: 1920, height: 1080),
+            primaryScreenHeight: primary
+        )
+        XCTAssertEqual(above, CGRect(x: 0, y: -1080, width: 1920, height: 1080), "主屏上方的副屏必须是负 CG y")
+
+        // 主屏下方：AppKit y 为负 → CG y 大于主屏高度。
+        let below = FullscreenProbe.cgRect(
+            fromAppKitRect: CGRect(x: 0, y: -1080, width: 1920, height: 1080),
+            primaryScreenHeight: primary
+        )
+        XCTAssertEqual(below, CGRect(x: 0, y: 900, width: 1920, height: 1080), "主屏下方的副屏从主屏高度往下算")
+
+        // 且判定用得起来：副屏自己的全屏窗口（哪怕位于负 y）必须被认出来。
+        let entries = [window(777, above)]
+        XCTAssertTrue(
+            FullscreenProbe.containsFullscreenWindow(
+                among: entries,
+                screenFrame: CGRect(x: 0, y: 900, width: 1920, height: 1080),
+                primaryScreenHeight: primary,
+                ownProcessIdentifier: EdgeDockTests.probeOwnPID
+            ),
+            "副屏在负 y 区域时覆盖判据不能恒假"
+        )
     }
 
     func testCgRectFlipPreservesSizeAndIsInvolutive() {

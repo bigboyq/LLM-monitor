@@ -169,7 +169,7 @@ the screen is **square and flush**, the inward-facing end is a large convex corn
 
 The flush screen side is deliberate. The window already sits flush against the
 screen edge; a rounded corner there opens a sliver of desktop between screen and
-window and the black shape starts to read as a capsule floating above the screen.
+window and the backplate starts to read as a capsule floating above the screen.
 Square corners let it join the screen edge into one continuous line.
 
 Each row is **ring + persistent quota number** (5h first, weekly as fallback, `—`
@@ -235,7 +235,7 @@ Three consequences that are easy to get wrong:
 - **`rowCenter` returns the row centre, not the ring centre** — the row includes the
   number, so they differ by 7pt. The popover aligns to the row.
 
-**Padding is orientation-independent.** The dock is a solid opaque black block, so a
+**Padding is orientation-independent.** The dock's backplate is a hard-edged shape, so a
 missing inset is immediately visible and never produces an error. `dockSize` adds
 `padding * 2` on the stacking axis (`rowHeight` per row vertically, `diameter` per
 column horizontally) and on the perpendicular axis (`diameter` vertically,
@@ -257,8 +257,8 @@ Two rings per row, each a **track** plus an **arc**:
 
 | Part | Rule |
 |---|---|
-| Track | `EdgeDockTheme.ringTrack` (white @ 16%), drawn **unconditionally**. It is the only cue that "there is a ring here, the number just isn't readable yet" while loading, on first fetch, or for providers with no quota window. Never skip it because `fraction == nil` — the track and the arc are two separate draws |
-| Track colour | Fixed white, **not** `Color.secondary`. The dock is solid black and does not follow system appearance; a semantic colour flips with it and vanishes in light mode |
+| Track | `EdgeDockTheme.ringTrack`, drawn **unconditionally**. It is the only cue that "there is a ring here, the number just isn't readable yet" while loading, on first fetch, or for providers with no quota window. Never skip it because `fraction == nil` — the track and the arc are two separate draws |
+| Track colour | `Color.primary` @ 18%, **not** a fixed white and not `Color.secondary`. The dock's backplate is a material that follows the system appearance, so the track must resolve to the opposite side of it in both modes; a fixed white disappears on light material, and a track that disappears is read as "the ring is broken", not as "half left" |
 | Arc | `EdgeDockGeometry.arcTrimRange(fraction:)`, which returns `nil` for `nil` and `0` (a zero-length round-capped stroke would leave a dot on an empty ring) and `[1 - fraction, 1]` otherwise |
 | Direction | **Depletes clockwise.** The clockwise end is pinned at 12 o'clock and the free end sweeps clockwise toward it, so the gap opens at 12 o'clock and grows clockwise. The common `[0, fraction]` fills clockwise from 12 and retracts *counter*-clockwise on the way down — that reads as "progress", not "remaining" |
 
@@ -436,42 +436,44 @@ interior center.
 
 ### Background
 
-The two surfaces deliberately do **not** share a background any more:
+The two surfaces **share** one background implementation:
 
 | Surface | Fill | Why |
 |---|---|---|
-| Dock | **solid black**, opaque (`EdgeDockTheme.background`) | It is permanently on screen. A 38pt-wide always-on window doing live wallpaper refraction costs power and makes the ring's legibility drift with whatever wallpaper happens to be behind it. Solid black is stable and free. |
-| Hover popover | **dark liquid glass** (`EdgeDockGlassSurface`) | It exists for a few seconds, on demand, and sampling the desktop behind it is the whole point. |
+| Dock | `.regularMaterial`, clipped by `EdgeDockTab` | Permanently on screen, so it must not be the one piece of UI that looks like a different app |
+| Hover popover | the same material, `popoverCornerRadius` | Exists for a few seconds on demand; sampling the desktop behind it is the whole point |
+| Menu panel | AppKit's own glass for the `MenuBarExtra(.window)` window | The reference the other two are matched to |
 
-The one-deep-one-light contrast between them is intentional layering, not a mismatch:
-the dock is a fixture, the popover is a temporary overlay.
+The dock was once solid opaque black on purpose: it is permanently on screen, and a
+38pt-wide always-on window doing live wallpaper refraction costs power and lets the
+rings' legibility drift with whatever wallpaper is behind it. That trade is now taken
+the other way, so that the dock, the popover and the menu panel all read as the same
+material. If power or ring contrast becomes a problem, this is the knob to turn back:
+the dock is the always-on surface and the popover is not, so keeping only the popover
+on a material is the cheap half-measure.
 
 Both windows stay **transparent** at the window level (`isOpaque = false`, clear
 background) and paint their fill in SwiftUI. For the dock this is because an opaque
-black window background would black out the whole window rect and make the notch's
-rounded corners invisible; for the popover it is because **glass samples what is behind
-the window** — an opaque panel turns the material into a dead grey slab.
+window background would fill the whole window rect and hide the notch's rounded corner
+outline; for the popover it is because **the material samples what is behind the
+window** — an opaque panel turns it into a dead grey slab.
 
-Glass implementation, two paths:
+One implementation, no OS branching: both surfaces fill their shape with
+`.regularMaterial` through `edgeDockSystemMaterialBackground(in:)` (the popover passes
+`popoverCornerRadius`). The menu's glass is supplied by AppKit for the
+`MenuBarExtra(.window)` window specifically and is not inherited by a self-built
+borderless `NSPanel`, where `Color.clear` would be plain transparency with no blur — so
+the material is requested explicitly. Depth is entirely the system's: the same
+`regularMaterial` resolves light or dark from the app appearance, and neither surface
+carries a hand-tuned tint. There is no `#available` branch, hence nothing to log.
 
-| OS | Implementation |
-|---|---|
-| macOS 26+ | `Glass.regular.tint(EdgeDockTheme.glassTint)` via `.glassEffect(_:in:)` — real Liquid Glass with refraction and a system-drawn rim |
-| macOS 14–25 | `.ultraThinMaterial` plus a `glassTint` layer on top — a dark frosted approximation |
+**Appearance is inherited, not forced.** The popover sets no
+`NSAppearance(named: .vibrantDark)`, and the content does not override `\.colorScheme`:
+a material resolves its appearance from the view's, so forcing only the SwiftUI
+environment paints light content over a dark slab. In a light system the popover and the
+dock are two light materials side by side, matching the menu.
 
-The active path is logged (`EdgeDock: popover 玻璃=glassEffect`) because "the glass did
-not render" and "the code fell back to the material" look identical on screen, and
-neither produces an error.
-
-**Dark is forced, not inherited.** The popover panel sets
-`NSAppearance(named: .vibrantDark)` and the SwiftUI content gets
-`\.colorScheme = .dark`. Materials resolve their appearance from the view's
-appearance, so the SwiftUI environment alone would leave the *material* light in a
-light system — a pale grey slab next to a black dock. The dark card text is a
-legibility requirement on top of the aesthetic one.
-
-`EdgeDockTheme` remains the single place these values live. Pure black and the glass
-tint are the current starting point, not hard decisions.
+`EdgeDockTheme` remains the single place these values live.
 
 ### Hover behaviour
 
@@ -599,13 +601,31 @@ Two supporting details, both about the per-event budget:
 - `setFrame(..., display: false)`. Forcing a synchronous redraw per event saturates
   the main thread; the window server composites the move anyway.
 
-Fullscreen handling: `FullscreenProbe` reads the frontmost app's window bounds via
-`CGWindowListCopyWindowInfo` (window *bounds* only — no Accessibility or Screen
-Recording permission prompt) and hides the dock when a normal-layer window covers
-the screen. This is **fail-open**: any failure returns `false` and the dock stays
-visible, because a panel that hides itself on a probe failure and never returns is
-worse than brief overlap. The dock's own window number is excluded from the probe
-so it cannot classify itself as fullscreen.
+Fullscreen handling: `FullscreenProbe` reads window *bounds* only via
+`CGWindowListCopyWindowInfo` (no Accessibility or Screen Recording permission prompt) and
+hides the dock when the current Space has a normal-layer window covering the whole screen
+**and** that display has no desktop chrome. The second half is what separates a real
+fullscreen Space from a zoomed window: with both the menu bar and the Dock set to
+auto-hide, `visibleFrame == frame`, so a zoomed window covers `screen.frame` exactly and
+coverage alone cannot tell the difference. Desktop chrome (the Finder desktop-icon window,
+`kCGDesktopIconWindowLevel`) is absent on every fullscreen Space and present on every
+normal one, and hiding the menu bar does not remove it. `.excludeDesktopElements` must
+therefore stay off, since it filters out exactly that window; the negative-layer windows it
+admits are ignored by the `layer == 0` candidate filter. The chrome layer is matched
+exactly, never as a band — WindowServer and WindowManager keep persistent windows at
+neighbouring levels even while fullscreen, so a band test would turn every fullscreen Space
+into a miss. This is **fail-open** and one-directional: the chrome test can only turn a
+`true` into a `false`, so when chrome cannot be read at all the probe degrades to the old
+coverage-only answer rather than hiding more. Any failure returns `false` and the dock
+stays visible, because a panel that hides itself on a probe failure and never returns is
+worse than brief overlap. The dock's own windows are excluded from the probe so it cannot
+classify itself as fullscreen.
+
+AX (`AXFullScreen`) was evaluated and rejected: it is not in the public SDK (only the
+fullscreen *button* element is), it needs an Accessibility grant that ad-hoc builds lose on
+every rebuild, and it answers "is this window fullscreen" without saying *which Space* — a
+fullscreen window on another Space still reports `true`, which would hide the dock on a
+plain desktop.
 
 Dragging moves the panel freely (`isMovableByWindowBackground`); on release it snaps
 to the nearest edge and persists `{edge, offset}` through `ConfigStore.applyAndSave`.
@@ -614,8 +634,13 @@ to the nearest edge and persists `{edge, offset}` through `ConfigStore.applyAndS
 |---|---|
 | `enabled == false` | Not created / ordered out |
 | No enabled Provider (entry count 0) | Ordered out — no empty shell on the screen edge |
-| Frontmost App in fullscreen | Ordered out, restored on exit |
+| Fullscreen window on the target screen's current Space, with `hideInFullscreen` on | Ordered out, restored on exit |
 | Otherwise | Visible, click-through |
+
+`hideInFullscreen` defaults to **on**: the option was added after the behaviour, so the
+default has to preserve it — defaulting to off would put a dock inside every fullscreen
+window for every existing user. Because the setting can be flipped while the user is
+already fullscreen, a policy change re-probes instead of reusing the cached verdict.
 
 ## Settings Window
 

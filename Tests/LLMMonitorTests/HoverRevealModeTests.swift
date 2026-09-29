@@ -47,6 +47,7 @@ final class HoverRevealModeTests: XCTestCase {
             ProviderCardLayout.showsPeakIndicatorInHeader,
             ProviderCardLayout.splitsCachedInputRow,
             ProviderCardLayout.splitsRoundsRow,
+            ProviderCardLayout.showsDetailSections,
         ] {
             XCTAssertFalse(rule(.onHover), "主菜单不该套用 dock 的重排规则")
             XCTAssertTrue(rule(.alwaysVisible), "dock 详情浮层才套用重排规则")
@@ -62,11 +63,15 @@ final class HoverRevealModeTests: XCTestCase {
     /// 满 7 天本地用量，444pt 内容宽）**1188pt**（全展开的原始形态）→
     /// **915pt**（第一轮重排）→ **611pt**（第二轮：元信息行去重 + 三列布局）
     /// → **648pt**（第三轮：重置卡提到头部 + input/cached、prompts/rounds 拆行）
-    /// → **628pt**（第四轮：去掉进度条前导 label 和模型名那一行）。
+    /// → **628pt**（第四轮：去掉进度条前导 label 和模型名那一行）
+    /// → **650pt**（第五轮：拆「额度 / 本地用量」两个 section，各加一个标题行）。
     ///
     /// 第三轮涨 37pt 是**故意的**：拆行换来每个数字都有完整一行。第四轮把
     /// 头部那张"条 + 名称 label"总表撤回、条各归各的分块，顺带省掉模型名那一行，
-    /// 又落回 628pt——比第二轮还低，且 Antigravity 双 model 形态只有 184pt。
+    /// 又落回 628pt。第五轮加两个 section 标题后回到 650pt——那 22pt 是**故意**
+    /// 花的：额度和本地用量是两套独立数据源（provider 接口 vs 本机会话扫描），
+    /// 混在一列里读者分不清归属，本地用量为空时"扫描尚未完成"尤其会被当成
+    /// 额度的脚注。标题带来的高度用可读性换。
     ///
     /// **不要改成"和菜单形态比"**：菜单那张卡片是**折叠**的（同一张卡只有
     /// 120pt），拿它当基准会把"折叠区就地展开"这件事本身判成回归——而就地

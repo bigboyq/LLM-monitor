@@ -90,14 +90,11 @@ struct EdgeDockContentView: View {
                 ? EdgeDockGeometry.compactPadding
                 : EdgeDockGeometry.padding
         )
-        .background(
-            // 纯黑不透明填充；不带投影——实心块加投影在浅色壁纸上只会显脏。
-            EdgeDockTab(edge: controller.config.edge)
-                .fill(EdgeDockTheme.background)
-        )
+        // 系统材质，深浅交给系统——和菜单面板同源，不在这里手调浓度。
+        .edgeDockSystemMaterialBackground(in: EdgeDockTab(edge: controller.config.edge))
         // 撑满宿主并朝贴靠边对齐：展开 / 收起变形期间内容小于窗口（展开时窗口
-        // 先行扩大、收起时窗口等内容收完再缩小），锚在左上角的话贴右边时黑块
-        // 会先出现在屏幕内侧、贴边侧露出透明缝。锚到贴靠边后黑块始终粘着屏幕
+        // 先行扩大、收起时窗口等内容收完再缩小），锚在左上角的话贴右边时背板
+        // 会先出现在屏幕内侧、贴边侧露出透明缝。锚到贴靠边后背板始终粘着屏幕
         // 边缘、向屏幕内生长 / 收回。稳态下宿主 == 内容尺寸，这个 frame 不改变
         // 任何东西。
         .frame(
@@ -236,7 +233,6 @@ struct EdgeDockContentView: View {
         .help("\(entry.displayName) · \(caption(for: entry))")
     }
 
-    /// 单个环：底环 + 按时钟方向填充的健康色弧。
     /// 圆环下方常驻的额度数值：优先 5 小时窗口，没有就退到周窗口，都没有显示 `—`。
     ///
     /// 常驻数字是边缘窗不悬停时的唯一可读信息，所以优先给 5 小时窗口——它变化最快，
@@ -245,7 +241,9 @@ struct EdgeDockContentView: View {
         Text(labelText(for: entry))
             .font(.system(size: 10, weight: .medium, design: .rounded))
             .monospacedDigit()
-            .foregroundStyle(Color.white.opacity(0.92))
+            // 语义色：深色外观下解析成浅字、浅色外观下解析成深字，
+            // 始终与玻璃底色相反。写死白色在浅色玻璃上等于隐形。
+            .foregroundStyle(Color.primary.opacity(0.9))
             .lineLimit(1)
             .fixedSize(horizontal: true, vertical: false)
     }
@@ -261,9 +259,9 @@ struct EdgeDockContentView: View {
     /// 额度窗口时，槽是"这里有一个环，只是读不到数"的唯一提示。槽和弧是两次独立
     /// 绘制，不能因为 `fraction == nil` 就把整个环连槽一起跳过。
     ///
-    /// 用固定的白色而不是 `Color.secondary`：dock 恒为纯黑、不随系统外观变化，而
-    /// 语义色会翻转 —— 浅色系统下 `secondary` 压到 0.16 几乎看不见，用户会以为
-    /// "加载中根本没有环"。
+    /// 用语义色而不是写死白色：dock 背板是随系统外观的系统材质，
+    /// `Color.primary` 在深色外观下解析成浅色、浅色外观下解析成深色，始终落在
+    /// 材质的对面；写死的白在浅色材质上等于隐形。
     private func ring(
         fraction: Double?,
         diameter: CGFloat,
