@@ -170,7 +170,21 @@ enum EdgeDockGeometry {
     /// 悬停时 popover 与圆环之间的间距（pt）。
     static let popoverGap: CGFloat = 10
     /// popover 高度占屏幕可见区的上限，超出部分滚动。
-    static let popoverHeightFraction: CGFloat = 0.7
+    ///
+    /// **这个上限不截断内容**：超过它就套 `ScrollView`（见 `EdgeDockController`
+    /// 里 `natural.height > heightCap` 那个分支），卡片该多高还是多高，只是
+    /// 变成可滚动的。
+    ///
+    /// 那为什么还要有它？因为 `popoverFrame` 会把面板高度压到
+    /// `visibleFrame.height`，而 `NSPanel` 自己不会滚动——超出屏幕的那一段
+    /// 永远够不着。所以真正的硬界只有**屏幕**；`heightCap` 的作用是保证
+    /// "一旦帧被压到屏幕高度，内容一定已经是可滚动的"，也就是
+    /// `heightCap ≤ visibleFrame.height` 必须成立。
+    ///
+    /// 取 0.95 而不是 1.0：留一线可见的边缘，让它还看得出是"从 dock 弹出来的
+    /// 一块浮层"，而不是铺满整屏。1080p 下约 918pt，ChatGPT 最重形态（648pt）
+    /// 完全放得下。
+    static let popoverHeightFraction: CGFloat = 0.95
 
     /// 剩余额度弧的 trim 区间（`0...1`，0 = 3 点方向，顺时针增长）。无弧返回 nil。
     ///

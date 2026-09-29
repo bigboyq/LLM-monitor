@@ -46,6 +46,8 @@ struct QuotaWindowsHoverView: View {
     let weeklyPercent: Double
     let weeklyResetsAt: Date?
     let secondaryLabel: String
+    /// dock 详情浮层里 5h 与周两栏并排；菜单 hover 浮层仍竖排（那边按内容自然宽度测量）。
+    @Environment(\.hoverRevealMode) private var revealMode
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -68,9 +70,19 @@ struct QuotaWindowsHoverView: View {
             .font(MenuTypography.hoverCaption)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
-            HoverMetricLine(label: primaryLabel, percent: safePrimaryPercent, resetsAt: primaryResetsAt)
-            Divider().opacity(0.45)
-            HoverMetricLine(label: secondaryLabel, percent: safeWeeklyPercent, resetsAt: weeklyResetsAt)
+
+            // 5h 与周各占一栏：两栏内容都是"百分比 + 重置时间"的同一形状，
+            // 并排后一眼能横向比较，竖排时只能靠上下位置去对齐找同一栏。
+            if ProviderCardLayout.laysWindowDetailsSideBySide(mode: revealMode) {
+                HStack(alignment: .top, spacing: 16) {
+                    HoverMetricLine(label: primaryLabel, percent: safePrimaryPercent, resetsAt: primaryResetsAt)
+                    HoverMetricLine(label: secondaryLabel, percent: safeWeeklyPercent, resetsAt: weeklyResetsAt)
+                }
+            } else {
+                HoverMetricLine(label: primaryLabel, percent: safePrimaryPercent, resetsAt: primaryResetsAt)
+                Divider().opacity(0.45)
+                HoverMetricLine(label: secondaryLabel, percent: safeWeeklyPercent, resetsAt: weeklyResetsAt)
+            }
         }
     }
 
@@ -125,6 +137,8 @@ struct QuotaUsageWindowsHoverView: View {
     /// GLM 今日闲时（off-peak）任务 token 用量：不消耗积分，单独展示避免混进
     /// 5h / 周额度窗口。非 GLM / 无闲时数据时传 nil。
     var offPeakUsage: UsageMetricSummary? = nil
+    /// dock 详情浮层里 5h 与周两栏并排；菜单 hover 浮层仍竖排。
+    @Environment(\.hoverRevealMode) private var revealMode
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -136,25 +150,33 @@ struct QuotaUsageWindowsHoverView: View {
                     .foregroundStyle(.secondary)
             }
 
-            usageSection(label: primaryLabel, usage: primaryUsage, creditUsage: primaryCreditUsage)
+            // 5h / 周两栏并排：它们是"同一个额度在两个时间尺度上的消耗"，
+            // 并排才能横向对比；竖排时读者要在两段之间来回跳着找同一栏。
+            if ProviderCardLayout.laysWindowDetailsSideBySide(mode: revealMode), hasSecondaryWindow {
+                HStack(alignment: .top, spacing: 16) {
+                    usageSection(
+                        label: primaryLabel,
+                        usage: primaryUsage,
+                        creditUsage: primaryCreditUsage
+                    )
+                    usageSection(
+                        label: secondaryLabel,
+                        usage: secondaryUsage,
+                        creditUsage: secondaryCreditUsage
+                    )
+                }
+            } else {
+                usageSection(label: primaryLabel, usage: primaryUsage, creditUsage: primaryCreditUsage)
 
-            if hasSecondaryWindow {
-                Divider().opacity(0.45)
-                usageSection(label: secondaryLabel, usage: secondaryUsage, creditUsage: secondaryCreditUsage)
+                if hasSecondaryWindow {
+                    Divider().opacity(0.45)
+                    usageSection(label: secondaryLabel, usage: secondaryUsage, creditUsage: secondaryCreditUsage)
+                }
             }
 
             if let offPeakUsage {
                 Divider().opacity(0.45)
-                VStack(alignment: .leading, spacing: 5) {
-                    UsageMetricHoverSummaryView(
-                        title: "今日闲时（不消耗积分）",
-                        usage: offPeakUsage,
-                        showPromptCount: true
-                    )
-                    Text("ZCode 闲时任务真实消耗；不影响 5h / 周积分余额")
-                        .font(MenuTypography.hoverFootnote)
-                        .foregroundStyle(.tertiary)
-                }
+                OffPeakUsageFootnote(usage: offPeakUsage)
             }
         }
     }
@@ -165,6 +187,24 @@ struct QuotaUsageWindowsHoverView: View {
         usage: UsageMetricSummary?,
         creditUsage: QuotaCountUsage?
     ) -> some View {
+        QuotaUsageWindowColumn(
+            label: label,
+            usage: usage,
+            creditUsage: creditUsage,
+            missingUsageIsLoading: missingUsageIsLoading
+        )
+    }
+}
+
+/// 一个额度窗口的用量明细。菜单里是 hover 浮层里的一段，dock 详情浮层里是
+/// 三列布局的一列——同一份渲染两处共用，免得"菜单里三个字段、浮层里四个"。
+struct QuotaUsageWindowColumn: View {
+    let label: String
+    let usage: UsageMetricSummary?
+    let creditUsage: QuotaCountUsage?
+    var missingUsageIsLoading: Bool = false
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             if let creditUsage {
                 HStack(spacing: 4) {
@@ -223,6 +263,16 @@ struct UsageMetricHoverSummaryView: View {
     let title: String
     let usage: UsageMetricSummary
     let showPromptCount: Bool
+    /// dock 详情浮层里一行只放一个数字；菜单 hover 弹层保持紧凑的合并行。
+    @Environment(\.hoverRevealMode) private var revealMode
+
+    private var splitsCachedInput: Bool {
+        ProviderCardLayout.splitsCachedInputRow(mode: revealMode)
+    }
+
+    private var splitsRounds: Bool {
+        ProviderCardLayout.splitsRoundsRow(mode: revealMode)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -233,23 +283,34 @@ struct UsageMetricHoverSummaryView: View {
             }
 
             if showPromptCount {
-                HStack(spacing: 0) {
-                    Text("prompts: ")
-                        .foregroundStyle(.secondary)
-                    Text("\(Formatters.formatGroupedInt(usage.prompts))")
-                        .foregroundStyle(.primary)
-                    Text(" (\(Formatters.formatGroupedInt(usage.rounds)) rounds)")
-                        .foregroundStyle(.secondary)
+                if splitsRounds {
+                    // 拆行：prompts 和 rounds 各自一行，rounds 紧跟 prompts。
+                    metricLine(label: "prompts", value: Formatters.formatGroupedInt(usage.prompts))
+                    metricLine(label: "rounds", value: Formatters.formatGroupedInt(usage.rounds))
+                } else {
+                    HStack(spacing: 0) {
+                        Text("prompts: ")
+                            .foregroundStyle(.secondary)
+                        Text("\(Formatters.formatGroupedInt(usage.prompts))")
+                            .foregroundStyle(.primary)
+                        Text(" (\(Formatters.formatGroupedInt(usage.rounds)) rounds)")
+                            .foregroundStyle(.secondary)
+                    }
+                    .font(MenuTypography.hoverBodyMonospaced)
                 }
-                .font(MenuTypography.hoverBodyMonospaced)
             } else {
                 metricLine(label: "rounds", value: Formatters.formatGroupedInt(usage.rounds))
             }
 
-            metricLine(
-                label: "input",
-                value: "\(Formatters.formatTokenCountCompact(usage.uncachedInputTokens)) (+\(Formatters.formatTokenCountCompact(usage.cachedInputTokens)) cached)"
-            )
+            if splitsCachedInput {
+                metricLine(label: "input", value: Formatters.formatTokenCountCompact(usage.uncachedInputTokens))
+                metricLine(label: "cached", value: Formatters.formatTokenCountCompact(usage.cachedInputTokens))
+            } else {
+                metricLine(
+                    label: "input",
+                    value: "\(Formatters.formatTokenCountCompact(usage.uncachedInputTokens)) (+\(Formatters.formatTokenCountCompact(usage.cachedInputTokens)) cached)"
+                )
+            }
             if let cacheHitRate = usage.cacheHitRate {
                 metricLine(label: "cache hit", value: Formatters.formatPercent(cacheHitRate, digits: 0))
             }

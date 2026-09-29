@@ -307,6 +307,73 @@ text, so `HoverRevealModeTests` asserts the default rather than trusting it.
 one-hover deep, so a nested "hover to expand" is a hover of a hover, and those
 sections would never open at all.
 
+Opening everything is not free, though: one provider card is a lot of content at
+once, and the popover is capped at `0.95 ×` the visible height. That cap does
+**not** truncate anything: over it, the content is wrapped in a `ScrollView`, so
+the card is exactly as tall as it wants to be. The cap exists for one reason —
+`popoverFrame` clamps the panel to `visibleFrame.height`, and an `NSPanel` does
+not scroll itself, so anything past the screen edge would be unreachable. The
+hard limit is the screen; the cap only guarantees the invariant
+`heightCap ≤ visibleFrame.height`, which is what makes "if the frame ever got
+clamped, the content is already scrollable" true. So
+the popover is **not** simply the menu card un-collapsed. Six layout rules
+(`ProviderCardLayout`) diverge, all keyed on the same mode:
+
+| Rule | Menu | Dock popover | Why |
+|---|---|---|---|
+| `liftsProgressBar` | title, then bar | **bar first, no title row** | "how much is left" before the detail; the model name is dropped because the bar sits directly on top of its own 5h/weekly columns, so the pairing is positional |
+| `laysWindowDetailsSideBySide` | 5h stacked over weekly | **Last Prompt \| 5h \| weekly in one row** | the three are the same shape (a time span plus a set of token metrics); side by side is comparable at a glance, stacked forces the reader to jump between three blocks |
+| `expandsAccountSection` | hover popover | **not expanded** | the panel can't be hovered, so expanding it only buries low-frequency email/source text in the most prominent slot |
+| `showsPeakIndicatorInHeader` | inside the quota block | **in the card header** | "can I use it cheaply right now" deserves the always-visible header line |
+| `splitsCachedInputRow` | `input: 1.2M (+860K cached)` | **`input:` and `cached:` on separate lines** | cached hides in parentheses, so a quick read only catches input — and cache hit rate is the number that says whether the call was expensive |
+| `splitsRoundsRow` | `prompts: 42 (128 rounds)` | **`prompts:` with `rounds:` on the next line** | each column is only ~140pt wide; merged, the value wraps or truncates |
+
+Because the rules are the *only* thing that differs, each is named rather than
+inlined as `mode == .alwaysVisible` at the call site, and
+`HoverRevealModeTests.testMenuLayoutStaysUnchanged` asserts the menu side stays off.
+
+The popover's header is therefore not just "provider name + state" — it keeps
+only what answers *how much is left* at a glance, and everything about *how was it
+spent* sits below:
+
+- **Peak indicator** (GLM / DeepSeek only)
+- **Reset credits**, in its collapsed form (count + nearest expiry) via
+  `revealsDetail: false`. Same reason as the account section: the panel can't be
+  hovered, so per-card detail would be permanently expanded.
+
+Each model block is then `QuotaBarWithMetadata` (bar + its `5h 100% weekly …`
+metadata line) directly above `QuotaDetailColumns` (Last Prompt | 5h | weekly),
+plus the GLM off-peak footnote. Two things are deliberately **absent**:
+
+- **No leading label on the bar.** An earlier pass pooled every model's bar into a
+  header table, which forced each row to carry a dot + model name so the reader
+  could tell them apart — and that label then duplicated the model-name row below.
+  With each bar back over its own columns the pairing is positional, so the label
+  buys nothing.
+- **No model-name row** (`QuotaWindowTitle`, which also carried the weekly
+  multiplier). The three columns are already labelled "5h local token usage" and
+  "weekly local token usage" and sit directly under that model's bar.
+
+`ModelQuotaDockBlock` has a `bar` parameter and no `title` parameter, so both
+omissions are structural rather than conditional. `QuotaUsageWindowColumn` is
+shared between the menu's hover panel and the popover's column, so the two hosts
+cannot drift into showing different fields for the same data.
+
+Height is measured, not assumed. Opening four sections inline is easy to get
+subtly taller — no crash, no warning, just a popover that scrolls or clips.
+`testDockDetailStaysUnderTheRearrangedCeiling` lays the card out for real and caps
+it: **1188pt** fully expanded → **915pt** after the first rework → **611pt** after
+the dedupe + three-column pass → **648pt** after the reset-credits hoist and the
+line splits → **628pt** after dropping the bar label and the model-name row
+(ChatGPT dual-window with a full 7 days of local usage, the heaviest form;
+Antigravity's two-model form is 184pt). Splitting cached and rounds onto their
+own lines really does cost ~37pt; that is the trade. Do **not** compare it against
+the menu card's height: that card is collapsed, so it measures ~120pt and "the
+popover is taller than the menu" is the intended behaviour, not a regression. The
+700pt ceiling here is also a different number from `popoverHeightFraction` — that
+one bounds the panel against the screen, this one catches someone re-adding an
+always-expanded block. Do not copy one into the other.
+
 The first version had this inverted (`minY` + step, i.e. index 0 at the bottom) and
 the test that "verified" it was named `testCircleCenterMatchesRenderedLayout` while
 asserting the exact opposite of what SwiftUI renders. The guard against that class of

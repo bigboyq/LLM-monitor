@@ -32,6 +32,65 @@ struct StatusIndicator: View {
     }
 }
 
+/// 同一张 `ProviderCardView` 在两种宿主下的排版规则。
+///
+/// 两个宿主的信息密度诉求相反：主菜单一屏要放下所有 provider，卡片必须靠
+/// hover 折叠细节；dock 详情浮层只有一张卡、且不接受鼠标事件，折叠区展不开，
+/// 只能全部就地展开——于是同一份内容在浮层里明显更高、容易超出屏幕。
+///
+/// 四条规则都只由 `HoverRevealMode` 决定，但**含义各不相同**，调用点直接写
+/// `mode == .alwaysVisible` 会丢掉"这一处到底在改什么"，所以各自命名。
+enum ProviderCardLayout {
+    /// 单个 model 的进度条提到**标题上方**（dock）。
+    ///
+    /// 标题回答"这是哪个套餐"、条回答"还剩多少"，浮层里先看条更直接；
+    /// 菜单保持标题在上——那是这行的名字，条是它的修饰。
+    static func liftsProgressBar(mode: HoverRevealMode) -> Bool {
+        mode == .alwaysVisible
+    }
+
+    /// 5h 与周两个窗口的明细**横向并排**（dock）。
+    ///
+    /// 竖排时读者要在两段之间来回跳着找同一栏；并排才能横向对比。
+    /// 菜单那侧是按内容自然宽度测量的 hover 浮层，宽度敏感，维持竖排。
+    static func laysWindowDetailsSideBySide(mode: HoverRevealMode) -> Bool {
+        mode == .alwaysVisible
+    }
+
+    /// 账号折叠区（邮箱 / 数据来源）就地展开（菜单侧为 hover）。
+    ///
+    /// dock 详情浮层**不**展开它：整体 `ignoresMouseEvents`，没有人能悬停，
+    /// 就地展开只会把低频信息塞进最抢眼的位置。菜单那侧保留 hover。
+    static func expandsAccountSection(mode: HoverRevealMode) -> Bool {
+        mode == .alwaysVisible
+    }
+
+    /// 高峰期倒计时画在**卡片头部**而非额度区（dock）。
+    ///
+    /// 它回答"现在能不能便宜用"，属于一眼要看的东西；留在额度区会被一堆
+    /// 百分比和明细挤到下面。头部那行本来就常驻状态，新用户第一眼就会看到。
+    static func showsPeakIndicatorInHeader(mode: HoverRevealMode) -> Bool {
+        mode == .alwaysVisible
+    }
+
+    /// `input` 与 `cached` 拆成两行（dock）。
+    ///
+    /// 原本是 `input: 1.2M (+860K cached)`——cached 藏在括号里，扫一眼
+    /// 只会读到 input，而 cache 命中率恰恰是判断"这次调用贵不贵"的关键数字。
+    /// 浮层里一行只放一件事，行高是横向空间换来的。
+    static func splitsCachedInputRow(mode: HoverRevealMode) -> Bool {
+        mode == .alwaysVisible
+    }
+
+    /// `prompts` 与 `rounds` 拆成两行，`rounds` 跟在 `prompts` 下面（dock）。
+    ///
+    /// 原本挤在一行 `prompts: 42 (128 rounds)`。三列并排时每列只有约 140pt，
+    /// 挤在一行必然换行或截断；拆开后每个数字都有自己完整的一行。
+    static func splitsRoundsRow(mode: HoverRevealMode) -> Bool {
+        mode == .alwaysVisible
+    }
+}
+
 /// provider 卡片 — 一个 provider 的全部信息
 ///
 /// `Equatable`：卡片渲染只依赖 `status`（值类型）。配合调用点的 `.equatable()`，
@@ -51,6 +110,10 @@ struct ProviderCardView: View, Equatable {
     }
 
     var surface: Surface = .system
+
+    /// 宿主决定详情是折叠（主菜单 hover 浮层）还是就地展开（dock 详情浮层）。
+    /// 两种形态的排版差别都挂在这个值上，见 `header` / `content`。
+    @Environment(\.hoverRevealMode) private var revealMode
 
     /// 卡片内容层四周的内边距。`EdgeDockTheme.popoverWidth` 推导宽度时要加上
     /// 这一层的两侧，所以提出成常量，避免两处各写一个 12 改一漏一。
@@ -111,7 +174,23 @@ struct ProviderCardView: View, Equatable {
 
     @ViewBuilder
     private var header: some View {
-        if status.kind == .antigravity {
+        if ProviderCardLayout.expandsAccountSection(mode: revealMode) {
+            // dock 详情浮层：不展开账号折叠区。那里是"悬停标题看账号"的细节，
+            // 而这个浮层整体不接受鼠标事件（`ignoresMouseEvents`），没有人会去
+            // 悬停它——就地展开只会把邮箱 / 数据来源这类低频信息塞进最抢眼的位置。
+            // 往上提的是两样"一眼要看"的东西：
+            //   高峰期倒计时 —— "现在能不能便宜用"。
+            //   重置卡       —— 总数 + 最近一张到期时间；每张卡的明细同样因为不吃
+            //                   鼠标事件而保持折叠。
+            // 额度条**不**提到头部：Antigravity 有两个 model，提到一起就得给每条
+            // 加名称 label 才分得清谁是谁，而那个 label 和下面原本那行模型名重了。
+            // 进度条留在各自分块里、紧贴自己的三列，对应关系靠位置就够。
+            VStack(alignment: .leading, spacing: 6) {
+                headerContent
+                headerPeakIndicator
+                headerResetCredits
+            }
+        } else if status.kind == .antigravity {
             HoverInfoRow {
                 headerContent
             } detail: {
@@ -140,6 +219,40 @@ struct ProviderCardView: View, Equatable {
             }
         } else {
             headerContent
+        }
+    }
+
+    /// dock 详情浮层头部下方的**高峰期倒计时**。只 GLM 与 DeepSeek 有窗口概念。
+    @ViewBuilder
+    private var headerPeakIndicator: some View {
+        switch status.kind {
+        case .glmCodingPlan:
+            if let peak = status.glmPeakWindow {
+                GlmPeakIndicatorView(window: peak)
+            }
+        case .deepseek:
+            DeepseekPeakIndicatorView(window: status.deepseekPeakWindow ?? .defaultWindow)
+        default:
+            EmptyView()
+        }
+    }
+
+    /// dock 详情浮层头部的**重置卡**，折叠态：只总数 + 最近一张到期时间。
+    ///
+    /// 与菜单同一行组件，但 `revealsDetail: false`——那个浮层不吃鼠标事件，
+    /// `HoverInfoRow` 在 `alwaysVisible` 下又总会展开，每张卡的明细会变成常驻。
+    /// 折叠态那一句才是该常驻的信息。
+    @ViewBuilder
+    private var headerResetCredits: some View {
+        if let info = status.lastSuccess,
+           let resets = info.resetCredits,
+           resets.shouldDisplay {
+            Divider().opacity(0.3)
+            CompactResetCreditsRow(
+                resets: resets,
+                refreshIntervalSeconds: status.refreshIntervalSeconds,
+                revealsDetail: false
+            )
         }
     }
 
@@ -229,7 +342,11 @@ struct ProviderCardView: View, Equatable {
                 excludeWindows: excludeWindows,
                 deepseekPeakWindow: status.deepseekPeakWindow ?? .defaultWindow
                 )
-                if status.kind == .glmCodingPlan, let peak = status.glmPeakWindow {
+                if status.kind == .glmCodingPlan,
+                   let peak = status.glmPeakWindow,
+                   !ProviderCardLayout.showsPeakIndicatorInHeader(mode: revealMode) {
+                    // dock 详情浮层里它已经升到头部（见 `headerPeakIndicator`），
+                    // 这里再画一遍就是同一个倒计时出现两次。
                     GlmPeakIndicatorView(window: peak)
                 }
                 if status.kind == .glmCodingPlan {
@@ -440,6 +557,18 @@ struct QuotaSummary: View {
     var excludeWindows: [GlmOffPeakWindow] = []
     /// DeepSeek 高峰期窗口（仅 `.deepseek` 用到；其余 provider 用默认值占位）。
     var deepseekPeakWindow: DeepseekPeakWindow = .defaultWindow
+    /// dock 详情浮层把高峰期倒计时提到卡片头部；菜单保持它在余额行里。
+    @Environment(\.hoverRevealMode) private var revealMode
+
+    /// 重置卡是否画在这一块。dock 侧画在卡片头部（`ProviderCardView.headerResetCredits`），
+    /// 两处都画就是同一张卡出现两次。
+    private var showsResetCredits: Bool {
+        !ProviderCardLayout.expandsAccountSection(mode: revealMode)
+    }
+
+    private var showsPeakIndicator: Bool {
+        !ProviderCardLayout.showsPeakIndicatorInHeader(mode: revealMode)
+    }
 
     private var displayedModels: [ModelQuota] {
         info.activeModels
@@ -461,7 +590,8 @@ struct QuotaSummary: View {
                         planLabel: info.planLabel,
                         balanceDetail: info.balanceDetail,
                         tint: accentColor(for: model),
-                        peakWindow: deepseekPeakWindow
+                        peakWindow: deepseekPeakWindow,
+                        showsPeakIndicator: showsPeakIndicator
                     )
                 } else {
                     CombinedQuotaWindowRow(
@@ -480,7 +610,7 @@ struct QuotaSummary: View {
                 }
             }
 
-            if let resets = info.resetCredits, resets.shouldDisplay {
+            if let resets = info.resetCredits, resets.shouldDisplay, showsResetCredits {
                 if !displayedModels.isEmpty {
                     Divider().opacity(0.3)
                 }

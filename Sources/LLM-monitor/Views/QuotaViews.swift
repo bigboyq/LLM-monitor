@@ -9,27 +9,126 @@ struct ChatGPTPlanModelRow: View {
     let usageDetails: CodexUsageDetails?
     let localSamples: [LocalTokenUsageSample]
     let tint: Color
+    /// dock 详情浮层把进度条提到标题上方；菜单保持原顺序（见 `CombinedQuotaWindowRow`）。
+    @Environment(\.hoverRevealMode) private var revealMode
+
+    private var liftsProgressBar: Bool {
+        ProviderCardLayout.liftsProgressBar(mode: revealMode)
+    }
 
     var body: some View {
+        if isDockLayout {
+            dockBlock
+        } else {
+            menuLayout
+        }
+    }
+
+    private var isDockLayout: Bool {
+        ProviderCardLayout.liftsProgressBar(mode: revealMode)
+    }
+
+    // MARK: dock：条 → 元信息行 → 标题 → 三列明细（与通用 model 行同构）
+
+    /// dock 侧没有标题行（见 `CombinedQuotaWindowRow.dockBlock` 的理由）：
+    /// 条 + 三列已经自解释，模型名是冗余的。菜单侧仍然用它当那行的名字。
+    @ViewBuilder
+    private var dockBlock: some View {
+        if hasPrimaryWindow && hasSecondaryWindow {
+            ModelQuotaDockBlock(
+                bar: QuotaBarWithMetadata(
+                    model: model,
+                    primaryLabel: primaryLabel,
+                    secondaryLabel: secondaryLabel,
+                    weeklyEquivalentMultiplier: 6,
+                    tint: tint
+                ),
+                columns: QuotaDetailColumns(
+                    lastPrompt: lastPrompt,
+                    primaryLabel: primaryLabel,
+                    primaryUsage: primaryUsage,
+                    primaryCreditUsage: nil,
+                    secondaryLabel: secondaryLabel,
+                    secondaryUsage: secondaryUsage,
+                    secondaryCreditUsage: nil,
+                    hasSecondaryWindow: true,
+                    missingUsageIsLoading: true
+                ),
+                footnote: EmptyView()
+            )
+        } else if hasPrimaryWindow {
+            ModelQuotaDockBlock(
+                bar: QuotaBarWithMetadata(
+                    model: model,
+                    primaryLabel: primaryLabel,
+                    secondaryLabel: "",
+                    weeklyEquivalentMultiplier: 6,
+                    tint: tint
+                ),
+                columns: QuotaDetailColumns(
+                    lastPrompt: lastPrompt,
+                    primaryLabel: primaryLabel,
+                    primaryUsage: primaryUsage,
+                    primaryCreditUsage: nil,
+                    secondaryLabel: "",
+                    secondaryUsage: nil,
+                    secondaryCreditUsage: nil,
+                    hasSecondaryWindow: false,
+                    missingUsageIsLoading: true
+                ),
+                footnote: EmptyView()
+            )
+        } else if hasSecondaryWindow {
+            ModelQuotaDockBlock(
+                bar: QuotaBarWithMetadata(
+                    model: model,
+                    primaryLabel: secondaryLabel,
+                    secondaryLabel: "",
+                    weeklyEquivalentMultiplier: 6,
+                    tint: tint
+                ),
+                columns: QuotaDetailColumns(
+                    lastPrompt: lastPrompt,
+                    primaryLabel: secondaryLabel,
+                    primaryUsage: secondaryUsage,
+                    primaryCreditUsage: nil,
+                    secondaryLabel: "",
+                    secondaryUsage: nil,
+                    secondaryCreditUsage: nil,
+                    hasSecondaryWindow: false,
+                    missingUsageIsLoading: true
+                ),
+                footnote: EmptyView()
+            )
+        } else {
+            Text("额度窗口不可用")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var title: some View {
+        QuotaWindowTitle(
+            title: model.displayName,
+            tint: tint,
+            weeklyEquivalentMultiplier: hasPrimaryWindow && hasSecondaryWindow ? 6 : nil,
+            primaryLabel: primaryLabel
+        )
+    }
+
+    // MARK: 菜单：标题在上，条与元信息行各自 hover
+
+    @ViewBuilder
+    private var menuLayout: some View {
         VStack(alignment: .leading, spacing: 5) {
             if let lastPrompt {
                 HoverInfoRow {
-                    QuotaWindowTitle(
-                        title: model.displayName,
-                        tint: tint,
-                        weeklyEquivalentMultiplier: hasPrimaryWindow && hasSecondaryWindow ? 6 : nil,
-                        primaryLabel: primaryLabel
-                    )
+                    title
                 } detail: {
                     LastPromptHoverSummaryView(lastPrompt: lastPrompt)
                 }
             } else {
-                QuotaWindowTitle(
-                    title: model.displayName,
-                    tint: tint,
-                    weeklyEquivalentMultiplier: hasPrimaryWindow && hasSecondaryWindow ? 6 : nil,
-                    primaryLabel: primaryLabel
-                )
+                title
             }
 
             if hasPrimaryWindow && hasSecondaryWindow {
@@ -172,6 +271,13 @@ struct CompactResetCreditsRow: View {
     let resets: ResetCreditsInfo
     /// provider 的 background 刷新间隔（秒）。
     var refreshIntervalSeconds: Int = 300
+    /// 是否把"每张卡"的明细挂在 hover 上。
+    ///
+    /// dock 详情浮层传 false：那个浮层**不接受鼠标事件**，`HoverInfoRow` 在
+    /// `alwaysVisible` 下又总会展开，于是每张卡的明细变成常驻——既占高度
+    /// 又把折叠态真正该给的信息（总数 + 最近一张到期时间）挤成了两行里
+    /// 夹着六行明细。传 false 就只留折叠态那一句，与菜单形态一致。
+    var revealsDetail: Bool = true
 
     /// R3: reset credits 的实际刷新周期。reset credits 只在 .full 抓取，而 scheduler
     /// 每 N 个 background 才补一次 full，所以真实周期 = N × background 间隔。
@@ -185,58 +291,72 @@ struct CompactResetCreditsRow: View {
     }
 
     var body: some View {
-        HoverInfoRow {
+        if revealsDetail {
+            HoverInfoRow {
+                summary
+            } detail: {
+                detail
+            }
+        } else {
+            summary
+        }
+    }
+
+    /// 折叠态：总数 + 最近一张的到期时间（外加过期提示）。
+    private var summary: some View {
+        HStack(spacing: 6) {
             HStack(spacing: 6) {
-                HStack(spacing: 6) {
-                    Image(systemName: "arrow.counterclockwise.circle.fill")
-                        .font(.system(size: 11))
-                        .foregroundStyle(summaryColor)
+                Image(systemName: "arrow.counterclockwise.circle.fill")
+                    .font(.system(size: 11))
+                    .foregroundStyle(summaryColor)
 
-                    Text("重置卡数量：\(resets.availableCount)")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(summaryColor)
-                }
+                Text("重置卡数量：\(resets.availableCount)")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(summaryColor)
+            }
 
-                Spacer(minLength: 8)
+            Spacer(minLength: 8)
 
-                if isStale {
-                    // R3: reset credits 子接口失败或数据过旧，显示过期提示（不只靠透明度/颜色）。
-                    HStack(spacing: 3) {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .font(.system(size: 9, weight: .semibold))
-                        Text(staleText)
-                            .font(.system(size: 9, weight: .semibold).monospacedDigit())
-                            .lineLimit(1)
-                    }
-                    .foregroundStyle(.orange)
-                    .help(staleHelp)
-                }
-
-                HStack(spacing: 4) {
-                    Image(systemName: "clock.arrow.circlepath")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                    Text(expiryText)
-                        .font(.system(size: 10, weight: .semibold).monospacedDigit())
-                        .foregroundStyle(.secondary)
+            if isStale {
+                // R3: reset credits 子接口失败或数据过旧，显示过期提示（不只靠透明度/颜色）。
+                HStack(spacing: 3) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 9, weight: .semibold))
+                    Text(staleText)
+                        .font(.system(size: 9, weight: .semibold).monospacedDigit())
                         .lineLimit(1)
                 }
+                .foregroundStyle(.orange)
+                .help(staleHelp)
             }
-            .padding(.vertical, 2)
-        } detail: {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("可用重置卡")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.primary)
 
-                if availableEntries.isEmpty {
-                    Text("暂无可用重置卡")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(Array(availableEntries.enumerated()), id: \.offset) { _, entry in
-                        CreditEntryRow(entry: entry)
-                    }
+            HStack(spacing: 4) {
+                Image(systemName: "clock.arrow.circlepath")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                Text(expiryText)
+                    .font(.system(size: 10, weight: .semibold).monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    /// 展开态：每张卡的明细。菜单侧 hover 出来，dock 侧不画（见 `revealsDetail`）。
+    private var detail: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("可用重置卡")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.primary)
+
+            if availableEntries.isEmpty {
+                Text("暂无可用重置卡")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(Array(availableEntries.enumerated()), id: \.offset) { _, entry in
+                    CreditEntryRow(entry: entry)
                 }
             }
         }
@@ -327,8 +447,127 @@ struct CombinedQuotaWindowRow: View {
     let localSamples: [LocalTokenUsageSample]
     /// 额度窗口 hover 统计排除的时间窗口（GLM 闲时任务不消耗积分）。
     var excludeWindows: [GlmOffPeakWindow] = []
+    /// dock 详情浮层把进度条提到标题上方；菜单保持原顺序。
+    @Environment(\.hoverRevealMode) private var revealMode
+
+    private var liftsProgressBar: Bool {
+        ProviderCardLayout.liftsProgressBar(mode: revealMode)
+    }
 
     var body: some View {
+        if isDockLayout {
+            dockBlock
+        } else {
+            menuLayout
+        }
+    }
+
+    private var isDockLayout: Bool {
+        ProviderCardLayout.liftsProgressBar(mode: revealMode)
+    }
+
+    // MARK: dock：条 + 元信息行 → 三列明细
+
+    /// 这里**没有标题行**。原来有 `QuotaWindowTitle`（模型名 + 周倍率），
+    /// 但条下面紧跟着的三列第一列标题就是"5h 本地 token 用量"、第三列就是
+    /// "周 本地 token 用量"——哪个 model 谁的条，读者靠位置就已经知道了，
+    /// 再加一行名称只是把同样的信息多写一遍。
+    ///
+    /// 元信息行（`5h 100% 周 …`）也只出现一次：它此前在额度行本身和
+    /// `QuotaWindowsHoverView` 展开后的窗口指标行各一份，dock 侧两处都在屏上。
+    @ViewBuilder
+    private var dockBlock: some View {
+        if model.hasIntervalWindow, model.hasWeeklyWindow {
+            ModelQuotaDockBlock(
+                bar: QuotaBarWithMetadata(
+                    model: model,
+                    primaryLabel: primaryLabel,
+                    secondaryLabel: "周",
+                    weeklyEquivalentMultiplier: weeklyEquivalentMultiplier,
+                    tint: tint
+                ),
+                columns: QuotaDetailColumns(
+                    lastPrompt: dockLastPrompt,
+                    primaryLabel: primaryLabel,
+                    primaryUsage: primaryUsage,
+                    primaryCreditUsage: intervalCreditUsage,
+                    secondaryLabel: "周",
+                    secondaryUsage: weeklyUsage,
+                    secondaryCreditUsage: weeklyCreditUsage,
+                    hasSecondaryWindow: true,
+                    missingUsageIsLoading: false
+                ),
+                footnote: offPeakFootnote
+            )
+        } else if model.hasIntervalWindow {
+            ModelQuotaDockBlock(
+                bar: QuotaBarWithMetadata(
+                    model: model,
+                    primaryLabel: primaryLabel,
+                    secondaryLabel: "",
+                    weeklyEquivalentMultiplier: weeklyEquivalentMultiplier,
+                    tint: tint
+                ),
+                columns: QuotaDetailColumns(
+                    lastPrompt: dockLastPrompt,
+                    primaryLabel: primaryLabel,
+                    primaryUsage: primaryUsage,
+                    primaryCreditUsage: intervalCreditUsage,
+                    secondaryLabel: "",
+                    secondaryUsage: nil,
+                    secondaryCreditUsage: nil,
+                    hasSecondaryWindow: false,
+                    missingUsageIsLoading: false
+                ),
+                footnote: offPeakFootnote
+            )
+        } else if model.hasWeeklyWindow {
+            ModelQuotaDockBlock(
+                bar: QuotaBarWithMetadata(
+                    model: model,
+                    primaryLabel: "周",
+                    secondaryLabel: "",
+                    weeklyEquivalentMultiplier: weeklyEquivalentMultiplier,
+                    tint: tint
+                ),
+                columns: QuotaDetailColumns(
+                    lastPrompt: dockLastPrompt,
+                    primaryLabel: "周",
+                    primaryUsage: weeklyUsage,
+                    primaryCreditUsage: weeklyCreditUsage,
+                    secondaryLabel: "",
+                    secondaryUsage: nil,
+                    secondaryCreditUsage: nil,
+                    hasSecondaryWindow: false,
+                    missingUsageIsLoading: false
+                ),
+                footnote: offPeakFootnote
+            )
+        } else {
+            Text("额度窗口不可用")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    /// GLM 闲时用量：只有真有数据才占一行，没有就整个不渲染。
+    @ViewBuilder
+    private var offPeakFootnote: some View {
+        if let todayOffPeakUsage {
+            OffPeakUsageFootnote(usage: todayOffPeakUsage)
+        }
+    }
+
+    /// 三列里的 Last Prompt。与菜单侧同一套门槛：不是每个 model 都值得挂一条。
+    private var dockLastPrompt: LastPromptUsage? {
+        shouldShowLastPrompt ? lastPrompt : nil
+    }
+
+    /// 重置倒计时取"先耗尽的那个"窗口的时间——与菜单那条元信息行同源。
+    // MARK: 菜单：标题在上，条与元信息行各自 hover
+
+    @ViewBuilder
+    private var menuLayout: some View {
         VStack(alignment: .leading, spacing: 5) {
             if let lastPrompt, shouldShowLastPrompt {
                 HoverInfoRow {
@@ -552,6 +791,214 @@ struct QuotaWindowTitle: View {
 private let quotaCombinedDataColumnWidth: CGFloat = 152
 private let quotaSingleDataColumnWidth: CGFloat = 80
 
+// MARK: - 进度条（裸视图）与它的 hover 明细
+
+/// 双窗口 model 的分段进度条本体。
+///
+/// 与 hover 明细拆开是因为**排版权在父级**：dock 详情浮层里这条要排在
+/// model 标题**之上**，而它的明细（5h / 周用量）在那边又被并进三列布局——
+/// 菜单那条"条 + hover 弹明细"的结构整块搬不过去。
+struct CombinedQuotaBar: View {
+    let model: ModelQuota
+    let tint: Color
+    let weeklyEquivalentMultiplier: Int
+
+    var body: some View {
+        SegmentedQuotaProgressBar(
+            primaryFraction: model.intervalRemainingPercent / 100.0,
+            weeklyFraction: model.weeklyRemainingPercent / 100.0,
+            tint: tint,
+            segments: weeklyEquivalentMultiplier,
+            height: 8,
+            timeRemainingFraction: model.weeklyTimeRemainingFraction
+        )
+        .frame(maxWidth: .infinity)
+        .help(QuotaBarTooltip.text(
+            segments: weeklyEquivalentMultiplier,
+            hasTriangle: model.weeklyTimeRemainingFraction != nil
+        ))
+    }
+}
+
+/// 单窗口 model 的进度条本体。
+struct SingleQuotaBar: View {
+    let percent: Double
+    let tint: Color
+    /// 顶部红三角位置 (0=即将过期, 1=刚重置)。nil = 不画。
+    let timeRemainingFraction: Double?
+
+    var body: some View {
+        SegmentedQuotaProgressBar(
+            primaryFraction: percent / 100.0,
+            weeklyFraction: percent / 100.0,
+            tint: tint,
+            segments: 1,
+            height: 8,
+            timeRemainingFraction: timeRemainingFraction
+        )
+        .frame(maxWidth: .infinity)
+    }
+}
+
+// MARK: - dock 详情浮层的 model 块
+
+/// dock 详情浮层里一个 model 的整块：进度条 → 元信息行 → 标题 → 三列明细。
+///
+/// 菜单形态不走这里：那边是 `HoverInfoRow` 逐块折叠的原有结构（条在标题下、
+/// 每块各自 hover）。这里把"全部就地展开"**收敛到一个视图**——条的次序、
+/// 元信息行只留一份、三列的左右顺序，这些规则不该在两个 model 行里各写一遍，
+/// 否则改一处漏一处，而漏了既不崩也不报错，只是浮层悄悄变高一截。
+struct ModelQuotaDockBlock<Bar: View, Columns: View, Footnote: View>: View {
+    let bar: Bar
+    let columns: Columns
+    /// 整行宽度的补充信息（GLM 今日闲时用量）。只有 GLM 传，ChatGPT 传 `EmptyView()`。
+    ///
+    /// 不给默认值：Swift 无法从默认属性值反推泛型参数，调用点漏写就成了
+    /// "generic parameter could not be inferred" 这种与意图无关的编译错误。
+    var footnote: Footnote
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            bar
+            columns
+            footnote
+        }
+    }
+}
+
+/// 一个 model 的「进度条 + 元信息行」。两者是同一份数字的两种画法（条是图形、
+/// 行是文字），所以合成一个视图，必须贴在一起。
+///
+/// 它就坐在**该 model 自己的**三列明细正上方，不提到卡片头部：Antigravity 有
+/// 两个 model，把两条条并到头部就得给每条加一个名称 label 才知道谁是谁，
+/// 而有了 label 它和下面那行模型名就重了；各归各的则"条 ↔ 下面的三列"是紧邻的
+/// 同一块，读者不用回头找对应关系。
+struct QuotaBarWithMetadata: View {
+    let model: ModelQuota
+    let primaryLabel: String
+    let secondaryLabel: String
+    let weeklyEquivalentMultiplier: Int
+    let tint: Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            if model.hasIntervalWindow, model.hasWeeklyWindow {
+                CombinedQuotaBar(
+                    model: model,
+                    tint: tint,
+                    weeklyEquivalentMultiplier: weeklyEquivalentMultiplier
+                )
+                CombinedQuotaMetadataLine(
+                    primaryLabel: primaryLabel,
+                    primaryPercent: model.intervalRemainingPercent,
+                    primaryTimeFraction: model.intervalTimeRemainingFraction,
+                    secondaryLabel: secondaryLabel,
+                    secondaryPercent: model.weeklyRemainingPercent,
+                    secondaryTimeFraction: model.weeklyTimeRemainingFraction,
+                    resetsAt: EquivalentQuotaAllocation.bindingResetDate(
+                        primaryFraction: model.intervalRemainingPercent / 100.0,
+                        weeklyFraction: model.weeklyRemainingPercent / 100.0,
+                        primaryResetsAt: model.intervalResetsAt,
+                        weeklyResetsAt: model.weeklyResetsAt,
+                        segments: weeklyEquivalentMultiplier
+                    )
+                )
+            } else if model.hasIntervalWindow {
+                SingleQuotaBar(
+                    percent: model.intervalRemainingPercent,
+                    tint: tint,
+                    timeRemainingFraction: nil
+                )
+                SingleQuotaMetadataLine(
+                    label: primaryLabel,
+                    percent: model.intervalRemainingPercent,
+                    resetsAt: model.intervalResetsAt
+                )
+            } else if model.hasWeeklyWindow {
+                SingleQuotaBar(
+                    percent: model.weeklyRemainingPercent,
+                    tint: tint,
+                    timeRemainingFraction: model.weeklyTimeRemainingFraction
+                )
+                SingleQuotaMetadataLine(
+                    label: secondaryLabel,
+                    percent: model.weeklyRemainingPercent,
+                    resetsAt: model.weeklyResetsAt
+                )
+            }
+        }
+    }
+}
+
+/// 三列明细：**Last Prompt | 5h | 周**。
+///
+/// 三列等宽、顶端对齐。Last Prompt 和两个额度窗口是同一形状的东西——一段
+/// 时间 + 一组 token 指标——横排才能横向对比（"这次 prompt 花了多少，比这周
+/// 窗口多还是少"）；上下堆着时读者只能在三段之间来回跳。
+///
+/// 没有 Last Prompt 时三列变两列，剩下两列平分宽度（`maxWidth: .infinity`）。
+struct QuotaDetailColumns: View {
+    let lastPrompt: LastPromptUsage?
+    let primaryLabel: String
+    let primaryUsage: UsageMetricSummary?
+    let primaryCreditUsage: QuotaCountUsage?
+    let secondaryLabel: String
+    let secondaryUsage: UsageMetricSummary?
+    let secondaryCreditUsage: QuotaCountUsage?
+    let hasSecondaryWindow: Bool
+    let missingUsageIsLoading: Bool
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 14) {
+            if let lastPrompt {
+                LastPromptHoverSummaryView(lastPrompt: lastPrompt)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            QuotaUsageWindowColumn(
+                label: primaryLabel,
+                usage: primaryUsage,
+                creditUsage: primaryCreditUsage,
+                missingUsageIsLoading: missingUsageIsLoading
+            )
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            if hasSecondaryWindow {
+                QuotaUsageWindowColumn(
+                    label: secondaryLabel,
+                    usage: secondaryUsage,
+                    creditUsage: secondaryCreditUsage,
+                    missingUsageIsLoading: missingUsageIsLoading
+                )
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+}
+
+/// GLM 今日闲时（off-peak）任务 token 用量：整行宽度，排在三列**下方**。
+///
+/// 闲时任务真实消耗但不消耗 Coding Plan 积分，混进 5h / 周两列会让那两列
+/// 的数字对不上额度，所以它必须是独立的一行而不是第三列。
+struct OffPeakUsageFootnote: View {
+    let usage: UsageMetricSummary
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            UsageMetricHoverSummaryView(
+                title: "今日闲时（不消耗积分）",
+                usage: usage,
+                showPromptCount: true
+            )
+            Text("ZCode 闲时任务真实消耗；不影响 5h / 周积分余额")
+                .font(MenuTypography.hoverFootnote)
+                .foregroundStyle(.tertiary)
+        }
+    }
+}
+
+// MARK: - 菜单形态的额度行
+
 /// 统一的双窗口交互：
 /// - 额度条 hover：额度窗口内 token 用量
 /// - 百分比 + 重置时间行 hover：每个窗口的精确重置时间
@@ -580,16 +1027,11 @@ struct QuotaCombinedUsageRow: View {
 
         VStack(alignment: .leading, spacing: 6) {
             HoverInfoRow {
-                SegmentedQuotaProgressBar(
-                    primaryFraction: model.intervalRemainingPercent / 100.0,
-                    weeklyFraction: model.weeklyRemainingPercent / 100.0,
+                CombinedQuotaBar(
+                    model: model,
                     tint: tint,
-                    segments: weeklyEquivalentMultiplier,
-                    height: 8,
-                    timeRemainingFraction: model.weeklyTimeRemainingFraction
+                    weeklyEquivalentMultiplier: weeklyEquivalentMultiplier
                 )
-                .frame(maxWidth: .infinity)
-                .help(segmentedBarTooltipText(segments: weeklyEquivalentMultiplier, hasTriangle: model.weeklyTimeRemainingFraction != nil))
             } detail: {
                 QuotaUsageWindowsHoverView(
                     title: "\(model.displayName) 额度窗口用量",
@@ -647,15 +1089,11 @@ struct QuotaSingleUsageRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HoverInfoRow {
-                SegmentedQuotaProgressBar(
-                    primaryFraction: percent / 100.0,
-                    weeklyFraction: percent / 100.0,
+                SingleQuotaBar(
+                    percent: percent,
                     tint: tint,
-                    segments: 1,
-                    height: 8,
                     timeRemainingFraction: timeRemainingFraction
                 )
-                .frame(maxWidth: .infinity)
             } detail: {
                 QuotaUsageWindowsHoverView(
                     title: "\(title) 额度窗口用量",
@@ -771,22 +1209,31 @@ private struct ResetTimeSummary: View {
 
 // MARK: - Tooltip helpers
 
-/// 进度条 hover 说明：精炼为清晰的配额与重置时间解释
+/// 进度条 hover 说明。抽成命名空间是因为进度条现在可能被**父级**画
+/// （dock 把条提到 model 标题之上），文案不能再是某个 view 里的自由函数。
+enum QuotaBarTooltip {
+    /// 精炼为清晰的配额与重置时间解释
+    static func text(segments: Int, hasTriangle: Bool) -> String {
+        let n = max(segments, 1)
+        let parts: String
+        if n == 1 {
+            parts = "单一窗口可用进度"
+        } else {
+            parts = "第 1 格为当前窗口余量；后续 \(n - 1) 格为等价周额度余量"
+        }
+        let triangle: String
+        if hasTriangle {
+            triangle = "\n顶部 ▼ 标记周重置时间进度（左侧即将重置，右侧刚重置）"
+        } else {
+            triangle = ""
+        }
+        return "分段额度：\n\(parts)。\(triangle)"
+    }
+}
+
+/// 兼容入口：菜单与卡片里的旧调用点仍按自由函数调用。
 func segmentedBarTooltipText(segments: Int, hasTriangle: Bool) -> String {
-    let n = max(segments, 1)
-    let parts: String
-    if n == 1 {
-        parts = "单一窗口可用进度"
-    } else {
-        parts = "第 1 格为当前窗口余量；后续 \(n - 1) 格为等价周额度余量"
-    }
-    let triangle: String
-    if hasTriangle {
-        triangle = "\n顶部 ▼ 标记周重置时间进度（左侧即将重置，右侧刚重置）"
-    } else {
-        triangle = ""
-    }
-    return "分段额度：\n\(parts)。\(triangle)"
+    QuotaBarTooltip.text(segments: segments, hasTriangle: hasTriangle)
 }
 
 // MARK: - DeepSeek API 余额专用行
@@ -799,6 +1246,8 @@ struct DeepseekBalanceRow: View {
     let balanceDetail: DeepseekBalanceDetail?
     let tint: Color
     let peakWindow: DeepseekPeakWindow
+    /// 高峰期倒计时已提到卡片头部时置 false（dock 详情浮层）。
+    var showsPeakIndicator: Bool = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -852,8 +1301,10 @@ struct DeepseekBalanceRow: View {
 
                 Spacer(minLength: 4)
 
-                DeepseekPeakIndicatorView(window: peakWindow)
-                    .layoutPriority(1)
+                if showsPeakIndicator {
+                    DeepseekPeakIndicatorView(window: peakWindow)
+                        .layoutPriority(1)
+                }
             }
         }
         .padding(.vertical, 2)
