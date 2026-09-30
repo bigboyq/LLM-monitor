@@ -18,6 +18,15 @@
       "models": [
         {
           "match": "exact",
+          "keywords": ["gpt-6.1-sol"],
+          "label": "GPT-6.1 Sol",
+          "currency": "USD",
+          "inputPerMillion": 2,
+          "cacheReadPerMillion": 0.1,
+          "outputPerMillion": 10
+        },
+        {
+          "match": "exact",
           "keywords": ["gpt-6-astra"],
           "label": "GPT-6 Astra",
           "currency": "USD",
