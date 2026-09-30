@@ -24,10 +24,83 @@ enum DockEdge: String, Codable, CaseIterable, Sendable, Identifiable {
     }
 }
 
+/// 边缘状态窗的**形态**。设置页里是一个 picker 的四个选项，不是"总开关 +
+/// 自动隐藏模式"两个布尔。
+///
+/// 两个布尔能拼出四种组合，其中一种（关掉总开关时的自动隐藏）根本没有意义；
+/// 而两个真实形态"常驻完整"与"常驻小圆环"也没有自己的名字，用户看到
+/// 「自动隐藏模式（收起为小圆环）」只能反推出"关掉它就常驻"。四选一之后每个
+/// 形态都有名字，设置项与屏幕上的样子一一对应，切换也不再有"两个开关同时
+/// 管一件事"的中间态。
+enum EdgeDockMode: String, Codable, CaseIterable, Sendable, Identifiable {
+    /// 不显示。**保留在 picker 里**而不是"用一个开关代替它"：关掉 dock 是
+    /// 一次明确的决定，混在一个开关里关掉之后就看不出"是没开还是被全屏挡了"。
+    case hidden
+
+    /// 常驻完整状态窗：双环 + 品牌图标 + 额度数值。
+    case statusWindow
+
+    /// 常驻小圆环：只有 5h 单环小圆（没有 5h 窗口的退到周窗口），无数字无图标。
+    /// **不随鼠标展开**——鼠标停在上面只有该 provider 的详情卡片，不长出完整形态。
+    case compactRings
+
+    /// 平时收起为小圆环，鼠标靠近才展开为完整状态窗。默认。
+    case autoHideWindow
+
+    /// 设置页的默认值。
+    ///
+    /// 给 `.autoHideWindow` 而不是"什么都不显示"：完整功能默认开着，但屏幕上
+    /// 默认只占边缘一条 7pt 的小环列，鼠标靠近才长出来。这是唯一一种"装了就有
+    /// 用、但完全不打扰"的形态——真不想要的人去 picker 里选「无」，而不是靠一个
+    /// 默认关闭的开关把功能整个藏起来。
+    static let `default` = EdgeDockMode.autoHideWindow
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .hidden:         return "无"
+        case .statusWindow:   return "状态窗"
+        case .compactRings:   return "小圆环"
+        case .autoHideWindow: return "状态窗（自动隐藏）"
+        }
+    }
+
+    /// picker 选中项下方的一行说明：每种形态在屏幕上到底长什么样。
+    var summary: String {
+        switch self {
+        case .hidden:
+            return "不显示边缘状态窗。"
+        case .statusWindow:
+            return "常驻完整圆环窗：双环、品牌图标与额度数值一直显示，悬停出详情卡片。"
+        case .compactRings:
+            return "常驻小圆环：只有一列 5h 单环小圆，无图标与数值；悬停某个圆仍会弹出该 Provider 的详情卡片，但不会展开成完整形态。"
+        case .autoHideWindow:
+            return "平时收起为小圆环，鼠标靠近时展开为完整圆环窗，移开后延时收起。"
+        }
+    }
+
+    /// 是否显示 dock。除 `.hidden` 外都显示。
+    var isVisible: Bool { self != .hidden }
+
+    /// 鼠标靠近时是否把 dock 展开成完整形态。
+    ///
+    /// 只有「状态窗（自动隐藏）」有这个行为：简版的圆只有 7pt，"dock 长出来"
+    /// 本身就是对靠近动作的回应，逐行命中在这个尺寸下只会抖。
+    ///
+    /// 「小圆环」刻意**不**展开——它要的就是屏幕上永远只有那一列小环；一个会
+    /// 长的东西等于把用户选的形态换掉了。它仍然逐行 hover 出详情卡片（见
+    /// `EdgeDockController.probeMouse`），但 dock 本身的形态不变。
+    var expandsOnProximity: Bool { self == .autoHideWindow }
+
+    /// 静置（鼠标不在）时是否保持完整形态。
+    var staysFullWhenIdle: Bool { self == .statusWindow }
+}
+
 /// 边缘状态窗的用户配置。落盘在 `config.json` 的顶层 `edgeDock`。
 struct EdgeDockConfig: Codable, Equatable, Sendable {
-    /// 总开关。默认**关闭** —— 新窗口属于主动开启的额外面板，不该在升级后自己冒出来。
-    var enabled: Bool
+    /// 显示形态（四选一）。默认 `EdgeDockMode.default`。
+    var mode: EdgeDockMode
 
     /// 贴靠边。默认右侧。
     ///
@@ -41,11 +114,10 @@ struct EdgeDockConfig: Codable, Equatable, Sendable {
     /// `visibleFrame`，存绝对坐标会让窗口直接掉到屏幕外且再也无法拖回来。
     var offset: Double
 
-    /// 自动隐藏模式：平时收起为紧贴边缘的**简版**（只有 5h 单环小圆，无数字无图标），
-    /// 鼠标靠近才展开为完整 dock。默认关闭 = 常驻完整形态。
-    var autoHideMode: Bool
-
     /// 前台 App 进入全屏时隐藏 dock。默认 **true** = 维持既有行为。
+    ///
+    /// 独立于 `mode`：它是"什么时候让路"，不是"dock 长什么样"，两者正交——
+    /// 所以即便形态选了「无」，这个开关也仍然有意义的读法（选了任何一种形态都受它管）。
     ///
     /// 默认给 true 而不是 false：这是一个"从没有这个开关"改成"有开关"的功能，
     /// 默认 false 等于**升级后所有已开启 dock 的用户立刻在全屏里多出一个窗口**。
@@ -53,37 +125,50 @@ struct EdgeDockConfig: Codable, Equatable, Sendable {
     var hideInFullscreen: Bool
 
     init(
-        enabled: Bool,
+        mode: EdgeDockMode = .default,
         edge: DockEdge,
         offset: Double,
-        autoHideMode: Bool = false,
         hideInFullscreen: Bool = true
     ) {
-        self.enabled = enabled
+        self.mode = mode
         self.edge = edge
         self.offset = offset
-        self.autoHideMode = autoHideMode
         self.hideInFullscreen = hideInFullscreen
     }
 
     enum CodingKeys: String, CodingKey {
-        case enabled, edge, offset, autoHideMode, hideInFullscreen
+        case mode, edge, offset, hideInFullscreen
     }
 
-    /// 自定义 decode 只为一件事：`autoHideMode` 是后加的字段，旧 config.json 里没有，
-    /// 合成版 Codable 会因此**整体解码失败** —— 而外层 `ConfigStore` 对 edgeDock 用的是
-    /// `try?`（坏值按没配过处理），失败意味着用户已经开启的 dock 被静默重置回默认关闭。
+    /// 自定义 decode 只为一件事：`mode` 与 `hideInFullscreen` 是后加字段，旧
+    /// config.json 里没有，合成版 Codable 会因此**整体解码失败** —— 而外层
+    /// `ConfigStore` 对 edgeDock 用的是 `try?`（坏值按没配过处理），失败意味着
+    /// 用户已经拖到屏幕另一边的 dock 被静默重置回默认位置。
+    ///
+    /// **旧配置里的 `enabled` / `autoHideMode` 不做映射**，一律回落到默认形态：
+    /// 那两个布尔已经被 `mode` 取代，再维护一张映射表就要为"没人能看见的旧字段"
+    /// 一直养着它；边缘状态窗在本版本里仍是未发布功能，行为回落到默认形态的
+    /// 代价比"照顾旧字段"小。
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        enabled = try container.decode(Bool.self, forKey: .enabled)
+        // 形态先按字符串解再查表，而不是 `decodeIfPresent(EdgeDockMode.self)`：
+        // 后者遇到手改出来的未知值（`"mode": "magic"`）会**抛错**，整块解码失败，
+        // 外层的 `try?` 随即把用户拖到另一条边、某一位置的 dock 一起重置掉。
+        // 这里回落成默认形态，坏的是一个字段而不是整块配置——正好是这个自定义
+        // decode 存在的理由。
+        if let raw = try container.decodeIfPresent(String.self, forKey: .mode),
+           let parsed = EdgeDockMode(rawValue: raw) {
+            mode = parsed
+        } else {
+            mode = .default
+        }
         edge = try container.decode(DockEdge.self, forKey: .edge)
         offset = try container.decode(Double.self, forKey: .offset)
-        autoHideMode = try container.decodeIfPresent(Bool.self, forKey: .autoHideMode) ?? false
-        // 同理：后加字段，缺省 true 保持旧配置的行为不变。
+        // 后加字段，缺省 true 保持旧配置的行为不变。
         hideInFullscreen = try container.decodeIfPresent(Bool.self, forKey: .hideInFullscreen) ?? true
     }
 
-    static let `default` = EdgeDockConfig(enabled: false, edge: .right, offset: 0.5)
+    static let `default` = EdgeDockConfig(mode: .default, edge: .right, offset: 0.5)
 
     /// 全屏时是否应该隐藏。
     ///
@@ -102,10 +187,9 @@ struct EdgeDockConfig: Codable, Equatable, Sendable {
     /// 产生一个永远画在屏幕外的窗口。
     var normalized: EdgeDockConfig {
         EdgeDockConfig(
-            enabled: enabled,
+            mode: mode,
             edge: edge,
             offset: offset.isFinite ? min(max(offset, 0), 1) : 0.5,
-            autoHideMode: autoHideMode,
             hideInFullscreen: hideInFullscreen
         )
     }

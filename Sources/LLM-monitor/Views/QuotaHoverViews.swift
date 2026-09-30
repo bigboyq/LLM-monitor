@@ -196,16 +196,17 @@ struct QuotaUsageWindowsHoverView: View {
     }
 }
 
-/// 一个额度窗口的用量明细。菜单里是 hover 浮层里的一段，dock 详情浮层里是
-/// 三列布局的一列——同一份渲染两处共用，免得"菜单里三个字段、浮层里四个"。
+/// 一个额度窗口的用量明细：hover 浮层里的一段（菜单与 dock 的浮层共用同一份
+/// 渲染）。dock 详情浮层原先也直接铺它，现在那边只留额度条——用量明细在菜单的
+/// hover 浮层里看。
 struct QuotaUsageWindowColumn: View {
     let label: String
     let usage: UsageMetricSummary?
     let creditUsage: QuotaCountUsage?
     var missingUsageIsLoading: Bool = false
 
-    /// 有数据与空态**共用**的标题。两边必须逐字相同：三列并排时任何一字之差
-    /// 都会让"标签宽度 / 换行点"对不上，空态那列看起来就像另起了一种排版。
+    /// 有数据与空态**共用**的标题。两边必须逐字相同：标题宽度决定正文从哪一行开始，
+    /// 一字之差就会让"没数据"读成另一种排版，而不是同一段里的一个空态。
     private var columnTitle: String { "\(label) 本地 token 用量" }
 
     var body: some View {
@@ -230,8 +231,8 @@ struct QuotaUsageWindowColumn: View {
                 // 空态**保留标题**，只把正文换成一句话。
                 //
                 // 此前空态直接渲染成一句"5h 额度窗口内暂无本地 token 记录"，没有
-                // 标题行。三列并排时这一列就比旁边两列**矮一整行**，正文和别人的
-                // 标题挤在同一高度上，读起来像列没对齐，而不是像"这一列没数据"。
+                // 标题行，于是正文和别人的标题挤在同一高度上，读起来像少了一段，
+                // 而不是像"这一段没数据"。
                 VStack(alignment: .leading, spacing: 5) {
                     Text(columnTitle)
                         .font(MenuTypography.hoverRowEmphasis)

@@ -7,7 +7,8 @@ import SwiftUI
 /// 全部是无 AppKit 窗口状态的纯函数：坐标系的翻转、贴边吸附、归一化位置换算
 /// 都是最容易出"看起来对但实际差 1px / 掉到屏幕外"的地方，所以全部独立出来测。
 enum EdgeDockGeometry {
-    /// dock 的两种外观尺寸。自动隐藏模式的收起形态用 `.compact`，其余一律 `.full`。
+    /// dock 的两种外观尺寸。「小圆环」与「状态窗（自动隐藏）」的收起形态用
+    /// `.compact`，其余一律 `.full`。
     enum DockAppearance {
         /// 完整版：双环 + 品牌图标 + 常驻数值。
         case full
@@ -70,6 +71,13 @@ enum EdgeDockGeometry {
     static let compactPadding: CGFloat = 7
     /// 简版环线宽（pt）。
     static let compactRingLineWidth: CGFloat = 2.5
+
+    /// 简版相邻两个圆心之间的距离（行距，pt）。
+    ///
+    /// 「小圆环」形态逐行 hover 时用它的一半做判定半径下限（见
+    /// `EdgeDockController.circleIndex`）：7pt 的圆按圆判定要指中一个 7px 的点，
+    /// 半个行距则刚好让相邻两环的判定区在中点接上。
+    static let compactRowStep: CGFloat = compactDiameter + compactSpacing
 
     /// 按条目数量算出贴边状态下窗口的尺寸。
     ///
@@ -297,21 +305,59 @@ enum EdgeDockGeometry {
         }
     }
 
+    /// 第 `index` 个圆的**圆心**（dock frame 坐标系，AppKit 屏幕坐标，y 轴朝上）。
+    ///
+    /// 必须与 `EdgeDockContentView` 的排版一致：
+    /// - 竖排用 `VStack`，第 0 行渲染在上方（= `maxY`），从 `maxY` 减去 padding 与半个圆径。
+    /// - 横排用 `HStack`，第 0 列渲染在左侧（= `minX`），x 从 `minX` 加上 padding 与半个圆径，y 位于顶部圆环中心。
+    static func circleCenter(dockFrame: CGRect, edge: DockEdge, index: Int) -> CGPoint {
+        if edge.isVertical {
+            return CGPoint(
+                x: dockFrame.midX,
+                y: dockFrame.maxY - (padding + diameter / 2) - CGFloat(index) * rowStep
+            )
+        }
+        return CGPoint(
+            x: dockFrame.minX + (padding + diameter / 2) + CGFloat(index) * columnStep,
+            y: dockFrame.maxY - padding - diameter / 2
+        )
+    }
+
+    /// 各圆的外接矩形（屏幕坐标系，与 `dockFrame` 同一空间）。
+    static func circleRects(dockFrame: CGRect, edge: DockEdge, entryCount: Int) -> [CGRect] {
+        (0..<max(entryCount, 0)).map { index in
+            let center = circleCenter(dockFrame: dockFrame, edge: edge, index: index)
+            return CGRect(
+                x: center.x - diameter / 2,
+                y: center.y - diameter / 2,
+                width: diameter,
+                height: diameter
+            )
+        }
+    }
+
     /// popover 贴近 dock 摆放：紧贴被 hover 的圆，沿垂直于贴靠边的方向朝屏幕内侧展开。
     ///
     /// 展开方向与 dock 的贴靠方向相反（贴右边 → popover 往左长），保证内容朝屏幕内，
     /// 不会被推出可视区域；纵向以圆心对齐并钳在 visibleFrame 内。
+    ///
+    /// `measuredRowCenter`：**实测**行中心（屏幕坐标），有值时用它当纵向锚点。
+    /// 必须传：下面的 `rowCenter` 兜底写死的是完整形态的常数（行距 38 + 16pt），
+    /// 在简版 15pt 的行距下从第 2 行起就逐行错开，卡片会挂在一个看起来不属于它
+    /// 的环上。实测矩形两种形态都上报（见 `EdgeDockContentView`），推算只留作
+    /// "这一帧还没量到"时的兜底。
     static func popoverFrame(
         size: CGSize,
         dockFrame: CGRect,
         rowIndex: Int,
         edge: DockEdge,
-        visibleFrame: CGRect
+        visibleFrame: CGRect,
+        measuredRowCenter: CGPoint? = nil
     ) -> CGRect {
         guard visibleFrame.width > 0, visibleFrame.height > 0 else { return .zero }
         let w = min(size.width, visibleFrame.width)
         let h = min(size.height, visibleFrame.height)
-        let center = rowCenter(dockFrame: dockFrame, edge: edge, index: rowIndex)
+        let center = measuredRowCenter ?? rowCenter(dockFrame: dockFrame, edge: edge, index: rowIndex)
 
         let x: CGFloat
         let y: CGFloat

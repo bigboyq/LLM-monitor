@@ -9,7 +9,7 @@ struct ChatGPTPlanModelRow: View {
     let usageDetails: CodexUsageDetails?
     let localSamples: [LocalTokenUsageSample]
     let tint: Color
-    /// 夹在进度条块与三列统计之间的卡片级信息（重置卡、高峰期），见
+    /// 夹在进度条块与下方**本地用量**之间的卡片级信息（重置卡、高峰期），见
     /// `ModelQuotaDockBlock.between`。只有第一个 model 行会拿到非空值。
     var between: AnyView = AnyView(EmptyView())
     /// dock 详情浮层把进度条提到标题上方；菜单保持原顺序（见 `CombinedQuotaWindowRow`）。
@@ -31,10 +31,11 @@ struct ChatGPTPlanModelRow: View {
         ProviderCardLayout.liftsProgressBar(mode: revealMode)
     }
 
-    // MARK: dock：条 → 元信息行 → 标题 → 三列明细（与通用 model 行同构）
+    // MARK: dock：条 + 元信息行（与通用 model 行同构）
 
-    /// dock 侧没有标题行（见 `CombinedQuotaWindowRow.dockBlock` 的理由）：
-    /// 条 + 三列已经自解释，模型名是冗余的。菜单侧仍然用它当那行的名字。
+    /// dock 侧只有额度条这一块，明细（三列统计）已撤掉：条 + 元信息行回答
+    /// "还剩多少、什么时候重置"，用量明细交给菜单侧的 hover 浮层。菜单侧仍然
+    /// 用 `title` 当那行的名字。
     @ViewBuilder
     private var dockBlock: some View {
         if hasPrimaryWindow && hasSecondaryWindow {
@@ -45,17 +46,6 @@ struct ChatGPTPlanModelRow: View {
                     secondaryLabel: secondaryLabel,
                     weeklyEquivalentMultiplier: 6,
                     tint: tint
-                ),
-                columns: QuotaDetailColumns(
-                    lastPrompt: lastPrompt,
-                    primaryLabel: primaryLabel,
-                    primaryUsage: primaryUsage,
-                    primaryCreditUsage: nil,
-                    secondaryLabel: secondaryLabel,
-                    secondaryUsage: secondaryUsage,
-                    secondaryCreditUsage: nil,
-                    hasSecondaryWindow: true,
-                    missingUsageIsLoading: true
                 ),
                 footnote: EmptyView(),
                 between: between
@@ -69,17 +59,6 @@ struct ChatGPTPlanModelRow: View {
                     weeklyEquivalentMultiplier: 6,
                     tint: tint
                 ),
-                columns: QuotaDetailColumns(
-                    lastPrompt: lastPrompt,
-                    primaryLabel: primaryLabel,
-                    primaryUsage: primaryUsage,
-                    primaryCreditUsage: nil,
-                    secondaryLabel: "",
-                    secondaryUsage: nil,
-                    secondaryCreditUsage: nil,
-                    hasSecondaryWindow: false,
-                    missingUsageIsLoading: true
-                ),
                 footnote: EmptyView(),
                 between: between
             )
@@ -91,17 +70,6 @@ struct ChatGPTPlanModelRow: View {
                     secondaryLabel: "",
                     weeklyEquivalentMultiplier: 6,
                     tint: tint
-                ),
-                columns: QuotaDetailColumns(
-                    lastPrompt: lastPrompt,
-                    primaryLabel: secondaryLabel,
-                    primaryUsage: secondaryUsage,
-                    primaryCreditUsage: nil,
-                    secondaryLabel: "",
-                    secondaryUsage: nil,
-                    secondaryCreditUsage: nil,
-                    hasSecondaryWindow: false,
-                    missingUsageIsLoading: true
                 ),
                 footnote: EmptyView(),
                 between: between
@@ -453,7 +421,7 @@ struct CombinedQuotaWindowRow: View {
     let localSamples: [LocalTokenUsageSample]
     /// 额度窗口 hover 统计排除的时间窗口（GLM 闲时任务不消耗积分）。
     var excludeWindows: [GlmOffPeakWindow] = []
-    /// 夹在进度条块与三列统计之间的卡片级信息（重置卡、高峰期），见
+    /// 夹在进度条块与下方**本地用量**之间的卡片级信息（重置卡、高峰期），见
     /// `ModelQuotaDockBlock.between`。只有第一个 model 行会拿到非空值。
     var between: AnyView = AnyView(EmptyView())
     /// dock 详情浮层把进度条提到标题上方；菜单保持原顺序。
@@ -475,12 +443,14 @@ struct CombinedQuotaWindowRow: View {
         ProviderCardLayout.liftsProgressBar(mode: revealMode)
     }
 
-    // MARK: dock：条 + 元信息行 → 三列明细
+    // MARK: dock：条 + 元信息行
 
-    /// 这里**没有标题行**。原来有 `QuotaWindowTitle`（模型名 + 周倍率），
-    /// 但条下面紧跟着的三列第一列标题就是"5h 本地 token 用量"、第三列就是
-    /// "周 本地 token 用量"——哪个 model 谁的条，读者靠位置就已经知道了，
-    /// 再加一行名称只是把同样的信息多写一遍。
+    /// dock 侧只剩**额度本身**：条 + 元信息行。
+    ///
+    /// 三列明细（Last Prompt | 5h | 周）已经撤掉——它们和下面那张「最近7天token
+    /// 用量」卡讲的是同一件事（本地扫描的 token 用量），在一屏里摆两份既重复，
+    /// 又让"还剩多少"这条主线被三块数字压住。想知道这次 prompt 花了多少，走
+    /// 菜单侧的 hover 浮层。
     ///
     /// 元信息行（`5h 100% 周 …`）也只出现一次：它此前在额度行本身和
     /// `QuotaWindowsHoverView` 展开后的窗口指标行各一份，dock 侧两处都在屏上。
@@ -495,18 +465,6 @@ struct CombinedQuotaWindowRow: View {
                     weeklyEquivalentMultiplier: weeklyEquivalentMultiplier,
                     tint: tint
                 ),
-                columns: QuotaDetailColumns(
-                    lastPrompt: dockLastPrompt,
-                    primaryLabel: primaryLabel,
-                    primaryUsage: primaryUsage,
-                    primaryCreditUsage: intervalCreditUsage,
-                    secondaryLabel: "周",
-                    secondaryUsage: weeklyUsage,
-                    secondaryCreditUsage: weeklyCreditUsage,
-                    hasSecondaryWindow: true,
-                    missingUsageIsLoading: false,
-                    showsLastPromptColumn: shouldShowLastPrompt
-                ),
                 footnote: offPeakFootnote,
                 between: between
             )
@@ -519,18 +477,6 @@ struct CombinedQuotaWindowRow: View {
                     weeklyEquivalentMultiplier: weeklyEquivalentMultiplier,
                     tint: tint
                 ),
-                columns: QuotaDetailColumns(
-                    lastPrompt: dockLastPrompt,
-                    primaryLabel: primaryLabel,
-                    primaryUsage: primaryUsage,
-                    primaryCreditUsage: intervalCreditUsage,
-                    secondaryLabel: "",
-                    secondaryUsage: nil,
-                    secondaryCreditUsage: nil,
-                    hasSecondaryWindow: false,
-                    missingUsageIsLoading: false,
-                    showsLastPromptColumn: shouldShowLastPrompt
-                ),
                 footnote: offPeakFootnote,
                 between: between
             )
@@ -542,18 +488,6 @@ struct CombinedQuotaWindowRow: View {
                     secondaryLabel: "",
                     weeklyEquivalentMultiplier: weeklyEquivalentMultiplier,
                     tint: tint
-                ),
-                columns: QuotaDetailColumns(
-                    lastPrompt: dockLastPrompt,
-                    primaryLabel: "周",
-                    primaryUsage: weeklyUsage,
-                    primaryCreditUsage: weeklyCreditUsage,
-                    secondaryLabel: "",
-                    secondaryUsage: nil,
-                    secondaryCreditUsage: nil,
-                    hasSecondaryWindow: false,
-                    missingUsageIsLoading: false,
-                    showsLastPromptColumn: shouldShowLastPrompt
                 ),
                 footnote: offPeakFootnote,
                 between: between
@@ -571,11 +505,6 @@ struct CombinedQuotaWindowRow: View {
         if let todayOffPeakUsage {
             OffPeakUsageFootnote(usage: todayOffPeakUsage)
         }
-    }
-
-    /// 三列里的 Last Prompt。与菜单侧同一套门槛：不是每个 model 都值得挂一条。
-    private var dockLastPrompt: LastPromptUsage? {
-        shouldShowLastPrompt ? lastPrompt : nil
     }
 
     /// 重置倒计时取"先耗尽的那个"窗口的时间——与菜单那条元信息行同源。
@@ -811,8 +740,8 @@ private let quotaSingleDataColumnWidth: CGFloat = 80
 /// 双窗口 model 的分段进度条本体。
 ///
 /// 与 hover 明细拆开是因为**排版权在父级**：dock 详情浮层里这条要排在
-/// model 标题**之上**，而它的明细（5h / 周用量）在那边又被并进三列布局——
-/// 菜单那条"条 + hover 弹明细"的结构整块搬不过去。
+/// model 标题**之上**，且旁边没有自己的 hover 明细——菜单那条"条 + hover 弹明细"
+/// 的结构整块搬不过去（浮层不接受鼠标事件），明细要看菜单。
 struct CombinedQuotaBar: View {
     let model: ModelQuota
     let tint: Color
@@ -857,24 +786,27 @@ struct SingleQuotaBar: View {
 
 // MARK: - dock 详情浮层的 model 块
 
-/// dock 详情浮层里一个 model 的整块：进度条 → 元信息行 → 标题 → 三列明细。
+/// dock 详情浮层里一个 model 的整块：元信息行 + 进度条（+ 卡片级信息）。
 ///
 /// 菜单形态不走这里：那边是 `HoverInfoRow` 逐块折叠的原有结构（条在标题下、
 /// 每块各自 hover）。这里把"全部就地展开"**收敛到一个视图**——条的次序、
-/// 元信息行只留一份、三列的左右顺序，这些规则不该在两个 model 行里各写一遍，
-/// 否则改一处漏一处，而漏了既不崩也不报错，只是浮层悄悄变高一截。
-struct ModelQuotaDockBlock<Bar: View, Columns: View, Footnote: View>: View {
+/// 元信息行只留一份，这些规则不该在两个 model 行里各写一遍，否则改一处漏一处，
+/// 而漏了既不崩也不报错，只是浮层悄悄变高一截。
+///
+/// 块里**没有**分隔线：三列明细撤掉后块内只剩额度本身，而"额度 / 本地用量"
+/// 之间的那条线要横跨所有 model，只能由卡片层画一次（`ProviderCardView.dockBody`）——
+/// 每个块各画一条会在两个 model 之间叠成两条挨着的线。
+struct ModelQuotaDockBlock<Bar: View, Footnote: View>: View {
     let bar: Bar
-    let columns: Columns
     /// 整行宽度的补充信息（GLM 今日闲时用量）。只有 GLM 传，ChatGPT 传 `EmptyView()`。
     ///
     /// 不给默认值：Swift 无法从默认属性值反推泛型参数，调用点漏写就成了
     /// "generic parameter could not be inferred" 这种与意图无关的编译错误。
     var footnote: Footnote
-    /// 夹在「进度条块」与「三列统计」之间的**卡片级**信息（重置卡、高峰期倒计时）。
+    /// 夹在「进度条块」与下方**本地用量**之间的**卡片级**信息（重置卡、高峰期倒计时）。
     ///
-    /// 用 `AnyView` 而不是第四个泛型参数：它的来源在卡片层（`ProviderCardView`），
-    /// 要一路穿过 `QuotaSummary` → 各个 model 行视图才到得了这里，四个泛型参数的
+    /// 用 `AnyView` 而不是再一个泛型参数：它的来源在卡片层（`ProviderCardView`），
+    /// 要一路穿过 `QuotaSummary` → 各个 model 行视图才到得了这里，多一个泛型参数的
     /// 传递会把整条链都染上类型参数，而这里只需要"一段不透明的内容"。
     /// 有默认值，所以三处 menu 调用点不用改。
     var between: AnyView = AnyView(EmptyView())
@@ -882,33 +814,23 @@ struct ModelQuotaDockBlock<Bar: View, Columns: View, Footnote: View>: View {
         VStack(alignment: .leading, spacing: 6) {
             bar
             between
-            columnDivider
-            columns
             footnote
         }
-    }
-
-    /// 统计表与上面的"额度概览"分开：上面回答"还剩多少、什么时候重置"，
-    /// 下面才是 Last Prompt / 5h / 周的明细。与 7 天图表下方那条同款
-    /// （同色、同不透明度、同样整行宽、不额外缩进），上下间距也对齐到 9pt
-    /// （本 VStack spacing 6 + 这里的 3），两条线在屏幕上读起来是同一条。
-    @ViewBuilder
-    private var columnDivider: some View {
-        Divider().opacity(0.45).padding(.vertical, 3)
     }
 }
 
 /// 一个 model 的「元信息行 + 进度条」。两者是同一份数字的两种画法（行是文字、
 /// 条是图形），所以合成一个视图，必须贴在一起。
 ///
-/// **行在条的上方**：那行写的是"这条条代表哪两个窗口、各剩多少、什么时候重置"，
-/// 先读说明再读图形；反过来读者得先猜这根条是什么、再回头找它的注解。条本身
-/// 上下各留一点间距，不贴着相邻内容。
+/// **行在条的上方**：那行写的是"这条条代表哪个 model、哪两个窗口、各剩多少、
+/// 什么时候重置"，先读说明再读图形；反过来读者得先猜这根条是什么、再回头找它
+/// 的注解。条本身上下各留一点间距，不贴着相邻内容。
 ///
-/// 它就坐在**该 model 自己的**三列明细正上方（中间隔一条分隔线与卡片级信息），
-/// 不提到卡片头部：Antigravity 有两个 model，把两条条并到头部就得给每条加一个
-/// 名称 label 才知道谁是谁，而有了 label 它和下面那行模型名就重了；各归各的则
-/// "条 ↔ 下面的三列"仍然同属一块，读者不用回头找对应关系。
+/// **model 名写在这行里，不另起一行、也不提到卡片头部**：三列明细撤掉后，块里
+/// 只剩这一行和条，Antigravity 那样的多 model provider 就有两条一模一样的条，
+/// 谁是谁全靠猜。名字必须和它描述的数字挨着——提到头部就得给每个 model 各搬一份，
+/// 另起一行则是把同一行字拆成两半。菜单侧不需要它：那边有 `QuotaWindowTitle`
+/// 当那行的名字，所以元信息行的 `name` 传空串。
 struct QuotaBarWithMetadata: View {
     let model: ModelQuota
     let primaryLabel: String
@@ -920,6 +842,7 @@ struct QuotaBarWithMetadata: View {
         VStack(alignment: .leading, spacing: 6) {
             if model.hasIntervalWindow, model.hasWeeklyWindow {
                 CombinedQuotaMetadataLine(
+                    name: model.displayName,
                     primaryLabel: primaryLabel,
                     primaryPercent: model.intervalRemainingPercent,
                     primaryTimeFraction: model.intervalTimeRemainingFraction,
@@ -942,6 +865,7 @@ struct QuotaBarWithMetadata: View {
                 .padding(.vertical, 3)
             } else if model.hasIntervalWindow {
                 SingleQuotaMetadataLine(
+                    name: model.displayName,
                     label: primaryLabel,
                     percent: model.intervalRemainingPercent,
                     resetsAt: model.intervalResetsAt
@@ -954,6 +878,7 @@ struct QuotaBarWithMetadata: View {
                 .padding(.vertical, 3)
             } else if model.hasWeeklyWindow {
                 SingleQuotaMetadataLine(
+                    name: model.displayName,
                     label: secondaryLabel,
                     percent: model.weeklyRemainingPercent,
                     resetsAt: model.weeklyResetsAt
@@ -969,86 +894,10 @@ struct QuotaBarWithMetadata: View {
     }
 }
 
-/// 三列明细：**Last Prompt | 5h | 周**。
+/// GLM 今日闲时（off-peak）任务 token 用量：整行宽度，排在额度条**下方**。
 ///
-/// 三列等宽、顶端对齐。Last Prompt 和两个额度窗口是同一形状的东西——一段
-/// 时间 + 一组 token 指标——横排才能横向对比（"这次 prompt 花了多少，比这周
-/// 窗口多还是少"）；上下堆着时读者只能在三段之间来回跳。
-///
-/// Last Prompt 那一列。有数据时是完整明细，支持但还没数据时**保留标题**、
-/// 正文换成"额度窗口内暂无本地数据"——和 5h / 周两列的空态处理是同一条规则。
-///
-/// 整列不画的情况由调用方在 `QuotaDetailColumns` 里判掉了：那里能拿到
-/// "支不支持"，这里只管"有数据还是没有"。
-struct LastPromptDockColumn: View {
-    let lastPrompt: LastPromptUsage?
-
-    var body: some View {
-        if let lastPrompt {
-            LastPromptHoverSummaryView(lastPrompt: lastPrompt)
-        } else {
-            VStack(alignment: .leading, spacing: 5) {
-                Text("Last Prompt")
-                    .font(MenuTypography.hoverRowEmphasis)
-                    .foregroundStyle(.primary)
-                Text("额度窗口内暂无本地数据")
-                    .font(MenuTypography.hoverCaption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-    }
-}
-
-struct QuotaDetailColumns: View {
-    let lastPrompt: LastPromptUsage?
-    let primaryLabel: String
-    let primaryUsage: UsageMetricSummary?
-    let primaryCreditUsage: QuotaCountUsage?
-    let secondaryLabel: String
-    let secondaryUsage: UsageMetricSummary?
-    let secondaryCreditUsage: QuotaCountUsage?
-    let hasSecondaryWindow: Bool
-    let missingUsageIsLoading: Bool
-    /// 这个 provider/model 是否**支持** last prompt。与 `lastPrompt == nil` 区分开：
-    /// 前者是"永远不会有"，后者是"支持但还没拉到"，空态文案只对后者成立。
-    var showsLastPromptColumn: Bool = true
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 14) {
-            // 有 last prompt 就完整画；支持但还没数据 → 保留标题 + 空态文案；
-            // 这个 provider 压根不提供 → 整列不画。三者必须分开：都画"暂无数据"
-            // 是在对 GLM 这类永远不会有 last prompt 的 provider 撒谎，而且是一句
-            // 永远兑现不了的谎。
-            if showsLastPromptColumn {
-                LastPromptDockColumn(lastPrompt: lastPrompt)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-
-            QuotaUsageWindowColumn(
-                label: primaryLabel,
-                usage: primaryUsage,
-                creditUsage: primaryCreditUsage,
-                missingUsageIsLoading: missingUsageIsLoading
-            )
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            if hasSecondaryWindow {
-                QuotaUsageWindowColumn(
-                    label: secondaryLabel,
-                    usage: secondaryUsage,
-                    creditUsage: secondaryCreditUsage,
-                    missingUsageIsLoading: missingUsageIsLoading
-                )
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        }
-    }
-}
-
-/// GLM 今日闲时（off-peak）任务 token 用量：整行宽度，排在三列**下方**。
-///
-/// 闲时任务真实消耗但不消耗 Coding Plan 积分，混进 5h / 周两列会让那两列
-/// 的数字对不上额度，所以它必须是独立的一行而不是第三列。
+/// 闲时任务真实消耗但不消耗 Coding Plan 积分，混进额度窗口会让读者把它算进
+/// 已用额度，所以它必须是独立的一行而不是额度块里的一部分。
 struct OffPeakUsageFootnote: View {
     let usage: UsageMetricSummary
 
@@ -1196,7 +1045,33 @@ struct QuotaSingleUsageRow: View {
     }
 }
 
+/// 进度条上方那一行的 model 名。
+///
+/// 它是**这行的主语**（"Gemini Models 5h 62% 周 59%"），所以用 `modelTitle`
+/// 而不是同行的 `dataLabel`——数字与窗口标签是宾语，11pt 的名字压得住 10pt 的
+/// 数字；两者同字号时一行四个等重的词，谁修饰谁反而看不出来。
+///
+/// 宽度放不下时截断而不是压缩数字：百分比列是定宽的，重置时间在行尾，名字是
+/// 整行里唯一可牺牲的那一段（`layoutPriority(-1)` 让它先让位）。名字缺失时
+/// 整个不画——菜单侧那行的名字由标题行写了，这里重复一遍只是多一处噪音。
+private struct QuotaRowModelName: View {
+    let name: String
+
+    var body: some View {
+        if !name.isEmpty {
+            Text(name)
+                .font(MenuTypography.modelTitle)
+                .foregroundStyle(Color.primaryLabel)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .layoutPriority(-1)
+        }
+    }
+}
+
 private struct CombinedQuotaMetadataLine: View {
+    /// 进度条对应的 model 名，排在所有窗口标签之前。菜单侧传空串（标题行已有）。
+    var name: String = ""
     let primaryLabel: String
     let primaryPercent: Double
     let primaryTimeFraction: Double?
@@ -1207,15 +1082,16 @@ private struct CombinedQuotaMetadataLine: View {
 
     var body: some View {
         HStack(spacing: 6) {
+            QuotaRowModelName(name: name)
+            Spacer(minLength: 12)
+            // 百分比与重置时间**一起靠右**：两个百分比回答"还剩多少"，重置时间回答
+            // "什么时候换一轮"，三者是同一组右侧读数，挤在行尾一簇。名字在行首，
+            // 中间的空档把"这是谁的条"和"还剩多少"分成两半。
             HStack(spacing: 6) {
                 quotaValue(label: primaryLabel, percent: primaryPercent, timeFraction: primaryTimeFraction)
                 quotaValue(label: secondaryLabel, percent: secondaryPercent, timeFraction: secondaryTimeFraction)
             }
-            .frame(width: quotaCombinedDataColumnWidth, alignment: .leading)
-            // 重置时间靠右：它和左侧两个百分比不是一组数字——百分比回答"还剩
-            // 多少"，重置时间回答"什么时候换一轮"，放在紧挨着的位置会被读成
-            // "5h 那一格的时间"。推到行尾，两个问题在视觉上分属两端。
-            Spacer(minLength: 12)
+            .frame(width: quotaCombinedDataColumnWidth, alignment: .trailing)
             ResetTimeSummary(resetsAt: resetsAt)
         }
     }
@@ -1234,12 +1110,16 @@ private struct CombinedQuotaMetadataLine: View {
 }
 
 private struct SingleQuotaMetadataLine: View {
+    /// 进度条对应的 model 名，排在窗口标签之前。菜单侧传空串（标题行已有）。
+    var name: String = ""
     let label: String
     let percent: Double
     let resetsAt: Date?
 
     var body: some View {
         HStack(spacing: 6) {
+            QuotaRowModelName(name: name)
+            Spacer(minLength: 12)
             HStack(spacing: 4) {
                 Text(label)
                     .font(MenuTypography.dataLabel)
@@ -1249,7 +1129,7 @@ private struct SingleQuotaMetadataLine: View {
                     .foregroundStyle(summaryColor(for: percent))
                     .frame(width: 40, alignment: .trailing)
             }
-            .frame(width: quotaSingleDataColumnWidth, alignment: .leading)
+            .frame(width: quotaSingleDataColumnWidth, alignment: .trailing)
             ResetTimeSummary(resetsAt: resetsAt)
         }
     }
@@ -1324,9 +1204,9 @@ struct DeepseekBalanceRow: View {
     let peakWindow: DeepseekPeakWindow
     /// 高峰期倒计时已提到卡片头部时置 false（dock 详情浮层）。
     var showsPeakIndicator: Bool = true
-    /// 夹在余额块与三列统计之间的卡片级信息（重置卡、高峰期倒计时），见
-    /// `ModelQuotaDockBlock.between`。DeepSeek 没有独立的三列统计块，所以它排在
-    /// 余额块正下方——位置等价，"额度概览在上、统计在下"的读法不变。
+    /// 夹在余额块与下方**本地用量**之间的卡片级信息（重置卡、高峰期倒计时），见
+    /// `ModelQuotaDockBlock.between`。DeepSeek 没有额度条块，所以它排在余额块
+    /// 正下方——位置等价，"额度概览在上、用量在下"的读法不变。
     var between: AnyView = AnyView(EmptyView())
 
     var body: some View {

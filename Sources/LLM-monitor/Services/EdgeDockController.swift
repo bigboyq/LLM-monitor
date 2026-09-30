@@ -10,11 +10,12 @@ import SwiftUI
 /// 1. **状态驱动**：窗口不自己轮询。只订阅 `AppState.statusDidChange`（官方广播
 ///    通道 —— 直接观察 `@Published statuses` 在本项目已被实测为失效）和
 ///    `healthEvaluationDate`（高峰边界时钟）。少接一个就是一片永远不变的假窗口。
-/// 2. **鼠标接管**：`ignoresMouseEvents = true` 的窗口**收不到** tracking area 事件，
-///    所以悬停探测必须走系统级 `addGlobalMonitorForEvents`。`hoveredIndex`（命中哪个圆）
-///    是唯一真值，dock 接管状态、圆的 hover 高亮、以及详情 popover 挂哪个圆
-///    全部由它驱动（`selectedIndex` 滞后于它一个 `hoverOpenDelay`，见
-///    `scheduleSelection`）。
+/// 2. **悬停与接管**：`ignoresMouseEvents = true` 的窗口**收不到** tracking area 事件，
+///    hover 只能由控制器自己问"鼠标在哪"——现在是 2Hz 轮询（见 `hoverPollInterval`
+///    与 §Per-event budget 的那笔账），不是逐条 `mouseMoved`。`hoveredIndex`
+///    （命中哪个圆）是唯一真值：dock 接管状态、圆的 hover 高亮、以及详情 popover
+///    挂哪个圆全部由它驱动（`selectedIndex` 滞后于它一个 `hoverOpenDelay`，见
+///    `scheduleSelection`）。拖拽仍然逐事件驱动，事件掩码只留它需要的那三个。
 /// 3. **位置存比例**：见 `EdgeDockConfig.offset`。
 @MainActor
 final class EdgeDockController: ObservableObject {
@@ -28,6 +29,19 @@ final class EdgeDockController: ObservableObject {
     private static let hoverPadding: CGFloat = 12
     /// 接管后的巡检间隔，兼作拖拽期间的松手检测。
     private static let capturePollInterval: TimeInterval = 0.2
+
+    /// 未接管时的 hover 轮询间隔（**2Hz**）。
+    ///
+    /// 指针在系统上动一下就把本进程唤醒一次，是这套交互里唯一压不掉的固定开销
+    ///（100~1000Hz，而唤醒才是大头，不是探测本身）。hover 要回答的问题变化极慢——
+    /// 只有指针位置变了才需要重判——所以它不必跟着事件频率走：2Hz 把唤醒次数压到
+    /// 每秒 2 次，代价是 hover 最多晚 0.5s 生效（圆环高亮、详情卡片、靠近展开都以
+    /// 0.5s 为上限到达）。
+    ///
+    /// 鼠标一旦进到 dock 附近，`captureMouse()` 会起 `capturePollInterval`（0.2s）
+    /// 的巡检定时器，hover 延迟随之降到 0.2s——真正看得见的 0.5s 只发生在"指针
+    /// 正在过来的那半秒"上。
+    private static let hoverPollInterval: TimeInterval = 0.5
     /// 按下后位移超过这么多 pt 才算拖动；以内松手视为"没拖动"，不做任何事
     /// （详情跟随 hover，按钮本身没有点击语义）。
     private static let dragThreshold: CGFloat = 4
@@ -35,6 +49,8 @@ final class EdgeDockController: ObservableObject {
     /// 朝边缘扫过去（拖东西到边上、翻页）会频繁路过它，即时展开就是一路闪卡片。
     /// 这一小段延迟把"路过"和"停下来看"分开。
     private static let hoverOpenDelay: TimeInterval = 0.15
+    /// 鼠标离开 provider 圆环后延迟这么久才收起详情；期间鼠标移入卡片或其它圆环则取消。
+    private static let hoverCloseDelay: TimeInterval = 0.20
     /// 鼠标离开保持区后延迟这么久才收起；期间鼠标回来则取消。误划过边缘
     /// （一次性往返）不该把 dock 收掉再长出来闪一遍。
     private static let collapseDelay: TimeInterval = 0.5
@@ -83,19 +99,23 @@ final class EdgeDockController: ObservableObject {
     /// 保持区后统一做。
     @Published private(set) var selectedIndex: Int?
 
-    /// 自动隐藏模式下是否处于**展开**形态。非自动隐藏模式下恒为 false 且无意义
-    /// （外观由 `isCompactAppearance` 统一推导）。
+    /// 「状态窗（自动隐藏）」形态下是否处于**展开**形态。其余形态恒为 false 且
+    /// 无意义（外观由 `isCompactAppearance` 统一推导）。
     ///
     /// true = 完整 dock（数值 + 品牌图标 + 双环，可逐行 hover）；
     /// false = 简版（只有 5h 单环小圆）。鼠标靠近展开、离开收起。
     @Published private(set) var isExpanded = false
 
-    /// 窗口当前该用哪种外观：自动隐藏开启且未展开时才是简版。
+    /// 窗口当前该用哪种外观：四种形态里只有一种会随鼠标变形。
     ///
     /// 唯一判定入口，`reconcile`（窗口尺寸）与视图（排版）都读它——两处若各写
     /// 各的判定，窗口尺寸和内容排版一旦不一致，圆环会被裁或留白。
     var isCompactAppearance: Bool {
-        config.autoHideMode && !isExpanded
+        // 「状态窗」静置即完整；「状态窗（自动隐藏）」跟随展开态；其余两种恒为
+        // 简版——`isExpanded` 对它们没有意义，不该读。
+        if config.mode.staysFullWhenIdle { return false }
+        if config.mode.expandsOnProximity { return !isExpanded }
+        return true
     }
 
     private weak var state: AppState?
@@ -119,16 +139,16 @@ final class EdgeDockController: ObservableObject {
     private var localMouseMonitor: Any?
     private var captureTimer: Timer?
 
-    /// 实际生效配置。`@Published`：外观（完整/简版）由它派生，设置页翻转
-    /// 自动隐藏开关时视图必须立即跟随，否则窗口缩了、内容排版还停在旧形态。
+    /// 实际生效配置。`@Published`：外观（完整/简版）由它派生，设置页换形态时
+    /// 视图必须立即跟随，否则窗口缩了、内容排版还停在旧形态。
     @Published private(set) var config: EdgeDockConfig = .default
     private var isFullscreenSpace = false
     private var isDragging = false
     /// 拖拽开始时取一次的条目数，供逐事件的 `applyDrag` 复用。
     private var dragEntryCount = 0
-    /// 按下时的屏幕坐标与"是否已越过拖动阈值"。位移在阈值内松手 = 点击（切换
-    /// 详情卡片），越过阈值 = 真拖动（收起详情、移动窗口）。没有这对状态就无法
-    /// 区分两种意图——点一下圆环会先把 dock 拖走几像素，或反过来拖动被当成点击。
+    /// 按下时的屏幕坐标与"是否已越过拖动阈值"。位移在阈值内松手 = 原地松开
+    /// （保持当前悬停状态），越过阈值 = 真拖动（收起详情、移动窗口）。避免微小手抖
+    /// 把 dock 拖走几像素。
     private var pressScreenLocation: CGPoint?
     private var pressBecameDrag = false
     /// 挂起中的延时收起任务。鼠标离开保持区时排入，0.5s 后触发；期间鼠标回来
@@ -140,6 +160,8 @@ final class EdgeDockController: ObservableObject {
     private var collapseWorkItem: DispatchWorkItem?
     /// 挂起的「展开某行详情」任务，见 `scheduleSelection`。
     private var pendingSelectionWorkItem: DispatchWorkItem?
+    /// 挂起的「收起详情」任务，见 `scheduleDeselection`。
+    private var pendingDeselectionWorkItem: DispatchWorkItem?
     /// 形态过渡进行中标记 + 到期解除任务：期间标准过渡（刷新广播等）不得碰
     /// 窗口 frame——按动画中间态帧重算并 setFrame 会打断正在播放的窗口动画，
     /// 表现为半途抽一下。
@@ -149,21 +171,19 @@ final class EdgeDockController: ObservableObject {
     /// 鼠标停在 popover 上时不需要再 hover 某个圆，但接管状态必须继续保持。
     private var isMouseCaptured = false
 
+    /// hover 探测的**轮询定时器**：只在 dock 可见期间存在（见 `startHoverPoll`）。
+    private var hoverPollTimer: Timer?
+
+
+    /// 各 provider 外圈在**视图坐标系**（= NSHostingView）下的真实矩形，由 `EdgeDockContentView`
+    /// 用 GeometryReader 逐项直报，键是 provider id。
+    private var measuredCircleRectsByID: [String: CGRect] = [:]
     /// 每一行在**视图坐标系**（= NSHostingView）下的真实矩形，由 `EdgeDockContentView`
     /// 用 GeometryReader **逐行直报**，键是 provider id。
-    ///
-    /// 存视图坐标而不是屏幕坐标：拖拽 / 换屏 / 移动窗口时这些矩形不变，屏幕坐标却在变。
-    /// 每帧按当前窗口位置换算一次，4 个矩形的开销可以忽略，却避免了"拖到一半命中
-    /// 判定还停在旧位置"这种陈旧数据。
-    ///
-    /// 坐标系换算由控制器统一做，视图只报自己的矩形 —— 视图不该知道屏幕的存在。
     private var measuredRowRectsByID: [String: CGRect] = [:]
     /// 本帧命中实际采用的来源，切换时写日志。
-    ///
-    /// 这一行日志是有意加的：实测路径一旦失效（例如坐标系换算错了），界面表现为
-    /// "hover 正常但位置微妙地偏"，没有任何报错。把它显式打出来，silent failure
-    /// 才有可能被看见。
     private var rowRectsSource: RowRectsSource = .geometry
+    private var circleRectsSource: RowRectsSource = .geometry
 
     private enum RowRectsSource: String {
         case measured = "实测"
@@ -199,22 +219,29 @@ final class EdgeDockController: ObservableObject {
             .sink { [weak self] newConfig in
                 guard let self else { return }
                 let next = newConfig.effectiveEdgeDockConfig
-                let visibilityChanged = next.enabled != self.config.enabled
-                let autoHideChanged = next.autoHideMode != self.config.autoHideMode
+                let modeChanged = next.mode != self.config.mode
                 let fullscreenPolicyChanged = next.hideInFullscreen != self.config.hideInFullscreen
+                let wasCompact = self.isCompactAppearance
                 self.config = next
-                // 开关翻转时清掉缓存的全屏判定：重新开启要从"当前不在全屏"开始，
+                // 形态翻转时清掉缓存的全屏判定：重新显示要从"当前不在全屏"开始，
                 // 否则会拿退出全屏时的旧状态直接判隐藏。
-                if visibilityChanged { self.isFullscreenSpace = false }
-                // 自动隐藏开关翻转时回到收起形态（关掉自动隐藏则恢复常驻完整 dock）。
+                if modeChanged { self.isFullscreenSpace = false }
+                // 形态翻转时回到收起形态（「状态窗」则恢复常驻完整 dock）。
                 // 只在翻转时复位：拖拽落点也会走一次持久化广播，鼠标正悬停时
                 // 不该因此闪一次收起。
-                if visibilityChanged || autoHideChanged { self.isExpanded = false }
-                self.reconcile(animated: true)
+                if modeChanged { self.isExpanded = false }
+                // 形态变了就是一次**形态过渡**：窗口 frame 与内容变形必须同曲线同时长
+                // （`.standard` 的 0.18s 对不上内容的 0.25s 变形，中间会出现"圆已经
+                // 缩成小环、窗口还在缩"的错位帧）。方向按新形态判定；形态没变
+                // （例如只翻了全屏隐藏、或只拖了位置）走标准过渡。
+                let formTransition: DockTransition = (wasCompact == self.isCompactAppearance)
+                    ? .standard
+                    : (self.isCompactAppearance ? .collapse : .expand)
+                self.reconcile(animated: true, transition: formTransition)
                 // 全屏隐藏开关翻转也必须重新探测：用户很可能**正在全屏里**改这个
                 // 设置。少了这次探测就会拿一个可能已经过期的 `isFullscreenSpace`
                 // 去套新策略——表现是"开关拨了没反应，要退出全屏再来一次"。
-                if visibilityChanged || fullscreenPolicyChanged {
+                if modeChanged || fullscreenPolicyChanged {
                     self.evaluateFullscreen()
                 }
             }
@@ -270,7 +297,10 @@ final class EdgeDockController: ObservableObject {
     }
 
     func teardown() {
+        stopHoverPoll()
         cancelPendingCollapse()
+        cancelPendingSelection()
+        cancelPendingDeselection()
         cancelFullscreenRechecks()
         cancelFormMorphGuard()
         if let globalMouseMonitor { NSEvent.removeMonitor(globalMouseMonitor) }
@@ -382,11 +412,11 @@ final class EdgeDockController: ObservableObject {
             selectedIndex = nil
         }
 
-        // 开关关闭、前台 App 全屏、或一个 provider 都没开监控 → 不出现。
+        // 形态选了「无」、前台 App 全屏、或一个 provider 都没开监控 → 不出现。
         // 挂一个空壳在屏幕边缘只会让人以为程序坏了。
-        guard config.enabled, !isHiddenByFullscreen, entryCount > 0 else {
+        guard config.mode.isVisible, !isHiddenByFullscreen, entryCount > 0 else {
             logVisibilityChange(
-                enabled: config.enabled,
+                mode: config.mode,
                 entryCount: entryCount,
                 fullscreen: isFullscreenSpace,
                 shown: false,
@@ -399,10 +429,12 @@ final class EdgeDockController: ObservableObject {
             // 重新出现时从收起形态开始：展开态是"鼠标还在上面"的瞬时状态，
             // 隐藏过一轮就不该带着它回来。
             isExpanded = false
-            // 用可选链而不是 ensurePanel()：开关关闭时**完全不创建窗口**。
+            // 用可选链而不是 ensurePanel()：形态为「无」时**完全不创建窗口**。
             // attach 跑在 LLMMonitorApp.init() 里，那早于 applicationDidFinishLaunching，
             // 不该在那之前就往 window server 塞一个窗口。
             panel?.orderOut(nil)
+            // 不显示就不必再问"鼠标在哪"：轮询是这条链路上唯一的常驻开销。
+            stopHoverPoll()
             return
         }
 
@@ -411,7 +443,7 @@ final class EdgeDockController: ObservableObject {
         guard let panel else { return }
 
         // dock 尺寸只跟条目数和外观有关 —— hover 弹出的是旁边那个独立 popover，
-        // dock 本体不参与展开（自动隐藏模式的收起/展开除外，那是窗口自身的形态）。
+        // dock 本体不参与展开（「状态窗（自动隐藏）」的收起/展开除外，那是窗口自身的形态）。
         let edge = config.edge
         let size = EdgeDockGeometry.dockSize(
             entryCount: entryCount,
@@ -458,9 +490,10 @@ final class EdgeDockController: ObservableObject {
             panel.setFrame(target, display: true)
         }
         panel.orderFrontRegardless()
+        startHoverPoll()
 
         logVisibilityChange(
-            enabled: config.enabled,
+            mode: config.mode,
             entryCount: entryCount,
             fullscreen: isFullscreenSpace,
             shown: true,
@@ -474,21 +507,21 @@ final class EdgeDockController: ObservableObject {
     /// 都没启用，三种情况屏幕上长得一模一样。没有任何日志时用户无从判断是哪一种，
     /// 只能靠猜。这里把判定输入和最终 frame 一起落盘，让"没出现"变成可诊断的。
     private func logVisibilityChange(
-        enabled: Bool,
+        mode: EdgeDockMode,
         entryCount: Int,
         fullscreen: Bool,
         shown: Bool,
         frame: CGRect
     ) {
-        let signature = "\(enabled)|\(entryCount)|\(fullscreen)|\(shown)|\(frame.origin.x.rounded())|\(frame.origin.y.rounded())"
+        let signature = "\(mode.rawValue)|\(entryCount)|\(fullscreen)|\(shown)|\(frame.origin.x.rounded())|\(frame.origin.y.rounded())"
         guard signature != lastVisibilitySignature else { return }
         lastVisibilitySignature = signature
 
         if shown {
-            logInfo("EdgeDock: 显示 \(entryCount) 个圆 edge=\(config.edge.rawValue) frame=\(Self.describe(frame))")
+            logInfo("EdgeDock: 显示 \(entryCount) 个圆 形态=\(mode.rawValue) edge=\(config.edge.rawValue) frame=\(Self.describe(frame))")
         } else {
-            let reason = !enabled ? "开关关闭" : (entryCount == 0 ? "没有已启用的 Provider" : "前台 App 全屏")
-            logInfo("EdgeDock: 隐藏（\(reason)）enabled=\(enabled) entries=\(entryCount) fullscreen=\(fullscreen)")
+            let reason = !mode.isVisible ? "形态为「无」" : (entryCount == 0 ? "没有已启用的 Provider" : "前台 App 全屏")
+            logInfo("EdgeDock: 隐藏（\(reason)）形态=\(mode.rawValue) entries=\(entryCount) fullscreen=\(fullscreen)")
         }
     }
 
@@ -518,16 +551,23 @@ final class EdgeDockController: ObservableObject {
     private func installMouseMonitors() {
         guard globalMouseMonitor == nil else { return }
 
-        // ignoresMouseEvents = true 的窗口收不到 tracking area 事件，必须走系统级监听。
+        // **只监听拖拽的三个事件，不监听 `.mouseMoved`**：全局 mouseMoved 钩子真正
+        // 的代价不是探测本身，而是"指针在系统上动一下，本进程就被唤醒一次"——移动
+        // 时 100~1000Hz，唤醒才是大头。hover / 靠近展开 / 收起现在一律由 2Hz 的
+        // `hoverPollTimer` 读 `NSEvent.mouseLocation` 回答；事件通知只留拖拽真正需要
+        // 的部分（逐事件驱动，延迟必须是 0，不能进轮询）。
+        //
+        // ignoresMouseEvents = true 的窗口收不到 tracking area 事件，所以"按下/拖动
+        // 落在 dock 上"这一路只能靠系统级监听。
         globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(
-            matching: [.mouseMoved, .leftMouseDown, .leftMouseDragged, .leftMouseUp]
+            matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp]
         ) { [weak self] event in
             MainActor.assumeIsolated { self?.handleMouseEvent(event.type) }
         }
 
         // 本 app 在前台或命中本应用面板时的事件监听。
         localMouseMonitor = NSEvent.addLocalMonitorForEvents(
-            matching: [.mouseMoved, .leftMouseDown, .leftMouseDragged, .leftMouseUp]
+            matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp]
         ) { [weak self] event in
             MainActor.assumeIsolated { self?.handleMouseEvent(event.type) }
             return event
@@ -543,9 +583,11 @@ final class EdgeDockController: ObservableObject {
             // 期间点到那个位置，不该把看不见的 dock 拖走再把新位置写进配置。
             if let panel, panel.isVisible, panel.frame.contains(NSEvent.mouseLocation) {
                 isDragging = true
-                // 按下即作废挂起的收起：拖拽期间收起毫无意义，且释放接管会打断
+                // 按下即作废挂起的收起与选择：拖拽期间收起毫无意义，且释放接管会打断
                 // 正在进行的事件序列。形态过渡守卫一并解除，拖拽自己接管 frame。
                 cancelPendingCollapse()
+                cancelPendingSelection()
+                cancelPendingDeselection()
                 cancelFormMorphGuard()
                 // 条目数在拖拽开始时取一次：拖动事件是 60~120Hz，而重新投影要走一遍
                 // 全部 provider 的额度聚合，没必要每帧重来。
@@ -558,8 +600,34 @@ final class EdgeDockController: ObservableObject {
         case .leftMouseDragged:
             dragMoved(at: NSEvent.mouseLocation)
         default:
-            probeMouse(at: NSEvent.mouseLocation)
+            // `.mouseMoved` 已不在监听掩码里（见 `installMouseMonitors`）：hover 走
+            // 轮询。这里留一个空分支而不是删掉 `default`，是为了将来若恢复事件驱动，
+            // 落到明确的 no-op，而不是一个"看起来在处理、其实没人发"的分支。
+            break
         }
+    }
+
+    /// hover 探测的轮询：**dock 可见期间**每 `hoverPollInterval` 问一次
+    /// 「鼠标在哪、命中哪个圆、要不要接管」。
+    ///
+    /// 幂等启动：显示分支每次 `reconcile` 都会调它，而定时器只需要一份。
+    private func startHoverPoll() {
+        guard hoverPollTimer == nil else { return }
+        let timer = Timer(timeInterval: Self.hoverPollInterval, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.probeMouse(at: NSEvent.mouseLocation)
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        hoverPollTimer = timer
+        // 立刻探一次：刚显示出来的窗口不该再等半秒才认人。
+        probeMouse(at: NSEvent.mouseLocation)
+    }
+
+    private func stopHoverPoll() {
+        hoverPollTimer?.invalidate()
+        hoverPollTimer = nil
     }
 
     /// 拖动事件 / 巡检定时器共用的移动入口：先过"点击 vs 拖动"阈值。
@@ -578,6 +646,8 @@ final class EdgeDockController: ObservableObject {
         if !pressBecameDrag, let start = pressScreenLocation {
             guard hypot(mouse.x - start.x, mouse.y - start.y) >= Self.dragThreshold else { return }
             pressBecameDrag = true
+            cancelPendingSelection()
+            cancelPendingDeselection()
             if selectedIndex != nil {
                 selectedIndex = nil
                 updatePopover()
@@ -593,6 +663,7 @@ final class EdgeDockController: ObservableObject {
     /// `hoveredIndex`——延迟期间鼠标可能已经移走或移到了别的圆上。
     private func scheduleSelection(_ index: Int) {
         cancelPendingSelection()
+        cancelPendingDeselection()
         let work = DispatchWorkItem { [weak self] in
             MainActor.assumeIsolated {
                 guard let self, self.hoveredIndex == index, self.selectedIndex != index else { return }
@@ -609,6 +680,26 @@ final class EdgeDockController: ObservableObject {
         pendingSelectionWorkItem = nil
     }
 
+    /// 鼠标离开 provider 圆环后延迟收起详情（经 `hoverCloseDelay`）。
+    /// 如果鼠标是在移向卡片，期间进入卡片区域即取消该任务；如果停在留白处，到点收起。
+    private func scheduleDeselection() {
+        guard pendingDeselectionWorkItem == nil else { return }
+        let work = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.selectedIndex != nil, self.hoveredIndex == nil else { return }
+                self.selectedIndex = nil
+                self.updatePopover()
+            }
+        }
+        pendingDeselectionWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.hoverCloseDelay, execute: work)
+    }
+
+    private func cancelPendingDeselection() {
+        pendingDeselectionWorkItem?.cancel()
+        pendingDeselectionWorkItem = nil
+    }
+
     /// 松手的统一收尾：有位移 = 拖动（吸附 + 记住位置），无位移 = 保持现状（悬停模式由鼠标位置驱动）。
     private func finishPressOrDrag(at mouse: CGPoint) {
         guard isDragging else { return }
@@ -621,7 +712,7 @@ final class EdgeDockController: ObservableObject {
     /// 每帧巡检鼠标：决定命中哪个圆、要不要接管、popover 挂在哪。
     private func probeMouse(at mouse: CGPoint) {
         guard let panel = self.panel,
-              config.enabled, !isHiddenByFullscreen, !isDragging else { return }
+              config.mode.isVisible, !isHiddenByFullscreen, !isDragging else { return }
 
         let inDock = panel.frame.insetBy(dx: -Self.hoverPadding, dy: -Self.hoverPadding).contains(mouse)
         // 卡片**不可见时不参与判定**：`orderOut` 只把窗口藏起来，frame 还留在
@@ -633,11 +724,14 @@ final class EdgeDockController: ObservableObject {
                 && $0.frame.insetBy(dx: -Self.hoverPadding, dy: -Self.hoverPadding).contains(mouse)
         } ?? false
 
-        // 简版（自动隐藏的收起形态）：靠近即整体展开，不做逐行 hover——
-        // 简版的圆只有 14pt，逐行命中在这个尺寸下只会抖；"dock 长出来"
-        // 本身就是对这个靠近动作的回应。逐行 hover（高亮 + 详情）都只在
-        // 展开形态里发生。
-        if isCompactAppearance {
+        // 「状态窗（自动隐藏）」的收起形态：靠近即整体展开，不做逐行 hover——
+        // 简版的圆只有 7pt，逐行命中在这个尺寸下只会抖；"dock 长出来"本身就是
+        // 对这个靠近动作的回应。逐行 hover（高亮 + 详情）都只在展开形态里发生。
+        //
+        // 「小圆环」形态**不**走这条：它常驻简版、永远不展开，但仍然逐行 hover
+        // 弹详情（落下去共用下面的通用命中路径即可）——展开与否是形态的差别，
+        // 能不能看某个 provider 的详情不是。
+        if isCompactAppearance, config.mode.expandsOnProximity {
             if inDock {
                 isExpanded = true
                 captureMouse()
@@ -651,31 +745,51 @@ final class EdgeDockController: ObservableObject {
             return
         }
 
-        // 实测矩形优先；不可用时才退回按常量推算（宁可位置有偏差，也不能没有命中——
-        // 命中失败会连带鼠标接管一起失效，hover 和拖拽会同时失能）。
-        let entries = orderedEntries()
-        let rows = resolvedRowRects(entries: entries, panelFrame: panel.frame)
-        let newIndex = inDock ? Self.rowIndex(at: mouse, measured: rows) : nil
-
-        if newIndex != hoveredIndex {
-            hoveredIndex = newIndex
-            logInfo(
-                "EdgeDock: hover -> \(Self.describe(newIndex)) "
-                + "rows=\(rows.count) 来源=\(rowRectsSource.rawValue)"
+        // 仅在 hover provider 外圈及内部区域时才命中（其他空白、数值标签等区域不命中）。
+        //
+        // 圆矩形**只在进到 dock 附近时**才算，`orderedEntries()` 也一起挪进来：它要
+        // 把全部 provider 重新投影一遍（每个 provider 两次额度聚合 + 一次健康度判定，
+        // 实测 ≈37µs），而指针九成时间都在屏幕别处——这一轮探测里它同样会被原样丢掉。
+        let circles: [CGRect]? = inDock
+            ? resolvedCircleRects(entries: orderedEntries(), panelFrame: panel.frame)
+            : nil
+        // 简版的圆半径只有 3.5pt，直接按圆判定等于要指到 7px 大的东西上；
+        // 「小圆环」形态逐行 hover 要能用，判定半径取**半个行距**（刚好让相邻两个
+        // 小环的判定区接上、在中点分界），命中哪个圆不再取决于手指有多稳。
+        let newIndex = circles.flatMap {
+            Self.circleIndex(
+                at: mouse,
+                circles: $0,
+                currentHovered: hoveredIndex,
+                minimumRadius: isCompactAppearance ? EdgeDockGeometry.compactRowStep / 2 : 0
             )
         }
 
-        // 详情**跟随 hover**。两个方向要区别对待：
-        //
-        // - 压在卡片上（`inPopover`）时不改选中：鼠标从环移到卡片上的那一段
-        //   `newIndex` 必然变成 nil，跟着它清就把正在读的卡片抽走了。
-        //   dock 与卡片的容差区在缝隙里重叠（2×12 > popoverGap 10），所以这里
-        //   出现的是"仍在接管区、但不在环上"，由下面 0.5s 的收起宽限兜底。
-        // - `newIndex == nil` 时**不**主动清空：鼠标滑到黑条内边距、或从环移向
-        //   卡片时都会经过这种状态，立刻收卡等于不给反应。真正的清理由
-        //   `releaseMouseCapture` 在离开整个保持区后统一做。
-        if !inPopover, let newIndex, newIndex != selectedIndex {
-            scheduleSelection(newIndex)
+        if newIndex != hoveredIndex {
+            hoveredIndex = newIndex
+            // `circles` 只在进 dock 时才算，"来源"（实测／几何兜底）也就只在那时
+            // 有意义；离开的那次没有几何可报，只记命中变化。
+            let source = circles.map { " circles=\($0.count) 来源=\(circleRectsSource.rawValue)" } ?? ""
+            logInfo("EdgeDock: hover -> \(Self.describe(newIndex))" + source)
+        }
+
+        // 仅在 hover provider 外圈以及内部区域时才触发详情展示：
+        // - 鼠标停留在卡片上（inPopover == true）：保持当前卡片展示不抽走；
+        // - 命中 provider 圆（newIndex != nil）：展开该 provider 详情（延迟 0.15s 防掠过闪烁）；
+        // - 鼠标在 dock 内但未命中任何 provider 圆（如落在数值标签或留白处）：延时 0.20s 收起详情卡片。
+        if inPopover {
+            cancelPendingSelection()
+            cancelPendingDeselection()
+        } else if let newIndex {
+            cancelPendingDeselection()
+            if newIndex != selectedIndex {
+                scheduleSelection(newIndex)
+            }
+        } else {
+            cancelPendingSelection()
+            if selectedIndex != nil {
+                scheduleDeselection()
+            }
         }
 
         // 鼠标在任一窗口的**视觉范围**（窗口 frame + 容差）内都保持接管。
@@ -729,7 +843,7 @@ final class EdgeDockController: ObservableObject {
             .contains(mouse)
     }
 
-    /// 鼠标离开 dock 与 popover 之后，把自动隐藏模式收起回简版。
+    /// 鼠标离开 dock 与 popover 之后，把「状态窗（自动隐藏）」收起回简版。
     ///
     /// 窗口与内容**同步**收回（同曲线同时长）：中心沿边连续移回简版位置、黑条
     /// 连续缩回边缘，结束后无需任何补摆。
@@ -737,7 +851,7 @@ final class EdgeDockController: ObservableObject {
     /// 不放进 `releaseMouseCapture`：那里还被 reconcile 的隐藏分支调用，若它再触发
     /// reconcile 会形成一次无意义的重入（隐藏条件不会变，但白跑一遍）。
     private func collapseExpandedDockIfNeeded() {
-        guard isExpanded, config.enabled, !isHiddenByFullscreen, !isDragging else { return }
+        guard isExpanded, config.mode.isVisible, !isHiddenByFullscreen, !isDragging else { return }
         isExpanded = false
         reconcile(animated: true, transition: .collapse)
     }
@@ -782,9 +896,42 @@ final class EdgeDockController: ObservableObject {
         return best.index
     }
 
+    /// 圆形命中测试：仅在命中 provider 外圈及其内部区域时返回对应 index。
+    ///
+    /// 严谨限制在圆内（半径 + 0.5pt 容差），排除了圆下方的数值百分比标签以及行间空隙。
+    /// 当某项处于 hover 状态时，圆环尺寸会放大 `EdgeDockGeometry.hoverScale`（1.10x），
+    /// 这里相应扩大判定半径，防止指针在边界处由于动画放大缩减产生抖动。
+    ///
+    /// `minimumRadius`：判定半径的下限。「小圆环」形态的圆只有 7pt（半径 3.5），
+    /// 照圆判定等于要指中一个 7px 的点，抖动到相邻行就换了一张卡；那里传**半个
+    /// 行距**，相邻两个小环的判定区正好在中点接上——仍然是"离得近的那个"，
+    /// 但不再要求指针精确。完整形态传 0，行为与从前逐字相同。
+    nonisolated static func circleIndex(
+        at point: CGPoint,
+        circles: [CGRect],
+        currentHovered: Int? = nil,
+        minimumRadius: CGFloat = 0
+    ) -> Int? {
+        for (index, rect) in circles.enumerated() {
+            let center = CGPoint(x: rect.midX, y: rect.midY)
+            let baseRadius = rect.width / 2
+            let isCurrent = (index == currentHovered)
+            let radius = isCurrent ? (baseRadius * EdgeDockGeometry.hoverScale) : baseRadius
+            if hypot(point.x - center.x, point.y - center.y) <= (max(radius, minimumRadius) + 0.5) {
+                return index
+            }
+        }
+        return nil
+    }
+
     func updateMeasuredRowRect(id: String, rect: CGRect) {
         guard measuredRowRectsByID[id] != rect else { return }
         measuredRowRectsByID[id] = rect
+    }
+
+    func updateMeasuredCircleRect(id: String, rect: CGRect) {
+        guard measuredCircleRectsByID[id] != rect else { return }
+        measuredCircleRectsByID[id] = rect
     }
 
     /// 本帧用于命中的行矩形（屏幕坐标）：实测优先，不可用时退回几何推算。
@@ -806,6 +953,25 @@ final class EdgeDockController: ObservableObject {
         )
         setRowRectsSource(resolved.usedMeasured ? .measured : .geometry)
         return resolved.rows
+    }
+
+    /// 本帧用于命中的 provider 圆矩形（屏幕坐标）：实测优先，不可用时退回几何推算。
+    private func resolvedCircleRects(entries: [EdgeDockEntry], panelFrame: CGRect) -> [CGRect] {
+        let onScreen: [String: CGRect]
+        if let hostingView {
+            onScreen = measuredCircleRectsByID.mapValues { convertToScreen($0, in: hostingView) }
+        } else {
+            onScreen = [:]
+        }
+        let resolved = Self.resolveCircleRects(
+            entries: entries,
+            measured: onScreen,
+            panelFrame: panelFrame,
+            edge: config.edge,
+            slack: Self.hoverPadding
+        )
+        setCircleRectsSource(resolved.usedMeasured ? .measured : .geometry)
+        return resolved.circles
     }
 
     /// 命中矩形选取（纯函数）：实测优先，三种情况退回几何推算。
@@ -839,10 +1005,37 @@ final class EdgeDockController: ObservableObject {
         return (ordered, true)
     }
 
+    nonisolated static func resolveCircleRects(
+        entries: [EdgeDockEntry],
+        measured: [String: CGRect],
+        panelFrame: CGRect,
+        edge: DockEdge,
+        slack: CGFloat
+    ) -> (circles: [CGRect], usedMeasured: Bool) {
+        let fallback = EdgeDockGeometry.circleRects(
+            dockFrame: panelFrame, edge: edge, entryCount: entries.count
+        )
+        guard !entries.isEmpty, !measured.isEmpty else { return (fallback, false) }
+
+        let ordered = EdgeDockProjection.orderRowRects(entries: entries, reported: measured)
+        guard ordered.allSatisfy({ $0 != EdgeDockProjection.unmeasuredRow }) else {
+            return (fallback, false)
+        }
+        let dockArea = panelFrame.insetBy(dx: -slack, dy: -slack)
+        guard ordered.allSatisfy({ dockArea.intersects($0) }) else { return (fallback, false) }
+        return (ordered, true)
+    }
+
     private func setRowRectsSource(_ source: RowRectsSource) {
         guard source != rowRectsSource else { return }
         rowRectsSource = source
         logInfo("EdgeDock: 命中来源 -> \(source.rawValue) measured=\(measuredRowRectsByID.count)")
+    }
+
+    private func setCircleRectsSource(_ source: RowRectsSource) {
+        guard source != circleRectsSource else { return }
+        circleRectsSource = source
+        logInfo("EdgeDock: 圆形命中来源 -> \(source.rawValue) measured=\(measuredCircleRectsByID.count)")
     }
 
     /// 视图坐标（y 向下，原点左上，来自 SwiftUI geo.frame(in: .global)）→ 屏幕坐标（y 向上，原点屏幕左下）。
@@ -869,6 +1062,7 @@ final class EdgeDockController: ObservableObject {
         // 挂起的展开同样作废：鼠标已经离开保持区，0.15s 后再凭空展开一张卡
         // 读起来是"鼠标不在、卡片在"。
         cancelPendingSelection()
+        cancelPendingDeselection()
         guard isMouseCaptured || hoveredIndex != nil || selectedIndex != nil else { return }
         isMouseCaptured = false
         captureTimer?.invalidate()
@@ -893,7 +1087,7 @@ final class EdgeDockController: ObservableObject {
         guard let panel,
               let state,
               let index = selectedIndex,
-              config.enabled, !isHiddenByFullscreen
+              config.mode.isVisible, !isHiddenByFullscreen
         else {
             hidePopover()
             return
@@ -956,12 +1150,19 @@ final class EdgeDockController: ObservableObject {
             )
         }
 
+        // 纵向锚点用**实测行中心**：`popoverFrame` 里的兜底推算写死的是完整形态的
+        // 行距（38 + 16pt），在「小圆环」的 15pt 行距下第 2 行往后会逐行错开，
+        // 卡片挂在一个看起来不属于自己的环上。实测矩形两种形态都上报，推算只留作
+        // "还没量到"时的兜底。
+        let rows = resolvedRowRects(entries: entries, panelFrame: panel.frame)
+        let anchorCenter = index < rows.count ? CGPoint(x: rows[index].midX, y: rows[index].midY) : nil
         let targetFrame = EdgeDockGeometry.popoverFrame(
             size: CGSize(width: width, height: height),
             dockFrame: panel.frame,
             rowIndex: index,
             edge: config.edge,
-            visibleFrame: visibleFrame
+            visibleFrame: visibleFrame,
+            measuredRowCenter: anchorCenter
         )
 
         popover.setFrame(targetFrame, display: true)
@@ -1144,7 +1345,7 @@ final class EdgeDockController: ObservableObject {
     }
 
     private func evaluateFullscreen() {
-        guard config.enabled else {
+        guard config.mode.isVisible else {
             isFullscreenSpace = false
             reconcile(animated: false)
             return

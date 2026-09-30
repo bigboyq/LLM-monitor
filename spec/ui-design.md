@@ -129,12 +129,16 @@ The menu footer contains:
 
 ## Edge Status Dock (Screen Edge Panel)
 
-A third, optional window pinned to a screen edge: one circle per enabled Provider,
-always visible without opening the menu. Configured under Settings → General →
-边缘状态窗, persisted at `config.json` → `edgeDock` (`enabled` / `edge` / `offset`).
+A third window pinned to a screen edge: one circle per enabled Provider, visible
+without opening the menu. Configured under Settings → General → 边缘状态窗, persisted
+at `config.json` → `edgeDock` (`mode` / `edge` / `offset` / `hideInFullscreen`).
 
-**Disabled by default.** A new persistent screen-edge window must be opted into; it
-never appears on upgrade by itself.
+**Default: 状态窗（自动隐藏）** — full feature on, but the screen shows only a 7pt ring
+column until the cursor comes near. Defaulting to "nothing appears" instead (the
+earlier behaviour, a disabled switch) buried the feature behind a toggle nobody
+flips; a column of small dots is the one shape that is present, useful and unobtrusive
+without being asked for. 「无」 is the first option in the picker for users who want it
+gone — an explicit pick rather than a default that hides the feature.
 
 Granularity is **one circle per Provider**, 1:1 with the menu cards
 (`ProviderStatus` granularity). Per-*model* circles were considered and rejected:
@@ -321,12 +325,12 @@ the popover is **not** simply the menu card un-collapsed. Six layout rules
 
 | Rule | Menu | Dock popover | Why |
 |---|---|---|---|
-| `liftsProgressBar` | title, then bar | **bar first, no title row** | "how much is left" before the detail; the model name is dropped because the bar sits directly on top of its own 5h/weekly columns, so the pairing is positional |
-| `laysWindowDetailsSideBySide` | 5h stacked over weekly | **Last Prompt \| 5h \| weekly in one row** | the three are the same shape (a time span plus a set of token metrics); side by side is comparable at a glance, stacked forces the reader to jump between three blocks |
+| `liftsProgressBar` | title, then bar | **bar first, no title row** | "how much is left" before the detail; the model name is not a row of its own but the leading token of the bar's metadata line (`Gemini Models 5h 62% weekly 59%`) |
+| `laysWindowDetailsSideBySide` | 5h stacked over weekly | **5h next to weekly** | the two are the same shape (a time span plus a set of token metrics); side by side is comparable at a glance, stacked forces the reader to jump between two blocks. It now only reaches the hover panels, which the popover cannot show |
 | `expandsAccountSection` | hover popover | **not expanded** | the panel can't be hovered, so expanding it only buries low-frequency email/source text in the most prominent slot |
 | `showsPeakIndicatorInHeader` | inside the quota block | **in the card header** | "can I use it cheaply right now" deserves the always-visible header line |
 | `splitsCachedInputRow` | `input: 1.2M (+860K cached)` | **`input:` and `cached:` on separate lines** | cached hides in parentheses, so a quick read only catches input — and cache hit rate is the number that says whether the call was expensive |
-| `splitsRoundsRow` | `prompts: 42 (128 rounds)` | **`prompts:` with `rounds:` on the next line** | each column is only ~140pt wide; merged, the value wraps or truncates |
+| `splitsRoundsRow` | `prompts: 42 (128 rounds)` | **`prompts:` with `rounds:` on the next line** | the three-column layout that forced it is gone; the row that still renders it in the popover is full width, where one number per line still reads better than a merged one |
 
 Because the rules are the *only* thing that differs, each is named rather than
 inlined as `mode == .alwaysVisible` at the call site, and
@@ -341,23 +345,51 @@ spent* sits below:
   `revealsDetail: false`. Same reason as the account section: the panel can't be
   hovered, so per-card detail would be permanently expanded.
 
-Each model block is then `QuotaBarWithMetadata` (bar + its `5h 100% weekly …`
-metadata line) directly above `QuotaDetailColumns` (Last Prompt | 5h | weekly),
-plus the GLM off-peak footnote. Two things are deliberately **absent**:
+Each model block is then `QuotaBarWithMetadata` (its `name · 5h 100% weekly …`
+metadata line + the bar), followed by the card-level rows and, for GLM, the
+off-peak footnote. The block carries no divider of its own — see below. Two things
+are deliberately **absent**:
 
 - **No leading label on the bar.** An earlier pass pooled every model's bar into a
   header table, which forced each row to carry a dot + model name so the reader
-  could tell them apart — and that label then duplicated the model-name row below.
-  With each bar back over its own columns the pairing is positional, so the label
-  buys nothing.
+  could tell them apart — and that label then duplicated the name on the metadata
+  line. Each bar keeps its own block, so the label buys nothing.
 - **No model-name row** (`QuotaWindowTitle`, which also carried the weekly
-  multiplier). The three columns are already labelled "5h local token usage" and
-  "weekly local token usage" and sit directly under that model's bar.
+  multiplier). The name is the **leading token of the metadata line** instead —
+  `Gemini Models 5h 62% weekly 59%`, `ChatGPT Plan 5h 62% weekly 30%`. It has to
+  be *somewhere* now: with the three columns gone the block is a bar and one line
+  of text, so Antigravity's two models would be two indistinguishable bars. Inline
+  is the only place that works — a separate row splits one sentence in two, and the
+  card header cannot carry it because the values are per model, not per provider.
+  The name uses `MenuTypography.modelTitle` (11pt semibold) while the window labels
+  and percentages stay at 10pt: the name is that line's subject, the rest is its
+  predicates, and four equally-weighted words hide that. It truncates
+  (`layoutPriority(-1)`, tail) when the line runs out of room — the percentages are
+  fixed-width and the reset time is pinned right, so the name is the only thing that
+  can give way. The menu passes an empty name: `QuotaWindowTitle` already labels
+  that row, and repeating it there would be noise.
 
-`ModelQuotaDockBlock` has a `bar` parameter and no `title` parameter, so both
-omissions are structural rather than conditional. `QuotaUsageWindowColumn` is
-shared between the menu's hover panel and the popover's column, so the two hosts
-cannot drift into showing different fields for the same data.
+**No `QuotaDetailColumns`.** The popover used to show *Last Prompt | 5h | weekly*
+as three equal columns under each bar. They are gone: all three report local token
+usage from the same local session scan, which card 2 already shows in full
+(`最近7天token用量` + its usage table), so the popover was saying the same thing
+twice and burying the one thing that answers "how much is left" under three blocks
+of numbers. The detail is not lost — it is one hover away in the menu, where
+`LastPromptHoverSummaryView` and `QuotaUsageWindowColumn` are still the menu's
+hover panels. `ModelQuotaDockBlock` therefore has no `columns` parameter at all:
+the omission is structural, not a flag someone can flip.
+
+The divider stays, but it moved **up** to the card layer: it used to sit at the end of
+each model block, separating the quota overview from those three columns. It now
+separates the quota overview (every model's bar + the reset/peak rows) from the
+local-usage row below it, and since it has to span all models it is drawn once in
+`ProviderCardView.dockBody` rather than once per block — per-block it would stack
+into two adjacent lines between Antigravity's two models. Both sides come from
+different data sources — provider API vs local session scan — and without the line
+the local usage reads as a continuation of the quota.
+
+`ModelQuotaDockBlock` has a `bar` parameter and no `title` parameter, so the title
+omission is structural too.
 
 Height is measured, not assumed. Opening four sections inline is easy to get
 subtly taller — no crash, no warning, just a popover that scrolls or clips.
@@ -365,14 +397,17 @@ subtly taller — no crash, no warning, just a popover that scrolls or clips.
 it: **1188pt** fully expanded → **915pt** after the first rework → **611pt** after
 the dedupe + three-column pass → **648pt** after the reset-credits hoist and the
 line splits → **628pt** after dropping the bar label and the model-name row
-(ChatGPT dual-window with a full 7 days of local usage, the heaviest form;
-Antigravity's two-model form is 184pt). Splitting cached and rounds onto their
-own lines really does cost ~37pt; that is the trade. Do **not** compare it against
-the menu card's height: that card is collapsed, so it measures ~120pt and "the
-popover is taller than the menu" is the intended behaviour, not a regression. The
-700pt ceiling here is also a different number from `popoverHeightFraction` — that
-one bounds the panel against the screen, this one catches someone re-adding an
-always-expanded block. Do not copy one into the other.
+(ChatGPT dual-window with a full 7 days of local usage, the heaviest form) →
+**650pt / 635pt / 617pt** through the two-section and two-card passes →
+**679pt** after the 13pt titles, 10/11pt body type and the reset/peak hoist →
+**505pt** after the three-column pass was dropped. Splitting cached and rounds
+onto their own lines really does cost ~37pt; that is the trade. Do **not** compare
+it against the menu card's height: that card is collapsed, so it measures ~120pt
+and "the popover is taller than the menu" is the intended behaviour, not a
+regression. The 550pt ceiling here is also a different number from
+`popoverHeightFraction` — that one bounds the panel against the screen, this one
+catches someone re-adding an always-expanded block. Do not copy one into the
+other.
 
 The first version had this inverted (`minY` + step, i.e. index 0 at the bottom) and
 the test that "verified" it was named `testCircleCenterMatchesRenderedLayout` while
@@ -502,18 +537,21 @@ afford twice the card spacing plus two title rows per card.
 
 | | Title row (outside, above the card) | Card |
 |---|---|---|
-| 1 | brand logo + provider name + plan capsule, with the refresh time / state label on the right — **no status dot**; the dot sits right next to the brand logo and the two small circles read as "the logo with a green pip", while the capsule on the same row already states the status | metadata line (`5h 100% 周 16% … 重置时间`), the progress bar, reset credits, the peak-window countdown, a divider, then the Last Prompt / 5h / 周 statistics and the local-usage **summary** row (`📈 今天 …`) |
+| 1 | brand logo + provider name + plan capsule, with the refresh time / state label on the right — **no status dot**; the dot sits right next to the brand logo and the two small circles read as "the logo with a green pip", while the capsule on the same row already states the status | per model: `<name> 5h 62% weekly 30% <reset time>` and the progress bar; then reset credits, the peak-window countdown, a divider, then the local-usage **summary** row (`📈 今天 …`) |
 | 2 | `最近7天token用量`, with the local-usage freshness as a **capsule** (`更新于 HH:mm` / `计算中…`) on the right — same font, weight and colour as title 1, because the two rows are the same kind of thing: the name of their card | the 7-day chart, its usage table and the footnote |
 
-**Card 1 reads top-to-bottom as summary → statistics.** The metadata line moved
+**Card 1 reads top-to-bottom as summary → local usage.** The metadata line moved
 *above* the bar (read the description, then the graphic), the bar now keeps vertical
 breathing room, and the reset/peak rows moved *below* the bar, above a divider that
-separates them from the table — they are context for the quota, not statistics. Those
+separates them from the local-usage row — they are context for the quota, and the
+row under the line comes from the local session scan, not the quota API. Those
 two rows are provider-level but sit in the middle of a per-model block, so they travel
 through `QuotaSummary.betweenBarAndColumns` → the model row → `ModelQuotaDockBlock.between`
 (type-erased as `AnyView`, only the first model row receives a non-empty value). The
-divider is the same one the chart uses below itself (`Divider().opacity(0.45)`, full
-content width, no extra horizontal inset).
+divider is drawn by the card itself (`ProviderCardView.quotaUsageDivider`), not by
+each model block, so it spans the whole quota group; it is the same one the chart
+uses below itself (`Divider().opacity(0.45)`, full content width, no extra
+horizontal inset).
 
 **Type scale inside the two cards: 13 / 11 / 10.** Card titles are
 `MenuTypography.cardTitle`; values and body text are 11 (`hoverBody*`, and `hoverTitle`
@@ -543,20 +581,45 @@ Non-`.ok` states (loading / failed / not configured) fall back to a single card:
 are no two groups to cut, and splitting anyway would leave a second card holding nothing
 but a placeholder.
 
-### Auto-hide mode (compact dock)
+### Dock modes (compact form)
 
-`EdgeDockConfig.autoHideMode` (Settings → 常规 → 边缘状态窗 → 自动隐藏模式, default
-**off**). Off: the dock is permanently the full appearance. On: the dock **collapses**
-into a compact form and only grows to the full dock on proximity:
+`EdgeDockConfig.mode` (Settings → 常规 → 边缘状态窗 → 形态), a four-way picker:
 
-- **Compact form** — flush to the edge, one small single ring per enabled provider
-  (`EdgeDockGeometry.compactDiameter` 14pt, 3pt stroke, 8pt gap, 3pt padding; total
-  edge thickness 20pt). No number label, no brand logo. The ring is the **5h interval
+| Mode | Screen |
+|---|---|
+| `hidden` 无 | Nothing is drawn |
+| `statusWindow` 状态窗 | Always the full appearance |
+| `compactRings` 小圆环 | Always the compact form; proximity never expands it |
+| `autoHideWindow` 状态窗（自动隐藏） | Compact form, expands on proximity (**default**) |
+
+**One enum, not two switches.** The previous pair (`enabled` + `autoHideMode`) spelled
+four combinations, one of which (auto-hide while disabled) is meaningless, and neither
+of the two real forms had a name of its own — a switch labelled 「自动隐藏模式（收起为
+小圆环）」 only tells you the *other* setting by negation. A four-way picker gives every
+form a name that matches what is on screen and removes the intermediate state where two
+switches both govern one thing.
+
+`hideInFullscreen` stays a **separate** toggle: it answers "when does it get out of the
+way" (an event), not "what does it look like" (a shape); the two are orthogonal, so the
+toggle still has a meaning under every mode except `hidden`.
+
+**Legacy configs** (`enabled` / `autoHideMode`, no `mode`) decode as the **default**
+mode. Mapping the two old booleans onto the enum was rejected: it would keep a
+translation table alive for fields nobody can see in the current UI, and the dock is
+still an unreleased feature, so falling back to the default is the cheaper mistake. A
+hand-edited *unknown* `mode` string also decodes as the default rather than throwing —
+`ConfigStore` uses `try?` on this block, so a throw would drop the user's dragged edge
+and offset along with the bad value. The four modes:
+
+- **Compact form** (shared by `compactRings` and collapsed `autoHideWindow`) — flush to
+  the edge, one small single ring per enabled provider
+  (`EdgeDockGeometry.compactDiameter` 7pt, 2.5pt stroke, 8pt gap, 7pt padding; total
+  edge thickness 21pt). No number label, no brand logo. The ring is the **5h interval
   fraction**, falling back to the weekly fraction for providers with no 5h window
   (same precedence as the full dock's number label — a blank ring would silently
   drop information), dim track only when neither exists.
-- **Expand** — cursor within the usual 12pt proximity of the compact window sets
-  `isExpanded = true`; the window frame and the content **animate together**
+- **Expand** (`autoHideWindow` only) — cursor within the usual 12pt proximity of the
+  compact window sets `isExpanded = true`; the window frame and the content **animate together**
   (`contentMorphDuration`, 0.25s easeOut, both started in the same tick): the AppKit
   `setFrame` animation moves the window center along the edge to the full-form
   position while the SwiftUI content morphs from compact to full — one view tree
@@ -567,9 +630,11 @@ into a compact form and only grows to the full dock on proximity:
   travel, which depends on size), so any *instant* window swap — grow-first or
   shrink-after — re-centers the content by up to tens of points and reads as a
   repositioning flicker. A synchronized continuous animation is the only ordering
-  with no seam at either end. Expansion is the *whole* response in compact form: no
+  reads as a
+  repositioning flicker. A synchronized continuous animation is the only ordering
+  with no seam at either end. In this mode expansion is the *whole* response: no
   per-row hover, no card until the full layout is up and the user **clicks** a circle
-  (a 14pt target is too small for per-row hit-testing to be anything but jitter).
+  (a 7pt target is too small for per-row hit-testing to be anything but jitter).
 - **Collapse** — the cursor leaving both the dock and the popover schedules collapse
   after a **0.5s grace delay**; the deadline is *fixed*, not re-armed (the 0.2s probe
   timer keeps hitting the "still outside" branch and a debounce-style re-arm would
@@ -585,14 +650,22 @@ into a compact form and only grows to the full dock on proximity:
   compact frame (`frame()` grows the window outward from the same anchor), so
   leaving the full frame means leaving the compact frame's proximity too.
 - **State** — `EdgeDockController.isExpanded` is the single published flag;
-  `isCompactAppearance` (`autoHideMode && !isExpanded`) is the one predicate both
-  `reconcile` (window size) and `EdgeDockContentView` (layout) read, so the window and
-  its content can never disagree about which form is showing. Toggling auto-hide (or
-  the dock itself) off/on resets to collapsed; a drag-persist write does **not** reset
-  it, so the dock doesn't flicker while you're hovering and it saves its position.
+  `isCompactAppearance` is the one predicate both `reconcile` (window size) and
+  `EdgeDockContentView` (layout) read, so the window and its content can never
+  disagree about which form is showing. It derives from the mode
+  (`staysFullWhenIdle` → always full; `expandsOnProximity` → `!isExpanded`; otherwise
+  always compact) rather than re-deriving the shape from two booleans at each site.
+  Switching mode resets to collapsed; a drag-persist write does **not**, so the dock
+  doesn't flicker while you're hovering and it saves its position.
 - **Geometry** — `dockSize(entryCount:edge:appearance:)`; the legacy call sites
-  default to `.full`, and the hit-test/fallback row geometry (`rowRects`, `rowCenter`)
-  remains full-appearance-only because compact form is never row-hit-tested.
+  default to `.full`, and the fallback hit-test geometry (`rowRects`, `rowCenter`)
+  remains full-appearance-only. In `compactRings` the dock *is* row-hit-tested, but it
+  uses the **measured** row rects (the view reports them in both appearances) and a
+  hit radius floor of half the compact row step (`compactRowStep / 2` = 7.5pt) rather
+  than the 3.5pt ring radius: a 7pt ring demands pixel-precise pointing, and at half a
+  row step the neighbouring hit zones meet at the midpoint. `popoverFrame` likewise
+  takes the measured row centre, because its fallback assumes the full form's 54pt row
+  step and would hang the card tens of points below the ring it belongs to.
 
 ### Dragging
 
@@ -638,7 +711,53 @@ from the timer makes it jump one step every 200ms, which reads as dropped frames
 redundant call purely as a safety net (absolute positioning makes it idempotent,
 and it is equally gated on `isDragging`).
 
-Two supporting details, both about the per-event budget:
+### Mouse polling budget (2Hz, not per-event)
+
+The dock reacts to hover and to the cursor approaching the screen edge. The obvious
+implementation — a system-wide `mouseMoved` monitor — turns out to be the one
+expensive thing in the whole feature, and not because of the work it does:
+
+| Cost | Measured |
+|---|---|
+| The probe body (hit test + geometry + reading the cursor) | **≈3 µs** |
+| AppKit **waking the process** for a system-wide mouse move, ×100–1000/s | the actual bill |
+
+A menu-bar app that registers `addGlobalMonitorForEvents(.mouseMoved)` gets scheduled
+every time the pointer moves *anywhere on the system* — 100–1000Hz while the user
+waves it. The probe body is a rounding error next to that wake, so the fix is not to
+make the probe cheaper (it is already cheap) but to **stop being woken**.
+
+Hover therefore runs on a **2Hz poll** (`hoverPollInterval`) instead of an event:
+
+- `.mouseMoved` was **removed from both monitors' masks**. The masks now carry only
+  `[.leftMouseDown, .leftMouseDragged, .leftMouseUp]` — exactly the events dragging
+  needs, which must stay event-driven because a 0-latency window move is the whole
+  point of the drag. Hover, proximity-expand and collapse are answered by reading
+  `NSEvent.mouseLocation` from the timer.
+- The poll exists only while the dock is **visible** (`startHoverPoll` /
+  `stopHoverPoll` in `reconcile`'s show / hide branches), and probes immediately on
+  show so a freshly revealed dock does not take half a second to notice the pointer.
+- Nothing is lost by polling slower than the pointer: the question hover asks
+  ("which circle is under the cursor") only changes when the cursor moves, and
+  a *faster sweep* now samples fewer positions — fewer accidental card flashes.
+- The projection is still computed **only when the cursor is inside the dock's
+  keep-alive region**. Off-dock probes cost two `CGRect.contains` and nothing else.
+  A projection cache was tried and removed: at 2Hz the whole-column projection
+  (≈37 µs) costs 0.007% of a core, and a TTL'd cache would be pure complexity.
+
+**Latency is the price, and it is bounded where it matters.** Ring highlight, card
+open and proximity-expand all land within `hoverPollInterval` (0.5s) of the pointer
+arriving. Once the cursor is actually over the dock, `captureMouse()` starts the
+0.2s `capturePollInterval` timer, and hover drops to 0.2s — the visible 0.5s is
+confined to the half-second *before* arrival. Releasing the capture stays prompt
+too: the 0.2s timer is what detects the pointer leaving, followed by the 0.5s
+`collapseDelay` grace.
+
+Swapping back is one constant: raising `hoverPollInterval` back to a frame and
+restoring `.mouseMoved` to the two masks reinstates event-driven hover, with the
+projection computed only inside the keep-alive region as it is today.
+
+Two supporting details for drag, both about the same per-event budget:
 
 - The provider projection is computed **once at mouse-down** (`dragEntryCount`). It
   walks every provider's quota aggregation, which has no business running 120×/second.
@@ -676,7 +795,7 @@ to the nearest edge and persists `{edge, offset}` through `ConfigStore.applyAndS
 
 | State | Dock |
 |---|---|
-| `enabled == false` | Not created / ordered out |
+| `mode == .hidden` | Not created / ordered out |
 | No enabled Provider (entry count 0) | Ordered out — no empty shell on the screen edge |
 | Fullscreen window on the target screen's current Space, with `hideInFullscreen` on | Ordered out, restored on exit |
 | Otherwise | Visible, click-through |

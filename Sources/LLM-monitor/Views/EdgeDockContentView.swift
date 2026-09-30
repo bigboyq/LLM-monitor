@@ -230,6 +230,17 @@ struct EdgeDockContentView: View {
                 ? EdgeDockGeometry.compactDiameter
                 : EdgeDockGeometry.diameter
         )
+        // 测量各 provider 外圈几何矩形，供精确的圆形区域命中测试使用
+        .background(
+            GeometryReader { geo in
+                let rect = geo.frame(in: .global)
+                Color.clear
+                    .onAppear { controller.updateMeasuredCircleRect(id: entry.id, rect: rect) }
+                    .onChange(of: rect) { _, newValue in
+                        controller.updateMeasuredCircleRect(id: entry.id, rect: newValue)
+                    }
+            }
+        )
         .accessibilityLabel(entry.displayName)
         .accessibilityValue(accessibilityValue(for: entry))
         .help("\(entry.displayName) · \(caption(for: entry))")

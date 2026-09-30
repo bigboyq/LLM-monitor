@@ -93,8 +93,9 @@ enum ProviderCardLayout {
 
     /// `prompts` 与 `rounds` 拆成两行，`rounds` 跟在 `prompts` 下面（dock）。
     ///
-    /// 原本挤在一行 `prompts: 42 (128 rounds)`。三列并排时每列只有约 140pt，
-    /// 挤在一行必然换行或截断；拆开后每个数字都有自己完整的一行。
+    /// 原本挤在一行 `prompts: 42 (128 rounds)`。当初是三列并排逼出来的——每列只有
+    /// 约 140pt，挤一行必然换行或截断。三列撤掉后触发条件没了，但 dock 侧的行是
+    /// 整行宽的，一行一个数字仍然更好读，留着不拆反而像半途而废。
     static func splitsRoundsRow(mode: HoverRevealMode) -> Bool {
         mode == .alwaysVisible
     }
@@ -176,6 +177,7 @@ struct ProviderCardView: View, Equatable {
             if case .ok(let info) = status.state {
                 dockCard {
                     quotaSection(info: info, projection: projection, between: AnyView(dockQuotaSummaryRows))
+                    quotaUsageDivider
                     localUsage(projection: projection, part: .summary)
                 }
                 dockSectionTitle(projection: projection)
@@ -190,14 +192,29 @@ struct ProviderCardView: View, Equatable {
         }
     }
 
-    /// 夹在「元信息行 + 进度条」与「三列统计」之间的卡片级信息（dock）。
+    /// 第一张卡片里，"额度"与"本地用量"之间的那条线。
+    ///
+    /// 两条线两侧的数据源不同：额度来自 provider 接口，用量来自本机会话扫描。
+    /// 没有这条线，`📈 今天 …` 会被读成额度的延续（尤其是它为空时的"扫描尚未
+    /// 完成"，看上去就像在解释上一行为什么没数字）。
+    ///
+    /// 它画在**卡片层**而不是每个 model 块里：三列明细撤掉后块内只剩额度本身，
+    /// 而这条线要横跨所有 model（Antigravity 有两个），每块各画一条会在两个块
+    /// 之间叠成两条挨着的线。样式与 7 天图表下方那条同款（同色、同不透明度、
+    /// 整行宽、不额外缩进），上下间距 6 + 3 = 9pt，两条线在屏幕上读起来是同一条。
+    private var quotaUsageDivider: some View {
+        Divider().opacity(0.45).padding(.vertical, 3)
+    }
+
+    /// 夹在「元信息行 + 进度条」与下方「本地用量」之间的卡片级信息（dock）。
     ///
     /// 顺序是这一屏的读法：先看还剩多少（条），再看这批额度什么时候重置、现在
-    /// 是不是高峰期，最后才是 Last Prompt / 5h / 周的明细。它们此前排在进度条
-    /// **上方**，等于让人先读脚注再看正文。
+    /// 是不是高峰期。三列明细（Last Prompt / 5h / 周）已撤掉，条之下第一件
+    /// 补充信息就是用量，两者都排在额度之后——它们此前排在进度条**上方**，等于
+    /// 让人先读脚注再看正文。
     ///
     /// 这两行之所以要"夹进去"而不是留在卡片顶层：顶层只能排在整块额度内容之前
-    /// 或之后，而它们的位置在中间（条之下、统计之上），只有交给 model 行去摆。
+    /// 或之后，而它们的位置在中间（条之下、用量之上），只有交给 model 行去摆。
     @ViewBuilder
     private var dockQuotaSummaryRows: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -680,7 +697,7 @@ struct QuotaSummary: View {
     var excludeWindows: [GlmOffPeakWindow] = []
     /// DeepSeek 高峰期窗口（仅 `.deepseek` 用到；其余 provider 用默认值占位）。
     var deepseekPeakWindow: DeepseekPeakWindow = .defaultWindow
-    /// dock：夹在「进度条块」与「三列统计」之间的卡片级信息（重置卡、高峰期），
+    /// dock：夹在「进度条块」与「本地用量」之间的卡片级信息（重置卡、高峰期），
     /// 由 `ProviderCardView.dockBody` 组装。菜单不传，默认空。
     var betweenBarAndColumns: AnyView = AnyView(EmptyView())
     /// dock 详情浮层把高峰期倒计时提到卡片头部；菜单保持它在余额行里。

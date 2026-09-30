@@ -185,11 +185,17 @@ final class EdgeDockTests: XCTestCase {
     // MARK: - hover 命中：鼠标位置 → 圆下标
 
     /// 贴右边、4 个圆、offset 居中的 dock frame。
-    private func makeDockFrame(edge: DockEdge, entryCount: Int, offset: Double = 0.5) -> CGRect {
+    /// `size` 显式给出时用它（简版形态的行距与完整版不同，测简版时必须给）。
+    private func makeDockFrame(
+        edge: DockEdge,
+        entryCount: Int,
+        offset: Double = 0.5,
+        size: CGSize? = nil
+    ) -> CGRect {
         EdgeDockGeometry.frame(
             visibleFrame: visible,
             edge: edge,
-            size: EdgeDockGeometry.dockSize(entryCount: entryCount, edge: edge),
+            size: size ?? EdgeDockGeometry.dockSize(entryCount: entryCount, edge: edge),
             offset: offset
         )
     }
@@ -418,6 +424,175 @@ final class EdgeDockTests: XCTestCase {
         )
     }
 
+    // MARK: - 精确圆形 Hover 命中测试
+
+    func testCircleCenterAndRectsGeometry() {
+        for edge in DockEdge.allCases {
+            let dock = makeDockFrame(edge: edge, entryCount: 3)
+            let circles = EdgeDockGeometry.circleRects(dockFrame: dock, edge: edge, entryCount: 3)
+            XCTAssertEqual(circles.count, 3)
+
+            for index in 0..<3 {
+                let center = EdgeDockGeometry.circleCenter(dockFrame: dock, edge: edge, index: index)
+                let rect = circles[index]
+                XCTAssertEqual(rect.midX, center.x, accuracy: 0.001, "edge=\(edge) idx=\(index) rect.midX")
+                XCTAssertEqual(rect.midY, center.y, accuracy: 0.001, "edge=\(edge) idx=\(index) rect.midY")
+                XCTAssertEqual(rect.width, EdgeDockGeometry.diameter, accuracy: 0.001)
+                XCTAssertEqual(rect.height, EdgeDockGeometry.diameter, accuracy: 0.001)
+            }
+
+            if edge.isVertical {
+                // 第 0 个在上方（y 坐标更大），第 2 个在下方（y 坐标更小）
+                XCTAssertGreaterThan(circles[0].midY, circles[1].midY)
+                XCTAssertGreaterThan(circles[1].midY, circles[2].midY)
+                // x 居中对齐 dock
+                XCTAssertEqual(circles[0].midX, dock.midX, accuracy: 0.001)
+            } else {
+                // 第 0 个在左边（x 坐标更小），第 2 个在右边（x 坐标更大）
+                XCTAssertLessThan(circles[0].midX, circles[1].midX)
+                XCTAssertLessThan(circles[1].midX, circles[2].midX)
+            }
+        }
+    }
+
+    func testCircleIndexHitsInsideProviderCircle() {
+        let dock = makeDockFrame(edge: .right, entryCount: 3)
+        let circles = EdgeDockGeometry.circleRects(dockFrame: dock, edge: .right, entryCount: 3)
+
+        for index in 0..<3 {
+            let center = EdgeDockGeometry.circleCenter(dockFrame: dock, edge: .right, index: index)
+            // 圆心
+            XCTAssertEqual(EdgeDockController.circleIndex(at: center, circles: circles), index)
+            // 内部区域 (半径内 10pt)
+            let innerPoint = CGPoint(x: center.x + 8, y: center.y - 6)
+            XCTAssertEqual(EdgeDockController.circleIndex(at: innerPoint, circles: circles), index)
+            // 外圈边界附近 (半径 19pt，测试 18.5pt)
+            let nearEdgePoint = CGPoint(x: center.x, y: center.y + 18.5)
+            XCTAssertEqual(EdgeDockController.circleIndex(at: nearEdgePoint, circles: circles), index)
+        }
+    }
+
+    func testCircleIndexRejectsLabelBelowCircle() {
+        let dock = makeDockFrame(edge: .right, entryCount: 3)
+        let circles = EdgeDockGeometry.circleRects(dockFrame: dock, edge: .right, entryCount: 3)
+
+        // 竖排中，数值百分比标签位于圆环下方（距离圆心垂直距离在 23pt ~ 33pt）
+        let center0 = EdgeDockGeometry.circleCenter(dockFrame: dock, edge: .right, index: 0)
+        let labelPoint = CGPoint(x: center0.x, y: center0.y - 26) // 标签区域
+
+        // circleIndex 必须返回 nil（不触发详情展示）
+        XCTAssertNil(
+            EdgeDockController.circleIndex(at: labelPoint, circles: circles),
+            "光标在百分比数值标签上时不应触发 circleIndex 命中"
+        )
+    }
+
+    func testCircleIndexRejectsGapBetweenCircles() {
+        let dock = makeDockFrame(edge: .right, entryCount: 3)
+        let circles = EdgeDockGeometry.circleRects(dockFrame: dock, edge: .right, entryCount: 3)
+
+        let center0 = EdgeDockGeometry.circleCenter(dockFrame: dock, edge: .right, index: 0)
+        let center1 = EdgeDockGeometry.circleCenter(dockFrame: dock, edge: .right, index: 1)
+        let midGap = CGPoint(x: dock.midX, y: (center0.y + center1.y) / 2)
+
+        XCTAssertNil(
+            EdgeDockController.circleIndex(at: midGap, circles: circles),
+            "光标在两圆环之间的间隙时不应命中"
+        )
+    }
+
+    func testCircleIndexRejectsDockBackgroundPadding() {
+        let dock = makeDockFrame(edge: .right, entryCount: 3)
+        let circles = EdgeDockGeometry.circleRects(dockFrame: dock, edge: .right, entryCount: 3)
+
+        // dock 顶部的留白边距区 (padding 区域)
+        let topPaddingPoint = CGPoint(x: dock.midX, y: dock.maxY - 2)
+        XCTAssertNil(
+            EdgeDockController.circleIndex(at: topPaddingPoint, circles: circles),
+            "光标在 dock 顶部边距时不应命中"
+        )
+
+        // dock 侧边的空白区域
+        let sideMarginPoint = CGPoint(x: dock.minX + 2, y: circles[0].midY)
+        XCTAssertNil(
+            EdgeDockController.circleIndex(at: sideMarginPoint, circles: circles),
+            "光标在 dock 侧边缘留白时不应命中"
+        )
+    }
+
+    func testCircleIndexRespectsHoverScaleExpansion() {
+        let dock = makeDockFrame(edge: .right, entryCount: 2)
+        let circles = EdgeDockGeometry.circleRects(dockFrame: dock, edge: .right, entryCount: 2)
+        let center0 = EdgeDockGeometry.circleCenter(dockFrame: dock, edge: .right, index: 0)
+
+        // 基准半径 19pt。测试点位于距离圆心 20.0pt (基准半径外，但在 1.10x 放大后的 20.9pt 半径内)
+        let pointAt20pt = CGPoint(x: center0.x + 20.0, y: center0.y)
+
+        // 未 hover 时：20pt 超出 19pt -> 返回 nil
+        XCTAssertNil(
+            EdgeDockController.circleIndex(at: pointAt20pt, circles: circles, currentHovered: nil)
+        )
+
+        // 已处于 hover 状态时：20pt 处于 20.9pt 放大圆内 -> 命中保持为 0，防止抖动
+        XCTAssertEqual(
+            EdgeDockController.circleIndex(at: pointAt20pt, circles: circles, currentHovered: 0),
+            0
+        )
+    }
+
+    func testCircleIndexHonoursMinimumRadiusForCompactRings() {
+        // 「小圆环」形态逐行 hover 用：7pt 的圆（半径 3.5）照圆判定等于要指中一个
+        // 7px 的点，指偏 4pt 就换了一张卡。传半个行距当判定半径下限之后，
+        // 圆心旁 6pt 处仍然命中**这一行**。
+        let compact = EdgeDockGeometry.dockSize(entryCount: 3, edge: .right, appearance: .compact)
+        let dock = makeDockFrame(edge: .right, entryCount: 3, size: compact)
+        let step = EdgeDockGeometry.compactRowStep
+        var circles: [CGRect] = []
+        for index in 0..<3 {
+            let center = CGPoint(
+                x: dock.midX,
+                y: dock.maxY - EdgeDockGeometry.compactPadding - EdgeDockGeometry.compactDiameter / 2
+                    - CGFloat(index) * step
+            )
+            circles.append(CGRect(
+                x: center.x - EdgeDockGeometry.compactDiameter / 2,
+                y: center.y - EdgeDockGeometry.compactDiameter / 2,
+                width: EdgeDockGeometry.compactDiameter,
+                height: EdgeDockGeometry.compactDiameter
+            ))
+        }
+        // 半径 3.5 的圆心旁 6pt：按圆判定不命中，按半个行距（7.5pt）判定命中。
+        let sixOut = CGPoint(x: circles[1].midX + 6, y: circles[1].midY)
+        XCTAssertNil(
+            EdgeDockController.circleIndex(at: sixOut, circles: circles),
+            "不传下限时行为与从前逐字相同：7pt 的圆只认 3.5pt"
+        )
+        XCTAssertEqual(
+            EdgeDockController.circleIndex(
+                at: sixOut, circles: circles, minimumRadius: step / 2
+            ),
+            1
+        )
+        // 相邻两环的判定区在中点接上：越靠近哪一个就归哪一个，不会因为"先遍历到
+        // 上面那个"而张冠李戴（中点 ±0.5pt 那一格是 0.5pt 容差，两边都算命中，
+        // 循环先到者胜——与完整形态用同一条容差规则，不另开特例）。
+        let nearerToSecond = CGPoint(x: circles[1].midX, y: circles[1].midY - 5.4)
+        XCTAssertEqual(
+            EdgeDockController.circleIndex(
+                at: nearerToSecond, circles: circles, minimumRadius: step / 2
+            ),
+            1,
+            "明显更靠近第二个环的点必须算第二个环"
+        )
+        let nearerToFirst = CGPoint(x: circles[0].midX, y: circles[0].midY + 5.4)
+        XCTAssertEqual(
+            EdgeDockController.circleIndex(
+                at: nearerToFirst, circles: circles, minimumRadius: step / 2
+            ),
+            0
+        )
+    }
+
     // MARK: - 额度弧：顺时针收缩
 
     func testArcPinsClockwiseEndAtTwelve() {
@@ -559,6 +734,27 @@ final class EdgeDockTests: XCTestCase {
         XCTAssertEqual(frame.midY, center.y, accuracy: 0.001, "纵向与被 hover 的圆心对齐")
     }
 
+    func testPopoverAnchorsToMeasuredRowCenter() {
+        // 「小圆环」形态行距 15pt，而 popoverFrame 的兜底推算写死的是完整形态的
+        // 行距（38 + 16pt）：不传实测中心时，第 2 行的卡片会挂在比真环低 30pt 的
+        // 位置。控制器一律传实测行中心。
+        let compact = EdgeDockGeometry.dockSize(entryCount: 4, edge: .right, appearance: .compact)
+        let dock = makeDockFrame(edge: .right, entryCount: 4, size: compact)
+        let estimated = EdgeDockGeometry.rowCenter(dockFrame: dock, edge: .right, index: 2)
+        let real = CGPoint(x: dock.midX, y: dock.maxY - 40)
+
+        let size = CGSize(width: 340, height: 200)
+        let frame = EdgeDockGeometry.popoverFrame(
+            size: size, dockFrame: dock, rowIndex: 2, edge: .right, visibleFrame: visible,
+            measuredRowCenter: real
+        )
+        XCTAssertEqual(frame.midY, real.y, accuracy: 0.001, "纵向必须对齐实测行中心")
+        XCTAssertNotEqual(
+            frame.midY, estimated.y, accuracy: 0.001,
+            "这条测试的前提：完整形态推算确实对不上简版的行距"
+        )
+    }
+
     func testPopoverStaysOnScreenWhenCircleNearTopOrBottom() {
         // 第一个圆贴顶 / 最后一个圆贴底时，popover 仍要完整可见。
         let size = CGSize(width: 340, height: 260)
@@ -660,61 +856,107 @@ final class EdgeDockTests: XCTestCase {
         )
     }
 
-    // MARK: - 自动隐藏模式：配置兼容
+    // MARK: - 形态（mode）：默认值、配置兼容与语义
 
-    func testAutoHideModeDefaultsOff() {
-        // 与 enabled 同一约定：新模式默认关闭，升级不改变现有形态。
-        XCTAssertFalse(EdgeDockConfig.default.autoHideMode)
+    func testDefaultModeIsAutoHideWindow() {
+        // 默认给「状态窗（自动隐藏）」：完整功能默认开着，屏幕上默认只占一条
+        // 7pt 的小环列，鼠标靠近才长出来。改这个值等于改"装上 App 之后屏幕上
+        // 立刻出现什么"——曾经默认是"什么都不出现"，现在必须钉住新约定。
+        XCTAssertEqual(EdgeDockConfig.default.mode, .autoHideWindow)
+        XCTAssertTrue(EdgeDockConfig.default.mode.isVisible)
     }
 
-    func testLegacyConfigJSONWithoutAutoHideFieldStillDecodes() throws {
-        // 旧版本 config.json 没有 autoHideMode 字段：必须按 false 解码成功。
-        // 外层 ConfigStore 对 edgeDock 用 try? 解码——本条测试钉住"新字段缺失
-        // 不会让整块失败"，失败意味着用户已开启的边缘窗被静默重置回默认关闭。
-        let legacy = #"{"enabled":true,"edge":"left","offset":0.3}"#
+    func testModeExposesTheTwoIndependentSwitchesTheControllerUsedToRead() {
+        // 控制器过去读两个布尔（enabled / autoHideMode），现在只读形态上这两个
+        // 派生属性。四种组合必须各自落在一个**互斥**的格子里：
+        // 「小圆环」与「状态窗（自动隐藏）」都是简版，但只有后者会被鼠标撑大——
+        // 这一条钉住的就是那个区别，它无法从"两个布尔"里一眼看出来。
+        XCTAssertFalse(EdgeDockMode.hidden.isVisible)
+        XCTAssertFalse(EdgeDockMode.hidden.expandsOnProximity)
+        XCTAssertTrue(EdgeDockMode.statusWindow.staysFullWhenIdle)
+        XCTAssertFalse(EdgeDockMode.statusWindow.expandsOnProximity)
+        XCTAssertTrue(EdgeDockMode.compactRings.isVisible)
+        XCTAssertFalse(EdgeDockMode.compactRings.expandsOnProximity, "小圆环永不展开")
+        XCTAssertFalse(EdgeDockMode.compactRings.staysFullWhenIdle)
+        XCTAssertTrue(EdgeDockMode.autoHideWindow.expandsOnProximity)
+        XCTAssertFalse(EdgeDockMode.autoHideWindow.staysFullWhenIdle)
+    }
+
+    func testEveryModeHasItsOwnDisplayName() {
+        // 四个选项都在 picker 里列出。名字重复或为空 = 用户分不出该选哪个。
+        XCTAssertEqual(EdgeDockMode.allCases.count, 4)
+        XCTAssertEqual(
+            Set(EdgeDockMode.allCases.map(\.displayName)).count, 4,
+            "四种形态的显示名必须两两不同"
+        )
+        XCTAssertTrue(EdgeDockMode.allCases.allSatisfy { !$0.summary.isEmpty })
+    }
+
+    func testLegacyConfigJSONWithoutModeFallsBackToDefault() throws {
+        // 旧 config.json 只有 enabled / autoHideMode，没有 mode：必须按**默认形态**
+        // 解码成功，绝不能让整块解码失败——外层 ConfigStore 对 edgeDock 用的是
+        // `try?`，失败 = 用户拖到另一条边的 dock 被静默重置回默认位置。
+        // 这里刻意**不**映射旧的 enabled/autoHideMode（行为回落到默认形态）。
+        let legacy = #"{"enabled":true,"edge":"left","offset":0.3,"autoHideMode":true}"#
         let decoded = try JSONDecoder().decode(EdgeDockConfig.self, from: Data(legacy.utf8))
-        XCTAssertTrue(decoded.enabled)
+        XCTAssertEqual(decoded.mode, .default)
         XCTAssertEqual(decoded.edge, .left)
         XCTAssertEqual(decoded.offset, 0.3, accuracy: 0.0001)
-        XCTAssertFalse(decoded.autoHideMode)
     }
 
-    func testAutoHideModeRoundTripsThroughJSON() throws {
-        let original = EdgeDockConfig(enabled: true, edge: .bottom, offset: 0.7, autoHideMode: true)
-        let data = try JSONEncoder().encode(original)
-        let decoded = try JSONDecoder().decode(EdgeDockConfig.self, from: data)
-        XCTAssertEqual(decoded, original)
-        XCTAssertTrue(decoded.normalized.autoHideMode, "normalized 必须原样保留自动隐藏开关")
+    func testLegacyConfigThatExplicitlyDisabledTheDockStillDecodes() throws {
+        // enabled=false 的旧配置同样按默认形态解码（不映射）——但**其它字段必须
+        // 原样保住**：位置和贴边方向是用户拖出来的，比形态更不能丢。
+        let legacy = #"{"enabled":false,"edge":"bottom","offset":0.8}"#
+        let decoded = try JSONDecoder().decode(EdgeDockConfig.self, from: Data(legacy.utf8))
+        XCTAssertEqual(decoded.edge, .bottom)
+        XCTAssertEqual(decoded.offset, 0.8, accuracy: 0.0001)
+    }
+
+    func testModeRoundTripsThroughJSON() throws {
+        for mode in EdgeDockMode.allCases {
+            let original = EdgeDockConfig(mode: mode, edge: .bottom, offset: 0.7)
+            let decoded = try JSONDecoder().decode(EdgeDockConfig.self, from: try JSONEncoder().encode(original))
+            XCTAssertEqual(decoded, original)
+            XCTAssertEqual(decoded.normalized.mode, mode, "normalized 必须原样保留形态")
+        }
+    }
+
+    func testUnknownModeValueInHandEditedConfigFallsBackToDefault() throws {
+        // 手改 config.json 写一个不存在的形态值：整块解码必须成功并回落到默认，
+        // 不能让 try? 把整份配置判成损坏。
+        let hand = #"{"mode":"magic","edge":"left","offset":0.2}"#
+        let decoded = try JSONDecoder().decode(EdgeDockConfig.self, from: Data(hand.utf8))
+        XCTAssertEqual(decoded.mode, .default)
     }
 
     // MARK: - 全屏隐藏开关：配置兼容
 
     func testHideInFullscreenDefaultsOn() {
-        // 这一条和 autoHideMode 的默认值**方向相反**，是故意的：
-        // 全屏隐藏是"从没有开关"变成"有开关"，功能一直存在、默认一直是开。
-        // 如果这里给 false，等于升级后所有已开启 dock 的用户立刻在全屏里
+        // 全屏隐藏与形态**正交**：形态选「无」时它没有可作用的对象，但只要选了
+        // 任何一种形态，缺省就该是"全屏时让路"——功能一直存在、默认一直是开。
+        // 如果这里给 false，等于升级后所有开着 dock 的用户立刻在全屏里
         // 多出一个窗口——那不是新功能，是行为突变。
         XCTAssertTrue(EdgeDockConfig.default.hideInFullscreen)
     }
 
     func testLegacyConfigJSONWithoutHideInFullscreenStillDecodes() throws {
-        // 同 autoHideMode：缺字段不能让整块解码失败。外层 ConfigStore 用 try?，
-        // 失败 = 用户已开启的边缘窗被静默重置回默认关闭。
-        let legacy = #"{"enabled":true,"edge":"top","offset":0.2,"autoHideMode":true}"#
+        // 缺字段不能让整块解码失败。外层 ConfigStore 用 try?，失败 = 用户拖好的
+        // 边缘窗被静默重置。
+        let legacy = #"{"mode":"statusWindow","edge":"top","offset":0.2}"#
         let decoded = try JSONDecoder().decode(EdgeDockConfig.self, from: Data(legacy.utf8))
-        XCTAssertTrue(decoded.enabled)
+        XCTAssertEqual(decoded.mode, .statusWindow)
         XCTAssertEqual(decoded.edge, .top)
-        XCTAssertTrue(decoded.autoHideMode)
         XCTAssertTrue(decoded.hideInFullscreen, "缺失该字段时必须回落到默认开启")
     }
 
     func testHideInFullscreenRoundTripsThroughJSON() throws {
-        let off = EdgeDockConfig(enabled: true, edge: .left, offset: 0.9, hideInFullscreen: false)
+        let off = EdgeDockConfig(mode: .statusWindow, edge: .left, offset: 0.9, hideInFullscreen: false)
         let offDecoded = try JSONDecoder().decode(EdgeDockConfig.self, from: try JSONEncoder().encode(off))
         XCTAssertEqual(offDecoded, off)
         XCTAssertFalse(offDecoded.normalized.hideInFullscreen, "normalized 必须原样保留关闭状态")
 
-        let on = EdgeDockConfig(enabled: true, edge: .left, offset: 0.9, hideInFullscreen: true)
+        let on = EdgeDockConfig(mode: .statusWindow, edge: .left, offset: 0.9, hideInFullscreen: true)
         let onDecoded = try JSONDecoder().decode(EdgeDockConfig.self, from: try JSONEncoder().encode(on))
         XCTAssertTrue(onDecoded.normalized.hideInFullscreen)
     }
@@ -723,11 +965,11 @@ final class EdgeDockTests: XCTestCase {
     func testFullscreenHidingRespectsTheToggle() {
         // 策略本身：探测到全屏 + 开关开着 → 隐藏；开关关掉 → 一律不隐藏。
         // 这两行曾经散在控制器四个 guard 里各写一次，任何一处漏掉都不会编译报错。
-        let hiding = EdgeDockConfig(enabled: true, edge: .right, offset: 0.5, hideInFullscreen: true)
+        let hiding = EdgeDockConfig(mode: .statusWindow, edge: .right, offset: 0.5, hideInFullscreen: true)
         XCTAssertTrue(hiding.hidesInFullscreen(isFullscreenSpace: true))
         XCTAssertFalse(hiding.hidesInFullscreen(isFullscreenSpace: false), "不在全屏时永远不隐藏")
 
-        let showing = EdgeDockConfig(enabled: true, edge: .right, offset: 0.5, hideInFullscreen: false)
+        let showing = EdgeDockConfig(mode: .statusWindow, edge: .right, offset: 0.5, hideInFullscreen: false)
         XCTAssertFalse(
             showing.hidesInFullscreen(isFullscreenSpace: true),
             "关掉开关后，即使前台 App 全屏也不该隐藏——这正是这个选项的意义"
@@ -738,12 +980,11 @@ final class EdgeDockTests: XCTestCase {
         // 设置页不再有"贴靠边"下拉框，但保存时仍然要把**已存的值**原样写回去。
         // 贴边方向由拖动实时写盘；如果这里改成 `EdgeDockConfig.default.edge`，
         // 用户在设置页点一下"保存"就会把拖好的位置打回右侧，而且没有任何提示。
-        let stored = EdgeDockConfig(enabled: true, edge: .bottom, offset: 0.42, hideInFullscreen: false)
+        let stored = EdgeDockConfig(mode: .compactRings, edge: .bottom, offset: 0.42, hideInFullscreen: false)
         let rebuilt = EdgeDockConfig(
-            enabled: stored.enabled,
+            mode: stored.mode,
             edge: stored.edge,
             offset: stored.offset,
-            autoHideMode: stored.autoHideMode,
             hideInFullscreen: stored.hideInFullscreen
         )
         XCTAssertEqual(rebuilt, stored)
@@ -752,21 +993,21 @@ final class EdgeDockTests: XCTestCase {
     // MARK: - 配置归一化
 
     func testNormalizedClampsHandEditedOffset() {
-        let over = EdgeDockConfig(enabled: true, edge: .right, offset: 42)
+        let over = EdgeDockConfig(mode: .statusWindow, edge: .right, offset: 42)
         XCTAssertEqual(over.normalized.offset, 1)
 
-        let under = EdgeDockConfig(enabled: true, edge: .right, offset: -7)
+        let under = EdgeDockConfig(mode: .statusWindow, edge: .right, offset: -7)
         XCTAssertEqual(under.normalized.offset, 0)
 
-        let nan = EdgeDockConfig(enabled: true, edge: .right, offset: .nan)
+        let nan = EdgeDockConfig(mode: .statusWindow, edge: .right, offset: .nan)
         XCTAssertEqual(nan.normalized.offset, 0.5)
     }
 
 
-    func testDefaultEdgeDockIsDisabled() {
-        // 新装用户不该在升级后凭空多出一个贴边窗口。
-        XCTAssertFalse(EdgeDockConfig.default.enabled)
+    func testDefaultEdgeDockSitsOnTheRightEdge() {
+        // 贴边方向与形态无关：默认右侧，拖动后由拖拽写盘。
         XCTAssertEqual(EdgeDockConfig.default.edge, .right)
+        XCTAssertEqual(EdgeDockConfig.default.mode, .autoHideWindow)
     }
 
     func testDockEdgeAxisClassification() {

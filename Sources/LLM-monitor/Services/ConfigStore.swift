@@ -202,7 +202,7 @@ struct AppConfig: Codable, Equatable {
     /// Bark 推送配置。nil 或 enabled=false 都表示不推送。
     var bark: BarkConfig?
 
-    /// 屏幕边缘状态窗配置。nil / enabled=false 都表示不显示。
+    /// 屏幕边缘状态窗配置。nil 与 `mode = .hidden` 都表示不显示。
     /// 与 statusBar* 同为纯外观字段，手改出错按缺失处理，不进损坏恢复流程。
     var edgeDock: EdgeDockConfig?
 
