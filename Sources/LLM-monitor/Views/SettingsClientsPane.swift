@@ -26,9 +26,17 @@ extension SettingsView {
                     if providers.isEmpty {
                         emptyClientState(client)
                     } else {
+                        // `.id(client.id)`：切客户端时整列重建，于是展开态回到
+                        // 下面算出的默认值。少了它，SwiftUI 会按位置复用上一列的
+                        // 展开态——"只有一个 Provider 的客户端直接展开"就会被
+                        // 上一列多 Provider 客户端的折叠态顶掉（反过来也一样）。
                         ForEach(providers) { provider in
-                            clientProviderDisclosure(provider)
+                            clientProviderDisclosure(
+                                provider,
+                                defaultExpanded: defaultProviderExpansion(forProviderCount: providers.count)
+                            )
                         }
+                        .id(client.id)
                     }
                 }
             }
@@ -45,51 +53,26 @@ extension SettingsView {
         }
     }
 
+    /// 客户端切换条：系统 `NSSegmentedControl`（图标 + 名称 + Provider 计数）。
+    ///
+    /// 外层保留横向滚动：控件按每段内容的测量宽度定尺寸，客户端变多时整体变宽
+    /// 而不是把标签压成省略号——原来的胶囊按钮条也是这个行为，换成系统控件后
+    /// 不该反过来。
     func clientTabBar(
         _ clients: [ClientDescriptor],
         usageByClient: [String: [ClientProviderUsageSummary]]
     ) -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
-                ForEach(clients) { client in
-                    let selected = selectedClientID == client.id
-                    let providerCount = usageByClient[client.id]?.count ?? 0
-                    Button {
-                        selectedClientID = client.id
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: client.iconSystemName)
-                                .font(.system(size: 12, weight: .medium))
-                            Text(client.displayName)
-                                .font(SettingsTypography.metadata)
-                            if providerCount > 0 {
-                                Text("\(providerCount)")
-                                    .font(.system(size: 9, weight: .semibold).monospacedDigit())
-                                    .foregroundStyle(selected ? Color.accentColor : .secondary)
-                                    .padding(.horizontal, 4)
-                                    .padding(.vertical, 1)
-                                    .background(
-                                        Capsule(style: .continuous)
-                                            .fill(selected ? Color.accentColor.opacity(0.14) : Color.secondary.opacity(0.12))
-                                    )
-                            }
-                        }
-                        .foregroundStyle(selected ? Color.accentColor : .secondary)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 7)
-                        .background(
-                            Capsule(style: .continuous)
-                                .fill(selected ? Color.accentColor.opacity(0.14) : Color.clear)
-                        )
-                        .overlay(
-                            Capsule(style: .continuous)
-                                .stroke(selected ? Color.accentColor.opacity(0.35) : Color.secondary.opacity(0.18), lineWidth: 0.5)
-                        )
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(.vertical, 2)
+        let items = clients.map { client in
+            ClientSegmentedControl.Item(
+                id: client.id,
+                title: client.displayName,
+                badge: usageByClient[client.id]?.count ?? 0,
+                subtitle: client.subtitle
+            )
+        }
+        return ScrollView(.horizontal, showsIndicators: false) {
+            ClientSegmentedControl(items: items, selection: $selectedClientID)
+                .padding(.vertical, 2)
         }
     }
 
@@ -264,8 +247,44 @@ extension SettingsView {
         .padding(.vertical, 12)
     }
 
-    func clientProviderDisclosure(_ provider: ClientProviderUsageSummary) -> some View {
-        DisclosureGroup {
+    /// Provider 行的默认展开态：**只有一个就直接展开**，**两个及以上全折叠**。
+    ///
+    /// 为一行内容多点一次折叠箭头毫无意义，折起来反而让人先猜里面有什么；反过来，
+    /// 一列七八个 Provider 全部展开会把设置页撑到要滚动，得让人先挑一个想看的。
+    /// 0 个 Provider 不会走到这里（那一列渲染的是空态）。
+    func defaultProviderExpansion(forProviderCount count: Int) -> Bool { count == 1 }
+
+    /// 展开态由 Provider 数量决定：**只有一个就直接展开**——为一行内容多点一次毫无
+    /// 意义，折起来反而让人先猜里面有什么；**两个及以上全折叠**——先让人挑一个想看的。
+    ///
+    /// `defaultExpanded` 只在首次出现时生效（`@State` 的初值语义），用户手动折起来
+    /// 之后不会被下一次刷新顶回去；而重新切到这个客户端时外层 `.id(client.id)`
+    /// 会重建整列，默认值重新生效。
+    func clientProviderDisclosure(
+        _ provider: ClientProviderUsageSummary,
+        defaultExpanded: Bool
+    ) -> some View {
+        ClientProviderDisclosureRow(provider: provider, defaultExpanded: defaultExpanded)
+    }
+}
+
+/// 单个 Provider 行。之所以单独具名而不是内联在 `clientProviderDisclosure` 里：
+/// 展开态要装进 `@State`，而展开内容此前正是内联深层 TupleView 时命过一次
+/// 系统级 swift_retain bad-pointer 崩溃（见下方 `ClientProviderExpandedContent`
+/// 的说明）——DisclosureGroup 这一层上，新加状态时用具名 struct 更稳。
+private struct ClientProviderDisclosureRow: View {
+    let provider: ClientProviderUsageSummary
+    let defaultExpanded: Bool
+    @State private var isExpanded: Bool
+
+    init(provider: ClientProviderUsageSummary, defaultExpanded: Bool) {
+        self.provider = provider
+        self.defaultExpanded = defaultExpanded
+        _isExpanded = State(initialValue: defaultExpanded)
+    }
+
+    var body: some View {
+        DisclosureGroup(isExpanded: $isExpanded) {
             ClientProviderExpandedContent(provider: provider)
                 .padding(.top, 8)
         } label: {
