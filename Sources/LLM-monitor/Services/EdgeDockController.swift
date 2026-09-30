@@ -253,6 +253,10 @@ final class EdgeDockController: ObservableObject {
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self else { return }
+                // 拔屏要先清记忆：否则缓存里留着已经不存在的 display id，
+                // `targetScreen` 拿它去匹配会一直失败（虽然结果碰巧也是"找不到"，
+                // 但留着就是随时会骗人的状态）。
+                EdgeDockDisplay.pruneCache(to: NSScreen.screens)
                 self.reconcile(animated: false)
                 self.evaluateFullscreen()
             }
@@ -394,6 +398,12 @@ final class EdgeDockController: ObservableObject {
         // `orderedEntries()` 取数据（它自己也读 `state`），接出一个用不上的局部量
         // 只会招来 unused 警告。
         guard state != nil else { return }
+
+        // 配置指定的屏已经不在了（拔线 / 换机器）→ 先把配置改写成"没指定"，
+        // 否则它会一直指向一块不存在的屏，每次启动都算错一次、dock 落在没人
+        // 看得到的地方。必须在取 `targetScreen` **之前**：本次 reconcile 就要
+        // 用回落后的屏定位。
+        dropScreenUUIDIfVanished()
 
         let entries = orderedEntries()
         let entryCount = entries.count
@@ -638,7 +648,7 @@ final class EdgeDockController: ObservableObject {
     ///
     /// 只跟从「在 dock 上按下」的那次拖动（`guard isDragging`）。global monitor
     /// 会收到所有其他 App 的拖动事件——在别的应用里拖窗口、划选文本、拖滑杆，
-    /// 无条件跟随时任何一次拖动都会把 dock 瞬移到鼠标处，松手再 persistPosition
+    /// 无条件跟随时任何一次拖动都会把 dock 瞬移到鼠标处，松手再 persistConfig
     /// 把漂移位置写进 config。mouseDown 落在 dock 上时 local / global 两个
     /// monitor 必有一个先见到（接管中走 local，穿透时走 global）。
     private func dragMoved(at mouse: CGPoint) {
@@ -706,7 +716,7 @@ final class EdgeDockController: ObservableObject {
         isDragging = false
         guard pressBecameDrag else { return }
         reconcile(animated: true)
-        persistPosition()
+        persistConfig()
     }
 
     /// 每帧巡检鼠标：决定命中哪个圆、要不要接管、popover 挂在哪。
@@ -1259,7 +1269,7 @@ final class EdgeDockController: ObservableObject {
     /// 由 `.leftMouseDragged` 逐事件调用（见 `handleMouseEvent`），不是定时轮询。
     private func applyDrag(at mouse: CGPoint) {
         guard let panel else { return }
-        let visibleFrame = Self.targetScreen.visibleFrame
+        let visibleFrame = dragVisibleFrame(for: mouse)
 
         // 鼠标明显更靠近另一条边时才换边（带 margin，避免角落来回闪）。
         let edge = EdgeDockGeometry.edgeAfterDrag(
@@ -1285,7 +1295,45 @@ final class EdgeDockController: ObservableObject {
         )
     }
 
-    private func persistPosition() {
+    /// 本次拖拽按**哪块屏**的可用区算：鼠标越过屏幕边界就换屏。
+    ///
+    /// 换屏写进 `config.screenUUID` 而不是记一个临时变量——`targetScreen` 下一帧
+    /// 就能确定性地解析到新屏（不依赖焦点，也不依赖窗口碰巧已经搬过去）。写完
+    /// 立刻按新屏重算，窗口当个事件就落位；松手时随整份配置一起持久化。
+    ///
+    /// 判定用"鼠标落在**别的**屏的可用区里"，而不是比较几何距离：相邻两屏拼接时
+    /// 边界只有一条，鼠标越过它时它在两块屏里都算落在边界附近，用距离会来回抖。
+    private func dragVisibleFrame(for mouse: CGPoint) -> CGRect {
+        let current = Self.targetScreen
+        let screens = NSScreen.screens
+        let index = EdgeDockDisplay.crossedIndex(
+            currentDisplayID: EdgeDockDisplay.displayID(of: current),
+            mouse: mouse,
+            candidates: screens.map { (EdgeDockDisplay.displayID(of: $0), $0.visibleFrame) }
+        )
+        guard let index, let uuid = EdgeDockDisplay.uuid(of: screens[index]) else {
+            return current.visibleFrame
+        }
+        config.screenUUID = uuid
+        logInfo("EdgeDock: 拖拽跨屏 → uuid=\(uuid) frame=\(Self.describe(screens[index].visibleFrame))")
+        return screens[index].visibleFrame
+    }
+
+    /// 配置里指定的屏在当前系统上找不到时，把它清掉并落盘。
+    ///
+    /// 落盘而不是只改内存：不落盘的话，用户每次启动都要重新走一遍"找不到 → 猜主屏"，
+    /// 而且 config.json 里那个永远解析不到的 UUID 会一直误导人。删掉之后 dock
+    /// 回到"跟随所在屏 / 主屏"的老行为——那是唯一在屏不见了还能站得住的语义。
+    private func dropScreenUUIDIfVanished() {
+        guard let uuid = config.screenUUID else { return }
+        guard NSScreen.screens.allSatisfy({ EdgeDockDisplay.uuid(of: $0) != uuid }) else { return }
+        logInfo("EdgeDock: 配置指定的屏已不在（uuid=\(uuid)），回落到主屏")
+        config.screenUUID = nil
+        persistConfig()
+    }
+
+    /// 整份 `EdgeDockConfig` 写盘（拖拽松手、配置指定的屏消失后的回落都走这里）。
+    private func persistConfig() {
         guard let configStore else { return }
         let current = configStore.config
         // 与默认完全一致时写 nil，保持 config.json 干净（与 statusBar* 字段同一约定）。
@@ -1295,7 +1343,7 @@ final class EdgeDockController: ObservableObject {
         do {
             try configStore.applyAndSave(updated)
         } catch {
-            logError("EdgeDock: 保存位置失败 \(error.localizedDescription)")
+            logError("EdgeDock: 保存边缘窗配置失败 \(error.localizedDescription)")
         }
     }
 

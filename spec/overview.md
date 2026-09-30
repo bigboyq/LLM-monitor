@@ -96,7 +96,7 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 | `Sources/LLM-monitor/Services/SQLiteTempCopy.swift` | CANTOPEN/BUSY 时 `/tmp` 副本 fallback |
 | `Sources/LLM-monitor/Views/Color+Theme.swift` | 品牌色常量 |
 | `Sources/LLM-monitor/Services/MenuBarRightClickHandler.swift` | 状态栏按钮右键菜单（best-effort） |
-| `Sources/LLM-monitor/Services/QuotaLogoSVGBuilder.swift` | 经典 App 图标（quotaLogo）SVG 生成：逆时针双环（实线到最低、刻度虚线到平均）+ 中心水位杯，共享额度指标结构也定义于此 |
+| `Sources/LLM-monitor/Services/StatusBarQuotaMetrics.swift` | 状态栏额度指标结构（`QuotaRingMetrics` / `StatusBarQuotaMetrics`），由 Icon Duo 仪表盘消费；原 App 图标 SVG 生成器已随「App 图标」改用固定设计稿而删除 |
 | `Sources/LLM-monitor/Services/IconDuoSVGBuilder.swift` | Icon Duo 状态栏额度仪表盘的参数化 SVG 生成（左右额度弧 / 中心扇形 / 底部模型健康点 / 顶部节能点） |
 | `Sources/LLM-monitor/Services/MinimaxDBReader.swift` | 读 minimax v2 `local_runtime_token_usage` 表 |
 | `Sources/LLM-monitor/Services/MinimaxLocalUsageScanner.swift` | minimax v2 `runtime-state.sqlite` 单源 scanner（AsyncMutex + lastCommittedGeneration 串行化）|
@@ -662,7 +662,7 @@ the interval and weekly windows.
 | `.failed(_, let last)` | `last?.healthLevel`（无则 nil） |
 | `.ready` / `.notConfigured` | `nil`（UI 显示灰点，不归类为"健康"） |
 
-`nil` 让 UI 端的 `StatusIndicator` 用 secondary 灰色渲染，明确区分"没数据"和"有数据但健康"。菜单栏的 `iconDuo` 仪表盘会随额度指标与节能/睡眠健康度变化，经典 `quotaLogo` 的水位颜色随 `waterHealth`（无值回退整体健康度）变化；标准 SF Symbol 样式则保留右下角状态点与刷新中的图标替换。卡片状态点和进度颜色同样反映健康度。
+`nil` 让 UI 端的 `StatusIndicator` 用 secondary 灰色渲染，明确区分"没数据"和"有数据但健康"。菜单栏的 `iconDuo` 仪表盘会随额度指标与节能/睡眠健康度变化；`quotaLogo`（App 图标）是固定设计稿、不随健康度变化；标准 SF Symbol 样式则保留右下角状态点与刷新中的图标替换。卡片状态点和进度颜色同样反映健康度。
 
 ## Error And Fallback
 
@@ -843,8 +843,8 @@ master 哈希即 icns 新鲜度的确定性判据，不用 mtime）。`build-app
 后调用 `sync-icon-assets.sh --check` 做构建前置校验（只校验不重生成——release 必
 须从已提交状态构建，不能在构建中悄悄改二进制）；副本一致性另由
 `Tests/LLMMonitorTests/IconAssetSyncTests.swift` 钉住。脚本覆盖范围之外的手工步骤：
-Icon Composer 里更新 `images/LLMMenu.icon` 工程；若菜单栏 quotaLogo 几何也要变，
-改 `QuotaLogoSVGBuilder` 并跑一致性测试；spec 文档同步。
+Icon Composer 里更新 `images/LLMMenu.icon` 工程；菜单栏「App 图标」直接用这份
+设计稿（`llm-quota-730-2-dark.svg`），改图即改图标，无需再改绘制代码；spec 文档同步。
 
 **历史分歧备注**：1.6.0 前夕 `478f322` 曾以"打包产物异常"为由移除 Icon Composer 路线，
 `0f1a7b8` 又将其恢复。本节即为最终裁定：**双路线并存是既定设计**，两条路线的产物各有
@@ -855,14 +855,14 @@ Icon Composer 里更新 `images/LLMMenu.icon` 工程；若菜单栏 quotaLogo �
 These are documented product boundaries:
 
 - The menu bar label defaults to the `chart.bar.fill` SF Symbol style; two optional
-    SVG dashboard styles are driven by `statusBarIconStyle`. The classic `quotaLogo`
-    style (config `quotaLogo` / "App 图标" in Settings, the pre-1.9.0 look restored)
-    renders an outer weekly ring and an inner 5h ring growing counter-clockwise from
-    12 o'clock (solid arc to the minimum remaining, 2-4 px ticked dashed arc to the
-    average) plus a center water cup whose height maps the 5h minimum remaining; its
-    water color follows `waterHealth` (falling back to overall health), and missing
-    windows render as full rings per the legacy semantics. See
-    `QuotaLogoSVGBuilder.swift`.
+    styles are driven by `statusBarIconStyle`. The `quotaLogo` style (config
+    `quotaLogo` / "App 图标" in Settings) is a **static design asset** — the same
+    `llm-quota-730-2-dark.svg` the Settings picker shows. It is not drawn at runtime:
+    health, quota levels and custom colors do not affect it, so the menu bar and the
+    picker can never disagree about what was picked. (The former runtime drawing — a
+    dual counter-clockwise ring gauge with a water cup whose color followed
+    `waterHealth` — was deleted along with the `waterHealth` / `colorHex` fields only
+    it consumed.)
     The `iconDuo` style (config `iconDuo` / "Icon Duo" in Settings, the 1.9.0+ redesign)
     renders a live quota dashboard: the left arc is 5h and the right arc is weekly; both are concentric
     circular arcs growing from the bottom with dark gray background tracks and health-colored

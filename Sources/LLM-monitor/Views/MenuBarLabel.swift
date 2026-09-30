@@ -138,16 +138,15 @@ struct MenuBarLabel: View {
         healthColors: StatusBarHealthColors = .default
     ) -> NSImage {
         let canvasSize = NSSize(width: 22, height: 22)
+        let baseRect = Self.baseDrawRect(for: iconStyle, canvas: canvasSize.width)
         let baseImage: NSImage?
         switch iconStyle {
         case .quotaLogo:
-            // 经典「App 图标」：逆时针双环 + 中心水位杯，水位颜色由
-            // waterHealth（无值时回退整体健康度）决定。
-            baseImage = QuotaLogoSVGBuilder.buildImage(
-                metrics: quotaMetrics,
-                fallbackHealth: health,
-                healthColors: healthColors
-            )
+            // 「App 图标」**不再动态绘制**：直接用 picker 里那张设计稿（同一份
+            // 资源，`.quotaLogo` 的预览图本来就是它，且都已裁掉留白）。原先这里用
+            // 指标现画双环 + 水位杯，菜单栏里那个小尺寸的动态版本和设计稿对不上——
+            // 同一个选项在设置页和菜单栏长得不一样，而"选的就是这个图标"应该字面成立。
+            baseImage = Self.appIconDesignImage
         case .iconDuo:
             // 「Icon Duo」仪表盘：左右额度弧、中心扇形、底部套餐点与顶部节能点。
             baseImage = IconDuoSVGBuilder.buildImage(
@@ -165,10 +164,12 @@ struct MenuBarLabel: View {
         }
 
         let image = NSImage(size: canvasSize, flipped: false) { _ in
-            // 专用 SVG 已裁掉原图透明留白；系统符号仍沿用原来的 20pt 画布。
-            baseImage?.draw(in: NSRect(x: 1, y: 1, width: 20, height: 20))
+            // 画哪一块由 `baseDrawRect` 决定：系统符号与 Icon Duo 走 1pt 边距的
+            // 20pt 框，「App 图标」按 18pt 居中（它的留白在载入时已裁掉）。
+            baseImage?.draw(in: baseRect)
 
-            // 两种仪表盘样式已内置额度与健康点表达，不再叠加系统图标圆点。
+            // 自带完整图形的两种样式（App 图标设计稿、Icon Duo 仪表盘）不再叠加
+            // 通用状态圆点：设计稿没有给圆点留位置，Icon Duo 的边缘弧贴着画布。
             let shouldShowHealthDot = showsHealthDot && !iconStyle.isDashboardStyle
             if shouldShowHealthDot, let dotColor = statusDotColor(for: health, colors: healthColors) {
                 dotColor.setFill()
@@ -198,18 +199,94 @@ struct MenuBarLabel: View {
         colors.color(for: health)
     }
 
-    /// App 图标设计稿（llm-quota-730-2-dark.svg）：设置页 picker 预览使用。
-    /// SwiftPM 会把 .copy 资源打平到 bundle Resources 根目录，
-    /// 与 BrandLogo 同款查找方式；设计稿固有 1024×1024，归一到 22pt 画布与
-    /// 其他图标预览一致，矢量缩放不失真。加载失败返回 nil，由调用方兜底。
+    /// App 图标设计稿（llm-quota-730-2-dark.svg）：设置页 picker 预览与菜单栏图标使用。
+    /// SwiftPM 会把 .copy 资源打平到 bundle Resources 根目录，与 BrandLogo 同款查找方式。
+    ///
+    /// **载入时就裁掉透明留白**，而不是让每个调用方各自裁：设计稿的画布是 1024 见方，
+    /// 图形只占中间约 59%，四边各有几十点透明边距。谁按画布尺寸用它，谁的东西就跟着
+    /// 一起缩小 41%——菜单栏里那个图标只有 11.7pt（比旁边的系统符号小一圈），设置页
+    /// 那个固定 18pt 的预览框里更是只剩 10.5pt。在资源这一层裁一次，两个消费方
+    /// （菜单栏、picker 预览）拿到的就都是"图形本身"，谁缩放都不会再失真。
+    ///
+    /// 裁剪在 256px 栅格上做（≈6.5 万像素，一次性不到 1ms），精度约画布的 0.4%
+    /// （落到菜单栏 22pt 上是 0.09pt），细过任何显示设备能分辨的差别；结果按栅格
+    /// 比例裁剪位图而不是重画矢量，缩放质量不受影响。留不出不透明像素（全透明资源）
+    /// 或加载失败时原样返回，绝不返回一张空白图——那会让图标整个消失。
     static let appIconDesignImage: NSImage? = {
-        guard let url = Bundle.module.url(forResource: "llm-quota-730-2-dark", withExtension: "svg") else {
-            return nil
+        guard let url = Bundle.module.url(forResource: "llm-quota-730-2-dark", withExtension: "svg"),
+              let source = NSImage(contentsOf: url)
+        else { return nil }
+
+        let edge = 256
+        guard let context = CGContext(
+            data: nil, width: edge, height: edge,
+            bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return source }
+
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: false)
+        source.draw(in: NSRect(x: 0, y: 0, width: edge, height: edge))
+        NSGraphicsContext.restoreGraphicsState()
+
+        // `makeImage()` 必须**画完之后**才取：它快照的是上下文的当前内容，先取再画
+        // 得到的是一张全透明图，扫描会得出"没有不透明像素"→ 退回整幅画布，裁剪静默
+        // 失效（图标还是那么小，但没有任何报错）。
+        guard let rendered = context.makeImage(),
+              let data = rendered.dataProvider?.data,
+              let bytes = CFDataGetBytePtr(data)
+        else { return source }
+
+        let bytesPerRow = rendered.bytesPerRow
+        var minX = edge, maxX = -1, minY = edge, maxY = -1
+        for y in 0..<edge {
+            for x in 0..<edge where bytes[y * bytesPerRow + x * 4 + 3] > 8 {
+                minX = min(minX, x); maxX = max(maxX, x)
+                minY = min(minY, y); maxY = max(maxY, y)
+            }
         }
-        guard let image = NSImage(contentsOf: url) else { return nil }
-        image.size = NSSize(width: 22, height: 22)
+        guard maxX >= minX, maxY >= minY,
+              let cropped = rendered.cropping(to: CGRect(
+                  x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1
+              ))
+        else { return source }
+
+        let side = NSSize(width: 22, height: 22)
+        // 保留宽高比：设计稿今天是正方形，但"按栅格比例裁"不该顺手把非正方形的设计
+        // 拉成正方形。
+        let aspect = CGFloat(cropped.height) / CGFloat(cropped.width)
+        let image = NSImage(cgImage: cropped, size: aspect >= 1
+                            ? NSSize(width: side.width / aspect, height: side.height)
+                            : NSSize(width: side.width, height: side.width * aspect))
         return image
     }()
+
+    /// 「App 图标」在画布上的边长。
+    ///
+    /// 22pt（铺满画布）看着偏大，20pt（与系统符号同一个绘制框）又偏小，18pt 落在
+    /// Icon Duo 仪表盘（17.1pt）与旧的双环动态绘制（约 20pt）之间，是菜单栏里一排
+    /// 图标里不抢戏也不显小的那一档。定成一个常量而不是散在调用处：改一次就够，
+    /// 而且能与 `baseDrawRect` 的断言对齐。
+    static let appIconDesignDrawSide: CGFloat = 18
+
+    /// 菜单栏图标在画布上的**绘制矩形**（居中）。
+    ///
+    /// 「App 图标」按 `appIconDesignDrawSide` 居中放——它的留白已在资源加载时裁掉，
+    /// 这里的边长就是图形真实边长，不用再留出透明边距。系统符号与 Icon Duo 沿用
+    /// 1pt 边距的 20pt 框：SF Symbol 自带内边距（画出来的字形只占框的 70~78%），
+    /// Icon Duo 的 SVG 也是紧凑画布，两者都靠这个框把视觉尺寸压到 15~17pt。
+    static func baseDrawRect(for iconStyle: StatusBarIconStyle, canvas: CGFloat) -> CGRect {
+        let side: CGFloat
+        switch iconStyle {
+        case .quotaLogo: side = min(appIconDesignDrawSide, canvas)
+        case .iconDuo, .chartBar, .sparkles, .brain, .cpu: side = canvas - 2
+        }
+        return CGRect(
+            x: (canvas - side) / 2, y: (canvas - side) / 2,
+            width: side, height: side
+        )
+    }
 
     /// 完整 App 图标（icon-master.png，含圆角底与渐变背景）：主面板 header 使用。
     /// 与设计稿同样归一到 22pt 画布，由调用方按需缩放。源 PNG 为 1024px，但

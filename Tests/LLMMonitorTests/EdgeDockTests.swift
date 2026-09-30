@@ -856,6 +856,118 @@ final class EdgeDockTests: XCTestCase {
         )
     }
 
+    // MARK: - 多屏：屏幕身份与跨屏拖拽
+
+    func testMatchingIndexResolvesTheConfiguredScreen() {
+        // 副屏在左边 / 在右边两种排列都要能找到——UUID 与下标顺序无关。
+        let keys = ["PRIMARY", "LEFT", "RIGHT"]
+        XCTAssertEqual(EdgeDockDisplay.matchingIndex(preferred: "RIGHT", keys: keys), 2)
+        XCTAssertEqual(EdgeDockDisplay.matchingIndex(preferred: "LEFT", keys: ["LEFT", "PRIMARY"]), 0)
+    }
+
+    func testMatchingIndexTreatsUnsetOrVanishedScreenAsUnset() {
+        let keys = ["PRIMARY", "RIGHT"]
+        XCTAssertNil(EdgeDockDisplay.matchingIndex(preferred: nil, keys: keys), "没配过屏")
+        XCTAssertNil(
+            EdgeDockDisplay.matchingIndex(preferred: "", keys: keys),
+            "空串要当没配（手改 config.json 会写出这种值）"
+        )
+        XCTAssertNil(
+            EdgeDockDisplay.matchingIndex(preferred: "GONE", keys: keys),
+            "屏被拔掉时必须返回 nil，调用方据此把配置改写回落"
+        )
+        XCTAssertNil(EdgeDockDisplay.matchingIndex(preferred: "PRIMARY", keys: []))
+    }
+
+    @MainActor
+    func testEveryAttachedDisplayHasADistinctResolvableUUID() {
+        // 真正跑一遍 AppKit 那层（`NSScreen` 在纯逻辑测试里造不出来）：
+        // 每块屏都要拿得到 UUID，UUID 之间不能重复，且能按 UUID 反查回同一块屏。
+        // 重复会让两块屏互相匹配，dock 停在 A 屏却按 B 屏的 visibleFrame 定位。
+        let screens = NSScreen.screens
+        let uuids = screens.compactMap { EdgeDockDisplay.uuid(of: $0) }
+        XCTAssertEqual(uuids.count, screens.count, "每块屏都要有 UUID（拿不到说明拿不到 display id）")
+        XCTAssertEqual(Set(uuids).count, uuids.count, "不同显示器不能撞 UUID")
+        for (index, screen) in screens.enumerated() {
+            let uuid = uuids[index]
+            XCTAssertEqual(
+                EdgeDockDisplay.displayID(of: EdgeDockDisplay.matchingScreen(preferred: uuid, screens: screens)!),
+                EdgeDockDisplay.displayID(of: screen),
+                "按 UUID 反查必须回到同一块屏"
+            )
+        }
+        XCTAssertNil(EdgeDockDisplay.matchingScreen(preferred: "NO-SUCH-UUID", screens: screens))
+    }
+
+    func testCrossedIndexOnlySwitchesToADifferentDisplay() {
+        let main = CGRect(x: 0, y: 0, width: 1920, height: 1080)
+        let right = CGRect(x: 1920, y: 0, width: 2560, height: 1440)
+        let candidates: [(displayID: CGDirectDisplayID?, visibleFrame: CGRect)] = [
+            (1, main), (2, right)
+        ]
+        // 鼠标还在本屏内：不换。
+        XCTAssertNil(EdgeDockDisplay.crossedIndex(currentDisplayID: 1, mouse: CGPoint(x: 900, y: 500), candidates: candidates))
+        // 鼠标越过拼接边界：换到右边那块。
+        XCTAssertEqual(
+            EdgeDockDisplay.crossedIndex(currentDisplayID: 1, mouse: CGPoint(x: 2400, y: 500), candidates: candidates),
+            1
+        )
+        // 反向同理。
+        XCTAssertEqual(
+            EdgeDockDisplay.crossedIndex(currentDisplayID: 2, mouse: CGPoint(x: 900, y: 500), candidates: candidates),
+            0
+        )
+    }
+
+    func testCrossedIndexIgnoresMirroredCopiesOfTheSameDisplay() {
+        // 镜像屏两个 NSScreen 共享同一个 display id，visibleFrame 各是一半。
+        // 鼠标在镜像那半边时"换屏"只会把窗口挪到同一台显示器的另一面，
+        // 坐标系统一换位置就错了——必须判定为没越界。
+        let left = CGRect(x: 0, y: 0, width: 960, height: 1080)
+        let right = CGRect(x: 960, y: 0, width: 960, height: 1080)
+        let candidates: [(displayID: CGDirectDisplayID?, visibleFrame: CGRect)] = [
+            (7, left), (7, right)
+        ]
+        XCTAssertNil(EdgeDockDisplay.crossedIndex(currentDisplayID: 7, mouse: CGPoint(x: 1500, y: 500), candidates: candidates))
+    }
+
+    func testCrossedIndexStaysPutWhenTheCurrentScreenIsUnknown() {
+        // 认不出本屏 display id 时不敢换：换错的后果是 dock 消失在看不见的地方。
+        let candidates: [(displayID: CGDirectDisplayID?, visibleFrame: CGRect)] = [
+            (1, CGRect(x: 0, y: 0, width: 1920, height: 1080))
+        ]
+        XCTAssertNil(
+            EdgeDockDisplay.crossedIndex(currentDisplayID: nil, mouse: CGPoint(x: 500, y: 500), candidates: candidates)
+        )
+    }
+
+    func testScreenUUIDRoundTripsAndDefaultsToUnset() throws {
+        // 老配置没有这个字段：必须是"没指定"（跟随所在屏），而不是解码失败。
+        let legacy = #"{"mode":"statusWindow","edge":"left","offset":0.2}"#
+        XCTAssertNil(try JSONDecoder().decode(EdgeDockConfig.self, from: Data(legacy.utf8)).screenUUID)
+
+        let onSecond = EdgeDockConfig(mode: .statusWindow, edge: .top, offset: 0.2, screenUUID: "RIGHT-UUID")
+        let decoded = try JSONDecoder().decode(EdgeDockConfig.self, from: try JSONEncoder().encode(onSecond))
+        XCTAssertEqual(decoded.screenUUID, "RIGHT-UUID")
+        XCTAssertEqual(decoded.normalized.screenUUID, "RIGHT-UUID", "normalized 必须原样保留所在的屏")
+    }
+
+    func testSettingsSaveMustNotLoseTheConfiguredScreen() {
+        // 设置页只改形态/贴边/全屏，位置类字段一律沿用已存值。漏掉 screenUUID
+        // 的后果比漏掉 offset 更严重：用户在副屏上拖好的 dock 会被点一下"保存"
+        // 静默搬回主屏。
+        let stored = EdgeDockConfig(mode: .compactRings, edge: .bottom, offset: 0.42,
+                                    screenUUID: "SECOND", hideInFullscreen: false)
+        let rebuilt = EdgeDockConfig(
+            mode: stored.mode,
+            edge: stored.edge,
+            offset: stored.offset,
+            screenUUID: stored.screenUUID,
+            hideInFullscreen: stored.hideInFullscreen
+        )
+        XCTAssertEqual(rebuilt, stored)
+    }
+
     // MARK: - 形态（mode）：默认值、配置兼容与语义
 
     func testDefaultModeIsAutoHideWindow() {

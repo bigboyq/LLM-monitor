@@ -26,16 +26,28 @@ Icon Styles (`statusBarIconStyle`):
 - `sparkles` (`sparkles`)
 - `brain` (`brain.head.profile`)
 - `cpu` (`cpu.fill`)
-- `quotaLogo` (`App 图标` - classic dual-ring water gauge, the pre-1.9.0 style)
-- `iconDuo` (`Icon Duo` - live quota dashboard, the 1.9.0+ redesign)
+- `quotaLogo` (`App 图标` - the app icon design asset, no longer drawn at runtime)
+- `iconDuo` (`Icon Duo` - live quota dashboard)
 
-The classic `quotaLogo` style (`QuotaLogoSVGBuilder`) draws an outer weekly ring and an
-inner 5h ring, both growing counter-clockwise from 12 o'clock: a solid arc fills up to
-the minimum remaining and a 2-4 px ticked dashed arc extends to the average. The center
-is a water cup: the water height maps the 5h minimum remaining and the water color
-follows `waterHealth` (falling back to overall provider health when unset). Missing
-windows keep the legacy semantics and render as full rings / a full cup, unlike the
-`iconDuo` missing-window gray tracks.
+`quotaLogo` is a **static image**: the settings picker and the menu bar use the same
+`llm-quota-730-2-dark.svg` design asset, and nothing about health, quota levels or
+custom colors changes it. The asset's canvas is not its artwork — the drawing occupies
+only ~59% of it, so drawing it canvas-true would put a ~12pt icon in the menu bar.
+`MenuBarLabel.appIconDesignContentRect` rasterizes it once at 256px, scans the alpha
+channel for the tight bounding box, and `fittedContentRect` maps that box into the same
+20pt frame the SF Symbol styles use (aspect preserved, centered). The scan must call
+`CGContext.makeImage()` *after* drawing — it snapshots the context's current contents,
+so the reverse order yields a blank image, "no opaque pixels", and a silent fallback to
+the uncropped canvas. It used to be drawn at runtime by `QuotaLogoSVGBuilder` — an
+outer weekly ring plus an inner 5h ring growing counter-clockwise from 12 o'clock, with
+a water cup in the center whose height mapped the 5h minimum remaining and whose color
+followed `waterHealth`. At 20pt in the menu bar that drawing did not look like the
+icon the picker showed, which is the wrong answer to "I picked this icon": the two
+renderings drifted apart, and `waterHealth` existed only to feed it. Deleting the
+builder therefore also deleted `StatusBarQuotaMetrics.waterHealth` and
+`QuotaRingMetrics.colorHex` (the ring palette, read by nothing else) — the Icon Duo
+gauge resolves every color from `healthColors` through its own `colorLevel` rule, so
+neither was needed.
 
 The `iconDuo` dashboard (`IconDuoSVGBuilder`) uses a left 5h arc and right weekly arc, both being concentric
 circular arcs growing from the bottom with dark gray background tracks and health-colored
@@ -696,12 +708,54 @@ because a mouse-down landing on the dock is always observed first by one of the 
 monitors: captured dock → the event is delivered to our app → local monitor;
 pass-through dock → the event goes to the app below → global monitor.
 
-**The dock is pinned to the screen it is on.** `targetScreen` returns
-`panel.screen` when visible instead of `NSScreen.main`, which follows keyboard
-focus — on multi-display setups clicking any window on another screen used to
-relocate the whole dock there, reading as random drift. The trade-off is deliberate:
-a drag cannot carry the dock to another display (positioning always uses the current
-screen's `visibleFrame`); cross-display moves need persisted screen identity first.
+**The dock's display comes from config, not from focus.** `targetScreen` resolves in
+three layers, in this order:
+
+1. **`config.screenUUID`** — the display the user parked the dock on. This is the
+   only path onto a secondary display, and it is a *display UUID*
+   (`CGDisplayCreateUUIDFromDisplayID`), never a screen index or a coordinate:
+   `NSScreen.screens` order follows the "primary display" setting and the
+   arrangement, and two same-resolution displays have identical geometry, so both
+   would let the dock move by itself. The UUID survives re-plugging, changing ports
+   and rearranging displays. (`CGDirectDisplayID` would not — it is re-enumerated
+   per boot.)
+2. **`panel.screen`** — the fallback when no display is configured, i.e. exactly the
+   pre-multi-display behaviour. `NSScreen.main` is *not* usable here: it follows
+   keyboard focus, so clicking any window on another screen used to relocate the
+   whole dock, reading as random drift.
+3. **Main screen, then the first screen** — start-up, before any window exists.
+
+Layer 2 verifies that `panel.screen` is still in `NSScreen.screens` (compared by
+display id): reconfiguring or unplugging a display replaces the `NSScreen` object, and
+computing a `visibleFrame` from an object that no longer belongs to a display parks
+the dock somewhere invisible.
+
+**A vanished display is resolved, not remembered.** `dropScreenUUIDIfVanished` runs
+at the top of `reconcile` — before anything reads `targetScreen`, so the same pass
+already positions the dock — and clears `screenUUID` when no attached display
+carries it. Falling back *in memory* would be worse than not recording it: the UUID
+in `config.json` would point at a display that no longer exists forever, and every
+launch would redo the "cannot resolve, guess the main screen" dance. Clearing it
+restores layer 2, the only semantics that survive the display being gone.
+
+**Dragging across displays.** `dragVisibleFrame` asks which display the *cursor* is
+on, not how far it is from an edge: two adjacent displays share a single boundary
+and the cursor sitting on it counts as inside both, so a distance comparison
+oscillates. Two conditions must both hold, and the mirror-display case is the reason
+the first is not optional — mirrored displays share one display id but have
+different `visibleFrame` coordinate spaces, so switching "screens" there would place
+the dock at a wrong position on the same physical display. When the current display
+id cannot be read at all, no switch happens: a wrong switch is invisible to the user,
+who then has no idea why their dock left.
+
+`offset` is a ratio along the current screen's edge, so it survives a display
+switch as the same *relative* position — dragging a centred dock to the next display
+leaves it centred, which is what a drag means here.
+
+**UUID lookups are memoised.** `CGDisplayCreateUUIDFromDisplayID` costs ~15µs (one
+WindowServer round trip) and `targetScreen` is consulted on every drag event.
+`EdgeDockDisplay` caches by display id for the lifetime of a boot and prunes on
+`didChangeScreenParametersNotification`.
 
 **Drag must be event-driven, never timer-driven.** The capture timer runs at
 `capturePollInterval` (0.2s) because it exists to answer "is the mouse still over

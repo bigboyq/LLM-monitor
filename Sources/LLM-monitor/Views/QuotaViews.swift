@@ -1079,19 +1079,39 @@ private struct CombinedQuotaMetadataLine: View {
     let secondaryPercent: Double
     let secondaryTimeFraction: Double?
     let resetsAt: Date?
+    /// dock 详情浮层才把三个读数聚到行尾；菜单侧维持"百分比在行首、时间在行尾"。
+    @Environment(\.hoverRevealMode) private var revealMode
+
+    /// 是否把百分比与重置时间**作为一组靠右**。
+    ///
+    /// - dock 详情浮层：是。两个百分比回答"还剩多少"，重置时间回答"什么时候换
+    ///   一轮"，三者挤在行尾一簇；开头的 model 名与它们之间的空档把"这是谁的条"
+    ///   和"还剩多少"分成两半。
+    /// - 菜单栏弹出：否。百分比在行首、重置时间推到行尾——那里两个问题本来就分属
+    ///   两端，靠到一处会被读成"5h 那一格的时间"，而这一行的名字由标题行写了，
+    ///   行首不需要让位给它。
+    ///
+    /// 判据是 `hoverRevealMode` 而不是"有没有 model 名"：同一批行视图在两侧复用，
+    /// 形态由环境说了算，别让对齐去猜调用方传了什么。
+    private var clustersAtTrailingEdge: Bool {
+        ProviderCardLayout.liftsProgressBar(mode: revealMode)
+    }
 
     var body: some View {
         HStack(spacing: 6) {
             QuotaRowModelName(name: name)
-            Spacer(minLength: 12)
-            // 百分比与重置时间**一起靠右**：两个百分比回答"还剩多少"，重置时间回答
-            // "什么时候换一轮"，三者是同一组右侧读数，挤在行尾一簇。名字在行首，
-            // 中间的空档把"这是谁的条"和"还剩多少"分成两半。
+            if clustersAtTrailingEdge {
+                Spacer(minLength: 12)
+            }
             HStack(spacing: 6) {
                 quotaValue(label: primaryLabel, percent: primaryPercent, timeFraction: primaryTimeFraction)
                 quotaValue(label: secondaryLabel, percent: secondaryPercent, timeFraction: secondaryTimeFraction)
             }
-            .frame(width: quotaCombinedDataColumnWidth, alignment: .trailing)
+            .frame(width: quotaCombinedDataColumnWidth,
+                   alignment: clustersAtTrailingEdge ? .trailing : .leading)
+            if !clustersAtTrailingEdge {
+                Spacer(minLength: 12)
+            }
             ResetTimeSummary(resetsAt: resetsAt)
         }
     }
@@ -1115,11 +1135,19 @@ private struct SingleQuotaMetadataLine: View {
     let label: String
     let percent: Double
     let resetsAt: Date?
+    /// 同 `CombinedQuotaMetadataLine`：dock 详情浮层聚在行尾，菜单侧分居两端。
+    @Environment(\.hoverRevealMode) private var revealMode
+
+    private var clustersAtTrailingEdge: Bool {
+        ProviderCardLayout.liftsProgressBar(mode: revealMode)
+    }
 
     var body: some View {
         HStack(spacing: 6) {
             QuotaRowModelName(name: name)
-            Spacer(minLength: 12)
+            if clustersAtTrailingEdge {
+                Spacer(minLength: 12)
+            }
             HStack(spacing: 4) {
                 Text(label)
                     .font(MenuTypography.dataLabel)
@@ -1129,7 +1157,11 @@ private struct SingleQuotaMetadataLine: View {
                     .foregroundStyle(summaryColor(for: percent))
                     .frame(width: 40, alignment: .trailing)
             }
-            .frame(width: quotaSingleDataColumnWidth, alignment: .trailing)
+            .frame(width: quotaSingleDataColumnWidth,
+                   alignment: clustersAtTrailingEdge ? .trailing : .leading)
+            if !clustersAtTrailingEdge {
+                Spacer(minLength: 12)
+            }
             ResetTimeSummary(resetsAt: resetsAt)
         }
     }

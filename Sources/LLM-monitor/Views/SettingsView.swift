@@ -352,7 +352,7 @@ struct SettingsView: View {
                 }
             }
 
-            SettingsSection(title: "状态栏图标", footer: "可自定义正常、预警、异常三种状态颜色；系统图标使用状态圆点。App 图标为经典双环水位样式：外环周额度、内环 5 小时额度（实线充盈到最低剩余量、虚线延伸到平均值，逆时针绘制），中心水位映射 5 小时最低剩余与警报颜色。Icon Duo 为额度仪表盘：左右弧线显示 5 小时与周额度，中心扇形按最低剩余比例动态显示 0～360°，底部三个套餐状态点与顶部节能状态圆点。") {
+            SettingsSection(title: "状态栏图标", footer: "可自定义正常、预警、异常三种状态颜色；系统图标使用状态圆点。App 图标直接使用设计稿（与下面的预览同一张图），是固定图片，不随额度与健康度变化。Icon Duo 为额度仪表盘：左右弧线显示 5 小时与周额度，中心扇形按最低剩余比例动态显示 0～360°，底部三个套餐状态点与顶部节能状态圆点。") {
                 VStack(alignment: .leading, spacing: 16) {
                     SettingsControlRow("图标主题") {
                         Picker("", selection: $statusBarIconStyle) {
@@ -417,7 +417,7 @@ struct SettingsView: View {
 
             SettingsSection(
                 title: "边缘状态窗",
-                footer: "在屏幕边缘常驻一个小型圆环窗，每个已启用的 Provider 一个双环圆——外环是 5 小时额度剩余比例，内环是周额度剩余比例（各取该 Provider 内最吃紧的套餐），中心是品牌图标，环的颜色沿用上方状态栏三色。鼠标默认穿透不挡点击，移上去才接管；悬停在某个圆环上会在旁边展开与主菜单相同的 Provider 卡片，移开鼠标收起。可直接拖到任意边缘，位置会记住——贴靠哪一边由拖动决定，这里没有下拉框。下拉框选的是 dock 在屏幕上的**形态**，四选一；全屏时是否隐藏是另一件事，单独一个开关。"
+                footer: "在屏幕边缘常驻一个小型圆环窗，每个已启用的 Provider 一个双环圆——外环是 5 小时额度剩余比例，内环是周额度剩余比例（各取该 Provider 内最吃紧的套餐），中心是品牌图标，环的颜色沿用上方状态栏三色。鼠标默认穿透不挡点击，移上去才接管；悬停在某个圆环上会在旁边展开与主菜单相同的 Provider 卡片，移开鼠标收起。可直接拖到任意边缘、任意一块显示器上，位置会记住——贴靠哪一边、停在哪块屏都由拖动决定，这里没有下拉框（屏的拔出会让 dock 自动回到主屏）。下拉框选的是 dock 在屏幕上的**形态**，四选一；全屏时是否隐藏是另一件事，单独一个开关。"
             ) {
                 VStack(alignment: .leading, spacing: 16) {
                     SettingsControlRow("形态") {
@@ -1078,14 +1078,15 @@ struct SettingsView: View {
         config.statusBarHealthColors = statusBarHealthColors == .default
             ? nil
             : statusBarHealthColors
-        // 边缘窗：位置（edge + 归一化 offset）由拖拽实时写盘，这里只带形态、
-        // 贴边方向与全屏隐藏，offset 沿用已存的值，避免在设置页点一下
-        // "保存"就把用户拖好的位置抹回中间。
+        // 边缘窗：位置（edge + 归一化 offset + 所在屏 UUID）由拖拽实时写盘，这里只
+        // 带形态、贴边方向与全屏隐藏，其余沿用已存的值——否则在设置页点一下"保存"
+        // 就会把用户拖好的位置抹回中间、把 dock 从副屏拽回主屏。
         let existingEdgeDock = configStore.config.edgeDock
         let nextEdgeDock = EdgeDockConfig(
             mode: edgeDockMode,
             edge: edgeDockEdge,
             offset: existingEdgeDock?.offset ?? EdgeDockConfig.default.offset,
+            screenUUID: existingEdgeDock?.screenUUID,
             hideInFullscreen: edgeDockHideInFullscreen
         )
         let defaultEdgeDock = EdgeDockConfig.default

@@ -35,8 +35,9 @@ enum StatusBarIconStyle: String, Codable, Sendable, CaseIterable, Identifiable {
         }
     }
 
-    /// 两种 SVG 仪表盘样式均为自包含图标，内部已表达健康度，不再叠加
-    /// 通用右下角状态圆点。
+    /// 自带完整图形的两种样式：App 图标（固定设计稿）与 Icon Duo（额度仪表盘），
+    /// 都不叠加通用右下角状态圆点——设计稿没给圆点留位置，Icon Duo 的边缘弧贴着
+    /// 画布，圆点只会压在图形上。
     var isDashboardStyle: Bool {
         self == .quotaLogo || self == .iconDuo
     }

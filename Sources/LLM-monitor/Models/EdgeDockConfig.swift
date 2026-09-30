@@ -114,6 +114,15 @@ struct EdgeDockConfig: Codable, Equatable, Sendable {
     /// `visibleFrame`，存绝对坐标会让窗口直接掉到屏幕外且再也无法拖回来。
     var offset: Double
 
+    /// 停在**哪块屏**上：那块屏的 display UUID（见 `EdgeDockDisplay`）。
+    ///
+    /// nil = 没指定，dock 跟随"当前所在屏"（未显示时是主屏）——这是本字段加入之前
+    /// 的全部行为，保留为默认值是升级不改动的保证。
+    ///
+    /// 存 UUID 而不是下标 / 几何位置：下标跟屏幕排列走、几何位置在同分辨率双屏上
+    /// 压根区分不开，两样都会让 dock 在用户没动它的时候跑掉。
+    var screenUUID: String?
+
     /// 前台 App 进入全屏时隐藏 dock。默认 **true** = 维持既有行为。
     ///
     /// 独立于 `mode`：它是"什么时候让路"，不是"dock 长什么样"，两者正交——
@@ -128,16 +137,18 @@ struct EdgeDockConfig: Codable, Equatable, Sendable {
         mode: EdgeDockMode = .default,
         edge: DockEdge,
         offset: Double,
+        screenUUID: String? = nil,
         hideInFullscreen: Bool = true
     ) {
         self.mode = mode
         self.edge = edge
         self.offset = offset
+        self.screenUUID = screenUUID
         self.hideInFullscreen = hideInFullscreen
     }
 
     enum CodingKeys: String, CodingKey {
-        case mode, edge, offset, hideInFullscreen
+        case mode, edge, offset, screenUUID, hideInFullscreen
     }
 
     /// 自定义 decode 只为一件事：`mode` 与 `hideInFullscreen` 是后加字段，旧
@@ -164,6 +175,9 @@ struct EdgeDockConfig: Codable, Equatable, Sendable {
         }
         edge = try container.decode(DockEdge.self, forKey: .edge)
         offset = try container.decode(Double.self, forKey: .offset)
+        // 后加字段：缺失 = 没指定屏 = 旧行为（跟随所在屏）。这里**不做**"从几何
+        // 位置反推是哪块屏"的兼容——猜错的代价是 dock 静默跑掉，比继续跟随更糟。
+        screenUUID = try container.decodeIfPresent(String.self, forKey: .screenUUID)
         // 后加字段，缺省 true 保持旧配置的行为不变。
         hideInFullscreen = try container.decodeIfPresent(Bool.self, forKey: .hideInFullscreen) ?? true
     }
@@ -190,6 +204,7 @@ struct EdgeDockConfig: Codable, Equatable, Sendable {
             mode: mode,
             edge: edge,
             offset: offset.isFinite ? min(max(offset, 0), 1) : 0.5,
+            screenUUID: screenUUID,
             hideInFullscreen: hideInFullscreen
         )
     }
