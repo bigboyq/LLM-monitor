@@ -12,8 +12,9 @@ import SwiftUI
 ///    `healthEvaluationDate`（高峰边界时钟）。少接一个就是一片永远不变的假窗口。
 /// 2. **鼠标接管**：`ignoresMouseEvents = true` 的窗口**收不到** tracking area 事件，
 ///    所以悬停探测必须走系统级 `addGlobalMonitorForEvents`。`hoveredIndex`（命中哪个圆）
-///    是唯一真值，dock 接管状态与圆的 hover 高亮由它驱动；详情 popover 由
-///    `selectedIndex`（**点击**选中的圆）驱动。
+///    是唯一真值，dock 接管状态、圆的 hover 高亮、以及详情 popover 挂哪个圆
+///    全部由它驱动（`selectedIndex` 滞后于它一个 `hoverOpenDelay`，见
+///    `scheduleSelection`）。
 /// 3. **位置存比例**：见 `EdgeDockConfig.offset`。
 @MainActor
 final class EdgeDockController: ObservableObject {
@@ -27,8 +28,13 @@ final class EdgeDockController: ObservableObject {
     private static let hoverPadding: CGFloat = 12
     /// 接管后的巡检间隔，兼作拖拽期间的松手检测。
     private static let capturePollInterval: TimeInterval = 0.2
-    /// 按下后位移超过这么多 pt 才算拖动；以内松手视为**点击**（展开/收起详情）。
+    /// 按下后位移超过这么多 pt 才算拖动；以内松手视为"没拖动"，不做任何事
+    /// （详情跟随 hover，按钮本身没有点击语义）。
     private static let dragThreshold: CGFloat = 4
+    /// 悬停某一行后延迟这么久才展开详情。dock 是**常驻**在屏幕边缘的，鼠标
+    /// 朝边缘扫过去（拖东西到边上、翻页）会频繁路过它，即时展开就是一路闪卡片。
+    /// 这一小段延迟把"路过"和"停下来看"分开。
+    private static let hoverOpenDelay: TimeInterval = 0.15
     /// 鼠标离开保持区后延迟这么久才收起；期间鼠标回来则取消。误划过边缘
     /// （一次性往返）不该把 dock 收掉再长出来闪一遍。
     private static let collapseDelay: TimeInterval = 0.5
@@ -62,14 +68,19 @@ final class EdgeDockController: ObservableObject {
 
     /// 当前 hover 到的圆下标；nil = 没有 hover 任何圆。
     ///
-    /// 单一真值：视图里圆的 hover 高亮、鼠标是否保持接管读这一个值。
-    /// 详情 popover **不再**由它驱动——hover 只高亮，详情看 `selectedIndex`。
+    /// 单一真值：视图里圆的 hover 高亮、鼠标是否保持接管、详情挂哪个圆，
+    /// 读的都是这一个值。
     @Published private(set) var hoveredIndex: Int?
 
-    /// 点击选中的圆下标；nil = 没有展开的详情卡片。
+    /// 已展开详情的圆下标；nil = 没有展开的详情卡片。
     ///
-    /// 点击某个圆 = 展开它的卡片（已展开同一个则收起），点击内边距空白 = 收起。
-    /// 卡片钉在原地直到鼠标离开 dock 与卡片区域，hover 其他圆只高亮不换卡。
+    /// 悬停某个圆 = 展开它的卡片，移开鼠标 = 收起。**不再由点击驱动**：点击留着
+    /// 只做拖动，按下即起候选、松手时位移不过阈值就当无事发生。
+    ///
+    /// 相比 `hoveredIndex` 滞后 `hoverOpenDelay`（竖着扫过一列圆时，每个圆都
+    /// 重新计时，扫过去就不会依次展开又收起每张卡）；鼠标压在卡片上时维持原值
+    /// 不变，那是同一张卡的延续。真正的清理由 `releaseMouseCapture` 在离开整个
+    /// 保持区后统一做。
     @Published private(set) var selectedIndex: Int?
 
     /// 自动隐藏模式下是否处于**展开**形态。非自动隐藏模式下恒为 false 且无意义
@@ -94,7 +105,7 @@ final class EdgeDockController: ObservableObject {
 
     private var panel: NSPanel?
     private var hostingView: NSHostingView<AnyView>?
-    /// 点击某个圆时在旁边展示的 provider 卡片 popover。与 dock 是**两个独立窗口**，
+    /// 悬停某个圆时在旁边展示的 provider 卡片 popover。与 dock 是**两个独立窗口**，
     /// dock 尺寸不因它改变。
     private var popoverPanel: NSPanel?
     private var popoverHostingView: NSHostingView<AnyView>?
@@ -127,6 +138,8 @@ final class EdgeDockController: ObservableObject {
     /// Space 切换后阶梯式补测全屏的挂起任务。见 `scheduleFullscreenRechecks`。
     private var fullscreenRetryWorkItems: [DispatchWorkItem] = []
     private var collapseWorkItem: DispatchWorkItem?
+    /// 挂起的「展开某行详情」任务，见 `scheduleSelection`。
+    private var pendingSelectionWorkItem: DispatchWorkItem?
     /// 形态过渡进行中标记 + 到期解除任务：期间标准过渡（刷新广播等）不得碰
     /// 窗口 frame——按动画中间态帧重算并 setFrame 会打断正在播放的窗口动画，
     /// 表现为半途抽一下。
@@ -145,17 +158,6 @@ final class EdgeDockController: ObservableObject {
     ///
     /// 坐标系换算由控制器统一做，视图只报自己的矩形 —— 视图不该知道屏幕的存在。
     private var measuredRowRectsByID: [String: CGRect] = [:]
-    /// 详情浮层里**已展开**的 model 分组（按 `displayedModels` 的下标）。
-    ///
-    /// 状态放在控制器而不是视图的 `@State` 里：卡片的点击由 `handleMouseEvent`
-    /// 做命中判定驱动，视图自己收不到点击（见 `ensurePopoverPanel` 的说明），
-    /// `@State` 没有第二个写入口。
-    @Published private var expandedDetailGroups: Set<Int> = []
-    /// 「用量明细」折叠头的实测矩形（视图坐标系），按下标索引。
-    private var detailDisclosureRects: [Int: CGRect] = [:]
-    /// 上一次渲染浮层时的 `selectedIndex`。切换 provider 时用它判断"换卡片了"，
-    /// 见 `updatePopover`。
-    private var lastPopoverIndex: Int?
     /// 本帧命中实际采用的来源，切换时写日志。
     ///
     /// 这一行日志是有意加的：实测路径一旦失效（例如坐标系换算错了），界面表现为
@@ -285,7 +287,6 @@ final class EdgeDockController: ObservableObject {
         spaceObserver = nil
         statusCancellable?.cancel()
         evaluationCancellable?.cancel()
-        configCancellable?.cancel()
         hidePopover()
         panel?.orderOut(nil)
     }
@@ -326,6 +327,7 @@ final class EdgeDockController: ObservableObject {
         // 拖动不走系统的自由移动：窗口位置由 `applyDrag` 按鼠标直接驱动，
         // 始终钉在贴靠边上（见该方法说明）。
         panel.isMovableByWindowBackground = false
+        panel.acceptsMouseMovedEvents = true
         // 默认完全穿透：常驻在屏幕边缘也绝不挡用户点下面的东西。
         panel.ignoresMouseEvents = true
 
@@ -390,6 +392,7 @@ final class EdgeDockController: ObservableObject {
                 shown: false,
                 frame: .zero
             )
+            // 隐藏路径**永远**清：不是"鼠标离开"，是"没有 dock 了"。
             releaseMouseCapture()
             // 隐藏即解除形态过渡守卫，窗口不再有动画需要保护。
             cancelFormMorphGuard()
@@ -436,9 +439,8 @@ final class EdgeDockController: ObservableObject {
         // 重启隐式动画，dock 会跟着每一次广播轻微抽动。显隐与位置都由 frame 决定，
         // 帧相同且已可见 = 一切照旧。
         if panel.isVisible, panel.frame == target {
-            // 例外：钉住的详情卡片内容是创建那一刻的快照，数据刷新后必须重摆一次，
-            // 否则"点开卡片读数"读到的永远是旧值——点击触发后卡片开得比 hover 久，
-            // 这个陈旧窗口从可忽略变成了必现。
+            // 例外：展开着的详情卡片内容是创建那一刻的快照，数据刷新后必须重摆
+            // 一次，否则读到的永远是旧值。
             if selectedIndex != nil { updatePopover() }
             return
         }
@@ -523,7 +525,7 @@ final class EdgeDockController: ObservableObject {
             MainActor.assumeIsolated { self?.handleMouseEvent(event.type) }
         }
 
-        // 本 app 在前台时的兜底（面板是非激活的，理论上不会走到，但留着更稳）。
+        // 本 app 在前台或命中本应用面板时的事件监听。
         localMouseMonitor = NSEvent.addLocalMonitorForEvents(
             matching: [.mouseMoved, .leftMouseDown, .leftMouseDragged, .leftMouseUp]
         ) { [weak self] event in
@@ -536,9 +538,6 @@ final class EdgeDockController: ObservableObject {
     private func handleMouseEvent(_ type: NSEvent.EventType) {
         switch type {
         case .leftMouseDown:
-            // 卡片里的「用量明细」先判：它和圆环不在同一个窗口上，而下面的拖拽
-            // 分支只看 dock 的 frame，两者互不重叠，所以不会互相抢。
-            if toggleDetailGroup(at: NSEvent.mouseLocation) { return }
             // 只有按在 dock 本身上才起拖；按在 popover 上不应该把圆环拖走。
             // isVisible：隐藏路径只 orderOut，frame 还留着旧位置——全屏 / 关开关
             // 期间点到那个位置，不该把看不见的 dock 拖走再把新位置写进配置。
@@ -553,8 +552,6 @@ final class EdgeDockController: ObservableObject {
                 dragEntryCount = orderedEntries().count
                 pressScreenLocation = NSEvent.mouseLocation
                 pressBecameDrag = false
-                // 不在这里收起详情：松手时若无位移，这次按压就是"点开/收起详情"；
-                // 真拖动会在越过阈值那一刻收起。
             }
         case .leftMouseUp:
             finishPressOrDrag(at: NSEvent.mouseLocation)
@@ -589,44 +586,36 @@ final class EdgeDockController: ObservableObject {
         applyDrag(at: mouse)
     }
 
-    /// 松手的统一收尾：无位移 = 点击（切换详情），有位移 = 拖动（吸附 + 记住位置）。
-    /// 命中「用量明细」折叠头则切换该分组的展开状态，返回是否命中。
-    private func toggleDetailGroup(at point: CGPoint) -> Bool {
-        let rects = resolvedDetailDisclosureRects()
-        guard let index = rects.first(where: { $0.value.contains(point) })?.key else { return false }
-        if expandedDetailGroups.contains(index) {
-            expandedDetailGroups.remove(index)
-        } else {
-            expandedDetailGroups.insert(index)
+    /// 展开某行的详情，经 `hoverOpenDelay` 延迟。
+    ///
+    /// 换行就换任务：鼠标竖着扫过一列圆时，每个圆都重新计时，于是"扫过去"不会
+    /// 依次展开又收起每张卡；停在哪，哪张才展开。任务到点时再复核一次
+    /// `hoveredIndex`——延迟期间鼠标可能已经移走或移到了别的圆上。
+    private func scheduleSelection(_ index: Int) {
+        cancelPendingSelection()
+        let work = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.hoveredIndex == index, self.selectedIndex != index else { return }
+                self.selectedIndex = index
+                self.updatePopover()
+            }
         }
-        updatePopover()
-        return true
+        pendingSelectionWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.hoverOpenDelay, execute: work)
     }
 
+    private func cancelPendingSelection() {
+        pendingSelectionWorkItem?.cancel()
+        pendingSelectionWorkItem = nil
+    }
+
+    /// 松手的统一收尾：有位移 = 拖动（吸附 + 记住位置），无位移 = 保持现状（悬停模式由鼠标位置驱动）。
     private func finishPressOrDrag(at mouse: CGPoint) {
         guard isDragging else { return }
         isDragging = false
-        if !pressBecameDrag {
-            // 点击。命中行在**松手时**判定（此时布局必然是最终的）：命中某个圆 =
-            // 切换它的详情（同一个则收起），命中内边距空白 = 收起当前详情。
-            if let row = hitRowIndex(at: mouse) {
-                selectedIndex = (selectedIndex == row) ? nil : row
-            } else {
-                selectedIndex = nil
-            }
-            updatePopover()
-            return
-        }
+        guard pressBecameDrag else { return }
         reconcile(animated: true)
         persistPosition()
-    }
-
-    /// 屏幕坐标 → 命中行下标（复用 hover 的同一套实测矩形 + 几何兜底）。
-    private func hitRowIndex(at mouse: CGPoint) -> Int? {
-        guard let panel else { return nil }
-        let entries = orderedEntries()
-        let rows = resolvedRowRects(entries: entries, panelFrame: panel.frame)
-        return Self.rowIndex(at: mouse, measured: rows)
     }
 
     /// 每帧巡检鼠标：决定命中哪个圆、要不要接管、popover 挂在哪。
@@ -646,7 +635,7 @@ final class EdgeDockController: ObservableObject {
 
         // 简版（自动隐藏的收起形态）：靠近即整体展开，不做逐行 hover——
         // 简版的圆只有 14pt，逐行命中在这个尺寸下只会抖；"dock 长出来"
-        // 本身就是对这个靠近动作的回应。点击详情 / hover 高亮都只在
+        // 本身就是对这个靠近动作的回应。逐行 hover（高亮 + 详情）都只在
         // 展开形态里发生。
         if isCompactAppearance {
             if inDock {
@@ -656,8 +645,8 @@ final class EdgeDockController: ObservableObject {
                 // 的位置、黑条连续长出。窗口瞬时先行 / 事后补缩都会在两种帧的
                 // 中心差上跳一下（同一 offset 下完整帧与简版帧中心不重合）。
                 reconcile(animated: true, transition: .expand)
-                // 详情卡片需要一次点击才会出现，而点击必然发生在展开完成之后，
-                // 这里不需要为动画中间态做任何补摆。
+                // 展开完成后接管巡检接管鼠标，`probeMouse` 会按新的行矩形补上
+                // 悬停命中，详情跟着一起出来；这里不需要为动画中间态做任何补摆。
             }
             return
         }
@@ -668,15 +657,25 @@ final class EdgeDockController: ObservableObject {
         let rows = resolvedRowRects(entries: entries, panelFrame: panel.frame)
         let newIndex = inDock ? Self.rowIndex(at: mouse, measured: rows) : nil
 
-        // hover 只驱动高亮，不再换卡：详情卡片钉在 `selectedIndex` 上，鼠标划过
-        // 别的圆时卡片不动，只有点击才切换——否则"点击触发"会在一次点击后退化
-        // 回"悬停换卡"。
         if newIndex != hoveredIndex {
             hoveredIndex = newIndex
             logInfo(
                 "EdgeDock: hover -> \(Self.describe(newIndex)) "
                 + "rows=\(rows.count) 来源=\(rowRectsSource.rawValue)"
             )
+        }
+
+        // 详情**跟随 hover**。两个方向要区别对待：
+        //
+        // - 压在卡片上（`inPopover`）时不改选中：鼠标从环移到卡片上的那一段
+        //   `newIndex` 必然变成 nil，跟着它清就把正在读的卡片抽走了。
+        //   dock 与卡片的容差区在缝隙里重叠（2×12 > popoverGap 10），所以这里
+        //   出现的是"仍在接管区、但不在环上"，由下面 0.5s 的收起宽限兜底。
+        // - `newIndex == nil` 时**不**主动清空：鼠标滑到黑条内边距、或从环移向
+        //   卡片时都会经过这种状态，立刻收卡等于不给反应。真正的清理由
+        //   `releaseMouseCapture` 在离开整个保持区后统一做。
+        if !inPopover, let newIndex, newIndex != selectedIndex {
+            scheduleSelection(newIndex)
         }
 
         // 鼠标在任一窗口的**视觉范围**（窗口 frame + 容差）内都保持接管。
@@ -783,23 +782,6 @@ final class EdgeDockController: ObservableObject {
         return best.index
     }
 
-    /// 视图逐行直报自己的实测矩形（视图坐标系）。
-    /// 视图上报「用量明细」折叠头的实测矩形（视图坐标系）。
-    ///
-    /// 换算到屏幕坐标放在**读取时**（`resolvedDetailDisclosureRects`），和
-    /// `resolvedRowRects` 同一个理由：浮层每次出现都可能被重摆到别的位置，
-    /// "上报时就换算"会留下上一个位置的陈旧矩形。
-    func updateDetailDisclosureRect(index: Int, rect: CGRect) {
-        guard detailDisclosureRects[index] != rect else { return }
-        detailDisclosureRects[index] = rect
-    }
-
-    /// 本帧用于命中的折叠头矩形（屏幕坐标）。
-    private func resolvedDetailDisclosureRects() -> [Int: CGRect] {
-        guard let hosting = popoverHostingView, popoverPanel?.isVisible == true else { return [:] }
-        return detailDisclosureRects.mapValues { convertToScreen($0, in: hosting) }
-    }
-
     func updateMeasuredRowRect(id: String, rect: CGRect) {
         guard measuredRowRectsByID[id] != rect else { return }
         measuredRowRectsByID[id] = rect
@@ -863,14 +845,14 @@ final class EdgeDockController: ObservableObject {
         logInfo("EdgeDock: 命中来源 -> \(source.rawValue) measured=\(measuredRowRectsByID.count)")
     }
 
-    /// 视图坐标（y 向下，原点左上）→ 窗口坐标 → 屏幕坐标（y 向上）。
+    /// 视图坐标（y 向下，原点左上，来自 SwiftUI geo.frame(in: .global)）→ 屏幕坐标（y 向上，原点屏幕左下）。
     private func convertToScreen(_ rect: CGRect, in view: NSView) -> CGRect {
-        let inWindow = view.convert(rect, to: nil)
-        guard let window = view.window else { return inWindow }
-        // NSWindow 没有 rect 版 convert，用点转换 + 保留尺寸（窗口不缩放）。
+        guard let window = view.window else { return rect }
         return CGRect(
-            origin: window.convertPoint(toScreen: inWindow.origin),
-            size: inWindow.size
+            x: window.frame.minX + rect.minX,
+            y: window.frame.maxY - rect.minY - rect.height,
+            width: rect.width,
+            height: rect.height
         )
     }
     private func captureMouse() {
@@ -884,6 +866,9 @@ final class EdgeDockController: ObservableObject {
         // 释放已由其它路径发生（隐藏 / 拆卸 / 本任务的触发点），挂起的延时收起
         // 一律作废，避免它在稍后凭空再跑一遍释放。
         cancelPendingCollapse()
+        // 挂起的展开同样作废：鼠标已经离开保持区，0.15s 后再凭空展开一张卡
+        // 读起来是"鼠标不在、卡片在"。
+        cancelPendingSelection()
         guard isMouseCaptured || hoveredIndex != nil || selectedIndex != nil else { return }
         isMouseCaptured = false
         captureTimer?.invalidate()
@@ -892,17 +877,15 @@ final class EdgeDockController: ObservableObject {
         if hoveredIndex != nil {
             hoveredIndex = nil
         }
-        // 详情跟随接管一起结束：鼠标都离开了 dock 与卡片，钉住的卡片没有
-        // 继续显示的理由（点击触发 ≠ 点开后永不关闭）。
         if selectedIndex != nil {
             selectedIndex = nil
+            updatePopover()
         }
-        updatePopover()
     }
 
     // MARK: - Provider 卡片 popover
 
-    /// 展示 / 收起**点击选中**的 provider 卡片。
+    /// 展示 / 收起**当前悬停**的 provider 卡片。
     ///
     /// 直接复用菜单里的 `ProviderCardView(status:)`，与主菜单那一屏**逐字同源**，
     /// 不另写一套轻量版 —— 两份"看起来一样的卡片"必然漂移。
@@ -927,16 +910,6 @@ final class EdgeDockController: ObservableObject {
             return
         }
 
-        // 展开状态和矩形都按 `displayedModels` 的**下标**索引，而每个 provider 的
-        // model 列表完全不同。点另一个圆环切卡片时走的是同一条路径（不经过
-        // `hidePopover`），所以必须在这里比对下标：漏了这一步，"Antigravity 第 2 组
-        // 展开"会原样落到下一个 provider 的第 2 组上。
-        if lastPopoverIndex != index {
-            lastPopoverIndex = index
-            if !expandedDetailGroups.isEmpty { expandedDetailGroups.removeAll() }
-            if !detailDisclosureRects.isEmpty { detailDisclosureRects.removeAll() }
-        }
-
         let visibleFrame = Self.targetScreen.visibleFrame
         let (popover, hosting) = ensurePopoverPanel()
         let backdrop = EdgeDockTheme.popoverPadding
@@ -958,16 +931,7 @@ final class EdgeDockController: ObservableObject {
         /// 位置会跳。固定宽度才和菜单那一屏看起来是同一个东西。
         @ViewBuilder
         func card() -> some View {
-            ProviderCardView(
-                status: status,
-                expandedDetailGroups: Binding(
-                    get: { [weak self] in self?.expandedDetailGroups ?? [] },
-                    set: { [weak self] newValue in self?.expandedDetailGroups = newValue }
-                ),
-                onMeasureDisclosure: { [weak self] index, rect in
-                    self?.updateDetailDisclosureRect(index: index, rect: rect)
-                }
-            )
+            ProviderCardView(status: status)
                 .frame(width: cardContentWidth)
                 .padding(backdrop)
                 .edgeDockPopoverSystemMaterialBackground()
@@ -992,29 +956,22 @@ final class EdgeDockController: ObservableObject {
             )
         }
 
-        popover.setFrame(
-            EdgeDockGeometry.popoverFrame(
-                size: CGSize(width: width, height: height),
-                dockFrame: panel.frame,
-                rowIndex: index,
-                edge: config.edge,
-                visibleFrame: visibleFrame
-            ),
-            display: true
+        let targetFrame = EdgeDockGeometry.popoverFrame(
+            size: CGSize(width: width, height: height),
+            dockFrame: panel.frame,
+            rowIndex: index,
+            edge: config.edge,
+            visibleFrame: visibleFrame
         )
+
+        popover.setFrame(targetFrame, display: true)
+        hosting.layoutSubtreeIfNeeded()
         popover.orderFrontRegardless()
     }
 
-    /// 收起详情窗。收回点击穿透**再** `orderOut`：
-    /// `orderOut` 只是把窗口藏起来，命中测试不再命中它，但万一之后有人漏了
-    /// 一次 `orderFront`（比如异常路径），一个看不见却仍吃点击的窗口最难查。
+    /// 收起详情窗。
     private func hidePopover() {
-        popoverPanel?.ignoresMouseEvents = true
         popoverPanel?.orderOut(nil)
-        // 展开状态和矩形都按下标索引，跨 provider 不通用：换一个 provider 就必须
-        // 清空，否则"第 1 组展开"会落到另一个 provider 的第 1 组头上。
-        if !expandedDetailGroups.isEmpty { expandedDetailGroups.removeAll() }
-        if !detailDisclosureRects.isEmpty { detailDisclosureRects.removeAll() }
     }
 
     /// popover 内容**跟随系统外观** + 折叠区常展。
@@ -1028,14 +985,10 @@ final class EdgeDockController: ObservableObject {
     /// `glassEffect` 按面板外观解析），结果是"内容按浅色画、底板按深色画"——
     /// 比不改更糟。
     ///
-    /// `hoverRevealMode = .alwaysVisible`：这个浮层本身就是"用户主动点击某个圆"
+    /// `hoverRevealMode = .alwaysVisible`：这个浮层本身就是"鼠标悬停在某个圆上"
     /// 才出现的详情，**靠鼠标移开来收起**而不是靠移出某个区域。里面再藏一层
     /// "悬停才展开"等于要求一个正在被移开的窗口被悬停 —— 那些 section 永远
     /// 展不开，等于整段信息静默丢失。
-    ///
-    /// 真正的点击交互（第二组 model 的「用量明细」展开/收起）靠的是**接管鼠标**，
-    /// 见 `ensurePopoverPanel` 里 `ignoresMouseEvents` 那段：两者的区别是
-    /// "收不到 hover" 与 "收得到点击"，前者必须靠常展，后者只要窗口在屏上。
     private func popoverContent<C: View>(_ content: C) -> some View {
         content
             .environment(\.hoverRevealMode, .alwaysVisible)
@@ -1065,23 +1018,6 @@ final class EdgeDockController: ObservableObject {
         // **不设** appearance：材质按系统外观解析，和菜单弹出保持一致。dock 那边
         // 是相反的（钉 vibrantDark + 强制 dark colorScheme），两者刻意不同——dock
         // 常驻，popover 跟菜单走。
-        // **保持完全穿透**，卡片的点击不走这里。
-        //
-        // 这是**故意**设的，不是能力限制：`ignoresMouseEvents` 控制的是"这个窗口
-        // 参不参与命中测试"，true = 整个窗口对鼠标透明，点击原样穿到下层。菜单栏
-        // 常驻的透明小窗、以及任何桌面悬浮件都用它。dock 尤其需要：它常驻在屏幕
-        // 边缘还带着 padding，如果它吃点击，用户在屏幕边上点任何东西都会被它拦下。
-        //
-        // 试过改成 `false` 让卡片里的 SwiftUI `Button` 直接响应——**没有生效**，
-        // 点击仍然什么都不发生。至于**为什么**没生效，我没有验证过：非激活面板
-        // （`.nonactivatingPanel` + accessory app 不抢焦点）里的 SwiftUI 交互是否
-        // 需要窗口成为 key、还是命中区域算错、还是别的原因，这里说不准。
-        // 所以这条注释只记观察到的结果，不记猜测的成因。
-        //
-        // 当前实现不依赖那个未知原因：点击一律由 `handleMouseEvent` 拿
-        // `NSEvent.mouseLocation` 做命中判定，和圆环的点击完全同源——dock 从来
-        // 没用过 SwiftUI Button。代价是这次点击**同时**落到卡片后面的 App 上，
-        // 那是穿透窗口的固有行为，不是新引入的。
         popover.ignoresMouseEvents = true
 
         let hosting = NSHostingView(rootView: AnyView(EmptyView()))

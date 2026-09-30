@@ -719,6 +719,7 @@ final class EdgeDockTests: XCTestCase {
         XCTAssertTrue(onDecoded.normalized.hideInFullscreen)
     }
 
+
     func testFullscreenHidingRespectsTheToggle() {
         // 策略本身：探测到全屏 + 开关开着 → 隐藏；开关关掉 → 一律不隐藏。
         // 这两行曾经散在控制器四个 guard 里各写一次，任何一处漏掉都不会编译报错。
@@ -760,6 +761,7 @@ final class EdgeDockTests: XCTestCase {
         let nan = EdgeDockConfig(enabled: true, edge: .right, offset: .nan)
         XCTAssertEqual(nan.normalized.offset, 0.5)
     }
+
 
     func testDefaultEdgeDockIsDisabled() {
         // 新装用户不该在升级后凭空多出一个贴边窗口。
@@ -1886,4 +1888,5 @@ final class EdgeDockTests: XCTestCase {
         let waySmaller = CGRect(x: 0, y: 0, width: 800, height: 600)
         XCTAssertFalse(waySmaller.insetBy(dx: -FullscreenProbe.coverageTolerance, dy: -FullscreenProbe.coverageTolerance).contains(screen))
     }
+
 }

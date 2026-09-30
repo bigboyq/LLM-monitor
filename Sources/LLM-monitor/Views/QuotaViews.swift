@@ -12,11 +12,6 @@ struct ChatGPTPlanModelRow: View {
     /// 夹在进度条块与三列统计之间的卡片级信息（重置卡、高峰期），见
     /// `ModelQuotaDockBlock.between`。只有第一个 model 行会拿到非空值。
     var between: AnyView = AnyView(EmptyView())
-    /// 第二个及以后的 model 行把三列明细默认折叠，见
-    /// `ModelQuotaDockBlock.collapsibleGroupIndex`。菜单侧不读这两个参数。
-    var collapsibleGroupIndex: Int? = nil
-    var expandedGroups: Binding<Set<Int>>? = nil
-    var onMeasureDisclosure: ((Int, CGRect) -> Void)? = nil
     /// dock 详情浮层把进度条提到标题上方；菜单保持原顺序（见 `CombinedQuotaWindowRow`）。
     @Environment(\.hoverRevealMode) private var revealMode
 
@@ -63,10 +58,7 @@ struct ChatGPTPlanModelRow: View {
                     missingUsageIsLoading: true
                 ),
                 footnote: EmptyView(),
-                between: between,
-                collapsibleGroupIndex: collapsibleGroupIndex,
-                expandedGroups: expandedGroups,
-                onMeasureDisclosure: onMeasureDisclosure
+                between: between
             )
         } else if hasPrimaryWindow {
             ModelQuotaDockBlock(
@@ -89,10 +81,7 @@ struct ChatGPTPlanModelRow: View {
                     missingUsageIsLoading: true
                 ),
                 footnote: EmptyView(),
-                between: between,
-                collapsibleGroupIndex: collapsibleGroupIndex,
-                expandedGroups: expandedGroups,
-                onMeasureDisclosure: onMeasureDisclosure
+                between: between
             )
         } else if hasSecondaryWindow {
             ModelQuotaDockBlock(
@@ -115,10 +104,7 @@ struct ChatGPTPlanModelRow: View {
                     missingUsageIsLoading: true
                 ),
                 footnote: EmptyView(),
-                between: between,
-                collapsibleGroupIndex: collapsibleGroupIndex,
-                expandedGroups: expandedGroups,
-                onMeasureDisclosure: onMeasureDisclosure
+                between: between
             )
         } else {
             Text("额度窗口不可用")
@@ -470,11 +456,6 @@ struct CombinedQuotaWindowRow: View {
     /// 夹在进度条块与三列统计之间的卡片级信息（重置卡、高峰期），见
     /// `ModelQuotaDockBlock.between`。只有第一个 model 行会拿到非空值。
     var between: AnyView = AnyView(EmptyView())
-    /// 第二个及以后的 model 行把三列明细默认折叠，见
-    /// `ModelQuotaDockBlock.collapsibleGroupIndex`。菜单侧不读这两个参数。
-    var collapsibleGroupIndex: Int? = nil
-    var expandedGroups: Binding<Set<Int>>? = nil
-    var onMeasureDisclosure: ((Int, CGRect) -> Void)? = nil
     /// dock 详情浮层把进度条提到标题上方；菜单保持原顺序。
     @Environment(\.hoverRevealMode) private var revealMode
 
@@ -527,10 +508,7 @@ struct CombinedQuotaWindowRow: View {
                     showsLastPromptColumn: shouldShowLastPrompt
                 ),
                 footnote: offPeakFootnote,
-                between: between,
-                collapsibleGroupIndex: collapsibleGroupIndex,
-                expandedGroups: expandedGroups,
-                onMeasureDisclosure: onMeasureDisclosure
+                between: between
             )
         } else if model.hasIntervalWindow {
             ModelQuotaDockBlock(
@@ -554,10 +532,7 @@ struct CombinedQuotaWindowRow: View {
                     showsLastPromptColumn: shouldShowLastPrompt
                 ),
                 footnote: offPeakFootnote,
-                between: between,
-                collapsibleGroupIndex: collapsibleGroupIndex,
-                expandedGroups: expandedGroups,
-                onMeasureDisclosure: onMeasureDisclosure
+                between: between
             )
         } else if model.hasWeeklyWindow {
             ModelQuotaDockBlock(
@@ -581,10 +556,7 @@ struct CombinedQuotaWindowRow: View {
                     showsLastPromptColumn: shouldShowLastPrompt
                 ),
                 footnote: offPeakFootnote,
-                between: between,
-                collapsibleGroupIndex: collapsibleGroupIndex,
-                expandedGroups: expandedGroups,
-                onMeasureDisclosure: onMeasureDisclosure
+                between: between
             )
         } else {
             Text("额度窗口不可用")
@@ -906,34 +878,12 @@ struct ModelQuotaDockBlock<Bar: View, Columns: View, Footnote: View>: View {
     /// 传递会把整条链都染上类型参数，而这里只需要"一段不透明的内容"。
     /// 有默认值，所以三处 menu 调用点不用改。
     var between: AnyView = AnyView(EmptyView())
-    /// 把三列明细折叠成一条可点击的标题行。传分组下标（`nil` = 不折叠）。
-    ///
-    /// 只给**第二个及以后的** model 行开（Antigravity 两条条、ChatGPT 多套餐同理）：
-    /// 第一个条上方的卡片级信息（重置卡、高峰期）和它下面的明细是同一组信息的两面，
-    /// 展开着才读得完整；而第二个条已经是补充，展开后要多占一百多 pt，
-    /// 浮层高度直接被它顶到要滚动。
-    var collapsibleGroupIndex: Int? = nil
-    /// 展开状态由控制器持有（点击不在这里判定，见
-    /// `EdgeDockController.ensurePopoverPanel`），所以是 binding 而不是 `@State`。
-    var expandedGroups: Binding<Set<Int>>? = nil
-    /// 上报折叠头矩形的回调。`nil`（菜单侧）时只是不画折叠交互，不影响其余排版。
-    var onMeasureDisclosure: ((Int, CGRect) -> Void)? = nil
-
-    private var isColumnsExpanded: Bool {
-        guard let collapsibleGroupIndex, let expandedGroups else { return true }
-        return expandedGroups.wrappedValue.contains(collapsibleGroupIndex)
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             bar
             between
-            if let collapsibleGroupIndex {
-                columnsDisclosure(index: collapsibleGroupIndex)
-            } else {
-                columnDivider
-                columns
-            }
+            columnDivider
+            columns
             footnote
         }
     }
@@ -945,37 +895,6 @@ struct ModelQuotaDockBlock<Bar: View, Columns: View, Footnote: View>: View {
     @ViewBuilder
     private var columnDivider: some View {
         Divider().opacity(0.45).padding(.vertical, 3)
-    }
-
-    private func columnsDisclosure(index: Int) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 4) {
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 8, weight: .bold))
-                    .rotationEffect(.degrees(isColumnsExpanded ? 90 : 0))
-                Text("用量明细")
-                    .font(MenuTypography.hoverRowEmphasis)
-                Spacer(minLength: 0)
-            }
-            .foregroundStyle(.secondary)
-            // 命中判定在控制器那边做（和圆环同一套），这里只负责把矩形报上去。
-            // **不能**用 SwiftUI `Button`：详情浮层是完全穿透的窗口，收不到点击，
-            // 写在 SwiftUI 里的按钮不报错也不置灰，只是永远按不动。
-            .background {
-                GeometryReader { geo in
-                    Color.clear
-                        .onAppear { onMeasureDisclosure?(index, geo.frame(in: .global)) }
-                        .onChange(of: geo.frame(in: .global)) { _, rect in
-                            onMeasureDisclosure?(index, rect)
-                        }
-                }
-            }
-
-            if isColumnsExpanded {
-                columnDivider
-                columns
-            }
-        }
     }
 }
 

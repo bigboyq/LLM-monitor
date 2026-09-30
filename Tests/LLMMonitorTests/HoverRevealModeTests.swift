@@ -105,6 +105,8 @@ final class HoverRevealModeTests: XCTestCase {
         )
     }
 
+
+
     // MARK: - helpers
 
     /// dock 浮层里卡片内容区的宽度（`EdgeDockTheme.popoverWidth` 减去两侧背板内边距）。

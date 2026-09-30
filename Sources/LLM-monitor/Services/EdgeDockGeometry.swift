@@ -63,13 +63,13 @@ enum EdgeDockGeometry {
     // 所以各项都明显小于完整版；贴边方向总厚度 = 14 + 3×2 = 20pt。
 
     /// 简版单环直径（pt）。
-    static let compactDiameter: CGFloat = 12
+    static let compactDiameter: CGFloat = 7
     /// 简版相邻两环的间距（pt）。
-    static let compactSpacing: CGFloat = 10
+    static let compactSpacing: CGFloat = 8
     /// 简版的内边距（pt）。
-    static let compactPadding: CGFloat = 8
+    static let compactPadding: CGFloat = 7
     /// 简版环线宽（pt）。
-    static let compactRingLineWidth: CGFloat = 3
+    static let compactRingLineWidth: CGFloat = 2.5
 
     /// 按条目数量算出贴边状态下窗口的尺寸。
     ///

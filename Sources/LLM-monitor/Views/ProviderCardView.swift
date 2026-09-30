@@ -127,11 +127,6 @@ struct ProviderCardView: View, Equatable {
     /// 这一层的两侧，所以提出成常量，避免两处各写一个 12 改一漏一。
     static let contentPadding: CGFloat = 12
 
-    /// 转发给 `QuotaSummary` 的两个可选项，语义见那里的注释。菜单侧为 nil。
-    var expandedDetailGroups: Binding<Set<Int>>? = nil
-    var onMeasureDisclosure: ((Int, CGRect) -> Void)? = nil
-
-
     // nonisolated：View 结构体因 View 协议推断为 @MainActor，而 Equatable 的 ==
     //  witnesses 必须可从任意隔离域调用；status 是 Sendable 值类型，非隔离比较安全。
     nonisolated static func == (lhs: ProviderCardView, rhs: ProviderCardView) -> Bool {
@@ -688,13 +683,6 @@ struct QuotaSummary: View {
     /// dock：夹在「进度条块」与「三列统计」之间的卡片级信息（重置卡、高峰期），
     /// 由 `ProviderCardView.dockBody` 组装。菜单不传，默认空。
     var betweenBarAndColumns: AnyView = AnyView(EmptyView())
-    /// dock 详情浮层里已展开的 model 分组。展开状态由 `EdgeDockController` 持有：
-    /// 那一侧是**控制器**在判点击（浮层是完全穿透的窗口，视图收不到点击），
-    /// 菜单侧没有这个概念，默认 nil 让菜单那边一行都不用改。
-    var expandedDetailGroups: Binding<Set<Int>>? = nil
-    /// 折叠头的实测矩形上报。浮层是 `.nonactivatingPanel`，点击不激活 app，
-    /// SwiftUI 自己的 Button 按不动，只能把矩形交回控制器做命中判定。
-    var onMeasureDisclosure: ((Int, CGRect) -> Void)? = nil
     /// dock 详情浮层把高峰期倒计时提到卡片头部；菜单保持它在余额行里。
     @Environment(\.hoverRevealMode) private var revealMode
 
@@ -719,20 +707,13 @@ struct QuotaSummary: View {
                 // 它讲的是这个 provider 的整体情况，不是每个 model 一份；跟着每个
                 // model 重复一次会读成"每个 model 各有一组重置卡"。
                 let between = index == 0 ? betweenBarAndColumns : AnyView(EmptyView())
-                // 第一个 model 行的明细常展开（它和条、重置卡是同一组信息的两面）；
-                // 第二个及以后默认折叠，否则 Antigravity 这类双条 provider 会把
-                // 浮层顶到上百 pt 之外、必须滚动才看得全。
-                let collapsibleGroupIndex: Int? = index > 0 ? index : nil
                 if Self.shouldUseChatGPTPlanRow(providerKind: providerKind, model: model) {
                     ChatGPTPlanModelRow(
                         model: model,
                         usageDetails: info.codexUsageDetails,
                         localSamples: localSamples,
                         tint: accentColor(for: model),
-                        between: between,
-                        collapsibleGroupIndex: collapsibleGroupIndex,
-                        expandedGroups: expandedDetailGroups,
-                        onMeasureDisclosure: onMeasureDisclosure
+                        between: between
                     )
                 } else if Self.shouldUseDeepseekBalanceRow(providerKind: providerKind, model: model) {
                     DeepseekBalanceRow(
@@ -753,10 +734,7 @@ struct QuotaSummary: View {
                         providerKind: providerKind,
                         localSamples: localSamples,
                         excludeWindows: excludeWindows,
-                        between: between,
-                        collapsibleGroupIndex: collapsibleGroupIndex,
-                        expandedGroups: expandedDetailGroups,
-                        onMeasureDisclosure: onMeasureDisclosure
+                        between: between
                     )
                 }
 
