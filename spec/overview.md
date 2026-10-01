@@ -323,7 +323,7 @@ independent GPT pricing rules are not affected. All price data lives in the bund
 at startup (entries evaluated in array order, first hit wins; parse failures crash
 loudly because the file is a developer-controlled, test-guarded resource). The
 catalog records its update date in
-`ModelPricingCatalog.lastUpdated` (currently `2026-09-23`, read from the JSON). Codex local events keep
+`ModelPricingCatalog.lastUpdated` (currently `2026-10-01`, read from the JSON). Codex local events keep
 the model from `turn_context` so GPT-5.6 / GPT-6 variants can be priced separately.
 
 The main provider card footer also shows today's token total, cache hit rate, and

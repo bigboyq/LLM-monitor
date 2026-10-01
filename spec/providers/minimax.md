@@ -32,7 +32,7 @@ This provider covers two distinct data sources:
 | Local R/T | `COUNT(*)` rounds + `COUNT(DISTINCT turn_id)` turns, computed in SQL (no cross-source join) |
 | Local reasoning | 字符比例分摊 `output_tokens` — 从 `session_messages.thinking_content` + `msg_content` 字符数按 `R/(R+C)` 比例分摊账单 output。守恒 `reason + realOutput == output`。 |
 | SQLite read strategy | `SQLITE_OPEN_READWRITE` + `busy_timeout(300)` + `extended_result_codes(1)`, fallback to `/tmp/{uuid}.db` copy on CANTOPEN(14) / BUSY(5) |
-| Models | M3（`minimax/MiniMax-M3`，99.97% of data）；定价目录仅支持 M3 及以上 —— M2 系列（M2.7 / M2.5 / M2.1）已退休，其历史用量显示"未定价"（有意行为） |
+| Models | M3（`minimax/MiniMax-M3`，99.97% of data）；定价目录仅支持 M3 及以上 —— M2 系列（M2.7 / M2.5 / M2.1）已退休，其历史用量显示"未定价"（有意行为）。M3.1 Flash 系列（ZCode 的真实 model_id 是 `MiniMax-M3.1-Flash-Preview`）有独立条目（关键字 `3.1-flash`，contains，与 M3 同价 ¥2.1/¥0.42/¥8.4），且该条目必须排在 `m3` 条目**之前** —— 否则 "首条命中" 会让 M3.1 Flash 落到 M3 条目上 |
 | Reasoning tokens | **来源**: M3 / M2.7 当前按 `session_messages.thinking_content` 字符数比例分摊 `output_tokens` 出来(账单层 `reasoning_tokens` 永远是 0)。未来切到 thinking model 时,scanner 自动切到 `raw.reasoning` 字段直接用。 |
 | Cross-provider hover | Shared `SevenDayTokenUsageHoverView<Daily: LocalUsageDaily>` + `LocalUsageFooterView<Daily>` — Antigravity / Codex / Minimax / OpenCode all use the same SwiftUI view with field-level adapters |
 

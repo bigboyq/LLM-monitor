@@ -1,8 +1,17 @@
 {
-  "lastUpdated": "2026-09-30",
+  "lastUpdated": "2026-10-01",
   "providers": {
     "minimax": {
       "models": [
+        {
+          "match": "contains",
+          "keywords": ["3.1-flash"],
+          "label": "MiniMax-M3.1 Flash",
+          "currency": "CNY",
+          "inputPerMillion": 2.1,
+          "cacheReadPerMillion": 0.42,
+          "outputPerMillion": 8.4
+        },
         {
           "match": "contains",
           "keywords": ["m3"],
