@@ -139,7 +139,11 @@ struct ProviderCardView: View, Equatable {
 
     /// 卡片内容层四周的内边距。`EdgeDockTheme.popoverWidth` 推导宽度时要加上
     /// 这一层的两侧，所以提出成常量，避免两处各写一个 12 改一漏一。
-    static let contentPadding: CGFloat = 12
+    ///
+    /// `nonisolated`：View 结构体因 View 协议推断为 @MainActor，而这个常量要被
+    /// 非隔离的 `EdgeDockTheme`（几何推导）读。值是编译期字面量、无隔离状态依赖，
+    /// 声明成非隔离即可——Swift 6 下原写法只是一条 warning，Swift 7 会变成 error。
+    nonisolated static let contentPadding: CGFloat = 12
 
     // nonisolated：View 结构体因 View 协议推断为 @MainActor，而 Equatable 的 ==
     //  witnesses 必须可从任意隔离域调用；status 是 Sendable 值类型，非隔离比较安全。

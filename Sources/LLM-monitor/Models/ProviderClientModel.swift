@@ -292,7 +292,7 @@ struct ClientUsageContribution: Equatable, Sendable {
     ) {
         self.clientID = clientID
         self.displayName = displayName
-        let unifiedDaily = dailyTokenUsage.map(UnifiedDailyTokenUsage.init)
+        let unifiedDaily = dailyTokenUsage.map { UnifiedDailyTokenUsage($0) }
         self.recentSamples = recentSamples
         self.dailyTokenUsage = UnifiedDailyUsageNormalizer.includingCurrentDay(
             dailyTokenUsage: unifiedDaily,

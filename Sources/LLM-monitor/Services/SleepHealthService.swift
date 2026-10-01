@@ -28,15 +28,19 @@ final class SleepHealthService: ObservableObject, SleepHealthReporting {
     /// 递增代际号：后台评估完成回主线程时校验，避免慢的旧结果覆盖新结果
     private var refreshGeneration = 0
 
-    private let now: () -> Date
-    private let assertionProbe: () throws -> [SleepAssertionSnapshot]
-    private let powerConfigProbe: () throws -> PowerConfigSnapshot?
+    /// 三个后台闭包（时钟 + 两个探针）必须是 `@Sendable`：`refreshNow()` 把它们
+    /// 捕获进 `Task.detached` 这一非隔离任务，Swift 6 语言模式下非 Sendable 捕获
+    /// 会被判为 sending 数据竞争（`Task.detached` 处直接编译失败）。
+    /// 反过来若它们只是普通闭包，后台线程调用时没有任何隔离检查兜底。
+    private let now: @Sendable () -> Date
+    private let assertionProbe: @Sendable () throws -> [SleepAssertionSnapshot]
+    private let powerConfigProbe: @Sendable () throws -> PowerConfigSnapshot?
 
     init(
-        now: @escaping () -> Date = { Date() },
-        assertionProbe: (() throws -> [SleepAssertionSnapshot])? = nil,
-        powerConfigProbe: (() throws -> PowerConfigSnapshot?)? = nil,
-        pmsetCustomReader: (() throws -> String)? = nil
+        now: @escaping @Sendable () -> Date = { Date() },
+        assertionProbe: (@Sendable () throws -> [SleepAssertionSnapshot])? = nil,
+        powerConfigProbe: (@Sendable () throws -> PowerConfigSnapshot?)? = nil,
+        pmsetCustomReader: (@Sendable () throws -> String)? = nil
     ) {
         self.now = now
         self.assertionProbe = assertionProbe ?? Self.defaultAssertionProbe
@@ -211,7 +215,10 @@ final class SleepHealthService: ObservableObject, SleepHealthReporting {
     /// - 断言 ID "AssertionId" / "AssertId"
     /// - 创建时间 "CreationDate"（旧 kIOPMAssertionCreationTimeKey）/ 实测键 "AssertStartWhen"
     /// - 级别 "AssertLevel"（kIOPMAssertionLevelKey），255 = kIOPMAssertionLevelOn
-    private static func defaultAssertionProbe() throws -> [SleepAssertionSnapshot] {
+    /// `nonisolated`：这些系统探针要作为 `@Sendable` 闭包在 detached 任务里调用。
+    /// 若沿用类上的 `@MainActor` 隐式隔离，函数引用在赋给闭包变量时隔离会被静默
+    /// 抹掉——编译能过，实际却在后台线程执行，无人检查。
+    nonisolated private static func defaultAssertionProbe() throws -> [SleepAssertionSnapshot] {
         var byPIDRef: Unmanaged<CFDictionary>?
         let status = IOPMCopyAssertionsByProcess(&byPIDRef)
         guard status == 0, let byPID = byPIDRef?.takeRetainedValue() as? [AnyHashable: Any] else {
@@ -264,7 +271,7 @@ final class SleepHealthService: ObservableObject, SleepHealthReporting {
     }
 
     /// 优先调用 IOPMCopyPMPreferences() 读取原生电源配置，失败则降级为 pmset -g custom
-    private static func defaultPowerConfigProbe() throws -> PowerConfigSnapshot? {
+    nonisolated private static func defaultPowerConfigProbe() throws -> PowerConfigSnapshot? {
         if let unmanaged = IOPMCopyPMPreferences() {
             let dict = unmanaged.takeRetainedValue() as NSDictionary
             if let swiftDict = dict as? [AnyHashable: Any],
@@ -277,7 +284,7 @@ final class SleepHealthService: ObservableObject, SleepHealthReporting {
     }
 
     /// ProcessRunner 执行 /usr/bin/pmset -g custom（只读、免 sudo）并返回 stdout（备用兜底）
-    private static func defaultPmsetCustomRead() throws -> String {
+    nonisolated private static func defaultPmsetCustomRead() throws -> String {
         let result = try ProcessRunner.run(
             executable: URL(fileURLWithPath: "/usr/bin/pmset"),
             arguments: ["-g", "custom"],

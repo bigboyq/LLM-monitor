@@ -427,7 +427,11 @@ final class AppState: ObservableObject {
         // 自动定时节拍不受影响：两条循环仍各自独立运行。
         await withTaskGroup(of: Void.self) { group in
             for providerID in providerIDs {
-                group.addTask { @MainActor [self, providerID] in
+                // 刻意不写 `@MainActor` 闭包属性：Swift 6.4 的 region isolation
+                // 检查器处理不了 `@MainActor [capture list]` 这个组合，会直接吐
+                // "Please file a bug" 并中断整段检查。子任务的 MainActor 隔离由
+                // 下面 await 跨 actor 调用点保证，语义不变。
+                group.addTask { [self, providerID] in
                     await self.refreshProviderFully(providerID: providerID, jobToken: token)
                 }
             }
@@ -462,8 +466,8 @@ final class AppState: ObservableObject {
             .map(\.id)
         await withTaskGroup(of: Void.self) { group in
             for providerID in providerIDs {
-                group.addTask { @MainActor [self, providerID] in
-                    guard self.refreshScheduler.isCurrentJob(token) else { return }
+                group.addTask { [self, providerID] in
+                    guard await self.refreshScheduler.isCurrentJob(token) else { return }
                     _ = await self.refreshScheduler.runRefresh(
                         providerID,
                         mode: .full,
