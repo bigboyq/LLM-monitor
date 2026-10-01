@@ -937,6 +937,88 @@ final class EdgeDockTests: XCTestCase {
         XCTAssertEqual(decoded.normalized.screenUUID, "RIGHT-UUID", "normalized 必须原样保留所在的屏")
     }
 
+    /// 设置页保存**不得**把用户拖出来的贴边方向退回。
+    ///
+    /// 这条驱动的是**真的保存路径**（`SettingsView.saveAndApply` → 落盘 → 重读
+    /// config.json），不是"照着生产代码的写法再拼一遍 struct"——后者只会断言
+    /// 一句同义反复，生产代码改了它照样绿。
+    ///
+    /// ⚠️ 它验的是**保存那一刻读的是配置、不是某个 `@State`**，而不是"开窗时
+    /// `@State` 读到了什么"：测试里这个 `SettingsView` 从未进入渲染层，而 SwiftUI
+    /// 的 `@State` 写入在未渲染的视图上会被丢弃——所以 `loadCurrentConfig()` 那一步
+    /// 在这里其实没留下任何状态。对本条**无害**（要抓的正是"保存时用了 view 上的
+    /// 陈旧值"），但别把它当成对加载路径的覆盖。
+    ///
+    /// 生产里的复现时序：设置窗口开着，用户把 dock 拖到另一条边
+    /// （`EdgeDockController.persistConfig` 立刻改写 config.json），再回设置页点
+    /// "保存"。贴边方向**曾经**是开窗时读进 `edgeDockEdge` 这个 `@State`、保存时
+    /// 原样写回的——于是刚拖出来的位置被悄悄退回。`offset` / `screenUUID` 当时
+    /// 已经是"保存这一刻现读"，只有 `edge` 漏了。
+    ///
+    /// 登录项那条支路在这里不会被打到：`SettingsSaveTransaction` 只在"请求值 ≠
+    /// 当前值"时才调 `updateLoginItem`，本测试两边都是 false。
+    @MainActor
+    func testSettingsSaveDoesNotRevertAnEdgeChosenByDragging() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("llm-edgedock-save-\(UUID().uuidString)", isDirectory: true)
+        let store = ConfigStore(configURL: root.appendingPathComponent("config.json"))
+        let state = AppState(descriptors: [], configStore: store)
+
+        // 1) 用户此前把 dock 拖到了下边、并且停在副屏上。
+        // 用 store 现有的 config 当基底（`AppConfig` 写了 `init(from:)`，成员构造器
+        // 已被抑制），只改 edgeDock。
+        var seeded = store.config
+        seeded.edgeDock = EdgeDockConfig(
+            mode: .compactRings, edge: .bottom, offset: 0.42,
+            screenUUID: "SECOND", hideInFullscreen: true
+        )
+        try store.applyAndSave(seeded)
+
+        // 2) 设置窗口打开：形态等字段被读进 @State。
+        let view = SettingsView(
+            configStore: store,
+            loginItemService: LoginItemService(),
+            state: state,
+            descriptors: []
+        )
+        view.loadCurrentConfig()
+
+        // 3) 窗口开着的时候，用户又把 dock 拖到了左边。控制器在松手时立刻落盘。
+        var afterDrag = store.config
+        afterDrag.edgeDock = EdgeDockConfig(
+            mode: .compactRings, edge: .left, offset: 0.42,
+            screenUUID: "SECOND", hideInFullscreen: true
+        )
+        try store.applyAndSave(afterDrag)
+
+        // 4) 用户回设置页点"保存"——形态/全屏开关没动过。
+        try await view.saveAndApply()
+
+        let saved = store.config.effectiveEdgeDockConfig
+        XCTAssertEqual(
+            saved.edge, .left,
+            "保存不得把拖拽改出来的贴边方向退回 bottom"
+        )
+        XCTAssertEqual(saved.offset, 0.42, accuracy: 0.0001, "沿边位置也不该被动")
+        XCTAssertEqual(saved.screenUUID, "SECOND", "所在屏不该被动")
+    }
+
+    func testSettingsSaveMustNotLoseTheConfiguredScreen() {
+        // 纯模型层的补充断言：设置页只带 `mode` 与 `hideInFullscreen`（那两个真有
+        // 控件），位置类三兄弟必须来自保存这一刻的配置。端到端的路径由
+        // `testSettingsSaveDoesNotRevertAnEdgeChosenByDragging` 守。
+        let afterDrag = EdgeDockConfig(mode: .compactRings, edge: .left, offset: 0.42,
+                                       screenUUID: "SECOND", hideInFullscreen: false)
+        let rebuilt = EdgeDockConfig(
+            mode: afterDrag.mode,
+            edge: afterDrag.edge,
+            offset: afterDrag.offset,
+            screenUUID: afterDrag.screenUUID,
+            hideInFullscreen: afterDrag.hideInFullscreen
+        )
+        XCTAssertEqual(rebuilt, afterDrag)
+    }
+
     /// `screenUUID` 的**消费端**机制必须对真实屏幕列表成立。
     ///
     /// 这个 bug 的形状很典型：`screenUUID` 被拖拽写入、被设置页小心保留、还被

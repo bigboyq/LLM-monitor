@@ -41,6 +41,16 @@ enum StatusBarIconStyle: String, Codable, Sendable, CaseIterable, Identifiable {
     var isDashboardStyle: Bool {
         self == .quotaLogo || self == .iconDuo
     }
+
+    /// 该样式是否真的消费额度指标（`StatusBarQuotaMetrics`）。
+    ///
+    /// 目前只有 Icon Duo 仪表盘读它：`quotaLogo` 已改成固定设计稿（见
+    /// `MenuBarLabel`），四种系统符号只有颜色随健康度变。这条让 `RenderSignature`
+    /// 只在真正需要时把指标算进去——否则每次额度广播（每个 provider 一次）都会
+    /// 改变签名，逼着另外四种样式白重合成一次 NSImage。
+    var consumesQuotaMetrics: Bool {
+        self == .iconDuo
+    }
 }
 
 /// 状态栏健康度圆点颜色。用固定 sRGB 十六进制值保存，避免系统动态颜色在
