@@ -176,6 +176,25 @@ struct SettingsView: View {
             ?? MenuBarLabel.composedMenuBarImage(iconStyle: style, health: nil, showsHealthDot: false)
     }
 
+    /// 图标主题 picker 里某一行的预览边长（pt）。
+    ///
+    /// 六种预览里只有「App 图标」需要单独定尺寸，其余共用一个 18pt 框。原因不是
+    /// 偏好而是两类资源的画布约定不同：SF Symbol 与 Icon Duo 的画布**自带内边距**，
+    /// 18pt 框里真正的不透明像素只有 12.4~14.5pt；而 App 图标设计稿在载入时已经
+    /// 把透明留白裁掉（见 `MenuBarLabel.appIconDesignImage`），直接铺满 18pt 框就是
+    /// 18pt 实心图形——比同一行里的同伴大 35%，在 20pt 高的菜单行里看着像要顶出去。
+    ///
+    /// 菜单栏那侧有对应的一步：`baseDrawRect` 借 `appIconDesignDrawSide` 把它从 22
+    /// 收到 18（"铺满 22pt 画布看着偏大"）。picker 这条路上原本没有，于是只有这里大。
+    ///
+    /// 15pt 的依据：实测其余五种预览的不透明像素上沿是 14.5pt（Icon Duo），均值约
+    /// 13.3pt；15pt 落在上沿偏上一点，与菜单栏里 18pt vs 15~17pt 的观感比例（1.13）
+    /// 对齐——App 图标是密实图形，比细描边符号略大一点是应当的，再大就抢戏了。
+    /// 由 `testPickerPreviewIconsShareOneVisualBand` 钉住。
+    static func previewIconSide(for style: StatusBarIconStyle) -> CGFloat {
+        style == .quotaLogo ? 15 : 18
+    }
+
     var body: some View {
         HStack(spacing: 0) {
             sidebar
@@ -368,7 +387,10 @@ struct SettingsView: View {
                                     .renderingMode(.original)
                                     .resizable()
                                     .interpolation(.high)
-                                    .frame(width: 18, height: 18)
+                                    .frame(
+                                        width: Self.previewIconSide(for: style),
+                                        height: Self.previewIconSide(for: style)
+                                    )
 
                                     Text(style.displayName)
                                 }

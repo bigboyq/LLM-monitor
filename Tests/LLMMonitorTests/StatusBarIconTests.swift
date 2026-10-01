@@ -1286,6 +1286,52 @@ final class StatusBarIconTests: XCTestCase {
         XCTAssertEqual(SettingsView.previewImage(for: .iconDuo).size.width, 22)
     }
 
+    /// picker 同一行里的六种预览，**不透明像素**的实际尺寸必须落在同一个视觉带内。
+    ///
+    /// 判据用光栅化后扫 alpha 得到的包围盒，而不是 NSImage 自身的 size——两者没有
+    /// 固定比例：SF Symbol 与 Icon Duo 的画布自带内边距，App 图标设计稿在载入时
+    /// 已裁掉透明留白。只比 NSImage size 的话，两者都是 22pt，这个 bug 完全测不出来。
+    ///
+    /// 实测基准（18pt 框，不透明像素**长边**）：柱状图 13.4 / AI 星光 13.5 / 智能大脑
+    /// 14.1 / 芯片 13.3 / Icon Duo 14.5；App 图标原本是 18.0pt 实心图形，比最小同伴
+    /// 大 35%（1.354），在 20pt 高的菜单行里看着像要顶出 picker。修法是给它单独的
+    /// 15pt 框（`SettingsView.previewIconSide`），比值回到 1.13 —— 与菜单栏里
+    /// 18pt vs 15~17pt 的观感比例一致。
+    @MainActor
+    func testPickerPreviewIconsShareOneVisualBand() throws {
+        var visuals: [(name: String, long: CGFloat)] = []
+        for style in StatusBarIconStyle.allCases {
+            let image = SettingsView.previewImage(for: style)
+            let box = try XCTUnwrap(
+                opaqueBounds(of: image, edge: 512),
+                "\(style.displayName) 的预览没有任何不透明像素，无法判断视觉尺寸"
+            )
+            let side = SettingsView.previewIconSide(for: style)
+            let scale = side / max(image.size.width, image.size.height)
+            visuals.append((
+                name: style.displayName,
+                long: max(box.width * image.size.width, box.height * image.size.height) * scale
+            ))
+        }
+        let widest = try XCTUnwrap(visuals.map(\.long).max())
+        let narrowest = try XCTUnwrap(visuals.map(\.long).min())
+        let breakdown = visuals.map { "\($0.name) \(String(format: "%.1f", $0.long))pt" }.joined(separator: " / ")
+
+        XCTAssertLessThanOrEqual(
+            widest / narrowest, 1.30,
+            "picker 同一行里各图标的视觉尺寸差距过大（\(breakdown)）"
+        )
+
+        // App 图标是密实图形，比细描边符号略大是应当的；但它必须是**唯一**的例外——
+        // 新增样式时若也要单独定尺寸，得先想清楚它的画布约定，别顺手沿用。
+        let defaultSide = SettingsView.previewIconSide(for: .iconDuo)
+        XCTAssertEqual(defaultSide, 18, "多数样式的预览框是 18pt")
+        let exceptions = Set(
+            StatusBarIconStyle.allCases.filter { SettingsView.previewIconSide(for: $0) != defaultSide }
+        )
+        XCTAssertEqual(exceptions, [.quotaLogo], "预览尺寸的例外必须仍然只有 App 图标")
+    }
+
     /// 主面板 header 使用的完整 App 图标（icon-master.png）必须能从资源包加载。
     func testHeaderAppIconMasterImageLoads() {
         let master = MenuBarLabel.appIconMasterImage
