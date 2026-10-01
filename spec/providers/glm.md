@@ -413,11 +413,12 @@ ZCode 的 `model_usage` 表是共享账本，GLM 卡按 `provider_id` 三分类�
 | 正常任务 | `account:bigmodel-individual-coding-plan`、`account:bigmodel-team-coding-plan`、`account:zai-individual-coding-plan`、`account:zai-team-coding-plan`、`builtin:bigmodel-coding-plan` | 交互式 Coding Plan 调用（2026-09-17 `0020_provider_model_selection` 迁移后账号套餐改写 `account:` 前缀；显式枚举于 `zcodeGlmCodingPlanProviderIDs`，通配写法已删，新套餐需显式登记） | **是**（唯一计入来源） | 是 |
 | 闲时任务 | `account:bigmodel-offpeak-idle-plan`、`account:zai-offpeak-idle-plan`、`offpeak-idle-plan`（0020 迁移前历史裸值） | 系统赠送的后台任务 | 否 | 是 |
 | 其他任务 | 其余 `builtin:bigmodel-%` / `account:bigmodel-%` / `account:zai-%` | 体验套餐（如 `account:bigmodel-start-plan`）及未来智谱新套餐 | 否 | 是 |
-| （不进 GLM 卡） | 不带 `builtin:bigmodel-` / `account:bigmodel-` / `account:zai-` 前缀的一切 provider | 未来 ZCode 接入的非智谱服务 | — | — |
+| （不进 GLM 卡，按前缀进分片） | 不带 `builtin:bigmodel-` / `account:bigmodel-` / `account:zai-` 前缀的一切 provider | ZCode 接入的非智谱服务（如 `minimax` / `deepseek`，经 `ZcodeProviderSlice` 并入对应卡片） | — | — |
 
 「其他」任务（如体验套餐）不消耗 Coding Plan 积分，额度窗口统计排除，避免高估消耗；
-token 柱图保留真实消耗。前缀通配保证未来智谱新套餐自动落进「其他」，非智谱 provider
-不会被误算进 GLM 卡。
+token 柱图保留真实消耗。前缀通配保证未来智谱新套餐自动落进「其他」。非智谱 provider
+不会被误算进 GLM 卡：它们由 `ZcodeProviderSlice` 的前缀谓词切出 `providerSlices`，在
+`clientBindings` 对应绑定开启时并入 DeepSeek / MiniMax 卡（默认开启）。
 
 设置 → 客户端 → ZCode 按 `GlmUsageCategory.classify`（与额度窗口白名单同一判定）把
 ZCode 贡献的样本拆成日常 / 闲时 / 其他三行，各自独立 token 柱图与计价——对齐

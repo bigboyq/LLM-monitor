@@ -14,6 +14,8 @@ import Foundation
 /// - **原生 turn_id**：turns 直接 `COUNT(DISTINCT turn_id)`（ZCode 一次 user prompt
 ///   触发的多次模型调用共享同一个 turn_id）；rounds = `COUNT(*)`（每行 = 一次模型请求，
 ///   含主 agent / subagent / retry / title 生成）
+/// - **多 provider 账本**：智谱系行走 GLM 卡，同表里的非智谱 provider 行
+///   （`minimax` / `deepseek`）按 `providerSlices` 切出分片，并入对应卡
 ///
 /// `dailyTokenUsage` 总是包含最近 7 个本地自然日（包含今天），按日升序。
 /// `today` 单独冗余存一份，避免 UI 每次都 `dailyTokenUsage.last`。
@@ -52,6 +54,22 @@ struct GlmLocalUsage: Equatable, Codable, Sendable {
     /// 尚未扫到），`[]` = 解析成功但当前无活动套餐。UI 按空数组处理 nil。
     let activityPlanBalances: [GlmActivityPlanBalance]?
 
+    /// 非智谱 provider 分片（`ZcodeProviderSlice`），key = 分片 rawValue
+    /// （`minimax` / `deepseek`）。ZCode 是一份多 provider 共享账本，这些分片
+    /// 与智谱系行同表同扫，但并入的是 MiniMax / DeepSeek 卡而不是 GLM 卡。
+    /// optional 让旧缓存快照仍可解码；UI 与卡片层按 nil = 无分片处理。
+    let providerSlices: [String: OpencodeProviderUsage]?
+
+    /// MiniMax 分片（便捷访问）。
+    var minimaxSlice: OpencodeProviderUsage? {
+        providerSlices?[ZcodeProviderSlice.minimax.rawValue]
+    }
+
+    /// DeepSeek 分片（便捷访问）。
+    var deepseekSlice: OpencodeProviderUsage? {
+        providerSlices?[ZcodeProviderSlice.deepseek.rawValue]
+    }
+
     static let empty = GlmLocalUsage(
         today: nil,
         dailyTokenUsage: [],
@@ -72,7 +90,8 @@ struct GlmLocalUsage: Equatable, Codable, Sendable {
         failedSessionCount: Int,
         recentSamples: [LocalTokenUsageSample]? = nil,
         offPeakWindows: [GlmOffPeakWindow] = [],
-        activityPlanBalances: [GlmActivityPlanBalance]? = nil
+        activityPlanBalances: [GlmActivityPlanBalance]? = nil,
+        providerSlices: [String: OpencodeProviderUsage]? = nil
     ) {
         self.today = today
         self.dailyTokenUsage = dailyTokenUsage
@@ -83,6 +102,7 @@ struct GlmLocalUsage: Equatable, Codable, Sendable {
         self.recentSamples = recentSamples
         self.offPeakWindows = offPeakWindows
         self.activityPlanBalances = activityPlanBalances
+        self.providerSlices = providerSlices
     }
 
     /// 自定义 `==` 排除 `scannedAt` —— `scannedAt` 是 metadata（每次扫描都是新 `Date`），
@@ -90,7 +110,8 @@ struct GlmLocalUsage: Equatable, Codable, Sendable {
     /// 导致 `AppState.apply*LocalUsage` 的 no-op 检查形同虚设：
     /// 每次都打 logInfo + 触发 `@Published` willSet 无意义 UI reload。
     /// 业务字段（`today` / `dailyTokenUsage` / `sessionCount` / `eventCount` /
-    /// `failedSessionCount` / `offPeakWindows` / `activityPlanBalances`）决定内容是否真变。
+    /// `failedSessionCount` / `offPeakWindows` / `activityPlanBalances` /
+    /// `providerSlices`）决定内容是否真变。
     /// Codable 自动合成的 CodingKeys 不受影响 —— `scannedAt` 仍然被编解码。
     static func == (lhs: GlmLocalUsage, rhs: GlmLocalUsage) -> Bool {
         lhs.today == rhs.today
@@ -101,5 +122,6 @@ struct GlmLocalUsage: Equatable, Codable, Sendable {
             && lhs.recentSamples == rhs.recentSamples
             && lhs.offPeakWindows == rhs.offPeakWindows
             && lhs.activityPlanBalances == rhs.activityPlanBalances
+            && lhs.providerSlices == rhs.providerSlices
     }
 }

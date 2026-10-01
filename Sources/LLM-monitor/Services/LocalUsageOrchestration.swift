@@ -28,11 +28,16 @@ final class LocalUsageOrchestration {
         let hasOpenCodeConsumer = statuses.contains {
             $0.isEnabled && $0.mergeOpencodeUsage
         }
+        // ZCode 是一份多 provider 账本：除 GLM 卡外，启用了 ZCode 分片绑定的
+        // MiniMax / DeepSeek 卡也消费同一份扫描结果。任一消费者在位就要扫描。
+        let hasZcodeSliceConsumer = statuses.contains {
+            $0.isEnabled && $0.mergeZcodeUsage
+        }
         return ActiveSources(
             codex: enabledKinds.contains(.codexChatGpt),
             antigravity: enabledKinds.contains(.antigravity),
             minimax: enabledKinds.contains(.minimaxTokenPlan),
-            glm: enabledKinds.contains(.glmCodingPlan),
+            glm: enabledKinds.contains(.glmCodingPlan) || hasZcodeSliceConsumer,
             dsh: enabledKinds.contains(.minimaxTokenPlan)
                 || enabledKinds.contains(.glmCodingPlan)
                 || enabledKinds.contains(.deepseek),
@@ -101,7 +106,13 @@ final class LocalUsageOrchestration {
         },
         apply: { [weak writer] usage in writer?.applyGlmLocalUsage(usage) },
         setScanning: { [weak writer] isScanning in
-            writer?.setScanningState(isScanning, for: writer?.providerID(for: .glmCodingPlan) ?? "")
+            // ZCode 快照被三张卡消费，扫描态同步到每一张，否则 MiniMax / DeepSeek
+            // 卡上的分片会在扫描期间显示为陈旧数据。
+            guard let writer else { return }
+            for kind in AppState.zcodeConsumerKinds {
+                guard let providerID = writer.providerID(for: kind) else { continue }
+                writer.setScanningState(isScanning, for: providerID)
+            }
         },
         onDirty: { [weak writer] in
             writer?.setLocalUsageFreshness(.dirty, for: .zcode)

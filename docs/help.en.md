@@ -27,7 +27,7 @@ shasum -a 256 -c SHA256SUMS.txt
 
 ### Minimax Token Plan
 
-Enable Minimax and enter a Token Plan API key. Local usage comes from `~/.minimax/v2/sqlite/runtime-state.sqlite`. To include `minimax-cn-coding-plan` usage from OpenCode, set the matching `clientBindings` entry to `true` in `config.json` (see "OpenCode merge" below).
+Enable Minimax and enter a Token Plan API key. Local usage comes from `~/.minimax/v2/sqlite/runtime-state.sqlite`; ZCode's `minimax` slice is merged into this card by default (disable via `clientBindings` in `config.json`). To also include `minimax-cn-coding-plan` usage from OpenCode, set the matching `clientBindings` entry to `true` in `config.json` (see "OpenCode merge" below).
 
 ### ChatGPT Plan / Codex
 
@@ -45,11 +45,15 @@ ZCode tasks fall into three provider categories — Normal (Coding Plan) / Off-p
 
 ### DeepSeek
 
-Enter a DeepSeek `sk-...` API key. The card displays account balance. DeepSeek has no native local ledger, so local token charts require the OpenCode merge (`clientBindings` in `config.json`). DeepSeek Flash local cost estimates use ¥1 per million input tokens, ¥0.02 per million cached-read tokens, and ¥4 per million output tokens. Beijing-time weekday busy hours (Mon–Fri 9:00–12:00 and 14:00–18:00) are charged at 2×; weekends are off-peak all day.
+Enter a DeepSeek `sk-...` API key. The card displays account balance. DeepSeek has no native local ledger: local token charts come from the ZCode slice (on by default; rows in `~/.zcode/cli/db/db.sqlite` whose `provider_id` is `deepseek`), optionally overlaid with the OpenCode merge (`clientBindings` in `config.json`). DeepSeek Flash local cost estimates use ¥1 per million input tokens, ¥0.02 per million cached-read tokens, and ¥4 per million output tokens. Beijing-time weekday busy hours (Mon–Fri 9:00–12:00 and 14:00–18:00) are charged at 2×; weekends are off-peak all day.
 
 ### OpenCode merge
 
 The app reads `~/.local/share/opencode/opencode.db` and separates rows by `providerID`. OpenCode is not a standalone card. Merging is controlled by the `opencode` bindings in `clientBindings[]` inside `~/Library/Application Support/LLM-monitor/config.json` (GLM defaults to enabled, other providers to disabled); the settings window has no per-provider toggle for it. Save the edited file and the app hot-reloads it without a restart.
+
+### ZCode slices
+
+ZCode is a shared multi-provider ledger just like OpenCode: Zhipu-family rows feed the GLM card, while rows whose `provider_id` starts with `minimax` / `deepseek` are partitioned into slices and merged into the MiniMax / DeepSeek cards respectively. The matching `zcode` entries in `clientBindings[]` default to enabled; there is likewise no per-provider toggle in the settings window.
 
 ## Everyday controls
 
@@ -121,7 +125,7 @@ Check connectivity, credentials, subscription type, and local login state. The a
 
 ### Local token usage is empty
 
-The corresponding client must have generated session data. Confirm that the database/session path exists and that the app can read it. Antigravity also needs its local service to be running. DeepSeek requires OpenCode merging for local usage.
+The corresponding client must have generated session data. Confirm that the database/session path exists and that the app can read it. Antigravity also needs its local service to be running. DeepSeek local usage requires matching provider calls in ZCode or OpenCode.
 
 ### Launch at login cannot be enabled
 

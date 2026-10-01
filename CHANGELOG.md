@@ -8,6 +8,8 @@
 
 - 设置页 Antigravity 区新增「本地用量缓存」分区与「强制全量重建本地缓存」按钮：忽略缓存对所有 session 强制重新请求 trajectory metadata，用于数据异常后的恢复；有其他刷新任务运行时按钮禁用并提示稍后再试。
 - 新增 GPT-6 Sol 与 GPT-6 Luna 定价（Sol：Input $2 / Cached Input $0.2 / Output $10；Luna：Input $0.1 / Cached Input $0.01 / Output $0.5），价目快照日期更新为 2026-09-23。
+- 新增 MiniMax M3.1 Flash 系列定价（Input ¥2.1 / Cached Input ¥0.42 / Output ¥8.4，沿用 M3 的人民币价目）：此前 `MiniMax-M3.1-Flash-Preview` 这类模型名会被 M3 条目按关键字误兜到 M3 上；价目快照日期更新为 2026-10-01。
+- DeepSeek 卡与 MiniMax 卡新增「ZCode 本地数据库用量」合并来源：ZCode 与 OpenCode 一样是多 provider 共享账本，同一张 `model_usage` 表里既有智谱系行、也有用户自带的 DeepSeek / MiniMax 行，此前非智谱行在扫描时被直接丢弃。现在一次扫描按 `provider_id` 前缀把这两路切成独立分片并入对应卡片（today / 7 天柱图 / 最近样本），默认开启；不需要时把 config.json `clientBindings` 里 `zcode → minimax` / `zcode → deepseek` 两条改为 `false`（与 OpenCode 绑定同一机制，设置页无专用开关）。本地用量缓存版本升级，ZCode 首次扫描会全量重算一次。
 
 ### Added
 

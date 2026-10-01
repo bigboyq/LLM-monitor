@@ -73,6 +73,12 @@ struct ProviderStatus: Identifiable, Equatable, Sendable {
     /// 这是 config 派生的展示开关，不影响后台扫描或诊断页。
     var mergeOpencodeUsage: Bool = false
 
+    /// 是否把 ZCode 账本里对应 provider 的分片（`ZcodeProviderSlice`）合并进这张卡。
+    /// GLM 卡消费的是智谱系 native 用量，不走这个开关；MiniMax / DeepSeek 卡消费
+    /// ZCode 里的 `minimax` / `deepseek` 分片，开关来自 `clientBindings` 的
+    /// `zcode → <quota provider>` 绑定（默认开启）。
+    var mergeZcodeUsage: Bool = false
+
     /// opencode 本地用量快照（四张卡共用的后台数据源）。
     /// 每张卡只读取自己的 provider slice；不会把 `minimax` 本地能力账本
     /// 自动算入 Minimax Token Plan。
@@ -140,11 +146,15 @@ struct ProviderStatus: Identifiable, Equatable, Sendable {
         case .antigravity:
             return [.antigravity] + (mergeOpencodeUsage ? [.opencode] : [])
         case .minimaxTokenPlan:
-            return [.minimaxCode, .dsh] + (mergeOpencodeUsage ? [.opencode] : [])
+            return [.minimaxCode, .dsh]
+                + (mergeZcodeUsage ? [.zcode] : [])
+                + (mergeOpencodeUsage ? [.opencode] : [])
         case .glmCodingPlan:
             return [.zcode, .dsh] + (mergeOpencodeUsage ? [.opencode] : [])
         case .deepseek:
-            return [.dsh] + (mergeOpencodeUsage ? [.opencode] : [])
+            return [.dsh]
+                + (mergeZcodeUsage ? [.zcode] : [])
+                + (mergeOpencodeUsage ? [.opencode] : [])
         }
     }
 

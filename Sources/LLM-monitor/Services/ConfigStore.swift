@@ -272,6 +272,22 @@ struct AppConfig: Codable, Equatable {
             quotaProviderID: QuotaProviderID.deepseek,
             sourceProviderAliases: [OpencodeLocalUsage.deepseekProviderID],
             enabled: false
+        ),
+        // ZCode 是多 provider 共享账本：`minimax` / `deepseek` 的行与智谱系行
+        // 同在 `model_usage` 表。默认开启（与 opencode → deepseek 的默认关闭相反）：
+        // ZCode 的这两路 provider 是用户显式配置过的上游，凭空关掉只会让卡片少报
+        // 一份已经真实发生的本地用量；要停用时把这两条改成 false 即可。
+        ClientProviderBinding(
+            clientID: ClientID.zcode,
+            quotaProviderID: QuotaProviderID.minimax,
+            sourceProviderAliases: [ZcodeProviderSlice.minimax.providerPrefix],
+            enabled: true
+        ),
+        ClientProviderBinding(
+            clientID: ClientID.zcode,
+            quotaProviderID: QuotaProviderID.deepseek,
+            sourceProviderAliases: [ZcodeProviderSlice.deepseek.providerPrefix],
+            enabled: true
         )
     ]
 

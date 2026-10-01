@@ -99,7 +99,13 @@ struct ClientDescriptor: Identifiable, Equatable, Sendable {
             id: ClientID.zcode,
             displayName: "ZCode",
             iconSystemName: "chevron.left.forwardslash.chevron.right",
-            supportedQuotaProviderIDs: [QuotaProviderID.zhipu],
+            // 智谱系行进 GLM 卡；同库里的 minimax / deepseek 行按分片并入对应卡
+            // （开关见 clientBindings 的 zcode → minimax / deepseek 两条）。
+            supportedQuotaProviderIDs: [
+                QuotaProviderID.zhipu,
+                QuotaProviderID.minimax,
+                QuotaProviderID.deepseek
+            ],
             subtitle: "ZCode 本地数据库用量"
         ),
         ClientDescriptor(
@@ -604,6 +610,9 @@ extension ProviderStatus {
                 make: { DshUsageMerger.mergeMinimax(dsh: $0.dshUsage) },
                 scannedAt: { $0.dshUsage?.scannedAt },
                 isTruncated: { DshUsageMerger.isTruncated($0.dshUsage) }),
+            zcodeContribution(
+                slice: { $0.glmLocalUsage?.minimaxSlice },
+                provider: .minimax),
             opencodeContribution(slice: { $0.opencodeUsage?.minimaxCodingPlanSlice },
                                  sourceProviderID: OpencodeLocalUsage.minimaxCodingPlanProviderID)
         ],
@@ -626,6 +635,9 @@ extension ProviderStatus {
                 make: { DshUsageMerger.mergeDeepseek(dsh: $0.dshUsage, opencode: nil) },
                 scannedAt: { $0.dshUsage?.scannedAt },
                 isTruncated: { DshUsageMerger.isTruncated($0.dshUsage) }),
+            zcodeContribution(
+                slice: { $0.glmLocalUsage?.deepseekSlice },
+                provider: .deepseek),
             opencodeContribution(slice: { $0.opencodeUsage?.deepseekSlice },
                                  sourceProviderID: OpencodeLocalUsage.deepseekProviderID)
         ]
@@ -670,6 +682,26 @@ extension ProviderStatus {
                 recentSamples: usage.recentSamples,
                 scannedAt: scannedAt(status),
                 isTruncated: isTruncated(status)
+            )
+        }
+    }
+
+    /// ZCode 合并来源：`mergeZcodeUsage` 开关 + ZCode 账本里对应 provider 的分片
+    /// （`minimax` / `deepseek`）。与 OpenCode 贡献同构：ZCode 也是一份多 provider
+    /// 账本，只是扫描器（`GlmZcodeLocalUsageScanner`）把这些 provider 的行挂在
+    /// `glmLocalUsage.providerSlices` 上。GLM 卡消费智谱系 native 用量，不走这里。
+    private static func zcodeContribution(
+        slice: @escaping @Sendable (ProviderStatus) -> OpencodeProviderUsage?,
+        provider: ZcodeProviderSlice
+    ) -> @Sendable (ProviderStatus, QuotaInfo?) -> ClientUsageContribution? {
+        { status, _ in
+            guard status.mergeZcodeUsage, let usage = slice(status) else { return nil }
+            return ClientUsageContribution(
+                clientID: ClientID.zcode,
+                displayName: "ZCode",
+                dailyTokenUsage: usage.dailyTokenUsage,
+                recentSamples: ZcodeProviderSlice.namespacedSamples(usage, for: provider),
+                scannedAt: status.glmLocalUsage?.scannedAt
             )
         }
     }

@@ -2,7 +2,7 @@
 
 [English](README.en.md) | **简体中文**
 
-适用于 macOS 14 及以上版本的菜单栏额度与本地用量监视器。一个入口集中查看 Minimax、ChatGPT/Codex、Antigravity、GLM Coding Plan 与 DeepSeek，并可选择合并 OpenCode 与 DeepSeek Harness (dsh) 的本地 token 账本。
+适用于 macOS 14 及以上版本的菜单栏额度与本地用量监视器。一个入口集中查看 Minimax、ChatGPT/Codex、Antigravity、GLM Coding Plan 与 DeepSeek，并可选择合并 OpenCode、ZCode 与 DeepSeek Harness (dsh) 的本地 token 账本。
 
 > 当前版本：**1.20.0** · 支持 Apple Silicon (arm64) · 所有凭据和用量缓存只保存在本机
 
@@ -50,15 +50,15 @@
 
 | Provider | 远程数据 | 本地用量 | 认证方式 |
 |---|---|---|---|
-| Minimax Token Plan | 套餐额度 API | Minimax v2 SQLite；默认合并 OpenCode（默认关闭，可在 config.json 开启） | Token Plan API Key |
+| Minimax Token Plan | 套餐额度 API | Minimax v2 SQLite；默认合并 ZCode 分片（默认开启），可选合并 OpenCode（默认关闭，可在 config.json 开启） | Token Plan API Key |
 | ChatGPT Plan / Codex | ChatGPT usage API | Codex session 日志；默认合并 OpenCode（默认关闭） | `~/.codex/auth.json` |
 | Antigravity | 本地 language-server RPC | 本地 trajectory metadata RPC；默认合并 OpenCode（默认关闭） | 已登录的 Antigravity 会话 |
 | GLM Coding Plan | GLM quota API | ZCode SQLite；默认合并 OpenCode（GLM 默认开启，其余可在 config.json 调整） | Coding Plan Key |
-| DeepSeek | 账户余额 API | 默认合并 OpenCode（默认关闭） | DeepSeek API Key |
+| DeepSeek | 账户余额 API | 默认合并 ZCode 分片（默认开启），可选合并 OpenCode（默认关闭） | DeepSeek API Key |
 
 各数据源、token 口径、高峰窗口和合并规则见下方 Provider 规格文档。
 
-> DSH（DeepSeek Harness）不是独立菜单栏 Provider，而是共享本地 session 账本；它会按 `request/context` 中的 provider 分片，并自动合并到 MiniMax / GLM / DeepSeek 卡片。所有本地客户端用量可在"设置 → 客户端"按客户端维度查看。
+> DSH（DeepSeek Harness）不是独立菜单栏 Provider，而是共享本地 session 账本；它会按 `request/context` 中的 provider 分片，并自动合并到 MiniMax / GLM / DeepSeek 卡片。ZCode 同样是多 provider 共享账本：智谱系行进 GLM 卡，`minimax` / `deepseek` 行按前缀分片并入对应卡片（默认开启，config.json `clientBindings` 可关）。所有本地客户端用量可在"设置 → 客户端"按客户端维度查看。
 
 ## 文档索引
 

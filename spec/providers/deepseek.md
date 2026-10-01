@@ -8,14 +8,16 @@ Implementation:
 - Tests: `Tests/LLMMonitorTests/DeepseekFetcherTests.swift`, `Tests/LLMMonitorTests/DeepseekPeakWindowTests.swift`
 
 DeepSeek 余额来自官方开放接口，展示为"账户剩余余额"（货币金额），不是 5h / 周积分窗口。
-本地 token 用量没有 native scanner（DeepSeek 官方无本地 CLI 账本），只有可选的 OpenCode
-`deepseek` provider slice 合并。
+本地 token 用量没有 native scanner（DeepSeek 官方无本地 CLI 账本），来自两路共享账本分片：
+ZCode `deepseek` provider slice（默认开启）与可选的 OpenCode `deepseek` provider slice 合并。
 
 ## Accounting contract
 
 DeepSeek 官方余额接口没有本地 token harness，因此 DeepSeek 卡片本身没有 native
-sample/daily accounting。若合并 OpenCode，使用 OpenCode 的统一四桶口径；余额金额和
-本地 API 名义价值是两条独立信息。统一规则（包括 `cacheWrite` 不计入估算）见
+sample/daily accounting。若合并 ZCode / OpenCode 分片，使用统一的四桶口径（ZCode 的
+`input_tokens` 为 cache-inclusive 上报，按 `uncached = max(input − cache_read, 0)` 拆桶；
+OpenCode 的 raw input 本就是 uncached）；余额金额和本地 API 名义价值是两条独立信息。
+统一规则（包括 `cacheWrite` 不计入估算）见
 [`spec/accounting.md`](../accounting.md)。
 
 ## Current Status
@@ -31,7 +33,7 @@ sample/daily accounting。若合并 OpenCode，使用 OpenCode 的统一四桶�
 | Remaining percent | `100` if `is_available` 且 `total_balance > 0`，否则 `0` |
 | Windows | interval `.present`（余额即 interval 口径）；weekly `.absent` |
 | Peak hours | 北京时间工作日 9:00–12:00 & 14:00–18:00（`DeepseekPeakWindow.defaultWindow`）；时段固定不可调，高峰永不含周末（周六、周日全天平价） |
-| Local token source | 无 native scanner；可选 OpenCode `deepseek` provider slice 合并 |
+| Local token source | 无 native scanner；ZCode `deepseek` 分片（默认开启）+ 可选 OpenCode `deepseek` 分片合并 |
 
 ## Config
 
@@ -57,7 +59,7 @@ Supported provider fields:
 | `apiKey` | DeepSeek API Key. Empty values and `REPLACE...` placeholders are treated as missing (`ProviderConfig.usableAPIKey`). |
 | `refreshIntervalSeconds` | Optional independent refresh interval (overrides global default of 300s). |
 | `displayName` | Optional card title override. |
-| `clientBindings[]` | The canonical client-to-quota binding controls whether OpenCode `deepseek` samples are projected into the card. The default binding is disabled; the legacy provider-level field is migration compatibility only. |
+| `clientBindings[]` | The canonical client-to-quota binding controls whether client `deepseek` samples are projected into the card. The `zcode` binding is **enabled by default** (`Sources/LLM-monitor/Services/ConfigStore.swift` `defaultClientBindings`); the OpenCode `deepseek` binding is disabled by default. The legacy provider-level field is migration compatibility only. |
 
 > **Note**: `deepseekPeakWeekdaysOnly` was removed together with the settings toggle
 > (peak never includes weekends is now fixed official policy). Old config files that
@@ -117,6 +119,14 @@ OpenCode 的 `deepseek` provider 分片作为可选叠加源，由 `config.json`
 `clientBindings[]` 控制（DeepSeek 缺省关闭），按字段逐项相加到卡片本地数据。DeepSeek
 没有 native 本地账本，因此开启后柱图 / 今日汇总完全来自 OpenCode 数据；关闭时卡片只
 显示远程余额。设置页不提供独立 Toggle，修改 binding 后目录监听会热加载。
+
+## ZCode merge
+
+ZCode 的 `deepseek` provider 分片（`model_usage` 表中 `provider_id` 前缀为 `deepseek`
+的行，经 `ZcodeProviderSlice` 切出）**默认并入**本卡，由 `clientBindings[]` 的
+`zcode → deepseek` 绑定控制。与 OpenCode 分片按字段逐项相加；`input` 按 cache-inclusive
+上报拆成 uncached / cache-read 两个不相交桶（见 Accounting contract）。ZCode 与 OpenCode
+样本以 `promptID` 命名空间（`zcode:deepseek:` 前缀）区分，不会互相去重。
 
 ## Error mapping
 

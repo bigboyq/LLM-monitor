@@ -567,8 +567,13 @@ struct ProviderCardView: View, Equatable {
 
     /// GLM 闲时任务窗口（仅 `.glmCodingPlan`）。额度窗口 hover 统计排除这些窗口内的 sample，
     /// 本地 token 柱图仍保留。其他 provider 恒为空。
+    ///
+    /// 必须按 kind 取：ZCode 是一份多 provider 账本，同一份 `glmLocalUsage` 现在也挂在
+    /// MiniMax / DeepSeek 卡上（只为了读 `providerSlices`）。闲时窗口只属于智谱任务，
+    /// 泄漏到其它卡会让落在窗口内的 MiniMax / DSH 样本被误判成闲时任务而排除。
     private var excludeWindows: [GlmOffPeakWindow] {
-        status.glmLocalUsage?.offPeakWindows ?? []
+        guard status.kind == .glmCodingPlan else { return [] }
+        return status.glmLocalUsage?.offPeakWindows ?? []
     }
 
     /// 所有卡片统一展示 quota provider 关联的客户端 token 汇总；客户端来源

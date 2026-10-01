@@ -19,15 +19,20 @@ import os
 /// 生命周期外壳、db+WAL 指纹、快照缓存与 7 天 rebase 都在
 /// `SingleDBSnapshotScanner` 基座；本类型只声明路径、缓存版本与三个 pipeline hook
 /// （含每轮都刷新的闲时任务窗口读取）。
+///
+/// ZCode 是一份**多 provider 共享账本**：智谱系行进 GLM 卡，同表里的非智谱行
+/// （`minimax` / `deepseek`）经 `providerSlices` 切出分片，供 MiniMax / DeepSeek
+/// 卡消费 —— 一次扫描、一份 DB，不为第二类 provider 再开一个 scanner。
 @MainActor
 final class GlmZcodeLocalUsageScanner: SingleDBSnapshotScanner<GlmLocalUsage>, @unchecked Sendable {
     nonisolated static let scanLogTag = "[glm-zcode-scan]"
-    /// 缓存版本 10：识别 Zcode `0020_provider_model_selection` 迁移后的
-    /// `account:bigmodel-` 前缀。v9 快照漏掉了迁移后新写入的
-    /// `account:bigmodel-individual-coding-plan` 行，必须重扫补齐。
-    /// （v9：额度窗口口径改为「仅 coding-plan 计入」，其他智谱套餐样本不再
-    /// 计入窗口；v8：recentSamples 新增 `sourceProviderID`。）
-    nonisolated static let cacheIndexVersion = 10
+    /// 缓存版本 11：ZCode 同库内非智谱 provider（`minimax` / `deepseek`）按
+    /// `ZcodeProviderSlice` 前缀切出分片，随快照一起供 MiniMax / DeepSeek 卡消费。
+    /// v10 快照的 `providerSlices` 恒为 nil，直接复用会在卡片上永久缺这条来源，
+    /// 必须重扫补齐。
+    /// （v10：识别 Zcode `0020_provider_model_selection` 迁移后的
+    /// `account:bigmodel-` 前缀；v9：recentSamples 新增 `sourceProviderID`。）
+    nonisolated static let cacheIndexVersion = 11
 
     /// 整个扫描 pipeline 的串行锁（跨实例共享）。
     nonisolated static let pipelineMutex = AsyncMutex()
@@ -127,12 +132,13 @@ final class GlmZcodeLocalUsageScanner: SingleDBSnapshotScanner<GlmLocalUsage>, @
             sessionCount: aggregate.sessionCount,
             roundCount: aggregate.roundCount,
             samples: aggregate.samples,
+            providerSlices: Self.providerSlices(from: aggregate.providerSlices, calendar: calendar, now: now),
             offPeakWindows: offPeakWindows,
             activityPlanBalances: activityPlanBalances,
             calendar: calendar,
             now: now
         )
-        logInfo("\(logTag) ✓ rounds=\(aggregate.roundCount) sessions=\(aggregate.sessionCount) offPeak=\(offPeakWindows.count) activityPlans=\(activityPlanBalances?.count ?? -1)")
+        logInfo("\(logTag) ✓ rounds=\(aggregate.roundCount) sessions=\(aggregate.sessionCount) offPeak=\(offPeakWindows.count) activityPlans=\(activityPlanBalances?.count ?? -1) slices=\(snapshot.providerSlices?.count ?? 0)")
         return snapshot
     }
 
@@ -160,7 +166,8 @@ final class GlmZcodeLocalUsageScanner: SingleDBSnapshotScanner<GlmLocalUsage>, @
                 failedSessionCount: rebased.failedSessionCount,
                 recentSamples: rebased.recentSamples,
                 offPeakWindows: offPeakWindows,
-                activityPlanBalances: effectiveActivityPlanBalances
+                activityPlanBalances: effectiveActivityPlanBalances,
+                providerSlices: rebased.providerSlices
             )
         }
         return rebased
@@ -216,11 +223,14 @@ final class GlmZcodeLocalUsageScanner: SingleDBSnapshotScanner<GlmLocalUsage>, @
     /// `adjustedPerDay` 直接来自 `GlmZcodeDBReader.queryPerDay`,Method A 归类后的最终值
     /// (`outputTokens` / `reasoningTokens` 已经按 part 表 + native priority 算好)。
     /// buildSnapshot 只负责 7 天窗口滚动 + 今日挑选 + samples 保留。
+    /// `providerSlices` 是同库内非智谱 provider 的分片（已由
+    /// `providerSlices(from:calendar:now:)` 压成 7 天窗口），照原样挂到快照上。
     nonisolated static func buildSnapshot(
         adjustedPerDay: [Date: GlmDailyUsage],
         sessionCount: Int,
         roundCount: Int,
         samples: [LocalTokenUsageSample],
+        providerSlices: [String: OpencodeProviderUsage] = [:],
         offPeakWindows: [GlmOffPeakWindow],
         activityPlanBalances: [GlmActivityPlanBalance]? = nil,
         calendar: Calendar,
@@ -241,8 +251,36 @@ final class GlmZcodeLocalUsageScanner: SingleDBSnapshotScanner<GlmLocalUsage>, @
             failedSessionCount: 0,
             recentSamples: samples,
             offPeakWindows: offPeakWindows,
-            activityPlanBalances: activityPlanBalances
+            activityPlanBalances: activityPlanBalances,
+            providerSlices: providerSlices
         )
+    }
+
+    /// 把 reader 的分片原始聚合压成 7 天窗口，形状与 `OpencodeUsageScanner`
+    /// 的同名步骤一致（today + 7 天日聚合 + 累计 rounds + 最近 8 天样本）。
+    nonisolated static func providerSlices(
+        from aggregate: ZcodeProviderSliceAggregate,
+        calendar: Calendar,
+        now: Date
+    ) -> [String: OpencodeProviderUsage] {
+        let todayStart = DailyUsageAggregation.todayCutoff(now: now, calendar: calendar)
+        var out: [String: OpencodeProviderUsage] = [:]
+        for (slice, byDay) in aggregate.perSliceDay {
+            let allDaily = byDay.values.sorted { $0.dayStart < $1.dayStart }
+            let recent7 = DailyUsageAggregation.filterLast7Days(
+                allDaily: allDaily, today: todayStart, calendar: calendar
+            )
+            let today = allDaily.first(where: { $0.dayStart == todayStart && $0.hasActivity })
+            out[slice] = OpencodeProviderUsage(
+                today: today,
+                dailyTokenUsage: recent7,
+                roundCount: aggregate.roundCount[slice]
+                    ?? SaturatingArithmetic.sum(allDaily.lazy.map(\.rounds)),
+                cost: 0,
+                recentSamples: aggregate.samples[slice] ?? []
+            )
+        }
+        return out
     }
 
     // MARK: - DB read (fast path + /tmp copy fallback)
@@ -284,8 +322,36 @@ final class GlmZcodeLocalUsageScanner: SingleDBSnapshotScanner<GlmLocalUsage>, @
             failedSessionCount: snapshot.failedSessionCount,
             recentSamples: (snapshot.recentSamples ?? []).filter { $0.completedAt >= sampleCutoff },
             offPeakWindows: snapshot.offPeakWindows,
-            activityPlanBalances: snapshot.activityPlanBalances
+            activityPlanBalances: snapshot.activityPlanBalances,
+            providerSlices: rebaseProviderSlices(snapshot.providerSlices, calendar: calendar, now: now)
         )
+    }
+
+    /// 分片同样只缓存 7 天日聚合：跨午夜时把窗口向前滚动，并把 8 天样本裁到
+    /// 最近 8 天（与智谱 native 样本同口径）。
+    nonisolated static func rebaseProviderSlices(
+        _ slices: [String: OpencodeProviderUsage]?,
+        calendar: Calendar,
+        now: Date
+    ) -> [String: OpencodeProviderUsage]? {
+        guard let slices, slices.isEmpty == false else { return slices }
+        let todayStart = DailyUsageAggregation.todayCutoff(now: now, calendar: calendar)
+        let sampleCutoff = now.addingTimeInterval(-8 * 24 * 60 * 60)
+        return slices.mapValues { usage in
+            let daily = DailyUsageAggregation.filterLast7Days(
+                allDaily: usage.dailyTokenUsage,
+                today: todayStart,
+                calendar: calendar
+            )
+            let today = daily.last.flatMap { $0.hasActivity ? $0 : nil }
+            return OpencodeProviderUsage(
+                today: today,
+                dailyTokenUsage: daily,
+                roundCount: usage.roundCount,
+                cost: usage.cost,
+                recentSamples: usage.recentSamples.filter { $0.completedAt >= sampleCutoff }
+            )
+        }
     }
 
     /// 冷启动缓存读取（保持既有两参数测试签名）。

@@ -739,6 +739,12 @@ final class AppState: ObservableObject {
                 clientID: ClientID.openCode,
                 quotaProviderID: d.kind.quotaProviderID
             )
+            // ZCode 的 provider 分片同样由 clientBindings 派生（默认开启）。
+            // GLM 卡消费智谱 native 用量，不受此开关影响。
+            statusItem.mergeZcodeUsage = configStore.config.isClientBindingEnabled(
+                clientID: ClientID.zcode,
+                quotaProviderID: d.kind.quotaProviderID
+            )
             statusItem.antigravityLocalUsage = preserved.antigravityLocalUsage
             statusItem.minimaxLocalUsage = preserved.minimaxLocalUsage
             statusItem.glmLocalUsage = preserved.glmLocalUsage
@@ -1097,16 +1103,36 @@ final class AppState: ObservableObject {
 
     // MARK: - GLM (ZCode) local usage scanner
 
+    /// 把 ZCode 扫描结果挂到所有消费它的卡片。
+    ///
+    /// ZCode 是一份多 provider 账本：GLM 卡消费智谱系 native 用量（不受开关
+    /// 约束），MiniMax / DeepSeek 卡消费同一快照里的 `providerSlices` 分片
+    /// （受各自 `mergeZcodeUsage` 开关约束，见 `usageContributionFactories`）。
+    /// 与 `applyOpencodeUsage` 同样只挂快照、关闭开关时诊断页仍可见。
     @MainActor
     func applyGlmLocalUsage(_ usage: GlmLocalUsage?) {
-        applyLocalUsage(
-            kind: .glmCodingPlan,
-            field: \.glmLocalUsage,
-            fieldName: "glmLocalUsage",
-            summarize: { "\($0.sessionCount) sessions" },
-            usage: usage
-        )
+        var copy = statuses
+        var changed = false
+        for kind in Self.zcodeConsumerKinds {
+            guard let providerID = providerID(for: kind),
+                  let idx = copy.firstIndex(where: { $0.id == providerID }) else { continue }
+            // GlmLocalUsage 自定义 == 排除 scannedAt
+            if copy[idx].glmLocalUsage == usage { continue }
+            copy[idx].glmLocalUsage = usage
+            changed = true
+        }
+        guard changed else { return }
+        statuses = copy
+        statusDidChange.send()
+        let slices = usage?.providerSlices?.count ?? 0
+        logDebug("[zcode/apply] slices=\(slices) sessions=\(usage?.sessionCount ?? 0)")
     }
+
+    /// 消费 ZCode 快照的卡片类型。智谱 native 用量进 GLM 卡，provider 分片进
+    /// MiniMax / DeepSeek 卡。
+    nonisolated static let zcodeConsumerKinds: [ProviderKind] = [
+        .glmCodingPlan, .minimaxTokenPlan, .deepseek
+    ]
 
     // MARK: - dsh local usage scanner（共享 session 日志 + 诊断页）
 
@@ -1325,7 +1351,7 @@ final class AppState: ObservableObject {
         case .minimaxCode:
             affectedKinds = [.minimaxTokenPlan]
         case .zcode:
-            affectedKinds = [.glmCodingPlan]
+            affectedKinds = Set(Self.zcodeConsumerKinds)
         case .dsh, .opencode:
             affectedKinds = Set(ProviderKind.allCases)
         }

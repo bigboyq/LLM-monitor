@@ -18,16 +18,19 @@ The public snapshot is ad-hoc signed and is not Apple-notarized. If macOS blocks
 
 | Provider | Remote data | Local usage | Authentication |
 |---|---|---|---|
-| Minimax Token Plan | Plan quota API | Minimax v2 SQLite; optional OpenCode merge | Token Plan API key |
+| Minimax Token Plan | Plan quota API | Minimax v2 SQLite; ZCode slices (on by default), optional OpenCode merge | Token Plan API key |
 | ChatGPT Plan / Codex | ChatGPT usage API | Codex session logs; optional OpenCode merge | `~/.codex/auth.json` |
 | Antigravity | Local language-server RPC | Local trajectory metadata RPC; optional OpenCode merge | Existing Antigravity session |
 | GLM Coding Plan | GLM quota API | ZCode SQLite; optional OpenCode merge | Coding Plan key |
-| DeepSeek | Account balance API | Optional OpenCode merge | DeepSeek API key |
+| DeepSeek | Account balance API | ZCode slices (on by default), optional OpenCode merge | DeepSeek API key |
 
 DeepSeek Harness (DSH) is not a separate menu-bar provider. It is a shared local
 session ledger, partitioned by the provider recorded in each `request/context`
-event and automatically merged into the Minimax, GLM, and DeepSeek cards. All
-client-local usage can be inspected under Settings → Clients.
+event and automatically merged into the Minimax, GLM, and DeepSeek cards. ZCode
+is likewise a shared multi-provider ledger: Zhipu-family rows feed the GLM card,
+while `minimax` / `deepseek` rows are partitioned by prefix and merged into the
+corresponding cards (on by default, configurable via `clientBindings` in
+config.json). All client-local usage can be inspected under Settings → Clients.
 
 ## Highlights
 
@@ -39,7 +42,7 @@ client-local usage can be inspected under Settings → Clients.
 - The main menu provider cards can be arranged with a custom order under Settings → General → Main Menu Provider Order; other provider and client lists remain alphabetized.
 - Per-provider refresh intervals, exponential retry backoff, and live config reload.
 - GLM and DeepSeek peak-period indicators.
-- Optional OpenCode usage merging per provider.
+- Optional OpenCode usage merging per provider, plus ZCode ledger slices for Minimax and DeepSeek (on by default).
 - Launch-at-login support when the app is installed in `/Applications`.
 - macOS sleep health diagnosis and keep-awake management: 1-click in-memory keep-awake toggle on the menu footer (with tri-color indicator dot); dedicated "Energy" settings tab displaying sleep blockers and system power parameter matrix (backed by native IOKit C API with zero subprocess overhead).
 - Private local storage: configuration directories use mode `0700`; config and log files use `0600`.

@@ -1,6 +1,23 @@
 import Foundation
 import SQLite3
 
+/// ZCode 库中**非智谱** provider（`ZcodeProviderSlice`）的原始聚合，结构与
+/// `OpencodeDBAggregate` 同构：一份 DB 按 provider 切片，供 scanner 再压成 7 天窗口。
+struct ZcodeProviderSliceAggregate: Equatable, Sendable {
+    /// `ZcodeProviderSlice.rawValue` → dayStart → 当日聚合
+    let perSliceDay: [String: [Date: OpencodeDailyUsage]]
+    /// 分片 → 累计、有 token 的 LLM round 数
+    let roundCount: [String: Int]
+    /// 分片 → 见过的 modelID（去重）
+    let models: [String: [String]]
+    /// 分片 → 最近窗口内的逐次模型调用
+    let samples: [String: [LocalTokenUsageSample]]
+
+    static let empty = ZcodeProviderSliceAggregate(
+        perSliceDay: [:], roundCount: [:], models: [:], samples: [:]
+    )
+}
+
 /// ZCode `model_usage` 聚合结果：per-day token + 累计 + samples + 见过的 model + session 数。
 /// reasoning 归类在 SQL `queryPerDay` 内通过 Method A（EXISTS reasoning part）一次性算好，
 /// 不再有字符分摊 / applyReasoningSplit 步骤——reader 输出的 `GlmDailyUsage.reasoningTokens`
@@ -16,9 +33,13 @@ struct GlmZcodeDBAggregate: Equatable, Sendable {
     let sessionCount: Int
     /// 最近窗口内的逐次模型调用（reader 直接输出 Method A 分类后的 realOutput/reasoningOutput）
     let samples: [LocalTokenUsageSample]
+    /// 非智谱 provider 分片（`minimax` / `deepseek`）的原始聚合。智谱系行不进这里，
+    /// 两者按 `ZcodeProviderSlice` 前缀谓词互斥切分。
+    let providerSlices: ZcodeProviderSliceAggregate
 
     static let empty = GlmZcodeDBAggregate(
-        perDay: [:], roundCount: 0, models: [], sessionCount: 0, samples: []
+        perDay: [:], roundCount: 0, models: [], sessionCount: 0, samples: [],
+        providerSlices: .empty
     )
 }
 
@@ -40,6 +61,11 @@ struct GlmZcodeDBAggregate: Equatable, Sendable {
 ///   其他任务；非智谱 provider 不带前缀、不会被误算进 GLM 卡
 ///
 /// 直接 read 原 .db；CANTOPEN / BUSY 时由调用方（`SQLiteTempCopy.read`）走 /tmp 副本。
+///
+/// **多 provider 账本**：除上面的智谱系行外，同表还有用户自带的非智谱 provider 行
+/// （`minimax` / `deepseek`）。它们由 `ZcodeProviderSlice` 前缀谓词单独读入
+/// `providerSlices`（per-slice × per-day 聚合 + 累计 rounds + models + samples），
+/// 与智谱行互斥：两组谓词都不带 `%` 之外的模糊匹配，不会互相吞行。
 final class GlmZcodeDBReader {
     /// ZCode 中闲时任务（off-peak idle task）的 provider_id —— 仅 0020 迁移前的
     /// 历史裸值。迁移后的新 ID（`account:bigmodel-offpeak-idle-plan` /
@@ -64,12 +90,33 @@ final class GlmZcodeDBReader {
         let totals = try queryTotals()
         let models = try queryModels()
         let samples = try querySamples(cutoff: sampleCutoff)
+        let providerSlices = try aggregateProviderSlices(calendar: calendar, cutoff: sampleCutoff)
 
         return GlmZcodeDBAggregate(
             perDay: perDay,
             roundCount: totals.roundCount,
             models: models,
             sessionCount: totals.sessionCount,
+            samples: samples,
+            providerSlices: providerSlices
+        )
+    }
+
+    /// 非智谱 provider 分片（`ZcodeProviderSlice`）的原始聚合。与智谱查询走同一张
+    /// `model_usage` 表，但谓词换成切片前缀 LIKE —— 一次扫描产出 GLM 卡 + 智谱以外
+    /// 各卡的原料，不需要第二个 scanner / 第二次开库。
+    private func aggregateProviderSlices(
+        calendar: Calendar,
+        cutoff: Date?
+    ) throws -> ZcodeProviderSliceAggregate {
+        let perSliceDay = try querySlicePerDay(calendar: calendar, cutoff: cutoff)
+        let roundCount = try querySliceTotals()
+        let models = try querySliceModels()
+        let samples = try querySliceSamples(cutoff: cutoff)
+        return ZcodeProviderSliceAggregate(
+            perSliceDay: perSliceDay,
+            roundCount: roundCount,
+            models: models,
             samples: samples
         )
     }
@@ -311,6 +358,250 @@ final class GlmZcodeDBReader {
             try SQLiteConnection.requiredText(stmt, column: 0)
         }
         return rows.sorted()
+    }
+
+    // MARK: - 非智谱 provider 分片（ZcodeProviderSlice）
+
+    /// 分片 × per-day token 聚合。
+    ///
+    /// 与智谱查询的差异只有两处，都是口径而非结构：
+    /// 1. **不做 Method A 归类**。Method A 依赖 `part` 表的 reasoning part，智谱行
+    ///    才有 `assistant_message_id` 关联；非智谱行的 `output_tokens` /
+    ///    `reasoning_tokens` 已是两个独立上报桶，直接沿用（对应
+    ///    `TokenAccountingCatalog.zcode` 的 `.normalized`）。
+    /// 2. **按 ZCode 的 cache-inclusive input 口径**：`uncached = max(input -
+    ///    cacheRead, 0)`，`total = uncached + cacheRead + output + reasoning`，
+    ///    与智谱行同源（OpenCode 那边 raw input 是 uncached，才需要 `input +
+    ///    cacheRead` 合成）。
+    private func querySlicePerDay(
+        calendar: Calendar,
+        cutoff: Date?
+    ) throws -> [String: [Date: OpencodeDailyUsage]] {
+        let sql = """
+        SELECT
+          provider_id,
+          strftime('%Y-%m-%d', started_at/1000,'unixepoch','localtime') AS day,
+          COUNT(*) AS rounds,
+          COUNT(DISTINCT turn_id) AS turns,
+          SUM(MAX(COALESCE(input_tokens, 0), 0)) AS tin,
+          SUM(MAX(COALESCE(output_tokens, 0), 0)) AS tout,
+          SUM(MAX(COALESCE(reasoning_tokens, 0), 0)) AS trsn,
+          SUM(MAX(COALESCE(cache_read_input_tokens, 0), 0)) AS tcr,
+          SUM(MAX(COALESCE(cache_creation_input_tokens, 0), 0)) AS tcw
+        FROM model_usage
+        WHERE \(Self.sliceFilterSQL("provider_id"))
+          AND status = 'completed'
+          AND (
+            COALESCE(input_tokens,0)
+            + COALESCE(output_tokens,0)
+            + COALESCE(reasoning_tokens,0)
+            + COALESCE(cache_read_input_tokens,0)
+          ) > 0
+          AND (? IS NULL OR started_at >= ?)
+        GROUP BY provider_id, day
+        """
+        let cutoffMs = cutoff.map { Int64($0.timeIntervalSince1970 * 1000) }
+        let rows: [(String, String, Int64, Int64, Int64, Int64, Int64, Int64, Int64)] = try connection.query(
+            sql: sql,
+            bind: { stmt in
+                let provider = Self.bindSlices(to: stmt, index: 1)
+                guard provider == SQLITE_OK else { return provider }
+                return SQLiteConnection.bindNullableMsCutoff(
+                    cutoffMs, startingAt: 1 + Self.sliceFilterParameterCount
+                )(stmt)
+            },
+            map: { stmt in
+            let providerID = try SQLiteConnection.requiredText(stmt, column: 0)
+            let dayKey = try SQLiteConnection.requiredText(stmt, column: 1)
+            let rounds = try SQLiteConnection.requiredInt64(stmt, column: 2)
+            let turns = try SQLiteConnection.requiredInt64(stmt, column: 3)
+            let tin = SQLiteConnection.optionalInt64(stmt, column: 4)
+            let tout = SQLiteConnection.optionalInt64(stmt, column: 5)
+            let trsn = SQLiteConnection.optionalInt64(stmt, column: 6)
+            let tcr = SQLiteConnection.optionalInt64(stmt, column: 7)
+            let tcw = SQLiteConnection.optionalInt64(stmt, column: 8)
+            return (providerID, dayKey, rounds, turns, tin, tout, trsn, tcr, tcw)
+            }
+        )
+        var out: [String: [Date: OpencodeDailyUsage]] = [:]
+        for (providerID, dayKey, rounds, turns, tin, tout, trsn, tcr, tcw) in rows {
+            guard let slice = ZcodeProviderSlice(providerID: providerID),
+                  let dayStart = LocalUsageDayKey.parse(dayKey, calendar: calendar) else { continue }
+            let toutNN = SQLiteConnection.nnClamp(tout)
+            let trsnNN = SQLiteConnection.nnClamp(trsn)
+            let tcrNN = SQLiteConnection.nnClamp(tcr)
+            let tcwNN = SQLiteConnection.nnClamp(tcw)
+            let uncachedInput = Int(clamping: max(SaturatingArithmetic.subtract(tin, tcr), 0))
+            let usage = OpencodeDailyUsage(
+                dayStart: dayStart,
+                inputTokens: uncachedInput,
+                outputTokens: toutNN,
+                cacheReadTokens: tcrNN,
+                cacheWriteTokens: tcwNN,
+                reasoningTokens: trsnNN,
+                totalTokens: SaturatingArithmetic.sum(uncachedInput, tcrNN, toutNN, trsnNN),
+                turns: max(0, Int(clamping: turns)),
+                rounds: max(0, Int(clamping: rounds))
+            )
+            var byDay = out[slice.rawValue] ?? [:]
+            byDay[dayStart] = byDay[dayStart].map { $0 + usage } ?? usage
+            out[slice.rawValue] = byDay
+        }
+        return out
+    }
+
+    /// 分片累计的有 token LLM round 数。
+    private func querySliceTotals() throws -> [String: Int] {
+        let sql = """
+        SELECT provider_id, COUNT(*) AS calls
+        FROM model_usage
+        WHERE \(Self.sliceFilterSQL("provider_id"))
+          AND status = 'completed'
+          AND (
+            COALESCE(input_tokens,0)
+            + COALESCE(output_tokens,0)
+            + COALESCE(reasoning_tokens,0)
+            + COALESCE(cache_read_input_tokens,0)
+          ) > 0
+        GROUP BY provider_id
+        """
+        var out: [String: Int] = [:]
+        let rows: [(String, Int64)] = try connection.query(sql: sql, bind: { stmt in
+            Self.bindSlices(to: stmt, index: 1)
+        }) { stmt in
+            (try SQLiteConnection.requiredText(stmt, column: 0),
+             try SQLiteConnection.requiredInt64(stmt, column: 1))
+        }
+        for (providerID, calls) in rows {
+            guard let slice = ZcodeProviderSlice(providerID: providerID) else { continue }
+            out[slice.rawValue] = SaturatingArithmetic.add(out[slice.rawValue] ?? 0, Int(clamping: calls))
+        }
+        return out
+    }
+
+    /// 分片见过的 modelID（去重）。
+    private func querySliceModels() throws -> [String: [String]] {
+        let sql = """
+        SELECT DISTINCT provider_id, model_id
+        FROM model_usage
+        WHERE \(Self.sliceFilterSQL("provider_id"))
+          AND model_id IS NOT NULL
+        """
+        var models: [String: Set<String>] = [:]
+        let rows: [(String, String)] = try connection.query(sql: sql, bind: { stmt in
+            Self.bindSlices(to: stmt, index: 1)
+        }) { stmt in
+            (try SQLiteConnection.requiredText(stmt, column: 0),
+             try SQLiteConnection.requiredText(stmt, column: 1))
+        }
+        for (providerID, model) in rows {
+            guard let slice = ZcodeProviderSlice(providerID: providerID) else { continue }
+            models[slice.rawValue, default: []].insert(model)
+        }
+        return models.mapValues { $0.sorted() }
+    }
+
+    /// 分片最近窗口内的逐次模型调用。口径与智谱样本一致：ZCode 的 `input_tokens`
+    /// 已是 cache-inclusive 完整 input，直接作为 `LocalTokenUsageSample.inputTokens`，
+    /// `cachedInputTokens = cache_read_input_tokens`；output / reasoning 是两个独立
+    /// 上报桶，不做 part 表归类。`modelName` 取 `model_id`（ZCode 不记 model 名），
+    /// `sourceProviderID` 保留原始 `provider_id`。
+    private func querySliceSamples(cutoff: Date?) throws -> [String: [LocalTokenUsageSample]] {
+        let sql = """
+        SELECT
+          id,
+          session_id,
+          started_at,
+          turn_id,
+          model_id,
+          provider_id,
+          input_tokens,
+          output_tokens,
+          reasoning_tokens,
+          cache_read_input_tokens
+        FROM model_usage
+        WHERE \(Self.sliceFilterSQL("provider_id"))
+          AND status = 'completed'
+          AND (
+            COALESCE(input_tokens,0)
+            + COALESCE(output_tokens,0)
+            + COALESCE(reasoning_tokens,0)
+            + COALESCE(cache_read_input_tokens,0)
+          ) > 0
+          AND (? IS NULL OR started_at >= ?)
+        ORDER BY started_at, id
+        """
+        let cutoffMs = cutoff.map { Int64($0.timeIntervalSince1970 * 1000) }
+        let rows: [(String, String, Int64, String?, String?, String, Int64, Int64, Int64, Int64)] = try connection.query(
+            sql: sql,
+            bind: { stmt in
+                let provider = Self.bindSlices(to: stmt, index: 1)
+                guard provider == SQLITE_OK else { return provider }
+                return SQLiteConnection.bindNullableMsCutoff(
+                    cutoffMs, startingAt: 1 + Self.sliceFilterParameterCount
+                )(stmt)
+            },
+            map: { stmt in
+            let id = try SQLiteConnection.requiredText(stmt, column: 0)
+            let sessionID = try SQLiteConnection.requiredText(stmt, column: 1)
+            let timestamp = try SQLiteConnection.requiredInt64(stmt, column: 2)
+            let turn = SQLiteConnection.optionalText(stmt, column: 3)
+            let model = SQLiteConnection.optionalText(stmt, column: 4)
+            let providerID = try SQLiteConnection.requiredText(stmt, column: 5)
+            let input = SQLiteConnection.optionalInt64(stmt, column: 6)
+            let output = SQLiteConnection.optionalInt64(stmt, column: 7)
+            let reasoning = SQLiteConnection.optionalInt64(stmt, column: 8)
+            let cacheRead = SQLiteConnection.optionalInt64(stmt, column: 9)
+            return (id, sessionID, timestamp, turn, model, providerID, input, output, reasoning, cacheRead)
+            }
+        )
+        var out: [String: [LocalTokenUsageSample]] = [:]
+        for (id, sessionID, timestamp, turn, model, providerID, input, output, reasoning, cacheRead) in rows {
+            guard let slice = ZcodeProviderSlice(providerID: providerID) else { continue }
+            let promptComponent = turn ?? "event-\(id)"
+            let sample = LocalTokenUsageSample(
+                completedAt: Date(timeIntervalSince1970: Double(timestamp) / 1000),
+                modelName: model,
+                promptID: "\(sessionID):\(promptComponent)",
+                inputTokens: SQLiteConnection.nnClamp(input),
+                cachedInputTokens: SQLiteConnection.nnClamp(cacheRead),
+                outputTokens: SQLiteConnection.nnClamp(output),
+                reasoningOutputTokens: SQLiteConnection.nnClamp(reasoning),
+                sourceProviderID: providerID
+            )
+            out[slice.rawValue, default: []].append(sample)
+        }
+        return out
+    }
+
+    /// 非智谱分片的 `provider_id` 谓词：每个 `ZcodeProviderSlice` 前缀一个
+    /// `LIKE ?`（与智谱谓词互斥，前缀增减时谓词与绑定同步生成）。
+    private static func sliceFilterSQL(_ column: String) -> String {
+        let likes = ZcodeProviderSlice.allCases
+            .map { _ in "\(column) LIKE ?" }
+            .joined(separator: " OR ")
+        return "(\(likes))"
+    }
+
+    private static var sliceFilterParameterCount: Int32 {
+        Int32(ZcodeProviderSlice.allCases.count)
+    }
+
+    private static func bindSlices(to statement: OpaquePointer, index: Int32) -> Int32 {
+        let transient = SQLiteConnection.sqliteTransientDestructor
+        var currentIndex = index
+        for slice in ZcodeProviderSlice.allCases {
+            let code = sqlite3_bind_text(
+                statement,
+                currentIndex,
+                ((slice.providerPrefix + "%") as NSString).utf8String,
+                -1,
+                transient
+            )
+            guard code == SQLITE_OK else { return code }
+            currentIndex += 1
+        }
+        return SQLITE_OK
     }
 
     /// `provider_id` 过滤谓词：每个智谱前缀一个 `LIKE ?`（GLM 家族超集，新格式

@@ -27,7 +27,7 @@ shasum -a 256 -c SHA256SUMS.txt
 
 ### Minimax Token Plan
 
-在设置中启用 Minimax 并填写 Token Plan API Key。本地用量读取 `~/.minimax/v2/sqlite/runtime-state.sqlite`；如需叠加 OpenCode 中的 `minimax-cn-coding-plan` 用量，把 `config.json` 中对应的 `clientBindings` 设为 `true`（见下文“OpenCode 合并”）。
+在设置中启用 Minimax 并填写 Token Plan API Key。本地用量读取 `~/.minimax/v2/sqlite/runtime-state.sqlite`；ZCode 的 `minimax` 分片默认并入本卡（`config.json` 的 `clientBindings` 可关）；如需叠加 OpenCode 中的 `minimax-cn-coding-plan` 用量，把 `config.json` 中对应的 `clientBindings` 设为 `true`（见下文"OpenCode 合并"）。
 
 ### ChatGPT Plan / Codex
 
@@ -45,11 +45,15 @@ ZCode 的任务按 provider 分为日常（Coding Plan）/ 闲时 / 其他智谱
 
 ### DeepSeek
 
-填写 `sk-...` 格式的 DeepSeek API Key。卡片显示账户余额；DeepSeek 没有 native 本地账本，只有启用 OpenCode 合并（`config.json` 的 `clientBindings`）后才会显示本地 token 图表。DeepSeek Flash 本地成本估算为：输入 ¥1/百万 token、缓存读取 ¥0.02/百万 token、输出 ¥4/百万 token；北京时间周一至周五 9:00–12:00、14:00–18:00 忙时按 2 倍计算，周末全天平价。
+填写 `sk-...` 格式的 DeepSeek API Key。卡片显示账户余额；DeepSeek 没有 native 本地账本，本地 token 图表来自 ZCode 分片（默认开启，读取 `~/.zcode/cli/db/db.sqlite` 中 `provider_id` 为 `deepseek` 的行），可选再叠加 OpenCode 合并（`config.json` 的 `clientBindings`）。DeepSeek Flash 本地成本估算为：输入 ¥1/百万 token、缓存读取 ¥0.02/百万 token、输出 ¥4/百万 token；北京时间周一至周五 9:00–12:00、14:00–18:00 忙时按 2 倍计算，周末全天平价。
 
 ### OpenCode 合并
 
 应用读取 `~/.local/share/opencode/opencode.db`，按 `providerID` 分片。OpenCode 不是独立卡片；合并由 `~/Library/Application Support/LLM-monitor/config.json` 中 `clientBindings[]` 的 `opencode` 绑定控制（GLM 默认开启，其他 Provider 默认关闭），设置页不提供独立开关。手工修改该文件并保存后应用会热加载，无需重启。
+
+### ZCode 分片
+
+ZCode 与 OpenCode 一样是多 provider 共享账本：智谱系行进 GLM 卡；`minimax` / `deepseek` 前缀的行按 `provider_id` 分片，分别并入 MiniMax / DeepSeek 卡。对应绑定是 `clientBindings[]` 的 `zcode` 条目，**默认开启**，设置页同样无独立开关。
 
 ## 日常操作
 
@@ -119,7 +123,7 @@ ZCode 的任务按 provider 分为日常（Coding Plan）/ 闲时 / 其他智谱
 
 ### 本地 token 用量为空
 
-对应客户端必须实际产生过会话记录。确认数据库/会话路径存在，并授予应用读取这些用户目录的权限。Antigravity 还要求本地服务正在运行；DeepSeek 需要启用 OpenCode 合并才有本地用量。
+对应客户端必须实际产生过会话记录。确认数据库/会话路径存在，并授予应用读取这些用户目录的权限。Antigravity 还要求本地服务正在运行；DeepSeek 的本地用量需要 ZCode 或 OpenCode 里产生过对应 provider 的调用记录。
 
 ### 无法开启“开机自启动”
 
