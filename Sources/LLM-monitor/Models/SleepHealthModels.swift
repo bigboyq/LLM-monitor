@@ -4,8 +4,9 @@ import Foundation
 // 「节能」模块（系统睡眠健康度与防休眠管理）在 UI 与服务实现之间的稳定数据契约。
 // 实现见 Services/SleepHealthService.swift；纯判定/解析逻辑见 SleepHealthEvaluator。
 
-/// 原始断言快照：由 IOKit 断言枚举映射而来，供白名单过滤与单元测试使用
-struct SleepAssertionSnapshot: Equatable {
+/// 原始断言快照：由 IOKit 断言枚举映射而来，供白名单过滤与单元测试使用。
+/// `Sendable`：由后台探针任务构造、经 `MainActor.run` 发布到主 actor。
+struct SleepAssertionSnapshot: Equatable, Sendable {
     /// 断言 ID（系统唯一自增标识，如 33575）
     var assertionId: UInt32?
     /// 断言类型，如 PreventUserIdleSystemSleep / NoIdleSleepAssertion / PreventSystemSleep
@@ -23,7 +24,7 @@ struct SleepAssertionSnapshot: Equatable {
 }
 
 /// 违规持有睡眠锁的第三方进程条目（检查项 1 的输出）
-struct SleepAssertionOffender: Identifiable, Equatable {
+struct SleepAssertionOffender: Identifiable, Equatable, Sendable {
     let assertionId: UInt32?
     let pid: Int32
     let processName: String
@@ -59,7 +60,7 @@ struct SleepAssertionOffender: Identifiable, Equatable {
 }
 
 /// 单一供电配置下的关键电源参数（nil 表示 pmset 未报告该项）
-struct PowerProfileSettings: Equatable {
+struct PowerProfileSettings: Equatable, Sendable {
     var sleepMinutes: Int?
     var womp: Int?
     var tcpkeepalive: Int?
@@ -68,13 +69,13 @@ struct PowerProfileSettings: Equatable {
 }
 
 /// `pmset -g custom` 解析结果（AC / Battery 双列；台式机无电池节时 battery 为 nil）
-struct PowerConfigSnapshot: Equatable {
+struct PowerConfigSnapshot: Equatable, Sendable {
     var ac: PowerProfileSettings
     var battery: PowerProfileSettings?
 }
 
 /// 三色睡眠健康度状态
-enum SleepHealthStatus: Equatable {
+enum SleepHealthStatus: Equatable, Sendable {
     /// 绿：三项检查全部通过
     case healthy
     /// 黄：存在第三方进程霸占睡眠锁（检查项 1 不通过）
@@ -98,7 +99,7 @@ enum SleepHealthStatus: Equatable {
 }
 
 /// 一次睡眠健康度评估的完整输出
-struct SleepHealthReport: Equatable {
+struct SleepHealthReport: Equatable, Sendable {
     var status: SleepHealthStatus
     /// 过滤后的全部第三方违规断言（无论哪个状态胜出都携带：红色态的检查项 1
     /// 明细需要真实数据，而非按胜出状态反推）

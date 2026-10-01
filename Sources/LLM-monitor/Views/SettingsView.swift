@@ -18,6 +18,11 @@ struct SettingsView: View {
     @State var statusBarHealthDotEnabled: Bool = true
     @State var statusBarHealthColors: StatusBarHealthColors = .default
 
+    // 贴边方向**没有** @State：设置页不提供它（见下方保存处的注释），而拖拽会在
+    // 设置窗口开着的时候改它——从 @State 写回就会把用户刚拖出来的位置抹掉。
+    @State var edgeDockMode: EdgeDockMode = EdgeDockConfig.default.mode
+    @State var edgeDockHideInFullscreen: Bool = EdgeDockConfig.default.hideInFullscreen
+
     @State var minimaxEnabled: Bool = false
     @State var minimaxInterval: Int = 0
     @State var minimaxApiKey: String = ""
@@ -64,6 +69,8 @@ struct SettingsView: View {
     @State var notifyChannels: [String: [QuotaNotificationKind: QuotaNotifyChannel]] = [:]
 
     @State var isSaving: Bool = false
+    /// 表单当前对应的那一版配置快照，只用于「这次变化与表单无关吗」的判据。
+    @State var loadedConfigSnapshot: AppConfig?
     @State var saveErrorMessage: String?
 
     @Environment(\.dismiss) var dismiss
@@ -197,9 +204,12 @@ struct SettingsView: View {
         .onReceive(state.$pendingSettingsTab) { _ in
             consumePendingSettingsTab()
         }
-        .onReceive(configStore.$config.dropFirst()) { _ in
-            // 外部编辑配置文件时，刷新设置页；保存过程中保留用户正在编辑的草稿。
-            guard !isSaving else { return }
+        .onReceive(configStore.$config.dropFirst()) { newConfig in
+            // 外部编辑配置文件时刷新设置页。两道闸门：
+            //  - 自己正在保存 → 保留草稿（保存会广播一次 `config`）。
+            //  - 变的只是边缘窗位置 → 保留草稿（拖 dock 会写盘，但那三个字段表单管不到；
+            //    不挡的话，用户输了一半的 API key 会被盘上的旧值无声刷回去）。
+            guard !isSaving, hasFormRelevantChange(to: newConfig) else { return }
             loadCurrentConfig()
         }
         .onDisappear {
@@ -348,7 +358,7 @@ struct SettingsView: View {
                 }
             }
 
-            SettingsSection(title: "状态栏图标", footer: "可自定义正常、预警、异常三种状态颜色；系统图标使用状态圆点。App 图标为经典双环水位样式：外环周额度、内环 5 小时额度（实线充盈到最低剩余量、虚线延伸到平均值，逆时针绘制），中心水位映射 5 小时最低剩余与警报颜色。Icon Duo 为额度仪表盘：左右弧线显示 5 小时与周额度，中心扇形按最低剩余比例动态显示 0～360°，底部三个套餐状态点与顶部节能状态圆点。") {
+            SettingsSection(title: "状态栏图标", footer: "可自定义正常、预警、异常三种状态颜色；系统图标使用状态圆点。App 图标直接使用设计稿（与下面的预览同一张图），是固定图片，不随额度与健康度变化。Icon Duo 为额度仪表盘：左右弧线显示 5 小时与周额度，中心扇形按最低剩余比例动态显示 0～360°，底部三个套餐状态点与顶部节能状态圆点。") {
                 VStack(alignment: .leading, spacing: 16) {
                     SettingsControlRow("图标主题") {
                         Picker("", selection: $statusBarIconStyle) {
@@ -397,6 +407,45 @@ struct SettingsView: View {
                         )
                         .labelsHidden()
                     }
+
+                    SettingsControlRow("恢复默认颜色") {
+                        Button("恢复默认") {
+                            statusBarHealthColors = .default
+                        }
+                        .controlSize(.small)
+                        // 三个颜色都还是默认值时按钮没有意义，也不该看着可点。
+                        // 放在 disabled 而不是直接隐藏：控件位置会随三色是否被改过
+                        // 而跳动，读起来像是设置页自己变了。
+                        .disabled(statusBarHealthColors == .default)
+                    }
+                }
+            }
+
+            SettingsSection(
+                title: "边缘状态窗",
+                footer: "在屏幕边缘常驻一个小型圆环窗，每个已启用的 Provider 一个双环圆——外环是 5 小时额度剩余比例，内环是周额度剩余比例（各取该 Provider 内最吃紧的套餐），中心是品牌图标，环的颜色沿用上方状态栏三色。鼠标默认穿透不挡点击，移上去才接管；悬停在某个圆环上会在旁边展开与主菜单相同的 Provider 卡片，移开鼠标收起。可直接拖到任意边缘、任意一块显示器上，位置会记住——贴靠哪一边、停在哪块屏都由拖动决定，这里没有下拉框（屏的拔出会让 dock 自动回到主屏）。下拉框选的是 dock 在屏幕上的**形态**，四选一；全屏时是否隐藏是另一件事，单独一个开关。"
+            ) {
+                VStack(alignment: .leading, spacing: 16) {
+                    SettingsControlRow("形态") {
+                        Picker("", selection: $edgeDockMode) {
+                            ForEach(EdgeDockMode.allCases) { mode in
+                                Text(mode.displayName).tag(mode)
+                            }
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.menu)
+                        .frame(width: SettingsLayout.standardControlWidth, alignment: .trailing)
+                    }
+
+                    // 选中项的一句话说明：四个选项的名字都是形态，不是行为，
+                    // 光看名字分不出"小圆环"会不会长、"自动隐藏"藏的是环还是整个窗。
+                    Text(edgeDockMode.summary)
+                        .font(SettingsTypography.status)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    SettingsToggleRow(label: "全屏时不显示", isOn: $edgeDockHideInFullscreen)
+                        .disabled(!edgeDockMode.isVisible)
                 }
             }
 
@@ -956,6 +1005,9 @@ struct SettingsView: View {
         statusBarIconStyle = config.effectiveStatusBarIconStyle
         statusBarHealthDotEnabled = config.effectiveStatusBarHealthDotEnabled
         statusBarHealthColors = config.effectiveStatusBarHealthColors
+        let edgeDock = config.effectiveEdgeDockConfig
+        edgeDockMode = edgeDock.mode
+        edgeDockHideInFullscreen = edgeDock.hideInFullscreen
         barkEnabled = config.bark?.enabled ?? false
         barkServerURL = config.bark?.serverURL ?? BarkConfig.defaultServerURL
         barkDeviceKey = config.bark?.deviceKey ?? ""
@@ -1022,6 +1074,48 @@ struct SettingsView: View {
             deepseekApiKey = deepseek.apiKey ?? ""
             deepseekInterval = deepseek.refreshIntervalSeconds ?? 0
         }
+        // 记下"表单当前对应的是哪一版配置"，供下面的重载判据用。
+        loadedConfigSnapshot = config
+    }
+
+    /// 把边缘窗的**位置三兄弟**（贴边方向 / 沿边位置 / 所在屏）抹平成默认值。
+    ///
+    /// 用它做对比，而不是逐个字段枚举"表单管得到哪些"：枚举一旦将来漏了新加的设置项，
+    /// 那个字段就会静默失去热重载。抹平位置字段之后，两份配置相等 ⟺
+    /// **除了 dock 停在哪，表单看到的任何东西都没变**。
+    static func formRelevantProjection(of config: AppConfig) -> AppConfig {
+        var copy = config
+        if var dock = copy.edgeDock {
+            dock.edge = EdgeDockConfig.default.edge
+            dock.offset = EdgeDockConfig.default.offset
+            dock.screenUUID = nil
+            copy.edgeDock = dock
+        }
+        return copy
+    }
+
+    /// `old` → `new` 之间，除边缘窗位置外还有没有别的差异？**纯函数**。
+    ///
+    /// 抽成 `static` 是因为它是全部的判断逻辑，而 `loadedConfigSnapshot` 活在
+    /// `@State` 里——`@State` 的写入只在视图真正进入渲染层时才可靠，直接从
+    /// 单元测试驱动 `loadCurrentConfig()` 写不进去，测到的会是快照为 nil 的分支。
+    static func hasFormRelevantChange(from old: AppConfig, to new: AppConfig) -> Bool {
+        formRelevantProjection(of: old) != formRelevantProjection(of: new)
+    }
+
+    /// 配置变了，但**变的不是表单关心的东西**吗？
+    ///
+    /// 边缘窗拖拽每次松手都会写 config.json（`EdgeDockController.persistConfig`），
+    /// 而它只动那三个位置字段——设置页表单一个都碰不到。少了这道判据，拖一次 dock
+    /// 就会让开着的设置页收到 `configStore.$config` 广播、整张表单重载，用户正在
+    /// 输入的 API key、刷新间隔、Bark 配置**无声地**刷回盘上的旧值（dock 面板是
+    /// nonactivating 的，完全可以在设置窗口开着的时候拖）。
+    ///
+    /// 没有快照（还没载入过）时一律判 true：宁可多刷一次，也不要在状态不明时
+    /// 顶着陈旧表单不刷新。
+    func hasFormRelevantChange(to newConfig: AppConfig) -> Bool {
+        guard let old = loadedConfigSnapshot else { return true }
+        return Self.hasFormRelevantChange(from: old, to: newConfig)
     }
 
     func saveAndApply() async throws {
@@ -1034,6 +1128,31 @@ struct SettingsView: View {
         config.statusBarHealthColors = statusBarHealthColors == .default
             ? nil
             : statusBarHealthColors
+        // 边缘窗：只带形态与全屏隐藏这两个**设置页真的有控件**的字段；贴边方向、
+        // 沿边位置、所在屏由拖拽实时写盘，一律在保存这一刻现读
+        // `configStore.config.effectiveEdgeDockConfig`。
+        //
+        // 三者都必须是"现读"而不是"开窗时读进 @State 再写回"：dock 的拖拽随时可能
+        // 改它们，而设置窗口并没有被阻塞（dock 是独立的 nonactivating panel，用户
+        // 完全可以一边开着设置、一边把 dock 拖到另一条边）。`offset` / `screenUUID`
+        // 本来就是现读的；`edge` 曾经用 @State，于是"开设置 → 拖 dock → 点保存"
+        // 这一条会把刚拖出来的贴边方向悄悄退回——正是上面这句话要防的事。
+        // 设置页没有贴边方向的 Picker（拖动才是唯一的决定方式），所以 `edge`
+        // 根本没有 UI 消费者，@State 纯属多余。
+        // 用 `effectiveEdgeDockConfig` 而不是裸的 `config.edgeDock`：后者是盘上的
+        // 原值，手改成 `"offset": 42` 时不会被 `normalized` 拉回 [0, 1]，于是每次
+        // 在设置页点保存都会把这个越界值原样写回去，而 dock 那边显示的是钳到 0.5 的
+        // 结果——两者长期不一致。`loadCurrentConfig` 已经用的是这个入口，这里对齐。
+        let existingEdgeDock = configStore.config.effectiveEdgeDockConfig
+        let nextEdgeDock = EdgeDockConfig(
+            mode: edgeDockMode,
+            edge: existingEdgeDock.edge,
+            offset: existingEdgeDock.normalized.offset,
+            screenUUID: existingEdgeDock.screenUUID,
+            hideInFullscreen: edgeDockHideInFullscreen
+        )
+        let defaultEdgeDock = EdgeDockConfig.default
+        config.edgeDock = (nextEdgeDock == defaultEdgeDock) ? nil : nextEdgeDock
         let defaultProviderOrder = descriptors
             .sorted(by: providerDescriptorDisplayNameAscending)
             .map { $0.kind.quotaProviderID }

@@ -33,7 +33,11 @@ enum SleepHealthEvaluator {
     static func resolveProcessPath(_ pid: Int32) -> String? {
         var pathbuf = [CChar](repeating: 0, count: Int(MAXPATHLEN))
         guard proc_pidpath(pid, &pathbuf, UInt32(MAXPATHLEN)) > 0 else { return nil }
-        return String(cString: pathbuf)
+        // C 字符串是「字节 + NUL 终止」，`String(cString:)` 的语义就是读到第一个
+        // 0 为止（遇非 UTF-8 字节则替换）。它已弃用，改为自己截断再解码：
+        // prefix(while:) 丢掉 NUL 及其后的残留，map 补上 UInt8 的位模式转换。
+        let bytes = pathbuf.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
+        return String(decoding: bytes, as: UTF8.self)
     }
 
     /// 是否系统自有进程：名称白名单命中，或路径可解析且位于系统目录。

@@ -16,5 +16,12 @@ extension Color {
     /// 统一预警语义色：深浅模式下均符合 WCAG 2.1 AA 对比度要求，且与 StatusIndicator 的 warning (orange) 对齐，
     /// 解决系统 Color.yellow 在浅色背景下对比度不足 2:1 的问题。
     static let warningTint = Color(nsColor: .systemOrange)
+
+    /// 统一"健康"语义色。SwiftUI 的 `.green` 是**固定色**：不随外观变化，
+    /// 同一个值在深色卡片上只是偏亮，在**浅色卡片上则是刺眼的亮绿**——白底亮绿
+    /// 的对比度看着够，但它的高饱和度会在一行里跳出来把整张卡片的注意力抢走。
+    /// `systemGreen` 有专门的浅色/深色两套变体（浅色模式自动压暗、加深），
+    /// 和 `warningTint` 同一套做法。
+    static let healthyTint = Color(nsColor: .systemGreen)
 }
 

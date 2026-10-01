@@ -10,8 +10,8 @@ Swift 6 strict-concurrency（[`-swift-version 6`](../../scripts/audit.sh:55)）�
 - `AppLog` [AppLog.swift:6](../../Sources/LLM-monitor/Services/AppLog.swift:6) — 内部 `DispatchQueue` 串行
 - `AppInstanceLock` [AppInstanceLock.swift:6](../../Sources/LLM-monitor/Services/AppInstanceLock.swift:6) — `flock(fd)` 内核锁
 - `FileManagerBox` [FileManagerBox.swift:35](../../Sources/LLM-monitor/Services/FileManagerBox.swift:35) — `private fileManager` + 调方 `AsyncMutex`/`@MainActor`
-- 4× `NSLock` 容器 — [Formatters:6](../../Sources/LLM-monitor/Services/Formatters.swift:6) / [DateParser:18](../../Sources/LLM-monitor/Services/DateParser.swift:18) / [BrandLogoView:33](../../Sources/LLM-monitor/Views/BrandLogoView.swift:33) / [ProcessRunner:28](../../Sources/LLM-monitor/Services/ProcessRunner.swift:28)
-- `ObserverStore` [MenuWindowAutoCloseBridge.swift:97](../../Sources/LLM-monitor/Views/MenuWindowAutoCloseBridge.swift:97) — Coordinator 主线程访问
+- 4× `NSLock` 容器 — [Formatters:6](../../Sources/LLM-monitor/Services/Formatters.swift:6) / [DateParser:18](../../Sources/LLM-monitor/Services/DateParser.swift:18) / [BrandLogoView:33](../../Sources/LLM-monitor/Views/BrandLogoView.swift:47) / [ProcessRunner:28](../../Sources/LLM-monitor/Services/ProcessRunner.swift:28)
+- `ObserverStore` [MenuWindowAutoCloseBridge.swift:105](../../Sources/LLM-monitor/Views/MenuWindowAutoCloseBridge.swift:105) — Coordinator 主线程访问
 - 5× scanner — [Minimax:48](../../Sources/LLM-monitor/Services/MinimaxLocalUsageScanner.swift:48) / [Antigravity:29](../../Sources/LLM-monitor/Services/AntigravityLocalUsageScanner.swift:29) / [Opencode:11](../../Sources/LLM-monitor/Services/OpencodeUsageScanner.swift:11) / [GlmZcode:22](../../Sources/LLM-monitor/Services/GlmZcodeLocalUsageScanner.swift:22) / [DSH:49](../../Sources/LLM-monitor/Services/DshLocalUsageScanner.swift:49) — `@MainActor` + `AsyncMutex.pipelineMutex`
 
 ## `actor` 清册
@@ -42,8 +42,35 @@ pipeline（load → RPC → SQL → save）安全持锁。`acquire()` 注册
 [`ProviderRefreshScheduler`](../../Sources/LLM-monitor/Services/ProviderRefreshScheduler.swift:26)
 用单一可中断 deadline driver 同时服务 regular 与 reset+delay 截止时间；到期网络
 batch 独立投递，driver 不在网络请求期间阻塞。
-[`ProviderRefreshScheduler.waitUntilNotInFlight`](../../Sources/LLM-monitor/Services/ProviderRefreshScheduler.swift:566)
+[`ProviderRefreshScheduler.waitUntilNotInFlight`](../../Sources/LLM-monitor/Services/ProviderRefreshScheduler.swift:742)
 和 [`AsyncMutex.acquire`](../../Sources/LLM-monitor/Services/AsyncMutex.swift:97) 是 cancellation
 范式：guard + `withCheckedThrowingContinuation` + `withTaskCancellationHandler`，cancel
 handler 投回 actor 精确移除 waiter；release 与 cancel 通过 actor 串行化防止 continuation
 double-resume。
+
+## 后台探针的 `@Sendable` 契约
+
+[`SleepHealthService`](../../Sources/LLM-monitor/Services/SleepHealthService.swift:35) 的
+「取快照后交给后台线程」写法有两个必须同时满足的条件：
+
+- 注入的时钟/探针闭包（`now` / `assertionProbe` / `powerConfigProbe`）要声明成
+  `@Sendable`。它们被捕获进 `Task.detached` 这一非隔离任务，Swift 6 语言模式下非
+  Sendable 捕获直接报 `sending` 数据竞争编译错误。
+- 三个系统探针（`defaultAssertionProbe` / `defaultPowerConfigProbe` /
+  `defaultPmsetCustomRead`）要标 `nonisolated`。类上是 `@MainActor`，函数引用赋给
+  闭包变量时隔离会被静默抹掉——编译照过，实际却在后台线程执行，没有任何隔离检查兜底。
+
+`Task.detached` 内部只读这些闭包的返回值，`report` 的发布仍走
+`await MainActor.run` + `refreshGeneration` 代际校验（期间有更新的刷新就丢弃旧结果）。
+
+## 编译器坑：`addTask` 闭包上的 `@MainActor` + 捕获列表
+
+`group.addTask { @MainActor [self, providerID] in … }` 这种写法在 Swift 6.4 上会让
+region isolation 检查器报 `pattern that the region-based isolation checker does not
+understand how to check. Please file a bug`，并**中断整段检查**——同一批次里更早的
+真实错误会被它吞掉，表现为"修完 A 冒出 B"。
+
+[`AppState.refreshAll`](../../Sources/LLM-monitor/Services/AppState.swift:447) 与
+`handleSystemWake` 因此不写 `@MainActor` 闭包属性，靠 `await self.…` 跨 actor 调用点
+保证隔离。改回 `@MainActor` 属性前先确认工具链是否已修这个 bug。
+

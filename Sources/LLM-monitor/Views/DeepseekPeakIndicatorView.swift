@@ -36,7 +36,7 @@ struct DeepseekPeakIndicatorView: View {
             offPeakRow: { start in
                 // 非高峰期：平时 1× 价格。距下一轮高峰 < 1 小时 → 橙色（临近）；≥ 1 小时 → 绿色（余量充足）。
                 let secs = start.timeIntervalSinceNow
-                let tier: Color = secs < 3600 ? Color.warningTint : .green
+                let tier: Color = secs < 3600 ? Color.warningTint : .healthyTint
                 HStack(spacing: 3) {
                     Image(systemName: "snowflake")
                         .font(MenuTypography.badge)

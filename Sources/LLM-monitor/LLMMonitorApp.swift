@@ -53,6 +53,7 @@ final class AppLifecycleDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         appState?.stop()
         barkNotifier?.cancelPendingSends()
+        EdgeDockController.shared.teardown()
         if let wakeObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver)
             self.wakeObserver = nil
@@ -135,6 +136,10 @@ struct LLMMonitorApp: App {
         appDelegate.quotaUpdateNotifier = quotaUpdateNotifier
         appDelegate.barkNotifier = barkNotifier
         rightClickHandler.setup(state: state)
+        // 边缘状态窗：接线（默认形态「状态窗（自动隐藏）」= 平时一列小圆环，
+        // 不占地方；不想要的人在设置页选「无」）。
+        // attach 内部订阅 statusDidChange / config 变化并按 config 决定显隐。
+        EdgeDockController.shared.attach(state: state, configStore: configStore)
         // R12: 启动时清理 SQLite 专属临时目录内超过 24 小时的残留副本（best-effort）。
         SQLiteTempCopy.sweepStaleCopies()
         logInfo("@main: AppState 启动完成")

@@ -35,10 +35,21 @@ enum StatusBarIconStyle: String, Codable, Sendable, CaseIterable, Identifiable {
         }
     }
 
-    /// 两种 SVG 仪表盘样式均为自包含图标，内部已表达健康度，不再叠加
-    /// 通用右下角状态圆点。
+    /// 自带完整图形的两种样式：App 图标（固定设计稿）与 Icon Duo（额度仪表盘），
+    /// 都不叠加通用右下角状态圆点——设计稿没给圆点留位置，Icon Duo 的边缘弧贴着
+    /// 画布，圆点只会压在图形上。
     var isDashboardStyle: Bool {
         self == .quotaLogo || self == .iconDuo
+    }
+
+    /// 该样式是否真的消费额度指标（`StatusBarQuotaMetrics`）。
+    ///
+    /// 目前只有 Icon Duo 仪表盘读它：`quotaLogo` 已改成固定设计稿（见
+    /// `MenuBarLabel`），四种系统符号只有颜色随健康度变。这条让 `RenderSignature`
+    /// 只在真正需要时把指标算进去——否则每次额度广播（每个 provider 一次）都会
+    /// 改变签名，逼着另外四种样式白重合成一次 NSImage。
+    var consumesQuotaMetrics: Bool {
+        self == .iconDuo
     }
 }
 
@@ -202,8 +213,18 @@ struct AppConfig: Codable, Equatable {
     /// Bark 推送配置。nil 或 enabled=false 都表示不推送。
     var bark: BarkConfig?
 
+    /// 屏幕边缘状态窗配置。nil 与 `mode = .hidden` 都表示不显示。
+    /// 与 statusBar* 同为纯外观字段，手改出错按缺失处理，不进损坏恢复流程。
+    var edgeDock: EdgeDockConfig?
+
     var effectiveStatusBarIconStyle: StatusBarIconStyle {
         statusBarIconStyle ?? .chartBar
+    }
+
+    /// 边缘窗配置归一化后再交给几何层：手改 `"offset": 42` 不该产生一个
+    /// 永远画在屏幕外、再也拖不回来的窗口。
+    var effectiveEdgeDockConfig: EdgeDockConfig {
+        (edgeDock ?? .default).normalized
     }
 
     var effectiveStatusBarHealthDotEnabled: Bool {
@@ -274,7 +295,8 @@ struct AppConfig: Codable, Equatable {
         statusBarHealthDotEnabled: Bool? = nil,
         statusBarHealthColors: StatusBarHealthColors? = nil,
         providerCardOrder: [String]? = nil,
-        bark: BarkConfig? = nil
+        bark: BarkConfig? = nil,
+        edgeDock: EdgeDockConfig? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.refreshIntervalSeconds = refreshIntervalSeconds
@@ -285,6 +307,7 @@ struct AppConfig: Codable, Equatable {
         self.statusBarHealthColors = statusBarHealthColors
         self.providerCardOrder = providerCardOrder
         self.bark = bark
+        self.edgeDock = edgeDock
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -293,6 +316,7 @@ struct AppConfig: Codable, Equatable {
         case statusBarHealthColors
         case providerCardOrder
         case bark
+        case edgeDock
     }
 
     init(from decoder: Decoder) throws {
@@ -320,6 +344,16 @@ struct AppConfig: Codable, Equatable {
             forKey: .statusBarHealthColors
         )
         self.providerCardOrder = try? container.decode([String].self, forKey: .providerCardOrder)
+        // 边缘窗同属外观字段：坏值按"没配过"处理，不能拖垮整份 provider 配置。
+        //
+        // 记一条告警：静默重置的位置/形态是排障噩梦——用户看到的是 dock 莫名回到
+        // 默认位置，而日志里什么都没有。Bark 那边同样有这层记录。
+        do {
+            self.edgeDock = try container.decodeIfPresent(EdgeDockConfig.self, forKey: .edgeDock)
+        } catch {
+            logWarn("[config] edgeDock 字段解析失败，已按未配置处理：\(error.localizedDescription)")
+            self.edgeDock = nil
+        }
         // Bark 字段手工配置容错：类型不匹配按缺失处理，不进损坏恢复流程；
         // 但 serverURL / deviceKey 等必填 key 缺失会让整块配置失效，记录告警。
         do {

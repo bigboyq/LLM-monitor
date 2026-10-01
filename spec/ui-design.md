@@ -26,16 +26,28 @@ Icon Styles (`statusBarIconStyle`):
 - `sparkles` (`sparkles`)
 - `brain` (`brain.head.profile`)
 - `cpu` (`cpu.fill`)
-- `quotaLogo` (`App 图标` - classic dual-ring water gauge, the pre-1.9.0 style)
-- `iconDuo` (`Icon Duo` - live quota dashboard, the 1.9.0+ redesign)
+- `quotaLogo` (`App 图标` - the app icon design asset, no longer drawn at runtime)
+- `iconDuo` (`Icon Duo` - live quota dashboard)
 
-The classic `quotaLogo` style (`QuotaLogoSVGBuilder`) draws an outer weekly ring and an
-inner 5h ring, both growing counter-clockwise from 12 o'clock: a solid arc fills up to
-the minimum remaining and a 2-4 px ticked dashed arc extends to the average. The center
-is a water cup: the water height maps the 5h minimum remaining and the water color
-follows `waterHealth` (falling back to overall provider health when unset). Missing
-windows keep the legacy semantics and render as full rings / a full cup, unlike the
-`iconDuo` missing-window gray tracks.
+`quotaLogo` is a **static image**: the settings picker and the menu bar use the same
+`llm-quota-730-2-dark.svg` design asset, and nothing about health, quota levels or
+custom colors changes it. The asset's canvas is not its artwork — the drawing occupies
+only ~59% of it, so drawing it canvas-true would put a ~12pt icon in the menu bar.
+`MenuBarLabel.appIconDesignContentRect` rasterizes it once at 256px, scans the alpha
+channel for the tight bounding box, and `fittedContentRect` maps that box into the same
+20pt frame the SF Symbol styles use (aspect preserved, centered). The scan must call
+`CGContext.makeImage()` *after* drawing — it snapshots the context's current contents,
+so the reverse order yields a blank image, "no opaque pixels", and a silent fallback to
+the uncropped canvas. It used to be drawn at runtime by `QuotaLogoSVGBuilder` — an
+outer weekly ring plus an inner 5h ring growing counter-clockwise from 12 o'clock, with
+a water cup in the center whose height mapped the 5h minimum remaining and whose color
+followed `waterHealth`. At 20pt in the menu bar that drawing did not look like the
+icon the picker showed, which is the wrong answer to "I picked this icon": the two
+renderings drifted apart, and `waterHealth` existed only to feed it. Deleting the
+builder therefore also deleted `StatusBarQuotaMetrics.waterHealth` and
+`QuotaRingMetrics.colorHex` (the ring palette, read by nothing else) — the Icon Duo
+gauge resolves every color from `healthColors` through its own `colorLevel` rule, so
+neither was needed.
 
 The `iconDuo` dashboard (`IconDuoSVGBuilder`) uses a left 5h arc and right weekly arc, both being concentric
 circular arcs growing from the bottom with dark gray background tracks and health-colored
@@ -140,6 +152,727 @@ The menu footer contains:
 - `节能` (1-click keep-awake in-memory toggle; overlay dot reflects tri-color sleep health)
 - `日志` (reveals `log.txt` in Finder)
 - `退出` (`NSApp.terminate`)
+
+## Edge Status Dock (Screen Edge Panel)
+
+A third window pinned to a screen edge: one circle per enabled Provider, visible
+without opening the menu. Configured under Settings → General → 边缘状态窗, persisted
+at `config.json` → `edgeDock` (`mode` / `edge` / `offset` / `hideInFullscreen`).
+
+**Default: 状态窗（自动隐藏）** — full feature on, but the screen shows only a 7pt ring
+column until the cursor comes near. Defaulting to "nothing appears" instead (the
+earlier behaviour, a disabled switch) buried the feature behind a toggle nobody
+flips; a column of small dots is the one shape that is present, useful and unobtrusive
+without being asked for. 「无」 is the first option in the picker for users who want it
+gone — an explicit pick rather than a default that hides the feature.
+
+Granularity is **one circle per Provider**, 1:1 with the menu cards
+(`ProviderStatus` granularity). Per-*model* circles were considered and rejected:
+they would need a new model-level colour caliber on top of the existing
+provider-level one, and would push the window past a glanceable length.
+
+### Circle anatomy
+
+Outside-in, three layers at a 38pt diameter:
+
+| Layer | Meaning | Source |
+|---|---|---|
+| **Outer ring** | 5-hour (interval) window remaining | `intervalRemainingPercent`, **worst** model |
+| **Inner ring** | Weekly window remaining | `weeklyRemainingPercent`, **worst** model, **raw** (not multiplied by `weeklyEquivalentMultiplier` — the inner ring answers "how much weekly quota is left", and multiplying by the equivalence factor N would stop being that) |
+| **Centre** | Which Provider | `BrandLogoView(kind:size:)` at a fixed 12pt — the same real brand asset the menu cards use, sized to stay inside the inner ring's inner edge (inner ring is `0.6 × 38 = 22.8pt`, so its inner edge sits at a 9.65pt radius against the icon's 6pt half-width). The size is **passed into the view**, never framed from outside: see *Logo sizing is the view's job* below |
+
+Each ring's length is the **minimum** across the provider's models that have that
+window. This deliberately diverges from the iconDuo arcs, which use the mean: the
+iconDuo is a single icon aggregating *all* providers and has no per-provider
+option, whereas an edge dock circle *is* one provider and must answer "is this one
+about to run out". Length and colour therefore agree — both worst-case — instead of
+ring saying "plenty" while the colour says "danger".
+
+A provider with only one of the two windows draws just that ring; a provider with
+neither (balance-only DeepSeek, or no successful fetch yet) draws a dimmed full ring
+on both, reading as "health is known, remaining quantity is not". A grey ring would
+be indistinguishable from "no data".
+
+The dock background uses `EdgeDockTab`: an **asymmetric tab** — the side facing
+the screen is **square and flush**, the inward-facing end is a large convex corner
+(`0.37 ×` the short side).
+
+The flush screen side is deliberate. The window already sits flush against the
+screen edge; a rounded corner there opens a sliver of desktop between screen and
+window and the backplate starts to read as a capsule floating above the screen.
+Square corners let it join the screen edge into one continuous line.
+
+Each row is **ring + persistent quota number** (5h first, weekly as fallback, `—`
+when neither exists). The number is the only readable information without
+hovering, so it is the 5h window: that is what changes fastest and answers "can I
+still work right now".
+
+### Row order is the configured provider order
+
+The dock lists providers in **`config.providerCardOrder`** — the same list the
+settings page drags and the menu panel renders, keyed by
+`ProviderKind.quotaProviderID`. With no configured order it falls back to
+display-name ascending. Combined with the anchor table above, the reading order
+is: `left`/`right` → **top to bottom**; `top`/`bottom` → **left to right**.
+
+Ordering is not presentational. A hit-test index is resolved back to a provider
+through `entries[index].id`, so the view's order and the controller's order must
+be the *same* order or hover highlights one circle and pops another provider's
+card. Both sides therefore go through `EdgeDockProjection.entries(from:preferredIDs:)`
+against the same config; `EdgeDockController.orderedEntries()` is the controller's
+single entry point.
+
+Two consequences worth keeping in mind:
+
+- **Selection is anchored by id, not by index.** Reordering while a card is open
+  would otherwise silently swap the open card to a different provider, so
+  `reconcile` re-derives `selectedIndex` from the provider id it was showing.
+- **Duplicate config keys must not trap.** `DisplayOrder.ordered` builds its
+  lookup with an explicit loop rather than `Dictionary(uniqueKeysWithValues:)`,
+  which would crash on two statuses sharing one `quotaProviderID` — and the dock
+  re-projects on every mouse move, so that is an app-wide crash, not a glitch.
+
+### Logo sizing is the view's job
+
+`BrandLogoView` takes a `size` and frames **itself** with it. Wrapping it in
+`.frame(width:height:)` from the call site does not shrink it: SwiftUI's `frame`
+is a size *proposal*, and a child carrying its own fixed frame returns that size
+regardless — the outer frame only centres the larger content, without scaling or
+clipping. The dock icon was declared 6pt this way and rendered at the default
+18pt, filling the inner ring's hole and riding onto its stroke.
+
+### Anchor convention (geometry must match layout, literally)
+
+Every `EdgeDockGeometry` function that positions a row has to agree with what
+`EdgeDockContentView` actually lays out. Getting this wrong flips the whole column
+and produces the worst-looking failure mode there is: the popover shows the **right
+provider** in the **wrong place**.
+
+| Edge | Stack | Index 0 renders at | Step along the edge |
+|---|---|---|---|
+| `left` / `right` | `VStack` | **top** = `dockFrame.maxY` (AppKit y points up) | `rowStep` = `rowHeight + spacing` |
+| `top` / `bottom` | `HStack` | **left** = `dockFrame.minX` (x matches SwiftUI) | `columnStep` = `diameter + spacing` |
+
+Three consequences that are easy to get wrong:
+
+- **`rowStep` is vertical-only.** The number sits *below* the ring, so a row is
+  `rowHeight` tall but only `diameter` wide. A horizontal dock stacks `diameter`
+  per column; reusing `rowStep` there leaves the window wider than its content and
+  the last column stranded.
+- **A row's hit rect spans the whole dock** on the axis perpendicular to the edge,
+  while the laid-out row is only `diameter` wide. Those are different purposes
+  (hit target vs. content), so the test compares the stacking axis only.
+- **`rowCenter` returns the row centre, not the ring centre** — the row includes the
+  number, so they differ by 7pt. The popover aligns to the row.
+
+**Padding is orientation-independent.** The dock's backplate is a hard-edged shape, so a
+missing inset is immediately visible and never produces an error. `dockSize` adds
+`padding * 2` on the stacking axis (`rowHeight` per row vertically, `diameter` per
+column horizontally) and on the perpendicular axis (`diameter` vertically,
+`rowHeight` horizontally — the number still hangs below the ring either way).
+`testContentInsetEqualsPaddingOnAllFourSidesOfEveryEdge` pins the result: the laid-out
+content sits exactly `padding` from all four window edges, for every edge and every
+row count. Changing `rowHeight`, `spacing` or `diameter` moves the window size and the
+layout together, or this fails.
+
+Rhythm is deliberate, not uniform: `labelSpacing` (4pt) is *smaller* than `spacing`
+(16pt), so a number reads as belonging to the ring above it rather than as the first
+element of the next row. `testLabelStaysVisuallyAttachedToItsOwnRing` guards that
+relationship, and that `spacing` stays wider than the ring's stroke — otherwise two
+rows' rings visually merge into one blob.
+
+### The quota ring
+
+Two rings per row, each a **track** plus an **arc**:
+
+| Part | Rule |
+|---|---|
+| Track | `EdgeDockTheme.ringTrack`, drawn **unconditionally**. It is the only cue that "there is a ring here, the number just isn't readable yet" while loading, on first fetch, or for providers with no quota window. Never skip it because `fraction == nil` — the track and the arc are two separate draws |
+| Track colour | `Color.primary` @ 18%, **not** a fixed white and not `Color.secondary`. The dock is force-rendered in `\.colorScheme = .dark`, so `primary` is reliably light against the dark glass; the point of the semantic colour is only that the old "dock never changes appearance, so hardcode white" special case no longer has to be maintained |
+| Arc | `EdgeDockGeometry.arcTrimRange(fraction:)`, which returns `nil` for `nil` and `0` (a zero-length round-capped stroke would leave a dot on an empty ring) and `[1 - fraction, 1]` otherwise |
+| Direction | **Depletes clockwise.** The clockwise end is pinned at 12 o'clock and the free end sweeps clockwise toward it, so the gap opens at 12 o'clock and grows clockwise. The common `[0, fraction]` fills clockwise from 12 and retracts *counter*-clockwise on the way down — that reads as "progress", not "remaining" |
+
+`arcTrimRange` is a pure function precisely so the direction is testable: written
+backwards it still renders, still animates, and still throws no error — it just makes
+the ring appear to turn the wrong way, which nothing in the UI reports.
+
+### Popover width
+
+The popover is **fixed width**, not content-sized, and the width is derived from the
+widest thing the card can contain — the 7-day token usage chart
+(`SevenDayUsageChartMetrics.pricedWidth` = 420): chart + the card's own 12pt padding
+(`ProviderCardView.contentPadding`) + the popover's 12pt backdrop padding
+(`MenuPanelHeightBridge.cardHorizontalPadding`) = `EdgeDockTheme.popoverWidth` (468).
+It used to equal the main-menu width (360), which left the card only 312pt of content
+width and clipped the first/last day of the chart — exactly the layout damage a fixed
+width was supposed to prevent, just caused by the width being too small in the first
+place. The menu keeps its own 360; only the popover widens. Clamped only when the
+screen is narrower than the popover. The same chart also sets
+`HoverPanelController.maximumPanelWidth` (chart + 2×10pt) so the menu's hover panel
+doesn't clip the price column.
+
+### Collapsed sections are open in the popover
+
+The provider card hides several sections behind hover — the account block in the
+header, the quota data rows, the reset-credit row, the local-usage footer. All of them
+go through the single `HoverInfoRow` wrapper, which is where the behaviour branches:
+
+| Host | `hoverRevealMode` | Behaviour |
+|---|---|---|
+| Main menu | `.onHover` (the default) | Independent `NSPanel` after a delay |
+| Edge dock popover | `.alwaysVisible` | Each section expands **in place**; the two groups (quota / 7-day usage) are additionally split into two cards, see *Two cards, titles outside* |
+
+The switch is an `Environment` value rather than a parameter threaded through each
+call site: there are a dozen `HoverInfoRow` uses across `ProviderCardView`,
+`QuotaViews` and `LocalUsageHoverViews`, and a parameter would mean remembering to
+update every one of them — a missed site silently keeps the old behaviour with no
+error anywhere.
+
+The default is `.onHover` **on purpose**: it is the side that protects the main menu.
+Changing it would not crash or warn, it would just quietly turn the menu into a wall of
+text, so `HoverRevealModeTests` asserts the default rather than trusting it.
+
+`.alwaysVisible` is the only workable choice for this window. The popover panel sets
+`ignoresMouseEvents = true` — it can never receive hover — and it is already a
+one-hover deep, so a nested "hover to expand" is a hover of a hover, and those
+sections would never open at all.
+
+Opening everything is not free, though: one provider card is a lot of content at
+once, and the popover is capped at `0.95 ×` the visible height. That cap does
+**not** truncate anything: over it, the content is wrapped in a `ScrollView`, so
+the card is exactly as tall as it wants to be. The cap exists for one reason —
+`popoverFrame` clamps the panel to `visibleFrame.height`, and an `NSPanel` does
+not scroll itself, so anything past the screen edge would be unreachable. The
+hard limit is the screen; the cap only guarantees the invariant
+`heightCap ≤ visibleFrame.height`, which is what makes "if the frame ever got
+clamped, the content is already scrollable" true. So
+the popover is **not** simply the menu card un-collapsed. Six layout rules
+(`ProviderCardLayout`) diverge, all keyed on the same mode:
+
+| Rule | Menu | Dock popover | Why |
+|---|---|---|---|
+| `liftsProgressBar` | title, then bar | **bar first, no title row** | "how much is left" before the detail; the model name is not a row of its own but the leading token of the bar's metadata line (`Gemini Models 5h 62% weekly 59%`) |
+| `laysWindowDetailsSideBySide` | 5h stacked over weekly | **5h next to weekly** | the two are the same shape (a time span plus a set of token metrics); side by side is comparable at a glance, stacked forces the reader to jump between two blocks. It now only reaches the hover panels, which the popover cannot show |
+| `expandsAccountSection` | hover popover | **not expanded** | the panel can't be hovered, so expanding it only buries low-frequency email/source text in the most prominent slot |
+| `showsPeakIndicatorInHeader` | inside the quota block | **in the card header** | "can I use it cheaply right now" deserves the always-visible header line |
+| `splitsCachedInputRow` | `input: 1.2M (+860K cached)` | **`input:` and `cached:` on separate lines** | cached hides in parentheses, so a quick read only catches input — and cache hit rate is the number that says whether the call was expensive |
+| `splitsRoundsRow` | `prompts: 42 (128 rounds)` | **`prompts:` with `rounds:` on the next line** | the three-column layout that forced it is gone; the row that still renders it in the popover is full width, where one number per line still reads better than a merged one |
+
+Because the rules are the *only* thing that differs, each is named rather than
+inlined as `mode == .alwaysVisible` at the call site, and
+`HoverRevealModeTests.testMenuLayoutStaysUnchanged` asserts the menu side stays off.
+
+The popover's header is therefore not just "provider name + state" — it keeps
+only what answers *how much is left* at a glance, and everything about *how was it
+spent* sits below:
+
+- **Peak indicator** (GLM / DeepSeek only)
+- **Reset credits**, in its collapsed form (count + nearest expiry) via
+  `revealsDetail: false`. Same reason as the account section: the panel can't be
+  hovered, so per-card detail would be permanently expanded.
+
+Each model block is then `QuotaBarWithMetadata` (its `name · 5h 100% weekly …`
+metadata line + the bar), followed by the card-level rows and, for GLM, the
+off-peak footnote. The block carries no divider of its own — see below. Two things
+are deliberately **absent**:
+
+- **No leading label on the bar.** An earlier pass pooled every model's bar into a
+  header table, which forced each row to carry a dot + model name so the reader
+  could tell them apart — and that label then duplicated the name on the metadata
+  line. Each bar keeps its own block, so the label buys nothing.
+- **No model-name row** (`QuotaWindowTitle`, which also carried the weekly
+  multiplier). The name is the **leading token of the metadata line** instead —
+  `Gemini Models 5h 62% weekly 59%`, `ChatGPT Plan 5h 62% weekly 30%`. It has to
+  be *somewhere* now: with the three columns gone the block is a bar and one line
+  of text, so Antigravity's two models would be two indistinguishable bars. Inline
+  is the only place that works — a separate row splits one sentence in two, and the
+  card header cannot carry it because the values are per model, not per provider.
+  The name uses `MenuTypography.modelTitle` (11pt semibold) while the window labels
+  and percentages stay at 10pt: the name is that line's subject, the rest is its
+  predicates, and four equally-weighted words hide that. It truncates
+  (`layoutPriority(-1)`, tail) when the line runs out of room — the percentages are
+  fixed-width and the reset time is pinned right, so the name is the only thing that
+  can give way. The menu passes an empty name: `QuotaWindowTitle` already labels
+  that row, and repeating it there would be noise.
+
+**No `QuotaDetailColumns`.** The popover used to show *Last Prompt | 5h | weekly*
+as three equal columns under each bar. They are gone: all three report local token
+usage from the same local session scan, which card 2 already shows in full
+(`最近7天token用量` + its usage table), so the popover was saying the same thing
+twice and burying the one thing that answers "how much is left" under three blocks
+of numbers. The detail is not lost — it is one hover away in the menu, where
+`LastPromptHoverSummaryView` and `QuotaUsageWindowColumn` are still the menu's
+hover panels. `ModelQuotaDockBlock` therefore has no `columns` parameter at all:
+the omission is structural, not a flag someone can flip.
+
+The divider stays, but it moved **up** to the card layer: it used to sit at the end of
+each model block, separating the quota overview from those three columns. It now
+separates the quota overview (every model's bar + the reset/peak rows) from the
+local-usage row below it, and since it has to span all models it is drawn once in
+`ProviderCardView.dockBody` rather than once per block — per-block it would stack
+into two adjacent lines between Antigravity's two models. Both sides come from
+different data sources — provider API vs local session scan — and without the line
+the local usage reads as a continuation of the quota.
+
+`ModelQuotaDockBlock` has a `bar` parameter and no `title` parameter, so the title
+omission is structural too.
+
+Height is measured, not assumed. Opening four sections inline is easy to get
+subtly taller — no crash, no warning, just a popover that scrolls or clips.
+`testDockDetailStaysUnderTheRearrangedCeiling` lays the card out for real and caps
+it: **1188pt** fully expanded → **915pt** after the first rework → **611pt** after
+the dedupe + three-column pass → **648pt** after the reset-credits hoist and the
+line splits → **628pt** after dropping the bar label and the model-name row
+(ChatGPT dual-window with a full 7 days of local usage, the heaviest form) →
+**650pt / 635pt / 617pt** through the two-section and two-card passes →
+**679pt** after the 13pt titles, 10/11pt body type and the reset/peak hoist →
+**505pt** after the three-column pass was dropped. Splitting cached and rounds
+onto their own lines really does cost ~37pt; that is the trade. Do **not** compare
+it against the menu card's height: that card is collapsed, so it measures ~120pt
+and "the popover is taller than the menu" is the intended behaviour, not a
+regression. The 550pt ceiling here is also a different number from
+`popoverHeightFraction` — that one bounds the panel against the screen, this one
+catches someone re-adding an always-expanded block. Do not copy one into the
+other.
+
+The first version had this inverted (`minY` + step, i.e. index 0 at the bottom) and
+the test that "verified" it was named `testCircleCenterMatchesRenderedLayout` while
+asserting the exact opposite of what SwiftUI renders. The guard against that class of
+error is `testGeometryMatchesSwiftUILayoutForEveryEdge`, which **simulates** the
+VStack/HStack layout and compares it against the geometry element by element.
+
+Hover hit-testing therefore **cannot** be derived from `EdgeDockGeometry` constants alone.
+Those constants guess SwiftUI's layout — text line height, `spacing`, `padding` — and
+once a guess is off by even 1pt the error accumulates row over row until hovering a
+circle pops a different provider's card. The rows measure their **real** rectangles
+instead, and the row frame itself is pinned to the geometry constants
+(`width: diameter, height: rowHeight`), so content size equals window size by
+construction; the hover scale lives on the circle inside the row and `scaleEffect`
+never participates in layout, so a measurement can no longer feed back into hit
+testing at all.
+
+Rows report those rectangles **directly** (`EdgeDockController.updateMeasuredRowRect`),
+keyed by provider ID — not through a `PreferenceKey`. `onPreferenceChange` only fires
+when the value *changes*, and the first layout pass hands it the `defaultValue` while
+the real rectangles only exist once layout has run; without a further layout pass it
+never fires again. The symptom is silent and severe: the measured rects stay empty,
+every hit test fails, and because mouse capture is driven by a hit, `ignoresMouseEvents`
+never turns off — so **hover and dragging die together**. `onAppear` / `onChange` have
+no such timing condition.
+
+Rects travel in the **view** coordinate space (`.global` = the `NSHostingView`), and the
+controller converts to screen coordinates per frame. Screen-space rects would go stale
+the moment the dock is dragged, moved, or moved to another display, because the view
+space rects are stable while the screen-space ones are not.
+
+Three rules keep this safe:
+
+- **Rectangles travel keyed by provider ID, never by position.** The hit index is what
+  `updatePopover` looks up `entries[index].id` with, so index misalignment is *wrong
+  content*, not just a misplaced popover. `EdgeDockProjection.orderRowRects` rebuilds
+  the array in `entries` order.
+- **A row that has not been measured keeps its slot.** A missing ID becomes
+  `EdgeDockProjection.unmeasuredRow` (an unreachable rect), never a skipped element;
+  skipping would shift every later row up one index — the same class of bug.
+- **There is always something hittable.** `resolveRowRects` falls back to
+  `EdgeDockGeometry.rowRects` when nothing was reported, when the report is incomplete,
+  or when the converted rects fall outside the dock (a sign the coordinate conversion
+  is wrong). The fallback is off by a little; having no hit at all is not an option,
+  because a miss also kills mouse capture and therefore dragging. The active source is
+  logged (`命中来源 -> 实测 / 几何兜底`) precisely so this stays observable instead of
+  degrading quietly.
+
+Only the right-edge variant is authored; the other three come from an affine mirror
+/ rotation. Hand-authoring all four means 16 arc segments, and a mismatched arc
+start point makes `Path` silently connect the two points with a straight line —
+cutting off the entire corner while `boundingRect` stays perfectly correct. The
+tests therefore assert per-side corner containment (square ⇒ corner inside, round
+⇒ corner outside) rather than only the bounding box.
+
+Rejected alternatives (all tried): semicircular cap, four convex corners, an
+outward flare on the screen side, and a concave fillet at the screen-side corners —
+the last is not expressible as a fillet at all, since a circle tangent to both
+edges of a rectangular corner only has its tangent points inside the rect from the
+interior center.
+
+### Background
+
+The two surfaces are deliberately **not** the same, and that difference is the point:
+
+| Surface | Fill | Why |
+|---|---|---|
+| Dock | **dark liquid glass**, fixed — `glassEffect` on macOS 26+, `ultraThinMaterial` + a black 0.34 layer below that, clipped by `EdgeDockTab` | It is permanently on screen next to the menu bar. Pinning it dark means the panel does not change character twice a day as the user switches the system appearance, and the rings' contrast is decided by one backdrop instead of two |
+| Hover popover | `.regularMaterial`, following the system appearance, `popoverCornerRadius` | It is a temporary overlay the user asked for, and it is matched to the menu popup: same system material, same `ProviderCardView(status:)` sitting on top of it |
+| Menu panel | AppKit's own glass for the `MenuBarExtra(.window)` window | The reference the popover is matched to |
+
+The dock was once solid opaque black, and both were briefly one shared system material.
+Neither is the current design: the dock stays dark on purpose, the popover follows the
+system on purpose.
+
+Both windows stay **transparent** at the window level (`isOpaque = false`, clear
+background) and paint their fill in SwiftUI. For the dock this is because an opaque
+window background would fill the whole window rect and hide the notch's rounded corner
+outline, and because glass samples what is behind the window; for the popover it is
+because **the material samples what is behind the window** — an opaque panel turns it
+into a dead grey slab.
+
+The menu's glass is supplied by AppKit for the `MenuBarExtra(.window)` window
+specifically and is not inherited by a self-built borderless `NSPanel`, where
+`Color.clear` would be plain transparency with no blur — so both surfaces request their
+backdrop explicitly (`edgeDockDarkGlassBackground` / `edgeDockPopoverSystemMaterialBackground`).
+
+**Forcing the dock dark takes two coordinated settings, never one.** The panel pins
+`NSAppearance(named: .vibrantDark)` so the *material* resolves dark, and the hosted
+content is wrapped in `\.colorScheme = .dark` so semantic colours (`Color.primary` in
+the ring track, the number label) resolve light. Doing only the first yields dark text
+on a dark slab; only the second yields light text on a light slab. The popover does
+neither, and that asymmetry is intentional.
+
+`EdgeDockTheme` remains the single place these values live.
+
+### Hover behaviour
+
+The dock window **never changes size on hover** — with one deliberate exception:
+auto-hide mode (below), where proximity is what grows the window. **Hovering** a circle
+opens a separate popover window beside the dock, containing the **same
+`ProviderCardView(status:)` the menu renders** for that provider — one card
+implementation, not a second lightweight variant. Two "identical looking" cards
+would inevitably drift apart. Hover alone only highlights the circle (the 1.10× scale).
+
+| Aspect | Behaviour |
+|---|---|
+| Dock window | Fixed size while expanded. Only the hovered **circle** scales to `EdgeDockGeometry.hoverScale` (1.10×) inside its fixed row — the row frame, the number label and the window never move |
+| Popover trigger | **Hover**, with a **0.15s open delay** (`selectedIndex` trails `hoveredIndex` by it; the click is reserved for dragging). `scheduleSelection` re-checks `hoveredIndex` when the delay elapses, so sweeping the cursor down a column of circles re-arms the timer for each one instead of flashing every card in turn. `scheduleDeselection` collapses the card 0.20s after the cursor leaves the circle, unless it entered the card itself. The delay is not cosmetic: the dock is **permanently** on the screen edge, and a cursor merely passing by (dragging a window to the edge, turning a page) would otherwise make cards strobe. Clicking is a drag candidate only — `dragMoved` gates on a 4pt threshold and a press that never crosses it does nothing at all |
+| Popover | Second `NSPanel`, `ignoresMouseEvents = true` (read-only, never steals focus), level `.popUpMenu` so it sits above the dock. Renders the same `ProviderCardView(status:)` the menu renders — so the dock's popover and the menu popup are the same object, not two near-identical ones. In the dock it lays out as **two cards with their titles outside**, see *Two cards, titles outside* below. An open card is re-rendered on every status broadcast (`reconcile`'s no-op-frame branch refreshes it), so it never shows numbers frozen at the moment it opened |
+| Hit test | `EdgeDockController.circleIndex(at:circles:currentHovered:minimumRadius:)` — the provider's **outer circle only** (radius + 0.5pt), which deliberately excludes the number label below it and the gaps between rows. The hovered circle's disc grows by `hoverScale` to match its on-screen scale animation. `minimumRadius` is a floor, not an override: the compact dock's circles are 7pt (radius 3.5) and it passes **half a row pitch** (7.5pt) so adjacent discs meet at their midpoint — pointing at a 7px target without it snaps to a neighbour. Circles come from `resolveCircleRects` (measured, with an `EdgeDockGeometry` fallback that is **appearance-aware** — the full-approach constants put compact row 0 about 24pt off). Never recomputed from constants alone — see *Edge status dock → Layout* |
+| Anchor | Vertically centred on the hovered **row** (measured rect when available; `EdgeDockGeometry.rowCenter` is only the "not measured yet" fallback), opening **inward** (docked right → opens left) |
+| Size | **Fixed width** `EdgeDockTheme.popoverWidth` (derived from the 7-day chart, see *Popover width*), height = natural card size clamped to 95% of screen height; a `ScrollView` replaces the plain card only when it exceeds the height cap, so overflow scrolls instead of being clipped |
+| Dismiss | Cursor leaving either the dock or the popover **by frame** takes effect after a **0.5s grace delay** (cancelled on return; see *Auto-hide mode → Collapse*). Each window's frame + a 12pt tolerance; `hoverPadding` must stay > half of `popoverGap` so the two tolerance zones overlap in the 10pt gap between the windows and capture never drops while crossing. The popover's zone counts **only while the card is visible** — `orderOut` leaves the frame where the card last was, and an unfiltered read reserves keep-capture space for an invisible card. Capture is deliberately **not** hit-based: the circle hit area is a 38pt disc, which leaves the padding strips and gap diagonals of the black tab uncovered — releasing there collapsed the dock while the cursor was still visibly on it. Release clears `hoveredIndex` / `selectedIndex` and any pending open/close work item |
+
+Because both windows participate in the same capture region, moving the cursor
+onto the popover keeps it open — and the popover's host status is looked up by
+**provider ID**, not array index, because the projection filters out disabled
+providers and the two indices can drift apart.
+
+#### Two cards, titles outside
+
+The dock popover is **two cards**, each with its title drawn *outside and above* it —
+`ProviderCardLayout.splitsIntoTwoCards` turns this on for `.alwaysVisible` only; the menu
+keeps one card with the header inside it, because a menu column of short cards cannot
+afford twice the card spacing plus two title rows per card.
+
+| | Title row (outside, above the card) | Card |
+|---|---|---|
+| 1 | brand logo + provider name + plan capsule, with the refresh time / state label on the right — **no status dot**; the dot sits right next to the brand logo and the two small circles read as "the logo with a green pip", while the capsule on the same row already states the status | per model: `<name> 5h 62% weekly 30% <reset time>` and the progress bar; then reset credits, the peak-window countdown, a divider, then the local-usage **summary** row (`📈 今天 …`) |
+| 2 | `最近7天token用量`, with the local-usage freshness as a **capsule** (`更新于 HH:mm` / `计算中…`) on the right — same font, weight and colour as title 1, because the two rows are the same kind of thing: the name of their card | the 7-day chart, its usage table and the footnote |
+
+**Card 1 reads top-to-bottom as summary → local usage.** The metadata line moved
+*above* the bar (read the description, then the graphic), the bar now keeps vertical
+breathing room, and the reset/peak rows moved *below* the bar, above a divider that
+separates them from the local-usage row — they are context for the quota, and the
+row under the line comes from the local session scan, not the quota API. Those
+two rows are provider-level but sit in the middle of a per-model block, so they travel
+through `QuotaSummary.betweenBarAndColumns` → the model row → `ModelQuotaDockBlock.between`
+(type-erased as `AnyView`, only the first model row receives a non-empty value). The
+divider is drawn by the card itself (`ProviderCardView.quotaUsageDivider`), not by
+each model block, so it spans the whole quota group; it is the same one the chart
+uses below itself (`Divider().opacity(0.45)`, full content width, no extra
+horizontal inset).
+
+**Type scale inside the two cards: 13 / 11 / 10.** Card titles are
+`MenuTypography.cardTitle`; values and body text are 11 (`hoverBody*`, and `hoverTitle`
+was pulled down to 11 so a sub-title is no longer bigger than the values under it);
+labels, captions, footnotes, day labels, chart annotations and table cells are 10 —
+the 8pt and 9pt sizes that used to live in the chart and the table are gone
+(`timeSuffix` and `hoverFootnote` moved from 9 to 10). Capsules keep `badge` at 9pt,
+since a pill is a different kind of mark, not body copy.
+
+The cut is not arbitrary: the quota group is "now" and the 7-day group is "history", and
+`HoverInfoRow` already drew a separator between them. The card boundary replaces that
+separator, so the lower half stops reading as a table appended to the upper card. The
+split rides on `LocalUsagePart` (`.summary` into card 1, `.detail` into card 2,
+`.combined` for the menu), which is also why the chart no longer draws its own title row
+in `.alwaysVisible`: the title and the freshness badge moved up into title row 2.
+
+Two knock-on details, both easy to miss:
+
+- The reset-credit row starts with a `Divider` when it sits under the header in the menu.
+  Once it moves between the bar and the statistics that divider would hang a line in the
+  middle of the summary block, so the row takes `divides:` and the dock passes `false`.
+- Both cards use `.frame(maxWidth: .infinity)`. Sized to their content they would have
+  different widths (card 2 is only the chart) and the stack would show two misaligned
+  plates.
+
+Non-`.ok` states (loading / failed / not configured) fall back to a single card: there
+are no two groups to cut, and splitting anyway would leave a second card holding nothing
+but a placeholder.
+
+### Dock modes (compact form)
+
+`EdgeDockConfig.mode` (Settings → 常规 → 边缘状态窗 → 形态), a four-way picker:
+
+| Mode | Screen |
+|---|---|
+| `hidden` 无 | Nothing is drawn |
+| `statusWindow` 状态窗 | Always the full appearance |
+| `compactRings` 小圆环 | Always the compact form; proximity never expands it |
+| `autoHideWindow` 状态窗（自动隐藏） | Compact form, expands on proximity (**default**) |
+
+**One enum, not two switches.** The previous pair (`enabled` + `autoHideMode`) spelled
+four combinations, one of which (auto-hide while disabled) is meaningless, and neither
+of the two real forms had a name of its own — a switch labelled 「自动隐藏模式（收起为
+小圆环）」 only tells you the *other* setting by negation. A four-way picker gives every
+form a name that matches what is on screen and removes the intermediate state where two
+switches both govern one thing.
+
+`hideInFullscreen` stays a **separate** toggle: it answers "when does it get out of the
+way" (an event), not "what does it look like" (a shape); the two are orthogonal, so the
+toggle still has a meaning under every mode except `hidden`.
+
+**Legacy configs** (`enabled` / `autoHideMode`, no `mode`) decode as the **default**
+mode. Mapping the two old booleans onto the enum was rejected: it would keep a
+translation table alive for fields nobody can see in the current UI, and the dock is
+still an unreleased feature, so falling back to the default is the cheaper mistake. A
+hand-edited *unknown* `mode` string also decodes as the default rather than throwing —
+`ConfigStore` uses `try?` on this block, so a throw would drop the user's dragged edge
+and offset along with the bad value. The four modes:
+
+- **Compact form** (shared by `compactRings` and collapsed `autoHideWindow`) — flush to
+  the edge, one small single ring per enabled provider
+  (`EdgeDockGeometry.compactDiameter` 7pt, 2.5pt stroke, 8pt gap, 7pt padding; total
+  edge thickness 21pt). No number label, no brand logo. The ring is the **5h interval
+  fraction**, falling back to the weekly fraction for providers with no 5h window
+  (same precedence as the full dock's number label — a blank ring would silently
+  drop information), dim track only when neither exists.
+- **Expand** (`autoHideWindow` only) — cursor within the usual 12pt proximity of the
+  compact window sets `isExpanded = true`; the window frame and the content **animate together**
+  (`contentMorphDuration`, 0.25s easeOut, both started in the same tick): the AppKit
+  `setFrame` animation moves the window center along the edge to the full-form
+  position while the SwiftUI content morphs from compact to full — one view tree
+  whose row frames, spacing, padding and ring diameters interpolate, with the inner
+  ring / brand icon / number label fading via opacity transitions. The two layers
+  must stay in lockstep: the full frame and the compact frame have **different
+  centers** for the same normalized offset (`frame()` anchors by offset × remaining
+  travel, which depends on size), so any *instant* window swap — grow-first or
+  shrink-after — re-centers the content by up to tens of points and reads as a
+  repositioning flicker. A synchronized continuous animation is the only ordering
+  reads as a
+  repositioning flicker. A synchronized continuous animation is the only ordering
+  with no seam at either end. In this mode expansion is the *whole* response: no
+  per-row hover while collapsed — once the full layout is up, the usual per-row hover
+  takes over (a 7pt target is too small for per-row hit-testing to be anything but jitter,
+  but at full size it is not).
+- **Collapse** — the cursor leaving both the dock and the popover schedules collapse
+  after a **0.5s grace delay**; the deadline is *fixed*, not re-armed (the 0.2s probe
+  timer keeps hitting the "still outside" branch and a debounce-style re-arm would
+  push the deadline forever). Returning inside the grace window cancels it, so a
+  quick sweep across the edge doesn't flash the dock out and back. At the deadline
+  the keep-alive region is re-checked, then capture releases and the window and
+  content animate back **together** (same synchronized 0.25s, reverse direction) —
+  no second-phase snap, nothing to settle afterwards. While the morph is in flight,
+  `reconcile` refuses *standard* frame updates (`isFormMorphInFlight`) so a status
+  broadcast can't restart the window animation mid-flight, and a form transition
+  itself simply retargets (rapid reverse switches stay continuous). This cannot
+  oscillate: for the same normalized offset the full frame always *contains* the
+  compact frame (`frame()` grows the window outward from the same anchor), so
+  leaving the full frame means leaving the compact frame's proximity too.
+- **State** — `EdgeDockController.isExpanded` is the single published flag;
+  `isCompactAppearance` is the one predicate both `reconcile` (window size) and
+  `EdgeDockContentView` (layout) read, so the window and its content can never
+  disagree about which form is showing. It derives from the mode
+  (`staysFullWhenIdle` → always full; `expandsOnProximity` → `!isExpanded`; otherwise
+  always compact) rather than re-deriving the shape from two booleans at each site.
+  Switching mode resets to collapsed; a drag-persist write does **not**, so the dock
+  doesn't flicker while you're hovering and it saves its position.
+- **Geometry** — `dockSize(entryCount:edge:appearance:)`; the legacy call sites
+  default to `.full`, and the fallback hit-test geometry (`rowRects`, `rowCenter`)
+  remains full-appearance-only. In `compactRings` the dock *is* row-hit-tested, but it
+  uses the **measured** row rects (the view reports them in both appearances) and a
+  hit radius floor of half the compact row step (`compactRowStep / 2` = 7.5pt) rather
+  than the 3.5pt ring radius: a 7pt ring demands pixel-precise pointing, and at half a
+  row step the neighbouring hit zones meet at the midpoint. `popoverFrame` likewise
+  takes the measured row centre, because its fallback assumes the full form's 54pt row
+  step and would hang the card tens of points below the ring it belongs to.
+
+### Dragging
+
+Dragging does **not** use `isMovableByWindowBackground`. Free movement would let
+the panel detach from the screen edge and float mid-screen, while the user's
+actual intent is "nudge it along the edge". `EdgeDockController.applyDrag`
+replaces the window frame directly from the mouse position on every capture tick:
+
+- **Perpendicular axis is pinned to the edge** — vertical edges only track `y`,
+  horizontal edges only track `x`, so a drag always slides along the edge.
+- **Edge switching needs a clear margin** (`EdgeDockGeometry.edgeSwitchMargin`,
+  40pt). Flipping to a new edge requires the mouse to be that much closer to the
+  new edge than the current one; otherwise hovering near a corner makes the dock
+  flicker between edges.
+- Releasing snaps, animates, and persists `{edge, offset}`.
+
+Pressing the mouse **on the dock** starts a drag and dismisses the popover;
+pressing on the popover does not move the dock. A hidden dock never starts one:
+the hide paths only `orderOut` (the stale frame remains), so the mouse-down guard
+also requires `panel.isVisible`.
+
+**Drag follows only drags that started on the dock.** `.leftMouseDragged` guards
+on `isDragging` instead of setting it. The global monitor delivers drag events from
+**every other app** — dragging a window, selecting text, pulling a slider — and an
+unguarded handler used to call `applyDrag` for each of them, teleporting the dock to
+the mouse and persisting the drifted position on release. This is safe to gate
+because a mouse-down landing on the dock is always observed first by one of the two
+monitors: captured dock → the event is delivered to our app → local monitor;
+pass-through dock → the event goes to the app below → global monitor.
+
+**The dock's display comes from config, not from focus.** `targetScreen` resolves in
+three layers, in this order:
+
+1. **`config.screenUUID`** — the display the user parked the dock on. This is the
+   only path onto a secondary display, and it is a *display UUID*
+   (`CGDisplayCreateUUIDFromDisplayID`), never a screen index or a coordinate:
+   `NSScreen.screens` order follows the "primary display" setting and the
+   arrangement, and two same-resolution displays have identical geometry, so both
+   would let the dock move by itself. The UUID survives re-plugging, changing ports
+   and rearranging displays. (`CGDirectDisplayID` would not — it is re-enumerated
+   per boot.)
+2. **`panel.screen`** — the fallback when no display is configured, i.e. exactly the
+   pre-multi-display behaviour. `NSScreen.main` is *not* usable here: it follows
+   keyboard focus, so clicking any window on another screen used to relocate the
+   whole dock, reading as random drift.
+3. **Main screen, then the first screen** — start-up, before any window exists.
+
+Layer 2 verifies that `panel.screen` is still in `NSScreen.screens` (compared by
+display id): reconfiguring or unplugging a display replaces the `NSScreen` object, and
+computing a `visibleFrame` from an object that no longer belongs to a display parks
+the dock somewhere invisible.
+
+**A vanished display is resolved, not remembered.** `dropScreenUUIDIfVanished` runs
+at the top of `reconcile` — before anything reads `targetScreen`, so the same pass
+already positions the dock — and clears `screenUUID` when no attached display
+carries it. Falling back *in memory* would be worse than not recording it: the UUID
+in `config.json` would point at a display that no longer exists forever, and every
+launch would redo the "cannot resolve, guess the main screen" dance. Clearing it
+restores layer 2, the only semantics that survive the display being gone.
+
+**Dragging across displays.** `dragVisibleFrame` asks which display the *cursor* is
+on, not how far it is from an edge: two adjacent displays share a single boundary
+and the cursor sitting on it counts as inside both, so a distance comparison
+oscillates. Two conditions must both hold, and the mirror-display case is the reason
+the first is not optional — mirrored displays share one display id but have
+different `visibleFrame` coordinate spaces, so switching "screens" there would place
+the dock at a wrong position on the same physical display. When the current display
+id cannot be read at all, no switch happens: a wrong switch is invisible to the user,
+who then has no idea why their dock left.
+
+`offset` is a ratio along the current screen's edge, so it survives a display
+switch as the same *relative* position — dragging a centred dock to the next display
+leaves it centred, which is what a drag means here.
+
+**UUID lookups are memoised.** `CGDisplayCreateUUIDFromDisplayID` costs ~15µs (one
+WindowServer round trip) and `targetScreen` is consulted on every drag event.
+`EdgeDockDisplay` caches by display id for the lifetime of a boot and prunes on
+`didChangeScreenParametersNotification`.
+
+**Drag must be event-driven, never timer-driven.** The capture timer runs at
+`capturePollInterval` (0.2s) because it exists to answer "is the mouse still over
+us?" — that is a 5Hz question. Drag events arrive at 60–120Hz, so moving the window
+from the timer makes it jump one step every 200ms, which reads as dropped frames.
+`.leftMouseDragged` therefore calls `applyDrag` directly; the timer keeps a
+redundant call purely as a safety net (absolute positioning makes it idempotent,
+and it is equally gated on `isDragging`).
+
+### Mouse polling budget (2Hz, not per-event)
+
+The dock reacts to hover and to the cursor approaching the screen edge. The obvious
+implementation — a system-wide `mouseMoved` monitor — turns out to be the one
+expensive thing in the whole feature, and not because of the work it does:
+
+| Cost | Measured |
+|---|---|
+| The probe body (hit test + geometry + reading the cursor) | **≈3 µs** |
+| AppKit **waking the process** for a system-wide mouse move, ×100–1000/s | the actual bill |
+
+A menu-bar app that registers `addGlobalMonitorForEvents(.mouseMoved)` gets scheduled
+every time the pointer moves *anywhere on the system* — 100–1000Hz while the user
+waves it. The probe body is a rounding error next to that wake, so the fix is not to
+make the probe cheaper (it is already cheap) but to **stop being woken**.
+
+Hover therefore runs on a **2Hz poll** (`hoverPollInterval`) instead of an event:
+
+- `.mouseMoved` was **removed from both monitors' masks**. The masks now carry only
+  `[.leftMouseDown, .leftMouseDragged, .leftMouseUp]` — exactly the events dragging
+  needs, which must stay event-driven because a 0-latency window move is the whole
+  point of the drag. Hover, proximity-expand and collapse are answered by reading
+  `NSEvent.mouseLocation` from the timer.
+- The poll exists only while the dock is **visible** (`startHoverPoll` /
+  `stopHoverPoll` in `reconcile`'s show / hide branches), and probes immediately on
+  show so a freshly revealed dock does not take half a second to notice the pointer.
+- Nothing is lost by polling slower than the pointer: the question hover asks
+  ("which circle is under the cursor") only changes when the cursor moves, and
+  a *faster sweep* now samples fewer positions — fewer accidental card flashes.
+- The projection is still computed **only when the cursor is inside the dock's
+  keep-alive region**. Off-dock probes cost two `CGRect.contains` and nothing else.
+  A projection cache was tried and removed: at 2Hz the whole-column projection
+  (≈37 µs) costs 0.007% of a core, and a TTL'd cache would be pure complexity.
+
+**Latency is the price, and it is bounded where it matters.** Ring highlight, card
+open and proximity-expand all land within `hoverPollInterval` (0.5s) of the pointer
+arriving. Once the cursor is actually over the dock, `captureMouse()` starts the
+0.2s `capturePollInterval` timer, and hover drops to 0.2s — the visible 0.5s is
+confined to the half-second *before* arrival. Releasing the capture stays prompt
+too: the 0.2s timer is what detects the pointer leaving, followed by the 0.5s
+`collapseDelay` grace.
+
+Swapping back is one constant: raising `hoverPollInterval` back to a frame and
+restoring `.mouseMoved` to the two masks reinstates event-driven hover, with the
+projection computed only inside the keep-alive region as it is today.
+
+Two supporting details for drag, both about the same per-event budget:
+
+- The provider projection is computed **once at mouse-down** (`dragEntryCount`). It
+  walks every provider's quota aggregation, which has no business running 120×/second.
+- `setFrame(..., display: false)`. Forcing a synchronous redraw per event saturates
+  the main thread; the window server composites the move anyway.
+
+Fullscreen handling: `FullscreenProbe` reads window *bounds* only via
+`CGWindowListCopyWindowInfo` (no Accessibility or Screen Recording permission prompt) and
+hides the dock when the current Space has a normal-layer window covering the whole screen
+**and** that display has no desktop chrome. The second half is what separates a real
+fullscreen Space from a zoomed window: with both the menu bar and the Dock set to
+auto-hide, `visibleFrame == frame`, so a zoomed window covers `screen.frame` exactly and
+coverage alone cannot tell the difference. Desktop chrome (the Finder desktop-icon window,
+`kCGDesktopIconWindowLevel`) is absent on every fullscreen Space and present on every
+normal one, and hiding the menu bar does not remove it. `.excludeDesktopElements` must
+therefore stay off, since it filters out exactly that window; the negative-layer windows it
+admits are ignored by the `layer == 0` candidate filter. The chrome layer is matched
+exactly, never as a band — WindowServer and WindowManager keep persistent windows at
+neighbouring levels even while fullscreen, so a band test would turn every fullscreen Space
+into a miss. This is **fail-open** and one-directional: the chrome test can only turn a
+`true` into a `false`, so when chrome cannot be read at all the probe degrades to the old
+coverage-only answer rather than hiding more. Any failure returns `false` and the dock
+stays visible, because a panel that hides itself on a probe failure and never returns is
+worse than brief overlap. The dock's own windows are excluded from the probe so it cannot
+classify itself as fullscreen.
+
+AX (`AXFullScreen`) was evaluated and rejected: it is not in the public SDK (only the
+fullscreen *button* element is), it needs an Accessibility grant that ad-hoc builds lose on
+every rebuild, and it answers "is this window fullscreen" without saying *which Space* — a
+fullscreen window on another Space still reports `true`, which would hide the dock on a
+plain desktop.
+
+Dragging moves the panel freely (`isMovableByWindowBackground`); on release it snaps
+to the nearest edge and persists `{edge, offset}` through `ConfigStore.applyAndSave`.
+
+| State | Dock |
+|---|---|
+| `mode == .hidden` | Not created / ordered out |
+| No enabled Provider (entry count 0) | Ordered out — no empty shell on the screen edge |
+| Fullscreen window on the target screen's current Space, with `hideInFullscreen` on | Ordered out, restored on exit |
+| Otherwise | Visible, click-through |
+
+`hideInFullscreen` defaults to **on**: the option was added after the behaviour, so the
+default has to preserve it — defaulting to off would put a dock inside every fullscreen
+window for every existing user. Because the setting can be flipped while the user is
+already fullscreen, a policy change re-probes instead of reusing the cached verdict.
 
 ## Settings Window
 

@@ -5,6 +5,33 @@ import Foundation
 
 final class StatusBarIconTests: XCTestCase {
 
+    /// `consumesQuotaMetrics` 必须与「合成图像时真的读了额度指标的那个 switch 分支」
+    /// 保持一致。
+    ///
+    /// 这两件事现在是**两处独立陈述**：判据在 `ConfigStore.swift`，消费点在
+    /// `MenuBarLabel.composedMenuBarImage` 的 `case .iconDuo`。将来加第二个仪表盘样式
+    /// 时，最自然的改法是去加 `case`——判据不会跟着改，于是签名不再携带
+    /// `quotaMetrics`、图像永远不重合成，那个样式就**静默冻结**在旧值上：没有编译
+    /// 错误，也没有失败的测试。
+    ///
+    /// 本测试把"消费额度指标的样式集合"钉成**恰好是 `.iconDuo`**。再加一个仪表盘样式
+    /// 时它会红，提醒同步改判据。
+    func testOnlyIconDuoConsumesQuotaMetrics() {
+        let consumers = StatusBarIconStyle.allCases.filter(\.consumesQuotaMetrics)
+        XCTAssertEqual(
+            consumers, [.iconDuo],
+            "消费额度指标的样式必须与 MenuBarLabel 里读取 quotaMetrics 的分支一致"
+        )
+        // 交叉核对：`.quotaLogo` 是固定设计稿，四种系统符号只随健康度变色，
+        // 都不该被算进来。
+        for style in StatusBarIconStyle.allCases where style != .iconDuo {
+            XCTAssertFalse(
+                style.consumesQuotaMetrics,
+                "\(style.rawValue) 不消费额度指标（App 图标是固定设计稿，系统符号只随健康度变色）"
+            )
+        }
+    }
+
     func testStatusBarConfigEncodingAndDecoding() throws {
         var config = AppConfig.default
         XCTAssertEqual(config.effectiveStatusBarIconStyle, .chartBar)
@@ -112,37 +139,27 @@ final class StatusBarIconTests: XCTestCase {
         XCTAssertFalse(quotaLogoImage.isTemplate)
         XCTAssertNotNil(quotaLogoImage.tiffRepresentation)
 
-        let healthyMetrics = StatusBarQuotaMetrics.full
-        let warningMetrics = StatusBarQuotaMetrics(
-            weekly: .default(minAvailable: 1, avgAvailable: 1, defaultColor: "#FB923C"),
-            interval: .default(minAvailable: 1, avgAvailable: 1, defaultColor: "#2DD4BF"),
-            centerAvailable: 1,
-            quotaHealthLevels: [.warning]
-        )
-        let criticalMetrics = StatusBarQuotaMetrics(
-            weekly: .default(minAvailable: 1, avgAvailable: 1, defaultColor: "#FB923C"),
-            interval: .default(minAvailable: 1, avgAvailable: 1, defaultColor: "#2DD4BF"),
-            centerAvailable: 1,
-            quotaHealthLevels: [.critical]
-        )
+        // App 图标是**固定设计稿**：健康度、额度指标、自定义颜色都不再参与绘制，
+        // 菜单栏里画出来的那张必须与设置页 picker 预览逐像素同源（预览同样直接用
+        // `appIconDesignImage`）。以前这里是断言"三档健康度画出三张不同的图"。
         let healthyQuotaLogo = MenuBarLabel.composedMenuBarImage(
             iconStyle: .quotaLogo,
             health: .healthy,
-            quotaMetrics: healthyMetrics
-        )
-        let warningQuotaLogo = MenuBarLabel.composedMenuBarImage(
-            iconStyle: .quotaLogo,
-            health: .warning,
-            quotaMetrics: warningMetrics
+            quotaMetrics: .full
         )
         let criticalQuotaLogo = MenuBarLabel.composedMenuBarImage(
             iconStyle: .quotaLogo,
             health: .critical,
-            quotaMetrics: criticalMetrics
+            quotaMetrics: StatusBarQuotaMetrics(
+                weekly: QuotaRingMetrics(minAvailable: 0, avgAvailable: 0, isAvailable: false),
+                interval: QuotaRingMetrics(minAvailable: 0, avgAvailable: 0, isAvailable: false),
+                centerAvailable: nil,
+                quotaHealthLevels: [.critical]
+            ),
+            healthColors: customColors
         )
-        XCTAssertNotEqual(healthyQuotaLogo.tiffRepresentation, warningQuotaLogo.tiffRepresentation)
-        XCTAssertNotEqual(warningQuotaLogo.tiffRepresentation, criticalQuotaLogo.tiffRepresentation)
-        XCTAssertNotEqual(
+        XCTAssertEqual(healthyQuotaLogo.tiffRepresentation, criticalQuotaLogo.tiffRepresentation)
+        XCTAssertEqual(
             healthyQuotaLogo.tiffRepresentation,
             MenuBarLabel.composedMenuBarImage(
                 iconStyle: .quotaLogo,
@@ -150,6 +167,7 @@ final class StatusBarIconTests: XCTestCase {
                 healthColors: customColors
             ).tiffRepresentation
         )
+        // 自带完整图形，仍不叠加通用状态圆点。
         XCTAssertEqual(
             MenuBarLabel.composedMenuBarImage(
                 iconStyle: .quotaLogo,
@@ -378,8 +396,8 @@ final class StatusBarIconTests: XCTestCase {
     func testIconDuoSVGBuilderDashboardGeometry() {
         // colorLevel 统一判定：周 avg 15% → 15 不小于 15、小于固定黄线 30 → warning；
         // 5h avg 35% → ≥ 30 → healthy；中心 50% → healthy。
-        let outer = QuotaRingMetrics(minAvailable: 0.1, avgAvailable: 0.15, colorHex: "#FB923C") // < 30 → warning
-        let middle = QuotaRingMetrics(minAvailable: 0.2, avgAvailable: 0.35, colorHex: "#2DD4BF") // >= 30 → healthy
+        let outer = QuotaRingMetrics(minAvailable: 0.1, avgAvailable: 0.15,) // < 30 → warning
+        let middle = QuotaRingMetrics(minAvailable: 0.2, avgAvailable: 0.35,) // >= 30 → healthy
         let metrics = StatusBarQuotaMetrics(
             weekly: outer,
             interval: middle,
@@ -425,8 +443,8 @@ final class StatusBarIconTests: XCTestCase {
 
         // 缺失窗口只绘制灰色底轨，不得伪装成 100% 可用。
         let weeklyOnly = StatusBarQuotaMetrics(
-            weekly: QuotaRingMetrics(minAvailable: 0.5, avgAvailable: 0.5, colorHex: "#FB923C"),
-            interval: QuotaRingMetrics(minAvailable: 0, avgAvailable: 0, colorHex: "#2DD4BF", isAvailable: false),
+            weekly: QuotaRingMetrics(minAvailable: 0.5, avgAvailable: 0.5,),
+            interval: QuotaRingMetrics(minAvailable: 0, avgAvailable: 0, isAvailable: false),
             centerAvailable: 0.5
         )
         let weeklyOnlySVG = IconDuoSVGBuilder.buildSVG(metrics: weeklyOnly)
@@ -434,8 +452,8 @@ final class StatusBarIconTests: XCTestCase {
         XCTAssertTrue(weeklyOnlySVG.contains("id=\"weekly-available\""))
 
         let intervalOnly = StatusBarQuotaMetrics(
-            weekly: QuotaRingMetrics(minAvailable: 0, avgAvailable: 0, colorHex: "#FB923C", isAvailable: false),
-            interval: QuotaRingMetrics(minAvailable: 0.5, avgAvailable: 0.5, colorHex: "#2DD4BF"),
+            weekly: QuotaRingMetrics(minAvailable: 0, avgAvailable: 0, isAvailable: false),
+            interval: QuotaRingMetrics(minAvailable: 0.5, avgAvailable: 0.5,),
             centerAvailable: 0.5
         )
         let intervalOnlySVG = IconDuoSVGBuilder.buildSVG(metrics: intervalOnly)
@@ -443,24 +461,24 @@ final class StatusBarIconTests: XCTestCase {
         XCTAssertFalse(intervalOnlySVG.contains("id=\"weekly-available\""))
 
         let unknownSVG = IconDuoSVGBuilder.buildSVG(metrics: StatusBarQuotaMetrics(
-            weekly: QuotaRingMetrics(minAvailable: 0, avgAvailable: 0, colorHex: "#FB923C", isAvailable: false),
-            interval: QuotaRingMetrics(minAvailable: 0, avgAvailable: 0, colorHex: "#2DD4BF", isAvailable: false)
+            weekly: QuotaRingMetrics(minAvailable: 0, avgAvailable: 0, isAvailable: false),
+            interval: QuotaRingMetrics(minAvailable: 0, avgAvailable: 0, isAvailable: false)
         ))
         XCTAssertTrue(unknownSVG.contains("id=\"center-sector\""))
         XCTAssertTrue(unknownSVG.contains("stroke=\"#8E8E93\""), "无数据时中心保持灰色环")
 
         // 验证三点优先级：红 > 黄 > 绿；如果有 3 个红，则不显示黄绿
         let threeRedsMetrics = StatusBarQuotaMetrics(
-            weekly: .default(minAvailable: 1, avgAvailable: 1, defaultColor: "#FB923C"),
-            interval: .default(minAvailable: 1, avgAvailable: 1, defaultColor: "#2DD4BF"),
+            weekly: QuotaRingMetrics(minAvailable: 1, avgAvailable: 1),
+            interval: QuotaRingMetrics(minAvailable: 1, avgAvailable: 1),
             centerAvailable: 0.8,
             quotaHealthLevels: [.critical, .warning, .critical, .healthy, .critical]
         )
         XCTAssertEqual(threeRedsMetrics.quotaHealthLevels, [.critical, .critical, .critical])
 
         let mixedMetrics = StatusBarQuotaMetrics(
-            weekly: .default(minAvailable: 1, avgAvailable: 1, defaultColor: "#FB923C"),
-            interval: .default(minAvailable: 1, avgAvailable: 1, defaultColor: "#2DD4BF"),
+            weekly: QuotaRingMetrics(minAvailable: 1, avgAvailable: 1),
+            interval: QuotaRingMetrics(minAvailable: 1, avgAvailable: 1),
             centerAvailable: 0.8,
             quotaHealthLevels: [.healthy, .critical, .warning]
         )
@@ -472,8 +490,8 @@ final class StatusBarIconTests: XCTestCase {
 
         // 验证 3 个红点全耗尽状态
         let allExhaustedMetrics = StatusBarQuotaMetrics(
-            weekly: .default(minAvailable: 0, avgAvailable: 0, defaultColor: "#FB923C"),
-            interval: .default(minAvailable: 0, avgAvailable: 0, defaultColor: "#2DD4BF"),
+            weekly: QuotaRingMetrics(minAvailable: 0, avgAvailable: 0),
+            interval: QuotaRingMetrics(minAvailable: 0, avgAvailable: 0),
             centerAvailable: 0.0,
             quotaHealthLevels: [.critical, .critical, .critical]
         )
@@ -542,7 +560,6 @@ final class StatusBarIconTests: XCTestCase {
         XCTAssertFalse(metrics.interval.isAvailable)
         XCTAssertFalse(metrics.weekly.isAvailable)
         XCTAssertNil(metrics.centerAvailable)
-        XCTAssertNil(metrics.waterHealth)
         XCTAssertEqual(metrics.quotaHealthLevels, [.healthy, .healthy, .healthy])
     }
 
@@ -1217,8 +1234,8 @@ final class StatusBarIconTests: XCTestCase {
     func testComposedMenuBarImageWithDynamicMetrics() {
         let fullMetrics = StatusBarQuotaMetrics.full
         let customMetrics = StatusBarQuotaMetrics(
-            weekly: QuotaRingMetrics(minAvailable: 0.3, avgAvailable: 0.6, colorHex: "#FB923C"),
-            interval: QuotaRingMetrics(minAvailable: 0.2, avgAvailable: 0.5, colorHex: "#2DD4BF"),
+            weekly: QuotaRingMetrics(minAvailable: 0.3, avgAvailable: 0.6,),
+            interval: QuotaRingMetrics(minAvailable: 0.2, avgAvailable: 0.5,),
             centerAvailable: 0.2,
             quotaHealthLevels: [.critical, .warning]
         )
@@ -1251,65 +1268,6 @@ final class StatusBarIconTests: XCTestCase {
             energyHealth: .healthy
         )
         XCTAssertNotEqual(keepAwakeImage.tiffRepresentation, energySavingImage.tiffRepresentation)
-    }
-
-    /// 经典 App 图标（上一版样式）：逆时针双环 + 中心水位杯。
-    func testQuotaLogoSVGBuilderArcAndWaterCalculations() {
-        let outer = QuotaRingMetrics(minAvailable: 0.3, avgAvailable: 0.7, colorHex: "#FB923C")
-        let middle = QuotaRingMetrics(minAvailable: 0.5, avgAvailable: 0.8, colorHex: "#2DD4BF")
-        let metrics = StatusBarQuotaMetrics(weekly: outer, interval: middle, waterHealth: nil)
-
-        // waterHealth 缺失时回退整体健康度（.healthy → 绿色水体）。
-        let svg = QuotaLogoSVGBuilder.buildSVG(
-            metrics: metrics,
-            fallbackHealth: .healthy
-        )
-
-        // 验证 viewBox 对称且足够容纳外圈，包含刻度虚线与水位杯裁剪。
-        XCTAssertTrue(svg.contains("viewBox=\"160 160 704 704\""))
-        XCTAssertTrue(svg.contains("stroke-dasharray=\"32 64\""))
-        XCTAssertTrue(svg.contains("clip-path=\"url(#cup)\""))
-        // 验证逆时针绘制（sweep-flag 为 0）。
-        XCTAssertTrue(svg.contains("A 320 320 0 0 0"))
-        // 水位取 5h 最低剩余量 0.5：waterHeight = 310 * 0.5 = 155.00, y = 702 - 155 = 547.00。
-        XCTAssertTrue(svg.contains("height=\"155.00\""))
-        XCTAssertTrue(svg.contains("y=\"547.00\""))
-        XCTAssertTrue(svg.contains("fill=\"#34C759\""))
-
-        // waterHealth 优先于整体健康度：红色水位。
-        let criticalSVG = QuotaLogoSVGBuilder.buildSVG(
-            metrics: StatusBarQuotaMetrics(weekly: outer, interval: middle, waterHealth: .critical)
-        )
-        XCTAssertTrue(criticalSVG.contains("fill=\"#FF453A\""))
-
-        // 缺失窗口沿用上一版语义按满环呈现：无 5h 窗口 → 满水位；
-        // 无周窗口 → 外环绘制为完整圆。
-        let missingInterval = QuotaLogoSVGBuilder.buildSVG(
-            metrics: StatusBarQuotaMetrics(
-                weekly: outer,
-                interval: QuotaRingMetrics(minAvailable: 0, avgAvailable: 0, colorHex: "#2DD4BF", isAvailable: false),
-                waterHealth: .healthy
-            )
-        )
-        XCTAssertTrue(missingInterval.contains("height=\"310.00\""))
-        XCTAssertTrue(missingInterval.contains("y=\"392.00\""))
-
-        let missingWeekly = QuotaLogoSVGBuilder.buildSVG(
-            metrics: StatusBarQuotaMetrics(
-                weekly: QuotaRingMetrics(minAvailable: 0, avgAvailable: 0, colorHex: "#FB923C", isAvailable: false),
-                interval: middle,
-                waterHealth: .healthy
-            )
-        )
-        XCTAssertTrue(missingWeekly.contains("<circle cx=\"512\" cy=\"512\" r=\"320.0\""))
-
-        let image = QuotaLogoSVGBuilder.buildImage(
-            metrics: metrics,
-            fallbackHealth: .healthy
-        )
-        XCTAssertNotNil(image)
-        XCTAssertEqual(image?.size.width, 22)
-        XCTAssertEqual(image?.size.height, 22)
     }
 
     /// 设置页 picker 与主面板 header 使用的 App 图标设计稿必须能从资源包加载；
@@ -1348,309 +1306,94 @@ final class StatusBarIconTests: XCTestCase {
         var stroke: String
     }
 
-    /// quotaLogo 的双源一致性守门：菜单栏真实图标由 QuotaLogoSVGBuilder 运行时
-    /// 生成，设置页预览却来自手写设计稿（llm-quota-730-2-dark.svg），几何常量
-    /// 改一侧不改另一侧会静默漂移。这里用能复现设计稿姿态的代表性输入
-    /// （外环 12 点逆时针 3/8 圈即 7:30 方向、内环 5/6 圈即 2 点方向、avg = min
-    /// 不产生刻度虚线段）让生成器产出同款双弧，再与资源文件逐项比较。
-    ///
-    /// 比较范围：两条弧的半径 / 端点 / large-arc 标志 / stroke-width / linecap /
-    /// 描边色，以及杯型路径（生成器是 clipPath、设计稿是满杯填充，本应是同
-    /// 一条 d）。不比较 viewBox——生成器裁掉透明留白用 704，设计稿保留完整
-    /// 1024 画布，但两者坐标系同为 1024 设计空间，元素坐标可直接对齐；不比较
-    /// 水位 rect——水位高度属动态语义（随指标变化），设计稿以满杯形状表达，
-    /// 生成器用 rect + clipPath 表达，水位数值本应允许不同。
-    func testQuotaLogoDesignAssetGeometryMatchesBuilder() throws {
-        let metrics = StatusBarQuotaMetrics(
-            weekly: QuotaRingMetrics(
-                minAvailable: 0.375, avgAvailable: 0.375,
-                colorHex: QuotaLogoSVGBuilder.defaultOuterColor
-            ),
-            interval: QuotaRingMetrics(
-                minAvailable: 5.0 / 6.0, avgAvailable: 5.0 / 6.0,
-                colorHex: QuotaLogoSVGBuilder.defaultMiddleColor
-            )
+    // MARK: - App 图标设计稿：载入时裁掉透明留白 + 菜单栏绘制边长
+
+    /// 光栅化一张图并返回其不透明像素的包围盒（归一化到 0...1）。
+    @MainActor
+    private func opaqueBounds(of image: NSImage, edge: Int = 256) -> CGRect? {
+        let bitmap = NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: edge, pixelsHigh: edge, bitsPerSample: 8,
+            samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0
+        )!
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bitmap)
+        image.draw(in: NSRect(x: 0, y: 0, width: edge, height: edge))
+        NSGraphicsContext.restoreGraphicsState()
+        // NSBitmapImageRep 的像素在 restore 之前就写好了，直接读 bitmapData。
+        let bytes = bitmap.bitmapData!
+        let bytesPerRow = bitmap.bytesPerRow
+        var minX = edge, maxX = -1, minY = edge, maxY = -1
+        for y in 0..<edge {
+            for x in 0..<edge where bytes[y * bytesPerRow + x * 4 + 3] > 8 {
+                minX = min(minX, x); maxX = max(maxX, x)
+                minY = min(minY, y); maxY = max(maxY, y)
+            }
+        }
+        guard maxX >= minX, maxY >= minY else { return nil }
+        return CGRect(
+            x: CGFloat(minX) / CGFloat(edge), y: CGFloat(minY) / CGFloat(edge),
+            width: CGFloat(maxX - minX + 1) / CGFloat(edge),
+            height: CGFloat(maxY - minY + 1) / CGFloat(edge)
         )
-        let generated = QuotaLogoSVGBuilder.buildSVG(metrics: metrics)
-
-        let designURL = try XCTUnwrap(
-            Bundle.module.url(forResource: "llm-quota-730-2-dark", withExtension: "svg"),
-            "设计稿 SVG 必须随 app target 打包（Package.swift resources 声明）"
-        )
-        let design = try String(contentsOf: designURL, encoding: .utf8)
-
-        let generatedArcs = try Self.strokedArcSkeletons(in: generated)
-        let designArcs = try Self.strokedArcSkeletons(in: design)
-        XCTAssertEqual(generatedArcs.count, 2, "生成器应产出外环 + 内环两条弧，实际 \(generatedArcs.count) 条")
-        XCTAssertEqual(designArcs.count, 2, "设计稿应包含外环 + 内环两条弧，实际 \(designArcs.count) 条")
-
-        // 两侧都按半径降序配对：首条为外环（r=320），次条为内环（r=240）。
-        for (index, pair) in zip(generatedArcs, designArcs).enumerated() {
-            let (generatedArc, designArc) = pair
-            XCTAssertEqual(
-                generatedArc.radius, designArc.radius, accuracy: 0.5,
-                "第 \(index) 条弧半径不一致：生成器 \(generatedArc.radius) vs 设计稿 \(designArc.radius)"
-            )
-            XCTAssertEqual(
-                generatedArc.strokeWidth, designArc.strokeWidth, accuracy: 0.5,
-                "第 \(index) 条弧 stroke-width 不一致：生成器 \(generatedArc.strokeWidth) vs 设计稿 \(designArc.strokeWidth)"
-            )
-            XCTAssertEqual(
-                generatedArc.largeArcFlag, designArc.largeArcFlag,
-                "第 \(index) 条弧 large-arc 标志不一致：生成器 \(generatedArc.largeArcFlag) vs 设计稿 \(designArc.largeArcFlag)"
-            )
-            XCTAssertEqual(
-                generatedArc.endpoints, designArc.endpoints,
-                "第 \(index) 条弧端点不一致（已归一为 2 位小数、忽略绘制方向）：生成器 \(generatedArc.endpoints) vs 设计稿 \(designArc.endpoints)"
-            )
-            XCTAssertEqual(
-                generatedArc.lineCap, designArc.lineCap,
-                "第 \(index) 条弧 linecap 不一致：生成器 \(generatedArc.lineCap) vs 设计稿 \(designArc.lineCap)"
-            )
-            XCTAssertEqual(
-                generatedArc.stroke, designArc.stroke,
-                "第 \(index) 条弧描边色不一致：生成器 \(generatedArc.stroke) vs 设计稿 \(designArc.stroke)"
-            )
-        }
-
-        // 杯型路径：生成器在 clipPath 内、设计稿是唯一的无 stroke 填充路径。
-        let generatedCup = try Self.cupPathD(in: generated)
-        let designCup = try Self.cupPathD(in: design)
-        XCTAssertEqual(
-            Self.normalizedPathGeometry(generatedCup), Self.normalizedPathGeometry(designCup),
-            "杯型 clipPath 路径不一致（数值已归一为 3 位小数）：生成器 \(generatedCup) vs 设计稿 \(designCup)"
-        )
-    }
-
-    /// 提取 SVG 中所有带 stroke 且 fill="none" 的 <path> 圆弧段，按半径降序。
-    /// 属性按名读取，不依赖属性出现顺序；对注释 / 空白不敏感。
-    private static func strokedArcSkeletons(in svg: String) throws -> [SVGArcSkeleton] {
-        try allMatches(of: #"<path\b[^>]*/>"#, in: svg).compactMap { element in
-            guard let stroke = attribute("stroke", in: element),
-                  attribute("fill", in: element) == "none" else { return nil }
-            guard let d = attribute("d", in: element) else { return nil }
-            let arc = try parseArcD(d)
-            return SVGArcSkeleton(
-                radius: arc.radius,
-                strokeWidth: Double(attribute("stroke-width", in: element) ?? "") ?? 0,
-                largeArcFlag: arc.largeArc,
-                endpoints: arc.endpoints,
-                lineCap: attribute("stroke-linecap", in: element) ?? "",
-                stroke: stroke
-            )
-        }
-        .sorted { $0.radius > $1.radius }
-    }
-
-    /// 解析单条圆弧 path d（"M x1 y1 A rx ry rot large sweep x2 y2"）。
-    /// 端点归一为 2 位小数并按字典序排序：设计稿与生成器绘制方向相反
-    /// （设计稿顺时针 sweep=1、生成器逆时针 sweep=0），同一段弧端点互换。
-    private static func parseArcD(_ d: String) throws -> (radius: Double, largeArc: Int, endpoints: [String]) {
-        let pattern = #"M\s+(-?[\d.]+)\s+(-?[\d.]+)\s+A\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(\d)\s+(\d)\s+(-?[\d.]+)\s+(-?[\d.]+)"#
-        let regex = try NSRegularExpression(pattern: pattern)
-        let nsd = d as NSString
-        guard let match = regex.firstMatch(in: d, range: NSRange(d.startIndex..., in: d)),
-              match.numberOfRanges == 10,
-              let radius = Double(nsd.substring(with: match.range(at: 3))),
-              let largeArc = Int(nsd.substring(with: match.range(at: 6))) else {
-            XCTFail("无法按圆弧格式解析 path d：\(d)")
-            throw NSError(domain: "SVGGeometry", code: 1)
-        }
-        let points = [match.range(at: 1), match.range(at: 2), match.range(at: 8), match.range(at: 9)]
-            .compactMap { Range($0, in: d).flatMap { Double(d[$0]) } }
-            .map { String(format: "%.2f", ($0 * 100).rounded() / 100) }
-        guard points.count == 4 else {
-            XCTFail("圆弧端点数量异常：\(d)")
-            throw NSError(domain: "SVGGeometry", code: 2)
-        }
-        return (radius, largeArc, [points[0] + "," + points[1], points[2] + "," + points[3]].sorted())
-    }
-
-    /// 提取杯型路径 d：优先取生成器 clipPath 内的 path；设计稿没有 clipPath，
-    /// 回退取唯一的无 stroke 填充 <path>。
-    private static func cupPathD(in svg: String) throws -> String {
-        if let d = firstCapture(of: #"<clipPath\b[^>]*>\s*<path\b[^>]*?\bd="([^"]+)""#, in: svg) {
-            return d
-        }
-        let filled = try allMatches(of: #"<path\b[^>]*/>"#, in: svg).filter {
-            attribute("stroke", in: $0) == nil && attribute("d", in: $0) != nil
-        }
-        guard filled.count == 1, let d = attribute("d", in: filled[0]) else {
-            XCTFail("无法唯一定位设计稿杯型填充路径，候选 \(filled.count) 条")
-            throw NSError(domain: "SVGGeometry", code: 3)
-        }
-        return d
-    }
-
-    private static func firstCapture(of pattern: String, in text: String) -> String? {
-        guard let regex = try? NSRegularExpression(pattern: pattern),
-              let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
-              let range = Range(match.range(at: 1), in: text) else { return nil }
-        return String(text[range])
-    }
-
-    /// 数值归一：折叠空白、把所有数字统一为 3 位小数书写，让「392.00000」与
-    /// 「392.00」这类书写差异不影响比较，几何数值本身仍敏感。
-    private static func normalizedPathGeometry(_ d: String) -> String {
-        let collapsed = d.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
-        let regex = try! NSRegularExpression(pattern: #"-?\d+(?:\.\d+)?"#)
-        let matches = regex.matches(in: collapsed, range: NSRange(collapsed.startIndex..., in: collapsed))
-        var result = ""
-        var cursor = collapsed.startIndex
-        for match in matches {
-            guard let range = Range(match.range, in: collapsed) else { continue }
-            result += collapsed[cursor..<range.lowerBound]
-            result += Double(collapsed[range]).map { String(format: "%.3f", $0) } ?? String(collapsed[range])
-            cursor = range.upperBound
-        }
-        result += collapsed[cursor...]
-        return result
-    }
-
-    private static func allMatches(of pattern: String, in text: String) throws -> [String] {
-        let regex = try NSRegularExpression(pattern: pattern)
-        return regex.matches(in: text, range: NSRange(text.startIndex..., in: text))
-            .compactMap { Range($0.range, in: text).map { String(text[$0]) } }
-    }
-
-    /// 按属性名读取元素属性值；前缀断言避免 stroke 误读 stroke-width。
-    private static func attribute(_ name: String, in element: String) -> String? {
-        let pattern = #"(?<![\w-])\#(name)="([^"]*)""#
-        guard let regex = try? NSRegularExpression(pattern: pattern),
-              let match = regex.firstMatch(in: element, range: NSRange(element.startIndex..., in: element)),
-              let range = Range(match.range(at: 1), in: element) else { return nil }
-        return String(element[range])
     }
 
     @MainActor
-    func testStatusBarWaterHealthLevels() {
-        let descriptors = [
-            FetcherDescriptor(
-                id: "test_a",
-                displayName: "Test A",
-                kind: .minimaxTokenPlan,
-                iconSystemName: "bubble.left",
-                accentColor: .minimax,
-                makeFetcher: { _ in MinimaxTokenPlanFetcher(apiKey: "key") }
-            ),
-            FetcherDescriptor(
-                id: "test_b",
-                displayName: "Test B",
-                kind: .codexChatGpt,
-                iconSystemName: "sparkles",
-                accentColor: .chatgpt,
-                makeFetcher: { _ in CodexFetcher(authPath: nil) }
-            ),
-            FetcherDescriptor(
-                id: "test_glm",
-                displayName: "Test GLM",
-                kind: .glmCodingPlan,
-                iconSystemName: "bolt",
-                accentColor: .glm,
-                makeFetcher: { _ in GlmCodingPlanFetcher(apiKey: "key") }
-            )
-        ]
-
-        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: dir) }
-
-        let configURL = dir.appendingPathComponent("config.json")
-        let store = ConfigStore(configURL: configURL)
-
-        var cfg = store.config
-        cfg.providers["test_a"] = ProviderConfig(enabled: true, apiKey: "key_a")
-        cfg.providers["test_b"] = ProviderConfig(enabled: true, apiKey: "key_b")
-        cfg.providers["test_glm"] = ProviderConfig(
-            enabled: true,
-            apiKey: "key_glm",
-            peakStartHour: 14,
-            peakEndHour: 18,
-            peakWeekdaysOnly: false
-        )
-        try? store.applyAndSave(cfg)
-
-        let appState = AppState(descriptors: descriptors, configStore: store)
-        defer { appState.stop() }
-
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = .current
-        let day = DateComponents(year: 2026, month: 8, day: 10)
-        let offPeakTime = calendar.date(from: DateComponents(
-            year: day.year, month: day.month, day: day.day, hour: 10, minute: 0
-        ))!
-        let peakTime = calendar.date(from: DateComponents(
-            year: day.year, month: day.month, day: day.day, hour: 15, minute: 0
-        ))!
-
-        func makeModel(percent: Double) -> ModelQuota {
-            ModelQuota(
-                modelName: "model",
-                intervalTotalCount: 100,
-                intervalUsageCount: Int(100.0 - percent),
-                intervalRemainingPercent: percent,
-                intervalStatus: .present,
-                intervalResetsAt: offPeakTime.addingTimeInterval(3600),
-                intervalWindowSeconds: 18000,
-                weeklyTotalCount: 100,
-                weeklyUsageCount: 20,
-                weeklyRemainingPercent: 80.0,
-                weeklyStatus: .present,
-                weeklyResetsAt: offPeakTime.addingTimeInterval(86400 * 7),
-                weeklyWindowSeconds: 86400 * 7
-            )
+    func testDesignAssetIsLoadedAlreadyCropped() {
+        // 设计稿原始画布里图形只占约 59%，其余是透明留白；载入时必须裁掉，菜单栏与
+        // 设置页 picker 两个消费方才都拿到"图形本身"，谁再按原画布缩放都不会小 41%。
+        //
+        // 判据是**包围盒贴住四条边**，不是"不透明像素占比高"：这张图是个环，环心
+        // 天生是透明的，裁干净之后覆盖率也只有 54%——用覆盖率判会把裁好的图判成没裁。
+        //
+        // 这条断言同时钉住一个静默失效的坑：包围盒靠"光栅化后扫描 alpha"算，
+        // 而 `CGContext.makeImage()` 快照的是上下文的**当前**内容，先取 image 再
+        // 绘制会得到全透明图，扫不到不透明像素 → 退回整幅画布：图标还是那么小，
+        // 却不报错不崩溃。顺序写反时只有这条会红。
+        let image = try? XCTUnwrap(MenuBarLabel.appIconDesignImage)
+        XCTAssertNotNil(image)
+        guard let design = image else { return }
+        let bounds = try? XCTUnwrap(opaqueBounds(of: design))
+        XCTAssertNotNil(bounds)
+        guard let box = bounds else { return }
+        for (name, value) in [("minX", box.minX), ("minY", box.minY),
+                              ("maxX", 1 - box.maxX), ("maxY", 1 - box.maxY)] {
+            XCTAssertLessThan(value, 0.02, "内容与 \(name) 侧之间还有 \(value * 100)% 的留白没裁掉")
         }
-
-        func setQuotas(aPercent: Double, bPercent: Double) {
-            appState.mutateStatus(for: "test_a") { st in
-                st.state = ProviderStatus.State.ok(QuotaInfo(models: [makeModel(percent: aPercent)], resetCredits: nil, planLabel: nil, accountEmail: nil, codexUsageDetails: nil, fetchedAt: offPeakTime))
-            }
-            appState.mutateStatus(for: "test_b") { st in
-                st.state = ProviderStatus.State.ok(QuotaInfo(models: [makeModel(percent: bPercent)], resetCredits: nil, planLabel: nil, accountEmail: nil, codexUsageDetails: nil, fetchedAt: offPeakTime))
-            }
-        }
-
-        // 1. 默认绿色：min >= 40%, avg >= 60%, 非高峰
-        // a=70%, b=90% -> min=70%, avg=80%
-        setQuotas(aPercent: 70.0, bPercent: 90.0)
-        var metrics = appState.statusBarQuotaMetrics(at: offPeakTime)
-        XCTAssertEqual(metrics.waterHealth, HealthLevel.healthy)
-
-        // 2. 黄色场景 A：任意 5h 额度 < 40%
-        // a=35%, b=85% -> min=35% (< 40%), avg=60%
-        setQuotas(aPercent: 35.0, bPercent: 85.0)
-        metrics = appState.statusBarQuotaMetrics(at: offPeakTime)
-        XCTAssertEqual(metrics.waterHealth, HealthLevel.warning)
-
-        // 3. 黄色场景 B：avg_5h < 60%（且 min >= 40%）
-        // a=50%, b=60% -> min=50%, avg=55% (< 60%)
-        setQuotas(aPercent: 50.0, bPercent: 60.0)
-        metrics = appState.statusBarQuotaMetrics(at: offPeakTime)
-        XCTAssertEqual(metrics.waterHealth, HealthLevel.warning)
-
-        // 4. 黄色场景 C：有高峰价格（即使额度全部 100%）
-        setQuotas(aPercent: 100.0, bPercent: 100.0)
-        metrics = appState.statusBarQuotaMetrics(at: peakTime)
-        XCTAssertEqual(metrics.waterHealth, HealthLevel.warning)
-
-        // 5. 红色场景 A：任意 5h 额度 < 10%
-        // a=8%, b=80% -> min=8% (< 10%), avg=44%
-        setQuotas(aPercent: 8.0, bPercent: 80.0)
-        metrics = appState.statusBarQuotaMetrics(at: offPeakTime)
-        XCTAssertEqual(metrics.waterHealth, HealthLevel.critical)
-
-        // 6. 红色场景 B：avg_5h < 40%
-        // a=20%, b=30% -> min=20%, avg=25% (< 40%)
-        setQuotas(aPercent: 20.0, bPercent: 30.0)
-        metrics = appState.statusBarQuotaMetrics(at: offPeakTime)
-        XCTAssertEqual(metrics.waterHealth, HealthLevel.critical)
-
-        // 7. 优先级：红 > 黄（例如 min < 10% 且处于高峰期时，判定为红色）
-        setQuotas(aPercent: 5.0, bPercent: 90.0)
-        metrics = appState.statusBarQuotaMetrics(at: peakTime)
-        XCTAssertEqual(metrics.waterHealth, HealthLevel.critical)
+        XCTAssertEqual(box.width, box.height, accuracy: 0.02, "裁剪保宽高比，这张设计稿是正方形")
     }
 
+    func testBaseDrawRectSizesTheAppIconToEighteenPoints() {
+        // 「App 图标」是这张表里唯一单独定边长的：细描边环比实心字形看着小，
+        // 但铺满 22pt 画布又偏大，18pt 是菜单栏里不抢戏也不显小的那一档。
+        let rect = MenuBarLabel.baseDrawRect(for: .quotaLogo, canvas: 22)
+        XCTAssertEqual(rect.width, 18, accuracy: 0.001)
+        XCTAssertEqual(rect.height, 18, accuracy: 0.001)
+        XCTAssertEqual(rect.midX, 11, accuracy: 0.001, "必须居中，否则图标偏在一侧")
+        XCTAssertEqual(rect.midY, 11, accuracy: 0.001)
+    }
+
+    func testBaseDrawRectKeepsTheInsetBoxForEveryOtherStyle() {
+        // 其余样式一律 1pt 边距的 20pt 框：SF Symbol 自带内边距、Icon Duo 是紧凑
+        // 画布，靠这个框把视觉尺寸压到 15~17pt。别顺手把它们也改成 18pt。
+        for style in [StatusBarIconStyle.chartBar, .sparkles, .brain, .cpu, .iconDuo] {
+            let rect = MenuBarLabel.baseDrawRect(for: style, canvas: 22)
+            XCTAssertEqual(rect, CGRect(x: 1, y: 1, width: 20, height: 20), "\(style.displayName)")
+        }
+    }
+
+    func testBaseDrawRectNeverExceedsTheCanvas() {
+        // 画布被改小（比如以后跟随外观调整）时，绘制框不能溢出画布。
+        for canvas in [CGFloat(22), 18, 16] {
+            for style in StatusBarIconStyle.allCases {
+                let rect = MenuBarLabel.baseDrawRect(for: style, canvas: canvas)
+                XCTAssertLessThanOrEqual(rect.width, canvas, "\(style.rawValue) @ \(canvas)")
+                XCTAssertGreaterThanOrEqual(rect.minX, 0, "\(style.rawValue) @ \(canvas)")
+            }
+        }
+    }
+
+    @MainActor
     // MARK: - 统一 colorLevel 判定（方案 A）
 
     /// `ModelQuota.aggregateHealthLevel`：binding 选择与并列取 5h、周 × N 折算、

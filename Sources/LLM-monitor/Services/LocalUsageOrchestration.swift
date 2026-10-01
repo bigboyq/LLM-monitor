@@ -449,7 +449,7 @@ final class LocalUsageOrchestration {
 
     /// 记录 readiness 并按需触发 scanner；返回值通过 coordinator 的生命周期
     /// interface 决定，而不是依赖具体 scanner 类型。
-    private func scanClient<Usage: Equatable>(
+    private func scanClient<Usage: Equatable & Sendable>(
         _ clientID: String,
         mode: LocalUsageScanMode,
         isActive: () -> Bool,

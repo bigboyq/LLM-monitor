@@ -9,6 +9,7 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 | Platform | macOS 14+, SwiftUI `MenuBarExtra` |
 | Build system | Swift Package Manager executable target (with `LLMMonitorTests` test target) |
 | UI model | Menu bar drop-down plus a native Settings window; lightweight setup guidance appears when all providers are unconfigured |
+| Edge dock | Optional screen-edge panel, one circle per enabled Provider, click-through by default and hidden while the frontmost App is fullscreen (off by default) |
 | Hover details | Delayed floating hover panels for compact quota details |
 | Login item | Settings-window launch-at-login toggle backed by `SMAppService.mainApp`; menu footer is read-only |
 | Config | `~/Library/Application Support/LLM-monitor/config.json`, JSON, permission `0600` |
@@ -95,7 +96,7 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 | `Sources/LLM-monitor/Services/SQLiteTempCopy.swift` | `/tmp` 副本 fallback：回退白名单 CANTOPEN / BUSY / READONLY 家族 / IOERR 家族 / CORRUPT，以及 immutable 直读打开后复检发现 `-shm`/`-wal` 出现的 `lostImmutableRace`（直读前提失效，非扫描失败）。副本读取同样 CORRUPT 时按源指纹（db/-wal/-shm 的 mtime+size，进程内不落盘）记忆为持久损坏，后续轮次跳过全量拷贝快速失败，指纹变化即失效恢复重拷——并发 checkpoint 撕裂页的重拷自愈路径不受影响。拷贝循环逐文件校验源指纹：db 拷完立即复验，失效即放弃本轮 wal/shm 拷贝，最多 3 轮后抛 `sourceChangedDuringSnapshot` |
 | `Sources/LLM-monitor/Views/Color+Theme.swift` | 品牌色常量 |
 | `Sources/LLM-monitor/Services/MenuBarRightClickHandler.swift` | 状态栏按钮右键菜单（best-effort） |
-| `Sources/LLM-monitor/Services/QuotaLogoSVGBuilder.swift` | 经典 App 图标（quotaLogo）SVG 生成：逆时针双环（实线到最低、刻度虚线到平均）+ 中心水位杯，共享额度指标结构也定义于此 |
+| `Sources/LLM-monitor/Services/StatusBarQuotaMetrics.swift` | 状态栏额度指标结构（`QuotaRingMetrics` / `StatusBarQuotaMetrics`），由 Icon Duo 仪表盘消费；原 App 图标 SVG 生成器已随「App 图标」改用固定设计稿而删除 |
 | `Sources/LLM-monitor/Services/IconDuoSVGBuilder.swift` | Icon Duo 状态栏额度仪表盘的参数化 SVG 生成（左右额度弧 / 中心扇形 / 底部模型健康点 / 顶部节能点） |
 | `Sources/LLM-monitor/Services/MinimaxDBReader.swift` | 读 minimax v2 `local_runtime_token_usage` 表 |
 | `Sources/LLM-monitor/Services/MinimaxLocalUsageScanner.swift` | minimax v2 `runtime-state.sqlite` 单源 scanner（AsyncMutex + lastCommittedGeneration 串行化）|
@@ -111,7 +112,7 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 | `Sources/LLM-monitor/Services/OpencodeUsageScanner.swift` | OpenCode DB 指纹、缓存、7 天窗口与 provider slice snapshot |
 | `Sources/LLM-monitor/Services/AsyncMutex.swift` | actor-based async-aware mutex（scanner pipeline 互斥；支持 caller cancellation propagation — acquire 前 / 排队中 / acquire 后执行前三阶段均检查取消）|
 | `Sources/LLM-monitor/Services/CancellationFilter.swift` | 统一"取消错误"判断（`Task.isCancelled` / `CancellationError` / `URLError.cancelled`），AppState 与 LocalUsageScanRunner 的两个 catch 入口共用 |
-| `Sources/LLM-monitor/Services/FileManagerBox.swift` | `FileManager` 的 `@unchecked Sendable` 包装 + `fileManager` 字段 `private`（同文件 extension 之外不能直接拿到底层 `FileManager`）。`Tests/LLMMonitorTests/StateAndSchedulerTests.swift` 验证该访问约束 |
+| `Sources/LLM-monitor/Services/FileManagerBox.swift` | `FileManager` 的 `@unchecked Sendable` 包装 + `fileManager` 字段 `private`（同文件 extension 之外不能直接拿到底层 `FileManager`）。`Tests/LLMMonitorTests/ConfigStoreTests.swift` 验证该访问约束 |
 | `Sources/LLM-monitor/Services/HTTPTimeouts.swift` | HTTP timeout 集中地（国内 domestic 10s / 海外 overseas 15s / antigravity 本机回环），改一处全局生效 |
 | `Sources/LLM-monitor/Services/LocalUsageScanRunner.swift` | 本地用量 scanner 共享的 lifecycle helper（generation 守门 / cancellation filter / defer generation 守门），消除镜像 boilerplate |
 | `Sources/LLM-monitor/Services/SingleDBSnapshotScanner.swift` | 单库全量快照 scanner 基座（db + WAL 双维指纹与缓存 index；GLM / OpenCode scanner 复用） |
@@ -132,6 +133,18 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 | `Sources/LLM-monitor/Views/QuotaViews.swift` | 各种 quota 行 + 进度条 + `EquivalentQuotaAllocation` |
 | `Sources/LLM-monitor/Views/QuotaHoverViews.swift` | 额度窗口 hover 视图族（binding constraint 文案、双 / 单窗口、用量指标与 Last Prompt 汇总） |
 | `Sources/LLM-monitor/Views/HoverPanel.swift` | `HoverInfoRow` / `HoverPanelController` / 浮层管理 |
+| `Sources/LLM-monitor/Models/EdgeDockEntry.swift` | `EdgeDockEntry` + `EdgeDockProjection`：已启用 Provider → 双环条目（5h / 周 各自最低剩余比例 + 健康档位 + 品牌 kind），纯函数 |
+| `Sources/LLM-monitor/Models/EdgeDockConfig.swift` | `DockEdge` / `EdgeDockConfig`：贴边方向 + 归一化位置（存比例不存绝对坐标），含手改值归一化 |
+| `Sources/LLM-monitor/Services/EdgeDockGeometry.swift` | 边缘窗纯几何：行高/尺寸、贴边 frame、offset 往返换算、最近边吸附、行/圆矩形推算（兜底用）、popover 定位、沿边拖拽换算、贴屏侧直边的非对称标签形状 |
+| `Sources/LLM-monitor/Services/FullscreenProbe.swift` | 当前 Space 全屏判定（`CGWindowList` 只读窗口边框 + 桌面装饰是否存在，fail-open，不需要辅助功能权限） |
+| `Sources/LLM-monitor/Services/EdgeDockController.swift` | 边缘窗控制器本体：状态与配置（`applyRuntimeConfig` 是运行时改配置的唯一入口，`config` 的 setter 保持 private）+ 接线（`attach` / `teardown`） |
+| `Sources/LLM-monitor/Services/EdgeDockController+Window.swift` | `NSPanel` 建/拆、按条目数与形态算窗口尺寸、贴到目标屏那一侧、"为什么没出现 / 出现在哪"的日志签名 |
+| `Sources/LLM-monitor/Services/EdgeDockController+Mouse.swift` | 鼠标穿透与悬停接管：monitor 装卸、2Hz 轮询节拍、命中后的接管与释放、hover / 展开 / 收起的挂起任务 |
+| `Sources/LLM-monitor/Services/EdgeDockController+Popover.swift` | Provider 卡片浮层（与 dock 两个独立窗口）：定位、显隐、鼠标停在浮层上时的接管保持 |
+| `Sources/LLM-monitor/Services/EdgeDockController+Drag.swift` | 沿贴靠边滑动拖拽：阈值判定、跨屏换屏 UUID、落点吸附与位置持久化 |
+| `Sources/LLM-monitor/Services/EdgeDockController+Fullscreen.swift` | 全屏门控：判定变化后重排窗口，以及窗口进出场动画期间的阶梯补测 |
+| `Sources/LLM-monitor/Services/EdgeDockController+HitTesting.swift` | 边缘窗命中判定纯函数（`circleIndex` 圆命中 + `resolveRowRects` / `resolveCircleRects` 实测优先、几何兜底），`nonisolated static`，不读实例状态 |
+| `Sources/LLM-monitor/Views/EdgeDockContentView.swift` | 边缘窗视图（外环=5h、内环=周、中心=Provider 品牌图标，刘海式背景） |
 | `Sources/LLM-monitor/Views/TokenChart.swift` | 7-day 柱图基础组件（`StackedTokenBar` / `TokenChartScale`） |
 | `Sources/LLM-monitor/Views/AccountHoverViews.swift` | Antigravity / ChatGPT 账号 hover 详情 |
 | `Sources/LLM-monitor/Views/DeepseekAccountView.swift` | DeepSeek 余额 hover 详情（充值 / 赠金明细） |
@@ -144,6 +157,7 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 | `Sources/LLM-monitor/Views/SegmentedQuotaProgressBar.swift` | 5h / 周额度分段条、窗口颜色与 reset 标记 |
 | `Sources/LLM-monitor/Views/SettingsEnergyPane.swift` | 设置页节能 pane：睡眠健康度、防休眠与电源参数矩阵 |
 | `Sources/LLM-monitor/Views/SettingsClientsPane.swift` | 设置页「客户端」tab：本地客户端用量诊断 + client ↔ quota 绑定开关（从 SettingsView 拆出） |
+| `Sources/LLM-monitor/Views/ClientSegmentedControl.swift` | 设置页「客户端」切换条：原生 `NSSegmentedControl` 包装（段宽按文字测量写死，客户端变多时整体变宽并横向滚动，不压成省略号） |
 | `Sources/LLM-monitor/Views/SettingsComponents.swift` | 设置窗口共享组件与统一字体角色（`SettingsTypography` / `SettingsSection` / `SettingsControlRow` / `SettingsPaneHeader`） |
 | `Sources/LLM-monitor/Views/SettingsSaveTransaction.swift` | 设置保存事务：login item 更新 + config 保存的失败回滚语义 |
 | `Sources/LLM-monitor/Views/SettingsView.swift` | 设置面板 |
@@ -655,7 +669,7 @@ the interval and weekly windows.
 | `.failed(_, let last)` | `last?.healthLevel`（无则 nil） |
 | `.ready` / `.notConfigured` | `nil`（UI 显示灰点，不归类为"健康"） |
 
-`nil` 让 UI 端的 `StatusIndicator` 用 secondary 灰色渲染，明确区分"没数据"和"有数据但健康"。菜单栏的 `iconDuo` 仪表盘会随额度指标与节能/睡眠健康度变化，经典 `quotaLogo` 的水位颜色随 `waterHealth`（无值回退整体健康度）变化；标准 SF Symbol 样式则保留右下角状态点与刷新中的图标替换。卡片状态点和进度颜色同样反映健康度。
+`nil` 让 UI 端的 `StatusIndicator` 用 secondary 灰色渲染，明确区分"没数据"和"有数据但健康"。菜单栏的 `iconDuo` 仪表盘会随额度指标与节能/睡眠健康度变化；`quotaLogo`（App 图标）是固定设计稿、不随健康度变化；标准 SF Symbol 样式则保留右下角状态点与刷新中的图标替换。卡片状态点和进度颜色同样反映健康度。
 
 ## Error And Fallback
 
@@ -836,8 +850,8 @@ master 哈希即 icns 新鲜度的确定性判据，不用 mtime）。`build-app
 后调用 `sync-icon-assets.sh --check` 做构建前置校验（只校验不重生成——release 必
 须从已提交状态构建，不能在构建中悄悄改二进制）；副本一致性另由
 `Tests/LLMMonitorTests/IconAssetSyncTests.swift` 钉住。脚本覆盖范围之外的手工步骤：
-Icon Composer 里更新 `images/LLMMenu.icon` 工程；若菜单栏 quotaLogo 几何也要变，
-改 `QuotaLogoSVGBuilder` 并跑一致性测试；spec 文档同步。
+Icon Composer 里更新 `images/LLMMenu.icon` 工程；菜单栏「App 图标」直接用这份
+设计稿（`llm-quota-730-2-dark.svg`），改图即改图标，无需再改绘制代码；spec 文档同步。
 
 **历史分歧备注**：1.6.0 前夕 `478f322` 曾以"打包产物异常"为由移除 Icon Composer 路线，
 `0f1a7b8` 又将其恢复。本节即为最终裁定：**双路线并存是既定设计**，两条路线的产物各有
@@ -848,14 +862,14 @@ Icon Composer 里更新 `images/LLMMenu.icon` 工程；若菜单栏 quotaLogo �
 These are documented product boundaries:
 
 - The menu bar label defaults to the `chart.bar.fill` SF Symbol style; two optional
-    SVG dashboard styles are driven by `statusBarIconStyle`. The classic `quotaLogo`
-    style (config `quotaLogo` / "App 图标" in Settings, the pre-1.9.0 look restored)
-    renders an outer weekly ring and an inner 5h ring growing counter-clockwise from
-    12 o'clock (solid arc to the minimum remaining, 2-4 px ticked dashed arc to the
-    average) plus a center water cup whose height maps the 5h minimum remaining; its
-    water color follows `waterHealth` (falling back to overall health), and missing
-    windows render as full rings per the legacy semantics. See
-    `QuotaLogoSVGBuilder.swift`.
+    styles are driven by `statusBarIconStyle`. The `quotaLogo` style (config
+    `quotaLogo` / "App 图标" in Settings) is a **static design asset** — the same
+    `llm-quota-730-2-dark.svg` the Settings picker shows. It is not drawn at runtime:
+    health, quota levels and custom colors do not affect it, so the menu bar and the
+    picker can never disagree about what was picked. (The former runtime drawing — a
+    dual counter-clockwise ring gauge with a water cup whose color followed
+    `waterHealth` — was deleted along with the `waterHealth` / `colorHex` fields only
+    it consumed.)
     The `iconDuo` style (config `iconDuo` / "Icon Duo" in Settings, the 1.9.0+ redesign)
     renders a live quota dashboard: the left arc is 5h and the right arc is weekly; both are concentric
     circular arcs growing from the bottom with dark gray background tracks and health-colored

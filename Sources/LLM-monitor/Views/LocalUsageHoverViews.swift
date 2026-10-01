@@ -76,6 +76,20 @@ struct LocalUsageChartScale: Equatable {
     }
 }
 
+/// 7 天 token 图表的固定宽度常量。
+///
+/// 这是浮层宽度的**推导源头**：dock popover 与主菜单 hover 浮层都以这里为基准
+/// 算自己的宽度（见 `EdgeDockTheme.popoverWidth` / `HoverPanelController`）。
+/// 图表 frame 装不下柱区时不会报错——柱只是安静地溢出 frame、被浮层边缘裁掉，
+/// 表现为"7 天的横向展示缺了首尾两天"。
+enum SevenDayUsageChartMetrics {
+    /// 柱区自然宽度：7 根柱 × 55pt + 6 个 5pt 间距 = 415。图表 frame 的下限。
+    static let barsWidth: CGFloat = 55 * 7 + 5 * 6
+    /// 带价格列时的图表宽度。表格（34+48+58×4+62 + 间距 18 ≈ 394）比柱区窄，
+    /// 仍以柱区为下限再留一点余量。
+    static let pricedWidth: CGFloat = 420
+}
+
 /// 7-day token 用量 hover 图表（泛型）—— 4 类 provider 数据共用。
 ///
 /// 取代了原来 3 个几乎一样的 view，并接入 OpenCode daily 数据：
@@ -105,6 +119,10 @@ struct SevenDayTokenUsageHoverView<Daily: LocalUsageDaily>: View {
     /// 本 view 的 body 内调用，定价计算才真正惰性化。
     private let priceByDayProvider: () -> [Date: String]
 
+    /// 宿主形态：dock 详情浮层的 `.alwaysVisible` 里，标题与新鲜度徽章都被提到了
+    /// 卡片外面（见 `ProviderCardView.dockSectionTitle`），这里不能再画一遍。
+    @Environment(\.hoverRevealMode) private var revealMode
+
     init(
         days: [Daily],
         scannedAt: Date?,
@@ -129,21 +147,15 @@ struct SevenDayTokenUsageHoverView<Daily: LocalUsageDaily>: View {
         let priceByDay = priceByDayProvider()
 
         VStack(alignment: .leading, spacing: 9) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("最近 7 天 Token 用量")
-                    .font(.system(size: 12, weight: .semibold))
-                Spacer()
-                HStack(spacing: 6) {
-                    if isScanning {
-                        ProgressView().controlSize(.mini).scaleEffect(0.8)
-                        Text("计算中…")
-                            .font(.system(size: 9))
-                            .foregroundStyle(.secondary)
-                    } else if let scannedAt {
-                        Text("更新于 \(Formatters.formatClock(scannedAt))")
-                            .font(.system(size: 9).monospacedDigit())
-                            .foregroundStyle(.secondary)
-                    }
+            // dock 详情浮层里整行标题都被提到了卡片外面（标题是「最近7天token用量」，
+            // 右侧是同一个新鲜度徽章，见 `ProviderCardView.dockSectionTitle`），
+            // 这里再画一遍就是同一行出现两次。菜单侧没有那一行，必须保留。
+            if revealMode != .alwaysVisible {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("最近 7 天 Token 用量")
+                        .font(.system(size: 12, weight: .semibold))
+                    Spacer()
+                    LocalUsageFreshnessBadge(scannedAt: scannedAt, isScanning: isScanning)
                 }
             }
 
@@ -197,7 +209,7 @@ struct SevenDayTokenUsageHoverView<Daily: LocalUsageDaily>: View {
                     let metrics = LocalUsageChartDayMetrics(day)
                     GridRow {
                         Text(Formatters.formatMonthDay(day.dayStart))
-                            .font(.system(size: 9, weight: .medium).monospacedDigit())
+                            .font(.system(size: 10, weight: .medium).monospacedDigit())
                             .foregroundStyle(.secondary)
                             .frame(width: 34, alignment: .leading)
                         roundsTurnsValue(day, width: 48)
@@ -213,7 +225,7 @@ struct SevenDayTokenUsageHoverView<Daily: LocalUsageDaily>: View {
             }
 
             Text("输入：Uncached 线性缩放（占最大高度 40%），Cache 按 Token^0.3 缩放（占最大高度 60%）；输出线性缩放。R/T = rounds / turns。")
-                .font(.system(size: 8))
+                .font(.system(size: 10))
                 .foregroundStyle(.tertiary)
 
             if isTruncated {
@@ -222,26 +234,32 @@ struct SevenDayTokenUsageHoverView<Daily: LocalUsageDaily>: View {
                     .foregroundStyle(.orange)
             }
         }
-        .frame(width: priceByDay.isEmpty ? 390 : 420, alignment: .leading)
+        // 宽度必须装下柱区（415）：旧的 390 会让首尾两天的柱溢出 frame 被浮层裁掉。
+        .frame(
+            width: priceByDay.isEmpty
+                ? SevenDayUsageChartMetrics.barsWidth
+                : SevenDayUsageChartMetrics.pricedWidth,
+            alignment: .leading
+        )
     }
 
     private func tableHeader(_ title: String, width: CGFloat, alignment: Alignment) -> some View {
         Text(title)
-            .font(.system(size: 8, weight: .semibold))
+            .font(.system(size: 10, weight: .semibold))
             .foregroundStyle(.secondary)
             .frame(width: width, alignment: alignment)
     }
 
     private func tokenValue(_ value: Int, color: Color, width: CGFloat) -> some View {
         Text(Formatters.formatTokenCountCompact(value))
-            .font(.system(size: 9, weight: .medium).monospacedDigit())
+            .font(.system(size: 10, weight: .medium).monospacedDigit())
             .foregroundStyle(color)
             .frame(width: width, alignment: .trailing)
     }
 
     private func priceValue(_ value: String, width: CGFloat) -> some View {
         Text(value)
-            .font(.system(size: 9, weight: .medium).monospacedDigit())
+            .font(.system(size: 10, weight: .medium).monospacedDigit())
             .foregroundStyle(
                 value == "未定价" || value.contains("部分计价") ? .orange : .secondary
             )
@@ -256,7 +274,7 @@ struct SevenDayTokenUsageHoverView<Daily: LocalUsageDaily>: View {
             ? "\(Formatters.formatGroupedInt(day.rounds))/\(Formatters.formatGroupedInt(day.turns))"
             : "—"
         return Text(text)
-            .font(.system(size: 9, weight: .medium).monospacedDigit())
+            .font(.system(size: 10, weight: .medium).monospacedDigit())
             .foregroundStyle(hasActivity ? .primary : .secondary)
             .frame(width: width, alignment: .trailing)
     }
@@ -281,7 +299,7 @@ struct LocalUsageDayBar<Daily: LocalUsageDaily>: View {
 
         VStack(spacing: 3) {
             Text(Calendar.current.isDateInToday(day.dayStart) ? "今天" : Formatters.formatMonthDay(day.dayStart))
-                .font(.system(size: 8, weight: .medium))
+                .font(.system(size: 10, weight: .medium))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
 
@@ -305,7 +323,7 @@ struct LocalUsageDayBar<Daily: LocalUsageDaily>: View {
                 Text("I \(Formatters.formatTokenCountCompact(metrics.inputTotal))")
                 Text("O \(Formatters.formatTokenCountCompact(metrics.outputTotal))")
             }
-            .font(.system(size: 8, weight: .medium).monospacedDigit())
+            .font(.system(size: 10, weight: .medium).monospacedDigit())
             .foregroundStyle(.secondary)
             .lineLimit(1)
             .minimumScaleFactor(0.8)
@@ -323,10 +341,62 @@ struct LocalUsageLegendDot: View {
         HStack(spacing: 3) {
             Circle().fill(color).frame(width: 6, height: 6)
             Text(title)
-                .font(.system(size: 9, weight: .medium))
+                .font(.system(size: 10, weight: .medium))
                 .foregroundStyle(.secondary)
         }
     }
+}
+
+/// 7 天用量的数据新鲜度：扫描中 / 更新于 `HH:mm`，**胶囊样式**。
+///
+/// 两个宿主放的位置不同、内容相同：菜单放在图表自己那行标题的右侧；dock 的详情
+/// 浮层把标题提到了卡片外，所以放在组标题「最近7天token用量」那一行的右侧——
+/// 与第一张卡片标题右侧的 `ProviderStateLabel` 用同一种胶囊，两行标题的右侧
+/// 才读起来是同一类东西。
+struct LocalUsageFreshnessBadge: View {
+    let scannedAt: Date?
+    let isScanning: Bool
+
+    /// 空态（既不在扫描、也还没扫出过）时**整个视图不渲染**，而不是渲染一个空胶囊。
+    ///
+    /// 两个宿主都把它放在 `HStack` 的 `Spacer` 之后：把 opacity 压到 0 只是看不见，
+    /// 那一格（文字 + 左右 6pt padding）仍会被布局算进去，于是右侧凭空多出约 20pt
+    /// 的空白、标题可用宽度被悄悄吃掉。真正不存在的状态就不该占位。
+    @ViewBuilder
+    var body: some View {
+        if isScanning {
+            capsule {
+                ProgressView().controlSize(.mini).scaleEffect(0.7)
+                Text("计算中…")
+            }
+        } else if let scannedAt {
+            capsule {
+                Text("更新于 \(Formatters.formatClock(scannedAt))")
+            }
+        }
+    }
+
+    private func capsule<C: View>(@ViewBuilder _ content: () -> C) -> some View {
+        HStack(spacing: 5, content: content)
+            .font(MenuTypography.badge)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(Color.secondary.opacity(0.1), in: Capsule())
+    }
+}
+
+/// dock 详情浮层把 7 天用量拆进两张卡片，这里决定 `LocalUsageFooterView` 出哪一半。
+///
+/// - `.combined`：菜单用，汇总行 + 分隔线 + 图表，一个 `HoverInfoRow` 原地展开
+/// - `.summary`：进上一张卡片的"今天 …"汇总行
+/// - `.detail`：下一张卡片的图表 + 用量表 + 脚注
+///
+/// 切分点是 `HoverInfoRow` 本来就有的那条分隔线——汇总与明细的分界，不是新划的。
+enum LocalUsagePart: Equatable {
+    case combined
+    case summary
+    case detail
 }
 
 /// provider 卡片底部的"今日 token 用量"行（泛型）—— 4 类 provider 数据共用。
@@ -357,6 +427,8 @@ struct LocalUsageFooterView<Daily: LocalUsageDaily>: View {
     /// "本机无 Antigravity 会话数据（~/.gemini/antigravity/conversations 为空）" 等
     /// provider 特定的"扫描完毕但还没数据"提示
     let emptyHint: String
+    /// 出哪一半（见 `LocalUsagePart`）。默认整个 `HoverInfoRow`，即菜单形态。
+    let part: LocalUsagePart
 
     init(
         dailyTokenUsage: [Daily],
@@ -368,7 +440,8 @@ struct LocalUsageFooterView<Daily: LocalUsageDaily>: View {
         freshness: LocalUsageFreshness = .clean,
         isTruncated: Bool = false,
         isReady: Bool,
-        emptyHint: String
+        emptyHint: String,
+        part: LocalUsagePart = .combined
     ) {
         self.dailyTokenUsage = dailyTokenUsage
         self.recentSamples = recentSamples
@@ -380,6 +453,7 @@ struct LocalUsageFooterView<Daily: LocalUsageDaily>: View {
         self.isTruncated = isTruncated
         self.isReady = isReady
         self.emptyHint = emptyHint
+        self.part = part
     }
 
     /// 不把数组顺序当作“今天”的依据；扫描器正常返回升序，但缓存或合并器
@@ -467,25 +541,49 @@ struct LocalUsageFooterView<Daily: LocalUsageDaily>: View {
 
     var body: some View {
         if isReady, !dailyTokenUsage.isEmpty {
-            HoverInfoRow {
-                HStack(spacing: 5) {
-                    Image(systemName: "chart.line.uptrend.xyaxis")
-                        .font(MenuTypography.footer)
-                        .foregroundStyle(.secondary)
-                    todayMetrics
+            switch part {
+            case .combined:
+                HoverInfoRow {
+                    summaryRow
+                } detail: {
+                    detailView
                 }
-            } detail: {
-                SevenDayTokenUsageHoverView(
-                    days: dailyTokenUsage,
-                    scannedAt: scannedAt,
-                    isScanning: isScanning,
-                    isTruncated: isTruncated,
-                    priceByDay: priceByDay
-                )
+            case .summary:
+                summaryRow
+            case .detail:
+                detailView
             }
         } else {
-            placeholder
+            // 拆成两张卡片时，"没有本地用量"这句话属于下面那张卡片（图表的位置），
+            // 不是额度卡片的收尾——汇总行此时整行不存在，留个空 HStack 会把卡片的
+            // 底边垫高。
+            if part == .summary {
+                EmptyView()
+            } else {
+                placeholder
+            }
         }
+    }
+
+    /// 汇总行：`📈 今天 173M tokens 命中率 97.8% 价值 $20.48`。
+    private var summaryRow: some View {
+        HStack(spacing: 5) {
+            Image(systemName: "chart.line.uptrend.xyaxis")
+                .font(MenuTypography.footer)
+                .foregroundStyle(.secondary)
+            todayMetrics
+        }
+    }
+
+    /// 明细：图例 + 柱图 + 用量表 + 脚注。标题与新鲜度徽章由宿主画在卡片外。
+    private var detailView: some View {
+        SevenDayTokenUsageHoverView(
+            days: dailyTokenUsage,
+            scannedAt: scannedAt,
+            isScanning: isScanning,
+            isTruncated: isTruncated,
+            priceByDay: priceByDay
+        )
     }
 
     @ViewBuilder

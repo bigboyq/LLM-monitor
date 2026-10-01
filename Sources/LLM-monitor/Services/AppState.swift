@@ -178,7 +178,6 @@ final class AppState: ObservableObject {
             intervalMetrics = QuotaRingMetrics(
                 minAvailable: 0.0,
                 avgAvailable: 0.0,
-                colorHex: QuotaLogoSVGBuilder.defaultMiddleColor,
                 isAvailable: false
             )
         } else {
@@ -188,7 +187,6 @@ final class AppState: ObservableObject {
             intervalMetrics = QuotaRingMetrics(
                 minAvailable: minVal,
                 avgAvailable: avgVal,
-                colorHex: QuotaLogoSVGBuilder.defaultMiddleColor,
                 isAvailable: true
             )
         }
@@ -200,7 +198,6 @@ final class AppState: ObservableObject {
             weeklyMetrics = QuotaRingMetrics(
                 minAvailable: 0.0,
                 avgAvailable: 0.0,
-                colorHex: QuotaLogoSVGBuilder.defaultOuterColor,
                 isAvailable: false
             )
         } else {
@@ -210,7 +207,6 @@ final class AppState: ObservableObject {
             weeklyMetrics = QuotaRingMetrics(
                 minAvailable: minVal,
                 avgAvailable: avgVal,
-                colorHex: QuotaLogoSVGBuilder.defaultOuterColor,
                 isAvailable: true
             )
         }
@@ -227,6 +223,10 @@ final class AppState: ObservableObject {
         // 表达两种窗口的原始物理剩余；底部三点按统一 colorLevel 判定（实际可用
         // 口径 + 高峰 floor），不排除耗尽套餐（用完的套餐点保持红），构造器
         // 负责排序、截断到三个并用默认绿色补齐。
+        //
+        // 这里**不再**产出"水位综合状态"这类整体健康值：它唯一的消费者是经典
+        // App 图标的中心水位，而 App 图标现在是固定设计稿，Icon Duo 的各部件按
+        // 统一 colorLevel 规则自行取色。
         var centerBest: (value: Double, bindingTimeFraction: Double?)?
         var hasAnyReading = false
         for entry in activeWindowedModels {
@@ -269,46 +269,11 @@ final class AppState: ObservableObject {
             .compactMap { $0.intervalTimeRemainingFraction(at: now) }
             .max()
 
-        // 4. 高峰价格判定
-        let isPeakPrice = enabled.contains { status in
-            if let glmPeak = status.glmPeakWindow, case .peak = glmPeak.status(at: now) {
-                return true
-            }
-            if let deepseekPeak = status.deepseekPeakWindow, case .peak = deepseekPeak.status(at: now) {
-                return true
-            }
-            return false
-        }
-
-        // 5. 中心水位综合状态（经典 App 图标消费）：默认绿色，如果有任意5h额度
-        // <40%，或有高峰价格，或avg_5h<60%，黄色；如果有任意5h额度<10%，或
-        // avg_5h<40%，红色。缺失 5h 窗口沿用上一版语义按满量（1.0）参与判定，
-        // 避免「无数据」被误判为「耗尽」。
-        let waterHealth: HealthLevel?
-        let hasWindowedQuotaData = enabled.contains {
-            $0.kind != .deepseek && $0.lastSuccess != nil
-        }
-        if allActiveModels.isEmpty && !hasWindowedQuotaData {
-            waterHealth = nil
-        } else {
-            let epsilon = 1e-6
-            let effectiveMin = intervalMetrics.isAvailable ? intervalMetrics.minAvailable : 1.0
-            let effectiveAvg = intervalMetrics.isAvailable ? intervalMetrics.avgAvailable : 1.0
-            if effectiveMin < (0.10 - epsilon) || effectiveAvg < (0.40 - epsilon) {
-                waterHealth = .critical
-            } else if effectiveMin < (0.40 - epsilon) || isPeakPrice || effectiveAvg < (0.60 - epsilon) {
-                waterHealth = .warning
-            } else {
-                waterHealth = .healthy
-            }
-        }
-
         return StatusBarQuotaMetrics(
             weekly: weeklyMetrics,
             interval: intervalMetrics,
             centerAvailable: centerAvailable,
             quotaHealthLevels: quotaHealthLevels,
-            waterHealth: waterHealth,
             weeklyTimeFraction: weeklyTimeFraction,
             centerTimeFraction: centerTimeFraction,
             intervalTimeFraction: intervalTimeFraction
@@ -496,7 +461,11 @@ final class AppState: ObservableObject {
         // 自动定时节拍不受影响：两条循环仍各自独立运行。
         await withTaskGroup(of: Void.self) { group in
             for providerID in providerIDs {
-                group.addTask { @MainActor [self, providerID] in
+                // 刻意不写 `@MainActor` 闭包属性：Swift 6.4 的 region isolation
+                // 检查器处理不了 `@MainActor [capture list]` 这个组合，会直接吐
+                // "Please file a bug" 并中断整段检查。子任务的 MainActor 隔离由
+                // 下面 await 跨 actor 调用点保证，语义不变。
+                group.addTask { [self, providerID] in
                     await self.refreshProviderFully(providerID: providerID, jobToken: token)
                 }
             }
@@ -534,8 +503,12 @@ final class AppState: ObservableObject {
             .map(\.id)
         await withTaskGroup(of: Void.self) { group in
             for providerID in providerIDs {
-                group.addTask { @MainActor [self, providerID] in
-                    guard self.refreshScheduler.isCurrentJob(token) else { return }
+                // 刻意不写 `@MainActor` 闭包属性：Swift 6.4 的 region isolation
+                // 检查器处理不了 `@MainActor [捕获列表]` 这个组合，会报
+                // "Please file a bug" 并中断整段检查。隔离由下面的
+                // `await self.refreshScheduler.…` 调用点保证，语义与原来逐字相同。
+                group.addTask { [self, providerID] in
+                    guard await self.refreshScheduler.isCurrentJob(token) else { return }
                     await self.refreshScheduler.refreshForSystemWake(providerID)
                 }
             }

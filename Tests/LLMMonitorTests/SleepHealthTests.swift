@@ -385,8 +385,10 @@ final class SleepHealthTests: XCTestCase {
 
     @MainActor
     func testSleepHealthServiceStopReleasesAssertion() {
+        // 时钟闭包会被捕获进 detached 任务：捕获值而非 self，才能满足 @Sendable
+        let fixedNow = self.now
         let service = SleepHealthService(
-            now: { self.now },
+            now: { fixedNow },
             assertionProbe: { [] },
             pmsetCustomReader: { "AC Power:\n sleep 15\n" }
         )

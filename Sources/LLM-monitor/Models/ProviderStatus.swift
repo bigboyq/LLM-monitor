@@ -147,6 +147,17 @@ struct ProviderStatus: Identifiable, Equatable, Sendable {
             return [.dsh] + (mergeOpencodeUsage ? [.opencode] : [])
         }
     }
+
+    /// 「用户没配过顺序」时的默认排序：显示名升序，同名再按 id 兜底。
+    ///
+    /// 菜单卡片（[MenuContentView]）与边缘 dock（[EdgeDockProjection]）**共用**这一个
+    /// 比较器。两处各写一份时，dock 和菜单迟早按不同顺序排列，而它们本来就该是
+    /// 同一份配置（`providerCardOrder`）的两种呈现。
+    static func displayNameAscending(_ lhs: ProviderStatus, _ rhs: ProviderStatus) -> Bool {
+        let comparison = lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName)
+        if comparison != .orderedSame { return comparison == .orderedAscending }
+        return lhs.id < rhs.id
+    }
 }
 
 /// provider 类型枚举（每加一个 provider 加一个 case）

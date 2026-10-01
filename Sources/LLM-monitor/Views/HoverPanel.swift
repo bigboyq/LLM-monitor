@@ -1,9 +1,36 @@
 import SwiftUI
 import AppKit
 
+/// `HoverInfoRow` 的展开方式。
+///
+/// 菜单里信息密度高，折叠区必须靠 hover 才出现；边缘状态窗的浮层本身就是
+/// "用户主动悬停某个圆才弹出来"的详情，**再要求悬停一次**就成了悬停的悬停。
+/// 两种宿主各取一种。
+enum HoverRevealMode {
+    /// 菜单：hover 才弹出独立浮层（`NSPanel`）。
+    case onHover
+    /// 边缘窗浮层：详情**就地展开**成独立 section，不接受鼠标也照样显示。
+    case alwaysVisible
+}
+
+private struct HoverRevealModeKey: EnvironmentKey {
+    /// 默认必须是 `.onHover`：主菜单的信息密度依赖折叠，不设默认等于把菜单撑成
+    /// 一堵墙。默认值是**保护主菜单的那一侧**。
+    static let defaultValue = HoverRevealMode.onHover
+}
+
+extension EnvironmentValues {
+    var hoverRevealMode: HoverRevealMode {
+        get { self[HoverRevealModeKey.self] }
+        set { self[HoverRevealModeKey.self] = newValue }
+    }
+}
+
 /// Hover 即显的轻量浮层。只读展示，不接收点击，避免把菜单交互复杂化。
 /// 三个 provider 的 footer / card 全部走 `HoverInfoRow` 统一触发，详情 view 由调用方传入。
 struct HoverInfoRow<Content: View, Detail: View>: View {
+    @Environment(\.hoverRevealMode) private var revealMode
+
     let content: Content
     let detail: Detail
 
@@ -14,6 +41,27 @@ struct HoverInfoRow<Content: View, Detail: View>: View {
     }
 
     var body: some View {
+        switch revealMode {
+        case .alwaysVisible:
+            expanded
+        case .onHover:
+            hoverable
+        }
+    }
+
+    /// 常展形态：每个折叠区就地展开成**独立 section**（内容 + 分隔线），
+    /// 而不是把多个折叠区的内容糊在一起——分不清哪段属于哪个标题。
+    private var expanded: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            content
+            Rectangle()
+                .fill(Color.primary.opacity(0.08))
+                .frame(height: 1)
+            detail
+        }
+    }
+
+    private var hoverable: some View {
         content
             .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
             .help("悬停查看详细信息")
@@ -157,7 +205,9 @@ private final class TrackingNSView: NSView {
 final class HoverPanelController {
     static let shared = HoverPanelController()
     private let cursorGap: CGFloat = 6
-    private let maximumPanelWidth: CGFloat = 420
+    /// 上限必须装下最宽的详情：7 天 token 图表 420pt + present() 两侧各 10pt
+    /// padding。旧的 420 会把带价格列的表格右缘整段裁掉。
+    private let maximumPanelWidth: CGFloat = SevenDayUsageChartMetrics.pricedWidth + 20
 
     private var panel: NSPanel?
     private var hostingView: NSHostingView<AnyView>?
