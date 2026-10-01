@@ -1,3 +1,4 @@
+import SwiftUI
 import XCTest
 import Combine
 import Foundation
@@ -1284,6 +1285,77 @@ final class StatusBarIconTests: XCTestCase {
         )
         // 其余样式始终走现生成逻辑。
         XCTAssertEqual(SettingsView.previewImage(for: .iconDuo).size.width, 22)
+    }
+
+
+    /// 把真实的 `Picker` 离屏渲染出来，量它**最终画出来**的图标边长。
+    ///
+    /// 上一条量的是"我们放进去的位图有多大"，这条量的是"SwiftUI 实际画了多大"——
+    /// `.frame()` 被谁摘掉、`.resizable()` 顺序变了、或者 Picker 改用别的方式呈现
+    /// label，只有这条会红。
+    ///
+    /// 判据直接写成用户报的那句话：图标不能撑满 picker。实测（@2x 渲染）：控件
+    /// 24pt 高、App 图标 15pt，两侧各留约 4.5pt；修复前是 22pt 图标配 22pt 控件，
+    /// 完全等高。之所以必须有 ≥4pt 余量而不是"小于即可"：等高与差 1pt 在 2x 屏上
+    /// 肉眼分不出，但它们已经是同一个布局 bug 的两端。
+    @MainActor
+    func testPickerRendersAppIconClearlySmallerThanItsControl() throws {
+        let style = StatusBarIconStyle.quotaLogo
+        let side = SettingsView.previewIconSide(for: style)
+        let picker = Picker("", selection: .constant(style)) {
+            HStack(spacing: 8) {
+                Image(nsImage: SettingsView.previewImage(for: style))
+                    .renderingMode(.original)
+                    .resizable()
+                    .interpolation(.high)
+                    .frame(width: side, height: side)
+                Text(style.displayName)
+            }
+            .tag(style)
+        }
+        .pickerStyle(.menu)
+        .frame(width: 300)
+
+        let renderer = ImageRenderer(content: picker)
+        renderer.scale = 2
+        let cg = try XCTUnwrap(
+            renderer.cgImage,
+            "ImageRenderer 渲染不了这个 Picker：无法验证预览尺寸（工具链变化时先看这里，别直接改断言）"
+        )
+        let w = cg.width, h = cg.height
+        let bytesPerRow = cg.bytesPerRow
+        let provider: CGDataProvider = try XCTUnwrap(cg.dataProvider)
+        let data: Data = try XCTUnwrap(provider.data) as Data
+
+        // 控件 = 任何不透明像素；图标 = 其中高饱和的那块（本图是橙红渐变环）
+        var minX = w, maxX = -1, minY = h, maxY = -1
+        var iconMinX = w, iconMaxX = -1, iconMinY = h, iconMaxY = -1
+        for y in 0..<h {
+            for x in 0..<w {
+                let o = y * bytesPerRow + x * 4
+                guard data[o + 3] > 8 else { continue }
+                minX = min(minX, x); maxX = max(maxX, x)
+                minY = min(minY, y); maxY = max(maxY, y)
+                let r = Int(data[o]), g = Int(data[o + 1]), b = Int(data[o + 2])
+                if max(r, g, b) > 90 && max(r, g, b) - min(r, g, b) > 60 {
+                    iconMinX = min(iconMinX, x); iconMaxX = max(iconMaxX, x)
+                    iconMinY = min(iconMinY, y); iconMaxY = max(iconMaxY, y)
+                }
+            }
+        }
+        XCTAssertGreaterThanOrEqual(maxX, minX, "picker 渲染结果全透明，无法测量")
+        XCTAssertGreaterThanOrEqual(iconMaxX, iconMinX, "picker 里没找到 App 图标的高饱和像素")
+
+        let controlHeight = Double(maxY - minY + 1) / 2
+        let iconSide = Double(iconMaxY - iconMinY + 1) / 2
+        XCTAssertEqual(
+            iconSide, Double(side), accuracy: 1.0,
+            "App 图标在 picker 里被画成 \(iconSide)pt，设定的边长是 \(side)pt"
+        )
+        XCTAssertGreaterThanOrEqual(
+            controlHeight - iconSide, 4.0,
+            "App 图标 \(iconSide)pt 撑在 \(controlHeight)pt 高的 picker 里，余量不足 4pt（会看着顶满整行）"
+        )
     }
 
     /// picker 同一行里的六种预览，**不透明像素**的实际尺寸必须落在同一个视觉带内。
