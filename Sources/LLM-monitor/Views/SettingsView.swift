@@ -158,22 +158,58 @@ struct SettingsView: View {
     /// ColorPicker（binding 直写 @State）高频重求值，不缓存会每 tick 重建
     /// SVG 与 NSImage。样式枚举有限（6 种），首次访问时一次性构建不可变
     /// 字典即可，天然有界；SwiftUI body 只在主线程求值，普通字典无需加锁。
+    ///
+    /// 每张图在这里就被**烘焙成自己的目标边长**（见 `previewIconSide`），而不是
+    /// 交给调用处的 `.frame()` 去缩。原因：菜单式 `Picker` 在真实窗口里由 AppKit 的
+    /// `NSPopUpButton` 绘制，那条路径不保证尊重 SwiftUI 施加在 label 子视图上的
+    /// frame——只要图片的 intrinsic size 还是 22pt 的画布，它就照 22pt 画出来，
+    /// `.frame(15, 15)` 被无声忽略。把尺寸做进 `NSImage.size` 之后，图标多大由图片
+    /// 自己说了算，任何容器都改不动。
     private static let previewImageCache: [StatusBarIconStyle: NSImage] =
         StatusBarIconStyle.allCases.reduce(into: [:]) { cache, style in
+            let composed: NSImage
             if style == .quotaLogo, let preview = MenuBarLabel.appIconDesignImage {
-                cache[style] = preview
+                composed = preview
             } else {
-                cache[style] = MenuBarLabel.composedMenuBarImage(
+                composed = MenuBarLabel.composedMenuBarImage(
                     iconStyle: style,
                     health: nil,
                     showsHealthDot: false
                 )
             }
+            cache[style] = bakedPreview(composed, side: previewIconSide(for: style))
         }
+
+    /// 把一张按画布尺寸的 `NSImage` 复制成指定边长的版本：位图按 2x 光栅化，
+    /// `NSImage.size` 直接就是目标 pt 值，于是它被任何容器拿去做 layout 都是那个大小。
+    ///
+    /// 用 2x（菜单行里的预览不会超过 18pt，2x 已有 36px 余量）。绘制走
+    /// `NSGraphicsContext` 而不是改 `size` 属性——只改 `size` 会让视图按新的点尺寸
+    /// 拉伸同一个 `CGImage`，在 22→15 这种非整数比上会糊。
+    private static func bakedPreview(_ image: NSImage, side: CGFloat) -> NSImage {
+        let pixels = max(1, Int((side * 2).rounded()))
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: pixels, pixelsHigh: pixels,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0
+        ) else { return image }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        image.draw(in: NSRect(x: 0, y: 0, width: pixels, height: pixels))
+        NSGraphicsContext.restoreGraphicsState()
+        let baked = NSImage(size: NSSize(width: side, height: side))
+        baked.addRepresentation(rep)
+        return baked
+    }
 
     static func previewImage(for style: StatusBarIconStyle) -> NSImage {
         previewImageCache[style]
-            ?? MenuBarLabel.composedMenuBarImage(iconStyle: style, health: nil, showsHealthDot: false)
+            ?? bakedPreview(
+                MenuBarLabel.composedMenuBarImage(
+                    iconStyle: style, health: nil, showsHealthDot: false
+                ),
+                side: previewIconSide(for: style)
+            )
     }
 
     /// 图标主题 picker 里某一行的预览边长（pt）。
@@ -383,14 +419,12 @@ struct SettingsView: View {
                         Picker("", selection: $statusBarIconStyle) {
                             ForEach(StatusBarIconStyle.allCases) { style in
                                 HStack(spacing: 8) {
+                                    // 不加 `.resizable()` / `.frame()`：边长已经烘焙进
+                                    // NSImage 自身的 size（见 previewImageCache），这里
+                                    // 任何缩放 modifier 反而会把 AppKit 那条不受约束的
+                                    // 绘制路径重新引进来。
                                     Image(nsImage: Self.previewImage(for: style))
                                     .renderingMode(.original)
-                                    .resizable()
-                                    .interpolation(.high)
-                                    .frame(
-                                        width: Self.previewIconSide(for: style),
-                                        height: Self.previewIconSide(for: style)
-                                    )
 
                                     Text(style.displayName)
                                 }

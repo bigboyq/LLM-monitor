@@ -1,4 +1,3 @@
-import SwiftUI
 import XCTest
 import Combine
 import Foundation
@@ -1274,134 +1273,50 @@ final class StatusBarIconTests: XCTestCase {
     /// 设置页 picker 与主面板 header 使用的 App 图标设计稿必须能从资源包加载；
     /// 加载失败会静默回退，这里钉住资源打包不回退。
     func testQuotaLogoPickerPreviewUsesDesignAsset() {
-        let preview = MenuBarLabel.appIconDesignImage
-        XCTAssertNotNil(preview, "设计稿 SVG 未打入资源包，picker 与 header 将回退")
-        // 归一到与各处预览一致的 22pt 画布。
-        XCTAssertEqual(preview?.size.width, 22)
-        XCTAssertEqual(preview?.size.height, 22)
-        XCTAssertEqual(
-            SettingsView.previewImage(for: .quotaLogo).tiffRepresentation,
-            preview?.tiffRepresentation
-        )
-        // 其余样式始终走现生成逻辑。
-        XCTAssertEqual(SettingsView.previewImage(for: .iconDuo).size.width, 22)
-    }
-
-
-    /// 把真实的 `Picker` 离屏渲染出来，量它**最终画出来**的图标边长。
-    ///
-    /// 上一条量的是"我们放进去的位图有多大"，这条量的是"SwiftUI 实际画了多大"——
-    /// `.frame()` 被谁摘掉、`.resizable()` 顺序变了、或者 Picker 改用别的方式呈现
-    /// label，只有这条会红。
-    ///
-    /// 判据直接写成用户报的那句话：图标不能撑满 picker。实测（@2x 渲染）：控件
-    /// 24pt 高、App 图标 15pt，两侧各留约 4.5pt；修复前是 22pt 图标配 22pt 控件，
-    /// 完全等高。之所以必须有 ≥4pt 余量而不是"小于即可"：等高与差 1pt 在 2x 屏上
-    /// 肉眼分不出，但它们已经是同一个布局 bug 的两端。
-    @MainActor
-    func testPickerRendersAppIconClearlySmallerThanItsControl() throws {
-        let style = StatusBarIconStyle.quotaLogo
-        let side = SettingsView.previewIconSide(for: style)
-        let picker = Picker("", selection: .constant(style)) {
-            HStack(spacing: 8) {
-                Image(nsImage: SettingsView.previewImage(for: style))
-                    .renderingMode(.original)
-                    .resizable()
-                    .interpolation(.high)
-                    .frame(width: side, height: side)
-                Text(style.displayName)
-            }
-            .tag(style)
-        }
-        .pickerStyle(.menu)
-        .frame(width: 300)
-
-        let renderer = ImageRenderer(content: picker)
-        renderer.scale = 2
-        let cg = try XCTUnwrap(
-            renderer.cgImage,
-            "ImageRenderer 渲染不了这个 Picker：无法验证预览尺寸（工具链变化时先看这里，别直接改断言）"
-        )
-        let w = cg.width, h = cg.height
-        let bytesPerRow = cg.bytesPerRow
-        let provider: CGDataProvider = try XCTUnwrap(cg.dataProvider)
-        let data: Data = try XCTUnwrap(provider.data) as Data
-
-        // 控件 = 任何不透明像素；图标 = 其中高饱和的那块（本图是橙红渐变环）
-        var minX = w, maxX = -1, minY = h, maxY = -1
-        var iconMinX = w, iconMaxX = -1, iconMinY = h, iconMaxY = -1
-        for y in 0..<h {
-            for x in 0..<w {
-                let o = y * bytesPerRow + x * 4
-                guard data[o + 3] > 8 else { continue }
-                minX = min(minX, x); maxX = max(maxX, x)
-                minY = min(minY, y); maxY = max(maxY, y)
-                let r = Int(data[o]), g = Int(data[o + 1]), b = Int(data[o + 2])
-                if max(r, g, b) > 90 && max(r, g, b) - min(r, g, b) > 60 {
-                    iconMinX = min(iconMinX, x); iconMaxX = max(iconMaxX, x)
-                    iconMinY = min(iconMinY, y); iconMaxY = max(iconMaxY, y)
-                }
-            }
-        }
-        XCTAssertGreaterThanOrEqual(maxX, minX, "picker 渲染结果全透明，无法测量")
-        XCTAssertGreaterThanOrEqual(iconMaxX, iconMinX, "picker 里没找到 App 图标的高饱和像素")
-
-        let controlHeight = Double(maxY - minY + 1) / 2
-        let iconSide = Double(iconMaxY - iconMinY + 1) / 2
-        XCTAssertEqual(
-            iconSide, Double(side), accuracy: 1.0,
-            "App 图标在 picker 里被画成 \(iconSide)pt，设定的边长是 \(side)pt"
-        )
-        XCTAssertGreaterThanOrEqual(
-            controlHeight - iconSide, 4.0,
-            "App 图标 \(iconSide)pt 撑在 \(controlHeight)pt 高的 picker 里，余量不足 4pt（会看着顶满整行）"
+        let design = MenuBarLabel.appIconDesignImage
+        XCTAssertNotNil(design, "设计稿 SVG 未打入资源包，picker 与 header 将回退")
+        // 菜单栏侧的中间产物：裁掉留白后归一到 22pt 画布（drawRect 再从中收窄）。
+        XCTAssertEqual(design?.size.width, 22)
+        XCTAssertEqual(design?.size.height, 22)
+        // picker 侧拿到的是**按目标边长烘焙过的副本**，不再是这张 22pt 图本身。
+        let preview = SettingsView.previewImage(for: .quotaLogo)
+        XCTAssertEqual(preview.size.width, SettingsView.previewIconSide(for: .quotaLogo))
+        XCTAssertNotEqual(
+            preview.tiffRepresentation, design?.tiffRepresentation,
+            "picker 若直接复用 22pt 的设计稿，AppKit 绘制菜单行时会按 intrinsic size 画成 22pt"
         )
     }
 
-    /// picker 同一行里的六种预览，**不透明像素**的实际尺寸必须落在同一个视觉带内。
+    /// picker 里每一行的预览，`NSImage` 自身的 size 必须就是目标边长。
     ///
-    /// 判据用光栅化后扫 alpha 得到的包围盒，而不是 NSImage 自身的 size——两者没有
-    /// 固定比例：SF Symbol 与 Icon Duo 的画布自带内边距，App 图标设计稿在载入时
-    /// 已裁掉透明留白。只比 NSImage size 的话，两者都是 22pt，这个 bug 完全测不出来。
+    /// 这条取代了原先"扫像素量不透明包围盒"的写法：尺寸既然已经烘焙进图片
+    /// （`SettingsView.bakedPreview`），`size` 本身就是契约，不必再靠渲染结果反推。
     ///
-    /// 实测基准（18pt 框，不透明像素**长边**）：柱状图 13.4 / AI 星光 13.5 / 智能大脑
-    /// 14.1 / 芯片 13.3 / Icon Duo 14.5；App 图标原本是 18.0pt 实心图形，比最小同伴
-    /// 大 35%（1.354），在 20pt 高的菜单行里看着像要顶出 picker。修法是给它单独的
-    /// 15pt 框（`SettingsView.previewIconSide`），比值回到 1.13 —— 与菜单栏里
-    /// 18pt vs 15~17pt 的观感比例一致。
-    @MainActor
-    func testPickerPreviewIconsShareOneVisualBand() throws {
-        var visuals: [(name: String, long: CGFloat)] = []
+    /// 为什么必须烘焙进图片而不是在调用处套 `.frame()`：菜单式 `Picker` 在真实窗口
+    /// 里由 AppKit 的 `NSPopUpButton` 绘制，那条路径不保证尊重 SwiftUI 施加在 label
+    /// 子视图上的 frame——图片的 intrinsic size 还是 22pt 就照 22pt 画，`.frame(15,15)`
+    /// 被无声忽略（用户实际看到的就是 22pt 顶满整行）。尺寸归图片自己所有之后，任何
+    /// 容器都改不动它。
+    ///
+    /// App 图标比其余样式小不是偏好，是画布约定不同：SF Symbol 与 Icon Duo 的画布
+    /// 自带内边距，18pt 格里真正的不透明像素只有 13.3~14.5pt；App 图标设计稿在载入
+    /// 时已裁掉透明留白，18pt 格里就是 18pt 实心图形，比最小同伴大 35%。15pt 与
+    /// 菜单栏里 18pt vs 15~17pt 的观感比例（1.13）对齐。
+    func testPickerPreviewImageCarriesItsOwnSide() {
         for style in StatusBarIconStyle.allCases {
             let image = SettingsView.previewImage(for: style)
-            let box = try XCTUnwrap(
-                opaqueBounds(of: image, edge: 512),
-                "\(style.displayName) 的预览没有任何不透明像素，无法判断视觉尺寸"
-            )
             let side = SettingsView.previewIconSide(for: style)
-            let scale = side / max(image.size.width, image.size.height)
-            visuals.append((
-                name: style.displayName,
-                long: max(box.width * image.size.width, box.height * image.size.height) * scale
-            ))
+            XCTAssertEqual(image.size.width, side, accuracy: 0.01, "\(style.displayName) 宽")
+            XCTAssertEqual(image.size.height, side, accuracy: 0.01, "\(style.displayName) 高")
         }
-        let widest = try XCTUnwrap(visuals.map(\.long).max())
-        let narrowest = try XCTUnwrap(visuals.map(\.long).min())
-        let breakdown = visuals.map { "\($0.name) \(String(format: "%.1f", $0.long))pt" }.joined(separator: " / ")
-
-        XCTAssertLessThanOrEqual(
-            widest / narrowest, 1.30,
-            "picker 同一行里各图标的视觉尺寸差距过大（\(breakdown)）"
-        )
-
-        // App 图标是密实图形，比细描边符号略大是应当的；但它必须是**唯一**的例外——
-        // 新增样式时若也要单独定尺寸，得先想清楚它的画布约定，别顺手沿用。
-        let defaultSide = SettingsView.previewIconSide(for: .iconDuo)
-        XCTAssertEqual(defaultSide, 18, "多数样式的预览框是 18pt")
+        // 唯一该特殊的仍是 App 图标；其余共用 18pt。
         let exceptions = Set(
-            StatusBarIconStyle.allCases.filter { SettingsView.previewIconSide(for: $0) != defaultSide }
+            StatusBarIconStyle.allCases.filter {
+                SettingsView.previewIconSide(for: $0) != SettingsView.previewIconSide(for: .iconDuo)
+            }
         )
         XCTAssertEqual(exceptions, [.quotaLogo], "预览尺寸的例外必须仍然只有 App 图标")
+        XCTAssertEqual(SettingsView.previewIconSide(for: .iconDuo), 18)
     }
 
     /// 主面板 header 使用的完整 App 图标（icon-master.png）必须能从资源包加载。
