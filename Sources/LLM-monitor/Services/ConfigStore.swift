@@ -346,10 +346,13 @@ struct AppConfig: Codable, Equatable {
         self.schemaVersion = Self.currentSchemaVersion
         self.refreshIntervalSeconds = try container.decode(Int.self, forKey: .refreshIntervalSeconds)
         self.providers = try container.decode([String: ProviderConfig].self, forKey: .providers)
-        self.clientBindings = try container.decodeIfPresent(
+        let decodedBindings = try container.decodeIfPresent(
             [ClientProviderBinding].self,
             forKey: .clientBindings
-        ) ?? Self.legacyClientBindings(from: self.providers)
+        )
+        self.clientBindings = Self.mergingMissingDefaultBindings(
+            decodedBindings ?? Self.legacyClientBindings(from: self.providers)
+        )
         // 这些字段只影响图标外观，不应因手工拼写错误或新版本增加枚举值而让
         // 整份 provider 配置进入损坏恢复流程。未知值和类型不匹配均按缺失处理。
         self.statusBarIconStyle = (try? container.decode(String.self, forKey: .statusBarIconStyle))
@@ -419,6 +422,27 @@ struct AppConfig: Codable, Equatable {
             return
         }
         clientBindings[index].enabled = enabled
+    }
+
+    /// 把 `defaultClientBindings` 中 (clientID, quotaProviderID) 组合在现有数组里
+    /// **不存在**的条目按默认值补到尾部。
+    ///
+    /// 老用户的 config.json 里已经有一份 clientBindings（当年只有 opencode 几条），
+    /// `decodeIfPresent` 会原样采用它——之后版本新增的默认绑定（如 zcode →
+    /// minimax / deepseek）永远进不了这些配置，表现为卡片恒不统计该来源用量。
+    /// 这里按组合补齐，顺序与用户显式值一律不动：关闭绑定的口径是"把条目的
+    /// enabled 改成 false"，删条目不是关闭方式，所以"补上缺的"不会复活已关闭的绑定。
+    private static func mergingMissingDefaultBindings(
+        _ bindings: [ClientProviderBinding]
+    ) -> [ClientProviderBinding] {
+        let existingPairs = Set(bindings.map { "\($0.clientID)\u{0}\($0.quotaProviderID)" })
+        var merged = bindings
+        for fallback in defaultClientBindings where !existingPairs.contains(
+            "\(fallback.clientID)\u{0}\(fallback.quotaProviderID)"
+        ) {
+            merged.append(fallback)
+        }
+        return merged
     }
 
     private static func legacyClientBindings(

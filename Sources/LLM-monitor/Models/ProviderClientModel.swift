@@ -53,7 +53,7 @@ struct ClientProviderBinding: Codable, Equatable, Identifiable, Sendable {
     var sourceProviderAliases: [String]
     var enabled: Bool
 
-    var id: String { "(clientID):(quotaProviderID)" }
+    var id: String { "\(clientID):\(quotaProviderID)" }
 
     init(
         clientID: String,
