@@ -22,7 +22,7 @@ import Combine
 /// - 所以让具体 scanner 用计算属性 lastResultPublisher / isScanningPublisher 把
 ///   $xxx.eraseToAnyPublisher() 暴露出来（见四类 scanner 的扩展）
 @MainActor
-final class LocalUsageCoordinator<Usage: Equatable> {
+final class LocalUsageCoordinator<Usage: Equatable & Sendable> {
     typealias Apply = (Usage?) -> Void
     typealias SetScanning = (Bool) -> Void
     typealias FreshnessChange = () -> Void
@@ -196,7 +196,7 @@ final class LocalUsageCoordinator<Usage: Equatable> {
 /// 才能在 existential 里用 `any LocalUsageScanner<Usage>` 语法（Swift 5.7+）。
 @MainActor
 protocol LocalUsageScanner<Usage>: AnyObject {
-    associatedtype Usage: Equatable
+    associatedtype Usage: Equatable, Sendable
     var lastResultPublisher: AnyPublisher<Usage?, Never> { get }
     var isScanningPublisher: AnyPublisher<Bool, Never> { get }
     func scan()

@@ -61,7 +61,7 @@ struct TestQuotaFetcher: QuotaFetcher {
     /// 假 scanner：模拟 @Published lastResult / isScanning，能从外部 push 状态。
     /// 做成泛型类，方便 `MinimaxLocalUsage` / `AntigravityLocalUsage` 各造一个。
     @MainActor
-    final class FakeLocalScanner<Usage: Equatable>: LocalUsageScanner {
+    final class FakeLocalScanner<Usage: Equatable & Sendable>: LocalUsageScanner {
         let usage: Usage
         var scanCount = 0
         // 内部 CurrentValueSubject，模拟 @Published

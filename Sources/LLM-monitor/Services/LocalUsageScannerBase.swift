@@ -52,7 +52,7 @@ enum LocalUsageScanMode: Sendable, Equatable {
 /// `pipelineLock`（默认 fatalError）返回子类的 `static let pipelineMutex`——泛型类
 /// 不能持有 static 存储属性，mutex 由每个 concrete 子类声明并跨实例共享。
 @MainActor
-class LocalUsageScannerBase<Usage: Equatable>: ObservableObject, @unchecked Sendable {
+class LocalUsageScannerBase<Usage: Equatable & Sendable>: ObservableObject, @unchecked Sendable {
     @Published private(set) var lastResult: Usage?
     @Published private(set) var isScanning: Bool = false
     @Published private(set) var lastError: String?
