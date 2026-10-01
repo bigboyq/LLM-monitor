@@ -15,10 +15,6 @@ struct ChatGPTPlanModelRow: View {
     /// dock 详情浮层把进度条提到标题上方；菜单保持原顺序（见 `CombinedQuotaWindowRow`）。
     @Environment(\.hoverRevealMode) private var revealMode
 
-    private var liftsProgressBar: Bool {
-        ProviderCardLayout.liftsProgressBar(mode: revealMode)
-    }
-
     var body: some View {
         if isDockLayout {
             dockBlock
@@ -33,42 +29,27 @@ struct ChatGPTPlanModelRow: View {
 
     // MARK: dock：条 + 元信息行（与通用 model 行同构）
 
+    /// ChatGPT 的周等效倍率。与 `QuotaInfo.weeklyEquivalentMultiplier` 的
+    /// `.codexChatGpt` 分支同值——这一整块是 **ChatGPT Plan 专用行**，倍率对它
+    /// 是常量，不该走那个按 provider 分派的函数（走一遍只会得到同样的 6，
+    /// 却让人以为这里也支持别的 provider）。
+    private static let weeklyEquivalentMultiplier = 6
+
     /// dock 侧只有额度条这一块，明细（三列统计）已撤掉：条 + 元信息行回答
     /// "还剩多少、什么时候重置"，用量明细交给菜单侧的 hover 浮层。菜单侧仍然
     /// 用 `title` 当那行的名字。
+    ///
+    /// 三个分支的差别只在"哪些窗口存在"→ 传哪两个 label；`footnote` 与 `between`
+    /// 三处完全一样，所以先算出来再各建一次 `ModelQuotaDockBlock`。
     @ViewBuilder
     private var dockBlock: some View {
-        if hasPrimaryWindow && hasSecondaryWindow {
+        if let pair = dockWindowLabels {
             ModelQuotaDockBlock(
                 bar: QuotaBarWithMetadata(
                     model: model,
-                    primaryLabel: primaryLabel,
-                    secondaryLabel: secondaryLabel,
-                    weeklyEquivalentMultiplier: 6,
-                    tint: tint
-                ),
-                footnote: EmptyView(),
-                between: between
-            )
-        } else if hasPrimaryWindow {
-            ModelQuotaDockBlock(
-                bar: QuotaBarWithMetadata(
-                    model: model,
-                    primaryLabel: primaryLabel,
-                    secondaryLabel: "",
-                    weeklyEquivalentMultiplier: 6,
-                    tint: tint
-                ),
-                footnote: EmptyView(),
-                between: between
-            )
-        } else if hasSecondaryWindow {
-            ModelQuotaDockBlock(
-                bar: QuotaBarWithMetadata(
-                    model: model,
-                    primaryLabel: secondaryLabel,
-                    secondaryLabel: "",
-                    weeklyEquivalentMultiplier: 6,
+                    primaryLabel: pair.primary,
+                    secondaryLabel: pair.secondary,
+                    weeklyEquivalentMultiplier: Self.weeklyEquivalentMultiplier,
                     tint: tint
                 ),
                 footnote: EmptyView(),
@@ -81,11 +62,22 @@ struct ChatGPTPlanModelRow: View {
         }
     }
 
+    /// dock 形态下这一行展示哪两个窗口，及其标签。两个窗口都有就都展示；只有一个就
+    /// 把它当主窗口（次窗口传空串）。一个都没有返回 nil，由 `dockBlock` 走占位文案。
+    private var dockWindowLabels: (primary: String, secondary: String)? {
+        if hasPrimaryWindow && hasSecondaryWindow {
+            return (primaryLabel, secondaryLabel)
+        }
+        if hasPrimaryWindow { return (primaryLabel, "") }
+        if hasSecondaryWindow { return (secondaryLabel, "") }
+        return nil
+    }
+
     private var title: some View {
         QuotaWindowTitle(
             title: model.displayName,
             tint: tint,
-            weeklyEquivalentMultiplier: hasPrimaryWindow && hasSecondaryWindow ? 6 : nil,
+            weeklyEquivalentMultiplier: hasPrimaryWindow && hasSecondaryWindow ? Self.weeklyEquivalentMultiplier : nil,
             primaryLabel: primaryLabel
         )
     }
@@ -113,7 +105,7 @@ struct ChatGPTPlanModelRow: View {
                     primaryUsage: primaryUsage,
                     secondaryUsage: secondaryUsage,
                     tint: tint,
-                    weeklyEquivalentMultiplier: 6,
+                    weeklyEquivalentMultiplier: Self.weeklyEquivalentMultiplier,
                     missingUsageIsLoading: true,
                     primaryCreditUsage: nil,
                     secondaryCreditUsage: nil
@@ -297,7 +289,7 @@ struct CompactResetCreditsRow: View {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .font(.system(size: 10, weight: .semibold))
                     Text(staleText)
-                        .font(.system(size: 10, weight: .semibold).monospacedDigit())
+                        .font(MenuTypography.resetDate)
                         .lineLimit(1)
                 }
                 .foregroundStyle(.orange)
@@ -309,7 +301,7 @@ struct CompactResetCreditsRow: View {
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(.secondary)
                 Text(expiryText)
-                    .font(.system(size: 10, weight: .semibold).monospacedDigit())
+                    .font(MenuTypography.resetDate)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
@@ -427,10 +419,6 @@ struct CombinedQuotaWindowRow: View {
     /// dock 详情浮层把进度条提到标题上方；菜单保持原顺序。
     @Environment(\.hoverRevealMode) private var revealMode
 
-    private var liftsProgressBar: Bool {
-        ProviderCardLayout.liftsProgressBar(mode: revealMode)
-    }
-
     var body: some View {
         if isDockLayout {
             dockBlock
@@ -461,7 +449,7 @@ struct CombinedQuotaWindowRow: View {
                 bar: QuotaBarWithMetadata(
                     model: model,
                     primaryLabel: primaryLabel,
-                    secondaryLabel: "周",
+                    secondaryLabel: QuotaSummary.weeklyWindowLabel(),
                     weeklyEquivalentMultiplier: weeklyEquivalentMultiplier,
                     tint: tint
                 ),
@@ -484,7 +472,7 @@ struct CombinedQuotaWindowRow: View {
             ModelQuotaDockBlock(
                 bar: QuotaBarWithMetadata(
                     model: model,
-                    primaryLabel: "周",
+                    primaryLabel: QuotaSummary.weeklyWindowLabel(),
                     secondaryLabel: "",
                     weeklyEquivalentMultiplier: weeklyEquivalentMultiplier,
                     tint: tint
@@ -507,7 +495,6 @@ struct CombinedQuotaWindowRow: View {
         }
     }
 
-    /// 重置倒计时取"先耗尽的那个"窗口的时间——与菜单那条元信息行同源。
     // MARK: 菜单：标题在上，条与元信息行各自 hover
 
     @ViewBuilder
@@ -527,7 +514,7 @@ struct CombinedQuotaWindowRow: View {
                 QuotaCombinedUsageRow(
                     model: model,
                     primaryLabel: primaryLabel,
-                    secondaryLabel: "周",
+                    secondaryLabel: QuotaSummary.weeklyWindowLabel(),
                     primaryUsage: primaryUsage,
                     secondaryUsage: weeklyUsage,
                     tint: tint,
@@ -552,7 +539,7 @@ struct CombinedQuotaWindowRow: View {
             } else if model.hasWeeklyWindow {
                 QuotaSingleUsageRow(
                     title: model.displayName,
-                    label: "周",
+                    label: QuotaSummary.weeklyWindowLabel(),
                     percent: model.weeklyRemainingPercent,
                     resetsAt: model.weeklyResetsAt,
                     usage: weeklyUsage,
@@ -831,6 +818,20 @@ struct ModelQuotaDockBlock<Bar: View, Footnote: View>: View {
 /// 谁是谁全靠猜。名字必须和它描述的数字挨着——提到头部就得给每个 model 各搬一份，
 /// 另起一行则是把同一行字拆成两半。菜单侧不需要它：那边有 `QuotaWindowTitle`
 /// 当那行的名字，所以元信息行的 `name` 传空串。
+///
+/// ## `primaryLabel` / `secondaryLabel` 的约定
+///
+/// **调用方已经决定了这个 model 有哪几个窗口**，这里的三个分支只负责把决定渲染
+/// 出来。约定：
+/// - 两个窗口都有 → `primaryLabel` 是短周期窗口标签，`secondaryLabel` 是周窗口标签。
+/// - 只有一个窗口 → **它一律进 `primaryLabel`**，`secondaryLabel` 传空串。
+///
+/// 「一律进 primary」是关键：两个调用点（`ChatGPTPlanModelRow.dockBlock` 的
+/// `dockWindowLabels` 与 `CombinedQuotaWindowRow.dockBlock`）都是这么传的。曾经
+/// 「只有周窗口」的分支去读 `secondaryLabel`——也就是那个被刻意留空的字符串——于是
+/// dock 里这一行的窗口标签**整个消失**，只剩一个无名百分比框；而同样情况的
+/// 「只有 5h」分支读 `primaryLabel`，是对的。同一份契约在一个视图里对两种情况
+/// 用了两套读法，属于最难发现的一类漂移。
 struct QuotaBarWithMetadata: View {
     let model: ModelQuota
     let primaryLabel: String
@@ -863,34 +864,55 @@ struct QuotaBarWithMetadata: View {
                     weeklyEquivalentMultiplier: weeklyEquivalentMultiplier
                 )
                 .padding(.vertical, 3)
-            } else if model.hasIntervalWindow {
-                SingleQuotaMetadataLine(
-                    name: model.displayName,
-                    label: primaryLabel,
-                    percent: model.intervalRemainingPercent,
-                    resetsAt: model.intervalResetsAt
-                )
-                SingleQuotaBar(
-                    percent: model.intervalRemainingPercent,
-                    tint: tint,
-                    timeRemainingFraction: nil
-                )
-                .padding(.vertical, 3)
-            } else if model.hasWeeklyWindow {
-                SingleQuotaMetadataLine(
-                    name: model.displayName,
-                    label: secondaryLabel,
-                    percent: model.weeklyRemainingPercent,
-                    resetsAt: model.weeklyResetsAt
-                )
-                SingleQuotaBar(
-                    percent: model.weeklyRemainingPercent,
-                    tint: tint,
-                    timeRemainingFraction: model.weeklyTimeRemainingFraction
-                )
-                .padding(.vertical, 3)
+            } else {
+                // 单窗口 / 无窗口共用一条路径：窗口选择交给 `singleWindow` 这个
+                // **纯函数**算，而不是在这里再写一遍三分支。
+                if let single = Self.singleWindow(
+                    model: model, primaryLabel: primaryLabel, secondaryLabel: secondaryLabel
+                ) {
+                    SingleQuotaMetadataLine(
+                        name: model.displayName,
+                        label: single.label,
+                        percent: single.percent,
+                        resetsAt: single.resetsAt
+                    )
+                    SingleQuotaBar(
+                        percent: single.percent,
+                        tint: tint,
+                        timeRemainingFraction: single.timeRemainingFraction
+                    )
+                    .padding(.vertical, 3)
+                }
             }
         }
+    }
+
+    /// 只有一个额度窗口时，这一条元信息行该画什么。`nil` = 一个窗口都没有
+    /// （调用方自己出占位文案）。
+    ///
+    /// 抽成纯函数有两个理由，第二个是它被修出来的那次 bug：
+    /// 1. 三分支的 `if/else` 里读的是**同一批**字段，抽出来后 `body` 只剩一次
+    ///    形状判断，标签/百分比/重置时间不可能在某一支里漏改。
+    /// 2. 「只有周窗口」那一支曾经去读 `secondaryLabel`——而按约定调用方把仅存的
+    ///    那个标签放在了 `primaryLabel`、`secondaryLabel` 刻意留空——于是 dock 里
+    ///    这行的窗口标签整个消失，只剩一个无名百分比框；同一视图的「只有 5h」
+    ///    分支读 `primaryLabel`，是对的。同一个视图对对称的两种情况用了两套读法，
+    ///    而两套读法都"看起来合理"，只能靠一条直接断言返回值的测试钉住。
+    static func singleWindow(
+        model: ModelQuota,
+        primaryLabel: String,
+        secondaryLabel: String
+    ) -> (label: String, percent: Double, resetsAt: Date?, timeRemainingFraction: Double?)? {
+        if model.hasIntervalWindow {
+            return (primaryLabel, model.intervalRemainingPercent, model.intervalResetsAt,
+                    model.intervalTimeRemainingFraction)
+        }
+        if model.hasWeeklyWindow {
+            // 单窗口时标签一律在 `primaryLabel`：`secondaryLabel` 此时是空串。
+            return (primaryLabel, model.weeklyRemainingPercent, model.weeklyResetsAt,
+                    model.weeklyTimeRemainingFraction)
+        }
+        return nil
     }
 }
 
@@ -1217,11 +1239,6 @@ enum QuotaBarTooltip {
         }
         return "分段额度：\n\(parts)。\(triangle)"
     }
-}
-
-/// 兼容入口：菜单与卡片里的旧调用点仍按自由函数调用。
-func segmentedBarTooltipText(segments: Int, hasTriangle: Bool) -> String {
-    QuotaBarTooltip.text(segments: segments, hasTriangle: hasTriangle)
 }
 
 // MARK: - DeepSeek API 余额专用行

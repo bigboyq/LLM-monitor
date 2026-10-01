@@ -346,20 +346,32 @@ struct LocalUsageFreshnessBadge: View {
     let scannedAt: Date?
     let isScanning: Bool
 
+    /// 空态（既不在扫描、也还没扫出过）时**整个视图不渲染**，而不是渲染一个空胶囊。
+    ///
+    /// 两个宿主都把它放在 `HStack` 的 `Spacer` 之后：把 opacity 压到 0 只是看不见，
+    /// 那一格（文字 + 左右 6pt padding）仍会被布局算进去，于是右侧凭空多出约 20pt
+    /// 的空白、标题可用宽度被悄悄吃掉。真正不存在的状态就不该占位。
+    @ViewBuilder
     var body: some View {
-        HStack(spacing: 5) {
-            if isScanning {
+        if isScanning {
+            capsule {
                 ProgressView().controlSize(.mini).scaleEffect(0.7)
                 Text("计算中…")
-            } else if let scannedAt {
+            }
+        } else if let scannedAt {
+            capsule {
                 Text("更新于 \(Formatters.formatClock(scannedAt))")
             }
         }
-        .font(MenuTypography.badge)
-        .foregroundStyle(.secondary)
-        .padding(.horizontal, 6)
-        .padding(.vertical, 3)
-        .background(Color.secondary.opacity(0.1), in: Capsule())
+    }
+
+    private func capsule<C: View>(@ViewBuilder _ content: () -> C) -> some View {
+        HStack(spacing: 5, content: content)
+            .font(MenuTypography.badge)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(Color.secondary.opacity(0.1), in: Capsule())
     }
 }
 

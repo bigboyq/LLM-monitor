@@ -59,7 +59,6 @@ struct ClientSegmentedControl: NSViewRepresentable {
         control.controlSize = .regular
         control.target = context.coordinator
         control.action = #selector(Coordinator.handleChange(_:))
-        context.coordinator.control = control
         Self.applySegments(items, to: control)
         Self.syncSelection(selection, items: items, onto: control)
         return control
@@ -144,7 +143,6 @@ struct ClientSegmentedControl: NSViewRepresentable {
         var selection: Binding<String>
         /// 与 `items` 同序的客户端 id，供 `handleChange` 按选中下标取回。
         var segmentIDs: [String]
-        weak var control: NSSegmentedControl?
 
         init(selection: Binding<String>, segmentIDs: [String]) {
             self.selection = selection

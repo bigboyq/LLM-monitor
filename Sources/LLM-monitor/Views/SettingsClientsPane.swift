@@ -254,12 +254,16 @@ extension SettingsView {
     /// 0 个 Provider 不会走到这里（那一列渲染的是空态）。
     func defaultProviderExpansion(forProviderCount count: Int) -> Bool { count == 1 }
 
-    /// 展开态由 Provider 数量决定：**只有一个就直接展开**——为一行内容多点一次毫无
-    /// 意义，折起来反而让人先猜里面有什么；**两个及以上全折叠**——先让人挑一个想看的。
+    /// Provider 行的构造入口。展开态由 Provider 数量决定（见 `defaultProviderExpansion`）。
     ///
     /// `defaultExpanded` 只在首次出现时生效（`@State` 的初值语义），用户手动折起来
     /// 之后不会被下一次刷新顶回去；而重新切到这个客户端时外层 `.id(client.id)`
     /// 会重建整列，默认值重新生效。
+    ///
+    /// **看着只是一层转发，留着是为了测试缝**：`SettingsClientsPaneTests` 直接拿一个
+    /// 真的 `SettingsView` 调它来驱动整棵折叠行（`ClientProviderDisclosureRow` 是
+    /// `private`，测试够不着）。删掉这层就要改成测更上面的东西，测的就不是真正被
+    /// 渲染的那棵树了。
     func clientProviderDisclosure(
         _ provider: ClientProviderUsageSummary,
         defaultExpanded: Bool

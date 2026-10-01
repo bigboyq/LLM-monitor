@@ -287,13 +287,6 @@ struct MenuContentView: View {
         }
     }
 
-    private static func providerStatusDisplayNameAscending(
-        _ lhs: ProviderStatus,
-        _ rhs: ProviderStatus
-    ) -> Bool {
-        ProviderStatus.displayNameAscending(lhs, rhs)
-    }
-
     /// Four registered cards can all be `.notConfigured` on first launch because
     /// the template intentionally contains no usable credentials. Keep the
     /// existing passive card layout, but add one actionable route to Settings.

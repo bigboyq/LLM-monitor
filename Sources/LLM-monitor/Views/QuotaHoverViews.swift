@@ -46,7 +46,16 @@ struct QuotaWindowsHoverView: View {
     let weeklyPercent: Double
     let weeklyResetsAt: Date?
     let secondaryLabel: String
-    /// dock 详情浮层里 5h 与周两栏并排；菜单 hover 浮层仍竖排（那边按内容自然宽度测量）。
+    /// ⚠️ 目前恒为菜单侧的 `.onHover`，下面那条并排分支**跑不到**。
+    ///
+    /// 本视图只从 `QuotaCombinedUsageRow` / `QuotaSingleUsageRow` 构造，而那两个
+    /// 视图只出现在两个 model 行的 `menuLayout` 里（dock 走的是
+    /// `ModelQuotaDockBlock` + `QuotaBarWithMetadata`）——dock 的 `.alwaysVisible`
+    /// 由 `EdgeDockController.popoverContent` 注入，但注入点在这条链之外。
+    /// 分支保留：它是本视图本来就该有的能力，而删掉只会让"dock 想要并排"这件事
+    /// 连个落点都没有。**真要接上之前**先看 `QuotaUsageWindowsHoverView` 那处——
+    /// 它多了一个 `hasSecondaryWindow` 判据而这里没有，两边对"什么时候并排"的
+    /// 理解并不一致，接上就会两个窗口只有一个时并排出一个空栏。
     @Environment(\.hoverRevealMode) private var revealMode
 
     var body: some View {
@@ -137,7 +146,10 @@ struct QuotaUsageWindowsHoverView: View {
     /// GLM 今日闲时（off-peak）任务 token 用量：不消耗积分，单独展示避免混进
     /// 5h / 周额度窗口。非 GLM / 无闲时数据时传 nil。
     var offPeakUsage: UsageMetricSummary? = nil
-    /// dock 详情浮层里 5h 与周两栏并排；菜单 hover 浮层仍竖排。
+    /// ⚠️ 同 `QuotaWindowsHoverView` 的 `revealMode`：目前恒为 `.onHover`，下面
+    /// 的并排分支**跑不到**（构造链只经过两个 model 行的 `menuLayout`）。
+    /// 这里比那边多一个 `hasSecondaryWindow` 判据、那边没有——两边对"什么时候并排"
+    /// 的理解并不一致，接上之前必须先统一，否则单窗口模型会并排出一个空栏。
     @Environment(\.hoverRevealMode) private var revealMode
 
     var body: some View {

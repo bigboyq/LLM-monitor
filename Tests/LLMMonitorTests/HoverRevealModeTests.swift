@@ -18,9 +18,20 @@ final class HoverRevealModeTests: XCTestCase {
         )
     }
 
+    /// 「注入点只有一处」这条约定本身**没有**被自动守住。
+    ///
+    /// 这条测试曾经只写了 `XCTAssertEqual(HoverRevealMode.onHover, EnvironmentValues().hoverRevealMode)`
+    /// ——和上面 `testDefaultIsOnHoverSoTheMenuKeepsCollapsing` 是同一个表达式，
+    /// 什么都没多证明：它从不碰 `MenuContentView`，把边缘窗整个删掉照样绿，
+    /// 明天往主菜单里加一处 `.environment(\.hoverRevealMode, .alwaysVisible)` 也照样绿。
+    /// 那正是它自称要守的东西。
+    ///
+    /// 真正能守住它的形式是**数注入点**（全仓 grep `.environment(\.hoverRevealMode`，
+    /// 应当只有 `EdgeDockController.popoverContent` 一处）。本文件拿不到源码路径，
+    /// 所以这里只把"默认值必须仍是 onHover"重复钉一次并说明差距，**不要**再把它
+    /// 当成注入点的闸门。注入点那条留给 review / 静态检查。
     func testMenuPanelContentDoesNotForceAlwaysVisible() {
-        // 主菜单不该注入 alwaysVisible：边缘窗的策略不能漏回主菜单。
-        // 这里只固定"注入点只有 popoverContent 一处"这个约定。
+        // 覆盖范围仅限默认值本身，**不含**"主菜单没有注入 alwaysVisible"。
         XCTAssertEqual(HoverRevealMode.onHover, EnvironmentValues().hoverRevealMode)
     }
 
@@ -35,15 +46,137 @@ final class HoverRevealModeTests: XCTestCase {
 
     // MARK: - 两套排版规则
 
-    /// 菜单侧六条规则**全部**关闭。任一条被顺手改成 true，主菜单卡片就会变形
+    /// 单窗口元信息行**必须**用调用方给的那个标签。
+    ///
+    /// 约定是"只有一个窗口时它一律进 `primaryLabel`、`secondaryLabel` 留空"
+    /// （两个 dock 调用点都这么传）。曾经「只有周窗口」那一支去读 `secondaryLabel`，
+    /// 于是读到那个刻意留空的串，dock 里这行的窗口标签**整个消失**——只剩一个无名
+    /// 百分比框，读者不知道那个数字是 5h 还是周。「只有 5h」那一支读的是
+    /// `primaryLabel`，所以是对的：同一视图对对称的两种情况用了两套读法。
+    ///
+    /// 这类 bug 靠渲染截图才看得出来，纯断言返回值才钉得住。
+    func testSingleWindowMetadataLineUsesTheLabelTheCallerSupplied() {
+        let now = Date()
+        func model(interval: Bool, weekly: Bool, remaining: Double) -> ModelQuota {
+            ModelQuota(
+                modelName: "general",
+                intervalTotalCount: 100,
+                intervalUsageCount: Int(100 - remaining),
+                intervalRemainingPercent: remaining,
+                intervalStatus: interval ? .present : .absent,
+                intervalResetsAt: interval ? now.addingTimeInterval(3600) : nil,
+                intervalWindowSeconds: interval ? 5 * 3600 : nil,
+                weeklyTotalCount: 100,
+                weeklyUsageCount: Int(100 - remaining),
+                weeklyRemainingPercent: weekly ? remaining : 0,
+                weeklyStatus: weekly ? .present : .absent,
+                weeklyResetsAt: weekly ? now.addingTimeInterval(7 * 24 * 3600) : nil,
+                weeklyWindowSeconds: weekly ? 7 * 24 * 3600 : nil
+            )
+        }
+
+        // 两个调用点都是"仅存的那个标签放 primary、secondary 留空"。
+        let weeklyOnly = QuotaBarWithMetadata.singleWindow(
+            model: model(interval: false, weekly: true, remaining: 42),
+            primaryLabel: "周",
+            secondaryLabel: ""
+        )
+        XCTAssertEqual(weeklyOnly?.label, "周",
+                       "只有周窗口时标签必须来自 primaryLabel；读 secondaryLabel 会得到空串")
+        XCTAssertEqual(weeklyOnly?.percent, 42)
+
+        let intervalOnly = QuotaBarWithMetadata.singleWindow(
+            model: model(interval: true, weekly: false, remaining: 77),
+            primaryLabel: "5h",
+            secondaryLabel: ""
+        )
+        XCTAssertEqual(intervalOnly?.label, "5h")
+        XCTAssertEqual(intervalOnly?.percent, 77)
+
+        // 一个窗口都没有 → nil，调用方自己出占位文案。
+        XCTAssertNil(
+            QuotaBarWithMetadata.singleWindow(
+                model: model(interval: false, weekly: false, remaining: 0),
+                primaryLabel: "5h", secondaryLabel: "周"
+            ),
+            "没有窗口时不该凭空造出一行"
+        )
+    }
+
+    /// 单 5h 窗口（长周期）时那条 ▼ 重置进度标记要透传，不能被写死成 nil。
+    ///
+    /// `intervalTimeRemainingFraction` 本来就只在**长**周期窗口下非 nil，正是需要
+    /// 标记的那一类；曾经 dock 侧把它写死成 nil，于是同一份数据在菜单里有 ▼、在
+    /// dock 里没有——同一件事两种画法。
+    func testSingleWindowKeepsTheIntervalResetMarker() {
+        let now = Date()
+        func model(windowSeconds: Int?) -> ModelQuota {
+            ModelQuota(
+                modelName: "chatgpt_plan",
+                intervalTotalCount: 100, intervalUsageCount: 20,
+                intervalRemainingPercent: 80, intervalStatus: .present,
+                intervalResetsAt: now.addingTimeInterval(3600),
+                intervalWindowSeconds: windowSeconds,
+                weeklyTotalCount: 0, weeklyUsageCount: 0, weeklyRemainingPercent: 0,
+                weeklyStatus: .absent, weeklyResetsAt: nil, weeklyWindowSeconds: nil
+            )
+        }
+        let short = QuotaBarWithMetadata.singleWindow(
+            model: model(windowSeconds: 5 * 3600), primaryLabel: "5h", secondaryLabel: ""
+        )
+        let long = QuotaBarWithMetadata.singleWindow(
+            model: model(windowSeconds: 7 * 24 * 3600), primaryLabel: "5h", secondaryLabel: ""
+        )
+        XCTAssertNil(short?.timeRemainingFraction, "短周期窗口本来就没有重置进度标记")
+        XCTAssertNotNil(long?.timeRemainingFraction, "长周期窗口的 ▼ 标记不能被吞掉")
+    }
+
+    /// dock 形态下，**重置卡与高峰期倒计时由卡片层提供**，而卡片层只在
+    /// `dockBody` 的非 `.ok` 回退路径上需要显式把它们交下去（`QuotaSummary` 自己
+    /// 因为 `hoistsResetCredits` 为 true 不再画）。
+    ///
+    /// 这个测试盯的是那条"交接链有没有断"：`.failed` 分支曾经漏传
+    /// `betweenBarAndColumns`，于是失败态的 provider 在 dock 浮层里既没有重置卡
+    /// 也没有倒计时——恰恰是最该看"上次还剩多少、什么时候回补"的时候。
+    ///
+    /// 怎么钉：`resetCredits` 有值时卡片会多出一整行；两种状态只差这一个字段，
+    /// 所以**高度差**就是那行在不在线的直接证据。不靠截图、不靠访问私有方法。
+    @MainActor
+    func testDockCardStillShowsResetCreditsWhenTheFetchFailed() {
+        let withCredits = Self.makeChatGPTStatus(state: .failed, resetCredits: true)
+        let withoutCredits = Self.makeChatGPTStatus(state: .failed, resetCredits: false)
+        let tall = measuredHeight(mode: .alwaysVisible, status: withCredits)
+        let short = measuredHeight(mode: .alwaysVisible, status: withoutCredits)
+        XCTAssertGreaterThan(
+            tall, short,
+            "dock 浮层里 `.failed` 状态必须仍画出重置卡（应比没有重置数据时高出约一行）"
+        )
+    }
+
+    /// 菜单侧不受上面那条影响：重置卡一直由 `QuotaSummary` 自己画，高度差应当**同样**
+    /// 存在。这里确认交接链的改动没有顺手把菜单也改了。
+    @MainActor
+    func testMenuCardResetCreditsBehaviourIsUnchanged() {
+        let withCredits = Self.makeChatGPTStatus(state: .failed, resetCredits: true)
+        let withoutCredits = Self.makeChatGPTStatus(state: .failed, resetCredits: false)
+        let tall = measuredHeight(mode: .onHover, status: withCredits)
+        let short = measuredHeight(mode: .onHover, status: withoutCredits)
+        XCTAssertGreaterThan(tall, short, "菜单侧重置卡一直是自己画的，不该被这次改动影响")
+    }
+
+    /// 菜单侧七条规则**全部**关闭。任一条被顺手改成 true，主菜单卡片就会变形
     /// （条跑到头部、5h/周并排、账号就地展开、倒计时跳到头部、input 里的
     /// cached 被拆出来、prompts 里的 rounds 被拆出来）——而菜单是默认宿主，
     /// 这条断言就是"改默认形态前先看这里"的闸门。
+    /// 刻意**不含** `laysWindowDetailsSideBySide`：它在本分支里没有可达的消费方
+    /// （唯一的读者在 `QuotaHoverViews` 的两个 hover 视图里，而那两个视图只从
+    /// model 行的 `menuLayout` 构造，dock 走的是 `ModelQuotaDockBlock`）。
+    /// 把它留在断言里只会制造"规则已实现"的错觉——测试绿着，功能却没有。
+    /// 见 `ProviderCardLayout.laysWindowDetailsSideBySide` 的注释。
     func testMenuLayoutStaysUnchanged() {
         for rule in [
             ProviderCardLayout.liftsProgressBar,
-            ProviderCardLayout.laysWindowDetailsSideBySide,
-            ProviderCardLayout.expandsAccountSection,
+            ProviderCardLayout.hoistsResetCredits,
             ProviderCardLayout.hoistsPeakIndicator,
             ProviderCardLayout.hidesHeaderStatusDot,
             ProviderCardLayout.splitsCachedInputRow,
@@ -113,6 +246,19 @@ final class HoverRevealModeTests: XCTestCase {
 
 
 
+    /// `.ok` / `.failed(带 lastSuccess)` 两种状态的选择器。
+    fileprivate enum CardState {
+        case ok
+        case failed
+
+        func makeState(from info: QuotaInfo) -> ProviderStatus.State {
+            switch self {
+            case .ok:      return .ok(info)
+            case .failed:  return .failed(message: "网络不可用", lastSuccess: info)
+            }
+        }
+    }
+
     // MARK: - helpers
 
     /// dock 浮层里卡片内容区的宽度（`EdgeDockTheme.popoverWidth` 减去两侧背板内边距）。
@@ -134,6 +280,18 @@ final class HoverRevealModeTests: XCTestCase {
     /// ChatGPT 卡：双窗口 model + 本地用量明细（走 `ChatGPTPlanModelRow`，
     /// 也就是 dock 详情浮层里最"重"的一种形态）。
     fileprivate static func makeChatGPTStatus() -> ProviderStatus {
+        makeChatGPTStatus(state: CardState.ok, resetCredits: false)
+    }
+
+    /// 同上，但状态与「有没有重置额度数据」可切换。
+    ///
+    /// 这两个开关是配对用的：`.failed` + 有/无重置数据，四个组合里只有
+    /// 「dock + 失败 + 有数据」这一格能区分"重置卡被画出来了"和"没画"——
+    /// 其余三格要么本来就画（菜单由 `QuotaSummary` 自己画），要么本来就该没有。
+    fileprivate static func makeChatGPTStatus(
+        state: CardState,
+        resetCredits: Bool
+    ) -> ProviderStatus {
         let now = Date()
         let model = ModelQuota(
             modelName: "chatgpt_plan",
@@ -158,9 +316,27 @@ final class HoverRevealModeTests: XCTestCase {
             outputTokens: 320_000,
             reasoningOutputTokens: 96_000
         )
+        let credits: ResetCreditsInfo? = resetCredits
+            ? ResetCreditsInfo(
+                entries: [
+                    ResetCreditEntry(
+                        id: "credit-1",
+                        status: "available",
+                        expiresAt: now.addingTimeInterval(14 * 24 * 3600),
+                        grantedAt: now,
+                        resetType: "codex_rate_limits",
+                        title: nil,
+                        description: nil
+                    )
+                ],
+                serverAvailableCount: 1,
+                totalEarnedCount: 1,
+                fetchedAt: now
+            )
+            : nil
         let info = QuotaInfo(
             models: [model],
-            resetCredits: nil,
+            resetCredits: credits,
             planLabel: "Team",
             accountEmail: "someone@example.com",
             codexUsageDetails: CodexUsageDetails(
@@ -183,7 +359,7 @@ final class HoverRevealModeTests: XCTestCase {
             iconSystemName: "sparkles",
             accentColor: .chatgpt,
             refreshIntervalSeconds: 300,
-            state: .ok(info)
+            state: state.makeState(from: info)
         )
     }
 

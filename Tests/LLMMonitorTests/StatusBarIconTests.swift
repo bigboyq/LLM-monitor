@@ -5,6 +5,33 @@ import Foundation
 
 final class StatusBarIconTests: XCTestCase {
 
+    /// `consumesQuotaMetrics` 必须与「合成图像时真的读了额度指标的那个 switch 分支」
+    /// 保持一致。
+    ///
+    /// 这两件事现在是**两处独立陈述**：判据在 `ConfigStore.swift`，消费点在
+    /// `MenuBarLabel.composedMenuBarImage` 的 `case .iconDuo`。将来加第二个仪表盘样式
+    /// 时，最自然的改法是去加 `case`——判据不会跟着改，于是签名不再携带
+    /// `quotaMetrics`、图像永远不重合成，那个样式就**静默冻结**在旧值上：没有编译
+    /// 错误，也没有失败的测试。
+    ///
+    /// 本测试把"消费额度指标的样式集合"钉成**恰好是 `.iconDuo`**。再加一个仪表盘样式
+    /// 时它会红，提醒同步改判据。
+    func testOnlyIconDuoConsumesQuotaMetrics() {
+        let consumers = StatusBarIconStyle.allCases.filter(\.consumesQuotaMetrics)
+        XCTAssertEqual(
+            consumers, [.iconDuo],
+            "消费额度指标的样式必须与 MenuBarLabel 里读取 quotaMetrics 的分支一致"
+        )
+        // 交叉核对：`.quotaLogo` 是固定设计稿，四种系统符号只随健康度变色，
+        // 都不该被算进来。
+        for style in StatusBarIconStyle.allCases where style != .iconDuo {
+            XCTAssertFalse(
+                style.consumesQuotaMetrics,
+                "\(style.rawValue) 不消费额度指标（App 图标是固定设计稿，系统符号只随健康度变色）"
+            )
+        }
+    }
+
     func testStatusBarConfigEncodingAndDecoding() throws {
         var config = AppConfig.default
         XCTAssertEqual(config.effectiveStatusBarIconStyle, .chartBar)

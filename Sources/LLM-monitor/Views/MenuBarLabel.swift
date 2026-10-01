@@ -39,7 +39,13 @@ struct MenuBarLabel: View {
         let showsHealthDot = configStore.config.effectiveStatusBarHealthDotEnabled
         let healthColors = configStore.config.effectiveStatusBarHealthColors
         let health = state.systemHealthLevel(at: state.healthEvaluationDate)
-        let quotaMetrics = state.statusBarQuotaMetrics(at: state.healthEvaluationDate)
+        // 只对真的消费它的样式算指标：`statusBarQuotaMetrics` 要把全部 provider 的
+        // 额度窗口聚合一遍，代价远高于这里其余几项。与 `rerenderIfNeeded` 的签名
+        // 用同一个判据——只改签名不跳过计算的话，收益基本为零（每次额度广播照样
+        // 每个 provider 聚合一次，只是最后不再重合成图像）。
+        let quotaMetrics = iconStyle.consumesQuotaMetrics
+            ? state.statusBarQuotaMetrics(at: state.healthEvaluationDate)
+            : nil
         let energyHealth = currentEnergyHealth
 
         content(
@@ -75,7 +81,7 @@ struct MenuBarLabel: View {
     private func content(
         iconStyle: StatusBarIconStyle,
         health: HealthLevel?,
-        quotaMetrics: StatusBarQuotaMetrics,
+        quotaMetrics: StatusBarQuotaMetrics?,
         energyHealth: HealthLevel?,
         showsHealthDot: Bool,
         healthColors: StatusBarHealthColors
@@ -95,7 +101,7 @@ struct MenuBarLabel: View {
             Image(nsImage: Self.composedMenuBarImage(
                 iconStyle: iconStyle,
                 health: health,
-                quotaMetrics: quotaMetrics,
+                quotaMetrics: quotaMetrics ?? .full,
                 energyHealth: energyHealth,
                 showsHealthDot: showsHealthDot,
                 healthColors: healthColors
@@ -106,10 +112,16 @@ struct MenuBarLabel: View {
     }
 
     private func rerenderIfNeeded() {
+        let iconStyle = configStore.config.effectiveStatusBarIconStyle
         let signature = RenderSignature(
-            iconStyle: configStore.config.effectiveStatusBarIconStyle,
+            iconStyle: iconStyle,
             health: state.systemHealthLevel(at: state.healthEvaluationDate),
-            quotaMetrics: state.statusBarQuotaMetrics(at: state.healthEvaluationDate),
+            // **只对真的消费它的样式取指标**：`.quotaLogo` 已经是固定设计稿、另外四种
+            // 是系统符号，都不读额度；无条件带上它会让每次额度广播（每个 provider 一次）
+            // 都改变签名，把完全不相关的五种样式也逼着重合成一次 NSImage。
+            quotaMetrics: iconStyle.consumesQuotaMetrics
+                ? state.statusBarQuotaMetrics(at: state.healthEvaluationDate)
+                : nil,
             energyHealth: currentEnergyHealth,
             showsHealthDot: configStore.config.effectiveStatusBarHealthDotEnabled,
             healthColors: configStore.config.effectiveStatusBarHealthColors,
