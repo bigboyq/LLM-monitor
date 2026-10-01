@@ -135,9 +135,15 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 | `Sources/LLM-monitor/Views/HoverPanel.swift` | `HoverInfoRow` / `HoverPanelController` / 浮层管理 |
 | `Sources/LLM-monitor/Models/EdgeDockEntry.swift` | `EdgeDockEntry` + `EdgeDockProjection`：已启用 Provider → 双环条目（5h / 周 各自最低剩余比例 + 健康档位 + 品牌 kind），纯函数 |
 | `Sources/LLM-monitor/Models/EdgeDockConfig.swift` | `DockEdge` / `EdgeDockConfig`：贴边方向 + 归一化位置（存比例不存绝对坐标），含手改值归一化 |
-| `Sources/LLM-monitor/Services/EdgeDockGeometry.swift` | 边缘窗纯几何：行高/尺寸、贴边 frame、offset 往返换算、最近边吸附、hover 行命中、popover 定位、沿边拖拽换算、贴屏侧直边的非对称标签形状 |
+| `Sources/LLM-monitor/Services/EdgeDockGeometry.swift` | 边缘窗纯几何：行高/尺寸、贴边 frame、offset 往返换算、最近边吸附、行/圆矩形推算（兜底用）、popover 定位、沿边拖拽换算、贴屏侧直边的非对称标签形状 |
 | `Sources/LLM-monitor/Services/FullscreenProbe.swift` | 当前 Space 全屏判定（`CGWindowList` 只读窗口边框 + 桌面装饰是否存在，fail-open，不需要辅助功能权限） |
-| `Sources/LLM-monitor/Services/EdgeDockController.swift` | 边缘窗 `NSPanel` 生命周期、鼠标穿透接管、拖拽吸附、位置持久化、全屏门控 |
+| `Sources/LLM-monitor/Services/EdgeDockController.swift` | 边缘窗控制器本体：状态与配置（`applyRuntimeConfig` 是运行时改配置的唯一入口，`config` 的 setter 保持 private）+ 接线（`attach` / `teardown`） |
+| `Sources/LLM-monitor/Services/EdgeDockController+Window.swift` | `NSPanel` 建/拆、按条目数与形态算窗口尺寸、贴到目标屏那一侧、"为什么没出现 / 出现在哪"的日志签名 |
+| `Sources/LLM-monitor/Services/EdgeDockController+Mouse.swift` | 鼠标穿透与悬停接管：monitor 装卸、2Hz 轮询节拍、命中后的接管与释放、hover / 展开 / 收起的挂起任务 |
+| `Sources/LLM-monitor/Services/EdgeDockController+Popover.swift` | Provider 卡片浮层（与 dock 两个独立窗口）：定位、显隐、鼠标停在浮层上时的接管保持 |
+| `Sources/LLM-monitor/Services/EdgeDockController+Drag.swift` | 沿贴靠边滑动拖拽：阈值判定、跨屏换屏 UUID、落点吸附与位置持久化 |
+| `Sources/LLM-monitor/Services/EdgeDockController+Fullscreen.swift` | 全屏门控：判定变化后重排窗口，以及窗口进出场动画期间的阶梯补测 |
+| `Sources/LLM-monitor/Services/EdgeDockController+HitTesting.swift` | 边缘窗命中判定纯函数（`circleIndex` 圆命中 + `resolveRowRects` / `resolveCircleRects` 实测优先、几何兜底），`nonisolated static`，不读实例状态 |
 | `Sources/LLM-monitor/Views/EdgeDockContentView.swift` | 边缘窗视图（外环=5h、内环=周、中心=Provider 品牌图标，刘海式背景） |
 | `Sources/LLM-monitor/Views/TokenChart.swift` | 7-day 柱图基础组件（`StackedTokenBar` / `TokenChartScale`） |
 | `Sources/LLM-monitor/Views/AccountHoverViews.swift` | Antigravity / ChatGPT 账号 hover 详情 |
