@@ -59,7 +59,9 @@ final class ModelPricingJSONTests: XCTestCase {
 
     func testPricingJSONIntegrity() throws {
         let catalog = try loadPricingJSON()
-        XCTAssertEqual(catalog.lastUpdated, "2026-09-23")
+        // 定价目录的"改价日"钉在这里：它是**快照基准**，不是"今天"，
+        // 所以改 ModelPricing.json 的内容时必须同步改这一行。
+        XCTAssertEqual(catalog.lastUpdated, "2026-09-30")
 
         let requiredProviders = ["minimax", "openai", "antigravity", "zhipu", "deepseek"]
         for providerID in requiredProviders {
