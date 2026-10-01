@@ -566,7 +566,13 @@ private struct FooterActionButton: View {
 }
 
 private struct CardsContentHeightKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
+    /// 用**计算属性**而不是 `static var defaultValue: CGFloat = 0`。
+    ///
+    /// `PreferenceKey.defaultValue` 的协议要求只声明了 `{ get }`，计算属性同样满足；
+    /// 而存储型 `static var` 是全局可变状态，Swift 6 语言模式下会被判
+    /// `MutableGlobalVariable` 编译错误，卡住 `scripts/audit.sh` 的 Swift 6 门禁。
+    /// 这条从 main 就存在，门禁一跑必红。
+    static var defaultValue: CGFloat { 0 }
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = max(value, nextValue())
     }

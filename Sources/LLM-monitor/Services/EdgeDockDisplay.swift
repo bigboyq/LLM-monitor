@@ -28,9 +28,19 @@ enum EdgeDockDisplay {
     /// 而 `targetScreen` 在拖拽的**每个事件**上都会被问一遍。同一块显示器在一次
     /// 开机期间不会换 UUID，所以按 display id 记一份就够；拔屏后由 `pruneCache`
     /// 清掉（挂在 `didChangeScreenParameters` 上，拔插 / 改分辨率 / 改排列都会发）。
+    ///
+    /// `@MainActor`：缓存是**全局可变**状态，Swift 6 语言模式下 `nonisolated` 的
+    /// `static var` 会被判 `MutableGlobalVariable` **编译错误**（`scripts/audit.sh`
+    /// 的 Swift 6 门禁会卡住——这条门禁不跑 `swift test`，只跑 `swift build -Xswiftc
+    /// -swift-version -Xswiftc 6`，所以常规构建/测试全绿也发现不了）。
+    /// 所有调用方——`targetScreen` / `dragVisibleFrame`（`EdgeDockController` 整个是
+    /// `@MainActor`）、屏幕参数变化监听里的 `Task { @MainActor }`、相关测试——本来就
+    /// 都在主线程，标上既让不变量成立，也让编译器替我们盯着将来有没有后台线程摸进来。
+    @MainActor
     private static var cache: [CGDirectDisplayID: String] = [:]
 
-    /// `NSScreen` 对应的稳定 UUID。
+    /// `NSScreen` 对应的稳定 UUID。`@MainActor`：读写上面的缓存。
+    @MainActor
     static func uuid(of screen: NSScreen) -> String? {
         guard let id = displayID(of: screen) else { return nil }
         if let cached = cache[id] { return cached }
@@ -42,6 +52,8 @@ enum EdgeDockDisplay {
     }
 
     /// 丢掉已经不在的显示器的记忆（拔屏）。挂在屏幕参数变化通知上调用。
+    /// `@MainActor`：读写缓存。
+    @MainActor
     static func pruneCache(to screens: [NSScreen]) {
         let live = Set(screens.compactMap(displayID(of:)))
         cache = cache.filter { live.contains($0.key) }
@@ -87,6 +99,7 @@ enum EdgeDockDisplay {
 
     /// 找出配置指定的那一块屏。匹配逻辑本身在 `matchingIndex`（纯函数，可单测），
     /// 这里只负责把 `NSScreen.screens` 摊成同序的 UUID 列表。
+    @MainActor
     static func matchingScreen(preferred: String?, screens: [NSScreen]) -> NSScreen? {
         // 取不到 UUID 的屏（极老的系统 / 无 display id）落成空串，永远匹配不上——
         // 与其拿它去比，不如当成"这块屏没有身份"，让调用方走回落。
