@@ -43,7 +43,10 @@ final class SleepHealthService: ObservableObject, SleepHealthReporting {
         pmsetCustomReader: (@Sendable () throws -> String)? = nil
     ) {
         self.now = now
-        self.assertionProbe = assertionProbe ?? Self.defaultAssertionProbe
+        // 裸 `func` 引用的函数类型不是 `@Sendable`，直接赋给 `@Sendable` 目标会告警
+        // （"converting non-Sendable function value ... may introduce data races"）。
+        // 用零捕获闭包字面量包一层，契约在转换点显式化；探针体与调用时机都不变。
+        self.assertionProbe = assertionProbe ?? { try Self.defaultAssertionProbe() }
         if let powerConfigProbe {
             self.powerConfigProbe = powerConfigProbe
         } else if let pmsetCustomReader {
@@ -52,7 +55,7 @@ final class SleepHealthService: ObservableObject, SleepHealthReporting {
                 return SleepHealthEvaluator.parsePmsetCustomOutput(output)
             }
         } else {
-            self.powerConfigProbe = Self.defaultPowerConfigProbe
+            self.powerConfigProbe = { try Self.defaultPowerConfigProbe() }
         }
     }
 
