@@ -164,15 +164,66 @@ final class HoverRevealModeTests: XCTestCase {
         XCTAssertGreaterThan(tall, short, "菜单侧重置卡一直是自己画的，不该被这次改动影响")
     }
 
+    /// 两个窗口的明细**并排**而不是堆叠。
+    ///
+    /// 判据是**宽度**，不是高度——这个选择是被量出来的：视图里除两列外还有标题行和
+    /// "周倍率"脚注，所以整个视图的堆叠/并排高度差被别的行淹没了（实测并排 98pt，
+    /// 而手搭的"两行+分隔线"参照只有 69pt，两者压根不是同一段内容，比高度不成立）。
+    ///
+    /// 宽度很干净：`HoverMetricLine` 是固定构造（标签 18pt + 百分比 40pt + 两个可压缩
+    /// 文本），单列自然宽 225pt，两列 `HStack(spacing: 16)` 自然宽 **466pt**
+    /// = 225 × 2 + 16。实测并排状态下整个视图的自然宽正好也是 466——说明这条 `HStack`
+    /// 就是驱动宽度的那一行。改回堆叠后视图宽度会塌到其它行（标题/脚注/单列）的最大
+    /// 宽度，达不到 466，断言即红。
+    ///
+    /// ⚠️ 这条是**间接**判据：它证明的是"有 466pt 的一行"，不是"那两个 `usageSection`
+    /// 在里面"。`QuotaUsageWindowsHoverView` 那处（列是 token 用量块）没有单独覆盖——
+    /// 两处是同构改动，要给第二处也加一条得先量出它的单列宽度当参照。
+    @MainActor
+    func testQuotaWindowsHoverLaysTwoColumnsSideBySide() {
+        let now = Date()
+        let primaryResets = now.addingTimeInterval(3600)
+        let weeklyResets = now.addingTimeInterval(7 * 24 * 3600)
+
+        let viewWidth = naturalWidth(of: QuotaWindowsHoverView(
+            title: "chatgpt_plan",
+            weeklyEquivalentMultiplier: 6,
+            primaryLabel: "5h",
+            primaryPercent: 62,
+            primaryResetsAt: primaryResets,
+            weeklyPercent: 80,
+            weeklyResetsAt: weeklyResets,
+            secondaryLabel: "周"
+        ))
+        let oneColumnWidth = naturalWidth(of: HoverMetricLine(
+            label: "5h", percent: 62, resetsAt: primaryResets
+        ))
+        let twoColumnWidth = naturalWidth(of: HStack(alignment: .top, spacing: 16) {
+            HoverMetricLine(label: "5h", percent: 62, resetsAt: primaryResets)
+            HoverMetricLine(label: "周", percent: 80, resetsAt: weeklyResets)
+        })
+
+        // 前提：参照物本身是"两列宽"，否则下面的比较毫无意义。
+        XCTAssertGreaterThan(
+            twoColumnWidth, oneColumnWidth * 1.9,
+            "前提不成立：两列 HStack 应当约为单列的两倍（实际 \(twoColumnWidth) vs \(oneColumnWidth)）"
+        )
+        XCTAssertGreaterThanOrEqual(
+            viewWidth, twoColumnWidth,
+            "两个窗口的明细必须并排：视图自然宽 \(viewWidth) 达不到两列的 \(twoColumnWidth)，说明它们被堆叠了"
+        )
+    }
+
     /// 菜单侧七条规则**全部**关闭。任一条被顺手改成 true，主菜单卡片就会变形
     /// （条跑到头部、5h/周并排、账号就地展开、倒计时跳到头部、input 里的
     /// cached 被拆出来、prompts 里的 rounds 被拆出来）——而菜单是默认宿主，
     /// 这条断言就是"改默认形态前先看这里"的闸门。
-    /// 刻意**不含** `laysWindowDetailsSideBySide`：它在本分支里没有可达的消费方
-    /// （唯一的读者在 `QuotaHoverViews` 的两个 hover 视图里，而那两个视图只从
-    /// model 行的 `menuLayout` 构造，dock 走的是 `ModelQuotaDockBlock`）。
-    /// 把它留在断言里只会制造"规则已实现"的错觉——测试绿着，功能却没有。
-    /// 见 `ProviderCardLayout.laysWindowDetailsSideBySide` 的注释。
+    /// 刻意**不含**并排那条：它曾经以 `laysWindowDetailsSideBySide(mode:)` 的形式
+    /// 出现在这里，但它没有可达的消费方（唯一的读者在 `QuotaHoverViews` 的两个
+    /// hover 视图里，而那两个视图只从 model 行的 `menuLayout` 构造），断言它对
+    /// `.alwaysVisible` 返回 true 只是在给"规则已实现"制造错觉。现在那个谓词连同
+    /// 堆叠分支一起删了，改为无条件并排，由
+    /// `testQuotaWindowsHoverLaysTwoColumnsSideBySide` 单独盯着。
     func testMenuLayoutStaysUnchanged() {
         for rule in [
             ProviderCardLayout.liftsProgressBar,
@@ -264,6 +315,27 @@ final class HoverRevealModeTests: XCTestCase {
     /// dock 浮层里卡片内容区的宽度（`EdgeDockTheme.popoverWidth` 减去两侧背板内边距）。
     private var cardContentWidth: CGFloat {
         EdgeDockTheme.popoverWidth - EdgeDockTheme.popoverPadding * 2
+    }
+
+    /// 视图的自然宽度（不限宽、不受 frame 影响）。
+    @MainActor
+    private func naturalWidth<V: View>(of view: V) -> CGFloat {
+        let hosting = NSHostingView(rootView: AnyView(view))
+        hosting.frame = CGRect(x: 0, y: 0, width: 10_000, height: 10_000)
+        hosting.layoutSubtreeIfNeeded()
+        return hosting.fittingSize.width
+    }
+
+    /// 测任意视图在 `minWidth` 下的自然高度。
+    ///
+    /// 宽度不设死：hover 浮层本身按内容自适应（见 `HoverPanelController`），
+    /// 这里只是给个下限让 layout 跑起来。
+    @MainActor
+    private func measuredHeight<V: View>(of view: V, minWidth: CGFloat) -> CGFloat {
+        let hosting = NSHostingView(rootView: AnyView(view).frame(width: minWidth))
+        hosting.frame = CGRect(x: 0, y: 0, width: minWidth, height: 10_000)
+        hosting.layoutSubtreeIfNeeded()
+        return hosting.fittingSize.height
     }
 
     @MainActor

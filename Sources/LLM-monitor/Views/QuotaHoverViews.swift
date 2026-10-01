@@ -46,17 +46,19 @@ struct QuotaWindowsHoverView: View {
     let weeklyPercent: Double
     let weeklyResetsAt: Date?
     let secondaryLabel: String
-    /// ⚠️ 目前恒为菜单侧的 `.onHover`，下面那条并排分支**跑不到**。
+    /// 恒为**并排**，不再按 `hoverRevealMode` 分支。
     ///
-    /// 本视图只从 `QuotaCombinedUsageRow` / `QuotaSingleUsageRow` 构造，而那两个
-    /// 视图只出现在两个 model 行的 `menuLayout` 里（dock 走的是
-    /// `ModelQuotaDockBlock` + `QuotaBarWithMetadata`）——dock 的 `.alwaysVisible`
-    /// 由 `EdgeDockController.popoverContent` 注入，但注入点在这条链之外。
-    /// 分支保留：它是本视图本来就该有的能力，而删掉只会让"dock 想要并排"这件事
-    /// 连个落点都没有。**真要接上之前**先看 `QuotaUsageWindowsHoverView` 那处——
-    /// 它多了一个 `hasSecondaryWindow` 判据而这里没有，两边对"什么时候并排"的
-    /// 理解并不一致，接上就会两个窗口只有一个时并排出一个空栏。
-    @Environment(\.hoverRevealMode) private var revealMode
+    /// 原先这里判 `ProviderCardLayout.laysWindowDetailsSideBySide(mode:)`（`alwaysVisible`
+    /// 即并排），但本视图只从 `QuotaCombinedUsageRow` / `QuotaSingleUsageRow` 构造，
+    /// 那两个视图只出现在 model 行的 `menuLayout` 里（dock 走的是
+    /// `ModelQuotaDockBlock` + `QuotaBarWithMetadata`）——于是 `alwaysVisible` 传不到
+    /// 这里，判据恒 false，并排那一支是**跑不到的死分支**，堆叠那一支才是实际行为。
+    ///
+    /// 现在按产品决定统一成并排：5h 与周讲的是"同一个额度在两个时间尺度上的消耗"，
+    /// 并排才能左右对齐、横向比较同一行；堆着的话读者得靠上下位置去对齐找同一栏。
+    /// 宽度不是问题——`HoverPanelController` 的面板宽度取
+    /// `min(max(fitting.width, 180), …)`，按内容自适应；7 天图表那张 420pt 的 hover
+    /// 早就比卡片（360 − 2×12 = 336pt）宽了。
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -82,14 +84,8 @@ struct QuotaWindowsHoverView: View {
 
             // 5h 与周各占一栏：两栏内容都是"百分比 + 重置时间"的同一形状，
             // 并排后一眼能横向比较，竖排时只能靠上下位置去对齐找同一栏。
-            if ProviderCardLayout.laysWindowDetailsSideBySide(mode: revealMode) {
-                HStack(alignment: .top, spacing: 16) {
-                    HoverMetricLine(label: primaryLabel, percent: safePrimaryPercent, resetsAt: primaryResetsAt)
-                    HoverMetricLine(label: secondaryLabel, percent: safeWeeklyPercent, resetsAt: weeklyResetsAt)
-                }
-            } else {
+            HStack(alignment: .top, spacing: 16) {
                 HoverMetricLine(label: primaryLabel, percent: safePrimaryPercent, resetsAt: primaryResetsAt)
-                Divider().opacity(0.45)
                 HoverMetricLine(label: secondaryLabel, percent: safeWeeklyPercent, resetsAt: weeklyResetsAt)
             }
         }
@@ -146,11 +142,15 @@ struct QuotaUsageWindowsHoverView: View {
     /// GLM 今日闲时（off-peak）任务 token 用量：不消耗积分，单独展示避免混进
     /// 5h / 周额度窗口。非 GLM / 无闲时数据时传 nil。
     var offPeakUsage: UsageMetricSummary? = nil
-    /// ⚠️ 同 `QuotaWindowsHoverView` 的 `revealMode`：目前恒为 `.onHover`，下面
-    /// 的并排分支**跑不到**（构造链只经过两个 model 行的 `menuLayout`）。
-    /// 这里比那边多一个 `hasSecondaryWindow` 判据、那边没有——两边对"什么时候并排"
-    /// 的理解并不一致，接上之前必须先统一，否则单窗口模型会并排出一个空栏。
-    @Environment(\.hoverRevealMode) private var revealMode
+    /// 恒为**并排**（`hasSecondaryWindow` 为假时单列）。
+    ///
+    /// 原先这里判 `ProviderCardLayout.laysWindowDetailsSideBySide(mode:)`，但该谓词
+    /// 恒为 false（构造链只经过两个 model 行的 `menuLayout`，传不到 dock 的
+    /// `.alwaysVisible`），跑的是堆叠分支。现在按产品决定统一成并排。
+    ///
+    /// 这里比 `QuotaWindowsHoverView` 多一个 `hasSecondaryWindow` 判据、那边没有——
+    /// 这个差异原先被死分支掩盖着：并排真正落地才暴露出来"单窗口模型并排会多出
+    /// 一栏空位"。现在这一处判据保留（单窗口本来就只有一个窗口），两边从此同构。
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -164,7 +164,9 @@ struct QuotaUsageWindowsHoverView: View {
 
             // 5h / 周两栏并排：它们是"同一个额度在两个时间尺度上的消耗"，
             // 并排才能横向对比；竖排时读者要在两段之间来回跳着找同一栏。
-            if ProviderCardLayout.laysWindowDetailsSideBySide(mode: revealMode), hasSecondaryWindow {
+            // 单窗口模型（`hasSecondaryWindow` 为假）只有一个窗口，并排会多出一栏
+            // 空位——所以这一处保留了判据，恒并排指的是"有两个窗口时"。
+            if hasSecondaryWindow {
                 HStack(alignment: .top, spacing: 16) {
                     usageSection(
                         label: primaryLabel,
@@ -179,11 +181,6 @@ struct QuotaUsageWindowsHoverView: View {
                 }
             } else {
                 usageSection(label: primaryLabel, usage: primaryUsage, creditUsage: primaryCreditUsage)
-
-                if hasSecondaryWindow {
-                    Divider().opacity(0.45)
-                    usageSection(label: secondaryLabel, usage: secondaryUsage, creditUsage: secondaryCreditUsage)
-                }
             }
 
             if let offPeakUsage {

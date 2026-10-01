@@ -49,21 +49,18 @@ enum ProviderCardLayout {
         mode == .alwaysVisible
     }
 
-    /// 5h 与周两个窗口的明细**横向并排**（dock）。
-    ///
-    /// 竖排时读者要在两段之间来回跳着找同一栏；并排才能横向对比。
-    /// 菜单那侧是按内容自然宽度测量的 hover 浮层，宽度敏感，维持竖排。
-    ///
-    /// ⚠️ **这条规则目前没有生效的调用方**。它唯一的消费者是
-    /// `QuotaWindowsHoverView` / `QuotaUsageWindowsHoverView` 里的并排分支，而
-    /// 那两个视图只从 `QuotaCombinedUsageRow` / `QuotaSingleUsageRow` 构造，后者
-    /// 只出现在两个 model 行的 `menuLayout` 里——dock 的额度块已经重排成
-    /// `ModelQuotaDockBlock` + `QuotaBarWithMetadata`，不再经过它们。规则本身没错，
-    /// 只是 dock 重排时忘了它还挂着一个"已实现"的谓词，测试又在断言它对
-    /// `.alwaysVisible` 返回 true，于是三方一起给了假信号。
-    static func laysWindowDetailsSideBySide(mode: HoverRevealMode) -> Bool {
-        mode == .alwaysVisible
-    }
+    // 曾有 `laysWindowDetailsSideBySide(mode:)`（`alwaysVisible` 即并排），已删除。
+    //
+    // 它唯一的消费者是 `QuotaWindowsHoverView` / `QuotaUsageWindowsHoverView` 里的
+    // 并排分支，而那两个视图只从 `QuotaCombinedUsageRow` / `QuotaSingleUsageRow`
+    // 构造，后者只出现在 model 行的 `menuLayout` 里——dock 的额度块早已重排成
+    // `ModelQuotaDockBlock` + `QuotaBarWithMetadata`，不再经过它们。于是判据恒为
+    // false，**并排那一支跑不到，堆叠那一支才是实际行为**：一个看着已实现、实际
+    // 从未生效的开关。
+    //
+    // 现在按产品决定统一成并排，并把判据内联到那两个视图里（单窗口仍单列）。
+    // dock 侧的"两列"是另一回事：`QuotaBarWithMetadata` 的元信息行本来就是
+    // `5h 62%  周 80%` 一行并排，不需要任何谓词。
 
     /// 重置额度卡由**卡片**画（dock），不在 model 列表尾部（菜单）。
     ///
