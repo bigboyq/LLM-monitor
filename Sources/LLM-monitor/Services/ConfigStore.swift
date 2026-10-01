@@ -335,7 +335,15 @@ struct AppConfig: Codable, Equatable {
         )
         self.providerCardOrder = try? container.decode([String].self, forKey: .providerCardOrder)
         // 边缘窗同属外观字段：坏值按"没配过"处理，不能拖垮整份 provider 配置。
-        self.edgeDock = try? container.decode(EdgeDockConfig.self, forKey: .edgeDock)
+        //
+        // 记一条告警：静默重置的位置/形态是排障噩梦——用户看到的是 dock 莫名回到
+        // 默认位置，而日志里什么都没有。Bark 那边同样有这层记录。
+        do {
+            self.edgeDock = try container.decodeIfPresent(EdgeDockConfig.self, forKey: .edgeDock)
+        } catch {
+            logWarn("[config] edgeDock 字段解析失败，已按未配置处理：\(error.localizedDescription)")
+            self.edgeDock = nil
+        }
         // Bark 字段手工配置容错：类型不匹配按缺失处理，不进损坏恢复流程；
         // 但 serverURL / deviceKey 等必填 key 缺失会让整块配置失效，记录告警。
         do {

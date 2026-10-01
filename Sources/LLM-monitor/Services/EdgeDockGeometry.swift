@@ -20,8 +20,14 @@ enum EdgeDockGeometry {
     static let diameter: CGFloat = 38
     /// 相邻两行/两列的间距（pt）。竖排是行间距，横排是列间距，两者同值。
     static let spacing: CGFloat = 16
-    /// 圆环下方常驻数值文字的高度（pt）。
-    static let labelHeight: CGFloat = 10
+    /// 圆环下方常驻数值文字的**字号**（pt）。`labelHeight` 由它推导，两者不许各写一个。
+    static let labelFontSize: CGFloat = 10
+    /// 圆环下方常驻数值文字占用的高度（pt）。
+    ///
+    /// 略大于字号：10pt 系统字体的实际行高约 12pt，按字号取值会让字形在固定行框里
+    /// 上下各溢出约 1pt（简版↔完整形态的行高动画会把它放大成可见的抖动）。
+    /// 取 `字号 + 2` 是把这 2pt 余量显式算进行高，而不是指望 SwiftUI 居中后看不出来。
+    static var labelHeight: CGFloat { labelFontSize + 2 }
     /// 圆环与数值文字之间的间距（pt）。
     ///
     /// 同样属于"挤"：2pt 时数字几乎贴着环线的描边。4pt 仍明显小于行间距，
@@ -224,9 +230,11 @@ enum EdgeDockGeometry {
         edge: DockEdge
     ) -> Double {
         guard visibleFrame.width > 0, visibleFrame.height > 0 else { return 0.5 }
-        let clamped = edge.isVertical
-            ? CGSize(width: min(dockSize.width, visibleFrame.width), height: min(dockSize.height, visibleFrame.height))
-            : CGSize(width: min(dockSize.width, visibleFrame.width), height: min(dockSize.height, visibleFrame.height))
+        // 窗口两个轴都要各自钳到可用区——不按朝向分叉，竖排横排用的是同一句。
+        let clamped = CGSize(
+            width: min(dockSize.width, visibleFrame.width),
+            height: min(dockSize.height, visibleFrame.height)
+        )
         let travel = edge.isVertical
             ? visibleFrame.height - clamped.height
             : visibleFrame.width - clamped.width
@@ -262,24 +270,53 @@ enum EdgeDockGeometry {
 
     /// 第 `index` 行的**行中心**（dock frame 坐标系，AppKit 屏幕坐标，y 轴朝上）。
     ///
-    /// 这里返回的是行中心而不是圆心：一行是"圆 + 下方数值"，行中心比圆心低 7pt。
+    /// 这里返回的是行中心而不是圆心：一行是"圆 + 下方数值"，竖排时行中心比圆心
+    /// 低 `(labelSpacing + labelHeight) / 2` = 8pt（当前行高 54 vs 圆径 38）。
     /// popover 纵向对齐到行中心比对齐圆心更稳，也不会因为数值文字的存在而看着偏上。
     ///
     /// **锚点约定必须和 `EdgeDockContentView` 的排版一致**，否则整列会上下翻转：
     /// - 竖排用 `VStack`，第 0 行渲染在**上方**（= `maxY`），所以从 `maxY` 往回减。
     /// - 横排用 `HStack`，第 0 列渲染在**左侧**（= `minX`），x 与 SwiftUI 同向，所以从
     ///   `minX` 往加。
-    static func rowCenter(dockFrame: CGRect, edge: DockEdge, index: Int) -> CGPoint {
-        if edge.isVertical {
-            return CGPoint(
-                x: dockFrame.midX,
-                y: dockFrame.maxY - (padding + rowHeight / 2) - CGFloat(index) * rowStep
-            )
+    static func rowCenter(
+        dockFrame: CGRect,
+        edge: DockEdge,
+        index: Int,
+        appearance: DockAppearance = .full
+    ) -> CGPoint {
+        // 竖排用**行高**做锚：完整形态行高 = 圆 38 + 间距 4 + 数值 12 = 54，
+        // 行中心因此比圆心低 (54 − 38)/2 = 8pt；简版没有数值文字，行高退化成
+        // 圆径，行中心就是圆心。
+        // 横排用**圆径**做锚、按**列距**步进：数值在圆的下方，不吃横排的列宽。
+        // 三套量都随形态切换，不能拿完整形态的常数去推 15pt 行距的简版。
+        let lead: CGFloat
+        let rowH: CGFloat
+        let dia: CGFloat
+        switch appearance {
+        case .full:    (lead, rowH, dia) = (padding, rowHeight, diameter)
+        case .compact: (lead, rowH, dia) = (compactPadding, compactDiameter, compactDiameter)
         }
-        return CGPoint(
-            x: dockFrame.minX + (padding + diameter / 2) + CGFloat(index) * columnStep,
-            y: dockFrame.midY
-        )
+        let along = CGFloat(index) * step(for: appearance, edge: edge)
+        if edge.isVertical {
+            return CGPoint(x: dockFrame.midX, y: dockFrame.maxY - (lead + rowH / 2) - along)
+        }
+        return CGPoint(x: dockFrame.minX + (lead + dia / 2) + along, y: dockFrame.midY)
+    }
+
+    /// 相邻两个条目在**堆叠轴**上的步进，按朝向与形态取值。
+    ///
+    /// 完整形态下竖排（`rowStep` 70）与横排（`columnStep` 54）**差 16pt**：数值
+    /// 文字挂在圆的下方，所以横排一列的宽度是圆宽而不是行高。简版没有数值文字，
+    /// 两者都退化成 `compactRowStep`。
+    ///
+    /// 单独抽出来是因为"竖排用行距、横排用列距"这条规则在 `circleCenter` 与
+    /// `rowCenter` 两处都要用，写成 `edge.isVertical ? a : b` 各写一遍最容易在
+    /// 改其中一处时漏掉另一处——那正是本函数被抽出来的原因。
+    private static func step(for appearance: DockAppearance, edge: DockEdge) -> CGFloat {
+        switch appearance {
+        case .full:    return edge.isVertical ? rowStep : columnStep
+        case .compact: return compactRowStep
+        }
     }
 
     /// 按常量推算的行矩形（**兜底**），屏幕坐标系，与 `dockFrame` 同一空间。
@@ -287,20 +324,33 @@ enum EdgeDockGeometry {
     /// 只在视图实测矩形不可用时用（见 `EdgeDockController.resolveRowRects`）。它会
     /// 因为猜错 SwiftUI 的文字行高而产生逐行累积的偏差，所以**只是兜底**：宁可偏差，
     /// 也不能让 hover 彻底失能——hover 失能会连带鼠标接管一起失效，拖拽也跟着死。
-    static func rowRects(dockFrame: CGRect, edge: DockEdge, entryCount: Int) -> [CGRect] {
-        (0..<max(entryCount, 0)).map { index in
-            let center = rowCenter(dockFrame: dockFrame, edge: edge, index: index)
-            // 行在堆叠轴上占 rowHeight，在另一轴上占 diameter（横排时交换）。
-            // 行与行之间留出 spacing 的缝，由 `rowIndex` 的"最近中心"容差兜住。
+    ///
+    /// `appearance` 与 `circleRects` 同理：简版没有数值文字，行高退化成
+    /// `compactDiameter`，行距是 `compactRowStep`。不带上它就会按 70pt 的行距去推
+    /// 15pt 行距的简版，从第 2 行起逐行错开，详情卡片会挂在一个看起来不属于它的环上。
+    static func rowRects(
+        dockFrame: CGRect,
+        edge: DockEdge,
+        entryCount: Int,
+        appearance: DockAppearance = .full
+    ) -> [CGRect] {
+        let across = appearance == .full ? diameter : compactDiameter
+        let rowH = appearance == .full ? rowHeight : compactDiameter
+        return (0..<max(entryCount, 0)).map { index in
+            let center = rowCenter(
+                dockFrame: dockFrame, edge: edge, index: index, appearance: appearance
+            )
             if edge.isVertical {
+                // 竖排：行在堆叠轴上占**行高**，在另一轴上铺满窗口厚度。
                 return CGRect(
-                    x: dockFrame.minX, y: center.y - rowHeight / 2,
-                    width: dockFrame.width, height: rowHeight
+                    x: dockFrame.minX, y: center.y - rowH / 2,
+                    width: dockFrame.width, height: rowH
                 )
             }
+            // 横排：行在堆叠轴上占**圆径**——数值文字在圆的下方，不吃列宽。
             return CGRect(
-                x: center.x - diameter / 2, y: dockFrame.minY,
-                width: diameter, height: dockFrame.height
+                x: center.x - across / 2, y: dockFrame.minY,
+                width: across, height: dockFrame.height
             )
         }
     }
@@ -310,28 +360,47 @@ enum EdgeDockGeometry {
     /// 必须与 `EdgeDockContentView` 的排版一致：
     /// - 竖排用 `VStack`，第 0 行渲染在上方（= `maxY`），从 `maxY` 减去 padding 与半个圆径。
     /// - 横排用 `HStack`，第 0 列渲染在左侧（= `minX`），x 从 `minX` 加上 padding 与半个圆径，y 位于顶部圆环中心。
-    static func circleCenter(dockFrame: CGRect, edge: DockEdge, index: Int) -> CGPoint {
-        if edge.isVertical {
-            return CGPoint(
-                x: dockFrame.midX,
-                y: dockFrame.maxY - (padding + diameter / 2) - CGFloat(index) * rowStep
-            )
+    ///
+    /// `appearance` 决定用哪一套尺寸常量：简版的圆只有 7pt、行距 15pt、内边距 7pt，
+    /// 与完整形态（38 / 70 / 16）毫无关系。**兜底路径必须显式带上它**——按完整
+    /// 形态的常数去推算简版，第 0 行会偏出约 24pt，命中到隔壁那个 provider。
+    ///
+    /// 步进**分朝向**：竖排是 `rowStep`（行高 + 行间距），横排是 `columnStep`
+    /// （圆宽 + 列间距）——两者在完整形态下差 16pt（数值文字在圆的**下方**，横排
+    /// 的列宽不吃行高）。简版没有数值文字，两者都等于 `compactRowStep`。
+    static func circleCenter(
+        dockFrame: CGRect,
+        edge: DockEdge,
+        index: Int,
+        appearance: DockAppearance = .full
+    ) -> CGPoint {
+        let inset: CGFloat
+        switch appearance {
+        case .full:      inset = padding + diameter / 2
+        case .compact:   inset = compactPadding + compactDiameter / 2
         }
-        return CGPoint(
-            x: dockFrame.minX + (padding + diameter / 2) + CGFloat(index) * columnStep,
-            y: dockFrame.maxY - padding - diameter / 2
-        )
+        let along = CGFloat(index) * step(for: appearance, edge: edge)
+        if edge.isVertical {
+            return CGPoint(x: dockFrame.midX, y: dockFrame.maxY - inset - along)
+        }
+        return CGPoint(x: dockFrame.minX + inset + along, y: dockFrame.maxY - inset)
     }
 
     /// 各圆的外接矩形（屏幕坐标系，与 `dockFrame` 同一空间）。
-    static func circleRects(dockFrame: CGRect, edge: DockEdge, entryCount: Int) -> [CGRect] {
-        (0..<max(entryCount, 0)).map { index in
-            let center = circleCenter(dockFrame: dockFrame, edge: edge, index: index)
+    static func circleRects(
+        dockFrame: CGRect,
+        edge: DockEdge,
+        entryCount: Int,
+        appearance: DockAppearance = .full
+    ) -> [CGRect] {
+        let dia = appearance == .full ? diameter : compactDiameter
+        return (0..<max(entryCount, 0)).map { index in
+            let center = circleCenter(dockFrame: dockFrame, edge: edge, index: index, appearance: appearance)
             return CGRect(
-                x: center.x - diameter / 2,
-                y: center.y - diameter / 2,
-                width: diameter,
-                height: diameter
+                x: center.x - dia / 2,
+                y: center.y - dia / 2,
+                width: dia,
+                height: dia
             )
         }
     }
@@ -342,22 +411,26 @@ enum EdgeDockGeometry {
     /// 不会被推出可视区域；纵向以圆心对齐并钳在 visibleFrame 内。
     ///
     /// `measuredRowCenter`：**实测**行中心（屏幕坐标），有值时用它当纵向锚点。
-    /// 必须传：下面的 `rowCenter` 兜底写死的是完整形态的常数（行距 38 + 16pt），
-    /// 在简版 15pt 的行距下从第 2 行起就逐行错开，卡片会挂在一个看起来不属于它
-    /// 的环上。实测矩形两种形态都上报（见 `EdgeDockContentView`），推算只留作
-    /// "这一帧还没量到"时的兜底。
+    /// 实测矩形两种形态都上报（见 `EdgeDockContentView`），所以它实际上总有值。
+    ///
+    /// `appearance` 只服务于下面那个 `rowCenter` 兜底：完整形态的行距是 70（行高
+    /// 54 + 间距 16），简版是 15。按完整形态的常数去推简版，从第 2 行起就逐行错开，
+    /// 卡片会挂在一个看起来不属于它的环上——与 `circleRects` / `rowRects` 同一个坑，
+    /// 三个兜底必须一起修。
     static func popoverFrame(
         size: CGSize,
         dockFrame: CGRect,
         rowIndex: Int,
         edge: DockEdge,
         visibleFrame: CGRect,
-        measuredRowCenter: CGPoint? = nil
+        measuredRowCenter: CGPoint? = nil,
+        appearance: DockAppearance = .full
     ) -> CGRect {
         guard visibleFrame.width > 0, visibleFrame.height > 0 else { return .zero }
         let w = min(size.width, visibleFrame.width)
         let h = min(size.height, visibleFrame.height)
-        let center = measuredRowCenter ?? rowCenter(dockFrame: dockFrame, edge: edge, index: rowIndex)
+        let center = measuredRowCenter
+            ?? rowCenter(dockFrame: dockFrame, edge: edge, index: rowIndex, appearance: appearance)
 
         let x: CGFloat
         let y: CGFloat
@@ -378,24 +451,26 @@ enum EdgeDockGeometry {
     }
 }
 
-/// 边缘窗背景形状：**贴屏幕那一侧是反向（凹）圆角，朝屏幕内侧是常规圆角**。
+/// 边缘窗背板形状：**贴屏幕那一侧走直边，朝屏幕内侧两端是圆角**。
 ///
-/// 这才是"刘海"的形状：窗口齐边贴住屏幕，贴边侧的两个角被**挖掉**而不是补圆，
-/// 于是屏幕边缘在上下两处向 dock 内凹进一块，像 iPhone 顶部那个缺口。
+/// 直边与屏幕边缘连成一条线，看起来是"从屏幕里长出来的一截"；那边若也圆，会在
+/// 屏幕与窗口之间露出一条缝，黑块反而像浮在屏幕上方的一颗胶囊。
 ///
-/// 四种形态的取舍（都踩过）：
+/// 几种替代形态（都踩过）：
+/// - 贴边侧挖成凹角（iPhone 那种刘海缺口）：语义上更"贴边"，但窗口本就与屏幕
+///   齐平，挖角只会在贴边侧的两端多出两小块悬空——在 20pt 厚的简版里几乎看不见，
+///   却让背板轮廓在角落处变得难以辨认。
 /// - 半圆帽：像浮在屏幕上的一颗珠子，不贴边。
-/// - 四角常规圆角：柔和，但贴边侧没有"缺口"，刘海感消失。
-/// - 直角：太生硬。
-/// - **本形态**：内侧圆润 + 贴边侧内凹。
+/// - 四角常规圆角：柔和，但贴边侧没有直边，贴边感消失。
+/// - **本形态**：内侧圆润 + 贴边侧直边。
 ///
-/// 几何上凹角与凸角的圆心相同（都在 `w/2, h/2` 一带），区别只在走哪一段弧：
-/// 凸角走"远离顶点"的长弧补满角落，凹角走"贴近顶点"的短弧把角落挖空。
-/// 下面每条边都显式写全 4 段弧——这种镜像推导很容易写反，而写反后
-/// boundingBox 仍然正确，只有角落包含性会变，必须靠测试钉住。
+/// 两端圆角与贴边直边**不是镜像推导出来的**：只手写"贴屏侧在右边"这一种形状，
+/// 其余三条边用仿射变换（`CGAffineTransform`）旋转/镜像得到——手写四组弧的镜像
+/// 版本几乎必错，而写反之后 boundingBox 仍然正确、只有角落包含性会变，
+/// 属于最难查的一类 bug，所以 `path(in:)` 的镜像结果由测试钉住。
 ///
-/// `cornerRadiusFactor` 取 0.4 而非 0.5：0.5 会退化成半圆帽，
-/// 且 0.4 × 短边必然小于短边的一半，第一个圆永远不会被圆角切到。
+/// `cornerRadiusFactor` 取 0.37 而非 0.5：0.5 会退化成半圆帽；0.37 × 短边
+/// 必然小于短边的一半（0.37 < 0.5），所以内侧第一个圆永远不会被圆角切到。
 struct EdgeDockTab: Shape {
     /// 决定哪一侧齐平。必须与 `EdgeDockGeometry.frame` 使用的贴靠边一致。
     let edge: DockEdge

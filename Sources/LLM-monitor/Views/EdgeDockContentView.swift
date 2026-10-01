@@ -29,6 +29,10 @@ extension AccentColor {
 /// 这个状态下 SwiftUI 收不到 hover 事件。命中判定由
 /// `EdgeDockController.hoveredIndex`（系统级事件监听算出）驱动，
 /// 这里只负责把高亮画出来；详情由 dock 旁边独立的 popover 展示。
+///
+/// 同理，下面的 `.help(...)` 只在**接管态**（鼠标已经压在 dock 上、`ignoresMouseEvents`
+/// 被翻成 false）那几百毫秒里够得着——常驻穿透态下它基本不会出现。留着是因为
+/// 接管态确实存在，而那里它比旁边 10pt 处的自定义 popover 更安静、不会抢读。
 struct EdgeDockContentView: View {
     @ObservedObject var controller: EdgeDockController
     @ObservedObject var state: AppState
@@ -90,10 +94,6 @@ struct EdgeDockContentView: View {
                 ? EdgeDockGeometry.compactPadding
                 : EdgeDockGeometry.padding
         )
-        // 常驻暗色液态玻璃，**不跟系统外观翻转**：dock 和菜单栏一起长在桌面上，
-        // 一天变两次观感没有意义；面板侧另有 vibrantDark + 强制 dark colorScheme
-        // 与它配对（见 `ensurePanel`）。
-        .edgeDockDarkGlassBackground(in: EdgeDockTab(edge: controller.config.edge))
         // 撑满宿主并朝贴靠边对齐：展开 / 收起变形期间内容小于窗口（展开时窗口
         // 先行扩大、收起时窗口等内容收完再缩小），锚在左上角的话贴右边时背板
         // 会先出现在屏幕内侧、贴边侧露出透明缝。锚到贴靠边后背板始终粘着屏幕
@@ -104,13 +104,33 @@ struct EdgeDockContentView: View {
             maxHeight: .infinity,
             alignment: alignmentTowardDockedEdge
         )
+        // 常驻暗色液态玻璃，**不跟系统外观翻转**：dock 和菜单栏一起长在桌面上，
+        // 一天变两次观感没有意义；面板侧另有 vibrantDark + 强制 dark colorScheme
+        // 与它配对（见 `ensurePanel`）。
+        //
+        // **必须排在 `.frame` 之后**：`background` 是按它所装饰视图的边界定尺寸的。
+        // 排在 frame 之前它就只包住内容大小，frame 只负责把它摆到位置上——变形期间
+        // 窗口跑在内容前面，多出来的那条是透明窗口（`isOpaque = false` + clear 背景），
+        // 露出来的会是**桌面**而不是黑边。排在 frame 之后它才跟着窗口一起长。
+        .edgeDockDarkGlassBackground(in: EdgeDockTab(edge: controller.config.edge))
         // 完整↔简版的**内容变形**动画：行尺寸、间距、内边距、环直径/弧长都在
         // 同一棵树上插值，与控制器驱动的窗口 frame 动画**同曲线同时长**同步播放
         // ——窗口负责黑条外框与沿边位置（两种形态的帧中心不重合，靠连续动画
         // 平滑衔接），内容负责行 / 环的插值。任一层单独先行都会露出破绽：
         // 只动窗口 = 收起时缩掉的全是透明区域；只动内容 = 结束后窗口必须瞬移。
+        //
+        // 曲线取 `formMorphControlPoints` 而不是直接写 `.easeOut`：两边的 `easeOut`
+        // 本来就是同一条曲线（两个框架各给了一份同值的预设），但"碰巧一致"不是
+        // 契约——谁把其中一侧换成别的预设，这里没有任何东西会反对。共用常量之后
+        // 同曲线才变成能钉住的事实。控制点见该常量的注释。
         .animation(
-            .easeOut(duration: EdgeDockController.contentMorphDuration),
+            .timingCurve(
+                EdgeDockController.formMorphControlPoints.x1,
+                EdgeDockController.formMorphControlPoints.y1,
+                EdgeDockController.formMorphControlPoints.x2,
+                EdgeDockController.formMorphControlPoints.y2,
+                duration: EdgeDockController.contentMorphDuration
+            ),
             value: controller.isCompactAppearance
         )
         .onReceive(state.statusDidChange) { _ in tick &+= 1 }
@@ -150,8 +170,10 @@ struct EdgeDockContentView: View {
                     .transition(.opacity)
             }
         }
-        // 宽高随形态插值（完整 = 圆宽×行高，简版 = 小环一边），收起时行高
-        // 50 → 14 连续收缩， dock 看起来是整体缩回去而不是换了一套内容。
+        // 宽高随形态插值（完整 = 圆宽×行高，简版 = 小环一边），收起时行高从
+        // `rowHeight`(54) 连续收缩到 `compactDiameter`(7)，dock 看起来是整体缩回去
+        // 而不是换了一套内容。**不写死数字**：两个值都由 `EdgeDockGeometry` 推导，
+        // 写在这里曾经和实际值对不上过两次（52/50 各一次）。
         .frame(
             width: controller.isCompactAppearance
                 ? EdgeDockGeometry.compactDiameter
@@ -252,7 +274,10 @@ struct EdgeDockContentView: View {
     /// 才是"现在还能不能干活"的直接答案。
     private func quotaLabel(for entry: EdgeDockEntry) -> some View {
         Text(labelText(for: entry))
-            .font(.system(size: 10, weight: .medium, design: .rounded))
+            // 字号取 `labelFontSize`：行高 `labelHeight` 就是从它推导的，两处
+            // 各写一个 10 的话，改了字号忘了改行高（或反过来）就会让数值在
+            // 固定行框里溢出。
+            .font(.system(size: EdgeDockGeometry.labelFontSize, weight: .medium, design: .rounded))
             .monospacedDigit()
             // dock 内容被强制在 dark colorScheme 下渲染（见 ensurePanel），
             // `primary` 因此恒为浅色；语义色而不是写死白色，只是不再需要那个

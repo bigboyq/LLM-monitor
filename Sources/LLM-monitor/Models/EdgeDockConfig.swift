@@ -173,8 +173,14 @@ struct EdgeDockConfig: Codable, Equatable, Sendable {
         } else {
             mode = .default
         }
-        edge = try container.decode(DockEdge.self, forKey: .edge)
-        offset = try container.decode(Double.self, forKey: .offset)
+        // `edge` / `offset` 同样**逐字段容错**：手改 config.json 时少写一个 `edge`、
+        // 或者把 `0.2` 写成字符串 `"0.2"`，都不该让整块 edgeDock 报废。
+        // 报废的后果特别重：外层 `ConfigStore` 对这一块用 `try?`（坏值按没配过处理），
+        // 于是**形态**（用户特意选的）和**拖好的位置**会一起静默重置回默认——而那
+        // 正是这个自定义 decode 存在的理由。`mode` 当初已经是这么处理的，剩下两个
+        // 字段漏了；`offset` 另有 `normalized` 负责把越界/非有限值拉回 [0, 1]。
+        edge = (try? container.decode(DockEdge.self, forKey: .edge)) ?? EdgeDockConfig.default.edge
+        offset = (try? container.decode(Double.self, forKey: .offset)) ?? EdgeDockConfig.default.offset
         // 后加字段：缺失 = 没指定屏 = 旧行为（跟随所在屏）。这里**不做**"从几何
         // 位置反推是哪块屏"的兼容——猜错的代价是 dock 静默跑掉，比继续跟随更糟。
         screenUUID = try container.decodeIfPresent(String.self, forKey: .screenUUID)

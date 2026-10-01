@@ -65,6 +65,23 @@ final class EdgeDockController: ObservableObject {
     /// main actor。Swift 6 语言模式下少了它就是一个编译错误（audit 门禁会跑）。
     nonisolated static let contentMorphDuration: TimeInterval = 0.25
 
+    /// 形态过渡的缓动控制点。**窗口与内容必须共用这一条曲线**（见 `DockTransition`
+    /// 与 `EdgeDockContentView` 里的同名注释）。
+    ///
+    /// (0, 0, 0.58, 1) —— 也就是两个框架各自的 `easeOut`：
+    /// `Animation.easeOut` 与 `CAMediaTimingFunction(name: .easeOut)` **本来就是同一条
+    /// 曲线**（两边四个具名预设一一对应：linear 0/0/1/1、easeIn 0.42/0/1/1、
+    /// easeOut 0/0/0.58/1、easeInEaseOut 0.42/0/0.58/1）。
+    ///
+    /// 那为什么还要抽成常量？因为"同曲线"此前只是**两个不同框架的同名预设碰巧一致**
+    /// 这一个隐含事实：谁把其中一侧换成 `easeInOut`、或者哪个框架将来调整了预设
+    /// 取值，代码里没有任何东西会反对，两层就静默错开。写成共用常量之后，"同一条
+    /// 曲线"变成编译器能钉住的事实而不是默契。
+    ///
+    /// 顺带提醒：别把它写成 (0.42, 0, 0.58, 1)。那是 `easeInEaseOut`——起步慢得多
+    /// （phase 0.15 处两条曲线差 0.25），会明显改变收起/展开的手感。
+    nonisolated static let formMorphControlPoints = (x1: 0.0, y1: 0.0, x2: 0.58, y2: 1.0)
+
     /// dock 窗口 frame 过渡的种类：决定动画时长与互斥规则。
     private enum DockTransition {
         case expand
@@ -133,6 +150,7 @@ final class EdgeDockController: ObservableObject {
     private var evaluationCancellable: AnyCancellable?
     private var configCancellable: AnyCancellable?
     private var screenObserver: NSObjectProtocol?
+    private var launchObserver: NSObjectProtocol?
     private var activationObserver: NSObjectProtocol?
     private var spaceObserver: NSObjectProtocol?
     private var globalMouseMonitor: Any?
@@ -191,6 +209,15 @@ final class EdgeDockController: ObservableObject {
     }
     /// 上一次的显隐判定签名，用于只在"为什么没出现 / 出现在哪"变化时写日志。
     private var lastVisibilitySignature = ""
+
+    /// 进程级事实：`applicationDidFinishLaunching` 是否已经发过。`teardown()` 不复位
+    /// ——它是**进程**的事实，不是本控制器的接线状态；重新 `attach` 时若 launch 早已
+    /// 发生，直接进入可用态而不是再等一个永不到来的通知。
+    private static var appDidFinishLaunching = false
+    /// 实例侧的镜像，供 `reconcile` 的门禁读。
+    private var hasFinishedLaunching = false
+    /// 拖拽过程中的临时位置。**不进 `config`**（理由见 `applyDrag`）。
+    private var dragOffset: Double?
 
     private init() {}
 
@@ -289,15 +316,40 @@ final class EdgeDockController: ObservableObject {
         }
 
         installMouseMonitors()
-        // 启动时先判一次全屏，再 reconcile：attach 之前用户可能就已经待在全屏 Space 里，
-        // 而那条路径上不会有任何 Space 切换 / App 激活通知（`activeSpaceDidChange` 只在
-        // 切换时发）。少了这一次，dock 会在启动的头一瞬间挂在全屏窗口上，一直等到用户
-        // 切走再切回来才消失。
+
+        // **窗口不能在 `applicationDidFinishLaunching` 之前建**：`attach` 跑在
+        // `LLMMonitorApp.init()` 里，那早于 launch，此时 window server 还不接受本
+        // 进程的窗口，位置与 Space 归属都不可靠。
         //
-        // 放在 reconcile 之前：判定为全屏时它自己会走一次 `reconcile(animated: false)`，
-        // 窗口直接以隐藏状态创建；反过来先 reconcile 就会先显示、再隐藏，闪一下。
-        evaluateFullscreen()
-        reconcile(animated: false)
+        // 注意真正拦住建窗的门禁在 `reconcile`（`hasFinishedLaunching`），不只是这里：
+        // 状态广播、配置保存、屏幕参数变化在 launch 之前同样可能各触发一次 reconcile，
+        // 只把这一次推迟并不够。
+        //
+        // 上面那些订阅照常接线——它们只是登记，`reconcile` 是幂等的，首次真正执行时
+        // 会读到那一刻的最新状态。
+        hasFinishedLaunching = Self.appDidFinishLaunching
+        launchObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didFinishLaunchingNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                Self.appDidFinishLaunching = true
+                self.hasFinishedLaunching = true
+                // 先判一次全屏再 reconcile：判定为全屏时它自己会走一次
+                // `reconcile(animated: false)`，窗口直接以隐藏状态创建；反过来先
+                // reconcile 就会先显示、再隐藏，闪一下。attach 之前用户可能就已经待在
+                // 全屏 Space 里，而那条路径上不会有任何 Space 切换 / App 激活通知。
+                self.evaluateFullscreen()
+                self.reconcile(animated: false)
+            }
+        }
+        if hasFinishedLaunching {
+            // 重新接线且 launch 早已发生：通知不会再补发，直接补上首次执行。
+            evaluateFullscreen()
+            reconcile(animated: false)
+        }
     }
 
     func teardown() {
@@ -314,15 +366,52 @@ final class EdgeDockController: ObservableObject {
         captureTimer?.invalidate()
         captureTimer = nil
         if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
+        if let launchObserver { NotificationCenter.default.removeObserver(launchObserver) }
         if let activationObserver { NSWorkspace.shared.notificationCenter.removeObserver(activationObserver) }
         if let spaceObserver { NSWorkspace.shared.notificationCenter.removeObserver(spaceObserver) }
         screenObserver = nil
+        launchObserver = nil
         activationObserver = nil
         spaceObserver = nil
         statusCancellable?.cancel()
         evaluationCancellable?.cancel()
+        // 三个订阅缺一不可：漏掉 `configCancellable` 会让"卸载后 config 又变了"
+        // 继续驱动一次 reconcile，而此时订阅者本该已经没了。
+        configCancellable?.cancel()
+        statusCancellable = nil
+        evaluationCancellable = nil
+        configCancellable = nil
         hidePopover()
         panel?.orderOut(nil)
+        // 断开 `controller → hostingView → rootView → controller` 这个环。单例进程
+        // 生命周期下它无害，但 teardown 的语义是"回到没接线的状态"，留着引用就不是。
+        popoverPanel?.orderOut(nil)
+        popoverPanel = nil
+        popoverHostingView = nil
+        panel = nil
+        hostingView = nil
+        // 接管标记也必须复位：`captureMouse()` 的入口是 `!isMouseCaptured`，
+        // 留着 true 的话，之后重建出来的面板（`ensurePanel` 一律以
+        // `ignoresMouseEvents = true` 新建）**永远接管不了鼠标**——hover 退化成
+        // 0.5s 轮询能看，但 0.2s 的接管巡检与拖拽判定都不会再启动。
+        isMouseCaptured = false
+        // 拖拽/悬停状态同理，全部复位：`reconcile` 在 `guard !isDragging` 处就返回，
+        // 一次"拖到一半 teardown"会让 dock 从此再也无法布局，而它是 `teardown`
+        // 声称要做到的事（回到没接线的状态）之一。`pressScreenLocation` /
+        // `pressBecameDrag` / `dragEntryCount` 一并清掉，免得下一次按下沿用半途的值。
+        isDragging = false
+        pressScreenLocation = nil
+        pressBecameDrag = false
+        dragEntryCount = 0
+        dragOffset = nil
+        isExpanded = false
+        hoveredIndex = nil
+        selectedIndex = nil
+        // 实测矩形同样作废：它们描述的是**旧**那个 hosting view 的布局，
+        // 换宿主后坐标系不再成立。留着会被 `resolveRowRects` 的"整列落在窗口内吗"
+        // 自检挡掉、退回几何兜底，但那是靠一次错误命中才纠正，不如直接清掉。
+        measuredRowRectsByID.removeAll()
+        measuredCircleRectsByID.removeAll()
     }
 
     // MARK: - 窗口
@@ -394,10 +483,10 @@ final class EdgeDockController: ObservableObject {
 
     /// 唯一的布局/显隐收口：算条目 → 决定显隐 → 定尺寸 → 贴边 → 排序。
     private func reconcile(animated: Bool, transition: DockTransition = .standard) {
-        // 只做"接没接线"的存在性检查，不绑定 `state` 本身：下面一律经
-        // `orderedEntries()` 取数据（它自己也读 `state`），接出一个用不上的局部量
-        // 只会招来 unused 警告。
-        guard state != nil else { return }
+        // launch 之前一律不建窗（见 `attach` 里的说明）：`ensurePanel` 会把一个
+        // NSPanel 交给 window server，那在 `applicationDidFinishLaunching` 之前
+        // 位置与 Space 归属都不可靠。
+        guard hasFinishedLaunching, state != nil else { return }
 
         // 配置指定的屏已经不在了（拔线 / 换机器）→ 先把配置改写成"没指定"，
         // 否则它会一直指向一块不存在的屏，每次启动都算错一次、dock 落在没人
@@ -409,17 +498,37 @@ final class EdgeDockController: ObservableObject {
         let entryCount = entries.count
         // 选中项按 **id** 跟着 provider 走，而不是钉在下标上：用户在设置页改了顺序，
         // 下标会指向另一个 provider，已经展开的卡片就会无声地换成别人的。
-        let selectedID = (selectedIndex.map { entries.indices.contains($0) } ?? false)
-            ? entries[selectedIndex!].id
-            : nil
+        //
+        // `resolvedIndex` 把"下标还在范围内吗"和"取它"合成一次判断：写成两个独立
+        // 表达式就必须靠 `!` 去断言前面那个 guard，拆开时编译器帮不上忙。
+        let resolvedIndex = selectedIndex.flatMap { entries.indices.contains($0) ? $0 : nil }
+        let selectedID = resolvedIndex.map { entries[$0].id }
         // 只在真的变了才写回——`@Published` 每次赋值都会广播，而 reconcile 每次
         // 状态广播都跑，无条件赋值等于每 provider 一次无谓的视图刷新。
+        //
+        // 下面两个"钉住的对象没了"的分支**清完下标必须让浮层真正消失**：
+        // `selectedIndex` 只是"该显示谁的卡"这一个真值，清它并不会让 popover 面板
+        // 收起来——`orderOut` 只在 `updatePopover()` / `hidePopover()` 里发生。而
+        // 这两条分支后面走的是 `entryCount > 0` 的**可见**路径，既不会经过隐藏分支
+        // 里的 `releaseMouseCapture()`，也不会走到快路径的 `if selectedIndex != nil`
+        // （刚清完，已经是 nil）。只清下标的结果是：面板留在屏幕上显示一个已经不
+        // 在 `entries` 里的 provider，而且**不会自愈**——`probeMouse` 只在
+        // `selectedIndex != nil` 时才排收起任务，nil 之后谁也不再碰它。
         if let selectedID {
             let reanchored = entries.firstIndex(where: { $0.id == selectedID })
             if selectedIndex != reanchored { selectedIndex = reanchored }
         } else if selectedIndex != nil, entryCount == 0 {
             // 条目全没了（provider 停用/删除）→ 钉住的卡片没有对象，直接收起。
             selectedIndex = nil
+            updatePopover()
+        } else if let stale = selectedIndex, stale >= entryCount {
+            // 条目**变少**了（下标还指向已被停用的 provider）：按 id 已经救不回来——
+            // 那个 provider 根本不在 `entries` 里。留着这个越界下标会让
+            // `updatePopover` 每次都白跑一遍 `orderedEntries()` 才在边界判断里退出。
+            selectedIndex = nil
+            // 顺带把悬停高亮也放掉：它同样按 id 锚定，provider 一走就无处可指。
+            if hoveredIndex == stale { hoveredIndex = nil }
+            updatePopover()
         }
 
         // 形态选了「无」、前台 App 全屏、或一个 provider 都没开监控 → 不出现。
@@ -454,6 +563,13 @@ final class EdgeDockController: ObservableObject {
 
         // dock 尺寸只跟条目数和外观有关 —— hover 弹出的是旁边那个独立 popover，
         // dock 本体不参与展开（「状态窗（自动隐藏）」的收起/展开除外，那是窗口自身的形态）。
+        // 拖拽中不跟几何计算抢控制权，否则窗口会跟手抽搐。
+        //
+        // 放在算 `target` **之前**还有第二个理由：拖拽期间 `config.offset` 还没写回
+        // （那要等松手，见 `finishPressOrDrag`），此刻拿它算出来的 `target` 是拖拽
+        // **之前**的位置——即使后面不再用它，也不该让一个明知是错的帧存在于这条路径上。
+        guard !isDragging else { return }
+
         let edge = config.edge
         let size = EdgeDockGeometry.dockSize(
             entryCount: entryCount,
@@ -467,9 +583,6 @@ final class EdgeDockController: ObservableObject {
             size: size,
             offset: config.offset
         )
-
-        // 拖拽中不跟几何计算抢控制权，否则窗口会跟手抽搐。
-        guard !isDragging else { return }
 
         // 形态过渡动画进行中：帧由该动画驱动到位，标准过渡此刻按中间态帧重算
         // 并 setFrame 只会打断它。形态过渡自身不受此限——快速反向切换时直接
@@ -491,9 +604,14 @@ final class EdgeDockController: ObservableObject {
             if transition.isFormChange { beginFormMorphGuard() }
             // 形态过渡（expand/collapse）与内容的 SwiftUI 变形同曲线同时长，
             // 窗口中心沿边连续移到目标位置；standard 只做位置微调。
+            // 曲线取 `formMorphControlPoints`——与内容侧那层同一个常量，不是
+            // 各写各的"easeOut"（那两条贝塞尔并不相同）。
+            let cp = Self.formMorphControlPoints
             NSAnimationContext.runAnimationGroup { ctx in
                 ctx.duration = transition.duration
-                ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                ctx.timingFunction = CAMediaTimingFunction(
+                    controlPoints: Float(cp.x1), Float(cp.y1), Float(cp.x2), Float(cp.y2)
+                )
                 panel.animator().setFrame(target, display: true)
             }
         } else {
@@ -543,17 +661,37 @@ final class EdgeDockController: ObservableObject {
         "(\(Int(rect.origin.x)),\(Int(rect.origin.y)) \(Int(rect.width))x\(Int(rect.height)))"
     }
 
-    /// dock 的"主场"屏：已显示时锚定**当前所在屏**，未显示时才用主屏。
+    /// dock 的"主场"屏，按三层解析，顺序即优先级（见 `spec/ui-design.md`）。
     ///
-    /// 不能无条件用 `NSScreen.main`：它跟随键盘焦点——多显示器下用户在另一块屏
-    /// 上点一下任何窗口，dock 就会整个跳到那块屏上，看起来就是位置随机漂移。
-    /// 锚定所在屏后位置只由配置驱动；代价是 dock 暂时不能被拖到别的屏
-    /// （拖拽时 visibleFrame 始终取本屏，窗口钉在本屏边缘），这是有意的取舍。
+    /// 1. **`config.screenUUID`** —— 用户把 dock 停靠的那块屏。**这是上副屏的唯一
+    ///    路径**：不加这一层，拖到副屏的位置虽然会被存进 `config.screenUUID`，却
+    ///    永远没有人读它，下次启动照样落回主屏（`EdgeDockDisplay.matchingScreen`
+    ///    就是为这一层写的，之前只有测试在调）。
+    /// 2. **窗口当前所在屏** —— 换屏 / 改分辨率 / 改排列之后 AppKit 会换掉
+    ///    `NSScreen` 对象，拿着一个已经不属于任何显示器的对象算 `visibleFrame`，
+    ///    dock 会停到看不见的地方，所以这里按 **display id** 复核它是否仍在线。
+    ///    不能无条件用 `NSScreen.main`：它跟随键盘焦点，多显示器下用户在另一块屏
+    ///    上点一下任何窗口，dock 就会整个跳过去，看起来就是位置随机漂移。
+    /// 3. **主屏 → 第一块屏** —— 启动、还没有任何窗口时的兜底。
     private static var targetScreen: NSScreen {
-        if let current = shared.panel?.screen ?? shared.popoverPanel?.screen {
+        let screens = NSScreen.screens
+        guard !screens.isEmpty else { return NSScreen.main ?? NSScreen.screens[0] }
+
+        if let uuid = shared.config.screenUUID,
+           let configured = EdgeDockDisplay.matchingScreen(preferred: uuid, screens: screens) {
+            return configured
+        }
+        if let current = shared.panel?.screen ?? shared.popoverPanel?.screen,
+           isStillAttached(current, among: screens) {
             return current
         }
-        return NSScreen.main ?? NSScreen.screens.first ?? NSScreen.screens[0]
+        return NSScreen.main ?? screens.first ?? screens[0]
+    }
+
+    /// 这块屏是否还挂在当前系统上（按 display id 比，不用对象相等）。
+    private static func isStillAttached(_ screen: NSScreen, among screens: [NSScreen]) -> Bool {
+        guard let id = EdgeDockDisplay.displayID(of: screen) else { return false }
+        return screens.contains { EdgeDockDisplay.displayID(of: $0) == id }
     }
 
     // MARK: - 鼠标穿透 / 悬停接管
@@ -604,6 +742,9 @@ final class EdgeDockController: ObservableObject {
                 dragEntryCount = orderedEntries().count
                 pressScreenLocation = NSEvent.mouseLocation
                 pressBecameDrag = false
+                // 上一段拖拽的临时位置不能带进这一次：没越过阈值就松手时
+                // `finishPressOrDrag` 会直接返回，留着就会写回一个陈旧的 offset。
+                dragOffset = nil
             }
         case .leftMouseUp:
             finishPressOrDrag(at: NSEvent.mouseLocation)
@@ -714,7 +855,14 @@ final class EdgeDockController: ObservableObject {
     private func finishPressOrDrag(at mouse: CGPoint) {
         guard isDragging else { return }
         isDragging = false
-        guard pressBecameDrag else { return }
+        // 无论是否越过阈值都要清干净：阈值内松手时不该把上一次拖拽留下的偏移
+        // 写进 `config`。
+        guard pressBecameDrag, let offset = dragOffset else {
+            dragOffset = nil
+            return
+        }
+        dragOffset = nil
+        config.offset = offset
         reconcile(animated: true)
         persistConfig()
     }
@@ -888,24 +1036,6 @@ final class EdgeDockController: ObservableObject {
         isFormMorphInFlight = false
     }
 
-    /// 命中测试：优先用视图实测的行矩形。
-    ///
-    /// `nonisolated`：纯函数，不碰任何 actor 状态。标出来是为了能在同步测试里直接
-    /// 断言几何行为——否则每个调用点都得被拖进主线程，白白让纯几何多一层跳板。
-    nonisolated static func rowIndex(at point: CGPoint, measured: [CGRect]) -> Int? {
-        for (index, rect) in measured.enumerated() where rect.contains(point) {
-            return index
-        }
-        // 实测矩形可能有 1~2pt 的取整差，取"最近中心"兜底，避免边界抖动。
-        var best: (index: Int, distance: CGFloat)?
-        for (index, rect) in measured.enumerated() {
-            let d = hypot(rect.midX - point.x, rect.midY - point.y)
-            if best == nil || d < best!.distance { best = (index, d) }
-        }
-        guard let best, best.distance <= EdgeDockGeometry.diameter else { return nil }
-        return best.index
-    }
-
     /// 圆形命中测试：仅在命中 provider 外圈及其内部区域时返回对应 index。
     ///
     /// 严谨限制在圆内（半径 + 0.5pt 容差），排除了圆下方的数值百分比标签以及行间空隙。
@@ -959,7 +1089,8 @@ final class EdgeDockController: ObservableObject {
             measured: onScreen,
             panelFrame: panelFrame,
             edge: config.edge,
-            slack: Self.hoverPadding
+            slack: Self.hoverPadding,
+            appearance: isCompactAppearance ? .compact : .full
         )
         setRowRectsSource(resolved.usedMeasured ? .measured : .geometry)
         return resolved.rows
@@ -978,7 +1109,8 @@ final class EdgeDockController: ObservableObject {
             measured: onScreen,
             panelFrame: panelFrame,
             edge: config.edge,
-            slack: Self.hoverPadding
+            slack: Self.hoverPadding,
+            appearance: isCompactAppearance ? .compact : .full
         )
         setCircleRectsSource(resolved.usedMeasured ? .measured : .geometry)
         return resolved.circles
@@ -997,10 +1129,11 @@ final class EdgeDockController: ObservableObject {
         measured: [String: CGRect],
         panelFrame: CGRect,
         edge: DockEdge,
-        slack: CGFloat
+        slack: CGFloat,
+        appearance: EdgeDockGeometry.DockAppearance = .full
     ) -> (rows: [CGRect], usedMeasured: Bool) {
         let fallback = EdgeDockGeometry.rowRects(
-            dockFrame: panelFrame, edge: edge, entryCount: entries.count
+            dockFrame: panelFrame, edge: edge, entryCount: entries.count, appearance: appearance
         )
         guard !entries.isEmpty, !measured.isEmpty else { return (fallback, false) }
 
@@ -1020,10 +1153,11 @@ final class EdgeDockController: ObservableObject {
         measured: [String: CGRect],
         panelFrame: CGRect,
         edge: DockEdge,
-        slack: CGFloat
+        slack: CGFloat,
+        appearance: EdgeDockGeometry.DockAppearance = .full
     ) -> (circles: [CGRect], usedMeasured: Bool) {
         let fallback = EdgeDockGeometry.circleRects(
-            dockFrame: panelFrame, edge: edge, entryCount: entries.count
+            dockFrame: panelFrame, edge: edge, entryCount: entries.count, appearance: appearance
         )
         guard !entries.isEmpty, !measured.isEmpty else { return (fallback, false) }
 
@@ -1160,10 +1294,10 @@ final class EdgeDockController: ObservableObject {
             )
         }
 
-        // 纵向锚点用**实测行中心**：`popoverFrame` 里的兜底推算写死的是完整形态的
-        // 行距（38 + 16pt），在「小圆环」的 15pt 行距下第 2 行往后会逐行错开，
-        // 卡片挂在一个看起来不属于自己的环上。实测矩形两种形态都上报，推算只留作
-        // "还没量到"时的兜底。
+        // 纵向锚点用**实测行中心**。`popoverFrame` 自己那个 `rowCenter` 兜底现在也
+        // 接了 `appearance`（与 `circleRects` / `rowRects` 同一批修的），所以它已经
+        // 不再"写死完整形态的行距"；但实测仍然优先——它顺带覆盖了简版↔完整形态
+        // 变形动画的中间帧，那几帧里两种常数都不对。
         let rows = resolvedRowRects(entries: entries, panelFrame: panel.frame)
         let anchorCenter = index < rows.count ? CGPoint(x: rows[index].midX, y: rows[index].midY) : nil
         let targetFrame = EdgeDockGeometry.popoverFrame(
@@ -1172,7 +1306,8 @@ final class EdgeDockController: ObservableObject {
             rowIndex: index,
             edge: config.edge,
             visibleFrame: visibleFrame,
-            measuredRowCenter: anchorCenter
+            measuredRowCenter: anchorCenter,
+            appearance: isCompactAppearance ? .compact : .full
         )
 
         popover.setFrame(targetFrame, display: true)
@@ -1275,21 +1410,32 @@ final class EdgeDockController: ObservableObject {
         let edge = EdgeDockGeometry.edgeAfterDrag(
             mouse: mouse, currentEdge: config.edge, visibleFrame: visibleFrame
         )
-        config.edge = edge
+        // `edge` **必须**逐事件跟进：内容靠它决定 VStack/HStack、背板形状与贴边
+        // 对齐，换边的那一刻就得换排布。但 `edgeAfterDrag` 带 40pt 优势判定，一次
+        // 拖拽通常一次都不会换边，所以只在真的变了时赋值——`config` 是 @Published，
+        // 无条件赋值等于每帧让整个 dock 视图重算一遍。
+        if edge != config.edge { config.edge = edge }
 
         let size = EdgeDockGeometry.dockSize(
             entryCount: dragEntryCount,
             edge: edge,
             appearance: isCompactAppearance ? .compact : .full
         )
-        config.offset = EdgeDockGeometry.offsetAlongEdge(
+        // `offset` 相反：它只决定**窗口**位置，视图一次也没读过它
+        // （`EdgeDockContentView` 只消费 `config.edge`）。拖拽期间留在非发布的
+        // `dragOffset` 上，松手时由 `finishPressOrDrag` 一次性写回——60~120Hz 的
+        // 发布会把整棵内容树连同每行两次 GeometryReader 测量全部重跑一遍，
+        // 换来的却是一个渲染不出来的数字。
+        let offset = EdgeDockGeometry.offsetAlongEdge(
             forMouse: mouse, dockSize: size, visibleFrame: visibleFrame, edge: edge
         )
+        dragOffset = offset
+
         // `display: false`：不在每个事件里强制同步重绘。拖动由窗口服务器合成，
         // 同步重绘只会把主线程打满，反而更卡。
         panel.setFrame(
             EdgeDockGeometry.frame(
-                visibleFrame: visibleFrame, edge: edge, size: size, offset: config.offset
+                visibleFrame: visibleFrame, edge: edge, size: size, offset: offset
             ),
             display: false
         )

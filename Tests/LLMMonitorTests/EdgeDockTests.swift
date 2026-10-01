@@ -409,21 +409,6 @@ final class EdgeDockTests: XCTestCase {
         }
     }
 
-    func testGapBetweenRowsSnapsToNeighbour() {
-        // 行与行之间的缝隙必须归属相邻的某一行，否则鼠标划过时 popover 会不停闪烁消失。
-        let dock = makeDockFrame(edge: .right, entryCount: 4)
-        let rows = EdgeDockGeometry.rowRects(dockFrame: dock, edge: .right, entryCount: 4)
-        let gapMid = CGPoint(
-            x: dock.midX,
-            y: (rows[1].maxY + rows[0].minY) / 2
-        )
-        let hit = EdgeDockController.rowIndex(at: gapMid, measured: rows)
-        XCTAssertTrue(
-            hit == 0 || hit == 1,
-            "缝隙必须命中相邻的某一行，实际 \(String(describing: hit))"
-        )
-    }
-
     // MARK: - 精确圆形 Hover 命中测试
 
     func testCircleCenterAndRectsGeometry() {
@@ -952,20 +937,50 @@ final class EdgeDockTests: XCTestCase {
         XCTAssertEqual(decoded.normalized.screenUUID, "RIGHT-UUID", "normalized 必须原样保留所在的屏")
     }
 
-    func testSettingsSaveMustNotLoseTheConfiguredScreen() {
-        // 设置页只改形态/贴边/全屏，位置类字段一律沿用已存值。漏掉 screenUUID
-        // 的后果比漏掉 offset 更严重：用户在副屏上拖好的 dock 会被点一下"保存"
-        // 静默搬回主屏。
-        let stored = EdgeDockConfig(mode: .compactRings, edge: .bottom, offset: 0.42,
-                                    screenUUID: "SECOND", hideInFullscreen: false)
-        let rebuilt = EdgeDockConfig(
-            mode: stored.mode,
-            edge: stored.edge,
-            offset: stored.offset,
-            screenUUID: stored.screenUUID,
-            hideInFullscreen: stored.hideInFullscreen
-        )
-        XCTAssertEqual(rebuilt, stored)
+    /// `screenUUID` 的**消费端**机制必须对真实屏幕列表成立。
+    ///
+    /// 这个 bug 的形状很典型：`screenUUID` 被拖拽写入、被设置页小心保留、还被
+    /// 两条测试钉住了"能存能取"，唯独没有任何代码在启动时拿它去选屏——于是
+    /// "停在副屏"这件事静默失效，CI 全绿而功能是死的。上面两条测试测的是**数据
+    /// 层**，所以它们给的是**假的安全感**：数据确实没错，错的是没人消费它。
+    ///
+    /// ⚠️ **这条仍然钉不住"生产路径真的调用了它"**：`targetScreen` 是
+    /// `private static`、读 AppKit 全局状态，纯逻辑测试够不到它。把
+    /// `EdgeDockDisplay.matchingScreen` 从 `targetScreen` 里删掉（也就是让 bug
+    /// 原样回来）本条依然全绿——它守的是"消费端这个零件本身可用且语义正确"，
+    /// 不是"零件被装上了"。
+    ///
+    /// 真正补上这一层需要 grep 式扫描或把 `targetScreen` 拆出一个可注入的纯函数；
+    /// 在那之前，这里能做的就这些，**不要再声称 CI 覆盖了接线**。
+    @MainActor
+    func testConfiguredScreenResolutionMechanismWorksOnRealScreens() throws {
+        let screens = NSScreen.screens
+        // `throws` + `try XCTSkipIf`，不要写成 `try?`：`XCTSkipIf` 是靠抛异常表示
+        // 跳过的，`try?` 会把那个异常吃掉，于是"没有显示器"时不跳不挂，测试**空过**
+        // （for 循环体一次都不执行）——headless CI 上就是一条零信号的绿灯。
+        try XCTSkipIf(screens.isEmpty, "没有接显示器，跳过")
+
+        // 逐块屏验证"按 UUID 反查回到同一块屏"——这是 `targetScreen` 第一层
+        // 依赖的全部机制。
+        for screen in screens {
+            guard let uuid = EdgeDockDisplay.uuid(of: screen) else {
+                XCTFail("取不到 \(screen.frame) 的 UUID")
+                continue
+            }
+            guard let resolved = EdgeDockDisplay.matchingScreen(preferred: uuid, screens: screens) else {
+                XCTFail("配置里的 UUID \(uuid) 反查不到屏")
+                continue
+            }
+            XCTAssertEqual(
+                EdgeDockDisplay.displayID(of: resolved),
+                EdgeDockDisplay.displayID(of: screen),
+                "配置里的 UUID 必须能解析回同一块屏"
+            )
+        }
+
+        // 没有任何一块屏是这个 UUID 时必须返回 nil（而不是悄悄兜底到第一块）：
+        // 兜底会让配置一直指向一块不存在的屏，每次启动都重演一次"解析不到"。
+        XCTAssertNil(EdgeDockDisplay.matchingScreen(preferred: "NO-SUCH-UUID", screens: screens))
     }
 
     // MARK: - 形态（mode）：默认值、配置兼容与语义
@@ -1699,50 +1714,92 @@ final class EdgeDockTests: XCTestCase {
         return rects
     }
 
-    func testRowIndexUsesMeasuredRectsNotAssumedGeometry() {
-        // 人为给每一行都加同样的漂移，模拟"常量推算与真实排版对不上"。
-        // 命中必须仍然落在被 hover 的那一行上。
+    /// 命中测试的**圆**矩形：按 `circleCenter` 定位、按 `diameter` 出尺寸，
+    /// 也就是 `EdgeDockContentView` 实际上报的那一份。
+    ///
+    /// 不能拿 `measuredRows` 顶替：`circleIndex` 的判定半径就是 `rect.width / 2`，
+    /// 传进 70pt 宽的行矩形等于把半径偷偷放大到 35pt——断言照样绿，测的却是另一套
+    /// 几何。行矩形比圆大（54 高 vs 38 直径）、行中心还在圆心下方 8pt，用它取样
+    /// 与"圆能不能被指中"无关。
+    private func measuredCircles(
+        edge: DockEdge,
+        entryCount: Int,
+        drift: CGFloat = 0
+    ) -> [CGRect] {
+        let size = EdgeDockGeometry.dockSize(entryCount: entryCount, edge: edge)
+        let dock = EdgeDockGeometry.frame(visibleFrame: visible, edge: edge, size: size, offset: 0.5)
+        return (0..<entryCount).map { index in
+            // drift 模拟"实测矩形与常量推算对不上"：**只平移、不改尺寸**——
+            // 尺寸一改就测不到"判定是否跟着实测走"了。
+            let c = EdgeDockGeometry.circleCenter(dockFrame: dock, edge: edge, index: index)
+            return CGRect(
+                x: c.x + drift - EdgeDockGeometry.diameter / 2,
+                y: c.y + drift - EdgeDockGeometry.diameter / 2,
+                width: EdgeDockGeometry.diameter,
+                height: EdgeDockGeometry.diameter
+            )
+        }
+    }
+
+    func testHitTestUsesMeasuredRectsNotAssumedGeometry() {
+        // 人为给每个圆都加同样的漂移，模拟"实测矩形与常量推算对不上"。
+        //
+        // 守的是**下标↔矩形的对应关系在漂移下不乱**：探针落在哪个矩形里，
+        // `circleIndex` 就必须返回那个矩形自己的下标。这条是「hover 上面的圆、
+        // 弹出下面那个 provider」那个 bug 的直接对应物。
+        //
+        // 它**不**能发现"几何层算的位置与视图真实排版对不上"——探针和矩形都出自
+        // `circleCenter`，两边会一起漂移。把 `circleCenter` 整体挪 30pt，这条照样绿。
+        // 那一层由 `testGeometryMatchesSwiftUILayoutForEveryEdge` 用真实布局量出的
+        // 矩形来守；两者合起来才覆盖完整。
         for edge in DockEdge.allCases {
-            let rows = measuredRows(edge: edge, entryCount: 4, drift: 3)
-            for (index, rect) in rows.enumerated() {
-                let probe = CGPoint(x: rect.midX, y: rect.midY)
+            let circles = measuredCircles(edge: edge, entryCount: 4, drift: 3)
+            let dock = EdgeDockGeometry.frame(
+                visibleFrame: visible,
+                edge: edge,
+                size: EdgeDockGeometry.dockSize(entryCount: 4, edge: edge),
+                offset: 0.5
+            )
+            for (index, rect) in circles.enumerated() {
+                // 探针 = 未漂移的常量圆心 + 同样的偏移。它落在这个圆的 `midX/midY`
+                // 上，所以"命中下标 == index"才真正说明判定用的是实测值。
+                let assumed = EdgeDockGeometry.circleCenter(dockFrame: dock, edge: edge, index: index)
+                let probe = CGPoint(x: assumed.x + 3, y: assumed.y + 3)
+                XCTAssertEqual(rect.midX, probe.x, accuracy: 0.001,
+                               "测试自身：探针必须落在实测圆的圆心上")
                 XCTAssertEqual(
-                    EdgeDockController.rowIndex(at: probe, measured: rows), index,
-                    "edge=\(edge) 第\(index)行中心应命中自己"
+                    EdgeDockController.circleIndex(at: probe, circles: circles), index,
+                    "edge=\(edge) 第\(index)个圆的中心应命中自己"
                 )
             }
         }
     }
 
-    func testRowIndexPrefersExactContainment() {
-        let rows = measuredRows(edge: .right, entryCount: 4)
-        // 取每行上边缘往里 2pt 的点——足够靠边，仍必须判给本行而不是下一行。
-        for (index, rect) in rows.enumerated() {
-            let probe = CGPoint(x: rect.midX, y: rect.minY + 2)
+    /// 行与行之间的缝隙**不命中**任何圆——这是有意的规则，不是待修的缺陷。
+    ///
+    /// 这里曾有一条"缝隙归属相邻行"的 `rowIndex` 容差，随那个只被测试调用的函数
+    /// 一起删掉了。现在判定"只认圆"（`circleIndex`），缝隙落在圆外就返回 nil，
+    /// `spec/ui-design.md` 的命中表也是这么写的。钉下来是为了防止哪天有人"顺手"
+    /// 把容差加回来——那会让指针在圆与圆之间来回扫时高亮反复跳变，2Hz 轮询会把
+    /// 这种抖动放大成看得见的闪烁。
+    func testGapBetweenCirclesIsDeliberatelyNotHittable() {
+        for edge in DockEdge.allCases {
+            let circles = measuredCircles(edge: edge, entryCount: 3)
+            let gapMid: CGPoint = edge.isVertical
+                ? CGPoint(x: circles[0].midX, y: (circles[0].minY + circles[1].maxY) / 2)
+                : CGPoint(x: (circles[0].maxX + circles[1].minX) / 2, y: circles[0].midY)
+            XCTAssertNil(
+                EdgeDockController.circleIndex(at: gapMid, circles: circles),
+                "\(edge.rawValue) 两个圆之间的缝隙应当不命中（判定只认圆）"
+            )
+            // 对照组：圆心必须命中自己——上面那条不是"整个判定坏了"。
+            let firstCenter = CGPoint(x: circles[0].midX, y: circles[0].midY)
             XCTAssertEqual(
-                EdgeDockController.rowIndex(at: probe, measured: rows), index,
-                "第\(index)行上沿内 2pt 应命中本行"
+                EdgeDockController.circleIndex(at: firstCenter, circles: circles),
+                0,
+                "对照组：第 0 个圆的圆心仍应命中"
             )
         }
-    }
-
-    func testRowIndexReturnsNilFarAway() {
-        let rows = measuredRows(edge: .right, entryCount: 4)
-        // 屏幕远端：既不在任何行内，离最近行中心也超过直径容差
-        XCTAssertNil(EdgeDockController.rowIndex(at: CGPoint(x: 100, y: visible.minY + 20), measured: rows))
-    }
-
-    func testRowIndexReturnsNilWhenNoRowsMeasuredYet() {
-        // 刚显示还没排版完时不能瞎猜，否则会弹错 provider。
-        XCTAssertNil(EdgeDockController.rowIndex(at: CGPoint(x: 1900, y: 500), measured: []))
-    }
-
-    func testRowIndexToleratesBoundaryGap() {
-        // 行与行之间有 spacing，落在缝隙里的点归属最近的行，不产生 nil 抖动。
-        let rows = measuredRows(edge: .right, entryCount: 3)
-        let gapMid = CGPoint(x: rows[0].midX, y: rows[0].maxY + (rows[1].minY - rows[0].maxY) / 2)
-        let hit = EdgeDockController.rowIndex(at: gapMid, measured: rows)
-        XCTAssertTrue(hit == 0 || hit == 1, "缝隙必须归属相邻的某一行，实际 \(String(describing: hit))")
     }
 
     // MARK: - 行下标与 provider 的对应关系
@@ -1806,19 +1863,21 @@ final class EdgeDockTests: XCTestCase {
 
     func testUnmeasuredRowIsNeverHittable() {
         // 占位矩形必须在任何真实鼠标位置之外，且自身不命中。
-        let rows = measuredRows(edge: .right, entryCount: 2) + [EdgeDockProjection.unmeasuredRow]
+        //
+        // 断言走 `circleIndex`——那是真正驱动命中的判定。
+        let circles = measuredRows(edge: .right, entryCount: 2) + [EdgeDockProjection.unmeasuredRow]
         XCTAssertNil(
-            EdgeDockController.rowIndex(at: CGPoint(x: 1900, y: 400), measured: rows),
+            EdgeDockController.circleIndex(at: CGPoint(x: 1900, y: 400), circles: circles),
             "真实屏幕点不该命中占位行"
         )
         XCTAssertNil(
-            EdgeDockController.rowIndex(at: .zero, measured: rows),
+            EdgeDockController.circleIndex(at: .zero, circles: circles),
             "原点也不该命中占位行"
         )
     }
 
     func testHoveringEachRowResolvesToThatSameProvider() {
-        // 端到端钉死用户报的那个症状：对第 i 行任意位置取样，命中下标必须是 i，
+        // 端到端钉死用户报的那个症状：对第 i 个圆取样，命中下标必须是 i，
         // 于是 popover 反查到的就是第 i 个 provider。
         let entries = makeEntries(["minimax", "deepseek", "glm", "chatgpt"])
         let reported = rowRectsByID(entries, drift: 3)
@@ -1826,12 +1885,14 @@ final class EdgeDockTests: XCTestCase {
 
         for (index, entry) in entries.enumerated() {
             let rect = measured[index]
+            // 取样点必须在圆内：行矩形比圆大（含数值文字那一段），而命中只认圆，
+            // 所以这里取圆心，而不是行中心——否则测的是一条不存在的规则。
             for probe in [CGPoint(x: rect.midX, y: rect.midY),
-                          CGPoint(x: rect.minX + 2, y: rect.minY + 2)] {
-                let hit = EdgeDockController.rowIndex(at: probe, measured: measured)
+                          CGPoint(x: rect.midX, y: rect.midY - EdgeDockGeometry.diameter / 4)] {
+                let hit = EdgeDockController.circleIndex(at: probe, circles: measured)
                 XCTAssertEqual(
                     hit, index,
-                    "hover \(entry.id) 的行（下标\(index)）却命中 \(String(describing: hit))"
+                    "hover \(entry.id) 的圆（下标\(index)）却命中 \(String(describing: hit))"
                 )
             }
         }
@@ -1852,8 +1913,8 @@ final class EdgeDockTests: XCTestCase {
         for (index, entry) in entries.enumerated() {
             XCTAssertEqual(b[index], shuffled[entry.id], "第\(index)槽应对应 \(entry.id) 自己的矩形")
             XCTAssertEqual(
-                EdgeDockController.rowIndex(
-                    at: CGPoint(x: b[index].midX, y: b[index].midY), measured: b
+                EdgeDockController.circleIndex(
+                    at: CGPoint(x: b[index].midX, y: b[index].midY), circles: b
                 ),
                 index,
                 "重排后 hover \(entry.id) 仍应命中下标\(index)"
@@ -1874,30 +1935,33 @@ final class EdgeDockTests: XCTestCase {
     }
 
     func testGeometryFallbackKeepsEveryRowHittable() {
-        // 一条实测矩形都没有时，必须退回几何推算，且每一行都还能命中自己。
+        // 一条实测矩形都没有时，必须退回几何推算，且**每一个圆**都还能命中自己。
+        //
+        // 断言走 `resolveCircleRects` + `circleIndex`——那才是真正驱动命中的那条
+        // 路径（行矩形如今只用于 popover 纵向锚点，不参与命中）。
         for edge in DockEdge.allCases {
             for count in 1...8 {
                 let entries = makeEntries((0..<count).map { "p\($0)" })
                 let frame = panelFrame(edge: edge, entryCount: count)
-                let resolved = EdgeDockController.resolveRowRects(
+                let resolved = EdgeDockController.resolveCircleRects(
                     entries: entries, measured: [:], panelFrame: frame, edge: edge, slack: 8
                 )
                 XCTAssertFalse(resolved.usedMeasured, "没有实测数据却声称用了实测")
-                XCTAssertEqual(resolved.rows.count, count)
+                XCTAssertEqual(resolved.circles.count, count)
                 // 用 firstRange 而不是直接下标：兜底一旦返回空数组，这里要报出清晰的
                 // 断言失败，而不是先崩在 "Index out of range" 上把真正的原因盖掉。
-                guard resolved.rows.first != nil else {
-                    XCTFail("edge=\(edge) count=\(count) 兜底返回了空行数组，hover 会彻底失能")
+                guard resolved.circles.first != nil else {
+                    XCTFail("edge=\(edge) count=\(count) 兜底返回了空圆数组，hover 会彻底失能")
                     continue
                 }
                 for index in 0..<count {
-                    let row = resolved.rows[index]
+                    let circle = resolved.circles[index]
                     XCTAssertEqual(
-                        EdgeDockController.rowIndex(
-                            at: CGPoint(x: row.midX, y: row.midY), measured: resolved.rows
+                        EdgeDockController.circleIndex(
+                            at: CGPoint(x: circle.midX, y: circle.midY), circles: resolved.circles
                         ),
                         index,
-                        "edge=\(edge) count=\(count) 第\(index)行兜底后必须还能命中"
+                        "edge=\(edge) count=\(count) 第\(index)个圆兜底后必须还能命中"
                     )
                 }
             }
@@ -1965,11 +2029,9 @@ final class EdgeDockTests: XCTestCase {
         )
         XCTAssertFalse(resolved.usedMeasured, "矩形全在窗口外说明换算错了，必须退回")
         XCTAssertEqual(
-            EdgeDockController.rowIndex(
-                at: CGPoint(x: frame.midX, y: frame.midY), measured: resolved.rows
-            ) != nil,
+            resolved.rows.contains { $0.contains(CGPoint(x: frame.midX, y: frame.midY)) },
             true,
-            "兜底后窗口中心必须仍能命中某一行"
+            "兜底后窗口中心必须仍落在某一行里"
         )
     }
 
@@ -1987,6 +2049,157 @@ final class EdgeDockTests: XCTestCase {
         XCTAssertEqual(
             resolved.rows, EdgeDockProjection.orderRowRects(entries: entries, reported: good),
             "实测路径应原样按条目顺序返回"
+        )
+    }
+
+    /// 堆叠轴上的步进必须**分朝向**：完整形态下竖排是 `rowStep`(70)、横排是
+    /// `columnStep`(54)，两者差 16pt（数值文字在圆的**下方**，横排列宽不吃行高）。
+    ///
+    /// 这条是给一次真实回归写的：把 `circleCenter` 重构成"共用一个 step 局部量"时，
+    /// 顺手让横排也用了 `rowStep`，于是横排第 1 个及之后的圆整体外移 16pt——兜底
+    /// 一旦被用到就会命中错误的 provider。原有测试全绿：它们断言的是"第 i 个圆中心
+    /// 落在第 i 行里"这类**关系**，而整列一起平移不破坏任何关系。只有把步进本身
+    /// 钉成常量才抓得住。
+    func testCirclePitchFollowsEdgeDirection() {
+        for edge in DockEdge.allCases {
+            let frame = makeDockFrame(edge: edge, entryCount: 4)
+            let circles = EdgeDockGeometry.circleRects(dockFrame: frame, edge: edge, entryCount: 4)
+            let expected = edge.isVertical ? EdgeDockGeometry.rowStep : EdgeDockGeometry.columnStep
+            for index in 1..<circles.count {
+                let delta = edge.isVertical
+                    ? abs(circles[index].midY - circles[index - 1].midY)
+                    : abs(circles[index].midX - circles[index - 1].midX)
+                XCTAssertEqual(
+                    delta, expected, accuracy: 0.001,
+                    "\(edge.rawValue) 第\(index)个圆与前一个的间距应是 \(expected)，实际 \(delta)"
+                )
+            }
+            // 顺带钉住这条轴向关系本身：完整形态的列步进比行步进小一个 spacing
+            // （行高 54 − 圆径 38 = labelSpacing + labelHeight = 16）。
+            if !edge.isVertical {
+                XCTAssertEqual(
+                    EdgeDockGeometry.rowStep - EdgeDockGeometry.columnStep,
+                    EdgeDockGeometry.labelSpacing + EdgeDockGeometry.labelHeight,
+                    accuracy: 0.001,
+                    "竖排与横排步进之差应正好是「数值文字 + 间距」"
+                )
+            }
+        }
+    }
+
+    // MARK: - 兜底路径必须感知形态
+
+    /// 简版 dock 的兜底矩形必须按**简版**常量算，而不是完整形态的。
+    ///
+    /// 这是本分支修掉的一个真实缺陷：`circleRects` / `rowRects` 曾经无条件使用
+    /// `diameter`(38) / `rowStep`(70) / `padding`(16)，而简版的真实值是 7 / 15 / 7。
+    /// 后果不是"差一点"，而是圆心整体偏出约 24pt，hover 高亮到隔壁那个 provider；
+    /// 兜底还会在 `startHoverPoll()` 的首次同步探测里被用到（那时视图还没上报任何
+    /// 矩形），所以这不是只在测量失效时才出现的边角情况。
+    func testCompactFallbackGeometryUsesCompactConstantsNotFullOnes() {
+        for edge in DockEdge.allCases {
+            let entryCount = 4
+            let compactFrame = EdgeDockGeometry.frame(
+                visibleFrame: visible,
+                edge: edge,
+                size: EdgeDockGeometry.dockSize(
+                    entryCount: entryCount, edge: edge, appearance: .compact
+                ),
+                offset: 0.5
+            )
+            let fullFrame = makeDockFrame(edge: edge, entryCount: entryCount)
+
+            let compactCircles = EdgeDockGeometry.circleRects(
+                dockFrame: compactFrame, edge: edge, entryCount: entryCount, appearance: .compact
+            )
+            let compactRows = EdgeDockGeometry.rowRects(
+                dockFrame: compactFrame, edge: edge, entryCount: entryCount, appearance: .compact
+            )
+
+            XCTAssertEqual(compactCircles.count, entryCount)
+            XCTAssertEqual(compactRows.count, entryCount)
+            XCTAssertTrue(
+                compactCircles.allSatisfy { $0.width == EdgeDockGeometry.compactDiameter },
+                "\(edge.rawValue) 简版兜底圆必须是 \(EdgeDockGeometry.compactDiameter)pt，实际 \(compactCircles.map(\.width))"
+            )
+            // 步进必须等于简版行距：相邻两行的间距错了，命中就会整列错位。
+            let step = edge.isVertical
+                ? abs(compactCircles[1].midY - compactCircles[0].midY)
+                : abs(compactCircles[1].midX - compactCircles[0].midX)
+            XCTAssertEqual(
+                step, EdgeDockGeometry.compactRowStep, accuracy: 0.001,
+                "\(edge.rawValue) 简版兜底的行距必须是 compactRowStep"
+            )
+            // 与完整形态的兜底刻意不同——相等就说明 appearance 根本没被传下去。
+            let fullCircles = EdgeDockGeometry.circleRects(
+                dockFrame: fullFrame, edge: edge, entryCount: entryCount
+            )
+            XCTAssertNotEqual(
+                compactCircles.map(\.width), fullCircles.map(\.width),
+                "\(edge.rawValue) 简版兜底不能与完整形态一样"
+            )
+        }
+    }
+
+    /// 简版兜底的圆心必须落在窗口内边距之内（`compactPadding`），而不是完整形态的
+    /// `padding`——后者会把第一行推离真实位置 9pt。
+    func testCompactFallbackCentersRespectCompactPadding() {
+        for edge in DockEdge.allCases {
+            let frame = EdgeDockGeometry.frame(
+                visibleFrame: visible,
+                edge: edge,
+                size: EdgeDockGeometry.dockSize(entryCount: 3, edge: edge, appearance: .compact),
+                offset: 0.5
+            )
+            let first = EdgeDockGeometry.circleCenter(
+                dockFrame: frame, edge: edge, index: 0, appearance: .compact
+            )
+            let lead = edge.isVertical
+                ? frame.maxY - first.y
+                : first.x - frame.minX
+            XCTAssertEqual(
+                lead,
+                EdgeDockGeometry.compactPadding + EdgeDockGeometry.compactDiameter / 2,
+                accuracy: 0.001,
+                "\(edge.rawValue) 简版第 0 行的起始内边距必须是 compactPadding"
+            )
+        }
+    }
+
+    /// `resolveCircleRects` 必须把 appearance 传进兜底。
+    ///
+    /// 这一层是"控制器 → 几何"的接缝：`resolveCircleRects` 曾经是
+    /// `nonisolated` 纯函数且**没有** appearance 参数，于是无论调用方处于什么形态，
+    /// 它都去调完整形态的 `circleRects`。
+    func testResolveCircleRectsPropagatesAppearanceIntoTheFallback() {
+        let edge = DockEdge.right
+        let entries = makeEntries(["minimax", "deepseek"])
+        let frame = EdgeDockGeometry.frame(
+            visibleFrame: visible,
+            edge: edge,
+            size: EdgeDockGeometry.dockSize(entryCount: 2, edge: edge, appearance: .compact),
+            offset: 0.5
+        )
+        // measured 传空 → 必然走兜底。
+        let resolved = EdgeDockController.resolveCircleRects(
+            entries: entries, measured: [:], panelFrame: frame, edge: edge,
+            slack: 8, appearance: .compact
+        )
+        XCTAssertFalse(resolved.usedMeasured, "没有实测矩形时必须走兜底")
+        XCTAssertTrue(
+            resolved.circles.allSatisfy { $0.width == EdgeDockGeometry.compactDiameter },
+            "兜底必须已经是简版尺寸，实际 \(resolved.circles.map(\.width))"
+        )
+        // 兜底位置下，指针落在"简版真实圆心"上必须能命中第 0 行。
+        let center = EdgeDockGeometry.circleCenter(
+            dockFrame: frame, edge: edge, index: 0, appearance: .compact
+        )
+        XCTAssertEqual(
+            EdgeDockController.circleIndex(
+                at: center, circles: resolved.circles, minimumRadius: EdgeDockGeometry.compactRowStep / 2
+            ),
+            0,
+            "简版真实圆心必须命中第 0 个圆"
         )
     }
 
