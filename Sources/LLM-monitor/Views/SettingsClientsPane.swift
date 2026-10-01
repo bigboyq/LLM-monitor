@@ -109,12 +109,39 @@ extension SettingsView {
             }
         }
         return rowsByClient.mapValues { rows in
-            rows.sorted {
-                if $0.providerName != $1.providerName {
-                    return $0.providerName.localizedCaseInsensitiveCompare($1.providerName) == .orderedAscending
+            rows.sorted { lhs, rhs in
+                // ZCode 客户端区是唯一混排多种语义行的列：GLM 分类行（套餐名）
+                // 与 DeepSeek / MiniMax 分片行（provider 名）必须按固定口径排，
+                // 字母序会得到 "Coding Plan → DeepSeek → Start Plan → …"。
+                if lhs.clientID == ClientID.zcode {
+                    let l = zcodeRowRank(lhs), r = zcodeRowRank(rhs)
+                    if l != r { return l < r }
                 }
-                return $0.usageGroupID < $1.usageGroupID
+                if lhs.providerName != rhs.providerName {
+                    return lhs.providerName.localizedCaseInsensitiveCompare(rhs.providerName) == .orderedAscending
+                }
+                return lhs.usageGroupID < rhs.usageGroupID
             }
+        }
+    }
+
+    /// ZCode 列的行序：Coding Plan → Start Plan → 闲时任务 → 其他任务 →
+    /// DeepSeek → MiniMax。
+    ///
+    /// GLM 分类行取 `GlmUsageCategory.allCases` 的声明序（枚举加 case 时行序
+    /// 自动跟随）；两个分片行来自 MiniMax / DeepSeek 卡的 ZCode 贡献
+    /// （`zcodeContribution`，受 `mergeZcodeUsage` 与 `clientBindings` 门控），
+    /// 它们不是套餐而是 provider，固定排在分类行之后。
+    func zcodeRowRank(_ row: ClientProviderUsageSummary) -> Int {
+        let glmCount = GlmUsageCategory.allCases.count
+        if row.quotaProviderID == QuotaProviderID.zhipu,
+           let category = GlmUsageCategory(rawValue: row.usageGroupID) {
+            return GlmUsageCategory.allCases.firstIndex(of: category) ?? 0
+        }
+        switch row.quotaProviderID {
+        case QuotaProviderID.deepseek: return glmCount
+        case QuotaProviderID.minimax: return glmCount + 1
+        default: return glmCount + 2
         }
     }
 
@@ -167,9 +194,10 @@ extension SettingsView {
         }
     }
 
-    /// ZCode 一次扫描覆盖智谱系全部 provider 任务（日常 / 闲时 / 其他智谱套餐）。
-    /// 按样本上的 `sourceProviderID` 三分类拆行，各自独立 token 柱图与计价——
-    /// 对齐 Antigravity 按模型分组拆行的模式；弹窗卡片维持三合一汇总不拆。
+    /// ZCode 一次扫描覆盖智谱系全部 provider 任务（Coding Plan / Start Plan /
+    /// 闲时 / 其他智谱套餐）。按样本上的 `sourceProviderID` 分类拆行，各自独立
+    /// token 柱图与计价——对齐 Antigravity 按模型分组拆行的模式；弹窗卡片维持
+    /// 合并汇总不拆。空分类不出现（"如有"语义由 `allCases` + 非空判定给出）。
     /// 样本为空（旧缓存 / 无样本）时保持整行不拆，避免把聚合值错标成某一分类。
     func glmUsageRows(
         status: ProviderStatus,

@@ -39,6 +39,9 @@
 - 设置页「客户端」的客户端切换条改用系统 `NSSegmentedControl`（原来是自绘的胶囊按钮排）。段宽按标签文字宽度加标定内边距（24.5pt）逐段写死，客户端变多时控件整体变宽并横向滚动，而不是把标签压成省略号；Provider 计数用括号包起来（`Antigravity (1)`，光看 `Antigravity 1` 分不清是 Provider 数还是版本号），含义同时放进 tooltip。代价：分段控件不支持图标 + 文字，切换条里不再显示客户端图标。
 - 设置页「客户端」里只有一个 Provider 时该行**默认展开**，两个及以上仍全部折叠。为一行内容多点一次折叠箭头毫无意义；反过来全部展开会把设置页撑到要滚动。默认值只在该行首次出现时生效（用户手动折起来后不被刷新顶回），切换客户端时整列按 `.id(client.id)` 重建、重新走一遍规则。
 
+- 修复升级后 ZCode → MiniMax / DeepSeek 的默认合并绑定对老配置不生效的问题：config.json 里已有 `clientBindings` 数组时，后续版本新增的默认绑定不会自动补入，DeepSeek / MiniMax 卡因此看不到 ZCode 用量（数据其实已扫描进缓存，只是被绑定开关拦下）。现解码时按 (clientID, quotaProviderID) 组合补齐缺失的默认绑定；用户显式设置过的 enabled 值与别名一律不动。
+- 设置 → 客户端 → ZCode 的拆行调整：「日常任务」改名「**Coding Plan**」，Start Plan（体验套餐，`provider_id` 含 `bigmodel-start-plan`）从「其他任务」拆出独立成行，DeepSeek / MiniMax 分片行固定排在智谱分类行之后（此前按字母序会把它们插在中间）。行序变为 Coding Plan / Start Plan / 闲时任务 / 其他任务（如有）/ DeepSeek / MiniMax（如有）。Start Plan 仍不计入额度窗口，口径不变。
+
 ### Changed
 
 - 菜单栏「App 图标」不再动态绘制：直接用设置页 picker 里那张设计稿（同一份资源），菜单栏与设置页从此显示同一张图。随之删除已无人消费的 `QuotaLogoSVGBuilder`（SVG 弧线/水位杯生成）、`StatusBarQuotaMetrics.waterHealth` 与 `QuotaRingMetrics.colorHex`（App 图标专用取色），文件更名为 `StatusBarQuotaMetrics.swift`。该选项现在**不随额度与健康度变化**。设计稿四周带透明留白（图形只占画布约 59%），照画布缩放会让菜单栏里的图标只有 11.7pt，因此在载入资源时就裁掉留白（菜单栏 11.7pt → 18pt、设置页预览 10.5pt → 18pt），绘制时按 18pt 居中放进 22pt 画布；其余图标主题仍是 1pt 边距的 20pt 框。

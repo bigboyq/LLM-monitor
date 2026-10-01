@@ -158,6 +158,18 @@ enum LocalUsageSummaryBuilder {
         return fallbackWindows.contains(where: { $0.contains(sample.completedAt) })
     }
 
+    /// 体验套餐 Start Plan：`provider_id` 含 `bigmodel-start-plan`
+    /// （`account:bigmodel-start-plan` / `builtin:bigmodel-start-plan`）。
+    ///
+    /// 判定放在 `isGlmOtherPlanSample` 之前：Start Plan 本来也满足「智谱前缀 +
+    /// 未登记进正式套餐 / 闲时两个集合」，不先摘出来就会被算进「其他任务」。
+    /// 这里只影响设置页拆行；额度窗口排除仍由 `isGlmOtherPlanSample` 整体
+    /// 覆盖（Start Plan 依旧不消耗积分），两处口径互不影响。
+    nonisolated static func isGlmStartPlanSample(_ sample: LocalTokenUsageSample) -> Bool {
+        guard let sourceProviderID = sample.sourceProviderID else { return false }
+        return sourceProviderID.contains("bigmodel-start-plan")
+    }
+
     /// 「其他」智谱任务：智谱前缀（`builtin:bigmodel-` / `account:bigmodel-` /
     /// `account:zai-`）但不属于任何已登记分类的 provider —— 体验套餐
     /// （`*:start-plan`）、未登记新套餐（含未来 `*-coding-plan` 变体）等。这类任务
@@ -260,34 +272,47 @@ enum LocalUsageSummaryBuilder {
     }
 }
 
-/// GLM 本地任务的 provider 三分类（与 GLM 卡额度窗口白名单同一口径）。
-/// 弹窗卡片维持三合一汇总；设置 → 客户端 → ZCode 按此分类拆行展示
+/// GLM 本地任务的 provider 分类（与 GLM 卡额度窗口白名单同一口径）。
+/// 弹窗卡片维持合并汇总；设置 → 客户端 → ZCode 按此分类拆行展示
 /// （对齐 Antigravity 按模型分组拆行的模式）。
+///
+/// **声明序即行序**：`SettingsView.glmUsageRows` 按 `allCases` 顺序输出空组被
+/// 跳过的行，所以新增 case 时把它放在想要的位置即可（GLM 行之下再跟
+/// DeepSeek / MiniMax 分片行，见 `SettingsView.zcodeRowOrder`）。
 enum GlmUsageCategory: String, CaseIterable, Sendable {
-    /// 日常任务（正式 Coding Plan，显式全集见
+    /// 正式 Coding Plan（显式全集见
     /// `OpencodeLocalUsage.zcodeGlmCodingPlanProviderIDs`，唯一计入额度窗口的
     /// 来源；无来源标记与 OpenCode / DSH 合并样本也归此类）
     case normal
+    /// 体验套餐 Start Plan（`provider_id` 含 `bigmodel-start-plan`，如
+    /// `account:bigmodel-start-plan` / `builtin:bigmodel-start-plan`）。
+    /// 从「其他任务」里单独拆出成行，不消耗积分 —— 额度窗口口径不受影响
+    /// （仍由 `isGlmOtherPlanSample` 整体排除，见 `summary(excludeWindows:)`）。
+    case startPlan
     /// 闲时任务（显式全集见 `OpencodeLocalUsage.zcodeOffPeakProviderIDs`，
     /// 含账号化新 ID 与历史裸值，不消耗积分）
     case offPeak
-    /// 其他智谱套餐（智谱前缀下未登记进上述两个集合的 provider，如体验套餐与
-    /// 未来新套餐，不消耗积分）
+    /// 其他智谱套餐（智谱前缀下未登记进上述集合的 provider，如未来新套餐，
+    /// 不消耗积分）
     case other
 
     var displayName: String {
         switch self {
-        case .normal: return "日常任务"
+        case .normal: return "Coding Plan"
+        case .startPlan: return "Start Plan"
         case .offPeak: return "闲时任务"
         case .other: return "其他任务"
         }
     }
 
     /// sample → 分类。无来源标记（旧缓存 / 手工构造）与 OpenCode / DSH 合并
-    /// 样本都归日常 —— 与额度窗口白名单的兼容回退语义保持一致。
+    /// 样本都归 Coding Plan —— 与额度窗口白名单的兼容回退语义保持一致。
     nonisolated static func classify(_ sample: LocalTokenUsageSample) -> GlmUsageCategory {
         if LocalUsageSummaryBuilder.isGlmOffPeakSample(sample, fallbackWindows: []) {
             return .offPeak
+        }
+        if LocalUsageSummaryBuilder.isGlmStartPlanSample(sample) {
+            return .startPlan
         }
         if LocalUsageSummaryBuilder.isGlmOtherPlanSample(sample) {
             return .other
