@@ -253,11 +253,11 @@ struct ProviderCardView: View, Equatable {
     }
 
     /// 「今」行：当天本地用量聚合，与第一张卡底部曾经的「今日使用情况」汇总行
-    /// （`LocalUsageFooterView.summaryRow` → `todayMetrics` / `todayCostText`）
-    /// **同源同口径**：token 四桶取 `dailyTokenUsage` 的今天那一条（与"今天 X
-    /// tokens / 命中率"同一份数据，比率公式也同一个：出/入 = (reasoning+output)/
-    /// (input+cached)、思考 = reasoning/(reasoning+output)、命中为缓存占比）；
-    /// 价值取当天样本逐条计价（与 `todayCostText` 同一取数与传参）。
+    /// （后被移除的旧汇总行）**同源同口径**：当天 token 四桶 + 当天样本计价。
+    /// token 四桶取 `dailyTokenUsage` 的今天那一条（与"今天 X tokens / 命中率"
+    /// 同一份数据，比率公式也同一个：出/入 = (reasoning+output)/(input+cached)、
+    /// 思考 = reasoning/(reasoning+output)、命中为缓存占比）；
+    /// 价值取当天样本逐条计价。
     ///
     /// 当天无本地数据 → 返回 `nil`，今行整个不画。它不是额度窗口，只复用
     /// `QuotaWindowUsageMetricRow` 的格式（行首标签「今」，第五轮改版从「今日」
@@ -750,7 +750,7 @@ struct ProviderStateLabel: View {
         case .secondary: return .secondary
         case .green: return .healthyTint
         case .yellow: return .warningTint
-        case .red: return .red
+        case .red: return .criticalTint
         }
     }
 }
