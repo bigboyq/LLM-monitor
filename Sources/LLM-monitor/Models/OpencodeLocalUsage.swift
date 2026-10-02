@@ -28,10 +28,10 @@ struct OpencodeLocalUsage: Equatable, Codable, Sendable {
 
     /// GLM Coding Plan 在 opencode 里的 providerID。
     ///
-    /// 从默认绑定（`AppConfig.defaultClientBindings` 的 opencode → zhipu 条目）
+    /// 从默认绑定（`ClientProviderBinding.defaultBindings` 的 opencode → zhipu 条目）
     /// 导出的访问器——归因别名的唯一事实源在那张表（P2 显式化）。末位字面量只是
     /// 静态表被误删时的兜底，`ProviderModelTests` 的一致性用例锁住两侧不漂移。
-    static let glmProviderID: String = AppConfig.defaultSourceProviderAliases(
+    static let glmProviderID: String = ClientProviderBinding.defaultSourceProviderAliases(
         clientID: ClientID.openCode,
         quotaProviderID: QuotaProviderID.zhipu
     ).first ?? "zhipuai-coding-plan"
@@ -88,24 +88,24 @@ struct OpencodeLocalUsage: Equatable, Codable, Sendable {
     /// 因此**没有**对应的 client 绑定，也不走绑定别名导出——保持字面量。
     static let minimaxProviderID = "minimax"
     /// Minimax Token Plan 在 opencode 里的 providerID（从默认绑定导出，同 `glmProviderID`）。
-    static let minimaxCodingPlanProviderID: String = AppConfig.defaultSourceProviderAliases(
+    static let minimaxCodingPlanProviderID: String = ClientProviderBinding.defaultSourceProviderAliases(
         clientID: ClientID.openCode,
         quotaProviderID: QuotaProviderID.minimax
     ).first ?? "minimax-cn-coding-plan"
     /// ChatGPT / OpenAI 在 opencode 里的 providerID（从默认绑定导出，同 `glmProviderID`）。
-    static let openAIProviderID: String = AppConfig.defaultSourceProviderAliases(
+    static let openAIProviderID: String = ClientProviderBinding.defaultSourceProviderAliases(
         clientID: ClientID.openCode,
         quotaProviderID: QuotaProviderID.openAI
     ).first ?? "openai"
     /// DeepSeek 在 opencode 里的 providerID（从默认绑定导出，同 `glmProviderID`）。
-    static let deepseekProviderID: String = AppConfig.defaultSourceProviderAliases(
+    static let deepseekProviderID: String = ClientProviderBinding.defaultSourceProviderAliases(
         clientID: ClientID.openCode,
         quotaProviderID: QuotaProviderID.deepseek
     ).first ?? "deepseek"
     /// Antigravity 可能使用的 providerID。不同 OpenCode 版本 / 配置可能落在其中之一
     /// （从默认绑定 opencode → antigravity 的别名数组导出，同 `glmProviderID`）。
     static let antigravityProviderIDs: [String] = {
-        let aliases = AppConfig.defaultSourceProviderAliases(
+        let aliases = ClientProviderBinding.defaultSourceProviderAliases(
             clientID: ClientID.openCode,
             quotaProviderID: QuotaProviderID.antigravity
         )

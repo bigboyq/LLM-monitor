@@ -1,27 +1,5 @@
 import Foundation
 
-/// Stable IDs for the billing/quota side of the application.
-///
-/// These IDs intentionally do not describe where a token was generated. A
-/// client can contribute usage to more than one quota provider.
-enum QuotaProviderID {
-    static let minimax = "minimax"
-    static let openAI = "openai"
-    static let antigravity = "antigravity"
-    static let zhipu = "zhipu"
-    static let deepseek = "deepseek"
-}
-
-/// Stable IDs for local applications that produce token usage.
-enum ClientID {
-    static let codex = "codex"
-    static let antigravity = "antigravity"
-    static let zcode = "zcode"
-    static let openCode = "opencode"
-    static let dsh = "dsh"
-    static let minimaxCode = "minimax_code"
-}
-
 /// Model families shown under the Antigravity client in Settings.
 enum AntigravityUsageGroup: String, CaseIterable, Sendable {
     case gemini
@@ -41,106 +19,6 @@ enum AntigravityUsageGroup: String, CaseIterable, Sendable {
         if model.contains("gemini") { return .gemini }
         if model.contains("claude") || model.contains("gpt") { return .claudeAndGPT }
         return .other
-    }
-}
-
-/// A client-to-quota relationship. The source aliases are normalized at the
-/// scanner boundary; this type exists so the relationship is explicit instead
-/// of being encoded as provider-specific `merge...` booleans.
-struct ClientProviderBinding: Codable, Equatable, Identifiable, Sendable {
-    let clientID: String
-    let quotaProviderID: String
-    var sourceProviderAliases: [String]
-    var enabled: Bool
-
-    var id: String { "\(clientID):\(quotaProviderID)" }
-
-    init(
-        clientID: String,
-        quotaProviderID: String,
-        sourceProviderAliases: [String] = [],
-        enabled: Bool = true
-    ) {
-        self.clientID = clientID
-        self.quotaProviderID = quotaProviderID
-        self.sourceProviderAliases = sourceProviderAliases
-        self.enabled = enabled
-    }
-}
-
-/// Registry metadata for a local client. This is deliberately independent of
-/// `FetcherDescriptor`, which describes remote quota fetchers.
-struct ClientDescriptor: Identifiable, Equatable, Sendable {
-    let id: String
-    let displayName: String
-    let iconSystemName: String
-    let supportedQuotaProviderIDs: [String]
-    let subtitle: String
-
-    static let all: [ClientDescriptor] = [
-        ClientDescriptor(
-            id: ClientID.codex,
-            displayName: "Codex",
-            iconSystemName: "terminal",
-            // Codex CLI 当前只走 OpenAI ChatGPT Plan 一条 quota 通道。
-            // DeepSeek / MiniMax 是预留路由：未来 Codex 增加对其它上游的支持时
-            // 直接启用，不需要再改 ClientDescriptor 注册。
-            supportedQuotaProviderIDs: [QuotaProviderID.openAI, QuotaProviderID.deepseek, QuotaProviderID.minimax],
-            subtitle: "Codex 本地会话与 token 用量"
-        ),
-        ClientDescriptor(
-            id: ClientID.antigravity,
-            displayName: "Antigravity",
-            iconSystemName: "paperplane.circle.fill",
-            supportedQuotaProviderIDs: [QuotaProviderID.antigravity],
-            subtitle: "Antigravity 本地会话与 token 用量"
-        ),
-        ClientDescriptor(
-            id: ClientID.zcode,
-            displayName: "ZCode",
-            iconSystemName: "chevron.left.forwardslash.chevron.right",
-            // 智谱系行进 GLM 卡；同库里的 minimax / deepseek 行按分片并入对应卡
-            // （开关见 clientBindings 的 zcode → minimax / deepseek 两条）。
-            supportedQuotaProviderIDs: [
-                QuotaProviderID.zhipu,
-                QuotaProviderID.minimax,
-                QuotaProviderID.deepseek
-            ],
-            subtitle: "ZCode 本地数据库用量"
-        ),
-        ClientDescriptor(
-            id: ClientID.openCode,
-            displayName: "OpenCode",
-            iconSystemName: "terminal",
-            supportedQuotaProviderIDs: [
-                QuotaProviderID.openAI,
-                QuotaProviderID.antigravity,
-                QuotaProviderID.zhipu,
-                QuotaProviderID.minimax,
-                QuotaProviderID.deepseek
-            ],
-            subtitle: "多 Provider 本地 token 账本"
-        ),
-        ClientDescriptor(
-            id: ClientID.dsh,
-            displayName: "DSH",
-            iconSystemName: "terminal.fill",
-            supportedQuotaProviderIDs: [QuotaProviderID.deepseek, QuotaProviderID.minimax, QuotaProviderID.zhipu],
-            subtitle: "多 Provider session token 账本"
-        ),
-        ClientDescriptor(
-            id: ClientID.minimaxCode,
-            displayName: "MiniMax Code",
-            iconSystemName: "bubble.left.and.text.bubble.right.fill",
-            supportedQuotaProviderIDs: [QuotaProviderID.minimax, QuotaProviderID.openAI, QuotaProviderID.deepseek],
-            subtitle: "MiniMax Code 本地用量"
-        )
-    ]
-
-    /// 展示名（`ClientUsageContribution.displayName` / 设置页行标题共用）。
-    /// 未登记的 clientID 回退成 ID 本身，避免出现空标题。
-    static func displayName(forClientID clientID: String) -> String {
-        all.first { $0.id == clientID }?.displayName ?? clientID
     }
 }
 
@@ -279,12 +157,6 @@ enum UnifiedDailyUsageNormalizer {
         }
         return byDay.values.sorted { $0.dayStart < $1.dayStart }
     }
-}
-
-/// 截断口径提示的共享文案：设置页展开行与 7 天柱图 hover footer 都引用同一
-/// 常量，避免两处 UI 文案漂移。
-enum ClientUsageTruncationNotice {
-    static let text = "会话文件超出单轮扫描预算，已按最新优先截断，最旧的历史用量未计入以上统计。"
 }
 
 /// One client's contribution to a quota card.

@@ -1,5 +1,11 @@
 import Foundation
 
+/// 截断口径提示的共享文案：设置页展开行与 7 天柱图 hover footer 都引用同一
+/// 常量，避免两处 UI 文案漂移。
+enum ClientUsageTruncationNotice {
+    static let text = "会话文件超出单轮扫描预算，已按最新优先截断，最旧的历史用量未计入以上统计。"
+}
+
 /// 「client → Provider 用量行」聚合的共享实现：设置页"客户端"tab 与后续
 /// Harness（客户端视角）菜单视图共用同一口径，避免两处各算一套。
 ///

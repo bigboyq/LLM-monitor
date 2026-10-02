@@ -825,7 +825,7 @@ final class UsageProjectionKernelTests: XCTestCase {
         )
         XCTAssertEqual(OpencodeLocalUsage.antigravitySourceProviderID, "antigravity")
         XCTAssertEqual(
-            AppConfig.defaultSourceProviderAliases(
+            ClientProviderBinding.defaultSourceProviderAliases(
                 clientID: ClientID.openCode, quotaProviderID: QuotaProviderID.zhipu
             ).first,
             OpencodeLocalUsage.glmProviderID,
@@ -833,19 +833,19 @@ final class UsageProjectionKernelTests: XCTestCase {
         )
 
         XCTAssertEqual(
-            AppConfig.defaultSourceProviderAliases(
+            ClientProviderBinding.defaultSourceProviderAliases(
                 clientID: ClientID.dsh, quotaProviderID: QuotaProviderID.deepseek
             ),
             ["deepseek", "deepseek-official", "deepseek-cn", "deepseek-v4"]
         )
         XCTAssertEqual(
-            AppConfig.defaultSourceProviderAliases(
+            ClientProviderBinding.defaultSourceProviderAliases(
                 clientID: ClientID.dsh, quotaProviderID: QuotaProviderID.minimax
             ),
             ["minimax", "minimax-cn", "minimax-cn-coding-plan"]
         )
         XCTAssertEqual(
-            AppConfig.defaultSourceProviderAliases(
+            ClientProviderBinding.defaultSourceProviderAliases(
                 clientID: ClientID.dsh, quotaProviderID: QuotaProviderID.zhipu
             ),
             ["glm", "zhipu", "zhipuai", "bigmodel",

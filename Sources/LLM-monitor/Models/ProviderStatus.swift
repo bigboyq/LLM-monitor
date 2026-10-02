@@ -91,7 +91,7 @@ struct ProviderStatus: Identifiable, Equatable, Sendable {
     /// 切片（opencode 分片 / zcode 分片）的门控与 dsh 帧的归属解析都从这里取值。
     /// native 贡献（codex / antigravity / minimax native / zcode 智谱 native）不经过
     /// 绑定——它们是各卡自己的 native 账本，历史上就不受合并开关控制。
-    var clientBindings: [ClientProviderBinding] = AppConfig.defaultClientBindings
+    var clientBindings: [ClientProviderBinding] = ClientProviderBinding.defaultBindings
 
     /// 是否启用某条 client → quota 绑定（`AppConfig.isClientBindingEnabled` 的
     /// 本地镜像，数据源是本 status 携带的绑定数组）。
