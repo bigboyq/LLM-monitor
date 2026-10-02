@@ -338,6 +338,56 @@ struct LocalUsageLegendDot: View {
     }
 }
 
+/// 7 天用量的数据新鲜度状态机：胶囊版与裸文本版共享的**唯一事实来源**。
+///
+/// 两个宿主要的是逐字一致的文案与相同的空态语义，所以状态判定只在这里做一遍；
+/// 皮肤（胶囊 / 裸文本）只决定「怎么包」，不决定「出什么」。
+private enum LocalUsageFreshnessState: Equatable {
+    /// 在扫描：迷你进度圈 + 「计算中…」
+    case scanning
+    /// 扫出过：已按 `formatClock` 格式化的时间
+    case updated(String)
+    /// 既不在扫描、也还没扫出过：空态，整个视图不该渲染
+    case absent
+
+    init(scannedAt: Date?, isScanning: Bool) {
+        if isScanning {
+            self = .scanning
+        } else if let scannedAt {
+            self = .updated(Formatters.formatClock(scannedAt))
+        } else {
+            self = .absent
+        }
+    }
+
+    /// 空态（`absent`）不占位。宿主都把它放在 `HStack` 的 `Spacer` 之后：把 opacity
+    /// 压到 0 只是看不见，那一格（文字 + 左右 padding）仍会被布局算进去，于是右侧凭空
+    /// 多出空白、标题可用宽度被悄悄吃掉。真正不存在的状态就不该占位。
+    var isPresent: Bool { self != .absent }
+
+    /// - Parameter clockPrefix: 时间前缀。胶囊版写「更新于 」，裸文本版传空串——
+    ///   这是两个宿主唯一允许不同的文案（裸文本那格没有胶囊的宽度预算，见
+    ///   `LocalUsageFreshnessText` 的说明）。扫描中与空态不受它影响。
+    @ViewBuilder
+    func content(clockPrefix: String) -> some View {
+        switch self {
+        case .scanning:
+            HStack(spacing: 5) {
+                ProgressView().controlSize(.mini).scaleEffect(0.7)
+                Text("计算中…")
+            }
+            .font(MenuTypography.badge)
+            .foregroundStyle(.secondary)
+        case .updated(let clock):
+            Text(clockPrefix + clock)
+                .font(MenuTypography.badge)
+                .foregroundStyle(.secondary)
+        case .absent:
+            EmptyView()
+        }
+    }
+}
+
 /// 7 天用量的数据新鲜度：扫描中 / 更新于 `HH:mm`，**胶囊样式**。
 ///
 /// 两个宿主放的位置不同、内容相同：菜单放在图表自己那行标题的右侧；dock 的详情
@@ -348,23 +398,17 @@ struct LocalUsageFreshnessBadge: View {
     let scannedAt: Date?
     let isScanning: Bool
 
-    /// 空态（既不在扫描、也还没扫出过）时**整个视图不渲染**，而不是渲染一个空胶囊。
-    ///
-    /// 两个宿主都把它放在 `HStack` 的 `Spacer` 之后：把 opacity 压到 0 只是看不见，
-    /// 那一格（文字 + 左右 6pt padding）仍会被布局算进去，于是右侧凭空多出约 20pt
-    /// 的空白、标题可用宽度被悄悄吃掉。真正不存在的状态就不该占位。
     @ViewBuilder
     var body: some View {
-        if isScanning {
+        if state.isPresent {
             capsule {
-                ProgressView().controlSize(.mini).scaleEffect(0.7)
-                Text("计算中…")
-            }
-        } else if let scannedAt {
-            capsule {
-                Text("更新于 \(Formatters.formatClock(scannedAt))")
+                state.content(clockPrefix: "更新于 ")
             }
         }
+    }
+
+    private var state: LocalUsageFreshnessState {
+        .init(scannedAt: scannedAt, isScanning: isScanning)
     }
 
     private func capsule<C: View>(@ViewBuilder _ content: () -> C) -> some View {
@@ -391,31 +435,22 @@ struct LocalUsageFreshnessText: View {
 
     @ViewBuilder
     var body: some View {
-        if isScanning {
-            HStack(spacing: 5) {
-                ProgressView().controlSize(.mini).scaleEffect(0.7)
-                Text("计算中…")
-            }
-            .font(MenuTypography.badge)
-            .foregroundStyle(.secondary)
-        } else if let scannedAt {
-            Text(Formatters.formatClock(scannedAt))
-                .font(MenuTypography.badge)
-                .foregroundStyle(.secondary)
+        if state.isPresent {
+            state.content(clockPrefix: "")
         }
+    }
+
+    private var state: LocalUsageFreshnessState {
+        .init(scannedAt: scannedAt, isScanning: isScanning)
     }
 }
 
 /// dock 详情浮层把 7 天用量拆进两张卡片，这里决定 `LocalUsageFooterView` 出哪一半。
 ///
-/// - `.combined`：菜单用，汇总行 + 分隔线 + 图表，一个 `HoverInfoRow` 原地展开
-/// - `.summary`：进上一张卡片的"今天 …"汇总行
 /// - `.detail`：下一张卡片的图表 + 用量表 + 脚注
 ///
 /// 切分点是 `HoverInfoRow` 本来就有的那条分隔线——汇总与明细的分界，不是新划的。
 enum LocalUsagePart: Equatable {
-    case combined
-    case summary
     case detail
 }
 
@@ -447,7 +482,7 @@ struct LocalUsageFooterView<Daily: LocalUsageDaily>: View {
     /// "本机无 Antigravity 会话数据（~/.gemini/antigravity/conversations 为空）" 等
     /// provider 特定的"扫描完毕但还没数据"提示
     let emptyHint: String
-    /// 出哪一半（见 `LocalUsagePart`）。默认整个 `HoverInfoRow`，即菜单形态。
+    /// 出哪一半（见 `LocalUsagePart`）。生产路径恒为 `.detail`。
     let part: LocalUsagePart
 
     init(
@@ -461,7 +496,7 @@ struct LocalUsageFooterView<Daily: LocalUsageDaily>: View {
         isTruncated: Bool = false,
         isReady: Bool,
         emptyHint: String,
-        part: LocalUsagePart = .combined
+        part: LocalUsagePart = .detail
     ) {
         self.dailyTokenUsage = dailyTokenUsage
         self.recentSamples = recentSamples
@@ -474,34 +509,6 @@ struct LocalUsageFooterView<Daily: LocalUsageDaily>: View {
         self.isReady = isReady
         self.emptyHint = emptyHint
         self.part = part
-    }
-
-    /// 不把数组顺序当作“今天”的依据；扫描器正常返回升序，但缓存或合并器
-    /// 变化时仍应只展示当前自然日的数据。
-    private var today: Daily? {
-        dailyTokenUsage.last { Calendar.current.isDateInToday($0.dayStart) }
-    }
-
-    private var todaySamples: [LocalTokenUsageSample] {
-        let calendar = Calendar.current
-        let todayStart = calendar.startOfDay(for: Date())
-        guard let tomorrow = calendar.date(byAdding: .day, value: 1, to: todayStart) else {
-            return []
-        }
-        return recentSamples.filter {
-            $0.completedAt >= todayStart && $0.completedAt < tomorrow
-        }
-    }
-
-    private var todayCostText: String {
-        guard !todaySamples.isEmpty else { return "—" }
-        let estimate = ModelPricingCatalog.estimate(
-            samples: todaySamples,
-            quotaProviderID: quotaProviderID,
-            deepseekPeakWindow: deepseekPeakWindow
-        )
-        // displayText 统一处理“未定价 / 部分计价 / 全部计价”三种覆盖度。
-        return estimate.displayText
     }
 
     private var priceByDay: [Date: String] {
@@ -522,76 +529,12 @@ struct LocalUsageFooterView<Daily: LocalUsageDaily>: View {
         })
     }
 
-    @ViewBuilder
-    private var todayMetrics: some View {
-        if let today {
-            HStack(spacing: 12) {
-                todayMetric(label: "今天", value: "\(Formatters.formatTokenCountCompact(today.totalTokens)) tokens")
-                todayMetric(label: "命中率", value: today.cacheHitRate.map { String(format: "%.1f%%", $0 * 100) } ?? "—")
-                todayMetric(label: "价值", value: todayCostText)
-            }
-        } else {
-            Text("今日暂无 Token 活动")
-                .font(MenuTypography.hint)
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    private func todayMetric(label: String, value: String) -> some View {
-        HStack(spacing: 3) {
-            Text(label)
-                .foregroundStyle(.secondary)
-            Text(value)
-                .foregroundStyle(metricValueColor)
-        }
-        .font(MenuTypography.metricValue)
-        .lineLimit(1)
-    }
-
-    private var metricValueColor: Color {
-        switch freshness {
-        case .clean:
-            return Color.secondaryLabel
-        case .dirty, .scanning:
-            return .yellow
-        case .failed:
-            return .red
-        }
-    }
-
     var body: some View {
         if isReady, !dailyTokenUsage.isEmpty {
-            switch part {
-            case .combined:
-                HoverInfoRow {
-                    summaryRow
-                } detail: {
-                    detailView
-                }
-            case .summary:
-                summaryRow
-            case .detail:
-                detailView
-            }
+            detailView
         } else {
-            // 拆成两张卡片时，"没有本地用量"这句话属于下面那张卡片（图表的位置），
-            // 不是额度卡片的收尾——汇总行此时整行不存在，留个空 HStack 会把卡片的
-            // 底边垫高。
-            if part == .summary {
-                EmptyView()
-            } else {
-                placeholder
-            }
-        }
-    }
-
-    /// 汇总行：`📈 今天 173M tokens 命中率 97.8% 价值 $20.48`。
-    private var summaryRow: some View {
-        HStack(spacing: 5) {
-            Image(systemName: "chart.line.uptrend.xyaxis")
-                .font(MenuTypography.footer)
-                .foregroundStyle(.secondary)
-            todayMetrics
+            // "没有本地用量"这句话属于图表那半张卡片。
+            placeholder
         }
     }
 

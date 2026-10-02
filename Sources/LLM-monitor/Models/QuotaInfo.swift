@@ -529,9 +529,6 @@ struct ResetCreditsInfo: Equatable, Codable, Sendable {
             .min()
     }
 
-    /// 是否展示：至少有一条 entry 才展示
-    var shouldDisplay: Bool { !entries.isEmpty }
-
     /// R3: 返回一份标记为"过期（最近 full 抓取失败）"的副本，保留原值与原 fetchedAt。
     func markingStale() -> ResetCreditsInfo {
         ResetCreditsInfo(
