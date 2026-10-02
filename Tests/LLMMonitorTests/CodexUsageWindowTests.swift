@@ -421,4 +421,71 @@ final class CodexUsageWindowTests: XCTestCase {
         XCTAssertEqual(sample.modelName, "gpt-5.6-terra")
         XCTAssertEqual(sample.completedAt, newerDate)
     }
+
+    // MARK: - ChatGPT 行用量（合并自 UIUsageRegressionTests）
+
+    @MainActor
+    func testChatGPTDetailsKeepNativeTotalsAndAppendOnlyOpenCode() {
+        let native = UsageMetricSummary(
+            prompts: 1,
+            rounds: 1,
+            inputTokens: 100,
+            cachedInputTokens: 20,
+            outputTokens: 10,
+            reasoningOutputTokens: 2
+        )
+        let openCode = UsageMetricSummary(
+            prompts: 1,
+            rounds: 1,
+            inputTokens: 40,
+            cachedInputTokens: 0,
+            outputTokens: 5,
+            reasoningOutputTokens: 1
+        )
+
+        let displayed = ChatGPTPlanModelRow.preferUsageDetails(
+            native,
+            native + openCode,
+            externalUsage: openCode
+        )
+
+        XCTAssertEqual(displayed, native + openCode)
+        XCTAssertEqual(displayed?.inputTokens, 140)
+        XCTAssertEqual(displayed?.cachedInputTokens, 20)
+        XCTAssertEqual(displayed?.outputTokens, 15)
+        XCTAssertEqual(displayed?.reasoningOutputTokens, 3)
+    }
+
+    @MainActor
+    func testChatGPTOpenCodeSelectionAndFallbackDoNotDoubleCount() {
+        let now = Date()
+        func sample(_ promptID: String, input: Int, date: Date? = nil) -> LocalTokenUsageSample {
+            LocalTokenUsageSample(
+                completedAt: date ?? now, modelName: "gpt-5.6-sol", promptID: promptID,
+                inputTokens: input, cachedInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0
+            )
+        }
+        let samples = [
+            sample("native-turn", input: 100),
+            sample("opencode:openai:turn", input: 40),
+            sample("opencode:openai:old", input: 70, date: now.addingTimeInterval(-7200))
+        ]
+        let start = now.addingTimeInterval(-3600)
+        let end = now.addingTimeInterval(3600)
+        let external = ChatGPTPlanModelRow.openCodeUsageSummary(
+            samples: samples, quotaModelName: "chatgpt_plan", start: start, end: end
+        )
+        XCTAssertEqual(external?.inputTokens, 40)
+        XCTAssertNil(ChatGPTPlanModelRow.openCodeUsageSummary(
+            samples: [samples[0]], quotaModelName: "chatgpt_plan", start: start, end: end
+        ), "绑定关闭时投影只含原生样本，不应追加贡献")
+        let combined = LocalUsageSummaryBuilder.summary(
+            samples: samples, providerKind: .codexChatGpt, quotaModelName: "chatgpt_plan", start: start, end: end
+        )
+        var externalEvaluated = false
+        func extra() -> UsageMetricSummary? { externalEvaluated = true; return external }
+        let fallback = ChatGPTPlanModelRow.preferUsageDetails(nil, combined, externalUsage: extra())
+        XCTAssertEqual(fallback?.inputTokens, 140)
+        XCTAssertFalse(externalEvaluated, "无原生详情时直接用合并样本，不再额外聚合OpenCode")
+    }
 }

@@ -26,37 +26,6 @@ final class GlmOffPeakTests: GlmTestCase {
         XCTAssertEqual(pc.glmPeakWindow, GlmPeakWindow(startHour: 9, endHour: 12, weekdaysOnly: false))
     }
 
-    func testGlmPeakWindowBoundaryAndWeekdaysOnly() {
-        var cal = Calendar(identifier: .gregorian)
-        cal.timeZone = TimeZone(secondsFromGMT: 0)!
-
-        // Peak window: 10:00 - 18:00 UTC
-        let window = GlmPeakWindow(startHour: 10, endHour: 18, weekdaysOnly: true)
-
-        // Monday (2026-08-03)
-        var comps = DateComponents(year: 2026, month: 8, day: 3, hour: 10, minute: 0, second: 0)
-        let startBound = cal.date(from: comps)!
-        comps.hour = 17
-        comps.minute = 59
-        let insidePeak = cal.date(from: comps)!
-        comps.hour = 18
-        comps.minute = 0
-        let endBound = cal.date(from: comps)! // half-open: 18:00 is off-peak
-
-        if case .peak = window.status(at: startBound, calendar: cal) {} else { XCTFail("startBound should be peak") }
-        if case .peak = window.status(at: insidePeak, calendar: cal) {} else { XCTFail("insidePeak should be peak") }
-        if case .offPeak = window.status(at: endBound, calendar: cal) {} else { XCTFail("endBound should be off-peak") }
-
-        // Sunday (2026-08-02): weekdaysOnly = true -> off-peak on weekends
-        comps = DateComponents(year: 2026, month: 8, day: 2, hour: 12, minute: 0, second: 0)
-        let sundayNoon = cal.date(from: comps)!
-        if case .offPeak = window.status(at: sundayNoon, calendar: cal) {} else { XCTFail("Sunday should be off-peak") }
-
-        // weekdaysOnly = false -> Sunday noon is peak
-        let everydayWindow = GlmPeakWindow(startHour: 10, endHour: 18, weekdaysOnly: false)
-        if case .peak = everydayWindow.status(at: sundayNoon, calendar: cal) {} else { XCTFail("Everyday Sunday noon should be peak") }
-    }
-
     // MARK: - GLM Off-Peak (闲时任务) Tests
 
     /// 闲时窗口的 contains 边界：闭区间 + 2 秒容差。off_peak.ended_at 与最后一轮

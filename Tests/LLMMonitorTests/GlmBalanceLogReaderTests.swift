@@ -175,4 +175,40 @@ final class GlmBalanceLogReaderTests: GlmTestCase {
         let decoded = try JSONDecoder().decode(ProviderConfig.self, from: encoded)
         XCTAssertEqual(decoded.parseZcodeBalanceLog, true)
     }
+    // MARK: - 解析开关对缓存余额的语义（自 ProviderRefreshSchedulerTests 归位）
+    @MainActor
+    func testDisablingBalanceParsingClearsCachedBalancesButReadFailureKeepsThem() throws {
+        let cacheDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("glm-refresh-balance-cache-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: cacheDir) }
+        let missingRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("glm-refresh-balance-missing-\(UUID().uuidString)", isDirectory: true)
+
+        let scanner = GlmZcodeLocalUsageScanner(
+            dbURL: missingRoot.appendingPathComponent("db.sqlite"),
+            tasksDBURL: missingRoot.appendingPathComponent("tasks.sqlite"),
+            cacheDir: cacheDir,
+            balanceLogDirectory: missingRoot.appendingPathComponent("logs", isDirectory: true)
+        )
+        let balance = GlmActivityPlanBalance(
+            planID: "plan", planName: "Plan", entitlementID: "entitlement",
+            showName: "GLM", modelNames: ["glm"], totalUnits: 100,
+            usedUnits: 10, remainingUnits: 90,
+            expiresAt: Date(timeIntervalSince1970: 1_700_086_400),
+            observedAt: Date(timeIntervalSince1970: 1_700_000_000)
+        )
+        let cached = GlmLocalUsage(
+            today: nil, dailyTokenUsage: [], scannedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            sessionCount: 0, eventCount: 0, failedSessionCount: 0,
+            activityPlanBalances: [balance]
+        )
+
+        scanner.setBalanceLogParsingEnabled(false)
+        let disabled = try scanner.rebaseSnapshot(cached, now: Date(timeIntervalSince1970: 1_700_000_001))
+        XCTAssertNil(disabled.activityPlanBalances)
+
+        scanner.setBalanceLogParsingEnabled(true)
+        let readFailed = try scanner.rebaseSnapshot(cached, now: Date(timeIntervalSince1970: 1_700_000_002))
+        XCTAssertEqual(readFailed.activityPlanBalances, [balance])
+    }
 }

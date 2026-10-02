@@ -5,7 +5,7 @@ Provider id: `deepseek`
 Implementation:
 - API fetcher: `Sources/LLM-monitor/Fetchers/DeepseekFetcher.swift`
 - Peak window: `Sources/LLM-monitor/Models/PeakWindow.swift` (`DeepseekPeakWindow` is a compatibility typealias)
-- Tests: `Tests/LLMMonitorTests/DeepseekFetcherTests.swift`, `Tests/LLMMonitorTests/DeepseekPeakWindowTests.swift`
+- Tests: `Tests/LLMMonitorTests/DeepseekFetcherTests.swift`, `Tests/LLMMonitorTests/PeakWindowTests.swift`
 
 DeepSeek 余额来自官方开放接口，展示为"账户剩余余额"（货币金额），不是 5h / 周积分窗口。
 本地 token 用量没有 native scanner（DeepSeek 官方无本地 CLI 账本），来自两路共享账本分片：
@@ -150,4 +150,4 @@ ZCode 的 `deepseek` provider 分片（`model_usage` 表中 `provider_id` 前缀
 | Settings pane | `Sources/LLM-monitor/Views/SettingsView.swift`（`deepseekPane`） |
 | Card integration | `Sources/LLM-monitor/Views/ProviderCardView.swift` |
 | Brand logo | `Sources/LLM-monitor/Resources/BrandLogos/deepseek.svg`、`Views/BrandLogoView.swift` |
-| Regression tests | `Tests/LLMMonitorTests/DeepseekFetcherTests.swift`、`DeepseekPeakWindowTests.swift` |
+| Regression tests | `Tests/LLMMonitorTests/DeepseekFetcherTests.swift`、`PeakWindowTests.swift` |

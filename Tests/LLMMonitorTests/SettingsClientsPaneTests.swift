@@ -267,4 +267,92 @@ final class SettingsClientsPaneTests: XCTestCase {
             scannedAt: Date()
         )
     }
+
+    // MARK: - 客户端用量聚合（合并自 UIUsageRegressionTests）
+
+    func testSettingsGroupingUsesOnlySevenDisplayedDays() throws {
+        // 聚合逻辑已提取为 ClientUsageAggregation 纯函数：直接以构造的
+        // ProviderStatus / 样本为输入断言同一口径，不再经 SettingsView。
+        var calendar = Calendar.current
+        calendar.timeZone = .current
+        let today = calendar.startOfDay(for: Date())
+        let template = (0..<7).map { offset in
+            UnifiedDailyTokenUsage(
+                dayStart: calendar.date(byAdding: .day, value: -offset, to: today)!,
+                input: 0
+            )
+        }
+        let inWindow = (0..<7).map { offset in
+            LocalTokenUsageSample(
+                completedAt: calendar.date(byAdding: .day, value: -offset, to: today)!
+                    .addingTimeInterval(3600),
+                modelName: "gemini-2.5-pro",
+                promptID: "in-\(offset)",
+                inputTokens: 100,
+                cachedInputTokens: 0,
+                outputTokens: 0,
+                reasoningOutputTokens: 0
+            )
+        }
+        let outsideWindow = LocalTokenUsageSample(
+            completedAt: calendar.date(byAdding: .day, value: -7, to: today)!
+                .addingTimeInterval(3600),
+            modelName: "claude-sonnet",
+            promptID: "outside",
+            inputTokens: 100,
+            cachedInputTokens: 0,
+            outputTokens: 0,
+            reasoningOutputTokens: 0
+        )
+        let samples = inWindow + [outsideWindow]
+
+        let daily = ClientUsageAggregation.dailyUsage(for: samples, matching: template)
+        XCTAssertEqual(daily.count, 7)
+        XCTAssertEqual(daily.reduce(0) { $0 + $1.totalTokens }, 700)
+
+        let contribution = ClientUsageContribution(
+            clientID: ClientID.antigravity,
+            displayName: "Antigravity",
+            dailyTokenUsage: template,
+            recentSamples: samples
+        )
+        let status = ProviderStatus(
+            id: "antigravity",
+            displayName: "Antigravity",
+            kind: .antigravity,
+            iconSystemName: "circle",
+            accentColor: .antigravity,
+            refreshIntervalSeconds: 300,
+            state: .ready
+        )
+        let rows = ClientUsageAggregation.antigravityUsageRows(status: status, contribution: contribution)
+        XCTAssertEqual(rows.map(\.usageGroupID), [AntigravityUsageGroup.gemini.rawValue])
+        XCTAssertEqual(rows.first?.totalTokens, 700)
+
+        let oldOnly = ClientUsageContribution(
+            clientID: ClientID.antigravity, displayName: "Antigravity",
+            dailyTokenUsage: template, recentSamples: [outsideWindow]
+        )
+        XCTAssertTrue(ClientUsageAggregation.antigravityUsageRows(status: status, contribution: oldOnly).isEmpty)
+
+        var glmSamples = inWindow
+        for index in glmSamples.indices {
+            glmSamples[index].sourceProviderID = "builtin:bigmodel-coding-plan"
+        }
+        var oldOffPeak = outsideWindow
+        oldOffPeak.sourceProviderID = "offpeak-idle-plan"
+        let glmContribution = ClientUsageContribution(
+            clientID: ClientID.zcode, displayName: "ZCode",
+            dailyTokenUsage: template, recentSamples: glmSamples + [oldOffPeak]
+        )
+        let glmStatus = ProviderStatus(
+            id: "glm", displayName: "GLM", kind: .glmCodingPlan,
+            iconSystemName: "circle", accentColor: .glm,
+            refreshIntervalSeconds: 300, state: .ready
+        )
+        let glmRows = ClientUsageAggregation.glmUsageRows(status: glmStatus, contribution: glmContribution)
+        XCTAssertEqual(glmRows.count, 1, "窗口外闲时样本不能创建额外分组")
+        XCTAssertEqual(glmRows.first?.totalTokens, 700)
+        XCTAssertEqual(glmRows.first?.recentSamples.count, 7)
+    }
 }

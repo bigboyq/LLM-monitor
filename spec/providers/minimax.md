@@ -748,16 +748,21 @@ local-usage state until Minimax creates it.
 
 ## Test Coverage
 
-Minimax tests are located in `Tests/LLMMonitorTests/MinimaxV2UsageTests.swift` and `Tests/LLMMonitorTests/ScannerAndLoggingTests.swift`:
+Minimax tests are located in `Tests/LLMMonitorTests/MinimaxDBReaderTests.swift`, `Tests/LLMMonitorTests/MinimaxLocalUsageScannerTests.swift` and `Tests/LLMMonitorTests/ScannerAndLoggingTests.swift`:
 
-- **Reader & v2 Scanner (`MinimaxV2UsageTests.swift`)**:
+- **Reader (`MinimaxDBReaderTests.swift`)**:
   - `testV2ReaderAggregatesRowsSessionsTurnsAndSamples`: aggregates v2 rows, sessions, turns, and samples.
   - `testV2ReaderClampsNegativeValuesAndUsesPerRowReasoningMaximum`: clamps invalid values and applies per-row reasoning maximum.
   - `testV2CharacterAggregationUsesToolArgsExcludesResultsAndPreservesOutput`: verifies v2 character aggregation filters and output conservation.
+  - `testV2CharSQLFailureKeepsTokenLedgerAndMarksDegradedForRetry`: keeps the token ledger and marks character aggregation degraded.
+  - `testPerRowReasoningExprTakesMaxOfNativeAndRaw`: verifies single-row dual-source `MAX` selection between native `reasoning_tokens` and `raw.reasoning`.
+- **v2 Scanner (`MinimaxLocalUsageScannerTests.swift`)**:
+  - `testV2DegradedSourceIsRetriedAndRecovers`: retries a degraded source and clears the flag after recovery.
   - `testV2UnsafeCharacterRatioDropsOnlyMisalignedDay`: filters abnormal character-count days.
   - `testV2CacheMigrationResetsLegacySourceData`: resets incompatible cached source data for the v2-only policy.
   - `testScannerReadsOnlyRuntimeDatabaseEvenWhenSiblingLegacyDatabaseExists`: ignores a sibling legacy database.
-  - `testPerRowReasoningExprTakesMaxOfNativeAndRaw`: verifies single-row dual-source `MAX` selection between native `reasoning_tokens` and `raw.reasoning`.
+  - `testMinimaxRestoresCachedUsageOnColdStart` / `testPrunesDailyBucketsOlderThanEightDayWindowOnSave`: cached-result restore and 8-day bucket hygiene.
+  - `testComputeFailedSessionCountRules`: failed-session count rules.
 Test pattern: build a real SQLite database with the v2 tables, insert test rows with
 `Date` / `DateComponents` (not hardcoded millisecond timestamps), open via
 `MinimaxDBReader`, and assert on the aggregate. The reader tests cover the complete

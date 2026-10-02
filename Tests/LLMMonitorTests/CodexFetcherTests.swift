@@ -421,6 +421,19 @@ final class CodexFetcherTests: XCTestCase {
         }
     }
 
+    /// R3 Codable 向后兼容：旧格式（无 fetchedAt/lastAttemptFailed）能解码。
+    /// 拆自 `CodexResetCreditsFreshnessTests`：这是 reset-credits 响应体的解码契约，
+    /// 归到解析层（`parseResetCreditsData` 同一路径）而非合并层。
+    func testResetCreditsCodableBackwardCompat() throws {
+        let oldJSON = """
+        {"entries":[],"serverAvailableCount":2,"totalEarnedCount":3}
+        """
+        let decoded = try JSONDecoder().decode(ResetCreditsInfo.self, from: Data(oldJSON.utf8))
+        XCTAssertEqual(decoded.serverAvailableCount, 2)
+        XCTAssertNil(decoded.fetchedAt, "旧数据缺省 fetchedAt 为 nil")
+        XCTAssertFalse(decoded.lastAttemptFailed, "旧数据缺省 lastAttemptFailed 为 false")
+    }
+
     func testCodexFetcherExtractsPlanLabelAndAccountEmailFromJWTAndDict() async throws {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("codex-jwt-test-\(UUID().uuidString)", isDirectory: true)
