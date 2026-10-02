@@ -98,7 +98,7 @@ struct ProviderCardView: View, Equatable {
         dockBody(projection: projection)
     }
 
-    /// **三段式**：段1「Account Info」行 → 段2「Plan Info」四个模块 →
+    /// **三段式**：段1「Account Info」行 → 段2「Plan详情」+ 四个模块 →
     /// 段3「最近7天token用量」卡。前两段住第一张卡，段3 独立成卡。
     ///
     /// 切分点不是新划的：额度那一组是"现在"、7 天用量那一组是"历史"，两者之间
@@ -110,10 +110,13 @@ struct ProviderCardView: View, Equatable {
     /// 渲染方，判据也随之失去意义——**唯一剩下的形态就是这一种**，所以直接
     /// 渲染，不再假装还有第二种。
     ///
-    /// 标题 1 就是卡片头部那一行（品牌图标 + provider 名，右侧是刷新时间/状态）；
-    /// 套餐 pill 已从 header 挪进段1 的账号行（`QuotaWindowAccountInfoRow`）。
-    /// 标题 2 是「最近7天token用量」，右侧同一行放数据新鲜度（更新于 / 计算中…），
-    /// 因此图表自己那行标题在 dock 形态下不画（见 `SevenDayTokenUsageHoverView`）。
+    /// 标题体系（第三轮改版）：标题 1 就是卡片头部那一行（品牌图标 + provider 名，
+    /// 右侧是刷新时间/状态），套餐 pill 已从 header 挪进段1 的账号行
+    /// （`QuotaWindowAccountInfoRow`）；**账号行本身不加标题**。段2 的段落标题
+    /// 「Plan详情」画在卡内（`planModules` 开头）；标题 2 是段3 的
+    /// 「最近7天token用量」，右侧同一行放数据新鲜度（更新于 / 计算中…）——
+    /// 段3 标题在卡外，段2 标题在卡内，两者都是 13pt 卡片标题级或 11pt 段落级，
+    /// 压过模块标题（10pt secondary）。
     ///
     /// 段2 的四个模块（进度条 / token用量统计值 / token用量原始值 / 重置卡）由
     /// `planModules` 组装，各模块按数据可用性显隐；`.loading` / `.failed` 的回退
@@ -165,17 +168,32 @@ struct ProviderCardView: View, Equatable {
     }
 
     /// 段2「Plan Info」的四个模块，按序：
+    /// 0. **段落标题「Plan详情」**——账号行分隔线之后、进度条区之前。三段里只有
+    ///    账号行不配标题（它本来就是一行）；这个标题与段3 的「最近7天token用量」
+    ///    同为段落级，但住在卡内（段3 的标题在卡外），层级压过模块标题：
+    ///    11pt semibold（`hoverRowEmphasis`）对 10pt secondary（`QuotaModuleTitle`）。
     /// 1. **进度条**——每模型配额行原样（元信息行、分段条、GLM 闲时脚注、
     ///    ChatGPT / DeepSeek 专属行）；高峰期倒计时仍由 `between` 夹在第一个
     ///    model 行的进度条下方。曾经挂在同一位置的 `CompactResetCreditsRow`
     ///    已摘走，挪到模块4。
     /// 2. **token用量统计值** + 3. **token用量原始值表** + 4. **重置卡信息**——
     ///    都在 `quotaWindowUsage` 的「额度窗口用量」区块里，与额度区之间隔着
-    ///    `quotaUsageDivider`。
+    ///    `quotaUsageDivider`；三个模块各自的标题（额度分析 / 额度详情 /
+    ///    重置卡详情）由 `QuotaWindowUsageSection` 内部画。
     @ViewBuilder
     private func planModules(info: QuotaInfo, projection: ProviderUsageProjection) -> some View {
+        planSectionTitle
         quotaSection(info: info, projection: projection, between: AnyView(peakIndicator))
         quotaWindowUsage(info: info, projection: projection)
+    }
+
+    /// 段2 的段落标题。文案常量给测试引用；样式是段落级：11pt semibold、主色。
+    static let planSectionTitleText = "Plan详情"
+
+    private var planSectionTitle: some View {
+        Text(Self.planSectionTitleText)
+            .font(MenuTypography.hoverRowEmphasis)
+            .foregroundStyle(Color.primaryLabel)
     }
 
     /// 第一张卡片里，"额度"与"额度窗口用量区块"之间的那条线。
@@ -446,6 +464,8 @@ struct ProviderCardView: View, Equatable {
             if let last = lastSuccess {
                 VStack(alignment: .leading, spacing: 6) {
                     accountInfoRow(info: last)
+                    // 段2 标题与 `.ok` 路径同源：回退卡少一段，浮层每次刷新都会闪。
+                    planSectionTitle
                     QuotaSummary(
                         info: last,
                         providerKind: status.kind,
@@ -485,6 +505,8 @@ struct ProviderCardView: View, Equatable {
                     Text("上次成功：\(Formatters.formatClock(last.fetchedAt))")
                         .font(.system(size: 10))
                         .foregroundStyle(.secondary)
+                    // 与 `.loading` 同理：段2 标题随额度段一起走，别在刷新时闪。
+                    planSectionTitle
                     QuotaSummary(
                         info: last,
                         providerKind: status.kind,

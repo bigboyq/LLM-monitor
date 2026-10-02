@@ -5,9 +5,10 @@ import AppKit
 
 /// 「额度窗口用量」区块的**价值**那一格，以及重置卡明细的可达性。
 ///
-/// 单独一个文件而不是并进 `QuotaWindowUsageTests`：这里测的是两条**可达性**性质
-/// （金额有没有真的算、五指标行会不会换行、重置卡逐张明细能不能被看到），与那份
-/// 文件里的「窗口口径/比率/时间构成条」是两批断言，混在一个文件里会互相淹没。
+/// 单独一个文件而不是并进 `QuotaWindowUsageTests`：这里测的是**可达性**性质
+/// （金额有没有真的算、五指标行会不会换行、列宽跨行对不对齐、模块标题有没有
+/// 真的画出来、重置卡逐张明细能不能被看到），与那份文件里的「窗口口径/比率/
+/// 时间构成条」是两批断言，混在一个文件里会互相淹没。
 final class QuotaWindowUsageValueTests: XCTestCase {
 
     // MARK: - 价值估算
@@ -233,7 +234,10 @@ final class QuotaWindowUsageValueTests: XCTestCase {
 
     // MARK: - 五个指标不换行
 
-    /// 一行五个指标在 336pt 卡片的内容宽（336 − 2×12 = 312pt）里必须**一行**。
+    /// 「额度分析」的一行五个指标在 336pt 卡片的内容宽（336 − 2×12 = 312pt）里
+    /// 必须**一行**。第三轮改版起行本体是 `GridRow`（五个格子平分整行），所以
+    /// 测量时要复刻宿主形态：住进 `Grid`、字号与单行约束由 `Grid` 施加——与
+    /// `QuotaWindowUsageSection.statsModule` 同一写法。
     ///
     /// 换行是最难在代码评审里发现的排版回归：视图不报错、数字都对，只是第二段
     /// 掉到下一行，读者会把 `¥12.34` 当成另一件事。断言方式是"限宽下的高度 == 不限
@@ -241,12 +245,12 @@ final class QuotaWindowUsageValueTests: XCTestCase {
     @MainActor
     func testMetricRowStaysOnOneLineInsideTheCardContentWidth() {
         let contentWidth = 336.0 - 2 * LayoutMetrics.cardContentPadding
-        let singleLine = self.measuredHeight(of: Self.row(of: Self.row(named: "典型值")), width: 1_000)
+        let singleLine = self.measuredHeight(of: Self.statsGrid(named: "典型值"), width: 1_000)
         XCTAssertGreaterThan(singleLine, 0, "前提不成立：这一行必须真的排得出来")
 
         for name in ["典型值", "部分计价", "超长金额"] {
             let constrained = self.measuredHeight(
-                of: Self.row(of: Self.row(named: name)),
+                of: Self.statsGrid(named: name),
                 width: contentWidth
             )
             XCTAssertEqual(
@@ -254,6 +258,51 @@ final class QuotaWindowUsageValueTests: XCTestCase {
                 "\(name) 这一行在 \(Int(contentWidth))pt 里折行了（\(constrained)pt vs 单行 \(singleLine)pt）"
             )
         }
+    }
+
+    /// 五列共用同一 `Grid`：列宽**跨行对齐**（第三轮改版的 5 列铺满）。
+    ///
+    /// 判据来自布局语义：三行真的住在同一个 Grid 里时，每列宽 = 各行该列的最大
+    /// 内容宽，Grid 总宽必然**大于**任一单行自己的总宽；若 `GridRow` 失去网格
+    /// 语义（被当成普通 cell），Grid 退化成一列，总宽就**等于**最宽那一行的总宽。
+    /// 让长内容错开在不同列——一行的长处在价值列（比率全是 `—`），另一行的长处
+    /// 在比率列（价值是 `—`）——两种结构的理想宽度就分得开。
+    @MainActor
+    func testMetricRowsShareOneGridSoColumnsAlignAcrossRows() {
+        // 比率全 `—`（四桶全 0），只有价值长。
+        let longCost = RowFixture(
+            label: "5h",
+            metrics: QuotaWindowUsageMetrics(input: 0, cachedInput: 0, output: 0, reasoning: 0),
+            cost: ModelCostEstimate(
+                value: 1_234_567.89,
+                currency: .cny,
+                pricedModelNames: ["a"],
+                unpricedModelNames: []
+            )
+        )
+        // 价值是 `—`，三个比率都是宽形态（100.000% 一类）。
+        let longRates = RowFixture(
+            label: "周",
+            metrics: QuotaWindowUsageMetrics(input: 1, cachedInput: 1, output: 1, reasoning: 1),
+            cost: nil
+        )
+
+        let grid = Grid(alignment: .leading, horizontalSpacing: 4, verticalSpacing: 3) {
+            Self.row(of: longCost)
+            Self.row(of: longRates)
+        }
+        .font(MenuTypography.dataValue)
+        .lineLimit(1)
+        let gridWidth = self.measuredWidth(of: grid)
+        let longCostWidth = self.measuredWidth(of: Self.statsGrid(fixture: longCost))
+        let longRatesWidth = self.measuredWidth(of: Self.statsGrid(fixture: longRates))
+
+        XCTAssertGreaterThan(longCostWidth, 0, "前提不成立：两行都得真的排得出来")
+        XCTAssertGreaterThan(longRatesWidth, 0, "前提不成立：两行都得真的排得出来")
+        XCTAssertGreaterThan(
+            gridWidth, max(longCostWidth, longRatesWidth) + 1,
+            "三行必须共用同一 Grid（列宽跨行对齐）：Grid 总宽应大于任一单行的总宽"
+        )
     }
 
     /// 降级顺序：宽度不够时先压标签（`出比` / `思`），数值一个都不压。
@@ -276,6 +325,62 @@ final class QuotaWindowUsageValueTests: XCTestCase {
         XCTAssertEqual(QuotaWindowUsageMetricRow.outputInputRateText(0), "0.000%")
         XCTAssertEqual(QuotaWindowUsageMetricRow.outputInputRateText(1), "100.000%")
         XCTAssertEqual(QuotaWindowUsageMetricRow.outputInputRateText(nil), "—")
+    }
+
+    // MARK: - 模块标题（第三轮改版）
+
+    /// 「额度分析」标题住在统计值模块内部：模块有内容才出现，且画在内容之上。
+    ///
+    /// 用「只剩今日行」的形态隔离标题：快照无窗口、无重置卡，`today` 有一行 →
+    /// 统计值模块 = 标题 + 一行指标（时间构成条无窗口不画）。区块必须比同一行
+    /// 指标裸排时**高出一截**（标题行 + 间距）；完全无数据时整块为 0——标题随
+    /// 模块一起消失，不会悬空。「额度详情」「重置卡详情」走同一机制（标题在模块
+    /// 内部、由既有显隐判定兜住），不各测一遍。
+    @MainActor
+    func testStatsModuleTitleRendersAboveItsRowsAndHidesWithTheModule() {
+        let today = QuotaWindowUsageSection.Row(
+            label: "今日",
+            metrics: QuotaWindowUsageMetrics(input: 100, cachedInput: 900, output: 100, reasoning: 400),
+            cost: nil
+        )
+        let empty = LocalUsageSummaryBuilder.windowUsage(
+            model: Self.model(name: "deepseek_balance", interval: false, weekly: false, now: Date()),
+            providerKind: .deepseek,
+            samples: [],
+            intervalLabel: "5h",
+            weeklyLabel: "周"
+        )
+        XCTAssertTrue(empty.isEmpty, "前提不成立：这里用的是没有额度窗口的快照")
+
+        let bareRows = self.measuredHeight(
+            of: Self.statsGrid(
+                fixture: RowFixture(label: today.label, metrics: today.metrics, cost: today.cost)
+            ),
+            width: 312
+        )
+        let withTitle = self.measuredHeight(
+            of: QuotaWindowUsageSection(snapshot: empty, today: today),
+            width: 312
+        )
+        let withoutModules = self.measuredHeight(
+            of: QuotaWindowUsageSection(snapshot: empty),
+            width: 312
+        )
+
+        XCTAssertEqual(withoutModules, 0, "无数据时整块（连同所有模块标题）不渲染")
+        XCTAssertGreaterThan(
+            withTitle - bareRows, 5,
+            "「额度分析」标题必须真的画出来（比裸指标行高出一行标题 + 间距的高度），现在是 \(withTitle - bareRows)pt"
+        )
+    }
+
+    /// 标题文案钉在这里：三块模块标题 + 段2 段落标题。改文案必须连测试一起改，
+    /// 防止视图与文档各漂各的。
+    func testTitleCopyIsPinned() {
+        XCTAssertEqual(QuotaWindowUsageSection.statsTitle, "额度分析")
+        XCTAssertEqual(QuotaWindowUsageSection.rawTableTitle, "额度详情")
+        XCTAssertEqual(QuotaWindowUsageSection.resetCreditsTitle, "重置卡详情")
+        XCTAssertEqual(ProviderCardView.planSectionTitleText, "Plan详情")
     }
 
     // MARK: - 重置卡逐张明细的可达性
@@ -438,6 +543,31 @@ final class QuotaWindowUsageValueTests: XCTestCase {
         hosting.frame = CGRect(x: 0, y: 0, width: width, height: 10_000)
         hosting.layoutSubtreeIfNeeded()
         return hosting.fittingSize.height
+    }
+
+    /// 理想宽度：不限宽时视图自己的自然宽。给「三行共用同一 Grid」的对齐判据用。
+    @MainActor
+    private func measuredWidth<V: View>(of view: V) -> CGFloat {
+        let hosting = NSHostingView(rootView: AnyView(view))
+        hosting.frame = CGRect(x: 0, y: 0, width: 10_000, height: 100)
+        hosting.layoutSubtreeIfNeeded()
+        return hosting.fittingSize.width
+    }
+
+    /// 复刻 `QuotaWindowUsageSection.statsModule` 的宿主形态：行本体是 `GridRow`，
+    /// 必须住进 `Grid`，字号与单行约束由 `Grid` 施加。
+    @MainActor
+    private static func statsGrid(fixture: RowFixture) -> some View {
+        Grid(alignment: .leading, horizontalSpacing: 4, verticalSpacing: 3) {
+            Self.row(of: fixture)
+        }
+        .font(MenuTypography.dataValue)
+        .lineLimit(1)
+    }
+
+    @MainActor
+    private static func statsGrid(named name: String) -> some View {
+        Self.statsGrid(fixture: Self.row(named: name))
     }
 
     private struct RowFixture {

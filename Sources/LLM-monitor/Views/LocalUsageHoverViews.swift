@@ -185,7 +185,9 @@ struct SevenDayTokenUsageHoverView<Daily: LocalUsageDaily>: View {
             Grid(alignment: .leading, horizontalSpacing: 3, verticalSpacing: 4) {
                 GridRow {
                     tableHeader("日期", width: 34, alignment: .leading)
-                    tableHeader("R/T", width: 48, alignment: .trailing)
+                    // R/T 加宽 2 个等宽字符（48 → 60）：两位回合数（如 `99/999`）
+                    // 曾被截尾。表格总宽 403 仍装得下 415 / 420 的图表 frame。
+                    tableHeader("R/T", width: 60, alignment: .trailing)
                     tableHeader("Input", width: 58, alignment: .trailing)
                     tableHeader("Cache", width: 58, alignment: .trailing)
                     tableHeader("Output", width: 58, alignment: .trailing)
@@ -201,7 +203,7 @@ struct SevenDayTokenUsageHoverView<Daily: LocalUsageDaily>: View {
                             .font(.system(size: 10, weight: .medium).monospacedDigit())
                             .foregroundStyle(.secondary)
                             .frame(width: 34, alignment: .leading)
-                        roundsTurnsValue(day, width: 48)
+                        roundsTurnsValue(day, width: 60)
                         tokenValue(metrics.input, color: inputColor, width: 58)
                         tokenValue(metrics.cacheTotal, color: cacheColor, width: 58)
                         tokenValue(metrics.output, color: outputColor, width: 58)

@@ -770,7 +770,7 @@ last 7 days look like*.
 
 | | Title row (outside, above the card) | Card |
 |---|---|---|
-| 1 | brand logo + provider name, with the refresh time / state label on the right — **no status dot** (the `ProviderStateLabel` capsule on the same row already states the status) and **no plan capsule** (it moved into the Account Info row) | **Section 1 — Account Info**: one resident row, account name + plan pill (see below). **Section 2 — Plan Info**, four resident modules: per model `<name> 5h 62% weekly 30% <reset time>` + the progress bar (the peak-window countdown still rides *below* the first bar); a divider; then the **quota-window usage block** — stats rows (5h / 周 / 今日), the raw-bucket table, and the reset-credit module (see below) |
+| 1 | brand logo + provider name, with the refresh time / state label on the right — **no status dot** (the `ProviderStateLabel` capsule on the same row already states the status) and **no plan capsule** (it moved into the Account Info row) | **Section 1 — Account Info**: one resident row, account name + plan pill (see below), no section title. **Section 2 — Plan Info**: the in-card section title 「Plan详情」 first, then four resident modules: per model `<name> 5h 62% weekly 30% <reset time>` + the progress bar (the peak-window countdown still rides *below* the first bar); a divider; then the **quota-window usage block** — stats rows (5h / 周 / 今日), the raw-bucket table, and the reset-credit module (see below) |
 | 2 | `最近7天token用量`, with the local-usage freshness as a **capsule** (`更新于 HH:mm` / `计算中…`) on the right — same font, weight and colour as title 1, because the two rows are the same kind of thing: the name of their card | the 7-day chart, its usage table and the footnote |
 
 **Section 1 — Account Info** is `QuotaWindowAccountInfoRow`, one row, no section
@@ -786,8 +786,11 @@ minimaxTokenPlan has neither field. An empty/blank string counts as missing, so 
 first-refresh gap never lights the row up. A thin separator follows the row only when
 it renders.
 
-**Section 2 — Plan Info reads as four modules.** The metadata line moved
-*above* the bar (read the description, then the graphic), the bar keeps vertical
+**Section 2 — Plan Info reads as four modules.** Since the third-round pass it
+opens with its own section title 「Plan详情」 (`ProviderCardView.planSectionTitle`,
+11pt semibold — the account row deliberately has none; the `.loading` / `.failed`
+fallback paths draw the same title so a mid-refresh flash cannot blink it). The
+metadata line moved *above* the bar (read the description, then the graphic), the bar keeps vertical
 breathing room, and the peak countdown sits *below* the bar — it is context for the
 quota, provider-level, so it travels through `QuotaSummary.betweenBarAndColumns` → the
 model row → `ModelQuotaDockBlock.between` (type-erased as `AnyView`, only the first
@@ -833,14 +836,17 @@ Inside card 1, **below** the quota/local-usage divider, there is one block that 
 `.alwaysVisible` card the dock popover and the menu's provider strip hover both show.
 Since the second-round pass the block is **fully resident** — the hover-expanded detail
 (`QuotaWindowUsageHoverView`) is deleted — and reads as up to three modules separated
-by 1px hairlines, each hidden when it has no data, the whole block (and the divider
-above it) hidden when all three are:
+by 1px hairlines. Since the third-round pass each module is headed by its own title
+(「额度分析」 / 「额度详情」 / 「重置卡详情」, `QuotaModuleTitle`: 10pt secondary,
+left-aligned) drawn **inside** the module, below the hairline and above the content, so
+it hides with its module; each module is hidden when it has no data, the whole block
+(and the divider above it) hidden when all three are:
 
 | Module | Content |
 |---|---|
-| Stats rows | The time-composition bar, then **one row per window followed by 今日**: `5h 173M · 命中 97.8% · 出/入 12.345% · 思考 41% · ¥12.34`. The bar is **time composition, not bucket composition**: the full bar is the local token total inside the current **weekly** window; the solid left segment is the part inside the latest **5h** window, the translucent right segment is the rest of the week. Grey trough, 6pt capsule, provider accent colour — deliberately *not* `TokenBucketBar` (that one splits input / cache / output) and not `SegmentedQuotaProgressBar` (that one encodes a remaining percentage). Rows are 10pt `monospacedDigit`, **one line, never wrapped**; when the width is genuinely insufficient `ViewThatFits` falls back to compressed labels (`出比` / `思`), the numbers themselves are never shortened. The **今日 row** reuses the same component and format (label 「今日」), sourced from the same-day local aggregate — the same data and ratio formulas the old `📈 今天 …` summary row used, so that row was removed from the card bottom. No local data today → the row is omitted; the bar is omitted when no window exists (a lone 今日 row under an all-grey trough would say nothing) |
-| Raw table | **`类型 / Input / Cached / Output / Reason / 重置日期`**, one row per **existing** window (5h, 周; a missing window omits its row). The four absolute buckets per window (`input` being the **uncached** one), `formatTokenCountCompact`, plus that window's reset time as `MM-dd HH:mm (倒计时)` — the same formatting the quota metadata line uses. Replaces the old hover detail's two side-by-side columns (same numbers, now always on screen). With several model pools, a footnote states the totals are summed and the reset time is the earliest |
-| Reset credits | The collapsed row (**`重置卡数量：N`** + nearest expiry) followed by the **per-card list** (`ResetCreditsDetailList`, header suppressed — the count is already on the first line): N available credits render as N+1 lines. **Zero available → the whole module is omitted** (not a `重置卡数量：0` line) |
+| Stats rows | Titled 「额度分析」. The time-composition bar, then **one row per window followed by 今日** — all rows share **one `Grid` of five equal columns** (`[窗口标签 + token 值] [命中] [出/入] [思考] [价值]`) that fill the card width and align **across** rows; the old dot-separated line that crowded everything at the left edge is gone. The first column is left-aligned, the value column right-aligned, the three rate columns right-aligned like the raw table's numeric columns. The bar is **time composition, not bucket composition**: the full bar is the local token total inside the current **weekly** window; the solid left segment is the part inside the latest **5h** window, the translucent right segment is the rest of the week. Grey trough, 6pt capsule, provider accent colour — deliberately *not* `TokenBucketBar` (that one splits input / cache / output) and not `SegmentedQuotaProgressBar` (that one encodes a remaining percentage). Rows are 10pt `monospacedDigit`, **one line, never wrapped**; when a column is genuinely too narrow the degradation is per-cell — `ViewThatFits` inside the cell falls back to compressed labels (`出比` / `思`), the numbers themselves are never shortened. The **今日 row** reuses the same component and format (label 「今日」), sourced from the same-day local aggregate — the same data and ratio formulas the old `📈 今天 …` summary row used, so that row was removed from the card bottom. No local data today → the row is omitted; the bar is omitted when no window exists (a lone 今日 row under an all-grey trough would say nothing) |
+| Raw table | Titled 「额度详情」. **`类型 / Input / Cached / Output / Reason / 重置日期`**, one row per **existing** window (5h, 周; a missing window omits its row). Column widths are **not** equal: 类型 and 重置日期 are **natural-width** (the reset date renders its longest form, e.g. `09-30 15:07 (5d13h)`, whole — the old `minimumScaleFactor(0.7)` squeeze is gone), and the four numeric columns split the remaining width, right-aligned with their headers following. The four absolute buckets per window (`input` being the **uncached** one), `formatTokenCountCompact`, plus that window's reset time as `MM-dd HH:mm (倒计时)` — the same formatting the quota metadata line uses. Replaces the old hover detail's two side-by-side columns (same numbers, now always on screen). With several model pools, a footnote states the totals are summed and the reset time is the earliest |
+| Reset credits | Titled 「重置卡详情」. The collapsed row (**`重置卡数量：N`** + nearest expiry) followed by the **per-card list** (`ResetCreditsDetailList`, header suppressed — the count is already on the first line): N available credits render as N+1 lines. **Zero available → the whole module is omitted** (not a `重置卡数量：0` line) |
 
 **Value (the fifth metric)** — `ModelPricingCatalog.estimate` over the window's
 **already filtered samples** (the very array the four buckets are summed from, so token
