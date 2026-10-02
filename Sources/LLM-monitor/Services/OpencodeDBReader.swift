@@ -7,15 +7,13 @@ struct OpencodeDBAggregate: Equatable, Sendable {
     let perProviderDay: [String: [Date: OpencodeDailyUsage]]
     /// providerID → 累计、有 token 的 LLM round 数
     let roundCount: [String: Int]
-    /// providerID → 累计 cost
-    let cost: [String: Double]
     /// providerID → 见过的 modelID
     let models: [String: [String]]
     /// providerID → 最近窗口内的逐次 assistant 调用
     let samples: [String: [LocalTokenUsageSample]]
 
     static let empty = OpencodeDBAggregate(
-        perProviderDay: [:], roundCount: [:], cost: [:], models: [:], samples: [:]
+        perProviderDay: [:], roundCount: [:], models: [:], samples: [:]
     )
 }
 
@@ -48,8 +46,7 @@ final class OpencodeDBReader {
         }
         return OpencodeDBAggregate(
             perProviderDay: perProviderDay,
-            roundCount: totals.rounds,
-            cost: totals.cost,
+            roundCount: totals,
             models: models,
             samples: samples
         )
@@ -128,13 +125,12 @@ final class OpencodeDBReader {
         return out
     }
 
-    /// per-provider 累计、有 token 的 LLM round 数 + cost。
-    private func queryTotals() throws -> (rounds: [String: Int], cost: [String: Double]) {
+    /// per-provider 累计、有 token 的 LLM round 数。
+    private func queryTotals() throws -> [String: Int] {
         let sql = """
         SELECT
           json_extract(data,'$.providerID') AS provider,
-          COUNT(*) AS calls,
-          SUM(json_extract(data,'$.cost')) AS cost
+          COUNT(*) AS calls
         FROM message
         WHERE json_extract(data,'$.role')='assistant'
           AND json_extract(data,'$.providerID') IS NOT NULL
@@ -148,18 +144,15 @@ final class OpencodeDBReader {
         GROUP BY provider
         """
         var rounds: [String: Int] = [:]
-        var cost: [String: Double] = [:]
-        let rows: [(String, Int64, Double)] = try connection.query(sql: sql) { stmt in
+        let rows: [(String, Int64)] = try connection.query(sql: sql) { stmt in
             let provider = try SQLiteConnection.requiredText(stmt, column: 0)
             let c = try SQLiteConnection.requiredInt64(stmt, column: 1)
-            let cst = SQLiteConnection.optionalDouble(stmt, column: 2)
-            return (provider, c, cst)
+            return (provider, c)
         }
-        for (provider, c, cst) in rows {
+        for (provider, c) in rows {
             rounds[provider] = Int(clamping: c)
-            cost[provider] = cst
         }
-        return (rounds, cost)
+        return rounds
     }
 
     /// 最近窗口内的逐次调用样本。`input` 是 uncached input，LocalTokenUsageSample

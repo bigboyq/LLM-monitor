@@ -93,8 +93,8 @@ enum SevenDayUsageChartMetrics {
 /// 7-day token 用量 hover 图表（泛型）—— 4 类 provider 数据共用。
 ///
 /// 取代了原来 3 个几乎一样的 view，并接入 OpenCode daily 数据：
-/// - `AntigravitySevenDayHoverView` (ProviderCardView line 1937-2050)
-/// - `SevenDayTokenUsageHoverView` (codex, line 1036-1185)
+/// - `AntigravitySevenDayHoverView`（原 ProviderCardView 内，行号随多次重构失效）
+/// - `SevenDayTokenUsageHoverView`（原 codex 侧，同上）
 /// - `MinimaxSevenDayHoverView` (我刚加的)
 ///
 /// 视觉完全等价：相同的 4 色（input 蓝 / cache 青 / output 绿 / reason 橙）、

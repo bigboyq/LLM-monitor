@@ -12,19 +12,16 @@ struct ChatGPTPlanModelRow: View {
     /// 夹在进度条块与下方**本地用量**之间的卡片级信息（重置卡、高峰期），见
     /// `ModelQuotaDockBlock.between`。只有第一个 model 行会拿到非空值。
     var between: AnyView = AnyView(EmptyView())
-    /// 恒 `true`：生产路径上唯一的宿主就是这张卡，而两个宿主都注入
-    /// `.alwaysVisible`（`EdgeDockController.popoverContent` /
-    /// `HarnessUsageMenuView.cardRevealMode`），原先的
-    /// `ProviderCardLayout.liftsProgressBar(mode:)` 恒为真，判据已删除、值内联到
-    /// 这里。`menuLayout` 随之成为跑不到的一支，理由见 `ProviderCardLayout`。
-    private var isDockLayout: Bool { true }
 
+    /// 直接渲染 dock 形态。此前是 `if isDockLayout { dockBlock } else { menuLayout }`：
+    /// 判据 `ProviderCardLayout.liftsProgressBar(mode:)` 恒为真（生产路径上唯一的宿主
+    /// 就是这张卡，而两个宿主都注入 `.alwaysVisible`——`EdgeDockController.popoverContent` /
+    /// `HarnessUsageMenuView.cardRevealMode`），所以菜单那一支跑不到，连同它的独占
+    /// 子视图（`QuotaCombinedUsageRow` / `QuotaSingleUsageRow` /
+    /// `LastPromptHoverSummaryView`）一并删除。
+    /// 新的渲染宿主若要换形态，届时是**恢复分支**而不是从死代码里挑。
     var body: some View {
-        if isDockLayout {
-            dockBlock
-        } else {
-            menuLayout
-        }
+        dockBlock
     }
 
     // MARK: dock：条 + 元信息行（与通用 model 行同构）
@@ -73,87 +70,10 @@ struct ChatGPTPlanModelRow: View {
         return nil
     }
 
-    private var title: some View {
-        QuotaWindowTitle(
-            title: model.displayName,
-            tint: tint,
-            weeklyEquivalentMultiplier: hasPrimaryWindow && hasSecondaryWindow ? Self.weeklyEquivalentMultiplier : nil,
-            primaryLabel: primaryLabel
-        )
-    }
-
-    // MARK: 菜单：标题在上，条与元信息行各自 hover
-
-    @ViewBuilder
-    private var menuLayout: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            if let lastPrompt {
-                HoverInfoRow {
-                    title
-                } detail: {
-                    LastPromptHoverSummaryView(lastPrompt: lastPrompt)
-                }
-            } else {
-                title
-            }
-
-            if hasPrimaryWindow && hasSecondaryWindow {
-                QuotaCombinedUsageRow(
-                    model: model,
-                    primaryLabel: primaryLabel,
-                    secondaryLabel: secondaryLabel,
-                    primaryUsage: primaryUsage,
-                    secondaryUsage: secondaryUsage,
-                    tint: tint,
-                    weeklyEquivalentMultiplier: Self.weeklyEquivalentMultiplier,
-                    missingUsageIsLoading: true,
-                    primaryCreditUsage: nil,
-                    secondaryCreditUsage: nil
-                )
-            } else if hasPrimaryWindow {
-                QuotaSingleUsageRow(
-                    title: "ChatGPT Plan",
-                    label: primaryLabel,
-                    percent: model.intervalRemainingPercent,
-                    resetsAt: model.intervalResetsAt,
-                    usage: primaryUsage,
-                    tint: tint,
-                    missingUsageIsLoading: true,
-                    creditUsage: nil,
-                    timeRemainingFraction: model.intervalTimeRemainingFraction
-                )
-            } else if hasSecondaryWindow {
-                QuotaSingleUsageRow(
-                    title: "ChatGPT Plan",
-                    label: secondaryLabel,
-                    percent: model.weeklyRemainingPercent,
-                    resetsAt: model.weeklyResetsAt,
-                    usage: secondaryUsage,
-                    tint: tint,
-                    missingUsageIsLoading: true,
-                    creditUsage: nil,
-                    timeRemainingFraction: model.weeklyTimeRemainingFraction
-                )
-            } else {
-                Text("额度窗口不可用")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-            }
-        }
-    }
-
     private var primaryLabel: String { Formatters.codexWindowLabel(seconds: model.intervalWindowSeconds) }
     private var secondaryLabel: String { Formatters.codexWindowLabel(seconds: model.weeklyWindowSeconds) }
     private var hasPrimaryWindow: Bool { model.hasIntervalWindow }
     private var hasSecondaryWindow: Bool { model.hasWeeklyWindow }
-
-    private var primaryUsage: UsageMetricSummary? {
-        Self.intervalUsage(model: model, usageDetails: usageDetails, samples: localSamples)
-    }
-
-    private var secondaryUsage: UsageMetricSummary? {
-        Self.weeklyUsage(model: model, usageDetails: usageDetails, samples: localSamples)
-    }
 
     /// 两个额度窗口的本地用量，**额度行与卡片级「额度窗口用量」区块共用这一份**。
     ///
@@ -222,14 +142,6 @@ struct ChatGPTPlanModelRow: View {
                 start: bounds?.start,
                 end: bounds?.end
             )
-        )
-    }
-
-    private var lastPrompt: LastPromptUsage? {
-        usageDetails?.lastPrompt ?? LocalUsageSummaryBuilder.lastPrompt(
-            samples: localSamples,
-            providerKind: .codexChatGpt,
-            quotaModelName: model.modelName
         )
     }
 
@@ -436,19 +348,15 @@ struct CombinedQuotaWindowRow: View {
     /// 夹在进度条块与下方**本地用量**之间的卡片级信息（重置卡、高峰期），见
     /// `ModelQuotaDockBlock.between`。只有第一个 model 行会拿到非空值。
     var between: AnyView = AnyView(EmptyView())
-    /// 恒 `true`：生产路径上唯一的宿主就是 `ProviderCardView`，而两个宿主都注入
-    /// `.alwaysVisible`（`EdgeDockController.popoverContent` /
-    /// `HarnessUsageMenuView.cardRevealMode`），原先的
-    /// `ProviderCardLayout.liftsProgressBar(mode:)` 恒为真，判据已删除、值内联到
-    /// 这里。`menuLayout` 随之成为跑不到的一支，理由见 `ProviderCardLayout`。
-    private var isDockLayout: Bool { true }
 
+    /// 直接渲染 dock 形态。此前是 `if isDockLayout { dockBlock } else { menuLayout }`：
+    /// 判据 `ProviderCardLayout.liftsProgressBar(mode:)` 恒为真（生产路径上唯一的宿主
+    /// 就是 `ProviderCardView`，而两个宿主都注入 `.alwaysVisible`——
+    /// `EdgeDockController.popoverContent` / `HarnessUsageMenuView.cardRevealMode`），
+    /// 菜单那一支跑不到，连同它的独占子视图一并删除。
+    /// 新的渲染宿主若要换形态，届时是**恢复分支**而不是从死代码里挑。
     var body: some View {
-        if isDockLayout {
-            dockBlock
-        } else {
-            menuLayout
-        }
+        dockBlock
     }
 
     // MARK: dock：条 + 元信息行
@@ -515,85 +423,6 @@ struct CombinedQuotaWindowRow: View {
         }
     }
 
-    // MARK: 菜单：标题在上，条与元信息行各自 hover
-
-    @ViewBuilder
-    private var menuLayout: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            if let lastPrompt, shouldShowLastPrompt {
-                HoverInfoRow {
-                    title
-                } detail: {
-                    LastPromptHoverSummaryView(lastPrompt: lastPrompt)
-                }
-            } else {
-                title
-            }
-
-            if model.hasIntervalWindow, model.hasWeeklyWindow {
-                QuotaCombinedUsageRow(
-                    model: model,
-                    primaryLabel: primaryLabel,
-                    secondaryLabel: QuotaSummary.weeklyWindowLabel(),
-                    primaryUsage: primaryUsage,
-                    secondaryUsage: weeklyUsage,
-                    tint: tint,
-                    weeklyEquivalentMultiplier: weeklyEquivalentMultiplier,
-                    missingUsageIsLoading: false,
-                    primaryCreditUsage: intervalCreditUsage,
-                    secondaryCreditUsage: weeklyCreditUsage,
-                    offPeakUsage: todayOffPeakUsage
-                )
-            } else if model.hasIntervalWindow {
-                QuotaSingleUsageRow(
-                    title: model.displayName,
-                    label: primaryLabel,
-                    percent: model.intervalRemainingPercent,
-                    resetsAt: model.intervalResetsAt,
-                    usage: primaryUsage,
-                    tint: tint,
-                    missingUsageIsLoading: false,
-                    creditUsage: intervalCreditUsage,
-                    timeRemainingFraction: nil
-                )
-            } else if model.hasWeeklyWindow {
-                QuotaSingleUsageRow(
-                    title: model.displayName,
-                    label: QuotaSummary.weeklyWindowLabel(),
-                    percent: model.weeklyRemainingPercent,
-                    resetsAt: model.weeklyResetsAt,
-                    usage: weeklyUsage,
-                    tint: tint,
-                    missingUsageIsLoading: false,
-                    creditUsage: weeklyCreditUsage,
-                    timeRemainingFraction: model.weeklyTimeRemainingFraction
-                )
-            } else {
-                Text("额度窗口不可用")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-            }
-        }
-    }
-
-    private var title: some View {
-        QuotaWindowTitle(
-            title: model.displayName,
-            tint: tint,
-            weeklyEquivalentMultiplier: model.hasIntervalWindow && model.hasWeeklyWindow
-                ? weeklyEquivalentMultiplier
-                : nil,
-            primaryLabel: primaryLabel
-        )
-    }
-
-    private var shouldShowLastPrompt: Bool {
-        let name = model.modelName.lowercased()
-        let antigravityGroupNames = Set(AntigravityModelKind.allCases.map(\.rawValue))
-        return (providerKind == .minimaxTokenPlan && name == "general")
-            || (providerKind == .antigravity && antigravityGroupNames.contains(name))
-    }
-
     /// GLM 今日闲时（off-peak）任务 token 用量，单独展示在额度窗口 hover 底部。
     /// 只取**今日**明确属于 offpeak provider 的 native ZCode 样本；旧缓存缺少来源
     /// 字段时回退到 `excludeWindows`。闲时任务真实消耗但不消耗 Coding Plan 积分，
@@ -606,52 +435,6 @@ struct CombinedQuotaWindowRow: View {
             quotaModelName: model.modelName,
             offPeakWindows: excludeWindows
         )
-    }
-
-    private var lastPrompt: LastPromptUsage? {
-        LocalUsageSummaryBuilder.lastPrompt(
-            samples: localSamples,
-            providerKind: providerKind,
-            quotaModelName: model.modelName
-        )
-    }
-
-    private var primaryUsage: UsageMetricSummary? {
-        let bounds = LocalUsageSummaryBuilder.windowBounds(
-            resetsAt: model.intervalResetsAt,
-            explicitWindowSeconds: model.intervalWindowSeconds,
-            fallbackSeconds: primaryFallbackSeconds
-        )
-        return LocalUsageSummaryBuilder.summary(
-            samples: localSamples,
-            providerKind: providerKind,
-            quotaModelName: model.modelName,
-            start: bounds?.start,
-            end: bounds?.end,
-            excludeWindows: excludeWindows,
-            excludeGlmOffPeak: providerKind == .glmCodingPlan
-        )
-    }
-
-    private var weeklyUsage: UsageMetricSummary? {
-        let bounds = LocalUsageSummaryBuilder.windowBounds(
-            resetsAt: model.weeklyResetsAt,
-            explicitWindowSeconds: model.weeklyWindowSeconds,
-            fallbackSeconds: 7 * 24 * 60 * 60
-        )
-        return LocalUsageSummaryBuilder.summary(
-            samples: localSamples,
-            providerKind: providerKind,
-            quotaModelName: model.modelName,
-            start: bounds?.start,
-            end: bounds?.end,
-            excludeWindows: excludeWindows,
-            excludeGlmOffPeak: providerKind == .glmCodingPlan
-        )
-    }
-
-    private var primaryFallbackSeconds: TimeInterval {
-        Self.primaryFallbackSeconds(providerKind: providerKind, model: model)
     }
 
     /// 短周期窗口缺 `windowSeconds` 时的兜底长度（`windowBounds` 用）。
@@ -668,93 +451,9 @@ struct CombinedQuotaWindowRow: View {
             ? 24 * 60 * 60
             : 5 * 60 * 60
     }
-
-    private var intervalCreditUsage: QuotaCountUsage? {
-        creditUsage(total: model.intervalTotalCount, used: model.intervalUsageCount, status: model.intervalStatus)
-    }
-
-    private var weeklyCreditUsage: QuotaCountUsage? {
-        creditUsage(total: model.weeklyTotalCount, used: model.weeklyUsageCount, status: model.weeklyStatus)
-    }
-
-    private func creditUsage(total: Int, used: Int, status: QuotaWindowStatus) -> QuotaCountUsage? {
-        guard providerKind == .glmCodingPlan, status.isPresent, total > 0 else { return nil }
-        return QuotaCountUsage(used: max(used, 0), total: total)
-    }
 }
 
 /// Hover 详情里的单行窗口信息
-struct HoverMetricLine: View {
-    let label: String
-    let percent: Double
-    let resetsAt: Date?
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Text(label)
-                .font(MenuTypography.dataLabel)
-                .foregroundStyle(.secondary)
-                .frame(width: 18, alignment: .leading)
-
-            Text(Formatters.formatQuotaPercent(percent))
-                .font(MenuTypography.dataValue)
-                .foregroundStyle(summaryColor(for: percent))
-                .frame(width: 40, alignment: .leading)
-
-            if let resetsAt {
-                Text(Formatters.formatMonthDayMinute(resetsAt))
-                    .font(MenuTypography.resetDate)
-                    .foregroundStyle(.primary)
-
-                Text(Formatters.formatRelativeShort(from: resetsAt))
-                    .font(MenuTypography.timeSuffix)
-                    .foregroundStyle(.secondary)
-            } else {
-                Text("重置时间 —")
-                    .font(MenuTypography.hint)
-                    .foregroundStyle(.tertiary)
-            }
-
-            Spacer(minLength: 0)
-        }
-    }
-}
-
-struct QuotaWindowTitle: View {
-    let title: String
-    let tint: Color
-    let weeklyEquivalentMultiplier: Int?
-    var primaryLabel: String = "5h"
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Text(title)
-                .font(MenuTypography.modelTitle)
-                .foregroundStyle(tint)
-            Spacer(minLength: 0)
-            if let weeklyEquivalentMultiplier {
-                Text("周倍率：\(weeklyEquivalentMultiplier)")
-                    .font(MenuTypography.multiplier)
-                    .foregroundStyle(.secondary)
-                    .help(multiplierTooltipText(weeklyEquivalentMultiplier))
-            }
-        }
-    }
-
-    /// 解释"周倍率 N"的含义：精炼为面向普通用户的自然语言
-    private func multiplierTooltipText(_ n: Int) -> String {
-        let segments = max(n, 1)
-        if segments <= 1 {
-            return "周倍率：1（仅单窗口，无分段）"
-        }
-        return "额度结构：当前 \(primaryLabel) + 等价周额度（共 \(segments) 等份配额池）"
-    }
-}
-
-/// 数据列宽度：双窗口数据列定宽 152pt 确保对齐，单窗口紧凑定宽 80pt 避免留白过大
-private let quotaCombinedDataColumnWidth: CGFloat = 152
-private let quotaSingleDataColumnWidth: CGFloat = 80
-
 // MARK: - 进度条（裸视图）与它的 hover 明细
 
 /// 双窗口 model 的分段进度条本体。
@@ -849,8 +548,7 @@ struct ModelQuotaDockBlock<Bar: View, Footnote: View>: View {
 /// **model 名写在这行里，不另起一行、也不提到卡片头部**：三列明细撤掉后，块里
 /// 只剩这一行和条，Antigravity 那样的多 model provider 就有两条一模一样的条，
 /// 谁是谁全靠猜。名字必须和它描述的数字挨着——提到头部就得给每个 model 各搬一份，
-/// 另起一行则是把同一行字拆成两半。菜单侧不需要它：那边有 `QuotaWindowTitle`
-/// 当那行的名字，所以元信息行的 `name` 传空串。
+/// 另起一行则是把同一行字拆成两半。
 ///
 /// ## `primaryLabel` / `secondaryLabel` 的约定
 ///
@@ -970,135 +668,16 @@ struct OffPeakUsageFootnote: View {
     }
 }
 
-// MARK: - 菜单形态的额度行
-
-/// 统一的双窗口交互：
-/// - 额度条 hover：额度窗口内 token 用量
-/// - 百分比 + 重置时间行 hover：每个窗口的精确重置时间
-struct QuotaCombinedUsageRow: View {
-    let model: ModelQuota
-    let primaryLabel: String
-    let secondaryLabel: String
-    let primaryUsage: UsageMetricSummary?
-    let secondaryUsage: UsageMetricSummary?
-    let tint: Color
-    let weeklyEquivalentMultiplier: Int
-    let missingUsageIsLoading: Bool
-    let primaryCreditUsage: QuotaCountUsage?
-    let secondaryCreditUsage: QuotaCountUsage?
-    /// GLM 今日闲时（off-peak）任务 token 用量（不消耗积分）。非 GLM 传 nil。
-    var offPeakUsage: UsageMetricSummary? = nil
-
-    var body: some View {
-        let bindingReset = EquivalentQuotaAllocation.bindingResetDate(
-            primaryFraction: model.intervalRemainingPercent / 100.0,
-            weeklyFraction: model.weeklyRemainingPercent / 100.0,
-            primaryResetsAt: model.intervalResetsAt,
-            weeklyResetsAt: model.weeklyResetsAt,
-            segments: weeklyEquivalentMultiplier
-        )
-
-        VStack(alignment: .leading, spacing: 6) {
-            HoverInfoRow {
-                CombinedQuotaBar(
-                    model: model,
-                    tint: tint,
-                    weeklyEquivalentMultiplier: weeklyEquivalentMultiplier
-                )
-            } detail: {
-                QuotaUsageWindowsHoverView(
-                    title: "\(model.displayName) 额度窗口用量",
-                    primaryLabel: primaryLabel,
-                    primaryUsage: primaryUsage,
-                    primaryCreditUsage: primaryCreditUsage,
-                    secondaryLabel: secondaryLabel,
-                    secondaryUsage: secondaryUsage,
-                    secondaryCreditUsage: secondaryCreditUsage,
-                    weeklyEquivalentMultiplier: weeklyEquivalentMultiplier,
-                    hasSecondaryWindow: true,
-                    missingUsageIsLoading: missingUsageIsLoading,
-                    offPeakUsage: offPeakUsage
-                )
-            }
-
-            HoverInfoRow {
-                CombinedQuotaMetadataLine(
-                    primaryLabel: primaryLabel,
-                    primaryPercent: model.intervalRemainingPercent,
-                    primaryTimeFraction: model.intervalTimeRemainingFraction,
-                    secondaryLabel: secondaryLabel,
-                    secondaryPercent: model.weeklyRemainingPercent,
-                    secondaryTimeFraction: model.weeklyTimeRemainingFraction,
-                    resetsAt: bindingReset
-                )
-            } detail: {
-                QuotaWindowsHoverView(
-                    title: model.displayName,
-                    weeklyEquivalentMultiplier: weeklyEquivalentMultiplier,
-                    primaryLabel: primaryLabel,
-                    primaryPercent: model.intervalRemainingPercent,
-                    primaryResetsAt: model.intervalResetsAt,
-                    weeklyPercent: model.weeklyRemainingPercent,
-                    weeklyResetsAt: model.weeklyResetsAt,
-                    secondaryLabel: secondaryLabel
-                )
-            }
-        }
-    }
-}
-
-struct QuotaSingleUsageRow: View {
-    let title: String
-    let label: String
-    let percent: Double
-    let resetsAt: Date?
-    let usage: UsageMetricSummary?
-    let tint: Color
-    let missingUsageIsLoading: Bool
-    let creditUsage: QuotaCountUsage?
-    /// 顶部红三角位置 (0=即将过期, 1=刚重置)。nil = 不画。5h 窗口不传。
-    let timeRemainingFraction: Double?
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HoverInfoRow {
-                SingleQuotaBar(
-                    percent: percent,
-                    tint: tint,
-                    timeRemainingFraction: timeRemainingFraction
-                )
-            } detail: {
-                QuotaUsageWindowsHoverView(
-                    title: "\(title) 额度窗口用量",
-                    primaryLabel: label,
-                    primaryUsage: usage,
-                    primaryCreditUsage: creditUsage,
-                    secondaryLabel: "",
-                    secondaryUsage: nil,
-                    secondaryCreditUsage: nil,
-                    weeklyEquivalentMultiplier: nil,
-                    hasSecondaryWindow: false,
-                    missingUsageIsLoading: missingUsageIsLoading
-                )
-            }
-
-            HoverInfoRow {
-                SingleQuotaMetadataLine(
-                    label: label,
-                    percent: percent,
-                    resetsAt: resetsAt
-                )
-            } detail: {
-                SingleQuotaWindowHoverView(
-                    title: title,
-                    label: label,
-                    percent: percent,
-                    resetsAt: resetsAt
-                )
-            }
-        }
-    }
-}
+// 原先这里还有一族「菜单形态的额度行」视图：`QuotaCombinedUsageRow`（条 + 元信息行
+// 各自 hover）与 `QuotaSingleUsageRow`（单窗口对应物），以及它们专用的
+// `QuotaWindowTitle`（那行 model 的名字 + 周倍率）。三者只从两个 model 行的
+// `menuLayout` 构造，而那一支随 `isDockLayout` 恒真一起变成不可达，于是连同
+// `LastPromptHoverSummaryView` 一并删除。
+//
+// `QuotaHoverViews.swift` 里的 `QuotaWindowsHoverView` / `SingleQuotaWindowHoverView`
+// / `QuotaUsageWindowsHoverView` / `QuotaUsageWindowColumn` 原本也只从这两个视图
+// 构造——该族（含 HoverMetricLine 与 Presentation，连同量宽测试）已随后续清理
+// 一并删除，`QuotaHoverViews.swift` 里留下删除说明。
 
 /// 进度条上方那一行的 model 名。
 ///
@@ -1142,10 +721,9 @@ private struct CombinedQuotaMetadataLine: View {
     ///
     /// 原先按 `hoverRevealMode` 分叉（菜单那支是"百分比在行首、时间在行尾"）：
     /// 判据 `ProviderCardLayout.liftsProgressBar(mode:)` 在 `.alwaysVisible` 下恒
-    /// 为真，而唯一的活的宿主是 dock 的 `QuotaBarWithMetadata`，两个渲染宿主都注入
-    /// `.alwaysVisible`，另一处宿主（`QuotaCombinedUsageRow`）只出现在 model 行的
-    /// `menuLayout` 里、已无渲染方。判据已删除，对齐固定成行尾（见
-    /// `ProviderCardLayout`）。
+    /// 为真，而两个渲染宿主都注入 `.alwaysVisible`，另一处宿主
+    /// （`QuotaCombinedUsageRow`）只出现在 model 行的 `menuLayout` 里、已随那一支
+    /// 删除。判据已删除，对齐固定成行尾（见 `ProviderCardLayout`）。
 
     var body: some View {
         HStack(spacing: 6) {
@@ -1337,3 +915,7 @@ struct DeepseekBalanceRow: View {
         }
     }
 }
+
+/// 数据列宽度：双窗口数据列定宽 152pt 确保对齐，单窗口紧凑定宽 80pt 避免留白过大
+private let quotaCombinedDataColumnWidth: CGFloat = 152
+private let quotaSingleDataColumnWidth: CGFloat = 80

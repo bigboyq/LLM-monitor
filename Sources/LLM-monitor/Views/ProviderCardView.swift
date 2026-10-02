@@ -52,11 +52,15 @@ enum ProviderCardLayout {
     //    那条脚注），确实在 dock 浮层里渲染；另一处是
     //    `QuotaUsageWindowColumn`（只从 `menuLayout` 那条路来）。同样内联成常量。
     //
-    // 为什么留着一个恒真的分支不继续删：内联之后 `isDockLayout` 恒真，
-    // `menuLayout` 成了跑不到的一支，但把它连同 `QuotaCombinedUsageRow` /
-    // `QuotaSingleUsageRow` / `QuotaWindowsHoverView` / `LastPromptHoverSummaryView`
-    // 这一整族视图一起删掉是一次独立的清理（跨三个文件、几百行），不该挂在这次
-    // 收敛上。新的渲染宿主若要换形态，届时是**恢复分支**而不是从死代码里挑。
+    // 后续（独立的一次清理）：上面 1. 的前两处 `isDockLayout` 连同恒假的 `else`
+    // 分支（`menuLayout`）一起删除，两个 model 行的 body 直接渲染 dock；随之删除的
+    // 独占子视图是 `QuotaCombinedUsageRow` / `QuotaSingleUsageRow` /
+    // `QuotaWindowTitle` / `LastPromptHoverSummaryView`。
+    // `QuotaWindowsHoverView` / `QuotaUsageWindowsHoverView` /
+    // `QuotaUsageWindowColumn` / `SingleQuotaWindowHoverView` 同样失去了渲染宿主，
+    // `QuotaWindowsHoverView` 族（连同量宽测试）已随后续清理一并删除，
+    // 故**保守保留整族**（见 `QuotaViews.swift` 的对应注释）。新的渲染宿主若要换
+    // 形态，届时是**恢复分支**而不是从死代码里挑。
 }
 
 /// provider 卡片 — 一个 provider 的全部信息

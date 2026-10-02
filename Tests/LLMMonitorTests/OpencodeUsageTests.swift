@@ -653,7 +653,6 @@ final class OpencodeUsageTests: XCTestCase {
         let aggregate = OpencodeDBAggregate(
             perProviderDay: ["zhipuai-coding-plan": [yesterday: previous, today: usage]],
             roundCount: ["zhipuai-coding-plan": 3],
-            cost: [:],
             models: ["zhipuai-coding-plan": ["glm-5.2"]],
             samples: [:]
         )

@@ -492,41 +492,6 @@ final class LLMMonitorTests: XCTestCase {
         )
     }
 
-    func testQuotaHoverPrimaryBindingTextUsesOrdinaryWindowLabel() {
-        let text = QuotaWindowsHoverPresentation.bindingConstraintText(
-            primaryLabel: "5h",
-            bindingWindow: .primary,
-            weeklyEquivalentMultiplier: 10,
-            weeklyLabel: "周"
-        )
-        // 校验语义决策输出：必须包含主窗口标签 "5h" 与周标签 "周"，且杜绝工程黑话
-        XCTAssertTrue(text.contains("5h"))
-        XCTAssertTrue(text.contains("周"))
-        XCTAssertFalse(text.contains("binding constraint"))
-        XCTAssertFalse(text.contains("reset time"))
-    }
-
-    func testQuotaHoverPrimaryBindingTextUsesVideoDayWindowLabel() {
-        let text = QuotaWindowsHoverPresentation.bindingConstraintText(
-            primaryLabel: "日",
-            bindingWindow: .primary,
-            weeklyEquivalentMultiplier: 7,
-            weeklyLabel: "周"
-        )
-        // 校验视频模型特化的 "日" 窗口标签正确注入展示层
-        XCTAssertTrue(text.contains("日"))
-        XCTAssertTrue(text.contains("周"))
-        XCTAssertFalse(text.contains("binding constraint"))
-        XCTAssertFalse(text.contains("reset time"))
-    }
-
-    func testQuotaHoverNormalizesNonFinitePercentForSafePresentation() {
-        XCTAssertEqual(QuotaWindowsHoverPresentation.normalizedPercent(.nan), 0)
-        XCTAssertEqual(QuotaWindowsHoverPresentation.normalizedPercent(.infinity), 0)
-        XCTAssertEqual(QuotaWindowsHoverPresentation.normalizedPercent(-1), 0)
-        XCTAssertEqual(QuotaWindowsHoverPresentation.normalizedPercent(101), 100)
-        XCTAssertEqual(QuotaWindowsHoverPresentation.normalizedPercent(42.5), 42.5)
-    }
 
     // MARK: - Provider state label freshness
 

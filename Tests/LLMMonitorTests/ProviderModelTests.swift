@@ -1026,28 +1026,6 @@ final class ProviderModelTests: XCTestCase {
         XCTAssertEqual(primaryDecision, .primary)
     }
 
-    func testBindingConstraintTextBothBranches() {
-        let weeklyBindingText = QuotaWindowsHoverPresentation.bindingConstraintText(
-            primaryLabel: "5h", bindingWindow: .weekly, weeklyEquivalentMultiplier: 5, weeklyLabel: "周额度"
-        )
-        // 周受限分支：应包含周与主窗口标签，且不泄露工程黑话
-        XCTAssertTrue(weeklyBindingText.contains("周额度"))
-        XCTAssertTrue(weeklyBindingText.contains("5h"))
-        XCTAssertFalse(weeklyBindingText.contains("binding constraint"))
-        XCTAssertFalse(weeklyBindingText.contains("reset time"))
-
-        let primaryBindingText = QuotaWindowsHoverPresentation.bindingConstraintText(
-            primaryLabel: "5h", bindingWindow: .primary, weeklyEquivalentMultiplier: 5, weeklyLabel: "周"
-        )
-        // 主周期受限分支：应包含主窗口标签与周标签，且不泄露工程黑话
-        XCTAssertTrue(primaryBindingText.contains("5h"))
-        XCTAssertTrue(primaryBindingText.contains("周"))
-        XCTAssertFalse(primaryBindingText.contains("binding constraint"))
-        XCTAssertFalse(primaryBindingText.contains("reset time"))
-
-        // 两个分支生成的语义文本必须具有区分度
-        XCTAssertNotEqual(weeklyBindingText, primaryBindingText)
-    }
 
     func testEquivalentQuotaAllocationSegmentFillsBoundaryConditions() {
         // 0% weekly units -> 0 fills

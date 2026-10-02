@@ -510,9 +510,8 @@ enum ProviderStatusStrip {
         var isEmpty: Bool { entries.isEmpty }
     }
 
-    /// 一行最多放几个 provider 元素。宽度预算与实测见
-    /// `ProviderStatusStripView.maximumVisibleCount`（同一条推导，视图侧留了副本
-    /// 因为排版数字属于排版）：最宽形态 326pt / 336pt 内容区。
+    /// 一行最多放几个 provider 元素。宽度预算：最宽形态实测 326pt / 336pt 内容区
+    /// （排版数字以这里的推导为准；视图侧副本已随重构删除，勿再按旧注释找）。
     static let maximumVisibleCount = 4
 
     /// 取前 `limit` 个**优先级最高**的 provider，其余折叠为 `hiddenCount`。

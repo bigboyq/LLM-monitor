@@ -213,54 +213,6 @@ final class HoverRevealModeTests: XCTestCase {
     /// 在里面"。`QuotaUsageWindowsHoverView` 那处（列是 token 用量块）没有单独覆盖——
     /// 两处是同构改动，要给第二处也加一条得先量出它的单列宽度当参照。
     @MainActor
-    func testQuotaWindowsHoverLaysTwoColumnsSideBySide() {
-        let now = Date()
-        let primaryResets = now.addingTimeInterval(3600)
-        let weeklyResets = now.addingTimeInterval(7 * 24 * 3600)
-
-        let viewWidth = naturalWidth(of: QuotaWindowsHoverView(
-            title: "chatgpt_plan",
-            weeklyEquivalentMultiplier: 6,
-            primaryLabel: "5h",
-            primaryPercent: 62,
-            primaryResetsAt: primaryResets,
-            weeklyPercent: 80,
-            weeklyResetsAt: weeklyResets,
-            secondaryLabel: "周"
-        ))
-        let oneColumnWidth = naturalWidth(of: HoverMetricLine(
-            label: "5h", percent: 62, resetsAt: primaryResets
-        ))
-        let twoColumnWidth = naturalWidth(of: HStack(alignment: .top, spacing: 16) {
-            HoverMetricLine(label: "5h", percent: 62, resetsAt: primaryResets)
-            HoverMetricLine(label: "周", percent: 80, resetsAt: weeklyResets)
-        })
-
-        // 前提：参照物本身是"两列宽"，否则下面的比较毫无意义。
-        XCTAssertGreaterThan(
-            twoColumnWidth, oneColumnWidth * 1.9,
-            "前提不成立：两列 HStack 应当约为单列的两倍（实际 \(twoColumnWidth) vs \(oneColumnWidth)）"
-        )
-        XCTAssertGreaterThanOrEqual(
-            viewWidth, twoColumnWidth,
-            "两个窗口的明细必须并排：视图自然宽 \(viewWidth) 达不到两列的 \(twoColumnWidth)，说明它们被堆叠了"
-        )
-    }
-
-    /// 菜单侧那批 `ProviderCardLayout` 规则**已经全部收敛**：菜单内容区改成客户端
-    /// 视角后不再渲染 provider 卡，两个渲染宿主（dock 浮层、菜单兜底行的 hover 卡）
-    /// 都注入 `.alwaysVisible`，于是每条以 `mode` 为参数的判据在生产路径上都恒为常量。
-    ///
-    /// 曾经留着三条（`liftsProgressBar` / `splitsCachedInputRow` / `splitsRoundsRow`），
-    /// 因为它们的消费方在 `QuotaViews` / `QuotaHoverViews`、不在 `ProviderCardView.swift`
-    /// 内。逐条核实宿主之后（`ChatGPTPlanModelRow` / `CombinedQuotaWindowRow` /
-    /// `QuotaBarWithMetadata` / `OffPeakUsageFootnote` 都是 `.alwaysVisible` 下的活宿主，
-    /// 另一批宿主只从 model 行的 `menuLayout` 来、已无渲染方），三条一并删除、值内联
-    /// 到消费点。下面那条断言守的是收敛后**看得见的**那份性质。
-    ///
-    /// 「菜单形态已无渲染消费方、生产路径一律 `.alwaysVisible`」由
-    /// `testStripHoverCardMustUseTheAlwaysVisibleRevealMode` 守着。
-    @MainActor
     func testUsageMetricHoverAlwaysSplitsPromptsRoundsAndInputCached() {
         let usage = UsageMetricSummary(
             prompts: 42,

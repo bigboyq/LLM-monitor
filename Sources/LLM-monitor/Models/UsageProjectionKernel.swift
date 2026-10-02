@@ -204,8 +204,6 @@ enum UsageProjectionKernel {
     /// 与帧顺序一致（视图层依赖稳定的行序）。
     ///
     /// - `bindings`：client → quota 的显式绑定。帧自带 `quotaProviderID` 时直接采用；
-    ///   只有帧未声明归属（空串）时才用绑定的 `sourceProviderAliases` 兜底解析。
-    /// - `bindings`：client → quota 的显式绑定。帧自带 `quotaProviderID` 时直接采用；
     ///   只有帧未声明归属（空串）时才用绑定的 `sourceProviderAliases` 兜底解析
     ///   （contains 匹配、仅认领 enabled 的绑定）。P2 起生产路径传入 config 的
     ///   `clientBindings`：dsh 帧不声明归属，归属与启停都在这里解析；未被任何
