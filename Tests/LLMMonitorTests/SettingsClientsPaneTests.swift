@@ -196,6 +196,137 @@ final class SettingsClientsPaneTests: XCTestCase {
         )
     }
 
+    // MARK: - Provider pane 的「立即刷新」按钮（设置页单刷入口）
+
+    /// 全量五种 provider 的 SettingsView：路由断言要覆盖每个 pane 的按钮。
+    /// descriptor id 直接用 `ProviderKind.providerID`，与产品注册点
+    /// （`LLMMonitorApp.makeDescriptors`）同一口径。
+    @MainActor
+    private func makeSettingsWithAllProviders() -> (view: SettingsView, state: AppState) {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("llm-settings-refresh-\(UUID().uuidString)", isDirectory: true)
+        let store = ConfigStore(configURL: root.appendingPathComponent("config.json"))
+        let fixtures: [(kind: ProviderKind, accent: AccentColor)] = [
+            (.minimaxTokenPlan, .minimax),
+            (.codexChatGpt, .chatgpt),
+            (.antigravity, .antigravity),
+            (.glmCodingPlan, .glm),
+            (.deepseek, .deepseek)
+        ]
+        let descriptors = fixtures.map { fixture in
+            FetcherDescriptor(
+                id: fixture.kind.providerID,
+                displayName: fixture.kind.providerID,
+                kind: fixture.kind,
+                iconSystemName: "circle",
+                accentColor: fixture.accent,
+                makeFetcher: { _ in
+                    TestQuotaFetcher(
+                        providerID: fixture.kind.providerID,
+                        displayName: fixture.kind.providerID,
+                        kind: fixture.kind
+                    )
+                }
+            )
+        }
+        let state = AppState(descriptors: descriptors, configStore: store)
+        return (SettingsView(
+            configStore: store,
+            loginItemService: LoginItemService(),
+            state: state,
+            descriptors: descriptors
+        ), state)
+    }
+
+    /// 每个 pane 的按钮都要路由到**自己**的 provider id。菜单侧的同款断言
+    /// （`testRefreshMenuItemRoutesItsOwnProviderID`）防的是"串卡"，这里防的是
+    /// "串 pane"：五个按钮共用同一个构造器 `providerRefreshButton(for:)`，
+    /// kind → id 挂错注册表就会刷了别人的卡。
+    @MainActor
+    func testProviderRefreshActionRoutesEachPaneToItsOwnProviderID() {
+        let (view, state) = makeSettingsWithAllProviders()
+        defer { state.stop() }
+        for kind in ProviderKind.allCases {
+            XCTAssertEqual(
+                view.providerRefreshAction(for: kind)?.providerID,
+                kind.providerID,
+                "\(kind.rawValue) pane 的立即刷新必须路由到自己的 providerID"
+            )
+        }
+    }
+
+    /// 未注册的 kind 拿不到动作（按钮不出现），而不是拿一个空 id 去刷空气。
+    @MainActor
+    func testProviderRefreshActionIsNilForUnregisteredKind() {
+        let (view, state) = makeSettings()  // 只有 glm / deepseek / minimax 三个 descriptor
+        defer { state.stop() }
+        XCTAssertNil(view.providerRefreshAction(for: .codexChatGpt))
+        XCTAssertNil(view.providerRefreshAction(for: .antigravity))
+        XCTAssertNotNil(view.providerRefreshAction(for: .glmCodingPlan))
+    }
+
+    /// 在飞禁用：空闲态（真的 AppState，isRefreshJobActive == false）可点；
+    /// 在飞态按全局粒度禁用——任意刷新事务（refreshAll / 别的 provider 单刷 /
+    /// Antigravity 硬重建）都让按钮置灰，不区分是哪一个 provider 在刷
+    /// （见 `SettingsProviderRefreshAction.isDisabled` 注释）。
+    @MainActor
+    func testProviderRefreshActionDisablesWhileAnyRefreshJobIsActive() {
+        let (view, state) = makeSettingsWithAllProviders()
+        defer { state.stop() }
+        XCTAssertEqual(
+            view.providerRefreshAction(for: .glmCodingPlan)?.isDisabled,
+            false,
+            "空闲时按钮不应禁用"
+        )
+        // state.isRefreshJobActive 是 private(set)，测试无法直写；在飞语义由
+        // 值类型直接钉住（视图侧经 providerRefreshAction 读到的就是它）。
+        let busy = SettingsProviderRefreshAction(providerID: "glm", isRefreshJobActive: true)
+        XCTAssertTrue(busy.isDisabled, "全局刷新事务在飞时按钮必须禁用")
+    }
+
+    /// perform 把 pane 所属的 providerID 原样交回宿主（宿主接
+    /// `AppState.refreshOne`，与菜单兜底行右键同链路）。
+    @MainActor
+    func testProviderRefreshActionPerformsItsOwnProviderID() {
+        let (view, state) = makeSettingsWithAllProviders()
+        defer { state.stop() }
+        for kind in ProviderKind.allCases {
+            guard let action = view.providerRefreshAction(for: kind) else {
+                XCTFail("\(kind.rawValue) 必须能构造出刷新动作")
+                continue
+            }
+            var requested: [String] = []
+            action.perform { requested.append($0) }
+            XCTAssertEqual(requested, [kind.providerID], "\(kind.rawValue) 不能把刷新交给别的 provider")
+        }
+    }
+
+    /// 悬停文案钉死为入口语义的唯一说明（改动需同步按钮上的 `.help`）。
+    @MainActor
+    func testProviderRefreshActionHelpTextMatchesSpec() {
+        let action = SettingsProviderRefreshAction(providerID: "glm", isRefreshJobActive: false)
+        XCTAssertEqual(action.helpText, "立即刷新该 Provider")
+    }
+
+    /// 按钮闲置 / 在飞两种形态都渲染得出来（图标 ⇄ ProgressView 的切换不崩、
+    /// 不渲染成空视图）。
+    @MainActor
+    func testProviderRefreshButtonRendersInBothStates() {
+        for isActive in [false, true] {
+            let button = SettingsProviderRefreshButton(
+                action: SettingsProviderRefreshAction(providerID: "glm", isRefreshJobActive: isActive),
+                onRefresh: { _ in }
+            )
+            let hosting = NSHostingView(rootView: button)
+            hosting.frame = CGRect(x: 0, y: 0, width: 60, height: 24)
+            hosting.layoutSubtreeIfNeeded()
+            XCTAssertGreaterThan(
+                hosting.fittingSize.height, 0,
+                "isRefreshJobActive=\(isActive) 必须真的渲染出按钮"
+            )
+        }
+    }
+
     // MARK: - fixtures
 
     /// 一份覆盖全部分类与分片的 ZCode 快照（各家真实 provider 形态）。
