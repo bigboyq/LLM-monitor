@@ -545,7 +545,7 @@ Bigmodel-Target-Type: PERSONAL                    # 团队套餐为 TEAM + Bigmo
 | Off-peak window reader | `Sources/LLM-monitor/Services/GlmZcodeOffPeakReader.swift` |
 | Scanner, cache, and seven-day snapshot | `Sources/LLM-monitor/Services/GlmZcodeLocalUsageScanner.swift` |
 | Activity-plan balance log reader | `Sources/LLM-monitor/Services/GlmZcodeBalanceLogReader.swift` |
-| Provider-neutral projection with OpenCode | `Sources/LLM-monitor/Models/ProviderClientModel.swift` (`ProviderStatus.usageProjection`) + `DshUsageMerger` |
+| Provider-neutral projection with OpenCode | `Sources/LLM-monitor/Models/ProviderClientModel.swift` (`ProviderStatus.usageProjection`，帧抽取表 `usageFrameExtractors`) + `UsageProjectionKernel` |
 | Window summary + off-peak exclusion | `Sources/LLM-monitor/Models/LocalTokenUsageSample.swift` (`summary(excludeGlmOffPeak:)`) |
 | Card integration | `Sources/LLM-monitor/Views/ProviderCardView.swift` + `QuotaViews.swift` |
 | Regression tests | `Tests/LLMMonitorTests/GlmTests.swift` |

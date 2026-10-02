@@ -60,7 +60,7 @@ struct MixedCurrencyEstimate: Equatable, Sendable {
     ///
     /// - 纯 CNY（usd == 0）→ `¥10.50`，纯 USD（cny == 0）→ `$3.20`
     ///   （与 `ModelCostEstimate.displayText` 同为定长两位小数的「金额」形态）
-    /// - 混合 → `10（含$1)`：总额是 CNY 折算后金额（无 `¥` 前缀，因为它已不是单一
+    /// - 混合 → `10（含$1）`：总额是 CNY 折算后金额（无 `¥` 前缀，因为它已不是单一
     ///   币种），括号内是 USD 原额。混合形态是「总额 + 构成标注」而不是单一金额，
     ///   补 `.00` 会凭空造出并不存在的分位，因此总额与 USD 部分都按最多两位小数
     ///   呈现、无小数则省略。
@@ -73,7 +73,7 @@ struct MixedCurrencyEstimate: Equatable, Sendable {
             return ModelPriceCurrency.usd.symbol + Self.fixedAmount(usdTotal)
         }
         return Self.trimmedAmount(cnyEquivalentTotal)
-            + "（含" + ModelPriceCurrency.usd.symbol + Self.trimmedAmount(usdTotal) + ")"
+            + "（含" + ModelPriceCurrency.usd.symbol + Self.trimmedAmount(usdTotal) + "）"
     }
 
     // MARK: - 格式化

@@ -11,7 +11,7 @@ final class MixedCurrencyEstimateTests: XCTestCase {
         XCTAssertEqual(estimate.cnyTotal, 3)
         XCTAssertEqual(estimate.cnyEquivalentTotal, 10)
         XCTAssertEqual(MixedCurrencyEstimate.usdToCNYRate, 7)
-        XCTAssertEqual(estimate.displayText, "10（含$1)")
+        XCTAssertEqual(estimate.displayText, "10（含$1）")
     }
 
     func testDecimalConversionKeepsFractionalUsdExact() {
@@ -23,7 +23,7 @@ final class MixedCurrencyEstimateTests: XCTestCase {
 
         let mixed = MixedCurrencyEstimate(usd: Decimal(string: "0.3")!, cny: Decimal(string: "0.2")!)
         XCTAssertEqual(mixed.cnyEquivalentTotal, Decimal(string: "2.3")!)
-        XCTAssertEqual(mixed.displayText, "2.3（含$0.3)")
+        XCTAssertEqual(mixed.displayText, "2.3（含$0.3）")
     }
 
     func testAccumulatedUsdStaysExactAcrossManyProviders() {
@@ -87,7 +87,7 @@ final class MixedCurrencyEstimateTests: XCTestCase {
         XCTAssertEqual(collected.cnyTotal, 5)
         XCTAssertEqual(collected.usdTotal, 1)
         XCTAssertEqual(collected.cnyEquivalentTotal, 12)
-        XCTAssertEqual(collected.displayText, "12（含$1)")
+        XCTAssertEqual(collected.displayText, "12（含$1）")
     }
 
     func testEmptyOrAllUnpricedEstimatesYieldEmptyTotals() {

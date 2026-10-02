@@ -116,7 +116,7 @@ to the next line, so a replayed event can never stall the scan.
 | Responsibility | Source |
 |---|---|
 | Data model and provider slices | `Sources/LLM-monitor/Models/DshLocalUsage.swift` |
-| Field-level merge and format conversion | `Sources/LLM-monitor/Services/DshUsageMerger.swift` |
+| Field-level merge and format conversion | `Sources/LLM-monitor/Models/UsageProjectionKernel.swift`（DSH 帧适配 `DshHarnessFrames` + `UsageProjectionKernel.project`，旧 `DshUsageMerger` 已吸收删除；`dsh:dsh:` 双层 promptID 前缀随之清理为单层） |
 | JSONL/zstd scanner, cache, and seven-day snapshot | `Sources/LLM-monitor/Services/DshLocalUsageScanner.swift` |
 | File discovery | `Sources/LLM-monitor/Services/FileManagerBox.swift` |
 | Client diagnostics | `Sources/LLM-monitor/Views/SettingsClientsPane.swift` |
