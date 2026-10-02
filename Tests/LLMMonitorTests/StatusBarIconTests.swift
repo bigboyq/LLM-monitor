@@ -595,7 +595,12 @@ final class StatusBarIconTests: XCTestCase {
         let appState = AppState(descriptors: [descA, descB], configStore: store)
         appState.stop()
 
-        let now = Date()
+        // 固定在周六上午（非 GLM 高峰窗口：工作日 14:00–18:00）：test_b 是 GLM
+        // provider，aggregateHealthLevel 的高峰保底会把期望的 healthy 压成
+        // warning，用真实 Date() 的断言在高峰时段必然翻车。
+        let now = Calendar.current.date(
+            from: DateComponents(year: 2026, month: 10, day: 3, hour: 10)
+        )!
         let totalWeekSeconds = 7.0 * 24 * 3600
 
         // 模型 A：5h 剩余 40%；周剩余 30%，但还剩 60% 的时间 (30% / 60% = 50% 可用度)
@@ -1198,6 +1203,12 @@ final class StatusBarIconTests: XCTestCase {
         let appState = AppState(descriptors: descriptors, configStore: store)
         defer { appState.stop() }
 
+        // 固定在周六上午（非 GLM 高峰窗口：工作日 14:00–18:00）：高峰保底会把
+        // 期望的 healthy 压成 warning，用真实 Date() 的断言在高峰时段必然翻车。
+        let now = Calendar.current.date(
+            from: DateComponents(year: 2026, month: 10, day: 3, hour: 10)
+        )!
+
         let glmModel = ModelQuota(
             modelName: "glm_coding_plan",
             intervalTotalCount: 100,
@@ -1210,7 +1221,7 @@ final class StatusBarIconTests: XCTestCase {
             weeklyUsageCount: 92,
             weeklyRemainingPercent: 8.0,
             weeklyStatus: .present,
-            weeklyResetsAt: Date().addingTimeInterval(7 * 24 * 3600),
+            weeklyResetsAt: now.addingTimeInterval(7 * 24 * 3600),
             weeklyWindowSeconds: 7 * 24 * 3600
         )
         let info = QuotaInfo(
@@ -1219,16 +1230,16 @@ final class StatusBarIconTests: XCTestCase {
             planLabel: nil,
             accountEmail: nil,
             codexUsageDetails: nil,
-            fetchedAt: Date()
+            fetchedAt: now
         )
         appState.mutateStatus(for: "test_glm") { $0.state = .ok(info) }
 
         let status = appState.statuses.first(where: { $0.id == "test_glm" })!
-        XCTAssertEqual(status.aggregateHealthLevel(), .healthy, "卡片头部点按实际可用口径（周 × 5，瓶颈 5h）应为绿")
+        XCTAssertEqual(status.aggregateHealthLevel(at: now), .healthy, "卡片头部点按实际可用口径（周 × 5，瓶颈 5h）应为绿")
         // 旧逐窗口口径对该反例判红（周 8% < 15 直接 critical），保留交叉断言。
         XCTAssertEqual(info.healthLevel, .critical)
-        XCTAssertEqual(appState.systemHealthLevel, status.aggregateHealthLevel(), "状态栏 SF Symbol 圆点必须与卡片头部点同色")
-        XCTAssertEqual(appState.systemHealthLevel, .healthy)
+        XCTAssertEqual(appState.systemHealthLevel(at: now), status.aggregateHealthLevel(at: now), "状态栏 SF Symbol 圆点必须与卡片头部点同色")
+        XCTAssertEqual(appState.systemHealthLevel(at: now), .healthy)
     }
 
     func testComposedMenuBarImageWithDynamicMetrics() {
