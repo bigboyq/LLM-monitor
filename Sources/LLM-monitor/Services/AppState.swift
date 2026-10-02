@@ -1107,7 +1107,7 @@ final class AppState: ObservableObject {
     ///
     /// ZCode 是一份多 provider 账本：GLM 卡消费智谱系 native 用量（不受开关
     /// 约束），MiniMax / DeepSeek 卡消费同一快照里的 `providerSlices` 分片
-    /// （受各自 `mergeZcodeUsage` 开关约束，见 `usageContributionFactories`）。
+    /// （受各自 `mergeZcodeUsage` 开关约束，见 `usageFrameExtractors`）。
     /// 与 `applyOpencodeUsage` 同样只挂快照、关闭开关时诊断页仍可见。
     @MainActor
     func applyGlmLocalUsage(_ usage: GlmLocalUsage?) {

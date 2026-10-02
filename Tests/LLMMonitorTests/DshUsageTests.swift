@@ -224,12 +224,17 @@ final class DshUsageTests: XCTestCase {
         )
     }
 
-    func testDshMergersSelectOnlyTheirProviderAliases() throws {
+    /// 引用点已从 `DshUsageMerger` 迁到 `DshHarnessFrames` + `UsageProjectionKernel`，
+    /// 断言语义不变：每张 quota 卡只消费自己那组 provider 别名，另一张卡的数值
+    /// （999 / 888 之类）不得混入。`today` + `roundCount` 两个旧字段在新链路上
+    /// 合成为 daily 的一行（`UnifiedDailyTokenUsage.input/cacheRead/output/reasoning/rounds`），
+    /// 这正是卡片层真正消费的形态。
+    func testDshFramesSelectOnlyTheirProviderAliases() throws {
         let dayStart = Date(timeIntervalSince1970: 1_700_000_000)
         let cases: [(
             name: String,
             usage: DshLocalUsage,
-            merge: (DshLocalUsage) -> OpencodeProviderUsage?,
+            quotaProviderID: String,
             inputTokens: Int,
             cacheReadTokens: Int,
             outputTokens: Int,
@@ -263,7 +268,7 @@ final class DshUsageTests: XCTestCase {
                     eventCount: 3,
                     scannedAt: Date()
                 ),
-                merge: { DshUsageMerger.mergeDeepseek(dsh: $0, opencode: nil) },
+                quotaProviderID: QuotaProviderID.deepseek,
                 inputTokens: 100,
                 cacheReadTokens: 50,
                 outputTokens: 20,
@@ -297,7 +302,7 @@ final class DshUsageTests: XCTestCase {
                     eventCount: 3,
                     scannedAt: Date()
                 ),
-                merge: { DshUsageMerger.mergeGlm(dsh: $0) },
+                quotaProviderID: QuotaProviderID.zhipu,
                 inputTokens: 50,
                 cacheReadTokens: 25,
                 outputTokens: 10,
@@ -331,7 +336,7 @@ final class DshUsageTests: XCTestCase {
                     eventCount: 4,
                     scannedAt: Date()
                 ),
-                merge: { DshUsageMerger.mergeMinimax(dsh: $0) },
+                quotaProviderID: QuotaProviderID.minimax,
                 inputTokens: 100,
                 cacheReadTokens: 20,
                 outputTokens: 15,
@@ -341,13 +346,20 @@ final class DshUsageTests: XCTestCase {
         ]
 
         for testCase in cases {
-            let merged = try XCTUnwrap(testCase.merge(testCase.usage), testCase.name)
-            let today = try XCTUnwrap(merged.today, testCase.name)
-            XCTAssertEqual(merged.roundCount, testCase.roundCount, testCase.name)
-            XCTAssertEqual(today.inputTokens, testCase.inputTokens, testCase.name)
-            XCTAssertEqual(today.cacheReadTokens, testCase.cacheReadTokens, testCase.name)
-            XCTAssertEqual(today.outputTokens, testCase.outputTokens, testCase.name)
-            XCTAssertEqual(today.reasoningTokens, testCase.reasoningTokens, testCase.name)
+            let frames = DshHarnessFrames.frames(
+                from: testCase.usage, quotaProviderID: testCase.quotaProviderID
+            )
+            XCTAssertFalse(frames.isEmpty, testCase.name)
+            let projections = UsageProjectionKernel.project(frames: frames)
+            let projection = try XCTUnwrap(projections.first, testCase.name)
+            XCTAssertEqual(projection.clientID, ClientID.dsh, testCase.name)
+            XCTAssertEqual(projection.quotaProviderID, testCase.quotaProviderID, testCase.name)
+            let day = try XCTUnwrap(projection.daily.first, testCase.name)
+            XCTAssertEqual(day.input, testCase.inputTokens, testCase.name)
+            XCTAssertEqual(day.cacheRead, testCase.cacheReadTokens, testCase.name)
+            XCTAssertEqual(day.output, testCase.outputTokens, testCase.name)
+            XCTAssertEqual(day.reasoning, testCase.reasoningTokens, testCase.name)
+            XCTAssertEqual(day.rounds, testCase.roundCount, testCase.name)
         }
     }
 
@@ -757,12 +769,13 @@ final class DshUsageTests: XCTestCase {
 
     func testDshTruncationMergerRuleTreatsAnyTruncatedSourceAsTruncated() {
         // 合并规则：任一来源截断即截断（保守取 true）；nil 视为未截断/未知。
-        XCTAssertFalse(DshUsageMerger.isTruncated(), "无来源 → 无截断")
-        XCTAssertFalse(DshUsageMerger.isTruncated(nil), "nil 快照 → 未知，按未截断")
-        XCTAssertFalse(DshUsageMerger.isTruncated(makeDshSnapshot(isTruncated: false)))
-        XCTAssertTrue(DshUsageMerger.isTruncated(makeDshSnapshot(isTruncated: true)))
+        // 引用点已从 `DshUsageMerger` 迁到 `DshHarnessFrames.anyTruncated`。
+        XCTAssertFalse(DshHarnessFrames.anyTruncated(), "无来源 → 无截断")
+        XCTAssertFalse(DshHarnessFrames.anyTruncated(nil), "nil 快照 → 未知，按未截断")
+        XCTAssertFalse(DshHarnessFrames.anyTruncated(makeDshSnapshot(isTruncated: false)))
+        XCTAssertTrue(DshHarnessFrames.anyTruncated(makeDshSnapshot(isTruncated: true)))
         XCTAssertTrue(
-            DshUsageMerger.isTruncated(
+            DshHarnessFrames.anyTruncated(
                 makeDshSnapshot(isTruncated: false),
                 nil,
                 makeDshSnapshot(isTruncated: true)
@@ -770,7 +783,7 @@ final class DshUsageTests: XCTestCase {
             "多来源混合时任一截断即整份展示数据按截断处理"
         )
         XCTAssertFalse(
-            DshUsageMerger.isTruncated(
+            DshHarnessFrames.anyTruncated(
                 makeDshSnapshot(isTruncated: false),
                 makeDshSnapshot(isTruncated: nil)
             )

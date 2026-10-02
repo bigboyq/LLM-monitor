@@ -159,10 +159,10 @@ final class OpencodeUsageTests: XCTestCase {
         XCTAssertEqual(nativeOnly.dailyTokenUsage.first?.input, 10)
 
         let summary = LocalUsageSummaryBuilder.summary(
-            samples: OpencodeUsageMerger.mergeSamples(
-                native: [nativeSample],
-                opencode: open,
-                providerID: OpencodeLocalUsage.minimaxCodingPlanProviderID
+            // 只有 OpenCode 侧的样本带命名空间；native 账本保持裸 promptID。
+            samples: [nativeSample] + UsageSampleNamespace.opencode.apply(
+                to: open.recentSamples,
+                sourceKey: OpencodeLocalUsage.minimaxCodingPlanProviderID
             ),
             providerKind: .minimaxTokenPlan,
             quotaModelName: "general",
@@ -353,8 +353,8 @@ final class OpencodeUsageTests: XCTestCase {
             ["prompt-a", "opencode:alias1:prompt-b"]
         )
 
-        let namespaced = OpencodeUsageMerger.mergeSamples(
-            native: [], opencode: slice, providerID: "google"
+        let namespaced = UsageSampleNamespace.opencode.apply(
+            to: slice.recentSamples, sourceKey: "google"
         )
         XCTAssertEqual(
             Set(namespaced.map(\.promptID)),

@@ -136,6 +136,12 @@ struct ClientDescriptor: Identifiable, Equatable, Sendable {
             subtitle: "MiniMax Code 本地用量"
         )
     ]
+
+    /// 展示名（`ClientUsageContribution.displayName` / 设置页行标题共用）。
+    /// 未登记的 clientID 回退成 ID 本身，避免出现空标题。
+    static func displayName(forClientID clientID: String) -> String {
+        all.first { $0.id == clientID }?.displayName ?? clientID
+    }
 }
 
 /// Provider-neutral daily token data used by the card and settings UI.
@@ -317,6 +323,17 @@ struct ClientUsageContribution: Equatable, Sendable {
         self.scannedAt = scannedAt
         self.isTruncated = isTruncated
     }
+
+    /// 从内核投影构造（`UsageProjectionKernel.project` 的产物）。
+    /// 投影里的 daily 已在内核做过合并与当日 max 修补，这里不再重复归一化。
+    init(projection: ProviderHarnessProjection, displayName: String) {
+        self.clientID = projection.clientID
+        self.displayName = displayName
+        self.dailyTokenUsage = projection.daily
+        self.recentSamples = projection.samples
+        self.scannedAt = projection.scannedAt
+        self.isTruncated = projection.isTruncated
+    }
 }
 
 /// The UI-facing projection for one quota card. It intentionally exposes a
@@ -382,6 +399,28 @@ struct ClientProviderUsageSummary: Identifiable, Equatable, Sendable {
     private let cachedUnpricedModelUsage: [UnpricedModelUsage]
 
     var id: String { "\(clientID):\(quotaProviderID):\(usageGroupID)" }
+
+    /// 内核投影 → 展示行。daily / samples / 截断位全部来自
+    /// `UsageProjectionKernel.project` 的产物，本类型只做"展示窗口裁剪 +
+    /// 价值缓存"，不再自己算合并规则。
+    init(
+        projection: ProviderHarnessProjection,
+        providerName: String,
+        usageGroupID: String = "",
+        deepseekPeakWindow: DeepseekPeakWindow = .defaultWindow
+    ) {
+        self.init(
+            clientID: projection.clientID,
+            quotaProviderID: projection.quotaProviderID,
+            providerName: providerName,
+            usageGroupID: usageGroupID,
+            dailyTokenUsage: projection.daily,
+            recentSamples: projection.samples,
+            scannedAt: projection.scannedAt,
+            isTruncated: projection.isTruncated,
+            deepseekPeakWindow: deepseekPeakWindow
+        )
+    }
 
     init(
         clientID: String,
@@ -566,160 +605,164 @@ extension ProviderStatus {
     /// Convert the currently available scanner snapshots into one provider-
     /// neutral projection for the card. The scanner-specific models remain
     /// useful to diagnostics, but views no longer need to know every client.
+    ///
+    /// 计算链路只有一条：L1 抽取帧 → L2 内核投影 → 视图模型。
+    /// 合并规则、命名空间、当日 max 修补、名义价值全部在内核里，视图层不再复算。
     func usageProjection(for info: QuotaInfo?) -> ProviderUsageProjection {
-        let factories = Self.usageContributionFactories[kind] ?? []
+        let frames = Self.usageFrameExtractors[kind]?.flatMap { $0(self, info) } ?? []
+        let projections = UsageProjectionKernel.project(
+            frames: frames,
+            deepseekPeakWindow: deepseekPeakWindow ?? .defaultWindow
+        )
         return ProviderUsageProjection(
-            contributions: factories.compactMap { $0(self, info) },
+            contributions: projections.map {
+                ClientUsageContribution(
+                    projection: $0,
+                    displayName: ClientDescriptor.displayName(forClientID: $0.clientID)
+                )
+            },
             localUsageFreshness: effectiveLocalUsageFreshness
         )
     }
 
-    /// 每个 quota 卡消费的客户端来源注册表（配置表驱动，取代 per-kind switch）：
-    /// `[kind: [contribution 工厂]]`，工厂返回 nil 表示该来源当前无数据。
-    /// 新增 provider 只需在这里追加工厂，不再往 switch 里堆分支。
-    static let usageContributionFactories: [ProviderKind: [@Sendable (ProviderStatus, QuotaInfo?) -> ClientUsageContribution?]] = [
+    /// 每个 quota 卡的**帧抽取注册表**（取代旧的 contribution 工厂表）：
+    /// `[kind: [帧抽取器]]`。每个抽取器把一个来源（status 字段 / QuotaInfo 详情）
+    /// 转成 0..n 个 `HarnessUsageFrame`；返回空数组表示该来源当前无数据。
+    ///
+    /// 帧的顺序即贡献顺序（内核按首次出现的分组顺序输出），所以这里的数组顺序
+    /// 是展示契约的一部分。新增 provider 只需在这里追一个抽取器。
+    static let usageFrameExtractors: [ProviderKind: [@Sendable (ProviderStatus, QuotaInfo?) -> [HarnessUsageFrame]]] = [
         .codexChatGpt: [
-            { status, info in
-                guard let details = info?.codexUsageDetails,
-                      let daily = details.dailyTokenUsage else { return nil }
-                return ClientUsageContribution(
-                    clientID: ClientID.codex,
-                    displayName: "Codex",
-                    dailyTokenUsage: daily,
-                    recentSamples: details.recentSamples ?? [],
-                    scannedAt: details.scannedAt
-                )
-            },
-            opencodeContribution(slice: { $0.opencodeUsage?.openAISlice },
-                                 sourceProviderID: OpencodeLocalUsage.openAIProviderID)
+            codexFrames,
+            opencodeFrames(sourceProviderID: OpencodeLocalUsage.openAIProviderID) { $0.opencodeUsage?.openAISlice }
         ],
         .antigravity: [
-            nativeContribution(clientID: ClientID.antigravity, displayName: "Antigravity") {
-                $0.antigravityLocalUsage
-            },
-            opencodeContribution(slice: { $0.opencodeUsage?.antigravitySlice },
-                                 sourceProviderID: "antigravity")
+            antigravityFrames,
+            opencodeFrames(sourceProviderID: "antigravity") { $0.opencodeUsage?.antigravitySlice }
         ],
         .minimaxTokenPlan: [
-            mergedContribution(
-                clientID: ClientID.minimaxCode, displayName: "MiniMax Code",
-                make: { DshUsageMerger.mergeMinimax(native: $0.minimaxLocalUsage) },
-                scannedAt: { $0.minimaxLocalUsage?.scannedAt }),
-            mergedContribution(
-                clientID: ClientID.dsh, displayName: "DSH",
-                make: { DshUsageMerger.mergeMinimax(dsh: $0.dshUsage) },
-                scannedAt: { $0.dshUsage?.scannedAt },
-                isTruncated: { DshUsageMerger.isTruncated($0.dshUsage) }),
-            zcodeContribution(
-                slice: { $0.glmLocalUsage?.minimaxSlice },
-                provider: .minimax),
-            opencodeContribution(slice: { $0.opencodeUsage?.minimaxCodingPlanSlice },
-                                 sourceProviderID: OpencodeLocalUsage.minimaxCodingPlanProviderID)
+            minimaxNativeFrames,
+            dshFrames,
+            zcodeSliceFrames(.minimax) { $0.glmLocalUsage?.minimaxSlice },
+            opencodeFrames(sourceProviderID: OpencodeLocalUsage.minimaxCodingPlanProviderID) {
+                $0.opencodeUsage?.minimaxCodingPlanSlice
+            }
         ],
         .glmCodingPlan: [
-            mergedContribution(
-                clientID: ClientID.zcode, displayName: "ZCode",
-                make: { DshUsageMerger.mergeGlm(native: $0.glmLocalUsage) },
-                scannedAt: { $0.glmLocalUsage?.scannedAt }),
-            mergedContribution(
-                clientID: ClientID.dsh, displayName: "DSH",
-                make: { DshUsageMerger.mergeGlm(dsh: $0.dshUsage) },
-                scannedAt: { $0.dshUsage?.scannedAt },
-                isTruncated: { DshUsageMerger.isTruncated($0.dshUsage) }),
-            opencodeContribution(slice: { $0.opencodeUsage?.glmSlice },
-                                 sourceProviderID: OpencodeLocalUsage.glmProviderID)
+            zcodeNativeFrames,
+            dshFrames,
+            opencodeFrames(sourceProviderID: OpencodeLocalUsage.glmProviderID) { $0.opencodeUsage?.glmSlice }
         ],
         .deepseek: [
-            mergedContribution(
-                clientID: ClientID.dsh, displayName: "DSH",
-                make: { DshUsageMerger.mergeDeepseek(dsh: $0.dshUsage, opencode: nil) },
-                scannedAt: { $0.dshUsage?.scannedAt },
-                isTruncated: { DshUsageMerger.isTruncated($0.dshUsage) }),
-            zcodeContribution(
-                slice: { $0.glmLocalUsage?.deepseekSlice },
-                provider: .deepseek),
-            opencodeContribution(slice: { $0.opencodeUsage?.deepseekSlice },
-                                 sourceProviderID: OpencodeLocalUsage.deepseekProviderID)
+            dshFrames,
+            zcodeSliceFrames(.deepseek) { $0.glmLocalUsage?.deepseekSlice },
+            opencodeFrames(sourceProviderID: OpencodeLocalUsage.deepseekProviderID) { $0.opencodeUsage?.deepseekSlice }
         ]
     ]
 
-    /// 单源客户端（antigravity native）：快照存在即贡献。
-    private static func nativeContribution(
-        clientID: String,
-        displayName: String,
-        _ usage: @escaping @Sendable (ProviderStatus) -> ProviderLocalUsage?
-    ) -> @Sendable (ProviderStatus, QuotaInfo?) -> ClientUsageContribution? {
-        { status, _ in
-            guard let snapshot = usage(status) else { return nil }
-            return ClientUsageContribution(
-                clientID: clientID,
-                displayName: displayName,
-                dailyTokenUsage: snapshot.dailyTokenUsage,
-                recentSamples: snapshot.recentSamples ?? [],
-                scannedAt: snapshot.scannedAt
-            )
-        }
+    /// Codex native（`QuotaInfo.codexUsageDetails`）。样本已在 scanner 构造点带
+    /// `codex:` 命名空间，这里保持原样。
+    private static let codexFrames: @Sendable (ProviderStatus, QuotaInfo?) -> [HarnessUsageFrame] = { _, info in
+        guard let details = info?.codexUsageDetails,
+              let daily = details.dailyTokenUsage else { return [] }
+        return [HarnessUsageFrame(
+            clientID: ClientID.codex,
+            quotaProviderID: QuotaProviderID.openAI,
+            daily: daily,
+            samples: details.recentSamples ?? [],
+            namespace: .codex,
+            scannedAt: details.scannedAt
+        )]
     }
 
-    /// `DshUsageMerger` 产出（OpencodeProviderUsage 形态）→ contribution。
-    /// minimax / GLM 的 native+dsh 双源、deepseek 的纯 dsh 都走这条路径。
-    /// 截断标志与 `scannedAt` 一样绕过合并产物、直接读快照——它是快照级口径，
-    /// 不随 provider 分片稀释；`DshUsageMerger.isTruncated` 负责多来源的
-    /// "任一截断即截断"合并规则。
-    private static func mergedContribution(
-        clientID: String,
-        displayName: String,
-        make: @escaping @Sendable (ProviderStatus) -> OpencodeProviderUsage?,
-        scannedAt: @escaping @Sendable (ProviderStatus) -> Date?,
-        isTruncated: @escaping @Sendable (ProviderStatus) -> Bool = { _ in false }
-    ) -> @Sendable (ProviderStatus, QuotaInfo?) -> ClientUsageContribution? {
-        { status, _ in
-            guard let usage = make(status) else { return nil }
-            return ClientUsageContribution(
-                clientID: clientID,
-                displayName: displayName,
-                dailyTokenUsage: usage.dailyTokenUsage,
-                recentSamples: usage.recentSamples,
-                scannedAt: scannedAt(status),
-                isTruncated: isTruncated(status)
-            )
-        }
+    /// Antigravity native（RPC + .db step 统计）。独立账本 → 裸 promptID。
+    private static let antigravityFrames: @Sendable (ProviderStatus, QuotaInfo?) -> [HarnessUsageFrame] = { status, _ in
+        guard let snapshot = status.antigravityLocalUsage else { return [] }
+        return [HarnessUsageFrame(
+            clientID: ClientID.antigravity,
+            quotaProviderID: QuotaProviderID.antigravity,
+            daily: snapshot.dailyTokenUsage,
+            samples: snapshot.recentSamples ?? [],
+            namespace: .native,
+            scannedAt: snapshot.scannedAt
+        )]
     }
 
-    /// ZCode 合并来源：`mergeZcodeUsage` 开关 + ZCode 账本里对应 provider 的分片
-    /// （`minimax` / `deepseek`）。与 OpenCode 贡献同构：ZCode 也是一份多 provider
-    /// 账本，只是扫描器（`GlmZcodeLocalUsageScanner`）把这些 provider 的行挂在
-    /// `glmLocalUsage.providerSlices` 上。GLM 卡消费智谱系 native 用量，不走这里。
-    private static func zcodeContribution(
-        slice: @escaping @Sendable (ProviderStatus) -> OpencodeProviderUsage?,
-        provider: ZcodeProviderSlice
-    ) -> @Sendable (ProviderStatus, QuotaInfo?) -> ClientUsageContribution? {
+    /// MiniMax Code native（v2 runtime-state 单库 SQL）。独立账本 → 裸 promptID。
+    private static let minimaxNativeFrames: @Sendable (ProviderStatus, QuotaInfo?) -> [HarnessUsageFrame] = { status, _ in
+        guard let snapshot = status.minimaxLocalUsage else { return [] }
+        return [HarnessUsageFrame(
+            clientID: ClientID.minimaxCode,
+            quotaProviderID: QuotaProviderID.minimax,
+            daily: snapshot.dailyTokenUsage,
+            samples: snapshot.recentSamples ?? [],
+            namespace: .native,
+            scannedAt: snapshot.scannedAt
+        )]
+    }
+
+    /// ZCode 智谱系 native（`GlmZcodeLocalUsageScanner`）。智谱行走 GLM 卡，
+    /// 样本保持裸 promptID（与既有行为一致），非智谱分片见 `zcodeSliceFrames`。
+    private static let zcodeNativeFrames: @Sendable (ProviderStatus, QuotaInfo?) -> [HarnessUsageFrame] = { status, _ in
+        guard let snapshot = status.glmLocalUsage else { return [] }
+        return [HarnessUsageFrame(
+            clientID: ClientID.zcode,
+            quotaProviderID: QuotaProviderID.zhipu,
+            daily: snapshot.dailyTokenUsage,
+            samples: snapshot.recentSamples ?? [],
+            namespace: .native,
+            scannedAt: snapshot.scannedAt
+        )]
+    }
+
+    /// DSH（共享 session 账本）→ 每 provider 键一帧。
+    /// `isTruncated` 是快照级口径（文件数/字节预算挤出最旧 session），不随
+    /// provider 分片稀释：每一帧都带快照的截断位，由内核做"任一截断即截断"。
+    private static let dshFrames: @Sendable (ProviderStatus, QuotaInfo?) -> [HarnessUsageFrame] = { status, _ in
+        DshHarnessFrames.frames(
+            from: status.dshUsage,
+            quotaProviderID: status.kind.quotaProviderID
+        )
+    }
+
+    /// ZCode 账本里的非智谱 provider 分片（`minimax` / `deepseek`），并入
+    /// MiniMax / DeepSeek 卡。受 `mergeZcodeUsage` 开关约束（该开关由
+    /// `clientBindings` 的 zcode → <quota provider> 绑定派生）。
+    private static func zcodeSliceFrames(
+        _ provider: ZcodeProviderSlice,
+        _ slice: @escaping @Sendable (ProviderStatus) -> OpencodeProviderUsage?
+    ) -> @Sendable (ProviderStatus, QuotaInfo?) -> [HarnessUsageFrame] {
         { status, _ in
-            guard status.mergeZcodeUsage, let usage = slice(status) else { return nil }
-            return ClientUsageContribution(
+            guard status.mergeZcodeUsage, let usage = slice(status) else { return [] }
+            return [HarnessUsageFrame(
                 clientID: ClientID.zcode,
-                displayName: "ZCode",
-                dailyTokenUsage: usage.dailyTokenUsage,
-                recentSamples: ZcodeProviderSlice.namespacedSamples(usage, for: provider),
+                sourceKey: provider.providerPrefix,
+                quotaProviderID: status.kind.quotaProviderID,
+                daily: usage.dailyTokenUsage,
+                samples: usage.recentSamples,
+                namespace: .zcodeSlice,
                 scannedAt: status.glmLocalUsage?.scannedAt
-            )
+            )]
         }
     }
 
-    /// OpenCode 合并来源：`mergeOpencodeUsage` 开关 + 对应 provider 分片。
-    private static func opencodeContribution(
-        slice: @escaping @Sendable (ProviderStatus) -> OpencodeProviderUsage?,
-        sourceProviderID: String
-    ) -> @Sendable (ProviderStatus, QuotaInfo?) -> ClientUsageContribution? {
+    /// OpenCode provider 分片（一份多 provider 账本）。受 `mergeOpencodeUsage`
+    /// 开关约束；样本加 `opencode:<provider>:` 命名空间。
+    private static func opencodeFrames(
+        sourceProviderID: String,
+        _ slice: @escaping @Sendable (ProviderStatus) -> OpencodeProviderUsage?
+    ) -> @Sendable (ProviderStatus, QuotaInfo?) -> [HarnessUsageFrame] {
         { status, _ in
-            guard status.mergeOpencodeUsage, let usage = slice(status) else { return nil }
-            return ClientUsageContribution(
+            guard status.mergeOpencodeUsage, let usage = slice(status) else { return [] }
+            return [HarnessUsageFrame(
                 clientID: ClientID.openCode,
-                displayName: "OpenCode",
-                dailyTokenUsage: usage.dailyTokenUsage,
-                recentSamples: OpencodeUsageMerger.opencodeSamples(usage, providerID: sourceProviderID),
+                sourceKey: sourceProviderID,
+                quotaProviderID: status.kind.quotaProviderID,
+                daily: usage.dailyTokenUsage,
+                samples: usage.recentSamples,
+                namespace: .opencode,
                 scannedAt: status.opencodeUsage?.scannedAt
-            )
+            )]
         }
     }
 }
