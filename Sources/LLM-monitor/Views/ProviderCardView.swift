@@ -2,6 +2,13 @@ import SwiftUI
 import AppKit
 
 /// 状态指示点 — 健康 / 警告 / 危险
+///
+/// ⚠️ **当前没有渲染消费方**：唯一的调用点是 provider 卡标题行那枚状态点，而它随
+/// 菜单那份渲染形态一起删掉了（见 `ProviderCardLayout`）——浮层里那枚点紧挨着
+/// 品牌图标，读成"图标带了个绿点"，状态本身由同一行的 `ProviderStateLabel`
+/// 胶囊说清。保留本视图而不是删掉，是因为 `AppState`（系统健康度口径）与
+/// `Color+Theme`（`warningTint`）的注释仍以它为参照；新地方要用状态点时先想清楚
+/// 是不是又要在一行里挤第二个圆。
 struct StatusIndicator: View {
     let level: HealthLevel?
     var size: CGFloat = 8
@@ -32,19 +39,24 @@ struct StatusIndicator: View {
     }
 }
 
-/// 同一张 `ProviderCardView` 在两种宿主下的排版规则。
+/// 同一张 `ProviderCardView` 的排版规则。
 ///
-/// 两个宿主的信息密度诉求相反：主菜单一屏要放下所有 provider，卡片必须靠
-/// hover 折叠细节；dock 详情浮层只有一张卡、且不接受鼠标事件，折叠区展不开，
-/// 只能全部就地展开——于是同一份内容在浮层里明显更高、容易超出屏幕。
+/// 菜单内容区已改为 Harness（客户端）视角，**不再渲染 provider 卡**：额度那一面
+/// 由边缘状态窗浮层与菜单底部的 provider 兜底行（`ProviderStatusStripView`，hover
+/// 弹出的就是这张卡）承担。因此这张卡只剩**一个**渲染宿主形态：`.alwaysVisible`
+/// （浮层 `ignoresMouseEvents = true`，折叠区展不开，就地展开是唯一选项）。
 ///
-/// 每条规则都只由 `HoverRevealMode` 决定，但**含义各不相同**，调用点直接写
-/// `mode == .alwaysVisible` 会丢掉"这一处到底在改什么"，所以各自命名。
+/// 曾经按 `HoverRevealMode` 分叉的七条规则已随之收敛：能证明没有消费方的那几条
+/// 连同它们守护的菜单分支一起删掉，剩下的三条**消费方在 `QuotaViews` /
+/// `QuotaHoverViews`**，不在本次清理的文件范围内，仍按环境值判断（生产路径上
+/// 它们只会取到 `.alwaysVisible`）。
 enum ProviderCardLayout {
-    /// 单个 model 的进度条提到**标题上方**（dock）。
+    /// 单个 model 的进度条提到**标题上方**。
     ///
-    /// 标题回答"这是哪个套餐"、条回答"还剩多少"，浮层里先看条更直接；
-    /// 菜单保持标题在上——那是这行的名字，条是它的修饰。
+    /// 标题回答"这是哪个套餐"、条回答"还剩多少"，浮层里先看条更直接。
+    ///
+    /// 消费方在 `QuotaViews`（model 行 / 统计块），不在 `ProviderCardView` 内，
+    /// 所以这条规则连同它在别处的分支都保留——只删"没有消费方"的规则。
     static func liftsProgressBar(mode: HoverRevealMode) -> Bool {
         mode == .alwaysVisible
     }
@@ -62,79 +74,55 @@ enum ProviderCardLayout {
     // dock 侧的"两列"是另一回事：`QuotaBarWithMetadata` 的元信息行本来就是
     // `5h 62%  周 80%` 一行并排，不需要任何谓词。
 
-    /// 重置额度卡由**卡片**画（dock），不在 model 列表尾部（菜单）。
-    ///
-    /// 它讲的是"这个 provider 的额度什么时候回补"，是整张卡的一个属性而不是某个
-    /// model 的属性。dock 侧跟高峰期倒计时一起夹在进度条下方（见
-    /// `ProviderCardView.dockQuotaSummaryRows`）；菜单侧留在 model 列表末尾。
-    static func hoistsResetCredits(mode: HoverRevealMode) -> Bool {
-        mode == .alwaysVisible
-    }
-
-    /// 高峰期倒计时由**卡片**画（dock），不在额度行里。
-    ///
-    /// 它回答"现在能不能便宜用"，是这一屏额度概览的一部分；留在额度行里会被
-    /// 一堆百分比和明细挤到下面。dock 侧它跟重置卡一起排在进度条下方、统计表
-    /// 上方（见 `ProviderCardView.dockQuotaSummaryRows`）。
-    static func hoistsPeakIndicator(mode: HoverRevealMode) -> Bool {
-        mode == .alwaysVisible
-    }
-
-    /// 标题行不画状态点（dock）。
-    ///
-    /// 它紧挨着品牌图标，两个小圆挤在一起读起来是"图标带了个绿点"；状态本身在
-    /// 同一行右侧那颗胶囊里已经写清楚了。菜单侧保留：那里没有右侧胶囊的替代。
-    static func hidesHeaderStatusDot(mode: HoverRevealMode) -> Bool {
-        mode == .alwaysVisible
-    }
-
-    /// `input` 与 `cached` 拆成两行（dock）。
+    /// `input` 与 `cached` 拆成两行。
     ///
     /// 原本是 `input: 1.2M (+860K cached)`——cached 藏在括号里，扫一眼
     /// 只会读到 input，而 cache 命中率恰恰是判断"这次调用贵不贵"的关键数字。
     /// 浮层里一行只放一件事，行高是横向空间换来的。
+    ///
+    /// 消费方在 `QuotaHoverViews`（用量 hover 视图），保留理由同 `liftsProgressBar`。
     static func splitsCachedInputRow(mode: HoverRevealMode) -> Bool {
         mode == .alwaysVisible
     }
 
-    /// `prompts` 与 `rounds` 拆成两行，`rounds` 跟在 `prompts` 下面（dock）。
+    /// `prompts` 与 `rounds` 拆成两行，`rounds` 跟在 `prompts` 下面。
     ///
     /// 原本挤在一行 `prompts: 42 (128 rounds)`。当初是三列并排逼出来的——每列只有
     /// 约 140pt，挤一行必然换行或截断。三列撤掉后触发条件没了，但 dock 侧的行是
     /// 整行宽的，一行一个数字仍然更好读，留着不拆反而像半途而废。
+    ///
+    /// 消费方在 `QuotaHoverViews`，保留理由同 `liftsProgressBar`。
     static func splitsRoundsRow(mode: HoverRevealMode) -> Bool {
         mode == .alwaysVisible
     }
 
-    /// dock 详情浮层把内容拆成**两张卡片**，各自的标题画在卡片**外面**的上方。
-    ///
-    /// 切分点不是新划的：额度那一组是"现在"、7 天用量那一组是"历史"，两者之间
-    /// 本来就有 `HoverInfoRow` 的那条分隔线。卡片边界取代它之后，两组各自是一张
-    /// 有边界的卡，下半截不会再被读成上半截的附表。
-    ///
-    /// 菜单侧不拆：主菜单卡片是折叠的，每张卡都很矮，拆成两张只会让整列菜单
-    /// 多出一倍的卡片间距与标题行。菜单靠 `hoverRevealMode` 默认值保持原样。
-    static func splitsIntoTwoCards(mode: HoverRevealMode) -> Bool {
-        mode == .alwaysVisible
-    }
+    // 已删除的四条（连同它们守护的菜单分支）：`hoistsResetCredits`、
+    // `hoistsPeakIndicator`、`hidesHeaderStatusDot`、`splitsIntoTwoCards`。
+    //
+    // 它们的消费方**全在 `ProviderCardView.swift` 内**，而菜单侧那条 `.onHover`
+    // 分支已经随 `menuBody` 一起没有渲染方了：重置卡与高峰期倒计时改由卡片层
+    // 无条件绘制，标题行的状态点不再画，卡片恒为「两张卡 + 标题在卡外」。
+    // 规则还在、却永远只取到 `true`，测试再断言它返回 `true` 就是三方一起给假
+    // 信号——这正是当初 `expandsAccountSection` 被拆掉时的同一个组合。
 }
 
 /// provider 卡片 — 一个 provider 的全部信息
 ///
 /// `Equatable`：卡片渲染依赖 `status`（值类型）**和** `@Environment(\.hoverRevealMode)`
 /// （排版形态，见 `ProviderCardLayout`）。配合调用点的 `.equatable()`，任一 provider
-/// 的任一状态变化只会重算真正变化的那几张卡，而不是整个菜单面板。
+/// 的任一状态变化只会重算真正变化的那几张卡，而不是整屏菜单面板。
 ///
 /// ⚠️ `==` 只比较 `status`，**不**比较 `revealMode` —— 它是 Environment，取不到。
-/// 当前安全：唯一的 `.equatable()` 调用点在 `MenuContentView` 里，而那里
-/// `revealMode` 恒为默认的 `.onHover`；dock 浮层是每次 `updatePopover` 重建整棵
-/// `rootView`，不走这个缓存。将来若有人在两个 mode 都可能出现的地方加
-/// `.equatable()`，就必须把 `revealMode` 也纳入比较。
+/// 保留这条注释是因为比较仍然只按 `status` 走：菜单里已无 provider 卡，而唯一两个
+/// 宿主（dock 浮层、菜单兜底行的 hover 卡）都是每次重建 `rootView` / 直接新建视图，
+/// 不走任何跨帧缓存。将来若有人在仍可能出现两种 mode 的地方加 `.equatable()`，
+/// 就必须把 `revealMode` 也纳入比较。
 struct ProviderCardView: View, Equatable {
     let status: ProviderStatus
 
-    /// 宿主决定详情是折叠（主菜单 hover 浮层）还是就地展开（dock 详情浮层）。
-    /// 两种形态的排版差别都挂在这个值上，见 `header` / `content`。
+    /// 宿主决定详情是折叠还是就地展开。见 `ProviderCardLayout`：生产路径上恒为
+    /// `.alwaysVisible`（两个宿主都是不吃鼠标事件的浮层），保留环境读取是因为
+    /// `QuotaViews` / `QuotaHoverViews` 里的三条规则仍在读它。
     @Environment(\.hoverRevealMode) private var revealMode
 
     /// 卡片内容层四周的内边距。`EdgeDockTheme.popoverWidth` 推导宽度时要加上
@@ -157,30 +145,23 @@ struct ProviderCardView: View, Equatable {
         // footer. The projection is derived only from `status`, so compute it
         // once and pass the value down to both consumers.
         let projection = status.usageProjection(for: status.lastSuccess)
-
-        if ProviderCardLayout.splitsIntoTwoCards(mode: revealMode) {
-            dockBody(projection: projection)
-        } else {
-            menuBody(projection: projection)
-        }
+        dockBody(projection: projection)
     }
 
-    /// 菜单：**一整张卡片**，标题（`header`）在卡片里面，和主菜单的信息密度一致。
-    private func menuBody(projection: ProviderUsageProjection) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            header
-            content(projection: projection)
-        }
-        .padding(Self.contentPadding)
-        .background(cardBackground)
-        .overlay(cardBorder)
-    }
-
-    /// dock 详情浮层：**两张卡片**，各自的标题画在卡片**外面**的上方。
+    /// **两张卡片**，各自的标题画在卡片**外面**的上方。
     ///
-    /// 标题 1 就是卡片头部那一行（状态点 + 品牌图标 + provider 名 + 套餐胶囊，
-    /// 右侧是刷新时间/状态），它被提到卡外，于是"第一张卡是什么"由它回答，
-    /// 不再需要额外的「额度」小标题。
+    /// 切分点不是新划的：额度那一组是"现在"、7 天用量那一组是"历史"，两者之间
+    /// 本来就有 `HoverInfoRow` 的那条分隔线。卡片边界取代它之后，两组各自是一张
+    /// 有边界的卡，下半截不会再被读成上半截的附表。
+    ///
+    /// 这里曾经是 `if splitsIntoTwoCards(mode:) { dockBody } else { menuBody }`。
+    /// 菜单改成客户端视角后 `menuBody`（单卡 + 卡内标题 + 账号折叠区）没有任何
+    /// 渲染方，判据也随之失去意义——**唯一剩下的形态就是这一种**，所以直接
+    /// 渲染，不再假装还有第二种。
+    ///
+    /// 标题 1 就是卡片头部那一行（品牌图标 + provider 名 + 套餐胶囊，右侧是
+    /// 刷新时间/状态），它被提到卡外，于是"第一张卡是什么"由它回答，不再需要
+    /// 额外的「额度」小标题。
     ///
     /// 标题 2 是「最近7天token用量」，右侧同一行放数据新鲜度（更新于 / 计算中…），
     /// 因此图表自己那行标题在 dock 形态下不画（见 `SevenDayTokenUsageHoverView`）。
@@ -203,14 +184,13 @@ struct ProviderCardView: View, Equatable {
                 }
             } else {
                 dockCard {
-                    // `between` 在这里**同样**要传：dock 形态下重置卡与高峰期倒计时
-                    // 是由卡片层画的（`QuotaSummary` 会因为 `hoistsResetCredits` /
-                    // `hoistsPeakIndicator` 为 true 而不再自己画）。曾经只在 `.ok`
-                    // 分支传，`.loading` / `.failed` 的回退路径忘了——那两种状态下
-                    // 谁也不画，两头落空。`.loading` 每次刷新都会短暂出现（`AppState`
-                    // 在每次 `refreshProviderDirectly` 开头就置位），于是重置卡和
-                    // 倒计时在 dock 里**每次刷新都闪一下**；`.failed` 则是一直不见。
-                    // 缓存额度还在的时候（正是需要看"上次剩多少"的时候）丢信息最亏。
+                    // `between` 在这里**同样**要传：重置卡与高峰期倒计时一律由卡片层
+                    // 画（`QuotaSummary` 不再自己画）。曾经只在 `.ok` 分支传，
+                    // `.loading` / `.failed` 的回退路径忘了——那两种状态下谁也不画，
+                    // 两头落空。`.loading` 每次刷新都会短暂出现（`AppState` 在每次
+                    // `refreshProviderDirectly` 开头就置位），于是重置卡和倒计时在浮层
+                    // 里**每次刷新都闪一下**；`.failed` 则是一直不见。缓存额度还在的
+                    // 时候（正是需要看"上次剩多少"的时候）丢信息最亏。
                     content(projection: projection, quotaBetween: AnyView(dockQuotaSummaryRows))
                 }
             }
@@ -243,7 +223,7 @@ struct ProviderCardView: View, Equatable {
     @ViewBuilder
     private var dockQuotaSummaryRows: some View {
         VStack(alignment: .leading, spacing: 6) {
-            resetCreditsRow(divides: false)
+            resetCreditsRow
             peakIndicator
         }
     }
@@ -285,8 +265,8 @@ struct ProviderCardView: View, Equatable {
     /// 卡片表面：半透明系统控件底色 + 品牌色描边。
     ///
     /// 曾经有第二套画法（`.transparent`：不画表面，直接坐在宿主的材质上），
-    /// 只给 dock 的详情浮层用。那条路已经撤掉了——dock 浮层现在和菜单弹出用
-    /// **同一张卡片**，"卡片长什么样"不该再有一个按调用方分叉的开关。
+    /// 只给 dock 的详情浮层用。那条路已经撤掉了——两个宿主（dock 浮层、菜单兜底行
+    /// 的 hover 卡）用**同一张卡片**，"卡片长什么样"不该再有一个按调用方分叉的开关。
     @ViewBuilder
     private var cardBackground: some View {
         RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -311,55 +291,9 @@ struct ProviderCardView: View, Equatable {
         }
     }
 
-    /// 菜单卡片的头部：标题行 + 账号信息的 hover 折叠区。
-    ///
-    /// **dock 侧不是靠某个 mode 谓词把这里关掉的，而是根本不调用这个属性**：
-    /// `dockBody` 的标题行直接用 `headerContent`。这就是"dock 不画账号折叠区"的
-    /// 全部实现——一个 `ProviderCardLayout.expandsAccountSection` 之类的谓词放在那里
-    /// 只会制造"规则存在 ⇒ 有地方在用"的错觉：谓词返回 true 而没有任何消费方，
-    /// 测试再断言它返回 true，三方一起给假信号（这个组合本分支真出现过一次，
-    /// `hoistsResetCredits` 就是从它身上拆下来的）。
-    ///
-    /// 折叠区在 dock 里本来就展不开（面板 `ignoresMouseEvents = true`），所以就地
-    /// 展开不是选项，是唯一选项——但既然浮层不收鼠标事件，低频的邮箱/数据来源
-    /// 塞在最抢眼的位置也没有意义，直接不画。
-    @ViewBuilder
-    private var header: some View {
-        if status.kind == .antigravity {
-            HoverInfoRow {
-                headerContent
-            } detail: {
-                AntigravityAccountHoverView(
-                    planLabel: planLabel,
-                    accountEmail: accountEmail
-                )
-            }
-        } else if status.kind == .codexChatGpt {
-            HoverInfoRow {
-                headerContent
-            } detail: {
-                ChatGPTAccountHoverView(
-                    planLabel: planLabel,
-                    accountEmail: accountEmail
-                )
-            }
-        } else if status.kind == .deepseek {
-            HoverInfoRow {
-                headerContent
-            } detail: {
-                DeepseekAccountHoverView(
-                    planLabel: planLabel,
-                    balanceDetail: status.lastSuccess?.balanceDetail
-                )
-            }
-        } else {
-            headerContent
-        }
-    }
-
     /// **高峰期倒计时**。只 GLM 与 DeepSeek 有窗口概念。
     ///
-    /// dock 里它排在进度条下方（`dockQuotaSummaryRows`）：它回答"现在能不能便宜
+    /// 它排在进度条下方（`dockQuotaSummaryRows`）：它回答"现在能不能便宜
     /// 用"，属于这一屏的额度概览，而不是卡片标题的一部分。
     @ViewBuilder
     private var peakIndicator: some View {
@@ -377,19 +311,19 @@ struct ProviderCardView: View, Equatable {
 
     /// **重置卡**，折叠态：只总数 + 最近一张到期时间。
     ///
-    /// 与菜单同一行组件，但 `revealsDetail: false`——那个浮层不吃鼠标事件，
-    /// `HoverInfoRow` 在 `alwaysVisible` 下又总会展开，每张卡的明细会变成常驻。
-    /// 折叠态那一句才是该常驻的信息。
+    /// `revealsDetail: false`——浮层不吃鼠标事件，`HoverInfoRow` 在
+    /// `alwaysVisible` 下又总会展开，每张卡的明细会变成常驻；折叠态那一句才是
+    /// 该常驻的信息。
     ///
-    /// - Parameter divides: 是否在前面画一条分隔线。菜单里它紧跟在标题行后面，
-    ///   需要那条线；dock 的第一张卡片里它是**卡片的第一个元素**，卡片边界已经
-    ///   在分隔，再画一条线就是卡片顶部悬着一条横线。
+    /// 它只由卡片层画（`dockQuotaSummaryRows`），且是那张卡的第一个元素：卡片
+    /// 边界已经在它上方，再画一条分隔线就是卡片顶部悬着一条横线。曾经这里有个
+    /// `divides:` 参数给"菜单里紧跟标题行"的那条分隔线，菜单那份渲染方删掉后
+    /// 恒为 `false`，参数随之删除。
     @ViewBuilder
-    private func resetCreditsRow(divides: Bool) -> some View {
+    private var resetCreditsRow: some View {
         if let info = status.lastSuccess,
            let resets = info.resetCredits,
            resets.shouldDisplay {
-            if divides { Divider().opacity(0.3) }
             CompactResetCreditsRow(
                 resets: resets,
                 refreshIntervalSeconds: status.refreshIntervalSeconds,
@@ -400,11 +334,10 @@ struct ProviderCardView: View, Equatable {
 
     private var headerContent: some View {
         HStack(spacing: 8) {
-            // dock 的标题行不画状态点：它紧挨着品牌图标，两个小圆挤在一起读起来
+            // 标题行不画状态点：它紧挨着品牌图标，两个小圆挤在一起读起来
             // 是"图标带了个绿点"，而状态本身在右侧那颗胶囊里已经写清楚了。
-            if !ProviderCardLayout.hidesHeaderStatusDot(mode: revealMode) {
-                StatusIndicator(level: status.aggregateHealthLevel())
-            }
+            // （曾经由 `ProviderCardLayout.hidesHeaderStatusDot` 决定，菜单那份
+            // 渲染方随 `menuBody` 一起删掉之后判据恒为 true，故一并删除。）
             BrandLogoView(kind: status.kind)
             Text(displayTitle)
                 .font(MenuTypography.cardTitle)
@@ -448,13 +381,11 @@ struct ProviderCardView: View, Equatable {
         status.lastSuccess?.planLabel
     }
 
-    private var accountEmail: String? {
-        status.lastSuccess?.accountEmail
-    }
-
     @ViewBuilder
-    /// `quotaBetween`：dock 形态下夹在进度条与用量之间的卡片级内容（重置卡 + 高峰期）。
-    /// 菜单侧不传（默认空）——菜单由 `QuotaSummary` 自己画那两样。
+    /// `quotaBetween`：卡片级信息（重置卡 + 高峰期倒计时），由 `dockBody` 组装
+    /// 后夹在进度条与用量之间。`.loading` / `.failed` 两条非 `.ok` 分支也必须传，
+    /// 否则那两种状态下谁也不画（`.loading` 每次刷新都短暂出现，两头落空会让
+    /// 重置卡与倒计时在浮层里**每次刷新闪一下**；`.failed` 则是一直不见）。
     private func content(
         projection: ProviderUsageProjection,
         quotaBetween: AnyView = AnyView(EmptyView())
@@ -511,10 +442,9 @@ struct ProviderCardView: View, Equatable {
                         refreshIntervalSeconds: status.refreshIntervalSeconds,
                         excludeWindows: excludeWindows,
                         deepseekPeakWindow: status.deepseekPeakWindow ?? .defaultWindow,
-                        // 与 `.loading` 那一支同源，别漏。dock 形态下重置卡与高峰期
-                        // 倒计时**只**由这一格提供（`QuotaSummary` 会因
-                        // `hoistsResetCredits` / `hoistsPeakIndicator` 为 true 而不再
-                        // 自己画，`quotaSection` 里的 GLM 倒计时这条路也走不到）。
+                        // 与 `.loading` 那一支同源，别漏。重置卡与高峰期倒计时**只**由
+                        // 这一格提供（`QuotaSummary` 不再自己画，`quotaSection` 里的
+                        // GLM 倒计时这条路也已撤掉）。
                         // 失败时恰恰最该看到它——用户要知道的是"上次还剩多少、
                         // 什么时候回补"，而这条 `lastSuccess` 正是那份数据的来源。
                         betweenBarAndColumns: quotaBetween
@@ -526,15 +456,16 @@ struct ProviderCardView: View, Equatable {
         }
     }
 
-    /// 「额度」这一段：额度窗口 + GLM 闲时峰值 + GLM 活动套餐余额。
+    /// 「额度」这一段：额度窗口 + GLM 活动套餐余额。
     ///
-    /// 抽出来只为一件事：让"dock 把它放进第一张卡片、菜单放进唯一那张卡片"这个
-    /// 分叉落在**这一段的外面**。两种排版各写一遍 `QuotaSummary` 调用，改参数时
-    /// 漏一处不会编译报错，只会让某一种形态悄悄少一个参数。
+    /// 抽出来只为一件事：让"卡片把它放进第一张、`.ok` 与否各走各的"这个分叉落在
+    /// **这一段的外面**。两种调用各写一遍 `QuotaSummary` 调用，改参数时漏一处不会
+    /// 编译报错，只会让某一种状态悄悄少一个参数。
     ///
-    /// `.loading` / `.failed` 两条分支不用它：它们各自要在额度行前面加状态说明
-    /// （"正在获取…" / 红色错误行 + 上次成功时间），且失败态整块压 0.55 透明度，
-    /// 硬套进来反而要在这段里再分支。
+    /// GLM 闲时峰值倒计时**不在**这里画：它由卡片层无条件提供（`peakIndicator`
+    /// 经 `dockQuotaSummaryRows` 夹在进度条下方）。曾经这里有一支
+    /// `!hoistsPeakIndicator` 的菜单分支——菜单那份渲染方删掉后它永远为 false，
+    /// 于是同一个倒计时会出现两次。
     @ViewBuilder
     private func quotaSection(
         info: QuotaInfo,
@@ -552,13 +483,6 @@ struct ProviderCardView: View, Equatable {
                 deepseekPeakWindow: status.deepseekPeakWindow ?? .defaultWindow,
                 betweenBarAndColumns: between
             )
-            if status.kind == .glmCodingPlan,
-               let peak = status.glmPeakWindow,
-               !ProviderCardLayout.hoistsPeakIndicator(mode: revealMode) {
-                // dock 里它已经排到进度条下方（见 `dockQuotaSummaryRows`），
-                // 这里再画一遍就是同一个倒计时出现两次。
-                GlmPeakIndicatorView(window: peak)
-            }
             if status.kind == .glmCodingPlan {
                 GlmActivityPlanBalancesView(balances: status.glmLocalUsage?.activityPlanBalances)
             }
@@ -579,8 +503,8 @@ struct ProviderCardView: View, Equatable {
     /// 所有卡片统一展示 quota provider 关联的客户端 token 汇总；客户端来源
     /// 只保留在 hover 明细中，避免卡片主体出现复杂的多来源信息。
     ///
-    /// - Parameter part: dock 把这一块拆进两张卡片（汇总进上一张、图表进下一张），
-    ///   菜单侧走 `.combined`。拆法见 `LocalUsagePart`。
+    /// - Parameter part: 这一块被拆进两张卡片（汇总进上一张、图表进下一张），
+    ///   拆法见 `LocalUsagePart`。
     @ViewBuilder
     private func localUsage(projection: ProviderUsageProjection, part: LocalUsagePart) -> some View {
         makeLocalUsageFooter(
@@ -738,34 +662,25 @@ struct ProviderStateLabel: View {
     }
 }
 
-/// 额度摘要：每个 model 一组 + reset credits
+/// 额度摘要：每个 model 一组。**重置卡与高峰期倒计时不在这里**——它们是
+/// provider 级的信息，一律由卡片层画（`ProviderCardView.dockQuotaSummaryRows`），
+/// 经 `betweenBarAndColumns` 夹在第一个 model 行的进度条下方。
 struct QuotaSummary: View {
     let info: QuotaInfo
     let providerKind: ProviderKind
     let accentColor: AccentColor
     let localSamples: [LocalTokenUsageSample]
-    /// R3: reset credits 过期判定用到的刷新间隔（秒）。
+    /// R3: reset credits 过期判定用到的刷新间隔（秒）。卡片层那张重置卡自己也会
+    /// 传同一个值（`ProviderCardView.resetCreditsRow`）。
     var refreshIntervalSeconds: Int = 300
     /// 额度窗口 hover 统计需要排除的时间窗口（GLM 闲时任务不消耗积分）。
     /// 本地 token 柱图不走这条路径，仍包含闲时任务。
     var excludeWindows: [GlmOffPeakWindow] = []
     /// DeepSeek 高峰期窗口（仅 `.deepseek` 用到；其余 provider 用默认值占位）。
     var deepseekPeakWindow: DeepseekPeakWindow = .defaultWindow
-    /// dock：夹在「进度条块」与「本地用量」之间的卡片级信息（重置卡、高峰期），
-    /// 由 `ProviderCardView.dockBody` 组装。菜单不传，默认空。
+    /// 夹在「进度条块」与「本地用量」之间的卡片级信息（重置卡、高峰期），
+    /// 由 `ProviderCardView.dockBody` 组装。
     var betweenBarAndColumns: AnyView = AnyView(EmptyView())
-    /// dock 详情浮层把高峰期倒计时提到卡片头部；菜单保持它在余额行里。
-    @Environment(\.hoverRevealMode) private var revealMode
-
-    /// 重置卡是否画在这一块（model 列表尾部）。dock 侧画在卡片头部
-    /// （`ProviderCardView.resetCreditsRow`），两处都画就是同一张卡出现两次。
-    private var showsResetCredits: Bool {
-        !ProviderCardLayout.hoistsResetCredits(mode: revealMode)
-    }
-
-    private var showsPeakIndicator: Bool {
-        !ProviderCardLayout.hoistsPeakIndicator(mode: revealMode)
-    }
 
     private var displayedModels: [ModelQuota] {
         info.activeModels
@@ -793,7 +708,9 @@ struct QuotaSummary: View {
                         balanceDetail: info.balanceDetail,
                         tint: accentColor(for: model),
                         peakWindow: deepseekPeakWindow,
-                        showsPeakIndicator: showsPeakIndicator,
+                        // 高峰期倒计时一律由卡片层画，余额行里不再重复。
+                        // 曾经是 `!hoistsPeakIndicator`，菜单那份渲染方删掉后恒为 false。
+                        showsPeakIndicator: false,
                         between: between
                     )
                 } else {
@@ -815,19 +732,11 @@ struct QuotaSummary: View {
             }
 
             // 一个 model 都没有时 `ForEach` 不产出任何行，而卡片级信息是挂在
-            // `index == 0` 上的——它会跟着一起消失。dock 浮层里这块（重置卡 +
-            // 高峰期）是"这个 provider 还剩多少、什么时候回补"的**唯一**出处，
-            // 丢了就只剩一张空卡。菜单侧 `betweenBarAndColumns` 恒为空，所以这
-            // 条分支对菜单是 no-op。
+            // `index == 0` 上的——它会跟着一起消失。那块（重置卡 + 高峰期）是
+            // "这个 provider 还剩多少、什么时候回补"的**唯一**出处，丢了就只剩
+            // 一张空卡。
             if displayedModels.isEmpty {
                 betweenBarAndColumns
-            }
-
-            if let resets = info.resetCredits, resets.shouldDisplay, showsResetCredits {
-                if !displayedModels.isEmpty {
-                    Divider().opacity(0.3)
-                }
-                CompactResetCreditsRow(resets: resets, refreshIntervalSeconds: refreshIntervalSeconds)
             }
         }
     }

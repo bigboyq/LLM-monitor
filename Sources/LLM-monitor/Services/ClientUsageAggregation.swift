@@ -66,7 +66,7 @@ enum ClientUsageAggregation {
     ///
     /// GLM 分类行取 `GlmUsageCategory.allCases` 的声明序（枚举加 case 时行序
     /// 自动跟随）；两个分片行来自 MiniMax / DeepSeek 卡的 ZCode 贡献
-    /// （`zcodeContribution`，受 `mergeZcodeUsage` 与 `clientBindings` 门控），
+    /// （由 `clientBindings` 的 zcode → <quota> 绑定门控），
     /// 它们不是套餐而是 provider，固定排在分类行之后。
     static func zcodeRowRank(_ row: ClientProviderUsageSummary) -> Int {
         let glmCount = GlmUsageCategory.allCases.count
@@ -301,6 +301,10 @@ struct HarnessSection: Identifiable, Equatable, Sendable {
     let buckets: TokenUsageBuckets
     let value: MixedCurrencyEstimate
     let rows: [HarnessModelRow]
+    /// 本段任一贡献来源的统计口径被截断（如 DSH 文件数/字节预算挤出最旧 session）。
+    /// 段头据此加橙色截断提示——**段级**聚合，规则与
+    /// `ProviderUsageProjection.isTruncated` 相同（任一来源截断即整段截断）。
+    let isTruncated: Bool
 
     var id: String { clientID }
     var totalTokens: Int { buckets.totalTokens }
@@ -322,6 +326,13 @@ struct HarnessTodaySummary: Equatable, Sendable {
     let value: MixedCurrencyEstimate
     /// 按今日 token 降序；没有今日活动的客户端整段不出现。
     let sections: [HarnessSection]
+    /// 任一启用数据源正在扫描本地用量 → 全局汇总块显示「计算中…」。
+    /// 取自各卡的 `effectiveLocalUsageFreshness`（卡级聚合已按"扫描 > 失败 > 脏 > 干净"
+    /// 取最差），所以任一来源在扫就点亮，与 dock 浮层那枚胶囊同一口径。
+    let isScanningLocalUsage: Bool
+    /// 各卡本地用量最近一次扫描时间的最大值；`nil` = 还没有任何来源扫出过。
+    /// 全 idle 时全局汇总块显示「更新于 HH:mm」。
+    let localUsageScannedAt: Date?
 
     var totalTokens: Int { buckets.totalTokens }
     var cacheHitRate: Double? { Self.cacheHitRate(for: buckets) }
@@ -342,15 +353,28 @@ struct HarnessTodaySummary: Equatable, Sendable {
         let dayStart = calendar.startOfDay(for: now)
         var samplesByRow: [HarnessRowKey: HarnessRowAccumulator] = [:]
         var displayNameByClient: [String: String] = [:]
+        var truncatedClients: Set<String> = []
+        var isScanningLocalUsage = false
+        var localUsageScannedAt: Date?
 
         for status in statuses {
             let quotaProviderID = status.kind.quotaProviderID
             let peakWindow = status.deepseekPeakWindow ?? .defaultWindow
             let projection = status.usageProjection(for: status.lastSuccess)
+            // 新鲜度取**卡级**聚合：任一来源在扫就报"计算中"，扫描时间取最大值。
+            if status.effectiveLocalUsageFreshness == .scanning {
+                isScanningLocalUsage = true
+            }
+            if let scannedAt = projection.scannedAt {
+                localUsageScannedAt = max(localUsageScannedAt ?? scannedAt, scannedAt)
+            }
             for contribution in projection.contributions {
                 guard contribution.hasActivity else { continue }
                 if displayNameByClient[contribution.clientID] == nil {
                     displayNameByClient[contribution.clientID] = contribution.displayName
+                }
+                if contribution.isTruncated {
+                    truncatedClients.insert(contribution.clientID)
                 }
                 for sample in contribution.recentSamples where isToday(sample.completedAt, dayStart: dayStart, calendar: calendar) {
                     let key = HarnessRowKey(
@@ -385,7 +409,8 @@ struct HarnessTodaySummary: Equatable, Sendable {
                 iconSystemName: descriptor?.iconSystemName ?? "terminal",
                 buckets: Self.sum(clientRows.map(\.buckets)),
                 value: MixedCurrencyEstimate(estimates: clientRows.map(\.costEstimate)),
-                rows: clientRows.sorted(by: modelRowOrder)
+                rows: clientRows.sorted(by: modelRowOrder),
+                isTruncated: truncatedClients.contains(clientID)
             )
         }
         .sorted { lhs, rhs in
@@ -397,7 +422,9 @@ struct HarnessTodaySummary: Equatable, Sendable {
             dayStart: dayStart,
             buckets: Self.sum(rows.map(\.buckets)),
             value: MixedCurrencyEstimate(estimates: rows.map(\.costEstimate)),
-            sections: sections
+            sections: sections,
+            isScanningLocalUsage: isScanningLocalUsage,
+            localUsageScannedAt: localUsageScannedAt
         )
     }
 
@@ -451,5 +478,90 @@ private struct HarnessRowAccumulator {
 
     init(peakWindow: DeepseekPeakWindow) {
         self.peakWindow = peakWindow
+    }
+}
+
+// MARK: - Provider 兜底行（菜单内容区底部）
+
+/// 菜单底部的 **provider 兜底行**的数据投影：一行横排全部**已启用** provider 的
+/// 极简状态元素，让没开边缘状态窗的用户在这一屏也能看到"额度侧还剩多少"。
+///
+/// 纯函数：只读传入的 `statuses`，不碰任何共享状态。"按什么顺序排"由调用方决定
+/// （`MenuContentView` 传的是 `DisplayOrder.ordered(...)` 的结果，与改造前那屏
+/// provider 卡同一份 `providerCardOrder`），本类型只做两件事：**滤掉未启用**的，
+/// 以及一行放不下时**取舍**（优先留下健康最差的那些）。
+///
+/// 无额度数据的 provider（未配置 / 失败 / 待更新）**同样在场**：这正是兜底的意义，
+/// "没显示"和"没数据"必须能被区分开。
+enum ProviderStatusStrip {
+    struct Entry: Identifiable, Equatable, Sendable {
+        let status: ProviderStatus
+        var id: String { status.id }
+        var displayName: String { status.displayName }
+    }
+
+    struct Snapshot: Equatable, Sendable {
+        /// 已按调用方给定的展示顺序排好（`entries` 之间不重排），最多 `limit` 个。
+        let entries: [Entry]
+        /// 因宽度预算被折叠掉的个数。> 0 时 UI 画一枚「+N」，
+        /// 免得"只显示了 3 个"被读成"只注册了 3 个"。
+        let hiddenCount: Int
+
+        var isEmpty: Bool { entries.isEmpty }
+    }
+
+    /// 一行最多放几个 provider 元素。宽度预算与实测见
+    /// `ProviderStatusStripView.maximumVisibleCount`（同一条推导，视图侧留了副本
+    /// 因为排版数字属于排版）：最宽形态 326pt / 336pt 内容区。
+    static let maximumVisibleCount = 4
+
+    /// 取前 `limit` 个**优先级最高**的 provider，其余折叠为 `hiddenCount`。
+    ///
+    /// 未启用（`isEnabled == false`）的 provider 在这里被滤掉，而不是交给调用方：
+    /// "这一行只显示用户勾选过的 provider"是这一行自己的性质，漏一处过滤的结果是
+    /// 菜单里冒出一张用户明确关掉的 provider 的卡。传入顺序即展示顺序（用户配置
+    /// 顺序），本函数只决定**留谁**，不重排留下的元素。
+    static func snapshot(
+        statuses: [ProviderStatus],
+        limit: Int = maximumVisibleCount
+    ) -> Snapshot {
+        let enabled = statuses.filter(\.isEnabled)
+        guard enabled.count > limit else {
+            return Snapshot(entries: enabled.map(Entry.init(status:)), hiddenCount: 0)
+        }
+        let keptIDs = Set(
+            enabled
+                .sorted { priority($0) > priority($1) }
+                .prefix(limit)
+                .map(\.id)
+        )
+        return Snapshot(
+            entries: enabled.filter { keptIDs.contains($0.id) }.map(Entry.init(status:)),
+            hiddenCount: enabled.count - limit
+        )
+    }
+
+    /// 兜底行的取舍优先级：越大越该被看见。
+    ///
+    /// 先看**状态**再看**额度健康度**，两者不可比：`.failed` / `.notConfigured`
+    /// 的卡没有可信的额度数字（`aggregateHealthLevel()` 对它们返回 `nil`），
+    /// 拿健康度排序会把它们排到最后——正好把最需要被看见的 provider 藏起来。
+    /// `.ok` 的卡再按额度健康度细分。
+    static func priority(_ status: ProviderStatus) -> Int {
+        switch status.state {
+        case .failed:
+            return 40
+        case .notConfigured, .ready:
+            return 30
+        case .loading:
+            return 20
+        case .ok:
+            switch status.aggregateHealthLevel() {
+            case .critical: return 12
+            case .warning: return 11
+            case .healthy: return 10
+            case nil: return 9
+            }
+        }
     }
 }

@@ -205,9 +205,12 @@ private final class TrackingNSView: NSView {
 final class HoverPanelController {
     static let shared = HoverPanelController()
     private let cursorGap: CGFloat = 6
-    /// 上限必须装下最宽的详情：7 天 token 图表 420pt + present() 两侧各 10pt
-    /// padding。旧的 420 会把带价格列的表格右缘整段裁掉。
-    private let maximumPanelWidth: CGFloat = SevenDayUsageChartMetrics.pricedWidth + 20
+    /// 上限必须装下最宽的详情：菜单底部的 provider 兜底行 hover 出来的是**整张
+    /// `ProviderCardView`**，它最宽的内容是 7 天 token 图表（420pt）+ 卡片自身
+    /// 两侧内边距 + present() 的 10pt padding —— 与 dock 浮层那张卡同宽
+    /// （`EdgeDockTheme.popoverWidth`，同一条推导链）。旧的 420 会把这张卡的右缘
+    /// 整段裁掉；`frameForPanel` 仍会在屏幕装不下时按 visibleFrame 收窄。
+    private let maximumPanelWidth: CGFloat = EdgeDockTheme.popoverWidth
 
     private var panel: NSPanel?
     private var hostingView: NSHostingView<AnyView>?

@@ -1,12 +1,14 @@
 import SwiftUI
 
 /// 状态栏下拉菜单的 **Harness（客户端）视角**内容：顶部一屏全局今日汇总，
-/// 下面按客户端分段、段内按模型一行一条。
+/// 下面按客户端分段、段内按模型一行一条，**最底部一行 provider 兜底状态**。
 ///
 /// 与 `ProviderCardView`（Provider 视角）是**并列**的两套读法，不是替换关系：
 /// 悬浮窗（边缘状态窗）仍然按 Provider 卡渲染额度，菜单这里只回答"今天我在哪些
-/// 客户端里烧了多少 token、命中率多少、值多少钱"。额度（还能用多少）不在这一屏
-/// 里——它留在边缘窗和设置页。
+/// 客户端里烧了多少 token、命中率多少、值多少钱"。额度（还能用多少）不再占一整屏，
+/// 但**不能从这一屏彻底消失**——否则没开边缘窗的用户在菜单里看不到任何额度信息；
+/// 底部的 `ProviderStatusStripView` 一行极简状态元素 + hover 弹出的完整卡片就是
+/// 这一层兜底。
 ///
 /// 排版宽度（菜单 360pt，内容区 336pt，见 `MenuPanelHeightBridge.width`）：
 /// 模型名 ≤108 + 占比条 ≥72 + Token 40 + 命中 36 + 价值 48 + 4×6 间距 = 328pt，
@@ -14,6 +16,12 @@ import SwiftUI
 /// 数字变化不会把整行往右顶。预算由 `HarnessUsageMenuViewTests` 钉住。
 struct HarnessUsageMenuView: View {
     let summary: HarnessTodaySummary
+    /// 底部的 provider 兜底行（见 `ProviderStatusStripView`）。空快照不渲染任何东西。
+    var providerStrip: ProviderStatusStrip.Snapshot = ProviderStatusStrip.Snapshot(entries: [], hiddenCount: 0)
+    /// 段头右键菜单的两条动作。默认空实现：菜单内容在任何只读渲染（测试、预览）
+    /// 里都能构造，右键菜单的存在与否由调用方决定。
+    var onRefreshAll: () -> Void = {}
+    var onOpenConfigFile: () -> Void = {}
 
     var body: some View {
         VStack(alignment: .leading, spacing: HarnessUsageMenuView.sectionSpacing) {
@@ -22,9 +30,14 @@ struct HarnessUsageMenuView: View {
                 emptyTodayState
             } else {
                 ForEach(summary.sections) { section in
-                    HarnessSectionView(section: section)
+                    HarnessSectionView(
+                        section: section,
+                        onRefreshAll: onRefreshAll,
+                        onOpenConfigFile: onOpenConfigFile
+                    )
                 }
             }
+            ProviderStatusStripView(snapshot: providerStrip)
         }
     }
 
@@ -57,7 +70,18 @@ struct HarnessUsageMenuView: View {
                     .truncationMode(.tail)
                     .frame(maxWidth: .infinity, alignment: .trailing)
             }
-            TokenBucketBar(buckets: summary.buckets)
+            // 新鲜度胶囊放在占比条那一行的**行尾**，而不是数字行：数字行里
+            // 「今天合计 / 总 token / 命中 / 价值」四段都是定宽或撑满的，插一枚
+            // 胶囊会把混币总价值折行；占比条是 `GeometryReader`（贪婪），让出
+            // 约 70pt 只会让三段比例窄一点，不会串列。位置与 dock 浮层里那枚
+            // （组标题右侧）同款，读起来是同一类东西。
+            HStack(spacing: 6) {
+                TokenBucketBar(buckets: summary.buckets)
+                LocalUsageFreshnessBadge(
+                    scannedAt: summary.localUsageScannedAt,
+                    isScanning: summary.isScanningLocalUsage
+                )
+            }
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 7)
@@ -101,6 +125,9 @@ struct HarnessUsageMenuView: View {
 /// 真正被渲染的那棵树了。同一约定见 `SettingsView.clientProviderDisclosure`。
 struct HarnessSectionView: View {
     let section: HarnessSection
+    /// 段头右键菜单的两条动作（刷新 / 打开配置文件）。
+    var onRefreshAll: () -> Void = {}
+    var onOpenConfigFile: () -> Void = {}
 
     var body: some View {
         // 行距取行视图自己的常量（比段间距小），"换了个客户端"才比"换了个模型"醒目。
@@ -115,29 +142,151 @@ struct HarnessSectionView: View {
     /// 段头：一行里同时给出"这是谁"和"今天它花了多少"。
     /// 段价值是 `MixedCurrencyEstimate`——同一个客户端横跨多个 provider 分片时
     /// （OpenCode / DSH / ZCode）必然混币，必须折算成 CNY 总额而不是裸相加。
+    ///
+    /// 右键菜单挂在**段头**（不是整段）：菜单内容区现在是客户端视角，右键一个
+    /// 段名才是"针对这些数据"的语义；两条动作沿用改造前 provider 卡的同名动作
+    /// （刷新全部 / 打开配置文件），动作实现由 `MenuContentView` 注入。
     private var header: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 5) {
-            Image(systemName: section.iconSystemName)
-                .font(.system(size: 9))
-                .foregroundStyle(Color.accentColor)
-            Text(section.displayName)
-                .font(MenuTypography.dataLabel)
-                .foregroundStyle(Color.primaryLabel)
-                .lineLimit(1)
-            Spacer(minLength: 6)
-            Text(Formatters.formatTokenCountCompact(section.totalTokens))
-                .font(MenuTypography.metricValue)
-                .foregroundStyle(Color.secondaryLabel)
-            Text(section.valueText)
-                .font(MenuTypography.metricValue)
-                .foregroundStyle(Color.primaryLabel)
-                .frame(width: HarnessUsageMenuView.valueWidth, alignment: .trailing)
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                Image(systemName: section.iconSystemName)
+                    .font(.system(size: 9))
+                    .foregroundStyle(Color.accentColor)
+                Text(section.displayName)
+                    .font(MenuTypography.dataLabel)
+                    .foregroundStyle(Color.primaryLabel)
+                    .lineLimit(1)
+                Spacer(minLength: 6)
+                Text(Formatters.formatTokenCountCompact(section.totalTokens))
+                    .font(MenuTypography.metricValue)
+                    .foregroundStyle(Color.secondaryLabel)
+                Text(section.valueText)
+                    .font(MenuTypography.metricValue)
+                    .foregroundStyle(Color.primaryLabel)
+                    .frame(width: HarnessUsageMenuView.valueWidth, alignment: .trailing)
+            }
+            .padding(.bottom, 1)
+            .overlay(alignment: .bottom) {
+                Rectangle()
+                    .fill(Color.primary.opacity(0.08))
+                    .frame(height: 1)
+            }
+            .contextMenu {
+                Button("立即刷新全部", action: onRefreshAll)
+                Button("打开配置文件", action: onOpenConfigFile)
+            }
+            // 截断提示只在该段的数据源真的被截断时出现：数字本身仍然是"对"的，
+            // 只是"不全"——不说就等于把一份残缺统计当完整统计读。
+            if section.isTruncated {
+                truncationNotice
+            }
         }
-        .padding(.bottom, 1)
-        .overlay(alignment: .bottom) {
-            Rectangle()
-                .fill(Color.primary.opacity(0.08))
-                .frame(height: 1)
+    }
+
+    /// 橙色截断提示，文案取 `ClientUsageTruncationNotice.text`——设置页展开行与
+    /// 7 天柱图脚注引用的是同一个常量，三处不许各写一句。
+    private var truncationNotice: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 4) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 8))
+                .foregroundStyle(Color.orange)
+            Text(ClientUsageTruncationNotice.text)
+                .font(MenuTypography.hint)
+                .foregroundStyle(Color.orange)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+                .help(ClientUsageTruncationNotice.text)
+        }
+    }
+}
+
+/// 菜单内容区**底部**的 provider 兜底行：一行横排全部已启用 provider 的极简状态
+/// 元素（品牌图标 + `ProviderStateLabel` 胶囊，红/黄/绿新鲜度）。
+///
+/// 它存在的理由：菜单主体已经改成客户端视角（"今天烧了多少"），**额度**那一面
+/// 只剩边缘状态窗与设置页；没开边缘窗的用户在这一屏就彻底看不到额度状态了。
+/// 这一行把它兜回来，且**不与 harness 段混淆**——独立小标题 + 独立一行，
+/// 不占段头、不进段的行序。
+///
+/// hover 任一元素 → 独立 `NSPanel` 弹出**完整 `ProviderCardView(status:)`**
+/// （`HoverInfoRow` + `HoverPanelController`，与菜单里其它 hover 详情同一机制）。
+/// 卡片按 `.alwaysVisible` 渲染：浮层 `ignoresMouseEvents = true`，在里面再要求
+/// "悬停才展开"等于要求一个正在被移开的窗口被悬停，那些折叠区永远展不开
+/// （与 `EdgeDockController+Popover.popoverContent` 同一理由）。
+struct ProviderStatusStripView: View {
+    let snapshot: ProviderStatusStrip.Snapshot
+
+    /// 元素之间的间距。比模型行的 6pt 紧一档：这一行是**兜底**信息，不该在
+    /// 视觉上比正文行还松。
+    static let entrySpacing: CGFloat = 4
+
+    /// hover 卡宽度：与 dock 浮层那张卡**逐像素同宽**
+    /// （`EdgeDockTheme.popoverWidth` 减去背板内边距）。写死成菜单宽度会让 7 天
+    /// 图表的 420pt 内容被压掉一截——dock 侧当初就是因为这个才把宽度从 360
+    /// 推到 `popoverWidth` 的。
+    static var cardWidth: CGFloat {
+        EdgeDockTheme.popoverWidth - EdgeDockTheme.popoverPadding * 2
+    }
+
+    /// hover 卡的折叠方式，**必须钉死成 `.alwaysVisible`**。
+    ///
+    /// `HoverPanelController` 的浮层 `ignoresMouseEvents = true`：它**收不到**鼠标
+    /// 事件，所以卡里那些「悬停才展开」的部分永远展不开。不钉这个值时（环境默认
+    /// 是 `.onHover`）弹出来的是一张缺重置卡、缺高峰期倒计时、额度行也是简版的卡
+    /// ——比不弹还糟。理由与 `EdgeDockController+Popover.popoverContent` 完全一致。
+    ///
+    /// 提成常量是为了让 `HoverRevealModeTests` 能直接断言"兜底行用的是哪一种"，
+    /// 而不是只能对着视图猜。
+    static let cardRevealMode: HoverRevealMode = .alwaysVisible
+
+    /// 品牌图标边长。常规 18pt 在这一行太大：整行最多四个元素，18pt 图标会把
+    /// 时间胶囊挤到只剩 30pt。11pt 仍能认出是哪个品牌。
+    static let logoSize: CGFloat = 11
+
+    var body: some View {
+        if !snapshot.isEmpty {
+            HStack(spacing: Self.entrySpacing) {
+                Text("Provider 状态")
+                    .font(MenuTypography.caption)
+                    .foregroundStyle(Color.secondaryLabel)
+                    .lineLimit(1)
+                    .fixedSize()
+                ForEach(snapshot.entries) { entry in
+                    entryView(entry)
+                }
+                // 有 provider 被折叠掉时必须说出来：否则"只显示 3 个"会被读成
+                // "只注册了 3 个"。
+                if snapshot.hiddenCount > 0 {
+                    Text("+\(snapshot.hiddenCount)")
+                        .font(MenuTypography.badge)
+                        .foregroundStyle(Color.secondaryLabel)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(Color.secondary.opacity(0.1), in: Capsule())
+                        .help("还有 \(snapshot.hiddenCount) 个已启用 provider 未显示：额度异常优先占位")
+                }
+            }
+            .padding(.top, 2)
+            .overlay(alignment: .top) {
+                Rectangle()
+                    .fill(Color.primary.opacity(0.08))
+                    .frame(height: 1)
+                    .padding(.bottom, 2)
+            }
+        }
+    }
+
+    /// 单个 provider 的极简元素 + 它的完整卡浮层。
+    private func entryView(_ entry: ProviderStatusStrip.Entry) -> some View {
+        HoverInfoRow {
+            HStack(spacing: 3) {
+                BrandLogoView(kind: entry.status.kind, size: Self.logoSize)
+                ProviderStateLabel(status: entry.status)
+            }
+        } detail: {
+            ProviderCardView(status: entry.status)
+                .environment(\.hoverRevealMode, Self.cardRevealMode)
+                .frame(width: Self.cardWidth)
         }
     }
 }

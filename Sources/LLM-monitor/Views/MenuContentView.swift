@@ -177,7 +177,7 @@ struct MenuContentView: View {
                     .frame(width: 26, height: 24, alignment: .trailing)
                     .help("正在刷新")
             } else {
-                Button(action: { Task { await state.refreshAll() } }) {
+                Button(action: refreshAllFromMenu) {
                     Image(systemName: "arrow.clockwise")
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(.secondary)
@@ -261,7 +261,20 @@ struct MenuContentView: View {
                         setupGuide
                     }
                     HarnessUsageMenuView(
-                        summary: HarnessTodaySummary.summarize(statuses: enabled)
+                        summary: HarnessTodaySummary.summarize(statuses: enabled),
+                        // 兜底行按**用户配置的顺序**排（与改造前那屏 provider 卡同一
+                        // 数据源 `providerCardOrder`）；"只显示已启用的"与"放不下时留
+                        // 谁"由 `ProviderStatusStrip` 自己负责，不在这里重复过滤。
+                        providerStrip: ProviderStatusStrip.snapshot(
+                            statuses: DisplayOrder.ordered(
+                                state.statuses,
+                                preferredIDs: state.configStore.config.providerCardOrder,
+                                id: { $0.kind.quotaProviderID },
+                                by: ProviderStatus.displayNameAscending
+                            )
+                        ),
+                        onRefreshAll: refreshAllFromMenu,
+                        onOpenConfigFile: { state.openConfigFile() }
                     )
                 }
                 .padding(.horizontal, MenuPanelHeightBridge.cardHorizontalPadding)
@@ -274,6 +287,12 @@ struct MenuContentView: View {
             }
             .frame(maxHeight: maxScrollViewHeight)
         }
+    }
+
+    /// 「立即刷新全部」的唯一入口：headerBar 那个刷新按钮与段头右键菜单共用它，
+    /// 两处不各写一份以免口径漂移。
+    private func refreshAllFromMenu() {
+        Task { await state.refreshAll() }
     }
 
     /// Four registered cards can all be `.notConfigured` on first launch because

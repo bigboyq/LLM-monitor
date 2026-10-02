@@ -138,7 +138,10 @@ height: content-driven, fixedSize(vertical: true)
 |   GLM-5.3    ██░░░░  200K  40%   ¥33.00        |
 | ▸ Codex                         380K   $7.10   |
 |   gpt-5.5    ██░░░░  380K  58%   $7.10         |
+| ⚠ 会话文件超出单轮扫描预算，已按最新优先截断…   |   truncation notice (that section only)
 | ...                                            |
++------------------------------------------------+
+| Provider 状态  ◉10:23 ◉需重试 ◉未启用      +1  |   provider fallback strip
 +------------------------------------------------+
 | 更新于 HH:mm / 下次 HH:mm / 就绪  自启 ✓|✗  设置 节能 日志 退出 |
 +------------------------------------------------+
@@ -146,9 +149,11 @@ height: content-driven, fixedSize(vertical: true)
 
 The menu is the **Harness (client) view**, not the Provider view. The header and
 footer are unchanged, but the content area answers "which clients burned how many
-tokens today" instead of "how much quota is left per provider". The per-provider
-quota reading lives in the edge status dock, the hover panels and Settings; the
-menu no longer renders provider cards.
+tokens today" instead of "how much quota is left per provider". The menu no longer
+renders provider cards; the per-provider quota reading lives in the edge status
+dock, the hover panels, Settings — and in the **one-line provider fallback strip at
+the bottom of the content area**, so that users without the edge dock still get a
+quota read in the menu.
 
 **Content structure** (`HarnessUsageMenuView`, driven by the pure
 `HarnessTodaySummary.summarize(statuses:now:calendar:)`):
@@ -187,6 +192,73 @@ The two-level empty states (no provider registered / no provider enabled) and th
 first-run setup guide are unchanged. A third, narrower state — clients present but
 no activity today — renders a single 「今日暂无本地 Token 用量」 line inside the
 content area.
+
+**Global freshness capsule** — the top summary block's second row ends with
+`LocalUsageFreshnessBadge`: 「计算中…」 while *any* enabled data source is scanning
+(per-card `effectiveLocalUsageFreshness`, which already resolves "scanning wins over
+failed over dirty"), otherwise 「更新于 HH:mm」 from the latest `scannedAt` across
+those cards. Both values are computed once in `HarnessTodaySummary.summarize`, so the
+view never walks `statuses` itself. The capsule sits at the end of the bucket-bar row
+rather than the number row: the number row's four segments are all fixed-width or
+greedy, and a capsule there would push the mixed-currency total into a second line;
+`TokenBucketBar` wraps a `GeometryReader`, so giving up ~70pt only narrows the three
+buckets. With no scan ever recorded the badge renders nothing at all (no empty
+capsule, no phantom space).
+
+**Truncation notice** — a section whose sources were truncated (DSH file/byte budget
+dropping the oldest sessions) shows the shared `ClientUsageTruncationNotice.text` in
+orange on the header's second line. Section-level aggregation, same "any source
+truncated ⇒ truncated" rule as `ProviderUsageProjection.isTruncated`. Sections
+without truncation show nothing — the numbers are right either way, they are just not
+complete, and staying silent would let a partial total read as a complete one.
+
+**Section header context menu** — right-click a section header for 「立即刷新全部」
+(`AppState.refreshAll`, the same entry point as the header refresh button) and
+「打开配置文件」(`state.openConfigFile`). These are the two actions the per-provider
+cards carried before the menu switched to the client view; they are attached to the
+header rather than the whole section so that the right-click target reads as "these
+numbers".
+
+**Provider fallback strip** (`ProviderStatusStripView`, the last row of the content
+area) — a 「Provider 状态」 label followed by one minimal element per enabled
+provider: brand logo (11pt) + `ProviderStateLabel` capsule (`10:23` / `需重试` /
+`未启用` …, already tri-colour by refresh freshness). Its data comes from the pure
+projection `ProviderStatusStrip.snapshot(statuses:limit:)`:
+
+- only **enabled** providers are shown — the filter lives in the projection, not in
+  the call site, so a forgotten filter cannot surface a card the user switched off;
+- providers **without** quota data (not configured / failed / pending) are shown too:
+  that is the whole point of the row, since "not displayed" and "no data" must not
+  look the same;
+- at most `maximumVisibleCount` (4) elements fit: the widest shape (5 enabled
+  providers, all `.ok` with timestamps, plus a 「+N」 chip) measures **326pt** inside
+  the 336pt content area, leaving 10pt for font-metric drift — the same order of
+  margin as the model row's 328pt budget. Whatever does not fit is folded into the
+  count reported by `hiddenCount` and rendered as 「+N」, so "three shown" is never
+  read as "three registered";
+- when truncation happens, the **worst** entries are the ones kept
+  (`ProviderStatusStrip.priority`: state first — failed > not configured/ready >
+  loading > ok — then quota health), because a failed card has no trustworthy
+  `aggregateHealthLevel()` (`nil`) and would sort last if health were ranked alone.
+  The kept entries stay in the user's configured order (`providerCardOrder`); only
+  *which* ones survive changes, never their order.
+
+Hovering one element opens the **full `ProviderCardView(status:)`** in the existing
+hover `NSPanel` (`HoverInfoRow` → `HoverPanelController`, the same mechanism as every
+other menu hover detail; 0.22s delay, 0.08s re-arm when switching, 6pt cursor gap,
+right edge flips to the cursor's left, bottom edge flips above the cursor). The card
+is pinned to `hoverRevealMode = .alwaysVisible` (`ProviderStatusStripView.cardRevealMode`)
+and to the dock popover's card width (`EdgeDockTheme.popoverWidth` minus its backdrop
+padding — writing the menu's 360pt there would cut 24pt off the 7-day chart) and is
+laid out exactly like the dock's card: two cards, titles outside. `.alwaysVisible` is
+not a style choice: the hover panel is `ignoresMouseEvents = true`, so every
+hover-collapsed section inside the card (account block, local-usage footer) could
+never open, and the quota rows would fall back to their compact layout — the same
+argument as `EdgeDockController+Popover`. `HoverPanelController.maximumPanelWidth`
+was raised to `EdgeDockTheme.popoverWidth` for the same reason it used to be sized
+for the 7-day chart: the panel must fit the widest detail. Vertical fit needs no
+scroll — the card is ~520pt tall and `frameForPanel` clamps to the screen's visible
+frame, which is taller than that on every display this ships to.
 
 The content area scrolls when needed. `MenuPanelHeightBridge` caps the menu window at
 70% of the screen's visible height; when the cap is reached, only the content list
@@ -382,9 +454,12 @@ It used to equal the main-menu width (360), which left the card only 312pt of co
 width and clipped the first/last day of the chart — exactly the layout damage a fixed
 width was supposed to prevent, just caused by the width being too small in the first
 place. The menu keeps its own 360; only the popover widens. Clamped only when the
-screen is narrower than the popover. The same chart also sets
-`HoverPanelController.maximumPanelWidth` (chart + 2×10pt) so the menu's hover panel
-doesn't clip the price column.
+screen is narrower than the popover. The same derivation now also sets
+`HoverPanelController.maximumPanelWidth` (it used to be chart + 2×10pt = 440, sized
+only for the chart): the menu's provider strip hovers a whole `ProviderCardView`,
+whose widest content is that chart **plus the card's own 12pt padding on each side**,
+so the cap is `EdgeDockTheme.popoverWidth` (468). Left at 440 the card's right edge
+was cut; the panel is still clamped to the screen's visible frame, as before.
 
 ### Collapsed sections are open in the popover
 
@@ -394,8 +469,9 @@ go through the single `HoverInfoRow` wrapper, which is where the behaviour branc
 
 | Host | `hoverRevealMode` | Behaviour |
 |---|---|---|
-| Main menu | `.onHover` (the default) | Independent `NSPanel` after a delay |
-| Edge dock popover | `.alwaysVisible` | Each section expands **in place**; the two groups (quota / 7-day usage) are additionally split into two cards, see *Two cards, titles outside* |
+| Main menu (its own hover rows) | `.onHover` (the default) | Independent `NSPanel` after a delay |
+| Provider card in the edge dock popover | `.alwaysVisible` | Each section expands **in place**; the two groups (quota / 7-day usage) are additionally split into two cards, see *Two cards, titles outside* |
+| Provider card in the menu's provider strip hover | `.alwaysVisible` (pinned) | identical to the dock card — same `NSPanel` mechanism, but a panel that ignores mouse events, so "hover to expand" could never open |
 
 The switch is an `Environment` value rather than a parameter threaded through each
 call site: there are a dozen `HoverInfoRow` uses across `ProviderCardView`,
@@ -421,21 +497,41 @@ not scroll itself, so anything past the screen edge would be unreachable. The
 hard limit is the screen; the cap only guarantees the invariant
 `heightCap ≤ visibleFrame.height`, which is what makes "if the frame ever got
 clamped, the content is already scrollable" true. So
-the popover is **not** simply the menu card un-collapsed. Six layout rules
-(`ProviderCardLayout`) diverge, all keyed on the same mode:
+the popover is **not** simply the old menu card un-collapsed. Three layout rules
+(`ProviderCardLayout`) still diverge, all keyed on the same mode, and all three are
+read outside `ProviderCardView` (in `QuotaViews` / `QuotaHoverViews`):
 
-| Rule | Menu | Dock popover | Why |
+| Rule | Other mode | Popover / strip hover | Why |
 |---|---|---|---|
 | `liftsProgressBar` | title, then bar | **bar first, no title row** | "how much is left" before the detail; the model name is not a row of its own but the leading token of the bar's metadata line (`Gemini Models 5h 62% weekly 59%`) |
-| `laysWindowDetailsSideBySide` | 5h stacked over weekly | **5h next to weekly** | the two are the same shape (a time span plus a set of token metrics); side by side is comparable at a glance, stacked forces the reader to jump between two blocks. It now only reaches the hover panels, which the popover cannot show |
-| `expandsAccountSection` | hover popover | **not expanded** | the panel can't be hovered, so expanding it only buries low-frequency email/source text in the most prominent slot |
-| `showsPeakIndicatorInHeader` | inside the quota block | **in the card header** | "can I use it cheaply right now" deserves the always-visible header line |
 | `splitsCachedInputRow` | `input: 1.2M (+860K cached)` | **`input:` and `cached:` on separate lines** | cached hides in parentheses, so a quick read only catches input — and cache hit rate is the number that says whether the call was expensive |
 | `splitsRoundsRow` | `prompts: 42 (128 rounds)` | **`prompts:` with `rounds:` on the next line** | the three-column layout that forced it is gone; the row that still renders it in the popover is full width, where one number per line still reads better than a merged one |
 
+The quota windows' side-by-side layout is no longer a rule at all: it had no reachable
+consumer (`QuotaWindowsHoverView` / `QuotaUsageWindowsHoverView` are only built from the
+model rows' menu layout, which the popover no longer uses), so the predicate was deleted
+and the two columns are now unconditional.
+
+Four more rules were deleted together with the menu's provider cards, because **all**
+of their consumers lived in `ProviderCardView.swift` and belonged to the deleted menu
+branch:
+
+| Deleted rule | What replaced it |
+|---|---|
+| `splitsIntoTwoCards` | the card is unconditionally two cards with their titles outside |
+| `hidesHeaderStatusDot` | the header row no longer draws a status dot at all (the `ProviderStateLabel` capsule on the same row already states the status) |
+| `hoistsResetCredits` | the card layer always draws the reset row, below the progress bar |
+| `hoistsPeakIndicator` | the card layer always draws the peak countdown, next to the reset row |
+
+Keeping a rule whose only consumer is gone produces exactly the false signal this
+table used to produce: a predicate that can only return `true`, a test asserting it
+returns `true`, and no rendering anywhere that depends on it.
+
 Because the rules are the *only* thing that differs, each is named rather than
 inlined as `mode == .alwaysVisible` at the call site, and
-`HoverRevealModeTests.testMenuLayoutStaysUnchanged` asserts the menu side stays off.
+`HoverRevealModeTests.testProviderCardLayoutTableConvergedToTheDockHost` pins what
+survived, while `testStripHoverCardMustUseTheAlwaysVisibleRevealMode` pins the mode
+the menu's own provider card is rendered with.
 
 The popover's header is therefore not just "provider name + state" — it keeps
 only what answers *how much is left* at a glance, and everything about *how was it
@@ -610,15 +706,16 @@ neither, and that asymmetry is intentional.
 The dock window **never changes size on hover** — with one deliberate exception:
 auto-hide mode (below), where proximity is what grows the window. **Hovering** a circle
 opens a separate popover window beside the dock, containing the **same
-`ProviderCardView(status:)` the menu renders** for that provider — one card
-implementation, not a second lightweight variant. Two "identical looking" cards
-would inevitably drift apart. Hover alone only highlights the circle (the 1.10× scale).
+`ProviderCardView(status:)` — the same card the menu's provider strip hovers for that
+provider, so there is one card implementation, not a second lightweight variant. Two
+"identical looking" cards would inevitably drift apart. Hover alone only highlights
+the circle (the 1.10× scale).
 
 | Aspect | Behaviour |
 |---|---|
 | Dock window | Fixed size while expanded. Only the hovered **circle** scales to `EdgeDockGeometry.hoverScale` (1.10×) inside its fixed row — the row frame, the number label and the window never move |
 | Popover trigger | **Hover**, with a **0.15s open delay** (`selectedIndex` trails `hoveredIndex` by it; the click is reserved for dragging). `scheduleSelection` re-checks `hoveredIndex` when the delay elapses, so sweeping the cursor down a column of circles re-arms the timer for each one instead of flashing every card in turn. `scheduleDeselection` collapses the card 0.20s after the cursor leaves the circle, unless it entered the card itself. The delay is not cosmetic: the dock is **permanently** on the screen edge, and a cursor merely passing by (dragging a window to the edge, turning a page) would otherwise make cards strobe. Clicking is a drag candidate only — `dragMoved` gates on a 4pt threshold and a press that never crosses it does nothing at all |
-| Popover | Second `NSPanel`, `ignoresMouseEvents = true` (read-only, never steals focus), level `.popUpMenu` so it sits above the dock. Renders the same `ProviderCardView(status:)` the menu renders — so the dock's popover and the menu popup are the same object, not two near-identical ones. In the dock it lays out as **two cards with their titles outside**, see *Two cards, titles outside* below. An open card is re-rendered on every status broadcast (`reconcile`'s no-op-frame branch refreshes it), so it never shows numbers frozen at the moment it opened |
+| Popover | Second `NSPanel`, `ignoresMouseEvents = true` (read-only, never steals focus), level `.popUpMenu` so it sits above the dock. Renders the same `ProviderCardView(status:)` the menu's provider strip hovers — so the dock's popover and the menu's hover card are the same object at the same width and the same layout, not two near-identical ones. In the dock it lays out as **two cards with their titles outside**, see *Two cards, titles outside* below. An open card is re-rendered on every status broadcast (`reconcile`'s no-op-frame branch refreshes it), so it never shows numbers frozen at the moment it opened |
 | Hit test | `EdgeDockController.circleIndex(at:circles:currentHovered:minimumRadius:)` — the provider's **outer circle only** (radius + 0.5pt), which deliberately excludes the number label below it and the gaps between rows. The hovered circle's disc grows by `hoverScale` to match its on-screen scale animation. `minimumRadius` is a floor, not an override: the compact dock's circles are 7pt (radius 3.5) and it passes **half a row pitch** (7.5pt) so adjacent discs meet at their midpoint — pointing at a 7px target without it snaps to a neighbour. Circles come from `resolveCircleRects` (measured, with an `EdgeDockGeometry` fallback that is **appearance-aware** — the full-approach constants put compact row 0 about 24pt off). Never recomputed from constants alone — see *Edge status dock → Layout* |
 | Anchor | Vertically centred on the hovered **row** (measured rect when available; `EdgeDockGeometry.rowCenter` is only the "not measured yet" fallback), opening **inward** (docked right → opens left) |
 | Size | **Fixed width** `EdgeDockTheme.popoverWidth` (derived from the 7-day chart, see *Popover width*), height = natural card size clamped to 95% of screen height; a `ScrollView` replaces the plain card only when it exceeds the height cap, so overflow scrolls instead of being clipped |
@@ -631,10 +728,11 @@ providers and the two indices can drift apart.
 
 #### Two cards, titles outside
 
-The dock popover is **two cards**, each with its title drawn *outside and above* it —
-`ProviderCardLayout.splitsIntoTwoCards` turns this on for `.alwaysVisible` only; the menu
-keeps one card with the header inside it, because a menu column of short cards cannot
-afford twice the card spacing plus two title rows per card.
+The dock popover is **two cards**, each with its title drawn *outside and above* it.
+This used to be `ProviderCardLayout.splitsIntoTwoCards` on for `.alwaysVisible` only,
+with the menu column of short cards keeping one card whose header sat inside it; that
+column is gone (the menu is the client view now), so the split is unconditional — the
+menu's provider strip hover shows the very same two-card layout.
 
 | | Title row (outside, above the card) | Card |
 |---|---|---|
@@ -1090,6 +1188,10 @@ Current styling:
 
 ## Provider Card
 
+`ProviderCardView` 现在只有**一个**渲染宿主形态：边缘状态窗的 provider 详情浮层，
+以及菜单底部 provider 兜底行 hover 出来的那张卡（两者都固定 `.alwaysVisible`）。
+菜单内容区是客户端视角，不再渲染 provider 卡，因此这张卡没有"菜单形态"了。
+
 `ProviderCardView` 是 thin coordinator，额度行、浮层、图表和账号详情按职责分文件维护：
 - `QuotaViews.swift` — 所有 quota 行 / 进度条 / `EquivalentQuotaAllocation`
 - `HoverPanel.swift` (306 行) — `HoverInfoRow` / `HoverPanelController` / 浮层管理
@@ -1140,22 +1242,16 @@ Row-level tint rules:
 
 | Element | Current behavior |
 |---|---|
-| Status dot | `StatusIndicator(level: status.healthLevel)` |
+| Status dot | **不再画**。它紧挨着品牌图标，两个小圆读起来像"图标带了个绿点"，而同一行右侧的 `ProviderStateLabel` 已经把状态说清楚了。`StatusIndicator` 视图本身还留在代码里（`AppState` 与 `Color+Theme` 的注释仍以它为参照），但已无渲染消费方 |
 | Provider icon | bundled brand asset in an `18x18pt` frame; OpenAI follows the system foreground color and missing assets use a recognizable SF Symbol fallback |
 | Display name | 14pt bold |
 | Plan tag | shown when a fetched provider supplies a plan label (for example, ChatGPT plan type) |
 | State tag | compact `未启用` / `待更新` / `已更新` / `需重试` label; a spinner replaces it while loading |
-| ChatGPT title hover | When seven-day local statistics are available, hovering the header displays seven calendar-day groups. Each group contains Input/Cached and Output/Reason stacked bars plus the exact compact values. |
+| Account block hover | **已删除**。邮箱 / 数据来源原本按 provider 分三路包在标题行的 `HoverInfoRow` 里，只为菜单那张卡服务；菜单不再渲染 provider 卡，浮层又不吃鼠标事件，这个折叠区展不开，直接不画 |
+| Seven-day local statistics | 不在标题行，在**本地用量那一段**（`LocalUsageFooterView` → `SevenDayTokenUsageHoverView`）：`.alwaysVisible` 下就地展开成第二张卡的内容，`.onHover` 下才是悬停弹层 |
 
-`StatusIndicator` uses:
-
-| Health | Dot color |
-|---|---|
-| healthy | green |
-| warning | orange |
-| critical | red |
-
-`.notConfigured`、`.ready`、首次 `.loading` 和没有成功数据的 `.failed` 都返回 `nil` 健康度，因此显示灰点。
+`StatusIndicator`（已无消费方）的配色原为：healthy 绿 / warning 橙 / critical 红，
+`nil` 健康度显示灰点。
 
 Bundled brand assets are used consistently in provider card headers and Settings navigation.
 They cover Minimax, OpenAI, Antigravity, GLM, and DeepSeek; OpenCode has separate light
@@ -1227,6 +1323,12 @@ This is currently used for:
 - ChatGPT Plan `Last Prompt`
 - ChatGPT Plan 合并的 `5h / 周` 本地用量
 - reset credits detail
+- **the menu's provider fallback strip**: hovering one provider element shows the full
+  `ProviderCardView(status:)` for that provider, at the dock popover's card width
+  (`EdgeDockTheme.popoverWidth` − backdrop padding) and in its `.alwaysVisible` layout
+  — the same card the dock shows, reached from the menu. No vertical scrolling is
+  needed: the card is ~520pt tall and the panel is placed inside the screen's visible
+  frame, which is taller than that on every supported display.
 
 ## Provider-Specific Card Details
 

@@ -342,6 +342,66 @@ final class HarnessTodaySummaryTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(summary.sections[0].rows[0].buckets.billableOutput, 0)
     }
 
+    // MARK: - 截断与新鲜度（菜单那两枚提示的数据源）
+
+    /// 段截断位是**段级**聚合：DSH 来源被预算截断 → 那一段（DSH 客户端）的段头
+    /// 出现橙色提示；同一份汇总里的 Codex 段不受影响（它的来源没有被截断）。
+    func testTruncatedSourceMarksOnlyItsOwnSection() {
+        let codex = codexStatus(samples: [sample(model: "gpt-5.5", at: now, input: 1_000, promptID: "c")])
+        let truncatedDSH = dshStatus(
+            samples: [sample(model: "deepseek-chat", at: now, input: 2_000, promptID: "d")],
+            isTruncated: true
+        )
+
+        let summary = HarnessTodaySummary.summarize(
+            statuses: [codex, truncatedDSH], now: now, calendar: calendar
+        )
+        let byClient = Dictionary(uniqueKeysWithValues: summary.sections.map { ($0.clientID, $0) })
+        XCTAssertEqual(byClient[ClientID.codex]?.isTruncated, false, "未截断的来源不该被提示")
+        XCTAssertEqual(
+            byClient[ClientID.dsh]?.isTruncated, true,
+            "DSH 快照被截断 → DSH 段必须提示（否则一份残缺统计被当完整统计读）"
+        )
+    }
+
+    /// 没有截断来源时整份汇总都不带截断位（提示不该无差别出现）。
+    func testNoTruncationMeansNoNoticeAnywhere() {
+        let summary = HarnessTodaySummary.summarize(
+            statuses: [codexStatus(samples: [sample(model: "gpt-5.5", at: now, input: 1_000)])],
+            now: now,
+            calendar: calendar
+        )
+        XCTAssertTrue(summary.sections.allSatisfy { $0.isTruncated == false })
+    }
+
+    /// 全局新鲜度：任一启用数据源在扫 → 「计算中…」；全 idle → 「更新于 HH:mm」
+    /// （取各卡扫描时间的最大值）。两个状态都由 `summarize` 顺带算出，视图端
+    /// 不再自己去遍历 statuses。
+    func testGlobalFreshnessReportsScanningAndTheLatestScanTime() {
+        let idle = HarnessTodaySummary.summarize(
+            statuses: [codexStatus(samples: [sample(model: "gpt-5.5", at: now, input: 1)])],
+            now: now, calendar: calendar
+        )
+        XCTAssertFalse(idle.isScanningLocalUsage)
+        XCTAssertEqual(idle.localUsageScannedAt, now, "idle 时显示最近一次扫描时间")
+
+        let scanning = HarnessTodaySummary.summarize(
+            statuses: [codexStatus(
+                samples: [sample(model: "gpt-5.5", at: now, input: 1)],
+                isScanning: true
+            )],
+            now: now, calendar: calendar
+        )
+        XCTAssertTrue(scanning.isScanningLocalUsage, "任一来源在扫就必须显示「计算中…」")
+    }
+
+    /// 一个来源都没扫过时**不显示**时间（而不是显示一个空胶囊或"更新于 1970"）。
+    func testFreshnessIsAbsentWhenNothingWasEverScanned() {
+        let summary = HarnessTodaySummary.summarize(statuses: [], now: now, calendar: calendar)
+        XCTAssertFalse(summary.isScanningLocalUsage)
+        XCTAssertNil(summary.localUsageScannedAt)
+    }
+
     // MARK: - fixtures
 
     private func sample(
@@ -365,7 +425,11 @@ final class HarnessTodaySummaryTests: XCTestCase {
     }
 
     /// ChatGPT / Codex 卡：`codexUsageDetails.recentSamples` 走原生贡献。
-    private func codexStatus(samples: [LocalTokenUsageSample]) -> ProviderStatus {
+    /// `isScanning` 用来驱动全局新鲜度那一格（菜单「计算中…」的数据源）。
+    private func codexStatus(
+        samples: [LocalTokenUsageSample],
+        isScanning: Bool = false
+    ) -> ProviderStatus {
         let info = QuotaInfo(
             models: [],
             resetCredits: nil,
@@ -394,7 +458,40 @@ final class HarnessTodaySummaryTests: XCTestCase {
             iconSystemName: "sparkles",
             accentColor: .chatgpt,
             refreshIntervalSeconds: 300,
-            state: .ok(info)
+            state: .ok(info),
+            isScanningLocalUsage: isScanning
+        )
+    }
+
+    /// DeepSeek 卡 + DSH 来源。`isTruncated` 是快照级截断位（文件数/字节预算挤出
+    /// 最旧 session），不随 provider 分片稀释——段头那枚提示就是读它。
+    private func dshStatus(
+        samples: [LocalTokenUsageSample],
+        isTruncated: Bool
+    ) -> ProviderStatus {
+        return ProviderStatus(
+            id: "deepseek",
+            displayName: "DeepSeek",
+            kind: .deepseek,
+            iconSystemName: "circle",
+            accentColor: .deepseek,
+            refreshIntervalSeconds: 300,
+            state: .notConfigured(reason: "test"),
+            dshUsage: DshLocalUsage(
+                byProvider: ["deepseek": DshProviderUsage(
+                    today: nil,
+                    dailyTokenUsage: [],
+                    sessionCount: 1,
+                    roundCount: samples.count,
+                    recentSamples: samples
+                )],
+                modelsByProvider: ["deepseek": ["deepseek-chat"]],
+                sessionsRoot: nil,
+                sessionCount: 1,
+                eventCount: samples.count,
+                scannedAt: now,
+                isTruncated: isTruncated
+            )
         )
     }
 
@@ -420,7 +517,7 @@ final class HarnessTodaySummaryTests: XCTestCase {
             accentColor: .minimax,
             refreshIntervalSeconds: 300,
             state: .notConfigured(reason: "test"),
-            mergeOpencodeUsage: true,
+            clientBindings: ProviderStatus.allClientBindingsEnabled(),
             opencodeUsage: OpencodeLocalUsage(
                 byProvider: [providerID: usage],
                 modelsByProvider: [:],

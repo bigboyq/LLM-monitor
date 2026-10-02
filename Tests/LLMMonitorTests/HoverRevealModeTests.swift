@@ -131,9 +131,8 @@ final class HoverRevealModeTests: XCTestCase {
         XCTAssertNotNil(long?.timeRemainingFraction, "长周期窗口的 ▼ 标记不能被吞掉")
     }
 
-    /// dock 形态下，**重置卡与高峰期倒计时由卡片层提供**，而卡片层只在
-    /// `dockBody` 的非 `.ok` 回退路径上需要显式把它们交下去（`QuotaSummary` 自己
-    /// 因为 `hoistsResetCredits` 为 true 不再画）。
+    /// 卡片层**无条件**提供重置卡与高峰期倒计时，而它只在 `dockBody` 的非 `.ok`
+    /// 回退路径上需要显式把它们交下去（`QuotaSummary` 自己不再画）。
     ///
     /// 这个测试盯的是那条"交接链有没有断"：`.failed` 分支曾经漏传
     /// `betweenBarAndColumns`，于是失败态的 provider 在 dock 浮层里既没有重置卡
@@ -153,15 +152,44 @@ final class HoverRevealModeTests: XCTestCase {
         )
     }
 
-    /// 菜单侧不受上面那条影响：重置卡一直由 `QuotaSummary` 自己画，高度差应当**同样**
-    /// 存在。这里确认交接链的改动没有顺手把菜单也改了。
+    /// 菜单底部兜底行 hover 出来的那张卡，**必须**以 `.alwaysVisible` 渲染。
+    ///
+    /// 浮层 `ignoresMouseEvents = true`，收不到鼠标事件：不钉这个 mode，卡里那些
+    /// 「悬停才展开」的部分永远展不开，额度行内部的三条规则（消费方在 `QuotaViews`
+    /// / `QuotaHoverViews`）也会走简版——实测同一张 `.failed` 的 ChatGPT 卡在
+    /// `.onHover` 下 159pt 且**完全没有重置卡**，`.alwaysVisible` 下 501pt 且重置卡
+    /// 在场（上一条断言量的就是后者）。
+    ///
+    /// 菜单形态那张完整卡（单卡 + 卡内标题 + 账号折叠区 + 自己画重置额度）曾经由
+    /// `testMenuCardResetCreditsBehaviourIsUnchanged` 守着，它随 `menuBody` 一起
+    /// 删除后，`.onHover` 退化成一张缺信息的简版，而生产路径上**没有任何宿主**再用
+    /// `.onHover` 渲染 provider 卡（dock 浮层与菜单兜底行都固定 `.alwaysVisible`）。
+    /// 于是这几条断言是一件事：兜底行用的就是那个 mode，在它之下重置卡画得出来，
+    /// 在默认 mode 之下画不出来——把"为什么必须钉死"写进测试，比只钉结果更耐改。
     @MainActor
-    func testMenuCardResetCreditsBehaviourIsUnchanged() {
+    func testStripHoverCardMustUseTheAlwaysVisibleRevealMode() {
+        XCTAssertEqual(
+            ProviderStatusStripView.cardRevealMode, .alwaysVisible,
+            "兜底行的 hover 卡必须钉死 .alwaysVisible（浮层不吃鼠标事件）"
+        )
+        XCTAssertEqual(
+            ProviderStatusStripView.cardWidth,
+            EdgeDockTheme.popoverWidth - EdgeDockTheme.popoverPadding * 2,
+            "hover 卡必须与 dock 浮层那张卡同宽（7 天图表那 420pt 不能被压掉）"
+        )
+
         let withCredits = Self.makeChatGPTStatus(state: .failed, resetCredits: true)
         let withoutCredits = Self.makeChatGPTStatus(state: .failed, resetCredits: false)
-        let tall = measuredHeight(mode: .onHover, status: withCredits)
-        let short = measuredHeight(mode: .onHover, status: withoutCredits)
-        XCTAssertGreaterThan(tall, short, "菜单侧重置卡一直是自己画的，不该被这次改动影响")
+        XCTAssertGreaterThan(
+            measuredHeight(mode: ProviderStatusStripView.cardRevealMode, status: withCredits),
+            measuredHeight(mode: ProviderStatusStripView.cardRevealMode, status: withoutCredits),
+            "兜底行的 hover 卡必须画出重置卡"
+        )
+        XCTAssertEqual(
+            measuredHeight(mode: .onHover, status: withCredits),
+            measuredHeight(mode: .onHover, status: withoutCredits),
+            "默认 mode 下的 provider 卡已不是完整卡片（这正是兜底行必须钉 .alwaysVisible 的理由）"
+        )
     }
 
     /// 两个窗口的明细**并排**而不是堆叠。
@@ -214,28 +242,29 @@ final class HoverRevealModeTests: XCTestCase {
         )
     }
 
-    /// 菜单侧七条规则**全部**关闭。任一条被顺手改成 true，主菜单卡片就会变形
-    /// （条跑到头部、5h/周并排、账号就地展开、倒计时跳到头部、input 里的
-    /// cached 被拆出来、prompts 里的 rounds 被拆出来）——而菜单是默认宿主，
-    /// 这条断言就是"改默认形态前先看这里"的闸门。
-    /// 刻意**不含**并排那条：它曾经以 `laysWindowDetailsSideBySide(mode:)` 的形式
-    /// 出现在这里，但它没有可达的消费方（唯一的读者在 `QuotaHoverViews` 的两个
-    /// hover 视图里，而那两个视图只从 model 行的 `menuLayout` 构造），断言它对
-    /// `.alwaysVisible` 返回 true 只是在给"规则已实现"制造错觉。现在那个谓词连同
-    /// 堆叠分支一起删了，改为无条件并排，由
+    /// 菜单侧那七条规则**已经收敛**：菜单内容区改成客户端视角后不再渲染 provider
+    /// 卡，唯一剩下的渲染宿主是浮层（`.alwaysVisible`，不吃鼠标事件）。
+    ///
+    /// 这条断言守的是"剩下的三条仍然为 dock 服务"。四条被删掉的
+    /// （`hoistsResetCredits` / `hoistsPeakIndicator` / `hidesHeaderStatusDot` /
+    /// `splitsIntoTwoCards`）不是"忘了删"，而是它们的消费方全在
+    /// `ProviderCardView.swift` 内、且都属于已删掉的菜单分支：规则还在、判据恒为
+    /// `true`、没有任何消费方，断言它返回 `true` 就是三方一起给假信号。
+    /// 并排那条（`laysWindowDetailsSideBySide`）早在上一轮就以同样理由删除，由
     /// `testQuotaWindowsHoverLaysTwoColumnsSideBySide` 单独盯着。
-    func testMenuLayoutStaysUnchanged() {
+    ///
+    /// 「菜单形态已无渲染消费方、生产路径一律 `.alwaysVisible`」由
+    /// `testStripHoverCardMustUseTheAlwaysVisibleRevealMode` 守住。
+    func testProviderCardLayoutTableConvergedToTheDockHost() {
         for rule in [
             ProviderCardLayout.liftsProgressBar,
-            ProviderCardLayout.hoistsResetCredits,
-            ProviderCardLayout.hoistsPeakIndicator,
-            ProviderCardLayout.hidesHeaderStatusDot,
             ProviderCardLayout.splitsCachedInputRow,
             ProviderCardLayout.splitsRoundsRow,
-            ProviderCardLayout.splitsIntoTwoCards,
         ] {
-            XCTAssertFalse(rule(.onHover), "主菜单不该套用 dock 的重排规则")
-            XCTAssertTrue(rule(.alwaysVisible), "dock 详情浮层才套用重排规则")
+            XCTAssertTrue(
+                rule(.alwaysVisible),
+                "剩下的三条规则消费方在 QuotaViews / QuotaHoverViews，dock 浮层必须套用"
+            )
         }
     }
 

@@ -109,6 +109,25 @@ final class HarnessUsageMenuViewTests: XCTestCase {
         )
     }
 
+    /// 截断提示**只在该段的数据源真被截断时出现**。
+    ///
+    /// 高度差就是那行在不在线的直接证据（只差 `isTruncated` 一个字段）。提示用
+    /// 的是 `ClientUsageTruncationNotice.text`（与设置页展开行、7 天柱图脚注同一
+    /// 常量），所以它固定占两行上下；哪天改成一行，这条的高度上限要跟着改。
+    @MainActor
+    func testTruncationNoticeOnlyShowsForTruncatedSections() {
+        let truncated = self.height(of: HarnessSectionView(
+            section: Self.sectionFixture(rowCount: 2, isTruncated: true)
+        ))
+        let complete = self.height(of: HarnessSectionView(
+            section: Self.sectionFixture(rowCount: 2, isTruncated: false)
+        ))
+        XCTAssertGreaterThan(
+            truncated, complete,
+            "被截断的段必须多出橙色截断提示行（否则一份残缺统计被当完整统计读）"
+        )
+    }
+
     // MARK: - helpers
 
     @MainActor
@@ -120,7 +139,7 @@ final class HarnessUsageMenuViewTests: XCTestCase {
     }
 
     /// 一个客户端 + 一个极长模型名的行：模型名列尾截断，右侧四列仍定宽。
-    private static func sectionFixture(rowCount: Int) -> HarnessSection {
+    private static func sectionFixture(rowCount: Int, isTruncated: Bool = false) -> HarnessSection {
         let rows = (0..<rowCount).map { index in
             HarnessModelRow(
                 dayStart: Calendar.current.startOfDay(for: Date()),
@@ -139,7 +158,8 @@ final class HarnessUsageMenuViewTests: XCTestCase {
             iconSystemName: "terminal",
             buckets: TokenUsageBuckets(input: 400_000, cacheRead: 600_000, output: 200_000, reasoning: 100_000),
             value: MixedCurrencyEstimate(usd: 11.3, cny: 0),
-            rows: rows
+            rows: rows,
+            isTruncated: isTruncated
         )
     }
 

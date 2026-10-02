@@ -113,7 +113,12 @@ final class SettingsClientsPaneTests: XCTestCase {
         let usage = sliceFixture()
         state.applyGlmLocalUsage(usage)
         XCTAssertTrue(
-            state.statuses.filter { $0.kind != .glmCodingPlan }.allSatisfy(\.mergeZcodeUsage),
+            state.statuses.filter { $0.kind != .glmCodingPlan }.allSatisfy {
+                $0.isClientBindingEnabled(
+                    clientID: ClientID.zcode,
+                    quotaProviderID: $0.kind.quotaProviderID
+                )
+            },
             "默认绑定（zcode → minimax / deepseek）应已开启，否则下面验不到分片行"
         )
 
@@ -174,7 +179,11 @@ final class SettingsClientsPaneTests: XCTestCase {
         let (_, state) = makeSettings()
         defer { state.stop() }
         state.applyGlmLocalUsage(sliceFixture())
-        state.mutateStatus(for: ProviderKind.deepseek.providerID) { $0.mergeZcodeUsage = false }
+        state.mutateStatus(for: ProviderKind.deepseek.providerID) {
+            $0.setClientBindingEnabled(
+                clientID: ClientID.zcode, quotaProviderID: QuotaProviderID.deepseek, enabled: false
+            )
+        }
 
         let rows = ClientUsageAggregation.clientProviderUsageByClient(for: state.statuses)[ClientID.zcode] ?? []
         XCTAssertFalse(
