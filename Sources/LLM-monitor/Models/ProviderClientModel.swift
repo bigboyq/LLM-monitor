@@ -681,7 +681,9 @@ extension ProviderStatus {
         )]
     }
 
-    /// Antigravity native（RPC + .db step 统计）。独立账本 → 裸 promptID。
+    /// Antigravity native（RPC + .db step 统计）。账本原始 promptID 是裸
+    /// `session:turn`，投影时补 `antigravity:` 命名空间（规则见内核
+    /// `UsageSampleNamespace.antigravityNative`）。
     private static let antigravityFrames: @Sendable (ProviderStatus, QuotaInfo?) -> [HarnessUsageFrame] = { status, _ in
         guard let snapshot = status.antigravityLocalUsage else { return [] }
         return [HarnessUsageFrame(
@@ -689,12 +691,13 @@ extension ProviderStatus {
             quotaProviderID: QuotaProviderID.antigravity,
             daily: snapshot.dailyTokenUsage,
             samples: snapshot.recentSamples ?? [],
-            namespace: .native,
+            namespace: .antigravityNative,
             scannedAt: snapshot.scannedAt
         )]
     }
 
-    /// MiniMax Code native（v2 runtime-state 单库 SQL）。独立账本 → 裸 promptID。
+    /// MiniMax Code native（v2 runtime-state 单库 SQL）。裸 `session:turn`，
+    /// 投影时补 `minimax-code:` 命名空间。
     private static let minimaxNativeFrames: @Sendable (ProviderStatus, QuotaInfo?) -> [HarnessUsageFrame] = { status, _ in
         guard let snapshot = status.minimaxLocalUsage else { return [] }
         return [HarnessUsageFrame(
@@ -702,13 +705,14 @@ extension ProviderStatus {
             quotaProviderID: QuotaProviderID.minimax,
             daily: snapshot.dailyTokenUsage,
             samples: snapshot.recentSamples ?? [],
-            namespace: .native,
+            namespace: .minimaxNative,
             scannedAt: snapshot.scannedAt
         )]
     }
 
     /// ZCode 智谱系 native（`GlmZcodeLocalUsageScanner`）。智谱行走 GLM 卡，
-    /// 样本保持裸 promptID（与既有行为一致），非智谱分片见 `zcodeSliceFrames`。
+    /// 裸 `session:turn` 在投影时补 `zcode:` 命名空间；非智谱分片（多一段
+    /// slice 键）见 `zcodeSliceFrames`。
     private static let zcodeNativeFrames: @Sendable (ProviderStatus, QuotaInfo?) -> [HarnessUsageFrame] = { status, _ in
         guard let snapshot = status.glmLocalUsage else { return [] }
         return [HarnessUsageFrame(
@@ -716,7 +720,7 @@ extension ProviderStatus {
             quotaProviderID: QuotaProviderID.zhipu,
             daily: snapshot.dailyTokenUsage,
             samples: snapshot.recentSamples ?? [],
-            namespace: .native,
+            namespace: .zcodeNative,
             scannedAt: snapshot.scannedAt
         )]
     }

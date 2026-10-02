@@ -113,6 +113,36 @@ catalog 的结果已经在 reader 层固化，重建逻辑必须逐字段原样�
 一律返回 1。新增 provider 的峰谷定价只往表里追加一行，不要在求值分支里加
 `if quotaProviderID == ...`。价目本身仍然只改 JSON，不在本表登记。
 
+## promptID 命名空间登记表
+
+同一台机器上多份本地账本可能恰好使用相同的 prompt ID（几乎都是裸 `session:turn`）。
+不区分来源时它们会被去重成「同一次用户请求」，turns 计数因此偏低。规则集中登记在
+`Sources/LLM-monitor/Models/UsageProjectionKernel.swift` 的 `UsageSampleNamespace`：
+
+| 来源（`UsageSampleNamespace` case） | 账本 | 前缀 |
+|---|---|---|
+| `antigravityNative` | Antigravity native（RPC + .db step 统计） | `antigravity:` |
+| `minimaxNative` | MiniMax Code native（v2 runtime-state 单库 SQL） | `minimax-code:` |
+| `zcodeNative` | ZCode 智谱系 native（`GlmZcodeLocalUsageScanner`） | `zcode:` |
+| `codex` | Codex native（scanner 构造点已自带 `codex:`） | 不叠加 |
+| `dsh` | DSH 共享 session 账本 + provider 路由键 | `dsh:<provider>:` |
+| `opencode` | OpenCode 一份多 provider 账本 | `opencode:<provider>:` |
+| `zcodeSlice` | ZCode 账本里的非智谱 provider 分片 | `zcode:<slice>:` |
+| `passthrough` | 显式透传（调用点默认） | 不加 |
+
+**前缀加在投影层**：scanner / reader / 磁盘缓存一律保持账本原始格式，命名空间在帧
+构造时（L1 `HarnessUsageFrame(namespace:)`）统一施加。因此旧缓存里的裸 ID 与今天
+新写入的裸 ID 得到**完全相同**的终态 ID —— 既有缓存不需要迁移，同一次请求也不会
+因为「一份带前缀、一份是裸的」被计成两次。改在 scanner 层加前缀会正好造成这种
+双计，不要那样做。
+
+前缀是纯粹的**标识**层：智谱套餐分类（`isGlmOffPeakSample` / `isGlmOtherPlanSample`）
+一律按 `sourceProviderID` 判定，`lastPrompt` 等只按 promptID 做等值分组，两者都不
+解析 promptID 的字面前缀，所以新增前缀不会影响分类与窗口口径。唯一读前缀的地方是
+`LocalUsageSummaryBuilder.isGlmOffPeakSample` 的「OpenCode 合并样本不算闲时」回退
+（`hasPrefix("opencode:")`），`zcode:` / `antigravity:` / `minimax-code:` 都不匹配该
+判定，语义与加前缀前一致。
+
 ## 跨 provider 金额汇总
 
 `ModelCostEstimate` 是**单 provider 内**的计价结果：同一 provider 出现币种冲突时把冲突
@@ -141,6 +171,7 @@ catalog 的结果已经在 reader 层固化，重建逻辑必须逐字段原样�
 | Sample → 估算四桶 | `TokenUsageBuckets.fromSample(_:)` |
 | Sample → daily 规范化汇总 | `UnifiedTokenUsageAggregator` |
 | Sample → 计价三项 | `ModelPricingCatalog.tokenComponents(for:)` |
+| promptID 命名空间登记 | `Sources/LLM-monitor/Models/UsageProjectionKernel.swift` 的 `UsageSampleNamespace`（前缀常量在 `UsageSampleNamespace.Prefix`） |
 | DSH raw → daily/sample | `DshLocalUsageScanner.add` |
 
 任何新 harness 必须先补充本矩阵、provider spec 和 `TokenAccountingCatalog`，再接入 UI；

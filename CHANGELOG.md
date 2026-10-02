@@ -2,6 +2,18 @@
 
 本文件记录面向用户的版本变化；审计、重构和测试补强只在影响使用行为时摘要记录。
 
+## [Unreleased]
+
+### Added
+
+- 账号信息找回：菜单改版删掉旧卡的账号折叠区后，邮箱 / 套餐 / 数据来源从所有 UI 入口消失——现并入「额度窗口用量」区块的展开明细（逐张重置卡清单下方，同款分隔线；Antigravity / ChatGPT 有账号数据时出现）。卡片高度代价约 +93pt，超屏仍由既有滚动兜底。
+- Provider 状态兜底行的单个胶囊支持右键「刷新 <provider 名>」：复用改版前单卡刷新的同一入口（只重锚该 provider 的排期，不动其他 provider），刷新事务在飞时置灰——此前菜单里只剩「立即刷新全部」。
+
+### Changed
+
+- 内部：原生样本（Antigravity / MiniMax Code / ZCode 智谱）的 promptID 在投影层统一加 `antigravity:` / `minimax-code:` / `zcode:` 前缀，与 OpenCode / DSH / ZCode 分片的前缀体系对齐——磁盘缓存零迁移（前缀在帧构造时施加，新旧样本得到相同终态 ID，turn 去重不受影响），apply 带幂等护栏杜绝双层前缀。
+- 内部：菜单 Harness 汇总改为缓存计算（statusDidChange 标脏、跨自然日自动失效、1Hz 时钟 tick 零重算）；删除死代码——`StatusIndicator` 类型、`OpencodeProviderUsage.cost` 字段、`ProviderCardLayout` 三条恒真谓词（`liftsProgressBar` / `splitsCachedInputRow` / `splitsRoundsRow`，生产路径收敛为 dock 排版后恒定，消费点内联）与两个无调用方的账号包装视图。
+
 ## [1.21.0] - 2026-10-02
 
 ### Added

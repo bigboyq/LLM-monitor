@@ -151,8 +151,6 @@ struct OpencodeProviderUsage: Equatable, Codable, Sendable {
     let dailyTokenUsage: [OpencodeDailyUsage]
     /// 该 provider 的累计、有 token 的 LLM round 数。
     let roundCount: Int
-    /// 该 provider 的累计 cost（GLM 订阅制恒为 0）
-    let cost: Double
     /// 最近 8 天的逐次 assistant 调用，供 quota 窗口内 token 汇总使用。
     let recentSamples: [LocalTokenUsageSample]
 }
@@ -191,7 +189,6 @@ extension OpencodeProviderUsage {
             today: mergedToday,
             dailyTokenUsage: mergedDaily,
             roundCount: SaturatingArithmetic.add(roundCount, other.roundCount),
-            cost: cost + other.cost,
             recentSamples: recentSamples + otherSamples
         )
     }

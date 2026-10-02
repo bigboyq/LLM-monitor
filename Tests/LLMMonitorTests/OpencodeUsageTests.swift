@@ -91,7 +91,6 @@ final class OpencodeUsageTests: XCTestCase {
                 rounds: 3
             )],
             roundCount: 3,
-            cost: 0,
             recentSamples: [openSample]
         )
         let native = MinimaxLocalUsage(
@@ -212,7 +211,6 @@ final class OpencodeUsageTests: XCTestCase {
                 rounds: 3
             )],
             roundCount: 3,
-            cost: 0,
             recentSamples: [openSample]
         )
         let native = AntigravityLocalUsage(
@@ -295,7 +293,6 @@ final class OpencodeUsageTests: XCTestCase {
             today: nil,
             dailyTokenUsage: [],
             roundCount: 1,
-            cost: 0,
             recentSamples: [sample]
         )
         let snapshot = OpencodeLocalUsage(
@@ -337,11 +334,11 @@ final class OpencodeUsageTests: XCTestCase {
             )
         }
         let first = OpencodeProviderUsage(
-            today: nil, dailyTokenUsage: [], roundCount: 1, cost: 0,
+            today: nil, dailyTokenUsage: [], roundCount: 1,
             recentSamples: [sample("prompt-a")]
         )
         let second = OpencodeProviderUsage(
-            today: nil, dailyTokenUsage: [], roundCount: 1, cost: 0,
+            today: nil, dailyTokenUsage: [], roundCount: 1,
             recentSamples: [sample("prompt-b")]
         )
         let snapshot = OpencodeLocalUsage(
@@ -394,7 +391,6 @@ final class OpencodeUsageTests: XCTestCase {
                 today: daily,
                 dailyTokenUsage: [daily],
                 roundCount: 1,
-                cost: 0,
                 recentSamples: [sample]
             )
         }
@@ -516,7 +512,6 @@ final class OpencodeUsageTests: XCTestCase {
                 rounds: 3
             )],
             roundCount: 3,
-            cost: 0,
             recentSamples: []
         )
 

@@ -13,9 +13,12 @@ import Foundation
 /// 2. **内核契约**：帧分组顺序、当日 max 修补、per-model 四桶、名义价值、
 ///    截断聚合、promptID 命名空间登记表。
 ///
-/// 唯一允许的差异：DSH sample 的 `dsh:dsh:<provider>:` → `dsh:<provider>:`
-/// （旧 Merger 在 scanner 已带 `dsh:` 的 sourceProviderID 上又叠了一层）。
-/// diff 用例显式按这条规则归一后再比对，并有独立用例锁死新格式。
+/// 允许的差异只有 promptID 命名空间两处，都由 `normalizedPromptIDs` 显式归一后
+/// 再比：DSH 的 `dsh:dsh:<provider>:` → `dsh:<provider>:`（旧 Merger 在 scanner
+/// 已带 `dsh:` 的 sourceProviderID 上又叠了一层）、以及 A4 起三个 native 账本在
+/// 投影层补的 `antigravity:` / `minimax-code:` / `zcode:` 前缀。两侧各有独立用例
+/// 锁死新格式（`testDshSamplesUseSingleLayerPromptNamespace` /
+/// `testNativeFrameSamplesAreNamespacedOncePerRequest`）。
 final class UsageProjectionKernelTests: XCTestCase {
 
     // MARK: - fixture
@@ -73,7 +76,6 @@ final class UsageProjectionKernelTests: XCTestCase {
             today: daily,
             dailyTokenUsage: [daily],
             roundCount: promptIDs.count,
-            cost: 0,
             recentSamples: promptIDs.map {
                 sample($0, day: day, model: model, input: input,
                        cacheRead: cacheRead, output: output, reasoning: reasoning)
@@ -339,9 +341,9 @@ final class UsageProjectionKernelTests: XCTestCase {
                     "\(status.kind)/\(expected.clientID) 截断位"
                 )
                 XCTAssertEqual(
-                    Self.normalizedDSHPromptIDs(got.recentSamples),
-                    Self.normalizedDSHPromptIDs(expected.samples),
-                    "\(status.kind)/\(expected.clientID) 样本逐条相等（dsh:dsh: 归一后）"
+                    Self.normalizedPromptIDs(got.recentSamples, kind: status.kind),
+                    Self.normalizedPromptIDs(expected.samples, kind: status.kind),
+                    "\(status.kind)/\(expected.clientID) 样本逐条相等（dsh:dsh: 与 A4 native 前缀归一后）"
                 )
             }
 
@@ -581,16 +583,125 @@ final class UsageProjectionKernelTests: XCTestCase {
     /// 命名空间登记表：每条规则的字面前缀。
     /// zcode 分片规则迁移为「绑定驱动后样本前缀仍逐字等于 `zcode:<slice>:`」：
     /// 端到端断言在 ZcodeProviderSliceTests（走 zcodeSliceFrames → 内核的
-    /// 生产链路），这里锁登记表的字面量与 native 透传。
+    /// 生产链路），这里锁登记表的字面量与 passthrough 透传。
     func testUsageSampleNamespaceRegistryPrefixes() {
         let item = sample("p", day: Date(), model: "m", input: 1)
-        XCTAssertNil(UsageSampleNamespace.native.prefix(sourceKey: "x"))
+        XCTAssertNil(UsageSampleNamespace.passthrough.prefix(sourceKey: "x"))
         XCTAssertNil(UsageSampleNamespace.codex.prefix(sourceKey: "x"))
         XCTAssertEqual(UsageSampleNamespace.dsh.prefix(sourceKey: "minimax-cn"), "dsh:minimax-cn:")
         XCTAssertEqual(UsageSampleNamespace.opencode.prefix(sourceKey: "openai"), "opencode:openai:")
         XCTAssertEqual(UsageSampleNamespace.zcodeSlice.prefix(sourceKey: "deepseek"), "zcode:deepseek:")
         XCTAssertEqual(UsageSampleNamespace.dsh.prefix(sourceKey: nil), "dsh:unknown:")
-        XCTAssertEqual(UsageSampleNamespace.native.apply(to: [item]).map(\.promptID), ["p"])
+        XCTAssertEqual(UsageSampleNamespace.passthrough.apply(to: [item]).map(\.promptID), ["p"])
+    }
+
+    /// A4：三个 native（单源）账本的裸 `session:turn` 在投影层各补一层固定前缀。
+    ///
+    /// 登记表的字面量（前缀常量集中定义在 `UsageSampleNamespace.Prefix`）：
+    /// antigravity → `antigravity:`、minimax code → `minimax-code:`、
+    /// zcode 智谱 → `zcode:`。`sourceKey` 对这三个来源无意义（单源账本），传什么都
+    /// 不影响结果。
+    func testNativeNamespacesUseFixedClientPrefixes() {
+        let item = sample("session-1:turn-2", day: Date(), model: "m", input: 1)
+        for key in [nil, "ignored", ""] as [String?] {
+            XCTAssertEqual(
+                UsageSampleNamespace.antigravityNative.prefix(sourceKey: key),
+                UsageSampleNamespace.Prefix.antigravityNative
+            )
+            XCTAssertEqual(
+                UsageSampleNamespace.minimaxNative.prefix(sourceKey: key),
+                UsageSampleNamespace.Prefix.minimaxNative
+            )
+            XCTAssertEqual(
+                UsageSampleNamespace.zcodeNative.prefix(sourceKey: key),
+                UsageSampleNamespace.Prefix.zcodeNative
+            )
+        }
+        XCTAssertEqual(
+            UsageSampleNamespace.antigravityNative.apply(to: [item]).map(\.promptID),
+            ["antigravity:session-1:turn-2"]
+        )
+        XCTAssertEqual(
+            UsageSampleNamespace.minimaxNative.apply(to: [item]).map(\.promptID),
+            ["minimax-code:session-1:turn-2"]
+        )
+        XCTAssertEqual(
+            UsageSampleNamespace.zcodeNative.apply(to: [item]).map(\.promptID),
+            ["zcode:session-1:turn-2"]
+        )
+        // 三个来源的原始 ID 完全同构（都是裸 session:turn），必须映射到互不相同的
+        // 终态 ID，否则跨 harness 去重会把它们算成同一次请求。
+        XCTAssertEqual(
+            Set([UsageSampleNamespace.antigravityNative,
+                 .minimaxNative, .zcodeNative]
+                .map { $0.apply(to: [item]).first?.promptID }).count,
+            3
+        )
+        // apply 幂等：已经是终态 ID 的样本再过一次内核不得叠出 `zcode:zcode:`。
+        XCTAssertEqual(
+            UsageSampleNamespace.zcodeNative.apply(
+                to: UsageSampleNamespace.zcodeNative.apply(to: [item])
+            ).map(\.promptID),
+            ["zcode:session-1:turn-2"]
+        )
+    }
+
+    /// A4 端到端：三个 native 帧的裸样本经**生产链路**（帧抽取器 → 内核）后带上
+    /// 各自前缀；且旧缓存里的裸 ID 与今天新写入的裸 ID 落到同一个终态 ID
+    /// —— 这就是"零缓存迁移、零 turn 双计"的证明：同一请求不会因为前缀的存在
+    /// 而被计成两次（去重集合 `Set(promptID)` 仍只收一条）。
+    func testNativeFrameSamplesAreNamespacedOncePerRequest() throws {
+        let now = Date()
+        let (statuses, _) = makeStatuses(now: now)
+
+        func promptIDs(_ kind: ProviderKind, _ clientID: String) throws -> [String] {
+            let status = try XCTUnwrap(statuses.first { $0.kind == kind })
+            let contribution = try XCTUnwrap(
+                status.usageProjection(for: nil).contributions.first { $0.clientID == clientID },
+                "\(kind)/\(clientID) 缺贡献"
+            )
+            return contribution.recentSamples.map(\.promptID)
+        }
+
+        let antigravity = try promptIDs(.antigravity, ClientID.antigravity)
+        let minimax = try promptIDs(.minimaxTokenPlan, ClientID.minimaxCode)
+        let zcode = try promptIDs(.glmCodingPlan, ClientID.zcode)
+        XCTAssertEqual(antigravity, ["antigravity:ag-native:turn-1"])
+        XCTAssertEqual(minimax, ["minimax-code:mm-native:turn-1"])
+        XCTAssertEqual(zcode, ["zcode:glm-s:glm-t1"])
+
+        // 同一次请求（裸 ID 相同）无论来自旧缓存还是本次新扫描，终态 ID 唯一。
+        let bare = sample("shared-session:turn-1", day: now, model: "m", input: 1)
+        func antigravityFramePromptIDs(_ snapshot: ProviderLocalUsage) -> [String] {
+            var status = ProviderStatus(
+                id: ProviderKind.antigravity.providerID, displayName: "Antigravity",
+                kind: .antigravity, iconSystemName: "circle", accentColor: .antigravity,
+                refreshIntervalSeconds: 300, state: .ready
+            )
+            status.antigravityLocalUsage = snapshot
+            let extractors = ProviderStatus.usageFrameExtractors[.antigravity] ?? []
+            return extractors
+                .flatMap { $0(status, nil) }
+                .flatMap(\.samples)
+                .map(\.promptID)
+        }
+        func bareSnapshot() -> ProviderLocalUsage {
+            // 旧缓存快照：磁盘上的形态就是裸 promptID（命名空间只在投影层施加）。
+            ProviderLocalUsage(
+                today: nil,
+                dailyTokenUsage: [],
+                scannedAt: now,
+                sessionCount: 1,
+                eventCount: 1,
+                failedSessionCount: 0,
+                recentSamples: [bare]
+            )
+        }
+        let cachedIDs = antigravityFramePromptIDs(bareSnapshot())
+        let freshIDs = antigravityFramePromptIDs(bareSnapshot())
+        XCTAssertEqual(cachedIDs, ["antigravity:shared-session:turn-1"])
+        XCTAssertEqual(freshIDs, cachedIDs, "旧缓存与新扫描的同一请求必须得到同一个终态 ID")
+        XCTAssertEqual(Set(cachedIDs + freshIDs).count, 1, "拼接后仍只算一次请求（无 turn 双计）")
     }
 
     /// 视图模型只做展示窗口裁剪 + 价值缓存，不再自己算合并规则。
@@ -811,19 +922,41 @@ final class UsageProjectionKernelTests: XCTestCase {
         )
     }
 
-    /// 供 diff 归一：把旧 Merger 叠出来的 `dsh:dsh:<provider>:` 双层前缀压成
-    /// 单层 `dsh:<provider>:`，让新旧样本在同一条规则下可比。排序后比较，
-    /// 因为旧实现的样本顺序来自 Dictionary 迭代顺序（不确定），新实现按
-    /// provider 键升序拼接（确定）——顺序不是契约，逐条内容才是。
-    private static func normalizedDSHPromptIDs(
-        _ samples: [LocalTokenUsageSample]
+    /// 供 diff 归一：两处**已声明的允许差异**，都只动 promptID 字面量。
+    ///
+    /// 1. DSH：旧 Merger 叠出来的 `dsh:dsh:<provider>:` 双层前缀压成单层
+    ///    `dsh:<provider>:`（P1 起清理，见 `testDshSamplesUseSingleLayerPromptNamespace`）。
+    /// 2. A4：三个 native 账本的裸 `session:turn` 起在投影层补固定前缀
+    ///    （`antigravity:` / `minimax-code:` / `zcode:`），而 `LegacyProjector`
+    ///    复刻的正是改造前的裸 ID。这里按**卡**剥掉该卡对应的那一条 —— zcode 分片
+    ///    （`zcode:<slice>:`，改造前后一致）不在剥离范围内，否则两侧同被削首段、
+    ///    反而掩盖真实差异。
+    ///
+    /// 逐条内容（而非顺序）才是契约：旧实现的样本顺序来自 Dictionary 迭代顺序
+    /// （不确定），新实现按 provider 键升序拼接（确定）。其余字段两侧同源。
+    private static func normalizedPromptIDs(
+        _ samples: [LocalTokenUsageSample],
+        kind: ProviderKind
     ) -> [String] {
+        samples.map { Self.normalizedPromptID($0.promptID, kind: kind) }.sorted()
+    }
+
+    private static func normalizedPromptID(_ promptID: String, kind: ProviderKind) -> String {
         let doubled = "dsh:dsh:"
-        return samples.map { item in
-            item.promptID.hasPrefix(doubled)
-                ? "dsh:" + item.promptID.dropFirst(doubled.count)
-                : item.promptID
-        }.sorted()
+        if promptID.hasPrefix(doubled) { return "dsh:" + promptID.dropFirst(doubled.count) }
+        let nativePrefix: String?
+        switch kind {
+        case .antigravity:
+            nativePrefix = UsageSampleNamespace.Prefix.antigravityNative
+        case .minimaxTokenPlan:
+            nativePrefix = UsageSampleNamespace.Prefix.minimaxNative
+        case .glmCodingPlan:
+            nativePrefix = UsageSampleNamespace.Prefix.zcodeNative
+        case .codexChatGpt, .deepseek:
+            nativePrefix = nil
+        }
+        guard let nativePrefix, promptID.hasPrefix(nativePrefix) else { return promptID }
+        return String(promptID.dropFirst(nativePrefix.count))
     }
 }
 
@@ -923,7 +1056,6 @@ private enum LegacyProjector {
             roundCount: SaturatingArithmetic.sum(
                 native?.roundCount ?? 0, dshSlice?.roundCount ?? 0, opencode?.roundCount ?? 0
             ),
-            cost: (native?.cost ?? 0) + (opencode?.cost ?? 0),
             recentSamples: (native?.recentSamples ?? [])
                 + dshSamples(dshSlice)
                 + opencodeSamples(opencode, providerID: "opencode")
@@ -936,7 +1068,6 @@ private enum LegacyProjector {
             today: nil,
             dailyTokenUsage: snapshot.dailyTokenUsage,
             roundCount: snapshot.eventCount,
-            cost: 0,
             recentSamples: snapshot.recentSamples ?? []
         )
     }

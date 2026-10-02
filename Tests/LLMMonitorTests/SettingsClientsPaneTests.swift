@@ -158,7 +158,7 @@ final class SettingsClientsPaneTests: XCTestCase {
                 recentSamples: [fixtureSample(provider: "account:bigmodel-individual-coding-plan", input: 1_000)],
                 providerSlices: [
                     ZcodeProviderSlice.deepseek.rawValue: OpencodeProviderUsage(
-                        today: nil, dailyTokenUsage: [], roundCount: 1, cost: 0,
+                        today: nil, dailyTokenUsage: [], roundCount: 1,
                         recentSamples: [fixtureSample(provider: "deepseek", input: 300, promptID: "ds:t1")]
                     )
                 ]
@@ -202,11 +202,11 @@ final class SettingsClientsPaneTests: XCTestCase {
     private func sliceFixture() -> GlmLocalUsage {
         let slices = [
             ZcodeProviderSlice.deepseek.rawValue: OpencodeProviderUsage(
-                today: nil, dailyTokenUsage: [], roundCount: 1, cost: 0,
+                today: nil, dailyTokenUsage: [], roundCount: 1,
                 recentSamples: [fixtureSample(provider: "deepseek", input: 300, promptID: "ds:t1")]
             ),
             ZcodeProviderSlice.minimax.rawValue: OpencodeProviderUsage(
-                today: nil, dailyTokenUsage: [], roundCount: 1, cost: 0,
+                today: nil, dailyTokenUsage: [], roundCount: 1,
                 recentSamples: [fixtureSample(provider: "minimax", input: 200, promptID: "mm:t1")]
             )
         ]

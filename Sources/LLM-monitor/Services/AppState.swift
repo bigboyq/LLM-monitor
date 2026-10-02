@@ -120,7 +120,8 @@ final class AppState: ObservableObject {
                 // lastSuccess == nil 返回 nil，需单独保留该语义。
                 return .critical
             case .ok, .loading(lastSuccess: .some), .failed(message: _, lastSuccess: .some):
-                // 与卡片头部点（ProviderCardView 的 StatusIndicator）同一口径。
+                // 与卡片同一口径：卡片标题行的状态由 `ProviderStateLabel` 胶囊说出，
+                // 这里的聚合档位要与之同源。
                 if let level = status.aggregateHealthLevel(at: now) {
                     levels.append(level)
                 }

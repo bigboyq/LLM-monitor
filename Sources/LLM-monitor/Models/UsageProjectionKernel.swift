@@ -20,34 +20,74 @@ import Foundation
 /// 可能恰好使用相同的 prompt ID；不加命名空间会被去重成"同一次用户请求"，
 /// turns 计数因此偏低。规则收口在这里，新增 harness 只需登记一条。
 ///
+/// **前缀加在投影层，不动 scanner / reader / 磁盘缓存**：账本里落盘的一律是原始
+/// 格式，命名空间在帧构造时（L1 `HarnessUsageFrame(namespace:)`）统一施加。
+/// 于是旧缓存里的裸 ID 与今天新写入的裸 ID 在投影时得到**完全相同**的终态 ID ——
+/// 同一次请求恒定映射到同一个字符串，既不需要缓存迁移，也不会出现"新旧各算一次
+/// 同一 turn"的双计。若改在 scanner 层加前缀，同一条历史记录会被前缀与裸格式各
+/// 命中一次，反而双计（已否决的方案）。
+///
 /// 登记项与实际口径：
-/// - `native`：Antigravity / MiniMax Code / ZCode 智谱 native —— 各自独立账本，
-///   保持裸格式（历史行为，不改）。
-/// - `codex`：Codex scanner 已在构造点自带 `codex:` 前缀，这里保持不叠加。
+/// - `antigravityNative`：`antigravity:`（Antigravity native，单源账本）。
+/// - `minimaxNative`：`minimax-code:`（MiniMax Code native，单源账本）。
+/// - `zcodeNative`：`zcode:`（ZCode 智谱系 native，单源账本）。
+///   这三个来源的 promptID 都是裸 `session:turn`（`GlmZcodeDBReader` /
+///   `MinimaxDBReader` / `AntigravityLocalUsageAggregation` 各自生成），与
+///   OpenCode / ZCode 分片的**未加前缀原始格式**同构，所以按 client 身份各补一层
+///   固定前缀。`zcode:` 与 `zcodeSlice` 的 `zcode:<slice>:` 同族但不冲突：后者多
+///   一段 slice 键，native 快照本身就是一整份智谱账本，不再分片。
+/// - `passthrough`：不加前缀，保持原样。
+/// - `codex`：Codex scanner 已在构造点自带 `codex:` 前缀，这里同样不叠加；保留
+///   独立 case 只是为了让调用点的意图一眼可读。
 /// - `dsh`：DSH scanner 原生 promptID 已含 `dsh:` 会话标识；本层只补**一层**
 ///   `dsh:<provider>:` 归因（旧 `DshUsageMerger` 叠的是 `dsh:dsh:<provider>:`，
 ///   属本阶段唯一允许的差异）。
 /// - `opencode`：`opencode:<provider>:`（OpenCode 一份多 provider 账本）。
 /// - `zcodeSlice`：`zcode:<slice>:`（ZCode 账本里的非智谱 provider 分片）。
 enum UsageSampleNamespace: Sendable, Equatable, CaseIterable {
-    case native
+    case antigravityNative
+    case minimaxNative
+    case zcodeNative
+    case passthrough
     case codex
     case dsh
     case opencode
     case zcodeSlice
 
+    /// 前缀常量集中定义处。新增来源只在这里加一条常量（外加一条 case）。
+    enum Prefix {
+        /// Antigravity native 账本（RPC + .db step 统计）。
+        static let antigravityNative = "antigravity:"
+        /// MiniMax Code native 账本（v2 runtime-state 单库 SQL）。
+        static let minimaxNative = "minimax-code:"
+        /// ZCode 智谱系 native 账本（`GlmZcodeLocalUsageScanner`）。
+        static let zcodeNative = "zcode:"
+        /// DSH 共享 session 账本 + provider 路由键。
+        static let dsh = "dsh:"
+        /// OpenCode 一份多 provider 账本 + providerID。
+        static let opencode = "opencode:"
+        /// ZCode 账本里的非智谱 provider 分片。
+        static let zcodeSlice = "zcode:"
+    }
+
     /// 施加到 promptID 前的命名空间；nil = 保持原样。
     /// `sourceKey` 为 nil 时退化为 `unknown`（与旧 merger 的兼容回退一致）。
     func prefix(sourceKey: String?) -> String? {
         switch self {
-        case .native, .codex:
+        case .passthrough, .codex:
             return nil
+        case .antigravityNative:
+            return Self.Prefix.antigravityNative
+        case .minimaxNative:
+            return Self.Prefix.minimaxNative
+        case .zcodeNative:
+            return Self.Prefix.zcodeNative
         case .dsh:
-            return "dsh:\(sourceKey ?? Self.unknownSourceKey):"
+            return Self.Prefix.dsh + "\(sourceKey ?? Self.unknownSourceKey):"
         case .opencode:
-            return "opencode:\(sourceKey ?? Self.unknownSourceKey):"
+            return Self.Prefix.opencode + "\(sourceKey ?? Self.unknownSourceKey):"
         case .zcodeSlice:
-            return "zcode:\(sourceKey ?? Self.unknownSourceKey):"
+            return Self.Prefix.zcodeSlice + "\(sourceKey ?? Self.unknownSourceKey):"
         }
     }
 
@@ -56,7 +96,14 @@ enum UsageSampleNamespace: Sendable, Equatable, CaseIterable {
         sourceKey: String? = nil
     ) -> [LocalTokenUsageSample] {
         guard let prefix = prefix(sourceKey: sourceKey) else { return samples }
-        return samples.map { $0.withPromptIDPrefix(prefix) }
+        return samples.map { sample in
+            // 幂等：已经是终态 ID 的样本不再叠一层。帧的输入恒为 scanner 原始快照
+            // （裸 ID），所以正常路径走不到这条；这里只是把「同一请求恒定映射到同一
+            // 个终态 ID」从调用方约定变成代码事实，未来谁在已命名的样本上再过一次
+            // 内核也不会造出 `zcode:zcode:` 这种字符串。
+            guard sample.promptID.hasPrefix(prefix) == false else { return sample }
+            return sample.withPromptIDPrefix(prefix)
+        }
     }
 
     static let unknownSourceKey = "unknown"
@@ -89,7 +136,7 @@ struct HarnessUsageFrame: Equatable, Sendable {
         quotaProviderID: String,
         daily: [Daily],
         samples: [LocalTokenUsageSample] = [],
-        namespace: UsageSampleNamespace = .native,
+        namespace: UsageSampleNamespace = .passthrough,
         isTruncated: Bool = false,
         scannedAt: Date? = nil
     ) {

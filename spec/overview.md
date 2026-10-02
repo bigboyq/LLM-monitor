@@ -129,7 +129,7 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 | `Sources/LLM-monitor/Views/MenuContentView.swift` | 主面板（header / content / footer） |
 | `Sources/LLM-monitor/Views/MenuTypography.swift` | 菜单面板与悬浮层统一排版常量（语义角色，禁止散落硬编码字号） |
 | `Sources/LLM-monitor/Views/MenuWindowAutoCloseBridge.swift` | 失焦立即关 + 30s 无交互关闭（菜单内 mouse/scroll/key 重置计时）|
-| `Sources/LLM-monitor/Views/ProviderCardView.swift` | provider 卡片 + `StatusIndicator` + `ProviderStateLabel` + `QuotaSummary` |
+| `Sources/LLM-monitor/Views/ProviderCardView.swift` | provider 卡片 + `ProviderStateLabel` + `QuotaSummary`（卡内状态点已随菜单改版移除，状态由 `ProviderStateLabel` 胶囊承载） |
 | `Sources/LLM-monitor/Views/QuotaViews.swift` | 各种 quota 行 + 进度条 + `EquivalentQuotaAllocation` |
 | `Sources/LLM-monitor/Views/QuotaHoverViews.swift` | 额度窗口 hover 视图族（binding constraint 文案、双 / 单窗口、用量指标与 Last Prompt 汇总） |
 | `Sources/LLM-monitor/Views/HoverPanel.swift` | `HoverInfoRow` / `HoverPanelController` / 浮层管理 |
@@ -669,7 +669,7 @@ the interval and weekly windows.
 | `.failed(_, let last)` | `last?.healthLevel`（无则 nil） |
 | `.ready` / `.notConfigured` | `nil`（UI 显示灰点，不归类为"健康"） |
 
-`nil` 让 UI 端的 `StatusIndicator` 用 secondary 灰色渲染，明确区分"没数据"和"有数据但健康"。菜单栏的 `iconDuo` 仪表盘会随额度指标与节能/睡眠健康度变化；`quotaLogo`（App 图标）是固定设计稿、不随健康度变化；标准 SF Symbol 样式则保留右下角状态点与刷新中的图标替换。卡片状态点和进度颜色同样反映健康度。
+`nil` 让 UI 端的状态胶囊用 secondary 灰色渲染，明确区分"没数据"和"有数据但健康"。菜单栏的 `iconDuo` 仪表盘会随额度指标与节能/睡眠健康度变化；`quotaLogo`（App 图标）是固定设计稿、不随健康度变化；标准 SF Symbol 样式则保留右下角状态点与刷新中的图标替换。卡片状态点和进度颜色同样反映健康度。
 
 ## Error And Fallback
 

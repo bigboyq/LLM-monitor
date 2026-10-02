@@ -93,7 +93,6 @@ final class OpencodeUsageScanner: SingleDBSnapshotScanner<OpencodeLocalUsage>, @
                 dailyTokenUsage: recent7,
                 roundCount: aggregate.roundCount[provider]
                     ?? SaturatingArithmetic.sum(allDaily.lazy.map(\.rounds)),
-                cost: aggregate.cost[provider] ?? 0,
                 recentSamples: aggregate.samples[provider] ?? []
             )
         }
@@ -138,7 +137,6 @@ final class OpencodeUsageScanner: SingleDBSnapshotScanner<OpencodeLocalUsage>, @
                 today: today,
                 dailyTokenUsage: daily,
                 roundCount: usage.roundCount,
-                cost: usage.cost,
                 recentSamples: usage.recentSamples.filter { $0.completedAt >= sampleCutoff }
             )
         }

@@ -548,7 +548,7 @@ final class GlmTests: XCTestCase {
             inputTokens: 200, cachedInputTokens: 0, outputTokens: 80, reasoningOutputTokens: 0
         )
         let opencode = OpencodeProviderUsage(
-            today: openDay, dailyTokenUsage: [openDay], roundCount: 4, cost: 0.0,
+            today: openDay, dailyTokenUsage: [openDay], roundCount: 4,
             recentSamples: [sample2]
         )
 
@@ -574,9 +574,10 @@ final class GlmTests: XCTestCase {
         XCTAssertEqual(mergedToday.cacheWrite, 25)
         XCTAssertEqual(mergedToday.reasoning, 50)
 
-        // Verify recentSamples promptID namespacing
+        // Verify recentSamples promptID namespacing。A4 起 ZCode 智谱 native 在投影层
+        // 补 `zcode:` 前缀（scanner / 缓存仍是裸 ID），OpenCode 分片前缀不变。
         let sampleIDs = projection.recentSamples.map { $0.promptID }
-        XCTAssertTrue(sampleIDs.contains("native:1"))
+        XCTAssertTrue(sampleIDs.contains("zcode:native:1"))
         XCTAssertTrue(sampleIDs.contains("opencode:\(OpencodeLocalUsage.glmProviderID):p1"))
     }
 

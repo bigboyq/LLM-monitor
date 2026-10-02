@@ -276,7 +276,6 @@ final class GlmZcodeLocalUsageScanner: SingleDBSnapshotScanner<GlmLocalUsage>, @
                 dailyTokenUsage: recent7,
                 roundCount: aggregate.roundCount[slice]
                     ?? SaturatingArithmetic.sum(allDaily.lazy.map(\.rounds)),
-                cost: 0,
                 recentSamples: aggregate.samples[slice] ?? []
             )
         }
@@ -348,7 +347,6 @@ final class GlmZcodeLocalUsageScanner: SingleDBSnapshotScanner<GlmLocalUsage>, @
                 today: today,
                 dailyTokenUsage: daily,
                 roundCount: usage.roundCount,
-                cost: usage.cost,
                 recentSamples: usage.recentSamples.filter { $0.completedAt >= sampleCutoff }
             )
         }

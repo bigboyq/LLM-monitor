@@ -506,7 +506,6 @@ final class HarnessTodaySummaryTests: XCTestCase {
             today: nil,
             dailyTokenUsage: [],
             roundCount: samples.count,
-            cost: 0,
             recentSamples: samples
         )
         return ProviderStatus(

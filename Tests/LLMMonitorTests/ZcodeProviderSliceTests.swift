@@ -328,7 +328,7 @@ final class ZcodeProviderSliceTests: XCTestCase {
             providerSlices: [
                 "deepseek": OpencodeProviderUsage(
                     today: deepseekDay, dailyTokenUsage: [deepseekDay], roundCount: 2,
-                    cost: 0, recentSamples: [
+                    recentSamples: [
                         LocalTokenUsageSample(
                             completedAt: day, modelName: "deepseek-flash", promptID: "ds-s:ds-t1",
                             inputTokens: 23_771, cachedInputTokens: 0, outputTokens: 298,
@@ -338,7 +338,7 @@ final class ZcodeProviderSliceTests: XCTestCase {
                 ),
                 "minimax": OpencodeProviderUsage(
                     today: minimaxDay, dailyTokenUsage: [minimaxDay], roundCount: 6,
-                    cost: 0, recentSamples: []
+                    recentSamples: []
                 )
             ]
         )
