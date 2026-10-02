@@ -26,8 +26,15 @@ struct OpencodeLocalUsage: Equatable, Codable, Sendable {
         byProvider: [:], modelsByProvider: [:], dbPath: nil, scannedAt: nil
     )
 
-    /// GLM Coding Plan 在 opencode 里的 providerID
-    static let glmProviderID = "zhipuai-coding-plan"
+    /// GLM Coding Plan 在 opencode 里的 providerID。
+    ///
+    /// 从默认绑定（`AppConfig.defaultClientBindings` 的 opencode → zhipu 条目）
+    /// 导出的访问器——归因别名的唯一事实源在那张表（P2 显式化）。末位字面量只是
+    /// 静态表被误删时的兜底，`ProviderModelTests` 的一致性用例锁住两侧不漂移。
+    static let glmProviderID: String = AppConfig.defaultSourceProviderAliases(
+        clientID: ClientID.openCode,
+        quotaProviderID: QuotaProviderID.zhipu
+    ).first ?? "zhipuai-coding-plan"
     /// ZCode（智谱官方 CLI）中消耗 Coding Plan 积分的正式套餐 provider_id 显式全集
     /// （native 源，唯一计入额度窗口）。2026-09-17 `0020_provider_model_selection`
     /// 迁移起 provider_id 账号化（`account:bigmodel-*` / `account:zai-*`），历史行
@@ -76,21 +83,39 @@ struct OpencodeLocalUsage: Equatable, Codable, Sendable {
     nonisolated static func isZcodeOffPeakProvider(_ providerID: String) -> Bool {
         zcodeOffPeakProviderIDs.contains(providerID)
     }
-    /// minimax 在 opencode 里的 providerID
+    /// minimax 在 opencode 里的 providerID。
+    /// 注意：这是「本地能力账本」，只进 OpenCode 诊断页、不参与 Minimax 卡归因，
+    /// 因此**没有**对应的 client 绑定，也不走绑定别名导出——保持字面量。
     static let minimaxProviderID = "minimax"
-    /// Minimax Token Plan 在 opencode 里的 providerID
-    static let minimaxCodingPlanProviderID = "minimax-cn-coding-plan"
-    /// ChatGPT / OpenAI 在 opencode 里的 providerID
-    static let openAIProviderID = "openai"
-    /// DeepSeek 在 opencode 里的 providerID
-    static let deepseekProviderID = "deepseek"
-    /// Antigravity 可能使用的 providerID。不同 OpenCode 版本 / 配置可能落在其中之一。
-    static let antigravityProviderIDs = [
-        "antigravity",
-        "google-antigravity",
-        "google-vertex",
-        "google"
-    ]
+    /// Minimax Token Plan 在 opencode 里的 providerID（从默认绑定导出，同 `glmProviderID`）。
+    static let minimaxCodingPlanProviderID: String = AppConfig.defaultSourceProviderAliases(
+        clientID: ClientID.openCode,
+        quotaProviderID: QuotaProviderID.minimax
+    ).first ?? "minimax-cn-coding-plan"
+    /// ChatGPT / OpenAI 在 opencode 里的 providerID（从默认绑定导出，同 `glmProviderID`）。
+    static let openAIProviderID: String = AppConfig.defaultSourceProviderAliases(
+        clientID: ClientID.openCode,
+        quotaProviderID: QuotaProviderID.openAI
+    ).first ?? "openai"
+    /// DeepSeek 在 opencode 里的 providerID（从默认绑定导出，同 `glmProviderID`）。
+    static let deepseekProviderID: String = AppConfig.defaultSourceProviderAliases(
+        clientID: ClientID.openCode,
+        quotaProviderID: QuotaProviderID.deepseek
+    ).first ?? "deepseek"
+    /// Antigravity 可能使用的 providerID。不同 OpenCode 版本 / 配置可能落在其中之一
+    /// （从默认绑定 opencode → antigravity 的别名数组导出，同 `glmProviderID`）。
+    static let antigravityProviderIDs: [String] = {
+        let aliases = AppConfig.defaultSourceProviderAliases(
+            clientID: ClientID.openCode,
+            quotaProviderID: QuotaProviderID.antigravity
+        )
+        return aliases.isEmpty
+            ? ["antigravity", "google-antigravity", "google-vertex", "google"]
+            : aliases
+    }()
+    /// Antigravity opencode 分片的命名空间主键（默认绑定 opencode → antigravity 的
+    /// 首选别名）。多 alias 分片合并后，帧统一用它做 `opencode:<key>:` 前缀。
+    static let antigravitySourceProviderID: String = antigravityProviderIDs.first ?? "antigravity"
 
     /// GLM 分片（便捷访问）
     var glmSlice: OpencodeProviderUsage? { byProvider[Self.glmProviderID] }

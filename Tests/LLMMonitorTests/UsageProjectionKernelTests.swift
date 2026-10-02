@@ -285,8 +285,7 @@ final class UsageProjectionKernelTests: XCTestCase {
             status.opencodeUsage = opencode
             status.dshUsage = dsh
             status.glmLocalUsage = zcode
-            status.mergeOpencodeUsage = true
-            status.mergeZcodeUsage = true
+            status.clientBindings = ProviderStatus.allClientBindingsEnabled()
             return status
         }
 
@@ -312,7 +311,10 @@ final class UsageProjectionKernelTests: XCTestCase {
 
         for status in statuses {
             let legacy = LegacyProjector.projections(
-                status: status, info: status.kind == .codexChatGpt ? codexInfo : nil
+                status: status,
+                info: status.kind == .codexChatGpt ? codexInfo : nil,
+                // 旧实现里 merge 开关是入参；P2 起从 status 携带的绑定注册表取值。
+                merges: LegacyProjector.legacyMergeFlags(of: status)
             )
             let actual = status.usageProjection(for: status.kind == .codexChatGpt ? codexInfo : nil)
 
@@ -577,8 +579,9 @@ final class UsageProjectionKernelTests: XCTestCase {
     }
 
     /// 命名空间登记表：每条规则的字面前缀。
-    /// `zcode:<slice>:` 与 `ZcodeProviderSlice.namespacedSamples` 必须一致
-    /// （后者仍在 ZcodeProviderSliceTests 里被间接使用，改一处必须改另一处）。
+    /// zcode 分片规则迁移为「绑定驱动后样本前缀仍逐字等于 `zcode:<slice>:`」：
+    /// 端到端断言在 ZcodeProviderSliceTests（走 zcodeSliceFrames → 内核的
+    /// 生产链路），这里锁登记表的字面量与 native 透传。
     func testUsageSampleNamespaceRegistryPrefixes() {
         let item = sample("p", day: Date(), model: "m", input: 1)
         XCTAssertNil(UsageSampleNamespace.native.prefix(sourceKey: "x"))
@@ -587,17 +590,6 @@ final class UsageProjectionKernelTests: XCTestCase {
         XCTAssertEqual(UsageSampleNamespace.opencode.prefix(sourceKey: "openai"), "opencode:openai:")
         XCTAssertEqual(UsageSampleNamespace.zcodeSlice.prefix(sourceKey: "deepseek"), "zcode:deepseek:")
         XCTAssertEqual(UsageSampleNamespace.dsh.prefix(sourceKey: nil), "dsh:unknown:")
-
-        let zcodeSlice = OpencodeProviderUsage(
-            today: nil, dailyTokenUsage: [], roundCount: 0, cost: 0, recentSamples: [item]
-        )
-        XCTAssertEqual(
-            UsageSampleNamespace.zcodeSlice.apply(
-                to: [item], sourceKey: ZcodeProviderSlice.deepseek.providerPrefix
-            ).map(\.promptID),
-            ZcodeProviderSlice.namespacedSamples(zcodeSlice, for: .deepseek).map(\.promptID),
-            "内核登记表与 ZcodeProviderSlice 的既有命名空间必须逐字一致"
-        )
         XCTAssertEqual(UsageSampleNamespace.native.apply(to: [item]).map(\.promptID), ["p"])
     }
 
@@ -629,6 +621,193 @@ final class UsageProjectionKernelTests: XCTestCase {
         XCTAssertEqual(
             summary.dailyTokenUsage, projection.daily,
             "daily 必须原样来自内核（含当日 max 修补），视图层不得再改"
+        )
+    }
+
+    // MARK: - P2 绑定显式化验收
+
+    /// 绑定关闭时对应切片帧不产出：zcode → minimax = false 后 MiniMax 卡不再有
+    /// ZCode 贡献，且同卡的 opencode 贡献与 DeepSeek 卡的 zcode 分片不受牵连。
+    /// 语义迁移自旧 mergeZcodeUsage 直改的开关用例。
+    func testBindingDisabledDropsZcodeSliceContribution() throws {
+        let now = Date()
+        let (statuses, _) = makeStatuses(now: now)
+
+        var minimax = try XCTUnwrap(statuses.first { $0.kind == .minimaxTokenPlan })
+        minimax.setClientBindingEnabled(
+            clientID: ClientID.zcode, quotaProviderID: QuotaProviderID.minimax, enabled: false
+        )
+        XCTAssertNil(
+            minimax.usageProjection(for: nil).contributions.first { $0.clientID == ClientID.zcode },
+            "zcode → minimax 绑定关闭后 MiniMax 卡不得再有 ZCode 贡献"
+        )
+        XCTAssertNotNil(
+            minimax.usageProjection(for: nil).contributions.first { $0.clientID == ClientID.openCode },
+            "同卡的 opencode 绑定不受 zcode 绑定关闭影响"
+        )
+
+        var deepseek = try XCTUnwrap(statuses.first { $0.kind == .deepseek })
+        deepseek.setClientBindingEnabled(
+            clientID: ClientID.zcode, quotaProviderID: QuotaProviderID.minimax, enabled: false
+        )
+        XCTAssertNotNil(
+            deepseek.usageProjection(for: nil).contributions.first { $0.clientID == ClientID.zcode },
+            "关闭 minimax 侧绑定不影响 deepseek 侧的 zcode 分片"
+        )
+    }
+
+    /// dsh 帧不声明归属：内核用 clientBindings 的 dsh 条目按别名解析 quota；
+    /// 未被任何启用绑定认领的键落空串组，由卡片侧按本卡 quota 过滤。
+    func testDshFramesResolveQuotaThroughBindingsAndDropUnclaimedKeys() throws {
+        let day = Date(timeIntervalSince1970: 1_800_000_000)
+        let usage = DshLocalUsage(
+            byProvider: [
+                "deepseek-official": dshProvider(
+                    "deepseek-official", day: day, model: "deepseek-v4-flash",
+                    input: 100, turnIDs: ["1"]
+                ),
+                "minimax-cn": dshProvider(
+                    "minimax-cn", day: day, model: "MiniMax-M3", input: 80, turnIDs: ["1"]
+                ),
+                "mystery-router": dshProvider(
+                    "mystery-router", day: day, model: "mystery", input: 999, turnIDs: ["1"]
+                )
+            ],
+            modelsByProvider: [:], sessionsRoot: "/tmp/.dsh/sessions",
+            sessionCount: 3, eventCount: 3, scannedAt: day
+        )
+
+        // 内核层：被绑定认领的键解析到对应 quota，未认领的键落空串组。
+        let frames = DshHarnessFrames.frames(from: usage)
+        let projections = UsageProjectionKernel.project(
+            frames: frames, bindings: AppConfig.defaultClientBindings
+        )
+        XCTAssertEqual(
+            projections.map(\.quotaProviderID).sorted(),
+            ["", QuotaProviderID.deepseek, QuotaProviderID.minimax],
+            "dsh 帧的归属来自绑定别名解析，未认领键落空串组"
+        )
+
+        // 卡片层：DeepSeek 卡只呈现本卡 quota 的 DSH 贡献，mystery-router 不并入。
+        var status = ProviderStatus(
+            id: "deepseek", displayName: "DeepSeek", kind: .deepseek,
+            iconSystemName: "circle", accentColor: .deepseek,
+            refreshIntervalSeconds: 300, state: .ready
+        )
+        status.dshUsage = usage
+        let projection = status.usageProjection(for: nil)
+        XCTAssertEqual(projection.clientIDs, [ClientID.dsh])
+        XCTAssertEqual(projection.dailyTokenUsage.first?.input, 100)
+    }
+
+    /// 别名单一事实源：默认绑定数组里的字面量是唯一来源，两处历史硬编码
+    /// （OpencodeLocalUsage 常量表、DshHarnessFrames 路由表）都从绑定导出且
+    /// 与既有字面量逐字一致（写错即漏采，漂移必须在这里爆掉）。
+    func testAliasesAreExportedFromDefaultBindings() {
+        XCTAssertEqual(OpencodeLocalUsage.glmProviderID, "zhipuai-coding-plan")
+        XCTAssertEqual(OpencodeLocalUsage.minimaxCodingPlanProviderID, "minimax-cn-coding-plan")
+        XCTAssertEqual(OpencodeLocalUsage.openAIProviderID, "openai")
+        XCTAssertEqual(OpencodeLocalUsage.deepseekProviderID, "deepseek")
+        XCTAssertEqual(
+            OpencodeLocalUsage.antigravityProviderIDs,
+            ["antigravity", "google-antigravity", "google-vertex", "google"]
+        )
+        XCTAssertEqual(OpencodeLocalUsage.antigravitySourceProviderID, "antigravity")
+        XCTAssertEqual(
+            AppConfig.defaultSourceProviderAliases(
+                clientID: ClientID.openCode, quotaProviderID: QuotaProviderID.zhipu
+            ).first,
+            OpencodeLocalUsage.glmProviderID,
+            "opencode 常量必须与默认绑定导出的首选别名同源"
+        )
+
+        XCTAssertEqual(
+            AppConfig.defaultSourceProviderAliases(
+                clientID: ClientID.dsh, quotaProviderID: QuotaProviderID.deepseek
+            ),
+            ["deepseek", "deepseek-official", "deepseek-cn", "deepseek-v4"]
+        )
+        XCTAssertEqual(
+            AppConfig.defaultSourceProviderAliases(
+                clientID: ClientID.dsh, quotaProviderID: QuotaProviderID.minimax
+            ),
+            ["minimax", "minimax-cn", "minimax-cn-coding-plan"]
+        )
+        XCTAssertEqual(
+            AppConfig.defaultSourceProviderAliases(
+                clientID: ClientID.dsh, quotaProviderID: QuotaProviderID.zhipu
+            ),
+            ["glm", "zhipu", "zhipuai", "bigmodel",
+             "builtin:bigmodel-coding-plan", "account:bigmodel-individual-coding-plan"]
+        )
+        // dsh 三条默认启用（与 DSH 历史上不受任何开关控制一致）。
+        for quota in [QuotaProviderID.deepseek, QuotaProviderID.minimax, QuotaProviderID.zhipu] {
+            XCTAssertTrue(
+                AppConfig.default.isClientBindingEnabled(clientID: ClientID.dsh, quotaProviderID: quota),
+                "dsh → \(quota) 默认绑定应启用"
+            )
+        }
+    }
+
+    /// logWarn 判定路径（纯函数部分）：账本键没被任何 dsh 绑定别名认领时返回
+    /// 该键，供 AppState.applyDshUsage 打告警（含 unmatched 键与已登记别名）。
+    /// 被认领（含显式停用）的键不算异常。
+    func testUnclaimedProviderKeysDetectAliasMismatch() {
+        let day = Date(timeIntervalSince1970: 1_800_000_000)
+        let usage = DshLocalUsage(
+            byProvider: [
+                "deepseek-official": dshProvider(
+                    "deepseek-official", day: day, model: "m", input: 1, turnIDs: ["1"]
+                ),
+                "mystery-router": dshProvider(
+                    "mystery-router", day: day, model: "m", input: 1, turnIDs: ["1"]
+                )
+            ],
+            modelsByProvider: [:], sessionsRoot: nil, sessionCount: 2, eventCount: 2, scannedAt: day
+        )
+
+        XCTAssertEqual(
+            DshHarnessFrames.unclaimedProviderKeys(
+                in: usage, bindings: AppConfig.defaultClientBindings
+            ),
+            ["mystery-router"],
+            "默认绑定下只有未登记路由是未认领键"
+        )
+
+        // 用户手改 config 写错别名（deepseek → deepseak）：真实键变成未认领，
+        // 这正是静默漏采需要告警的形态。
+        let typoBindings = AppConfig.defaultClientBindings.map { binding in
+            guard binding.clientID == ClientID.dsh,
+                  binding.quotaProviderID == QuotaProviderID.deepseek else { return binding }
+            return ClientProviderBinding(
+                clientID: binding.clientID,
+                quotaProviderID: binding.quotaProviderID,
+                sourceProviderAliases: ["deepseak"],
+                enabled: binding.enabled
+            )
+        }
+        XCTAssertEqual(
+            DshHarnessFrames.unclaimedProviderKeys(in: usage, bindings: typoBindings),
+            ["deepseek-official", "mystery-router"]
+        )
+        XCTAssertEqual(
+            DshHarnessFrames.registeredAliases(bindings: typoBindings).contains("deepseak"),
+            true,
+            "告警日志里的「期望形态」应来自当前绑定注册表"
+        )
+
+        // 显式停用的绑定仍算"被认领"：是刻意关闭，不是别名失配。
+        let disabledBindings = AppConfig.defaultClientBindings.toggled(
+            clientID: ClientID.dsh, quotaProviderID: QuotaProviderID.deepseek, enabled: false
+        )
+        XCTAssertEqual(
+            DshHarnessFrames.unclaimedProviderKeys(in: usage, bindings: disabledBindings),
+            ["mystery-router"]
+        )
+
+        XCTAssertEqual(
+            DshHarnessFrames.unclaimedProviderKeys(in: nil, bindings: AppConfig.defaultClientBindings),
+            []
         )
     }
 
@@ -708,6 +887,16 @@ private enum LegacyProjector {
         }
     }
 
+    /// 旧 `ZcodeProviderSlice.namespacedSamples` 的等价内联复刻（该 API 已删除，
+    /// 规则收口在内核 `UsageSampleNamespace.zcodeSlice`）：样本加 `zcode:<slice>:`
+    /// 前缀，避免 ZCode 账本与 native / dsh / OpenCode 账本撞 promptID。
+    static func zcodeSliceSamples(
+        _ usage: OpencodeProviderUsage,
+        for slice: ZcodeProviderSlice
+    ) -> [LocalTokenUsageSample] {
+        usage.recentSamples.map { $0.withPromptIDPrefix("zcode:\(slice.providerPrefix):") }
+    }
+
     static func legacyIsTruncated(_ usages: DshLocalUsage?...) -> Bool {
         usages.contains { $0?.isTruncated == true }
     }
@@ -780,7 +969,28 @@ private enum LegacyProjector {
 
     // MARK: 工厂表复刻
 
-    static func projections(status: ProviderStatus, info: QuotaInfo?) -> [Contribution] {
+    /// 旧实现把 merge 开关当入参；这里从 status 携带的绑定注册表取同源值，
+    /// 保证 diff 两侧的"开关输入"一致。
+    static func legacyMergeFlags(
+        of status: ProviderStatus
+    ) -> (opencode: Bool, zcode: Bool) {
+        (
+            opencode: status.isClientBindingEnabled(
+                clientID: ClientID.openCode,
+                quotaProviderID: status.kind.quotaProviderID
+            ),
+            zcode: status.isClientBindingEnabled(
+                clientID: ClientID.zcode,
+                quotaProviderID: status.kind.quotaProviderID
+            )
+        )
+    }
+
+    static func projections(
+        status: ProviderStatus,
+        info: QuotaInfo?,
+        merges: (opencode: Bool, zcode: Bool)
+    ) -> [Contribution] {
         var result: [Contribution] = []
 
         func appendMerged(
@@ -807,7 +1017,7 @@ private enum LegacyProjector {
                     scannedAt: details.scannedAt, isTruncated: false
                 ))
             }
-            if status.mergeOpencodeUsage, let usage = status.opencodeUsage?.openAISlice {
+            if merges.opencode, let usage = status.opencodeUsage?.openAISlice {
                 result.append(contribution(
                     clientID: ClientID.openCode, displayName: "OpenCode",
                     daily: usage.dailyTokenUsage,
@@ -824,7 +1034,7 @@ private enum LegacyProjector {
                     scannedAt: snapshot.scannedAt, isTruncated: false
                 ))
             }
-            if status.mergeOpencodeUsage, let usage = status.opencodeUsage?.antigravitySlice {
+            if merges.opencode, let usage = status.opencodeUsage?.antigravitySlice {
                 result.append(contribution(
                     clientID: ClientID.openCode, displayName: "OpenCode",
                     daily: usage.dailyTokenUsage,
@@ -845,15 +1055,15 @@ private enum LegacyProjector {
                 scannedAt: status.dshUsage?.scannedAt,
                 isTruncated: legacyIsTruncated(status.dshUsage)
             )
-            if status.mergeZcodeUsage, let usage = status.glmLocalUsage?.minimaxSlice {
+            if merges.zcode, let usage = status.glmLocalUsage?.minimaxSlice {
                 result.append(contribution(
                     clientID: ClientID.zcode, displayName: "ZCode",
                     daily: usage.dailyTokenUsage,
-                    samples: ZcodeProviderSlice.namespacedSamples(usage, for: .minimax),
+                    samples: LegacyProjector.zcodeSliceSamples(usage, for: .minimax),
                     scannedAt: status.glmLocalUsage?.scannedAt, isTruncated: false
                 ))
             }
-            if status.mergeOpencodeUsage, let usage = status.opencodeUsage?.minimaxCodingPlanSlice {
+            if merges.opencode, let usage = status.opencodeUsage?.minimaxCodingPlanSlice {
                 result.append(contribution(
                     clientID: ClientID.openCode, displayName: "OpenCode",
                     daily: usage.dailyTokenUsage,
@@ -876,7 +1086,7 @@ private enum LegacyProjector {
                 scannedAt: status.dshUsage?.scannedAt,
                 isTruncated: legacyIsTruncated(status.dshUsage)
             )
-            if status.mergeOpencodeUsage, let usage = status.opencodeUsage?.glmSlice {
+            if merges.opencode, let usage = status.opencodeUsage?.glmSlice {
                 result.append(contribution(
                     clientID: ClientID.openCode, displayName: "OpenCode",
                     daily: usage.dailyTokenUsage,
@@ -892,15 +1102,15 @@ private enum LegacyProjector {
                 scannedAt: status.dshUsage?.scannedAt,
                 isTruncated: legacyIsTruncated(status.dshUsage)
             )
-            if status.mergeZcodeUsage, let usage = status.glmLocalUsage?.deepseekSlice {
+            if merges.zcode, let usage = status.glmLocalUsage?.deepseekSlice {
                 result.append(contribution(
                     clientID: ClientID.zcode, displayName: "ZCode",
                     daily: usage.dailyTokenUsage,
-                    samples: ZcodeProviderSlice.namespacedSamples(usage, for: .deepseek),
+                    samples: LegacyProjector.zcodeSliceSamples(usage, for: .deepseek),
                     scannedAt: status.glmLocalUsage?.scannedAt, isTruncated: false
                 ))
             }
-            if status.mergeOpencodeUsage, let usage = status.opencodeUsage?.deepseekSlice {
+            if merges.opencode, let usage = status.opencodeUsage?.deepseekSlice {
                 result.append(contribution(
                     clientID: ClientID.openCode, displayName: "OpenCode",
                     daily: usage.dailyTokenUsage,
@@ -944,5 +1154,59 @@ private enum LegacyProjector {
             }
         }
         return byDay.values.sorted { $0.dayStart < $1.dayStart }
+    }
+}
+
+// MARK: - 跨测试文件共享的绑定夹具助手（P2）
+
+extension ClientProviderBinding {
+    /// enabled 改为指定值的副本。
+    func withEnabled(_ value: Bool) -> ClientProviderBinding {
+        ClientProviderBinding(
+            clientID: clientID,
+            quotaProviderID: quotaProviderID,
+            sourceProviderAliases: sourceProviderAliases,
+            enabled: value
+        )
+    }
+}
+
+extension Array where Element == ClientProviderBinding {
+    /// 返回把指定 (clientID, quotaProviderID) 绑定的 enabled 翻到目标值的副本；
+    /// 不存在该组合时原样返回（与 `AppConfig.setClientBindingEnabled` 的补齐语义
+    /// 无关，这里只做夹具内翻转）。
+    func toggled(
+        clientID: String,
+        quotaProviderID: String,
+        enabled: Bool
+    ) -> [ClientProviderBinding] {
+        map { binding in
+            binding.clientID == clientID && binding.quotaProviderID == quotaProviderID
+                ? binding.withEnabled(enabled)
+                : binding
+        }
+    }
+}
+
+extension ProviderStatus {
+    /// 把本 status 携带的绑定里某一条开/关（镜像 `AppConfig.setClientBindingEnabled`
+    /// 的更新路径；测试用它替代旧的 `mergeXxx = false` 直改）。
+    mutating func setClientBindingEnabled(
+        clientID: String,
+        quotaProviderID: String,
+        enabled: Bool
+    ) {
+        clientBindings = clientBindings.toggled(
+            clientID: clientID,
+            quotaProviderID: quotaProviderID,
+            enabled: enabled
+        )
+    }
+
+    /// 全量启用版默认绑定：5 条 opencode + 2 条 zcode + 3 条 dsh 全部 enabled。
+    /// 对应旧测试夹具里 `mergeOpencodeUsage = true` + `mergeZcodeUsage = true` 的
+    /// "全部打开"语义。
+    static func allClientBindingsEnabled() -> [ClientProviderBinding] {
+        AppConfig.defaultClientBindings.map { $0.withEnabled(true) }
     }
 }

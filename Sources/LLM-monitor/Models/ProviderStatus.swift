@@ -69,15 +69,22 @@ struct ProviderStatus: Identifiable, Equatable, Sendable {
     /// 只在 `kind == .deepseek` 时使用；其他 provider 永远 nil。
     var deepseekPeakWindow: DeepseekPeakWindow?
 
-    /// 是否把对应 OpenCode provider 的用量合并进这张卡。
-    /// 这是 config 派生的展示开关，不影响后台扫描或诊断页。
-    var mergeOpencodeUsage: Bool = false
+    /// client → quota 绑定注册表：config `clientBindings` 的**逐字快照**（P2）。
+    ///
+    /// 取代旧的 `mergeOpencodeUsage` / `mergeZcodeUsage` 派生 bool：AppState 在
+    /// rebuildStatuses 把 config 的绑定数组原样挂上来（不派生、不裁剪），共享账本
+    /// 切片（opencode 分片 / zcode 分片）的门控与 dsh 帧的归属解析都从这里取值。
+    /// native 贡献（codex / antigravity / minimax native / zcode 智谱 native）不经过
+    /// 绑定——它们是各卡自己的 native 账本，历史上就不受合并开关控制。
+    var clientBindings: [ClientProviderBinding] = AppConfig.defaultClientBindings
 
-    /// 是否把 ZCode 账本里对应 provider 的分片（`ZcodeProviderSlice`）合并进这张卡。
-    /// GLM 卡消费的是智谱系 native 用量，不走这个开关；MiniMax / DeepSeek 卡消费
-    /// ZCode 里的 `minimax` / `deepseek` 分片，开关来自 `clientBindings` 的
-    /// `zcode → <quota provider>` 绑定（默认开启）。
-    var mergeZcodeUsage: Bool = false
+    /// 是否启用某条 client → quota 绑定（`AppConfig.isClientBindingEnabled` 的
+    /// 本地镜像，数据源是本 status 携带的绑定数组）。
+    func isClientBindingEnabled(clientID: String, quotaProviderID: String) -> Bool {
+        clientBindings.first {
+            $0.clientID == clientID && $0.quotaProviderID == quotaProviderID
+        }?.enabled ?? false
+    }
 
     /// opencode 本地用量快照（四张卡共用的后台数据源）。
     /// 每张卡只读取自己的 provider slice；不会把 `minimax` 本地能力账本
@@ -140,21 +147,30 @@ struct ProviderStatus: Identifiable, Equatable, Sendable {
     }
 
     private var localUsageSources: [LocalUsageSource] {
+        // 共享账本来源的消费资格由 clientBindings 决定（P2 起，取代 merge bool）。
+        let opencodeConsumer = isClientBindingEnabled(
+            clientID: ClientID.openCode,
+            quotaProviderID: kind.quotaProviderID
+        )
+        let zcodeSliceConsumer = isClientBindingEnabled(
+            clientID: ClientID.zcode,
+            quotaProviderID: kind.quotaProviderID
+        )
         switch kind {
         case .codexChatGpt:
-            return [.codex] + (mergeOpencodeUsage ? [.opencode] : [])
+            return [.codex] + (opencodeConsumer ? [.opencode] : [])
         case .antigravity:
-            return [.antigravity] + (mergeOpencodeUsage ? [.opencode] : [])
+            return [.antigravity] + (opencodeConsumer ? [.opencode] : [])
         case .minimaxTokenPlan:
             return [.minimaxCode, .dsh]
-                + (mergeZcodeUsage ? [.zcode] : [])
-                + (mergeOpencodeUsage ? [.opencode] : [])
+                + (zcodeSliceConsumer ? [.zcode] : [])
+                + (opencodeConsumer ? [.opencode] : [])
         case .glmCodingPlan:
-            return [.zcode, .dsh] + (mergeOpencodeUsage ? [.opencode] : [])
+            return [.zcode, .dsh] + (opencodeConsumer ? [.opencode] : [])
         case .deepseek:
             return [.dsh]
-                + (mergeZcodeUsage ? [.zcode] : [])
-                + (mergeOpencodeUsage ? [.opencode] : [])
+                + (zcodeSliceConsumer ? [.zcode] : [])
+                + (opencodeConsumer ? [.opencode] : [])
         }
     }
 

@@ -158,8 +158,11 @@ enum UsageProjectionKernel {
     ///
     /// - `bindings`：client → quota 的显式绑定。帧自带 `quotaProviderID` 时直接采用；
     ///   只有帧未声明归属（空串）时才用绑定的 `sourceProviderAliases` 兜底解析。
-    ///   P1 阶段调用方传空数组（开关仍由 `mergeOpencodeUsage` / `mergeZcodeUsage`
-    ///   承担），P2 起由 config 显式化。
+    /// - `bindings`：client → quota 的显式绑定。帧自带 `quotaProviderID` 时直接采用；
+    ///   只有帧未声明归属（空串）时才用绑定的 `sourceProviderAliases` 兜底解析
+    ///   （contains 匹配、仅认领 enabled 的绑定）。P2 起生产路径传入 config 的
+    ///   `clientBindings`：dsh 帧不声明归属，归属与启停都在这里解析；未被任何
+    ///   启用绑定认领的帧落成空串组，由卡片侧 `usageProjection` 按本卡 quota 过滤。
     /// - `deepseekPeakWindow`：名义价值用的峰谷窗口（默认官方口径）。
     static func project(
         frames: [HarnessUsageFrame],
@@ -286,50 +289,59 @@ enum UsageProjectionKernel {
 /// DSH（DeepSeek Harness）共享账本 → 帧。
 ///
 /// dsh 是一份多 provider 路由的 session 账本。这里按**单个 provider 键**切帧
-/// （而不是先合并成一份 `DshProviderUsage`），归并交给内核：
+/// （而不是先合并成一份 `DshProviderUsage`），归并与归属都交给内核：
+/// - 每帧**不声明** quota 归属（空串），由内核用 `clientBindings` 的 dsh 条目
+///   按别名解析（P2 显式化，取代旧的 `providerIDs(forQuotaProviderID:)`
+///   硬编码路由表）；绑定关闭（enabled=false）的键解析不到 → 空串组 → 卡片
+///   侧按本卡 quota 过滤丢弃，等价"该路停用"；
 /// - 同一天的多个 provider 帧由内核相加（等价于旧 `mergeDaily` 的逐日相加）；
 /// - 每个 provider 帧的样本带 `dsh:<provider>:` 单层命名空间，跨路由仍能区分
 ///   prompt，不会被误去重。
 enum DshHarnessFrames {
-    static let deepseekProviderIDs = ["deepseek", "deepseek-official", "deepseek-cn", "deepseek-v4"]
-    static let minimaxProviderIDs = ["minimax", "minimax-cn", "minimax-cn-coding-plan"]
-    static let glmProviderIDs = ["glm", "zhipu", "zhipuai", "bigmodel", "builtin:bigmodel-coding-plan", "account:bigmodel-individual-coding-plan"]
-
-    /// quota 归属 → 该卡消费的 dsh provider 别名。
-    static func providerIDs(forQuotaProviderID quotaProviderID: String) -> [String] {
-        switch quotaProviderID {
-        case QuotaProviderID.deepseek: return deepseekProviderIDs
-        case QuotaProviderID.minimax: return minimaxProviderIDs
-        case QuotaProviderID.zhipu: return glmProviderIDs
-        default: return []
+    /// 快照 → 每 provider 键一帧（键名升序，保证样本拼接顺序稳定）。
+    /// 账本里的**全部**键都出帧：归属解析统一在内核（`clientBindings`），
+    /// 这里不做别名预过滤。
+    static func frames(from usage: DshLocalUsage?) -> [HarnessUsageFrame] {
+        guard let usage else { return [] }
+        return usage.byProvider.keys.sorted().compactMap { key in
+            guard let provider = usage.byProvider[key] else { return nil }
+            return HarnessUsageFrame(
+                clientID: ClientID.dsh,
+                sourceKey: key,
+                quotaProviderID: "",
+                daily: Self.daily(of: provider),
+                samples: provider.recentSamples,
+                namespace: .dsh,
+                isTruncated: usage.isTruncated == true,
+                scannedAt: usage.scannedAt
+            )
         }
     }
 
-    /// 快照 → 每 provider 键一帧（键名升序，保证样本拼接顺序稳定）。
-    /// 没有命中任何别名时返回空数组（等价旧行为的 nil：不产生贡献）。
-    static func frames(
-        from usage: DshLocalUsage?,
-        quotaProviderID: String
-    ) -> [HarnessUsageFrame] {
+    /// 账本里没被**任何** dsh 绑定别名认领的 provider 键（不论绑定启用与否）。
+    ///
+    /// 启用绑定的别名没匹配上的键在内核解析为空串组并被卡片过滤——用户手改
+    /// config 写错 `sourceProviderAliases` 时表现为静默漏采；本函数供
+    /// `AppState.applyDshUsage` 在扫描落地时检测并 logWarn（含 unmatched 的
+    /// providerID 与已登记别名，见调用点）。绑定被显式停用（enabled=false）的
+    /// 键仍算"被认领"，不算异常。
+    static func unclaimedProviderKeys(
+        in usage: DshLocalUsage?,
+        bindings: [ClientProviderBinding]
+    ) -> [String] {
         guard let usage else { return [] }
-        let aliases = providerIDs(forQuotaProviderID: quotaProviderID)
+        let aliases = registeredAliases(bindings: bindings)
+        // 没有任何 dsh 绑定时无法判定（生产上解码合并会补齐默认绑定），保持安静。
         guard aliases.isEmpty == false else { return [] }
-        return usage.byProvider.keys
-            .filter { matches($0, aliases: aliases) }
+        return usage.byProvider.keys.filter { matches($0, aliases: aliases) == false }.sorted()
+    }
+
+    /// 当前绑定注册表里 dsh 已登记的全部别名（升序，供日志"期望形态"展示）。
+    static func registeredAliases(bindings: [ClientProviderBinding]) -> [String] {
+        bindings
+            .filter { $0.clientID == ClientID.dsh }
+            .flatMap(\.sourceProviderAliases)
             .sorted()
-            .compactMap { key in
-                guard let provider = usage.byProvider[key] else { return nil }
-                return HarnessUsageFrame(
-                    clientID: ClientID.dsh,
-                    sourceKey: key,
-                    quotaProviderID: quotaProviderID,
-                    daily: Self.daily(of: provider),
-                    samples: provider.recentSamples,
-                    namespace: .dsh,
-                    isTruncated: usage.isTruncated == true,
-                    scannedAt: usage.scannedAt
-                )
-            }
     }
 
     /// 截断标志的多来源合并规则（供 UI 展示链与回归测试直接引用）。

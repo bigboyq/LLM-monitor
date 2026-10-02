@@ -70,7 +70,7 @@ final class LocalUsageCoordinatorTests: StateTestCase {
             kind: .minimaxTokenPlan, iconSystemName: "circle",
             accentColor: .minimax, refreshIntervalSeconds: 60, state: .ready
         )
-        defaultEnabled.mergeOpencodeUsage = true
+        defaultEnabled.clientBindings = ProviderStatus.allClientBindingsEnabled()
         let explicitlyDisabled = ProviderStatus(
             id: "glm_coding_plan", displayName: "GLM",
             kind: .glmCodingPlan, iconSystemName: "circle",
@@ -83,7 +83,9 @@ final class LocalUsageCoordinatorTests: StateTestCase {
         )
         XCTAssertTrue(active.minimax)
         XCTAssertTrue(active.dsh, "共享 DSH source 应由有效启用的 MiniMax consumer 保留")
-        XCTAssertFalse(active.glm)
+        // GLM status 虽被禁用，但 minimax 卡的 zcode → minimax 分片绑定开启时
+        // ZCode 源必须扫描（分片消费方在位，见 ZcodeProviderSliceTests 的同语义用例）。
+        XCTAssertTrue(active.glm)
         XCTAssertTrue(active.opencode)
     }
     @MainActor

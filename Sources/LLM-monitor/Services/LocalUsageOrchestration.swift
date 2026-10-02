@@ -25,13 +25,20 @@ final class LocalUsageOrchestration {
     /// and tests.
     nonisolated static func activeSources(for statuses: [ProviderStatus]) -> ActiveSources {
         let enabledKinds = Set(statuses.filter(\.isEnabled).map(\.kind))
+        // 共享账本的消费资格由各卡携带的 clientBindings 决定（P2，取代 merge bool）。
         let hasOpenCodeConsumer = statuses.contains {
-            $0.isEnabled && $0.mergeOpencodeUsage
+            $0.isEnabled && $0.isClientBindingEnabled(
+                clientID: ClientID.openCode,
+                quotaProviderID: $0.kind.quotaProviderID
+            )
         }
         // ZCode 是一份多 provider 账本：除 GLM 卡外，启用了 ZCode 分片绑定的
         // MiniMax / DeepSeek 卡也消费同一份扫描结果。任一消费者在位就要扫描。
         let hasZcodeSliceConsumer = statuses.contains {
-            $0.isEnabled && $0.mergeZcodeUsage
+            $0.isEnabled && $0.isClientBindingEnabled(
+                clientID: ClientID.zcode,
+                quotaProviderID: $0.kind.quotaProviderID
+            )
         }
         return ActiveSources(
             codex: enabledKinds.contains(.codexChatGpt),

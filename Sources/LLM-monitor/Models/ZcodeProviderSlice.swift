@@ -39,15 +39,9 @@ enum ZcodeProviderSlice: String, CaseIterable, Sendable {
         self = match
     }
 
-    /// 给分片的样本加 `zcode:<provider>:` 命名空间，避免 ZCode 账本里的
-    /// `session:turn` 与 native / dsh / OpenCode 账本中相同的 promptID 被当成
-    /// 同一次用户请求。GLM 卡的智谱 native 样本保持原有不加前缀的口径。
-    nonisolated static func namespacedSamples(
-        _ usage: OpencodeProviderUsage?,
-        for slice: ZcodeProviderSlice
-    ) -> [LocalTokenUsageSample] {
-        guard let usage else { return [] }
-        let prefix = "zcode:\(slice.providerPrefix):"
-        return usage.recentSamples.map { $0.withPromptIDPrefix(prefix) }
-    }
+    // 说明：P1 起「给分片样本加 `zcode:<provider>:` 命名空间」的规则已收口到
+    // 内核的 `UsageSampleNamespace.zcodeSlice`（帧抽取时按 sourceKey 施加前缀），
+    // 旧的 `namespacedSamples(for:)` 死代码已删除（P2）。绑定驱动后 zcode 分片
+    // 样本前缀仍逐字等于 `zcode:<slice>:`，由 ZcodeProviderSliceTests /
+    // UsageProjectionKernelTests 的命名空间用例锁住。
 }

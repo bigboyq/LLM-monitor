@@ -563,7 +563,7 @@ final class GlmTests: XCTestCase {
             byProvider: [OpencodeLocalUsage.glmProviderID: opencode],
             modelsByProvider: [:], dbPath: nil, scannedAt: nil
         )
-        status.mergeOpencodeUsage = true
+        status.clientBindings = ProviderStatus.allClientBindingsEnabled()
 
         let projection = status.usageProjection(for: nil)
         XCTAssertEqual(projection.clientIDs, [ClientID.zcode, ClientID.openCode])

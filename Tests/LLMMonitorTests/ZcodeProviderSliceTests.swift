@@ -344,14 +344,13 @@ final class ZcodeProviderSliceTests: XCTestCase {
         )
     }
 
-    /// 开关打开时 MiniMax / DeepSeek 卡各自出现 ZCode 本地数据库用量贡献；
-    /// 关闭后贡献整体消失，卡片数据回到其它来源。
+    /// 默认绑定开启时 MiniMax / DeepSeek 卡各自出现 ZCode 本地数据库用量贡献；
+    /// 关闭对应绑定后贡献整体消失，卡片数据回到其它来源。
     func testZcodeSliceContributionsAppearPerCardAndRespectSwitch() throws {
         let usage = sliceFixture()
 
         var deepseek = makeStatus(kind: .deepseek)
         deepseek.glmLocalUsage = usage
-        deepseek.mergeZcodeUsage = true
         let deepseekProjection = deepseek.usageProjection(for: nil)
         XCTAssertEqual(deepseekProjection.clientIDs, [ClientID.zcode])
         let deepseekDay = try XCTUnwrap(deepseekProjection.dailyTokenUsage.first)
@@ -360,24 +359,24 @@ final class ZcodeProviderSliceTests: XCTestCase {
         XCTAssertEqual(
             deepseekProjection.recentSamples.map(\.promptID),
             ["zcode:deepseek:ds-s:ds-t1"],
-            "分片样本必须带 zcode 命名空间，避免与其它账本 promptID 撞车"
+            "绑定驱动后分片样本前缀仍逐字等于 zcode:<slice>:，避免与其它账本 promptID 撞车"
         )
 
         var minimax = makeStatus(kind: .minimaxTokenPlan)
         minimax.glmLocalUsage = usage
-        minimax.mergeZcodeUsage = true
         let minimaxProjection = minimax.usageProjection(for: nil)
         XCTAssertTrue(minimaxProjection.clientIDs.contains(ClientID.zcode))
         XCTAssertEqual(minimaxProjection.dailyTokenUsage.first?.rounds, 6)
 
-        // 开关关闭：贡献消失
-        deepseek.mergeZcodeUsage = false
+        // 绑定关闭：贡献消失（帧不产出）。
+        deepseek.setClientBindingEnabled(
+            clientID: ClientID.zcode, quotaProviderID: QuotaProviderID.deepseek, enabled: false
+        )
         XCTAssertTrue(deepseek.usageProjection(for: nil).clientIDs.isEmpty)
         XCTAssertFalse(deepseek.usageProjection(for: nil).hasActivity)
 
-        // GLM 卡不受这个开关影响：智谱 native 用量照旧贡献
-        var glm = makeStatus(kind: .glmCodingPlan)
-        glm.mergeZcodeUsage = false
+        // GLM 卡不消费 zcode 分片（没有 zcode → zhipu 绑定）：无智谱用量时不凭空产生贡献。
+        let glm = makeStatus(kind: .glmCodingPlan)
         XCTAssertTrue(glm.usageProjection(for: nil).clientIDs.isEmpty, "无智谱用量时不应凭空产生贡献")
     }
 
@@ -393,15 +392,16 @@ final class ZcodeProviderSliceTests: XCTestCase {
         disabledGLM.isEnabled = false
         XCTAssertFalse(LocalUsageOrchestration.activeSources(for: [disabledGLM]).glm)
 
-        var deepseek = makeStatus(kind: .deepseek)
-        deepseek.mergeZcodeUsage = true
+        // 默认绑定已开启 zcode → deepseek，仅启用 DeepSeek 卡也要扫 ZCode。
+        let deepseek = makeStatus(kind: .deepseek)
         XCTAssertTrue(
             LocalUsageOrchestration.activeSources(for: [deepseek]).glm,
             "只开 DeepSeek 卡也要扫 ZCode，否则分片永远拿不到数据"
         )
 
-        deepseek.isEnabled = false
-        XCTAssertFalse(LocalUsageOrchestration.activeSources(for: [deepseek]).glm)
+        var disabledDeepseek = deepseek
+        disabledDeepseek.isEnabled = false
+        XCTAssertFalse(LocalUsageOrchestration.activeSources(for: [disabledDeepseek]).glm)
     }
 
     // MARK: - config

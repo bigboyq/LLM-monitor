@@ -579,16 +579,17 @@ final class ProviderModelTests: XCTestCase {
     func testSetClientBindingEnabledAppendsForUnknownPair() throws {
         // 给一个 default 中不存在的 (clientID, quotaProviderID) 对调用
         // setClientBindingEnabled 必须 append 一个新 binding，而不是静默失败。
+        // （codex 目前没有 quota 绑定条目；dsh 三条在 P2 已进入默认绑定。）
         var config = AppConfig.default
         let before = config.clientBindings.count
         config.setClientBindingEnabled(
-            clientID: ClientID.dsh,
+            clientID: ClientID.codex,
             quotaProviderID: QuotaProviderID.deepseek,
             enabled: true
         )
         XCTAssertEqual(config.clientBindings.count, before + 1)
         XCTAssertTrue(config.isClientBindingEnabled(
-            clientID: ClientID.dsh,
+            clientID: ClientID.codex,
             quotaProviderID: QuotaProviderID.deepseek
         ))
     }

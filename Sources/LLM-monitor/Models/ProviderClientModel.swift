@@ -612,10 +612,14 @@ extension ProviderStatus {
         let frames = Self.usageFrameExtractors[kind]?.flatMap { $0(self, info) } ?? []
         let projections = UsageProjectionKernel.project(
             frames: frames,
+            bindings: clientBindings,
             deepseekPeakWindow: deepseekPeakWindow ?? .defaultWindow
         )
+        // 卡片只呈现本卡 quota 侧的贡献：dsh 帧不声明归属（由内核按绑定解析），
+        // 未被任何启用绑定认领的键会落成空串组，在这里被过滤掉，不产生垃圾贡献行。
+        let ownQuotaProjections = projections.filter { $0.quotaProviderID == kind.quotaProviderID }
         return ProviderUsageProjection(
-            contributions: projections.map {
+            contributions: ownQuotaProjections.map {
                 ClientUsageContribution(
                     projection: $0,
                     displayName: ClientDescriptor.displayName(forClientID: $0.clientID)
@@ -638,7 +642,9 @@ extension ProviderStatus {
         ],
         .antigravity: [
             antigravityFrames,
-            opencodeFrames(sourceProviderID: "antigravity") { $0.opencodeUsage?.antigravitySlice }
+            opencodeFrames(sourceProviderID: OpencodeLocalUsage.antigravitySourceProviderID) {
+                $0.opencodeUsage?.antigravitySlice
+            }
         ],
         .minimaxTokenPlan: [
             minimaxNativeFrames,
@@ -715,25 +721,28 @@ extension ProviderStatus {
         )]
     }
 
-    /// DSH（共享 session 账本）→ 每 provider 键一帧。
+    /// DSH（共享 session 账本）→ 每 provider 键一帧。帧**不声明 quota 归属**：
+    /// dsh 是多 provider 路由账本，归属与启停都由内核按 `status.clientBindings`
+    /// 的 dsh 条目解析；本卡 quota 之外的组由 `usageProjection` 过滤。
     /// `isTruncated` 是快照级口径（文件数/字节预算挤出最旧 session），不随
     /// provider 分片稀释：每一帧都带快照的截断位，由内核做"任一截断即截断"。
     private static let dshFrames: @Sendable (ProviderStatus, QuotaInfo?) -> [HarnessUsageFrame] = { status, _ in
-        DshHarnessFrames.frames(
-            from: status.dshUsage,
-            quotaProviderID: status.kind.quotaProviderID
-        )
+        DshHarnessFrames.frames(from: status.dshUsage)
     }
 
     /// ZCode 账本里的非智谱 provider 分片（`minimax` / `deepseek`），并入
-    /// MiniMax / DeepSeek 卡。受 `mergeZcodeUsage` 开关约束（该开关由
-    /// `clientBindings` 的 zcode → <quota provider> 绑定派生）。
+    /// MiniMax / DeepSeek 卡。由 `clientBindings` 的 zcode → <quota provider>
+    /// 绑定门控（P2 起，取代旧 `mergeZcodeUsage` 派生 bool）。
     private static func zcodeSliceFrames(
         _ provider: ZcodeProviderSlice,
         _ slice: @escaping @Sendable (ProviderStatus) -> OpencodeProviderUsage?
     ) -> @Sendable (ProviderStatus, QuotaInfo?) -> [HarnessUsageFrame] {
         { status, _ in
-            guard status.mergeZcodeUsage, let usage = slice(status) else { return [] }
+            guard status.isClientBindingEnabled(
+                    clientID: ClientID.zcode,
+                    quotaProviderID: status.kind.quotaProviderID
+            ),
+                  let usage = slice(status) else { return [] }
             return [HarnessUsageFrame(
                 clientID: ClientID.zcode,
                 sourceKey: provider.providerPrefix,
@@ -746,14 +755,19 @@ extension ProviderStatus {
         }
     }
 
-    /// OpenCode provider 分片（一份多 provider 账本）。受 `mergeOpencodeUsage`
-    /// 开关约束；样本加 `opencode:<provider>:` 命名空间。
+    /// OpenCode provider 分片（一份多 provider 账本）。由 `clientBindings` 的
+    /// opencode → <quota provider> 绑定门控（P2 起，取代旧 `mergeOpencodeUsage`
+    /// 派生 bool）；样本加 `opencode:<provider>:` 命名空间。
     private static func opencodeFrames(
         sourceProviderID: String,
         _ slice: @escaping @Sendable (ProviderStatus) -> OpencodeProviderUsage?
     ) -> @Sendable (ProviderStatus, QuotaInfo?) -> [HarnessUsageFrame] {
         { status, _ in
-            guard status.mergeOpencodeUsage, let usage = slice(status) else { return [] }
+            guard status.isClientBindingEnabled(
+                    clientID: ClientID.openCode,
+                    quotaProviderID: status.kind.quotaProviderID
+            ),
+                  let usage = slice(status) else { return [] }
             return [HarnessUsageFrame(
                 clientID: ClientID.openCode,
                 sourceKey: sourceProviderID,

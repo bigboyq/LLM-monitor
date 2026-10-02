@@ -225,7 +225,8 @@ final class DshUsageTests: XCTestCase {
     }
 
     /// 引用点已从 `DshUsageMerger` 迁到 `DshHarnessFrames` + `UsageProjectionKernel`，
-    /// 断言语义不变：每张 quota 卡只消费自己那组 provider 别名，另一张卡的数值
+    /// 断言语义不变：dsh 帧不声明归属，由内核按 clientBindings 的 dsh 条目解析，
+    /// 每张 quota 卡只消费自己那组 provider 别名，另一张卡的数值
     /// （999 / 888 之类）不得混入。`today` + `roundCount` 两个旧字段在新链路上
     /// 合成为 daily 的一行（`UnifiedDailyTokenUsage.input/cacheRead/output/reasoning/rounds`），
     /// 这正是卡片层真正消费的形态。
@@ -346,12 +347,16 @@ final class DshUsageTests: XCTestCase {
         ]
 
         for testCase in cases {
-            let frames = DshHarnessFrames.frames(
-                from: testCase.usage, quotaProviderID: testCase.quotaProviderID
-            )
+            let frames = DshHarnessFrames.frames(from: testCase.usage)
             XCTAssertFalse(frames.isEmpty, testCase.name)
-            let projections = UsageProjectionKernel.project(frames: frames)
-            let projection = try XCTUnwrap(projections.first, testCase.name)
+            let projections = UsageProjectionKernel.project(
+                frames: frames,
+                bindings: AppConfig.defaultClientBindings
+            )
+            let projection = try XCTUnwrap(
+                projections.first { $0.quotaProviderID == testCase.quotaProviderID },
+                testCase.name
+            )
             XCTAssertEqual(projection.clientID, ClientID.dsh, testCase.name)
             XCTAssertEqual(projection.quotaProviderID, testCase.quotaProviderID, testCase.name)
             let day = try XCTUnwrap(projection.daily.first, testCase.name)

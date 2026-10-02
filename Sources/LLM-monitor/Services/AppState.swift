@@ -732,19 +732,11 @@ final class AppState: ObservableObject {
                 isScanningLocalUsage: preserved.isScanningLocalUsage,
                 localUsageFreshness: preserved.localUsageFreshness
             )
-            // OpenCode is a Client; keep the old ProviderStatus field as a
-            // compatibility projection while reading the new client binding
-            // registry as the source of truth.
-            statusItem.mergeOpencodeUsage = configStore.config.isClientBindingEnabled(
-                clientID: ClientID.openCode,
-                quotaProviderID: d.kind.quotaProviderID
-            )
-            // ZCode 的 provider 分片同样由 clientBindings 派生（默认开启）。
-            // GLM 卡消费智谱 native 用量，不受此开关影响。
-            statusItem.mergeZcodeUsage = configStore.config.isClientBindingEnabled(
-                clientID: ClientID.zcode,
-                quotaProviderID: d.kind.quotaProviderID
-            )
+            // client → quota 绑定注册表逐字跟随 config（P2 单一事实源）：共享账本
+            // 切片（opencode / zcode 分片）的门控与 dsh 帧的归属解析都由
+            // `status.clientBindings` 派生，不再有派生 bool（旧 mergeOpencodeUsage /
+            // mergeZcodeUsage 已删除）。
+            statusItem.clientBindings = configStore.config.clientBindings
             statusItem.antigravityLocalUsage = preserved.antigravityLocalUsage
             statusItem.minimaxLocalUsage = preserved.minimaxLocalUsage
             statusItem.glmLocalUsage = preserved.glmLocalUsage
@@ -1105,10 +1097,10 @@ final class AppState: ObservableObject {
 
     /// 把 ZCode 扫描结果挂到所有消费它的卡片。
     ///
-    /// ZCode 是一份多 provider 账本：GLM 卡消费智谱系 native 用量（不受开关
+    /// ZCode 是一份多 provider 账本：GLM 卡消费智谱系 native 用量（不受绑定
     /// 约束），MiniMax / DeepSeek 卡消费同一快照里的 `providerSlices` 分片
-    /// （受各自 `mergeZcodeUsage` 开关约束，见 `usageFrameExtractors`）。
-    /// 与 `applyOpencodeUsage` 同样只挂快照、关闭开关时诊断页仍可见。
+    /// （由 `clientBindings` 的 zcode → <quota> 绑定门控，见 `usageFrameExtractors`）。
+    /// 与 `applyOpencodeUsage` 同样只挂快照、关闭绑定时诊断页仍可见。
     @MainActor
     func applyGlmLocalUsage(_ usage: GlmLocalUsage?) {
         var copy = statuses
@@ -1150,6 +1142,22 @@ final class AppState: ObservableObject {
         statuses = copy
         statusDidChange.send()
         logDebug("[dsh/apply] providers=\(usage?.byProvider.count ?? 0), sessions=\(usage?.sessionCount ?? 0)")
+        // 别名失配告警（P2）：dsh 帧的归属由 config 绑定别名解析，用户手改
+        // config 写错 `sourceProviderAliases` 会让对应 provider 的用量静默漏采
+        // （帧落空串组后被卡片过滤）。这里在快照落地时检测一次并打告警；
+        // guard changed 之上不放——同一份快照只在首次落地时告警，不随渲染重复。
+        let unclaimed = DshHarnessFrames.unclaimedProviderKeys(
+            in: usage,
+            bindings: configStore.config.clientBindings
+        )
+        if unclaimed.isEmpty == false {
+            logWarn(
+                "[dsh/apply] 以下 dsh provider 键没有被任何 dsh 绑定别名认领，对应用量不会并入任何卡片："
+                + "\(unclaimed.joined(separator: ", "))；"
+                + "当前已登记别名（config clientBindings 的 sourceProviderAliases）："
+                + "\(DshHarnessFrames.registeredAliases(bindings: configStore.config.clientBindings).joined(separator: ", "))"
+            )
+        }
     }
 
     // MARK: - opencode local usage scanner（GLM 卡 + 诊断页）

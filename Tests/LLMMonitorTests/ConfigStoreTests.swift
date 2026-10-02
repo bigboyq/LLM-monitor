@@ -472,8 +472,8 @@ final class ConfigStoreTests: StateTestCase {
     }
 
     /// 老用户配置：数组已存在、只有 5 条 opencode 绑定，且 opencode → deepseek 被
-    /// 用户显式打开（默认是 false）。解码后必须补上两条 zcode 默认绑定，同时
-    /// 用户的显式值原样保留——不能被默认值覆盖。
+    /// 用户显式打开（默认是 false）。解码后必须补上 zcode（2 条）与 dsh（3 条）
+    /// 默认绑定，同时用户的显式值原样保留——不能被默认值覆盖。
     func testDecodeAddsNewDefaultBindingsToExistingLegacyArray() throws {
         let existing: [[String: Any]] = [
             bindingEntry(
@@ -509,7 +509,10 @@ final class ConfigStoreTests: StateTestCase {
         ]
         let config = try decodeConfig(makeConfigJSON(clientBindings: existing))
 
-        XCTAssertEqual(config.clientBindings.count, 7, "5 条 opencode + 2 条 zcode 默认绑定")
+        XCTAssertEqual(
+            config.clientBindings.count, 10,
+            "5 条 opencode + 2 条 zcode + 3 条 dsh 默认绑定"
+        )
         XCTAssertTrue(
             config.isClientBindingEnabled(clientID: ClientID.zcode, quotaProviderID: QuotaProviderID.minimax),
             "老配置应补上 zcode → minimax 默认绑定（enabled=true）"

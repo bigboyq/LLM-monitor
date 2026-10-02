@@ -133,7 +133,7 @@ final class OpencodeUsageTests: XCTestCase {
             byProvider: [OpencodeLocalUsage.minimaxCodingPlanProviderID: open],
             modelsByProvider: [:], dbPath: nil, scannedAt: nil
         )
-        status.mergeOpencodeUsage = true
+        status.clientBindings = ProviderStatus.allClientBindingsEnabled()
 
         let projection = status.usageProjection(for: nil)
         XCTAssertEqual(projection.clientIDs, [ClientID.minimaxCode, ClientID.openCode])
@@ -152,8 +152,10 @@ final class OpencodeUsageTests: XCTestCase {
             "OpenCode sample 必须带命名空间前缀"
         )
 
-        // mergeOpencodeUsage=false 时 OpenCode 贡献整体消失。
-        status.mergeOpencodeUsage = false
+        // opencode → minimax 绑定关闭时 OpenCode 贡献整体消失。
+        status.setClientBindingEnabled(
+            clientID: ClientID.openCode, quotaProviderID: QuotaProviderID.minimax, enabled: false
+        )
         let nativeOnly = status.usageProjection(for: nil)
         XCTAssertEqual(nativeOnly.clientIDs, [ClientID.minimaxCode])
         XCTAssertEqual(nativeOnly.dailyTokenUsage.first?.input, 10)
@@ -260,7 +262,7 @@ final class OpencodeUsageTests: XCTestCase {
             byProvider: [OpencodeLocalUsage.antigravityProviderIDs[0]: open],
             modelsByProvider: [:], dbPath: nil, scannedAt: nil
         )
-        status.mergeOpencodeUsage = true
+        status.clientBindings = ProviderStatus.allClientBindingsEnabled()
 
         let projection = status.usageProjection(for: nil)
         XCTAssertEqual(projection.clientIDs, [ClientID.antigravity, ClientID.openCode])
@@ -443,7 +445,7 @@ final class OpencodeUsageTests: XCTestCase {
                 refreshIntervalSeconds: 300, state: .ready
             )
             status.opencodeUsage = snapshot
-            status.mergeOpencodeUsage = true
+            status.clientBindings = ProviderStatus.allClientBindingsEnabled()
             return status
         }
 
@@ -537,7 +539,7 @@ final class OpencodeUsageTests: XCTestCase {
             byProvider: [OpencodeLocalUsage.openAIProviderID: open],
             modelsByProvider: [:], dbPath: nil, scannedAt: nil
         )
-        status.mergeOpencodeUsage = true
+        status.clientBindings = ProviderStatus.allClientBindingsEnabled()
 
         let projection = status.usageProjection(for: info)
         let mergedDay = try XCTUnwrap(projection.dailyTokenUsage.first)

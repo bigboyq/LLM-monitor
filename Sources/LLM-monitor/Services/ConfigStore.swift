@@ -195,6 +195,8 @@ struct AppConfig: Codable, Equatable {
 
     /// Client → quota Provider 的显式绑定。缺失时从旧版 provider-level
     /// `mergeOpencodeUsage` 字段迁移生成，确保旧配置继续生效。
+    /// P2 起这是共享账本归因/门控的唯一事实源：状态卡在 rebuildStatuses 拿到
+    /// 逐字快照（`ProviderStatus.clientBindings`），帧抽取器与投影内核都从它取值。
     var clientBindings: [ClientProviderBinding]
 
     /// 状态栏图标风格 (nil = 默认 chartBar)
@@ -242,35 +244,42 @@ struct AppConfig: Codable, Equatable {
         providerCardOrder: nil
     )
 
+    /// 默认 client → quota 绑定注册表。
+    ///
+    /// **数组里的字面量是归因别名的唯一事实源**（P2 显式化）：`OpencodeLocalUsage`
+    /// 的 providerID 常量与 dsh 帧的路由匹配都从这里导出
+    /// （`defaultSourceProviderAliases(clientID:quotaProviderID:)`），改别名只改这里。
+    /// 注意不能反向引用 `OpencodeLocalUsage` 的常量——那些常量正是从本表导出的，
+    /// 互相引用会形成静态初始化环。
     static let defaultClientBindings: [ClientProviderBinding] = [
         ClientProviderBinding(
             clientID: ClientID.openCode,
             quotaProviderID: QuotaProviderID.minimax,
-            sourceProviderAliases: [OpencodeLocalUsage.minimaxCodingPlanProviderID],
+            sourceProviderAliases: ["minimax-cn-coding-plan"],
             enabled: false
         ),
         ClientProviderBinding(
             clientID: ClientID.openCode,
             quotaProviderID: QuotaProviderID.openAI,
-            sourceProviderAliases: [OpencodeLocalUsage.openAIProviderID],
+            sourceProviderAliases: ["openai"],
             enabled: false
         ),
         ClientProviderBinding(
             clientID: ClientID.openCode,
             quotaProviderID: QuotaProviderID.antigravity,
-            sourceProviderAliases: OpencodeLocalUsage.antigravityProviderIDs,
+            sourceProviderAliases: ["antigravity", "google-antigravity", "google-vertex", "google"],
             enabled: false
         ),
         ClientProviderBinding(
             clientID: ClientID.openCode,
             quotaProviderID: QuotaProviderID.zhipu,
-            sourceProviderAliases: [OpencodeLocalUsage.glmProviderID],
+            sourceProviderAliases: ["zhipuai-coding-plan"],
             enabled: true
         ),
         ClientProviderBinding(
             clientID: ClientID.openCode,
             quotaProviderID: QuotaProviderID.deepseek,
-            sourceProviderAliases: [OpencodeLocalUsage.deepseekProviderID],
+            sourceProviderAliases: ["deepseek"],
             enabled: false
         ),
         // ZCode 是多 provider 共享账本：`minimax` / `deepseek` 的行与智谱系行
@@ -288,8 +297,43 @@ struct AppConfig: Codable, Equatable {
             quotaProviderID: QuotaProviderID.deepseek,
             sourceProviderAliases: [ZcodeProviderSlice.deepseek.providerPrefix],
             enabled: true
+        ),
+        // DSH 是一份多 provider 路由的 session 账本：帧不声明归属，由内核用这里的
+        // 别名解析（contains 匹配、enabled 门控）。别名即旧 `DshHarnessFrames`
+        // 硬编码路由表，语义不变，只是搬进唯一事实源。默认开启（与 DSH 历史上
+        // 不受任何开关控制一致）。
+        ClientProviderBinding(
+            clientID: ClientID.dsh,
+            quotaProviderID: QuotaProviderID.deepseek,
+            sourceProviderAliases: ["deepseek", "deepseek-official", "deepseek-cn", "deepseek-v4"],
+            enabled: true
+        ),
+        ClientProviderBinding(
+            clientID: ClientID.dsh,
+            quotaProviderID: QuotaProviderID.minimax,
+            sourceProviderAliases: ["minimax", "minimax-cn", "minimax-cn-coding-plan"],
+            enabled: true
+        ),
+        ClientProviderBinding(
+            clientID: ClientID.dsh,
+            quotaProviderID: QuotaProviderID.zhipu,
+            sourceProviderAliases: [
+                "glm", "zhipu", "zhipuai", "bigmodel",
+                "builtin:bigmodel-coding-plan", "account:bigmodel-individual-coding-plan"
+            ],
+            enabled: true
         )
     ]
+
+    /// 从默认绑定导出 (clientID, quotaProviderID) 的归因别名。
+    ///
+    /// 唯一事实源是 `defaultClientBindings` 的数组字面量；查不到返回空数组，
+    /// 调用方决定兜底（常量导出方用历史字面量兜底，并由一致性测试锁住不漂移）。
+    static func defaultSourceProviderAliases(clientID: String, quotaProviderID: String) -> [String] {
+        defaultClientBindings.first {
+            $0.clientID == clientID && $0.quotaProviderID == quotaProviderID
+        }?.sourceProviderAliases ?? []
+    }
 
     enum SchemaError: LocalizedError, Equatable {
         case unsupportedVersion(Int)
@@ -429,9 +473,10 @@ struct AppConfig: Codable, Equatable {
     ///
     /// 老用户的 config.json 里已经有一份 clientBindings（当年只有 opencode 几条），
     /// `decodeIfPresent` 会原样采用它——之后版本新增的默认绑定（如 zcode →
-    /// minimax / deepseek）永远进不了这些配置，表现为卡片恒不统计该来源用量。
-    /// 这里按组合补齐，顺序与用户显式值一律不动：关闭绑定的口径是"把条目的
-    /// enabled 改成 false"，删条目不是关闭方式，所以"补上缺的"不会复活已关闭的绑定。
+    /// minimax / deepseek，以及 dsh 三条路由绑定）永远进不了这些配置，表现为卡片
+    /// 恒不统计该来源用量。这里按组合补齐，顺序与用户显式值一律不动：关闭绑定的
+    /// 口径是"把条目的 enabled 改成 false"，删条目不是关闭方式，所以"补上缺的"
+    /// 不会复活已关闭的绑定。
     private static func mergingMissingDefaultBindings(
         _ bindings: [ClientProviderBinding]
     ) -> [ClientProviderBinding] {
