@@ -387,7 +387,8 @@ struct QuotaWindowUsageSection: View {
 /// `类型 | 用量 | 命中 | 产出比 | 思考 | 价值`。
 ///
 /// 样式与「额度详情」的表头一致（`metricLabel` 10pt secondary），**全列左对齐**
-/// （沿用第四轮的数据列对齐，表头跟随）。表头出现后数据格不再重复文字标签，
+/// （第六轮起数据格的用量/命中/产出比/思考四列改右对齐，表头不跟随、仍从列
+/// 起点读起——列名是文字不是数值）。表头出现后数据格不再重复文字标签，
 /// 列名只在表头说一次（见 `QuotaWindowUsageMetricRow`）。命中/思考两列的表头
 /// 随模块级列显隐一起消失；类型/用量/产出比/价值四列表头恒在。表头住进与数据行
 /// 同一个 `Grid`，六列才能跨行对齐。文案钉在
@@ -448,6 +449,11 @@ struct QuotaWindowUsageStatsHeader: View {
 ///
 /// 10pt 等宽数字、单行不折行的既有约束不变：字号与 `lineLimit` 由宿主的 `Grid`
 /// 统一施加（`statsModule`），修饰符包在 `GridRow` 外会让它失去网格语义。
+///
+/// **对齐规则**（第六轮改版）：类型与价值是"从行首读起的文字/金额"，数据格
+/// 左对齐；用量/命中/产出比/思考是等宽数字，数据格**右对齐**——同一列的数字
+/// 沿右缘（个位）对齐才可比。表头不跟随，仍全列左对齐（见
+/// `QuotaWindowUsageStatsHeader`）。
 struct QuotaWindowUsageMetricRow: View {
     let label: String
     let metrics: QuotaWindowUsageMetrics
@@ -465,7 +471,7 @@ struct QuotaWindowUsageMetricRow: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             Text(Formatters.formatTokenCountCompact(metrics.totalTokens))
                 .foregroundStyle(Color.primaryLabel)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .trailing)
             if showsHitColumn {
                 rateCell(Self.rateText(metrics.cacheHitRate, digits: 1))
             }
@@ -479,11 +485,12 @@ struct QuotaWindowUsageMetricRow: View {
         }
     }
 
-    /// 比率数值格：只有数值、左对齐（第四轮），标签在表头（第五轮）。
+    /// 比率数值格：只有数值、**右对齐**（第六轮改版；第四轮为左对齐），标签在
+    /// 表头（第五轮）。
     private func rateCell(_ value: String) -> some View {
         Text(value)
             .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .trailing)
     }
 
     /// 分母为 0 的比率显示 `—`，不显示 `0%`：前者是"这个比率算不出来"，
@@ -532,11 +539,13 @@ struct QuotaWindowUsageMetricRow: View {
 /// `numericColumnVisibility` 一次跨行算出，表头与每一行数据格拿同一份结果。
 ///
 /// 列宽**不均分**（第三轮起）：类型列按内容自然宽；重置日期列取**固定宽**
-/// （`resetDateColumnWidth` = 最长形态自然宽 × 1.2）——第三轮的自然宽在真机上
-/// 仍被四个数值列挤到缩字，固定宽之后四个数值列平分的是**剩余**宽度，重置日期
-/// 完整显示、不 `minimumScaleFactor`。数值列右对齐、表头跟随其对齐方式的现状
-/// 保持；重置日期列（表头与数据格）**左对齐**（第五轮改版）——它是日期文字
-/// 不是数值，与类型列同一"从列起点读起"的读法，不再锚到右缘仿数值列。
+/// （`resetDateColumnWidth` = 最长形态自然宽 × 1.2 + 前置间隙 12pt）——第三轮的
+/// 自然宽在真机上仍被四个数值列挤到缩字，固定宽之后四个数值列平分的是**剩余**
+/// 宽度，重置日期完整显示、不 `minimumScaleFactor`。数值列右对齐、表头跟随的
+/// 现状保持；重置日期数据格**左对齐**（第五轮改版，日期文字不是数值，与类型列
+/// 同一"从列起点读起"的读法，不锚右缘仿数值列），第六轮起格子与列表头各带
+/// `resetDateColumnLeadingGap` 前置间隙与 Reason 列拉开可见间距，表头改在固定
+/// 宽内**居中**（它标注的是整列，不是列起点），数据格仍锚在间隙之后。
 struct QuotaWindowUsageRawTable: View {
     let snapshot: QuotaWindowUsageSnapshot
     /// 「今」行：宿主传入的当天本地聚合（`ProviderCardView.todayUsageRow`，
@@ -545,15 +554,21 @@ struct QuotaWindowUsageRawTable: View {
     /// 同一份数据；四桶合计为 0 时同样被 `tableRows` 跳过。
     var today: QuotaWindowUsageSection.Row?
 
-    /// 重置日期列的**固定宽度**（第四轮改版）。
+    /// 重置日期列与 Reason 列之间的**前置间隙**（第六轮改版）：重置日期不再贴着
+    /// Reason 列，两侧拉开一拍可见间距。列表头（frame 内边距）与数据格（格子
+    /// 前导 padding）各带这份间隙，列的固定宽把它一并算进去。
+    static let resetDateColumnLeadingGap: CGFloat = 12
+
+    /// 重置日期列的**固定宽度**（第四轮改版；第六轮起含前置间隙）。
     ///
     /// 量法：与 `QuotaWindowUsageValueTests` 量宽同一手法——`NSHostingView` 承载
     /// `Text(形态).font(MenuTypography.metricValue)`（10pt medium monospacedDigit，
     /// 本表格的既有字号），不限宽测 `fittingSize.width`。最长形态是
     /// `09-30 15:07 (23h59m)`（`formatResetSuffix` 最宽的后缀，比 `2d23h`、
-    /// `已过期`、`365d` 都宽），2026-10-03 实测自然宽 **117pt**，× 1.2 取
-    /// 140.4pt。测试钉住「常量 ≥ 最长形态自然宽」，系统字体度量变了会先红在这里。
-    static let resetDateColumnWidth: CGFloat = 117 * 1.2
+    /// `已过期`、`365d` 都宽），2026-10-03 实测自然宽 **117pt**，× 1.2 取 140.4pt，
+    /// 再加前置间隙 12pt 得 152.4pt——刨去间隙后文字空间与第四轮相同。测试钉住
+    /// 「常量 − 间隙 ≥ 最长形态自然宽」，系统字体度量变了会先红在这里。
+    static let resetDateColumnWidth: CGFloat = 117 * 1.2 + resetDateColumnLeadingGap
 
     /// 表内一行（`ForEach` 的元素）：`id` 是行序——标签（`5h`/`周`/`今`）理论上
     /// 不重复，但行序才是这张表真正的身份。
@@ -666,13 +681,15 @@ struct QuotaWindowUsageRawTable: View {
     }
 
     /// 重置日期列表头：**固定宽**（`resetDateColumnWidth`），不参与数值列的平分
-    /// ——四个数值列平分的是刨去它之后的剩余宽度。**左对齐**（第五轮改版）：
-    /// 日期文字与类型列同一读法，从列起点读起。
+    /// ——四个数值列平分的是刨去它之后的剩余宽度。**居中**（第六轮改版）：表头
+    /// 标注的是整列，不再锚列起点。间隙放在 frame **之内**（padding 先于
+    /// frame），刨去间隙后标题的文字空间不变。数据格仍左对齐（见 `resetCell`）。
     private var resetDateHeader: some View {
         Text("重置日期")
             .font(MenuTypography.metricLabel)
             .foregroundStyle(.secondary)
-            .frame(width: Self.resetDateColumnWidth, alignment: .leading)
+            .padding(.leading, Self.resetDateColumnLeadingGap)
+            .frame(width: Self.resetDateColumnWidth, alignment: .center)
     }
 
     /// 表内一行：窗口行（5h/周）与今行共用——差别只在标签来源与重置时刻
@@ -706,8 +723,10 @@ struct QuotaWindowUsageRawTable: View {
     /// 重置日期 = `MM-dd HH:mm (倒计时)`，取数与格式化与旧 hover 的重置行同一套
     /// （`formatMonthDayMinute` + `formatResetSuffix`）。没有重置时刻写 `—`
     /// （不猜服务端时间；今行恒走这一格）。固定宽列：按最长形态完整显示，不
-    /// `minimumScaleFactor` 压缩；**左对齐**（第五轮改版，表头与数据格同一读法
-    /// ——日期文字不是数值，不跟随数值列的右对齐）。
+    /// `minimumScaleFactor` 压缩；**左对齐**（第五轮改版，日期文字不是数值，
+    /// 不跟随数值列的右对齐；第六轮起表头另改居中），带 `resetDateColumnLeadingGap`
+    /// 前置间隙与 Reason 列拉开——padding 在 anchor 之内，锚的仍是"间隙之后"
+    /// 的格首。
     private func resetCell(_ resetsAt: Date?) -> some View {
         Group {
             if let resetsAt {
@@ -718,6 +737,7 @@ struct QuotaWindowUsageRawTable: View {
                     .foregroundStyle(.tertiary)
             }
         }
+        .padding(.leading, Self.resetDateColumnLeadingGap)
         .gridCellAnchor(.leading)
     }
 }

@@ -571,9 +571,10 @@ final class QuotaWindowUsageValueTests: XCTestCase {
         )
     }
 
-    /// 重置日期列**左对齐**（第五轮改版）：固定宽列（表头与数据格）锚在列首，
-    /// 不再仿数值列锚右缘。渲染成位图找墨迹位置——左对齐时墨迹紧贴列左缘
-    /// （旧态右对齐会距左缘约一个列宽减文本宽），判据留足余量防字体度量抖动。
+    /// 重置日期数据格**左对齐 + 前置间隙**（第五轮左对齐、第六轮加 12pt 间隙）：
+    /// 固定宽列的数据格锚在"列首 + `resetDateColumnLeadingGap`"处，不仿数值列
+    /// 锚右缘。渲染成位图找墨迹位置——墨迹应恰落在间隙之后（明显小于说明间隙
+    /// 丢了，明显大于说明又锚去右缘了），判据留足余量防字体度量抖动。
     @MainActor
     func testResetDateColumnAlignsLeading() {
         let now = Date(timeIntervalSince1970: 1_790_000_000)
@@ -595,7 +596,7 @@ final class QuotaWindowUsageValueTests: XCTestCase {
         hosting.cacheDisplay(in: hosting.bounds, to: rep)
         let scale = CGFloat(rep.pixelsWide) / hosting.bounds.width
 
-        // 前提自检：列右缘上方必须是空白（左对齐时数据最长形态也留有 ~20pt）。
+        // 前提自检：列右缘上方必须是空白（左对齐时数据最长形态之后还留有 ~23pt）。
         // 若整张位图都不透明，下面的墨迹判定会恒真——先在这里红掉。
         XCTAssertLessThan(
             rep.colorAt(x: rep.pixelsWide - 2, y: 1)?.alphaComponent ?? 1,
@@ -616,9 +617,15 @@ final class QuotaWindowUsageValueTests: XCTestCase {
         guard let minInkX else {
             return XCTFail("重置日期列里必须真的画出了内容")
         }
+        // 第六轮起内容带前置间隙：墨迹应锚在"列首 + 间隙"处。
+        let gap = QuotaWindowUsageRawTable.resetDateColumnLeadingGap
+        XCTAssertGreaterThanOrEqual(
+            minInkX - columnStart, gap - 2,
+            "重置日期内容与列首之间必须保住 \(Int(gap))pt 前置间隙，现在距列左缘 \(minInkX - columnStart)pt"
+        )
         XCTAssertLessThan(
-            minInkX - columnStart, 12,
-            "重置日期内容必须锚在列首（左对齐），现在距列左缘 \(minInkX - columnStart)pt"
+            minInkX - columnStart, gap + 6,
+            "重置日期内容必须锚在列首 + 间隙处（左对齐），现在距列左缘 \(minInkX - columnStart)pt"
         )
     }
 
@@ -772,22 +779,26 @@ final class QuotaWindowUsageValueTests: XCTestCase {
         )
     }
 
-    /// 重置日期列的固定宽常量必须 ≥ 最长形态的自然宽（`MM-dd HH:mm (23h59m)`，
-    /// `formatResetSuffix` 最宽的后缀——比 `2d23h`/`已过期`/`365d` 都宽），也别宽得
-    /// 离谱（×1.2 的本意）。系统字体度量变了先红在这里。
+    /// 重置日期列固定宽常量里**刨去前置间隙**的文字空间必须 ≥ 最长形态的自然宽
+    /// （`MM-dd HH:mm (23h59m)`，`formatResetSuffix` 最宽的后缀——比 `2d23h`/
+    /// `已过期`/`365d` 都宽），也别宽得离谱（×1.2 的本意）。第六轮起常量含
+    /// 12pt 前置间隙，口径从「常量」改为「常量 − 间隙」。系统字体度量变了先红
+    /// 在这里。
     @MainActor
     func testResetDateColumnWidthCoversTheLongestForm() {
         let longest = self.measuredWidth(
             of: Text("09-30 15:07 (23h59m)").font(MenuTypography.metricValue)
         )
+        let textSpace = QuotaWindowUsageRawTable.resetDateColumnWidth
+            - QuotaWindowUsageRawTable.resetDateColumnLeadingGap
         XCTAssertGreaterThan(longest, 0, "前提不成立：最长形态必须真的排得出来")
         XCTAssertGreaterThanOrEqual(
-            QuotaWindowUsageRawTable.resetDateColumnWidth, longest,
-            "固定宽常量（\(QuotaWindowUsageRawTable.resetDateColumnWidth)pt）容不下最长形态自然宽（\(longest)pt）"
+            textSpace, longest,
+            "固定宽常量刨去前置间隙（\(textSpace)pt）容不下最长形态自然宽（\(longest)pt）"
         )
         XCTAssertLessThan(
-            QuotaWindowUsageRawTable.resetDateColumnWidth, longest * 1.5,
-            "常量应约为最长形态自然宽 × 1.2：宽出 50% 说明量法或倍率写错了"
+            textSpace, longest * 1.5,
+            "文字空间应约为最长形态自然宽 × 1.2：宽出 50% 说明量法或倍率写错了"
         )
     }
 
