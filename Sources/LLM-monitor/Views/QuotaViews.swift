@@ -280,8 +280,8 @@ struct CompactResetCreditsRow: View {
     }
 
     private var summaryColor: Color {
-        if resets.availableCount == 0 { return .red }
-        if resets.availableCount == 1 { return .orange }
+        if resets.availableCount == 0 { return .criticalTint }
+        if resets.availableCount == 1 { return .warningTint }
         return .healthyTint
     }
 }
