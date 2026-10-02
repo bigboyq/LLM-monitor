@@ -185,7 +185,7 @@ final class AntigravityCacheMaintenanceTests: AntigravityConvergenceTestCase {
     }
 
     /// 卫生清理：写回 index 前裁剪严格早于 8 天窗口的日桶（与 samples 的
-    /// `-8 * 24 * 60 * 60` 谓词同式）。构造含 10 天前桶的缓存且 session 指纹
+    /// `-LocalUsageRetentionWindow.seconds` 谓词同式）。构造含 10 天前桶的缓存且 session 指纹
     /// 新鲜（不触发 RPC、日桶不会被重算替换），扫描后旧桶被裁、7 天内的桶与
     /// samples 不受影响、eventCount 不变。
     func testPrunesDailyBucketsOlderThanEightDayWindowOnSave() async throws {

@@ -58,7 +58,7 @@ final class OpencodeUsageScanner: SingleDBSnapshotScanner<OpencodeLocalUsage>, @
         let aggregate = try Self.aggregateFromDB(
             dbPath: dbURL,
             calendar: calendar,
-            sampleCutoff: now.addingTimeInterval(-8 * 24 * 60 * 60)
+            sampleCutoff: now.addingTimeInterval(-LocalUsageRetentionWindow.seconds)
         )
         let snapshot = Self.buildSnapshot(
             from: aggregate, dbPath: dbURL.path, calendar: calendar, now: now
@@ -125,7 +125,7 @@ final class OpencodeUsageScanner: SingleDBSnapshotScanner<OpencodeLocalUsage>, @
         now: Date
     ) -> OpencodeLocalUsage {
         let todayStart = DailyUsageAggregation.todayCutoff(now: now, calendar: calendar)
-        let sampleCutoff = now.addingTimeInterval(-8 * 24 * 60 * 60)
+        let sampleCutoff = now.addingTimeInterval(-LocalUsageRetentionWindow.seconds)
         let rebased = snapshot.byProvider.mapValues { usage in
             let daily = DailyUsageAggregation.filterLast7Days(
                 allDaily: usage.dailyTokenUsage,

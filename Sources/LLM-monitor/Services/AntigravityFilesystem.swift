@@ -324,7 +324,7 @@ extension AntigravityLocalUsageScanner {
             let recent7 = filterLast7Days(allDaily: allDaily, today: todayStart, calendar: calendar)
             let samples = (index.samplesBySession ?? [:]).values
                 .flatMap { $0 }
-                .filter { $0.completedAt >= now.addingTimeInterval(-8 * 24 * 60 * 60) }
+                .filter { $0.completedAt >= now.addingTimeInterval(-LocalUsageRetentionWindow.seconds) }
                 .sorted { $0.completedAt < $1.completedAt }
             return AntigravityLocalUsage(
                 today: allDaily.first(where: { $0.dayStart == todayStart }),

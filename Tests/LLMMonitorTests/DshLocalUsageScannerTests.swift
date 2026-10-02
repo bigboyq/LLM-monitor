@@ -1328,7 +1328,7 @@ final class DshLocalUsageScannerTests: XCTestCase {
         )))
         let cutoff = try XCTUnwrap(calendar.date(
             byAdding: .day,
-            value: -7,
+            value: -(LocalUsageRetentionWindow.days - 1),
             to: calendar.startOfDay(for: now)
         ))
         let samples = [

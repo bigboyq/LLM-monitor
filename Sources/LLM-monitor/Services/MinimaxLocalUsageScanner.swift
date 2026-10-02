@@ -312,7 +312,7 @@ final class MinimaxLocalUsageScanner: LocalUsageScannerBase<MinimaxLocalUsage>, 
                 let aggregate = try Self.aggregateFromDB(
                     dbPath: info.url,
                     calendar: calendar,
-                    cutoff: now().addingTimeInterval(-8 * 24 * 60 * 60)
+                    cutoff: now().addingTimeInterval(-LocalUsageRetentionWindow.seconds)
                 )
 
                 // 字符分摊 outputTokens → reasoningTokens。raw.reasoning 永远 0 时
@@ -396,7 +396,7 @@ final class MinimaxLocalUsageScanner: LocalUsageScannerBase<MinimaxLocalUsage>, 
         let recentSamples = (index.samplesBySource ?? [:])
             .values
             .flatMap { $0 }
-            .filter { $0.completedAt >= nowDate.addingTimeInterval(-8 * 24 * 60 * 60) }
+            .filter { $0.completedAt >= nowDate.addingTimeInterval(-LocalUsageRetentionWindow.seconds) }
             .sorted { $0.completedAt < $1.completedAt }
 
         // 7. 算总数 + 失败 source 数（set union 处理 overlap）
@@ -461,7 +461,8 @@ extension MinimaxLocalUsageScanner {
     }
 
     /// 写回 index 前裁剪 `dailyBySource` 中严格早于 8 天窗口的日期桶（与
-    /// samples 的 `-8 * 24 * 60 * 60` 谓词同式，按桶的 `dayStart` 比较）。
+    /// samples 的 `-LocalUsageRetentionWindow.seconds` 谓词同式，按桶的
+    /// `dayStart` 比较）。
     /// 日桶只有 today / 最近 7 天两个消费出口（`computeGlobalDaily` → today +
     /// `filterLast7Days`），source 级 `eventCount` 独立保存在 `sources` 条目里，
     /// 因此旧桶删除不影响任何用户可见数字。SQL 聚合本身已按 8 天 cutoff 取数，
@@ -471,7 +472,7 @@ extension MinimaxLocalUsageScanner {
         index: inout CacheIndex,
         now: Date
     ) {
-        let cutoff = now.addingTimeInterval(-8 * 24 * 60 * 60)
+        let cutoff = now.addingTimeInterval(-LocalUsageRetentionWindow.seconds)
         var removedBuckets = 0
         var removedSources = 0
         for (sourceKey, byDay) in index.dailyBySource {
@@ -676,7 +677,7 @@ extension MinimaxLocalUsageScanner {
             let recent7 = filterLast7Days(allDaily: allDaily, today: todayStart, calendar: calendar)
             let samples = (index.samplesBySource ?? [:]).values
                 .flatMap { $0 }
-                .filter { $0.completedAt >= now.addingTimeInterval(-8 * 24 * 60 * 60) }
+                .filter { $0.completedAt >= now.addingTimeInterval(-LocalUsageRetentionWindow.seconds) }
                 .sorted { $0.completedAt < $1.completedAt }
             return MinimaxLocalUsage(
                 today: allDaily.first(where: { $0.dayStart == todayStart }),

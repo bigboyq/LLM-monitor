@@ -423,9 +423,9 @@ final class DshLocalUsageScanner: LocalUsageScannerBase<DshLocalUsage>, @uncheck
     }
 
     /// Unified recent-samples contract shared by full scans and cached rebases:
-    /// keep at most the last 8 calendar days (today plus the previous 7, which
-    /// fully covers the 7-day daily window across midnight rebases), oldest-to-
-    /// newest, capped at `maxCount`.
+    /// keep at most the last `LocalUsageRetentionWindow.days` calendar days
+    /// (today plus the previous 7, which fully covers the 7-day daily window
+    /// across midnight rebases), oldest-to-newest, capped at `maxCount`.
     nonisolated static func boundedRecentSamples(
         _ samples: [LocalTokenUsageSample],
         calendar: Calendar,
@@ -434,7 +434,7 @@ final class DshLocalUsageScanner: LocalUsageScannerBase<DshLocalUsage>, @uncheck
     ) -> [LocalTokenUsageSample] {
         guard let cutoff = calendar.date(
             byAdding: .day,
-            value: -7,
+            value: -(LocalUsageRetentionWindow.days - 1),
             to: calendar.startOfDay(for: now)
         ) else {
             return []

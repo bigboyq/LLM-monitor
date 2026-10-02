@@ -795,7 +795,7 @@ extension AntigravityLocalUsageScanner {
                         let existingSamples = index.samplesBySession?[sessionId] ?? []
                         var samplesBySession = index.samplesBySession ?? [:]
                         samplesBySession[sessionId] = (existingSamples + details.samples).filter {
-                            $0.completedAt >= nowDate.addingTimeInterval(-8 * 24 * 60 * 60)
+                            $0.completedAt >= nowDate.addingTimeInterval(-LocalUsageRetentionWindow.seconds)
                         }
                         index.samplesBySession = samplesBySession
 
@@ -831,7 +831,7 @@ extension AntigravityLocalUsageScanner {
                         }
                         var samplesBySession = index.samplesBySession ?? [:]
                         samplesBySession[sessionId] = details.samples.filter {
-                            $0.completedAt >= nowDate.addingTimeInterval(-8 * 24 * 60 * 60)
+                            $0.completedAt >= nowDate.addingTimeInterval(-LocalUsageRetentionWindow.seconds)
                         }
                         index.samplesBySession = samplesBySession
 
@@ -902,7 +902,7 @@ extension AntigravityLocalUsageScanner {
         let recent7 = filterLast7Days(allDaily: allDaily, today: todayStart, calendar: calendar)
         let recentSamples = (index.samplesBySession ?? [:]).values
             .flatMap { $0 }
-            .filter { $0.completedAt >= nowDate.addingTimeInterval(-8 * 24 * 60 * 60) }
+            .filter { $0.completedAt >= nowDate.addingTimeInterval(-LocalUsageRetentionWindow.seconds) }
             .sorted { $0.completedAt < $1.completedAt }
         return AntigravityLocalUsage(
             today: allDaily.first(where: { $0.dayStart == todayStart }),
@@ -1010,7 +1010,8 @@ extension AntigravityLocalUsageScanner {
     }
 
     /// 写回 index 前裁剪 `dailyBySession` 中严格早于 8 天窗口的日期桶（与
-    /// samples 的 `-8 * 24 * 60 * 60` 谓词同式，按桶的 `dayStart` 比较）。
+    /// samples 的 `-LocalUsageRetentionWindow.seconds` 谓词同式，按桶的
+    /// `dayStart` 比较）。
     /// 日桶只有 today / 最近 7 天两个消费出口（`computeGlobalDaily` → today +
     /// `filterLast7Days`），session 级 `eventCount` 独立保存在 `sessions` 条目
     /// 里，因此旧桶删除不影响任何用户可见数字，只防止长期使用后 index.json
@@ -1019,7 +1020,7 @@ extension AntigravityLocalUsageScanner {
         index: inout CacheIndex,
         now: Date
     ) {
-        let cutoff = now.addingTimeInterval(-8 * 24 * 60 * 60)
+        let cutoff = now.addingTimeInterval(-LocalUsageRetentionWindow.seconds)
         var removedBuckets = 0
         var removedSessions = 0
         for (sessionID, byDay) in index.dailyBySession {

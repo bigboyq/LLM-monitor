@@ -54,7 +54,7 @@ final class MinimaxLocalUsageScannerTests: XCTestCase {
     }
 
     /// 卫生清理：写回 index 前裁剪严格早于 8 天窗口的日桶（与 samples 的
-    /// `-8 * 24 * 60 * 60` 谓词同式）。构造含 10 天前桶的缓存且 source 指纹
+    /// `-LocalUsageRetentionWindow.seconds` 谓词同式）。构造含 10 天前桶的缓存且 source 指纹
     /// 新鲜（不 dirty、不走 SQL 聚合，dailyBySource 不会被整体替换），扫描后
     /// 旧桶被裁、7 天内的桶与 samples 不受影响、eventCount 不变。
     func testPrunesDailyBucketsOlderThanEightDayWindowOnSave() throws {

@@ -124,7 +124,7 @@ final class GlmZcodeLocalUsageScanner: SingleDBSnapshotScanner<GlmLocalUsage>, @
         let aggregate = try Self.aggregateFromDB(
             dbPath: dbURL,
             calendar: calendar,
-            sampleCutoff: now.addingTimeInterval(-8 * 24 * 60 * 60)
+            sampleCutoff: now.addingTimeInterval(-LocalUsageRetentionWindow.seconds)
         )
         let activityPlanBalances = readActivityPlanBalances(now: now)
         let snapshot = Self.buildSnapshot(
@@ -311,7 +311,7 @@ final class GlmZcodeLocalUsageScanner: SingleDBSnapshotScanner<GlmLocalUsage>, @
             calendar: calendar
         )
         let today = daily.last.flatMap { $0.hasActivity ? $0 : nil }
-        let sampleCutoff = now.addingTimeInterval(-8 * 24 * 60 * 60)
+        let sampleCutoff = now.addingTimeInterval(-LocalUsageRetentionWindow.seconds)
         return GlmLocalUsage(
             today: today,
             dailyTokenUsage: daily,
@@ -335,7 +335,7 @@ final class GlmZcodeLocalUsageScanner: SingleDBSnapshotScanner<GlmLocalUsage>, @
     ) -> [String: OpencodeProviderUsage]? {
         guard let slices, slices.isEmpty == false else { return slices }
         let todayStart = DailyUsageAggregation.todayCutoff(now: now, calendar: calendar)
-        let sampleCutoff = now.addingTimeInterval(-8 * 24 * 60 * 60)
+        let sampleCutoff = now.addingTimeInterval(-LocalUsageRetentionWindow.seconds)
         return slices.mapValues { usage in
             let daily = DailyUsageAggregation.filterLast7Days(
                 allDaily: usage.dailyTokenUsage,
