@@ -660,6 +660,13 @@ struct SettingsView: View {
                         .padding(.vertical, 4)
 
                     intervalSliderField(label: "独立刷新频率", value: $minimaxInterval)
+
+                    Divider()
+                        .padding(.vertical, 4)
+
+                    SettingsControlRow("立即刷新") {
+                        providerRefreshButton(for: .minimaxTokenPlan)
+                    }
                 }
             }
         }
@@ -694,6 +701,13 @@ struct SettingsView: View {
                         .padding(.vertical, 4)
 
                     intervalSliderField(label: "独立刷新频率", value: $chatgptInterval)
+
+                    Divider()
+                        .padding(.vertical, 4)
+
+                    SettingsControlRow("立即刷新") {
+                        providerRefreshButton(for: .codexChatGpt)
+                    }
                 }
             }
         }
@@ -713,6 +727,16 @@ struct SettingsView: View {
                     footer: "Antigravity 走自动发现：扫描 `language_server`（IDE）与 `agy` / `antigravity-cli`（CLI）进程，复用它们的本地登录态，无需任何配置。"
                 ) {
                     intervalSliderField(label: "独立刷新频率", value: $antigravityInterval)
+
+                    Divider()
+                        .padding(.vertical, 4)
+
+                    // 立即刷新（额度重取）与下方「本地用量缓存」的强制全量重建是
+                    // 两个动作：前者走 refreshOne 只重取额度并重锚排期，后者强制
+                    // 重扫本地 session 缓存。并列共存，互不替换。
+                    SettingsControlRow("立即刷新") {
+                        providerRefreshButton(for: .antigravity)
+                    }
                 }
 
                 SettingsSection(
@@ -776,6 +800,13 @@ struct SettingsView: View {
                         .padding(.vertical, 4)
 
                     intervalSliderField(label: "独立刷新频率", value: $glmInterval)
+
+                    Divider()
+                        .padding(.vertical, 4)
+
+                    SettingsControlRow("立即刷新") {
+                        providerRefreshButton(for: .glmCodingPlan)
+                    }
                 }
 
                 SettingsSection(
@@ -817,6 +848,13 @@ struct SettingsView: View {
                         .padding(.vertical, 4)
 
                     intervalSliderField(label: "独立刷新频率", value: $deepseekInterval)
+
+                    Divider()
+                        .padding(.vertical, 4)
+
+                    SettingsControlRow("立即刷新") {
+                        providerRefreshButton(for: .deepseek)
+                    }
                 }
 
                 SettingsSection(
@@ -1318,6 +1356,38 @@ struct SettingsView: View {
         descriptors.first(where: { $0.kind == kind })?.id
     }
 
+    // MARK: - 单个 provider 的「立即刷新」（设置页侧唯一入口）
+
+    /// pane「认证与刷新」区那枚「立即刷新」按钮的**全部决策**（路由 + 禁用）
+    /// 收敛在这一个纯读函数里：路由经 `providerID(for:)` 挂到注册表（不硬编码
+    /// id），禁用读全局在飞标志。返回 nil = 该 kind 没有注册 descriptor，按钮
+    /// 不该出现。
+    func providerRefreshAction(for kind: ProviderKind) -> SettingsProviderRefreshAction? {
+        guard let providerID = providerID(for: kind) else { return nil }
+        return SettingsProviderRefreshAction(
+            providerID: providerID,
+            isRefreshJobActive: state.isRefreshJobActive
+        )
+    }
+
+    /// 「立即刷新」按钮构造入口：五个 provider pane 共用，行内写
+    /// `providerRefreshButton(for: .xxx)` 即可。
+    @ViewBuilder
+    func providerRefreshButton(for kind: ProviderKind) -> some View {
+        if let action = providerRefreshAction(for: kind) {
+            SettingsProviderRefreshButton(action: action, onRefresh: refreshProviderFromSettings)
+        }
+    }
+
+    /// 「立即刷新该 Provider」在设置页的唯一落点：走 `AppState.refreshOne(providerID:)`，
+    /// 与菜单兜底行右键「刷新该 Provider」（`MenuContentView.refreshProviderFromMenu`）
+    /// **同一条链路**——只发这个 provider 的请求、只重锚它自己的排期，其他
+    /// provider 的下一拍与周期 full 计数不受影响。重复点击由 `refreshOne` 的
+    /// 全局事务闸门兜底（第二个 `beginExternalJob` 拿不到 token，静默 no-op）。
+    func refreshProviderFromSettings(_ providerID: String) {
+        Task { await state.refreshOne(providerID: providerID) }
+    }
+
     func providerRefreshInterval(from value: Int) -> Int? {
         value == 0 ? nil : value
     }
@@ -1377,6 +1447,66 @@ struct SettingsView: View {
             return "~/" + String(path.dropFirst(homePrefix.count))
         }
         return path
+    }
+}
+
+/// 设置页 provider pane 里那枚「立即刷新」按钮的**数据形态**（路由 + 禁用
+/// 决策，不含 SwiftUI 视图）。
+///
+/// 提成值类型与菜单侧 `ProviderStatusStripView.RefreshMenuItem` 同一理由：
+/// SwiftUI `Button` 没有可寻址的测试缝，断言只能落在喂给它的这份数据与
+/// `perform` 的路由上——「按钮把哪个 providerID 交出去」「在飞时禁不禁用」
+/// 都在这里被单测钉住，视图只负责把结果画出来。
+struct SettingsProviderRefreshAction: Equatable, Sendable {
+    /// 交给 `AppState.refreshOne(providerID:)` 的 provider id。
+    let providerID: String
+    /// 全局刷新事务在飞标志（`AppState.isRefreshJobActive`）原样传入。
+    let isRefreshJobActive: Bool
+
+    /// 禁用判定：只看全局在飞标志。
+    ///
+    /// **粒度是全局的，这是刻意的**：`isRefreshJobActive` 覆盖 quota fetch 与
+    /// 本地 full reconcile，且不区分"是哪一个 provider 在刷"（refreshAll、
+    /// 别的 provider 的单刷、Antigravity 硬重建都算在飞）。设置页拿不到
+    /// per-provider 的在飞信号，与其猜，不如任意刷新事务在飞时把所有 pane 的
+    /// 按钮一起置灰——语义诚实，且与菜单 header 刷新按钮、Antigravity 重建
+    /// 按钮的禁用口径完全一致。
+    var isDisabled: Bool { isRefreshJobActive }
+
+    /// 悬停文案（入口语义的唯一说明，改动需同步对应测试）。
+    var helpText: String { "立即刷新该 Provider" }
+
+    /// 执行：把 providerID 原样交回宿主（`SettingsView.refreshProviderFromSettings`）。
+    func perform(_ onRefresh: (String) -> Void) {
+        onRefresh(providerID)
+    }
+}
+
+/// 每个 provider pane「认证与刷新」区的小型「立即刷新」按钮（图标 + `.help`）。
+///
+/// 在飞时图标换成小号 ProgressView 并置灰——设置页的在飞标志是全局粒度（见
+/// `SettingsProviderRefreshAction.isDisabled`），进行态因此也是全局的：任意
+/// 刷新事务在飞时所有 pane 的按钮一起转。按钮层置灰是第一道防线，重复点击
+/// 的正确性仍由 `refreshOne` 的事务闸门兜底（两层语义，见
+/// `SettingsView.refreshProviderFromSettings`）。
+struct SettingsProviderRefreshButton: View {
+    let action: SettingsProviderRefreshAction
+    var onRefresh: (String) -> Void
+
+    var body: some View {
+        Button {
+            action.perform(onRefresh)
+        } label: {
+            if action.isRefreshJobActive {
+                ProgressView()
+                    .controlSize(.small)
+            } else {
+                Image(systemName: "arrow.clockwise")
+            }
+        }
+        .buttonStyle(.borderless)
+        .disabled(action.isDisabled)
+        .help(action.helpText)
     }
 }
 
