@@ -113,7 +113,7 @@ struct SegmentedQuotaProgressBar: View {
 
     private func color(for level: HealthLevel) -> Color {
         switch level {
-        case .critical: return .red
+        case .critical: return .criticalTint
         case .warning:  return .warningTint
         case .healthy:  return tint
         }
@@ -229,7 +229,7 @@ enum EquivalentQuotaAllocation {
 
 func summaryColor(for percent: Double, timeFraction: Double? = nil) -> Color {
     switch ModelQuota.colorLevel(percent: percent, timeFraction: timeFraction) {
-    case .critical: return .red
+    case .critical: return .criticalTint
     case .warning:  return .warningTint
     case .healthy:
         // summary 没有 tint 上下文，用 primary 当基线；> 80% 额外加绿色信号

@@ -24,6 +24,15 @@ extension Color {
     /// 和 `warningTint` 同一套做法。
     static let healthyTint = Color(nsColor: .systemGreen)
 
+    /// 统一"critical"语义色（额度耗尽 / 抓取失败 / 数据过期到失真）。SwiftUI 的
+    /// `.red` 是**固定色**：不随外观变化，与 `warningTint` / `healthyTint` 用
+    /// `systemRed` 同一套做法——`systemRed` 有专门的浅色/深色两套变体，
+    /// 三档健康色在深浅模式下保持一致的对比度表现。
+    /// 注：暂不读取 `statusBarHealthColors` 里用户自配的 criticalHex——
+    /// 该配置目前只喂菜单图标圆点与 dock 圆点，配色联动（动态 token）
+    /// 需要跨 AppState 的 plumbing，属后续工作。
+    static let criticalTint = Color(nsColor: .systemRed)
+
     /// 三桶语义色（input 蓝 / cacheRead 青 / output 绿）：7 天柱图与
     /// `TokenBucketBar` 共用，同一个 token 桶在不同视图里保持同一颜色。
     /// 取自 `SevenDayTokenUsageHoverView` 原有的实例色值，视觉零变化。

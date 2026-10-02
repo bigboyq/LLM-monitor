@@ -29,9 +29,9 @@ final class SegmentedQuotaProgressBarTests: XCTestCase {
 
     /// warning 档的颜色是 `Color.warningTint`（动态 NSColor 包装），
     /// 两次构造的 Color 相等性不可靠；`color(for:)` 只会输出
-    /// {.red, .warningTint, tint} 三种，排除另外两种即可唯一锁定 warning 档。
+    /// {.criticalTint, .warningTint, tint} 三种，排除另外两种即可唯一锁定 warning 档。
     private func assertIsWarningTier(_ color: Color, line: UInt = #line) {
-        XCTAssertNotEqual(color, Color.red, line: line)
+        XCTAssertNotEqual(color, Color.criticalTint, line: line)
         XCTAssertNotEqual(color, tint, line: line)
     }
 
@@ -41,7 +41,7 @@ final class SegmentedQuotaProgressBarTests: XCTestCase {
     /// 不受 weeklyFraction 与时间标记影响
     func testSingleIntervalColorsFollowPrimaryFractionOnly() {
         let critical = makeBar(primary: 0.05, weekly: 0.9, segments: 1)
-        XCTAssertEqual(critical.intervalSegmentColor, Color.red)
+        XCTAssertEqual(critical.intervalSegmentColor, Color.criticalTint)
 
         let healthy = makeBar(primary: 0.9, weekly: 0.05, segments: 1)
         XCTAssertEqual(healthy.intervalSegmentColor, tint)
@@ -59,7 +59,7 @@ final class SegmentedQuotaProgressBarTests: XCTestCase {
 
         // 5% 周余额 → critical（若误用 primary=90% 会得到 tint）
         let critical = makeBar(primary: 0.9, weekly: 0.05, segments: 1, timeRemaining: 0.5)
-        XCTAssertEqual(critical.intervalSegmentColor, Color.red)
+        XCTAssertEqual(critical.intervalSegmentColor, Color.criticalTint)
 
         // 40% 周余额：剩余 20% 时间 → 阈值 20 → healthy；
         // 剩余 90% 时间 → 阈值 50 → warning
@@ -76,10 +76,10 @@ final class SegmentedQuotaProgressBarTests: XCTestCase {
     func testCombinedModeColorsEachWindowIndependently() {
         let bar = makeBar(primary: 0.9, weekly: 0.05, segments: 3, timeRemaining: 0.5)
         XCTAssertEqual(bar.intervalSegmentColor, tint, "第一格应只由 primary 决定，不受 weekly 拖累")
-        XCTAssertEqual(bar.weeklySegmentColor, Color.red)
+        XCTAssertEqual(bar.weeklySegmentColor, Color.criticalTint)
 
         let flipped = makeBar(primary: 0.05, weekly: 0.9, segments: 3, timeRemaining: 0.5)
-        XCTAssertEqual(flipped.intervalSegmentColor, Color.red)
+        XCTAssertEqual(flipped.intervalSegmentColor, Color.criticalTint)
         XCTAssertEqual(flipped.weeklySegmentColor, tint, "weekly 格不应被 primary 的 critical 拖累")
     }
 
@@ -96,14 +96,15 @@ final class SegmentedQuotaProgressBarTests: XCTestCase {
 
     // MARK: - summaryColor
 
-    /// summaryColor：critical → 红，warning 档（动态橙色），healthy 基线 primary，
-    /// >80% 额外给一个"健康"色信号。
+    /// summaryColor：critical → criticalTint（systemRed，随外观变化），warning 档（动态橙色），
+    /// healthy 基线 primary，>80% 额外给一个"健康"色信号。
     ///
     /// 绿色信号钉的是 `Color.healthyTint`（`systemGreen`）而不是 SwiftUI 的
     /// `.green`：后者是**固定色**，不随外观变化，在浅色卡片上刺眼。这里顺带把
-    /// "不能退回固定绿"钉住——它正是这个 bug 重新长出来的入口。
+    /// "不能退回固定绿"钉住——它正是这个 bug 重新长出来的入口。红色同理钉
+    /// `Color.criticalTint`，不退回固定 `.red`。
     func testSummaryColorMappingIncludesGreenBoostAbove80() {
-        XCTAssertEqual(summaryColor(for: 5), Color.red)
+        XCTAssertEqual(summaryColor(for: 5), Color.criticalTint)
         XCTAssertEqual(summaryColor(for: 50), Color.primary)
         XCTAssertEqual(summaryColor(for: 80), Color.primary, "80% 是边界，不含 > 80 的加成")
         XCTAssertEqual(summaryColor(for: 90), Color.healthyTint)
@@ -113,9 +114,9 @@ final class SegmentedQuotaProgressBarTests: XCTestCase {
         )
 
         // 20% + 无时间系数 → 30% 固定黄阈值 → warning 档
-        //（排除 red / primary / healthyTint 唯一锁定 warningTint）
+        //（排除 criticalTint / primary / healthyTint 唯一锁定 warningTint）
         let warning = summaryColor(for: 20)
-        XCTAssertNotEqual(warning, Color.red)
+        XCTAssertNotEqual(warning, Color.criticalTint)
         XCTAssertNotEqual(warning, Color.primary)
         XCTAssertNotEqual(warning, Color.healthyTint)
     }
