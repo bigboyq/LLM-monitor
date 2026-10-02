@@ -404,26 +404,31 @@ the full input masquerading as new input.
 
 ### Off-peak tasks (闲时任务)
 
-### Provider 三分类（正常 / 闲时 / 其他）与额度窗口白名单
+### Provider 分类（Coding Plan / Start Plan / 闲时 / 其他）与额度窗口白名单
 
-ZCode 的 `model_usage` 表是共享账本，GLM 卡按 `provider_id` 三分类：
+ZCode 的 `model_usage` 表是共享账本，GLM 卡按 `provider_id` 分类：
 
 | 分类 | `provider_id` | 典型来源 | 计入额度窗口 | 计入 token 柱图 |
 |---|---|---|---|---|
-| 正常任务 | `account:bigmodel-individual-coding-plan`、`account:bigmodel-team-coding-plan`、`account:zai-individual-coding-plan`、`account:zai-team-coding-plan`、`builtin:bigmodel-coding-plan` | 交互式 Coding Plan 调用（2026-09-17 `0020_provider_model_selection` 迁移后账号套餐改写 `account:` 前缀；显式枚举于 `zcodeGlmCodingPlanProviderIDs`，通配写法已删，新套餐需显式登记） | **是**（唯一计入来源） | 是 |
+| Coding Plan | `account:bigmodel-individual-coding-plan`、`account:bigmodel-team-coding-plan`、`account:zai-individual-coding-plan`、`account:zai-team-coding-plan`、`builtin:bigmodel-coding-plan` | 交互式 Coding Plan 调用（2026-09-17 `0020_provider_model_selection` 迁移后账号套餐改写 `account:` 前缀；显式枚举于 `zcodeGlmCodingPlanProviderIDs`，通配写法已删，新套餐需显式登记） | **是**（唯一计入来源） | 是 |
 | 闲时任务 | `account:bigmodel-offpeak-idle-plan`、`account:zai-offpeak-idle-plan`、`offpeak-idle-plan`（0020 迁移前历史裸值） | 系统赠送的后台任务 | 否 | 是 |
-| 其他任务 | 其余 `builtin:bigmodel-%` / `account:bigmodel-%` / `account:zai-%` | 体验套餐（如 `account:bigmodel-start-plan`）及未来智谱新套餐 | 否 | 是 |
+| Start Plan | `provider_id` 含 `bigmodel-start-plan`（`account:bigmodel-start-plan` / `builtin:bigmodel-start-plan`） | 智谱体验套餐；从「其他」里单独摘出成行（`isGlmStartPlanSample`） | 否 | 是 |
+| 其他任务 | 其余 `builtin:bigmodel-%` / `account:bigmodel-%` / `account:zai-%`（含 `account:zai-start-plan`） | 未登记的未来智谱新套餐 | 否 | 是 |
 | （不进 GLM 卡，按前缀进分片） | 不带 `builtin:bigmodel-` / `account:bigmodel-` / `account:zai-` 前缀的一切 provider | ZCode 接入的非智谱服务（如 `minimax` / `deepseek`，经 `ZcodeProviderSlice` 并入对应卡片） | — | — |
 
-「其他」任务（如体验套餐）不消耗 Coding Plan 积分，额度窗口统计排除，避免高估消耗；
-token 柱图保留真实消耗。前缀通配保证未来智谱新套餐自动落进「其他」。非智谱 provider
-不会被误算进 GLM 卡：它们由 `ZcodeProviderSlice` 的前缀谓词切出 `providerSlices`，在
-`clientBindings` 对应绑定开启时并入 DeepSeek / MiniMax 卡（默认开启）。
+Start Plan 与「其他」任务都不消耗 Coding Plan 积分，额度窗口统计排除，避免高估消耗；
+token 柱图保留真实消耗。拆行只是展示层的细分：`isGlmOtherPlanSample` 仍把 Start Plan
+一起覆盖，额度窗口口径与拆行前完全一致。前缀通配保证未来智谱新套餐自动落进「其他」。
+非智谱 provider 不会被误算进 GLM 卡：它们由 `ZcodeProviderSlice` 的前缀谓词切出
+`providerSlices`，在 `clientBindings` 对应绑定开启时并入 DeepSeek / MiniMax 卡（默认开启）。
 
 设置 → 客户端 → ZCode 按 `GlmUsageCategory.classify`（与额度窗口白名单同一判定）把
-ZCode 贡献的样本拆成日常 / 闲时 / 其他三行，各自独立 token 柱图与计价——对齐
-Antigravity 按模型分组拆行的模式；弹窗卡片维持三合一汇总不拆。样本为空时不拆行，
-避免把聚合值错标成某一分类。
+ZCode 贡献的样本拆成 Coding Plan → Start Plan → 闲时任务 → 其他任务四行（行序 =
+`GlmUsageCategory.allCases` 声明序，无用量的分类不出行），各自独立 token 柱图与计价
+——对齐 Antigravity 按模型分组拆行的模式；弹窗卡片维持合并汇总不拆。之后依次是同一
+客户端列里 DeepSeek / MiniMax 两个分片行（来自各自卡的 `zcodeContribution`，受
+`clientBindings` 门控），排序由 `SettingsView.zcodeRowRank` 固定，不参与字母序。
+样本为空时不拆行，避免把聚合值错标成某一分类。
 
 ZCode 的闲时任务是系统赠送的、**不消耗 Coding Plan 积分**的后台任务（需提前排队）。
 它的 `model_usage` 行写在同一张表，但 **`provider_id` 是独立的闲时 ID**（0020 迁移后
@@ -431,7 +436,7 @@ ZCode 的闲时任务是系统赠送的、**不消耗 Coding Plan 积分**的后
 行仍是裸值 `offpeak-idle-plan`；均不是正式 Coding Plan provider）；落在
 `off_peak_tasks.[started_at, ended_at]` 时间窗口内的调用不扣积分。
 
-| 位置 | 是否包含闲时 / 其他任务 token |
+| 位置 | 是否包含闲时 / Start Plan / 其他任务 token |
 |---|---|
 | 今日 / 7 天本地 token 柱图（footer） | **包含**（真实 token 消耗，按日聚合不经过窗口过滤） |
 | 5h / week 额度窗口 hover（`primaryUsage` / `weeklyUsage`） | **排除**（不消耗积分，计入会高估额度消耗） |

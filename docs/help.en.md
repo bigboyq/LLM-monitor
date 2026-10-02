@@ -41,7 +41,7 @@ Start and sign in to Antigravity or the `agy` CLI. LLM Monitor discovers the loc
 
 Enter a Coding Plan key, commonly in `id.secret` format. Remote quota comes from GLM; local ZCode usage comes from `~/.zcode/cli/db/db.sqlite`. The default peak window is Monday through Friday, 14:00–18:00 in the Mac's local time, and can be changed in Settings.
 
-ZCode tasks fall into three provider categories — Normal (Coding Plan) / Off-peak / Other Zhipu plans: only Normal tasks count toward the 5h / weekly quota windows, while all three appear in the local token bars; Settings → Clients → ZCode shows per-category bars and cost estimates. Enabling "Parse activity plan balance log" in Settings also shows zcode activity plans (e.g. the weekend trial plan) with remaining percentage and expiry on the card, parsed from ZCode's local balance polling log (`~/.zcode/v2/logs`); local files only, off by default.
+ZCode tasks fall into four provider categories — Coding Plan / Start Plan (trial plan) / Off-peak / Other Zhipu plans: only Coding Plan tasks count toward the 5h / weekly quota windows, while all four appear in the local token bars. Settings → Clients → ZCode lists them as separate rows in that order (categories with no usage are omitted), each with its own bars and cost estimate, followed by the DeepSeek / MiniMax slice rows from the same ledger (each can be turned off via the client ↔ provider bindings). Enabling "Parse activity plan balance log" in Settings also shows zcode activity plans (e.g. the weekend trial plan) with remaining percentage and expiry on the card, parsed from ZCode's local balance polling log (`~/.zcode/v2/logs`); local files only, off by default.
 
 ### DeepSeek
 

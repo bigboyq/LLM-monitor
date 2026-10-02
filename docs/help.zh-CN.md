@@ -41,7 +41,7 @@ shasum -a 256 -c SHA256SUMS.txt
 
 填写 Coding Plan Key，通常为 `id.secret` 格式。远程 API 提供额度；本地 ZCode 用量来自 `~/.zcode/cli/db/db.sqlite`。高峰窗口默认是本机时区的周一至周五 14:00–18:00，可在设置中调整。
 
-ZCode 的任务按 provider 分为日常（Coding Plan）/ 闲时 / 其他智谱套餐三类：只有日常任务计入 5h / 周额度窗口，三类 token 都计入本地柱图；设置 → 客户端 → ZCode 可查看按分类拆分的柱图与名义价值。开启设置中的「解析活动套餐余额日志」后，卡片还会显示 zcode 活动套餐（如周末体验套餐）的剩余百分比与过期时间，数据来自 ZCode 本地余额轮询日志（`~/.zcode/v2/logs`），只读本地文件，默认关闭。
+ZCode 的任务按 provider 分为 Coding Plan（正式套餐）/ Start Plan（体验套餐）/ 闲时 / 其他智谱套餐四类：只有 Coding Plan 计入 5h / 周额度窗口，四类 token 都计入本地柱图。设置 → 客户端 → ZCode 按这个顺序拆行显示各自独立的柱图与名义价值（没有用量的分类不出现行），其后是同一账本里的 DeepSeek / MiniMax 分片行（可在「客户端 ↔ Provider 绑定」里分别关闭）。开启设置中的「解析活动套餐余额日志」后，卡片还会显示 zcode 活动套餐（如周末体验套餐）的剩余百分比与过期时间，数据来自 ZCode 本地余额轮询日志（`~/.zcode/v2/logs`），只读本地文件，默认关闭。
 
 ### DeepSeek
 
