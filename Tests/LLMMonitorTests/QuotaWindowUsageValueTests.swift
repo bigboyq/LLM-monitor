@@ -22,10 +22,11 @@ final class QuotaWindowUsageValueTests: XCTestCase {
         - EdgeDockTheme.popoverPadding * 2
         - LayoutMetrics.cardContentPadding * 2
 
-    /// 「额度分析」六列平分卡内容宽时每列的份额：(420 − 5×4 间距) / 6 ≈ 66.7pt。
-    /// 命中/思考两列整列隐藏后按剩下的列数重新平分（4 列各 102pt），最窄的情形
-    /// 就是这个六列值。
-    private static let statsColumnWidth: CGFloat = (cardContentWidth - 5 * 4) / 6
+    /// 「额度分析」六列平分卡内容宽时每列的份额：(420 − 5×10 间距) / 6 ≈ 61.7pt。
+    /// 第八轮把 Grid 横向间距从 4 放宽到 10（右对齐的思考值与左对齐的价值金额
+    /// 曾只隔 4pt 挤成一句）。命中/思考两列整列隐藏后按剩下的列数重新平分，
+    /// 最窄的情形就是这个六列值。
+    private static let statsColumnWidth: CGFloat = (cardContentWidth - 5 * 10) / 6
 
     // MARK: - 价值估算
 
@@ -306,7 +307,7 @@ final class QuotaWindowUsageValueTests: XCTestCase {
             cost: nil
         )
 
-        let grid = Grid(alignment: .leading, horizontalSpacing: 4, verticalSpacing: 3) {
+        let grid = Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 3) {
             Self.row(of: longCost)
             Self.row(of: longRates)
         }
@@ -343,7 +344,7 @@ final class QuotaWindowUsageValueTests: XCTestCase {
     @MainActor
     func testStatsHeaderRowRendersAndCollapsesWithItsColumns() {
         func headerGrid(showsHit: Bool, showsThink: Bool) -> some View {
-            Grid(alignment: .leading, horizontalSpacing: 4, verticalSpacing: 3) {
+            Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 3) {
                 QuotaWindowUsageStatsHeader(
                     showsHitColumn: showsHit,
                     showsThinkingColumn: showsThink
@@ -400,10 +401,11 @@ final class QuotaWindowUsageValueTests: XCTestCase {
 
     /// 超长金额**换紧凑单位**，不再靠 `lineLimit(1)` 截尾（第七轮）。
     ///
-    /// 420pt 卡内容宽下价值列只有 (420 − 20) / 6 ≈ 66.7pt，而 `¥1,234,567.89`
-    /// 实测 ≥ 70pt——以前那一格是被截掉的半截数字。这里钉住阶梯：低于 100 万原样
-    /// （两位小数、原币种符号），≥ 100 万走 `M`，≥ 10 亿走 `B`；部分计价的
-    /// 后缀保留，币种不转换。
+    /// 420pt 卡内容宽下价值列只有 (420 − 50) / 6 ≈ 61.7pt（第八轮间距放宽后），
+    /// 而 `¥1,234,567.89`
+    /// 实测 ≥ 70pt——以前那一格是被截掉的半截数字。这里钉住阶梯（第八轮加 K 档）：
+    /// 低于 10 万原样（两位小数、原币种符号），≥ 10 万走 `K`（一位小数），≥ 100 万
+    /// 走 `M`，≥ 10 亿走 `B`；部分计价的后缀保留，币种不转换。
     func testLongCostCompactsToMillionsInsteadOfTruncating() {
         func estimate(_ value: Double, _ currency: ModelPriceCurrency = .cny, partial: Bool = false)
             -> ModelCostEstimate {
@@ -419,9 +421,10 @@ final class QuotaWindowUsageValueTests: XCTestCase {
         XCTAssertEqual(QuotaWindowUsageMetricRow.costText(estimate(12.34)), "¥12.34", "常规金额仍走 displayText")
         XCTAssertEqual(QuotaWindowUsageMetricRow.costText(estimate(45.67, .usd)), "$45.67", "原币种符号不换")
         XCTAssertEqual(
-            QuotaWindowUsageMetricRow.costText(estimate(999_999.99)), "¥999999.99",
-            "阈值以下不缩写：11 个字符仍在 66.7pt 的列里"
+            QuotaWindowUsageMetricRow.costText(estimate(99_999.99)), "¥99999.99",
+            "阈值以下不缩写：9 个字符在 61.7pt 的列里（第八轮列宽）放得下"
         )
+        XCTAssertEqual(QuotaWindowUsageMetricRow.costText(estimate(123_456.78)), "¥123.5K", "刚过 10 万就换单位")
         XCTAssertEqual(QuotaWindowUsageMetricRow.costText(estimate(1_000_000)), "¥1.00M", "刚过 100 万就换单位")
         XCTAssertEqual(
             QuotaWindowUsageMetricRow.costText(estimate(1_234_567.89)), "¥1.23M",
@@ -434,18 +437,20 @@ final class QuotaWindowUsageValueTests: XCTestCase {
         )
         XCTAssertEqual(
             QuotaWindowUsageMetricRow.costText(estimate(0)), "¥0.00",
-            "零金额不是超长金额，不该出现 ¥0.00M"
+            "零金额不是超长金额，不该出现 ¥0.00K"
         )
-        XCTAssertNil(
+        XCTAssertEqual(
             QuotaWindowUsageMetricRow.compactAmountText(999_999.99, symbol: "¥"),
-            "阈值以下没有紧凑形态（调用点据此回落到 displayText）"
+            "¥1000.0K",
+            "K 档上沿四舍五入到 1000.0 可接受（宽度实测仍远小于列宽），不跨档伪装成 M"
         )
     }
 
-    /// 价值列的**两个档都要装得进 66.7pt 的列**：阈值以下最宽的原样金额
-    /// （`¥999999.99`）、阈值以上最宽的紧凑金额（`¥9.88M`）都不得越过列宽——
-    /// 否则"不截尾"只是换了个截法。守门用的是同一套 `NSHostingView` 量法
-    /// （`MenuTypography.dataValue`，与 `statsModule` 施加的字号一致）。
+    /// 价值列的**两个档都要装得进 ≈61.7pt 的列**（第八轮间距放宽后的份额）：
+    /// 阈值以下最宽的原样金额（`¥99999.99`）、阈值以上最宽的紧凑金额（`¥9.88M`）
+    /// 都不得越过列宽——否则"不截尾"只是换了个截法。守门用的是同一套
+    /// `NSHostingView` 量法（`MenuTypography.dataValue`，与 `statsModule` 施加的
+    /// 字号一致）。
     @MainActor
     func testCompactedCostFitsInsideTheValueColumnShare() {
         func width(of value: Double) -> CGFloat {
@@ -459,7 +464,7 @@ final class QuotaWindowUsageValueTests: XCTestCase {
             )
         }
         let column = Self.statsColumnWidth
-        let plainWidest = width(of: 999_999.99)
+        let plainWidest = width(of: 99_999.99)
         let compactWidest = width(of: 9_876_543.21)
 
         XCTAssertLessThanOrEqual(
@@ -784,7 +789,7 @@ final class QuotaWindowUsageValueTests: XCTestCase {
         let metrics = QuotaWindowUsageMetrics(input: 1_000, cachedInput: 0, output: 1_000, reasoning: 0)
         let cost = ModelCostEstimate(value: 12.34, currency: .cny, pricedModelNames: ["a"], unpricedModelNames: [])
         func grid(showsHit: Bool, showsThink: Bool) -> some View {
-            Grid(alignment: .leading, horizontalSpacing: 4, verticalSpacing: 3) {
+            Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 3) {
                 QuotaWindowUsageMetricRow(
                     label: "5h",
                     metrics: metrics,
@@ -1098,7 +1103,7 @@ final class QuotaWindowUsageValueTests: XCTestCase {
     /// 必须住进 `Grid`，字号与单行约束由 `Grid` 施加。
     @MainActor
     private static func statsGrid(fixture: RowFixture) -> some View {
-        Grid(alignment: .leading, horizontalSpacing: 4, verticalSpacing: 3) {
+        Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 3) {
             Self.row(of: fixture)
         }
         .font(MenuTypography.dataValue)

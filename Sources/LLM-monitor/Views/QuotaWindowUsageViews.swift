@@ -312,7 +312,10 @@ struct QuotaWindowUsageSection: View {
                 tint: tint
             )
         }
-        Grid(alignment: .leading, horizontalSpacing: 4, verticalSpacing: 3) {
+        // 横向间距 10（第八轮改版，原 4）：右对齐的思考值与左对齐的价值金额
+        // 曾只隔 4pt，挤在一条缝里读成"38% $11.20"一句话。列宽随之收窄到
+        // (420 − 5×10) / 6 ≈ 61.7pt，仍在数据最宽形态（12.345% ≈ 42pt）之内。
+        Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 3) {
             let visibility = Self.statsColumnVisibility(rows: rows.map(\.metrics))
             QuotaWindowUsageStatsHeader(
                 showsHitColumn: visibility.hit,
@@ -417,9 +420,10 @@ fileprivate struct QuotaTableHeaderCell: View {
 /// 「额度分析」的**表头行**（第五轮改版，本体是 `GridRow`）：
 /// `类型 | 用量 | 命中 | 产出比 | 思考 | 价值`。
 ///
-/// 样式与「额度详情」的表头一致（`metricLabel` 10pt secondary），**全列左对齐**
-/// （第六轮起数据格的用量/命中/产出比/思考四列改右对齐，表头不跟随、仍从列
-/// 起点读起——列名是文字不是数值）。表头出现后数据格不再重复文字标签，
+/// 样式与「额度详情」的表头一致（`metricLabel` 10pt secondary），**对齐跟随所在
+/// 列的数据格**（第八轮改版：用量/命中/产出比/思考右对齐，类型/价值左对齐——
+/// 第六轮曾让表头固定左对齐，实测表头与自己的数值拉开大半列宽，读起来错位）。
+/// 表头出现后数据格不再重复文字标签，
 /// 列名只在表头说一次（见 `QuotaWindowUsageMetricRow`）。命中/思考两列的表头
 /// 随模块级列显隐一起消失；类型/用量/产出比/价值四列表头恒在。表头住进与数据行
 /// 同一个 `Grid`，六列才能跨行对齐。文案钉在
@@ -433,22 +437,25 @@ struct QuotaWindowUsageStatsHeader: View {
     var body: some View {
         let copy = QuotaWindowUsageSection.statsHeaders
         return GridRow {
-            headerCell(copy.type)
-            headerCell(copy.usage)
+            headerCell(copy.type, alignment: .leading)
+            headerCell(copy.usage, alignment: .trailing)
             if showsHitColumn {
-                headerCell(copy.hit)
+                headerCell(copy.hit, alignment: .trailing)
             }
-            headerCell(copy.outputInput)
+            headerCell(copy.outputInput, alignment: .trailing)
             if showsThinkingColumn {
-                headerCell(copy.think)
+                headerCell(copy.think, alignment: .trailing)
             }
-            headerCell(copy.value)
+            headerCell(copy.value, alignment: .leading)
         }
     }
 
-    /// 平分宽度、左对齐（表头不跟随数据格的右对齐——列名是文字不是数值）。
-    private func headerCell(_ title: String) -> some View {
-        QuotaTableHeaderCell(title: title, alignment: .leading)
+    /// 表头跟随所在列数据格的对齐（第八轮改版）：用量/命中/产出比/思考的数值
+    /// 右对齐，表头若仍锚在列起点，会与自己的数值拉开大半列宽，读起来像两件事
+    /// （右邻价值列的左对齐金额还会挤到跟前）。列名跟着数值走，扫一列时视线
+    /// 才是一条直线。类型与价值从行首读起，两头保持左对齐。
+    private func headerCell(_ title: String, alignment: Alignment) -> some View {
+        QuotaTableHeaderCell(title: title, alignment: alignment)
     }
 }
 
@@ -464,8 +471,9 @@ struct QuotaWindowUsageStatsHeader: View {
 ///
 /// **不降级的宽度核算**（第七轮起按两个宿主共同的 **420pt 卡内容宽**，不再是旧
 /// 主菜单的 312pt）：`EdgeDockTheme.popoverWidth` 468 − 2×背板 padding 12 −
-/// 2×卡片内容 padding 12 = 420pt。六列平分时每列 = (420 − 5×4 间距) / 6 =
-/// **66.7pt**（命中/思考两列整列隐藏后按剩下的列数重新平分：4 列各 102pt）。
+/// 2×卡片内容 padding 12 = 420pt。六列平分时每列 = (420 − 5×10 间距) / 6 ≈
+/// **61.7pt**（第八轮把间距从 4 放宽到 10；命中/思考两列整列隐藏后按剩下的
+/// 列数重新平分）。
 /// 表头最宽「产出比」三字 ≈ 31pt，数据格常规最宽「12.345%」≈ 42pt、命中率
 /// 「97.8%」与价值「¥12.34」≈ 33pt，都在列宽内。价值列的超长金额（如
 /// 「¥1,234,567.89」实测 ≥ 70pt）**不再靠 `lineLimit(1)` 截尾**：金额自己换紧凑单位
@@ -555,11 +563,12 @@ struct QuotaWindowUsageMetricRow: View {
     /// 算不出来（而不是等于 0）。
     static let outputInputRateHelpUnavailable = "会话无输入 token 时产出比无法计算，显示为 —"
 
-    /// 金额超长时的紧凑单位起点：**100 万**。分界线是量出来的：420pt 卡内容宽
-    /// 下价值列 66.7pt，而 `¥999999.99`（阈值以下最长的原样形态）实测 **64pt**
-    /// 刚好装得下，再长一格（`¥1000000.00` ≈ 77pt）就越过列宽；`¥9.88M` 实测
-    /// **40pt**，离列宽还有一半余量。
-    static let costCompactThreshold: Double = 1_000_000
+    /// 金额超长时的紧凑单位起点：**10 万**（第八轮从 100 万下调）。分界线是
+    /// 量出来的：420pt 卡内容宽下，第七轮的价值列 66.7pt 装得下 `¥999999.99`
+    /// （阈值以下最长原样形态，实测 64pt），第八轮 Grid 横向间距从 4 放宽到 10
+    /// 后列宽收窄到 ≈61.7pt——同一个形态放不下了，阈值随之降到 10 万：
+    /// `¥99999.99` 实测 ≈58pt 放得下，紧凑档最宽 `¥9.88M` ≈40pt，余量过半。
+    static let costCompactThreshold: Double = 100_000
     /// 十亿档：token 成本是名义价值，实际到不了这一档，但格式化不该在某个
     /// 数量级上突然失去单位（`¥1234567890.12` 会把列撑爆）。
     static let costCompactBillionThreshold: Double = 1_000_000_000
@@ -583,30 +592,38 @@ struct QuotaWindowUsageMetricRow: View {
         return compact
     }
 
-    /// 超长金额的紧凑形态：`¥1,234,567.89` → `¥1.23M`、`$1,234,567,890` →
-    /// `$1.23B`；**低于阈值返回 nil**（由调用点回落到 `displayText` 的原币种
-    /// 两位小数形态）。
+    /// 超长金额的紧凑形态：`¥123,456.78` → `¥123.5K`、`¥1,234,567.89` → `¥1.23M`、
+    /// `$1,234,567,890` → `$1.23B`；**低于阈值返回 nil**（由调用点回落到
+    /// `displayText` 的原币种两位小数形态）。K 档用一位小数（`¥999.9K` 是本档
+    /// 最宽形态，实测 ≈51pt），M / B 档两位小数。
     ///
     /// **为什么是 K/M/B 而不是「万」**（第七轮）：① 这一列的表头是「价值」，
     /// 同一行左边「用量」列已经在用 K/M 阶梯（`Formatters.formatTokenCountCompact`
     ///：`30K` / `3M`），读者在这一格里已经解码过这套单位了，`¥1.23M` 与它
     /// 读起来是同一种语言，而「¥123.4万」是另一套；②「万」只对人民币成立，
-    /// 这一列原币种显示，`$123.4万` 是错的。单位在 10 亿 / 100 万两档升级，
-    /// 与 token 那套的阶梯口径一致。
+    /// 这一列原币种显示，`$123.4万` 是错的。单位在 10 亿 / 100 万 / 10 万三档
+    /// 升级（第八轮加 K 档，理由见 `costCompactThreshold`）。
     static func compactAmountText(_ value: Double, symbol: String) -> String? {
         let magnitude = abs(value)
         let divisor: Double
         let suffix: String
+        let format: String
         if magnitude >= costCompactBillionThreshold {
             divisor = 1_000_000_000
             suffix = "B"
-        } else if magnitude >= costCompactThreshold {
+            format = "%.2f"
+        } else if magnitude >= costCompactThreshold * 10 {
             divisor = 1_000_000
             suffix = "M"
+            format = "%.2f"
+        } else if magnitude >= costCompactThreshold {
+            divisor = 1_000
+            suffix = "K"
+            format = "%.1f"
         } else {
             return nil
         }
-        return "\(symbol)\(String(format: "%.2f", value / divisor))\(suffix)"
+        return "\(symbol)\(String(format: format, value / divisor))\(suffix)"
     }
 }
 
