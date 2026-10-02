@@ -269,10 +269,10 @@ struct CompactResetCreditsRow: View {
         .padding(.vertical, 2)
     }
 
-    /// 展开态：每张卡的明细。清单本体在 `ResetCreditsDetailList`——dock 侧那个
-    /// `revealsDetail: false` 的浮层里没有第二个展开入口，明细就并到
-    /// 「额度窗口用量」区块的浮层上（`QuotaWindowUsageHoverView`），两边共用同一份
-    /// 渲染实现与同一份排序。
+    /// 展开态：每张卡的明细。清单本体在 `ResetCreditsDetailList`——第二轮改版后
+    /// 「额度窗口用量」区块的重置卡模块把逐张清单**常驻**在了折叠行下面
+    /// （`showsHeader: false`），这张卡的 hover 展开只服务鼠标可达的宿主，两边
+    /// 共用同一份渲染实现与同一份排序。
     private var detail: some View {
         ResetCreditsDetailList(resets: resets)
     }

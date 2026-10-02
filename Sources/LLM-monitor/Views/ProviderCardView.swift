@@ -98,7 +98,8 @@ struct ProviderCardView: View, Equatable {
         dockBody(projection: projection)
     }
 
-    /// **两张卡片**，各自的标题画在卡片**外面**的上方。
+    /// **三段式**：段1「Account Info」行 → 段2「Plan Info」四个模块 →
+    /// 段3「最近7天token用量」卡。前两段住第一张卡，段3 独立成卡。
     ///
     /// 切分点不是新划的：额度那一组是"现在"、7 天用量那一组是"历史"，两者之间
     /// 本来就有 `HoverInfoRow` 的那条分隔线。卡片边界取代它之后，两组各自是一张
@@ -109,14 +110,17 @@ struct ProviderCardView: View, Equatable {
     /// 渲染方，判据也随之失去意义——**唯一剩下的形态就是这一种**，所以直接
     /// 渲染，不再假装还有第二种。
     ///
-    /// 标题 1 就是卡片头部那一行（品牌图标 + provider 名 + 套餐胶囊，右侧是
-    /// 刷新时间/状态），它被提到卡外，于是"第一张卡是什么"由它回答，不再需要
-    /// 额外的「额度」小标题。
-    ///
+    /// 标题 1 就是卡片头部那一行（品牌图标 + provider 名，右侧是刷新时间/状态）；
+    /// 套餐 pill 已从 header 挪进段1 的账号行（`QuotaWindowAccountInfoRow`）。
     /// 标题 2 是「最近7天token用量」，右侧同一行放数据新鲜度（更新于 / 计算中…），
     /// 因此图表自己那行标题在 dock 形态下不画（见 `SevenDayTokenUsageHoverView`）。
     ///
-    /// 非 `.ok` 状态（读取中 / 失败 / 未配置）没有这两组可切，退回单卡：硬拆会
+    /// 段2 的四个模块（进度条 / token用量统计值 / token用量原始值 / 重置卡）由
+    /// `planModules` 组装，各模块按数据可用性显隐；`.loading` / `.failed` 的回退
+    /// 路径走 `content`，**同样**要拼出账号行与这四个模块——`.loading` 每次刷新
+    /// 都会短暂出现，漏掉任何一段都会让它在浮层里**每次刷新闪一下**。
+    ///
+    /// 非 `.ok` 状态（读取中 / 失败 / 未配置）没有第二张卡可切，退回单卡：硬拆会
     /// 得到"第二张卡片只有一个占位提示"的空壳。
     @ViewBuilder
     private func dockBody(projection: ProviderUsageProjection) -> some View {
@@ -124,10 +128,8 @@ struct ProviderCardView: View, Equatable {
             headerContent
             if case .ok(let info) = status.state {
                 dockCard {
-                    quotaSection(info: info, projection: projection, between: AnyView(dockQuotaSummaryRows))
-                    quotaUsageDivider
-                    quotaWindowUsage(info: info, projection: projection)
-                    localUsage(projection: projection, part: .summary)
+                    accountInfoRow(info: info)
+                    planModules(info: info, projection: projection)
                 }
                 dockSectionTitle(projection: projection)
                 dockCard {
@@ -135,71 +137,135 @@ struct ProviderCardView: View, Equatable {
                 }
             } else {
                 dockCard {
-                    // `between` 在这里**同样**要传：重置卡与高峰期倒计时一律由卡片层
-                    // 画（`QuotaSummary` 不再自己画）。曾经只在 `.ok` 分支传，
-                    // `.loading` / `.failed` 的回退路径忘了——那两种状态下谁也不画，
-                    // 两头落空。`.loading` 每次刷新都会短暂出现（`AppState` 在每次
-                    // `refreshProviderDirectly` 开头就置位），于是重置卡和倒计时在浮层
-                    // 里**每次刷新都闪一下**；`.failed` 则是一直不见。缓存额度还在的
-                    // 时候（正是需要看"上次剩多少"的时候）丢信息最亏。
-                    content(projection: projection, quotaBetween: AnyView(dockQuotaSummaryRows))
+                    content(projection: projection)
                 }
             }
         }
     }
 
-    /// 第一张卡片里，"额度"与"本地用量"之间的那条线。
+    /// 段1「Account Info」：账号名 + 账号级别 pill 的一行，无段落标题。
     ///
-    /// 两条线两侧的数据源不同：额度来自 provider 接口，用量来自本机会话扫描。
-    /// 没有这条线，`📈 今天 …` 会被读成额度的延续（尤其是它为空时的"扫描尚未
-    /// 完成"，看上去就像在解释上一行为什么没数字）。
+    /// 可见性判定**只在** `QuotaWindowAccountInfo.make`：codexChatGPT / antigravity
+    /// 有邮箱（+ 套餐），glmCodingPlan 仅套餐档位，deepseek / minimaxTokenPlan
+    /// 返回 nil → 整行不画。行后面跟一条细分隔线，把"账号是谁"与"额度还剩多少"
+    /// 分成两段；整行隐藏时分隔线跟着消失，卡顶不会悬一条没有上文的线。
+    /// `.failed` 没有缓存数据（`lastSuccess == nil`）时同样整行不画。
+    @ViewBuilder
+    private func accountInfoRow(info: QuotaInfo?) -> some View {
+        if let account = info.flatMap({
+            QuotaWindowAccountInfo.make(
+                providerKind: status.kind,
+                accountEmail: $0.accountEmail,
+                planLabel: $0.planLabel
+            )
+        }) {
+            QuotaWindowAccountInfoRow(info: account)
+            QuotaModuleSeparator()
+        }
+    }
+
+    /// 段2「Plan Info」的四个模块，按序：
+    /// 1. **进度条**——每模型配额行原样（元信息行、分段条、GLM 闲时脚注、
+    ///    ChatGPT / DeepSeek 专属行）；高峰期倒计时仍由 `between` 夹在第一个
+    ///    model 行的进度条下方。曾经挂在同一位置的 `CompactResetCreditsRow`
+    ///    已摘走，挪到模块4。
+    /// 2. **token用量统计值** + 3. **token用量原始值表** + 4. **重置卡信息**——
+    ///    都在 `quotaWindowUsage` 的「额度窗口用量」区块里，与额度区之间隔着
+    ///    `quotaUsageDivider`。
+    @ViewBuilder
+    private func planModules(info: QuotaInfo, projection: ProviderUsageProjection) -> some View {
+        quotaSection(info: info, projection: projection, between: AnyView(peakIndicator))
+        quotaWindowUsage(info: info, projection: projection)
+    }
+
+    /// 第一张卡片里，"额度"与"额度窗口用量区块"之间的那条线。
+    ///
+    /// 两条线两侧的数据源不同：额度条来自 provider 接口，窗口用量来自本机会话
+    /// 扫描。没有这条线，`5h 173M · 命中 …` 会被读成额度的延续。
     ///
     /// 它画在**卡片层**而不是每个 model 块里：三列明细撤掉后块内只剩额度本身，
     /// 而这条线要横跨所有 model（Antigravity 有两个），每块各画一条会在两个块
     /// 之间叠成两条挨着的线。样式与 7 天图表下方那条同款（同色、同不透明度、
     /// 整行宽、不额外缩进），上下间距 6 + 3 = 9pt，两条线在屏幕上读起来是同一条。
     ///
-    /// 线**之下**先是「额度窗口用量」区块（见 `quotaWindowUsage`）再是本地用量
-    /// footer：前者虽然讲的是额度窗口，数据仍然来自本机扫描，放到线上会把
-    /// "额度来自接口" 这条约定作废。
+    /// 只在「额度窗口用量」区块至少有一个模块可见时才画（判定在
+    /// `quotaWindowUsage`）：整块隐藏时不能在卡里悬一条没有下文的线。
     private var quotaUsageDivider: some View {
         Divider().opacity(0.45).padding(.vertical, 3)
     }
 
-    /// 「额度窗口用量」区块（条 + 每个窗口一行短指标 + 明细）。
+    /// 「额度窗口用量」区块（统计值 / 原始值表 / 重置卡三个模块，全部常驻）。
     ///
-    /// 位置：**额度区之后、本地用量 footer 之前**，紧跟那条分隔线。它与下面
-    /// 「今天 / 最近 7 天」的区别是时间尺度——那两处讲"最近 24 小时 / 7 天"，
-    /// 这里讲"**当前这一轮额度窗口**"，也就是额度行那条百分比对应的同一段时间。
-    /// 放在分隔线**之下**是因为它的数据仍然来自本机会话扫描：那条线的语义是
-    /// "上面来自 provider 接口、下面来自本地扫描"，把这个区块放到线上面会让
-    /// 读者把本机 token 数当成额度接口返回的数。
+    /// 位置：**额度区之后、7 天用量卡之前**，紧跟 `quotaUsageDivider`。它与下面
+    /// 「最近 7 天」的区别是时间尺度——那里讲"最近 7 天"，这里讲"**当前这一轮
+    /// 额度窗口**"，也就是额度行那条百分比对应的同一段时间。放在分隔线**之下**
+    /// 是因为它的数据仍然来自本机会话扫描：那条线的语义是"上面来自 provider
+    /// 接口、下面来自本地扫描"（重置卡虽来自接口，但它是额度条的补充，跟着区块走）。
     ///
-    /// 余额型 provider（DeepSeek，没有额度窗口）整块不画，见
-    /// `QuotaWindowUsageSection` 的 `snapshot.isEmpty` 判据；重置卡的逐张明细与
-    /// 账号信息搭同一个浮层（见该类型的 `resetCredits` / `account`）。
+    /// 各模块按数据可用性显隐；**全部**不可见时整块（连同上面的分隔线）不渲染
+    /// ——余额型 DeepSeek 没有额度窗口、没有重置卡，今日行也不属于窗口区块。
     ///
     /// **这一处是 `QuotaWindowUsageSection` 唯一的构造点**：`.ok`、`.loading`、
-    /// `.failed` 三条路径都走它，所以账号信息只在这里取一次，三条路径自动一致
-    /// ——曾经那条 `quotaBetween` 就是漏了回退路径才让重置卡与倒计时在浮层里
+    /// `.failed` 三条路径都走它，所以今日行与重置卡只在这里取一次，三条路径自动
+    /// 一致——曾经那条 `quotaBetween` 就是漏了回退路径才让重置卡与倒计时在浮层里
     /// 每次刷新闪一下。
     @ViewBuilder
     private func quotaWindowUsage(info: QuotaInfo, projection: ProviderUsageProjection) -> some View {
         let snapshot = quotaWindowUsageSnapshot(info: info, projection: projection)
-        // 品牌色与卡片描边（`accentColor`）同源：它本来就是额度那一组的一部分。
-        QuotaWindowUsageSection(
-            snapshot: snapshot,
-            tint: accentColor,
-            resetCredits: info.resetCredits,
-            // 菜单那张卡的账号折叠区删掉之后，账号从所有 UI 入口消失（整个
-            // `AccountHoverViews` 一度没有调用方），现在搭这个浮层。没有账号概念的
-            // provider 返回 nil，那一段不画。
-            account: QuotaWindowAccountInfo.make(
-                providerKind: status.kind,
-                accountEmail: info.accountEmail,
-                planLabel: info.planLabel
+        let today = todayUsageRow(projection: projection)
+        let hasUsageModules = !snapshot.isEmpty
+            || today != nil
+            || (info.resetCredits?.availableCount ?? 0) > 0
+        if hasUsageModules {
+            quotaUsageDivider
+            // 品牌色与卡片描边（`accentColor`）同源：它本来就是额度那一组的一部分。
+            QuotaWindowUsageSection(
+                snapshot: snapshot,
+                tint: accentColor,
+                today: today,
+                resetCredits: info.resetCredits,
+                refreshIntervalSeconds: status.refreshIntervalSeconds
             )
+        }
+    }
+
+    /// 「今日」行：当天本地用量聚合，与第一张卡底部曾经的「今日使用情况」汇总行
+    /// （`LocalUsageFooterView.summaryRow` → `todayMetrics` / `todayCostText`）
+    /// **同源同口径**：token 四桶取 `dailyTokenUsage` 的今天那一条（与"今天 X
+    /// tokens / 命中率"同一份数据，比率公式也同一个：出/入 = (reasoning+output)/
+    /// (input+cached)、思考 = reasoning/(reasoning+output)、命中为缓存占比）；
+    /// 价值取当天样本逐条计价（与 `todayCostText` 同一取数与传参）。
+    ///
+    /// 当天无本地数据 → 返回 `nil`，今日行整个不画。它不是额度窗口，只复用
+    /// `QuotaWindowUsageMetricRow` 的格式（行首标签「今日」），不参与时间构成条。
+    private func todayUsageRow(projection: ProviderUsageProjection) -> QuotaWindowUsageSection.Row? {
+        guard let today = projection.dailyTokenUsage.last(where: {
+            Calendar.current.isDateInToday($0.dayStart)
+        }) else {
+            return nil
+        }
+        let metrics = QuotaWindowUsageMetrics(
+            input: today.input,
+            cachedInput: today.cacheRead,
+            output: today.output,
+            reasoning: today.reasoning
         )
+        let calendar = Calendar.current
+        let todayStart = calendar.startOfDay(for: Date())
+        guard let tomorrow = calendar.date(byAdding: .day, value: 1, to: todayStart) else {
+            return nil
+        }
+        let todaySamples = projection.recentSamples.filter {
+            $0.completedAt >= todayStart && $0.completedAt < tomorrow
+        }
+        let cost: ModelCostEstimate? = todaySamples.isEmpty
+            ? nil
+            : ModelPricingCatalog.estimate(
+                samples: todaySamples,
+                quotaProviderID: status.kind.quotaProviderID,
+                deepseekPeakWindow: status.deepseekPeakWindow ?? .defaultWindow
+            )
+        return QuotaWindowUsageSection.Row(label: "今日", metrics: metrics, cost: cost)
     }
 
     /// 区块数据：各 active model 的窗口用量按 provider 合计。
@@ -244,20 +310,23 @@ struct ProviderCardView: View, Equatable {
         return LocalUsageSummaryBuilder.combineWindowUsage(snapshots)
     }
 
-    /// 夹在「元信息行 + 进度条」与下方「本地用量」之间的卡片级信息（dock）。
+    /// **高峰期倒计时**。只 GLM 与 DeepSeek 有窗口概念。
     ///
-    /// 顺序是这一屏的读法：先看还剩多少（条），再看这批额度什么时候重置、现在
-    /// 是不是高峰期。三列明细（Last Prompt / 5h / 周）已撤掉，条之下第一件
-    /// 补充信息就是用量，两者都排在额度之后——它们此前排在进度条**上方**，等于
-    /// 让人先读脚注再看正文。
-    ///
-    /// 这两行之所以要"夹进去"而不是留在卡片顶层：顶层只能排在整块额度内容之前
-    /// 或之后，而它们的位置在中间（条之下、用量之上），只有交给 model 行去摆。
+    /// 它排在进度条下方（经 `planModules` 的 `between` 夹进第一个 model 行）：
+    /// 它回答"现在能不能便宜用"，属于这一屏的额度概览，而不是卡片标题的一部分。
+    /// 曾经与它并列的 `CompactResetCreditsRow`（重置卡折叠行）已摘走，挪进
+    /// 「额度窗口用量」区块的重置卡模块（`QuotaWindowUsageSection`）。
     @ViewBuilder
-    private var dockQuotaSummaryRows: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            resetCreditsRow
-            peakIndicator
+    private var peakIndicator: some View {
+        switch status.kind {
+        case .glmCodingPlan:
+            if let peak = status.glmPeakWindow {
+                GlmPeakIndicatorView(window: peak)
+            }
+        case .deepseek:
+            DeepseekPeakIndicatorView(window: status.deepseekPeakWindow ?? .defaultWindow)
+        default:
+            EmptyView()
         }
     }
 
@@ -324,47 +393,11 @@ struct ProviderCardView: View, Equatable {
         }
     }
 
-    /// **高峰期倒计时**。只 GLM 与 DeepSeek 有窗口概念。
+    /// 卡片头部：品牌图标 + provider 名 + 右侧刷新状态。
     ///
-    /// 它排在进度条下方（`dockQuotaSummaryRows`）：它回答"现在能不能便宜
-    /// 用"，属于这一屏的额度概览，而不是卡片标题的一部分。
-    @ViewBuilder
-    private var peakIndicator: some View {
-        switch status.kind {
-        case .glmCodingPlan:
-            if let peak = status.glmPeakWindow {
-                GlmPeakIndicatorView(window: peak)
-            }
-        case .deepseek:
-            DeepseekPeakIndicatorView(window: status.deepseekPeakWindow ?? .defaultWindow)
-        default:
-            EmptyView()
-        }
-    }
-
-    /// **重置卡**，折叠态：只总数 + 最近一张到期时间。
-    ///
-    /// `revealsDetail: false`——浮层不吃鼠标事件，`HoverInfoRow` 在
-    /// `alwaysVisible` 下又总会展开，每张卡的明细会变成常驻；折叠态那一句才是
-    /// 该常驻的信息。
-    ///
-    /// 它只由卡片层画（`dockQuotaSummaryRows`），且是那张卡的第一个元素：卡片
-    /// 边界已经在它上方，再画一条分隔线就是卡片顶部悬着一条横线。曾经这里有个
-    /// `divides:` 参数给"菜单里紧跟标题行"的那条分隔线，菜单那份渲染方删掉后
-    /// 恒为 `false`，参数随之删除。
-    @ViewBuilder
-    private var resetCreditsRow: some View {
-        if let info = status.lastSuccess,
-           let resets = info.resetCredits,
-           resets.shouldDisplay {
-            CompactResetCreditsRow(
-                resets: resets,
-                refreshIntervalSeconds: status.refreshIntervalSeconds,
-                revealsDetail: false
-            )
-        }
-    }
-
+    /// 套餐 pill **已从这里移除**（第二轮改版）：它挪进了卡片第一段「Account Info」
+    /// 行（`QuotaWindowAccountInfoRow`），与账号邮箱组成同一行——账号是谁、
+    /// 什么级别，本来就是同一个问题的两半。
     private var headerContent: some View {
         HStack(spacing: 8) {
             // 标题行不画状态点：它紧挨着品牌图标，两个小圆挤在一起读起来
@@ -379,14 +412,6 @@ struct ProviderCardView: View, Equatable {
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .help(displayTitle)
-            if let pillLabel {
-                Text(pillLabel)
-                    .font(MenuTypography.pill)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 3)
-                    .background(Color.primary.opacity(0.06), in: Capsule())
-            }
             Spacer()
             if case .loading = status.state {
                 ProgressView()
@@ -398,31 +423,20 @@ struct ProviderCardView: View, Equatable {
         }
     }
 
-    /// 卡片标题。一律走 `status.displayName`（provider 名），
-    /// 套餐名（如果有）放进 `pillLabel` 跟 ChatGPT 的 `Team` 节奏保持一致。
+    /// 卡片标题。一律走 `status.displayName`（provider 名）；套餐级别现在住在
+    /// 段1「Account Info」行的 pill 里（见 `QuotaWindowAccountInfo.make`）。
     private var displayTitle: String {
         status.displayName
     }
 
-    /// 标题右侧的小 pill 文本。Antigravity 会剥掉 `Google ` / `Antigravity ` 前缀
-    /// （见 `QuotaSummary.planPillLabel`），让 `Google AI Pro` → `AI Pro` 跟 ChatGPT 的 `Team` 短一致。
-    private var pillLabel: String? {
-        QuotaSummary.planPillLabel(providerKind: status.kind, planLabel: planLabel)
-    }
-
-    private var planLabel: String? {
-        status.lastSuccess?.planLabel
-    }
-
     @ViewBuilder
-    /// `quotaBetween`：卡片级信息（重置卡 + 高峰期倒计时），由 `dockBody` 组装
-    /// 后夹在进度条与用量之间。`.loading` / `.failed` 两条非 `.ok` 分支也必须传，
-    /// 否则那两种状态下谁也不画（`.loading` 每次刷新都短暂出现，两头落空会让
-    /// 重置卡与倒计时在浮层里**每次刷新闪一下**；`.failed` 则是一直不见）。
-    private func content(
-        projection: ProviderUsageProjection,
-        quotaBetween: AnyView = AnyView(EmptyView())
-    ) -> some View {
+    /// 非 `.ok` 状态（`.loading` / `.failed`）的回退卡内容。结构与 `.ok` 分支的
+    /// 第一张卡一致：段1 账号行 → 段2 四个模块（额度条压暗示弱）→ 7 天图表。
+    /// 曾经这里是 `quotaBetween` 参数从 `dockBody` 传进来的——重置卡与倒计时漏传
+    /// 会在浮层里每次刷新闪一下；现在回退卡与 `.ok` 走同一批构造点
+    /// （`accountInfoRow` / `quotaWindowUsage` / `peakIndicator`），不存在"另一条
+    /// 路径忘了传"的缝隙。
+    private func content(projection: ProviderUsageProjection) -> some View {
         switch status.state {
         case .notConfigured(let reason):
             notConfiguredView(reason: reason)
@@ -431,6 +445,7 @@ struct ProviderCardView: View, Equatable {
         case .loading(let lastSuccess):
             if let last = lastSuccess {
                 VStack(alignment: .leading, spacing: 6) {
+                    accountInfoRow(info: last)
                     QuotaSummary(
                         info: last,
                         providerKind: status.kind,
@@ -439,23 +454,24 @@ struct ProviderCardView: View, Equatable {
                         refreshIntervalSeconds: status.refreshIntervalSeconds,
                         excludeWindows: excludeWindows,
                         deepseekPeakWindow: status.deepseekPeakWindow ?? .defaultWindow,
-                        betweenBarAndColumns: quotaBetween
+                        betweenBarAndColumns: AnyView(peakIndicator)
                     )
                     .opacity(0.5)
                     quotaWindowUsage(info: last, projection: projection)
-                    localUsage(projection: projection, part: .combined)
+                    localUsage(projection: projection, part: .detail)
                 }
             } else {
                 placeholder("正在获取…")
             }
         case .ok(let info):
             VStack(alignment: .leading, spacing: 6) {
-                quotaSection(info: info, projection: projection, between: quotaBetween)
-                quotaWindowUsage(info: info, projection: projection)
-                localUsage(projection: projection, part: .combined)
+                accountInfoRow(info: info)
+                planModules(info: info, projection: projection)
+                localUsage(projection: projection, part: .detail)
             }
         case .failed(let message, let lastSuccess):
             VStack(alignment: .leading, spacing: 6) {
+                accountInfoRow(info: lastSuccess)
                 HStack(spacing: 4) {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .font(.system(size: 11))
@@ -477,16 +493,14 @@ struct ProviderCardView: View, Equatable {
                         refreshIntervalSeconds: status.refreshIntervalSeconds,
                         excludeWindows: excludeWindows,
                         deepseekPeakWindow: status.deepseekPeakWindow ?? .defaultWindow,
-                        // 与 `.loading` 那一支同源，别漏。重置卡与高峰期倒计时**只**由
-                        // 这一格提供（`QuotaSummary` 不再自己画，`quotaSection` 里的
-                        // GLM 倒计时这条路也已撤掉）。
-                        // 失败时恰恰最该看到它——用户要知道的是"上次还剩多少、
-                        // 什么时候回补"，而这条 `lastSuccess` 正是那份数据的来源。
-                        betweenBarAndColumns: quotaBetween
+                        // 与 `.loading` 那一支同源，别漏。高峰期倒计时**只**由这一格
+                        // 提供（`QuotaSummary` 不再自己画，`quotaSection` 里的 GLM
+                        // 倒计时这条路也已撤掉）。失败时恰恰最该看到它。
+                        betweenBarAndColumns: AnyView(peakIndicator)
                     )
                         .opacity(0.55)
                     quotaWindowUsage(info: last, projection: projection)
-                    localUsage(projection: projection, part: .combined)
+                    localUsage(projection: projection, part: .detail)
                 }
             }
         }
@@ -498,8 +512,8 @@ struct ProviderCardView: View, Equatable {
     /// **这一段的外面**。两种调用各写一遍 `QuotaSummary` 调用，改参数时漏一处不会
     /// 编译报错，只会让某一种状态悄悄少一个参数。
     ///
-    /// GLM 闲时峰值倒计时**不在**这里画：它由卡片层无条件提供（`peakIndicator`
-    /// 经 `dockQuotaSummaryRows` 夹在进度条下方）。曾经这里有一支
+    /// GLM 闲时峰值倒计时**不在**这里画：它由卡片层提供（`peakIndicator` 经
+    /// `between` 夹在进度条下方）。曾经这里有一支
     /// `!hoistsPeakIndicator` 的菜单分支——菜单那份渲染方删掉后它永远为 false，
     /// 于是同一个倒计时会出现两次。
     @ViewBuilder
@@ -539,8 +553,12 @@ struct ProviderCardView: View, Equatable {
     /// 所有卡片统一展示 quota provider 关联的客户端 token 汇总；客户端来源
     /// 只保留在 hover 明细中，避免卡片主体出现复杂的多来源信息。
     ///
-    /// - Parameter part: 这一块被拆进两张卡片（汇总进上一张、图表进下一张），
-    ///   拆法见 `LocalUsagePart`。
+    /// 第二轮改版后卡片上只剩 `.detail`（段3 的图表）——曾经的 `.summary`
+    /// 「今日使用情况」汇总行已摘除，其内容上移为「额度窗口用量」区块统计值里的
+    /// 「今日」行（`todayUsageRow`，同源同口径）。
+    ///
+    /// - Parameter part: 现在生产路径只传 `.detail`；其余 case 是
+    ///   `LocalUsagePart` 的历史形态，见该类型的说明。
     @ViewBuilder
     private func localUsage(projection: ProviderUsageProjection, part: LocalUsagePart) -> some View {
         makeLocalUsageFooter(
@@ -702,24 +720,24 @@ struct ProviderStateLabel: View {
     }
 }
 
-/// 额度摘要：每个 model 一组。**重置卡与高峰期倒计时不在这里**——它们是
-/// provider 级的信息，一律由卡片层画（`ProviderCardView.dockQuotaSummaryRows`），
-/// 经 `betweenBarAndColumns` 夹在第一个 model 行的进度条下方。
+/// 额度摘要：每个 model 一组。**高峰期倒计时不在这里**——它是 provider 级的
+/// 信息，由卡片层画（`ProviderCardView.peakIndicator`），经 `betweenBarAndColumns`
+/// 夹在第一个 model 行的进度条下方。曾经与它并列的重置卡已挪进「额度窗口用量」
+/// 区块的重置卡模块，`between` 现在只夹倒计时。
 struct QuotaSummary: View {
     let info: QuotaInfo
     let providerKind: ProviderKind
     let accentColor: AccentColor
     let localSamples: [LocalTokenUsageSample]
-    /// R3: reset credits 过期判定用到的刷新间隔（秒）。卡片层那张重置卡自己也会
-    /// 传同一个值（`ProviderCardView.resetCreditsRow`）。
+    /// R3: reset credits 过期判定用到的刷新间隔（秒）。
     var refreshIntervalSeconds: Int = 300
     /// 额度窗口 hover 统计需要排除的时间窗口（GLM 闲时任务不消耗积分）。
     /// 本地 token 柱图不走这条路径，仍包含闲时任务。
     var excludeWindows: [GlmOffPeakWindow] = []
     /// DeepSeek 高峰期窗口（仅 `.deepseek` 用到；其余 provider 用默认值占位）。
     var deepseekPeakWindow: DeepseekPeakWindow = .defaultWindow
-    /// 夹在「进度条块」与「本地用量」之间的卡片级信息（重置卡、高峰期），
-    /// 由 `ProviderCardView.dockBody` 组装。
+    /// 夹在进度条块下方的**卡片级**信息（高峰期倒计时），由
+    /// `ProviderCardView.planModules` 组装。
     var betweenBarAndColumns: AnyView = AnyView(EmptyView())
 
     private var displayedModels: [ModelQuota] {
@@ -729,9 +747,9 @@ struct QuotaSummary: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             ForEach(Array(displayedModels.enumerated()), id: \.offset) { index, model in
-                // 卡片级信息（重置卡、高峰期）只在**第一个** model 行上出现一次：
+                // 卡片级信息（高峰期倒计时）只在**第一个** model 行上出现一次：
                 // 它讲的是这个 provider 的整体情况，不是每个 model 一份；跟着每个
-                // model 重复一次会读成"每个 model 各有一组重置卡"。
+                // model 重复一次会读成"每个 model 各有一组倒计时"。
                 let between = index == 0 ? betweenBarAndColumns : AnyView(EmptyView())
                 if Self.shouldUseChatGPTPlanRow(providerKind: providerKind, model: model) {
                     ChatGPTPlanModelRow(
@@ -772,9 +790,8 @@ struct QuotaSummary: View {
             }
 
             // 一个 model 都没有时 `ForEach` 不产出任何行，而卡片级信息是挂在
-            // `index == 0` 上的——它会跟着一起消失。那块（重置卡 + 高峰期）是
-            // "这个 provider 还剩多少、什么时候回补"的**唯一**出处，丢了就只剩
-            // 一张空卡。
+            // `index == 0` 上的——它会跟着一起消失。那块（高峰期倒计时）是
+            // "现在能不能便宜用"的唯一出处，丢了就只剩一张空卡。
             if displayedModels.isEmpty {
                 betweenBarAndColumns
             }

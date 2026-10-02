@@ -267,16 +267,26 @@ final class QuotaWindowUsageValueTests: XCTestCase {
         XCTAssertEqual(compact.hit, full.hit, "『命中』最短，缩了就认不出，不参与压缩")
     }
 
+    /// 出/入比文案**固定 3 位小数**（`xx.xxx%`）：0 位小数会把 12.4% 与 11.6% 压成
+    /// 同一个 "12%"，5h / 周 / 今日三行并排时就失去可比性。固定（而非至多）3 位
+    /// 还让这一段等宽。分母为 0（`nil`）仍是 `—`。
+    func testOutputInputRateTextFormatsThreeDecimalPlaces() {
+        XCTAssertEqual(QuotaWindowUsageMetricRow.outputInputRateText(0.12345), "12.345%")
+        XCTAssertEqual(QuotaWindowUsageMetricRow.outputInputRateText(0.1), "10.000%", "不足 3 位补零，保持等宽")
+        XCTAssertEqual(QuotaWindowUsageMetricRow.outputInputRateText(0), "0.000%")
+        XCTAssertEqual(QuotaWindowUsageMetricRow.outputInputRateText(1), "100.000%")
+        XCTAssertEqual(QuotaWindowUsageMetricRow.outputInputRateText(nil), "—")
+    }
+
     // MARK: - 重置卡逐张明细的可达性
 
-    /// dock 浮层 `ignoresMouseEvents = true` → 重置卡那行 `revealsDetail: false`，
-    /// 纯 hover 展不开。逐张明细因此**必须**并到「额度窗口用量」区块的浮层里，
-    /// 否则它就是一个只有总数、看不到明细的死角。
+    /// 重置卡模块是**常驻**的：折叠行（重置卡数量：N + 最近到期）下面直接接逐张
+    /// 清单，N 张可用 = N + 1 行；0 张（或没有数据）整块不画。曾经逐张明细挂在
+    /// `HoverInfoRow` 的展开态上，而两个宿主都不吃鼠标事件——折叠态等于不存在。
     ///
-    /// 断言方式是"逐张明细真的进了常展树"：按 dock 的 `.alwaysVisible` 量一次高度，
-    /// 条数越多高度越高，且比"只有折叠态摘要"高得多。
+    /// 断言方式是量高度：条数越多高度越高，且比"没有重置数据"高得多。
     @MainActor
-    func testResetCreditsListIsReachableInTheAlwaysVisibleSection() {
+    func testResetCreditsModuleRendersThePerCardListInline() {
         let snapshot = LocalUsageSummaryBuilder.windowUsage(
             model: Self.model(name: "deepseek_balance", interval: false, weekly: false, now: Date()),
             providerKind: .deepseek,
@@ -287,26 +297,22 @@ final class QuotaWindowUsageValueTests: XCTestCase {
         XCTAssertTrue(snapshot.isEmpty, "前提不成立：这里用的是没有额度窗口的快照")
 
         let withCredits = self.measuredHeight(
-            of: Self.dockHosted(
-                QuotaWindowUsageSection(snapshot: snapshot, resetCredits: Self.resetCredits(count: 3))
-            ),
+            of: QuotaWindowUsageSection(snapshot: snapshot, resetCredits: Self.resetCredits(count: 3)),
             width: 312
         )
         let withMoreCredits = self.measuredHeight(
-            of: Self.dockHosted(
-                QuotaWindowUsageSection(snapshot: snapshot, resetCredits: Self.resetCredits(count: 6))
-            ),
+            of: QuotaWindowUsageSection(snapshot: snapshot, resetCredits: Self.resetCredits(count: 6)),
             width: 312
         )
         let withoutCredits = self.measuredHeight(
-            of: Self.dockHosted(QuotaWindowUsageSection(snapshot: snapshot)),
+            of: QuotaWindowUsageSection(snapshot: snapshot),
             width: 312
         )
 
         XCTAssertEqual(withoutCredits, 0, "没有窗口也没有重置卡时整块不渲染")
         XCTAssertGreaterThan(
             withCredits, withoutCredits,
-            "有重置卡就必须渲染出明细（否则逐张清单在 dock 上不可达）"
+            "有重置卡就必须渲染出折叠行 + 逐张清单（否则明细不可达）"
         )
         XCTAssertGreaterThan(
             withMoreCredits, withCredits,
@@ -314,8 +320,32 @@ final class QuotaWindowUsageValueTests: XCTestCase {
         )
     }
 
-    /// 清单只列 `available`，按到期日升序；两个消费面（重置卡 hover、区块浮层）
-    /// 走的是同一个 `ResetCreditsDetailList.availableEntries(in:)`。
+    /// 0 张可用 → 整个模块不显示（产品规则），哪怕 entries 非空。
+    @MainActor
+    func testResetCreditsModuleHidesWhenNothingIsAvailable() {
+        let snapshot = LocalUsageSummaryBuilder.windowUsage(
+            model: Self.model(name: "deepseek_balance", interval: false, weekly: false, now: Date()),
+            providerKind: .deepseek,
+            samples: [],
+            intervalLabel: "5h",
+            weeklyLabel: "周"
+        )
+        let allUsed = ResetCreditsInfo(
+            entries: [
+                Self.credit(id: "used", status: "used", expiresAt: nil)
+            ],
+            serverAvailableCount: 0,
+            totalEarnedCount: 1
+        )
+        let height = self.measuredHeight(
+            of: QuotaWindowUsageSection(snapshot: snapshot, resetCredits: allUsed),
+            width: 312
+        )
+        XCTAssertEqual(height, 0, "0 张可用重置卡时整个模块不显示，不能只剩一句『重置卡数量：0』")
+    }
+
+    /// 清单只列 `available`，按到期日升序；两个消费面（重置卡 hover 展开态、
+    /// 常驻模块）走的是同一个 `ResetCreditsDetailList.availableEntries(in:)`。
     func testResetCreditsListSortsAvailableEntriesByExpiry() {
         let resets = ResetCreditsInfo(
             entries: [
@@ -335,107 +365,69 @@ final class QuotaWindowUsageValueTests: XCTestCase {
         XCTAssertEqual(resets.availableCount, 3, "折叠态那句『重置卡数量』与清单长度必须一致")
     }
 
-    // MARK: - 账号信息的可达性
+    // MARK: - 账号行的可见性（段1 Account Info）
 
-    /// 菜单改版删掉 provider 卡的账号折叠区后，账号（邮箱 / 套餐 / 数据来源）一度
-    /// **没有任何渲染入口**。它现在并到「额度窗口用量」浮层的末尾，而两个宿主都在
-    /// `ignoresMouseEvents = true` 的浮层里，纯 hover 展不开——所以断言方式是"账号段
-    /// 真的进了常展树"，与上面重置卡逐张明细同一条理由、同一种量法。
-    @MainActor
-    func testAccountSectionIsReachableInTheAlwaysVisibleSection() {
-        let emptySnapshot = LocalUsageSummaryBuilder.windowUsage(
-            model: Self.model(name: "deepseek_balance", interval: false, weekly: false, now: Date()),
-            providerKind: .deepseek,
-            samples: [],
-            intervalLabel: "5h",
-            weeklyLabel: "周"
-        )
-        XCTAssertTrue(emptySnapshot.isEmpty, "前提不成立：这里用的是没有额度窗口的快照")
-
-        let withoutAnything = self.measuredHeight(
-            of: Self.dockHosted(QuotaWindowUsageSection(snapshot: emptySnapshot)),
-            width: 312
-        )
-        XCTAssertEqual(withoutAnything, 0, "没有窗口、没有重置卡、没有账号时整块不渲染")
-
-        let withAccount = self.measuredHeight(
-            of: Self.dockHosted(QuotaWindowUsageSection(
-                snapshot: emptySnapshot,
-                account: .codex(planLabel: "Team", accountEmail: "someone@example.com")
-            )),
-            width: 312
-        )
-        XCTAssertGreaterThan(
-            withAccount, withoutAnything,
-            "有账号信息就必须渲染出那一段（否则账号在 dock 上彻底不可见——它已经没有任何别的入口）"
-        )
-    }
-
-    /// 账号段是**追加**在明细末尾的：四桶绝对值那几行不能因为多了账号而被挤掉。
-    @MainActor
-    func testAccountSectionIsAppendedAfterTheResetCreditsList() {
-        let now = Date()
-        let snapshot = LocalUsageSummaryBuilder.windowUsage(
-            model: Self.model(name: "chatgpt_plan", interval: true, weekly: true, now: now),
+    /// 账号行可见性的**唯一判定来源**是 `QuotaWindowAccountInfo.make`：
+    /// 有真实账号名或真实级别其一即显示（有啥显示啥），两者皆无整行不画。
+    ///
+    /// - codexChatGPT / antigravity：邮箱 + 套餐（antigravity 沿用 pill 的前缀剥离）。
+    /// - glmCodingPlan：API Key 没有邮箱，但 `planLabel` 是套餐档位 → **仅等级也显示**。
+    /// - deepseek：`planLabel` 是余额串（`¥xx.xx`），不是账号级别 → 视为不可得，
+    ///   传了余额也返回 nil（余额由 `DeepseekBalanceRow` 展示，不在这里重复）。
+    /// - minimaxTokenPlan：两者皆不可得。
+    func testAccountVisibilityRulesPerProvider() {
+        let codex = QuotaWindowAccountInfo.make(
             providerKind: .codexChatGpt,
-            samples: [Self.sample(at: now.addingTimeInterval(-600), prompt: "p1", model: "gpt-5.5")],
-            intervalLabel: "5h",
-            weeklyLabel: "周"
+            accountEmail: "someone@example.com",
+            planLabel: "Team"
         )
-        XCTAssertFalse(snapshot.isEmpty, "前提不成立：这里要的是有窗口的快照")
+        XCTAssertEqual(codex?.accountEmail, "someone@example.com")
+        XCTAssertEqual(codex?.planLabel, "Team")
 
-        let bare = self.measuredHeight(
-            of: Self.dockHosted(QuotaWindowUsageSection(snapshot: snapshot)),
-            width: 312
+        // antigravity 沿用 pill 文案的前缀剥离（与它曾经住在 header 里那颗一致）。
+        let antigravity = QuotaWindowAccountInfo.make(
+            providerKind: .antigravity,
+            accountEmail: "someone@example.com",
+            planLabel: "Google AI Pro"
         )
-        let withCredits = self.measuredHeight(
-            of: Self.dockHosted(QuotaWindowUsageSection(
-                snapshot: snapshot,
-                resetCredits: Self.resetCredits(count: 2)
-            )),
-            width: 312
+        XCTAssertEqual(antigravity?.planLabel, "AI Pro")
+
+        // GLM：仅等级也显示，邮箱位保持空。
+        let glm = QuotaWindowAccountInfo.make(
+            providerKind: .glmCodingPlan,
+            accountEmail: nil,
+            planLabel: "Pro"
         )
-        let withBoth = self.measuredHeight(
-            of: Self.dockHosted(QuotaWindowUsageSection(
-                snapshot: snapshot,
-                resetCredits: Self.resetCredits(count: 2),
-                account: .codex(planLabel: "Team", accountEmail: "someone@example.com")
-            )),
-            width: 312
+        XCTAssertNotNil(glm, "glmCodingPlan 有套餐档位，仅等级也要显示账号行")
+        XCTAssertNil(glm?.accountEmail)
+        XCTAssertEqual(glm?.planLabel, "Pro")
+
+        // GLM 连等级都没有 → 整行不画。
+        XCTAssertNil(
+            QuotaWindowAccountInfo.make(providerKind: .glmCodingPlan, accountEmail: nil, planLabel: nil)
         )
 
-        XCTAssertGreaterThan(bare, 0, "前提不成立：这一格必须真的画出了窗口明细")
-        XCTAssertGreaterThan(withCredits, bare, "重置卡逐张清单必须仍然在浮层里")
-        XCTAssertGreaterThan(
-            withBoth, withCredits,
-            "账号段叠在重置卡清单**之上**：两者同时给出时必须比只有清单更高"
+        // DeepSeek 的 planLabel 是余额，不算级别；minimax 两者皆 nil。
+        XCTAssertNil(
+            QuotaWindowAccountInfo.make(providerKind: .deepseek, accountEmail: nil, planLabel: "¥12.34"),
+            "余额串不能被当成账号级别画进账号行"
         )
-    }
+        XCTAssertNil(
+            QuotaWindowAccountInfo.make(providerKind: .minimaxTokenPlan, accountEmail: nil, planLabel: nil)
+        )
 
-    /// 只有真有账号概念的 provider 才建得出账号段。GLM / MiniMax 走 API Key，
-    /// DeepSeek 的 fetcher 不再往 `accountEmail` 里塞值（那是 R7 之前的预格式化余额串），
-    /// 那三种画出来只会永远停在「未拿到账号邮箱」那一行。
-    func testAccountSectionIsOnlyBuiltForProvidersThatHaveOne() {
-        for kind in [ProviderKind.antigravity, .codexChatGpt] {
-            XCTAssertNotNil(
-                QuotaWindowAccountInfo.make(
-                    providerKind: kind,
-                    accountEmail: "someone@example.com",
-                    planLabel: "Team"
-                ),
-                "\(kind) 是登录态 provider，必须有账号段"
-            )
-        }
-        for kind in [ProviderKind.minimaxTokenPlan, .glmCodingPlan, .deepseek] {
-            XCTAssertNil(
-                QuotaWindowAccountInfo.make(
-                    providerKind: kind,
-                    accountEmail: "someone@example.com",
-                    planLabel: "Team"
-                ),
-                "\(kind) 没有可展示的账号，传了邮箱也不该画（否则是一个永远填不满的占位）"
-            )
-        }
+        // 有啥显示啥：codex 只有其一也显示。
+        XCTAssertNotNil(
+            QuotaWindowAccountInfo.make(providerKind: .codexChatGpt, accountEmail: "a@b.c", planLabel: nil)
+        )
+        XCTAssertNotNil(
+            QuotaWindowAccountInfo.make(providerKind: .codexChatGpt, accountEmail: nil, planLabel: "Team")
+        )
+
+        // 空串 / 纯空白按不可得处理（首次刷新前的空字段不该把整行"点亮"）。
+        XCTAssertNil(
+            QuotaWindowAccountInfo.make(providerKind: .codexChatGpt, accountEmail: "  ", planLabel: "")
+        )
     }
 
     // MARK: - helpers
@@ -507,12 +499,6 @@ final class QuotaWindowUsageValueTests: XCTestCase {
             metrics: fixture.metrics,
             cost: fixture.cost
         )
-    }
-
-    /// 按 dock 浮层的形态渲染（就地展开，hover 拿不到任何东西）。
-    @MainActor
-    private static func dockHosted<V: View>(_ view: V) -> some View {
-        view.environment(\.hoverRevealMode, .alwaysVisible)
     }
 
     private static func model(

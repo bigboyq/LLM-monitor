@@ -90,22 +90,16 @@ final class HoverRevealModeTests: XCTestCase {
 
     /// 菜单底部兜底行 hover 出来的那张卡，**必须**以 `.alwaysVisible` 渲染。
     ///
-    /// 浮层 `ignoresMouseEvents = true`，收不到鼠标事件：不钉这个 mode，卡里那些
-    /// 「悬停才展开」的部分永远展不开——`HoverInfoRow` 折叠起来的东西（四桶绝对值、
-    /// 逐张重置卡清单、账号段）一份也看不到。
+    /// 浮层 `ignoresMouseEvents = true`，收不到鼠标事件。第二轮改版（三段式）之后
+    /// 卡里已经**没有**「悬停才展开」的折叠段——四桶原始值表、逐张重置卡清单、
+    /// 账号行全部变成与 reveal mode 无关的常驻模块，曾经"不钉 mode 就一份也看不到"
+    /// 的前提随之消失；钉 mode 剩下的理由是 7 天图表的卡内标题行：`.alwaysVisible`
+    /// 下它由卡外的 `dockSectionTitle` 承担（`SevenDayTokenUsageHoverView` 不画），
+    /// 其它 mode 下图表自己画——mode 串了会出现两份或零份标题。
     ///
-    /// ⚠️ 这里的"为什么"在 `ProviderCardLayout` 那轮收敛之后**变过一次**：额度行
-    /// 内部那三条排版规则（消费方在 `QuotaViews` / `QuotaHoverViews`）已随判据删除
-    /// 固定成 dock 形态，所以 `.onHover` 不再是"另一套简版排版"，它少掉的只是折叠
-    /// 起来的那几段。原来那条"`onHover` 下没有重置卡"的等值断言因此失效——重置卡
-    /// 摘要现在由卡片层无条件画，两个 mode 下都在场。
-    ///
-    /// 菜单形态那张完整卡（单卡 + 卡内标题 + 账号折叠区 + 自己画重置额度）曾经由
-    /// `testMenuCardResetCreditsBehaviourIsUnchanged` 守着，它随 `menuBody` 一起
-    /// 删除。生产路径上**没有任何宿主**再用 `.onHover` 渲染 provider 卡（dock 浮层与
-    /// 菜单兜底行都固定 `.alwaysVisible`），于是这几条断言是一件事：兜底行用的就是
-    /// 那个 mode，在它之下折叠段的内容在场、在默认 mode 之下不在场——把"为什么必须
-    /// 钉死"写进测试，比只钉结果更耐改。
+    /// 常驻化把"可达性不依赖鼠标"这件事从 mode 保证挪成了结构保证，所以这里把
+    /// 它钉成结构断言：重置卡的高度差在**两个 mode 下都必须在场**——`.onHover`
+    /// 一侧若消失，说明有人把清单又拴回了展开态。
     @MainActor
     func testStripHoverCardMustUseTheAlwaysVisibleRevealMode() {
         XCTAssertEqual(
@@ -126,10 +120,9 @@ final class HoverRevealModeTests: XCTestCase {
             "兜底行的 hover 卡必须画出重置卡"
         )
         XCTAssertGreaterThan(
-            measuredHeight(mode: ProviderStatusStripView.cardRevealMode, status: withCredits),
             measuredHeight(mode: .onHover, status: withCredits),
-            "`.alwaysVisible` 下「额度窗口用量」浮层里那些折叠段（四桶 / 逐张重置卡 / 账号）"
-                + "必须就地展开——浮层不吃鼠标事件，它们是唯一的呈现路径"
+            measuredHeight(mode: .onHover, status: withoutCredits),
+            "重置卡折叠行 + 逐张清单已常驻：onHover 下也必须在场（可达性不依赖展开态）"
         )
     }
 

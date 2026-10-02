@@ -1,11 +1,22 @@
 import SwiftUI
 
+/// 1px 细分隔线：卡片内**模块之间**的既有分隔样式（与 7 天图表表格上方那条、
+/// 旧展开浮层里的分隔线同一份样式）。模块是同一件事的几个侧面，不该用重线
+/// 把它们切成几张卡。`QuotaWindowUsageSection` 内部与卡片段1 / 段2 之间共用。
+struct QuotaModuleSeparator: View {
+    var body: some View {
+        Rectangle()
+            .fill(Color.primary.opacity(0.08))
+            .frame(height: 1)
+    }
+}
+
 /// 额度窗口内四个 token 桶的绝对值，以及由它们算出的三个比率。
-///
 /// **为什么不用 `UsageMetricSummary` 现成的 `cacheHitRate` / `reasonRate`**：
-/// 卡片上这三个数字要和下面那张 hover 明细里的四桶绝对值**读起来是同一份数据**——
-/// 明细写 `input`（未缓存）/`cached`/`output`/`reason`，比率就必须按这四个桶现算，
-/// 否则读者拿明细里的数去验比率会对不上（`cacheHitRate` 的分母是 cache-inclusive
+/// 卡片上这三个数字要和下面那张原始值表格（`QuotaWindowUsageRawTable`）里的
+/// 四桶绝对值**读起来是同一份数据**——
+/// 表格写 `input`（未缓存）/`cached`/`output`/`reason`，比率就必须按这四个桶现算，
+/// 否则读者拿表格里的数去验比率会对不上（`cacheHitRate` 的分母是 cache-inclusive
 /// 的 `inputTokens`，与"未缓存 input + cached"这个可视口径差一个减法）。
 struct QuotaWindowUsageMetrics: Equatable, Sendable {
     /// 未缓存输入（明细里的 `input` 桶）。
@@ -130,78 +141,116 @@ struct QuotaWindowTimeShareBar: View {
     }
 }
 
-/// 「额度窗口用量」区块：一条时间构成条 + 每个窗口一行短指标。
+/// 「额度窗口用量」区块：一条时间构成条 + 每窗口一行短指标 + 原始值表 + 重置卡，
+/// **全部常驻**。曾经包在 `HoverInfoRow` 里的展开明细（`QuotaWindowUsageHoverView`
+/// 的四桶两栏 + 重置卡清单 + 账号段）已按第二轮改版拆走：四桶绝对值上提成本区块
+/// 的常驻表格（`QuotaWindowUsageRawTable`），重置卡逐张清单落到本区块末尾的常驻
+/// 模块，账号段上提成卡片第一段的「Account Info」行。宿主两个（dock 浮层、菜单
+/// 兜底行的 hover 卡）都不吃鼠标事件，折叠态等于不存在——常驻是唯一可达形态。
 ///
-/// 位置由宿主决定（`ProviderCardView` 放在额度区之后、本地用量 footer 之前）：
-/// 它回答的是"这一轮额度里本机烧了多少"，与下面那张卡的"今天 / 最近 7 天"是两件事。
+/// 位置由宿主决定（`ProviderCardView` 放在额度区之后、7 天用量卡之前）：
+/// 它回答的是"这一轮额度里本机烧了多少"，与下面那张卡的"最近 7 天"是两件事。
 ///
-/// **整个区块是时间构成，不是桶构成**：满条 = 周窗口内本地 token 总量，两段只把
-/// 其中"最近 5h"与"5h 之外"分开。要看四个桶的绝对值，hover（或浮层里就地展开）
-/// 下面的明细。
-///
-/// 余额型 provider（DeepSeek，没有额度窗口）整块不画——`snapshot.isEmpty` 且没有
-/// 重置卡 / 账号可搭车时，调用方什么都不渲染，而不是画一条永远空的条。（DeepSeek 两样
-/// 都没有：fetcher 不填 `accountEmail`，也没有重置额度数据。）
-///
-/// `resetCredits` / `account` 都是**搭车**进来的：重置卡在额度区里只显示折叠态那一句
-/// （总数 + 最近到期），逐张明细挂在 `HoverInfoRow` 上；账号信息原本在菜单那张卡的
-/// 折叠区里，而菜单已经不渲染 provider 卡。两者都在 `ignoresMouseEvents = true` 的
-/// 浮层里，纯 hover 展不开——等于不存在。与其再找第二个展开入口（这张卡里没有第二处
-/// 可展），不如并到这个浮层：它们本来就是"这一轮额度的补充信息"，与四桶绝对值回答的
-/// 是同一个问题（这轮额度是谁在用、还剩多少）。
+/// 模块按数据可用性显隐，模块之间用既有细分隔线；**全部**无数据时整块不渲染
+/// （余额型 DeepSeek：没有额度窗口、今日行也不该出现在这里——它的窗口区块
+/// 本来就是空的），而不是画一条永远空的条。
 struct QuotaWindowUsageSection: View {
     let snapshot: QuotaWindowUsageSnapshot
     var tint: Color = .primary
+    /// 「今日」行（当天本地用量聚合）。`nil` = 当天无本地数据，该行不画。
+    /// 数据由宿主取（`ProviderCardView.todayUsageRow`），与额度窗口无关，
+    /// 也不参与时间构成条的比例。
+    var today: Row?
+    /// 重置卡信息；`availableCount == 0` 或 `nil` 时重置卡模块整块不画。
     var resetCredits: ResetCreditsInfo?
-    /// 账号信息（邮箱 / 套餐 / 数据来源）。`nil` 时整段不画。
-    var account: QuotaWindowAccountInfo?
+    /// 重置卡折叠行的过期判定用刷新周期（秒），透传给 `CompactResetCreditsRow`。
+    var refreshIntervalSeconds: Int = 300
 
-    var body: some View {
-        if !snapshot.isEmpty || resetCredits != nil || account != nil {
-            HoverInfoRow {
-                summary
-            } detail: {
-                QuotaWindowUsageHoverView(
-                    snapshot: snapshot,
-                    resetCredits: resetCredits,
-                    account: account
-                )
-            }
-        }
-    }
-
-    /// 常驻内容：条 + 每个窗口一行。空快照（只有重置卡可展示）时这块不画。
-    @ViewBuilder
-    private var summary: some View {
-        if !snapshot.isEmpty {
-            VStack(alignment: .leading, spacing: 5) {
-                QuotaWindowTimeShareBar(
-                    primaryFraction: barFractions.primary,
-                    remainderFraction: barFractions.remainder,
-                    tint: tint
-                )
-                VStack(alignment: .leading, spacing: 3) {
-                    ForEach(rows, id: \.label) { row in
-                        QuotaWindowUsageMetricRow(
-                            label: row.label,
-                            metrics: row.metrics,
-                            cost: row.cost
-                        )
-                    }
-                }
-            }
-        }
-    }
-
-    /// `5h 173M · 命中 97.8% · 出/入 12% · 思考 41% · ¥12.34` 里的五段。
-    private struct Row: Equatable {
+    /// 一行短指标：`5h 173M · 命中 97.8% · 出/入 12.345% · 思考 41% · ¥12.34`。
+    /// `today` 行由宿主构造后塞进 `rows`，同一组件同一格式。
+    struct Row: Equatable {
         let label: String
         let metrics: QuotaWindowUsageMetrics
         let cost: ModelCostEstimate?
     }
 
-    /// 只有**有窗口**的那几行；窗口存在但本地零用量仍然出一行（0 / `—`），
-    /// 因为"这一轮还没开始用"和"根本没有这个窗口"是两件事。
+    var body: some View {
+        let showStats = !snapshot.isEmpty || today != nil
+        let showTable = !snapshot.isEmpty
+        let showResets = (resetCredits?.availableCount ?? 0) > 0
+        if showStats || showTable || showResets {
+            VStack(alignment: .leading, spacing: 6) {
+                if showStats {
+                    statsModule
+                }
+                if showStats && (showTable || showResets) {
+                    moduleSeparator
+                }
+                if showTable {
+                    QuotaWindowUsageRawTable(snapshot: snapshot)
+                }
+                if showTable && showResets {
+                    moduleSeparator
+                }
+                if showResets {
+                    resetCreditsModule
+                }
+            }
+        }
+    }
+
+    /// 模块2「token用量统计值」：时间构成条 + 每窗口一行（5h、周，再接今日）。
+    ///
+    /// 条只在**有额度窗口**时画：它讲的是"5h 占周窗口的比例"，没有窗口（只剩
+    /// 今日行）时一条全灰的槽什么都没说。
+    @ViewBuilder
+    private var statsModule: some View {
+        if !snapshot.isEmpty {
+            QuotaWindowTimeShareBar(
+                primaryFraction: barFractions.primary,
+                remainderFraction: barFractions.remainder,
+                tint: tint
+            )
+        }
+        VStack(alignment: .leading, spacing: 3) {
+            ForEach(rows, id: \.label) { row in
+                QuotaWindowUsageMetricRow(
+                    label: row.label,
+                    metrics: row.metrics,
+                    cost: row.cost
+                )
+            }
+        }
+    }
+
+    /// 模块4「重置卡信息」：折叠态一行（重置卡数量：N + 最近到期）+ 逐张详情行。
+    ///
+    /// 逐张清单不再挂 hover（`CompactResetCreditsRow` 传 `revealsDetail: false`），
+    /// 直接接在折叠行下面：N 张可用的卡 = N + 1 行。清单不带头部「可用重置卡 N 张」
+    /// ——数量已经在第一行里了，再报一遍就是同一屏两份总数。0 张（或没有数据）
+    /// 整块不画，由 `body` 的 `showResets` 与这里的双重判定兜住。
+    @ViewBuilder
+    private var resetCreditsModule: some View {
+        if let resetCredits, resetCredits.availableCount > 0 {
+            VStack(alignment: .leading, spacing: 5) {
+                CompactResetCreditsRow(
+                    resets: resetCredits,
+                    refreshIntervalSeconds: refreshIntervalSeconds,
+                    revealsDetail: false
+                )
+                ResetCreditsDetailList(resets: resetCredits, showsHeader: false)
+            }
+        }
+    }
+
+    /// 模块之间的细分隔线：见 `QuotaModuleSeparator`。
+    private var moduleSeparator: some View {
+        QuotaModuleSeparator()
+    }
+
+    /// 条之下的行序：**5h、周、今日**。前两行来自额度窗口快照；窗口存在但本地
+    /// 零用量仍然出一行（0 / `—`），因为"这一轮还没开始用"和"根本没有这个窗口"
+    /// 是两件事。今日行排最后：它不是额度窗口，只是同格式的补充。
     private var rows: [Row] {
         var result: [Row] = []
         if let interval = snapshot.interval {
@@ -217,6 +266,9 @@ struct QuotaWindowUsageSection: View {
                 metrics: QuotaWindowUsageMetrics(usage: weekly.usage),
                 cost: weekly.cost
             ))
+        }
+        if let today {
+            result.append(today)
         }
         return result
     }
@@ -268,7 +320,7 @@ struct QuotaWindowUsageMetricRow: View {
             dot
             metric(names.hit, QuotaWindowUsageMetricRow.rateText(metrics.cacheHitRate, digits: 1))
             dot
-            metric(names.outIn, QuotaWindowUsageMetricRow.rateText(metrics.outputToInputRate, digits: 0))
+            metric(names.outIn, QuotaWindowUsageMetricRow.outputInputRateText(metrics.outputToInputRate))
             dot
             metric(names.think, QuotaWindowUsageMetricRow.rateText(metrics.reasoningShare, digits: 0))
             dot
@@ -302,6 +354,15 @@ struct QuotaWindowUsageMetricRow: View {
         return Formatters.formatPercent(rate, digits: digits)
     }
 
+    /// 出/入比文案：**固定 3 位小数**（`xx.xxx%`）。出/入比通常只有百分之几十以内，
+    /// 0 位小数会把 12.4% 与 11.6% 压成同一个 "12%"——同一 provider 的 5h / 周 /
+    /// 今日三行并排时就失去可比性；固定（而不是至多）3 位还让这一段保持等宽。
+    /// 分母为 0 仍是 `—`，与其它比率同一个语义。
+    static func outputInputRateText(_ rate: Double?) -> String {
+        guard let rate else { return "—" }
+        return String(format: "%.3f%%", rate * 100)
+    }
+
     /// 金额文案直接用 `ModelCostEstimate.displayText`（与 7 天图表、客户端汇总
     /// 同一句），`¥12.34` / `$45.67` 原币种显示，部分计价自带后缀，不在这里另造
     /// 一套。没有本地样本是 `—`，与"有样本但都查不到价"（`未定价`）区分开。
@@ -311,116 +372,44 @@ struct QuotaWindowUsageMetricRow: View {
     }
 }
 
-/// 额度窗口用量的明细：两个窗口各自的四桶绝对值 + 各自的重置时刻。
+/// 「token用量原始值」表：各额度窗口四个桶的**绝对值** + 各自的重置时刻，常驻。
 ///
-/// 排版照抄 `QuotaUsageWindowsHoverView` / `QuotaUsageWindowColumn` 那一套
-/// （`label: value` 两段、10pt 等宽数字、**两个窗口并排各占一栏**），只是
-/// **只留四个桶**：prompts / rounds / cache hit / reason rate 在上面的短指标行与
-/// 7 天图表里已经各有一份，这里再列一遍就是同一屏里三份同样的数。
+/// 取代了旧版挂在 hover 上的 `QuotaWindowUsageHoverView` 两栏明细（该视图已删除）：
+/// 同样的取数与格式化，只是从"展开后才看得到"变成常驻——两个宿主都不吃鼠标
+/// 事件，折叠态等于不存在，绝对值要一直在屏上才回答得了"这些 token 都是什么"。
 ///
-/// 也**不再画一行"额度窗口用量"标题**：它就挂在 `HoverInfoRow` 的分隔线上方，
-/// 上面两行已经写着 `5h` / `周`，再写一遍标题只是多占一行高度（这张卡的高度
-/// 上限见 `HoverRevealModeTests.testDockDetailStaysUnderTheRearrangedCeiling`）。
-///
-/// 并排还有一个实用理由：两栏的四行是同一组桶，横向对齐才看得出"周比 5h 多了
-/// 哪一部分"；竖着堆只能靠上下位置去对齐找同一栏。
-struct QuotaWindowUsageHoverView: View {
+/// 表头 `类型 | Input | Cached | Output | Reason | 重置日期`，下面每个**存在**的
+/// 额度窗口一行（`5h` / `周`；某窗口不存在就省略该行，与统计值行的行序一致）。
+/// 数值与旧两栏一样走 `formatTokenCountCompact`；重置日期是
+/// `MM-dd HH:mm (倒计时)`，与额度行元信息行尾的重置时刻同一套格式化。
+struct QuotaWindowUsageRawTable: View {
     let snapshot: QuotaWindowUsageSnapshot
-    /// 额度区那张重置卡；非 nil 时本浮层末尾附逐张明细（可达性见
-    /// `QuotaWindowUsageSection.resetCredits`）。
-    var resetCredits: ResetCreditsInfo?
-    /// 账号信息；非 nil 时本浮层末尾、逐张重置卡清单之后附一段（可达性见
-    /// `QuotaWindowUsageSection.account`）。
-    var account: QuotaWindowAccountInfo?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            if !snapshot.isEmpty {
-                HStack(alignment: .top, spacing: 16) {
-                    if let interval = snapshot.interval {
-                        column(interval)
-                    }
-                    if let weekly = snapshot.weekly {
-                        column(weekly)
-                    }
+        VStack(alignment: .leading, spacing: 5) {
+            Grid(alignment: .leading, horizontalSpacing: 4, verticalSpacing: 4) {
+                GridRow {
+                    header("类型", alignment: .leading)
+                    header("Input", alignment: .trailing)
+                    header("Cached", alignment: .trailing)
+                    header("Output", alignment: .trailing)
+                    header("Reason", alignment: .trailing)
+                    header("重置日期", alignment: .trailing)
                 }
-
-                if snapshot.poolCount > 1 {
-                    Text("本 provider 有 \(snapshot.poolCount) 个额度池，以上为合计；重置时间取最早的那个。")
-                        .font(MenuTypography.hoverFootnote)
-                        .foregroundStyle(.tertiary)
-                        .fixedSize(horizontal: false, vertical: true)
+                if let interval = snapshot.interval {
+                    windowRow(interval)
                 }
-            }
-
-            if let resetCredits {
-                separator
-                ResetCreditsDetailList(resets: resetCredits)
-            }
-
-            if let account {
-                // 上面一行都没有时（只有账号、既无窗口也无重置卡）不画分隔线，
-                // 否则浮层顶上会悬一条没有上文的横线。
-                if !snapshot.isEmpty || resetCredits != nil {
-                    separator
+                if let weekly = snapshot.weekly {
+                    windowRow(weekly)
                 }
-                AccountHoverView(info: account)
-            }
-        }
-    }
-
-    /// 与逐张重置卡清单之间那条 1px 分隔线：两种内容都是"额度本身的补充"，
-    /// 挤在一起会读成同一块。
-    private var separator: some View {
-        Rectangle()
-            .fill(Color.primary.opacity(0.08))
-            .frame(height: 1)
-    }
-
-    private func column(_ window: QuotaWindowUsageSnapshot.Window) -> some View {
-        let metrics = QuotaWindowUsageMetrics(usage: window.usage)
-        return VStack(alignment: .leading, spacing: 4) {
-            Text("\(window.label) 本地 token 用量")
-                .font(MenuTypography.hoverRowEmphasis)
-                .foregroundStyle(.primary)
-            bucket("input", metrics.input)
-            bucket("cached", metrics.cachedInput)
-            bucket("output", metrics.output)
-            bucket("reason", metrics.reasoning)
-            costRow(window.cost)
-            resetRow(window.resetsAt)
-        }
-        // 单窗口时这一栏独占整行，不能让它按内容宽度缩到左边——两栏并排是
-        // 常态，单栏要占满，否则它会读成"还有一栏空着"。
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func bucket(_ label: String, _ value: Int) -> some View {
-        HStack(spacing: 0) {
-            Text("\(label): ")
-                .foregroundStyle(.secondary)
-            Text(Formatters.formatTokenCountCompact(value))
-                .foregroundStyle(.primary)
-        }
-        .font(MenuTypography.metricValue)
-    }
-
-    /// 金额那一行与上面四行同格式。短指标行里已经有金额，这里补的是"这个金额
-    /// 覆盖了哪些模型"——部分计价时短行会带后缀，展开后能看清是哪几个模型没查到
-    /// 价（`ModelCostEstimate.unpricedModelNames`），否则后缀只是一句免责。
-    @ViewBuilder
-    private func costRow(_ cost: ModelCostEstimate?) -> some View {
-        if let cost {
-            HStack(spacing: 0) {
-                Text("价值: ")
-                    .foregroundStyle(.secondary)
-                Text(cost.displayText)
-                    .foregroundStyle(.primary)
             }
             .font(MenuTypography.metricValue)
+            .lineLimit(1)
 
-            if !cost.unpricedModelNames.isEmpty {
-                Text("未定价模型：" + cost.unpricedModelNames.joined(separator: "、"))
+            if snapshot.poolCount > 1 {
+                // 多额度池合计的口径披露：合计数 + 最早重置，不加这句会被读成
+                // "这个 provider 只重置一次"。（旧 hover 明细里就有，随常驻表格保留。）
+                Text("本 provider 有 \(snapshot.poolCount) 个额度池，以上为合计；重置时间取最早的那个。")
                     .font(MenuTypography.hoverFootnote)
                     .foregroundStyle(.tertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -428,41 +417,71 @@ struct QuotaWindowUsageHoverView: View {
         }
     }
 
-    /// 重置时刻：有就写时刻 + 倒计时，没有就写 `—`（不猜服务端时间）。
-    private func resetRow(_ resetsAt: Date?) -> some View {
-        HStack(spacing: 4) {
+    private func header(_ title: String, alignment: Alignment) -> some View {
+        Text(title)
+            .font(MenuTypography.metricLabel)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: alignment)
+    }
+
+    private func windowRow(_ window: QuotaWindowUsageSnapshot.Window) -> some View {
+        let metrics = QuotaWindowUsageMetrics(usage: window.usage)
+        return GridRow {
+            Text(window.label)
+                .foregroundStyle(Color.primaryLabel)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            cell(Formatters.formatTokenCountCompact(metrics.input))
+            cell(Formatters.formatTokenCountCompact(metrics.cachedInput))
+            cell(Formatters.formatTokenCountCompact(metrics.output))
+            cell(Formatters.formatTokenCountCompact(metrics.reasoning))
+            resetCell(window.resetsAt)
+        }
+    }
+
+    /// 数值格：等宽数字、次要色——它们是"原始值"，主角是行首的窗口标签。
+    private func cell(_ value: String) -> some View {
+        Text(value)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .trailing)
+    }
+
+    /// 重置日期 = `MM-dd HH:mm (倒计时)`，取数与格式化与旧 hover 的重置行同一套
+    /// （`formatMonthDayMinute` + `formatResetSuffix`）。没有重置时刻写 `—`
+    /// （不猜服务端时间）。
+    private func resetCell(_ resetsAt: Date?) -> some View {
+        Group {
             if let resetsAt {
-                Text("重置 ")
-                    .foregroundStyle(.secondary)
-                Text(Formatters.formatMonthDayMinute(resetsAt))
-                    .foregroundStyle(.primary)
-                Text("(\(Formatters.formatResetSuffix(from: resetsAt)))")
+                Text("\(Formatters.formatMonthDayMinute(resetsAt)) (\(Formatters.formatResetSuffix(from: resetsAt)))")
                     .foregroundStyle(.secondary)
             } else {
-                Text("重置 —")
+                Text("—")
                     .foregroundStyle(.tertiary)
             }
-            Spacer(minLength: 0)
         }
-        .font(MenuTypography.metricValue)
-        .lineLimit(1)
+        .minimumScaleFactor(0.7)
+        .frame(maxWidth: .infinity, alignment: .trailing)
     }
 }
 
 /// 可用重置卡的**逐张清单**：总数 + 每张的到期日。
 ///
-/// 两处消费：`QuotaWindowUsageHoverView`（dock / 菜单兜底卡的浮层，这是唯一可达
-/// 路径，见 `QuotaWindowUsageSection.resetCredits`）与 `CompactResetCreditsRow`
-/// 的 hover 展开态。写法提出来是因为两边必须给出**同一份**清单——用户从菜单
-/// hover 看到的两张卡，和从 dock 浮层看到的，不能是两条不同的排序。
+/// 两处消费：`QuotaWindowUsageSection` 的重置卡模块（常驻，`showsHeader: false`）
+/// 与 `CompactResetCreditsRow` 的 hover 展开态（`showsHeader: true`）。写法提出来
+/// 是因为两边必须给出**同一份**清单——用户从重置卡 hover 看到的两张卡，和常驻
+/// 模块里看到的，不能是两条不同的排序。
 struct ResetCreditsDetailList: View {
     let resets: ResetCreditsInfo
+    /// 是否画头部「可用重置卡 N 张」。常驻模块不画：折叠行第一行已经写了
+    /// 「重置卡数量：N」，再报一遍就是同一屏两份总数。
+    var showsHeader: Bool = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
-            Text("可用重置卡 \(resets.availableCount) 张")
-                .font(MenuTypography.hoverRowEmphasis)
-                .foregroundStyle(.primary)
+            if showsHeader {
+                Text("可用重置卡 \(resets.availableCount) 张")
+                    .font(MenuTypography.hoverRowEmphasis)
+                    .foregroundStyle(.primary)
+            }
 
             if availableEntries.isEmpty {
                 Text("暂无可用重置卡")
