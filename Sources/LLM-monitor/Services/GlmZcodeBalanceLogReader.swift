@@ -1,32 +1,5 @@
 import Foundation
 
-/// ZCode 活动套餐（zcode-plan，如周末体验套餐）的一条余额快照。
-///
-/// 数据来源不是任何公开 API，而是 ZCode 自己的余额轮询日志：ZCode 桌面端每
-/// ~60 秒请求一次 `https://zcode.z.ai/api/v1/zcode-plan/billing/balance`，并把
-/// **完整响应 JSON** 原样打进 `~/.zcode/v2/logs/YYYY-MM-DD.log`（行内标记
-/// `billing/balance 请求完成`）。解析日志即可零鉴权拿到
-/// `total / used / remaining / expires_at`。
-///
-/// 注意口径：该接口只覆盖 zcode SaaS 活动套餐，**不含** bigmodel coding plan
-/// 积分池（后者走 open.bigmodel.cn monitor 接口，需要 Coding Plan Key）。
-struct GlmActivityPlanBalance: Equatable, Codable, Sendable {
-    let planID: String
-    let planName: String
-    let entitlementID: String
-    /// 余额展示名（通常为模型名，如 `GLM-5.3-Flash`）
-    let showName: String
-    /// 从 `capabilities` 的 `model:xxx` 提取的模型 ID；缺失时回退 `[showName]`
-    let modelNames: [String]
-    let totalUnits: Int
-    let usedUnits: Int
-    let remainingUnits: Int
-    /// 套餐过期时间（unix 秒）。缺失 / 解析失败为 nil
-    let expiresAt: Date?
-    /// 该快照在日志里的落盘时间（用于 UI 标注数据新旧；ZCode 未运行时不更新）
-    let observedAt: Date?
-}
-
 /// 解析 ZCode 余额轮询日志，产出最新活动套餐余额快照。
 ///
 /// 文件发现策略：先读**今天**的 `YYYY-MM-DD.log`，没有任何 billing/balance 行时

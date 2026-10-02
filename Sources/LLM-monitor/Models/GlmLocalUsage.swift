@@ -125,3 +125,52 @@ struct GlmLocalUsage: Equatable, Codable, Sendable {
             && lhs.providerSlices == rhs.providerSlices
     }
 }
+
+/// 一个已完成的闲时任务（off-peak task）的运行时间窗口。
+///
+/// ZCode 闲时任务是系统赠送的、不消耗 Coding Plan 积分的后台任务，需提前排队。
+/// 它的 `model_usage` 行写在同一张表（同 session_id），但 `provider_id` 是独立的
+/// `offpeak-idle-plan`（非 `builtin:bigmodel-coding-plan`）。落在这个
+/// `[started_at, ended_at]` 时间窗口内的调用不扣积分。额度窗口（5h/week）统计时需要
+/// 把这部分 sample 排除，避免高估积分消耗；本地 token 柱图仍保留（真实 token 消耗）。
+struct GlmOffPeakWindow: Equatable, Codable, Sendable {
+    /// 闲时任务开始时间（off_peak_tasks.started_at，epoch ms → Date）
+    let startedAt: Date
+    /// 闲时任务结束时间（off_peak_tasks.ended_at，epoch ms → Date）
+    let endedAt: Date
+
+    /// sample.completedAt 是否落在本闲时任务窗口内（闭区间，容差 2 秒）。
+    /// off_peak.ended_at 与最后一轮 model_usage.completed_at 实测差 ~1 秒，闭区间 +
+    /// 小容差确保边界 round 不会被误判。
+    func contains(_ date: Date, tolerance: TimeInterval = 2) -> Bool {
+        date >= startedAt.addingTimeInterval(-tolerance)
+            && date <= endedAt.addingTimeInterval(tolerance)
+    }
+}
+
+/// ZCode 活动套餐（zcode-plan，如周末体验套餐）的一条余额快照。
+///
+/// 数据来源不是任何公开 API，而是 ZCode 自己的余额轮询日志：ZCode 桌面端每
+/// ~60 秒请求一次 `https://zcode.z.ai/api/v1/zcode-plan/billing/balance`，并把
+/// **完整响应 JSON** 原样打进 `~/.zcode/v2/logs/YYYY-MM-DD.log`（行内标记
+/// `billing/balance 请求完成`）。解析日志即可零鉴权拿到
+/// `total / used / remaining / expires_at`。
+///
+/// 注意口径：该接口只覆盖 zcode SaaS 活动套餐，**不含** bigmodel coding plan
+/// 积分池（后者走 open.bigmodel.cn monitor 接口，需要 Coding Plan Key）。
+struct GlmActivityPlanBalance: Equatable, Codable, Sendable {
+    let planID: String
+    let planName: String
+    let entitlementID: String
+    /// 余额展示名（通常为模型名，如 `GLM-5.3-Flash`）
+    let showName: String
+    /// 从 `capabilities` 的 `model:xxx` 提取的模型 ID；缺失时回退 `[showName]`
+    let modelNames: [String]
+    let totalUnits: Int
+    let usedUnits: Int
+    let remainingUnits: Int
+    /// 套餐过期时间（unix 秒）。缺失 / 解析失败为 nil
+    let expiresAt: Date?
+    /// 该快照在日志里的落盘时间（用于 UI 标注数据新旧；ZCode 未运行时不更新）
+    let observedAt: Date?
+}
