@@ -662,6 +662,75 @@ final class AppStateTests: StateTestCase {
         )
     }
 
+    /// 单刷的**网络侧与 UI 侧**隔离：refreshOne(A) 只应给 A 的 fetcher 多发一次
+    /// 请求、只应让 A 的 `lastRefreshedAt` 前移。
+    ///
+    /// 与 `testRefreshOneReanchorsOnlyRefreshedProvider` 的分工：那条盯的是调度
+    /// 状态（next / 周期 full 计数 / reset candidates），这条盯的是"请求真的只发
+    /// 给了 A"和"只有 A 的卡片变新鲜"。有一类改法（顺手 refreshAll、或把
+    /// refreshProviderFully 换成遍历所有 provider）会让调度状态那条照样绿——
+    /// 只有请求计数与新鲜度这两条能抓住。
+    @MainActor
+    func testRefreshOneOnlyFetchesAndTouchesTheTargetProvider() async {
+        let ids = ["prov_a", "prov_b"]
+        let store = makeIsolatedConfigStore()
+        var config = store.config
+        config.refreshIntervalSeconds = 300
+        for id in ids {
+            config.providers[id] = ProviderConfig(
+                enabled: true,
+                authPath: store.configURL.deletingLastPathComponent()
+                    .appendingPathComponent("auth.json").path
+            )
+        }
+        try! store.applyAndSave(config)
+
+        let counters = FetchCallCounters()
+        let descriptors: [FetcherDescriptor] = ids.map { id in
+            FetcherDescriptor(
+                id: id,
+                displayName: id,
+                kind: .codexChatGpt,
+                iconSystemName: "star",
+                accentColor: .chatgpt,
+                makeFetcher: { _ in RefreshOneStubFetcher(providerID: id, counters: counters) }
+            )
+        }
+        let state = AppState(descriptors: descriptors, configStore: store)
+        state.localUsage.testReadinessOverride = { _ in false }
+        defer { state.stop() }
+
+        let scheduler = state.refreshScheduler!
+        // 等 a（错峰 0s）首拍结算。
+        for _ in 0..<200 where (scheduler.nextRefreshDate(for: "prov_a") ?? .distantPast) <= Date() {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        // 把 b 推到远期：b 的 2 秒错峰首拍不能混进本用例的基线。
+        scheduler.reanchorProvider("prov_b", at: Date(), resetDatesByProvider: [:])
+
+        let baseCountA = await counters.count(for: "prov_a")
+        let baseCountB = await counters.count(for: "prov_b")
+        let baseRefreshedA = state.statuses.first { $0.id == "prov_a" }?.lastRefreshedAt
+        let baseRefreshedB = state.statuses.first { $0.id == "prov_b" }?.lastRefreshedAt
+        XCTAssertEqual(baseCountA, 1, "前提不成立：a 的首拍应已完成一次 fetch")
+        XCTAssertEqual(baseCountB, 0, "前提不成立：b 被推到远期，此刻不应发过请求")
+        XCTAssertNotNil(baseRefreshedA, "前提不成立：a 首拍成功后 lastRefreshedAt 应有值")
+        XCTAssertNil(baseRefreshedB, "前提不成立：b 没刷过就不该有新鲜度")
+
+        await state.refreshOne(providerID: "prov_a")
+
+        let afterCountA = await counters.count(for: "prov_a")
+        let afterCountB = await counters.count(for: "prov_b")
+        XCTAssertEqual(afterCountA, baseCountA + 1, "refreshOne(A) 应只给 A 多发一次请求")
+        XCTAssertEqual(afterCountB, baseCountB, "refreshOne(A) 绝不能替 B 发请求")
+
+        let refreshedA = state.statuses.first { $0.id == "prov_a" }?.lastRefreshedAt
+        let refreshedB = state.statuses.first { $0.id == "prov_b" }?.lastRefreshedAt
+        XCTAssertNotEqual(refreshedA, baseRefreshedA, "A 的 lastRefreshedAt 必须前移")
+        XCTAssertGreaterThanOrEqual(refreshedA ?? .distantPast, baseRefreshedA ?? .distantFuture)
+        XCTAssertEqual(refreshedB, baseRefreshedB, "B 的 lastRefreshedAt 不得被 refreshOne(A) 改动")
+    }
+
     /// handleSystemWake 恢复 refreshForSystemWake 合并协议后：唤醒刷新不得重锚
     /// 其他 provider 的排期（回归 a287e8d 结尾的 reanchorAllProviders）；合并
     /// 窗口内的 provider 不重复发 full。
@@ -726,15 +795,20 @@ final class AppStateTests: StateTestCase {
 
 /// refreshOne 的单 provider fetch stub：返回带未来 reset 时间的窗口数据，
 /// 让 reanchor 后的 mid-cycle reset 重排有真实输入。
+///
+/// `counters` 非 nil 时顺带按 provider 记一次 fetch 次数（"单刷只发给了 A"那条用例用）。
 private final class RefreshOneStubFetcher: QuotaFetcher, @unchecked Sendable {
     let providerID: String
     let displayName: String
     let kind = ProviderKind.codexChatGpt
-    init(providerID: String) {
+    private let counters: FetchCallCounters?
+    init(providerID: String, counters: FetchCallCounters? = nil) {
         self.providerID = providerID
         self.displayName = providerID
+        self.counters = counters
     }
     func fetch(mode: RefreshMode) async throws -> QuotaInfo {
+        await counters?.bump(providerID)
         let model = ModelQuota(
             modelName: "chatgpt_plan",
             intervalTotalCount: 100,
@@ -760,4 +834,17 @@ private final class RefreshOneStubFetcher: QuotaFetcher, @unchecked Sendable {
         )
     }
     func hasLocalAuth() -> Bool { true }
+}
+
+/// 按 provider 记 fetch 次数。跨 actor 边界，所以用 actor 而不是裸 var。
+private actor FetchCallCounters {
+    private var counts: [String: Int] = [:]
+
+    func bump(_ providerID: String) {
+        counts[providerID, default: 0] += 1
+    }
+
+    func count(for providerID: String) -> Int {
+        counts[providerID] ?? 0
+    }
 }

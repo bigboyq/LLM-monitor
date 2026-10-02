@@ -311,6 +311,9 @@ final class RefreshSchedulerMidCycleTests: StateTestCase {
     func testF3CancelStopsMidCycleTask() async {
         let fixedNow = Date(timeIntervalSince1970: 1_700_000_000)
         var invokedModes: [RefreshMode] = []
+        // sleep 跑满 300ms 后翻标志：cancel 会取消 sleepTask，这里用 `try?` 吞掉
+        // 取消错误，保证"这一次 sleep 走到了尽头"始终可观测（原 600ms 固定等待的锚点）。
+        let sleepFinished = AsyncFlag()
         let scheduler = ProviderRefreshScheduler(
             refreshHandler: { _, mode in
                 invokedModes.append(mode)
@@ -319,13 +322,18 @@ final class RefreshSchedulerMidCycleTests: StateTestCase {
             intervalProvider: { _ in 300 },
             onNextRefreshChange: {},
             now: { fixedNow },
-            sleep: { _ in try await Task.sleep(nanoseconds: 300_000_000) }
+            sleep: { _ in
+                try? await Task.sleep(nanoseconds: 300_000_000)
+                await sleepFinished.set()
+            }
         )
         scheduler.scheduleMidCycleResetRefreshes(
             for: "p", resetsAtDates: [fixedNow.addingTimeInterval(200)]
         )
         scheduler.cancel(providerID: "p")  // 在 sleep 完成前取消
-        try? await Task.sleep(nanoseconds: 600_000_000)
+        // 条件等待：注入的 sleep 一旦走完就立刻断言，不必再睡满 600ms。
+        let slept = await waitUntil { await sleepFinished.isSet }
+        XCTAssertTrue(slept, "注入的 sleep 应在超时前走完（否则下面的否定断言不成立）")
         XCTAssertFalse(invokedModes.contains(.background), "cancel 后 mid-cycle task 不应触发")
     }
     @MainActor
@@ -349,8 +357,9 @@ final class RefreshSchedulerMidCycleTests: StateTestCase {
         )
         holder.sched = sched
         sched.schedule(for: "p")
-        // 安全超时；正常应在记满 9 个后自行 cancel。
-        try? await Task.sleep(nanoseconds: 1_000_000_000)
+        // 条件等待：mode log 记满 9 轮即满足（正常 <10ms）；timeout 只作安全网。
+        let reachedNine = await waitUntil { await log.snapshot().count >= 9 }
+        XCTAssertTrue(reachedNine, "9 轮周期 full 应在超时前跑完")
         sched.cancelAll()
 
         let seq = await log.snapshot()
@@ -393,8 +402,9 @@ final class RefreshSchedulerMidCycleTests: StateTestCase {
             onNextRefreshChange: {}
         )
         sched.schedule(for: "a")
-        // 等 ~1.5s：只应完成首次请求，下一次应在 60s 后。
-        try? await Task.sleep(nanoseconds: 1_500_000_000)
+        // 等 ~1.2s：只应完成首次请求，下一次应在 60s 后。
+        // 这条必须是真时钟 —— 它验证的正是"1s 内不会重试风暴"，条件等待会把它掏空。
+        try? await Task.sleep(nanoseconds: 1_200_000_000)
         sched.cancel(providerID: "a")
         // 验证：没有每秒重复调用。
         let calls = await counter.calls

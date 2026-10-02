@@ -450,6 +450,13 @@ final class CodexFetcherTests: XCTestCase {
             headers: ["Content-Type": "application/json"],
             body: Self.validUsageJSON()
         )
+        // .full 模式会并发打 usage + reset-credits 两条请求；只 stub usage 会让
+        // StubURLProtocol.canInit 对 reset path 返回 false → 真网络打 chatgpt.com。
+        StubURLProtocol.responses[Self.resetPath] = .init(
+            statusCode: 200,
+            headers: ["Content-Type": "application/json"],
+            body: Self.validResetCreditsJSON(availableCount: 1, totalEarned: 3)
+        )
 
         let fetcher = CodexFetcher(
             authPath: authURL.path,
@@ -459,6 +466,12 @@ final class CodexFetcherTests: XCTestCase {
         let info = try await fetcher.fetch(mode: .full)
         XCTAssertEqual(info.planLabel, "Team")
         XCTAssertEqual(info.accountEmail, "user@example.com")
+        // .full 模式必须两条请求都发出去（各 1 次），且 reset-credits 分支的解析结果
+        // 真的落到 info 上（此前这条路径从未被断言覆盖，只靠 usage stub 兜底）。
+        XCTAssertEqual(StubURLProtocol.callCounts[Self.usagePath], 1)
+        XCTAssertEqual(StubURLProtocol.callCounts[Self.resetPath], 1)
+        XCTAssertEqual(info.resetCredits?.serverAvailableCount, 1)
+        XCTAssertEqual(info.resetCredits?.totalEarnedCount, 3)
     }
 
     // MARK: - 辅助 JSON 构造

@@ -6,6 +6,22 @@ import AppKit
 /// 刷新排期 / dedup / 取消，以及 `waitUntilNotInFlight` 的 cancel-after-resume 竞态。对应 `ProviderRefreshScheduler`。
 final class ProviderRefreshSchedulerTests: StateTestCase {
 
+    /// 该 provider 的常规排期是否已由一次真实 batch 结算。
+    ///
+    /// `schedule(for:)` 会立刻写入 provisional `now()`，所以"非 nil"不等于"已结算"；
+    /// 结算后写入的是 `settledAt + interval`，必然落在未来。用"落在未来"当收敛信号，
+    /// 既无竞态（结算写入与 runningProviders 清理之间的代码不再 await），也无需固定
+    /// sleep 去等一个纯内存的调度状态。
+    @MainActor
+    private static func hasSettledRegularDate(
+        _ scheduler: ProviderRefreshScheduler,
+        _ providerID: String,
+        now: Date = Date()
+    ) -> Bool {
+        guard let date = scheduler.nextRefreshDate(for: providerID) else { return false }
+        return date > now
+    }
+
     // MARK: - ProviderRefreshScheduler: 排期 / dedup / 取消
     @MainActor
     func testSchedulerInFlightDedup() {
@@ -259,7 +275,9 @@ final class ProviderRefreshSchedulerTests: StateTestCase {
         )
         holder.sched = sched
         sched.schedule(for: "a")
-        try? await Task.sleep(nanoseconds: 500_000_000)
+        // 条件等待：handler 跑满 12 轮即满足（正常 <10ms），timeout 只作安全网。
+        let reachedTwelve = await waitUntil { callDates.count >= 12 }
+        XCTAssertTrue(reachedTwelve, "12 轮刷新应在超时前跑完")
         sched.cancelAll()
 
         XCTAssertEqual(callDates.count, 12, "应正好跑 12 轮后自行 cancel，实际 \(callDates.count)")
@@ -510,8 +528,12 @@ final class ProviderRefreshSchedulerTests: StateTestCase {
         )
         scheduler.schedule(for: "a")
         scheduler.schedule(for: "b")
-        // 等首拍（两个 provider 同批 .full）结算，进入 60s 静默窗口。
-        try? await Task.sleep(nanoseconds: 500_000_000)
+        // 条件等待：两个 provider 的首拍都结算完（排期落到未来 = settledAt + interval；
+        // schedule(for:) 刚写入的 provisional 是 now()，落在过去）即满足。
+        let bothSettled = await waitUntil {
+            Self.hasSettledRegularDate(scheduler, "a") && Self.hasSettledRegularDate(scheduler, "b")
+        }
+        XCTAssertTrue(bothSettled, "两个 provider 的首拍应在超时前结算")
         let baseA = scheduler.nextRefreshDate(for: "a")
         let baseB = scheduler.nextRefreshDate(for: "b")
         let baseCountA = scheduler.backgroundsSinceFullCount(for: "a")
@@ -547,8 +569,12 @@ final class ProviderRefreshSchedulerTests: StateTestCase {
         )
         scheduler.schedule(for: "a")
         scheduler.schedule(for: "b")
-        // 等首拍（两个 provider 同批 .full）结算，进入静默窗口。
-        try? await Task.sleep(nanoseconds: 500_000_000)
+        // 条件等待：两个 provider 的首拍都结算完（排期落到未来 = settledAt + interval；
+        // schedule(for:) 刚写入的 provisional 是 now()，落在过去）即满足。
+        let bothSettled = await waitUntil {
+            Self.hasSettledRegularDate(scheduler, "a") && Self.hasSettledRegularDate(scheduler, "b")
+        }
+        XCTAssertTrue(bothSettled, "两个 provider 的首拍应在超时前结算")
         let baseA = scheduler.nextRefreshDate(for: "a")
         let baseB = scheduler.nextRefreshDate(for: "b")
         XCTAssertNotNil(baseA)
@@ -599,9 +625,10 @@ final class ProviderRefreshSchedulerTests: StateTestCase {
         )
         holder.sched = sched
         sched.schedule(for: "p")
-        // 安全超时；与 testSchedulerPeriodicFullEveryNBackgrounds 相同的
-        // 虚拟时间节奏（注入 1ns sleep 让 deadline driver 立即续拍）。
-        try? await Task.sleep(nanoseconds: 1_000_000_000)
+        // 条件等待：与 testSchedulerPeriodicFullEveryNBackgrounds 相同的虚拟时间
+        // 节奏（注入 1ns sleep 让 deadline driver 立即续拍），记满 6 拍即可断言。
+        let reachedSix = await waitUntil { await log.snapshot().count >= 6 }
+        XCTAssertTrue(reachedSix, "应至少在超时前跑满 6 拍")
         sched.cancelAll()
 
         let seq = await log.snapshot()

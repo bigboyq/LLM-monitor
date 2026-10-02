@@ -31,6 +31,28 @@ class StateTestCase: XCTestCase {
         }
         return ConfigStore(configURL: configURL)
     }
+
+    /// 轮询 `condition` 直到它为 true（或 `timeout` 耗尽后返回最后一次结果）。
+    ///
+    /// 用来替代表尾的固定 `Task.sleep`："睡满 N 秒等异步收敛" → "睡到收敛为止"。
+    /// 收敛后立刻返回，异常路径仍有 timeout 兜底 —— 断言强度不变，只是省掉
+    /// 正常路径上大部分的干等时间。超时返回 false，让调用方给出可读的失败信息。
+    ///
+    /// - Note: 条件闭包是 `@MainActor` 的：调度器替身（`ProviderRefreshScheduler`）
+    ///   与测试里的局部计数变量都在主 actor 上。
+    @discardableResult
+    func waitUntil(
+        timeout: TimeInterval = 3,
+        pollInterval: TimeInterval = 0.002,
+        _ condition: @MainActor () async -> Bool
+    ) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        repeat {
+            if await condition() { return true }
+            try? await Task.sleep(nanoseconds: UInt64(pollInterval * 1_000_000_000))
+        } while Date() < deadline
+        return await condition()
+    }
 }
 
 
@@ -103,6 +125,15 @@ struct TestQuotaFetcher: QuotaFetcher {
             calls += 1
             lastMode = mode
         }
+    }
+
+    /// 单次翻转标志。给注入到 `@Sendable` 闭包（调度器的 `sleep` / `refreshHandler`）
+    /// 里的"这一步跑到哪了"信号用，测试侧再用 `waitUntil` 轮询它。
+    actor AsyncFlag {
+        private(set) var isSet = false
+
+        func set() { isSet = true }
+        func reset() { isSet = false }
     }
 
     /// 记录 refresh handler 收到的 mode 序列；record 返回记录后的总数。

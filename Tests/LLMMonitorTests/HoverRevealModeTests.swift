@@ -152,6 +152,27 @@ final class HoverRevealModeTests: XCTestCase {
         )
     }
 
+    /// `.ok` 状态下，额度窗口区块**必须真的画出来**。
+    ///
+    /// `QuotaWindowUsageTests.testBalanceOnlyProviderRendersNoBlockAtAll` 只钉了
+    /// 反向的那一半："没有窗口时整块零高度"。反向断言有个盲区——如果卡片层
+    /// 根本没把窗口数据传下去，那条测试照样绿（因为它量的正是"没画"），
+    /// 而用户看到的是一张只剩百分比、连 5h / 周都分不清的卡。
+    ///
+    /// 怎么钉：同一个 provider、同一状态、同一个 reveal mode，两份数据只差
+    /// "模型有没有额度窗口"这一个字段，高度差就是那两条窗口行在不在线的直接证据。
+    @MainActor
+    func testOkStateCardIsTallerWhenTheModelHasQuotaWindows() {
+        let withWindows = Self.makeChatGPTStatus(state: .ok, resetCredits: false, withQuotaWindows: true)
+        let withoutWindows = Self.makeChatGPTStatus(state: .ok, resetCredits: false, withQuotaWindows: false)
+        let tall = measuredHeight(mode: .alwaysVisible, status: withWindows)
+        let short = measuredHeight(mode: .alwaysVisible, status: withoutWindows)
+        XCTAssertGreaterThan(
+            tall, short,
+            "`.ok` 卡片里有额度窗口的模型必须比没有窗口的更高（窗口区块必须真的渲染）"
+        )
+    }
+
     /// 菜单底部兜底行 hover 出来的那张卡，**必须**以 `.alwaysVisible` 渲染。
     ///
     /// 浮层 `ignoresMouseEvents = true`，收不到鼠标事件：不钉这个 mode，卡里那些
@@ -450,7 +471,8 @@ final class HoverRevealModeTests: XCTestCase {
     fileprivate static func makeChatGPTStatus(
         state: CardState,
         resetCredits: Bool,
-        recentSamples: [LocalTokenUsageSample] = []
+        recentSamples: [LocalTokenUsageSample] = [],
+        withQuotaWindows: Bool = true
     ) -> ProviderStatus {
         let now = Date()
         let model = ModelQuota(
@@ -458,15 +480,15 @@ final class HoverRevealModeTests: XCTestCase {
             intervalTotalCount: 100,
             intervalUsageCount: 38,
             intervalRemainingPercent: 62,
-            intervalStatus: .present,
-            intervalResetsAt: now.addingTimeInterval(2 * 3600),
-            intervalWindowSeconds: 5 * 3600,
+            intervalStatus: withQuotaWindows ? .present : .absent,
+            intervalResetsAt: withQuotaWindows ? now.addingTimeInterval(2 * 3600) : nil,
+            intervalWindowSeconds: withQuotaWindows ? 5 * 3600 : nil,
             weeklyTotalCount: 100,
             weeklyUsageCount: 70,
             weeklyRemainingPercent: 30,
-            weeklyStatus: .present,
-            weeklyResetsAt: now.addingTimeInterval(3 * 24 * 3600),
-            weeklyWindowSeconds: 7 * 24 * 3600
+            weeklyStatus: withQuotaWindows ? .present : .absent,
+            weeklyResetsAt: withQuotaWindows ? now.addingTimeInterval(3 * 24 * 3600) : nil,
+            weeklyWindowSeconds: withQuotaWindows ? 7 * 24 * 3600 : nil
         )
         let usage = UsageMetricSummary(
             prompts: 42,
