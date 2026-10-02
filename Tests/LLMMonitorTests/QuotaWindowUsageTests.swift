@@ -113,8 +113,10 @@ final class QuotaWindowUsageTests: XCTestCase {
         XCTAssertEqual(merged.poolCount, 2, "poolCount > 0 时 UI 必须说明这是合计")
     }
 
-    /// 窗口在、但本地零用量：行照画，数值是 0，比率是 `—`（不是 0%）。
-    func testWindowWithoutLocalUsageStillProducesARow() {
+    /// 窗口在、但本地零用量：数据上仍记录"窗口存在、usage 为 nil"（与窗口不存
+    /// 在区分开），但 UI 上全零行整行跳过（第五轮改版）——不再出 `0 / —` 行，
+    /// 取代"窗口存在但本地零用量仍然出一行"的旧规则。
+    func testWindowWithoutLocalUsageIsSkippedAsAnAllZeroRow() {
         let now = Date()
         let snapshot = LocalUsageSummaryBuilder.windowUsage(
             model: Self.glmModel(now: now),
@@ -124,11 +126,15 @@ final class QuotaWindowUsageTests: XCTestCase {
             weeklyLabel: "周",
             excludeGlmOffPeak: true
         )
-        XCTAssertNotNil(snapshot.interval, "窗口存在就必须有一行，哪怕本地没有记录")
+        XCTAssertNotNil(snapshot.interval, "窗口存在这件事在数据层仍要记录")
         XCTAssertNil(snapshot.interval?.usage, "本地零用量时 usage 是 nil（与'窗口不存在'区分开）")
         let metrics = QuotaWindowUsageMetrics(usage: snapshot.interval?.usage)
-        XCTAssertEqual(metrics.totalTokens, 0, "窗口存在但没有本地记录时，数字是 0 而不是整块不画")
+        XCTAssertEqual(metrics.totalTokens, 0, "四桶合计为 0 → 触发全零行跳过")
         XCTAssertNil(metrics.cacheHitRate, "分母为 0 的比率必须是 nil（显示 —），不是 0%")
+        XCTAssertTrue(
+            QuotaWindowUsageSection.visibleRows(snapshot: snapshot, today: nil).isEmpty,
+            "全零行整行跳过：「额度分析」「额度详情」两个模块都不出这一行"
+        )
     }
 
     // MARK: - 退化：单窗口 / 余额型

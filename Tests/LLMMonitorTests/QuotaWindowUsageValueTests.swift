@@ -6,9 +6,9 @@ import AppKit
 /// 「额度窗口用量」区块的**价值**那一格，以及重置卡明细的可达性。
 ///
 /// 单独一个文件而不是并进 `QuotaWindowUsageTests`：这里测的是**可达性**性质
-/// （金额有没有真的算、五指标行会不会换行、列宽跨行对不对齐、模块标题有没有
-/// 真的画出来、重置卡逐张明细能不能被看到），与那份文件里的「窗口口径/比率/
-/// 时间构成条」是两批断言，混在一个文件里会互相淹没。
+/// （金额有没有真的算、六列指标行会不会换行、列宽跨行对不对齐、模块标题有没有
+/// 真的画出来、全零行跳过与模块联动、重置卡逐张明细能不能被看到），与那份文件
+/// 里的「窗口口径/比率/时间构成条」是两批断言，混在一个文件里会互相淹没。
 final class QuotaWindowUsageValueTests: XCTestCase {
 
     // MARK: - 价值估算
@@ -234,10 +234,12 @@ final class QuotaWindowUsageValueTests: XCTestCase {
 
     // MARK: - 五个指标不换行
 
-    /// 「额度分析」的一行五个指标在 336pt 卡片的内容宽（336 − 2×12 = 312pt）里
-    /// 必须**一行**。第三轮改版起行本体是 `GridRow`（五个格子平分整行），所以
-    /// 测量时要复刻宿主形态：住进 `Grid`、字号与单行约束由 `Grid` 施加——与
-    /// `QuotaWindowUsageSection.statsModule` 同一写法。
+    /// 「额度分析」的一行六个格子（类型/用量/命中/产出比/思考/价值）在 336pt
+    /// 卡片的内容宽（336 − 2×12 = 312pt）里必须**一行**。第三轮改版起行本体是
+    /// `GridRow`（格子平分整行），所以测量时要复刻宿主形态：住进 `Grid`、字号
+    /// 与单行约束由 `Grid` 施加——与 `QuotaWindowUsageSection.statsModule` 同一
+    /// 写法（表头行的单行约束由 testStatsHeaderRowRendersAndCollapsesWithItsColumns
+    /// 单独钉）。
     ///
     /// 换行是最难在代码评审里发现的排版回归：视图不报错、数字都对，只是第二段
     /// 掉到下一行，读者会把 `¥12.34` 当成另一件事。断言方式是"限宽下的高度 == 不限
@@ -305,19 +307,46 @@ final class QuotaWindowUsageValueTests: XCTestCase {
         )
     }
 
-    /// 降级顺序：宽度不够时先压标签（`出比` / `思`），数值一个都不压。
-    func testCompactLabelsOnlyShortenTheTwoLongestOnes() {
-        let full = QuotaWindowUsageMetricRow.labels(compact: false)
-        let compact = QuotaWindowUsageMetricRow.labels(compact: true)
-        XCTAssertEqual(full.outIn, "出/入")
-        XCTAssertEqual(full.think, "思考")
-        XCTAssertEqual(compact.outIn, "出比")
-        XCTAssertEqual(compact.think, "思")
-        XCTAssertEqual(compact.hit, full.hit, "『命中』最短，缩了就认不出，不参与压缩")
+    /// 「额度分析」表头文案钉在这里（第五轮改版）：数据格不再带文字标签，列名
+    /// 只在表头说一次；曾经的 `labels(compact:)` 紧凑降级随标签一起删除——固定
+    /// 三字文案在最窄列也装得下（宽度核算见 `QuotaWindowUsageMetricRow` 文档），
+    /// 表头层不再需要第二套写法。
+    func testStatsHeaderCopyIsPinned() {
+        XCTAssertEqual(QuotaWindowUsageSection.statsHeaders.type, "类型")
+        XCTAssertEqual(QuotaWindowUsageSection.statsHeaders.usage, "用量")
+        XCTAssertEqual(QuotaWindowUsageSection.statsHeaders.hit, "命中")
+        XCTAssertEqual(QuotaWindowUsageSection.statsHeaders.outputInput, "产出比")
+        XCTAssertEqual(QuotaWindowUsageSection.statsHeaders.think, "思考")
+        XCTAssertEqual(QuotaWindowUsageSection.statsHeaders.value, "价值")
+    }
+
+    /// 表头行真的画出来，且随模块级列显隐整列消失（第五轮改版）：六列表头齐全时
+    /// 比「命中/思考」两列表头关掉时更宽；固定文案在 312pt 卡片内容宽里单行
+    /// 不折行（不做紧凑降级）。
+    @MainActor
+    func testStatsHeaderRowRendersAndCollapsesWithItsColumns() {
+        func headerGrid(showsHit: Bool, showsThink: Bool) -> some View {
+            Grid(alignment: .leading, horizontalSpacing: 4, verticalSpacing: 3) {
+                QuotaWindowUsageStatsHeader(
+                    showsHitColumn: showsHit,
+                    showsThinkingColumn: showsThink
+                )
+            }
+            .font(MenuTypography.dataValue)
+            .lineLimit(1)
+        }
+        let allShown = self.measuredWidth(of: headerGrid(showsHit: true, showsThink: true))
+        let collapsed = self.measuredWidth(of: headerGrid(showsHit: false, showsThink: false))
+        let height = self.measuredHeight(of: headerGrid(showsHit: true, showsThink: true), width: 312)
+        let unconstrained = self.measuredHeight(of: headerGrid(showsHit: true, showsThink: true), width: 1_000)
+
+        XCTAssertGreaterThan(allShown, 0, "前提不成立：表头行必须真的排得出来")
+        XCTAssertGreaterThan(allShown, collapsed + 5, "命中/思考两列表头关掉后必须真的更窄（表头随列一起消失）")
+        XCTAssertEqual(height, unconstrained, accuracy: 0.5, "表头在 312pt 内容宽里必须单行不折行（固定文案不降级）")
     }
 
     /// 出/入比文案**固定 3 位小数**（`xx.xxx%`）：0 位小数会把 12.4% 与 11.6% 压成
-    /// 同一个 "12%"，5h / 周 / 今日三行并排时就失去可比性。固定（而非至多）3 位
+    /// 同一个 "12%"，5h / 周 / 今三行并排时就失去可比性。固定（而非至多）3 位
     /// 还让这一段等宽。分母为 0（`nil`）仍是 `—`。
     func testOutputInputRateTextFormatsThreeDecimalPlaces() {
         XCTAssertEqual(QuotaWindowUsageMetricRow.outputInputRateText(0.12345), "12.345%")
@@ -331,15 +360,15 @@ final class QuotaWindowUsageValueTests: XCTestCase {
 
     /// 「额度分析」标题住在统计值模块内部：模块有内容才出现，且画在内容之上。
     ///
-    /// 用「只剩今日行」的形态隔离标题：快照无窗口、无重置卡，`today` 有一行 →
-    /// 统计值模块 = 标题 + 一行指标（时间构成条无窗口不画）。区块必须比同一行
-    /// 指标裸排时**高出一截**（标题行 + 间距）；完全无数据时整块为 0——标题随
-    /// 模块一起消失，不会悬空。「额度详情」「重置卡详情」走同一机制（标题在模块
-    /// 内部、由既有显隐判定兜住），不各测一遍。
+    /// 用「只剩今行」的形态隔离标题：快照无窗口、无重置卡，`today` 有一行 →
+    /// 统计值模块 = 标题 + 时间构成条之外的内容（条无可见窗口行不画）+ 表头 +
+    /// 一行指标。区块必须比同一行指标裸排时**高出一截**；完全无数据时整块为 0
+    /// ——标题随模块一起消失，不会悬空。「额度详情」「重置卡详情」走同一机制
+    /// （标题在模块内部、由既有显隐判定兜住），不各测一遍。
     @MainActor
     func testStatsModuleTitleRendersAboveItsRowsAndHidesWithTheModule() {
         let today = QuotaWindowUsageSection.Row(
-            label: "今日",
+            label: ProviderCardView.todayRowLabel,
             metrics: QuotaWindowUsageMetrics(input: 100, cachedInput: 900, output: 100, reasoning: 400),
             cost: nil
         )
@@ -374,16 +403,226 @@ final class QuotaWindowUsageValueTests: XCTestCase {
         )
     }
 
-    /// 标题文案钉在这里：三块模块标题 + 段2 段落标题。改文案必须连测试一起改，
-    /// 防止视图与文档各漂各的。
+    /// 标题文案钉在这里：三块模块标题 + 段2 段落标题 + 今行标签。改文案必须连
+    /// 测试一起改，防止视图与文档各漂各的。
     func testTitleCopyIsPinned() {
         XCTAssertEqual(QuotaWindowUsageSection.statsTitle, "额度分析")
         XCTAssertEqual(QuotaWindowUsageSection.rawTableTitle, "额度详情")
         XCTAssertEqual(QuotaWindowUsageSection.resetCreditsTitle, "重置卡详情")
         XCTAssertEqual(ProviderCardView.planSectionTitleText, "Plan详情")
+        XCTAssertEqual(
+            ProviderCardView.todayRowLabel, "今",
+            "行标签第五轮起是「今」（从「今日」缩成），与「5h」「周」同一长度档"
+        )
     }
 
-    // MARK: - 全零列隐藏与今日行（第四轮改版）
+    // MARK: - 全零行跳过与模块联动（第五轮改版）
+
+    /// 全零行跳过：某行（5h/周/今）四桶 token 合计为 0 时整行跳过，「额度分析」
+    /// 与「额度详情」两个模块都不出现该行。minimax 形态：全 0 的 5h 与今行消失，
+    /// 周行保留；列显隐基于过滤后的行集。
+    func testAllZeroRowsAreSkippedInBothModules() {
+        let now = Date()
+        // 5h 窗口存在但全零（样本只在 5h 之外、周窗口之内）；今行全零。
+        let snapshot = LocalUsageSummaryBuilder.windowUsage(
+            model: Self.model(name: "general", interval: true, weekly: true, now: now),
+            providerKind: .minimaxTokenPlan,
+            samples: [Self.sample(at: now.addingTimeInterval(-6 * 3600), prompt: "weekly-only", model: "minimax-m3")],
+            intervalLabel: "5h",
+            weeklyLabel: "周"
+        )
+        let today = QuotaWindowUsageSection.Row(
+            label: ProviderCardView.todayRowLabel,
+            metrics: QuotaWindowUsageMetrics(input: 0, cachedInput: 0, output: 0, reasoning: 0),
+            cost: nil
+        )
+
+        XCTAssertEqual(
+            QuotaWindowUsageSection.visibleRows(snapshot: snapshot, today: today).map(\.label),
+            ["周"],
+            "全 0 的 5h 与今行整行跳过，「额度分析」只剩周行"
+        )
+        let table = QuotaWindowUsageRawTable(snapshot: snapshot, today: today)
+        XCTAssertEqual(
+            table.tableRows.map(\.label), ["周"],
+            "「额度详情」同一规则：全 0 的 5h 与今行不进表"
+        )
+        // 列显隐基于过滤后的行集：周行有量，cached/output/reason 三列保留
+        // （helper 的样本 cached > input，未缓存 input 桶钳成 0，Input 列隐藏）。
+        let visibility = QuotaWindowUsageRawTable.numericColumnVisibility(rows: table.tableRows.map(\.metrics))
+        XCTAssertTrue(visibility.cached && visibility.output && visibility.reason, "周行有量的桶，列保留")
+
+        // 余额型形态：没有窗口、今行全零 → 过滤后什么都不剩。
+        let empty = LocalUsageSummaryBuilder.windowUsage(
+            model: Self.model(name: "deepseek_balance", interval: false, weekly: false, now: now),
+            providerKind: .deepseek,
+            samples: [],
+            intervalLabel: "5h",
+            weeklyLabel: "周"
+        )
+        XCTAssertTrue(
+            QuotaWindowUsageSection.visibleRows(snapshot: empty, today: today).isEmpty,
+            "无窗口且今行全零 → 过滤后没有剩余行"
+        )
+        XCTAssertTrue(QuotaWindowUsageRawTable(snapshot: empty, today: today).tableRows.isEmpty)
+    }
+
+    /// 模块级联动：过滤后没有剩余行 → 模块（连标题「额度分析」/「额度详情」）
+    /// 整体不渲染；只有重置卡可用时只剩重置卡模块。
+    @MainActor
+    func testModulesAndTitlesVanishWhenEveryRowIsFiltered() {
+        let now = Date()
+        let zeroWindows = LocalUsageSummaryBuilder.windowUsage(
+            model: Self.model(name: "deepseek_balance", interval: true, weekly: true, now: now),
+            providerKind: .deepseek,
+            samples: [],
+            intervalLabel: "5h",
+            weeklyLabel: "周"
+        )
+        let zeroToday = QuotaWindowUsageSection.Row(
+            label: ProviderCardView.todayRowLabel,
+            metrics: QuotaWindowUsageMetrics(input: 0, cachedInput: 0, output: 0, reasoning: 0),
+            cost: nil
+        )
+
+        XCTAssertEqual(
+            self.measuredHeight(
+                of: QuotaWindowUsageSection(snapshot: zeroWindows, today: zeroToday),
+                width: 312
+            ),
+            0,
+            "窗口全零 + 今行全零：额度分析/额度详情连标题一起消失，整块零高度"
+        )
+        XCTAssertGreaterThan(
+            self.measuredHeight(
+                of: QuotaWindowUsageSection(
+                    snapshot: zeroWindows,
+                    today: zeroToday,
+                    resetCredits: Self.resetCredits(count: 2)
+                ),
+                width: 312
+            ),
+            0,
+            "行全被跳过但重置卡可用：只剩重置卡模块（连同标题）"
+        )
+        XCTAssertGreaterThan(
+            self.measuredHeight(
+                of: QuotaWindowUsageSection(
+                    snapshot: zeroWindows,
+                    today: QuotaWindowUsageSection.Row(
+                        label: ProviderCardView.todayRowLabel,
+                        metrics: QuotaWindowUsageMetrics(input: 100, cachedInput: 900, output: 100, reasoning: 400),
+                        cost: nil
+                    )
+                ),
+                width: 312
+            ),
+            0,
+            "今行有量时行集非空，两个模块随今行渲染"
+        )
+    }
+
+    /// 时间构成条只在**过滤后仍有窗口行**（5h/周）可见时画：只剩今行、或窗口
+    /// 全零（行被跳过）只剩今行时，条都不画——全灰条没有信息量。
+    @MainActor
+    func testTimeShareBarOnlyDrawsWhenAWindowRowSurvivesFiltering() {
+        let now = Date()
+        // 周窗口有量、无 5h 窗口：stats = 标题 + 条 + 表头 + 周行。
+        let weeklyOnly = LocalUsageSummaryBuilder.windowUsage(
+            model: Self.model(name: "general", interval: false, weekly: true, now: now),
+            providerKind: .minimaxTokenPlan,
+            samples: [Self.sample(at: now.addingTimeInterval(-600), prompt: "p1", model: "minimax-m3")],
+            intervalLabel: "5h",
+            weeklyLabel: "周"
+        )
+        // 无窗口、今行有量：同构但少一条时间构成条。
+        let noWindows = LocalUsageSummaryBuilder.windowUsage(
+            model: Self.model(name: "deepseek_balance", interval: false, weekly: false, now: now),
+            providerKind: .deepseek,
+            samples: [],
+            intervalLabel: "5h",
+            weeklyLabel: "周"
+        )
+        // 窗口存在但全零、今行有量：与「无窗口 + 今行」同高——条也不画。
+        let zeroWindows = LocalUsageSummaryBuilder.windowUsage(
+            model: Self.model(name: "deepseek_balance", interval: true, weekly: true, now: now),
+            providerKind: .deepseek,
+            samples: [],
+            intervalLabel: "5h",
+            weeklyLabel: "周"
+        )
+        let today = QuotaWindowUsageSection.Row(
+            label: ProviderCardView.todayRowLabel,
+            metrics: QuotaWindowUsageMetrics(input: 100, cachedInput: 900, output: 100, reasoning: 400),
+            cost: nil
+        )
+
+        let withBar = self.measuredHeight(of: QuotaWindowUsageSection(snapshot: weeklyOnly, today: today), width: 312)
+        let withoutBar = self.measuredHeight(of: QuotaWindowUsageSection(snapshot: noWindows, today: today), width: 312)
+        let zeroWindowsHeight = self.measuredHeight(of: QuotaWindowUsageSection(snapshot: zeroWindows, today: today), width: 312)
+
+        XCTAssertGreaterThan(
+            withBar, withoutBar + 5,
+            "有可见窗口行时 stats 模块必须多出一条时间构成条"
+        )
+        XCTAssertEqual(
+            zeroWindowsHeight, withoutBar, accuracy: 0.5,
+            "窗口全零（行被跳过）时不画条——条需要的是可见窗口行，不是存在的窗口"
+        )
+    }
+
+    /// 重置日期列**左对齐**（第五轮改版）：固定宽列（表头与数据格）锚在列首，
+    /// 不再仿数值列锚右缘。渲染成位图找墨迹位置——左对齐时墨迹紧贴列左缘
+    /// （旧态右对齐会距左缘约一个列宽减文本宽），判据留足余量防字体度量抖动。
+    @MainActor
+    func testResetDateColumnAlignsLeading() {
+        let now = Date(timeIntervalSince1970: 1_790_000_000)
+        let snapshot = LocalUsageSummaryBuilder.windowUsage(
+            model: Self.model(name: "deepseek_balance", interval: true, weekly: false, now: now),
+            providerKind: .deepseek,
+            samples: [Self.sample(at: now.addingTimeInterval(-600), prompt: "p1", model: "deepseek-chat")],
+            intervalLabel: "5h",
+            weeklyLabel: "周"
+        )
+        let width: CGFloat = 420
+        let hosting = NSHostingView(rootView: AnyView(QuotaWindowUsageRawTable(snapshot: snapshot).frame(width: width)))
+        hosting.frame = CGRect(x: 0, y: 0, width: width, height: 500)
+        hosting.layoutSubtreeIfNeeded()
+
+        guard let rep = hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds) else {
+            return XCTFail("拿不到位图缓存")
+        }
+        hosting.cacheDisplay(in: hosting.bounds, to: rep)
+        let scale = CGFloat(rep.pixelsWide) / hosting.bounds.width
+
+        // 前提自检：列右缘上方必须是空白（左对齐时数据最长形态也留有 ~20pt）。
+        // 若整张位图都不透明，下面的墨迹判定会恒真——先在这里红掉。
+        XCTAssertLessThan(
+            rep.colorAt(x: rep.pixelsWide - 2, y: 1)?.alphaComponent ?? 1,
+            0.1,
+            "位图右缘应为透明背景；不透明说明渲染方式变了，墨迹判定失效"
+        )
+
+        // 重置日期列固定宽且是最后一列：取最右 resetDateColumnWidth 的一条竖带。
+        let columnStart = width - QuotaWindowUsageRawTable.resetDateColumnWidth
+        var minInkX: CGFloat?
+        for x in Int(columnStart * scale)..<rep.pixelsWide {
+            for y in 0..<rep.pixelsHigh where rep.colorAt(x: x, y: y)?.alphaComponent ?? 0 > 0.1 {
+                minInkX = CGFloat(x) / scale
+                break
+            }
+            if minInkX != nil { break }
+        }
+        guard let minInkX else {
+            return XCTFail("重置日期列里必须真的画出了内容")
+        }
+        XCTAssertLessThan(
+            minInkX - columnStart, 12,
+            "重置日期内容必须锚在列首（左对齐），现在距列左缘 \(minInkX - columnStart)pt"
+        )
+    }
+
+    // MARK: - 全零行跳过、全零列隐藏与今行（第四/五轮改版）
 
     /// 「额度分析」的「命中」「思考」列只在**没有任何可见行**产出对应桶时隐藏：
     /// 模块内跨行判定，不是单行判定——某一行的比率是 `—` 不足以藏掉一列。
@@ -436,8 +675,9 @@ final class QuotaWindowUsageValueTests: XCTestCase {
         XCTAssertGreaterThan(allShown, collapsed + 5, "命中/思考两列关掉后必须真的更窄（整列消失）")
     }
 
-    /// 「额度详情」四个数值列在**所有可见行**合计为 0 时整列隐藏——**含表头**：
-    /// 全零时表格自然宽必须缩到只剩「类型 + 重置日期」两列；桶非零时列原样保留。
+    /// 「额度详情」四个数值列在**所有可见行**合计为 0 时整列隐藏——**含表头**；
+    /// 且全零行本身整行跳过（第五轮改版），所以全零快照的表格只剩标题 + 「类型 +
+    /// 重置日期」两个表头，没有任何数值列表头。桶非零时列原样保留。
     @MainActor
     func testRawTableHidesAllZeroNumericColumnsWithTheirHeaders() {
         let now = Date()
@@ -473,8 +713,9 @@ final class QuotaWindowUsageValueTests: XCTestCase {
         let kept = Self.numericVisibility(of: full)
         XCTAssertTrue(kept.input && kept.cached && kept.output && kept.reason, "前提不成立：有样本的快照四桶应都非零")
 
-        // 「类型 + 重置日期」两列的理论宽：类型表头自然宽 + 一个列距 + 重置日期固定宽。
-        // 留 8pt 余量（窗口标签/中文表头的半字符级抖动）；多活一个表头就要多 ~35pt。
+        // 全零行已整行跳过：剩下的宽度上界钉「没有任何数值列表头幸存」——
+        // 类型表头自然宽 + 一个列距 + 重置日期固定宽，再多任何一个数值表头
+        // 都要宽出 ~35pt。
         let typeHeaderWidth = self.measuredWidth(of: Text("类型").font(MenuTypography.metricLabel))
         let hiddenTableWidth = self.measuredWidth(of: QuotaWindowUsageRawTable(snapshot: zero))
         let fullTableWidth = self.measuredWidth(of: QuotaWindowUsageRawTable(snapshot: full))
@@ -482,7 +723,7 @@ final class QuotaWindowUsageValueTests: XCTestCase {
         XCTAssertLessThanOrEqual(
             hiddenTableWidth,
             typeHeaderWidth + 4 + QuotaWindowUsageRawTable.resetDateColumnWidth + 8,
-            "全零时表格只剩「类型 + 重置日期」两列：列表头必须跟数据格一起消失，不能留一个孤零零的表头"
+            "全零时行全被跳过，数值列表头必须一起消失，不能留一个孤零零的表头"
         )
         XCTAssertGreaterThan(
             fullTableWidth, hiddenTableWidth + 8,
@@ -490,8 +731,8 @@ final class QuotaWindowUsageValueTests: XCTestCase {
         )
     }
 
-    /// 「今日」行进表（排在 5h/周 之后，重置日期格 `—`），并且**参与全零列判定**：
-    /// 窗口全零 + 今日有 cached 时，Cached 列要因今日而被保住（表格变宽）。
+    /// 「今」行进表（排在 5h/周 之后，重置日期格 `—`），并且**参与全零列判定**：
+    /// 窗口全零（那些行被跳过）+ 今有 cached 时，Cached 列要因今而被保住。
     @MainActor
     func testTodayRowEntersTheRawTableAndJoinsTheColumnVisibility() {
         let now = Date()
@@ -503,13 +744,18 @@ final class QuotaWindowUsageValueTests: XCTestCase {
             weeklyLabel: "周"
         )
         let today = QuotaWindowUsageSection.Row(
-            label: "今日",
+            label: ProviderCardView.todayRowLabel,
             metrics: QuotaWindowUsageMetrics(input: 0, cachedInput: 9_000, output: 0, reasoning: 0),
             cost: nil
         )
         XCTAssertTrue(
             Self.numericVisibility(of: zero, today: today).cached,
-            "前提不成立：今日行有 cached 时 Cached 列应保留"
+            "前提不成立：今行有 cached 时 Cached 列应保留"
+        )
+        XCTAssertEqual(
+            QuotaWindowUsageRawTable(snapshot: zero, today: today).tableRows.map(\.label),
+            [ProviderCardView.todayRowLabel],
+            "前提不成立：窗口行全零被跳过，表里应只剩今行"
         )
 
         let withoutToday = QuotaWindowUsageRawTable(snapshot: zero)
@@ -518,11 +764,11 @@ final class QuotaWindowUsageValueTests: XCTestCase {
         XCTAssertGreaterThan(
             self.measuredHeight(of: withToday, width: 312),
             self.measuredHeight(of: withoutToday, width: 312),
-            "今日行必须真的多出一行（进表）"
+            "今行必须真的多出一行（进表）"
         )
         XCTAssertGreaterThan(
             self.measuredWidth(of: withToday), self.measuredWidth(of: withoutToday) + 8,
-            "今日有 cached 时 Cached 列要保住：今日行参与全零列判定，不是只多一行"
+            "今有 cached 时 Cached 列要保住：今行参与全零列判定，不是只多一行"
         )
     }
 
@@ -793,8 +1039,9 @@ final class QuotaWindowUsageValueTests: XCTestCase {
         )
     }
 
-    /// 快照（+今日行）的四数值列显隐——给上面的显隐断言当取数口：与视图同一份
-    /// `tableRows` → `numericColumnVisibility` 链路，测的才是表格实际用的判定。
+    /// 快照（+今行）的四数值列显隐——给上面的显隐断言当取数口：与视图同一份
+    /// `tableRows`（全零行跳过后）→ `numericColumnVisibility` 链路，测的才是
+    /// 表格实际用的判定。
     private static func numericVisibility(
         of snapshot: QuotaWindowUsageSnapshot,
         today: QuotaWindowUsageSection.Row? = nil

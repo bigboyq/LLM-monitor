@@ -170,22 +170,26 @@ struct QuotaWindowTimeShareBar: View {
 /// 它回答的是"这一轮额度里本机烧了多少"，与下面那张卡的"最近 7 天"是两件事。
 ///
 /// 模块按数据可用性显隐，模块之间用既有细分隔线；第三轮改版起每个模块头顶有
-/// 一个模块标题（`QuotaModuleTitle`，住在模块内部，随模块一起显隐）；**全部**
-/// 无数据时整块不渲染（余额型 DeepSeek：没有额度窗口、今日行也不该出现在这里
-/// ——它的窗口区块本来就是空的），而不是画一条永远空的条。
+/// 一个模块标题（`QuotaModuleTitle`，住在模块内部，随模块一起显隐）。**全零行
+/// 整行跳过**（第五轮改版，见 `visibleRows`）：过滤后没有剩余行时模块（连标题
+/// 一起）整体不渲染；过滤后**什么都不剩**时整块不渲染（余额型 DeepSeek：没有
+/// 额度窗口、今行也不该出现在这里——它的窗口区块本来就是空的），而不是画一条
+/// 永远空的条。
 struct QuotaWindowUsageSection: View {
     let snapshot: QuotaWindowUsageSnapshot
     var tint: Color = .primary
-    /// 「今日」行（当天本地用量聚合）。`nil` = 当天无本地数据，该行不画。
-    /// 数据由宿主取（`ProviderCardView.todayUsageRow`），与额度窗口无关，
-    /// 也不参与时间构成条的比例。
+    /// 「今」行（当天本地用量聚合；第五轮改版标签从「今日」缩成「今」）。
+    /// `nil` = 当天无本地数据，该行不画。数据由宿主取
+    /// （`ProviderCardView.todayUsageRow`），与额度窗口无关，也不参与时间构成条
+    /// 的比例；当天四桶合计为 0 时照常传入，由 `visibleRows` 统一跳过。
     var today: Row?
     /// 重置卡信息；`availableCount == 0` 或 `nil` 时重置卡模块整块不画。
     var resetCredits: ResetCreditsInfo?
     /// 重置卡折叠行的过期判定用刷新周期（秒），透传给 `CompactResetCreditsRow`。
     var refreshIntervalSeconds: Int = 300
 
-    /// 一行短指标：`5h 173M · 命中 97.8% · 出/入 12.345% · 思考 41% · ¥12.34`。
+    /// 一行短指标的取数：类型格放窗口标签，用量格放 `formatTokenCountCompact`
+    /// 的 token 数，比率与价值三格只放数值（列名在表头，`statsHeaders`）。
     /// `today` 行由宿主构造后塞进 `rows`，同一组件同一格式。
     struct Row: Equatable {
         let label: String
@@ -198,17 +202,69 @@ struct QuotaWindowUsageSection: View {
     static let rawTableTitle = "额度详情"
     static let resetCreditsTitle = "重置卡详情"
 
+    /// 「额度分析」**表头行**文案（第五轮改版，与「额度详情」表头同款风格）。
+    /// 测试直接引用，文案漂移会编译报错。「产出比」即原出/入列——表头出现后
+    /// 数据格不再重复文字标签，列名只在表头说一次。
+    static let statsHeaders = (
+        type: "类型", usage: "用量", hit: "命中",
+        outputInput: "产出比", think: "思考", value: "价值"
+    )
+
     /// 「额度分析」的列显隐（第四轮改版，**模块内跨行判定**）：「命中」「思考」
-    /// 两列各自在**所有可见行**（5h/周/今日）的合计为 0 时整列隐藏——某一行的
-    /// 比率是 `—` 不足以免掉一列，只有模块内没有任何行产出该桶才藏。出/入、
-    /// 价值与首列（标签+token）恒在，不参与判定。纯函数，测试直接引用。
+    /// 两列各自在**所有可见行**（5h/周/今）的合计为 0 时整列隐藏（表头随数据格
+    /// 一起消失，第五轮起有表头行）——某一行的比率是 `—` 不足以免掉一列，只有
+    /// 模块内没有任何行产出该桶才藏。产出比、价值与类型、用量两列恒在，不参与
+    /// 判定。调用方传**过滤后**的行（`visibleRows`；全零行本来就对任何桶都无
+    /// 贡献，传过滤前行结果相同，但口径统一在过滤后）。纯函数，测试直接引用。
     static func statsColumnVisibility(rows: [QuotaWindowUsageMetrics]) -> (hit: Bool, think: Bool) {
         (rows.contains { $0.cachedInput > 0 }, rows.contains { $0.reasoning > 0 })
     }
 
+    /// **全零行跳过**（第五轮改版）后的可见行集：某行（5h/周/今）四个桶 token
+    /// 合计为 0（`totalTokens == 0`）时整行跳过，「额度分析」与「额度详情」两个
+    /// 模块都不出现该行——"这一轮还没开始用"不再出 `0 / —` 行，取代第四轮前
+    /// "窗口存在但本地零用量仍然出一行"的旧规则。stats rows 与 raw table 的
+    /// `tableRows` 各自从这份口径过滤（同一取数、同一判定，行集一致），宿主的
+    /// 整块显隐（`hasVisibleContent`）也用它。纯函数，测试直接引用。
+    static func visibleRows(snapshot: QuotaWindowUsageSnapshot, today: Row?) -> [Row] {
+        var result: [Row] = []
+        if let interval = snapshot.interval {
+            result.append(Row(
+                label: interval.label,
+                metrics: QuotaWindowUsageMetrics(usage: interval.usage),
+                cost: interval.cost
+            ))
+        }
+        if let weekly = snapshot.weekly {
+            result.append(Row(
+                label: weekly.label,
+                metrics: QuotaWindowUsageMetrics(usage: weekly.usage),
+                cost: weekly.cost
+            ))
+        }
+        if let today {
+            result.append(today)
+        }
+        return result.filter { $0.metrics.totalTokens > 0 }
+    }
+
+    /// 过滤后是否还有任何可见内容：可见行非空，或重置卡可用。宿主
+    /// （`ProviderCardView`）用它决定分隔线与整块区块的显隐——行全被跳过时
+    /// 分隔线不能悬在一个空区块上面。纯函数，测试直接引用。
+    static func hasVisibleContent(
+        snapshot: QuotaWindowUsageSnapshot,
+        today: Row?,
+        resetCredits: ResetCreditsInfo?
+    ) -> Bool {
+        !visibleRows(snapshot: snapshot, today: today).isEmpty
+            || (resetCredits?.availableCount ?? 0) > 0
+    }
+
     var body: some View {
-        let showStats = !snapshot.isEmpty || today != nil
-        let showTable = !snapshot.isEmpty
+        // 两个模块消费同一份过滤后的行集（stats rows 与 `tableRows` 同取数同
+        // 判定），所以一个非空判定同时给两处当显隐开关。
+        let showStats = !rows.isEmpty
+        let showTable = !rows.isEmpty
         let showResets = (resetCredits?.availableCount ?? 0) > 0
         if showStats || showTable || showResets {
             VStack(alignment: .leading, spacing: 6) {
@@ -231,21 +287,25 @@ struct QuotaWindowUsageSection: View {
         }
     }
 
-    /// 模块2「token用量统计值」：标题 + 时间构成条 + 每窗口一行（5h、周，再接今日）。
+    /// 模块2「token用量统计值」：标题 + 时间构成条 + 表头行 + 每窗口一行（5h、周，再接今）。
     ///
     /// 标题「额度分析」在**时间构成条之上**（标题属于模块，条只是模块的第一件内容）。
-    /// 条只在**有额度窗口**时画：它讲的是"5h 占周窗口的比例"，没有窗口（只剩
-    /// 今日行）时一条全灰的槽什么都没说。
+    /// 条只在**过滤后仍有窗口行**（5h/周）可见时画（第五轮改版）：全零窗口的全灰
+    /// 条没有信息量，只剩今行时也一样——条讲的是"5h 占周窗口的比例"。
     ///
-    /// 三行指标共用**同一个** `Grid`（见 `QuotaWindowUsageMetricRow`）：五列
+    /// **表头行**（第五轮改版，`QuotaWindowUsageStatsHeader`）：`类型 | 用量 |
+    /// 命中 | 产出比 | 思考 | 价值`，样式与「额度详情」表头一致（10pt secondary）。
+    /// 表头出现后数据格不再重复文字标签，列名只在表头说一次。
+    ///
+    /// 表头与数据行共用**同一个** `Grid`（见 `QuotaWindowUsageMetricRow`）：六列
     /// 平分整行宽度、跨行对齐。「命中」「思考」两列的显隐是**模块级**的
-    /// （`statsColumnVisibility` 跨行判定一次，每一行拿到同一对值），列才能整列
-    /// 消失而不是参差。字号与单行约束由 `Grid` 统一施加（与下方
-    /// `QuotaWindowUsageRawTable` 同一写法），行本体不再自带字号。
+    /// （`statsColumnVisibility` 基于过滤后的行跨行判定一次，表头与每一行拿到
+    /// 同一对值），列才能整列消失而不是参差。字号与单行约束由 `Grid` 统一施加
+    /// （与下方 `QuotaWindowUsageRawTable` 同一写法），行本体不再自带字号。
     @ViewBuilder
     private var statsModule: some View {
         QuotaModuleTitle(text: Self.statsTitle)
-        if !snapshot.isEmpty {
+        if showsTimeShareBar {
             QuotaWindowTimeShareBar(
                 primaryFraction: barFractions.primary,
                 remainderFraction: barFractions.remainder,
@@ -254,6 +314,10 @@ struct QuotaWindowUsageSection: View {
         }
         Grid(alignment: .leading, horizontalSpacing: 4, verticalSpacing: 3) {
             let visibility = Self.statsColumnVisibility(rows: rows.map(\.metrics))
+            QuotaWindowUsageStatsHeader(
+                showsHitColumn: visibility.hit,
+                showsThinkingColumn: visibility.think
+            )
             ForEach(rows, id: \.label) { row in
                 QuotaWindowUsageMetricRow(
                     label: row.label,
@@ -294,29 +358,21 @@ struct QuotaWindowUsageSection: View {
         QuotaModuleSeparator()
     }
 
-    /// 条之下的行序：**5h、周、今日**。前两行来自额度窗口快照；窗口存在但本地
-    /// 零用量仍然出一行（0 / `—`），因为"这一轮还没开始用"和"根本没有这个窗口"
-    /// 是两件事。今日行排最后：它不是额度窗口，只是同格式的补充。
+    /// 条之下的**可见**行序：**5h、周、今**（全零行已跳过，见 `visibleRows`）。
+    /// 前两行来自额度窗口快照；今行排最后：它不是额度窗口，只是同格式的补充。
     private var rows: [Row] {
-        var result: [Row] = []
-        if let interval = snapshot.interval {
-            result.append(Row(
-                label: interval.label,
-                metrics: QuotaWindowUsageMetrics(usage: interval.usage),
-                cost: interval.cost
-            ))
+        Self.visibleRows(snapshot: snapshot, today: today)
+    }
+
+    /// 时间构成条的显隐（第五轮改版）：只在**过滤后仍有窗口行**（5h/周）可见时
+    /// 画——全零窗口的全灰条没有信息量；只剩今行时也不画（今行不是额度窗口，
+    /// 不讲"5h 占周窗口的比例"）。判定与 `visibleRows` 同一口径
+    /// （四桶合计 > 0），而不是"窗口存在就画"。
+    private var showsTimeShareBar: Bool {
+        [snapshot.interval, snapshot.weekly].contains { window in
+            guard let window else { return false }
+            return QuotaWindowUsageMetrics(usage: window.usage).totalTokens > 0
         }
-        if let weekly = snapshot.weekly {
-            result.append(Row(
-                label: weekly.label,
-                metrics: QuotaWindowUsageMetrics(usage: weekly.usage),
-                cost: weekly.cost
-            ))
-        }
-        if let today {
-            result.append(today)
-        }
-        return result
     }
 
     private var barFractions: (primary: Double, remainder: Double) {
@@ -327,25 +383,71 @@ struct QuotaWindowUsageSection: View {
     }
 }
 
-/// 「额度分析」里一个窗口行的**五个格子**（本体是 `GridRow`）：
-/// `[5h 173M] [命中 97.8%] [出/入 12.345%] [思考 41%] [¥12.34]`。
+/// 「额度分析」的**表头行**（第五轮改版，本体是 `GridRow`）：
+/// `类型 | 用量 | 命中 | 产出比 | 思考 | 价值`。
 ///
-/// 三行（5h / 周 / 今日）住在**同一个** `Grid` 里（`statsModule`），所以这五列
-/// 平分整行宽度、**跨行对齐**——曾经五个指标挤在行首、段间用小圆点分开，右侧
-/// 整段留白，三行各自的段落起点还互相参差。第四轮改版起五列**全部左对齐**：
-/// 右对齐的价值列在三行之间参差（`¥12.34` 与 `$45.67` 宽度不同，右缘对不齐），
-/// 左对齐让每行的五个指标都从各自的列起点开始读，跨行扫一列时视线是直的。
+/// 样式与「额度详情」的表头一致（`metricLabel` 10pt secondary），**全列左对齐**
+/// （沿用第四轮的数据列对齐，表头跟随）。表头出现后数据格不再重复文字标签，
+/// 列名只在表头说一次（见 `QuotaWindowUsageMetricRow`）。命中/思考两列的表头
+/// 随模块级列显隐一起消失；类型/用量/产出比/价值四列表头恒在。表头住进与数据行
+/// 同一个 `Grid`，六列才能跨行对齐。文案钉在
+/// `QuotaWindowUsageSection.statsHeaders`，测试直接引用。
+struct QuotaWindowUsageStatsHeader: View {
+    /// 「命中」列表头是否保留，与数据格同一份模块级判定。
+    var showsHitColumn: Bool = true
+    /// 「思考」列表头是否保留，与数据格同一份模块级判定。
+    var showsThinkingColumn: Bool = true
+
+    var body: some View {
+        let copy = QuotaWindowUsageSection.statsHeaders
+        return GridRow {
+            headerCell(copy.type)
+            headerCell(copy.usage)
+            if showsHitColumn {
+                headerCell(copy.hit)
+            }
+            headerCell(copy.outputInput)
+            if showsThinkingColumn {
+                headerCell(copy.think)
+            }
+            headerCell(copy.value)
+        }
+    }
+
+    private func headerCell(_ title: String) -> some View {
+        Text(title)
+            .font(MenuTypography.metricLabel)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// 「额度分析」里一个窗口行的**六个格子**（本体是 `GridRow`）：
+/// `[5h] [173M] [97.8%] [12.345%] [41%] [¥12.34]`。
+///
+/// 表头行（`QuotaWindowUsageStatsHeader`）与数据行住在**同一个** `Grid` 里
+/// （`statsModule`），六列平分整行宽度、**跨行对齐**。第五轮改版起首列由
+/// 「标签+token 合并格」拆成类型（行标签）与用量（token 数）两列、`GridRow`
+/// 由五列变六列；表头出现后**数据格不再带文字标签**——曾经每格「命中 97.8%」
+/// 式的「标签+数值」连同 `ViewThatFits` 紧凑降级（`出比` / `思`）一起删除：
+/// 列名只在表头说一次，格子只放数值。
+///
+/// **不降级的宽度核算**（第五轮，336pt 卡内容宽 312pt、六列各约 48.7pt）：
+/// 表头最宽「产出比」三字 ≈ 31pt，数据格常规最宽「12.345%」≈ 42pt、命中率
+/// 「97.8%」与价值「¥12.34」≈ 33pt，都在列宽内；价值列的超长金额（如
+/// 「¥1,234,567.89」≈ 72pt）本来就越过列宽——第四轮五列（约 60pt）时已是
+/// `lineLimit(1)` 截尾而非折行，六列只是更早触发，行为不变（截尾不折行，
+/// 行高恒一格，`testMetricRowStaysOnOneLineInsideTheCardContentWidth` 与表头
+/// 单行断言钉住）。表头层不做紧凑降级：固定三字文案在最窄列也装得下。
 ///
 /// 「命中」「思考」两列可以**整列隐藏**（第四轮改版）：显隐是模块级判定
-/// （`QuotaWindowUsageSection.statsColumnVisibility`，该列在所有可见行的桶合计
-/// 为 0 时藏），宿主判定一次、每一行拿到同一对 `showsHitColumn` /
+/// （`QuotaWindowUsageSection.statsColumnVisibility`，该列在所有可见行（过滤后）
+/// 的桶合计为 0 时藏），宿主判定一次、表头与每一行拿到同一对 `showsHitColumn` /
 /// `showsThinkingColumn`——判定在行外，行本体只照办，同一 Grid 里的格子才会
-/// 一起消失。出/入、价值与首列恒在。
+/// 一起消失。产出比、价值与类型、用量两列恒在。
 ///
 /// 10pt 等宽数字、单行不折行的既有约束不变：字号与 `lineLimit` 由宿主的 `Grid`
-/// 统一施加（`statsModule`），行本体不携带——修饰符包在 `GridRow` 外会让它失去
-/// 网格语义。宽度不够时的降级改为**列内**的 `ViewThatFits`：`出/入` / `思考`
-/// 先压成 `出比` / `思`，数值本身一个都不压。
+/// 统一施加（`statsModule`），修饰符包在 `GridRow` 外会让它失去网格语义。
 struct QuotaWindowUsageMetricRow: View {
     let label: String
     let metrics: QuotaWindowUsageMetrics
@@ -356,56 +458,32 @@ struct QuotaWindowUsageMetricRow: View {
     /// 「思考」列是否保留。模块内所有可见行的 reasoning 合计为 0 时由宿主传 `false`。
     var showsThinkingColumn: Bool = true
 
-    /// 标签集。完整版先试，放不下再压两个最长的（`出/入`、`思考`）——它们各带一个
-    /// 斜杠/双字，缩写后省出的 20pt 恰好够，不动 `命中`（最短，且缩了就认不出）。
-    static func labels(compact: Bool) -> (hit: String, outIn: String, think: String) {
-        compact ? ("命中", "出比", "思") : ("命中", "出/入", "思考")
-    }
-
     var body: some View {
-        let names = Self.labels(compact: false)
-        let compactNames = Self.labels(compact: true)
         return GridRow {
-            HStack(spacing: 4) {
-                Text(label)
-                Text(Formatters.formatTokenCountCompact(metrics.totalTokens))
-            }
-            .foregroundStyle(Color.primaryLabel)
-            .frame(maxWidth: .infinity, alignment: .leading)
-
+            Text(label)
+                .foregroundStyle(Color.primaryLabel)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Text(Formatters.formatTokenCountCompact(metrics.totalTokens))
+                .foregroundStyle(Color.primaryLabel)
+                .frame(maxWidth: .infinity, alignment: .leading)
             if showsHitColumn {
-                pairCell(names.hit, compactNames.hit, Self.rateText(metrics.cacheHitRate, digits: 1))
+                rateCell(Self.rateText(metrics.cacheHitRate, digits: 1))
             }
-            pairCell(names.outIn, compactNames.outIn, Self.outputInputRateText(metrics.outputToInputRate))
+            rateCell(Self.outputInputRateText(metrics.outputToInputRate))
             if showsThinkingColumn {
-                pairCell(names.think, compactNames.think, Self.rateText(metrics.reasoningShare, digits: 0))
+                rateCell(Self.rateText(metrics.reasoningShare, digits: 0))
             }
-
             Text(Self.costText(cost))
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
-    /// 一个「标签 + 数值」格，左对齐（第四轮改版，五列统一）。标签列内放不下时由
-    /// `ViewThatFits` 降级成紧凑写法；标签只有一个写法时（`命中`）直接画，不空转
-    /// 一遍降级。
-    private func pairCell(_ fullLabel: String, _ compactLabel: String, _ value: String) -> some View {
-        HStack(spacing: 2) {
-            if fullLabel == compactLabel {
-                Text(fullLabel)
-                    .foregroundStyle(.secondary)
-            } else {
-                ViewThatFits(in: .horizontal) {
-                    Text(fullLabel)
-                    Text(compactLabel)
-                }
-                .foregroundStyle(.secondary)
-            }
-            Text(value)
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
+    /// 比率数值格：只有数值、左对齐（第四轮），标签在表头（第五轮）。
+    private func rateCell(_ value: String) -> some View {
+        Text(value)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     /// 分母为 0 的比率显示 `—`，不显示 `0%`：前者是"这个比率算不出来"，
@@ -415,10 +493,10 @@ struct QuotaWindowUsageMetricRow: View {
         return Formatters.formatPercent(rate, digits: digits)
     }
 
-    /// 出/入比文案：**固定 3 位小数**（`xx.xxx%`）。出/入比通常只有百分之几十以内，
-    /// 0 位小数会把 12.4% 与 11.6% 压成同一个 "12%"——同一 provider 的 5h / 周 /
-    /// 今日三行并排时就失去可比性；固定（而不是至多）3 位还让这一段保持等宽。
-    /// 分母为 0 仍是 `—`，与其它比率同一个语义。
+    /// 产出比（出/入比）文案：**固定 3 位小数**（`xx.xxx%`）。出/入比通常只有
+    /// 百分之几十以内，0 位小数会把 12.4% 与 11.6% 压成同一个 "12%"——同一
+    /// provider 的 5h / 周 / 今三行并排时就失去可比性；固定（而不是至多）3 位还
+    /// 让这一段保持等宽。分母为 0 仍是 `—`，与其它比率同一个语义。
     static func outputInputRateText(_ rate: Double?) -> String {
         guard let rate else { return "—" }
         return String(format: "%.3f%%", rate * 100)
@@ -439,29 +517,32 @@ struct QuotaWindowUsageMetricRow: View {
 /// 同样的取数与格式化，只是从"展开后才看得到"变成常驻——两个宿主都不吃鼠标
 /// 事件，折叠态等于不存在，绝对值要一直在屏上才回答得了"这些 token 都是什么"。
 ///
-/// 表头 `类型 | Input | Cached | Output | Reason | 重置日期`，下面每个**存在**的
-/// 额度窗口一行（`5h` / `周`；某窗口不存在就省略该行），末尾再接**今日**行
-/// （第四轮改版：宿主传入的当天本地聚合，重置日期格写 `—`——今日没有窗口重置
-/// 概念；当天无本地数据则不追加）。数值与旧两栏一样走 `formatTokenCountCompact`；
-/// 重置日期是 `MM-dd HH:mm (倒计时)`，与额度行元信息行尾的重置时刻同一套格式化。
+/// 表头 `类型 | Input | Cached | Output | Reason | 重置日期`，下面每个**存在且
+/// 非全零**的额度窗口一行（`5h` / `周`；某窗口不存在、或四桶合计为 0 时省略该行
+/// ——第五轮改版的**全零行跳过**，与「额度分析」同一规则），末尾再接**今**行
+/// （第四轮改版：宿主传入的当天本地聚合，重置日期格写 `—`——今没有窗口重置
+/// 概念；当天无本地数据不追加，当天全零同样被跳过）。数值与旧两栏一样走
+/// `formatTokenCountCompact`；重置日期是 `MM-dd HH:mm (倒计时)`，与额度行元信息
+/// 行尾的重置时刻同一套格式化。
 ///
 /// **全零列隐藏**（第四轮改版）：Input / Cached / Output / Reason 四列各自在
-/// **所有可见行**（5h/周/今日）合计为 0 时整列隐藏——表头跟着数据格一起消失
-/// （「如果整列都跳过，那么标题也跳过」说的是列表头；模块标题「额度详情」只随
-/// 模块整体显隐）。类型、重置日期两列恒在。判定是 `numericColumnVisibility`
-/// 一次跨行算出，表头与每一行数据格拿同一份结果。
+/// **所有可见行**（5h/周/今，全零行跳过之后）合计为 0 时整列隐藏——表头跟着
+/// 数据格一起消失（「如果整列都跳过，那么标题也跳过」说的是列表头；模块标题
+/// 「额度详情」只随模块整体显隐）。类型、重置日期两列恒在。判定是
+/// `numericColumnVisibility` 一次跨行算出，表头与每一行数据格拿同一份结果。
 ///
 /// 列宽**不均分**（第三轮起）：类型列按内容自然宽；重置日期列取**固定宽**
 /// （`resetDateColumnWidth` = 最长形态自然宽 × 1.2）——第三轮的自然宽在真机上
 /// 仍被四个数值列挤到缩字，固定宽之后四个数值列平分的是**剩余**宽度，重置日期
 /// 完整显示、不 `minimumScaleFactor`。数值列右对齐、表头跟随其对齐方式的现状
-/// 保持；重置日期列内较短的格用 `gridCellAnchor` 锚到右缘（与数值列右对齐同一
-/// 读法），类型左缘对齐。
+/// 保持；重置日期列（表头与数据格）**左对齐**（第五轮改版）——它是日期文字
+/// 不是数值，与类型列同一"从列起点读起"的读法，不再锚到右缘仿数值列。
 struct QuotaWindowUsageRawTable: View {
     let snapshot: QuotaWindowUsageSnapshot
-    /// 「今日」行：宿主传入的当天本地聚合（`ProviderCardView.todayUsageRow`），
-    /// 排在 5h/周 之后；`nil` = 当天无本地数据，不追加该行。它**参与全零列判定**
-    /// ——今日有 cached 就保住 Cached 列，与「额度分析」的今日行同一份数据。
+    /// 「今」行：宿主传入的当天本地聚合（`ProviderCardView.todayUsageRow`，
+    /// 标签「今」），排在 5h/周 之后；`nil` = 当天无本地数据，不追加该行。它
+    /// **参与全零列判定**——今有 cached 就保住 Cached 列，与「额度分析」的今行
+    /// 同一份数据；四桶合计为 0 时同样被 `tableRows` 跳过。
     var today: QuotaWindowUsageSection.Row?
 
     /// 重置日期列的**固定宽度**（第四轮改版）。
@@ -474,7 +555,7 @@ struct QuotaWindowUsageRawTable: View {
     /// 140.4pt。测试钉住「常量 ≥ 最长形态自然宽」，系统字体度量变了会先红在这里。
     static let resetDateColumnWidth: CGFloat = 117 * 1.2
 
-    /// 表内一行（`ForEach` 的元素）：`id` 是行序——标签（`5h`/`周`/`今日`）理论上
+    /// 表内一行（`ForEach` 的元素）：`id` 是行序——标签（`5h`/`周`/`今`）理论上
     /// 不重复，但行序才是这张表真正的身份。
     struct TableRow: Identifiable {
         let id: Int
@@ -483,8 +564,10 @@ struct QuotaWindowUsageRawTable: View {
         let resetsAt: Date?
     }
 
-    /// 表内可见行：5h、周，再接今日（第四轮改版）。列显隐与行渲染都从这一份
-    /// 取数，「今日参与全零列判定」才不会与行序漂移。
+    /// 表内可见行：5h、周，再接今，**全零行已跳过**（第五轮改版，与
+    /// `QuotaWindowUsageSection.visibleRows` 同一取数、同一判定——四桶合计为 0
+    /// 的行整行不出）。列显隐与行渲染都从这一份取数，「今参与全零列判定」才
+    /// 不会与行序漂移，列显隐也天然基于过滤后的行。
     var tableRows: [TableRow] {
         var result: [TableRow] = []
         if let interval = snapshot.interval {
@@ -511,12 +594,12 @@ struct QuotaWindowUsageRawTable: View {
                 resetsAt: nil
             ))
         }
-        return result
+        return result.filter { $0.metrics.totalTokens > 0 }
     }
 
     /// 四个数值列的显隐（第四轮改版，**模块内跨行判定**）：某列在所有可见行
-    /// （5h/周/今日）合计为 0 时整列隐藏（含表头）。类型、重置日期两列恒在。
-    /// 纯函数，测试直接引用。
+    /// （5h/周/今，全零行跳过之后）合计为 0 时整列隐藏（含表头）。类型、重置
+    /// 日期两列恒在。纯函数，测试直接引用。
     static func numericColumnVisibility(rows: [QuotaWindowUsageMetrics])
         -> (input: Bool, cached: Bool, output: Bool, reason: Bool) {
         (
@@ -583,16 +666,17 @@ struct QuotaWindowUsageRawTable: View {
     }
 
     /// 重置日期列表头：**固定宽**（`resetDateColumnWidth`），不参与数值列的平分
-    /// ——四个数值列平分的是刨去它之后的剩余宽度。右缘对齐，与数值格同一读法。
+    /// ——四个数值列平分的是刨去它之后的剩余宽度。**左对齐**（第五轮改版）：
+    /// 日期文字与类型列同一读法，从列起点读起。
     private var resetDateHeader: some View {
         Text("重置日期")
             .font(MenuTypography.metricLabel)
             .foregroundStyle(.secondary)
-            .frame(width: Self.resetDateColumnWidth, alignment: .trailing)
+            .frame(width: Self.resetDateColumnWidth, alignment: .leading)
     }
 
-    /// 表内一行：窗口行（5h/周）与今日行共用——差别只在标签来源与重置时刻
-    /// （今日恒 `nil` → 重置日期格 `—`）。格子按 `visibility` 逐列给出，与表头
+    /// 表内一行：窗口行（5h/周）与今行共用——差别只在标签来源与重置时刻
+    /// （今恒 `nil` → 重置日期格 `—`）。格子按 `visibility` 逐列给出，与表头
     /// 同一份判定。
     private func dataRow(
         label: String,
@@ -621,8 +705,9 @@ struct QuotaWindowUsageRawTable: View {
 
     /// 重置日期 = `MM-dd HH:mm (倒计时)`，取数与格式化与旧 hover 的重置行同一套
     /// （`formatMonthDayMinute` + `formatResetSuffix`）。没有重置时刻写 `—`
-    /// （不猜服务端时间；今日行恒走这一格）。固定宽列：按最长形态完整显示，不
-    /// `minimumScaleFactor` 压缩；较短的格锚到列右缘，与数值列的右对齐读法一致。
+    /// （不猜服务端时间；今行恒走这一格）。固定宽列：按最长形态完整显示，不
+    /// `minimumScaleFactor` 压缩；**左对齐**（第五轮改版，表头与数据格同一读法
+    /// ——日期文字不是数值，不跟随数值列的右对齐）。
     private func resetCell(_ resetsAt: Date?) -> some View {
         Group {
             if let resetsAt {
@@ -633,7 +718,7 @@ struct QuotaWindowUsageRawTable: View {
                     .foregroundStyle(.tertiary)
             }
         }
-        .gridCellAnchor(.trailing)
+        .gridCellAnchor(.leading)
     }
 }
 

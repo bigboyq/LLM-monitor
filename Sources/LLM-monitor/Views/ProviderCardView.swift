@@ -221,20 +221,24 @@ struct ProviderCardView: View, Equatable {
     /// 是因为它的数据仍然来自本机会话扫描：那条线的语义是"上面来自 provider
     /// 接口、下面来自本地扫描"（重置卡虽来自接口，但它是额度条的补充，跟着区块走）。
     ///
-    /// 各模块按数据可用性显隐；**全部**不可见时整块（连同上面的分隔线）不渲染
-    /// ——余额型 DeepSeek 没有额度窗口、没有重置卡，今日行也不属于窗口区块。
+    /// 各模块按数据可用性显隐；过滤后**什么都不剩**时整块（连同上面的分隔线）
+    /// 不渲染——余额型 DeepSeek 没有额度窗口、没有重置卡，今行也不属于窗口区块
+    /// （判定走 `QuotaWindowUsageSection.hasVisibleContent`：全零行跳过之后还有
+    /// 可见行、或重置卡可用，分隔线才画）。
     ///
     /// **这一处是 `QuotaWindowUsageSection` 唯一的构造点**：`.ok`、`.loading`、
-    /// `.failed` 三条路径都走它，所以今日行与重置卡只在这里取一次，三条路径自动
+    /// `.failed` 三条路径都走它，所以今行与重置卡只在这里取一次，三条路径自动
     /// 一致——曾经那条 `quotaBetween` 就是漏了回退路径才让重置卡与倒计时在浮层里
     /// 每次刷新闪一下。
     @ViewBuilder
     private func quotaWindowUsage(info: QuotaInfo, projection: ProviderUsageProjection) -> some View {
         let snapshot = quotaWindowUsageSnapshot(info: info, projection: projection)
         let today = todayUsageRow(projection: projection)
-        let hasUsageModules = !snapshot.isEmpty
-            || today != nil
-            || (info.resetCredits?.availableCount ?? 0) > 0
+        let hasUsageModules = QuotaWindowUsageSection.hasVisibleContent(
+            snapshot: snapshot,
+            today: today,
+            resetCredits: info.resetCredits
+        )
         if hasUsageModules {
             quotaUsageDivider
             // 品牌色与卡片描边（`accentColor`）同源：它本来就是额度那一组的一部分。
@@ -248,17 +252,19 @@ struct ProviderCardView: View, Equatable {
         }
     }
 
-    /// 「今日」行：当天本地用量聚合，与第一张卡底部曾经的「今日使用情况」汇总行
+    /// 「今」行：当天本地用量聚合，与第一张卡底部曾经的「今日使用情况」汇总行
     /// （`LocalUsageFooterView.summaryRow` → `todayMetrics` / `todayCostText`）
     /// **同源同口径**：token 四桶取 `dailyTokenUsage` 的今天那一条（与"今天 X
     /// tokens / 命中率"同一份数据，比率公式也同一个：出/入 = (reasoning+output)/
     /// (input+cached)、思考 = reasoning/(reasoning+output)、命中为缓存占比）；
     /// 价值取当天样本逐条计价（与 `todayCostText` 同一取数与传参）。
     ///
-    /// 当天无本地数据 → 返回 `nil`，今日行整个不画。它不是额度窗口，只复用
-    /// `QuotaWindowUsageMetricRow` 的格式（行首标签「今日」），不参与时间构成条；
-    /// 第四轮改版起同一行还进「额度详情」表（`QuotaWindowUsageRawTable.today`，
-    /// 重置日期格 `—`，并参与该表的全零列判定），两处消费同一份 `Row`。
+    /// 当天无本地数据 → 返回 `nil`，今行整个不画。它不是额度窗口，只复用
+    /// `QuotaWindowUsageMetricRow` 的格式（行首标签「今」，第五轮改版从「今日」
+    /// 缩成「今」，与「5h」「周」同一长度档），不参与时间构成条；第四轮改版起
+    /// 同一行还进「额度详情」表（`QuotaWindowUsageRawTable.today`，重置日期格
+    /// `—`，并参与该表的全零列判定），两处消费同一份 `Row`。当天四桶合计为 0
+    /// 时照常返回 `Row`，由 `QuotaWindowUsageSection.visibleRows` 统一跳过。
     private func todayUsageRow(projection: ProviderUsageProjection) -> QuotaWindowUsageSection.Row? {
         guard let today = projection.dailyTokenUsage.last(where: {
             Calendar.current.isDateInToday($0.dayStart)
@@ -286,8 +292,12 @@ struct ProviderCardView: View, Equatable {
                 quotaProviderID: status.kind.quotaProviderID,
                 deepseekPeakWindow: status.deepseekPeakWindow ?? .defaultWindow
             )
-        return QuotaWindowUsageSection.Row(label: "今日", metrics: metrics, cost: cost)
+        return QuotaWindowUsageSection.Row(label: Self.todayRowLabel, metrics: metrics, cost: cost)
     }
+
+    /// 今行的行标签（第五轮改版从「今日」缩成「今」，与「5h」「周」同一长度档）。
+    /// 测试钉住，改文案必须连测试一起改。
+    static let todayRowLabel = "今"
 
     /// 区块数据：各 active model 的窗口用量按 provider 合计。
     ///
@@ -580,7 +590,7 @@ struct ProviderCardView: View, Equatable {
     ///
     /// 第二轮改版后卡片上只剩 `.detail`（段3 的图表）——曾经的 `.summary`
     /// 「今日使用情况」汇总行已摘除，其内容上移为「额度窗口用量」区块统计值里的
-    /// 「今日」行（`todayUsageRow`，同源同口径）。
+    /// 「今」行（`todayUsageRow`，同源同口径）。
     ///
     /// - Parameter part: 现在生产路径只传 `.detail`；其余 case 是
     ///   `LocalUsagePart` 的历史形态，见该类型的说明。

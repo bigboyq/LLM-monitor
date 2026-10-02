@@ -305,7 +305,8 @@ enum LocalUsageSummaryBuilder {
 ///
 /// 两条窗口都可以是 `nil`（provider 只有其中一个窗口，或根本没有额度窗口——
 /// 余额型 DeepSeek）。`usage` 为 `nil` 表示"窗口存在但本地没有记录"，与
-/// "窗口不存在"是两件事：前者画一行 0 / `—`，后者整行不画。
+/// "窗口不存在"在数据上仍是两件事；但 UI 上（第五轮改版）全零行整行跳过
+/// （`QuotaWindowUsageSection.visibleRows`），两个模块都不出 `0 / —` 行。
 struct QuotaWindowUsageSnapshot: Equatable, Sendable {
     struct Window: Equatable, Sendable {
         /// 窗口标签（`5h` / `周` / minimax video 的 `日`），由调用方给——
