@@ -452,10 +452,45 @@ struct MenuContentView: View {
     }
 
     private var footerSeparator: some View {
-        Rectangle()
-            .fill(Color.primary.opacity(0.08))
-            .frame(width: 1, height: 10)
+        MenuHairline.vertical
     }
+}
+
+/// 菜单里的**发丝线**：段头下沿（`HarnessSectionView`）、兜底行上沿
+/// （`ProviderStatusStripView`）两道横线，以及 footer 里两处分隔竖线。
+///
+/// 三处原本各写一份 `Rectangle().fill(Color.primary.opacity(0.08)).frame(height: 1)`
+/// / `frame(width: 1, height: 10)`——它们本来就是**同一根线**的不同朝向：同层玻璃
+/// 材质上的同一个 8% 前景色、同一个 1pt 粗细。收成一个视图，改颜色/粗细时三处一起
+/// 变，漏一处就会在同一个面板里出现两种线。
+///
+/// 横线**不设宽度**：三处用法都挂在 `.overlay` 上，宽度必须由父容器给（铺满），
+/// 在这里写死宽度反而会与容器脱钩。
+struct MenuHairline: View {
+    /// 线粗细。横竖共用 1pt。
+    static let thickness: CGFloat = 1
+    /// 线颜色 = 前景色 8%。三处观感一致是刻意的。
+    static let opacity: Double = 0.08
+    /// 竖线长度（footer 分隔线）。横线不用这个值。
+    static let verticalLength: CGFloat = 10
+
+    var isVertical: Bool = false
+    /// 竖线长度；横线忽略它。
+    var length: CGFloat = MenuHairline.verticalLength
+
+    var body: some View {
+        Rectangle()
+            .fill(Color.primary.opacity(Self.opacity))
+            .frame(
+                width: isVertical ? Self.thickness : nil,
+                height: isVertical ? length : Self.thickness
+            )
+    }
+
+    /// 横线：铺满父容器宽度，1pt 高。
+    static var horizontal: some View { MenuHairline() }
+    /// 竖线：1pt 宽、`verticalLength` 高（footer 分隔线）。
+    static var vertical: some View { MenuHairline(isVertical: true) }
 }
 
 /// 菜单整体背景：macOS 26 交给 MenuBarExtra 的系统 popover 提供 Liquid Glass，
