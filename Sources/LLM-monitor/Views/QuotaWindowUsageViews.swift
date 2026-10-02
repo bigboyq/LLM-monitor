@@ -334,10 +334,11 @@ struct QuotaWindowUsageSection: View {
 
     /// 模块4「重置卡信息」：标题 + 折叠态一行（重置卡数量：N + 最近到期）+ 逐张详情行。
     ///
-    /// 逐张清单不再挂 hover（`CompactResetCreditsRow` 传 `revealsDetail: false`），
-    /// 直接接在折叠行下面：N 张可用的卡 = N + 1 行。清单不带头部「可用重置卡 N 张」
-    /// ——数量已经在第一行里了，再报一遍就是同一屏两份总数。0 张（或没有数据）
-    /// 整块不画（标题跟着一起），由 `body` 的 `showResets` 与这里的双重判定兜住。
+    /// 逐张清单**直接接在折叠行下面**（第七轮：`CompactResetCreditsRow` 不再挂
+    /// hover 展开分支，视图只渲染折叠态那一句）：N 张可用的卡 = N + 1 行。清单
+    /// 不带头部「可用重置卡 N 张」——数量已经在第一行里了，再报一遍就是同一屏
+    /// 两份总数。0 张（或没有数据）整块不画（标题跟着一起），由 `body` 的
+    /// `showResets` 与这里的双重判定兜住。
     @ViewBuilder
     private var resetCreditsModule: some View {
         if let resetCredits, resetCredits.availableCount > 0 {
@@ -345,10 +346,9 @@ struct QuotaWindowUsageSection: View {
                 QuotaModuleTitle(text: Self.resetCreditsTitle)
                 CompactResetCreditsRow(
                     resets: resetCredits,
-                    refreshIntervalSeconds: refreshIntervalSeconds,
-                    revealsDetail: false
+                    refreshIntervalSeconds: refreshIntervalSeconds
                 )
-                ResetCreditsDetailList(resets: resetCredits, showsHeader: false)
+                ResetCreditsDetailList(resets: resetCredits)
             }
         }
     }
@@ -380,6 +380,37 @@ struct QuotaWindowUsageSection: View {
             intervalTokens: snapshot.interval.map { QuotaWindowUsageMetrics(usage: $0.usage).totalTokens },
             weeklyTokens: snapshot.weekly.map { QuotaWindowUsageMetrics(usage: $0.usage).totalTokens }
         )
+    }
+}
+
+/// 本文件两张表（`QuotaWindowUsageStatsHeader` 与 `QuotaWindowUsageRawTable`）
+/// 列表头的**唯一**实现：同字体（`MenuTypography.metricLabel` 10pt）同色
+/// （secondary），差别只在**列的几何**——参与平分剩余宽度的列（`alignment`
+/// 分支）与按内容自然宽取宽的列（`anchor` 分支）。
+///
+/// 三个调用点原本各写一份 `Text(...).font(...).foregroundStyle(...)`（同字体同色
+/// 只差对齐/锚点），改字号或颜色时很容易只改到其中一处；合成一个之后字体与颜色
+/// 只有这一处可改，列宽策略仍由两个可选参数表达，观感不变。
+fileprivate struct QuotaTableHeaderCell: View {
+    let title: String
+    /// 平分宽度列的列内对齐（左对齐/右对齐）。非 nil 时走 `frame` 分支。
+    var alignment: Alignment?
+    /// 自然宽列的列内锚点（`gridCellAnchor` 只收 `UnitPoint`/`Anchor<UnitPoint>`，
+    /// 没有 `Alignment` 重载）。`alignment == nil` 时走这一支。
+    var anchor: UnitPoint?
+
+    var body: some View {
+        if let alignment {
+            text.frame(maxWidth: .infinity, alignment: alignment)
+        } else {
+            text.gridCellAnchor(anchor ?? .leading)
+        }
+    }
+
+    private var text: some View {
+        Text(title)
+            .font(MenuTypography.metricLabel)
+            .foregroundStyle(.secondary)
     }
 }
 
@@ -415,11 +446,9 @@ struct QuotaWindowUsageStatsHeader: View {
         }
     }
 
+    /// 平分宽度、左对齐（表头不跟随数据格的右对齐——列名是文字不是数值）。
     private func headerCell(_ title: String) -> some View {
-        Text(title)
-            .font(MenuTypography.metricLabel)
-            .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, alignment: .leading)
+        QuotaTableHeaderCell(title: title, alignment: .leading)
     }
 }
 
@@ -433,13 +462,17 @@ struct QuotaWindowUsageStatsHeader: View {
 /// 式的「标签+数值」连同 `ViewThatFits` 紧凑降级（`出比` / `思`）一起删除：
 /// 列名只在表头说一次，格子只放数值。
 ///
-/// **不降级的宽度核算**（第五轮，336pt 卡内容宽 312pt、六列各约 48.7pt）：
+/// **不降级的宽度核算**（第七轮起按两个宿主共同的 **420pt 卡内容宽**，不再是旧
+/// 主菜单的 312pt）：`EdgeDockTheme.popoverWidth` 468 − 2×背板 padding 12 −
+/// 2×卡片内容 padding 12 = 420pt。六列平分时每列 = (420 − 5×4 间距) / 6 =
+/// **66.7pt**（命中/思考两列整列隐藏后按剩下的列数重新平分：4 列各 102pt）。
 /// 表头最宽「产出比」三字 ≈ 31pt，数据格常规最宽「12.345%」≈ 42pt、命中率
-/// 「97.8%」与价值「¥12.34」≈ 33pt，都在列宽内；价值列的超长金额（如
-/// 「¥1,234,567.89」≈ 72pt）本来就越过列宽——第四轮五列（约 60pt）时已是
-/// `lineLimit(1)` 截尾而非折行，六列只是更早触发，行为不变（截尾不折行，
-/// 行高恒一格，`testMetricRowStaysOnOneLineInsideTheCardContentWidth` 与表头
-/// 单行断言钉住）。表头层不做紧凑降级：固定三字文案在最窄列也装得下。
+/// 「97.8%」与价值「¥12.34」≈ 33pt，都在列宽内。价值列的超长金额（如
+/// 「¥1,234,567.89」实测 ≥ 70pt）**不再靠 `lineLimit(1)` 截尾**：金额自己换紧凑单位
+/// （`¥1.23M`，实测 ≈ 40pt，见 `costText` / `compactAmountText`），截尾只剩
+/// `lineLimit` 这层结构保险。行高恒一格，
+/// `testMetricRowStaysOnOneLineInsideTheCardContentWidth` 与表头单行断言钉住。
+/// 表头层不做紧凑降级：固定三字文案在最窄列也装得下。
 ///
 /// 「命中」「思考」两列可以**整列隐藏**（第四轮改版）：显隐是模块级判定
 /// （`QuotaWindowUsageSection.statsColumnVisibility`，该列在所有可见行（过滤后）
@@ -475,7 +508,12 @@ struct QuotaWindowUsageMetricRow: View {
             if showsHitColumn {
                 rateCell(Self.rateText(metrics.cacheHitRate, digits: 1))
             }
-            rateCell(Self.outputInputRateText(metrics.outputToInputRate))
+            rateCell(
+                Self.outputInputRateText(metrics.outputToInputRate),
+                help: metrics.outputToInputRate == nil
+                    ? Self.outputInputRateHelpUnavailable
+                    : Self.outputInputRateHelp
+            )
             if showsThinkingColumn {
                 rateCell(Self.rateText(metrics.reasoningShare, digits: 0))
             }
@@ -486,11 +524,12 @@ struct QuotaWindowUsageMetricRow: View {
     }
 
     /// 比率数值格：只有数值、**右对齐**（第六轮改版；第四轮为左对齐），标签在
-    /// 表头（第五轮）。
-    private func rateCell(_ value: String) -> some View {
+    /// 表头（第五轮）。`help` 非空时挂上 hover 说明（见 `outputInputRateHelp`）。
+    private func rateCell(_ value: String, help: String? = nil) -> some View {
         Text(value)
             .foregroundStyle(.secondary)
             .frame(maxWidth: .infinity, alignment: .trailing)
+            .help(help ?? "")
     }
 
     /// 分母为 0 的比率显示 `—`，不显示 `0%`：前者是"这个比率算不出来"，
@@ -509,12 +548,65 @@ struct QuotaWindowUsageMetricRow: View {
         return String(format: "%.3f%%", rate * 100)
     }
 
-    /// 金额文案直接用 `ModelCostEstimate.displayText`（与 7 天图表、客户端汇总
-    /// 同一句），`¥12.34` / `$45.67` 原币种显示，部分计价自带后缀，不在这里另造
-    /// 一套。没有本地样本是 `—`，与"有样本但都查不到价"（`未定价`）区分开。
+    /// 产出比格子的 hover 说明（第七轮）：格子里只有一个 `xx.xxx%` 或一个 `—`，
+    /// 光标停上去才说得出这两串字符各自代表什么——`—` 尤其需要，它不是 0%。
+    static let outputInputRateHelp = "产出比 =（思考 + 输出）/（未缓存输入 + 缓存输入）"
+    /// `—` 时的说明：分母是**输入侧**总量，会话没有输入 token 时这个比率
+    /// 算不出来（而不是等于 0）。
+    static let outputInputRateHelpUnavailable = "会话无输入 token 时产出比无法计算，显示为 —"
+
+    /// 金额超长时的紧凑单位起点：**100 万**。分界线是量出来的：420pt 卡内容宽
+    /// 下价值列 66.7pt，而 `¥999999.99`（阈值以下最长的原样形态）实测 **64pt**
+    /// 刚好装得下，再长一格（`¥1000000.00` ≈ 77pt）就越过列宽；`¥9.88M` 实测
+    /// **40pt**，离列宽还有一半余量。
+    static let costCompactThreshold: Double = 1_000_000
+    /// 十亿档：token 成本是名义价值，实际到不了这一档，但格式化不该在某个
+    /// 数量级上突然失去单位（`¥1234567890.12` 会把列撑爆）。
+    static let costCompactBillionThreshold: Double = 1_000_000_000
+
+    /// 金额文案：常规档直接用 `ModelCostEstimate.displayText`（与 7 天图表、
+    /// 客户端汇总同一句），`¥12.34` / `$45.67` 原币种显示，部分计价自带后缀，
+    /// 不在这里另造一套；**只有超长金额**（≥ `costCompactThreshold`）换紧凑
+    /// 单位，不再依赖 `lineLimit(1)` 截尾。没有本地样本是 `—`，与"有样本但
+    /// 都查不到价"（`未定价`）区分开。
     static func costText(_ cost: ModelCostEstimate?) -> String {
         guard let cost else { return "—" }
-        return cost.displayText
+        guard let value = cost.value, let currency = cost.currency else {
+            return cost.displayText
+        }
+        guard let compact = compactAmountText(value, symbol: currency.symbol) else {
+            return cost.displayText
+        }
+        if case .partiallyPriced = cost.coverage {
+            return compact + "（部分计价）"
+        }
+        return compact
+    }
+
+    /// 超长金额的紧凑形态：`¥1,234,567.89` → `¥1.23M`、`$1,234,567,890` →
+    /// `$1.23B`；**低于阈值返回 nil**（由调用点回落到 `displayText` 的原币种
+    /// 两位小数形态）。
+    ///
+    /// **为什么是 K/M/B 而不是「万」**（第七轮）：① 这一列的表头是「价值」，
+    /// 同一行左边「用量」列已经在用 K/M 阶梯（`Formatters.formatTokenCountCompact`
+    ///：`30K` / `3M`），读者在这一格里已经解码过这套单位了，`¥1.23M` 与它
+    /// 读起来是同一种语言，而「¥123.4万」是另一套；②「万」只对人民币成立，
+    /// 这一列原币种显示，`$123.4万` 是错的。单位在 10 亿 / 100 万两档升级，
+    /// 与 token 那套的阶梯口径一致。
+    static func compactAmountText(_ value: Double, symbol: String) -> String? {
+        let magnitude = abs(value)
+        let divisor: Double
+        let suffix: String
+        if magnitude >= costCompactBillionThreshold {
+            divisor = 1_000_000_000
+            suffix = "B"
+        } else if magnitude >= costCompactThreshold {
+            divisor = 1_000_000
+            suffix = "M"
+        } else {
+            return nil
+        }
+        return "\(symbol)\(String(format: "%.2f", value / divisor))\(suffix)"
     }
 }
 
@@ -546,6 +638,11 @@ struct QuotaWindowUsageMetricRow: View {
 /// 同一"从列起点读起"的读法，不锚右缘仿数值列），第六轮起格子与列表头各带
 /// `resetDateColumnLeadingGap` 前置间隙与 Reason 列拉开可见间距，表头改在固定
 /// 宽内**居中**（它标注的是整列，不是列起点），数据格仍锚在间隙之后。
+///
+/// 宽度口径与「额度分析」一致：两个宿主的卡内容宽都是 **420pt**
+/// （`EdgeDockTheme.popoverWidth` 468 − 2×背板 padding 12 − 2×卡片内容 padding
+/// 12）。四列都可见时数值列各 (420 − 152.4 固定宽 − 5×4 间距) / 4 = **61.9pt**，
+/// 装得下最宽的 `formatTokenCountCompact` 形态（如 `987M` ≈ 30pt）。
 struct QuotaWindowUsageRawTable: View {
     let snapshot: QuotaWindowUsageSnapshot
     /// 「今」行：宿主传入的当天本地聚合（`ProviderCardView.todayUsageRow`，
@@ -664,20 +761,13 @@ struct QuotaWindowUsageRawTable: View {
     /// 数值列表头（Input / Cached / Output / Reason）：参与平分剩余宽度，
     /// 对齐方式跟随数值格（右对齐）。
     private func header(_ title: String, alignment: Alignment) -> some View {
-        Text(title)
-            .font(MenuTypography.metricLabel)
-            .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, alignment: alignment)
+        QuotaTableHeaderCell(title: title, alignment: alignment)
     }
 
-    /// 自然宽列表头（类型）：按内容取宽，`anchor` 是列内锚点（`gridCellAnchor`
-    /// 只收 `UnitPoint`/`Anchor<UnitPoint>`，没有 `Alignment` 重载——`Alignment`
-    /// 版本的对齐留给上面的 `frame` 分支）。
+    /// 自然宽列表头（类型）：按内容取宽，`anchor` 是列内锚点（见
+    /// `QuotaTableHeaderCell.anchor`）。
     private func naturalHeader(_ title: String, anchor: UnitPoint) -> some View {
-        Text(title)
-            .font(MenuTypography.metricLabel)
-            .foregroundStyle(.secondary)
-            .gridCellAnchor(anchor)
+        QuotaTableHeaderCell(title: title, anchor: anchor)
     }
 
     /// 重置日期列表头：**固定宽**（`resetDateColumnWidth`），不参与数值列的平分
@@ -742,34 +832,20 @@ struct QuotaWindowUsageRawTable: View {
     }
 }
 
-/// 可用重置卡的**逐张清单**：总数 + 每张的到期日。
+/// 可用重置卡的**逐张清单**：每张的到期日。
 ///
-/// 两处消费：`QuotaWindowUsageSection` 的重置卡模块（常驻，`showsHeader: false`）
-/// 与 `CompactResetCreditsRow` 的 hover 展开态（`showsHeader: true`）。写法提出来
-/// 是因为两边必须给出**同一份**清单——用户从重置卡 hover 看到的两张卡，和常驻
-/// 模块里看到的，不能是两条不同的排序。
+/// 唯一消费面是 `QuotaWindowUsageSection` 的重置卡模块（常驻，紧接折叠行下面）。
+/// 第七轮删掉了 `showsHeader`：头部「可用重置卡 N 张」在那个入口永远画不出来
+/// （折叠行第一行已经写了「重置卡数量：N」，再报一遍是同一屏两份总数），而
+/// 「暂无可用重置卡」的空态也一并删掉——常驻入口被 `availableCount > 0` 双重
+/// 把门，进来时清单必非空，留在代码里只会让读者以为"没有卡"时也会画点什么。
 struct ResetCreditsDetailList: View {
     let resets: ResetCreditsInfo
-    /// 是否画头部「可用重置卡 N 张」。常驻模块不画：折叠行第一行已经写了
-    /// 「重置卡数量：N」，再报一遍就是同一屏两份总数。
-    var showsHeader: Bool = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
-            if showsHeader {
-                Text("可用重置卡 \(resets.availableCount) 张")
-                    .font(MenuTypography.hoverRowEmphasis)
-                    .foregroundStyle(.primary)
-            }
-
-            if availableEntries.isEmpty {
-                Text("暂无可用重置卡")
-                    .font(MenuTypography.metricValue)
-                    .foregroundStyle(.secondary)
-            } else {
-                ForEach(Array(availableEntries.enumerated()), id: \.offset) { _, entry in
-                    CreditEntryRow(entry: entry)
-                }
+            ForEach(Array(availableEntries.enumerated()), id: \.offset) { _, entry in
+                CreditEntryRow(entry: entry)
             }
         }
     }

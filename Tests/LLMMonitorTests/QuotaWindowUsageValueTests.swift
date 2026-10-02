@@ -11,6 +11,22 @@ import AppKit
 /// 里的「窗口口径/比率/时间构成条」是两批断言，混在一个文件里会互相淹没。
 final class QuotaWindowUsageValueTests: XCTestCase {
 
+    /// **卡内容宽**（两个宿主一致）：dock 浮层的背板宽 `EdgeDockTheme.popoverWidth`
+    /// 468 = 图表 420 + 2×卡片内容 padding 12 + 2×背板 padding 12；扣掉这两层
+    /// 内边距后，卡片内容区就是 **420pt**（`EdgeDockTheme.popoverWidth` 减去
+    /// 2×`popoverPadding` 再减 2×`cardContentPadding`）。菜单兜底行的 hover 卡走
+    /// 同一个上限常量（`HoverPanelController.maximumPanelWidth`），所以两份宿主
+    /// 装得下的是同一份宽度——**不再按旧主菜单的 312pt 核算**。
+    private static let cardContentWidth: CGFloat =
+        EdgeDockTheme.popoverWidth
+        - EdgeDockTheme.popoverPadding * 2
+        - LayoutMetrics.cardContentPadding * 2
+
+    /// 「额度分析」六列平分卡内容宽时每列的份额：(420 − 5×4 间距) / 6 ≈ 66.7pt。
+    /// 命中/思考两列整列隐藏后按剩下的列数重新平分（4 列各 102pt），最窄的情形
+    /// 就是这个六列值。
+    private static let statsColumnWidth: CGFloat = (cardContentWidth - 5 * 4) / 6
+
     // MARK: - 价值估算
 
     /// 金额走 `ModelPricingCatalog`，**原币种**显示（智谱 ¥、OpenAI/Antigravity $），
@@ -234,8 +250,9 @@ final class QuotaWindowUsageValueTests: XCTestCase {
 
     // MARK: - 五个指标不换行
 
-    /// 「额度分析」的一行六个格子（类型/用量/命中/产出比/思考/价值）在 336pt
-    /// 卡片的内容宽（336 − 2×12 = 312pt）里必须**一行**。第三轮改版起行本体是
+    /// 「额度分析」的一行六个格子（类型/用量/命中/产出比/思考/价值）在**卡内容宽
+    /// 420pt**（`EdgeDockTheme.popoverWidth` 468 − 2×12 背板 padding − 2×12 卡片
+    /// padding，见 `cardContentWidth`）里必须**一行**。第三轮改版起行本体是
     /// `GridRow`（格子平分整行），所以测量时要复刻宿主形态：住进 `Grid`、字号
     /// 与单行约束由 `Grid` 施加——与 `QuotaWindowUsageSection.statsModule` 同一
     /// 写法（表头行的单行约束由 testStatsHeaderRowRendersAndCollapsesWithItsColumns
@@ -246,7 +263,7 @@ final class QuotaWindowUsageValueTests: XCTestCase {
     /// 宽下的高度"——不等就说明它折了。
     @MainActor
     func testMetricRowStaysOnOneLineInsideTheCardContentWidth() {
-        let contentWidth = 336.0 - 2 * LayoutMetrics.cardContentPadding
+        let contentWidth = Self.cardContentWidth
         let singleLine = self.measuredHeight(of: Self.statsGrid(named: "典型值"), width: 1_000)
         XCTAssertGreaterThan(singleLine, 0, "前提不成立：这一行必须真的排得出来")
 
@@ -262,16 +279,16 @@ final class QuotaWindowUsageValueTests: XCTestCase {
         }
     }
 
-    /// 五列共用同一 `Grid`：列宽**跨行对齐**（第三轮改版的 5 列铺满）。
+    /// 六列共用同一 `Grid`：列宽**跨行对齐**（第五轮改版的六列铺满）。
     ///
-    /// 判据来自布局语义：三行真的住在同一个 Grid 里时，每列宽 = 各行该列的最大
+    /// 判据来自布局语义：两行真的住在同一个 Grid 里时，每列宽 = 各行该列的最大
     /// 内容宽，Grid 总宽必然**大于**任一单行自己的总宽；若 `GridRow` 失去网格
     /// 语义（被当成普通 cell），Grid 退化成一列，总宽就**等于**最宽那一行的总宽。
     /// 让长内容错开在不同列——一行的长处在价值列（比率全是 `—`），另一行的长处
     /// 在比率列（价值是 `—`）——两种结构的理想宽度就分得开。
     @MainActor
     func testMetricRowsShareOneGridSoColumnsAlignAcrossRows() {
-        // 比率全 `—`（四桶全 0），只有价值长。
+        // 比率全 `—`（四桶全 0），只有价值长（超长金额已换紧凑单位 `¥1.23M`）。
         let longCost = RowFixture(
             label: "5h",
             metrics: QuotaWindowUsageMetrics(input: 0, cachedInput: 0, output: 0, reasoning: 0),
@@ -303,7 +320,7 @@ final class QuotaWindowUsageValueTests: XCTestCase {
         XCTAssertGreaterThan(longRatesWidth, 0, "前提不成立：两行都得真的排得出来")
         XCTAssertGreaterThan(
             gridWidth, max(longCostWidth, longRatesWidth) + 1,
-            "三行必须共用同一 Grid（列宽跨行对齐）：Grid 总宽应大于任一单行的总宽"
+            "两行必须共用同一 Grid（列宽跨行对齐）：Grid 总宽应大于任一单行的总宽"
         )
     }
 
@@ -321,7 +338,7 @@ final class QuotaWindowUsageValueTests: XCTestCase {
     }
 
     /// 表头行真的画出来，且随模块级列显隐整列消失（第五轮改版）：六列表头齐全时
-    /// 比「命中/思考」两列表头关掉时更宽；固定文案在 312pt 卡片内容宽里单行
+    /// 比「命中/思考」两列表头关掉时更宽；固定文案在 **420pt 卡内容宽**里单行
     /// 不折行（不做紧凑降级）。
     @MainActor
     func testStatsHeaderRowRendersAndCollapsesWithItsColumns() {
@@ -337,12 +354,18 @@ final class QuotaWindowUsageValueTests: XCTestCase {
         }
         let allShown = self.measuredWidth(of: headerGrid(showsHit: true, showsThink: true))
         let collapsed = self.measuredWidth(of: headerGrid(showsHit: false, showsThink: false))
-        let height = self.measuredHeight(of: headerGrid(showsHit: true, showsThink: true), width: 312)
+        let height = self.measuredHeight(
+            of: headerGrid(showsHit: true, showsThink: true),
+            width: Self.cardContentWidth
+        )
         let unconstrained = self.measuredHeight(of: headerGrid(showsHit: true, showsThink: true), width: 1_000)
 
         XCTAssertGreaterThan(allShown, 0, "前提不成立：表头行必须真的排得出来")
         XCTAssertGreaterThan(allShown, collapsed + 5, "命中/思考两列表头关掉后必须真的更窄（表头随列一起消失）")
-        XCTAssertEqual(height, unconstrained, accuracy: 0.5, "表头在 312pt 内容宽里必须单行不折行（固定文案不降级）")
+        XCTAssertEqual(
+            height, unconstrained, accuracy: 0.5,
+            "表头在 \(Int(Self.cardContentWidth))pt 内容宽里必须单行不折行（固定文案不降级）"
+        )
     }
 
     /// 出/入比文案**固定 3 位小数**（`xx.xxx%`）：0 位小数会把 12.4% 与 11.6% 压成
@@ -354,6 +377,104 @@ final class QuotaWindowUsageValueTests: XCTestCase {
         XCTAssertEqual(QuotaWindowUsageMetricRow.outputInputRateText(0), "0.000%")
         XCTAssertEqual(QuotaWindowUsageMetricRow.outputInputRateText(1), "100.000%")
         XCTAssertEqual(QuotaWindowUsageMetricRow.outputInputRateText(nil), "—")
+    }
+
+    /// 产出比格的 hover 说明（第七轮）：格子里只有一个 `xx.xxx%` 或一个 `—`，
+    /// 光标停上去才说得出 `—` 是什么意思——**分母是输入侧总量，会话没有输入
+    /// token 时算不出来**（不是 0）。文案钉在这里：这一条解释是这格唯一的
+    /// 说明渠道，改文案必须连视图一起改。
+    func testOutputInputRateHelpExplainsTheZeroDenominator() {
+        XCTAssertFalse(
+            QuotaWindowUsageMetricRow.outputInputRateHelpUnavailable.isEmpty,
+            "`—` 的说明不能为空，否则读者无从知道它不是 0%"
+        )
+        XCTAssertTrue(
+            QuotaWindowUsageMetricRow.outputInputRateHelpUnavailable.contains("无输入 token"),
+            "`—` 的说明要点名「无输入 token」这个原因，实际文案：\(QuotaWindowUsageMetricRow.outputInputRateHelpUnavailable)"
+        )
+        XCTAssertFalse(
+            QuotaWindowUsageMetricRow.outputInputRateHelp.isEmpty,
+            "有值时也要说得出这一格是（思考 + 输出）/（输入 + 缓存输入）"
+        )
+    }
+
+    /// 超长金额**换紧凑单位**，不再靠 `lineLimit(1)` 截尾（第七轮）。
+    ///
+    /// 420pt 卡内容宽下价值列只有 (420 − 20) / 6 ≈ 66.7pt，而 `¥1,234,567.89`
+    /// 实测 ≥ 70pt——以前那一格是被截掉的半截数字。这里钉住阶梯：低于 100 万原样
+    /// （两位小数、原币种符号），≥ 100 万走 `M`，≥ 10 亿走 `B`；部分计价的
+    /// 后缀保留，币种不转换。
+    func testLongCostCompactsToMillionsInsteadOfTruncating() {
+        func estimate(_ value: Double, _ currency: ModelPriceCurrency = .cny, partial: Bool = false)
+            -> ModelCostEstimate {
+            ModelCostEstimate(
+                value: value,
+                currency: currency,
+                pricedModelNames: ["a"],
+                unpricedModelNames: partial ? ["b"] : []
+            )
+        }
+
+        XCTAssertEqual(QuotaWindowUsageMetricRow.costText(nil), "—")
+        XCTAssertEqual(QuotaWindowUsageMetricRow.costText(estimate(12.34)), "¥12.34", "常规金额仍走 displayText")
+        XCTAssertEqual(QuotaWindowUsageMetricRow.costText(estimate(45.67, .usd)), "$45.67", "原币种符号不换")
+        XCTAssertEqual(
+            QuotaWindowUsageMetricRow.costText(estimate(999_999.99)), "¥999999.99",
+            "阈值以下不缩写：11 个字符仍在 66.7pt 的列里"
+        )
+        XCTAssertEqual(QuotaWindowUsageMetricRow.costText(estimate(1_000_000)), "¥1.00M", "刚过 100 万就换单位")
+        XCTAssertEqual(
+            QuotaWindowUsageMetricRow.costText(estimate(1_234_567.89)), "¥1.23M",
+            "超长金额缩成 M——原币种两位小数，读者自己乘回去"
+        )
+        XCTAssertEqual(QuotaWindowUsageMetricRow.costText(estimate(2_500_000_000, .usd)), "$2.50B")
+        XCTAssertEqual(
+            QuotaWindowUsageMetricRow.costText(estimate(1_234_567.89, partial: true)), "¥1.23M（部分计价）",
+            "部分计价的后缀必须跟着金额一起换单位，不能只缩一半"
+        )
+        XCTAssertEqual(
+            QuotaWindowUsageMetricRow.costText(estimate(0)), "¥0.00",
+            "零金额不是超长金额，不该出现 ¥0.00M"
+        )
+        XCTAssertNil(
+            QuotaWindowUsageMetricRow.compactAmountText(999_999.99, symbol: "¥"),
+            "阈值以下没有紧凑形态（调用点据此回落到 displayText）"
+        )
+    }
+
+    /// 价值列的**两个档都要装得进 66.7pt 的列**：阈值以下最宽的原样金额
+    /// （`¥999999.99`）、阈值以上最宽的紧凑金额（`¥9.88M`）都不得越过列宽——
+    /// 否则"不截尾"只是换了个截法。守门用的是同一套 `NSHostingView` 量法
+    /// （`MenuTypography.dataValue`，与 `statsModule` 施加的字号一致）。
+    @MainActor
+    func testCompactedCostFitsInsideTheValueColumnShare() {
+        func width(of value: Double) -> CGFloat {
+            self.measuredWidth(
+                of: Text(QuotaWindowUsageMetricRow.costText(
+                    ModelCostEstimate(
+                        value: value, currency: .cny,
+                        pricedModelNames: ["a"], unpricedModelNames: []
+                    )
+                )).font(MenuTypography.dataValue)
+            )
+        }
+        let column = Self.statsColumnWidth
+        let plainWidest = width(of: 999_999.99)
+        let compactWidest = width(of: 9_876_543.21)
+
+        XCTAssertLessThanOrEqual(
+            column, (420 - 20) / 6 + 0.5,
+            "前提不成立：六列份额应按 420pt 卡内容宽算（现在是 \(column)pt）"
+        )
+        XCTAssertGreaterThan(plainWidest, 0, "前提不成立：金额格必须真的排得出来")
+        XCTAssertLessThanOrEqual(
+            plainWidest, column,
+            "阈值以下最宽的原样金额 \(plainWidest)pt 装不进价值列 \(column)pt（阈值定高了）"
+        )
+        XCTAssertLessThanOrEqual(
+            compactWidest, column,
+            "最宽的紧凑金额 \(compactWidest)pt 装不进价值列 \(column)pt，还是会被截尾"
+        )
     }
 
     // MARK: - 模块标题（第三轮改版）
@@ -385,15 +506,15 @@ final class QuotaWindowUsageValueTests: XCTestCase {
             of: Self.statsGrid(
                 fixture: RowFixture(label: today.label, metrics: today.metrics, cost: today.cost)
             ),
-            width: 312
+            width: Self.cardContentWidth
         )
         let withTitle = self.measuredHeight(
             of: QuotaWindowUsageSection(snapshot: empty, today: today),
-            width: 312
+            width: Self.cardContentWidth
         )
         let withoutModules = self.measuredHeight(
             of: QuotaWindowUsageSection(snapshot: empty),
-            width: 312
+            width: Self.cardContentWidth
         )
 
         XCTAssertEqual(withoutModules, 0, "无数据时整块（连同所有模块标题）不渲染")
@@ -488,7 +609,7 @@ final class QuotaWindowUsageValueTests: XCTestCase {
         XCTAssertEqual(
             self.measuredHeight(
                 of: QuotaWindowUsageSection(snapshot: zeroWindows, today: zeroToday),
-                width: 312
+                width: Self.cardContentWidth
             ),
             0,
             "窗口全零 + 今行全零：额度分析/额度详情连标题一起消失，整块零高度"
@@ -500,7 +621,7 @@ final class QuotaWindowUsageValueTests: XCTestCase {
                     today: zeroToday,
                     resetCredits: Self.resetCredits(count: 2)
                 ),
-                width: 312
+                width: Self.cardContentWidth
             ),
             0,
             "行全被跳过但重置卡可用：只剩重置卡模块（连同标题）"
@@ -515,7 +636,7 @@ final class QuotaWindowUsageValueTests: XCTestCase {
                         cost: nil
                     )
                 ),
-                width: 312
+                width: Self.cardContentWidth
             ),
             0,
             "今行有量时行集非空，两个模块随今行渲染"
@@ -557,9 +678,9 @@ final class QuotaWindowUsageValueTests: XCTestCase {
             cost: nil
         )
 
-        let withBar = self.measuredHeight(of: QuotaWindowUsageSection(snapshot: weeklyOnly, today: today), width: 312)
-        let withoutBar = self.measuredHeight(of: QuotaWindowUsageSection(snapshot: noWindows, today: today), width: 312)
-        let zeroWindowsHeight = self.measuredHeight(of: QuotaWindowUsageSection(snapshot: zeroWindows, today: today), width: 312)
+        let withBar = self.measuredHeight(of: QuotaWindowUsageSection(snapshot: weeklyOnly, today: today), width: Self.cardContentWidth)
+        let withoutBar = self.measuredHeight(of: QuotaWindowUsageSection(snapshot: noWindows, today: today), width: Self.cardContentWidth)
+        let zeroWindowsHeight = self.measuredHeight(of: QuotaWindowUsageSection(snapshot: zeroWindows, today: today), width: Self.cardContentWidth)
 
         XCTAssertGreaterThan(
             withBar, withoutBar + 5,
@@ -769,8 +890,8 @@ final class QuotaWindowUsageValueTests: XCTestCase {
         let withToday = QuotaWindowUsageRawTable(snapshot: zero, today: today)
 
         XCTAssertGreaterThan(
-            self.measuredHeight(of: withToday, width: 312),
-            self.measuredHeight(of: withoutToday, width: 312),
+            self.measuredHeight(of: withToday, width: Self.cardContentWidth),
+            self.measuredHeight(of: withoutToday, width: Self.cardContentWidth),
             "今行必须真的多出一行（进表）"
         )
         XCTAssertGreaterThan(
@@ -822,15 +943,15 @@ final class QuotaWindowUsageValueTests: XCTestCase {
 
         let withCredits = self.measuredHeight(
             of: QuotaWindowUsageSection(snapshot: snapshot, resetCredits: Self.resetCredits(count: 3)),
-            width: 312
+            width: Self.cardContentWidth
         )
         let withMoreCredits = self.measuredHeight(
             of: QuotaWindowUsageSection(snapshot: snapshot, resetCredits: Self.resetCredits(count: 6)),
-            width: 312
+            width: Self.cardContentWidth
         )
         let withoutCredits = self.measuredHeight(
             of: QuotaWindowUsageSection(snapshot: snapshot),
-            width: 312
+            width: Self.cardContentWidth
         )
 
         XCTAssertEqual(withoutCredits, 0, "没有窗口也没有重置卡时整块不渲染")
@@ -863,7 +984,7 @@ final class QuotaWindowUsageValueTests: XCTestCase {
         )
         let height = self.measuredHeight(
             of: QuotaWindowUsageSection(snapshot: snapshot, resetCredits: allUsed),
-            width: 312
+            width: Self.cardContentWidth
         )
         XCTAssertEqual(height, 0, "0 张可用重置卡时整个模块不显示，不能只剩一句『重置卡数量：0』")
     }

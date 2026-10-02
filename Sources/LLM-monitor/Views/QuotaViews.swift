@@ -192,18 +192,16 @@ struct ChatGPTPlanModelRow: View {
     }
 }
 
-/// ChatGPT 重置卡：默认只显示数量和最早过期时间，hover 再看每张卡
+/// ChatGPT 重置卡：只显示数量和最早过期时间。
+///
+/// 逐张明细**不再挂 hover**（第七轮）：`QuotaWindowUsageSection` 的重置卡模块
+/// 已经把清单常驻在折叠行下面（同一个 `ResetCreditsDetailList`、同一份排序），
+/// 原来的 `revealsDetail: true` 展开分支只剩默认参数在走，生产路径不可达，
+/// hover 展开那条还会让鼠标可达的宿主（主菜单 hover 卡）看到重复的清单。
 struct CompactResetCreditsRow: View {
     let resets: ResetCreditsInfo
     /// provider 的 background 刷新间隔（秒）。
     var refreshIntervalSeconds: Int = 300
-    /// 是否把"每张卡"的明细挂在 hover 上。
-    ///
-    /// dock 详情浮层传 false：那个浮层**不接受鼠标事件**，`HoverInfoRow` 在
-    /// `alwaysVisible` 下又总会展开，于是每张卡的明细变成常驻——既占高度
-    /// 又把折叠态真正该给的信息（总数 + 最近一张到期时间）挤成了两行里
-    /// 夹着六行明细。传 false 就只留折叠态那一句，与菜单形态一致。
-    var revealsDetail: Bool = true
 
     /// R3: reset credits 的实际刷新周期。reset credits 只在 .full 抓取，而 scheduler
     /// 每 N 个 background 才补一次 full，所以真实周期 = N × background 间隔。
@@ -217,15 +215,7 @@ struct CompactResetCreditsRow: View {
     }
 
     var body: some View {
-        if revealsDetail {
-            HoverInfoRow {
-                summary
-            } detail: {
-                detail
-            }
-        } else {
-            summary
-        }
+        summary
     }
 
     /// 折叠态：总数 + 最近一张的到期时间（外加过期提示）。
@@ -267,14 +257,6 @@ struct CompactResetCreditsRow: View {
             }
         }
         .padding(.vertical, 2)
-    }
-
-    /// 展开态：每张卡的明细。清单本体在 `ResetCreditsDetailList`——第二轮改版后
-    /// 「额度窗口用量」区块的重置卡模块把逐张清单**常驻**在了折叠行下面
-    /// （`showsHeader: false`），这张卡的 hover 展开只服务鼠标可达的宿主，两边
-    /// 共用同一份渲染实现与同一份排序。
-    private var detail: some View {
-        ResetCreditsDetailList(resets: resets)
     }
 
     private var expiryText: String {
