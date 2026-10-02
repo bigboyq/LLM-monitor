@@ -106,7 +106,9 @@ final class SettingsClientsPaneTests: XCTestCase {
     /// 的改名。
     @MainActor
     func testZcodeRowsSplitIntoPlanLinesThenProviderSlices() {
-        let (view, state) = makeSettings()
+        // 聚合逻辑已提取为 ClientUsageAggregation 纯函数：不再经 SettingsView，
+        // 直接以 state.statuses 为输入断言同一口径。
+        let (_, state) = makeSettings()
         defer { state.stop() }
         let usage = sliceFixture()
         state.applyGlmLocalUsage(usage)
@@ -115,7 +117,7 @@ final class SettingsClientsPaneTests: XCTestCase {
             "默认绑定（zcode → minimax / deepseek）应已开启，否则下面验不到分片行"
         )
 
-        let rows = view.clientProviderUsageByClient()[ClientID.zcode] ?? []
+        let rows = ClientUsageAggregation.clientProviderUsageByClient(for: state.statuses)[ClientID.zcode] ?? []
         XCTAssertEqual(
             rows.map(\.providerName),
             ["Coding Plan", "Start Plan", "闲时任务", "其他任务", "DeepSeek", "minimax Token Plan"]
@@ -141,7 +143,7 @@ final class SettingsClientsPaneTests: XCTestCase {
     /// 分片行有数据就出现（不依赖 GLM 分类行是否存在）。
     @MainActor
     func testZcodeRowsOmitEmptyCategoriesAndKeepSliceRowsIndependent() {
-        let (view, state) = makeSettings()
+        let (_, state) = makeSettings()
         defer { state.stop() }
         // 只有 Coding Plan + DeepSeek 分片有智谱 / 非智谱数据
         state.applyGlmLocalUsage(
@@ -158,7 +160,7 @@ final class SettingsClientsPaneTests: XCTestCase {
             )
         )
 
-        let rows = view.clientProviderUsageByClient()[ClientID.zcode] ?? []
+        let rows = ClientUsageAggregation.clientProviderUsageByClient(for: state.statuses)[ClientID.zcode] ?? []
         XCTAssertEqual(
             rows.map(\.providerName), ["Coding Plan", "DeepSeek"],
             "空分类不该出现占位行；分片行与 GLM 分类互不依赖"
@@ -169,12 +171,12 @@ final class SettingsClientsPaneTests: XCTestCase {
     /// 这一格是"行展示正确"与"门控"的分界：门控在 `clientBindings`，展示层不绕过它。
     @MainActor
     func testDeepseekRowDisappearsWhenItsZcodeBindingIsOff() {
-        let (view, state) = makeSettings()
+        let (_, state) = makeSettings()
         defer { state.stop() }
         state.applyGlmLocalUsage(sliceFixture())
         state.mutateStatus(for: ProviderKind.deepseek.providerID) { $0.mergeZcodeUsage = false }
 
-        let rows = view.clientProviderUsageByClient()[ClientID.zcode] ?? []
+        let rows = ClientUsageAggregation.clientProviderUsageByClient(for: state.statuses)[ClientID.zcode] ?? []
         XCTAssertFalse(
             rows.contains { $0.providerName == "DeepSeek" },
             "绑定关闭时不该出现 DeepSeek 行"

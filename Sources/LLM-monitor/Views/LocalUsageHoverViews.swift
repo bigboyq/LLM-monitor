@@ -137,9 +137,9 @@ struct SevenDayTokenUsageHoverView<Daily: LocalUsageDaily>: View {
         self.priceByDayProvider = priceByDay
     }
 
-    private let inputColor = Color(red: 0.16, green: 0.47, blue: 0.91)
-    private let cacheColor = Color(red: 0.18, green: 0.70, blue: 0.76)
-    private let outputColor = Color(red: 0.11, green: 0.64, blue: 0.34)
+    private let inputColor = Color.tokenInputTint
+    private let cacheColor = Color.tokenCacheReadTint
+    private let outputColor = Color.tokenOutputTint
     private let reasonColor = Color(red: 0.90, green: 0.46, blue: 0.16)
 
     var body: some View {

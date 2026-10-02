@@ -565,7 +565,10 @@ private struct FooterActionButton: View {
     }
 }
 
-private struct CardsContentHeightKey: PreferenceKey {
+/// 卡片内容高度上报（`onPreferenceChange` 桥接菜单窗口高度）。原为文件私有，
+/// 提升为 internal 供下一阶段 Harness 客户端视图复用同一测量管道；
+/// `defaultValue` 保持计算属性写法（Swift 6 门禁，见下）。
+struct CardsContentHeightKey: PreferenceKey {
     /// 用**计算属性**而不是 `static var defaultValue: CGFloat = 0`。
     ///
     /// `PreferenceKey.defaultValue` 的协议要求只声明了 `{ get }`，计算属性同样满足；

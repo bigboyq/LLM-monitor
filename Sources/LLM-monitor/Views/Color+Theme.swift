@@ -23,5 +23,12 @@ extension Color {
     /// `systemGreen` 有专门的浅色/深色两套变体（浅色模式自动压暗、加深），
     /// 和 `warningTint` 同一套做法。
     static let healthyTint = Color(nsColor: .systemGreen)
+
+    /// 三桶语义色（input 蓝 / cacheRead 青 / output 绿）：7 天柱图与
+    /// `TokenBucketBar` 共用，同一个 token 桶在不同视图里保持同一颜色。
+    /// 取自 `SevenDayTokenUsageHoverView` 原有的实例色值，视觉零变化。
+    static let tokenInputTint = Color(red: 0.16, green: 0.47, blue: 0.91)
+    static let tokenCacheReadTint = Color(red: 0.18, green: 0.70, blue: 0.76)
+    static let tokenOutputTint = Color(red: 0.11, green: 0.64, blue: 0.34)
 }
 
