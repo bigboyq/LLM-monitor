@@ -735,6 +735,105 @@ final class UsageProjectionKernelTests: XCTestCase {
         )
     }
 
+    // MARK: - 帧抽取注册表的顺序契约
+
+    /// 注册表必须覆盖每一张卡：新增 `ProviderKind` case 却忘了在
+    /// `usageFrameExtractors` 里追一个抽取器时，该卡会静默无数据，这里立刻爆掉。
+    func testFrameExtractorRegistryCoversEveryProviderKind() {
+        XCTAssertEqual(
+            Set(ProviderStatus.usageFrameExtractors.keys),
+            Set(ProviderKind.allCases),
+            "每一张 quota 卡都必须在帧抽取注册表里登记抽取器数组"
+        )
+    }
+
+    /// 注册表里**数组顺序**是展示契约（`usageFrameExtractors` 注释：帧的顺序即
+    /// 贡献顺序，内核按首次出现的分组顺序输出）。这里对每个 `ProviderKind` 用
+    /// 全量挂载的 status 跑一遍抽取器，把产出的帧压成
+    /// `clientID|sourceKey|quotaProviderID` 指纹并逐条比对字面量期望：
+    /// 任何一卡新增 / 删除 / 调序抽取器都必须同步本用例的期望。
+    ///
+    /// 夹具让每个抽取器都产帧（native 快照、dsh 全键账本、zcode 两个非智谱分片、
+    /// opencode 各分片、codex 详情全在），所以"某个抽取器被悄悄挪位"不会漏检。
+    func testFrameExtractorOrderIsTheDisplayContract() throws {
+        let now = Date()
+        let (statuses, codexInfo) = makeStatuses(now: now)
+
+        func fingerprint(
+            _ clientID: String, _ sourceKey: String?, _ quotaProviderID: String
+        ) -> String {
+            "\(clientID)|\(sourceKey ?? "-")|\(quotaProviderID)"
+        }
+        // dsh 抽取器一次吐出账本全部键（键名升序），帧不声明 quota 归属。
+        func dshFingerprints() -> [String] {
+            ["deepseek-official", "minimax-cn", "openai", "zhipuai"].map {
+                fingerprint(ClientID.dsh, $0, "")
+            }
+        }
+
+        let expected: [ProviderKind: [String]] = [
+            .codexChatGpt: [
+                fingerprint(ClientID.codex, nil, QuotaProviderID.openAI),
+                fingerprint(ClientID.openCode, OpencodeLocalUsage.openAIProviderID, QuotaProviderID.openAI)
+            ],
+            .antigravity: [
+                fingerprint(ClientID.antigravity, nil, QuotaProviderID.antigravity),
+                fingerprint(
+                    ClientID.openCode, OpencodeLocalUsage.antigravitySourceProviderID,
+                    QuotaProviderID.antigravity
+                )
+            ],
+            .minimaxTokenPlan:
+                [fingerprint(ClientID.minimaxCode, nil, QuotaProviderID.minimax)]
+                + dshFingerprints()
+                + [
+                    fingerprint(
+                        ClientID.zcode, ZcodeProviderSlice.minimax.providerPrefix,
+                        QuotaProviderID.minimax
+                    ),
+                    fingerprint(
+                        ClientID.openCode, OpencodeLocalUsage.minimaxCodingPlanProviderID,
+                        QuotaProviderID.minimax
+                    )
+                ],
+            .glmCodingPlan:
+                [fingerprint(ClientID.zcode, nil, QuotaProviderID.zhipu)]
+                + dshFingerprints()
+                + [
+                    fingerprint(
+                        ClientID.openCode, OpencodeLocalUsage.glmProviderID,
+                        QuotaProviderID.zhipu
+                    )
+                ],
+            .deepseek:
+                dshFingerprints()
+                + [
+                    fingerprint(
+                        ClientID.zcode, ZcodeProviderSlice.deepseek.providerPrefix,
+                        QuotaProviderID.deepseek
+                    ),
+                    fingerprint(
+                        ClientID.openCode, OpencodeLocalUsage.deepseekProviderID,
+                        QuotaProviderID.deepseek
+                    )
+                ]
+        ]
+
+        for kind in ProviderKind.allCases {
+            let status = try XCTUnwrap(statuses.first { $0.kind == kind })
+            let extractors = try XCTUnwrap(
+                ProviderStatus.usageFrameExtractors[kind], "\(kind) 未登记帧抽取器"
+            )
+            let fingerprints = extractors
+                .flatMap { $0(status, kind == .codexChatGpt ? codexInfo : nil) }
+                .map { fingerprint($0.clientID, $0.sourceKey, $0.quotaProviderID) }
+            XCTAssertEqual(
+                fingerprints, try XCTUnwrap(expected[kind], "\(kind) 缺期望"),
+                "\(kind) 的帧顺序即贡献顺序，改动抽取器顺序必须同步本用例"
+            )
+        }
+    }
+
     // MARK: - P2 绑定显式化验收
 
     /// 绑定关闭时对应切片帧不产出：zcode → minimax = false 后 MiniMax 卡不再有
