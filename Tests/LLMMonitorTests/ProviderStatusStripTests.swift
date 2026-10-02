@@ -185,13 +185,18 @@ final class ProviderStatusStripTests: XCTestCase {
 
     // MARK: - 排版预算
 
-    /// 五个 provider 全启用（`ProviderKind.allCases` 的全部）时这一行不得溢出
-    /// 内容区。溢出只会让最右边的胶囊被裁掉或换行，编译期与运行期都不报错。
+    /// 五个 provider 全启用（`ProviderKind.allCases` 的全部）时**全部可见**且
+    /// 这一行不得溢出内容区。溢出只会让最右边的胶囊被裁掉或换行，编译期与
+    /// 运行期都不报错。容量核算见 `ProviderStatusStrip.maximumVisibleCount`。
     @MainActor
     func testStripNaturalWidthFitsTheMenuContentWidth() {
         let contentWidth = MenuPanelHeightBridge.width - LayoutMetrics.cardColumnHorizontalPadding * 2
-        let snapshot = ProviderStatusStrip.snapshot(statuses: Self.allProviderFixture(), limit: 4)
-        XCTAssertEqual(snapshot.hiddenCount, 1, "前提不成立：五个 provider 必须触发折叠")
+        let snapshot = ProviderStatusStrip.snapshot(statuses: Self.allProviderFixture())
+        XCTAssertEqual(snapshot.entries.count, 5, "前提不成立：五种 provider 必须全部在场")
+        XCTAssertEqual(
+            snapshot.hiddenCount, 0,
+            "行首标签去掉后 5 个必须全部可见，不该再出现「+N」"
+        )
 
         // 宽画布量**自然宽**：给定 336pt 时任何一行都能"塞进去"（顶多被裁），
         // 那不证明放得下——只有自然宽 ≤ 内容区才是真的放得下。
@@ -200,9 +205,29 @@ final class ProviderStatusStripTests: XCTestCase {
         hosting.layoutSubtreeIfNeeded()
         XCTAssertLessThanOrEqual(
             hosting.fittingSize.width, contentWidth + 0.5,
-            "兜底行自然宽 \(hosting.fittingSize.width)pt 溢出内容区 \(contentWidth)pt（四个元素 + 「+N」）"
+            "兜底行自然宽 \(hosting.fittingSize.width)pt 溢出内容区 \(contentWidth)pt（五个元素）"
         )
         XCTAssertGreaterThan(hosting.fittingSize.height, 0, "必须真的渲染出行高")
+    }
+
+    /// 第 6 个启用 provider 触发兜底：留下 5 个、折叠 1 个，且折叠态（5 元素 +
+    /// 「+N」）本身也放得下——「+N」不能成为新的溢出源。
+    @MainActor
+    func testSixEnabledProvidersFoldIntoPlusNAndStillFit() {
+        let contentWidth = MenuPanelHeightBridge.width - LayoutMetrics.cardColumnHorizontalPadding * 2
+        let statuses = Self.allProviderFixture()
+            + [Self.status(id: "extra", displayName: "Extra Plan", kind: .codexChatGpt, health: .healthy)]
+        let snapshot = ProviderStatusStrip.snapshot(statuses: statuses)
+        XCTAssertEqual(snapshot.entries.count, 5)
+        XCTAssertEqual(snapshot.hiddenCount, 1, "第 6 个启用 provider 必须被折叠进「+N」")
+
+        let hosting = NSHostingView(rootView: AnyView(ProviderStatusStripView(snapshot: snapshot)))
+        hosting.frame = CGRect(x: 0, y: 0, width: 10_000, height: 10_000)
+        hosting.layoutSubtreeIfNeeded()
+        XCTAssertLessThanOrEqual(
+            hosting.fittingSize.width, contentWidth + 0.5,
+            "折叠态（五个元素 + 「+N」）自然宽 \(hosting.fittingSize.width)pt 溢出内容区 \(contentWidth)pt"
+        )
     }
 
     /// 空快照不渲染任何东西（没有 provider 可显示时不该留一条空行 + 一条分隔线）。

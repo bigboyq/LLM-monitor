@@ -36,6 +36,38 @@ final class HarnessUsageMenuViewTests: XCTestCase {
         )
     }
 
+    /// 今日合计**数字行**的宽度预算：标签 + 总 token 列 + 裸命中率列 + 最宽常见
+    /// 混币价值 + 裸刷新时间 + 各段间距，不得超出卡片内宽（内容区 − 卡片自带的
+    /// 两侧 8pt padding）。超出时先被 tail 截断的是混币价值——这条钉住的是
+    /// "常见最坏形态不必动用截断"；跨天时间（`MM-dd HH:mm`，实测 59pt）与扫描
+    /// 态（「计算中…」+ 进度圈，实测 52pt）共用这条余量，真同时发生时由价值
+    /// 截断兜底，与改造前同一口径。
+    @MainActor
+    func testTodayOverviewRowFitsItsInnerWidth() {
+        let innerWidth = contentWidth - 16
+        let label = self.width(of: Text("今日合计").font(MenuTypography.metricLabel))
+        let hitRate = self.width(
+            of: Text(HarnessUsageMenuView.hitRateText(1.0)).font(MenuTypography.metricValue)
+        )
+        // 混币价值最宽的常见形态：跨币种 + 两位小数（`MixedCurrencyEstimate` 的
+        // 呈现口径，trim 后无分组分隔符）。
+        let value = MixedCurrencyEstimate(usd: 7610.55, cny: 45659.85)
+        let valueText = self.width(of: Text(value.displayText).font(MenuTypography.metricValue))
+        let refreshTime = self.width(of: Text("21:09").font(MenuTypography.badge))
+
+        let row = label
+            + HarnessUsageMenuView.totalWidth
+            + HarnessUsageMenuView.hitRateWidth
+            + valueText
+            + refreshTime
+            + 4 * 6   // HStack 四段固定间距
+            + 4       // Spacer 最小宽
+        XCTAssertLessThanOrEqual(
+            row, innerWidth,
+            "今日合计行最坏 \(row)pt 超出卡片内宽 \(innerWidth)pt，混币价值会被截断"
+        )
+    }
+
     /// 真的布局一次：最宽形态（长模型名 + 9 字符 token + 部分计价）下自然宽不得
     /// 超过内容区。定宽常量是这条的**前提**——任何一个数字列去掉 `.frame(width:)`
     /// 都会让自然宽按文案涨上去。
@@ -136,6 +168,15 @@ final class HarnessUsageMenuViewTests: XCTestCase {
         hosting.frame = CGRect(x: 0, y: 0, width: contentWidth, height: 10_000)
         hosting.layoutSubtreeIfNeeded()
         return hosting.fittingSize.height
+    }
+
+    /// 宽画布量单段文案 / 视图的**自然宽**：定宽列常量必须装得下各自的文案。
+    @MainActor
+    private func width<V: View>(of view: V) -> CGFloat {
+        let hosting = NSHostingView(rootView: AnyView(view))
+        hosting.frame = CGRect(x: 0, y: 0, width: 10_000, height: 10_000)
+        hosting.layoutSubtreeIfNeeded()
+        return hosting.fittingSize.width
     }
 
     /// 一个客户端 + 一个极长模型名的行：模型名列尾截断，右侧四列仍定宽。

@@ -55,11 +55,15 @@ struct HarnessUsageMenuView: View {
     // MARK: - 全局今日汇总
 
     /// 顶部一屏结论：今天一共烧了多少、缓存命中率多少、折算成 CNY 值多少，
-    /// 底下再用三段占比条给出这批 token 的构成（input / cacheRead / output）。
+    /// 底下一行三段占比条给出这批 token 的构成（input / cacheRead / output）。
+    ///
+    /// 数字行（第一行）从左到右：标签 / 总 token（定宽）/ 命中率（裸值，定宽）/
+    /// 价值（撑满、右对齐）/ 裸刷新时间。宽度核算见下方各常量与
+    /// `HarnessUsageMenuViewTests.testTodayOverviewRowFitsItsInnerWidth`。
     private var todayOverview: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text("今天合计")
+                Text("今日合计")
                     .font(MenuTypography.metricLabel)
                     .foregroundStyle(Color.secondaryLabel)
                 // 定宽：token 数位变化不该把右边两列推来推去。
@@ -68,7 +72,9 @@ struct HarnessUsageMenuView: View {
                     .foregroundStyle(Color.primaryLabel)
                     .frame(width: HarnessUsageMenuView.totalWidth, alignment: .leading)
                 Spacer(minLength: 4)
-                Text("命中 \(Self.hitRateText(summary.cacheHitRate))")
+                // 命中率是裸值（`100%` / `—`），不再带「命中」前缀：一行的读者已经
+                // 知道这列是什么，省下的 20pt 留给混币价值与刷新时间。
+                Text(Self.hitRateText(summary.cacheHitRate))
                     .font(MenuTypography.metricValue)
                     .foregroundStyle(Color.secondaryLabel)
                     .frame(width: HarnessUsageMenuView.hitRateWidth, alignment: .trailing)
@@ -80,19 +86,19 @@ struct HarnessUsageMenuView: View {
                     .lineLimit(1)
                     .truncationMode(.tail)
                     .frame(maxWidth: .infinity, alignment: .trailing)
-            }
-            // 新鲜度胶囊放在占比条那一行的**行尾**，而不是数字行：数字行里
-            // 「今天合计 / 总 token / 命中 / 价值」四段都是定宽或撑满的，插一枚
-            // 胶囊会把混币总价值折行；占比条是 `GeometryReader`（贪婪），让出
-            // 约 70pt 只会让三段比例窄一点，不会串列。位置与 dock 浮层里那枚
-            // （组标题右侧）同款，读起来是同一类东西。
-            HStack(spacing: 6) {
-                TokenBucketBar(buckets: summary.buckets)
-                LocalUsageFreshnessBadge(
+                // 行尾刷新时间是**裸文本**（HH:mm，跨天退化成 `MM-dd HH:mm`），不带
+                // 「更新于」前缀与胶囊底色——数字行没有胶囊的宽度预算。颜色语义与
+                // 「计算中…」状态由 `LocalUsageFreshnessText` 保持在悬浮窗 7 天卡那枚
+                // 胶囊（`LocalUsageFreshnessBadge`）的同款。时间自然宽、不压缩：空间
+                // 不足时先被截断的是上面的混币价值（tail），时间格始终完整可读。
+                LocalUsageFreshnessText(
                     scannedAt: summary.localUsageScannedAt,
                     isScanning: summary.isScanningLocalUsage
                 )
             }
+            // 占比条独占一整行：数字行已经放不下任何徽标（见上），而占比条是
+            // `GeometryReader`（贪婪），独占整行也让三段比例的读数更宽。
+            TokenBucketBar(buckets: summary.buckets)
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 7)
@@ -122,8 +128,8 @@ struct HarnessUsageMenuView: View {
     static let sectionSpacing: CGFloat = 10
     /// 今日总 token 列定宽。`1,041M`（六字符）是最宽的常见形态。
     static let totalWidth: CGFloat = 56
-    /// 命中率列定宽。`命中 100%` 是最宽形态。
-    static let hitRateWidth: CGFloat = 52
+    /// 命中率列定宽（今日合计行的**裸值**）。`100%` 实测自然宽 30pt，留 2pt 余量。
+    static let hitRateWidth: CGFloat = 32
     /// 段价值列定宽。与模型行的价值列同宽，两个"价值"数字右对齐成一条竖线。
     static let valueWidth: CGFloat = 56
 }
@@ -221,8 +227,8 @@ struct HarnessSectionView: View {
 ///
 /// 它存在的理由：菜单主体已经改成客户端视角（"今天烧了多少"），**额度**那一面
 /// 只剩边缘状态窗与设置页；没开边缘窗的用户在这一屏就彻底看不到额度状态了。
-/// 这一行把它兜回来，且**不与 harness 段混淆**——独立小标题 + 独立一行，
-/// 不占段头、不进段的行序。
+/// 这一行把它兜回来，且**不与 harness 段混淆**——独立一行（无文字标题，图标 +
+/// 状态胶囊的序列自解释），不占段头、不进段的行序。
 ///
 /// hover 任一元素 → 独立 `NSPanel` 弹出**完整 `ProviderCardView(status:)`**
 /// （`HoverInfoRow` + `HoverPanelController`，与菜单里其它 hover 详情同一机制）。
@@ -251,7 +257,7 @@ struct ProviderStatusStripView: View {
         let displayName: String
         var id: String { providerID }
         /// 菜单文案。旧 provider 卡的单刷项叫「立即刷新」，这里带上 provider 名，
-        /// 因为一行里有四个同名菜单项，不带名用户分不清点的是哪一个。
+        /// 因为一行里有多枚同款菜单项，不带名用户分不清点的是哪一个。
         var title: String { "刷新 \(displayName)" }
         /// 执行：把 providerID 原样交回宿主。
         func perform(_ onRefresh: (String) -> Void) {
@@ -288,18 +294,18 @@ struct ProviderStatusStripView: View {
     /// 而不是只能对着视图猜。
     static let cardRevealMode: HoverRevealMode = .alwaysVisible
 
-    /// 品牌图标边长。常规 18pt 在这一行太大：整行最多四个元素，18pt 图标会把
-    /// 时间胶囊挤到只剩 30pt。11pt 仍能认出是哪个品牌。
+    /// 品牌图标边长。常规 18pt 在这一行太大：一行要放下
+    /// `ProviderStatusStrip.maximumVisibleCount` 个元素，18pt 图标会把时间胶囊
+    /// 挤到只剩 30pt。11pt 仍能认出是哪个品牌。
     static let logoSize: CGFloat = 11
 
     var body: some View {
         if !snapshot.isEmpty {
+            // 不带文字标签：一行「品牌图标 + 状态胶囊」的序列自解释（红/黄/绿胶囊
+            // 的语义由 `ProviderStateLabel` 承载），去掉约 74pt 的标签换来的宽度
+            // 正好把可见容量从 4 个 provider 放到 5 个（核算见
+            // `ProviderStatusStrip.maximumVisibleCount`）。
             HStack(spacing: Self.entrySpacing) {
-                Text("Provider 状态")
-                    .font(MenuTypography.caption)
-                    .foregroundStyle(Color.secondaryLabel)
-                    .lineLimit(1)
-                    .fixedSize()
                 ForEach(snapshot.entries) { entry in
                     entryView(entry)
                 }
