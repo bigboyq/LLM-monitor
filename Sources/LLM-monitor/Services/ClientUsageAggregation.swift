@@ -538,9 +538,23 @@ enum ProviderStatusStrip {
         var isEmpty: Bool { entries.isEmpty }
     }
 
-    /// 一行最多放几个 provider 元素。宽度预算：最宽形态实测 326pt / 336pt 内容区
-    /// （排版数字以这里的推导为准；视图侧副本已随重构删除，勿再按旧注释找）。
-    static let maximumVisibleCount = 4
+    /// 一行最多放几个 provider 元素。
+    ///
+    /// 容量按**实测**自然宽核算（NSHostingView，macOS 27 SDK；行内可用宽 = 菜单
+    /// 360pt − 两侧 `LayoutMetrics.cardColumnHorizontalPadding` 共 24pt = 336pt，
+    /// 这一行的数据投影本侧不加横向 padding）。单个元素 = 品牌 logo 11pt + 3pt
+    /// 间距 + `ProviderStateLabel` 胶囊（两侧各 6pt padding + 9pt 文案：`HH:mm`
+    /// 实测 40pt，「未配置」等三字 39pt），最宽 **54pt**；元素间距 4pt。
+    ///
+    /// - 5 个：5×54 + 4×4 = **286pt** ≤ 336pt，余量 50pt，足够吸收字体度量随
+    ///   系统版本的漂移；
+    /// - 6 个：6×54 + 5×4 = **344pt** > 336pt——第 6 个会被裁掉。不去压 logo /
+    ///   间距硬塞（那会把"放得下"建立在亚 10pt 的余量上），超出部分交给
+    ///   「+N」兜底说出来。
+    ///
+    /// 曾经是 4：那时行首还有「Provider 状态」文字标签（约 74pt），标签随
+    /// 2026-10 的 UI 第一轮调整去掉后容量升到 5。
+    static let maximumVisibleCount = 5
 
     /// 取前 `limit` 个**优先级最高**的 provider，其余折叠为 `hiddenCount`。
     ///

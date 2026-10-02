@@ -375,6 +375,35 @@ struct LocalUsageFreshnessBadge: View {
     }
 }
 
+/// `LocalUsageFreshnessBadge` 的**裸文本**变体：状态机与颜色语义与胶囊版完全一致
+/// （扫描中 → 迷你进度圈 + 「计算中…」；扫出过 → `formatClock` 时间；从没扫过 →
+/// 整个视图不渲染），只是**去掉**「更新于」前缀与胶囊底色。
+///
+/// 存在的理由：菜单今日合计的数字行里四段数字全是定宽或撑满（见
+/// `HarnessUsageMenuView.todayOverview`），行尾那格只有放**时间本身**的预算——
+/// 胶囊两侧 12pt padding 加前缀会把混币价值挤到折行。悬浮窗 7 天卡等既有宿主
+/// 仍用胶囊版（`LocalUsageFreshnessBadge`），两边互不影响。
+struct LocalUsageFreshnessText: View {
+    let scannedAt: Date?
+    let isScanning: Bool
+
+    @ViewBuilder
+    var body: some View {
+        if isScanning {
+            HStack(spacing: 5) {
+                ProgressView().controlSize(.mini).scaleEffect(0.7)
+                Text("计算中…")
+            }
+            .font(MenuTypography.badge)
+            .foregroundStyle(.secondary)
+        } else if let scannedAt {
+            Text(Formatters.formatClock(scannedAt))
+                .font(MenuTypography.badge)
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
 /// dock 详情浮层把 7 天用量拆进两张卡片，这里决定 `LocalUsageFooterView` 出哪一半。
 ///
 /// - `.combined`：菜单用，汇总行 + 分隔线 + 图表，一个 `HoverInfoRow` 原地展开
