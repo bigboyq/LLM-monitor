@@ -147,4 +147,17 @@ final class DailyUsageAggregationTests: XCTestCase {
         XCTAssertEqual(LocalUsageDayKey.make(cutoff, calendar: calendar),
                        LocalUsageDayKey.make(now, calendar: calendar))
     }
+
+    // MARK: - LocalUsageDayKey 日期键解析（自 UsableAPIKeyHealthLevelTests 解散归入）
+
+    func testLocalUsageDayKeyRules() {
+        let calendar = Calendar(identifier: .gregorian)
+        XCTAssertNil(LocalUsageDayKey.parse("not-a-date", calendar: calendar))
+        XCTAssertNil(LocalUsageDayKey.parse("", calendar: calendar))
+        XCTAssertNil(LocalUsageDayKey.parse("2026-13-99", calendar: calendar))
+
+        let date = LocalUsageDayKey.parse("2026-07-16", calendar: calendar)!
+        XCTAssertEqual(calendar.component(.year, from: date), 2026)
+        XCTAssertEqual(LocalUsageDayKey.make(date), LocalUsageDayKey.make(date))
+    }
 }

@@ -775,4 +775,13 @@ final class MinimaxV2UsageTests: XCTestCase {
         let daily = aggregate.perDay.values.first
         XCTAssertEqual(daily?.reasoningTokens, 100, "单行同时有 native(50) + raw(100) 时，SQL perRowReasoningExpr 应取 MAX (100)")
     }
+
+    // MARK: - 失败会话计数（自 UsableAPIKeyHealthLevelTests 解散归入）
+
+    func testComputeFailedSessionCountRules() {
+        XCTAssertEqual(MinimaxLocalUsageScanner.computeFailedSessionCount(failedKeys: [], currentSourceKeys: [], cachedSourceKeys: []), 0)
+        XCTAssertEqual(MinimaxLocalUsageScanner.computeFailedSessionCount(failedKeys: [], currentSourceKeys: ["main", "runtime"], cachedSourceKeys: []), 2)
+        XCTAssertEqual(MinimaxLocalUsageScanner.computeFailedSessionCount(failedKeys: ["main"], currentSourceKeys: ["main", "runtime"], cachedSourceKeys: ["main", "runtime"]), 1)
+        XCTAssertEqual(MinimaxLocalUsageScanner.computeFailedSessionCount(failedKeys: ["main", "runtime"], currentSourceKeys: ["main", "runtime", "extra"], cachedSourceKeys: ["extra"]), 2)
+    }
 }

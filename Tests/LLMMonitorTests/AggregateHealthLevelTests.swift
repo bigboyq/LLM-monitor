@@ -414,4 +414,17 @@ final class AggregateHealthLevelTests: XCTestCase {
         XCTAssertEqual(glmHealthy.aggregateHealthLevel(at: offPeak), .healthy)
         XCTAssertEqual(glmHealthy.aggregateHealthLevel(at: peak), .warning, "高峰时卡头点保底黄色")
     }
+
+    // MARK: - 单模型健康度档位与窗口 present 判定（自 UsableAPIKeyHealthLevelTests 解散归入）
+
+    func testHealthLevelAndQuotaStatusRules() throws {
+        let absentWeekly = ModelQuota(modelName: "general", intervalTotalCount: 0, intervalUsageCount: 0, intervalRemainingPercent: 80, intervalStatus: .present, intervalResetsAt: nil, intervalWindowSeconds: nil, weeklyTotalCount: 0, weeklyUsageCount: 0, weeklyRemainingPercent: 0, weeklyStatus: .absent, weeklyResetsAt: nil, weeklyWindowSeconds: nil)
+        XCTAssertEqual(absentWeekly.healthLevel, .healthy)
+
+        let presentWeekly = ModelQuota(modelName: "general", intervalTotalCount: 0, intervalUsageCount: 0, intervalRemainingPercent: 80, intervalStatus: .present, intervalResetsAt: nil, intervalWindowSeconds: nil, weeklyTotalCount: 0, weeklyUsageCount: 0, weeklyRemainingPercent: 10, weeklyStatus: .present, weeklyResetsAt: Date(timeIntervalSince1970: 4_102_444_800), weeklyWindowSeconds: nil)
+        XCTAssertEqual(presentWeekly.healthLevel, .critical)
+
+        XCTAssertTrue(QuotaWindowStatus.present.isPresent)
+        XCTAssertFalse(QuotaWindowStatus.absent.isPresent)
+    }
 }

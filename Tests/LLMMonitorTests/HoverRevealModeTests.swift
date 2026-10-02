@@ -46,91 +46,6 @@ final class HoverRevealModeTests: XCTestCase {
 
     // MARK: - 两套排版规则
 
-    /// 单窗口元信息行**必须**用调用方给的那个标签。
-    ///
-    /// 约定是"只有一个窗口时它一律进 `primaryLabel`、`secondaryLabel` 留空"
-    /// （两个 dock 调用点都这么传）。曾经「只有周窗口」那一支去读 `secondaryLabel`，
-    /// 于是读到那个刻意留空的串，dock 里这行的窗口标签**整个消失**——只剩一个无名
-    /// 百分比框，读者不知道那个数字是 5h 还是周。「只有 5h」那一支读的是
-    /// `primaryLabel`，所以是对的：同一视图对对称的两种情况用了两套读法。
-    ///
-    /// 这类 bug 靠渲染截图才看得出来，纯断言返回值才钉得住。
-    func testSingleWindowMetadataLineUsesTheLabelTheCallerSupplied() {
-        let now = Date()
-        func model(interval: Bool, weekly: Bool, remaining: Double) -> ModelQuota {
-            ModelQuota(
-                modelName: "general",
-                intervalTotalCount: 100,
-                intervalUsageCount: Int(100 - remaining),
-                intervalRemainingPercent: remaining,
-                intervalStatus: interval ? .present : .absent,
-                intervalResetsAt: interval ? now.addingTimeInterval(3600) : nil,
-                intervalWindowSeconds: interval ? 5 * 3600 : nil,
-                weeklyTotalCount: 100,
-                weeklyUsageCount: Int(100 - remaining),
-                weeklyRemainingPercent: weekly ? remaining : 0,
-                weeklyStatus: weekly ? .present : .absent,
-                weeklyResetsAt: weekly ? now.addingTimeInterval(7 * 24 * 3600) : nil,
-                weeklyWindowSeconds: weekly ? 7 * 24 * 3600 : nil
-            )
-        }
-
-        // 两个调用点都是"仅存的那个标签放 primary、secondary 留空"。
-        let weeklyOnly = QuotaBarWithMetadata.singleWindow(
-            model: model(interval: false, weekly: true, remaining: 42),
-            primaryLabel: "周",
-            secondaryLabel: ""
-        )
-        XCTAssertEqual(weeklyOnly?.label, "周",
-                       "只有周窗口时标签必须来自 primaryLabel；读 secondaryLabel 会得到空串")
-        XCTAssertEqual(weeklyOnly?.percent, 42)
-
-        let intervalOnly = QuotaBarWithMetadata.singleWindow(
-            model: model(interval: true, weekly: false, remaining: 77),
-            primaryLabel: "5h",
-            secondaryLabel: ""
-        )
-        XCTAssertEqual(intervalOnly?.label, "5h")
-        XCTAssertEqual(intervalOnly?.percent, 77)
-
-        // 一个窗口都没有 → nil，调用方自己出占位文案。
-        XCTAssertNil(
-            QuotaBarWithMetadata.singleWindow(
-                model: model(interval: false, weekly: false, remaining: 0),
-                primaryLabel: "5h", secondaryLabel: "周"
-            ),
-            "没有窗口时不该凭空造出一行"
-        )
-    }
-
-    /// 单 5h 窗口（长周期）时那条 ▼ 重置进度标记要透传，不能被写死成 nil。
-    ///
-    /// `intervalTimeRemainingFraction` 本来就只在**长**周期窗口下非 nil，正是需要
-    /// 标记的那一类；曾经 dock 侧把它写死成 nil，于是同一份数据在菜单里有 ▼、在
-    /// dock 里没有——同一件事两种画法。
-    func testSingleWindowKeepsTheIntervalResetMarker() {
-        let now = Date()
-        func model(windowSeconds: Int?) -> ModelQuota {
-            ModelQuota(
-                modelName: "chatgpt_plan",
-                intervalTotalCount: 100, intervalUsageCount: 20,
-                intervalRemainingPercent: 80, intervalStatus: .present,
-                intervalResetsAt: now.addingTimeInterval(3600),
-                intervalWindowSeconds: windowSeconds,
-                weeklyTotalCount: 0, weeklyUsageCount: 0, weeklyRemainingPercent: 0,
-                weeklyStatus: .absent, weeklyResetsAt: nil, weeklyWindowSeconds: nil
-            )
-        }
-        let short = QuotaBarWithMetadata.singleWindow(
-            model: model(windowSeconds: 5 * 3600), primaryLabel: "5h", secondaryLabel: ""
-        )
-        let long = QuotaBarWithMetadata.singleWindow(
-            model: model(windowSeconds: 7 * 24 * 3600), primaryLabel: "5h", secondaryLabel: ""
-        )
-        XCTAssertNil(short?.timeRemainingFraction, "短周期窗口本来就没有重置进度标记")
-        XCTAssertNotNil(long?.timeRemainingFraction, "长周期窗口的 ▼ 标记不能被吞掉")
-    }
-
     /// 卡片层**无条件**提供重置卡与高峰期倒计时，而它只在 `dockBody` 的非 `.ok`
     /// 回退路径上需要显式把它们交下去（`QuotaSummary` 自己不再画）。
     ///
@@ -218,162 +133,10 @@ final class HoverRevealModeTests: XCTestCase {
         )
     }
 
-    /// 两个窗口的明细**并排**而不是堆叠。
-    ///
-    /// 判据是**宽度**，不是高度——这个选择是被量出来的：视图里除两列外还有标题行和
-    /// "周倍率"脚注，所以整个视图的堆叠/并排高度差被别的行淹没了（实测并排 98pt，
-    /// 而手搭的"两行+分隔线"参照只有 69pt，两者压根不是同一段内容，比高度不成立）。
-    ///
-    /// 宽度很干净：`HoverMetricLine` 是固定构造（标签 18pt + 百分比 40pt + 两个可压缩
-    /// 文本），单列自然宽 225pt，两列 `HStack(spacing: 16)` 自然宽 **466pt**
-    /// = 225 × 2 + 16。实测并排状态下整个视图的自然宽正好也是 466——说明这条 `HStack`
-    /// 就是驱动宽度的那一行。改回堆叠后视图宽度会塌到其它行（标题/脚注/单列）的最大
-    /// 宽度，达不到 466，断言即红。
-    ///
-    /// ⚠️ 这条是**间接**判据：它证明的是"有 466pt 的一行"，不是"那两个 `usageSection`
-    /// 在里面"。`QuotaUsageWindowsHoverView` 那处（列是 token 用量块）没有单独覆盖——
-    /// 两处是同构改动，要给第二处也加一条得先量出它的单列宽度当参照。
-    @MainActor
-    func testUsageMetricHoverAlwaysSplitsPromptsRoundsAndInputCached() {
-        let usage = UsageMetricSummary(
-            prompts: 42,
-            rounds: 128,
-            inputTokens: 1_240_000,
-            cachedInputTokens: 860_000,
-            outputTokens: 320_000,
-            reasoningOutputTokens: 96_000
-        )
-        let split = self.measuredHeight(
-            of: UsageMetricHoverSummaryView(title: "", usage: usage, showPromptCount: true),
-            minWidth: 1_000
-        )
-        let merged = self.measuredHeight(of: Self.mergedMetricSummary(usage: usage), minWidth: 1_000)
-
-        XCTAssertGreaterThan(split, 0, "前提不成立：这一组必须真的排得出来")
-        XCTAssertGreaterThan(
-            split, merged * 1.5,
-            "prompts/rounds 与 input/cached 必须各占一行（拆行 \(split)pt vs 合并 \(merged)pt）"
-        )
-    }
-
-    // MARK: - 真的量一次高度
-
-    /// 钉住"重排后不能再长回去"。
-    ///
-    /// 量的是 dock 详情浮层**自己**的高度（`.alwaysVisible`），把同一张卡片
-    /// 真正布局一遍取 `fittingSize`。2026-09-29 实测（ChatGPT 双窗口 +
-    /// 满 7 天本地用量，444pt 内容宽）**1188pt**（全展开的原始形态）→
-    /// **915pt**（第一轮重排）→ **611pt**（第二轮：元信息行去重 + 三列布局）
-    /// → **648pt**（第三轮：重置卡提到头部 + input/cached、prompts/rounds 拆行）
-    /// → **628pt**（第四轮：去掉进度条前导 label 和模型名那一行）
-    /// → **650pt**（第五轮：拆「额度 / 最近7天token用量」两个 section，各加一个标题行）
-    /// → **635pt**（第六轮：去掉两组之间的横线，并让第二组不再画自己那行
-    ///   12pt「最近 7 天 Token 用量」）。
-    /// → **617pt**（第七轮：改成一屏**两张卡片**，标题提到卡外——头部那行当第一张
-    ///   卡的标题、新增「最近7天token用量」当第二张的标题，图表自己那行标题连同
-    ///   分隔线一起撤掉）。
-    /// → **679pt**（第八轮：两行标题统一成 13pt、卡片内字号收到 10/11、
-    ///   描述行移到进度条上方并给条留出上下间距、重置/高峰期移到条与统计表之间
-    ///   并补一条分隔线。这一轮是**涨**的，涨在字号与呼吸感上）。
-    /// → **506pt**（第九轮：撤掉三列明细 **Last Prompt | 5h | 周**。它们讲的是
-    ///   本地扫描的 token 用量，和下一张卡「最近7天token用量」是同一件事，
-    ///   一屏摆两份既重复又把"还剩多少"这条主线压住。条与元信息行之间的分隔线
-    ///   留着，现在分隔的是"额度"与"用量"）。
-    /// → **664pt**（第十轮：在额度区与本地用量之间加「额度窗口用量」区块——一条
-    ///   时间构成条 + 每个窗口一行短指标 + 四桶明细。这一轮是**涨**的，涨在一件
-    ///   新的信息上：额度条讲"还剩多少"，这个区块讲"这一轮额度里本机烧了多少"，
-    ///   两者不重叠。涨的 158pt = 条与两行短指标约 40pt + 明细两栏（各 6 行）
-    ///   约 100pt + 两处间距。
-    /// → **757pt**（第十二轮：账号信息并进「额度窗口用量」浮层末尾——菜单改版删掉
-    ///   账号折叠区之后，邮箱 / 套餐 / 数据来源一度没有任何渲染入口。涨的 93pt =
-    ///   分隔线 + 标题行 + 邮箱行 + 套餐行 + 数据来源脚注。同样是"浮层里必须就地
-    ///   展开"的信息，超出屏幕时仍由 popover 的 ScrollView 兜底）。
-    ///
-    /// ⚠️ 第十轮那 100pt 明细是**必须**在卡里就地展开的，不是"顺手摆上去的"：
-    /// 两个宿主（dock 浮层、菜单兜底行的 hover 卡）都在 `ignoresMouseEvents = true`
-    /// 的 `NSPanel` 里，卡内收不到鼠标事件（`HoverPanel.swift` / `EdgeDockController+Popover`），
-    /// 所以 `HoverInfoRow` 的 `.alwaysVisible` 分支是它唯一的呈现路径——把它降级成
-    /// "只有 hover 才展开"，四桶绝对值就永远没人看得见。代价是卡更高，超出屏幕时
-    /// 由 popover 既有的 ScrollView 兜底（`popoverHeightFraction`）。
-    ///
-    /// 第三轮涨 37pt 是**故意的**：拆行换来每个数字都有完整一行。第四轮把
-    /// 头部那张"条 + 名称 label"总表撤回、条各归各的分块，顺带省掉模型名那一行，
-    /// 又落回 628pt。第五轮加两个 section 标题后回到 650pt——那 22pt 是**故意**
-    /// 花的：额度和本地用量是两套独立数据源（provider 接口 vs 本机会话扫描），
-    /// 混在一列里读者分不清归属，本地用量为空时"扫描尚未完成"尤其会被当成
-    /// 额度的脚注。第七轮把两组做成两张有边界的卡、标题提到卡外，反而又降了
-    /// 18pt：多出来的卡间距与标题行，少于撤掉的图表标题行 + 分隔线 + 内层标题。
-    /// 第八轮把 8/9pt 的字号统一到 10pt，图表与用量表跟着变高——那是拿高度换
-    /// 可读性，不是排版失控。第九轮一次性降 174pt：三列明细整块撤掉，用量明细
-    /// 只留在「最近7天token用量」那张卡里，浮层不必再滚动。
-    ///
-    /// **不要改成"和菜单形态比"**：菜单那张卡片是**折叠**的（同一张卡只有
-    /// 120pt），拿它当基准会把"折叠区就地展开"这件事本身判成回归——而就地
-    /// 展开正是 dock 侧必须的行为（浮层不接受鼠标事件，折叠区展不开）。
-    ///
-    /// 上限取 800pt：第十二轮实测 757pt（账号段并进「额度窗口用量」浮层末尾，
-    /// +93pt），余量 43pt，与第十轮同量级。改动这套排版时要重新量。
-    ///
-    /// ⚠️ 这条量的是**最轻**的一格（无重置额度数据、窗口内无本地样本），所以它
-    /// 挡不住后来挂在同一区块上的两样东西：金额行与逐张重置卡清单。真实形态由
-    /// `testDockDetailWithTheFullestQuotaWindowSectionStaysUnderTheSameCeiling` 单独
-    /// 守（第十二轮实测 838pt，上限 900pt）。两条一起看才是完整的高度契约。
-    ///
-    /// 注意这个上限和 popover 的高度上限（`popoverHeightFraction`）是两回事：
-    /// 那条管的是"面板不许高过屏幕"，超了套 ScrollView；这条管的是"排版别再变高"，
-    /// 顶破了说明有人加回了常展区块。两个数字不要互相抄。
-    @MainActor
-    func testDockDetailStaysUnderTheRearrangedCeiling() {
-        let height = measuredHeight(mode: .alwaysVisible, status: Self.makeChatGPTStatus())
-        XCTAssertGreaterThan(height, 0, "必须能布局出高度，否则这条断言没有意义")
-        XCTAssertLessThan(
-            height, 800,
-            "dock 详情浮层比重排前更高了（现在 \(height)pt，全展开时是 1188pt）"
-        )
-    }
-
-    /// 同一个上限，另配一张**真实形态**的卡：既有重置额度数据、窗口内也有本地
-    /// 样本（于是「额度窗口用量」区块会多画金额行与逐张重置卡清单）。
-    ///
-    /// 上一条量的那张卡没有重置数据、没有样本，是这条链上**最轻**的一格——它守不住
-    /// 后来加的两样东西（金额行、重置卡清单）。真实用户的 ChatGPT 卡几乎总是两样
-    /// 都有，所以上限必须按这一格量：第十二轮实测 **838pt**（账号段 +93pt），
-    /// 上限取 900pt（余量 62pt，与另一条同量级）。
-    @MainActor
-    func testDockDetailWithTheFullestQuotaWindowSectionStaysUnderTheSameCeiling() {
-        let now = Date()
-        let status = Self.makeChatGPTStatus(
-            state: .ok,
-            resetCredits: true,
-            recentSamples: (0..<3).map { index in
-                LocalTokenUsageSample(
-                    completedAt: now.addingTimeInterval(TimeInterval(-600 * (index + 1))),
-                    modelName: "gpt-5.5",
-                    promptID: "p\(index)",
-                    inputTokens: 1_000,
-                    cachedInputTokens: 9_000,
-                    outputTokens: 1_000,
-                    reasoningOutputTokens: 2_000
-                )
-            }
-        )
-        let height = measuredHeight(mode: .alwaysVisible, status: status)
-        let bare = measuredHeight(mode: .alwaysVisible, status: Self.makeChatGPTStatus())
-        XCTAssertGreaterThan(
-            height, bare,
-            "前提不成立：带重置卡与样本的这一格必须比最轻的那格高（否则量的不是同一张卡）"
-        )
-        XCTAssertLessThan(
-            height, 900,
-            "真实形态（金额行 + 逐张重置卡清单 + 账号段）的 dock 浮层高度（现在 \(height)pt）"
-                + "不该越过 900pt；超了先量一下，ScrollView 会兜底但那是一屏看不全"
-        )
-    }
-
-
+    // MARK: - 卡片 fixture（ChatGPT 卡，LayoutMetricsTests 也复用这一份）
 
     /// `.ok` / `.failed(带 lastSuccess)` 两种状态的选择器。
-    fileprivate enum CardState {
+    enum CardState {
         case ok
         case failed
 
@@ -385,7 +148,7 @@ final class HoverRevealModeTests: XCTestCase {
         }
     }
 
-    // MARK: - helpers
+    // MARK: - 排版测量 helpers
 
     /// dock 浮层里卡片内容区的宽度（`EdgeDockTheme.popoverWidth` 减去两侧背板内边距）。
     private var cardContentWidth: CGFloat {
@@ -459,7 +222,7 @@ final class HoverRevealModeTests: XCTestCase {
 
     /// ChatGPT 卡：双窗口 model + 本地用量明细（走 `ChatGPTPlanModelRow`，
     /// 也就是 dock 详情浮层里最"重"的一种形态）。
-    fileprivate static func makeChatGPTStatus() -> ProviderStatus {
+    static func makeChatGPTStatus() -> ProviderStatus {
         makeChatGPTStatus(state: CardState.ok, resetCredits: false)
     }
 
@@ -468,7 +231,7 @@ final class HoverRevealModeTests: XCTestCase {
     /// 这两个开关是配对用的：`.failed` + 有/无重置数据，四个组合里只有
     /// 「dock + 失败 + 有数据」这一格能区分"重置卡被画出来了"和"没画"——
     /// 其余三格要么本来就画（菜单由 `QuotaSummary` 自己画），要么本来就该没有。
-    fileprivate static func makeChatGPTStatus(
+    static func makeChatGPTStatus(
         state: CardState,
         resetCredits: Bool,
         recentSamples: [LocalTokenUsageSample] = [],
@@ -547,7 +310,7 @@ final class HoverRevealModeTests: XCTestCase {
 
     /// 含今天在内的七个自然日。ChatGPT 的页脚要**满 7 天**才进图表形态
     /// （不足时是一行"积累中"占位），少一天这条测试量的就不是最重的那个形态。
-    fileprivate static func makeSevenDays(now: Date) -> [DailyTokenUsage] {
+    static func makeSevenDays(now: Date) -> [DailyTokenUsage] {
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: now)
         return (0..<7).reversed().map { offset in

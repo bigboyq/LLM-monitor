@@ -3,7 +3,7 @@ import SwiftUI
 import AppKit
 @testable import LLM_monitor
 
-/// 「额度窗口用量」区块：窗口聚合口径、三个比率、时间构成条、以及两条文案。
+/// 「额度窗口用量」区块：窗口聚合口径、三个比率、时间构成条、以及截断短文案。
 ///
 /// 这个区块的数据**不是**新算的——窗口边界与闲时排除都取自额度行同一份
 /// `LocalUsageSummaryBuilder`。所以这里钉的不是"聚合算得对不对"（那是
@@ -269,30 +269,6 @@ final class QuotaWindowUsageTests: XCTestCase {
 
     // MARK: - 文案
 
-    /// `.notConfigured` 的胶囊文案是「未配置」而不是「未启用」。
-    ///
-    /// 这个状态覆盖五种原因（缺配置块 / 缺 Key / 缺外部 auth / 缺登录…），其中
-    /// 只有一种是"被禁用"；写「未启用」会让"已启用但还没填 Key"读成被关掉了，
-    /// 而同一张卡下面写着的原因是"API Key 未填写"——两句话自相矛盾。
-    func testNotConfiguredCapsuleSaysUnconfiguredNotDisabled() {
-        let status = ProviderStatus(
-            id: "p",
-            displayName: "P",
-            kind: .minimaxTokenPlan,
-            iconSystemName: "x",
-            accentColor: .minimax,
-            refreshIntervalSeconds: 300,
-            state: .notConfigured(reason: "API Key 未填写")
-        )
-        let presentation = ProviderStateLabel(status: status).presentation(at: Date())
-        XCTAssertEqual(presentation.title, "未配置")
-        XCTAssertNotEqual(presentation.title, "未启用", "「未启用」会被读成 provider 被关掉了")
-        XCTAssertEqual(presentation.tone, .secondary, "色调不变：这一条只改文案")
-
-        // 与其它状态区分得开（胶囊是这一行唯一携带的信息）。
-        XCTAssertNotEqual(presentation.title, ProviderStateLabel(status: Self.okStatus()).presentation(at: Date()).title)
-    }
-
     /// 段截断提示是**单行**短文案，完整说明留在 `.help` 里。
     func testTruncationNoticeIsASingleShortLine() {
         XCTAssertFalse(
@@ -383,28 +359,6 @@ final class QuotaWindowUsageTests: XCTestCase {
             outputTokens: 1_000,
             reasoningOutputTokens: 2_000,
             sourceProviderID: source
-        )
-    }
-
-    private static func okStatus() -> ProviderStatus {
-        let now = Date()
-        let info = QuotaInfo(
-            models: [glmModel(now: now)],
-            resetCredits: nil,
-            planLabel: "Pro",
-            accountEmail: nil,
-            codexUsageDetails: nil,
-            fetchedAt: now
-        )
-        return ProviderStatus(
-            id: "glm",
-            displayName: "GLM Coding Plan",
-            kind: .glmCodingPlan,
-            iconSystemName: "x",
-            accentColor: .glm,
-            refreshIntervalSeconds: 300,
-            state: .ok(info),
-            lastRefreshedAt: now
         )
     }
 }

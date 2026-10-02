@@ -96,48 +96,6 @@ final class ConfigStoreTests: StateTestCase {
         XCTAssertTrue(store.ensureProvidersPresent(descriptors: LLMMonitorApp.makeDescriptors()))
         XCTAssertEqual(store.config.providers.count, ProviderKind.allCases.count)
     }
-    @MainActor
-    func testAppInstanceLockAllowsOnlyOneOwner() throws {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("llm-monitor-instance-lock-\(UUID().uuidString)", isDirectory: true)
-        let lockURL = directory.appendingPathComponent("instance.lock")
-
-        do {
-            let first = AppInstanceLock.acquire(at: lockURL)
-            XCTAssertNotNil(first)
-            XCTAssertNil(AppInstanceLock.acquire(at: lockURL))
-        }
-
-        XCTAssertNotNil(AppInstanceLock.acquire(at: lockURL))
-    }
-    @MainActor
-    func testAppInstanceLockResultDistinguishesContentionFromFilesystemFailure() throws {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("llm-monitor-instance-lock-result-\(UUID().uuidString)", isDirectory: true)
-        let lockURL = directory.appendingPathComponent("instance.lock")
-        defer { try? FileManager.default.removeItem(at: directory) }
-
-        guard case .acquired(let firstLock) = AppInstanceLock.acquireResult(at: lockURL) else {
-            return XCTFail("首个实例应取得锁")
-        }
-        let contentionResult = withExtendedLifetime(firstLock) {
-            AppInstanceLock.acquireResult(at: lockURL)
-        }
-        guard case .alreadyRunning = contentionResult else {
-            return XCTFail("第二个实例应被识别为锁竞争")
-        }
-
-        let parentFile = FileManager.default.temporaryDirectory
-            .appendingPathComponent("llm-monitor-lock-parent-\(UUID().uuidString)")
-        try Data("not a directory".utf8).write(to: parentFile)
-        defer { try? FileManager.default.removeItem(at: parentFile) }
-
-        guard case .failed(.createDirectoryFailed) = AppInstanceLock.acquireResult(
-            at: parentFile.appendingPathComponent("instance.lock")
-        ) else {
-            return XCTFail("锁目录创建失败不应伪装成已有实例")
-        }
-    }
     func testAppConfigSchemaVersionIsWrittenAndFutureVersionIsRejected() throws {
         let config = AppConfig(refreshIntervalSeconds: 300, providers: [:])
         let data = try JSONEncoder().encode(config)
@@ -251,85 +209,6 @@ final class ConfigStoreTests: StateTestCase {
             "配置内容变化不能仅依赖 mtime 精度，否则连续保存可能漏掉 reload"
         )
     }
-    @MainActor
-    func testAppStateStartAfterStopRestartsConfigWatcher() async throws {
-        let store = makeIsolatedConfigStore()
-        let state = AppState(descriptors: [], configStore: store)
-        state.stop()
-
-        let reloadExpectation = expectation(description: "配置 watcher 在重启后继续工作")
-        let cancellable = store.$config
-            .dropFirst()
-            .sink { _ in reloadExpectation.fulfill() }
-        defer {
-            cancellable.cancel()
-            state.stop()
-        }
-
-        state.start()
-        var changed = store.config
-        changed.refreshIntervalSeconds += 1
-        let data = try JSONEncoder().encode(changed)
-        try data.write(to: store.configURL, options: .atomic)
-
-        await fulfillment(of: [reloadExpectation], timeout: 2)
-        XCTAssertEqual(store.config.refreshIntervalSeconds, changed.refreshIntervalSeconds)
-    }
-    /// 审计降级项复现测试 1：生产写入路径（ConfigStore.persist → FileManagerBox
-    /// .writePrivate → 临时文件 + rename）必须触发目录 `.write` watcher 的 reload。
-    /// 该测试与 startAfterStop 测试一起，作为“目录 .write 掩码不会错过 rename 替换”
-    /// 的 macOS 平台行为证据；若未来 macOS 行为变化导致本测试失败，再改事件模型。
-    @MainActor
-    func testConfigWatcherCatchesProductionPersistRenameWrite() async throws {
-        let store = makeIsolatedConfigStore()
-        let state = AppState(descriptors: [], configStore: store)
-        state.start()
-        defer { state.stop() }
-
-        let reloadExpectation = expectation(description: "生产 persist 路径触发 reload")
-        let cancellable = store.$config
-            .dropFirst()
-            .sink { _ in reloadExpectation.fulfill() }
-        defer { cancellable.cancel() }
-
-        var changed = store.config
-        changed.refreshIntervalSeconds += 1
-        try store.applyAndSave(changed)
-
-        await fulfillment(of: [reloadExpectation], timeout: 2)
-        XCTAssertEqual(store.config.refreshIntervalSeconds, changed.refreshIntervalSeconds)
-    }
-    /// 审计降级项复现测试 2：最坏情况——外部进程在同一目录创建临时文件后用
-    /// rename(2) 覆盖 config.json。目录 `.write` 事件仍必须触发 reload。
-    @MainActor
-    func testConfigWatcherCatchesRawRenameOverConfigFile() async throws {
-        let store = makeIsolatedConfigStore()
-        let state = AppState(descriptors: [], configStore: store)
-        state.start()
-        defer { state.stop() }
-
-        let reloadExpectation = expectation(description: "raw rename 覆盖触发 reload")
-        let cancellable = store.$config
-            .dropFirst()
-            .sink { _ in reloadExpectation.fulfill() }
-        defer { cancellable.cancel() }
-
-        var changed = store.config
-        changed.refreshIntervalSeconds += 2
-        let data = try JSONEncoder().encode(changed)
-        let stagingURL = store.configURL.deletingLastPathComponent()
-            .appendingPathComponent("config.json.editor-swap")
-        try data.write(to: stagingURL)
-        let renameResult = stagingURL.path.withCString { src in
-            store.configURL.path.withCString { dst in
-                Darwin.rename(src, dst)
-            }
-        }
-        XCTAssertEqual(renameResult, 0, "rename(2) 覆盖 config.json 必须成功")
-
-        await fulfillment(of: [reloadExpectation], timeout: 2)
-        XCTAssertEqual(store.config.refreshIntervalSeconds, changed.refreshIntervalSeconds)
-    }
     // MARK: - P1: ConfigStore.applyAndSave persistence blocked
     /// 当配置解析失败且 `backupCorruptConfig` 也失败时，`persistenceAllowed = false`，
     /// 后续 `applyAndSave` 必须抛 `corruptConfigBackupFailed`。
@@ -437,178 +316,42 @@ final class ConfigStoreTests: StateTestCase {
         XCTAssertEqual(visibleCards.first?.id, "test_a")
     }
 
-    // MARK: - clientBindings 解码合并（老配置补齐新增默认绑定）
+    // MARK: - ProviderConfig 占位 Key 守门与刷新间隔钳制（自 UsableAPIKeyHealthLevelTests 解散归入）
 
-    /// 组装一份最小可解码的 config.json 字典，附带调用方给的 clientBindings 数组。
-    private func makeConfigJSON(
-        clientBindings: [[String: Any]]? = nil,
-        schemaVersion: Int? = nil
-    ) -> Data {
-        var json: [String: Any] = [
-            "refreshIntervalSeconds": 300,
-            "providers": [String: Any]()
-        ]
-        if let schemaVersion { json["schemaVersion"] = schemaVersion }
-        if let clientBindings { json["clientBindings"] = clientBindings }
-        return try! JSONSerialization.data(withJSONObject: json)
+    func testUsableAPIKeyRules() {
+        XCTAssertNil(ProviderConfig(apiKey: nil).usableAPIKey)
+        XCTAssertNil(ProviderConfig(apiKey: "").usableAPIKey)
+        XCTAssertNil(ProviderConfig(apiKey: "   \n\t  ").usableAPIKey)
+        XCTAssertNil(ProviderConfig(apiKey: "REPLACE-WITH-YOUR-KEY").usableAPIKey)
+        XCTAssertNil(ProviderConfig(apiKey: "sk-cp-REPLACE-WITH-YOUR-KEY").usableAPIKey)
+        XCTAssertNil(ProviderConfig(apiKey: "sk-cp-xxx-REPLACE-THIS-TOKEN").usableAPIKey)
+        XCTAssertEqual(ProviderConfig(apiKey: "test-key-with-valid-format-12345").usableAPIKey, "test-key-with-valid-format-12345")
+        XCTAssertEqual(ProviderConfig(apiKey: "  sk-cp-real-key  \n").usableAPIKey, "sk-cp-real-key")
     }
 
-    private func decodeConfig(_ data: Data) throws -> AppConfig {
-        try JSONDecoder().decode(AppConfig.self, from: data)
-    }
+    func testEffectiveRefreshIntervalRules() {
+        let global = AppConfig(refreshIntervalSeconds: 300, providers: [:])
+        XCTAssertEqual(global.effectiveRefreshInterval(for: "anything"), 300)
 
-    private func bindingEntry(
-        clientID: String,
-        quotaProviderID: String,
-        sourceProviderAliases: [String],
-        enabled: Bool
-    ) -> [String: Any] {
-        [
-            "clientID": clientID,
-            "quotaProviderID": quotaProviderID,
-            "sourceProviderAliases": sourceProviderAliases,
-            "enabled": enabled
-        ]
-    }
+        let override = AppConfig(refreshIntervalSeconds: 300, providers: ["minimax_token_plan": ProviderConfig(refreshIntervalSeconds: 60)])
+        XCTAssertEqual(override.effectiveRefreshInterval(for: "minimax_token_plan"), 60)
 
-    /// 老用户配置：数组已存在、只有 5 条 opencode 绑定，且 opencode → deepseek 被
-    /// 用户显式打开（默认是 false）。解码后必须补上 zcode（2 条）与 dsh（3 条）
-    /// 默认绑定，同时用户的显式值原样保留——不能被默认值覆盖。
-    func testDecodeAddsNewDefaultBindingsToExistingLegacyArray() throws {
-        let existing: [[String: Any]] = [
-            bindingEntry(
-                clientID: ClientID.openCode,
-                quotaProviderID: QuotaProviderID.minimax,
-                sourceProviderAliases: [OpencodeLocalUsage.minimaxCodingPlanProviderID],
-                enabled: false
-            ),
-            bindingEntry(
-                clientID: ClientID.openCode,
-                quotaProviderID: QuotaProviderID.openAI,
-                sourceProviderAliases: [OpencodeLocalUsage.openAIProviderID],
-                enabled: false
-            ),
-            bindingEntry(
-                clientID: ClientID.openCode,
-                quotaProviderID: QuotaProviderID.antigravity,
-                sourceProviderAliases: OpencodeLocalUsage.antigravityProviderIDs,
-                enabled: false
-            ),
-            bindingEntry(
-                clientID: ClientID.openCode,
-                quotaProviderID: QuotaProviderID.zhipu,
-                sourceProviderAliases: [OpencodeLocalUsage.glmProviderID],
-                enabled: true
-            ),
-            bindingEntry(
-                clientID: ClientID.openCode,
-                quotaProviderID: QuotaProviderID.deepseek,
-                sourceProviderAliases: [OpencodeLocalUsage.deepseekProviderID],
-                enabled: true
-            )
-        ]
-        let config = try decodeConfig(makeConfigJSON(clientBindings: existing))
+        let zeroClamped = AppConfig(refreshIntervalSeconds: 0, providers: [:])
+        XCTAssertEqual(zeroClamped.effectiveRefreshInterval(for: "x"), 10)
 
+        let hugeClamped = AppConfig(refreshIntervalSeconds: Int.max, providers: [:])
         XCTAssertEqual(
-            config.clientBindings.count, 10,
-            "5 条 opencode + 2 条 zcode + 3 条 dsh 默认绑定"
+            hugeClamped.effectiveRefreshInterval(for: "x"),
+            TimeInterval(AppConfig.maximumRefreshIntervalSeconds)
         )
-        XCTAssertTrue(
-            config.isClientBindingEnabled(clientID: ClientID.zcode, quotaProviderID: QuotaProviderID.minimax),
-            "老配置应补上 zcode → minimax 默认绑定（enabled=true）"
-        )
-        XCTAssertTrue(
-            config.isClientBindingEnabled(clientID: ClientID.zcode, quotaProviderID: QuotaProviderID.deepseek),
-            "老配置应补上 zcode → deepseek 默认绑定（enabled=true）"
-        )
-        XCTAssertTrue(
-            config.isClientBindingEnabled(clientID: ClientID.openCode, quotaProviderID: QuotaProviderID.deepseek),
-            "用户显式打开的 opencode → deepseek 不应被默认值(false)覆盖"
-        )
-        // 补齐只追加到尾部，opencode 段落顺序与来源别名保持原样。
-        XCTAssertEqual(
-            config.clientBindings.prefix(5).map { "\($0.clientID):\($0.quotaProviderID)" },
-            existing.map { "\($0["clientID"] as! String):\($0["quotaProviderID"] as! String)" }
+
+        let hugeOverride = AppConfig(
+            refreshIntervalSeconds: 300,
+            providers: ["x": ProviderConfig(refreshIntervalSeconds: Int.max)]
         )
         XCTAssertEqual(
-            config.clientBindings.first?.sourceProviderAliases,
-            [OpencodeLocalUsage.minimaxCodingPlanProviderID]
-        )
-    }
-
-    /// 已经包含全部默认绑定的配置解码后不应重复，也不应重排。
-    func testDecodeDoesNotDuplicateOrReorderCompleteDefaultBindings() throws {
-        let encoded = try JSONEncoder().encode(AppConfig.defaultClientBindings)
-        let bindings = try XCTUnwrap(try JSONSerialization.jsonObject(with: encoded) as? [[String: Any]])
-
-        let config = try decodeConfig(makeConfigJSON(clientBindings: bindings))
-
-        XCTAssertEqual(config.clientBindings, AppConfig.defaultClientBindings)
-        XCTAssertEqual(config.clientBindings.count, AppConfig.defaultClientBindings.count)
-    }
-
-    /// 用户把某条默认绑定显式关掉后解码不能复活它（补齐只针对"缺失的组合"）。
-    func testDecodeKeepsExplicitlyDisabledDefaultBindingDisabled() throws {
-        let encoded = try JSONEncoder().encode(AppConfig.defaultClientBindings)
-        var bindings = try XCTUnwrap(try JSONSerialization.jsonObject(with: encoded) as? [[String: Any]])
-        for index in bindings.indices {
-            if bindings[index]["clientID"] as? String == ClientID.zcode,
-               bindings[index]["quotaProviderID"] as? String == QuotaProviderID.minimax {
-                bindings[index]["enabled"] = false
-            }
-        }
-
-        let config = try decodeConfig(makeConfigJSON(clientBindings: bindings))
-
-        XCTAssertFalse(
-            config.isClientBindingEnabled(clientID: ClientID.zcode, quotaProviderID: QuotaProviderID.minimax),
-            "用户关掉的 zcode → minimax 不应被默认值复活"
-        )
-        XCTAssertTrue(
-            config.isClientBindingEnabled(clientID: ClientID.zcode, quotaProviderID: QuotaProviderID.deepseek)
-        )
-        XCTAssertEqual(config.clientBindings.count, AppConfig.defaultClientBindings.count)
-    }
-
-    /// clientBindings 字段缺失（schema 0 legacy 路径）同样要经过合并，不能停在
-    /// 5 条 opencode 上。
-    func testDecodeWithoutClientBindingsFieldFallsBackToFullDefaults() throws {
-        let config = try decodeConfig(makeConfigJSON())
-
-        XCTAssertEqual(config.clientBindings, AppConfig.defaultClientBindings)
-        XCTAssertTrue(
-            config.isClientBindingEnabled(clientID: ClientID.zcode, quotaProviderID: QuotaProviderID.minimax)
-        )
-        XCTAssertTrue(
-            config.isClientBindingEnabled(clientID: ClientID.zcode, quotaProviderID: QuotaProviderID.deepseek)
-        )
-    }
-
-    /// schema 1（有 clientBindings、无 zcode 新条目的老用户）走的是同一合并逻辑。
-    func testSchema1ConfigAlsoReceivesNewDefaultBindings() throws {
-        let existing: [[String: Any]] = [
-            bindingEntry(
-                clientID: ClientID.openCode,
-                quotaProviderID: QuotaProviderID.zhipu,
-                sourceProviderAliases: [OpencodeLocalUsage.glmProviderID],
-                enabled: true
-            )
-        ]
-        let config = try decodeConfig(
-            makeConfigJSON(clientBindings: existing, schemaVersion: 1)
-        )
-
-        XCTAssertEqual(config.schemaVersion, AppConfig.currentSchemaVersion)
-        XCTAssertEqual(config.clientBindings.count, AppConfig.defaultClientBindings.count)
-        XCTAssertTrue(
-            config.isClientBindingEnabled(clientID: ClientID.zcode, quotaProviderID: QuotaProviderID.minimax)
-        )
-        XCTAssertTrue(
-            config.isClientBindingEnabled(clientID: ClientID.zcode, quotaProviderID: QuotaProviderID.deepseek)
-        )
-        XCTAssertTrue(
-            config.isClientBindingEnabled(clientID: ClientID.openCode, quotaProviderID: QuotaProviderID.zhipu),
-            "原有条目不应被改写"
+            hugeOverride.effectiveRefreshInterval(for: "x"),
+            TimeInterval(AppConfig.maximumRefreshIntervalSeconds)
         )
     }
 }

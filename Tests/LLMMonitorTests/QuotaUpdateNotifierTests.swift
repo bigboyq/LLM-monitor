@@ -475,4 +475,72 @@ final class QuotaUpdateNotifierTests: XCTestCase {
         _ = await state.refreshProviderDirectly(providerID: fetcher.providerID, mode: .full)
         XCTAssertTrue(notifier.recorded.isEmpty, "非窗口类 provider 任何情况下都不发额度事件")
     }
+
+    // MARK: - QuotaEventBatch 事件分组与渠道拆分（自 BarkNotifierTests 并入：
+    // 测的是 QuotaUpdateNotifier.swift 里的 QuotaEventBatch，不依赖 Bark 投递路径）
+
+    private static func event(_ kind: QuotaNotificationKind, model: String = "general") -> QuotaEvent {
+        QuotaEvent(
+            modelName: model,
+            displayName: model,
+            kind: kind,
+            previousPercent: 10,
+            currentPercent: kind == .intervalRestored || kind == .weeklyRestored ? 100 : 0
+        )
+    }
+
+    @MainActor
+    func testBarkNotificationIDIsStableAcrossEventCombinationChanges() {
+        // R2: 事件组合从单事件变为双事件时，覆盖 id 必须保持不变，否则
+        // 旧通知无法被覆盖、继续堆积。
+        let channels = QuotaNotifyChannels(
+            intervalRestored: .barkAndSystem, intervalExhausted: .barkAndSystem,
+            weeklyRestored: .barkAndSystem, weeklyExhausted: .barkAndSystem
+        )
+        let single = QuotaEventBatch(
+            providerID: "p", providerName: "P",
+            events: [Self.event(.intervalRestored)], channels: channels
+        )
+        let combined = QuotaEventBatch(
+            providerID: "p", providerName: "P",
+            events: [Self.event(.intervalRestored), Self.event(.weeklyRestored)],
+            channels: channels
+        )
+        XCTAssertEqual(single.modelGroups[0].barkNotificationID, "llmmonitor-p-general")
+        XCTAssertEqual(single.modelGroups[0].barkNotificationID, combined.modelGroups[0].barkNotificationID)
+    }
+
+    func testBatchSplitsEventsPerChannel() {
+        // R1: 渠道拆分语义 —— system 只含启用系统通知的事件，bark 只含
+        // 启用 Bark 的事件，「不通知」的事件两边都不出现。
+        let channels = QuotaNotifyChannels(
+            intervalRestored: .system,
+            intervalExhausted: .none,
+            weeklyRestored: .barkAndSystem,
+            weeklyExhausted: .none
+        )
+        let batch = QuotaEventBatch(
+            providerID: "p", providerName: "P",
+            events: [
+                Self.event(.intervalRestored),
+                Self.event(.weeklyRestored),
+                Self.event(.intervalExhausted),
+                Self.event(.weeklyExhausted),
+            ],
+            channels: channels
+        )
+        let group = batch.modelGroups[0]
+        // 「Bark + 系统通知」同时进入两个渠道；「不通知」两边都不出现。
+        XCTAssertEqual(group.systemEvents.map(\.kind), [.intervalRestored, .weeklyRestored])
+        XCTAssertEqual(group.barkEvents.map(\.kind), [.weeklyRestored])
+        XCTAssertTrue(group.sendsSystem)
+        XCTAssertTrue(group.sendsBark)
+        // 渠道正文按各自的事件列表生成，互不混入。
+        XCTAssertEqual(group.systemLines.count, 2)
+        XCTAssertTrue(group.systemLines[0].contains("短周期"))
+        XCTAssertTrue(group.systemLines[1].contains("周额度"))
+        XCTAssertEqual(group.barkLines.count, 1)
+        XCTAssertTrue(group.barkLines[0].contains("周额度"))
+        XCTAssertFalse(group.barkLines[0].contains("短周期"))
+    }
 }
