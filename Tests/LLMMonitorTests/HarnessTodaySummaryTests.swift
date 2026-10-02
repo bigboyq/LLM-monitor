@@ -232,6 +232,28 @@ final class HarnessTodaySummaryTests: XCTestCase {
 
     // MARK: - 空贡献跳过
 
+    /// 压缩名只去掉超长品牌前缀、让变体后缀可区分；分组键与统计仍用原始 ID。
+    func testCompactDisplayNameStripsOnlyLongBrandPrefixes() {
+        func row(named model: String?) -> HarnessModelRow {
+            HarnessModelRow(
+                dayStart: now, clientID: "antigravity", quotaProviderID: "antigravity",
+                modelName: model,
+                samples: [sample(model: model, at: now, input: 100, cached: 0, output: 10, promptID: "p")],
+                calendar: calendar
+            )
+        }
+        // 变体后缀在定宽列里可区分（这是压缩的唯一目的）
+        XCTAssertEqual(row(named: "gemini-3.8-flash-n").compactDisplayName, "3.8-flash-n")
+        XCTAssertEqual(row(named: "gemini-3.8-flash-tiered").compactDisplayName, "3.8-flash-tiered")
+        XCTAssertEqual(row(named: "claude-opus-4-6-thinking").compactDisplayName, "opus-4-6-thinking")
+        // 短前缀 / 无前缀 / 其他品牌不压：裸 `flash` 在多 provider 段里反而难归属
+        XCTAssertEqual(row(named: "deepseek-flash").compactDisplayName, "deepseek-flash")
+        XCTAssertEqual(row(named: "GLM-5.3").compactDisplayName, "GLM-5.3")
+        XCTAssertEqual(row(named: "gpt-5.2-codex").compactDisplayName, "gpt-5.2-codex")
+        // 分组键（modelName）不受展示压缩影响
+        XCTAssertEqual(row(named: "gemini-3.8-flash-n").modelName, "gemini-3.8-flash-n")
+    }
+
     /// 三种"没有今日活动"都不该产生段：完全没样本的 provider、只有昨天的样本、
     /// 贡献本身无任何活动（`hasActivity` 为 false，与设置页同一口径）。
     func testContributionsWithoutTodayActivityProduceNoSections() {

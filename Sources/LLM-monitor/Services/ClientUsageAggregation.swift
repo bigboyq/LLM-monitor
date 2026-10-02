@@ -240,6 +240,25 @@ struct HarnessModelRow: Identifiable, Equatable, Sendable {
         modelName ?? HarnessTodaySummary.missingModelNameText
     }
 
+    /// UI 展示用的压缩名：去掉超长品牌前缀（`gemini-` / `claude-`），让
+    /// `3.8-flash-n` 与 `3.8-flash-tiered` 这类变体后缀在定宽列里可区分——
+    /// 原始 ID 下两个变体都会被尾部截断成相同开头，肉眼无法分辨。
+    /// 只影响展示：分组键（`id`）、定价与统计一律仍用原始 `modelName`。
+    var compactDisplayName: String {
+        guard let name = modelName else {
+            return HarnessTodaySummary.missingModelNameText
+        }
+        for prefix in Self.compactBrandPrefixes where name.hasPrefix(prefix) {
+            return String(name.dropFirst(prefix.count))
+        }
+        return name
+    }
+
+    /// 只压掉**已知超长品牌前缀**（7 字符档）：能显著缩短且不引入歧义。
+    /// 短前缀（如 `gpt-`）压缩收益小，`deepseek-` 去掉后裸 `flash` 在
+    /// 多 provider 段里反而更难归属，都不压。
+    static let compactBrandPrefixes: [String] = ["gemini-", "claude-"]
+
     init(
         dayStart: Date,
         clientID: String,

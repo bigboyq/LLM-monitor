@@ -160,12 +160,14 @@ struct HarnessModelRowView: View {
             // 模型名**定宽**，不是 `maxWidth`：同行的 `TokenBucketBar` 内部是
             // `GeometryReader`（贪婪填充），不定宽的名字列会被它整列吃掉——实测
             // 模型名会宽到 0pt，整行只剩条和数字。名字定宽 + 条吃剩余，是这里
-            // 唯一稳定的分法。
-            Text(row.displayName)
+            // 唯一稳定的分法。展示用压缩名（去品牌前缀，让变体后缀可区分），
+            // hover 提示兜底完整原始 ID。
+            Text(row.compactDisplayName)
                 .font(MenuTypography.modelTitle)
                 .foregroundStyle(Color.primaryLabel)
                 .lineLimit(1)
                 .truncationMode(.tail)
+                .help(row.displayName)
                 .frame(width: HarnessModelRowView.modelNameWidth, alignment: .leading)
             TokenBucketBar(buckets: row.buckets)
                 .frame(minWidth: HarnessModelRowView.bucketBarMinWidth, maxWidth: .infinity)
