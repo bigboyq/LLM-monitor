@@ -121,3 +121,14 @@ extension LocalDailyTokenUsage: LocalUsageDaily {
     var output: Int { outputTokens }
     var reasoning: Int { reasoningTokens }
 }
+
+/// Scanner daily usage 类型需要满足的协议，用于 `DailyUsageAggregation` 泛型约束。
+/// 协议随实现方住在 Models（上轮架构审核：Models → Services 的最后一处反向依赖）。
+protocol DailyUsageAddable: Sendable {
+    var dayStart: Date { get }
+    init(dayStart: Date)
+    static func + (lhs: Self, rhs: Self) -> Self
+    /// 返回一份拷贝，dayStart 替换为指定日期。
+    /// filterLast7Days 需要确保 dayStart 与本地 calendar.startOfDay 精度完全一致。
+    func withDayStart(_ date: Date) -> Self
+}
