@@ -229,16 +229,23 @@ extension AntigravityLocalUsageScanner {
         event: AntigravityFetcher.UsageEvent
     ) -> LocalTokenUsageSample {
         // Antigravity events report uncached input and cache-read separately.
-        // Samples keep the historical cache-inclusive input field; the daily
-        // adapter and TokenUsageBuckets split it for UI/pricing.
-        LocalTokenUsageSample(
+        // Route raw→桶 through the harness catalog and rebuild the historical
+        // cache-inclusive sample contract only here; the daily adapter and
+        // TokenUsageBuckets split it for UI/pricing.
+        let buckets = TokenAccountingCatalog.antigravity.normalizedBuckets(
+            rawInput: event.inputTokens,
+            cacheRead: event.cacheReadTokens,
+            rawOutput: event.outputTokens,
+            rawReasoning: event.reasoningTokens
+        )
+        return LocalTokenUsageSample(
             completedAt: event.timestamp ?? .distantPast,
             modelName: event.model,
             promptID: "\(sessionID):\(promptComponent)",
-            inputTokens: SaturatingArithmetic.add(event.inputTokens, event.cacheReadTokens),
-            cachedInputTokens: event.cacheReadTokens,
-            outputTokens: event.outputTokens,
-            reasoningOutputTokens: event.reasoningTokens
+            inputTokens: buckets.cacheInclusiveInput,
+            cachedInputTokens: buckets.cacheRead,
+            outputTokens: buckets.output,
+            reasoningOutputTokens: buckets.reasoning
         )
     }
 

@@ -30,6 +30,8 @@ extension MinimaxLocalUsageScanner {
                 Int((Double(sample.outputTokens) * ratio).rounded()),
                 sample.outputTokens
             )
+            // 重建 sample 时必须原样带回 sourceProviderID：reader 写入了该
+            // 诊断字段，per-turn 分摊若丢掉它，hover / 汇总就无法再追溯来源。
             return LocalTokenUsageSample(
                 completedAt: sample.completedAt,
                 modelName: sample.modelName,
@@ -37,7 +39,8 @@ extension MinimaxLocalUsageScanner {
                 inputTokens: sample.inputTokens,
                 cachedInputTokens: sample.cachedInputTokens,
                 outputTokens: max(sample.outputTokens - reasoning, 0),
-                reasoningOutputTokens: reasoning
+                reasoningOutputTokens: reasoning,
+                sourceProviderID: sample.sourceProviderID
             )
         }
     }

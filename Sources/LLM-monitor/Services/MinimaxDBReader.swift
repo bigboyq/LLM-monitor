@@ -336,17 +336,24 @@ final class MinimaxDBReader {
                 let cachedInput = SQLiteConnection.nnClamp(sqlite3_column_int64(stmt, 7))
                 let promptComponent = turnID ?? "event-\(timestampMs)"
                 // MiniMax raw input is uncached and cache-read is separate;
-                // samples deliberately store their legacy cache-inclusive
-                // input. Reasoning is split later by the scanner when a safe
-                // native/character-based signal exists.
+                // route raw→桶 through the harness catalog and rebuild the
+                // legacy cache-inclusive sample here. Reasoning is split later
+                // by the scanner when a safe native/character-based signal
+                // exists (the split preserves every field written here).
+                let buckets = TokenAccountingCatalog.minimax.normalizedBuckets(
+                    rawInput: uncachedInput,
+                    cacheRead: cachedInput,
+                    rawOutput: output,
+                    rawReasoning: reasoning
+                )
                 return LocalTokenUsageSample(
                     completedAt: Date(timeIntervalSince1970: Double(timestampMs) / 1000),
                     modelName: modelName,
                     promptID: "\(sessionID):\(promptComponent)",
-                    inputTokens: SaturatingArithmetic.add(uncachedInput, cachedInput),
-                    cachedInputTokens: cachedInput,
-                    outputTokens: output,
-                    reasoningOutputTokens: reasoning
+                    inputTokens: buckets.cacheInclusiveInput,
+                    cachedInputTokens: buckets.cacheRead,
+                    outputTokens: buckets.output,
+                    reasoningOutputTokens: buckets.reasoning
                 )
             }
         )

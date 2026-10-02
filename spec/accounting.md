@@ -81,11 +81,62 @@ DSH 与 MiniMax Code 都只在 provider 没有可用原生 reasoning 数值时�
 分布差异影响。不要把两种来源的字符统计直接合并，也不要把估算的 Reason 当作 provider
 原生账单字段。
 
+### 唯一入口：raw → 桶
+
+raw provider 计数器到四个规范化桶的转换**只有一条路径**：
+`TokenAccountingCatalog.<harness>.normalizedBuckets(rawInput:cacheRead:rawOutput:rawReasoning:)`。
+reader / scanner / aggregation 不得自己写 `input + cacheRead` 或
+`rawOutput - reasoning` 这类手算桶关系的表达式。允许的只有两件事：
+
+1. 传给 catalog 的 raw 值做**非负饱和**（`nnClamp` / `max(_, 0)`）；
+2. 拿到 `TokenUsageBuckets` 后，按各自持久化结构**重新组装**字段（sample 存
+   cache-inclusive `inputTokens`、daily 存 `cacheReadTokens` 等）。
+
+这样 clamping、cache-inclusive 减法、output/reasoning 拆分三处规则只有一份实现；
+`testXxxUsage` 系列护栏测试必须全绿，任何手算漂移都会在这些用例上表现为
+input/cache/output/reasoning 数值变化。
+
+reader 组装 sample 后仍可能被下游改写（MiniMax 的字符分摊会重建 sample）；此时
+catalog 的结果已经在 reader 层固化，重建逻辑必须逐字段原样带回（含
+`sourceProviderID` 等诊断字段），不得丢字段。
+
+### 高峰倍率登记表
+
+`ModelPricing.json` 只描述「这个模型多少钱」；「什么时段按几折算」属于正交的另一层，
+登记在 `ModelPricingCatalog` 的 `pricingMultipliers` 表里：
+
+| provider | 窗口类型 | 倍率 |
+|---|---|---|
+| `QuotaProviderID.deepseek` | `PeakWindow` 高峰窗口 | ×2 |
+
+`pricingMultiplier(quotaProviderID:at:)` 遍历登记表求值，未登记的 provider 或窗口未命中
+一律返回 1。新增 provider 的峰谷定价只往表里追加一行，不要在求值分支里加
+`if quotaProviderID == ...`。价目本身仍然只改 JSON，不在本表登记。
+
+## 跨 provider 金额汇总
+
+`ModelCostEstimate` 是**单 provider 内**的计价结果：同一 provider 出现币种冲突时把冲突
+模型丢进 unpriced 报「部分计价」，绝不跨币种相加。跨 provider 汇总由第二层
+`MixedCurrencyEstimate`（`Sources/LLM-monitor/Models/MixedCurrencyEstimate.swift`）负责：
+
+- 按币种把各 estimate 的 `value` 归集到 `usdTotal` / `cnyTotal`，`value` 或
+  `currency` 为 nil 的 estimate 直接跳过；
+- 总额 `cnyEquivalentTotal = cnyTotal + usdTotal × usdToCNYRate`（`usdToCNYRate`
+  暂硬编码 7，是产品决策而非定价数据）；
+- 文案：纯 CNY `¥10.50`、纯 USD `$3.20`、混合 `10（含$1)`（总额无 `¥` 前缀，
+  括号内是 USD 原额）。
+
+金额全程用 `Decimal`：`ModelCostEstimate.value` 是浮点累加结果，跨币种还要再乘一次
+折算率，用 `Double` 会出现 `0.3 × 7 = 2.0999999…` 的尾差错账。
+
 ## 代码入口
 
 | 责任 | 入口 |
 |---|---|
 | Harness 原始字段定义 | `Sources/LLM-monitor/Models/TokenAccounting.swift` 的 `TokenAccountingCatalog` |
+| raw → 四桶（唯一入口） | `TokenAccountingDefinition.normalizedBuckets(rawInput:cacheRead:rawOutput:rawReasoning:)` |
+| 高峰倍率登记 | `ModelPricingCatalog.pricingMultipliers` |
+| 跨 provider 金额汇总 | `Sources/LLM-monitor/Models/MixedCurrencyEstimate.swift` |
 | Daily 统一字段 | `Sources/LLM-monitor/Models/LocalUsageDaily.swift` |
 | Sample → 估算四桶 | `TokenUsageBuckets.fromSample(_:)` |
 | Sample → daily 规范化汇总 | `UnifiedTokenUsageAggregator` |

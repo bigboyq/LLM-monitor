@@ -5,7 +5,7 @@ import Foundation
 // PeakWindow，被 ProviderClientModel / Views / SettingsView 消费。
 // 价格数据全部来自随 app 打包的 Resources/ModelPricing.json（Package.swift 以
 // process resource 声明）：调价 / 新增 / 退休模型只改 JSON，并同步测试与 spec；
-// 本文件只保留匹配引擎、zhipu 兜底顺序与 DeepSeek 高峰倍率逻辑。
+// 本文件只保留匹配引擎、zhipu 兜底顺序与高峰倍率登记表逻辑。
 
 /// The currencies used by the public API price lists. Values are intentionally
 /// kept in their published currency instead of silently applying an exchange
@@ -226,15 +226,47 @@ enum ModelPricingCatalog {
         }
     }
 
-    /// 用户给定的是非高峰价；现有 DeepSeek 高峰窗口规则规定高峰统一乘 2。
+    /// 用户给定的是非高峰价；provider 的高峰/峰谷定价规则登记在这里，
+    /// 由 `pricingMultiplier(quotaProviderID:at:)` 查表求值。规则条目与
+    /// ModelPricing.json 的价目表分离：JSON 只描述"这个模型多少钱"，这里只描述
+    /// "什么时段按几折算"，两者正交。行为等价性由 DeepseekPeakWindowTests /
+    /// ModelPricingJSONTests 守门。
+    private struct ProviderPricingMultiplier: Sendable {
+        /// QuotaProviderID。
+        let providerID: String
+        /// 该规则适用的计价窗口类型（当前只有 DeepSeek 高峰 / 谷价两类）。
+        enum Kind: Sendable {
+            /// 北京时间高峰窗口，命中即乘 `multiplier`。
+            case peakWindow
+        }
+        let kind: Kind
+        let multiplier: Double
+    }
+
+    /// 高峰倍率登记表。新增 provider 的峰谷规则只在这里追加一行，不改
+    /// `pricingMultiplier` 的求值分支。
+    private static let pricingMultipliers: [ProviderPricingMultiplier] = [
+        ProviderPricingMultiplier(
+            providerID: QuotaProviderID.deepseek,
+            kind: .peakWindow,
+            multiplier: 2
+        )
+    ]
+
+    /// 用户给定的是非高峰价；已登记的 provider 按其窗口规则取倍率，未登记
+    /// （或窗口未命中）返回 1。
     private static func pricingMultiplier(
         quotaProviderID: String,
         at date: Date,
         deepseekPeakWindow: DeepseekPeakWindow
     ) -> Double {
-        guard quotaProviderID == QuotaProviderID.deepseek else { return 1 }
-        if case .peak = deepseekPeakWindow.status(at: date, calendar: PeakWindow.beijingCalendar) {
-            return 2
+        for rule in pricingMultipliers where rule.providerID == quotaProviderID {
+            switch rule.kind {
+            case .peakWindow:
+                if case .peak = deepseekPeakWindow.status(at: date, calendar: PeakWindow.beijingCalendar) {
+                    return rule.multiplier
+                }
+            }
         }
         return 1
     }

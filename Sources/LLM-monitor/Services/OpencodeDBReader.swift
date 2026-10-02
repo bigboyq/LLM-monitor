@@ -213,19 +213,26 @@ final class OpencodeDBReader {
         var samplesByProvider: [String: [LocalTokenUsageSample]] = [:]
         for (messageID, sessionID, timestamp, provider, parent, model, input, output, reasoning, cacheRead) in rows {
             let promptComponent = parent ?? "event-\(messageID)"
-            // R9: 读取层非负饱和；input = nn(input) + nn(cacheRead)。
+            // R9: 读取层非负饱和；raw→桶转换统一走 TokenAccountingCatalog。
             let inNN = SQLiteConnection.nnClamp(input)
             let crNN = SQLiteConnection.nnClamp(cacheRead)
-            // OpenCode raw input is uncached; preserve the sample contract by
-            // combining it with cache-read only at this compatibility boundary.
+            // OpenCode raw input is uncached; route the raw counters through the
+            // harness catalog and rebuild the legacy cache-inclusive sample
+            // contract only at this compatibility boundary.
+            let buckets = TokenAccountingCatalog.opencode.normalizedBuckets(
+                rawInput: inNN,
+                cacheRead: crNN,
+                rawOutput: SQLiteConnection.nnClamp(output),
+                rawReasoning: SQLiteConnection.nnClamp(reasoning)
+            )
             let sample = LocalTokenUsageSample(
                 completedAt: Date(timeIntervalSince1970: Double(timestamp) / 1000),
                 modelName: model,
                 promptID: "\(sessionID):\(promptComponent)",
-                inputTokens: SaturatingArithmetic.add(inNN, crNN),
-                cachedInputTokens: crNN,
-                outputTokens: SQLiteConnection.nnClamp(output),
-                reasoningOutputTokens: SQLiteConnection.nnClamp(reasoning)
+                inputTokens: buckets.cacheInclusiveInput,
+                cachedInputTokens: buckets.cacheRead,
+                outputTokens: buckets.output,
+                reasoningOutputTokens: buckets.reasoning
             )
             samplesByProvider[provider, default: []].append(sample)
         }
