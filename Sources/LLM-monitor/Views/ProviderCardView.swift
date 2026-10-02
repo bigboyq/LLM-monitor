@@ -171,7 +171,8 @@ struct ProviderCardView: View, Equatable {
     /// 0. **段落标题「Plan详情」**——账号行分隔线之后、进度条区之前。三段里只有
     ///    账号行不配标题（它本来就是一行）；这个标题与段3 的「最近7天token用量」
     ///    同为段落级，但住在卡内（段3 的标题在卡外），层级压过模块标题：
-    ///    11pt semibold（`hoverRowEmphasis`）对 10pt secondary（`QuotaModuleTitle`）。
+    ///    11pt semibold（`hoverRowEmphasis`）对 10pt semibold secondary（`QuotaModuleTitle`，
+    ///    第四轮起模块标题也加重字重，但字号与颜色仍在段落标题之下）。
     /// 1. **进度条**——每模型配额行原样（元信息行、分段条、GLM 闲时脚注、
     ///    ChatGPT / DeepSeek 专属行）；高峰期倒计时仍由 `between` 夹在第一个
     ///    model 行的进度条下方。曾经挂在同一位置的 `CompactResetCreditsRow`
@@ -255,7 +256,9 @@ struct ProviderCardView: View, Equatable {
     /// 价值取当天样本逐条计价（与 `todayCostText` 同一取数与传参）。
     ///
     /// 当天无本地数据 → 返回 `nil`，今日行整个不画。它不是额度窗口，只复用
-    /// `QuotaWindowUsageMetricRow` 的格式（行首标签「今日」），不参与时间构成条。
+    /// `QuotaWindowUsageMetricRow` 的格式（行首标签「今日」），不参与时间构成条；
+    /// 第四轮改版起同一行还进「额度详情」表（`QuotaWindowUsageRawTable.today`，
+    /// 重置日期格 `—`，并参与该表的全零列判定），两处消费同一份 `Row`。
     private func todayUsageRow(projection: ProviderUsageProjection) -> QuotaWindowUsageSection.Row? {
         guard let today = projection.dailyTokenUsage.last(where: {
             Calendar.current.isDateInToday($0.dayStart)

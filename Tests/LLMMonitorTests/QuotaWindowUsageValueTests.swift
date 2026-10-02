@@ -383,6 +383,168 @@ final class QuotaWindowUsageValueTests: XCTestCase {
         XCTAssertEqual(ProviderCardView.planSectionTitleText, "Plan详情")
     }
 
+    // MARK: - 全零列隐藏与今日行（第四轮改版）
+
+    /// 「额度分析」的「命中」「思考」列只在**没有任何可见行**产出对应桶时隐藏：
+    /// 模块内跨行判定，不是单行判定——某一行的比率是 `—` 不足以藏掉一列。
+    func testStatsColumnsHideOnlyWhenNoVisibleRowProducesTheBucket() {
+        let zero = QuotaWindowUsageMetrics(input: 0, cachedInput: 0, output: 0, reasoning: 0)
+        let cachedOnly = QuotaWindowUsageMetrics(input: 1, cachedInput: 9, output: 1, reasoning: 0)
+        let reasoningOnly = QuotaWindowUsageMetrics(input: 1, cachedInput: 0, output: 1, reasoning: 2)
+
+        let allZero = QuotaWindowUsageSection.statsColumnVisibility(rows: [zero, zero])
+        XCTAssertFalse(allZero.hit, "所有行的 cached 合计为 0 → 命中列整列隐藏")
+        XCTAssertFalse(allZero.think, "所有行的 reasoning 合计为 0 → 思考列整列隐藏")
+
+        XCTAssertTrue(
+            QuotaWindowUsageSection.statsColumnVisibility(rows: [zero, cachedOnly]).hit,
+            "只要有一行产出 cached 就保住命中列（跨行判定，不是单行判定）"
+        )
+        XCTAssertTrue(
+            QuotaWindowUsageSection.statsColumnVisibility(rows: [zero, reasoningOnly]).think,
+            "只要有一行产出 reasoning 就保住思考列"
+        )
+        XCTAssertFalse(
+            QuotaWindowUsageSection.statsColumnVisibility(rows: [zero, cachedOnly]).think,
+            "cached 不救思考列：两列各判各的"
+        )
+    }
+
+    /// 行本体照办宿主给的列显隐：两列全关的行必须真的更窄（整列消失，不只是
+    /// 比率显示成 `—`）。宿主形态同上：行本体是 `GridRow`，要住进 `Grid` 再量。
+    @MainActor
+    func testStatsColumnFlagsCollapseTheWholeColumn() {
+        let metrics = QuotaWindowUsageMetrics(input: 1_000, cachedInput: 0, output: 1_000, reasoning: 0)
+        let cost = ModelCostEstimate(value: 12.34, currency: .cny, pricedModelNames: ["a"], unpricedModelNames: [])
+        func grid(showsHit: Bool, showsThink: Bool) -> some View {
+            Grid(alignment: .leading, horizontalSpacing: 4, verticalSpacing: 3) {
+                QuotaWindowUsageMetricRow(
+                    label: "5h",
+                    metrics: metrics,
+                    cost: cost,
+                    showsHitColumn: showsHit,
+                    showsThinkingColumn: showsThink
+                )
+            }
+            .font(MenuTypography.dataValue)
+            .lineLimit(1)
+        }
+        let allShown = self.measuredWidth(of: grid(showsHit: true, showsThink: true))
+        let collapsed = self.measuredWidth(of: grid(showsHit: false, showsThink: false))
+
+        XCTAssertGreaterThan(allShown, 0, "前提不成立：行必须真的排得出来")
+        XCTAssertGreaterThan(allShown, collapsed + 5, "命中/思考两列关掉后必须真的更窄（整列消失）")
+    }
+
+    /// 「额度详情」四个数值列在**所有可见行**合计为 0 时整列隐藏——**含表头**：
+    /// 全零时表格自然宽必须缩到只剩「类型 + 重置日期」两列；桶非零时列原样保留。
+    @MainActor
+    func testRawTableHidesAllZeroNumericColumnsWithTheirHeaders() {
+        let now = Date()
+        let zero = LocalUsageSummaryBuilder.windowUsage(
+            model: Self.model(name: "deepseek_balance", interval: true, weekly: true, now: now),
+            providerKind: .deepseek,
+            samples: [],
+            intervalLabel: "5h",
+            weeklyLabel: "周"
+        )
+        let full = LocalUsageSummaryBuilder.windowUsage(
+            model: Self.model(name: "deepseek_balance", interval: true, weekly: true, now: now),
+            providerKind: .deepseek,
+            // 四桶都非零的样本（共用 helper 的 cached > input 会让未缓存 input 钳成 0）。
+            samples: [LocalTokenUsageSample(
+                completedAt: now.addingTimeInterval(-600),
+                modelName: "deepseek-chat",
+                promptID: "p",
+                inputTokens: 10_000,
+                cachedInputTokens: 9_000,
+                outputTokens: 1_000,
+                reasoningOutputTokens: 2_000,
+                sourceProviderID: nil
+            )],
+            intervalLabel: "5h",
+            weeklyLabel: "周"
+        )
+        let hidden = Self.numericVisibility(of: zero)
+        XCTAssertFalse(
+            hidden.input || hidden.cached || hidden.output || hidden.reason,
+            "前提不成立：空样本快照四桶应全零"
+        )
+        let kept = Self.numericVisibility(of: full)
+        XCTAssertTrue(kept.input && kept.cached && kept.output && kept.reason, "前提不成立：有样本的快照四桶应都非零")
+
+        // 「类型 + 重置日期」两列的理论宽：类型表头自然宽 + 一个列距 + 重置日期固定宽。
+        // 留 8pt 余量（窗口标签/中文表头的半字符级抖动）；多活一个表头就要多 ~35pt。
+        let typeHeaderWidth = self.measuredWidth(of: Text("类型").font(MenuTypography.metricLabel))
+        let hiddenTableWidth = self.measuredWidth(of: QuotaWindowUsageRawTable(snapshot: zero))
+        let fullTableWidth = self.measuredWidth(of: QuotaWindowUsageRawTable(snapshot: full))
+
+        XCTAssertLessThanOrEqual(
+            hiddenTableWidth,
+            typeHeaderWidth + 4 + QuotaWindowUsageRawTable.resetDateColumnWidth + 8,
+            "全零时表格只剩「类型 + 重置日期」两列：列表头必须跟数据格一起消失，不能留一个孤零零的表头"
+        )
+        XCTAssertGreaterThan(
+            fullTableWidth, hiddenTableWidth + 8,
+            "桶非零时四列原样保留（表格必须比全零态更宽）"
+        )
+    }
+
+    /// 「今日」行进表（排在 5h/周 之后，重置日期格 `—`），并且**参与全零列判定**：
+    /// 窗口全零 + 今日有 cached 时，Cached 列要因今日而被保住（表格变宽）。
+    @MainActor
+    func testTodayRowEntersTheRawTableAndJoinsTheColumnVisibility() {
+        let now = Date()
+        let zero = LocalUsageSummaryBuilder.windowUsage(
+            model: Self.model(name: "deepseek_balance", interval: true, weekly: true, now: now),
+            providerKind: .deepseek,
+            samples: [],
+            intervalLabel: "5h",
+            weeklyLabel: "周"
+        )
+        let today = QuotaWindowUsageSection.Row(
+            label: "今日",
+            metrics: QuotaWindowUsageMetrics(input: 0, cachedInput: 9_000, output: 0, reasoning: 0),
+            cost: nil
+        )
+        XCTAssertTrue(
+            Self.numericVisibility(of: zero, today: today).cached,
+            "前提不成立：今日行有 cached 时 Cached 列应保留"
+        )
+
+        let withoutToday = QuotaWindowUsageRawTable(snapshot: zero)
+        let withToday = QuotaWindowUsageRawTable(snapshot: zero, today: today)
+
+        XCTAssertGreaterThan(
+            self.measuredHeight(of: withToday, width: 312),
+            self.measuredHeight(of: withoutToday, width: 312),
+            "今日行必须真的多出一行（进表）"
+        )
+        XCTAssertGreaterThan(
+            self.measuredWidth(of: withToday), self.measuredWidth(of: withoutToday) + 8,
+            "今日有 cached 时 Cached 列要保住：今日行参与全零列判定，不是只多一行"
+        )
+    }
+
+    /// 重置日期列的固定宽常量必须 ≥ 最长形态的自然宽（`MM-dd HH:mm (23h59m)`，
+    /// `formatResetSuffix` 最宽的后缀——比 `2d23h`/`已过期`/`365d` 都宽），也别宽得
+    /// 离谱（×1.2 的本意）。系统字体度量变了先红在这里。
+    @MainActor
+    func testResetDateColumnWidthCoversTheLongestForm() {
+        let longest = self.measuredWidth(
+            of: Text("09-30 15:07 (23h59m)").font(MenuTypography.metricValue)
+        )
+        XCTAssertGreaterThan(longest, 0, "前提不成立：最长形态必须真的排得出来")
+        XCTAssertGreaterThanOrEqual(
+            QuotaWindowUsageRawTable.resetDateColumnWidth, longest,
+            "固定宽常量（\(QuotaWindowUsageRawTable.resetDateColumnWidth)pt）容不下最长形态自然宽（\(longest)pt）"
+        )
+        XCTAssertLessThan(
+            QuotaWindowUsageRawTable.resetDateColumnWidth, longest * 1.5,
+            "常量应约为最长形态自然宽 × 1.2：宽出 50% 说明量法或倍率写错了"
+        )
+    }
+
     // MARK: - 重置卡逐张明细的可达性
 
     /// 重置卡模块是**常驻**的：折叠行（重置卡数量：N + 最近到期）下面直接接逐张
@@ -629,6 +791,16 @@ final class QuotaWindowUsageValueTests: XCTestCase {
             metrics: fixture.metrics,
             cost: fixture.cost
         )
+    }
+
+    /// 快照（+今日行）的四数值列显隐——给上面的显隐断言当取数口：与视图同一份
+    /// `tableRows` → `numericColumnVisibility` 链路，测的才是表格实际用的判定。
+    private static func numericVisibility(
+        of snapshot: QuotaWindowUsageSnapshot,
+        today: QuotaWindowUsageSection.Row? = nil
+    ) -> (input: Bool, cached: Bool, output: Bool, reason: Bool) {
+        let table = QuotaWindowUsageRawTable(snapshot: snapshot, today: today)
+        return QuotaWindowUsageRawTable.numericColumnVisibility(rows: table.tableRows.map(\.metrics))
     }
 
     private static func model(

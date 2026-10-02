@@ -13,17 +13,18 @@ struct QuotaModuleSeparator: View {
 
 /// 「额度窗口用量」区块的**模块标题**（「额度分析 / 额度详情 / 重置卡详情」）。
 ///
-/// 10pt secondary（`MenuTypography.metricLabel` 同级）左对齐——它是模块的名字，
-/// 层级要压在内容之下：段落标题（`ProviderCardView.planSectionTitle`，11pt
-/// semibold）> 模块标题（这里）> 模块正文。标题住在**模块内部**：模块按数据
-/// 可用性显隐时标题跟着一起走，分隔线之下、内容之上——无数据的模块不会悬一个
-/// 没有下文的标题。
+/// 10pt secondary 但 **semibold**（第四轮改版；`MenuTypography.metricLabel`
+/// 加重一档）左对齐——它是模块的名字，字号仍在正文同级、层级要压在内容之下，
+/// 但和正文拉开字重：段落标题（`ProviderCardView.planSectionTitle`，11pt
+/// semibold primary）> 模块标题（这里，10pt semibold secondary）> 模块正文。
+/// 标题住在**模块内部**：模块按数据可用性显隐时标题跟着一起走，分隔线之下、
+/// 内容之上——无数据的模块不会悬一个没有下文的标题。
 struct QuotaModuleTitle: View {
     let text: String
 
     var body: some View {
         Text(text)
-            .font(MenuTypography.metricLabel)
+            .font(MenuTypography.metricLabel.weight(.semibold))
             .foregroundStyle(.secondary)
     }
 }
@@ -197,6 +198,14 @@ struct QuotaWindowUsageSection: View {
     static let rawTableTitle = "额度详情"
     static let resetCreditsTitle = "重置卡详情"
 
+    /// 「额度分析」的列显隐（第四轮改版，**模块内跨行判定**）：「命中」「思考」
+    /// 两列各自在**所有可见行**（5h/周/今日）的合计为 0 时整列隐藏——某一行的
+    /// 比率是 `—` 不足以免掉一列，只有模块内没有任何行产出该桶才藏。出/入、
+    /// 价值与首列（标签+token）恒在，不参与判定。纯函数，测试直接引用。
+    static func statsColumnVisibility(rows: [QuotaWindowUsageMetrics]) -> (hit: Bool, think: Bool) {
+        (rows.contains { $0.cachedInput > 0 }, rows.contains { $0.reasoning > 0 })
+    }
+
     var body: some View {
         let showStats = !snapshot.isEmpty || today != nil
         let showTable = !snapshot.isEmpty
@@ -210,7 +219,7 @@ struct QuotaWindowUsageSection: View {
                     moduleSeparator
                 }
                 if showTable {
-                    QuotaWindowUsageRawTable(snapshot: snapshot)
+                    QuotaWindowUsageRawTable(snapshot: snapshot, today: today)
                 }
                 if showTable && showResets {
                     moduleSeparator
@@ -229,7 +238,9 @@ struct QuotaWindowUsageSection: View {
     /// 今日行）时一条全灰的槽什么都没说。
     ///
     /// 三行指标共用**同一个** `Grid`（见 `QuotaWindowUsageMetricRow`）：五列
-    /// 平分整行宽度、跨行对齐。字号与单行约束由 `Grid` 统一施加（与下方
+    /// 平分整行宽度、跨行对齐。「命中」「思考」两列的显隐是**模块级**的
+    /// （`statsColumnVisibility` 跨行判定一次，每一行拿到同一对值），列才能整列
+    /// 消失而不是参差。字号与单行约束由 `Grid` 统一施加（与下方
     /// `QuotaWindowUsageRawTable` 同一写法），行本体不再自带字号。
     @ViewBuilder
     private var statsModule: some View {
@@ -242,11 +253,14 @@ struct QuotaWindowUsageSection: View {
             )
         }
         Grid(alignment: .leading, horizontalSpacing: 4, verticalSpacing: 3) {
+            let visibility = Self.statsColumnVisibility(rows: rows.map(\.metrics))
             ForEach(rows, id: \.label) { row in
                 QuotaWindowUsageMetricRow(
                     label: row.label,
                     metrics: row.metrics,
-                    cost: row.cost
+                    cost: row.cost,
+                    showsHitColumn: visibility.hit,
+                    showsThinkingColumn: visibility.think
                 )
             }
         }
@@ -318,9 +332,15 @@ struct QuotaWindowUsageSection: View {
 ///
 /// 三行（5h / 周 / 今日）住在**同一个** `Grid` 里（`statsModule`），所以这五列
 /// 平分整行宽度、**跨行对齐**——曾经五个指标挤在行首、段间用小圆点分开，右侧
-/// 整段留白，三行各自的段落起点还互相参差。列分布：第 1 列（窗口标签 + token
-/// 值）左对齐；价值列右对齐；中间三个比率列也右对齐——与下方「额度详情」表格
-/// 的数值列同一读法。段间小圆点随五列分布一并取消。
+/// 整段留白，三行各自的段落起点还互相参差。第四轮改版起五列**全部左对齐**：
+/// 右对齐的价值列在三行之间参差（`¥12.34` 与 `$45.67` 宽度不同，右缘对不齐），
+/// 左对齐让每行的五个指标都从各自的列起点开始读，跨行扫一列时视线是直的。
+///
+/// 「命中」「思考」两列可以**整列隐藏**（第四轮改版）：显隐是模块级判定
+/// （`QuotaWindowUsageSection.statsColumnVisibility`，该列在所有可见行的桶合计
+/// 为 0 时藏），宿主判定一次、每一行拿到同一对 `showsHitColumn` /
+/// `showsThinkingColumn`——判定在行外，行本体只照办，同一 Grid 里的格子才会
+/// 一起消失。出/入、价值与首列恒在。
 ///
 /// 10pt 等宽数字、单行不折行的既有约束不变：字号与 `lineLimit` 由宿主的 `Grid`
 /// 统一施加（`statsModule`），行本体不携带——修饰符包在 `GridRow` 外会让它失去
@@ -331,6 +351,10 @@ struct QuotaWindowUsageMetricRow: View {
     let metrics: QuotaWindowUsageMetrics
     /// 该窗口内本地 token 的名义价值。`nil` 时显示 `—`（窗口内没有本地样本）。
     let cost: ModelCostEstimate?
+    /// 「命中」列是否保留。模块内所有可见行的 cached 合计为 0 时由宿主传 `false`。
+    var showsHitColumn: Bool = true
+    /// 「思考」列是否保留。模块内所有可见行的 reasoning 合计为 0 时由宿主传 `false`。
+    var showsThinkingColumn: Bool = true
 
     /// 标签集。完整版先试，放不下再压两个最长的（`出/入`、`思考`）——它们各带一个
     /// 斜杠/双字，缩写后省出的 20pt 恰好够，不动 `命中`（最短，且缩了就认不出）。
@@ -349,18 +373,23 @@ struct QuotaWindowUsageMetricRow: View {
             .foregroundStyle(Color.primaryLabel)
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            pairCell(names.hit, compactNames.hit, Self.rateText(metrics.cacheHitRate, digits: 1))
+            if showsHitColumn {
+                pairCell(names.hit, compactNames.hit, Self.rateText(metrics.cacheHitRate, digits: 1))
+            }
             pairCell(names.outIn, compactNames.outIn, Self.outputInputRateText(metrics.outputToInputRate))
-            pairCell(names.think, compactNames.think, Self.rateText(metrics.reasoningShare, digits: 0))
+            if showsThinkingColumn {
+                pairCell(names.think, compactNames.think, Self.rateText(metrics.reasoningShare, digits: 0))
+            }
 
             Text(Self.costText(cost))
                 .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .trailing)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
-    /// 一个「标签 + 数值」格，右对齐。标签列内放不下时由 `ViewThatFits` 降级成
-    /// 紧凑写法；标签只有一个写法时（`命中`）直接画，不空转一遍降级。
+    /// 一个「标签 + 数值」格，左对齐（第四轮改版，五列统一）。标签列内放不下时由
+    /// `ViewThatFits` 降级成紧凑写法；标签只有一个写法时（`命中`）直接画，不空转
+    /// 一遍降级。
     private func pairCell(_ fullLabel: String, _ compactLabel: String, _ value: String) -> some View {
         HStack(spacing: 2) {
             if fullLabel == compactLabel {
@@ -376,7 +405,7 @@ struct QuotaWindowUsageMetricRow: View {
             Text(value)
                 .foregroundStyle(.secondary)
         }
-        .frame(maxWidth: .infinity, alignment: .trailing)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     /// 分母为 0 的比率显示 `—`，不显示 `0%`：前者是"这个比率算不出来"，
@@ -411,36 +440,113 @@ struct QuotaWindowUsageMetricRow: View {
 /// 事件，折叠态等于不存在，绝对值要一直在屏上才回答得了"这些 token 都是什么"。
 ///
 /// 表头 `类型 | Input | Cached | Output | Reason | 重置日期`，下面每个**存在**的
-/// 额度窗口一行（`5h` / `周`；某窗口不存在就省略该行，与统计值行的行序一致）。
-/// 数值与旧两栏一样走 `formatTokenCountCompact`；重置日期是
-/// `MM-dd HH:mm (倒计时)`，与额度行元信息行尾的重置时刻同一套格式化。
+/// 额度窗口一行（`5h` / `周`；某窗口不存在就省略该行），末尾再接**今日**行
+/// （第四轮改版：宿主传入的当天本地聚合，重置日期格写 `—`——今日没有窗口重置
+/// 概念；当天无本地数据则不追加）。数值与旧两栏一样走 `formatTokenCountCompact`；
+/// 重置日期是 `MM-dd HH:mm (倒计时)`，与额度行元信息行尾的重置时刻同一套格式化。
 ///
-/// 列宽**不再六列等宽**（第三轮改版）：类型列与重置日期列按内容**自然宽**——
-/// 等宽下「类型」被撑得过宽、「重置日期」被压到要 `minimumScaleFactor` 缩字才
-/// 塞得下；现在四个数值列（Input / Cached / Output / Reason）平分剩余宽度，
-/// 重置日期按最长形态（如 `09-30 15:07 (5d13h)`）完整显示，不缩字。数值列
-/// 右对齐、表头跟随其对齐方式的现状保持；自然宽列里较短的格用 `gridCellAnchor`
-/// 对齐到列边（重置日期右缘、类型左缘不参差）。
+/// **全零列隐藏**（第四轮改版）：Input / Cached / Output / Reason 四列各自在
+/// **所有可见行**（5h/周/今日）合计为 0 时整列隐藏——表头跟着数据格一起消失
+/// （「如果整列都跳过，那么标题也跳过」说的是列表头；模块标题「额度详情」只随
+/// 模块整体显隐）。类型、重置日期两列恒在。判定是 `numericColumnVisibility`
+/// 一次跨行算出，表头与每一行数据格拿同一份结果。
+///
+/// 列宽**不均分**（第三轮起）：类型列按内容自然宽；重置日期列取**固定宽**
+/// （`resetDateColumnWidth` = 最长形态自然宽 × 1.2）——第三轮的自然宽在真机上
+/// 仍被四个数值列挤到缩字，固定宽之后四个数值列平分的是**剩余**宽度，重置日期
+/// 完整显示、不 `minimumScaleFactor`。数值列右对齐、表头跟随其对齐方式的现状
+/// 保持；重置日期列内较短的格用 `gridCellAnchor` 锚到右缘（与数值列右对齐同一
+/// 读法），类型左缘对齐。
 struct QuotaWindowUsageRawTable: View {
     let snapshot: QuotaWindowUsageSnapshot
+    /// 「今日」行：宿主传入的当天本地聚合（`ProviderCardView.todayUsageRow`），
+    /// 排在 5h/周 之后；`nil` = 当天无本地数据，不追加该行。它**参与全零列判定**
+    /// ——今日有 cached 就保住 Cached 列，与「额度分析」的今日行同一份数据。
+    var today: QuotaWindowUsageSection.Row?
+
+    /// 重置日期列的**固定宽度**（第四轮改版）。
+    ///
+    /// 量法：与 `QuotaWindowUsageValueTests` 量宽同一手法——`NSHostingView` 承载
+    /// `Text(形态).font(MenuTypography.metricValue)`（10pt medium monospacedDigit，
+    /// 本表格的既有字号），不限宽测 `fittingSize.width`。最长形态是
+    /// `09-30 15:07 (23h59m)`（`formatResetSuffix` 最宽的后缀，比 `2d23h`、
+    /// `已过期`、`365d` 都宽），2026-10-03 实测自然宽 **117pt**，× 1.2 取
+    /// 140.4pt。测试钉住「常量 ≥ 最长形态自然宽」，系统字体度量变了会先红在这里。
+    static let resetDateColumnWidth: CGFloat = 117 * 1.2
+
+    /// 表内一行（`ForEach` 的元素）：`id` 是行序——标签（`5h`/`周`/`今日`）理论上
+    /// 不重复，但行序才是这张表真正的身份。
+    struct TableRow: Identifiable {
+        let id: Int
+        let label: String
+        let metrics: QuotaWindowUsageMetrics
+        let resetsAt: Date?
+    }
+
+    /// 表内可见行：5h、周，再接今日（第四轮改版）。列显隐与行渲染都从这一份
+    /// 取数，「今日参与全零列判定」才不会与行序漂移。
+    var tableRows: [TableRow] {
+        var result: [TableRow] = []
+        if let interval = snapshot.interval {
+            result.append(TableRow(
+                id: result.count,
+                label: interval.label,
+                metrics: QuotaWindowUsageMetrics(usage: interval.usage),
+                resetsAt: interval.resetsAt
+            ))
+        }
+        if let weekly = snapshot.weekly {
+            result.append(TableRow(
+                id: result.count,
+                label: weekly.label,
+                metrics: QuotaWindowUsageMetrics(usage: weekly.usage),
+                resetsAt: weekly.resetsAt
+            ))
+        }
+        if let today {
+            result.append(TableRow(
+                id: result.count,
+                label: today.label,
+                metrics: today.metrics,
+                resetsAt: nil
+            ))
+        }
+        return result
+    }
+
+    /// 四个数值列的显隐（第四轮改版，**模块内跨行判定**）：某列在所有可见行
+    /// （5h/周/今日）合计为 0 时整列隐藏（含表头）。类型、重置日期两列恒在。
+    /// 纯函数，测试直接引用。
+    static func numericColumnVisibility(rows: [QuotaWindowUsageMetrics])
+        -> (input: Bool, cached: Bool, output: Bool, reason: Bool) {
+        (
+            rows.contains { $0.input > 0 },
+            rows.contains { $0.cachedInput > 0 },
+            rows.contains { $0.output > 0 },
+            rows.contains { $0.reasoning > 0 }
+        )
+    }
 
     var body: some View {
+        let visibility = Self.numericColumnVisibility(rows: tableRows.map(\.metrics))
         VStack(alignment: .leading, spacing: 5) {
             QuotaModuleTitle(text: QuotaWindowUsageSection.rawTableTitle)
             Grid(alignment: .leading, horizontalSpacing: 4, verticalSpacing: 4) {
                 GridRow {
                     naturalHeader("类型", anchor: .leading)
-                    header("Input", alignment: .trailing)
-                    header("Cached", alignment: .trailing)
-                    header("Output", alignment: .trailing)
-                    header("Reason", alignment: .trailing)
-                    naturalHeader("重置日期", anchor: .trailing)
+                    if visibility.input { header("Input", alignment: .trailing) }
+                    if visibility.cached { header("Cached", alignment: .trailing) }
+                    if visibility.output { header("Output", alignment: .trailing) }
+                    if visibility.reason { header("Reason", alignment: .trailing) }
+                    resetDateHeader
                 }
-                if let interval = snapshot.interval {
-                    windowRow(interval)
-                }
-                if let weekly = snapshot.weekly {
-                    windowRow(weekly)
+                ForEach(tableRows) { row in
+                    dataRow(
+                        label: row.label,
+                        metrics: row.metrics,
+                        resetsAt: row.resetsAt,
+                        visibility: visibility
+                    )
                 }
             }
             .font(MenuTypography.metricValue)
@@ -466,9 +572,9 @@ struct QuotaWindowUsageRawTable: View {
             .frame(maxWidth: .infinity, alignment: alignment)
     }
 
-    /// 自然宽列表头（类型 / 重置日期）：按内容取宽，`anchor` 是列内锚点
-    /// （`gridCellAnchor` 只收 `UnitPoint`/`Anchor<UnitPoint>`，没有 `Alignment`
-    /// 重载——`Alignment` 版本的对齐留给上面的 `frame` 分支）。
+    /// 自然宽列表头（类型）：按内容取宽，`anchor` 是列内锚点（`gridCellAnchor`
+    /// 只收 `UnitPoint`/`Anchor<UnitPoint>`，没有 `Alignment` 重载——`Alignment`
+    /// 版本的对齐留给上面的 `frame` 分支）。
     private func naturalHeader(_ title: String, anchor: UnitPoint) -> some View {
         Text(title)
             .font(MenuTypography.metricLabel)
@@ -476,17 +582,33 @@ struct QuotaWindowUsageRawTable: View {
             .gridCellAnchor(anchor)
     }
 
-    private func windowRow(_ window: QuotaWindowUsageSnapshot.Window) -> some View {
-        let metrics = QuotaWindowUsageMetrics(usage: window.usage)
-        return GridRow {
-            Text(window.label)
+    /// 重置日期列表头：**固定宽**（`resetDateColumnWidth`），不参与数值列的平分
+    /// ——四个数值列平分的是刨去它之后的剩余宽度。右缘对齐，与数值格同一读法。
+    private var resetDateHeader: some View {
+        Text("重置日期")
+            .font(MenuTypography.metricLabel)
+            .foregroundStyle(.secondary)
+            .frame(width: Self.resetDateColumnWidth, alignment: .trailing)
+    }
+
+    /// 表内一行：窗口行（5h/周）与今日行共用——差别只在标签来源与重置时刻
+    /// （今日恒 `nil` → 重置日期格 `—`）。格子按 `visibility` 逐列给出，与表头
+    /// 同一份判定。
+    private func dataRow(
+        label: String,
+        metrics: QuotaWindowUsageMetrics,
+        resetsAt: Date?,
+        visibility: (input: Bool, cached: Bool, output: Bool, reason: Bool)
+    ) -> some View {
+        GridRow {
+            Text(label)
                 .foregroundStyle(Color.primaryLabel)
                 .gridCellAnchor(.leading)
-            cell(Formatters.formatTokenCountCompact(metrics.input))
-            cell(Formatters.formatTokenCountCompact(metrics.cachedInput))
-            cell(Formatters.formatTokenCountCompact(metrics.output))
-            cell(Formatters.formatTokenCountCompact(metrics.reasoning))
-            resetCell(window.resetsAt)
+            if visibility.input { cell(Formatters.formatTokenCountCompact(metrics.input)) }
+            if visibility.cached { cell(Formatters.formatTokenCountCompact(metrics.cachedInput)) }
+            if visibility.output { cell(Formatters.formatTokenCountCompact(metrics.output)) }
+            if visibility.reason { cell(Formatters.formatTokenCountCompact(metrics.reasoning)) }
+            resetCell(resetsAt)
         }
     }
 
@@ -499,8 +621,8 @@ struct QuotaWindowUsageRawTable: View {
 
     /// 重置日期 = `MM-dd HH:mm (倒计时)`，取数与格式化与旧 hover 的重置行同一套
     /// （`formatMonthDayMinute` + `formatResetSuffix`）。没有重置时刻写 `—`
-    /// （不猜服务端时间）。自然宽列：按最长形态完整显示，不再 `minimumScaleFactor`
-    /// 压缩；较短的格锚到列右缘，与数值列的右对齐读法一致。
+    /// （不猜服务端时间；今日行恒走这一格）。固定宽列：按最长形态完整显示，不
+    /// `minimumScaleFactor` 压缩；较短的格锚到列右缘，与数值列的右对齐读法一致。
     private func resetCell(_ resetsAt: Date?) -> some View {
         Group {
             if let resetsAt {
