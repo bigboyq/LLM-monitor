@@ -39,7 +39,7 @@ final class LocalUsageLifecycleTests: ScannerTestCase {
             events.append(event)
         }
         watcher.start()
-        try await Task.sleep(nanoseconds: 500_000_000)
+        try await Task.sleep(nanoseconds: 150_000_000)
         watcher.stop()
 
         XCTAssertTrue(events.isEmpty, "注册 watcher 不应凭空产生 dirty event: \(events)")
@@ -80,10 +80,10 @@ final class LocalUsageLifecycleTests: ScannerTestCase {
     }
 
     /// M8 合并窗口：首事件即时投递；窗口内后续事件合并为窗口结束时的一次
-    /// 投递；窗口空闲后的新写入再次即时投递。窗口注入 0.8s（生产默认 0.25s），
-    /// 让多次 100ms 间隔的 append 稳定落在同一窗口内。到达性断言用 waitUntil
+    /// 投递；窗口空闲后的新写入再次即时投递。窗口注入 0.3s（生产默认 0.25s），
+    /// 让多次 40ms 间隔的 append 稳定落在同一窗口内。到达性断言用 waitUntil
     /// 轮询（不人为设投递时延上限），合并/不投递断言保持严格相等——那才是
-    /// 被测语义。
+    /// 被测语义。生产默认窗口的同机制冒烟见下一个用例。
     @MainActor
     func testLocalVnodeWriteWatcherCoalescesRapidAppendsIntoSingleDelivery() async throws {
         let root = FileManager.default.temporaryDirectory
@@ -94,7 +94,7 @@ final class LocalUsageLifecycleTests: ScannerTestCase {
         FileManager.default.createFile(atPath: file.path, contents: Data())
 
         var deliveries = 0
-        let vnode = LocalVnodeWriteWatcher(path: file, coalescingWindow: 0.8) {
+        let vnode = LocalVnodeWriteWatcher(path: file, coalescingWindow: 0.3) {
             deliveries += 1
         }
         vnode.start()
@@ -111,19 +111,55 @@ final class LocalUsageLifecycleTests: ScannerTestCase {
         for _ in 0..<2 {
             XCTAssertEqual(withUnsafePointer(to: &byte) { Darwin.write(fd, $0, 1) }, 1)
             XCTAssertEqual(fsync(fd), 0)
-            try await Task.sleep(nanoseconds: 100_000_000)
+            try await Task.sleep(nanoseconds: 40_000_000)
         }
         XCTAssertEqual(deliveries, 1, "窗口内的连续 append 不应逐条投递，实际 \(deliveries)")
 
-        // 窗口（0.8s）结束时，窗口内的后续 append 合并为一次投递
+        // 窗口（0.3s）结束时，窗口内的后续 append 合并为一次投递
         await waitUntil(timeout: 2, message: "窗口内的后续 append 应合并为一次投递") { deliveries == 2 }
 
-        // 第二个窗口（0.8s）空闲到期：不应产生追加投递
-        try await Task.sleep(nanoseconds: 1_000_000_000)
+        // 第二个窗口（0.3s）空闲到期：不应产生追加投递。负向断言只能靠足额静置
+        // （> 窗口）而不是条件等待——条件等待会立即返回。
+        try await Task.sleep(nanoseconds: 400_000_000)
         XCTAssertEqual(deliveries, 2)
         XCTAssertEqual(withUnsafePointer(to: &byte) { Darwin.write(fd, $0, 1) }, 1)
         XCTAssertEqual(fsync(fd), 0)
         await waitUntil(timeout: 2, message: "窗口空闲后的新写入应再次投递") { deliveries == 3 }
+    }
+
+    /// 冒烟：合并机制在较宽窗口（0.5s，与本文件压缩版同量级、贴近生产默认
+    /// 0.25s 的放大值）下同样成立——守住"窗口空闲后的新写入再次即时投递"这条
+    /// 与窗口取值无关的语义，防止压缩窗口的用例掩盖真实行为差异。
+    @MainActor
+    func testLocalVnodeWriteWatcherCoalescesAtProductionScaleWindow() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("llm-monitor-vnode-coalesce-smoke-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("runtime.jsonl")
+        FileManager.default.createFile(atPath: file.path, contents: Data())
+
+        var deliveries = 0
+        let vnode = LocalVnodeWriteWatcher(path: file, coalescingWindow: 0.5) {
+            deliveries += 1
+        }
+        vnode.start()
+        let fd = open(file.path, O_WRONLY | O_APPEND)
+        XCTAssertGreaterThanOrEqual(fd, 0)
+        guard fd >= 0 else { return }
+        defer { vnode.stop(); close(fd) }
+        var byte: UInt8 = 1
+        XCTAssertEqual(withUnsafePointer(to: &byte) { Darwin.write(fd, $0, 1) }, 1)
+        XCTAssertEqual(fsync(fd), 0)
+        await waitUntil(timeout: 2, message: "首事件应即时投递") { deliveries == 1 }
+
+        // 窗口内再写一次：合并，不逐条投递
+        XCTAssertEqual(withUnsafePointer(to: &byte) { Darwin.write(fd, $0, 1) }, 1)
+        XCTAssertEqual(fsync(fd), 0)
+        XCTAssertEqual(deliveries, 1, "窗口内的后续写入应被合并，实际 \(deliveries)")
+
+        // 窗口结束时合并为一次投递
+        await waitUntil(timeout: 2, message: "窗口内的后续 append 应合并为一次投递") { deliveries == 2 }
     }
 
     /// M8 停止安全：stop() 取消合并窗口，窗口内被合并的事件不投递幽灵事件。
@@ -137,7 +173,7 @@ final class LocalUsageLifecycleTests: ScannerTestCase {
         FileManager.default.createFile(atPath: file.path, contents: Data())
 
         var deliveries = 0
-        let vnode = LocalVnodeWriteWatcher(path: file, coalescingWindow: 2.0) {
+        let vnode = LocalVnodeWriteWatcher(path: file, coalescingWindow: 0.4) {
             deliveries += 1
         }
         vnode.start()
@@ -152,12 +188,13 @@ final class LocalUsageLifecycleTests: ScannerTestCase {
         // 窗口内再写一次：被合并，等待窗口结束时投递
         XCTAssertEqual(withUnsafePointer(to: &byte) { Darwin.write(fd, $0, 1) }, 1)
         XCTAssertEqual(fsync(fd), 0)
-        try await Task.sleep(nanoseconds: 300_000_000)
+        try await Task.sleep(nanoseconds: 150_000_000)
         XCTAssertEqual(deliveries, 1, "窗口内的后续写入应被合并，实际 \(deliveries)")
         // stop() 取消窗口：被合并的事件不应再投递
         vnode.stop()
-        // 越过 2s 窗口后确认无幽灵投递
-        try await Task.sleep(nanoseconds: 2_500_000_000)
+        // 越过 0.4s 窗口后确认无幽灵投递。负向断言只能靠足额静置（> 窗口）
+        // 而不是条件等待——条件等待会立即返回。
+        try await Task.sleep(nanoseconds: 600_000_000)
         XCTAssertEqual(deliveries, 1, "stop 后窗口内的合并事件不应投递幽灵事件")
     }
 

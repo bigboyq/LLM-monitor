@@ -290,8 +290,9 @@ actor BarkSendQueue {
     nonisolated static let cooldownInterval: TimeInterval = 60
     /// 积压上限：超出时丢弃最旧的操作。
     nonisolated static let maximumPending = 10
-    /// 瞬时错误重试前的退避。
-    nonisolated private static let retryDelay: TimeInterval = 1
+    /// 瞬时错误重试前的退避（生产默认）。nonisolated：纯常量，供 init 默认参数
+    /// 在非隔离上下文引用。
+    nonisolated static let defaultRetryDelay: TimeInterval = 1
 
     private var pending: [Operation] = []
     private var draining = false
@@ -301,9 +302,15 @@ actor BarkSendQueue {
     private var generation = 0
     private var lastSentAt: [String: Date] = [:]
     private let session: URLSession
+    /// 瞬时错误重试前的退避；注入以便测试压缩真实睡眠，生产默认 1 秒。
+    private let retryDelay: TimeInterval
 
-    init(session: URLSession = .shared) {
+    init(
+        session: URLSession = .shared,
+        retryDelay: TimeInterval = BarkSendQueue.defaultRetryDelay
+    ) {
         self.session = session
+        self.retryDelay = max(retryDelay, 0)
     }
 
     func enqueue(_ operation: Operation) {
@@ -384,9 +391,9 @@ actor BarkSendQueue {
                     redactedPath: HTTPRequestLogSanitizer.sanitizedURL(operation.request.url)
                 )
                 if (500...599).contains(response.statusCode), attempt == 1 {
-                    logWarn("[bark] \(operation.label) Bark 服务端 HTTP \(response.statusCode)，\(Int(Self.retryDelay))s 后重试")
+                    logWarn("[bark] \(operation.label) Bark 服务端 HTTP \(response.statusCode)，\(Int(retryDelay))s 后重试")
                     do {
-                        try await Task.sleep(nanoseconds: UInt64(Self.retryDelay * 1_000_000_000))
+                        try await Task.sleep(nanoseconds: UInt64(retryDelay * 1_000_000_000))
                     } catch {
                         return
                     }
@@ -410,9 +417,9 @@ actor BarkSendQueue {
                     return
                 }
                 if attempt == 1, Self.isTransient(error) {
-                    logWarn("[bark] \(operation.label) 网络错误 \(error.localizedDescription)，\(Int(Self.retryDelay))s 后重试")
+                    logWarn("[bark] \(operation.label) 网络错误 \(error.localizedDescription)，\(Int(retryDelay))s 后重试")
                     do {
-                        try await Task.sleep(nanoseconds: UInt64(Self.retryDelay * 1_000_000_000))
+                        try await Task.sleep(nanoseconds: UInt64(retryDelay * 1_000_000_000))
                     } catch {
                         return
                     }

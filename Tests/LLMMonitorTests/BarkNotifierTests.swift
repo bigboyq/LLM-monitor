@@ -129,16 +129,22 @@ final class BarkNotifierTests: XCTestCase {
         return URLSession(configuration: config)
     }
 
+    /// `retryDelay` 缺省时用生产默认 1s（不注入）；需要压缩真实退避睡眠的用例
+    /// 显式传小值，见各用例注释。
     @MainActor
     private func makeNotifier(
         _ bark: BarkConfig,
         session: URLSession? = nil,
-        screenInActiveUse: @escaping () -> Bool = { false }
+        screenInActiveUse: @escaping () -> Bool = { false },
+        retryDelay: TimeInterval = BarkSendQueue.defaultRetryDelay
     ) -> BarkQuotaNotifier {
         BarkQuotaNotifier(
             configProvider: StubConfigProvider(bark),
             screenInActiveUse: screenInActiveUse,
-            sendQueue: BarkSendQueue(session: session ?? sessionWith(RecordingURLProtocol.self))
+            sendQueue: BarkSendQueue(
+                session: session ?? sessionWith(RecordingURLProtocol.self),
+                retryDelay: retryDelay
+            )
         )
     }
 
@@ -447,18 +453,19 @@ final class BarkNotifierTests: XCTestCase {
 
         RecordingURLProtocol.onReceive = nil
         notifier.notify(providerID: "p", providerName: "P", events: events, channels: allBarkChannels)
-        try await Task.sleep(nanoseconds: 500_000_000)
+        try await Task.sleep(nanoseconds: 150_000_000)
         XCTAssertEqual(RecordingURLProtocol.requests.count, 1, "冷却窗口内的重复推送应被跳过")
     }
 
     @MainActor
     func testRetriesOnceOnServerError() async throws {
-        // R6: 5xx 触发一次重试（共 2 个请求），之后放弃。
+        // R6: 5xx 触发一次重试（共 2 个请求），之后放弃。退避注入 50ms：被测语义
+        // 是"重试恰好一次"，退避时长本身由 defaultRetryDelay 契约覆盖。
         RecordingURLProtocol.reset(statusCode: 500)
         let notifier = makeNotifier(BarkConfig(
             enabled: true, serverURL: "https://api.day.app", deviceKey: "k1",
             sound: nil, group: nil
-        ))
+        ), retryDelay: 0.05)
         let exp = expectation(description: "第二次请求（重试）")
         RecordingURLProtocol.onReceive = { _ in
             if RecordingURLProtocol.requests.count >= 2 { exp.fulfill() }
@@ -470,12 +477,14 @@ final class BarkNotifierTests: XCTestCase {
         )
         await fulfillment(of: [exp], timeout: 10)
         // 重试后不再继续（不会出现第 3 个请求）。
-        try await Task.sleep(nanoseconds: 300_000_000)
+        try await Task.sleep(nanoseconds: 150_000_000)
         XCTAssertEqual(RecordingURLProtocol.requests.count, 2)
     }
 
     @MainActor
     func testCancellingRetrySleepDoesNotIssueSecondRequest() async throws {
+        // 本用例刻意保留生产默认的 1s 退避（不注入）：被测回归价值正是
+        // "cancelAll 能打断真实的退避 sleep"，注入零延迟会把这个价值归零。
         RecordingURLProtocol.reset(statusCode: 500)
         let notifier = makeNotifier(BarkConfig(
             enabled: true, serverURL: "https://api.day.app", deviceKey: "k1",
@@ -495,14 +504,15 @@ final class BarkNotifierTests: XCTestCase {
 
     @MainActor
     func testTransientNetworkErrorRetriesOnce() async throws {
-        // 测试清单 7：瞬时网络错误（timedOut）重试一次。
+        // 测试清单 7：瞬时网络错误（timedOut）重试一次。退避注入 50ms。
         FailingURLProtocol.reset(errorCode: .timedOut)
         let notifier = makeNotifier(
             BarkConfig(
                 enabled: true, serverURL: "https://api.day.app", deviceKey: "k1",
                 sound: nil, group: nil
             ),
-            session: sessionWith(FailingURLProtocol.self)
+            session: sessionWith(FailingURLProtocol.self),
+            retryDelay: 0.05
         )
         notifier.notify(
             providerID: "p", providerName: "P",
@@ -518,7 +528,7 @@ final class BarkNotifierTests: XCTestCase {
         }
         await fulfillment(of: [exp], timeout: 10)
         poll.cancel()
-        try await Task.sleep(nanoseconds: 300_000_000)
+        try await Task.sleep(nanoseconds: 150_000_000)
         XCTAssertEqual(FailingURLProtocol.attempts, 2, "瞬时错误重试一次后放弃")
     }
 
@@ -639,19 +649,19 @@ final class BarkNotifierTests: XCTestCase {
     @MainActor
     func testFailedSendDoesNotStartCooldown() async throws {
         // D4: 发送失败（500 两次尝试均失败）不进入冷却，同一模型下一轮可
-        // 立即重发；成功之后才冷却。
+        // 立即重发；成功之后才冷却。退避注入 50ms。
         RecordingURLProtocol.reset(statusCode: 500)
         let notifier = makeNotifier(BarkConfig(
             enabled: true, serverURL: "https://api.day.app", deviceKey: "k1",
             sound: nil, group: nil
-        ))
+        ), retryDelay: 0.05)
         notifier.notify(
             providerID: "p", providerName: "P",
             events: [Self.event(.intervalRestored)],
             channels: allBarkChannels
         )
         // 先等首个请求落地（避免 awaitIdle 在入队 Task 启动前空转返回），
-        // 再等队列彻底空闲（覆盖 1s 退避后的重试）。
+        // 再等队列彻底空闲（覆盖退避后的重试）。
         await expectRequestCount(1)
         await notifier.sendQueue.awaitIdle()
         let failedAttempts = RecordingURLProtocol.requests.count
@@ -666,7 +676,7 @@ final class BarkNotifierTests: XCTestCase {
         // 成功后同模型再触发应命中冷却。
         RecordingURLProtocol.onReceive = nil
         notifier.notify(providerID: "p", providerName: "P", events: events, channels: allBarkChannels)
-        try await Task.sleep(nanoseconds: 500_000_000)
+        try await Task.sleep(nanoseconds: 150_000_000)
         XCTAssertEqual(RecordingURLProtocol.requests.count, 1, "成功后的冷却窗口内不应重发")
     }
 
@@ -682,6 +692,14 @@ final class BarkNotifierTests: XCTestCase {
     func testBarkRequestsUseStandardResponseByteLimit() {
         XCTAssertEqual(BarkQuotaNotifier.responseByteLimit, ResponseByteLimits.standardQuota)
         XCTAssertEqual(BarkQuotaNotifier.responseByteLimit, 8 * 1024 * 1024)
+    }
+
+    // MARK: - 重试退避（可注入，生产默认 1s）
+
+    /// 退避改为 init 注入后，生产默认仍是 1 秒：这条契约护住"注入只为测试提速，
+    /// 不改变线上退避节奏"。
+    func testBarkSendQueueDefaultRetryDelayStaysOneSecond() {
+        XCTAssertEqual(BarkSendQueue.defaultRetryDelay, 1)
     }
 
     // MARK: - 测试推送（R7：与正式推送共用参数）
