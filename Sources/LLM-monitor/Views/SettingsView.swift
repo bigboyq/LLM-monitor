@@ -77,69 +77,6 @@ struct SettingsView: View {
 
     @Environment(\.dismiss) var dismiss
 
-    /// 侧栏 tab 模型。`.general` 是固定的"全局设置"；provider tab 从
-    /// `descriptors` 派生（侧栏渲染时按 `descriptors` 顺序展开，标题/icon
-    /// 都从 descriptor 拿），加新 provider 不用改这里。
-    ///
-    /// 当前 tab 选中态用 `SettingsTab` 表达 —— `.general` 跟具体 descriptor
-    /// 一一对应。`Identifiable` 让侧栏 `ForEach` 走 `id` 区分，切换不触发
-    /// 整列重渲染；选中态判断用 `currentTab.id == tab.id`。
-    enum SettingsTab: Identifiable {
-        case general
-        case energy
-        case provider(FetcherDescriptor)
-        case clients
-
-        static let generalID = "general"
-        static let energyID = "energy"
-        static let clientsID = "clients"
-
-        var id: String {
-            switch self {
-            case .general: return Self.generalID
-            case .energy: return Self.energyID
-            case .provider(let d): return d.id
-            case .clients: return Self.clientsID
-            }
-        }
-
-        var displayTitle: String {
-            switch self {
-            case .general: return "常规"
-            case .energy: return "节能"
-            case .provider(let d): return d.settingsTabTitle ?? d.displayName
-            case .clients: return "客户端"
-            }
-        }
-
-        var iconSystemName: String {
-            switch self {
-            case .general: return "gearshape"
-            case .energy: return "powersleep"
-            case .provider(let d): return d.iconSystemName
-            case .clients: return "terminal"
-            }
-        }
-
-        var brandAsset: BrandLogoAsset? {
-            switch self {
-            case .general: return nil
-            case .energy: return nil
-            case .provider(let d): return .provider(d.kind)
-            case .clients: return nil
-            }
-        }
-
-        var subtitle: String {
-            switch self {
-            case .general: return "刷新节奏与应用启动行为"
-            case .energy: return "系统睡眠健康度与防止休眠"
-            case .provider(let d): return d.settingsTabSubtitle ?? ""
-            case .clients: return "本地客户端用量与 Provider 映射"
-            }
-        }
-    }
-
     /// 全部 tab（`.general` / `.energy` + descriptors 派生的 provider tab）。
     /// `Identifiable` 让 `ForEach` 走 `id` 区分，切换不会触发整列重渲染。
     var allTabs: [SettingsTab] {
@@ -1440,5 +1377,22 @@ struct SettingsView: View {
             return "~/" + String(path.dropFirst(homePrefix.count))
         }
         return path
+    }
+}
+
+/// `SettingsTab` 的视图侧呈现映射。
+///
+/// 枚举本体住在 Services（`AppState.pendingSettingsTab` 要用它，见
+/// `Services/AppState.swift`），但 `BrandLogoAsset` 是 Views 的类型——把它留在
+/// 枚举里就等于把 Services → Views 的反向依赖又请回来。呈现映射按类型扩展留在
+/// 视图层，调用侧（`SettingsView` 侧栏与 `SettingsComponents`）写法不变。
+extension SettingsTab {
+    var brandAsset: BrandLogoAsset? {
+        switch self {
+        case .general: return nil
+        case .energy: return nil
+        case .provider(let d): return .provider(d.kind)
+        case .clients: return nil
+        }
     }
 }

@@ -79,13 +79,9 @@ enum ProviderCardLayout {
 struct ProviderCardView: View, Equatable {
     let status: ProviderStatus
 
-    /// 卡片内容层四周的内边距。`EdgeDockTheme.popoverWidth` 推导宽度时要加上
-    /// 这一层的两侧，所以提出成常量，避免两处各写一个 12 改一漏一。
-    ///
-    /// `nonisolated`：View 结构体因 View 协议推断为 @MainActor，而这个常量要被
-    /// 非隔离的 `EdgeDockTheme`（几何推导）读。值是编译期字面量、无隔离状态依赖，
-    /// 声明成非隔离即可——Swift 6 下原写法只是一条 warning，Swift 7 会变成 error。
-    nonisolated static let contentPadding: CGFloat = 12
+    // 卡片内容层四周的内边距搬到了 `LayoutMetrics.cardContentPadding`：
+    // `EdgeDockTheme.popoverWidth` 推导宽度时也要读它，声明留在这个 View 里会
+    // 让 Services 反向依赖视图层。
 
     // nonisolated：View 结构体因 View 协议推断为 @MainActor，而 Equatable 的 ==
     //  witnesses 必须可从任意隔离域调用；status 是 Sendable 值类型，非隔离比较安全。
@@ -274,7 +270,7 @@ struct ProviderCardView: View, Equatable {
         VStack(alignment: .leading, spacing: 6) {
             content()
         }
-        .padding(Self.contentPadding)
+        .padding(LayoutMetrics.cardContentPadding)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(cardBackground)
         .overlay(cardBorder)
@@ -524,7 +520,7 @@ struct ProviderCardView: View, Equatable {
                 betweenBarAndColumns: between
             )
             if status.kind == .glmCodingPlan {
-                GlmActivityPlanBalancesView(balances: status.glmLocalUsage?.activityPlanBalances)
+                GlmActivityPlanBalancesView(balances: status.glmActivityPlanBalances)
             }
         }
     }
@@ -537,7 +533,7 @@ struct ProviderCardView: View, Equatable {
     /// 泄漏到其它卡会让落在窗口内的 MiniMax / DSH 样本被误判成闲时任务而排除。
     private var excludeWindows: [GlmOffPeakWindow] {
         guard status.kind == .glmCodingPlan else { return [] }
-        return status.glmLocalUsage?.offPeakWindows ?? []
+        return status.glmOffPeakWindows
     }
 
     /// 所有卡片统一展示 quota provider 关联的客户端 token 汇总；客户端来源

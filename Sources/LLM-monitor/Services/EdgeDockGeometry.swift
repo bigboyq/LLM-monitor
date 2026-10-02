@@ -625,13 +625,13 @@ enum EdgeDockTheme {
     /// 就装得下最宽的内容。屏幕比它还窄时才钳位。
     static var popoverWidth: CGFloat {
         SevenDayUsageChartMetrics.pricedWidth
-            + ProviderCardView.contentPadding * 2
+            + LayoutMetrics.cardContentPadding * 2
             + popoverPadding * 2
     }
 
     /// popover 背板内边距。水平方向与主菜单卡片列的内边距同源，
     /// 这样 popover 里的卡片宽度与菜单里的卡片**逐像素相同**。
-    static var popoverPadding: CGFloat { MenuPanelHeightBridge.cardHorizontalPadding }
+    static var popoverPadding: CGFloat { LayoutMetrics.cardColumnHorizontalPadding }
 
     /// dock 液态玻璃的暗色压深。
     ///

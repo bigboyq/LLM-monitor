@@ -56,6 +56,21 @@ struct ProviderStatus: Identifiable, Equatable, Sendable {
     /// 只在 `kind == .glmCodingPlan` 时使用；其他 provider 永远 nil。
     var glmLocalUsage: GlmLocalUsage?
 
+    /// ZCode 活动套餐余额（UI 投影）。`nil`（未解析 / 开关关闭）与 `[]`（解析到但
+    /// 当前无套餐）在这里合并成"没有余额可显示"——视图不必知道 scanner 快照里
+    /// 这个字段是 optional，也不必下钻 `glmLocalUsage` 的内部结构。
+    ///
+    /// 只有 `.glmCodingPlan` 的卡片读它（`GlmActivityPlanBalancesView`）。
+    var glmActivityPlanBalances: [GlmActivityPlanBalance] {
+        glmLocalUsage?.activityPlanBalances ?? []
+    }
+
+    /// GLM 闲时任务窗口（UI 投影）。非 GLM 卡恒为空——ZCode 是一份多 provider
+    /// 账本，`glmLocalUsage` 也挂在 MiniMax / DeepSeek 卡上，闲时窗口只属于智谱任务。
+    var glmOffPeakWindows: [GlmOffPeakWindow] {
+        glmLocalUsage?.offPeakWindows ?? []
+    }
+
     /// DeepSeek Harness (`dsh`) session-log token usage。
     /// 这是共享本地数据源，不在 `ProviderKind` 中增加一个独立 provider；
     /// 按 request/context provider 分片后合并到对应卡片。

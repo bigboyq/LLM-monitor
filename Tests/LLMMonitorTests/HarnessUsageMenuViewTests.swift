@@ -10,10 +10,10 @@ import XCTest
 /// `NSHostingView` 的自然宽：溢出 336pt（菜单 360 − 两侧 12pt 内边距）即红。
 final class HarnessUsageMenuViewTests: XCTestCase {
 
-    /// 菜单内容区宽度：360pt 面板减去 `MenuPanelHeightBridge.cardHorizontalPadding`
+    /// 菜单内容区宽度：360pt 面板减去 `LayoutMetrics.cardColumnHorizontalPadding`
     /// 两侧内边距。改菜单宽度时这里必须跟着动。
     private var contentWidth: CGFloat {
-        MenuPanelHeightBridge.width - MenuPanelHeightBridge.cardHorizontalPadding * 2
+        MenuPanelHeightBridge.width - LayoutMetrics.cardColumnHorizontalPadding * 2
     }
 
     /// 五列定宽 + 四段间距不得超出内容区。少一个 term 就说明新增/加宽了某一列。

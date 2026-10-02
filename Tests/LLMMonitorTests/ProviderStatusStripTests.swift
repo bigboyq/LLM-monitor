@@ -175,7 +175,7 @@ final class ProviderStatusStripTests: XCTestCase {
         hosting.frame = CGRect(x: 0, y: 0, width: 10_000, height: 10_000)
         hosting.layoutSubtreeIfNeeded()
 
-        let contentWidth = MenuPanelHeightBridge.width - MenuPanelHeightBridge.cardHorizontalPadding * 2
+        let contentWidth = MenuPanelHeightBridge.width - LayoutMetrics.cardColumnHorizontalPadding * 2
         XCTAssertGreaterThan(hosting.fittingSize.height, 0, "必须真的渲染出这一行")
         XCTAssertLessThanOrEqual(
             hosting.fittingSize.width, contentWidth + 0.5,
@@ -189,7 +189,7 @@ final class ProviderStatusStripTests: XCTestCase {
     /// 内容区。溢出只会让最右边的胶囊被裁掉或换行，编译期与运行期都不报错。
     @MainActor
     func testStripNaturalWidthFitsTheMenuContentWidth() {
-        let contentWidth = MenuPanelHeightBridge.width - MenuPanelHeightBridge.cardHorizontalPadding * 2
+        let contentWidth = MenuPanelHeightBridge.width - LayoutMetrics.cardColumnHorizontalPadding * 2
         let snapshot = ProviderStatusStrip.snapshot(statuses: Self.allProviderFixture(), limit: 4)
         XCTAssertEqual(snapshot.hiddenCount, 1, "前提不成立：五个 provider 必须触发折叠")
 

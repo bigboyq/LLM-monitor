@@ -130,7 +130,7 @@ struct SettingsWindowFocusBridge: NSViewRepresentable {
 }
 
 struct SettingsPaneHeader: View {
-    let tab: SettingsView.SettingsTab
+    let tab: SettingsTab
 
     var body: some View {
         HStack(alignment: .center, spacing: 12) {

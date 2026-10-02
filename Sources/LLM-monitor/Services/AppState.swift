@@ -2,6 +2,61 @@ import Foundation
 import Combine
 import AppKit
 
+/// 设置窗口的侧栏 tab 模型。放在 Services 而不是 `SettingsView` 内部，是因为
+/// `AppState.pendingSettingsTab` 要用它——信号从"主面板点节能"出发、由状态层
+/// 持有，视图层只是消费方。声明留在视图里时，Services 只能反向引用
+/// `SettingsView.SettingsTab`。
+///
+/// 纯数据 + 标识派生：只依赖 `FetcherDescriptor`（Fetchers 层），不含任何
+/// SwiftUI 类型。视图侧的呈现映射（`brandAsset`，其类型 `BrandLogoAsset` 住在
+/// Views）以扩展的形式留在 `Views/SettingsView.swift`。
+enum SettingsTab: Identifiable {
+    case general
+    case energy
+    case provider(FetcherDescriptor)
+    case clients
+
+    static let generalID = "general"
+    static let energyID = "energy"
+    static let clientsID = "clients"
+
+    var id: String {
+        switch self {
+        case .general: return Self.generalID
+        case .energy: return Self.energyID
+        case .provider(let d): return d.id
+        case .clients: return Self.clientsID
+        }
+    }
+
+    var displayTitle: String {
+        switch self {
+        case .general: return "常规"
+        case .energy: return "节能"
+        case .provider(let d): return d.settingsTabTitle ?? d.displayName
+        case .clients: return "客户端"
+        }
+    }
+
+    var iconSystemName: String {
+        switch self {
+        case .general: return "gearshape"
+        case .energy: return "powersleep"
+        case .provider(let d): return d.iconSystemName
+        case .clients: return "terminal"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .general: return "刷新节奏与应用启动行为"
+        case .energy: return "系统睡眠健康度与防止休眠"
+        case .provider(let d): return d.settingsTabSubtitle ?? ""
+        case .clients: return "本地客户端用量与 Provider 映射"
+        }
+    }
+}
+
 /// 全局状态：从 ConfigStore 派生 provider 列表 + 定时刷新
 @MainActor
 final class AppState: ObservableObject {
@@ -37,7 +92,7 @@ final class AppState: ObservableObject {
     /// 设置窗口跳转信号：主面板 footer「节能」按钮先置 `.energy` 再打开设置
     /// 窗口；SettingsView 在出现 / 值变化时消费并清 nil（双兜底规避窗口
     /// 尚未创建时的订阅竞态）。
-    @Published var pendingSettingsTab: SettingsView.SettingsTab?
+    @Published var pendingSettingsTab: SettingsTab?
 
     // MARK: - 内部
 

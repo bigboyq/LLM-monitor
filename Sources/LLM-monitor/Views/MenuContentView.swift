@@ -292,7 +292,7 @@ struct MenuContentView: View {
                         onOpenConfigFile: { state.openConfigFile() }
                     )
                 }
-                .padding(.horizontal, MenuPanelHeightBridge.cardHorizontalPadding)
+                .padding(.horizontal, LayoutMetrics.cardColumnHorizontalPadding)
                 .padding(.vertical, 8)
                 .background(
                     GeometryReader { geo in
@@ -491,13 +491,9 @@ struct MenuPanelHeightBridge: NSViewRepresentable {
     static let heightCapFraction: CGFloat = 0.70
     /// F4: 菜单固定宽度。改这里会改所有 menu 卡片列宽。
     static let width: CGFloat = 360
-    /// 卡片列的水平内边距。边缘状态窗的 popover 复用同一数值，两边的卡片宽度
-    /// 才能逐像素一致（见 `EdgeDockTheme.popoverPadding`）。
-    ///
-    /// `nonisolated`：`EdgeDockTheme.popoverPadding`（非隔离的纯几何计算）要读它，
-    /// 而本类型跟随 `NSViewRepresentable` 推断成 main actor。纯 CGFloat 常量没有
-    /// 隔离的必要，Swift 6 语言模式下少了它就是编译错误。
-    nonisolated static let cardHorizontalPadding: CGFloat = 12
+    // 卡片列的水平内边距搬到了 `LayoutMetrics.cardColumnHorizontalPadding`
+    // （Services 侧的 `EdgeDockTheme.popoverPadding` 要读它，声明留在这里会变成
+    // Services → Views 的反向依赖）。
     /// header (~38pt) + footer (~27pt) 的总固定高度。
     /// 所有需要将"卡片列表高度"换算为"窗口总高度"的位置统一引用此常量，
     /// 避免多处硬编码导致改一漏一。

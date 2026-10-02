@@ -240,7 +240,7 @@ final class QuotaWindowUsageValueTests: XCTestCase {
     /// 宽下的高度"——不等就说明它折了。
     @MainActor
     func testMetricRowStaysOnOneLineInsideTheCardContentWidth() {
-        let contentWidth = 336.0 - 2 * ProviderCardView.contentPadding
+        let contentWidth = 336.0 - 2 * LayoutMetrics.cardContentPadding
         let singleLine = self.measuredHeight(of: Self.row(of: Self.row(named: "典型值")), width: 1_000)
         XCTAssertGreaterThan(singleLine, 0, "前提不成立：这一行必须真的排得出来")
 

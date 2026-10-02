@@ -14,7 +14,7 @@ final class EdgeDockPopoverTests: EdgeDockTestCase {
         XCTAssertEqual(
             EdgeDockTheme.popoverWidth,
             SevenDayUsageChartMetrics.pricedWidth
-                + ProviderCardView.contentPadding * 2
+                + LayoutMetrics.cardContentPadding * 2
                 + EdgeDockTheme.popoverPadding * 2
         )
         XCTAssertGreaterThan(EdgeDockTheme.popoverWidth, MenuPanelHeightBridge.width)
@@ -25,7 +25,7 @@ final class EdgeDockPopoverTests: EdgeDockTestCase {
         // 不带价格列时同样要装下柱区（415）。
         let inner = EdgeDockTheme.popoverWidth
             - EdgeDockTheme.popoverPadding * 2
-            - ProviderCardView.contentPadding * 2
+            - LayoutMetrics.cardContentPadding * 2
         XCTAssertGreaterThanOrEqual(inner, SevenDayUsageChartMetrics.pricedWidth)
         XCTAssertGreaterThanOrEqual(inner, SevenDayUsageChartMetrics.barsWidth)
     }
@@ -39,7 +39,7 @@ final class EdgeDockPopoverTests: EdgeDockTestCase {
 
     func testPopoverPaddingTracksMenuCardPadding() {
         XCTAssertEqual(
-            EdgeDockTheme.popoverPadding, MenuPanelHeightBridge.cardHorizontalPadding,
+            EdgeDockTheme.popoverPadding, LayoutMetrics.cardColumnHorizontalPadding,
             "两侧内边距同源，改菜单时不会漏改 popover"
         )
     }

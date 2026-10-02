@@ -112,6 +112,15 @@ struct SleepHealthReport: Equatable, Sendable {
 }
 
 /// UI 与 AppState 消费睡眠健康度的稳定接口；实现在 Services/SleepHealthService.swift
+///
+/// `@MainActor` 保留（2026-10 复核：试过移除，删掉后 `SleepHealthService`（本身是
+/// `@MainActor final class`）对它的 conformance 立刻报 ConformanceIsolation
+/// "crosses into main actor-isolated code"，Swift 6 语言模式下升级为 error——因为
+/// 协议要求是非隔离的，而唯一的 witness 全是主线程隔离成员。这是 Models 目录里唯一
+/// 的 `@MainActor`，看着突兀，但它是**协议要求的隔离**，不是某个类型的属性：
+/// 要去掉，得先把 witness 逐个 `nonisolated` 化或改成 isolated conformance
+/// （`@MainActor extension SleepHealthService: SleepHealthReporting {}`），
+/// 属于一次独立的重构，不在本次视图层解耦的范围内。
 @MainActor
 protocol SleepHealthReporting: ObservableObject {
     /// 最近一次评估结果；nil 表示尚未完成首次评估
