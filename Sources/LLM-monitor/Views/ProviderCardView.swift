@@ -176,6 +176,7 @@ struct ProviderCardView: View, Equatable {
                 dockCard {
                     quotaSection(info: info, projection: projection, between: AnyView(dockQuotaSummaryRows))
                     quotaUsageDivider
+                    quotaWindowUsage(info: info, projection: projection)
                     localUsage(projection: projection, part: .summary)
                 }
                 dockSectionTitle(projection: projection)
@@ -207,8 +208,77 @@ struct ProviderCardView: View, Equatable {
     /// 而这条线要横跨所有 model（Antigravity 有两个），每块各画一条会在两个块
     /// 之间叠成两条挨着的线。样式与 7 天图表下方那条同款（同色、同不透明度、
     /// 整行宽、不额外缩进），上下间距 6 + 3 = 9pt，两条线在屏幕上读起来是同一条。
+    ///
+    /// 线**之下**先是「额度窗口用量」区块（见 `quotaWindowUsage`）再是本地用量
+    /// footer：前者虽然讲的是额度窗口，数据仍然来自本机扫描，放到线上会把
+    /// "额度来自接口" 这条约定作废。
     private var quotaUsageDivider: some View {
         Divider().opacity(0.45).padding(.vertical, 3)
+    }
+
+    /// 「额度窗口用量」区块（条 + 每个窗口一行短指标 + 明细）。
+    ///
+    /// 位置：**额度区之后、本地用量 footer 之前**，紧跟那条分隔线。它与下面
+    /// 「今天 / 最近 7 天」的区别是时间尺度——那两处讲"最近 24 小时 / 7 天"，
+    /// 这里讲"**当前这一轮额度窗口**"，也就是额度行那条百分比对应的同一段时间。
+    /// 放在分隔线**之下**是因为它的数据仍然来自本机会话扫描：那条线的语义是
+    /// "上面来自 provider 接口、下面来自本地扫描"，把这个区块放到线上面会让
+    /// 读者把本机 token 数当成额度接口返回的数。
+    ///
+    /// 余额型 provider（DeepSeek，没有额度窗口）整块不画，见
+    /// `QuotaWindowUsageSection` 的 `snapshot.isEmpty` 判据；重置卡的逐张明细
+    /// 搭同一个浮层（见该类型的 `resetCredits`）。
+    @ViewBuilder
+    private func quotaWindowUsage(info: QuotaInfo, projection: ProviderUsageProjection) -> some View {
+        let snapshot = quotaWindowUsageSnapshot(info: info, projection: projection)
+        // 品牌色与卡片描边（`accentColor`）同源：它本来就是额度那一组的一部分。
+        QuotaWindowUsageSection(
+            snapshot: snapshot,
+            tint: accentColor,
+            resetCredits: info.resetCredits
+        )
+    }
+
+    /// 区块数据：各 active model 的窗口用量按 provider 合计。
+    ///
+    /// 口径**完全**取自额度行——窗口边界走 `LocalUsageSummaryBuilder.windowBounds`
+    /// （同 `CombinedQuotaWindowRow.primaryUsage` / `weeklyUsage`），GLM 闲时排除
+    /// 走同一个 `excludeWindows` + `excludeGlmOffPeak`，ChatGPT 走
+    /// `ChatGPTPlanModelRow` 的预聚合口径。多 model 求和的理由见
+    /// `LocalUsageSummaryBuilder.combineWindowUsage`。
+    private func quotaWindowUsageSnapshot(
+        info: QuotaInfo,
+        projection: ProviderUsageProjection
+    ) -> QuotaWindowUsageSnapshot {
+        let snapshots = info.activeModels.map { model -> QuotaWindowUsageSnapshot in
+            // ChatGPT 的窗口用量由 codexUsageDetails 预聚合（再补 OpenCode 来源），
+            // 那些样本已被统计过一次，不能再从 samples 重算一遍。
+            let overrides = status.kind == .codexChatGpt
+                ? ChatGPTPlanModelRow.windowUsages(
+                    model: model,
+                    usageDetails: info.codexUsageDetails,
+                    samples: projection.recentSamples
+                )
+                : (interval: nil, weekly: nil)
+            return LocalUsageSummaryBuilder.windowUsage(
+                model: model,
+                providerKind: status.kind,
+                samples: projection.recentSamples,
+                intervalLabel: QuotaSummary.primaryWindowLabel(providerKind: status.kind, model: model),
+                weeklyLabel: QuotaSummary.weeklyWindowLabel(),
+                intervalFallbackSeconds: CombinedQuotaWindowRow.primaryFallbackSeconds(
+                    providerKind: status.kind,
+                    model: model
+                ),
+                excludeWindows: excludeWindows,
+                excludeGlmOffPeak: status.kind == .glmCodingPlan,
+                intervalUsageOverride: overrides.interval,
+                weeklyUsageOverride: overrides.weekly,
+                quotaProviderID: status.kind.quotaProviderID,
+                deepseekPeakWindow: status.deepseekPeakWindow ?? .defaultWindow
+            )
+        }
+        return LocalUsageSummaryBuilder.combineWindowUsage(snapshots)
     }
 
     /// 夹在「元信息行 + 进度条」与下方「本地用量」之间的卡片级信息（dock）。
@@ -409,6 +479,7 @@ struct ProviderCardView: View, Equatable {
                         betweenBarAndColumns: quotaBetween
                     )
                     .opacity(0.5)
+                    quotaWindowUsage(info: last, projection: projection)
                     localUsage(projection: projection, part: .combined)
                 }
             } else {
@@ -417,6 +488,7 @@ struct ProviderCardView: View, Equatable {
         case .ok(let info):
             VStack(alignment: .leading, spacing: 6) {
                 quotaSection(info: info, projection: projection, between: quotaBetween)
+                quotaWindowUsage(info: info, projection: projection)
                 localUsage(projection: projection, part: .combined)
             }
         case .failed(let message, let lastSuccess):
@@ -450,7 +522,8 @@ struct ProviderCardView: View, Equatable {
                         betweenBarAndColumns: quotaBetween
                     )
                         .opacity(0.55)
-                        localUsage(projection: projection, part: .combined)
+                    quotaWindowUsage(info: last, projection: projection)
+                    localUsage(projection: projection, part: .combined)
                 }
             }
         }
@@ -609,7 +682,11 @@ struct ProviderStateLabel: View {
     nonisolated func presentation(at now: Date) -> Presentation {
         switch status.state {
         case .notConfigured:
-            return Presentation(title: "未启用", tone: .secondary)
+            // 「未配置」而不是「未启用」：`.notConfigured` 覆盖五种原因（缺配置块、
+            // 缺 Key、缺外部 auth、缺登录……），其中只有一种是"被禁用"。写「未启用」
+            // 会让"已启用但还没填 Key"读成"我把它关了"，而同一行下面的原因文案
+            // 恰恰说的是缺 Key——同一张卡里两句话互相打架。
+            return Presentation(title: "未配置", tone: .secondary)
         case .ready:
             return Presentation(title: "待更新", tone: .secondary)
         case .loading:

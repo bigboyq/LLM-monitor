@@ -6,7 +6,7 @@ enum MenuTypography {
     static let headerTitle = Font.system(size: 13, weight: .semibold)
     /// 卡片主标题 (Provider 名称)
     static let cardTitle = Font.system(size: 13, weight: .bold)
-    /// 状态标签与微型 Pill (未启用 / 待更新 / Team / AI Pro)
+    /// 状态标签与微型 Pill (未配置 / 待更新 / Team / AI Pro)
     static let badge = Font.system(size: 9, weight: .semibold).monospacedDigit()
     static let pill = Font.system(size: 9, weight: .semibold)
     /// 模型名称 (Gemini 2.5 Flash 等)

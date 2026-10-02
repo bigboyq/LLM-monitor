@@ -183,18 +183,23 @@ struct HarnessSectionView: View {
         }
     }
 
-    /// 橙色截断提示，文案取 `ClientUsageTruncationNotice.text`——设置页展开行与
-    /// 7 天柱图脚注引用的是同一个常量，三处不许各写一句。
+    /// 橙色截断提示，**单行**短文案。
+    ///
+    /// 完整说明是 `ClientUsageTruncationNotice.text`（设置页展开行与 7 天柱图
+    /// footer 用的那一句），但那一句二十多个字，在段头底下 336pt 宽的位置要占两行，
+    /// 而菜单里这一行的读者只需要知道"数字不全"——具体怎么截断的，鼠标悬停
+    /// （`.help`）再看。
+    static let truncationShortText = "部分较早会话未计入"
+
     private var truncationNotice: some View {
         HStack(alignment: .firstTextBaseline, spacing: 4) {
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.system(size: 8))
                 .foregroundStyle(Color.orange)
-            Text(ClientUsageTruncationNotice.text)
+            Text(Self.truncationShortText)
                 .font(MenuTypography.hint)
                 .foregroundStyle(Color.orange)
-                .lineLimit(2)
-                .fixedSize(horizontal: false, vertical: true)
+                .lineLimit(1)
                 .help(ClientUsageTruncationNotice.text)
         }
     }

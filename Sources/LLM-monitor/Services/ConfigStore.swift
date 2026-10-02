@@ -516,7 +516,7 @@ struct AppConfig: Codable, Equatable {
 /// 所有字段除 `enabled` 外都是 optional。nil 字段在 JSON 里**完全不写**，
 /// 让配置文件保持干净——只展示当前 provider 真正关心的字段。
 struct ProviderConfig: Codable, Equatable {
-    /// 是否启用（false 则不抓取、UI 显示"未启用"）
+    /// 是否启用（false 则不抓取、UI 状态胶囊显示「未配置」）
     var enabled: Bool
 
     /// API Key（明文，文件权限 0600）。某些 provider（如 codex）从外部 auth.json 读，传 nil

@@ -287,10 +287,22 @@ final class HoverRevealModeTests: XCTestCase {
     /// → **679pt**（第八轮：两行标题统一成 13pt、卡片内字号收到 10/11、
     ///   描述行移到进度条上方并给条留出上下间距、重置/高峰期移到条与统计表之间
     ///   并补一条分隔线。这一轮是**涨**的，涨在字号与呼吸感上）。
-    /// → **505pt**（第九轮：撤掉三列明细 **Last Prompt | 5h | 周**。它们讲的是
+    /// → **506pt**（第九轮：撤掉三列明细 **Last Prompt | 5h | 周**。它们讲的是
     ///   本地扫描的 token 用量，和下一张卡「最近7天token用量」是同一件事，
     ///   一屏摆两份既重复又把"还剩多少"这条主线压住。条与元信息行之间的分隔线
     ///   留着，现在分隔的是"额度"与"用量"）。
+    /// → **664pt**（第十轮：在额度区与本地用量之间加「额度窗口用量」区块——一条
+    ///   时间构成条 + 每个窗口一行短指标 + 四桶明细。这一轮是**涨**的，涨在一件
+    ///   新的信息上：额度条讲"还剩多少"，这个区块讲"这一轮额度里本机烧了多少"，
+    ///   两者不重叠。涨的 158pt = 条与两行短指标约 40pt + 明细两栏（各 6 行）
+    ///   约 100pt + 两处间距。
+    ///
+    /// ⚠️ 第十轮那 100pt 明细是**必须**在卡里就地展开的，不是"顺手摆上去的"：
+    /// 两个宿主（dock 浮层、菜单兜底行的 hover 卡）都在 `ignoresMouseEvents = true`
+    /// 的 `NSPanel` 里，卡内收不到鼠标事件（`HoverPanel.swift` / `EdgeDockController+Popover`），
+    /// 所以 `HoverInfoRow` 的 `.alwaysVisible` 分支是它唯一的呈现路径——把它降级成
+    /// "只有 hover 才展开"，四桶绝对值就永远没人看得见。代价是卡更高，超出屏幕时
+    /// 由 popover 既有的 ScrollView 兜底（`popoverHeightFraction`）。
     ///
     /// 第三轮涨 37pt 是**故意的**：拆行换来每个数字都有完整一行。第四轮把
     /// 头部那张"条 + 名称 label"总表撤回、条各归各的分块，顺带省掉模型名那一行，
@@ -307,9 +319,14 @@ final class HoverRevealModeTests: XCTestCase {
     /// 120pt），拿它当基准会把"折叠区就地展开"这件事本身判成回归——而就地
     /// 展开正是 dock 侧必须的行为（浮层不接受鼠标事件，折叠区展不开）。
     ///
-    /// 上限取 550pt：给字体度量随 macOS 版本漂移留出余量，又足够紧——任何
-    /// "再加回一个常展区块"都会顶破它（上一轮的三列明细就有 174pt）。
+    /// 上限取 700pt：给字体度量随 macOS 版本漂移留出余量（第十轮实测 664pt，
+    /// 余量 36pt），又足够紧——第十一轮再加一个常展区块就会顶破它。
     /// 改动这套排版时要重新量。
+    ///
+    /// ⚠️ 这条量的是**最轻**的一格（无重置额度数据、窗口内无本地样本），所以它
+    /// 挡不住后来挂在同一区块上的两样东西：金额行与逐张重置卡清单。真实形态由
+    /// `testDockDetailWithTheFullestQuotaWindowSectionStaysUnderTheSameCeiling` 单独
+    /// 守（第十一轮实测 745pt，上限 800pt）。两条一起看才是完整的高度契约。
     ///
     /// 注意这个上限和 popover 的高度上限（`popoverHeightFraction`）是两回事：
     /// 那条管的是"面板不许高过屏幕"，超了套 ScrollView；这条管的是"排版别再变高"，
@@ -319,8 +336,46 @@ final class HoverRevealModeTests: XCTestCase {
         let height = measuredHeight(mode: .alwaysVisible, status: Self.makeChatGPTStatus())
         XCTAssertGreaterThan(height, 0, "必须能布局出高度，否则这条断言没有意义")
         XCTAssertLessThan(
-            height, 550,
+            height, 700,
             "dock 详情浮层比重排前更高了（现在 \(height)pt，全展开时是 1188pt）"
+        )
+    }
+
+    /// 同一个上限，另配一张**真实形态**的卡：既有重置额度数据、窗口内也有本地
+    /// 样本（于是「额度窗口用量」区块会多画金额行与逐张重置卡清单）。
+    ///
+    /// 上一条量的那张卡没有重置数据、没有样本，是这条链上**最轻**的一格——它守不住
+    /// 后来加的两样东西（金额行、重置卡清单）。真实用户的 ChatGPT 卡几乎总是两样
+    /// 都有，所以上限必须按这一格量：第十一轮实测 **745pt**，上限取 800pt（余量
+    /// 55pt，与另一条同量级）。
+    @MainActor
+    func testDockDetailWithTheFullestQuotaWindowSectionStaysUnderTheSameCeiling() {
+        let now = Date()
+        let status = Self.makeChatGPTStatus(
+            state: .ok,
+            resetCredits: true,
+            recentSamples: (0..<3).map { index in
+                LocalTokenUsageSample(
+                    completedAt: now.addingTimeInterval(TimeInterval(-600 * (index + 1))),
+                    modelName: "gpt-5.5",
+                    promptID: "p\(index)",
+                    inputTokens: 1_000,
+                    cachedInputTokens: 9_000,
+                    outputTokens: 1_000,
+                    reasoningOutputTokens: 2_000
+                )
+            }
+        )
+        let height = measuredHeight(mode: .alwaysVisible, status: status)
+        let bare = measuredHeight(mode: .alwaysVisible, status: Self.makeChatGPTStatus())
+        XCTAssertGreaterThan(
+            height, bare,
+            "前提不成立：带重置卡与样本的这一格必须比最轻的那格高（否则量的不是同一张卡）"
+        )
+        XCTAssertLessThan(
+            height, 800,
+            "真实形态（金额行 + 逐张重置卡清单）的 dock 浮层高度（现在 \(height)pt）"
+                + "不该越过 800pt；超了先量一下，ScrollView 会兜底但那是一屏看不全"
         )
     }
 
@@ -391,7 +446,8 @@ final class HoverRevealModeTests: XCTestCase {
     /// 其余三格要么本来就画（菜单由 `QuotaSummary` 自己画），要么本来就该没有。
     fileprivate static func makeChatGPTStatus(
         state: CardState,
-        resetCredits: Bool
+        resetCredits: Bool,
+        recentSamples: [LocalTokenUsageSample] = []
     ) -> ProviderStatus {
         let now = Date()
         let model = ModelQuota(
@@ -448,7 +504,7 @@ final class HoverRevealModeTests: XCTestCase {
                     usage: usage
                 ),
                 dailyTokenUsage: makeSevenDays(now: now),
-                recentSamples: [],
+                recentSamples: recentSamples,
                 scannedAt: now
             ),
             fetchedAt: now

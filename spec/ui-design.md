@@ -141,7 +141,7 @@ height: content-driven, fixedSize(vertical: true)
 | ⚠ 会话文件超出单轮扫描预算，已按最新优先截断…   |   truncation notice (that section only)
 | ...                                            |
 +------------------------------------------------+
-| Provider 状态  ◉10:23 ◉需重试 ◉未启用      +1  |   provider fallback strip
+| Provider 状态  ◉10:23 ◉需重试 ◉未配置      +1  |   provider fallback strip
 +------------------------------------------------+
 | 更新于 HH:mm / 下次 HH:mm / 就绪  自启 ✓|✗  设置 节能 日志 退出 |
 +------------------------------------------------+
@@ -206,8 +206,10 @@ buckets. With no scan ever recorded the badge renders nothing at all (no empty
 capsule, no phantom space).
 
 **Truncation notice** — a section whose sources were truncated (DSH file/byte budget
-dropping the oldest sessions) shows the shared `ClientUsageTruncationNotice.text` in
-orange on the header's second line. Section-level aggregation, same "any source
+dropping the oldest sessions) shows a **one-line** short notice (`部分较早会话未计入`,
+`HarnessSectionView.truncationShortText`) in orange on the header's second line; the
+full `ClientUsageTruncationNotice.text` stays in its `.help` tooltip. The long sentence
+wrapped onto two lines under a 336pt content area and pushed the section's rows down. Section-level aggregation, same "any source
 truncated ⇒ truncated" rule as `ProviderUsageProjection.isTruncated`. Sections
 without truncation show nothing — the numbers are right either way, they are just not
 complete, and staying silent would let a partial total read as a complete one.
@@ -222,7 +224,7 @@ numbers".
 **Provider fallback strip** (`ProviderStatusStripView`, the last row of the content
 area) — a 「Provider 状态」 label followed by one minimal element per enabled
 provider: brand logo (11pt) + `ProviderStateLabel` capsule (`10:23` / `需重试` /
-`未启用` …, already tri-colour by refresh freshness). Its data comes from the pure
+`未配置` …, already tri-colour by refresh freshness). Its data comes from the pure
 projection `ProviderStatusStrip.snapshot(statuses:limit:)`:
 
 - only **enabled** providers are shown — the filter lives in the projection, not in
@@ -256,9 +258,11 @@ hover-collapsed section inside the card (account block, local-usage footer) coul
 never open, and the quota rows would fall back to their compact layout — the same
 argument as `EdgeDockController+Popover`. `HoverPanelController.maximumPanelWidth`
 was raised to `EdgeDockTheme.popoverWidth` for the same reason it used to be sized
-for the 7-day chart: the panel must fit the widest detail. Vertical fit needs no
-scroll — the card is ~520pt tall and `frameForPanel` clamps to the screen's visible
-frame, which is taller than that on every display this ships to.
+for the 7-day chart: the panel must fit the widest detail. Vertical fit usually needs
+no scroll — the card is ~745pt tall (measured on the fullest form: reset credits +
+priced windows) and `frameForPanel` clamps to the screen's visible
+frame; on a short display the clamp wins and the dock popover's `ScrollView` fallback
+(see *Hover behaviour → Size*) keeps the overflow reachable.
 
 The content area scrolls when needed. `MenuPanelHeightBridge` caps the menu window at
 70% of the screen's visible height; when the cap is reached, only the content list
@@ -736,7 +740,7 @@ menu's provider strip hover shows the very same two-card layout.
 
 | | Title row (outside, above the card) | Card |
 |---|---|---|
-| 1 | brand logo + provider name + plan capsule, with the refresh time / state label on the right — **no status dot**; the dot sits right next to the brand logo and the two small circles read as "the logo with a green pip", while the capsule on the same row already states the status | per model: `<name> 5h 62% weekly 30% <reset time>` and the progress bar; then reset credits, the peak-window countdown, a divider, then the local-usage **summary** row (`📈 今天 …`) |
+| 1 | brand logo + provider name + plan capsule, with the refresh time / state label on the right — **no status dot**; the dot sits right next to the brand logo and the two small circles read as "the logo with a green pip", while the capsule on the same row already states the status | per model: `<name> 5h 62% weekly 30% <reset time>` and the progress bar; then reset credits, the peak-window countdown, a divider, the **quota-window usage block** (see below), then the local-usage **summary** row (`📈 今天 …`) |
 | 2 | `最近7天token用量`, with the local-usage freshness as a **capsule** (`更新于 HH:mm` / `计算中…`) on the right — same font, weight and colour as title 1, because the two rows are the same kind of thing: the name of their card | the 7-day chart, its usage table and the footnote |
 
 **Card 1 reads top-to-bottom as summary → local usage.** The metadata line moved
@@ -779,6 +783,77 @@ Two knock-on details, both easy to miss:
 Non-`.ok` states (loading / failed / not configured) fall back to a single card: there
 are no two groups to cut, and splitting anyway would leave a second card holding nothing
 but a placeholder.
+
+#### Quota window usage block
+
+Inside card 1, **below** the quota/local-usage divider and above the `📈 今天 …` row,
+there is one block that answers "how much did *this machine* burn inside the current
+quota window?". It is rendered by `QuotaWindowUsageSection`
+(`Views/QuotaWindowUsageViews.swift`), in the same `.alwaysVisible` card the dock
+popover and the menu's provider strip hover both show.
+
+| Part | Content |
+|---|---|
+| Bar | **Time composition, not bucket composition**: the full bar is the local token total inside the current **weekly** window; the solid left segment is the part inside the latest **5h** window, the translucent right segment is the rest of the week. Grey trough. 6pt Capsule, provider accent colour. Deliberately *not* `TokenBucketBar` (that one splits input / cache / output) and not `SegmentedQuotaProgressBar` (that one encodes a remaining percentage) |
+| One row per window | `5h 173M · 命中 97.8% · 出/入 12% · 思考 41% · ¥12.34` — five short metrics, 10pt `monospacedDigit`, **one line, never wrapped**. When the width is genuinely insufficient, `ViewThatFits` falls back to compressed labels (`出比` / `思`); the numbers themselves are never shortened, because two rows of numbers read as two different subjects |
+| Hover detail | per window: the four absolute buckets (`input` / `cached` / `output` / `reason`, `input` being the **uncached** one), that window's nominal value, and that window's reset time. The two windows sit **side by side**, so the same bucket lines up horizontally |
+| Hover detail, reset credits | appended below the buckets: the **per-card list** of available reset credits (count + each card's expiry), rendered by `ResetCreditsDetailList` — the same view the reset-credit row's own hover uses |
+
+**Value (the fifth metric)** — `ModelPricingCatalog.estimate` over the window's
+**already filtered samples** (the very array the four buckets are summed from, so token
+count and money can never describe different sets of samples), in the **original
+currency** (`¥` / `$`) with no local-currency conversion, matching the 7-day table and
+the client summary. DeepSeek's ×2 peak multiplier is evaluated **per sample timestamp**
+(the `deepseekPeakWindow` travels with the status), so a window straddling a peak
+boundary is not doubled as a whole. `—` means no local samples in the window; `未定价`
+means samples are present but the catalog has no price for them. Summing several model
+pools adds their money only while the currencies agree — a mixed-currency sum returns
+nil rather than a meaningless total.
+
+Ratio formulas (all three return `nil` — rendered `—` — when their denominator is 0;
+`0%` would read as "the ratio really is zero"):
+
+| Ratio | Formula |
+|---|---|
+| 命中 cache hit | `cached / (input + cached)` |
+| 出/入 output to input | `(reason + output) / (input + cached)` |
+| 思考 reasoning share | `reason / (reason + output)` |
+
+Data source and calibration:
+
+- Windows are the **same** ones the quota rows use — `LocalUsageSummaryBuilder.windowBounds`
+  (`intervalResetsAt` / `weeklyResetsAt` pushed back by the window length) feeding
+  `LocalUsageSummaryBuilder.windowSamples`, so the GLM off-peak exclusion
+  (`excludeWindows` + `excludeGlmOffPeak`) applies here exactly as it does above. ChatGPT
+  keeps its `codexUsageDetails` + OpenCode path via `ChatGPTPlanModelRow.windowUsages`.
+- A provider with several model quotas is **summed per window** (`combineWindowUsage`):
+  `modelMatches` already partitions the samples per model quota, so the pools do not
+  overlap. The reset time shown is the **earliest** one, and the detail says so whenever
+  more than one pool contributed.
+- **Degenerate cases**: a provider with only one of the two windows shows only that row
+  and the bar becomes a single segment; a balance-only provider (DeepSeek API balance,
+  no quota window at all) renders **nothing** — not an empty bar; a window with zero local
+  usage still shows its row with `0` and `—`.
+- Both card hosts live in panels with `ignoresMouseEvents = true`, so the detail is
+  rendered **in place** by `HoverInfoRow`'s `.alwaysVisible` branch — it is the only path
+  by which the four buckets are ever visible. That is why the card grew (measured 506pt
+  → 664pt) and why the ceiling in
+  `HoverRevealModeTests.testDockDetailStaysUnderTheRearrangedCeiling` moved 550 → 700.
+- **Reset credits reachability.** The reset-credit row in the quota area is
+  `revealsDetail: false`, and both hosts swallow mouse events, so a pure hover cannot
+  open its per-card list. The per-card list therefore rides this block's detail panel —
+  it is the only in-place expansion point the card has, and "how many credits do I have
+  and when do they expire" answers the same question as the four buckets ("what did this
+  round of quota actually go on"). `QuotaWindowUsageSection` renders whenever
+  `resetCredits != nil`, even if the snapshot itself is empty; the bar and the metric
+  rows stay hidden in that case.
+- **Height ceiling.** `testDockDetailStaysUnderTheRearrangedCeiling` measures the
+  *lightest* card (no reset credits, no local samples in the window). The realistic
+  case — reset credits present, samples present, hence two more value lines plus the
+  per-card credit list — is guarded separately by
+  `testDockDetailWithTheFullestQuotaWindowSectionStaysUnderTheSameCeiling`
+  (measured 745pt, ceiling 800pt). Both are needed: the light fixture alone would not
+  notice the last two additions.
 
 ### Dock modes (compact form)
 
@@ -1246,7 +1321,7 @@ Row-level tint rules:
 | Provider icon | bundled brand asset in an `18x18pt` frame; OpenAI follows the system foreground color and missing assets use a recognizable SF Symbol fallback |
 | Display name | 14pt bold |
 | Plan tag | shown when a fetched provider supplies a plan label (for example, ChatGPT plan type) |
-| State tag | compact `未启用` / `待更新` / `已更新` / `需重试` label; a spinner replaces it while loading |
+| State tag | compact `未配置` / `待更新` / `已更新` / `需重试` label; a spinner replaces it while loading. `未配置` (not `未启用`): `.notConfigured` covers a missing API key, missing external auth and missing login as well as a disabled provider, and `未启用` made an enabled-but-keyless provider read as switched off |
 | Account block hover | **已删除**。邮箱 / 数据来源原本按 provider 分三路包在标题行的 `HoverInfoRow` 里，只为菜单那张卡服务；菜单不再渲染 provider 卡，浮层又不吃鼠标事件，这个折叠区展不开，直接不画 |
 | Seven-day local statistics | 不在标题行，在**本地用量那一段**（`LocalUsageFooterView` → `SevenDayTokenUsageHoverView`）：`.alwaysVisible` 下就地展开成第二张卡的内容，`.onHover` 下才是悬停弹层 |
 
@@ -1326,9 +1401,8 @@ This is currently used for:
 - **the menu's provider fallback strip**: hovering one provider element shows the full
   `ProviderCardView(status:)` for that provider, at the dock popover's card width
   (`EdgeDockTheme.popoverWidth` − backdrop padding) and in its `.alwaysVisible` layout
-  — the same card the dock shows, reached from the menu. No vertical scrolling is
-  needed: the card is ~520pt tall and the panel is placed inside the screen's visible
-  frame, which is taller than that on every supported display.
+  — the same card the dock shows, reached from the menu. Vertical fit is handled by
+  `frameForPanel` clamping to the screen's visible frame (fullest card ≈ 745pt).
 
 ## Provider-Specific Card Details
 

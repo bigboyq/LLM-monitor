@@ -148,28 +148,80 @@ struct ChatGPTPlanModelRow: View {
     private var hasSecondaryWindow: Bool { model.hasWeeklyWindow }
 
     private var primaryUsage: UsageMetricSummary? {
+        Self.intervalUsage(model: model, usageDetails: usageDetails, samples: localSamples)
+    }
+
+    private var secondaryUsage: UsageMetricSummary? {
+        Self.weeklyUsage(model: model, usageDetails: usageDetails, samples: localSamples)
+    }
+
+    /// 两个额度窗口的本地用量，**额度行与卡片级「额度窗口用量」区块共用这一份**。
+    ///
+    /// ChatGPT 的窗口用量有特殊口径（`codexUsageDetails` 预聚合 + OpenCode 补充），
+    /// 两条消费路径必须逐字段一致；写成两个 `static` 之后，模型行与卡片区块
+    /// 不可能各算一套。
+    static func windowUsages(
+        model: ModelQuota,
+        usageDetails: CodexUsageDetails?,
+        samples: [LocalTokenUsageSample]
+    ) -> (interval: UsageMetricSummary?, weekly: UsageMetricSummary?) {
+        (
+            intervalUsage(model: model, usageDetails: usageDetails, samples: samples),
+            weeklyUsage(model: model, usageDetails: usageDetails, samples: samples)
+        )
+    }
+
+    static func intervalUsage(
+        model: ModelQuota,
+        usageDetails: CodexUsageDetails?,
+        samples: [LocalTokenUsageSample]
+    ) -> UsageMetricSummary? {
         let bounds = LocalUsageSummaryBuilder.windowBounds(
             resetsAt: model.intervalResetsAt,
             explicitWindowSeconds: model.intervalWindowSeconds,
             fallbackSeconds: 5 * 60 * 60
         )
-        return Self.preferUsageDetails(
+        return preferUsageDetails(
             usageDetails?.primary,
-            localUsage(start: bounds?.start, end: bounds?.end),
-            externalUsage: openCodeUsage(start: bounds?.start, end: bounds?.end)
+            localUsage(
+                samples: samples,
+                quotaModelName: model.modelName,
+                start: bounds?.start,
+                end: bounds?.end
+            ),
+            externalUsage: openCodeUsageSummary(
+                samples: samples,
+                quotaModelName: model.modelName,
+                start: bounds?.start,
+                end: bounds?.end
+            )
         )
     }
 
-    private var secondaryUsage: UsageMetricSummary? {
+    static func weeklyUsage(
+        model: ModelQuota,
+        usageDetails: CodexUsageDetails?,
+        samples: [LocalTokenUsageSample]
+    ) -> UsageMetricSummary? {
         let bounds = LocalUsageSummaryBuilder.windowBounds(
             resetsAt: model.weeklyResetsAt,
             explicitWindowSeconds: model.weeklyWindowSeconds,
             fallbackSeconds: 7 * 24 * 60 * 60
         )
-        return Self.preferUsageDetails(
+        return preferUsageDetails(
             usageDetails?.secondary,
-            localUsage(start: bounds?.start, end: bounds?.end),
-            externalUsage: openCodeUsage(start: bounds?.start, end: bounds?.end)
+            localUsage(
+                samples: samples,
+                quotaModelName: model.modelName,
+                start: bounds?.start,
+                end: bounds?.end
+            ),
+            externalUsage: openCodeUsageSummary(
+                samples: samples,
+                quotaModelName: model.modelName,
+                start: bounds?.start,
+                end: bounds?.end
+            )
         )
     }
 
@@ -181,20 +233,16 @@ struct ChatGPTPlanModelRow: View {
         )
     }
 
-    private func localUsage(start: Date?, end: Date?) -> UsageMetricSummary? {
+    static func localUsage(
+        samples: [LocalTokenUsageSample],
+        quotaModelName: String,
+        start: Date?,
+        end: Date?
+    ) -> UsageMetricSummary? {
         return LocalUsageSummaryBuilder.summary(
-            samples: localSamples,
+            samples: samples,
             providerKind: .codexChatGpt,
-            quotaModelName: model.modelName,
-            start: start,
-            end: end
-        )
-    }
-
-    private func openCodeUsage(start: Date?, end: Date?) -> UsageMetricSummary? {
-        Self.openCodeUsageSummary(
-            samples: localSamples,
-            quotaModelName: model.modelName,
+            quotaModelName: quotaModelName,
             start: start,
             end: end
         )
@@ -309,40 +357,12 @@ struct CompactResetCreditsRow: View {
         .padding(.vertical, 2)
     }
 
-    /// 展开态：每张卡的明细。菜单侧 hover 出来，dock 侧不画（见 `revealsDetail`）。
+    /// 展开态：每张卡的明细。清单本体在 `ResetCreditsDetailList`——dock 侧那个
+    /// `revealsDetail: false` 的浮层里没有第二个展开入口，明细就并到
+    /// 「额度窗口用量」区块的浮层上（`QuotaWindowUsageHoverView`），两边共用同一份
+    /// 渲染实现与同一份排序。
     private var detail: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("可用重置卡")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.primary)
-
-            if availableEntries.isEmpty {
-                Text("暂无可用重置卡")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-            } else {
-                ForEach(Array(availableEntries.enumerated()), id: \.offset) { _, entry in
-                    CreditEntryRow(entry: entry)
-                }
-            }
-        }
-    }
-
-    private var availableEntries: [ResetCreditEntry] {
-        resets.entries
-            .filter { $0.status.lowercased() == "available" }
-            .sorted { lhs, rhs in
-                switch (lhs.expiresAt, rhs.expiresAt) {
-                case let (l?, r?):
-                    return l < r
-                case (.some, .none):
-                    return true
-                case (.none, .some):
-                    return false
-                case (.none, .none):
-                    return lhs.id < rhs.id
-                }
-            }
+        ResetCreditsDetailList(resets: resets)
     }
 
     private var expiryText: String {
@@ -631,6 +651,19 @@ struct CombinedQuotaWindowRow: View {
     }
 
     private var primaryFallbackSeconds: TimeInterval {
+        Self.primaryFallbackSeconds(providerKind: providerKind, model: model)
+    }
+
+    /// 短周期窗口缺 `windowSeconds` 时的兜底长度（`windowBounds` 用）。
+    ///
+    /// 提成 `static` 是因为卡片级「额度窗口用量」区块（`ProviderCardView`）要为同
+    /// 一个 model 推窗口边界，它必须拿到**同一个**兜底长度——minimax video 是日窗口
+    /// （24h），其余是 5h，两处各写一份迟早改漏一处，而漏了不会崩，只会让 video
+    /// 的"日窗口"按 5h 截断、条与数字各说各话。
+    nonisolated static func primaryFallbackSeconds(
+        providerKind: ProviderKind,
+        model: ModelQuota
+    ) -> TimeInterval {
         providerKind == .minimaxTokenPlan && model.modelName.lowercased() == "video"
             ? 24 * 60 * 60
             : 5 * 60 * 60

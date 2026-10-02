@@ -68,11 +68,39 @@ enum LocalUsageSummaryBuilder {
         excludeWindows: [GlmOffPeakWindow] = [],
         excludeGlmOffPeak: Bool = false
     ) -> UsageMetricSummary? {
+        let matching = windowSamples(
+            samples: samples,
+            providerKind: providerKind,
+            quotaModelName: quotaModelName,
+            start: start,
+            end: end,
+            excludeWindows: excludeWindows,
+            excludeGlmOffPeak: excludeGlmOffPeak
+        )
+        guard !matching.isEmpty else { return nil }
+        return aggregate(matching)
+    }
+
+    /// 窗口口径的样本**筛选**（与 `summary` 同一份规则），返回样本本身而不是聚合值。
+    ///
+    /// 存在的理由是计价：`ModelPricingCatalog.estimate` 要的是样本（它逐条按模型
+    /// 查价、DeepSeek 还要逐条按 `completedAt` 判峰时 ×2），给不了聚合值。这里把
+    /// 筛选单独提出来，`summary` 与「额度窗口用量」区块的**金额**都走它——两处一旦
+    /// 各写一份筛选，token 数和金额就会落在不同的一批样本上，而这种错位不崩不报错。
+    nonisolated static func windowSamples(
+        samples: [LocalTokenUsageSample],
+        providerKind: ProviderKind,
+        quotaModelName: String,
+        start: Date?,
+        end: Date?,
+        excludeWindows: [GlmOffPeakWindow] = [],
+        excludeGlmOffPeak: Bool = false
+    ) -> [LocalTokenUsageSample] {
         // 服务端 resetTime 通常按整秒（秒级）向上取整返回，而本地事件 completedAt 带有毫秒精度。
         // 导致触发当前配额窗口的第一笔请求（如 11:19:19.903）会比推算出的 start (11:19:20.000) 小几十毫秒而被误判剔除。
         // 增加 20 秒容差 (tolerance) 保持起始边界精准涵盖触发事件。
         let effectiveStart = start?.addingTimeInterval(-20)
-        let matching = matchingSamples(
+        return matchingSamples(
             samples,
             providerKind: providerKind,
             quotaModelName: quotaModelName
@@ -87,8 +115,6 @@ enum LocalUsageSummaryBuilder {
                     || isGlmOtherPlanSample(sample) { return false }
             return true
         }
-        guard !matching.isEmpty else { return nil }
-        return aggregate(matching)
     }
 
     nonisolated static func lastPrompt(
@@ -268,6 +294,195 @@ enum LocalUsageSummaryBuilder {
             cachedInputTokens: SaturatingArithmetic.sum(samples.lazy.map(\.cachedInputTokens)),
             outputTokens: SaturatingArithmetic.sum(samples.lazy.map(\.outputTokens)),
             reasoningOutputTokens: SaturatingArithmetic.sum(samples.lazy.map(\.reasoningOutputTokens))
+        )
+    }
+}
+
+/// 额度窗口内的本地 token 用量：短周期（`5h`）窗口与周窗口各一条。
+///
+/// 这是 provider 卡片「额度窗口用量」区块的**唯一**数据形状：额度行（每个 model
+/// 一条）负责"还剩多少"，这个区块负责"这一轮额度里本机实际烧了多少"。
+///
+/// 两条窗口都可以是 `nil`（provider 只有其中一个窗口，或根本没有额度窗口——
+/// 余额型 DeepSeek）。`usage` 为 `nil` 表示"窗口存在但本地没有记录"，与
+/// "窗口不存在"是两件事：前者画一行 0 / `—`，后者整行不画。
+struct QuotaWindowUsageSnapshot: Equatable, Sendable {
+    struct Window: Equatable, Sendable {
+        /// 窗口标签（`5h` / `周` / minimax video 的 `日`），由调用方给——
+        /// 标签口径归 `QuotaSummary` 管，这里不自造。
+        let label: String
+        let usage: UsageMetricSummary?
+        let resetsAt: Date?
+        /// 这一轮窗口里本地 token 的名义价值（原币种）。
+        ///
+        /// `nil` 有两种含义，UI 用 `—` 与「未定价」区分：
+        /// 窗口内没有本地样本（还不值得估价）／样本全部未定价。后者由
+        /// `ModelCostEstimate.displayText` 自己说，字段本身不重复这个信息。
+        let cost: ModelCostEstimate?
+    }
+
+    let interval: Window?
+    let weekly: Window?
+    /// 参与合计的额度池（model）数量。> 1 时重置时刻是"最早的那个"，UI 必须
+    /// 在 hover 明细里说清楚，否则会被读成"这个 provider 只重置一次"。
+    let poolCount: Int
+
+    var isEmpty: Bool { interval == nil && weekly == nil }
+}
+
+extension LocalUsageSummaryBuilder {
+    /// 单个 model 在两个额度窗口内的本地 token 用量。
+    ///
+    /// 窗口边界与 `CombinedQuotaWindowRow.primaryUsage` / `weeklyUsage`
+    /// **同源**：同一份 `windowBounds(resetsAt:explicitWindowSeconds:fallbackSeconds:)`
+    /// 加同一份 `summary(…excludeWindows:excludeGlmOffPeak:)`。这里不再推第二套
+    /// 边界——两处一旦各自算各自的 "5h 从什么时候开始"，区块里的数和 hover 明细
+    /// 里的数就会对不上，而这种漂移只能靠肉眼发现。
+    ///
+    /// - Parameters:
+    ///   - intervalFallbackSeconds: 短周期窗口缺 `windowSeconds` 时的兜底长度
+    ///     （minimax video 是 24h，其余 5h），由调用方按 `QuotaSummary` 的口径给。
+    ///   - intervalUsageOverride / weeklyUsageOverride: **已经**按外部口径算好的
+    ///     窗口用量（ChatGPT 的 `codexUsageDetails` 与 OpenCode 合并结果，见
+    ///     `ChatGPTPlanModelRow.preferUsageDetails`）。给非 nil 时直接采用，
+    ///     不再从 samples 重算——那些样本已经被 `codexUsageDetails` 统计过一次。
+    ///   - quotaProviderID / deepseekPeakWindow: 计价用。价格目录按
+    ///     QuotaProviderID 查表，DeepSeek 的峰时 ×2 还要按**每条样本的时刻**判，
+    ///     所以窗口窗口内跨峰谷的一批样本不会被粗暴地整体乘 2。
+    nonisolated static func windowUsage(
+        model: ModelQuota,
+        providerKind: ProviderKind,
+        samples: [LocalTokenUsageSample],
+        intervalLabel: String,
+        weeklyLabel: String,
+        intervalFallbackSeconds: TimeInterval = 5 * 60 * 60,
+        excludeWindows: [GlmOffPeakWindow] = [],
+        excludeGlmOffPeak: Bool = false,
+        intervalUsageOverride: UsageMetricSummary? = nil,
+        weeklyUsageOverride: UsageMetricSummary? = nil,
+        quotaProviderID: String = "",
+        deepseekPeakWindow: DeepseekPeakWindow = .defaultWindow
+    ) -> QuotaWindowUsageSnapshot {
+        func window(
+            _ label: String,
+            resetsAt: Date?,
+            windowSeconds: Int?,
+            fallbackSeconds: TimeInterval,
+            usageOverride: UsageMetricSummary?
+        ) -> QuotaWindowUsageSnapshot.Window {
+            let bounds = windowBounds(
+                resetsAt: resetsAt,
+                explicitWindowSeconds: windowSeconds,
+                fallbackSeconds: fallbackSeconds
+            )
+            // 金额与 token 数**必须**用同一批样本：先按窗口口径筛出样本，聚合出
+            // token 桶、逐条计价出金额。两条路各筛一次的话，DeepSeek 跨峰谷时
+            // （×2 的只有一部分样本）金额会和"用这批 token 乘出来的钱"对不上。
+            let windowSamples = Self.windowSamples(
+                samples: samples,
+                providerKind: providerKind,
+                quotaModelName: model.modelName,
+                start: bounds?.start,
+                end: bounds?.end,
+                excludeWindows: excludeWindows,
+                excludeGlmOffPeak: excludeGlmOffPeak
+            )
+            return QuotaWindowUsageSnapshot.Window(
+                label: label,
+                usage: usageOverride ?? (windowSamples.isEmpty
+                    ? nil
+                    : aggregate(windowSamples)),
+                resetsAt: resetsAt,
+                cost: windowSamples.isEmpty ? nil : ModelPricingCatalog.estimate(
+                    samples: windowSamples,
+                    quotaProviderID: quotaProviderID,
+                    deepseekPeakWindow: deepseekPeakWindow
+                )
+            )
+        }
+
+        let intervalWindow: QuotaWindowUsageSnapshot.Window? = model.hasIntervalWindow
+            ? window(
+                intervalLabel,
+                resetsAt: model.intervalResetsAt,
+                windowSeconds: model.intervalWindowSeconds,
+                fallbackSeconds: intervalFallbackSeconds,
+                usageOverride: intervalUsageOverride
+            )
+            : nil
+
+        let weeklyWindow: QuotaWindowUsageSnapshot.Window? = model.hasWeeklyWindow
+            ? window(
+                weeklyLabel,
+                resetsAt: model.weeklyResetsAt,
+                windowSeconds: model.weeklyWindowSeconds,
+                fallbackSeconds: 7 * 24 * 60 * 60,
+                usageOverride: weeklyUsageOverride
+            )
+            : nil
+
+        return QuotaWindowUsageSnapshot(
+            interval: intervalWindow,
+            weekly: weeklyWindow,
+            poolCount: 1
+        )
+    }
+
+    /// provider 级合计：各 model 的同名窗口相加。
+    ///
+    /// **为什么相加而不是取最吃紧的那个 model**：额度行的 `modelMatches` 已经把样本
+    /// 按 model 配额**互斥**切开（Antigravity 的两组按 3P / 非 3P 分，minimax 只有
+    /// `general` 匹配 token 账本），所以各 model 的窗口用量互不重叠，相加就是
+    /// "这个 provider 在这一轮额度窗口里本机烧了多少"的真值。取最吃紧的那个 model
+    /// 反而会**丢掉**另一个池子的消耗——额度行是按 model 并排展示的，读者能自己对上，
+    /// 区块只有一个数字，它必须回答整体。
+    ///
+    /// 窗口缺失的一侧不参与；重置时刻取**最早**的那个（多个 model 各自按自己的
+    /// 节奏重置，取最早 = "离下一次重置还有多久"这个问题的答案）。
+    ///
+    /// 金额同样相加，但**只在币种一致时**相加：混币种时把两笔数加成一个数是编造
+    /// （口径与 `ModelPricingCatalog.estimate` 里那处币种冲突的处理一致——落到
+    /// "部分计价"而不是给出一个假的总价）。
+    nonisolated static func combineWindowUsage(
+        _ snapshots: [QuotaWindowUsageSnapshot]
+    ) -> QuotaWindowUsageSnapshot {
+        func merged(
+            _ keyPath: KeyPath<QuotaWindowUsageSnapshot, QuotaWindowUsageSnapshot.Window?>
+        ) -> QuotaWindowUsageSnapshot.Window? {
+            let windows = snapshots.compactMap { $0[keyPath: keyPath] }
+            guard let first = windows.first else { return nil }
+            let present = windows.compactMap(\.usage)
+            let total: UsageMetricSummary? = present.isEmpty
+                ? nil
+                : present.dropFirst().reduce(present[0], +)
+            return QuotaWindowUsageSnapshot.Window(
+                label: first.label,
+                usage: total,
+                resetsAt: windows.compactMap(\.resetsAt).min(),
+                cost: mergeCost(windows.compactMap(\.cost))
+            )
+        }
+        return QuotaWindowUsageSnapshot(
+            interval: merged(\.interval),
+            weekly: merged(\.weekly),
+            poolCount: snapshots.filter { !$0.isEmpty }.count
+        )
+    }
+
+    /// 若干个 model 池的金额合并成一条。币种不一致（或有一侧完全估不出）时返回
+    /// nil，UI 显示 `—`——宁可少一个数，也不要给一个跨币种的假总价。
+    private nonisolated static func mergeCost(
+        _ estimates: [ModelCostEstimate]
+    ) -> ModelCostEstimate? {
+        guard !estimates.isEmpty else { return nil }
+        let currencies = Set(estimates.compactMap(\.currency))
+        let values = estimates.compactMap(\.value)
+        guard currencies.count == 1, !values.isEmpty else { return nil }
+        return ModelCostEstimate(
+            value: values.reduce(0, +),
+            currency: currencies.first,
+            pricedModelNames: Set(estimates.flatMap(\.pricedModelNames)).sorted(),
+            unpricedModelNames: Set(estimates.flatMap(\.unpricedModelNames)).sorted()
         )
     }
 }
