@@ -21,6 +21,13 @@ struct HarnessUsageMenuView: View {
     /// 段头右键菜单的两条动作。默认空实现：菜单内容在任何只读渲染（测试、预览）
     /// 里都能构造，右键菜单的存在与否由调用方决定。
     var onRefreshAll: () -> Void = {}
+    /// 兜底行单个 provider 的「刷新该 Provider」动作。参数是 providerID，
+    /// 刷新实现由 `MenuContentView` 注入（它持有 `AppState`）。
+    var onRefreshProvider: (String) -> Void = { _ in }
+    /// 是否正有刷新事务在飞。透传给兜底行：刷新期间把单刷菜单项置灰，
+    /// 口径与 header 那个转圈按钮同源（`AppState.isRefreshJobActive`，全局粒度，
+    /// 不是单卡粒度——单卡粒度这套状态里没有，不硬造）。
+    var isRefreshJobActive: Bool = false
     var onOpenConfigFile: () -> Void = {}
 
     var body: some View {
@@ -37,7 +44,11 @@ struct HarnessUsageMenuView: View {
                     )
                 }
             }
-            ProviderStatusStripView(snapshot: providerStrip)
+            ProviderStatusStripView(
+                snapshot: providerStrip,
+                onRefreshProvider: onRefreshProvider,
+                isRefreshJobActive: isRefreshJobActive
+            )
         }
     }
 
@@ -218,8 +229,41 @@ struct HarnessSectionView: View {
 /// 卡片按 `.alwaysVisible` 渲染：浮层 `ignoresMouseEvents = true`，在里面再要求
 /// "悬停才展开"等于要求一个正在被移开的窗口被悬停，那些折叠区永远展不开
 /// （与 `EdgeDockController+Popover.popoverContent` 同一理由）。
+///
+/// 右键任一元素 → 「刷新 <provider>」：单刷入口。菜单主体改成客户端视角后，
+/// 这一行是菜单里唯一还能点到某个具体 provider 的地方，hover 浮层只读不能操作，
+/// 「立即刷新全部」又不给"只重试这一个失败 provider"的口子。
 struct ProviderStatusStripView: View {
     let snapshot: ProviderStatusStrip.Snapshot
+    /// 单个 provider 的「刷新该 Provider」。参数是 providerID，实际刷新路径由
+    /// 宿主（`MenuContentView` → `AppState.refreshOne`）决定，这一层不碰网络。
+    var onRefreshProvider: (String) -> Void = { _ in }
+    /// 刷新事务在飞时把菜单项置灰，避免连点叠加。全局粒度，同 header 刷新按钮。
+    var isRefreshJobActive: Bool = false
+
+    /// 右键菜单里那一项的**数据形态**（不含 SwiftUI 视图）。
+    ///
+    /// 单独提成值类型，是为了让"菜单项标题长什么样""点下去交出去的是不是这张
+    /// provider 的 id"这两条可以被单测钉住：contextMenu 的 `Button` 在 SwiftUI
+    /// 里没有可寻址的测试缝，断言只能落在喂给它的这份数据与 `perform` 的路由上。
+    struct RefreshMenuItem: Identifiable, Equatable, Sendable {
+        let providerID: String
+        let displayName: String
+        var id: String { providerID }
+        /// 菜单文案。旧 provider 卡的单刷项叫「立即刷新」，这里带上 provider 名，
+        /// 因为一行里有四个同名菜单项，不带名用户分不清点的是哪一个。
+        var title: String { "刷新 \(displayName)" }
+        /// 执行：把 providerID 原样交回宿主。
+        func perform(_ onRefresh: (String) -> Void) {
+            onRefresh(providerID)
+        }
+    }
+
+    /// 单个 provider 元素对应的单刷菜单项。**在场即有**——`.failed` /
+    /// `.notConfigured` 的 provider 同样能点，因为"重试"正是它们需要的动作。
+    static func refreshMenuItem(for entry: ProviderStatusStrip.Entry) -> RefreshMenuItem {
+        RefreshMenuItem(providerID: entry.status.id, displayName: entry.displayName)
+    }
 
     /// 元素之间的间距。比模型行的 6pt 紧一档：这一行是**兜底**信息，不该在
     /// 视觉上比正文行还松。
@@ -282,6 +326,10 @@ struct ProviderStatusStripView: View {
     }
 
     /// 单个 provider 的极简元素 + 它的完整卡浮层。
+    ///
+    /// 右键菜单挂在**整个元素**上（不是浮层里的卡）：菜单改版成客户端视角后，
+    /// 这一行是菜单里唯一还带 provider 身份的地方，单刷入口必须回到这里——
+    /// 旧 provider 卡的「立即刷新」是 3b3538e 随卡片一起下线的。
     private func entryView(_ entry: ProviderStatusStrip.Entry) -> some View {
         HoverInfoRow {
             HStack(spacing: 3) {
@@ -292,6 +340,13 @@ struct ProviderStatusStripView: View {
             ProviderCardView(status: entry.status)
                 .environment(\.hoverRevealMode, Self.cardRevealMode)
                 .frame(width: Self.cardWidth)
+        }
+        .contextMenu {
+            let item = Self.refreshMenuItem(for: entry)
+            Button(item.title) {
+                item.perform(onRefreshProvider)
+            }
+            .disabled(isRefreshJobActive)
         }
     }
 }

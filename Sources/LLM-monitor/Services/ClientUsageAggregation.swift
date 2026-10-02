@@ -555,13 +555,69 @@ enum ProviderStatusStrip {
             return 30
         case .loading:
             return 20
-        case .ok:
-            switch status.aggregateHealthLevel() {
-            case .critical: return 12
-            case .warning: return 11
-            case .healthy: return 10
-            case nil: return 9
+            case .ok:
+                switch status.aggregateHealthLevel() {
+                case .critical: return 12
+                case .warning: return 11
+                case .healthy: return 10
+                case nil: return 9
+                }
             }
+    }
+}
+
+/// 「今日汇总」的计算缓存。
+///
+/// 菜单开着时 `MenuDisplayClock` 每秒 tick 一次，每次 tick 都让 `MenuContentView`
+/// 的 body 重 eval，而 body 里原本直接 `HarnessTodaySummary.summarize(...)`——
+/// 含每行定价（`MixedCurrencyEstimate` / `ModelCostEstimate`），与改版前同量级，
+/// 但**输入没变**。这里把"算一次"与"读一次"分开：body 只读缓存，缓存自己决定
+/// 要不要真算。
+///
+/// 失效口径（诚实版）：**广播驱动**，不靠比对。
+/// - `invalidate()` 由 `MenuContentView` 在 `state.statusDidChange` 到达时调用。
+///   `AppState` 里所有改 `statuses` 的入口都会 fire 这一次广播
+///   （`rebuildStatuses` / `mutateStatus` / `apply*LocalUsage` / `setScanningState`），
+///   `statuses` 本身是 `private(set)`，没有旁路写入，所以"没广播 == 数据没变"。
+/// - 跨天是唯一不经广播的失效源：`dayStart` 变了意味着"今天"这个口径本身换了，
+///   而它不来自任何一次状态变更。这里在读路径上按自然日比对（一次
+///   `startOfDay`，可忽略的开销），不额外引入一轮定时器。
+///
+/// 纯本地状态，不参与任何并发共享：`@MainActor` 隔离，视图以 `@State` 持有。
+/// `computeCount` 是留给测试的口径断言（"tick 没有重算"只能这样钉）。
+@MainActor
+final class HarnessSummaryCache {
+    /// 上一次算出的汇总。菜单首次渲染（缓存还是种子的空汇总）读到的就是它。
+    private(set) var summary: HarnessTodaySummary
+    /// 真算过几次。种子算一次，之后每次真正重算 +1。
+    private(set) var computeCount: Int
+    private var isStale = true
+
+    init() {
+        // 种子：空 statuses 的汇总。空输入是这里唯一"不需要真实数据就能算"的
+        // 情形，用它开局省掉"首帧要么崩、要么得等一次广播"的分支。
+        summary = HarnessTodaySummary.summarize(statuses: [])
+        computeCount = 1
+    }
+
+    /// 数据变了（`statusDidChange` 广播 / 配置变更走的是同一条广播）：标脏。
+    /// 只标脏不算——真正那次计算留到 body 读的时候（body 未必会重 eval，
+    /// 提前算就成了没人读的浪费）。
+    func invalidate() {
+        isStale = true
+    }
+
+    /// body 里的唯一读入口。被标脏或跨天时真算一次，否则原样返回上次的值。
+    func value(
+        for statuses: [ProviderStatus],
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> HarnessTodaySummary {
+        if isStale || calendar.startOfDay(for: now) != summary.dayStart {
+            summary = HarnessTodaySummary.summarize(statuses: statuses, now: now, calendar: calendar)
+            computeCount &+= 1
+            isStale = false
         }
+        return summary
     }
 }

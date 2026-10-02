@@ -112,6 +112,77 @@ final class ProviderStatusStripTests: XCTestCase {
         XCTAssertGreaterThan(ProviderStatusStrip.priority(critical), ProviderStatusStrip.priority(healthy))
     }
 
+    // MARK: - 单 provider 刷新（右键菜单）
+
+    /// 菜单项标题必须带 provider 名：一行里最多四枚同款菜单项，都叫「立即刷新」
+    /// 的话用户分不清点的是哪一个。
+    func testRefreshMenuItemTitleNamesTheProvider() {
+        let item = ProviderStatusStripView.refreshMenuItem(
+            for: ProviderStatusStrip.Entry(
+                status: Self.status(id: "antigravity", displayName: "Google Antigravity", kind: .antigravity)
+            )
+        )
+        XCTAssertEqual(item.title, "刷新 Google Antigravity")
+        XCTAssertEqual(item.providerID, "antigravity")
+    }
+
+    /// 点下去交出去的是**这张** provider 的 id。宿主（`MenuContentView`）拿这个
+    /// id 调 `AppState.refreshOne(providerID:)`，串错 id 就是刷了别人的卡。
+    func testRefreshMenuItemRoutesItsOwnProviderID() {
+        let entries = ProviderStatusStrip.snapshot(statuses: Self.allProviderFixture(), limit: 4)
+        var requested: [String] = []
+
+        for entry in entries.entries {
+            ProviderStatusStripView.refreshMenuItem(for: entry).perform { requested.append($0) }
+        }
+
+        XCTAssertEqual(
+            Set(requested), Set(entries.entries.map(\.status.id)),
+            "每个在场的 provider 都要能点到自己，且只点自己"
+        )
+    }
+
+    /// 无额度数据的 provider（未配置 / 失败）**同样有单刷入口**——重试正是它们
+    /// 需要的动作。若哪一步按"有数据"过滤，这一行存在的意义就少一半。
+    func testProvidersWithoutQuotaDataStillGetARefreshItem() {
+        let statuses = [
+            Self.status(id: "failed", displayName: "Failed",
+                        state: .failed(message: "网络不可用", lastSuccess: nil)),
+            Self.status(id: "unconfigured", displayName: "Unconfigured",
+                        state: .notConfigured(reason: "缺少 API Key"))
+        ]
+        let items = ProviderStatusStrip.snapshot(statuses: statuses).entries
+            .map(ProviderStatusStripView.refreshMenuItem(for:))
+
+        XCTAssertEqual(Set(items.map(\.providerID)), ["failed", "unconfigured"])
+        XCTAssertEqual(
+            Set(items.map(\.title)), ["刷新 Failed", "刷新 Unconfigured"],
+            "两个 provider 各自有可分辨的单刷项"
+        )
+    }
+
+    /// 注入回调后这一行照常渲染（contextMenu 不改布局，也不吞掉 hover 卡）。
+    @MainActor
+    func testStripRendersWithSingleProviderRefreshWired() {
+        let snapshot = ProviderStatusStrip.snapshot(statuses: Self.allProviderFixture(), limit: 4)
+        let hosting = NSHostingView(
+            rootView: AnyView(ProviderStatusStripView(
+                snapshot: snapshot,
+                onRefreshProvider: { _ in },
+                isRefreshJobActive: true
+            ))
+        )
+        hosting.frame = CGRect(x: 0, y: 0, width: 10_000, height: 10_000)
+        hosting.layoutSubtreeIfNeeded()
+
+        let contentWidth = MenuPanelHeightBridge.width - MenuPanelHeightBridge.cardHorizontalPadding * 2
+        XCTAssertGreaterThan(hosting.fittingSize.height, 0, "必须真的渲染出这一行")
+        XCTAssertLessThanOrEqual(
+            hosting.fittingSize.width, contentWidth + 0.5,
+            "接上单刷回调后自然宽不得超出内容区"
+        )
+    }
+
     // MARK: - 排版预算
 
     /// 五个 provider 全启用（`ProviderKind.allCases` 的全部）时这一行不得溢出

@@ -264,6 +264,18 @@ priced windows) and `frameForPanel` clamps to the screen's visible
 frame; on a short display the clamp wins and the dock popover's `ScrollView` fallback
 (see *Hover behaviour → Size*) keeps the overflow reachable.
 
+Right-clicking one element offers 「刷新 <provider>」 — the per-provider refresh
+entry point the menu lost when the provider cards were replaced by the client view.
+It routes to `AppState.refreshOne(providerID:)` (the same call the old cards' single
+「立即刷新」 item used), so only that provider is fetched and only that provider's
+schedule is re-anchored; the other providers' next tick is untouched
+(`AppStateTests.testRefreshOneReanchorsOnlyRefreshedProvider`). The item exists for
+**every** entry in the strip, including `.notConfigured` / `.failed` ones — retrying
+is exactly the action those need. While a refresh transaction is running the item is
+disabled; that signal is `AppState.isRefreshJobActive`, the same global flag the
+header's spinner uses (there is no per-provider in-flight flag to key on, and none
+was invented for this).
+
 The content area scrolls when needed. `MenuPanelHeightBridge` caps the menu window at
 70% of the screen's visible height; when the cap is reached, only the content list
 scrolls while the header and footer remain fixed. The cap is applied at the native
@@ -1317,7 +1329,7 @@ Row-level tint rules:
 
 | Element | Current behavior |
 |---|---|
-| Status dot | **不再画**。它紧挨着品牌图标，两个小圆读起来像"图标带了个绿点"，而同一行右侧的 `ProviderStateLabel` 已经把状态说清楚了。`StatusIndicator` 视图本身还留在代码里（`AppState` 与 `Color+Theme` 的注释仍以它为参照），但已无渲染消费方 |
+| Status dot | **不再画**。它紧挨着品牌图标，两个小圆读起来像"图标带了个绿点"，而同一行右侧的 `ProviderStateLabel` 已经把状态说清楚了。承载它的 `StatusIndicator` 视图已随之删除（那两处以它为参照的注释也改成了不依赖类型名的说法） |
 | Provider icon | bundled brand asset in an `18x18pt` frame; OpenAI follows the system foreground color and missing assets use a recognizable SF Symbol fallback |
 | Display name | 14pt bold |
 | Plan tag | shown when a fetched provider supplies a plan label (for example, ChatGPT plan type) |
@@ -1325,8 +1337,8 @@ Row-level tint rules:
 | Account block hover | **已删除**。邮箱 / 数据来源原本按 provider 分三路包在标题行的 `HoverInfoRow` 里，只为菜单那张卡服务；菜单不再渲染 provider 卡，浮层又不吃鼠标事件，这个折叠区展不开，直接不画 |
 | Seven-day local statistics | 不在标题行，在**本地用量那一段**（`LocalUsageFooterView` → `SevenDayTokenUsageHoverView`）：`.alwaysVisible` 下就地展开成第二张卡的内容，`.onHover` 下才是悬停弹层 |
 
-`StatusIndicator`（已无消费方）的配色原为：healthy 绿 / warning 橙 / critical 红，
-`nil` 健康度显示灰点。
+状态点的配色（已连同视图删除）原为：healthy 绿 / warning 橙 / critical 红，
+`nil` 健康度显示灰点；语义色本身仍由 `healthyTint` / `warningTint` 提供。
 
 Bundled brand assets are used consistently in provider card headers and Settings navigation.
 They cover Minimax, OpenAI, Antigravity, GLM, and DeepSeek; OpenCode has separate light

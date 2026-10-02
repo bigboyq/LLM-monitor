@@ -70,6 +70,14 @@ struct MenuContentView: View {
     @State private var screenAvailableHeight: CGFloat = 0
     /// 菜单所在屏幕的可见高度（扣除 Dock 等后的可见区域，用于 70% 封顶）
     @State private var screenVisibleHeight: CGFloat = 0
+    /// 「今日合计 + 按客户端分段」的计算缓存。
+    ///
+    /// body 每秒至少被 `MenuDisplayClock` 的 tick 重 eval 一次，而汇总含每行
+    /// 定价；输入没变时这一整趟都是白算。缓存只读不写：`statusDidChange` 到达时
+    /// 标脏（见下），真正那次重算发生在 body 读它的时候。失效口径与「所有
+    /// statuses 变更入口都会 fire `statusDidChange`」这个前提写在
+    /// `HarnessSummaryCache` 上。
+    @State private var summaryCache = HarnessSummaryCache()
 
     /// “如果屏幕能展示就展示，不能展示按屏幕大小 70% 做”
     private var maxScrollViewHeight: CGFloat? {
@@ -135,7 +143,12 @@ struct MenuContentView: View {
         // （@ObservedObject 在 MenuBarExtra 上有时不触发 body 重 eval）。
         // AppState 的所有 status 变更入口（mutateStatus / rebuildStatuses / setScanningState /
         // apply*LocalUsage）都 fire `statusDidChange`，view 端挂这一个就够了。
-        .onReceive(state.statusDidChange) { _ in }
+        // 顺带在这里把今日汇总的缓存标脏：这正是"数据变了"唯一的信号源。
+        // 注意标脏放在广播回调里而不是 body 里——body 每秒重 eval 一次，
+        // 放在那里等于每秒失效一次，缓存就没意义了。
+        .onReceive(state.statusDidChange) { _ in
+            summaryCache.invalidate()
+        }
         // 「节能」健康灯的数据在 SleepHealthService（AppState 之外的嵌套
         // ObservableObject）上；通过改变 @State 强制触发 body 重 eval，
         // 保证圆点颜色即时更新。
@@ -261,7 +274,7 @@ struct MenuContentView: View {
                         setupGuide
                     }
                     HarnessUsageMenuView(
-                        summary: HarnessTodaySummary.summarize(statuses: enabled),
+                        summary: todaySummary,
                         // 兜底行按**用户配置的顺序**排（与改造前那屏 provider 卡同一
                         // 数据源 `providerCardOrder`）；"只显示已启用的"与"放不下时留
                         // 谁"由 `ProviderStatusStrip` 自己负责，不在这里重复过滤。
@@ -274,6 +287,8 @@ struct MenuContentView: View {
                             )
                         ),
                         onRefreshAll: refreshAllFromMenu,
+                        onRefreshProvider: refreshProviderFromMenu,
+                        isRefreshJobActive: state.isRefreshJobActive,
                         onOpenConfigFile: { state.openConfigFile() }
                     )
                 }
@@ -289,10 +304,28 @@ struct MenuContentView: View {
         }
     }
 
+    /// 今日汇总：body 每次重 eval（含每秒一次的时钟 tick）都走这里，但只有在
+    /// 缓存被标脏或跨了自然日时才真算一次。口径与分段同源（同为"已启用的
+    /// provider"这一份输入），`HarnessTodaySummary` 自己仍是纯函数。
+    private var todaySummary: HarnessTodaySummary {
+        summaryCache.value(for: state.statuses.filter(\.isEnabled))
+    }
+
     /// 「立即刷新全部」的唯一入口：headerBar 那个刷新按钮与段头右键菜单共用它，
     /// 两处不各写一份以免口径漂移。
     private func refreshAllFromMenu() {
         Task { await state.refreshAll() }
+    }
+
+    /// 「刷新该 Provider」的唯一入口：兜底行每个 provider 元素的右键菜单项。
+    ///
+    /// 走 `AppState.refreshOne(providerID:)`——改造前 provider 卡的「立即刷新」
+    /// 用的就是它（3b3538e 把那批卡从菜单里删掉时入口一起没了）。`refreshOne`
+    /// 与 `refreshAll` 的差别正是这里要的语义：只发一次这个 provider 的请求，
+    /// 只重锚**它自己**的排期，其他 provider 的下一拍与周期 full 计数不受影响
+    /// （回归见 `AppStateTests.testRefreshOneReanchorsOnlyRefreshedProvider`）。
+    private func refreshProviderFromMenu(_ providerID: String) {
+        Task { await state.refreshOne(providerID: providerID) }
     }
 
     /// Four registered cards can all be `.notConfigured` on first launch because
