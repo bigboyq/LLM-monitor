@@ -130,20 +130,69 @@ height: content-driven, fixedSize(vertical: true)
 +------------------------------------------------+
 | chart.bar.xaxis  LLM Monitor              ↻    |
 +------------------------------------------------+
-|                                                |
-| provider card                                  |
-| provider card                                  |
+| 今天合计 1.2M        命中 60%     $18.40       |   global today summary
+|  ████████░░░░░░░░  input / cache / output      |
++------------------------------------------------+
+| ▸ OpenCode                      820K    10.5   |   section: client + subtotal + value
+|   gpt-5.5    ███░░░  620K  62%  $11.30         |   model row
+|   GLM-5.3    ██░░░░  200K  40%   ¥33.00        |
+| ▸ Codex                         380K   $7.10   |
+|   gpt-5.5    ██░░░░  380K  58%   $7.10         |
 | ...                                            |
-|                                                |
 +------------------------------------------------+
 | 更新于 HH:mm / 下次 HH:mm / 就绪  自启 ✓|✗  设置 节能 日志 退出 |
 +------------------------------------------------+
 ```
 
-The provider area scrolls when needed. `MenuPanelHeightBridge` caps the menu window at
-70% of the screen's visible height; when the cap is reached, only the provider list
+The menu is the **Harness (client) view**, not the Provider view. The header and
+footer are unchanged, but the content area answers "which clients burned how many
+tokens today" instead of "how much quota is left per provider". The per-provider
+quota reading lives in the edge status dock, the hover panels and Settings; the
+menu no longer renders provider cards.
+
+**Content structure** (`HarnessUsageMenuView`, driven by the pure
+`HarnessTodaySummary.summarize(statuses:now:calendar:)`):
+
+- **Global today summary** — total tokens, total cache-hit rate, total value, plus
+  one `TokenBucketBar` for the three-bucket composition. The value is a
+  `MixedCurrencyEstimate`: mixed-currency totals render as `10.5（含$1)` (CNY
+  equivalent total, USD original in parentheses).
+- **Per-client sections**, ordered by today-token descending. A client with no
+  today activity is dropped entirely rather than shown as an empty section. Each
+  section header carries the client name (`ClientDescriptor`), the section token
+  subtotal and the section value — again a `MixedCurrencyEstimate`, because one
+  client may span several provider slices (OpenCode / DSH / ZCode) and therefore
+  several currencies.
+- **Per-model rows inside a section**, keyed by
+  `(clientID, quotaProviderID, modelName)`; samples with no usable model name
+  collapse into a single 「模型名缺失」 row. Each row is: model name (tail-truncated,
+  100pt) + `TokenBucketBar` (fills the remainder, ≥72pt) + tokens (40pt) + hit rate
+  (36pt) + value (56pt). The row value is the **single-provider, single-currency**
+  original amount (`ModelCostEstimate.displayText`: `¥3.21` / `$9.80` / `未定价`) —
+  cross currency folding happens only at section and global level, never per row.
+
+Row column budget: 100 + 72 + 40 + 36 + 56 = 304pt plus 4×6pt spacing = 328pt,
+inside the 336pt content area (360pt panel − 2×12pt padding). Numeric columns are
+fixed-width, right-aligned and `monospacedDigit`, so a refresh never shifts the row.
+The model-name column is **fixed-width**, not `maxWidth`: `TokenBucketBar` wraps a
+`GeometryReader` (greedy), and a flexible name column loses the whole row to it.
+`HarnessUsageMenuViewTests` pins both the column budget and the row's natural width
+(328pt) so that regression cannot come back silently.
+
+Tokens are always counted from the same-day subset of each provider contribution's
+`recentSamples` (through `UnifiedTokenUsageAggregator.day`), so the extra day that
+scanners keep for quota-window math never leaks into "today".
+
+The two-level empty states (no provider registered / no provider enabled) and the
+first-run setup guide are unchanged. A third, narrower state — clients present but
+no activity today — renders a single 「今日暂无本地 Token 用量」 line inside the
+content area.
+
+The content area scrolls when needed. `MenuPanelHeightBridge` caps the menu window at
+70% of the screen's visible height; when the cap is reached, only the content list
 scrolls while the header and footer remain fixed. The cap is applied at the native
-window layer and the list uses the remaining content height.
+window layer and the list uses the remaining content height. The measured height is
+reported through `CardsContentHeightKey`, which the harness content reuses unchanged.
 
 The menu footer contains:
 - `自启 ✓` / `自启 ✗` login item status indicator

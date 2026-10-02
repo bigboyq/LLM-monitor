@@ -210,18 +210,15 @@ struct MenuContentView: View {
         }
     }
 
-    // MARK: - content（卡片过多时滚动，避免菜单超出屏幕）
+    // MARK: - content（Harness 客户端视角：全局今日汇总 + 按客户端分段）
 
     @ViewBuilder
     private var content: some View {
-        let cards = DisplayOrder.ordered(
-            state.statuses.filter { $0.isEnabled },
-            preferredIDs: state.configStore.config.providerCardOrder,
-            id: { $0.kind.quotaProviderID },
-            by: ProviderStatus.displayNameAscending
-        )
+        // 汇总口径与分段口径同源：都在这一处按"启用的 provider"取输入，
+        // `HarnessTodaySummary` 自己只认传入的 statuses（纯函数，不隐式过滤）。
+        let enabled = state.statuses.filter { $0.isEnabled }
 
-        if cards.isEmpty {
+        if enabled.isEmpty {
             VStack(spacing: 8) {
                 if state.statuses.isEmpty {
                     Text("没有注册 provider")
@@ -257,23 +254,15 @@ struct MenuContentView: View {
             )
         } else {
             ScrollView(.vertical, showsIndicators: false) {
-                LazyVStack(spacing: 14) {
-                    if Self.shouldShowSetupGuide(for: cards) {
+                // 非 Lazy：内容高度要喂给 `MenuPanelHeightBridge` 决定窗口高度，
+                // Lazy 容器在测量时只布局可视区，会把真实高度报小。
+                VStack(spacing: HarnessUsageMenuView.sectionSpacing) {
+                    if Self.shouldShowSetupGuide(for: enabled) {
                         setupGuide
                     }
-                    ForEach(cards) { status in
-                        ProviderCardView(status: status)
-                            .equatable()
-                            .contextMenu {
-                                Button("立即刷新") {
-                                    Task { await state.refreshOne(providerID: status.id) }
-                                }
-                                .disabled(state.isRefreshJobActive)
-                                Button("打开配置文件…") {
-                                    state.openConfigFile()
-                                }
-                            }
-                    }
+                    HarnessUsageMenuView(
+                        summary: HarnessTodaySummary.summarize(statuses: enabled)
+                    )
                 }
                 .padding(.horizontal, MenuPanelHeightBridge.cardHorizontalPadding)
                 .padding(.vertical, 8)

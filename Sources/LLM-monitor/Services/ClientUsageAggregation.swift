@@ -197,3 +197,240 @@ enum ClientUsageAggregation {
         }
     }
 }
+
+// MARK: - Harness（客户端视角）今日汇总
+
+/// 菜单模型行的唯一键：一个客户端在某个 quota provider 下产生的**一个模型名**。
+///
+/// 模型名缺失（nil / 空白）的样本归一化成 `nil`，与
+/// `ModelPricingCatalog.pricing` 对空模型名的判定一致，因此「模型名缺失」行既是
+/// 一条真实的数据行，也是一条必然未定价的行——不会出现"同名两行"。
+private struct HarnessRowKey: Hashable, Sendable {
+    let clientID: String
+    let quotaProviderID: String
+    let modelName: String?
+}
+
+/// 段内单条模型用量行。价值在 `init` 里算一次并缓存（同
+/// `ClientProviderUsageSummary` 的做法），SwiftUI 逐帧重排时不会反复扫描样本。
+struct HarnessModelRow: Identifiable, Equatable, Sendable {
+    let dayStart: Date
+    let clientID: String
+    let quotaProviderID: String
+    /// `nil` = 样本没有可用模型名，UI 渲染成「模型名缺失」行。
+    let modelName: String?
+    let buckets: TokenUsageBuckets
+    private let cachedCostEstimate: ModelCostEstimate
+
+    var id: String { "\(clientID):\(quotaProviderID):\(modelName ?? "")" }
+
+    /// 今日该行的合计 token（四桶，`TokenUsageBuckets` 的既有口径）。
+    var totalTokens: Int { buckets.totalTokens }
+
+    /// 缓存命中率 = cacheRead / (input + cacheRead)。分母为 0 时是 `nil`
+    /// （UI 显示「—」），与设置页 `ClientProviderUsageSummary.cacheHitRate` 同语义。
+    var cacheHitRate: Double? { HarnessTodaySummary.cacheHitRate(for: buckets) }
+
+    /// 行级价值：**单 provider 单币种**的原额（`¥3.21` / `$9.80` / `未定价`）。
+    /// 跨币种折算只发生在段头与全局（`MixedCurrencyEstimate`），行级绝不相加。
+    var costEstimate: ModelCostEstimate { cachedCostEstimate }
+    var costText: String { cachedCostEstimate.displayText }
+
+    var displayName: String {
+        modelName ?? HarnessTodaySummary.missingModelNameText
+    }
+
+    init(
+        dayStart: Date,
+        clientID: String,
+        quotaProviderID: String,
+        modelName: String?,
+        samples: [LocalTokenUsageSample],
+        deepseekPeakWindow: DeepseekPeakWindow = .defaultWindow,
+        calendar: Calendar = .current
+    ) {
+        let day = UnifiedTokenUsageAggregator.day(
+            from: samples,
+            dayStart: dayStart,
+            calendar: calendar
+        )
+        self.dayStart = calendar.startOfDay(for: day.dayStart)
+        self.clientID = clientID
+        self.quotaProviderID = quotaProviderID
+        self.modelName = modelName
+        self.buckets = TokenUsageBuckets(
+            input: day.input,
+            cacheRead: day.cacheRead,
+            output: day.output,
+            reasoning: day.reasoning
+        )
+        self.cachedCostEstimate = ModelPricingCatalog.estimate(
+            samples: samples,
+            quotaProviderID: quotaProviderID,
+            deepseekPeakWindow: deepseekPeakWindow
+        )
+    }
+}
+
+/// 菜单里一个客户端（harness）分段。段的今日三桶是段内各行之和，段价值是段内
+/// 各行**行级 estimate** 的跨币种归集（`MixedCurrencyEstimate`）——OpenCode / DSH /
+/// ZCode 这类一个客户端横跨多个 provider 分片的段会混币，必须走折算而不是裸相加。
+struct HarnessSection: Identifiable, Equatable, Sendable {
+    let clientID: String
+    let displayName: String
+    let iconSystemName: String
+    let buckets: TokenUsageBuckets
+    let value: MixedCurrencyEstimate
+    let rows: [HarnessModelRow]
+
+    var id: String { clientID }
+    var totalTokens: Int { buckets.totalTokens }
+    var cacheHitRate: Double? { HarnessTodaySummary.cacheHitRate(for: buckets) }
+    var valueText: String { value.displayText }
+}
+
+/// 状态栏下拉菜单的 Harness 视角数据：全局今日汇总 + 按客户端分段的今日用量。
+///
+/// 与设置页 `clientProviderUsageByClient` 的区别在时间口径：设置页是「最近 7 天按
+/// provider/套餐拆行」的诊断视图，菜单是「今天按客户端 → 模型拆行」的一眼概览。
+struct HarnessTodaySummary: Equatable, Sendable {
+    /// 模型名缺失行的显示名。取空白/空名归一到这一行，而不是让同一段里出现两行
+    /// `nil`。
+    static let missingModelNameText = "模型名缺失"
+
+    let dayStart: Date
+    let buckets: TokenUsageBuckets
+    let value: MixedCurrencyEstimate
+    /// 按今日 token 降序；没有今日活动的客户端整段不出现。
+    let sections: [HarnessSection]
+
+    var totalTokens: Int { buckets.totalTokens }
+    var cacheHitRate: Double? { Self.cacheHitRate(for: buckets) }
+    var valueText: String { value.displayText }
+    var isEmpty: Bool { sections.isEmpty }
+
+    /// 从各 provider 卡的 `usageProjection` 汇总出「今天」这一屏。
+    ///
+    /// 口径：只消费公开的 `status.usageProjection(for:)`，因此投影层重构
+    /// （并行任务 D）不牵动这里。空贡献按设置页同一 `hasActivity` 判定跳过
+    /// （`ClientUsageAggregation.clientProviderUsageByClient` 的 guard）；贡献里
+    /// 没有任何今日样本时同样不产生行——「今天」这一屏不该出现 7 天前的活动。
+    static func summarize(
+        statuses: [ProviderStatus],
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> HarnessTodaySummary {
+        let dayStart = calendar.startOfDay(for: now)
+        var samplesByRow: [HarnessRowKey: HarnessRowAccumulator] = [:]
+        var displayNameByClient: [String: String] = [:]
+
+        for status in statuses {
+            let quotaProviderID = status.kind.quotaProviderID
+            let peakWindow = status.deepseekPeakWindow ?? .defaultWindow
+            let projection = status.usageProjection(for: status.lastSuccess)
+            for contribution in projection.contributions {
+                guard contribution.hasActivity else { continue }
+                if displayNameByClient[contribution.clientID] == nil {
+                    displayNameByClient[contribution.clientID] = contribution.displayName
+                }
+                for sample in contribution.recentSamples where isToday(sample.completedAt, dayStart: dayStart, calendar: calendar) {
+                    let key = HarnessRowKey(
+                        clientID: contribution.clientID,
+                        quotaProviderID: quotaProviderID,
+                        modelName: normalizedModelName(sample.modelName)
+                    )
+                    samplesByRow[key, default: HarnessRowAccumulator(peakWindow: peakWindow)].samples.append(sample)
+                }
+            }
+        }
+
+        let rows = samplesByRow.map { key, accumulator in
+            HarnessModelRow(
+                dayStart: dayStart,
+                clientID: key.clientID,
+                quotaProviderID: key.quotaProviderID,
+                modelName: key.modelName,
+                samples: accumulator.samples,
+                deepseekPeakWindow: accumulator.peakWindow,
+                calendar: calendar
+            )
+        }
+
+        let sections = Dictionary(grouping: rows, by: \.clientID).map { clientID, clientRows in
+            let descriptor = ClientDescriptor.all.first { $0.id == clientID }
+            return HarnessSection(
+                clientID: clientID,
+                displayName: descriptor?.displayName
+                    ?? displayNameByClient[clientID]
+                    ?? clientID,
+                iconSystemName: descriptor?.iconSystemName ?? "terminal",
+                buckets: Self.sum(clientRows.map(\.buckets)),
+                value: MixedCurrencyEstimate(estimates: clientRows.map(\.costEstimate)),
+                rows: clientRows.sorted(by: modelRowOrder)
+            )
+        }
+        .sorted { lhs, rhs in
+            if lhs.totalTokens != rhs.totalTokens { return lhs.totalTokens > rhs.totalTokens }
+            return lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName) == .orderedAscending
+        }
+
+        return HarnessTodaySummary(
+            dayStart: dayStart,
+            buckets: Self.sum(rows.map(\.buckets)),
+            value: MixedCurrencyEstimate(estimates: rows.map(\.costEstimate)),
+            sections: sections
+        )
+    }
+
+    /// 行序：今日 token 降序，同量时「模型名缺失」沉底、其余按名称升序。
+    static func modelRowOrder(_ lhs: HarnessModelRow, _ rhs: HarnessModelRow) -> Bool {
+        if lhs.totalTokens != rhs.totalTokens { return lhs.totalTokens > rhs.totalTokens }
+        let lhsMissing = lhs.modelName == nil
+        let rhsMissing = rhs.modelName == nil
+        if lhsMissing != rhsMissing { return rhsMissing }
+        return lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName) == .orderedAscending
+    }
+
+    /// 缓存命中率 = cacheRead / (input + cacheRead)，分母 0 → nil。
+    static func cacheHitRate(for buckets: TokenUsageBuckets) -> Double? {
+        let input = max(buckets.input, 0)
+        let cache = max(buckets.cacheRead, 0)
+        let denominator = Double(input) + Double(cache)
+        guard denominator > 0 else { return nil }
+        return Double(cache) / denominator
+    }
+
+    private static func isToday(_ date: Date, dayStart: Date, calendar: Calendar) -> Bool {
+        calendar.isDate(date, inSameDayAs: dayStart)
+    }
+
+    /// 空白模型名归一到 `nil`：定价层对空名一律判未定价，保留成两个 key 只会让
+    /// 同一段出现两行「无模型名」而其中一行是重复的。
+    static func normalizedModelName(_ raw: String?) -> String? {
+        guard let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines),
+              trimmed.isEmpty == false else { return nil }
+        return trimmed
+    }
+
+    private static func sum(_ buckets: [TokenUsageBuckets]) -> TokenUsageBuckets {
+        buckets.reduce(TokenUsageBuckets.zero) { acc, next in
+            TokenUsageBuckets(
+                input: SaturatingArithmetic.add(acc.input, next.input),
+                cacheRead: SaturatingArithmetic.add(acc.cacheRead, next.cacheRead),
+                output: SaturatingArithmetic.add(acc.output, next.output),
+                reasoning: SaturatingArithmetic.add(acc.reasoning, next.reasoning)
+            )
+        }
+    }
+}
+
+/// 累加桶：同一个行键可能在多张卡上出现（同一客户端在同一 provider 下的多次
+/// 贡献），先攒齐样本再算一次价值，避免同一段出现重复求值。
+private struct HarnessRowAccumulator {
+    var samples: [LocalTokenUsageSample] = []
+    let peakWindow: DeepseekPeakWindow
+
+    init(peakWindow: DeepseekPeakWindow) {
+        self.peakWindow = peakWindow
+    }
+}
