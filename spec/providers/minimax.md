@@ -561,7 +561,7 @@ try SQLiteTempCopy.read(dbPath: dbPath, logTag: "[minimax-scan]") { url in
 - 错误码过滤：只对 file-level 错误（CANTOPEN 14 / BUSY 5）走 copy，其他错误直接 propagate
 
 历史背景：`.db → /tmp 副本 + read` 的逻辑最初是 `MinimaxLocalUsageScanner.aggregateFromDB`
-内联的私有方法；后来抽到 `Services/SQLiteTempCopy.read` 公共 helper（跟 antigravity
+内联的私有方法；后来抽到 `Services/Infra/SQLiteTempCopy.read` 公共 helper（跟 antigravity
 scanner 共享）。SQLiteTempCopy 的 `withTempCopy` defer 注册位置修复了一个老 bug：
 旧代码先 copy .db 再注册 defer，".db 复制成功但 -wal 复制失败" 时副本残留在 /tmp。
 新代码在第一次文件创建之前就注册 defer, 覆盖半完成场景。

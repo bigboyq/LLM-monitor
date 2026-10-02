@@ -9,14 +9,14 @@ Swift 6 strict-concurrency（[`-swift-version 6`](../../scripts/audit.sh:55)）�
 - `HTTPClient` [HTTPClient.swift:173](../../Sources/LLM-monitor/Services/Infra/HTTPClient.swift:173) — `URLSession` 自身 thread-safe
 - `AppLog` [AppLog.swift:6](../../Sources/LLM-monitor/Services/AppLog.swift:6) — 内部 `DispatchQueue` 串行
 - `AppInstanceLock` [AppInstanceLock.swift:6](../../Sources/LLM-monitor/Services/AppInstanceLock.swift:6) — `flock(fd)` 内核锁
-- `FileManagerBox` [FileManagerBox.swift:35](../../Sources/LLM-monitor/Services/FileManagerBox.swift:35) — `private fileManager` + 调方 `AsyncMutex`/`@MainActor`
+- `FileManagerBox` [FileManagerBox.swift:35](../../Sources/LLM-monitor/Services/Infra/FileManagerBox.swift:35) — `private fileManager` + 调方 `AsyncMutex`/`@MainActor`
 - 4× `NSLock` 容器 — [Formatters:6](../../Sources/LLM-monitor/Services/Formatters.swift:6) / [DateParser:18](../../Sources/LLM-monitor/Services/Infra/DateParser.swift:18) / [BrandLogoView:33](../../Sources/LLM-monitor/Views/BrandLogoView.swift:47) / [ProcessRunner:28](../../Sources/LLM-monitor/Services/Infra/ProcessRunner.swift:28)
 - `ObserverStore` [MenuWindowAutoCloseBridge.swift:105](../../Sources/LLM-monitor/Views/MenuWindowAutoCloseBridge.swift:105) — Coordinator 主线程访问
 - 5× scanner — [Minimax:48](../../Sources/LLM-monitor/Services/MinimaxLocalUsageScanner.swift:48) / [Antigravity:29](../../Sources/LLM-monitor/Services/AntigravityLocalUsageScanner.swift:29) / [Opencode:11](../../Sources/LLM-monitor/Services/OpencodeUsageScanner.swift:11) / [GlmZcode:22](../../Sources/LLM-monitor/Services/GlmZcodeLocalUsageScanner.swift:22) / [DSH:49](../../Sources/LLM-monitor/Services/DshLocalUsageScanner.swift:49) — `@MainActor` + `AsyncMutex.pipelineMutex`
 
 ## `actor` 清册
 
-- `AsyncMutex` [AsyncMutex.swift:55](../../Sources/LLM-monitor/Services/AsyncMutex.swift:55) — FIFO `CheckedContinuation` 队列，跨 await 持锁，cancellation-aware
+- `AsyncMutex` [AsyncMutex.swift:55](../../Sources/LLM-monitor/Services/Infra/AsyncMutex.swift:55) — FIFO `CheckedContinuation` 队列，跨 await 持锁，cancellation-aware
 - `CodexUsageDetailsCache` [CodexLocalUsageScanner.swift:4](../../Sources/LLM-monitor/Services/CodexLocalUsageScanner.swift:4) — cache 读写串行
 
 `NSLock` 跨 await 在 Swift 6 mode 报 `unlock() is unavailable`；`AsyncMutex` 替代后整
@@ -43,7 +43,7 @@ pipeline（load → RPC → SQL → save）安全持锁。`acquire()` 注册
 用单一可中断 deadline driver 同时服务 regular 与 reset+delay 截止时间；到期网络
 batch 独立投递，driver 不在网络请求期间阻塞。
 [`ProviderRefreshScheduler.waitUntilNotInFlight`](../../Sources/LLM-monitor/Services/ProviderRefreshScheduler.swift:742)
-和 [`AsyncMutex.acquire`](../../Sources/LLM-monitor/Services/AsyncMutex.swift:97) 是 cancellation
+和 [`AsyncMutex.acquire`](../../Sources/LLM-monitor/Services/Infra/AsyncMutex.swift:97) 是 cancellation
 范式：guard + `withCheckedThrowingContinuation` + `withTaskCancellationHandler`，cancel
 handler 投回 actor 精确移除 waiter；release 与 cancel 通过 actor 串行化防止 continuation
 double-resume。

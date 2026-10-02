@@ -18,7 +18,7 @@
 
 ## 权限 & 原子写
 
-[`FileManagerBox.writePrivate`](../../Sources/LLM-monitor/Services/FileManagerBox.swift:106) 是
+[`FileManagerBox.writePrivate`](../../Sources/LLM-monitor/Services/Infra/FileManagerBox.swift:106) 是
 项目所有敏感文件写入的**唯一**入口：同目录 `.<basename>.<UUID>.tmp` →
 `O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC` + `S_IRUSR | S_IWUSR`（0600 from birth）→
 完整 `write()` 循环（`EINTR` 重试）→ `fchmod` 0600 → `fsync` → `rename` 原子替换 →

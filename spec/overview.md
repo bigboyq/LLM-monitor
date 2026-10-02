@@ -513,7 +513,7 @@ Antigravity 是用本地 Antigravity / agy CLI 的 `language_server`，进程可
    worker". cancel + rescan 是唯一会并发的场景.
 
 2. **`AsyncMutex` pipeline 串行化**（actor-based async-aware mutex,
-   `Services/AsyncMutex.swift`）—— 整个 `performScanPure` 包在
+   `Services/Infra/AsyncMutex.swift`）—— 整个 `performScanPure` 包在
    `try await pipelineMutex.withLock { ... }` 里. 旧 worker 跑完整个 pipeline
    （包括 saveIndex）才让新 worker 开始, 杜绝 "两个 worker 并发 loadIndex/saveIndex
    导致 cache revert".

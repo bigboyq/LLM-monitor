@@ -1,27 +1,5 @@
 import Foundation
 
-/// Model families shown under the Antigravity client in Settings.
-enum AntigravityUsageGroup: String, CaseIterable, Sendable {
-    case gemini
-    case claudeAndGPT
-    case other
-
-    var displayName: String {
-        switch self {
-        case .gemini: return "Gemini Models"
-        case .claudeAndGPT: return "Claude and GPT Models"
-        case .other: return "Other Models"
-        }
-    }
-
-    static func classify(modelName: String?) -> Self {
-        let model = modelName?.lowercased() ?? ""
-        if model.contains("gemini") { return .gemini }
-        if model.contains("claude") || model.contains("gpt") { return .claudeAndGPT }
-        return .other
-    }
-}
-
 /// One client's contribution to a quota card.
 struct ClientUsageContribution: Equatable, Sendable {
     let clientID: String

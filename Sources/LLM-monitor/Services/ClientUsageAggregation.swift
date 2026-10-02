@@ -6,6 +6,28 @@ enum ClientUsageTruncationNotice {
     static let text = "会话文件超出单轮扫描预算，已按最新优先截断，最旧的历史用量未计入以上统计。"
 }
 
+/// Model families shown under the Antigravity client in Settings.
+enum AntigravityUsageGroup: String, CaseIterable, Sendable {
+    case gemini
+    case claudeAndGPT
+    case other
+
+    var displayName: String {
+        switch self {
+        case .gemini: return "Gemini Models"
+        case .claudeAndGPT: return "Claude and GPT Models"
+        case .other: return "Other Models"
+        }
+    }
+
+    static func classify(modelName: String?) -> Self {
+        let model = modelName?.lowercased() ?? ""
+        if model.contains("gemini") { return .gemini }
+        if model.contains("claude") || model.contains("gpt") { return .claudeAndGPT }
+        return .other
+    }
+}
+
 /// 「client → Provider 用量行」聚合的共享实现：设置页"客户端"tab 与后续
 /// Harness（客户端视角）菜单视图共用同一口径，避免两处各算一套。
 ///
