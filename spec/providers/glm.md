@@ -4,7 +4,7 @@ Provider id: `glm_coding_plan`
 
 Implementation:
 - API fetcher: `Sources/LLM-monitor/Fetchers/GlmCodingPlanFetcher.swift`
-- Tests: `Tests/LLMMonitorTests/GlmTests.swift`
+- Tests: `Tests/LLMMonitorTests/GlmCodingPlanFetcherTests.swift / GlmZcodeDBReaderTests.swift / GlmOffPeakTests.swift / GlmBalanceLogReaderTests.swift / GlmUsageCategoryTests.swift（按 MARK 段拆分）`
 
 The quota portion queries 智谱 (Zhipu / BigModel) GLM Coding Plan's internal monitor
 endpoint — the same one used by the official `zai-coding-plugins` — for the 5-hour and
@@ -548,7 +548,7 @@ Bigmodel-Target-Type: PERSONAL                    # 团队套餐为 TEAM + Bigmo
 | Provider-neutral projection with OpenCode | `Sources/LLM-monitor/Models/ProviderClientModel.swift` (`ProviderStatus.usageProjection`，帧抽取表 `usageFrameExtractors`) + `UsageProjectionKernel` |
 | Window summary + off-peak exclusion | `Sources/LLM-monitor/Models/LocalTokenUsageSample.swift` (`summary(excludeGlmOffPeak:)`) |
 | Card integration | `Sources/LLM-monitor/Views/ProviderCardView.swift` + `QuotaViews.swift` |
-| Regression tests | `Tests/LLMMonitorTests/GlmTests.swift` |
+| Regression tests | `Tests/LLMMonitorTests/GlmCodingPlanFetcherTests.swift 等 5 个按 MARK 段拆分的 GLM 测试文件` |
 
 ## API Error Handling
 
@@ -601,7 +601,7 @@ provider-specific interval can be set via `refreshIntervalSeconds`.
 
 ## Test Coverage
 
-`Tests/LLMMonitorTests/GlmTests.swift` — the GLM fetcher, peak-window, native scanner,
+`Tests/LLMMonitorTests/GlmCodingPlanFetcherTests.swift 等 5 个按 MARK 段拆分的 GLM 测试文件` — the GLM fetcher, peak-window, native scanner,
 and OpenCode merge tests are consolidated in one file:
 
 | Test | What it verifies |

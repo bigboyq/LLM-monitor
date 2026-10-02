@@ -1,11 +1,113 @@
 import XCTest
 @testable import LLM_monitor
 
-final class DshUsageTests: XCTestCase {
+final class DshLocalUsageScannerTests: XCTestCase {
+
     private func makeUTCGregorianCalendar() -> Calendar {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
         return calendar
+    }
+
+    @discardableResult
+    private func writeSessionLog(
+        root: URL,
+        sessionID: String,
+        project: String = "Project",
+        body: String
+    ) throws -> URL {
+        let directory = root
+            .appendingPathComponent("--\(project)--", isDirectory: true)
+            .appendingPathComponent(sessionID, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appendingPathComponent("session.jsonl")
+        try body.write(to: url, atomically: true, encoding: .utf8)
+        return url
+    }
+
+    @discardableResult
+    private func writeRawSessionArtifact(
+        root: URL,
+        sessionID: String,
+        fileName: String,
+        body: Data
+    ) throws -> URL {
+        let directory = root
+            .appendingPathComponent("--Project--", isDirectory: true)
+            .appendingPathComponent(sessionID, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appendingPathComponent(fileName)
+        try body.write(to: url)
+        return url
+    }
+
+    private struct DshDecompressorCallCounter {
+        final class Box: @unchecked Sendable {
+            private let lock = NSLock()
+            private var count = 0
+            var value: Int {
+                lock.lock(); defer { lock.unlock() }
+                return count
+            }
+            func increment() {
+                lock.lock(); defer { lock.unlock() }
+                count += 1
+            }
+        }
+
+        struct DecompressError: LocalizedError {
+            var errorDescription: String? { "模拟的 zstd 解压失败" }
+        }
+    }
+
+    private func makeUsageLine(seq: Int, turn: Int, step: Int, timeMs: Int64, input: Int) -> String {
+        #"{"type":"assistant/message","seq":\#(seq),"time":\#(timeMs),"data":{"turn":\#(turn),"step":\#(step),"usage":{"inputTokens":\#(input),"outputTokens":1,"reasoningTokens":0}}}"#
+    }
+
+    private struct ParseCounter {
+        final class Box: @unchecked Sendable {
+            private let lock = NSLock()
+            private var count = 0
+
+            var value: Int {
+                lock.lock()
+                defer { lock.unlock() }
+                return count
+            }
+
+            func increment() {
+                lock.lock()
+                count += 1
+                lock.unlock()
+            }
+        }
+    }
+
+    private func usageBody(
+        sequence: Int = 2,
+        turn: Int = 1,
+        inputTokens: Int = 10
+    ) -> String {
+        [
+            #"{"type":"request/context","seq":1,"time":1700000000000,"data":{"provider":"deepseek-official","model":"deepseek-v4-flash"}}"#,
+            #"{"type":"assistant/message","seq":\#(sequence),"time":1700000001000,"data":{"turn":\#(turn),"step":0,"usage":{"inputTokens":\#(inputTokens),"cacheReadTokens":2,"outputTokens":3,"reasoningTokens":1}}}"#
+        ].joined(separator: "\n") + "\n"
+    }
+
+    private func writeCompressedSession(
+        sessionsRoot: URL,
+        sessionID: String,
+        body: String,
+        modifiedAt: Date
+    ) throws -> URL {
+        let directory = sessionsRoot
+            .appendingPathComponent("--Project--", isDirectory: true)
+            .appendingPathComponent(sessionID, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appendingPathComponent("session.jsonl.zst")
+        try Data(body.utf8).write(to: url)
+        try FileManager.default.setAttributes([.modificationDate: modifiedAt], ofItemAtPath: url.path)
+        return url
     }
 
     func testDshCacheWriteIsReportedSeparatelyAndExcludedFromTotal() throws {
@@ -46,22 +148,6 @@ final class DshUsageTests: XCTestCase {
         XCTAssertEqual(today.outputTokens, 20)
         XCTAssertEqual(today.reasoningTokens, 10)
         XCTAssertEqual(today.totalTokens, 180)
-    }
-
-    @discardableResult
-    private func writeSessionLog(
-        root: URL,
-        sessionID: String,
-        project: String = "Project",
-        body: String
-    ) throws -> URL {
-        let directory = root
-            .appendingPathComponent("--\(project)--", isDirectory: true)
-            .appendingPathComponent(sessionID, isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let url = directory.appendingPathComponent("session.jsonl")
-        try body.write(to: url, atomically: true, encoding: .utf8)
-        return url
     }
 
     func testScannerAggregatesExactUsageFromPlainJSONL() throws {
@@ -194,213 +280,6 @@ final class DshUsageTests: XCTestCase {
         XCTAssertEqual(today.reasoningTokens, 0)
         XCTAssertEqual(minimax.recentSamples.first?.outputTokens, 100)
         XCTAssertEqual(minimax.recentSamples.first?.reasoningOutputTokens, 0)
-    }
-
-    private func makeDshProvider(
-        dayStart: Date,
-        inputTokens: Int,
-        outputTokens: Int,
-        cacheReadTokens: Int = 0,
-        reasoningTokens: Int = 0,
-        totalTokens: Int,
-        rounds: Int
-    ) -> DshProviderUsage {
-        let today = DshDailyUsage(
-            dayStart: dayStart,
-            inputTokens: inputTokens,
-            outputTokens: outputTokens,
-            cacheReadTokens: cacheReadTokens,
-            reasoningTokens: reasoningTokens,
-            totalTokens: totalTokens,
-            turns: 1,
-            rounds: rounds
-        )
-        return DshProviderUsage(
-            today: today,
-            dailyTokenUsage: [],
-            sessionCount: 1,
-            roundCount: rounds,
-            recentSamples: []
-        )
-    }
-
-    /// 引用点已从 `DshUsageMerger` 迁到 `DshHarnessFrames` + `UsageProjectionKernel`，
-    /// 断言语义不变：dsh 帧不声明归属，由内核按 clientBindings 的 dsh 条目解析，
-    /// 每张 quota 卡只消费自己那组 provider 别名，另一张卡的数值
-    /// （999 / 888 之类）不得混入。`today` + `roundCount` 两个旧字段在新链路上
-    /// 合成为 daily 的一行（`UnifiedDailyTokenUsage.input/cacheRead/output/reasoning/rounds`），
-    /// 这正是卡片层真正消费的形态。
-    func testDshFramesSelectOnlyTheirProviderAliases() throws {
-        let dayStart = Date(timeIntervalSince1970: 1_700_000_000)
-        let cases: [(
-            name: String,
-            usage: DshLocalUsage,
-            quotaProviderID: String,
-            inputTokens: Int,
-            cacheReadTokens: Int,
-            outputTokens: Int,
-            reasoningTokens: Int,
-            roundCount: Int
-        )] = [
-            (
-                name: "deepseek",
-                usage: DshLocalUsage(
-                    byProvider: [
-                        "deepseek-official": makeDshProvider(
-                            dayStart: dayStart,
-                            inputTokens: 100,
-                            outputTokens: 20,
-                            cacheReadTokens: 50,
-                            reasoningTokens: 10,
-                            totalTokens: 170,
-                            rounds: 2
-                        ),
-                        "minimax-cn": makeDshProvider(
-                            dayStart: dayStart,
-                            inputTokens: 999,
-                            outputTokens: 999,
-                            totalTokens: 999,
-                            rounds: 1
-                        )
-                    ],
-                    modelsByProvider: ["deepseek-official": ["deepseek-v4-flash"]],
-                    sessionsRoot: "/tmp/.dsh/sessions",
-                    sessionCount: 2,
-                    eventCount: 3,
-                    scannedAt: Date()
-                ),
-                quotaProviderID: QuotaProviderID.deepseek,
-                inputTokens: 100,
-                cacheReadTokens: 50,
-                outputTokens: 20,
-                reasoningTokens: 10,
-                roundCount: 2
-            ),
-            (
-                name: "glm",
-                usage: DshLocalUsage(
-                    byProvider: [
-                        "zhipuai": makeDshProvider(
-                            dayStart: dayStart,
-                            inputTokens: 50,
-                            outputTokens: 10,
-                            cacheReadTokens: 25,
-                            reasoningTokens: 5,
-                            totalTokens: 80,
-                            rounds: 2
-                        ),
-                        "minimax-cn": makeDshProvider(
-                            dayStart: dayStart,
-                            inputTokens: 999,
-                            outputTokens: 999,
-                            totalTokens: 999,
-                            rounds: 1
-                        )
-                    ],
-                    modelsByProvider: ["zhipuai": ["GLM-4.5"]],
-                    sessionsRoot: "/tmp/.dsh/sessions",
-                    sessionCount: 2,
-                    eventCount: 3,
-                    scannedAt: Date()
-                ),
-                quotaProviderID: QuotaProviderID.zhipu,
-                inputTokens: 50,
-                cacheReadTokens: 25,
-                outputTokens: 10,
-                reasoningTokens: 5,
-                roundCount: 2
-            ),
-            (
-                name: "minimax",
-                usage: DshLocalUsage(
-                    byProvider: [
-                        "minimax": makeDshProvider(
-                            dayStart: dayStart,
-                            inputTokens: 100,
-                            outputTokens: 15,
-                            cacheReadTokens: 20,
-                            reasoningTokens: 5,
-                            totalTokens: 130,
-                            rounds: 3
-                        ),
-                        "zhipu": makeDshProvider(
-                            dayStart: dayStart,
-                            inputTokens: 888,
-                            outputTokens: 888,
-                            totalTokens: 888,
-                            rounds: 1
-                        )
-                    ],
-                    modelsByProvider: ["minimax": ["MiniMax-M3"]],
-                    sessionsRoot: "/tmp/.dsh/sessions",
-                    sessionCount: 2,
-                    eventCount: 4,
-                    scannedAt: Date()
-                ),
-                quotaProviderID: QuotaProviderID.minimax,
-                inputTokens: 100,
-                cacheReadTokens: 20,
-                outputTokens: 15,
-                reasoningTokens: 5,
-                roundCount: 3
-            )
-        ]
-
-        for testCase in cases {
-            let frames = DshHarnessFrames.frames(from: testCase.usage)
-            XCTAssertFalse(frames.isEmpty, testCase.name)
-            let projections = UsageProjectionKernel.project(
-                frames: frames,
-                bindings: AppConfig.defaultClientBindings
-            )
-            let projection = try XCTUnwrap(
-                projections.first { $0.quotaProviderID == testCase.quotaProviderID },
-                testCase.name
-            )
-            XCTAssertEqual(projection.clientID, ClientID.dsh, testCase.name)
-            XCTAssertEqual(projection.quotaProviderID, testCase.quotaProviderID, testCase.name)
-            let day = try XCTUnwrap(projection.daily.first, testCase.name)
-            XCTAssertEqual(day.input, testCase.inputTokens, testCase.name)
-            XCTAssertEqual(day.cacheRead, testCase.cacheReadTokens, testCase.name)
-            XCTAssertEqual(day.output, testCase.outputTokens, testCase.name)
-            XCTAssertEqual(day.reasoning, testCase.reasoningTokens, testCase.name)
-            XCTAssertEqual(day.rounds, testCase.roundCount, testCase.name)
-        }
-    }
-
-    @discardableResult
-    private func writeRawSessionArtifact(
-        root: URL,
-        sessionID: String,
-        fileName: String,
-        body: Data
-    ) throws -> URL {
-        let directory = root
-            .appendingPathComponent("--Project--", isDirectory: true)
-            .appendingPathComponent(sessionID, isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let url = directory.appendingPathComponent(fileName)
-        try body.write(to: url)
-        return url
-    }
-
-    private struct DshDecompressorCallCounter {
-        final class Box: @unchecked Sendable {
-            private let lock = NSLock()
-            private var count = 0
-            var value: Int {
-                lock.lock(); defer { lock.unlock() }
-                return count
-            }
-            func increment() {
-                lock.lock(); defer { lock.unlock() }
-                count += 1
-            }
-        }
-
-        struct DecompressError: LocalizedError {
-            var errorDescription: String? { "模拟的 zstd 解压失败" }
-        }
     }
 
     func testCorruptZstdSessionFileIsSkippedWhileGoodFilesStillAggregate() throws {
@@ -744,129 +623,6 @@ final class DshUsageTests: XCTestCase {
             limits: DshLocalUsageScanLimits.production
         )
         XCTAssertEqual(snapshot.isTruncated, false, "未截断的扫描必须显式置 false")
-    }
-
-    // MARK: - isTruncated 展示链（merger 规则 → contribution → projection → summary）
-
-    private func makeDshSnapshot(isTruncated: Bool?) -> DshLocalUsage {
-        var snapshot = DshLocalUsage(
-            byProvider: [
-                "deepseek-official": DshProviderUsage(
-                    today: DshDailyUsage(
-                        dayStart: Date(timeIntervalSince1970: 1_700_000_000),
-                        inputTokens: 10, outputTokens: 1, totalTokens: 11, turns: 1, rounds: 1
-                    ),
-                    dailyTokenUsage: [],
-                    sessionCount: 1,
-                    roundCount: 1,
-                    recentSamples: []
-                )
-            ],
-            modelsByProvider: ["deepseek-official": ["deepseek-v4-flash"]],
-            sessionsRoot: "/tmp/dsh-sessions",
-            sessionCount: 1,
-            eventCount: 1,
-            scannedAt: Date(timeIntervalSince1970: 1_700_000_000)
-        )
-        snapshot.isTruncated = isTruncated
-        return snapshot
-    }
-
-    func testDshTruncationMergerRuleTreatsAnyTruncatedSourceAsTruncated() {
-        // 合并规则：任一来源截断即截断（保守取 true）；nil 视为未截断/未知。
-        // 引用点已从 `DshUsageMerger` 迁到 `DshHarnessFrames.anyTruncated`。
-        XCTAssertFalse(DshHarnessFrames.anyTruncated(), "无来源 → 无截断")
-        XCTAssertFalse(DshHarnessFrames.anyTruncated(nil), "nil 快照 → 未知，按未截断")
-        XCTAssertFalse(DshHarnessFrames.anyTruncated(makeDshSnapshot(isTruncated: false)))
-        XCTAssertTrue(DshHarnessFrames.anyTruncated(makeDshSnapshot(isTruncated: true)))
-        XCTAssertTrue(
-            DshHarnessFrames.anyTruncated(
-                makeDshSnapshot(isTruncated: false),
-                nil,
-                makeDshSnapshot(isTruncated: true)
-            ),
-            "多来源混合时任一截断即整份展示数据按截断处理"
-        )
-        XCTAssertFalse(
-            DshHarnessFrames.anyTruncated(
-                makeDshSnapshot(isTruncated: false),
-                makeDshSnapshot(isTruncated: nil)
-            )
-        )
-    }
-
-    func testDshTruncationFlagSurfacesThroughProjectionAndSummaryRows() throws {
-        // 快照上的 isTruncated 必须穿透 usageProjection 的 DSH contribution 到达
-        // 展示模型；nil（旧缓存快照）不得触发提示。
-        var status = ProviderStatus(
-            id: "deepseek",
-            displayName: "DeepSeek",
-            kind: .deepseek,
-            iconSystemName: "circle",
-            accentColor: .deepseek,
-            refreshIntervalSeconds: 300,
-            state: .ready
-        )
-
-        status.dshUsage = makeDshSnapshot(isTruncated: true)
-        let truncatedProjection = status.usageProjection(for: nil)
-        let dshContribution = try XCTUnwrap(
-            truncatedProjection.contributions.first { $0.clientID == ClientID.dsh },
-            "DSH 快照存在时必须产生 DSH contribution"
-        )
-        XCTAssertTrue(dshContribution.isTruncated, "截断标志必须透传到 contribution")
-        XCTAssertTrue(
-            truncatedProjection.isTruncated,
-            "任一 contribution 截断即整卡按截断处理"
-        )
-
-        status.dshUsage = makeDshSnapshot(isTruncated: nil)
-        let unknownProjection = status.usageProjection(for: nil)
-        let unknownContribution = try XCTUnwrap(
-            unknownProjection.contributions.first { $0.clientID == ClientID.dsh }
-        )
-        XCTAssertFalse(unknownContribution.isTruncated, "nil 视为未截断/未知，不显示提示")
-        XCTAssertFalse(unknownProjection.isTruncated)
-
-        // 全部来源未截断 → 整卡不提示。
-        let allClear = ProviderUsageProjection(contributions: [
-            ClientUsageContribution(
-                clientID: ClientID.dsh, displayName: "DSH",
-                dailyTokenUsage: [UnifiedDailyTokenUsage]()
-            ),
-            ClientUsageContribution(
-                clientID: ClientID.openCode, displayName: "OpenCode",
-                dailyTokenUsage: [UnifiedDailyTokenUsage]()
-            )
-        ])
-        XCTAssertFalse(allClear.isTruncated)
-
-        // 多来源聚合（DSH 截断 + 其他来源正常）→ 整卡截断。
-        let mixed = ProviderUsageProjection(contributions: [
-            ClientUsageContribution(
-                clientID: ClientID.dsh, displayName: "DSH",
-                dailyTokenUsage: [UnifiedDailyTokenUsage](),
-                isTruncated: true
-            ),
-            ClientUsageContribution(
-                clientID: ClientID.openCode, displayName: "OpenCode",
-                dailyTokenUsage: [UnifiedDailyTokenUsage]()
-            )
-        ])
-        XCTAssertTrue(mixed.isTruncated)
-
-        // 展示模型（设置页展开行数据）承载标志，供 UI 提示渲染。
-        let summary = ClientProviderUsageSummary(
-            clientID: ClientID.dsh,
-            quotaProviderID: QuotaProviderID.deepseek,
-            providerName: "DeepSeek",
-            usageGroupID: QuotaProviderID.deepseek,
-            dailyTokenUsage: [UnifiedDailyTokenUsage](),
-            recentSamples: [],
-            scannedAt: nil,
-            isTruncated: true
-        )
-        XCTAssertTrue(summary.isTruncated)
     }
 
     func testHardFullScanRetriesRecoveredStatFailureAndClearsPartial() throws {
@@ -1462,10 +1218,6 @@ final class DshUsageTests: XCTestCase {
         XCTAssertEqual(snapshot.byProvider["deepseek-official"]?.today?.inputTokens, 20)
     }
 
-    private func makeUsageLine(seq: Int, turn: Int, step: Int, timeMs: Int64, input: Int) -> String {
-        #"{"type":"assistant/message","seq":\#(seq),"time":\#(timeMs),"data":{"turn":\#(turn),"step":\#(step),"usage":{"inputTokens":\#(input),"outputTokens":1,"reasoningTokens":0}}}"#
-    }
-
     func testDshFullScanDropsSamplesOlderThanEightDays() throws {
         // 统一契约：full scan 与 cached rebase 都保留最近 8 个自然日。
         let base = Date(timeIntervalSince1970: 1_700_000_000)
@@ -1715,5 +1467,174 @@ final class DshUsageTests: XCTestCase {
         let unwrappedSummary = try XCTUnwrap(summary)
         XCTAssertEqual(unwrappedSummary.uncachedInputTokens, 584_000, "Uncached input in current window must match 584k, not 0")
         XCTAssertEqual(unwrappedSummary.cachedInputTokens, 100_000)
+    }
+
+    func testChangingOneOf257SessionsDoesNotReparseProtectedHotSet() throws {
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let calendar = makeUTCGregorianCalendar()
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("llm-monitor-dsh-cache-regression-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let cacheDir = root.appendingPathComponent("cache", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var sessionURLs: [URL] = []
+        for index in 0..<257 {
+            sessionURLs.append(
+                try writeCompressedSession(
+                    sessionsRoot: sessionsRoot,
+                    sessionID: "session-\(index)",
+                    body: usageBody(),
+                    modifiedAt: base.addingTimeInterval(Double(-index))
+                )
+            )
+        }
+
+        let counter = ParseCounter.Box()
+        let decompressor: DshLocalUsageScanner.Decompressor = { data in
+            counter.increment()
+            return data
+        }
+        let first = try DshLocalUsageScanner.performScanPure(
+            sessionsRoot: sessionsRoot,
+            cacheDir: cacheDir,
+            fileManager: FileManagerBox(),
+            calendar: calendar,
+            now: { base },
+            decompressor: decompressor
+        )
+        XCTAssertEqual(counter.value, 257)
+        XCTAssertEqual(first.sessionCount, 257)
+        XCTAssertEqual(first.eventCount, 257)
+        XCTAssertEqual(first.byProvider["deepseek-official"]?.today?.totalTokens, 257 * 15)
+
+        // Append a replay with a new seq. It changes the fingerprint and is a
+        // valid usage record, but the existing turn/step identity keeps the
+        // aggregate unchanged. The newest file remains in the protected hot set.
+        try Data((usageBody() + usageBody(sequence: 3, inputTokens: 999)).utf8).write(to: sessionURLs[0])
+        try FileManager.default.setAttributes(
+            [.modificationDate: base.addingTimeInterval(1)],
+            ofItemAtPath: sessionURLs[0].path
+        )
+
+        let second = try DshLocalUsageScanner.performScanPure(
+            sessionsRoot: sessionsRoot,
+            cacheDir: cacheDir,
+            fileManager: FileManagerBox(),
+            calendar: calendar,
+            now: { base },
+            decompressor: decompressor
+        )
+        // The changed hot file and the one capacity-external file are parsed;
+        // the latter is intentionally not cached and cannot evict the hot set.
+        XCTAssertEqual(counter.value, 259, "only the changed hot file and cold overflow should be reparsed")
+        XCTAssertEqual(second, first, "replayed usage must preserve the aggregate result")
+    }
+
+    func testAddingNewestSessionDoesNotReparseTheWholeHistory() throws {
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let calendar = makeUTCGregorianCalendar()
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("llm-monitor-dsh-cache-newest-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let cacheDir = root.appendingPathComponent("cache", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        for index in 0..<256 {
+            _ = try writeCompressedSession(
+                sessionsRoot: sessionsRoot,
+                sessionID: "session-\(index)",
+                body: usageBody(),
+                modifiedAt: base.addingTimeInterval(Double(-index))
+            )
+        }
+
+        let counter = ParseCounter.Box()
+        let decompressor: DshLocalUsageScanner.Decompressor = { data in
+            counter.increment()
+            return data
+        }
+        let first = try DshLocalUsageScanner.performScanPure(
+            sessionsRoot: sessionsRoot,
+            cacheDir: cacheDir,
+            fileManager: FileManagerBox(),
+            calendar: calendar,
+            now: { base },
+            decompressor: decompressor
+        )
+        XCTAssertEqual(counter.value, 256)
+        XCTAssertEqual(first.sessionCount, 256)
+
+        _ = try writeCompressedSession(
+            sessionsRoot: sessionsRoot,
+            sessionID: "session-newest",
+            body: usageBody(turn: 2),
+            modifiedAt: base.addingTimeInterval(1)
+        )
+        let second = try DshLocalUsageScanner.performScanPure(
+            sessionsRoot: sessionsRoot,
+            cacheDir: cacheDir,
+            fileManager: FileManagerBox(),
+            calendar: calendar,
+            now: { base },
+            decompressor: decompressor
+        )
+        XCTAssertEqual(counter.value, 258, "adding a newest file should not reparse all history")
+        XCTAssertEqual(second.sessionCount, 257)
+        XCTAssertEqual(second.eventCount, 257)
+        XCTAssertEqual(second.byProvider["deepseek-official"]?.today?.totalTokens, 257 * 15)
+    }
+
+    func testUnchangedFilesWithinHotSetAreReusedWhenAnotherFileChanges() throws {
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let calendar = makeUTCGregorianCalendar()
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("llm-monitor-dsh-cache-hot-set-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let cacheDir = root.appendingPathComponent("cache", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let firstURL = try writeCompressedSession(
+            sessionsRoot: sessionsRoot,
+            sessionID: "session-first",
+            body: usageBody(inputTokens: 10),
+            modifiedAt: base
+        )
+        _ = try writeCompressedSession(
+            sessionsRoot: sessionsRoot,
+            sessionID: "session-second",
+            body: usageBody(turn: 2, inputTokens: 20),
+            modifiedAt: base.addingTimeInterval(-1)
+        )
+
+        let counter = ParseCounter.Box()
+        let decompressor: DshLocalUsageScanner.Decompressor = { data in
+            counter.increment()
+            return data
+        }
+        _ = try DshLocalUsageScanner.performScanPure(
+            sessionsRoot: sessionsRoot,
+            cacheDir: cacheDir,
+            fileManager: FileManagerBox(),
+            calendar: calendar,
+            now: { base },
+            decompressor: decompressor
+        )
+        XCTAssertEqual(counter.value, 2)
+
+        try Data((usageBody(inputTokens: 10) + usageBody(sequence: 3, inputTokens: 999)).utf8).write(to: firstURL)
+        try FileManager.default.setAttributes(
+            [.modificationDate: base.addingTimeInterval(1)],
+            ofItemAtPath: firstURL.path
+        )
+        _ = try DshLocalUsageScanner.performScanPure(
+            sessionsRoot: sessionsRoot,
+            cacheDir: cacheDir,
+            fileManager: FileManagerBox(),
+            calendar: calendar,
+            now: { base },
+            decompressor: decompressor
+        )
+        XCTAssertEqual(counter.value, 3, "unchanged files in the hot set should remain reusable")
     }
 }

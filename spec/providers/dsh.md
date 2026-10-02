@@ -121,4 +121,4 @@ to the next line, so a replayed event can never stall the scan.
 | File discovery | `Sources/LLM-monitor/Services/Infra/FileManagerBox.swift` |
 | Client diagnostics | `Sources/LLM-monitor/Views/SettingsClientsPane.swift` |
 | Card integration | `Sources/LLM-monitor/Views/ProviderCardView.swift` |
-| Regression tests | `Tests/LLMMonitorTests/DshUsageTests.swift` |
+| Regression tests | `Tests/LLMMonitorTests/DshLocalUsageScannerTests.swift` |
