@@ -203,10 +203,14 @@ walks `statuses` itself. It is the **bare-text variant** of `LocalUsageFreshness
 (same state machine, same `.secondary` grey, no 「更新于」 prefix, no capsule
 background) — the number row has no width budget for a capsule: its segments are all
 fixed-width or greedy, and a capsule there would push the mixed-currency total into a
-second line. The bucket bar below it therefore owns its **whole row** (no badge at its
-tail), which also widens the three buckets' read. With no scan ever recorded the bare
-time renders nothing at all (no placeholder, no phantom space). The capsule variant
-keeps its other hosts (the 7-day card title in the dock popover / strip hover card).
+second line. The two skins are now literally one decision: both read a shared private
+`LocalUsageFreshnessState`, so the state judgement and the clock text (including the
+`MM-dd HH:mm` midnight degradation) are written once and only the wrapping differs. Both
+public types and their interfaces are unchanged. The bucket bar below it therefore owns
+its **whole row** (no badge at its tail), which also widens the three buckets' read. With
+no scan ever recorded the bare time renders nothing at all (no placeholder, no phantom
+space). The capsule variant keeps its other hosts (the 7-day card title in the dock
+popover / strip hover card).
 
 **Truncation notice** — a section whose sources were truncated (DSH file/byte budget
 dropping the oldest sessions) shows a **one-line** short notice (`部分较早会话未计入`,
@@ -229,7 +233,8 @@ area) — one minimal element per enabled provider, **no leading label**: brand 
 (11pt) + `ProviderStateLabel` capsule (`10:23` / `需重试` / `未配置` …, already
 tri-colour by refresh freshness). The label was removed in the 2026-10 first-round UI
 pass — the icon+capsule sequence is self-explanatory, and the ~74pt it freed is what
-raises visible capacity. Its data comes from the pure projection
+raises visible capacity. It is separated from the sections above by a
+`MenuHairline.horizontal`, and its data comes from the pure projection
 `ProviderStatusStrip.snapshot(statuses:limit:)`:
 
 - only **enabled** providers are shown — the filter lives in the projection, not in
@@ -272,17 +277,40 @@ fullest card; `LayoutMetricsTests` keeps it under an 800pt ceiling) — on a sho
 display the clamp wins and the dock popover's `ScrollView` fallback
 (see *Hover behaviour → Size*) keeps the overflow reachable.
 
-Right-clicking one element offers 「刷新 <provider>」 — the per-provider refresh
-entry point the menu lost when the provider cards were replaced by the client view.
-It routes to `AppState.refreshOne(providerID:)` (the same call the old cards' single
-「立即刷新」 item used), so only that provider is fetched and only that provider's
-schedule is re-anchored; the other providers' next tick is untouched
-(`AppStateTests.testRefreshOneReanchorsOnlyRefreshedProvider`). The item exists for
-**every** entry in the strip, including `.notConfigured` / `.failed` ones — retrying
-is exactly the action those need. While a refresh transaction is running the item is
-disabled; that signal is `AppState.isRefreshJobActive`, the same global flag the
-header's spinner uses (there is no per-provider in-flight flag to key on, and none
-was invented for this).
+**Three interactions share one element**, and the split between them is the point:
+
+| Input | Action | Why it is this one |
+|---|---|---|
+| **Left click** | Refresh this provider immediately | The element is the only thing in the panel you can left-click onto a *specific* provider with — the hover panel is `ignoresMouseEvents = true` and cannot be clicked, and the header's 「立即刷新全部」 is scoped to everything. No explicit menu, no discovery cost |
+| **Right click** | `刷新 <provider>` menu item | The same action as an explicit, named entry point, for the "I know which one I want" case. It carries the provider name because one row shows several same-shaped items |
+| **Hover** | Pop the full `ProviderCardView` | Read-only. It issues **no** network request — a pointer merely crossing the row must not spend a provider's fetch budget |
+
+Left and right share **one** action, not two copies: both go through
+`ProviderStatusStripView.RefreshMenuItem` (a plain value type carrying `providerID` +
+`displayName`, with the `刷新 <name>` title and the `perform` routing), and the host is
+still `MenuContentView.refreshProviderFromMenu` → `AppState.refreshOne`. `onTapGesture`
+has no addressable seam in SwiftUI, so both the item and the tap closure
+(`tapHandler(for:onRefresh:)`) are `static` and pinned by tests instead.
+
+The single-provider refresh is the per-provider entry point the menu lost when the
+provider cards were replaced by the client view. It routes to
+`AppState.refreshOne(providerID:)` (the same call the old cards' single 「立即刷新」
+item used), so only that provider is fetched and only that provider's schedule is
+re-anchored; the other providers' next tick is untouched
+(`AppStateTests.testRefreshOneReanchorsOnlyRefreshedProvider`). It exists for **every**
+entry in the strip, including `.notConfigured` / `.failed` ones — retrying is exactly
+the action those need.
+
+**The right-click item is disabled while a refresh transaction is running; the left
+click deliberately is not.** The disable signal is `AppState.isRefreshJobActive`, the
+same global flag the header's spinner uses (there is no per-provider in-flight flag to
+key on, and none was invented for this). The tap path keeps no second copy of that
+state: `refreshOne` opens with the same global in-flight gate
+(`refreshScheduler.beginExternalJob()`), so a repeat tap is a silent no-op that only
+re-anchors the same provider, and a UI-side busy state would only drift from the global
+verdict. Feedback comes from the capsule the element already carries (it moves to a
+refreshing state and then back to `HH:mm`) — a dead-looking button during a rapid
+re-click reads worse than one that just does nothing twice.
 
 The content area scrolls when needed. `MenuPanelHeightBridge` caps the menu window at
 70% of the screen's visible height; when the cap is reached, only the content list
@@ -803,19 +831,26 @@ session scan below — and without the line the usage reads as a continuation of
 quota.
 
 **Type scale inside the two cards: 13 / 11 / 10.** Card titles are
-`MenuTypography.cardTitle`; values and body text are 11 (`hoverBody*`, and `hoverTitle`
-was pulled down to 11 so a sub-title is no longer bigger than the values under it);
+`MenuTypography.cardTitle`; values and body text are 11 (`hoverBodyMonospaced` /
+`hoverRowEmphasis`, and `hoverTitle` was pulled down to 11 so a sub-title is no longer
+bigger than the values under it);
 labels, captions, footnotes, day labels, chart annotations and table cells are 10 —
 the 8pt and 9pt sizes that used to live in the chart and the table are gone
 (`timeSuffix` and `hoverFootnote` moved from 9 to 10). Capsules keep `badge` at 9pt,
-since a pill is a different kind of mark, not body copy.
+since a pill is a different kind of mark, not body copy. The scale is a **role
+vocabulary, not a fixed list**: unreferenced roles are deleted rather than parked, so
+`MenuTypography` holds no multiplier / `hoverBody` / `hoverCaptionEmphasis` /
+`errorMessage` token waiting for a caller that never arrives.
 
 The cut is not arbitrary: the quota group is "now" and the 7-day group is "history", and
 `HoverInfoRow` already drew a separator between them. The card boundary replaces that
 separator, so the lower half stops reading as a table appended to the upper card. The
-split rides on `LocalUsagePart` (`.detail` into card 2 — since the second-round pass
-the `.summary` row no longer renders anywhere in the card, its content moved into the
-usage block's 今 row), which is also why the chart no longer draws its own title row
+split rides on `LocalUsagePart`, which today has exactly **one** case — `.detail`,
+i.e. card 2 gets the chart and card 1 gets everything else. The former `.summary` and
+`.combined` cases are gone: the summary row stopped rendering anywhere in the card in
+the second-round pass (its content moved into the usage block's 今 row) and the combined
+form was for the old menu column, which no longer exists, so both were branches that
+could only ever be false. This is also why the chart no longer draws its own title row
 in `.alwaysVisible`: the title and the freshness badge moved up into title row 2.
 
 Two knock-on details, both easy to miss:
@@ -842,11 +877,21 @@ by 1px hairlines. Since the third-round pass each module is headed by its own ti
 it hides with its module; each module is hidden when it has no data, the whole block
 (and the divider above it) hidden when all three are:
 
+**Every width in both tables is budgeted against 420pt, the card content width the two
+hosts share** — `EdgeDockTheme.popoverWidth` (468) − 2×12pt backdrop padding − 2×12pt
+card padding. That is the number to use, *not* the main menu's 360/312. The grids are
+greedy so they always fill whatever they are given, but every number *derived* from the
+width — the per-column budget, the "does the three-character header still fit" argument,
+where the compact-money threshold is measured — was being computed against a menu that
+no longer renders a provider card at all, 108pt narrower than either real host. The
+guardrail tests now read the same constant, so the budget and the check cannot drift
+apart again.
+
 | Module | Content |
 |---|---|
-| Stats rows | Titled 「额度分析」. The time-composition bar, then a **header row `类型 | 用量 | 命中 | 产出比 | 思考 | 价值`** (fifth round, styled like the raw table's header — 10pt secondary, left-aligned) followed by **one row per window and the 今 row**. All rows share **one `Grid` of six equal columns** (`[类型 = 窗口标签] [用量 = token 值] [命中] [产出比] [思考] [价值]`) that fill the card width and align **across** rows — the fifth round split the old merged `[标签 + token]` cell into the 类型 and 用量 columns, and since the column names live in the header the data cells carry **no text labels any more** (the old `ViewThatFits` compressed-label degradation `出比` / `思` was deleted with them; the fixed three-character header fits the narrowest column — 产出比 ≈ 31pt vs ≈ 48.7pt per column at the 312pt card content width — so the header layer degrades nothing). **Headers are all left-aligned**; since the sixth round the 用量 / 命中 / 产出比 / 思考 **data cells are right-aligned** — equal-width `monospacedDigit` values line up along a column's trailing edge (the ones digit), which is what makes them comparable down the rows — while the 类型 and 价值 data cells stay left-aligned, and the header row does **not** follow the numeric right-alignment (headers are words, not numbers). **All-zero rows are skipped entirely** (fifth round): a row (5h/周/今) whose four buckets sum to 0 appears in **neither** module — the old "a window with zero local usage still shows a `0 / —` row" rule is gone. **When no row survives the filter the whole module — header included — disappears**, and the block-level divider goes with it. **All-zero columns hide module-wide**: the 命中 column (header with it) disappears when the cached bucket sums to 0 across **all visible rows** (5h/周/今, after the row filter), likewise 思考 for the reasoning bucket — a per-row `—` is not enough to drop a column; 类型/用量/产出比/价值 are always present. The bar is **time composition, not bucket composition**: the full bar is the local token total inside the current **weekly** window; the solid left segment is the part inside the latest **5h** window, the translucent right segment is the rest of the week — and it is drawn only when a **window row (5h/周) survives the row filter** (an all-zero window's all-grey trough says nothing; a lone 今 row draws none either). Grey trough, 6pt capsule, provider accent colour — deliberately *not* `TokenBucketBar` (that one splits input / cache / output) and not `SegmentedQuotaProgressBar` (that one encodes a remaining percentage). Rows are 10pt `monospacedDigit`, **one line, never wrapped** (an over-long cost value truncates instead, as it already did). The **今 row** (label 「今」 since the fifth round — was 「今日」) reuses the same component and format, sourced from the same-day local aggregate — the same data and ratio formulas the old `📈 今天 …` summary row used, so that row was removed from the card bottom. No local data today → the row is omitted; an all-zero day → the row is skipped by the filter above |
-| Raw table | Titled 「额度详情」. **`类型 / Input / Cached / Output / Reason / 重置日期`**, one row per **existing, non-all-zero** window (5h, 周; a missing window omits its row, and **since the fifth round a window whose four buckets sum to 0 is skipped entirely** — the same all-zero row rule as the stats module) **followed by a 今 row since the fourth round** (same-day local aggregate, label 「今」 since the fifth round, reset-date cell `—` — today has no window reset; omitted when there is no local data today, skipped when the day is all-zero, and it joins the all-zero column judgement below). **All-zero columns hide with their headers**: each of Input / Cached / Output / Reason disappears when its bucket sums to 0 across **all visible rows** (5h/周/今, after the row filter); 类型 and 重置日期 are always present. When no row survives the filter the module — title included — disappears. Column widths are **not** equal: 类型 is **natural-width**; 重置日期 takes a **fixed width** = its longest form's natural width × 1.2 **plus a 12pt leading gutter** that separates it from the Reason column (sixth round; measured once: `09-30 15:07 (23h59m)`, the widest `formatResetSuffix` form, is 117pt at the table's 10pt `monospacedDigit` font → `resetDateColumnWidth` 152.4pt, of which 140.4pt is text region, pinned by test) so it renders whole — no `minimumScaleFactor` — while the four numeric columns split the **remaining** width, right-aligned with their headers following. **Reset-date cells stay left-aligned at the end of the 12pt gutter** (left-aligned since the fifth round, gutter since the sixth) — date text is not a number, so it reads from the column start like the 类型 column and does not anchor to the trailing edge — while the **column header is centred within the fixed width since the sixth round** (it labels the whole column, not the column start). The four absolute buckets per window (`input` being the **uncached** one), `formatTokenCountCompact`, plus that window's reset time as `MM-dd HH:mm (倒计时)` — the same formatting the quota metadata line uses. Replaces the old hover detail's two side-by-side columns (same numbers, now always on screen). With several model pools, a footnote states the totals are summed and the reset time is the earliest |
-| Reset credits | Titled 「重置卡详情」. The collapsed row (**`重置卡数量：N`** + nearest expiry) followed by the **per-card list** (`ResetCreditsDetailList`, header suppressed — the count is already on the first line): N available credits render as N+1 lines. **Zero available → the whole module is omitted** (not a `重置卡数量：0` line) |
+| Stats rows | Titled 「额度分析」. The time-composition bar, then a **header row `类型 | 用量 | 命中 | 产出比 | 思考 | 价值`** (fifth round, styled like the raw table's header — 10pt secondary, left-aligned) followed by **one row per window and the 今 row**. All rows share **one `Grid` of six equal columns** (`[类型 = 窗口标签] [用量 = token 值] [命中] [产出比] [思考] [价值]`) that fill the card width and align **across** rows — the fifth round split the old merged `[标签 + token]` cell into the 类型 and 用量 columns, and since the column names live in the header the data cells carry **no text labels any more** (the old `ViewThatFits` compressed-label degradation `出比` / `思` was deleted with them; the fixed three-character header fits the narrowest column — 产出比 ≈ 31pt against ≈ 66.7pt per column, at the **420pt** card content width both hosts share — so the header layer degrades nothing). **Headers are all left-aligned**; since the sixth round the 用量 / 命中 / 产出比 / 思考 **data cells are right-aligned** — equal-width `monospacedDigit` values line up along a column's trailing edge (the ones digit), which is what makes them comparable down the rows — while the 类型 and 价值 data cells stay left-aligned, and the header row does **not** follow the numeric right-alignment (headers are words, not numbers). **All-zero rows are skipped entirely** (fifth round): a row (5h/周/今) whose four buckets sum to 0 appears in **neither** module — the old "a window with zero local usage still shows a `0 / —` row" rule is gone. **When no row survives the filter the whole module — header included — disappears**, and the block-level divider goes with it. **All-zero columns hide module-wide**: the 命中 column (header with it) disappears when the cached bucket sums to 0 across **all visible rows** (5h/周/今, after the row filter), likewise 思考 for the reasoning bucket — a per-row `—` is not enough to drop a column; 类型/用量/产出比/价值 are always present. The bar is **time composition, not bucket composition**: the full bar is the local token total inside the current **weekly** window; the solid left segment is the part inside the latest **5h** window, the translucent right segment is the rest of the week — and it is drawn only when a **window row (5h/周) survives the row filter** (an all-zero window's all-grey trough says nothing; a lone 今 row draws none either). Grey trough, 6pt capsule, provider accent colour — deliberately *not* `TokenBucketBar` (that one splits input / cache / output) and not `SegmentedQuotaProgressBar` (that one encodes a remaining percentage). Rows are 10pt `monospacedDigit`, **one line, never wrapped** (an over-long cost value is compacted into K/M/B units instead, see *Value* below — truncation is the failure mode this no longer relies on). The **今 row** (label 「今」 since the fifth round — was 「今日」) reuses the same component and format, sourced from the same-day local aggregate — the same data and ratio formulas the old `📈 今天 …` summary row used, so that row was removed from the card bottom. No local data today → the row is omitted; an all-zero day → the row is skipped by the filter above |
+| Raw table | Titled 「额度详情」. **`类型 / Input / Cached / Output / Reason / 重置日期`**, one row per **existing, non-all-zero** window (5h, 周; a missing window omits its row, and **since the fifth round a window whose four buckets sum to 0 is skipped entirely** — the same all-zero row rule as the stats module) **followed by a 今 row since the fourth round** (same-day local aggregate, label 「今」 since the fifth round, reset-date cell `—` — today has no window reset; omitted when there is no local data today, skipped when the day is all-zero, and it joins the all-zero column judgement below). **All-zero columns hide with their headers**: each of Input / Cached / Output / Reason disappears when its bucket sums to 0 across **all visible rows** (5h/周/今, after the row filter); 类型 and 重置日期 are always present. When no row survives the filter the module — title included — disappears. Column widths are **not** equal: 类型 is **natural-width**; 重置日期 takes a **fixed width** = its longest form's natural width × 1.2 **plus a 12pt leading gutter** that separates it from the Reason column (sixth round; measured once: `09-30 15:07 (23h59m)`, the widest `formatResetSuffix` form, is 117pt at the table's 10pt `monospacedDigit` font → `resetDateColumnWidth` 152.4pt, of which 140.4pt is text region, pinned by test) so it renders whole — no `minimumScaleFactor` — while the four numeric columns split the **remaining** width, right-aligned with their headers following — at the shared 420pt that is (420 − 152.4 − 5×4) / 4 ≈ **61.9pt** each, enough for the widest `formatTokenCountCompact` form (`987M` ≈ 30pt). **Reset-date cells stay left-aligned at the end of the 12pt gutter** (left-aligned since the fifth round, gutter since the sixth) — date text is not a number, so it reads from the column start like the 类型 column and does not anchor to the trailing edge — while the **column header is centred within the fixed width since the sixth round** (it labels the whole column, not the column start). The four absolute buckets per window (`input` being the **uncached** one), `formatTokenCountCompact`, plus that window's reset time as `MM-dd HH:mm (倒计时)` — the same formatting the quota metadata line uses. Replaces the old hover detail's two side-by-side columns (same numbers, now always on screen). With several model pools, a footnote states the totals are summed and the reset time is the earliest |
+| Reset credits | Titled 「重置卡详情」. The collapsed row (**`重置卡数量：N`** + nearest expiry) followed by the **per-card list** (`ResetCreditsDetailList`): N available credits render as N+1 lines. **Zero available → the whole module is omitted** (not a `重置卡数量：0` line) |
 
 **Value (the fifth metric)** — `ModelPricingCatalog.estimate` over the window's
 **already filtered samples** (the very array the four buckets are summed from, so token
@@ -859,6 +904,18 @@ means samples are present but the catalog has no price for them. Summing several
 pools adds their money only while the currencies agree — a mixed-currency sum returns
 nil rather than a meaningless total.
 
+**Amounts ≥ 1,000,000 switch to compact units** (`¥1.23M` / `$2.50B`); below that the
+cell is `ModelCostEstimate.displayText` verbatim, with the partially-priced suffix
+carried over. The threshold is measured, not guessed: the 价值 column is 66.7pt at the
+420pt card content width, and `¥999999.99` — the longest form the plain path can
+produce — measures 64pt, so one more digit (`¥1000000.00` ≈ 77pt) is exactly what used
+to overflow into a truncated tail. `¥9.88M` measures ≈40pt, half the column to spare.
+The ladder is **K / M / B**, the same language the 用量 column already speaks
+(`Formatters.formatTokenCountCompact`: `30K` / `3M`), and the B rung exists so the
+formatter cannot lose its unit at some magnitude. 「万」 was considered and rejected:
+it is a second unit system the reader has to learn, and it only means anything for CNY —
+this column is original-currency, so `$123.4万` would simply be wrong.
+
 Ratio formulas (all three return `nil` — rendered `—` — when their denominator is 0;
 `0%` would read as "the ratio really is zero"):
 
@@ -867,6 +924,15 @@ Ratio formulas (all three return `nil` — rendered `—` — when their denomin
 | 命中 cache hit | `cached / (input + cached)` | 1 decimal (`97.8%`) |
 | 产出比 output to input | `(reason + output) / (input + cached)` | **fixed 3 decimals (`12.345%`)** — 0 decimals folded 12.4% and 11.6% into the same "12%", and the 5h / 周 / 今 rows sit close enough that they must stay comparable; fixed (not "at most") keeps the column monospaced |
 | 思考 reasoning share | `reason / (reason + output)` | 0 decimals (`41%`) |
+
+**The 产出比 cell explains itself on hover.** A cell holds either `12.345%` or a bare
+`—`, and neither says what the two sides of the fraction are. So the cell carries a
+`.help`: with a value, 「产出比 =（思考 + 输出）/（未缓存输入 + 缓存输入）」; without one,
+「会话无输入 token 时产出比无法计算，显示为 —」. The second string is the important one —
+`—` there is not zero, it is a ratio whose denominator is the entire input side and the
+session had none, and a dash in a numeric column is otherwise read as a missing reading
+rather than an undefined one. Both are constants on
+`QuotaWindowUsageMetricRow` and are pinned by a test.
 
 Data source and calibration:
 
@@ -890,10 +956,16 @@ Data source and calibration:
   the stats / raw-table modules — titles included — disappear** (the card's divider goes
   with them); a balance-only provider (DeepSeek API balance, no quota window at all)
   renders **nothing** — not an empty bar.
-- **Reset credits residency.** The per-card list is the module itself now (collapsed row
-  + list, always on screen); `CompactResetCreditsRow`'s own hover expansion
-  (`revealsDetail: true`) keeps its default only for symmetry with `ResetCreditsDetailList` —
-  no production call site expands it any more.
+- **Reset credits residency.** The per-card list is the module itself: the collapsed row
+  (`CompactResetCreditsRow`) plus `ResetCreditsDetailList`, unconditionally, always on
+  screen. There is nothing left to expand — `CompactResetCreditsRow` has no
+  `revealsDetail` parameter and no hover branch, and `ResetCreditsDetailList` has no
+  `showsHeader` parameter, no 「可用重置卡 N 张」 header and no 「暂无可用重置卡」 empty
+  state. The old hover form was deleted rather than left defaulted: the only construction
+  site passed `false`, so the expanded branch was unreachable in production, and keeping
+  it alive would have shown a **second** copy of the list on the one host that can still
+  receive hover (the main menu's own hover rows). Zero available credits is handled by
+  the module rule above, so the list never needs an empty state of its own.
 - **Height ceiling.** `LayoutMetricsTests` still lays the card out for real and caps it at
   **800pt** — `testDockDetailStaysUnderTheRearrangedCeiling` on the light fixture,
   `testDockDetailWithTheFullestQuotaWindowSectionStaysUnderTheSameCeiling` with reset
@@ -1214,6 +1286,34 @@ Typography is semantic rather than chosen independently by each pane: 20pt bold 
 titles, `subheadline` for subtitles and supporting text, `caption` for section titles,
 footers, and metadata, `body` for row labels, and `footnote` for inline status messages.
 
+### Per-provider 「立即刷新」 (single-provider refresh)
+
+Every **enabled** provider pane carries one small 「立即刷新」 row inside its
+「认证与刷新」 section (Antigravity is the exception on placement: it has no auth
+block, so the row sits in 「刷新频率」 instead). It is a `SettingsControlRow` with a
+borderless `arrow.clockwise` button and the tooltip 「立即刷新该 Provider」, built by the
+shared `providerRefreshButton(for:)` so the five panes are one line each. The button is
+rendered only for a provider that has a registered descriptor — an unregistered kind
+has no id to refresh, so there is nothing to route to.
+
+It routes to `AppState.refreshOne(providerID:)`, the **same chain** as the menu's
+provider-strip right-click item (see *Provider fallback strip*): one provider's request,
+one provider's schedule re-anchored, every other provider's next tick untouched. On
+Antigravity it sits **beside** the local-usage hard rebuild, not instead of it — one
+re-fetches quota and re-anchors the schedule, the other force-rescans every local
+session; they answer different questions and neither replaces the other.
+
+**The in-flight signal is global, on purpose.** While `AppState.isRefreshJobActive` is
+true every pane's button is disabled and swaps its icon for a small `ProgressView`.
+There is no per-provider in-flight signal to read, and guessing one would mean
+maintaining a second verdict next to the global one; the same flag already gates the
+menu's header refresh button and Antigravity's rebuild button, so all three agree.
+`SettingsProviderRefreshAction` (a value type mirroring the menu's `RefreshMenuItem`)
+holds the routing and the disable decision, because a SwiftUI `Button` has no
+addressable seam — the tests pin the action, the view only draws it. The greyed-out
+first layer is UX, not correctness: repeated clicks are absorbed by `refreshOne`'s
+transaction gate.
+
 ## Header
 
 Implemented in `MenuContentView.headerBar`.
@@ -1307,6 +1407,19 @@ Current styling:
 - footer actions use lightweight, keyboard-accessible plain buttons instead of gesture-only labels
 - separators are 1pt low-contrast vertical rules
 
+**All menu hairlines are one component** (`MenuHairline`). Three call sites — the
+section header's lower edge, the provider strip's upper edge, and the footer's vertical
+separators — used to spell the same line out by hand
+(`Rectangle().fill(Color.primary.opacity(0.08)).frame(height: 1)` /
+`frame(width: 1, height: 10)`). They are the same line in two orientations: one 1pt
+stroke, one 8% foreground colour, on the same glass. Converged into one view so a
+change to weight or colour moves all three at once — leaving one behind puts two
+different lines on one panel. The horizontal form sets **no width**: all its call sites
+hang it off an `.overlay`, so the width has to come from the container, and hardcoding
+it here would decouple the rule from what it is ruling. Spec: thickness 1pt, opacity
+0.08, vertical length 10pt; the numbers are pinned by a test so the refactor stays
+appearance-neutral.
+
 ## Provider Card
 
 `ProviderCardView` 现在只有**一个**渲染宿主形态：边缘状态窗的 provider 详情浮层，
@@ -1372,7 +1485,8 @@ Row-level tint rules:
 | Seven-day local statistics | 不在标题行，在**本地用量那一段**（`LocalUsageFooterView` → `SevenDayTokenUsageHoverView`）：`.alwaysVisible` 下就地展开成第二张卡的内容，`.onHover` 下才是悬停弹层 |
 
 状态点的配色（已连同视图删除）原为：healthy 绿 / warning 橙 / critical 红，
-`nil` 健康度显示灰点；语义色本身仍由 `healthyTint` / `warningTint` 提供。
+`nil` 健康度显示灰点；三档语义色本身由 `healthyTint` / `warningTint` /
+`criticalTint` 提供（见 *Progress And Health Colors*）。
 
 Bundled brand assets are used consistently in provider card headers and Settings navigation.
 They cover Minimax, OpenAI, Antigravity, GLM, and DeepSeek; OpenCode has separate light
@@ -1563,7 +1677,7 @@ Quota summary line:
 
 | Part | Style |
 |---|---|
-| Progress bar | **整行宽**（约 312pt，跟随卡片内容宽度），8pt height。The first segment is `min(5h remaining, weekly remaining × N)`；若周额度尚有余量，下一格先显示 `(weekly remaining × N - 5h remaining) mod 1`，再显示整格周额度 |
+| Progress bar | **整行宽**（跟随卡片内容宽度，即两个宿主共同的 **420pt**；不是旧主菜单的 312pt），8pt height。The first segment is `min(5h remaining, weekly remaining × N)`；若周额度尚有余量，下一格先显示 `(weekly remaining × N - 5h remaining) mod 1`，再显示整格周额度 |
 | Data column | 双窗口 `5h X%  周 Y%` 使用 `quotaCombinedDataColumnWidth` 固定 **152pt** 宽，单窗口使用 `quotaSingleDataColumnWidth` 固定 **80pt** 宽；两者均左对齐，让 reset time 从一致的 x 位置开始。内部 per-percent 框保持 "5h" 和 "周" 列对齐 |
 | Labels (`5h`, `周`) | 10pt semibold, secondary |
 | Percent | 10pt semibold monospaced digit，每个用 32pt 固定右对齐宽 |
@@ -1598,22 +1712,34 @@ The 周倍率 label（`周倍率：N`，标题右侧）expresses a provider-spec
 
 ## Progress And Health Colors
 
+**The three health colors are tokens, not literals.** `Color.criticalTint`
+(systemRed), `Color.warningTint` (systemOrange) and `Color.healthyTint` (systemGreen) in
+`Color+Theme.swift` are the single definition, and the bar fill, the summary/reset
+color, the `ProviderStateLabel` red capsule and the reset-credit row's three tiers all
+read them. `systemRed` is the reason the critical tier needed a token too: SwiftUI's
+`.red` is a **fixed** colour that does not follow the appearance, so on a light card it
+stays the same hot red its dark-card contrast was chosen for, exactly the problem
+`healthyTint` already had. Custom `statusBarHealthColors` are **not** wired into these
+tokens yet — that config still feeds only the menu-bar icon dot and the dock circle,
+and making it reach the card means plumbing a dynamic colour through `AppState`; it is
+deliberately future work rather than a silent half-wiring.
+
 Progress bar fill (`SegmentedQuotaProgressBar.intervalSegmentColor` /
 `weeklySegmentColor` and `ModelQuota.colorLevel`):
 
 | Remaining percent | Health Level | Color |
 |---|---|---|
-| `< 15` | critical | red |
-| `< 30` (5h) / `< min(time%, 50)` (weekly) | warning | yellow |
+| `< 15` | critical | `Color.criticalTint` |
+| `< 30` (5h) / `< min(time%, 50)` (weekly) | warning | `Color.warningTint` |
 | otherwise | healthy | provider/model tint |
 
 Reset time color (`summaryColor(for:)`):
 
 | Remaining percent | Color |
 |---|---|
-| `< 15` | red |
-| `< 30` (5h) / `< min(time%, 50)` (weekly) | yellow |
-| `> 80` | green |
+| `< 15` | `Color.criticalTint` |
+| `< 30` (5h) / `< min(time%, 50)` (weekly) | `Color.warningTint` |
+| `> 80` | `Color.healthyTint` |
 | otherwise | primary |
 
 ## Quota Notifications (system + Bark)
@@ -1654,9 +1780,11 @@ the session is unlocked; display sleep or a locked screen (user away) both deliv
 
 Since the 2026-10 second-round pass, reset credits live in one **resident module** at
 the end of the quota-window usage block (see *Quota window usage block*): the collapsed
-row — `CompactResetCreditsRow`, shown when
-`info.resetCredits?.shouldDisplay == true` — followed by the per-card list. Zero
-available credits → the whole module (not just the list) is omitted.
+row (`CompactResetCreditsRow`) followed by the per-card list. The module's single
+visibility rule is **available count > 0**; zero available → the whole module is
+omitted, not just the list. The old `ResetCreditsInfo.shouldDisplay` predicate that
+expressed this was deleted — it was a second answer to a question the count already
+answers, and two answers to one question is how they drift apart.
 
 Collapsed row:
 
@@ -1664,13 +1792,14 @@ Collapsed row:
 arrow.counterclockwise.circle.fill  重置卡数量：N  [可能过期 · 上次更新 HH:mm]  🕓 MM-dd HH:mm
 ```
 
-Row color (the icon + the count text together):
+Row color (the icon + the count text together) — these are the semantic health
+tokens, not literals, so all three tiers hold their contrast in both appearances:
 
 | Available count | Color |
 |---|---|
-| `0` | red |
-| `1` | orange |
-| `>= 2` | green |
+| `0` | `Color.criticalTint` (systemRed) |
+| `1` | `Color.warningTint` (systemOrange) |
+| `>= 2` | `Color.healthyTint` (systemGreen) |
 
 Rows are only shown for entries with `expiresAt != nil`.
 
@@ -1702,6 +1831,10 @@ The UI intentionally hides reset-credit id, title, description, and grant time.
 | Reset relative time | 11pt semibold |
 | Error message | 11pt |
 | Footer text/buttons | 9pt medium |
+
+The card's failure row is the one place in this table that is a **literal** 11pt rather
+than a `MenuTypography` role: the `errorMessage` role had no call site and was deleted
+rather than left as an unused role. The rendered size is unchanged.
 
 ## Non-Goals
 
