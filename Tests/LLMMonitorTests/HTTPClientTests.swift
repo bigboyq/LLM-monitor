@@ -1,10 +1,152 @@
 import XCTest
+import Foundation
 @testable import LLM_monitor
 
-/// R2: HTTP/RPC 响应体硬上限测试。
-/// 直接验证 CappedDownloadDelegate 的累计/上限/提前拒绝逻辑（cap 机制的核心），
-/// 并用 URLProtocol 覆盖正常交付路径（恰好等于上限、低于上限、非 2xx）。
-final class ResponseCapTests: XCTestCase {
+/// `Services/Infra/HTTPClient.swift`：取消透传、诊断错误体截断、QuotaError
+/// 文案，以及 HTTP/RPC 响应体硬上限（R2 cap 机制）。
+/// 由 `HTTPAndSQLiteTests` 的 HTTP 部分 + 整份 `ResponseCapTests` 合并而成，
+/// 逐字搬移零逻辑变化。
+final class HTTPClientTests: XCTestCase {
+
+    // MARK: - HTTPClient 取消语义
+
+    func testQuotaErrorDoesNotDuplicateHTTPStatus() {
+        let error = QuotaError.httpError(status: 503, body: "HTTP 503，响应 12 bytes")
+        XCTAssertEqual(error.localizedDescription, "HTTP 503，响应 12 bytes")
+    }
+
+    func testQuotaErrorProvidesProviderSpecificAuthenticationGuidance() {
+        let error = QuotaError.httpError(status: 401, body: "unauthorized")
+
+        XCTAssertEqual(
+            QuotaError.userFacingDescription(for: error, providerKind: .codexChatGpt),
+            "Codex 登录已失效，请运行 codex login 后重试"
+        )
+        XCTAssertEqual(
+            QuotaError.userFacingDescription(for: error, providerKind: .antigravity),
+            "Antigravity 登录已失效，请重新启动 Antigravity 并完成登录"
+        )
+        // round 11 P1：minimax / GLM 也需要 provider-specific 提示，
+        // 否则用户看到通用 "HTTP 401" 不知道该换 key 还是换账号。
+        XCTAssertEqual(
+            QuotaError.userFacingDescription(for: error, providerKind: .minimaxTokenPlan),
+            "minimax API Key 无效或已过期"
+        )
+        XCTAssertEqual(
+            QuotaError.userFacingDescription(for: error, providerKind: .glmCodingPlan),
+            "GLM Coding Plan Key 无效或已过期"
+        )
+    }
+
+    /// 之前 `HTTPClient.send` 把 `CancellationError` / `URLError.cancelled` 包装成
+    /// `QuotaError.networkError`，配置变更 / 停止刷新时取消请求会被记成 provider failed、
+    /// 走失败排期。修后必须透传 `CancellationError`。
+    func testHTTPClientSurfacesCancellationError() async throws {
+        let cancellableURL = URL(string: "https://example.invalid/slow")!
+        let client = HTTPClient(
+            session: HangingSession.makeSession(),
+            logTag: "[test/cancel]",
+            defaultTimeout: 30
+        )
+        var req = URLRequest(url: cancellableURL)
+        req.httpMethod = "GET"
+
+        let task = Task<Bool, Error> {
+            do {
+                _ = try await client.send(req, includeBodyInError: true)
+                return false  // 不应该走到这里
+            } catch is CancellationError {
+                return true
+            } catch let error as URLError where error.code == .cancelled {
+                return true
+            } catch {
+                // networkError 包装算失败
+                XCTFail("CancellationError 被包装成 \(error)")
+                return false
+            }
+        }
+
+        // 立即取消 —— 让 hanging session 抛 cancelled
+        task.cancel()
+
+        let wasCancelled = try await task.value
+        XCTAssertTrue(wasCancelled, "HTTPClient.send 应当透传 CancellationError，而不是包成 QuotaError.networkError")
+    }
+
+    /// `URLSession` 子类：所有请求都挂住，不返回任何响应。
+    /// 直到 task 被取消。
+    private final class HangingSession: NSObject, URLSessionDelegate {
+        static func makeSession() -> URLSession {
+            let config = URLSessionConfiguration.ephemeral
+            config.protocolClasses = [HangingProtocol.self]
+            config.timeoutIntervalForRequest = 30
+            return URLSession(configuration: config, delegate: nil, delegateQueue: nil)
+        }
+    }
+
+    private final class HangingProtocol: URLProtocol {
+        override class func canInit(with request: URLRequest) -> Bool { true }
+        override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+        override func startLoading() {
+            // 不调用 urlProtocol(_:didReceive:response:cacheStoragePolicy:) / didFinishLoading
+            // 让请求一直挂住。取消时 URLProtocol 会被通知 stopLoading。
+        }
+
+        override func stopLoading() {
+            // Task 取消 → URLSession 调用 stopLoading，模拟真实场景的 cancelled
+            if let client = client {
+                let error = URLError(.cancelled)
+                client.urlProtocol(self, didFailWithError: error)
+            }
+        }
+    }
+
+    private final class ErrorResponseProtocol: URLProtocol {
+        override class func canInit(with request: URLRequest) -> Bool { true }
+        override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+        override func startLoading() {
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 500,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: Data(repeating: 65, count: 600))
+            client?.urlProtocolDidFinishLoading(self)
+        }
+
+        override func stopLoading() {}
+    }
+
+    func testHTTPClientCapsDiagnosticErrorBodyAt500Characters() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ErrorResponseProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let client = HTTPClient(session: session, logTag: "[test/body-limit]")
+        let request = URLRequest(url: URL(string: "https://example.invalid/error")!)
+
+        do {
+            _ = try await client.send(request, includeBodyInError: true)
+            XCTFail("expected HTTP error")
+        } catch let error as QuotaError {
+            guard case .httpError(let status, let body) = error else {
+                XCTFail("expected QuotaError.httpError, got \(error)")
+                return
+            }
+            XCTAssertEqual(status, 500)
+            XCTAssertEqual(body.count, 500)
+            XCTAssertTrue(body.allSatisfy { $0 == "A" })
+        }
+    }
+
+    // MARK: - R2: HTTP/RPC 响应体硬上限
+
+    // R2 cap 测试（原 `ResponseCapTests`）：直接验证 CappedDownloadDelegate 的
+    // 累计/上限/提前拒绝逻辑（cap 机制的核心），并用 URLProtocol 覆盖正常交付
+    // 路径（恰好等于上限、低于上限、非 2xx）。
 
     /// 可注入响应的测试 URLProtocol，用于正常交付路径（不测 cancel race）。
     private final class TestURLProtocol: URLProtocol {
