@@ -11,8 +11,6 @@ enum MenuTypography {
     static let pill = Font.system(size: 9, weight: .semibold)
     /// 模型名称 (Gemini 2.5 Flash 等)
     static let modelTitle = Font.system(size: 11, weight: .semibold)
-    /// 周倍率与辅助标记
-    static let multiplier = Font.system(size: 10, weight: .medium).monospacedDigit()
     /// 数据行标签 (5h, 周)
     static let dataLabel = Font.system(size: 10, weight: .semibold)
     /// 数据行百分比与数值
@@ -27,8 +25,6 @@ enum MenuTypography {
     /// 今日指标与小徽标
     static let metricLabel = Font.system(size: 10, weight: .medium)
     static let metricValue = Font.system(size: 10, weight: .medium).monospacedDigit()
-    /// 错误与警示消息
-    static let errorMessage = Font.system(size: 11, weight: .medium)
     /// 占位文本与空提示
     static let hint = Font.system(size: 10)
     static let caption = Font.system(size: 11)
@@ -39,11 +35,9 @@ enum MenuTypography {
     /// 悬浮面板正文重点
     static let hoverRowEmphasis = Font.system(size: 11, weight: .semibold)
     /// 悬浮面板正文/数值
-    static let hoverBody = Font.system(size: 11, weight: .medium)
     static let hoverBodyMonospaced = Font.system(size: 11, weight: .medium).monospacedDigit()
     /// 悬浮面板辅助说明 (最低 10pt，严禁低于 HIG 规范)
     static let hoverCaption = Font.system(size: 10, weight: .regular)
-    static let hoverCaptionEmphasis = Font.system(size: 10, weight: .medium)
     /// 悬浮面板微型注释与来源脚注
     static let hoverFootnote = Font.system(size: 10, weight: .regular)
 }
