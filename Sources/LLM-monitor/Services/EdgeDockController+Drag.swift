@@ -29,7 +29,8 @@ extension EdgeDockController {
         let size = EdgeDockGeometry.dockSize(
             entryCount: dragEntryCount,
             edge: edge,
-            appearance: isCompactAppearance ? .compact : .full
+            appearance: isCompactAppearance ? .compact : .full,
+            compactSize: config.compactSize
         )
         // `offset` 相反：它只决定**窗口**位置，视图一次也没读过它
         // （`EdgeDockContentView` 只消费 `config.edge`）。拖拽期间留在非发布的

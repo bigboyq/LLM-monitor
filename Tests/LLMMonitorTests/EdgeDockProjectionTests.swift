@@ -135,6 +135,117 @@ final class EdgeDockProjectionTests: EdgeDockTestCase {
         XCTAssertEqual(Set(ids).count, ids.count, "id 不重复")
     }
 
+    // MARK: - 逐窗口色档（内外环独立取色的输入）
+
+    /// 5h 档位：固定 30% 黄线（`colorLevel` 的 `timeFraction == nil` 分支）、
+    /// 固定 15% 红线。三个值分别落在红、黄、绿三段上——任何一个阈值漂了
+    /// （比如有人把黄线改成 20%），这条会跟着红。
+    func testIntervalHealthUsesFixedThirtyPercentYellowLine() {
+        let red = makeStatus(id: "red", state: .ok(makeInfo([
+            makeModel(name: "g", intervalPercent: 10),
+        ])))
+        XCTAssertEqual(
+            EdgeDockProjection.intervalHealth(red, at: Self.makeNow), .critical,
+            "10% 低于固定 15% 的红线"
+        )
+
+        let yellow = makeStatus(id: "yellow", state: .ok(makeInfo([
+            makeModel(name: "g", intervalPercent: 25),
+        ])))
+        XCTAssertEqual(
+            EdgeDockProjection.intervalHealth(yellow, at: Self.makeNow), .warning,
+            "25% 在 15% 红线与 30% 黄线之间"
+        )
+
+        let green = makeStatus(id: "green", state: .ok(makeInfo([
+            makeModel(name: "g", intervalPercent: 30),
+        ])))
+        XCTAssertEqual(
+            EdgeDockProjection.intervalHealth(green, at: Self.makeNow), .healthy,
+            "30% 正好压线，不吃动态黄线"
+        )
+    }
+
+    /// 周档位：阈值 = min(剩余时间%, 50)。剩余时间多（0.6）时黄线收紧到 50%，
+    /// 40% 落在黄线以下 → 黄；剩余时间少（0.2）时黄线只有 20%，40% 高于它 → 绿。
+    /// 同一个百分比、不同的剩余时间给出不同的颜色，正是"时间感知阈值"存在的理由。
+    func testWeeklyHealthTightensWithRemainingTime() {
+        let plentyOfTime = makeStatus(id: "plenty", state: .ok(makeInfo([
+            weeklyModel(percent: 40, timeFraction: 0.6),
+        ])))
+        XCTAssertEqual(
+            EdgeDockProjection.weeklyHealth(plentyOfTime, at: Self.makeNow), .warning,
+            "剩余时间 60% 时黄线是 min(60, 50) = 50，40% 在黄线以下"
+        )
+
+        let runningOut = makeStatus(id: "short", state: .ok(makeInfo([
+            weeklyModel(percent: 40, timeFraction: 0.2),
+        ])))
+        XCTAssertEqual(
+            EdgeDockProjection.weeklyHealth(runningOut, at: Self.makeNow), .healthy,
+            "剩余时间 20% 时黄线是 20，40% 在黄线以上"
+        )
+    }
+
+    /// 周色档**不吃**周等效倍率——与 `weeklyFraction` 同一个理由。内环表达的是
+    /// "周额度本身还剩多少"，乘完 N 之后 40% 变成 240%，永远绿，读出来就不是周额度了。
+    func testWeeklyHealthUsesRawPercentNotEquivalentMultiplier() {
+        let status = makeStatus(id: "codex", kind: .codexChatGpt, state: .ok(makeInfo([
+            weeklyModel(percent: 20, timeFraction: 0.6),
+        ])))
+        // 20% 低于 50% 的黄线，但高于固定 15% 的红线 → 黄。
+        XCTAssertEqual(EdgeDockProjection.weeklyHealth(status, at: Self.makeNow), .warning)
+        XCTAssertEqual(EdgeDockProjection.weeklyFraction(status, at: Self.makeNow) ?? -1, 0.20, accuracy: 0.0001)
+    }
+
+    /// 一个 provider 下多个 model 时**逐窗口**取最差档：颜色必须和弧长指向同一个
+    /// 瓶颈，否则会出现"弧长来自 model a、颜色来自 model b"。
+    func testPerWindowHealthTakesTheWorstModel() {
+        let status = makeStatus(id: "multi", state: .ok(makeInfo([
+            quotaModel(intervalPercent: 90, weeklyPercent: 95, weeklyTimeFraction: 0.6),
+            quotaModel(intervalPercent: 10, weeklyPercent: 20, weeklyTimeFraction: 0.6),
+        ])))
+        XCTAssertEqual(
+            EdgeDockProjection.intervalHealth(status, at: Self.makeNow), .critical,
+            "10% 低于固定 15% 的红线，最差的那个 model 决定整环"
+        )
+        XCTAssertEqual(
+            EdgeDockProjection.weeklyHealth(status, at: Self.makeNow), .warning,
+            "20% 低于 min(60, 50) = 50 的黄线"
+        )
+    }
+
+    /// 没有某个窗口 = 该窗口的色档是 nil（"读不到"），而不是某一档颜色。
+    /// 视图据此落回中性灰：灰 ≠ 绿 ≠ 红。
+    func testPerWindowHealthIsNilWithoutThatWindow() {
+        let intervalOnly = makeStatus(id: "interval_only", state: .ok(makeInfo([
+            makeModel(name: "g", intervalPercent: 50),
+        ])))
+        XCTAssertEqual(EdgeDockProjection.intervalHealth(intervalOnly, at: Self.makeNow), .healthy)
+        XCTAssertNil(EdgeDockProjection.weeklyHealth(intervalOnly, at: Self.makeNow))
+
+        let noData = makeStatus(id: "ready", state: .ready)
+        XCTAssertNil(EdgeDockProjection.intervalHealth(noData, at: Self.makeNow))
+        XCTAssertNil(EdgeDockProjection.weeklyHealth(noData, at: Self.makeNow))
+        XCTAssertNil(EdgeDockProjection.entries(from: [noData]).first?.intervalHealth)
+        XCTAssertNil(EdgeDockProjection.entries(from: [noData]).first?.weeklyHealth)
+    }
+
+    /// 投影必须把两个色档一起带出来：视图按 entry 取色，不回头再算一遍。
+    /// 漏带的后果是"弧长有、颜色却是灰的"——用户读成没有数据。
+    func testProjectionCarriesPerWindowHealth() {
+        let status = makeStatus(id: "dual", state: .ok(makeInfo([
+            quotaModel(intervalPercent: 20, weeklyPercent: 90, weeklyTimeFraction: 0.6),
+        ])))
+        let entry = EdgeDockProjection.entries(from: [status], at: Self.makeNow)[0]
+        XCTAssertEqual(entry.intervalHealth, .warning)
+        XCTAssertEqual(entry.weeklyHealth, .healthy)
+        XCTAssertNotEqual(
+            entry.intervalHealth, entry.weeklyHealth,
+            "这正是独立取色要表达的差别：5h 已经偏紧、周还很空"
+        )
+    }
+
     // MARK: - 条目顺序 = 配置里的 provider 顺序
 
     /// dock 必须按设置页里排的顺序展示，且与菜单卡片**同序**：

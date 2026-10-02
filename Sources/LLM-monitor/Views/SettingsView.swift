@@ -22,6 +22,8 @@ struct SettingsView: View {
     // 设置窗口开着的时候改它——从 @State 写回就会把用户刚拖出来的位置抹掉。
     @State var edgeDockMode: EdgeDockMode = EdgeDockConfig.default.mode
     @State var edgeDockHideInFullscreen: Bool = EdgeDockConfig.default.hideInFullscreen
+    @State var edgeDockCompactSize: EdgeDockCompactSize = EdgeDockConfig.default.compactSize
+    @State var edgeDockIndependentRingColors: Bool = EdgeDockConfig.default.independentRingColors
 
     @State var minimaxEnabled: Bool = false
     @State var minimaxInterval: Int = 0
@@ -499,6 +501,32 @@ struct SettingsView: View {
                         .font(SettingsTypography.status)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
+
+                    SettingsControlRow("小圆环尺寸") {
+                        Picker("", selection: $edgeDockCompactSize) {
+                            ForEach(EdgeDockCompactSize.allCases) { size in
+                                Text(size.displayName).tag(size)
+                            }
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.menu)
+                        .frame(width: SettingsLayout.standardControlWidth, alignment: .trailing)
+                    }
+                    // 简版尺寸**只在有简版消费者时才有意义**：形态选了「无」不显示，
+                    // 「状态窗」常驻完整、外环是 38pt 固定值，两种情况下改这一档
+                    // 屏幕上的像素一动不动。与全屏开关同一套禁用口径。
+                    .disabled(!edgeDockMode.usesCompactAppearance)
+
+                    SettingsToggleRow(label: "内外环独立取色", isOn: $edgeDockIndependentRingColors)
+
+                    Text(
+                        edgeDockIndependentRingColors
+                            ? "开启后外环按 5 小时窗口、内环按周窗口各自的时间感知阈值取色；关闭后两环同色，取该 Provider 的整体健康度。"
+                            : "两环同色，取该 Provider 的整体健康度；开启后可分别读出 5 小时与周窗口各自的吃紧程度。"
+                    )
+                    .font(SettingsTypography.status)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
 
                     SettingsToggleRow(label: "全屏时不显示", isOn: $edgeDockHideInFullscreen)
                         .disabled(!edgeDockMode.isVisible)
@@ -1064,6 +1092,8 @@ struct SettingsView: View {
         let edgeDock = config.effectiveEdgeDockConfig
         edgeDockMode = edgeDock.mode
         edgeDockHideInFullscreen = edgeDock.hideInFullscreen
+        edgeDockCompactSize = edgeDock.compactSize
+        edgeDockIndependentRingColors = edgeDock.independentRingColors
         barkEnabled = config.bark?.enabled ?? false
         barkServerURL = config.bark?.serverURL ?? BarkConfig.defaultServerURL
         barkDeviceKey = config.bark?.deviceKey ?? ""
@@ -1199,13 +1229,19 @@ struct SettingsView: View {
         // 原值，手改成 `"offset": 42` 时不会被 `normalized` 拉回 [0, 1]，于是每次
         // 在设置页点保存都会把这个越界值原样写回去，而 dock 那边显示的是钳到 0.5 的
         // 结果——两者长期不一致。`loadCurrentConfig` 已经用的是这个入口，这里对齐。
+        //
+        // 下面这个**逐字段重建**必须把每一个有 UI 消费者的字段都显式写出来：
+        // `EdgeDockConfig` 的 init 给了默认值，漏写一个不会报错、不会警告，只会在
+        // 用户点保存的那一刻把这个字段重置成默认（`edge` 曾经就踩过这个前科）。
         let existingEdgeDock = configStore.config.effectiveEdgeDockConfig
         let nextEdgeDock = EdgeDockConfig(
             mode: edgeDockMode,
             edge: existingEdgeDock.edge,
             offset: existingEdgeDock.normalized.offset,
             screenUUID: existingEdgeDock.screenUUID,
-            hideInFullscreen: edgeDockHideInFullscreen
+            hideInFullscreen: edgeDockHideInFullscreen,
+            compactSize: edgeDockCompactSize,
+            independentRingColors: edgeDockIndependentRingColors
         )
         let defaultEdgeDock = EdgeDockConfig.default
         config.edgeDock = (nextEdgeDock == defaultEdgeDock) ? nil : nextEdgeDock

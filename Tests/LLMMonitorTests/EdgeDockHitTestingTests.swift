@@ -298,55 +298,68 @@ final class EdgeDockHitTestingTests: EdgeDockTestCase {
     }
 
     func testCircleIndexHonoursMinimumRadiusForCompactRings() {
-        // 「小圆环」形态逐行 hover 用：7pt 的圆（半径 3.5）照圆判定等于要指中一个
-        // 7px 的点，指偏 4pt 就换了一张卡。传半个行距当判定半径下限之后，
-        // 圆心旁 6pt 处仍然命中**这一行**。
-        let compact = EdgeDockGeometry.dockSize(entryCount: 3, edge: .right, appearance: .compact)
-        let dock = makeDockFrame(edge: .right, entryCount: 3, size: compact)
-        let step = EdgeDockGeometry.compactRowStep
-        var circles: [CGRect] = []
-        for index in 0..<3 {
-            let center = CGPoint(
-                x: dock.midX,
-                y: dock.maxY - EdgeDockGeometry.compactPadding - EdgeDockGeometry.compactDiameter / 2
-                    - CGFloat(index) * step
+        // 「小圆环」形态逐行 hover 用：小档 7pt 的圆（半径 3.5）照圆判定等于要指中
+        // 一个 7px 的点，指偏 4pt 就换了一张卡。传半个行距当判定半径下限之后，
+        // 圆心旁 6pt 处仍然命中**这一行**。三档的行距不同，判定半径也跟着变。
+        for size in EdgeDockCompactSize.allCases {
+            let m = EdgeDockGeometry.compactMetrics(for: size)
+            let compact = EdgeDockGeometry.dockSize(
+                entryCount: 3, edge: .right, appearance: .compact, compactSize: size
             )
-            circles.append(CGRect(
-                x: center.x - EdgeDockGeometry.compactDiameter / 2,
-                y: center.y - EdgeDockGeometry.compactDiameter / 2,
-                width: EdgeDockGeometry.compactDiameter,
-                height: EdgeDockGeometry.compactDiameter
-            ))
+            let dock = makeDockFrame(edge: .right, entryCount: 3, size: compact)
+            let step = EdgeDockGeometry.compactRowStep(for: size)
+            let circles: [CGRect] = (0..<3).map { index in
+                let center = CGPoint(
+                    x: dock.midX,
+                    y: dock.maxY - m.padding - m.diameter / 2 - CGFloat(index) * step
+                )
+                return CGRect(
+                    x: center.x - m.diameter / 2,
+                    y: center.y - m.diameter / 2,
+                    width: m.diameter,
+                    height: m.diameter
+                )
+            }
+            // 圆外一点（圆半径 +1.5pt）：按圆判定不命中，按半个行距判定命中。
+            // 偏移量必须**跟着档位算**——写死 6 在中/大档上会落进圆内，那条
+            // "不传下限时按圆判定"的断言会变成在测另一件事。
+            let outside = m.diameter / 2 + 1.5
+            let sixOut = CGPoint(x: circles[1].midX + outside, y: circles[1].midY)
+            XCTAssertNil(
+                EdgeDockController.circleIndex(at: sixOut, circles: circles),
+                "\(size) 不传下限时行为与从前逐字相同：只认圆半径"
+            )
+            XCTAssertEqual(
+                EdgeDockController.circleIndex(
+                    at: sixOut, circles: circles, minimumRadius: step / 2
+                ),
+                1,
+                "\(size) 半个行距 \(step / 2)pt 必须覆盖到圆外 \(outside)pt 处"
+            )
+            // 相邻两环的判定区在中点接上：越靠近哪一个就归哪一个，不会因为"先遍历到
+            // 上面那个"而张冠李戴（中点 ±0.5pt 那一格是 0.5pt 容差，两边都算命中，
+            // 循环先到者胜——与完整形态用同一条容差规则，不另开特例）。
+            // 取"半个行距往回 2.1pt"：明显偏向本环，又不越中点，三档通用。
+            let nearerToSecond = CGPoint(
+                x: circles[1].midX, y: circles[1].midY - (step / 2 - 2.1)
+            )
+            XCTAssertEqual(
+                EdgeDockController.circleIndex(
+                    at: nearerToSecond, circles: circles, minimumRadius: step / 2
+                ),
+                1,
+                "\(size) 明显更靠近第二个环的点必须算第二个环"
+            )
+            let nearerToFirst = CGPoint(
+                x: circles[0].midX, y: circles[0].midY + (step / 2 - 2.1)
+            )
+            XCTAssertEqual(
+                EdgeDockController.circleIndex(
+                    at: nearerToFirst, circles: circles, minimumRadius: step / 2
+                ),
+                0,
+                "\(size) 明显更靠近第一个环的点必须算第一个环"
+            )
         }
-        // 半径 3.5 的圆心旁 6pt：按圆判定不命中，按半个行距（7.5pt）判定命中。
-        let sixOut = CGPoint(x: circles[1].midX + 6, y: circles[1].midY)
-        XCTAssertNil(
-            EdgeDockController.circleIndex(at: sixOut, circles: circles),
-            "不传下限时行为与从前逐字相同：7pt 的圆只认 3.5pt"
-        )
-        XCTAssertEqual(
-            EdgeDockController.circleIndex(
-                at: sixOut, circles: circles, minimumRadius: step / 2
-            ),
-            1
-        )
-        // 相邻两环的判定区在中点接上：越靠近哪一个就归哪一个，不会因为"先遍历到
-        // 上面那个"而张冠李戴（中点 ±0.5pt 那一格是 0.5pt 容差，两边都算命中，
-        // 循环先到者胜——与完整形态用同一条容差规则，不另开特例）。
-        let nearerToSecond = CGPoint(x: circles[1].midX, y: circles[1].midY - 5.4)
-        XCTAssertEqual(
-            EdgeDockController.circleIndex(
-                at: nearerToSecond, circles: circles, minimumRadius: step / 2
-            ),
-            1,
-            "明显更靠近第二个环的点必须算第二个环"
-        )
-        let nearerToFirst = CGPoint(x: circles[0].midX, y: circles[0].midY + 5.4)
-        XCTAssertEqual(
-            EdgeDockController.circleIndex(
-                at: nearerToFirst, circles: circles, minimumRadius: step / 2
-            ),
-            0
-        )
     }
 }

@@ -55,6 +55,38 @@ struct EdgeDockContentView: View {
         configStore.config.effectiveStatusBarHealthColors
     }
 
+    /// 收起形态当前这一档的尺寸。
+    ///
+    /// 读 `controller.config`（而不是 `configStore.config`）：窗口尺寸、命中兜底、
+    /// popover 定位全部读的是控制器那份**已发布**的运行时配置，而内容必须和它们
+    /// 逐帧一致。`configStore.$config` 的订阅是 `receive(on: DispatchQueue.main)`
+    /// ——一次异步跳转，在那段空窗里两边读到的是两个值，内容会先按新尺寸排好、
+    /// 窗口还停在旧尺寸，正好是"同曲线同时长"要防的错位帧。
+    private var compactMetrics: EdgeDockGeometry.CompactMetrics {
+        EdgeDockGeometry.compactMetrics(for: controller.config.compactSize)
+    }
+
+    /// 完整↔简版变形的动画驱动值。
+    ///
+    /// `.animation(_:value:)` 只在 `value` **变了**时播放。原来这个 value 是
+    /// `isCompactAppearance`：只改简版档位时它不变，于是环径 / 行距 / 内边距**瞬变**
+    /// （内容不插值），窗口侧却因为 `configCancellable` 判成形态过渡而播 0.25s ——
+    /// 窗口独舞，正是 `EdgeDockController.contentMorphDuration` 注释里禁止的错位。
+    ///
+    /// 所以 value 必须是"这一帧决定排版的全部输入"：外观（完整/简版）+ 简版档位。
+    /// 两者任一变化都触发同一条曲线的内容插值，与窗口侧同判据。
+    private struct FormSignature: Equatable {
+        let isCompact: Bool
+        let compactSize: EdgeDockCompactSize
+    }
+
+    private var formSignature: FormSignature {
+        FormSignature(
+            isCompact: controller.isCompactAppearance,
+            compactSize: controller.config.compactSize
+        )
+    }
+
     /// 堆叠方向。竖排第 0 行在上，横排第 0 列在左。
     ///
     /// 与 `entries` 的配置顺序合成完整阅读顺序：贴左/右 → **从上往下**；
@@ -82,7 +114,7 @@ struct EdgeDockContentView: View {
     var body: some View {
         stack(
             spacing: controller.isCompactAppearance
-                ? EdgeDockGeometry.compactSpacing
+                ? compactMetrics.spacing
                 : EdgeDockGeometry.spacing
         ) {
             ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
@@ -91,7 +123,7 @@ struct EdgeDockContentView: View {
         }
         .padding(
             controller.isCompactAppearance
-                ? EdgeDockGeometry.compactPadding
+                ? compactMetrics.padding
                 : EdgeDockGeometry.padding
         )
         // 撑满宿主并朝贴靠边对齐：展开 / 收起变形期间内容小于窗口（展开时窗口
@@ -131,7 +163,7 @@ struct EdgeDockContentView: View {
                 EdgeDockController.formMorphControlPoints.y2,
                 duration: EdgeDockController.contentMorphDuration
             ),
-            value: controller.isCompactAppearance
+            value: formSignature
         )
         .onReceive(state.statusDidChange) { _ in tick &+= 1 }
         .onReceive(state.$healthEvaluationDate) { _ in tick &+= 1 }
@@ -176,10 +208,10 @@ struct EdgeDockContentView: View {
         // 写在这里曾经和实际值对不上过两次（52/50 各一次）。
         .frame(
             width: controller.isCompactAppearance
-                ? EdgeDockGeometry.compactDiameter
+                ? compactMetrics.diameter
                 : EdgeDockGeometry.diameter,
             height: controller.isCompactAppearance
-                ? EdgeDockGeometry.compactDiameter
+                ? compactMetrics.diameter
                 : EdgeDockGeometry.rowHeight
         )
         // 逐行**直报**给控制器，不走 PreferenceKey。
@@ -219,12 +251,19 @@ struct EdgeDockContentView: View {
                     ? (entry.intervalFraction ?? entry.weeklyFraction)
                     : entry.intervalFraction,
                 diameter: controller.isCompactAppearance
-                    ? EdgeDockGeometry.compactDiameter
+                    ? compactMetrics.diameter
                     : EdgeDockGeometry.outerRingDiameter,
                 lineWidth: controller.isCompactAppearance
-                    ? EdgeDockGeometry.compactRingLineWidth
+                    ? compactMetrics.ringLineWidth
                     : EdgeDockGeometry.ringLineWidth,
-                tint: healthTint(for: entry)
+                // 外环读 5h 窗口的色档；简版只有一环，取值口径必须与它的**弧长**
+                // 回退一致（没有 5h 窗口时退到周窗口），否则会出现"弧长画的是周
+                // 窗口、颜色说的是 5h 窗口"的错配。
+                tint: healthTint(
+                    for: controller.config.independentRingColors
+                        ? (entry.intervalHealth ?? entry.weeklyHealth)
+                        : entry.health
+                )
             )
 
             if !controller.isCompactAppearance {
@@ -232,7 +271,14 @@ struct EdgeDockContentView: View {
                 ring(
                     fraction: entry.weeklyFraction,
                     diameter: EdgeDockGeometry.innerRingDiameter,
-                    tint: healthTint(for: entry)
+                    // 粗外细内：两环同样粗会读成"同一条弧画了两遍"，
+                    // 层级消失。取值理由见 `EdgeDockGeometry.innerRingLineWidth`。
+                    lineWidth: EdgeDockGeometry.innerRingLineWidth,
+                    tint: healthTint(
+                        for: controller.config.independentRingColors
+                            ? entry.weeklyHealth
+                            : entry.health
+                    )
                 )
                 .transition(.opacity)
 
@@ -246,10 +292,10 @@ struct EdgeDockContentView: View {
         }
         .frame(
             width: controller.isCompactAppearance
-                ? EdgeDockGeometry.compactDiameter
+                ? compactMetrics.diameter
                 : EdgeDockGeometry.diameter,
             height: controller.isCompactAppearance
-                ? EdgeDockGeometry.compactDiameter
+                ? compactMetrics.diameter
                 : EdgeDockGeometry.diameter
         )
         // 测量各 provider 外圈几何矩形，供精确的圆形区域命中测试使用
@@ -327,8 +373,13 @@ struct EdgeDockContentView: View {
 
     // MARK: - 取值
 
-    private func healthTint(for entry: EdgeDockEntry) -> Color {
-        guard let color = healthColors.color(for: entry.health) else {
+    /// 某一档健康度 → 环色。
+    ///
+    /// 传 `HealthLevel?` 而不是 `EdgeDockEntry`：内外环独立取色时两个环问的是
+    /// **不同**的档位（5h / 周），把它们合成一个参数就等于把独立取色又合回去了。
+    /// nil 落回中性灰而不是随便取一档：灰 ≠ 绿 ≠ 红，"读不到"必须读成"读不到"。
+    private func healthTint(for level: HealthLevel?) -> Color {
+        guard let color = healthColors.color(for: level) else {
             return Color(nsColor: .tertiaryLabelColor)
         }
         return Color(nsColor: color)

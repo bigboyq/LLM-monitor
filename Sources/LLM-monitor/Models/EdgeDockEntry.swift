@@ -26,6 +26,17 @@ struct EdgeDockEntry: Identifiable, Equatable, Sendable {
     /// nil = 无数据，沿用菜单栏状态点语义（灰 ≠ 绿）。
     let health: HealthLevel?
 
+    /// **仅 5 小时窗口**的健康档位（该 provider 下所有含 5h 窗口的 model 里最差的一档）。
+    /// nil = 没有 5h 窗口。
+    ///
+    /// 与 `intervalFraction` 同口径、同过滤条件——两者都只看
+    /// `activeModels.filter(\.hasIntervalWindow)`，所以"有弧"与"有色"永远同步，
+    /// 不会出现外环画了弧却是中性灰。
+    let intervalHealth: HealthLevel?
+
+    /// **仅周窗口**的健康档位（同上，取最差档）。nil = 没有周窗口。
+    let weeklyHealth: HealthLevel?
+
     /// 该 provider 是否存在任何可读额度窗口。false 时两个环都不画弧，
     /// 改为压暗满环表示"读得到健康、读不到余量"（余额型 DeepSeek）。
     var hasAnyQuotaWindow: Bool {
@@ -66,7 +77,9 @@ enum EdgeDockProjection {
                 kind: status.kind,
                 intervalFraction: intervalFraction(status, at: now),
                 weeklyFraction: weeklyFraction(status, at: now),
-                health: status.aggregateHealthLevel(at: now)
+                health: status.aggregateHealthLevel(at: now),
+                intervalHealth: intervalHealth(status, at: now),
+                weeklyHealth: weeklyHealth(status, at: now)
             )
         }
     }
@@ -101,6 +114,50 @@ enum EdgeDockProjection {
         let values = models.map { min(max(percent($0), 0), 100) }
         guard let worst = values.min() else { return nil }
         return worst / 100
+    }
+
+    // MARK: - 逐窗口色档
+
+    /// 5 小时窗口的健康档位：取该 provider 所有含 5h 窗口 model 里**最差**的一档。
+    ///
+    /// 与 `intervalFraction` 的"最低值"是同一个聚合口径：颜色必须和弧长指向同一个
+    /// 瓶颈，否则会出现"最紧的那个 model 决定了弧长、另一个更闲的 model 决定了颜色"。
+    ///
+    /// 阈值走 `ModelQuota.colorLevel`（与卡片分段条同一份），时间比例传 `nil`——
+    /// 即固定 30% 黄线。动态黄线（`min(time%, 50)`）是**长窗口**规则：5h 窗口
+    /// 本来就每 5 小时重置一次，"周还剩多少"对它没有意义。
+    static func intervalHealth(_ status: ProviderStatus, at now: Date) -> HealthLevel? {
+        worstHealth(
+            status.lastSuccess?.activeModels.filter(\.hasIntervalWindow),
+            percent: { $0.intervalRemainingPercent },
+            timeFraction: { _ in nil }
+        )
+    }
+
+    /// 周窗口的健康档位：同样取最差档，阈值按**剩余时间**收紧
+    /// （`weeklyTimeRemainingFraction(at: now)`）。
+    ///
+    /// 用**原始**周剩余百分比，不乘 `weeklyEquivalentMultiplier` —— 与
+    /// `weeklyFraction` 同一个理由：内环表达的是"周额度本身还剩多少"。
+    static func weeklyHealth(_ status: ProviderStatus, at now: Date) -> HealthLevel? {
+        worstHealth(
+            status.lastSuccess?.activeModels.filter(\.hasWeeklyWindow),
+            percent: { $0.weeklyRemainingPercent },
+            timeFraction: { $0.weeklyTimeRemainingFraction(at: now) }
+        )
+    }
+
+    /// 逐窗口最差色档。`HealthLevel` 的 `Comparable` 方向是"rank 越小越差"，
+    /// 所以 `min` 正好是最差档；空集合返回 nil（该窗口不存在，而不是"很健康"）。
+    private static func worstHealth(
+        _ models: [ModelQuota]?,
+        percent: (ModelQuota) -> Double,
+        timeFraction: (ModelQuota) -> Double?
+    ) -> HealthLevel? {
+        guard let models, !models.isEmpty else { return nil }
+        return models
+            .map { ModelQuota.colorLevel(percent: percent($0), timeFraction: timeFraction($0)) }
+            .min()
     }
 
     // MARK: - 行矩形排序

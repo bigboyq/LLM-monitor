@@ -167,7 +167,8 @@ extension EdgeDockController {
         let size = EdgeDockGeometry.dockSize(
             entryCount: entryCount,
             edge: edge,
-            appearance: isCompactAppearance ? .compact : .full
+            appearance: isCompactAppearance ? .compact : .full,
+            compactSize: config.compactSize
         )
 
         let target = EdgeDockGeometry.frame(

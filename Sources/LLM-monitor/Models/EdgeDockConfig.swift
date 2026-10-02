@@ -95,6 +95,42 @@ enum EdgeDockMode: String, Codable, CaseIterable, Sendable, Identifiable {
 
     /// 静置（鼠标不在）时是否保持完整形态。
     var staysFullWhenIdle: Bool { self == .statusWindow }
+
+    /// 这个形态**会不会**以简版小圆环出现。
+    ///
+    /// 「小圆环」恒为简版；「状态窗（自动隐藏）」收起时是简版；「状态窗」恒完整；
+    /// 「无」根本不显示。设置页据此禁用"小圆环尺寸"——那一条只被简版消费，
+    /// 在恒完整或根本不显示的形态下改了屏幕上的像素一动不动。
+    var usesCompactAppearance: Bool { isVisible && !staysFullWhenIdle }
+}
+
+/// 收起形态（简版小圆环）的尺寸档位。
+///
+/// 三档对应三组环径 / 线宽 / 间距 / 内边距（见 `EdgeDockGeometry.compactMetrics`）。
+/// 做成**枚举**而不是一个数字滑块：这几个量之间有硬约束（线宽不能吃掉环心、
+/// 判定半径不能低于可用性下限、贴边厚度必须小于完整版），滑块能滑出的组合里
+/// 大部分是不合法的，而三档是全部算过、都成立的。
+enum EdgeDockCompactSize: String, Codable, CaseIterable, Sendable, Identifiable {
+    /// 环径 7 / 线宽 2.5 / 间距 8 / 内边距 7 → 贴边厚度 21、行距 15。
+    case small
+    /// 环径 11 / 线宽 3.5 / 间距 10 / 内边距 10 → 贴边厚度 31、行距 21。
+    case medium
+    /// 环径 14 / 线宽 4 / 间距 12 / 内边距 12 → 贴边厚度 38、行距 26。
+    case large
+
+    /// 默认给小的那档：升级前屏幕上的简版就是这一组尺寸，缺省改成更大的会让所有
+    /// 开着 dock 的用户一升级就看到黑条变粗。
+    static let `default`: EdgeDockCompactSize = .small
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .small:  return "小"
+        case .medium: return "中"
+        case .large:  return "大"
+        }
+    }
 }
 
 /// 边缘状态窗的用户配置。落盘在 `config.json` 的顶层 `edgeDock`。
@@ -133,22 +169,43 @@ struct EdgeDockConfig: Codable, Equatable, Sendable {
     /// 那不是新功能，那是行为突变。
     var hideInFullscreen: Bool
 
+    /// 收起形态（简版小圆环）的尺寸档位。默认 `EdgeDockCompactSize.default`（小）。
+    ///
+    /// 只对**简版**有消费者：形态选「小圆环」，或「状态窗（自动隐藏）」处于收起态。
+    /// 完整形态的外环直径 / 内边距不读它，所以设了档位而不选那两种形态时，
+    /// 设置页里的这一行会跟着全屏开关一起禁用。
+    var compactSize: EdgeDockCompactSize
+
+    /// 展开形态是否让**外环与内环各自取色**：开 = 外环按 5 小时窗口、内环按周窗口
+    /// 各自的时间感知阈值取色；关 = 两环同色，取该 provider 的整体健康度。
+    ///
+    /// 默认 **true**：两环表达的是两个**独立**的窗口，5h 还紧而周还很空时把它们
+    /// 画成同一个颜色，等于抹掉了这条信息。给 true 意味着升级后环色会变
+    /// （之前两环恒同色），但变化的方向只有"更准"——整体档位不会因为
+    /// 逐窗口取色而变得更乐观（外环取的就是 5h 窗口本身的档位）。
+    var independentRingColors: Bool
+
     init(
         mode: EdgeDockMode = .default,
         edge: DockEdge,
         offset: Double,
         screenUUID: String? = nil,
-        hideInFullscreen: Bool = true
+        hideInFullscreen: Bool = true,
+        compactSize: EdgeDockCompactSize = .default,
+        independentRingColors: Bool = true
     ) {
         self.mode = mode
         self.edge = edge
         self.offset = offset
         self.screenUUID = screenUUID
         self.hideInFullscreen = hideInFullscreen
+        self.compactSize = compactSize
+        self.independentRingColors = independentRingColors
     }
 
     enum CodingKeys: String, CodingKey {
         case mode, edge, offset, screenUUID, hideInFullscreen
+        case compactSize, independentRingColors
     }
 
     /// 自定义 decode 只为一件事：`mode` 与 `hideInFullscreen` 是后加字段，旧
@@ -186,6 +243,21 @@ struct EdgeDockConfig: Codable, Equatable, Sendable {
         screenUUID = try container.decodeIfPresent(String.self, forKey: .screenUUID)
         // 后加字段，缺省 true 保持旧配置的行为不变。
         hideInFullscreen = try container.decodeIfPresent(Bool.self, forKey: .hideInFullscreen) ?? true
+        // 后加字段，同样逐字段容错。**未知字符串也回落默认**而不是
+        // `decodeIfPresent(EdgeDockCompactSize.self)`：后者遇到手改出来的
+        // `"compactSize": "gigantic"` 会抛错，整块 edgeDock 报废，用户拖好的
+        // 位置与贴边方向一起被外层的 `try?` 重置掉——为一个纯观感字段赔上
+        // 整个 dock 的位置不划算。
+        if let raw = try container.decodeIfPresent(String.self, forKey: .compactSize),
+           let parsed = EdgeDockCompactSize(rawValue: raw) {
+            compactSize = parsed
+        } else {
+            compactSize = .default
+        }
+        // 后加字段，缺省 true（与 `compactSize` 同款容错理由）。
+        independentRingColors = try container.decodeIfPresent(
+            Bool.self, forKey: .independentRingColors
+        ) ?? true
     }
 
     static let `default` = EdgeDockConfig(mode: .default, edge: .right, offset: 0.5)
@@ -211,7 +283,9 @@ struct EdgeDockConfig: Codable, Equatable, Sendable {
             edge: edge,
             offset: offset.isFinite ? min(max(offset, 0), 1) : 0.5,
             screenUUID: screenUUID,
-            hideInFullscreen: hideInFullscreen
+            hideInFullscreen: hideInFullscreen,
+            compactSize: compactSize,
+            independentRingColors: independentRingColors
         )
     }
 }

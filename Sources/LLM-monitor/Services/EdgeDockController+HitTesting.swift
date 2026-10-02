@@ -51,11 +51,13 @@ extension EdgeDockController {
         panelFrame: CGRect,
         edge: DockEdge,
         slack: CGFloat,
-        appearance: EdgeDockGeometry.DockAppearance = .full
+        appearance: EdgeDockGeometry.DockAppearance = .full,
+        compactSize: EdgeDockCompactSize = .default
     ) -> (rows: [CGRect], usedMeasured: Bool) {
         let resolved = resolveRects(
             fallback: EdgeDockGeometry.rowRects(
-                dockFrame: panelFrame, edge: edge, entryCount: entries.count, appearance: appearance
+                dockFrame: panelFrame, edge: edge, entryCount: entries.count,
+                appearance: appearance, compactSize: compactSize
             ),
             entries: entries,
             measured: measured,
@@ -73,11 +75,13 @@ extension EdgeDockController {
         panelFrame: CGRect,
         edge: DockEdge,
         slack: CGFloat,
-        appearance: EdgeDockGeometry.DockAppearance = .full
+        appearance: EdgeDockGeometry.DockAppearance = .full,
+        compactSize: EdgeDockCompactSize = .default
     ) -> (circles: [CGRect], usedMeasured: Bool) {
         let resolved = resolveRects(
             fallback: EdgeDockGeometry.circleRects(
-                dockFrame: panelFrame, edge: edge, entryCount: entries.count, appearance: appearance
+                dockFrame: panelFrame, edge: edge, entryCount: entries.count,
+                appearance: appearance, compactSize: compactSize
             ),
             entries: entries,
             measured: measured,

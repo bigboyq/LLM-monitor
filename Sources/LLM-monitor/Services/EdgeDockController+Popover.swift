@@ -92,7 +92,8 @@ extension EdgeDockController {
             edge: config.edge,
             visibleFrame: visibleFrame,
             measuredRowCenter: anchorCenter,
-            appearance: isCompactAppearance ? .compact : .full
+            appearance: isCompactAppearance ? .compact : .full,
+            compactSize: config.compactSize
         )
 
         popover.setFrame(targetFrame, display: true)

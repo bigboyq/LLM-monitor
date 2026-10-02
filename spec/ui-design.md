@@ -179,7 +179,7 @@ Outside-in, three layers at a 38pt diameter:
 |---|---|---|
 | **Outer ring** | 5-hour (interval) window remaining | `intervalRemainingPercent`, **worst** model |
 | **Inner ring** | Weekly window remaining | `weeklyRemainingPercent`, **worst** model, **raw** (not multiplied by `weeklyEquivalentMultiplier` — the inner ring answers "how much weekly quota is left", and multiplying by the equivalence factor N would stop being that) |
-| **Centre** | Which Provider | `BrandLogoView(kind:size:)` at a fixed 12pt — the same real brand asset the menu cards use, sized to stay inside the inner ring's inner edge (inner ring is `0.6 × 38 = 22.8pt`, so its inner edge sits at a 9.65pt radius against the icon's 6pt half-width). The size is **passed into the view**, never framed from outside: see *Logo sizing is the view's job* below |
+| **Centre** | Which Provider | `BrandLogoView(kind:size:)` at a fixed 12pt — the same real brand asset the menu cards use, sized to stay inside the inner ring's inner edge (inner ring is `0.72 × 38 = 27.4pt`, so its inner edge sits at a 12.2pt radius against the icon's 7pt half-width). The size is **passed into the view**, never framed from outside: see *Logo sizing is the view's job* below |
 
 Each ring's length is the **minimum** across the provider's models that have that
 window. This deliberately diverges from the iconDuo arcs, which use the mean: the
@@ -188,10 +188,36 @@ option, whereas an edge dock circle *is* one provider and must answer "is this o
 about to run out". Length and colour therefore agree — both worst-case — instead of
 ring saying "plenty" while the colour says "danger".
 
+**Thickness is also a hierarchy: thick outside, thin inside.** The outer ring is
+3.5pt, the inner 2.5pt. Two rings of equal weight read as the same arc drawn twice;
+the step in weight makes the outer ring the subject and the inner an annotation. It
+stops short of being thinner because the inner ring's diameter is only `0.72 ×` the
+outer one, and a much thinner stroke turns its 1.8pt-radius band into a grey smear.
+
+**The two rings may be coloured independently** (`config.independentRingColors`,
+on by default). On: the outer ring takes the colour of the **5-hour window alone**
+and the inner ring the colour of the **weekly window alone**, each through
+`ModelQuota.colorLevel(percent:timeFraction:)` — the same thresholds the segmented
+bar uses. The weekly ring therefore passes `weeklyTimeRemainingFraction(at:)` and
+gets the *time-aware* yellow line (`min(time%, 50)`): a weekly budget that is
+half spent with a day left is a warning, with six days left it is not. The 5-hour
+ring passes `timeFraction: nil` and gets the fixed 30% line — the dynamic line is
+a long-window rule, and a window that resets every five hours has no meaningful
+"fraction of the window remaining" to tighten it. Both take the **worst** model in
+that window, matching how their lengths are computed, so length and colour never
+point at different bottlenecks. Off: both rings take the provider's aggregate
+`health` instead. The centre logo and the quota number stay neutral in both modes —
+they identify, they do not report.
+
+The compact single ring is coloured by the 5-hour window too, with the same weekly
+fallback its *arc length* uses, so a weekly-only provider never shows a weekly arc
+in the 5-hour window's colour.
+
 A provider with only one of the two windows draws just that ring; a provider with
 neither (balance-only DeepSeek, or no successful fetch yet) draws a dimmed full ring
 on both, reading as "health is known, remaining quantity is not". A grey ring would
-be indistinguishable from "no data".
+be indistinguishable from "no data" — which is also why a *missing* window gets a
+`nil` health level (neutral) rather than some guessed colour.
 
 The dock background uses `EdgeDockTab`: an **asymmetric tab** — the side facing
 the screen is **square and flush**, the inward-facing end is a large convex corner
@@ -638,12 +664,26 @@ hand-edited *unknown* `mode` string also decodes as the default rather than thro
 and offset along with the bad value. The four modes:
 
 - **Compact form** (shared by `compactRings` and collapsed `autoHideWindow`) — flush to
-  the edge, one small single ring per enabled provider
-  (`EdgeDockGeometry.compactDiameter` 7pt, 2.5pt stroke, 8pt gap, 7pt padding; total
-  edge thickness 21pt). No number label, no brand logo. The ring is the **5h interval
-  fraction**, falling back to the weekly fraction for providers with no 5h window
-  (same precedence as the full dock's number label — a blank ring would silently
-  drop information), dim track only when neither exists.
+  the edge, one small single ring per enabled provider. Its size is a **user choice**,
+  `config.compactSize`, three tiers (`EdgeDockGeometry.compactMetrics(for:)`):
+
+  | Tier | Ring | Stroke | Gap | Padding | Edge thickness | Row step |
+  |---|---|---|---|---|---|---|
+  | 小 small (**default**) | 7pt | 2.5pt | 8pt | 7pt | 21pt | 15pt |
+  | 中 medium | 11pt | 3.5pt | 10pt | 10pt | 31pt | 21pt |
+  | 大 large | 14pt | 4pt | 12pt | 12pt | 38pt | 26pt |
+
+  A tier is a **whole** set, not one number: scaling only the ring would leave the
+  spacing and padding behind and the column reads as a mistake. Three tiers rather
+  than a slider because the four metrics have hard constraints between them
+  (stroke must stay visible yet not eat the ring centre, the compact window must
+  stay smaller than the full form's 70pt, half a row step must stay a pointable
+  target) — a slider can produce most combinations, and all three tiers are checked
+  against every one of them. The default is 小 because that is what the screen
+  showed before the setting existed. No number label, no brand logo. The ring is the
+  **5h interval fraction**, falling back to the weekly fraction for providers with no
+  5h window (same precedence as the full dock's number label — a blank ring would
+  silently drop information), dim track only when neither exists.
 - **Expand** (`autoHideWindow` only) — cursor within the usual 12pt proximity of the
   compact window sets `isExpanded = true`; the window frame and the content **animate together**
   (`contentMorphDuration`, 0.25s easeOut, both started in the same tick): the AppKit
@@ -684,15 +724,28 @@ and offset along with the bad value. The four modes:
   always compact) rather than re-deriving the shape from two booleans at each site.
   Switching mode resets to collapsed; a drag-persist write does **not**, so the dock
   doesn't flicker while you're hovering and it saves its position.
-- **Geometry** — `dockSize(entryCount:edge:appearance:)`; the legacy call sites
-  default to `.full`, and the fallback hit-test geometry (`rowRects`, `rowCenter`)
-  remains full-appearance-only. In `compactRings` the dock *is* row-hit-tested, but it
-  uses the **measured** row rects (the view reports them in both appearances) and a
-  hit radius floor of half the compact row step (`compactRowStep / 2` = 7.5pt) rather
-  than the 3.5pt ring radius: a 7pt ring demands pixel-precise pointing, and at half a
-  row step the neighbouring hit zones meet at the midpoint. `popoverFrame` likewise
-  takes the measured row centre, because its fallback assumes the full form's 54pt row
-  step and would hang the card tens of points below the ring it belongs to.
+- **Geometry** — `dockSize(entryCount:edge:appearance:compactSize:)`; `appearance`
+  defaults to `.full` so the full-form call sites are unchanged, and **every compact
+  path passes `compactSize`** (window, drag, hit-test fallback, popover, mouse floor).
+  The fallback hit-test geometry (`rowRects`, `rowCenter`, `circleRects`,
+  `circleCenter`, `popoverFrame`) is **appearance- and tier-aware**, not
+  full-appearance-only: the full-form constants put compact row 0 about 24pt off, and
+  they do it per tier (小 row 0 is off by 31pt at 大). In `compactRings` the dock *is*
+  row-hit-tested, but it uses the **measured** row rects (the view reports them in
+  both appearances) and a hit radius floor of half the compact row step
+  (`compactRowStep(for:) / 2`, 7.5/10.5/13pt by tier) rather than the ring radius: a
+  7pt ring demands pixel-precise pointing, and at half a row step the neighbouring
+  hit zones meet at the midpoint. `popoverFrame` likewise takes the measured row
+  centre, because its fallback assumes the full form's 54pt row step and would hang
+  the card tens of points below the ring it belongs to.
+- **Tier changes are a form transition** — changing `compactSize` while the compact
+  form is showing routes through `.collapse`/`.expand` (0.25s, same curve) like any
+  other form change, and the content's `.animation(_:value:)` is keyed on a
+  `formSignature` of *appearance + tier*, not on `isCompactAppearance` alone. Keying
+  on appearance alone made the content snap while the window animated: the window
+  side alone would then be the layer moving by itself, which is the exact failure the
+  shared-curve contract exists to prevent. While the full form is showing the tier
+  has no consumer, so a tier change there is an ordinary `.standard` update.
 
 ### Dragging
 

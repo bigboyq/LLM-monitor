@@ -138,6 +138,123 @@ final class EdgeDockConfigTests: EdgeDockTestCase {
         XCTAssertEqual(rebuilt, stored)
     }
 
+    // MARK: - 简版尺寸档位（compactSize）
+
+    func testCompactSizeDefaultsToSmall() {
+        // 缺省必须是**升级前的那一档**（7pt 小环 / 15pt 行距）：默认改成更大的，
+        // 等于所有开着 dock 的用户一升级就看到屏幕边缘的黑条变粗。
+        XCTAssertEqual(EdgeDockConfig.default.compactSize, .small)
+        XCTAssertEqual(EdgeDockCompactSize.default, .small)
+    }
+
+    func testLegacyConfigJSONWithoutCompactSizeFallsBackToDefault() throws {
+        // 缺字段不能让整块解码失败（外层 `try?` 会把拖好的位置一起重置）。
+        let legacy = #"{"mode":"compactRings","edge":"left","offset":0.3}"#
+        let decoded = try JSONDecoder().decode(EdgeDockConfig.self, from: Data(legacy.utf8))
+        XCTAssertEqual(decoded.compactSize, .small)
+        XCTAssertEqual(decoded.edge, .left, "坏一个字段不能牵连贴边与位置")
+        XCTAssertEqual(decoded.offset, 0.3, accuracy: 0.0001)
+    }
+
+    func testUnknownCompactSizeValueFallsBackWithoutBreakingTheBlock() throws {
+        // 手改出来的未知档位不能让整块 edgeDock 报废：`decodeIfPresent(枚举.self)`
+        // 遇到 "gigantic" 会抛错，于是外层的 try? 把形态与位置一起静默重置——
+        // 为一个纯观感字段赔上整个 dock 的位置不划算。
+        let hand = #"{"compactSize":"gigantic","edge":"bottom","offset":0.8}"#
+        let decoded = try JSONDecoder().decode(EdgeDockConfig.self, from: Data(hand.utf8))
+        XCTAssertEqual(decoded.compactSize, .small)
+        XCTAssertEqual(decoded.edge, .bottom)
+        XCTAssertEqual(decoded.offset, 0.8, accuracy: 0.0001)
+    }
+
+    func testCompactSizeRoundTripsThroughJSONAndNormalized() throws {
+        for size in EdgeDockCompactSize.allCases {
+            let original = EdgeDockConfig(
+                mode: .compactRings, edge: .left, offset: 0.2, compactSize: size
+            )
+            let decoded = try JSONDecoder().decode(
+                EdgeDockConfig.self, from: try JSONEncoder().encode(original)
+            )
+            XCTAssertEqual(decoded, original)
+            // `normalized` 是手工逐字段重建的：漏传一个字段会让"归一化"变成"重置"，
+            // 而且没有任何编译错误或运行期信号。
+            XCTAssertEqual(decoded.normalized.compactSize, size, "normalized 必须原样保留档位")
+            XCTAssertEqual(decoded.normalized, original)
+        }
+    }
+
+    func testEveryCompactSizeHasItsOwnDisplayName() {
+        XCTAssertEqual(EdgeDockCompactSize.allCases.count, 3)
+        XCTAssertEqual(
+            Set(EdgeDockCompactSize.allCases.map(\.displayName)).count, 3,
+            "三档的显示名必须两两不同，否则 picker 里分不出该选哪个"
+        )
+    }
+
+    func testSettingsSaveKeepsBothNewFields() {
+        // 设置页的保存是**逐字段重建** `EdgeDockConfig` 的（那里没有控件的字段一律
+        // 现读）。这两个字段有控件，漏写一个不会报错、不会警告，只会在用户点保存
+        // 那一刻被重置成默认——`edge` 曾经就踩过这个前科。
+        let stored = EdgeDockConfig(
+            mode: .autoHideWindow, edge: .bottom, offset: 0.42,
+            compactSize: .large, independentRingColors: false
+        )
+        let rebuilt = EdgeDockConfig(
+            mode: stored.mode,
+            edge: stored.edge,
+            offset: stored.offset,
+            screenUUID: stored.screenUUID,
+            hideInFullscreen: stored.hideInFullscreen,
+            compactSize: stored.compactSize,
+            independentRingColors: stored.independentRingColors
+        )
+        XCTAssertEqual(rebuilt, stored)
+    }
+
+    // MARK: - 内外环独立取色（independentRingColors）
+
+    func testIndependentRingColorsDefaultsOn() {
+        // 默认开：两环表达的是两个**独立**的窗口，5h 还紧而周还很空时画成同一个
+        // 颜色等于抹掉了这条信息。给 false 等于升级后所有人立刻失去这个信息。
+        XCTAssertTrue(EdgeDockConfig.default.independentRingColors)
+    }
+
+    func testLegacyConfigJSONWithoutIndependentRingColorsStillDecodes() throws {
+        let legacy = #"{"mode":"statusWindow","edge":"top","offset":0.2}"#
+        let decoded = try JSONDecoder().decode(EdgeDockConfig.self, from: Data(legacy.utf8))
+        XCTAssertTrue(decoded.independentRingColors, "缺失该字段时必须回落到默认开启")
+        XCTAssertEqual(decoded.edge, .top)
+    }
+
+    func testIndependentRingColorsRoundTripsBothWays() throws {
+        for on in [true, false] {
+            let original = EdgeDockConfig(
+                mode: .statusWindow, edge: .left, offset: 0.9, independentRingColors: on
+            )
+            let decoded = try JSONDecoder().decode(
+                EdgeDockConfig.self, from: try JSONEncoder().encode(original)
+            )
+            XCTAssertEqual(decoded, original)
+            XCTAssertEqual(decoded.normalized.independentRingColors, on)
+        }
+    }
+
+    /// 开关在**任何形态**下都不该被禁用：完整形态的 dock 常驻双环，简版的单环
+    /// 也读同一个字段（取 5h 档）。只有「小圆环尺寸」才有形态相关的消费者。
+    func testEveryVisibleModeHasAConsumerForBothNewFields() {
+        for mode in EdgeDockMode.allCases {
+            XCTAssertTrue(
+                EdgeDockConfig(mode: mode, edge: .right, offset: 0.5).independentRingColors,
+                "\(mode) 必须能取到独立取色开关"
+            )
+        }
+        // 简版尺寸则相反：只有可能出现简版的形态才有消费者。
+        XCTAssertTrue(EdgeDockMode.compactRings.usesCompactAppearance)
+        XCTAssertTrue(EdgeDockMode.autoHideWindow.usesCompactAppearance)
+        XCTAssertFalse(EdgeDockMode.statusWindow.usesCompactAppearance, "常驻完整，改档位无像素变化")
+        XCTAssertFalse(EdgeDockMode.hidden.usesCompactAppearance, "根本不显示")
+    }
+
     // MARK: - 配置归一化
 
     func testNormalizedClampsHandEditedOffset() {

@@ -268,6 +268,7 @@ final class EdgeDockController: ObservableObject {
                 let next = newConfig.effectiveEdgeDockConfig
                 let modeChanged = next.mode != self.config.mode
                 let fullscreenPolicyChanged = next.hideInFullscreen != self.config.hideInFullscreen
+                let sizeChanged = next.compactSize != self.config.compactSize
                 let wasCompact = self.isCompactAppearance
                 self.config = next
                 // 形态翻转时清掉缓存的全屏判定：重新显示要从"当前不在全屏"开始，
@@ -281,7 +282,15 @@ final class EdgeDockController: ObservableObject {
                 // （`.standard` 的 0.18s 对不上内容的 0.25s 变形，中间会出现"圆已经
                 // 缩成小环、窗口还在缩"的错位帧）。方向按新形态判定；形态没变
                 // （例如只翻了全屏隐藏、或只拖了位置）走标准过渡。
-                let formTransition: DockTransition = (wasCompact == self.isCompactAppearance)
+                //
+                // 简版档位变化**同样是形态变化**，但只在当前确实是简版外观时才成立：
+                // 完整形态下改档位对屏幕上的像素毫无影响（没有消费者），此时走
+                // `.standard` 就够了。反过来若不看 `isCompactAppearance` 一律当形态
+                // 过渡，会在完整形态下凭空播一次 0.25s 的窗口动画——完整形态的
+                // 窗口尺寸与档位无关，动画播完落在同一个帧上，纯属闪一下。
+                let formChanged = (wasCompact != self.isCompactAppearance)
+                    || (sizeChanged && self.isCompactAppearance)
+                let formTransition: DockTransition = !formChanged
                     ? .standard
                     : (self.isCompactAppearance ? .collapse : .expand)
                 self.reconcile(animated: true, transition: formTransition)

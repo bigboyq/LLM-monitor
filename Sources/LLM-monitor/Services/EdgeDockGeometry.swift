@@ -56,6 +56,13 @@ enum EdgeDockGeometry {
     static let iconSize: CGFloat = 14
     /// 环线宽（pt）。
     static let ringLineWidth: CGFloat = 3.5
+    /// 内环（周窗口）线宽（pt）。
+    ///
+    /// 比外环细是**刻意的**：两环画一样粗时，内环像外环的复制品，"两个窗口"
+    /// 读起来像同一条弧画了两遍。粗外 / 细内给出明确的层级——外环是主体、内环是
+    /// 附注。取值 2.5（外环 3.5 的 ~0.71）而不是更细：内环直径只有外环的 0.72，
+    /// 线宽再细就会在内环已经只有 2px 直径的环心上糊成灰点。
+    static let innerRingLineWidth: CGFloat = 2.5
 
     /// hover 高亮的轻微放大倍数。
     ///
@@ -67,23 +74,62 @@ enum EdgeDockGeometry {
     // MARK: 简版（自动隐藏模式的收起形态）常量
     //
     // 简版的目标是"常驻也不显眼"：没有数字、没有图标，只剩一枚小环，
-    // 所以各项都明显小于完整版；贴边方向总厚度 = 14 + 3×2 = 20pt。
+    // 所以各项都明显小于完整版。三档之间是**整套**换掉的（环径、线宽、间距、
+    // 内边距同步放大），只放大其中一两项会立刻看出"环变大了但排布没跟上"。
 
-    /// 简版单环直径（pt）。
-    static let compactDiameter: CGFloat = 7
-    /// 简版相邻两环的间距（pt）。
-    static let compactSpacing: CGFloat = 8
-    /// 简版的内边距（pt）。
-    static let compactPadding: CGFloat = 7
-    /// 简版环线宽（pt）。
-    static let compactRingLineWidth: CGFloat = 2.5
+    /// 一档简版尺寸的全部度量。抽成值类型而不是四个平行函数：环径、线宽、间距、
+    /// 内边距是**同一个决定**的四面，分成四处查表迟早只改其中一面。
+    struct CompactMetrics {
+        let diameter: CGFloat
+        let spacing: CGFloat
+        let padding: CGFloat
+        let ringLineWidth: CGFloat
+
+        /// 相邻两个圆心之间的距离（行距）= 环径 + 间距。
+        var rowStep: CGFloat { diameter + spacing }
+
+        /// 贴边方向的窗口总厚度 = 环径 + 内边距 ×2。
+        var thickness: CGFloat { diameter + padding * 2 }
+    }
+
+    /// 查某一档简版的尺寸。
+    ///
+    /// 三档的取值都是算出来的，不是"看着差不多"：线宽不能细到在浅色玻璃上消失
+    /// （≥1.5），也不能粗到吃掉环心（×2 < 环径）；贴边厚度必须严格小于完整版的
+    /// 70pt，否则"收起"反而比展开更占地方；行距的一半是逐行 hover 的判定半径
+    /// 下限，必须 ≥7.5pt 才够手指指。这些不等式由 `EdgeDockGeometryTests` 钉住。
+    static func compactMetrics(for size: EdgeDockCompactSize) -> CompactMetrics {
+        switch size {
+        case .small:  return CompactMetrics(diameter: 7, spacing: 8, padding: 7, ringLineWidth: 2.5)
+        case .medium: return CompactMetrics(diameter: 11, spacing: 10, padding: 10, ringLineWidth: 3.5)
+        case .large:  return CompactMetrics(diameter: 14, spacing: 12, padding: 12, ringLineWidth: 4)
+        }
+    }
 
     /// 简版相邻两个圆心之间的距离（行距，pt）。
     ///
     /// 「小圆环」形态逐行 hover 时用它的一半做判定半径下限（见
-    /// `EdgeDockController.circleIndex`）：7pt 的圆按圆判定要指中一个 7px 的点，
+    /// `EdgeDockController.circleIndex`）：小档 7pt 的圆按圆判定要指中一个 7px 的点，
     /// 半个行距则刚好让相邻两环的判定区在中点接上。
-    static let compactRowStep: CGFloat = compactDiameter + compactSpacing
+    static func compactRowStep(for size: EdgeDockCompactSize) -> CGFloat {
+        compactMetrics(for: size).rowStep
+    }
+
+    // 无参版本 = 默认档的转发。给"确实不关心档位"的读者（绝大多数完整形态的
+    // 调用点、以及只关心默认行为的老测试）留一个短写法；**任何简版路径都必须
+    // 显式传档位**——下面的兜底推算漏传档位的后果是整列圆按小档尺寸算，
+    // 命中与卡片定位会逐行错开。
+
+    /// 简版单环直径（pt），默认档。
+    static var compactDiameter: CGFloat { compactMetrics(for: .default).diameter }
+    /// 简版相邻两环的间距（pt），默认档。
+    static var compactSpacing: CGFloat { compactMetrics(for: .default).spacing }
+    /// 简版的内边距（pt），默认档。
+    static var compactPadding: CGFloat { compactMetrics(for: .default).padding }
+    /// 简版环线宽（pt），默认档。
+    static var compactRingLineWidth: CGFloat { compactMetrics(for: .default).ringLineWidth }
+    /// 简版行距（pt），默认档。
+    static var compactRowStep: CGFloat { compactRowStep(for: .default) }
 
     /// 按条目数量算出贴边状态下窗口的尺寸。
     ///
@@ -92,7 +138,12 @@ enum EdgeDockGeometry {
     /// 厚度那一轴在竖排时是圆宽、在横排时是行高——因为数值文字在圆的**下方**，
     /// 两种朝向下列高都是 `rowHeight`。简版没有数值文字，厚度轴退化为
     /// `compactDiameter + compactPadding`。
-    static func dockSize(entryCount: Int, edge: DockEdge, appearance: DockAppearance = .full) -> CGSize {
+    static func dockSize(
+        entryCount: Int,
+        edge: DockEdge,
+        appearance: DockAppearance = .full,
+        compactSize: EdgeDockCompactSize = .default
+    ) -> CGSize {
         let n = CGFloat(max(entryCount, 0))
         switch appearance {
         case .full:
@@ -107,12 +158,12 @@ enum EdgeDockGeometry {
                 ? CGSize(width: across, height: along)
                 : CGSize(width: along, height: across)
         case .compact:
-            let gaps = CGFloat(max(entryCount - 1, 0)) * compactSpacing
-            let along = n * compactDiameter + gaps + compactPadding * 2
-            let across = compactDiameter + compactPadding * 2
+            let m = compactMetrics(for: compactSize)
+            let gaps = CGFloat(max(entryCount - 1, 0)) * m.spacing
+            let along = n * m.diameter + gaps + m.padding * 2
             return edge.isVertical
-                ? CGSize(width: across, height: along)
-                : CGSize(width: along, height: across)
+                ? CGSize(width: m.thickness, height: along)
+                : CGSize(width: along, height: m.thickness)
         }
     }
 
@@ -282,21 +333,24 @@ enum EdgeDockGeometry {
         dockFrame: CGRect,
         edge: DockEdge,
         index: Int,
-        appearance: DockAppearance = .full
+        appearance: DockAppearance = .full,
+        compactSize: EdgeDockCompactSize = .default
     ) -> CGPoint {
         // 竖排用**行高**做锚：完整形态行高 = 圆 38 + 间距 4 + 数值 12 = 54，
         // 行中心因此比圆心低 (54 − 38)/2 = 8pt；简版没有数值文字，行高退化成
         // 圆径，行中心就是圆心。
         // 横排用**圆径**做锚、按**列距**步进：数值在圆的下方，不吃横排的列宽。
-        // 三套量都随形态切换，不能拿完整形态的常数去推 15pt 行距的简版。
+        // 三套量都随形态与简版档位切换，不能拿完整形态的常数去推 15pt 行距的简版。
         let lead: CGFloat
         let rowH: CGFloat
         let dia: CGFloat
         switch appearance {
         case .full:    (lead, rowH, dia) = (padding, rowHeight, diameter)
-        case .compact: (lead, rowH, dia) = (compactPadding, compactDiameter, compactDiameter)
+        case .compact:
+            let m = compactMetrics(for: compactSize)
+            (lead, rowH, dia) = (m.padding, m.diameter, m.diameter)
         }
-        let along = CGFloat(index) * step(for: appearance, edge: edge)
+        let along = CGFloat(index) * step(for: appearance, edge: edge, compactSize: compactSize)
         if edge.isVertical {
             return CGPoint(x: dockFrame.midX, y: dockFrame.maxY - (lead + rowH / 2) - along)
         }
@@ -312,10 +366,14 @@ enum EdgeDockGeometry {
     /// 单独抽出来是因为"竖排用行距、横排用列距"这条规则在 `circleCenter` 与
     /// `rowCenter` 两处都要用，写成 `edge.isVertical ? a : b` 各写一遍最容易在
     /// 改其中一处时漏掉另一处——那正是本函数被抽出来的原因。
-    private static func step(for appearance: DockAppearance, edge: DockEdge) -> CGFloat {
+    private static func step(
+        for appearance: DockAppearance,
+        edge: DockEdge,
+        compactSize: EdgeDockCompactSize = .default
+    ) -> CGFloat {
         switch appearance {
         case .full:    return edge.isVertical ? rowStep : columnStep
-        case .compact: return compactRowStep
+        case .compact: return compactRowStep(for: compactSize)
         }
     }
 
@@ -332,13 +390,16 @@ enum EdgeDockGeometry {
         dockFrame: CGRect,
         edge: DockEdge,
         entryCount: Int,
-        appearance: DockAppearance = .full
+        appearance: DockAppearance = .full,
+        compactSize: EdgeDockCompactSize = .default
     ) -> [CGRect] {
-        let across = appearance == .full ? diameter : compactDiameter
-        let rowH = appearance == .full ? rowHeight : compactDiameter
+        let compact = compactMetrics(for: compactSize)
+        let across = appearance == .full ? diameter : compact.diameter
+        let rowH = appearance == .full ? rowHeight : compact.diameter
         return (0..<max(entryCount, 0)).map { index in
             let center = rowCenter(
-                dockFrame: dockFrame, edge: edge, index: index, appearance: appearance
+                dockFrame: dockFrame, edge: edge, index: index,
+                appearance: appearance, compactSize: compactSize
             )
             if edge.isVertical {
                 // 竖排：行在堆叠轴上占**行高**，在另一轴上铺满窗口厚度。
@@ -361,9 +422,10 @@ enum EdgeDockGeometry {
     /// - 竖排用 `VStack`，第 0 行渲染在上方（= `maxY`），从 `maxY` 减去 padding 与半个圆径。
     /// - 横排用 `HStack`，第 0 列渲染在左侧（= `minX`），x 从 `minX` 加上 padding 与半个圆径，y 位于顶部圆环中心。
     ///
-    /// `appearance` 决定用哪一套尺寸常量：简版的圆只有 7pt、行距 15pt、内边距 7pt，
-    /// 与完整形态（38 / 70 / 16）毫无关系。**兜底路径必须显式带上它**——按完整
-    /// 形态的常数去推算简版，第 0 行会偏出约 24pt，命中到隔壁那个 provider。
+    /// `appearance` 决定用哪一套尺寸常量：简版的圆径、行距、内边距按**档位**取
+    /// （7~14pt / 15~26pt / 7~12pt），与完整形态（38 / 70 / 16）毫无关系。
+    /// **兜底路径必须显式带上它**——按完整形态的常数去推算简版，第 0 行会偏出
+    /// 约 24pt，命中到隔壁那个 provider。
     ///
     /// 步进**分朝向**：竖排是 `rowStep`（行高 + 行间距），横排是 `columnStep`
     /// （圆宽 + 列间距）——两者在完整形态下差 16pt（数值文字在圆的**下方**，横排
@@ -372,14 +434,17 @@ enum EdgeDockGeometry {
         dockFrame: CGRect,
         edge: DockEdge,
         index: Int,
-        appearance: DockAppearance = .full
+        appearance: DockAppearance = .full,
+        compactSize: EdgeDockCompactSize = .default
     ) -> CGPoint {
         let inset: CGFloat
         switch appearance {
         case .full:      inset = padding + diameter / 2
-        case .compact:   inset = compactPadding + compactDiameter / 2
+        case .compact:
+            let m = compactMetrics(for: compactSize)
+            inset = m.padding + m.diameter / 2
         }
-        let along = CGFloat(index) * step(for: appearance, edge: edge)
+        let along = CGFloat(index) * step(for: appearance, edge: edge, compactSize: compactSize)
         if edge.isVertical {
             return CGPoint(x: dockFrame.midX, y: dockFrame.maxY - inset - along)
         }
@@ -391,11 +456,15 @@ enum EdgeDockGeometry {
         dockFrame: CGRect,
         edge: DockEdge,
         entryCount: Int,
-        appearance: DockAppearance = .full
+        appearance: DockAppearance = .full,
+        compactSize: EdgeDockCompactSize = .default
     ) -> [CGRect] {
-        let dia = appearance == .full ? diameter : compactDiameter
+        let dia = appearance == .full ? diameter : compactMetrics(for: compactSize).diameter
         return (0..<max(entryCount, 0)).map { index in
-            let center = circleCenter(dockFrame: dockFrame, edge: edge, index: index, appearance: appearance)
+            let center = circleCenter(
+                dockFrame: dockFrame, edge: edge, index: index,
+                appearance: appearance, compactSize: compactSize
+            )
             return CGRect(
                 x: center.x - dia / 2,
                 y: center.y - dia / 2,
@@ -424,13 +493,17 @@ enum EdgeDockGeometry {
         edge: DockEdge,
         visibleFrame: CGRect,
         measuredRowCenter: CGPoint? = nil,
-        appearance: DockAppearance = .full
+        appearance: DockAppearance = .full,
+        compactSize: EdgeDockCompactSize = .default
     ) -> CGRect {
         guard visibleFrame.width > 0, visibleFrame.height > 0 else { return .zero }
         let w = min(size.width, visibleFrame.width)
         let h = min(size.height, visibleFrame.height)
         let center = measuredRowCenter
-            ?? rowCenter(dockFrame: dockFrame, edge: edge, index: rowIndex, appearance: appearance)
+            ?? rowCenter(
+                dockFrame: dockFrame, edge: edge, index: rowIndex,
+                appearance: appearance, compactSize: compactSize
+            )
 
         let x: CGFloat
         let y: CGFloat

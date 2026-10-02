@@ -87,6 +87,50 @@ class EdgeDockTestCase: XCTestCase {
         )
     }
 
+    /// 投影测试里色档断言的固定时刻。
+    ///
+    /// 周色档是"时间感知"的（阈值 = min(剩余时间%, 50)），用真实 `Date()` 的话同一条
+    /// 断言会随运行时刻漂——尤其是跨周边界时，测试会在某天突然红。
+    /// `static`：夹具函数要拿它当默认参数，默认参数里不能用实例成员。
+    static let makeNow = Date(timeIntervalSince1970: 1_700_000_000)
+
+    /// 显式给出窗口时间比例的 model 夹具。
+    ///
+    /// 与 `makeModel` 的区别只有一处：周窗口的 `resetsAt` 由 `weeklyTimeFraction`
+    /// 反推，而不是"从 `Date()` 起往后 3 天"。色档测试要断言的就是"同一个百分比
+    /// 在不同剩余时间下给出不同颜色"，所以剩余时间必须是输入而不是副作用。
+    func quotaModel(
+        intervalPercent: Double?,
+        weeklyPercent: Double? = nil,
+        weeklyTimeFraction: Double? = nil,
+        now: Date = EdgeDockTestCase.makeNow
+    ) -> ModelQuota {
+        ModelQuota(
+            modelName: "g",
+            intervalTotalCount: 100,
+            intervalUsageCount: 0,
+            intervalRemainingPercent: intervalPercent ?? 0,
+            intervalStatus: intervalPercent == nil ? .absent : .present,
+            intervalResetsAt: intervalPercent == nil ? nil : now.addingTimeInterval(2 * 3600),
+            // 5h 短窗（< 24h）：`intervalTimeRemainingFraction` 按定义返回 nil，
+            // 外环色档走固定 30% 黄线。
+            intervalWindowSeconds: intervalPercent == nil ? nil : 18000,
+            weeklyTotalCount: 100,
+            weeklyUsageCount: 0,
+            weeklyRemainingPercent: weeklyPercent ?? 0,
+            weeklyStatus: weeklyPercent == nil ? .absent : .present,
+            weeklyResetsAt: weeklyPercent == nil
+                ? nil
+                : now.addingTimeInterval((weeklyTimeFraction ?? 1) * 604_800),
+            weeklyWindowSeconds: weeklyPercent == nil ? nil : 604_800
+        )
+    }
+
+    /// 只有周窗口、且剩余时间比例显式给定的 model。
+    func weeklyModel(percent: Double, timeFraction: Double) -> ModelQuota {
+        quotaModel(intervalPercent: nil, weeklyPercent: percent, weeklyTimeFraction: timeFraction)
+    }
+
     func makeStatus(
         id: String,
         kind: ProviderKind = .codexChatGpt,
@@ -184,7 +228,9 @@ class EdgeDockTestCase: XCTestCase {
                 kind: .codexChatGpt,
                 intervalFraction: 0.5,
                 weeklyFraction: 0.8,
-                health: .healthy
+                health: .healthy,
+                intervalHealth: .healthy,
+                weeklyHealth: .healthy
             )
         }
     }

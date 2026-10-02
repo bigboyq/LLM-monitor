@@ -224,15 +224,18 @@ extension EdgeDockController {
         let circles: [CGRect]? = inDock
             ? resolvedCircleRects(entries: orderedEntries(), panelFrame: panel.frame)
             : nil
-        // 简版的圆半径只有 3.5pt，直接按圆判定等于要指到 7px 大的东西上；
+        // 简版的圆半径只有 3.5pt（小档），直接按圆判定等于要指到 7px 大的东西上；
         // 「小圆环」形态逐行 hover 要能用，判定半径取**半个行距**（刚好让相邻两个
         // 小环的判定区接上、在中点分界），命中哪个圆不再取决于手指有多稳。
+        // 行距随档位变，所以下限也必须按当前档位取。
         let newIndex = circles.flatMap {
             Self.circleIndex(
                 at: mouse,
                 circles: $0,
                 currentHovered: hoveredIndex,
-                minimumRadius: isCompactAppearance ? EdgeDockGeometry.compactRowStep / 2 : 0
+                minimumRadius: isCompactAppearance
+                    ? EdgeDockGeometry.compactRowStep(for: config.compactSize) / 2
+                    : 0
             )
         }
 
@@ -375,7 +378,8 @@ extension EdgeDockController {
             panelFrame: panelFrame,
             edge: config.edge,
             slack: Self.hoverPadding,
-            appearance: isCompactAppearance ? .compact : .full
+            appearance: isCompactAppearance ? .compact : .full,
+            compactSize: config.compactSize
         )
         setRowRectsSource(resolved.usedMeasured ? .measured : .geometry)
         return resolved.rows
@@ -395,7 +399,8 @@ extension EdgeDockController {
             panelFrame: panelFrame,
             edge: config.edge,
             slack: Self.hoverPadding,
-            appearance: isCompactAppearance ? .compact : .full
+            appearance: isCompactAppearance ? .compact : .full,
+            compactSize: config.compactSize
         )
         setCircleRectsSource(resolved.usedMeasured ? .measured : .geometry)
         return resolved.circles

@@ -227,73 +227,191 @@ final class EdgeDockGeometryTests: EdgeDockTestCase {
 
     func testCompactDockSizeGrowsVerticallyOnVerticalEdges() {
         // 简版没有数值文字：厚度轴 = 单环直径 + 内边距，两个方向同值。
-        let thickness = EdgeDockGeometry.compactDiameter + EdgeDockGeometry.compactPadding * 2
-        let one = EdgeDockGeometry.dockSize(entryCount: 1, edge: .right, appearance: .compact)
-        XCTAssertEqual(one.width, thickness)
-        XCTAssertEqual(one.height, thickness)
+        // 三档都要过：档位换的是**整套**尺寸，只验默认档等于没验。
+        for size in EdgeDockCompactSize.allCases {
+            let m = EdgeDockGeometry.compactMetrics(for: size)
+            let one = EdgeDockGeometry.dockSize(
+                entryCount: 1, edge: .right, appearance: .compact, compactSize: size
+            )
+            XCTAssertEqual(one.width, m.thickness, "\(size) 单条厚度")
+            XCTAssertEqual(one.height, m.thickness, "\(size) 单条厚度")
 
-        let three = EdgeDockGeometry.dockSize(entryCount: 3, edge: .right, appearance: .compact)
-        XCTAssertEqual(three.width, thickness, "竖排时厚度不随条目数变化")
-        XCTAssertEqual(
-            three.height,
-            CGFloat(3) * EdgeDockGeometry.compactDiameter
-                + CGFloat(2) * EdgeDockGeometry.compactSpacing
-                + EdgeDockGeometry.compactPadding * 2
-        )
+            let three = EdgeDockGeometry.dockSize(
+                entryCount: 3, edge: .right, appearance: .compact, compactSize: size
+            )
+            XCTAssertEqual(three.width, m.thickness, "\(size) 竖排时厚度不随条目数变化")
+            XCTAssertEqual(
+                three.height,
+                CGFloat(3) * m.diameter + CGFloat(2) * m.spacing + m.padding * 2,
+                "\(size) 沿边方向 = 环径 ×n + 间距 ×(n-1) + 内边距 ×2"
+            )
+        }
     }
 
     func testCompactDockSizeGrowsHorizontallyOnHorizontalEdges() {
-        let three = EdgeDockGeometry.dockSize(entryCount: 3, edge: .bottom, appearance: .compact)
-        XCTAssertEqual(
-            three.height,
-            EdgeDockGeometry.compactDiameter + EdgeDockGeometry.compactPadding * 2
-        )
-        XCTAssertEqual(
-            three.width,
-            CGFloat(3) * EdgeDockGeometry.compactDiameter
-                + CGFloat(2) * EdgeDockGeometry.compactSpacing
-                + EdgeDockGeometry.compactPadding * 2
-        )
+        for size in EdgeDockCompactSize.allCases {
+            let m = EdgeDockGeometry.compactMetrics(for: size)
+            let three = EdgeDockGeometry.dockSize(
+                entryCount: 3, edge: .bottom, appearance: .compact, compactSize: size
+            )
+            XCTAssertEqual(three.height, m.thickness, "\(size) 横排厚度轴")
+            XCTAssertEqual(
+                three.width,
+                CGFloat(3) * m.diameter + CGFloat(2) * m.spacing + m.padding * 2,
+                "\(size) 横排沿边方向"
+            )
+        }
     }
 
     func testCompactDockIsSmallerThanFullDock() {
         // 简版的存在意义就是"收起后不显眼"：任何朝向、任何条目数都必须比完整版小。
-        for edge in DockEdge.allCases {
-            for count in [1, 3, 5] {
-                let full = EdgeDockGeometry.dockSize(entryCount: count, edge: edge, appearance: .full)
-                let compact = EdgeDockGeometry.dockSize(entryCount: count, edge: edge, appearance: .compact)
-                XCTAssertLessThan(compact.width, full.width, "edge=\(edge) count=\(count) 简版必须更窄")
-                XCTAssertLessThan(compact.height, full.height, "edge=\(edge) count=\(count) 简版必须更矮")
+        // **三档都要满足**：大档的贴边厚度 38 已经逼近完整版的 70，再加一档就会
+        // 出现"收起比展开还占地方"——这条不等式是档位表能加到几档的上界。
+        for size in EdgeDockCompactSize.allCases {
+            for edge in DockEdge.allCases {
+                for count in [1, 3, 5] {
+                    let full = EdgeDockGeometry.dockSize(entryCount: count, edge: edge, appearance: .full)
+                    let compact = EdgeDockGeometry.dockSize(
+                        entryCount: count, edge: edge, appearance: .compact, compactSize: size
+                    )
+                    XCTAssertLessThan(
+                        compact.width, full.width, "edge=\(edge) count=\(count) \(size) 必须更窄"
+                    )
+                    XCTAssertLessThan(
+                        compact.height, full.height, "edge=\(edge) count=\(count) \(size) 必须更矮"
+                    )
+                }
             }
         }
     }
 
     func testCompactFrameStaysFullyOnScreen() {
         // 简版与完整版共用 frame()：贴边、钳位、offset 0/1 不被裁，缺一不可。
-        for edge in DockEdge.allCases {
-            let size = EdgeDockGeometry.dockSize(entryCount: 4, edge: edge, appearance: .compact)
-            for offset in [0.0, 0.5, 1.0] {
-                let frame = EdgeDockGeometry.frame(
-                    visibleFrame: visible, edge: edge, size: size, offset: offset
+        for size in EdgeDockCompactSize.allCases {
+            for edge in DockEdge.allCases {
+                let dockSize = EdgeDockGeometry.dockSize(
+                    entryCount: 4, edge: edge, appearance: .compact, compactSize: size
                 )
-                XCTAssertTrue(
-                    visible.contains(frame),
-                    "edge=\(edge) offset=\(offset) 简版窗口必须完整可见"
-                )
+                for offset in [0.0, 0.5, 1.0] {
+                    let frame = EdgeDockGeometry.frame(
+                        visibleFrame: visible, edge: edge, size: dockSize, offset: offset
+                    )
+                    XCTAssertTrue(
+                        visible.contains(frame),
+                        "edge=\(edge) offset=\(offset) 简版窗口必须完整可见"
+                    )
+                }
             }
         }
     }
 
+    /// **档位必须传遍每一条简版几何路径**：行中心、圆心、行矩形、圆矩形都各自
+    /// 内部算了一遍锚点与步进，其中任何一处漏传 `compactSize`，症状都是"窗口按
+    /// 大档变大、兜底命中仍按小档算"，hover 从第 2 行起逐行错开。
+    /// `rowCenter` 曾经就是这样漏的（`step(...)` 忘了带档位），而当时所有尺寸测试
+    /// 都只查 `dockSize`，全绿——所以这条按"窗口尺寸 + 四个兜底"整体钉。
+    func testCompactTierReachesEveryGeometryPath() {
+        for size in EdgeDockCompactSize.allCases {
+            let m = EdgeDockGeometry.compactMetrics(for: size)
+            let step = m.rowStep
+            let count = 3
+            let size2D = EdgeDockGeometry.dockSize(
+                entryCount: count, edge: .right, appearance: .compact, compactSize: size
+            )
+            let dock = makeDockFrame(edge: .right, entryCount: count, size: size2D)
+
+            // 圆心：第 0 行贴 padding，之后按该档行距步进。
+            for index in 0..<count {
+                let center = EdgeDockGeometry.circleCenter(
+                    dockFrame: dock, edge: .right, index: index,
+                    appearance: .compact, compactSize: size
+                )
+                XCTAssertEqual(center.x, dock.midX, accuracy: 0.001, "\(size) 圆心在厚度轴居中")
+                XCTAssertEqual(
+                    center.y, dock.maxY - m.padding - m.diameter / 2 - CGFloat(index) * step,
+                    accuracy: 0.001, "\(size) 第 \(index) 个圆的纵向位置/步进"
+                )
+            }
+            // 行中心：行高退化成环径（简版没有数值文字），但**行距同样按档位**。
+            for index in 0..<count {
+                let center = EdgeDockGeometry.rowCenter(
+                    dockFrame: dock, edge: .right, index: index,
+                    appearance: .compact, compactSize: size
+                )
+                XCTAssertEqual(
+                    center.y, dock.maxY - m.padding - m.diameter / 2 - CGFloat(index) * step,
+                    accuracy: 0.001, "\(size) 第 \(index) 行的行距必须按档位"
+                )
+            }
+            // 兜底矩形：圆矩形边长 = 环径，行矩形在竖排时铺满窗口厚度。
+            let circles = EdgeDockGeometry.circleRects(
+                dockFrame: dock, edge: .right, entryCount: count,
+                appearance: .compact, compactSize: size
+            )
+            XCTAssertTrue(
+                circles.allSatisfy { abs($0.width - m.diameter) < 0.001 },
+                "\(size) 兜底圆边长必须等于该档环径"
+            )
+            XCTAssertTrue(
+                circles.allSatisfy { $0.height < EdgeDockGeometry.diameter },
+                "\(size) 兜底圆必须比完整版小"
+            )
+            let rows = EdgeDockGeometry.rowRects(
+                dockFrame: dock, edge: .right, entryCount: count,
+                appearance: .compact, compactSize: size
+            )
+            XCTAssertTrue(
+                rows.allSatisfy { abs($0.height - m.diameter) < 0.001 },
+                "\(size) 简版行高退化成环径"
+            )
+            XCTAssertTrue(
+                rows.allSatisfy { abs($0.width - dock.width) < 0.001 },
+                "\(size) 竖排行在另一轴上铺满窗口厚度"
+            )
+        }
+    }
+
     func testCompactRingIsReadableAtItsSize() {
-        // 14pt 的环配 2pt 线宽：线宽不能细到看不见，也不能粗到环变成实心点。
-        XCTAssertGreaterThanOrEqual(
-            EdgeDockGeometry.compactRingLineWidth, 1.5,
-            "环线过细在浅色壁纸上会消失"
-        )
-        XCTAssertLessThan(
-            EdgeDockGeometry.compactRingLineWidth * 2, EdgeDockGeometry.compactDiameter,
-            "环线过粗会吃掉整个环心"
-        )
+        // 每一档的线宽都要同时满足两条：细到极限时在浅色玻璃上会消失（≥1.5），
+        // 粗到极限时环心被吃光（×2 < 环径）。这两条是档位表的取值边界。
+        for size in EdgeDockCompactSize.allCases {
+            let m = EdgeDockGeometry.compactMetrics(for: size)
+            XCTAssertGreaterThanOrEqual(
+                m.ringLineWidth, 1.5, "\(size) 环线过细在浅色壁纸上会消失"
+            )
+            XCTAssertLessThan(
+                m.ringLineWidth * 2, m.diameter, "\(size) 环线过粗会吃掉整个环心"
+            )
+        }
+    }
+
+    /// 档位表的可用性下限：逐行 hover 的判定半径是**半个行距**
+    /// （见 `EdgeDockController.circleIndex` 的 `minimumRadius`）。它必须够手指指，
+    /// 否则"简版逐行 hover 出对应 provider 的详情"这个能力在某一档上直接失能，
+    /// 而症状是"有时候点得中有时候点不中"。
+    func testCompactHitRadiusStaysAboveUsabilityFloor() {
+        for size in EdgeDockCompactSize.allCases {
+            let step = EdgeDockGeometry.compactRowStep(for: size)
+            XCTAssertGreaterThanOrEqual(
+                step / 2, 7.5,
+                "\(size) 半个行距 \(step / 2)pt 低于 7.5pt 的可用性下限，逐行 hover 会难按"
+            )
+        }
+    }
+
+    /// 三档必须**真的**是三档：环径与行距都不同。写成三档而取值相同的话，
+    /// 整个功能等于只有一个尺寸换了三次名字。
+    func testCompactTiersAreActuallyDistinct() {
+        let diameters = EdgeDockCompactSize.allCases.map {
+            EdgeDockGeometry.compactMetrics(for: $0).diameter
+        }
+        XCTAssertEqual(Set(diameters).count, EdgeDockCompactSize.allCases.count, "环径必须逐档不同")
+        let steps = EdgeDockCompactSize.allCases.map { EdgeDockGeometry.compactRowStep(for: $0) }
+        XCTAssertEqual(Set(steps).count, EdgeDockCompactSize.allCases.count, "行距必须逐档不同")
+        // 档位从小到大必须真的变大：picker 里的顺序与屏幕上的大小必须同向。
+        for (a, b) in zip(diameters, diameters.dropFirst()) {
+            XCTAssertLessThan(a, b, "档位顺序必须与尺寸顺序同向")
+        }
     }
 
     // MARK: - 背景形状：贴屏侧直角齐平 / 内侧大圆角
