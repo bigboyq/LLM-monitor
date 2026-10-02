@@ -139,25 +139,33 @@ struct QuotaWindowTimeShareBar: View {
 /// 其中"最近 5h"与"5h 之外"分开。要看四个桶的绝对值，hover（或浮层里就地展开）
 /// 下面的明细。
 ///
-/// 余额型 provider（DeepSeek，没有额度窗口）整块不画——`snapshot.isEmpty` 时调用方
-/// 什么都不渲染，而不是画一条永远空的条。
+/// 余额型 provider（DeepSeek，没有额度窗口）整块不画——`snapshot.isEmpty` 且没有
+/// 重置卡 / 账号可搭车时，调用方什么都不渲染，而不是画一条永远空的条。（DeepSeek 两样
+/// 都没有：fetcher 不填 `accountEmail`，也没有重置额度数据。）
 ///
-/// `resetCredits` 是**搭车**进来的：重置卡在额度区里只显示折叠态那一句（总数 +
-/// 最近到期），逐张明细挂在 `HoverInfoRow` 上，而两个宿主都在
-/// `ignoresMouseEvents = true` 的浮层里，纯 hover 展不开——明细等于不存在。
-/// 与其再找第二个展开入口（这张卡里没有第二处可展），不如并到这个浮层：
-/// 它本来就是"这一轮额度的补充信息"，明细与四桶绝对值回答的是同一个问题。
+/// `resetCredits` / `account` 都是**搭车**进来的：重置卡在额度区里只显示折叠态那一句
+/// （总数 + 最近到期），逐张明细挂在 `HoverInfoRow` 上；账号信息原本在菜单那张卡的
+/// 折叠区里，而菜单已经不渲染 provider 卡。两者都在 `ignoresMouseEvents = true` 的
+/// 浮层里，纯 hover 展不开——等于不存在。与其再找第二个展开入口（这张卡里没有第二处
+/// 可展），不如并到这个浮层：它们本来就是"这一轮额度的补充信息"，与四桶绝对值回答的
+/// 是同一个问题（这轮额度是谁在用、还剩多少）。
 struct QuotaWindowUsageSection: View {
     let snapshot: QuotaWindowUsageSnapshot
     var tint: Color = .primary
     var resetCredits: ResetCreditsInfo?
+    /// 账号信息（邮箱 / 套餐 / 数据来源）。`nil` 时整段不画。
+    var account: QuotaWindowAccountInfo?
 
     var body: some View {
-        if !snapshot.isEmpty || resetCredits != nil {
+        if !snapshot.isEmpty || resetCredits != nil || account != nil {
             HoverInfoRow {
                 summary
             } detail: {
-                QuotaWindowUsageHoverView(snapshot: snapshot, resetCredits: resetCredits)
+                QuotaWindowUsageHoverView(
+                    snapshot: snapshot,
+                    resetCredits: resetCredits,
+                    account: account
+                )
             }
         }
     }
@@ -321,6 +329,9 @@ struct QuotaWindowUsageHoverView: View {
     /// 额度区那张重置卡；非 nil 时本浮层末尾附逐张明细（可达性见
     /// `QuotaWindowUsageSection.resetCredits`）。
     var resetCredits: ResetCreditsInfo?
+    /// 账号信息；非 nil 时本浮层末尾、逐张重置卡清单之后附一段（可达性见
+    /// `QuotaWindowUsageSection.account`）。
+    var account: QuotaWindowAccountInfo?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -343,12 +354,27 @@ struct QuotaWindowUsageHoverView: View {
             }
 
             if let resetCredits {
-                Rectangle()
-                    .fill(Color.primary.opacity(0.08))
-                    .frame(height: 1)
+                separator
                 ResetCreditsDetailList(resets: resetCredits)
             }
+
+            if let account {
+                // 上面一行都没有时（只有账号、既无窗口也无重置卡）不画分隔线，
+                // 否则浮层顶上会悬一条没有上文的横线。
+                if !snapshot.isEmpty || resetCredits != nil {
+                    separator
+                }
+                AccountHoverView(info: account)
+            }
         }
+    }
+
+    /// 与逐张重置卡清单之间那条 1px 分隔线：两种内容都是"额度本身的补充"，
+    /// 挤在一起会读成同一块。
+    private var separator: some View {
+        Rectangle()
+            .fill(Color.primary.opacity(0.08))
+            .frame(height: 1)
     }
 
     private func column(_ window: QuotaWindowUsageSnapshot.Window) -> some View {

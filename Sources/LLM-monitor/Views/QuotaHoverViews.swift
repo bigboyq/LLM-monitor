@@ -284,16 +284,15 @@ struct UsageMetricHoverSummaryView: View {
     let title: String
     let usage: UsageMetricSummary
     let showPromptCount: Bool
-    /// dock 详情浮层里一行只放一个数字；菜单 hover 弹层保持紧凑的合并行。
-    @Environment(\.hoverRevealMode) private var revealMode
 
-    private var splitsCachedInput: Bool {
-        ProviderCardLayout.splitsCachedInputRow(mode: revealMode)
-    }
-
-    private var splitsRounds: Bool {
-        ProviderCardLayout.splitsRoundsRow(mode: revealMode)
-    }
+    /// `input` 与 `cached`、`prompts` 与 `rounds` **恒**各占一行。
+    ///
+    /// 判据 `ProviderCardLayout.splitsCachedInputRow(mode:)` /
+    /// `splitsRoundsRow(mode:)` 在 `.alwaysVisible` 下恒为真：本视图有一处活的
+    /// 卡内宿主（`CombinedQuotaWindowRow.dockBlock` 里的 `OffPeakUsageFootnote`，
+    /// dock 浮层里确实渲染），另一处宿主 `QuotaUsageWindowColumn` 只从 model 行的
+    /// `menuLayout` 那条路来、已无渲染方；而两个渲染宿主都注入 `.alwaysVisible`。
+    /// 两条判据已删除，分行固定下来（见 `ProviderCardLayout`）。
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -304,34 +303,15 @@ struct UsageMetricHoverSummaryView: View {
             }
 
             if showPromptCount {
-                if splitsRounds {
-                    // 拆行：prompts 和 rounds 各自一行，rounds 紧跟 prompts。
-                    metricLine(label: "prompts", value: Formatters.formatGroupedInt(usage.prompts))
-                    metricLine(label: "rounds", value: Formatters.formatGroupedInt(usage.rounds))
-                } else {
-                    HStack(spacing: 0) {
-                        Text("prompts: ")
-                            .foregroundStyle(.secondary)
-                        Text("\(Formatters.formatGroupedInt(usage.prompts))")
-                            .foregroundStyle(.primary)
-                        Text(" (\(Formatters.formatGroupedInt(usage.rounds)) rounds)")
-                            .foregroundStyle(.secondary)
-                    }
-                    .font(MenuTypography.hoverBodyMonospaced)
-                }
+                // 拆行：prompts 和 rounds 各自一行，rounds 紧跟 prompts。
+                metricLine(label: "prompts", value: Formatters.formatGroupedInt(usage.prompts))
+                metricLine(label: "rounds", value: Formatters.formatGroupedInt(usage.rounds))
             } else {
                 metricLine(label: "rounds", value: Formatters.formatGroupedInt(usage.rounds))
             }
 
-            if splitsCachedInput {
-                metricLine(label: "input", value: Formatters.formatTokenCountCompact(usage.uncachedInputTokens))
-                metricLine(label: "cached", value: Formatters.formatTokenCountCompact(usage.cachedInputTokens))
-            } else {
-                metricLine(
-                    label: "input",
-                    value: "\(Formatters.formatTokenCountCompact(usage.uncachedInputTokens)) (+\(Formatters.formatTokenCountCompact(usage.cachedInputTokens)) cached)"
-                )
-            }
+            metricLine(label: "input", value: Formatters.formatTokenCountCompact(usage.uncachedInputTokens))
+            metricLine(label: "cached", value: Formatters.formatTokenCountCompact(usage.cachedInputTokens))
             if let cacheHitRate = usage.cacheHitRate {
                 metricLine(label: "cache hit", value: Formatters.formatPercent(cacheHitRate, digits: 0))
             }

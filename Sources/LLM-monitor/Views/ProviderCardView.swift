@@ -1,44 +1,6 @@
 import SwiftUI
 import AppKit
 
-/// 状态指示点 — 健康 / 警告 / 危险
-///
-/// ⚠️ **当前没有渲染消费方**：唯一的调用点是 provider 卡标题行那枚状态点，而它随
-/// 菜单那份渲染形态一起删掉了（见 `ProviderCardLayout`）——浮层里那枚点紧挨着
-/// 品牌图标，读成"图标带了个绿点"，状态本身由同一行的 `ProviderStateLabel`
-/// 胶囊说清。保留本视图而不是删掉，是因为 `AppState`（系统健康度口径）与
-/// `Color+Theme`（`warningTint`）的注释仍以它为参照；新地方要用状态点时先想清楚
-/// 是不是又要在一行里挤第二个圆。
-struct StatusIndicator: View {
-    let level: HealthLevel?
-    var size: CGFloat = 8
-
-    var body: some View {
-        Circle()
-            .fill(color)
-            .frame(width: size, height: size)
-            .overlay(
-                Group {
-                    if level != nil {
-                        Circle()
-                            .stroke(color.opacity(0.25), lineWidth: size * 0.5)
-                            .blur(radius: size * 0.3)
-                    }
-                }
-            )
-            .animation(.easeInOut(duration: 0.2), value: level)
-    }
-
-    private var color: Color {
-        guard let level else { return .secondary.opacity(0.5) }
-        switch level {
-        case .healthy:  return .healthyTint
-        case .warning:  return .orange
-        case .critical: return .red
-        }
-    }
-}
-
 /// 同一张 `ProviderCardView` 的排版规则。
 ///
 /// 菜单内容区已改为 Harness（客户端）视角，**不再渲染 provider 卡**：额度那一面
@@ -46,21 +8,12 @@ struct StatusIndicator: View {
 /// 弹出的就是这张卡）承担。因此这张卡只剩**一个**渲染宿主形态：`.alwaysVisible`
 /// （浮层 `ignoresMouseEvents = true`，折叠区展不开，就地展开是唯一选项）。
 ///
-/// 曾经按 `HoverRevealMode` 分叉的七条规则已随之收敛：能证明没有消费方的那几条
-/// 连同它们守护的菜单分支一起删掉，剩下的三条**消费方在 `QuotaViews` /
-/// `QuotaHoverViews`**，不在本次清理的文件范围内，仍按环境值判断（生产路径上
-/// 它们只会取到 `.alwaysVisible`）。
+/// 曾经按 `HoverRevealMode` 分叉的规则至此**全部收敛**，这个类型只剩下面注释里
+/// 记录的历史。收敛的判据只有一条：`hoverRevealMode` 的两个注入点
+/// （`EdgeDockController.popoverContent`、`HarnessUsageMenuView.cardRevealMode`）
+/// **都写死 `.alwaysVisible`**，没有任何渲染宿主会读到 `.onHover`，于是每条以
+/// `mode` 为参数的判据在生产路径上都恒为常量。
 enum ProviderCardLayout {
-    /// 单个 model 的进度条提到**标题上方**。
-    ///
-    /// 标题回答"这是哪个套餐"、条回答"还剩多少"，浮层里先看条更直接。
-    ///
-    /// 消费方在 `QuotaViews`（model 行 / 统计块），不在 `ProviderCardView` 内，
-    /// 所以这条规则连同它在别处的分支都保留——只删"没有消费方"的规则。
-    static func liftsProgressBar(mode: HoverRevealMode) -> Bool {
-        mode == .alwaysVisible
-    }
-
     // 曾有 `laysWindowDetailsSideBySide(mode:)`（`alwaysVisible` 即并排），已删除。
     //
     // 它唯一的消费者是 `QuotaWindowsHoverView` / `QuotaUsageWindowsHoverView` 里的
@@ -74,28 +27,6 @@ enum ProviderCardLayout {
     // dock 侧的"两列"是另一回事：`QuotaBarWithMetadata` 的元信息行本来就是
     // `5h 62%  周 80%` 一行并排，不需要任何谓词。
 
-    /// `input` 与 `cached` 拆成两行。
-    ///
-    /// 原本是 `input: 1.2M (+860K cached)`——cached 藏在括号里，扫一眼
-    /// 只会读到 input，而 cache 命中率恰恰是判断"这次调用贵不贵"的关键数字。
-    /// 浮层里一行只放一件事，行高是横向空间换来的。
-    ///
-    /// 消费方在 `QuotaHoverViews`（用量 hover 视图），保留理由同 `liftsProgressBar`。
-    static func splitsCachedInputRow(mode: HoverRevealMode) -> Bool {
-        mode == .alwaysVisible
-    }
-
-    /// `prompts` 与 `rounds` 拆成两行，`rounds` 跟在 `prompts` 下面。
-    ///
-    /// 原本挤在一行 `prompts: 42 (128 rounds)`。当初是三列并排逼出来的——每列只有
-    /// 约 140pt，挤一行必然换行或截断。三列撤掉后触发条件没了，但 dock 侧的行是
-    /// 整行宽的，一行一个数字仍然更好读，留着不拆反而像半途而废。
-    ///
-    /// 消费方在 `QuotaHoverViews`，保留理由同 `liftsProgressBar`。
-    static func splitsRoundsRow(mode: HoverRevealMode) -> Bool {
-        mode == .alwaysVisible
-    }
-
     // 已删除的四条（连同它们守护的菜单分支）：`hoistsResetCredits`、
     // `hoistsPeakIndicator`、`hidesHeaderStatusDot`、`splitsIntoTwoCards`。
     //
@@ -104,13 +35,37 @@ enum ProviderCardLayout {
     // 无条件绘制，标题行的状态点不再画，卡片恒为「两张卡 + 标题在卡外」。
     // 规则还在、却永远只取到 `true`，测试再断言它返回 `true` 就是三方一起给假
     // 信号——这正是当初 `expandsAccountSection` 被拆掉时的同一个组合。
+
+    // 同一轮删掉的另外三条：消费方在 `QuotaViews` / `QuotaHoverViews`，不在本文件
+    // 内，所以是**先核实宿主、再就地内联恒定值**，而不是连消费点一起删。逐条结论：
+    //
+    // 1. `liftsProgressBar(mode:)`（恒 `true`）——消费方四处：
+    //    `ChatGPTPlanModelRow.isDockLayout`、`CombinedQuotaWindowRow.isDockLayout`、
+    //    `CombinedQuotaMetadataLine.clustersAtTrailingEdge`、
+    //    `SingleQuotaMetadataLine.clustersAtTrailingEdge`。前两处的宿主就是本卡片
+    //    （`.alwaysVisible`）；后两处既在 dock 的 `QuotaBarWithMetadata` 里（活的），
+    //    也在 `QuotaCombinedUsageRow` / `QuotaSingleUsageRow` 里（这两个只出现在 model
+    //    行的 `menuLayout`，菜单不渲染 provider 卡后已无宿主）。四处都内联成常量。
+    // 2. `splitsCachedInputRow(mode:)` / 3. `splitsRoundsRow(mode:)`（恒 `true`）——
+    //    消费方是 `UsageMetricHoverSummaryView`。它有一处**活的**卡内宿主：
+    //    `CombinedQuotaWindowRow.dockBlock` 里的 `OffPeakUsageFootnote`（GLM 闲时用量
+    //    那条脚注），确实在 dock 浮层里渲染；另一处是
+    //    `QuotaUsageWindowColumn`（只从 `menuLayout` 那条路来）。同样内联成常量。
+    //
+    // 为什么留着一个恒真的分支不继续删：内联之后 `isDockLayout` 恒真，
+    // `menuLayout` 成了跑不到的一支，但把它连同 `QuotaCombinedUsageRow` /
+    // `QuotaSingleUsageRow` / `QuotaWindowsHoverView` / `LastPromptHoverSummaryView`
+    // 这一整族视图一起删掉是一次独立的清理（跨三个文件、几百行），不该挂在这次
+    // 收敛上。新的渲染宿主若要换形态，届时是**恢复分支**而不是从死代码里挑。
 }
 
 /// provider 卡片 — 一个 provider 的全部信息
 ///
 /// `Equatable`：卡片渲染依赖 `status`（值类型）**和** `@Environment(\.hoverRevealMode)`
-/// （排版形态，见 `ProviderCardLayout`）。配合调用点的 `.equatable()`，任一 provider
-/// 的任一状态变化只会重算真正变化的那几张卡，而不是整屏菜单面板。
+/// ——后者由**后代**读（`HoverInfoRow` 决定就地展开还是折叠），本视图自己已经不读了
+/// （见 `ProviderCardLayout`：所有按 mode 分叉的排版判据都已收敛成常量）。配合调用点
+/// 的 `.equatable()`，任一 provider 的任一状态变化只会重算真正变化的那几张卡，
+/// 而不是整屏菜单面板。
 ///
 /// ⚠️ `==` 只比较 `status`，**不**比较 `revealMode` —— 它是 Environment，取不到。
 /// 保留这条注释是因为比较仍然只按 `status` 走：菜单里已无 provider 卡，而唯一两个
@@ -119,11 +74,6 @@ enum ProviderCardLayout {
 /// 就必须把 `revealMode` 也纳入比较。
 struct ProviderCardView: View, Equatable {
     let status: ProviderStatus
-
-    /// 宿主决定详情是折叠还是就地展开。见 `ProviderCardLayout`：生产路径上恒为
-    /// `.alwaysVisible`（两个宿主都是不吃鼠标事件的浮层），保留环境读取是因为
-    /// `QuotaViews` / `QuotaHoverViews` 里的三条规则仍在读它。
-    @Environment(\.hoverRevealMode) private var revealMode
 
     /// 卡片内容层四周的内边距。`EdgeDockTheme.popoverWidth` 推导宽度时要加上
     /// 这一层的两侧，所以提出成常量，避免两处各写一个 12 改一漏一。
@@ -226,8 +176,13 @@ struct ProviderCardView: View, Equatable {
     /// 读者把本机 token 数当成额度接口返回的数。
     ///
     /// 余额型 provider（DeepSeek，没有额度窗口）整块不画，见
-    /// `QuotaWindowUsageSection` 的 `snapshot.isEmpty` 判据；重置卡的逐张明细
-    /// 搭同一个浮层（见该类型的 `resetCredits`）。
+    /// `QuotaWindowUsageSection` 的 `snapshot.isEmpty` 判据；重置卡的逐张明细与
+    /// 账号信息搭同一个浮层（见该类型的 `resetCredits` / `account`）。
+    ///
+    /// **这一处是 `QuotaWindowUsageSection` 唯一的构造点**：`.ok`、`.loading`、
+    /// `.failed` 三条路径都走它，所以账号信息只在这里取一次，三条路径自动一致
+    /// ——曾经那条 `quotaBetween` 就是漏了回退路径才让重置卡与倒计时在浮层里
+    /// 每次刷新闪一下。
     @ViewBuilder
     private func quotaWindowUsage(info: QuotaInfo, projection: ProviderUsageProjection) -> some View {
         let snapshot = quotaWindowUsageSnapshot(info: info, projection: projection)
@@ -235,7 +190,15 @@ struct ProviderCardView: View, Equatable {
         QuotaWindowUsageSection(
             snapshot: snapshot,
             tint: accentColor,
-            resetCredits: info.resetCredits
+            resetCredits: info.resetCredits,
+            // 菜单那张卡的账号折叠区删掉之后，账号从所有 UI 入口消失（整个
+            // `AccountHoverViews` 一度没有调用方），现在搭这个浮层。没有账号概念的
+            // provider 返回 nil，那一段不画。
+            account: QuotaWindowAccountInfo.make(
+                providerKind: status.kind,
+                accountEmail: info.accountEmail,
+                planLabel: info.planLabel
+            )
         )
     }
 

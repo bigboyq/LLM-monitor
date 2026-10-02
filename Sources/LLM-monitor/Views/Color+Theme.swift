@@ -13,8 +13,8 @@ extension Color {
     /// 智谱 GLM 品牌色（靛蓝，区别于 Antigravity 的宝石蓝与 minimax 的品红）
     static let glmBrand = Color(red: 0.32, green: 0.36, blue: 0.92)
 
-    /// 统一预警语义色：深浅模式下均符合 WCAG 2.1 AA 对比度要求，且与 StatusIndicator 的 warning (orange) 对齐，
-    /// 解决系统 Color.yellow 在浅色背景下对比度不足 2:1 的问题。
+    /// 统一预警语义色：深浅模式下均符合 WCAG 2.1 AA 对比度要求，且与状态语义里的
+    /// warning (orange) 对齐，解决系统 Color.yellow 在浅色背景下对比度不足 2:1 的问题。
     static let warningTint = Color(nsColor: .systemOrange)
 
     /// 统一"健康"语义色。SwiftUI 的 `.green` 是**固定色**：不随外观变化，

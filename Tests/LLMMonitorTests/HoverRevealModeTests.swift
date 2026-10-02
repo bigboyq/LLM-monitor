@@ -155,17 +155,21 @@ final class HoverRevealModeTests: XCTestCase {
     /// 菜单底部兜底行 hover 出来的那张卡，**必须**以 `.alwaysVisible` 渲染。
     ///
     /// 浮层 `ignoresMouseEvents = true`，收不到鼠标事件：不钉这个 mode，卡里那些
-    /// 「悬停才展开」的部分永远展不开，额度行内部的三条规则（消费方在 `QuotaViews`
-    /// / `QuotaHoverViews`）也会走简版——实测同一张 `.failed` 的 ChatGPT 卡在
-    /// `.onHover` 下 159pt 且**完全没有重置卡**，`.alwaysVisible` 下 501pt 且重置卡
-    /// 在场（上一条断言量的就是后者）。
+    /// 「悬停才展开」的部分永远展不开——`HoverInfoRow` 折叠起来的东西（四桶绝对值、
+    /// 逐张重置卡清单、账号段）一份也看不到。
+    ///
+    /// ⚠️ 这里的"为什么"在 `ProviderCardLayout` 那轮收敛之后**变过一次**：额度行
+    /// 内部那三条排版规则（消费方在 `QuotaViews` / `QuotaHoverViews`）已随判据删除
+    /// 固定成 dock 形态，所以 `.onHover` 不再是"另一套简版排版"，它少掉的只是折叠
+    /// 起来的那几段。原来那条"`onHover` 下没有重置卡"的等值断言因此失效——重置卡
+    /// 摘要现在由卡片层无条件画，两个 mode 下都在场。
     ///
     /// 菜单形态那张完整卡（单卡 + 卡内标题 + 账号折叠区 + 自己画重置额度）曾经由
     /// `testMenuCardResetCreditsBehaviourIsUnchanged` 守着，它随 `menuBody` 一起
-    /// 删除后，`.onHover` 退化成一张缺信息的简版，而生产路径上**没有任何宿主**再用
-    /// `.onHover` 渲染 provider 卡（dock 浮层与菜单兜底行都固定 `.alwaysVisible`）。
-    /// 于是这几条断言是一件事：兜底行用的就是那个 mode，在它之下重置卡画得出来，
-    /// 在默认 mode 之下画不出来——把"为什么必须钉死"写进测试，比只钉结果更耐改。
+    /// 删除。生产路径上**没有任何宿主**再用 `.onHover` 渲染 provider 卡（dock 浮层与
+    /// 菜单兜底行都固定 `.alwaysVisible`），于是这几条断言是一件事：兜底行用的就是
+    /// 那个 mode，在它之下折叠段的内容在场、在默认 mode 之下不在场——把"为什么必须
+    /// 钉死"写进测试，比只钉结果更耐改。
     @MainActor
     func testStripHoverCardMustUseTheAlwaysVisibleRevealMode() {
         XCTAssertEqual(
@@ -185,10 +189,11 @@ final class HoverRevealModeTests: XCTestCase {
             measuredHeight(mode: ProviderStatusStripView.cardRevealMode, status: withoutCredits),
             "兜底行的 hover 卡必须画出重置卡"
         )
-        XCTAssertEqual(
+        XCTAssertGreaterThan(
+            measuredHeight(mode: ProviderStatusStripView.cardRevealMode, status: withCredits),
             measuredHeight(mode: .onHover, status: withCredits),
-            measuredHeight(mode: .onHover, status: withoutCredits),
-            "默认 mode 下的 provider 卡已不是完整卡片（这正是兜底行必须钉 .alwaysVisible 的理由）"
+            "`.alwaysVisible` 下「额度窗口用量」浮层里那些折叠段（四桶 / 逐张重置卡 / 账号）"
+                + "必须就地展开——浮层不吃鼠标事件，它们是唯一的呈现路径"
         )
     }
 
@@ -242,30 +247,40 @@ final class HoverRevealModeTests: XCTestCase {
         )
     }
 
-    /// 菜单侧那七条规则**已经收敛**：菜单内容区改成客户端视角后不再渲染 provider
-    /// 卡，唯一剩下的渲染宿主是浮层（`.alwaysVisible`，不吃鼠标事件）。
+    /// 菜单侧那批 `ProviderCardLayout` 规则**已经全部收敛**：菜单内容区改成客户端
+    /// 视角后不再渲染 provider 卡，两个渲染宿主（dock 浮层、菜单兜底行的 hover 卡）
+    /// 都注入 `.alwaysVisible`，于是每条以 `mode` 为参数的判据在生产路径上都恒为常量。
     ///
-    /// 这条断言守的是"剩下的三条仍然为 dock 服务"。四条被删掉的
-    /// （`hoistsResetCredits` / `hoistsPeakIndicator` / `hidesHeaderStatusDot` /
-    /// `splitsIntoTwoCards`）不是"忘了删"，而是它们的消费方全在
-    /// `ProviderCardView.swift` 内、且都属于已删掉的菜单分支：规则还在、判据恒为
-    /// `true`、没有任何消费方，断言它返回 `true` 就是三方一起给假信号。
-    /// 并排那条（`laysWindowDetailsSideBySide`）早在上一轮就以同样理由删除，由
-    /// `testQuotaWindowsHoverLaysTwoColumnsSideBySide` 单独盯着。
+    /// 曾经留着三条（`liftsProgressBar` / `splitsCachedInputRow` / `splitsRoundsRow`），
+    /// 因为它们的消费方在 `QuotaViews` / `QuotaHoverViews`、不在 `ProviderCardView.swift`
+    /// 内。逐条核实宿主之后（`ChatGPTPlanModelRow` / `CombinedQuotaWindowRow` /
+    /// `QuotaBarWithMetadata` / `OffPeakUsageFootnote` 都是 `.alwaysVisible` 下的活宿主，
+    /// 另一批宿主只从 model 行的 `menuLayout` 来、已无渲染方），三条一并删除、值内联
+    /// 到消费点。下面那条断言守的是收敛后**看得见的**那份性质。
     ///
     /// 「菜单形态已无渲染消费方、生产路径一律 `.alwaysVisible`」由
-    /// `testStripHoverCardMustUseTheAlwaysVisibleRevealMode` 守住。
-    func testProviderCardLayoutTableConvergedToTheDockHost() {
-        for rule in [
-            ProviderCardLayout.liftsProgressBar,
-            ProviderCardLayout.splitsCachedInputRow,
-            ProviderCardLayout.splitsRoundsRow,
-        ] {
-            XCTAssertTrue(
-                rule(.alwaysVisible),
-                "剩下的三条规则消费方在 QuotaViews / QuotaHoverViews，dock 浮层必须套用"
-            )
-        }
+    /// `testStripHoverCardMustUseTheAlwaysVisibleRevealMode` 守着。
+    @MainActor
+    func testUsageMetricHoverAlwaysSplitsPromptsRoundsAndInputCached() {
+        let usage = UsageMetricSummary(
+            prompts: 42,
+            rounds: 128,
+            inputTokens: 1_240_000,
+            cachedInputTokens: 860_000,
+            outputTokens: 320_000,
+            reasoningOutputTokens: 96_000
+        )
+        let split = self.measuredHeight(
+            of: UsageMetricHoverSummaryView(title: "", usage: usage, showPromptCount: true),
+            minWidth: 1_000
+        )
+        let merged = self.measuredHeight(of: Self.mergedMetricSummary(usage: usage), minWidth: 1_000)
+
+        XCTAssertGreaterThan(split, 0, "前提不成立：这一组必须真的排得出来")
+        XCTAssertGreaterThan(
+            split, merged * 1.5,
+            "prompts/rounds 与 input/cached 必须各占一行（拆行 \(split)pt vs 合并 \(merged)pt）"
+        )
     }
 
     // MARK: - 真的量一次高度
@@ -296,6 +311,10 @@ final class HoverRevealModeTests: XCTestCase {
     ///   新的信息上：额度条讲"还剩多少"，这个区块讲"这一轮额度里本机烧了多少"，
     ///   两者不重叠。涨的 158pt = 条与两行短指标约 40pt + 明细两栏（各 6 行）
     ///   约 100pt + 两处间距。
+    /// → **757pt**（第十二轮：账号信息并进「额度窗口用量」浮层末尾——菜单改版删掉
+    ///   账号折叠区之后，邮箱 / 套餐 / 数据来源一度没有任何渲染入口。涨的 93pt =
+    ///   分隔线 + 标题行 + 邮箱行 + 套餐行 + 数据来源脚注。同样是"浮层里必须就地
+    ///   展开"的信息，超出屏幕时仍由 popover 的 ScrollView 兜底）。
     ///
     /// ⚠️ 第十轮那 100pt 明细是**必须**在卡里就地展开的，不是"顺手摆上去的"：
     /// 两个宿主（dock 浮层、菜单兜底行的 hover 卡）都在 `ignoresMouseEvents = true`
@@ -319,14 +338,13 @@ final class HoverRevealModeTests: XCTestCase {
     /// 120pt），拿它当基准会把"折叠区就地展开"这件事本身判成回归——而就地
     /// 展开正是 dock 侧必须的行为（浮层不接受鼠标事件，折叠区展不开）。
     ///
-    /// 上限取 700pt：给字体度量随 macOS 版本漂移留出余量（第十轮实测 664pt，
-    /// 余量 36pt），又足够紧——第十一轮再加一个常展区块就会顶破它。
-    /// 改动这套排版时要重新量。
+    /// 上限取 800pt：第十二轮实测 757pt（账号段并进「额度窗口用量」浮层末尾，
+    /// +93pt），余量 43pt，与第十轮同量级。改动这套排版时要重新量。
     ///
     /// ⚠️ 这条量的是**最轻**的一格（无重置额度数据、窗口内无本地样本），所以它
     /// 挡不住后来挂在同一区块上的两样东西：金额行与逐张重置卡清单。真实形态由
     /// `testDockDetailWithTheFullestQuotaWindowSectionStaysUnderTheSameCeiling` 单独
-    /// 守（第十一轮实测 745pt，上限 800pt）。两条一起看才是完整的高度契约。
+    /// 守（第十二轮实测 838pt，上限 900pt）。两条一起看才是完整的高度契约。
     ///
     /// 注意这个上限和 popover 的高度上限（`popoverHeightFraction`）是两回事：
     /// 那条管的是"面板不许高过屏幕"，超了套 ScrollView；这条管的是"排版别再变高"，
@@ -336,7 +354,7 @@ final class HoverRevealModeTests: XCTestCase {
         let height = measuredHeight(mode: .alwaysVisible, status: Self.makeChatGPTStatus())
         XCTAssertGreaterThan(height, 0, "必须能布局出高度，否则这条断言没有意义")
         XCTAssertLessThan(
-            height, 700,
+            height, 800,
             "dock 详情浮层比重排前更高了（现在 \(height)pt，全展开时是 1188pt）"
         )
     }
@@ -346,8 +364,8 @@ final class HoverRevealModeTests: XCTestCase {
     ///
     /// 上一条量的那张卡没有重置数据、没有样本，是这条链上**最轻**的一格——它守不住
     /// 后来加的两样东西（金额行、重置卡清单）。真实用户的 ChatGPT 卡几乎总是两样
-    /// 都有，所以上限必须按这一格量：第十一轮实测 **745pt**，上限取 800pt（余量
-    /// 55pt，与另一条同量级）。
+    /// 都有，所以上限必须按这一格量：第十二轮实测 **838pt**（账号段 +93pt），
+    /// 上限取 900pt（余量 62pt，与另一条同量级）。
     @MainActor
     func testDockDetailWithTheFullestQuotaWindowSectionStaysUnderTheSameCeiling() {
         let now = Date()
@@ -373,9 +391,9 @@ final class HoverRevealModeTests: XCTestCase {
             "前提不成立：带重置卡与样本的这一格必须比最轻的那格高（否则量的不是同一张卡）"
         )
         XCTAssertLessThan(
-            height, 800,
-            "真实形态（金额行 + 逐张重置卡清单）的 dock 浮层高度（现在 \(height)pt）"
-                + "不该越过 800pt；超了先量一下，ScrollView 会兜底但那是一屏看不全"
+            height, 900,
+            "真实形态（金额行 + 逐张重置卡清单 + 账号段）的 dock 浮层高度（现在 \(height)pt）"
+                + "不该越过 900pt；超了先量一下，ScrollView 会兜底但那是一屏看不全"
         )
     }
 
@@ -420,6 +438,39 @@ final class HoverRevealModeTests: XCTestCase {
         hosting.frame = CGRect(x: 0, y: 0, width: minWidth, height: 10_000)
         hosting.layoutSubtreeIfNeeded()
         return hosting.fittingSize.height
+    }
+
+    /// 收敛**之前**的合并写法当参照物：`prompts: 42 (128 rounds)` 与
+    /// `input: 380K (+860K cached)` 各占一行（4 行），拆行写法是 8 行。
+    ///
+    /// 字体与 `UsageMetricHoverSummaryView.metricLine` 保持一致，否则量到的高度
+    /// 比的不是"行数"而是"字号"。
+    @MainActor
+    private static func mergedMetricSummary(usage: UsageMetricSummary) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 0) {
+                Text("prompts: ")
+                    .foregroundStyle(.secondary)
+                Text("\(Formatters.formatGroupedInt(usage.prompts))")
+                    .foregroundStyle(.primary)
+                Text(" (\(Formatters.formatGroupedInt(usage.rounds)) rounds)")
+                    .foregroundStyle(.secondary)
+            }
+            HStack(spacing: 0) {
+                Text("input: ")
+                    .foregroundStyle(.secondary)
+                Text("\(Formatters.formatTokenCountCompact(usage.uncachedInputTokens)) "
+                     + "(+\(Formatters.formatTokenCountCompact(usage.cachedInputTokens)) cached)")
+                    .foregroundStyle(.primary)
+            }
+            HStack(spacing: 0) {
+                Text("output: ")
+                    .foregroundStyle(.secondary)
+                Text(Formatters.formatTokenCountCompact(usage.outputTokens))
+                    .foregroundStyle(.primary)
+            }
+        }
+        .font(MenuTypography.hoverBodyMonospaced)
     }
 
     @MainActor

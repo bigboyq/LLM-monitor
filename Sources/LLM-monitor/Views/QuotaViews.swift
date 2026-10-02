@@ -12,8 +12,12 @@ struct ChatGPTPlanModelRow: View {
     /// 夹在进度条块与下方**本地用量**之间的卡片级信息（重置卡、高峰期），见
     /// `ModelQuotaDockBlock.between`。只有第一个 model 行会拿到非空值。
     var between: AnyView = AnyView(EmptyView())
-    /// dock 详情浮层把进度条提到标题上方；菜单保持原顺序（见 `CombinedQuotaWindowRow`）。
-    @Environment(\.hoverRevealMode) private var revealMode
+    /// 恒 `true`：生产路径上唯一的宿主就是这张卡，而两个宿主都注入
+    /// `.alwaysVisible`（`EdgeDockController.popoverContent` /
+    /// `HarnessUsageMenuView.cardRevealMode`），原先的
+    /// `ProviderCardLayout.liftsProgressBar(mode:)` 恒为真，判据已删除、值内联到
+    /// 这里。`menuLayout` 随之成为跑不到的一支，理由见 `ProviderCardLayout`。
+    private var isDockLayout: Bool { true }
 
     var body: some View {
         if isDockLayout {
@@ -21,10 +25,6 @@ struct ChatGPTPlanModelRow: View {
         } else {
             menuLayout
         }
-    }
-
-    private var isDockLayout: Bool {
-        ProviderCardLayout.liftsProgressBar(mode: revealMode)
     }
 
     // MARK: dock：条 + 元信息行（与通用 model 行同构）
@@ -436,8 +436,12 @@ struct CombinedQuotaWindowRow: View {
     /// 夹在进度条块与下方**本地用量**之间的卡片级信息（重置卡、高峰期），见
     /// `ModelQuotaDockBlock.between`。只有第一个 model 行会拿到非空值。
     var between: AnyView = AnyView(EmptyView())
-    /// dock 详情浮层把进度条提到标题上方；菜单保持原顺序。
-    @Environment(\.hoverRevealMode) private var revealMode
+    /// 恒 `true`：生产路径上唯一的宿主就是 `ProviderCardView`，而两个宿主都注入
+    /// `.alwaysVisible`（`EdgeDockController.popoverContent` /
+    /// `HarnessUsageMenuView.cardRevealMode`），原先的
+    /// `ProviderCardLayout.liftsProgressBar(mode:)` 恒为真，判据已删除、值内联到
+    /// 这里。`menuLayout` 随之成为跑不到的一支，理由见 `ProviderCardLayout`。
+    private var isDockLayout: Bool { true }
 
     var body: some View {
         if isDockLayout {
@@ -445,10 +449,6 @@ struct CombinedQuotaWindowRow: View {
         } else {
             menuLayout
         }
-    }
-
-    private var isDockLayout: Bool {
-        ProviderCardLayout.liftsProgressBar(mode: revealMode)
     }
 
     // MARK: dock：条 + 元信息行
@@ -1134,39 +1134,28 @@ private struct CombinedQuotaMetadataLine: View {
     let secondaryPercent: Double
     let secondaryTimeFraction: Double?
     let resetsAt: Date?
-    /// dock 详情浮层才把三个读数聚到行尾；菜单侧维持"百分比在行首、时间在行尾"。
-    @Environment(\.hoverRevealMode) private var revealMode
 
-    /// 是否把百分比与重置时间**作为一组靠右**。
+    /// 恒 `true`：百分比与重置时间**始终**作为一组聚在行尾。
     ///
-    /// - dock 详情浮层：是。两个百分比回答"还剩多少"，重置时间回答"什么时候换
-    ///   一轮"，三者挤在行尾一簇；开头的 model 名与它们之间的空档把"这是谁的条"
-    ///   和"还剩多少"分成两半。
-    /// - 菜单栏弹出：否。百分比在行首、重置时间推到行尾——那里两个问题本来就分属
-    ///   两端，靠到一处会被读成"5h 那一格的时间"，而这一行的名字由标题行写了，
-    ///   行首不需要让位给它。
+    /// 两个百分比回答"还剩多少"，重置时间回答"什么时候换一轮"，三者挤在行尾
+    /// 一簇；开头的 model 名与它们之间的空档把"这是谁的条"和"还剩多少"分成两半。
     ///
-    /// 判据是 `hoverRevealMode` 而不是"有没有 model 名"：同一批行视图在两侧复用，
-    /// 形态由环境说了算，别让对齐去猜调用方传了什么。
-    private var clustersAtTrailingEdge: Bool {
-        ProviderCardLayout.liftsProgressBar(mode: revealMode)
-    }
+    /// 原先按 `hoverRevealMode` 分叉（菜单那支是"百分比在行首、时间在行尾"）：
+    /// 判据 `ProviderCardLayout.liftsProgressBar(mode:)` 在 `.alwaysVisible` 下恒
+    /// 为真，而唯一的活的宿主是 dock 的 `QuotaBarWithMetadata`，两个渲染宿主都注入
+    /// `.alwaysVisible`，另一处宿主（`QuotaCombinedUsageRow`）只出现在 model 行的
+    /// `menuLayout` 里、已无渲染方。判据已删除，对齐固定成行尾（见
+    /// `ProviderCardLayout`）。
 
     var body: some View {
         HStack(spacing: 6) {
             QuotaRowModelName(name: name)
-            if clustersAtTrailingEdge {
-                Spacer(minLength: 12)
-            }
+            Spacer(minLength: 12)
             HStack(spacing: 6) {
                 quotaValue(label: primaryLabel, percent: primaryPercent, timeFraction: primaryTimeFraction)
                 quotaValue(label: secondaryLabel, percent: secondaryPercent, timeFraction: secondaryTimeFraction)
             }
-            .frame(width: quotaCombinedDataColumnWidth,
-                   alignment: clustersAtTrailingEdge ? .trailing : .leading)
-            if !clustersAtTrailingEdge {
-                Spacer(minLength: 12)
-            }
+            .frame(width: quotaCombinedDataColumnWidth, alignment: .trailing)
             ResetTimeSummary(resetsAt: resetsAt)
         }
     }
@@ -1190,19 +1179,12 @@ private struct SingleQuotaMetadataLine: View {
     let label: String
     let percent: Double
     let resetsAt: Date?
-    /// 同 `CombinedQuotaMetadataLine`：dock 详情浮层聚在行尾，菜单侧分居两端。
-    @Environment(\.hoverRevealMode) private var revealMode
-
-    private var clustersAtTrailingEdge: Bool {
-        ProviderCardLayout.liftsProgressBar(mode: revealMode)
-    }
+    /// 同 `CombinedQuotaMetadataLine`：读数一律聚在行尾，对齐不再按环境分叉。
 
     var body: some View {
         HStack(spacing: 6) {
             QuotaRowModelName(name: name)
-            if clustersAtTrailingEdge {
-                Spacer(minLength: 12)
-            }
+            Spacer(minLength: 12)
             HStack(spacing: 4) {
                 Text(label)
                     .font(MenuTypography.dataLabel)
@@ -1212,11 +1194,7 @@ private struct SingleQuotaMetadataLine: View {
                     .foregroundStyle(summaryColor(for: percent))
                     .frame(width: 40, alignment: .trailing)
             }
-            .frame(width: quotaSingleDataColumnWidth,
-                   alignment: clustersAtTrailingEdge ? .trailing : .leading)
-            if !clustersAtTrailingEdge {
-                Spacer(minLength: 12)
-            }
+            .frame(width: quotaSingleDataColumnWidth, alignment: .trailing)
             ResetTimeSummary(resetsAt: resetsAt)
         }
     }

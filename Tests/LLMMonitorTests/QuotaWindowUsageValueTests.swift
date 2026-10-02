@@ -335,6 +335,109 @@ final class QuotaWindowUsageValueTests: XCTestCase {
         XCTAssertEqual(resets.availableCount, 3, "折叠态那句『重置卡数量』与清单长度必须一致")
     }
 
+    // MARK: - 账号信息的可达性
+
+    /// 菜单改版删掉 provider 卡的账号折叠区后，账号（邮箱 / 套餐 / 数据来源）一度
+    /// **没有任何渲染入口**。它现在并到「额度窗口用量」浮层的末尾，而两个宿主都在
+    /// `ignoresMouseEvents = true` 的浮层里，纯 hover 展不开——所以断言方式是"账号段
+    /// 真的进了常展树"，与上面重置卡逐张明细同一条理由、同一种量法。
+    @MainActor
+    func testAccountSectionIsReachableInTheAlwaysVisibleSection() {
+        let emptySnapshot = LocalUsageSummaryBuilder.windowUsage(
+            model: Self.model(name: "deepseek_balance", interval: false, weekly: false, now: Date()),
+            providerKind: .deepseek,
+            samples: [],
+            intervalLabel: "5h",
+            weeklyLabel: "周"
+        )
+        XCTAssertTrue(emptySnapshot.isEmpty, "前提不成立：这里用的是没有额度窗口的快照")
+
+        let withoutAnything = self.measuredHeight(
+            of: Self.dockHosted(QuotaWindowUsageSection(snapshot: emptySnapshot)),
+            width: 312
+        )
+        XCTAssertEqual(withoutAnything, 0, "没有窗口、没有重置卡、没有账号时整块不渲染")
+
+        let withAccount = self.measuredHeight(
+            of: Self.dockHosted(QuotaWindowUsageSection(
+                snapshot: emptySnapshot,
+                account: .codex(planLabel: "Team", accountEmail: "someone@example.com")
+            )),
+            width: 312
+        )
+        XCTAssertGreaterThan(
+            withAccount, withoutAnything,
+            "有账号信息就必须渲染出那一段（否则账号在 dock 上彻底不可见——它已经没有任何别的入口）"
+        )
+    }
+
+    /// 账号段是**追加**在明细末尾的：四桶绝对值那几行不能因为多了账号而被挤掉。
+    @MainActor
+    func testAccountSectionIsAppendedAfterTheResetCreditsList() {
+        let now = Date()
+        let snapshot = LocalUsageSummaryBuilder.windowUsage(
+            model: Self.model(name: "chatgpt_plan", interval: true, weekly: true, now: now),
+            providerKind: .codexChatGpt,
+            samples: [Self.sample(at: now.addingTimeInterval(-600), prompt: "p1", model: "gpt-5.5")],
+            intervalLabel: "5h",
+            weeklyLabel: "周"
+        )
+        XCTAssertFalse(snapshot.isEmpty, "前提不成立：这里要的是有窗口的快照")
+
+        let bare = self.measuredHeight(
+            of: Self.dockHosted(QuotaWindowUsageSection(snapshot: snapshot)),
+            width: 312
+        )
+        let withCredits = self.measuredHeight(
+            of: Self.dockHosted(QuotaWindowUsageSection(
+                snapshot: snapshot,
+                resetCredits: Self.resetCredits(count: 2)
+            )),
+            width: 312
+        )
+        let withBoth = self.measuredHeight(
+            of: Self.dockHosted(QuotaWindowUsageSection(
+                snapshot: snapshot,
+                resetCredits: Self.resetCredits(count: 2),
+                account: .codex(planLabel: "Team", accountEmail: "someone@example.com")
+            )),
+            width: 312
+        )
+
+        XCTAssertGreaterThan(bare, 0, "前提不成立：这一格必须真的画出了窗口明细")
+        XCTAssertGreaterThan(withCredits, bare, "重置卡逐张清单必须仍然在浮层里")
+        XCTAssertGreaterThan(
+            withBoth, withCredits,
+            "账号段叠在重置卡清单**之上**：两者同时给出时必须比只有清单更高"
+        )
+    }
+
+    /// 只有真有账号概念的 provider 才建得出账号段。GLM / MiniMax 走 API Key，
+    /// DeepSeek 的 fetcher 不再往 `accountEmail` 里塞值（那是 R7 之前的预格式化余额串），
+    /// 那三种画出来只会永远停在「未拿到账号邮箱」那一行。
+    func testAccountSectionIsOnlyBuiltForProvidersThatHaveOne() {
+        for kind in [ProviderKind.antigravity, .codexChatGpt] {
+            XCTAssertNotNil(
+                QuotaWindowAccountInfo.make(
+                    providerKind: kind,
+                    accountEmail: "someone@example.com",
+                    planLabel: "Team"
+                ),
+                "\(kind) 是登录态 provider，必须有账号段"
+            )
+        }
+        for kind in [ProviderKind.minimaxTokenPlan, .glmCodingPlan, .deepseek] {
+            XCTAssertNil(
+                QuotaWindowAccountInfo.make(
+                    providerKind: kind,
+                    accountEmail: "someone@example.com",
+                    planLabel: "Team"
+                ),
+                "\(kind) 没有可展示的账号，传了邮箱也不该画（否则是一个永远填不满的占位）"
+            )
+        }
+    }
+
     // MARK: - helpers
 
     @MainActor
