@@ -604,6 +604,12 @@ catch 块始终 `release()` 防止锁泄漏。
 走显式 publisher 通道，两路保险。之前是 `objectWillChange.send() + in-place mutation` +
 3 个独立 PassthroughSubject（`antigravityUsageDidChange` / `minimaxUsageDidChange`），已合并。
 
+## Test Suite
+
+- 规模：`Tests/LLMMonitorTests/` 按主题一文件组织（2026-10 重组后 ~100 文件 / ~1000 用例 / 串行 wall ~22s）。
+- **串行执行是既定选择**：`swift test --parallel` 实测（2026-10-02，5 连跑 3 败）不可用——`SQLiteTempCopyTests` 的临时副本断言扫描跨进程共享目录，并行 worker 互相误判；且慢测试为睡眠型，并行的 wall 收益仅 ~4s。并行化前提：先给 SQLiteTempCopy 的副本目录引入进程级隔离，再复评。
+- 慢用例的等待注入缝已建立：调度器（now/sleep）、Bark 退避（retryDelay）、vnode 合并窗口（coalescingWindow 参数）；新增耗时敏感测试时优先走注入缝，不要写死真实 sleep。
+
 ## Launch At Login
 
 The Settings panel includes a launch-at-login toggle backed by `SMAppService.mainApp`. The menu footer displays read-only status text (`自启 ✓` / `自启 ✗`).
