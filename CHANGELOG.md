@@ -11,6 +11,7 @@
 
 ### Changed
 
+- 内部：架构分层落地（2026-10 审核整改）——纯基础设施迁 `Services/Infra/`（HTTP/SQLite/进程/文件/并发原语十件），`SaturatingArithmetic` 与 GLM 账本产物类型归位 `Models/`，身份语汇收编 `Models/ClientIdentity.swift`（Models → ConfigStore 反向依赖归零，绑定矩阵单一事实源随迁），排版常量上提 `Services/LayoutMetrics.swift`，`ProviderClientModel.swift` 拆出 `UsageFrameExtractors.swift` / `UnifiedDailyTokenUsage.swift`（786 → 366 行），帧抽取器的展示顺序契约以测试锁定。spec 补齐 L0-L3 分层定义与依赖方向规则。
 - 内部：原生样本（Antigravity / MiniMax Code / ZCode 智谱）的 promptID 在投影层统一加 `antigravity:` / `minimax-code:` / `zcode:` 前缀，与 OpenCode / DSH / ZCode 分片的前缀体系对齐——磁盘缓存零迁移（前缀在帧构造时施加，新旧样本得到相同终态 ID，turn 去重不受影响），apply 带幂等护栏杜绝双层前缀。
 - 内部：菜单 Harness 汇总改为缓存计算（statusDidChange 标脏、跨自然日自动失效、1Hz 时钟 tick 零重算）；删除死代码——`StatusIndicator` 类型、`OpencodeProviderUsage.cost` 字段、`ProviderCardLayout` 三条恒真谓词（`liftsProgressBar` / `splitsCachedInputRow` / `splitsRoundsRow`，生产路径收敛为 dock 排版后恒定，消费点内联）与两个无调用方的账号包装视图。
 

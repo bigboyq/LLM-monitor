@@ -131,7 +131,7 @@ catalog 的结果已经在 reader 层固化，重建逻辑必须逐字段原样�
 | `passthrough` | 显式透传（调用点默认） | 不加 |
 
 **前缀加在投影层**：scanner / reader / 磁盘缓存一律保持账本原始格式，命名空间在帧
-构造时（L1 `HarnessUsageFrame(namespace:)`）统一施加。因此旧缓存里的裸 ID 与今天
+构造时（L1 适配层（`HarnessUsageFrame`，逻辑层；类型与 L2 内核同文件 `Models/UsageProjectionKernel.swift`））统一施加。因此旧缓存里的裸 ID 与今天
 新写入的裸 ID 得到**完全相同**的终态 ID —— 既有缓存不需要迁移，同一次请求也不会
 因为「一份带前缀、一份是裸的」被计成两次。改在 scanner 层加前缀会正好造成这种
 双计，不要那样做。

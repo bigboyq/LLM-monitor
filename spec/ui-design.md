@@ -464,8 +464,8 @@ the ring appear to turn the wrong way, which nothing in the UI reports.
 The popover is **fixed width**, not content-sized, and the width is derived from the
 widest thing the card can contain — the 7-day token usage chart
 (`SevenDayUsageChartMetrics.pricedWidth` = 420): chart + the card's own 12pt padding
-(`ProviderCardView.contentPadding`) + the popover's 12pt backdrop padding
-(`MenuPanelHeightBridge.cardHorizontalPadding`) = `EdgeDockTheme.popoverWidth` (468).
+(`LayoutMetrics.cardContentPadding`) + the popover's 12pt backdrop padding
+(`LayoutMetrics.cardColumnHorizontalPadding`) = `EdgeDockTheme.popoverWidth` (468).
 It used to equal the main-menu width (360), which left the card only 312pt of content
 width and clipped the first/last day of the chart — exactly the layout damage a fixed
 width was supposed to prevent, just caused by the width being too small in the first
