@@ -171,7 +171,8 @@ struct ModelQuota: Equatable, Codable, Sendable {
         case .codexChatGpt:
             return 6
         case .antigravity:
-            return model.modelName.lowercased() == AntigravityModelKind.claudeAndGptModels.rawValue ? 3 : 6
+            // Claude and GPT：周窗口 = 1 × 5h 额度（Antigravity 2026-10 从 3 下调到 1）；Gemini 维持 6。
+            return model.modelName.lowercased() == AntigravityModelKind.claudeAndGptModels.rawValue ? 1 : 6
         case .glmCodingPlan:
             // GLM Coding Plan：5h 积分 × 5 = 周积分（Lite 2000/10000、Pro 12000/60000、Max 28000/140000）
             return 5

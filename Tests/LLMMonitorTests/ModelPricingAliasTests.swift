@@ -212,18 +212,18 @@ final class ModelPricingAliasTests: XCTestCase {
         XCTAssertEqual(minimax?.outputPerMillion, 8.4)
 
         let opus = ModelPricingCatalog.pricing(
-            for: "claude-opus-4-6", quotaProviderID: QuotaProviderID.antigravity
+            for: "claude-opus-5-5", quotaProviderID: QuotaProviderID.antigravity
         )
-        XCTAssertEqual(opus?.inputPerMillion, 5)
-        XCTAssertEqual(opus?.cacheReadPerMillion, 0.5)
-        XCTAssertEqual(opus?.outputPerMillion, 25)
+        XCTAssertEqual(opus?.inputPerMillion, 4)
+        XCTAssertEqual(opus?.cacheReadPerMillion, 0.2)
+        XCTAssertEqual(opus?.outputPerMillion, 20)
 
         let sonnet = ModelPricingCatalog.pricing(
-            for: "claude-sonnet-4.6", quotaProviderID: QuotaProviderID.antigravity
+            for: "claude-sonnet-5.5", quotaProviderID: QuotaProviderID.antigravity
         )
-        XCTAssertEqual(sonnet?.inputPerMillion, 3)
-        XCTAssertEqual(sonnet?.cacheReadPerMillion, 0.3)
-        XCTAssertEqual(sonnet?.outputPerMillion, 15)
+        XCTAssertEqual(sonnet?.inputPerMillion, 2)
+        XCTAssertEqual(sonnet?.cacheReadPerMillion, 0.2)
+        XCTAssertEqual(sonnet?.outputPerMillion, 10)
 
         let gptOSS = ModelPricingCatalog.pricing(
             for: "MODEL_OPENAI_GPT_OSS_120B_MEDIUM", quotaProviderID: QuotaProviderID.antigravity

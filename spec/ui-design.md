@@ -1592,7 +1592,7 @@ list is resident inside the card, so that consumer is gone.)
 - 账号行（第一段 Account Info）= 登录邮箱（来自 `GetUserStatus`）+ 套餐 pill（`planLabel` 去掉 `Google ` / `Antigravity ` 前缀，让 `Google AI Pro` → `AI Pro`，与它在 header 里时同一颗 pill 的文案）。
   两者皆缺时整行不画；一行常驻，不再有 hover 账号浮层。
 - `Gemini Models` and `Claude and GPT models` are shown as separate model groups inside one provider card.
-- 两组都把 5h / 周收为一条：Gemini 使用 `5h × 6 = 周` 分段，Claude and GPT 使用 `5h × 3 = 周` 分段。
+- 两组都把 5h / 周收为一条：Gemini 使用 `5h × 6 = 周` 分段，Claude and GPT 使用 `5h × 1 = 周` 分段。
 - The countdown text uses compact formatting such as `3小时41分后`.
 - The countdown follows the model tint unless quota is low enough to trigger warning or critical colors.
 

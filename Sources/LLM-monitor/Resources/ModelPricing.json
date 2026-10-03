@@ -122,21 +122,21 @@
         },
         {
           "match": "contains",
-          "keywords": ["claude-opus-4.6", "claude-opus-4-6"],
-          "label": "Claude Opus 4.6",
+          "keywords": ["claude-opus-5.5", "claude-opus-5-5"],
+          "label": "Claude Opus 5.5",
           "currency": "USD",
-          "inputPerMillion": 5,
-          "cacheReadPerMillion": 0.5,
-          "outputPerMillion": 25
+          "inputPerMillion": 4,
+          "cacheReadPerMillion": 0.2,
+          "outputPerMillion": 20
         },
         {
           "match": "contains",
-          "keywords": ["claude-sonnet-4.6", "claude-sonnet-4-6"],
-          "label": "Claude Sonnet 4.6",
+          "keywords": ["claude-sonnet-5.5", "claude-sonnet-5-5"],
+          "label": "Claude Sonnet 5.5",
           "currency": "USD",
-          "inputPerMillion": 3,
-          "cacheReadPerMillion": 0.3,
-          "outputPerMillion": 15
+          "inputPerMillion": 2,
+          "cacheReadPerMillion": 0.2,
+          "outputPerMillion": 10
         },
         {
           "match": "contains",
