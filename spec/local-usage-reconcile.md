@@ -47,6 +47,7 @@ FSEvents/vnode 只负责把 source 标记为 dirty 和驱动 freshness UI；它�
 | GLM / OpenCode | DB + WAL 指纹，快照带日历签名 | 未变化 rebase 本地日窗口；变化时重建单库 snapshot | DB/WAL 不可读、日历变化或 cache 版本不匹配时重建；失败不覆盖 last-good |
 | DSH | session 文件集合和每文件 fingerprint；聚合快照带日历签名 | 未变化复用；只解析变化文件，复用 parsed-file cache | 删除/压缩重写/预算截断等不安全状态回退单文件或受限全量；单文件失败时整份 index 保持 last-good 且保持 dirty，避免 fingerprint 与 aggregate 不一致 |
 | Codex | session JSONL per-file `mtime/size`，并检测 append/truncate/rewrite | 进程内未变化复用；append 从 offset 续读；启动 cache 缺失时冷扫一次 | truncate、同尺寸改写、部分行或预算未读保留 pending，下一拍续读/重扫；当前事件 cache 不跨进程持久化 |
+| agy | transcript 文件集合 + per-file `mtime/size` 指纹 + cli log 时间线签名（log-only 变化触发重聚合）；聚合快照带日历签名 | 未变化 rebase 本地 7 天窗口；变化时重聚合整个选中文件集（无 per-file 增量，靠 `(sessionID, created_at, step_index)` 跨文件去重兜底） | stat 失败或文件解析失败保留 last-good 且按 partial 暴露（partial 永不入盘、不推进成功指纹，失败文件下一轮重试）；预算截断是完整扫描，置 `isTruncated` 不算 partial |
 
 ## 事务和并发契约
 
@@ -62,11 +63,11 @@ FSEvents/vnode 只负责把 source 标记为 dirty 和驱动 freshness UI；它�
 ### 已落地
 
 - 将 `full` 和 `hardFull` 语义分开；启动 full 改为 cache-assisted。
-- MiniMax、GLM、OpenCode、DSH、Codex 不再因为启动 `full` 无条件绕过自身缓存。
+- MiniMax、GLM、OpenCode、DSH、Codex、agy 不再因为启动 `full` 无条件绕过自身缓存。
 - 日历/时区失效进入 `hardFull`；手工、唤醒、自动和普通日切保留 dirty/offset 路径。
 - 保留 Antigravity 设置页显式 hard-full，不扩大为全局硬全量。
 - 所有可持久化的日窗口快照都绑定 calendar/time-zone signature；冷启动遇到缺失或不匹配的签名会重建。
-- Antigravity、MiniMax 和 DSH 的 partial/文件失败不会被标记为 fresh；DSH 在失败轮次不改动 index，保留上一份自洽的成功聚合和 fingerprint。
+- Antigravity、MiniMax、DSH 和 agy 的 partial/文件失败不会被标记为 fresh；DSH 在失败轮次不改动 index，保留上一份自洽的成功聚合和 fingerprint，agy 同款（失败文件不入成功指纹，整份 index 原样保留）。
 - reconcile 使用单一 `pendingMode` 和 calendar revision，保证 in-flight 的 `hardFull` 不被 dirty 降级或吞掉。
 
 ### 下一阶段

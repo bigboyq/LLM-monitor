@@ -16,7 +16,7 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 | Instance | One process per user config directory, enforced by `instance.lock` |
 | Runtime log | `~/Library/Application Support/LLM-monitor/log.txt` plus stdout and `os.Logger` (privacy `.private`, Console.app 默认脱敏) |
 | Quota Providers | `minimax_token_plan`, `codex_chatgpt`, `antigravity`, `glm_coding_plan`, `deepseek` |
-| Clients | Codex, Antigravity, ZCode, OpenCode, DSH, MiniMax Code; clients may contribute to multiple quota providers |
+| Clients | Codex, Antigravity, Agy, ZCode, OpenCode, DSH, MiniMax Code; clients may contribute to multiple quota providers |
 | Refresh | Provider scheduler drives quota refreshes and settled-batch LocalUsage reconcile; scanners use FSEvents dirty invalidation |
 | Config reload | Event-driven via `DispatchSourceFileSystemObject` (no polling) |
 | Window lifetime | Menu closes on focus loss or after 30s of inactivity; any in-menu interaction resets the timer |
@@ -38,7 +38,7 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 
 | 层 | 内容 | 允许依赖 |
 |---|---|---|
-| **L0 数据源** | `Fetchers/` 全部；`Services/` 下的各 `*Scanner` / `*DBReader` / `*Aggregation`（Antigravity/Codex/Dsh/GlmZcode/Minimax/Opencode 系） | L0 专属基础设施（`Services/Infra/`：HTTP、SQLite、进程、文件、并发原语、错误类型）；Models 的数据契约类型 |
+| **L0 数据源** | `Fetchers/` 全部；`Services/` 下的各 `*Scanner` / `*DBReader` / `*Aggregation`（Antigravity/Agy/Codex/Dsh/GlmZcode/Minimax/Opencode 系） | L0 专属基础设施（`Services/Infra/`：HTTP、SQLite、进程、文件、并发原语、错误类型）；Models 的数据契约类型 |
 | **L1 适配** | `HarnessUsageFrame` + 各 harness 的帧适配（`DshHarnessFrames` 等；类型与 L2 内核同住 `Models/UsageProjectionKernel.swift`） | L0 产物类型、L1 自身 |
 | **L2 投影内核** | `UsageProjectionKernel.project`（`Models/UsageProjectionKernel.swift`）——全仓**唯一**生产调用点在 `ProviderStatus.usageProjection` | L1、`TokenAccounting`、`ModelPricingCatalog`、绑定矩阵 |
 | **L3 消费** | 视图模型（`ClientUsageAggregation.swift` 的 `HarnessTodaySummary` / `ProviderStatusStrip`、`ProviderClientModel.swift` 的 `ClientUsageContribution` / `ProviderUsageProjection` / `ClientProviderUsageSummary`）与全部 `Views/` | L2 产出、AppState 状态宿主 |
@@ -68,8 +68,8 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 | `Sources/LLM-monitor/Models/AntigravityModelKind.swift` | Antigravity 模型族分类 enum（`gemini_models` / `claude_and_gpt_models` wire 值的 single source of truth） |
 | `Sources/LLM-monitor/Models/AppMetadata.swift` | 版本 / build 号（读 Info.plist，设置页「关于」展示） |
 | `Sources/LLM-monitor/Models/AnyJSON.swift` | 弱类型 JSON（Antigravity 递归解析用） |
-| `Sources/LLM-monitor/Models/LocalUsageDaily.swift` | Antigravity / Codex / Minimax / GLM / DSH / OpenCode 共享的 7-day chart 协议 + 默认实现 |
-| `Sources/LLM-monitor/Models/LocalDailyTokenUsage.swift` | 五个本地数据源共享的单日 token 聚合结构（统一收口原 `XxxDailyUsage`，on-disk JSON 键兼容） |
+| `Sources/LLM-monitor/Models/LocalUsageDaily.swift` | Antigravity / Agy / Codex / Minimax / GLM / DSH / OpenCode 共享的 7-day chart 协议 + 默认实现 |
+| `Sources/LLM-monitor/Models/LocalDailyTokenUsage.swift` | 六个本地数据源共享的单日 token 聚合结构（统一收口原 `XxxDailyUsage`，on-disk JSON 键兼容） |
 | `Sources/LLM-monitor/Models/LocalTokenUsageSample.swift` | Provider 中立的单次模型调用 sample（cache-inclusive input 口径 + `TokenUsageBuckets` 规范化入口） |
 | `Sources/LLM-monitor/Models/TokenAccounting.swift` | harness raw input / output 计数口径的元数据枚举（cacheInclusive / uncachedOnly 等） |
 | `Sources/LLM-monitor/Models/LocalUsageFreshness.swift` | 本地用量数据新鲜度（clean / dirty / scanning / failed），刻意独立于额度健康度 |
@@ -80,6 +80,9 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 | `Sources/LLM-monitor/Models/ZcodeProviderSlice.swift` | ZCode 非智谱 provider 分片枚举（`minimax` / `deepseek` 前缀谓词、quota 卡映射与样本 promptID 命名空间） |
 | `Sources/LLM-monitor/Models/DshLocalUsage.swift` | DeepSeek Harness session token 数据模型与 provider 分片 |
 | `Sources/LLM-monitor/Services/DshLocalUsageScanner.swift` | 读取 `~/.dsh/sessions` 的 JSONL/zstd session 日志，按 provider 聚合 7 天用量 |
+| `Sources/LLM-monitor/Models/AgyLocalUsage.swift` | agy CLI 本地 transcript token 用量快照模型（`isPartial` 出相等 / `isTruncated` 入相等的设计注释） |
+| `Sources/LLM-monitor/Services/AgyLocalUsageScanner.swift` | 读取 `~/.gemini/antigravity-cli/brain/` 的 transcript JSONL + cli log 模型名时间线，聚合 7 天用量（预算截断 / 指纹缓存） |
+| `Tests/LLMMonitorTests/AgyLocalUsageScannerTests.swift` | agy scanner 回归护栏（MODEL 行解析 / 去重 / 模型名 join / 缓存短路 / 预算截断 / 帧投影命名空间） |
 | `Sources/LLM-monitor/Models/ProviderLocalUsage.swift` | Antigravity / minimax 共享的本地用量数据模型（保留历史类型别名） |
 | `Sources/LLM-monitor/Fetchers/QuotaFetcher.swift` | `QuotaFetcher` protocol + 默认实现 |
 | `Sources/LLM-monitor/Services/Infra/QuotaError.swift` | 统一错误类型 |
@@ -123,6 +126,7 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 | `Sources/LLM-monitor/Services/MinimaxDBReader.swift` | 读 minimax v2 `local_runtime_token_usage` 表 |
 | `Sources/LLM-monitor/Services/MinimaxLocalUsageScanner.swift` | minimax v2 `runtime-state.sqlite` 单源 scanner（AsyncMutex + lastCommittedGeneration 串行化）|
 | `Sources/LLM-monitor/Services/MinimaxLocalUsageAggregation.swift` | minimax reasoning 字符分摊比例回写 sample 与 per-day 聚合纯函数 |
+| `Sources/LLM-monitor/Services/AgyLocalUsageAggregation.swift` | agy transcript MODEL 行解析、跨文件去重、thinking 字符守恒分摊与日聚合纯函数 |
 | `Sources/LLM-monitor/Services/GlmZcodeDBReader.swift` | ZCode `model_usage` 表 SQL 读取 + Method A reasoning 归类 + per-day 聚合与 samples + 非智谱 provider 分片聚合（`ZcodeProviderSliceAggregate`） |
 | `Sources/LLM-monitor/Services/GlmZcodeOffPeakReader.swift` | `~/.zcode/v2/tasks-index.sqlite` 闲时任务时间窗口读取（额度窗口排除依据） |
 | `Sources/LLM-monitor/Services/GlmZcodeBalanceLogReader.swift` | ZCode 余额轮询日志解析（活动套餐 balances，`parseZcodeBalanceLog` 开关） |
@@ -216,7 +220,7 @@ flowchart TD
 
   LoopA -. 并发抓取额度 .-> Fetchers
   Prober -. 本地认证探测 .-> Fetchers
-  Reconcile -. 扫描本地账本 .-> Scanners["Local Scanners\n(Minimax / GLM / OpenCode / DSH / Antigravity / Codex)"]
+  Reconcile -. 扫描本地账本 .-> Scanners["Local Scanners\n(Minimax / GLM / OpenCode / DSH / Antigravity / Agy / Codex)"]
   Scanners -. 各自 FSEvents 标记 dirty .-> Reconcile
 
   Fetchers --> Minimax["MinimaxTokenPlanFetcher"]
@@ -327,7 +331,7 @@ stable IDs, ignores removed or duplicated entries, and appends newly registered
 Providers using the default alphabetical order.
 
 Settings > Clients uses horizontally scrollable client tabs sorted by display name
-(Antigravity, Codex, DSH, MiniMax Code, OpenCode, ZCode). Each tab only renders quota
+(Agy, Antigravity, Codex, DSH, MiniMax Code, OpenCode, ZCode). Each tab only renders quota
 providers with observed local token activity. Provider rows are collapsed by default;
 expanding one opens the shared seven-day token chart. It uses the same seven local
 calendar days as the provider chart: the extra retained samples

@@ -27,6 +27,7 @@ enum ClientID {
     static let openCode = "opencode"
     static let dsh = "dsh"
     static let minimaxCode = "minimax_code"
+    static let agy = "agy"
 }
 
 /// A client-to-quota relationship. The source aliases are normalized at the
@@ -170,6 +171,16 @@ struct ClientDescriptor: Identifiable, Equatable, Sendable {
             iconSystemName: "paperplane.circle.fill",
             supportedQuotaProviderIDs: [QuotaProviderID.antigravity],
             subtitle: "Antigravity 本地会话与 token 用量"
+        ),
+        ClientDescriptor(
+            id: ClientID.agy,
+            displayName: "Agy",
+            iconSystemName: "paperplane.fill",
+            // agy 是 Antigravity 的 CLI 分支，模型本质是 Gemini：本地用量归
+            // Antigravity quota 卡（帧自带 quotaProviderID 的 native 模式，
+            // 与 ClientID.antigravity 同款，不进 defaultBindings）。
+            supportedQuotaProviderIDs: [QuotaProviderID.antigravity],
+            subtitle: "Agy CLI 本地会话与 token 用量"
         ),
         ClientDescriptor(
             id: ClientID.zcode,

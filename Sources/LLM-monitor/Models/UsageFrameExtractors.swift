@@ -14,6 +14,7 @@ extension ProviderStatus {
         ],
         .antigravity: [
             antigravityFrames,
+            agyFrames,
             opencodeFrames(sourceProviderID: OpencodeLocalUsage.antigravitySourceProviderID) {
                 $0.opencodeUsage?.antigravitySlice
             }
@@ -64,6 +65,23 @@ extension ProviderStatus {
             daily: snapshot.dailyTokenUsage,
             samples: snapshot.recentSamples ?? [],
             namespace: .antigravityNative,
+            scannedAt: snapshot.scannedAt
+        )]
+    }
+
+    /// agy CLI（Antigravity 的命令行分支）本地 transcript 账本。帧自带
+    /// quota 归属（`.antigravity`，与 antigravity native 同卡并列），账本原始
+    /// promptID 是裸 `session:step`，投影时补 `agy:` 命名空间。截断位是快照级
+    /// 口径（文件数/字节预算挤出最旧 session），整帧携带。
+    private static let agyFrames: @Sendable (ProviderStatus, QuotaInfo?) -> [HarnessUsageFrame] = { status, _ in
+        guard let snapshot = status.agyUsage else { return [] }
+        return [HarnessUsageFrame(
+            clientID: ClientID.agy,
+            quotaProviderID: QuotaProviderID.antigravity,
+            daily: snapshot.dailyTokenUsage,
+            samples: snapshot.recentSamples,
+            namespace: .agy,
+            isTruncated: snapshot.isTruncated == true,
             scannedAt: snapshot.scannedAt
         )]
     }

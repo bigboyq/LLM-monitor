@@ -32,6 +32,7 @@ enum LocalUsageSource: String, CaseIterable, Hashable, Sendable {
     case zcode
     case dsh
     case opencode
+    case agy
 }
 
 /// Value-type storage for source freshness on `ProviderStatus`.

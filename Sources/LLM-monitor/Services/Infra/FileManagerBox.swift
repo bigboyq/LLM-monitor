@@ -95,6 +95,11 @@ extension FileManagerBox {
         try fileManager.attributesOfItem(atPath: path)
     }
 
+    /// 整文件读取入口，与 writePrivate 对应。
+    func contents(at url: URL) throws -> Data {
+        try Data(contentsOf: url)
+    }
+
     /// 在目标同目录中以 0600 创建唯一临时文件，完整写入、fsync、rename，再同步父目录。
     ///
     /// 与 `Data.write(.atomic) -> chmod` 不同，临时文件从诞生起就是 owner-only，

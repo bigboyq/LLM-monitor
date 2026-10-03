@@ -1136,6 +1136,19 @@ final class AppState: ObservableObject {
         )
     }
 
+    // MARK: - agy CLI local usage scanner（Antigravity 卡的本地用量贡献之一）
+
+    @MainActor
+    func applyAgyUsage(_ usage: AgyLocalUsage?) {
+        applyLocalUsage(
+            kind: .antigravity,
+            field: \.agyUsage,
+            fieldName: "agyUsage",
+            summarize: { "\($0.sessionCount) sessions" },
+            usage: usage
+        )
+    }
+
     // MARK: - minimax local usage scanner
 
     @MainActor
@@ -1410,7 +1423,7 @@ final class AppState: ObservableObject {
         switch source {
         case .codex:
             affectedKinds = [.codexChatGpt]
-        case .antigravity:
+        case .antigravity, .agy:
             affectedKinds = [.antigravity]
         case .minimaxCode:
             affectedKinds = [.minimaxTokenPlan]

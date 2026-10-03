@@ -125,16 +125,19 @@ final class ClientSegmentedControlTests: XCTestCase {
     }
 
     @MainActor
-    func testSixRealClientsStillFitTheSettingsContentWidth() {
-        // 客户端数会增长（现在 6 个）。超过内容区宽度时外层横向滚动，功能不受影响，
+    func testRegisteredClientsStillFitTheSettingsContentWidth() {
+        // 客户端数会增长（现在 7 个）。超过内容区宽度时外层横向滚动，功能不受影响，
         // 但值得先知道，免得"加个客户端名"悄悄把切换条挤出视野。
+        // 660pt 是 6 客户端时代的内容区口径；Agy 加入后（"Agy (12)" 一段约 50pt）
+        // 切换条按设计超出并由外层滚动兜底，预算放宽到 720pt 继续守门：
+        // 再涨就该考虑折叠计数或换布局了。
         let items = ClientDescriptor.all.map {
             item($0.id, $0.displayName, badge: 12, subtitle: $0.subtitle)
         }
         let font = NSFont.systemFont(ofSize: 13)
         let total = items.reduce(0) { $0 + ClientSegmentedControl.segmentWidth(for: $1.label, font: font) }
-        print("6 个客户端（名称 + 两位计数）总宽 = \(Int(total))pt")
-        XCTAssertLessThan(total, 660, "设置窗口内容区约 660pt；再宽就该考虑折叠计数或换布局了")
+        print("\(ClientDescriptor.all.count) 个客户端（名称 + 两位计数）总宽 = \(Int(total))pt")
+        XCTAssertLessThan(total, 720, "切换条总宽超出滚动兜底可接受的口径；再宽就该考虑折叠计数或换布局了")
     }
 
     @MainActor

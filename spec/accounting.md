@@ -31,6 +31,7 @@ completion，而不是仅可见文字。
 | MiniMax Code | `input` = uncached | 独立字段 | 当前账单 output 可能不含可分离 reasoning；reader 用原生字段或 thinking 字符比例拆分 | 能拆分则 `Output/Reason` 守恒（比例公式同样走共享 `ReasoningCharSplit`）；不能拆分则 raw output 全放 `Output`、`Reason=0` |
 | Codex | `inputTokens` 含 cache | `cachedInputTokens` 是子集 | output/reasoning 独立 | `Input = max(input - cache, 0)`；Output/Reason 直接映射 |
 | Antigravity | event `inputTokens` = uncached | 独立字段 | output/reasoning 独立 | daily 直接映射；sample 保留 cache-inclusive input |
+| agy | transcript `input_tokens` = uncached | 独立字段 | `output_tokens` 含思考，无原生 reasoning 计数 | `thinking` 非空时按字符占比走共享 `ReasoningCharSplit` 守恒拆分（`Reason + Output = raw output`）；无 thinking 则 `Reason=0`、`Output=raw output`；daily 直接映射；sample 保留 cache-inclusive input |
 | OpenCode | `tokens.input` = uncached | `tokens.cache.read` 独立 | output/reasoning 独立，但 `tokens.reasoning` 对 `minimax` 前缀恒 0 | native reasoning 原样透传；仅 `minimax` 前缀在 native 为 0 时按 `part` 表字符比例 fallback 分摊（极老库缺 `part` 表时降级为 `Reason=0`，聚合不失败）；daily 直接映射；sample 保留 cache-inclusive input |
 | ZCode / GLM | `model_usage.input_tokens` 含 cache | `cache_read_input_tokens` 是子集 | 智谱行由 reader 的 Method A 归类；非智谱分片另有三段式 | daily 先减 cache；sample 保留完整 input；不再二次拆分。智谱行走 Method A 整轮归类；**非智谱分片走字符分摊三段式**：① native `reasoning_tokens > 0` 原样透传 → ② 否则按 `part` 表字符比例分摊（day 级聚合 / 行级样本）→ ③ 都没有保持 `Reason=0` |
 
@@ -83,10 +84,11 @@ DSH 与 MiniMax Code 都只在 provider 没有可用原生 reasoning 数值时�
 
 两处 M3 字符分摊的**比例公式**共用 `Sources/LLM-monitor/Models/ReasoningCharSplit.swift`
 的 `split(outputTokens:reasoningChars:visibleChars:)`（返回 `nil` 表示无法估算，调用方
-保持原样）。同一工具还被 ZCode 的非智谱 provider 分片与 OpenCode 的 `minimax` 分片复用，
-字符桶口径一致：思考取 reasoning part，可见输出取 text part + tool 参数
-（`$.state.input` / DSH `tool-call.arguments`）；粒度分别是 ZCode 分片 day 级聚合 / 行级
-样本、OpenCode day 级聚合 / 行级样本。
+保持原样）。同一工具还被 ZCode 的非智谱 provider 分片、OpenCode 的 `minimax` 分片与
+agy 的 transcript 行复用，字符桶口径一致：思考取 reasoning part（agy 取行内
+`thinking` 字段），可见输出取 text part + tool 参数（`$.state.input` / DSH
+`tool-call.arguments` / agy `content` + `tool_calls` 序列化文本）；粒度分别是 ZCode
+分片 day 级聚合 / 行级样本、OpenCode day 级聚合 / 行级样本、agy 行级样本。
 
 ### 唯一入口：raw → 桶
 
@@ -131,6 +133,7 @@ catalog 的结果已经在 reader 层固化，重建逻辑必须逐字段原样�
 | `antigravityNative` | Antigravity native（RPC + .db step 统计） | `antigravity:` |
 | `minimaxNative` | MiniMax Code native（v2 runtime-state 单库 SQL） | `minimax-code:` |
 | `zcodeNative` | ZCode 智谱系 native（`GlmZcodeLocalUsageScanner`） | `zcode:` |
+| `agy` | agy CLI 本地 transcript（单源账本，裸 `session:step:N`） | `agy:` |
 | `codex` | Codex native（scanner 构造点已自带 `codex:`） | 不叠加 |
 | `dsh` | DSH 共享 session 账本 + provider 路由键 | `dsh:<provider>:` |
 | `opencode` | OpenCode 一份多 provider 账本 | `opencode:<provider>:` |

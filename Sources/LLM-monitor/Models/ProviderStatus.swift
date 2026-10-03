@@ -48,6 +48,11 @@ struct ProviderStatus: Identifiable, Equatable, Sendable {
     /// Antigravity 本地 token 用量聚合（来自 AntigravityLocalUsageScanner）
     /// 只在 `kind == .antigravity` 时使用；其他 provider 永远 nil。
     var antigravityLocalUsage: AntigravityLocalUsage?
+    /// agy CLI（Antigravity 的命令行分支）本地 token 用量聚合（来自
+    /// AgyLocalUsageScanner）。与 `antigravityLocalUsage` 同卡并列：agy 的模型
+    /// 本质是 Gemini，本地用量归 `.antigravity` 卡，是该卡本地用量的贡献来源之一。
+    /// 只在 `kind == .antigravity` 时使用；其他 provider 永远 nil。
+    var agyUsage: AgyLocalUsage?
     /// minimax 本地 token 用量聚合（来自 MinimaxLocalUsageScanner，v2 runtime-state 单源）
     /// 只在 `kind == .minimaxTokenPlan` 时使用；其他 provider 永远 nil。
     var minimaxLocalUsage: MinimaxLocalUsage?
@@ -175,7 +180,7 @@ struct ProviderStatus: Identifiable, Equatable, Sendable {
         case .codexChatGpt:
             return [.codex] + (opencodeConsumer ? [.opencode] : [])
         case .antigravity:
-            return [.antigravity] + (opencodeConsumer ? [.opencode] : [])
+            return [.antigravity, .agy] + (opencodeConsumer ? [.opencode] : [])
         case .minimaxTokenPlan:
             return [.minimaxCode, .dsh]
                 + (zcodeSliceConsumer ? [.zcode] : [])

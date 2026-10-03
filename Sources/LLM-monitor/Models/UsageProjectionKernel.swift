@@ -36,6 +36,8 @@ import Foundation
 ///   OpenCode / ZCode 分片的**未加前缀原始格式**同构，所以按 client 身份各补一层
 ///   固定前缀。`zcode:` 与 `zcodeSlice` 的 `zcode:<slice>:` 同族但不冲突：后者多
 ///   一段 slice 键，native 快照本身就是一整份智谱账本，不再分片。
+/// - `agy`：`agy:`（agy CLI 本地 transcript，单源账本）。裸 `session:step`，
+///   与 antigravity native 同族的固定前缀模式。
 /// - `passthrough`：不加前缀，保持原样。
 /// - `codex`：Codex scanner 已在构造点自带 `codex:` 前缀，这里同样不叠加；保留
 ///   独立 case 只是为了让调用点的意图一眼可读。
@@ -48,6 +50,7 @@ enum UsageSampleNamespace: Sendable, Equatable, CaseIterable {
     case antigravityNative
     case minimaxNative
     case zcodeNative
+    case agy
     case passthrough
     case codex
     case dsh
@@ -62,6 +65,8 @@ enum UsageSampleNamespace: Sendable, Equatable, CaseIterable {
         static let minimaxNative = "minimax-code:"
         /// ZCode 智谱系 native 账本（`GlmZcodeLocalUsageScanner`）。
         static let zcodeNative = "zcode:"
+        /// agy CLI 本地 transcript 账本。
+        static let agy = "agy:"
         /// DSH 共享 session 账本 + provider 路由键。
         static let dsh = "dsh:"
         /// OpenCode 一份多 provider 账本 + providerID。
@@ -82,6 +87,8 @@ enum UsageSampleNamespace: Sendable, Equatable, CaseIterable {
             return Self.Prefix.minimaxNative
         case .zcodeNative:
             return Self.Prefix.zcodeNative
+        case .agy:
+            return Self.Prefix.agy
         case .dsh:
             return Self.Prefix.dsh + "\(sourceKey ?? Self.unknownSourceKey):"
         case .opencode:

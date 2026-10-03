@@ -11,6 +11,7 @@ enum TokenMonitorProvider: String, CaseIterable, Sendable {
     case glmZcode = "glm-zcode"
     case opencode
     case dsh
+    case agy
 }
 
 enum TokenMonitorPaths {

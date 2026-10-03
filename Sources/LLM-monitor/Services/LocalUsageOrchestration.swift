@@ -17,6 +17,7 @@ final class LocalUsageOrchestration {
         var glm = true
         var dsh = true
         var opencode = true
+        var agy = true
     }
 
     /// Derive source ownership from the effective provider statuses.  This is
@@ -48,7 +49,11 @@ final class LocalUsageOrchestration {
             dsh: enabledKinds.contains(.minimaxTokenPlan)
                 || enabledKinds.contains(.glmCodingPlan)
                 || enabledKinds.contains(.deepseek),
-            opencode: hasOpenCodeConsumer
+            opencode: hasOpenCodeConsumer,
+            // agy 的本地用量归 Antigravity 卡（帧自带 quotaProviderID 的
+            // native 模式）：provider 启用即扫描；目录不存在时由
+            // checkClientReadiness 短路。
+            agy: enabledKinds.contains(.antigravity)
         )
     }
 
@@ -173,6 +178,25 @@ final class LocalUsageOrchestration {
         }
     )
 
+    /// agy CLI（Antigravity 的命令行分支）本地 transcript token 用量 scanner。
+    /// agy 同样不是菜单栏 provider：结果挂到 `.antigravity` 卡的 `agyUsage`
+    /// 字段（该卡本地用量的贡献来源之一），没有独立 scanning 状态。
+    private lazy var agyCoordinator = LocalUsageCoordinator<AgyLocalUsage>(
+        providerID: "agy",
+        logTag: "agy",
+        makeScanner: { AgyLocalUsageScanner() },
+        apply: { [weak writer] usage in writer?.applyAgyUsage(usage) },
+        onDirty: { [weak writer] in
+            writer?.setLocalUsageFreshness(.dirty, for: .agy)
+        },
+        onFresh: { [weak writer] in
+            writer?.setLocalUsageFreshness(.clean, for: .agy)
+        },
+        onFailed: { [weak writer] in
+            writer?.setLocalUsageFreshness(.failed, for: .agy)
+        }
+    )
+
     // MARK: - Reconcile state
 
     /// LocalUsage 不再拥有常驻 beat/timer。一次 reconcile 由 provider batch settled
@@ -226,6 +250,7 @@ final class LocalUsageOrchestration {
         glmCoordinator.cancelInFlight()
         opencodeCoordinator.cancelInFlight()
         dshCoordinator.cancelInFlight()
+        agyCoordinator.cancelInFlight()
         reconcileTask?.cancel()
         reconcileTask = nil
         pendingMode = nil
@@ -244,6 +269,7 @@ final class LocalUsageOrchestration {
         glmCoordinator.setActive(active.glm)
         dshCoordinator.setActive(active.dsh)
         opencodeCoordinator.setActive(active.opencode)
+        agyCoordinator.setActive(active.agy)
         if !active.codex {
             stopCodexWatcher()
         } else if codexSourceLifecycle != nil {
@@ -429,19 +455,28 @@ final class LocalUsageOrchestration {
                 isActive: { self.activeSources.antigravity }
             ) { self.antigravityCoordinator }
         }
+        let agy: @MainActor () async -> Void = { [weak self] in
+            guard let self, !Task.isCancelled else { return }
+            await self.scanClient(
+                "agy",
+                mode: mode,
+                isActive: { self.activeSources.agy }
+            ) { self.agyCoordinator }
+        }
         let codex: @MainActor () async -> Void = { [weak self] in
             guard !Task.isCancelled else { return }
             await self?.scanCodexClient(mode: mode)
         }
 
         // Keep the small SQLite snapshots concurrent, but never overlap the
-        // three heavyweight parsers. DSH can ingest a very large compressed
-        // history, Antigravity holds trajectory response Data, and Codex scans
-        // a large JSONL corpus; running them in one batch recreates the peak
+        // heavyweight parsers. DSH can ingest a very large compressed history,
+        // Antigravity holds trajectory response Data, Codex and agy scan large
+        // JSONL corpora; running any of them in one batch recreates the peak
         // memory pressure this pass is designed to remove.
         let batches: [[@MainActor () async -> Void]] = [
             [minimax, glm, opencode],
             [dsh],
+            [agy],
             [antigravity],
             [codex]
         ]
@@ -637,6 +672,8 @@ final class LocalUsageOrchestration {
             return fileManager.fileExists(atPath: OpencodeUsageScanner.defaultDBURL.path)
         case "dsh":
             return fileManager.fileExists(atPath: DshLocalUsageScanner.defaultSessionsRoot.path)
+        case "agy":
+            return fileManager.fileExists(atPath: AgyLocalUsageScanner.defaultBrainRoot.path)
         case "antigravity":
             // 等价于 AntigravityFetcher().hasLocalAuth() 的常量语义：真正的本地
             // 探测（pgrep/lsof 进程发现）推迟到 async fetch()，这里直接短路，
@@ -679,6 +716,7 @@ protocol LocalUsageStatusWriting: AnyObject {
     func applyGlmLocalUsage(_ usage: GlmLocalUsage?)
     func applyOpencodeUsage(_ usage: OpencodeLocalUsage?)
     func applyDshUsage(_ usage: DshLocalUsage?)
+    func applyAgyUsage(_ usage: AgyLocalUsage?)
     func codexEnrichmentTarget() -> (providerID: String, authPath: String?, model: ModelQuota?, fetchedAt: Date, generation: Int)?
     /// codex 在 config.json 中配置的 authPath（未配置 provider 时返回 nil，不要求
     /// enabled / lastSuccess）—— 供 readiness 沿 CodexFetcher 的解析链定位 codex home。

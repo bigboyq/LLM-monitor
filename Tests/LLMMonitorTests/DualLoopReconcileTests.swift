@@ -64,6 +64,7 @@ final class DualLoopReconcileTests: StateTestCase {
             func applyGlmLocalUsage(_ usage: GlmLocalUsage?) {}
             func applyOpencodeUsage(_ usage: OpencodeLocalUsage?) {}
             func applyDshUsage(_ usage: DshLocalUsage?) {}
+            func applyAgyUsage(_ usage: AgyLocalUsage?) {}
             func codexEnrichmentTarget() -> (providerID: String, authPath: String?, model: ModelQuota?, fetchedAt: Date, generation: Int)? { nil }
             func codexConfiguredAuthPath() -> String? { nil }
             func applyCodexUsageDetails(_ details: CodexUsageDetails?, providerID: String, fetchedAt: Date, configurationGeneration: Int) {}
@@ -101,6 +102,7 @@ final class DualLoopReconcileTests: StateTestCase {
             func applyGlmLocalUsage(_ usage: GlmLocalUsage?) {}
             func applyOpencodeUsage(_ usage: OpencodeLocalUsage?) {}
             func applyDshUsage(_ usage: DshLocalUsage?) {}
+            func applyAgyUsage(_ usage: AgyLocalUsage?) {}
             func codexEnrichmentTarget() -> (providerID: String, authPath: String?, model: ModelQuota?, fetchedAt: Date, generation: Int)? { nil }
             func codexConfiguredAuthPath() -> String? { authPath }
             func applyCodexUsageDetails(_ details: CodexUsageDetails?, providerID: String, fetchedAt: Date, configurationGeneration: Int) {}
