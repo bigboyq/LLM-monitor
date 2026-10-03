@@ -2,6 +2,15 @@
 
 本文件记录面向用户的版本变化；审计、重构和测试补强只在影响使用行为时摘要记录。
 
+## [1.23.0] - 2026-10-04
+
+### Added
+
+- **新增本地用量客户端 Agy（Antigravity 的 CLI 分支）**：agy 把每个会话落盘为 `~/.gemini/antigravity-cli/brain/` 下的明文 JSONL transcript，现已接入本地用量扫描——设置 → Clients 自动出现 Agy tab；其 token 计入 Google Antigravity 卡，与 IDE 的本地账本同卡并列，Provider、价格表与周倍率口径零改动（`gemini-3.1-pro-high` 等模型直接命中现有 Antigravity 价目）。
+- **agy 模型名 join**：transcript 行不带模型名，扫描器用 `log/cli-*.log` 构建运行时间线（文件名本地时区、每文件取最后一条 `Resolving model`），把每行的 UTC 时间 join 进所属运行窗口；无命中的行照常计入用量，归入未命名模型组，join 失败不阻断扫描。
+- **agy 思考 token 字符分摊**：账本没有原生 reasoning 计数，按 `thinking` 字段字符占比把 output 守恒拆成 reasoning + output（复用 MiniMax/DeepSeek 的 ReasoningCharSplit 共享公式）；无思考文本全记 output，reasoning + output 恒等于原始 output_tokens。
+- **DSH 同款扫描护栏**：1 GiB 原始字节 / 1024 文件预算（mtime 最新优先截断并置 isTruncated）、主 transcript 与滚动分块跨文件去重、指纹缓存增量短路、partial 结果永不入缓存；Agy 扫描独立成批，不与大体积解析器重叠。
+
 ## [1.22.0] - 2026-10-03
 
 ### Added
