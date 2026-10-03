@@ -27,12 +27,12 @@ completion，而不是仅可见文字。
 
 | Harness | raw input | raw cache read | raw output / reasoning | 规范化处理 |
 |---|---|---|---|---|
-| DSH | `inputTokens` = uncached | 独立字段 | `outputTokens` 含 reasoning，`reasoningTokens` 是子集 | 原生 reason 存在时 `Output = output - reason`、`Reason = reasoning`；仅对 DSH 内部的 MiniMax-M3，在原生 reason 缺失时按同一 message 的 `reasoning/text/tool-call.arguments` 字符比例估算；其他缺失场景 `Reason=0`、`Output=raw output` |
-| MiniMax Code | `input` = uncached | 独立字段 | 当前账单 output 可能不含可分离 reasoning；reader 用原生字段或 thinking 字符比例拆分 | 能拆分则 `Output/Reason` 守恒；不能拆分则 raw output 全放 `Output`、`Reason=0` |
+| DSH | `inputTokens` = uncached | 独立字段 | `outputTokens` 含 reasoning，`reasoningTokens` 是子集 | 原生 reason 存在时 `Output = output - reason`、`Reason = reasoning`；仅对 DSH 内部的 MiniMax-M3，在原生 reason 缺失时按同一 message 的 `reasoning/text/tool-call.arguments` 字符比例估算（比例公式已收敛到共享 `ReasoningCharSplit`）；其他缺失场景 `Reason=0`、`Output=raw output` |
+| MiniMax Code | `input` = uncached | 独立字段 | 当前账单 output 可能不含可分离 reasoning；reader 用原生字段或 thinking 字符比例拆分 | 能拆分则 `Output/Reason` 守恒（比例公式同样走共享 `ReasoningCharSplit`）；不能拆分则 raw output 全放 `Output`、`Reason=0` |
 | Codex | `inputTokens` 含 cache | `cachedInputTokens` 是子集 | output/reasoning 独立 | `Input = max(input - cache, 0)`；Output/Reason 直接映射 |
 | Antigravity | event `inputTokens` = uncached | 独立字段 | output/reasoning 独立 | daily 直接映射；sample 保留 cache-inclusive input |
-| OpenCode | `tokens.input` = uncached | `tokens.cache.read` 独立 | output/reasoning 独立 | daily 直接映射；sample 保留 cache-inclusive input |
-| ZCode / GLM | `model_usage.input_tokens` 含 cache | `cache_read_input_tokens` 是子集 | reader 的 Method A 已将 reasoning 归类 | daily 先减 cache；sample 保留完整 input；不再二次拆分 |
+| OpenCode | `tokens.input` = uncached | `tokens.cache.read` 独立 | output/reasoning 独立，但 `tokens.reasoning` 对 `minimax` 前缀恒 0 | native reasoning 原样透传；仅 `minimax` 前缀在 native 为 0 时按 `part` 表字符比例 fallback 分摊（极老库缺 `part` 表时降级为 `Reason=0`，聚合不失败）；daily 直接映射；sample 保留 cache-inclusive input |
+| ZCode / GLM | `model_usage.input_tokens` 含 cache | `cache_read_input_tokens` 是子集 | 智谱行由 reader 的 Method A 归类；非智谱分片另有三段式 | daily 先减 cache；sample 保留完整 input；不再二次拆分。智谱行走 Method A 整轮归类；**非智谱分片走字符分摊三段式**：① native `reasoning_tokens > 0` 原样透传 → ② 否则按 `part` 表字符比例分摊（day 级聚合 / 行级样本）→ ③ 都没有保持 `Reason=0` |
 
 ## 字段边界
 
@@ -80,6 +80,13 @@ DSH 与 MiniMax Code 都只在 provider 没有可用原生 reasoning 数值时�
 两条路径都保持 `Output + Reason = raw output`，但结果是估算值，精度受字符与 token
 分布差异影响。不要把两种来源的字符统计直接合并，也不要把估算的 Reason 当作 provider
 原生账单字段。
+
+两处 M3 字符分摊的**比例公式**共用 `Sources/LLM-monitor/Models/ReasoningCharSplit.swift`
+的 `split(outputTokens:reasoningChars:visibleChars:)`（返回 `nil` 表示无法估算，调用方
+保持原样）。同一工具还被 ZCode 的非智谱 provider 分片与 OpenCode 的 `minimax` 分片复用，
+字符桶口径一致：思考取 reasoning part，可见输出取 text part + tool 参数
+（`$.state.input` / DSH `tool-call.arguments`）；粒度分别是 ZCode 分片 day 级聚合 / 行级
+样本、OpenCode day 级聚合 / 行级样本。
 
 ### 唯一入口：raw → 桶
 

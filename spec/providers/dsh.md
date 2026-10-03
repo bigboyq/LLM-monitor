@@ -36,7 +36,11 @@ scanner 将 `outputTokens`（含 reasoning）拆成互斥的 `Output` 和 `Reaso
 当原生字段缺失或值不可用/为零时（nil 与显式 0 同等对待，以避免上游把缺失值写成 0
 时漏掉估算），
 scanner 在 DSH 内部读取同一 `assistant/message` 的 `reasoning`、`text`、`tool-call`
-内容块，按字符比例估算 Reason，并保持 `Output + Reason = raw outputTokens`。其他模型、
+内容块，按字符比例估算 Reason，并保持 `Output + Reason = raw outputTokens`。比例公式本身
+已收敛到共享工具 `Sources/LLM-monitor/Models/ReasoningCharSplit.swift` 的
+`split(outputTokens:reasoningChars:visibleChars:)`（字符累加与 `isMiniMaxM3` 门控不变），
+与 MiniMax Code runtime、ZCode 非智谱 provider 分片、OpenCode `minimax` 分片同一实现，
+因此也顺带获得 `Int.max` 饱和保护；估算行为本身不变。其他模型、
 其他 provider，或没有可用内容块时不猜比例：raw output 全放 `Output`，`Reason = 0`。
 `cacheWrite` 只保留在 DSH 原始 daily 诊断字段，不进入统一 total、图表或金额。
 

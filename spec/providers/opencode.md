@@ -9,6 +9,7 @@ optionally merged into the Minimax, ChatGPT, Antigravity, GLM, and DeepSeek card
 |---|---|
 | Database | `~/.local/share/opencode/opencode.db` |
 | Table | `message` |
+| Part table | `part` — optional, joined via `message.id`; only used by the minimax reasoning char split (very old databases have no such table, see below) |
 | Included rows | `role = assistant`, non-null `providerID`, non-null `tokens`, positive token total |
 | Cache | `~/Library/Application Support/LLM-monitor/token-monitor/opencode.json` |
 | Daily window | Seven local calendar days, including today |
@@ -53,7 +54,9 @@ the other supported bindings default to disabled. Users who need a non-default v
 | DeepSeek | `deepseek`, `deepseek-official`, `deepseek-cn`, or `deepseek-v4` | `false` |
 
 The `minimax` providerID is intentionally excluded from the Minimax card; it is the
-redundant OpenCode local-capability ledger and never contributes to that quota card.
+redundant OpenCode local-capability ledger and never contributes to that quota card. Its
+rows are still read (and still get the reasoning char split below) — the exclusion only
+keeps them out of the card merge.
 
 When the matching `clientBindings[]` entry is disabled, the card receives only its existing
 native/local data. When it is enabled, OpenCode values are added to the native values:
@@ -66,6 +69,51 @@ For ChatGPT, OpenCode's uncached `input` is converted to the Codex daily model a
 `inputTokens = input + cacheRead` and `cachedInputTokens = cacheRead` before addition.
 This preserves the Codex model's invariant that cached input is a subset of complete
 input.
+
+## MiniMax reasoning fallback
+
+`message.data.$.tokens.reasoning` is a real, independent bucket for most providers —
+`deepseek` / `openai` / `zhipuai` all report values, and those rows are passed through
+untouched. The minimax rows are the exception: measured `minimax` (7904 messages) and
+`minimax-cn-coding-plan` (36 messages) both report `tokens.reasoning` as **always 0**,
+while the `part` table holds the real thinking text (3860 reasoning parts, 3.18M chars).
+For them the thinking is folded into the output bucket.
+
+`OpencodeDBReader` therefore applies a three-stage decision whose formula is the shared
+`Models/ReasoningCharSplit.swift` (`split(outputTokens:reasoningChars:visibleChars:)`),
+identical to the ZCode provider slices, the MiniMax Code runtime, and DSH M3:
+
+| Priority | Condition | Result |
+|---|---|---|
+| ① native | `tokens.reasoning > 0` | passed through unchanged (two independent columns, no reclassification) |
+| ② char split | providerID lowercased prefix is `minimax` **and** the day / row carries reasoning text in `part` | `round(output × rchars / (rchars + vchars))` split into `reasoning` + `output`, conserving `reasoning + output == raw output` |
+| ③ fallback | neither of the above | `reasoning = 0`, `output` unchanged |
+
+The minimax gate is deliberate and not a generic rule: for every other provider a split
+would overwrite a genuine native value. The SQL side narrows with `LIKE 'minimax%'` and
+the Swift side re-checks the lowercased prefix (`needsCharSplit`) so both sides state the
+same rule explicitly (SQLite `LIKE` is case-insensitive for ASCII by default).
+
+Character buckets are identical to the ZCode slices — measured in `opencode.db`, a tool
+part stores its arguments at the same path as ZCode:
+
+| Bucket | Condition | Characters |
+|---|---|---|
+| reasoning | `$.type = 'reasoning'` | `$.text` |
+| visible | `$.type = 'text'` | `$.text` |
+| visible | `$.type = 'tool'` | `$.state.input` (tool arguments are model-generated output, equivalent to MiniMax Code's `tool_call_args`) |
+
+Granularity: daily aggregation (`queryPerDay` + `queryMinimaxReasoningChars`) is a
+**day-level** split — characters are grouped by provider × local calendar day; recent
+samples (`querySamples`) are a **row-level** split — two correlated subqueries fetch the
+part characters of that one message. The split conserves the bucket, so recomputing
+`totalTokens` still yields the original `in + out + rsn + cacheRead`.
+
+Very old `opencode.db` files have no `part` table at all (this reader never depended on it
+before). `partTableExists()` checks `sqlite_master` before any character query, so the
+char aggregation returns empty and the sample SQL degrades those two columns to constant
+`0` — reasoning stays `0` and aggregation still succeeds, instead of failing at
+`sqlite3_prepare` time on the missing table.
 
 ## Rounds and turns
 

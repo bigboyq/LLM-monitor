@@ -30,7 +30,7 @@ This provider covers two distinct data sources:
 | Local table | `local_runtime_token_usage` |
 | Local scanner | `MinimaxLocalUsageScanner` — mtime diff + WAL-aware cache + single-source scan + 7-day padding |
 | Local R/T | `COUNT(*)` rounds + `COUNT(DISTINCT turn_id)` turns, computed in SQL (no cross-source join) |
-| Local reasoning | 字符比例分摊 `output_tokens` — 从 `session_messages.thinking_content` + `msg_content` 字符数按 `R/(R+C)` 比例分摊账单 output。守恒 `reason + realOutput == output`。 |
+| Local reasoning | 字符比例分摊 `output_tokens` — 从 `session_messages.thinking_content` + `msg_content` 字符数按 `R/(R+C)` 比例分摊账单 output。守恒 `reason + realOutput == output`。公式走共享工具 `Models/ReasoningCharSplit.swift`（`split(outputTokens:reasoningChars:visibleChars:)`），与 ZCode 非智谱 provider 分片、OpenCode `minimax` 分片、DSH M3 同一实现 |
 | SQLite read strategy | `SQLITE_OPEN_READWRITE` + `busy_timeout(300)` + `extended_result_codes(1)`, fallback to `/tmp/{uuid}.db` copy on CANTOPEN(14) / BUSY(5) |
 | Models | M3（`minimax/MiniMax-M3`，99.97% of data）；定价目录仅支持 M3 及以上 —— M2 系列（M2.7 / M2.5 / M2.1）已退休，其历史用量显示"未定价"（有意行为）。M3.1 Flash 系列（ZCode 的真实 model_id 是 `MiniMax-M3.1-Flash-Preview`）有独立条目（关键字 `3.1-flash`，contains，与 M3 同价 ¥2.1/¥0.42/¥8.4），且该条目必须排在 `m3` 条目**之前** —— 否则 "首条命中" 会让 M3.1 Flash 落到 M3 条目上 |
 | Reasoning tokens | **来源**: M3 / M2.7 当前按 `session_messages.thinking_content` 字符数比例分摊 `output_tokens` 出来(账单层 `reasoning_tokens` 永远是 0)。未来切到 thinking model 时,scanner 自动切到 `raw.reasoning` 字段直接用。 |
@@ -422,16 +422,29 @@ if usage.reasoningTokens > 0 {
     // 未来路径:账单/聚合层面已经分了 reasoning,直接用
     realOutput = max(0, outputTokens - reasoningTokens)
     reason     = reasoningTokens
-} else if let chars = perDayChars[day], chars.total > 0 {
+} else if let chars = perDayChars[day],
+          let split = ReasoningCharSplit.split(
+            outputTokens: outputTokens,
+            reasoningChars: chars.reason,
+            visibleChars: chars.output
+          ) {
     // 当前 M3 / M2.7 路径:按 thinking_content 字符比例分摊
-    reason     = outputTokens * chars.reason / (chars.reason + chars.output)
-    realOutput = outputTokens - reason
+    // (公式与 Dsh M3 / ZCode 分片 / OpenCode minimax 分片共用 `ReasoningCharSplit`)
+    reason     = split.reasoning
+    realOutput = split.output
 } else {
-    // 没字符数据(v2 / 字符聚合失败)→ 保持原样
+    // 没字符数据(v2 / 字符聚合失败)或字符里没有思考文本 → 保持原样
     realOutput = outputTokens
     reason     = 0
 }
 ```
+
+**共享公式**: 比例分摊本身收敛到 `Sources/LLM-monitor/Models/ReasoningCharSplit.swift`
+的 `split(outputTokens:reasoningChars:visibleChars:)`，行为与本节早前的 `R/(R+C)` 公式一致
+（并顺带获得 `Int.max` 饱和保护）。另外三处字符分摊入口复用它：ZCode 的非智谱 provider
+分片（`GlmZcodeDBReader`，day 级 / 行级）、OpenCode 的 `minimax` 分片（`OpencodeDBReader`，
+day 级 / 行级）、Dsh M3（`DshLocalUsageScanner.estimateM3ReasoningTokens`，事件级）。`split`
+返回 `nil` 表示无法估算（raw output ≤ 0 或思考字符 ≤ 0），调用方保持原样。
 
 **守恒**: `reason + realOutput == outputTokens` 永远成立(整数四舍五入最多 ±1 token)。
 

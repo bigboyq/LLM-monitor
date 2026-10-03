@@ -31,7 +31,9 @@ ZCode 的 `model_usage.input_tokens` 是包含 cache-read 的 raw input，
 `cache_read_input_tokens` 是子集。reader 的 daily 路径先计算 uncached input；sample
 保留完整 input 以兼容 `LocalTokenUsageSample`。Method A 已在 reader 内完成 reasoning
 归类：output/reasoning 进入统一层时已经互斥，不再二次相减。`cache_creation_input_tokens`
-只保留为 raw 诊断，不进入统一 total、图表或金额估算。见
+只保留为 raw 诊断，不进入统一 total、图表或金额估算。Method A 只属于**智谱行**；同一本
+账本里的**非智谱 provider 分片**（`minimax` / `deepseek` 等）不走 Method A，改走字符比例
+三段式分摊，见「非智谱 provider 分片的 reasoning 口径」。见
 [`spec/accounting.md`](../accounting.md)。
 
 ## Model Pricing Catalog
@@ -286,7 +288,7 @@ optional overlay on top (controlled by `clientBindings[]`, default on).
 | Item | Value |
 |---|---|
 | Database | `~/.zcode/cli/db/db.sqlite` (WAL mode, active `-wal`) |
-| Tables | `model_usage` (one row per model request) + `part` (looked up via `model_usage.assistant_message_id` for round-level reasoning classification) |
+| Tables | `model_usage` (one row per model request) + `part` (looked up via `model_usage.assistant_message_id` for round-level reasoning classification of 智谱 rows, and for the char-proportion split of 非智谱 slices) |
 | Included rows | (`provider_id LIKE 'builtin:bigmodel-%'` OR `provider_id LIKE 'account:bigmodel-%'` OR `provider_id LIKE 'account:zai-%'` OR `provider_id = 'offpeak-idle-plan'`) AND `status = 'completed'` AND (`input + output + reasoning + cache_read`) > 0 |
 | Cache | `~/Library/Application Support/LLM-monitor/token-monitor/glm-zcode.json` (versioned, db+WAL fingerprint) |
 | Daily window | Seven local calendar days, including today |
@@ -311,8 +313,9 @@ The scanner also checks the `part` table via `assistant_message_id`:
 
 ```text
 part.data                      # JSON: {"type": "reasoning"|"text", ...}
-                               # any type='reasoning' part classifies that round as reasoning
-                               # no character/token ratio is calculated
+                               # 智谱行: any type='reasoning' part classifies that round as
+                               #   reasoning, no character/token ratio is calculated
+                               # 非智谱分片: reasoning/text/tool part 的字符数进入比例分摊
 ```
 
 **Input 口径（重要）**：ZCode 的 `input_tokens` 列是**完整输入（含 cacheRead）**，不是
@@ -344,13 +347,14 @@ and is not included in the consumption total.
 里，per-row 把 `output_tokens` 整轮归到 reasoning 列（或保持 output 列），不走字符比例估算。
 **不是 token 级精确拆分**,而是"该 round 是否整轮算 thinking"的硬分类。
 
-> **关于字符分摊**: 早期 (v 之前) 实现曾按 `reasonChars / (reasonChars + textChars)` 比例把
-> `output_tokens` 拆成 `(realOutput, reasoningTokens)`,跟 minimax 同构。该路径已弃用:
-> - 估算误差大(中英文字符/token 比例不一致,代码块 / Markdown 字符密度差异)
-> - 跟当前 Method A 重复(同一份 part 文本既被字符分摊也被 EXISTS 归类)
-> - 维护成本高(scanner 还要在 aggregation 末尾按日比例回写 sample)
-> 决策:**统一到 Method A**,删掉所有字符分摊代码;spec 也只描述 Method A 行为。
-> minimax spec 里的"字符分摊"跟 GLM 的 Method A 是**完全不同的两套实现**,不可混用。
+> **关于字符分摊**：本节上面的归类规则、下面的边界条件表，以及"整轮硬分类、不做字符/token
+> 换算"的结论，**只适用于智谱行**。但 Method A 对**非智谱 provider 分片**不成立 —— MiniMax / DeepSeek
+> 的一轮里思考文本与正文混在同一 `assistant_message_id` 下，整轮归类会把可见正文一起算进
+> reasoning。因此分片改走**字符比例分摊**（见「非智谱 provider 分片的 reasoning 口径」），
+> 与 MiniMax Code runtime / Dsh M3 同一口径。
+> 当前状态：**分类策略仍是两套**（智谱行 = Method A 整轮归类；非智谱分片 = 字符比例分摊），
+> 但三处字符分摊的**公式**已统一到共享工具
+> `Sources/LLM-monitor/Models/ReasoningCharSplit.swift`，不再各写一份比例算法。
 
 | 边界条件 | 行为 |
 |---|---|
@@ -374,6 +378,45 @@ OpenCode 的 `zhipuai-coding-plan` 分片本身有原生 reasoning tokens（由
 per-sample 分布：reader 直接输出 `LocalTokenUsageSample.reasoningOutputTokens` 跟 `outputTokens`
 (Method A 已经在 SQL CASE 里算好),scanner 不再额外做 sample 回写——比字符分摊时代少一层
 "按日比例回写"的复杂度。
+
+### 非智谱 provider 分片的 reasoning 口径（字符比例三段式）
+
+ZCode 的 `model_usage.reasoning_tokens` 对**所有** provider 恒 0，非智谱分片的思考文本同样
+只存在于 `part` 表。分片**不走 Method A**（智谱行的整轮硬分类会把 thinking 与正文混排的
+一轮整体算成 reasoning），改走与 MiniMax Code runtime / Dsh M3 同款的**字符比例守恒分摊**。
+
+公式收敛到共享工具 `Sources/LLM-monitor/Models/ReasoningCharSplit.swift` 的
+`split(outputTokens:reasoningChars:visibleChars:)`：
+`reason = round(output × rchars / (rchars + vchars))`，结果 clamp 到 `[0, output]`，
+`reasoning + output == 原始 output_tokens` 恒成立；账面 output ≤ 0 或思考字符 ≤ 0 时返回
+`nil`（无法估算，调用方保持原样）；字符数异常大时 `Int.max` 饱和而不溢出。
+
+三段式判定（`GlmZcodeDBReader.querySlicePerDay` / `querySliceSamples`）：
+
+| 优先级 | 条件 | 该行 `output_tokens` 归到哪 |
+|---|---|---|
+| ① native | `mu.reasoning_tokens > 0` | 原样透传：两列独立上报，不重分类 |
+| ② 字符分摊 | 无 native + 该 slice/day（或该行）的 `part` 表里有思考文本 | 按上式拆成 `reasoning_tokens` + `output_tokens`（守恒） |
+| ③ 兜底 | 都没有（无 part / 损坏 JSON / 字符里没有思考文本） | `reasoning_tokens = 0`，`output_tokens` 保持原样 |
+
+字符口径（`querySliceReasoningChars`，与 MiniMax Code 的字符桶同构）：
+
+| 类别 | `part.data` 条件 | 取的字符 |
+|---|---|---|
+| 思考 | `$.type = 'reasoning'` | `$.text` 长度 |
+| 可见输出 | `$.type = 'text'` | `$.text` 长度 |
+| 可见输出 | `$.type = 'tool'` | `$.state.input` 长度（工具参数同属模型生成输出，对应 MiniMax Code 的 `tool_call_args` 桶） |
+
+**粒度**：日聚合（`querySlicePerDay`）是 **day 级**分摊 —— `querySliceReasoningChars`
+按 provider × 本地自然日汇总两类字符；逐次样本（`querySliceSamples`）是**行级**分摊 ——
+SELECT 里两个相关子查询按 `assistant_message_id` 关联本行 part 字符。两者共用
+`ReasoningCharSplit`，都是守恒拆分，所以重算 `totalTokens` 后仍等于原始
+`input + output + cacheRead`。
+
+边界：`assistant_message_id IS NULL` 或 `part` 表无对应行时字符数自然为 0 → 走 ③；
+`part.data` 损坏 JSON 先由 `json_valid` 替换为 `{}` 再 `json_extract`，静默处理。实测
+minimax 分片的 `assistant_message_id` 100% 非空，因此"非智谱行不做 part 归类"已不再是
+保留原样的理由。
 
 ### Rounds and turns
 
@@ -414,7 +457,7 @@ ZCode 的 `model_usage` 表是共享账本，GLM 卡按 `provider_id` 分类：
 | 闲时任务 | `account:bigmodel-offpeak-idle-plan`、`account:zai-offpeak-idle-plan`、`offpeak-idle-plan`（0020 迁移前历史裸值） | 系统赠送的后台任务 | 否 | 是 |
 | Start Plan | `provider_id` 含 `bigmodel-start-plan`（`account:bigmodel-start-plan` / `builtin:bigmodel-start-plan`） | 智谱体验套餐；从「其他」里单独摘出成行（`isGlmStartPlanSample`） | 否 | 是 |
 | 其他任务 | 其余 `builtin:bigmodel-%` / `account:bigmodel-%` / `account:zai-%`（含 `account:zai-start-plan`） | 未登记的未来智谱新套餐 | 否 | 是 |
-| （不进 GLM 卡，按前缀进分片） | 不带 `builtin:bigmodel-` / `account:bigmodel-` / `account:zai-` 前缀的一切 provider | ZCode 接入的非智谱服务（如 `minimax` / `deepseek`，经 `ZcodeProviderSlice` 并入对应卡片） | — | — |
+| （不进 GLM 卡，按前缀进分片） | 不带 `builtin:bigmodel-` / `account:bigmodel-` / `account:zai-` 前缀的一切 provider | ZCode 接入的非智谱服务（如 `minimax` / `deepseek`，经 `ZcodeProviderSlice` 并入对应卡片；reasoning 口径见「非智谱 provider 分片的 reasoning 口径」，不走 Method A） | — | — |
 
 Start Plan 与「其他」任务都不消耗 Coding Plan 积分，额度窗口统计排除，避免高估消耗；
 token 柱图保留真实消耗。拆行只是展示层的细分：`isGlmOtherPlanSample` 仍把 Start Plan
