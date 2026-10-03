@@ -22,6 +22,8 @@ build/
 # Local temporary/debug dirs
 .codex-tmp/
 .zcode/
+# ZCode 上下文打包排除配置（上半部同步自本文件，本地工具产物不入库）
+.zcodeignore
 /.worktrees/
 
 # Personal working notes (audit execution plans, scratch plans, etc.).
