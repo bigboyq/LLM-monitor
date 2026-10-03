@@ -28,8 +28,8 @@ final class ZcodeProviderSliceTests: XCTestCase {
             throw SQLiteConnectionError.openFailed(path: path, code: 0, extendedCode: 0, message: "open failed")
         }
         defer { sqlite3_close(db) }
-        // schema 与 ZCode 真实 `model_usage` 表一致（含 part 表：智谱行的 Method A
-        // 归类要 JOIN 它，非智谱行不 JOIN）。
+        // schema 与 ZCode 真实 `model_usage` 表一致（含 part 表：智谱行走 Method A
+        // 归类、非智谱分片按字符比例分摊，都经 assistant_message_id JOIN 它）。
         let sql = """
         CREATE TABLE model_usage (
             id TEXT PRIMARY KEY, session_id TEXT NOT NULL, turn_id TEXT,
@@ -63,7 +63,8 @@ final class ZcodeProviderSliceTests: XCTestCase {
         cacheWrite: Int = 0,
         status: String = "completed",
         model: String,
-        provider: String
+        provider: String,
+        assistantMessageID: String? = nil
     ) throws -> Bool {
         var db: OpaquePointer?
         guard sqlite3_open(path, &db) == SQLITE_OK else { return false }
@@ -72,7 +73,7 @@ final class ZcodeProviderSliceTests: XCTestCase {
         INSERT INTO model_usage (id, session_id, turn_id, started_at, status, model_id, provider_id,
             input_tokens, output_tokens, reasoning_tokens, cache_read_input_tokens,
             cache_creation_input_tokens, assistant_message_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL);
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         """
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return false }
@@ -90,7 +91,45 @@ final class ZcodeProviderSliceTests: XCTestCase {
         sqlite3_bind_int64(stmt, 10, Int64(reasoning))
         sqlite3_bind_int64(stmt, 11, Int64(cacheRead))
         sqlite3_bind_int64(stmt, 12, Int64(cacheWrite))
+        if let assistantMessageID {
+            sqlite3_bind_text(stmt, 13, (assistantMessageID as NSString).utf8String, -1, nil)
+        } else {
+            sqlite3_bind_null(stmt, 13)
+        }
         return sqlite3_step(stmt) == SQLITE_DONE
+    }
+
+    /// 写一条 `part`（思考 / 正文 / 工具参数块）。`data` 直接放 JSON 字符串。
+    @discardableResult
+    private func insertPart(
+        databaseURL path: String,
+        partID: String,
+        messageID: String,
+        data: String
+    ) throws -> Bool {
+        var db: OpaquePointer?
+        guard sqlite3_open(path, &db) == SQLITE_OK else { return false }
+        defer { sqlite3_close(db) }
+        let sql = "INSERT INTO part (id, message_id, data) VALUES (?, ?, ?);"
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return false }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_text(stmt, 1, (partID as NSString).utf8String, -1, nil)
+        sqlite3_bind_text(stmt, 2, (messageID as NSString).utf8String, -1, nil)
+        sqlite3_bind_text(stmt, 3, (data as NSString).utf8String, -1, nil)
+        return sqlite3_step(stmt) == SQLITE_DONE
+    }
+
+    private func reasoningPartJSON(chars: Int) -> String {
+        "{\"type\":\"reasoning\",\"text\":\"\(String(repeating: "x", count: chars))\"}"
+    }
+
+    private func textPartJSON(chars: Int) -> String {
+        "{\"type\":\"text\",\"text\":\"\(String(repeating: "y", count: chars))\"}"
+    }
+
+    private func toolPartJSON(inputChars: Int) -> String {
+        "{\"type\":\"tool\",\"state\":{\"input\":\"\(String(repeating: "z", count: inputChars))\"}}"
     }
 
     /// 写入一份「用户今天真实发生」的混合账本：
@@ -247,6 +286,172 @@ final class ZcodeProviderSliceTests: XCTestCase {
         )
         XCTAssertNil(aggregate.providerSlices.perSliceDay["deepseek"]?[oldDay])
         XCTAssertEqual(aggregate.providerSlices.samples["deepseek"]?.map(\.promptID), ["s:t-new"])
+    }
+
+    // MARK: - reasoning 字符分摊
+
+    /// ZCode 账本 `reasoning_tokens` 恒 0，MiniMax 卡必须按 part 表字符比例分摊：
+    /// 当日 300 output / 1500 思考字符 / 500 可见字符 → 225 reasoning + 75 output。
+    func testZcodeSliceSplitsReasoningFromPartChars() throws {
+        let db = try makeDatabase()
+        defer { try? FileManager.default.removeItem(atPath: db) }
+        let cal = utcCalendar()
+        let today = cal.startOfDay(for: Date())
+
+        for (index, output) in [200, 100].enumerated() {
+            let messageID = "mm-msg-\(index)"
+            try insert(databaseURL: db, id: "mm\(index)", sessionID: "mm-s", turnID: "mm-t\(index)",
+                       timestamp: ms(today) + Int64(index), input: 1_000, output: output,
+                       model: "MiniMax-M3.1-Flash-Preview", provider: "minimax",
+                       assistantMessageID: messageID)
+            try insertPart(databaseURL: db, partID: "p-r-\(index)", messageID: messageID,
+                           data: reasoningPartJSON(chars: 750))
+            try insertPart(databaseURL: db, partID: "p-t-\(index)", messageID: messageID,
+                           data: textPartJSON(chars: 250))
+        }
+
+        let aggregate = try GlmZcodeLocalUsageScanner.aggregateFromDB(
+            dbPath: URL(fileURLWithPath: db), calendar: cal
+        )
+        let day = try XCTUnwrap(aggregate.providerSlices.perSliceDay["minimax"]?[today])
+        XCTAssertEqual(day.reasoningTokens, 225, "300 × 1500/2000，day 级分摊")
+        XCTAssertEqual(day.outputTokens, 75)
+        XCTAssertEqual(day.reasoningTokens + day.outputTokens, 300, "守恒")
+        XCTAssertEqual(day.inputTokens, 2_000)
+        XCTAssertEqual(
+            day.totalTokens,
+            day.inputTokens + day.cacheReadTokens + day.outputTokens + day.reasoningTokens
+        )
+
+        // 样本是行级分摊（200×0.75 / 100×0.75），合计与 day 级一致。
+        let samples = try XCTUnwrap(aggregate.providerSlices.samples["minimax"])
+        XCTAssertEqual(samples.map(\.reasoningOutputTokens), [150, 75])
+        XCTAssertEqual(samples.map(\.outputTokens), [50, 25])
+        XCTAssertEqual(samples.reduce(0) { $0 + $1.reasoningOutputTokens + $1.outputTokens }, 300)
+    }
+
+    /// 工具参数也属模型生成输出，计入可见字符分母。
+    func testZcodeSliceCountsToolInputAsVisibleChars() throws {
+        let db = try makeDatabase()
+        defer { try? FileManager.default.removeItem(atPath: db) }
+        let cal = utcCalendar()
+        let today = cal.startOfDay(for: Date())
+
+        try insert(databaseURL: db, id: "mm", sessionID: "mm-s", turnID: "mm-t1",
+                   timestamp: ms(today), input: 100, output: 200,
+                   model: "MiniMax-M3.1-Flash-Preview", provider: "minimax",
+                   assistantMessageID: "mm-msg")
+        try insertPart(databaseURL: db, partID: "p-r", messageID: "mm-msg",
+                       data: reasoningPartJSON(chars: 500))
+        try insertPart(databaseURL: db, partID: "p-tool", messageID: "mm-msg",
+                       data: toolPartJSON(inputChars: 500))
+
+        let aggregate = try GlmZcodeLocalUsageScanner.aggregateFromDB(
+            dbPath: URL(fileURLWithPath: db), calendar: cal
+        )
+        let day = try XCTUnwrap(aggregate.providerSlices.perSliceDay["minimax"]?[today])
+        XCTAssertEqual(day.reasoningTokens, 100, "思考 500 / (500 + 工具 500) = 50%")
+        XCTAssertEqual(day.outputTokens, 100)
+    }
+
+    /// 账面已给 `reasoning_tokens` 时原样透传，不再按字符二次分摊。
+    func testZcodeSliceKeepsNativeReasoningWithoutReSplitting() throws {
+        let db = try makeDatabase()
+        defer { try? FileManager.default.removeItem(atPath: db) }
+        let cal = utcCalendar()
+        let today = cal.startOfDay(for: Date())
+
+        try insert(databaseURL: db, id: "n1", sessionID: "s", turnID: "t1", timestamp: ms(today),
+                   input: 500, output: 200, reasoning: 60, cacheRead: 100,
+                   model: "deepseek-reasoner", provider: "deepseek", assistantMessageID: "m1")
+        try insertPart(databaseURL: db, partID: "p-r", messageID: "m1", data: reasoningPartJSON(chars: 750))
+        try insertPart(databaseURL: db, partID: "p-t", messageID: "m1", data: textPartJSON(chars: 250))
+
+        let aggregate = try GlmZcodeLocalUsageScanner.aggregateFromDB(
+            dbPath: URL(fileURLWithPath: db), calendar: cal
+        )
+        let day = try XCTUnwrap(aggregate.providerSlices.perSliceDay["deepseek"]?[today])
+        XCTAssertEqual(day.reasoningTokens, 60, "native 优先，不二次分摊")
+        XCTAssertEqual(day.outputTokens, 200)
+
+        let sample = try XCTUnwrap(aggregate.providerSlices.samples["deepseek"]?.first)
+        XCTAssertEqual(sample.reasoningOutputTokens, 60)
+        XCTAssertEqual(sample.outputTokens, 200)
+    }
+
+    /// 同一套字符分摊对 DeepSeek 分片同样生效（不只 MiniMax）。
+    func testZcodeSliceSplitsReasoningForDeepSeekToo() throws {
+        let db = try makeDatabase()
+        defer { try? FileManager.default.removeItem(atPath: db) }
+        let cal = utcCalendar()
+        let today = cal.startOfDay(for: Date())
+
+        try insert(databaseURL: db, id: "d1", sessionID: "ds-s", turnID: "ds-t1", timestamp: ms(today),
+                   input: 1_200, output: 300, model: "deepseek-flash", provider: "deepseek",
+                   assistantMessageID: "ds-msg")
+        try insertPart(databaseURL: db, partID: "p-r", messageID: "ds-msg", data: reasoningPartJSON(chars: 750))
+        try insertPart(databaseURL: db, partID: "p-t", messageID: "ds-msg", data: textPartJSON(chars: 250))
+
+        let aggregate = try GlmZcodeLocalUsageScanner.aggregateFromDB(
+            dbPath: URL(fileURLWithPath: db), calendar: cal
+        )
+        let day = try XCTUnwrap(aggregate.providerSlices.perSliceDay["deepseek"]?[today])
+        XCTAssertEqual(day.reasoningTokens, 225)
+        XCTAssertEqual(day.outputTokens, 75)
+
+        let sample = try XCTUnwrap(aggregate.providerSlices.samples["deepseek"]?.first)
+        XCTAssertEqual(sample.reasoningOutputTokens, 225, "行级分摊")
+        XCTAssertEqual(sample.outputTokens, 75)
+        XCTAssertEqual(sample.reasoningOutputTokens + sample.outputTokens, 300, "行级也守恒")
+    }
+
+    /// 无 `assistant_message_id` 的行没有 part 可 JOIN → reasoning 保持 0，
+    /// day 与样本都不凭空生思考。
+    func testZcodeSliceWithoutAssistantMessageIDKeepsZeroReasoning() throws {
+        let db = try makeDatabase()
+        defer { try? FileManager.default.removeItem(atPath: db) }
+        let cal = utcCalendar()
+        let today = cal.startOfDay(for: Date())
+
+        try insert(databaseURL: db, id: "x1", sessionID: "s", turnID: "t1", timestamp: ms(today),
+                   input: 100, output: 200, model: "MiniMax-M3", provider: "minimax")
+        // 同 message_id 下另有 part，但没有任何 model_usage 行关联它。
+        try insertPart(databaseURL: db, partID: "p-r", messageID: "orphan", data: reasoningPartJSON(chars: 750))
+
+        let aggregate = try GlmZcodeLocalUsageScanner.aggregateFromDB(
+            dbPath: URL(fileURLWithPath: db), calendar: cal
+        )
+        let day = try XCTUnwrap(aggregate.providerSlices.perSliceDay["minimax"]?[today])
+        XCTAssertEqual(day.reasoningTokens, 0)
+        XCTAssertEqual(day.outputTokens, 200)
+        XCTAssertEqual(day.totalTokens, day.inputTokens + day.cacheReadTokens + day.outputTokens)
+
+        let sample = try XCTUnwrap(aggregate.providerSlices.samples["minimax"]?.first)
+        XCTAssertEqual(sample.reasoningOutputTokens, 0)
+        XCTAssertEqual(sample.outputTokens, 200)
+    }
+
+    /// 智谱行仍走 Method A 整轮归类，与非智谱字符分摊互不干扰。
+    func testZcodeGlmRowsKeepMethodAWhileSlicesSplitByChars() throws {
+        let db = try makeDatabase()
+        defer { try? FileManager.default.removeItem(atPath: db) }
+        let cal = utcCalendar()
+        let today = cal.startOfDay(for: Date())
+
+        try insert(databaseURL: db, id: "glm1", sessionID: "g-s", turnID: "g-t1", timestamp: ms(today),
+                   input: 100, output: 200, model: "GLM-5.3",
+                   provider: "builtin:bigmodel-coding-plan", assistantMessageID: "g-msg")
+        try insertPart(databaseURL: db, partID: "p-r", messageID: "g-msg", data: reasoningPartJSON(chars: 750))
+        try insertPart(databaseURL: db, partID: "p-t", messageID: "g-msg", data: textPartJSON(chars: 250))
+
+        let aggregate = try GlmZcodeLocalUsageScanner.aggregateFromDB(
+            dbPath: URL(fileURLWithPath: db), calendar: cal
+        )
+        let glmDay = try XCTUnwrap(aggregate.perDay[today])
+        XCTAssertEqual(glmDay.reasoningTokens, 200, "Method A 整轮归 reasoning，不按字符分摊")
+        XCTAssertEqual(glmDay.outputTokens, 0)
+        XCTAssertNil(aggregate.providerSlices.perSliceDay["minimax"])
+        XCTAssertNil(aggregate.providerSlices.perSliceDay["deepseek"])
     }
 
     // MARK: - snapshot

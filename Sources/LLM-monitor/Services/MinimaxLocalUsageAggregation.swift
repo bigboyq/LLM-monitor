@@ -121,33 +121,19 @@ extension MinimaxLocalUsageScanner {
                 }
                 reasonTokens = min(usage.reasoningTokens, outputTokens)
                 realOutput = outputTokens - reasonTokens
-            } else if let chars = perDayChars[day] {
-                let totalChars = SaturatingArithmetic.add(chars.reason, chars.output)
-                guard totalChars > 0 else {
-                    out[day] = usage
-                    continue
-                }
+            } else if let chars = perDayChars[day],
+                      let split = ReasoningCharSplit.split(
+                        outputTokens: outputTokens,
+                        reasoningChars: chars.reason,
+                        visibleChars: chars.output
+                      ) {
                 // 当前 M3 / M2.7 路径:按字符比例分摊 outputTokens
-                if chars.output == 0 {
-                    // 极端:只有 thinking 没 content → 100% 算 reason
-                    reasonTokens = outputTokens
-                } else if chars.reason == 0 {
-                    // 极端:只有 content 没 thinking → 0 算 reason
-                    reasonTokens = 0
-                } else {
-                    // 正常:按字符比例
-                    let proportion = Double(max(chars.reason, 0)) / Double(totalChars)
-                    let estimate = (Double(outputTokens) * proportion).rounded()
-                    // Double(Int.max) 在 64-bit 平台会向上舍入到 2^63，直接转 Int
-                    // 可能 trap；边界值直接饱和，并再约束到 output 保持守恒。
-                    let estimatedTokens = estimate >= Double(Int.max)
-                        ? Int.max
-                        : (Int(exactly: estimate) ?? 0)
-                    reasonTokens = min(max(estimatedTokens, 0), outputTokens)
-                }
-                realOutput = outputTokens - reasonTokens
+                // (公式与 Dsh M3 / ZCode 分片共用 `ReasoningCharSplit`)
+                reasonTokens = split.reasoning
+                realOutput = split.output
             } else {
-                // 没字符数据(v2 异常 day 跳过 / 字符聚合失败) → 保持原样
+                // 没字符数据(v2 异常 day 跳过 / 字符聚合失败)或字符里没有思考
+                // 文本(拆分为 nil) → 保持原样(此时 reason 恒 0,total 已是守恒值)
                 out[day] = usage
                 continue
             }

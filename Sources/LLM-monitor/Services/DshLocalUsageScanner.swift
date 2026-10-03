@@ -1174,6 +1174,9 @@ private extension DshLocalUsageScanner {
     /// This is deliberately event-local: usage and content belong to the same
     /// assistant/message event, which avoids the day-level alignment problem
     /// that MiniMax Code has to solve in its separate SQLite tables.
+    ///
+    /// The char-proportion formula itself lives in `ReasoningCharSplit`, shared
+    /// verbatim with the MiniMax Code runtime and the ZCode provider slices.
     private nonisolated static func estimateM3ReasoningTokens(
         rawOutput: Int,
         provider: String,
@@ -1214,11 +1217,11 @@ private extension DshLocalUsageScanner {
             }
         }
 
-        let totalChars = SaturatingArithmetic.add(reasoningChars, visibleChars)
-        guard totalChars > 0, reasoningChars > 0 else { return 0 }
-        let proportion = Double(reasoningChars) / Double(totalChars)
-        let estimate = (Double(rawOutput) * proportion).rounded()
-        return min(max(Int(exactly: estimate) ?? 0, 0), rawOutput)
+        return ReasoningCharSplit.split(
+            outputTokens: rawOutput,
+            reasoningChars: reasoningChars,
+            visibleChars: visibleChars
+        )?.reasoning ?? 0
     }
 
     private nonisolated static func isMiniMaxM3(provider: String, model: String?) -> Bool {

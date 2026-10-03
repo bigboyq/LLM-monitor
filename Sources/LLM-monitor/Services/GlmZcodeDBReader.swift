@@ -364,19 +364,23 @@ final class GlmZcodeDBReader {
 
     /// 分片 × per-day token 聚合。
     ///
-    /// 与智谱查询的差异只有两处，都是口径而非结构：
-    /// 1. **不做 Method A 归类**。Method A 依赖 `part` 表的 reasoning part，智谱行
-    ///    才有 `assistant_message_id` 关联；非智谱行的 `output_tokens` /
-    ///    `reasoning_tokens` 已是两个独立上报桶，直接沿用（对应
-    ///    `TokenAccountingCatalog.zcode` 的 `.normalized`）。
-    /// 2. **按 ZCode 的 cache-inclusive input 口径**：`uncached = max(input -
-    ///    cacheRead, 0)`，`total = uncached + cacheRead + output + reasoning`，
-    ///    与智谱行同源（OpenCode 那边 raw input 是 uncached，才需要 `input +
-    ///    cacheRead` 合成）。
+    /// 与智谱查询的结构差异只有 provider 谓词（切片前缀），其余口径同源。reasoning
+    /// 走**三段式**判定（与 `TokenAccountingCatalog.zcode` 的 `.normalized` 对齐）：
+    /// 1. **native `reasoning_tokens > 0`**：账单已分好两个桶，原样沿用（native 优先）。
+    /// 2. **否则 + 该 slice/day 在 `part` 表里有思考文本**：按字符比例分摊 output，
+    ///    见 `querySliceReasoningChars` 与 `ReasoningCharSplit`。智谱行的 Method A
+    ///    （EXISTS reasoning part 整轮归 reasoning）对分片粒度太粗——MiniMax / DeepSeek
+    ///    的一轮里思考与正文混在同一 message，比例必须按字符算，与 MiniMax Code
+    ///    runtime / Dsh M3 同一口径。
+    /// 3. **都没有**：保持 `reasoning_tokens = 0`。
+    ///
+    /// input 口径：ZCode 的 input 是 cache-inclusive，`uncached = max(input - cacheRead, 0)`，
+    /// `total = uncached + cacheRead + output + reasoning`（分摊后重算，守恒）。
     private func querySlicePerDay(
         calendar: Calendar,
         cutoff: Date?
     ) throws -> [String: [Date: OpencodeDailyUsage]] {
+        let charsBySliceDay = try querySliceReasoningChars(calendar: calendar, cutoff: cutoff)
         let sql = """
         SELECT
           provider_id,
@@ -432,19 +436,120 @@ final class GlmZcodeDBReader {
             let tcrNN = SQLiteConnection.nnClamp(tcr)
             let tcwNN = SQLiteConnection.nnClamp(tcw)
             let uncachedInput = Int(clamping: max(SaturatingArithmetic.subtract(tin, tcr), 0))
+            // 三段式 reasoning：native 优先，否则用 part 表字符比例分摊（day 级），
+            // 都没有则保持 0。分摊守恒，故 total 重算后仍是 input+cacheRead+output。
+            let split = trsnNN > 0
+                ? nil
+                : charsBySliceDay[slice.rawValue]?[dayStart].flatMap {
+                    ReasoningCharSplit.split(
+                        outputTokens: toutNN,
+                        reasoningChars: $0.reasoningChars,
+                        visibleChars: $0.visibleChars
+                    )
+                }
+            let reasoningTokens = split?.reasoning ?? trsnNN
+            let outputTokens = split?.output ?? toutNN
             let usage = OpencodeDailyUsage(
                 dayStart: dayStart,
                 inputTokens: uncachedInput,
-                outputTokens: toutNN,
+                outputTokens: outputTokens,
                 cacheReadTokens: tcrNN,
                 cacheWriteTokens: tcwNN,
-                reasoningTokens: trsnNN,
-                totalTokens: SaturatingArithmetic.sum(uncachedInput, tcrNN, toutNN, trsnNN),
+                reasoningTokens: reasoningTokens,
+                totalTokens: SaturatingArithmetic.sum(
+                    uncachedInput, tcrNN, outputTokens, reasoningTokens
+                ),
                 turns: max(0, Int(clamping: turns)),
                 rounds: max(0, Int(clamping: rounds))
             )
             var byDay = out[slice.rawValue] ?? [:]
             byDay[dayStart] = byDay[dayStart].map { $0 + usage } ?? usage
+            out[slice.rawValue] = byDay
+        }
+        return out
+    }
+
+    /// 分片 × per-day 的思考/可见字符数（`part` 表）。
+    ///
+    /// ZCode 账本 `model_usage.reasoning_tokens` 对所有 provider 恒 0，真正的思考
+    /// 文本在 `part` 表（`model_usage.assistant_message_id` → `part.message_id`）。
+    /// 这里按 provider × 本地自然日汇总两类字符数，供 `querySlicePerDay` 做
+    /// day 级守恒拆分（公式与 MiniMax Code runtime / Dsh M3 同一口径）：
+    /// - 思考：`type = 'reasoning'` 的 `$.text`。
+    /// - 可见输出：`type = 'text'` 的 `$.text` + `type = 'tool'` 的 `$.state.input`
+    ///   （工具参数同属模型生成输出，对应 MiniMax Code 的 tool_call_args 桶）。
+    ///
+    /// JOIN 会把一条 `model_usage` 行复制成 N 个 part 行；因为只累加字符数、不
+    /// 累加 token，复制不影响结果。`assistant_message_id` 为 NULL 的行 JOIN 不上，
+    /// 自然不出现在结果里（无思考数据可分摊，保持 reasoning = 0）。
+    private func querySliceReasoningChars(
+        calendar: Calendar,
+        cutoff: Date?
+    ) throws -> [String: [Date: (reasoningChars: Int, visibleChars: Int)]] {
+        let sql = """
+        SELECT
+          mu.provider_id,
+          strftime('%Y-%m-%d', mu.started_at/1000,'unixepoch','localtime') AS day,
+          SUM(CASE WHEN json_extract(
+                 CASE WHEN json_valid(p.data) THEN p.data ELSE '{}' END, '$.type') = 'reasoning'
+            THEN LENGTH(COALESCE(json_extract(
+                 CASE WHEN json_valid(p.data) THEN p.data ELSE '{}' END, '$.text'), ''))
+            ELSE 0 END) AS rchars,
+          SUM(CASE WHEN json_extract(
+                 CASE WHEN json_valid(p.data) THEN p.data ELSE '{}' END, '$.type') = 'text'
+            THEN LENGTH(COALESCE(json_extract(
+                 CASE WHEN json_valid(p.data) THEN p.data ELSE '{}' END, '$.text'), ''))
+            ELSE 0 END)
+          + SUM(CASE WHEN json_extract(
+                 CASE WHEN json_valid(p.data) THEN p.data ELSE '{}' END, '$.type') = 'tool'
+            THEN LENGTH(COALESCE(json_extract(
+                 CASE WHEN json_valid(p.data) THEN p.data ELSE '{}' END, '$.state.input'), ''))
+            ELSE 0 END) AS vchars
+        FROM model_usage mu
+        JOIN part p ON p.message_id = mu.assistant_message_id
+        WHERE \(Self.sliceFilterSQL("mu.provider_id"))
+          AND mu.status = 'completed'
+          AND (
+            COALESCE(mu.input_tokens,0)
+            + COALESCE(mu.output_tokens,0)
+            + COALESCE(mu.reasoning_tokens,0)
+            + COALESCE(mu.cache_read_input_tokens,0)
+          ) > 0
+          AND (? IS NULL OR mu.started_at >= ?)
+        GROUP BY mu.provider_id, day
+        """
+        let cutoffMs = cutoff.map { Int64($0.timeIntervalSince1970 * 1000) }
+        let rows: [(String, String, Int64, Int64)] = try connection.query(
+            sql: sql,
+            bind: { stmt in
+                let provider = Self.bindSlices(to: stmt, index: 1)
+                guard provider == SQLITE_OK else { return provider }
+                return SQLiteConnection.bindNullableMsCutoff(
+                    cutoffMs, startingAt: 1 + Self.sliceFilterParameterCount
+                )(stmt)
+            },
+            map: { stmt in
+            let providerID = try SQLiteConnection.requiredText(stmt, column: 0)
+            let dayKey = try SQLiteConnection.requiredText(stmt, column: 1)
+            let reasoningChars = SQLiteConnection.optionalInt64(stmt, column: 2)
+            let visibleChars = SQLiteConnection.optionalInt64(stmt, column: 3)
+            return (providerID, dayKey, reasoningChars, visibleChars)
+            }
+        )
+        var out: [String: [Date: (reasoningChars: Int, visibleChars: Int)]] = [:]
+        for (providerID, dayKey, reasoningChars, visibleChars) in rows {
+            guard let slice = ZcodeProviderSlice(providerID: providerID),
+                  let dayStart = LocalUsageDayKey.parse(dayKey, calendar: calendar) else { continue }
+            var byDay = out[slice.rawValue] ?? [:]
+            let existing = byDay[dayStart] ?? (reasoningChars: 0, visibleChars: 0)
+            byDay[dayStart] = (
+                reasoningChars: SaturatingArithmetic.add(
+                    existing.reasoningChars, SQLiteConnection.nnClamp(reasoningChars)
+                ),
+                visibleChars: SaturatingArithmetic.add(
+                    existing.visibleChars, SQLiteConnection.nnClamp(visibleChars)
+                )
+            )
             out[slice.rawValue] = byDay
         }
         return out
@@ -503,9 +608,13 @@ final class GlmZcodeDBReader {
 
     /// 分片最近窗口内的逐次模型调用。口径与智谱样本一致：ZCode 的 `input_tokens`
     /// 已是 cache-inclusive 完整 input，直接作为 `LocalTokenUsageSample.inputTokens`，
-    /// `cachedInputTokens = cache_read_input_tokens`；output / reasoning 是两个独立
-    /// 上报桶，不做 part 表归类。`modelName` 取 `model_id`（ZCode 不记 model 名），
-    /// `sourceProviderID` 保留原始 `provider_id`。
+    /// `cachedInputTokens = cache_read_input_tokens`。`modelName` 取 `model_id`
+    /// （ZCode 不记 model 名），`sourceProviderID` 保留原始 `provider_id`。
+    ///
+    /// reasoning 与日聚合同口径但粒度更细：native `reasoning_tokens > 0` 原样透传；
+    /// 否则按**行级**字符比例分摊（两个相关子查询取本行 `assistant_message_id` 的
+    /// part 字符数，无 part 时自然得 0 → 保持 reasoning = 0）。日聚合是 day 级分摊、
+    /// 样本是行级分摊，两者都是守恒拆分，公式共用 `ReasoningCharSplit`。
     private func querySliceSamples(cutoff: Date?) throws -> [String: [LocalTokenUsageSample]] {
         let sql = """
         SELECT
@@ -518,21 +627,45 @@ final class GlmZcodeDBReader {
           input_tokens,
           output_tokens,
           reasoning_tokens,
-          cache_read_input_tokens
-        FROM model_usage
-        WHERE \(Self.sliceFilterSQL("provider_id"))
-          AND status = 'completed'
+          cache_read_input_tokens,
+          COALESCE((
+            SELECT SUM(LENGTH(COALESCE(json_extract(
+              CASE WHEN json_valid(p.data) THEN p.data ELSE '{}' END, '$.text'), '')))
+            FROM part p
+            WHERE p.message_id = mu.assistant_message_id
+              AND json_extract(
+                CASE WHEN json_valid(p.data) THEN p.data ELSE '{}' END, '$.type') = 'reasoning'
+          ), 0) AS reasoning_chars,
+          COALESCE((
+            SELECT SUM(
+              CASE WHEN json_extract(
+                CASE WHEN json_valid(p.data) THEN p.data ELSE '{}' END, '$.type') = 'text'
+              THEN LENGTH(COALESCE(json_extract(
+                CASE WHEN json_valid(p.data) THEN p.data ELSE '{}' END, '$.text'), ''))
+              ELSE 0 END
+              + CASE WHEN json_extract(
+                CASE WHEN json_valid(p.data) THEN p.data ELSE '{}' END, '$.type') = 'tool'
+              THEN LENGTH(COALESCE(json_extract(
+                CASE WHEN json_valid(p.data) THEN p.data ELSE '{}' END, '$.state.input'), ''))
+              ELSE 0 END
+            )
+            FROM part p
+            WHERE p.message_id = mu.assistant_message_id
+          ), 0) AS visible_chars
+        FROM model_usage mu
+        WHERE \(Self.sliceFilterSQL("mu.provider_id"))
+          AND mu.status = 'completed'
           AND (
-            COALESCE(input_tokens,0)
-            + COALESCE(output_tokens,0)
-            + COALESCE(reasoning_tokens,0)
-            + COALESCE(cache_read_input_tokens,0)
+            COALESCE(mu.input_tokens,0)
+            + COALESCE(mu.output_tokens,0)
+            + COALESCE(mu.reasoning_tokens,0)
+            + COALESCE(mu.cache_read_input_tokens,0)
           ) > 0
-          AND (? IS NULL OR started_at >= ?)
-        ORDER BY started_at, id
+          AND (? IS NULL OR mu.started_at >= ?)
+        ORDER BY mu.started_at, mu.id
         """
         let cutoffMs = cutoff.map { Int64($0.timeIntervalSince1970 * 1000) }
-        let rows: [(String, String, Int64, String?, String?, String, Int64, Int64, Int64, Int64)] = try connection.query(
+        let rows: [(String, String, Int64, String?, String?, String, Int64, Int64, Int64, Int64, Int64, Int64)] = try connection.query(
             sql: sql,
             bind: { stmt in
                 let provider = Self.bindSlices(to: stmt, index: 1)
@@ -552,21 +685,41 @@ final class GlmZcodeDBReader {
             let output = SQLiteConnection.optionalInt64(stmt, column: 7)
             let reasoning = SQLiteConnection.optionalInt64(stmt, column: 8)
             let cacheRead = SQLiteConnection.optionalInt64(stmt, column: 9)
-            return (id, sessionID, timestamp, turn, model, providerID, input, output, reasoning, cacheRead)
+            let reasoningChars = SQLiteConnection.optionalInt64(stmt, column: 10)
+            let visibleChars = SQLiteConnection.optionalInt64(stmt, column: 11)
+            return (
+                id, sessionID, timestamp, turn, model, providerID, input, output, reasoning, cacheRead,
+                reasoningChars, visibleChars
+            )
             }
         )
         var out: [String: [LocalTokenUsageSample]] = [:]
-        for (id, sessionID, timestamp, turn, model, providerID, input, output, reasoning, cacheRead) in rows {
+        for (id, sessionID, timestamp, turn, model, providerID, input, output, reasoning, cacheRead,
+             reasoningChars, visibleChars) in rows {
             guard let slice = ZcodeProviderSlice(providerID: providerID) else { continue }
             let promptComponent = turn ?? "event-\(id)"
+            // native reasoning 优先原样透传；否则按本行 part 字符比例分摊（守恒：
+            // reasoning + output == 原始 output）。
+            let nativeReasoning = SQLiteConnection.nnClamp(reasoning)
+            let nativeOutput = SQLiteConnection.nnClamp(output)
+            let split: (reasoning: Int, output: Int)?
+            if nativeReasoning > 0 {
+                split = nil
+            } else {
+                split = ReasoningCharSplit.split(
+                    outputTokens: nativeOutput,
+                    reasoningChars: SQLiteConnection.nnClamp(reasoningChars),
+                    visibleChars: SQLiteConnection.nnClamp(visibleChars)
+                )
+            }
             let sample = LocalTokenUsageSample(
                 completedAt: Date(timeIntervalSince1970: Double(timestamp) / 1000),
                 modelName: model,
                 promptID: "\(sessionID):\(promptComponent)",
                 inputTokens: SQLiteConnection.nnClamp(input),
                 cachedInputTokens: SQLiteConnection.nnClamp(cacheRead),
-                outputTokens: SQLiteConnection.nnClamp(output),
-                reasoningOutputTokens: SQLiteConnection.nnClamp(reasoning),
+                outputTokens: split?.output ?? nativeOutput,
+                reasoningOutputTokens: split?.reasoning ?? nativeReasoning,
                 sourceProviderID: providerID
             )
             out[slice.rawValue, default: []].append(sample)

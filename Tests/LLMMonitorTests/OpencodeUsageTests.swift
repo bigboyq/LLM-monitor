@@ -612,6 +612,235 @@ final class OpencodeUsageTests: XCTestCase {
         XCTAssertEqual(daily[1].totalTokens, 25)
     }
 
+    // MARK: - minimax reasoning 字符分摊（part 表）
+
+    /// minimax 的 `tokens.reasoning` 恒 0 → 用 `part` 表字符比例做 day 级分摊，
+    /// 且分摊守恒（reasoning + output == 原始 output，total 不变）。
+    func testOpencodeMinimaxSplitsReasoningFromPartCharsPerDay() throws {
+        let databaseURL = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: databaseURL) }
+        let timestamp: Int64 = 1_800_000_000_000
+
+        for (index, output) in [200, 100].enumerated() {
+            // opencode 的 part 直接挂 message.id（没有 ZCode 的 assistant_message_id 中转）
+            let messageID = "mm\(index)"
+            try insert(
+                databaseURL: databaseURL,
+                id: messageID,
+                sessionID: "mm-s",
+                timestamp: timestamp + Int64(index),
+                payload: payload(
+                    parent: "mm-t\(index)", input: 1_000, output: output,
+                    provider: "minimax"
+                )
+            )
+            try insertPart(
+                databaseURL: databaseURL, partID: "p-r-\(index)", messageID: messageID,
+                data: reasoningPartJSON(chars: 750)
+            )
+            try insertPart(
+                databaseURL: databaseURL, partID: "p-t-\(index)", messageID: messageID,
+                data: textPartJSON(chars: 250)
+            )
+        }
+
+        let calendar = Calendar(identifier: .gregorian)
+        let reader = try OpencodeDBReader(path: databaseURL)
+        defer { reader.close() }
+        let aggregate = try reader.aggregate(calendar: calendar)
+
+        let byDay = try XCTUnwrap(aggregate.perProviderDay["minimax"])
+        let day = try XCTUnwrap(byDay.values.first)
+        // day 级分摊：300 × (1500 / 2000) = 225
+        XCTAssertEqual(day.reasoningTokens, 225, "300 × 1500/2000，day 级分摊")
+        XCTAssertEqual(day.outputTokens, 75)
+        XCTAssertEqual(day.reasoningTokens + day.outputTokens, 300, "守恒")
+        XCTAssertEqual(day.inputTokens, 2_000)
+        XCTAssertEqual(day.rounds, 2)
+        XCTAssertEqual(
+            day.totalTokens,
+            day.inputTokens + day.cacheReadTokens + day.outputTokens + day.reasoningTokens
+        )
+        // 原始 total = 1000 + 1000 + 300 + 0 = 2300，分摊后不变
+        XCTAssertEqual(day.totalTokens, 2_300, "分摊不改变 total")
+    }
+
+    /// 工具参数（`$.state.input`）也算可见输出，计入分摊分母。
+    func testOpencodeMinimaxCountsToolInputAsVisibleChars() throws {
+        let databaseURL = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: databaseURL) }
+        let timestamp: Int64 = 1_800_000_000_000
+
+        try insert(
+            databaseURL: databaseURL, id: "mm", sessionID: "mm-s", timestamp: timestamp,
+            payload: payload(parent: "mm-t1", input: 100, output: 200, provider: "minimax")
+        )
+        try insertPart(
+            databaseURL: databaseURL, partID: "p-r", messageID: "mm",
+            data: reasoningPartJSON(chars: 600)
+        )
+        try insertPart(
+            databaseURL: databaseURL, partID: "p-x", messageID: "mm",
+            data: textPartJSON(chars: 200)
+        )
+        try insertPart(
+            databaseURL: databaseURL, partID: "p-tool", messageID: "mm",
+            data: toolPartJSON(inputChars: 200)
+        )
+
+        let calendar = Calendar(identifier: .gregorian)
+        let reader = try OpencodeDBReader(path: databaseURL)
+        defer { reader.close() }
+        let aggregate = try reader.aggregate(calendar: calendar)
+
+        let day = try XCTUnwrap(aggregate.perProviderDay["minimax"]?.values.first)
+        // 可见字符 = text 200 + tool 200 = 400，思考 600 → 200 × 600/1000 = 120
+        XCTAssertEqual(day.reasoningTokens, 120)
+        XCTAssertEqual(day.outputTokens, 80)
+        XCTAssertEqual(day.reasoningTokens + day.outputTokens, 200, "守恒")
+    }
+
+    /// native reasoning > 0 的 provider（如 deepseek / zhipuai）不分摊，原样透传。
+    func testOpencodeNativeReasoningProvidersAreNotResplit() throws {
+        let databaseURL = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: databaseURL) }
+        let timestamp: Int64 = 1_800_000_000_000
+
+        // deepseek：native reasoning 200，part 里也有思考文本（若被分摊会变成别的值）
+        try insert(
+            databaseURL: databaseURL, id: "ds", sessionID: "ds-s", timestamp: timestamp,
+            payload: payload(
+                parent: "ds-t1", input: 500, output: 300, reasoning: 200,
+                cacheRead: 40, provider: "deepseek"
+            )
+        )
+        try insertPart(
+            databaseURL: databaseURL, partID: "p-ds-r", messageID: "ds",
+            data: reasoningPartJSON(chars: 100)
+        )
+        try insertPart(
+            databaseURL: databaseURL, partID: "p-ds-t", messageID: "ds",
+            data: textPartJSON(chars: 900)
+        )
+
+        let calendar = Calendar(identifier: .gregorian)
+        let reader = try OpencodeDBReader(path: databaseURL)
+        defer { reader.close() }
+        let aggregate = try reader.aggregate(calendar: calendar)
+
+        let day = try XCTUnwrap(aggregate.perProviderDay["deepseek"]?.values.first)
+        XCTAssertEqual(day.reasoningTokens, 200, "native reasoning 原样透传")
+        XCTAssertEqual(day.outputTokens, 300)
+        XCTAssertEqual(day.cacheReadTokens, 40)
+        XCTAssertEqual(day.totalTokens, 1_040)
+
+        let samples = try XCTUnwrap(aggregate.samples["deepseek"])
+        XCTAssertEqual(samples.first?.reasoningOutputTokens, 200)
+        XCTAssertEqual(samples.first?.outputTokens, 300)
+    }
+
+    /// minimax 但没有 part 行 → 无思考数据可分摊，reasoning 保持 0。
+    func testOpencodeMinimaxWithoutPartsKeepsZeroReasoning() throws {
+        let databaseURL = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: databaseURL) }
+        let timestamp: Int64 = 1_800_000_000_000
+
+        try insert(
+            databaseURL: databaseURL, id: "mm", sessionID: "mm-s", timestamp: timestamp,
+            payload: payload(parent: "mm-t1", input: 100, output: 200, provider: "minimax-cn-coding-plan")
+        )
+
+        let calendar = Calendar(identifier: .gregorian)
+        let reader = try OpencodeDBReader(path: databaseURL)
+        defer { reader.close() }
+        let aggregate = try reader.aggregate(calendar: calendar)
+
+        let day = try XCTUnwrap(aggregate.perProviderDay["minimax-cn-coding-plan"]?.values.first)
+        XCTAssertEqual(day.reasoningTokens, 0, "无 part → 不分摊")
+        XCTAssertEqual(day.outputTokens, 200)
+        XCTAssertEqual(day.totalTokens, 300)
+
+        let samples = try XCTUnwrap(aggregate.samples["minimax-cn-coding-plan"])
+        XCTAssertEqual(samples.first?.reasoningOutputTokens, 0)
+        XCTAssertEqual(samples.first?.outputTokens, 200)
+    }
+
+    /// 极老版本库缺 `part` 表 → 字符分摊整表降级,聚合照常返回、reasoning 保持 0。
+    func testOpencodeAggregateDegradesWithoutPartTable() throws {
+        let databaseURL = try makeDatabase(partTable: false)
+        defer { try? FileManager.default.removeItem(at: databaseURL) }
+        let timestamp: Int64 = 1_800_000_000_000
+
+        try insert(
+            databaseURL: databaseURL, id: "mm", sessionID: "mm-s", timestamp: timestamp,
+            payload: payload(parent: "mm-t1", input: 100, output: 200, provider: "minimax")
+        )
+
+        let calendar = Calendar(identifier: .gregorian)
+        let reader = try OpencodeDBReader(path: databaseURL)
+        defer { reader.close() }
+        let aggregate = try reader.aggregate(calendar: calendar)
+
+        let day = try XCTUnwrap(aggregate.perProviderDay["minimax"]?.values.first)
+        XCTAssertEqual(day.reasoningTokens, 0, "缺 part 表 → 降级,不分摊")
+        XCTAssertEqual(day.outputTokens, 200)
+        XCTAssertEqual(day.totalTokens, 300)
+        XCTAssertEqual(aggregate.samples["minimax"]?.first?.outputTokens, 200)
+    }
+
+    /// 样本走**行级**分摊：每一行按自己 message 的 part 字符比例算，
+    /// 再过 `TokenAccountingCatalog.opencode` 的 `.independent` 桶后仍然守恒。
+    func testOpencodeMinimaxSamplesSplitPerRowAndStayConserved() throws {
+        let databaseURL = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: databaseURL) }
+        let timestamp: Int64 = 1_800_000_000_000
+
+        // 行 0：200 output，思考 750 / 可见 250 → 150 / 50
+        try insert(
+            databaseURL: databaseURL, id: "mm0", sessionID: "mm-s", timestamp: timestamp,
+            payload: payload(parent: "mm-t0", input: 1_000, output: 200, cacheRead: 30, provider: "minimax")
+        )
+        try insertPart(
+            databaseURL: databaseURL, partID: "p0-r", messageID: "mm0",
+            data: reasoningPartJSON(chars: 750)
+        )
+        try insertPart(
+            databaseURL: databaseURL, partID: "p0-t", messageID: "mm0",
+            data: textPartJSON(chars: 250)
+        )
+        // 行 1：100 output，思考 250 / 可见 750 → 25 / 75
+        try insert(
+            databaseURL: databaseURL, id: "mm1", sessionID: "mm-s", timestamp: timestamp + 1,
+            payload: payload(parent: "mm-t1", input: 500, output: 100, provider: "minimax")
+        )
+        try insertPart(
+            databaseURL: databaseURL, partID: "p1-r", messageID: "mm1",
+            data: reasoningPartJSON(chars: 250)
+        )
+        try insertPart(
+            databaseURL: databaseURL, partID: "p1-t", messageID: "mm1",
+            data: textPartJSON(chars: 750)
+        )
+
+        let calendar = Calendar(identifier: .gregorian)
+        let reader = try OpencodeDBReader(path: databaseURL)
+        defer { reader.close() }
+        let aggregate = try reader.aggregate(calendar: calendar)
+
+        let samples = try XCTUnwrap(aggregate.samples["minimax"])
+        XCTAssertEqual(samples.count, 2)
+        XCTAssertEqual(samples.map(\.reasoningOutputTokens), [150, 25], "行级分摊")
+        XCTAssertEqual(samples.map(\.outputTokens), [50, 75])
+        XCTAssertEqual(
+            samples.reduce(0) { $0 + $1.reasoningOutputTokens + $1.outputTokens },
+            300,
+            "过 catalog 之后仍守恒"
+        )
+        // raw input 是 uncached，catalog 补回 cache.read
+        XCTAssertEqual(samples[0].inputTokens, 1_030)
+        XCTAssertEqual(samples[0].cachedInputTokens, 30)
+    }
+
     func testGLMOpencodeSamplesMatchQuotaModel() {
         XCTAssertTrue(
             LocalUsageSummaryBuilder.modelMatches(
@@ -679,7 +908,7 @@ final class OpencodeUsageTests: XCTestCase {
         XCTAssertNil(rebased.glmSlice?.today)
     }
 
-    private func makeDatabase() throws -> URL {
+    private func makeDatabase(partTable: Bool = true) throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("llm-monitor-opencode-\(UUID().uuidString)")
             .appendingPathExtension("sqlite")
@@ -700,6 +929,21 @@ final class OpencodeUsageTests: XCTestCase {
             )
             """
         )
+        // 精简 part 表：reader 的 minimax reasoning 字符分摊要 JOIN 它
+        // （真实库还有 session_id / time_created / time_updated，读取层用不到）。
+        // `partTable: false` 模拟极老版本库缺表,reader 必须降级而不是抛错。
+        if partTable {
+            try exec(
+                db: db,
+                sql: """
+                CREATE TABLE part (
+                  id TEXT PRIMARY KEY,
+                  message_id TEXT,
+                  data TEXT
+                )
+                """
+            )
+        }
         return url
     }
 
@@ -729,11 +973,51 @@ final class OpencodeUsageTests: XCTestCase {
         output: Int,
         reasoning: Int = 0,
         cacheRead: Int = 0,
-        cacheWrite: Int = 0
+        cacheWrite: Int = 0,
+        provider: String = "zhipuai-coding-plan"
     ) -> String {
         """
-        {"role":"assistant","providerID":"zhipuai-coding-plan","modelID":"glm-5.2","parentID":"\(parent)","tokens":{"input":\(input),"output":\(output),"reasoning":\(reasoning),"cache":{"read":\(cacheRead),"write":\(cacheWrite)}}}
+        {"role":"assistant","providerID":"\(provider)","modelID":"glm-5.2","parentID":"\(parent)","tokens":{"input":\(input),"output":\(output),"reasoning":\(reasoning),"cache":{"read":\(cacheRead),"write":\(cacheWrite)}}}
         """
+    }
+
+    /// 写一条 `part`（思考 / 正文 / 工具参数块）。`data` 直接放 JSON 字符串。
+    private func insertPart(
+        databaseURL: URL,
+        partID: String,
+        messageID: String,
+        data: String
+    ) throws {
+        var db: OpaquePointer?
+        guard sqlite3_open(databaseURL.path, &db) == SQLITE_OK, let db else {
+            throw NSError(domain: "OpencodeUsageTests", code: 3)
+        }
+        defer { sqlite3_close(db) }
+        let sql = "INSERT INTO part (id, message_id, data) VALUES (?, ?, ?);"
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw NSError(domain: "OpencodeUsageTests", code: 4)
+        }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_text(stmt, 1, (partID as NSString).utf8String, -1, nil)
+        sqlite3_bind_text(stmt, 2, (messageID as NSString).utf8String, -1, nil)
+        sqlite3_bind_text(stmt, 3, (data as NSString).utf8String, -1, nil)
+        guard sqlite3_step(stmt) == SQLITE_DONE else {
+            throw NSError(domain: "OpencodeUsageTests", code: 5)
+        }
+    }
+
+    private func reasoningPartJSON(chars: Int) -> String {
+        #"{"type":"reasoning","text":"\#(String(repeating: "x", count: chars))"}"#
+    }
+
+    private func textPartJSON(chars: Int) -> String {
+        #"{"type":"text","text":"\#(String(repeating: "y", count: chars))"}"#
+    }
+
+    /// opencode.db 的 tool part 参数路径实测与 ZCode 一致，都是 `$.state.input`。
+    private func toolPartJSON(inputChars: Int) -> String {
+        #"{"type":"tool","state":{"input":"\#(String(repeating: "z", count: inputChars))"}}"#
     }
 
     private func exec(db: OpaquePointer, sql: String) throws {
