@@ -163,3 +163,5 @@ agy 不挂独立 timer、没有 quota 依赖：由 `ProviderRefreshScheduler` �
 | 缓存路径 | `Sources/LLM-monitor/Services/TokenMonitorPaths.swift`（`TokenMonitorProvider.agy` → `token-monitor/agy.json`） |
 | Client 身份与描述符 | `Sources/LLM-monitor/Models/ClientIdentity.swift`（`ClientID.agy` + `ClientDescriptor`） |
 | Regression tests | `Tests/LLMMonitorTests/AgyLocalUsageScannerTests.swift`（16 个用例：MODEL 行解析与 thinking 分摊守恒、无 thinking 全记 output、非 DONE / 无 token 行跳过、主文件与分块去重、模型名 join 命中与目录缺失兜底、指纹缓存短路、stat 失败保留 last-good 且窗口重算、log-only 变化解除短路重建缓存、行数熔断失败隔离不入指纹、文件数 / 字节预算截断最旧优先并置位、超长行丢弃与恢复、`AgyLocalUsage.==` 语义、帧投影 `.antigravity` 卡命名空间、unknownModelName 归桶） |
+
+> 核对基线：2026-10-04 · 代码 d6396fd

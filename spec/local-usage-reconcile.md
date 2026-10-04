@@ -83,3 +83,5 @@ FSEvents/vnode 只负责把 source 标记为 dirty 和驱动 freshness UI；它�
 - dirty 在扫描期间再次发生时，当前结果可以提交但 freshness 必须继续为 dirty，下一次 reconcile 才消费新变化。
 - hard-full 是显式可见、可测试、可取消的恢复操作，不会被普通 dirty 或自动 full 误触发。
 - 自动 batch、Manual、Wakeup、calendar invalidation 均只有一个全局 LocalUsage reconcile；完整测试和 release build 通过。
+
+> 核对基线：2026-10-04 · 代码 d6396fd

@@ -49,9 +49,15 @@ the other supported bindings default to disabled. Users who need a non-default v
 |---|---|---|
 | Minimax Token Plan | `minimax-cn-coding-plan` | `false` |
 | ChatGPT Plan | `openai` | `false` |
-| Antigravity | `antigravity`, `google-antigravity`, `google-vertex`, or `google` | `false` |
+| Antigravity | `antigravity`, `google-antigravity`, `google-vertex`, or `google` (多个 alias 逐项相加合并成一帧) | `false` |
 | GLM Coding Plan | `zhipuai-coding-plan` | `true` |
-| DeepSeek | `deepseek`, `deepseek-official`, `deepseek-cn`, or `deepseek-v4` | `false` |
+| DeepSeek | `deepseek` | `false` |
+
+别名的事实源是 `ClientProviderBinding.defaultBindings` 的
+`clientID: openCode` 条目（`Models/ClientIdentity.swift`），
+`OpencodeLocalUsage.<x>ProviderID` 常量从那里导出。DeepSeek 行只有 `deepseek`
+一个别名——`deepseek-official` / `deepseek-cn` / `deepseek-v4` 是 **DSH** 的路由
+别名（`ClientID.dsh` 条目），不参与 OpenCode 分片归因。
 
 The `minimax` providerID is intentionally excluded from the Minimax card; it is the
 redundant OpenCode local-capability ledger and never contributes to that quota card. Its
@@ -65,10 +71,11 @@ native/local data. When it is enabled, OpenCode values are added to the native v
 - quota-window token summaries (`prompts`, `rounds`, and token categories);
 - ChatGPT's 5-hour / weekly daily token data.
 
-For ChatGPT, OpenCode's uncached `input` is converted to the Codex daily model as
-`inputTokens = input + cacheRead` and `cachedInputTokens = cacheRead` before addition.
-This preserves the Codex model's invariant that cached input is a subset of complete
-input.
+ChatGPT 没有 per-source 的手工换算：合并发生在 `UsageProjectionKernel`，所有来源的 daily
+都先归一成 `UnifiedDailyTokenUsage`（`input` = uncached，`cacheRead` / `cacheWrite`
+独立成桶）再逐桶相加。Codex native 的 `DailyTokenUsage` 也通过 `LocalUsageDaily`
+conformance 落进同一模型（`input = uncachedInputTokens`、`cacheRead = cachedInputTokens`），
+所以「cached 是完整 input 的子集」这条不变量在求和后仍然成立。
 
 ## MiniMax reasoning fallback
 
@@ -144,12 +151,14 @@ where R is rounds and T is turns.
 ## Refresh timing
 
 OpenCode 不挂自己的独立 timer，也没有 quota 依赖：由 `ProviderRefreshScheduler` 每批
-Provider 请求结算后的 `LocalUsageOrchestration.reconcile()` 驱动。首次启动和自然日切换
-执行 Full Scan；其余批次只在 OpenCode scanner 自己的 FSEvents watcher 标记 source dirty
-时执行 Dirty Scan。手动 refreshAll 仍显式等待一次 Full Scan。
+Provider 请求结算后的 `LocalUsageOrchestration.reconcile()` 驱动。启动首拍执行 Full Scan；
+日历 / 时区失效走 hardFull；其余批次（自然日切换、手工 `refreshAll`、唤醒、定时）一律
+是 dirty 模式的普通 reconcile——只有 OpenCode scanner 自己的 FSEvents watcher 或显式
+失效把 source 标为 dirty 时才会重聚合，否则仅在指纹未变的情况下 rebase 7 天窗口。
 
 > 决策依据：OpenCode 是“跨 provider 共享账本”。FSEvents 只负责把它标记为 dirty，
 > 实际扫描仍挂在 Provider batch 之后；因此不需要也不存在 OpenCode 自己的独立触发配置。
+> 模式语义见 [`spec/local-usage-reconcile.md`](../local-usage-reconcile.md)。
 
 ## Implementation map
 
@@ -162,3 +171,5 @@ Provider 请求结算后的 `LocalUsageOrchestration.reconcile()` 驱动。首�
 | Merge 控制（无设置页开关） | `config.json` 的 `clientBindings[]`（唯一事实源；legacy config 由 `legacyClientBindings` 从 `ProviderConfig.mergeOpencodeUsage` 迁移） |
 | Card integration | `Sources/LLM-monitor/Views/ProviderCardView.swift` and `QuotaViews.swift` |
 | Regression tests | `Tests/LLMMonitorTests/OpencodeUsageTests.swift`（usageProjection 多 client 投影、命名空间与 reader 回归） |
+
+> 核对基线：2026-10-04 · 代码 d6396fd

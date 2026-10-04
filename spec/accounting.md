@@ -31,7 +31,7 @@ completion，而不是仅可见文字。
 | MiniMax Code | `input` = uncached | 独立字段 | 当前账单 output 可能不含可分离 reasoning；reader 用原生字段或 thinking 字符比例拆分 | 能拆分则 `Output/Reason` 守恒（比例公式同样走共享 `ReasoningCharSplit`）；不能拆分则 raw output 全放 `Output`、`Reason=0` |
 | Codex | `inputTokens` 含 cache | `cachedInputTokens` 是子集 | output/reasoning 独立 | `Input = max(input - cache, 0)`；Output/Reason 直接映射 |
 | Antigravity | event `inputTokens` = uncached | 独立字段 | output/reasoning 独立 | daily 直接映射；sample 保留 cache-inclusive input |
-| agy | transcript `input_tokens` = uncached | 独立字段 | `output_tokens` 含思考，无原生 reasoning 计数 | `thinking` 非空时按字符占比走共享 `ReasoningCharSplit` 守恒拆分（`Reason + Output = raw output`）；无 thinking 则 `Reason=0`、`Output=raw output`；daily 直接映射；sample 保留 cache-inclusive input |
+| agy | transcript `input_tokens` = uncached | 独立字段 | `output_tokens` 含思考，无原生 reasoning 计数 | `thinking` 非空时按字符占比走共享 `ReasoningCharSplit` 守恒拆分（`Reason + Output = raw output`）；无 thinking 则 `Reason=0`、`Output=raw output`；daily 直接映射；sample 保留 cache-inclusive input。agy 在 `TokenAccountingCatalog` 里没有独立条目，计数口径与 `antigravity` 一致，在 reader 层直接映射（见「唯一入口」的例外说明） |
 | OpenCode | `tokens.input` = uncached | `tokens.cache.read` 独立 | output/reasoning 独立，但 `tokens.reasoning` 对 `minimax` 前缀恒 0 | native reasoning 原样透传；仅 `minimax` 前缀在 native 为 0 时按 `part` 表字符比例 fallback 分摊（极老库缺 `part` 表时降级为 `Reason=0`，聚合不失败）；daily 直接映射；sample 保留 cache-inclusive input |
 | ZCode / GLM | `model_usage.input_tokens` 含 cache | `cache_read_input_tokens` 是子集 | 智谱行由 reader 的 Method A 归类；非智谱分片另有三段式 | daily 先减 cache；sample 保留完整 input；不再二次拆分。智谱行走 Method A 整轮归类；**非智谱分片走字符分摊三段式**：① native `reasoning_tokens > 0` 原样透传 → ② 否则按 `part` 表字符比例分摊（day 级聚合 / 行级样本）→ ③ 都没有保持 `Reason=0` |
 
@@ -101,9 +101,16 @@ reader / scanner / aggregation 不得自己写 `input + cacheRead` 或
 2. 拿到 `TokenUsageBuckets` 后，按各自持久化结构**重新组装**字段（sample 存
    cache-inclusive `inputTokens`、daily 存 `cacheReadTokens` 等）。
 
+例外（当前实现的既成事实，不要照抄）：`GlmZcodeDBReader` 的智谱行与非智谱分片在
+day 级聚合里手算 `max(input - cacheRead, 0)` 并直接重建 sample（智谱行 / 分片行
+都是如此，只在注释里与 `TokenAccountingCatalog.zcode` 的 `.normalized`「对齐」，
+没有真正调用它）；agy 的 transcript 行同样在 `AgyLocalUsageAggregation` 内直接
+组装四桶。新增 harness 必须走 catalog，这两处是历史存量。
+
 这样 clamping、cache-inclusive 减法、output/reasoning 拆分三处规则只有一份实现；
-`testXxxUsage` 系列护栏测试必须全绿，任何手算漂移都会在这些用例上表现为
-input/cache/output/reasoning 数值变化。
+`Tests/LLMMonitorTests/TokenAccountingTests.swift`（`testAllHarnessDefinitionsProduceDisjointNormalizedBuckets`
+等）必须全绿，任何手算漂移都会在这些用例上表现为 input/cache/output/reasoning
+数值变化。
 
 reader 组装 sample 后仍可能被下游改写（MiniMax 的字符分摊会重建 sample）；此时
 catalog 的结果已经在 reader 层固化，重建逻辑必须逐字段原样带回（含
@@ -118,9 +125,9 @@ catalog 的结果已经在 reader 层固化，重建逻辑必须逐字段原样�
 |---|---|---|
 | `QuotaProviderID.deepseek` | `PeakWindow` 高峰窗口 | ×2 |
 
-`pricingMultiplier(quotaProviderID:at:)` 遍历登记表求值，未登记的 provider 或窗口未命中
-一律返回 1。新增 provider 的峰谷定价只往表里追加一行，不要在求值分支里加
-`if quotaProviderID == ...`。价目本身仍然只改 JSON，不在本表登记。
+`pricingMultiplier(quotaProviderID:at:deepseekPeakWindow:)` 遍历登记表求值，未登记的
+provider 或窗口未命中一律返回 1。新增 provider 的峰谷定价只往表里追加一行，不要在
+求值分支里加 `if quotaProviderID == ...`。价目本身仍然只改 JSON，不在本表登记。
 
 ## promptID 命名空间登记表
 
@@ -147,8 +154,8 @@ catalog 的结果已经在 reader 层固化，重建逻辑必须逐字段原样�
 双计，不要那样做。
 
 前缀是纯粹的**标识**层：智谱套餐分类（`isGlmOffPeakSample` / `isGlmOtherPlanSample`）
-一律按 `sourceProviderID` 判定，`lastPrompt` 等只按 promptID 做等值分组，两者都不
-解析 promptID 的字面前缀，所以新增前缀不会影响分类与窗口口径。唯一读前缀的地方是
+一律按 `sourceProviderID` 判定，其余对 promptID 的使用（如 DSH 去重键）只做等值分组，
+都不解析 promptID 的字面前缀，所以新增前缀不会影响分类与窗口口径。唯一读前缀的地方是
 `LocalUsageSummaryBuilder.isGlmOffPeakSample` 的「OpenCode 合并样本不算闲时」回退
 （`hasPrefix("opencode:")`），`zcode:` / `antigravity:` / `minimax-code:` 都不匹配该
 判定，语义与加前缀前一致。
@@ -186,3 +193,5 @@ catalog 的结果已经在 reader 层固化，重建逻辑必须逐字段原样�
 
 任何新 harness 必须先补充本矩阵、provider spec 和 `TokenAccountingCatalog`，再接入 UI；
 不要在 view 或 pricing 分支里重新猜测 input/cache/reasoning 的关系。
+
+> 核对基线：2026-10-04 · 代码 d6396fd

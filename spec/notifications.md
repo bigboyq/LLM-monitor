@@ -118,7 +118,9 @@ DeepSeek 不参与：余额被二值化为 0/100 percent，无窗口语义；其
 - 标题按事件类型：纯耗尽 →「{provider} 额度已用完」、纯恢复 →「额度已恢复」、
   混合 →「额度提醒」；正文 `messageLine`：恢复为「短周期/周额度 X% → Y%」，
   耗尽为「5 小时/周额度已用完（剩 X%）」。
-- 60s 冷却（`groupsAfterCooldown`，内存表按 thread key）。
+- 60s 冷却（`groupsAfterCooldown`，内存表按 thread key）；冷却**只在确认会发送的
+  路径消耗**——授权检查（异步）先行，未授权 / `.denied` 挡下的通知不写冷却表，
+  避免白烧 60s 窗口把用户重新授权后的首个事件挡掉。
 
 ### 4.3 Bark（`BarkQuotaNotifier` + `BarkSendQueue`）
 
@@ -126,7 +128,10 @@ DeepSeek 不参与：余额被二值化为 0/100 percent，无窗口语义；其
   URL 编码与 2048 限制；server URL 的 base path 原样保留（反向代理子路径可用）。
   scheme 白名单：https + 本机 loopback http（`localhost`/`127.0.0.1`/`::1`）。
   `ttl`（消息有效期秒数，过期后手机端自动删除）仅在该值 > 0 时按 JSON 数字携带；
-  0 / 未配置 = 不携带参数（Bark 默认行为，不自动过期）。
+  0 / 未配置 = 不携带参数（Bark 默认行为，不自动过期）。请求超时 15s
+  （`BarkQuotaNotifier.requestTimeout`，正式推送与测试推送共用）。
+- 响应体硬上限 8MiB（`ResponseByteLimits.standardQuota`）：`serverURL` 由用户
+  config 控制，超限响应抛错、不进解析链路，且按非瞬时错误处理（不重试、不占冷却）。
 - 配置规范化（trim）先于校验与请求；`serverURL`/`deviceKey` 不全 → 渠道不可用，
   触发 `.barkAndSystem` 时降级为只发系统通知（不丢通知）。
 - **屏幕跳过**（`skipWhenAwakeAndUnlocked`，2026-09-13 裁定）：
@@ -171,9 +176,9 @@ provider 的渠道枚举坏值按缺失处理（`try? + rawValue`）；`bark` �
     "codex_chatgpt": {
       "enabled": true,
       "notifyIntervalRestored": "system",    // none | system | barkAndSystem
-      "notifyIntervalExhausted": "off",
+      "notifyIntervalExhausted": "none",
       "notifyWeeklyRestored": "system",
-      "notifyWeeklyExhausted": "off"
+      "notifyWeeklyExhausted": "none"
     }
   }
 }
@@ -235,3 +240,5 @@ provider 的渠道枚举坏值按缺失处理（`try? + rawValue`）；`bark` �
   测试桩回调时机修复（消 flaky）。
 - 决策记录：屏幕跳过语义与恢复公式阈值见 §3.2 / §4.3 的裁定标注（2026-09-13）；
   余额触发器延后（裁定）。
+
+> 核对基线：2026-10-04 · 代码 d6396fd

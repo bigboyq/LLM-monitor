@@ -49,7 +49,7 @@ ZCode 的 `model_usage.input_tokens` 是包含 cache-read 的 raw input，
 - **GLM-5.2 及以下已退休**：`glm-5.2` / `glm-4.5` / `glm-4.7` 不再单独定价，出现即按
   GLM-5.3-Flash 兜底计价（估计值，不对应真实账单）。兜底使 zhipu 分支永远有价。
 - **日志匹配规则**：匹配不区分大小写。ZCode 日志中的 `GLM-5.3`、OpenCode 中的 `glm-5.3`、DSH 中的 `GLM-5.3-Flash` 均可直接命中。
-- **目录更新时间**：记录于 `ModelPricingCatalog.lastUpdated`（即 JSON 顶层 `lastUpdated`，当前为 `2026-09-09`）。
+- **目录更新时间**：记录于 `ModelPricingCatalog.lastUpdated`（即 JSON 顶层 `lastUpdated`，当前为 `2026-10-01`）。
 - **未定价模型**：zhipu 分支因兜底永远全覆盖，"未定价 / 部分计价"提示对该 provider 不再出现；其他 provider 维持明确列出未收录模型的既有口径。
 
 ## Config
@@ -186,10 +186,13 @@ Processing steps:
    codes → `QuotaError.decodingError`.
 3. Filter `data.limits` to `type == "CREDIT_LIMIT"` with `usage > 0`.
 4. **Classify windows** by stable metadata first: `unit == 3, number == 5` is the 5h
-   (interval) window and `unit == 6, number == 1` is the weekly window. When the metadata
-   is missing or unknown, fall back to `nextResetTime` ascending for compatibility with
-   older responses. This avoids misclassifying windows when a weekly reset happens before
-   the 5h reset.
+   (interval) window and `unit == 6, number == 1` is the weekly window. The metadata
+   is only trusted when **both** windows are identified **and** their
+   `nextResetTime` differ; otherwise (metadata missing / unknown, or the two
+   reset times collapse to the same value) the parser falls back to
+   `nextResetTime` ascending — first = 5h, last = weekly — for compatibility with
+   older responses. This avoids misclassifying windows when a weekly reset happens
+   before the 5h reset.
 5. Per window: validate `total > 0`, `used >= 0`, `remaining >= 0`. `used > total` is
    allowed because a single Coding Plan task can exceed the nominal window total; that
    window is treated as exhausted (`remainingPercent = 0`) instead of failing the whole
@@ -207,7 +210,7 @@ Mapping:
 | `limits[*].usage` | `intervalTotalCount` / `weeklyTotalCount` |
 | `limits[*].currentValue` | `intervalUsageCount` / `weeklyUsageCount` |
 | `remaining / usage * 100` | `intervalRemainingPercent` / `weeklyRemainingPercent` |
-| `limits[*].nextResetTime` (ms) | `intervalResetsAt` / `weeklyResetsAt`; missing 5h value falls back to `now + 5h` |
+| `limits[*].nextResetTime` (ms) | `intervalResetsAt` / `weeklyResetsAt`; missing 5h value falls back to `now + 5h`，missing weekly value passes `nil` through（消费面按「present 但 reset 时间未知」降级，不伪造 7 天边界） |
 | `data.level` (capitalized) | `QuotaInfo.planLabel` |
 
 Successful parse returns:
@@ -241,9 +244,12 @@ Card metadata:
 | `iconSystemName` | `chevron.left.forwardslash.chevron.right` (`</>`) — 仅是 bundled 资源缺失时的防御性兜底符号；`Resources/BrandLogos/glm.svg` 已内置（1.4.2 起），卡片正常渲染品牌 logo，实际无 SF Symbol 回退 |
 | `accentColor` | `glm` mapped to `.glmBrand` (indigo) |
 
-Window multiplier (`ModelQuota.weeklyEquivalentMultiplier`): **5** — renders as
-`周倍率：5`（`QuotaViews.swift` 的 `QuotaWindowTitle`），matching the tier credit ratio
-(weekly = 5× the 5h credits).
+Window multiplier (`ModelQuota.weeklyEquivalentMultiplier`): **5** — 不再有一行
+「周倍率：N」文本（旧的 `QuotaWindowTitle` 已随三列布局下线删除）：倍率以
+`CombinedQuotaWindowRow(weeklyEquivalentMultiplier:)` 传给分段进度条
+（`SegmentedQuotaProgressBar`，5 段），段数语义写在 hover 提示
+`QuotaBarTooltip.text(segments:)`（「第 1 格为当前窗口余量；后续 4 格为等价周额度
+余量」），matching the tier credit ratio (weekly = 5× the 5h credits)。
 
 The card shows the standard two-window layout (5h + weekly remaining %, reset countdown)
 and a tier pill (`Lite` / `Pro` / `Max`). The footer renders the shared seven-day
@@ -269,7 +275,7 @@ needed.
 |---|---|
 | Model | `Models/PeakWindow.swift`（`GlmPeakWindow` 为兼容 typealias，:127）— `status(at:calendar:)` 返回 `.peak(until:)` / `.offPeak(until:)` |
 | Time basis | `Calendar.current`（用户本地时区），与 GLM API 无关 —— refresh 失败也能显示 |
-| Live countdown | `Views/GlmPeakIndicatorView.swift` 用 `TimelineView(.periodic(by: 60))`，菜单打开时每分钟自动刷新；关闭时零开销 |
+| Live countdown | `Views/GlmPeakIndicatorView.swift` 只注入 GLM 文案 / 图标 / 配色，倒计时读环境值 `\.menuDisplayDate`（`MenuContentView.MenuDisplayClock` 的**共享菜单时钟，菜单打开期间每秒 tick**）；菜单关闭时时钟停摆、零开销。公共外壳与 `formatPeakDuration` 在 `Views/PeakIndicatorView.swift`，不再自挂 `TimelineView` |
 | Window source | `ProviderConfig.glmPeakWindow`（config 派生，`rebuildStatuses` 时挂在 `ProviderStatus.glmPeakWindow`） |
 | Defaults | `GlmPeakWindow.zhipuDefault` = Mon–Fri 14:00–18:00 |
 | Day classification | `Calendar.weekday`: Mon–Fri = 2…6；周末永远非高峰（`weekdaysOnly`） |
@@ -299,7 +305,7 @@ The scanner reads the following columns from each GLM `model_usage` row:
 started_at                     # epoch ms, source of per-day aggregation
 turn_id                        # native turn grouping (one user prompt → one turn)
 session_id                     # session dedup for sessionCount
-model_id                       # diagnosis + Last Prompt model match
+model_id                       # diagnosis + per-row modelName
 assistant_message_id           # FK to message.id; NULL for session_title, otherwise used
                                #   to test whether a reasoning part exists
 input_tokens                   # FULL input (cacheRead is a subset, NOT uncached)
@@ -437,10 +443,10 @@ the primary "input" number, so the two views never disagree:
 - **7-day chart** (`LocalUsageDaily.input`): `GlmDailyUsage.inputTokens` is already uncached
   (= `max(input_raw - cacheRead, 0)`), computed in the reader.
 - **Hover** (`UsageMetricHoverSummaryView`): the shared `input` line renders
-  `usage.uncachedInputTokens` (= `max(inputTokens - cachedInputTokens, 0)`) with the cache
-  amount shown as a `(+N cached)` suffix. `UsageMetricSummary.inputTokens` keeps its
-  project-wide "full input (cache is a subset)" invariant; `cacheHitRate` is still computed
-  against full input.
+  `usage.uncachedInputTokens` (= `max(inputTokens - cachedInputTokens, 0)`)，缓存量
+  单起一行 `cached`（不是 `(+N cached)` 后缀）。`UsageMetricSummary.inputTokens` keeps
+  its project-wide "full input (cache is a subset)" invariant; `cacheHitRate` is still
+  computed against full input.
 
 This is a global hover change (applies to all four providers) so the Input number is never
 the full input masquerading as new input.
@@ -465,12 +471,13 @@ token 柱图保留真实消耗。拆行只是展示层的细分：`isGlmOtherPla
 非智谱 provider 不会被误算进 GLM 卡：它们由 `ZcodeProviderSlice` 的前缀谓词切出
 `providerSlices`，在 `clientBindings` 对应绑定开启时并入 DeepSeek / MiniMax 卡（默认开启）。
 
-设置 → 客户端 → ZCode 按 `GlmUsageCategory.classify`（与额度窗口白名单同一判定）把
+设置 → 客户端 → ZCode 按 `GlmUsageCategory.classify`（与额度窗口白名单同一判定，拆行实现
+在 `Services/ClientUsageAggregation.glmUsageRows`）把
 ZCode 贡献的样本拆成 Coding Plan → Start Plan → 闲时任务 → 其他任务四行（行序 =
 `GlmUsageCategory.allCases` 声明序，无用量的分类不出行），各自独立 token 柱图与计价
 ——对齐 Antigravity 按模型分组拆行的模式；弹窗卡片维持合并汇总不拆。之后依次是同一
-客户端列里 DeepSeek / MiniMax 两个分片行（来自各自卡的 `zcodeContribution`，受
-`clientBindings` 门控），排序由 `SettingsView.zcodeRowRank` 固定，不参与字母序。
+客户端列里 DeepSeek / MiniMax 两个分片行（来自各自卡的 ZCode 贡献，受
+`clientBindings` 门控），排序由 `ClientUsageAggregation.zcodeRowRank` 固定，不参与字母序。
 样本为空时不拆行，避免把聚合值错标成某一分类。
 
 ZCode 的闲时任务是系统赠送的、**不消耗 Coding Plan 积分**的后台任务（需提前排队）。
@@ -488,7 +495,8 @@ ZCode 的闲时任务是系统赠送的、**不消耗 Coding Plan 积分**的后
 三前缀 LIKE + `offpeak-idle-plan` 裸值精确匹配（每个前缀一个 `LIKE ?`，再加一个精确 `= ?`，
 谓词与绑定由 `zcodeBigmodelProviderPrefixes` 同源生成），让闲时与其他任务的真实消耗进入
 今日 / 7 天柱图。scanner 每次扫描额外读 `~/.zcode/v2/tasks-index.sqlite` 的
-`off_peak_tasks` 表（`status='completed'` 且 `started_at` / `ended_at` 都非空），产出
+`off_peak_tasks` 表（`status='completed'` 且 `started_at` / `ended_at` 都非空、且
+`ended_at >= started_at`），产出
 `[GlmOffPeakWindow]` 挂在 `GlmLocalUsage.offPeakWindows`。`LocalUsageSummaryBuilder.summary`
 的额度窗口路径是**白名单**口径：sample 上的原始 `provider_id` 精确判定——
 闲时 ID（`account:bigmodel-offpeak-idle-plan`、`account:zai-offpeak-idle-plan`
@@ -500,10 +508,13 @@ ZCode 的闲时任务是系统赠送的、**不消耗 Coding Plan 积分**的后
 OpenCode / DSH 合并 sample（`zhipuai-coding-plan`、`dsh:glm` 等）不带 bigmodel 前缀，
 始终视为正常消耗。
 
-> 缓存版本 10：识别 `0020_provider_model_selection` 迁移后的 `account:bigmodel-` /
-> `account:zai-` 前缀（读取谓词同步为三前缀 LIKE + `offpeak-idle-plan` 精确匹配），
-> v9 快照漏掉迁移后新写入的账号套餐行，升版强制重扫补齐。（v9：额度窗口改为
-> "仅正式 Coding Plan 计入"白名单口径，纠正 v8 错误算入的其他套餐样本。）
+> 缓存版本 11：同库内非智谱 provider（`minimax` / `deepseek`）按 `ZcodeProviderSlice`
+> 前缀切出 `providerSlices` 随快照一起供 MiniMax / DeepSeek 卡消费；v10 快照该字段恒为
+> nil，直接复用会让卡片永久缺这条来源，升版强制重扫。（v10：识别
+> `0020_provider_model_selection` 迁移后的 `account:bigmodel-` / `account:zai-` 前缀，
+> 读取谓词同步为三前缀 LIKE + `offpeak-idle-plan` 精确匹配；v9 快照漏掉迁移后新写入的
+> 账号套餐行。**v9**：额度窗口改为"仅正式 Coding Plan 计入"白名单口径，纠正 v8 错误算入的
+> 其他套餐样本。）
 
 ### Activity plan balances（活动套餐余额，可选）
 
@@ -644,8 +655,9 @@ provider-specific interval can be set via `refreshIntervalSeconds`.
 
 ## Test Coverage
 
-`Tests/LLMMonitorTests/GlmCodingPlanFetcherTests.swift 等 5 个按 MARK 段拆分的 GLM 测试文件` — the GLM fetcher, peak-window, native scanner,
-and OpenCode merge tests are consolidated in one file:
+`Tests/LLMMonitorTests/GlmCodingPlanFetcherTests.swift / GlmZcodeDBReaderTests.swift /
+GlmOffPeakTests.swift / GlmBalanceLogReaderTests.swift / GlmUsageCategoryTests.swift`
+（按 MARK 段拆分，高峰窗口边界用例另在共享的 `PeakWindowTests.swift`）:
 
 | Test | What it verifies |
 |---|---|
@@ -672,3 +684,5 @@ whether the quota batch succeeded. GLM's former dedicated periodic trigger
 
 The scanner's db+WAL fingerprint check is unchanged: when nothing changed only a `stat()`
 runs (microseconds); SQL (~1.5ms) only runs when the WAL actually moved.
+
+> 核对基线：2026-10-04 · 代码 d6396fd

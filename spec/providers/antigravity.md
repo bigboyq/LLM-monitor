@@ -2,7 +2,7 @@
 
 Provider id: `antigravity`
 
-Implementation: `Sources/LLM-monitor/Fetchers/AntigravityFetcher.swift` + `Sources/LLM-monitor/Services/AntigravityLocalUsageScanner.swift`
+Implementation: `Sources/LLM-monitor/Fetchers/AntigravityFetcher.swift`（RPC + `generatorMetadata` 解析）+ `Sources/LLM-monitor/Fetchers/AntigravityProcessDiscovery.swift`（进程/端口发现）+ `Sources/LLM-monitor/Fetchers/AntigravitySchemas.swift`（请求/响应模型）+ `Sources/LLM-monitor/Services/AntigravityLocalUsageScanner.swift` 及其同族（`AntigravityFilesystem.swift` / `AntigravityLocalUsageCache.swift` / `AntigravityLocalUsageAggregation.swift` / `AntigravityStepTimestampReader.swift`）
 
 This provider does not call Google quota APIs with a saved OAuth access token. Instead, it reuses the locally authenticated Antigravity backend — the IDE's `language_server` or the `agy` CLI — discovers its local HTTPS port, and reads quota + account info + per-session token usage from local RPC endpoints.
 
@@ -110,10 +110,11 @@ or, if a process is found but no port:
 发现 Antigravity 进程但未监听本地端口，请确认 Antigravity 或 CLI 已完成登录
 ```
 
-or, if process + port are healthy but `~/.gemini/antigravity/conversations/` is empty (CLI-only user with no IDE activity):
+or, if process + port are healthy but `~/.gemini/antigravity/conversations/` is empty (CLI-only user with no IDE activity) — the local-usage card section degrades to a placeholder:
 
 ```text
-今日用量：扫描中…   (in the footer line — hovering the title shows scan state)
+正在扫描本地 token 用量…            (扫描进行中，带 mini 进度条)
+本机未发现 Antigravity 会话数据      (扫描已完成、0 session)
 ```
 
 ## Discovery Flow
@@ -146,9 +147,16 @@ Candidates are sorted:
 2. Within a kind, by `processRank()`: `workspace + lsp + csrf` > `lsp + csrf` > `csrf` > other
 3. Within a rank, by PID (lower first)
 
-For each candidate, `lsof -nP -a -p <pid> -iTCP -sTCP:LISTEN` finds the first `127.0.0.1:<port>` listening socket. The first candidate that exposes such a port wins.
+For each candidate, `lsof -nP -a -p <pid> -iTCP -sTCP:LISTEN` finds the first `127.0.0.1:<port>` listening socket. The chosen `ServerInfo` carries the CSRF token (if any) and the discovered `kind` for diagnostics.
 
-The chosen `ServerInfo` carries the CSRF token (if any) and the discovered `kind` for diagnostics.
+The two consumers of discovery differ deliberately:
+
+- **Quota fetch** — `discoverServerAsync()` returns the **first** candidate that exposes a port; that single `ServerInfo` serves all three quota/account RPCs.
+- **Local-usage scan** — `defaultMetadataServers()` (behind `discoverMetadataServers()`) collects **every** usable candidate, and the scanner reuses that one snapshot for all dirty sessions in a scan (`fetchAll` runs pgrep+lsof once, not per session). `getTrajectoryMetadata(sessionId:offset:servers:)` then tries the servers in order and returns the first page with `metadataEntryCount > 0`; only a transport failure on every server throws.
+
+`hasLocalAuth()` deliberately returns `true` without probing (it runs on the menu / settings hot path); the real probe is the async `checkLocalAuth()` → `discoverServerAsync()`.
+
+Before every POST, `serverStillOwnsEndpoint(server)` re-runs `lsof -nP -a -p <pid> -iTCP:<port> -sTCP:LISTEN` and fails the request with `网络错误：Antigravity 本地服务身份已变化（pid=…, port=…），请重试刷新` if the original process no longer owns the port — narrowing the TOCTOU window in which a restarted server inherits the port.
 
 ## Local RPCs
 
@@ -175,6 +183,12 @@ Bodies:
 - `GetLoadCodeAssist`, `RetrieveUserQuotaSummary`: `{}`
 
 The session trusts localhost TLS for `127.0.0.1` and `localhost`.
+
+Response caps and timeouts (`ResponseByteLimits` / `HTTPTimeouts`, enforced by
+`CappedDownloader`): the trajectory RPC allows **64 MiB** per response
+(`antigravityTrajectory`), every other call **8 MiB** (`standardQuota`); request
+timeout 15s, resource timeout 20s. Exceeding the cap cancels the download and
+surfaces as `QuotaError.responseTooLarge`.
 
 ## Local RPC Response Shapes
 
@@ -299,6 +313,17 @@ Current parser behavior:
 | `window == "5h"` | interval window |
 | `window == "weekly"` | weekly window |
 
+`bucket(for:in:)` resolves a window by `window`（大小写不敏感）**或** by a `bucketId` that
+contains the window string, so responses carrying only `bucketId: "gemini-5h"` /
+`"3p-weekly"` still resolve. Group normalization looks at `displayName` **and**
+`description`: a `gemini` hit → `gemini_models`, otherwise a `claude` / `gpt` hit →
+`claude_and_gpt_models`, otherwise the raw `displayName` is kept.
+
+Failure is per group: a group whose `remainingFraction` is missing, non-finite or
+outside `[0, 1]` is skipped with a `logWarn` (mirroring `postOptional`'s
+partial-availability semantics) and the remaining groups still produce a card;
+only when **no** group survives does the fetcher throw.
+
 Window status is normalized from bucket presence: an existing bucket maps to
 `QuotaWindowStatus.present`, including `remainingFraction = 0`; a missing bucket maps to
 `.absent`. The shared UI and health logic never interprets provider-specific raw status values.
@@ -360,18 +385,43 @@ Field name resolution (case-insensitive, snake_case or camelCase both accepted):
 
 | Detected name pattern | Mapped to |
 |---|---|
-| `^(input\|prompt).*token$` or `input_tokens` | `inputTokens` |
-| `^(output\|completion).*token$` or `output_tokens` | `outputTokens` |
-| `cache.*read.*token` or `cache_read_tokens` | `cacheReadTokens` |
-| `cache.*write.*token` or `cache_write_tokens` | `cacheWriteTokens` |
-| `(reasoning\|thinking).*token` or `reasoning_tokens` | `reasoningTokens` |
+| `^(input\|prompt).*token` (covers `inputTokens` and `input_tokens`) | `inputTokens` |
+| `^(output\|completion).*token` (covers `outputTokens` / `output_tokens`) | `outputTokens` |
+| `cache.*read.*token` (covers `cacheReadTokens` / `cache_read_tokens`) | `cacheReadTokens` |
+| `cache.*write.*token` (covers `cacheWriteTokens` / `cache_write_tokens`) | `cacheWriteTokens` |
+| `(reasoning\|thinking).*token` (covers `reasoningTokens` / `reasoning_tokens`) | `reasoningTokens` |
 | `totalTokens` or `total_tokens` | `totalTokens` (used or ignored depending on how many component patterns matched — see "Total caliber" below) |
 | `stepIndices` or `step_indices` | `stepIndices` (used for best-effort turn inference) |
 | `apiProvider` or `api_provider` | model fallback when no higher-priority model field is present |
 
-Model field is selected from explicit `model`-named keys first, with `apiProvider` as a lower-priority fallback (so unrelated strings such as timestamps are not misread as the model name). Values prefixed with `MODEL_PLACEHOLDER_` are dropped.
+Matching is `regularExpression` `range(of:)` (substring semantics, **no** trailing
+anchor) on the lowercased key, so the same pattern serves camelCase and
+snake_case. Only non-negative integers count; a match is recorded even when the
+value is `0` (field present = matched — see "Total caliber").
 
-Events with no token fields at all (just a timestamp + model) are skipped — they don't contribute to the aggregate.
+Per token category the parser keeps the **maximum** value found anywhere in the
+tree instead of summing layers: several RPC versions repeat the same counters in
+the wrapper and in a nested usage object, and one generator-metadata entry is a
+single LLM call, so summing would double-count. Recursion is depth-capped at 32.
+
+**Timestamp** candidates are a strict key whitelist, ranked by semantics (so
+`duration` / `latency` / `time_to_first_token` never participate) and then by
+nesting depth: `timestamp` / `timestampMs` / `timestampSeconds` (0) >
+`eventTimestamp` (1) > `createdAt` (2) > `created` (3) > `time` (4). Epoch numbers
+above 20 000 000 000 are read as milliseconds, and every candidate date must fall
+in `[2000-01-01, 2100-01-01)`.
+
+Model candidates are ranked the same way — key semantics first, nesting depth
+second, so `metadata.chatModel.model` beats an outer descriptive field:
+`model` (0) > `response_model` (1) > `model_name` (2) > any other key containing
+`model` (3) > `apiProvider` (4). Values prefixed with `MODEL_PLACEHOLDER_` are
+dropped (so unrelated strings such as placeholders are not misread as the model
+name); remaining ties at the same priority and depth break lexicographically, so
+JSON field order never decides.
+
+Events with no token data at all (just a timestamp + model) are skipped — the
+guard is `finalTotal > 0 || cacheWriteTokens > 0`, so an entry carrying only
+cache-write bookkeeping still counts while a pure metadata entry does not.
 
 **Total caliber.** `cacheWrite` is bookkeeping and never counts toward the exposed
 total. Some RPC versions fold it into `totalTokens`, so the server value cannot be
@@ -642,9 +692,10 @@ rollover use dirty/offset mode after startup. The settings page exposes a separa
 hard-full action for rebuilding every non-empty session through RPC when the cache is suspect.
 The watcher is
 stopped for the scan and rebuilt by this scanner after it settles.
-It scans both supported conversation directories, accepts `.db` and `.pb` session files,
-compares file metadata (mtime/size plus WAL mtime/size for `.db`) against a cached index,
-and re-fetches only dirty sessions via `GetCascadeTrajectoryGeneratorMetadata`. Token
+It scans the (single) supported conversation directory, accepts `.db` and `.pb`
+session files, compares file metadata (mtime/size plus WAL mtime/size for `.db`)
+against a cached index, and re-fetches only dirty sessions via
+`GetCascadeTrajectoryGeneratorMetadata`. Token
 values always come from RPC; for SQLite events that lack a timestamp, the scanner reads
 only the matching step metadata timestamp as a fallback.
 
@@ -661,12 +712,19 @@ only the matching step metadata timestamp as a fallback.
 └── antigravity.json                        ← top-level state and per-session cache (fast load)
 ```
 
+The one write the scanner still performs inside the client directory is a cleanup
+of the pre-v4 leftovers: v3 used to write per-session `rpc-cache/v1/<session>/`
+JSONL under `~/.gemini/antigravity/.token-monitor`, which the root migration to
+`token-monitor/` never carried over. `ensureCacheDirectoriesExist` deletes that
+tree idempotently on every scan (a failure is logged, never fatal).
+
 `index.json` schema:
 
 ```json
 {
   "version": 7,
   "lastScannedAt": "2026-07-15T02:00:00Z",
+  "calendarSignature": "gregorian|Asia/Shanghai",
   "sessions": {
     "41272769-fe7d-4802-a174-b5b28b526ade": {
       "mtimeMs": 1752542400000.0,
@@ -693,6 +751,15 @@ only the matching step metadata timestamp as a fallback.
 }
 ```
 
+`calendarSignature` (`LocalUsageCalendarSignature.make`: `calendar.identifier|timeZone.identifier`)
+is optional and gates the cold rebuild: a signature that no longer matches the
+current calendar forces an offset=0 full plan for every readable session, and a
+cold start refuses to restore cached day buckets while it differs. The remaining
+optional top-level maps (`emptyFullStrikesBySession`,
+`zeroAccountedFullStrikesBySession`, `offsetRegressionStrikesBySession`,
+`calendarRebuildPendingSessions`, `partialHitWarnedBySession`) are documented under
+"Bounded convergence" below.
+
 `dailyBySession` keeps each session's per-day token breakdown, while `samplesBySession` keeps recent per-event samples. A changed session replaces only its own entries; unchanged sessions remain cached. The source events are not persisted as JSONL — they are fetched again from RPC whenever the file fingerprint is dirty. Day buckets are retention-bounded: before each index write-back, buckets strictly older than the 8-day window (`dayStart < now - 8d`, the same predicate as `samplesBySession`) are pruned, along with sessions whose buckets are all pruned. The only consumers of day buckets are the today value and the 7-day window (`computeGlobalDaily` → `filterLast7Days`), and per-session `eventCount` lives in `sessions`, so pruning never changes any reported number.
 
 `consecutiveEmptySuffixes` (per session) and `emptyFullStrikesBySession` (top level) drive bounded convergence; both are optional and default to 0 / absent when absent — see "Bounded convergence" above. They exist purely for retry bookkeeping and never alter the accounting fields.
@@ -701,7 +768,7 @@ only the matching step metadata timestamp as a fallback.
 
 The scanner does heavy work in the background and is built for low-cost re-runs:
 
-1. **File + WAL fingerprint diff**: each scan starts with directory/resource metadata only. A `.db` session is re-fetched when its file mtime/size or WAL mtime/size changes; a `.pb` session uses its file mtime/size. Startup full is cache-assisted; only the explicit settings-page hard full bypasses this check for every non-empty session.
+1. **File + WAL fingerprint diff**: each scan starts with directory/resource metadata only. A `.db` session is re-fetched when its file mtime/size or WAL mtime/size changes; a `.pb` session uses its file mtime/size. Startup full is cache-assisted; only the explicit settings-page hard full bypasses this check for every non-empty session. Antigravity also leaves **0-byte placeholder cascades** whose mtime still moves during IDE housekeeping: those only get their fingerprint refreshed locally (no RPC) and re-enter the dirty set once the file/WAL actually grows.
 2. **Per-session incremental aggregation**: `index.dailyBySession` stores each session's day-keyed breakdown. When a session changes, only that session's cached entry is replaced — other sessions' entries are untouched.
 3. **In-flight dedup**: if `scan()` is called while a previous scan is still running, the new call is a no-op (the previous one will publish its result via `@Published`).
 4. **Off-main-thread I/O**: the scanner class is `@MainActor` for state mutation, while the heavy pipeline lives in `nonisolated static performScanPure(...)` and runs through the non-actor-isolated `LocalUsageScanRunner`. It inherits caller cancellation and only assigns the result back on MainActor.
@@ -709,7 +776,7 @@ The scanner does heavy work in the background and is built for low-cost re-runs:
    any batch containing full requests is limited to two. Results are reduced in small
    batches so parsed events from all sessions are not retained until the final RPC.
 6. **Failure is non-fatal, and bounded**: RPC failures don't update `index.sessions[id].mtimeMs` — the next scan naturally retries. Persistent non-successes are bounded: empty suffixes escalate to a verification full after 2 attempts and zero-metadata fulls converge after 3 strikes (see "Bounded convergence"), and converged sessions do not count toward `failedSessionCount`, which is surfaced in the result so the UI can show a warning.
-7. **In-flight / offline tolerance**: if every entry in `defaultConversationsDirs` doesn't exist (CLI-only or no IDE activity), `listDBFiles()` returns `[]` and the scan completes cleanly with `sessionCount: 0` — no exception.
+7. **In-flight / offline tolerance**: if every entry in `defaultConversationsDirs` doesn't exist (CLI-only or no IDE activity), `listDBFilesWithStatus()` returns an empty file set (explicitly-missing directory is not an error) and the scan completes cleanly with `sessionCount: 0` — no exception. Permission / TCC / transient I/O failures instead mark the listing `isComplete == false`: already-discovered sessions are still refreshed, but no session may be declared deleted and the calendar signature is held back.
 8. **Index parse failure recovery**: a corrupted `index.json` is logged + reset to `.empty` rather than failing the whole scan.
 9. **Pipeline serialization via `AsyncMutex` + `lastCommittedGeneration`**: 整个 `performScanPure` 包在 `try await pipelineMutex.withLock { ... }` 里, 旧 worker 跑完整个 pipeline 才让新 worker 开始. 配合 `lastCommittedGeneration` 守门, cancel+rescan 期间旧 worker 即使晚到 mutex, `startedGeneration < lastCommittedGeneration` 时也跳过 saveIndex, 杜绝 cache revert. **P1 invariant**: read + write-to-disk + update 全在 mutex 内 atomic (跨 @MainActor hop `await scanner.read.../write...` 持锁执行), 不能拆到 mutex 外. 详见 `spec/overview.md` "Scanner Concurrency" 段.
 10. **Generation 守门防 UI flicker**: `runScan` 用 `startedGeneration` 跟 `latestGeneration` 比对, 不一致就丢弃 in-memory result, defer 状态清理也按 generation 守门（`if startedGeneration == self.latestGeneration` 才清 isScanning / inFlightTask）. 防止 cancel+rescan 期间旧任务的 defer 把 UI 的"扫描中"状态清掉.
@@ -1008,58 +1075,70 @@ Card metadata:
 | `iconSystemName` | `paperplane.circle.fill` |
 | `accentColor` | `antigravity` |
 
-**Card title = `displayName`** ("Google Antigravity") with the tier shown as a small pill on the right, mirroring the `ChatGPT Plan` + `Team` pattern. The pill strips the `Google ` / `Antigravity ` prefix from `planLabel`, so `Google AI Pro` becomes `AI Pro`, `Antigravity Pro` becomes `Pro`, and bare names like `Free` pass through unchanged. When no tier is known the pill is suppressed (e.g. the user has just logged out and the next refresh hasn't run yet).
+**Card title = `displayName`** ("Google Antigravity") and nothing else — the tier
+pill was removed from the header row (2026-10 second UI pass) and now lives in the
+card's first section. The two text dimensions still carry non-overlapping
+information, just in different places:
 
-The two text dimensions carry non-overlapping information:
+- **Title** = provider brand (always present, header row, right side is the
+  refresh time / state capsule)
+- **Pill** = tier / plan identifier (when known, kept short, card section 1)
 
-- **Title** = provider brand (always present)
-- **Pill** = tier / plan identifier (when known, kept short)
+`planPillLabel` strips the `Google ` / `Antigravity ` prefix, so `Google AI Pro`
+becomes `AI Pro`, `Antigravity Pro` becomes `Pro`, and bare names like `Free` pass
+through unchanged.
 
-### Hover details (card title)
+### Account row (card section 1)
 
-A `HoverInfoRow` wraps the entire header. The detail panel shows:
+`QuotaWindowAccountInfoRow` is a **resident row** in the card's first section
+(`QuotaWindowAccountInfo.make` is the single visibility judge), followed by a thin
+separator. The old `AccountHoverView` panel — and with it the
+`Google Antigravity 账号` header, the "数据来源：本机 Antigravity / agy CLI 的
+language_server" note and the "未拿到账号邮箱（首次刷新后会显示）" placeholder — is
+gone; a hint that can never resolve is noise in a row that is always on screen.
 
-- Login email (from `GetUserStatus.userStatus.email`)
-- Plan name (tier, repeated for clarity when different from the card pill)
-- Source note: "数据来源：本机 Antigravity / agy CLI 的 language_server"
+The row shows:
 
-Panel header is `Google Antigravity 账号` for consistency with the card title.
+- Login email (`GetUserStatus.userStatus.email`), monospaced, single line with
+  tail truncation and the full text in `.help(...)`
+- The tier pill right after it, shortened by the same `planPillLabel` rule
 
-If email is missing, the panel shows a non-fatal "未拿到账号邮箱（首次刷新后会显示）" hint instead of an empty cell. Email text is `.textSelection(.enabled)` so users can copy it.
+Antigravity needs **either** field to draw the row; when both are missing (e.g.
+the user just logged out and the next refresh hasn't run) the whole row and its
+separator are skipped.
 
-### Footer line: today's token usage
+This card is also the home of the agy CLI's local usage: `agy`'s transcript frames
+carry `quotaProviderID = antigravity` (native mode, not routed through the
+`defaultBindings` matrix), so its 7-day usage lands in the same section beside the
+IDE RPC ledger — see `spec/providers/agy.md`.
 
-Below the two model quota rows, a small line shows today's usage:
+### Local usage (card section 3)
 
-```text
-📈 今天 5.2K in · 1.3K out · 800 cache · 200 reason
-```
+The card is a three-part stack: **1 Account Info** → **2「Plan详情」** (the two
+model bars + the quota-window usage block) → **3「最近7天token用量」**, with a card
+boundary replacing the old hover divider between quota (now) and local usage
+(history). Section 3 renders the `.detail` half of `LocalUsageFooterView`
+**inline** — there is no hover panel any more:
 
-Source: `AntigravityLocalUsage.today` (sum of all sessions' events whose timestamp is in today's local day).
+- legend `Input` / `Cache` / `Output` / `Reason`
+- 7 stacked bars, one per local day, ascending with today last
+- a numeric table: 日期 / R/T / Input / Cache / Output / Reason (plus 价值 when a
+  per-day price estimate exists)
+- freshness lives in the section title row (`dockSectionTitle`): 「最近7天token用量」
+  + `LocalUsageFreshnessBadge` ("更新于 HH:MM" from `scannedAt`, or 计算中… while
+  scanning)
 
-When the scanner hasn't completed yet (first scan in progress, or RPC failure), the footer shows a placeholder `今日用量：扫描中…` so the user knows data is coming.
+Source: `AntigravityLocalUsage.dailyTokenUsage` (always the last 7 local days,
+missing days back-filled), summed from every session's events whose timestamp
+falls in that local day.
 
-### Hover details (footer)
-
-A second `HoverInfoRow` wraps the footer line. The detail panel shows:
-
-- 7 stacked bar chart, one per local day for the last 7 days
-- Each bar stacked: input (blue) / cache (cyan) / output (green) / reason (orange)
-- Numeric table below: date / input / cache / output / reason
-- Footer: "更新于 HH:MM" (from `scannedAt`)
-
-```text
-最近 7 天 Token 用量                            更新于 02:00
-[Input] [Cache] [Output] [Reason]
-
-[bar chart, 7 columns]
-
-日期      Input   Cache   Output  Reason
-07-09     1.2K    300     500     100
-07-10     2.1K    500     800     150
-...
-07-15     5.2K    800     1.3K    200
-```
+Today's number has its own home now: it is the 「今」row of the 「额度分析」stats
+block in section 2 (`ProviderCardView.todayUsageRow`, same `AntigravityLocalUsage.today`
+source) — the standalone "📈 今天 …" footer line was removed together with the rest
+of the `.summary` part. `isReady` for Antigravity is simply "there is at least one
+day of data", so a partially accumulated week still renders the chart; before any
+data exists the section shows a placeholder (`正在扫描本地 token 用量…` while
+scanning, `本机未发现 Antigravity 会话数据` once the scan completed with 0 sessions).
 
 ### Quota rows
 
@@ -1070,32 +1149,51 @@ Current row tints:
 | `Gemini Models` | blue |
 | `Claude and GPT models` | orange |
 
-Both groups use a combined quota row:
+Both groups use a combined quota row: the metadata line is
+`<model name> … 5h <pct> 周 <pct> <reset time>` (name leading, both window
+readings plus the binding window's reset time clustered at the line end), and the
+bar is segmented by the group's weekly equivalent multiplier — 6 for
+`Gemini Models`, 1 for `Claude and GPT models` (2026-10: the Claude/GPT weekly
+window is 1 × the 5h allowance, down from 3). A 1-segment bar has no equivalent-
+weekly reading to draw, and its tooltip says 单一窗口可用进度 instead of
+"第 1 格为当前窗口余量；后续 N-1 格为等价周额度余量".
 
 ```text
-Google Antigravity              [AI Pro]                   01:44
-Gemini Models                                          5h × 6 = 周
-5h 100%  周 85%   [weekly bar in 6 segments]  <weekly reset time>
+Google Antigravity                                          01:44
+alice@example.com  [AI Pro]
+───────────────────────────── Plan详情
+Gemini Models                          5h 100%  周 85%   <weekly reset time>
+[weekly bar in 6 segments]
 
-Claude and GPT models                                  5h × 1 = 周
-5h 100%  周 100%  [weekly bar in 1 segment]   <weekly reset time>
+Claude and GPT models                  5h 100%  周 100%  <weekly reset time>
+[weekly bar in 1 segment]
 
-📈 今天 5.2K in · 1.3K out · 800 cache · 200 reason
+───────────────────────────── 最近7天token用量          更新于 02:00
+[Input] [Cache] [Output] [Reason] + 7-day stacked bars + usage table
 ```
+
+The status bar's center gauge uses the same multiplier as its single source of
+truth: `min(5h 剩余, 周剩余 × N)` (`ModelQuota.weeklyEquivalentMultiplier` →
+`aggregateActualAvailable`).
 
 ## Error Handling
 
 | Situation | Current behavior |
 |---|---|
-| `pgrep` finds no Antigravity `language_server` and no agy CLI | `网络错误：未发现 Antigravity 或 agy CLI 进程...` |
-| Processes found but none listen on localhost | `网络错误：发现 Antigravity 进程但未监听本地端口...` |
-| IDE candidate without `--csrf_token` | Silently rejected; later valid candidates still considered |
-| `lsof` fails | Wrapped in `网络错误：无法启动 lsof: <msg>` |
-| `RetrieveUserQuotaSummary` returns non-2xx | `HTTP <status>: <body preview>` |
-| `GetUserStatus` or `GetLoadCodeAssist` fail | Logged at warn level; tier / email degrade gracefully (fallback chain + nil email) |
-| `RetrieveUserQuotaSummary` JSON decode fails | `解析失败：Antigravity 响应解析失败: ...` |
+| `pgrep` finds no Antigravity `language_server` and no agy CLI | `网络错误：未发现 Antigravity 或 agy CLI 进程，请先启动 Antigravity 并完成登录` |
+| Processes found but none listen on localhost | `网络错误：发现 Antigravity 进程但未监听本地端口，请确认 Antigravity 或 CLI 已完成登录` |
+| IDE candidate without `--csrf_token` | Silently rejected (`isUsableProcessCandidate`); later valid candidates still considered |
+| `lsof` / `pgrep` exits non-zero or cannot be launched | `网络错误：lsof 失败: <stderr>` (or `网络错误：无法运行 Antigravity 进程` when the process can't be spawned at all) |
+| The discovered pid no longer owns the port before the POST | `网络错误：Antigravity 本地服务身份已变化（pid=…, port=…），请重试刷新` (`serverStillOwnsEndpoint`) |
+| `RetrieveUserQuotaSummary` returns non-2xx | `HTTP <status>: 响应 <N> bytes` (the body is summarized by size only, never echoed) |
+| `GetUserStatus` or `GetLoadCodeAssist` fail | Logged at warn level (`可选接口 <path> 失败，将使用兜底`); tier / email degrade gracefully (fallback chain + nil email) |
+| RPC response exceeds the byte cap | `响应过大（上限 N bytes）：<redacted path>` (`QuotaError.responseTooLarge`) |
+| `RetrieveUserQuotaSummary` JSON decode fails | `解析失败：Antigravity 响应无法解析，响应 <N> bytes` |
+| One quota group has an invalid / missing `remainingFraction` | That group is skipped with a warn; the other groups still render |
 | No quota groups survive parsing | `解析失败：Antigravity quota 响应里没有可用 bucket` |
-| Scanner: every entry in `defaultConversationsDirs` missing | Scan completes with `sessionCount: 0`; footer shows placeholder "今日用量：扫描中…" |
+| Local RPC returns 401 | Translated to `Antigravity 登录已失效，请重新启动 Antigravity 并完成登录` |
+| Scanner: every entry in `defaultConversationsDirs` missing | Scan completes with `sessionCount: 0`; the local-usage section shows the "本机未发现 Antigravity 会话数据" placeholder |
+| Scanner: conversations enumeration hit a permission / TCC / I/O error | `isComplete = false` → no session is declared deleted, the calendar signature does not advance, and the round counts as one failure |
 | Scanner: `GetCascadeTrajectoryGeneratorMetadata` fails for one session | `failedSessionCount` increments; the session is retried next scan (mtime preserved) |
 | Scanner: `index.json` corrupted | Logged at warn level + reset to `.empty`; next scan rebuilds from scratch |
 
@@ -1110,11 +1208,19 @@ Antigravity and Codex report cache reads using **incompatible semantic models**.
 `inputTokens` is **only the uncached input**. Tokens that were served from the cache are reported as `cacheReadTokens`, not as part of `inputTokens`. The two are separate buckets; their sum is the total input that the model "saw":
 
 ```swift
-// AntigravityLocalUsage.swift
-totalInput = inputTokens + cacheReadTokens
-cacheHitRate = cacheReadTokens / (inputTokens + cacheReadTokens)
-totalTokens = inputTokens + cacheReadTokens + outputTokens + reasoningTokens
-//                                     ^ cacheWriteTokens intentionally excluded
+// Models/TokenAccounting.swift — TokenAccountingCatalog.antigravity is
+// TokenAccountingDefinition(input: .uncachedOnly, output: .independent), so the
+// raw counters map to disjoint buckets without any per-provider arithmetic:
+let buckets = TokenAccountingCatalog.antigravity.normalizedBuckets(
+    rawInput: event.inputTokens,
+    cacheRead: event.cacheReadTokens,
+    rawOutput: event.outputTokens,
+    rawReasoning: event.reasoningTokens
+)
+buckets.cacheInclusiveInput   // = input + cacheRead（sample 层的兼容口径）
+buckets.totalTokens          // = input + cacheRead + output + reasoning
+//                             ^ cacheWriteTokens intentionally excluded
+// LocalDailyTokenUsage.cacheHitRate = cacheRead / (cacheRead + input)
 ```
 
 `cacheWriteTokens` is bookkeeping (writes to a future read cache) and is **never** part of `totalTokens`. Reasoning tokens may overlap with output tokens; both are reported independently.
@@ -1186,12 +1292,12 @@ After normalization, cross-provider sum, average, and chart rendering can treat 
 ## Recent Issues & Fixes (July 2026)
 
 ### 1. Multi-Workspace & Multi-Instance Port Discovery
-- **Issue**: When running multiple workspaces in `Antigravity IDE.app`, each workspace spawns its own isolated `language_server_macos_arm` process listening on a random port. Token usage metadata is kept in the memory of the specific process running that workspace. The previous implementation only queried the first process returned by `discoverServer()`, resulting in missing stats for other workspaces (returning 0 events).
-- **Fix**: Updated `AntigravityFetcher` to expose `discoverServers()` which lists all active local servers. `getTrajectoryMetadata` now tries querying all servers sequentially and returns the first non-empty events list. Added `silenceError: true` to `postOptional` to prevent mismatching servers from flooding log files with `trajectory not found` HTTP 500 warnings.
+- **Issue**: When running multiple workspaces, each spawns its own isolated `language_server` process listening on a random port, and token usage metadata lives in the memory of the process running that workspace. The original implementation only queried the first process returned by `discoverServer()`, so the other workspaces reported 0 events.
+- **Fix**: The metadata path now lists **all** usable servers (`defaultMetadataServers()` behind `discoverMetadataServers()`) and the scanner reuses that one snapshot for every dirty session. `getTrajectoryMetadata(sessionId:offset:servers:)` queries them in order and returns the first page with `metadataEntryCount > 0`; a server that doesn't own the cascade is skipped and logged at info level, so a mismatching server no longer floods the log with `trajectory not found` HTTP 500s. (The quota path intentionally still stops at the first server that exposes a port — `discoverServerAsync()`.)
 
 ### 2. Empty-RPC retention and cache migration
 - **Issue**: A session queried against the wrong workspace server, or a server that is not ready yet, can return an empty event list. Treating that response as a successful empty session would freeze the cache at zero.
-- **Fix**: Empty RPC responses are not trustworthy success: the scanner retains last-good daily/samples data, does not advance the file fingerprint, and retries on a later scan. Cache indexes from v5 and earlier are migrated to v6, their old per-event samples are cleared, and existing sessions are forced through the pure-RPC path once.
+- **Fix**: Empty RPC responses are not trustworthy success: the scanner retains last-good daily/samples data, does not advance the file fingerprint, and retries on a later scan — now bounded by the three-strike / two-strike convergence rules documented above. Cache indexes are migrated to **v7** (`loadIndex` accepts v2…v6); v5 and earlier additionally have their per-event samples cleared, and every existing session is forced through the pure-RPC path once because a missing `samplesBySession[id]` entry schedules an offset=0 full plan.
 
 ### 3. Pure-RPC Turn/Round approximation
 - **Issue**: The removed SQLite implementation could count `step_type=14/15` directly, but it did not work uniformly across `.db` and `.pb` formats and required reading the IDE's database files.
@@ -1213,3 +1319,5 @@ This script:
 2. extracts its CSRF token
 3. calls `RetrieveUserQuotaSummary`
 4. prints or writes the raw JSON
+
+> 核对基线：2026-10-04 · 代码 d6396fd

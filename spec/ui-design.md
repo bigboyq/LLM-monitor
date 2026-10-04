@@ -15,7 +15,7 @@ This spec documents the UI that is currently implemented in `Sources/LLM-monitor
 
 Current implementation:
 
-`MenuBarLabel` (defined in `Sources/LLM-monitor/Views/MenuBarLabel.swift`) renders a fixed `22x22pt` canvas. The configured symbol is drawn in a `20x20pt` area and dynamically reflects overall provider health and background refreshing status.
+`MenuBarLabel` (defined in `Sources/LLM-monitor/Views/MenuBarLabel.swift`) renders a fixed `22x22pt` canvas. SF Symbol styles and Icon Duo are drawn into a `20x20pt` box (canvas − 2pt); the `quotaLogo` design asset is drawn at `appIconDesignDrawSide` = **18pt**, centered. The symbol dynamically reflects overall provider health and background refreshing status.
 `AppState` publishes a stable one-minute clock value, so GLM/DeepSeek peak-window
 boundaries update even when no provider publishes a fresh network result. The clock is
 kept outside the `MenuBarExtra` label because embedding `TimelineView` there can trigger
@@ -33,12 +33,14 @@ Icon Styles (`statusBarIconStyle`):
 `llm-quota-730-2-dark.svg` design asset, and nothing about health, quota levels or
 custom colors changes it. The asset's canvas is not its artwork — the drawing occupies
 only ~59% of it, so drawing it canvas-true would put a ~12pt icon in the menu bar.
-`MenuBarLabel.appIconDesignContentRect` rasterizes it once at 256px, scans the alpha
-channel for the tight bounding box, and `fittedContentRect` maps that box into the same
-20pt frame the SF Symbol styles use (aspect preserved, centered). The scan must call
-`CGContext.makeImage()` *after* drawing — it snapshots the context's current contents,
-so the reverse order yields a blank image, "no opaque pixels", and a silent fallback to
-the uncropped canvas. It used to be drawn at runtime by `QuotaLogoSVGBuilder` — an
+`MenuBarLabel.appIconDesignImage` rasterizes it once at 256px, scans the alpha
+channel for the tight bounding box and crops to it **at load time** (aspect preserved),
+so both consumers — the menu bar and the settings picker — get the artwork rather than
+the canvas. `MenuBarLabel.baseDrawRect` then centers it in an
+`appIconDesignDrawSide` (**18pt**) box; the SF Symbol and Icon Duo styles use a 20pt
+box (canvas − 2pt). The scan must call `CGContext.makeImage()` *after* drawing — it
+snapshots the context's current contents, so the reverse order yields a blank image, "no
+opaque pixels", and a silent fallback to the uncropped canvas. It used to be drawn at runtime by `QuotaLogoSVGBuilder` — an
 outer weekly ring plus an inner 5h ring growing counter-clockwise from 12 o'clock, with
 a water cup in the center whose height mapped the 5h minimum remaining and whose color
 followed `waterHealth`. At 20pt in the menu bar that drawing did not look like the
@@ -87,7 +89,7 @@ as critical regardless); no plan has any window at all → `nil` (gray, "not con
 is not "exhausted"). Ties keep the first plan encountered. The bottom dots and the card
 header dots are unaffected — they still cover every plan, so a spent plan stays red
 there. The notification pipeline is a separate concept: it keys off per-window remaining
-crossing a 1% threshold, so "plan A's 5-hour window ran out" and "the ring now shows plan
+crossing below **0.01%**, so "plan A's 5-hour window ran out" and "the ring now shows plan
 B" are complementary rather than contradictory.
 
 The base icon keeps the standard macOS foreground appearance. For standard SF Symbol
@@ -117,7 +119,10 @@ Health State Mapping:
 Runtime behavior:
 
 - menu window closes when it loses focus
-- menu window also closes 30 seconds after the mouse leaves it
+- menu window also closes after **30 seconds of no interaction** — the timer starts on
+  every `become key` and any mouse move / mouse down / scroll / key down inside the
+  window resets it (`MenuInactivityTimer`, the state machine is unit-tested with an
+  injected scheduler rather than a real 30s wait)
 - hover details are shown in a separate floating `NSPanel`
 - Antigravity process availability is discovered asynchronously and cached, so opening the menu does not synchronously run process inspection.
 
@@ -322,7 +327,9 @@ The menu footer contains:
 - `自启 ✓` / `自启 ✗` login item status indicator
 - refresh status (`更新于 HH:mm` / `下次 HH:mm` / `就绪`)
 - `设置` (opens native Settings window)
-- `节能` (1-click keep-awake in-memory toggle; overlay dot reflects tri-color sleep health)
+- `节能` (1-click keep-awake in-memory toggle; the icon flips `powersleep` →
+  `cup.and.saucer.fill` and the label to `防休眠` while it is on, and the overlay dot
+  reflects tri-color sleep health — immediately red when keep-awake is on)
 - `日志` (reveals `log.txt` in Finder)
 - `退出` (`NSApp.terminate`)
 
@@ -350,12 +357,16 @@ Outside-in, three layers at a 38pt diameter:
 
 | Layer | Meaning | Source |
 |---|---|---|
-| **Outer ring** | 5-hour (interval) window remaining | `intervalRemainingPercent`, **worst** model |
+| **Outer ring** | Effective 5h quota = per-model `min(5h remaining, weekly remaining × N)` via `aggregateActualAvailable` — the same caliber as the iconDuo centre fan / `aggregateHealthLevel` | **worst** model by that effective quota |
 | **Inner ring** | Weekly window remaining | `weeklyRemainingPercent`, **worst** model, **raw** (not multiplied by `weeklyEquivalentMultiplier` — the inner ring answers "how much weekly quota is left", and multiplying by the equivalence factor N would stop being that) |
-| **Centre** | Which Provider | `BrandLogoView(kind:size:)` at a fixed 12pt — the same real brand asset the menu cards use, sized to stay inside the inner ring's inner edge (inner ring is `0.72 × 38 = 27.4pt`, so its inner edge sits at a 12.2pt radius against the icon's 7pt half-width). The size is **passed into the view**, never framed from outside: see *Logo sizing is the view's job* below |
+| **Centre** | Which Provider | `BrandLogoView(kind:size:)` at a fixed 14pt (`EdgeDockGeometry.iconSize`) — the same real brand asset the menu cards use, sized to stay inside the inner ring's inner edge (inner ring is `0.72 × 38 = 27.4pt`, so its inner edge sits at a 12.2pt radius against the icon's 7pt half-width). The size is **passed into the view**, never framed from outside: see *Logo sizing is the view's job* below |
 
 Each ring's length is the **minimum** across the provider's models that have that
-window. This deliberately diverges from the iconDuo arcs, which use the mean: the
+window — and the outer ring reads the **effective 5h quota** above, not the raw 5h
+percentage: a weekly budget that is tighter than the 5h window once the equivalent
+multiplier is applied shrinks the outer ring with it (antigravity's Claude/GPT group
+at N = 1 is the typical case). The inner ring keeps the **raw** weekly remaining.
+This deliberately diverges from the iconDuo arcs, which use the mean: the
 iconDuo is a single icon aggregating *all* providers and has no per-provider
 option, whereas an edge dock circle *is* one provider and must answer "is this one
 about to run out". Length and colour therefore agree — both worst-case — instead of
@@ -368,23 +379,28 @@ stops short of being thinner because the inner ring's diameter is only `0.72 ×`
 outer one, and a much thinner stroke turns its 1.8pt-radius band into a grey smear.
 
 **The two rings may be coloured independently** (`config.independentRingColors`,
-on by default). On: the outer ring takes the colour of the **5-hour window alone**
-and the inner ring the colour of the **weekly window alone**, each through
+on by default). On: the outer ring takes the colour of the **effective 5h quota** —
+the same bottleneck model its arc length comes from — and the inner ring the colour
+of the **weekly window alone**, each through
 `ModelQuota.colorLevel(percent:timeFraction:)` — the same thresholds the segmented
 bar uses. The weekly ring therefore passes `weeklyTimeRemainingFraction(at:)` and
 gets the *time-aware* yellow line (`min(time%, 50)`): a weekly budget that is
-half spent with a day left is a warning, with six days left it is not. The 5-hour
-ring passes `timeFraction: nil` and gets the fixed 30% line — the dynamic line is
-a long-window rule, and a window that resets every five hours has no meaningful
-"fraction of the window remaining" to tighten it. Both take the **worst** model in
-that window, matching how their lengths are computed, so length and colour never
+half spent with a day left is a warning, with six days left it is not. The outer
+ring's time fraction **follows the binding window**: when the 5h window is the
+bottleneck it passes `timeFraction: nil` and gets the fixed 30% line — the dynamic
+line is a long-window rule, and a window that resets every five hours has no
+meaningful "fraction of the window remaining" to tighten it — but when the weekly
+window binds (weekly × N tighter than 5h remaining) it passes the weekly time
+fraction and gets the same dynamic line, matching `aggregateHealthLevel`. Both take
+the **worst** model — for the outer ring the one with the lowest effective quota —
+matching how their lengths are computed, so length and colour never
 point at different bottlenecks. Off: both rings take the provider's aggregate
 `health` instead. The centre logo and the quota number stay neutral in both modes —
 they identify, they do not report.
 
-The compact single ring is coloured by the 5-hour window too, with the same weekly
-fallback its *arc length* uses, so a weekly-only provider never shows a weekly arc
-in the 5-hour window's colour.
+The compact single ring is coloured by the effective 5h quota too, with the same
+weekly fallback its *arc length* uses, so a weekly-only provider never shows a
+weekly arc in the 5h ring's colour.
 
 A provider with only one of the two windows draws just that ring; a provider with
 neither (balance-only DeepSeek, or no successful fetch yet) draws a dimmed full ring
@@ -401,10 +417,18 @@ screen edge; a rounded corner there opens a sliver of desktop between screen and
 window and the backplate starts to read as a capsule floating above the screen.
 Square corners let it join the screen edge into one continuous line.
 
-Each row is **ring + persistent quota number** (5h first, weekly as fallback, `—`
-when neither exists). The number is the only readable information without
-hovering, so it is the 5h window: that is what changes fastest and answers "can I
-still work right now".
+Each row is **ring + persistent quota number** (effective 5h first, weekly as
+fallback, `—` when neither exists). The number is the only readable information
+without hovering, so it is the 5h quota (effective: the same number the outer ring
+draws): that is what changes fastest and answers "can I
+still work right now". It stays a single value — the raw-vs-effective contrast
+lives only in the hover tooltip.
+
+There the 5h segment is dual-valued exactly when the weekly conversion binds
+(effective < raw 5h): `5h <raw>%(<effective>%有效)` (e.g. `5h 90%(30%有效)`, via
+`EdgeDockProjection.intervalCaption`) — the gap reads as a weekly bottleneck
+rather than the 5h window itself running dry; when effective == raw it stays a
+plain `5h 60%`.
 
 ### Row order is the configured provider order
 
@@ -462,7 +486,8 @@ Three consequences that are easy to get wrong:
   while the laid-out row is only `diameter` wide. Those are different purposes
   (hit target vs. content), so the test compares the stacking axis only.
 - **`rowCenter` returns the row centre, not the ring centre** — the row includes the
-  number, so they differ by 7pt. The popover aligns to the row.
+  number, so they differ by `(labelSpacing + labelHeight) / 2` = **8pt** (row height 54
+  vs. diameter 38). The popover aligns to the row.
 
 **Padding is orientation-independent.** The dock's backplate is a hard-edged shape, so a
 missing inset is immediately visible and never produces an error. `dockSize` adds
@@ -527,15 +552,15 @@ card title outside; other modes draw it inside). Everything below still describe
 
 | Host | `hoverRevealMode` | Behaviour |
 |---|---|---|
-| Main menu (its own hover rows) | `.onHover` (the default) | Independent `NSPanel` after a delay |
+| Main menu — the header's sleep-blockers notice (`SleepOffendersHoverView`) | `.onHover` (the default) | Independent `NSPanel` after a delay |
 | Provider card in the edge dock popover | `.alwaysVisible` | Resident layout; the quota / 7-day groups are split into two cards, see *Two cards, titles outside* |
 | Provider card in the menu's provider strip hover | `.alwaysVisible` (pinned) | identical to the dock card — same `NSPanel` mechanism, but a panel that ignores mouse events |
 
 The switch is an `Environment` value rather than a parameter threaded through each
-call site: there are a dozen `HoverInfoRow` uses across `ProviderCardView`,
-`QuotaViews` and `LocalUsageHoverViews`, and a parameter would mean remembering to
-update every one of them — a missed site silently keeps the old behaviour with no
-error anywhere.
+call site: even with only two live `HoverInfoRow` call sites left (the header notice and
+the provider strip — the card's own hover rows were deleted with the menu's provider
+cards), a parameter would mean remembering to update every one of them, and a missed
+site silently keeps the old behaviour with no error anywhere.
 
 The default is `.onHover` **on purpose**: it is the side that protects the main menu.
 Changing it would not crash or warn, it would just quietly turn the menu into a wall of
@@ -566,9 +591,12 @@ read outside `ProviderCardView` (in `QuotaViews` / `QuotaHoverViews`):
 | `splitsRoundsRow` | `prompts: 42 (128 rounds)` | **`prompts:` with `rounds:` on the next line** | the three-column layout that forced it is gone; the row that still renders it in the popover is full width, where one number per line still reads better than a merged one |
 
 The quota windows' side-by-side layout is no longer a rule at all: it had no reachable
-consumer (`QuotaWindowsHoverView` / `QuotaUsageWindowsHoverView` are only built from the
-model rows' menu layout, which the popover no longer uses), so the predicate was deleted
-and the two columns are now unconditional.
+consumer, and the whole `QuotaWindowsHoverView` family
+(`QuotaWindowsHoverView` / `QuotaUsageWindowsHoverView` / `QuotaUsageWindowColumn` /
+`SingleQuotaWindowHoverView` / `HoverMetricLine` / `QuotaWindowsHoverPresentation`) was
+**deleted** along with the only path that constructed it — the model rows' `menuLayout`,
+which is itself gone. `QuotaHoverViews.swift` now holds only
+`UsageMetricHoverSummaryView`, whose one live in-card host is GLM's off-peak footnote.
 
 Four more rules were deleted together with the menu's provider cards, because **all**
 of their consumers lived in `ProviderCardView.swift` and belonged to the deleted menu
@@ -622,18 +650,20 @@ are deliberately **absent**:
   predicates, and four equally-weighted words hide that. It truncates
   (`layoutPriority(-1)`, tail) when the line runs out of room — the percentages are
   fixed-width and the reset time is pinned right, so the name is the only thing that
-  can give way. The menu passes an empty name: `QuotaWindowTitle` already labels
-  that row, and repeating it there would be noise.
+  can give way. The metadata line keeps a `name` defaulting to `""` so a host that
+  already labels the row elsewhere can omit it; today every call site passes
+  `model.displayName` (the menu host that used to pass the empty string is gone).
 
 **No `QuotaDetailColumns`.** The popover used to show *Last Prompt | 5h | weekly*
 as three equal columns under each bar. They are gone: all three report local token
 usage from the same local session scan, which card 2 already shows in full
 (`最近7天token用量` + its usage table), so the popover was saying the same thing
 twice and burying the one thing that answers "how much is left" under three blocks
-of numbers. The detail is not lost — it is one hover away in the menu, where
-`LastPromptHoverSummaryView` and `QuotaUsageWindowColumn` are still the menu's
-hover panels. `ModelQuotaDockBlock` therefore has no `columns` parameter at all:
-the omission is structural, not a flag someone can flip.
+of numbers. Their hover carriers (`LastPromptHoverSummaryView`,
+`QuotaUsageWindowColumn`, `QuotaWindowsHoverView`) were deleted with the menu's
+provider cards, so the detail is not one hover away anywhere — card 2's 7-day table
+is now its only home. `ModelQuotaDockBlock` therefore has no `columns` parameter at
+all: the omission is structural, not a flag someone can flip.
 
 The divider stays, but it moved **up** to the card layer: it used to sit at the end of
 each model block, separating the quota overview from those three columns. It now
@@ -657,13 +687,15 @@ line splits → **628pt** after dropping the bar label and the model-name row
 **650pt / 635pt / 617pt** through the two-section and two-card passes →
 **679pt** after the 13pt titles, 10/11pt body type and the reset/peak hoist →
 **505pt** after the three-column pass was dropped. Splitting cached and rounds
-onto their own lines really does cost ~37pt; that is the trade. Do **not** compare
-it against the menu card's height: that card is collapsed, so it measures ~120pt
-and "the popover is taller than the menu" is the intended behaviour, not a
-regression. The 550pt ceiling here is also a different number from
-`popoverHeightFraction` — that one bounds the panel against the screen, this one
-catches someone re-adding an always-expanded block. Do not copy one into the
-other.
+onto their own lines really does cost ~37pt; that is the trade. There is no shorter
+"menu card" to compare it against any more — the menu's collapsed provider card is
+gone, and both live hosts render this same resident layout. The **800pt** ceiling here is also a different number from
+`popoverHeightFraction` (0.95) — that one bounds the panel against the screen, this one
+catches someone re-adding an always-expanded block. Do not copy one into the other.
+There is a second, looser ceiling: the "fullest quota window section" fixture (reset
+credits + priced windows) is capped at **900pt** by
+`testDockDetailWithTheFullestQuotaWindowSectionStaysUnderTheSameCeiling`, which first
+asserts that the fixture really is taller than the light one.
 
 The first version had this inverted (`minY` + step, i.e. index 0 at the bottom) and
 the test that "verified" it was named `testCircleCenterMatchesRenderedLayout` while
@@ -969,12 +1001,12 @@ Data source and calibration:
   it alive would have shown a **second** copy of the list on the one host that can still
   receive hover (the main menu's own hover rows). Zero available credits is handled by
   the module rule above, so the list never needs an empty state of its own.
-- **Height ceiling.** `LayoutMetricsTests` still lays the card out for real and caps it at
-  **800pt** — `testDockDetailStaysUnderTheRearrangedCeiling` on the light fixture,
-  `testDockDetailWithTheFullestQuotaWindowSectionStaysUnderTheSameCeiling` with reset
-  credits + priced windows (the resident form's realistic worst case). Residency is what
-  makes the cap matter: nothing is hidden behind a hover any more, so the popover's
-  `ScrollView` fallback is the only overflow valve.
+- **Height ceiling.** `LayoutMetricsTests` still lays the card out for real — the light
+  fixture is capped at **800pt** (`testDockDetailStaysUnderTheRearrangedCeiling`), and
+  the reset-credits + priced-windows fixture (the resident form's realistic worst case)
+  at **900pt** (`testDockDetailWithTheFullestQuotaWindowSectionStaysUnderTheSameCeiling`).
+  Residency is what makes the cap matter: nothing is hidden behind a hover any more, so
+  the popover's `ScrollView` fallback is the only overflow valve.
 
 ### Dock modes (compact form)
 
@@ -1024,7 +1056,9 @@ and offset along with the bad value. The four modes:
   target) — a slider can produce most combinations, and all three tiers are checked
   against every one of them. The default is 小 because that is what the screen
   showed before the setting existed. No number label, no brand logo. The ring is the
-  **5h interval fraction**, falling back to the weekly fraction for providers with no
+  **effective 5h quota** (`min(5h remaining, weekly remaining × N)` via
+  `aggregateActualAvailable`, the same caliber as the full dock's outer ring and the
+  iconDuo centre fan), falling back to the raw weekly fraction for providers with no
   5h window (same precedence as the full dock's number label — a blank ring would
   silently drop information), dim track only when neither exists.
 - **Expand** (`autoHideWindow` only) — cursor within the usual 12pt proximity of the
@@ -1291,13 +1325,16 @@ footers, and metadata, `body` for row labels, and `footnote` for inline status m
 
 ### Per-provider 「立即刷新」 (single-provider refresh)
 
-Every **enabled** provider pane carries one small 「立即刷新」 row inside its
+Every provider pane (five: minimax, chatgpt, antigravity, glm, deepseek) carries one
+small 「立即刷新」 row inside its
 「认证与刷新」 section (Antigravity is the exception on placement: it has no auth
 block, so the row sits in 「刷新频率」 instead). It is a `SettingsControlRow` with a
 borderless `arrow.clockwise` button and the tooltip 「立即刷新该 Provider」, built by the
 shared `providerRefreshButton(for:)` so the five panes are one line each. The button is
 rendered only for a provider that has a registered descriptor — an unregistered kind
-has no id to refresh, so there is nothing to route to.
+has no id to refresh, so there is nothing to route to. The pane's enabled/disabled
+toggle does **not** gate it: a disabled provider is exactly the one a user wants to
+retry.
 
 It routes to `AppState.refreshOne(providerID:)`, the **same chain** as the menu's
 provider-strip right-click item (see *Provider fallback strip*): one provider's request,
@@ -1316,6 +1353,31 @@ holds the routing and the disable decision, because a SwiftUI `Button` has no
 addressable seam — the tests pin the action, the view only draws it. The greyed-out
 first layer is UX, not correctness: repeated clicks are absorbed by `refreshOne`'s
 transaction gate.
+
+### 客户端 (Clients) pane
+
+`SettingsView.clientsPane` (`SettingsClientsPane.swift`) is the only pane that is not a
+provider pane. It has two halves:
+
+- A **client switch bar** — `ClientSegmentedControl`, an `NSViewRepresentable` over
+  `NSSegmentedControl`, wrapped in a horizontal `ScrollView`. The system control is
+  used instead of SwiftUI's segmented `Picker` for two measured reasons: the Picker does
+  not scroll and squeezes overflowed segments into ellipses (`MiniMax Code` truncates),
+  and it can only render `Text`, so a count badge cannot use a smaller secondary font.
+  Each segment is `title (N)` — the count in parentheses, because a bare `DSH 2` reads as
+  a version number; the full form goes in the tooltip (`标题 · N 个 Provider · 副标题`).
+  The tradeoff is explicit: no icons, since `NSSegmentedControl` cannot show an icon
+  beside a text label without giving up template tinting.
+- A **「已识别的 Provider」 section** — one `DisclosureGroup` per provider that actually
+  produced local token activity for the selected client, showing total tokens, cache hit
+  rate and the API-price estimate. The list is keyed by `.id(client.id)` so switching
+  clients rebuilds the column and the expansion state falls back to the computed default
+  (expanded only when the client has exactly one provider) instead of SwiftUI reusing
+  the previous client's expansion by position.
+
+The per-provider OpenCode merge switch is **not** in this pane (nor in the provider
+panes) — `clientBindings[]` in `config.json` is its only source of truth, so saving the
+form never rolls a hand-edited value back. See *OpenCode client bindings*.
 
 ## Header
 
@@ -1344,21 +1406,31 @@ If `state.statuses` is empty:
 
 Otherwise:
 
-- `LazyVStack(spacing: 14)`
-- horizontal padding 12pt
+- `ScrollView(.vertical, showsIndicators: false)` wrapping a **non-lazy** `VStack`
+  (`HarnessUsageMenuView.sectionSpacing` = 10pt). Non-lazy on purpose: the content
+  height feeds `MenuPanelHeightBridge` to decide the window height, and a lazy
+  container only lays out its visible region and would under-report it
+- horizontal padding `LayoutMetrics.cardColumnHorizontalPadding` (12pt)
 - vertical padding 8pt
-- one `ProviderCardView` per status
+- optionally the first-run setup guide (`MenuContentView.shouldShowSetupGuide`: every
+  enabled provider is `.notConfigured`)
+- `HarnessUsageMenuView` (global summary + per-client sections) and, as its last row,
+  `ProviderStatusStripView` — **not** a `ProviderCardView` per status
 
-Each card has a context menu:
+The two context menus that used to hang off each provider card now hang off narrower
+targets:
 
-| Menu item | Action |
-|---|---|
-| `立即刷新` | `state.refreshOne(providerID:)` |
-| `打开配置文件…` | `state.openConfigFile()` |
+| Target | Menu item | Action |
+|---|---|---|
+| Client section header (`HarnessSectionView`) | `立即刷新全部` | `AppState.refreshAll` (same entry point as the header refresh button) |
+| Client section header | `打开配置文件` | `state.openConfigFile()` |
+| Provider strip element | `刷新 <provider>` | `state.refreshOne(providerID:)` |
 
-When the menu appears, `MenuContentView.onAppear` logs all statuses. If any provider is `.ready`, it triggers `state.refreshAll()`.
+When the menu appears, `MenuContentView.onAppear` refreshes the login-item status and
+forces a sleep-health probe, and — if **any** provider is `.ready` — triggers
+`state.refreshAll()`.
 
-`MenuWindowAutoCloseBridge` attaches native tracking and notification observers so the menu can auto-close on focus loss or delayed mouse exit.
+`MenuWindowAutoCloseBridge` attaches native tracking and notification observers so the menu can auto-close on focus loss or 30s of inactivity; it also snaps the window's top edge to `screen.visibleFrame.maxY + 10` (`MenuWindowAlignment.topOffset`), absorbing the system popover's top margin so the panel sits flush with the menu bar.
 
 ## Launch At Login (Settings Window)
 
@@ -1401,6 +1473,7 @@ Right actions:
 | Button | Icon | Action |
 |---|---|---|
 | `设置` | `gearshape` | open the graphical Settings window |
+| `节能` / `防休眠` | `powersleep` / `cup.and.saucer.fill` | `state.sleepHealth.setKeepAwake(_:)` — one click, in memory, no `IOPMAssertion` written to disk; the tri-colour health dot turns red while keep-awake is on |
 | `日志` | `doc.text.magnifyingglass` | reveal `log.txt` in Finder |
 | `退出` | `xmark.circle` | `NSApp.terminate(nil)` |
 
@@ -1430,32 +1503,41 @@ appearance-neutral.
 菜单内容区是客户端视角，不再渲染 provider 卡，因此这张卡没有"菜单形态"了。
 
 `ProviderCardView` 是 thin coordinator，额度行、浮层、图表和账号详情按职责分文件维护：
-- `QuotaViews.swift` — 所有 quota 行 / 进度条 / `EquivalentQuotaAllocation`
-- `HoverPanel.swift` (306 行) — `HoverInfoRow` / `HoverPanelController` / 浮层管理
+- `QuotaViews.swift` — 所有 quota 行 / 进度条 / 重置卡 / `EquivalentQuotaAllocation`
+- `QuotaWindowUsageViews.swift` — 「额度窗口用量」区块（三个模块的表与格）
+- `LocalUsageHoverViews.swift` — 7 天本地用量卡与 `LocalUsageFreshnessBadge` / `LocalUsageFreshnessText`
+- `HoverPanel.swift` (363 行) — `HoverInfoRow` / `HoverPanelController` / 浮层管理
 - `TokenChart.swift` (40 行) — 7-day 柱图基础组件
-- `AntigravityAccountView.swift` (52 行) — Antigravity 账号 hover 详情
-
-具体视觉结构由 `QuotaViews.swift` 定义。
+- `QuotaHoverViews.swift` — 只剩 `UsageMetricHoverSummaryView`（额度窗口 hover 明细族已随 `menuLayout` 删除）
 
 Visual structure:
 
 ```text
 +-----------------------------------------------+
-| accent stripe | status dot  icon  display name |
-|               |                                |
-|               | state-specific content         |
+|  icon  display name              state capsule |
+|  [account row]                                 |
+|  Plan详情                                       |
+|    <model metadata line>                       |
+|    <progress bar>                              |
+|  额度分析 / 额度详情 / 重置卡详情               |
+|  -------------------------------------------  |
+|  最近7天token用量            <freshness pill>  |
+|  <chart + table>                               |
 +-----------------------------------------------+
 ```
+
+(The two `最近7天token用量` rows are the two card titles, each drawn **outside and
+above** its own card plate — see *Two cards, titles outside*.)
 
 Card styling:
 
 | Property | Value |
 |---|---|
-| Background | `Color.primary.opacity(0.04)` |
-| Border | accent color at 25% opacity, 1pt |
-| Corner radius | 10pt continuous |
-| Left stripe | 3pt wide rounded rectangle |
-| Inner padding | 12pt |
+| Background | `Color(NSColor.controlBackgroundColor).opacity(0.60)` — a system control底色, not a hand-picked translucent grey; the card is content, so it should not refract the host glass under it |
+| Border | accent color at 25% opacity, 1pt (`strokeBorder`) |
+| Corner radius | 12pt continuous |
+| Left stripe | **不存在** — 曾是 3pt 圆角竖条，随宿主材质方案一起撤掉了 |
+| Inner padding | `LayoutMetrics.cardContentPadding` (12pt) |
 
 Accent color mapping:
 
@@ -1464,7 +1546,7 @@ Accent color mapping:
 | `minimax` | purple |
 | `chatgpt` | green |
 | `antigravity` | blue |
-| `glm` | blue |
+| `glm` | `Color.glmBrand`（靛蓝，刻意区别于 Antigravity 的宝石蓝） |
 | `custom` | gray |
 | `deepseek` | cyan |
 
@@ -1480,8 +1562,8 @@ Row-level tint rules:
 | Element | Current behavior |
 |---|---|
 | Status dot | **不再画**。它紧挨着品牌图标，两个小圆读起来像"图标带了个绿点"，而同一行右侧的 `ProviderStateLabel` 已经把状态说清楚了。承载它的 `StatusIndicator` 视图已随之删除（那两处以它为参照的注释也改成了不依赖类型名的说法） |
-| Provider icon | bundled brand asset in an `18x18pt` frame; OpenAI follows the system foreground color and missing assets use a recognizable SF Symbol fallback |
-| Display name | 14pt bold |
+| Provider icon | `BrandLogoView(kind:)` at its `defaultSize` (18pt); ChatGPT and GLM assets render as **templates** (they follow `Color.primaryLabel`, so both appearances stay readable), the rest keep their own colours, and a missing asset falls back to a per-brand SF Symbol at 0.72 × size |
+| Display name | `MenuTypography.cardTitle` — **13pt bold**, `Color.primaryLabel`, single line, tail-truncated with a `.help` of the full name |
 | Plan tag | **已从标题行移除**（2026-10 第二轮改版）。套餐 pill 挪进卡片第一段「Account Info」行（`QuotaWindowAccountInfoRow`），与账号名同一行——账号是谁、什么级别是同一个问题的两半 |
 | State tag | compact `未配置` / `待更新` / `已更新` / `需重试` label; a spinner replaces it while loading. `未配置` (not `未启用`): `.notConfigured` covers a missing API key, missing external auth and missing login as well as a disabled provider, and `未启用` made an enabled-but-keyless provider read as switched off |
 | Account block hover | **已删除**。邮箱 / 数据来源原本按 provider 分三路包在标题行的 `HoverInfoRow` 里，只为菜单那张卡服务；菜单不再渲染 provider 卡，浮层又不吃鼠标事件，这个折叠区展不开，直接不画 |
@@ -1504,7 +1586,7 @@ Shown for missing config blocks, disabled providers, missing API keys, or missin
 ```text
 doc.badge.gearshape
 <reason>
-编辑 config.json 启用
+前往设置启用并配置
 ```
 
 Reasons currently produced by `AppState`:
@@ -1559,40 +1641,42 @@ Current behavior:
 - if the bottom does not fit, clamp to the screen visible frame
 - attach to the menu window via parent-child relationship
 
-This is currently used for:
+This is currently used for exactly two things:
 
-- ChatGPT Plan `Last Prompt`
-- ChatGPT Plan 合并的 `5h / 周` 本地用量
+- the header's **sleep-blockers notice** (`SleepOffendersHoverView`, the same rows as
+  Settings → Energy check 1) — hover-only, no click action
 - **the menu's provider fallback strip**: hovering one provider element shows the full
   `ProviderCardView(status:)` for that provider, at the dock popover's card width
   (`EdgeDockTheme.popoverWidth` − backdrop padding) and in its `.alwaysVisible` layout
   — the same card the dock shows, reached from the menu. Vertical fit is handled by
   `frameForPanel` clamping to the screen's visible frame; `LayoutMetricsTests` keeps
-  the resident card under an 800pt ceiling.
+  the resident card under an 800pt ceiling (900pt for the fullest fixture).
 
-(Reset credits used to ride a hover panel too; since the second-round pass the per-card
-list is resident inside the card, so that consumer is gone.)
+Everything else that used to hang off a hover panel is gone: the ChatGPT `Last Prompt`
+summary, the merged `5h / 周` local-usage column, the quota-window detail views and the
+per-card reset-credit list were all deleted with the menu's provider cards (reset credits
+first became resident in the second-round pass, the rest lost their only host). Do not
+look for a hover route to this data — the card carries it inline.
 
 ## Provider-Specific Card Details
 
 ### minimax
 
-- 大部分模型（`general` / `image` / `speech` / `music` / `tts` 等）把 5h 和周额度合成一条。标题右侧显示 `5h × 10 = 周`，周进度条按 10 个等价额度分段；hover 展开两个窗口的百分比与 reset 时间。
-- **`video` 模型走日窗口**：标题右侧显示 `日 × 7 = 周`，周进度条按 7 个等价额度分段（1 天 ≈ 1/7 周）。原因：minimax video 实际是日配额而不是 5h 配额，按 5h × 10 分段会误导。label 由 `QuotaSummary.primaryWindowLabel` 按 model 名判断。
+- 大部分模型（`general` / `image` / `speech` / `music` / `tts` 等）把 5h 和周额度合成一条，周进度条按 10 个等价额度分段（`ModelQuota.weeklyEquivalentMultiplier` = 10）。
+- **`video` 模型走日窗口**：周进度条按 7 个等价额度分段（1 天 ≈ 1/7 周）。原因：minimax video 实际是日配额而不是 5h 配额，按 5h × 10 分段会误导。label 由 `QuotaSummary.primaryWindowLabel` 按 model 名判断。
 
 ### ChatGPT Plan
 
-- The `ChatGPT Plan` row hovers to a `Last Prompt` summary.
-- 同时有 5h 和周额度时合并为一条，标题右侧显示 `5h × 6 = 周`；hover 先显示短周期的本地 usage，横线分隔后显示周 usage。接口只返回一个窗口时不显示倍率或虚构的第二窗口。
+- 同时有 5h 和周额度时合并为一条，周进度条按 6 个等价额度分段（`weeklyEquivalentMultiplier` = 6）；接口只返回一个窗口时走单窗口路径，不虚构第二窗口。
 - 账号行（第一段 Account Info）= 邮箱（`~/.codex/auth.json`）+ 套餐 pill（如 `Team`）；重置卡逐张清单常驻在「额度窗口用量」区块的重置卡模块里，不再挂 hover。
+- `Last Prompt` 摘要随菜单的 provider 卡一起删除，卡片里不再有这个入口；本地用量改由「额度分析 / 额度详情」两个模块与 7 天卡承担。
 
 ### Antigravity
 
 - 卡片标题 = `Google Antigravity`（provider 名），无 pill。
-- 账号行（第一段 Account Info）= 登录邮箱（来自 `GetUserStatus`）+ 套餐 pill（`planLabel` 去掉 `Google ` / `Antigravity ` 前缀，让 `Google AI Pro` → `AI Pro`，与它在 header 里时同一颗 pill 的文案）。
-  两者皆缺时整行不画；一行常驻，不再有 hover 账号浮层。
+- 账号行（第一段 Account Info）= 登录邮箱（来自 `GetUserStatus`）+ 套餐 pill（`planLabel` 去掉 `Google ` / `Antigravity ` 前缀，让 `Google AI Pro` → `AI Pro`）。两者皆缺时整行不画。这是一行**常驻**内容：菜单的 provider 卡删除前，邮箱与套餐曾按 provider 分三路包在标题行的 `HoverInfoRow` 浮层里；现在浮层 `ignoresMouseEvents = true`，那个折叠区展不开，所以直接画成常驻行——没有「重新进入 hover 浮层」这条路径了。
 - `Gemini Models` and `Claude and GPT models` are shown as separate model groups inside one provider card.
-- 两组都把 5h / 周收为一条：Gemini 使用 `5h × 6 = 周` 分段，Claude and GPT 使用 `5h × 1 = 周` 分段。
+- 两组都把 5h / 周收为一条：Gemini 按 6 个等价额度分段，Claude and GPT 按 1 个（`weeklyEquivalentMultiplier` = 6 / 1，周窗口即 1 × 5h 额度）。
 - The countdown text uses compact formatting such as `3小时41分后`.
 - The countdown follows the model tint unless quota is low enough to trigger warning or critical colors.
 
@@ -1600,9 +1684,10 @@ list is resident inside the card, so that consumer is gone.)
 
 - 卡片标题 = `GLM Coding Plan`（provider 名），无 pill。
 - 账号行（第一段 Account Info）= 仅套餐档位 pill（`data.level` 首字母大写：`lite` → `Lite` / `Pro` / `Max`）。GLM 走 API Key 登录、拿不到邮箱，但**仅等级也显示账号行**；拿不到等级时整行不画。
-- 单条 `GLM Coding Plan` 模型行（`QuotaInfo.displayName`，不再硬编码具体模型名）：智谱 Coding Plan 的 5h + 周积分是套餐共享池，合成一条展示，标题右侧显示 `5h × 5 = 周`（周积分 = 5 × 5h 积分：Lite 2000/10000、Pro 12000/60000、Max 28000/140000）。
+- 单条 `GLM Coding Plan` 模型行（`QuotaInfo.displayName`，不再硬编码具体模型名）：智谱 Coding Plan 的 5h + 周积分是套餐共享池，合成一条展示，周进度条按 5 个等价额度分段（`weeklyEquivalentMultiplier` = 5；周积分 = 5 × 5h 积分：Lite 2000/10000、Pro 12000/60000、Max 28000/140000）。
 - 数据来源：远程 `GET open.bigmodel.cn/api/monitor/usage/quota/limit`，Coding Plan Key 作裸 token 放 `Authorization`。鉴权失败（HTTP 200 + `code:1000`）在 parse 阶段捕获并映射成 401 语义。
-- **高峰期提示**：额度行下方一行，纯本地时区计算（与 API 无关）。颜色分 3 档：高峰期 🔥 红色 `高峰期 · 还剩 X`；非高峰期距高峰 < 1 小时 ❄️ 橙色、≥ 1 小时 ❄️ 绿色 `距高峰期 X · 非高峰 5 折`。默认 Mon–Fri 14–18（官方规则：高峰全价、非高峰 50% 折），窗口可在设置面板自定义。`TimelineView(.periodic(by: 60))` 让倒计时在菜单打开时每分钟刷新。
+- **高峰期提示**：额度行下方一行（`PeakIndicatorView` 外壳 + `GlmPeakIndicatorView` 的文案），纯本地时区计算（与 API 无关）。颜色分 3 档：高峰期 🔥 红色 `高峰期 · 还剩 X`；非高峰期距高峰 < 1 小时 ❄️ 橙色、≥ 1 小时 ❄️ 绿色 `距高峰期 X · 非高峰 5 折`。默认 Mon–Fri 14–18（官方规则：高峰全价、非高峰 50% 折），窗口可在设置面板自定义。倒计时读环境里的 `\.menuDisplayDate`——菜单那一秒一 tick 的共享时钟（`MenuDisplayClock`），菜单打开期间自动推进，不需要自己挂 `TimelineView`。
+- **活动套餐余额**（`GlmActivityPlanBalancesView`，仅在开启 `parseZcodeBalanceLog` 且有未过期 entitlement 时出现）：每条一行 `🎁 套餐名 94% (283M/300M) 08-31 09:00`，排在额度段之后、余额之前。
 - **OpenCode 数据合并**：`zhipuai-coding-plan` 绑定默认开启（`clientBindings[]`）。卡片底部展示 native ZCode 与 OpenCode 合并后的今日与最近 7 天 Input / Cache / Output / Reason 以及 R/T；绑定关闭后只显示 native ZCode local Scanner 数据。设置页没有该开关，调整方式见下节。
 
 ### OpenCode client bindings（无设置页开关）
@@ -1653,65 +1738,79 @@ this structure exists to prevent was exactly that, a missed `between` parameter.
 
 `QuotaSummary` contains:
 
-1. One `ModelRow` per `info.models`.
-2. A divider between model rows.
+1. One model block per `info.activeModels`, picked by three pure predicates:
+   `shouldUseChatGPTPlanRow` (ChatGPT + `chatgpt_plan`) → `ChatGPTPlanModelRow`,
+   `shouldUseDeepseekBalanceRow` (any DeepSeek model) → `DeepseekBalanceRow`, otherwise
+   `CombinedQuotaWindowRow`. Each wraps its bar in a `ModelQuotaDockBlock`.
+2. A `Divider().opacity(0.3)` between model blocks, none after the last one.
+3. The card-level `betweenBarAndColumns` on the **first** model only — and if the model
+   list is empty, it is drawn on its own, so the peak countdown can never vanish with
+   the `ForEach`.
 
 The current UI does not show a large primary remaining-number block. It prioritizes per-window reset timing. **Reset credits are no longer part of `QuotaSummary`** — since the 2026-10 second-round pass the collapsed row moved out of the progress bar's `between` slot (which now carries only the peak countdown) into the quota-window usage block's reset-credit module.
 
 ## Combined Quota Row
 
-Implemented in `ModelRow`.
+Implemented in `QuotaBarWithMetadata` (both the dual-window `CombinedQuotaMetadataLine` +
+`CombinedQuotaBar` path and the single-window `SingleQuotaMetadataLine` + `SingleQuotaBar` path).
 
 ```text
-<model display name>                         5h × <N> = 周
-5h <NN>%   周 <NN>%   [weekly progress, divided into N equivalent segments]  <weekly reset time>
+<model display name>  5h <NN>%  周 <NN>%        🕓 <reset date> (<countdown>)
+[weekly progress bar, divided into N equivalent segments]
 ```
+
+**The multiplier N is not written anywhere on screen.** It used to be a `5h × N = 周`
+caption in the title row (and a `周倍率：N` label); both are gone. N now only drives
+(a) the number of segments in the progress bar and (b) the `min(5h, weekly × N)`
+"actual available" caliber shared by the card's bar, the Icon Duo centre sector and the
+menu bar aggregation. The reader infers it from the bar's segmentation and from the
+tooltip below.
 
 Model name:
 
-- 11pt semibold
-- brand tint for the current provider/model group
+- 11pt semibold (`MenuTypography.modelTitle`)
+- `Color.primaryLabel`, tail-truncated; **not** the brand tint — see *字体统一规则* below
 
 Quota summary line:
 
 布局从「横向三段」改成「上下两行」：
-- **Line 1**：进度条（**占满整行**）
-- **Line 2**：`5h X%  周 Y%`（左） + `clock reset-date (suffix)`（右）
+- **Line 1**：元信息行（`model · 5h X% 周 Y%` + 右侧 `clock reset-date (suffix)`）——
+  先读说明再读图形，model 名就住在这行里（见 *Two cards, titles outside*）
+- **Line 2**：进度条（**占满整行**）
 
 | Part | Style |
 |---|---|
-| Progress bar | **整行宽**（跟随卡片内容宽度，即两个宿主共同的 **420pt**；不是旧主菜单的 312pt），8pt height。The first segment is `min(5h remaining, weekly remaining × N)`；若周额度尚有余量，下一格先显示 `(weekly remaining × N - 5h remaining) mod 1`，再显示整格周额度 |
-| Data column | 双窗口 `5h X%  周 Y%` 使用 `quotaCombinedDataColumnWidth` 固定 **152pt** 宽，单窗口使用 `quotaSingleDataColumnWidth` 固定 **80pt** 宽；两者均左对齐，让 reset time 从一致的 x 位置开始。内部 per-percent 框保持 "5h" 和 "周" 列对齐 |
+| Progress bar | **整行宽**（跟随卡片内容宽度，即两个宿主共同的 **420pt**；不是旧主菜单的 312pt），8pt height，上下各留 3pt。The first segment is `min(5h remaining, weekly remaining × N)`；若周额度尚有余量，下一格先显示 `(weekly remaining × N - 5h remaining) mod 1`，再显示整格周额度 |
+| Data column | 双窗口 `5h X%  周 Y%` 使用 `quotaCombinedDataColumnWidth` 固定 **152pt** 宽，单窗口使用 `quotaSingleDataColumnWidth` 固定 **80pt** 宽；两者均右对齐，让 reset time 从一致的 x 位置开始。内部 per-percent 框保持 "5h" 和 "周" 列对齐 |
 | Labels (`5h`, `周`) | 10pt semibold, secondary |
-| Percent | 10pt semibold monospaced digit，每个用 32pt 固定右对齐宽 |
+| Percent | 10pt semibold monospaced digit，每个用 40pt 固定右对齐宽 |
 | Clock icon | `clock.arrow.circlepath`, 10pt semibold |
-| Reset time | **从 data column 末尾紧跟其后**（不再用 Spacer 推右），跨行起始 x 一致。取 binding constraint 那一边的 reset：min(5h remaining, weekly remaining × N) 中较小那一边。如果 5h 较小，显示 5h reset；如果 wk × N 较小（5h 还有余量但 wk 撑死了），显示 wk reset——这种场景下 wk reset 才是用户真正等的时间。两边都缺数据时显示 `—`；hover 永远展示两个窗口的完整 reset |
+| Reset time | 紧跟在 data column 之后（不再用 Spacer 推右），跨行起始 x 一致。取 binding constraint 那一边的 reset：min(5h remaining, weekly remaining × N) 中较小那一边。如果 5h 较小，显示 5h reset；如果 wk × N 较小（5h 还有余量但 wk 撑死了），显示 wk reset——这种场景下 wk reset 才是用户真正等的时间（`EquivalentQuotaAllocation.bindingResetDate`）。两边都缺数据时显示 `—` |
 | Reset 剩余时间 | reset date 之后括号内挂一个紧凑倒计时，由 `Formatters.formatResetSuffix` 输出。阶梯压缩：3d+ → `Xd`；1d+ → `XdXh`；5h+ → `Xh`；1h+ → `XhXXm`；否则 `Xm`。边界 inclusive（>=），避免 1d → "24h"、5h → "5h00m" 这种单位丢失 |
 
 **字体统一规则**：
-- 标题行（model name / 重置卡数量）：11pt semibold，brand 颜色
-- 周倍率 caption：10pt medium monospaced，secondary（之前是 8pt tertiary 太小）
+- 标题行（model name / 重置卡数量）：11pt semibold
 - 数据行（percent / reset time）：10pt semibold
 
-按这样分级，避免字号跳跃（之前 8pt / 10pt / 11pt 混着用）。
+model name 与重置卡数量用 `Color.primaryLabel` 而不是品牌色——**品牌色只进进度条**
+（`SegmentedQuotaProgressBar.tint`）。一条彩色的文字躺在整行灰度数字中间会抢走整行的
+读法。
 
-The 周倍率 label（`周倍率：N`，标题右侧）expresses a provider-specific equivalent quota ratio, not a conversion of elapsed time. If reset time is missing, the line shows `—`.
+**Hover tooltip（`QuotaBarTooltip.text(segments:hasTriangle:)`，挂在进度条上，
+系统 `.help()`）**：
 
-**Hover tooltip 文案（解释视觉元素）**：
+```
+分段额度：
+第 1 格为当前窗口余量；后续 <N-1> 格为等价周额度余量。顶部 ▼ 标记周重置时间进度（左侧即将重置，右侧刚重置）
+```
 
-- **周倍率 N 文字**（标题右侧）:
-  - `周倍率：5（分段条按 1 段当前 5h + 4 段等价的周额度渲染）` — 让用户理解 N 段不是 5 段 / 6 段 / 10 段的随机数,而是"1 段当前窗口 + (N-1) 段周窗口"的几何关系
-- **分段条 hover**（系统 .help()）:
-  - `分段条: 第 1 格 = 当前 5h 剩余;后续 N-1 格 = 等价的周额度剩余。顶部 ▼ = 周 reset 进度（0 = 即将过期, 1 = 刚重置）`
-  - 5h-only 单窗口不画三角,tooltip 省略三角说明
-- **数据行 hover popover**（自定义 HoverInfoRow）:
-  - `主行 reset time 取 5h（5h 是 binding constraint,比周额度先耗尽）。顶部红三角 ▼ = 周 reset 进度,仅作时间标记`
-  - 跟分段条 tooltip 区分:这里明确说"红三角 = 周 reset 标记,主行 = 当前 binding constraint 的 reset"
-  - 周是 binding constraint 时: `主行 reset time 取周额度（5h 还有余量但周额度已先耗尽）。顶部红三角 ▼ = 周 reset 进度,与主行 reset 含义不同`
+单窗口（`N == 1`）换成「单一窗口可用进度」；`hasTriangle` 为 false 时（没有周重置
+时间可标）整句省略三角说明。
 
-> 设计原则:把"几何关系"（N 段 = 1 + N-1）、"时间标记 vs binding reset"（红三角 vs 主行）、
-> "两个窗口哪个先耗尽"（binding constraint）三类容易混淆的视觉/语义用 tooltip 说清。
-> 不增加新 UI 元素,只让用户能 hover 看到文字解释。
+> 设计原则:把"几何关系"（N 段 = 1 + N-1）和"时间标记 vs binding reset"（顶部 ▼ vs
+> 主行）两类容易混淆的视觉/语义用 tooltip 说清。**binding constraint 本身不再解释**
+> ——那两句 tooltip 曾挂在数据行的 `HoverInfoRow` 上，随菜单的 provider 卡一起删除，
+> 现在读者只能从"主行 reset 落在 5h 还是周"自己读出结论。
 
 ## Progress And Health Colors
 
@@ -1804,20 +1903,16 @@ tokens, not literals, so all three tiers hold their contrast in both appearances
 | `1` | `Color.warningTint` (systemOrange) |
 | `>= 2` | `Color.healthyTint` (systemGreen) |
 
-Rows are only shown for entries with `expiresAt != nil`.
+The per-card list (`ResetCreditsDetailList`) filters to `status == "available"` and sorts
+by expiry ascending (entries with no expiry last, then by id for stability), so the
+status-based dot colours the list used to switch on are **no longer needed**: every
+row that survives the filter is available, and its 5pt dot is unconditionally
+`Color.healthyTint`. An entry with no expiry is still listed, as 「过期时间未知」.
 
 ```text
-status dot  MM-dd HH:mm  约 <duration> 后
+●  2026-10-30 09:00  约 3 天 4 小时 后
+●  过期时间未知
 ```
-
-Entry status colors:
-
-| Status | Dot color |
-|---|---|
-| `available` | green |
-| `used` | secondary |
-| `expired` | red |
-| other | secondary |
 
 The UI intentionally hides reset-credit id, title, description, and grant time.
 
@@ -1825,15 +1920,19 @@ The UI intentionally hides reset-credit id, title, description, and grant time.
 
 | Element | Font |
 |---|---|
-| Header title | 13pt semibold |
-| Provider title | 14pt bold |
-| Provider icon | 14pt semibold |
-| Model name | 11pt semibold |
-| Reset label | 11pt semibold |
-| Reset percent | 11pt medium monospaced digit |
-| Reset relative time | 11pt semibold |
+| Header title (`MenuTypography.headerTitle`) | 13pt semibold |
+| Card / provider title (`MenuTypography.cardTitle`) | 13pt bold |
+| Provider icon | not text — the bundled brand asset at 18pt (`BrandLogoView.defaultSize`) |
+| Model name (`MenuTypography.modelTitle`) | 11pt semibold |
+| Window label `5h` / `周` (`MenuTypography.dataLabel`) | 10pt semibold |
+| Window percent (`MenuTypography.dataValue`) | 10pt semibold monospaced digit |
+| Reset time (`MenuTypography.resetDate`) | 10pt semibold monospaced digit |
+| Reset countdown suffix (`MenuTypography.timeSuffix`) | 10pt medium monospaced digit |
+| Plan pill (`MenuTypography.pill`) / state & count capsules (`MenuTypography.badge`) | 9pt semibold |
+| Quota-table body (`MenuTypography.metricValue`) | 10pt medium monospaced digit |
+| Table headers / module titles (`MenuTypography.metricLabel` / `QuotaModuleTitle`) | 10pt (semibold for module titles) |
 | Error message | 11pt |
-| Footer text/buttons | 9pt medium |
+| Footer text/buttons (`MenuTypography.footer`) | 9pt medium |
 
 The card's failure row is the one place in this table that is a **literal** 11pt rather
 than a `MenuTypography` role: the `errorMessage` role had no call site and was deleted
@@ -1850,3 +1949,5 @@ rather than left as an unused role. The rendered size is unchanged.
 ## UI Follow-Ups
 
 These are useful future changes if the app grows:
+
+> 核对基线：2026-10-04 · 代码 d6396fd

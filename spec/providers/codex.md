@@ -14,11 +14,13 @@ This provider reads the local Codex authentication file and calls ChatGPT backen
 | Token refresh | Not implemented; assumes Codex CLI/Desktop has already refreshed auth |
 | Main endpoint | `GET https://chatgpt.com/backend-api/wham/usage` |
 | Reset credits endpoint | `GET https://chatgpt.com/backend-api/wham/rate-limit-reset-credits` |
+| Timeout | 15 s (`HTTPTimeouts.overseas`)；响应体上限 8 MiB (`ResponseByteLimits.standardQuota`) |
 | Model rows | One synthetic model: `chatgpt_plan` |
 | Reset credits | Parsed and displayed when entries exist |
 | Plan label | Parsed from `id_token` JWT when available |
+| Account email | 解析自 `auth.json` 顶层 / `tokens.email`，缺失时回退 `id_token` JWT 的 `email` 或 `https://api.openai.com/profile.email`；与 `planLabel` 一起进卡内 Account Info 行 |
 | Local usage details | Aggregated from local Codex session logs |
-| Local pricing models | GPT-5.5, GPT-5.6 Sol, GPT-5.6 Terra, GPT-5.6 Luna, GPT-6 Astra, GPT-6 Sol, GPT-6 Luna |
+| Local pricing models | GPT-5.5, GPT-5.6 Sol, GPT-5.6 Terra, GPT-5.6 Luna, GPT-6.1 Sol, GPT-6 Sol, GPT-6 Luna, GPT-6 Astra |
 
 ## Config
 
@@ -81,9 +83,17 @@ Fields used by this app:
 |---|---|
 | `tokens.access_token` | Bearer token for API requests |
 | `tokens.account_id` | Optional `ChatGPT-Account-ID` header |
-| `tokens.id_token` | Optional JWT source for `chatgpt_plan_type` |
+| `tokens.id_token` | Optional JWT source for `chatgpt_plan_type` and `email` |
+| `email`（顶层）/ `tokens.email` | `accountEmail`（优先于 JWT 里的邮箱） |
 
 `refresh_token` is not used.
+
+The file is read through `FileHandle` in 64 KiB chunks with a hard cap of
+`CodexFetcher.maxAuthFileBytes` (1 MiB); over the cap the provider fails with
+`网络错误：Codex 认证文件过大` and logs neither the path nor the content. Read/parse
+errors never embed the full path or the underlying system error — they surface as
+`网络错误：无法读取 Codex 认证文件（auth.json）`, which keeps the username and any
+custom `authPath` directory out of the UI and the log.
 
 ## Request Headers
 
@@ -134,10 +144,27 @@ Current parser behavior:
 | `secondary_window.reset_at` | `weeklyResetsAt` |
 | `secondary_window.limit_window_seconds` | local weekly usage window start = `reset_at - seconds` |
 
-`reset_at` can be:
+Per-window validation in `parseWindow` (a window failing any of these is treated as
+absent, not as a healthy window):
 
-- ISO-8601 string
-- Unix timestamp number, treated as seconds
+- `used_percent` must be a real JSON number (booleans rejected via
+  `DateParser.isBoolean`), finite, and within `0...100`.
+- The window length comes from `limit_window_seconds`; when that key is absent the
+  parser falls back to `window_minutes` and converts (`× 60`, overflow-checked). Either
+  way the value must be a positive integer not exceeding
+  `CodexFetcher.maxUsageWindowSeconds` (366 days) — a 5 h window is `18000`, a weekly
+  window is `604800`. No length key at all leaves the length `nil`; consumers then
+  degrade safely (5 h / 7 d fallbacks) instead of synthesizing a boundary.
+
+`reset_at` is parsed by the shared `DateParser.parse`, so it can be:
+
+- ISO-8601 string, with or without fractional seconds
+- numeric string (`"1783234800"` / `"1783234800000"`)
+- Unix timestamp number — treated as seconds, except that `|value| > 1_000_000_000_000`
+  is treated as milliseconds
+
+Values outside `0001-01-01 … 9999-12-31` (or non-finite) return `nil`; the fetcher then
+passes `resetsAt = nil` through rather than fabricating a boundary.
 
 If `rate_limit` or its primary window is missing/invalid, parsing fails instead of fabricating a
 healthy quota. A missing or invalid secondary window maps to `weeklyStatus = .absent`; a valid
@@ -155,6 +182,7 @@ secondary window remains `.present` even when its remaining percentage is `0%`.
 | gpt-5.6-sol | 4.00 | 0.40 | 20.00 |
 | gpt-5.6-terra | 2.00 | 0.20 | 12.00 |
 | gpt-5.6-luna | 0.20 | 0.02 | 1.20 |
+| gpt-6.1-sol | 2.00 | 0.10 | 10.00 |
 | gpt-6-sol | 2.00 | 0.20 | 10.00 |
 | gpt-6-luna | 0.10 | 0.01 | 0.50 |
 | gpt-6-astra | 10.00 | 1.00 | 50.00 |
@@ -293,17 +321,24 @@ Codex local usage details are produced by `LocalUsageOrchestration.reconcile()` 
 Provider batch settles and no longer wait for a successful quota fetch:
 
 - The session scan runs whenever the codex home directory exists — resolved via config
-  `authPath` → `CODEX_HOME` → `~/.codex`, the same chain `CodexFetcher` uses. Readiness is
+  `authPath` → `CODEX_HOME` → `~/.codex`, the same chain `CodexFetcher` uses
+  (`CodexFetcher.codexHomeDirectory` / `checkClientReadiness("codex")`). Readiness is
   diagnostics-only; when a source disappears, one transition reconcile lets the scanner
   publish an empty snapshot and clear stale UI.
-- The first reconcile and each natural-day rollover are Full Scans. Later reconciles only
-  run when Codex's source-owned FSEvents watcher has marked the session roots dirty.
+- The scan is **not** gated on FSEvents dirtiness. Every reconcile pass runs it and lets the
+  window + source fingerprints decide whether anything was actually re-read; the
+  source-owned watcher (`LocalUsageSourceLifecycle` over `sessions` + `archived_sessions`)
+  only drives UI freshness (`.dirty` / `.clean`). This mirrors the other scanners: an
+  always-open session file can change mtime/size before any FSEvents event arrives, so a
+  dirty-gated scan would miss it.
+- Mode mapping: `.full` and `.dirty` may reuse the cache (`.full` even reuses the
+  per-file event cache), only `.hardFull` sets `forceFull` and re-parses every selected
+  file. Code equivalence: `forceFull: mode.bypassesProviderCache`.
 - Scan results produced before the first quota success can still be collected; the normal
   post-Provider reconcile enriches them when the 5h window is available.
 - Window summaries (`primary` / `secondary`) are derived from the reset times stored in the
   shared data layer (the most recent successful quota fetch). Before the first quota success
-  they are `nil`, and the scan still produces `dailyTokenUsage` (7 days), the recent samples,
-  and the Last Prompt row.
+  they are `nil`, and the scan still produces `dailyTokenUsage` (7 days) and the recent samples.
 - `applyCodexUsageDetails` enriches whatever quota info the data layer currently holds; the
   strict `fetchedAt` match is gone. After a quota refresh, the next loop-B tick re-derives the
   windows from the new reset times.
@@ -314,7 +349,10 @@ Codex 的 raw `inputTokens` 是包含 cache-read 的完整输入，`cachedInputT
 它们的原始字段语义保持不变。`LocalUsageDaily` adapter 只在统一层计算
 `Input = inputTokens - cachedInputTokens`，并单独保留 `Cache read`。Codex 的 output 和
 reasoning 是独立字段，直接映射为 `Output` / `Reason`。统一 total 与价格不包含
-`cacheWrite`（Codex 本身也不提供该字段）。完整矩阵见 [`spec/accounting.md`](../accounting.md)。
+`cacheWrite`（Codex 本身也不提供该字段）。Codex 侧 scanner 走
+`TokenAccountingCatalog.codex`（`input: .cacheInclusive` / `output: .independent`）把 raw
+计数归一化成四桶，再还原成 cache-inclusive 的 sample 落盘。完整矩阵见
+[`spec/accounting.md`](../accounting.md)。
 
 ### Architecture note
 
@@ -324,6 +362,13 @@ cache keyed by file path; there is no provider-owned incremental SQLite index wh
 could race during cancel-and-rescan. Cancellation checks at scan boundaries plus the shared local
 usage lifecycle/generation guard are therefore sufficient, and a separate `lastCommittedGeneration`
 layer or dedicated cancel-and-rescan persistence test would not describe the Codex data path.
+
+It does share the **downstream** half of the model: `QuotaInfo.codexUsageDetails` is turned
+into a `HarnessUsageFrame` by `UsageFrameExtractors.codexFrames`
+(`clientID = codex`, `quotaProviderID = openAI`, `namespace = .codex` — a passthrough
+namespace because the scanner already stamped `codex:` onto every promptID) and then goes
+through the same `UsageProjectionKernel` as the other clients. What Codex opts out of is
+only the generic `LocalUsageScannerBase` coordinator/cache layer.
 
 Since 2026-09-06 the in-memory cache also carries a per-file resume offset: while the app is
 running, a grown session file is re-parsed only from its last complete line (append-only
@@ -344,6 +389,18 @@ window (discarding older content is intentional). A natural EOF with an incomple
 is stable while the file is unchanged; its resume offset stays at the line start so an append
 can complete that line without duplicating events.
 
+`CodexLocalScanLimits.production` (single source of the numbers above):
+
+| Limit | Value |
+|---|---|
+| `maxSessionFiles` | 1,024 |
+| `maxEventsPerFile` | 10,000 |
+| `maxTotalParsedBytes` | 1 GiB (1,073,741,824) |
+| `maxJSONLLineBytes` | 8 MiB |
+| `readChunkBytes` | 1 MiB |
+| `maxEventCacheEntries` | 256 |
+| `maxRecentSamples` | 65,536 |
+
 The provider also computes local usage summaries from:
 
 - `~/.codex/sessions/**/*.jsonl`
@@ -352,18 +409,21 @@ The provider also computes local usage summaries from:
 The application uses the same local aggregation rules directly in
 `CodexLocalUsageScanner`:
 
-| UI hover | Time window | Aggregation |
+| Consumer | Time window | Aggregation |
 |---|---|---|
-| `5h` | `intervalResetsAt - 5h` to `intervalResetsAt` | prompts, rounds, input, cached, output, reasoning output |
-| `周` | `weeklyResetsAt - 7d` to `weeklyResetsAt` | same fields over the weekly window |
-| `ChatGPT Plan` row | latest completed prompt only | `Last Prompt` summary |
+| 5 h window (`primary`) | `intervalResetsAt - windowSeconds` to `intervalResetsAt` | prompts, rounds, input, cached, output, reasoning output |
+| weekly window (`secondary`) | `weeklyResetsAt - windowSeconds` to `weeklyResetsAt` | same fields over the weekly window |
+| 7-day chart (`dailyTokenUsage`) | local calendar days, today and the previous 6 | daily `turns` / `rounds` / token totals |
+| recent samples | whole scan | per-`token_count` `LocalTokenUsageSample` (cache-inclusive input, `codex:` promptID, `sourceProviderID = openai`), newest 65,536 kept |
+
+Window lengths are the parser's `limitWindowSeconds` (falling back to 5 h / 7 d when the
+API omits them), not the literal 5 h / 7 d.
 
 Rules:
 
 - `prompts` counts unique `task_started.turn_id` values inside the window
 - `rounds` counts matching `token_count` events
 - token totals sum `last_token_usage.*`
-- `Last Prompt` is the most recent `task_complete` turn plus all `token_count` events between its `task_started` and `task_complete`
 
 ## Reset Credits Endpoint
 
@@ -402,16 +462,30 @@ Current parser behavior:
 | `credits[].granted_at` | `ResetCreditEntry.grantedAt` |
 | `credits[].reset_type` | `ResetCreditEntry.resetType` |
 
-Date parsing accepts:
+Date parsing (shared `DateParser.parse`) accepts:
 
 - ISO-8601 with fractional seconds
 - ISO-8601 without fractional seconds
 - Unix seconds
 - Unix milliseconds
+- numeric strings in either unit
 
-If `credits` is missing, the provider returns an empty entries array. If `credits` is empty but `available_count > 0`, the parser synthesizes `available` entries so the UI can still show a remaining count.
+Bounds enforced by `CodexFetcher.maxResetCreditEntries` (1,000): `available_count` must be
+a strict non-negative integer in `0...1000`, `total_earned_count` a strict non-negative
+integer, and a `credits` array longer than 1,000 fails the sub-request. `available_count`
+absent → `serverAvailableCount = nil` and the UI counts `status == "available"` entries
+itself (`ResetCreditsInfo.availableCount`).
 
-Reset-credit fetch failure does not fail the provider refresh. The fetcher logs a warning and returns the quota model with `resetCredits = nil`.
+If `credits` is missing, the provider returns an empty entries array. If `credits` is
+empty — or simply carries fewer `available` entries than the server-reported
+`available_count` — the parser appends synthetic `available` entries (`id = synthetic-<i>`,
+no expiry/granted date) so the UI can still show a remaining count. A response that would
+push the entry list past 1,000 after that top-up is rejected instead of truncated.
+
+Reset-credit fetch failure does not fail the provider refresh. The fetcher logs a warning
+and returns the quota model with `resetCredits = nil`; `CodexFillingMissingMerger` then
+distinguishes "failed" (marks the row 可能过期) from "skipped by design" (keeps the
+previous value and its freshness untouched) based on the refresh mode.
 
 `fetchResetCredits` does not log raw response bodies (`includeBodyInError: false`); only summary count info is logged.
 
@@ -442,19 +516,24 @@ from the main `QuotaInfo.fetchedAt`:
   `lastAttemptFailed`, so the row shows "可能过期" immediately.
 - Recovery on the next successful `.full` clears the flag and updates `fetchedAt`.
 - As a safety net, the row also shows "可能过期" when the data age exceeds
-  `3 × (periodicFullEveryN × refreshInterval)` (default ≈ 5 h), meaning several periodic-full
-  cycles were missed. Normal operation never reaches this (data refreshes every ~100 min).
+  `max(3 × (periodicFullEveryN × refreshInterval), 15 min)` (default ≈ 5 h), meaning
+  several periodic-full cycles were missed. Normal operation never reaches this
+  (data refreshes every ~100 min). A value with no `fetchedAt` (pre-R3 cached data) is
+  not age-judged.
 
 ## QuotaInfo Mapping
 
-Successful fetch returns:
+Successful fetch returns (the fetcher itself always writes `codexUsageDetails: nil` —
+local usage details are attached later by the reconcile pass, see *Provider-batch
+reconciliation*):
 
 ```swift
 QuotaInfo(
     models: [ModelQuota(modelName: "chatgpt_plan", ...)],
     resetCredits: resetCredits,
     planLabel: planLabel,
-    codexUsageDetails: localUsageDetails,
+    accountEmail: auth.accountEmail,
+    codexUsageDetails: nil,
     fetchedAt: Date()
 )
 ```
@@ -505,32 +584,52 @@ Card metadata:
 | `iconSystemName` | `sparkles` |
 | `accentColor` | `chatgpt` mapped to green |
 
-Quota rows:
+Quota rows (`ChatGPTPlanModelRow`, dock-only render path):
 
 ```text
-ChatGPT Plan                              周倍率：6
-5h <remaining>%  周 <remaining>%  [weekly bar in 6 segments]  <weekly reset time>
+ChatGPT Plan   5小时 54%   周 36%   <binding reset time>
+[ 6-segment bar: cell 1 = 5h remaining, cells 2…6 = weekly remaining ]
 ```
 
-Hover details:
+- The two window labels come from `Formatters.codexWindowLabel(seconds:)` applied to the
+  parsed window length, not from hard-coded strings: `18000` renders as `5小时`, `604800`
+  as `周`, and a missing length falls back to `主额度`. Only the **bar** is segmented, into
+  `6` segments (`ChatGPTPlanModelRow.weeklyEquivalentMultiplier`, the same constant as
+  `ModelQuota.weeklyEquivalentMultiplier(.codexChatGpt)`); the multiplier is **not**
+  rendered as text anywhere — no `周倍率：N` label exists in `QuotaViews.swift` any more.
+  It only drives the segment count here and the status-bar
+  `min(5h, 周 × N)` aggregation (`ModelQuota.aggregateActualAvailable`).
+- The hover tooltip on the bar is `QuotaBarTooltip.text(segments:hasTriangle:)`:
+  `分段额度：第 1 格为当前窗口余量；后续 5 格为等价周额度余量。` plus the ▼ marker legend
+  when the weekly reset time is known.
 
-- Hover `ChatGPT Plan` row: `Last Prompt`
-- Hover the combined quota line: local short-window usage first, then a divider, then local weekly usage
+Window usage details: the local per-window metrics live in the card's 「额度窗口用量」
+section (`QuotaWindowUsageSection`), which for ChatGPT is fed by
+`ChatGPTPlanModelRow.windowUsages` — `codexUsageDetails.primary` / `.secondary` when
+present (already pre-aggregated from the same session samples, so they must **not** be
+re-added), with enabled OpenCode `openai` samples appended on top. The
+三列明细（Last Prompt / 5h / 周）row that used to sit under the bar was removed together
+with the menu-layout hover family, and the `lastPrompt` data chain (`LastPromptUsage` +
+scanner tracking) was removed with it.
 
 If `secondary_window` is absent (for example, a promotion temporarily removes the 5-hour
-limit), the app displays the single `primary_window` using its actual `limit_window_seconds` label
-and only aggregates local usage for that window. It does not synthesize a second window or apply
-the `周倍率：6` presentation.
+limit), the app displays the single `primary_window` using its actual `limit_window_seconds`
+label and only aggregates local usage for that window. It does not synthesize a second
+window, and the bar degrades to the single-window path (`SingleQuotaMetadataLine` +
+`SingleQuotaBar`, 1 segment).
 
-Reset credits, when present:
+Reset credits, when present, render as a collapsed row inside the card's
+「额度窗口用量」section (`CompactResetCreditsRow`, module 4 — it used to sit directly
+under the quota bar):
 
 ```text
-重置卡数量：<availableCount>
-最早过期：yyyy-MM-dd HH:mm
+重置卡数量：<availableCount>          可能过期 · 上次更新 HH:mm   <earliest expiry>
 ```
 
-The card title displays `planLabel` as a compact pill when the JWT provides one;
-the account hover also includes the full plan label.
+`planLabel` and `accountEmail` render as the card's Account Info row
+(`QuotaWindowAccountInfoRow`), not as a card-title pill: for `.codexChatGpt` either one
+alone is enough for the row to appear, and both empty hides the row entirely
+(`QuotaWindowAccountInfo.make`).
 
 ## Errors
 
@@ -538,16 +637,24 @@ The current fetcher uses shared `QuotaError` messages rather than provider-speci
 
 | Situation | Current error |
 |---|---|
-| `auth.json` unreadable | `网络错误：无法读取 <path>: <system error>` |
+| `auth.json` unreadable | `网络错误：无法读取 Codex 认证文件（auth.json）`（只带文件名，不带完整路径 / 底层错误） |
+| `auth.json` > 1 MiB | `网络错误：Codex 认证文件过大` |
 | `auth.json` invalid JSON | `解析失败：auth.json 不是合法 JSON` |
+| `auth.json` 顶层不是对象 | `解析失败：auth.json 顶层不是对象` |
 | missing `tokens` | `解析失败：auth.json 缺 tokens` |
 | missing `tokens.access_token` | `未配置 API Key` |
 | non-HTTP response | `响应格式无效` |
-| HTTP non-2xx | `HTTP <status>: <body preview>` |
+| response body > 8 MiB | `响应过大（上限 … bytes）：<脱敏 endpoint>` |
+| HTTP non-2xx | `HTTP <status>，响应 <N> bytes`（`includeBodyInError: false`，不回显 body） |
+| HTTP 401 | `Codex 登录已失效，请运行 codex login 后重试`（`QuotaError.userFacingDescription`） |
+| usage top level not an object | `解析失败：usage 顶层不是对象` |
+| `rate_limit` missing | `解析失败：usage 响应缺少 rate_limit` |
+| primary window missing/invalid | `解析失败：usage.rate_limit 缺少合法 primary_window` |
 | malformed usage JSON | `解析失败：usage 不是合法 JSON` |
-| malformed reset-credit JSON | warning only, quota still succeeds |
+| malformed / out-of-range reset-credit JSON | warning only, quota still succeeds |
 
-Potential improvement: map common HTTP codes to clearer actions, especially 401 requiring Codex re-login and 429 rate limiting.
+Remaining known gap: 429 rate limiting still surfaces the generic `HTTP 429，响应 … bytes`
+line rather than a "try again in N minutes" hint.
 
 ## Cross-Provider Cache Semantics (Codex vs Antigravity)
 
@@ -617,3 +724,5 @@ To compare or sum daily usage across both providers, normalize both into a singl
 | `rounds` | `rounds` |
 
 After normalization, cross-provider sum, average, and chart rendering can treat the two providers as a single data source.
+
+> 核对基线：2026-10-04 · 代码 d6396fd
