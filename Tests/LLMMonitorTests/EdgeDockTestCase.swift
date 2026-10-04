@@ -227,6 +227,7 @@ class EdgeDockTestCase: XCTestCase {
                 displayName: $0.uppercased(),
                 kind: .codexChatGpt,
                 intervalFraction: 0.5,
+                rawIntervalFraction: 0.5,
                 weeklyFraction: 0.8,
                 health: .healthy,
                 intervalHealth: .healthy,

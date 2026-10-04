@@ -4,8 +4,9 @@ import CoreGraphics
 /// 边缘状态窗里的单个圆。粒度 = **provider**，与菜单卡片 1:1。
 ///
 /// 双环结构（与 iconDuo 的左右弧同源，但按 provider 分开展示）：
-/// - **外环** = 5 小时（interval）窗口剩余比例
-/// - **内环** = 周（weekly）窗口剩余比例
+/// - **外环** = 5 小时（interval）**有效额度** = min(5h 剩余, 周剩余 × 周等效倍率 N)，
+///   与状态栏中心扇形同口径（见 `intervalFraction`）
+/// - **内环** = 周（weekly）窗口剩余比例（原始百分比，不乘倍率）
 /// - **中心** = Provider 品牌图标（`BrandLogoView`）
 struct EdgeDockEntry: Identifiable, Equatable, Sendable {
     /// `ProviderStatus.id`（providerID），跨刷新稳定。
@@ -14,9 +15,15 @@ struct EdgeDockEntry: Identifiable, Equatable, Sendable {
     /// 用于取品牌图标。`ProviderStatus.kind`。
     let kind: ProviderKind
 
-    /// 外环填充比例 `0...1`，5 小时窗口。
+    /// 外环填充比例 `0...1`，5 小时**有效额度**（min(5h 剩余, 周剩余 × 周等效倍率 N)，
+    /// 口径见 `EdgeDockProjection.intervalFraction`）。
     /// nil = 该 provider 没有 5 小时窗口（周窗口型 / 余额型）→ 该环不画弧。
     let intervalFraction: Double?
+
+    /// 原始 5h 窗口剩余比例（未与周折算取 min）。只喂 hover 文案：有效额度低于
+    /// 原始 5h 时，caption 把两个数并排亮出来（`5h 90%(30%有效)`），说明环为什么
+    /// 比 5h 剩余少——差额来自周瓶颈，不是 5h 本身见底。
+    let rawIntervalFraction: Double?
 
     /// 内环填充比例 `0...1`，周窗口。
     /// nil = 该 provider 没有周窗口（纯 5 小时型）→ 该环不画弧。
@@ -26,12 +33,13 @@ struct EdgeDockEntry: Identifiable, Equatable, Sendable {
     /// nil = 无数据，沿用菜单栏状态点语义（灰 ≠ 绿）。
     let health: HealthLevel?
 
-    /// **仅 5 小时窗口**的健康档位（该 provider 下所有含 5h 窗口的 model 里最差的一档）。
+    /// **仅 5 小时窗口**的健康档位，按 5h **有效额度**判定（瓶颈 model 的
+    /// `colorLevel(percent:bindingTimeFraction:)`，口径见 `intervalFraction`）。
     /// nil = 没有 5h 窗口。
     ///
     /// 与 `intervalFraction` 同口径、同过滤条件——两者都只看
-    /// `activeModels.filter(\.hasIntervalWindow)`，所以"有弧"与"有色"永远同步，
-    /// 不会出现外环画了弧却是中性灰。
+    /// `activeModels.filter(\.hasIntervalWindow)` 并取同一个有效额度最低的瓶颈，
+    /// 所以"有弧"与"有色"永远同步，不会出现外环画了弧却是中性灰。
     let intervalHealth: HealthLevel?
 
     /// **仅周窗口**的健康档位（同上，取最差档）。nil = 没有周窗口。
@@ -76,6 +84,7 @@ enum EdgeDockProjection {
                 displayName: status.displayName,
                 kind: status.kind,
                 intervalFraction: intervalFraction(status, at: now),
+                rawIntervalFraction: rawIntervalFraction(status),
                 weeklyFraction: weeklyFraction(status, at: now),
                 health: status.aggregateHealthLevel(at: now),
                 intervalHealth: intervalHealth(status, at: now),
@@ -84,12 +93,27 @@ enum EdgeDockProjection {
         }
     }
 
-    /// 5 小时窗口剩余比例：取该 provider 所有含 5h 窗口 model 的**最低**值。
+    /// 5 小时**有效额度**：逐 model 取 min(5h 剩余, 周剩余 × 周等效倍率 N)
+    /// （`ModelQuota.aggregateActualAvailable`），再取所有含 5h 窗口 model 里的最低值。
     ///
-    /// 与 iconDuo 弧线的"平均"口径有意不同：iconDuo 是**所有 provider 挤在一个图标里**，
-    /// 只能取聚合值；而边缘窗一个圆就是一个 provider，取最低值才回答得了
-    /// "这家是不是快用完了"。颜色也走同一条 `aggregateHealthLevel`，长度和颜色不打架。
+    /// 与状态栏中心扇形（`AppState.statusBarQuotaMetrics`）同一真源：周额度折算后
+    /// 可能比 5h 剩余更紧（典型：antigravity Claude/GPT 组 N=1，2026-10 从 3 下调），
+    /// 外环若直接读原始 5h 百分比就会高估可用额度——周更紧时外环随之收缩。
+    ///
+    /// 与 iconDuo 弧线的"平均"聚合口径有意不同：iconDuo 是**所有 provider 挤在一个
+    /// 图标里**，只能取聚合值；而边缘窗一个圆就是一个 provider，取最低值才回答得了
+    /// "这家是不是快用完了"。颜色与弧长共用同一个瓶颈（见 `intervalHealth`），
+    /// 长度和颜色不打架。nil 条件不变：没有任何含 5h 窗口的 model（周窗口型 / 余额型）。
     static func intervalFraction(_ status: ProviderStatus, at now: Date) -> Double? {
+        worstEffectiveReading(status, at: now).map { $0.percent / 100 }
+    }
+
+    /// 原始 5h 剩余比例（取所有含 5h 窗口 model 的最低值，不与周折算取 min）。
+    ///
+    /// 保留切换前的旧口径，**只喂 hover 文案**做对照（`intervalCaption`）：外环读
+    /// 有效额度之后，只亮有效值会让人误以为 5h 真的只剩这么多，把原始值并排给出
+    /// 才能看出差额来自周瓶颈。画环 / 取色 / 常驻数值一律不读它。
+    static func rawIntervalFraction(_ status: ProviderStatus) -> Double? {
         worstFraction(status.lastSuccess?.activeModels.filter(\.hasIntervalWindow)) {
             $0.intervalRemainingPercent
         }
@@ -99,7 +123,7 @@ enum EdgeDockProjection {
     ///
     /// 用**原始**剩余百分比，不乘 `weeklyEquivalentMultiplier` —— 内环表达的是
     /// "周额度本身还剩多少"，乘等效倍率会把它变成与 5h 同量纲的换算值，
-    /// 读出来就不再是周额度了（等效倍率只用于跨窗口的「实际可用」合成）。
+    /// 读出来就不再是周额度了（倍率只参与外环的 5h 有效额度合成，内环保持原始）。
     static func weeklyFraction(_ status: ProviderStatus, at now: Date) -> Double? {
         worstFraction(status.lastSuccess?.activeModels.filter(\.hasWeeklyWindow)) {
             $0.weeklyRemainingPercent
@@ -116,22 +140,36 @@ enum EdgeDockProjection {
         return worst / 100
     }
 
+    /// 「5h 有效额度」读数：逐 model 取 min(5h 剩余, 周剩余 × 周等效倍率 N)
+    /// （`aggregateActualAvailable`，与状态栏中心扇形 / `aggregateHealthLevel` 同一真源），
+    /// 再取该 provider 所有含 5h 窗口 model 里 percent 最低的一个。
+    /// 返回瓶颈 model 的 (percent, bindingTimeFraction)，弧长与颜色共用同一瓶颈。
+    private static func worstEffectiveReading(
+        _ status: ProviderStatus,
+        at now: Date
+    ) -> (percent: Double, bindingTimeFraction: Double?)? {
+        let models = status.lastSuccess?.activeModels.filter(\.hasIntervalWindow)
+        guard let models, !models.isEmpty else { return nil }
+        return models
+            .compactMap { $0.aggregateActualAvailable(providerKind: status.kind, at: now) }
+            .min(by: { $0.percent < $1.percent })
+    }
+
     // MARK: - 逐窗口色档
 
-    /// 5 小时窗口的健康档位：取该 provider 所有含 5h 窗口 model 里**最差**的一档。
+    /// 5 小时窗口的健康档位：与 `intervalFraction` 共用同一个瓶颈（5h **有效额度**
+    /// 最低的那个 model），颜色必须和弧长指向同一个瓶颈，否则会出现"最紧的那个
+    /// model 决定了弧长、另一个更闲的 model 决定了颜色"。
     ///
-    /// 与 `intervalFraction` 的"最低值"是同一个聚合口径：颜色必须和弧长指向同一个
-    /// 瓶颈，否则会出现"最紧的那个 model 决定了弧长、另一个更闲的 model 决定了颜色"。
-    ///
-    /// 阈值走 `ModelQuota.colorLevel`（与卡片分段条同一份），时间比例传 `nil`——
-    /// 即固定 30% 黄线。动态黄线（`min(time%, 50)`）是**长窗口**规则：5h 窗口
-    /// 本来就每 5 小时重置一次，"周还剩多少"对它没有意义。
+    /// 时间比例**随瓶颈窗口走**（`aggregateActualAvailable` 的 `bindingTimeFraction`）：
+    /// 瓶颈是 5h 短窗口时为 nil → 固定 30% 黄线（动态黄线 `min(time%, 50)` 是
+    /// **长窗口**规则：5h 窗口本来就每 5 小时重置一次，"周还剩多少"对它没有意义）；
+    /// 瓶颈是周窗口（周 × N 比 5h 更紧）时为周剩余时间比例 → 长窗口动态黄线，
+    /// 与 `aggregateHealthLevel` 同口径。
     static func intervalHealth(_ status: ProviderStatus, at now: Date) -> HealthLevel? {
-        worstHealth(
-            status.lastSuccess?.activeModels.filter(\.hasIntervalWindow),
-            percent: { $0.intervalRemainingPercent },
-            timeFraction: { _ in nil }
-        )
+        worstEffectiveReading(status, at: now).map {
+            ModelQuota.colorLevel(percent: $0.percent, timeFraction: $0.bindingTimeFraction)
+        }
     }
 
     /// 周窗口的健康档位：同样取最差档，阈值按**剩余时间**收紧
@@ -158,6 +196,17 @@ enum EdgeDockProjection {
         return models
             .map { ModelQuota.colorLevel(percent: percent($0), timeFraction: timeFraction($0)) }
             .min()
+    }
+
+    // MARK: - hover 文案
+
+    /// hover 文案的 5h 段：周折算不构成瓶颈（有效 == 原始）时维持单数值；
+    /// 有效 < 原始时并排显示两个数，先原始后有效（`5h 90%(30%有效)`）。
+    /// 逐 model 有效 ≤ 原始，各取 min 后仍 ≤，不会出现「括号里更大」的展示。
+    static func intervalCaption(effective: Double, raw: Double?) -> String {
+        let percent = { (fraction: Double) in "\(Int((fraction * 100).rounded()))%" }
+        guard let raw, raw > effective else { return "5h \(percent(effective))" }
+        return "5h \(percent(raw))(\(percent(effective))有效)"
     }
 
     // MARK: - 行矩形排序

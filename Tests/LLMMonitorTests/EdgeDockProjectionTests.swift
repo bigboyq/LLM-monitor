@@ -25,6 +25,12 @@ final class EdgeDockProjectionTests: EdgeDockTestCase {
         let entry = EdgeDockProjection.entries(from: [status])[0]
         XCTAssertEqual(entry.intervalFraction ?? -1, 0.40, accuracy: 0.0001)
         XCTAssertEqual(entry.weeklyFraction ?? -1, 0.85, accuracy: 0.0001)
+        // 周充裕（85% × N=6 封顶 100 ≥ 40）：raw == effective，hover 文案维持单数值。
+        XCTAssertEqual(entry.rawIntervalFraction ?? -1, 0.40, accuracy: 0.0001)
+        XCTAssertEqual(
+            entry.rawIntervalFraction, entry.intervalFraction,
+            "周不是瓶颈时原始值与有效额度一致"
+        )
         XCTAssertTrue(entry.hasAnyQuotaWindow)
     }
 
@@ -135,10 +141,129 @@ final class EdgeDockProjectionTests: EdgeDockTestCase {
         XCTAssertEqual(Set(ids).count, ids.count, "id 不重复")
     }
 
+    // MARK: - 外环 = 5h 有效额度（min(5h 剩余, 周剩余 × 周等效倍率 N)，与状态栏同口径）
+
+    /// 外环读 5h **有效额度**：codex 的周等效倍率 N = 6，周 10% 折算成 60%，
+    /// 比原始 5h 的 90% 更紧 → 外环画 60% 而不是 90%。同时钉住内环不吃倍率
+    /// （仍是原始周剩余 10%），防止有效额度口径渗透到内环。
+    func testOuterRingUsesEffectiveQuotaWhenWeeklyTimesMultiplierIsTighter() {
+        let status = makeStatus(id: "codex", kind: .codexChatGpt, state: .ok(makeInfo([
+            makeModel(name: "g", intervalPercent: 90, weeklyPercent: 10, now: Self.makeNow),
+        ])))
+        XCTAssertEqual(
+            EdgeDockProjection.intervalFraction(status, at: Self.makeNow) ?? -1,
+            0.60, accuracy: 0.0001,
+            "周 10% × N=6 = 60% < 原始 5h 90%，外环取有效额度 60%"
+        )
+        XCTAssertEqual(
+            EdgeDockProjection.weeklyFraction(status, at: Self.makeNow) ?? -1,
+            0.10, accuracy: 0.0001,
+            "内环仍是原始周剩余 10%，不乘倍率"
+        )
+        XCTAssertEqual(
+            EdgeDockProjection.rawIntervalFraction(status) ?? -1,
+            0.90, accuracy: 0.0001,
+            "原始 5h 仍是 90%，只喂 hover 文案做对照，不参与画环"
+        )
+        // 投影把对照值带出条目：raw 0.90 ≠ 有效 0.60，hover 文案才能亮出
+        // `5h 90%(60%有效)`，说明环为什么比 5h 剩余少。
+        let entry = EdgeDockProjection.entries(from: [status], at: Self.makeNow)[0]
+        XCTAssertEqual(entry.rawIntervalFraction ?? -1, 0.90, accuracy: 0.0001)
+        XCTAssertEqual(entry.intervalFraction ?? -1, 0.60, accuracy: 0.0001)
+    }
+
+    /// antigravity 的 Claude/GPT 组周倍率 2026-10 从 3 下调到 1：周剩余 × 1 就是周剩余，
+    /// 这是「周比 5h 更紧」最典型的场景——5h 剩 90% 但周只剩 30%，实际只能用 30%。
+    func testOuterRingUsesEffectiveQuotaForAntigravityClaudeGptGroup() {
+        let status = makeStatus(id: "antigravity", kind: .antigravity, state: .ok(makeInfo([
+            makeModel(
+                name: AntigravityModelKind.claudeAndGptModels.rawValue,
+                intervalPercent: 90,
+                weeklyPercent: 30,
+                now: Self.makeNow
+            ),
+        ])))
+        XCTAssertEqual(
+            EdgeDockProjection.intervalFraction(status, at: Self.makeNow) ?? -1,
+            0.30, accuracy: 0.0001,
+            "周 30% × N=1 = 30% < 原始 5h 90%，外环取有效额度 30%"
+        )
+        XCTAssertEqual(
+            EdgeDockProjection.rawIntervalFraction(status) ?? -1,
+            0.90, accuracy: 0.0001,
+            "原始 5h 仍是 90%——有效额度收缩来自周瓶颈，原始值供 hover 文案对照"
+        )
+    }
+
+    /// 外环颜色跟随**有效额度**而不是原始 5h：40% 的 5h 配 5% 的周（×6 = 30%），
+    /// 有效额度 30%、瓶颈是周窗口 → 时间比例 0.6 → 动态黄线 min(60, 50) = 50，
+    /// 30% < 50 → 黄。反事实：若仍按原始 5h 算，40% 配固定 30% 黄线会是 healthy——
+    /// 这条测试钉住「颜色跟随有效额度、时间比例随瓶颈窗口走」的行为变化。
+    func testOuterRingHealthFollowsEffectiveQuotaWithWeeklyBinding() {
+        let status = makeStatus(id: "codex", kind: .codexChatGpt, state: .ok(makeInfo([
+            quotaModel(intervalPercent: 40, weeklyPercent: 5, weeklyTimeFraction: 0.6),
+        ])))
+        XCTAssertEqual(
+            EdgeDockProjection.intervalFraction(status, at: Self.makeNow) ?? -1,
+            0.30, accuracy: 0.0001
+        )
+        XCTAssertEqual(
+            EdgeDockProjection.intervalHealth(status, at: Self.makeNow), .warning,
+            "瓶颈是周窗口：30% 低于动态黄线 min(60, 50) = 50；若按原始 5h（40% + 固定 30% 黄线）会是 healthy"
+        )
+    }
+
+    /// 多 model 时有效额度也取**最低**的那个，且颜色与弧长来自同一个瓶颈：
+    /// a 的 min(90, 90×6→封顶 100) = 90，b 的 min(80, 5×6 = 30) = 30 → 外环 30%，
+    /// 颜色也按 b 的瓶颈（周窗口、动态黄线 50）判定 → 黄。若颜色另取 model
+    /// （比如 a 的 90% 是绿的），弧长与颜色就指向两个不同的瓶颈。
+    func testOuterRingEffectiveQuotaTakesWorstModel() {
+        let status = makeStatus(id: "multi", kind: .codexChatGpt, state: .ok(makeInfo([
+            quotaModel(intervalPercent: 90, weeklyPercent: 90, weeklyTimeFraction: 0.6),
+            quotaModel(intervalPercent: 80, weeklyPercent: 5, weeklyTimeFraction: 0.6),
+        ])))
+        XCTAssertEqual(
+            EdgeDockProjection.intervalFraction(status, at: Self.makeNow) ?? -1,
+            0.30, accuracy: 0.0001
+        )
+        XCTAssertEqual(
+            EdgeDockProjection.intervalHealth(status, at: Self.makeNow), .warning,
+            "颜色来自瓶颈 model b（周瓶颈、30%），不与弧长脱钩"
+        )
+    }
+
+    // MARK: - hover 文案（5h 段双数值）
+
+    /// 周折算不构成瓶颈（有效 == 原始）时维持单数值——没有差额就没有可解释的，
+    /// 亮两个一样的数只是噪音。
+    func testIntervalCaptionKeepsSingleValueWhenRawEqualsEffective() {
+        XCTAssertEqual(
+            EdgeDockProjection.intervalCaption(effective: 0.60, raw: 0.60),
+            "5h 60%"
+        )
+    }
+
+    /// 有效 < 原始：并排显示，先原始后有效（`5h 90%(30%有效)`）。只亮有效值会让
+    /// 人误以为 5h 真的只剩这么多，双数值才说明差额来自周瓶颈。
+    func testIntervalCaptionShowsDualValueWhenEffectiveIsLower() {
+        XCTAssertEqual(
+            EdgeDockProjection.intervalCaption(effective: 0.30, raw: 0.90),
+            "5h 90%(30%有效)"
+        )
+    }
+
+    /// raw 缺失时退回单数值（防御分支：正常投影里 5h 段出现时 raw 一定存在）。
+    func testIntervalCaptionKeepsSingleValueWithoutRaw() {
+        XCTAssertEqual(
+            EdgeDockProjection.intervalCaption(effective: 0.60, raw: nil),
+            "5h 60%"
+        )
+    }
+
     // MARK: - 逐窗口色档（内外环独立取色的输入）
 
-    /// 5h 档位：固定 30% 黄线（`colorLevel` 的 `timeFraction == nil` 分支）、
-    /// 固定 15% 红线。三个值分别落在红、黄、绿三段上——任何一个阈值漂了
+    /// 5h 档位：无周窗口（瓶颈 = 5h 短窗口，`bindingTimeFraction == nil`）时固定
+    /// 30% 黄线、固定 15% 红线。三个值分别落在红、黄、绿三段上——任何一个阈值漂了
     /// （比如有人把黄线改成 20%），这条会跟着红。
     func testIntervalHealthUsesFixedThirtyPercentYellowLine() {
         let red = makeStatus(id: "red", state: .ok(makeInfo([

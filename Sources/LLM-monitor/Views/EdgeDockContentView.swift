@@ -18,7 +18,8 @@ extension AccentColor {
 /// 边缘状态窗的内容：一列 provider 双环。
 ///
 /// 结构由外向内三层：
-/// - **外环** = 5 小时窗口剩余比例
+/// - **外环** = 5h 有效额度（min(5h 剩余, 周剩余 × 周等效倍率 N)，与状态栏中心扇形同口径，
+///   见 `EdgeDockProjection.intervalFraction`）
 /// - **内环** = 周窗口剩余比例
 /// - **中心** = Provider 品牌图标（`BrandLogoView`，与菜单卡片同源）
 ///
@@ -242,7 +243,7 @@ struct EdgeDockContentView: View {
     ///
     /// 两种形态是**同一棵树的插值**而不是两套分支：外环直径、弧长随
     /// `isCompactAppearance` 连续过渡，内环 / 图标 / 数值淡出，黑条因此从边缘
-    /// 长出 / 收回而不是瞬间换内容。简版单环取 5h 剩余、没有 5h 窗口的退到
+    /// 长出 / 收回而不是瞬间换内容。简版单环取 5h 有效额度、没有 5h 窗口的退到
     /// 周窗口（与数值文字同一取值口径）。
     private func circle(for entry: EdgeDockEntry) -> some View {
         ZStack {
@@ -314,10 +315,11 @@ struct EdgeDockContentView: View {
         .help("\(entry.displayName) · \(caption(for: entry))")
     }
 
-    /// 圆环下方常驻的额度数值：优先 5 小时窗口，没有就退到周窗口，都没有显示 `—`。
+    /// 圆环下方常驻的额度数值：优先 5h 有效额度，没有就退到周窗口，都没有显示 `—`。
     ///
-    /// 常驻数字是边缘窗不悬停时的唯一可读信息，所以优先给 5 小时窗口——它变化最快，
-    /// 才是"现在还能不能干活"的直接答案。
+    /// 常驻数字是边缘窗不悬停时的唯一可读信息，所以优先给 5h 有效额度——它变化最快，
+    /// 才是"现在还能不能干活"的直接答案。始终单数值：原始 5h 的对照只出现在
+    /// hover 文案里（见 `caption(for:)`）。
     private func quotaLabel(for entry: EdgeDockEntry) -> some View {
         Text(labelText(for: entry))
             // 字号取 `labelFontSize`：行高 `labelHeight` 就是从它推导的，两处
@@ -385,11 +387,21 @@ struct EdgeDockContentView: View {
         return Color(nsColor: color)
     }
 
+    /// hover tooltip（`.help`）文案：`5h 段 · 周 段 · 健康档`，与辅助功能朗读共用。
+    ///
+    /// 5h 段在**周折算构成瓶颈**（有效额度 < 原始 5h）时并排显示两个数
+    /// （`5h 90%(30%有效)`，见 `EdgeDockProjection.intervalCaption`）：外环读的是
+    /// 有效额度，只亮一个数会让人误以为 5h 真的只剩这么多，补上原始值才能看出
+    /// 差额来自周瓶颈、不是 5h 本身见底。常驻数值（`quotaLabel`）不受影响，
+    /// 仍然只显示有效额度。
     private func caption(for entry: EdgeDockEntry) -> String {
         guard entry.hasAnyQuotaWindow else { return healthText(for: entry) }
         var parts: [String] = []
         if let interval = entry.intervalFraction {
-            parts.append("5h \(percentText(interval))")
+            parts.append(EdgeDockProjection.intervalCaption(
+                effective: interval,
+                raw: entry.rawIntervalFraction
+            ))
         }
         if let weekly = entry.weeklyFraction {
             parts.append("周 \(percentText(weekly))")
