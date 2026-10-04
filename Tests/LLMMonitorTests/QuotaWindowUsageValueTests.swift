@@ -509,7 +509,7 @@ final class QuotaWindowUsageValueTests: XCTestCase {
         )
         XCTAssertTrue(empty.isEmpty, "前提不成立：这里用的是没有额度窗口的快照")
 
-        let bareGrid = Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 3) {
+        let bareGrid = Grid(alignment: .leading, horizontalSpacing: QuotaWindowUsageSection.horizontalSpacing, verticalSpacing: 3) {
             GridRow {
                 Text(today.label)
                 Text(Formatters.formatTokenCountCompact(today.metrics.totalTokens))
@@ -670,11 +670,11 @@ final class QuotaWindowUsageValueTests: XCTestCase {
         )
 
         // 验证中间 4 列等宽常量
-        XCTAssertEqual(QuotaWindowUsageSection.middleColumnWidth, 38)
+        XCTAssertEqual(QuotaWindowUsageSection.middleColumnWidth, 42)
         XCTAssertEqual(QuotaWindowUsageSection.valueColumnWidth, 58)
-        XCTAssertEqual(QuotaWindowUsageSection.resetDateColumnWidth, 129)
-        XCTAssertEqual(QuotaWindowUsageSection.resetDateColumnLeadingGap, 12)
-        XCTAssertEqual(QuotaWindowUsageSection.horizontalSpacing, 10)
+        XCTAssertEqual(QuotaWindowUsageSection.resetDateColumnWidth, 126)
+        XCTAssertEqual(QuotaWindowUsageSection.resetDateColumnLeadingGap, 9)
+        XCTAssertEqual(QuotaWindowUsageSection.horizontalSpacing, 8)
 
         // 验证两态下 visibleRows 相同
         let visibleRows = QuotaWindowUsageSection.visibleRows(snapshot: snapshot, today: today)
@@ -694,7 +694,7 @@ final class QuotaWindowUsageValueTests: XCTestCase {
     }
 
     /// 420pt 卡内容宽的列宽预算 guardrail：
-    /// 类型 natural (~20pt) + 4×38pt (152pt) + 58pt (价值) + 129pt (重置日期) + 6×10pt 间距 (60pt) = 419pt ≤ 420pt。
+    /// 类型 natural (~20pt) + 4×42pt (168pt) + 58pt (价值) + 126pt (重置日期) + 6×8pt 间距 (48pt) = 420pt ≤ 420pt。
     @MainActor
     func testTotalWidthBudgetGuardrail() {
         let typeWidth = self.measuredWidth(of: Text("类型").font(MenuTypography.metricLabel))
@@ -711,17 +711,43 @@ final class QuotaWindowUsageValueTests: XCTestCase {
             "7 列总预算（\(totalBudget)pt）必须小于等于卡内容宽 420pt"
         )
 
-        // 验证中间列 38pt 能装下两态所有单元格的最宽自然宽
-        // 表头最宽：Cached (38pt)、Reason (37pt)；数值最宽：自适应比率 (33pt)、Token 紧凑计数 (29pt)
+        // 验证中间列 42pt 能装下两态所有单元格的最宽自然宽
+        // 表头最宽：Cached (38pt)、Reason (37pt)；数值最宽：自适应比率 (40pt)、Token 紧凑计数 (39pt)
         let widestCachedHeader = self.measuredWidth(of: Text("Cached").font(MenuTypography.metricLabel))
         let widestReasonHeader = self.measuredWidth(of: Text("Reason").font(MenuTypography.metricLabel))
-        let widestRate = self.measuredWidth(of: Text("99.9%").font(MenuTypography.metricValue))
-        let widestToken = self.measuredWidth(of: Text("999M").font(MenuTypography.metricValue))
+        let widestRate = self.measuredWidth(of: Text("100.0%").font(MenuTypography.metricValue))
+        let widestToken = self.measuredWidth(of: Text("12.34M").font(MenuTypography.metricValue))
         let widestMiddleCell = max(widestCachedHeader, widestReasonHeader, widestRate, widestToken)
         XCTAssertLessThanOrEqual(
             widestMiddleCell,
             middleColWidth,
             "中间列宽度（\(middleColWidth)pt）必须容纳最宽自然宽单元格（\(widestMiddleCell)pt）"
+        )
+    }
+
+    /// 中间 4 列宽度护栏：
+    /// middleColumnWidth 必须严格大于所有 compact token 现实最宽形态（至少 +2pt 余量），
+    /// 确保 1.22M、12.3M、99.9K、999K、999M、12.34M 全部不发生单行截断（lineLimit(1) 截尾）。
+    @MainActor
+    func testMiddleColumnsAccommodateCompactTokenRepresentations() {
+        let middleColWidth = QuotaWindowUsageSection.middleColumnWidth
+        let tokenCandidates = [
+            "1.22M", "12.3M", "99.9K", "999K", "999M", "12.34M"
+        ]
+        var maxTokenWidth: CGFloat = 0
+        for token in tokenCandidates {
+            let width = self.measuredWidth(of: Text(token).font(MenuTypography.metricValue))
+            maxTokenWidth = max(maxTokenWidth, width)
+            XCTAssertLessThanOrEqual(
+                width + 2,
+                middleColWidth,
+                "token 形态 \(token)（\(width)pt）必须比中间列宽 \(middleColWidth)pt 小至少 2pt 余量"
+            )
+        }
+        XCTAssertGreaterThan(maxTokenWidth, 0)
+        XCTAssertGreaterThanOrEqual(
+            middleColWidth - maxTokenWidth, 2,
+            "中间列宽（\(middleColWidth)pt）对最宽 token 形态（\(maxTokenWidth)pt）必须留有至少 2pt 余量"
         )
     }
 
@@ -1024,8 +1050,8 @@ final class QuotaWindowUsageValueTests: XCTestCase {
 
     /// 重置日期列固定宽常量里**刨去前置间隙**的文字空间必须 ≥ 最长形态的自然宽
     /// （`MM-dd HH:mm (23h59m)`，`formatResetSuffix` 最宽的后缀——比 `2d23h`/
-    /// `已过期`/`365d` 都宽），也别宽得离谱（×1.2 的本意）。第六轮起常量含
-    /// 12pt 前置间隙，口径从「常量」改为「常量 − 间隙」。系统字体度量变了先红
+    /// `已过期`/`365d` 都宽），也别宽得离谱（×1.2 的本意）。第七轮起常量含
+    /// 9pt 前置间隙（126 − 9 = 117pt 零冗余），口径为「常量 − 间隙」。系统字体度量变了先红
     /// 在这里。
     @MainActor
     func testResetDateColumnWidthCoversTheLongestForm() {

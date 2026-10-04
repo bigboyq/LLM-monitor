@@ -203,11 +203,11 @@ struct QuotaWindowUsageSection: View {
     )
 
     // MARK: - 列宽预算与排版常量（卡内容宽 420pt 约束）
-    static let horizontalSpacing: CGFloat = 10
-    static let middleColumnWidth: CGFloat = 38
+    static let horizontalSpacing: CGFloat = 8
+    static let middleColumnWidth: CGFloat = 42
     static let valueColumnWidth: CGFloat = 58
-    static let resetDateColumnLeadingGap: CGFloat = 12
-    static let resetDateColumnWidth: CGFloat = 129
+    static let resetDateColumnLeadingGap: CGFloat = 9
+    static let resetDateColumnWidth: CGFloat = 126
 
     /// 「分析」态的列显隐（模块内跨行判定）：「命中」「思考」两列各自在所有可见行的合计为 0 时整列隐藏。
     static func statsColumnVisibility(rows: [QuotaWindowUsageMetrics]) -> (hit: Bool, think: Bool) {
