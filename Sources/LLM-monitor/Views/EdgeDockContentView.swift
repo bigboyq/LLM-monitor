@@ -30,10 +30,8 @@ extension AccentColor {
 /// 这个状态下 SwiftUI 收不到 hover 事件。命中判定由
 /// `EdgeDockController.hoveredIndex`（系统级事件监听算出）驱动，
 /// 这里只负责把高亮画出来；详情由 dock 旁边独立的 popover 展示。
-///
-/// 同理，下面的 `.help(...)` 只在**接管态**（鼠标已经压在 dock 上、`ignoresMouseEvents`
-/// 被翻成 false）那几百毫秒里够得着——常驻穿透态下它基本不会出现。留着是因为
-/// 接管态确实存在，而那里它比旁边 10pt 处的自定义 popover 更安静、不会抢读。
+/// 曾经挂过 `.help(...)` tooltip，但穿透态下几乎无法触发，已随 VoiceOver
+/// 文案保留策略一并撤掉（见 `caption(for:)`）。
 struct EdgeDockContentView: View {
     @ObservedObject var controller: EdgeDockController
     @ObservedObject var state: AppState
@@ -312,7 +310,6 @@ struct EdgeDockContentView: View {
         )
         .accessibilityLabel(entry.displayName)
         .accessibilityValue(accessibilityValue(for: entry))
-        .help("\(entry.displayName) · \(caption(for: entry))")
     }
 
     /// 圆环下方常驻的额度数值：优先 5h 有效额度，没有就退到周窗口，都没有显示 `—`。
@@ -387,12 +384,14 @@ struct EdgeDockContentView: View {
         return Color(nsColor: color)
     }
 
-    /// hover tooltip（`.help`）文案：`5h 段 · 周 段 · 健康档`，与辅助功能朗读共用。
+    /// 辅助功能朗读文案（`accessibilityValue`）：`5h 段 · 周 段 · 健康档`。
     ///
     /// 5h 段在**周折算构成瓶颈**（有效额度 < 原始 5h）时并排显示两个数
     /// （`5h 90%(30%有效)`，见 `EdgeDockProjection.intervalCaption`）：外环读的是
-    /// 有效额度，只亮一个数会让人误以为 5h 真的只剩这么多，补上原始值才能看出
-    /// 差额来自周瓶颈、不是 5h 本身见底。常驻数值（`quotaLabel`）不受影响，
+    /// 有效额度，只读一个数会让人误以为 5h 真的只剩这么多，补上原始值才能听出
+    /// 差额来自周瓶颈、不是 5h 本身见底。曾经同时喂 `.help(...)` tooltip，但
+    /// 穿透态下几乎无法触发（详情 popover 又更快更醒目），tooltip 已移除；
+    /// 文案保留给 VoiceOver，视觉侧无感知。常驻数值（`quotaLabel`）不受影响，
     /// 仍然只显示有效额度。
     private func caption(for entry: EdgeDockEntry) -> String {
         guard entry.hasAnyQuotaWindow else { return healthText(for: entry) }
