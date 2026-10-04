@@ -411,7 +411,7 @@ The `cache_read_tokens` column is the dominant cost — for a typical M3 session
 
 Cache reads are 30-40× uncached input — M3's prompt cache is heavily hit. This is **the** reason a per-day breakdown matters: showing only "remaining quota" (the API) hides the fact that you're actually using far more tokens than the API's "remaining %" implies.
 
-**5h-window cache_read distribution** (August 2026, M3 only, post-Token-Plan): a steady-state 5h window accumulates **~50M cache_read tokens** (median 49.2M, max 65.6M) which is ~97% of the window's 51M total tokens and ~91% of the window's ¥24 cost. This 5h cache_read volume is the **primary signal** for "are you approaching the 5h rate-limit waterline" — see [Rate Limits § Server-side 5h rolling window](#server-side-5h-rolling-window--observed-waterline) for the cost-side analysis.
+**5h-window cache_read distribution** (August 2026, M3 only, post-Token-Plan): a steady-state 5h window accumulates **~50M cache_read tokens** (median 49.2M, max 65.6M) which is ~97% of the window's 51M total tokens and ~91% of the window's ¥24 cost. This 5h cache_read volume is the **primary signal** for "are you approaching the 5h rate-limit waterline" — see §Server-side 5h rolling window for the cost-side analysis.
 
 ### Lazy .db write — sessions don't flush while open
 

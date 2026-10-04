@@ -111,11 +111,11 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 | 新增 quota provider | `runtime.md` §Provider Registration Contract |
 | 改某 provider 的抓取 / 解析 / 缓存 / 帧适配 | `providers/<名>.md`（agy / antigravity / codex / deepseek / dsh / glm / minimax / opencode） |
 | 改配额卡、菜单结构、hover 浮层、进度与健康色 | `ui/menu-and-cards.md` §Provider Card |
-| 改屏幕边缘状态窗（几何 / 拖拽 / 全屏 / dock 形态） | `ui/edge-dock.md` §Edge Status Dock |
-| 改设置窗口与客户端 pane | `ui/settings.md` §Settings Window / §客户端 (Clients) pane |
+| 改屏幕边缘状态窗（几何 / 拖拽 / 全屏 / dock 形态） | `ui/edge-dock.md` §Edge Status Dock (Screen Edge Panel) |
+| 改设置窗口与客户端 pane | `ui/settings.md` §Settings Window 及其下 §客户端 (Clients) pane |
 | 改开机自启入口 | `ui/settings.md` §Launch At Login (Settings Window) |
 | 改 token 计量、思考分摊、价格与金额汇总 | `accounting.md` §Harness 对齐矩阵 |
-| 改扫描调度、缓存指纹、reconcile 分层 | `local-usage-reconcile.md` §Scanner Concurrency |
+| 改扫描调度、缓存指纹、reconcile 分层 | `local-usage-reconcile.md` §Scanner Concurrency (本地用量 scanner 的并发模型) |
 | 改 `config.json` 字段、运行时文件、构建打包 | `config.md` §Config Schema |
 | 改通知触发语义、渠道与去抖 | `notifications.md` §3. 事件模型与触发语义 |
 | 改额度健康度分档与状态胶囊配色 | `runtime.md` §Health Algorithm |

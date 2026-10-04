@@ -200,38 +200,10 @@ appearance-neutral.
 
 ## Quota Notifications (system + Bark)
 
-本节只管设置页与 UI 呈现；通知的触发逻辑、阈值、渠道与防抖见 `spec/notifications.md`。
+本节只管设置页的呈现与入口位置；通知的触发逻辑、事件边沿阈值、渠道行为与防抖的**单一事实源**在 `spec/notifications.md`（§3 事件模型与触发语义 / §4 渠道层 / §5 配置 Schema），本节不复述其规则。
 
-After each successful remote quota request for a windowed provider (`ProviderKind.windowedKinds`:
-ChatGPT, GLM, minimax, Antigravity), `QuotaEventDetector` compares the result with that
-provider's persisted baseline (`TriggerStateStore`, `notification-state.json` — survives
-restarts, so exhaustion/recovery events that happen while the app is down are reported on the
-first refresh after relaunch). Four event kinds, each with an independently configurable
-channel (`off` / `system` / `bark+system`, defaults: restored → system, exhausted → off):
-
-| Kind | Edge |
-|---|---|
-| restored (5h / weekly) | rise > 5 pp, or back above 98% with a strict rise (parking at 100% is not a rise) |
-| exhausted (5h / weekly) | remaining percent crosses below 0.01% |
-
-The first snapshot, a newly appearing model or window, and decreases do not notify. Per-model
-merging applies: one refresh produces at most one system notification and one Bark push per
-model, and each channel's body only contains events routed to that channel. System titles
-reflect the event kind (「额度已用完 / 已恢复 / 额度提醒」); Bark carries a stable per
-provider+model overwrite `id` so new pushes replace old ones on the phone. Both channels
-apply a 60-second per-model cooldown. DeepSeek is balance-based (binarized 0/100) and has no
-window triggers; a balance threshold trigger is future work (see `spec/notifications.md`).
-
-At application launch, notification authorization is requested only when the system status is
-`.notDetermined`; an existing allow or deny choice is not prompted again. Notifications remain
-visible as a banner with sound while the menu app is in the foreground. UserNotifications is
-available only from a packaged `.app` with a Bundle Identifier, so raw `swift run` / SwiftPM
-executables disable the system-notification channel safely (Bark, being plain HTTP, still
-works there).
-
-The optional Bark push (Settings > General > Bark 推送) posts JSON to
-`POST {server}/{key}` and is skipped when the user is at the Mac: with
-`skipWhenAwakeAndUnlocked` enabled, Bark is skipped only when the display is awake **and**
-the session is unlocked; display sleep or a locked screen (user away) both deliver.
+- 四个有窗口事件的 provider pane（ChatGPT / GLM / minimax / Antigravity）各有一个「通知配置」节：恢复 / 耗尽两个事件各自的渠道选择（`off` / `system` / `bark+system`）。
+- General pane 有一个「Bark 推送」全局节：`enabled` / `serverURL` / `deviceKey` / `sound` / `skipWhenAwakeAndUnlocked` / `ttl` / `group`。
+- 字段默认值与逐字段容错见 `spec/notifications.md` §5；JSON 契约见 `spec/config.md` §Config Schema 的 `notify*` 与 `bark` 字段。
 
 > 核对基线：2026-10-04 · 代码 d6396fd

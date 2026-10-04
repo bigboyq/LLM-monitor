@@ -557,7 +557,7 @@ look for a hover route to this data — the card carries it inline.
 
 The settings panes intentionally expose **no** per-provider OpenCode toggle. Whether
 an OpenCode provider slice is merged into a card is owned by `clientBindings[]` in
-`config.json` (see the Config Schema section); GLM defaults to enabled, all other
+`config.json` (see `spec/config.md` §Config Schema); GLM defaults to enabled, all other
 providers to disabled. To change it, edit `config.json` and save — the directory
 watcher hot-reloads the config and rebuilds the cards, no app restart needed.
 
