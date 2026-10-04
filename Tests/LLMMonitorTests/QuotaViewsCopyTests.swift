@@ -95,6 +95,60 @@ final class QuotaViewsCopyTests: XCTestCase {
         XCTAssertNotNil(long?.timeRemainingFraction, "长周期窗口的 ▼ 标记不能被吞掉")
     }
 
+    // MARK: - 周瓶颈括号（5h 有效额度）
+
+    /// 双窗口行的括号判定：周 × N **严格**小于 5h 剩余才显示，值 = min(5h, 周×N)。
+    /// 判定与该行分段条共用 `EquivalentQuotaAllocation.bindingWindow`（含并列取 5h
+    /// 的约定）——条缩到 30% 的同一行文字必须给出 "(30%有效)"，两者永远同源。
+    func testWeeklyBindingEffectivePercentMirrorsTheBarBindingDecision() {
+        let now = Date()
+        func model(interval: Double?, weekly: Double?) -> ModelQuota {
+            ModelQuota(
+                modelName: "chatgpt_plan",
+                intervalTotalCount: 100, intervalUsageCount: 0,
+                intervalRemainingPercent: interval ?? 0,
+                intervalStatus: interval == nil ? .absent : .present,
+                intervalResetsAt: interval == nil ? nil : now.addingTimeInterval(3600),
+                intervalWindowSeconds: interval == nil ? nil : 5 * 3600,
+                weeklyTotalCount: 100, weeklyUsageCount: 0,
+                weeklyRemainingPercent: weekly ?? 0,
+                weeklyStatus: weekly == nil ? .absent : .present,
+                weeklyResetsAt: weekly == nil ? nil : now.addingTimeInterval(7 * 24 * 3600),
+                weeklyWindowSeconds: weekly == nil ? nil : 7 * 24 * 3600
+            )
+        }
+
+        // 用户实测场景：5h 100%、周 5%、N=6 → 条 30%，括号 "(30%有效)"。
+        XCTAssertEqual(
+            QuotaBarWithMetadata.weeklyBindingEffectivePercent(
+                model: model(interval: 100, weekly: 5), multiplier: 6
+            ) ?? -1, 30, accuracy: 0.0001
+        )
+        // 周充裕（85 × 6 封顶 100 ≥ 40）→ 5h 是瓶颈，维持单数值。
+        XCTAssertNil(
+            QuotaBarWithMetadata.weeklyBindingEffectivePercent(
+                model: model(interval: 40, weekly: 85), multiplier: 6
+            )
+        )
+        // 并列（60 == 10 × 6）→ 约定落到 5h，不显示括号（与 bindingWindow 一致）。
+        XCTAssertNil(
+            QuotaBarWithMetadata.weeklyBindingEffectivePercent(
+                model: model(interval: 60, weekly: 10), multiplier: 6
+            )
+        )
+        // 单窗口：不存在跨窗口瓶颈，永远不显示括号。
+        XCTAssertNil(
+            QuotaBarWithMetadata.weeklyBindingEffectivePercent(
+                model: model(interval: 40, weekly: nil), multiplier: 6
+            )
+        )
+        XCTAssertNil(
+            QuotaBarWithMetadata.weeklyBindingEffectivePercent(
+                model: model(interval: nil, weekly: 40), multiplier: 6
+            )
+        )
+    }
+
     /// 两个窗口的明细**并排**而不是堆叠。
     ///
     /// 判据是**宽度**，不是高度——这个选择是被量出来的：视图里除两列外还有标题行和

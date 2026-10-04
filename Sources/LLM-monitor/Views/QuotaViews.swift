@@ -559,6 +559,9 @@ struct QuotaBarWithMetadata: View {
                     name: model.displayName,
                     primaryLabel: primaryLabel,
                     primaryPercent: model.intervalRemainingPercent,
+                    primaryEffectivePercent: Self.weeklyBindingEffectivePercent(
+                        model: model, multiplier: weeklyEquivalentMultiplier
+                    ),
                     primaryTimeFraction: model.intervalTimeRemainingFraction,
                     secondaryLabel: secondaryLabel,
                     secondaryPercent: model.weeklyRemainingPercent,
@@ -627,6 +630,27 @@ struct QuotaBarWithMetadata: View {
         }
         return nil
     }
+
+    /// 「周折算构成瓶颈」时括号里要亮出来的 5h **有效额度**（min(5h 剩余, 周剩余 × N)）；
+    /// nil = 5h 是瓶颈（或并列），元信息行维持单数值。
+    ///
+    /// 分段条画的是 min(5h, 周×N)、`primaryPercent` 却是原始 5h——周更紧时
+    /// （典型：ChatGPT 周只剩 5%、antigravity Claude/GPT 组 N=1）会出现
+    /// "条已缩到 30%、文字还写着 5h 100%"的表观矛盾，括号值就是把这笔账补上。
+    /// 判定与并列约定**复用** `EquivalentQuotaAllocation.bindingWindow`
+    /// （weekly 严格小于 primary 才算周瓶颈），保证括号出现与否与这行自己的
+    /// 分段条永远同源，不会条缩了文字没缩（或反过来）。
+    static func weeklyBindingEffectivePercent(model: ModelQuota, multiplier: Int) -> Double? {
+        guard model.hasIntervalWindow, model.hasWeeklyWindow else { return nil }
+        let primary = model.intervalRemainingPercent / 100.0
+        let weekly = model.weeklyRemainingPercent / 100.0
+        guard EquivalentQuotaAllocation.bindingWindow(
+            primaryFraction: primary, weeklyFraction: weekly, segments: multiplier
+        ) == .weekly else { return nil }
+        return EquivalentQuotaAllocation.effectivePrimaryFraction(
+            primaryFraction: primary, weeklyFraction: weekly, segments: multiplier
+        ) * 100
+    }
 }
 
 /// GLM 今日闲时（off-peak）任务 token 用量：整行宽度，排在额度条**下方**。
@@ -690,6 +714,12 @@ private struct CombinedQuotaMetadataLine: View {
     var name: String = ""
     let primaryLabel: String
     let primaryPercent: Double
+    /// 周折算构成瓶颈时并列显示的 5h 有效额度（括号值），nil = 周不是瓶颈。
+    ///
+    /// 分段条按 min(5h, 周×N) 画、`primaryPercent` 是原始 5h，周更紧时两者
+    /// 表观矛盾（条 30%、文字 100%）；括号把有效值并排亮出来。判定与条同源，
+    /// 见 `QuotaBarWithMetadata.weeklyBindingEffectivePercent`。
+    let primaryEffectivePercent: Double?
     let primaryTimeFraction: Double?
     let secondaryLabel: String
     let secondaryPercent: Double
@@ -712,15 +742,28 @@ private struct CombinedQuotaMetadataLine: View {
             QuotaRowModelName(name: name)
             Spacer(minLength: 12)
             HStack(spacing: 6) {
-                quotaValue(label: primaryLabel, percent: primaryPercent, timeFraction: primaryTimeFraction)
+                quotaValue(
+                    label: primaryLabel, percent: primaryPercent,
+                    timeFraction: primaryTimeFraction, effectivePercent: primaryEffectivePercent
+                )
                 quotaValue(label: secondaryLabel, percent: secondaryPercent, timeFraction: secondaryTimeFraction)
             }
-            .frame(width: quotaCombinedDataColumnWidth, alignment: .trailing)
+            .frame(
+                width: quotaCombinedDataColumnWidth
+                    + (primaryEffectivePercent == nil ? 0 : quotaCombinedEffectiveSuffixWidth),
+                alignment: .trailing
+            )
             ResetTimeSummary(resetsAt: resetsAt)
         }
     }
 
-    private func quotaValue(label: String, percent: Double, timeFraction: Double?) -> some View {
+    /// - Parameter effectivePercent: 周瓶颈时并列显示的 5h 有效额度，仅 primary 传非 nil。
+    private func quotaValue(
+        label: String,
+        percent: Double,
+        timeFraction: Double?,
+        effectivePercent: Double? = nil
+    ) -> some View {
         HStack(spacing: 4) {
             Text(label)
                 .font(MenuTypography.dataLabel)
@@ -729,6 +772,12 @@ private struct CombinedQuotaMetadataLine: View {
                 .font(MenuTypography.dataValue)
                 .foregroundStyle(summaryColor(for: percent, timeFraction: timeFraction))
                 .frame(width: 40, alignment: .trailing)
+            if let effectivePercent {
+                Text("(\(Formatters.formatQuotaPercent(effectivePercent))有效)")
+                    .font(MenuTypography.dataValue)
+                    .foregroundStyle(.secondary)
+                    .fixedSize()
+            }
         }
     }
 }
@@ -901,3 +950,9 @@ struct DeepseekBalanceRow: View {
 /// 数据列宽度：双窗口数据列定宽 152pt 确保对齐，单窗口紧凑定宽 80pt 避免留白过大
 private let quotaCombinedDataColumnWidth: CGFloat = 152
 private let quotaSingleDataColumnWidth: CGFloat = 80
+
+/// 周瓶颈括号「(30%有效)」的预留宽度。括号值恒 < 100（周**严格**更紧才显示），
+/// 10pt semibold monospacedDigit 下最长约 50pt；定宽让所有显示括号的行共用同一个
+/// 列宽（152 + 56），不显示的行维持原 152——同一张卡里两档列宽各自成列，
+/// 重置时间不会因为括号的有无而左右乱跳。
+private let quotaCombinedEffectiveSuffixWidth: CGFloat = 56
