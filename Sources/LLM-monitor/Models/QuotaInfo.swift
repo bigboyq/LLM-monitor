@@ -353,11 +353,6 @@ struct QuotaCountUsage: Equatable, Codable, Sendable {
     let total: Int
 }
 
-struct LastPromptUsage: Equatable, Codable, Sendable {
-    let completedAt: Date
-    let usage: UsageMetricSummary
-}
-
 /// 按本地自然日聚合的 Codex token 用量。inputTokens 是服务端原始输入总量，
 /// cachedInputTokens 是其中的缓存命中量，图表会单独绘制未缓存输入与缓存输入。
 struct DailyTokenUsage: Equatable, Codable, Sendable, Identifiable {
@@ -408,7 +403,6 @@ struct CodexUsageDetails: Equatable, Codable, Sendable {
     let primary: UsageMetricSummary?
     /// wham/usage 的 secondary_window 对应的本地统计（接口未返回时为 nil）。
     let secondary: UsageMetricSummary?
-    let lastPrompt: LastPromptUsage?
     /// 包含今天在内的最近七个本地自然日（00:00–23:59）。
     let dailyTokenUsage: [DailyTokenUsage]?
     /// 最近七天的逐次调用样本。旧缓存没有此字段时保持 nil。
@@ -418,14 +412,12 @@ struct CodexUsageDetails: Equatable, Codable, Sendable {
     init(
         primary: UsageMetricSummary?,
         secondary: UsageMetricSummary?,
-        lastPrompt: LastPromptUsage?,
         dailyTokenUsage: [DailyTokenUsage]?,
         recentSamples: [LocalTokenUsageSample]? = nil,
         scannedAt: Date?
     ) {
         self.primary = primary
         self.secondary = secondary
-        self.lastPrompt = lastPrompt
         self.dailyTokenUsage = dailyTokenUsage
         self.recentSamples = recentSamples
         self.scannedAt = scannedAt

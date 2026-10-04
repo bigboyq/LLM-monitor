@@ -228,18 +228,10 @@ struct CodexFetcher: QuotaFetcher {
             limits: limits
         )
         guard !Task.isCancelled else { return nil }
-        let lastPrompt = latestPromptUsage(
-            sessionFiles: sessionFiles,
-            fileURL: summaries.latestPromptFile,
-            turnID: summaries.latestPromptTurnID,
-            completedAt: summaries.latestPromptCompletedAt
-        )
-        guard !Task.isCancelled else { return nil }
 
         let details = CodexUsageDetails(
             primary: summaries.usageSummaries["primary"],
             secondary: summaries.usageSummaries["secondary"],
-            lastPrompt: lastPrompt,
             dailyTokenUsage: summaries.dailyTokenUsage,
             recentSamples: summaries.recentSamples,
             scannedAt: Date()

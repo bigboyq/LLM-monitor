@@ -438,7 +438,6 @@ final class HarnessTodaySummaryTests: XCTestCase {
             codexUsageDetails: CodexUsageDetails(
                 primary: nil,
                 secondary: nil,
-                lastPrompt: nil,
                 dailyTokenUsage: [DailyTokenUsage(
                     dayStart: today,
                     inputTokens: samples.map(\.inputTokens).reduce(0, +),

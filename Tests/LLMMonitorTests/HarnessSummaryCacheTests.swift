@@ -127,7 +127,6 @@ final class HarnessSummaryCacheTests: XCTestCase {
             codexUsageDetails: CodexUsageDetails(
                 primary: nil,
                 secondary: nil,
-                lastPrompt: nil,
                 dailyTokenUsage: [DailyTokenUsage(
                     dayStart: today,
                     inputTokens: totalTokens,

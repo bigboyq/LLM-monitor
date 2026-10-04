@@ -259,15 +259,12 @@ extension CodexFetcher {
         let usageSummaries: [String: UsageMetricSummary]
         let dailyTokenUsage: [DailyTokenUsage]
         let recentSamples: [LocalTokenUsageSample]
-        let latestPromptFile: URL?
-        let latestPromptTurnID: String?
-        let latestPromptCompletedAt: Date?
         let scannedFileCount: Int
     }
 
     nonisolated static func makeUsageWindows(from model: ModelQuota?) -> [String: ActiveUsageWindow] {
         // model 为 nil（quota 首胜前）或无 reset 信息时返回空窗口：
-        // 本地扫描照常进行，仅产出 7day/today 与 Last Prompt，窗口用量缺省。
+        // 本地扫描照常进行，仅产出 7day/today，窗口用量缺省。
         guard let model else { return [:] }
         var windows: [String: ActiveUsageWindow] = [:]
 
@@ -296,7 +293,7 @@ extension CodexFetcher {
         sessionFiles: [CodexSessionFileEvents],
         limits: CodexLocalScanLimits = .production
     ) -> LocalUsageScanResult {
-        // windows 为空（quota 首胜前）不再整体放弃：daily/lastPrompt 是纯本地信息，
+        // windows 为空（quota 首胜前）不再整体放弃：daily 是纯本地信息，
         // 照常产出，仅窗口用量（usageSummaries）缺省。
 
         var tokenSummaries = Dictionary(
@@ -311,9 +308,6 @@ extension CodexFetcher {
         var dailyPromptIDs = Dictionary(
             uniqueKeysWithValues: dailyWindows.map { ($0.startDate, Set<String>()) }
         )
-        var latestPromptFile: URL?
-        var latestPromptTurnID: String?
-        var latestPromptCompletedAt: Date?
         var recentSamples: [LocalTokenUsageSample] = []
         var scannedFileCount = 0
 
@@ -344,12 +338,6 @@ extension CodexFetcher {
                 case .taskCompleted(_, let turnID):
                     if activeTurnID == turnID {
                         activeTurnID = nil
-                    }
-                    // Last Prompt 取全局最近完成的 turn：无窗口（quota 首胜前）也照常产出
-                    if latestPromptCompletedAt == nil || timestamp > latestPromptCompletedAt! {
-                        latestPromptCompletedAt = timestamp
-                        latestPromptFile = sessionFile.fileURL
-                        latestPromptTurnID = turnID
                     }
                 case .modelContext(_, let modelName):
                     currentModelName = modelName
@@ -416,10 +404,7 @@ extension CodexFetcher {
                 turns: frozen.prompts
             )
         }
-        logInfo(
-            "[codex/local] 扫描完成：files=\(scannedFileCount), "
-                + "hasLatestPrompt=\(latestPromptFile != nil)"
-        )
+        logInfo("[codex/local] 扫描完成：files=\(scannedFileCount)")
         for day in dailyTokenUsage {
             let key = Formatters.formatMonthDay(day.dayStart)
             logDebug("[codex/local/day] \(key): turns=\(day.turns), rounds=\(day.rounds), input=\(day.inputTokens), cached=\(day.cachedInputTokens), output=\(day.outputTokens), reason=\(day.reasoningOutputTokens)")
@@ -446,54 +431,8 @@ extension CodexFetcher {
             // 保证 UI 在 `samplesInDisplayedWindow` / `todaySamples` 这类按日期过滤
             // 的逻辑下不会因为文件读取顺序错乱而漏掉 sample，且保留最新的 maxRecentSamples 条。
             recentSamples: boundedSamples,
-            latestPromptFile: latestPromptFile,
-            latestPromptTurnID: latestPromptTurnID,
-            latestPromptCompletedAt: latestPromptCompletedAt,
             scannedFileCount: scannedFileCount
         )
-    }
-
-    nonisolated static func latestPromptUsage(
-        sessionFiles: [CodexSessionFileEvents],
-        fileURL: URL?,
-        turnID: String?,
-        completedAt: Date?
-    ) -> LastPromptUsage? {
-        guard let fileURL,
-              let turnID,
-              let completedAt,
-              let events = sessionFiles.first(where: { $0.fileURL == fileURL })?.events else {
-            return nil
-        }
-
-        var startedAt: Date?
-        var summary = MutableUsageSummary()
-
-        for event in events {
-            guard !Task.isCancelled else { return nil }
-            switch event {
-            case .taskStarted(let timestamp, let eventTurnID):
-                if eventTurnID == turnID {
-                    startedAt = timestamp
-                }
-            case .tokenCount(let timestamp, let usage):
-                guard let startedAt,
-                      startedAt <= timestamp,
-                      timestamp <= completedAt else {
-                    continue
-                }
-                summary.add(usage)
-            case .modelContext:
-                continue
-            case .taskCompleted:
-                continue
-            }
-        }
-
-        guard startedAt != nil else { return nil }
-        let frozen = summary.freeze()
-        logDebug("[codex/local] lastPrompt: rounds=\(frozen.rounds), input=\(frozen.inputTokens), output=\(frozen.outputTokens), reasoning=\(frozen.reasoningOutputTokens)")
-        return LastPromptUsage(completedAt: completedAt, usage: frozen)
     }
 
     nonisolated static func cachedSessionEvents(

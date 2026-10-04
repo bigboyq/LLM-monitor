@@ -262,7 +262,7 @@ final class UsageProjectionKernelTests: XCTestCase {
         let codexInfo = QuotaInfo(
             models: [], resetCredits: nil, planLabel: "Free", accountEmail: nil,
             codexUsageDetails: CodexUsageDetails(
-                primary: nil, secondary: nil, lastPrompt: nil,
+                primary: nil, secondary: nil,
                 dailyTokenUsage: codexDaily,
                 recentSamples: [
                     sample("codex:turn-1", day: day, model: "gpt-5.6-sol", input: 30,

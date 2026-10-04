@@ -475,7 +475,7 @@ final class OpencodeUsageTests: XCTestCase {
         let codexInfo = QuotaInfo(
             models: [], resetCredits: nil, planLabel: nil, accountEmail: nil,
             codexUsageDetails: CodexUsageDetails(
-                primary: nil, secondary: nil, lastPrompt: nil,
+                primary: nil, secondary: nil,
                 dailyTokenUsage: codex, recentSamples: [], scannedAt: day
             ),
             fetchedAt: day
@@ -520,7 +520,7 @@ final class OpencodeUsageTests: XCTestCase {
         let info = QuotaInfo(
             models: [], resetCredits: nil, planLabel: nil, accountEmail: nil,
             codexUsageDetails: CodexUsageDetails(
-                primary: nil, secondary: nil, lastPrompt: nil,
+                primary: nil, secondary: nil,
                 dailyTokenUsage: [native], recentSamples: [], scannedAt: day
             ),
             fetchedAt: day

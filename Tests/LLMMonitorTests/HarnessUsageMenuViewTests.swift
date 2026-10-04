@@ -308,7 +308,6 @@ final class HarnessUsageMenuViewTests: XCTestCase {
             codexUsageDetails: CodexUsageDetails(
                 primary: nil,
                 secondary: nil,
-                lastPrompt: nil,
                 dailyTokenUsage: [],
                 recentSamples: samples,
                 scannedAt: Date()

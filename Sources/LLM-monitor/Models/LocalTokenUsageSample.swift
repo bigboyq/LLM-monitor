@@ -117,27 +117,6 @@ enum LocalUsageSummaryBuilder {
         }
     }
 
-    nonisolated static func lastPrompt(
-        samples: [LocalTokenUsageSample],
-        providerKind: ProviderKind,
-        quotaModelName: String
-    ) -> LastPromptUsage? {
-        let matching = matchingSamples(
-            samples,
-            providerKind: providerKind,
-            quotaModelName: quotaModelName
-        )
-        guard let latest = matching.max(by: { $0.completedAt < $1.completedAt }) else {
-            return nil
-        }
-        let promptSamples = matching.filter { $0.promptID == latest.promptID }
-        guard !promptSamples.isEmpty else { return nil }
-        return LastPromptUsage(
-            completedAt: promptSamples.map(\.completedAt).max() ?? latest.completedAt,
-            usage: aggregate(promptSamples)
-        )
-    }
-
     /// 今日闲时（off-peak）任务 token 汇总：取 `now` 所在本地自然日内、落在
     /// `offPeakWindows` 时间窗口内的样本，聚合出单独展示的"今日闲时"用量。
     ///

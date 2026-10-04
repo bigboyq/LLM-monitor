@@ -2,7 +2,7 @@ import XCTest
 @testable import LLM_monitor
 
 /// Codex 额度窗口切分（`makeUsageWindows`）与本地用量摘要
-/// （`summarizeLocalUsage` / `latestPromptUsage`）。
+/// （`summarizeLocalUsage`）。
 /// 拆自 `CodexLocalUsageTests`，逐字搬移零逻辑变化。
 final class CodexUsageWindowTests: XCTestCase {
 
@@ -78,8 +78,8 @@ final class CodexUsageWindowTests: XCTestCase {
         XCTAssertEqual(Set(windows.keys), ["primary"], "仅 primary 参与聚合，不产出合成的假数")
     }
 
-    func testSummarizeLocalUsageWithoutWindowsStillProducesDailyAndLastPrompt() throws {
-        // LocalUsage 与额度解耦：无 reset 时间（windows 为空）时，daily 与 Last Prompt
+    func testSummarizeLocalUsageWithoutWindowsStillProducesDaily() throws {
+        // LocalUsage 与额度解耦：无 reset 时间（windows 为空）时，daily
         // 是纯本地信息照常产出，仅窗口用量（usageSummaries）缺省。
         let base = Date(timeIntervalSince1970: 24_000)
         let fileURL = URL(fileURLWithPath: "/tmp/codex-local-no-window-test.jsonl")
@@ -106,7 +106,6 @@ final class CodexUsageWindowTests: XCTestCase {
         XCTAssertTrue(result.usageSummaries.isEmpty)
         XCTAssertEqual(result.dailyTokenUsage.first?.turns, 1)
         XCTAssertEqual(result.dailyTokenUsage.first?.inputTokens, 10)
-        XCTAssertEqual(result.latestPromptTurnID, "turn-a")
         XCTAssertEqual(result.scannedFileCount, 1)
     }
 
@@ -154,7 +153,6 @@ final class CodexUsageWindowTests: XCTestCase {
         XCTAssertEqual(summary.reasoningOutputTokens, 3)
         XCTAssertEqual(result.dailyTokenUsage.first?.turns, 2)
         XCTAssertEqual(result.scannedFileCount, 1)
-        XCTAssertEqual(result.latestPromptTurnID, "turn-2")
     }
 
     func testSummarizeLocalUsageClampsCachedWhenCacheExceedsInput() throws {
@@ -314,49 +312,6 @@ final class CodexUsageWindowTests: XCTestCase {
         let secondSample = try XCTUnwrap(result.recentSamples.last)
         XCTAssertEqual(secondSample.inputTokens, 200)
         XCTAssertEqual(secondSample.modelName, "gpt-5.6-terra", "turn 中途切 model 后，第二条 sample 必须用新 model")
-    }
-
-    func testLatestPromptUsageOnlyIncludesRoundsOfSelectedTurn() throws {
-        let base = Date(timeIntervalSince1970: 30_000)
-        let fileURL = URL(fileURLWithPath: "/tmp/codex-latest-prompt-test.jsonl")
-        let completedAt = base.addingTimeInterval(50)
-        let files = [CodexSessionFileEvents(
-            fileURL: fileURL,
-            events: [
-                .tokenCount(
-                    timestamp: base.addingTimeInterval(1),
-                    usage: CodexTokenUsageEvent(inputTokens: 99, cachedInputTokens: 0, outputTokens: 99, reasoningOutputTokens: 0)
-                ),
-                .taskStarted(timestamp: base.addingTimeInterval(10), turnID: "turn-2"),
-                .tokenCount(
-                    timestamp: base.addingTimeInterval(20),
-                    usage: CodexTokenUsageEvent(inputTokens: 10, cachedInputTokens: 2, outputTokens: 5, reasoningOutputTokens: 1)
-                ),
-                .tokenCount(
-                    timestamp: base.addingTimeInterval(30),
-                    usage: CodexTokenUsageEvent(inputTokens: 20, cachedInputTokens: 3, outputTokens: 6, reasoningOutputTokens: 2)
-                ),
-                .taskCompleted(timestamp: completedAt, turnID: "turn-2"),
-                .tokenCount(
-                    timestamp: base.addingTimeInterval(60),
-                    usage: CodexTokenUsageEvent(inputTokens: 88, cachedInputTokens: 0, outputTokens: 88, reasoningOutputTokens: 0)
-                )
-            ]
-        )]
-
-        let result = try XCTUnwrap(CodexFetcher.latestPromptUsage(
-            sessionFiles: files,
-            fileURL: fileURL,
-            turnID: "turn-2",
-            completedAt: completedAt
-        ))
-
-        XCTAssertEqual(result.usage.rounds, 2)
-        XCTAssertEqual(result.usage.inputTokens, 30)
-        XCTAssertEqual(result.usage.cachedInputTokens, 5)
-        XCTAssertEqual(result.usage.outputTokens, 11)
-        XCTAssertEqual(result.usage.reasoningOutputTokens, 3)
-        XCTAssertEqual(result.completedAt, completedAt)
     }
 
     func testSummarizeLocalUsageRetainsNewestSamplesWhenExceedingLimit() throws {

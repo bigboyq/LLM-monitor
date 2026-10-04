@@ -280,10 +280,6 @@ final class HoverRevealModeTests: XCTestCase {
             codexUsageDetails: CodexUsageDetails(
                 primary: usage,
                 secondary: usage,
-                lastPrompt: LastPromptUsage(
-                    completedAt: now.addingTimeInterval(-1800),
-                    usage: usage
-                ),
                 dailyTokenUsage: makeSevenDays(now: now),
                 recentSamples: recentSamples,
                 scannedAt: now

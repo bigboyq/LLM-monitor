@@ -77,7 +77,7 @@ final class RefreshResultMergerTests: StateTestCase {
         // 2. 新值 nil + previous 有 codexUsageDetails → 回退
         do {
             let prevDetails = CodexUsageDetails(
-                primary: nil, secondary: nil, lastPrompt: nil, dailyTokenUsage: nil, scannedAt: Date()
+                primary: nil, secondary: nil, dailyTokenUsage: nil, scannedAt: Date()
             )
             let previous = makeQuotaInfo(models: [makeModel("chatgpt_plan")], codexUsageDetails: prevDetails)
             let new = makeQuotaInfo(models: [makeModel("chatgpt_plan")], codexUsageDetails: nil)
