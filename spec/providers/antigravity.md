@@ -1132,8 +1132,8 @@ Source: `AntigravityLocalUsage.dailyTokenUsage` (always the last 7 local days,
 missing days back-filled), summed from every session's events whose timestamp
 falls in that local day.
 
-Today's number has its own home now: it is the 「今」row of the 「额度分析」stats
-block in section 2 (`ProviderCardView.todayUsageRow`, same `AntigravityLocalUsage.today`
+Today's number has its own home now: it is the 「今」row of the 「额度窗口」block in
+section 2 (`ProviderCardView.todayUsageRow`, same `AntigravityLocalUsage.today`
 source) — the standalone "📈 今天 …" footer line was removed together with the rest
 of the `.summary` part. `isReady` for Antigravity is simply "there is at least one
 day of data", so a partially accumulated week still renders the chart; before any
@@ -1320,4 +1320,4 @@ This script:
 3. calls `RetrieveUserQuotaSummary`
 4. prints or writes the raw JSON
 
-> 核对基线：2026-10-04 · 代码 d6396fd
+> 核对基线：2026-10-04 · 代码 094bd57

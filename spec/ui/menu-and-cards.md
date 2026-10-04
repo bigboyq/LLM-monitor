@@ -367,7 +367,7 @@ The menu footer contains:
 
 `ProviderCardView` 是 thin coordinator，额度行、浮层、图表和账号详情按职责分文件维护：
 - `QuotaViews.swift` — 所有 quota 行 / 进度条 / 重置卡 / `EquivalentQuotaAllocation`
-- `QuotaWindowUsageViews.swift` — 「额度窗口用量」区块（三个模块的表与格）
+- `QuotaWindowUsageViews.swift` — 「额度窗口用量」区块（包含「额度窗口」分析/用量可切换模块与「重置卡详情」模块，详见 `spec/ui/edge-dock.md` §Quota window usage block）
 - `LocalUsageHoverViews.swift` — 7 天本地用量卡与 `LocalUsageFreshnessBadge` / `LocalUsageFreshnessText`
 - `HoverPanel.swift` (363 行) — `HoverInfoRow` / `HoverPanelController` / 浮层管理
 - `TokenChart.swift` (40 行) — 7-day 柱图基础组件
@@ -382,7 +382,7 @@ Visual structure:
 |  Plan详情                                       |
 |    <model metadata line>                       |
 |    <progress bar>                              |
-|  额度分析 / 额度详情 / 重置卡详情               |
+|  额度窗口（分析/用量 segment 切换）/ 重置卡详情   |
 |  -------------------------------------------  |
 |  最近7天token用量            <freshness pill>  |
 |  <chart + table>                               |
@@ -532,7 +532,7 @@ look for a hover route to this data — the card carries it inline.
 
 - 同时有 5h 和周额度时合并为一条，周进度条按 6 个等价额度分段（`weeklyEquivalentMultiplier` = 6）；接口只返回一个窗口时走单窗口路径，不虚构第二窗口。
 - 账号行（第一段 Account Info）= 邮箱（`~/.codex/auth.json`）+ 套餐 pill（如 `Team`）；重置卡逐张清单常驻在「额度窗口用量」区块的重置卡模块里，不再挂 hover。
-- `Last Prompt` 摘要随菜单的 provider 卡一起删除，卡片里不再有这个入口；本地用量改由「额度分析 / 额度详情」两个模块与 7 天卡承担。
+- `Last Prompt` 摘要随菜单的 provider 卡一起删除，卡片里不再有这个入口；本地用量改由「额度窗口」模块（分析/用量可切换）与 7 天卡承担。
 
 ### Antigravity
 
@@ -797,4 +797,4 @@ The card's failure row is the one place in this table that is a **literal** 11pt
 than a `MenuTypography` role: the `errorMessage` role had no call site and was deleted
 rather than left as an unused role. The rendered size is unchanged.
 
-> 核对基线：2026-10-04 · 代码 1ea48fd
+> 核对基线：2026-10-04 · 代码 094bd57

@@ -221,20 +221,22 @@ was cut; the panel is still clamped to the screen's visible frame, as before.
 ### Collapsed sections are open in the popover
 
 **Since the 2026-10 second-round pass the provider card has no hover-collapsed
-sections left.** The account row, the quota-window usage rows and their raw-bucket
-table, the per-card reset-credit list and the 7-day footer are all **resident** — the
-two card hosts (dock popover, menu strip hover) sit in `ignoresMouseEvents = true`
-panels, so a collapsed section was unreachable there and residency is the only form
-that is actually reachable. What still branches on `hoverRevealMode` inside the card
-is one detail: the 7-day chart's own title row (`.alwaysVisible` hoists it into the
-card title outside; other modes draw it inside). Everything below still describes the
-`HoverInfoRow` mechanism, which the **main menu's own hover rows** continue to use:
+sections left.** The account row, the quota-window usage block (`QuotaWindowUsageSection`),
+the per-card reset-credit list and the 7-day footer are all **resident** — formerly the
+two card hosts sat in `ignoresMouseEvents = true` panels (the menu strip hover still does,
+while the dock popover panel has since flipped `ignoresMouseEvents = false` so its
+controls and tooltips are interactive), but residency remains the only form that works
+across both hosts without an unreachable "hover of a hover". What still branches on
+`hoverRevealMode` inside the card is one detail: the 7-day chart's own title row
+(`.alwaysVisible` hoists it into the card title outside; other modes draw it inside).
+Everything below still describes the `HoverInfoRow` mechanism, which the **main menu's
+own hover rows** continue to use:
 
 | Host | `hoverRevealMode` | Behaviour |
 |---|---|---|
 | Main menu — the header's sleep-blockers notice (`SleepOffendersHoverView`) | `.onHover` (the default) | Independent `NSPanel` after a delay |
-| Provider card in the edge dock popover | `.alwaysVisible` | Resident layout; the quota / 7-day groups are split into two cards, see *Two cards, titles outside* |
-| Provider card in the menu's provider strip hover | `.alwaysVisible` (pinned) | identical to the dock card — same `NSPanel` mechanism, but a panel that ignores mouse events |
+| Provider card in the edge dock popover | `.alwaysVisible` | Resident layout; the quota / 7-day groups are split into two cards, see *Two cards, titles outside*. The popover panel receives mouse events (`ignoresMouseEvents = false`), enabling segment switching, `.help` tooltips, and `ScrollView` scrolling |
+| Provider card in the menu's provider strip hover | `.alwaysVisible` (pinned) | identical layout to the dock card, but the panel ignores mouse events (`ignoresMouseEvents = true`); segment control is not rendered (`quotaWindowSegmentEditable = false`), table renders the persisted segment state |
 
 The switch is an `Environment` value rather than a parameter threaded through each
 call site: even with only two live `HoverInfoRow` call sites left (the header notice and
@@ -246,10 +248,11 @@ The default is `.onHover` **on purpose**: it is the side that protects the main 
 Changing it would not crash or warn, it would just quietly turn the menu into a wall of
 text, so `HoverRevealModeTests` asserts the default rather than trusting it.
 
-`.alwaysVisible` is the only workable choice for this window. The popover panel sets
-`ignoresMouseEvents = true` — it can never receive hover — and it is already a
-one-hover deep, so a nested "hover to expand" is a hover of a hover, and those
-sections would never open at all.
+`.alwaysVisible` is the only workable choice for this window. The popover is already
+one-hover deep, so a nested "hover to expand" would be a hover of a hover. Even with
+the dock popover now receiving mouse events (`ignoresMouseEvents = false`), keeping
+sections resident preserves unified card sizing across both hosts and prevents
+jarring height jumps.
 
 Opening everything is not free, though: one provider card is a lot of content at
 once, and the popover is capped at `0.95 ×` the visible height. That cap does
@@ -504,7 +507,7 @@ the circle (the 1.10× scale).
 |---|---|
 | Dock window | Fixed size while expanded. Only the hovered **circle** scales to `EdgeDockGeometry.hoverScale` (1.10×) inside its fixed row — the row frame, the number label and the window never move |
 | Popover trigger | **Hover**, with a **0.15s open delay** (`selectedIndex` trails `hoveredIndex` by it; the click is reserved for dragging). `scheduleSelection` re-checks `hoveredIndex` when the delay elapses, so sweeping the cursor down a column of circles re-arms the timer for each one instead of flashing every card in turn. `scheduleDeselection` collapses the card 0.20s after the cursor leaves the circle, unless it entered the card itself. The delay is not cosmetic: the dock is **permanently** on the screen edge, and a cursor merely passing by (dragging a window to the edge, turning a page) would otherwise make cards strobe. Clicking is a drag candidate only — `dragMoved` gates on a 4pt threshold and a press that never crosses it does nothing at all |
-| Popover | Second `NSPanel`, `ignoresMouseEvents = true` (read-only, never steals focus), level `.popUpMenu` so it sits above the dock. Renders the same `ProviderCardView(status:)` the menu's provider strip hovers — so the dock's popover and the menu's hover card are the same object at the same width and the same layout, not two near-identical ones. In the dock it lays out as **two cards with their titles outside**, see *Two cards, titles outside* below. An open card is re-rendered on every status broadcast (`reconcile`'s no-op-frame branch refreshes it), so it never shows numbers frozen at the moment it opened |
+| Popover | Second `NSPanel`, `ignoresMouseEvents = false` (`.nonactivatingPanel`, receives clicks/hovers without stealing focus), level `.popUpMenu` so it sits above the dock. Renders the same `ProviderCardView(status:)` the menu's provider strip hovers — so the dock's popover and the menu's hover card are the same object at the same width and the same layout, not two near-identical ones. In the dock it lays out as **two cards with their titles outside**, see *Two cards, titles outside* below. An open card is re-rendered on every status broadcast (`reconcile`'s no-op-frame branch refreshes it), so it never shows numbers frozen at the moment it opened |
 | Hit test | `EdgeDockController.circleIndex(at:circles:currentHovered:minimumRadius:)` — the provider's **outer circle only** (radius + 0.5pt), which deliberately excludes the number label below it and the gaps between rows. The hovered circle's disc grows by `hoverScale` to match its on-screen scale animation. `minimumRadius` is a floor, not an override: the compact dock's circles are 7pt (radius 3.5) and it passes **half a row pitch** (7.5pt) so adjacent discs meet at their midpoint — pointing at a 7px target without it snaps to a neighbour. Circles come from `resolveCircleRects` (measured, with an `EdgeDockGeometry` fallback that is **appearance-aware** — the full-approach constants put compact row 0 about 24pt off). Never recomputed from constants alone — see *Edge status dock → Layout* |
 | Anchor | Vertically centred on the hovered **row** (measured rect when available; `EdgeDockGeometry.rowCenter` is only the "not measured yet" fallback), opening **inward** (docked right → opens left) |
 | Size | **Fixed width** `EdgeDockTheme.popoverWidth` (derived from the 7-day chart, see *Popover width*), height = natural card size clamped to 95% of screen height; a `ScrollView` replaces the plain card only when it exceeds the height cap, so overflow scrolls instead of being clipped |
@@ -528,7 +531,7 @@ last 7 days look like*.
 
 | | Title row (outside, above the card) | Card |
 |---|---|---|
-| 1 | brand logo + provider name, with the refresh time / state label on the right — **no status dot** (the `ProviderStateLabel` capsule on the same row already states the status) and **no plan capsule** (it moved into the Account Info row) | **Section 1 — Account Info**: one resident row, account name + plan pill (see below), no section title. **Section 2 — Plan Info**: the in-card section title 「Plan详情」 first, then four resident modules: per model `<name> 5h 62%[(30%有效)] weekly 30% <reset time>` + the progress bar (the peak-window countdown still rides *below* the first bar; the parenthesised suffix appears only when the weekly conversion binds — see *Collapsed sections are open in the popover*); a divider; then the **quota-window usage block** — stats rows (5h / 周 / 今), the raw-bucket table, and the reset-credit module (see below) |
+| 1 | brand logo + provider name, with the refresh time / state label on the right — **no status dot** (the `ProviderStateLabel` capsule on the same row already states the status) and **no plan capsule** (it moved into the Account Info row) | **Section 1 — Account Info**: one resident row, account name + plan pill (see below), no section title. **Section 2 — Plan Info**: the in-card section title 「Plan详情」 first, then three resident modules: per model `<name> 5h 62%[(30%有效)] weekly 30% <reset time>` + the progress bar (the peak-window countdown still rides *below* the first bar; the parenthesised suffix appears only when the weekly conversion binds — see *Collapsed sections are open in the popover*); a divider; then the **quota-window usage block** — unified 「额度窗口」 Grid (with 「分析」/「用量」 segment switch) and the reset-credit module (see below) |
 | 2 | `最近7天token用量`, with the local-usage freshness as a **capsule** (`更新于 HH:mm` / `计算中…`) on the right — same font, weight and colour as title 1, because the two rows are the same kind of thing: the name of their card | the 7-day chart, its usage table and the footnote |
 
 **Section 1 — Account Info** is `QuotaWindowAccountInfoRow`, one row, no section
@@ -544,7 +547,7 @@ minimaxTokenPlan has neither field. An empty/blank string counts as missing, so 
 first-refresh gap never lights the row up. A thin separator follows the row only when
 it renders.
 
-**Section 2 — Plan Info reads as four modules.** Since the third-round pass it
+**Section 2 — Plan Info reads as three modules.** Since the third-round pass it
 opens with its own section title 「Plan详情」 (`ProviderCardView.planSectionTitle`,
 11pt semibold — the account row deliberately has none; the `.loading` / `.failed`
 fallback paths draw the same title so a mid-refresh flash cannot blink it). The
@@ -553,7 +556,7 @@ breathing room, and the peak countdown sits *below* the bar — it is context fo
 quota, provider-level, so it travels through `QuotaSummary.betweenBarAndColumns` → the
 model row → `ModelQuotaDockBlock.between` (type-erased as `AnyView`, only the first
 model row receives a non-empty value). The reset-credit row that used to sit next to
-the countdown now lives in the usage block's fourth module. The divider between the
+the countdown now lives in the usage block's second module. The divider between the
 quota bars and the usage block is drawn once by the card
 (`ProviderCardView.quotaUsageDivider`), not per model block, so it spans the whole
 quota group; both sides come from different data sources — provider API above, local
@@ -600,12 +603,12 @@ Inside card 1, **below** the quota/local-usage divider, there is one block that 
 `QuotaWindowUsageSection` (`Views/QuotaWindowUsageViews.swift`), in the same
 `.alwaysVisible` card the dock popover and the menu's provider strip hover both show.
 Since the second-round pass the block is **fully resident** — the hover-expanded detail
-(`QuotaWindowUsageHoverView`) is deleted — and reads as up to three modules separated
-by 1px hairlines. Since the third-round pass each module is headed by its own title
-(「额度分析」 / 「额度详情」 / 「重置卡详情」, `QuotaModuleTitle`: 10pt secondary
+(`QuotaWindowUsageHoverView`) is deleted — and reads as up to two modules separated
+by 1px hairlines (`QuotaModuleSeparator`). Each module is headed by its own title
+(「额度窗口」 / 「重置卡详情」, `QuotaModuleTitle`: 10pt secondary
 **semibold** since the fourth round, left-aligned) drawn **inside** the module, below the hairline and above the content, so
 it hides with its module; each module is hidden when it has no data, the whole block
-(and the divider above it) hidden when all three are:
+(and the divider above it) hidden when both are:
 
 **Every width in both tables is budgeted against 420pt, the card content width the two
 hosts share** — `EdgeDockTheme.popoverWidth` (468) − 2×12pt backdrop padding − 2×12pt
@@ -619,11 +622,10 @@ apart again.
 
 | Module | Content |
 |---|---|
-| Stats rows | Titled 「额度分析」. The time-composition bar, then a **header row `类型 | 用量 | 命中 | 产出比 | 思考 | 价值`** (fifth round, styled like the raw table's header — 10pt secondary, left-aligned) followed by **one row per window and the 今 row**. All rows share **one `Grid` of six equal columns** (`[类型 = 窗口标签] [用量 = token 值] [命中] [产出比] [思考] [价值]`) that fill the card width and align **across** rows — the fifth round split the old merged `[标签 + token]` cell into the 类型 and 用量 columns, and since the column names live in the header the data cells carry **no text labels any more** (the old `ViewThatFits` compressed-label degradation `出比` / `思` was deleted with them; the fixed three-character header fits the narrowest column — 产出比 ≈ 31pt against ≈ 61.7pt per column (the eighth round widened the stats Grid's horizontal spacing from 4 to 10 so a right-aligned 思考 value no longer sits 4pt from the 价值 column's left-aligned amount; the value column now compacts at ≥ 1M partly for the same reason), at the **420pt** card content width both hosts share — so the header layer degrades nothing). **Headers follow their column's data alignment** (eighth round): the 用量 / 命中 / 产出比 / 思考 headers are right-aligned over their right-aligned values and the 类型 / 价值 headers stay left-aligned — the sixth round's "headers don't follow" rule was reverted after real use showed a left-anchored header floating most of a column away from its own values (and the neighbouring 价值 amount crowding up to it), which read as a broken table. The 用量 / 命中 / 产出比 / 思考 **data cells are right-aligned** — equal-width `monospacedDigit` values line up along a column's trailing edge (the ones digit), which is what makes them comparable down the rows — while the 类型 and 价值 data cells stay left-aligned. **All-zero rows are skipped entirely** (fifth round): a row (5h/周/今) whose four buckets sum to 0 appears in **neither** module — the old "a window with zero local usage still shows a `0 / —` row" rule is gone. **When no row survives the filter the whole module — header included — disappears**, and the block-level divider goes with it. **All-zero columns hide module-wide**: the 命中 column (header with it) disappears when the cached bucket sums to 0 across **all visible rows** (5h/周/今, after the row filter), likewise 思考 for the reasoning bucket — a per-row `—` is not enough to drop a column; 类型/用量/产出比/价值 are always present. The bar is **time composition, not bucket composition**: the full bar is the local token total inside the current **weekly** window; the solid left segment is the part inside the latest **5h** window, the translucent right segment is the rest of the week — and it is drawn only when a **window row (5h/周) survives the row filter** (an all-zero window's all-grey trough says nothing; a lone 今 row draws none either). Grey trough, 6pt capsule, provider accent colour — deliberately *not* `TokenBucketBar` (that one splits input / cache / output) and not `SegmentedQuotaProgressBar` (that one encodes a remaining percentage). Rows are 10pt `monospacedDigit`, **one line, never wrapped** (an over-long cost value is compacted into K/M/B units instead, see *Value* below — truncation is the failure mode this no longer relies on). The **今 row** (label 「今」 since the fifth round — was 「今日」) reuses the same component and format, sourced from the same-day local aggregate — the same data and ratio formulas the old `📈 今天 …` summary row used, so that row was removed from the card bottom. No local data today → the row is omitted; an all-zero day → the row is skipped by the filter above |
-| Raw table | Titled 「额度详情」. **`类型 / Input / Cached / Output / Reason / 重置日期`**, one row per **existing, non-all-zero** window (5h, 周; a missing window omits its row, and **since the fifth round a window whose four buckets sum to 0 is skipped entirely** — the same all-zero row rule as the stats module) **followed by a 今 row since the fourth round** (same-day local aggregate, label 「今」 since the fifth round, reset-date cell `—` — today has no window reset; omitted when there is no local data today, skipped when the day is all-zero, and it joins the all-zero column judgement below). **All-zero columns hide with their headers**: each of Input / Cached / Output / Reason disappears when its bucket sums to 0 across **all visible rows** (5h/周/今, after the row filter); 类型 and 重置日期 are always present. When no row survives the filter the module — title included — disappears. Column widths are **not** equal: 类型 is **natural-width**; 重置日期 takes a **fixed width** = its longest form's natural width × 1.2 **plus a 12pt leading gutter** that separates it from the Reason column (sixth round; measured once: `09-30 15:07 (23h59m)`, the widest `formatResetSuffix` form, is 117pt at the table's 10pt `monospacedDigit` font → `resetDateColumnWidth` 152.4pt, of which 140.4pt is text region, pinned by test) so it renders whole — no `minimumScaleFactor` — while the four numeric columns split the **remaining** width, right-aligned with their headers following — at the shared 420pt that is (420 − 152.4 − 5×4) / 4 ≈ **61.9pt** each, enough for the widest `formatTokenCountCompact` form (`987M` ≈ 30pt). **Reset-date cells stay left-aligned at the end of the 12pt gutter** (left-aligned since the fifth round, gutter since the sixth) — date text is not a number, so it reads from the column start like the 类型 column and does not anchor to the trailing edge — while the **column header is centred within the fixed width since the sixth round** (it labels the whole column, not the column start). The four absolute buckets per window (`input` being the **uncached** one), `formatTokenCountCompact`, plus that window's reset time as `MM-dd HH:mm (倒计时)` — the same formatting the quota metadata line uses. Replaces the old hover detail's two side-by-side columns (same numbers, now always on screen). With several model pools, a footnote states the totals are summed and the reset time is the earliest |
-| Reset credits | Titled 「重置卡详情」. The collapsed row (**`重置卡数量：N`** + nearest expiry) followed by the **per-card list** (`ResetCreditsDetailList`): N available credits render as N+1 lines. **Zero available → the whole module is omitted** (not a `重置卡数量：0` line) |
+| Quota window (`windowUsageModule`) | Titled 「额度窗口」 (`QuotaWindowUsageSection.windowUsageTitle`). Merges the former 「额度分析」 and 「额度详情」 into a single switchable module with zero-reflow between states. The title row hosts a custom capsule `QuotaWindowUsageSegmentControl` on the right (rendered when `quotaWindowSegmentEditable` is true), offering **「分析」** (default) and **「用量」** (`QuotaWindowUsageSegment`, persisted via `@AppStorage(QuotaWindowUsageSection.segmentStorageKey)` = `"quotaWindowUsageSegment"`). The time-composition bar (`QuotaWindowTimeShareBar`) was completely removed. Below the title row sits **one unified `Grid` of 7 columns** (`horizontalSpacing: 10`, `verticalSpacing: 3`) across all visible rows (5h / 周 / 今). Fixed columns: **类型** (left, natural width ~16pt), **价值** (fixed 58pt, `QuotaWindowUsageSection.valueColumnWidth`, left-aligned cell), and **重置日期** (right, fixed 129pt, `QuotaWindowUsageSection.resetDateColumnWidth`, including 12pt leading gutter `QuotaWindowUsageSection.resetDateColumnLeadingGap`). The middle 4 columns switch by segment: in **「分析」** mode: `类型 | 用量 | 命中 | 产出比 | 思考 | 价值 | 重置日期` (`statsHeaders`); in **「用量」** mode: `类型 | Input | Cached | Output | Reason | 价值 | 重置日期` (`rawTableHeaders`). Middle columns share a fixed width of **38pt** (`middleColumnWidth`) and right-alignment (headers follow cell alignment). The 420pt budget: `natural (~16pt) + 4×38pt + 58pt + 129pt + 6×10pt = 415pt ≤ 420pt` (leaves a ~5pt safety margin). Both modes share the exact same Grid skeleton and column dimensions, guaranteeing zero reflow (pinned by height-equality test). Reset date is formatted as `MM-dd HH:mm (倒计时)`, 今 row displays `—`; its 129pt width removes the former 1.2× factor, fitting the longest form `09-30 15:07 (23h59m)` (117pt) + 12pt gutter with 0pt surplus, guarded by `testResetDateColumnWidthCoversTheLongestForm`. With multiple pools, a footnote below the Grid explains totals are summed and reset date is the earliest. |
+| Reset credits (`resetCreditsModule`) | Titled 「重置卡详情」 (`QuotaWindowUsageSection.resetCreditsTitle`). The collapsed row (**`重置卡数量：N`** + nearest expiry) followed by the **per-card list** (`ResetCreditsDetailList`): N available credits render as N+1 lines. **Zero available → the whole module is omitted** (not a `重置卡数量：0` line) |
 
-**Value (the fifth metric)** — `ModelPricingCatalog.estimate` over the window's
+**Value (the sixth metric)** — `ModelPricingCatalog.estimate` over the window's
 **already filtered samples** (the very array the four buckets are summed from, so token
 count and money can never describe different sets of samples), in the **original
 currency** (`¥` / `$`) with no local-currency conversion, matching the 7-day table and
@@ -637,12 +639,10 @@ nil rather than a meaningless total.
 **Amounts ≥ 100,000 switch to compact units** (`¥123.5K`, `¥1.23M` / `$2.50B`; the K
 rung uses one decimal); below that the
 cell is `ModelCostEstimate.displayText` verbatim, with the partially-priced suffix
-carried over. The threshold is measured, not guessed: the 价值 column is ≈61.7pt at the
-420pt card content width after the eighth-round spacing widening (was 66.7pt), and
-`¥99999.99` — the longest form the plain path can now
-produce — measures ≈58pt, while `¥999999.99` (the old seventh-round boundary form,
-64pt) no longer fits and is what pushed the threshold down one rung. `¥9.88M` measures
-≈40pt, half the column to spare.
+carried over. The threshold is measured, not guessed: the 价值 column is fixed at 58pt
+(`valueColumnWidth`), and `¥99999.99` — the longest form the plain path can produce —
+measures ≈58pt, while `¥999999.99` no longer fits and is what pushed the threshold down.
+`¥9.88M` measures ≈40pt, leaving plenty of room in the column.
 The ladder is **K / M / B**, the same language the 用量 column already speaks
 (`Formatters.formatTokenCountCompact`: `30K` / `3M`), and the B rung exists so the
 formatter cannot lose its unit at some magnitude. 「万」 was considered and rejected:
@@ -655,17 +655,17 @@ Ratio formulas (all three return `nil` — rendered `—` — when their denomin
 | Ratio | Formula | Rendered |
 |---|---|---|
 | 命中 cache hit | `cached / (input + cached)` | 1 decimal (`97.8%`) |
-| 产出比 output to input | `(reason + output) / (input + cached)` | **fixed 3 decimals (`12.345%`)** — 0 decimals folded 12.4% and 11.6% into the same "12%", and the 5h / 周 / 今 rows sit close enough that they must stay comparable; fixed (not "at most") keeps the column monospaced |
+| 产出比 output to input | `(reason + output) / (input + cached)` | **adaptive percentage (`outputInputRateText`)**: value ≥ 10 → integer (`12%`, `100%`); 1 ≤ value < 10 → 1 decimal (`1.2%`, `9.9%`); value < 1 → 2 decimals (`0.12%`, `0.00%`). Tiered on raw percentage value before formatting (e.g. 9.99% falls in 1-decimal bracket, displays `10.0%`). Designed to reclaim column width for the 420pt budget and zero-reflow layout; users knowingly accepted folding in the 10–100% range (the former "fixed 3 decimals" design decision retired). |
 | 思考 reasoning share | `reason / (reason + output)` | 0 decimals (`41%`) |
 
-**The 产出比 cell explains itself on hover.** A cell holds either `12.345%` or a bare
+**The 产出比 cell explains itself on hover.** A cell holds either the percentage text or a bare
 `—`, and neither says what the two sides of the fraction are. So the cell carries a
 `.help`: with a value, 「产出比 =（思考 + 输出）/（未缓存输入 + 缓存输入）」; without one,
 「会话无输入 token 时产出比无法计算，显示为 —」. The second string is the important one —
 `—` there is not zero, it is a ratio whose denominator is the entire input side and the
 session had none, and a dash in a numeric column is otherwise read as a missing reading
-rather than an undefined one. Both are constants on
-`QuotaWindowUsageMetricRow` and are pinned by a test.
+rather than an undefined one. Both are constants on `QuotaWindowUsageSection`
+(`outputInputRateHelp` / `outputInputRateHelpUnavailable`) and are pinned by a test.
 
 Data source and calibration:
 
@@ -677,18 +677,33 @@ Data source and calibration:
 - A provider with several model quotas is **summed per window** (`combineWindowUsage`):
   `modelMatches` already partitions the samples per model quota, so the pools do not
   overlap. The reset time shown is the **earliest** one, and the table footnote says so
-  whenever more than one pool contributed.
+  whenever more than one pool contributed (`snapshot.poolCount > 1`).
 - The **今 row** (label 「今」 since the fifth round) is provider-level today: the same-day
   bucket aggregate from `ProviderUsageProjection.dailyTokenUsage` (the same source the
   removed `📈 今天 …` summary row read), valued from the same-day samples through
-  `ModelPricingCatalog` — no window math, no GLM off-peak exclusion, and it is excluded
-  from the time-share bar.
-- **Degenerate cases**: a provider with only one of the two windows shows only that row
-  and the bar becomes a single segment; **since the fifth round a row (5h/周/今) whose
-  four buckets sum to 0 is skipped entirely in both modules, and when nothing survives
-  the stats / raw-table modules — titles included — disappear** (the card's divider goes
-  with them); a balance-only provider (DeepSeek API balance, no quota window at all)
-  renders **nothing** — not an empty bar.
+  `ModelPricingCatalog` — no window math, no GLM off-peak exclusion. Today has no window
+  reset date, so its reset date cell displays `—`.
+- **All-zero rules & Degenerate cases**:
+  - **All-zero rows skipped**: a row (5h/周/今) whose four buckets sum to 0 is skipped
+    entirely via `visibleRows` — appearing in neither mode.
+  - **All-zero columns hide module-wide**: evaluated per active segment across visible rows.
+    In analysis mode (`statsColumnVisibility`), `命中` disappears when cached tokens sum to 0
+    across all visible rows, and `思考` disappears when reasoning tokens sum to 0 across all
+    visible rows. In usage mode (`numericColumnVisibility`), each of `Input`, `Cached`,
+    `Output`, and `Reason` disappears when its respective bucket sums to 0 across all visible
+    rows. Fixed columns (`类型`, `价值`, `重置日期`) are always present and never hide.
+  - **Whole module disappearance**: when no row survives the filter, the entire 「额度窗口」
+    module — title and segment control included — disappears. If no reset credits are available
+    either (`hasVisibleContent` is false), the whole section and the card's `quotaUsageDivider`
+    above it disappear. A balance-only provider (DeepSeek API balance, no quota window at all)
+    renders **nothing**.
+- **Host interactivity & environment**:
+  - Dock popover panel: `ensurePopoverPanel` sets `ignoresMouseEvents = false` (`.nonactivatingPanel`,
+    does not steal focus), allowing users to click the segment switch, hover over `.help` tooltips,
+    and scroll with `ScrollView`. Injects `.environment(\.quotaWindowSegmentEditable, true)`.
+  - Menu strip hover panel: `HoverPanel.swift` retains `ignoresMouseEvents = true`, injecting
+    `.environment(\.quotaWindowSegmentEditable, false)`. The segment control is not rendered in
+    the title row, while the table renders the persisted segment state from `@AppStorage`.
 - **Reset credits residency.** The per-card list is the module itself: the collapsed row
   (`CompactResetCreditsRow`) plus `ResetCreditsDetailList`, unconditionally, always on
   screen. There is nothing left to expand — `CompactResetCreditsRow` has no
@@ -1002,4 +1017,4 @@ default has to preserve it — defaulting to off would put a dock inside every f
 window for every existing user. Because the setting can be flipped while the user is
 already fullscreen, a policy change re-probes instead of reusing the cached verdict.
 
-> 核对基线：2026-10-04 · 代码 1ea48fd
+> 核对基线：2026-10-04 · 代码 094bd57

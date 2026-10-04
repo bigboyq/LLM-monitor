@@ -120,7 +120,7 @@
 | `Sources/LLM-monitor/Views/MenuWindowAutoCloseBridge.swift` | 失焦立即关 + 30s 无交互关闭（菜单内 mouse/scroll/key 重置计时）|
 | `Sources/LLM-monitor/Views/ProviderCardView.swift` | provider 卡片 + `ProviderStateLabel` + `QuotaSummary`（卡内状态点已随菜单改版移除，状态由 `ProviderStateLabel` 胶囊承载） |
 | `Sources/LLM-monitor/Views/QuotaViews.swift` | 各种 quota 行 + 进度条（`CombinedQuotaWindowRow` / `CombinedQuotaBar` / `SingleQuotaBar` / `ModelQuotaDockBlock` / `OffPeakUsageFootnote` / `DeepseekBalanceRow` / `ChatGPTPlanModelRow` / `CompactResetCreditsRow` / `QuotaBarTooltip`） |
-| `Sources/LLM-monitor/Views/QuotaWindowUsageViews.swift` | 「额度窗口用量」区块族：模块标题 / 细分隔线、四桶绝对值与三个比率（`QuotaWindowUsageMetrics`）、时间构成条（`QuotaWindowTimeShareBar`）、原始值表格（`QuotaWindowUsageRawTable`）、reset credits 明细（`ResetCreditsDetailList`）与总段 `QuotaWindowUsageSection` |
+| `Sources/LLM-monitor/Views/QuotaWindowUsageViews.swift` | 「额度窗口用量」区块族：模块标题 / 细分隔线、四桶绝对值与三个比率（`QuotaWindowUsageMetrics`）、双段 capsule 切换（`QuotaWindowUsageSegmentControl` / `QuotaWindowUsageSegment`）、reset credits 明细（`ResetCreditsDetailList`）与合并统一 7 列 Grid 骨架的总段 `QuotaWindowUsageSection` |
 | `Sources/LLM-monitor/Views/QuotaHoverViews.swift` | 仅剩 `UsageMetricHoverSummaryView`（额度用量指标 hover 摘要，input/cached 与 prompts/rounds 固定分行）；旧 `QuotaWindowsHoverView` 族已随 menuLayout 死分支整体删除 |
 | `Sources/LLM-monitor/Views/HoverPanel.swift` | `HoverInfoRow` / `HoverPanelController` / 浮层管理 |
 | `Sources/LLM-monitor/Models/EdgeDockEntry.swift` | `EdgeDockEntry` + `EdgeDockProjection`：已启用 Provider → 双环条目（外环=5h 有效额度 min(5h, 周×N) 与状态栏同口径、原始 5h 字段供 hover 文案对照、内环=原始周 各自最低 + 健康档位 + 品牌 kind），纯函数 |
@@ -131,7 +131,7 @@
 | `Sources/LLM-monitor/Services/EdgeDockController.swift` | 边缘窗控制器本体：状态与配置（`applyRuntimeConfig` 是运行时改配置的唯一入口，`config` 的 setter 保持 private）+ 接线（`attach` / `teardown`） |
 | `Sources/LLM-monitor/Services/EdgeDockController+Window.swift` | `NSPanel` 建/拆、按条目数与形态算窗口尺寸、贴到目标屏那一侧、"为什么没出现 / 出现在哪"的日志签名 |
 | `Sources/LLM-monitor/Services/EdgeDockController+Mouse.swift` | 鼠标穿透与悬停接管：monitor 装卸、2Hz 轮询节拍、命中后的接管与释放、hover / 展开 / 收起的挂起任务 |
-| `Sources/LLM-monitor/Services/EdgeDockController+Popover.swift` | Provider 卡片浮层（与 dock 两个独立窗口）：定位、显隐、鼠标停在浮层上时的接管保持 |
+| `Sources/LLM-monitor/Services/EdgeDockController+Popover.swift` | Provider 卡片浮层（与 dock 两个独立窗口）：定位、显隐、鼠标停在浮层上时的接管保持（`ignoresMouseEvents = false` 接收交互并注入 `quotaWindowSegmentEditable = true`） |
 | `Sources/LLM-monitor/Services/EdgeDockController+Drag.swift` | 沿贴靠边滑动拖拽：阈值判定、跨屏换屏 UUID、落点吸附与位置持久化 |
 | `Sources/LLM-monitor/Services/EdgeDockController+Fullscreen.swift` | 全屏门控：判定变化后重排窗口，以及窗口进出场动画期间的阶梯补测 |
 | `Sources/LLM-monitor/Services/EdgeDockController+HitTesting.swift` | 边缘窗命中判定纯函数（`circleIndex` 圆命中 + `resolveRowRects` / `resolveCircleRects` 实测优先、几何兜底），`nonisolated static`，不读实例状态 |
@@ -170,4 +170,4 @@
 - **串行执行是既定选择**：`swift test --parallel` 实测（2026-10-02，5 连跑 3 败）不可用——`SQLiteTempCopyTests` 的临时副本断言扫描跨进程共享目录，并行 worker 互相误判；且慢测试为睡眠型，并行的 wall 收益仅 ~4s。并行化前提：先给 SQLiteTempCopy 的副本目录引入进程级隔离，再复评。
 - 慢用例的等待注入缝已建立：调度器（now/sleep）、Bark 退避（retryDelay）、vnode 合并窗口（coalescingWindow 参数）；新增耗时敏感测试时优先走注入缝，不要写死真实 sleep。
 
-> 核对基线：2026-10-04 · 代码 d6396fd
+> 核对基线：2026-10-04 · 代码 094bd57
