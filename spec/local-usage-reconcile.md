@@ -84,4 +84,93 @@ FSEvents/vnode 只负责把 source 标记为 dirty 和驱动 freshness UI；它�
 - hard-full 是显式可见、可测试、可取消的恢复操作，不会被普通 dirty 或自动 full 误触发。
 - 自动 batch、Manual、Wakeup、calendar invalidation 均只有一个全局 LocalUsage reconcile；完整测试和 release build 通过。
 
+## Scanner Concurrency (本地用量 scanner 的并发模型)
+
+`MinimaxLocalUsageScanner` / `AntigravityLocalUsageScanner` 的缓存写入并发安全靠
+**三层防御** 叠加：
+
+1. **`inFlightTask` dedup**（`@MainActor` instance 状态）—— `scan()` 入口检查
+   `inFlightTask == nil`，已有 in-flight 就直接 return. 正常路径下保证"同时间最多一个
+   worker". cancel + rescan 是唯一会并发的场景.
+
+2. **`AsyncMutex` pipeline 串行化**（actor-based async-aware mutex,
+   `Services/Infra/AsyncMutex.swift`）—— 整个 `performScanPure` 包在
+   `try await pipelineMutex.withLock { ... }` 里. 旧 worker 跑完整个 pipeline
+   （包括 saveIndex）才让新 worker 开始, 杜绝 "两个 worker 并发 loadIndex/saveIndex
+   导致 cache revert".
+
+3. **`lastCommittedGeneration` 守门**（`@MainActor private var`, 每个 scanner
+   实例独立; `performScanPure` 在 `AsyncMutex` 内部跨 `@MainActor` hop 调
+   `await scanner.readLastCommittedGeneration()` 读 + `await scanner.writeLastCommittedGeneration(...)`
+   写, 整个 read + write-to-disk + update 都在 mutex 内 atomic）—— 旧 worker
+   即使晚到 mutex, 读到的也是新 worker 更新过的值, shouldSave=false 跳过
+   saveIndex, 磁盘保留新 worker 的 view. **P1 fix**: 之前用 `lastCommittedAtStart`
+   快照从 main actor 传入, 跟 mutex 内的 write 跨 await 拆分, 会有 "新 worker
+   写盘后, 旧 worker 在 mutex 外读 stale 值, 进 mutex 后用 stale 值判断
+   shouldSave=true, 写 A_view 回滚 B_view" 的回归. 修法: 把 read 移回
+   mutex 内, 跨 @MainActor 边界 hop (`await scanner.read...`) 持锁执行.
+   三层缺一不可:
+   - 没 dedup: 正常路径就 race
+   - 没 AsyncMutex: cancel+rescan 期间 race
+   - 没 lastCommittedGeneration (在 mutex 内): 旧 worker 晚到 mutex 时回滚新 worker 的 cache
+
+`runScan` 端还有 `startedGeneration == latestGeneration` 守门, 负责旧 worker 的
+`in-memory result` 不写到 `self.lastResult`（保护 UI）. 三个守门各管一段, 不重叠.
+
+GLM ZCode scanner 是有意的**全量快照模型**：它每次从同一个数据库重建完整 snapshot，
+并由 `inFlightTask` + `AsyncMutex` + `runScan` generation 守门保护；它不使用
+`lastCommittedGeneration`，因为没有 Minimax/Antigravity 那种按 source 增量合并后可能回滚
+其他 source 的 cache view 的路径。这个差异是设计选择，不是遗漏的第三层。
+
+**本地用量 scanner 共享的 lifecycle 抽到 `LocalUsageScanRunner`**（`Services/LocalUsageScanRunner.swift`）：
+- `scan()` / `cancelInFlight()` / `runScan()` 的 boilerplate（启动 / 完成 generation
+  检查、cancellation filter、applyResult / applyError 闭包注入）走 runner
+- 各自 scanner 只实现"具体 work"（mutex + `performScanPureImpl`）跟"defer 块清
+  isScanning / inFlightTask"
+- 之前各 scanner 有约 80 行镜像 lifecycle 代码，现在各约 50 行
+- `LocalUsageScanRunner.run` 是 enum 静态函数（不是 class），从 `await
+  MainActor.run { latestGeneration() }` 拿 scanner 的 generation — 不引入
+  新的 actor / state 污染各 scanner 独立的状态机
+- **不**抽 base class / 不**改** `performScanPure` 签名 — 测试 surface
+  （`testGate` / `performScanPure`）保留，避免大改测试
+
+**Minimax / Antigravity 两个 provider 的 apply 路径抽到 `AppState.applyLocalUsage`**：
+- `applyAntigravityLocalUsage` / `applyMinimaxLocalUsage` 99% 一样（`providerID` 查表 +
+  no-op 检查 + `mutateStatus` 写入），原本是镜像重复。
+- 抽到 `applyLocalUsage<T: Equatable>(kind:field:fieldName:summarize:usage:)`：
+  - 用 `WritableKeyPath<ProviderStatus, T?>` 让 set 路径走类型系统，避免每次写闭包
+  - `summarize` closure 让调用方按"X sessions" / "X events" 等不同口径打印日志摘要
+    （避免 dump 完整 7-day daily 数组，污染 debug 日志）
+  - 派生自 `ProviderKind.logTag`（新加的 short tag，跟 fetcher `logTag` 约定一致）
+
+**`AntigravityLocalUsage` / `MinimaxLocalUsage` 自定义 `==` 排除 `scannedAt`**：
+- 默认 Equatable 因 `scannedAt: Date?`（每次扫描都是新 `Date`）让"内容没变但 scannedAt 变了"
+  的两份 usage 永远 !=，`AppState.apply*LocalUsage` 的 no-op 检查形同虚设：
+  每次都打 `logInfo` + 触发 `@Published` willSet 无意义 UI reload（实测 5 天 1298 行 logInfo spam）。
+- 修法：自定义 `==` 只比业务字段（`today` / `dailyTokenUsage` / `sessionCount` /
+  `eventCount` / `failedSessionCount`），`scannedAt` 不参与 equality。
+- Codable 自动合成的 `CodingKeys` 不受影响 —— `scannedAt` 仍然被编解码到 JSON cache。
+
+**apply 路径的日志范式统一**：
+- `applyAntigravityLocalUsage` / `applyMinimaxLocalUsage` 全部改 `logDebug`
+  （与 `LocalUsageCoordinator.sink fire` 一致）；release build 不输出。
+- refresh 路径的 `[antigravity/refresh] BEFORE/AFTER mutate` 也降级到 `logDebug`。
+- 高频路径不再污染 release log.txt（5MB rotate 阈值下原版每天接近触顶）。
+
+`AsyncMutex` 用 `actor` + waiters FIFO 队列实现 "锁跨 await 是设计内的": 持锁 worker
+await 时 actor executor 释放, 但 waiters 队列仍持有锁; 下一个 worker 在 acquire() 处
+await 挂起, 锁不释放. `withLock(work)` 闭包抛错时也保证 release. 锁不可重入；持锁的
+work 不能嵌套调用同一个 `withLock`，否则会等待自身释放锁。
+
+**Cancellation 语义**：`acquire()` 用 `withTaskCancellationHandler` +
+`withCheckedThrowingContinuation`, 支持 caller cancellation propagation.
+三阶段防护：(1) acquire 前 `try Task.checkCancellation()` 阻止已取消任务拿空闲锁；
+(2) 排队等待期间 `cancelWaiter(id:)` 从队列移除并立即抛 `CancellationError`（不拿锁不执行 work）；
+(3) `withLock` 在 acquire 成功后执行 work 前再次 `try Task.checkCancellation()`，
+catch 块始终 `release()` 防止锁泄漏。
+
+**Test gate**：`#if DEBUG` 包起来的 `static var testGate: (@Sendable () async -> Void)?`,
+测试可以注入一个 `TestGate.wait()` 让 worker 在 SQL/RPC 前阻塞, 精确控制 cancel+rescan
+时序. release build 的 binary 完全不带这个字段.
+
 > 核对基线：2026-10-04 · 代码 d6396fd
