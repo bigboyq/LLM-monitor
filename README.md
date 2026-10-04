@@ -33,18 +33,24 @@
   <img src="docs/images/menu-overview.png" alt="LLM Monitor 菜单栏主面板" width="420">
 </p>
 
-<p align="center"><sub>集中查看 Provider 额度、余额、重置时间、高峰提示和本地用量。</sub></p>
+<p align="center"><sub>客户端视角的今日用量总览：按 client 分组查看 token、命中率与价值，底部一行兜底展示各 Provider 额度状态。</sub></p>
 
 <table>
   <tr>
-    <td><img src="docs/images/settings-general.png" alt="LLM Monitor 通用设置界面"></td>
-    <td><img src="docs/images/token-usage-seven-days.png" alt="最近七天 Token 用量图表"></td>
+    <td><img src="docs/images/settings-general.png" alt="LLM Monitor 设置界面"></td>
+    <td><img src="docs/images/provider-card-minimax.png" alt="LLM Monitor Provider 卡片（minimax）"></td>
   </tr>
   <tr>
-    <td align="center">通用设置与 Provider 导航</td>
-    <td align="center">最近七天 Token 用量明细</td>
+    <td align="center">设置：客户端用量与 Provider 映射</td>
+    <td align="center">Provider 卡：Plan详情、额度窗口（分析/用量）与最近 7 天用量</td>
   </tr>
 </table>
+
+<p align="center">
+  <img src="docs/images/edge-dock.png" alt="LLM Monitor 边缘状态窗" width="110">
+</p>
+
+<p align="center"><sub>边缘状态窗：一圆环一 Provider，外环读 5h 有效额度，悬停弹出完整卡片。</sub></p>
 
 ## 支持的 Provider
 

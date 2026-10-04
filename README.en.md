@@ -53,18 +53,24 @@ config.json). All client-local usage can be inspected under Settings → Clients
   <img src="docs/images/menu-overview.png" alt="LLM Monitor menu bar dashboard" width="420">
 </p>
 
-<p align="center"><sub>The menu bar dashboard combines provider quota, balance, reset time, peak-period status, and local usage.</sub></p>
+<p align="center"><sub>The client-view dashboard: today's tokens, hit rate and value grouped per client, with the provider status strip at the bottom.</sub></p>
 
 <table>
   <tr>
-    <td><img src="docs/images/settings-general.png" alt="LLM Monitor general settings"></td>
-    <td><img src="docs/images/token-usage-seven-days.png" alt="Seven-day token usage chart"></td>
+    <td><img src="docs/images/settings-general.png" alt="LLM Monitor settings"></td>
+    <td><img src="docs/images/provider-card-minimax.png" alt="LLM Monitor provider card (minimax)"></td>
   </tr>
   <tr>
-    <td align="center">General settings and provider navigation</td>
-    <td align="center">Seven-day token usage details</td>
+    <td align="center">Settings: client usage and provider mapping</td>
+    <td align="center">Provider card: plan details, quota windows (analysis/usage) and the 7-day chart</td>
   </tr>
 </table>
+
+<p align="center">
+  <img src="docs/images/edge-dock.png" alt="LLM Monitor edge status dock" width="110">
+</p>
+
+<p align="center"><sub>Edge status dock: one ring per provider — the outer ring reads the effective 5h quota; hover pops the full card.</sub></p>
 
 ## Documentation
 
