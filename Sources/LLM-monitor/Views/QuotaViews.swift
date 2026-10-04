@@ -773,9 +773,11 @@ private struct CombinedQuotaMetadataLine: View {
                 .foregroundStyle(summaryColor(for: percent, timeFraction: timeFraction))
                 .frame(width: 40, alignment: .trailing)
             if let effectivePercent {
+                // 红色用告急同款 `criticalTint`：括号值是"周瓶颈下实际还能用多少"的
+                // 告警数字，要在原始 5h（绿色系）旁边跳出来，secondary 灰不够响。
                 Text("(\(Formatters.formatQuotaPercent(effectivePercent))有效)")
                     .font(MenuTypography.dataValue)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.criticalTint)
                     .fixedSize()
             }
         }
