@@ -177,10 +177,9 @@ struct ProviderCardView: View, Equatable {
     ///    ChatGPT / DeepSeek 专属行）；高峰期倒计时仍由 `between` 夹在第一个
     ///    model 行的进度条下方。曾经挂在同一位置的 `CompactResetCreditsRow`
     ///    已摘走，挪到模块4。
-    /// 2. **token用量统计值** + 3. **token用量原始值表** + 4. **重置卡信息**——
+    /// 2. **额度窗口（分析/用量可切换）** + 3. **重置卡信息**——
     ///    都在 `quotaWindowUsage` 的「额度窗口用量」区块里，与额度区之间隔着
-    ///    `quotaUsageDivider`；三个模块各自的标题（额度分析 / 额度详情 /
-    ///    重置卡详情）由 `QuotaWindowUsageSection` 内部画。
+    ///    `quotaUsageDivider`；模块标题（额度窗口 / 重置卡详情）由 `QuotaWindowUsageSection` 内部画。
     @ViewBuilder
     private func planModules(info: QuotaInfo, projection: ProviderUsageProjection) -> some View {
         planSectionTitle
@@ -259,12 +258,11 @@ struct ProviderCardView: View, Equatable {
     /// 思考 = reasoning/(reasoning+output)、命中为缓存占比）；
     /// 价值取当天样本逐条计价。
     ///
-    /// 当天无本地数据 → 返回 `nil`，今行整个不画。它不是额度窗口，只复用
-    /// `QuotaWindowUsageMetricRow` 的格式（行首标签「今」，第五轮改版从「今日」
-    /// 缩成「今」，与「5h」「周」同一长度档），不参与时间构成条；第四轮改版起
-    /// 同一行还进「额度详情」表（`QuotaWindowUsageRawTable.today`，重置日期格
-    /// `—`，并参与该表的全零列判定），两处消费同一份 `Row`。当天四桶合计为 0
-    /// 时照常返回 `Row`，由 `QuotaWindowUsageSection.visibleRows` 统一跳过。
+    /// 当天无本地数据 → 返回 `nil`，今行整个不画。它不是额度窗口，只是
+    /// `QuotaWindowUsageSection` 的同一份 `Row` 格式（行首标签「今」，第五轮
+    /// 改版从「今日」缩成「今」，与「5h」「周」同一长度档）；合并改版后重置
+    /// 日期格 `—`、并参与所在态的全零列判定。当天四桶合计为 0 时照常返回
+    /// `Row`，由 `QuotaWindowUsageSection.visibleRows` 统一跳过。
     private func todayUsageRow(projection: ProviderUsageProjection) -> QuotaWindowUsageSection.Row? {
         guard let today = projection.dailyTokenUsage.last(where: {
             Calendar.current.isDateInToday($0.dayStart)

@@ -24,6 +24,16 @@ extension EnvironmentValues {
         get { self[HoverRevealModeKey.self] }
         set { self[HoverRevealModeKey.self] = newValue }
     }
+
+    /// 「额度窗口」卡片内切换 segment 是否可编辑（dock popover 开启，菜单 strip hover 保持鼠标穿透并隐藏控件）。
+    var quotaWindowSegmentEditable: Bool {
+        get { self[QuotaWindowSegmentEditableKey.self] }
+        set { self[QuotaWindowSegmentEditableKey.self] = newValue }
+    }
+}
+
+private struct QuotaWindowSegmentEditableKey: EnvironmentKey {
+    static let defaultValue = false
 }
 
 /// Hover 即显的轻量浮层。只读展示，不接收点击，避免把菜单交互复杂化。

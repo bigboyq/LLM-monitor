@@ -3,7 +3,7 @@ import SwiftUI
 import AppKit
 @testable import LLM_monitor
 
-/// 「额度窗口用量」区块：窗口聚合口径、三个比率、时间构成条、以及截断短文案。
+/// 「额度窗口用量」区块：窗口聚合口径、三个比率、以及截断短文案。
 ///
 /// 这个区块的数据**不是**新算的——窗口边界与闲时排除都取自额度行同一份
 /// `LocalUsageSummaryBuilder`。所以这里钉的不是"聚合算得对不对"（那是
@@ -240,38 +240,11 @@ final class QuotaWindowUsageTests: XCTestCase {
         XCTAssertEqual(inputOnly.outputToInputRate ?? -1, 0, accuracy: 1e-9)
         XCTAssertNil(inputOnly.reasoningShare, "没有输出时分母为 0，必须是 nil 而不是 0%")
 
-        XCTAssertEqual(QuotaWindowUsageMetricRow.rateText(nil, digits: 1), "—")
-        XCTAssertEqual(QuotaWindowUsageMetricRow.rateText(0.978, digits: 1), "97.8%")
-        XCTAssertEqual(QuotaWindowUsageMetricRow.rateText(0.41, digits: 0), "41%")
+        XCTAssertEqual(QuotaWindowUsageSection.rateText(nil, digits: 1), "—")
+        XCTAssertEqual(QuotaWindowUsageSection.rateText(0.978, digits: 1), "97.8%")
+        XCTAssertEqual(QuotaWindowUsageSection.rateText(0.41, digits: 0), "41%")
     }
 
-    // MARK: - 时间构成条
-
-    /// 满条 = 周窗口总量；实色段 = 5h 窗口量；半透明段 = 其余。
-    func testBarSplitsByTimeNotByBucket() {
-        let fractions = QuotaWindowTimeShareBar.fractions(intervalTokens: 30, weeklyTokens: 120)
-        XCTAssertEqual(fractions.primary, 0.25, accuracy: 1e-9, "实色段 = 5h / 周")
-        XCTAssertEqual(fractions.remainder, 0.75, accuracy: 1e-9, "半透明段 = (周 − 5h) / 周")
-    }
-
-    /// 退化：只有一个窗口时整条实色（没有"其余"可分）；零用量时只剩灰底槽。
-    func testBarDegradesForSingleWindowAndZeroUsage() {
-        let single = QuotaWindowTimeShareBar.fractions(intervalTokens: 50, weeklyTokens: nil)
-        XCTAssertEqual(single.primary, 1, accuracy: 1e-9, "只有 5h 时整条都是实色段")
-        XCTAssertEqual(single.remainder, 0, accuracy: 1e-9)
-
-        let weeklyOnly = QuotaWindowTimeShareBar.fractions(intervalTokens: nil, weeklyTokens: 80)
-        XCTAssertEqual(weeklyOnly.remainder, 1, accuracy: 1e-9, "只有周窗口时整条都是半透明段（没有 5h 那一段）")
-
-        let zero = QuotaWindowTimeShareBar.fractions(intervalTokens: 0, weeklyTokens: 0)
-        XCTAssertEqual(zero.primary, 0)
-        XCTAssertEqual(zero.remainder, 0, "零用量 → 只剩灰底槽，不能出现 NaN 宽度")
-
-        // 5h 比周还大（两个 reset 不同步的脏数据）：钳到 1，不溢出。
-        let inconsistent = QuotaWindowTimeShareBar.fractions(intervalTokens: 100, weeklyTokens: 40)
-        XCTAssertEqual(inconsistent.primary, 1)
-        XCTAssertEqual(inconsistent.remainder, 0)
-    }
 
     // MARK: - 文案
 

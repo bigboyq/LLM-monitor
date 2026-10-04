@@ -377,6 +377,7 @@ struct ProviderStatusStripView: View {
         } detail: {
             ProviderCardView(status: entry.status)
                 .environment(\.hoverRevealMode, Self.cardRevealMode)
+                .environment(\.quotaWindowSegmentEditable, false)
                 .frame(width: Self.cardWidth)
         }
         .onTapGesture(perform: Self.tapHandler(for: item, onRefresh: onRefreshProvider))

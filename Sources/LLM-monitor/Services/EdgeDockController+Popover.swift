@@ -124,9 +124,10 @@ extension EdgeDockController {
     private func popoverContent<C: View>(_ content: C) -> some View {
         content
             .environment(\.hoverRevealMode, .alwaysVisible)
+            .environment(\.quotaWindowSegmentEditable, true)
     }
 
-    private func ensurePopoverPanel() -> (NSPanel, NSHostingView<AnyView>) {
+    func ensurePopoverPanel() -> (NSPanel, NSHostingView<AnyView>) {
         if let popoverPanel, let popoverHostingView {
             return (popoverPanel, popoverHostingView)
         }
@@ -150,7 +151,7 @@ extension EdgeDockController {
         // **不设** appearance：材质按系统外观解析，和菜单弹出保持一致。dock 那边
         // 是相反的（钉 vibrantDark + 强制 dark colorScheme），两者刻意不同——dock
         // 常驻，popover 跟菜单走。
-        popover.ignoresMouseEvents = true
+        popover.ignoresMouseEvents = false
 
         let hosting = NSHostingView(rootView: AnyView(EmptyView()))
         hosting.translatesAutoresizingMaskIntoConstraints = false
