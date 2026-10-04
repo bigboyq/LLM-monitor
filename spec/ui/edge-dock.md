@@ -95,13 +95,13 @@ fallback, `—` when neither exists). The number is the only readable informatio
 without hovering, so it is the 5h quota (effective: the same number the outer ring
 draws): that is what changes fastest and answers "can I
 still work right now". It stays a single value — the raw-vs-effective contrast
-lives only in the hover tooltip.
+lives only in the hover tooltip.（额度剩余百分比统一经 `Formatters.formatQuotaPercent` 格式化：至多一位小数，计算结果为整数则显示整数且绝不带 `.0`，如 `91.9%` / `92%` / `100%`。）
 
 There the 5h segment is dual-valued exactly when the weekly conversion binds
-(effective < raw 5h): `5h <raw>%(<effective>%有效)` (e.g. `5h 90%(30%有效)`, via
-`EdgeDockProjection.intervalCaption`) — the gap reads as a weekly bottleneck
+(effective < raw 5h): `5h <raw>%(<effective>%有效)` (e.g. `5h 90%(30%有效)` 或 `5h 100%(91.9%有效)`, via
+`EdgeDockProjection.intervalCaption`，同样至多一位小数、整数不带 `.0`） — the gap reads as a weekly bottleneck
 rather than the 5h window itself running dry; when effective == raw it stays a
-plain `5h 60%`.
+plain `5h 60%`（或 `5h 91.9%`）.
 
 That bracket is the **tooltip's**, produced by the dock projection, and it is a
 *separate* implementation from the identically-shaped `(N%有效)` on the popover
@@ -1017,4 +1017,4 @@ default has to preserve it — defaulting to off would put a dock inside every f
 window for every existing user. Because the setting can be flipped while the user is
 already fullscreen, a policy change re-probes instead of reusing the cached verdict.
 
-> 核对基线：2026-10-04 · 代码 094bd57
+> 核对基线：2026-10-04 · 代码 20232da
