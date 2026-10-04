@@ -1,5 +1,6 @@
 import XCTest
 import CoreGraphics
+import SwiftUI
 @testable import LLM_monitor
 
 /// 窗口尺寸、贴边 frame、offset 往返与最近边吸附，以及圆环外观常量。对应 `EdgeDockGeometry` / `+Window`。
@@ -604,5 +605,28 @@ final class EdgeDockGeometryTests: EdgeDockTestCase {
             EdgeDockGeometry.iconSize, BrandLogoView.defaultSize,
             "dock 图标比默认尺寸小时，兜底符号必须跟着缩小"
         )
+    }
+
+    // MARK: - 常驻数值标签宽度护栏
+
+    /// 圆环下方常驻数值文字（如 "91.9%", "100%"）在最长形态下的自然测量宽度
+    /// 必须 ≤ 行宽/圆环直径（`EdgeDockGeometry.diameter` = 38pt），
+    /// 保证一位小数改版后常驻数字不撑破 dock 标签。
+    @MainActor
+    func testDockQuotaLabelWidthFitsWithinRowDiameter() {
+        let longestForms = ["100%", "99.9%", "91.9%", "0%"]
+        for text in longestForms {
+            let label = Text(text)
+                .font(.system(size: EdgeDockGeometry.labelFontSize, weight: .medium, design: .rounded))
+                .monospacedDigit()
+            let hosting = NSHostingView(rootView: label)
+            hosting.layoutSubtreeIfNeeded()
+            let width = hosting.fittingSize.width
+            XCTAssertLessThanOrEqual(
+                width,
+                EdgeDockGeometry.diameter,
+                "额度百分比标签 \"\(text)\" 测量宽度（\(width)pt）不能超过 dock 圆环直径（\(EdgeDockGeometry.diameter)pt）"
+            )
+        }
     }
 }

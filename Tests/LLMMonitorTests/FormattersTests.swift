@@ -22,29 +22,38 @@ final class FormattersTests: XCTestCase {
         XCTAssertEqual(Formatters.formatPercent(0.6432, digits: 1), "64.3%")
     }
 
-    /// formatQuotaPercent：距离整数 < 0.05 显示整数，否则 1 位小数。
+    /// formatQuotaPercent：至多一位小数，计算结果是整数则显示整数（绝不带 .0）。
     /// 取代原本主面板 / hover / 通知 / 日志四处各不相同的舍入语义。
     func testFormattersQuotaPercent() {
-        // 整数附近：明确 < 0.05 → 整数
-        XCTAssertEqual(Formatters.formatQuotaPercent(80.0), "80%")
-        XCTAssertEqual(Formatters.formatQuotaPercent(80.04), "80%")         // 距 80 仅 0.04
-        XCTAssertEqual(Formatters.formatQuotaPercent(79.96), "80%")         // 距 80 仅 0.04
+        // 整数：直接输出整数
+        XCTAssertEqual(Formatters.formatQuotaPercent(92.0), "92%")
         XCTAssertEqual(Formatters.formatQuotaPercent(100.0), "100%")
         XCTAssertEqual(Formatters.formatQuotaPercent(0.0), "0%")
-        XCTAssertEqual(Formatters.formatQuotaPercent(0.04), "0%")
+        XCTAssertEqual(Formatters.formatQuotaPercent(80.0), "80%")
 
-        // 远离整数：明确 ≥ 0.05 → 1 位小数
+        // 整数附近进位与 xx.0% 泄漏防回归：
+        XCTAssertEqual(Formatters.formatQuotaPercent(91.95), "92%", "91.95 四舍五入到 92.0 后必须剥离为 92%，不能泄漏 92.0%")
+        XCTAssertEqual(Formatters.formatQuotaPercent(92.04), "92%")
+        XCTAssertEqual(Formatters.formatQuotaPercent(80.04), "80%")
+        XCTAssertEqual(Formatters.formatQuotaPercent(79.96), "80%")
+        XCTAssertEqual(Formatters.formatQuotaPercent(0.04), "0%")
+        XCTAssertEqual(Formatters.formatQuotaPercent(99.96), "100%", "99.96 四舍五入到 100.0 后必须剥离为 100%")
+
+        // 一位小数：
+        XCTAssertEqual(Formatters.formatQuotaPercent(94.3), "94.3%")
+        XCTAssertEqual(Formatters.formatQuotaPercent(4.71), "4.7%")
         XCTAssertEqual(Formatters.formatQuotaPercent(80.4), "80.4%")
         XCTAssertEqual(Formatters.formatQuotaPercent(79.6), "79.6%")
         XCTAssertEqual(Formatters.formatQuotaPercent(99.9), "99.9%")
         XCTAssertEqual(Formatters.formatQuotaPercent(33.33), "33.3%")
-
-        // 距离整数 0.5+ 的整数舍入值：仍走 1 位小数分支
-        // （如 79.5 距离 80 是 0.5，远大于 0.05 阈值）
         XCTAssertEqual(Formatters.formatQuotaPercent(79.5), "79.5%")
 
         // 数值 > 100：和原行为一致，不做 clamp
         XCTAssertEqual(Formatters.formatQuotaPercent(100.4), "100.4%")
+
+        // 负数与负零防回归：
+        XCTAssertEqual(Formatters.formatQuotaPercent(-0.0), "0%")
+        XCTAssertEqual(Formatters.formatQuotaPercent(-0.04), "0%")
     }
 
     /// 时间格式化 2 in 1：formatResetSuffix (5 阶梯压缩) + formatClock (跨日切月日)

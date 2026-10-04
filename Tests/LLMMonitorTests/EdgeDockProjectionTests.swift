@@ -260,6 +260,24 @@ final class EdgeDockProjectionTests: EdgeDockTestCase {
         )
     }
 
+    /// hover 文案统一遵循 Formatters.formatQuotaPercent：至多一位小数、整数不带 .0。
+    func testIntervalCaptionPreservesAtMostOneDecimal() {
+        // raw > effective (瓶颈): 原始值 1.0 (100%), 有效值 0.919 (91.9%)
+        XCTAssertEqual(
+            EdgeDockProjection.intervalCaption(effective: 0.919, raw: 1.0),
+            "5h 100%(91.9%有效)"
+        )
+        // raw 缺失或等于 effective: 单数值保持小数
+        XCTAssertEqual(
+            EdgeDockProjection.intervalCaption(effective: 0.919, raw: nil),
+            "5h 91.9%"
+        )
+        XCTAssertEqual(
+            EdgeDockProjection.intervalCaption(effective: 0.0471, raw: 0.0471),
+            "5h 4.7%"
+        )
+    }
+
     // MARK: - 逐窗口色档（内外环独立取色的输入）
 
     /// 5h 档位：无周窗口（瓶颈 = 5h 短窗口，`bindingTimeFraction == nil`）时固定

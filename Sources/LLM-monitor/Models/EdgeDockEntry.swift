@@ -204,7 +204,7 @@ enum EdgeDockProjection {
     /// 有效 < 原始时并排显示两个数，先原始后有效（`5h 90%(30%有效)`）。
     /// 逐 model 有效 ≤ 原始，各取 min 后仍 ≤，不会出现「括号里更大」的展示。
     static func intervalCaption(effective: Double, raw: Double?) -> String {
-        let percent = { (fraction: Double) in "\(Int((fraction * 100).rounded()))%" }
+        let percent = { (fraction: Double) in Formatters.formatQuotaPercent(fraction * 100) }
         guard let raw, raw > effective else { return "5h \(percent(effective))" }
         return "5h \(percent(raw))(\(percent(effective))有效)"
     }

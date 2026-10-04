@@ -334,7 +334,7 @@ struct EdgeDockContentView: View {
 
     private func labelText(for entry: EdgeDockEntry) -> String {
         guard let fraction = entry.intervalFraction ?? entry.weeklyFraction else { return "—" }
-        return "\(Int((fraction * 100).rounded()))%"
+        return Formatters.formatQuotaPercent(fraction * 100)
     }
 
     /// 单个环：底槽 + 顺时针收缩的健康色弧。
@@ -410,7 +410,7 @@ struct EdgeDockContentView: View {
     }
 
     private func percentText(_ fraction: Double) -> String {
-        "\(Int((fraction * 100).rounded()))%"
+        Formatters.formatQuotaPercent(fraction * 100)
     }
 
     private func healthText(for entry: EdgeDockEntry) -> String {
