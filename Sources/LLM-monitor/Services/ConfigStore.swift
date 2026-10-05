@@ -448,7 +448,7 @@ struct ProviderConfig: Codable, Equatable {
     /// 自管 auth 的 fetcher 用：auth.json 路径（如 codex 的 ~/.codex/auth.json）
     var authPath: String?
 
-    /// GLM Coding Plan 高峰期开始小时（24h 制，本地时区）。nil = 默认 14
+    /// GLM Coding Plan 高峰期开始小时（24h 制，北京时间）。nil = 默认 14
     var peakStartHour: Int?
     /// GLM Coding Plan 高峰期结束小时（24h 制，半开区间）。nil = 默认 18
     var peakEndHour: Int?

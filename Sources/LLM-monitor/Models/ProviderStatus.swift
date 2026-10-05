@@ -148,7 +148,7 @@ struct ProviderStatus: Identifiable, Equatable, Sendable {
     func aggregateHealthLevel(at now: Date = Date()) -> HealthLevel? {
         guard let info = lastSuccess else { return nil }
         let isPeak: Bool
-        if let glmPeak = glmPeakWindow, case .peak = glmPeak.status(at: now) {
+        if let glmPeak = glmPeakWindow, case .peak = glmPeak.status(at: now, calendar: PeakWindow.beijingCalendar) {
             isPeak = true
         } else {
             isPeak = false

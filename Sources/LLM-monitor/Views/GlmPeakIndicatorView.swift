@@ -2,8 +2,9 @@ import SwiftUI
 
 /// GLM Coding Plan 高峰期提示行。
 ///
-/// 纯本地时间计算（`GlmPeakWindow.status(at:)`），不依赖 GLM API —— 即使 refresh
-/// 失败，只要卡片有数据（`.ok`）就照常显示。公共外壳与倒计时格式化复用
+/// 纯北京时间计算（`GlmPeakWindow.status(at:calendar:holidays:)`，显式传
+/// `PeakWindow.beijingCalendar`，与 DeepSeek 判定形状统一），不依赖 GLM API ——
+/// 即使 refresh 失败，只要卡片有数据（`.ok`）就照常显示。公共外壳与倒计时格式化复用
 /// `PeakIndicatorView`，这里只注入 GLM 专属的文案 / 图标 / 配色。
 struct GlmPeakIndicatorView: View {
     let window: GlmPeakWindow
@@ -11,7 +12,7 @@ struct GlmPeakIndicatorView: View {
     var body: some View {
         PeakIndicatorView(
             status: { date in
-                switch window.status(at: date) {
+                switch window.status(at: date, calendar: PeakWindow.beijingCalendar) {
                 case .peak(until: let end): return (true, end)
                 case .offPeak(until: let start): return (false, start)
                 }

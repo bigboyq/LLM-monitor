@@ -184,7 +184,7 @@ final class AppState: ObservableObject {
                 break
             }
 
-            if let glmPeak = status.glmPeakWindow, case .peak = glmPeak.status(at: now) {
+            if let glmPeak = status.glmPeakWindow, case .peak = glmPeak.status(at: now, calendar: PeakWindow.beijingCalendar) {
                 levels.append(.warning)
             }
             if let deepseekPeak = status.deepseekPeakWindow, case .peak = deepseekPeak.status(at: now) {
@@ -213,7 +213,7 @@ final class AppState: ObservableObject {
         for status in enabled where status.kind != .deepseek {
             // 高峰判定跟随 systemHealthLevel 现状：glmPeakWindow 命中 .peak 即 true。
             let isPeak: Bool
-            if let glmPeak = status.glmPeakWindow, case .peak = glmPeak.status(at: now) {
+            if let glmPeak = status.glmPeakWindow, case .peak = glmPeak.status(at: now, calendar: PeakWindow.beijingCalendar) {
                 isPeak = true
             } else {
                 isPeak = false
@@ -820,14 +820,14 @@ final class AppState: ObservableObject {
         rescheduleHealthBoundary(updateEvaluationDate: true)
     }
 
-    /// 取所有启用 Provider 的最近高峰窗口边界。GLM 使用本地日历，DeepSeek
-    /// 使用北京时间日历；重复的绝对时刻通过 Set 自然合并。边界是显示/UI
-    /// deadline，不属于任何 Provider 的 regular/reset 网络刷新。
+    /// 取所有启用 Provider 的最近高峰窗口边界。GLM 与 DeepSeek 统一使用北京时间
+    /// 日历（`PeakWindow.beijingCalendar`）；重复的绝对时刻通过 Set 自然合并。边界
+    /// 是显示/UI deadline，不属于任何 Provider 的 regular/reset 网络刷新。
     private func nextHealthBoundary(after date: Date) -> Date? {
         var candidates = Set<Date>()
         for status in statuses where status.isEnabled {
             if let window = status.glmPeakWindow,
-               case .peak(until: let boundary) = window.status(at: date, calendar: .current),
+               case .peak(until: let boundary) = window.status(at: date, calendar: PeakWindow.beijingCalendar),
                boundary > date {
                 candidates.insert(boundary)
             }
@@ -837,7 +837,7 @@ final class AppState: ObservableObject {
                 candidates.insert(boundary)
             }
             if let window = status.glmPeakWindow,
-               case .offPeak(until: let boundary) = window.status(at: date, calendar: .current),
+               case .offPeak(until: let boundary) = window.status(at: date, calendar: PeakWindow.beijingCalendar),
                boundary > date {
                 candidates.insert(boundary)
             }

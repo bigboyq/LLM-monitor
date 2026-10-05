@@ -161,7 +161,8 @@ enum ModelPricingCatalog {
     static func estimate(
         samples: [LocalTokenUsageSample],
         quotaProviderID: String,
-        deepseekPeakWindow: DeepseekPeakWindow = .defaultWindow
+        deepseekPeakWindow: DeepseekPeakWindow = .defaultWindow,
+        holidays: HolidayCalendar = HolidayCalendar.shared
     ) -> ModelCostEstimate {
         var value = 0.0
         var currency: ModelPriceCurrency?
@@ -193,7 +194,8 @@ enum ModelPricingCatalog {
             let multiplier = pricingMultiplier(
                 quotaProviderID: quotaProviderID,
                 at: sample.completedAt,
-                deepseekPeakWindow: deepseekPeakWindow
+                deepseekPeakWindow: deepseekPeakWindow,
+                holidays: holidays
             )
             value += Double(components.uncached) * pricing.inputPerMillion * multiplier / 1_000_000
             value += Double(components.cached) * pricing.cacheReadPerMillion * multiplier / 1_000_000
@@ -212,7 +214,8 @@ enum ModelPricingCatalog {
         samples: [LocalTokenUsageSample],
         quotaProviderID: String,
         calendar: Calendar = .current,
-        deepseekPeakWindow: DeepseekPeakWindow = .defaultWindow
+        deepseekPeakWindow: DeepseekPeakWindow = .defaultWindow,
+        holidays: HolidayCalendar = HolidayCalendar.shared
     ) -> [Date: ModelCostEstimate] {
         let grouped = Dictionary(grouping: samples) {
             calendar.startOfDay(for: $0.completedAt)
@@ -221,7 +224,8 @@ enum ModelPricingCatalog {
             estimate(
                 samples: $0,
                 quotaProviderID: quotaProviderID,
-                deepseekPeakWindow: deepseekPeakWindow
+                deepseekPeakWindow: deepseekPeakWindow,
+                holidays: holidays
             )
         }
     }
@@ -236,7 +240,7 @@ enum ModelPricingCatalog {
         let providerID: String
         /// 该规则适用的计价窗口类型（当前只有 DeepSeek 高峰 / 谷价两类）。
         enum Kind: Sendable {
-            /// 北京时间高峰窗口，命中即乘 `multiplier`。
+            /// 北京时间高峰窗口（周一–周五 ∧ 非法定节假日），命中即乘 `multiplier`。
             case peakWindow
         }
         let kind: Kind
@@ -254,16 +258,18 @@ enum ModelPricingCatalog {
     ]
 
     /// 用户给定的是非高峰价；已登记的 provider 按其窗口规则取倍率，未登记
-    /// （或窗口未命中）返回 1。
+    /// （或窗口未命中）返回 1。节假日（`holidays`，Rule A）内的周一–周五不算
+    /// 高峰、不加倍 —— 判定随 `PeakWindow.status(at:calendar:holidays:)` 一并完成。
     private static func pricingMultiplier(
         quotaProviderID: String,
         at date: Date,
-        deepseekPeakWindow: DeepseekPeakWindow
+        deepseekPeakWindow: DeepseekPeakWindow,
+        holidays: HolidayCalendar
     ) -> Double {
         for rule in pricingMultipliers where rule.providerID == quotaProviderID {
             switch rule.kind {
             case .peakWindow:
-                if case .peak = deepseekPeakWindow.status(at: date, calendar: PeakWindow.beijingCalendar) {
+                if case .peak = deepseekPeakWindow.status(at: date, calendar: PeakWindow.beijingCalendar, holidays: holidays) {
                     return rule.multiplier
                 }
             }

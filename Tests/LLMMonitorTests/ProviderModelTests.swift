@@ -101,6 +101,43 @@ final class ProviderModelTests: XCTestCase {
         }
     }
 
+    /// 节假日（Rule A）内的周一–周五不算高峰：DeepSeek ×2 倍率在法定节假日
+    /// 不加倍。用注入的 fixture 节假日 + 注入的 window/calendar 断言，不依赖
+    /// 真实快照内容。
+    func testDeepseekPricingSkipsHolidayWeekday() {
+        let calendar = DeepseekPeakWindow.beijingCalendar
+        // 2026-08-05 是周三：10:00 落在工作日 9–12 高峰 slot。
+        let day = calendar.date(from: DateComponents(year: 2026, month: 8, day: 5, hour: 10))!
+        let sample = LocalTokenUsageSample(
+            completedAt: day,
+            modelName: "deepseek-v4-flash",
+            promptID: "p1",
+            inputTokens: 1_000_000,
+            cachedInputTokens: 200_000,
+            outputTokens: 100_000,
+            reasoningOutputTokens: 0
+        )
+
+        // 空节假日表（纯周一–周五口径）→ 正常 ×2。
+        let emptyHolidayEstimate = ModelPricingCatalog.estimate(
+            samples: [sample],
+            quotaProviderID: QuotaProviderID.deepseek,
+            deepseekPeakWindow: .defaultWindow,
+            holidays: .empty
+        )
+        XCTAssertEqual(emptyHolidayEstimate.value ?? -1, 2.408, accuracy: 0.000001)
+
+        // 该日标记为法定节假日 → 不加倍（1×）。
+        let holidayEstimate = ModelPricingCatalog.estimate(
+            samples: [sample],
+            quotaProviderID: QuotaProviderID.deepseek,
+            deepseekPeakWindow: .defaultWindow,
+            holidays: HolidayCalendar.make(holidays: ["2026-08-05"])
+        )
+        XCTAssertEqual(holidayEstimate.value ?? -1, 1.204, accuracy: 0.000001,
+                       "法定节假日的周一–周五高峰 slot 内必须按平价（1×）计价")
+    }
+
     func testDisplayOrderHonorsKnownIDsAndAppendsNewItemsByDefaultOrder() {
         let items = ["zeta", "alpha", "beta"]
         let ordered = DisplayOrder.ordered(
