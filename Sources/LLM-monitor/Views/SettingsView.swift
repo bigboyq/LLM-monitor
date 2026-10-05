@@ -42,15 +42,16 @@ struct SettingsView: View {
     @State var glmInterval: Int = 0
     @State var glmApiKey: String = ""
     @State var showGlmKey: Bool = false
-    @State var glmPeakStart: Int = GlmPeakWindow.zhipuDefault.startHour
-    @State var glmPeakEnd: Int = GlmPeakWindow.zhipuDefault.endHour
-    @State var glmPeakWeekdays: Bool = GlmPeakWindow.zhipuDefault.weekdaysOnly
     @State var glmBalanceLogParsing: Bool = false
 
     @State var deepseekEnabled: Bool = false
     @State var deepseekInterval: Int = 0
     @State var deepseekApiKey: String = ""
     @State var showDeepseekKey: Bool = false
+
+    /// 节假日数据源草稿（常规 pane）。nil 配置展示为默认上游 URL；
+    /// 保存时与默认一致写 nil、显式空串写 ""（仅内置快照），见 saveAndApply。
+    @State var holidaySourceDraft: String = ""
 
     @State var selectedClientID: String = ClientID.antigravity
     @State var providerCardOrder: [String] = []
@@ -554,6 +555,16 @@ struct SettingsView: View {
                 providerCardOrderEditor
             }
 
+            SettingsSection(
+                title: "节假日数据源",
+                footer: "GLM / DeepSeek 高峰判定与高峰倍率所用的法定节假日表来源。支持 URL 或本地文件路径（本项目 JSON 快照格式，可用 scripts/sync-holiday-data.sh 生成）；填回默认地址即恢复默认（chinese-days 的 CDN JSON，App 内自动转换为快照口径）；清空表示只用随 App 打包的内置快照、不联网。取数失败时保留既有数据。"
+            ) {
+                HolidaySourceSection(
+                    service: state.holidayCalendarService,
+                    draft: $holidaySourceDraft
+                )
+            }
+
             SettingsSection(title: "关于") {
                 SettingsControlRow("LLM Monitor") {
                     Text("版本 \(AppMetadata.version)（\(AppMetadata.build)）")
@@ -811,12 +822,13 @@ struct SettingsView: View {
 
                 SettingsSection(
                     title: "高峰期提示",
-                    footer: "高峰期内模型调用按基础积分扣费，非高峰期按 50% 抵扣（省一半）。按本机时区计算，卡片会显示距高峰期 / 高峰结束的倒计时。默认：周一–周五 14:00–18:00。"
+                    footer: "高峰期内模型调用按基础积分扣费，非高峰期按 50% 抵扣（省一半）。按北京时间计算，工作日 = 周一–周五（法定节假日除外），卡片会显示距高峰期 / 高峰结束的倒计时。官方口径，不可调。"
                 ) {
-                    peakHourRow(label: "开始", value: $glmPeakStart, max: 22)
-                    peakHourRow(label: "结束", value: $glmPeakEnd, min: glmPeakStart + 1)
-                    Divider().padding(.vertical, 4)
-                    SettingsToggleRow(label: "仅工作日（周一–周五）", isOn: $glmPeakWeekdays)
+                    SettingsControlRow("高峰时段定义") {
+                        Text("工作日 14:00–18:00（北京时间 · 法定节假日除外）")
+                            .font(SettingsTypography.numericValue)
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 SettingsSection(
@@ -859,7 +871,7 @@ struct SettingsView: View {
 
                 SettingsSection(
                     title: "高峰期提示",
-                    footer: "DeepSeek API 采用峰谷定价策略，高峰价格为平价（1×）的 2 倍（适用于所有计费项）。系统将自动换算北京时间并实时提示倒计时。高峰时段为北京时间工作日 9:00–12:00 和 14:00–18:00，周六、周日全天平价（1×）。"
+                    footer: "DeepSeek API 采用峰谷定价策略，高峰价格为平价（1×）的 2 倍（适用于所有计费项）。系统将自动换算北京时间并实时提示倒计时。高峰时段为北京时间工作日（法定节假日除外）9:00–12:00 和 14:00–18:00，周六、周日全天平价（1×）。官方口径，不可调。"
                 ) {
                     SettingsControlRow("高峰时段定义") {
                         Text("北京时间工作日 9:00–12:00, 14:00–18:00")
@@ -912,21 +924,6 @@ struct SettingsView: View {
                 notifyChannels[providerID] = entry
             }
         )
-    }
-
-    /// 高峰期小时选择行：Stepper 限定在 [min, max]，显示 "HH:00"。
-    func peakHourRow(
-        label: String,
-        value: Binding<Int>,
-        min: Int = 0,
-        max: Int = 23
-    ) -> some View {
-        SettingsControlRow(label) {
-            Stepper(value: value, in: min...max) {
-                Text(String(format: "%02d:00", value.wrappedValue))
-                    .font(SettingsTypography.rowValueMonospaced)
-            }
-        }
     }
 
     var glmApiKeyField: some View {
@@ -1077,6 +1074,9 @@ struct SettingsView: View {
         barkTTL = config.bark.map { $0.ttl > 0 ? String($0.ttl) : "" } ?? ""
         barkSkipWhenAwakeAndUnlocked = config.bark?.skipWhenAwakeAndUnlocked ?? false
         barkTestMessage = nil
+        // 节假日数据源：缺省键在输入框里展示为默认上游 URL（保存时与默认一致
+        // 写回 nil，保持 config.json 干净；显式空串 = 仅内置快照）。
+        holidaySourceDraft = config.holidaySource ?? HolidayCalendar.defaultSourceURL
 
         notifyChannels = [:]
         for kind in ProviderKind.windowedKinds {
@@ -1120,13 +1120,6 @@ struct SettingsView: View {
             glmEnabled = glm.enabled
             glmApiKey = glm.apiKey ?? ""
             glmInterval = glm.refreshIntervalSeconds ?? 0
-            let loadedPeakStart = min(max(glm.peakStartHour ?? GlmPeakWindow.zhipuDefault.startHour, 0), 22)
-            glmPeakStart = loadedPeakStart
-            glmPeakEnd = min(
-                max(glm.peakEndHour ?? GlmPeakWindow.zhipuDefault.endHour, loadedPeakStart + 1),
-                23
-            )
-            glmPeakWeekdays = glm.peakWeekdaysOnly ?? GlmPeakWindow.zhipuDefault.weekdaysOnly
             glmBalanceLogParsing = glm.parseZcodeBalanceLog ?? false
         }
 
@@ -1233,6 +1226,14 @@ struct SettingsView: View {
             ? nil
             : effectiveProviderOrder
 
+        // 节假日数据源：与默认上游一致写 nil（不落键，保持 config.json 干净）；
+        // 显式空串原样写 ""（语义 = 只用内置快照、不联网）；其余 URL / 本地路径
+        // 原样保存。
+        let trimmedHolidaySource = holidaySourceDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        config.holidaySource = trimmedHolidaySource == HolidayCalendar.defaultSourceURL
+            ? nil
+            : trimmedHolidaySource
+
         let trimmedBarkServer = trimmedString(barkServerURL) ?? BarkConfig.defaultServerURL
         let trimmedBarkKey = trimmedString(barkDeviceKey)
         let trimmedBarkSound = trimmedString(barkSound)
@@ -1293,14 +1294,9 @@ struct SettingsView: View {
             glm.enabled = glmEnabled
             glm.apiKey = trimmedString(glmApiKey)
             glm.refreshIntervalSeconds = providerRefreshInterval(from: glmInterval)
-            // 与默认一致时写 nil，保持 config.json 干净
-            let d = GlmPeakWindow.zhipuDefault
-            // 先把结束时间钳到合法区间，避免用户先把开始调高导致 end ≤ start
-            let clampedStart = min(max(glmPeakStart, 0), 22)
-            let clampedEnd = min(max(glmPeakEnd, clampedStart + 1), 23)
-            glm.peakStartHour = clampedStart == d.startHour ? nil : clampedStart
-            glm.peakEndHour = clampedEnd == d.endHour ? nil : clampedEnd
-            glm.peakWeekdaysOnly = glmPeakWeekdays == d.weekdaysOnly ? nil : glmPeakWeekdays
+            // 高峰窗口固定为官方口径，无 config 字段可写；旧版本残留的
+            // peakStartHour / peakEndHour / peakWeekdaysOnly 键由 JSONDecoder
+            // 静默忽略，保存时也不会再写回。
             // 关闭时写 nil（配置文件不落该字段），与「字段不存在 = 不解析」一致。
             glm.parseZcodeBalanceLog = glmBalanceLogParsing ? true : nil
             config.providers[id] = glm
@@ -1447,6 +1443,62 @@ struct SettingsView: View {
             return "~/" + String(path.dropFirst(homePrefix.count))
         }
         return path
+    }
+}
+
+/// 「节假日数据源」节（常规 pane）的表体：源输入 + 状态行 + 覆盖提示 + 立即更新。
+///
+/// 单独成 View 是为了 `@ObservedObject` 观察服务端的 @Published（刷新状态 /
+/// 结果文案 / 来源标记），让「立即更新」的转圈与结果行只重绘本节，不重绘整张
+/// 设置表单。源文本走父级的 draft binding，与既有 draft/save 事务同轨。
+private struct HolidaySourceSection: View {
+    @ObservedObject var service: HolidayCalendarService
+    @Binding var draft: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            SettingsControlRow("数据源") {
+                TextField("", text: $draft, prompt: Text(HolidayCalendar.defaultSourceURL))
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: SettingsLayout.standardControlWidth)
+            }
+
+            Text(service.statusLineText)
+                .font(SettingsTypography.status)
+                .foregroundStyle(.secondary)
+
+            if let warning = service.coverageWarningText {
+                Text(warning)
+                    .font(SettingsTypography.status)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            HStack(spacing: 12) {
+                Button("立即更新") {
+                    Task {
+                        _ = await service.refreshNow(
+                            source: draft.trimmingCharacters(in: .whitespacesAndNewlines)
+                        )
+                    }
+                }
+                .disabled(service.isRefreshing)
+
+                if service.isRefreshing {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("正在更新…")
+                        .font(SettingsTypography.status)
+                        .foregroundStyle(.secondary)
+                } else if let message = service.lastRefreshMessage {
+                    Text(message)
+                        .font(SettingsTypography.status)
+                        .foregroundStyle(message.hasPrefix("节假日更新失败") ? .orange : .secondary)
+                        .lineLimit(2)
+                }
+                Spacer()
+            }
+        }
     }
 }
 

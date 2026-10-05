@@ -136,6 +136,10 @@ struct LLMMonitorApp: App {
         appDelegate.quotaUpdateNotifier = quotaUpdateNotifier
         appDelegate.barkNotifier = barkNotifier
         rightClickHandler.setup(state: state)
+        // 节假日数据源：启动解析链（缓存 → 内置快照）+ best-effort 取数。
+        // 异步执行、失败保留既有表；放在 App 入口（而非 AppState.start），
+        // 让测试可构造 AppState 而不触发任何网络请求。
+        state.holidayCalendarService.start(source: configStore.config.effectiveHolidaySource)
         // 边缘状态窗：接线（默认形态「状态窗（自动隐藏）」= 平时一列小圆环，
         // 不占地方；不想要的人在设置页选「无」）。
         // attach 内部订阅 statusDidChange / config 变化并按 config 决定显隐。

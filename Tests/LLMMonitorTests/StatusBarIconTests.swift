@@ -170,13 +170,8 @@ final class StatusBarIconTests: XCTestCase {
         let store = ConfigStore(configURL: dir.appendingPathComponent("config.json"))
         var cfg = store.config
         cfg.providers["test_a"] = ProviderConfig(enabled: true, apiKey: "key_a")
-        cfg.providers["test_glm"] = ProviderConfig(
-            enabled: true,
-            apiKey: "key_glm",
-            peakStartHour: 14,
-            peakEndHour: 18,
-            peakWeekdaysOnly: false
-        )
+        // GLM 高峰窗口固定为官方口径（zhipuDefault），不再从 config 派生。
+        cfg.providers["test_glm"] = ProviderConfig(enabled: true, apiKey: "key_glm")
         try? store.applyAndSave(cfg)
 
         let appState = AppState(descriptors: descriptors, configStore: store)

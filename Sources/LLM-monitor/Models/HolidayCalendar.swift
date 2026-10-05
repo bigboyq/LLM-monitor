@@ -20,17 +20,22 @@ import Foundation
 /// 只意味着法定假日的周一–周五会被误判为高峰候选（白天时段仍按 slots 判定），
 /// 属于可接受的降级，不应阻断 App 其他功能。
 ///
-/// **阶段 B 接缝**：「数据源可配置 + 在线取数缓存」属于阶段 B，本阶段不实现。
-/// 加载逻辑收在 `loadBundled()`（bundle 资源的唯一切入点，可替换），阶段 B 会在
-/// `shared` 前面插一层"缓存/远程覆盖"并替换加载入口；`source` / `fetchedAt`
-/// 元信息即为此预留的展示与提示字段。
+/// **数据源解析链（阶段 B，已落地）**：`shared` 不再只来自打包快照，默认参数
+/// `HolidayCalendar = .shared` 在调用时求值，因此更新后各判定点自然读到新表。
+/// 完整链条（编排在 `Services/HolidayCalendarService.swift`，本类型只提供纯解析）：
+/// ① 本地缓存文件（存在且可解析）→ ② 内置 bundle 快照（`loadBundled()`，缺失 /
+/// 解析失败内部退化为空表）→ ③ `.empty`。取数（URL 走 HTTPClient / 本地路径直读）
+/// 成功后写缓存并 `applyResolved` 替换 `shared`；失败不清空既有数据。数据源由
+/// config 顶层 `holidaySource` 配置（缺省 = 上游 chinese-days CDN URL；显式空串 =
+/// 只用内置快照、不联网），`source` / `fetchedAt` 元信息即状态行的展示字段。
 struct HolidayCalendar: Sendable, Equatable {
     /// yyyyMMdd 序号化的节假日日期集合（如 20261001），按 `beijingCalendar` 提取。
     /// 用 Int 键而非 Date / ISO 字符串：判定路径是纯 Set 查找，无 formatter、
     /// 无逐次时区换算。
     private let holidayKeys: Set<Int>
 
-    /// 快照来源（上游 URL）。空表退化为 nil；阶段 B 的"数据源可配置"展示用。
+    /// 快照来源（配置源字符串或上游 URL）。空表退化为 nil；设置页状态行与
+    /// 缓存回写（`HolidayCalendarService`）的展示字段。
     let source: String?
     /// 快照抓取日期（"YYYY-MM-DD"）。空表退化为 nil。
     let fetchedAt: String?
@@ -42,9 +47,26 @@ struct HolidayCalendar: Sendable, Equatable {
     /// 空节假日表：缺数据的退化形态（纯周一–周五口径）。
     static let empty = HolidayCalendar(holidayKeys: [], source: nil, fetchedAt: nil, isLoadedFromResource: false)
 
-    /// 进程级单例：从打包资源加载一次。阶段 B 会在其前插入缓存/远程覆盖层，
-    /// 见文件头「阶段 B 接缝」。
-    static let shared: HolidayCalendar = loadBundled()
+    /// 进程级单例。默认从打包资源加载；数据源解析链（缓存命中 / 取数成功）经
+    /// `applyResolved` 原子替换。读走锁保护的快照，默认参数
+    /// `HolidayCalendar = .shared` 在**调用时**求值，替换后各判定点自然读到新表。
+    static var shared: HolidayCalendar {
+        sharedLock.lock()
+        defer { sharedLock.unlock() }
+        return sharedStorage
+    }
+
+    private static let sharedLock = NSLock()
+    /// `nonisolated(unsafe)`：可变静态在并发下的正确性由 `sharedLock` 保证
+    /// （ HolidayCalendar 是 Sendable 值类型，读写都是锁内的整份拷贝）。
+    private nonisolated(unsafe) static var sharedStorage = HolidayCalendar.loadBundled()
+
+    /// 数据源解析链成功后替换 `shared`（缓存命中 / 取数成功都走这里）。
+    static func applyResolved(_ calendar: HolidayCalendar) {
+        sharedLock.lock()
+        defer { sharedLock.unlock() }
+        sharedStorage = calendar
+    }
 
     /// `date` 是否为法定节假日 / 调休放假日。日期键按传入 calendar 提取
     /// （默认北京时间，与快照生成口径一致）。
@@ -69,7 +91,7 @@ struct HolidayCalendar: Sendable, Equatable {
 
     // MARK: - 加载与构造
 
-    /// 从打包资源加载（`loadBundled` 是阶段 B 插入缓存/远程覆盖层前的唯一切入点）。
+    /// 从打包资源加载（解析链的第 ② 层兜底：缓存缺失 / 损坏时使用）。
     /// 缺失 / 解析失败一律退化为空表 + 告警日志，不崩溃——与 ModelPricing.json
     /// 的"崩溃暴露问题"策略刻意不同：价格缺失会让所有 provider 显示未定价（必须
     /// 修），节假日缺失只影响少数法定假日的判定形状，降级可接受。
@@ -87,8 +109,9 @@ struct HolidayCalendar: Sendable, Equatable {
         }
     }
 
-    /// 快照 JSON 的解码形态（由 scripts/sync-holiday-data.sh 生成）。
-    private struct ResourceDocument: Decodable {
+    /// 快照 JSON 的文档 schema（打包资源与本地缓存 `holidays-cache.json` 同构，
+    /// 由 scripts/sync-holiday-data.sh 生成；取数成功后按此 schema 写缓存）。
+    struct CacheDocument: Codable, Equatable, Sendable {
         let source: String
         let fetchedAt: String
         let holidays: [String]
@@ -104,14 +127,14 @@ struct HolidayCalendar: Sendable, Equatable {
     /// 解析快照 JSON。个别非法日期（格式错 / 非真日期）跳过——脚本护栏 + 测试
     /// 守门之下不应出现，出现时也不该让整张表失效；整体解析失败走 catch 退化。
     private init(resourceData data: Data) throws {
-        let doc = try JSONDecoder().decode(ResourceDocument.self, from: data)
+        let doc = try JSONDecoder().decode(CacheDocument.self, from: data)
         let calendar = PeakWindow.beijingCalendar
         let keys = Set(doc.holidays.compactMap { HolidayCalendar.dateKey(fromISODateString: $0, calendar: calendar) })
         self.init(holidayKeys: keys, source: doc.source, fetchedAt: doc.fetchedAt, isLoadedFromResource: true)
     }
 
     /// 从 "YYYY-MM-DD" 字符串集合构造（非法日期静默跳过）——测试 fixture 与
-    /// 阶段 B 注入层的公共入口。`isLoadedFromResource` 为
+    /// 缓存/取数路径（`make(document:)`）的公共入口。`isLoadedFromResource` 为
     /// `true`（正常构造的表，区别于资源缺失退化的 `empty`）。
     static func make(
         holidays: some Collection<String>,
@@ -140,5 +163,147 @@ struct HolidayCalendar: Sendable, Equatable {
         let back = calendar.dateComponents([.year, .month, .day], from: date)
         guard back.year == year, back.month == month, back.day == day else { return nil }
         return year * 10000 + month * 100 + day
+    }
+
+    /// "YYYY-MM-DD" → 当日 00:00 的 Date（`isStale` 用）。非法日期返回 nil。
+    static func date(fromISODateString text: String, calendar: Calendar) -> Date? {
+        guard let key = dateKey(fromISODateString: text, calendar: calendar) else { return nil }
+        var comps = DateComponents()
+        comps.year = key / 10000
+        comps.month = (key / 100) % 100
+        comps.day = key % 100
+        return calendar.date(from: comps)
+    }
+
+    // MARK: - 数据源语义与解析链（阶段 B）
+
+    /// config `holidaySource` 的缺省值：上游 chinese-days CDN JSON（与
+    /// `scripts/sync-holiday-data.sh` 的 `UPSTREAM_URL` 同值）。
+    static let defaultSourceURL = "https://cdn.jsdelivr.net/npm/chinese-days/dist/chinese-days.json"
+
+    /// 缓存新鲜度窗口（天）：`fetchedAt` 早于该天数才重新取数。
+    static let defaultMaxAgeDays = 7
+
+    /// 节假日数据源形态（config 顶层 `holidaySource` 的语义）。
+    enum Source: Equatable, Sendable {
+        /// HTTP(S) URL（原始字符串保留给快照 source 元信息）。
+        case remoteURL(String)
+        /// 本地文件路径（支持 `~` 前缀展开）。
+        case localFile(String)
+        /// 显式空串：只用内置快照，不联网、不读缓存。
+        case bundledOnly
+    }
+
+    /// 解析 config 源字符串：http/https → remoteURL；空白串 → bundledOnly；
+    /// 其余一律按本地路径处理。调用方传入的应是 `AppConfig.effectiveHolidaySource`
+    /// （缺省键已替换为 `defaultSourceURL`）。
+    static func parseSource(_ raw: String) -> Source {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return .bundledOnly }
+        let lowered = trimmed.lowercased()
+        if lowered.hasPrefix("https://") || lowered.hasPrefix("http://") {
+            return .remoteURL(trimmed)
+        }
+        return .localFile(trimmed)
+    }
+
+    /// 快照日期（ISO "YYYY-MM-DD"，排序）。设置页状态展示与缓存回写用。
+    var holidayDates: [String] {
+        holidayKeys.sorted().map { key in
+            String(format: "%04d-%02d-%02d", key / 10000, (key / 100) % 100, key % 100)
+        }
+    }
+
+    /// 数据源解析统一入口：返回**排序去重后的**法定节假日 ISO 日期列表。
+    /// 依次尝试：① 本项目快照格式（source / fetchedAt / holidays）；② 上游
+    /// chinese-days 格式按脚本同款规则转换（默认源的 payload 就是该格式，App 内
+    /// 转换与 `sync-holiday-data.sh` 产出一致）。两者都不是（如 ICS / 任意 HTML）
+    /// 返回 nil，调用方给出明确失败文案——不猜测、不部分采用。
+    static func parseSourceDates(
+        _ data: Data,
+        now: Date = Date(),
+        calendar: Calendar = PeakWindow.beijingCalendar
+    ) -> [String]? {
+        if let doc = try? JSONDecoder().decode(CacheDocument.self, from: data) {
+            let dates = Set(doc.holidays).sorted()
+            if !dates.isEmpty { return dates }
+        }
+        return parseChineseDaysDates(data, now: now, calendar: calendar)
+    }
+
+    /// 上游 chinese-days 格式（顶层 holidays / workdays / inLieuDays 三个扁平映射）
+    /// → 快照日期列表。转换规则与 `sync-holiday-data.sh` 完全一致：
+    /// 非高峰日集合 = `holidays` ∪ `inLieuDays`（workdays 有意丢弃，Rule A），
+    /// 年份过滤 `[当前年-1, …]`。解析失败或结果为空返回 nil（按格式不支持处理）。
+    static func parseChineseDaysDates(
+        _ data: Data,
+        now: Date = Date(),
+        calendar: Calendar = PeakWindow.beijingCalendar
+    ) -> [String]? {
+        struct UpstreamDocument: Decodable {
+            // 值形态不参与判定（"English,中文,旗标"），宽松解码只取日期键。
+            let holidays: [String: LossyString]?
+            let workdays: [String: LossyString]?
+            let inLieuDays: [String: LossyString]?
+        }
+        struct LossyString: Decodable {
+            init(from decoder: Decoder) throws {
+                _ = try? decoder.singleValueContainer().decode(String.self)
+            }
+        }
+        guard let doc = try? JSONDecoder().decode(UpstreamDocument.self, from: data),
+              let holidayKeys = doc.holidays?.keys else { return nil }
+        let inLieuKeys = doc.inLieuDays.map { Set($0.keys) } ?? Set<String>()
+        let minYear = calendar.component(.year, from: now) - 1
+        let dates = Set(holidayKeys)
+            .union(inLieuKeys)
+            .compactMap { key -> String? in
+                guard let year = Int(key.prefix(4)), year >= minYear else { return nil }
+                return dateKey(fromISODateString: key, calendar: calendar).map { _ in key }
+            }
+            .sorted()
+        return dates.isEmpty ? nil : dates
+    }
+
+    /// 从快照文档构造（缓存命中路径与取数路径共用；非法日期静默跳过）。
+    static func make(document: CacheDocument) -> HolidayCalendar {
+        make(holidays: document.holidays, source: document.source, fetchedAt: document.fetchedAt)
+    }
+
+    /// 解析链（纯函数，可注入）：① 本地缓存数据（存在、可解析且非空）→
+    /// ② 内置 bundle 快照（`bundled` 注入点，生产即 `loadBundled()`，其内部在
+    /// 资源缺失/损坏时退化为 `.empty`）。返回是否命中了缓存，供状态行
+    /// 「来源：缓存/内置」展示。
+    static func resolve(
+        cacheData: Data?,
+        bundled: () -> HolidayCalendar = { HolidayCalendar.loadBundled() }
+    ) -> (calendar: HolidayCalendar, usedCache: Bool) {
+        if let data = cacheData,
+           let doc = try? JSONDecoder().decode(CacheDocument.self, from: data),
+           !doc.holidays.isEmpty {
+            return (make(document: doc), true)
+        }
+        return (bundled(), false)
+    }
+
+    /// 北京时间 "YYYY-MM-DD"（取数 `fetchedAt` 戳的登记口径）。
+    static func beijingDateString(on now: Date = Date()) -> String {
+        let calendar = PeakWindow.beijingCalendar
+        let c = calendar.dateComponents([.year, .month, .day], from: now)
+        return String(format: "%04d-%02d-%02d", c.year ?? 0, c.month ?? 0, c.day ?? 0)
+    }
+
+    /// 缓存是否过期：`fetchedAt`（"YYYY-MM-DD"）距 `now` 超过 `maxAgeDays` 个
+    /// 自然日（按 `calendar` 计算日期差，忽略当日时刻）。fetchedAt 缺失 / 非法
+    /// 视为已过期。
+    static func isStale(
+        fetchedAt: String,
+        now: Date = Date(),
+        maxAgeDays: Int = HolidayCalendar.defaultMaxAgeDays,
+        calendar: Calendar = PeakWindow.beijingCalendar
+    ) -> Bool {
+        guard let fetched = date(fromISODateString: fetchedAt, calendar: calendar) else { return true }
+        let days = calendar.dateComponents([.day], from: fetched, to: now).day
+        return (days ?? Int.max) > maxAgeDays
     }
 }

@@ -219,6 +219,12 @@ struct AppConfig: Codable, Equatable {
     /// 与 statusBar* 同为纯外观字段，手改出错按缺失处理，不进损坏恢复流程。
     var edgeDock: EdgeDockConfig?
 
+    /// 法定节假日数据源（URL 或本地文件路径），供 `HolidayCalendar` 解析链取数。
+    /// nil（缺省）= 上游 chinese-days CDN JSON（`HolidayCalendar.defaultSourceURL`，
+    /// 与 `scripts/sync-holiday-data.sh` 的 `UPSTREAM_URL` 同值）；显式空串 =
+    /// 只用随 App 打包的内置快照、不联网。类型写错按缺失处理（缺省语义）。
+    var holidaySource: String?
+
     var effectiveStatusBarIconStyle: StatusBarIconStyle {
         statusBarIconStyle ?? .chartBar
     }
@@ -235,6 +241,12 @@ struct AppConfig: Codable, Equatable {
 
     var effectiveStatusBarHealthColors: StatusBarHealthColors {
         statusBarHealthColors ?? .default
+    }
+
+    /// 生效的节假日数据源字符串：缺省（nil）= 上游 chinese-days CDN URL；
+    /// 显式空串原样返回（`HolidayCalendar.parseSource` 把它判为「仅内置快照」）。
+    var effectiveHolidaySource: String {
+        holidaySource ?? HolidayCalendar.defaultSourceURL
     }
 
     static let `default` = AppConfig(
@@ -273,7 +285,8 @@ struct AppConfig: Codable, Equatable {
         statusBarHealthColors: StatusBarHealthColors? = nil,
         providerCardOrder: [String]? = nil,
         bark: BarkConfig? = nil,
-        edgeDock: EdgeDockConfig? = nil
+        edgeDock: EdgeDockConfig? = nil,
+        holidaySource: String? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.refreshIntervalSeconds = refreshIntervalSeconds
@@ -285,6 +298,7 @@ struct AppConfig: Codable, Equatable {
         self.providerCardOrder = providerCardOrder
         self.bark = bark
         self.edgeDock = edgeDock
+        self.holidaySource = holidaySource
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -294,6 +308,7 @@ struct AppConfig: Codable, Equatable {
         case providerCardOrder
         case bark
         case edgeDock
+        case holidaySource
     }
 
     init(from decoder: Decoder) throws {
@@ -342,6 +357,9 @@ struct AppConfig: Codable, Equatable {
             logWarn("[config] bark 字段解析失败，已按未配置处理：\(error.localizedDescription)")
             self.bark = nil
         }
+        // 节假日数据源与外观字段同一容错档：类型写错按缺省（上游 CDN）处理。
+        // 显式空串会被原样保留（语义 = 只用内置快照、不联网）。
+        self.holidaySource = try? container.decodeIfPresent(String.self, forKey: .holidaySource)
     }
 
     /// 全局生效的刷新间隔：clamp 到 10s...30d（供 Provider scheduler 使用）。
@@ -448,13 +466,6 @@ struct ProviderConfig: Codable, Equatable {
     /// 自管 auth 的 fetcher 用：auth.json 路径（如 codex 的 ~/.codex/auth.json）
     var authPath: String?
 
-    /// GLM Coding Plan 高峰期开始小时（24h 制，北京时间）。nil = 默认 14
-    var peakStartHour: Int?
-    /// GLM Coding Plan 高峰期结束小时（24h 制，半开区间）。nil = 默认 18
-    var peakEndHour: Int?
-    /// GLM Coding Plan 高峰期是否仅工作日（周一–周五）。nil = 默认 true
-    var peakWeekdaysOnly: Bool?
-
     /// 是否把对应的 OpenCode provider 用量合并到菜单栏卡片。
     /// nil = 使用 provider 的默认值：GLM 默认开启，其余 provider 默认关闭。
     var mergeOpencodeUsage: Bool?
@@ -473,7 +484,7 @@ struct ProviderConfig: Codable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case enabled, apiKey, displayName, refreshIntervalSeconds, authPath
-        case peakStartHour, peakEndHour, peakWeekdaysOnly, mergeOpencodeUsage
+        case mergeOpencodeUsage
         case parseZcodeBalanceLog
         case notifyIntervalRestored, notifyIntervalExhausted
         case notifyWeeklyRestored, notifyWeeklyExhausted
@@ -484,9 +495,6 @@ struct ProviderConfig: Codable, Equatable {
          displayName: String? = nil,
          refreshIntervalSeconds: Int? = nil,
          authPath: String? = nil,
-         peakStartHour: Int? = nil,
-         peakEndHour: Int? = nil,
-         peakWeekdaysOnly: Bool? = nil,
          mergeOpencodeUsage: Bool? = nil,
          parseZcodeBalanceLog: Bool? = nil,
          notifyIntervalRestored: QuotaNotifyChannel? = nil,
@@ -498,9 +506,6 @@ struct ProviderConfig: Codable, Equatable {
         self.displayName = displayName
         self.refreshIntervalSeconds = refreshIntervalSeconds
         self.authPath = authPath
-        self.peakStartHour = peakStartHour
-        self.peakEndHour = peakEndHour
-        self.peakWeekdaysOnly = peakWeekdaysOnly
         self.mergeOpencodeUsage = mergeOpencodeUsage
         self.parseZcodeBalanceLog = parseZcodeBalanceLog
         self.notifyIntervalRestored = notifyIntervalRestored
@@ -520,9 +525,6 @@ struct ProviderConfig: Codable, Equatable {
         self.displayName = try c.decodeIfPresent(String.self, forKey: .displayName)
         self.refreshIntervalSeconds = try c.decodeIfPresent(Int.self, forKey: .refreshIntervalSeconds)
         self.authPath = try c.decodeIfPresent(String.self, forKey: .authPath)
-        self.peakStartHour = try c.decodeIfPresent(Int.self, forKey: .peakStartHour)
-        self.peakEndHour = try c.decodeIfPresent(Int.self, forKey: .peakEndHour)
-        self.peakWeekdaysOnly = try c.decodeIfPresent(Bool.self, forKey: .peakWeekdaysOnly)
         self.mergeOpencodeUsage = try c.decodeIfPresent(Bool.self, forKey: .mergeOpencodeUsage)
         self.parseZcodeBalanceLog = try c.decodeIfPresent(Bool.self, forKey: .parseZcodeBalanceLog)
         // 渠道枚举值写错时按缺失处理，不让整份配置进入损坏恢复流程。
@@ -575,22 +577,6 @@ extension ProviderConfig {
         case .weeklyRestored: notifyWeeklyRestored = value
         case .weeklyExhausted: notifyWeeklyExhausted = value
         }
-    }
-
-    /// 解析为 GLM 高峰期窗口。nil 字段回退官方默认（14–18 / 仅工作日）；
-    /// 非法配置（end ≤ start 或越界）整体回退默认，避免 UI 误判成永久高峰/非高峰。
-    var glmPeakWindow: GlmPeakWindow {
-        let d = GlmPeakWindow.zhipuDefault
-        let start = peakStartHour ?? d.startHour
-        let end = peakEndHour ?? d.endHour
-        let weekdays = peakWeekdaysOnly ?? d.weekdaysOnly
-        let validRange = 0...23
-        guard validRange.contains(start),
-              validRange.contains(end),
-              end > start else {
-            return d
-        }
-        return GlmPeakWindow(startHour: start, endHour: end, weekdaysOnly: weekdays)
     }
 }
 

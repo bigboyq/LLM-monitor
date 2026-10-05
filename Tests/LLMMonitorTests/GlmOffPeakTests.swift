@@ -22,8 +22,9 @@ final class GlmOffPeakTests: GlmTestCase {
         XCTAssertEqual(peakWindow.status(at: date(2026, 7, 31, 10), calendar: cal), .offPeak(until: date(2026, 7, 31, 14)))
         XCTAssertEqual(peakWindow.status(at: date(2026, 8, 1, 15), calendar: cal), .offPeak(until: date(2026, 8, 3, 14)))
 
-        let pc = ProviderConfig(enabled: true, apiKey: "k", peakStartHour: 9, peakEndHour: 12, peakWeekdaysOnly: false)
-        XCTAssertEqual(pc.glmPeakWindow, GlmPeakWindow(startHour: 9, endHour: 12, weekdaysOnly: false))
+        // GLM 窗口已固定为官方口径（不再从 config 派生）：rebuildStatuses 一律挂
+        // `zhipuDefault`；旧配置残留的 peak* 键由 JSONDecoder 静默忽略。
+        XCTAssertEqual(peakWindow, GlmPeakWindow(startHour: 14, endHour: 18, weekdaysOnly: true))
     }
 
     // MARK: - GLM Off-Peak (闲时任务) Tests

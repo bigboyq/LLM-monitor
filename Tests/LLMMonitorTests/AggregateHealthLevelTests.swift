@@ -128,14 +128,10 @@ final class AggregateHealthLevelTests: XCTestCase {
         XCTAssertEqual(appState.systemHealthLevel, .critical)
 
         // 时间派生状态可注入固定 now：同一份 provider 数据在高峰边界前后应切换。
+        // GLM 窗口固定为官方口径（zhipuDefault：周一–周五 14–18），不再从 config
+        // 派生；2026-08-10 是周一，边界断言不受迁移影响。
         cfg = store.config
-        cfg.providers["test_glm"] = ProviderConfig(
-            enabled: true,
-            apiKey: "key",
-            peakStartHour: 14,
-            peakEndHour: 18,
-            peakWeekdaysOnly: false
-        )
+        cfg.providers["test_glm"] = ProviderConfig(enabled: true, apiKey: "key")
         try? store.applyAndSave(cfg)
         appState.rebuildStatuses()
         appState.mutateStatus(for: "test_a") { $0.state = .ok(healthyInfo) }

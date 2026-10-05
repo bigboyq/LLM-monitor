@@ -122,6 +122,25 @@ final class AppState: ObservableObject {
     /// `internal`（非 `private`）让测试能直接触发或观测用量循环。
     lazy var localUsage = LocalUsageOrchestration(writer: self)
 
+    /// 节假日数据源服务（解析链 + best-effort 取数）。lazy：构造需要捕获 self。
+    /// 缓存文件与 config.json 同目录（测试注入临时目录时自动隔离）。
+    /// `internal` 让设置页「节假日数据源」节直接观察刷新状态与结果文案。
+    lazy var holidayCalendarService: HolidayCalendarService = {
+        let service = HolidayCalendarService(
+            cacheURL: configStore.configURL
+                .deletingLastPathComponent()
+                .appendingPathComponent(HolidayCalendarService.cacheFileName),
+            onCalendarApplied: { [weak self] in
+                guard let self else { return }
+                // 节假日表变了 → 广播一次让卡片上的高峰 pill / 额度行重算，
+                // 并重排健康边界（下一次高峰/非高峰切换点可能随之移动）。
+                self.statusDidChange.send()
+                self.rescheduleHealthBoundary(updateEvaluationDate: true)
+            }
+        )
+        return service
+    }()
+
     private var sleepHealthCancellable: AnyCancellable?
 
     /// 统一的 statuses 广播通道。
@@ -445,6 +464,9 @@ final class AppState: ObservableObject {
 
         rebuildStatuses()
         start()
+        // 节假日数据源：seed 源基线（后续 config 变更据此判定「源变了」）。
+        // 启动取数由 App 入口触发，不在测试会构造的 init/start 路径上发网络请求。
+        holidayCalendarService.adoptSource(configStore.config.effectiveHolidaySource)
         setupConfigSubscription()
     }
 
@@ -702,7 +724,7 @@ final class AppState: ObservableObject {
         configStore.$config
             .dropFirst()
             .receive(on: RunLoop.main)
-            .sink { [weak self] _ in
+            .sink { [weak self] newConfig in
                 guard let self else { return }
                 logInfo("AppState: 检测到配置变更，开始重建状态并重新调度任务")
                 self.configurationGeneration &+= 1
@@ -710,6 +732,10 @@ final class AppState: ObservableObject {
                 self.authProber.reset()
                 self.rebuildStatuses()
                 self.rescheduleAll()
+                // 节假日数据源变更 → 重新走解析链并按需取数；源未变时内部 no-op。
+                self.holidayCalendarService.handleConfigChange(
+                    source: newConfig.effectiveHolidaySource
+                )
             }
             .store(in: &cancellables)
     }
@@ -798,10 +824,10 @@ final class AppState: ObservableObject {
             statusItem.glmLocalUsage = preserved.glmLocalUsage
             statusItem.opencodeUsage = preserved.opencodeUsage
             statusItem.dshUsage = preserved.dshUsage
-            // GLM 高峰期窗口是纯 config 派生（非运行时累积），每次 rebuild 直接重算。
-            statusItem.glmPeakWindow = d.kind == .glmCodingPlan
-                ? (pc?.glmPeakWindow ?? .zhipuDefault)
-                : nil
+            // GLM 高峰期窗口固定为官方口径（`GlmPeakWindow.zhipuDefault`，与
+            // DeepSeek 同形状：北京时间 + Rule A 工作日），无 config 字段可调；
+            // 旧配置残留的 peak* 键由 JSONDecoder 静默忽略。
+            statusItem.glmPeakWindow = d.kind == .glmCodingPlan ? .zhipuDefault : nil
             // DeepSeek 高峰期窗口同理：官方固定口径（北京时间工作日 9–12 / 14–18，
             // 高峰永不含周末），无 config 字段可调，直接用默认窗口。
             statusItem.deepseekPeakWindow = d.kind == .deepseek
