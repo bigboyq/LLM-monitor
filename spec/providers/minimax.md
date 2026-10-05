@@ -235,13 +235,13 @@ dirty source via direct SQLite queries on the `local_runtime_token_usage` table.
 
 | Concern | Antigravity | minimax |
 |---|---|---|
-| Token data source | RPC `GetCascadeTrajectoryGeneratorMetadata` + protobuf decode | **Direct SQL on `local_runtime_token_usage` table** (no RPC, no protobuf) |
-| R/T computation | Cross-source join: `.db` `step_type=14/15` idx → RPC events (order not stable) | **Pure SQL**: `COUNT(*)` + `COUNT(DISTINCT turn_id)` (zero cross-source join) |
+| Token data source | RPC `GetCascadeTrajectoryGeneratorMetadata` (protobuf decode only for the `.db` timestamp fallback) | **Direct SQL on `local_runtime_token_usage` table** (no RPC, no protobuf) |
+| R/T computation | Pure RPC: rounds = timestamped events, turns inferred from `stepIndices` gaps (best-effort) | **Pure SQL**: `COUNT(*)` + `COUNT(DISTINCT turn_id)` (zero cross-source join) |
 | Number of `.db` files | One per Antigravity session (up to 22+) | **Just 1 active** (v2 runtime-state) |
 | mtime cadence | Once a session is active (frequent) | v2: ~2 min (continuous) |
-| R/T drift | Possible (RPC order drift → had to sort by timestamp) | **Impossible** (single SQL query) |
+| R/T drift | Possible (turn inference from step-index gaps can overcount) | **Impossible** (single SQL query) |
 
-`AntigravityLocalUsageScanner` is ~1200 lines because of RPC + protobuf + cross-source join logic. `MinimaxLocalUsageScanner` is ~720 lines because everything is local SQL.
+`AntigravityLocalUsageScanner` is ~1200 lines because of RPC + bounded-convergence bookkeeping. `MinimaxLocalUsageScanner` is ~720 lines because everything is local SQL.
 
 ### Storage layout
 
@@ -312,8 +312,8 @@ only the changed source's contribution without rebuilding unrelated cache state.
 
    **Why WAL dimension was added**: minimax v2 runtime uses SQLite WAL mode and may go **36+ hours without checkpointing** — new writes accumulate in `runtime-state.sqlite-wal` (observed up to 5.4MB before flush) while `.db`'s mtime/size stay frozen. The old two-dimension diff (`mtime || size`) could not detect this, leaving the UI without 7/25-7/26 data until the runtime finally flushed. The WAL size is a direct signal: `walSize` increasing = new data waiting. WAL truncation on checkpoint is captured by `.db`'s mtime jump (runtime `fsync` after WAL write), so the old dimension still catches that case. WAL **mtime** was added alongside size because a checkpoint can rewrite a WAL back to a similar size, and size alone would miss a content-only update.
 2. **Per-source incremental aggregation**: `index.dailyBySource["runtime"]` stores the day-keyed breakdown. When runtime changes, only its daily map is replaced.
-3. **In-flight dedup**: if `scan()` is called while a previous scan is still running, the new call is a no-op.
-4. **Serial scan** (`maxConcurrentReads = 1`): single source scanned, no parallelism needed.
+3. **In-flight dedup**: `LocalUsageScannerBase.scan(mode:)` never runs two scans at once — a request arriving while a previous scan is in flight is merged into the pending slot (stronger mode wins), and the in-flight scan's completion immediately runs one more round with the merged mode.
+4. **Serial scan**: the dirty source loop in `performScanPureImpl` is a plain `for` over `dirty` (single source, no parallelism).
 5. **Failure is non-fatal**: SQLite aggregate failures don't update `index.sources[source]` fingerprint — the next scan naturally retries. A `stat` failure (permission, transient I/O) is treated separately from a *confirmed* missing file: the source is counted as degraded and its last-good `sources` / `dailyBySource` are preserved, so a permission blip never wipes the card. Only an explicit ENOENT clears the cache entry.
 6. **Failure doesn't lose data**: even when a source's `aggregate` throws, the existing `index.dailyBySource[source]` is preserved (no overwrite), so historical data is never lost on transient failures.
 7. **Pipeline serialization via `AsyncMutex` + `lastCommittedGeneration`**: 整个 `performScanPure` 包在 `try await pipelineMutex.withLock { ... }` 里, 旧 worker 跑完整个 pipeline 才让新 worker 开始. 配合 `lastCommittedGeneration` 守门, cancel+rescan 期间旧 worker 即使晚到 mutex, `startedGeneration < lastCommittedGeneration` 时也跳过 saveIndex, 杜绝 cache revert. **P1 invariant**: read + write-to-disk + update 全在 mutex 内 atomic (跨 @MainActor hop `await scanner.read.../write...` 持锁执行), 不能拆到 mutex 外. 详见 `spec/local-usage-reconcile.md` "Scanner Concurrency (本地用量 scanner 的并发模型)" 段.
@@ -473,7 +473,7 @@ UI 只消费最近 7 天，dirty 重扫时无下界的全表 `GROUP BY` 是纯�
 
 **Timezone**: `strftime + 'localtime'` uses the process's local timezone (matches Swift's `Calendar.current`). This is critical for cross-day transitions — verified by test (cross-midnight timestamps are correctly bucketed to the local date).
 
-**R/T**: computed in the same SQL query as the per-day tokens. **No cross-source join**, so there's no "RPC order drift" pitfall (which antigravity had to handle — see its spec's `sort by timestamp` rule).
+**R/T**: computed in the same SQL query as the per-day tokens. **No cross-source join**, so there's no "RPC order drift" pitfall (which antigravity's removed SQLite reader once had to handle — see its spec's historical R/T pairing section).
 
 **Character aggregation**: per-day `reason_chars` + `output_chars` 来自
 `local_runtime_message_rows.data_json`（生产表是 `local_runtime_message_rows`，
@@ -934,8 +934,14 @@ local-usage state until Minimax creates it.
 
 ## Test Coverage
 
-Minimax tests are located in `Tests/LLMMonitorTests/MinimaxDBReaderTests.swift` and `Tests/LLMMonitorTests/MinimaxLocalUsageScannerTests.swift`, with the shared retention contract in `Tests/LLMMonitorTests/ScannerRetentionContractTests.swift`:
+Minimax tests are located in `Tests/LLMMonitorTests/MinimaxResponseParsingTests.swift`, `Tests/LLMMonitorTests/MinimaxDBReaderTests.swift` and `Tests/LLMMonitorTests/MinimaxLocalUsageScannerTests.swift`, with the shared retention contract in `Tests/LLMMonitorTests/ScannerRetentionContractTests.swift`:
 
+- **Fetcher parser (`MinimaxResponseParsingTests.swift`)**:
+  - `testMinimaxParse`: happy-path `model_remains` → `ModelQuota` mapping.
+  - `testMinimaxParseBaseRespError` / `testMinimaxParseEmptyModelRemains`: `base_resp` failures and the empty-array guard.
+  - `testMinimaxParseRecordMissingModelNameSkipped`: blank `model_name` records are skipped, not fatal.
+  - `testMinimaxParseStrictCountValidation`: `strictNonnegativeCount` / `validatedCounts` rejection paths.
+  - `testMinimaxParseWeeklyWindowMissingEndTimePassesThroughNil` / `testMinimaxParseIntervalWindowMissingPercentToleratedAsAbsent` / `testMinimaxParseDeclaredPresentWindowWithoutPercentStillThrows`: window-status tolerance and rejection boundaries.
 - **Reader (`MinimaxDBReaderTests.swift`)**:
   - `testV2ReaderAggregatesRowsSessionsTurnsAndSamples`: aggregates v2 rows, sessions, turns, and samples.
   - `testV2ReaderRecoversMissingModelFromSessionAndUniqueLedgerModel`: the row → `record_json.effectiveModel` → unique-ledger-model fallback chain.
@@ -985,4 +991,4 @@ reasoning maximum, character aggregation, and output conservation.
 
     To realize this split, the fetcher must persist every `current_interval_remaining_percent` sample with a timestamp. Currently it only stores the most recent value in `ModelQuota`; a `local_runtime_quota_snapshots(model_name, ts, interval_remaining_percent, weekly_remaining_percent, interval_total_count, interval_usage_count, weekly_total_count, weekly_usage_count)` table is needed, and `local_runtime_token_usage` should gain a `quota_snapshot_id` so each row can be tagged "inside plan" vs "credits".
 
-> 核对基线：2026-10-04 · 代码 d6396fd
+> 核对基线：2026-10-05 · 代码 79dee29

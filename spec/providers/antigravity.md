@@ -690,8 +690,8 @@ session and validates fingerprints, but unchanged sessions reuse `antigravity.js
 append-only changes use offset. Manual refresh, wake-up, interval refresh and natural-day
 rollover use dirty/offset mode after startup. The settings page exposes a separate explicit
 hard-full action for rebuilding every non-empty session through RPC when the cache is suspect.
-The watcher is
-stopped for the scan and rebuilt by this scanner after it settles.
+The source watcher **stays attached during a scan** (`LocalUsageScannerBase.startScan` starts it
+rather than stopping it; a mid-scan event keeps the source dirty for the next round).
 It scans the (single) supported conversation directory, accepts `.db` and `.pb`
 session files, compares file metadata (mtime/size plus WAL mtime/size for `.db`)
 against a cached index, and re-fetches only dirty sessions via
@@ -770,7 +770,7 @@ The scanner does heavy work in the background and is built for low-cost re-runs:
 
 1. **File + WAL fingerprint diff**: each scan starts with directory/resource metadata only. A `.db` session is re-fetched when its file mtime/size or WAL mtime/size changes; a `.pb` session uses its file mtime/size. Startup full is cache-assisted; only the explicit settings-page hard full bypasses this check for every non-empty session. Antigravity also leaves **0-byte placeholder cascades** whose mtime still moves during IDE housekeeping: those only get their fingerprint refreshed locally (no RPC) and re-enter the dirty set once the file/WAL actually grows.
 2. **Per-session incremental aggregation**: `index.dailyBySession` stores each session's day-keyed breakdown. When a session changes, only that session's cached entry is replaced — other sessions' entries are untouched.
-3. **In-flight dedup**: if `scan()` is called while a previous scan is still running, the new call is a no-op (the previous one will publish its result via `@Published`).
+3. **In-flight dedup**: `LocalUsageScannerBase.scan(mode:)` never runs two scans at once — a request arriving while a previous scan is in flight is merged into the pending slot (stronger mode wins), and the in-flight scan's completion immediately runs one more round with the merged mode. The old scan still publishes its own result via `@Published`.
 4. **Off-main-thread I/O**: the scanner class is `@MainActor` for state mutation, while the heavy pipeline lives in `nonisolated static performScanPure(...)` and runs through the non-actor-isolated `LocalUsageScanRunner`. It inherits caller cancellation and only assigns the result back on MainActor.
 5. **Bounded/adaptive RPC**: dirty sessions use four concurrent suffix requests, while
    any batch containing full requests is limited to two. Results are reduced in small
@@ -1320,4 +1320,4 @@ This script:
 3. calls `RetrieveUserQuotaSummary`
 4. prints or writes the raw JSON
 
-> 核对基线：2026-10-04 · 代码 094bd57
+> 核对基线：2026-10-05 · 代码 79dee29

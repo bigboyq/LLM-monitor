@@ -203,4 +203,4 @@ catalog 的结果已经在 reader 层固化，重建逻辑必须逐字段原样�
 任何新 harness 必须先补充本矩阵、provider spec 和 `TokenAccountingCatalog`，再接入 UI；
 不要在 view 或 pricing 分支里重新猜测 input/cache/reasoning 的关系。
 
-> 核对基线：2026-10-05 · 代码 6128ab5
+> 核对基线：2026-10-05 · 代码 79dee29

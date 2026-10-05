@@ -600,8 +600,8 @@ ChatGPT Plan   5小时 54%   周 36%   <binding reset time>
   It only drives the segment count here and the status-bar
   `min(5h, 周 × N)` aggregation (`ModelQuota.aggregateActualAvailable`).
 - The hover tooltip on the bar is `QuotaBarTooltip.text(segments:hasTriangle:)`:
-  `分段额度：第 1 格为当前窗口余量；后续 5 格为等价周额度余量。` plus the ▼ marker legend
-  when the weekly reset time is known.
+  `分段额度：\n第 1 格为当前窗口余量；后续 5 格为等价周额度余量。` plus the ▼ marker legend
+  (`\n顶部 ▼ 标记周重置时间进度（左侧即将重置，右侧刚重置）`) when the weekly reset time is known.
 
 Window usage details: the local per-window metrics live in the card's 「额度窗口用量」
 section (`QuotaWindowUsageSection`), which for ChatGPT is fed by
@@ -725,4 +725,4 @@ To compare or sum daily usage across both providers, normalize both into a singl
 
 After normalization, cross-provider sum, average, and chart rendering can treat the two providers as a single data source.
 
-> 核对基线：2026-10-04 · 代码 d6396fd
+> 核对基线：2026-10-05 · 代码 79dee29

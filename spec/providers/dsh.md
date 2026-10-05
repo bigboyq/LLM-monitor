@@ -122,10 +122,12 @@ to the next line, so a replayed event can never stall the scan.
 
 ## Scanner behavior
 
-- Reconciled after each settled Provider batch; the first reconcile and each natural-day
-  rollover run a Full Scan, while later reconciles only run when the DSH scanner's
-  source-owned FSEvents watcher marks the sessions root dirty. The watcher is stopped
-  during scanning and independently rebuilt after the scan settles. `.hardFull`
+- Reconciled after each settled Provider batch; the first reconcile runs a Full Scan and
+  every later pass — natural-day rollover included — is a dirty-mode reconcile that still
+  triggers the scanner, letting its own fingerprints decide whether anything was actually
+  re-read. The source-owned FSEvents watcher only drives UI freshness (`.dirty` / `.clean`),
+  never whether a pass runs, and it **stays attached during a scan**: an event arriving
+  mid-scan keeps the source dirty so the next round picks it up. `.hardFull`
   (explicit user retry / system clock change) is the only mode allowed to bypass the
   provider's own fingerprint cache.
 - Uses file mtime + size fingerprints (version 5 of `DshCacheIndex`); if nothing
@@ -180,4 +182,4 @@ to the next line, so a replayed event can never stall the scan.
 | Card integration | `Sources/LLM-monitor/Views/ProviderCardView.swift` |
 | Regression tests | `Tests/LLMMonitorTests/DshLocalUsageScannerTests.swift`, `DshHarnessFramesTests.swift`, `ScannerRetentionContractTests.swift` |
 
-> 核对基线：2026-10-04 · 代码 d6396fd
+> 核对基线：2026-10-05 · 代码 79dee29

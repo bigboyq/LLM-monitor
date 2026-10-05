@@ -51,8 +51,11 @@ enum EdgeDockGeometry {
     static let innerRingDiameter = diameter * 0.72
     /// 中心品牌图标边长（pt）。
     ///
-    /// 上限受内环内沿约束（当前内环内沿半径 ≈ 8.9pt，即图标最大约 17pt），
-    /// 再大就会盖住环线；6pt 为当前观感取值。
+    /// 上限受内环内沿约束。环是 `Circle().stroke(lineWidth:)`，**描边以路径为中心**，
+    /// 所以内沿半径 = `innerRingDiameter / 2 - innerRingLineWidth / 2`
+    /// = 27.36 / 2 − 1.25 ≈ **12.4pt**（不是 `innerRingDiameter / 2` = 13.68）。
+    /// `spec/ui/edge-dock.md` 记的 12.2pt 是该推导的保守下界。当前 14pt（半宽 7pt）
+    /// 留有余量；再大就会盖住环线。
     static let iconSize: CGFloat = 14
     /// 环线宽（pt）。
     static let ringLineWidth: CGFloat = 3.5

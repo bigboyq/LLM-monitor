@@ -704,11 +704,13 @@ Data source and calibration:
     popover host also owns a shared display clock (`EdgeDockController.popoverDisplayClock`, started
     in `updatePopover`'s success path, stopped in `hidePopover`) injected via `DisplayClockScope`,
     so the card's peak countdown / freshness capsule advance while the popover is visible.
-  - Menu strip hover panel: `HoverPanel.swift` retains `ignoresMouseEvents = true`, injecting
-    `.environment(\.quotaWindowSegmentEditable, false)`. The segment control is not rendered in
-    the title row, while the table renders the persisted segment state from `@AppStorage`. It
-    likewise injects a panel-scoped display clock via `DisplayClockScope`
-    (`HoverPanelController.displayClock`, started in `present`, stopped in `hide`).
+  - Menu strip hover panel: `HoverPanel.swift` retains `ignoresMouseEvents = true` and injects a
+    panel-scoped display clock via `DisplayClockScope` (`HoverPanelController.displayClock`,
+    started in `present`, stopped in `hide`). The `false` side of
+    `.environment(\.quotaWindowSegmentEditable, false)` is injected by the **card's call site**
+    (`Views/HarnessUsageMenuView.swift`, next to `cardRevealMode = .alwaysVisible`), not by the
+    panel itself. The segment control is not rendered in the title row, while the table renders
+    the persisted segment state from `@AppStorage`.
 - **Reset credits residency.** The per-card list is the module itself: the collapsed row
   (`CompactResetCreditsRow`) plus `ResetCreditsDetailList`, unconditionally, always on
   screen. There is nothing left to expand — `CompactResetCreditsRow` has no

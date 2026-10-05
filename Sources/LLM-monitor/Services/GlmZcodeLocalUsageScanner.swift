@@ -31,7 +31,8 @@ final class GlmZcodeLocalUsageScanner: SingleDBSnapshotScanner<GlmLocalUsage>, @
     /// v10 快照的 `providerSlices` 恒为 nil，直接复用会在卡片上永久缺这条来源，
     /// 必须重扫补齐。
     /// （v10：识别 Zcode `0020_provider_model_selection` 迁移后的
-    /// `account:bigmodel-` 前缀；v9：recentSamples 新增 `sourceProviderID`。）
+    /// `account:bigmodel-` 前缀；v9：provider 三分类，额度窗口统计改为「仅正式
+    /// Coding Plan 计入」的白名单口径——见 `spec/providers/glm.md` 的 Off-peak 节。）
     nonisolated static let cacheIndexVersion = 11
 
     /// 整个扫描 pipeline 的串行锁（跨实例共享）。

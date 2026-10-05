@@ -27,8 +27,10 @@ struct RefreshJobToken: Equatable, Sendable {
 /// - 既有语义逐条保留：启动首拍 .full、之后 .background、每 20 次 background 补一次 full、
 ///   失败与 deferred 都按 baseInterval 固定间隔随下一定时周期重试（不指数退避）、
 ///   mid-cycle reset+15s 一次性补刷新（与 regular 共用 deadline driver）、健康窗口边界
-///   （只回调 UI，不发网络请求）、ManualRefreshGate 与在飞刷新合并、配置热加载
-///   stop+reschedule。`earliestNextRefresh` 仍只暴露 regular deadline。
+///   （只回调 UI，不发网络请求）、ManualRefreshGate 与在飞刷新合并、配置热加载走
+///   **差异化重排** `reconfigure(managed:)`（未变 provider 保留 deadline 与首刷状态，
+///   只有新增 / 重新启用 / 间隔变化者重锚——不再是 stop + 全体 reschedule）。
+///   `earliestNextRefresh` 仍只暴露 regular deadline。
 @MainActor
 final class ProviderRefreshScheduler {
     /// 实际 fetch 的回调。`AppState.refreshProviderDirectly` 是这个闭包。

@@ -9,8 +9,10 @@ index). It documents the menu bar item, the menu window structure and the shared
 Current implementation:
 
 `MenuBarLabel` (defined in `Sources/LLM-monitor/Views/MenuBarLabel.swift`) renders a fixed `22x22pt` canvas. SF Symbol styles and Icon Duo are drawn into a `20x20pt` box (canvas − 2pt); the `quotaLogo` design asset is drawn at `appIconDesignDrawSide` = **18pt**, centered. The symbol dynamically reflects overall provider health and background refreshing status.
-`AppState` publishes a stable one-minute clock value, so GLM/DeepSeek peak-window
-boundaries update even when no provider publishes a fresh network result. The clock is
+`AppState` publishes a stable clock value (`healthEvaluationDate`), advanced by the
+provider deadline driver at GLM/DeepSeek peak/off-peak boundaries plus a ≤5min
+sleep-health re-check (no dedicated resident timer), so peak-window boundaries update
+even when no provider publishes a fresh network result. The clock is
 kept outside the `MenuBarExtra` label because embedding `TimelineView` there can trigger
 a status-item redraw loop on some macOS versions.
 
@@ -374,7 +376,7 @@ The menu footer contains:
 - `QuotaViews.swift` — 所有 quota 行 / 进度条 / 重置卡 / `EquivalentQuotaAllocation`
 - `QuotaWindowUsageViews.swift` — 「额度窗口用量」区块（包含「额度窗口」分析/用量可切换模块与「重置卡详情」模块，详见 `spec/ui/edge-dock.md` §Quota window usage block）
 - `LocalUsageHoverViews.swift` — 7 天本地用量卡与 `LocalUsageFreshnessBadge` / `LocalUsageFreshnessText`
-- `HoverPanel.swift` (363 行) — `HoverInfoRow` / `HoverPanelController` / 浮层管理
+- `HoverPanel.swift` (386 行) — `HoverInfoRow` / `HoverPanelController` / 浮层管理
 - `TokenChart.swift` (40 行) — 7-day 柱图基础组件
 - `QuotaHoverViews.swift` — 只剩 `UsageMetricHoverSummaryView`（额度窗口 hover 明细族已随 `menuLayout` 删除）
 

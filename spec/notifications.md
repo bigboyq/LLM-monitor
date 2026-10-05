@@ -207,8 +207,8 @@ provider 的渠道枚举坏值按缺失处理（`try? + rawValue`）；`bark` �
 | 文件 | 覆盖 |
 |---|---|
 | `QuotaUpdateNotifierTests.swift` | detector 边沿（首帧/新窗口/absent/浮点噪声）、恢复阈值边界（0→3 不报、10→20 报、96→100 报、99→100 报、100→100 不报）、耗尽边沿、渠道默认兼容、thread provider 维度、系统通知 60s 冷却、`setNotifyChannel` 归一化、AppState 两快照集成（配置透传 + 首帧不通知） |
-| `BarkNotifierTests.swift` | POST JSON 构造、base path 保留、scheme 白名单、规范化、按渠道过滤、按模型拆分与稳定覆盖 id、人在电脑前跳过矩阵、冷却（成功才生效）、5xx/瞬时重试一次、非瞬时不重试、积压取消（确定性时序：入队齐 → cancelAll → 释放 hold → awaitIdle）、溢出按模型合并、测试推送复用正式参数、测试推送失败文案脱敏（非 `URLError` 泛化 + 类型名，不回显原始 URL）、BarkConfig 容错解码 |
-| `TriggerStateStoreTests.swift` | 跨实例 roundtrip、detector 消费重载基线补报停机事件、快照 key 冲突取 first、reset 后重载为空、坏文件降级、停机同步兜底与写高水位防回退（`flushSynchronously`） |
+| `BarkNotifierTests.swift` | POST JSON 构造、base path 保留、scheme 白名单、规范化、按渠道过滤、按模型拆分与稳定覆盖 id、人在电脑前跳过矩阵、冷却（成功才生效）、5xx/瞬时重试一次（退避恒为 1s）、非瞬时不重试、积压取消（确定性时序：入队齐 → cancelAll → 释放 hold → awaitIdle）、溢出按模型合并、测试推送复用正式参数、测试推送失败文案脱敏（非 `URLError` 泛化 + 类型名，不回显原始 URL）、响应体 8MiB 硬上限（`testBarkRequestsUseStandardResponseByteLimit`）、日志定位标签脱敏（`bark://<host>/<key 前 4 位>`，key ≤4 位全隐；响应超限文案同样不外泄 device key）、BarkConfig 容错解码 |
+| `TriggerStateStoreTests.swift` | 跨实例 roundtrip、detector 消费重载基线补报停机事件、快照 key 冲突取 first、reset 后重载为空、坏文件降级、`update` 返回后内存态立即可读（早于落盘）、快速连写最终以最新快照落盘、停机同步兜底与写高水位防回退（`flushSynchronously`） |
 | `QuotaUpdateNotifierTests.swift`（集成补强） | `.notConfigured` → 基线 reset 接线（注入 store 直接观察）、非窗口类 provider（DeepSeek 余额口径）不产生任何额度事件 |
 
 测试基础设施注意：`RecordingURLProtocol` 的记录与 `onReceive` 回调发生在请求
@@ -244,4 +244,4 @@ provider 的渠道枚举坏值按缺失处理（`try? + rawValue`）；`bark` �
 - 决策记录：屏幕跳过语义与恢复公式阈值见 §3.2 / §4.3 的裁定标注（2026-09-13）；
   余额触发器延后（裁定）。
 
-> 核对基线：2026-10-05 · 代码 22a2467
+> 核对基线：2026-10-05 · 代码 79dee29

@@ -125,12 +125,14 @@ deriveState 返回 `.notConfigured` 时整个 state 重置，lastSuccess 跟着�
 不改变常规排期节奏）。这样 Codex 的 reset credits 不需要用户手动刷新也能周期性更新：默认 300s 间隔下
 约每 `20×300s ≈ 100min` 自动 full 一次。`.background` 仍只抓主 quota，不抓 reset credits。
 
-scheduler 集中持有排期与 in-flight 状态：`nextRefreshDates` / `midCycleDeadlines` / `inFlightModes` / `inFlightWaiters` 等。
+scheduler 集中持有排期与 in-flight 状态：`nextRefreshDates` / `resetCandidates` +
+`lastIntervalFinishedDates`（mid-cycle reset 点）/ `inFlightModes` / `inFlightWaiters` 等。
 in-flight dedup：`markInFlight(providerID)` 返回 false 时直接 `.deferred`（已被 timer /
 manual / menu-open 任一路径占住）。手动 full refresh 若遇到 background 请求，会通过
 `waitUntilNotInFlight` 等待；该等待支持 cancellation，取消时会移除带 UUID 的 waiter，
-不会留下悬挂 continuation。多个 full refresh waiter 由 `pendingFullRefreshIDs` 做一次性
-claim，当前 background 请求完成后最多补跑一次 full refresh。
+不会留下悬挂 continuation。多个 full refresh waiter 由 `ManualRefreshGate` 的
+`pendingFullRefreshIDs`（`Services/ManualRefreshGate.swift`，AppState 侧而非 scheduler 侧）
+做一次性 claim，当前 background 请求完成后最多补跑一次 full refresh。
 成功与失败都直接按 baseInterval 写入 `nextRefreshDates`。
 UI 通过 `earliestNextRefresh` 拿到所有 provider 中最早的下次触发时间，pub 到 `nextRefreshAt`。
 
@@ -162,8 +164,9 @@ asynchronous.
 Config reload path:
 
 1. `ConfigStore.startWatching()` opens the `config.json` **file** and installs a
-   `DispatchSource.makeFileSystemObjectSource` listener; `AppState.start()` is its
-   only caller.
+   `DispatchSource.makeFileSystemObjectSource` listener; the only callers are
+   `AppState.start()`（启动）与 `AppState.rescheduleAll()`（配置重载路径上的幂等重申——
+   watcher 本来就在跑，不构成第二个装载点）。
 2. Each event first schedules a 250 ms debounce, then reads the file on a detached
    utility task and calls `configStore.hasChangedSinceLastRead(using:)`; an
    unchanged fingerprint short-circuits without parsing.
@@ -414,9 +417,11 @@ through this path. Two known edges (intentional, not bugs):
    but stored locally because the fetcher is a `Sendable` value that may be used
    independently of the registry.
 
-**SettingsView 派生 tab**（不是硬编码）：`SettingsTab` 是 `.general` + `.provider(FetcherDescriptor)`
-的 enum。`SettingsView.allTabs` 直接 `[.general] + descriptors.map { .provider($0) }`，
-侧栏 icon / 标题 / 副标题从 descriptor 拿，**新增 provider 不用改 `SettingsTab` 枚举本身**。
+**SettingsView 派生 tab**（不是硬编码）：`SettingsTab` 是 `.general` / `.energy` /
+`.provider(FetcherDescriptor)` / `.clients` 的 enum。`SettingsView.allTabs` 是
+`[.general, .energy] + sortedProviderDescriptors.map { .provider($0) } + [.clients]`
+（provider 段按显示名升序），侧栏 icon / 标题 / 副标题从 descriptor 拿，**新增 provider
+不用改 `SettingsTab` 枚举本身**。
 `providerPane(for: ProviderKind)` 是 kind 派发，加新 provider 在那里加一个 `case` 写
 pane UI（默认模板：enabled toggle + 独立刷新间隔；特殊字段如 API Key / authPath
 在 case 里加）。`SettingsPaneHeader` 也走同一个 `SettingsTab`，不再 hardcoded icon / title。
@@ -441,4 +446,4 @@ These are documented product boundaries:
   have their own SQLite readers, Antigravity is pure RPC, and Codex parses JSONL on
   demand for the 7-day chart.
 
-> 核对基线：2026-10-05 · 代码 22a2467
+> 核对基线：2026-10-05 · 代码 79dee29
