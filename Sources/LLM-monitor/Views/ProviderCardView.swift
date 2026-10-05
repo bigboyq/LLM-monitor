@@ -79,6 +79,10 @@ enum ProviderCardLayout {
 struct ProviderCardView: View, Equatable {
     let status: ProviderStatus
 
+    /// 「今」行取哪一天：宿主注入的展示时钟（随浮层显隐起停），与卡内其它
+    /// 倒计时/新鲜度消费者同一个 now，不取渲染时的墙钟。
+    @Environment(\.menuDisplayDate) private var displayDate
+
     // 卡片内容层四周的内边距搬到了 `LayoutMetrics.cardContentPadding`：
     // `EdgeDockTheme.popoverWidth` 推导宽度时也要读它，声明留在这个 View 里会
     // 让 Services 反向依赖视图层。
@@ -264,8 +268,10 @@ struct ProviderCardView: View, Equatable {
     /// 日期格 `—`、并参与所在态的全零列判定。当天四桶合计为 0 时照常返回
     /// `Row`，由 `QuotaWindowUsageSection.visibleRows` 统一跳过。
     private func todayUsageRow(projection: ProviderUsageProjection) -> QuotaWindowUsageSection.Row? {
+        let calendar = Calendar.current
+        // 「今天」以展示时钟为准（与下面的 startOfDay 同一个 now，别用两个来源）。
         guard let today = projection.dailyTokenUsage.last(where: {
-            Calendar.current.isDateInToday($0.dayStart)
+            calendar.isDate($0.dayStart, inSameDayAs: displayDate)
         }) else {
             return nil
         }
@@ -275,8 +281,7 @@ struct ProviderCardView: View, Equatable {
             output: today.output,
             reasoning: today.reasoning
         )
-        let calendar = Calendar.current
-        let todayStart = calendar.startOfDay(for: Date())
+        let todayStart = calendar.startOfDay(for: displayDate)
         guard let tomorrow = calendar.date(byAdding: .day, value: 1, to: todayStart) else {
             return nil
         }

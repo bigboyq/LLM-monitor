@@ -33,6 +33,10 @@ extension EdgeDockController {
             return
         }
 
+        // 走到这里 = 浮层确实要展示：开表。start 自身幂等，重复 hover 同一张卡
+        // 不会创建第二个 tick task；两个 guard 早退路径已经各自走 hidePopover()。
+        popoverMenuDisplayClock.start()
+
         let visibleFrame = Self.targetScreen.visibleFrame
         let (popover, hosting) = ensurePopoverPanel()
         let backdrop = EdgeDockTheme.popoverPadding
@@ -104,6 +108,7 @@ extension EdgeDockController {
     /// 收起详情窗。
     func hidePopover() {
         popoverPanel?.orderOut(nil)
+        popoverMenuDisplayClock.stop()
     }
 
     /// popover 内容**跟随系统外观** + 折叠区常展。
@@ -121,10 +126,18 @@ extension EdgeDockController {
     /// 才出现的详情，**靠鼠标移开来收起**而不是靠移出某个区域。里面再藏一层
     /// "悬停才展开"等于要求一个正在被移开的窗口被悬停 —— 那些 section 永远
     /// 展不开，等于整段信息静默丢失。
+    ///
+    /// 外面再包一层 `MenuDisplayClockScope`：浮层宿主不在 `MenuContentView` 的
+    /// 环境里，不注入活动时钟的话，卡内读 `\.menuDisplayDate` 的组件（高峰
+    /// 倒计时 / 新鲜度胶囊）会读到环境键 `static let` 的进程级兜底值——进程内
+    /// 只求值一次，永远冻结。时钟由 `popoverMenuDisplayClock` 持有，随浮层显隐
+    /// start/stop（`updatePopover` 成功路径 / `hidePopover`）。
     private func popoverContent<C: View>(_ content: C) -> some View {
-        content
-            .environment(\.hoverRevealMode, .alwaysVisible)
-            .environment(\.quotaWindowSegmentEditable, true)
+        MenuDisplayClockScope(clock: popoverMenuDisplayClock) {
+            content
+                .environment(\.hoverRevealMode, .alwaysVisible)
+                .environment(\.quotaWindowSegmentEditable, true)
+        }
     }
 
     func ensurePopoverPanel() -> (NSPanel, NSHostingView<AnyView>) {

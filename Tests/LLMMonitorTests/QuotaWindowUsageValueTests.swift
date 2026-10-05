@@ -849,7 +849,7 @@ final class QuotaWindowUsageValueTests: XCTestCase {
     func testResetDateColumnAlignsLeading() {
         let now = Date(timeIntervalSince1970: 1_790_000_000)
         let width = QuotaWindowUsageSection.resetDateColumnWidth
-        let dateView = Text(QuotaWindowUsageSection.formatResetDateText(now.addingTimeInterval(3600)))
+        let dateView = Text(QuotaWindowUsageSection.formatResetDateText(now.addingTimeInterval(3600), now: now))
             .font(MenuTypography.metricValue)
             .padding(.leading, QuotaWindowUsageSection.resetDateColumnLeadingGap)
             .frame(width: width, alignment: .leading)

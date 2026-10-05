@@ -56,6 +56,27 @@ final class MenuDisplayClock: ObservableObject {
     deinit { task?.cancel() }
 }
 
+/// 把共享展示时钟铺进独立宿主（`NSPanel` + `NSHostingView`）的根视图。
+///
+/// 宿主不在 `MenuContentView` 的环境里，卡片读 `\.menuDisplayDate` 会落到
+/// `MenuDisplayDateKey` 的静态兜底值——`static let` 进程内只求值一次，
+/// 于是高峰倒计时 / 新鲜度胶囊会永远冻结在第一次渲染的时刻。时钟由宿主
+/// 持有并随面板显隐 start/stop（`HoverPanelController` / `EdgeDockController`
+/// 的浮层各持一个），这里只负责订阅 tick 并把新值注入环境。
+struct MenuDisplayClockScope<Content: View>: View {
+    @ObservedObject var clock: MenuDisplayClock
+    private let content: Content
+
+    init(clock: MenuDisplayClock, @ViewBuilder content: () -> Content) {
+        self.clock = clock
+        self.content = content()
+    }
+
+    var body: some View {
+        content.environment(\.menuDisplayDate, clock.date)
+    }
+}
+
 /// MenuBarExtra 点开后看到的主面板 — **纯展示**，无 sheet 无交互弹窗
 struct MenuContentView: View {
     @ObservedObject var state: AppState

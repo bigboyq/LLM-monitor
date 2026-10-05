@@ -155,6 +155,11 @@ final class EdgeDockController: ObservableObject {
     /// dock 尺寸不因它改变。
     var popoverPanel: NSPanel?
     var popoverHostingView: NSHostingView<AnyView>?
+    /// popover 宿主的共享展示时钟：随浮层显隐 start/stop（`updatePopover` 成功
+    /// 路径 / `hidePopover`），经 `MenuDisplayClockScope` 注入卡片。没有它，卡内
+    /// 读 `\.menuDisplayDate` 的组件（高峰倒计时 / 新鲜度胶囊）会落到环境键
+    /// `static let` 的进程级兜底值——永远冻结。
+    let popoverMenuDisplayClock = MenuDisplayClock()
     private var statusCancellable: AnyCancellable?
     private var evaluationCancellable: AnyCancellable?
     private var configCancellable: AnyCancellable?

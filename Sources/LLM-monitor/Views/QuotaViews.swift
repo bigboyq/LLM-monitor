@@ -210,8 +210,11 @@ struct CompactResetCreditsRow: View {
         TimeInterval(refreshIntervalSeconds) * TimeInterval(ProviderRefreshScheduler.periodicFullEveryNDefault)
     }
 
+    /// 过期判定用宿主注入的展示时钟，不取渲染时的墙钟（与卡内其它倒计时同一个 now）。
+    @Environment(\.menuDisplayDate) private var displayDate
+
     private var isStale: Bool {
-        resets.isStale(now: Date(), refreshIntervalSeconds: resetCreditsRefreshPeriod)
+        resets.isStale(now: displayDate, refreshIntervalSeconds: resetCreditsRefreshPeriod)
     }
 
     var body: some View {
@@ -289,6 +292,8 @@ struct CompactResetCreditsRow: View {
 /// 一条可用 reset credit：过期时间 + 剩余时间
 struct CreditEntryRow: View {
     let entry: ResetCreditEntry
+    /// 剩余时间取宿主注入的展示时钟，不取渲染时的墙钟。
+    @Environment(\.menuDisplayDate) private var displayDate
 
     var body: some View {
         HStack(spacing: 6) {
@@ -301,7 +306,7 @@ struct CreditEntryRow: View {
                     .font(.system(size: 11, weight: .medium).monospacedDigit())
                     .foregroundStyle(.primary)
 
-                Text(Formatters.formatRelativeShort(from: expiresAt))
+                Text(Formatters.formatRelativeShort(from: expiresAt, now: displayDate))
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
             } else {
@@ -813,6 +818,8 @@ private struct SingleQuotaMetadataLine: View {
 
 private struct ResetTimeSummary: View {
     let resetsAt: Date?
+    /// 倒计时取宿主注入的展示时钟，不取渲染时的墙钟（随浮层显隐起停）。
+    @Environment(\.menuDisplayDate) private var displayDate
 
     var body: some View {
         if let resetsAt {
@@ -825,7 +832,7 @@ private struct ResetTimeSummary: View {
                 // 倒计时用次要色而不是 tertiary：tertiary 在浅色材质上已经淡到
                 // 接近不可读，而"还剩多久"是这行里读者真正要拿走的第二个信息
                 // （第一个是重置时刻），不该比同一行的时钟图标还弱。
-                Text("(\(Formatters.formatResetSuffix(from: resetsAt)))")
+                Text("(\(Formatters.formatResetSuffix(from: resetsAt, now: displayDate)))")
                     .font(MenuTypography.timeSuffix)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)

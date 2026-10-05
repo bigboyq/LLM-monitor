@@ -160,6 +160,9 @@ struct QuotaWindowUsageSection: View {
 
     @AppStorage(QuotaWindowUsageSection.segmentStorageKey) private var segmentRawValue: String = QuotaWindowUsageSegment.analysis.rawValue
     @Environment(\.quotaWindowSegmentEditable) private var isSegmentEditable
+    /// 重置日期格倒计时的取值来源：宿主注入的展示时钟（随浮层显隐起停），
+    /// 与卡内其它消费者（高峰倒计时、新鲜度胶囊）同一个 now。
+    @Environment(\.menuDisplayDate) private var displayDate
 
     var activeSegment: QuotaWindowUsageSegment {
         segmentOverride ?? (QuotaWindowUsageSegment(rawValue: segmentRawValue) ?? .analysis)
@@ -346,9 +349,10 @@ struct QuotaWindowUsageSection: View {
     }
 
     /// 重置日期格文案：`MM-dd HH:mm (倒计时)`，没有重置时刻写 `—`。
-    static func formatResetDateText(_ resetsAt: Date?) -> String {
+    /// 倒计时取 `now`（宿主注入的展示时钟），不取渲染时的墙钟。
+    static func formatResetDateText(_ resetsAt: Date?, now: Date) -> String {
         guard let resetsAt else { return "—" }
-        return "\(Formatters.formatMonthDayMinute(resetsAt)) (\(Formatters.formatResetSuffix(from: resetsAt)))"
+        return "\(Formatters.formatMonthDayMinute(resetsAt)) (\(Formatters.formatResetSuffix(from: resetsAt, now: now)))"
     }
 
     var body: some View {
@@ -546,7 +550,7 @@ struct QuotaWindowUsageSection: View {
     private func resetDateCell(_ resetsAt: Date?) -> some View {
         Group {
             if let resetsAt {
-                Text(Self.formatResetDateText(resetsAt))
+                Text(Self.formatResetDateText(resetsAt, now: displayDate))
                     .foregroundStyle(.secondary)
             } else {
                 Text("—")

@@ -109,7 +109,10 @@ enum Formatters {
     // 金额格式化链路暂不保留；未来需要展示余额时再同步增加币种字段。
 
     /// "5 分钟后" / "2 天 3 小时后" / "刚刚"
-    static func formatRelativeShort(from date: Date, now: Date = Date()) -> String {
+    ///
+    /// `now` 必填：相对时间的数值由调用方决定——视图层必须传宿主注入的展示时钟
+    /// （`\.menuDisplayDate`，随宿主显隐起停），不允许渲染时现取墙钟。
+    static func formatRelativeShort(from date: Date, now: Date) -> String {
         let delta = date.timeIntervalSince(now)
         if delta <= 0 { return "已过期" }
         return "约 \(formatDuration(delta)) 后"
@@ -126,7 +129,10 @@ enum Formatters {
     /// - 4h05m      → "4h05m"
     /// - 23m        → "23m"
     /// - 0 / 负数    → "已过期"
-    static func formatResetSuffix(from date: Date, now: Date = Date()) -> String {
+    ///
+    /// `now` 必填：同 `formatRelativeShort`——倒计时数值取宿主注入的展示时钟，
+    /// 不取渲染时的墙钟。
+    static func formatResetSuffix(from date: Date, now: Date) -> String {
         let delta = date.timeIntervalSince(now)
         if delta <= 0 { return "已过期" }
         let total = Int(delta)

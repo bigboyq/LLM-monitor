@@ -222,6 +222,13 @@ final class HoverPanelController {
     /// 整段裁掉；`frameForPanel` 仍会在屏幕装不下时按 visibleFrame 收窄。
     private let maximumPanelWidth: CGFloat = EdgeDockTheme.popoverWidth
 
+    /// 浮层宿主的共享展示时钟：随面板显隐 start/stop（`present` / `hide`），
+    /// 经 `MenuDisplayClockScope` 注入 rootView。没有它，卡内读
+    /// `\.menuDisplayDate` 的组件（高峰倒计时 / 新鲜度胶囊）会落到
+    /// `MenuDisplayDateKey` 的 `static let` 兜底值——进程内只求值一次，
+    /// 永远冻结在第一次渲染的时刻。
+    let displayClock = MenuDisplayClock()
+
     private var panel: NSPanel?
     private var hostingView: NSHostingView<AnyView>?
     private var pendingDetail: AnyView?
@@ -255,6 +262,7 @@ final class HoverPanelController {
         pendingDetail = nil
         pendingSample = nil
         panel?.orderOut(nil)
+        displayClock.stop()
     }
 
     func updateContent(detail: AnyView) {
@@ -269,21 +277,26 @@ final class HoverPanelController {
     private func present(detail: AnyView, sample: HoverSample) {
         let panel = ensurePanel()
         let hostingView = ensureHostingView()
+        // 浮层进入实际展示路径即开表；start 自身幂等，重复 present（切换详情 /
+        // updateContent 重刷）不会创建第二个 tick task。
+        displayClock.start()
 
         hostingView.rootView = AnyView(
-            detail
-                .padding(10)
-                .background(
-                    RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .fill(Color(NSColor.windowBackgroundColor))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .strokeBorder(Color.primary.opacity(0.10), lineWidth: 1)
-                )
-                // NSHostingView 会以当前 panel 的宽度参与 fittingSize 计算；
-                // 保持详情的固有宽度，避免较长的 token 数在测量阶段被省略。
-                .fixedSize(horizontal: true, vertical: false)
+            MenuDisplayClockScope(clock: displayClock) {
+                detail
+                    .padding(10)
+                    .background(
+                        RoundedRectangle(cornerRadius: 9, style: .continuous)
+                            .fill(Color(NSColor.windowBackgroundColor))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 9, style: .continuous)
+                            .strokeBorder(Color.primary.opacity(0.10), lineWidth: 1)
+                    )
+                    // NSHostingView 会以当前 panel 的宽度参与 fittingSize 计算；
+                    // 保持详情的固有宽度，避免较长的 token 数在测量阶段被省略。
+                    .fixedSize(horizontal: true, vertical: false)
+            }
         )
 
         hostingView.layoutSubtreeIfNeeded()
