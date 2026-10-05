@@ -209,6 +209,59 @@ final class HolidaySourceTests: XCTestCase {
         )
     }
 
+    /// 上游 chinese-days 键集护栏：顶层必须是 holidays / workdays / inLieuDays
+    /// 三个键，缺一即整体拒绝（与 `sync-holiday-data.sh` 的 jq 护栏同款）。
+    /// 否则上游改名 / 缺键会被静默按部分数据接受，数据问题被隐藏。
+    func testParseChineseDaysDatesRejectsPayloadMissingAnyTopLevelKey() {
+        let currentYear = beijing.component(.year, from: Date())
+        let complete = """
+        {
+          "holidays": {"\(currentYear)-10-01": "National Day,国庆节,1"},
+          "workdays": {"\(currentYear)-10-10": "Makeup,调休上班,1"},
+          "inLieuDays": {"\(currentYear)-01-02": "InLieu,调休放假日,1"}
+        }
+        """
+        XCTAssertEqual(
+            HolidayCalendar.parseChineseDaysDates(Data(complete.utf8)),
+            ["\(currentYear)-01-02", "\(currentYear)-10-01"],
+            "三键齐全的输入仍必须通过（不因新增校验被误伤）"
+        )
+
+        let missingInLieu = """
+        {
+          "holidays": {"\(currentYear)-10-01": "National Day,国庆节,1"},
+          "workdays": {"\(currentYear)-10-10": "Makeup,调休上班,1"}
+        }
+        """
+        XCTAssertNil(
+            HolidayCalendar.parseChineseDaysDates(Data(missingInLieu.utf8)),
+            "缺 inLieuDays 必须整体拒绝，不能只按 holidays 静默接受"
+        )
+        XCTAssertNil(
+            HolidayCalendar.parseSourceDates(Data(missingInLieu.utf8)),
+            "parseSourceDates 走同款校验"
+        )
+
+        let missingWorkdays = """
+        {
+          "holidays": {"\(currentYear)-10-01": "National Day,国庆节,1"},
+          "inLieuDays": {"\(currentYear)-01-02": "InLieu,调休放假日,1"}
+        }
+        """
+        XCTAssertNil(
+            HolidayCalendar.parseChineseDaysDates(Data(missingWorkdays.utf8)),
+            "缺 workdays 同样拒绝：workdays 不参与判定，但缺它说明上游 schema 已变"
+        )
+
+        let missingHolidays = """
+        {
+          "workdays": {"\(currentYear)-10-10": "Makeup,调休上班,1"},
+          "inLieuDays": {"\(currentYear)-01-02": "InLieu,调休放假日,1"}
+        }
+        """
+        XCTAssertNil(HolidayCalendar.parseChineseDaysDates(Data(missingHolidays.utf8)))
+    }
+
     func testParseSourceDatesRejectsNonSnapshotFormats() {
         let ics = """
         BEGIN:VCALENDAR

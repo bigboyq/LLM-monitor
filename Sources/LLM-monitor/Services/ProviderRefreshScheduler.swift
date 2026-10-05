@@ -54,8 +54,17 @@ final class ProviderRefreshScheduler {
 
     /// 单一常驻额度调度循环 Task
     private var loopTask: Task<Void, Never>?
+    /// 当前 loop 实例的 token。`ensureLoopRunning` 每次起新 loop 递增，`cancelAll`
+    /// 也递增（让被取消但仍挂在 `await task.value` 上收尾的旧 loop 立即失效）。
+    /// 旧 loop 若不认这个 token，就会在 `cancelAll()` 紧跟 `schedule(for:)` 的
+    /// 序列里与新 loop 短暂双跑。
+    private var loopGeneration: UInt64 = 0
     /// 睡眠等待时的休眠 Task（wake() 时精确 cancel 提前唤醒，无 continuation 悬挂风险）
     private var sleepTask: Task<Void, any Error>?
+    /// 当前 `sleepTask` 属于哪个 loop 实例。旧 loop 收尾时只清理属于自己的
+    /// 引用，不会把新 loop 的 `sleepTask` 置空（那会让后续 `wake()` 打不断
+    /// 睡眠，丢掉一次提前唤醒，provider 最坏要睡到下一个 deadline）。
+    private var sleepGeneration: UInt64?
     /// 上一次休眠正常走满的目标截止时刻（在注入了极速测试 sleep 时，作为虚拟时间推进标记）
     private var lastCompletedTargetWakeDate: Date?
 
@@ -322,6 +331,9 @@ final class ProviderRefreshScheduler {
     func cancelAll() {
         loopTask?.cancel()
         loopTask = nil
+        // 旧 loop 还挂在 `await task.value` 上不会立刻结束；立刻换 token 让它在
+        // 收尾前就退出下一轮迭代（与新 loop 不再双跑）。
+        loopGeneration &+= 1
         batchTasks.values.forEach { $0.cancel() }
         batchTasks.removeAll()
         schedulerGeneration &+= 1
@@ -351,17 +363,22 @@ final class ProviderRefreshScheduler {
 
     private func ensureLoopRunning() {
         guard loopTask == nil else { return }
+        loopGeneration &+= 1
+        let generation = loopGeneration
         loopTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            await self.runLoop()
+            await self.runLoop(generation: generation)
         }
     }
 
-    private func runLoop() async {
+    private func runLoop(generation: UInt64) async {
         var initialBatchPending = true
-        while !Task.isCancelled {
+        // `generation == loopGeneration` 让被 cancelAll 取消的旧 loop 在收尾后
+        // 不再进入下一轮迭代：`cancelAll()` 置空 loopTask 后 `schedule(for:)`
+        // 会立刻起新 loop，没有这道闸旧 loop 会与它短暂双跑。
+        while !Task.isCancelled, generation == loopGeneration {
             if activeJobToken != nil {
-                _ = await interruptibleSleep(3600, targetWakeDate: nil)
+                _ = await interruptibleSleep(3600, targetWakeDate: nil, generation: generation)
                 continue
             }
             let nowDate = now()
@@ -458,12 +475,12 @@ final class ProviderRefreshScheduler {
             let resetDates = nextResetCandidate.map { [$0.executionAt] } ?? []
             let auxiliaryDates = healthBoundaryDate.map { [$0] } ?? []
             guard let nextWake = (Array(regularDates) + resetDates + auxiliaryDates).min() else {
-                _ = await interruptibleSleep(3600, targetWakeDate: nil)
+                _ = await interruptibleSleep(3600, targetWakeDate: nil, generation: generation)
                 continue
             }
 
             let sleepSeconds = max(nextWake.timeIntervalSince(now()), 0)
-            let completed = await interruptibleSleep(sleepSeconds, targetWakeDate: nextWake)
+            let completed = await interruptibleSleep(sleepSeconds, targetWakeDate: nextWake, generation: generation)
             if completed {
                 lastCompletedTargetWakeDate = nextWake
             }
@@ -571,26 +588,42 @@ final class ProviderRefreshScheduler {
     }
 
     @discardableResult
-    private func interruptibleSleep(_ seconds: TimeInterval, targetWakeDate: Date?) async -> Bool {
+    private func interruptibleSleep(
+        _ seconds: TimeInterval,
+        targetWakeDate: Date?,
+        generation: UInt64
+    ) async -> Bool {
         guard seconds > 0 else { return true }
         let task = Task { [weak self] in
             guard let self else { return }
             try await self.sleep(seconds)
         }
         self.sleepTask = task
+        self.sleepGeneration = generation
         do {
             try await task.value
-            self.sleepTask = nil
+            clearSleepTask(generation: generation)
             return true
         } catch {
-            self.sleepTask = nil
+            clearSleepTask(generation: generation)
             return false
         }
+    }
+
+    /// 只清理属于本 loop 实例的 `sleepTask`。被取消的旧 loop 收尾时无条件置空
+    /// 会把新 loop 的引用一起清掉——那之后的 `wake()`（reset deadline 补刷、
+    /// 新 provider 注册、`beginExternalJob`）都打不断这次睡眠，provider 会一直
+    /// 睡到下一个 deadline。
+    private func clearSleepTask(generation: UInt64) {
+        guard sleepGeneration == generation else { return }
+        sleepTask = nil
+        sleepGeneration = nil
     }
 
     private func wake() {
         sleepTask?.cancel()
         sleepTask = nil
+        sleepGeneration = nil
     }
 
     // MARK: - Mid-Cycle Reset Time 补刷新 (reset 发生 15s 后额外触发一次，不打乱 regular nextRefreshDate)
@@ -996,6 +1029,12 @@ final class ProviderRefreshScheduler {
     /// 已由 deadline driver 投递、但 handler 可能尚未开始的 batch。这个
     /// seam 让 wake 合并竞态可以稳定验证，不把网络/解析逻辑暴露给 UI。
     var runningProviderIDs: Set<String> { runningProviders }
+
+    /// 当前 loop 实例 token（测试 / debug 用）。`cancelAll` + 重新起 loop 会让它递增。
+    var loopGenerationForTesting: UInt64 { loopGeneration }
+
+    /// 当前睡眠句柄归属的 loop 实例；nil 表示 driver 没在睡（测试 / debug 用）。
+    var sleepOwnerGeneration: UInt64? { sleepGeneration }
 
     /// 当前 provider 等待 in-flight 结束的 waiter 数（测试 / debug 用）。
     func inFlightWaiterCount(for providerID: String) -> Int {

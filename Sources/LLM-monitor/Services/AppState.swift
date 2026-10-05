@@ -513,9 +513,14 @@ final class AppState: ObservableObject {
         nextRefreshAt = nil
         sleepHealth.stop()
         configStore.stopWatching()
+        // 停机兜底：基线正常走 actor 异步串行落盘，进程可能在 encode + fsync 的
+        // 毫秒级窗口里退出而丢掉最后一次基线（重启后停机期间的耗尽/恢复就补报不了）。
+        // stop() 是同步路径，不能 await actor，这里同步写完再返回。
+        triggerStateStore.flushSynchronously()
     }
 
-    /// 重新调度所有 timer（配置变更后调用）
+    /// 配置变更后的重排入口（差异化：只重锚新增 / 重新启用 / interval 变化的 provider）。
+    /// 函数名是历史遗留——语义早已不是"重新调度所有"。
     ///
     /// **刻意不是冷启动**：本路径只由「配置写盘」触发（设置页保存、拖 dock
     /// 松手 App 自写 config、auth 探测翻转），而这些操作与刷新无关。走 `start()`

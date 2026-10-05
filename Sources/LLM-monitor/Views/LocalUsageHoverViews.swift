@@ -512,21 +512,12 @@ struct LocalUsageFooterView<Daily: LocalUsageDaily>: View {
     }
 
     private var priceByDay: [Date: String] {
-        let estimates = ModelPricingCatalog.estimateByDay(
-            samples: recentSamples,
+        LocalUsagePriceByDay.values(
+            dayStarts: dailyTokenUsage.map(\.dayStart),
+            recentSamples: recentSamples,
             quotaProviderID: quotaProviderID,
             deepseekPeakWindow: deepseekPeakWindow
         )
-        return Dictionary(uniqueKeysWithValues: dailyTokenUsage.map { day in
-            let key = Calendar.current.startOfDay(for: day.dayStart)
-            let text: String
-            if let estimate = estimates[key] {
-                text = estimate.displayText
-            } else {
-                text = "—"
-            }
-            return (day.dayStart, text)
-        })
     }
 
     var body: some View {
@@ -575,5 +566,84 @@ struct LocalUsageFooterView<Daily: LocalUsageDaily>: View {
         }
         // codex 在数据未满 7 天时走这里（isReady=false 但已有部分数据）
         return "本地 token 用量数据积累中（\(dailyTokenUsage.count) / 7 天）"
+    }
+}
+
+/// 7 天金额文案（`LocalUsageFooterView.priceByDay`）的 memo。
+///
+/// 与 `ProviderCardDerivedValues` 同一个理由：这个 footer 挂在 provider 卡片
+/// 段3 里，而卡片 body 由 `DisplayClock` **每秒**重 eval；`estimateByDay` 要把
+/// **全部** `recentSamples` 按自然日分组后逐条计价（DeepSeek 还要逐条按北京
+/// 时间判峰谷 ×2），DSH 的样本上限 65536 ——「数据一秒没变」也是一次万级迭代。
+/// （memo 命中后键比较同样走 COW identity 快路径、~0.16 µs/次；省下的是逐条计价本身。）
+///
+/// 键覆盖的输入：样本集合与内容、计价用的 quota provider、高峰窗口、节假日表
+/// 版本（`HolidayCalendar.shared` 换表后峰谷判定会变）、以及**要显示哪几天**
+/// （金额只由 samples + 计价参数决定，daily 各桶的数值不参与，所以键里只放
+/// 日首）。daily 的桶值变化由上层卡片 memo 的 `status` 键一并覆盖。
+enum LocalUsagePriceByDay {
+    struct Key: Equatable {
+        let dayStarts: [Date]
+        let recentSamples: [LocalTokenUsageSample]
+        let quotaProviderID: String
+        let deepseekPeakWindow: DeepseekPeakWindow
+        let holidayRevision: Int
+        /// `Calendar.current` 不是编译期常量：系统时区变了，按日分组的边界就变。
+        let timeZoneIdentifier: String
+    }
+
+    private static let memo = DerivedValueMemo<String, Key, [Date: String]>()
+
+    /// 真正算过几次（测试口径）。
+    static var computeCount: Int { memo.computeCount }
+    /// 清空（测试用）。
+    static func reset() { memo.reset() }
+
+    /// 未走 memo 的直算路径（`values` 的 `compute`，测试的"逐字不变"对照也用它）。
+    static func compute(
+        dayStarts: [Date],
+        recentSamples: [LocalTokenUsageSample],
+        quotaProviderID: String,
+        deepseekPeakWindow: DeepseekPeakWindow
+    ) -> [Date: String] {
+        let estimates = ModelPricingCatalog.estimateByDay(
+            samples: recentSamples,
+            quotaProviderID: quotaProviderID,
+            deepseekPeakWindow: deepseekPeakWindow
+        )
+        return Dictionary(uniqueKeysWithValues: dayStarts.map { dayStart in
+            let key = Calendar.current.startOfDay(for: dayStart)
+            let text: String
+            if let estimate = estimates[key] {
+                text = estimate.displayText
+            } else {
+                text = "—"
+            }
+            return (dayStart, text)
+        })
+    }
+
+    static func values(
+        dayStarts: [Date],
+        recentSamples: [LocalTokenUsageSample],
+        quotaProviderID: String,
+        deepseekPeakWindow: DeepseekPeakWindow
+    ) -> [Date: String] {
+        let key = Key(
+            dayStarts: dayStarts,
+            recentSamples: recentSamples,
+            quotaProviderID: quotaProviderID,
+            deepseekPeakWindow: deepseekPeakWindow,
+            holidayRevision: HolidayCalendar.sharedRevision,
+            timeZoneIdentifier: Calendar.current.timeZone.identifier
+        )
+        return memo.value(for: quotaProviderID, key: key) {
+            compute(
+                dayStarts: dayStarts,
+                recentSamples: recentSamples,
+                quotaProviderID: quotaProviderID,
+                deepseekPeakWindow: deepseekPeakWindow
+            )
+        }
     }
 }

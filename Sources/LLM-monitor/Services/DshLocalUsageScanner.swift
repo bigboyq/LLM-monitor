@@ -739,7 +739,7 @@ private extension DshLocalUsageScanner {
                                 limits: limits
                             )
                         } else {
-                            let temporary = fileManager.temporaryURL()
+                            let temporary = try fileManager.temporaryURL()
                             defer { try? fileManager.removeItem(at: temporary) }
                             try streamingDecompressor(snapshot.url, temporary, fileManager)
                             result = try parseFile(

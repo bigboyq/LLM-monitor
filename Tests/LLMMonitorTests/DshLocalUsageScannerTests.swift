@@ -900,6 +900,116 @@ final class DshLocalUsageScannerTests: XCTestCase {
         XCTAssertEqual(snapshot.byProvider["deepseek-official"]?.today?.inputTokens, 100)
     }
 
+    /// 解压临时产物必须落在 App 自有临时根（`$TMPDIR/llm-monitor-sqlite/`）内部：
+    /// 正常路径由 defer 删除，崩溃/强杀残留由启动 sweep
+    /// （`SQLiteTempCopy.sweepStaleCopies`）回收——单个产物最大 1GiB，落在
+    /// `$TMPDIR` 根下就永远无人回收。
+    func testDshDecompressionTempFileLivesInAppOwnedTempRootAndIsCleanedUp() throws {
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let calendar = makeUTCGregorianCalendar()
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("llm-monitor-dsh-temproot-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let cache = root.appendingPathComponent(".token-monitor", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let body = [
+            #"{"type":"request/context","seq":1,"time":1700000000000,"data":{"provider":"deepseek-official","model":"deepseek-v4-flash"}}"#,
+            makeUsageLine(seq: 2, turn: 1, step: 0, timeMs: 1_700_000_001_000, input: 100)
+        ].joined(separator: "\n") + "\n"
+        try writeRawSessionArtifact(
+            root: sessionsRoot,
+            sessionID: "session-temproot",
+            fileName: "session.jsonl.zst",
+            body: Data(body.utf8)
+        )
+
+        let outputURL = OutputURLBox()
+        let snapshot = try DshLocalUsageScanner.performScanPure(
+            sessionsRoot: sessionsRoot,
+            cacheDir: cache,
+            fileManager: FileManagerBox(),
+            calendar: calendar,
+            now: { base },
+            streamingDecompressor: { input, output, _ in
+                outputURL.record(output)
+                try Data(contentsOf: input).write(to: output)
+            },
+            limits: DshLocalUsageScanLimits(
+                maxSessionFiles: 8,
+                maxTotalRawBytes: 1024 * 1024,
+                maxJSONLLineBytes: 8 * 1024 * 1024,
+                maxRecentSamples: 100,
+                readChunkBytes: 64 * 1024
+            )
+        )
+        XCTAssertEqual(snapshot.eventCount, 1)
+
+        let produced = try XCTUnwrap(outputURL.value, "流式解压应被调用")
+        XCTAssertEqual(
+            produced.deletingLastPathComponent().standardizedFileURL.path,
+            SQLiteTempCopy.appTempDir().standardizedFileURL.path,
+            "解压临时产物必须落在 App 自有临时根内"
+        )
+        XCTAssertTrue(
+            produced.lastPathComponent.hasPrefix(SQLiteTempCopy.dshTempPrefix),
+            "解压临时产物名应带 dsh 前缀供启动 sweep 识别: \(produced.lastPathComponent)"
+        )
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: produced.path),
+            "正常路径 defer 应删除解压临时产物"
+        )
+    }
+
+    /// 子进程产物文件（DSH 解压输出，最大 1GiB 的会话明文）必须 owner-only：
+    /// `FileManager.createFile` 默认按 umask 建（实测 0644），不能继承系统 umask。
+    func testProcessRunnerOutputFileIsCreatedOwnerOnly() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("llm-monitor-process-runner-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let outputURL = dir.appendingPathComponent("stdout.bin")
+
+        let result = try ProcessRunner.run(
+            executable: URL(fileURLWithPath: "/bin/echo"),
+            arguments: ["hello-from-process-runner"],
+            timeout: 10,
+            standardOutputFile: outputURL
+        )
+        XCTAssertEqual(result.terminationStatus, 0, "实际 stderr：\(result.standardError)")
+
+        let permissions = try XCTUnwrap(
+            (try FileManager.default.attributesOfItem(atPath: outputURL.path)[.posixPermissions] as? NSNumber)?
+                .intValue,
+            "子进程产物应存在并带 posix 权限"
+        )
+        XCTAssertEqual(
+            permissions, 0o600,
+            "子进程产物权限应为 0600，实际：\(String(permissions, radix: 8))"
+        )
+        XCTAssertEqual(
+            String(data: try Data(contentsOf: outputURL), encoding: .utf8), "hello-from-process-runner\n",
+            "权限收紧不得改变落盘内容"
+        )
+    }
+
+    private final class OutputURLBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var stored: URL?
+
+        var value: URL? {
+            lock.lock()
+            defer { lock.unlock() }
+            return stored
+        }
+
+        func record(_ url: URL) {
+            lock.lock()
+            stored = url
+            lock.unlock()
+        }
+    }
+
     func testDshPlainJSONLStreamingParserMatchesFullReadSemantics() throws {
         // 等价性：明文 JSONL 改走 parseFile(fileURL:) 流式解析后，行级语义必须
         // 与内存全量解析一致——超长行（含跨读取分块的）整行跳过且不污染统计、

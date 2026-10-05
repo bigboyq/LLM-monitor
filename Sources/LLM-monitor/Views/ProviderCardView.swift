@@ -94,12 +94,13 @@ struct ProviderCardView: View, Equatable {
     }
 
     var body: some View {
-        // A single card render used to rebuild the same provider-neutral
-        // projection once for QuotaSummary and again for the local-usage
-        // footer. The projection is derived only from `status`, so compute it
-        // once and pass the value down to both consumers.
-        let projection = status.usageProjection(for: status.lastSuccess)
-        dockBody(projection: projection)
+        // 派生值（投影 / 额度窗口快照 / 「今」行）由 `ProviderCardDerivedValues`
+        // 统一算：它们只由 `status` 与两个"今天"决定，而 body 在展示时钟的 1s
+        // tick 里每秒重 eval —— 每次都真算就是把 O(samples) 的归桶 + 逐条计价
+        // （DeepSeek 还要逐条判北京时间峰谷）在 DSH 的数万条样本上重跑一遍。
+        // memo 之后只有输入真的变了才重算，数值与口径一字未改。
+        let derived = ProviderCardDerivedValues.resolve(status: status, displayDate: displayDate)
+        dockBody(derived: derived)
     }
 
     /// **三段式**：段1「Account Info」行 → 段2「Plan详情」+ 四个模块 →
@@ -130,21 +131,21 @@ struct ProviderCardView: View, Equatable {
     /// 非 `.ok` 状态（读取中 / 失败 / 未配置）没有第二张卡可切，退回单卡：硬拆会
     /// 得到"第二张卡片只有一个占位提示"的空壳。
     @ViewBuilder
-    private func dockBody(projection: ProviderUsageProjection) -> some View {
+    private func dockBody(derived: ProviderCardDerived) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             headerContent
             if case .ok(let info) = status.state {
                 dockCard {
                     accountInfoRow(info: info)
-                    planModules(info: info, projection: projection)
+                    planModules(info: info, derived: derived)
                 }
-                dockSectionTitle(projection: projection)
+                dockSectionTitle(projection: derived.projection)
                 dockCard {
-                    localUsage(projection: projection, part: .detail)
+                    localUsage(projection: derived.projection, part: .detail)
                 }
             } else {
                 dockCard {
-                    content(projection: projection)
+                    content(derived: derived)
                 }
             }
         }
@@ -185,10 +186,10 @@ struct ProviderCardView: View, Equatable {
     ///    都在 `quotaWindowUsage` 的「额度窗口用量」区块里，与额度区之间隔着
     ///    `quotaUsageDivider`；模块标题（额度窗口 / 重置卡详情）由 `QuotaWindowUsageSection` 内部画。
     @ViewBuilder
-    private func planModules(info: QuotaInfo, projection: ProviderUsageProjection) -> some View {
+    private func planModules(info: QuotaInfo, derived: ProviderCardDerived) -> some View {
         planSectionTitle
-        quotaSection(info: info, projection: projection, between: AnyView(peakIndicator))
-        quotaWindowUsage(info: info, projection: projection)
+        quotaSection(info: info, derived: derived, between: AnyView(peakIndicator))
+        quotaWindowUsage(info: info, derived: derived)
     }
 
     /// 段2 的段落标题。文案常量给测试引用；样式是段落级：11pt semibold、主色。
@@ -234,9 +235,9 @@ struct ProviderCardView: View, Equatable {
     /// 一致——曾经那条 `quotaBetween` 就是漏了回退路径才让重置卡与倒计时在浮层里
     /// 每次刷新闪一下。
     @ViewBuilder
-    private func quotaWindowUsage(info: QuotaInfo, projection: ProviderUsageProjection) -> some View {
-        let snapshot = quotaWindowUsageSnapshot(info: info, projection: projection)
-        let today = todayUsageRow(projection: projection)
+    private func quotaWindowUsage(info: QuotaInfo, derived: ProviderCardDerived) -> some View {
+        let snapshot = derived.windowUsageSnapshot
+        let today = derived.todayUsageRow
         let hasUsageModules = QuotaWindowUsageSection.hasVisibleContent(
             snapshot: snapshot,
             today: today,
@@ -255,94 +256,10 @@ struct ProviderCardView: View, Equatable {
         }
     }
 
-    /// 「今」行：当天本地用量聚合，与第一张卡底部曾经的「今日使用情况」汇总行
-    /// （后被移除的旧汇总行）**同源同口径**：当天 token 四桶 + 当天样本计价。
-    /// token 四桶取 `dailyTokenUsage` 的今天那一条（与"今天 X tokens / 命中率"
-    /// 同一份数据，比率公式也同一个：出/入 = (reasoning+output)/(input+cached)、
-    /// 思考 = reasoning/(reasoning+output)、命中为缓存占比）；
-    /// 价值取当天样本逐条计价。
-    ///
-    /// 当天无本地数据 → 返回 `nil`，今行整个不画。它不是额度窗口，只是
-    /// `QuotaWindowUsageSection` 的同一份 `Row` 格式（行首标签「今」，第五轮
-    /// 改版从「今日」缩成「今」，与「5h」「周」同一长度档）；合并改版后重置
-    /// 日期格 `—`、并参与所在态的全零列判定。当天四桶合计为 0 时照常返回
-    /// `Row`，由 `QuotaWindowUsageSection.visibleRows` 统一跳过。
-    private func todayUsageRow(projection: ProviderUsageProjection) -> QuotaWindowUsageSection.Row? {
-        let calendar = Calendar.current
-        // 「今天」以展示时钟为准（与下面的 startOfDay 同一个 now，别用两个来源）。
-        guard let today = projection.dailyTokenUsage.last(where: {
-            calendar.isDate($0.dayStart, inSameDayAs: displayDate)
-        }) else {
-            return nil
-        }
-        let metrics = QuotaWindowUsageMetrics(
-            input: today.input,
-            cachedInput: today.cacheRead,
-            output: today.output,
-            reasoning: today.reasoning
-        )
-        let todayStart = calendar.startOfDay(for: displayDate)
-        guard let tomorrow = calendar.date(byAdding: .day, value: 1, to: todayStart) else {
-            return nil
-        }
-        let todaySamples = projection.recentSamples.filter {
-            $0.completedAt >= todayStart && $0.completedAt < tomorrow
-        }
-        let cost: ModelCostEstimate? = todaySamples.isEmpty
-            ? nil
-            : ModelPricingCatalog.estimate(
-                samples: todaySamples,
-                quotaProviderID: status.kind.quotaProviderID,
-                deepseekPeakWindow: status.deepseekPeakWindow ?? .defaultWindow
-            )
-        return QuotaWindowUsageSection.Row(label: Self.todayRowLabel, metrics: metrics, cost: cost)
-    }
-
     /// 今行的行标签（第五轮改版从「今日」缩成「今」，与「5h」「周」同一长度档）。
-    /// 测试钉住，改文案必须连测试一起改。
+    /// 测试钉住，改文案必须连测试一起改。行本身由 `ProviderCardDerivedValues`
+    /// 产出（与投影是同一个 memo 值）。
     static let todayRowLabel = "今"
-
-    /// 区块数据：各 active model 的窗口用量按 provider 合计。
-    ///
-    /// 口径**完全**取自额度行——窗口边界走 `LocalUsageSummaryBuilder.windowBounds`
-    /// （同 `CombinedQuotaWindowRow.primaryUsage` / `weeklyUsage`），GLM 闲时排除
-    /// 走同一个 `excludeWindows` + `excludeGlmOffPeak`，ChatGPT 走
-    /// `ChatGPTPlanModelRow` 的预聚合口径。多 model 求和的理由见
-    /// `LocalUsageSummaryBuilder.combineWindowUsage`。
-    private func quotaWindowUsageSnapshot(
-        info: QuotaInfo,
-        projection: ProviderUsageProjection
-    ) -> QuotaWindowUsageSnapshot {
-        let snapshots = info.activeModels.map { model -> QuotaWindowUsageSnapshot in
-            // ChatGPT 的窗口用量由 codexUsageDetails 预聚合（再补 OpenCode 来源），
-            // 那些样本已被统计过一次，不能再从 samples 重算一遍。
-            let overrides = status.kind == .codexChatGpt
-                ? ChatGPTPlanModelRow.windowUsages(
-                    model: model,
-                    usageDetails: info.codexUsageDetails,
-                    samples: projection.recentSamples
-                )
-                : (interval: nil, weekly: nil)
-            return LocalUsageSummaryBuilder.windowUsage(
-                model: model,
-                providerKind: status.kind,
-                samples: projection.recentSamples,
-                intervalLabel: QuotaSummary.primaryWindowLabel(providerKind: status.kind, model: model),
-                weeklyLabel: QuotaSummary.weeklyWindowLabel(),
-                intervalFallbackSeconds: CombinedQuotaWindowRow.primaryFallbackSeconds(
-                    providerKind: status.kind,
-                    model: model
-                ),
-                excludeWindows: excludeWindows,
-                excludeGlmOffPeak: status.kind == .glmCodingPlan,
-                intervalUsageOverride: overrides.interval,
-                weeklyUsageOverride: overrides.weekly,
-                quotaProviderID: status.kind.quotaProviderID,
-                deepseekPeakWindow: status.deepseekPeakWindow ?? .defaultWindow
-            )
-        }
-        return LocalUsageSummaryBuilder.combineWindowUsage(snapshots)
-    }
 
     /// **高峰期倒计时**。只 GLM 与 DeepSeek 有窗口概念。
     ///
@@ -470,7 +387,8 @@ struct ProviderCardView: View, Equatable {
     /// 会在浮层里每次刷新闪一下；现在回退卡与 `.ok` 走同一批构造点
     /// （`accountInfoRow` / `quotaWindowUsage` / `peakIndicator`），不存在"另一条
     /// 路径忘了传"的缝隙。
-    private func content(projection: ProviderUsageProjection) -> some View {
+    private func content(derived: ProviderCardDerived) -> some View {
+        let projection = derived.projection
         switch status.state {
         case .notConfigured(let reason):
             notConfiguredView(reason: reason)
@@ -493,7 +411,7 @@ struct ProviderCardView: View, Equatable {
                         betweenBarAndColumns: AnyView(peakIndicator)
                     )
                     .opacity(0.5)
-                    quotaWindowUsage(info: last, projection: projection)
+                    quotaWindowUsage(info: last, derived: derived)
                     localUsage(projection: projection, part: .detail)
                 }
             } else {
@@ -502,7 +420,7 @@ struct ProviderCardView: View, Equatable {
         case .ok(let info):
             VStack(alignment: .leading, spacing: 6) {
                 accountInfoRow(info: info)
-                planModules(info: info, projection: projection)
+                planModules(info: info, derived: derived)
                 localUsage(projection: projection, part: .detail)
             }
         case .failed(let message, let lastSuccess):
@@ -537,7 +455,7 @@ struct ProviderCardView: View, Equatable {
                         betweenBarAndColumns: AnyView(peakIndicator)
                     )
                         .opacity(0.55)
-                    quotaWindowUsage(info: last, projection: projection)
+                    quotaWindowUsage(info: last, derived: derived)
                     localUsage(projection: projection, part: .detail)
                 }
             }
@@ -557,9 +475,10 @@ struct ProviderCardView: View, Equatable {
     @ViewBuilder
     private func quotaSection(
         info: QuotaInfo,
-        projection: ProviderUsageProjection,
+        derived: ProviderCardDerived,
         between: AnyView = AnyView(EmptyView())
     ) -> some View {
+        let projection = derived.projection
         VStack(alignment: .leading, spacing: 6) {
             QuotaSummary(
                 info: info,
@@ -584,8 +503,7 @@ struct ProviderCardView: View, Equatable {
     /// MiniMax / DeepSeek 卡上（只为了读 `providerSlices`）。闲时窗口只属于智谱任务，
     /// 泄漏到其它卡会让落在窗口内的 MiniMax / DSH 样本被误判成闲时任务而排除。
     private var excludeWindows: [GlmOffPeakWindow] {
-        guard status.kind == .glmCodingPlan else { return [] }
-        return status.glmOffPeakWindows
+        ProviderCardDerivedValues.offPeakWindows(status: status)
     }
 
     /// 所有卡片统一展示 quota provider 关联的客户端 token 汇总；客户端来源

@@ -1276,6 +1276,136 @@ final class ProviderRefreshSchedulerTests: StateTestCase {
         }
     }
 
+    // MARK: - cancelAll + 立即重排：旧 loop 收尾不得干扰新 loop
+
+    /// 可注入的假 sleep：把每次睡眠挂成可手动完成 / 失败的 continuation，并把
+    /// 「被 cancel 请求过」记录下来。生产里这三次事件（`cancelAll` 取消旧睡眠、
+    /// 旧 loop 收尾、新 loop 建睡眠）谁先谁后取决于 runloop 时序，这里由测试
+    /// 显式排序，从而把「旧 loop 收尾晚于新 loop 建睡眠」这条竞态变成确定步骤。
+    private final class ControllableSleepRecorder: @unchecked Sendable {
+        private let lock = NSLock()
+        private var startedCount = 0
+        private var slots: [Int: CheckedContinuation<Void, any Error>] = [:]
+        private var cancelRequested: Set<Int> = []
+
+        /// 已挂起的睡眠次数。
+        var sleeps: Int { locked { startedCount } }
+        /// 收到过 `Task.cancel()` 的睡眠下标。
+        func wasCancelRequested(_ index: Int) -> Bool { locked { cancelRequested.contains(index) } }
+
+        /// 注入给 `ProviderRefreshScheduler` 的 sleep：不响应取消（只记录），
+        /// 由测试决定何时以何种结果收尾。
+        func wait() async throws {
+            let index = locked { () -> Int in
+                startedCount += 1
+                return startedCount - 1
+            }
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+                    locked { slots[index] = continuation }
+                }
+            } onCancel: {
+                locked { cancelRequested.insert(index) }
+            }
+        }
+
+        /// 让第 index 次睡眠以 cancellation 收尾（等价于真实 `Task.sleep` 被取消）。
+        func cancelSleep(_ index: Int) {
+            locked { slots.removeValue(forKey: index) }?.resume(throwing: CancellationError())
+        }
+
+        /// 让第 index 次睡眠正常走满。
+        func finishSleep(_ index: Int) {
+            locked { slots.removeValue(forKey: index) }?.resume()
+        }
+
+        private func locked<T>(_ body: () -> T) -> T {
+            lock.lock()
+            defer { lock.unlock() }
+            return body()
+        }
+    }
+
+    /// `cancelAll()` 紧跟 `schedule(for:)` / `start()` 会起一个新 loop，而旧 loop
+    /// 还挂在 `await task.value` 上。若旧 loop 收尾时无条件清 `sleepTask`，新 loop
+    /// 的睡眠引用就被抹掉——之后的 `wake()`（reset 补刷 / 新 provider 注册 /
+    /// `beginExternalJob`）打不断这次睡眠，该 provider 只能睡到下一个 deadline。
+    @MainActor
+    func testStaleLoopCleanupKeepsCurrentSleepAndItsWakePath() async {
+        let recorder = ControllableSleepRecorder()
+        let scheduler = ProviderRefreshScheduler(
+            refreshHandler: { _, _ in .completed(success: true) },
+            intervalProvider: { _ in 60 },
+            onNextRefreshChange: {},
+            sleep: { _ in try await recorder.wait() }
+        )
+
+        // 第一个 loop：无 provider → 走 3600s 兜底睡眠。
+        scheduler.start()
+        await waitUntilReached { recorder.sleeps >= 1 }
+        let firstGeneration = scheduler.loopGenerationForTesting
+        XCTAssertEqual(scheduler.sleepOwnerGeneration, firstGeneration)
+
+        // cancelAll 取消旧睡眠，紧接着 start() 起新 loop 并建立自己的睡眠。
+        scheduler.cancelAll()
+        await waitUntilReached { recorder.wasCancelRequested(0) }
+        XCTAssertTrue(recorder.wasCancelRequested(0), "cancelAll 必须取消旧 loop 的睡眠")
+        scheduler.start()
+        await waitUntilReached { recorder.sleeps >= 2 }
+        guard let secondGeneration = scheduler.sleepOwnerGeneration else {
+            return XCTFail("新 loop 应已建立自己的睡眠句柄")
+        }
+        XCTAssertNotEqual(secondGeneration, firstGeneration, "cancelAll 后应换新的 loop 实例")
+
+        // 让旧 loop 的收尾（睡眠以 cancellation 结束）迟到于新 loop 建睡眠。
+        recorder.cancelSleep(0)
+        try? await Task.sleep(nanoseconds: 20_000_000)
+        XCTAssertEqual(
+            scheduler.sleepOwnerGeneration,
+            secondGeneration,
+            "旧 loop 收尾不得清掉新 loop 的 sleepTask 引用"
+        )
+
+        // 引用还在，wake() 才能打不断当前睡眠。
+        scheduler.scheduleHealthBoundary(at: Date().addingTimeInterval(600))
+        await waitUntilReached { recorder.wasCancelRequested(1) }
+        XCTAssertTrue(recorder.wasCancelRequested(1), "wake() 必须能取消当前 loop 的睡眠")
+        XCTAssertNil(scheduler.sleepOwnerGeneration, "wake() 后不再持有睡眠句柄")
+
+        // 当前 loop 仍然活着：释放后按新 deadline 重新入睡，而不是被旧 loop 拖死。
+        recorder.finishSleep(1)
+        await waitUntilReached { recorder.sleeps >= 3 }
+        XCTAssertEqual(recorder.sleeps, 3, "只有当前 loop 会在 wake 后重新入睡")
+        XCTAssertEqual(scheduler.sleepOwnerGeneration, secondGeneration)
+        scheduler.cancelAll()
+    }
+
+    /// 被 `cancelAll()` 取消的旧 loop 在收尾后不得再进入下一轮迭代（否则会与
+    /// `cancelAll()` 之后立刻建立的新 loop 双跑，两边都投递 deadline batch）。
+    @MainActor
+    func testCancelledLoopDoesNotResumeSleepingAfterCancelAll() async {
+        let recorder = ControllableSleepRecorder()
+        let scheduler = ProviderRefreshScheduler(
+            refreshHandler: { _, _ in .completed(success: true) },
+            intervalProvider: { _ in 60 },
+            onNextRefreshChange: {},
+            sleep: { _ in try await recorder.wait() }
+        )
+
+        scheduler.start()
+        await waitUntilReached { recorder.sleeps >= 1 }
+        scheduler.cancelAll()
+        scheduler.start()
+        await waitUntilReached { recorder.sleeps >= 2 }
+
+        // 旧 loop 的睡眠此刻"正常走满"（与 cancelAll 撞上），它不应再起第三次睡眠。
+        recorder.finishSleep(0)
+        await waitUntilReached { recorder.sleeps >= 2 }
+        try? await Task.sleep(nanoseconds: 20_000_000)
+        XCTAssertEqual(recorder.sleeps, 2, "被取消的旧 loop 不得再进入下一轮迭代")
+        scheduler.cancelAll()
+    }
+
     /// **配置写盘不等于冷启动**：未变 provider 的 `nextRefreshDates` 不能被重置
     /// 为 now，也不能因此立刻重抓一次。
     @MainActor

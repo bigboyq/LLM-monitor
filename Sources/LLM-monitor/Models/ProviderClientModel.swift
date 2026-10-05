@@ -321,11 +321,16 @@ extension ProviderStatus {
     ///
     /// 计算链路只有一条：L1 抽取帧 → L2 内核投影 → 视图模型。
     /// 合并规则、命名空间、当日 max 修补、名义价值全部在内核里，视图层不再复算。
-    func usageProjection(for info: QuotaInfo?) -> ProviderUsageProjection {
+    /// - Parameter now: 内核的"现在"，只用于当日 max 修补
+    ///   （`UnifiedDailyUsageNormalizer.includingCurrentDay` 按**自然日**取整，
+    ///   同一自然日内结果恒定）。渲染期调用方（`ProviderCardDerivedValues`）把它
+    ///   显式传进来，好让 memo 的键与实际取值来自同一个时刻；不传则取墙钟。
+    func usageProjection(for info: QuotaInfo?, now: Date = Date()) -> ProviderUsageProjection {
         let frames = Self.usageFrameExtractors[kind]?.flatMap { $0(self, info) } ?? []
         let projections = UsageProjectionKernel.project(
             frames: frames,
             bindings: clientBindings,
+            now: now,
             deepseekPeakWindow: deepseekPeakWindow ?? .defaultWindow
         )
         // 卡片只呈现本卡 quota 侧的贡献：dsh 帧不声明归属（由内核按绑定解析），

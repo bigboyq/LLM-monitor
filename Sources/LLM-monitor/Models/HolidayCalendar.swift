@@ -56,16 +56,33 @@ struct HolidayCalendar: Sendable, Equatable {
         return sharedStorage
     }
 
+    /// `shared` 快照的单调版本号：每次 `applyResolved` 替换快照 +1。
+    ///
+    /// 存在的理由是**派生值的 memo**：`ModelPricingCatalog.estimate` 的
+    /// `holidays` 默认参数在调用时求值 `HolidayCalendar.shared`，而节假日表
+    /// 在运行期会换（本地缓存命中 / 远程取数成功，见 `HolidayCalendarService`），
+    /// 换表后 DeepSeek 峰谷判定（Rule A 的"周一–周五 ∧ 非法定节假日"）结果会变。
+    /// memo 的键里带上这个版本号，换表即失效重算；同值重复 `applyResolved` 也会
+    /// 换版本号——那只是多算一次，方向是保守的。
+    static var sharedRevision: Int {
+        sharedLock.lock()
+        defer { sharedLock.unlock() }
+        return sharedRevisionStorage
+    }
+
     private static let sharedLock = NSLock()
     /// `nonisolated(unsafe)`：可变静态在并发下的正确性由 `sharedLock` 保证
     /// （ HolidayCalendar 是 Sendable 值类型，读写都是锁内的整份拷贝）。
     private nonisolated(unsafe) static var sharedStorage = HolidayCalendar.loadBundled()
+    /// 与 `sharedStorage` 同锁读写；初值 0 表示"进程内还没换过表"。
+    private nonisolated(unsafe) static var sharedRevisionStorage: Int = 0
 
     /// 数据源解析链成功后替换 `shared`（缓存命中 / 取数成功都走这里）。
     static func applyResolved(_ calendar: HolidayCalendar) {
         sharedLock.lock()
         defer { sharedLock.unlock() }
         sharedStorage = calendar
+        sharedRevisionStorage &+= 1
     }
 
     /// `date` 是否为法定节假日 / 调休放假日。日期键按传入 calendar 提取
@@ -241,6 +258,11 @@ struct HolidayCalendar: Sendable, Equatable {
     /// → 快照日期列表。转换规则与 `sync-holiday-data.sh` 完全一致：
     /// 非高峰日集合 = `holidays` ∪ `inLieuDays`（workdays 有意丢弃，Rule A），
     /// 年份过滤 `[当前年-1, …]`。解析失败或结果为空返回 nil（按格式不支持处理）。
+    ///
+    /// **键集校验与脚本护栏同款**：上游 schema 改名 / 缺键时必须整体拒绝，而不是
+    /// 只按还能读到的那部分数据静默产出快照（`workdays` 明明缺了却照样"成功"会让
+    /// 数据问题被隐藏）。三键缺一即返回 nil，由调用方给出既有的「仅支持本项目
+    /// JSON 快照格式」失败文案，不新增文案。
     static func parseChineseDaysDates(
         _ data: Data,
         now: Date = Date(),
@@ -258,8 +280,10 @@ struct HolidayCalendar: Sendable, Equatable {
             }
         }
         guard let doc = try? JSONDecoder().decode(UpstreamDocument.self, from: data),
-              let holidayKeys = doc.holidays?.keys else { return nil }
-        let inLieuKeys = doc.inLieuDays.map { Set($0.keys) } ?? Set<String>()
+              let holidayKeys = doc.holidays?.keys,
+              // workdays 不参与判定，但必须存在：缺它 = 上游 schema 已变。
+              doc.workdays != nil,
+              let inLieuKeys = doc.inLieuDays?.keys else { return nil }
         let minYear = calendar.component(.year, from: now) - 1
         let dates = Set(holidayKeys)
             .union(inLieuKeys)

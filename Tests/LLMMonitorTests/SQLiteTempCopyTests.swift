@@ -620,6 +620,43 @@ final class SQLiteTempCopyTests: XCTestCase {
         XCTAssertTrue(fm.fileExists(atPath: outside.path), "专属目录外文件不受影响")
     }
 
+    /// DSH 解压临时产物与 SQLite 副本同根：启动 sweep 无条件回收
+    /// `llm-monitor-dsh-` 前缀的残留（单个最大 1GiB，且启动时不可能有正在使用
+    /// 的解压产物），而同目录下非前缀的未过期文件仍按 24h 年龄策略保留。
+    func testR12SweepRemovesDshLeftoversRegardlessOfAge() throws {
+        let fm = FileManager.default
+        let dir = SQLiteTempCopy.appTempDir()
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: NSNumber(value: 0o700)])
+
+        let leftover = dir.appendingPathComponent("\(SQLiteTempCopy.dshTempPrefix)\(UUID().uuidString)")
+        let unrelated = dir.appendingPathComponent("r12-unrelated-\(UUID().uuidString)")
+        try Data("decompressed".utf8).write(to: leftover)
+        try Data("x".utf8).write(to: unrelated)
+        defer {
+            try? fm.removeItem(at: leftover)
+            try? fm.removeItem(at: unrelated)
+        }
+
+        // 刚写入（mtime = now，远未到 24h）
+        SQLiteTempCopy.sweepStaleCopies(now: Date(), maxAge: 24 * 3600)
+
+        XCTAssertFalse(fm.fileExists(atPath: leftover.path), "解压残留应无条件被启动 sweep 回收")
+        XCTAssertTrue(fm.fileExists(atPath: unrelated.path), "无关的未过期文件不应被清理")
+    }
+
+    /// 解码器临时文件（DSH 解压产物）的落点：App 自有临时根内部，目录 0700。
+    func testR12DecoderTempURLLivesInAppOwnedTempRoot() throws {
+        let tempURL = try FileManagerBox().temporaryURL()
+        let appTemp = SQLiteTempCopy.appTempDir().standardizedFileURL.path
+        XCTAssertEqual(
+            tempURL.deletingLastPathComponent().standardizedFileURL.path,
+            appTemp,
+            "解码临时文件必须落在 App 自有临时根内，否则启动 sweep 覆盖不到"
+        )
+        let permissions = try FileManager.default.attributesOfItem(atPath: appTemp)[.posixPermissions] as? NSNumber
+        XCTAssertEqual(permissions?.int16Value, 0o700, "App 自有临时根权限应为 0700")
+    }
+
     /// T2/R12: 快照应用专属临时目录 `$TMPDIR/llm-monitor-sqlite/` 的内容。
     private func currentAppTempEntries() throws -> Set<String> {
         let dir = SQLiteTempCopy.appTempDir().path

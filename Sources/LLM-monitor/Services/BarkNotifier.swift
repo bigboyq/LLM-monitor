@@ -168,7 +168,17 @@ final class BarkQuotaNotifier: QuotaUpdateNotifying {
         } catch is CancellationError {
             return "测试推送已取消"
         } catch {
-            return "推送请求失败：\(error.localizedDescription)"
+            // 不回显 `error.localizedDescription`：它可能原样带出完整请求 URL，
+            // 而 Bark 的 device key 就在 URL 的 path 段里。当前上游只抛已脱敏的
+            // 错误，但那是调用链的巧合，不是类型系统保证——统一过脱敏层。
+            // URLError 走稳定中文摘要；其余类型只给泛化文案 + 类型名。
+            let detail: String
+            if let urlError = error as? URLError {
+                detail = HTTPRequestLogSanitizer.networkErrorDescription(urlError)
+            } else {
+                detail = "未知错误（\(type(of: error))）"
+            }
+            return "推送请求失败：\(detail)"
         }
     }
 

@@ -60,13 +60,19 @@ enum ProcessRunner {
         if let standardOutputFile {
             let fm = FileManager.default
             try? fm.removeItem(at: standardOutputFile)
-            if !fm.createFile(atPath: standardOutputFile.path, contents: nil) {
+            // 显式 0600：`createFile` 默认按 umask 建（实测 0644），而子进程产物
+            // 是会话明文（DSH 解压输出最大 1GiB），不能继承系统 umask。
+            if !fm.createFile(
+                atPath: standardOutputFile.path,
+                contents: nil,
+                attributes: [.posixPermissions: NSNumber(value: 0o600)]
+            ) {
                 throw NSError(
                     domain: NSPOSIXErrorDomain,
                     code: Int(EIO),
                     userInfo: [
                         NSLocalizedDescriptionKey:
-                            "unable to create process output file: (standardOutputFile.path)"
+                            "unable to create process output file: \(standardOutputFile.path)"
                     ]
                 )
             }

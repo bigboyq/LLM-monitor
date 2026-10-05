@@ -256,8 +256,20 @@ struct MenuWindowAutoCloseBridge: NSViewRepresentable {
                 [weak self, weak target = targetWindow] event in
                 // 只重置属于本菜单窗口的事件，避免其他窗口的交互影响本菜单计时。
                 if let target, event.window === target {
-                    Task { @MainActor [weak self] in
-                        self?.timer.startOrReset()
+                    // mouseMoved 在菜单打开时可到数百次/秒。这里不包一层
+                    // `Task { @MainActor }`：那会为每个事件分配一个 Task 并把重置
+                    // 排到下一个 runloop 之后，既浪费又让"最后一次交互"延后生效。
+                    // NSEvent 的 local monitor 由 AppKit 事件循环在主线程调用，
+                    // 因此直接 assumeIsolated 重入主 actor（保留隔离检查语义）。
+                    // 万一将来这个 monitor 被挪到非主线程上下文，assumeIsolated
+                    // 会 trap，所以先用 Thread.isMainThread 判定，异常时回退到
+                    // Task 投递。
+                    if Thread.isMainThread {
+                        MainActor.assumeIsolated { self?.timer.startOrReset() }
+                    } else {
+                        Task { @MainActor [weak self] in
+                            self?.timer.startOrReset()
+                        }
                     }
                 }
                 return event
@@ -356,8 +368,10 @@ final class MenuInactivityTimer {
     private let scheduler: any InactivityScheduler
     private let onClose: () -> Void
     private var currentHandle: (any InactivityHandle)?
-    /// 每次 startOrReset 生成新 token；过期 fire（被 reset 替换的旧计时）不会触发 close。
-    private var currentToken = UUID()
+    /// 每次 startOrReset / cancel 递增的代次；过期 fire（被 reset 替换的旧计时）
+    /// 代次不匹配，不会触发 close。用单调整数而不是 UUID：mouseMoved 可达
+    /// 数百次/秒，没必要为每次 reset 分配一个 UUID。
+    private var currentToken: UInt64 = 0
     /// 测试观察：close 触发次数。
     private(set) var fireCount = 0
 
@@ -374,8 +388,8 @@ final class MenuInactivityTimer {
     /// 启动或重置：取消旧计时，安排新的 interval 后触发。
     func startOrReset() {
         cancel()
-        let token = UUID()
-        currentToken = token
+        currentToken &+= 1
+        let token = currentToken
         currentHandle = scheduler.schedule(after: interval) { [weak self] in
             guard let self, self.currentToken == token else { return }
             self.fireCount += 1
@@ -386,39 +400,81 @@ final class MenuInactivityTimer {
     func cancel() {
         currentHandle?.cancel()
         currentHandle = nil
-        // 让任何在途的 fire 因为 token 不匹配而失效。
-        currentToken = UUID()
+        // 让任何在途的 fire 因为代次不匹配而失效。
+        currentToken &+= 1
     }
 }
 
 // MARK: - Production scheduler
 
-/// 生产调度器：DispatchQueue.main.asyncAfter + 可取消的 DispatchWorkItem。
+/// 生产调度器：单个可复用的 `DispatchSourceTimer`。
+///
+/// 菜单打开且鼠标持续移动时交互事件可达数百次/秒；每次 reset 只改写同一个
+/// timer 的 deadline（`schedule(deadline:)`，leeway 0），既不新建
+/// `DispatchWorkItem` + `asyncAfter` 也不再分配句柄。取消 = 把同一个 timer 的
+/// deadline 推到 `distantFuture`（此后不再投递），timer 本身留给下次复用。
+///
+/// timer 全程保持 resumed（GCD 不允许在挂起状态下释放 dispatch source），因此
+/// 反复 reset 不会累积 suspend/resume 对；`MenuInactivityTimer` 的代次校验保证
+/// 即使取消与到期撞上，过期 fire 也不会触发 close。
 @MainActor
 final class DispatchInactivityScheduler: InactivityScheduler {
+    private var source: DispatchSourceTimer?
+    private var sharedHandle: Handle?
+    /// 到期时执行的闭包；取消时置空（等价于"这次 fire 不再有效"）。
+    private var pendingBlock: (@MainActor @Sendable () -> Void)?
+    /// 测试观察：真正新建的 timer 数量（高频 reset 不应让它增长）。
+    private(set) var sourceCreationCount = 0
+
     func schedule(
         after delay: TimeInterval,
         _ block: @escaping @MainActor @Sendable () -> Void
     ) -> any InactivityHandle {
-        let handle = DispatchHandle()
-        let workItem = DispatchWorkItem { [weak handle] in
-            handle?.fire(block)
-        }
-        handle.workItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
+        pendingBlock = block
+        ensureSource().schedule(deadline: .now() + delay, leeway: .nanoseconds(0))
+        if let sharedHandle { return sharedHandle }
+        let handle = Handle(scheduler: self)
+        sharedHandle = handle
         return handle
     }
 
-    private final class DispatchHandle: InactivityHandle {
-        var workItem: DispatchWorkItem?
-        func cancel() {
-            workItem?.cancel()
-            workItem = nil
+    /// 取消当前 deadline：清掉待触发闭包并把 deadline 推到无穷远，保留同一个
+    /// timer 供下次 reset 复用。
+    fileprivate func cancelScheduled() {
+        pendingBlock = nil
+        source?.schedule(deadline: .distantFuture)
+    }
+
+    private func ensureSource() -> DispatchSourceTimer {
+        if let source { return source }
+        let source = DispatchSource.makeTimerSource(queue: .main)
+        // 事件在主队列派发；回调只转发当前待触发闭包。
+        source.setEventHandler { [weak self] in
+            MainActor.assumeIsolated { self?.pendingBlock?() }
         }
-        @MainActor
-        func fire(_ block: @escaping @MainActor @Sendable () -> Void) {
-            guard workItem != nil else { return }  // 已取消则不触发
-            block()
+        source.resume()
+        self.source = source
+        sourceCreationCount += 1
+        return source
+    }
+
+    deinit {
+        // 从不挂起，因此直接 cancel 安全（挂起状态下释放 dispatch source 会崩）。
+        source?.setEventHandler {}
+        source?.cancel()
+    }
+
+    /// 共享句柄：所有 schedule 返回同一个实例，取消语义只作用于 scheduler
+    /// 上那个唯一 timer（每次交互因此零分配）。
+    private final class Handle: InactivityHandle {
+        private weak var scheduler: DispatchInactivityScheduler?
+
+        init(scheduler: DispatchInactivityScheduler) {
+            self.scheduler = scheduler
+        }
+
+        func cancel() {
+            scheduler?.cancelScheduled()
         }
     }
 }

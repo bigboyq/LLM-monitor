@@ -45,6 +45,43 @@ final class LocalUsageLifecycleTests: ScannerTestCase {
         XCTAssertTrue(events.isEmpty, "注册 watcher 不应凭空产生 dirty event: \(events)")
     }
 
+    /// FSEvents context 的所有权归属：stream 存活期间 context 由 FSEvents 持有
+    /// （回调不会拿到悬垂指针），`stop()` 释放 stream 后 FSEvents 通过 release
+    /// 回调归还（context 不泄漏）。context 只弱引用 watcher，所以 watcher ↔ stream
+    /// 不成环——丢掉最后一个强引用就能释放。
+    @MainActor
+    func testFSEventsContextIsRetainedWhileRunningAndReleasedOnStop() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("llm-monitor-fsevents-ctx-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var events: [LocalFSEventsEvent] = []
+        weak var weakWatcher: LocalFSEventsWatcher?
+        do {
+            let watcher = LocalFSEventsWatcher(paths: [root]) { event in
+                events.append(event)
+            }
+            weakWatcher = watcher
+            // scanner 每轮扫描复用同一生命周期对象：start/stop 多轮，每轮都要
+            // 重新配对一次 context 的 retain/release。
+            for _ in 0..<2 {
+                watcher.start()
+                XCTAssertNotNil(watcher.contextForTesting, "FSEvents 应持有 context 强引用")
+                watcher.stop()
+                await waitUntil(timeout: 2, message: "stop 后 FSEvents 应归还 context 引用") {
+                    watcher.contextForTesting == nil
+                }
+                XCTAssertFalse(watcher.isRunning, "stop 后 stream 不应仍在运行")
+            }
+        }
+        XCTAssertNil(weakWatcher, "context 不得把 watcher 强引用住形成泄漏环")
+        // 让主 actor 把已派发的回调 Task 跑完：此时 context 已释放，回调至多
+        // 拿到 nil 的弱引用——不应崩溃，也不再产生投递。
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertTrue(events.isEmpty, "未写入被监听目录，不应有事件: \(events)")
+    }
+
     @MainActor
     func testLocalVnodeWriteWatcherSeesAppendWhileWriterRemainsOpen() async throws {
         let root = FileManager.default.temporaryDirectory
@@ -267,17 +304,13 @@ final class LocalUsageLifecycleTests: ScannerTestCase {
         let file = root.appendingPathComponent("session.jsonl")
         FileManager.default.createFile(atPath: file.path, contents: Data())
         let monitor = LocalUsageFileMonitor(maxVnodeWatchers: 3, autoDiscoveryEnabled: false)
-        let first = expectation(description: "first source dirty")
-        first.assertForOverFulfill = false
-        let second = expectation(description: "second source dirty")
-        second.assertForOverFulfill = false
         let source1 = LocalUsageSourceLifecycle(
             paths: [root], seedDynamicFiles: [file], dynamicExtensions: ["jsonl"], monitor: monitor,
-            onDirty: { first.fulfill() }
+            onDirty: {}
         )
         let source2 = LocalUsageSourceLifecycle(
             paths: [root], seedDynamicFiles: [file], dynamicExtensions: ["jsonl"], monitor: monitor,
-            onDirty: { second.fulfill() }
+            onDirty: {}
         )
         XCTAssertEqual(monitor.vnodeWatcherCount, 1)
         let fd = open(file.path, O_WRONLY | O_APPEND)
@@ -285,9 +318,22 @@ final class LocalUsageLifecycleTests: ScannerTestCase {
         guard fd >= 0 else { return }
         defer { close(fd); source1.stop(); source2.stop() }
         var byte: UInt8 = 1
+        // 不用 `fulfillment`（与 testGlobalMonitorLRURefreshesOnHotFileTouchAndProtectsPinned
+        // 同理由）：共享主 actor 上前序用例遗留的 Task / DispatchSource 可能占满
+        // 主 actor，硬 2s 预算会被吃掉。改为按 generation 轮询——`eventGeneration`
+        // 在 `onDirty` 之前自增，等价于"dirty 回调至少发生过一次"。
+        let generationBeforeFirstWrite1 = source1.eventGeneration
+        let generationBeforeFirstWrite2 = source2.eventGeneration
         XCTAssertEqual(withUnsafePointer(to: &byte) { Darwin.write(fd, $0, 1) }, 1)
         XCTAssertEqual(fsync(fd), 0)
-        await fulfillment(of: [first, second], timeout: 2)
+        await waitUntil(
+            timeout: 5,
+            message: "第 1 个事件未到：source1 应因共享 vnode 写入而 dirty（快照 generation=\(generationBeforeFirstWrite1)）"
+        ) { source1.eventGeneration > generationBeforeFirstWrite1 }
+        await waitUntil(
+            timeout: 5,
+            message: "第 2 个事件未到：source2 应因共享 vnode 写入而 dirty（快照 generation=\(generationBeforeFirstWrite2)）"
+        ) { source2.eventGeneration > generationBeforeFirstWrite2 }
 
         source1.stop()
         XCTAssertEqual(monitor.vnodeWatcherCount, 1)
@@ -295,11 +341,10 @@ final class LocalUsageLifecycleTests: ScannerTestCase {
         let secondFDWrite = withUnsafePointer(to: &byte) { Darwin.write(fd, $0, 1) }
         XCTAssertEqual(secondFDWrite, 1)
         XCTAssertEqual(fsync(fd), 0)
-        let deadline = Date().addingTimeInterval(2)
-        while source2.eventGeneration == generationBeforeSecondWrite && Date() < deadline {
-            try? await Task.sleep(nanoseconds: 10_000_000)
-        }
-        XCTAssertGreaterThan(source2.eventGeneration, generationBeforeSecondWrite)
+        await waitUntil(
+            timeout: 5,
+            message: "第 3 个事件未到：source1 停止后 source2 仍应独立收到 vnode 写入（快照 generation=\(generationBeforeSecondWrite)）"
+        ) { source2.eventGeneration > generationBeforeSecondWrite }
         XCTAssertEqual(monitor.vnodeWatcherCount, 1)
     }
 

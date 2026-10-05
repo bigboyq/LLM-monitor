@@ -121,6 +121,47 @@ final class MenuAutoCloseTests: XCTestCase {
         XCTAssertFalse(scheduler.handles[2].isCancelled, "最新 handle 不应被取消")
     }
 
+    // MARK: - 生产调度器（单可重置 timer）
+
+    /// 高频交互（菜单内 mouseMoved 可达数百次/秒）只应复用一个
+    /// `DispatchSourceTimer`：每次 reset 只改写 deadline，不再新建
+    /// DispatchWorkItem / asyncAfter，也不再分配句柄。
+    func testProductionSchedulerReusesOneTimerAcrossResets() async {
+        let scheduler = DispatchInactivityScheduler()
+        var closeCallCount = 0
+        let timer = MenuInactivityTimer(
+            interval: 0.05,
+            scheduler: scheduler,
+            onClose: { closeCallCount += 1 }
+        )
+        for _ in 0..<200 { timer.startOrReset() }
+        XCTAssertEqual(scheduler.sourceCreationCount, 1, "反复 reset 不得反复新建 timer")
+
+        // 行为不变性：最后一次 reset 起算 interval，到期仍要关菜单。
+        for _ in 0..<400 {
+            if closeCallCount > 0 { break }
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+        XCTAssertEqual(closeCallCount, 1, "最后一次 reset 后仍应按 interval 触发一次 close")
+        timer.cancel()
+    }
+
+    /// cancel（失焦 / attach 重绑 / detach）后到期的 fire 不得触发 close。
+    func testProductionSchedulerCancelStopsFiring() async {
+        let scheduler = DispatchInactivityScheduler()
+        var closeCallCount = 0
+        let timer = MenuInactivityTimer(
+            interval: 0.05,
+            scheduler: scheduler,
+            onClose: { closeCallCount += 1 }
+        )
+        timer.startOrReset()
+        timer.cancel()
+
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(closeCallCount, 0, "cancel 后不得触发 close")
+    }
+
     // MARK: - 关闭回调（onPanelClose）
 
     /// 菜单关掉时视图**不销毁**（只是 `orderOut`），所以展示时钟的停表不能挂在

@@ -13,16 +13,28 @@ import Darwin
 ///
 /// 不适用：自己创建 + 自己读的 .db（无 IDE 锁）。
 enum SQLiteTempCopy {
-    /// R12: 应用专属临时目录名，副本只出现在 `$TMPDIR/llm-monitor-sqlite/`。
+    /// R12: 应用专属临时目录名，App 自有临时文件只出现在
+    /// `$TMPDIR/llm-monitor-sqlite/`（SQLite 副本 + DSH 解压产物）。
     static let appTempSubdir = "llm-monitor-sqlite"
 
+    /// 本地解码器（DSH 流式解压）临时产物名前缀：同样落在专属临时目录内，
+    /// 正常路径由调用方 defer 删除，崩溃/强杀残留由 `sweepStaleCopies` 回收。
+    static let dshTempPrefix = "llm-monitor-dsh-"
+
     /// R12: 应用专属临时目录（`$TMPDIR/llm-monitor-sqlite/`，0700）。
+    /// 承载两类产物：SQLite 快照副本（`<UUID>.db{,-wal,-shm}`）与 DSH 解压临时
+    /// 产物（`llm-monitor-dsh-<UUID>`）。
     static func appTempDir() -> URL {
         URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent(appTempSubdir, isDirectory: true)
     }
 
-    /// R12: 启动时清理专属临时目录内超过 `maxAge`（默认 24h）的残留副本。
+    /// R12: 启动时清理专属临时目录内的残留产物。
+    /// - SQLite 副本只删超过 `maxAge`（默认 24h）的，避免误删正在被别的进程使用的文件。
+    /// - DSH 解压产物**不受年龄限制**：`defer` 已在正常路径删除它们，启动时
+    ///   存在即上一轮扫描被强杀/崩溃的残留（单个最大 1GiB），没有"可能仍在使用"的
+    ///   可能——启动 sweep 早于任何扫描启动。
+    ///
     /// 只扫描该目录内部；目录是 symlink / 非普通目录时放弃清理并 warning，
     /// 绝不扫描或删除 `$TMPDIR` 其他文件。
     static func sweepStaleCopies(now: Date = Date(), maxAge: TimeInterval = 24 * 60 * 60) {
@@ -40,6 +52,10 @@ enum SQLiteTempCopy {
         guard let entries = try? fm.contentsOfDirectory(atPath: dir.path) else { return }
         for entry in entries {
             let entryURL = dir.appendingPathComponent(entry)
+            if entry.hasPrefix(dshTempPrefix) {
+                try? fm.removeItem(at: entryURL)
+                continue
+            }
             guard let attrs = try? fm.attributesOfItem(atPath: entryURL.path),
                   let mtime = attrs[.modificationDate] as? Date else { continue }
             if now.timeIntervalSince(mtime) > maxAge {
@@ -49,7 +65,9 @@ enum SQLiteTempCopy {
     }
 
     /// R12: 确保专属临时目录存在且权限为 0700。
-    private static func ensureAppTempDir() throws -> URL {
+    /// internal（除副本路径外，`FileManagerBox.temporaryURL` 也用它给 DSH 解压
+    /// 临时产物找落点，保证所有 App 自有临时文件都在同一个可 sweep 的根下）。
+    static func ensureAppTempDir() throws -> URL {
         let dir = appTempDir()
         let fm = FileManager.default
         if !fm.fileExists(atPath: dir.path) {

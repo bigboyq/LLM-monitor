@@ -50,9 +50,16 @@ extension FileManagerBox {
     }
 
     /// Create a private, unique temporary file URL used by local decoders.
-    func temporaryURL() -> URL {
-        fileManager.temporaryDirectory
-            .appendingPathComponent("llm-monitor-dsh-\(UUID().uuidString)")
+    ///
+    /// The file lives inside the app-owned temp root (`$TMPDIR/llm-monitor-sqlite/`,
+    /// 0700) rather than directly under `$TMPDIR`, so the startup sweep
+    /// (`SQLiteTempCopy.sweepStaleCopies`) reclaims leftovers of a killed scan.
+    /// A DSH decompression product can be up to `maximumDecompressedBytes` (1 GiB),
+    /// so an unreclaimed leftover is not negligible disk usage. Callers keep
+    /// deleting the file in a `defer` on the normal path.
+    func temporaryURL() throws -> URL {
+        try SQLiteTempCopy.ensureAppTempDir()
+            .appendingPathComponent("\(SQLiteTempCopy.dshTempPrefix)\(UUID().uuidString)")
     }
 
     /// 创建并收紧本地缓存目录。token 用量缓存属于用户数据，不能依赖系统 umask。

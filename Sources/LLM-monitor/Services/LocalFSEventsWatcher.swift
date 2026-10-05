@@ -13,6 +13,25 @@ struct LocalFSEventsEvent: Sendable, Equatable {
 
 }
 
+/// FSEvents `info` 指针的载荷。它的所有权完全交给 FSEvents：`start()` 时
+/// `passRetained` 交出一份强引用，`FSEventStreamRelease` 时由 release 回调归还。
+///
+/// 对 watcher 只持**弱**引用，于是 stream ↔ watcher 不成环（watcher 被丢弃后
+/// deinit 仍能跑完、释放 stream，泄漏环不会形成），而 C 回调里对 watcher 的
+/// 弱→强提升在 watcher 已释放时只会得到 nil：旧实现直接把 `info` 当裸指针
+/// `takeUnretainedValue()`，`LocalUsageFileMonitor.stop(id)` 释放 watcher 后
+/// 已派发未执行的回调理论上会命中已释放对象。
+///
+/// 类型保持 internal（而非 private）：测试通过 `contextForTesting` 断言 context
+/// 的所有权归属，不需要自己构造它。
+final class FSEventsWatcherContext {
+    weak var watcher: LocalFSEventsWatcher?
+
+    init(watcher: LocalFSEventsWatcher) {
+        self.watcher = watcher
+    }
+}
+
 /// Reusable, per-registration FSEvents watcher. It owns exactly the paths
 /// supplied by the shared process-wide LocalUsageFileMonitor; registration
 /// filtering and vnode ownership are handled by that monitor.
@@ -37,6 +56,13 @@ final class LocalFSEventsWatcher {
     /// that one startup artifact per root; later root events remain real dirty
     /// signals.
     private var ignoredInitialRootPaths = Set<String>()
+    #if DEBUG
+    /// 测试钩子：当前 stream 的 context box（**弱**引用）。`start()` 后应为非 nil
+    /// ——FSEvents 持有强引用，回调不会拿到悬垂指针；`stop()` / `deinit()` 后应回到
+    /// nil ——FSEvents 已通过 release 回调归还。两端一起断言即锁死 retain/release
+    /// 配对：缺 release 会让 context 泄漏，缺 retain 就是原来的 use-after-free。
+    weak var contextForTesting: FSEventsWatcherContext?
+    #endif
 
     init(
         paths: [URL],
@@ -69,11 +95,19 @@ final class LocalFSEventsWatcher {
 
         logInfo("[local-fsevents] starting paths=\(paths.joined(separator: ", "))")
 
+        let contextBox = FSEventsWatcherContext(watcher: self)
+        #if DEBUG
+        contextForTesting = contextBox
+        #endif
         var context = FSEventStreamContext(
             version: 0,
-            info: Unmanaged.passUnretained(self).toOpaque(),
+            // The context box (not the watcher itself) is handed to FSEvents as
+            // an owned reference: it stays valid for as long as FSEvents may
+            // invoke the callback, and the box's weak back-reference keeps a
+            // dispatched callback from touching a released watcher.
+            info: Unmanaged.passRetained(contextBox).toOpaque(),
             retain: nil,
-            release: nil,
+            release: Self.contextRelease,
             copyDescription: nil
         )
         let pathArray = paths as NSArray
@@ -93,6 +127,10 @@ final class LocalFSEventsWatcher {
             0.25,
             flags
         ) else {
+            // create 失败时没有 stream 接管 context（FSEvents 只在 create 成功
+            // 时把字段拷进 stream 并接管所有权），这里不自行 release：无法确证
+            // FSEvents 是否已经动过这份引用，误 release 会造成 over-release。
+            // 代价是这条实际不可达的路径上多留一个空 context box。
             return
         }
 
@@ -113,6 +151,9 @@ final class LocalFSEventsWatcher {
         logInfo("[local-fsevents] stopping paths=\(paths.joined(separator: ", "))")
         FSEventStreamStop(stream)
         FSEventStreamInvalidate(stream)
+        // 归还 FSEvents 持有的 context 强引用：此后已派发的回调至多拿到一个
+        // nil 的弱引用，不再触碰本 watcher，因此这里不需要在回调队列上排空
+        // 在途回调（也就不会给主线程引入一次跨队列 sync）。
         FSEventStreamRelease(stream)
         self.stream = nil
     }
@@ -170,14 +211,26 @@ final class LocalFSEventsWatcher {
         return path.hasPrefix(prefix)
     }
 
+    /// FSEvents 释放 stream 时归还 `passRetained` 的那一份 context 强引用。
+    /// 纯引用计数操作：只在 FSEvents 自己的线程上跑，不 hop MainActor、不阻塞
+    /// 调用方（`stop()` 里 `FSEventStreamRelease` 之后不会等待它）。
+    private static let contextRelease: CFAllocatorReleaseCallBack = { info in
+        guard let info else { return }
+        Unmanaged<FSEventsWatcherContext>.fromOpaque(info).release()
+    }
+
     private static let eventCallback: FSEventStreamCallback = {
         _, clientCallBackInfo, numberOfEvents, eventPaths, eventFlags, eventIDs in
         guard let clientCallBackInfo else {
             return
         }
-        let watcher = Unmanaged<LocalFSEventsWatcher>
+        // context box 由 FSEvents 持有（在 stream 释放前一直有效），这里取到的
+        // 强引用保证回调体执行期间 box 不会被释放；watcher 只做弱→强提升，
+        // 已随 stop/deinit 释放时得到 nil，回调安全空跑。
+        let context = Unmanaged<FSEventsWatcherContext>
             .fromOpaque(clientCallBackInfo)
             .takeUnretainedValue()
+        let watcher = context.watcher
         let paths = eventPaths.assumingMemoryBound(to: UnsafePointer<CChar>.self)
         // C 回调运行在 FSEvents 的 utility 队列上（非隔离）：这里只做字符串
         // 拷贝与事件打包，全部使用回调参数的局部值，不触碰 watcher 的可变

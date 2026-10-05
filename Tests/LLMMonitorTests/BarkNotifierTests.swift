@@ -74,6 +74,26 @@ private final class RecordingURLProtocol: URLProtocol {
     override func stopLoading() {}
 }
 
+/// 自定义错误：`localizedDescription`（errorDescription）里带完整请求 URL。
+/// 模拟"未来新增的错误类型把原始 URL 回显出来"——Bark 的 device key 就在
+/// URL 的 path 段里，文案路径必须对它免疫。
+private struct LeakyURLEchoError: LocalizedError {
+    let url: URL
+    var errorDescription: String? { "unsupported request: \(url.absoluteString)" }
+}
+
+private final class LeakyURLProtocol: URLProtocol {
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        let url = request.url ?? URL(string: "https://invalid.invalid")!
+        client?.urlProtocol(self, didFailWithError: LeakyURLEchoError(url: url))
+    }
+
+    override func stopLoading() {}
+}
+
 /// 始终抛指定 URLError 的 URLProtocol 桩，验证失败 / 重试路径。
 private final class FailingURLProtocol: URLProtocol {
     private static let lock = NSLock()
@@ -909,5 +929,26 @@ final class BarkNotifierTests: XCTestCase {
         XCTAssertTrue(message.contains("推送请求失败"), "实际文案：\(message)")
         XCTAssertFalse(message.contains(key), "失败文案不得回显 device key：\(message)")
         XCTAssertFalse(message.contains("bark.example.com/abcdef"), "失败文案不得回显请求 URL：\(message)")
+    }
+
+    /// catch 路径统一脱敏：URLError / QuotaError 之外的自定义错误（其
+    /// `localizedDescription` 直接回显完整请求 URL，含 path 段里的 device key）
+    /// 也不得把 key 带到用户文案里。当前上游只抛已脱敏错误只是调用链的巧合，
+    /// 未来新增错误类型不能凭这条巧合就把 key 泄出去。
+    @MainActor
+    func testTestPushSanitizesNonURLFailureTextCarryingRawRequestURL() async {
+        let key = "abcdef0123456789SECRET"
+        let message = await BarkQuotaNotifier.sendTestPush(
+            config: BarkConfig(
+                enabled: true, serverURL: "https://bark.example.com", deviceKey: key,
+                sound: nil, group: nil
+            ),
+            session: sessionWith(LeakyURLProtocol.self),
+            screenInActiveUse: { false }
+        )
+        XCTAssertTrue(message.contains("推送请求失败"), "实际文案：\(message)")
+        XCTAssertTrue(message.contains("未知错误"), "非 URLError 应落到泛化文案 + 类型名分支：\(message)")
+        XCTAssertFalse(message.contains(key), "未知错误类型的文案不得回显 device key：\(message)")
+        XCTAssertFalse(message.contains("bark.example.com"), "未知错误类型的文案不得回显请求 URL：\(message)")
     }
 }
