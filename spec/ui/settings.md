@@ -81,6 +81,52 @@ panes) — `clientBindings[]` in `config.json` is its only source of truth, so s
 form never rolls a hand-edited value back. See `spec/ui/menu-and-cards.md`
 §Provider-Specific Card Details → *OpenCode client bindings*.
 
+### GLM 高峰期提示（只读）与「节假日数据源」
+
+GLM provider pane 的「高峰期提示」段是**只读展示**（与 DeepSeek 同款
+`SettingsControlRow` 写法）：值行为 `工作日 14:00–18:00（北京时间 · 法定节假日除外）`，
+footer 注明按北京时间计算、官方口径、不可调。曾经的开始/结束小时 Stepper 与
+「仅工作日」开关已随 GLM 去配置化删除（`peakStartHour` / `peakEndHour` /
+`peakWeekdaysOnly` 键移除，残留键由 `JSONDecoder` 静默忽略，见 `spec/config.md`
+§Config Schema）；DeepSeek pane 的 footer 同步补了「法定节假日除外」口径。
+
+General pane 末尾（「主菜单 Provider 顺序」之后、「关于」之前）新增
+「节假日数据源」节（`HolidaySourceSection`，单独 View 以 `@ObservedObject` 观察
+`AppState.holidayCalendarService` 的刷新状态与结果文案）：
+
+- **源输入行**：可编辑文本（支持 URL / 本地文件路径），缺省（config 不写
+  `holidaySource` 键）展示为上游 chinese-days CDN URL
+  （`HolidayCalendar.defaultSourceURL`）。保存走既有 draft/save 事务：与默认 URL
+  一致写回 nil（不落键，保持 config.json 干净）、显式空串原样写 `""`
+  （= 只用内置快照、不联网）、其余值原样保存。
+- **状态行**：`2025–2026 · 抓取于 2026-10-05 · 来源：缓存/内置`
+  （`HolidayCalendarService.statusLine` 纯函数）。当前年份未被快照覆盖时另有一行
+  **橙色**提示：`节假日表未覆盖 <year>，<year> 年按纯周一–周五判定`
+  （`coverageWarning` 纯函数）。
+- **「立即更新」按钮** + 进行中（转圈 + 正在更新…）/ 最近一次结果文案：强制取数
+  一次，不受新鲜度窗口限制；失败文案橙色，既有数据原样保留。
+
+取数与缓存编排（`Services/HolidayCalendarService.swift`，解析纯函数在
+`Models/HolidayCalendar.swift`）：
+
+- 解析链：① 本地缓存 `~/Library/Application Support/LLM-monitor/holidays-cache.json`
+  （与打包资源同 schema：source / fetchedAt / holidays）→ ② 内置 bundle 快照
+  （缺失/损坏内部退化空表）→ ③ `.empty`。`holidaySource` 为显式空串时跳过缓存
+  与取数，直接用内置快照。
+- 触发：启动后（App 入口调 `start(source:)`；缓存缺失 / `fetchedAt` 早于 7 天 /
+  源变更才真取数）+ config 中 `holidaySource` 变更（`AppState` config 订阅 →
+  `handleConfigChange`，源未变 no-op）+ 设置页「立即更新」。取数异步 best-effort，
+  不阻塞启动、不崩、失败不清空既有数据。
+- 成功后：写缓存（best-effort）→ `HolidayCalendar.applyResolved` 替换 `shared`
+  （`status(at:)` 等默认参数在调用时求值，各判定点自然读到新表）→ 经
+  `statusDidChange.send()` + 健康边界重排触发一次 UI 刷新（卡片高峰 pill / 额度行
+  随之重算）。
+- 源格式：仅支持本项目 JSON 快照格式；默认源的上游 chinese-days 格式由 App 内置
+  与 `sync-holiday-data.sh` 同款转换（`holidays` ∪ `inLieuDays`、workdays 有意
+  丢弃、年份过滤 [当前年-1, …]）。其余格式（如 ICS）给明确失败文案
+  「仅支持本项目 JSON 快照格式，可用 scripts/sync-holiday-data.sh 生成」，不猜测
+  解析。取数走 `Services/Infra/HTTPClient`（overseas 超时档），本地路径直接读文件。
+
 ## Header
 
 Implemented in `MenuContentView.headerBar`.
@@ -206,4 +252,4 @@ appearance-neutral.
 - General pane 有一个「Bark 推送」全局节：`enabled` / `serverURL` / `deviceKey` / `sound` / `skipWhenAwakeAndUnlocked` / `ttl` / `group`。
 - 字段默认值与逐字段容错见 `spec/notifications.md` §5；JSON 契约见 `spec/config.md` §Config Schema 的 `notify*` 与 `bark` 字段。
 
-> 核对基线：2026-10-04 · 代码 d6396fd
+> 核对基线：2026-10-05 · 代码 6128ab5

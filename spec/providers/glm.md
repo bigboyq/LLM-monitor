@@ -63,9 +63,6 @@ Full config shape:
     "glm_coding_plan": {
       "enabled": true,
       "apiKey": "your-coding-plan-key-id.secret",
-      "peakStartHour": 14,
-      "peakEndHour": 18,
-      "peakWeekdaysOnly": true,
       "parseZcodeBalanceLog": true
     }
   }
@@ -80,16 +77,15 @@ Supported provider fields:
 | `apiKey` | Coding Plan Key. Empty values and `REPLACE...` placeholders are treated as missing (`ProviderConfig.usableAPIKey`). |
 | `refreshIntervalSeconds` | Optional independent refresh interval (overrides global default of 300s). |
 | `displayName` | Optional card title override. |
-| `peakStartHour` | Peak window start hour (24h, local tz). Default `14`. |
-| `peakEndHour` | Peak window end hour (24h, half-open, must be > `peakStartHour`). Default `18`. |
-| `peakWeekdaysOnly` | `true` = Mon–Fri only; `false` = every day. Default `true`. |
 | `parseZcodeBalanceLog` | Parse ZCode's balance polling log and show activity-plan (zcode-plan, e.g. weekend trial) balances on the GLM card. Absent/false = off. |
 | `notifyIntervalRestored` etc. (4 fields) | Optional per-event notification channels (5h/weekly × restored/exhausted): `none` / `system` / `barkAndSystem`. Defaults: restored → `system`, exhausted → `none`. See `spec/notifications.md`. |
 | `clientBindings[]` | Canonical client-to-quota binding for the optional OpenCode `zhipuai-coding-plan` slice. GLM defaults to enabled; the legacy provider-level field is migration compatibility only. |
 
-Peak fields are optional; when omitted (or when `peakEndHour ≤ peakStartHour`) the window
-falls back to the official default (Mon–Fri 14:00–18:00). Omitted fields are not written to
-`config.json`.
+The peak window is **fixed at the official default**（Mon–Fri 14:00–18:00，北京时间，
+法定节假日除外）——there are no peak config fields and no settings controls（设置页
+只读展示，见 `spec/ui/settings.md`）。旧版本残留的 `peakStartHour` / `peakEndHour` /
+`peakWeekdaysOnly` 键由 `JSONDecoder` 静默忽略（见 `spec/config.md` §Config Schema），
+不进损坏恢复流程、不影响判定，下次保存时自然消失。
 
 `GlmCodingPlanFetcher.hasLocalAuth()` always returns `true`; `AppState` validates the config `apiKey`.
 
@@ -261,9 +257,10 @@ needed.
 
 ## Peak Hours Indicator
 
-智谱官方规则：**每周一至周五 14:00–18:00**（用户本地时区）为高峰时段，高峰期模型
-调用按基础积分扣费，**非高峰期按 50% 抵扣**（省一半）。卡片在额度行下方显示一条
-倒计时提示，颜色分 3 档反映紧迫度：
+智谱官方规则：**每周一至周五 14:00–18:00**（北京时间，与 DeepSeek 统一判定形状）
+为高峰时段，**法定节假日除外**（工作日 = 周一–周五 ∧ 当天不是法定节假日，
+见 `Models/HolidayCalendar.swift`）。高峰期模型调用按基础积分扣费，**非高峰期按
+50% 抵扣**（省一半）。卡片在额度行下方显示一条倒计时提示，颜色分 3 档反映紧迫度：
 
 - **高峰期** 🔥（**红色**）：`高峰期 · 还剩 1小时30分`
 - **非高峰期，距高峰 < 1 小时** ❄️（**橙色**，临近）：`距高峰期 45分 · 非高峰 5 折`
@@ -273,17 +270,18 @@ needed.
 
 | Aspect | Behavior |
 |---|---|
-| Model | `Models/PeakWindow.swift`（`GlmPeakWindow` 为兼容 typealias，:127）— `status(at:calendar:)` 返回 `.peak(until:)` / `.offPeak(until:)` |
-| Time basis | `Calendar.current`（用户本地时区），与 GLM API 无关 —— refresh 失败也能显示 |
+| Model | `Models/PeakWindow.swift`（`GlmPeakWindow` 为兼容 typealias，:141）— `status(at:calendar:holidays:)` 返回 `.peak(until:)` / `.offPeak(until:)` |
+| Time basis | `PeakWindow.beijingCalendar`（Asia/Shanghai，与 DeepSeek 统一；调用点显式传入），与 GLM API 无关 —— refresh 失败也能显示 |
 | Live countdown | `Views/GlmPeakIndicatorView.swift` 只注入 GLM 文案 / 图标 / 配色，倒计时读环境值 `\.displayDate`（**宿主各自注入的活动时钟**：`MenuContentView` 内联 / hover 浮层 `HoverPanelController` / dock 浮层 `EdgeDockController`，各自持有一个 `DisplayClock` 实例并经 `DisplayClockScope` 注入，随宿主显隐 start/stop）；宿主不可见即停、零开销。公共外壳与 `formatPeakDuration` 在 `Views/PeakIndicatorView.swift`，不再自挂 `TimelineView` |
-| Window source | `ProviderConfig.glmPeakWindow`（config 派生，`rebuildStatuses` 时挂在 `ProviderStatus.glmPeakWindow`） |
+| Window source | `GlmPeakWindow.zhipuDefault` **常量**（`rebuildStatuses` 时挂在 `ProviderStatus.glmPeakWindow`，GLM kind 一律 `.zhipuDefault`、其余 kind 为 nil；无 config 查询） |
 | Defaults | `GlmPeakWindow.zhipuDefault` = Mon–Fri 14:00–18:00 |
-| Day classification | `Calendar.weekday`: Mon–Fri = 2…6；周末永远非高峰（`weekdaysOnly`） |
+| Day classification | Rule A：`Calendar.weekday` Mon–Fri = 2…6 ∧ 非法定节假日（`HolidayCalendar.shared`，打包快照 `Resources/ChinaHolidays.json`）；周末与调休上班的周六/周日永远非高峰（`weekdaysOnly`） |
 | Boundary | 半开区间 `[startHour:00, endHour:00)`：14:00:00 算高峰，18:00:00 算非高峰 |
-| Next peak | 今日 `startHour:00` 未到则取今日，否则逐日扫描跳过非高峰日（覆盖周末） |
+| Next peak | 今日 `startHour:00` 未到则取今日，否则逐日扫描跳过非高峰日（15 天预算：春节 8 天法定假 + 紧邻周末最长空档 ~11 天） |
 
-窗口完全可配置（设置面板「高峰期提示」段：开始/结束小时 Stepper + 仅工作日开关）；
-非法配置（`endHour ≤ startHour` 或越界）整体回退默认。
+窗口固定不可调（与 DeepSeek 同形状）：北京时间 + Rule A 工作日（周一–周五 ∧ 非法定
+节假日），无任何 config 字段或设置开关；设置面板「高峰期提示」段为**只读展示**
+（`工作日 14:00–18:00（北京时间 · 法定节假日除外）`）。
 
 ## Local Token Source (ZCode)
 
@@ -657,7 +655,8 @@ provider-specific interval can be set via `refreshIntervalSeconds`.
 
 `Tests/LLMMonitorTests/GlmCodingPlanFetcherTests.swift / GlmZcodeDBReaderTests.swift /
 GlmOffPeakTests.swift / GlmBalanceLogReaderTests.swift / GlmUsageCategoryTests.swift`
-（按 MARK 段拆分，高峰窗口边界用例另在共享的 `PeakWindowTests.swift`）:
+（按 MARK 段拆分，高峰窗口边界与节假日判定用例另在共享的 `PeakWindowTests.swift`，
+法定节假日快照守门在 `HolidayCalendarTests.swift`）:
 
 | Test | What it verifies |
 |---|---|
@@ -685,4 +684,4 @@ whether the quota batch succeeded. GLM's former dedicated periodic trigger
 The scanner's db+WAL fingerprint check is unchanged: when nothing changed only a `stat()`
 runs (microseconds); SQL (~1.5ms) only runs when the WAL actually moved.
 
-> 核对基线：2026-10-05 · 代码 c7d9afa
+> 核对基线：2026-10-05 · 代码 6128ab5

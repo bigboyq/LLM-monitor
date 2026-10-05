@@ -125,9 +125,18 @@ catalog 的结果已经在 reader 层固化，重建逻辑必须逐字段原样�
 |---|---|---|
 | `QuotaProviderID.deepseek` | `PeakWindow` 高峰窗口 | ×2 |
 
-`pricingMultiplier(quotaProviderID:at:deepseekPeakWindow:)` 遍历登记表求值，未登记的
-provider 或窗口未命中一律返回 1。新增 provider 的峰谷定价只往表里追加一行，不要在
-求值分支里加 `if quotaProviderID == ...`。价目本身仍然只改 JSON，不在本表登记。
+判定口径为 Rule A：工作日（周一–周五 ∧ 非法定节假日，节假日表来自
+`HolidayCalendar.shared`）内命中高峰窗口才乘倍率——**法定节假日的周一–周五
+不算高峰、不加倍**；调休上班的周六/周日同样不算高峰。 
+`pricingMultiplier(quotaProviderID:at:deepseekPeakWindow:holidays:)` 遍历登记表求值，
+未登记的 provider 或窗口未命中一律返回 1。新增 provider 的峰谷定价只往表里追加
+一行，不要在求值分支里加 `if quotaProviderID == ...`。价目本身仍然只改 JSON，
+不在本表登记。
+
+**口径说明（勿混入积分套餐类）**：GLM（zhipu）的价值为**名义估算、与峰谷无关**
+——峰谷对 GLM 只影响高峰提示 pill 与健康色（卡头点 floor），不参与价值系数；
+倍率表只登记按量计费类 provider（当前仅 DeepSeek），勿给积分套餐类 provider
+（GLM Coding Plan 这类共享积分池）加价值系数。
 
 ## promptID 命名空间登记表
 
@@ -194,4 +203,4 @@ provider 或窗口未命中一律返回 1。新增 provider 的峰谷定价只�
 任何新 harness 必须先补充本矩阵、provider spec 和 `TokenAccountingCatalog`，再接入 UI；
 不要在 view 或 pricing 分支里重新猜测 input/cache/reasoning 的关系。
 
-> 核对基线：2026-10-04 · 代码 d6396fd
+> 核对基线：2026-10-05 · 代码 6128ab5

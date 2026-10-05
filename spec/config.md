@@ -66,19 +66,20 @@ The app reads and writes this shape:
 | `statusBarHealthColors` | global | `healthyHex` / `warningHex` / `criticalHex` overrides for the health dot and Icon Duo arcs. Missing or malformed falls back to `StatusBarHealthColors.default` (`#34C759` / `#FFD60A` / `#FF453A`). |
 | `edgeDock` | global | 屏幕边缘状态窗配置（`EdgeDockConfig`）。缺省等价于 `EdgeDockConfig.default`：`mode = .autoHideWindow`（默认开启、平时收起为小圆环）、`edge = .right`、`offset = 0.5`、`hideInFullscreen = true`、`compactSize = .small`、`independentRingColors = true`。`screenUUID` 为 nil 时跟随当前所在屏。**逐字段容错**：手改坏值只回退该字段，不整块报废（外层用 `try?` 解码，整块失败会连用户拖好的位置一起静默重置）。详见 `spec/ui/edge-dock.md`。 |
 | `bark` | global | Bark 推送渠道（`BarkConfig`：`enabled` / `serverURL` / `deviceKey` / `sound` / `skipWhenAwakeAndUnlocked` / `ttl` / `group`）。字段缺失或 `enabled == false` 都表示不推送。详见 `spec/notifications.md`。 |
+| `holidaySource` | global | 法定节假日数据源（URL 或本地文件路径），供 `HolidayCalendar` 解析链取数。缺省（不写键）= 上游 chinese-days CDN JSON（`HolidayCalendar.defaultSourceURL`，与 `scripts/sync-holiday-data.sh` 的 `UPSTREAM_URL` 同值）；**显式空串** = 只用随 App 打包的内置快照、不联网；其余值按 http(s) URL 或本地文件路径解析。类型写错按缺失处理（回退缺省语义）。缓存文件、取数触发与设置页展示见 `spec/ui/settings.md` 的「节假日数据源」。 |
 | `providerCardOrder` | global | Optional ordered list of stable canonical Quota Provider IDs (for example `deepseek` or `minimax`) for the main menu cards. Missing, empty, unknown, or duplicate IDs are normalized; omitted items are appended by Provider display name. |
 | `providers.<id>.enabled` | provider | Disabled providers stay visible but are not fetched. Missing `enabled` decodes as `true`. |
 | `providers.<id>.apiKey` | provider | API key for providers that do not manage external auth. Used by minimax. |
 | `providers.<id>.displayName` | provider | Optional UI label override. |
 | `providers.<id>.refreshIntervalSeconds` | provider | Optional provider-specific timer interval, with the same 10-second...30-day clamp. |
 | `providers.<id>.authPath` | provider | External-auth path used by Codex. Accepts either an `auth.json` file path or its parent directory. |
-| `providers.<id>.peakStartHour` / `peakEndHour` / `peakWeekdaysOnly` | provider | GLM Coding Plan 高峰窗口（24h 制本机时区半开区间 + 是否仅工作日）。缺省为 `14` / `18` / `true`；DeepSeek 的北京时间双窗口固定不可调，不读这三个字段。 |
 | `providers.<id>.parseZcodeBalanceLog` | provider | 是否解析 ZCode 余额轮询日志、在 GLM 卡显示活动套餐余额。字段不存在 = 关闭（不读日志）。 |
 | `providers.<id>.notifyIntervalRestored` / `notifyIntervalExhausted` / `notifyWeeklyRestored` / `notifyWeeklyExhausted` | provider | 四类额度事件各自的推送渠道（`QuotaNotifyChannel`：`none` / `system` / `barkAndSystem`）。字段不存在 = 默认渠道（恢复 → 系统通知，耗尽 → 不通知），与引入通知配置前的行为一致。 |
 | `clientBindings[]` | client → quota Provider | Canonical source of truth for which Client usage slices contribute to a quota card. Schema v2; missing bindings are migrated from the legacy provider-level OpenCode switches by `AppConfig.legacyClientBindings(from:)`. |
 | `providers.<id>.mergeOpencodeUsage` | legacy compatibility | Decoded for older config files and projected into runtime status for compatibility. The canonical source is `clientBindings[]`; Settings does not expose a per-provider OpenCode toggle and `applyAndSave` preserves this legacy field rather than rewriting it. Defaults are encoded in `ProviderConfig.shouldMergeOpencodeUsage(for:)` (GLM `true`, others `false`), and users with non-default needs edit `config.json`. |
 
 `ProviderConfig.encode(to:)` omits nil optional fields, so saved config only includes relevant keys. `ConfigStore.applyAndSave()` writes pretty-printed, sorted-key JSON and reapplies `0600`.
+旧版本残留的 provider 级键（如 GLM 曾有的 `peakStartHour` / `peakEndHour` / `peakWeekdaysOnly`——GLM 高峰窗口已固定为官方口径，DeepSeek 峰谷键当年同理）由 `JSONDecoder` **静默忽略**：解码端只认上表列出的键，残留既不报错、也不参与任何判定，下次在设置页保存时自然消失。
 Unknown or incorrectly typed `statusBarIconStyle` /
 `statusBarHealthDotEnabled` values fall back
 to their defaults; cosmetic config errors do not trigger recovery of the provider settings.
@@ -135,6 +136,7 @@ value when local model samples are available.
 | File | Purpose |
 |---|---|
 | `~/Library/Application Support/LLM-monitor/config.json` | User-editable config |
+| `~/Library/Application Support/LLM-monitor/holidays-cache.json` | 法定节假日数据源缓存（与打包资源同 schema：source / fetchedAt / holidays）。取数成功后回写；缺失 / 损坏 / bundledOnly 模式时回落内置快照 |
 | `~/Library/Application Support/LLM-monitor/notification-state.json` | 通知触发器基线（每次成功刷新回写，供边沿检测跨重启连续） |
 | `~/Library/Application Support/LLM-monitor/log.txt` | Rotated runtime log (5 MB 上限 rotate, 保留 active + .1 + .2 共 3 份) |
 
@@ -212,4 +214,4 @@ Icon Composer 里更新 `images/LLMMenu.icon` 工程；菜单栏「App 图标」
 `0f1a7b8` 又将其恢复。本节即为最终裁定：**双路线并存是既定设计**，两条路线的产物各有
 职责、互不替代。今后改动图标打包方案前，先修订本节并说明理由，不要再单方面翻转。
 
-> 核对基线：2026-10-04 · 代码 d6396fd
+> 核对基线：2026-10-05 · 代码 6128ab5

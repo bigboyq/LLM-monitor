@@ -18,6 +18,7 @@
 | `Sources/LLM-monitor/Services/LayoutMetrics.swift` | Services 与 Views 共读的排版常量（图表宽 / 卡片列与内容层内边距） |
 | `Sources/LLM-monitor/Models/ModelPricingCatalog.swift` | 计价引擎：加载 `Resources/ModelPricing.json`（首条命中 / exact / matchAll / zhipu 兜底 / 下划线归一化）并应用 DeepSeek 高峰倍率 |
 | `Sources/LLM-monitor/Resources/ModelPricing.json` | 价格数据：随 app 打包的唯一价格源（`ModelPricingJSONTests` 守门 schema 完整性） |
+| `Sources/LLM-monitor/Resources/ChinaHolidays.json` | 法定节假日快照：随 app 打包的静态离线数据（`holidays` ∪ `inLieuDays` 日期并集，年份 [当前年-1, …]），由 `scripts/sync-holiday-data.sh` 生成，`HolidayCalendarTests` 守门 |
 | `Sources/LLM-monitor/Models/ProviderStatus.swift` | UI-facing provider state + `ProviderKind` / `AccentColor` 枚举 |
 | `Sources/LLM-monitor/Models/QuotaInfo.swift` | Provider-neutral quota 和 reset-credit 模型 |
 | `Sources/LLM-monitor/Models/QuotaWindowStatus.swift` | Provider 无关的额度窗口存在性（`.present` / `.absent`）；fetcher 在边界归一化 raw 状态码 |
@@ -51,7 +52,9 @@
 | `Sources/LLM-monitor/Fetchers/AntigravitySchemas.swift` | Antigravity RPC request / response 的 Encodable 编码 schema 与解码模型 |
 | `Sources/LLM-monitor/Fetchers/GlmCodingPlanFetcher.swift` | GLM Coding Plan 额度与 reset time 抓取 |
 | `Sources/LLM-monitor/Fetchers/DeepseekFetcher.swift` | DeepSeek 账户余额抓取（`/user/balance`）+ 解析 |
-| `Sources/LLM-monitor/Models/PeakWindow.swift` | GLM / DeepSeek 共用的参数化高峰窗口判定（`slots` × `weekdaysOnly`；GLM 本机时区单窗口可配置，DeepSeek 北京时间双窗口固定、高峰永不含周末） |
+| `Sources/LLM-monitor/Models/PeakWindow.swift` | GLM / DeepSeek 共用的参数化高峰窗口判定（`slots` × `weekdaysOnly` × `HolidayCalendar`；统一北京时间 + Rule A 工作日口径，两家只差 slots 数量：GLM 单窗口（官方固定 14–18，不可调），DeepSeek 双窗口固定、高峰永不含周末） |
+| `Sources/LLM-monitor/Models/HolidayCalendar.swift` | 法定节假日快照模型（Rule A 的节假日数据源）：`Set<Int>` yyyyMMdd 日期键 + source/fetchedAt 元信息，`isHoliday` / `covers(year:)`；解析链纯函数（`parseSource` 源语义 / `parseSourceDates` 快照+上游 chinese-days 双格式 / `resolve` 缓存→bundle→empty / `isStale` 7 天新鲜度）与可更新的 `shared`（锁保护，`applyResolved` 替换）；bundle 加载 `loadBundled()` 缺失退化为空表并记日志 |
+| `Sources/LLM-monitor/Services/HolidayCalendarService.swift` | 节假日数据源服务（解析链编排 + best-effort 取数）：config `holidaySource` 的触发判定（启动 / 源变更 / 设置页立即更新）、缓存 `holidays-cache.json` 读写、HTTP 走 `HTTPClient` / 本地路径直读、成功后应用 `shared` + 宿主回调（UI 刷新）；失败不清空既有数据；设置页状态行 / 覆盖提示纯函数 |
 | `Sources/LLM-monitor/Services/AppState.swift` | 全局状态派生、config reload 接线（`configStore.startWatching()`，watcher 本体在 ConfigStore）、scanner wire-up、Provider batch/LocalUsage reconcile 与睡眠健康边界接线 |
 | `Sources/LLM-monitor/Services/QuotaUpdateNotifier.swift` | 额度通知引擎：`QuotaEventDetector`（四类窗口事件边沿判定）+ `QuotaEventBatch`（按模型×渠道合并）+ 系统通知渠道 + `CompositeQuotaUpdateNotifier` 渠道扇出 |
 | `Sources/LLM-monitor/Services/BarkNotifier.swift` | Bark 推送渠道：POST JSON 传输、稳定覆盖 id、锁屏/亮屏跳过判定、有界串行发送队列（冷却 / 重试 / 可取消） |
@@ -164,6 +167,7 @@
 | `scripts/export-antigravity-quota.sh` | 导出 Antigravity 本地 quota 数据 |
 | `scripts/generate-icns.sh` | 从源图生成 AppIcon.icns（由 sync-icon-assets.sh 调用，也可独立使用） |
 | `scripts/sync-icon-assets.sh` | 图标资产唯一同步入口：IconPreview 副本 + 回退 icns 重生成 + sidecar 新鲜度记录；`--check` 供构建前置校验 |
+| `scripts/sync-holiday-data.sh` | 法定节假日快照唯一同步入口：拉取上游 chinese-days JSON，抽取 `holidays` ∪ `inLieuDays`（workdays 有意丢弃，Rule A）生成 ChinaHolidays.json，幂等 + `--check` 只读校验 |
 
 ## Test Suite
 
@@ -171,4 +175,4 @@
 - **串行执行是既定选择**：`swift test --parallel` 实测（2026-10-02，5 连跑 3 败）不可用——`SQLiteTempCopyTests` 的临时副本断言扫描跨进程共享目录，并行 worker 互相误判；且慢测试为睡眠型，并行的 wall 收益仅 ~4s。并行化前提：先给 SQLiteTempCopy 的副本目录引入进程级隔离，再复评。
 - 慢用例的等待注入缝已建立：调度器（now/sleep）、Bark 退避（retryDelay）、vnode 合并窗口（coalescingWindow 参数）；新增耗时敏感测试时优先走注入缝，不要写死真实 sleep。
 
-> 核对基线：2026-10-05 · 代码 c7d9afa
+> 核对基线：2026-10-05 · 代码 6128ab5

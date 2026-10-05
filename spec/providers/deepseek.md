@@ -33,7 +33,7 @@ DSH 与 OpenCode 的 raw input 本就是 uncached）；余额金额和本地 API
 | Display | 余额行（`DeepseekBalanceRow`）标题 `API 账户余额`，右端 `planLabel` 金额（`¥100.50`）；`充值: ¥90.50` / `赠金: ¥10.00` 与高峰指示器同处该行第二行（单行截断，完整文本走 tooltip） |
 | Remaining percent | `100` if `is_available` 且 `total_balance > 0`，否则 `0` |
 | Windows | interval `.present`（余额即 interval 口径）；weekly `.absent` |
-| Peak hours | 北京时间工作日 9:00–12:00 & 14:00–18:00（`DeepseekPeakWindow.defaultWindow`）；时段固定不可调，高峰永不含周末（周六、周日全天平价） |
+| Peak hours | 北京时间工作日 9:00–12:00 & 14:00–18:00（`DeepseekPeakWindow.defaultWindow`）；时段固定不可调，高峰永不含周末（周六、周日全天平价），法定节假日的周一–周五同样不算高峰（Rule A） |
 | Local token source | 无 native scanner；ZCode `deepseek` 分片（默认开启）+ DSH `deepseek` provider（默认开启）+ 可选 OpenCode `deepseek` 分片（默认关闭）合并 |
 | Balance model row | 单个合成 model `deepseek_balance`，`ModelQuota.displayName` → `DeepSeek API 余额` |
 
@@ -102,11 +102,18 @@ DeepSeek 官方定价规则：**北京时间周一至周五 9:00–12:00 与 14:
 价格为平价（1×）的 2 倍。判定全程基于 `Asia/Shanghai` 时区 Calendar
 （`DeepseekPeakWindow.beijingCalendar`），与用户本机时区无关。
 
+**工作日口径（Rule A，与 GLM 统一形状）**：工作日 = 周一–周五 ∧ 当天不是法定节假日。
+法定节假日（含调休换来的放假日，常落在周一–周五）不算高峰、高峰 ×2 倍率不加倍
+（数据源为打包快照 `Resources/ChinaHolidays.json`，加载与退化行为见
+`Models/HolidayCalendar.swift`）；调休上班的周六/周日**有意不建模**——它们本来就不是
+周一–周五，天然不算高峰。
+
 **周末平价（官方口径）**：经确认 DeepSeek 周六、周日不执行高峰定价，高峰永不含周末。
 `DeepseekPeakWindow.defaultWindow` 固定为 `slots [9–12, 14–18]` + `weekdaysOnly: true`：
 
-- 周一–周五执行 9–12 / 14–18 高峰；周六、周日全天平价（1×），
-  倒计时直接指向下周一 9:00。`nextPeakStart` 逐日扫描跳过非高峰日（最多 8 天，覆盖周末）。
+- 周一–周五执行 9–12 / 14–18 高峰（法定节假日除外）；周六、周日全天平价（1×），
+  倒计时直接指向下一个工作日 9:00。`nextPeakStart` 逐日扫描跳过非高峰日
+  （15 天预算：春节 8 天法定假 + 紧邻周末最长空档 ~11 天）。
 - 高峰窗口整体固定，无任何 config 字段或设置开关可调（「仅工作日」开关与
   `deepseekPeakWeekdaysOnly` 配置键已移除；旧配置文件中的残留键会被静默忽略）。
 
@@ -170,4 +177,4 @@ raw daily 诊断字段，不进入统一 total / 图表 / 金额。详见 [`dsh.
 | Brand logo | `Sources/LLM-monitor/Resources/BrandLogos/deepseek.svg`、`Views/BrandLogoView.swift` |
 | Regression tests | `Tests/LLMMonitorTests/DeepseekFetcherTests.swift`、`PeakWindowTests.swift` |
 
-> 核对基线：2026-10-05 · 代码 c7d9afa
+> 核对基线：2026-10-05 · 代码 6128ab5
