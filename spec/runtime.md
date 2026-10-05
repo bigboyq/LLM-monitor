@@ -202,6 +202,9 @@ Antigravity 是用本地 Antigravity / agy CLI 的 `language_server`，进程可
 
 `onChange` 回调在 cache 值变化时触发，AppState 收到 `false` 立刻 `rebuildStatuses + rescheduleAll`
 让 UI 立即显示离线提示；`true` 不在 callback 里 rebuild（依赖下次 refresh 成功后的 markAvailable）。
+函数名 `rescheduleAll` 是历史遗留（`AppState.swift` 顶部注释亦然），**语义已是「Refresh Behavior」
+小节那条差异化重排**：auth 探测翻转与配置写盘同属一条路径，只重排新增 / 重新启用 /
+interval 变化的 provider，未变者保留既有 deadline 与首刷标记，不做全员重抓。
 
 ## UI Event Broadcasting
 
@@ -438,4 +441,4 @@ These are documented product boundaries:
   have their own SQLite readers, Antigravity is pure RPC, and Codex parses JSONL on
   demand for the 7-day chart.
 
-> 核对基线：2026-10-05 · 代码 d2ef5ed
+> 核对基线：2026-10-05 · 代码 22a2467

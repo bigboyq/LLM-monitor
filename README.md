@@ -12,7 +12,7 @@
 2. 打开 DMG，将 **LLM-monitor.app** 拖到 **Applications**。
 3. 启动应用，点击菜单栏图标，进入“设置”启用并配置需要的 Provider。
 
-当前公开版本使用 ad-hoc 签名，未经过 Apple notarization。若 macOS 阻止首次打开，请在 Finder 中右键应用并选择“打开”；请只安装本仓库 Releases 提供、且 SHA-256 与 `SHA256SUMS.txt` 一致的文件。
+当前公开版本使用 ad-hoc 签名，未经过 Apple notarization。若 macOS 阻止首次打开，请在 Finder 中右键应用并选择“打开”；请只安装本仓库 Releases 提供、且 SHA-256 与 `SHA256SUMS.txt` 一致的文件。应用不做自动更新，想知道有没有新版本时订阅或定期查看 [Releases 页](https://github.com/bigboyq/LLM-monitor/releases) 即可。
 
 ## 主要能力
 
@@ -75,7 +75,7 @@
 | 架构、状态机、刷新与数据模型 | [项目架构规格](spec/overview.md) | 同一文档 |
 | Provider 数据源与口径 | [Minimax](spec/providers/minimax.md) · [ChatGPT/Codex](spec/providers/codex.md) · [Antigravity](spec/providers/antigravity.md) · [GLM](spec/providers/glm.md) · [DeepSeek](spec/providers/deepseek.md) · [OpenCode](spec/providers/opencode.md) · [DSH](spec/providers/dsh.md) | 同左 |
 | 并发、错误、日志、性能与持久化策略 | [工程策略](docs/policy/) | 同一目录 |
-| 版本变化 | [CHANGELOG](CHANGELOG.md) | [Release notes](docs/releases/) |
+| 版本变化 | [CHANGELOG](CHANGELOG.md) | [Release notes](docs/releases/README.md) |
 
 ## 从源码构建
 

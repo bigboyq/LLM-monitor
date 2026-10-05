@@ -12,7 +12,7 @@ LLM Monitor is a macOS 14+ menu bar app for viewing quota, balance, reset times,
 2. Open the DMG and drag **LLM-monitor.app** to **Applications**.
 3. Launch the app, click its menu bar icon, open Settings, and enable the providers you use.
 
-The public snapshot is ad-hoc signed and is not Apple-notarized. If macOS blocks the first launch, Control-click the app in Finder and choose **Open**. Install only artifacts from this repository's Releases page and verify them against `SHA256SUMS.txt`.
+The public snapshot is ad-hoc signed and is not Apple-notarized. If macOS blocks the first launch, Control-click the app in Finder and choose **Open**. Install only artifacts from this repository's Releases page and verify them against `SHA256SUMS.txt`. The app never updates itself; watch or subscribe to the [Releases page](https://github.com/bigboyq/LLM-monitor/releases) to learn about new versions.
 
 ## Supported providers
 
@@ -21,7 +21,7 @@ The public snapshot is ad-hoc signed and is not Apple-notarized. If macOS blocks
 | Minimax Token Plan | Plan quota API | Minimax v2 SQLite; ZCode slices (on by default), optional OpenCode merge | Token Plan API key |
 | ChatGPT Plan / Codex | ChatGPT usage API | Codex session logs; optional OpenCode merge | `~/.codex/auth.json` |
 | Antigravity | Local language-server RPC | Local trajectory metadata RPC; optional OpenCode merge | Existing Antigravity session |
-| GLM Coding Plan | GLM quota API | ZCode SQLite; optional OpenCode merge | Coding Plan key |
+| GLM Coding Plan | GLM quota API | ZCode SQLite; OpenCode merge (on by default) | Coding Plan key |
 | DeepSeek | Account balance API | ZCode slices (on by default), optional OpenCode merge | DeepSeek API key |
 
 DeepSeek Harness (DSH) is not a separate menu-bar provider. It is a shared local
@@ -79,7 +79,7 @@ config.json). All client-local usage can be inspected under Settings → Clients
 - Architecture, state machine, refresh behavior, and data model: [project specification](spec/overview.md)
 - Provider data sources and accounting rules: [Minimax](spec/providers/minimax.md) · [ChatGPT/Codex](spec/providers/codex.md) · [Antigravity](spec/providers/antigravity.md) · [GLM](spec/providers/glm.md) · [DeepSeek](spec/providers/deepseek.md) · [OpenCode](spec/providers/opencode.md) · [DSH](spec/providers/dsh.md)
 - Engineering policies: [concurrency](docs/policy/concurrency.md) · [errors](docs/policy/error.md) · [logging](docs/policy/logging.md) · [performance](docs/policy/performance.md) · [persistence](docs/policy/persistence.md)
-- Version history: [changelog](CHANGELOG.md) · [release notes](docs/releases/)
+- Version history: [changelog](CHANGELOG.md) · [release notes](docs/releases/README.md)
 
 ## Build from source
 

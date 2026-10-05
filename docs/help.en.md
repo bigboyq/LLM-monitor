@@ -23,6 +23,8 @@ Verify the download in Terminal:
 shasum -a 256 -c SHA256SUMS.txt
 ```
 
+The app never checks for or installs updates by itself. Watch or subscribe to the [GitHub Releases page](https://github.com/bigboyq/LLM-monitor/releases) to learn about new versions, then download and install them as described above.
+
 ## Provider setup
 
 ### Minimax Token Plan

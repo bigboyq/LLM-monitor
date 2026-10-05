@@ -48,7 +48,7 @@ flowchart TD
 |---|---|
 | `Services/QuotaUpdateNotifier.swift` | `QuotaNotifyChannel` / `QuotaNotificationKind` / `QuotaEvent` / `QuotaEventDetector` / `QuotaEventBatch` / `QuotaUpdateNotifying` 协议 + `Composite`/`Noop` + `SystemQuotaUpdateNotifier` |
 | `Services/BarkNotifier.swift` | `BarkQuotaNotifier`（渠道实现 + 屏幕/锁屏判定 + 测试推送）+ `BarkSendQueue`（actor 串行队列） |
-| `Services/TriggerStateStore.swift` | `QuotaSnapshot` / `QuotaWindowBaseline` / `TriggerStateStore`（MainActor 内存权威 + 每次更新同步原子写盘） |
+| `Services/TriggerStateStore.swift` | `QuotaSnapshot` / `QuotaWindowBaseline` / `TriggerStateStore`（MainActor 内存权威 + 每次更新经 actor `TriggerStateWriter` 异步串行写盘：0600 / 临时文件 / fsync / rename，`seq` 丢弃迟到旧快照；`update` 返回后内存态立即可读；`AppState.stop()` 另做一次同步兜底写（`flushSynchronously` + 写高水位，排队旧快照不回退） |
 | `Services/AppState.swift` | 刷新成功分支的事件源 + windowedKinds 门控 + notConfigured 时 reset 基线 |
 | `Views/SettingsView.swift` | 「常规 > Bark 推送」全局节 + 各窗口类 provider「通知配置」节 |
 | `Services/ConfigStore.swift` | `AppConfig.bark: BarkConfig?` + `ProviderConfig.notify*` 四字段 |
@@ -93,10 +93,11 @@ DeepSeek 不参与：余额被二值化为 0/100 percent，无窗口语义；其
 - **reset 时机**：provider 转入 `.notConfigured`（禁用 / 凭证失效 / 外部 auth 缺失）
   时 `rebuildStatuses` 调 `reset(providerID:)`；重新配置后回到首帧语义。
 - **抓取失败不评估也不回写**：`.loading/.failed` 携带的 lastSuccess 是旧数据。
-- **落盘**：`notification-state.json`（config.json 同目录），每次更新同步原子写
+- **落盘**：`notification-state.json`（config.json 同目录），每次更新原子写（2026-10-05 起 fsync 移出主线程、经 actor 串行；停机时同步兜底一次）
   （`FileManagerBox.writePrivate`：0600 / 临时文件 / fsync / rename）。写入策略裁定
   （2026-09-14）：不做防抖合并——频率只有每 provider 每刷新周期一次、文件 ~2KB，
-  同步顺序写从构造上消除并发写竞态，比防抖 + 后台写更简单。坏文件容错降级为空。
+  写盘自 2026-10-05 起移到 actor `TriggerStateWriter` 串行执行（仍每次更新直写、不加合并；fsync 不再占主线程——10s 极值间隔下曾达 ≈0.5 次/秒阻塞），
+  一致性由 MainActor 内存权威副本保证；代价是进程在毫秒级写盘窗口内退出可能丢最后一次基线。坏文件容错降级为空。
 
 ## 4. 渠道层
 
@@ -206,8 +207,8 @@ provider 的渠道枚举坏值按缺失处理（`try? + rawValue`）；`bark` �
 | 文件 | 覆盖 |
 |---|---|
 | `QuotaUpdateNotifierTests.swift` | detector 边沿（首帧/新窗口/absent/浮点噪声）、恢复阈值边界（0→3 不报、10→20 报、96→100 报、99→100 报、100→100 不报）、耗尽边沿、渠道默认兼容、thread provider 维度、系统通知 60s 冷却、`setNotifyChannel` 归一化、AppState 两快照集成（配置透传 + 首帧不通知） |
-| `BarkNotifierTests.swift` | POST JSON 构造、base path 保留、scheme 白名单、规范化、按渠道过滤、按模型拆分与稳定覆盖 id、人在电脑前跳过矩阵、冷却（成功才生效）、5xx/瞬时重试一次、非瞬时不重试、积压取消（确定性时序：入队齐 → cancelAll → 释放 hold → awaitIdle）、溢出按模型合并、测试推送复用正式参数、BarkConfig 容错解码 |
-| `TriggerStateStoreTests.swift` | 跨实例 roundtrip、detector 消费重载基线补报停机事件、快照 key 冲突取 first、reset 后重载为空、坏文件降级 |
+| `BarkNotifierTests.swift` | POST JSON 构造、base path 保留、scheme 白名单、规范化、按渠道过滤、按模型拆分与稳定覆盖 id、人在电脑前跳过矩阵、冷却（成功才生效）、5xx/瞬时重试一次、非瞬时不重试、积压取消（确定性时序：入队齐 → cancelAll → 释放 hold → awaitIdle）、溢出按模型合并、测试推送复用正式参数、测试推送失败文案脱敏（非 `URLError` 泛化 + 类型名，不回显原始 URL）、BarkConfig 容错解码 |
+| `TriggerStateStoreTests.swift` | 跨实例 roundtrip、detector 消费重载基线补报停机事件、快照 key 冲突取 first、reset 后重载为空、坏文件降级、停机同步兜底与写高水位防回退（`flushSynchronously`） |
 | `QuotaUpdateNotifierTests.swift`（集成补强） | `.notConfigured` → 基线 reset 接线（注入 store 直接观察）、非窗口类 provider（DeepSeek 余额口径）不产生任何额度事件 |
 
 测试基础设施注意：`RecordingURLProtocol` 的记录与 `onReceive` 回调发生在请求
@@ -230,7 +231,7 @@ provider 的渠道枚举坏值按缺失处理（`try? + rawValue`）；`bark` �
 
 - 2026-09-14 自审修复：`BarkConfig` 逐字段容错解码（单字段类型写错不再拖垮整块，
   `ttl` 非法归一化为 0 并从 `Int?` 改为 `Int = 0`）；`TriggerStateStore` 去掉 250ms
-  防抖合并改为每次更新同步原子直写（裁定：防抖属过度防御，写入频率低、文件小，
+  防抖合并改为每次更新原子直写（2026-10-05：fsync 移出主线程，改 actor 串行）（裁定：防抖属过度防御，写入频率低、文件小，
   同步顺序写消除并发写竞态）；补集成测试（notConfigured → reset 接线、非窗口类
   provider 静默）；用户文档澄清「渠道默认与历史行为一致」≠ 恢复阈值未变。
 - 分支 `tsh/feat/bark-notification`（同事实现：通知器抽象、四类事件、Bark 渠道、
@@ -243,4 +244,4 @@ provider 的渠道枚举坏值按缺失处理（`try? + rawValue`）；`bark` �
 - 决策记录：屏幕跳过语义与恢复公式阈值见 §3.2 / §4.3 的裁定标注（2026-09-13）；
   余额触发器延后（裁定）。
 
-> 核对基线：2026-10-05 · 代码 d2ef5ed
+> 核对基线：2026-10-05 · 代码 22a2467

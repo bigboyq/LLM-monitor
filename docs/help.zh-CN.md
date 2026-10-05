@@ -23,6 +23,8 @@
 shasum -a 256 -c SHA256SUMS.txt
 ```
 
+应用不会自动检查或安装新版本；订阅或定期查看 [GitHub Releases 页](https://github.com/bigboyq/LLM-monitor/releases)即可获知新版本，再按上面的步骤重新下载安装。
+
 ## Provider 配置
 
 ### Minimax Token Plan

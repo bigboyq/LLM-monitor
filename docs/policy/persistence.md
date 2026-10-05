@@ -15,7 +15,7 @@
 - 用户配置 → `~/Library/Application Support/LLM-monitor/config.json` [ConfigStore.swift:583](../../Sources/LLM-monitor/Services/ConfigStore.swift:583)
 - 实例锁 → `…/LLM-monitor/instance.lock` [AppInstanceLock.swift:42](../../Sources/LLM-monitor/Services/AppInstanceLock.swift:42)
 - 损坏配置备份 → `config.json.corrupt-<UUID>.json` [ConfigStore.swift:925](../../Sources/LLM-monitor/Services/ConfigStore.swift:925)
-- 日志 → `…/LLM-monitor/log.txt`（rotated `.1` / `.2`）[AppLog.swift:34](../../Sources/LLM-monitor/Services/AppLog.swift:34)
+- 日志 → `…/LLM-monitor/log.txt`（rotated `.1` / `.2`）[AppLog](../../Sources/LLM-monitor/Services/AppLog.swift) 的 `resolveLogFileURL`（优先级见 `logging.md`）
 - 6× scanner cache: `~/Library/Application Support/LLM-monitor/token-monitor/{minimax,antigravity,opencode,glm-zcode,dsh,agy}.json` [TokenMonitorPaths.swift:8](../../Sources/LLM-monitor/Services/TokenMonitorPaths.swift:8)
 - 节假日缓存 → `…/LLM-monitor/holidays-cache.json`（0600）[HolidayCalendarService.swift:37](../../Sources/LLM-monitor/Services/HolidayCalendarService.swift:37)
 - SQLite 临时副本 → `NSTemporaryDirectory()/llm-monitor-<UUID>.sqlite`
