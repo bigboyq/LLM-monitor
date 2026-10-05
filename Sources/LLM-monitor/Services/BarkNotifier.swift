@@ -158,7 +158,7 @@ final class BarkQuotaNotifier: QuotaUpdateNotifying {
                 for: request,
                 session: session,
                 maxBytes: Self.responseByteLimit,
-                redactedPath: HTTPRequestLogSanitizer.sanitizedURL(request.url)
+                redactedPath: Self.redactedPath(for: request)
             )
             guard (200..<300).contains(response.statusCode) else {
                 // 不回显服务端响应（可能包含 device key 等敏感内容）。
@@ -271,6 +271,22 @@ final class BarkQuotaNotifier: QuotaUpdateNotifying {
         request.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
         request.httpBody = bodyData
         return request
+    }
+
+    /// Bark 请求的日志 / 错误定位标签：`bark://<host>/<key 前 4 位>…`。
+    ///
+    /// Bark 走 `POST {server}/{key}`，device key 就在 URL path 段里；通用脱敏
+    /// （`HTTPRequestLogSanitizer.sanitizedURL`）只剥 userinfo / query，path 原样
+    /// 保留，会把完整 key 写进 log.txt 并回显到 `responseTooLarge` 的用户文案。
+    /// Bark 侧统一用本标签替代：host 足够定位服务，key 只留 4 位便于用户确认
+    /// 「配的是哪一把 key」，且 key 本身不超过 4 位时完全隐去。
+    nonisolated static func redactedPath(for request: URLRequest) -> String {
+        guard let url = request.url, let host = url.host, !host.isEmpty else {
+            return "bark://<invalid-url>"
+        }
+        let key = url.lastPathComponent
+        let keyHint = key.count > 4 ? "\(key.prefix(4))…" : "<redacted>"
+        return "bark://\(host)/\(keyHint)"
     }
 }
 
@@ -388,7 +404,7 @@ actor BarkSendQueue {
                     for: operation.request,
                     session: session,
                     maxBytes: BarkQuotaNotifier.responseByteLimit,
-                    redactedPath: HTTPRequestLogSanitizer.sanitizedURL(operation.request.url)
+                    redactedPath: BarkQuotaNotifier.redactedPath(for: operation.request)
                 )
                 if (500...599).contains(response.statusCode), attempt == 1 {
                     logWarn("[bark] \(operation.label) Bark 服务端 HTTP \(response.statusCode)，\(Int(retryDelay))s 后重试")

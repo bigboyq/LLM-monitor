@@ -331,14 +331,41 @@ struct AppConfig: Codable, Equatable {
         )
         // 这些字段只影响图标外观，不应因手工拼写错误或新版本增加枚举值而让
         // 整份 provider 配置进入损坏恢复流程。未知值和类型不匹配均按缺失处理。
-        self.statusBarIconStyle = (try? container.decode(String.self, forKey: .statusBarIconStyle))
-            .flatMap(StatusBarIconStyle.init(rawValue:))
-        self.statusBarHealthDotEnabled = try? container.decode(Bool.self, forKey: .statusBarHealthDotEnabled)
-        self.statusBarHealthColors = try? container.decode(
-            StatusBarHealthColors.self,
-            forKey: .statusBarHealthColors
-        )
-        self.providerCardOrder = try? container.decode([String].self, forKey: .providerCardOrder)
+        //
+        // 记一条告警：静默回落的外观（图标样式、健康点、卡片顺序、节假日源）
+        // 排障时看不到任何线索——用户只看到「dock 回到默认位置」「节假日按
+        // 官方数据算」，日志里却干干净净。与 edgeDock / bark 同一档记录。
+        do {
+            self.statusBarIconStyle = (try container.decodeIfPresent(String.self, forKey: .statusBarIconStyle))
+                .flatMap(StatusBarIconStyle.init(rawValue:))
+        } catch {
+            logWarn("[config] statusBarIconStyle 字段解析失败，已按缺省处理：\(error.localizedDescription)")
+            self.statusBarIconStyle = nil
+        }
+        do {
+            self.statusBarHealthDotEnabled = try container.decodeIfPresent(
+                Bool.self,
+                forKey: .statusBarHealthDotEnabled
+            )
+        } catch {
+            logWarn("[config] statusBarHealthDotEnabled 字段解析失败，已按缺省处理：\(error.localizedDescription)")
+            self.statusBarHealthDotEnabled = nil
+        }
+        do {
+            self.statusBarHealthColors = try container.decodeIfPresent(
+                StatusBarHealthColors.self,
+                forKey: .statusBarHealthColors
+            )
+        } catch {
+            logWarn("[config] statusBarHealthColors 字段解析失败，已按缺省处理：\(error.localizedDescription)")
+            self.statusBarHealthColors = nil
+        }
+        do {
+            self.providerCardOrder = try container.decodeIfPresent([String].self, forKey: .providerCardOrder)
+        } catch {
+            logWarn("[config] providerCardOrder 字段解析失败，已按缺省处理：\(error.localizedDescription)")
+            self.providerCardOrder = nil
+        }
         // 边缘窗同属外观字段：坏值按"没配过"处理，不能拖垮整份 provider 配置。
         //
         // 记一条告警：静默重置的位置/形态是排障噩梦——用户看到的是 dock 莫名回到
@@ -357,9 +384,15 @@ struct AppConfig: Codable, Equatable {
             logWarn("[config] bark 字段解析失败，已按未配置处理：\(error.localizedDescription)")
             self.bark = nil
         }
-        // 节假日数据源与外观字段同一容错档：类型写错按缺省（上游 CDN）处理。
+        // 节假日数据源与外观字段同一容错档：类型写错按缺省（上游 CDN）处理，
+        // 但要记告警——源静默回退 CDN 时用户只会看到「节假日不对」，无从查起。
         // 显式空串会被原样保留（语义 = 只用内置快照、不联网）。
-        self.holidaySource = try? container.decodeIfPresent(String.self, forKey: .holidaySource)
+        do {
+            self.holidaySource = try container.decodeIfPresent(String.self, forKey: .holidaySource)
+        } catch {
+            logWarn("[config] holidaySource 字段解析失败，已按缺省（上游 CDN）处理：\(error.localizedDescription)")
+            self.holidaySource = nil
+        }
     }
 
     /// 全局生效的刷新间隔：clamp 到 10s...30d（供 Provider scheduler 使用）。

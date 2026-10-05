@@ -826,4 +826,88 @@ final class BarkNotifierTests: XCTestCase {
         let fallback = try JSONDecoder().decode(AppConfig.self, from: Data(broken.utf8))
         XCTAssertNil(fallback.bark)
     }
+
+    // MARK: - 日志与错误文案脱敏
+
+    /// P1: device key 位于 URL path 段（`POST {server}/{key}`），通用 URL 脱敏
+    /// （`HTTPRequestLogSanitizer`）只剥 userinfo / query，会把完整 key 写进
+    /// log.txt，并回显到 `responseTooLarge` 的用户文案。Bark 侧统一用固定标签
+    /// `bark://<host>/<key 前 4 位>…`。
+    func testRedactedPathNeverExposesFullDeviceKey() throws {
+        let key = "abcdef0123456789SECRET"
+        let request = try XCTUnwrap(BarkQuotaNotifier.buildRequest(
+            config: BarkConfig(
+                enabled: true, serverURL: "https://bark.example.com/base", deviceKey: key,
+                sound: nil, group: nil
+            ),
+            providerName: "P", body: "b"
+        ))
+        // 请求本身仍带完整 key（Bark 协议要求，key 在 path 段）。
+        XCTAssertEqual(request.url?.absoluteString, "https://bark.example.com/base/\(key)")
+
+        let label = BarkQuotaNotifier.redactedPath(for: request)
+        XCTAssertEqual(label, "bark://bark.example.com/abcd…")
+        XCTAssertFalse(label.contains(key), "标签不得含完整 key：\(label)")
+        XCTAssertFalse(label.contains("abcdef"), "标签只保留前 4 位：\(label)")
+    }
+
+    /// key 不超过 4 位时（自建服务常见短 key）完全隐去，不因「只留前 4 位」
+    /// 而把整把 key 写进日志。
+    func testRedactedPathHidesShortDeviceKeys() throws {
+        let request = try XCTUnwrap(BarkQuotaNotifier.buildRequest(
+            config: BarkConfig(
+                enabled: true, serverURL: "https://bark.example.com", deviceKey: "k1",
+                sound: nil, group: nil
+            ),
+            providerName: "P", body: "b"
+        ))
+        let label = BarkQuotaNotifier.redactedPath(for: request)
+        XCTAssertEqual(label, "bark://bark.example.com/<redacted>")
+        XCTAssertFalse(label.contains("k1"))
+    }
+
+    /// 端到端：`responseTooLarge` 的用户文案走 redactedPath，必须不含完整 key。
+    func testResponseTooLargeTextDoesNotEchoDeviceKey() async throws {
+        let key = "abcdef0123456789SECRET"
+        let request = try XCTUnwrap(BarkQuotaNotifier.buildRequest(
+            config: BarkConfig(
+                enabled: true, serverURL: "https://bark.example.com", deviceKey: key,
+                sound: nil, group: nil
+            ),
+            providerName: "P", body: "b"
+        ))
+        // 桩返回 "{}"（2 bytes），上限给 1 byte 即触发 responseTooLarge。
+        do {
+            _ = try await CappedDownloader.data(
+                for: request,
+                session: sessionWith(RecordingURLProtocol.self),
+                maxBytes: 1,
+                redactedPath: BarkQuotaNotifier.redactedPath(for: request)
+            )
+            XCTFail("响应超限应抛 responseTooLarge")
+        } catch let error as QuotaError {
+            let text = error.localizedDescription
+            XCTAssertTrue(text.contains("bark://bark.example.com/abcd…"), "实际文案：\(text)")
+            XCTAssertFalse(text.contains(key), "错误文案不得回显 device key：\(text)")
+        }
+    }
+
+    /// 测试推送的失败文案（`error.localizedDescription` 二次落盘的那条路径）
+    /// 同样不得含 device key。
+    @MainActor
+    func testTestPushFailureTextDoesNotEchoDeviceKey() async {
+        FailingURLProtocol.reset(errorCode: .timedOut)
+        let key = "abcdef0123456789SECRET"
+        let message = await BarkQuotaNotifier.sendTestPush(
+            config: BarkConfig(
+                enabled: true, serverURL: "https://bark.example.com", deviceKey: key,
+                sound: nil, group: nil
+            ),
+            session: sessionWith(FailingURLProtocol.self),
+            screenInActiveUse: { false }
+        )
+        XCTAssertTrue(message.contains("推送请求失败"), "实际文案：\(message)")
+        XCTAssertFalse(message.contains(key), "失败文案不得回显 device key：\(message)")
+        XCTAssertFalse(message.contains("bark.example.com/abcdef"), "失败文案不得回显请求 URL：\(message)")
+    }
 }

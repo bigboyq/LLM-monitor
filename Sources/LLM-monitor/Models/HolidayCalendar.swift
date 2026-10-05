@@ -96,6 +96,12 @@ struct HolidayCalendar: Sendable, Equatable {
     /// 的"崩溃暴露问题"策略刻意不同：价格缺失会让所有 provider 显示未定价（必须
     /// 修），节假日缺失只影响少数法定假日的判定形状，降级可接受。
     static func loadBundled() -> HolidayCalendar {
+        // 资源 bundle 整体缺失时 `Bundle.module` 访问器自身会 fatalError，走不到
+        // 下面本意的降级分支——先探测再访问（probe 的候选与判定口径与 accessor 同序同形）。
+        guard ResourceBundleProbe.isResourceBundleAvailable else {
+            logWarn("HolidayCalendar: 资源 bundle 缺失（安装可能不完整），节假日判定退化为纯周一–周五口径")
+            return .empty
+        }
         guard let url = Bundle.module.url(forResource: "ChinaHolidays", withExtension: "json") else {
             logWarn("HolidayCalendar: ChinaHolidays.json 缺失（Bundle.module 找不到打包资源），节假日判定退化为纯周一–周五口径")
             return .empty

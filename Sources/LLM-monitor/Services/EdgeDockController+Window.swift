@@ -267,20 +267,36 @@ extension EdgeDockController {
     ///    不能无条件用 `NSScreen.main`：它跟随键盘焦点，多显示器下用户在另一块屏
     ///    上点一下任何窗口，dock 就会整个跳过去，看起来就是位置随机漂移。
     /// 3. **主屏 → 第一块屏** —— 启动、还没有任何窗口时的兜底。
+    ///
+    /// **一块屏都没有时**（无头 / 显示器被全部拔出这类瞬态）**不再对空数组取
+    /// `[0]`**——旧写法在"空数组"分支里对同一份空数组下标，必然越界。改为回落到
+    /// 上一次成功解析到的屏：dock 会停在拔屏前的那块屏的几何上而不是跳到
+    /// 屏幕原点；进程启动以来一块屏都没见过时才退到一个零尺寸的 `NSScreen()`
+    /// 兜底（与 `MenuWindowAlignment.effectiveScreen` 的末位兜底同一形状，不引入
+    /// 新的强制解包）。
     static var targetScreen: NSScreen {
         let screens = NSScreen.screens
-        guard !screens.isEmpty else { return NSScreen.main ?? NSScreen.screens[0] }
+        guard !screens.isEmpty else {
+            return lastKnownScreen ?? NSScreen.main ?? NSScreen()
+        }
 
+        let resolved: NSScreen
         if let uuid = shared.config.screenUUID,
            let configured = EdgeDockDisplay.matchingScreen(preferred: uuid, screens: screens) {
-            return configured
+            resolved = configured
+        } else if let current = shared.panel?.screen ?? shared.popoverPanel?.screen,
+                  isStillAttached(current, among: screens) {
+            resolved = current
+        } else {
+            resolved = NSScreen.main ?? screens.first ?? screens[0]
         }
-        if let current = shared.panel?.screen ?? shared.popoverPanel?.screen,
-           isStillAttached(current, among: screens) {
-            return current
-        }
-        return NSScreen.main ?? screens.first ?? screens[0]
+        lastKnownScreen = resolved
+        return resolved
     }
+
+    /// 最近一次成功解析到的屏。仅在"系统当前一块屏都没有"时作为兜底被读到，
+    /// 写入点只有 `targetScreen` 本身。
+    private static var lastKnownScreen: NSScreen?
 
     /// 这块屏是否还挂在当前系统上（按 display id 比，不用对象相等）。
     private static func isStillAttached(_ screen: NSScreen, among screens: [NSScreen]) -> Bool {

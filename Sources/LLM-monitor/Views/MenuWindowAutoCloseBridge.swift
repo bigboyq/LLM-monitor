@@ -78,11 +78,17 @@ enum MenuWindowAlignment {
 /// 3. 每次面板打开（窗口 become key）回调 `onPanelOpen`：MenuBarExtra 的
 ///    onAppear 只保证首次创建时触发，无法作为「每次打开」的可靠信号，而
 ///    become key 与关闭路径的 resign key 是对称事件，每次打开必触发。
+/// 4. 每次面板关闭回调 `onPanelClose`，与 3 严格对称。**关菜单只是
+///    `orderOut`、不销毁视图**，所以 `MenuContentView` 的 `onDisappear` 不可依赖：
+///    打开过一次之后 1s tick 会常驻。挂在关闭路径上（如展示时钟停表）是唯一
+///    覆盖全部关闭方式（自动关 / 失焦关 / resign key）的做法。
 ///
 /// 计时状态机抽出到可单测的 `MenuInactivityTimer`，事件监听只在生产 bridge 里安装。
 struct MenuWindowAutoCloseBridge: NSViewRepresentable {
     /// 面板每次打开（窗口 become key）时的回调，如「节能」健康灯的即时刷新；默认 nil。
     var onPanelOpen: (() -> Void)? = nil
+    /// 面板每次关闭（自动关 / 失焦关 / app resign active）时的回调，如展示时钟停表；默认 nil。
+    var onPanelClose: (() -> Void)? = nil
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -92,12 +98,14 @@ struct MenuWindowAutoCloseBridge: NSViewRepresentable {
         let view = TrackingNSView()
         view.coordinator = context.coordinator
         view.onPanelOpen = onPanelOpen
+        view.onPanelClose = onPanelClose
         return view
     }
 
     func updateNSView(_ nsView: TrackingNSView, context: Context) {
         nsView.coordinator = context.coordinator
         nsView.onPanelOpen = onPanelOpen
+        nsView.onPanelClose = onPanelClose
     }
 
     @MainActor
@@ -116,6 +124,10 @@ struct MenuWindowAutoCloseBridge: NSViewRepresentable {
         private let timer: MenuInactivityTimer
         /// 面板每次打开（become key）时的回调；由 TrackingNSView 转发赋值。
         var onPanelOpen: (() -> Void)?
+        /// 面板每次关闭时的回调；由 TrackingNSView 转发赋值。`closeMenu` 的
+        /// 三条触发路径（30s 无交互 / resign key / app resign active）都经过
+        /// `performClose`，因此这个回调覆盖全部关闭方式。
+        var onPanelClose: (() -> Void)?
 
         init(inactivityInterval: TimeInterval = 30,
              scheduler: (any InactivityScheduler)? = nil) {
@@ -272,7 +284,21 @@ struct MenuWindowAutoCloseBridge: NSViewRepresentable {
 
         private func closeMenu(reason: String) {
             timer.cancel()
-            guard let window else { return }
+            guard let window else {
+                // 没有 window 就没有真正关掉任何东西，但计时已停——这里仍发关闭
+                // 回调，保证"面板不可用"时展示时钟也能被停掉。
+                onPanelClose?()
+                return
+            }
+            performClose(reason: reason, window: window)
+        }
+
+        /// 关闭动作的唯一出口：先发 `onPanelClose`（停表等），再隐藏浮层并
+        /// `orderOut`。回调**先于**隐藏发出——停表要在视图仍可见时生效，顺序
+        /// 反过来会多留一帧 1s tick。隐藏动作仍走一次主 actor 投递（与原实现
+        /// 一致），避免在 AppKit 通知派发过程中就地 orderOut 引发重入。
+        private func performClose(reason: String, window: NSWindow) {
+            onPanelClose?()
             Task { @MainActor in
                 HoverPanelController.shared.hide()
                 logInfo("MenuWindowAutoCloseBridge: closing menu (\(reason))")
@@ -288,6 +314,10 @@ extension MenuWindowAutoCloseBridge {
         /// 透传 bridge 的面板打开回调；updateNSView 时刷新，窗口附着后生效。
         var onPanelOpen: (() -> Void)? {
             didSet { coordinator?.onPanelOpen = onPanelOpen }
+        }
+        /// 透传 bridge 的面板关闭回调；与 `onPanelOpen` 对称。
+        var onPanelClose: (() -> Void)? {
+            didSet { coordinator?.onPanelClose = onPanelClose }
         }
 
         override func viewDidMoveToWindow() {

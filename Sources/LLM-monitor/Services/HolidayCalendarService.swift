@@ -23,8 +23,9 @@ struct HolidaySourceFailure: Error, Equatable {
 /// 缓存文件原样保留——节假日表是"锦上添花"的数据，绝不能因为刷新失败把好的
 /// 判定搞坏。`bundledOnly`（显式空串）不发起任何网络请求。
 ///
-/// **测试不依赖网络**：远端取数路径不进测试；本地文件路径、解析链与状态文案
-/// 纯函数全部可注入 / 可直接断言。测试里应用过新表后应通过
+/// **测试不依赖网络**：远端取数路径用 `init(session:)` 注入 URLProtocol 桩覆盖
+/// （见 `HolidaySourceRemoteFetchTests`），本地文件路径、解析链与状态文案纯函数
+/// 全部可注入 / 可直接断言。测试里应用过新表后应通过
 /// `HolidayCalendar.applyResolved` 恢复原表（global 状态复位）。
 @MainActor
 final class HolidayCalendarService: ObservableObject {
@@ -238,11 +239,12 @@ final class HolidayCalendarService: ObservableObject {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             let data = try encoder.encode(document)
-            try FileManager.default.createDirectory(
-                at: cacheURL.deletingLastPathComponent(),
-                withIntermediateDirectories: true
-            )
-            try data.write(to: cacheURL, options: .atomic)
+            // 缓存与 config.json 同属用户数据，落盘必须 0600、目录 0700，不能依赖
+            // 进程 umask（`Data.write(.atomic)` 会按 umask 留下 0644）。统一走
+            // `FileManagerBox` 的私有写入口（临时文件 0600 出生 + rename）。
+            let fileManager = FileManagerBox()
+            try fileManager.createPrivateDirectory(at: cacheURL.deletingLastPathComponent())
+            try fileManager.writePrivate(data, to: cacheURL)
         } catch {
             logWarn("HolidayCalendarService: 缓存写入失败（\(error.localizedDescription)），新表仍已应用")
         }

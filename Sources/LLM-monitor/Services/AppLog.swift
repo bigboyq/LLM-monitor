@@ -18,21 +18,28 @@ final class AppLog: @unchecked Sendable {
     /// 5 MB 够 24h+ 常规使用, 不会无限涨。
     static let maxLogFileSize: Int = 5 * 1024 * 1024
     static let maxLogBackups: Int = 2
+
+    /// 是否跑在 XCTest 进程里。
+    ///
+    /// 判定用两个信号取或：`XCTestConfigurationFilePath` 是 XCTest 注入测试进程
+    /// 的标准环境变量（swift-corelibs-xctest 与 Apple XCTest 都会设），是最强
+    /// 信号；`NSClassFromString("XCTestCase")` 是兜底——某些 runner（IDE 内、
+    /// 自定义 bundle）不注入该环境变量，但 XCTest 框架一定已链接进进程。
+    ///
+    /// 为什么要判：裸 `swift test`（不经 `scripts/test.sh`）不带
+    /// `LLM_MONITOR_LOG_PATH` 覆盖时，测试 fixture 日志会写进用户真实的
+    /// `~/Library/Application Support/LLM-monitor/log.txt`（实测污染 2000+ 行
+    /// 并触发轮转），把真实运行日志冲掉。测试进程改写到临时目录即可隔离。
+    static let isRunningUnderTest: Bool = {
+        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+            || NSClassFromString("XCTestCase") != nil
+    }()
+
     private init() {
-        let overridePath = ProcessInfo.processInfo.environment["LLM_MONITOR_LOG_PATH"]?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let resolvedFileURL: URL
-        if let overridePath, !overridePath.isEmpty {
-            resolvedFileURL = URL(fileURLWithPath: overridePath)
-        } else {
-            let support = FileManager.default.urls(
-                for: .applicationSupportDirectory,
-                in: .userDomainMask
-            ).first ?? URL(fileURLWithPath: NSHomeDirectory() + "/Library/Application Support")
-            resolvedFileURL = support
-                .appendingPathComponent("LLM-monitor", isDirectory: true)
-                .appendingPathComponent("log.txt")
-        }
+        let resolvedFileURL = Self.resolveLogFileURL(
+            environment: ProcessInfo.processInfo.environment,
+            isUnderTest: Self.isRunningUnderTest
+        )
         let dir = resolvedFileURL.deletingLastPathComponent()
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         try? FileManager.default.setAttributes(
@@ -56,6 +63,32 @@ final class AppLog: @unchecked Sendable {
         // 启动时打个 banner + 路径，方便定位
         info({ "========== LLM Monitor 启动 ==========" })
         info({ "日志文件: \(fileURL.path)" })
+    }
+
+    /// 解析日志文件路径。优先级（`init` 拆成可测的纯函数，逻辑不变）：
+    /// 1. `LLM_MONITOR_LOG_PATH` 显式覆盖（`scripts/test.sh` / `scripts/audit.sh`
+    ///    用它重定向，最优先，生产与测试都认）；
+    /// 2. 测试进程（`isUnderTest`）→ `NSTemporaryDirectory()` 下的独立文件，
+    ///    裸 `swift test` 不再往用户真实 log.txt 里灌 fixture 日志；
+    /// 3. 其余 = 生产路径 `~/Library/Application Support/LLM-monitor/log.txt`。
+    static func resolveLogFileURL(environment: [String: String], isUnderTest: Bool) -> URL {
+        let overridePath = environment["LLM_MONITOR_LOG_PATH"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if let overridePath, !overridePath.isEmpty {
+            return URL(fileURLWithPath: overridePath)
+        }
+        if isUnderTest {
+            return URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+                .appendingPathComponent("LLM-monitor-tests", isDirectory: true)
+                .appendingPathComponent("log.txt")
+        }
+        let support = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first ?? URL(fileURLWithPath: NSHomeDirectory() + "/Library/Application Support")
+        return support
+            .appendingPathComponent("LLM-monitor", isDirectory: true)
+            .appendingPathComponent("log.txt")
     }
 
     /// 同步创建 / 收紧日志文件为 0600（仅 owner 可读写），跟 config.json 对齐。

@@ -347,12 +347,6 @@ struct UsageMetricSummary: Equatable, Codable, Sendable {
     }
 }
 
-/// 远程额度窗口的积分用量。GLM 返回的是积分而不是 token，必须与本地 token 统计分开显示。
-struct QuotaCountUsage: Equatable, Codable, Sendable {
-    let used: Int
-    let total: Int
-}
-
 /// 按本地自然日聚合的 Codex token 用量。inputTokens 是服务端原始输入总量，
 /// cachedInputTokens 是其中的缓存命中量，图表会单独绘制未缓存输入与缓存输入。
 struct DailyTokenUsage: Equatable, Codable, Sendable, Identifiable {

@@ -67,6 +67,10 @@ final class ProviderRefreshScheduler {
     private var nextRefreshDates: [String: Date] = [:]
     /// 已执行的 background 刷新次数；每 periodicFullEveryN 次补一次 .full。
     private var backgroundsSinceFull: [String: Int] = [:]
+    /// 当前排期所依据的 interval 快照。配置重载的差异化重排用它区分
+    /// 「只是别的 provider 变了」与「这个 provider 自己的间隔变了」——
+    /// 排期本身存的是绝对时刻，看不出它是按哪个间隔算出来的。
+    private var scheduledIntervals: [String: TimeInterval] = [:]
     /// 已经完成过首次常规刷新的 provider 集合（未完成过的首拍用 .full）。
     private var hasDoneFirstRefresh: Set<String> = []
     /// reset+delay 截止时间。和常规 deadline 一样由唯一 driver 服务；到期项
@@ -187,6 +191,7 @@ final class ProviderRefreshScheduler {
             managedProviderOrder.append(providerID)
         }
         let interval = intervalProvider(providerID)
+        scheduledIntervals[providerID] = interval
         logInfo("ProviderRefreshScheduler: 将 [\(providerID)] 纳入额度循环，基础间隔 \(Int(interval))s")
 
         if nextRefreshDates[providerID] == nil {
@@ -196,6 +201,60 @@ final class ProviderRefreshScheduler {
         ensureLoopRunning()
         onNextRefreshChange()
         wake()
+    }
+
+    /// 配置重载专用：按新的受管 provider 集合做**差异化**重排。
+    ///
+    /// 存在理由就是"配置写盘不该等于冷启动"：`cancelAll()` + 逐个 `schedule(for:)`
+    /// 会清掉所有 deadline 与 `hasDoneFirstRefresh`，于是设置页保存、拖 dock 松手
+    /// 写回 config 这类**与刷新无关**的操作，会让每个 provider 立刻重抓一遍、
+    /// 而且因为首刷标记被清掉一律走更贵的 `.full`。本方法只动真正该动的：
+    /// - 不再受管（停用 / 未配置）的 provider 走与 `cancel(providerID:)` 相同的清理；
+    /// - **新增 / 重新启用**的 provider 走与冷启动相同的第一拍（`now()`，`.full`）；
+    /// - **间隔变化**的 provider 按新间隔重锚一次；
+    /// - 仍启用且间隔未变的 provider 保留既有 deadline、`hasDoneFirstRefresh`、
+    ///   周期 full 计数与 reset 补刷新点，下一拍继续按原节奏走 `.background`。
+    ///
+    /// - Returns: 是否真的改动了排期。没有改动时不唤醒 driver（保持它在睡）。
+    @discardableResult
+    func reconfigure(managed providerIDs: [String]) -> Bool {
+        let desired = Set(providerIDs)
+        var changed = false
+
+        for existing in managedProviders where !desired.contains(existing) {
+            removeManagedState(for: existing)
+            logInfo("ProviderRefreshScheduler: 配置重载移除 [\(existing)]，退出额度循环")
+            changed = true
+        }
+
+        for providerID in providerIDs {
+            let interval = intervalProvider(providerID)
+            if !managedProviders.contains(providerID) {
+                managedProviders.insert(providerID)
+                if !managedProviderOrder.contains(providerID) {
+                    managedProviderOrder.append(providerID)
+                }
+                nextRefreshDates[providerID] = now()
+                providerGenerations[providerID, default: 0] &+= 1
+                scheduledIntervals[providerID] = interval
+                logInfo("ProviderRefreshScheduler: 配置重载新增 [\(providerID)]，按初始排期立即纳入，基础间隔 \(Int(interval))s")
+                changed = true
+                continue
+            }
+            if let known = scheduledIntervals[providerID], known != interval {
+                nextRefreshDates[providerID] = now()
+                scheduledIntervals[providerID] = interval
+                logInfo("ProviderRefreshScheduler: 配置重载变更 [\(providerID)] 的刷新间隔 \(Int(known))s → \(Int(interval))s，按初始排期重锚")
+                changed = true
+            }
+        }
+
+        // 即使什么都没变也要保证循环在跑（配置重载可能发生在 `stop()` 之后）。
+        ensureLoopRunning()
+        guard changed else { return false }
+        onNextRefreshChange()
+        wake()
+        return true
     }
 
     /// 尝试开始一个由 AppState 托管的 Manual/Wakeup 全局事务。
@@ -225,6 +284,14 @@ final class ProviderRefreshScheduler {
 
     /// 从单循环中移除指定的 provider
     func cancel(providerID: String) {
+        removeManagedState(for: providerID)
+        onNextRefreshChange()
+        wake()
+    }
+
+    /// 单个 provider 的全部受管状态清理（`cancel` 与 `reconfigure` 的移除分支共用）。
+    /// 不发 `onNextRefreshChange` / `wake`：调用方按需合并成一次。
+    private func removeManagedState(for providerID: String) {
         managedProviders.remove(providerID)
         managedProviderOrder.removeAll { $0 == providerID }
         nextRefreshDates.removeValue(forKey: providerID)
@@ -235,10 +302,9 @@ final class ProviderRefreshScheduler {
         pendingRegularProviders.remove(providerID)
         providerGenerations[providerID, default: 0] &+= 1
         backgroundsSinceFull.removeValue(forKey: providerID)
+        scheduledIntervals.removeValue(forKey: providerID)
         hasDoneFirstRefresh.remove(providerID)
         lastRefreshActivity.removeValue(forKey: providerID)
-        onNextRefreshChange()
-        wake()
     }
 
     /// 注册或清除全局非网络健康边界。该日期只参与 driver 的下一次唤醒，
@@ -271,6 +337,7 @@ final class ProviderRefreshScheduler {
         pendingRegularProviders.removeAll()
         providerGenerations.removeAll()
         backgroundsSinceFull.removeAll()
+        scheduledIntervals.removeAll()
         hasDoneFirstRefresh.removeAll()
         lastRefreshActivity.removeAll()
         if activeJobToken != nil {
@@ -499,6 +566,7 @@ final class ProviderRefreshScheduler {
             let interval = intervalProvider(entry.id)
             lastIntervalFinishedDates[entry.id] = finishedAt
             nextRefreshDates[entry.id] = finishedAt.addingTimeInterval(interval)
+            scheduledIntervals[entry.id] = interval
         }
     }
 
@@ -615,7 +683,9 @@ final class ProviderRefreshScheduler {
     ) {
         for providerID in managedProviderOrder where managedProviders.contains(providerID) {
             let startPoint = finishedAt.addingTimeInterval(startPointDefer(for: providerID))
-            nextRefreshDates[providerID] = startPoint.addingTimeInterval(intervalProvider(providerID))
+            let interval = intervalProvider(providerID)
+            nextRefreshDates[providerID] = startPoint.addingTimeInterval(interval)
+            scheduledIntervals[providerID] = interval
             lastIntervalFinishedDates[providerID] = finishedAt
             backgroundsSinceFull[providerID] = 0
             hasDoneFirstRefresh.insert(providerID)
@@ -645,7 +715,9 @@ final class ProviderRefreshScheduler {
     ) {
         guard managedProviders.contains(providerID) else { return }
         let startPoint = finishedAt.addingTimeInterval(startPointDefer(for: providerID))
-        nextRefreshDates[providerID] = startPoint.addingTimeInterval(intervalProvider(providerID))
+        let interval = intervalProvider(providerID)
+        nextRefreshDates[providerID] = startPoint.addingTimeInterval(interval)
+        scheduledIntervals[providerID] = interval
         lastIntervalFinishedDates[providerID] = finishedAt
         backgroundsSinceFull[providerID] = 0
         hasDoneFirstRefresh.insert(providerID)

@@ -145,4 +145,45 @@ final class AppLogTests: XCTestCase {
         AppLog.shared.warn({ "test private path warn" })
         AppLog.shared.error({ "test private path error" })
     }
+
+    /// P2 回归：裸 `swift test`（不带 `LLM_MONITOR_LOG_PATH` 覆盖）曾把 fixture 日志
+    /// 写进用户真实的 `~/Library/Application Support/LLM-monitor/log.txt`（实测污染
+    /// 2000+ 行并触发两次轮转）。测试进程必须改写到临时目录；显式覆盖优先级最高、
+    /// 生产路径不变。
+    func testLogPathResolvesToTemporaryDirectoryInTestProcess() throws {
+        XCTAssertTrue(AppLog.isRunningUnderTest, "本用例跑在 XCTest 进程里，应被识别为测试环境")
+        let supportDirectory = try XCTUnwrap(
+            FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+        )
+
+        let underTest = AppLog.resolveLogFileURL(environment: [:], isUnderTest: true)
+        XCTAssertTrue(
+            underTest.path.hasPrefix(NSTemporaryDirectory()),
+            "测试日志应落在临时目录，实际：\(underTest.path)"
+        )
+        XCTAssertFalse(
+            underTest.path.hasPrefix(supportDirectory.path),
+            "测试日志不得落在用户 Application Support 下，实际：\(underTest.path)"
+        )
+
+        let production = AppLog.resolveLogFileURL(environment: [:], isUnderTest: false)
+        XCTAssertEqual(
+            production.path,
+            supportDirectory.appendingPathComponent("LLM-monitor", isDirectory: true)
+                .appendingPathComponent("log.txt").path,
+            "非测试环境必须仍是生产路径"
+        )
+
+        // 显式覆盖优先级最高（测试环境同样认），并按空白裁剪。
+        let overridden = AppLog.resolveLogFileURL(
+            environment: ["LLM_MONITOR_LOG_PATH": "  /tmp/llm-monitor-override.log  "],
+            isUnderTest: true
+        )
+        XCTAssertEqual(overridden.path, "/tmp/llm-monitor-override.log")
+        // 纯空白视作未设置。
+        XCTAssertEqual(
+            AppLog.resolveLogFileURL(environment: ["LLM_MONITOR_LOG_PATH": "   "], isUnderTest: true).path,
+            underTest.path
+        )
+    }
 }

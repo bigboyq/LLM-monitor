@@ -354,4 +354,36 @@ final class ConfigStoreTests: StateTestCase {
             TimeInterval(AppConfig.maximumRefreshIntervalSeconds)
         )
     }
+
+    /// 外观四字段 + `holidaySource` 类型写错时按缺省处理、不进损坏恢复流程
+    /// （容错语义回归护栏）。这些字段此前一律 `try?` 静默回落，现在补 logWarn
+    /// ——用户看到的是「图标样式回默认 / 节假日按官方数据算」，日志里必须有线索。
+    func testAppearanceFieldsWithWrongTypesFallBackToDefaults() throws {
+        let json = """
+        {
+          "schemaVersion": 2,
+          "refreshIntervalSeconds": 300,
+          "providers": {},
+          "statusBarIconStyle": 42,
+          "statusBarHealthDotEnabled": "yes",
+          "statusBarHealthColors": "#ff0000",
+          "providerCardOrder": "glm_coding_plan",
+          "holidaySource": 7
+        }
+        """
+        let config = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+        XCTAssertNil(config.statusBarIconStyle)
+        XCTAssertNil(config.statusBarHealthDotEnabled)
+        XCTAssertNil(config.statusBarHealthColors)
+        XCTAssertNil(config.providerCardOrder)
+        XCTAssertNil(config.holidaySource)
+
+        // 生效值回落到缺省（与字段缺省时一致）。
+        XCTAssertEqual(config.effectiveStatusBarIconStyle, AppConfig.default.effectiveStatusBarIconStyle)
+        XCTAssertEqual(
+            config.effectiveStatusBarHealthDotEnabled,
+            AppConfig.default.effectiveStatusBarHealthDotEnabled
+        )
+        XCTAssertEqual(config.effectiveHolidaySource, HolidayCalendar.defaultSourceURL)
+    }
 }

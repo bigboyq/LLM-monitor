@@ -52,9 +52,17 @@ struct MenuContentView: View {
         // 面板每次打开即时刷新睡眠健康度：健康灯红黄绿必须在用户点开面板的
         // 瞬间反映最新断言状态，而不是等下一个 60s 轮询周期（用户刚退出了
         // 霸占睡眠锁的应用时，旧状态会误导）。
-        .background(MenuWindowAutoCloseBridge(onPanelOpen: {
-            state.sleepHealth.refreshNow()
-        }))
+        // 关闭时对称地停掉展示时钟：关菜单走的是 orderOut，视图**不销毁**，
+        // `.onDisappear` 不可依赖——只靠它，打开过一次之后 1s tick 就会常驻，
+        // 每秒唤醒一次并让整棵菜单 body 重算。
+        .background(MenuWindowAutoCloseBridge(
+            onPanelOpen: {
+                state.sleepHealth.refreshNow()
+            },
+            onPanelClose: {
+                displayClock.stop()
+            }
+        ))
         // F4: 窗口高度与位置由 MenuWindowAlignment 基于卡片真实内容高度与
         // 屏幕可用高度及 70% 封顶动态驱动：能展示就自然展开，超标则封顶 70% 并在内部滚动。
         .background(MenuPanelHeightBridge(measuredCardsHeight: measuredCardsHeight) { availH, visH in
@@ -508,25 +516,39 @@ struct MenuPanelHeightBridge: NSViewRepresentable {
         var measuredCardsHeight: CGFloat = 0
         var onScreenDimensions: ((CGFloat, CGFloat) -> Void)? = nil
         private var lastMaxHeight: CGFloat = 0
+        /// `applyMaxSize` 早退守卫的输入。菜单开着时 `updateNSView` 每秒被
+        /// `DisplayClock` 的 tick 驱动一次，而本方法末尾的
+        /// `MenuWindowAlignment.align` 内部要读 `window.contentView?.fittingSize`
+        /// ——那是真实的 SwiftUI 布局测量。输入没变时这一整趟都是白算。
+        private var lastAppliedInput: (cards: CGFloat, screen: NSScreen?)?
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
             // 每次菜单窗口出现（viewDidMoveToWindow）都按当前所在屏重算 contentMaxSize。
-            applyMaxSize()
+            applyMaxSize(force: true)
             DispatchQueue.main.async { [weak self] in
-                self?.applyMaxSize()
+                self?.applyMaxSize(force: true)
             }
         }
 
         override func updateTrackingAreas() {
             super.updateTrackingAreas()
             // 屏幕分辨率/Dock 变化后 visibleFrame 会变，借 updateTrackingAreas 重新核对。
-            applyMaxSize()
+            applyMaxSize(force: true)
         }
 
-        func applyMaxSize() {
+        func applyMaxSize(force: Bool = false) {
             guard let window else { return }
             let screen = MenuWindowAlignment.effectiveScreen(for: window)
+            // 早退：卡片高度与所在屏都没变时，本次调用是每秒 tick 的空转。
+            // 两者是 `applyMaxSize` 的全部输入（窗口自身尺寸由 `align` 按内容
+            // 决定，不由本方法设置），因此不构成漏算路径。`force` 供
+            // viewDidMoveToWindow / updateTrackingAreas 显式绕过守卫。
+            if !force, let last = lastAppliedInput,
+               last.cards == measuredCardsHeight, last.screen === screen {
+                return
+            }
+            lastAppliedInput = (measuredCardsHeight, screen)
             let visibleHeight = screen.visibleFrame.height
             // 真实可用高度：从顶部菜单栏到屏幕底部的实际空间
             let availableHeight = max(visibleHeight, screen.frame.height - 35)

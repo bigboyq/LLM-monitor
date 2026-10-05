@@ -1210,4 +1210,183 @@ final class ProviderRefreshSchedulerTests: StateTestCase {
         let durations = await sleepProbe.allDurations()
         XCTAssertFalse(durations.contains { abs($0 - 135) < 0.001 }, "got \(durations)")
     }
+
+    // MARK: - 配置重载的差异化重排（reconfigure）
+
+    /// 跨闭包共享的可变状态（虚拟时钟 / interval / 已发生的刷新模式 / publish 次数）。
+    private final class ConfigReloadProbeState: @unchecked Sendable {
+        var now = Date(timeIntervalSince1970: 1_700_000_000)
+        var intervals: [String: TimeInterval] = [:]
+        var modes: [String: [RefreshMode]] = [:]
+        var nextRefreshChanges = 0
+    }
+
+    /// 冻结虚拟时钟 + 睡到天荒地老。
+    ///
+    /// 两个注入缺一不可：`now` 冻结让排期完全由注入值决定（可以逐字断言
+    /// deadline）；`sleep` 睡满一整轮让 driver 停在"没有 deadline 到期"的状态——
+    /// 如果 sleep 立即返回，driver 会把 `lastCompletedTargetWakeDate` 一路推到下一个
+    /// 截止时刻并连拍，测到的就不是"配置重载有没有让未变 provider 重抓"。
+    @MainActor
+    private func makeConfigReloadScheduler(
+        _ box: ConfigReloadProbeState
+    ) -> ProviderRefreshScheduler {
+        ProviderRefreshScheduler(
+            refreshHandler: { id, mode in
+                box.modes[id, default: []].append(mode)
+                return .completed(success: true)
+            },
+            intervalProvider: { id in box.intervals[id] ?? 300 },
+            onNextRefreshChange: { box.nextRefreshChanges += 1 },
+            now: { box.now },
+            sleep: { _ in try await Task.sleep(for: .seconds(3600)) }
+        )
+    }
+
+    /// 启动并跑到"首拍已结算"：此后 deadline = `now + interval` 且不再变动。
+    @MainActor
+    private func startAndSettle(
+        _ scheduler: ProviderRefreshScheduler,
+        _ box: ConfigReloadProbeState,
+        providerIDs: [String]
+    ) async {
+        for id in providerIDs { scheduler.schedule(for: id) }
+        scheduler.staggerInitialRefreshes(at: box.now)
+        // 启动错峰会把第 i 个 provider 推后 i×2s，而虚拟时钟不会自己走：必须手动
+        // 推过最大错峰，否则 index≥1 的 provider 永远等不到第一拍，"配置重载不该
+        // 让它退回 .full" 这条断言就没有可比的基线。
+        box.now = box.now.addingTimeInterval(TimeInterval(providerIDs.count * 2) + 1)
+        scheduler.start()
+        // 等"首拍已结算"而不是"handler 已被调用"：handler 在 settleRegularIntervals
+        // 之前就被记录，只等 handler 会读到还没结算的 deadline。
+        await waitUntilReached {
+            providerIDs.allSatisfy { (scheduler.nextRefreshDate(for: $0) ?? .distantPast) > box.now }
+        }
+    }
+
+    @MainActor
+    private func waitUntilReached(_ condition: () -> Bool) async {
+        for _ in 0..<500 {
+            if condition() { return }
+            await Task.yield()
+        }
+        for _ in 0..<50 {
+            if condition() { return }
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+    }
+
+    /// **配置写盘不等于冷启动**：未变 provider 的 `nextRefreshDates` 不能被重置
+    /// 为 now，也不能因此立刻重抓一次。
+    @MainActor
+    func testReconfigureKeepsUnchangedProviderDeadlineAndSkipsImmediateRefetch() async {
+        let box = ConfigReloadProbeState()
+        box.intervals = ["a": 300]
+        let scheduler = makeConfigReloadScheduler(box)
+        await startAndSettle(scheduler, box, providerIDs: ["a"])
+        let settledDeadline = scheduler.nextRefreshDate(for: "a")
+        XCTAssertEqual(settledDeadline, box.now.addingTimeInterval(300), "首拍结算后应落在 now + 300s")
+        let callsBefore = box.modes["a"]?.count ?? 0
+
+        // 配置重载：只有 b 是新增，a 未变。
+        box.intervals["b"] = 300
+        let changed = scheduler.reconfigure(managed: ["a", "b"])
+        // 先逐字断言（同步段内 driver 改不到排期），再等新增 provider 的第一拍。
+        XCTAssertEqual(scheduler.nextRefreshDate(for: "b"), box.now, "新增 provider 走初始排期（now）")
+        await waitUntilReached { box.modes["b"] != nil }
+
+        XCTAssertTrue(changed, "新增 provider 必须算作排期变化")
+        XCTAssertEqual(
+            scheduler.nextRefreshDate(for: "a"),
+            settledDeadline,
+            "配置变更后未变 provider 的 nextRefreshDates 不得被重置"
+        )
+        XCTAssertEqual(
+            box.modes["a"]?.count, callsBefore,
+            "配置变更不得让未变 provider 立即重抓"
+        )
+        XCTAssertEqual(box.modes["b"], [.full], "新增 provider 的第一拍走 .full")
+        scheduler.cancelAll()
+    }
+
+    /// 间隔**变化**的 provider 按新间隔重锚，未变的保持原 deadline。
+    @MainActor
+    func testReconfigureReanchorsOnlyProvidersWhoseIntervalChanged() async {
+        let box = ConfigReloadProbeState()
+        box.intervals = ["a": 300, "b": 300]
+        let scheduler = makeConfigReloadScheduler(box)
+        await startAndSettle(scheduler, box, providerIDs: ["a", "b"])
+        let deadlineA = scheduler.nextRefreshDate(for: "a")
+        let deadlineB = scheduler.nextRefreshDate(for: "b")
+        let callsBefore = box.modes["a"]?.count ?? 0
+
+        // 只把 b 的间隔从 300 改成 600。
+        box.intervals["b"] = 600
+        scheduler.reconfigure(managed: ["a", "b"])
+        XCTAssertEqual(scheduler.nextRefreshDate(for: "b"), box.now, "间隔变化的 provider 被重锚到 now")
+        await waitUntilReached { (scheduler.nextRefreshDate(for: "b") ?? .distantPast) > box.now }
+
+        XCTAssertEqual(scheduler.nextRefreshDate(for: "a"), deadlineA, "间隔未变的 provider 保持既有 deadline")
+        XCTAssertEqual(box.modes["a"]?.count, callsBefore, "间隔未变的 provider 不因配置重载立即重抓")
+        XCTAssertEqual(scheduler.nextRefreshDate(for: "b"), box.now.addingTimeInterval(600),
+                       "间隔变化的 provider 按新间隔重锚")
+        XCTAssertNotEqual(deadlineB, scheduler.nextRefreshDate(for: "b"))
+        XCTAssertEqual(box.modes["b"], [.full, .background],
+                       "间隔变化的 provider 重锚后那一拍沿用已完成首刷（.background）")
+        scheduler.cancelAll()
+    }
+
+    /// 停用的 provider 走与 `cancel(providerID:)` 相同的清理，其余不动。
+    @MainActor
+    func testReconfigureDropsProvidersNoLongerEnabled() async {
+        let box = ConfigReloadProbeState()
+        box.intervals = ["a": 300, "b": 300]
+        let scheduler = makeConfigReloadScheduler(box)
+        await startAndSettle(scheduler, box, providerIDs: ["a", "b"])
+        let deadlineA = scheduler.nextRefreshDate(for: "a")
+
+        scheduler.reconfigure(managed: ["a"])
+        XCTAssertNil(scheduler.nextRefreshDate(for: "b"), "停用的 provider 应退出额度循环")
+        XCTAssertEqual(scheduler.nextRefreshDate(for: "a"), deadlineA, "留下的 provider 不应被动到")
+        scheduler.cancelAll()
+    }
+
+    /// 重锚后的首拍必须沿用"已完成首次刷新"的状态走 `.background`——旧实现
+    /// （cancelAll + 逐个 schedule）会清掉 `hasDoneFirstRefresh`，让配置改动后的
+    /// 重抓一律退化成更贵的 `.full`。
+    @MainActor
+    func testReanchorAfterIntervalChangeKeepsFirstRefreshState() async {
+        let box = ConfigReloadProbeState()
+        box.intervals = ["a": 300]
+        let scheduler = makeConfigReloadScheduler(box)
+        await startAndSettle(scheduler, box, providerIDs: ["a"])
+        XCTAssertEqual(box.modes["a"], [.full], "启动第一拍是 .full")
+
+        box.intervals["a"] = 600
+        scheduler.reconfigure(managed: ["a"])
+        await waitUntilReached { (box.modes["a"]?.count ?? 0) > 1 }
+
+        XCTAssertEqual(
+            box.modes["a"], [.full, .background],
+            "重锚后的首拍必须沿用已完成的首次刷新状态（.background），不能退回 .full"
+        )
+        scheduler.cancelAll()
+    }
+
+    /// 什么都没有变时不应唤醒 driver（返回 false 且不重复 publish nextRefreshAt）。
+    @MainActor
+    func testReconfigureWithNoDeltaReportsNoChange() async {
+        let box = ConfigReloadProbeState()
+        box.intervals = ["a": 300]
+        let scheduler = makeConfigReloadScheduler(box)
+        await startAndSettle(scheduler, box, providerIDs: ["a"])
+        let deadline = scheduler.nextRefreshDate(for: "a")
+        let changesBefore = box.nextRefreshChanges
+
+        let changed = scheduler.reconfigure(managed: ["a"])
+        XCTAssertFalse(changed, "受管集合与间隔都没变时不算变化")
+        XCTAssertEqual(scheduler.nextRefreshDate(for: "a"), deadline)
+        XCTAssertEqual(box.nextRefreshChanges, changesBefore, "无变化时不应再 publish 一次 nextRefreshAt")
+        scheduler.cancelAll()
+    }
 }

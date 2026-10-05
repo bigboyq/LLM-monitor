@@ -86,6 +86,10 @@ struct UnpricedModelUsage: Equatable, Sendable, Identifiable {
 private struct PricingCatalogDocument: Decodable, Sendable {
     let lastUpdated: String
     let providers: [String: ProviderPricing]
+
+    /// 资源 bundle 整体缺失时的空目录（见 `loadCatalog`）。空 `providers` 让
+    /// 所有模型落到"未定价"，而不是让调用方拿到半个目录。
+    static let empty = PricingCatalogDocument(lastUpdated: "未知（资源缺失）", providers: [:])
 }
 
 /// 单个 provider 的价目。
@@ -147,6 +151,19 @@ enum ModelPricingCatalog {
     static let lastUpdated = catalog.lastUpdated
 
     private static func loadCatalog() -> PricingCatalogDocument {
+        // `Bundle.module` 自身在 **bundle 整体缺失** 时就 fatalError，上面那条
+        // "崩溃暴露"策略压根到不了——DMG 拷贝不完整 / 用户删掉
+        // `LLM-monitor_LLM-monitor.bundle` 都会变成启动即崩，App 变成完全不可用。
+        // 因此先过一道资源 bundle 探测：缺失时价格功能**整体降级**为空目录
+        // （所有模型显示"未定价"，其余功能全部照常），并记一条 error 日志指出
+        // 真正的原因是资源缺失而不是价格数据问题。
+        //
+        // 注意作用域：只覆盖"bundle 整体没了"。bundle 在、JSON 缺失或解析失败
+        // 仍然走下面的 preconditionFailure——那是"资源在但数据坏了"，必须炸出来。
+        guard ResourceBundleProbe.isResourceBundleAvailable else {
+            logError("ModelPricingCatalog: 资源 bundle \(ResourceBundleProbe.resourceBundleName).bundle 缺失（DMG 拷贝不完整或资源被删除），定价功能整体降级为『全部未定价』；请重新安装本 App")
+            return .empty
+        }
         guard let url = Bundle.module.url(forResource: "ModelPricing", withExtension: "json") else {
             preconditionFailure("ModelPricing.json 缺失：Bundle.module 中找不到定价目录资源，请检查 Package.swift 的 resources 声明")
         }

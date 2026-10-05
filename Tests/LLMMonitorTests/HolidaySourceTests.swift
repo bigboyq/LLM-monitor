@@ -6,9 +6,10 @@ import Foundation
 /// 解析链优先级与降级、上游 chinese-days 格式转换、本地文件取数与缓存回写、
 /// 设置页状态文案纯函数。
 ///
-/// **全部不依赖网络**：远端取数路径不进测试；`refreshNow` 只用本地文件与
-/// bundledOnly 源。`refreshNow` 成功会替换全局 `HolidayCalendar.shared`，
-/// 每个触达 global 的用例在 `setUp`/`tearDown` 保存并恢复原表。
+/// **全部不依赖网络**：这里的 `refreshNow` 只用本地文件与 bundledOnly 源；远程
+/// 取数分支由 `HolidaySourceRemoteFetchTests` 用 URLProtocol 桩覆盖。`refreshNow`
+/// 成功会替换全局 `HolidayCalendar.shared`，每个触达 global 的用例在
+/// `setUp`/`tearDown` 保存并恢复原表。
 final class HolidaySourceTests: XCTestCase {
 
     private var originalSharedCalendar: HolidayCalendar?
@@ -243,6 +244,43 @@ final class HolidaySourceTests: XCTestCase {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
+    }
+
+    @MainActor
+    func testRefreshNowWritesCacheFileWithOwnerOnlyPermissions() async throws {
+        // P2 回归：缓存曾用 `Data.write(.atomic)` 落盘，实际权限取决于 umask
+        // （实测 0644），与同目录 config.json / log.txt 的 0600 策略不一致。
+        let dir = makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let sourceURL = dir.appendingPathComponent("days.json")
+        let year = beijing.component(.year, from: Date())
+        let snapshot = HolidayCalendar.CacheDocument(
+            source: "original-source",
+            fetchedAt: "2026-01-01",
+            holidays: ["\(year)-10-01"]
+        )
+        try JSONEncoder().encode(snapshot).write(to: sourceURL)
+
+        // 用一个尚不存在的子目录，顺带验证目录会被建成 0700。
+        let cacheDirectory = dir.appendingPathComponent("nested")
+        let cacheURL = cacheDirectory.appendingPathComponent(HolidayCalendarService.cacheFileName)
+        let service = HolidayCalendarService(cacheURL: cacheURL)
+
+        let message = await service.refreshNow(source: sourceURL.path)
+        XCTAssertTrue(message.hasPrefix("更新成功"), "实际文案：\(message)")
+
+        let filePermissions = try XCTUnwrap(
+            (try FileManager.default.attributesOfItem(atPath: cacheURL.path)[.posixPermissions] as? NSNumber)?
+                .intValue,
+            "缓存文件应存在并带 posix 权限"
+        )
+        XCTAssertEqual(filePermissions, 0o600, "缓存文件权限应为 0600，实际：\(String(filePermissions, radix: 8))")
+        let directoryPermissions = try XCTUnwrap(
+            (try FileManager.default.attributesOfItem(atPath: cacheDirectory.path)[.posixPermissions] as? NSNumber)?
+                .intValue
+        )
+        XCTAssertEqual(directoryPermissions, 0o700, "缓存目录权限应为 0700，实际：\(String(directoryPermissions, radix: 8))")
     }
 
     @MainActor

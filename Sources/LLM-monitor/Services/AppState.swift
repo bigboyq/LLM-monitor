@@ -516,8 +516,29 @@ final class AppState: ObservableObject {
     }
 
     /// 重新调度所有 timer（配置变更后调用）
+    ///
+    /// **刻意不是冷启动**：本路径只由「配置写盘」触发（设置页保存、拖 dock
+    /// 松手 App 自写 config、auth 探测翻转），而这些操作与刷新无关。走 `start()`
+    /// 会在每次写盘后 `cancelAllRefreshTasks()` 清掉全部 deadline 与首刷标记，
+    /// 紧接着把每个 provider 的 `nextRefreshDates` 重置为 `now()` —— 于是任何一次
+    /// 配置改动都变成"所有 provider 立刻重抓一遍"，而且因为 `hasDoneFirstRefresh`
+    /// 一起被清掉，重抓一律走更贵的 `.full`。
+    ///
+    /// 改为走 scheduler 的差异化重排：仍启用且间隔未变的 provider 原样保留既有
+    /// deadline 与首刷状态（下一拍继续 `.background`），只有新增 / 重新启用 /
+    /// 间隔变化的 provider 才走初始排期。`start()` 作为**真启动**入口语义不变。
     func rescheduleAll() {
-        start()
+        // `startWatching` 幂等：配置重载路径上 watcher 本来就在跑，这里只是
+        // 保持与 start() 一致的"随时可重载"不变量。
+        configStore.startWatching()
+        sleepHealth.refreshNow()
+
+        let managedProviderIDs = statuses
+            .filter { shouldAutoRefresh(providerID: $0.id) }
+            .map(\.id)
+        logInfo("AppState.rescheduleAll: 配置重载差异化重排，\(managedProviderIDs.count)/\(statuses.count) 个 provider 进入额度循环")
+        refreshScheduler.reconfigure(managed: managedProviderIDs)
+        rescheduleHealthBoundary(updateEvaluationDate: true)
     }
 
     // MARK: - 公开操作
