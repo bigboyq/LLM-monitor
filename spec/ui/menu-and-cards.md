@@ -325,7 +325,7 @@ reported through `CardsContentHeightKey`, which the harness content reuses uncha
 content (`fixedSize(vertical: true)`) so a short client list gets a short window; the
 ceiling is `window.contentMaxSize` = `floor(visibleFrame.height × 0.70)`, set by
 `MenuPanelHeightBridge.HeightProbeView.applyMaxSize()`
-(`Views/MenuContentView.swift:579-595`). `cappedHeight(_:)` and `heightCapFraction`
+(`Views/MenuContentView.swift:540-569`，`HeightProbeView` 定义在同文件 `:515`). `cappedHeight(_:)` and `heightCapFraction`
 (0.70) are exposed as `static` precisely so `MenuPanelHeightBridgeTests` can pin the
 arithmetic without standing up an `NSWindow` / `NSScreen`. The cap is conditional:
 `windowMaxHeight` is `maxHeight` only when the natural height (measured cards +
@@ -802,4 +802,4 @@ The card's failure row is the one place in this table that is a **literal** 11pt
 than a `MenuTypography` role: the `errorMessage` role had no call site and was deleted
 rather than left as an unused role. The rendered size is unchanged.
 
-> 核对基线：2026-10-05 · 代码 6128ab5
+> 核对基线：2026-10-05 · 代码 d2ef5ed

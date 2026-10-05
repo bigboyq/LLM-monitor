@@ -41,7 +41,7 @@ config.json). All client-local usage can be inspected under Settings → Clients
 - Local token totals and seven-day charts for supported clients.
 - The main menu provider cards can be arranged with a custom order under Settings → General → Main Menu Provider Order; other provider and client lists remain alphabetized.
 - Per-provider refresh intervals, exponential retry backoff, and live config reload.
-- GLM and DeepSeek peak-period indicators.
+- GLM and DeepSeek peak-period indicators. Peak hours are always evaluated in Beijing time (Asia/Shanghai) and exclude statutory public holidays; the holiday table refreshes over the network by default and can be pinned to the bundled snapshot in Settings — see the [user guide](docs/help.en.md#holiday-data-source).
 - Optional OpenCode usage merging per provider, plus ZCode ledger slices for Minimax and DeepSeek (on by default).
 - Launch-at-login support when the app is installed in `/Applications`.
 - macOS sleep health diagnosis and keep-awake management: 1-click in-memory keep-awake toggle on the menu footer (with tri-color indicator dot); dedicated "Energy" settings tab displaying sleep blockers and system power parameter matrix (backed by native IOKit C API with zero subprocess overhead).

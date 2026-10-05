@@ -10,9 +10,9 @@ final class GlmZcodeDBReaderTests: GlmTestCase {
     func testGlmZcodeDBReaderMethodAClassification() throws {
         let db = try makeDatabase()
         defer { try? FileManager.default.removeItem(atPath: db) }
-        let day = Self.todayMidnight(calendar: utcCalendar())
+        let day = Self.todayMidnight(calendar: localCalendar())
         let ts = ms(day)
-        let cal = utcCalendar()
+        let cal = localCalendar()
 
         // R1: 账单层直接给 reasoning_tokens=20 → 优先级路径
         try insert(databaseURL: db, id: "r1", sessionID: "s", turnID: "t1", timestamp: ts,
@@ -63,9 +63,9 @@ final class GlmZcodeDBReaderTests: GlmTestCase {
     func testR9GlmNegativeTokensDoNotCancelPositives() throws {
         let db = try makeDatabase()
         defer { try? FileManager.default.removeItem(atPath: db) }
-        let day = Self.todayMidnight(calendar: utcCalendar())
+        let day = Self.todayMidnight(calendar: localCalendar())
         let ts = ms(day)
-        let cal = utcCalendar()
+        let cal = localCalendar()
 
         // 正行：input=100, output=50
         try insert(databaseURL: db, id: "pos", sessionID: "s", turnID: "t1", timestamp: ts,
@@ -95,9 +95,9 @@ final class GlmZcodeDBReaderTests: GlmTestCase {
     func testGlmZcodeReaderIncludesAccountPrefixAfterMigration() throws {
         let db = try makeDatabase()
         defer { try? FileManager.default.removeItem(atPath: db) }
-        let day = Self.todayMidnight(calendar: utcCalendar())
+        let day = Self.todayMidnight(calendar: localCalendar())
         let ts = ms(day)
-        let cal = utcCalendar()
+        let cal = localCalendar()
 
         // 迁移前后各 2 行正式 Coding Plan（builtin: / account:）
         try insert(databaseURL: db, id: "b1", sessionID: "s1", turnID: "t1", timestamp: ts,
@@ -153,8 +153,8 @@ final class GlmZcodeDBReaderTests: GlmTestCase {
     func testGlmZcodeDBReaderNativeAndSnapshot() throws {
         let db = try makeDatabase()
         defer { try? FileManager.default.removeItem(atPath: db) }
-        let day = Self.todayMidnight(calendar: utcCalendar())
-        let cal = utcCalendar()
+        let day = Self.todayMidnight(calendar: localCalendar())
+        let cal = localCalendar()
 
         // 3 行同 session 同 turn + 1 行 turn=NULL（测 event-id fallback）+ 1 行其他 turn
         try insert(databaseURL: db, id: "u1", sessionID: "s1", turnID: "t1", timestamp: ms(day),
@@ -211,8 +211,8 @@ final class GlmZcodeDBReaderTests: GlmTestCase {
     func testGlmZcodeDBReaderIncludesOffPeakProviderRows() throws {
         let db = try makeDatabase()
         defer { try? FileManager.default.removeItem(atPath: db) }
-        let day = Self.todayMidnight(calendar: utcCalendar())
-        let cal = utcCalendar()
+        let day = Self.todayMidnight(calendar: localCalendar())
+        let cal = localCalendar()
         let offPeakStart = day.addingTimeInterval(3600)
         let offPeakEnd = day.addingTimeInterval(7200)
 
@@ -262,7 +262,7 @@ final class GlmZcodeDBReaderTests: GlmTestCase {
     }
 
     func testGlmCachedSnapshotRebaseRefreshesTimestampAndUsesOnlyActiveToday() {
-        let cal = utcCalendar()
+        let cal = localCalendar()
         let yesterday = cal.date(byAdding: .day, value: -1, to: Self.todayMidnight(calendar: cal))!
         let now = cal.date(byAdding: .hour, value: 1, to: Self.todayMidnight(calendar: cal))!
         let oldScan = now.addingTimeInterval(-3600)
@@ -291,7 +291,7 @@ final class GlmZcodeDBReaderTests: GlmTestCase {
     func testGlmReaderAppliesRecentCutoffToDailyAggregation() throws {
         let db = try makeDatabase()
         defer { try? FileManager.default.removeItem(atPath: db) }
-        let cal = utcCalendar()
+        let cal = localCalendar()
         let today = Self.todayMidnight(calendar: cal)
         let oldDay = cal.date(byAdding: .day, value: -10, to: today)!
 

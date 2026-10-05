@@ -16,7 +16,7 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 | Login item | Settings-window launch-at-login toggle backed by `SMAppService.mainApp`; menu footer is read-only |
 | Config | `~/Library/Application Support/LLM-monitor/config.json`, JSON, permission `0600` |
 | Instance | One process per user config directory, enforced by `instance.lock` |
-| Runtime log | `~/Library/Application Support/LLM-monitor/log.txt` plus stdout and `os.Logger` (privacy `.private`, Console.app 默认脱敏) |
+| Runtime log | `~/Library/Application Support/LLM-monitor/log.txt` plus stdout and `os.Logger` (privacy `.private`, Console.app 默认脱敏)；测试进程改写至 `NSTemporaryDirectory()`（`LLM_MONITOR_LOG_PATH` 覆盖最优先） |
 | Quota Providers | `minimax_token_plan`, `codex_chatgpt`, `antigravity`, `glm_coding_plan`, `deepseek` |
 | Clients | Codex, Antigravity, Agy, ZCode, OpenCode, DSH, MiniMax Code; clients may contribute to multiple quota providers |
 | Refresh | Provider scheduler drives quota refreshes and settled-batch LocalUsage reconcile; scanners use FSEvents dirty invalidation |
@@ -46,7 +46,7 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 | **L3 消费** | 视图模型（`ClientUsageAggregation.swift` 的 `HarnessTodaySummary` / `ProviderStatusStrip`、`ProviderClientModel.swift` 的 `ClientUsageContribution` / `ProviderUsageProjection` / `ClientProviderUsageSummary`）与全部 `Views/` | L2 产出、AppState 状态宿主 |
 | **横切** | 身份语汇 `Models/ClientIdentity.swift`（QuotaProviderID / ClientID / ClientDescriptor / ClientProviderBinding + 默认绑定矩阵）、纯数值 `Models/SaturatingArithmetic.swift`、排版常量 `Services/LayoutMetrics.swift` | 各层均可读；它们自身只依赖更底层 |
 
-**方向规则**（2026-10 架构审核后确立）：禁止 Models → Services（业务编排/配置）、禁止 Services → Views（排版常量例外：统一走 `Services/LayoutMetrics.swift`）、禁止任何层 → L3。基础设施（`Services/Infra/`）是所有层的合法下层。审核基线：`Models → Services` / `Models → Views` / `Fetchers → Views` 代码引用均为零（注释与文档提及不计）；`Services → Views` 仅豁免 `EdgeDockController+` 族 **2 处 NSHostingView 宿主**（`+Window.swift:52` / `+Popover.swift:57`——AppKit 宿主装载 SwiftUI 根视图，归属待独立裁定）；`UsageProjectionKernel.project` 生产调用点唯一（`ProviderClientModel.swift:326`，其余全部在 `Tests/`）。
+**方向规则**（2026-10 架构审核后确立）：禁止 Models → Services（业务编排/配置）、禁止 Services → Views（排版常量例外：统一走 `Services/LayoutMetrics.swift`）、禁止任何层 → L3。基础设施（`Services/Infra/`）是所有层的合法下层。审核基线：`Models → Services` / `Models → Views` / `Fetchers → Views` 代码引用均为零（注释与文档提及不计）；`Services → Views` 仅豁免 `EdgeDockController+` 族 **2 处 NSHostingView 宿主**（`+Window.swift:50` / `+Popover.swift:169`——AppKit 宿主装载 SwiftUI 根视图，归属待独立裁定）；`UsageProjectionKernel.project` 生产调用点唯一（`ProviderClientModel.swift:326`，其余全部在 `Tests/`）。
 
 ## 概念模型
 
@@ -139,4 +139,4 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 - Usage history or cost analytics.
 - Automatic provider discovery from remote sources.
 
-> 核对基线：2026-10-04 · 代码 d6396fd
+> 核对基线：2026-10-05 · 代码 d2ef5ed

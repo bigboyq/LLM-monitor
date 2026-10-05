@@ -152,7 +152,7 @@ final class GlmOffPeakTests: GlmTestCase {
             quotaModelName: "glm_coding_plan",
             offPeakWindows: [window],
             now: Date(timeIntervalSince1970: 1_050),
-            calendar: utcCalendar()
+            calendar: localCalendar()
         )
         XCTAssertEqual(idleSummary?.rounds, 1)
         XCTAssertEqual(idleSummary?.inputTokens, 500)
@@ -228,9 +228,9 @@ final class GlmOffPeakTests: GlmTestCase {
     func testGlmZcodeDBReaderIncludesBigmodelPrefixPlans() throws {
         let db = try makeDatabase()
         defer { try? FileManager.default.removeItem(atPath: db) }
-        let day = Self.todayMidnight(calendar: utcCalendar())
+        let day = Self.todayMidnight(calendar: localCalendar())
         let ts = ms(day)
-        let cal = utcCalendar()
+        let cal = localCalendar()
 
         try insert(databaseURL: db, id: "cp", sessionID: "s1", turnID: "t1", timestamp: ts,
                    input: 100, output: 10, model: "GLM-5.3", provider: "builtin:bigmodel-coding-plan")
@@ -284,7 +284,7 @@ final class GlmOffPeakTests: GlmTestCase {
     /// "今日闲时" 单独展示：只取今日落在 off_peak 窗口内的 native 样本；
     /// 非今日 / 窗口外 / OpenCode 合并样本都不算闲时。
     func testGlmOffPeakTodaySummary() {
-        let cal = utcCalendar()
+        let cal = localCalendar()
         let today = Self.todayMidnight(calendar: cal)
         let window = GlmOffPeakWindow(startedAt: today.addingTimeInterval(3600),
                                       endedAt: today.addingTimeInterval(7200))

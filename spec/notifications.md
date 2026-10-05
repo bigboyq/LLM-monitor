@@ -150,7 +150,7 @@ DeepSeek 不参与：余额被二值化为 0/100 percent，无窗口语义；其
   5xx / 瞬时网络错误（timeout / 断连 / DNS 等）重试一次（1s 退避）+ 代际取消
   （`cancelAll` 递增代际使旧 drain 失效；`draining` 标记同步复位，避免
   `awaitIdle` 永挂）。App 退出（`applicationWillTerminate`）取消未完成推送。
-- 日志脱敏：不回显 device key / 完整 URL / 自建服务响应体。
+- 日志脱敏：不回显 device key / 完整 URL / 自建服务响应体。Bark 的日志 / 错误定位标签固定为 `bark://<host>/<key 前 4 位>…`（key ≤4 位时全隐）——device key 在 URL path 段，通用脱敏器只剥 query、会原样带出，故 Bark 侧不用它。
 
 ## 5. 配置 Schema（config.json）
 
@@ -243,4 +243,4 @@ provider 的渠道枚举坏值按缺失处理（`try? + rawValue`）；`bark` �
 - 决策记录：屏幕跳过语义与恢复公式阈值见 §3.2 / §4.3 的裁定标注（2026-09-13）；
   余额触发器延后（裁定）。
 
-> 核对基线：2026-10-04 · 代码 d6396fd
+> 核对基线：2026-10-05 · 代码 d2ef5ed

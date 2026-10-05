@@ -133,8 +133,9 @@ final class AntigravityUsageModelTests: AntigravityTestCase {
         let byDay = AntigravityLocalUsageScanner.aggregateDaily(events: events, calendar: testCalendar)
 
         XCTAssertEqual(byDay.count, 2)
-        let todayKey = LocalUsageDayKey.make(today)
-        let yesterdayKey = LocalUsageDayKey.make(yesterday)
+        // 日键必须与聚合同一个 calendar（默认 `.current` 会与 testCalendar 错开）
+        let todayKey = LocalUsageDayKey.make(today, calendar: testCalendar)
+        let yesterdayKey = LocalUsageDayKey.make(yesterday, calendar: testCalendar)
 
         XCTAssertEqual(byDay[todayKey]?.inputTokens, 30)   // 10 + 20
         XCTAssertEqual(byDay[todayKey]?.outputTokens, 13)  // 5 + 8
@@ -149,14 +150,14 @@ final class AntigravityUsageModelTests: AntigravityTestCase {
         ]
         let byDay = AntigravityLocalUsageScanner.aggregateDaily(events: events, calendar: testCalendar)
         XCTAssertEqual(byDay.count, 1)
-        let todayKey = LocalUsageDayKey.make(testCalendar.startOfDay(for: now))
+        let todayKey = LocalUsageDayKey.make(testCalendar.startOfDay(for: now), calendar: testCalendar)
         XCTAssertEqual(byDay[todayKey]?.inputTokens, 5)
     }
 
     func testComputeGlobalDailySumsAcrossSessions() {
         let now = Date()
         let today = testCalendar.startOfDay(for: now)
-        let todayKey = LocalUsageDayKey.make(today)
+        let todayKey = LocalUsageDayKey.make(today, calendar: testCalendar)
 
         let bySession: [String: [String: AntigravityDailyUsage]] = [
             "s1": [todayKey: AntigravityDailyUsage(dayStart: today, inputTokens: 100, totalTokens: 100)],
@@ -194,7 +195,7 @@ final class AntigravityUsageModelTests: AntigravityTestCase {
 
     func testIsoDayKeyFormat() {
         let date = testCalendar.date(from: DateComponents(timeZone: TimeZone(identifier: "UTC"), year: 2026, month: 7, day: 15))!
-        let key = LocalUsageDayKey.make(date)
+        let key = LocalUsageDayKey.make(date, calendar: testCalendar)
         XCTAssertEqual(key, "2026-07-15")
     }
 

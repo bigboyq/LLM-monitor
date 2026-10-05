@@ -177,8 +177,9 @@ final class StatusBarIconTests: XCTestCase {
         let appState = AppState(descriptors: descriptors, configStore: store)
         defer { appState.stop() }
 
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = .current
+        // 高峰判定固定走 `PeakWindow.beijingCalendar`（生产口径），fixture 必须
+        // 用同一时区构造时刻，否则非 UTC 时区机器上 15:00 落不到北京高峰。
+        let calendar = PeakWindow.beijingCalendar
         let offPeakTime = calendar.date(from: DateComponents(year: 2026, month: 8, day: 11, hour: 10))!
         let peakTime = calendar.date(from: DateComponents(year: 2026, month: 8, day: 11, hour: 15))!
 

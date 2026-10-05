@@ -11,9 +11,14 @@ class GlmTestCase: XCTestCase {
 
     // MARK: - GLM ZCode Local Usage Scanner Tests
 
-    func utcCalendar() -> Calendar {
+    /// 本机自然日历。**必须与 SQL 的 `strftime(...,'localtime')` 同口径**：
+    /// ZCode / Antigravity / OpenCode 的日聚合在 SQLite 侧按进程时区归日，Swift
+    /// 侧再用注入的 calendar 把 `yyyy-MM-dd` 键解析成 `dayStart`。注入 UTC
+    /// 会让两侧错开一天，非 UTC 时区机器上 `perDay[day]` 直接查不到。
+    /// 生产 scanner 传 `.autoupdatingCurrent`，fixture 必须同口径。
+    func localCalendar() -> Calendar {
         var c = Calendar(identifier: .gregorian)
-        c.timeZone = TimeZone(secondsFromGMT: 0)!
+        c.timeZone = .autoupdatingCurrent
         return c
     }
 

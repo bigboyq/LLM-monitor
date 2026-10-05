@@ -10,9 +10,12 @@ final class ZcodeProviderSliceTests: XCTestCase {
 
     // MARK: - fixture
 
-    private func utcCalendar() -> Calendar {
+    /// 本机自然日历。**必须与 SQL 的 `strftime(...,'localtime')` 同口径**：日聚合
+    /// 在 SQLite 侧按进程时区归日，Swift 侧再用注入 calendar 解析 `yyyy-MM-dd`
+    /// 键。注入 UTC 会让两侧错开一天，非 UTC 时区机器上分片按日查不到。
+    private func localCalendar() -> Calendar {
         var c = Calendar(identifier: .gregorian)
-        c.timeZone = TimeZone(secondsFromGMT: 0)!
+        c.timeZone = .autoupdatingCurrent
         return c
     }
 
@@ -178,9 +181,9 @@ final class ZcodeProviderSliceTests: XCTestCase {
     /// 真实数据形态（deepseek 23771/298、minimax 6 行）逐分片落到正确的卡，
     /// 且智谱行的 GLM 聚合不受影响。
     func testZcodeReaderSlicesNonZhipuProvidersWithoutTouchingGlm() throws {
-        let db = try makeMixedLedger(today: utcCalendar().startOfDay(for: Date()))
+        let db = try makeMixedLedger(today: localCalendar().startOfDay(for: Date()))
         defer { try? FileManager.default.removeItem(atPath: db) }
-        let cal = utcCalendar()
+        let cal = localCalendar()
         let today = cal.startOfDay(for: Date())
 
         let aggregate = try GlmZcodeLocalUsageScanner.aggregateFromDB(
@@ -238,7 +241,7 @@ final class ZcodeProviderSliceTests: XCTestCase {
     func testZcodeSliceAppliesCacheInclusiveInputAccounting() throws {
         let db = try makeDatabase()
         defer { try? FileManager.default.removeItem(atPath: db) }
-        let cal = utcCalendar()
+        let cal = localCalendar()
         let today = cal.startOfDay(for: Date())
 
         try insert(databaseURL: db, id: "c1", sessionID: "s", turnID: "t1", timestamp: ms(today),
@@ -271,7 +274,7 @@ final class ZcodeProviderSliceTests: XCTestCase {
     func testZcodeSliceSamplesHonorCutoff() throws {
         let db = try makeDatabase()
         defer { try? FileManager.default.removeItem(atPath: db) }
-        let cal = utcCalendar()
+        let cal = localCalendar()
         let today = cal.startOfDay(for: Date())
         let oldDay = cal.date(byAdding: .day, value: -10, to: today)!
 
@@ -295,7 +298,7 @@ final class ZcodeProviderSliceTests: XCTestCase {
     func testZcodeSliceSplitsReasoningFromPartChars() throws {
         let db = try makeDatabase()
         defer { try? FileManager.default.removeItem(atPath: db) }
-        let cal = utcCalendar()
+        let cal = localCalendar()
         let today = cal.startOfDay(for: Date())
 
         for (index, output) in [200, 100].enumerated() {
@@ -334,7 +337,7 @@ final class ZcodeProviderSliceTests: XCTestCase {
     func testZcodeSliceCountsToolInputAsVisibleChars() throws {
         let db = try makeDatabase()
         defer { try? FileManager.default.removeItem(atPath: db) }
-        let cal = utcCalendar()
+        let cal = localCalendar()
         let today = cal.startOfDay(for: Date())
 
         try insert(databaseURL: db, id: "mm", sessionID: "mm-s", turnID: "mm-t1",
@@ -358,7 +361,7 @@ final class ZcodeProviderSliceTests: XCTestCase {
     func testZcodeSliceKeepsNativeReasoningWithoutReSplitting() throws {
         let db = try makeDatabase()
         defer { try? FileManager.default.removeItem(atPath: db) }
-        let cal = utcCalendar()
+        let cal = localCalendar()
         let today = cal.startOfDay(for: Date())
 
         try insert(databaseURL: db, id: "n1", sessionID: "s", turnID: "t1", timestamp: ms(today),
@@ -383,7 +386,7 @@ final class ZcodeProviderSliceTests: XCTestCase {
     func testZcodeSliceSplitsReasoningForDeepSeekToo() throws {
         let db = try makeDatabase()
         defer { try? FileManager.default.removeItem(atPath: db) }
-        let cal = utcCalendar()
+        let cal = localCalendar()
         let today = cal.startOfDay(for: Date())
 
         try insert(databaseURL: db, id: "d1", sessionID: "ds-s", turnID: "ds-t1", timestamp: ms(today),
@@ -410,7 +413,7 @@ final class ZcodeProviderSliceTests: XCTestCase {
     func testZcodeSliceWithoutAssistantMessageIDKeepsZeroReasoning() throws {
         let db = try makeDatabase()
         defer { try? FileManager.default.removeItem(atPath: db) }
-        let cal = utcCalendar()
+        let cal = localCalendar()
         let today = cal.startOfDay(for: Date())
 
         try insert(databaseURL: db, id: "x1", sessionID: "s", turnID: "t1", timestamp: ms(today),
@@ -435,7 +438,7 @@ final class ZcodeProviderSliceTests: XCTestCase {
     func testZcodeGlmRowsKeepMethodAWhileSlicesSplitByChars() throws {
         let db = try makeDatabase()
         defer { try? FileManager.default.removeItem(atPath: db) }
-        let cal = utcCalendar()
+        let cal = localCalendar()
         let today = cal.startOfDay(for: Date())
 
         try insert(databaseURL: db, id: "glm1", sessionID: "g-s", turnID: "g-t1", timestamp: ms(today),
@@ -458,7 +461,7 @@ final class ZcodeProviderSliceTests: XCTestCase {
 
     /// 快照把分片压成 7 天窗口并带上 today；rebase 跨午夜时同步滚动窗口。
     func testZcodeSnapshotWindowsProviderSlices() throws {
-        let cal = utcCalendar()
+        let cal = localCalendar()
         let today = cal.startOfDay(for: Date())
         let yesterday = cal.date(byAdding: .day, value: -1, to: today)!
         let now = cal.date(byAdding: .hour, value: 1, to: today)!
@@ -505,7 +508,7 @@ final class ZcodeProviderSliceTests: XCTestCase {
         let decoded = try JSONDecoder().decode(GlmLocalUsage.self, from: Data(json.utf8))
         XCTAssertNil(decoded.providerSlices)
         XCTAssertNil(decoded.deepseekSlice)
-        let rebased = GlmZcodeLocalUsageScanner.rebaseCachedSnapshot(decoded, calendar: utcCalendar(), now: Date())
+        let rebased = GlmZcodeLocalUsageScanner.rebaseCachedSnapshot(decoded, calendar: localCalendar(), now: Date())
         XCTAssertNil(rebased.providerSlices)
     }
 

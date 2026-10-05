@@ -62,7 +62,10 @@ flowchart TD
 11. `AppState.start()` calls `ConfigStore.startWatching()`, which opens the **`config.json` file itself** via `open(O_EVTONLY)` and installs a `DispatchSource.makeFileSystemObjectSource` listener (`eventMask` = `.write / .delete / .rename / .revoke`) — config edits trigger a debounced, event-driven reload in milliseconds (no polling). Directory-level watching is deliberately avoided: `log.txt` and `last-refresh.json` sit in the same directory and would fire a reload on every log line and every timestamp write. An editor's atomic replace (delete + rename) reopens the fd on the old inode's death, and a briefly-missing file is retried with backoff.
 
 The lifecycle delegate calls `AppState.stop()` during normal application termination
-and triggers an immediate `refreshAll()` after `NSWorkspace.didWakeNotification`,
+and triggers `AppState.handleSystemWake()` after `NSWorkspace.didWakeNotification` —
+a merged protocol: the wake refresh joins the global refresh transaction (an external job
+already in flight absorbs it as `pendingWakeup` instead of a second transaction) and does
+**not** re-anchor per-provider schedules,
 so sleep/wake does not leave quota cards stale until the next configured timer tick.
 Sleep health is refreshed at startup and wake, and the same deadline driver also schedules
 a five-minute health boundary, so newly acquired sleep assertions or AC power changes
@@ -114,6 +117,8 @@ deriveState 返回 `.notConfigured` 时整个 state 重置，lastSuccess 跟着�
 3. 成功后按 `providers.<id>.refreshIntervalSeconds ?? refreshIntervalSeconds` 计算下次到期
 4. 失败按同一个 baseInterval 固定间隔随下一定时周期重试（不做指数退避：后台固定间隔刷新下，拉长重试间隔只会推迟恢复）
 5. 任务被 cancel → 退出循环
+
+**配置重载 ≠ 冷启动**：配置写盘（设置页保存、dock 拖拽落点 App 自写 config、auth 探测翻转）触发的重排走 `ProviderRefreshScheduler.reconfigure(managed:)` 差异化路径——仍启用且 interval 未变的 provider 原样保留既有 deadline 与首刷标记（下一拍继续 `.background`），只有新增 / 重新启用 / interval 变化的 provider 才按初始排期立即纳入；冷启动语义只属于 `AppState.start()`。
 
 **周期 full（reset credits 等“只在 full 抓取”的字段）**：`ProviderRefreshScheduler` 每累计
 `periodicFullEveryN`（默认 20）次 `.background` 后，下一次补跑一次 `.full`（走常规 deadline，
@@ -433,4 +438,4 @@ These are documented product boundaries:
   have their own SQLite readers, Antigravity is pure RPC, and Codex parses JSONL on
   demand for the 7-day chart.
 
-> 核对基线：2026-10-04 · 代码 d6396fd
+> 核对基线：2026-10-05 · 代码 d2ef5ed

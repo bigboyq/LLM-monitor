@@ -137,8 +137,9 @@ final class AggregateHealthLevelTests: XCTestCase {
         appState.mutateStatus(for: "test_a") { $0.state = .ok(healthyInfo) }
         appState.mutateStatus(for: "test_glm") { $0.state = .ok(healthyInfo) }
 
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = .current
+        // 高峰判定固定走 `PeakWindow.beijingCalendar`（生产口径），fixture 必须
+        // 用同一时区构造时刻，否则非 UTC 时区机器上 14:00 落不到北京 14:00。
+        let calendar = PeakWindow.beijingCalendar
         let day = DateComponents(year: 2026, month: 8, day: 10)
         let beforePeak = calendar.date(from: DateComponents(
             year: day.year, month: day.month, day: day.day, hour: 13, minute: 59
@@ -384,8 +385,8 @@ final class AggregateHealthLevelTests: XCTestCase {
         )
 
         // 4. GLM 高峰 floor：高峰时 healthy → warning；非高峰保持 healthy。
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = .current
+        // `aggregateHealthLevel` 用 `PeakWindow.beijingCalendar` 判定，fixture 同步。
+        let calendar = PeakWindow.beijingCalendar
         let offPeak = calendar.date(from: DateComponents(year: 2026, month: 8, day: 11, hour: 10))!
         let peak = calendar.date(from: DateComponents(year: 2026, month: 8, day: 11, hour: 15))!
         let glmHealthy = makeStatus(

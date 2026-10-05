@@ -136,9 +136,9 @@ value when local model samples are available.
 | File | Purpose |
 |---|---|
 | `~/Library/Application Support/LLM-monitor/config.json` | User-editable config |
-| `~/Library/Application Support/LLM-monitor/holidays-cache.json` | 法定节假日数据源缓存（与打包资源同 schema：source / fetchedAt / holidays）。取数成功后回写；缺失 / 损坏 / bundledOnly 模式时回落内置快照 |
+| `~/Library/Application Support/LLM-monitor/holidays-cache.json` | 法定节假日数据源缓存（与打包资源同 schema：source / fetchedAt / holidays）。取数成功后经 `FileManagerBox.writePrivate` 回写（文件 0600 / 目录 0700）；缺失 / 损坏 / bundledOnly 模式时回落内置快照 |
 | `~/Library/Application Support/LLM-monitor/notification-state.json` | 通知触发器基线（每次成功刷新回写，供边沿检测跨重启连续） |
-| `~/Library/Application Support/LLM-monitor/log.txt` | Rotated runtime log (5 MB 上限 rotate, 保留 active + .1 + .2 共 3 份) |
+| `~/Library/Application Support/LLM-monitor/log.txt` | Rotated runtime log (5 MB 上限 rotate, 保留 active + .1 + .2 共 3 份)；测试进程（XCTest）自动改写到 `NSTemporaryDirectory()/LLM-monitor-tests/log.txt`（裸 `swift test` 不再污染真实日志），`LLM_MONITOR_LOG_PATH` 显式覆盖最优先 |
 
 The footer has buttons to open the config file and reveal the log file in Finder.
 
@@ -172,9 +172,12 @@ NOTARIZE=1 NOTARY_PROFILE="llm-monitor" ./scripts/build-dmg.sh
 
 脚本会签名 DMG，等待 Apple 审核结果、staple ticket 并执行 `stapler validate`；普通本地构建默认不签名 DMG，也不访问 notarization 服务。
 
-`build-app.sh` compiles an arm64-only release binary (`swift build -c release --arch arm64`,
-preferring the triple-specific product path so stale universal artifacts under
-`.build/apple/Products` are never picked up), creates `build/LLM-monitor.app`, writes
+`build-app.sh` compiles an arm64-only release binary (`swift build -c release --arch arm64`),
+then asks SwiftPM where the products actually landed
+(`swift build -c release --arch arm64 --show-bin-path`, e.g. `.build/out/Products/Release`) instead of
+guessing a historical product path — the real directory moves with toolchain / build system, and a
+guessed path silently repacks a stale binary into a freshly-timestamped `.app`. A `lipo -archs` gate
+then rejects anything that is not arm64-only, creates `build/LLM-monitor.app`, writes
 `Info.plist`, sets `LSUIElement=true`, and ad-hoc signs the app.
 
 ### App icon packaging（双路线设计，已裁定勿再翻转）
@@ -214,4 +217,4 @@ Icon Composer 里更新 `images/LLMMenu.icon` 工程；菜单栏「App 图标」
 `0f1a7b8` 又将其恢复。本节即为最终裁定：**双路线并存是既定设计**，两条路线的产物各有
 职责、互不替代。今后改动图标打包方案前，先修订本节并说明理由，不要再单方面翻转。
 
-> 核对基线：2026-10-05 · 代码 6128ab5
+> 核对基线：2026-10-05 · 代码 d2ef5ed

@@ -54,7 +54,7 @@ FSEvents/vnode 只负责把 source 标记为 dirty 和驱动 freshness UI；它�
 1. Scheduler 的一个自动 batch 可以包含同时到期的多个 Provider，并行执行 quota；全局排他覆盖 quota batch 到 LocalUsage reconcile 完成的整个事务。
 2. Manual/Wakeup 不在运行中的事务期间排队成第二个刷新事务；入口应直接拒绝或由明确的 wakeup pending 机制合并，不能一边清理旧 deadline 一边继续执行旧任务。
 3. `refreshOne` 也必须经过同一个全局事务入口；它不能绕过 LocalUsage reconcile 或 gate。
-4. regular Interval 从完整事务完成时间结算；旧 generation 在取消、stop、配置重载后不能写回新的 deadline、freshness 或 cache。
+4. regular Interval 从完整事务完成时间结算；**配置重载不取消在飞扫描**（扫描与配置无关），代价是可能多出一次扫描请求——该请求必须在 scanner 层**合并**：`LocalUsageScannerBase.scan(mode:)` 在 in-flight 期间把请求并入待执行槽位（更强模式优先），当前扫描 settle 后接续一轮，**任何时刻每个 scanner 至多一个在飞扫描**（重复触发不得演变成并发叠加）；旧 generation 在取消、stop 后不能写回新的 deadline、freshness 或 cache。
 5. 自动 batch 只触发一次 reconcile；启动错峰 quota 结束后只触发一次 cache-assisted-full。Provider 之间可以分批控制内存峰值，但不能把每个 Provider 拆成一次全局 full scan。
 6. Scanner 的结果必须区分完整和可重试的 partial；partial 可以暂时展示，但不能推进 freshness、日历签名或成功 fingerprint。旧 generation 不能释放新 generation 的 gate，也不能覆盖新的 deadline、freshness 或 cache。
 

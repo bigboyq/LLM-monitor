@@ -33,15 +33,15 @@ swift build -c release
 
 echo "==> Building release (arm64) with arch gate"
 swift build -c release --arch arm64
-# 单架构（--arch arm64）产物在 triple 目录；apple/Products 与 .build/release
-# 仅作旧布局兼容回退，避免误拾上一步普通构建留下的 universal 二进制。
-RELEASE_BIN="$ROOT_DIR/.build/arm64-apple-macosx/release/LLM-monitor"
+# SwiftPM 的实际 products 目录会随 toolchain / build system 改变（例如
+# `.build/arm64-apple-macosx/release` 或 `.build/out/Products/Release`）。必须问
+# SwiftPM 本次构建的真实目录，不能按历史路径优先级猜测——猜测链会静默拾上一步
+# 普通 `swift build -c release` 留下的 universal 产物，架构门禁形同虚设。
+SWIFT_BIN_DIR="$(swift build -c release --arch arm64 --show-bin-path)"
+RELEASE_BIN="$SWIFT_BIN_DIR/LLM-monitor"
 if [ ! -f "$RELEASE_BIN" ]; then
-    RELEASE_BIN="$ROOT_DIR/.build/apple/Products/Release/LLM-monitor"
-fi
-if [ ! -f "$RELEASE_BIN" ]; then
-    # 兼容 Swift < 5.9 的路径
-    RELEASE_BIN="$ROOT_DIR/.build/release/LLM-monitor"
+    echo "ERROR: release binary not found in SwiftPM bin path: $RELEASE_BIN" >&2
+    exit 1
 fi
 RELEASE_ARCHS=$(lipo -archs "$RELEASE_BIN" 2>/dev/null || true)
 echo "    Architectures: ${RELEASE_ARCHS:-<unknown>}"

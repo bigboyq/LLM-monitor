@@ -22,7 +22,7 @@
 - Bark 推送支持官方或自建服务端（POST JSON、覆盖 ID、串行队列、冷却与重试），可配置「人在电脑前时跳过推送」（屏幕亮且未锁屏才跳过）；应用启动时检查通知权限。
 - 汇总 Codex、Minimax、Antigravity、ZCode、OpenCode 与 DeepSeek Harness (dsh) 的本地 token 用量。
 - 支持每个 Provider 独立刷新、失败退避、手动刷新和配置热重载。
-- 提供 GLM/DeepSeek 高峰时段提示、最近 7 天图表和开机自启动。
+- 提供 GLM/DeepSeek 高峰时段提示、最近 7 天图表和开机自启动。高峰一律按北京时间（Asia/Shanghai）判定，且法定节假日不计入高峰；节假日表默认联网更新，也可在设置中改为只用内置快照，详见[中文帮助](docs/help.zh-CN.md#节假日数据源)。
 - 主菜单 Provider 卡片可自定义显示顺序（设置 → 常规 → 主菜单 Provider 顺序）；客户端 tab、设置页 Provider tabs 与 Client tab 内的 Provider 行按显示名称字母顺序排列，仅主菜单卡片读取 `providerCardOrder`。
 - 提供 macOS 系统睡眠健康度与防休眠管理：主面板 Footer 一键就地切换「防止休眠」临时内存开关（带三色指示灯）；设置页「节能」Tab 展示健康度状态、霸占休眠锁的违规应用明细与系统电源参数矩阵（直通 IOKit 原生 API，免子进程开销）。
 - 配置目录权限为 `0700`，配置、日志与凭据文件权限为 `0600`。
@@ -113,7 +113,7 @@ swift build
 
 `build-release.sh [version] [build-number]` 永不递增 `.build_number`（省略参数时读取当前值），适合发布前做可重复构建。
 
-默认构建使用 ad-hoc 签名。Developer ID 签名与 notarization 参数见 `scripts/build-app.sh` 和 `scripts/build-dmg.sh` 的文件注释；完整构建与发布约定见[项目架构规格](spec/overview.md#build-and-packaging)。
+默认构建使用 ad-hoc 签名。Developer ID 签名与 notarization 参数见 `scripts/build-app.sh` 和 `scripts/build-dmg.sh` 的文件注释；完整构建与发布约定见[项目架构规格](spec/config.md#build-and-packaging)。
 
 ## 隐私与安全
 

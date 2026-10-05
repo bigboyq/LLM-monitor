@@ -16,7 +16,8 @@
 | `Sources/LLM-monitor/Models/MixedCurrencyEstimate.swift` | 跨 provider 金额汇总的统一折算类型（USD ×7 → CNY） |
 | `Sources/LLM-monitor/Services/ClientUsageAggregation.swift` | L3 视图模型纯函数：设置页客户端拆行、菜单 `HarnessTodaySummary`、`ProviderStatusStrip` 投影、`HarnessSummaryCache` |
 | `Sources/LLM-monitor/Services/LayoutMetrics.swift` | Services 与 Views 共读的排版常量（图表宽 / 卡片列与内容层内边距） |
-| `Sources/LLM-monitor/Models/ModelPricingCatalog.swift` | 计价引擎：加载 `Resources/ModelPricing.json`（首条命中 / exact / matchAll / zhipu 兜底 / 下划线归一化）并应用 DeepSeek 高峰倍率 |
+| `Sources/LLM-monitor/Models/ModelPricingCatalog.swift` | 计价引擎：加载 `Resources/ModelPricing.json`（首条命中 / exact / matchAll / zhipu 兜底 / 下划线归一化）并应用 DeepSeek 高峰倍率；资源 bundle 整体缺失时先过 `ResourceBundleProbe`、降级为空目录并记 error（不再启动即崩），bundle 在而 JSON 缺失 / 解析失败仍 preconditionFailure |
+| `Sources/LLM-monitor/Models/ResourceBundleProbe.swift` | 资源 bundle 探测：按 SwiftPM 生成的 accessor 同序候选路径判断 `Bundle.module` 是否可用（`probe` 可注入、`isResourceBundleAvailable` 进程内缓存），供定价 / 节假日资源加载在缺失时走降级而不是 fatalError |
 | `Sources/LLM-monitor/Resources/ModelPricing.json` | 价格数据：随 app 打包的唯一价格源（`ModelPricingJSONTests` 守门 schema 完整性） |
 | `Sources/LLM-monitor/Resources/ChinaHolidays.json` | 法定节假日快照：随 app 打包的静态离线数据（`holidays` ∪ `inLieuDays` 日期并集，年份 [当前年-1, …]），由 `scripts/sync-holiday-data.sh` 生成，`HolidayCalendarTests` 守门 |
 | `Sources/LLM-monitor/Models/ProviderStatus.swift` | UI-facing provider state + `ProviderKind` / `AccentColor` 枚举 |
@@ -53,20 +54,20 @@
 | `Sources/LLM-monitor/Fetchers/GlmCodingPlanFetcher.swift` | GLM Coding Plan 额度与 reset time 抓取 |
 | `Sources/LLM-monitor/Fetchers/DeepseekFetcher.swift` | DeepSeek 账户余额抓取（`/user/balance`）+ 解析 |
 | `Sources/LLM-monitor/Models/PeakWindow.swift` | GLM / DeepSeek 共用的参数化高峰窗口判定（`slots` × `weekdaysOnly` × `HolidayCalendar`；统一北京时间 + Rule A 工作日口径，两家只差 slots 数量：GLM 单窗口（官方固定 14–18，不可调），DeepSeek 双窗口固定、高峰永不含周末） |
-| `Sources/LLM-monitor/Models/HolidayCalendar.swift` | 法定节假日快照模型（Rule A 的节假日数据源）：`Set<Int>` yyyyMMdd 日期键 + source/fetchedAt 元信息，`isHoliday` / `covers(year:)`；解析链纯函数（`parseSource` 源语义 / `parseSourceDates` 快照+上游 chinese-days 双格式 / `resolve` 缓存→bundle→empty / `isStale` 7 天新鲜度）与可更新的 `shared`（锁保护，`applyResolved` 替换）；bundle 加载 `loadBundled()` 缺失退化为空表并记日志 |
-| `Sources/LLM-monitor/Services/HolidayCalendarService.swift` | 节假日数据源服务（解析链编排 + best-effort 取数）：config `holidaySource` 的触发判定（启动 / 源变更 / 设置页立即更新）、缓存 `holidays-cache.json` 读写、HTTP 走 `HTTPClient` / 本地路径直读、成功后应用 `shared` + 宿主回调（UI 刷新）；失败不清空既有数据；设置页状态行 / 覆盖提示纯函数 |
+| `Sources/LLM-monitor/Models/HolidayCalendar.swift` | 法定节假日快照模型（Rule A 的节假日数据源）：`Set<Int>` yyyyMMdd 日期键 + source/fetchedAt 元信息，`isHoliday` / `covers(year:)`；解析链纯函数（`parseSource` 源语义 / `parseSourceDates` 快照+上游 chinese-days 双格式 / `resolve` 缓存→bundle→empty / `isStale` 7 天新鲜度）与可更新的 `shared`（锁保护，`applyResolved` 替换）；bundle 加载 `loadBundled()` 先过 `ResourceBundleProbe`（资源 bundle 整体缺失时降级路径才可达）、缺失 / 损坏退化为空表并记日志 |
+| `Sources/LLM-monitor/Services/HolidayCalendarService.swift` | 节假日数据源服务（解析链编排 + best-effort 取数）：config `holidaySource` 的触发判定（启动 / 源变更 / 设置页立即更新）、缓存 `holidays-cache.json` 读写、HTTP 走 `HTTPClient` / 本地路径直读、成功后应用 `shared` + 宿主回调（UI 刷新）；失败不清空既有数据；设置页状态行 / 覆盖提示纯函数；缓存回写经 `FileManagerBox.writePrivate`（0600 / 0700） |
 | `Sources/LLM-monitor/Services/AppState.swift` | 全局状态派生、config reload 接线（`configStore.startWatching()`，watcher 本体在 ConfigStore）、scanner wire-up、Provider batch/LocalUsage reconcile 与睡眠健康边界接线 |
 | `Sources/LLM-monitor/Services/QuotaUpdateNotifier.swift` | 额度通知引擎：`QuotaEventDetector`（四类窗口事件边沿判定）+ `QuotaEventBatch`（按模型×渠道合并）+ 系统通知渠道 + `CompositeQuotaUpdateNotifier` 渠道扇出 |
-| `Sources/LLM-monitor/Services/BarkNotifier.swift` | Bark 推送渠道：POST JSON 传输、稳定覆盖 id、锁屏/亮屏跳过判定、有界串行发送队列（冷却 / 重试 / 可取消） |
+| `Sources/LLM-monitor/Services/BarkNotifier.swift` | Bark 推送渠道：POST JSON 传输、稳定覆盖 id、锁屏/亮屏跳过判定、有界串行发送队列（冷却 / 重试 / 可取消）；日志 / 错误定位用固定标签 `bark://<host>/<key 前 4 位>…`（不回显完整 device key） |
 | `Sources/LLM-monitor/Services/TriggerStateStore.swift` | 通知触发器基线持久化（`notification-state.json`），检测 previous 的跨重启单一来源 |
 | `Sources/LLM-monitor/Services/LastRefreshStore.swift` | `last-refresh.json` 的 actor 化持久化（合并窗口 + encode/fsync 移出 MainActor） |
-| `Sources/LLM-monitor/Services/AppLog.swift` | stdout / 文件 (5MB rotate) / os.Logger (`.private`) 三路日志 |
+| `Sources/LLM-monitor/Services/AppLog.swift` | stdout / 文件 (5MB rotate) / os.Logger (`.private`) 三路日志；测试进程改写日志路径到 `NSTemporaryDirectory()`（`LLM_MONITOR_LOG_PATH` 最优先） |
 | `Sources/LLM-monitor/Services/ConfigStore.swift` | config.json 读写 + 内容指纹跟踪 + 模板生成 + **单文件 `DispatchSource` watcher**（`startWatching()` / `startConfigWatcher()`，debounce + 原子替换后重开 fd + 退避重试，由 `AppState.start()` 调用） |
 | `Sources/LLM-monitor/Services/LoginItemService.swift` | `SMAppService.mainApp` 包装 + 状态显示 |
 | `Sources/LLM-monitor/Services/Formatters.swift` | token / percent / 时间 / codex window 标签格式化；相对时间类（`formatRelativeShort` / `formatResetSuffix`）的 `now:` 必填——视图层显式传宿主展示时钟，不取渲染时墙钟 |
 | `Sources/LLM-monitor/Services/Infra/HTTPClient.swift` | 共享 HTTP 客户端（minimax / codex 三个 fetch 路径）；`ResponseByteLimits` 响应体硬上限（标准额度 8 MiB / Antigravity trajectory 64 MiB）由 `CappedDownloader.data` 在**响应体返回后**校验——超限抛 `responseTooLarge`，该错误为非瞬时（不重试、不进通知冷却）。async `session.data(for:delegate:)` 不向 per-task delegate 投递 `didReceive response` / `didReceive data` 内容回调（macOS 27 实测：URLProtocol 桩与真实网络均不触发），因此 `CappedDownloadDelegate` 的流式计数在当前调用方式下**不执行**，真正的拦截点是后置字节校验；delegate 保留待将来改用回调系任务。峰值内存仍由 URLSession 缓冲决定——该上限保证超限响应不进入调用方解析链路，不保证单次响应不被完整缓冲 |
 | `Sources/LLM-monitor/Services/LocalUsageCoordinator.swift` | scanner 协议 + Combine wire-up 容器 |
-| `Sources/LLM-monitor/Services/ProviderRefreshScheduler.swift` | 循环 A（额度循环）：单一 Task 管理所有 Provider 的 quota 定时排期，睡眠至最早截止时间，并发刷新 + 条目级隔离 |
+| `Sources/LLM-monitor/Services/ProviderRefreshScheduler.swift` | 循环 A（额度循环）：单一 Task 管理所有 Provider 的 quota 定时排期，睡眠至最早截止时间，并发刷新 + 条目级隔离；配置重载走差异化重排 `reconfigure(managed:)`（未变 provider 保留 deadline 与首刷状态，避免每次写配置全员重抓） |
 | `Sources/LLM-monitor/Services/ManualRefreshGate.swift` | 手动 full refresh 与 in-flight background refresh 的合并协议（pending 登记 / 取消撤销 / 一次性补跑） |
 | `Sources/LLM-monitor/Services/LocalUsageOrchestration.swift` | LocalUsage reconcile：按触发原因分层为 `.dirty` / `.full`（cache-assisted） / `.hardFull`（绕过各 provider 自己的 fingerprint / offset / cache），请求按 `dirty < full < hardFull` 优先级折叠成一次；`.hardFull` 只在启动首拍、日历签名失效与 `bypassesProviderCache` 时触发。Provider batch settled 后每拍都投递一次 reconcile（scanner 内部指纹短路决定是否真扫），不持有 Timer |
 | `Sources/LLM-monitor/Services/LocalFSEventsWatcher.swift` | 可复用的单 scanner FSEvents 封装；每个 scanner 自己持有 watcher 与源路径，不维护全局路径表 |
@@ -108,7 +109,7 @@
 | `Sources/LLM-monitor/Services/LocalUsageScanRunner.swift` | 本地用量 scanner 共享的 lifecycle helper（generation 守门 / cancellation filter / defer generation 守门），消除镜像 boilerplate |
 | `Sources/LLM-monitor/Services/SingleDBSnapshotScanner.swift` | 单库全量快照 scanner 基座（db + WAL 双维指纹与缓存 index；GLM / OpenCode scanner 复用） |
 | `Sources/LLM-monitor/Services/DailyUsageAggregation.swift` | minimax / antigravity 共享的 per-day 聚合（补零填充 + 跨 source 合并） |
-| `Sources/LLM-monitor/Services/ScannerIndexIO.swift` | minimax / antigravity 共享的 versioned `index.json` 读写（版本迁移 / 不匹配 reset） |
+| `Sources/LLM-monitor/Services/ScannerIndexIO.swift` | 6 个 scanner 共用的 versioned 缓存 index 读写（版本迁移 / 不匹配 reset）：`MinimaxLocalUsageScanner` / `AntigravityFilesystem` / `DshLocalUsageScanner` / `AgyLocalUsageScanner` 直接调用，另两个经 `SingleDBSnapshotScanner` 基座（GLM-Zcode / OpenCode）调用 |
 | `Sources/LLM-monitor/Services/ScannerFileError.swift` | scanner 共用的「明确不存在」错误判断（权限 / TCC / 瞬时 I/O 不误判为删除，保护 last-good cache） |
 | `Sources/LLM-monitor/Services/LocalUsageScannerBase.swift` | 本地用量 scanner 的状态、generation、取消与 in-flight 去重基座 |
 | `Sources/LLM-monitor/Services/LocalUsageSourceLifecycle.swift` | 本地用量源的 FSEvents/vnode 生命周期与 dirty 事件桥接 |
@@ -121,7 +122,7 @@
 | `Sources/LLM-monitor/Views/DisplayClock.swift` | 跨宿主共享的展示时钟：`DisplayClock` + `DisplayClockScope` + `\.displayDate` 环境键；菜单内容 / hover 浮层 / dock 浮层各自持有实例、随宿主显隐 start/stop 并注入环境 |
 | `Sources/LLM-monitor/Views/HarnessUsageMenuView.swift` | 菜单的 Harness（客户端）视角：顶部一屏全局今日汇总（`HarnessUsageMenuView`）→ 按客户端分段（`HarnessSectionView`）→ 段内按模型一行（`HarnessModelRowView`）→ 底部 provider 兜底状态条（`ProviderStatusStripView`，hover 出完整卡片）。与 `ProviderCardView` 并列而非替代；模型行的 328pt 宽度预算（菜单 360pt / 内容 336pt）由 `HarnessUsageMenuViewTests` 钉住 |
 | `Sources/LLM-monitor/Views/MenuTypography.swift` | 菜单面板与悬浮层统一排版常量（语义角色，禁止散落硬编码字号） |
-| `Sources/LLM-monitor/Views/MenuWindowAutoCloseBridge.swift` | 失焦立即关 + 30s 无交互关闭（菜单内 mouse/scroll/key 重置计时）|
+| `Sources/LLM-monitor/Views/MenuWindowAutoCloseBridge.swift` | 失焦立即关 + 30s 无交互关闭（菜单内 mouse/scroll/key 重置计时）；关闭统一出口 `performClose` 并发 `onPanelClose`（菜单展示时钟随之停表） |
 | `Sources/LLM-monitor/Views/ProviderCardView.swift` | provider 卡片 + `ProviderStateLabel` + `QuotaSummary`（卡内状态点已随菜单改版移除，状态由 `ProviderStateLabel` 胶囊承载） |
 | `Sources/LLM-monitor/Views/QuotaViews.swift` | 各种 quota 行 + 进度条（`CombinedQuotaWindowRow` / `CombinedQuotaBar` / `SingleQuotaBar` / `ModelQuotaDockBlock` / `OffPeakUsageFootnote` / `DeepseekBalanceRow` / `ChatGPTPlanModelRow` / `CompactResetCreditsRow` / `QuotaBarTooltip`）；重置倒计时与过期判定随宿主展示时钟推进（`\.displayDate`） |
 | `Sources/LLM-monitor/Views/QuotaWindowUsageViews.swift` | 「额度窗口用量」区块族：模块标题 / 细分隔线、四桶绝对值与三个比率（`QuotaWindowUsageMetrics`）、双段 capsule 切换（`QuotaWindowUsageSegmentControl` / `QuotaWindowUsageSegment`）、reset credits 明细（`ResetCreditsDetailList`）与合并统一 7 列 Grid 骨架的总段 `QuotaWindowUsageSection`；重置日期格倒计时随宿主展示时钟推进（`\.displayDate`） |
@@ -171,8 +172,8 @@
 
 ## Test Suite
 
-- 规模：`Tests/LLMMonitorTests/` 按主题一文件组织（2026-10 重组后 ~120 文件 / ~1060 用例）。
+- 规模：`Tests/LLMMonitorTests/` 按主题一文件组织（2026-10 重组后 125 文件 / 1141 用例）。
 - **串行执行是既定选择**：`swift test --parallel` 实测（2026-10-02，5 连跑 3 败）不可用——`SQLiteTempCopyTests` 的临时副本断言扫描跨进程共享目录，并行 worker 互相误判；且慢测试为睡眠型，并行的 wall 收益仅 ~4s。并行化前提：先给 SQLiteTempCopy 的副本目录引入进程级隔离，再复评。
 - 慢用例的等待注入缝已建立：调度器（now/sleep）、Bark 退避（retryDelay）、vnode 合并窗口（coalescingWindow 参数）；新增耗时敏感测试时优先走注入缝，不要写死真实 sleep。
 
-> 核对基线：2026-10-05 · 代码 6128ab5
+> 核对基线：2026-10-05 · 代码 d2ef5ed

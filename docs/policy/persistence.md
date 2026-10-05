@@ -1,8 +1,14 @@
 # 持久化布局（Persistence Layout）
 
-运行时数据集中在 `~/Library/{Application Support,Caches,Logs}/LLM-monitor/` + SQLite 临时副本
-在 `NSTemporaryDirectory()`。权限策略统一 **0600 文件 / 0700 目录**，写入走
+应用自管的运行时数据**集中在 `~/Library/Application Support/LLM-monitor/`**（配置、日志、
+最近刷新状态、通知基线、scanner 缓存、节假日缓存），SQLite 临时副本另落在
+`NSTemporaryDirectory()`。权限策略统一 **0600 文件 / 0700 目录**，写入走
 `O_EXCL | O_CLOEXEC` 原子模式。
+
+> **Caches 是例外，不是应用布局的一部分**：`~/Library/Caches/com.yaktype.llm-monitor/`
+> 由 Foundation 的 `URLSession` 按 bundle id 自动创建（`Cache.db` + `fsCachedData`），
+> 代码从不读写它，也不依赖其内容——HTTP 响应缓存是 URLSession 的实现细节，可随时被
+> 系统清理。同理 `~/Library/Logs/` 下没有本项目文件。
 
 ## 路径
 
@@ -10,7 +16,8 @@
 - 实例锁 → `…/LLM-monitor/instance.lock` [AppInstanceLock.swift:42](../../Sources/LLM-monitor/Services/AppInstanceLock.swift:42)
 - 损坏配置备份 → `config.json.corrupt-<UUID>.json` [ConfigStore.swift:925](../../Sources/LLM-monitor/Services/ConfigStore.swift:925)
 - 日志 → `…/LLM-monitor/log.txt`（rotated `.1` / `.2`）[AppLog.swift:34](../../Sources/LLM-monitor/Services/AppLog.swift:34)
-- 5× scanner cache: `~/Library/Application Support/LLM-monitor/token-monitor/{minimax,antigravity,opencode,glm-zcode,dsh}.json`
+- 6× scanner cache: `~/Library/Application Support/LLM-monitor/token-monitor/{minimax,antigravity,opencode,glm-zcode,dsh,agy}.json` [TokenMonitorPaths.swift:8](../../Sources/LLM-monitor/Services/TokenMonitorPaths.swift:8)
+- 节假日缓存 → `…/LLM-monitor/holidays-cache.json`（0600）[HolidayCalendarService.swift:37](../../Sources/LLM-monitor/Services/HolidayCalendarService.swift:37)
 - SQLite 临时副本 → `NSTemporaryDirectory()/llm-monitor-<UUID>.sqlite`
 
 > **Override**：`LLM_MONITOR_LOG_PATH` 改日志位置 [AppLog.swift:22](../../Sources/LLM-monitor/Services/AppLog.swift:22)；
@@ -43,6 +50,9 @@
 [ConfigStore.swift:653](../../Sources/LLM-monitor/Services/ConfigStore.swift:653)）：解析失败
 → 备份到 `config.json.corrupt-<UUID>.json`（0600）→ 备份成功用 `.default` 空配置运行
 （不覆盖原文件）→ 备份失败 `persistenceAllowed = false` 禁止自动写回。
-5× scanner 用 `ScannerIndexIO` 版本不匹配 → 重扫（v14/v6/v2/v9/v5）。
+6× scanner 用 `ScannerIndexIO` 版本不匹配时按各自策略处理：Antigravity 有
+v2…v6 → v7 的迁移闭包（`AntigravityFilesystem.loadIndex`），其余 5 个无迁移路径，
+版本不匹配直接重扫全量重建。当前版本号：Antigravity 7 / Minimax 14 / GLM-Zcode 11 /
+OpenCode 2 / DSH 5 / Agy 2。
 `SQLiteTempCopy.read` 把生产 `.db` 复制到 `NSTemporaryDirectory()` 绕开 IDE/Antigravity WAL
 锁（`CANTOPEN`/`BUSY`），per-scan UUID，权限 0600。

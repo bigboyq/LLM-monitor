@@ -39,13 +39,13 @@ shasum -a 256 -c SHA256SUMS.txt
 
 ### GLM Coding Plan
 
-填写 Coding Plan Key，通常为 `id.secret` 格式。远程 API 提供额度；本地 ZCode 用量来自 `~/.zcode/cli/db/db.sqlite`。高峰窗口默认是本机时区的周一至周五 14:00–18:00，可在设置中调整。
+填写 Coding Plan Key，通常为 `id.secret` 格式。远程 API 提供额度；本地 ZCode 用量来自 `~/.zcode/cli/db/db.sqlite`。高峰窗口固定为北京时间（Asia/Shanghai）周一至周五 14:00–18:00，法定节假日除外；口径与本机时区无关，也没有设置开关。
 
 ZCode 的任务按 provider 分为 Coding Plan（正式套餐）/ Start Plan（体验套餐）/ 闲时 / 其他智谱套餐四类：只有 Coding Plan 计入 5h / 周额度窗口，四类 token 都计入本地柱图。设置 → 客户端 → ZCode 按这个顺序拆行显示各自独立的柱图与名义价值（没有用量的分类不出现行），其后是同一账本里的 DeepSeek / MiniMax 分片行（可在「客户端 ↔ Provider 绑定」里分别关闭）。开启设置中的「解析活动套餐余额日志」后，卡片还会显示 zcode 活动套餐（如周末体验套餐）的剩余百分比与过期时间，数据来自 ZCode 本地余额轮询日志（`~/.zcode/v2/logs`），只读本地文件，默认关闭。
 
 ### DeepSeek
 
-填写 `sk-...` 格式的 DeepSeek API Key。卡片显示账户余额；DeepSeek 没有 native 本地账本，本地 token 图表来自 ZCode 分片（默认开启，读取 `~/.zcode/cli/db/db.sqlite` 中 `provider_id` 为 `deepseek` 的行），可选再叠加 OpenCode 合并（`config.json` 的 `clientBindings`）。DeepSeek Flash 本地成本估算为：输入 ¥1/百万 token、缓存读取 ¥0.02/百万 token、输出 ¥4/百万 token；北京时间周一至周五 9:00–12:00、14:00–18:00 忙时按 2 倍计算，周末全天平价。
+填写 `sk-...` 格式的 DeepSeek API Key。卡片显示账户余额；DeepSeek 没有 native 本地账本，本地 token 图表来自 ZCode 分片（默认开启，读取 `~/.zcode/cli/db/db.sqlite` 中 `provider_id` 为 `deepseek` 的行），可选再叠加 OpenCode 合并（`config.json` 的 `clientBindings`）。DeepSeek Flash 本地成本估算为：输入 ¥1/百万 token、缓存读取 ¥0.02/百万 token、输出 ¥4/百万 token；北京时间周一至周五 9:00–12:00、14:00–18:00 忙时按 2 倍计算（法定节假日除外），周末全天平价。
 
 ### OpenCode 合并
 
@@ -54,6 +54,15 @@ ZCode 的任务按 provider 分为 Coding Plan（正式套餐）/ Start Plan（�
 ### ZCode 分片
 
 ZCode 与 OpenCode 一样是多 provider 共享账本：智谱系行进 GLM 卡；`minimax` / `deepseek` 前缀的行按 `provider_id` 分片，分别并入 MiniMax / DeepSeek 卡。对应绑定是 `clientBindings[]` 的 `zcode` 条目，**默认开启**，设置页同样无独立开关。
+
+## 节假日数据源
+
+GLM 与 DeepSeek 的高峰判定都以北京时间（Asia/Shanghai）为准，只看"周一至周五 ∧ 非法定节假日"。这张节假日表决定了春节、国庆等假期不再算高峰，也决定了调休放假日（哪怕落在周一至周五）同样不算高峰。
+
+- **默认联网取数**：应用启动后从上游 chinese-days 项目的 JSON（`https://cdn.jsdelivr.net/npm/chinese-days/dist/chinese-days.json`）拉取，缓存到 `~/Library/Application Support/LLM-monitor/holidays-cache.json`（权限 0600）。缓存在 7 天内不会重复请求。
+- **只用内置快照**：把「设置 → 常规 → 节假日数据源」清空成空串即可。此时应用只用随包发布的 `ChinaHolidays.json` 快照，既不联网也不读缓存。
+- **手动更新**：设置页有「立即更新」按钮，强制重新取一次数据并回写缓存；状态行会显示当前数据来源（缓存 / 内置）与抓取日期。取数失败时保留既有数据，不会把节假日表清空。
+- **未覆盖年份**：节假日数据按年发布。若内置快照或缓存不覆盖某个年份，该年份按纯"周一至周五"判定（法定假日的周一至周五会暂时被算作高峰候选）。想要准确口径，请更新数据源。
 
 ## 日常操作
 

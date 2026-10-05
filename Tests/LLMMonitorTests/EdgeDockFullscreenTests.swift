@@ -197,4 +197,53 @@ final class EdgeDockFullscreenTests: EdgeDockTestCase {
         let waySmaller = CGRect(x: 0, y: 0, width: 800, height: 600)
         XCTAssertFalse(waySmaller.insetBy(dx: -FullscreenProbe.coverageTolerance, dy: -FullscreenProbe.coverageTolerance).contains(screen))
     }
+
+    // MARK: - 阶梯补测的挂起态（scheduleFullscreenRechecks）
+
+    /// Space 切换后必须挂起**一整串**补测，而不是只补一次——判定的失败模式正是
+    /// "第一次读到动画中间态就被缓存"。
+    ///
+    /// 这里断言的是**挂起态**（挂了几个、是否已取消），不去等 2.8s 让它们真的
+    /// 逐个跑完：`evaluateFullscreen` 会读真实窗口服务器，在测试进程里既不可复现
+    /// 也不该依赖。真正跑完后的效果由判定层（`FullscreenProbe` 用例）与
+    /// `evaluateFullscreen` 的"值没变就 return"守卫共同保证。
+    ///
+    /// `EdgeDockController.shared` 是进程级单例，用完必须复位，否则挂起项会漏到
+    /// 别的用例里。
+    @MainActor
+    func testScheduleFullscreenRechecksQueuesLadderAndRescheduleCancelsPrevious() {
+        let controller = EdgeDockController.shared
+        controller.cancelFullscreenRechecks()
+        addTeardownBlock { controller.cancelFullscreenRechecks() }
+
+        controller.scheduleFullscreenRechecks()
+        let first = controller.fullscreenRetryWorkItems
+        XCTAssertGreaterThan(
+            first.count, 1,
+            "只补一次不够：0.25s 时窗口还在长大，读到的中间态会被永久缓存成「没全屏」"
+        )
+        XCTAssertFalse(
+            first.contains { $0.isCancelled },
+            "刚排入的补测不该处于已取消状态"
+        )
+
+        // 连续触发（滑 Space 时通知会连发）必须替换而不是叠加，否则补测窗口无限拉长。
+        controller.scheduleFullscreenRechecks()
+        let second = controller.fullscreenRetryWorkItems
+        XCTAssertEqual(
+            first.filter { $0.isCancelled }.count, first.count,
+            "重新排入时上一轮必须全部取消"
+        )
+        XCTAssertEqual(
+            second.count, first.count,
+            "补测阶梯长度固定，重排不应改变档数"
+        )
+        XCTAssertFalse(second.contains { $0.isCancelled })
+
+        controller.cancelFullscreenRechecks()
+        XCTAssertTrue(
+            controller.fullscreenRetryWorkItems.isEmpty,
+            "取消后不应残留挂起项"
+        )
+    }
 }

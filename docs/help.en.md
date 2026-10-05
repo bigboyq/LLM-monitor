@@ -39,13 +39,13 @@ Start and sign in to Antigravity or the `agy` CLI. LLM Monitor discovers the loc
 
 ### GLM Coding Plan
 
-Enter a Coding Plan key, commonly in `id.secret` format. Remote quota comes from GLM; local ZCode usage comes from `~/.zcode/cli/db/db.sqlite`. The default peak window is Monday through Friday, 14:00–18:00 in the Mac's local time, and can be changed in Settings.
+Enter a Coding Plan key, commonly in `id.secret` format. Remote quota comes from GLM; local ZCode usage comes from `~/.zcode/cli/db/db.sqlite`. The peak window is fixed at Monday to Friday, 14:00–18:00 Beijing time (Asia/Shanghai), excluding statutory public holidays. It does not follow the Mac's local time zone and there is no setting to change it.
 
 ZCode tasks fall into four provider categories — Coding Plan / Start Plan (trial plan) / Off-peak / Other Zhipu plans: only Coding Plan tasks count toward the 5h / weekly quota windows, while all four appear in the local token bars. Settings → Clients → ZCode lists them as separate rows in that order (categories with no usage are omitted), each with its own bars and cost estimate, followed by the DeepSeek / MiniMax slice rows from the same ledger (each can be turned off via the client ↔ provider bindings). Enabling "Parse activity plan balance log" in Settings also shows zcode activity plans (e.g. the weekend trial plan) with remaining percentage and expiry on the card, parsed from ZCode's local balance polling log (`~/.zcode/v2/logs`); local files only, off by default.
 
 ### DeepSeek
 
-Enter a DeepSeek `sk-...` API key. The card displays account balance. DeepSeek has no native local ledger: local token charts come from the ZCode slice (on by default; rows in `~/.zcode/cli/db/db.sqlite` whose `provider_id` is `deepseek`), optionally overlaid with the OpenCode merge (`clientBindings` in `config.json`). DeepSeek Flash local cost estimates use ¥1 per million input tokens, ¥0.02 per million cached-read tokens, and ¥4 per million output tokens. Beijing-time weekday busy hours (Mon–Fri 9:00–12:00 and 14:00–18:00) are charged at 2×; weekends are off-peak all day.
+Enter a DeepSeek `sk-...` API key. The card displays account balance. DeepSeek has no native local ledger: local token charts come from the ZCode slice (on by default; rows in `~/.zcode/cli/db/db.sqlite` whose `provider_id` is `deepseek`), optionally overlaid with the OpenCode merge (`clientBindings` in `config.json`). DeepSeek Flash local cost estimates use ¥1 per million input tokens, ¥0.02 per million cached-read tokens, and ¥4 per million output tokens. Beijing-time weekday busy hours (Mon–Fri 9:00–12:00 and 14:00–18:00) are charged at 2×, excluding statutory public holidays; weekends are off-peak all day.
 
 ### OpenCode merge
 
@@ -54,6 +54,15 @@ The app reads `~/.local/share/opencode/opencode.db` and separates rows by `provi
 ### ZCode slices
 
 ZCode is a shared multi-provider ledger just like OpenCode: Zhipu-family rows feed the GLM card, while rows whose `provider_id` starts with `minimax` / `deepseek` are partitioned into slices and merged into the MiniMax / DeepSeek cards respectively. The matching `zcode` entries in `clientBindings[]` default to enabled; there is likewise no per-provider toggle in the settings window.
+
+## Holiday data source
+
+Both GLM and DeepSeek decide peak hours in Beijing time (Asia/Shanghai), counting a weekday as Monday to Friday **minus** statutory public holidays. This table is why Spring Festival and National Day no longer count as peak time, and why a make-up holiday that falls on a weekday is excluded too.
+
+- **Fetches over the network by default.** On launch the app pulls the JSON published by the chinese-days project (`https://cdn.jsdelivr.net/npm/chinese-days/dist/chinese-days.json`) and caches it at `~/Library/Application Support/LLM-monitor/holidays-cache.json` (mode 0600). A fresh cache is reused for 7 days before another request.
+- **Bundled snapshot only.** Clear the "节假日数据源" field under Settings → General to an empty string. The app then uses only the `ChinaHolidays.json` snapshot shipped with the bundle — no network, no cache read.
+- **Refresh on demand.** The section has a "立即更新" (Refresh now) button that re-fetches and rewrites the cache. The status line shows the current source (cache or bundle) and the fetch date. A failed fetch keeps the existing data instead of wiping the table.
+- **Years not covered.** Holiday data is published year by year. When neither the cache nor the bundled snapshot covers a year, that year falls back to a plain Mon–Fri rule, so a public holiday on a weekday is temporarily treated as a peak candidate. Update the data source for exact coverage.
 
 ## Everyday controls
 
