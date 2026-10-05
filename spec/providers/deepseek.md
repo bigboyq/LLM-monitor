@@ -115,7 +115,10 @@ UI 上 `DeepseekPeakIndicatorView` 嵌在余额行右侧：
 - 非高峰期，距高峰 < 1 小时 ❄️：`距高峰 X`（橙色 pill，临近）
 - 非高峰期，距高峰 ≥ 1 小时 ❄️：`距高峰 X`（绿色 pill）
 
-倒计时纯本地计算，不依赖 API 响应，刷新失败也能显示。
+倒计时纯本地计算，不依赖 API 响应，刷新失败也能显示。两个卡片宿主（菜单兜底行
+hover 浮层 / dock 浮层）均经 `DisplayClockScope` 注入随面板显隐 start/stop 的
+共享展示时钟，倒计时每秒推进（机制与 GLM 同源，见 `spec/providers/glm.md`
+§Live countdown 行）。
 
 ## OpenCode merge
 
@@ -167,4 +170,4 @@ raw daily 诊断字段，不进入统一 total / 图表 / 金额。详见 [`dsh.
 | Brand logo | `Sources/LLM-monitor/Resources/BrandLogos/deepseek.svg`、`Views/BrandLogoView.swift` |
 | Regression tests | `Tests/LLMMonitorTests/DeepseekFetcherTests.swift`、`PeakWindowTests.swift` |
 
-> 核对基线：2026-10-04 · 代码 d6396fd
+> 核对基线：2026-10-05 · 代码 c7d9afa

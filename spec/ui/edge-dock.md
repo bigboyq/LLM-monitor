@@ -622,7 +622,7 @@ apart again.
 
 | Module | Content |
 |---|---|
-| Quota window (`windowUsageModule`) | Titled 「额度窗口」 (`QuotaWindowUsageSection.windowUsageTitle`). Merges the former 「额度分析」 and 「额度详情」 into a single switchable module with zero-reflow between states. The title row hosts a custom capsule `QuotaWindowUsageSegmentControl` on the right (rendered when `quotaWindowSegmentEditable` is true), offering **「分析」** (default) and **「用量」** (`QuotaWindowUsageSegment`, persisted via `@AppStorage(QuotaWindowUsageSection.segmentStorageKey)` = `"quotaWindowUsageSegment"`). The time-composition bar (`QuotaWindowTimeShareBar`) was completely removed. Below the title row sits **one unified `Grid` of 7 columns** (`horizontalSpacing: 8`, `verticalSpacing: 3`) across all visible rows (5h / 周 / 今). Fixed columns: **类型** (left, natural width ~16pt), **价值** (fixed 58pt, `QuotaWindowUsageSection.valueColumnWidth`, left-aligned cell), and **重置日期** (right, fixed 126pt, `QuotaWindowUsageSection.resetDateColumnWidth`, including 9pt leading gutter `QuotaWindowUsageSection.resetDateColumnLeadingGap`). The middle 4 columns switch by segment: in **「分析」** mode: `类型 | 用量 | 命中 | 产出比 | 思考 | 价值 | 重置日期` (`statsHeaders`); in **「用量」** mode: `类型 | Input | Cached | Output | Reason | 价值 | 重置日期` (`rawTableHeaders`). Middle columns share a fixed width of **42pt** (`middleColumnWidth`) and right-alignment (headers follow cell alignment). The 420pt budget: `natural (~16pt) + 4×42pt + 58pt + 126pt + 6×8pt = 416pt ≤ 420pt` (measured header 「类型」 at 20pt yields `420pt ≤ 420pt`). Both modes share the exact same Grid skeleton and column dimensions, guaranteeing zero reflow (pinned by height-equality test). Reset date is formatted as `MM-dd HH:mm (倒计时)`, 今 row displays `—`; its 126pt width removes the former 1.2× factor, fitting the longest form `09-30 15:07 (23h59m)` (117pt) + 9pt gutter with 0pt surplus, guarded by `testResetDateColumnWidthCoversTheLongestForm`. With multiple pools, a footnote below the Grid explains totals are summed and reset date is the earliest. |
+| Quota window (`windowUsageModule`) | Titled 「额度窗口」 (`QuotaWindowUsageSection.windowUsageTitle`). Merges the former 「额度分析」 and 「额度详情」 into a single switchable module with zero-reflow between states. The title row hosts a custom capsule `QuotaWindowUsageSegmentControl` on the right (rendered when `quotaWindowSegmentEditable` is true), offering **「分析」** (default) and **「用量」** (`QuotaWindowUsageSegment`, persisted via `@AppStorage(QuotaWindowUsageSection.segmentStorageKey)` = `"quotaWindowUsageSegment"`). The time-composition bar (`QuotaWindowTimeShareBar`) was completely removed. Below the title row sits **one unified `Grid` of 7 columns** (`horizontalSpacing: 8`, `verticalSpacing: 3`) across all visible rows (5h / 周 / 今). Fixed columns: **类型** (left, natural width ~16pt), **价值** (fixed 58pt, `QuotaWindowUsageSection.valueColumnWidth`, left-aligned cell), and **重置日期** (right, fixed 126pt, `QuotaWindowUsageSection.resetDateColumnWidth`, including 9pt leading gutter `QuotaWindowUsageSection.resetDateColumnLeadingGap`). The middle 4 columns switch by segment: in **「分析」** mode: `类型 | 用量 | 命中 | 产出比 | 思考 | 价值 | 重置日期` (`statsHeaders`); in **「用量」** mode: `类型 | Input | Cached | Output | Reason | 价值 | 重置日期` (`rawTableHeaders`). Middle columns share a fixed width of **42pt** (`middleColumnWidth`) and right-alignment (headers follow cell alignment). The 420pt budget: `natural (~16pt) + 4×42pt + 58pt + 126pt + 6×8pt = 416pt ≤ 420pt` (measured header 「类型」 at 20pt yields `420pt ≤ 420pt`). Both modes share the exact same Grid skeleton and column dimensions, guaranteeing zero reflow (pinned by height-equality test). Reset date is formatted as `MM-dd HH:mm (倒计时)`, 今 row displays `—`; its 126pt width removes the former 1.2× factor, fitting the longest form `09-30 15:07 (23h59m)` (117pt) + 9pt gutter with 0pt surplus, guarded by `testResetDateColumnWidthCoversTheLongestForm`. The countdown inside the parentheses takes its value from the host-injected display clock (`\.displayDate`, started/stopped with the panel) — not the wall clock at render time. With multiple pools, a footnote below the Grid explains totals are summed and reset date is the earliest. |
 | Reset credits (`resetCreditsModule`) | Titled 「重置卡详情」 (`QuotaWindowUsageSection.resetCreditsTitle`). The collapsed row (**`重置卡数量：N`** + nearest expiry) followed by the **per-card list** (`ResetCreditsDetailList`): N available credits render as N+1 lines. **Zero available → the whole module is omitted** (not a `重置卡数量：0` line) |
 
 **Value (the sixth metric)** — `ModelPricingCatalog.estimate` over the window's
@@ -700,10 +700,15 @@ Data source and calibration:
 - **Host interactivity & environment**:
   - Dock popover panel: `ensurePopoverPanel` sets `ignoresMouseEvents = false` (`.nonactivatingPanel`,
     does not steal focus), allowing users to click the segment switch, hover over `.help` tooltips,
-    and scroll with `ScrollView`. Injects `.environment(\.quotaWindowSegmentEditable, true)`.
+    and scroll with `ScrollView`. Injects `.environment(\.quotaWindowSegmentEditable, true)`. The
+    popover host also owns a shared display clock (`EdgeDockController.popoverDisplayClock`, started
+    in `updatePopover`'s success path, stopped in `hidePopover`) injected via `DisplayClockScope`,
+    so the card's peak countdown / freshness capsule advance while the popover is visible.
   - Menu strip hover panel: `HoverPanel.swift` retains `ignoresMouseEvents = true`, injecting
     `.environment(\.quotaWindowSegmentEditable, false)`. The segment control is not rendered in
-    the title row, while the table renders the persisted segment state from `@AppStorage`.
+    the title row, while the table renders the persisted segment state from `@AppStorage`. It
+    likewise injects a panel-scoped display clock via `DisplayClockScope`
+    (`HoverPanelController.displayClock`, started in `present`, stopped in `hide`).
 - **Reset credits residency.** The per-card list is the module itself: the collapsed row
   (`CompactResetCreditsRow`) plus `ResetCreditsDetailList`, unconditionally, always on
   screen. There is nothing left to expand — `CompactResetCreditsRow` has no
@@ -1017,4 +1022,4 @@ default has to preserve it — defaulting to off would put a dock inside every f
 window for every existing user. Because the setting can be flipped while the user is
 already fullscreen, a policy change re-probes instead of reusing the cached verdict.
 
-> 核对基线：2026-10-04 · 代码 eb28ecf
+> 核对基线：2026-10-05 · 代码 c7d9afa

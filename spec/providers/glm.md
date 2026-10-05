@@ -275,7 +275,7 @@ needed.
 |---|---|
 | Model | `Models/PeakWindow.swift`（`GlmPeakWindow` 为兼容 typealias，:127）— `status(at:calendar:)` 返回 `.peak(until:)` / `.offPeak(until:)` |
 | Time basis | `Calendar.current`（用户本地时区），与 GLM API 无关 —— refresh 失败也能显示 |
-| Live countdown | `Views/GlmPeakIndicatorView.swift` 只注入 GLM 文案 / 图标 / 配色，倒计时读环境值 `\.menuDisplayDate`（`MenuContentView.MenuDisplayClock` 的**共享菜单时钟，菜单打开期间每秒 tick**）；菜单关闭时时钟停摆、零开销。公共外壳与 `formatPeakDuration` 在 `Views/PeakIndicatorView.swift`，不再自挂 `TimelineView` |
+| Live countdown | `Views/GlmPeakIndicatorView.swift` 只注入 GLM 文案 / 图标 / 配色，倒计时读环境值 `\.displayDate`（**宿主各自注入的活动时钟**：`MenuContentView` 内联 / hover 浮层 `HoverPanelController` / dock 浮层 `EdgeDockController`，各自持有一个 `DisplayClock` 实例并经 `DisplayClockScope` 注入，随宿主显隐 start/stop）；宿主不可见即停、零开销。公共外壳与 `formatPeakDuration` 在 `Views/PeakIndicatorView.swift`，不再自挂 `TimelineView` |
 | Window source | `ProviderConfig.glmPeakWindow`（config 派生，`rebuildStatuses` 时挂在 `ProviderStatus.glmPeakWindow`） |
 | Defaults | `GlmPeakWindow.zhipuDefault` = Mon–Fri 14:00–18:00 |
 | Day classification | `Calendar.weekday`: Mon–Fri = 2…6；周末永远非高峰（`weekdaysOnly`） |
@@ -685,4 +685,4 @@ whether the quota batch succeeded. GLM's former dedicated periodic trigger
 The scanner's db+WAL fingerprint check is unchanged: when nothing changed only a `stat()`
 runs (microseconds); SQL (~1.5ms) only runs when the WAL actually moved.
 
-> 核对基线：2026-10-04 · 代码 d6396fd
+> 核对基线：2026-10-05 · 代码 c7d9afa

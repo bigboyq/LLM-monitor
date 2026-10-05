@@ -256,7 +256,12 @@ raises visible capacity. It is separated from the sections above by a
 Hovering one element opens the **full `ProviderCardView(status:)`** in the existing
 hover `NSPanel` (`HoverInfoRow` → `HoverPanelController`, the same mechanism as every
 other menu hover detail; 0.22s delay, 0.08s re-arm when switching, 6pt cursor gap,
-right edge flips to the cursor's left, bottom edge flips above the cursor). The card
+right edge flips to the cursor's left, bottom edge flips above the cursor). The panel
+host owns a shared display clock (`HoverPanelController.displayClock`) that starts/stops
+with the panel's show/hide and is injected through `DisplayClockScope` — without it
+the in-card peak countdown / freshness capsule would read the environment key's static
+fallback value (`DisplayDateKey.defaultValue` is a `static let`, evaluated once per
+process, permanently frozen). The card
 is pinned to `hoverRevealMode = .alwaysVisible` (`ProviderStatusStripView.cardRevealMode`)
 and to the dock popover's card width (`EdgeDockTheme.popoverWidth` minus its backdrop
 padding — writing the menu's 360pt there would cut 24pt off the 7-day chart) and is
@@ -549,7 +554,7 @@ look for a hover route to this data — the card carries it inline.
 - 账号行（第一段 Account Info）= 仅套餐档位 pill（`data.level` 首字母大写：`lite` → `Lite` / `Pro` / `Max`）。GLM 走 API Key 登录、拿不到邮箱，但**仅等级也显示账号行**；拿不到等级时整行不画。
 - 单条 `GLM Coding Plan` 模型行（`QuotaInfo.displayName`，不再硬编码具体模型名）：智谱 Coding Plan 的 5h + 周积分是套餐共享池，合成一条展示，周进度条按 5 个等价额度分段（`weeklyEquivalentMultiplier` = 5；周积分 = 5 × 5h 积分：Lite 2000/10000、Pro 12000/60000、Max 28000/140000）。
 - 数据来源：远程 `GET open.bigmodel.cn/api/monitor/usage/quota/limit`，Coding Plan Key 作裸 token 放 `Authorization`。鉴权失败（HTTP 200 + `code:1000`）在 parse 阶段捕获并映射成 401 语义。
-- **高峰期提示**：额度行下方一行（`PeakIndicatorView` 外壳 + `GlmPeakIndicatorView` 的文案），纯本地时区计算（与 API 无关）。颜色分 3 档：高峰期 🔥 红色 `高峰期 · 还剩 X`；非高峰期距高峰 < 1 小时 ❄️ 橙色、≥ 1 小时 ❄️ 绿色 `距高峰期 X · 非高峰 5 折`。默认 Mon–Fri 14–18（官方规则：高峰全价、非高峰 50% 折），窗口可在设置面板自定义。倒计时读环境里的 `\.menuDisplayDate`——菜单那一秒一 tick 的共享时钟（`MenuDisplayClock`），菜单打开期间自动推进，不需要自己挂 `TimelineView`。
+- **高峰期提示**：额度行下方一行（`PeakIndicatorView` 外壳 + `GlmPeakIndicatorView` 的文案），纯本地时区计算（与 API 无关）。颜色分 3 档：高峰期 🔥 红色 `高峰期 · 还剩 X`；非高峰期距高峰 < 1 小时 ❄️ 橙色、≥ 1 小时 ❄️ 绿色 `距高峰期 X · 非高峰 5 折`。默认 Mon–Fri 14–18（官方规则：高峰全价、非高峰 50% 折），窗口可在设置面板自定义。倒计时读环境里的 `\.displayDate`——共享展示时钟 `DisplayClock`（每个宿主各持一个实例），由卡片实际所在的宿主各自注入并随面板显隐 start/stop：菜单内容（`MenuContentView` 内联）、菜单兜底行 hover 浮层（`HoverPanelController`）与 dock 浮层（`EdgeDockController`）都持有时钟、经 `DisplayClockScope` 注入环境；不需要自己挂 `TimelineView`。
 - **活动套餐余额**（`GlmActivityPlanBalancesView`，仅在开启 `parseZcodeBalanceLog` 且有未过期 entitlement 时出现）：每条一行 `🎁 套餐名 94% (283M/300M) 08-31 09:00`，排在额度段之后、余额之前。
 - **OpenCode 数据合并**：`zhipuai-coding-plan` 绑定默认开启（`clientBindings[]`）。卡片底部展示 native ZCode 与 OpenCode 合并后的今日与最近 7 天 Input / Cache / Output / Reason 以及 R/T；绑定关闭后只显示 native ZCode local Scanner 数据。设置页没有该开关，调整方式见下节。
 
@@ -655,7 +660,7 @@ Quota summary line:
 | Percent | 10pt semibold monospaced digit，每个用 40pt 固定右对齐宽（统一经 `Formatters.formatQuotaPercent` 格式化：至多一位小数，计算结果为整数则显示整数且绝不带 `.0`，如 `91.9%` / `92%` / `100%`） |
 | Clock icon | `clock.arrow.circlepath`, 10pt semibold |
 | Reset time | 紧跟在 data column 之后（不再用 Spacer 推右），跨行起始 x 一致。取 binding constraint 那一边的 reset：min(5h remaining, weekly remaining × N) 中较小那一边。如果 5h 较小，显示 5h reset；如果 wk × N 较小（5h 还有余量但 wk 撑死了），显示 wk reset——这种场景下 wk reset 才是用户真正等的时间（`EquivalentQuotaAllocation.bindingResetDate`）。两边都缺数据时显示 `—` |
-| Reset 剩余时间 | reset date 之后括号内挂一个紧凑倒计时，由 `Formatters.formatResetSuffix` 输出。阶梯压缩：3d+ → `Xd`；1d+ → `XdXh`；5h+ → `Xh`；1h+ → `XhXXm`；否则 `Xm`。边界 inclusive（>=），避免 1d → "24h"、5h → "5h00m" 这种单位丢失 |
+| Reset 剩余时间 | reset date 之后括号内挂一个紧凑倒计时，由 `Formatters.formatResetSuffix` 输出。阶梯压缩：3d+ → `Xd`；1d+ → `XdXh`；5h+ → `Xh`；1h+ → `XhXXm`；否则 `Xm`。边界 inclusive（>=），避免 1d → "24h"、5h → "5h00m" 这种单位丢失。取值来源是宿主注入的展示时钟（`\.displayDate`，随浮层显隐起停）——`now` 为必填参数，不再是渲染时现取的墙钟 |
 | Weekly-bottleneck suffix | 周折算构成瓶颈时，5h 数值之后并列一个 `(<N>%有效)`，见下节 |
 
 **Weekly-bottleneck suffix（`(30%有效)`，2026-10-04 起）** —
@@ -797,4 +802,4 @@ The card's failure row is the one place in this table that is a **literal** 11pt
 than a `MenuTypography` role: the `errorMessage` role had no call site and was deleted
 rather than left as an unused role. The rendered size is unchanged.
 
-> 核对基线：2026-10-04 · 代码 20232da
+> 核对基线：2026-10-05 · 代码 c7d9afa

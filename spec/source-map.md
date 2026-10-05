@@ -60,7 +60,7 @@
 | `Sources/LLM-monitor/Services/AppLog.swift` | stdout / 文件 (5MB rotate) / os.Logger (`.private`) 三路日志 |
 | `Sources/LLM-monitor/Services/ConfigStore.swift` | config.json 读写 + 内容指纹跟踪 + 模板生成 + **单文件 `DispatchSource` watcher**（`startWatching()` / `startConfigWatcher()`，debounce + 原子替换后重开 fd + 退避重试，由 `AppState.start()` 调用） |
 | `Sources/LLM-monitor/Services/LoginItemService.swift` | `SMAppService.mainApp` 包装 + 状态显示 |
-| `Sources/LLM-monitor/Services/Formatters.swift` | token / percent / 时间 / codex window 标签格式化 |
+| `Sources/LLM-monitor/Services/Formatters.swift` | token / percent / 时间 / codex window 标签格式化；相对时间类（`formatRelativeShort` / `formatResetSuffix`）的 `now:` 必填——视图层显式传宿主展示时钟，不取渲染时墙钟 |
 | `Sources/LLM-monitor/Services/Infra/HTTPClient.swift` | 共享 HTTP 客户端（minimax / codex 三个 fetch 路径）；`ResponseByteLimits` 响应体硬上限（标准额度 8 MiB / Antigravity trajectory 64 MiB）由 `CappedDownloader.data` 在**响应体返回后**校验——超限抛 `responseTooLarge`，该错误为非瞬时（不重试、不进通知冷却）。async `session.data(for:delegate:)` 不向 per-task delegate 投递 `didReceive response` / `didReceive data` 内容回调（macOS 27 实测：URLProtocol 桩与真实网络均不触发），因此 `CappedDownloadDelegate` 的流式计数在当前调用方式下**不执行**，真正的拦截点是后置字节校验；delegate 保留待将来改用回调系任务。峰值内存仍由 URLSession 缓冲决定——该上限保证超限响应不进入调用方解析链路，不保证单次响应不被完整缓冲 |
 | `Sources/LLM-monitor/Services/LocalUsageCoordinator.swift` | scanner 协议 + Combine wire-up 容器 |
 | `Sources/LLM-monitor/Services/ProviderRefreshScheduler.swift` | 循环 A（额度循环）：单一 Task 管理所有 Provider 的 quota 定时排期，睡眠至最早截止时间，并发刷新 + 条目级隔离 |
@@ -114,15 +114,16 @@
 | `Sources/LLM-monitor/Services/SleepHealthService.swift` | 睡眠健康度快照、防休眠断言与周期健康边界刷新 |
 | `Sources/LLM-monitor/Services/SleepHealthEvaluator.swift` | 睡眠锁与系统电源参数的健康度评估 |
 | `Sources/LLM-monitor/Views/MenuBarLabel.swift` | 菜单栏 label 视图（可见输入签名去重重绘 + 分钟时钟监听，App 图标 / Icon Duo / SF Symbol 多样式） |
-| `Sources/LLM-monitor/Views/MenuContentView.swift` | 主面板（header / content / footer）+ `MenuDisplayClock` 驱动 + 高度桥 `MenuPanelHeightBridge`（`contentMaxSize` = 屏幕可见高 × 0.70）+ `MenuHairline` |
+| `Sources/LLM-monitor/Views/MenuContentView.swift` | 主面板（header / content / footer）+ 高度桥 `MenuPanelHeightBridge`（`contentMaxSize` = 屏幕可见高 × 0.70）+ `MenuHairline`；展示时钟经 `\.displayDate` 注入卡片 |
+| `Sources/LLM-monitor/Views/DisplayClock.swift` | 跨宿主共享的展示时钟：`DisplayClock` + `DisplayClockScope` + `\.displayDate` 环境键；菜单内容 / hover 浮层 / dock 浮层各自持有实例、随宿主显隐 start/stop 并注入环境 |
 | `Sources/LLM-monitor/Views/HarnessUsageMenuView.swift` | 菜单的 Harness（客户端）视角：顶部一屏全局今日汇总（`HarnessUsageMenuView`）→ 按客户端分段（`HarnessSectionView`）→ 段内按模型一行（`HarnessModelRowView`）→ 底部 provider 兜底状态条（`ProviderStatusStripView`，hover 出完整卡片）。与 `ProviderCardView` 并列而非替代；模型行的 328pt 宽度预算（菜单 360pt / 内容 336pt）由 `HarnessUsageMenuViewTests` 钉住 |
 | `Sources/LLM-monitor/Views/MenuTypography.swift` | 菜单面板与悬浮层统一排版常量（语义角色，禁止散落硬编码字号） |
 | `Sources/LLM-monitor/Views/MenuWindowAutoCloseBridge.swift` | 失焦立即关 + 30s 无交互关闭（菜单内 mouse/scroll/key 重置计时）|
 | `Sources/LLM-monitor/Views/ProviderCardView.swift` | provider 卡片 + `ProviderStateLabel` + `QuotaSummary`（卡内状态点已随菜单改版移除，状态由 `ProviderStateLabel` 胶囊承载） |
-| `Sources/LLM-monitor/Views/QuotaViews.swift` | 各种 quota 行 + 进度条（`CombinedQuotaWindowRow` / `CombinedQuotaBar` / `SingleQuotaBar` / `ModelQuotaDockBlock` / `OffPeakUsageFootnote` / `DeepseekBalanceRow` / `ChatGPTPlanModelRow` / `CompactResetCreditsRow` / `QuotaBarTooltip`） |
-| `Sources/LLM-monitor/Views/QuotaWindowUsageViews.swift` | 「额度窗口用量」区块族：模块标题 / 细分隔线、四桶绝对值与三个比率（`QuotaWindowUsageMetrics`）、双段 capsule 切换（`QuotaWindowUsageSegmentControl` / `QuotaWindowUsageSegment`）、reset credits 明细（`ResetCreditsDetailList`）与合并统一 7 列 Grid 骨架的总段 `QuotaWindowUsageSection` |
+| `Sources/LLM-monitor/Views/QuotaViews.swift` | 各种 quota 行 + 进度条（`CombinedQuotaWindowRow` / `CombinedQuotaBar` / `SingleQuotaBar` / `ModelQuotaDockBlock` / `OffPeakUsageFootnote` / `DeepseekBalanceRow` / `ChatGPTPlanModelRow` / `CompactResetCreditsRow` / `QuotaBarTooltip`）；重置倒计时与过期判定随宿主展示时钟推进（`\.displayDate`） |
+| `Sources/LLM-monitor/Views/QuotaWindowUsageViews.swift` | 「额度窗口用量」区块族：模块标题 / 细分隔线、四桶绝对值与三个比率（`QuotaWindowUsageMetrics`）、双段 capsule 切换（`QuotaWindowUsageSegmentControl` / `QuotaWindowUsageSegment`）、reset credits 明细（`ResetCreditsDetailList`）与合并统一 7 列 Grid 骨架的总段 `QuotaWindowUsageSection`；重置日期格倒计时随宿主展示时钟推进（`\.displayDate`） |
 | `Sources/LLM-monitor/Views/QuotaHoverViews.swift` | 仅剩 `UsageMetricHoverSummaryView`（额度用量指标 hover 摘要，input/cached 与 prompts/rounds 固定分行）；旧 `QuotaWindowsHoverView` 族已随 menuLayout 死分支整体删除 |
-| `Sources/LLM-monitor/Views/HoverPanel.swift` | `HoverInfoRow` / `HoverPanelController` / 浮层管理 |
+| `Sources/LLM-monitor/Views/HoverPanel.swift` | `HoverInfoRow` / `HoverPanelController` / 浮层管理；浮层显隐驱动共享展示时钟（经 `DisplayClockScope` 注入） |
 | `Sources/LLM-monitor/Models/EdgeDockEntry.swift` | `EdgeDockEntry` + `EdgeDockProjection`：已启用 Provider → 双环条目（外环=5h 有效额度 min(5h, 周×N) 与状态栏同口径、原始 5h 字段供 hover 文案对照、内环=原始周 各自最低 + 健康档位 + 品牌 kind），纯函数 |
 | `Sources/LLM-monitor/Models/EdgeDockConfig.swift` | `DockEdge` / `EdgeDockConfig`：贴边方向 + 归一化位置（存比例不存绝对坐标），含手改值归一化 |
 | `Sources/LLM-monitor/Services/EdgeDockGeometry.swift` | 边缘窗纯几何：行高/尺寸、贴边 frame、offset 往返换算、最近边吸附、行/圆矩形推算（兜底用）、popover 定位、沿边拖拽换算、贴屏侧直边的非对称标签形状 |
@@ -131,7 +132,7 @@
 | `Sources/LLM-monitor/Services/EdgeDockController.swift` | 边缘窗控制器本体：状态与配置（`applyRuntimeConfig` 是运行时改配置的唯一入口，`config` 的 setter 保持 private）+ 接线（`attach` / `teardown`） |
 | `Sources/LLM-monitor/Services/EdgeDockController+Window.swift` | `NSPanel` 建/拆、按条目数与形态算窗口尺寸、贴到目标屏那一侧、"为什么没出现 / 出现在哪"的日志签名 |
 | `Sources/LLM-monitor/Services/EdgeDockController+Mouse.swift` | 鼠标穿透与悬停接管：monitor 装卸、2Hz 轮询节拍、命中后的接管与释放、hover / 展开 / 收起的挂起任务 |
-| `Sources/LLM-monitor/Services/EdgeDockController+Popover.swift` | Provider 卡片浮层（与 dock 两个独立窗口）：定位、显隐、鼠标停在浮层上时的接管保持（`ignoresMouseEvents = false` 接收交互并注入 `quotaWindowSegmentEditable = true`） |
+| `Sources/LLM-monitor/Services/EdgeDockController+Popover.swift` | Provider 卡片浮层（与 dock 两个独立窗口）：定位、显隐、鼠标停在浮层上时的接管保持（`ignoresMouseEvents = false` 接收交互并注入 `quotaWindowSegmentEditable = true`），并经 `DisplayClockScope` 注入随显隐 start/stop 的展示时钟 |
 | `Sources/LLM-monitor/Services/EdgeDockController+Drag.swift` | 沿贴靠边滑动拖拽：阈值判定、跨屏换屏 UUID、落点吸附与位置持久化 |
 | `Sources/LLM-monitor/Services/EdgeDockController+Fullscreen.swift` | 全屏门控：判定变化后重排窗口，以及窗口进出场动画期间的阶梯补测 |
 | `Sources/LLM-monitor/Services/EdgeDockController+HitTesting.swift` | 边缘窗命中判定纯函数（`circleIndex` 圆命中 + `resolveRowRects` / `resolveCircleRects` 实测优先、几何兜底），`nonisolated static`，不读实例状态 |
@@ -170,4 +171,4 @@
 - **串行执行是既定选择**：`swift test --parallel` 实测（2026-10-02，5 连跑 3 败）不可用——`SQLiteTempCopyTests` 的临时副本断言扫描跨进程共享目录，并行 worker 互相误判；且慢测试为睡眠型，并行的 wall 收益仅 ~4s。并行化前提：先给 SQLiteTempCopy 的副本目录引入进程级隔离，再复评。
 - 慢用例的等待注入缝已建立：调度器（now/sleep）、Bark 退避（retryDelay）、vnode 合并窗口（coalescingWindow 参数）；新增耗时敏感测试时优先走注入缝，不要写死真实 sleep。
 
-> 核对基线：2026-10-04 · 代码 094bd57
+> 核对基线：2026-10-05 · 代码 c7d9afa
