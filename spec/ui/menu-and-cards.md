@@ -231,7 +231,11 @@ numbers".
 **Provider fallback strip** (`ProviderStatusStripView`, the last row of the content
 area) — one minimal element per enabled provider, **no leading label**: brand logo
 (11pt) + `ProviderStateLabel` capsule (`10:23` / `需重试` / `未配置` …, already
-tri-colour by refresh freshness). The label was removed in the 2026-10 first-round UI
+tri-colour by refresh freshness). The capsule's time is a **day-independent bare
+`HH:mm`** (`Formatters.formatTimeOfDay`) — it never degrades to `MM-dd HH:mm`
+across midnight, unlike the header's freshness text, because the strip's 54pt width
+budget below assumes the 5-character capsule; "which day" is carried by the capsule's
+freshness colour, not by widening the text. The label was removed in the 2026-10 first-round UI
 pass — the icon+capsule sequence is self-explanatory, and the ~74pt it freed is what
 raises visible capacity. It is separated from the sections above by a
 `MenuHairline.horizontal`, and its data comes from the pure projection
@@ -804,4 +808,4 @@ The card's failure row is the one place in this table that is a **literal** 11pt
 than a `MenuTypography` role: the `errorMessage` role had no call site and was deleted
 rather than left as an unused role. The rendered size is unchanged.
 
-> 核对基线：2026-10-05 · 代码 79dee29
+> 核对基线：2026-10-05 · 代码 ed1616b
