@@ -111,7 +111,7 @@ enum Formatters {
     /// "5 分钟后" / "2 天 3 小时后" / "刚刚"
     ///
     /// `now` 必填：相对时间的数值由调用方决定——视图层必须传宿主注入的展示时钟
-    /// （`\.menuDisplayDate`，随宿主显隐起停），不允许渲染时现取墙钟。
+    /// （`\.displayDate`，随宿主显隐起停），不允许渲染时现取墙钟。
     static func formatRelativeShort(from date: Date, now: Date) -> String {
         let delta = date.timeIntervalSince(now)
         if delta <= 0 { return "已过期" }

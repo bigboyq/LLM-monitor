@@ -162,7 +162,7 @@ struct QuotaWindowUsageSection: View {
     @Environment(\.quotaWindowSegmentEditable) private var isSegmentEditable
     /// 重置日期格倒计时的取值来源：宿主注入的展示时钟（随浮层显隐起停），
     /// 与卡内其它消费者（高峰倒计时、新鲜度胶囊）同一个 now。
-    @Environment(\.menuDisplayDate) private var displayDate
+    @Environment(\.displayDate) private var displayDate
 
     var activeSegment: QuotaWindowUsageSegment {
         segmentOverride ?? (QuotaWindowUsageSegment(rawValue: segmentRawValue) ?? .analysis)

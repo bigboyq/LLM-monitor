@@ -609,7 +609,7 @@ enum ProviderStatusStrip {
 
 /// 「今日汇总」的计算缓存。
 ///
-/// 菜单开着时 `MenuDisplayClock` 每秒 tick 一次，每次 tick 都让 `MenuContentView`
+/// 菜单开着时 `DisplayClock` 每秒 tick 一次，每次 tick 都让 `MenuContentView`
 /// 的 body 重 eval，而 body 里原本直接 `HarnessTodaySummary.summarize(...)`——
 /// 含每行定价（`MixedCurrencyEstimate` / `ModelCostEstimate`），与改版前同量级，
 /// 但**输入没变**。这里把"算一次"与"读一次"分开：body 只读缓存，缓存自己决定

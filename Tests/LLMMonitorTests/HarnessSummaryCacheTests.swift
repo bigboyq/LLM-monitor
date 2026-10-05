@@ -4,7 +4,7 @@ import XCTest
 /// 菜单「今日汇总」的计算缓存（`HarnessSummaryCache`）。
 ///
 /// 缓存要解决的是一个不产生错误、只产生浪费的问题：菜单开着时
-/// `MenuDisplayClock` 每秒 tick 一次，每次都让 `MenuContentView` 的 body 重 eval，
+/// `DisplayClock` 每秒 tick 一次，每次都让 `MenuContentView` 的 body 重 eval，
 /// 而 body 里原本直接全量重算 `HarnessTodaySummary.summarize`（含每行定价）。
 /// 所以断言也分两类：**该重算时重算了**（失效口径不能漏）与**不该重算时没重算**
 /// （`computeCount` 不许涨）。
@@ -78,7 +78,7 @@ final class HarnessSummaryCacheTests: XCTestCase {
         let afterFirstRead = cache.computeCount
 
         for tick in 1...10 {
-            // 每次 tick 的墙钟都往前一秒，模拟 MenuDisplayClock。
+            // 每次 tick 的墙钟都往前一秒，模拟 DisplayClock。
             let ticked = cache.value(
                 for: statuses,
                 now: now.addingTimeInterval(Double(tick)),

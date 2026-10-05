@@ -1,88 +1,15 @@
 import SwiftUI
 
-private struct MenuDisplayDateKey: EnvironmentKey {
-    static let defaultValue = Date()
-}
-
-extension EnvironmentValues {
-    /// A value environment (rather than an EnvironmentObject) keeps small
-    /// display components safe when rendered in isolation, such as previews
-    /// and focused tests. MenuContentView supplies the live shared value.
-    var menuDisplayDate: Date {
-        get { self[MenuDisplayDateKey.self] }
-        set { self[MenuDisplayDateKey.self] = newValue }
-    }
-}
-
-/// 菜单打开期间的单一展示时钟。只让实际需要倒计时/新鲜度的消费者订阅，
-/// 避免每张卡片各自创建 TimelineView。
-@MainActor
-final class MenuDisplayClock: ObservableObject {
-    @Published private(set) var date = Date()
-    private var task: Task<Void, Never>?
-    private let tickIntervalNanoseconds: UInt64
-    private(set) var startCount = 0
-    private(set) var tickCount = 0
-
-    init(tickIntervalNanoseconds: UInt64 = 1_000_000_000) {
-        self.tickIntervalNanoseconds = tickIntervalNanoseconds
-    }
-
-    var isRunning: Bool { task != nil }
-
-    func start() {
-        guard task == nil else { return }
-        startCount += 1
-        date = Date()
-        task = Task { @MainActor [weak self] in
-            while !Task.isCancelled {
-                do {
-                    try await Task.sleep(nanoseconds: self?.tickIntervalNanoseconds ?? 1_000_000_000)
-                } catch {
-                    return
-                }
-                guard let self, !Task.isCancelled else { return }
-                self.tickCount += 1
-                self.date = Date()
-            }
-        }
-    }
-
-    func stop() {
-        task?.cancel()
-        task = nil
-    }
-
-    deinit { task?.cancel() }
-}
-
-/// 把共享展示时钟铺进独立宿主（`NSPanel` + `NSHostingView`）的根视图。
-///
-/// 宿主不在 `MenuContentView` 的环境里，卡片读 `\.menuDisplayDate` 会落到
-/// `MenuDisplayDateKey` 的静态兜底值——`static let` 进程内只求值一次，
-/// 于是高峰倒计时 / 新鲜度胶囊会永远冻结在第一次渲染的时刻。时钟由宿主
-/// 持有并随面板显隐 start/stop（`HoverPanelController` / `EdgeDockController`
-/// 的浮层各持一个），这里只负责订阅 tick 并把新值注入环境。
-struct MenuDisplayClockScope<Content: View>: View {
-    @ObservedObject var clock: MenuDisplayClock
-    private let content: Content
-
-    init(clock: MenuDisplayClock, @ViewBuilder content: () -> Content) {
-        self.clock = clock
-        self.content = content()
-    }
-
-    var body: some View {
-        content.environment(\.menuDisplayDate, clock.date)
-    }
-}
+// 展示时钟（`DisplayClock` / `DisplayClockScope` / `\.displayDate` 环境键）
+// 定义在 `Views/DisplayClock.swift`：跨宿主共享（菜单内容 / hover 浮层 /
+// dock 浮层），本视图只持有一个实例并注入环境。
 
 /// MenuBarExtra 点开后看到的主面板 — **纯展示**，无 sheet 无交互弹窗
 struct MenuContentView: View {
     @ObservedObject var state: AppState
     @ObservedObject var loginItemService: LoginItemService
     @Environment(\.openSettings) private var openSettings
-    @StateObject private var displayClock = MenuDisplayClock()
+    @StateObject private var displayClock = DisplayClock()
     /// 强制本地 UI 重渲染计数（用于同步响应 sleepHealth 状态变更）
     @State private var energyUpdateTick = 0
     /// 动态测量卡片列表的自然排版高度
@@ -93,7 +20,7 @@ struct MenuContentView: View {
     @State private var screenVisibleHeight: CGFloat = 0
     /// 「今日合计 + 按客户端分段」的计算缓存。
     ///
-    /// body 每秒至少被 `MenuDisplayClock` 的 tick 重 eval 一次，而汇总含每行
+    /// body 每秒至少被 `DisplayClock` 的 tick 重 eval 一次，而汇总含每行
     /// 定价；输入没变时这一整趟都是白算。缓存只读不写：`statusDidChange` 到达时
     /// 标脏（见下），真正那次重算发生在 body 读它的时候。失效口径与「所有
     /// statuses 变更入口都会 fire `statusDidChange`」这个前提写在
@@ -145,7 +72,7 @@ struct MenuContentView: View {
             }
         }
         .environmentObject(displayClock)
-        .environment(\.menuDisplayDate, displayClock.date)
+        .environment(\.displayDate, displayClock.date)
         .onAppear {
             displayClock.start()
             let needsFetch = state.statuses.contains { s in

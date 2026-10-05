@@ -11,7 +11,7 @@ struct PeakIndicatorView<Peak: View, OffPeak: View>: View {
     let status: (Date) -> (isPeak: Bool, boundary: Date)
     let peakRow: (Date) -> Peak
     let offPeakRow: (Date) -> OffPeak
-    @Environment(\.menuDisplayDate) private var displayDate
+    @Environment(\.displayDate) private var displayDate
 
     init(
         status: @escaping (Date) -> (isPeak: Bool, boundary: Date),

@@ -7,8 +7,8 @@ import AppKit
 final class LLMMonitorTests: XCTestCase {
 
     @MainActor
-    func testMenuDisplayClockStartIsIdempotentAndStopCancels() async {
-        let clock = MenuDisplayClock(tickIntervalNanoseconds: 1_000_000)
+    func testDisplayClockStartIsIdempotentAndStopCancels() async {
+        let clock = DisplayClock(tickIntervalNanoseconds: 1_000_000)
         clock.start()
         clock.start()
         XCTAssertTrue(clock.isRunning)

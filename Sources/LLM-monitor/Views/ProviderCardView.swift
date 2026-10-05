@@ -81,7 +81,7 @@ struct ProviderCardView: View, Equatable {
 
     /// 「今」行取哪一天：宿主注入的展示时钟（随浮层显隐起停），与卡内其它
     /// 倒计时/新鲜度消费者同一个 now，不取渲染时的墙钟。
-    @Environment(\.menuDisplayDate) private var displayDate
+    @Environment(\.displayDate) private var displayDate
 
     // 卡片内容层四周的内边距搬到了 `LayoutMetrics.cardContentPadding`：
     // `EdgeDockTheme.popoverWidth` 推导宽度时也要读它，声明留在这个 View 里会
@@ -691,11 +691,11 @@ struct ProviderStateLabel: View {
     }
 
     /// 最小刷新间隔为 10 秒，其中第一个新鲜度阈值只有 3 秒。
-    /// 菜单打开期间由共享 MenuDisplayClock 每秒 tick，确保不会跨过阈值却仍保留旧颜色。
+    /// 菜单打开期间由共享 DisplayClock 每秒 tick，确保不会跨过阈值却仍保留旧颜色。
     nonisolated static let timelineIntervalSeconds: TimeInterval = 1
 
     let status: ProviderStatus
-    @Environment(\.menuDisplayDate) private var displayDate
+    @Environment(\.displayDate) private var displayDate
 
     /// 给定时刻的纯展示模型，方便精确验证边界；实际时钟由菜单共享注入。
     nonisolated func presentation(at now: Date) -> Presentation {

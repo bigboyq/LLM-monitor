@@ -223,11 +223,11 @@ final class HoverPanelController {
     private let maximumPanelWidth: CGFloat = EdgeDockTheme.popoverWidth
 
     /// 浮层宿主的共享展示时钟：随面板显隐 start/stop（`present` / `hide`），
-    /// 经 `MenuDisplayClockScope` 注入 rootView。没有它，卡内读
-    /// `\.menuDisplayDate` 的组件（高峰倒计时 / 新鲜度胶囊）会落到
-    /// `MenuDisplayDateKey` 的 `static let` 兜底值——进程内只求值一次，
+    /// 经 `DisplayClockScope` 注入 rootView。没有它，卡内读
+    /// `\.displayDate` 的组件（高峰倒计时 / 新鲜度胶囊）会落到
+    /// `DisplayDateKey` 的 `static let` 兜底值——进程内只求值一次，
     /// 永远冻结在第一次渲染的时刻。
-    let displayClock = MenuDisplayClock()
+    let displayClock = DisplayClock()
 
     private var panel: NSPanel?
     private var hostingView: NSHostingView<AnyView>?
@@ -282,7 +282,7 @@ final class HoverPanelController {
         displayClock.start()
 
         hostingView.rootView = AnyView(
-            MenuDisplayClockScope(clock: displayClock) {
+            DisplayClockScope(clock: displayClock) {
                 detail
                     .padding(10)
                     .background(

@@ -8,19 +8,19 @@ import AppKit
 /// `ProviderCardView` 实际可见的宿主只有两个：菜单兜底行 hover 浮层
 /// （`HoverPanelController`）与 dock 浮层（`EdgeDockController` 的 popover），
 /// 都不在 `MenuContentView` 的环境里。没有宿主级注入时，卡内读
-/// `\.menuDisplayDate` 的组件（GLM / DeepSeek 高峰倒计时、`ProviderStateLabel`
-/// 新鲜度胶囊）会落到 `MenuDisplayDateKey` 的 `static let` 兜底值——进程内只
+/// `\.displayDate` 的组件（GLM / DeepSeek 高峰倒计时、`ProviderStateLabel`
+/// 新鲜度胶囊）会落到 `DisplayDateKey` 的 `static let` 兜底值——进程内只
 /// 求值一次，永远冻结（用户实测 DeepSeek 卡一直显示「距高峰 1分」）。
 ///
-/// 这组测试钉住两件事：`MenuDisplayClockScope` 确实把**活动**时钟送进环境且
+/// 这组测试钉住两件事：`DisplayClockScope` 确实把**活动**时钟送进环境且
 /// 随 tick 推进；两个宿主的时钟默认停表、隐藏即停。
 @MainActor
-final class MenuDisplayClockScopeTests: XCTestCase {
+final class DisplayClockScopeTests: XCTestCase {
 
     // MARK: - 机制：活动时钟随 tick 推进（关键回归门禁）
 
     /// scope 必须把**每 tick 新取的 `Date()`**送进环境，而不是
-    /// `MenuDisplayDateKey.defaultValue` 那个冻结值。
+    /// `DisplayDateKey.defaultValue` 那个冻结值。
     ///
     /// 探针视图在 body 里记录每次读到的环境值；时钟以 1ms tick 泵动后，
     /// 记录序列必须攒出 ≥3 个值且末值 > 首值——冻结值做不到这一点。
@@ -28,11 +28,11 @@ final class MenuDisplayClockScopeTests: XCTestCase {
     /// 墙钟巧合，保证 CI / 本机稳定。
     func testScopeInjectsAdvancingClockDatesIntoTheEnvironment() async {
         let recorder = DateRecorder()
-        let clock = MenuDisplayClock(tickIntervalNanoseconds: 1_000_000)
+        let clock = DisplayClock(tickIntervalNanoseconds: 1_000_000)
         // 强引用 hosting：视图树必须在断言期间持续活着并接收更新。
         let hosting = NSHostingView(
-            rootView: MenuDisplayClockScope(clock: clock) {
-                MenuDisplayDateProbeView(recorder: recorder)
+            rootView: DisplayClockScope(clock: clock) {
+                DisplayDateProbeView(recorder: recorder)
             }
         )
         hosting.frame = CGRect(x: 0, y: 0, width: 40, height: 40)
@@ -53,21 +53,21 @@ final class MenuDisplayClockScopeTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(
             recorder.dates.count, 3,
             "2s 内探针只记录到 \(recorder.dates.count) 个环境值：时钟没 tick，"
-                + "或环境值没有随 tick 传播到读 `\\.menuDisplayDate` 的视图"
+                + "或环境值没有随 tick 传播到读 `\\.displayDate` 的视图"
         )
         XCTAssertGreaterThan(
             recorder.dates.last!, recorder.dates.first!,
             "环境里的展示日期必须随 tick 推进；首尾相同说明注入的是冻结值"
-                + "（MenuDisplayDateKey.defaultValue 的老毛病）"
+                + "（DisplayDateKey.defaultValue 的老毛病）"
         )
     }
 
     // MARK: - 机制：卡内重置倒计时取注入的展示时钟，不是渲染时墙钟
 
     /// 「额度窗口」区块的重置日期格 `MM-dd HH:mm (倒计时)` 必须由**注入的**
-    /// `\.menuDisplayDate` 决定（`QuotaWindowUsageSection.resetDateCell` 读环境值），
+    /// `\.displayDate` 决定（`QuotaWindowUsageSection.resetDateCell` 读环境值），
     /// 而不是渲染时现取的墙钟——否则卡片浮层只要一直开着，倒计时就冻结在
-    /// 打开那一刻（与 `MenuDisplayDateKey.defaultValue` 冻结是同一类毛病）。
+    /// 打开那一刻（与 `DisplayDateKey.defaultValue` 冻结是同一类毛病）。
     ///
     /// 怎么钉：同一份快照（`resetsAt` 固定），两次 `NSHostingView` 渲染只差注入的
     /// 展示时刻——`resetsAt − 1h` 出剩余时间后缀，`resetsAt + 1h` 必须出「已过期」，
@@ -107,7 +107,7 @@ final class MenuDisplayClockScopeTests: XCTestCase {
 
         func section(displayDate: Date) -> some View {
             QuotaWindowUsageSection(snapshot: snapshot, segmentOverride: .analysis)
-                .environment(\.menuDisplayDate, displayDate)
+                .environment(\.displayDate, displayDate)
                 .frame(width: width)
         }
 
@@ -148,7 +148,7 @@ final class MenuDisplayClockScopeTests: XCTestCase {
         XCTAssertNotEqual(
             fresh, expired,
             "只差注入的展示时刻（剩余 vs 已过期），位图必须不同——相同说明重置倒计时"
-                + "没有读注入的 \\(\\.menuDisplayDate)，而是在渲染时现取了墙钟"
+                + "没有读注入的 \\(\\.displayDate)，而是在渲染时现取了墙钟"
         )
     }
 
@@ -174,7 +174,7 @@ final class MenuDisplayClockScopeTests: XCTestCase {
     func testEdgeDockPopoverClockIsStoppedAfterHidePopover() {
         EdgeDockController.shared.hidePopover()
         XCTAssertFalse(
-            EdgeDockController.shared.popoverMenuDisplayClock.isRunning,
+            EdgeDockController.shared.popoverDisplayClock.isRunning,
             "dock 浮层隐藏后展示时钟必须停表"
         )
     }
@@ -185,7 +185,7 @@ final class MenuDisplayClockScopeTests: XCTestCase {
     func testUpdatePopoverEarlyExitKeepsTheClockStopped() {
         EdgeDockController.shared.updatePopover()
         XCTAssertFalse(
-            EdgeDockController.shared.popoverMenuDisplayClock.isRunning,
+            EdgeDockController.shared.popoverDisplayClock.isRunning,
             "updatePopover 早退路径必须收敛到 hidePopover()，时钟不得残留运行态"
         )
     }
@@ -201,10 +201,10 @@ private final class DateRecorder {
     }
 }
 
-/// 读 `\.menuDisplayDate` 的最小探针：环境值变化会触发 body 重 eval，
+/// 读 `\.displayDate` 的最小探针：环境值变化会触发 body 重 eval，
 /// `let _ =` 在 ViewBuilder 里是合法语句，每次重 eval 都记录一次。
-private struct MenuDisplayDateProbeView: View {
-    @Environment(\.menuDisplayDate) private var date
+private struct DisplayDateProbeView: View {
+    @Environment(\.displayDate) private var date
     let recorder: DateRecorder
 
     var body: some View {

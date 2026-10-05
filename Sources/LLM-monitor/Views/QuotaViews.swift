@@ -211,7 +211,7 @@ struct CompactResetCreditsRow: View {
     }
 
     /// 过期判定用宿主注入的展示时钟，不取渲染时的墙钟（与卡内其它倒计时同一个 now）。
-    @Environment(\.menuDisplayDate) private var displayDate
+    @Environment(\.displayDate) private var displayDate
 
     private var isStale: Bool {
         resets.isStale(now: displayDate, refreshIntervalSeconds: resetCreditsRefreshPeriod)
@@ -293,7 +293,7 @@ struct CompactResetCreditsRow: View {
 struct CreditEntryRow: View {
     let entry: ResetCreditEntry
     /// 剩余时间取宿主注入的展示时钟，不取渲染时的墙钟。
-    @Environment(\.menuDisplayDate) private var displayDate
+    @Environment(\.displayDate) private var displayDate
 
     var body: some View {
         HStack(spacing: 6) {
@@ -819,7 +819,7 @@ private struct SingleQuotaMetadataLine: View {
 private struct ResetTimeSummary: View {
     let resetsAt: Date?
     /// 倒计时取宿主注入的展示时钟，不取渲染时的墙钟（随浮层显隐起停）。
-    @Environment(\.menuDisplayDate) private var displayDate
+    @Environment(\.displayDate) private var displayDate
 
     var body: some View {
         if let resetsAt {
