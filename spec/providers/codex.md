@@ -702,7 +702,7 @@ Reasoning is reported as `reasoning_output_tokens` separately from `output_token
 
 ### Why this matters in practice
 
-- **UI stacked bars render differently.** Codex has 4 segments (`uncached = input - cached`, `cached`, `output`, `reasoning`); Antigravity has 5. Drawing them with the same `totalSegments` assumption misaligns colors and widths.
+- **Data models differ; the shared UI renders them uniformly.** Antigravity's daily type carries a 5th field (`cacheWrite`) that Codex lacks, but the shared chart layer (`LocalUsageChartDayMetrics`) renders the **same 4 segments** (`uncached = input - cached`, `cached`, `output`, `reasoning`) for every provider — `cacheWrite` is excluded from the UI and kept as raw diagnostics. The historical risk was drawing bars from raw per-provider shapes; today only code that bypasses the shared metrics would misalign.
 - **Total computation differs.** A naive `total = input + cached + output + reasoning` over-counts Codex by `cached` (because Codex's `input` already includes `cached`).
 - **cacheWrite asymmetry.** Codex has no `cacheWrite` segment; the UI either hides the segment for Codex rows or renders 0.
 - **Cross-provider sum**: only `input (uncached)`, `cacheRead/cached`, `output`, `reasoning` are comparable. `cacheWrite` is Antigravity-only.
