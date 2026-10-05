@@ -343,6 +343,21 @@ final class LocalUsageLifecycleTests: ScannerTestCase {
         )
     }
 
+    /// 共享 vnode owner + 事件路由：两个 lifecycle 复用同一个 vnode watcher
+    /// （`vnodeWatcherCount == 1`），一次真实写入两个 source 都 dirty。
+    ///
+    /// 归因（本用例的核心，见上面两段注释的对偶）：等待挂在 vnode 专属信号上。
+    /// `accessSequence` 读的是 monitor 的 `recency[path]`，全仓只有
+    /// `handleVnodeEvent` 与 `addDynamicPath` 会推进它，而 `handleFSEvent` 从不调用
+    /// `touch`；静置之后 `addDynamicPath` 也不会再触发（`autoDiscoveryEnabled: false`
+    /// 且没有新动态文件被发现）。因此 `accessSequence` 前进 == 发生了一次 vnode 写入
+    /// 事件，写入自身的 FSEvents `ItemModified` 伪造不出它。
+    /// per-source 的 dirty 计数对两者都敏感（vnode 事件与 FSEvents 汇到同一个
+    /// `onEvent`），只能证明"被通知"，不能证明"被谁通知"——所以两类信号都要：
+    /// 先等 vnode 归因锚点，再断言两边各自的 dirty 前进。
+    /// 组合起来：`vnodeWatcherCount == 1` + `accessSequence` 前进 ⇒ 那次写入事件
+    /// 必然经由唯一的 vnode watcher 派发，而 `handleVnodeEvent` 对 `owners[path]`
+    /// 逐个 `onEvent()`，所以两个 source 的 dirty 来自**同一个** watcher。
     @MainActor
     func testGlobalMonitorSharesVnodeOwnerAndRoutesDirty() async throws {
         let root = FileManager.default.temporaryDirectory
@@ -352,13 +367,17 @@ final class LocalUsageLifecycleTests: ScannerTestCase {
         let file = root.appendingPathComponent("session.jsonl")
         FileManager.default.createFile(atPath: file.path, contents: Data())
         let monitor = LocalUsageFileMonitor(maxVnodeWatchers: 3, autoDiscoveryEnabled: false)
+        // per-source dirty 计数（同 testLocalUsageLifecycleReentrantStartAndBoundedHotSet
+        // 的 idiom）：证明"两个 source 各被通知"，但它不区分 vnode 与 FSEvents。
+        var dirtyCount1 = 0
+        var dirtyCount2 = 0
         let source1 = LocalUsageSourceLifecycle(
             paths: [root], seedDynamicFiles: [file], dynamicExtensions: ["jsonl"], monitor: monitor,
-            onDirty: {}
+            onDirty: { dirtyCount1 += 1 }
         )
         let source2 = LocalUsageSourceLifecycle(
             paths: [root], seedDynamicFiles: [file], dynamicExtensions: ["jsonl"], monitor: monitor,
-            onDirty: {}
+            onDirty: { dirtyCount2 += 1 }
         )
         XCTAssertEqual(monitor.vnodeWatcherCount, 1)
         let fd = open(file.path, O_WRONLY | O_APPEND)
@@ -368,34 +387,55 @@ final class LocalUsageLifecycleTests: ScannerTestCase {
         var byte: UInt8 = 1
         // 不用 `fulfillment`（与 testGlobalMonitorLRURefreshesOnHotFileTouchAndProtectsPinned
         // 同理由）：共享主 actor 上前序用例遗留的 Task / DispatchSource 可能占满
-        // 主 actor，硬 2s 预算会被吃掉。改为按 generation 轮询——`eventGeneration`
-        // 在 `onDirty` 之前自增，等价于"dirty 回调至少发生过一次"。
-        // 快照之前先静置：注册期拓扑事件也会推进 generation，不静置的话它们会
+        // 主 actor，硬预算会被吃掉。改为轮询。
+        // 快照之前先静置：注册期拓扑事件也会推进 eventGeneration，不静置的话它们会
         // 直接满足下面的等待（删掉真实写入用例仍然绿）。见 settleSourceEvents。
         await settleSourceEvents([source1, source2])
-        let generationBeforeFirstWrite1 = source1.eventGeneration
-        let generationBeforeFirstWrite2 = source2.eventGeneration
+        // 两类信号一起快照：accessSequence 是 vnode 归因锚点，dirty 计数是路由证据。
+        let vnodeSequenceBeforeFirstWrite = monitor.accessSequence(for: file) ?? 0
+        let dirty1BeforeFirstWrite = dirtyCount1
+        let dirty2BeforeFirstWrite = dirtyCount2
         XCTAssertEqual(withUnsafePointer(to: &byte) { Darwin.write(fd, $0, 1) }, 1)
         XCTAssertEqual(fsync(fd), 0)
+        // 先等 vnode 专属信号：只有 handleVnodeEvent 会推进 accessSequence，
+        // 它前进才说明这次写入事件确实来自 vnode watcher（FSEvents 满足不了）。
         await waitUntil(
             timeout: 5,
-            message: "第 1 个事件未到：source1 应因共享 vnode 写入而 dirty（快照 generation=\(generationBeforeFirstWrite1)）"
-        ) { source1.eventGeneration > generationBeforeFirstWrite1 }
+            message: "共享 vnode watcher 未收到写入：accessSequence 未推进（快照 \(vnodeSequenceBeforeFirstWrite)，当前 \(monitor.accessSequence(for: file) ?? 0)）"
+        ) { (monitor.accessSequence(for: file) ?? 0) > vnodeSequenceBeforeFirstWrite }
         await waitUntil(
             timeout: 5,
-            message: "第 2 个事件未到：source2 应因共享 vnode 写入而 dirty（快照 generation=\(generationBeforeFirstWrite2)）"
-        ) { source2.eventGeneration > generationBeforeFirstWrite2 }
+            message: "第 1 个事件未到：source1 应因共享 vnode 写入而 dirty（快照 dirty=\(dirty1BeforeFirstWrite)，当前 \(dirtyCount1)）"
+        ) { dirtyCount1 > dirty1BeforeFirstWrite }
+        await waitUntil(
+            timeout: 5,
+            message: "第 2 个事件未到：source2 应因共享 vnode 写入而 dirty（快照 dirty=\(dirty2BeforeFirstWrite)，当前 \(dirtyCount2)）"
+        ) { dirtyCount2 > dirty2BeforeFirstWrite }
 
         source1.stop()
         XCTAssertEqual(monitor.vnodeWatcherCount, 1)
-        let generationBeforeSecondWrite = source2.eventGeneration
+        // source1 已 stop：它的 eventGeneration 冻结，settleSourceEvents 退化成
+        // "等一个安静窗口"，用来排除第一次写入的在途事件，防止下面
+        // "只有 source2 收到" 的断言被前一阶段的余波误伤。
+        await settleSourceEvents([source1])
+        let vnodeSequenceBeforeSecondWrite = monitor.accessSequence(for: file) ?? 0
+        let dirty1BeforeSecondWrite = dirtyCount1
+        let dirty2BeforeSecondWrite = dirtyCount2
         let secondFDWrite = withUnsafePointer(to: &byte) { Darwin.write(fd, $0, 1) }
         XCTAssertEqual(secondFDWrite, 1)
         XCTAssertEqual(fsync(fd), 0)
         await waitUntil(
             timeout: 5,
-            message: "第 3 个事件未到：source1 停止后 source2 仍应独立收到 vnode 写入（快照 generation=\(generationBeforeSecondWrite)）"
-        ) { source2.eventGeneration > generationBeforeSecondWrite }
+            message: "source1 停止后 vnode 写入事件未到：accessSequence 未推进（快照 \(vnodeSequenceBeforeSecondWrite)，当前 \(monitor.accessSequence(for: file) ?? 0)）"
+        ) { (monitor.accessSequence(for: file) ?? 0) > vnodeSequenceBeforeSecondWrite }
+        await waitUntil(
+            timeout: 5,
+            message: "第 3 个事件未到：source1 停止后 source2 仍应独立收到 vnode 写入（快照 dirty=\(dirty2BeforeSecondWrite)，当前 \(dirtyCount2)）"
+        ) { dirtyCount2 > dirty2BeforeSecondWrite }
+        XCTAssertEqual(
+            dirtyCount1, dirty1BeforeSecondWrite,
+            "source1 已 stop：第 2 次写入不应再路由到它（快照 \(dirty1BeforeSecondWrite)，当前 \(dirtyCount1)）"
+        )
         XCTAssertEqual(monitor.vnodeWatcherCount, 1)
     }
 
