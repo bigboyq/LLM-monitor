@@ -346,7 +346,7 @@ cannot drift. Since 2026-10-04 that line shows, next to the raw 5h reading, the 
 below it draws `min(5h, weekly × N)` while the number is the raw 5h — without the
 suffix a 30%-long bar next to "5h 100%" reads as a bug (the user reported exactly
 that). The predicate is `QuotaBarWithMetadata.weeklyBindingEffectivePercent`
-(`QuotaViews.swift:643`), which reuses `EquivalentQuotaAllocation.bindingWindow`:
+(`QuotaViews.swift:648`), which reuses `EquivalentQuotaAllocation.bindingWindow`:
 weekly × N must be *strictly* tighter, ties fall to 5h, and single-window models
 never get a suffix. The value is `effectivePrimaryFraction × 100`, printed in
 `Color.criticalTint`. The row's data column switches from 152pt to 208pt
@@ -1022,4 +1022,4 @@ default has to preserve it — defaulting to off would put a dock inside every f
 window for every existing user. Because the setting can be flipped while the user is
 already fullscreen, a policy change re-probes instead of reusing the cached verdict.
 
-> 核对基线：2026-10-05 · 代码 c7d9afa
+> 核对基线：2026-10-05 · 代码 79dee29
