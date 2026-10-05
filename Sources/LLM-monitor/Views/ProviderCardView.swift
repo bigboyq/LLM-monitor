@@ -636,7 +636,9 @@ struct ProviderStateLabel: View {
                 let interval = Double(status.refreshIntervalSeconds)
                 let r = interval > 0 ? (elapsed / interval) : 0.0
 
-                let timeString = Formatters.formatClock(lastRefreshedAt, now: now)
+                // 恒定 HH:mm（formatTimeOfDay）：兜底行胶囊的宽度预算按 5 字符钉死，
+                // formatClock 的跨天退化成 MM-dd HH:mm 会把整行撑变形。
+                let timeString = Formatters.formatTimeOfDay(lastRefreshedAt)
                 let tone: Tone
                 if r <= 0.3 {
                     tone = .green

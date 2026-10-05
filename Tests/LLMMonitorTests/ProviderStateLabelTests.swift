@@ -47,6 +47,25 @@ final class ProviderStateLabelTests: XCTestCase {
 
     // MARK: - 文案
 
+    /// `.ok` 胶囊的时间跨天**不**退化成 `MM-dd HH:mm`：兜底行宽度预算按 5 字符
+    /// 胶囊钉死（5 元素 × 54pt），加宽会把整行撑变形——「哪一天」由胶囊的新鲜度
+    /// 颜色承担，不进时间文本。
+    func testOkTitleStaysBareClockAcrossMidnight() {
+        let cal = Calendar.current
+        let now = Date()
+        let yesterday = cal.date(byAdding: .day, value: -1, to: now)!
+
+        var status = Self.okStatus()
+        status.lastRefreshedAt = yesterday
+        let title = ProviderStateLabel(status: status).presentation(at: now).title
+
+        XCTAssertEqual(title, Formatters.formatTimeOfDay(yesterday))
+        XCTAssertEqual(title.count, 5, "胶囊必须是 HH:mm 五字符形态，实际：\(title)")
+        XCTAssertFalse(title.contains("-"), "跨天不得退化成 MM-dd HH:mm，实际：\(title)")
+        // 对照：通用 formatClock 在同样的跨天场景下会带日期（两者语义从此分家）。
+        XCTAssertTrue(Formatters.formatClock(yesterday, now: now).contains("-"))
+    }
+
     /// `.notConfigured` 的胶囊文案是「未配置」而不是「未启用」。
     ///
     /// 这个状态覆盖五种原因（缺配置块 / 缺 Key / 缺外部 auth / 缺登录…），其中

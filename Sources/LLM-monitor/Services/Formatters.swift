@@ -167,6 +167,14 @@ enum Formatters {
         }
     }
 
+    /// 时钟胶囊专用：恒定 "HH:mm"，**跨天不退化**。Provider 兜底行的宽度预算按
+    /// 5 字符胶囊钉死（5 元素 × 54pt，spec/ui/menu-and-cards.md §Provider fallback
+    /// strip），`MM-dd HH:mm` 的 11 字符会把整行撑变形——跨天的「哪一天」信息由
+    /// 胶囊的新鲜度颜色承担，不靠加宽时间文本。
+    static func formatTimeOfDay(_ date: Date) -> String {
+        formatterCache.date(date, format: "HH:mm")
+    }
+
     /// 紧凑绝对时间，适合菜单内默认摘要
     static func formatMonthDayMinute(_ date: Date) -> String {
         formatterCache.date(date, format: "MM-dd HH:mm")

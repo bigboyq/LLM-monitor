@@ -79,5 +79,8 @@ final class FormattersTests: XCTestCase {
         let diffDay = formatter.date(from: "2026-07-09 21:32:00")!
         XCTAssertEqual(Formatters.formatClock(sameDay, now: baseTime), "21:32")
         XCTAssertEqual(Formatters.formatClock(diffDay, now: baseTime), "07-09 21:32")
+        // formatTimeOfDay: 恒定 HH:mm，跨天**不**退化——兜底行胶囊宽度预算按 5 字符钉死
+        XCTAssertEqual(Formatters.formatTimeOfDay(sameDay), "21:32")
+        XCTAssertEqual(Formatters.formatTimeOfDay(diffDay), "21:32")
     }
 }
