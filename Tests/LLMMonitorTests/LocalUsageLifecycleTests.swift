@@ -91,9 +91,9 @@ final class LocalUsageLifecycleTests: ScannerTestCase {
         let file = root.appendingPathComponent("runtime.sqlite")
         FileManager.default.createFile(atPath: file.path, contents: Data())
 
-        let changed = expectation(description: "vnode write")
+        var deliveries = 0
         let vnode = LocalVnodeWriteWatcher(path: file) {
-            changed.fulfill()
+            deliveries += 1
         }
         vnode.start()
         let fd = open(file.path, O_WRONLY | O_APPEND)
@@ -111,7 +111,12 @@ final class LocalUsageLifecycleTests: ScannerTestCase {
         XCTAssertEqual(fsync(fd), 0)
         // Keep fd open until after this assertion: this is the regression case
         // that FSEvents alone cannot reliably surface.
-        await fulfillment(of: [changed], timeout: 2)
+        // 与本文件其余 vnode 用例一致改用 waitUntil 轮询（不用 `fulfillment`）：
+        // 共享主 actor 上前序用例遗留的 Task / DispatchSource 可能占满主 actor，
+        // 硬超时预算会被吃掉；轮询只在条件成立时才消耗预算。
+        await waitUntil(timeout: 2, message: "append 事件未到：writer 保持打开时 vnode 写入应投递 dirty") {
+            deliveries == 1
+        }
         let fileSize = (try FileManager.default.attributesOfItem(atPath: file.path)[.size] as? NSNumber)?.intValue ?? 0
         XCTAssertGreaterThan(fileSize, 0)
     }
@@ -295,6 +300,49 @@ final class LocalUsageLifecycleTests: ScannerTestCase {
         )
     }
 
+    /// 静置：等"注册期"FSEvents 拓扑事件排空，返回时这些 source 的
+    /// `eventGeneration` 已连续 `quietWindow` 秒不再增长。
+    ///
+    /// 为什么必须静置：`LocalUsageSourceLifecycle.init` 里就 `start()` 了流，
+    /// 根目录 / seed 文件都是刚创建的，它们的创建事件会在注册后被
+    /// fseventsd 补投并推进 `eventGeneration`。若直接快照 generation 再写入，
+    /// 后续 `eventGeneration > 快照` 的等待会被这些**注册期**事件满足——
+    /// 真实写入即使完全不发生，用例照样绿，断言失去意义（静置前已实测复现）。
+    /// 静置把快照点挪到注册期事件之后，等待条件才重新只由被测写入满足。
+    ///
+    /// 有界性：整体不超过 `timeout`；每次观察到 generation 变化就重置安静窗口
+    /// 计时。超时即 XCTFail 并说明"注册期事件未排空"，不会挂死也不会静默跳过。
+    /// 边界值：`quietWindow` 0.6s 明显大于 FSEvents 的 0.25s 流延迟
+    /// （`LocalFSEventsWatcher.start` 的 latency 参数）+ fseventsd 调度抖动，
+    /// 所以"安静窗口内无事件"等价于"注册期事件已排空"；`timeout` 4s 给系统负载
+    /// 高时留足余量，又远小于等待写入的 5s 预算，不会把用例拖成超时失败源。
+    @MainActor
+    private func settleSourceEvents(
+        _ sources: [LocalUsageSourceLifecycle],
+        quietWindow: TimeInterval = 0.6,
+        timeout: TimeInterval = 4
+    ) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        var lastGenerations = sources.map(\.eventGeneration)
+        var quietSince = Date()
+        while Date() < deadline {
+            try? await Task.sleep(nanoseconds: 20_000_000)
+            let now = Date()
+            let generations = sources.map(\.eventGeneration)
+            if generations != lastGenerations {
+                // 仍有注册期事件在到达：重新计时，直到它们彻底排空。
+                lastGenerations = generations
+                quietSince = now
+            } else if now.timeIntervalSince(quietSince) >= quietWindow {
+                return
+            }
+        }
+        XCTFail(
+            "注册期事件未在 \(Int(timeout)) 秒内排空"
+                + "（安静窗口 \(quietWindow)s，最后一次 generation 变化发生在 \(lastGenerations)）"
+        )
+    }
+
     @MainActor
     func testGlobalMonitorSharesVnodeOwnerAndRoutesDirty() async throws {
         let root = FileManager.default.temporaryDirectory
@@ -322,6 +370,9 @@ final class LocalUsageLifecycleTests: ScannerTestCase {
         // 同理由）：共享主 actor 上前序用例遗留的 Task / DispatchSource 可能占满
         // 主 actor，硬 2s 预算会被吃掉。改为按 generation 轮询——`eventGeneration`
         // 在 `onDirty` 之前自增，等价于"dirty 回调至少发生过一次"。
+        // 快照之前先静置：注册期拓扑事件也会推进 generation，不静置的话它们会
+        // 直接满足下面的等待（删掉真实写入用例仍然绿）。见 settleSourceEvents。
+        await settleSourceEvents([source1, source2])
         let generationBeforeFirstWrite1 = source1.eventGeneration
         let generationBeforeFirstWrite2 = source2.eventGeneration
         XCTAssertEqual(withUnsafePointer(to: &byte) { Darwin.write(fd, $0, 1) }, 1)
