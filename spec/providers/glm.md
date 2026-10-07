@@ -251,7 +251,7 @@ The card shows the standard two-window layout (5h + weekly remaining %, reset co
 and a tier pill (`Lite` / `Pro` / `Max`). The footer renders the shared seven-day
 Input/Cache/Output/Reason local-usage chart, fed by the native ZCode scanner with OpenCode's
 `zhipuai-coding-plan` slice optionally merged on top (`clientBindings[]`, default on).
-The merged samples also feed the quota-window hover summary. The settings UI has no separate
+The merged samples also feed the 「额度窗口」 usage table and its 「闲」 row. The settings UI has no separate
 OpenCode toggle; edit `clientBindings[]` and save the config file when a non-default binding is
 needed.
 
@@ -433,20 +433,21 @@ minimax 分片的 `assistant_message_id` 100% 非空，因此"非智谱行不做
   sample prompt IDs are namespaced with the `opencode:zhipuai-coding-plan:` prefix so a
   native ZCode prompt ID and an OpenCode prompt ID never collide.
 
-### Input display (chart vs hover)
+### Input display (chart vs quota-window table)
 
-Both the 7-day stacked bar chart and the quota-window hover show the **uncached** input as
+Both the 7-day stacked bar chart and the 「额度窗口」 usage table show the **uncached** input as
 the primary "input" number, so the two views never disagree:
 
 - **7-day chart** (`LocalUsageDaily.input`): `GlmDailyUsage.inputTokens` is already uncached
   (= `max(input_raw - cacheRead, 0)`), computed in the reader.
-- **Hover** (`UsageMetricHoverSummaryView`): the shared `input` line renders
-  `usage.uncachedInputTokens` (= `max(inputTokens - cachedInputTokens, 0)`)，缓存量
-  单起一行 `cached`（不是 `(+N cached)` 后缀）。`UsageMetricSummary.inputTokens` keeps
+- **Quota-window table** (`QuotaWindowUsageMetrics(usage:)`, the Input bucket behind the
+  用量 mode's `Input` column and the 今 / 闲 rows): it renders
+  `usage.uncachedInputTokens` (= `max(inputTokens - cachedInputTokens, 0)`)，缓存量单独成
+  `Cached` 桶（不是 `(+N cached)` 后缀）。`UsageMetricSummary.inputTokens` keeps
   its project-wide "full input (cache is a subset)" invariant; `cacheHitRate` is still
   computed against full input.
 
-This is a global hover change (applies to all four providers) so the Input number is never
+This is a global caliber change (applies to all providers) so the Input number is never
 the full input masquerading as new input.
 
 ### Off-peak tasks (闲时任务)
@@ -487,7 +488,16 @@ ZCode 的闲时任务是系统赠送的、**不消耗 Coding Plan 积分**的后
 | 位置 | 是否包含闲时 / Start Plan / 其他任务 token |
 |---|---|
 | 今日 / 7 天本地 token 柱图（footer） | **包含**（真实 token 消耗，按日聚合不经过窗口过滤） |
-| 5h / week 额度窗口 hover（`primaryUsage` / `weeklyUsage`） | **排除**（不消耗积分，计入会高估额度消耗） |
+| 5h / 周额度窗口行（「额度窗口」表格，`ProviderCardDerivedValues.windowUsageSnapshot` → `LocalUsageSummaryBuilder.windowUsage` 的白名单口径） | **排除**（不消耗积分，计入会高估额度消耗） |
+| 额度窗口表格「闲」行 | 单独拆出展示（今日闲时切片，与 5h / 周 / 今 并列，不计入窗口统计） |
+
+「额度窗口」表格的「闲」行是闲时用量的唯一卡内出口：曾经的独立闲时脚注
+（`OffPeakUsageFootnote`）已删除，用量并入表格——由 `ProviderCardDerivedValues.offPeakUsageRow`
+构造，数据与被删脚注同源同口径（`LocalUsageSummaryBuilder.offPeakTodaySummary`，今日闲时
+样本的筛选谓词全仓仅 `offPeakTodaySamples` 一份），价值列对同一批今日闲时样本走
+`ModelPricingCatalog.estimate` 计价（原币种，格内不加「零积分」说明）；仅
+`status.kind == .glmCodingPlan` 构造，重置日期格恒 `—`，说明句
+「ZCode 闲时任务真实消耗；不影响 5h / 周积分余额」逐字保留为「闲」行类型格的 tooltip。
 
 实现：`GlmZcodeDBReader` 读 `builtin:bigmodel-%` / `account:bigmodel-%` / `account:zai-%`
 三前缀 LIKE + `offpeak-idle-plan` 裸值精确匹配（每个前缀一个 `LIKE ?`，再加一个精确 `= ?`，
@@ -598,8 +608,8 @@ Bigmodel-Target-Type: PERSONAL                    # 团队套餐为 TEAM + Bigmo
 | Scanner, cache, and seven-day snapshot | `Sources/LLM-monitor/Services/GlmZcodeLocalUsageScanner.swift` |
 | Activity-plan balance log reader | `Sources/LLM-monitor/Services/GlmZcodeBalanceLogReader.swift` |
 | Provider-neutral projection with OpenCode | `Sources/LLM-monitor/Models/ProviderClientModel.swift` (`ProviderStatus.usageProjection`，帧抽取表 `usageFrameExtractors`) + `UsageProjectionKernel` |
-| Window summary + off-peak exclusion | `Sources/LLM-monitor/Models/LocalTokenUsageSample.swift` (`summary(excludeGlmOffPeak:)`) |
-| Card integration | `Sources/LLM-monitor/Views/ProviderCardView.swift` + `QuotaViews.swift` |
+| Window summary + off-peak exclusion | `Sources/LLM-monitor/Models/LocalTokenUsageSample.swift` (`summary(excludeGlmOffPeak:)`；今日闲时样本筛选/聚合 `offPeakTodaySamples` / `offPeakTodaySummary`) |
+| Card integration | `Sources/LLM-monitor/Views/ProviderCardView.swift` + `QuotaViews.swift`；「额度窗口」表格「闲」行的构造在 `Sources/LLM-monitor/Views/ProviderCardDerived.swift`（`ProviderCardDerivedValues.offPeakUsageRow`） |
 | Regression tests | `Tests/LLMMonitorTests/GlmCodingPlanFetcherTests.swift 等 5 个按 MARK 段拆分的 GLM 测试文件` |
 
 ## API Error Handling
@@ -669,6 +679,9 @@ GlmOffPeakTests.swift / GlmBalanceLogReaderTests.swift / GlmUsageCategoryTests.s
 | `testGlmZcodeDBReaderNativeAndSnapshot` | Native aggregation, samples, snapshot padding, and today selection |
 | `testGlmReaderAppliesRecentCutoffToDailyAggregation` | Recent cutoff applies to daily aggregation and samples |
 | usageProjection GLM client contribution tests | OpenCode GLM usage projection and sample namespace |
+| `testOffPeakUsageRowMirrorsTheDeletedFootnote` | 「闲」行与被删脚注同源同口径：四桶映射与 `offPeakTodaySummary` 一致（Input 为未缓存输入），命中率与 `summary.cacheHitRate` 相等，价值对同批 `offPeakTodaySamples` 与目录逐分一致（¥ 原币种）；正常任务样本不进「闲」行 |
+| `testOffPeakUsageRowIsNilWithoutOffPeakSamplesToday` | 当天无闲时样本 →「闲」行整个不画（nil，不是全零行） |
+| `testOffPeakUsageRowIsNilForNonGlmProviders` | 非 `glmCodingPlan` kind 恒返回 nil（闲时窗口只属于智谱任务，不泄漏到共用 ZCode 账本的 MiniMax / DeepSeek 卡） |
 
 The native ZCode scanner and OpenCode merge coverage is included above.
 
@@ -684,4 +697,4 @@ whether the quota batch succeeded. GLM's former dedicated periodic trigger
 The scanner's db+WAL fingerprint check is unchanged: when nothing changed only a `stat()`
 runs (microseconds); SQL (~1.5ms) only runs when the WAL actually moved.
 
-> 核对基线：2026-10-05 · 代码 79dee29
+> 核对基线：2026-10-07 · 代码 44afd87

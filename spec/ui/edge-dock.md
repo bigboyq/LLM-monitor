@@ -278,8 +278,10 @@ consumer, and the whole `QuotaWindowsHoverView` family
 (`QuotaWindowsHoverView` / `QuotaUsageWindowsHoverView` / `QuotaUsageWindowColumn` /
 `SingleQuotaWindowHoverView` / `HoverMetricLine` / `QuotaWindowsHoverPresentation`) was
 **deleted** along with the only path that constructed it — the model rows' `menuLayout`,
-which is itself gone. `QuotaHoverViews.swift` now holds only
-`UsageMetricHoverSummaryView`, whose one live in-card host is GLM's off-peak footnote.
+which is itself gone. `QuotaHoverViews.swift` is now comment-only: its last resident,
+`UsageMetricHoverSummaryView`, was deleted together with its one live in-card host —
+GLM's off-peak footnote, whose usage now renders as the quota-window table's 「闲」 row
+(see *Quota window usage block* below). Only a deletion-record comment remains in the file.
 
 Four more rules were deleted together with the menu's provider cards, because **all**
 of their consumers lived in `ProviderCardView.swift` and belonged to the deleted menu
@@ -313,8 +315,10 @@ one thing:
   `betweenBarAndColumns`.
 
 Each model block is then `QuotaBarWithMetadata` (its `name · 5h 100%[(30%有效)] weekly …`
-metadata line + the bar), followed by the card-level rows and, for GLM, the
-off-peak footnote. The block carries no divider of its own — see below. Two things
+metadata line + the bar), followed by the card-level rows. GLM's former off-peak
+footnote used to hang here too; it was deleted and its content merged into the
+quota-window table's 「闲」 row (see *Quota window usage block* below). The block
+carries no divider of its own — see below. Two things
 are deliberately **absent**:
 
 - **No leading label on the bar.** An earlier pass pooled every model's bar into a
@@ -622,7 +626,7 @@ apart again.
 
 | Module | Content |
 |---|---|
-| Quota window (`windowUsageModule`) | Titled 「额度窗口」 (`QuotaWindowUsageSection.windowUsageTitle`). Merges the former 「额度分析」 and 「额度详情」 into a single switchable module with zero-reflow between states. The title row hosts a custom capsule `QuotaWindowUsageSegmentControl` on the right (rendered when `quotaWindowSegmentEditable` is true), offering **「分析」** (default) and **「用量」** (`QuotaWindowUsageSegment`, persisted via `@AppStorage(QuotaWindowUsageSection.segmentStorageKey)` = `"quotaWindowUsageSegment"`). The time-composition bar (`QuotaWindowTimeShareBar`) was completely removed. Below the title row sits **one unified `Grid` of 7 columns** (`horizontalSpacing: 8`, `verticalSpacing: 3`) across all visible rows (5h / 周 / 今). Fixed columns: **类型** (left, natural width ~16pt), **价值** (fixed 58pt, `QuotaWindowUsageSection.valueColumnWidth`, left-aligned cell), and **重置日期** (right, fixed 126pt, `QuotaWindowUsageSection.resetDateColumnWidth`, including 9pt leading gutter `QuotaWindowUsageSection.resetDateColumnLeadingGap`). The middle 4 columns switch by segment: in **「分析」** mode: `类型 | 用量 | 命中 | 产出比 | 思考 | 价值 | 重置日期` (`statsHeaders`); in **「用量」** mode: `类型 | Input | Cached | Output | Reason | 价值 | 重置日期` (`rawTableHeaders`). Middle columns share a fixed width of **42pt** (`middleColumnWidth`) and right-alignment (headers follow cell alignment). The 420pt budget: `natural (~16pt) + 4×42pt + 58pt + 126pt + 6×8pt = 416pt ≤ 420pt` (measured header 「类型」 at 20pt yields `420pt ≤ 420pt`). Both modes share the exact same Grid skeleton and column dimensions, guaranteeing zero reflow (pinned by height-equality test). Reset date is formatted as `MM-dd HH:mm (倒计时)`, 今 row displays `—`; its 126pt width removes the former 1.2× factor, fitting the longest form `09-30 15:07 (23h59m)` (117pt) + 9pt gutter with 0pt surplus, guarded by `testResetDateColumnWidthCoversTheLongestForm`. The countdown inside the parentheses takes its value from the host-injected display clock (`\.displayDate`, started/stopped with the panel) — not the wall clock at render time. With multiple pools, a footnote below the Grid explains totals are summed and reset date is the earliest. |
+| Quota window (`windowUsageModule`) | Titled 「额度窗口」 (`QuotaWindowUsageSection.windowUsageTitle`). Merges the former 「额度分析」 and 「额度详情」 into a single switchable module with zero-reflow between states. The title row hosts a custom capsule `QuotaWindowUsageSegmentControl` on the right (rendered when `quotaWindowSegmentEditable` is true), offering **「分析」** (default) and **「用量」** (`QuotaWindowUsageSegment`, persisted via `@AppStorage(QuotaWindowUsageSection.segmentStorageKey)` = `"quotaWindowUsageSegment"`). The time-composition bar (`QuotaWindowTimeShareBar`) was completely removed. Below the title row sits **one unified `Grid` of 7 columns** (`horizontalSpacing: 8`, `verticalSpacing: 3`) across all visible rows (5h / 周 / 今 / 闲). Fixed columns: **类型** (left, natural width ~16pt), **价值** (fixed 58pt, `QuotaWindowUsageSection.valueColumnWidth`, left-aligned cell), and **重置日期** (right, fixed 126pt, `QuotaWindowUsageSection.resetDateColumnWidth`, including 9pt leading gutter `QuotaWindowUsageSection.resetDateColumnLeadingGap`). The middle 4 columns switch by segment: in **「分析」** mode: `类型 | 用量 | 命中 | 产出比 | 思考 | 价值 | 重置日期` (`statsHeaders`); in **「用量」** mode: `类型 | Input | Cached | Output | Reason | 价值 | 重置日期` (`rawTableHeaders`). Middle columns share a fixed width of **42pt** (`middleColumnWidth`) and right-alignment (headers follow cell alignment). The 420pt budget: `natural (~16pt) + 4×42pt + 58pt + 126pt + 6×8pt = 416pt ≤ 420pt` (measured header 「类型」 at 20pt yields `420pt ≤ 420pt`). Both modes share the exact same Grid skeleton and column dimensions, guaranteeing zero reflow (pinned by height-equality test). Reset date is formatted as `MM-dd HH:mm (倒计时)`, 今 / 闲 rows display `—`; its 126pt width removes the former 1.2× factor, fitting the longest form `09-30 15:07 (23h59m)` (117pt) + 9pt gutter with 0pt surplus, guarded by `testResetDateColumnWidthCoversTheLongestForm`. The countdown inside the parentheses takes its value from the host-injected display clock (`\.displayDate`, started/stopped with the panel) — not the wall clock at render time. With multiple pools, a footnote below the Grid explains totals are summed and reset date is the earliest. |
 | Reset credits (`resetCreditsModule`) | Titled 「重置卡详情」 (`QuotaWindowUsageSection.resetCreditsTitle`). The collapsed row (**`重置卡数量：N`** + nearest expiry) followed by the **per-card list** (`ResetCreditsDetailList`): N available credits render as N+1 lines. **Zero available → the whole module is omitted** (not a `重置卡数量：0` line) |
 
 **Value (the sixth metric)** — `ModelPricingCatalog.estimate` over the window's
@@ -682,9 +686,31 @@ Data source and calibration:
   bucket aggregate from `ProviderUsageProjection.dailyTokenUsage` (the same source the
   removed `📈 今天 …` summary row read), valued from the same-day samples through
   `ModelPricingCatalog` — no window math, no GLM off-peak exclusion. Today has no window
-  reset date, so its reset date cell displays `—`.
+  reset date, so its reset date cell displays `—`. The caliber is a deliberate pair with
+  the rows above: **今 is the day's full actual consumption** (off-peak tasks, Start Plan
+  and unregistered 智谱 plans included — the same caliber as the 7-day chart), while the
+  **5h / 周 rows are the plan's billing caliber** (the whitelist that excludes off-peak and
+  other non-credit tasks, so quota consumption is not overestimated).
+- The **闲 row** (label 「闲」, `QuotaWindowUsageSection.offPeakRowLabel`) sits after 今 in
+  the fixed row order 5h → 周 → 今 → 闲: the off-peak slice of 今 broken out on its own, so
+  the 今 − 闲 split is readable inside the table. It is **GLM-only** — constructed by
+  `ProviderCardDerivedValues.offPeakUsageRow` only for `status.kind == .glmCodingPlan`,
+  every other kind yields `nil` and the row never draws, and so does a day with no
+  off-peak samples (a nil, not an all-zero row). Data is the deleted off-peak
+  footnote's exact path: `LocalUsageSummaryBuilder.offPeakTodaySummary` over the same
+  `projection.recentSamples` (quotaModelName = the one active GLM model), `now` = the host
+  display clock, memoised on `Key.displayDay` like the 今 row; the 价值 column prices the
+  very same sample set (`offPeakTodaySamples` — today's off-peak sample filter exists in
+  exactly one place, and the summary is its aggregate) through `ModelPricingCatalog`,
+  original currency, and shows the money **directly — no 「零积分」 annotation in the
+  cell** (deliberate user decision; the caliber lives in the tooltip). Its reset date cell is forced `—` (off-peak
+  consumes no credits, nothing to reset), the all-zero rule skips it like any row, and it
+  joins both segments' cross-row column-visibility sums. The tooltip hangs on the row's
+  **type cell** (`typeCell`'s `help` parameter, so it cannot clash with the 产出比 cell's
+  own `.help`): `offPeakRowHelp` = 「ZCode 闲时任务真实消耗；不影响 5h / 周积分余额」 — the
+  deleted footnote's sentence kept verbatim, pinned by a test.
 - **All-zero rules & Degenerate cases**:
-  - **All-zero rows skipped**: a row (5h/周/今) whose four buckets sum to 0 is skipped
+  - **All-zero rows skipped**: a row (5h/周/今/闲) whose four buckets sum to 0 is skipped
     entirely via `visibleRows` — appearing in neither mode.
   - **All-zero columns hide module-wide**: evaluated per active segment across visible rows.
     In analysis mode (`statsColumnVisibility`), `命中` disappears when cached tokens sum to 0
@@ -1024,4 +1050,4 @@ default has to preserve it — defaulting to off would put a dock inside every f
 window for every existing user. Because the setting can be flipped while the user is
 already fullscreen, a policy change re-probes instead of reusing the cached verdict.
 
-> 核对基线：2026-10-05 · 代码 79dee29
+> 核对基线：2026-10-07 · 代码 44afd87
