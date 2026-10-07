@@ -326,6 +326,154 @@ final class GlmOffPeakTests: GlmTestCase {
         )
     }
 
+    // MARK: - 「闲」行（原独立闲时脚注并入「额度窗口」表格）
+
+    /// GLM 卡「额度窗口」表格的「闲」行（`ProviderCardDerivedValues.offPeakUsageRow`）：
+    /// 数据与被删的独立闲时脚注**同源同口径**。钉三件事：
+    /// 1. 四桶映射与 `offPeakTodaySummary` 一致——Input 是**未缓存**输入（与 7 天
+    ///    柱图 / 今行口径一致），命中率与 summary 的 cacheHitRate 相等；
+    /// 2. 价值对同一批今日闲时样本走 `ModelPricingCatalog` 计价（有样本出金额）；
+    /// 3. 正常任务样本不进「闲」行。
+    func testOffPeakUsageRowMirrorsTheDeletedFootnote() throws {
+        let cal = localCalendar()
+        let today = Self.todayMidnight(calendar: cal)
+        let window = GlmOffPeakWindow(startedAt: today.addingTimeInterval(3600),
+                                      endedAt: today.addingTimeInterval(7200))
+        let displayDate = today.addingTimeInterval(10_000)
+
+        func sample(_ seconds: TimeInterval, promptID: String, input: Int, cached: Int,
+                    output: Int, reasoning: Int, provider: String) -> LocalTokenUsageSample {
+            LocalTokenUsageSample(
+                completedAt: today.addingTimeInterval(seconds),
+                modelName: "glm-5.3",
+                promptID: promptID,
+                inputTokens: input + cached,
+                cachedInputTokens: cached,
+                outputTokens: output,
+                reasoningOutputTokens: reasoning,
+                sourceProviderID: provider
+            )
+        }
+        // 两条闲时样本（一条带缓存命中）+ 一条正常任务样本（不进「闲」行）。
+        let samples = [
+            sample(5400, promptID: "s1:t1", input: 100, cached: 900, output: 50, reasoning: 200,
+                   provider: "offpeak-idle-plan"),
+            sample(6000, promptID: "s1:t2", input: 300, cached: 0, output: 20, reasoning: 0,
+                   provider: "offpeak-idle-plan"),
+            sample(6000, promptID: "s1:t3", input: 9_999, cached: 0, output: 0, reasoning: 0,
+                   provider: "builtin:bigmodel-coding-plan"),
+        ]
+        let status = Self.makeGlmStatus(
+            samples: samples, now: displayDate, calendar: cal, offPeakWindows: [window]
+        )
+        let projection = status.usageProjection(for: status.lastSuccess, now: displayDate)
+        let row = try XCTUnwrap(
+            ProviderCardDerivedValues.offPeakUsageRow(
+                status: status,
+                projection: projection,
+                displayDate: displayDate,
+                calendar: cal
+            ),
+            "当天有闲时样本时必须产出「闲」行"
+        )
+        XCTAssertEqual(row.label, QuotaWindowUsageSection.offPeakRowLabel)
+        XCTAssertNil(row.resetsAt, "闲时不占积分余额，重置日期格恒 —（与今行同一机制）")
+
+        // 与被删脚注同源：summary 就用脚注当年的入口取（同一批 projection 样本）。
+        let summary = try XCTUnwrap(LocalUsageSummaryBuilder.offPeakTodaySummary(
+            samples: projection.recentSamples,
+            providerKind: .glmCodingPlan,
+            quotaModelName: "glm_coding_plan",
+            offPeakWindows: [window],
+            now: displayDate,
+            calendar: cal
+        ))
+        XCTAssertEqual(summary.rounds, 2, "前提不成立：只有两条闲时样本进汇总（正常任务不算闲时）")
+        // 未缓存 input = inputTokens − cached（1300 − 900 = 400）；cached/output/reason 对应各自桶。
+        XCTAssertEqual(row.metrics.input, 400, "Input 桶是未缓存输入，不是 cache-inclusive 总量")
+        XCTAssertEqual(row.metrics.cachedInput, 900)
+        XCTAssertEqual(row.metrics.output, 70)
+        XCTAssertEqual(row.metrics.reasoning, 200)
+        XCTAssertEqual(
+            row.metrics.cacheHitRate ?? -1, summary.cacheHitRate ?? -2, accuracy: 1e-9,
+            "闲行命中率与 summary 的 cacheHitRate 在同一 fixture 上必须相等"
+        )
+
+        // 价值走同一批样本的目录计价（与 todayUsageRow 同一传法）。
+        let costSamples = LocalUsageSummaryBuilder.offPeakTodaySamples(
+            samples: projection.recentSamples,
+            providerKind: .glmCodingPlan,
+            quotaModelName: "glm_coding_plan",
+            offPeakWindows: [window],
+            now: displayDate,
+            calendar: cal
+        )
+        XCTAssertEqual(costSamples.count, 2, "计价样本与汇总样本必须是同一批")
+        let expected = ModelPricingCatalog.estimate(
+            samples: costSamples,
+            quotaProviderID: QuotaProviderID.zhipu
+        )
+        XCTAssertEqual(row.cost?.currency, .cny, "智谱价目表是人民币，原币种显示")
+        XCTAssertGreaterThan(row.cost?.value ?? 0, 0, "有闲时样本必须出金额")
+        XCTAssertEqual(
+            row.cost?.value ?? 0, expected.value ?? 0, accuracy: 1e-9,
+            "闲行金额必须与目录对同一批样本的估价逐分一致"
+        )
+    }
+
+    /// 当天没有闲时样本 → 「闲」行整个不画（nil，不是全零行）。
+    func testOffPeakUsageRowIsNilWithoutOffPeakSamplesToday() {
+        let cal = localCalendar()
+        let today = Self.todayMidnight(calendar: cal)
+        let displayDate = today.addingTimeInterval(10_000)
+        let normal = LocalTokenUsageSample(
+            completedAt: displayDate,
+            modelName: "glm-5.3", promptID: "s1:t1",
+            inputTokens: 100, cachedInputTokens: 0, outputTokens: 1, reasoningOutputTokens: 0,
+            sourceProviderID: "builtin:bigmodel-coding-plan"
+        )
+        let status = Self.makeGlmStatus(
+            samples: [normal], now: displayDate, calendar: cal,
+            offPeakWindows: [GlmOffPeakWindow(startedAt: today, endedAt: displayDate)]
+        )
+        let projection = status.usageProjection(for: status.lastSuccess, now: displayDate)
+        XCTAssertNil(
+            ProviderCardDerivedValues.offPeakUsageRow(
+                status: status, projection: projection, displayDate: displayDate, calendar: cal
+            ),
+            "没有闲时样本时不该凭空造一行"
+        )
+    }
+
+    /// 非 GLM provider 恒不出「闲」行：ZCode 是一份多 provider 账本，
+    /// `glmLocalUsage`（含闲时窗口与样本）也会挂在 MiniMax / DeepSeek 卡上，
+    /// 泄漏过去就会把别的 provider 的样本误报成闲时。
+    func testOffPeakUsageRowIsNilForNonGlmProviders() {
+        let cal = localCalendar()
+        let today = Self.todayMidnight(calendar: cal)
+        let displayDate = today.addingTimeInterval(10_000)
+        let samples = [LocalTokenUsageSample(
+            completedAt: displayDate,
+            modelName: "glm-5.3", promptID: "s1:t1",
+            inputTokens: 100, cachedInputTokens: 0, outputTokens: 1, reasoningOutputTokens: 0,
+            sourceProviderID: "offpeak-idle-plan"
+        )]
+        for kind in ProviderKind.allCases where kind != .glmCodingPlan {
+            let status = Self.makeGlmStatus(
+                samples: samples, now: displayDate, calendar: cal,
+                offPeakWindows: [GlmOffPeakWindow(startedAt: today, endedAt: displayDate)],
+                kind: kind
+            )
+            let projection = status.usageProjection(for: status.lastSuccess, now: displayDate)
+            XCTAssertNil(
+                ProviderCardDerivedValues.offPeakUsageRow(
+                    status: status, projection: projection, displayDate: displayDate, calendar: cal
+                ),
+                "\(kind) 不得产出「闲」行"
+            )
+        }
+    }
+
     /// 闲时窗口语义（旧 mergeGlm 测试的迁移）：offPeakWindows 只属于 native
     /// ZCode 源，卡片直接从 `status.glmLocalUsage` 读取（ProviderCardView），
     /// `usageProjection` 不携带也不修改它 —— 合并路径无法再影响闲时窗口。
@@ -353,5 +501,62 @@ final class GlmOffPeakTests: GlmTestCase {
         // projection 只表达 token 用量，闲时窗口不参与、也不受合并影响。
         _ = status.usageProjection(for: nil)
         XCTAssertEqual(status.glmLocalUsage?.offPeakWindows.count, 1)
+    }
+
+    // MARK: - helpers
+
+    /// 一张挂好 `glmLocalUsage`（样本 + 闲时窗口）的 provider 卡，供「闲」行
+    /// （`ProviderCardDerivedValues.offPeakUsageRow`）的取数路径用。GLM 的
+    /// `activeModels` 必须非空（quotaModelName 从 `lastSuccess` 取）；非 GLM kind
+    /// 按 kind 换 id / 颜色，model 留空——闲行在 kind 判定处就该返回 nil。
+    private static func makeGlmStatus(
+        samples: [LocalTokenUsageSample],
+        now: Date,
+        calendar: Calendar,
+        offPeakWindows: [GlmOffPeakWindow],
+        kind: ProviderKind = .glmCodingPlan
+    ) -> ProviderStatus {
+        let quotaModel = ModelQuota(
+            modelName: "glm_coding_plan",
+            intervalTotalCount: 100,
+            intervalUsageCount: 40,
+            intervalRemainingPercent: 60,
+            intervalStatus: .present,
+            intervalResetsAt: now.addingTimeInterval(2 * 3600),
+            intervalWindowSeconds: 5 * 3600,
+            weeklyTotalCount: 700,
+            weeklyUsageCount: 300,
+            weeklyRemainingPercent: 60,
+            weeklyStatus: .present,
+            weeklyResetsAt: now.addingTimeInterval(3 * 86400),
+            weeklyWindowSeconds: 7 * 24 * 3600
+        )
+        var status = ProviderStatus(
+            id: kind.providerID,
+            displayName: "GLM",
+            kind: kind,
+            iconSystemName: "circle",
+            accentColor: kind == .glmCodingPlan ? .glm : .custom,
+            refreshIntervalSeconds: 300,
+            state: .ok(QuotaInfo(
+                models: kind == .glmCodingPlan ? [quotaModel] : [],
+                resetCredits: nil,
+                planLabel: "Pro",
+                accountEmail: nil,
+                codexUsageDetails: nil,
+                fetchedAt: now
+            ))
+        )
+        status.glmLocalUsage = GlmLocalUsage(
+            today: GlmDailyUsage(dayStart: calendar.startOfDay(for: now), inputTokens: 0, rounds: 0),
+            dailyTokenUsage: [],
+            scannedAt: now,
+            sessionCount: samples.count,
+            eventCount: samples.count,
+            failedSessionCount: 0,
+            recentSamples: samples,
+            offPeakWindows: offPeakWindows
+        )
+        return status
     }
 }

@@ -169,39 +169,6 @@ final class HoverRevealModeTests: XCTestCase {
         return hosting.fittingSize.height
     }
 
-    /// 收敛**之前**的合并写法当参照物：`prompts: 42 (128 rounds)` 与
-    /// `input: 380K (+860K cached)` 各占一行（4 行），拆行写法是 8 行。
-    ///
-    /// 字体与 `UsageMetricHoverSummaryView.metricLine` 保持一致，否则量到的高度
-    /// 比的不是"行数"而是"字号"。
-    @MainActor
-    private static func mergedMetricSummary(usage: UsageMetricSummary) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 0) {
-                Text("prompts: ")
-                    .foregroundStyle(.secondary)
-                Text("\(Formatters.formatGroupedInt(usage.prompts))")
-                    .foregroundStyle(.primary)
-                Text(" (\(Formatters.formatGroupedInt(usage.rounds)) rounds)")
-                    .foregroundStyle(.secondary)
-            }
-            HStack(spacing: 0) {
-                Text("input: ")
-                    .foregroundStyle(.secondary)
-                Text("\(Formatters.formatTokenCountCompact(usage.uncachedInputTokens)) "
-                     + "(+\(Formatters.formatTokenCountCompact(usage.cachedInputTokens)) cached)")
-                    .foregroundStyle(.primary)
-            }
-            HStack(spacing: 0) {
-                Text("output: ")
-                    .foregroundStyle(.secondary)
-                Text(Formatters.formatTokenCountCompact(usage.outputTokens))
-                    .foregroundStyle(.primary)
-            }
-        }
-        .font(MenuTypography.hoverBodyMonospaced)
-    }
-
     @MainActor
     private func measuredHeight(mode: HoverRevealMode, status: ProviderStatus) -> CGFloat {
         let root = ProviderCardView(status: status)

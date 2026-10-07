@@ -1,15 +1,16 @@
 import Foundation
 
-/// 卡片 body 一次要用的三个派生产物：provider-neutral 投影、额度窗口用量快照、
-/// 「今」行。三者都只由 `status`（+ 两个"今天"）决定，所以一起算、一起缓存。
+/// 卡片 body 一次要用的四个派生产物：provider-neutral 投影、额度窗口用量快照、
+/// 「今」行、「闲」行。四者都只由 `status`（+ 两个"今天"）决定，所以一起算、一起缓存。
 ///
 /// 为什么要打包成一个值：它们共享同一个失效条件集合（见
-/// `ProviderCardDerivedValues.Key`），分成三个 memo 只会把同一份 O(samples)
-/// 的键比较做三遍。
+/// `ProviderCardDerivedValues.Key`），分成四个 memo 只会把同一份 O(samples)
+/// 的键比较做四遍。
 struct ProviderCardDerived: Equatable {
     let projection: ProviderUsageProjection
     let windowUsageSnapshot: QuotaWindowUsageSnapshot
     let todayUsageRow: QuotaWindowUsageSection.Row?
+    let offPeakUsageRow: QuotaWindowUsageSection.Row?
 }
 
 /// `ProviderCardView.body` 的唯一派生值入口（`ProviderCardView` 仍是 thin
@@ -99,6 +100,12 @@ enum ProviderCardDerivedValues {
                 projection: projection,
                 displayDate: displayDate,
                 calendar: calendar
+            ),
+            offPeakUsageRow: offPeakUsageRow(
+                status: status,
+                projection: projection,
+                displayDate: displayDate,
+                calendar: calendar
             )
         )
     }
@@ -159,13 +166,79 @@ enum ProviderCardDerivedValues {
         )
     }
 
+    // MARK: - 「闲」行
+
+    /// 「闲」行：GLM 今日闲时（off-peak）任务用量，从额度条下方的独立脚注
+    /// （已删除的 `OffPeakUsageFootnote`）迁入「额度窗口」表格。数据与被删脚注
+    /// **同源同口径**：同样走 `LocalUsageSummaryBuilder.offPeakTodaySummary`——
+    /// samples 用 `projection.recentSamples` 同源集合，quotaModelName 用
+    /// `status.lastSuccess` 里 GLM 唯一 active model 的 modelName（与脚注逐模型
+    /// 传入的值一致，保证数字一致）；summary → 四桶的映射与「今」行同构
+    /// （Input 是未缓存输入，与 7 天柱图 / 今行口径一致）。价值对同一批今日闲时
+    /// 样本（`offPeakTodaySamples`，与 summary 共享同一份谓词）走
+    /// `ModelPricingCatalog.estimate` 计价。
+    ///
+    /// 仅 `status.kind == .glmCodingPlan` 时构造，其余 kind 恒 `nil`——闲时窗口
+    /// 只属于智谱任务（见 `offPeakWindows` 的按 kind 取值理由）。当天无闲时样本
+    /// → summary 为 `nil` → 整行不画；四桶合计为 0 时照常返回 `Row`，由
+    /// `QuotaWindowUsageSection.visibleRows` 统一跳过。重置日期格恒 `—`
+    /// （闲时不占积分余额，没有"重置"一说）。
+    ///
+    /// 「今天」以展示时钟为准（`now: displayDate`），与 `todayUsageRow` 同一个
+    /// 自然日判定——脚注当年用墙钟默认值，但它没被 memo；这里取值必须只依赖
+    /// `displayDate` 所在自然日（`Key.displayDay`），同一自然日内展示时钟每 tick
+    /// 都命中 memo。
+    static func offPeakUsageRow(
+        status: ProviderStatus,
+        projection: ProviderUsageProjection,
+        displayDate: Date,
+        calendar: Calendar = .current
+    ) -> QuotaWindowUsageSection.Row? {
+        guard status.kind == .glmCodingPlan else { return nil }
+        guard let quotaModelName = status.lastSuccess?.activeModels.first?.modelName else {
+            return nil
+        }
+        let offPeakWindows = offPeakWindows(status: status)
+        let summary = LocalUsageSummaryBuilder.offPeakTodaySummary(
+            samples: projection.recentSamples,
+            providerKind: status.kind,
+            quotaModelName: quotaModelName,
+            offPeakWindows: offPeakWindows,
+            now: displayDate,
+            calendar: calendar
+        )
+        guard let summary else { return nil }
+        let metrics = QuotaWindowUsageMetrics(usage: summary)
+        // 金额与 token 数用同一批样本：筛选谓词只有 offPeakTodaySamples 一份，
+        // summary 是它的聚合形态，两处参数必须逐字一致。
+        let costSamples = LocalUsageSummaryBuilder.offPeakTodaySamples(
+            samples: projection.recentSamples,
+            providerKind: status.kind,
+            quotaModelName: quotaModelName,
+            offPeakWindows: offPeakWindows,
+            now: displayDate,
+            calendar: calendar
+        )
+        let cost: ModelCostEstimate? = costSamples.isEmpty
+            ? nil
+            : ModelPricingCatalog.estimate(
+                samples: costSamples,
+                quotaProviderID: status.kind.quotaProviderID,
+                deepseekPeakWindow: status.deepseekPeakWindow ?? .defaultWindow
+            )
+        return QuotaWindowUsageSection.Row(
+            label: QuotaWindowUsageSection.offPeakRowLabel,
+            metrics: metrics,
+            cost: cost
+        )
+    }
+
     // MARK: - 额度窗口用量快照
 
     /// 区块数据：各 active model 的窗口用量按 provider 合计。
     ///
-    /// 口径**完全**取自额度行——窗口边界走 `LocalUsageSummaryBuilder.windowBounds`
-    /// （同 `CombinedQuotaWindowRow.primaryUsage` / `weeklyUsage`），GLM 闲时排除
-    /// 走同一个 `excludeWindows` + `excludeGlmOffPeak`，ChatGPT 走
+    /// 口径**完全**取自额度行——窗口边界走 `LocalUsageSummaryBuilder.windowBounds`，
+    /// GLM 闲时排除走同一个 `excludeWindows` + `excludeGlmOffPeak`，ChatGPT 走
     /// `ChatGPTPlanModelRow` 的预聚合口径。多 model 求和的理由见
     /// `LocalUsageSummaryBuilder.combineWindowUsage`。
     /// 额度 model 取 `status.lastSuccess`：`.ok` / `.loading` / `.failed` 三条路径

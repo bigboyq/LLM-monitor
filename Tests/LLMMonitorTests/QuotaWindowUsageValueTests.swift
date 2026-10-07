@@ -571,13 +571,13 @@ final class QuotaWindowUsageValueTests: XCTestCase {
         )
 
         XCTAssertEqual(
-            QuotaWindowUsageSection.visibleRows(snapshot: snapshot, today: today).map(\.label),
+            QuotaWindowUsageSection.visibleRows(snapshot: snapshot, today: today, offPeak: nil).map(\.label),
             ["周"],
             "全 0 的 5h 与今行整行跳过，只剩周行"
         )
         // 列显隐基于过滤后的行集：周行有量，cached/output/reason 三列保留
         // （helper 的样本 cached > input，未缓存 input 桶钳成 0，Input 列隐藏）。
-        let visibleRows = QuotaWindowUsageSection.visibleRows(snapshot: snapshot, today: today)
+        let visibleRows = QuotaWindowUsageSection.visibleRows(snapshot: snapshot, today: today, offPeak: nil)
         let visibility = QuotaWindowUsageSection.numericColumnVisibility(rows: visibleRows.map(\.metrics))
         XCTAssertTrue(visibility.cached && visibility.output && visibility.reason, "周行有量的桶，列保留")
 
@@ -590,7 +590,7 @@ final class QuotaWindowUsageValueTests: XCTestCase {
             weeklyLabel: "周"
         )
         XCTAssertTrue(
-            QuotaWindowUsageSection.visibleRows(snapshot: empty, today: today).isEmpty,
+            QuotaWindowUsageSection.visibleRows(snapshot: empty, today: today, offPeak: nil).isEmpty,
             "无窗口且今行全零 → 过滤后没有剩余行"
         )
     }
@@ -677,7 +677,7 @@ final class QuotaWindowUsageValueTests: XCTestCase {
         XCTAssertEqual(QuotaWindowUsageSection.horizontalSpacing, 8)
 
         // 验证两态下 visibleRows 相同
-        let visibleRows = QuotaWindowUsageSection.visibleRows(snapshot: snapshot, today: today)
+        let visibleRows = QuotaWindowUsageSection.visibleRows(snapshot: snapshot, today: today, offPeak: nil)
         XCTAssertEqual(visibleRows.count, 3)
 
         // 验证两态渲染高度与排版稳定性（在固定卡内容宽 420pt 下，两态高度必须完全一致）
@@ -1029,7 +1029,7 @@ final class QuotaWindowUsageValueTests: XCTestCase {
             "前提不成立：今行有 cached 时 Cached 列应保留"
         )
         XCTAssertEqual(
-            QuotaWindowUsageSection.visibleRows(snapshot: zero, today: today).map(\.label),
+            QuotaWindowUsageSection.visibleRows(snapshot: zero, today: today, offPeak: nil).map(\.label),
             [ProviderCardView.todayRowLabel],
             "前提不成立：窗口行全零被跳过，表里应只剩今行"
         )
@@ -1045,6 +1045,83 @@ final class QuotaWindowUsageValueTests: XCTestCase {
         XCTAssertGreaterThan(
             self.measuredWidth(of: withToday), self.measuredWidth(of: withoutToday) + 8,
             "今有 cached 时 Cached 列要保住：今行参与全零列判定，不是只多一行"
+        )
+    }
+
+    // MARK: - 「闲」行（原独立闲时脚注并入表格）
+
+    /// 行序固定 5h → 周 → 今 → 闲；全零的闲行整行跳过（与今行同一机制）；
+    /// 闲行的重置日期格强制 `—`（闲时不占积分余额，没有"重置"一说）；
+    /// 并参与 `hasVisibleContent` 的整块显隐判定。
+    func testVisibleRowOrderPutsOffPeakAfterTodayAndSkipsItsAllZeroRow() {
+        let now = Date()
+        let snapshot = LocalUsageSummaryBuilder.windowUsage(
+            model: Self.model(name: "glm_coding_plan", interval: true, weekly: true, now: now),
+            providerKind: .glmCodingPlan,
+            samples: [Self.sample(at: now.addingTimeInterval(-600), prompt: "p1", model: "glm-4.6")],
+            intervalLabel: "5h",
+            weeklyLabel: "周"
+        )
+        func row(_ label: String, metrics: QuotaWindowUsageMetrics) -> QuotaWindowUsageSection.Row {
+            QuotaWindowUsageSection.Row(label: label, metrics: metrics, cost: nil)
+        }
+        let today = row(
+            ProviderCardView.todayRowLabel,
+            metrics: QuotaWindowUsageMetrics(input: 10, cachedInput: 0, output: 5, reasoning: 0)
+        )
+        let offPeak = row(
+            QuotaWindowUsageSection.offPeakRowLabel,
+            metrics: QuotaWindowUsageMetrics(input: 20, cachedInput: 0, output: 5, reasoning: 0)
+        )
+        let zeroOffPeak = row(
+            QuotaWindowUsageSection.offPeakRowLabel,
+            metrics: QuotaWindowUsageMetrics(input: 0, cachedInput: 0, output: 0, reasoning: 0)
+        )
+
+        XCTAssertEqual(
+            QuotaWindowUsageSection.visibleRows(snapshot: snapshot, today: today, offPeak: offPeak).map(\.label),
+            ["5h", "周", ProviderCardView.todayRowLabel, QuotaWindowUsageSection.offPeakRowLabel],
+            "行序固定 5h → 周 → 今 → 闲"
+        )
+        XCTAssertNil(
+            QuotaWindowUsageSection.visibleRows(snapshot: snapshot, today: today, offPeak: offPeak).last?.resetsAt,
+            "闲行重置日期格强制 nil（渲染 —），与今行同一机制"
+        )
+        XCTAssertEqual(
+            QuotaWindowUsageSection.visibleRows(snapshot: snapshot, today: today, offPeak: zeroOffPeak).map(\.label),
+            ["5h", "周", ProviderCardView.todayRowLabel],
+            "全零闲行整行跳过"
+        )
+
+        // 整块显隐判定：闲行有量时区块可见；全零闲行不能独自点亮区块。
+        let empty = LocalUsageSummaryBuilder.windowUsage(
+            model: Self.model(name: "deepseek_balance", interval: false, weekly: false, now: now),
+            providerKind: .deepseek,
+            samples: [],
+            intervalLabel: "5h",
+            weeklyLabel: "周"
+        )
+        XCTAssertTrue(
+            QuotaWindowUsageSection.hasVisibleContent(snapshot: empty, today: nil, offPeak: offPeak, resetCredits: nil),
+            "闲行有量时区块可见"
+        )
+        XCTAssertFalse(
+            QuotaWindowUsageSection.hasVisibleContent(snapshot: empty, today: nil, offPeak: zeroOffPeak, resetCredits: nil),
+            "全零闲行不能独自点亮区块"
+        )
+    }
+
+    /// 「闲」行文案钉在这里：行标签与类型格 hover 说明句（原独立闲时脚注的说明句，
+    /// 逐字保留，挂在类型格上——产出比格有自己的 `.help`，不能互相打架）。
+    /// 改文案必须连测试一起改。
+    func testOffPeakRowCopyIsPinned() {
+        XCTAssertEqual(
+            QuotaWindowUsageSection.offPeakRowLabel, "闲",
+            "行标签与「5h」「周」「今」同一长度档"
+        )
+        XCTAssertEqual(
+            QuotaWindowUsageSection.offPeakRowHelp,
+            "ZCode 闲时任务真实消耗；不影响 5h / 周积分余额"
         )
     }
 
@@ -1322,14 +1399,15 @@ final class QuotaWindowUsageValueTests: XCTestCase {
         }
     }
 
-    /// 快照（+今行）的四数值列显隐——给上面的显隐断言当取数口：与视图同一份
+    /// 快照（+今行/闲行）的四数值列显隐——给上面的显隐断言当取数口：与视图同一份
     /// `visibleRows`（全零行跳过后）→ `numericColumnVisibility` 链路，测的才是
     /// 表格实际用的判定。
     private static func numericVisibility(
         of snapshot: QuotaWindowUsageSnapshot,
-        today: QuotaWindowUsageSection.Row? = nil
+        today: QuotaWindowUsageSection.Row? = nil,
+        offPeak: QuotaWindowUsageSection.Row? = nil
     ) -> (input: Bool, cached: Bool, output: Bool, reason: Bool) {
-        let rows = QuotaWindowUsageSection.visibleRows(snapshot: snapshot, today: today)
+        let rows = QuotaWindowUsageSection.visibleRows(snapshot: snapshot, today: today, offPeak: offPeak)
         return QuotaWindowUsageSection.numericColumnVisibility(rows: rows.map(\.metrics))
     }
 

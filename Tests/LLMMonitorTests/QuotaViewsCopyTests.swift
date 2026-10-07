@@ -3,9 +3,9 @@ import SwiftUI
 import AppKit
 @testable import LLM_monitor
 
-/// 单窗口额度行的标签 / 标记文案，以及用量浮层的拆行规则。对应
-/// `QuotaViews` 的 `QuotaBarWithMetadata` 与 `QuotaHoverViews` 的
-/// `UsageMetricHoverSummaryView`。
+/// 单窗口额度行的标签 / 标记文案，以及周瓶颈括号的判定。对应
+/// `QuotaViews` 的 `QuotaBarWithMetadata`。（用量浮层拆行规则属于已删除的
+/// `UsageMetricHoverSummaryView`，相关量宽测试随视图一并移除。）
 final class QuotaViewsCopyTests: XCTestCase {
 
     // MARK: - 单窗口标签与用量浮层拆行
@@ -147,90 +147,5 @@ final class QuotaViewsCopyTests: XCTestCase {
                 model: model(interval: nil, weekly: 40), multiplier: 6
             )
         )
-    }
-
-    /// 两个窗口的明细**并排**而不是堆叠。
-    ///
-    /// 判据是**宽度**，不是高度——这个选择是被量出来的：视图里除两列外还有标题行和
-    /// "周倍率"脚注，所以整个视图的堆叠/并排高度差被别的行淹没了（实测并排 98pt，
-    /// 而手搭的"两行+分隔线"参照只有 69pt，两者压根不是同一段内容，比高度不成立）。
-    ///
-    /// 宽度很干净：`HoverMetricLine` 是固定构造（标签 18pt + 百分比 40pt + 两个可压缩
-    /// 文本），单列自然宽 225pt，两列 `HStack(spacing: 16)` 自然宽 **466pt**
-    /// = 225 × 2 + 16。实测并排状态下整个视图的自然宽正好也是 466——说明这条 `HStack`
-    /// 就是驱动宽度的那一行。改回堆叠后视图宽度会塌到其它行（标题/脚注/单列）的最大
-    /// 宽度，达不到 466，断言即红。
-    ///
-    /// ⚠️ 这条是**间接**判据：它证明的是"有 466pt 的一行"，不是"那两个 `usageSection`
-    /// 在里面"。`QuotaUsageWindowsHoverView` 那处（列是 token 用量块）没有单独覆盖——
-    /// 两处是同构改动，要给第二处也加一条得先量出它的单列宽度当参照。
-    @MainActor
-    func testUsageMetricHoverAlwaysSplitsPromptsRoundsAndInputCached() {
-        let usage = UsageMetricSummary(
-            prompts: 42,
-            rounds: 128,
-            inputTokens: 1_240_000,
-            cachedInputTokens: 860_000,
-            outputTokens: 320_000,
-            reasoningOutputTokens: 96_000
-        )
-        let split = self.measuredHeight(
-            of: UsageMetricHoverSummaryView(title: "", usage: usage, showPromptCount: true),
-            minWidth: 1_000
-        )
-        let merged = self.measuredHeight(of: Self.mergedMetricSummary(usage: usage), minWidth: 1_000)
-
-        XCTAssertGreaterThan(split, 0, "前提不成立：这一组必须真的排得出来")
-        XCTAssertGreaterThan(
-            split, merged * 1.5,
-            "prompts/rounds 与 input/cached 必须各占一行（拆行 \(split)pt vs 合并 \(merged)pt）"
-        )
-    }
-
-    // MARK: - helpers
-
-    /// 测任意视图在 `minWidth` 下的自然高度。
-    ///
-    /// 宽度不设死：hover 浮层本身按内容自适应（见 `HoverPanelController`），
-    /// 这里只是给个下限让 layout 跑起来。
-    @MainActor
-    private func measuredHeight<V: View>(of view: V, minWidth: CGFloat) -> CGFloat {
-        let hosting = NSHostingView(rootView: AnyView(view).frame(width: minWidth))
-        hosting.frame = CGRect(x: 0, y: 0, width: minWidth, height: 10_000)
-        hosting.layoutSubtreeIfNeeded()
-        return hosting.fittingSize.height
-    }
-
-    /// 收敛**之前**的合并写法当参照物：`prompts: 42 (128 rounds)` 与
-    /// `input: 380K (+860K cached)` 各占一行（4 行），拆行写法是 8 行。
-    ///
-    /// 字体与 `UsageMetricHoverSummaryView.metricLine` 保持一致，否则量到的高度
-    /// 比的不是"行数"而是"字号"。
-    @MainActor
-    private static func mergedMetricSummary(usage: UsageMetricSummary) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 0) {
-                Text("prompts: ")
-                    .foregroundStyle(.secondary)
-                Text("\(Formatters.formatGroupedInt(usage.prompts))")
-                    .foregroundStyle(.primary)
-                Text(" (\(Formatters.formatGroupedInt(usage.rounds)) rounds)")
-                    .foregroundStyle(.secondary)
-            }
-            HStack(spacing: 0) {
-                Text("input: ")
-                    .foregroundStyle(.secondary)
-                Text("\(Formatters.formatTokenCountCompact(usage.uncachedInputTokens)) "
-                     + "(+\(Formatters.formatTokenCountCompact(usage.cachedInputTokens)) cached)")
-                    .foregroundStyle(.primary)
-            }
-            HStack(spacing: 0) {
-                Text("output: ")
-                    .foregroundStyle(.secondary)
-                Text(Formatters.formatTokenCountCompact(usage.outputTokens))
-                    .foregroundStyle(.primary)
-            }
-        }
-        .font(MenuTypography.hoverBodyMonospaced)
     }
 }

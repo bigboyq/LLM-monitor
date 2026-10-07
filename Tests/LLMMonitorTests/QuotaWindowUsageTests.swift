@@ -132,7 +132,7 @@ final class QuotaWindowUsageTests: XCTestCase {
         XCTAssertEqual(metrics.totalTokens, 0, "四桶合计为 0 → 触发全零行跳过")
         XCTAssertNil(metrics.cacheHitRate, "分母为 0 的比率必须是 nil（显示 —），不是 0%")
         XCTAssertTrue(
-            QuotaWindowUsageSection.visibleRows(snapshot: snapshot, today: nil).isEmpty,
+            QuotaWindowUsageSection.visibleRows(snapshot: snapshot, today: nil, offPeak: nil).isEmpty,
             "全零行整行跳过：「额度分析」「额度详情」两个模块都不出这一行"
         )
     }

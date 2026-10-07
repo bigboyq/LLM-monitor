@@ -36,7 +36,7 @@ struct ChatGPTPlanModelRow: View {
     /// "还剩多少、什么时候重置"，用量明细交给菜单侧的 hover 浮层。菜单侧仍然
     /// 用 `title` 当那行的名字。
     ///
-    /// 三个分支的差别只在"哪些窗口存在"→ 传哪两个 label；`footnote` 与 `between`
+    /// 三个分支的差别只在"哪些窗口存在"→ 传哪两个 label；`between`
     /// 三处完全一样，所以先算出来再各建一次 `ModelQuotaDockBlock`。
     @ViewBuilder
     private var dockBlock: some View {
@@ -49,7 +49,6 @@ struct ChatGPTPlanModelRow: View {
                     weeklyEquivalentMultiplier: Self.weeklyEquivalentMultiplier,
                     tint: tint
                 ),
-                footnote: EmptyView(),
                 between: between
             )
         } else {
@@ -328,10 +327,6 @@ struct CombinedQuotaWindowRow: View {
     let primaryLabel: String
     let tint: Color
     let weeklyEquivalentMultiplier: Int
-    let providerKind: ProviderKind
-    let localSamples: [LocalTokenUsageSample]
-    /// 额度窗口 hover 统计排除的时间窗口（GLM 闲时任务不消耗积分）。
-    var excludeWindows: [GlmOffPeakWindow] = []
     /// 夹在进度条块与下方**本地用量**之间的卡片级信息（重置卡、高峰期），见
     /// `ModelQuotaDockBlock.between`。只有第一个 model 行会拿到非空值。
     var between: AnyView = AnyView(EmptyView())
@@ -368,7 +363,6 @@ struct CombinedQuotaWindowRow: View {
                     weeklyEquivalentMultiplier: weeklyEquivalentMultiplier,
                     tint: tint
                 ),
-                footnote: offPeakFootnote,
                 between: between
             )
         } else if model.hasIntervalWindow {
@@ -380,7 +374,6 @@ struct CombinedQuotaWindowRow: View {
                     weeklyEquivalentMultiplier: weeklyEquivalentMultiplier,
                     tint: tint
                 ),
-                footnote: offPeakFootnote,
                 between: between
             )
         } else if model.hasWeeklyWindow {
@@ -392,7 +385,6 @@ struct CombinedQuotaWindowRow: View {
                     weeklyEquivalentMultiplier: weeklyEquivalentMultiplier,
                     tint: tint
                 ),
-                footnote: offPeakFootnote,
                 between: between
             )
         } else {
@@ -400,28 +392,6 @@ struct CombinedQuotaWindowRow: View {
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
         }
-    }
-
-    /// GLM 闲时用量：只有真有数据才占一行，没有就整个不渲染。
-    @ViewBuilder
-    private var offPeakFootnote: some View {
-        if let todayOffPeakUsage {
-            OffPeakUsageFootnote(usage: todayOffPeakUsage)
-        }
-    }
-
-    /// GLM 今日闲时（off-peak）任务 token 用量，单独展示在额度窗口 hover 底部。
-    /// 只取**今日**明确属于 offpeak provider 的 native ZCode 样本；旧缓存缺少来源
-    /// 字段时回退到 `excludeWindows`。闲时任务真实消耗但不消耗 Coding Plan 积分，
-    /// 所以 5h / 周窗口统计排除它，这里单独列出。
-    /// OpenCode 合并样本（promptID 带 `opencode:` 前缀）是正常消耗，不算闲时。
-    private var todayOffPeakUsage: UsageMetricSummary? {
-        LocalUsageSummaryBuilder.offPeakTodaySummary(
-            samples: localSamples,
-            providerKind: providerKind,
-            quotaModelName: model.modelName,
-            offPeakWindows: excludeWindows
-        )
     }
 
     /// 短周期窗口缺 `windowSeconds` 时的兜底长度（`windowBounds` 用）。
@@ -502,13 +472,8 @@ struct SingleQuotaBar: View {
 /// 块里**没有**分隔线：三列明细撤掉后块内只剩额度本身，而"额度 / 本地用量"
 /// 之间的那条线要横跨所有 model，只能由卡片层画一次（`ProviderCardView.dockBody`）——
 /// 每个块各画一条会在两个 model 之间叠成两条挨着的线。
-struct ModelQuotaDockBlock<Bar: View, Footnote: View>: View {
+struct ModelQuotaDockBlock<Bar: View>: View {
     let bar: Bar
-    /// 整行宽度的补充信息（GLM 今日闲时用量）。只有 GLM 传，ChatGPT 传 `EmptyView()`。
-    ///
-    /// 不给默认值：Swift 无法从默认属性值反推泛型参数，调用点漏写就成了
-    /// "generic parameter could not be inferred" 这种与意图无关的编译错误。
-    var footnote: Footnote
     /// 夹在「进度条块」与下方**本地用量**之间的**卡片级**信息（重置卡、高峰期倒计时）。
     ///
     /// 用 `AnyView` 而不是再一个泛型参数：它的来源在卡片层（`ProviderCardView`），
@@ -520,7 +485,6 @@ struct ModelQuotaDockBlock<Bar: View, Footnote: View>: View {
         VStack(alignment: .leading, spacing: 6) {
             bar
             between
-            footnote
         }
     }
 }
@@ -658,26 +622,12 @@ struct QuotaBarWithMetadata: View {
     }
 }
 
-/// GLM 今日闲时（off-peak）任务 token 用量：整行宽度，排在额度条**下方**。
-///
-/// 闲时任务真实消耗但不消耗 Coding Plan 积分，混进额度窗口会让读者把它算进
-/// 已用额度，所以它必须是独立的一行而不是额度块里的一部分。
-struct OffPeakUsageFootnote: View {
-    let usage: UsageMetricSummary
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            UsageMetricHoverSummaryView(
-                title: "今日闲时（不消耗积分）",
-                usage: usage,
-                showPromptCount: true
-            )
-            Text("ZCode 闲时任务真实消耗；不影响 5h / 周积分余额")
-                .font(MenuTypography.hoverFootnote)
-                .foregroundStyle(.tertiary)
-        }
-    }
-}
+// `OffPeakUsageFootnote`（GLM 今日闲时用量脚注，连同它的取数 `todayOffPeakUsage`
+// 与 `offPeakFootnote`）已删除：闲时用量并入「额度窗口」表格的「闲」行
+// （`QuotaWindowUsageSection.offPeak`，数据由 `ProviderCardDerivedValues.offPeakUsageRow`
+// 产出，与被删脚注同源同口径）。说明句「ZCode 闲时任务真实消耗；不影响 5h / 周
+// 积分余额」逐字保留在 `QuotaWindowUsageSection.offPeakRowHelp`，挂在「闲」行
+// 类型格的 `.help` 上。
 
 // 原先这里还有一族「菜单形态的额度行」视图：`QuotaCombinedUsageRow`（条 + 元信息行
 // 各自 hover）与 `QuotaSingleUsageRow`（单窗口对应物），以及它们专用的

@@ -47,10 +47,11 @@ enum ProviderCardLayout {
     //    也在 `QuotaCombinedUsageRow` / `QuotaSingleUsageRow` 里（这两个只出现在 model
     //    行的 `menuLayout`，菜单不渲染 provider 卡后已无宿主）。四处都内联成常量。
     // 2. `splitsCachedInputRow(mode:)` / 3. `splitsRoundsRow(mode:)`（恒 `true`）——
-    //    消费方是 `UsageMetricHoverSummaryView`。它有一处**活的**卡内宿主：
-    //    `CombinedQuotaWindowRow.dockBlock` 里的 `OffPeakUsageFootnote`（GLM 闲时用量
-    //    那条脚注），确实在 dock 浮层里渲染；另一处是
-    //    `QuotaUsageWindowColumn`（只从 `menuLayout` 那条路来）。同样内联成常量。
+    //    消费方是 `UsageMetricHoverSummaryView`。它唯一的一处卡内宿主曾是
+    //    `CombinedQuotaWindowRow.dockBlock` 里的 `OffPeakUsageFootnote`（GLM 闲时
+    //    用量那条脚注）；另一处是 `QuotaUsageWindowColumn`（只从 `menuLayout`
+    //    那条路来）。两处随后续清理一起消失：闲时用量并入「额度窗口」表格的
+    //    「闲」行，脚注与该视图整个删除。判据同样内联成常量。
     //
     // 后续（独立的一次清理）：上面 1. 的前两处 `isDockLayout` 连同恒假的 `else`
     // 分支（`menuLayout`）一起删除，两个 model 行的 body 直接渲染 dock；随之删除的
@@ -178,10 +179,10 @@ struct ProviderCardView: View, Equatable {
     ///    同为段落级，但住在卡内（段3 的标题在卡外），层级压过模块标题：
     ///    11pt semibold（`hoverRowEmphasis`）对 10pt semibold secondary（`QuotaModuleTitle`，
     ///    第四轮起模块标题也加重字重，但字号与颜色仍在段落标题之下）。
-    /// 1. **进度条**——每模型配额行原样（元信息行、分段条、GLM 闲时脚注、
-    ///    ChatGPT / DeepSeek 专属行）；高峰期倒计时仍由 `between` 夹在第一个
-    ///    model 行的进度条下方。曾经挂在同一位置的 `CompactResetCreditsRow`
-    ///    已摘走，挪到模块4。
+    /// 1. **进度条**——每模型配额行原样（元信息行、分段条、ChatGPT / DeepSeek
+    ///    专属行）；高峰期倒计时仍由 `between` 夹在第一个 model 行的进度条下方。
+    ///    曾经挂在同一位置的 GLM 闲时脚注已删除——闲时用量并入「额度窗口」
+    ///    表格的「闲」行。`CompactResetCreditsRow` 也已摘走，挪到模块4。
     /// 2. **额度窗口（分析/用量可切换）** + 3. **重置卡信息**——
     ///    都在 `quotaWindowUsage` 的「额度窗口用量」区块里，与额度区之间隔着
     ///    `quotaUsageDivider`；模块标题（额度窗口 / 重置卡详情）由 `QuotaWindowUsageSection` 内部画。
@@ -238,9 +239,11 @@ struct ProviderCardView: View, Equatable {
     private func quotaWindowUsage(info: QuotaInfo, derived: ProviderCardDerived) -> some View {
         let snapshot = derived.windowUsageSnapshot
         let today = derived.todayUsageRow
+        let offPeak = derived.offPeakUsageRow
         let hasUsageModules = QuotaWindowUsageSection.hasVisibleContent(
             snapshot: snapshot,
             today: today,
+            offPeak: offPeak,
             resetCredits: info.resetCredits
         )
         if hasUsageModules {
@@ -250,6 +253,7 @@ struct ProviderCardView: View, Equatable {
                 snapshot: snapshot,
                 tint: accentColor,
                 today: today,
+                offPeak: offPeak,
                 resetCredits: info.resetCredits,
                 refreshIntervalSeconds: status.refreshIntervalSeconds
             )
@@ -406,7 +410,6 @@ struct ProviderCardView: View, Equatable {
                         accentColor: status.accentColor,
                         localSamples: projection.recentSamples,
                         refreshIntervalSeconds: status.refreshIntervalSeconds,
-                        excludeWindows: excludeWindows,
                         deepseekPeakWindow: status.deepseekPeakWindow ?? .defaultWindow,
                         betweenBarAndColumns: AnyView(peakIndicator)
                     )
@@ -447,7 +450,6 @@ struct ProviderCardView: View, Equatable {
                         accentColor: status.accentColor,
                         localSamples: projection.recentSamples,
                         refreshIntervalSeconds: status.refreshIntervalSeconds,
-                        excludeWindows: excludeWindows,
                         deepseekPeakWindow: status.deepseekPeakWindow ?? .defaultWindow,
                         // 与 `.loading` 那一支同源，别漏。高峰期倒计时**只**由这一格
                         // 提供（`QuotaSummary` 不再自己画，`quotaSection` 里的 GLM
@@ -486,7 +488,6 @@ struct ProviderCardView: View, Equatable {
                 accentColor: status.accentColor,
                 localSamples: projection.recentSamples,
                 refreshIntervalSeconds: status.refreshIntervalSeconds,
-                excludeWindows: excludeWindows,
                 deepseekPeakWindow: status.deepseekPeakWindow ?? .defaultWindow,
                 betweenBarAndColumns: between
             )
@@ -494,16 +495,6 @@ struct ProviderCardView: View, Equatable {
                 GlmActivityPlanBalancesView(balances: status.glmActivityPlanBalances)
             }
         }
-    }
-
-    /// GLM 闲时任务窗口（仅 `.glmCodingPlan`）。额度窗口 hover 统计排除这些窗口内的 sample，
-    /// 本地 token 柱图仍保留。其他 provider 恒为空。
-    ///
-    /// 必须按 kind 取：ZCode 是一份多 provider 账本，同一份 `glmLocalUsage` 现在也挂在
-    /// MiniMax / DeepSeek 卡上（只为了读 `providerSlices`）。闲时窗口只属于智谱任务，
-    /// 泄漏到其它卡会让落在窗口内的 MiniMax / DSH 样本被误判成闲时任务而排除。
-    private var excludeWindows: [GlmOffPeakWindow] {
-        ProviderCardDerivedValues.offPeakWindows(status: status)
     }
 
     /// 所有卡片统一展示 quota provider 关联的客户端 token 汇总；客户端来源
@@ -689,9 +680,6 @@ struct QuotaSummary: View {
     let localSamples: [LocalTokenUsageSample]
     /// R3: reset credits 过期判定用到的刷新间隔（秒）。
     var refreshIntervalSeconds: Int = 300
-    /// 额度窗口 hover 统计需要排除的时间窗口（GLM 闲时任务不消耗积分）。
-    /// 本地 token 柱图不走这条路径，仍包含闲时任务。
-    var excludeWindows: [GlmOffPeakWindow] = []
     /// DeepSeek 高峰期窗口（仅 `.deepseek` 用到；其余 provider 用默认值占位）。
     var deepseekPeakWindow: DeepseekPeakWindow = .defaultWindow
     /// 夹在进度条块下方的**卡片级**信息（高峰期倒计时），由
@@ -735,9 +723,6 @@ struct QuotaSummary: View {
                         primaryLabel: Self.primaryWindowLabel(providerKind: providerKind, model: model),
                         tint: accentColor(for: model),
                         weeklyEquivalentMultiplier: Self.weeklyEquivalentMultiplier(providerKind: providerKind, model: model),
-                        providerKind: providerKind,
-                        localSamples: localSamples,
-                        excludeWindows: excludeWindows,
                         between: between
                     )
                 }

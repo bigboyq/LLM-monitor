@@ -151,6 +151,11 @@ struct QuotaWindowUsageSection: View {
     /// `nil` = 当天无本地数据，该行不画。数据由宿主取
     /// （`ProviderCardView.todayUsageRow`），当天四桶合计为 0 时照常传入，由 `visibleRows` 统一跳过。
     var today: Row?
+    /// 「闲」行（GLM 今日闲时任务用量；从额度条下方的独立闲时脚注迁入表格）。
+    /// `nil` = 非 GLM provider 或当天无闲时数据，该行不画。数据由宿主取
+    /// （`ProviderCardDerivedValues.offPeakUsageRow`），四桶合计为 0 时照常传入，
+    /// 由 `visibleRows` 统一跳过。
+    var offPeak: Row?
     /// 重置卡信息；`availableCount == 0` 或 `nil` 时重置卡模块整块不画。
     var resetCredits: ResetCreditsInfo?
     /// 重置卡折叠行的过期判定用刷新周期（秒），透传给 `CompactResetCreditsRow`。
@@ -190,6 +195,11 @@ struct QuotaWindowUsageSection: View {
     static let rawTableTitle = windowUsageTitle
     static let resetCreditsTitle = "重置卡详情"
 
+    /// 「闲」行的行标签（GLM 今日闲时任务用量，从独立脚注迁入表格）。
+    /// 行本身由 `ProviderCardDerivedValues` 产出；与「5h」「周」「今」同一长度档。
+    /// 测试钉住，改文案必须连测试一起改。
+    static let offPeakRowLabel = "闲"
+
     /// segment 持久化 key。
     static let segmentStorageKey = "quotaWindowUsageSegment"
 
@@ -228,8 +238,9 @@ struct QuotaWindowUsageSection: View {
         )
     }
 
-    /// **全零行跳过**后的可见行集：某行（5h/周/今）四个桶 token 合计为 0 时整行跳过，两态都不出现该行。
-    static func visibleRows(snapshot: QuotaWindowUsageSnapshot, today: Row?) -> [Row] {
+    /// **全零行跳过**后的可见行集：某行（5h/周/今/闲）四个桶 token 合计为 0 时整行跳过，两态都不出现该行。
+    /// 行序固定 5h → 周 → 今 → 闲；今 / 闲两行的重置日期格强制 `nil`（渲染 `—`）。
+    static func visibleRows(snapshot: QuotaWindowUsageSnapshot, today: Row?, offPeak: Row?) -> [Row] {
         var result: [Row] = []
         if let interval = snapshot.interval {
             result.append(Row(
@@ -255,6 +266,14 @@ struct QuotaWindowUsageSection: View {
                 resetsAt: nil
             ))
         }
+        if let offPeak {
+            result.append(Row(
+                label: offPeak.label,
+                metrics: offPeak.metrics,
+                cost: offPeak.cost,
+                resetsAt: nil
+            ))
+        }
         return result.filter { $0.metrics.totalTokens > 0 }
     }
 
@@ -264,9 +283,10 @@ struct QuotaWindowUsageSection: View {
     static func hasVisibleContent(
         snapshot: QuotaWindowUsageSnapshot,
         today: Row?,
+        offPeak: Row?,
         resetCredits: ResetCreditsInfo?
     ) -> Bool {
-        !visibleRows(snapshot: snapshot, today: today).isEmpty
+        !visibleRows(snapshot: snapshot, today: today, offPeak: offPeak).isEmpty
             || (resetCredits?.availableCount ?? 0) > 0
     }
 
@@ -301,6 +321,10 @@ struct QuotaWindowUsageSection: View {
     static let outputInputRateHelp = "产出比 =（思考 + 输出）/（未缓存输入 + 缓存输入）"
     /// `—` 时的说明：分母是输入侧总量，会话没有输入 token 时这个比率算不出来。
     static let outputInputRateHelpUnavailable = "会话无输入 token 时产出比无法计算，显示为 —"
+    /// 「闲」行类型格的 hover 说明（原独立闲时脚注的说明句，逐字保留）：
+    /// 格子里只有一个「闲」字，光标停上去才说得出这一行的口径。挂在类型格
+    /// 而不是整行——产出比格有自己的 `.help`，不能互相打架。
+    static let offPeakRowHelp = "ZCode 闲时任务真实消耗；不影响 5h / 周积分余额"
 
     /// 金额超长时的紧凑单位起点：10 万。
     static let costCompactThreshold: Double = 100_000
@@ -462,11 +486,15 @@ struct QuotaWindowUsageSection: View {
 
     @ViewBuilder
     private func gridDataRow(_ row: Row) -> some View {
+        // 「闲」行的类型格挂说明句（格子的 Grid 身份就是 label，与 ForEach 的
+        // `id: \.label` 同一口径）；其余行的类型格不带 `.help`，避免和产出比格
+        // 自己的说明打架。
+        let typeHelp = row.label == Self.offPeakRowLabel ? Self.offPeakRowHelp : nil
         switch activeSegment {
         case .analysis:
             let visibility = Self.statsColumnVisibility(rows: rows.map(\.metrics))
             GridRow {
-                typeCell(row.label)
+                typeCell(row.label, help: typeHelp)
                 cell(Formatters.formatTokenCountCompact(row.metrics.totalTokens), width: Self.middleColumnWidth)
                 if visibility.hit {
                     rateCell(Self.rateText(row.metrics.cacheHitRate, digits: 1), width: Self.middleColumnWidth)
@@ -487,7 +515,7 @@ struct QuotaWindowUsageSection: View {
         case .usage:
             let visibility = Self.numericColumnVisibility(rows: rows.map(\.metrics))
             GridRow {
-                typeCell(row.label)
+                typeCell(row.label, help: typeHelp)
                 if visibility.input {
                     cell(Formatters.formatTokenCountCompact(row.metrics.input), width: Self.middleColumnWidth)
                 }
@@ -522,10 +550,11 @@ struct QuotaWindowUsageSection: View {
         }
     }
 
-    private func typeCell(_ label: String) -> some View {
+    private func typeCell(_ label: String, help: String? = nil) -> some View {
         Text(label)
             .foregroundStyle(Color.primaryLabel)
             .gridCellAnchor(.leading)
+            .help(help ?? "")
     }
 
     private func cell(_ value: String, width: CGFloat) -> some View {
@@ -580,7 +609,7 @@ struct QuotaWindowUsageSection: View {
     }
 
     private var rows: [Row] {
-        Self.visibleRows(snapshot: snapshot, today: today)
+        Self.visibleRows(snapshot: snapshot, today: today, offPeak: offPeak)
     }
 }
 

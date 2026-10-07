@@ -117,12 +117,43 @@ enum LocalUsageSummaryBuilder {
         }
     }
 
-    /// 今日闲时（off-peak）任务 token 汇总：取 `now` 所在本地自然日内、落在
-    /// `offPeakWindows` 时间窗口内的样本，聚合出单独展示的"今日闲时"用量。
+    /// 今日闲时（off-peak）任务的**样本**筛选：取 `now` 所在本地自然日内、落在
+    /// `offPeakWindows` 时间窗口内（或来源标记为闲时 provider）的样本，返回样本
+    /// 本身而不是聚合值。
+    ///
+    /// 存在的理由与 `windowSamples` 相同：计价（`ModelPricingCatalog.estimate`）要的
+    /// 是样本。「闲」行（`ProviderCardDerivedValues.offPeakUsageRow`）的 token 数与
+    /// 金额必须落在同一批样本上，所以筛选单独提出来，`offPeakTodaySummary` 与
+    /// 「闲」行的**金额**都走它。
     ///
     /// - OpenCode 合并样本（promptID 带 `opencode:` 前缀）是正常消耗，不算闲时，排除。
     /// - 闲时任务不消耗 Coding Plan 积分，额度窗口统计排除它们（见 `summary(excludeWindows:)`），
-    ///   这里单独列出供 UI 展示真实消耗。
+    ///   这里单独筛出供 UI 展示真实消耗。
+    nonisolated static func offPeakTodaySamples(
+        samples: [LocalTokenUsageSample],
+        providerKind: ProviderKind,
+        quotaModelName: String,
+        offPeakWindows: [GlmOffPeakWindow],
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> [LocalTokenUsageSample] {
+        let todayStart = calendar.startOfDay(for: now)
+        guard let todayEnd = calendar.date(byAdding: .day, value: 1, to: todayStart) else { return [] }
+        let offPeakSamples = samples.filter { sample in
+            guard sample.completedAt >= todayStart, sample.completedAt < todayEnd else { return false }
+            return isGlmOffPeakSample(sample, fallbackWindows: offPeakWindows)
+        }
+        return matchingSamples(
+            offPeakSamples,
+            providerKind: providerKind,
+            quotaModelName: quotaModelName
+        )
+    }
+
+    /// 今日闲时（off-peak）任务 token 汇总：取 `now` 所在本地自然日内、落在
+    /// `offPeakWindows` 时间窗口内的样本，聚合出单独展示的"今日闲时"用量。
+    ///
+    /// 判定谓词只有 `offPeakTodaySamples` 一份，这里只是它的聚合形态。
     nonisolated static func offPeakTodaySummary(
         samples: [LocalTokenUsageSample],
         providerKind: ProviderKind,
@@ -131,17 +162,13 @@ enum LocalUsageSummaryBuilder {
         now: Date = Date(),
         calendar: Calendar = .current
     ) -> UsageMetricSummary? {
-        let todayStart = calendar.startOfDay(for: now)
-        guard let todayEnd = calendar.date(byAdding: .day, value: 1, to: todayStart) else { return nil }
-        let offPeakSamples = samples.filter { sample in
-            guard sample.completedAt >= todayStart, sample.completedAt < todayEnd else { return false }
-            return isGlmOffPeakSample(sample, fallbackWindows: offPeakWindows)
-        }
-        guard !offPeakSamples.isEmpty else { return nil }
-        let matching = matchingSamples(
-            offPeakSamples,
+        let matching = offPeakTodaySamples(
+            samples: samples,
             providerKind: providerKind,
-            quotaModelName: quotaModelName
+            quotaModelName: quotaModelName,
+            offPeakWindows: offPeakWindows,
+            now: now,
+            calendar: calendar
         )
         guard !matching.isEmpty else { return nil }
         return aggregate(matching)
@@ -313,11 +340,12 @@ struct QuotaWindowUsageSnapshot: Equatable, Sendable {
 extension LocalUsageSummaryBuilder {
     /// 单个 model 在两个额度窗口内的本地 token 用量。
     ///
-    /// 窗口边界与 `CombinedQuotaWindowRow.primaryUsage` / `weeklyUsage`
-    /// **同源**：同一份 `windowBounds(resetsAt:explicitWindowSeconds:fallbackSeconds:)`
-    /// 加同一份 `summary(…excludeWindows:excludeGlmOffPeak:)`。这里不再推第二套
-    /// 边界——两处一旦各自算各自的 "5h 从什么时候开始"，区块里的数和 hover 明细
-    /// 里的数就会对不上，而这种漂移只能靠肉眼发现。
+    /// 窗口边界**单源**于同一份
+    /// `windowBounds(resetsAt:explicitWindowSeconds:fallbackSeconds:)`
+    /// 加同一份 `summary(…excludeWindows:excludeGlmOffPeak:)`。「额度窗口」表格的
+    /// 5h / 周 行（经 `windowUsageSnapshot`）从这里取数，别处不再推第二套边界——
+    /// 一旦各自算各自的 "5h 从什么时候开始"，两边的数就会对不上，而这种漂移只能
+    /// 靠肉眼发现。
     ///
     /// - Parameters:
     ///   - intervalFallbackSeconds: 短周期窗口缺 `windowSeconds` 时的兜底长度
