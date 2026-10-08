@@ -692,6 +692,11 @@ Data source and calibration:
   `LocalUsageSummaryBuilder.windowSamples`, so the GLM off-peak exclusion
   (`excludeWindows` + `excludeGlmOffPeak`) applies here exactly as it does above. ChatGPT
   keeps its `codexUsageDetails` + OpenCode path via `ChatGPTPlanModelRow.windowUsages`.
+  minimax 的 5h 行长度来自 fetcher 按 `end_time` 反推的真实段长
+  （`intervalWindowSeconds`：end 落 0 点 → 4h，其余边界 → 5h）——minimax 窗口贴固定日
+  边界 00/05/10/15/20，最后一段 20:00→24:00 只有 4 小时，按 5h 兜底反推会把起点退到
+  19:00，把上一窗口最后 1 小时的样本多算进本行（token 与金额双双虚高）。
+- A provider with several model quotas is **summed per window** (`combineWindowUsage`):
 - A provider with several model quotas is **summed per window** (`combineWindowUsage`):
   `modelMatches` already partitions the samples per model quota, so the pools do not
   overlap. The reset time shown is the **earliest** one, and the table footnote says so
@@ -1064,4 +1069,4 @@ default has to preserve it — defaulting to off would put a dock inside every f
 window for every existing user. Because the setting can be flipped while the user is
 already fullscreen, a policy change re-probes instead of reusing the cached verdict.
 
-> 核对基线：2026-10-08 · 代码 d2ea05e
+> 核对基线：2026-10-09 · 代码 87c17b8

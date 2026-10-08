@@ -197,7 +197,10 @@ Processing steps:
 6. Build a single `ModelQuota` (modelName `glm_coding_plan`, displayName `GLM Coding Plan`) with
    interval (5h) + weekly windows; present limits map to `QuotaWindowStatus.present`,
    missing weekly limits map to `.absent`, and `intervalWindowSeconds = 18000`,
-   `weeklyWindowSeconds = 604800`.
+   `weeklyWindowSeconds = 604800`. 写死 18000 是**对的**：GLM 的 5h 窗口是真实滚动
+   5 小时（用户裁定 2026-10-09），不像 minimax 贴固定日边界、末段只有 4h——不要给
+   GLM 引入任何按 `end_time` 反推边界的逻辑。Codex（API 返回真实窗口长度）与
+   Antigravity（rolling 5h，5h 兜底仅在 reset 时间缺失的降级路径生效）同理无整点切换。
 
 Mapping:
 
@@ -697,4 +700,4 @@ whether the quota batch succeeded. GLM's former dedicated periodic trigger
 The scanner's db+WAL fingerprint check is unchanged: when nothing changed only a `stat()`
 runs (microseconds); SQL (~1.5ms) only runs when the WAL actually moved.
 
-> 核对基线：2026-10-07 · 代码 44afd87
+> 核对基线：2026-10-09 · 代码 87c17b8
