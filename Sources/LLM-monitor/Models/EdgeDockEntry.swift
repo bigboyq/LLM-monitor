@@ -38,7 +38,8 @@ struct EdgeDockEntry: Identifiable, Equatable, Sendable {
     /// nil = 没有 5h 窗口。
     ///
     /// 与 `intervalFraction` 同口径、同过滤条件——两者都只看
-    /// `activeModels.filter(\.hasIntervalWindow)` 并取同一个有效额度最低的瓶颈，
+    /// `aggregateQuotaModels(providerKind:).filter(\.hasIntervalWindow)` 并取同一个
+    /// 有效额度最低的瓶颈，
     /// 所以"有弧"与"有色"永远同步，不会出现外环画了弧却是中性灰。
     let intervalHealth: HealthLevel?
 
@@ -95,6 +96,8 @@ enum EdgeDockProjection {
 
     /// 5 小时**有效额度**：逐 model 取 min(5h 剩余, 周剩余 × 周等效倍率 N)
     /// （`ModelQuota.aggregateActualAvailable`），再取所有含 5h 窗口 model 里的最低值。
+    /// 聚合 model 集合已排除 minimax video / antigravity Claude and GPT 组
+    /// （`QuotaInfo.aggregateQuotaModels`）。
     ///
     /// 与状态栏中心扇形（`AppState.statusBarQuotaMetrics`）同一真源：周额度折算后
     /// 可能比 5h 剩余更紧（典型：antigravity Claude/GPT 组 N=1，2026-10 从 3 下调），
@@ -114,18 +117,20 @@ enum EdgeDockProjection {
     /// 有效额度之后，只亮有效值会让人误以为 5h 真的只剩这么多，把原始值并排给出
     /// 才能看出差额来自周瓶颈。画环 / 取色 / 常驻数值一律不读它。
     static func rawIntervalFraction(_ status: ProviderStatus) -> Double? {
-        worstFraction(status.lastSuccess?.activeModels.filter(\.hasIntervalWindow)) {
+        worstFraction(status.lastSuccess?.aggregateQuotaModels(providerKind: status.kind).filter(\.hasIntervalWindow)) {
             $0.intervalRemainingPercent
         }
     }
 
     /// 周窗口剩余比例：取该 provider 所有含周窗口 model 的**最低**值。
     ///
-    /// 用**原始**剩余百分比，不乘 `weeklyEquivalentMultiplier` —— 内环表达的是
+    /// 聚合 model 集合已排除 minimax video / antigravity Claude and GPT 组
+    /// （`QuotaInfo.aggregateQuotaModels`）。用**原始**剩余百分比，不乘
+    /// `weeklyEquivalentMultiplier` —— 内环表达的是
     /// "周额度本身还剩多少"，乘等效倍率会把它变成与 5h 同量纲的换算值，
     /// 读出来就不再是周额度了（倍率只参与外环的 5h 有效额度合成，内环保持原始）。
     static func weeklyFraction(_ status: ProviderStatus, at now: Date) -> Double? {
-        worstFraction(status.lastSuccess?.activeModels.filter(\.hasWeeklyWindow)) {
+        worstFraction(status.lastSuccess?.aggregateQuotaModels(providerKind: status.kind).filter(\.hasWeeklyWindow)) {
             $0.weeklyRemainingPercent
         }
     }
@@ -148,7 +153,7 @@ enum EdgeDockProjection {
         _ status: ProviderStatus,
         at now: Date
     ) -> (percent: Double, bindingTimeFraction: Double?)? {
-        let models = status.lastSuccess?.activeModels.filter(\.hasIntervalWindow)
+        let models = status.lastSuccess?.aggregateQuotaModels(providerKind: status.kind).filter(\.hasIntervalWindow)
         guard let models, !models.isEmpty else { return nil }
         return models
             .compactMap { $0.aggregateActualAvailable(providerKind: status.kind, at: now) }
@@ -179,7 +184,7 @@ enum EdgeDockProjection {
     /// `weeklyFraction` 同一个理由：内环表达的是"周额度本身还剩多少"。
     static func weeklyHealth(_ status: ProviderStatus, at now: Date) -> HealthLevel? {
         worstHealth(
-            status.lastSuccess?.activeModels.filter(\.hasWeeklyWindow),
+            status.lastSuccess?.aggregateQuotaModels(providerKind: status.kind).filter(\.hasWeeklyWindow),
             percent: { $0.weeklyRemainingPercent },
             timeFraction: { $0.weeklyTimeRemainingFraction(at: now) }
         )

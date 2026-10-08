@@ -217,7 +217,8 @@ final class AppState: ObservableObject {
 
     /// 计算当前状态栏配额指标：左弧 5h、右弧周额度、中间为所有有效套餐
     /// 「实际可用」比例（min(5h, 周 × N)）的最低值，底部三点按统一 colorLevel
-    /// 判定（实际可用口径 + 高峰 floor）红 > 黄 > 绿排列。
+    /// 判定（实际可用口径 + 高峰 floor）红 > 黄 > 绿排列。聚合 model 集合已排除
+    /// minimax video / antigravity Claude and GPT 组（`QuotaInfo.aggregateQuotaModels`）。
     func statusBarQuotaMetrics(at now: Date = Date()) -> StatusBarQuotaMetrics {
         let enabled = statuses.filter(\.isEnabled)
         // (kind, model, isPeak) 三元组：中心扇形与底部三点的「实际可用」口径需要
@@ -239,7 +240,7 @@ final class AppState: ObservableObject {
             }
             switch status.state {
             case .ok(let info), .loading(lastSuccess: let info?), .failed(message: _, lastSuccess: let info?):
-                activeWindowedModels.append(contentsOf: info.activeModels.map { (kind: status.kind, model: $0, isPeak: isPeak) })
+                activeWindowedModels.append(contentsOf: info.aggregateQuotaModels(providerKind: status.kind).map { (kind: status.kind, model: $0, isPeak: isPeak) })
             case .notConfigured, .ready, .loading(lastSuccess: nil), .failed(message: _, lastSuccess: nil):
                 break
             }

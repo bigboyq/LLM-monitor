@@ -232,6 +232,81 @@ final class EdgeDockProjectionTests: EdgeDockTestCase {
         )
     }
 
+    // MARK: - 聚合排除：minimax video / antigravity Claude and GPT 组不参与圆环聚合
+
+    /// minimax 的 `video`（独立小配额池）不参与圆环与色档聚合（用户裁定 2026-10）：
+    /// general 80%/60% + video 10%/5% 时，内外环与 health 只反映 general——否则外环
+    /// 会被 video 的有效额度 min(10%, 5%×7=35%) = 10% 拖到 0.10。
+    func testProjectionExcludesMinimaxVideoFromRingAggregation() {
+        let status = makeStatus(id: "minimax", kind: .minimaxTokenPlan, state: .ok(makeInfo([
+            makeModel(name: "general", intervalPercent: 80, weeklyPercent: 60, now: Self.makeNow),
+            makeModel(name: "video", intervalPercent: 10, weeklyPercent: 5, now: Self.makeNow),
+        ])))
+        XCTAssertEqual(
+            EdgeDockProjection.intervalFraction(status, at: Self.makeNow) ?? -1,
+            0.80, accuracy: 0.0001,
+            "外环只按 general：min(80%, 60%×10 封顶 100) = 80%"
+        )
+        XCTAssertEqual(
+            EdgeDockProjection.rawIntervalFraction(status) ?? -1,
+            0.80, accuracy: 0.0001,
+            "原始 5h 同样排除 video（video 原始 10% 不参与取最低）"
+        )
+        XCTAssertEqual(
+            EdgeDockProjection.weeklyFraction(status, at: Self.makeNow) ?? -1,
+            0.60, accuracy: 0.0001,
+            "内环只按 general 的周剩余 60%（video 的 5% 不参与）"
+        )
+        XCTAssertEqual(EdgeDockProjection.intervalHealth(status, at: Self.makeNow), .healthy)
+        XCTAssertEqual(EdgeDockProjection.weeklyHealth(status, at: Self.makeNow), .healthy)
+        XCTAssertEqual(
+            EdgeDockProjection.entries(from: [status], at: Self.makeNow)[0].health, .healthy,
+            "health 走 aggregateHealthLevel，同样排除 video"
+        )
+    }
+
+    /// antigravity 的 Claude and GPT models 组同理：gemini 组独自决定圆环，
+    /// claude 组的有效额度 min(5%, 2%×1=2%) 不再把外环拖到底。
+    func testProjectionExcludesAntigravityClaudeGroupFromRingAggregation() {
+        let status = makeStatus(id: "antigravity", kind: .antigravity, state: .ok(makeInfo([
+            makeModel(name: AntigravityModelKind.geminiModels.rawValue, intervalPercent: 90, weeklyPercent: 80, now: Self.makeNow),
+            makeModel(name: AntigravityModelKind.claudeAndGptModels.rawValue, intervalPercent: 5, weeklyPercent: 2, now: Self.makeNow),
+        ])))
+        XCTAssertEqual(
+            EdgeDockProjection.intervalFraction(status, at: Self.makeNow) ?? -1,
+            0.90, accuracy: 0.0001,
+            "外环只按 gemini 组：min(90%, 80%×6 封顶 100) = 90%"
+        )
+        XCTAssertEqual(
+            EdgeDockProjection.rawIntervalFraction(status) ?? -1,
+            0.90, accuracy: 0.0001
+        )
+        XCTAssertEqual(
+            EdgeDockProjection.weeklyFraction(status, at: Self.makeNow) ?? -1,
+            0.80, accuracy: 0.0001,
+            "内环只按 gemini 组的周剩余 80%"
+        )
+    }
+
+    /// 回退分支：provider 只剩被排除的 model 时回退 `activeModels`——圆环与色档
+    /// 仍按 video 判定，不退化为「无读数」。
+    func testProjectionFallsBackWhenOnlyExcludedModelRemains() {
+        let status = makeStatus(id: "minimax", kind: .minimaxTokenPlan, state: .ok(makeInfo([
+            makeModel(name: "video", intervalPercent: 40, now: Self.makeNow),
+        ])))
+        XCTAssertEqual(
+            EdgeDockProjection.intervalFraction(status, at: Self.makeNow) ?? -1,
+            0.40, accuracy: 0.0001,
+            "只有 video 时回退全集，外环仍画 video 的 40%"
+        )
+        XCTAssertEqual(EdgeDockProjection.intervalHealth(status, at: Self.makeNow), .healthy, "40% 高于固定 30% 黄线")
+        XCTAssertNil(
+            EdgeDockProjection.weeklyFraction(status, at: Self.makeNow),
+            "回退后的 video 无周窗口，内环仍为 nil"
+        )
+        XCTAssertEqual(EdgeDockProjection.entries(from: [status], at: Self.makeNow)[0].health, .healthy)
+    }
+
     // MARK: - hover 文案（5h 段双数值）
 
     /// 周折算不构成瓶颈（有效 == 原始）时维持单数值——没有差额就没有可解释的，

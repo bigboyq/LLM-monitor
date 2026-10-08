@@ -181,6 +181,24 @@ struct ModelQuota: Equatable, Codable, Sendable {
         }
     }
 
+    /// 是否排除在「5h / 周」聚合读数之外。聚合读数 = 状态栏 iconDuo（左右弧 / 中心扇形 /
+    /// 底部三点）、边缘窗圆环（`EdgeDockProjection`）与 provider 综合健康度
+    /// （`ProviderStatus.aggregateHealthLevel`）这类跨 model 汇总；卡片逐 model 独立展示、
+    /// 通知管线逐 model 检测，都不读这个开关。
+    ///
+    /// minimax 的 `video`（视频生成）与 antigravity 的 Claude and GPT models 组是独立
+    /// 小配额池，余量水位与主力模型无关，聚合时不计（用户裁定 2026-10）。
+    func isExcludedFromQuotaAggregation(providerKind: ProviderKind) -> Bool {
+        switch providerKind {
+        case .minimaxTokenPlan:
+            return modelName.lowercased() == "video"
+        case .antigravity:
+            return modelName.lowercased() == AntigravityModelKind.claudeAndGptModels.rawValue
+        case .codexChatGpt, .glmCodingPlan, .deepseek:
+            return false
+        }
+    }
+
     /// 周窗口剩余时间比例。0.0 = 即将过期，1.0 = 刚重置。
     /// 仅在周窗口存在且 weeklyResetsAt 已知时返回有效值；
     /// `weeklyWindowSeconds` 缺失时按 7 天兜底（minimax fetcher 当前把
@@ -274,6 +292,15 @@ struct QuotaInfo: Equatable, Codable, Sendable {
     /// 记录，便于日志和后续状态码诊断。
     var activeModels: [ModelQuota] {
         models.filter(\.hasActiveQuotaWindow)
+    }
+
+    /// 参与「5h / 周」聚合读数的 model 集合：`activeModels` 再滤掉
+    /// `isExcludedFromQuotaAggregation(providerKind:)` 命中的 model。滤后为空时回退
+    /// `activeModels`——排除规则只允许「少算」，不允许把一个有数据的 provider 聚合
+    /// 成「无读数」或保守误红（`aggregateHealthLevel` 对空集回退 .critical）。
+    func aggregateQuotaModels(providerKind: ProviderKind) -> [ModelQuota] {
+        let filtered = activeModels.filter { !$0.isExcludedFromQuotaAggregation(providerKind: providerKind) }
+        return filtered.isEmpty ? activeModels : filtered
     }
 
     /// 综合健康度：只计算当前有效 model；全部无效时保守返回 critical。

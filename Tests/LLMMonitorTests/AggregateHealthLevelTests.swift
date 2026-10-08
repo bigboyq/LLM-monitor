@@ -412,6 +412,105 @@ final class AggregateHealthLevelTests: XCTestCase {
         XCTAssertEqual(glmHealthy.aggregateHealthLevel(at: peak), .warning, "高峰时卡头点保底黄色")
     }
 
+    /// minimax 的 `video` 与 antigravity 的 Claude and GPT 组是独立小配额池，
+    /// 不参与 provider 综合健康度（用户裁定 2026-10）：主力 model 健康 + 独立池
+    /// 耗尽 → 卡头点只按主力判定，不被拖红。
+    func testAggregateHealthLevelExcludesMinimaxVideoAndAntigravityClaudeGroup() {
+        func makeWindowedModel(modelName: String, intervalPercent: Double) -> ModelQuota {
+            ModelQuota(
+                modelName: modelName,
+                intervalTotalCount: 100,
+                intervalUsageCount: 100 - Int(intervalPercent),
+                intervalRemainingPercent: intervalPercent,
+                intervalStatus: .present,
+                intervalResetsAt: Date().addingTimeInterval(3600),
+                intervalWindowSeconds: 5 * 3600,
+                weeklyTotalCount: 0,
+                weeklyUsageCount: 0,
+                weeklyRemainingPercent: 0,
+                weeklyStatus: .absent,
+                weeklyResetsAt: nil,
+                weeklyWindowSeconds: nil
+            )
+        }
+
+        func makeQuotaStatus(kind: ProviderKind, models: [ModelQuota]) -> ProviderStatus {
+            ProviderStatus(
+                id: "t", displayName: "T", kind: kind,
+                iconSystemName: "c", accentColor: .minimax,
+                refreshIntervalSeconds: 60,
+                state: .ok(QuotaInfo(
+                    models: models,
+                    resetCredits: nil, planLabel: nil, accountEmail: nil,
+                    codexUsageDetails: nil, fetchedAt: Date()
+                ))
+            )
+        }
+
+        XCTAssertEqual(
+            makeQuotaStatus(kind: .minimaxTokenPlan, models: [
+                makeWindowedModel(modelName: "general", intervalPercent: 80),
+                makeWindowedModel(modelName: "video", intervalPercent: 0),
+            ]).aggregateHealthLevel(),
+            .healthy,
+            "video 耗尽（0%，本会判红）不参与综合健康度，卡头点只按 general 的 80% 判绿"
+        )
+        XCTAssertEqual(
+            makeQuotaStatus(kind: .antigravity, models: [
+                makeWindowedModel(modelName: AntigravityModelKind.geminiModels.rawValue, intervalPercent: 80),
+                makeWindowedModel(modelName: AntigravityModelKind.claudeAndGptModels.rawValue, intervalPercent: 0),
+            ]).aggregateHealthLevel(),
+            .healthy,
+            "Claude and GPT 组耗尽不参与综合健康度，卡头点只按 gemini 组判定"
+        )
+    }
+
+    /// 回退分支：provider 只剩被排除的 model 时回退 `activeModels`，仍按它判定
+    /// （不额外保守误红），它本身耗尽时才 .critical。
+    func testAggregateHealthLevelFallsBackWhenOnlyExcludedModelRemains() {
+        func makeVideoModel(intervalPercent: Double) -> ModelQuota {
+            ModelQuota(
+                modelName: "video",
+                intervalTotalCount: 100,
+                intervalUsageCount: 100 - Int(intervalPercent),
+                intervalRemainingPercent: intervalPercent,
+                intervalStatus: .present,
+                intervalResetsAt: Date().addingTimeInterval(3600),
+                intervalWindowSeconds: 5 * 3600,
+                weeklyTotalCount: 0,
+                weeklyUsageCount: 0,
+                weeklyRemainingPercent: 0,
+                weeklyStatus: .absent,
+                weeklyResetsAt: nil,
+                weeklyWindowSeconds: nil
+            )
+        }
+
+        func makeMinimaxStatus(models: [ModelQuota]) -> ProviderStatus {
+            ProviderStatus(
+                id: "t", displayName: "T", kind: .minimaxTokenPlan,
+                iconSystemName: "c", accentColor: .minimax,
+                refreshIntervalSeconds: 60,
+                state: .ok(QuotaInfo(
+                    models: models,
+                    resetCredits: nil, planLabel: nil, accountEmail: nil,
+                    codexUsageDetails: nil, fetchedAt: Date()
+                ))
+            )
+        }
+
+        XCTAssertEqual(
+            makeMinimaxStatus(models: [makeVideoModel(intervalPercent: 50)]).aggregateHealthLevel(),
+            .healthy,
+            "只有 video 时回退全集按 video 判定：50% 高于固定 30% 黄线，不误红"
+        )
+        XCTAssertEqual(
+            makeMinimaxStatus(models: [makeVideoModel(intervalPercent: 0)]).aggregateHealthLevel(),
+            .critical,
+            "回退不豁免 video 本身的耗尽：0% 仍判红"
+        )
+    }
+
     // MARK: - 单模型健康度档位与窗口 present 判定（自 UsableAPIKeyHealthLevelTests 解散归入）
 
     func testHealthLevelAndQuotaStatusRules() throws {

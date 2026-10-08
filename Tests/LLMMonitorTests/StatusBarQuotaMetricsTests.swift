@@ -746,4 +746,209 @@ final class StatusBarQuotaMetricsTests: XCTestCase {
         XCTAssertFalse(svg.contains("#FFD60A"), "周瓶颈 late-window 时中心按动态黄线应为绿色，不得虚黄（无任何黄色元素）")
         XCTAssertTrue(svg.contains("#34C759"), "中心应为绿色")
     }
+
+    /// minimax 的 `video`（视频生成）是独立小配额池，不参与 iconDuo 聚合
+    /// （用户裁定 2026-10）：左右弧 min/avg、中心扇形与底部三点只反映 general，
+    /// 不被耗尽的 video 拖到 0 / 红。
+    @MainActor
+    func testMinimaxVideoDoesNotEnterQuotaLogoAggregate() {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let store = ConfigStore(configURL: dir.appendingPathComponent("config.json"))
+        var config = store.config
+        config.providers["test_minimax"] = ProviderConfig(enabled: true, apiKey: "key")
+        try? store.applyAndSave(config)
+        let descriptor = FetcherDescriptor(
+            id: "test_minimax",
+            displayName: "Minimax",
+            kind: .minimaxTokenPlan,
+            iconSystemName: "bubble.left",
+            accentColor: .minimax,
+            makeFetcher: { _ in MinimaxTokenPlanFetcher(apiKey: "key") }
+        )
+        let state = AppState(descriptors: [descriptor], configStore: store)
+        defer { state.stop() }
+
+        let general = ModelQuota(
+            modelName: "general",
+            intervalTotalCount: 100,
+            intervalUsageCount: 0,
+            intervalRemainingPercent: 100,
+            intervalStatus: .present,
+            intervalResetsAt: Date().addingTimeInterval(3600),
+            intervalWindowSeconds: 5 * 3600,
+            weeklyTotalCount: 0,
+            weeklyUsageCount: 0,
+            weeklyRemainingPercent: 0,
+            weeklyStatus: .absent,
+            weeklyResetsAt: nil,
+            weeklyWindowSeconds: nil
+        )
+        let video = ModelQuota(
+            modelName: "video",
+            intervalTotalCount: 100,
+            intervalUsageCount: 100,
+            intervalRemainingPercent: 0,
+            intervalStatus: .present,
+            intervalResetsAt: Date().addingTimeInterval(3600),
+            intervalWindowSeconds: 5 * 3600,
+            weeklyTotalCount: 100,
+            weeklyUsageCount: 100,
+            weeklyRemainingPercent: 0,
+            weeklyStatus: .present,
+            weeklyResetsAt: Date().addingTimeInterval(7 * 24 * 3600),
+            weeklyWindowSeconds: 7 * 24 * 3600
+        )
+        state.mutateStatus(for: "test_minimax") {
+            $0.state = .ok(QuotaInfo(
+                models: [general, video],
+                resetCredits: nil,
+                planLabel: nil,
+                accountEmail: nil,
+                codexUsageDetails: nil,
+                fetchedAt: Date()
+            ))
+        }
+
+        let metrics = state.statusBarQuotaMetrics()
+        XCTAssertTrue(metrics.interval.isAvailable)
+        XCTAssertEqual(metrics.interval.minAvailable, 1.0, accuracy: 0.001, "左弧只反映 general 的 100%，不被 video 的 0% 拖到 0")
+        XCTAssertEqual(metrics.interval.avgAvailable, 1.0, accuracy: 0.001)
+        XCTAssertFalse(metrics.weekly.isAvailable, "general 无周窗口、video 已被排除，右弧应无读数")
+        XCTAssertEqual(metrics.centerAvailable ?? -1, 1.0, accuracy: 0.001, "中心只反映 general 的实际可用 100%")
+        XCTAssertEqual(metrics.quotaHealthLevels, [.healthy, .healthy, .healthy], "底部三点只按 general 判绿，不被耗尽的 video 拖红")
+    }
+
+    /// antigravity 的 Claude and GPT models 组同理不参与 iconDuo 聚合：
+    /// gemini_models 独自决定左右弧、中心与底部三点读数。
+    @MainActor
+    func testAntigravityClaudeGroupDoesNotEnterQuotaLogoAggregate() {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let store = ConfigStore(configURL: dir.appendingPathComponent("config.json"))
+        var config = store.config
+        config.providers["test_antigravity"] = ProviderConfig(enabled: true, apiKey: "key")
+        try? store.applyAndSave(config)
+        let descriptor = FetcherDescriptor(
+            id: "test_antigravity",
+            displayName: "Antigravity",
+            kind: .antigravity,
+            iconSystemName: "sparkles",
+            accentColor: .antigravity,
+            makeFetcher: { _ in AntigravityFetcher() }
+        )
+        let state = AppState(descriptors: [descriptor], configStore: store)
+        defer { state.stop() }
+
+        let gemini = ModelQuota(
+            modelName: AntigravityModelKind.geminiModels.rawValue,
+            intervalTotalCount: 100,
+            intervalUsageCount: 0,
+            intervalRemainingPercent: 100,
+            intervalStatus: .present,
+            intervalResetsAt: Date().addingTimeInterval(3600),
+            intervalWindowSeconds: 5 * 3600,
+            weeklyTotalCount: 0,
+            weeklyUsageCount: 0,
+            weeklyRemainingPercent: 0,
+            weeklyStatus: .absent,
+            weeklyResetsAt: nil,
+            weeklyWindowSeconds: nil
+        )
+        let claudeGroup = ModelQuota(
+            modelName: AntigravityModelKind.claudeAndGptModels.rawValue,
+            intervalTotalCount: 100,
+            intervalUsageCount: 100,
+            intervalRemainingPercent: 0,
+            intervalStatus: .present,
+            intervalResetsAt: Date().addingTimeInterval(3600),
+            intervalWindowSeconds: 5 * 3600,
+            weeklyTotalCount: 100,
+            weeklyUsageCount: 100,
+            weeklyRemainingPercent: 0,
+            weeklyStatus: .present,
+            weeklyResetsAt: Date().addingTimeInterval(7 * 24 * 3600),
+            weeklyWindowSeconds: 7 * 24 * 3600
+        )
+        state.mutateStatus(for: "test_antigravity") {
+            $0.state = .ok(QuotaInfo(
+                models: [gemini, claudeGroup],
+                resetCredits: nil,
+                planLabel: nil,
+                accountEmail: nil,
+                codexUsageDetails: nil,
+                fetchedAt: Date()
+            ))
+        }
+
+        let metrics = state.statusBarQuotaMetrics()
+        XCTAssertTrue(metrics.interval.isAvailable)
+        XCTAssertEqual(metrics.interval.minAvailable, 1.0, accuracy: 0.001, "左弧只反映 gemini 组的 100%，不被 claude 组的 0% 拖到 0")
+        XCTAssertEqual(metrics.interval.avgAvailable, 1.0, accuracy: 0.001)
+        XCTAssertFalse(metrics.weekly.isAvailable, "gemini 组无周窗口、claude 组已被排除，右弧应无读数")
+        XCTAssertEqual(metrics.centerAvailable ?? -1, 1.0, accuracy: 0.001, "中心只反映 gemini 组的实际可用 100%")
+        XCTAssertEqual(metrics.quotaHealthLevels, [.healthy, .healthy, .healthy], "底部三点只按 gemini 组判绿，不被耗尽的 claude 组拖红")
+    }
+
+    /// 回退分支：minimax 只剩 video（无 general）时回退 `activeModels`，
+    /// 聚合仍反映 video 本身，而不是把有数据的 provider 聚合成「无读数」。
+    @MainActor
+    func testQuotaAggregateFallsBackToVideoWhenGeneralMissing() {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let store = ConfigStore(configURL: dir.appendingPathComponent("config.json"))
+        var config = store.config
+        config.providers["test_minimax"] = ProviderConfig(enabled: true, apiKey: "key")
+        try? store.applyAndSave(config)
+        let descriptor = FetcherDescriptor(
+            id: "test_minimax",
+            displayName: "Minimax",
+            kind: .minimaxTokenPlan,
+            iconSystemName: "bubble.left",
+            accentColor: .minimax,
+            makeFetcher: { _ in MinimaxTokenPlanFetcher(apiKey: "key") }
+        )
+        let state = AppState(descriptors: [descriptor], configStore: store)
+        defer { state.stop() }
+
+        let video = ModelQuota(
+            modelName: "video",
+            intervalTotalCount: 100,
+            intervalUsageCount: 60,
+            intervalRemainingPercent: 40,
+            intervalStatus: .present,
+            intervalResetsAt: Date().addingTimeInterval(3600),
+            intervalWindowSeconds: 5 * 3600,
+            weeklyTotalCount: 0,
+            weeklyUsageCount: 0,
+            weeklyRemainingPercent: 0,
+            weeklyStatus: .absent,
+            weeklyResetsAt: nil,
+            weeklyWindowSeconds: nil
+        )
+        state.mutateStatus(for: "test_minimax") {
+            $0.state = .ok(QuotaInfo(
+                models: [video],
+                resetCredits: nil,
+                planLabel: nil,
+                accountEmail: nil,
+                codexUsageDetails: nil,
+                fetchedAt: Date()
+            ))
+        }
+
+        let metrics = state.statusBarQuotaMetrics()
+        XCTAssertTrue(metrics.interval.isAvailable, "只有 video 时回退全集，左弧不应退化成无读数")
+        XCTAssertEqual(metrics.interval.minAvailable, 0.4, accuracy: 0.001)
+        XCTAssertEqual(metrics.interval.avgAvailable, 0.4, accuracy: 0.001)
+        XCTAssertFalse(metrics.weekly.isAvailable)
+        XCTAssertEqual(metrics.centerAvailable ?? -1, 0.4, accuracy: 0.001, "中心仍按 video 的实际可用 40% 参与聚合")
+        XCTAssertEqual(metrics.quotaHealthLevels, [.healthy, .healthy, .healthy], "40% 高于固定 30% 黄线，video 的点为绿")
+    }
 }

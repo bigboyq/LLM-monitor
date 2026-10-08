@@ -141,6 +141,9 @@ struct ProviderStatus: Identifiable, Equatable, Sendable {
     /// - 有数据但没有有效窗口 model → .critical（对齐 `QuotaInfo.healthLevel` 现状）。
     /// - 否则取各 model `aggregateHealthLevel`（实际可用口径 min(5h, 周 × N)）的最差值。
     ///
+    /// 聚合 model 集合已排除 minimax video / antigravity Claude and GPT 组
+    /// （`QuotaInfo.aggregateQuotaModels`，滤后为空回退全集）。
+    ///
     /// 高峰判定跟随 `AppState.systemHealthLevel` 现状：`glmPeakWindow` 命中 .peak
     /// 即保底 .warning（红色优先，floor 不吞掉红色）；`deepseekPeakWindow` 不参与
     /// 卡头点 floor。deepseek 余额模型只有 5h 形态的窗口且无 reset 时间，走本方法
@@ -153,7 +156,7 @@ struct ProviderStatus: Identifiable, Equatable, Sendable {
         } else {
             isPeak = false
         }
-        return info.activeModels
+        return info.aggregateQuotaModels(providerKind: kind)
             .map { $0.aggregateHealthLevel(providerKind: kind, isPeakPrice: isPeak) }
             .min() ?? .critical
     }
