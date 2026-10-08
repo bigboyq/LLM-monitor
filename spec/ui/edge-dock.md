@@ -45,6 +45,20 @@ option, whereas an edge dock circle *is* one provider and must answer "is this o
 about to run out". Length and colour therefore agree — both worst-case — instead of
 ring saying "plenty" while the colour says "danger".
 
+**The aggregation model set excludes two deliberately parked families
+(2026-10 user ruling).** Ring lengths, ring colours and the circle's aggregate
+`health` all read `QuotaInfo.aggregateQuotaModels(providerKind:)` — `activeModels`
+minus the families `ModelQuota.isExcludedFromQuotaAggregation(providerKind:)` parks:
+minimax's `video`（视频生成）and antigravity's `claude_and_gpt_models`（Claude and
+GPT models）. Both are independent side pools whose remaining fraction says nothing
+about the main pool's waterline, so counting them into the worst-model aggregate lets
+an idle side pool dilute — or a spent one flood — a reading the user cannot act on.
+The card keeps rendering both rows, and the notification pipeline still covers them;
+this filter lives only in the cross-model aggregates. If the filter ever empties the
+set (degenerate: nothing aggregatable left), it falls back to the unfiltered
+`activeModels`, so a data-bearing provider can never aggregate to "no reading" or a
+false red.
+
 **Thickness is also a hierarchy: thick outside, thin inside.** The outer ring is
 3.5pt, the inner 2.5pt. Two rings of equal weight read as the same arc drawn twice;
 the step in weight makes the outer ring the subject and the inner an annotation. It
@@ -1050,4 +1064,4 @@ default has to preserve it — defaulting to off would put a dock inside every f
 window for every existing user. Because the setting can be flipped while the user is
 already fullscreen, a policy change re-probes instead of reusing the cached verdict.
 
-> 核对基线：2026-10-07 · 代码 44afd87
+> 核对基线：2026-10-08 · 代码 d2ea05e

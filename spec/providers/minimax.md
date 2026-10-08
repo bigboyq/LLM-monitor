@@ -726,6 +726,12 @@ Card metadata:
 | `general` / `image` / `speech` / `music` / `tts` | `5h` | 10 | 1 段 = 5h，10 段 = 周 |
 | `video` | `日` | 7 | 1 段 = 1 天，7 段 = 周（minimax 实际是日配额） |
 
+**聚合排除（2026-10 用户裁定）**：`video` 不参与跨 model 聚合读数——状态栏 iconDuo、
+边缘窗圆环与 provider 综合健康度经 `QuotaInfo.aggregateQuotaModels(providerKind:)` 取
+聚合 model 集合，`ModelQuota.isExcludedFromQuotaAggregation` 把 `video` 排除（与
+antigravity 的 Claude and GPT 组同规则）。独立小配额池的余量不代表主力模型水位；卡片
+video 行、通知检测（`QuotaEventDetector` 走 `current.models` 全量）不受影响。
+
 ### 7-day hover chart (shared by every local-usage client)
 
 The card no longer renders `MinimaxLocalUsage` directly. `ProviderCardView.localUsage(projection:part:)`
@@ -991,4 +997,4 @@ reasoning maximum, character aggregation, and output conservation.
 
     To realize this split, the fetcher must persist every `current_interval_remaining_percent` sample with a timestamp. Currently it only stores the most recent value in `ModelQuota`; a `local_runtime_quota_snapshots(model_name, ts, interval_remaining_percent, weekly_remaining_percent, interval_total_count, interval_usage_count, weekly_total_count, weekly_usage_count)` table is needed, and `local_runtime_token_usage` should gain a `quota_snapshot_id` so each row can be tagged "inside plan" vs "credits".
 
-> 核对基线：2026-10-05 · 代码 79dee29
+> 核对基线：2026-10-08 · 代码 d2ea05e

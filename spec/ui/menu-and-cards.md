@@ -73,6 +73,16 @@ floor raises a provider's composite status to at least `.warning` (red wins); th
 only applies to the iconDuo bottom dots and the card header dots — arcs and the center
 sector are exempt.
 
+**聚合 model 集合排除两个独立小池（2026-10 用户裁定）。** iconDuo 的四个读数（左右弧、
+中心扇形、底部三点）与 SF Symbol 状态点 / 边缘窗圆环 / provider 综合健康度读的都是
+`QuotaInfo.aggregateQuotaModels(providerKind:)` —— `activeModels` 再滤掉
+`ModelQuota.isExcludedFromQuotaAggregation(providerKind:)` 命中的家族：minimax 的
+`video`（视频生成）与 antigravity 的 `claude_and_gpt_models`（Claude and GPT models）。
+两者都是与主力模型无关的独立配额池，计入最差值聚合只会让无关池子的余量稀释（或拖垮）
+一个用户无从 action 的读数。滤后为空时回退 `activeModels`（排除只允许「少算」，不允许
+把有数据的 provider 聚合成「无读数」或保守误红）。卡片逐 model 行与通知管线
+（`QuotaEventDetector` 逐 model 窗口事件）不受影响。
+
 **Center sector relay semantics.** The center sector takes the *lowest* "actually
 available" ratio across plans, but a plan whose value is exactly 0 is excluded from that
 comparison. This models plan hand-off: once a plan is spent, it would otherwise pin the
@@ -538,6 +548,7 @@ look for a hover route to this data — the card carries it inline.
 
 - 大部分模型（`general` / `image` / `speech` / `music` / `tts` 等）把 5h 和周额度合成一条，周进度条按 10 个等价额度分段（`ModelQuota.weeklyEquivalentMultiplier` = 10）。
 - **`video` 模型走日窗口**：周进度条按 7 个等价额度分段（1 天 ≈ 1/7 周）。原因：minimax video 实际是日配额而不是 5h 配额，按 5h × 10 分段会误导。label 由 `QuotaSummary.primaryWindowLabel` 按 model 名判断。
+- **`video` 不参与聚合读数**：状态栏 iconDuo（左右弧 / 中心扇形 / 底部三点）、边缘窗圆环与 provider 综合健康度走 `QuotaInfo.aggregateQuotaModels(providerKind:)`，`video` 被 `ModelQuota.isExcludedFromQuotaAggregation` 排除（与 antigravity 的 Claude and GPT 组同规则）——独立小配额池的余量不代表主力模型水位；卡片 video 行照常展示，通知检测仍逐 model 覆盖。
 
 ### ChatGPT Plan
 
@@ -551,6 +562,7 @@ look for a hover route to this data — the card carries it inline.
 - 账号行（第一段 Account Info）= 登录邮箱（来自 `GetUserStatus`）+ 套餐 pill（`planLabel` 去掉 `Google ` / `Antigravity ` 前缀，让 `Google AI Pro` → `AI Pro`）。两者皆缺时整行不画。这是一行**常驻**内容：菜单的 provider 卡删除前，邮箱与套餐曾按 provider 分三路包在标题行的 `HoverInfoRow` 浮层里；现在浮层 `ignoresMouseEvents = true`，那个折叠区展不开，所以直接画成常驻行——没有「重新进入 hover 浮层」这条路径了。
 - `Gemini Models` and `Claude and GPT models` are shown as separate model groups inside one provider card.
 - 两组都把 5h / 周收为一条：Gemini 按 6 个等价额度分段，Claude and GPT 按 1 个（`weeklyEquivalentMultiplier` = 6 / 1，周窗口即 1 × 5h 额度）。
+- **`Claude and GPT models` 不参与聚合读数**：状态栏 iconDuo、边缘窗圆环与 provider 综合健康度经 `QuotaInfo.aggregateQuotaModels(providerKind:)` 过滤，`ModelQuota.isExcludedFromQuotaAggregation` 把整组排除（与 minimax `video` 同规则）。quota 以整组为一个池，无法只排 Claude 保留 GPT；卡片两组行照常展示，通知检测不受影响。
 - The countdown text uses compact formatting such as `3小时41分后`.
 - The countdown follows the model tint unless quota is low enough to trigger warning or critical colors.
 
@@ -809,4 +821,4 @@ The card's failure row is the one place in this table that is a **literal** 11pt
 than a `MenuTypography` role: the `errorMessage` role had no call site and was deleted
 rather than left as an unused role. The rendered size is unchanged.
 
-> 核对基线：2026-10-07 · 代码 44afd87
+> 核对基线：2026-10-08 · 代码 d2ea05e

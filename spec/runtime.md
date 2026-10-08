@@ -318,6 +318,15 @@ the interval and weekly windows.
 
 `nil` 让 UI 端的状态胶囊用 secondary 灰色渲染，明确区分"没数据"和"有数据但健康"。菜单栏的 `iconDuo` 仪表盘会随额度指标与节能/睡眠健康度变化；`quotaLogo`（App 图标）是固定设计稿、不随健康度变化；标准 SF Symbol 样式则保留右下角状态点与刷新中的图标替换。卡片状态点和进度颜色同样反映健康度。
 
+跨 model 的聚合读数不遍历全部 `activeModels`：`ProviderStatus.aggregateHealthLevel`、
+`AppState.statusBarQuotaMetrics`（iconDuo 左右弧 / 中心扇形 / 底部三点）与
+`EdgeDockProjection`（边缘窗圆环）统一读 `QuotaInfo.aggregateQuotaModels(providerKind:)`
+—— `activeModels` 再排除 `ModelQuota.isExcludedFromQuotaAggregation(providerKind:)`
+命中的 minimax `video`（视频生成）与 antigravity `claude_and_gpt_models`（Claude and
+GPT models）。两者是独立小配额池，余量与主力模型水位无关，2026-10 用户裁定不计入聚合；
+滤后为空回退 `activeModels`（排除只允许「少算」）。卡片逐 model 展示与通知管线
+（`QuotaEventDetector` 逐 model 窗口事件）不受影响。
+
 ## Error And Fallback
 
 On successful fetch:
@@ -447,4 +456,4 @@ These are documented product boundaries:
   have their own SQLite readers, Antigravity is pure RPC, and Codex parses JSONL on
   demand for the 7-day chart.
 
-> 核对基线：2026-10-05 · 代码 79dee29
+> 核对基线：2026-10-08 · 代码 d2ea05e

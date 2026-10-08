@@ -1176,6 +1176,13 @@ The status bar's center gauge uses the same multiplier as its single source of
 truth: `min(5h 剩余, 周剩余 × N)` (`ModelQuota.weeklyEquivalentMultiplier` →
 `aggregateActualAvailable`).
 
+**聚合排除（2026-10 用户裁定）**：`Claude and GPT models` 组不参与跨 model 聚合读数
+—— 状态栏 iconDuo、边缘窗圆环与 provider 综合健康度经
+`QuotaInfo.aggregateQuotaModels(providerKind:)` 取聚合 model 集合，
+`ModelQuota.isExcludedFromQuotaAggregation` 把该组排除（与 minimax `video` 同规则）。
+quota 以整组为一个池，无法只排 Claude 保留 GPT，故整组不计；卡片两组行、通知检测
+不受影响。滤后为空的退化场景回退 `activeModels`。
+
 ## Error Handling
 
 | Situation | Current behavior |
@@ -1320,4 +1327,4 @@ This script:
 3. calls `RetrieveUserQuotaSummary`
 4. prints or writes the raw JSON
 
-> 核对基线：2026-10-05 · 代码 79dee29
+> 核对基线：2026-10-08 · 代码 d2ea05e
