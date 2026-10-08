@@ -563,7 +563,7 @@ look for a hover route to this data — the card carries it inline.
 - `Gemini Models` and `Claude and GPT models` are shown as separate model groups inside one provider card.
 - 两组都把 5h / 周收为一条：Gemini 按 6 个等价额度分段，Claude and GPT 按 1 个（`weeklyEquivalentMultiplier` = 6 / 1，周窗口即 1 × 5h 额度）。
 - **`Claude and GPT models` 不参与聚合读数**：状态栏 iconDuo、边缘窗圆环与 provider 综合健康度经 `QuotaInfo.aggregateQuotaModels(providerKind:)` 过滤，`ModelQuota.isExcludedFromQuotaAggregation` 把整组排除（与 minimax `video` 同规则）。quota 以整组为一个池，无法只排 Claude 保留 GPT；卡片两组行照常展示，通知检测不受影响。
-- The countdown text uses compact formatting such as `3小时41分后`.
+- The countdown suffix uses `Formatters.formatResetSuffix`'s compact ladder (e.g. `3h41m`), the same reset-suffix formatter every provider row shares.
 - The countdown follows the model tint unless quota is low enough to trigger warning or critical colors.
 
 ### GLM Coding Plan
@@ -691,10 +691,10 @@ Claude/GPT 组 N=1）。括号把差额摆到明面上。
 
 | Rule | Value |
 |---|---|
-| 显示条件 | `QuotaBarWithMetadata.weeklyBindingEffectivePercent(model:multiplier:)` 返回非 nil（`QuotaViews.swift:648`）——纯函数，双窗口以外一律 nil |
+| 显示条件 | `QuotaBarWithMetadata.weeklyBindingEffectivePercent(model:multiplier:)` 返回非 nil（`QuotaViews.swift:612`）——纯函数，双窗口以外一律 nil |
 | 判定谓词 | **复用** `EquivalentQuotaAllocation.bindingWindow(...) == .weekly`（`SegmentedQuotaProgressBar.swift:163`）：周 × N **严格**小于 5h 才算周瓶颈，并列按同一约定落到 5h、不显示括号。这样括号出现与否与本行的分段条永远同源，不会条缩了文字没缩 |
 | 括号值 | `EquivalentQuotaAllocation.effectivePrimaryFraction(...) × 100`（`SegmentedQuotaProgressBar.swift:149`），经 `Formatters.formatQuotaPercent` 格式化（至多一位小数、整数不带 `.0`，如 `30%` / `91.9%`） |
-| 渲染 | `Text("(\(Formatters.formatQuotaPercent(effectivePercent))有效)")`，`MenuTypography.dataValue`（10pt semibold monospacedDigit），`Color.criticalTint`，`.fixedSize()`（`QuotaViews.swift:780-786`） |
+| 渲染 | `Text("(\(Formatters.formatQuotaPercent(effectivePercent))有效)")`，`MenuTypography.dataValue`（10pt semibold monospacedDigit），`Color.criticalTint`，`.fixedSize()`（`QuotaViews.swift:728-736`） |
 | 颜色 | **告急同款红 `Color.criticalTint`**，不是 `.secondary` 灰：括号值是"周瓶颈下实际还能用多少"的告警数字，要在原始 5h 的绿色系旁边跳出来 |
 | 宽度 | 数据列按上表走 152 → 152+56 两档，括号本身 `fixedSize` 不参与压缩 |
 | 作用域 | 只对 5h（primary）那一格传非 nil；周数值（secondary）没有对应括号——它就是周窗口自己的原始剩余，没有被折算过 |
@@ -821,4 +821,4 @@ The card's failure row is the one place in this table that is a **literal** 11pt
 than a `MenuTypography` role: the `errorMessage` role had no call site and was deleted
 rather than left as an unused role. The rendered size is unchanged.
 
-> 核对基线：2026-10-08 · 代码 d2ea05e
+> 核对基线：2026-10-09 · 代码 004e041

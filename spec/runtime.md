@@ -260,7 +260,7 @@ Implementation notes:
 
 | Window | Fields |
 |---|---|
-| 5-hour / interval | `intervalTotalCount`, `intervalUsageCount`, `intervalRemainingPercent`, `intervalStatus`, `intervalResetsAt`, `intervalWindowSeconds` (optional; ChatGPT/Codex 等动态窗口) |
+| 5-hour / interval | `intervalTotalCount`, `intervalUsageCount`, `intervalRemainingPercent`, `intervalStatus`, `intervalResetsAt`, `intervalWindowSeconds` (optional; ChatGPT/Codex 等动态窗口；minimax 5h 由 fetcher 按 `end_time` 反推段长：end 落 0 点 → 4h、其余边界 → 5h，video 恒 nil) |
 | Weekly | `weeklyTotalCount`, `weeklyUsageCount`, `weeklyRemainingPercent`, `weeklyStatus`, `weeklyResetsAt`, `weeklyWindowSeconds` |
 
 `intervalStatus` and `weeklyStatus` use the shared `QuotaWindowStatus` type:
@@ -301,19 +301,17 @@ else { .healthy }
 
 `ModelQuota.colorLevel` is the single source of truth for both health and progress-bar
 colors. Short windows use a fixed 30% warning threshold; long windows use the smaller
-of the remaining-time percentage and 50%. `ModelQuota.healthLevel` uses the worse of
-the interval and weekly windows.
-`QuotaInfo.healthLevel` uses the worse model.
-`ProviderStatus.healthLevel` returns `HealthLevel?` (optional) and is derived from
-`state.lastSuccess?.healthLevel` —— 跟 state 自带的 QuotaInfo? 同步，**不**会
-跟 state 里的数据不一致。`stateHasSuccessData` helper 用来判断一个 state
+of the remaining-time percentage and 50%. 三个 `healthLevel` 派生属性
+（`ModelQuota.healthLevel` / `QuotaInfo.healthLevel` / `ProviderStatus.healthLevel`）
+已于 2026-10-09 随死代码清理删除：生产消费面为零，跨 model 读数统一走
+`aggregateHealthLevel`；`colorLevel` 与 `stateHasSuccessData` 不受影响。`stateHasSuccessData` helper 用来判断一个 state
 是否带"上次成功数据"（`.ok/.loading/.failed` 都返回 true）。
 
 | State | Health source |
 |---|---|
-| `.ok(info)` | `info.healthLevel` |
-| `.loading(lastSuccess: prev)` | `prev?.healthLevel`（无则 nil） |
-| `.failed(_, let last)` | `last?.healthLevel`（无则 nil） |
+| `.ok(info)` | `aggregateHealthLevel(at:)`——取聚合 model 集合（`QuotaInfo.aggregateQuotaModels(providerKind:)`）各 model 最差档，全空保守 `.critical` |
+| `.loading(lastSuccess: prev)` | `aggregateHealthLevel(at:)`（同上；`prev` 为 nil 则 nil） |
+| `.failed(_, let last)` | `aggregateHealthLevel(at:)`（同上；`last` 为 nil 则 nil） |
 | `.ready` / `.notConfigured` | `nil`（UI 显示灰点，不归类为"健康"） |
 
 `nil` 让 UI 端的状态胶囊用 secondary 灰色渲染，明确区分"没数据"和"有数据但健康"。菜单栏的 `iconDuo` 仪表盘会随额度指标与节能/睡眠健康度变化；`quotaLogo`（App 图标）是固定设计稿、不随健康度变化；标准 SF Symbol 样式则保留右下角状态点与刷新中的图标替换。卡片状态点和进度颜色同样反映健康度。
@@ -389,9 +387,11 @@ Adding a provider currently requires:
     实现（参考 `MinimaxLocalUsageScanner`），用 `AsyncMutex` + `lastCommittedGeneration`
     串行化 cache 写（防 cache revert）。`LocalUsageScanRunner.run` 抽走了
     lifecycle boilerplate，scanner 只实现 work + defer 块。
-11. 在 `AppState` 加一个 `lazy var xxxLocalUsageCoordinator = LocalUsageCoordinator<XxxLocalUsage>(...)`
-    （参考 `antigravityLocalUsageCoordinator`），apply 闭包走 `applyLocalUsage<T: Equatable>(kind:field:...)`
-    通用函数（**不**要再写镜像的 `applyXxxLocalUsage`）。
+11. 在 `Services/LocalUsageOrchestration.swift` 加一个 `lazy var xxxCoordinator = LocalUsageCoordinator<XxxLocalUsage>(...)`
+    （参考 `antigravityCoordinator`），`AppState.localUsage` 会随该结构自动携带。apply 闭包走
+    `applyLocalUsage<T: Equatable>(kind:field:...)` 通用函数；具名薄 wrapper（一行委托通用
+    函数，见 `AppState.swift` 约 :1163-1198 的 `applyAntigravityLocalUsage` 等）是允许的
+    现状形态——不要再写第二套完整镜像实现。
 12. 本地用量扫描由 `ProviderRefreshScheduler` 的 `onBatchSettled` 驱动：每批 Provider
     请求全部返回后（不论成功/失败）投递一次 `LocalUsageOrchestration` reconcile。
     **reconcile 每拍都跑**，不是只在 FSEvents 报 dirty 时才跑：常规档是 `.full`
@@ -456,4 +456,4 @@ These are documented product boundaries:
   have their own SQLite readers, Antigravity is pure RPC, and Codex parses JSONL on
   demand for the 7-day chart.
 
-> 核对基线：2026-10-08 · 代码 d2ea05e
+> 核对基线：2026-10-09 · 代码 004e041

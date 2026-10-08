@@ -364,7 +364,7 @@ cannot drift. Since 2026-10-04 that line shows, next to the raw 5h reading, the 
 below it draws `min(5h, weekly × N)` while the number is the raw 5h — without the
 suffix a 30%-long bar next to "5h 100%" reads as a bug (the user reported exactly
 that). The predicate is `QuotaBarWithMetadata.weeklyBindingEffectivePercent`
-(`QuotaViews.swift:648`), which reuses `EquivalentQuotaAllocation.bindingWindow`:
+(`QuotaViews.swift:612`), which reuses `EquivalentQuotaAllocation.bindingWindow`:
 weekly × N must be *strictly* tighter, ties fall to 5h, and single-window models
 never get a suffix. The value is `effectivePrimaryFraction × 100`, printed in
 `Color.criticalTint`. The row's data column switches from 152pt to 208pt
@@ -661,8 +661,9 @@ carried over. The threshold is measured, not guessed: the 价值 column is fixed
 (`valueColumnWidth`), and `¥99999.99` — the longest form the plain path can produce —
 measures ≈58pt, while `¥999999.99` no longer fits and is what pushed the threshold down.
 `¥9.88M` measures ≈40pt, leaving plenty of room in the column.
-The ladder is **K / M / B**, the same language the 用量 column already speaks
-(`Formatters.formatTokenCountCompact`: `30K` / `3M`), and the B rung exists so the
+The ladder is **K / M / B**; K / M are the same language the 用量 column already
+speaks (`Formatters.formatTokenCountCompact`: `30K` / `3M` — whose largest rung is
+`G`, not `B`), and the B rung exists so the
 formatter cannot lose its unit at some magnitude. 「万」 was considered and rejected:
 it is a second unit system the reader has to learn, and it only means anything for CNY —
 this column is original-currency, so `$123.4万` would simply be wrong.
@@ -696,7 +697,6 @@ Data source and calibration:
   （`intervalWindowSeconds`：end 落 0 点 → 4h，其余边界 → 5h）——minimax 窗口贴固定日
   边界 00/05/10/15/20，最后一段 20:00→24:00 只有 4 小时，按 5h 兜底反推会把起点退到
   19:00，把上一窗口最后 1 小时的样本多算进本行（token 与金额双双虚高）。
-- A provider with several model quotas is **summed per window** (`combineWindowUsage`):
 - A provider with several model quotas is **summed per window** (`combineWindowUsage`):
   `modelMatches` already partitions the samples per model quota, so the pools do not
   overlap. The reset time shown is the **earliest** one, and the table footnote says so
@@ -1069,4 +1069,4 @@ default has to preserve it — defaulting to off would put a dock inside every f
 window for every existing user. Because the setting can be flipped while the user is
 already fullscreen, a policy change re-probes instead of reusing the cached verdict.
 
-> 核对基线：2026-10-09 · 代码 87c17b8
+> 核对基线：2026-10-09 · 代码 004e041

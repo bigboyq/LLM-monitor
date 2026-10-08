@@ -318,7 +318,8 @@ only the changed source's contribution without rebuilding unrelated cache state.
    | v14 | 重新规范化样本 `inputTokens` 为 `uncached + cache_read`（cache-inclusive），与 Codex/DSH 的 sample 字段语义对齐；`tokenComponents` 统一假设 cache-inclusive 输入后，无需再为 Minimax 走特殊分支。旧 snapshots 全量重建 |
 
    当前 scanner 的 `currentVersion` 是 14（`CacheIndex.empty.version` 与
-   `loadIndex(currentVersion: 14)` 两处一致）。`MinimaxLocalUsageScanner.CacheIndex` 注释中标明每次 bump 的理由。
+   `loadIndex(currentVersion: 14)` 两处一致）。v14 的 bump 理由见
+   `CacheIndex.empty` 的行内注释（`MinimaxLocalUsageScanner.swift`），v12 / v13 见上表。
 
    **Why WAL dimension was added**: minimax v2 runtime uses SQLite WAL mode and may go **36+ hours without checkpointing** — new writes accumulate in `runtime-state.sqlite-wal` (observed up to 5.4MB before flush) while `.db`'s mtime/size stay frozen. The old two-dimension diff (`mtime || size`) could not detect this, leaving the UI without 7/25-7/26 data until the runtime finally flushed. The WAL size is a direct signal: `walSize` increasing = new data waiting. WAL truncation on checkpoint is captured by `.db`'s mtime jump (runtime `fsync` after WAL write), so the old dimension still catches that case. WAL **mtime** was added alongside size because a checkpoint can rewrite a WAL back to a similar size, and size alone would miss a content-only update.
 2. **Per-source incremental aggregation**: `index.dailyBySource["runtime"]` stores the day-keyed breakdown. When runtime changes, only its daily map is replaced.
@@ -838,7 +839,7 @@ Current fetch path:
 | Empty API key passed to fetcher | `未配置 API Key` |
 | URLSession error | `网络错误：<system message>` |
 | Non-HTTP response | `响应格式无效` |
-| HTTP non-2xx | `HTTP <status>: HTTP <status>，响应 <N> bytes`（`QuotaError.httpError` 只带脱敏摘要，body 前缀已含状态码故原样显示） |
+| HTTP non-2xx | `HTTP <status>，响应 <N> bytes`（`HTTPClient` 的脱敏摘要已含状态码，`QuotaError` 检测到前缀重复时原样显示、不二次拼 `HTTP <status>:`） |
 | Response body over the 8 MiB cap | `响应过大（上限 <N> bytes）：<endpoint path>` |
 | Any JSON decode failure (malformed JSON, wrong type, non-negative-count violation, `usage > total`, out-of-range percent) | `解析失败：minimax 返回的 JSON 无法解析` |
 | Missing `base_resp` | `解析失败：响应缺少 base_resp` |
@@ -1012,4 +1013,4 @@ reasoning maximum, character aggregation, and output conservation.
 
     To realize this split, the fetcher must persist every `current_interval_remaining_percent` sample with a timestamp. Currently it only stores the most recent value in `ModelQuota`; a `local_runtime_quota_snapshots(model_name, ts, interval_remaining_percent, weekly_remaining_percent, interval_total_count, interval_usage_count, weekly_total_count, weekly_usage_count)` table is needed, and `local_runtime_token_usage` should gain a `quota_snapshot_id` so each row can be tagged "inside plan" vs "credits".
 
-> 核对基线：2026-10-09 · 代码 87c17b8
+> 核对基线：2026-10-09 · 代码 004e041
