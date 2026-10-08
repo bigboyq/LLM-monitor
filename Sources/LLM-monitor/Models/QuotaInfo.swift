@@ -9,7 +9,7 @@ struct ModelQuota: Equatable, Codable, Sendable {
     var displayName: String {
         switch modelName.lowercased() {
         case "general":       return "通用 (M3)"
-        case "video":         return "视频生成"
+        case MinimaxModelKind.video.rawValue: return "视频生成"
         case "image":         return "图像生成"
         case "speech":        return "语音合成"
         case "music":         return "音乐生成"
@@ -125,27 +125,8 @@ struct ModelQuota: Equatable, Codable, Sendable {
         }
     }
 
-    /// "差" 的健康度（红 > 黄 > 绿）。只有明确存在的窗口才参与计算；
-    /// 如果没有任何有效窗口，保守返回 critical。
-    var healthLevel: HealthLevel {
-        var levels: [HealthLevel] = []
-        if hasIntervalWindow {
-            levels.append(Self.colorLevel(
-                percent: intervalRemainingPercent,
-                timeFraction: intervalTimeRemainingFraction
-            ))
-        }
-        if hasWeeklyWindow {
-            levels.append(Self.colorLevel(
-                percent: weeklyRemainingPercent,
-                timeFraction: weeklyTimeRemainingFraction
-            ))
-        }
-        return levels.min() ?? .critical
-    }
-
-    /// 单窗口的颜色等级判定。给 `healthLevel` 和
-    /// `SegmentedQuotaProgressBar.barColor` 共用，避免两边阈值漂移。
+    /// 单窗口的颜色等级判定。给聚合健康度判定（`aggregateHealthLevel` 经
+    /// `aggregateActualAvailable`）与 `SegmentedQuotaProgressBar.barColor` 共用，避免两边阈值漂移。
     ///
     /// - `percent < 15` → critical（红）
     /// - `percent < yellowThreshold` → warning（黄）
@@ -167,7 +148,7 @@ struct ModelQuota: Equatable, Codable, Sendable {
         switch providerKind {
         case .minimaxTokenPlan:
             // video 用日窗口 → 1 天 ≈ 1/7 周；其他模型（general 等）走 5h 窗口 → 1/10 周
-            return model.modelName.lowercased() == "video" ? 7 : 10
+            return MinimaxModelKind.isVideo(model.modelName) ? 7 : 10
         case .codexChatGpt:
             return 6
         case .antigravity:
@@ -191,7 +172,7 @@ struct ModelQuota: Equatable, Codable, Sendable {
     func isExcludedFromQuotaAggregation(providerKind: ProviderKind) -> Bool {
         switch providerKind {
         case .minimaxTokenPlan:
-            return modelName.lowercased() == "video"
+            return MinimaxModelKind.isVideo(modelName)
         case .antigravity:
             return modelName.lowercased() == AntigravityModelKind.claudeAndGptModels.rawValue
         case .codexChatGpt, .glmCodingPlan, .deepseek:
@@ -301,11 +282,6 @@ struct QuotaInfo: Equatable, Codable, Sendable {
     func aggregateQuotaModels(providerKind: ProviderKind) -> [ModelQuota] {
         let filtered = activeModels.filter { !$0.isExcludedFromQuotaAggregation(providerKind: providerKind) }
         return filtered.isEmpty ? activeModels : filtered
-    }
-
-    /// 综合健康度：只计算当前有效 model；全部无效时保守返回 critical。
-    var healthLevel: HealthLevel {
-        activeModels.map(\.healthLevel).min() ?? .critical
     }
 
     /// 主 model（按显示顺序，第一个有效额度 model）

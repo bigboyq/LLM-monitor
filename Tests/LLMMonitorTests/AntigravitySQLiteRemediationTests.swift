@@ -81,7 +81,6 @@ final class AntigravitySQLiteRemediationTests: AntigravityTestCase {
         XCTAssertEqual(model.intervalStatus, .present)
         XCTAssertEqual(model.intervalRemainingPercent, 0)
         XCTAssertTrue(model.hasIntervalWindow)
-        XCTAssertEqual(model.healthLevel, .critical)
     }
 
     /// 全部分量正则命中 → computed（分量和）权威。分量和不重复计数，

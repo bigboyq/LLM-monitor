@@ -218,8 +218,6 @@ final class AggregateHealthLevelTests: XCTestCase {
 
         let status = appState.statuses.first(where: { $0.id == "test_glm" })!
         XCTAssertEqual(status.aggregateHealthLevel(at: now), .healthy, "卡片头部点按实际可用口径（周 × 5，瓶颈 5h）应为绿")
-        // 旧逐窗口口径对该反例判红（周 8% < 15 直接 critical），保留交叉断言。
-        XCTAssertEqual(info.healthLevel, .critical)
         XCTAssertEqual(appState.systemHealthLevel(at: now), status.aggregateHealthLevel(at: now), "状态栏 SF Symbol 圆点必须与卡片头部点同色")
         XCTAssertEqual(appState.systemHealthLevel(at: now), .healthy)
     }
@@ -346,19 +344,6 @@ final class AggregateHealthLevelTests: XCTestCase {
             makeStatus(kind: .glmCodingPlan, state: .loading(lastSuccess: nil)).aggregateHealthLevel()
         )
 
-        // 2. deepseek 余额模型：新路径与旧 `healthLevel` 完全一致（50% 绿 / 0% 红），
-        //    卡头点现状颜色不变。
-        for percent in [50.0, 0.0] {
-            let status = makeStatus(
-                kind: .deepseek,
-                state: .ok(QuotaInfo(
-                    models: [makeBalanceModel(percent: percent)],
-                    resetCredits: nil, planLabel: nil, accountEmail: nil,
-                    codexUsageDetails: nil, fetchedAt: Date()
-                ))
-            )
-            XCTAssertEqual(status.aggregateHealthLevel(), status.healthLevel)
-        }
         XCTAssertEqual(
             makeStatus(
                 kind: .deepseek,
@@ -371,7 +356,7 @@ final class AggregateHealthLevelTests: XCTestCase {
             .healthy
         )
 
-        // 3. 有数据但 models 为空（无有效窗口 model）→ .critical（对齐 QuotaInfo.healthLevel 现状）。
+        // 3. 有数据但 models 为空（无有效窗口 model）→ .critical（聚合口径保守误红）。
         XCTAssertEqual(
             makeStatus(
                 kind: .minimaxTokenPlan,
@@ -514,12 +499,6 @@ final class AggregateHealthLevelTests: XCTestCase {
     // MARK: - 单模型健康度档位与窗口 present 判定（自 UsableAPIKeyHealthLevelTests 解散归入）
 
     func testHealthLevelAndQuotaStatusRules() throws {
-        let absentWeekly = ModelQuota(modelName: "general", intervalTotalCount: 0, intervalUsageCount: 0, intervalRemainingPercent: 80, intervalStatus: .present, intervalResetsAt: nil, intervalWindowSeconds: nil, weeklyTotalCount: 0, weeklyUsageCount: 0, weeklyRemainingPercent: 0, weeklyStatus: .absent, weeklyResetsAt: nil, weeklyWindowSeconds: nil)
-        XCTAssertEqual(absentWeekly.healthLevel, .healthy)
-
-        let presentWeekly = ModelQuota(modelName: "general", intervalTotalCount: 0, intervalUsageCount: 0, intervalRemainingPercent: 80, intervalStatus: .present, intervalResetsAt: nil, intervalWindowSeconds: nil, weeklyTotalCount: 0, weeklyUsageCount: 0, weeklyRemainingPercent: 10, weeklyStatus: .present, weeklyResetsAt: Date(timeIntervalSince1970: 4_102_444_800), weeklyWindowSeconds: nil)
-        XCTAssertEqual(presentWeekly.healthLevel, .critical)
-
         XCTAssertTrue(QuotaWindowStatus.present.isPresent)
         XCTAssertFalse(QuotaWindowStatus.absent.isPresent)
     }

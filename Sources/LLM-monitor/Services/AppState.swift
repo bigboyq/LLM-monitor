@@ -183,10 +183,10 @@ final class AppState: ObservableObject {
         // dot and the card dot agree for every provider. DeepSeek's balance
         // health is still counted here (balance ¥0 → .critical): its balance
         // model has only a 5h-shaped window with no reset time, so
-        // aggregateHealthLevel gives it the same color the old per-window
-        // healthLevel did; the remaining known scope difference is that
-        // DeepSeek participates here while being excluded from the
-        // quotaLogo aggregate.
+        // aggregateHealthLevel colors it by the same colorLevel thresholds the
+        // balance reading always went through; the remaining known scope
+        // difference is that DeepSeek participates here while being excluded
+        // from the quotaLogo aggregate.
         for status in enabled {
             switch status.state {
             case .failed(message: _, lastSuccess: nil):
@@ -203,7 +203,7 @@ final class AppState: ObservableObject {
                 break
             }
 
-            if let glmPeak = status.glmPeakWindow, case .peak = glmPeak.status(at: now, calendar: PeakWindow.beijingCalendar) {
+            if status.isGlmPeak(at: now) {
                 levels.append(.warning)
             }
             if let deepseekPeak = status.deepseekPeakWindow, case .peak = deepseekPeak.status(at: now) {
@@ -231,13 +231,8 @@ final class AppState: ObservableObject {
         // semantics; it is excluded from the quotaLogo aggregate just as the
         // notification pipeline excludes non-windowed providers.
         for status in enabled where status.kind != .deepseek {
-            // 高峰判定跟随 systemHealthLevel 现状：glmPeakWindow 命中 .peak 即 true。
-            let isPeak: Bool
-            if let glmPeak = status.glmPeakWindow, case .peak = glmPeak.status(at: now, calendar: PeakWindow.beijingCalendar) {
-                isPeak = true
-            } else {
-                isPeak = false
-            }
+            // 高峰判定跟随 systemHealthLevel 现状：isGlmPeak 命中 .peak 即 true。
+            let isPeak = status.isGlmPeak(at: now)
             switch status.state {
             case .ok(let info), .loading(lastSuccess: let info?), .failed(message: _, lastSuccess: let info?):
                 activeWindowedModels.append(contentsOf: info.aggregateQuotaModels(providerKind: status.kind).map { (kind: status.kind, model: $0, isPeak: isPeak) })
@@ -248,43 +243,13 @@ final class AppState: ObservableObject {
         let allActiveModels = activeWindowedModels.map(\.model)
 
         // 1. 5h 窗口 (原始值，不带时间系数)
-        let intervalModels = allActiveModels.filter(\.hasIntervalWindow)
-        let intervalMetrics: QuotaRingMetrics
-        if intervalModels.isEmpty {
-            intervalMetrics = QuotaRingMetrics(
-                minAvailable: 0.0,
-                avgAvailable: 0.0,
-                isAvailable: false
-            )
-        } else {
-            let pcts = intervalModels.map { min(max($0.intervalRemainingPercent / 100.0, 0.0), 1.0) }
-            let minVal = pcts.min() ?? 1.0
-            let avgVal = pcts.reduce(0.0, +) / Double(pcts.count)
-            intervalMetrics = QuotaRingMetrics(
-                minAvailable: minVal,
-                avgAvailable: avgVal,
-                isAvailable: true
-            )
+        let intervalMetrics = ringMetrics(allActiveModels.filter(\.hasIntervalWindow)) {
+            $0.intervalRemainingPercent
         }
 
         // 2. 周窗口 (原始百分比，不带时间系数)
-        let weeklyModels = allActiveModels.filter(\.hasWeeklyWindow)
-        let weeklyMetrics: QuotaRingMetrics
-        if weeklyModels.isEmpty {
-            weeklyMetrics = QuotaRingMetrics(
-                minAvailable: 0.0,
-                avgAvailable: 0.0,
-                isAvailable: false
-            )
-        } else {
-            let pcts = weeklyModels.map { min(max($0.weeklyRemainingPercent / 100.0, 0.0), 1.0) }
-            let minVal = pcts.min() ?? 1.0
-            let avgVal = pcts.reduce(0.0, +) / Double(pcts.count)
-            weeklyMetrics = QuotaRingMetrics(
-                minAvailable: minVal,
-                avgAvailable: avgVal,
-                isAvailable: true
-            )
+        let weeklyMetrics = ringMetrics(allActiveModels.filter(\.hasWeeklyWindow)) {
+            $0.weeklyRemainingPercent
         }
 
         // 3. 中心扇形 = 仍有剩余的套餐中「实际可用」比例的最低值，与卡片分段条
@@ -353,6 +318,22 @@ final class AppState: ObservableObject {
             weeklyTimeFraction: weeklyTimeFraction,
             centerTimeFraction: centerTimeFraction,
             intervalTimeFraction: intervalTimeFraction
+        )
+    }
+
+    /// 单侧聚合弧的读数：所有含该窗口 model 的原始剩余比例取 min/avg；空集 =
+    /// 无该窗口（isAvailable false，弧只画底轨）。
+    private func ringMetrics(
+        _ models: [ModelQuota],
+        percent: (ModelQuota) -> Double
+    ) -> QuotaRingMetrics {
+        guard !models.isEmpty else {
+            return QuotaRingMetrics(minAvailable: 0.0, avgAvailable: 0.0, isAvailable: false)
+        }
+        let pcts = models.map { min(max(percent($0) / 100.0, 0.0), 1.0) }
+        return QuotaRingMetrics(
+            minAvailable: pcts.min() ?? 1.0,
+            avgAvailable: pcts.reduce(0.0, +) / Double(pcts.count)
         )
     }
 

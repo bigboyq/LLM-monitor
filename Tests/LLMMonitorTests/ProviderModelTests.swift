@@ -359,62 +359,6 @@ final class ProviderModelTests: XCTestCase {
         XCTAssertNotEqual(base, dailyChanged)
     }
 
-    func testHealthLevelNewThresholds() {
-        let futureDate = Date().addingTimeInterval(3.5 * 24 * 60 * 60) // 50% time remaining (~3.5d of 7d)
-
-        // 1. 5h window: 14% -> critical (red)
-        let c1 = ModelQuota(
-            modelName: "general", intervalTotalCount: 0, intervalUsageCount: 0,
-            intervalRemainingPercent: 14, intervalStatus: .present, intervalResetsAt: nil, intervalWindowSeconds: 18000,
-            weeklyTotalCount: 0, weeklyUsageCount: 0, weeklyRemainingPercent: 100, weeklyStatus: .absent, weeklyResetsAt: nil, weeklyWindowSeconds: nil
-        )
-        XCTAssertEqual(c1.healthLevel, .critical)
-
-        // 2. 5h window: 25% -> warning (yellow)
-        let w1 = ModelQuota(
-            modelName: "general", intervalTotalCount: 0, intervalUsageCount: 0,
-            intervalRemainingPercent: 25, intervalStatus: .present, intervalResetsAt: nil, intervalWindowSeconds: 18000,
-            weeklyTotalCount: 0, weeklyUsageCount: 0, weeklyRemainingPercent: 100, weeklyStatus: .absent, weeklyResetsAt: nil, weeklyWindowSeconds: nil
-        )
-        XCTAssertEqual(w1.healthLevel, .warning)
-
-        // 3. 5h window: 30% -> healthy (green)
-        let h1 = ModelQuota(
-            modelName: "general", intervalTotalCount: 0, intervalUsageCount: 0,
-            intervalRemainingPercent: 30, intervalStatus: .present, intervalResetsAt: nil, intervalWindowSeconds: 18000,
-            weeklyTotalCount: 0, weeklyUsageCount: 0, weeklyRemainingPercent: 100, weeklyStatus: .absent, weeklyResetsAt: nil, weeklyWindowSeconds: nil
-        )
-        XCTAssertEqual(h1.healthLevel, .healthy)
-
-        // 4. Week window with 80% time remaining -> yellow threshold is min(80, 50) = 50%
-        // weeklyRemaining = 45% -> warning (yellow)
-        let farFutureDate = Date().addingTimeInterval(5.6 * 24 * 60 * 60)
-        let w2 = ModelQuota(
-            modelName: "general", intervalTotalCount: 0, intervalUsageCount: 0,
-            intervalRemainingPercent: 100, intervalStatus: .absent, intervalResetsAt: nil, intervalWindowSeconds: nil,
-            weeklyTotalCount: 0, weeklyUsageCount: 0, weeklyRemainingPercent: 45, weeklyStatus: .present, weeklyResetsAt: farFutureDate, weeklyWindowSeconds: 7 * 24 * 60 * 60
-        )
-        XCTAssertEqual(w2.healthLevel, .warning)
-
-        // 5. Week window with 20% time remaining (1.4d in future) -> yellow threshold is min(20, 50) = 20%
-        // weeklyRemaining = 25% (>= 20%) -> healthy (green)
-        let nearExpiryDate = Date().addingTimeInterval(1.4 * 24 * 60 * 60)
-        let h2 = ModelQuota(
-            modelName: "general", intervalTotalCount: 0, intervalUsageCount: 0,
-            intervalRemainingPercent: 100, intervalStatus: .absent, intervalResetsAt: nil, intervalWindowSeconds: nil,
-            weeklyTotalCount: 0, weeklyUsageCount: 0, weeklyRemainingPercent: 25, weeklyStatus: .present, weeklyResetsAt: nearExpiryDate, weeklyWindowSeconds: 7 * 24 * 60 * 60
-        )
-        XCTAssertEqual(h2.healthLevel, .healthy)
-
-        // 6. Dual window: 5h is 20% (warning), week is 10% (critical) -> min is critical (red)
-        let combo = ModelQuota(
-            modelName: "general", intervalTotalCount: 0, intervalUsageCount: 0,
-            intervalRemainingPercent: 20, intervalStatus: .present, intervalResetsAt: nil, intervalWindowSeconds: 18000,
-            weeklyTotalCount: 0, weeklyUsageCount: 0, weeklyRemainingPercent: 10, weeklyStatus: .present, weeklyResetsAt: futureDate, weeklyWindowSeconds: 7 * 24 * 60 * 60
-        )
-        XCTAssertEqual(combo.healthLevel, .critical)
-    }
-
     private struct MockDailyUsage: LocalUsageDaily {
         let inputTokens: Int
         let outputTokens: Int

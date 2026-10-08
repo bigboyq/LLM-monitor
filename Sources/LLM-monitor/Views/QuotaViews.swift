@@ -404,7 +404,7 @@ struct CombinedQuotaWindowRow: View {
         providerKind: ProviderKind,
         model: ModelQuota
     ) -> TimeInterval {
-        providerKind == .minimaxTokenPlan && model.modelName.lowercased() == "video"
+        providerKind == .minimaxTokenPlan && MinimaxModelKind.isVideo(model.modelName)
             ? 24 * 60 * 60
             : 5 * 60 * 60
     }

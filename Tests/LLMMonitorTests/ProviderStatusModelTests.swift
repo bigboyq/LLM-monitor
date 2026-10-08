@@ -106,45 +106,6 @@ final class ProviderStatusModelTests: StateTestCase {
 
         XCTAssertNotEqual(base, changed, "lastSuccess 变化必须参与 ProviderStatus Equatable")
     }
-    /// `healthLevel` 现在统一从 `lastSuccess?.healthLevel` 派生，跟 `State` 同步，
-    /// 不再有"`.failed(_, nil)` 跟 `_lastSuccess=non-nil` 不一致"的可能。
-    func testProviderStatusHealthLevelFromState() {
-        let info = QuotaInfo(
-            models: [ModelQuota(
-                modelName: "general",
-                intervalTotalCount: 0, intervalUsageCount: 0,
-                intervalRemainingPercent: 10,   // < 20 → critical
-                intervalStatus: .present, intervalResetsAt: nil, intervalWindowSeconds: nil,
-                weeklyTotalCount: 0, weeklyUsageCount: 0,
-                weeklyRemainingPercent: 5, weeklyStatus: .present,
-                weeklyResetsAt: Date(timeIntervalSince1970: 4_102_444_800), weeklyWindowSeconds: nil
-            )],
-            resetCredits: nil, planLabel: nil, accountEmail: nil,
-            codexUsageDetails: nil, fetchedAt: Date()
-        )
-        let failedWithPrev = ProviderStatus(
-            id: "t", displayName: "T", kind: .minimaxTokenPlan,
-            iconSystemName: "c", accentColor: .minimax,
-            refreshIntervalSeconds: 60, state: .failed(message: "err", lastSuccess: info)
-        )
-        XCTAssertEqual(failedWithPrev.healthLevel, .critical,
-                       ".failed(_, prev) 应该从 prev 算 healthLevel，不返回 nil")
-
-        let loadingNoPrev = ProviderStatus(
-            id: "t", displayName: "T", kind: .minimaxTokenPlan,
-            iconSystemName: "c", accentColor: .minimax,
-            refreshIntervalSeconds: 60, state: .loading(lastSuccess: nil)
-        )
-        XCTAssertNil(loadingNoPrev.healthLevel,
-                     ".loading(nil) 没数据时 healthLevel = nil（不是 critical）")
-
-        let notConfigured = ProviderStatus(
-            id: "t", displayName: "T", kind: .minimaxTokenPlan,
-            iconSystemName: "c", accentColor: .minimax,
-            refreshIntervalSeconds: 60, state: .notConfigured(reason: "x")
-        )
-        XCTAssertNil(notConfigured.healthLevel)
-    }
     /// `AppState.stateHasSuccessData` 跟 `state.lastSuccess != nil` 同义。
     /// 抽成 static 让 `rebuildStatuses` 能复用同一判断（auth 仍 ok 时保留旧 .ok/.loading/.failed）。
     func testAppStateStateHasSuccessData() {

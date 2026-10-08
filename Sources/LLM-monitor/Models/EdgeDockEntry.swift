@@ -117,7 +117,7 @@ enum EdgeDockProjection {
     /// 有效额度之后，只亮有效值会让人误以为 5h 真的只剩这么多，把原始值并排给出
     /// 才能看出差额来自周瓶颈。画环 / 取色 / 常驻数值一律不读它。
     static func rawIntervalFraction(_ status: ProviderStatus) -> Double? {
-        worstFraction(status.lastSuccess?.aggregateQuotaModels(providerKind: status.kind).filter(\.hasIntervalWindow)) {
+        worstFraction(aggregateModels(status, hasWindow: { $0.hasIntervalWindow })) {
             $0.intervalRemainingPercent
         }
     }
@@ -130,8 +130,19 @@ enum EdgeDockProjection {
     /// "周额度本身还剩多少"，乘等效倍率会把它变成与 5h 同量纲的换算值，
     /// 读出来就不再是周额度了（倍率只参与外环的 5h 有效额度合成，内环保持原始）。
     static func weeklyFraction(_ status: ProviderStatus, at now: Date) -> Double? {
-        worstFraction(status.lastSuccess?.aggregateQuotaModels(providerKind: status.kind).filter(\.hasWeeklyWindow)) {
+        worstFraction(aggregateModels(status, hasWindow: { $0.hasWeeklyWindow })) {
             $0.weeklyRemainingPercent
+        }
+    }
+
+    /// 聚合 model 集合的窗口过滤：四个环读取点共用同一段可选链，口径漂移只能
+    /// 出现在一处。
+    private static func aggregateModels(
+        _ status: ProviderStatus,
+        hasWindow: (ModelQuota) -> Bool
+    ) -> [ModelQuota]? {
+        status.lastSuccess.map {
+            $0.aggregateQuotaModels(providerKind: status.kind).filter(hasWindow)
         }
     }
 
@@ -153,7 +164,7 @@ enum EdgeDockProjection {
         _ status: ProviderStatus,
         at now: Date
     ) -> (percent: Double, bindingTimeFraction: Double?)? {
-        let models = status.lastSuccess?.aggregateQuotaModels(providerKind: status.kind).filter(\.hasIntervalWindow)
+        let models = aggregateModels(status, hasWindow: { $0.hasIntervalWindow })
         guard let models, !models.isEmpty else { return nil }
         return models
             .compactMap { $0.aggregateActualAvailable(providerKind: status.kind, at: now) }
@@ -184,7 +195,7 @@ enum EdgeDockProjection {
     /// `weeklyFraction` 同一个理由：内环表达的是"周额度本身还剩多少"。
     static func weeklyHealth(_ status: ProviderStatus, at now: Date) -> HealthLevel? {
         worstHealth(
-            status.lastSuccess?.aggregateQuotaModels(providerKind: status.kind).filter(\.hasWeeklyWindow),
+            aggregateModels(status, hasWindow: { $0.hasWeeklyWindow }),
             percent: { $0.weeklyRemainingPercent },
             timeFraction: { $0.weeklyTimeRemainingFraction(at: now) }
         )

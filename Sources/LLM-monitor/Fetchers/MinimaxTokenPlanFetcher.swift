@@ -181,10 +181,10 @@ struct MinimaxTokenPlanFetcher: QuotaFetcher {
             let intervalRemainingPercent = entry.intervalRemainingPercent ?? 0
 
             // 5h 窗口长度由 end_time 反推（见 `intervalWindowLength`）；video 是
-            // 日窗口、保持 nil（`modelName.lowercased() == "video"` 与其他消费面
+            // 日窗口、保持 nil（`MinimaxModelKind.isVideo` 与其他消费面
             // 同一惯例）。reset 与窗口长度必须来自同一个 end 值。
             let intervalResetsAt = entry.endTime.flatMap(DateParser.parseMsTimestamp)
-            let intervalWindowSeconds: Int? = modelName.lowercased() == "video"
+            let intervalWindowSeconds: Int? = MinimaxModelKind.isVideo(modelName)
                 ? nil
                 : intervalResetsAt.map { Self.intervalWindowLength(endsAt: $0) }
 

@@ -758,7 +758,7 @@ struct QuotaSummary: View {
     nonisolated static func weeklyWindowLabel() -> String { "周" }
 
     nonisolated static func primaryWindowLabel(providerKind: ProviderKind, model: ModelQuota) -> String {
-        if providerKind == .minimaxTokenPlan && model.modelName.lowercased() == "video" {
+        if providerKind == .minimaxTokenPlan && MinimaxModelKind.isVideo(model.modelName) {
             return "日"
         }
         return "5h"
