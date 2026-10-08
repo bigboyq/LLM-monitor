@@ -180,14 +180,22 @@ struct MinimaxTokenPlanFetcher: QuotaFetcher {
             let weeklyResetsAt = entry.weeklyEndTime.flatMap(DateParser.parseMsTimestamp)
             let intervalRemainingPercent = entry.intervalRemainingPercent ?? 0
 
+            // 5h 窗口长度由 end_time 反推（见 `intervalWindowLength`）；video 是
+            // 日窗口、保持 nil（`modelName.lowercased() == "video"` 与其他消费面
+            // 同一惯例）。reset 与窗口长度必须来自同一个 end 值。
+            let intervalResetsAt = entry.endTime.flatMap(DateParser.parseMsTimestamp)
+            let intervalWindowSeconds: Int? = modelName.lowercased() == "video"
+                ? nil
+                : intervalResetsAt.map { Self.intervalWindowLength(endsAt: $0) }
+
             let m = ModelQuota(
                 modelName: modelName,
                 intervalTotalCount: intervalCounts.total,
                 intervalUsageCount: intervalCounts.usage,
                 intervalRemainingPercent: intervalRemainingPercent,
                 intervalStatus: intervalStatus,
-                intervalResetsAt: entry.endTime.flatMap(DateParser.parseMsTimestamp),
-                intervalWindowSeconds: nil,
+                intervalResetsAt: intervalResetsAt,
+                intervalWindowSeconds: intervalWindowSeconds,
                 weeklyTotalCount: weeklyCounts.total,
                 weeklyUsageCount: weeklyCounts.usage,
                 weeklyRemainingPercent: entry.weeklyRemainingPercent ?? 0,
@@ -213,6 +221,19 @@ struct MinimaxTokenPlanFetcher: QuotaFetcher {
             codexUsageDetails: nil,
             fetchedAt: Date()
         )
+    }
+
+    /// minimax 5h 窗口贴固定日边界 00/05/10/15/20（本地时区），最后一段 20:00→24:00
+    /// 只有 4 小时。响应不携带窗口长度，但 end_time 必落在边界上，由它反推：end 落在
+    /// 0 点 → 4h 段，其余边界 → 5h。填进 `intervalWindowSeconds` 后，「额度窗口」5h 行
+    /// 经 `windowBounds` 的 `end − 长度` 反推才落在真实起点上——20~23:59 区间不再把
+    /// 上一窗口 19:00–20:00 的样本多算 1 小时。
+    ///
+    /// video 是日窗口、保持 nil：其 24h 兜底长度在 end 已知时本就落在 0 点边界；填
+    /// 86400 反而会激活 `intervalTimeRemainingFraction` 的 ≥24h 长窗口动态黄线规则，
+    /// 属于另一个口径变更，不在此夹带。
+    static func intervalWindowLength(endsAt: Date, calendar: Calendar = .current) -> Int {
+        calendar.component(.hour, from: endsAt) == 0 ? 4 * 60 * 60 : 5 * 60 * 60
     }
 
     /// Converts Minimax's raw window status into the shared presence status.

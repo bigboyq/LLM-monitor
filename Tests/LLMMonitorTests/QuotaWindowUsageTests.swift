@@ -189,6 +189,84 @@ final class QuotaWindowUsageTests: XCTestCase {
         )
     }
 
+    // MARK: - minimax 贴日边界的 4h/5h 窗口
+
+    /// minimax 的 5h 窗口贴固定日边界 00/05/10/15/20，最后一段 20:00→24:00 只有
+    /// 4 小时。end 落在次日 0 点时，`windowBounds` 用真实长度 14400 反推
+    /// start = 当日 20:00，不再退回 5h 兜底把起点错推到 19:00。
+    ///
+    /// 时区固定 Asia/Shanghai 构造（`windowBounds` 本身不做时区运算，边界就是
+    /// 纯 `end − 长度`），断言在任意宿主时区下一致。
+    func testWindowBoundsPinnedToRealStartWhenMinimaxEndsAtMidnight() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai")!
+        let evening = calendar.date(from: DateComponents(year: 2026, month: 1, day: 15, hour: 21))!
+        let midnight = calendar.date(from: DateComponents(year: 2026, month: 1, day: 16, hour: 0))!
+        let windowStart = calendar.date(from: DateComponents(year: 2026, month: 1, day: 15, hour: 20))!
+
+        let bounds = LocalUsageSummaryBuilder.windowBounds(
+            resetsAt: midnight,
+            explicitWindowSeconds: 4 * 60 * 60,
+            fallbackSeconds: 5 * 60 * 60,
+            now: evening
+        )
+        XCTAssertEqual(bounds?.end, midnight, "end 取服务端 reset 时刻（次日 0 点）")
+        XCTAssertEqual(bounds?.start, windowStart, "4h 真实长度反推起点 = 当日 20:00，不回退 5h 兜底错推的 19:00")
+    }
+
+    /// windowUsage 级钉住修复前后的分界：20:00–24:00 段里，带真实 4h 长度的
+    /// minimax model 只算 20:00 之后的样本；`intervalWindowSeconds` 为 nil 的
+    /// model 退回 5h 兜底，把上一窗口 19:00–20:00 的样本也多算进来（修复前的
+    /// 行为，作对照组）。4h/5h 均 < 86400，`intervalTimeRemainingFraction` 的
+    /// 长窗口门禁不激活、仍为 nil。
+    func testMinimaxShortWindowUsageExcludesPreviousWindowWhenLengthIsKnown() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai")!
+        func at(_ day: Int, _ hour: Int, _ minute: Int) -> Date {
+            calendar.date(from: DateComponents(year: 2026, month: 1, day: day, hour: hour, minute: minute))!
+        }
+        let midnight = at(16, 0, 0)  // 次日 0 点：20:00→24:00 段的 end
+
+        let samples = [
+            // 上一窗口 19:00–20:00 内：4h 口径必须排除
+            Self.sample(at: at(15, 19, 30), prompt: "prev-window", model: "minimax-m3"),
+            // 当前 4h 段内：两种口径都该算
+            Self.sample(at: at(15, 20, 30), prompt: "this-window", model: "minimax-m3"),
+        ]
+
+        let fixedModel = Self.minimaxModel(
+            intervalWindowSeconds: 4 * 60 * 60,
+            intervalResetsAt: midnight,
+            weeklyResetsAt: calendar.date(byAdding: .day, value: 2, to: midnight)!
+        )
+        let fixed = LocalUsageSummaryBuilder.windowUsage(
+            model: fixedModel,
+            providerKind: .minimaxTokenPlan,
+            samples: samples,
+            intervalLabel: "5h",
+            weeklyLabel: "周"
+        )
+        XCTAssertEqual(fixed.interval?.usage?.rounds, 1, "4h 真实长度：只算 20:30 那条，19:30 属于上一窗口")
+        XCTAssertEqual(fixed.interval?.resetsAt, midnight)
+
+        let legacyModel = Self.minimaxModel(
+            intervalWindowSeconds: nil,
+            intervalResetsAt: midnight,
+            weeklyResetsAt: calendar.date(byAdding: .day, value: 2, to: midnight)!
+        )
+        let legacy = LocalUsageSummaryBuilder.windowUsage(
+            model: legacyModel,
+            providerKind: .minimaxTokenPlan,
+            samples: samples,
+            intervalLabel: "5h",
+            weeklyLabel: "周"
+        )
+        XCTAssertEqual(legacy.interval?.usage?.rounds, 2, "无 windowSeconds 退回 5h 兜底：19:30 被多算 1 条（修复前行为，对照组）")
+
+        XCTAssertNil(fixedModel.intervalTimeRemainingFraction, "4h < 86400：长窗口动态黄线规则不激活")
+        XCTAssertNil(legacyModel.intervalTimeRemainingFraction, "5h < 86400：长窗口动态黄线规则不激活")
+    }
+
     // MARK: - 三个比率
 
     /// 命中 = `cached / (input + cached)`、出/入 = `(reason + output) / (input + cached)`、
@@ -314,6 +392,29 @@ final class QuotaWindowUsageTests: XCTestCase {
             intervalStatus: .present,
             intervalResetsAt: intervalResetsAt,
             intervalWindowSeconds: 5 * 3600,
+            weeklyTotalCount: 700,
+            weeklyUsageCount: 300,
+            weeklyRemainingPercent: 60,
+            weeklyStatus: .present,
+            weeklyResetsAt: weeklyResetsAt,
+            weeklyWindowSeconds: 7 * 24 * 3600
+        )
+    }
+
+    /// minimax `general` 额度池：窗口长度（4h/5h/nil）与 reset 时刻由用例给。
+    private static func minimaxModel(
+        intervalWindowSeconds: Int?,
+        intervalResetsAt: Date,
+        weeklyResetsAt: Date
+    ) -> ModelQuota {
+        ModelQuota(
+            modelName: "general",
+            intervalTotalCount: 100,
+            intervalUsageCount: 40,
+            intervalRemainingPercent: 60,
+            intervalStatus: .present,
+            intervalResetsAt: intervalResetsAt,
+            intervalWindowSeconds: intervalWindowSeconds,
             weeklyTotalCount: 700,
             weeklyUsageCount: 300,
             weeklyRemainingPercent: 60,

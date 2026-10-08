@@ -290,4 +290,105 @@ final class MinimaxResponseParsingTests: XCTestCase {
             }
         }
     }
+
+    // MARK: - intervalWindowSeconds 反推（5h 窗口贴日边界，最后一段只有 4h）
+
+    /// 构造单条 `model_remains` 记录的最小响应，`end_time` 毫秒值由调用方给。
+    /// 周窗口字段全部缺省（absent），与本节关注的 5h 窗口长度无关。
+    private func makeData(modelName: String, endTimeMs: Int?) -> Data {
+        let endTimeField = endTimeMs.map { "\"end_time\": \($0)," } ?? ""
+        return """
+        {
+          "model_remains": [
+            {
+              "model_name": "\(modelName)",
+              \(endTimeField)
+              "current_interval_status": 1,
+              "current_interval_remaining_percent": 50
+            }
+          ],
+          "base_resp": { "status_code": 0, "status_msg": "success" }
+        }
+        """.data(using: .utf8)!
+    }
+
+    /// 宿主本地时区下的指定整点。parse 走 `intervalWindowLength` 的默认参数
+    /// `Calendar.current`，「本地 0 点 / 本地 20:00」必须按宿主时区构造，断言才能
+    /// 在任意宿主时区成立。日期取 1 月中旬：全球各时区均无夏令时切换，整点必存在。
+    private func localTime(hour: Int) -> Date {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .current
+        return calendar.date(from: DateComponents(year: 2026, month: 1, day: 15, hour: hour))!
+    }
+
+    /// Date → 毫秒时间戳（整秒时刻与 `DateParser.parseMsTimestamp` 的 Int 路径
+    /// 精确互逆，`intervalResetsAt` 可以直接做 Date 相等断言）。
+    private func msTimestamp(_ date: Date) -> Int {
+        Int((date.timeIntervalSince1970 * 1000).rounded())
+    }
+
+    /// end_time 落在本地 0 点 → 最后一段 20:00→24:00 的窗口，长度 4h（14400s），
+    /// `intervalResetsAt` 等于该 0 点本身。之前恒为 nil，消费面退回 5h 兜底把
+    /// 起点错推到 19:00。
+    func testMinimaxParseIntervalWindowSecondsFromMidnightEndTime() throws {
+        let midnight = localTime(hour: 0)
+        let info = try MinimaxTokenPlanFetcher.parse(
+            data: makeData(modelName: "general", endTimeMs: msTimestamp(midnight))
+        )
+        let model = try XCTUnwrap(info.models.first)
+        XCTAssertEqual(model.intervalWindowSeconds, 4 * 60 * 60)
+        XCTAssertEqual(model.intervalResetsAt, midnight)
+    }
+
+    /// end_time 落在本地 20:00（00/05/10/15 同理）→ 常规 5h 段，长度 18000s。
+    func testMinimaxParseIntervalWindowSecondsFromEveningBoundaryEndTime() throws {
+        let evening = localTime(hour: 20)
+        let info = try MinimaxTokenPlanFetcher.parse(
+            data: makeData(modelName: "general", endTimeMs: msTimestamp(evening))
+        )
+        let model = try XCTUnwrap(info.models.first)
+        XCTAssertEqual(model.intervalWindowSeconds, 5 * 60 * 60)
+        XCTAssertEqual(model.intervalResetsAt, evening)
+    }
+
+    /// video 是日窗口：end_time 同样落在 0 点也不反推窗口长度，保持 nil
+    /// （其余字段照常解析）。
+    func testMinimaxParseVideoRecordKeepsIntervalWindowSecondsNil() throws {
+        let midnight = localTime(hour: 0)
+        let info = try MinimaxTokenPlanFetcher.parse(
+            data: makeData(modelName: "video", endTimeMs: msTimestamp(midnight))
+        )
+        let model = try XCTUnwrap(info.models.first)
+        XCTAssertEqual(model.modelName, "video")
+        XCTAssertNil(model.intervalWindowSeconds)
+        XCTAssertEqual(model.intervalResetsAt, midnight)
+        XCTAssertEqual(model.intervalRemainingPercent, 50)
+    }
+
+    /// 缺 end_time 的记录没有可反推的边界，`intervalWindowSeconds` 保持 nil。
+    func testMinimaxParseRecordWithoutEndTimeKeepsIntervalWindowSecondsNil() throws {
+        let info = try MinimaxTokenPlanFetcher.parse(
+            data: makeData(modelName: "general", endTimeMs: nil)
+        )
+        let model = try XCTUnwrap(info.models.first)
+        XCTAssertNil(model.intervalResetsAt)
+        XCTAssertNil(model.intervalWindowSeconds)
+    }
+
+    /// helper 直测：注入固定 Asia/Shanghai 日历，0 点 → 14400、20:00 → 18000，
+    /// 与宿主时区无关。
+    func testIntervalWindowLengthHelperWithFixedCalendar() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai")!
+        let midnight = calendar.date(from: DateComponents(year: 2026, month: 1, day: 15, hour: 0))!
+        let evening = calendar.date(from: DateComponents(year: 2026, month: 1, day: 15, hour: 20))!
+        XCTAssertEqual(
+            MinimaxTokenPlanFetcher.intervalWindowLength(endsAt: midnight, calendar: calendar),
+            4 * 60 * 60
+        )
+        XCTAssertEqual(
+            MinimaxTokenPlanFetcher.intervalWindowLength(endsAt: evening, calendar: calendar),
+            5 * 60 * 60
+        )
+    }
 }
