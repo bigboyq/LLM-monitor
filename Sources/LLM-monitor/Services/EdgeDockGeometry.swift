@@ -94,16 +94,20 @@ enum EdgeDockGeometry {
         /// 贴边方向的窗口总厚度 = 环径 + 内边距 ×2。
         var thickness: CGFloat { diameter + padding * 2 }
 
-        /// 环**孔径**（pt）= 环径 − 线宽：周额度升级提示那个圆点的直径。
+        /// 周额度升级提示那个圆点的直径（pt）= 孔径 − 2。
         ///
-        /// 环是 `Circle().stroke(lineWidth:)`，描边**以路径为中心**向内外各摊一半，
-        /// 所以圈住的空心部分只有 `diameter - ringLineWidth`（不是 `diameter / 2 - …`
-        /// 之类的半径口径）。圆点取满整个孔径：它是"环心被占住了"的信号，小一圈
-        /// 会读成环里还有个洞，大一圈就压到环线上、环与点糊成一坨。
+        /// 环**孔径** = 环径 − 线宽：环是 `Circle().stroke(lineWidth:)`，描边**以
+        /// 路径为中心**向内外各摊一半，所以圈住的空心部分只有 `diameter - ringLineWidth`
+        /// （不是 `diameter / 2 - …` 之类的半径口径）。
         ///
-        /// 三档取值：小 7−2.5 = 4.5、中 11−3.5 = 7.5、大 14−4 = 10——
-        /// 都严格小于环径（`ringLineWidth * 2 < diameter` 那条不等式的直接推论）。
-        var centerDotDiameter: CGFloat { diameter - ringLineWidth }
+        /// 点**不再取满孔径**：填满时点与环直接接触、糊成一坨（用户实测反馈
+        /// 2026-10，太堵）。现在在孔径内**每侧留 1pt**（@2x retina 即每侧 2 物理
+        /// px、合计 2pt）的呼吸缝，点才读得出是一个独立元素而不是"环心被涂满"。
+        ///
+        /// 三档取值：小 7−2.5−2 = 2.5、中 11−3.5−2 = 5.5、大 14−4−2 = 8——
+        /// 都严格小于孔径（缝真实存在）且严格小于环径。小档 2.5pt 是三档里最紧的
+        /// 下限，仍 ≥2pt、在 @2x 下有 5 物理px，可读。
+        var centerDotDiameter: CGFloat { diameter - ringLineWidth - 2 }
     }
 
     /// 查某一档简版的尺寸。

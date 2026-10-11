@@ -386,31 +386,39 @@ final class EdgeDockGeometryTests: EdgeDockTestCase {
         }
     }
 
-    /// 周额度升级提示点的直径 = 孔径 = 环径 − 线宽，三档必须逐档成立。
+    /// 周额度升级提示点的直径 = 孔径 − 2，三档必须逐档成立。
     ///
-    /// 钉的是**描边居中**这条几何事实：`Circle().stroke(lineWidth:)` 的线宽向内外
-    /// 各摊一半，圈住的空心部分只有 `diameter - ringLineWidth`。写成 `diameter / 2`
-    /// 之类的半径口径，点会小到看不见；写成 `diameter` 则直接盖住环线、环和点糊成
-    /// 一坨。所以除了逐档等于孔径，再钉两条边界：严格为正（不能算成 0 或负）、
-    /// 严格小于环径（不能盖住环线）。
-    func testCompactCenterDotFillsTheRingAperture() {
+    /// 钉的是**留缝**这条决策本身（2026-10 用户实测反馈：点填满孔径时太堵、点与环
+    /// 糊成一坨）。所以除了逐档等于 `diameter - ringLineWidth - 2` 与逐档等于档位表
+    /// 的字面值，还要钉住**缝真实存在**：点必须严格小于孔径（`diameter -
+    /// ringLineWidth`），否则有人把公式改回填满、或把缝算成直径口径（而不是从直径
+    /// 里扣掉）时，测试会当场拦下。
+    ///
+    /// 描边口径同样被钉住：`Circle().stroke(lineWidth:)` 的线宽向内外各摊一半，
+    /// 孔径是 `diameter - ringLineWidth` 而不是 `diameter / 2`——写成半径口径会让
+    /// 点小到看不见。
+    func testCompactCenterDotLeavesABreathingGapToTheRing() {
         let expected: [EdgeDockCompactSize: CGFloat] = [
-            .small: 4.5,   // 7 − 2.5
-            .medium: 7.5,  // 11 − 3.5
-            .large: 10,    // 14 − 4
+            .small: 2.5,   // 7 − 2.5 − 2
+            .medium: 5.5,  // 11 − 3.5 − 2
+            .large: 8,     // 14 − 4 − 2
         ]
         for size in EdgeDockCompactSize.allCases {
             let m = EdgeDockGeometry.compactMetrics(for: size)
+            let aperture = m.diameter - m.ringLineWidth
             XCTAssertEqual(
-                m.centerDotDiameter, m.diameter - m.ringLineWidth, accuracy: 0.001,
-                "\(size) 圆点必须填满孔径（diameter − ringLineWidth）"
+                m.centerDotDiameter, aperture - 2, accuracy: 0.001,
+                "\(size) 圆点必须在孔径内每侧留 1pt 呼吸缝（孔径 − 2）"
             )
             XCTAssertEqual(
                 m.centerDotDiameter, expected[size] ?? -1, accuracy: 0.001,
                 "\(size) 圆点直径对不上档位表"
             )
             XCTAssertGreaterThan(m.centerDotDiameter, 0, "\(size) 圆点必须有正的直径")
-            XCTAssertLessThan(m.centerDotDiameter, m.diameter, "\(size) 圆点不能盖住环线")
+            XCTAssertLessThan(
+                m.centerDotDiameter, aperture,
+                "\(size) 圆点必须严格小于孔径，否则与环相接、呼吸缝没了"
+            )
         }
     }
 

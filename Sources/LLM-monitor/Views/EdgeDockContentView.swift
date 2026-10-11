@@ -291,8 +291,8 @@ struct EdgeDockContentView: View {
             } else if let escalation = entry.weeklyEscalationHealth {
                 // 简版的中心：周额度**升级提示**点。简版只有一环（5h 有效额度），
                 // 周窗口的健康度在这条路径上没有任何出口——周比 5h 更紧时，光看环会
-                // 以为"这家还很宽裕"。点填满孔径（`centerDotDiameter`），ZStack 自动
-                // 居中，不需要再 offset。
+                // 以为"这家还很宽裕"。点在孔径内留 2px 呼吸缝（`centerDotDiameter`），
+                // ZStack 自动居中，不需要再 offset。
                 //
                 // 颜色取周档位且**必然比环差**（判定见 `weeklyEscalationHealth`）：
                 // 点在这里是提示，不是第二块读数。淡入淡出沿用内环/图标那套 opacity
