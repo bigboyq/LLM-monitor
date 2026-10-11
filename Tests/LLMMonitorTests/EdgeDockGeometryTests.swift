@@ -386,6 +386,34 @@ final class EdgeDockGeometryTests: EdgeDockTestCase {
         }
     }
 
+    /// 周额度升级提示点的直径 = 孔径 = 环径 − 线宽，三档必须逐档成立。
+    ///
+    /// 钉的是**描边居中**这条几何事实：`Circle().stroke(lineWidth:)` 的线宽向内外
+    /// 各摊一半，圈住的空心部分只有 `diameter - ringLineWidth`。写成 `diameter / 2`
+    /// 之类的半径口径，点会小到看不见；写成 `diameter` 则直接盖住环线、环和点糊成
+    /// 一坨。所以除了逐档等于孔径，再钉两条边界：严格为正（不能算成 0 或负）、
+    /// 严格小于环径（不能盖住环线）。
+    func testCompactCenterDotFillsTheRingAperture() {
+        let expected: [EdgeDockCompactSize: CGFloat] = [
+            .small: 4.5,   // 7 − 2.5
+            .medium: 7.5,  // 11 − 3.5
+            .large: 10,    // 14 − 4
+        ]
+        for size in EdgeDockCompactSize.allCases {
+            let m = EdgeDockGeometry.compactMetrics(for: size)
+            XCTAssertEqual(
+                m.centerDotDiameter, m.diameter - m.ringLineWidth, accuracy: 0.001,
+                "\(size) 圆点必须填满孔径（diameter − ringLineWidth）"
+            )
+            XCTAssertEqual(
+                m.centerDotDiameter, expected[size] ?? -1, accuracy: 0.001,
+                "\(size) 圆点直径对不上档位表"
+            )
+            XCTAssertGreaterThan(m.centerDotDiameter, 0, "\(size) 圆点必须有正的直径")
+            XCTAssertLessThan(m.centerDotDiameter, m.diameter, "\(size) 圆点不能盖住环线")
+        }
+    }
+
     /// 档位表的可用性下限：逐行 hover 的判定半径是**半个行距**
     /// （见 `EdgeDockController.circleIndex` 的 `minimumRadius`）。它必须够手指指，
     /// 否则"简版逐行 hover 出对应 provider 的详情"这个能力在某一档上直接失能，

@@ -237,7 +237,8 @@ struct EdgeDockContentView: View {
         )
     }
 
-    /// 单个 provider 的圆：完整形态 = 双环 + 品牌图标；简版 = 缩到 14pt 的单环。
+    /// 单个 provider 的圆：完整形态 = 双环 + 品牌图标；简版 = 缩到 14pt 的单环
+    /// （周更紧时环心多一个升级提示点，见 `weeklyEscalationHealth`）。
     ///
     /// 两种形态是**同一棵树的插值**而不是两套分支：外环直径、弧长随
     /// `isCompactAppearance` 连续过渡，内环 / 图标 / 数值淡出，黑条因此从边缘
@@ -286,6 +287,22 @@ struct EdgeDockContentView: View {
                 // frame 的子视图，只会把 18pt 的图居中摆在 6pt 的框里（不裁剪），
                 // 于是图标按 18pt 画出来、正好压在内环描边上。
                 BrandLogoView(kind: entry.kind, size: EdgeDockGeometry.iconSize)
+                    .transition(.opacity)
+            } else if let escalation = entry.weeklyEscalationHealth {
+                // 简版的中心：周额度**升级提示**点。简版只有一环（5h 有效额度），
+                // 周窗口的健康度在这条路径上没有任何出口——周比 5h 更紧时，光看环会
+                // 以为"这家还很宽裕"。点填满孔径（`centerDotDiameter`），ZStack 自动
+                // 居中，不需要再 offset。
+                //
+                // 颜色取周档位且**必然比环差**（判定见 `weeklyEscalationHealth`）：
+                // 点在这里是提示，不是第二块读数。淡入淡出沿用内环/图标那套 opacity
+                // transition，形态切换时不引入新的动画机制。
+                Circle()
+                    .fill(healthTint(for: escalation))
+                    .frame(
+                        width: compactMetrics.centerDotDiameter,
+                        height: compactMetrics.centerDotDiameter
+                    )
                     .transition(.opacity)
             }
         }
@@ -384,7 +401,7 @@ struct EdgeDockContentView: View {
         return Color(nsColor: color)
     }
 
-    /// 辅助功能朗读文案（`accessibilityValue`）：`5h 段 · 周 段 · 健康档`。
+    /// 辅助功能朗读文案（`accessibilityValue`）：`5h 段 · 周 段 · [中心点段 ·] 健康档`。
     ///
     /// 5h 段在**周折算构成瓶颈**（有效额度 < 原始 5h）时并排显示两个数
     /// （`5h 90%(30%有效)`，见 `EdgeDockProjection.intervalCaption`）：外环读的是
@@ -405,8 +422,24 @@ struct EdgeDockContentView: View {
         if let weekly = entry.weeklyFraction {
             parts.append("周 \(percentText(weekly))")
         }
+        // 周额度升级提示：视觉上只是环心一个点，VoiceOver 必须把它读出来，否则
+        // "点比环差"这条信息在朗读路径上完全丢失。放在健康档**之前**——它是这次
+        // 读数的定性（瓶颈已经不在 5h），健康档只是这次读数的结论。
+        if let escalation = entry.weeklyEscalationHealth {
+            parts.append(escalationText(for: escalation))
+        }
         parts.append(healthText(for: entry))
         return parts.joined(separator: " · ")
+    }
+
+    /// 升级提示点的朗读措辞。词汇与 `healthText` 对齐（预警 / 告急），否则同一个
+    /// "周比 5h 差"的事实会在同一句话里出现两套说法。
+    private func escalationText(for escalation: HealthLevel) -> String {
+        switch escalation {
+        case .warning:  return "中心点：周预警"
+        case .critical: return "中心点：周告急"
+        case .healthy:  return "中心点：周正常"
+        }
     }
 
     private func percentText(_ fraction: Double) -> String {

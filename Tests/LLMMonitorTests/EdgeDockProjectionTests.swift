@@ -464,6 +464,86 @@ final class EdgeDockProjectionTests: EdgeDockTestCase {
         )
     }
 
+    // MARK: - 周额度升级提示（简版环心圆点）
+
+    /// 真值表：圆点**只在周严格差于 5h 时**出现，颜色 = 周档位。
+    ///
+    /// 三行 `XCTAssert` 各钉一件事：前置的两档确实是表里写的那档（夹具漂了会先在
+    /// 前置断言上炸，而不是让 `weeklyEscalationHealth` 的 nil 变成"碰巧对"）、
+    /// 输出等于期望、以及出点时不变量「点永远比环差」。provider 一律用
+    /// `codexChatGpt`（周倍率 N=6），所以周折算后总比 5h 松，5h 档位走固定
+    /// 30% 黄线——百分比与档位的对应关系一眼可核。
+    func testWeeklyEscalationHealthOnlyWhenWeeklyIsWorseThanInterval() {
+        // (名字, 5h%, 周%, 剩余时间比例, 5h档, 周档, 期望圆点)
+        let cases: [(String, Double, Double, Double, HealthLevel, HealthLevel, HealthLevel?)] = [
+            // 周不差于 5h → 无点：同档（黄/黄、红/红、绿/绿）与周更健康都不画。
+            ("both_warning", 25, 40, 0.6, .warning, .warning, nil),
+            ("both_critical", 10, 10, 0.6, .critical, .critical, nil),
+            ("both_healthy", 60, 90, 0.2, .healthy, .healthy, nil),
+            // 周更健康（黄/绿）→ 无点。5h 已告急时周只到黄也不算"更差"——
+            // 升级提示说的是「瓶颈已经从 5h 挪到周」，瓶颈还在 5h 就不是。
+            ("weekly_healthier_warning", 25, 90, 0.2, .warning, .healthy, nil),
+            ("weekly_healthier_critical", 10, 40, 0.6, .critical, .warning, nil),
+            // 周严格更差 → 有点，颜色 = 周档位。
+            ("weekly_worse_warning", 60, 40, 0.6, .healthy, .warning, .warning),
+            ("weekly_worse_critical", 25, 10, 0.6, .warning, .critical, .critical),
+            ("weekly_worse_critical_from_healthy", 60, 10, 0.6, .healthy, .critical, .critical),
+        ]
+        for (name, intervalPct, weeklyPct, timeFraction, intervalLevel, weeklyLevel, expected) in cases {
+            let status = makeStatus(id: name, state: .ok(makeInfo([
+                quotaModel(
+                    intervalPercent: intervalPct,
+                    weeklyPercent: weeklyPct,
+                    weeklyTimeFraction: timeFraction
+                ),
+            ])))
+            let entry = EdgeDockProjection.entries(from: [status], at: Self.makeNow)[0]
+            XCTAssertEqual(entry.intervalHealth, intervalLevel, "\(name) 的 5h 档位")
+            XCTAssertEqual(entry.weeklyHealth, weeklyLevel, "\(name) 的周档位")
+            XCTAssertEqual(entry.weeklyEscalationHealth, expected, "\(name) 的升级提示档位")
+
+            // 不变量：出点时点色必然比环色差（环取 intervalHealth ?? weeklyHealth）。
+            if let escalation = entry.weeklyEscalationHealth {
+                let ringLevel = entry.intervalHealth ?? entry.weeklyHealth
+                XCTAssertNotNil(ringLevel, "\(name) 出点时环色必须存在")
+                if let ringLevel {
+                    XCTAssertLessThan(escalation, ringLevel, "\(name) 点必须比环差")
+                }
+            }
+        }
+    }
+
+    /// 缺任一窗口 → 无点，而且是**语义正确**的 nil，不是"没算出来"：
+    /// - 纯周窗口型（无 5h 窗口）：`intervalHealth == nil`，环本身已经是周色，
+    ///   再补一个同色圆点等于什么都没说。
+    /// - 纯 5h 型（无周窗口）：`weeklyHealth == nil`，没有可升级的周信息。
+    /// - 完全没有数据：两个都是 nil。
+    func testWeeklyEscalationHealthIsNilWithoutBothWindows() {
+        let weeklyOnly = makeStatus(id: "weekly_only", state: .ok(makeInfo([
+            weeklyModel(percent: 10, timeFraction: 0.6),
+        ])))
+        let weeklyOnlyEntry = EdgeDockProjection.entries(from: [weeklyOnly], at: Self.makeNow)[0]
+        XCTAssertNil(weeklyOnlyEntry.intervalHealth, "纯周窗口型没有 5h 窗口")
+        XCTAssertEqual(weeklyOnlyEntry.weeklyHealth, .critical)
+        XCTAssertNil(
+            weeklyOnlyEntry.weeklyEscalationHealth,
+            "环本身就是周色，不需要再点一个同色的圆心"
+        )
+
+        let intervalOnly = makeStatus(id: "interval_only", state: .ok(makeInfo([
+            makeModel(name: "g", intervalPercent: 25, now: Self.makeNow),
+        ])))
+        let intervalOnlyEntry = EdgeDockProjection.entries(from: [intervalOnly], at: Self.makeNow)[0]
+        XCTAssertEqual(intervalOnlyEntry.intervalHealth, .warning)
+        XCTAssertNil(intervalOnlyEntry.weeklyHealth, "纯 5h 型没有周窗口")
+        XCTAssertNil(intervalOnlyEntry.weeklyEscalationHealth, "没有周信息就没有可提示的升级")
+
+        let noData = makeStatus(id: "ready", state: .ready)
+        XCTAssertNil(
+            EdgeDockProjection.entries(from: [noData], at: Self.makeNow).first?.weeklyEscalationHealth
+        )
+    }
+
     // MARK: - 条目顺序 = 配置里的 provider 顺序
 
     /// dock 必须按设置页里排的顺序展示，且与菜单卡片**同序**：

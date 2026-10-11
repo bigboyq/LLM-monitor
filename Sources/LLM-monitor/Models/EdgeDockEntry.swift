@@ -46,6 +46,30 @@ struct EdgeDockEntry: Identifiable, Equatable, Sendable {
     /// **仅周窗口**的健康档位（同上，取最差档）。nil = 没有周窗口。
     let weeklyHealth: HealthLevel?
 
+    /// **周额度升级提示**档位：周窗口严格差于 5 小时窗口时返回周档位，否则 nil。
+    ///
+    /// 简版（收起形态 / 小圆环）只有一环，画的是 5h 有效额度
+    /// （`intervalFraction ?? weeklyFraction`），周窗口的健康度在那里完全不可见。
+    /// 圆心那个小点就是补这条信息用的：环说"5h 还行"，点说"周更紧"。
+    ///
+    /// 判定只看 `weeklyHealth < intervalHealth`（`HealthLevel` 的 `Comparable`
+    /// 方向是 rank 越小越差，所以 `<` 就是"周更差"），两者缺一即 nil：
+    /// - `intervalHealth == nil`：没有 5h 窗口（纯周窗口型 / 余额型）→ 环本身就是周色，
+    ///   再点一个同色的点等于什么都没说。
+    /// - `weeklyHealth == nil`：没有周窗口（纯 5 小时型）→ 没有可升级的信息。
+    /// - 周不差于 5h：包括**同档**（周黄+5h黄、周红+5h红）与**周更健康**
+    ///   （周绿 + 任意 5h 档）。同档不画点是刻意的：点存在的意义是"还有更差的窗口"，
+    ///   同色重复只会让人以为环本身出错了。
+    ///
+    /// **不变量：圆心出现时颜色永远比环差**——环取 `intervalHealth ?? weeklyHealth`，
+    /// 而出点的前提正是周严格差于 5h。圆心是**升级提示**，不是第二块读数：它不回答
+    /// "周还剩多少"（那由 hover 文案的「周」段负责，见 `EdgeDockProjection.intervalCaption`
+    /// 同一张 caption），只回答"这家的瓶颈已经不在 5h 了"。
+    var weeklyEscalationHealth: HealthLevel? {
+        guard let intervalHealth, let weeklyHealth, weeklyHealth < intervalHealth else { return nil }
+        return weeklyHealth
+    }
+
     /// 该 provider 是否存在任何可读额度窗口。false 时两个环都不画弧，
     /// 改为压暗满环表示"读得到健康、读不到余量"（余额型 DeepSeek）。
     var hasAnyQuotaWindow: Bool {
