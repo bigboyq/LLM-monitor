@@ -89,6 +89,25 @@ The compact single ring is coloured by the effective 5h quota too, with the same
 weekly fallback its *arc length* uses, so a weekly-only provider never shows a
 weekly arc in the 5h ring's colour.
 
+**The compact centre dot is a weekly escalation cue, not a second reading.** The
+compact ring draws one arc (5h effective quota), so `weeklyHealth` — the
+time-aware yellow-line caliber — has no exit on the permanent surface: when the
+weekly window is the tighter one (GLM at N=5 is the typical case — a 5h 90% green
+ring against a weekly 45% that already reads yellow early in the week) nothing on
+screen says so. `EdgeDockEntry.weeklyEscalationHealth`
+(`Sources/LLM-monitor/Models/EdgeDockEntry.swift:68`) is a pure computed property
+returning the weekly level **only when `weeklyHealth < intervalHealth`**
+(`HealthLevel` is `Comparable` with smallest-rank-worst, so `<` reads as "weekly is
+worse"), nil otherwise. The dot therefore carries the invariant **when it appears,
+its colour is always strictly worse than the ring's** (the ring takes
+`intervalHealth ?? weeklyHealth`): it answers "the bottleneck is no longer the 5h
+window", never "how much weekly quota is left" — that stays with the caption's 「周」
+segment. Same level, weekly healthier, or either window missing → nil; a
+weekly-only provider's ring already *is* the weekly colour, so a same-coloured dot
+would say nothing. The verdict reads `weeklyEscalationHealth` directly and is
+**not** affected by `independentRingColors` — that switch governs ring tints, not
+whether the weekly window has escalated past the 5h one.
+
 A provider with only one of the two windows draws just that ring; a provider with
 neither (balance-only DeepSeek, or no successful fetch yet) draws a dimmed full ring
 on both, reading as "health is known, remaining quantity is not". A grey ring would
@@ -123,6 +142,15 @@ card's per-model metadata line (`QuotaBarWithMetadata.weeklyBindingEffectivePerc
 see *Collapsed sections are open in the popover*). The two answer the same question at
 two zoom levels — provider-wide worst model here, per model there — and they are not
 expected to print the same number.
+
+**The compact centre dot is announced in the same caption, ahead of the health
+level.** The dot is invisible on the speech path, so without a segment the "dot is
+worse than the ring" fact is lost entirely to VoiceOver; `accessibilityValue` reads
+`5h 段 · 周 段 · [中心点段 ·] 健康档`, with 中心点 段 rendered `中心点：周预警` /
+`中心点：周告急` (`escalationText(for:)`, worded to match `healthText` — 预警 / 告急 —
+so one fact never gets two vocabularies in one sentence). It sits **before** the
+health level on purpose: the dot is the *qualification* of this reading (the
+bottleneck has moved off 5h), the health level is only its conclusion.
 
 ### Row order is the configured provider order
 
@@ -826,6 +854,20 @@ and offset along with the bad value. The four modes:
   iconDuo centre fan), falling back to the raw weekly fraction for providers with no
   5h window (same precedence as the full dock's number label — a blank ring would
   silently drop information), dim track only when neither exists.
+
+  The centre dot (weekly escalation cue, defined in *Circle anatomy* above) takes
+  `CompactMetrics.centerDotDiameter` = `diameter - ringLineWidth`
+  (`Sources/LLM-monitor/Services/EdgeDockGeometry.swift:106`) — 4.5 / 7.5 / 10pt by
+  tier, i.e. the **aperture**, not the diameter: the ring is `Circle().stroke(lineWidth:)`,
+  whose line straddles the path and so eats half the width inwards. The dot fills
+  that aperture exactly — a smaller dot reads as "there is still a hole in the
+  ring", a larger one rides onto the stroke and smears ring and dot into one blob.
+  It is a computed property, so `CompactMetrics` keeps its memberwise init
+  signature unchanged; `testCompactCenterDotFillsTheRingAperture` pins the equality
+  per tier plus the two bounds (strictly positive, strictly below the ring
+  diameter). The dot is centred by the `ZStack` (no offset), and its
+  `.transition(.opacity)` is the same one the inner ring and the brand icon use, so
+  a form morph introduces no new animation mechanism.
 - **Expand** (`autoHideWindow` only) — cursor within the usual 12pt proximity of the
   compact window sets `isExpanded = true`; the window frame and the content **animate together**
   (`contentMorphDuration`, 0.25s easeOut, both started in the same tick): the AppKit
@@ -1069,4 +1111,4 @@ default has to preserve it — defaulting to off would put a dock inside every f
 window for every existing user. Because the setting can be flipped while the user is
 already fullscreen, a policy change re-probes instead of reusing the cached verdict.
 
-> 核对基线：2026-10-09 · 代码 004e041
+> 核对基线：2026-10-11 · 代码 eb49b1a
