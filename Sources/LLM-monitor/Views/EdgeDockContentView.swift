@@ -426,20 +426,10 @@ struct EdgeDockContentView: View {
         // "点比环差"这条信息在朗读路径上完全丢失。放在健康档**之前**——它是这次
         // 读数的定性（瓶颈已经不在 5h），健康档只是这次读数的结论。
         if let escalation = entry.weeklyEscalationHealth {
-            parts.append(escalationText(for: escalation))
+            parts.append(EdgeDockProjection.escalationCaption(escalation))
         }
         parts.append(healthText(for: entry))
         return parts.joined(separator: " · ")
-    }
-
-    /// 升级提示点的朗读措辞。词汇与 `healthText` 对齐（预警 / 告急），否则同一个
-    /// "周比 5h 差"的事实会在同一句话里出现两套说法。
-    private func escalationText(for escalation: HealthLevel) -> String {
-        switch escalation {
-        case .warning:  return "中心点：周预警"
-        case .critical: return "中心点：周告急"
-        case .healthy:  return "中心点：周正常"
-        }
     }
 
     private func percentText(_ fraction: Double) -> String {

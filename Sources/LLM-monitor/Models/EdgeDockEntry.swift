@@ -249,6 +249,20 @@ enum EdgeDockProjection {
         return "5h \(percent(raw))(\(percent(effective))有效)"
     }
 
+    /// 周额度升级提示点的朗读措辞：视觉上只是环心一个点，VoiceOver 必须把它读出来，
+    /// 否则「点比环差」这条信息在朗读路径上完全丢失。词汇与 `healthText` 对齐
+    /// （预警 / 告急），否则同一个「周比 5h 差」的事实会在同一句话里出现两套说法。
+    ///
+    /// `.healthy` 分支只是为 `switch` 穷尽性保留，生产路径不可达：出点的判定保证
+    /// 周档位必然**差于** 5h 档位，而 `.healthy` 是 rank 最大值（最好），到不了。
+    static func escalationCaption(_ level: HealthLevel) -> String {
+        switch level {
+        case .warning:  return "中心点：周预警"
+        case .critical: return "中心点：周告急"
+        case .healthy:  return "中心点：周正常"
+        }
+    }
+
     // MARK: - 行矩形排序
 
     /// 还没量到 / 量丢了的行用的占位矩形：放到屏幕坐标系够不着的地方。

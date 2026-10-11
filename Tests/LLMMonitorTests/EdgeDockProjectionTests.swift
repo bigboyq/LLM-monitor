@@ -353,6 +353,18 @@ final class EdgeDockProjectionTests: EdgeDockTestCase {
         )
     }
 
+    /// 升级提示点的朗读措辞：三档逐字钉死。措辞与 `healthText` 的词汇（预警 / 告急）
+    /// 必须成对，改一半就会在同一句话里出现两套说法。
+    ///
+    /// `.healthy` 一档在生产路径上**不可达**——出点的判定保证周档位必然差于 5h 档位，
+    /// 而 `.healthy` 是 rank 最大值（最好）。这里仍然断言它，只是为了给
+    /// `switch` 的穷尽性分支钉一个值，避免以后有人顺手删掉分支后措辞悄悄消失。
+    func testEscalationCaptionWordsTheThreeLevels() {
+        XCTAssertEqual(EdgeDockProjection.escalationCaption(.critical), "中心点：周告急")
+        XCTAssertEqual(EdgeDockProjection.escalationCaption(.warning), "中心点：周预警")
+        XCTAssertEqual(EdgeDockProjection.escalationCaption(.healthy), "中心点：周正常")
+    }
+
     // MARK: - 逐窗口色档（内外环独立取色的输入）
 
     /// 5h 档位：无周窗口（瓶颈 = 5h 短窗口，`bindingTimeFraction == nil`）时固定
