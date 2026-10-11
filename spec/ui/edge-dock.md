@@ -147,10 +147,11 @@ expected to print the same number.
 level.** The dot is invisible on the speech path, so without a segment the "dot is
 worse than the ring" fact is lost entirely to VoiceOver; `accessibilityValue` reads
 `5h 段 · 周 段 · [中心点段 ·] 健康档`, with 中心点 段 rendered `中心点：周预警` /
-`中心点：周告急` (`escalationText(for:)`, worded to match `healthText` — 预警 / 告急 —
-so one fact never gets two vocabularies in one sentence). It sits **before** the
-health level on purpose: the dot is the *qualification* of this reading (the
-bottleneck has moved off 5h), the health level is only its conclusion.
+`中心点：周告急` (`EdgeDockProjection.escalationCaption(_:)`, worded to match `healthText`
+— 预警 / 告急 — so one fact never gets two vocabularies in one sentence; all three
+levels are pinned verbatim by `testEscalationCaptionWordsTheThreeLevels`). It sits
+**before** the health level on purpose: the dot is the *qualification* of this
+reading (the bottleneck has moved off 5h), the health level is only its conclusion.
 
 ### Row order is the configured provider order
 
@@ -1111,4 +1112,4 @@ default has to preserve it — defaulting to off would put a dock inside every f
 window for every existing user. Because the setting can be flipped while the user is
 already fullscreen, a policy change re-probes instead of reusing the cached verdict.
 
-> 核对基线：2026-10-11 · 代码 eb49b1a
+> 核对基线：2026-10-11 · 代码 7233ca8
