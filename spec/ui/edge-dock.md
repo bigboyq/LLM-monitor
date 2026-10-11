@@ -857,16 +857,22 @@ and offset along with the bad value. The four modes:
   silently drop information), dim track only when neither exists.
 
   The centre dot (weekly escalation cue, defined in *Circle anatomy* above) takes
-  `CompactMetrics.centerDotDiameter` = `diameter - ringLineWidth`
-  (`Sources/LLM-monitor/Services/EdgeDockGeometry.swift:106`) — 4.5 / 7.5 / 10pt by
-  tier, i.e. the **aperture**, not the diameter: the ring is `Circle().stroke(lineWidth:)`,
-  whose line straddles the path and so eats half the width inwards. The dot fills
-  that aperture exactly — a smaller dot reads as "there is still a hole in the
-  ring", a larger one rides onto the stroke and smears ring and dot into one blob.
-  It is a computed property, so `CompactMetrics` keeps its memberwise init
-  signature unchanged; `testCompactCenterDotFillsTheRingAperture` pins the equality
-  per tier plus the two bounds (strictly positive, strictly below the ring
-  diameter). The dot is centred by the `ZStack` (no offset), and its
+  `CompactMetrics.centerDotDiameter` = `diameter - ringLineWidth - 2`
+  (`Sources/LLM-monitor/Services/EdgeDockGeometry.swift:110`) — 2.5 / 5.5 / 8pt by
+  tier, i.e. the **aperture** (the ring is `Circle().stroke(lineWidth:)`,
+  whose line straddles the path and so eats half the width inwards — hence
+  `diameter - ringLineWidth`, not the diameter) minus 2pt. The dot does **not**
+  fill that aperture: filling it made dot and ring touch directly and smear into
+  one blob (user feedback 2026-10, 太堵), so the dot now leaves a **1pt gap per
+  side** (2 physical px per side at @2x, 2pt in total) and reads as an element of
+  its own rather than a filled ring centre. The small tier's 2.5pt is the tightest
+  of the three and still reads — 5 physical px at @2x. It is a computed property,
+  so `CompactMetrics` keeps its memberwise init
+  signature unchanged; `testCompactCenterDotLeavesABreathingGapToTheRing` pins
+  the per-tier equality with `aperture - 2`, the literal per-tier value, and the
+  two bounds — strictly positive, and strictly below the **aperture** (not just
+  below the ring diameter) so that reverting to a filled dot fails the test. The
+  dot is centred by the `ZStack` (no offset), and its
   `.transition(.opacity)` is the same one the inner ring and the brand icon use, so
   a form morph introduces no new animation mechanism.
 - **Expand** (`autoHideWindow` only) — cursor within the usual 12pt proximity of the
@@ -1112,4 +1118,4 @@ default has to preserve it — defaulting to off would put a dock inside every f
 window for every existing user. Because the setting can be flipped while the user is
 already fullscreen, a policy change re-probes instead of reusing the cached verdict.
 
-> 核对基线：2026-10-11 · 代码 7233ca8
+> 核对基线：2026-10-12 · 代码 2af536b
