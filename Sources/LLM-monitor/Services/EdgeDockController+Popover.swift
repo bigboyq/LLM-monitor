@@ -140,11 +140,24 @@ extension EdgeDockController {
         }
     }
 
+    /// 取 popover 面板与其宿主视图；不存在则建。
+    ///
+    /// 正常路径**已经走不到建窗那一步**了：dock 建窗时就把浮层一起建了出来
+    /// （见 `EdgeDockController+Window.ensurePanel`）。这里保留的是幂等兜底。
     func ensurePopoverPanel() -> (NSPanel, NSHostingView<AnyView>) {
         if let popoverPanel, let popoverHostingView {
             return (popoverPanel, popoverHostingView)
         }
+        return makePopoverPanel()
+    }
 
+    /// 真正建 popover 面板。
+    ///
+    /// 从 `ensurePopoverPanel` 里拆出来，是因为 dock 建窗要**主动**调它把浮层一起
+    /// 建出来，而那条路径不需要返回值——两者共用同一个建窗体，避免"建两遍窗口
+    /// 工程"这种必然漂移的分叉。
+    @discardableResult
+    func makePopoverPanel() -> (NSPanel, NSHostingView<AnyView>) {
         let popover = NSPanel(
             contentRect: .init(x: 0, y: 0, width: 340, height: 200),
             styleMask: [.borderless, .nonactivatingPanel],
