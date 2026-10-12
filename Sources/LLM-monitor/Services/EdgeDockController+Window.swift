@@ -59,20 +59,6 @@ extension EdgeDockController {
 
         self.panel = panel
         self.hostingView = hosting
-
-        // **详情浮层与 dock 同期诞生**，而不是等第一次悬停才建。
-        //
-        // 懒建的实际后果不是"晚建一个窗口"，而是**它出生在哪个 Space 是任意的**：
-        // 面板第一次被创建时的当前 Space 就是它的 Space 归属，而此后没有任何人
-        // 在 Space 切换后重新抬它一次（`activeSpaceDidChange` 只跑全屏判定，
-        // 判定不翻转就直接 return）。于是浮层会留在旧 Space 上——现象是"位置算得
-        // 完全正确，但当前 Space 里看不见，滑回原来那个 Space 才又冒出来"。
-        // dock 本体没有这个问题：它建在 `reconcile` 里，且每次状态广播都
-        // `orderFrontRegardless()`，随时自我修复。
-        //
-        // 放在这里，浮层就与 dock 落在**同一个已稳定的 Space** 里，继承 dock 的
-        // Space 归属（两者的 `collectionBehavior` 本就完全一致）。
-        makePopoverPanel()
     }
 
     /// 当前应该展示的条目，顺序 = 配置里的 provider 顺序（与菜单卡片一致）。

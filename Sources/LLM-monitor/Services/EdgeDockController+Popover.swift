@@ -103,11 +103,46 @@ extension EdgeDockController {
         popover.setFrame(targetFrame, display: true)
         hosting.layoutSubtreeIfNeeded()
         popover.orderFrontRegardless()
+        logPopoverOnscreen(popover, targetFrame: targetFrame)
+    }
+
+    /// popover 显示路径的诊断日志:orderFront 后立刻 + 0.3s 后各查一次该窗口
+    /// 是否真的**上屏**(`CGWindowList.optionOnScreenOnly`)。
+    ///
+    /// "有序"与"上屏"是两回事:orderFront 只保证窗口有序,**放进哪个 Space**
+    /// 由 WindowServer 决定;落进非活跃 Space 的窗口有序但不在屏,表现为
+    /// "代码显示成功、用户看不见,滑回另一个 Space 才看到它"。这行日志就是
+    /// 把这两种状态区分开的唯一手段——`上屏=false` 即实锤 Space 归属问题。
+    private func logPopoverOnscreen(_ popover: NSPanel, targetFrame: CGRect) {
+        func snapshot(_ when: String) {
+            let onscreen = (CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID)
+                as? [[String: Any]])?
+                .compactMap { $0[kCGWindowNumber as String] as? Int }
+                .contains(popover.windowNumber) ?? false
+            logInfo("EdgeDock: popover \(when) 目标=\(Self.describe(targetFrame)) winNo=\(popover.windowNumber) 上屏=\(onscreen)")
+        }
+        snapshot("show")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak popover] in
+            guard let popover, popover.isVisible else { return }
+            snapshot("show+0.3s")
+        }
     }
 
     /// 收起详情窗。
+    ///
+    /// **隐藏即销毁**,不是 `orderOut` 后留窗复用。同一个 NSPanel 反复
+    /// orderOut → orderFront,跨过 Space 切换后会落回它**上一次上屏的
+    /// Space**:位置完全正确、`orderFrontRegardless` 照常执行,但当前活跃
+    /// Space 里看不见,滑回那个 Space 才发现它一直等在那儿(2026-10 两次
+    /// 实测,见诊断日志 `上屏=false`)。"每次显示都是新窗口的首次上屏"
+    /// 则必然进**当前**活跃 Space——新窗口没有历史 Space 可回落。
+    ///
+    /// 显示中切换 provider(`updatePopover` 换 rootView)不走这里,窗口
+    /// 复用、不重建、不闪;销毁只发生在收起路径,频率与"弹出"同阶。
     func hidePopover() {
         popoverPanel?.orderOut(nil)
+        popoverPanel = nil
+        popoverHostingView = nil
         popoverDisplayClock.stop()
     }
 
@@ -142,22 +177,15 @@ extension EdgeDockController {
 
     /// 取 popover 面板与其宿主视图；不存在则建。
     ///
-    /// 正常路径**已经走不到建窗那一步**了：dock 建窗时就把浮层一起建了出来
-    /// （见 `EdgeDockController+Window.ensurePanel`）。这里保留的是幂等兜底。
+    /// **这个"不存在"是常态**：`hidePopover` 是隐藏即销毁（见其注释——复用
+    /// 旧窗口跨 Space 会落回老 Space），所以几乎每次弹出都走这里的建窗分支，
+    /// 新窗口的**首次上屏**必进当前活跃 Space。显示中切换 provider（换
+    /// rootView 重摆内容）才走复用分支。
     func ensurePopoverPanel() -> (NSPanel, NSHostingView<AnyView>) {
         if let popoverPanel, let popoverHostingView {
             return (popoverPanel, popoverHostingView)
         }
-        return makePopoverPanel()
-    }
 
-    /// 真正建 popover 面板。
-    ///
-    /// 从 `ensurePopoverPanel` 里拆出来，是因为 dock 建窗要**主动**调它把浮层一起
-    /// 建出来，而那条路径不需要返回值——两者共用同一个建窗体，避免"建两遍窗口
-    /// 工程"这种必然漂移的分叉。
-    @discardableResult
-    func makePopoverPanel() -> (NSPanel, NSHostingView<AnyView>) {
         let popover = NSPanel(
             contentRect: .init(x: 0, y: 0, width: 340, height: 200),
             styleMask: [.borderless, .nonactivatingPanel],
