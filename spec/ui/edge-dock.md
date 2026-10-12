@@ -1151,4 +1151,4 @@ default has to preserve it — defaulting to off would put a dock inside every f
 window for every existing user. Because the setting can be flipped while the user is
 already fullscreen, a policy change re-probes instead of reusing the cached verdict.
 
-> 核对基线：2026-10-12 · 代码 2af536b
+> 核对基线：2026-10-12 · 代码 bcf686f
