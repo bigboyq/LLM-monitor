@@ -565,32 +565,40 @@ onto the popover keeps it open — and the popover's host status is looked up by
 **provider ID**, not array index, because the projection filters out disabled
 providers and the two indices can drift apart.
 
-#### Both windows are born in the same Space
+#### The popover is destroyed on hide, rebuilt on show
 
-The popover panel is created in `EdgeDockController+Window.ensurePanel()` —
-**together with the dock, not on first hover**. `makePopoverPanel()` holds the
-window engineering and is called from there; `ensurePopoverPanel()` keeps only the
-idempotent "give me the pair" accessor that `updatePopover` uses, so the window
-setup still exists in exactly one place.
+The popover panel's lifetime is **one display session**: `hidePopover()` orders
+out *and* releases the panel (`popoverPanel` / `popoverHostingView` set to `nil`),
+and the next `updatePopover` rebuilds it through `ensurePopoverPanel()`. Showing
+while already visible (switching providers, status-broadcast re-layouts) reuses
+the window and only swaps the root view — no rebuild, no flash.
 
-The reason is Space membership, and it is not about latency. A window's Space
-affiliation is fixed **when it is created**; a popover built lazily on the first
-hover is born into whichever Space happened to be current at that moment, and
-nothing ever re-raises it after a Space switch — `activeSpaceDidChange` only runs
-the fullscreen verdict, and `evaluateFullscreen` returns early when that verdict
-does not flip, so a Space change that is not a fullscreen transition does
-literally nothing. The popover is then stranded on the old Space: `popoverFrame`
-computes a perfectly correct frame, and the card stays invisible until the user
-swipes back to the Space it was born on.
+The reason is Space membership, and the failure signature is specific: the card
+renders at a perfectly correct frame, the show path runs to completion, yet the
+current Space shows nothing — swipe to another Space and the card is sitting
+there, exactly where it was told to appear. That is "ordered but not on-screen":
+reusing one `NSPanel` across `orderOut` → `orderFront` cycles, once Spaces have
+switched in between, lands the window back in the Space of its **last on-screen
+appearance**, and `orderFrontRegardless` does not move it. A window that has
+never been on screen has no history Space to fall back to, so "every show is a
+first on-screen appearance" must land in the **current** active Space. The dock
+itself never had this bug because it stays ordered continuously (every status
+broadcast re-runs `orderFrontRegardless()`), so its Space tracking is never
+interrupted.
 
-Creating it alongside the dock puts both windows in the same already-settled
-Space, so the popover **inherits the dock's Space affiliation**. The two panels
-already carry an identical `collectionBehavior`
-(`[.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]`), so no
-flag distinguishes them — only *when they were created* did. The dock never had
-this bug precisely because it is built inside `reconcile` and re-runs
-`orderFrontRegardless()` on every status broadcast, which repairs its ordering
-continuously.
+Two approaches were tried and one was falsified on 2026-10: pre-creating the
+popover alongside the dock in `ensurePanel()` ("inherit the dock's Space
+affiliation") did **not** fix it — the user reproduced the identical symptom on
+that build, proving creation time is not what decides Space placement. That
+pre-creation was reverted; the destroy-on-hide rule above is the current design.
+
+Because "ordered" and "on-screen" are different facts, the show path logs the
+distinction (`EdgeDockController+Popover.logPopoverOnscreen`): immediately after
+`orderFrontRegardless` and again 0.3s later it checks the window number against
+`CGWindowList.optionOnScreenOnly` and logs
+`popover show 目标=(…) winNo=N 上屏=true/false`. `上屏=false` is the hard
+evidence of a Space-placement miss; without it this failure is indistinguishable
+from "nothing happened" — the popover had no logging at all before 2026-10.
 
 A corollary worth remembering if this ever misbehaves again: re-hovering the
 **same** circle does not retry. `probeMouse` calls `scheduleSelection` only when
@@ -1151,4 +1159,4 @@ default has to preserve it — defaulting to off would put a dock inside every f
 window for every existing user. Because the setting can be flipped while the user is
 already fullscreen, a policy change re-probes instead of reusing the cached verdict.
 
-> 核对基线：2026-10-12 · 代码 bcf686f
+> 核对基线：2026-10-13 · 代码 fc29e0b
