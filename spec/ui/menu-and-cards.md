@@ -210,11 +210,13 @@ source is scanning (per-card `effectiveLocalUsageFreshness`, which already resol
 back to `MM-dd HH:mm` across midnight) from the latest `scannedAt` across those cards.
 Both values are computed once in `HarnessTodaySummary.summarize`, so the view never
 walks `statuses` itself. It is the **bare-text variant** of `LocalUsageFreshnessBadge`
-(same state machine, same `.secondary` grey, no 「更新于」 prefix, no capsule
-background) — the number row has no width budget for a capsule: its segments are all
+(same state machine, same `.secondary` grey, no capsule background — since 2026-10-13
+the badge dropped its 「更新于」 prefix too, so both skins render the same bare clock)
+— the number row has no width budget for a capsule: its segments are all
 fixed-width or greedy, and a capsule there would push the mixed-currency total into a
-second line. The two skins are now literally one decision: both read a shared private
-`LocalUsageFreshnessState`, so the state judgement and the clock text (including the
+second line. The two skins are now literally one decision: both read a shared
+`LocalUsageFreshnessState` (internal so state-level tests can pin the bare clock), so
+the state judgement and the clock text (including the
 `MM-dd HH:mm` midnight degradation) are written once and only the wrapping differs. Both
 public types and their interfaces are unchanged. The bucket bar below it therefore owns
 its **whole row** (no badge at its tail), which also widens the three buckets' read. With
@@ -385,6 +387,24 @@ The menu footer contains:
 `ProviderCardView` 现在只有**一个**渲染宿主形态：边缘状态窗的 provider 详情浮层，
 以及菜单底部 provider 兜底行 hover 出来的那张卡（两者都固定 `.alwaysVisible`）。
 菜单内容区是客户端视角，不再渲染 provider 卡，因此这张卡没有"菜单形态"了。
+
+**卡上两处时间戳统一为裸 "hh:mm"，点击即刷新（2026-10-13）**：headerContent 右侧的
+`ProviderStateLabel` 与段3 标题行的 `LocalUsageFreshnessBadge` 都是裸 `HH:mm`
+（徽章去掉「更新于 」前缀，`LocalUsageFreshnessState.content()` 随之删除前缀参数；
+tooltip 均为 headerBar 刷新按钮同款文案「立即刷新全部」）。点击任一处触发与
+headerBar「立即刷新全部」**同源**的强制刷新（`AppState.refreshAll`，含
+`triggerImmediateScanAll` 用量补拍；在飞事务由 `beginExternalJob` 闸门合并，反馈交给
+既有状态胶囊自然变化）。动作经环境键 `\.cardManualRefreshAction: (() -> Void)?`
+传递（默认 `nil` = 无操作，只读渲染免注入）——`ProviderCardView` 是 `Equatable`
+值语义视图，不能携带闭包存储属性。注入链路：菜单兜底行走
+`MenuContentView.refreshAllFromMenu` → `HarnessUsageMenuView` →
+`ProviderStatusStripView.onRefreshAll`，在 detail 闭包内挂上卡（浮层宿主是
+`HoverPanelController` 自己的 NSHostingView，外层环境进不来，只有随视图显式注入的
+键值能跨宿主存活，与 `\.hoverRevealMode` 同因）；dock 浮层由
+`EdgeDockController+Popover` 的 `popoverContent` 用 controller 经 `attach(state:)`
+持有的 `AppState` 注入。手势挂在 `ProviderCardView` 的两个使用点上，**不进**
+`ProviderStateLabel` 内部——兜底行本体复用该视图做 headline，行级已有自己的
+tap（刷新单个 provider），手势进视图内部会打架。
 
 `ProviderCardView` 是 thin coordinator，额度行、浮层、图表和账号详情按职责分文件维护；body 的派生值（投影 / 额度窗口快照 / 「今」行 / 「闲」行）收在 `Views/ProviderCardDerived.swift` 的值键 memo 里（`Models/DerivedValueMemo.swift`），只有输入真的变了才重算：
 - `QuotaViews.swift` — 所有 quota 行 / 进度条 / 重置卡 / `EquivalentQuotaAllocation`

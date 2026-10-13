@@ -342,7 +342,9 @@ struct LocalUsageLegendDot: View {
 ///
 /// 两个宿主要的是逐字一致的文案与相同的空态语义，所以状态判定只在这里做一遍；
 /// 皮肤（胶囊 / 裸文本）只决定「怎么包」，不决定「出什么」。
-private enum LocalUsageFreshnessState: Equatable {
+/// 保持 internal（而非 private）：状态级文案断言（裸时间、空态不占位）直接钉在
+/// 它身上，同 `HarnessModelRowView` 为排版预算断言保持 internal 的理由。
+enum LocalUsageFreshnessState: Equatable {
     /// 在扫描：迷你进度圈 + 「计算中…」
     case scanning
     /// 扫出过：已按 `formatClock` 格式化的时间
@@ -365,11 +367,8 @@ private enum LocalUsageFreshnessState: Equatable {
     /// 多出空白、标题可用宽度被悄悄吃掉。真正不存在的状态就不该占位。
     var isPresent: Bool { self != .absent }
 
-    /// - Parameter clockPrefix: 时间前缀。胶囊版写「更新于 」，裸文本版传空串——
-    ///   这是两个宿主唯一允许不同的文案（裸文本那格没有胶囊的宽度预算，见
-    ///   `LocalUsageFreshnessText` 的说明）。扫描中与空态不受它影响。
     @ViewBuilder
-    func content(clockPrefix: String) -> some View {
+    func content() -> some View {
         switch self {
         case .scanning:
             HStack(spacing: 5) {
@@ -379,7 +378,7 @@ private enum LocalUsageFreshnessState: Equatable {
             .font(MenuTypography.badge)
             .foregroundStyle(.secondary)
         case .updated(let clock):
-            Text(clockPrefix + clock)
+            Text(clock)
                 .font(MenuTypography.badge)
                 .foregroundStyle(.secondary)
         case .absent:
@@ -388,7 +387,8 @@ private enum LocalUsageFreshnessState: Equatable {
     }
 }
 
-/// 7 天用量的数据新鲜度：扫描中 / 更新于 `HH:mm`，**胶囊样式**。
+/// 7 天用量的数据新鲜度：扫描中 / 裸 `HH:mm`，**胶囊样式**（2026-10-13 起与
+/// header 的 `ProviderStateLabel` 统一为裸时间，不再带「更新于」前缀）。
 ///
 /// 两个宿主放的位置不同、内容相同：菜单放在图表自己那行标题的右侧；dock 的详情
 /// 浮层把标题提到了卡片外，所以放在组标题「最近7天token用量」那一行的右侧——
@@ -402,7 +402,7 @@ struct LocalUsageFreshnessBadge: View {
     var body: some View {
         if state.isPresent {
             capsule {
-                state.content(clockPrefix: "更新于 ")
+                state.content()
             }
         }
     }
@@ -423,11 +423,12 @@ struct LocalUsageFreshnessBadge: View {
 
 /// `LocalUsageFreshnessBadge` 的**裸文本**变体：状态机与颜色语义与胶囊版完全一致
 /// （扫描中 → 迷你进度圈 + 「计算中…」；扫出过 → `formatClock` 时间；从没扫过 →
-/// 整个视图不渲染），只是**去掉**「更新于」前缀与胶囊底色。
+/// 整个视图不渲染），只是**去掉**胶囊底色（2026-10-13 起徽章同样不带「更新于」
+/// 前缀，两个皮肤只剩包装上的差别）。
 ///
 /// 存在的理由：菜单今日合计的数字行里四段数字全是定宽或撑满（见
 /// `HarnessUsageMenuView.todayOverview`），行尾那格只有放**时间本身**的预算——
-/// 胶囊两侧 12pt padding 加前缀会把混币价值挤到折行。悬浮窗 7 天卡等既有宿主
+/// 胶囊两侧 12pt padding 会把混币价值挤到折行。悬浮窗 7 天卡等既有宿主
 /// 仍用胶囊版（`LocalUsageFreshnessBadge`），两边互不影响。
 struct LocalUsageFreshnessText: View {
     let scannedAt: Date?
@@ -436,7 +437,7 @@ struct LocalUsageFreshnessText: View {
     @ViewBuilder
     var body: some View {
         if state.isPresent {
-            state.content(clockPrefix: "")
+            state.content()
         }
     }
 

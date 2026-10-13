@@ -64,6 +64,23 @@ enum ProviderCardLayout {
     // 形态，届时是**恢复分支**而不是从死代码里挑。
 }
 
+/// PopWindow 卡片两处时间戳（headerContent 的 `ProviderStateLabel`、dockSectionTitle
+/// 的 `LocalUsageFreshnessBadge`）的点击动作：与菜单 headerBar「立即刷新全部」同源的
+/// 强制刷新（`AppState.refreshAll`，含 `triggerImmediateScanAll` 的用量补拍；在飞事务
+/// 由 `beginExternalJob` 闸门合并，无需额外防抖状态）。默认 `nil`——nil 时手势等于
+/// 无操作，只读渲染（测试 / 预览）无需注入。闭包经环境键传递而不是存储属性：
+/// `ProviderCardView` 是 `Equatable` 值语义视图，不能携带闭包成员。
+private struct CardManualRefreshActionKey: EnvironmentKey {
+    static let defaultValue: (() -> Void)? = nil
+}
+
+extension EnvironmentValues {
+    var cardManualRefreshAction: (() -> Void)? {
+        get { self[CardManualRefreshActionKey.self] }
+        set { self[CardManualRefreshActionKey.self] = newValue }
+    }
+}
+
 /// provider 卡片 — 一个 provider 的全部信息
 ///
 /// `Equatable`：卡片渲染依赖 `status`（值类型）**和** `@Environment(\.hoverRevealMode)`
@@ -72,17 +89,20 @@ enum ProviderCardLayout {
 /// 的 `.equatable()`，任一 provider 的任一状态变化只会重算真正变化的那几张卡，
 /// 而不是整屏菜单面板。
 ///
-/// ⚠️ `==` 只比较 `status`，**不**比较 `revealMode` —— 它是 Environment，取不到。
-/// 保留这条注释是因为比较仍然只按 `status` 走：菜单里已无 provider 卡，而唯一两个
-/// 宿主（dock 浮层、菜单兜底行的 hover 卡）都是每次重建 `rootView` / 直接新建视图，
-/// 不走任何跨帧缓存。将来若有人在仍可能出现两种 mode 的地方加 `.equatable()`，
-/// 就必须把 `revealMode` 也纳入比较。
+/// ⚠️ `==` 只比较 `status`，**不**比较 `revealMode` / `cardManualRefreshAction` ——
+/// 它们是 Environment，取不到。保留这条注释是因为比较仍然只按 `status` 走：菜单里
+/// 已无 provider 卡，而唯一两个宿主（dock 浮层、菜单兜底行的 hover 卡）都是每次
+/// 重建 `rootView` / 直接新建视图，不走任何跨帧缓存。将来若有人在仍可能出现两种
+/// mode 的地方加 `.equatable()`，就必须把它们也纳入比较。
 struct ProviderCardView: View, Equatable {
     let status: ProviderStatus
 
     /// 「今」行取哪一天：宿主注入的展示时钟（随浮层显隐起停），与卡内其它
     /// 倒计时/新鲜度消费者同一个 now，不取渲染时的墙钟。
     @Environment(\.displayDate) private var displayDate
+
+    /// 两处时间戳的点击刷新动作（见 `CardManualRefreshActionKey`）。
+    @Environment(\.cardManualRefreshAction) private var cardManualRefreshAction
 
     // 卡片内容层四周的内边距搬到了 `LayoutMetrics.cardContentPadding`：
     // `EdgeDockTheme.popoverWidth` 推导宽度时也要读它，声明留在这个 View 里会
@@ -120,7 +140,7 @@ struct ProviderCardView: View, Equatable {
     /// 右侧是刷新时间/状态），套餐 pill 已从 header 挪进段1 的账号行
     /// （`QuotaWindowAccountInfoRow`）；**账号行本身不加标题**。段2 的段落标题
     /// 「Plan详情」画在卡内（`planModules` 开头）；标题 2 是段3 的
-    /// 「最近7天token用量」，右侧同一行放数据新鲜度（更新于 / 计算中…）——
+    /// 「最近7天token用量」，右侧同一行放数据新鲜度（时间 / 计算中…）——
     /// 段3 标题在卡外，段2 标题在卡内，两者都是 13pt 卡片标题级或 11pt 段落级，
     /// 压过模块标题（10pt secondary）。
     ///
@@ -311,10 +331,14 @@ struct ProviderCardView: View, Equatable {
                 .font(MenuTypography.cardTitle)
                 .foregroundStyle(Color.primaryLabel)
             Spacer(minLength: 8)
+            // 点击刷新与 headerContent 的 `ProviderStateLabel` 同一动作、同一来源
+            // （`\.cardManualRefreshAction`）；手势同样挂在卡片这个使用点。
             LocalUsageFreshnessBadge(
                 scannedAt: projection.scannedAt,
                 isScanning: status.isScanningLocalUsage || projection.localUsageFreshness == .scanning
             )
+            .onTapGesture { cardManualRefreshAction?() }
+            .help("立即刷新全部")
         }
         .padding(.top, 4)
     }
@@ -373,7 +397,13 @@ struct ProviderCardView: View, Equatable {
                     .scaleEffect(0.55)
                     .frame(width: 14, height: 14)
             } else {
+                // 手势挂在**使用点**而不是 `ProviderStateLabel` 内部：兜底行本体
+                // 复用同一视图做 headline，行级已有自己的 tap（刷新单个 provider），
+                // 手势进视图内部会和它打架。点击 = 与 headerBar「立即刷新全部」
+                // 同源的强制刷新；nil 时等于无操作。
                 ProviderStateLabel(status: status)
+                    .onTapGesture { cardManualRefreshAction?() }
+                    .help("立即刷新全部")
             }
         }
     }

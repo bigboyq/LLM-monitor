@@ -1127,8 +1127,11 @@ boundary replacing the old hover divider between quota (now) and local usage
 - a numeric table: 日期 / R/T / Input / Cache / Output / Reason (plus 价值 when a
   per-day price estimate exists)
 - freshness lives in the section title row (`dockSectionTitle`): 「最近7天token用量」
-  + `LocalUsageFreshnessBadge` ("更新于 HH:MM" from `scannedAt`, or 计算中… while
-  scanning)
+  + `LocalUsageFreshnessBadge` (bare `HH:MM` from `scannedAt` — the 「更新于」 prefix
+  was dropped 2026-10-13 to match the header timestamp, or 计算中… while scanning).
+  Both card timestamps (the header `ProviderStateLabel` and this badge) are tappable
+  and trigger the same forced refresh as the menu headerBar's 立即刷新全部
+  (`AppState.refreshAll` via `\.cardManualRefreshAction`, default nil = no-op)
 
 Source: `AntigravityLocalUsage.dailyTokenUsage` (always the last 7 local days,
 missing days back-filled), summed from every session's events whose timestamp
@@ -1170,7 +1173,7 @@ Gemini Models                          5h 100%  周 85%   <weekly reset time>
 Claude Models                          5h 100%  周 100%  <weekly reset time>
 [weekly bar in 2 segments]
 
-───────────────────────────── 最近7天token用量          更新于 02:00
+───────────────────────────── 最近7天token用量          02:00
 [Input] [Cache] [Output] [Reason] + 7-day stacked bars + usage table
 ```
 

@@ -1,5 +1,6 @@
 import XCTest
 import Foundation
+import SwiftUI
 @testable import LLM_monitor
 
 /// `ProviderStateLabel` 的文案与新鲜度呈现规则。对应 `ProviderStateLabel`。
@@ -88,6 +89,29 @@ final class ProviderStateLabelTests: XCTestCase {
 
         // 与其它状态区分得开（胶囊是这一行唯一携带的信息）。
         XCTAssertNotEqual(presentation.title, ProviderStateLabel(status: Self.okStatus()).presentation(at: Date()).title)
+    }
+
+    // MARK: - PopWindow 卡时间戳（2026-10-13 统一裸时间 + 点击刷新）
+
+    /// 卡上两处时间戳的点击动作经环境键 `\.cardManualRefreshAction` 注入，默认
+    /// **nil**：只读渲染（测试 / 预览）不注入时手势等于无操作，`ProviderCardView`
+    /// 也因此能保持 `Equatable` 值语义、不携带闭包存储属性。
+    func testCardManualRefreshActionDefaultsToNil() {
+        XCTAssertNil(EnvironmentValues().cardManualRefreshAction)
+    }
+
+    /// 新鲜度徽章与裸文本同源的状态机：`updated` 携带的就是**裸** `formatClock`
+    /// 时间。徽章已无「更新于」前缀可加（`content()` 的前缀参数随两处宿主统一
+    /// 裸时间一并删除），与 header 的 `ProviderStateLabel` 口径一致。
+    func testLocalUsageFreshnessStateCarriesBareClock() {
+        let scannedAt = Date(timeIntervalSince1970: 1_720_000_000)
+        XCTAssertEqual(
+            LocalUsageFreshnessState(scannedAt: scannedAt, isScanning: false),
+            .updated(Formatters.formatClock(scannedAt)),
+            "updated 必须是裸 formatClock 输出，不得在状态层拼前缀"
+        )
+        XCTAssertEqual(LocalUsageFreshnessState(scannedAt: nil, isScanning: false), .absent)
+        XCTAssertEqual(LocalUsageFreshnessState(scannedAt: scannedAt, isScanning: true), .scanning)
     }
 
     // MARK: - helpers

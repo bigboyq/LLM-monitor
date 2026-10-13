@@ -46,6 +46,7 @@ struct HarnessUsageMenuView: View {
             }
             ProviderStatusStripView(
                 snapshot: providerStrip,
+                onRefreshAll: onRefreshAll,
                 onRefreshProvider: onRefreshProvider,
                 isRefreshJobActive: isRefreshJobActive
             )
@@ -87,7 +88,7 @@ struct HarnessUsageMenuView: View {
                     .truncationMode(.tail)
                     .frame(maxWidth: .infinity, alignment: .trailing)
                 // 行尾刷新时间是**裸文本**（HH:mm，跨天退化成 `MM-dd HH:mm`），不带
-                // 「更新于」前缀与胶囊底色——数字行没有胶囊的宽度预算。颜色语义与
+                // 胶囊底色——数字行没有胶囊的宽度预算。颜色语义与
                 // 「计算中…」状态由 `LocalUsageFreshnessText` 保持在悬浮窗 7 天卡那枚
                 // 胶囊（`LocalUsageFreshnessBadge`）的同款。时间自然宽、不压缩：空间
                 // 不足时先被截断的是上面的混币价值（tail），时间格始终完整可读。
@@ -247,6 +248,10 @@ struct HarnessSectionView: View {
 /// - **hover** → 弹完整卡，纯只读，**不触发任何网络请求**。
 struct ProviderStatusStripView: View {
     let snapshot: ProviderStatusStrip.Snapshot
+    /// hover 卡时间戳的点击动作：与 headerBar「立即刷新全部」同源的强制刷新
+    /// （`MenuContentView.refreshAllFromMenu` → `AppState.refreshAll`）。经环境键
+    /// `\.cardManualRefreshAction` 注进 hover 卡，跟随 detail 闭包进入浮层宿主。
+    var onRefreshAll: () -> Void = {}
     /// 单个 provider 的「刷新该 Provider」。参数是 providerID，实际刷新路径由
     /// 宿主（`MenuContentView` → `AppState.refreshOne`）决定，这一层不碰网络。
     var onRefreshProvider: (String) -> Void = { _ in }
@@ -378,6 +383,12 @@ struct ProviderStatusStripView: View {
             ProviderCardView(status: entry.status)
                 .environment(\.hoverRevealMode, Self.cardRevealMode)
                 .environment(\.quotaWindowSegmentEditable, false)
+                // 卡上两处时间戳的点击刷新。必须挂在 detail 闭包内：hover 卡在
+                // `HoverPanelController` 自己的 NSHostingView 里渲染，外层
+                // （MenuContentView）的环境进不来，只有随视图显式注入的键值能
+                // 跨宿主存活——与上面两个环境键同一原因。动作来自 `onRefreshAll`
+                //（`MenuContentView` 注入的「立即刷新全部」），与 headerBar 同源。
+                .environment(\.cardManualRefreshAction, onRefreshAll)
                 .frame(width: Self.cardWidth)
         }
         .onTapGesture(perform: Self.tapHandler(for: item, onRefresh: onRefreshProvider))

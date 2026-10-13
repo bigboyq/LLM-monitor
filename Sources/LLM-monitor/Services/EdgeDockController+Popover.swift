@@ -167,12 +167,26 @@ extension EdgeDockController {
     /// 倒计时 / 新鲜度胶囊）会读到环境键 `static let` 的进程级兜底值——进程内
     /// 只求值一次，永远冻结。时钟由 `popoverDisplayClock` 持有，随浮层显隐
     /// start/stop（`updatePopover` 成功路径 / `hidePopover`）。
+    ///
+    /// `\.cardManualRefreshAction` 同理必须在这里注入：卡上两处时间戳的点击刷新
+    /// 与菜单 headerBar「立即刷新全部」同源（`AppState.refreshAll`，含
+    /// `triggerImmediateScanAll` 的用量补拍；在飞事务由 `beginExternalJob` 闸门
+    /// 合并）。`state` 由 `attach(state:configStore:)` 注入，缺席（teardown 后）
+    /// 时为 nil，手势等于无操作。
     private func popoverContent<C: View>(_ content: C) -> some View {
         DisplayClockScope(clock: popoverDisplayClock) {
             content
                 .environment(\.hoverRevealMode, .alwaysVisible)
                 .environment(\.quotaWindowSegmentEditable, true)
+                .environment(\.cardManualRefreshAction, cardManualRefreshAction)
         }
+    }
+
+    /// 点击刷新动作。每次 `updatePopover` 重建 popover 内容时重新求值，闭包只
+    /// 强持有 `state` 本身（AppState 是 app 级长生命周期对象），不持有 self。
+    private var cardManualRefreshAction: (() -> Void)? {
+        guard let state else { return nil }
+        return { Task { await state.refreshAll() } }
     }
 
     /// 取 popover 面板与其宿主视图；不存在则建。
