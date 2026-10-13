@@ -1332,4 +1332,4 @@ This script:
 3. calls `RetrieveUserQuotaSummary`
 4. prints or writes the raw JSON
 
-> 核对基线：2026-10-13 · 代码 9866830
+> 核对基线：2026-10-13 · 代码 ae7fe3d
