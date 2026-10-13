@@ -439,7 +439,7 @@ Row-level tint rules:
 - minimax rows use a magenta brand tint
 - ChatGPT rows use a green brand tint
 - Antigravity uses blue for `Gemini Models`
-- Antigravity uses orange for `Claude and GPT models`
+- Antigravity uses orange for `Claude Models`（raw id `claude_and_gpt_models`）
 
 ## Card Header
 
@@ -560,9 +560,9 @@ look for a hover route to this data — the card carries it inline.
 
 - 卡片标题 = `Google Antigravity`（provider 名），无 pill。
 - 账号行（第一段 Account Info）= 登录邮箱（来自 `GetUserStatus`）+ 套餐 pill（`planLabel` 去掉 `Google ` / `Antigravity ` 前缀，让 `Google AI Pro` → `AI Pro`）。两者皆缺时整行不画。这是一行**常驻**内容：菜单的 provider 卡删除前，邮箱与套餐曾按 provider 分三路包在标题行的 `HoverInfoRow` 浮层里；现在浮层 `ignoresMouseEvents = true`，那个折叠区展不开，所以直接画成常驻行——没有「重新进入 hover 浮层」这条路径了。
-- `Gemini Models` and `Claude and GPT models` are shown as separate model groups inside one provider card.
-- 两组都把 5h / 周收为一条：Gemini 按 6 个等价额度分段，Claude and GPT 按 1 个（`weeklyEquivalentMultiplier` = 6 / 1，周窗口即 1 × 5h 额度）。
-- **`Claude and GPT models` 不参与聚合读数**：状态栏 iconDuo、边缘窗圆环与 provider 综合健康度经 `QuotaInfo.aggregateQuotaModels(providerKind:)` 过滤，`ModelQuota.isExcludedFromQuotaAggregation` 把整组排除（与 minimax `video` 同规则）。quota 以整组为一个池，无法只排 Claude 保留 GPT；卡片两组行照常展示，通知检测不受影响。
+- `Gemini Models` and `Claude Models` are shown as separate model groups inside one provider card.
+- 两组都把 5h / 周收为一条：Gemini 按 6 个等价额度分段，Claude Models 按 2 个（`weeklyEquivalentMultiplier` = 6 / 2，周窗口即 2 × 5h 额度；2026-10-13 从 1 调回 2，2026-10 初曾从 3 下调到 1）。
+- **`Claude Models`（`claude_and_gpt_models`）不参与聚合读数**：状态栏 iconDuo、边缘窗圆环与 provider 综合健康度经 `QuotaInfo.aggregateQuotaModels(providerKind:)` 过滤，`ModelQuota.isExcludedFromQuotaAggregation` 把整组排除（与 minimax `video` 同规则）。quota 以整组为一个池，无法只排 Claude 保留 GPT；卡片两组行照常展示，通知检测不受影响。
 - The countdown suffix uses `Formatters.formatResetSuffix`'s compact ladder (e.g. `3h41m`), the same reset-suffix formatter every provider row shares.
 - The countdown follows the model tint unless quota is low enough to trigger warning or critical colors.
 
@@ -687,7 +687,7 @@ Quota summary line:
 文字，标出这一行**实际还能用多少**。它解决的是同一行里条与字打架：分段条首格画的是
 `min(5h, 周×N)`，而 `primaryPercent` 始终是**原始** 5h，所以周更紧时读者会看到
 "条已经缩到 30%、文字还写着 `5h 100%`"（典型：ChatGPT 周只剩 5%、N=6；antigravity
-Claude/GPT 组 N=1）。括号把差额摆到明面上。
+Claude Models 组 N=2）。括号把差额摆到明面上。
 
 | Rule | Value |
 |---|---|

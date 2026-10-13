@@ -333,7 +333,9 @@ Current normalized internal names:
 | Group | Internal `modelName` | Display name |
 |---|---|---|
 | `Gemini Models` | `gemini_models` | `Gemini Models` |
-| `Claude and GPT models` | `claude_and_gpt_models` | `Claude and GPT models` |
+| `Claude and GPT models` | `claude_and_gpt_models` | `Claude Models` |
+
+Display name is `Claude Models` as of 2026-10-13 — the group effectively only has Claude left (GPT-OSS is about to be delisted and is no longer in use), so this adopts the new naming early; the wire displayName is still `Claude and GPT models`.
 
 Returned `ModelQuota` values keep count fields at `0`, because the current local RPC only exposes fractions and reset times.
 
@@ -1147,14 +1149,14 @@ Current row tints:
 | Group | Tint |
 |---|---|
 | `Gemini Models` | blue |
-| `Claude and GPT models` | orange |
+| `Claude Models` | orange |
 
 Both groups use a combined quota row: the metadata line is
 `<model name> … 5h <pct> 周 <pct> <reset time>` (name leading, both window
 readings plus the binding window's reset time clustered at the line end), and the
 bar is segmented by the group's weekly equivalent multiplier — 6 for
-`Gemini Models`, 1 for `Claude and GPT models` (2026-10: the Claude/GPT weekly
-window is 1 × the 5h allowance, down from 3). A 1-segment bar has no equivalent-
+`Gemini Models`, 2 for `Claude Models` (2026-10-13 从 1 调回 2；2026-10 初曾从 3 下调到 1，
+周窗口 = 2 × 5h 额度). A 1-segment bar has no equivalent-
 weekly reading to draw, and its tooltip says 单一窗口可用进度 instead of
 "第 1 格为当前窗口余量；后续 N-1 格为等价周额度余量".
 
@@ -1165,8 +1167,8 @@ alice@example.com  [AI Pro]
 Gemini Models                          5h 100%  周 85%   <weekly reset time>
 [weekly bar in 6 segments]
 
-Claude and GPT models                  5h 100%  周 100%  <weekly reset time>
-[weekly bar in 1 segment]
+Claude Models                          5h 100%  周 100%  <weekly reset time>
+[weekly bar in 2 segments]
 
 ───────────────────────────── 最近7天token用量          更新于 02:00
 [Input] [Cache] [Output] [Reason] + 7-day stacked bars + usage table

@@ -172,8 +172,8 @@ final class EdgeDockProjectionTests: EdgeDockTestCase {
         XCTAssertEqual(entry.intervalFraction ?? -1, 0.60, accuracy: 0.0001)
     }
 
-    /// antigravity 的 Claude/GPT 组周倍率 2026-10 从 3 下调到 1：周剩余 × 1 就是周剩余，
-    /// 这是「周比 5h 更紧」最典型的场景——5h 剩 90% 但周只剩 30%，实际只能用 30%。
+    /// antigravity 的 Claude/GPT 组周倍率 2026-10-13 从 1 调回 2（2026-10 初曾从 3 下调到 1）：
+    /// 周剩余 × 2 = 60% 仍比原始 5h 的 90% 更紧——「周比 5h 更紧」的场景，实际只能用 60%。
     func testOuterRingUsesEffectiveQuotaForAntigravityClaudeGptGroup() {
         let status = makeStatus(id: "antigravity", kind: .antigravity, state: .ok(makeInfo([
             makeModel(
@@ -185,8 +185,8 @@ final class EdgeDockProjectionTests: EdgeDockTestCase {
         ])))
         XCTAssertEqual(
             EdgeDockProjection.intervalFraction(status, at: Self.makeNow) ?? -1,
-            0.30, accuracy: 0.0001,
-            "周 30% × N=1 = 30% < 原始 5h 90%，外环取有效额度 30%"
+            0.60, accuracy: 0.0001,
+            "周 30% × N=2 = 60% < 原始 5h 90%，外环取有效额度 60%"
         )
         XCTAssertEqual(
             EdgeDockProjection.rawIntervalFraction(status) ?? -1,
