@@ -250,7 +250,7 @@ enum ProviderCardDerivedValues {
         projection: ProviderUsageProjection
     ) -> QuotaWindowUsageSnapshot {
         let quotaInfo = status.lastSuccess
-        let models = quotaInfo?.activeModels ?? []
+        let models = quotaInfo?.aggregateQuotaModels(providerKind: status.kind) ?? []
         let snapshots = models.map { model -> QuotaWindowUsageSnapshot in
             // ChatGPT 的窗口用量由 codexUsageDetails 预聚合（再补 OpenCode 来源），
             // 那些样本已被统计过一次，不能再从 samples 重算一遍。

@@ -411,4 +411,147 @@ final class ProviderCardDerivedMemoTests: XCTestCase {
         XCTAssertEqual(cached.todayUsageRow?.cost?.value, fresh.todayUsageRow?.cost?.value)
         XCTAssertEqual(cached.todayUsageRow?.cost?.displayText, fresh.todayUsageRow?.cost?.displayText)
     }
+
+    /// 验证 windowUsageSnapshot 仅包含 aggregateQuotaModels（例如 Antigravity 仅保留 Gemini Models，
+    /// 排除 gemini_argon 与 claude_and_gpt_models），而 todayUsageRow 保留全部模型。
+    func testAntigravityWindowUsageFiltersExcludedGroupsWhileTodayKeepsAll() {
+        let now = Date()
+        let day = Calendar.current.startOfDay(for: now)
+
+        let geminiSample = LocalTokenUsageSample(
+            completedAt: now,
+            modelName: "gemini-3.7-flash",
+            promptID: "gemini-1",
+            inputTokens: 100,
+            cachedInputTokens: 0,
+            outputTokens: 50,
+            reasoningOutputTokens: 0,
+            sourceProviderID: "antigravity"
+        )
+        let argonSample = LocalTokenUsageSample(
+            completedAt: now,
+            modelName: "gemini-4-argon",
+            promptID: "argon-1",
+            inputTokens: 200,
+            cachedInputTokens: 0,
+            outputTokens: 80,
+            reasoningOutputTokens: 0,
+            sourceProviderID: "antigravity"
+        )
+        let claudeSample = LocalTokenUsageSample(
+            completedAt: now,
+            modelName: "claude-sonnet-5.5",
+            promptID: "claude-1",
+            inputTokens: 300,
+            cachedInputTokens: 0,
+            outputTokens: 100,
+            reasoningOutputTokens: 0,
+            sourceProviderID: "antigravity"
+        )
+        let allSamples = [geminiSample, argonSample, claudeSample]
+
+        let daily = LocalDailyTokenUsage(
+            dayStart: day,
+            inputTokens: 600,
+            outputTokens: 230,
+            cacheReadTokens: 0,
+            cacheWriteTokens: 0,
+            reasoningTokens: 0,
+            totalTokens: 830,
+            turns: 3,
+            rounds: 3
+        )
+        let localUsage = AntigravityLocalUsage(
+            today: daily,
+            dailyTokenUsage: [daily],
+            scannedAt: now,
+            sessionCount: 1,
+            eventCount: 3,
+            failedSessionCount: 0,
+            recentSamples: allSamples
+        )
+
+        let geminiModel = ModelQuota(
+            modelName: AntigravityModelKind.geminiModels.rawValue,
+            intervalTotalCount: 100,
+            intervalUsageCount: 0,
+            intervalRemainingPercent: 100,
+            intervalStatus: .present,
+            intervalResetsAt: now.addingTimeInterval(3600),
+            intervalWindowSeconds: 5 * 3600,
+            weeklyTotalCount: 100,
+            weeklyUsageCount: 0,
+            weeklyRemainingPercent: 100,
+            weeklyStatus: .present,
+            weeklyResetsAt: now.addingTimeInterval(7 * 24 * 3600),
+            weeklyWindowSeconds: 7 * 24 * 3600
+        )
+        let argonModel = ModelQuota(
+            modelName: AntigravityModelKind.geminiArgon.rawValue,
+            intervalTotalCount: 0,
+            intervalUsageCount: 0,
+            intervalRemainingPercent: 0,
+            intervalStatus: .absent,
+            intervalResetsAt: nil,
+            intervalWindowSeconds: nil,
+            weeklyTotalCount: 100,
+            weeklyUsageCount: 0,
+            weeklyRemainingPercent: 100,
+            weeklyStatus: .present,
+            weeklyResetsAt: now.addingTimeInterval(4 * 24 * 3600),
+            weeklyWindowSeconds: 7 * 24 * 3600
+        )
+        let claudeModel = ModelQuota(
+            modelName: AntigravityModelKind.claudeAndGptModels.rawValue,
+            intervalTotalCount: 100,
+            intervalUsageCount: 0,
+            intervalRemainingPercent: 100,
+            intervalStatus: .present,
+            intervalResetsAt: now.addingTimeInterval(1800),
+            intervalWindowSeconds: 5 * 3600,
+            weeklyTotalCount: 100,
+            weeklyUsageCount: 0,
+            weeklyRemainingPercent: 100,
+            weeklyStatus: .present,
+            weeklyResetsAt: now.addingTimeInterval(3 * 24 * 3600),
+            weeklyWindowSeconds: 7 * 24 * 3600
+        )
+
+        var status = ProviderStatus(
+            id: ProviderKind.antigravity.providerID,
+            displayName: "Google Antigravity",
+            kind: .antigravity,
+            iconSystemName: "sparkles",
+            accentColor: .antigravity,
+            refreshIntervalSeconds: 300,
+            state: .ok(QuotaInfo(
+                models: [geminiModel, argonModel, claudeModel],
+                resetCredits: nil,
+                planLabel: "AI Pro",
+                accountEmail: "test@example.com",
+                codexUsageDetails: nil,
+                fetchedAt: now
+            ))
+        )
+        status.antigravityLocalUsage = localUsage
+
+        let derived = ProviderCardDerivedValues.resolve(status: status, displayDate: now, now: now)
+
+        // 1. windowUsageSnapshot 仅统计 Gemini Models：
+        //    5h 与 周 窗口仅包含 geminiSample，不包含 argon 和 claude；poolCount = 1
+        XCTAssertEqual(derived.windowUsageSnapshot.poolCount, 1)
+        XCTAssertEqual(derived.windowUsageSnapshot.interval?.usage?.rounds, 1)
+        XCTAssertEqual(derived.windowUsageSnapshot.interval?.usage?.inputTokens, 100)
+        XCTAssertEqual(derived.windowUsageSnapshot.interval?.usage?.outputTokens, 50)
+        XCTAssertEqual(derived.windowUsageSnapshot.weekly?.usage?.rounds, 1)
+        XCTAssertEqual(derived.windowUsageSnapshot.weekly?.usage?.inputTokens, 100)
+        XCTAssertEqual(derived.windowUsageSnapshot.weekly?.usage?.outputTokens, 50)
+        XCTAssertEqual(derived.windowUsageSnapshot.interval?.resetsAt, geminiModel.intervalResetsAt)
+        XCTAssertEqual(derived.windowUsageSnapshot.weekly?.resetsAt, geminiModel.weeklyResetsAt)
+
+        // 2. todayUsageRow 统计今日所有调用：包含 gemini + argon + claude（总计 830 tokens）
+        XCTAssertEqual(derived.todayUsageRow?.metrics.totalTokens, 830)
+        XCTAssertEqual(derived.todayUsageRow?.metrics.input, 600)
+        XCTAssertEqual(derived.todayUsageRow?.metrics.output, 230)
+    }
 }

@@ -1209,6 +1209,10 @@ provider 综合健康度经 `QuotaInfo.aggregateQuotaModels(providerKind:)` 取�
 只以主力 `Gemini Models`（`gemini_models`）代表 Antigravity 的聚合水位；卡片三组行、
 通知检测不受影响。滤后为空的退化场景回退 `activeModels`。
 
+卡片第 2 段「额度窗口用量」表格的 **5h / 周** 同样严格走 `aggregateQuotaModels`，仅统计
+主力 `Gemini Models` 的窗口用量与重置倒计时，不与 Argon / Claude 跨池混淆或被副池的倒计时误导；
+而表格的「**今**」行则取全量日账本，统计今日账号下调用的所有模型（含 Gemini、Argon、Claude）。
+
 ## Error Handling
 
 | Situation | Current behavior |
@@ -1353,4 +1357,4 @@ This script:
 3. calls `RetrieveUserQuotaSummary`
 4. prints or writes the raw JSON
 
-> 核对基线：2026-10-16 · 代码 01d3f4e
+> 核对基线：2026-10-16 · 代码 ac70b39

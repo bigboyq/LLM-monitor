@@ -768,19 +768,21 @@ Data source and calibration:
   （`intervalWindowSeconds`：end 落 0 点 → 4h，其余边界 → 5h）——minimax 窗口贴固定日
   边界 00/05/10/15/20，最后一段 20:00→24:00 只有 4 小时，按 5h 兜底反推会把起点退到
   19:00，把上一窗口最后 1 小时的样本多算进本行（token 与金额双双虚高）。
-- A provider with several model quotas is **summed per window** (`combineWindowUsage`):
-  `modelMatches` already partitions the samples per model quota, so the pools do not
-  overlap. The reset time shown is the **earliest** one, and the table footnote says so
-  whenever more than one pool contributed (`snapshot.poolCount > 1`).
+- A provider with several model quotas determines its **5h / 周 rows** from
+  `QuotaInfo.aggregateQuotaModels(providerKind:)` (`ProviderCardDerivedValues.windowUsageSnapshot`),
+  excluding parked side pools (e.g. minimax's `video`, antigravity's `Claude and GPT models` and `Gemini 4 Argon`)
+  so that the 5h / weekly usage and reset timing strictly match the primary model pool
+  (e.g. `Gemini Models` alone for Antigravity) instead of cross-pool confusion.
+  If multiple unexcluded pools exist, they are **summed per window** (`combineWindowUsage`),
+  the reset time shown is the **earliest** one, and the table footnote says so (`snapshot.poolCount > 1`).
 - The **今 row** (label 「今」 since the fifth round) is provider-level today: the same-day
   bucket aggregate from `ProviderUsageProjection.dailyTokenUsage` (the same source the
   removed `📈 今天 …` summary row read), valued from the same-day samples through
-  `ModelPricingCatalog` — no window math, no GLM off-peak exclusion. Today has no window
-  reset date, so its reset date cell displays `—`. The caliber is a deliberate pair with
-  the rows above: **今 is the day's full actual consumption** (off-peak tasks, Start Plan
-  and unregistered 智谱 plans included — the same caliber as the 7-day chart), while the
-  **5h / 周 rows are the plan's billing caliber** (the whitelist that excludes off-peak and
-  other non-credit tasks, so quota consumption is not overestimated).
+  `ModelPricingCatalog` — no window math, no side-pool exclusion, covering all model calls
+  made today. Today has no window reset date, so its reset date cell displays `—`. The caliber
+  is a deliberate pair with the rows above: **今 is the day's full actual consumption** (all models,
+  off-peak tasks, Start Plan and unregistered 智谱 plans included — the same caliber as the 7-day chart),
+  while the **5h / 周 rows are the plan's billing caliber** (the whitelist that matches the primary quota).
 - The **闲 row** (label 「闲」, `QuotaWindowUsageSection.offPeakRowLabel`) sits after 今 in
   the fixed row order 5h → 周 → 今 → 闲: the off-peak slice of 今 broken out on its own, so
   the 今 − 闲 split is readable inside the table. It is **GLM-only** — constructed by
@@ -1160,4 +1162,4 @@ default has to preserve it — defaulting to off would put a dock inside every f
 window for every existing user. Because the setting can be flipped while the user is
 already fullscreen, a policy change re-probes instead of reusing the cached verdict.
 
-> 核对基线：2026-10-16 · 代码 01d3f4e
+> 核对基线：2026-10-16 · 代码 ac70b39
