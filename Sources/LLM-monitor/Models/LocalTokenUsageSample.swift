@@ -273,11 +273,15 @@ enum LocalUsageSummaryBuilder {
                 || sample.contains("openai")
                 || sample.contains("claude")
                 || sample.contains("gpt")
+            let isArgon = sample.contains("argon")
             if quota == AntigravityModelKind.claudeAndGptModels.rawValue {
                 return is3P
             }
+            if quota == AntigravityModelKind.geminiArgon.rawValue {
+                return isArgon
+            }
             if quota == AntigravityModelKind.geminiModels.rawValue {
-                return !is3P
+                return !is3P && !isArgon
             }
             return sample == quota
         case .glmCodingPlan:

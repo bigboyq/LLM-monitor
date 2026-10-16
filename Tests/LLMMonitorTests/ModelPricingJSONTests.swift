@@ -61,7 +61,7 @@ final class ModelPricingJSONTests: XCTestCase {
         let catalog = try loadPricingJSON()
         // 定价目录的"改价日"钉在这里：它是**快照基准**，不是"今天"，
         // 所以改 ModelPricing.json 的内容时必须同步改这一行。
-        XCTAssertEqual(catalog.lastUpdated, "2026-10-01")
+        XCTAssertEqual(catalog.lastUpdated, "2026-10-16")
 
         let requiredProviders = ["minimax", "openai", "antigravity", "zhipu", "deepseek"]
         for providerID in requiredProviders {
@@ -357,5 +357,26 @@ final class ModelPricingJSONTests: XCTestCase {
         XCTAssertEqual(luna?.cacheReadPerMillion, 0.01)
         XCTAssertEqual(luna?.outputPerMillion, 0.5)
         XCTAssertEqual(luna?.modelLabel, "gpt-6-luna")
+    }
+
+    // MARK: - 新增模型：Gemini 4 Argon（推广期定价至 2026-11-30：2.00 / 0.10 / 10.00）
+
+    func testAntigravityGemini4ArgonPricing() {
+        for modelName in [
+            "gemini-4-argon",
+            "gemini-4-argon-low",
+            "gemini-4-argon-medium",
+            "gemini-4-argon-high",
+            "GEMINI-4-Argon-High",
+            "google_gemini_4_argon"
+        ] {
+            let pricing = ModelPricingCatalog.pricing(for: modelName, quotaProviderID: QuotaProviderID.antigravity)
+            XCTAssertNotNil(pricing, modelName)
+            XCTAssertEqual(pricing?.currency, .usd, modelName)
+            XCTAssertEqual(pricing?.inputPerMillion, 2.0, modelName)
+            XCTAssertEqual(pricing?.cacheReadPerMillion, 0.1, modelName)
+            XCTAssertEqual(pricing?.outputPerMillion, 10.0, modelName)
+            XCTAssertEqual(pricing?.modelLabel, modelName, "modelLabel 必须保留样本原始模型名")
+        }
     }
 }

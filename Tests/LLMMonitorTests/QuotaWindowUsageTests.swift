@@ -79,9 +79,14 @@ final class QuotaWindowUsageTests: XCTestCase {
         XCTAssertEqual(excluded.interval?.usage?.rounds, 1)
     }
 
-    /// 多 model provider（Antigravity 两组）按 provider 合计，重置时刻取最早。
+    /// 多 model provider（Antigravity 三组）按 provider 合计，重置时刻取最早，且 Argon 样本与 Gemini 普通样本互斥不重算。
     func testCombineSumsModelPoolsAndTakesTheEarliestReset() {
         let now = Date()
+        let allSamples = [
+            Self.sample(at: now.addingTimeInterval(-600), prompt: "gemini", model: "gemini-3.8-flash-high"),
+            Self.sample(at: now.addingTimeInterval(-450), prompt: "argon", model: "gemini-4-argon-low"),
+            Self.sample(at: now.addingTimeInterval(-300), prompt: "claude", model: "claude-sonnet-5-5-medium")
+        ]
         let gemini = LocalUsageSummaryBuilder.windowUsage(
             model: Self.antigravityModel(
                 name: AntigravityModelKind.geminiModels.rawValue,
@@ -89,7 +94,28 @@ final class QuotaWindowUsageTests: XCTestCase {
                 weeklyResetsAt: now.addingTimeInterval(3 * 86400)
             ),
             providerKind: .antigravity,
-            samples: [Self.sample(at: now.addingTimeInterval(-600), prompt: "gemini", model: "gemini-3-pro")],
+            samples: allSamples,
+            intervalLabel: "5h",
+            weeklyLabel: "周"
+        )
+        let argon = LocalUsageSummaryBuilder.windowUsage(
+            model: ModelQuota(
+                modelName: AntigravityModelKind.geminiArgon.rawValue,
+                intervalTotalCount: 0,
+                intervalUsageCount: 0,
+                intervalRemainingPercent: 0,
+                intervalStatus: .absent,
+                intervalResetsAt: nil,
+                intervalWindowSeconds: nil,
+                weeklyTotalCount: 0,
+                weeklyUsageCount: 0,
+                weeklyRemainingPercent: 85,
+                weeklyStatus: .present,
+                weeklyResetsAt: now.addingTimeInterval(4 * 86400),
+                weeklyWindowSeconds: nil
+            ),
+            providerKind: .antigravity,
+            samples: allSamples,
             intervalLabel: "5h",
             weeklyLabel: "周"
         )
@@ -100,17 +126,21 @@ final class QuotaWindowUsageTests: XCTestCase {
                 weeklyResetsAt: now.addingTimeInterval(5 * 86400)
             ),
             providerKind: .antigravity,
-            samples: [Self.sample(at: now.addingTimeInterval(-300), prompt: "claude", model: "claude-sonnet-4-5")],
+            samples: allSamples,
             intervalLabel: "5h",
             weeklyLabel: "周"
         )
 
-        let merged = LocalUsageSummaryBuilder.combineWindowUsage([gemini, claude])
-        XCTAssertEqual(merged.interval?.usage?.rounds, 2, "两个额度池的用量必须相加，不能只留一个")
-        XCTAssertEqual(merged.weekly?.usage?.rounds, 2)
+        XCTAssertEqual(gemini.weekly?.usage?.rounds, 1, "gemini_models 仅匹配非 Argon 的 Gemini 样本")
+        XCTAssertEqual(argon.weekly?.usage?.rounds, 1, "gemini_argon 仅匹配 Argon 样本")
+        XCTAssertEqual(claude.weekly?.usage?.rounds, 1, "claude_and_gpt_models 仅匹配 3P 样本")
+
+        let merged = LocalUsageSummaryBuilder.combineWindowUsage([gemini, argon, claude])
+        XCTAssertEqual(merged.interval?.usage?.rounds, 2, "有 5h 窗口的两个池（Gemini + Claude）相加")
+        XCTAssertEqual(merged.weekly?.usage?.rounds, 3, "三个周窗口池互斥相加，不重不漏")
         XCTAssertEqual(merged.interval?.resetsAt, now.addingTimeInterval(1 * 3600), "重置时刻取最早的那个")
         XCTAssertEqual(merged.weekly?.resetsAt, now.addingTimeInterval(3 * 86400))
-        XCTAssertEqual(merged.poolCount, 2, "poolCount > 0 时 UI 必须说明这是合计")
+        XCTAssertEqual(merged.poolCount, 3, "poolCount > 0 时 UI 必须说明这是合计")
     }
 
     /// 窗口在、但本地零用量：数据上仍记录"窗口存在、usage 为 nil"（与窗口不存

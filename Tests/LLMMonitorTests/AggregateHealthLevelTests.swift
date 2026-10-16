@@ -443,10 +443,11 @@ final class AggregateHealthLevelTests: XCTestCase {
         XCTAssertEqual(
             makeQuotaStatus(kind: .antigravity, models: [
                 makeWindowedModel(modelName: AntigravityModelKind.geminiModels.rawValue, intervalPercent: 80),
+                makeWindowedModel(modelName: AntigravityModelKind.geminiArgon.rawValue, intervalPercent: 0),
                 makeWindowedModel(modelName: AntigravityModelKind.claudeAndGptModels.rawValue, intervalPercent: 0),
             ]).aggregateHealthLevel(),
             .healthy,
-            "Claude and GPT 组耗尽不参与综合健康度，卡头点只按 gemini 组判定"
+            "Gemini 4 Argon 与 Claude and GPT 组耗尽不参与综合健康度，卡头点只按 gemini 组判定"
         )
     }
 

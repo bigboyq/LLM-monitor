@@ -1,5 +1,5 @@
 {
-  "lastUpdated": "2026-10-01",
+  "lastUpdated": "2026-10-16",
   "providers": {
     "minimax": {
       "models": [
@@ -102,6 +102,15 @@
     "antigravity": {
       "normalizeUnderscores": true,
       "models": [
+        {
+          "match": "contains",
+          "keywords": ["gemini-4-argon"],
+          "label": "Gemini 4 Argon",
+          "currency": "USD",
+          "inputPerMillion": 2,
+          "cacheReadPerMillion": 0.1,
+          "outputPerMillion": 10
+        },
         {
           "match": "contains",
           "keywords": ["gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.8-flash"],

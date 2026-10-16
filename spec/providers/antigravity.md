@@ -16,7 +16,7 @@ This provider does not call Google quota APIs with a saved OAuth access token. I
 | CSRF | IDE requires `--csrf_token`; CLI does not require any |
 | Main local RPCs | `GetUserStatus` (account + tier), `GetLoadCodeAssist` (tier fallback), `RetrieveUserQuotaSummary` (quota), `GetCascadeTrajectoryGeneratorMetadata` (per-event token usage) |
 | Account fields | `userStatus.email`, `userStatus.userTier.name`, `userStatus.planStatus.planInfo.{planDisplayName,displayName,productName,planName,planShortName}` |
-| Model groups | `Gemini Models`, `Claude and GPT models` |
+| Model groups | `Gemini Models`, `Gemini 4 Argon`, `Claude and GPT models` |
 | Window types | `5h`, `weekly` |
 | Reset credits | Not used |
 | **Local token usage history** | ✅ Pure RPC architecture: per-event input / output / cacheRead / cacheWrite / reasoning, aggregated to last 7 local days, persisted to `~/Library/Application Support/LLM-monitor/token-monitor/antigravity.json` |
@@ -43,6 +43,7 @@ tokens，模型名小写 + `_` 归一为 `-` 后按 contains 匹配，数组顺�
 |---|---|---|---|
 | Gemini Flash 3.x（`gemini-3.6-flash` / `gemini-3.7-flash` / `gemini-3.8-flash`） | 0.75 | 0.075 | 3.75 |
 | `gemini-3.1-pro` | 2.00 | 0.20 | 12.00 |
+| `gemini-4-argon` | 2.00 | 0.10 | 10.00 |
 | `claude-opus-5.5` / `claude-opus-5-5` | 4.00 | 0.20 | 20.00 |
 | `claude-sonnet-5.5` / `claude-sonnet-5-5` | 2.00 | 0.20 | 10.00 |
 | `gpt-oss-120b` | 0.09 | 0.009 | 0.36 |
@@ -50,8 +51,9 @@ tokens，模型名小写 + `_` 归一为 `-` 后按 contains 匹配，数组顺�
 | `claude-3.5-haiku` | 0.80 | 0.08 | 4.00 |
 | `gpt-4.1` | 2.00 | 0.50 | 8.00 |
 
-- **Gemini 支持清单**：仅 `gemini-3.1-pro` 与 3.6 / 3.7 / 3.8 Flash 有价。
+- **Gemini 支持清单**：`gemini-3.1-pro`、`gemini-4-argon` 与 3.6 / 3.7 / 3.8 Flash 有价。
   **Gemini 2.5 系列（Pro / Flash）已退休**：条目已删除，历史用量显示"未定价"（有意行为）。
+- **Gemini 4 Argon**：按 introductory API 定价（至 2026-11-30，`2.00 / 0.10 / 10.00`）；`gemini-4-argon` 子串同时覆盖 `-low` / `-medium` / `-high` 三个思考档位。
 - **Claude Opus / Sonnet 4.6 已下架**（2026-10 起被 5.5 取代）：条目已删除，历史用量显示"未定价"（有意行为，与 Gemini 2.5 退休同口径）。
 - **Gemini 3.1 Pro**：按标准档（≤200K 上下文）定价；>200K 的长上下文档不建模 ——
   本地账本不保留请求上下文长度，与 MiniMax >512K 档不参与同一口径。
@@ -297,6 +299,19 @@ Observed response shape:
             "resetTime": "2026-07-08T13:09:12Z"
           }
         ]
+      },
+      {
+        "displayName": "Gemini 4 Argon",
+        "description": "For paid Pro plans, Argon quota is separate. Higher Argon quota (included as part of the larger Gemini quota bucket) is available on Ultra plans.",
+        "buckets": [
+          {
+            "bucketId": "gemini-argon-wtu-weekly",
+            "displayName": "Gemini 4 Argon Weekly Limit",
+            "window": "weekly",
+            "remainingFraction": 1,
+            "resetTime": "2026-07-15T08:09:12Z"
+          }
+        ]
       }
     ]
   }
@@ -315,9 +330,12 @@ Current parser behavior:
 
 `bucket(for:in:)` resolves a window by `window`（大小写不敏感）**或** by a `bucketId` that
 contains the window string, so responses carrying only `bucketId: "gemini-5h"` /
-`"3p-weekly"` still resolve. Group normalization looks at `displayName` **and**
-`description`: a `gemini` hit → `gemini_models`, otherwise a `claude` / `gpt` hit →
-`claude_and_gpt_models`, otherwise the raw `displayName` is kept.
+`"3p-weekly"` still resolve. Group normalization looks at `displayName`, `description`,
+and `buckets[].bucketId` / `buckets[].displayName`: an `argon` hit → `gemini_argon`
+(checked **before** generic `gemini`), otherwise a `gemini` hit → `gemini_models`,
+otherwise a `claude` / `gpt` hit → `claude_and_gpt_models`, otherwise the raw
+`displayName` is kept. Parsed groups are sorted in fixed order:
+`gemini_models (0) < gemini_argon (1) < claude_and_gpt_models (2) < other (3)`.
 
 Failure is per group: a group whose `remainingFraction` is missing, non-finite or
 outside `[0, 1]` is skipped with a `logWarn` (mirroring `postOptional`'s
@@ -328,14 +346,13 @@ Window status is normalized from bucket presence: an existing bucket maps to
 `QuotaWindowStatus.present`, including `remainingFraction = 0`; a missing bucket maps to
 `.absent`. The shared UI and health logic never interprets provider-specific raw status values.
 
-Current normalized internal names:
+Current normalized internal names (display names match the API-returned `displayName` across all groups):
 
 | Group | Internal `modelName` | Display name |
 |---|---|---|
 | `Gemini Models` | `gemini_models` | `Gemini Models` |
-| `Claude and GPT models` | `claude_and_gpt_models` | `Claude Models` |
-
-Display name is `Claude Models` as of 2026-10-13 — the group effectively only has Claude left (GPT-OSS is about to be delisted and is no longer in use), so this adopts the new naming early; the wire displayName is still `Claude and GPT models`.
+| `Gemini 4 Argon` | `gemini_argon` | `Gemini 4 Argon` |
+| `Claude and GPT models` | `claude_and_gpt_models` | `Claude and GPT models` |
 
 Returned `ModelQuota` values keep count fields at `0`, because the current local RPC only exposes fractions and reset times.
 
@@ -1151,14 +1168,15 @@ Current row tints:
 
 | Group | Tint |
 |---|---|
-| `Gemini Models` | blue |
-| `Claude Models` | orange |
+| `Gemini Models` / `Gemini 4 Argon` | blue |
+| `Claude and GPT models` | orange |
 
-Both groups use a combined quota row: the metadata line is
+Dual-window groups use a combined quota row: the metadata line is
 `<model name> … 5h <pct> 周 <pct> <reset time>` (name leading, both window
 readings plus the binding window's reset time clustered at the line end), and the
 bar is segmented by the group's weekly equivalent multiplier — 6 for
-`Gemini Models`, 2 for `Claude Models` (2026-10-13 从 1 调回 2；2026-10 初曾从 3 下调到 1，
+`Gemini Models` (`Gemini 4 Argon` Pro 套餐仅返回周窗口，走单窗口路径；若返回双窗口同为 6),
+2 for `Claude and GPT models` (2026-10-13 从 1 调回 2；2026-10 初曾从 3 下调到 1，
 周窗口 = 2 × 5h 额度). A 1-segment bar has no equivalent-
 weekly reading to draw, and its tooltip says 单一窗口可用进度 instead of
 "第 1 格为当前窗口余量；后续 N-1 格为等价周额度余量".
@@ -1170,7 +1188,10 @@ alice@example.com  [AI Pro]
 Gemini Models                          5h 100%  周 85%   <weekly reset time>
 [weekly bar in 6 segments]
 
-Claude Models                          5h 100%  周 100%  <weekly reset time>
+Gemini 4 Argon                                  周 100%  <weekly reset time>
+[single weekly bar]
+
+Claude and GPT models                  5h 100%  周 100%  <weekly reset time>
 [weekly bar in 2 segments]
 
 ───────────────────────────── 最近7天token用量          02:00
@@ -1181,12 +1202,12 @@ The status bar's center gauge uses the same multiplier as its single source of
 truth: `min(5h 剩余, 周剩余 × N)` (`ModelQuota.weeklyEquivalentMultiplier` →
 `aggregateActualAvailable`).
 
-**聚合排除（2026-10 用户裁定）**：`Claude and GPT models` 组不参与跨 model 聚合读数
-—— 状态栏 iconDuo、边缘窗圆环与 provider 综合健康度经
-`QuotaInfo.aggregateQuotaModels(providerKind:)` 取聚合 model 集合，
-`ModelQuota.isExcludedFromQuotaAggregation` 把该组排除（与 minimax `video` 同规则）。
-quota 以整组为一个池，无法只排 Claude 保留 GPT，故整组不计；卡片两组行、通知检测
-不受影响。滤后为空的退化场景回退 `activeModels`。
+**聚合排除（2026-10 用户裁定）**：`Claude and GPT models`（`claude_and_gpt_models`）与
+`Gemini 4 Argon`（`gemini_argon`）组不参与跨 model 聚合读数 —— 状态栏 iconDuo、边缘窗圆环与
+provider 综合健康度经 `QuotaInfo.aggregateQuotaModels(providerKind:)` 取聚合 model 集合，
+`ModelQuota.isExcludedFromQuotaAggregation` 把这两组排除（与 minimax `video` 同规则），
+只以主力 `Gemini Models`（`gemini_models`）代表 Antigravity 的聚合水位；卡片三组行、
+通知检测不受影响。滤后为空的退化场景回退 `activeModels`。
 
 ## Error Handling
 
@@ -1332,4 +1353,4 @@ This script:
 3. calls `RetrieveUserQuotaSummary`
 4. prints or writes the raw JSON
 
-> 核对基线：2026-10-13 · 代码 ae7fe3d
+> 核对基线：2026-10-16 · 代码 01d3f4e

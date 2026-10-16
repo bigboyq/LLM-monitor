@@ -12,5 +12,6 @@ import Foundation
 /// 安全校验外部输入。
 enum AntigravityModelKind: String, Sendable, CaseIterable {
     case geminiModels = "gemini_models"
+    case geminiArgon = "gemini_argon"
     case claudeAndGptModels = "claude_and_gpt_models"
 }

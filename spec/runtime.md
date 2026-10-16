@@ -321,9 +321,9 @@ of the remaining-time percentage and 50%. 三个 `healthLevel` 派生属性
 `EdgeDockProjection`（边缘窗圆环）统一读 `QuotaInfo.aggregateQuotaModels(providerKind:)`
 —— `activeModels` 再排除 `ModelQuota.isExcludedFromQuotaAggregation(providerKind:)`
 命中的 minimax `video`（视频生成）与 antigravity `claude_and_gpt_models`（Claude and
-GPT models）。两者是独立小配额池，余量与主力模型水位无关，2026-10 用户裁定不计入聚合；
-滤后为空回退 `activeModels`（排除只允许「少算」）。卡片逐 model 展示与通知管线
-（`QuotaEventDetector` 逐 model 窗口事件）不受影响。
+GPT models）/ `gemini_argon`（Gemini 4 Argon）。这些都是独立配额池，余量与主力模型水位无关，
+2026-10 用户裁定不计入聚合；滤后为空回退 `activeModels`（排除只允许「少算」）。卡片逐 model
+展示与通知管线（`QuotaEventDetector` 逐 model 窗口事件）不受影响。
 
 ## Error And Fallback
 
@@ -456,4 +456,4 @@ These are documented product boundaries:
   have their own SQLite readers, Antigravity is pure RPC, and Codex parses JSONL on
   demand for the 7-day chart.
 
-> 核对基线：2026-10-09 · 代码 004e041
+> 核对基线：2026-10-16 · 代码 01d3f4e

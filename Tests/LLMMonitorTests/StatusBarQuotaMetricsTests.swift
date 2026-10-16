@@ -859,6 +859,21 @@ final class StatusBarQuotaMetricsTests: XCTestCase {
             weeklyResetsAt: nil,
             weeklyWindowSeconds: nil
         )
+        let geminiArgon = ModelQuota(
+            modelName: AntigravityModelKind.geminiArgon.rawValue,
+            intervalTotalCount: 0,
+            intervalUsageCount: 0,
+            intervalRemainingPercent: 0,
+            intervalStatus: .absent,
+            intervalResetsAt: nil,
+            intervalWindowSeconds: nil,
+            weeklyTotalCount: 100,
+            weeklyUsageCount: 100,
+            weeklyRemainingPercent: 0,
+            weeklyStatus: .present,
+            weeklyResetsAt: Date().addingTimeInterval(7 * 24 * 3600),
+            weeklyWindowSeconds: 7 * 24 * 3600
+        )
         let claudeGroup = ModelQuota(
             modelName: AntigravityModelKind.claudeAndGptModels.rawValue,
             intervalTotalCount: 100,
@@ -876,7 +891,7 @@ final class StatusBarQuotaMetricsTests: XCTestCase {
         )
         state.mutateStatus(for: "test_antigravity") {
             $0.state = .ok(QuotaInfo(
-                models: [gemini, claudeGroup],
+                models: [gemini, geminiArgon, claudeGroup],
                 resetCredits: nil,
                 planLabel: nil,
                 accountEmail: nil,
@@ -887,11 +902,11 @@ final class StatusBarQuotaMetricsTests: XCTestCase {
 
         let metrics = state.statusBarQuotaMetrics()
         XCTAssertTrue(metrics.interval.isAvailable)
-        XCTAssertEqual(metrics.interval.minAvailable, 1.0, accuracy: 0.001, "左弧只反映 gemini 组的 100%，不被 claude 组的 0% 拖到 0")
+        XCTAssertEqual(metrics.interval.minAvailable, 1.0, accuracy: 0.001, "左弧只反映 gemini 组的 100%，不被 claude / argon 组的 0% 拖到 0")
         XCTAssertEqual(metrics.interval.avgAvailable, 1.0, accuracy: 0.001)
-        XCTAssertFalse(metrics.weekly.isAvailable, "gemini 组无周窗口、claude 组已被排除，右弧应无读数")
+        XCTAssertFalse(metrics.weekly.isAvailable, "gemini 组无周窗口、claude / argon 组已被排除，右弧应无读数")
         XCTAssertEqual(metrics.centerAvailable ?? -1, 1.0, accuracy: 0.001, "中心只反映 gemini 组的实际可用 100%")
-        XCTAssertEqual(metrics.quotaHealthLevels, [.healthy, .healthy, .healthy], "底部三点只按 gemini 组判绿，不被耗尽的 claude 组拖红")
+        XCTAssertEqual(metrics.quotaHealthLevels, [.healthy, .healthy, .healthy], "底部三点只按 gemini 组判绿，不被耗尽的 claude / argon 组拖红")
     }
 
     /// 回退分支：minimax 只剩 video（无 general）时回退 `activeModels`，

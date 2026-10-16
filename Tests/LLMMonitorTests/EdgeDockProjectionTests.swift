@@ -270,6 +270,7 @@ final class EdgeDockProjectionTests: EdgeDockTestCase {
     func testProjectionExcludesAntigravityClaudeGroupFromRingAggregation() {
         let status = makeStatus(id: "antigravity", kind: .antigravity, state: .ok(makeInfo([
             makeModel(name: AntigravityModelKind.geminiModels.rawValue, intervalPercent: 90, weeklyPercent: 80, now: Self.makeNow),
+            makeModel(name: AntigravityModelKind.geminiArgon.rawValue, intervalPercent: nil, weeklyPercent: 1, now: Self.makeNow),
             makeModel(name: AntigravityModelKind.claudeAndGptModels.rawValue, intervalPercent: 5, weeklyPercent: 2, now: Self.makeNow),
         ])))
         XCTAssertEqual(

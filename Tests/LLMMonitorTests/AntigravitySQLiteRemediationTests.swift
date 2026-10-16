@@ -224,6 +224,54 @@ final class AntigravitySQLiteRemediationTests: AntigravityTestCase {
         XCTAssertEqual(models.first?.weeklyRemainingPercent, 75)
     }
 
+    func testQuotaModelsDistinguishesGeminiArgonAndSortsGroups() throws {
+        let data = Data(
+            """
+            {
+              "groups": [
+                {
+                  "displayName": "Claude and GPT models",
+                  "description": "Models within this group: Claude Opus, Claude Sonnet, GPT-OSS",
+                  "buckets": [
+                    { "bucketId": "3p-weekly", "window": "weekly", "remainingFraction": 0.63 },
+                    { "bucketId": "3p-5h", "window": "5h", "remainingFraction": 1.0 }
+                  ]
+                },
+                {
+                  "displayName": "Gemini 4 Argon",
+                  "description": "For paid Pro plans, Argon quota is separate.",
+                  "buckets": [
+                    { "bucketId": "gemini-argon-wtu-weekly", "window": "weekly", "remainingFraction": 0.85 }
+                  ]
+                },
+                {
+                  "displayName": "Gemini Models",
+                  "description": "Models within this group: Gemini Flash, Gemini Pro",
+                  "buckets": [
+                    { "bucketId": "gemini-weekly", "window": "weekly", "remainingFraction": 0.90 },
+                    { "bucketId": "gemini-5h", "window": "5h", "remainingFraction": 1.0 }
+                  ]
+                }
+              ]
+            }
+            """.utf8
+        )
+        let models = try AntigravityFetcher.parseQuotaModelsForTest(data)
+        XCTAssertEqual(models.map(\.modelName), [
+            AntigravityModelKind.geminiModels.rawValue,
+            AntigravityModelKind.geminiArgon.rawValue,
+            AntigravityModelKind.claudeAndGptModels.rawValue
+        ])
+        XCTAssertEqual(models.map(\.displayName), [
+            "Gemini Models",
+            "Gemini 4 Argon",
+            "Claude and GPT models"
+        ])
+        XCTAssertEqual(models[1].hasIntervalWindow, false, "Gemini 4 Argon 仅含周窗口")
+        XCTAssertEqual(models[1].hasWeeklyWindow, true)
+        XCTAssertEqual(models[1].weeklyRemainingPercent, 85, accuracy: 0.001)
+    }
+
     /// M3 的另一面：全部 group 都不可用（都缺 fraction / 都无 bucket）时，
     /// 仍抛 decodingError —— 部分可用语义不等于"静默返回空额度"。
     func testQuotaModelsAllGroupsUnavailableStillThrows() {

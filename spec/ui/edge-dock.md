@@ -45,15 +45,16 @@ option, whereas an edge dock circle *is* one provider and must answer "is this o
 about to run out". Length and colour therefore agree — both worst-case — instead of
 ring saying "plenty" while the colour says "danger".
 
-**The aggregation model set excludes two deliberately parked families
+**The aggregation model set excludes deliberately parked side pools
 (2026-10 user ruling).** Ring lengths, ring colours and the circle's aggregate
 `health` all read `QuotaInfo.aggregateQuotaModels(providerKind:)` — `activeModels`
 minus the families `ModelQuota.isExcludedFromQuotaAggregation(providerKind:)` parks:
 minimax's `video`（视频生成）and antigravity's `claude_and_gpt_models`（Claude and
-GPT models）. Both are independent side pools whose remaining fraction says nothing
-about the main pool's waterline, so counting them into the worst-model aggregate lets
-an idle side pool dilute — or a spent one flood — a reading the user cannot act on.
-The card keeps rendering both rows, and the notification pipeline still covers them;
+GPT models） / `gemini_argon`（Gemini 4 Argon）. These are independent side pools whose
+remaining fraction says nothing about the main pool's waterline, so counting them into
+the worst-model aggregate lets an idle side pool dilute — or a spent one flood — a
+reading the user cannot act on.
+The card keeps rendering all rows, and the notification pipeline still covers them;
 this filter lives only in the cross-model aggregates. If the filter ever empties the
 set (degenerate: nothing aggregatable left), it falls back to the unfiltered
 `activeModels`, so a data-bearing provider can never aggregate to "no reading" or a
@@ -1159,4 +1160,4 @@ default has to preserve it — defaulting to off would put a dock inside every f
 window for every existing user. Because the setting can be flipped while the user is
 already fullscreen, a policy change re-probes instead of reusing the cached verdict.
 
-> 核对基线：2026-10-13 · 代码 ae7fe3d
+> 核对基线：2026-10-16 · 代码 01d3f4e

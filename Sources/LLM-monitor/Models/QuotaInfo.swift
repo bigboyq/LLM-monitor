@@ -16,7 +16,8 @@ struct ModelQuota: Equatable, Codable, Sendable {
         case "tts":           return "TTS"
         case "chatgpt_plan":  return "ChatGPT Plan"
         case AntigravityModelKind.geminiModels.rawValue: return "Gemini Models"
-        case AntigravityModelKind.claudeAndGptModels.rawValue: return "Claude Models"
+        case AntigravityModelKind.geminiArgon.rawValue: return "Gemini 4 Argon"
+        case AntigravityModelKind.claudeAndGptModels.rawValue: return "Claude and GPT models"
         case "glm_coding_plan": return "GLM Coding Plan"
         case "deepseek_balance": return "DeepSeek API 余额"
         default:              return modelName
@@ -167,14 +168,16 @@ struct ModelQuota: Equatable, Codable, Sendable {
     /// （`ProviderStatus.aggregateHealthLevel`）这类跨 model 汇总；卡片逐 model 独立展示、
     /// 通知管线逐 model 检测，都不读这个开关。
     ///
-    /// minimax 的 `video`（视频生成）与 antigravity 的 Claude and GPT models 组是独立
-    /// 小配额池，余量水位与主力模型无关，聚合时不计（用户裁定 2026-10）。
+    /// minimax 的 `video`（视频生成）与 antigravity 的 Claude and GPT models / Gemini 4 Argon 组是独立
+    /// 配额池，余量水位与主力 Gemini Models 无关，聚合时不计（用户裁定 2026-10）。
     func isExcludedFromQuotaAggregation(providerKind: ProviderKind) -> Bool {
         switch providerKind {
         case .minimaxTokenPlan:
             return MinimaxModelKind.isVideo(modelName)
         case .antigravity:
-            return modelName.lowercased() == AntigravityModelKind.claudeAndGptModels.rawValue
+            let lower = modelName.lowercased()
+            return lower == AntigravityModelKind.claudeAndGptModels.rawValue
+                || lower == AntigravityModelKind.geminiArgon.rawValue
         case .codexChatGpt, .glmCodingPlan, .deepseek:
             return false
         }

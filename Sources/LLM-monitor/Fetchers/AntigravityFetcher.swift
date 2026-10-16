@@ -698,7 +698,13 @@ struct AntigravityFetcher: QuotaFetcher {
     private nonisolated static func normalizedModelName(from group: QuotaGroup) -> String {
         let title = group.displayName.lowercased()
         let description = (group.description ?? "").lowercased()
+        let hasArgonBucket = group.buckets.contains {
+            ($0.bucketId?.lowercased() ?? "").contains("argon")
+        }
 
+        if title.contains("argon") || description.contains("argon") || hasArgonBucket {
+            return AntigravityModelKind.geminiArgon.rawValue
+        }
         if title.contains("gemini") || description.contains("gemini") {
             return AntigravityModelKind.geminiModels.rawValue
         }
@@ -711,7 +717,8 @@ struct AntigravityFetcher: QuotaFetcher {
     private nonisolated static func sortRank(for modelName: String) -> Int {
         switch modelName.lowercased() {
         case AntigravityModelKind.geminiModels.rawValue: return 0
-        case AntigravityModelKind.claudeAndGptModels.rawValue: return 1
+        case AntigravityModelKind.geminiArgon.rawValue: return 1
+        case AntigravityModelKind.claudeAndGptModels.rawValue: return 2
         default: return 9
         }
     }
