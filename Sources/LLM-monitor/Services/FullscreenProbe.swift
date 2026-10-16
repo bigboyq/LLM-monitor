@@ -150,6 +150,60 @@ enum FullscreenProbe {
         )
     }
 
+    /// 判定明细，供日志定位"为什么判成/没判成全屏"。
+    ///
+    /// 只在判定**翻转**时被读——常驻开销与 `isAnyFullscreenWindow` 同阶
+    /// （一次窗口列表遍历），而翻转本身是低频事件。格式面向 grep：
+    /// `屏=… 盖满=[owner WxH …] 桌面装饰=[owner …]`，盖满/装饰都为空时是 `无`。
+    static func diagnose(
+        on screen: NSScreen,
+        excludingProcessIdentifier ownProcessIdentifier: pid_t
+    ) -> String {
+        let options: CGWindowListOption = [.optionOnScreenOnly]
+        guard let raw = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
+            return "窗口列表读取失败"
+        }
+        struct Named {
+            let owner: String
+            let bounds: CGRect
+        }
+        var covering: [Named] = []
+        var chrome: [Named] = []
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? screen.frame.height
+        let screenRect = cgRect(fromAppKitRect: screen.frame, primaryScreenHeight: primaryHeight)
+        for item in raw {
+            guard let pid = item[kCGWindowOwnerPID as String] as? pid_t,
+                  let layer = item[kCGWindowLayer as String] as? Int,
+                  let bounds = item[kCGWindowBounds as String] as? [String: Any],
+                  let rect = CGRect(dictionaryRepresentation: bounds as CFDictionary)
+            else { continue }
+            guard layer == 0 || layer == desktopChromeLayer else { continue }
+            // 与 containsFullscreenWindow 同口径：盖满候选排除本进程，
+            // 桌面装饰**不排除**（hasDesktopChrome 在 PID 过滤之前）。
+            guard layer == 0, pid != ownProcessIdentifier else {
+                if layer == desktopChromeLayer, covers(rect, screenRect) {
+                    chrome.append(Named(
+                        owner: item[kCGWindowOwnerName as String] as? String ?? "pid=\(pid)",
+                        bounds: rect
+                    ))
+                }
+                continue
+            }
+            guard covers(rect, screenRect) else { continue }
+            covering.append(Named(
+                owner: item[kCGWindowOwnerName as String] as? String ?? "pid=\(pid)",
+                bounds: rect
+            ))
+        }
+        let cover = covering.isEmpty
+            ? "无"
+            : covering.map { "\($0.owner) \(Int($0.bounds.width))x\(Int($0.bounds.height))" }.joined(separator: ", ")
+        let chromeText = chrome.isEmpty
+            ? "无"
+            : chrome.map { "\($0.owner) \(Int($0.bounds.width))x\(Int($0.bounds.height))" }.joined(separator: ", ")
+        return "屏=\(screen.localizedName) 盖满候选=[\(cover)] 桌面装饰=[\(chromeText)]"
+    }
+
     private static func covers(_ rect: CGRect, _ screenRect: CGRect) -> Bool {
         rect.insetBy(dx: -coverageTolerance, dy: -coverageTolerance).contains(screenRect)
     }
