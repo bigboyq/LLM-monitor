@@ -1141,6 +1141,14 @@ stays visible, because a panel that hides itself on a probe failure and never re
 worse than brief overlap. The dock's own windows are excluded from the probe so it cannot
 classify itself as fullscreen.
 
+Every verdict **flip** logs the probe's inputs via `FullscreenProbe.diagnose` (same
+thresholds as the verdict: covering candidates exclude this process, desktop chrome does
+not) — which screen, which windows cover it, and whether chrome is present, e.g.
+`盖满候选=[微信 1512x982] 桌面装饰=[无]`. A bare true/false flip cannot tell a real
+fullscreen Space from a momentary covering window or an animation intermediate; the line's
+first real catch was WeChat flashing a screen-sized layer-0 window, which was the source of
+the dock's occasional 0.3s blink in the field.
+
 AX (`AXFullScreen`) was evaluated and rejected: it is not in the public SDK (only the
 fullscreen *button* element is), it needs an Accessibility grant that ad-hoc builds lose on
 every rebuild, and it answers "is this window fullscreen" without saying *which Space* — a
@@ -1162,4 +1170,4 @@ default has to preserve it — defaulting to off would put a dock inside every f
 window for every existing user. Because the setting can be flipped while the user is
 already fullscreen, a policy change re-probes instead of reusing the cached verdict.
 
-> 核对基线：2026-10-16 · 代码 ac70b39
+> 核对基线：2026-10-16 · 代码 eda4054
