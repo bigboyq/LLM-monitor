@@ -266,10 +266,11 @@ was cut; the panel is still clamped to the screen's visible frame, as before.
 
 **Since the 2026-10 second-round pass the provider card has no hover-collapsed
 sections left.** The account row, the quota-window usage block (`QuotaWindowUsageSection`),
-the per-card reset-credit list and the 7-day footer are all **resident** — formerly the
-two card hosts sat in `ignoresMouseEvents = true` panels (the menu strip hover still does,
-while the dock popover panel has since flipped `ignoresMouseEvents = false` so its
-controls and tooltips are interactive), but residency remains the only form that works
+the per-card reset-credit list and the 7-day footer are all **resident** — the two card
+hosts are hover-driven popups whose lifetime the card does not own (both panels now
+accept mouse events — the dock popover first, the menu strip hover in 2026-10 with a
+0.25s hover bridge — but their visibility still follows the host row/circle's hover),
+so residency remains the only form that works
 across both hosts without an unreachable "hover of a hover". What still branches on
 `hoverRevealMode` inside the card is one detail: the 7-day chart's own title row
 (`.alwaysVisible` hoists it into the card title outside; other modes draw it inside).
@@ -280,7 +281,7 @@ own hover rows** continue to use:
 |---|---|---|
 | Main menu — the header's sleep-blockers notice (`SleepOffendersHoverView`) | `.onHover` (the default) | Independent `NSPanel` after a delay |
 | Provider card in the edge dock popover | `.alwaysVisible` | Resident layout; the quota / 7-day groups are split into two cards, see *Two cards, titles outside*. The popover panel receives mouse events (`ignoresMouseEvents = false`), enabling segment switching, `.help` tooltips, and `ScrollView` scrolling |
-| Provider card in the menu's provider strip hover | `.alwaysVisible` (pinned) | identical layout to the dock card, but the panel ignores mouse events (`ignoresMouseEvents = true`); segment control is not rendered (`quotaWindowSegmentEditable = false`), table renders the persisted segment state |
+| Provider card in the menu's provider strip hover | `.alwaysVisible` (pinned) | identical layout to the dock card; the panel accepts mouse events too (timestamp taps → refresh all), but segment control is not rendered (`quotaWindowSegmentEditable = false`), table renders the persisted segment state |
 
 The switch is an `Environment` value rather than a parameter threaded through each
 call site: even with only two live `HoverInfoRow` call sites left (the header notice and
@@ -294,7 +295,7 @@ text, so `HoverRevealModeTests` asserts the default rather than trusting it.
 
 `.alwaysVisible` is the only workable choice for this window. The popover is already
 one-hover deep, so a nested "hover to expand" would be a hover of a hover. Even with
-the dock popover now receiving mouse events (`ignoresMouseEvents = false`), keeping
+both popup panels now receiving mouse events (`ignoresMouseEvents = false`), keeping
 sections resident preserves unified card sizing across both hosts and prevents
 jarring height jumps.
 
@@ -822,7 +823,10 @@ Data source and calibration:
     popover host also owns a shared display clock (`EdgeDockController.popoverDisplayClock`, started
     in `updatePopover`'s success path, stopped in `hidePopover`) injected via `DisplayClockScope`,
     so the card's peak countdown / freshness capsule advance while the popover is visible.
-  - Menu strip hover panel: `HoverPanel.swift` retains `ignoresMouseEvents = true` and injects a
+  - Menu strip hover panel: `HoverPanel.swift` sets `ignoresMouseEvents = false` (2026-10:
+    card timestamps are clickable → refresh all; a 0.25s hover bridge — `scheduleHide` on
+    row exit, panel-side enter/exit tracking plus an `isMouseInsidePanel` guard — keeps the
+    card alive while the cursor is on it) and injects a
     panel-scoped display clock via `DisplayClockScope` (`HoverPanelController.displayClock`,
     started in `present`, stopped in `hide`). The `false` side of
     `.environment(\.quotaWindowSegmentEditable, false)` is injected by the **card's call site**

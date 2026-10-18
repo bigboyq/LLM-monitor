@@ -112,22 +112,11 @@ final class ProviderStatusStripTests: XCTestCase {
         XCTAssertGreaterThan(ProviderStatusStrip.priority(critical), ProviderStatusStrip.priority(healthy))
     }
 
-    // MARK: - 单 provider 刷新（右键菜单）
+    // MARK: - 单 provider 刷新（左键点按）
 
-    /// 菜单项标题必须带 provider 名：一行里最多四枚同款菜单项，都叫「立即刷新」
-    /// 的话用户分不清点的是哪一个。
-    func testRefreshMenuItemTitleNamesTheProvider() {
-        let item = ProviderStatusStripView.refreshMenuItem(
-            for: ProviderStatusStrip.Entry(
-                status: Self.status(id: "antigravity", displayName: "Google Antigravity", kind: .antigravity)
-            )
-        )
-        XCTAssertEqual(item.title, "刷新 Google Antigravity")
-        XCTAssertEqual(item.providerID, "antigravity")
-    }
-
-    /// 点下去交出去的是**这张** provider 的 id。宿主（`MenuContentView`）拿这个
-    /// id 调 `AppState.refreshOne(providerID:)`，串错 id 就是刷了别人的卡。
+    /// 点下去交出去的是**这张** provider 的 id。`RefreshMenuItem` 是左键 tap 挂的
+    /// 那份数据形态（`tapHandler` 内部就是 `perform`），宿主（`MenuContentView`）
+    /// 拿这个 id 调 `AppState.refreshOne(providerID:)`，串错 id 就是刷了别人的卡。
     func testRefreshMenuItemRoutesItsOwnProviderID() {
         let entries = ProviderStatusStrip.snapshot(statuses: Self.allProviderFixture(), limit: 4)
         var requested: [String] = []
@@ -154,22 +143,20 @@ final class ProviderStatusStripTests: XCTestCase {
         let items = ProviderStatusStrip.snapshot(statuses: statuses).entries
             .map(ProviderStatusStripView.refreshMenuItem(for:))
 
-        XCTAssertEqual(Set(items.map(\.providerID)), ["failed", "unconfigured"])
         XCTAssertEqual(
-            Set(items.map(\.title)), ["刷新 Failed", "刷新 Unconfigured"],
-            "两个 provider 各自有可分辨的单刷项"
+            Set(items.map(\.providerID)), ["failed", "unconfigured"],
+            "两个 provider 各自能点到自己"
         )
     }
 
-    /// 注入回调后这一行照常渲染（contextMenu 不改布局，也不吞掉 hover 卡）。
+    /// 注入回调后这一行照常渲染（点按回调不改布局，也不吞掉 hover 卡）。
     @MainActor
     func testStripRendersWithSingleProviderRefreshWired() {
         let snapshot = ProviderStatusStrip.snapshot(statuses: Self.allProviderFixture(), limit: 4)
         let hosting = NSHostingView(
             rootView: AnyView(ProviderStatusStripView(
                 snapshot: snapshot,
-                onRefreshProvider: { _ in },
-                isRefreshJobActive: true
+                onRefreshProvider: { _ in }
             ))
         )
         hosting.frame = CGRect(x: 0, y: 0, width: 10_000, height: 10_000)

@@ -5,8 +5,8 @@ import SwiftUI
 /// 这一块的呈现形态换过三次：菜单 provider 卡的账号折叠区 → 「额度窗口用量」
 /// hover 浮层的末尾段（`AccountHoverView`，已随该浮层一并删除）→ 现在的
 /// **卡片第一段「Account Info」行**（`ProviderCardView.dockBody` 的段1）。
-/// 折叠区与浮层两代都依赖 hover 展开，而两个宿主（dock 浮层、菜单兜底行的
-/// hover 卡）都在 `ignoresMouseEvents = true` 的面板里，纯 hover 展不开——
+/// 折叠区与浮层两代都依赖 hover 展开，而它们的宿主（dock 浮层、菜单兜底行的
+/// hover 卡）都是随行 hover 显隐的弹层——弹层不在场时折叠区根本无从展开——
 /// 常驻的一行才是唯一永远可达的形态。
 ///
 /// 做成**值类型**而不是只留一个视图：调用方（`ProviderCardView`）要能在"这个

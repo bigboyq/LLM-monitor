@@ -234,12 +234,14 @@ truncated ⇒ truncated" rule as `ProviderUsageProjection.isTruncated`. Sections
 without truncation show nothing — the numbers are right either way, they are just not
 complete, and staying silent would let a partial total read as a complete one.
 
-**Section header context menu** — right-click a section header for 「立即刷新全部」
-(`AppState.refreshAll`, the same entry point as the header refresh button) and
-「打开配置文件」(`state.openConfigFile`). These are the two actions the per-provider
-cards carried before the menu switched to the client view; they are attached to the
-header rather than the whole section so that the right-click target reads as "these
-numbers".
+**Section header context menu** — right-click a section header for 「刷新 <客户端名>」:
+`HarnessSection.refreshProviderStatusIDs(in:)` resolves the provider cards this
+section's today contributions came from (a ZCode section spanning GLM / minimax /
+deepseek shard rows refreshes all of them), and `MenuContentView.refreshSectionFromMenu`
+then runs `AppState.refreshOne` over those cards sequentially. 「打开配置文件」 used to
+live here too; it moved to the menu-bar icon's right-click menu (刷新 / 配置 / 退出).
+The menu is attached to the header rather than the whole section so that the right-click
+target reads as "these numbers".
 
 **Provider fallback strip** (`ProviderStatusStripView`, the last row of the content
 area) — one minimal element per enabled provider, **no leading label**: brand logo
@@ -276,6 +278,11 @@ Hovering one element opens the **full `ProviderCardView(status:)`** in the exist
 hover `NSPanel` (`HoverInfoRow` → `HoverPanelController`, the same mechanism as every
 other menu hover detail; 0.22s delay, 0.08s re-arm when switching, 6pt cursor gap,
 right edge flips to the cursor's left, bottom edge flips above the cursor). The panel
+accepts mouse events (`ignoresMouseEvents = false`, still `.nonactivatingPanel`, so a
+click on the card never steals the menu window's key): a 0.25s hover bridge
+(`HoverPanelController.scheduleHide` on row exit + panel-side enter/exit tracking,
+guarded by `isMouseInsidePanel` against event reordering) keeps the card alive while
+the cursor is over it, making the timestamp taps reachable. The panel
 host owns a shared display clock (`HoverPanelController.displayClock`) that starts/stops
 with the panel's show/hide and is injected through `DisplayClockScope` — without it
 the in-card peak countdown / freshness capsule would read the environment key's static
@@ -288,8 +295,9 @@ laid out exactly like the dock's card: the same three sections (Account Info row
 Plan Info's four resident modules → the 7-day card), see `spec/ui/edge-dock.md`
 §Two cards, titles outside and §Quota window usage block. `.alwaysVisible` keeps one real job for the 7-day
 chart: in that mode the chart does not draw its own title row (the card title row
-outside carries it), so a wrong mode shows the title twice or not at all — the hover
-panel is `ignoresMouseEvents = true`, and every formerly hover-collapsed section has
+outside carries it), so a wrong mode shows the title twice or not at all — the panel
+is a hover-driven popup (it accepts mouse events since 2026-10, but its lifetime still
+follows the row's hover), and every formerly hover-collapsed section has
 been **resident** since the 2026-10 second-round pass (the quota-window usage table,
 the per-card reset-credit list and the account row render in both modes). `HoverPanelController.maximumPanelWidth`
 was raised to `EdgeDockTheme.popoverWidth` for the same reason it used to be sized
@@ -299,18 +307,18 @@ fullest card; `LayoutMetricsTests` keeps it under an 800pt ceiling) — on a sho
 display the clamp wins and the dock popover's `ScrollView` fallback
 (see `spec/ui/edge-dock.md` §Hover behaviour → Size) keeps the overflow reachable.
 
-**Three interactions share one element**, and the split between them is the point:
+**Two interactions share one element**, and the split between them is the point:
 
 | Input | Action | Why it is this one |
 |---|---|---|
-| **Left click** | Refresh this provider immediately | The element is the only thing in the panel you can left-click onto a *specific* provider with — the hover panel is `ignoresMouseEvents = true` and cannot be clicked, and the header's 「立即刷新全部」 is scoped to everything. No explicit menu, no discovery cost |
-| **Right click** | `刷新 <provider>` menu item | The same action as an explicit, named entry point, for the "I know which one I want" case. It carries the provider name because one row shows several same-shaped items |
+| **Left click** | Refresh this provider immediately | The element is the only thing in the panel you can left-click onto a *specific* provider with — the hover card's clickable affordances are the refresh-all-scoped timestamp taps, and the header's 「立即刷新全部」 is scoped to everything. No explicit menu, no discovery cost |
 | **Hover** | Pop the full `ProviderCardView` | Read-only. It issues **no** network request — a pointer merely crossing the row must not spend a provider's fetch budget |
 
-Left and right share **one** action, not two copies: both go through
-`ProviderStatusStripView.RefreshMenuItem` (a plain value type carrying `providerID` +
-`displayName`, with the `刷新 <name>` title and the `perform` routing), and the host is
-still `MenuContentView.refreshProviderFromMenu` → `AppState.refreshOne`. `onTapGesture`
+The tap path goes through `ProviderStatusStripView.RefreshMenuItem`, a plain value type
+carrying `providerID` + `displayName` and the `perform` routing (it used to back a
+right-click `刷新 <provider>` menu item as well; that duplicate entry point was removed
+once the left click covered the same action). The host is still
+`MenuContentView.refreshProviderFromMenu` → `AppState.refreshOne`. `onTapGesture`
 has no addressable seam in SwiftUI, so both the item and the tap closure
 (`tapHandler(for:onRefresh:)`) are `static` and pinned by tests instead.
 
@@ -323,16 +331,14 @@ re-anchored; the other providers' next tick is untouched
 entry in the strip, including `.notConfigured` / `.failed` ones — retrying is exactly
 the action those need.
 
-**The right-click item is disabled while a refresh transaction is running; the left
-click deliberately is not.** The disable signal is `AppState.isRefreshJobActive`, the
-same global flag the header's spinner uses (there is no per-provider in-flight flag to
-key on, and none was invented for this). The tap path keeps no second copy of that
-state: `refreshOne` opens with the same global in-flight gate
-(`refreshScheduler.beginExternalJob()`), so a repeat tap is a silent no-op that only
-re-anchors the same provider, and a UI-side busy state would only drift from the global
-verdict. Feedback comes from the capsule the element already carries (it moves to a
-refreshing state and then back to `HH:mm`) — a dead-looking button during a rapid
-re-click reads worse than one that just does nothing twice.
+**No element of the strip carries a UI-side busy state.** There is no per-provider
+in-flight flag to key on (and none was invented for this): `refreshOne` opens with the
+global in-flight gate (`refreshScheduler.beginExternalJob()`), so a repeat tap is a
+silent no-op that only re-anchors the same provider, and a UI-side busy state would
+only drift from the global verdict (the header spinner's `AppState.isRefreshJobActive`
+is the only such flag). Feedback comes from the capsule the element already carries
+(it moves to a refreshing state and then back to `HH:mm`) — a dead-looking button
+during a rapid re-click reads worse than one that just does nothing twice.
 
 The content area scrolls when needed. `MenuPanelHeightBridge` caps the menu window at
 70% of the screen's visible height; when the cap is reached, only the content list
@@ -580,7 +586,7 @@ look for a hover route to this data — the card carries it inline.
 ### Antigravity
 
 - 卡片标题 = `Google Antigravity`（provider 名），无 pill。
-- 账号行（第一段 Account Info）= 登录邮箱（来自 `GetUserStatus`）+ 套餐 pill（`planLabel` 去掉 `Google ` / `Antigravity ` 前缀，让 `Google AI Pro` → `AI Pro`）。两者皆缺时整行不画。这是一行**常驻**内容：菜单的 provider 卡删除前，邮箱与套餐曾按 provider 分三路包在标题行的 `HoverInfoRow` 浮层里；现在浮层 `ignoresMouseEvents = true`，那个折叠区展不开，所以直接画成常驻行——没有「重新进入 hover 浮层」这条路径了。
+- 账号行（第一段 Account Info）= 登录邮箱（来自 `GetUserStatus`）+ 套餐 pill（`planLabel` 去掉 `Google ` / `Antigravity ` 前缀，让 `Google AI Pro` → `AI Pro`）。两者皆缺时整行不画。这是一行**常驻**内容：菜单的 provider 卡删除前，邮箱与套餐曾按 provider 分三路包在标题行的 `HoverInfoRow` 浮层里；那些折叠区挂在随行 hover 显隐的弹层里，弹层不在场时无从展开，所以直接画成常驻行——provider 卡退出菜单后也没有「重新进入 hover 浮层」这条路径了。
 - `Gemini Models`、`Gemini 4 Argon` and `Claude and GPT models` are shown as separate model groups inside one provider card (display names align with the API-returned `displayName`).
 - 双窗口组把 5h / 周收为一条：Gemini 按 6 个等价额度分段，Claude and GPT models 按 2 个（`weeklyEquivalentMultiplier` = 6 / 2，周窗口即 2 × 5h 额度；2026-10-13 从 1 调回 2，2026-10 初曾从 3 下调到 1）；`Gemini 4 Argon` 在 Pro 套餐下仅返回周窗口，走单窗口路径。
 - **`Claude and GPT models`（`claude_and_gpt_models`）与 `Gemini 4 Argon`（`gemini_argon`）不参与聚合读数**：状态栏 iconDuo、边缘窗圆环与 provider 综合健康度经 `QuotaInfo.aggregateQuotaModels(providerKind:)` 过滤，`ModelQuota.isExcludedFromQuotaAggregation` 把这两组排除（与 minimax `video` 同规则），只以主力 `Gemini Models` 代表聚合水位；卡片三组行照常展示，通知检测不受影响。

@@ -338,6 +338,24 @@ struct HarnessSection: Identifiable, Equatable, Sendable {
     var totalTokens: Int { buckets.totalTokens }
     var cacheHitRate: Double? { HarnessTodaySummary.cacheHitRate(for: buckets) }
     var valueText: String { value.displayText }
+
+    /// 段头右键「刷新 <客户端名>」要刷的 provider 卡 id：段头右键按**本段今日
+    /// 贡献行**决定刷哪些卡——ZCode 段含 GLM / minimax / deepseek 分片行时一次
+    /// 刷齐，且只动这些卡，不惊动与该段无关的 provider。
+    ///
+    /// 取本段行的去重 `quotaProviderID` 集合，映射到 `statuses` 里匹配
+    /// `kind.quotaProviderID` 的 status.id：**输出顺序跟随 statuses**（调用方传
+    /// 的是展示顺序，与刷新请求次序同源）、按 status.id 去重、匹配不到的
+    /// （段里有贡献行但已不在列表里的 provider）忽略。
+    func refreshProviderStatusIDs(in statuses: [ProviderStatus]) -> [String] {
+        let contributedQuotaProviderIDs = Set(rows.map(\.quotaProviderID))
+        var emittedIDs: Set<String> = []
+        return statuses.compactMap { status in
+            guard contributedQuotaProviderIDs.contains(status.kind.quotaProviderID),
+                  emittedIDs.insert(status.id).inserted else { return nil }
+            return status.id
+        }
+    }
 }
 
 /// 状态栏下拉菜单的 Harness 视角数据：全局今日汇总 + 按客户端分段的今日用量。

@@ -18,17 +18,16 @@ struct HarnessUsageMenuView: View {
     let summary: HarnessTodaySummary
     /// 底部的 provider 兜底行（见 `ProviderStatusStripView`）。空快照不渲染任何东西。
     var providerStrip: ProviderStatusStrip.Snapshot = ProviderStatusStrip.Snapshot(entries: [], hiddenCount: 0)
-    /// 段头右键菜单的两条动作。默认空实现：菜单内容在任何只读渲染（测试、预览）
-    /// 里都能构造，右键菜单的存在与否由调用方决定。
+    /// header「立即刷新全部」与 hover 卡时间戳点击（环境键 `\.cardManualRefreshAction`）
+    /// 共用的强制刷新动作。默认空实现：菜单内容在任何只读渲染（测试、预览）
+    /// 里都能构造。
     var onRefreshAll: () -> Void = {}
-    /// 兜底行单个 provider 的「刷新该 Provider」动作。参数是 providerID，
+    /// 段头右键「刷新 <客户端名>」：按该段今日贡献行刷新涉及的 provider 卡。
+    /// 动作实现由 `MenuContentView` 注入（它持有 `AppState`）。
+    var onRefreshSection: (HarnessSection) -> Void = { _ in }
+    /// 兜底行单个 provider 的刷新动作（左键点按）。参数是 providerID，
     /// 刷新实现由 `MenuContentView` 注入（它持有 `AppState`）。
     var onRefreshProvider: (String) -> Void = { _ in }
-    /// 是否正有刷新事务在飞。透传给兜底行：刷新期间把单刷菜单项置灰，
-    /// 口径与 header 那个转圈按钮同源（`AppState.isRefreshJobActive`，全局粒度，
-    /// 不是单卡粒度——单卡粒度这套状态里没有，不硬造）。
-    var isRefreshJobActive: Bool = false
-    var onOpenConfigFile: () -> Void = {}
 
     var body: some View {
         VStack(alignment: .leading, spacing: HarnessUsageMenuView.sectionSpacing) {
@@ -39,16 +38,14 @@ struct HarnessUsageMenuView: View {
                 ForEach(summary.sections) { section in
                     HarnessSectionView(
                         section: section,
-                        onRefreshAll: onRefreshAll,
-                        onOpenConfigFile: onOpenConfigFile
+                        onRefreshSection: onRefreshSection
                     )
                 }
             }
             ProviderStatusStripView(
                 snapshot: providerStrip,
                 onRefreshAll: onRefreshAll,
-                onRefreshProvider: onRefreshProvider,
-                isRefreshJobActive: isRefreshJobActive
+                onRefreshProvider: onRefreshProvider
             )
         }
     }
@@ -143,9 +140,8 @@ struct HarnessUsageMenuView: View {
 /// 真正被渲染的那棵树了。同一约定见 `SettingsView.clientProviderDisclosure`。
 struct HarnessSectionView: View {
     let section: HarnessSection
-    /// 段头右键菜单的两条动作（刷新 / 打开配置文件）。
-    var onRefreshAll: () -> Void = {}
-    var onOpenConfigFile: () -> Void = {}
+    /// 段头右键「刷新 <客户端名>」：按本段今日贡献行刷新涉及的 provider 卡。
+    var onRefreshSection: (HarnessSection) -> Void = { _ in }
 
     var body: some View {
         // 行距取行视图自己的常量（比段间距小），"换了个客户端"才比"换了个模型"醒目。
@@ -162,8 +158,9 @@ struct HarnessSectionView: View {
     /// （OpenCode / DSH / ZCode）必然混币，必须折算成 CNY 总额而不是裸相加。
     ///
     /// 右键菜单挂在**段头**（不是整段）：菜单内容区现在是客户端视角，右键一个
-    /// 段名才是"针对这些数据"的语义；两条动作沿用改造前 provider 卡的同名动作
-    /// （刷新全部 / 打开配置文件），动作实现由 `MenuContentView` 注入。
+    /// 段名才是"针对这些数据"的语义；「刷新 <客户端名>」按本段今日贡献行刷新
+    /// 涉及的 provider 卡（`HarnessSection.refreshProviderStatusIDs(in:)`），
+    /// 动作实现由 `MenuContentView` 注入。
     private var header: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(alignment: .firstTextBaseline, spacing: 5) {
@@ -188,8 +185,7 @@ struct HarnessSectionView: View {
                 MenuHairline.horizontal
             }
             .contextMenu {
-                Button("立即刷新全部", action: onRefreshAll)
-                Button("打开配置文件", action: onOpenConfigFile)
+                Button("刷新 \(section.displayName)") { onRefreshSection(section) }
             }
             // 截断提示只在该段的数据源真的被截断时出现：数字本身仍然是"对"的，
             // 只是"不全"——不说就等于把一份残缺统计当完整统计读。
@@ -231,20 +227,18 @@ struct HarnessSectionView: View {
 ///
 /// hover 任一元素 → 独立 `NSPanel` 弹出**完整 `ProviderCardView(status:)`**
 /// （`HoverInfoRow` + `HoverPanelController`，与菜单里其它 hover 详情同一机制）。
-/// 卡片按 `.alwaysVisible` 渲染：浮层 `ignoresMouseEvents = true`，在里面再要求
-/// "悬停才展开"等于要求一个正在被移开的窗口被悬停，那些折叠区永远展不开
-/// （与 `EdgeDockController+Popover.popoverContent` 同一理由）。
+/// 卡片按 `.alwaysVisible` 渲染：浮层是随行 hover 显隐的弹层，在里面再要求
+/// "悬停才展开"等于在 hover 驱动的窗口里再造一层 hover 依赖，弹层收起的瞬间
+/// 折叠区跟着失联（与 `EdgeDockController+Popover.popoverContent` 同一理由）。
 ///
-/// 一个元素上叠着**三种交互**，分工是：
+/// 一个元素上叠着**两种交互**，分工是：
 ///
 /// - **左键点按** → 立即刷新这一个 provider。菜单主体改成客户端视角后，这一行
-///   元素是面板上唯一能"左键点到某个具体 provider"的地方：hover 浮层
-///   `ignoresMouseEvents` 穿透、点不了，header 的「立即刷新全部」范围又太大。
+///   元素是面板上唯一能"点到某个具体 provider"的地方：hover 卡上可点的只有
+///   「刷新全部」级的时间戳动作，header 的「立即刷新全部」范围又太大。
 ///   连点的安全性由 `AppState.refreshOne` 的全局在飞闸门兜（见下），UI 侧
-///   不做禁用态。
-/// - **右键** → 「刷新 <provider>」菜单项。同一个动作的显式入口，适合"我知道
-///   我要点哪个"的场景；与左键走**同一份** `RefreshMenuItem`（`refreshMenuItem(for:)`），
-///   两条路只有一个区别：怎么触发。
+///   不做禁用态；曾经还有右键菜单提供同一动作的显式入口，与左键完全重复后
+///   删掉了。
 /// - **hover** → 弹完整卡，纯只读，**不触发任何网络请求**。
 struct ProviderStatusStripView: View {
     let snapshot: ProviderStatusStrip.Snapshot
@@ -252,25 +246,19 @@ struct ProviderStatusStripView: View {
     /// （`MenuContentView.refreshAllFromMenu` → `AppState.refreshAll`）。经环境键
     /// `\.cardManualRefreshAction` 注进 hover 卡，跟随 detail 闭包进入浮层宿主。
     var onRefreshAll: () -> Void = {}
-    /// 单个 provider 的「刷新该 Provider」。参数是 providerID，实际刷新路径由
+    /// 单个 provider 的刷新动作。参数是 providerID，实际刷新路径由
     /// 宿主（`MenuContentView` → `AppState.refreshOne`）决定，这一层不碰网络。
     var onRefreshProvider: (String) -> Void = { _ in }
-    /// 刷新事务在飞时把菜单项置灰，避免连点叠加。全局粒度，同 header 刷新按钮。
-    var isRefreshJobActive: Bool = false
 
-    /// 右键菜单项 / 左键点按**共用**的这份动作的**数据形态**（不含 SwiftUI 视图）。
+    /// 左键点按动作的**数据形态**（不含 SwiftUI 视图）。
     ///
-    /// 单独提成值类型，是为了让"菜单项标题长什么样""点下去交出去的是不是这张
-    /// provider 的 id"这两条可以被单测钉住：contextMenu 的 `Button` 与
-    /// `onTapGesture` 在 SwiftUI 里都没有可寻址的测试缝，断言只能落在喂给它们的
-    /// 这份数据与 `perform` 的路由上。
+    /// 单独提成值类型，是为了让"点下去交出去的是不是这张 provider 的 id"可以被
+    /// 单测钉住：`onTapGesture` 在 SwiftUI 里没有可寻址的测试缝，断言只能落在
+    /// 喂给它的这份数据与 `perform` 的路由上。
     struct RefreshMenuItem: Identifiable, Equatable, Sendable {
         let providerID: String
         let displayName: String
         var id: String { providerID }
-        /// 菜单文案。旧 provider 卡的单刷项叫「立即刷新」，这里带上 provider 名，
-        /// 因为一行里有多枚同款菜单项，不带名用户分不清点的是哪一个。
-        var title: String { "刷新 \(displayName)" }
         /// 执行：把 providerID 原样交回宿主。
         func perform(_ onRefresh: (String) -> Void) {
             onRefresh(providerID)
@@ -283,9 +271,9 @@ struct ProviderStatusStripView: View {
         RefreshMenuItem(providerID: entry.status.id, displayName: entry.displayName)
     }
 
-    /// 左键点按的动作闭包。与右键菜单项**共用同一个 `RefreshMenuItem`**——
-    /// 两条交互只有一个区别：怎么触发，执行路径（providerID → 宿主注入的刷新
-    /// 闭包 → `AppState.refreshOne`）完全共用，不各写一份。
+    /// 左键点按的动作闭包：只是 `RefreshMenuItem.perform` 的包装——数据形态
+    /// （点的是哪个 provider）与执行（交回宿主 → `AppState.refreshOne`）分离，
+    /// 让两边都能被单测独立钉住。
     ///
     /// 提成 `static` 是**测试缝**：`onTapGesture` 在 SwiftUI 里没有可寻址的接口，
     /// 「点按交出去的是不是这张 provider 的 id」只能钉在这个闭包上。
@@ -310,8 +298,8 @@ struct ProviderStatusStripView: View {
 
     /// hover 卡的折叠方式，**必须钉死成 `.alwaysVisible`**。
     ///
-    /// `HoverPanelController` 的浮层 `ignoresMouseEvents = true`：它**收不到**鼠标
-    /// 事件，所以卡里那些「悬停才展开」的部分永远展不开。不钉这个值时（环境默认
+    /// 浮层是随行 hover 显隐的弹层，卡里那些「悬停才展开」的部分在弹层收起的
+    /// 瞬间跟着失联，在弹层里再造 hover 依赖只会更脆；不钉这个值时（环境默认
     /// 是 `.onHover`）弹出来的是一张缺重置卡、缺高峰期倒计时、额度行也是简版的卡
     /// ——比不弹还糟。理由与 `EdgeDockController+Popover.popoverContent` 完全一致。
     ///
@@ -354,24 +342,23 @@ struct ProviderStatusStripView: View {
         }
     }
 
-    /// 单个 provider 的极简元素 + 它的完整卡浮层，以及叠在元素上的三种交互。
+    /// 单个 provider 的极简元素 + 它的完整卡浮层，以及叠在元素上的两种交互。
     ///
-    /// 右键菜单挂在**整个元素**上（不是浮层里的卡）：菜单改版成客户端视角后，
-    /// 这一行是菜单里唯一还带 provider 身份的地方，单刷入口必须回到这里——
-    /// 旧 provider 卡的「立即刷新」是 3b3538e 随卡片一起下线的。
+    /// 单刷入口（左键点按）挂在**整个元素**上（不是浮层里的卡）：菜单改版成
+    /// 客户端视角后，这一行是菜单里唯一还带 provider 身份的地方，单刷入口必须
+    /// 回到这里——旧 provider 卡的「立即刷新」是 3b3538e 随卡片一起下线的。
     ///
     /// 手势的挂载点说明（为什么这样挂不互相破坏）：
     /// - `onTapGesture` 挂在 `HoverInfoRow` **外面**：它加的是 SwiftUI 手势识别，
     ///   而 hover 走的是 `HoverTrackingView` 的 NSView tracking area，两条通道互不
     ///   干涉，hover 弹卡照旧。命中区域直接沿用 `HoverInfoRow` 自己那层
     ///   `contentShape`（6pt 圆角矩形），已经盖住图标与胶囊之间那 3pt 缝。
-    /// - `contextMenu` 同样挂在外面：右键是独立事件路径，与左键手势不冲突。
-    /// - **不做 `isRefreshJobActive` 置灰**（右键菜单项做了）：重复点按交出去的还是
+    /// - **不做 `isRefreshJobActive` 置灰**：重复点按交出去的还是
     ///   同一个 `AppState.refreshOne`，它开头就有全局在飞闸门
     ///   （`refreshScheduler.beginExternalJob()`，在飞则整次忽略并只重锚被刷的
-    ///   provider）。UI 再维护一份"这一行点不动"的状态只会和 `isRefreshJobActive`
-    ///   的全局口径漂移，而且用户连点时看到"没反应"比看到"已在刷新"更困惑——
-    ///   反馈交给既有状态胶囊自然变化（更新中 → HH:mm）。
+    ///   provider）。UI 再维护一份"这一行点不动"的状态只会和
+    ///   `AppState.isRefreshJobActive` 的全局口径漂移，而且用户连点时看到"没反应"
+    ///   比看到"已在刷新"更困惑——反馈交给既有状态胶囊自然变化（更新中 → HH:mm）。
     private func entryView(_ entry: ProviderStatusStrip.Entry) -> some View {
         let item = Self.refreshMenuItem(for: entry)
         return HoverInfoRow {
@@ -392,12 +379,6 @@ struct ProviderStatusStripView: View {
                 .frame(width: Self.cardWidth)
         }
         .onTapGesture(perform: Self.tapHandler(for: item, onRefresh: onRefreshProvider))
-        .contextMenu {
-            Button(item.title) {
-                item.perform(onRefreshProvider)
-            }
-            .disabled(isRefreshJobActive)
-        }
     }
 }
 

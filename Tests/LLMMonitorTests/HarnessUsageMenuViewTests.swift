@@ -160,31 +160,25 @@ final class HarnessUsageMenuViewTests: XCTestCase {
         )
     }
 
-    // MARK: - 兜底行的三种交互（左键点按 / 右键菜单 / hover）
+    // MARK: - 兜底行的两种交互（左键点按 / hover）
 
-    /// 左键点按交出去的是**这张** provider 的 id，且与右键菜单项走**同一份**
-    /// `RefreshMenuItem`——两条路只有一个区别：怎么触发。
+    /// 左键点按交出去的是**这张** provider 的 id：`RefreshMenuItem` 只是 tap 挂的
+    /// 数据形态，`tapHandler` 内部就是它的 `perform`。
     ///
     /// 这条钉的是 `onTapGesture` 实际挂的那个闭包（`ProviderStatusStripView.tapHandler`，
     /// SwiftUI 手势本身没有可寻址的测试缝）。串错 id 就是"点 A 刷 B"，在真实菜单里
     /// 只有联网之后才看得出来。
-    func testTapRoutesTheSameProviderIDAsTheContextMenuItem() {
+    func testTapHandlerRoutesEachEntrysOwnProviderID() {
         let snapshot = ProviderStatusStrip.snapshot(
             statuses: [Self.codexFixture(), Self.deepseekFixture()],
             limit: 4
         )
         var tapped: [String] = []
-        var clickedInMenu: [String] = []
         for entry in snapshot.entries {
             let item = ProviderStatusStripView.refreshMenuItem(for: entry)
             ProviderStatusStripView.tapHandler(for: item) { tapped.append($0) }()
-            item.perform { clickedInMenu.append($0) }
         }
         XCTAssertFalse(tapped.isEmpty, "fixture 必须真的有 provider，否则量的是空行")
-        XCTAssertEqual(
-            tapped, clickedInMenu,
-            "左键点按与右键菜单项必须交出同一个 providerID（点 A 刷 B 是最坏的错法）"
-        )
         XCTAssertEqual(
             Set(tapped), Set(snapshot.entries.map(\.status.id)),
             "每个在场的 provider 都能点到自己，且只点自己"
@@ -219,8 +213,7 @@ final class HarnessUsageMenuViewTests: XCTestCase {
         let hosting = NSHostingView(
             rootView: AnyView(ProviderStatusStripView(
                 snapshot: snapshot,
-                onRefreshProvider: { _ in },
-                isRefreshJobActive: false
+                onRefreshProvider: { _ in }
             ))
         )
         hosting.frame = CGRect(x: 0, y: 0, width: 10_000, height: 10_000)

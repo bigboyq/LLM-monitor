@@ -16,7 +16,7 @@ flowchart TD
   MenuContentView --> Harness["HarnessUsageMenuView\n(客户端视角: 汇总/分段/兜底行)"]
   MenuContentView --> AutoClose["MenuWindowAutoCloseBridge"]
   Harness --> Strip["ProviderStatusStripView\n(兜底行, hover 出完整卡片)"]
-  Strip --> HoverPanel["floating hover panel\nNSPanel + parent-child\n(ignoresMouseEvents)"]
+  Strip --> HoverPanel["floating hover panel\nNSPanel + parent-child\n(clickable, 0.25s hover bridge)"]
 
   AppState --> Statuses["[ProviderStatus]"]
   AppState --> LoopA["循环 A: ProviderRefreshScheduler\n(单 Task 额度循环 / 最早截止时间休眠 / 并发隔离)"]
@@ -153,9 +153,11 @@ Manual refresh paths:
 | UI action | Method |
 |---|---|
 | Header refresh button | `AppState.refreshAll()` |
-| Card context menu "立即刷新" | `AppState.refreshOne(providerID:)` |
+| Provider card timestamp tap (menu hover / dock popover) | `AppState.refreshAll()` |
+| Provider strip left click | `AppState.refreshOne(providerID:)` |
+| Section header right-click 「刷新 <客户端名>」 | sequential `AppState.refreshOne` over the section's contributed providers (`HarnessSection.refreshProviderStatusIDs`) |
 | Menu open with any `.ready` provider | `MenuContentView.onAppear` triggers `refreshAll()` |
-| Right-click menu bar icon | `MenuBarRightClickHandler.refreshClicked` |
+| Right-click menu bar icon 刷新 | `MenuBarRightClickHandler.refreshClicked`；同一菜单的「配置」项（`configClicked`）经 `AppState.openConfigFile()` 用默认编辑器打开 `config.json` |
 
 `refreshAll()` starts one child task per refreshable provider. `ProviderRefreshScheduler.markInFlight`
 deduplicates so timer + manual + menu-open fire on the same provider collapse to a

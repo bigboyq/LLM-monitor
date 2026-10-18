@@ -6,7 +6,8 @@ import AppKit
 /// 菜单内容区已改为 Harness（客户端）视角，**不再渲染 provider 卡**：额度那一面
 /// 由边缘状态窗浮层与菜单底部的 provider 兜底行（`ProviderStatusStripView`，hover
 /// 弹出的就是这张卡）承担。因此这张卡只剩**一个**渲染宿主形态：`.alwaysVisible`
-/// （浮层 `ignoresMouseEvents = true`，折叠区展不开，就地展开是唯一选项）。
+/// （两个宿主都是随行 hover 显隐的弹层，卡的生命周期不归自己管，在里面再造
+/// 「悬停才展开」的依赖只会更脆——就地展开是唯一稳妥选项）。
 ///
 /// 曾经按 `HoverRevealMode` 分叉的规则至此**全部收敛**，这个类型只剩下面注释里
 /// 记录的历史。收敛的判据只有一条：`hoverRevealMode` 的两个注入点

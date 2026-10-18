@@ -402,7 +402,78 @@ final class HarnessTodaySummaryTests: XCTestCase {
         XCTAssertNil(summary.localUsageScannedAt)
     }
 
+    // MARK: - 段头右键的刷新目标（refreshProviderStatusIDs）
+
+    /// 段头右键「刷新 <客户端名>」要刷的 provider 卡：本段行涉及的
+    /// `quotaProviderID` → 匹配的 status.id，**输出顺序跟随传入 statuses**、
+    /// 按 status.id 去重、段里没贡献的 provider 忽略。
+    ///
+    /// ZCode 段是关键场景：GLM / minimax / deepseek 三张卡的分片行同段共存，
+    /// 一次右键必须刷齐三张且只刷这三张；段的行序（按今日 token 排）与卡序
+    /// （用户配置的展示序）没有关联，输出必须以 statuses 为准。
+    func testRefreshProviderStatusIDsFollowsStatusOrderAndSkipsUnrelated() {
+        func row(quotaProviderID: String, modelName: String) -> HarnessModelRow {
+            HarnessModelRow(
+                dayStart: today,
+                clientID: ClientID.zcode,
+                quotaProviderID: quotaProviderID,
+                modelName: modelName,
+                samples: [sample(model: modelName, at: now, input: 100, promptID: modelName)],
+                calendar: calendar
+            )
+        }
+        let section = HarnessSection(
+            clientID: ClientID.zcode,
+            displayName: "ZCode",
+            iconSystemName: "chevron.left.forwardslash.chevron.right",
+            buckets: TokenUsageBuckets.zero,
+            value: MixedCurrencyEstimate(usd: 0, cny: 0),
+            rows: [
+                row(quotaProviderID: QuotaProviderID.zhipu, modelName: "GLM-5.3"),
+                row(quotaProviderID: QuotaProviderID.minimax, modelName: "minimax-m2"),
+                row(quotaProviderID: QuotaProviderID.minimax, modelName: "minimax-m1"),
+                row(quotaProviderID: QuotaProviderID.deepseek, modelName: "deepseek-chat")
+            ],
+            isTruncated: false
+        )
+        // statuses 顺序故意与段内行序不同，且把段里没贡献的 codex 卡排最前。
+        let statuses = [
+            minimalStatus(id: "codex_chatgpt", kind: .codexChatGpt),
+            minimalStatus(id: "deepseek", kind: .deepseek),
+            minimalStatus(id: "glm_coding_plan", kind: .glmCodingPlan),
+            minimalStatus(id: "minimax_token_plan", kind: .minimaxTokenPlan)
+        ]
+
+        XCTAssertEqual(
+            section.refreshProviderStatusIDs(in: statuses),
+            ["deepseek", "glm_coding_plan", "minimax_token_plan"],
+            "顺序跟随 statuses；未贡献的 codex 卡被忽略；两行 minimax 分片只映射一卡"
+        )
+
+        // 列表里一个匹配的 provider 都没有（如该段贡献的卡全部不在场）→ 空列表，
+        // 调用方不必发起任何刷新任务。
+        XCTAssertTrue(
+            section.refreshProviderStatusIDs(
+                in: [minimalStatus(id: "codex_chatgpt", kind: .codexChatGpt)]
+            ).isEmpty
+        )
+    }
+
     // MARK: - fixtures
+
+    /// 最小可用 `ProviderStatus`：只有 id 与 kind 是有效信息（右键刷新目标的
+    /// 映射只看 `kind.quotaProviderID` 与 `id`），状态一律未配置即可。
+    private func minimalStatus(id: String, kind: ProviderKind) -> ProviderStatus {
+        ProviderStatus(
+            id: id,
+            displayName: id,
+            kind: kind,
+            iconSystemName: "circle",
+            accentColor: .chatgpt,
+            refreshIntervalSeconds: 300,
+            state: .notConfigured(reason: "test")
+        )
+    }
 
     private func sample(
         model: String?,

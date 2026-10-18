@@ -25,7 +25,8 @@ extension EnvironmentValues {
         set { self[HoverRevealModeKey.self] = newValue }
     }
 
-    /// 「额度窗口」卡片内切换 segment 是否可编辑（dock popover 开启，菜单 strip hover 保持鼠标穿透并隐藏控件）。
+    /// 「额度窗口」卡片内切换 segment 是否可编辑（dock popover 开启；菜单 hover 关闭它，
+    /// 防止划过信息行时误触编辑控件——菜单 hover 卡本身已可点击，与此开关互不影响）。
     var quotaWindowSegmentEditable: Bool {
         get { self[QuotaWindowSegmentEditableKey.self] }
         set { self[QuotaWindowSegmentEditableKey.self] = newValue }
@@ -36,7 +37,9 @@ private struct QuotaWindowSegmentEditableKey: EnvironmentKey {
     static let defaultValue = false
 }
 
-/// Hover 即显的轻量浮层。只读展示，不接收点击，避免把菜单交互复杂化。
+/// Hover 即显的轻量浮层。信息行本身只负责触发；弹出的详情卡（`NSPanel`）**可点击**——
+/// 卡上时间戳 onTapGesture 触发手动刷新（环境键由宿主注入），segment 编辑控件仍由
+/// `quotaWindowSegmentEditable = false` 关闭，避免把菜单交互复杂化。
 /// 三个 provider 的 footer / card 全部走 `HoverInfoRow` 统一触发，详情 view 由调用方传入。
 struct HoverInfoRow<Content: View, Detail: View>: View {
     @Environment(\.hoverRevealMode) private var revealMode
@@ -87,7 +90,9 @@ struct HoverInfoRow<Content: View, Detail: View>: View {
                         )
                     },
                     onExit: {
-                        HoverPanelController.shared.hide()
+                        // 不能直接 hide：鼠标正从行移向详情卡，卡必须等
+                        // scheduleHide 的悬停桥宽限（含面板内侧 entered 取消）。
+                        HoverPanelController.shared.scheduleHide()
                     }
                 )
             )
@@ -211,6 +216,48 @@ private final class TrackingNSView: NSView {
     }
 }
 
+/// 详情卡（NSPanel）的内容容器：hostingView 钉在四边，自己只铺一层全幅
+/// NSTrackingArea，把"鼠标是否在卡上"上报给 HoverPanelController——悬停桥的
+/// **面板内侧**半边（行内侧是上面的 TrackingNSView）。hitTest 保持默认实现：
+/// 卡要接点击（时间戳刷新），不能像行内背景跟踪视图那样返回 nil。
+private final class PanelTrackingView: NSView {
+    var onEnter: (() -> Void)?
+    var onExit: (() -> Void)?
+    private var trackingAreaRef: NSTrackingArea?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        updateTrackingAreas()
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+
+        if let trackingAreaRef {
+            removeTrackingArea(trackingAreaRef)
+        }
+
+        // .inVisibleRect：面板每次 present 都 setContentSize/setFrame，跟着
+        // 可见矩形走就不用在尺寸变化后手动重建。
+        let options: NSTrackingArea.Options = [
+            .mouseEnteredAndExited,
+            .activeAlways,
+            .inVisibleRect,
+        ]
+        let trackingAreaRef = NSTrackingArea(rect: .zero, options: options, owner: self, userInfo: nil)
+        addTrackingArea(trackingAreaRef)
+        self.trackingAreaRef = trackingAreaRef
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        onEnter?()
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        onExit?()
+    }
+}
+
 @MainActor
 final class HoverPanelController {
     static let shared = HoverPanelController()
@@ -230,14 +277,26 @@ final class HoverPanelController {
     let displayClock = DisplayClock()
 
     private var panel: NSPanel?
+    private var panelTrackingView: PanelTrackingView?
     private var hostingView: NSHostingView<AnyView>?
     private var pendingDetail: AnyView?
     private var pendingSample: HoverSample?
     private var showWorkItem: DispatchWorkItem?
+    /// 悬停桥的延迟隐藏任务：行退出后给鼠标留出移向卡上的时间窗。
+    private var hideWorkItem: DispatchWorkItem?
+    /// 鼠标当前是否真的在卡上。scheduleHide 的守卫：行退出（菜单窗口）与面板
+    /// 进入（NSPanel）分属两个窗口，事件到达顺序不保证——若先 panelEntered 后
+    /// rowExited，没有这个守卫的话，鼠标明明已停在卡上仍会被 rowExited 安排隐藏。
+    private var isMouseInsidePanel = false
 
     private init() {}
 
     func hoverMoved(detail: AnyView, sample: HoverSample, delay: TimeInterval) {
+        // 鼠标从卡上移回信息行时，可能仍有一笔 scheduleHide 在途（0.25s 未到）；
+        // 先取消，否则防抖缓冲的 0.08s 窗口内卡会被延迟隐藏杀掉。
+        hideWorkItem?.cancel()
+        hideWorkItem = nil
+
         pendingDetail = detail
         pendingSample = sample
 
@@ -256,13 +315,45 @@ final class HoverPanelController {
         DispatchQueue.main.asyncAfter(deadline: .now() + effectiveDelay, execute: item)
     }
 
+    /// 立即隐藏：菜单整体关闭（MenuWindowAutoCloseBridge）等"必须当场消失"的
+    /// 路径专用；顺带取消在途的延迟隐藏，避免关掉菜单后卡又被 workItem 弹回。
     func hide() {
         showWorkItem?.cancel()
         showWorkItem = nil
+        hideWorkItem?.cancel()
+        hideWorkItem = nil
+        isMouseInsidePanel = false
         pendingDetail = nil
         pendingSample = nil
         panel?.orderOut(nil)
         displayClock.stop()
+    }
+
+    /// 悬停桥的延迟隐藏：鼠标从信息行移向卡上要越过两窗口间的 cursorGap，
+    /// 且行 mouseExited 与面板 mouseEntered 到达顺序不保证，直接 hide 会让卡
+    /// 死在鼠标扑向它的路上。0.25s 比行侧 hoverMoved 的 0.08s 防抖更长（在途
+    /// 期间回到行/进入面板都会被取消），又不至于让卡在鼠标真正离开后残留太久。
+    func scheduleHide() {
+        // 鼠标仍在卡上（跨窗口事件乱序）时，这次"退出"是假的，直接吞掉。
+        guard !isMouseInsidePanel else { return }
+        hideWorkItem?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            self?.hideWorkItem = nil
+            self?.hide()
+        }
+        hideWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: item)
+    }
+
+    /// 面板内侧跟踪回调：进入卡面 → 取消在途隐藏；离开卡面 → 安排延迟隐藏。
+    private func panelHoverChanged(_ inside: Bool) {
+        isMouseInsidePanel = inside
+        if inside {
+            hideWorkItem?.cancel()
+            hideWorkItem = nil
+        } else {
+            scheduleHide()
+        }
     }
 
     func updateContent(detail: AnyView) {
@@ -332,7 +423,10 @@ final class HoverPanelController {
         panel.isOpaque = false
         panel.hasShadow = true
         panel.backgroundColor = .clear
-        panel.ignoresMouseEvents = true
+        // 卡要接收点击（时间戳 onTapGesture 手动刷新）。保留 .nonactivatingPanel：
+        // 点击卡不能抢菜单窗口的 key——菜单靠焦点丢失关闭，抢了 key 等于一点卡
+        // 就把菜单关了。卡是菜单窗口的 child window，点击落在卡上不会关菜单。
+        panel.ignoresMouseEvents = false
 
         self.panel = panel
         return panel
@@ -340,11 +434,30 @@ final class HoverPanelController {
 
     private func ensureHostingView() -> NSHostingView<AnyView> {
         if let hostingView { return hostingView }
+        // contentView 是跟踪容器而非 hostingView 本身：容器负责"鼠标是否在卡上"
+        // 的进入/退出上报，hostingView 钉在四边只管渲染。
+        let tracking = ensurePanelTrackingView()
         let hostingView = NSHostingView(rootView: AnyView(EmptyView()))
         hostingView.translatesAutoresizingMaskIntoConstraints = false
-        panel?.contentView = hostingView
+        tracking.addSubview(hostingView)
+        NSLayoutConstraint.activate([
+            hostingView.leadingAnchor.constraint(equalTo: tracking.leadingAnchor),
+            hostingView.trailingAnchor.constraint(equalTo: tracking.trailingAnchor),
+            hostingView.topAnchor.constraint(equalTo: tracking.topAnchor),
+            hostingView.bottomAnchor.constraint(equalTo: tracking.bottomAnchor),
+        ])
         self.hostingView = hostingView
         return hostingView
+    }
+
+    private func ensurePanelTrackingView() -> PanelTrackingView {
+        if let panelTrackingView { return panelTrackingView }
+        let tracking = PanelTrackingView()
+        tracking.onEnter = { [weak self] in self?.panelHoverChanged(true) }
+        tracking.onExit = { [weak self] in self?.panelHoverChanged(false) }
+        panel?.contentView = tracking
+        self.panelTrackingView = tracking
+        return tracking
     }
 
     private func frameForPanel(size: CGSize, sample: HoverSample) -> CGRect {

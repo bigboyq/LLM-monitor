@@ -1,7 +1,7 @@
 import AppKit
 import Foundation
 
-/// 拦截菜单栏图标的右键点击事件，显示“刷新”和“退出”菜单。
+/// 拦截菜单栏图标的右键点击事件，显示“刷新”“配置”和“退出”菜单。
 @MainActor
 final class MenuBarRightClickHandler: NSObject, NSMenuDelegate {
     private var statusButton: NSButton?
@@ -93,7 +93,13 @@ final class MenuBarRightClickHandler: NSObject, NSMenuDelegate {
         let refreshItem = NSMenuItem(title: "刷新", action: #selector(refreshClicked), keyEquivalent: "r")
         refreshItem.target = self
         menu.addItem(refreshItem)
-        
+
+        // 打开配置文件：与菜单面板空态里那个「打开配置文件」按钮同一路径
+        // （`AppState.openConfigFile`）。不带快捷键——r/q 之外不挤占系统键位。
+        let configItem = NSMenuItem(title: "配置", action: #selector(configClicked), keyEquivalent: "")
+        configItem.target = self
+        menu.addItem(configItem)
+
         menu.addItem(NSMenuItem.separator())
         
         let quitItem = NSMenuItem(title: "退出", action: #selector(quitClicked), keyEquivalent: "q")
@@ -111,6 +117,11 @@ final class MenuBarRightClickHandler: NSObject, NSMenuDelegate {
         Task {
             await state?.refreshAll()
         }
+    }
+
+    @objc private func configClicked() {
+        logInfo("RightClickHandler: 触发右键菜单打开配置文件")
+        state?.openConfigFile()
     }
     
     @objc private func quitClicked() {

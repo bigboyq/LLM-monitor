@@ -243,9 +243,8 @@ struct MenuContentView: View {
                             )
                         ),
                         onRefreshAll: refreshAllFromMenu,
-                        onRefreshProvider: refreshProviderFromMenu,
-                        isRefreshJobActive: state.isRefreshJobActive,
-                        onOpenConfigFile: { state.openConfigFile() }
+                        onRefreshSection: refreshSectionFromMenu,
+                        onRefreshProvider: refreshProviderFromMenu
                     )
                 }
                 .padding(.horizontal, LayoutMetrics.cardColumnHorizontalPadding)
@@ -267,13 +266,15 @@ struct MenuContentView: View {
         summaryCache.value(for: state.statuses.filter(\.isEnabled))
     }
 
-    /// 「立即刷新全部」的唯一入口：headerBar 那个刷新按钮与段头右键菜单共用它，
-    /// 两处不各写一份以免口径漂移。
+    /// 「立即刷新全部」的入口：只剩 headerBar 那个刷新按钮，外加 hover 卡时间戳
+    /// 的点击动作（经 `onRefreshAll` → 环境键 `\.cardManualRefreshAction` 进浮层）。
+    /// 段头右键已改为按段刷新（`refreshSectionFromMenu`），不再共用这条全量路径。
     private func refreshAllFromMenu() {
         Task { await state.refreshAll() }
     }
 
-    /// 「刷新该 Provider」的唯一入口：兜底行每个 provider 元素的右键菜单项。
+    /// 「刷新该 Provider」的唯一入口：兜底行每个 provider 元素的**左键点按**
+    /// （右键菜单已删——它与左键是同一个动作的重复入口）。
     ///
     /// 走 `AppState.refreshOne(providerID:)`——改造前 provider 卡的「立即刷新」
     /// 用的就是它（3b3538e 把那批卡从菜单里删掉时入口一起没了）。`refreshOne`
@@ -282,6 +283,25 @@ struct MenuContentView: View {
     /// （回归见 `AppStateTests.testRefreshOneReanchorsOnlyRefreshedProvider`）。
     private func refreshProviderFromMenu(_ providerID: String) {
         Task { await state.refreshOne(providerID: providerID) }
+    }
+
+    /// 段头右键「刷新 <客户端名>」的唯一入口：按本段今日贡献行刷新涉及的
+    /// provider 卡。
+    ///
+    /// 不走 `refreshAll`：右键一个段的语义是"**这些**数据旧了"，只动本段贡献的
+    /// 那几张卡的额度抓取与重锚，其他 provider 的排期不被重锚——与
+    /// `refreshProviderFromMenu` 选 `refreshOne` 的理由同源。多个 provider 串行
+    /// 逐个刷（`refreshOne` 自带全局在飞闸门与用量补拍）：串行让每张卡都完整
+    /// 走一遍"发起抓取 → 重锚自己"，不与在飞事务抢闸门；段内跨卡数量最多三张
+    /// （ZCode），顺序发出的延迟可忽略。
+    private func refreshSectionFromMenu(_ section: HarnessSection) {
+        let ids = section.refreshProviderStatusIDs(in: state.statuses)
+        guard !ids.isEmpty else { return }
+        Task {
+            for id in ids {
+                await state.refreshOne(providerID: id)
+            }
+        }
     }
 
     /// Four registered cards can all be `.notConfigured` on first launch because
