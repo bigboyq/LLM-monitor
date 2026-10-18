@@ -459,4 +459,4 @@ These are documented product boundaries:
   have their own SQLite readers, Antigravity is pure RPC, and Codex parses JSONL on
   demand for the 7-day chart.
 
-> 核对基线：2026-10-19 · 代码 3980be1
+> 核对基线：2026-10-19 · 代码 dde25f8
