@@ -286,4 +286,41 @@ final class EdgeDockPopoverTests: EdgeDockTestCase {
             )
         }
     }
+
+    // MARK: - popover 面板与宿主视图的事件/Tooltip交互配置
+
+    @MainActor
+    func testPopoverPanelAndHostingViewInteractionConfiguration() {
+        let controller = EdgeDockController.shared
+        let (panel, hosting) = controller.ensurePopoverPanel()
+
+        // 永不抢 key / main（避免失焦关窗或干扰输入焦点）
+        XCTAssertFalse(panel.canBecomeKey, "popover 面板不抢 key")
+        XCTAssertFalse(panel.canBecomeMain, "popover 面板不抢 main")
+
+        // 鼠标事件接收与移动分发
+        XCTAssertFalse(panel.ignoresMouseEvents, "popover 面板不穿透鼠标事件")
+        XCTAssertTrue(panel.acceptsMouseMovedEvents, "popover 面板接收 mouseMoved 事件（支持 onHover 与 tooltip 延迟计时）")
+
+        // 后台应用 Tooltip 启用（浮层常驻在后台 App 中弹出，必须显式开启系统 Tooltip）
+        XCTAssertTrue(panel.allowsToolTipsWhenApplicationIsInactive, "popover 面板在后台应用时支持显示 Tooltip")
+
+        // 首击穿透（避免后台点击被系统当成激活窗口点击而吞噬，导致点击无响应）
+        XCTAssertTrue(hosting.acceptsFirstMouse(for: nil), "popover 宿主视图必须接受首击（acceptsFirstMouse）")
+
+        controller.hidePopover()
+    }
+
+    // MARK: - selectedIndex 为 nil 时自动销毁与收起
+
+    @MainActor
+    func testPopoverClosesWhenSelectedIndexIsNil() {
+        let controller = EdgeDockController.shared
+        _ = controller.ensurePopoverPanel()
+        XCTAssertNotNil(controller.popoverPanel, "建窗后 popoverPanel 存在")
+
+        controller.selectedIndex = nil
+        controller.updatePopover()
+        XCTAssertNil(controller.popoverPanel, "selectedIndex 为 nil 时 updatePopover 必须调用 hidePopover 销毁面板")
+    }
 }

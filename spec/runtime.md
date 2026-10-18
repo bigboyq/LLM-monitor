@@ -153,7 +153,8 @@ Manual refresh paths:
 | UI action | Method |
 |---|---|
 | Header refresh button | `AppState.refreshAll()` |
-| Provider card timestamp tap (menu hover / dock popover) | `AppState.refreshAll()` |
+| Provider card quota timestamp（标题行胶囊，menu hover / dock popover） | `AppState.refreshOne(providerID:)` — 只刷该 provider 的额度 |
+| Provider card usage timestamp（段3 标题行） | `AppState.triggerLocalUsageRescan()` — 只重扫本地用量，不发额度请求 |
 | Provider strip left click | `AppState.refreshOne(providerID:)` |
 | Section header right-click 「刷新 <客户端名>」 | sequential `AppState.refreshOne` over the section's contributed providers (`HarnessSection.refreshProviderStatusIDs`) |
 | Menu open with any `.ready` provider | `MenuContentView.onAppear` triggers `refreshAll()` |
@@ -458,4 +459,4 @@ These are documented product boundaries:
   have their own SQLite readers, Antigravity is pure RPC, and Codex parses JSONL on
   demand for the 7-day chart.
 
-> 核对基线：2026-10-18 · 代码 d88a718
+> 核对基线：2026-10-19 · 代码 3980be1

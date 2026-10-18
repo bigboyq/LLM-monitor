@@ -18,10 +18,9 @@ struct HarnessUsageMenuView: View {
     let summary: HarnessTodaySummary
     /// 底部的 provider 兜底行（见 `ProviderStatusStripView`）。空快照不渲染任何东西。
     var providerStrip: ProviderStatusStrip.Snapshot = ProviderStatusStrip.Snapshot(entries: [], hiddenCount: 0)
-    /// header「立即刷新全部」与 hover 卡时间戳点击（环境键 `\.cardManualRefreshAction`）
-    /// 共用的强制刷新动作。默认空实现：菜单内容在任何只读渲染（测试、预览）
-    /// 里都能构造。
-    var onRefreshAll: () -> Void = {}
+    /// hover 卡 7 天区块时间戳的点击动作：只重扫本地用量计算，不发额度请求。
+    /// 默认空实现：菜单内容在任何只读渲染（测试、预览）里都能构造。
+    var onRefreshUsageRescan: () -> Void = {}
     /// 段头右键「刷新 <客户端名>」：按该段今日贡献行刷新涉及的 provider 卡。
     /// 动作实现由 `MenuContentView` 注入（它持有 `AppState`）。
     var onRefreshSection: (HarnessSection) -> Void = { _ in }
@@ -44,7 +43,7 @@ struct HarnessUsageMenuView: View {
             }
             ProviderStatusStripView(
                 snapshot: providerStrip,
-                onRefreshAll: onRefreshAll,
+                onRefreshUsageRescan: onRefreshUsageRescan,
                 onRefreshProvider: onRefreshProvider
             )
         }
@@ -242,10 +241,11 @@ struct HarnessSectionView: View {
 /// - **hover** → 弹完整卡，纯只读，**不触发任何网络请求**。
 struct ProviderStatusStripView: View {
     let snapshot: ProviderStatusStrip.Snapshot
-    /// hover 卡时间戳的点击动作：与 headerBar「立即刷新全部」同源的强制刷新
-    /// （`MenuContentView.refreshAllFromMenu` → `AppState.refreshAll`）。经环境键
-    /// `\.cardManualRefreshAction` 注进 hover 卡，跟随 detail 闭包进入浮层宿主。
-    var onRefreshAll: () -> Void = {}
+    /// hover 卡 7 天区块时间戳（本地用量新鲜度胶囊）的点击动作：只重扫本地用量
+    /// 计算，不发额度请求（`MenuContentView.refreshUsageRescanFromMenu` →
+    /// `AppState.triggerLocalUsageRescan`）。经环境键 `\.cardUsageRefreshAction`
+    /// 注进 hover 卡，跟随 detail 闭包进入浮层宿主。
+    var onRefreshUsageRescan: () -> Void = {}
     /// 单个 provider 的刷新动作。参数是 providerID，实际刷新路径由
     /// 宿主（`MenuContentView` → `AppState.refreshOne`）决定，这一层不碰网络。
     var onRefreshProvider: (String) -> Void = { _ in }
@@ -370,12 +370,15 @@ struct ProviderStatusStripView: View {
             ProviderCardView(status: entry.status)
                 .environment(\.hoverRevealMode, Self.cardRevealMode)
                 .environment(\.quotaWindowSegmentEditable, false)
-                // 卡上两处时间戳的点击刷新。必须挂在 detail 闭包内：hover 卡在
-                // `HoverPanelController` 自己的 NSHostingView 里渲染，外层
-                // （MenuContentView）的环境进不来，只有随视图显式注入的键值能
-                // 跨宿主存活——与上面两个环境键同一原因。动作来自 `onRefreshAll`
-                //（`MenuContentView` 注入的「立即刷新全部」），与 headerBar 同源。
-                .environment(\.cardManualRefreshAction, onRefreshAll)
+                // 卡上两处时间戳的点击刷新，按数据种类分两条路：额度时间戳 →
+                // `onRefreshProvider`（refreshOne），用量时间戳 →
+                // `onRefreshUsageRescan`（本地用量重扫）。必须挂在 detail 闭包内：
+                // hover 卡在 `HoverPanelController` 自己的 NSHostingView 里渲染，
+                // 外层（MenuContentView）的环境进不来，只有随视图显式注入的键值能
+                // 跨宿主存活——与上面两个环境键同一原因。Optional 包一层让泛型
+                // `V` 精确匹配键的可选值类型。
+                .environment(\.cardQuotaRefreshAction, Optional(onRefreshProvider))
+                .environment(\.cardUsageRefreshAction, Optional(onRefreshUsageRescan))
                 .frame(width: Self.cardWidth)
         }
         .onTapGesture(perform: Self.tapHandler(for: item, onRefresh: onRefreshProvider))

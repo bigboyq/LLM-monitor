@@ -181,16 +181,28 @@ extension EdgeDockController {
         // 形态过渡动画进行中：帧由该动画驱动到位，标准过渡此刻按中间态帧重算
         // 并 setFrame 只会打断它。形态过渡自身不受此限——快速反向切换时直接
         // 重定目标即可。
-        if transition == .standard, isFormMorphInFlight { return }
+        if transition == .standard, isFormMorphInFlight {
+            if selectedIndex != nil {
+                updatePopover()
+            }
+            return
+        }
 
         // 帧没有变化时完全不碰窗口。refresh 期间 `statusDidChange` 每个 provider
         // 都触发一次；反复 `setFrame`（哪怕目标帧相同）也会打断窗口服务器的合成、
         // 重启隐式动画，dock 会跟着每一次广播轻微抽动。显隐与位置都由 frame 决定，
         // 帧相同且已可见 = 一切照旧。
-        if panel.isVisible, panel.frame == target {
+        let frameMatches = abs(panel.frame.origin.x - target.origin.x) < 0.5
+            && abs(panel.frame.origin.y - target.origin.y) < 0.5
+            && abs(panel.frame.size.width - target.size.width) < 0.5
+            && abs(panel.frame.size.height - target.size.height) < 0.5
+
+        if panel.isVisible, frameMatches {
             // 例外：展开着的详情卡片内容是创建那一刻的快照，数据刷新后必须重摆
             // 一次，否则读到的永远是旧值。
-            if selectedIndex != nil { updatePopover() }
+            if selectedIndex != nil {
+                updatePopover()
+            }
             return
         }
 
@@ -213,6 +225,10 @@ extension EdgeDockController {
         }
         panel.orderFrontRegardless()
         startHoverPoll()
+
+        if selectedIndex != nil {
+            updatePopover()
+        }
 
         logVisibilityChange(
             mode: config.mode,

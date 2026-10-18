@@ -65,20 +65,32 @@ enum ProviderCardLayout {
     // 形态，届时是**恢复分支**而不是从死代码里挑。
 }
 
-/// PopWindow 卡片两处时间戳（headerContent 的 `ProviderStateLabel`、dockSectionTitle
-/// 的 `LocalUsageFreshnessBadge`）的点击动作：与菜单 headerBar「立即刷新全部」同源的
-/// 强制刷新（`AppState.refreshAll`，含 `triggerImmediateScanAll` 的用量补拍；在飞事务
-/// 由 `beginExternalJob` 闸门合并，无需额外防抖状态）。默认 `nil`——nil 时手势等于
-/// 无操作，只读渲染（测试 / 预览）无需注入。闭包经环境键传递而不是存储属性：
-/// `ProviderCardView` 是 `Equatable` 值语义视图，不能携带闭包成员。
-private struct CardManualRefreshActionKey: EnvironmentKey {
+/// PopWindow 卡片两处时间戳的点击动作，**按数据种类拆成两个键**：标题行的
+/// `ProviderStateLabel` 是**额度**的新鲜度，点击只重抓该 provider 的额度
+/// （`AppState.refreshOne(providerID:)`，参数是 `status.id`）；段3 的
+/// `LocalUsageFreshnessBadge` 是**本地用量**的新鲜度，点击只重扫本地用量计算
+/// （`AppState.triggerLocalUsageRescan()`，不发额度请求）。两个时间戳本来就是
+/// 两种数据各自的"最后更新于"，点哪个刷哪个，不再都走全量刷新。默认 `nil`
+/// ——nil 时手势等于无操作，只读渲染（测试 / 预览）无需注入。闭包经环境键
+/// 传递而不是存储属性：`ProviderCardView` 是 `Equatable` 值语义视图，不能携带
+/// 闭包成员。
+private struct CardQuotaRefreshActionKey: EnvironmentKey {
+    static let defaultValue: ((String) -> Void)? = nil
+}
+
+private struct CardUsageRefreshActionKey: EnvironmentKey {
     static let defaultValue: (() -> Void)? = nil
 }
 
 extension EnvironmentValues {
-    var cardManualRefreshAction: (() -> Void)? {
-        get { self[CardManualRefreshActionKey.self] }
-        set { self[CardManualRefreshActionKey.self] = newValue }
+    var cardQuotaRefreshAction: ((String) -> Void)? {
+        get { self[CardQuotaRefreshActionKey.self] }
+        set { self[CardQuotaRefreshActionKey.self] = newValue }
+    }
+
+    var cardUsageRefreshAction: (() -> Void)? {
+        get { self[CardUsageRefreshActionKey.self] }
+        set { self[CardUsageRefreshActionKey.self] = newValue }
     }
 }
 
@@ -90,7 +102,8 @@ extension EnvironmentValues {
 /// 的 `.equatable()`，任一 provider 的任一状态变化只会重算真正变化的那几张卡，
 /// 而不是整屏菜单面板。
 ///
-/// ⚠️ `==` 只比较 `status`，**不**比较 `revealMode` / `cardManualRefreshAction` ——
+/// ⚠️ `==` 只比较 `status`，**不**比较 `revealMode` / `cardQuotaRefreshAction` /
+/// `cardUsageRefreshAction` ——
 /// 它们是 Environment，取不到。保留这条注释是因为比较仍然只按 `status` 走：菜单里
 /// 已无 provider 卡，而唯一两个宿主（dock 浮层、菜单兜底行的 hover 卡）都是每次
 /// 重建 `rootView` / 直接新建视图，不走任何跨帧缓存。将来若有人在仍可能出现两种
@@ -102,8 +115,21 @@ struct ProviderCardView: View, Equatable {
     /// 倒计时/新鲜度消费者同一个 now，不取渲染时的墙钟。
     @Environment(\.displayDate) private var displayDate
 
-    /// 两处时间戳的点击刷新动作（见 `CardManualRefreshActionKey`）。
-    @Environment(\.cardManualRefreshAction) private var cardManualRefreshAction
+    /// 两处时间戳各自的点击刷新动作（额度 → `CardQuotaRefreshActionKey`，
+    /// 本地用量 → `CardUsageRefreshActionKey`）。
+    @Environment(\.cardQuotaRefreshAction) private var cardQuotaRefreshAction
+    @Environment(\.cardUsageRefreshAction) private var cardUsageRefreshAction
+
+    /// 光标反馈用 `set` 覆盖而不是 `push/pop`：卡在光标下方被 orderOut 时
+    /// `onHover(false)` 不保证送达，push 进栈的手型永远弹不出来（无凭据的
+    /// `pop` 又会误弹别人的光标）；`set` 是无栈覆盖，配合两条 hide 路径的
+    /// 显式复位（`HoverPanelController.hide` / `EdgeDockController.hidePopover`）
+    /// 不存在残留。
+    private func updatePointingCursor(_ hovering: Bool) {
+        // 不能写 `NSCursor.set(_:)` 类方法：macOS 27 SDK 下它会触发 NoUsage
+        // 诊断（"function is unused"，本仓按错误处理）；实例 `set()` 无此问题。
+        (hovering ? NSCursor.pointingHand : NSCursor.arrow).set()
+    }
 
     // 卡片内容层四周的内边距搬到了 `LayoutMetrics.cardContentPadding`：
     // `EdgeDockTheme.popoverWidth` 推导宽度时也要读它，声明留在这个 View 里会
@@ -332,14 +358,29 @@ struct ProviderCardView: View, Equatable {
                 .font(MenuTypography.cardTitle)
                 .foregroundStyle(Color.primaryLabel)
             Spacer(minLength: 8)
-            // 点击刷新与 headerContent 的 `ProviderStateLabel` 同一动作、同一来源
-            // （`\.cardManualRefreshAction`）；手势同样挂在卡片这个使用点。
-            LocalUsageFreshnessBadge(
-                scannedAt: projection.scannedAt,
-                isScanning: status.isScanningLocalUsage || projection.localUsageFreshness == .scanning
-            )
-            .onTapGesture { cardManualRefreshAction?() }
-            .help("立即刷新全部")
+            // 这枚胶囊是**本地用量**的新鲜度：点击只重扫本地用量计算（不发额度
+            // 请求），与标题行额度时间戳的刷新互不牵连；手势同样挂在卡片这个使用点。
+            // 采用 Button(.plain) 确保后台悬浮窗（EdgeDock popover）下首击直接响应，
+            // 行为与「分析/用量」切换控件完全一致。
+            if let cardUsageRefreshAction {
+                Button {
+                    logInfo("ProviderCardView: 点击 7 天用量时间戳重扫本地用量")
+                    cardUsageRefreshAction()
+                } label: {
+                    LocalUsageFreshnessBadge(
+                        scannedAt: projection.scannedAt,
+                        isScanning: status.isScanningLocalUsage || projection.localUsageFreshness == .scanning
+                    )
+                }
+                .buttonStyle(.plain)
+                .onHover { updatePointingCursor($0) }
+                .help("重新扫描本地用量")
+            } else {
+                LocalUsageFreshnessBadge(
+                    scannedAt: projection.scannedAt,
+                    isScanning: status.isScanningLocalUsage || projection.localUsageFreshness == .scanning
+                )
+            }
         }
         .padding(.top, 4)
     }
@@ -398,13 +439,25 @@ struct ProviderCardView: View, Equatable {
                     .scaleEffect(0.55)
                     .frame(width: 14, height: 14)
             } else {
-                // 手势挂在**使用点**而不是 `ProviderStateLabel` 内部：兜底行本体
+                // 按钮挂在**使用点**而不是 `ProviderStateLabel` 内部：兜底行本体
                 // 复用同一视图做 headline，行级已有自己的 tap（刷新单个 provider），
-                // 手势进视图内部会和它打架。点击 = 与 headerBar「立即刷新全部」
-                // 同源的强制刷新；nil 时等于无操作。
-                ProviderStateLabel(status: status)
-                    .onTapGesture { cardManualRefreshAction?() }
-                    .help("立即刷新全部")
+                // 按钮进视图内部会和它打架。这枚胶囊是**额度**的新鲜度：点击只重抓
+                // 该 provider 的额度，排期重锚也只动它自己（refreshOne 语义）；
+                // nil 时为只读展示。采用 Button(.plain) 确保后台悬浮窗（EdgeDock popover）
+                // 下首击直接响应，行为与「分析/用量」切换控件完全一致。
+                if let cardQuotaRefreshAction {
+                    Button {
+                        logInfo("ProviderCardView: 点击额度时间戳刷新 provider=\(status.id)")
+                        cardQuotaRefreshAction(status.id)
+                    } label: {
+                        ProviderStateLabel(status: status)
+                    }
+                    .buttonStyle(.plain)
+                    .onHover { updatePointingCursor($0) }
+                    .help("立即刷新该 Provider")
+                } else {
+                    ProviderStateLabel(status: status)
+                }
             }
         }
     }
@@ -688,6 +741,7 @@ struct ProviderStateLabel: View {
             .padding(.horizontal, 6)
             .padding(.vertical, 3)
             .background(color.opacity(0.1), in: Capsule())
+            .contentShape(Capsule())
     }
 
     private func color(for tone: Tone) -> Color {

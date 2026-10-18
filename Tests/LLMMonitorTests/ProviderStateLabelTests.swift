@@ -93,11 +93,13 @@ final class ProviderStateLabelTests: XCTestCase {
 
     // MARK: - PopWindow 卡时间戳（2026-10-13 统一裸时间 + 点击刷新）
 
-    /// 卡上两处时间戳的点击动作经环境键 `\.cardManualRefreshAction` 注入，默认
-    /// **nil**：只读渲染（测试 / 预览）不注入时手势等于无操作，`ProviderCardView`
-    /// 也因此能保持 `Equatable` 值语义、不携带闭包存储属性。
-    func testCardManualRefreshActionDefaultsToNil() {
-        XCTAssertNil(EnvironmentValues().cardManualRefreshAction)
+    /// 卡上两处时间戳的点击动作经环境键注入（额度 → `cardQuotaRefreshAction`、
+    /// 本地用量 → `cardUsageRefreshAction`），默认都为 **nil**：只读渲染
+    /// （测试 / 预览）不注入时手势等于无操作，`ProviderCardView` 也因此能保持
+    /// `Equatable` 值语义、不携带闭包存储属性。
+    func testCardRefreshActionKeysDefaultToNil() {
+        XCTAssertNil(EnvironmentValues().cardQuotaRefreshAction)
+        XCTAssertNil(EnvironmentValues().cardUsageRefreshAction)
     }
 
     /// 新鲜度徽章与裸文本同源的状态机：`updated` 携带的就是**裸** `formatClock`
@@ -152,5 +154,31 @@ final class ProviderStateLabelTests: XCTestCase {
             state: .ok(info),
             lastRefreshedAt: now
         )
+    }
+
+    // MARK: - Hover panel active source tracking
+
+    @MainActor
+    func testHoverPanelActiveSourceIDTracksAndFiltersUpdates() {
+        let controller = HoverPanelController.shared
+        let id1 = UUID()
+
+        let dummySample = HoverSample(
+            screenPoint: .zero,
+            visibleFrame: .zero,
+            hostWindow: nil
+        )
+
+        controller.hoverMoved(
+            sourceID: id1,
+            detail: AnyView(Text("Detail 1")),
+            sample: dummySample,
+            delay: 0
+        )
+        XCTAssertEqual(controller.activeSourceID, id1)
+
+        // 隐藏后清空 activeSourceID
+        controller.hide()
+        XCTAssertNil(controller.activeSourceID)
     }
 }

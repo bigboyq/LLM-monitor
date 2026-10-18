@@ -82,14 +82,15 @@ struct HoverInfoRow<Content: View, Detail: View>: View {
             .background(
                 HoverTrackingView(
                     detail: AnyView(detail),
-                    onHover: { sample in
+                    onHover: { sample, sourceID in
                         HoverPanelController.shared.hoverMoved(
+                            sourceID: sourceID,
                             detail: AnyView(detail),
                             sample: sample,
                             delay: 0.22
                         )
                     },
-                    onExit: {
+                    onExit: { _ in
                         // 不能直接 hide：鼠标正从行移向详情卡，卡必须等
                         // scheduleHide 的悬停桥宽限（含面板内侧 entered 取消）。
                         HoverPanelController.shared.scheduleHide()
@@ -107,8 +108,8 @@ struct HoverSample {
 
 private struct HoverTrackingView: NSViewRepresentable {
     let detail: AnyView
-    let onHover: (HoverSample) -> Void
-    let onExit: () -> Void
+    let onHover: (HoverSample, UUID) -> Void
+    let onExit: (UUID) -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(onHover: onHover, onExit: onExit)
@@ -123,29 +124,35 @@ private struct HoverTrackingView: NSViewRepresentable {
     func updateNSView(_ nsView: TrackingNSView, context: Context) {
         context.coordinator.onHover = onHover
         context.coordinator.onExit = onExit
+        if let window = nsView.window {
+            context.coordinator.ownerWindow = window
+        }
         nsView.coordinator = context.coordinator
 
-        if context.coordinator.isCurrentlyHovered {
+        let coordinatorID = context.coordinator.id
+        let isCurrentActive = HoverPanelController.shared.activeSourceID == coordinatorID
+        if (context.coordinator.isCurrentlyHovered || isCurrentActive) && HoverPanelController.shared.isPanelVisible {
             let d = detail
             DispatchQueue.main.async {
-                HoverPanelController.shared.updateContent(detail: d)
+                HoverPanelController.shared.updateContent(for: coordinatorID, detail: d)
             }
         }
     }
 
     final class Coordinator: NSObject {
-        var onHover: (HoverSample) -> Void
-        var onExit: () -> Void
+        let id = UUID()
+        var onHover: (HoverSample, UUID) -> Void
+        var onExit: (UUID) -> Void
         weak var ownerWindow: NSWindow?
         var isCurrentlyHovered = false
 
-        init(onHover: @escaping (HoverSample) -> Void,
-             onExit: @escaping () -> Void) {
+        init(onHover: @escaping (HoverSample, UUID) -> Void,
+             onExit: @escaping (UUID) -> Void) {
             self.onHover = onHover
             self.onExit = onExit
         }
 
-        func handleHover(screenPoint: CGPoint) {
+        func handleHover(screenPoint: CGPoint, hostWindow: NSWindow?) {
             isCurrentlyHovered = true
             let visibleFrame = NSScreen.screens
                 .first(where: { NSMouseInRect(screenPoint, $0.frame, false) })?
@@ -153,16 +160,19 @@ private struct HoverTrackingView: NSViewRepresentable {
                 ?? NSScreen.main?.visibleFrame
                 ?? .zero
 
-            onHover(HoverSample(
-                screenPoint: screenPoint,
-                visibleFrame: visibleFrame,
-                hostWindow: ownerWindow
-            ))
+            onHover(
+                HoverSample(
+                    screenPoint: screenPoint,
+                    visibleFrame: visibleFrame,
+                    hostWindow: hostWindow ?? ownerWindow
+                ),
+                id
+            )
         }
 
         func handleExit() {
             isCurrentlyHovered = false
-            onExit()
+            onExit(id)
         }
     }
 }
@@ -212,7 +222,7 @@ private final class TrackingNSView: NSView {
 
     private func reportHover(_ event: NSEvent) {
         _ = convert(event.locationInWindow, from: nil)
-        coordinator?.handleHover(screenPoint: NSEvent.mouseLocation)
+        coordinator?.handleHover(screenPoint: NSEvent.mouseLocation, hostWindow: window)
     }
 }
 
@@ -256,11 +266,29 @@ private final class PanelTrackingView: NSView {
     override func mouseExited(with event: NSEvent) {
         onExit?()
     }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
+    }
+}
+
+private final class HoverHostingView<Content: View>: NSHostingView<Content> {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
+    }
 }
 
 @MainActor
 final class HoverPanelController {
     static let shared = HoverPanelController()
+
+    /// 永不成为 key 的 borderless 面板：点击只投递鼠标事件，不动 key window
+    /// 归属（见 `ensurePanel` 内注释——这是卡上点击能存活的前提）。
+    private final class HoverPanel: NSPanel {
+        override var canBecomeKey: Bool { false }
+        override var canBecomeMain: Bool { false }
+    }
+
     private let cursorGap: CGFloat = 6
     /// 上限必须装下最宽的详情：菜单底部的 provider 兜底行 hover 出来的是**整张
     /// `ProviderCardView`**，它最宽的内容是 7 天 token 图表（420pt）+ 卡片自身
@@ -275,6 +303,14 @@ final class HoverPanelController {
     /// `DisplayDateKey` 的 `static let` 兜底值——进程内只求值一次，
     /// 永远冻结在第一次渲染的时刻。
     let displayClock = DisplayClock()
+
+    /// 当前展示卡片的触发来源 ID；卡片隐藏时清空。只要卡片仍处于展示态，
+    /// 即使鼠标从触发条目移入卡片上，该来源的属性更新也能无缝推送进卡内。
+    private(set) var activeSourceID: UUID?
+
+    var isPanelVisible: Bool {
+        panel?.isVisible == true
+    }
 
     private var panel: NSPanel?
     private var panelTrackingView: PanelTrackingView?
@@ -291,12 +327,13 @@ final class HoverPanelController {
 
     private init() {}
 
-    func hoverMoved(detail: AnyView, sample: HoverSample, delay: TimeInterval) {
+    func hoverMoved(sourceID: UUID, detail: AnyView, sample: HoverSample, delay: TimeInterval) {
         // 鼠标从卡上移回信息行时，可能仍有一笔 scheduleHide 在途（0.25s 未到）；
         // 先取消，否则防抖缓冲的 0.08s 窗口内卡会被延迟隐藏杀掉。
         hideWorkItem?.cancel()
         hideWorkItem = nil
 
+        activeSourceID = sourceID
         pendingDetail = detail
         pendingSample = sample
 
@@ -323,9 +360,17 @@ final class HoverPanelController {
         hideWorkItem?.cancel()
         hideWorkItem = nil
         isMouseInsidePanel = false
+        activeSourceID = nil
         pendingDetail = nil
         pendingSample = nil
+        let wasVisible = panel?.isVisible == true
         panel?.orderOut(nil)
+        if wasVisible {
+            // 卡可能连着光标一起消失（时间戳胶囊的 onHover(false) 不保证送达），
+            // 光标反馈是 set 覆盖式的，在这里统一复位，见 ProviderCardView
+            // 的 updatePointingCursor。
+            NSCursor.arrow.set()
+        }
         displayClock.stop()
     }
 
@@ -356,12 +401,12 @@ final class HoverPanelController {
         }
     }
 
-    func updateContent(detail: AnyView) {
-        if panel?.isVisible == true {
-            pendingDetail = detail
-            if let sample = pendingSample {
-                present(detail: detail, sample: sample)
-            }
+    /// 仅当更新来自当前处于活跃状态的 sourceID 时推送重绘，避免非激活条目的刷新干扰当前展示。
+    func updateContent(for sourceID: UUID, detail: AnyView) {
+        guard activeSourceID == sourceID, panel?.isVisible == true else { return }
+        pendingDetail = detail
+        if let sample = pendingSample {
+            present(detail: detail, sample: sample)
         }
     }
 
@@ -404,13 +449,20 @@ final class HoverPanelController {
         attachPanel(panel, to: sample.hostWindow)
         panel.setContentSize(size)
         panel.setFrame(frame, display: true)
+        panel.contentView?.layoutSubtreeIfNeeded()
         panel.orderFrontRegardless()
     }
 
     private func ensurePanel() -> NSPanel {
         if let panel { return panel }
 
-        let panel = NSPanel(
+        // canBecomeKey = false 是可点击的前提：MenuWindowAutoCloseBridge 在菜单窗口
+        // 上监听 didResignKeyNotification（失焦即关菜单），而 borderless nonactivating
+        // panel 默认点击时自己会成为 key——一点卡，菜单窗口就 resign key，菜单连卡
+        // 一起被收掉，tap 永远跑不到。禁掉 key 后点击仍照常送达（mouseDown/up 不
+        // 依赖 key 状态，dock popover 的按钮同为非 key 面板可点），菜单保持 key
+        // 不触发关闭。
+        let panel = HoverPanel(
             contentRect: .init(x: 0, y: 0, width: 200, height: 80),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
@@ -424,9 +476,10 @@ final class HoverPanelController {
         panel.hasShadow = true
         panel.backgroundColor = .clear
         // 卡要接收点击（时间戳 onTapGesture 手动刷新）。保留 .nonactivatingPanel：
-        // 点击卡不能抢菜单窗口的 key——菜单靠焦点丢失关闭，抢了 key 等于一点卡
-        // 就把菜单关了。卡是菜单窗口的 child window，点击落在卡上不会关菜单。
+        // 点击卡不能激活整个 App。
         panel.ignoresMouseEvents = false
+        panel.acceptsMouseMovedEvents = true
+        panel.allowsToolTipsWhenApplicationIsInactive = true
 
         self.panel = panel
         return panel
@@ -437,7 +490,7 @@ final class HoverPanelController {
         // contentView 是跟踪容器而非 hostingView 本身：容器负责"鼠标是否在卡上"
         // 的进入/退出上报，hostingView 钉在四边只管渲染。
         let tracking = ensurePanelTrackingView()
-        let hostingView = NSHostingView(rootView: AnyView(EmptyView()))
+        let hostingView = HoverHostingView(rootView: AnyView(EmptyView()))
         hostingView.translatesAutoresizingMaskIntoConstraints = false
         tracking.addSubview(hostingView)
         NSLayoutConstraint.activate([

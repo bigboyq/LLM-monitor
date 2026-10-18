@@ -418,6 +418,7 @@ struct LocalUsageFreshnessBadge: View {
             .padding(.horizontal, 6)
             .padding(.vertical, 3)
             .background(Color.secondary.opacity(0.1), in: Capsule())
+            .contentShape(Capsule())
     }
 }
 

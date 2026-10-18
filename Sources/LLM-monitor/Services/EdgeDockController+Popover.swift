@@ -102,6 +102,7 @@ extension EdgeDockController {
 
         popover.setFrame(targetFrame, display: true)
         hosting.layoutSubtreeIfNeeded()
+        hosting.needsDisplay = true
         popover.orderFrontRegardless()
         logPopoverOnscreen(popover, targetFrame: targetFrame)
     }
@@ -140,10 +141,17 @@ extension EdgeDockController {
     /// 显示中切换 provider(`updatePopover` 换 rootView)不走这里,窗口
     /// 复用、不重建、不闪;销毁只发生在收起路径,频率与"弹出"同阶。
     func hidePopover() {
+        let wasVisible = popoverPanel?.isVisible == true
         popoverPanel?.orderOut(nil)
         popoverPanel = nil
         popoverHostingView = nil
         popoverDisplayClock.stop()
+        if wasVisible {
+            // 卡可能连着光标一起消失（时间戳胶囊的 onHover(false) 不保证送达），
+            // 光标反馈是 set 覆盖式的，在这里统一复位，见 ProviderCardView
+            // 的 updatePointingCursor。
+            NSCursor.arrow.set()
+        }
     }
 
     /// popover 内容**跟随系统外观** + 折叠区常展。
@@ -168,25 +176,62 @@ extension EdgeDockController {
     /// 只求值一次，永远冻结。时钟由 `popoverDisplayClock` 持有，随浮层显隐
     /// start/stop（`updatePopover` 成功路径 / `hidePopover`）。
     ///
-    /// `\.cardManualRefreshAction` 同理必须在这里注入：卡上两处时间戳的点击刷新
-    /// 与菜单 headerBar「立即刷新全部」同源（`AppState.refreshAll`，含
-    /// `triggerImmediateScanAll` 的用量补拍；在飞事务由 `beginExternalJob` 闸门
-    /// 合并）。`state` 由 `attach(state:configStore:)` 注入，缺席（teardown 后）
-    /// 时为 nil，手势等于无操作。
+    /// 两个刷新动作键同理必须在这里注入：卡上两处时间戳按数据种类各刷各的——
+    /// 额度时间戳 → `cardQuotaRefreshAction`（`AppState.refreshOne(providerID:)`），
+    /// 本地用量时间戳 → `cardUsageRefreshAction`
+    /// （`AppState.triggerLocalUsageRescan`，只补拍用量 reconcile，不发额度请求；
+    /// 在飞事务由 `beginExternalJob` 闸门合并）。`state` 由
+    /// `attach(state:configStore:)` 注入，缺席（teardown 后）时为 nil，手势等于
+    /// 无操作。
     private func popoverContent<C: View>(_ content: C) -> some View {
         DisplayClockScope(clock: popoverDisplayClock) {
             content
                 .environment(\.hoverRevealMode, .alwaysVisible)
                 .environment(\.quotaWindowSegmentEditable, true)
-                .environment(\.cardManualRefreshAction, cardManualRefreshAction)
+                .environment(\.cardQuotaRefreshAction, cardQuotaRefreshAction)
+                .environment(\.cardUsageRefreshAction, cardUsageRefreshAction)
         }
     }
 
-    /// 点击刷新动作。每次 `updatePopover` 重建 popover 内容时重新求值，闭包只
-    /// 强持有 `state` 本身（AppState 是 app 级长生命周期对象），不持有 self。
-    private var cardManualRefreshAction: (() -> Void)? {
+    /// 点击刷新动作（额度 / 本地用量各一条）。每次 `updatePopover` 重建 popover
+    /// 内容时重新求值，弱持有 self 保证在刷新完成后主动驱动可见 popover 更新。
+    private var cardQuotaRefreshAction: ((String) -> Void)? {
         guard let state else { return nil }
-        return { Task { await state.refreshAll() } }
+        return { [weak self] id in
+            Task {
+                await state.refreshOne(providerID: id)
+                await MainActor.run {
+                    if self?.selectedIndex != nil {
+                        self?.updatePopover()
+                    }
+                }
+            }
+        }
+    }
+
+    private var cardUsageRefreshAction: (() -> Void)? {
+        guard let state else { return nil }
+        return { [weak self] in
+            Task {
+                await state.triggerLocalUsageRescan()
+                await MainActor.run {
+                    if self?.selectedIndex != nil {
+                        self?.updatePopover()
+                    }
+                }
+            }
+        }
+    }
+
+    private final class PopoverPanel: NSPanel {
+        override var canBecomeKey: Bool { false }
+        override var canBecomeMain: Bool { false }
+    }
+
+    private final class PopoverHostingView<Content: View>: NSHostingView<Content> {
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+            true
+        }
     }
 
     /// 取 popover 面板与其宿主视图；不存在则建。
@@ -200,7 +245,7 @@ extension EdgeDockController {
             return (popoverPanel, popoverHostingView)
         }
 
-        let popover = NSPanel(
+        let popover = PopoverPanel(
             contentRect: .init(x: 0, y: 0, width: 340, height: 200),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
@@ -220,8 +265,15 @@ extension EdgeDockController {
         // 是相反的（钉 vibrantDark + 强制 dark colorScheme），两者刻意不同——dock
         // 常驻，popover 跟菜单走。
         popover.ignoresMouseEvents = false
+        popover.acceptsMouseMovedEvents = true
+        // 后台应用窗口默认不会触发 ToolTip（NSToolTipManager 默认只顾前台）；
+        // 浮层常驻在后台 App 中弹出，必须显式开启，卡片内部与按钮的 .help 才能正常展示。
+        popover.allowsToolTipsWhenApplicationIsInactive = true
 
-        let hosting = NSHostingView(rootView: AnyView(EmptyView()))
+        // 默认 NSHostingView 在后台窗口下 acceptsFirstMouse 返回 false，
+        // 会导致用户点击卡片时间戳时首击被系统吞噬用于"激活窗口"（而 nonactivatingPanel 又不激活），
+        // 造成点击彻底死掉；重写返回 true 确保单次点击直接响应。
+        let hosting = PopoverHostingView(rootView: AnyView(EmptyView()))
         hosting.translatesAutoresizingMaskIntoConstraints = false
         popover.contentView = hosting
 

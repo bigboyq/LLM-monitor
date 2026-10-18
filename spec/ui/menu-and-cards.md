@@ -278,11 +278,22 @@ Hovering one element opens the **full `ProviderCardView(status:)`** in the exist
 hover `NSPanel` (`HoverInfoRow` → `HoverPanelController`, the same mechanism as every
 other menu hover detail; 0.22s delay, 0.08s re-arm when switching, 6pt cursor gap,
 right edge flips to the cursor's left, bottom edge flips above the cursor). The panel
-accepts mouse events (`ignoresMouseEvents = false`, still `.nonactivatingPanel`, so a
-click on the card never steals the menu window's key): a 0.25s hover bridge
+accepts mouse events (`ignoresMouseEvents = false`, `acceptsMouseMovedEvents = true`,
+`allowsToolTipsWhenApplicationIsInactive = true`, plus `PanelTrackingView` / `HoverHostingView`
+`acceptsFirstMouse = true` and `canBecomeKey = false` / `canBecomeMain = false`
+overrides — the overrides are the load-bearing half: a borderless nonactivating panel
+becomes key on click by default, and the menu auto-closes on
+`didResignKeyNotification`, so without it the first click on the card would tear the
+menu down). A 0.25s hover bridge
 (`HoverPanelController.scheduleHide` on row exit + panel-side enter/exit tracking,
 guarded by `isMouseInsidePanel` against event reordering) keeps the card alive while
-the cursor is over it, making the timestamp taps reachable. The panel
+the cursor is over it, making the timestamp taps reachable; `HoverPanelController.activeSourceID`
+binds the presenting strip row to the panel so model status transitions (e.g. entering
+`.loading` on tap) keep pushing live updates to the card even when the cursor has moved
+onto the panel; capsules carry `contentShape(Capsule())` and pointing-hand cursor
+feedback (a `set`-based overwrite reset to arrow when the panel hides — `push/pop`
+leaves a stuck hand when the card vanishes under the cursor without delivering
+`onHover(false)`) for reliable hit-testing. The panel
 host owns a shared display clock (`HoverPanelController.displayClock`) that starts/stops
 with the panel's show/hide and is injected through `DisplayClockScope` — without it
 the in-card peak countdown / freshness capsule would read the environment key's static
@@ -395,17 +406,25 @@ The menu footer contains:
 以及菜单底部 provider 兜底行 hover 出来的那张卡（两者都固定 `.alwaysVisible`）。
 菜单内容区是客户端视角，不再渲染 provider 卡，因此这张卡没有"菜单形态"了。
 
-**卡上两处时间戳统一为裸 "hh:mm"，点击即刷新（2026-10-13）**：headerContent 右侧的
-`ProviderStateLabel` 与段3 标题行的 `LocalUsageFreshnessBadge` 都是裸 `HH:mm`
-（徽章去掉「更新于 」前缀，`LocalUsageFreshnessState.content()` 随之删除前缀参数；
-tooltip 均为 headerBar 刷新按钮同款文案「立即刷新全部」）。点击任一处触发与
-headerBar「立即刷新全部」**同源**的强制刷新（`AppState.refreshAll`，含
-`triggerImmediateScanAll` 用量补拍；在飞事务由 `beginExternalJob` 闸门合并，反馈交给
-既有状态胶囊自然变化）。动作经环境键 `\.cardManualRefreshAction: (() -> Void)?`
+**卡上两处时间戳统一为裸 "hh:mm"，点击按位置刷各自的数据（2026-10-13 引入，2026-10-18
+拆分语义）**：headerContent 右侧的 `ProviderStateLabel` 与段3 标题行的
+`LocalUsageFreshnessBadge` 都是裸 `HH:mm`（徽章去掉「更新于 」前缀，
+`LocalUsageFreshnessState.content()` 随之删除前缀参数）。两个时间戳本来就是两种数据的
+新鲜度，点击各刷各的，不再共用全量刷新：
+
+- **额度时间戳**（标题行胶囊，tooltip「立即刷新该 Provider」）→ 环境键
+  `\.cardQuotaRefreshAction`（`((String) -> Void)?`，参数 `status.id`）→
+  `AppState.refreshOne(providerID:)`：只重抓这张卡的额度并只重锚它自己的排期；
+- **用量时间戳**（段3 标题行，tooltip「重新扫描本地用量」）→ 环境键
+  `\.cardUsageRefreshAction`（`(() -> Void)?`）→ `AppState.triggerLocalUsageRescan()`：
+  只补拍一次本地用量 reconcile，不发额度请求、不动任何 provider 的排期。
+
+在飞事务由 `beginExternalJob` 闸门合并，反馈交给既有状态胶囊自然变化。动作经环境键
 传递（默认 `nil` = 无操作，只读渲染免注入）——`ProviderCardView` 是 `Equatable`
 值语义视图，不能携带闭包存储属性。注入链路：菜单兜底行走
-`MenuContentView.refreshAllFromMenu` → `HarnessUsageMenuView` →
-`ProviderStatusStripView.onRefreshAll`，在 detail 闭包内挂上卡（浮层宿主是
+`MenuContentView.refreshProviderFromMenu` / `refreshUsageRescanFromMenu` →
+`HarnessUsageMenuView` → `ProviderStatusStripView` 的 `onRefreshProvider` /
+`onRefreshUsageRescan`，在 detail 闭包内挂上卡（浮层宿主是
 `HoverPanelController` 自己的 NSHostingView，外层环境进不来，只有随视图显式注入的
 键值能跨宿主存活，与 `\.hoverRevealMode` 同因）；dock 浮层由
 `EdgeDockController+Popover` 的 `popoverContent` 用 controller 经 `attach(state:)`
@@ -848,4 +867,4 @@ The card's failure row is the one place in this table that is a **literal** 11pt
 than a `MenuTypography` role: the `errorMessage` role had no call site and was deleted
 rather than left as an unused role. The rendered size is unchanged.
 
-> 核对基线：2026-10-18 · 代码 d88a718
+> 核对基线：2026-10-19 · 代码 3980be1

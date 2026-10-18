@@ -644,6 +644,12 @@ final class AppState: ObservableObject {
         )
     }
 
+    /// Provider 卡 7 天区块时间戳的点击入口：只补拍一次本地用量 reconcile，
+    /// 不发额度请求、不重锚任何 provider 的排期。
+    func triggerLocalUsageRescan() async {
+        await localUsage.triggerImmediateScanAll()
+    }
+
     /// Settings-page recovery action: rebuild Antigravity's local token cache
     /// under the same global gate as Manual/Wakeup/automatic refresh jobs.
     /// It intentionally does not issue a quota refresh or rescan other clients.

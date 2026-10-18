@@ -253,16 +253,28 @@ final class EdgeDockController: ObservableObject {
         self.configStore = configStore
         config = configStore.config.effectiveEdgeDockConfig
 
-        // 条目数 / 健康色变化 → 重算窗口尺寸
+        // 条目数 / 健康色变化 → 重算窗口尺寸，并同步刷新正展示的 popover 卡片
         statusCancellable = state.statusDidChange
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.reconcile(animated: true) }
+            .sink { [weak self] _ in
+                guard let self else { return }
+                self.reconcile(animated: true)
+                if self.selectedIndex != nil {
+                    self.updatePopover()
+                }
+            }
 
         // 高峰窗口跨越边界时也要跟着变色（此时可能没有任何抓取发生）
         evaluationCancellable = state.$healthEvaluationDate
             .dropFirst()
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.reconcile(animated: true) }
+            .sink { [weak self] _ in
+                guard let self else { return }
+                self.reconcile(animated: true)
+                if self.selectedIndex != nil {
+                    self.updatePopover()
+                }
+            }
 
         // config.json 被手改 / 设置页保存 → 跟随
         configCancellable = configStore.$config

@@ -281,7 +281,7 @@ own hover rows** continue to use:
 |---|---|---|
 | Main menu — the header's sleep-blockers notice (`SleepOffendersHoverView`) | `.onHover` (the default) | Independent `NSPanel` after a delay |
 | Provider card in the edge dock popover | `.alwaysVisible` | Resident layout; the quota / 7-day groups are split into two cards, see *Two cards, titles outside*. The popover panel receives mouse events (`ignoresMouseEvents = false`), enabling segment switching, `.help` tooltips, and `ScrollView` scrolling |
-| Provider card in the menu's provider strip hover | `.alwaysVisible` (pinned) | identical layout to the dock card; the panel accepts mouse events too (timestamp taps → refresh all), but segment control is not rendered (`quotaWindowSegmentEditable = false`), table renders the persisted segment state |
+| Provider card in the menu's provider strip hover | `.alwaysVisible` (pinned) | identical layout to the dock card; the panel accepts mouse events too (quota timestamp → refresh that provider, usage timestamp → rescan local usage), but segment control is not rendered (`quotaWindowSegmentEditable = false`), table renders the persisted segment state |
 
 The switch is an `Environment` value rather than a parameter threaded through each
 call site: even with only two live `HoverInfoRow` call sites left (the header notice and
@@ -556,7 +556,7 @@ the circle (the 1.10× scale).
 |---|---|
 | Dock window | Fixed size while expanded. Only the hovered **circle** scales to `EdgeDockGeometry.hoverScale` (1.10×) inside its fixed row — the row frame, the number label and the window never move |
 | Popover trigger | **Hover**, with a **0.15s open delay** (`selectedIndex` trails `hoveredIndex` by it; the click is reserved for dragging). `scheduleSelection` re-checks `hoveredIndex` when the delay elapses, so sweeping the cursor down a column of circles re-arms the timer for each one instead of flashing every card in turn. `scheduleDeselection` collapses the card 0.20s after the cursor leaves the circle, unless it entered the card itself. The delay is not cosmetic: the dock is **permanently** on the screen edge, and a cursor merely passing by (dragging a window to the edge, turning a page) would otherwise make cards strobe. Clicking is a drag candidate only — `dragMoved` gates on a 4pt threshold and a press that never crosses it does nothing at all |
-| Popover | Second `NSPanel`, `ignoresMouseEvents = false` (`.nonactivatingPanel`, receives clicks/hovers without stealing focus), level `.popUpMenu` so it sits above the dock. Renders the same `ProviderCardView(status:)` the menu's provider strip hovers — so the dock's popover and the menu's hover card are the same object at the same width and the same layout, not two near-identical ones. In the dock it lays out as **two cards with their titles outside**, see *Two cards, titles outside* below. An open card is re-rendered on every status broadcast (`reconcile`'s no-op-frame branch refreshes it), so it never shows numbers frozen at the moment it opened |
+| Popover | Second `NSPanel` (`PopoverPanel`: `canBecomeKey = false` / `canBecomeMain = false`), `ignoresMouseEvents = false`, `acceptsMouseMovedEvents = true`, `allowsToolTipsWhenApplicationIsInactive = true`, `NSHostingView` 覆写 `acceptsFirstMouse = true`（`.nonactivatingPanel`，后台单次点击直接穿透生效而不被系统当作激活拦截，`.help` Tooltip 与 hover 正常触发，绝不抢 key / 焦点），level `.popUpMenu` so it sits above the dock. Renders the same `ProviderCardView(status:)` the menu's provider strip hovers — so the dock's popover and the menu's hover card are the same object at the same width and the same layout, not two near-identical ones. In the dock it lays out as **two cards with their titles outside**, see *Two cards, titles outside* below. An open card is re-rendered on every status broadcast (`reconcile`'s no-op-frame branch refreshes it), so it never shows numbers frozen at the moment it opened |
 | Hit test | `EdgeDockController.circleIndex(at:circles:currentHovered:minimumRadius:)` — the provider's **outer circle only** (radius + 0.5pt), which deliberately excludes the number label below it and the gaps between rows. The hovered circle's disc grows by `hoverScale` to match its on-screen scale animation. `minimumRadius` is a floor, not an override: the compact dock's circles are 7pt (radius 3.5) and it passes **half a row pitch** (7.5pt) so adjacent discs meet at their midpoint — pointing at a 7px target without it snaps to a neighbour. Circles come from `resolveCircleRects` (measured, with an `EdgeDockGeometry` fallback that is **appearance-aware** — the full-approach constants put compact row 0 about 24pt off). Never recomputed from constants alone — see *Edge status dock → Layout* |
 | Anchor | Vertically centred on the hovered **row** (measured rect when available; `EdgeDockGeometry.rowCenter` is only the "not measured yet" fallback), opening **inward** (docked right → opens left) |
 | Size | **Fixed width** `EdgeDockTheme.popoverWidth` (derived from the 7-day chart, see *Popover width*), height = natural card size clamped to 95% of screen height; a `ScrollView` replaces the plain card only when it exceeds the height cap, so overflow scrolls instead of being clipped |
@@ -818,15 +818,26 @@ Data source and calibration:
     renders **nothing**.
 - **Host interactivity & environment**:
   - Dock popover panel: `ensurePopoverPanel` sets `ignoresMouseEvents = false` (`.nonactivatingPanel`,
-    does not steal focus), allowing users to click the segment switch, hover over `.help` tooltips,
-    and scroll with `ScrollView`. Injects `.environment(\.quotaWindowSegmentEditable, true)`. The
-    popover host also owns a shared display clock (`EdgeDockController.popoverDisplayClock`, started
-    in `updatePopover`'s success path, stopped in `hidePopover`) injected via `DisplayClockScope`,
-    so the card's peak countdown / freshness capsule advance while the popover is visible.
+    `canBecomeKey = false`, `canBecomeMain = false`), allowing users to click the segment switch,
+    click timestamps to refresh, hover over `.help` tooltips (`allowsToolTipsWhenApplicationIsInactive = true`,
+    `acceptsMouseMovedEvents = true`), and scroll with `ScrollView`. The hosting view overrides `acceptsFirstMouse(for:) -> true`
+    to ensure clicks on timestamps in the background window trigger immediately without being swallowed for activation.
+    Injects `.environment(\.quotaWindowSegmentEditable, true)`. The popover host owns a shared display clock
+    (`EdgeDockController.popoverDisplayClock`, started in `updatePopover`'s success path, stopped in `hidePopover`)
+    injected via `DisplayClockScope`, so peak countdowns and freshness capsules advance while visible.
+    To ensure live updates when clicking timestamps in the popover, `EdgeDockController` dispatches `updatePopover()` on
+    `state.statusDidChange` whenever `selectedIndex != nil`, triggers `updatePopover()` when click tasks complete,
+    and applies a `< 0.5` tolerance in `reconcile` so subpixel window-server coordinate snaps do not bypass popover updates.
+    The popover auto-close contract remains strictly governed by `selectedIndex == nil`: when mouse leaves the keep-alive
+    region, `scheduleDeselection` / `releaseMouseCapture` clears `selectedIndex = nil` and calls `updatePopover()`, which
+    destroys the panel via `hidePopover()`.
   - Menu strip hover panel: `HoverPanel.swift` sets `ignoresMouseEvents = false` (2026-10:
-    card timestamps are clickable → refresh all; a 0.25s hover bridge — `scheduleHide` on
-    row exit, panel-side enter/exit tracking plus an `isMouseInsidePanel` guard — keeps the
-    card alive while the cursor is on it) and injects a
+    card timestamps are clickable — quota timestamp → `AppState.refreshOne` on that
+    provider, usage timestamp → `AppState.triggerLocalUsageRescan`; the panel also
+    overrides `canBecomeKey = false`, otherwise a click makes the panel key, the menu
+    window resigns key and the auto-close bridge tears the menu down mid-tap; a 0.25s
+    hover bridge — `scheduleHide` on row exit, panel-side enter/exit tracking plus an
+    `isMouseInsidePanel` guard — keeps the card alive while the cursor is on it) and injects a
     panel-scoped display clock via `DisplayClockScope` (`HoverPanelController.displayClock`,
     started in `present`, stopped in `hide`). The `false` side of
     `.environment(\.quotaWindowSegmentEditable, false)` is injected by the **card's call site**
@@ -1174,4 +1185,4 @@ default has to preserve it — defaulting to off would put a dock inside every f
 window for every existing user. Because the setting can be flipped while the user is
 already fullscreen, a policy change re-probes instead of reusing the cached verdict.
 
-> 核对基线：2026-10-18 · 代码 d88a718
+> 核对基线：2026-10-19 · 代码 3980be1
