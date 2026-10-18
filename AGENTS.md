@@ -17,3 +17,8 @@ spec 文件索引、任务 → 文件 § 小节路由、client → provider spec
 - 保持原文件结构、小节划分与中英混排风格；只修漂移、补缺失、删过时，不做无差别重写。
 - spec 里的 `file:line` 引用、类型/函数名必须能在代码中 grep 命中；数值断言（价格、阈值、默认值）与代码字面量逐一核对。
 - 修订完成后更新文件末尾核对基线行，格式统一为：`> 核对基线：<YYYY-MM-DD> · 代码 <short-commit>`。
+
+## Git 推送约定
+
+- 默认推送远端是 `tsh`（`git push tsh main`）；`origin`（GitHub）仅在用户明确要求时推送。
+- 推送前先 `git ls-remote tsh main` 确认远端位置；历史分叉时停下向用户确认，不强推。
