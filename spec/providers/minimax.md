@@ -5,6 +5,7 @@ Provider id: `minimax_token_plan`
 Implementation:
 - API fetcher: `Sources/LLM-monitor/Fetchers/MinimaxTokenPlanFetcher.swift`
 - Local `.db` scanner: `Sources/LLM-monitor/Services/MinimaxLocalUsageScanner.swift` + `MinimaxDBReader.swift` + `MinimaxLocalUsageAggregation.swift`
+- Session-directory model resolver: `Sources/LLM-monitor/Services/MinimaxSessionModelResolver.swift`（真实模型名的落点，见 §Model resolution for samples）
 - Local usage model: `Sources/LLM-monitor/Models/ProviderLocalUsage.swift` (`MinimaxLocalUsage` is a compatibility typealias)
 - Shared SQLite read/fallback: `Sources/LLM-monitor/Services/Infra/SQLiteConnection.swift` + `SQLiteTempCopy.swift`
 - Shared 7-day hover view: `Sources/LLM-monitor/Views/LocalUsageHoverViews.swift`
@@ -39,7 +40,7 @@ contributors are specified in their own files.
 | Local R/T | `COUNT(*)` rounds + `COUNT(DISTINCT turn_id)` turns, computed in SQL (no cross-source join) |
 | Local reasoning | 字符比例分摊 `output_tokens` — 从 `local_runtime_message_rows.data_json` 的 `thinking_content` + `msg_content` + `tool_calls[].tool_call_args` 字符数按 `R/(R+C)` 比例分摊账单 output。守恒 `reason + realOutput == output`。公式走共享工具 `Models/ReasoningCharSplit.swift`（`split(outputTokens:reasoningChars:visibleChars:)`），与 ZCode 非智谱 provider 分片、OpenCode `minimax` 分片、DSH M3、Agy 同一实现 |
 | SQLite read strategy | Direct read `SQLITE_OPEN_READONLY`（无 `-shm` 且无非空 `-wal` 时走 `file:...?immutable=1`）+ `busy_timeout(300)` + `extended_result_codes(1)`；file-level 错误（CANTOPEN 14 / BUSY 5 / READONLY 8 / IOERR 10 / CORRUPT 11）回退 `/tmp/{uuid}.db` 副本，副本以 `SQLITE_OPEN_READWRITE` 打开完成 WAL recovery |
-| Models | M3（`minimax/MiniMax-M3`，99.97% of data）；定价目录仅支持 M3 及以上 —— M2 系列（M2.7 / M2.5 / M2.1）已退休，其历史用量显示"未定价"（有意行为）。M3.1 Flash 系列（ZCode 的真实 model_id 是 `MiniMax-M3.1-Flash-Preview`）有独立条目（关键字 `3.1-flash`，contains，与 M3 同价 ¥2.1/¥0.42/¥8.4），且该条目必须排在 `m3` 条目**之前** —— 否则 "首条命中" 会让 M3.1 Flash 落到 M3 条目上 |
+| Models | M3（`minimax/MiniMax-M3`，99.97% of data）；定价目录仅支持 M3 及以上 —— M2 系列（M2.7 / M2.5 / M2.1）已退休，其历史用量显示"未定价"（有意行为）。M3.1 Flash 系列有独立条目（关键字 `3.1-flash`，contains，**¥1 / ¥0.1 / ¥4**，比 M3 的 ¥2.1 / ¥0.42 / ¥8.4 便宜），真实 model_id 有三种写法：ZCode `MiniMax-M3.1-Flash-Preview`、DSH `Minimax-M3.1-flash-preview`、MiniMax Code session 目录 `MiniMax-M3.1-Flash`；该条目必须排在 `m3` 条目**之前** —— 否则 "首条命中" 会让 M3.1 Flash 落到 M3 条目上。**注意**：`minimax/MiniMax-M3` 是 runtime 写的泛化标签，不是真实模型（见 §Model resolution for samples） |
 | Reasoning tokens | **来源**: M3 / M2.7 当前按 `thinking_content` 字符数比例分摊 `output_tokens` 出来(账单层 `reasoning_tokens` 永远是 0)。未来切到 thinking model 时,reader 的 per-row `MAX(reasoning_tokens, raw.reasoning)` 会捕获到非零值,scanner 自动切到该字段直接用。 |
 | Cross-provider hover | Shared `SevenDayTokenUsageHoverView<Daily: LocalUsageDaily>` + `LocalUsageFooterView<Daily>` — every local-usage client (Antigravity / Codex / Minimax / OpenCode / GLM-ZCode / DSH / Agy) uses the same SwiftUI view with field-level adapters; the card feeds it a merged `ProviderUsageProjection` |
 
@@ -316,10 +317,11 @@ only the changed source's contribution without rebuilding unrelated cache state.
    | v12 | 加 WAL mtime+size diff,避免 WAL 长 checkpoint 期间漏数据 |
    | v13 | `MinimaxDBReader` 增加 model 回退链：row-level `model` → session-level `record_json.effectiveModel` → ledger 唯一模型（仅当 ledger 只有一个 distinct model；多模型时不猜）；旧 samples 全量重建以应用新模型解析 |
    | v14 | 重新规范化样本 `inputTokens` 为 `uncached + cache_read`（cache-inclusive），与 Codex/DSH 的 sample 字段语义对齐；`tokenComponents` 统一假设 cache-inclusive 输入后，无需再为 Minimax 走特殊分支。旧 snapshots 全量重建 |
+   | v15 | 模型名改从 session 目录的 `llm-call.json` 取**真实模型**（见 §Model resolution for samples），账本/投影里的 `minimax/MiniMax-M3` 泛化标签不再当模型名用。旧 samples 带的是错标模型名，必须全量重建才能改对 |
 
-   当前 scanner 的 `currentVersion` 是 14（`CacheIndex.empty.version` 与
-   `loadIndex(currentVersion: 14)` 两处一致）。v14 的 bump 理由见
-   `CacheIndex.empty` 的行内注释（`MinimaxLocalUsageScanner.swift`），v12 / v13 见上表。
+   当前 scanner 的 `currentVersion` 是 15（`CacheIndex.empty.version` 与
+   `loadIndex(currentVersion: 15)` 两处一致）。v15 的 bump 理由见
+   `CacheIndex.empty` 的行内注释（`MinimaxLocalUsageScanner.swift`），v12 / v13 / v14 见上表。
 
    **Why WAL dimension was added**: minimax v2 runtime uses SQLite WAL mode and may go **36+ hours without checkpointing** — new writes accumulate in `runtime-state.sqlite-wal` (observed up to 5.4MB before flush) while `.db`'s mtime/size stay frozen. The old two-dimension diff (`mtime || size`) could not detect this, leaving the UI without 7/25-7/26 data until the runtime finally flushed. The WAL size is a direct signal: `walSize` increasing = new data waiting. WAL truncation on checkpoint is captured by `.db`'s mtime jump (runtime `fsync` after WAL write), so the old dimension still catches that case. WAL **mtime** was added alongside size because a checkpoint can rewrite a WAL back to a similar size, and size alone would miss a content-only update.
 2. **Per-source incremental aggregation**: `index.dailyBySource["runtime"]` stores the day-keyed breakdown. When runtime changes, only its daily map is replaced.
@@ -381,8 +383,23 @@ CREATE INDEX idx_local_runtime_token_usage_ts         ON local_runtime_token_usa
 
 The MiniMax runtime dropped the `model` column value for many token-ledger rows in its
 2026-08-15 schema migration, while the session projection kept the model. `MinimaxDBReader`
-therefore resolves each sample's `modelName` through a three-step fallback chain, all in
-one `COALESCE`:
+therefore resolves each sample's `modelName` in two stages.
+
+**Stage 1 — the real model, from the session directory.** The ledger column and the session
+projection both store the **generic label** `minimax/MiniMax-M3`, not the model that actually
+ran. The real model lives only in the session directory's `llm-call.json` (`model` +
+`provider`), at `~/.minimax/v2/sessions/<history_relative_dir>/llm-call.json`.
+`MinimaxSessionModelResolver` reads it (one read per session, cached; the file is
+~150 KB because it embeds the system prompt, so it must **not** be re-parsed per row).
+
+When the resolver returns a model, that model **wins over everything below**. Without this
+stage every recent usage row is mislabeled: measured on the real ledger, **all 2754 sample
+rows inside the 8-day window** fell through to the generic label, i.e. every M3.1 Flash call
+was attributed to M3 — wrong model name *and* wrong price (M3 ¥2.1/¥0.42/¥8.4 vs M3.1 Flash
+¥1/¥0.1/¥4, which over-estimated the same 8-day usage by **¥253.76 vs ¥69.70**).
+
+**Stage 2 — the fallback chain**, all in one SQL `COALESCE`, used only when the session
+directory yields nothing (directory cleaned up, file missing, unreadable JSON):
 
 1. row-level `NULLIF(TRIM(t.model), '')` — the ledger's own value when present
 2. session-level `local_runtime_sessions.record_json.effectiveModel` (via a `LEFT JOIN`,
@@ -393,7 +410,9 @@ one `COALESCE`:
 
 Both `model` and the session projection are probed with `PRAGMA table_info` first: older
 schemas or test fixtures without the column degrade to `NULL` for that step rather than
-failing the whole source. Sample `promptID` is `"\(session_id):\(turn_id ?? "event-\(ts)")"`.
+failing the whole source. `history_relative_dir` is probed the same way — a fixture without
+that column simply loses stage 1 and keeps the old behaviour. Sample `promptID` is
+`"\(session_id):\(turn_id ?? "event-\(ts)")"`.
 
 ### Field semantics
 
@@ -908,6 +927,18 @@ The window cost formula uses the M3 prices from `ModelPricing.json`:
 cost(¥) = input * 2.10 + cacheRead * 0.42 + (output + reasoning) * 8.40  (per 1M tokens)
 ```
 
+M3.1 Flash has its own, cheaper entry (also from `ModelPricing.json`):
+
+```
+cost(¥) = input * 1.00 + cacheRead * 0.10 + (output + reasoning) * 4.00  (per 1M tokens)
+```
+
+The M3 prices above remain the right ones for the M3-era evidence quoted in this section
+(Mavis 2026-08-01 ~ 08-14, DSH 2026-08-16 ~ 08-27 — all M3). But a **current** ledger
+whose rows resolve to M3.1 Flash must be costed with the M3.1 Flash prices; mixing the two
+inflates the estimate (measured on a real 8-day window: ¥253.76 with M3 prices vs ¥69.70
+with M3.1 Flash prices for the same tokens).
+
 #### Evidence the ceiling is cost, not tokens
 
 1. **Mavis local `.db` M3 usage, 2026-08-01 ~ 2026-08-14, 24 windows (post-Token-Plan tier change)**: 10 of the 24 windows sit in the **¥23.49 – ¥25.38** band with token totals 49.2M–52.7M and rounds 254–570. Mavis' long-running task loops naturally cap at this level even when the underlying M3 quota API has remaining capacity.
@@ -934,10 +965,10 @@ A working hypothesis (DSH 2026-08-17 10:00+5h): `cost_in_plan ≈ ¥24`, `cost_o
 ## Known Limitations
 
 - `cost_usd` is present in `local_runtime_token_usage` but is **not read at all** by the reader, let alone shown in the UI — the scanner only keeps `input/output/cache/rounds/turns`. (Pricing for the chart's money column comes from `ModelPricing.json` × tokens, not from the ledger's own `cost_usd`.) Future work: add a "今天 $0.42" suffix to the footer.
-- Per-model breakdown is not exposed in the hover chart. It shows **aggregate** per day, not "today's M3 vs M3.1 Flash vs coder vs verifier". The `model` and `agent_name` columns are queryable from `.db`; UI is the only blocker. (`model` *is* resolved per sample for pricing, via the row → session → unique-ledger fallback chain.)
+- Per-model breakdown is not exposed in the hover chart. It shows **aggregate** per day, not "today's M3 vs M3.1 Flash vs coder vs verifier". The `model` and `agent_name` columns are queryable from `.db`; UI is the only blocker. (`model` *is* resolved per sample for pricing, via the session-directory model → row → session → unique-ledger fallback chain.)
 - 7-day window is hardcoded. The data is in cache, so extending to 14/30 days is a single SQL change (and a `LocalUsageRetentionWindow` bump).
 - `cost_usd` is only meaningful for direct API calls; sub-agent runs (`coder`, `verifier`, etc.) may have different cost semantics that aren't surfaced.
-- v2's `local_runtime_sessions.record_json` is only consulted for `effectiveModel` (the session-level model fallback in the sample query). `parentSessionId` / `errorMessage` / `title` are **not** read. Schema is 100% available, scanner just doesn't query those fields.
+- v2's `local_runtime_sessions.record_json` is only consulted for `effectiveModel` (the session-level model fallback in the sample query). `parentSessionId` / `errorMessage` / `title` are **not** read. Schema is 100% available, scanner just doesn't query those fields. The **real** model comes from a different file entirely — the session directory's `llm-call.json` (see §Model resolution for samples).
 
 ## Legacy database policy
 
@@ -968,6 +999,8 @@ Minimax tests are located in `Tests/LLMMonitorTests/MinimaxResponseParsingTests.
   - `testV2ReaderAggregatesRowsSessionsTurnsAndSamples`: aggregates v2 rows, sessions, turns, and samples.
   - `testV2ReaderRecoversMissingModelFromSessionAndUniqueLedgerModel`: the row → `record_json.effectiveModel` → unique-ledger-model fallback chain.
   - `testV2ReaderDoesNotGuessWhenLedgerContainsMultipleModels`: with several distinct models in the ledger the last fallback is refused (sample `modelName` is nil rather than a wrong guess).
+  - `testV2ReaderPrefersSessionDirectoryModelOverGenericLedgerLabel`: the session directory's `llm-call.json` model wins over the ledger's generic `minimax/MiniMax-M3` label.
+  - `testV2ReaderFallsBackWhenSessionDirectoryModelIsUnavailable`: an unreadable session directory falls back to the old chain instead of crashing or guessing.
   - `testV2ReaderClampsNegativeValuesAndUsesPerRowReasoningMaximum`: clamps invalid values and applies per-row reasoning maximum.
   - `testV2CharacterAggregationUsesToolArgsExcludesResultsAndPreservesOutput`: verifies v2 character aggregation filters and output conservation.
   - `testV2CharSQLFailureKeepsTokenLedgerAndMarksDegradedForRetry`: keeps the token ledger and marks character aggregation degraded.
@@ -1013,4 +1046,4 @@ reasoning maximum, character aggregation, and output conservation.
 
     To realize this split, the fetcher must persist every `current_interval_remaining_percent` sample with a timestamp. Currently it only stores the most recent value in `ModelQuota`; a `local_runtime_quota_snapshots(model_name, ts, interval_remaining_percent, weekly_remaining_percent, interval_total_count, interval_usage_count, weekly_total_count, weekly_usage_count)` table is needed, and `local_runtime_token_usage` should gain a `quota_snapshot_id` so each row can be tagged "inside plan" vs "credits".
 
-> 核对基线：2026-10-09 · 代码 004e041
+> 核对基线：2026-10-20 · 代码 ff9e2f5
