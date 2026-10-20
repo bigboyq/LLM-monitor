@@ -466,15 +466,10 @@ extension EdgeDockController {
         }
 
         // 该屏幕是否可能具有动态弹出式菜单栏：
-        // 1. 全屏空间下：所有屏幕均可在指针推至顶沿时滑出菜单栏；
-        // 2. 非全屏空间下：
-        //    - 若 `screensHaveSeparateSpaces == false` 且当前为副屏，macOS 绝不会显示菜单栏；
-        //    - 若系统已常驻保留菜单栏（visibleFrame 已扣除顶部），菜单栏恒定可见，无需动态唤出判定。
+        // 只要静态安全区未扣除常驻菜单栏（`staticTop <= 1`，包含全屏、副屏无常驻菜单栏、或系统设置
+        // 自动隐藏菜单栏），macOS 均允许在指针推至物理顶沿时动态唤出菜单栏。
         let staticTop = screen.frame.maxY - screen.visibleFrame.maxY
-        let supportsDynamicMenuBar = isFullscreenSpace || (
-            (NSScreen.screensHaveSeparateSpaces || ScreenChromeProbe.isPrimaryScreen(screen))
-            && staticTop <= 1
-        )
+        let supportsDynamicMenuBar = isFullscreenSpace || staticTop <= 1
 
         // 顶边感应区距离门控：
         // macOS 只有在鼠标推至屏幕物理顶沿时才会唤出动态菜单栏。

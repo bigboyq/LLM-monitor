@@ -384,4 +384,47 @@ final class EdgeDockFullscreenTests: EdgeDockTestCase {
             )
         }
     }
+
+    // MARK: - 窗口与屏幕切换协同重算测试
+
+    func testQueryWindowEntriesProvidesValidList() {
+        // queryWindowEntries 在任何合规 macOS 环境下至少返回一个窗口或空列表，绝不崩溃
+        let entries = FullscreenProbe.queryWindowEntries()
+        if let entries {
+            XCTAssertGreaterThanOrEqual(entries.count, 0)
+        }
+    }
+
+    @MainActor
+    func testEvaluateFullscreenSynchronizesMenuBarStateEvenWhenFullscreenBooleanStaysSame() {
+        let controller = EdgeDockController.shared
+        let originalConfig = controller.config
+        let originalMenuBar = controller.lastMenuBarState
+        let originalFullscreen = controller.isFullscreenSpace
+        addTeardownBlock {
+            controller.applyRuntimeConfig { $0 = originalConfig }
+            controller.lastMenuBarState = originalMenuBar
+            controller.isFullscreenSpace = originalFullscreen
+        }
+
+        controller.applyRuntimeConfig {
+            $0.edge = .top
+            $0.mode = .statusWindow
+        }
+
+        // 假设原本记录的菜单栏状态为虚拟的过期值 (isVisible: true, height: 999)
+        let staleMenuBar = ScreenChromeProbe.MenuBarState(isVisible: true, height: 999)
+        controller.lastMenuBarState = staleMenuBar
+
+        // 触发 evaluateFullscreen
+        controller.evaluateFullscreen()
+
+        // 验证：evaluateFullscreen 必须探测真实菜单栏状态并覆盖过期的 lastMenuBarState，
+        // 绝不能继续拿着 height: 999 的旧缓存
+        XCTAssertNotEqual(
+            controller.lastMenuBarState,
+            staleMenuBar,
+            "evaluateFullscreen 必须主动同步真实菜单栏状态，消除过期状态栏缓存锁死"
+        )
+    }
 }

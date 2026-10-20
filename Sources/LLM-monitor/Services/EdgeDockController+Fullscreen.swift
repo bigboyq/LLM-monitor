@@ -47,6 +47,7 @@ extension EdgeDockController {
     func evaluateFullscreen() {
         guard config.mode.isVisible else {
             isFullscreenSpace = false
+            lastMenuBarState = nil
             reconcile(animated: false)
             return
         }
@@ -55,24 +56,49 @@ extension EdgeDockController {
         // 判据问的是"当前 Space 上有没有铺满整屏的窗口"，不是"前台 App 有没有"——
         // 滑动 Space 不触发 App 激活，按前台过滤会漏判出非前台 App 的全屏 Space。
         let screen = Self.targetScreen
-        let fullscreen = FullscreenProbe.isAnyFullscreenWindow(
+        let windowEntries = FullscreenProbe.queryWindowEntries()
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? screen.frame.height
+
+        let fullscreen: Bool
+        if let windowEntries {
+            fullscreen = FullscreenProbe.containsFullscreenWindow(
+                among: windowEntries,
+                screenFrame: screen.frame,
+                primaryScreenHeight: primaryHeight,
+                ownProcessIdentifier: ProcessInfo.processInfo.processIdentifier
+            )
+        } else {
+            fullscreen = false
+        }
+
+        let probedMenuBar = ScreenChromeProbe.menuBarState(
             on: screen,
-            excludingProcessIdentifier: ProcessInfo.processInfo.processIdentifier
+            isFullscreenSpace: fullscreen,
+            windowEntries: windowEntries
         )
-        guard fullscreen != isFullscreenSpace else { return }
-        isFullscreenSpace = fullscreen
-        // 判定翻转时把**判定输入**一并落盘：真实复现场景稍纵即逝（用户描述的
-        // "Chrome 全屏看不到悬浮窗"只存在了几分钟），没有明细的 true/false
-        // 翻转无法区分"真全屏""伪全屏（铺满大窗口）"和"中间态误判"。
-        logInfo((fullscreen
-            ? (config.hideInFullscreen
-                ? "EdgeDock: 检测到全屏，隐藏"
-                : "EdgeDock: 检测到全屏（已关闭全屏隐藏，继续显示）")
-            : "EdgeDock: 退出全屏，恢复显示")
-            + " " + FullscreenProbe.diagnose(
-                on: screen,
-                excludingProcessIdentifier: ProcessInfo.processInfo.processIdentifier
-            ))
-        reconcile(animated: false)
+
+        let fullscreenChanged = fullscreen != isFullscreenSpace
+        let menuBarChanged = probedMenuBar != lastMenuBarState
+
+        guard fullscreenChanged || menuBarChanged else { return }
+
+        if fullscreenChanged {
+            isFullscreenSpace = fullscreen
+            // 判定翻转时把**判定输入**一并落盘：真实复现场景稍纵即逝（用户描述的
+            // "Chrome 全屏看不到悬浮窗"只存在了几分钟），没有明细的 true/false
+            // 翻转无法区分"真全屏""伪全屏（铺满大窗口）"和"中间态误判"。
+            logInfo((fullscreen
+                ? (config.hideInFullscreen
+                    ? "EdgeDock: 检测到全屏，隐藏"
+                    : "EdgeDock: 检测到全屏（已关闭全屏隐藏，继续显示）")
+                : "EdgeDock: 退出全屏，恢复显示")
+                + " " + FullscreenProbe.diagnose(
+                    on: screen,
+                    excludingProcessIdentifier: ProcessInfo.processInfo.processIdentifier
+                ))
+        }
+
+        lastMenuBarState = probedMenuBar
+        reconcile(animated: true)
     }
 }

@@ -155,8 +155,8 @@ final class EdgeDockController: ObservableObject {
     private var configCancellable: AnyCancellable?
     private var screenObserver: NSObjectProtocol?
     private var launchObserver: NSObjectProtocol?
-    private var activationObserver: NSObjectProtocol?
     private var spaceObserver: NSObjectProtocol?
+    private var workspaceObservers: [NSObjectProtocol] = []
     var globalMouseMonitor: Any?
     var localMouseMonitor: Any?
     var captureTimer: Timer?
@@ -347,17 +347,29 @@ final class EdgeDockController: ObservableObject {
                 // 但留着就是随时会骗人的状态）。
                 EdgeDockDisplay.pruneCache(to: NSScreen.screens)
                 self.lastMenuBarState = nil
-                self.reconcile(animated: false)
                 self.evaluateFullscreen()
             }
         }
 
-        activationObserver = NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.didActivateApplicationNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.evaluateFullscreen() }
+        // 应用生命周期与窗口层级切换：包括前台激活、失活、隐藏、取消隐藏。
+        // 切窗口时常伴随窗口过渡动画，立即重测 + 阶梯补测确保捕获稳态。
+        let workspaceNotifications: [NSNotification.Name] = [
+            NSWorkspace.didActivateApplicationNotification,
+            NSWorkspace.didDeactivateApplicationNotification,
+            NSWorkspace.didHideApplicationNotification,
+            NSWorkspace.didUnhideApplicationNotification,
+        ]
+        workspaceObservers = workspaceNotifications.map { name in
+            NSWorkspace.shared.notificationCenter.addObserver(
+                forName: name,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.evaluateFullscreen()
+                    self?.scheduleFullscreenRechecks()
+                }
+            }
         }
 
         // 进/出全屏的**本体**信号：全屏会切到一个新的 Space，所以真正对应这件事的
@@ -430,11 +442,13 @@ final class EdgeDockController: ObservableObject {
         captureTimer = nil
         if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
         if let launchObserver { NotificationCenter.default.removeObserver(launchObserver) }
-        if let activationObserver { NSWorkspace.shared.notificationCenter.removeObserver(activationObserver) }
+        for observer in workspaceObservers {
+            NSWorkspace.shared.notificationCenter.removeObserver(observer)
+        }
+        workspaceObservers.removeAll()
         if let spaceObserver { NSWorkspace.shared.notificationCenter.removeObserver(spaceObserver) }
         screenObserver = nil
         launchObserver = nil
-        activationObserver = nil
         spaceObserver = nil
         statusCancellable?.cancel()
         evaluationCancellable?.cancel()

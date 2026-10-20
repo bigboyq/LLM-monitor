@@ -119,21 +119,14 @@ enum FullscreenProbe {
         }
     }
 
-    /// 当前 Space 上是否有原生全屏窗口。
-    ///
-    /// - Parameter ownProcessIdentifier: 本进程 PID，用于排除自身窗口。
-    static func isAnyFullscreenWindow(
-        on screen: NSScreen,
-        excludingProcessIdentifier ownProcessIdentifier: pid_t
-    ) -> Bool {
-        // **不能带 `.excludeDesktopElements`**：它过滤掉的正是桌面装饰（壁纸 /
-        // 桌面图标 / 菜单栏），而"桌面装饰在不在"就是本探测的另一半判据。多出来的
-        // 都是负层级窗口，`layer == 0` 的候选过滤本来就会把它们挡掉。
+    /// 读取当前屏幕上所有窗口的轻量快照（仅 bounds/layer/ownerPID，无内容无录屏权限要求）。
+    /// 读取失败返回 nil（fail-open）。
+    static func queryWindowEntries() -> [WindowEntry]? {
         let options: CGWindowListOption = [.optionOnScreenOnly]
         guard let raw = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
-            return false
+            return nil
         }
-        let entries = raw.compactMap { item -> WindowEntry? in
+        return raw.compactMap { item -> WindowEntry? in
             guard let ownerPID = item[kCGWindowOwnerPID as String] as? pid_t,
                   let layer = item[kCGWindowLayer as String] as? Int,
                   let bounds = item[kCGWindowBounds as String] as? [String: Any],
@@ -141,6 +134,16 @@ enum FullscreenProbe {
             else { return nil }
             return WindowEntry(ownerPID: ownerPID, layer: layer, bounds: rect)
         }
+    }
+
+    /// 当前 Space 上是否有原生全屏窗口。
+    ///
+    /// - Parameter ownProcessIdentifier: 本进程 PID，用于排除自身窗口。
+    static func isAnyFullscreenWindow(
+        on screen: NSScreen,
+        excludingProcessIdentifier ownProcessIdentifier: pid_t
+    ) -> Bool {
+        guard let entries = queryWindowEntries() else { return false }
         let primaryHeight = NSScreen.screens.first?.frame.height ?? screen.frame.height
         return containsFullscreenWindow(
             among: entries,
@@ -159,18 +162,7 @@ enum FullscreenProbe {
         for screens: [NSScreen],
         excludingProcessIdentifier ownProcessIdentifier: pid_t
     ) -> [CGDirectDisplayID: Bool] {
-        let options: CGWindowListOption = [.optionOnScreenOnly]
-        guard let raw = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
-            return [:]
-        }
-        let entries = raw.compactMap { item -> WindowEntry? in
-            guard let ownerPID = item[kCGWindowOwnerPID as String] as? pid_t,
-                  let layer = item[kCGWindowLayer as String] as? Int,
-                  let bounds = item[kCGWindowBounds as String] as? [String: Any],
-                  let rect = CGRect(dictionaryRepresentation: bounds as CFDictionary)
-            else { return nil }
-            return WindowEntry(ownerPID: ownerPID, layer: layer, bounds: rect)
-        }
+        guard let entries = queryWindowEntries() else { return [:] }
         return verdicts(
             among: screens.compactMap { screen in
                 EdgeDockDisplay.displayID(of: screen).map { (displayID: $0, frame: screen.frame) }
