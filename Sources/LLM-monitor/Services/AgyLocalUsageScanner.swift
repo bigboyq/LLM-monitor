@@ -455,50 +455,18 @@ final class AgyLocalUsageScanner: LocalUsageScannerBase<AgyLocalUsage>, @uncheck
         limits: AgyLocalUsageScanLimits,
         snapshotReader: ((URL) throws -> AgyLogFileSnapshot)? = nil
     ) -> AgyFileSelection {
-        var candidates: [AgyLogFileSnapshot] = []
-        candidates.reserveCapacity(filePaths.count)
-        var failedFileURLs: [URL] = []
-        for url in filePaths {
-            let snapshot: AgyLogFileSnapshot?
-            do {
-                snapshot = try snapshotReader.map { try $0(url) }
-                    ?? AgyLogFileSnapshot(url: url, fileManager: fileManager)
-            } catch {
-                failedFileURLs.append(url)
+        LogFileSelector.select(
+            filePaths: filePaths,
+            fileManager: fileManager,
+            maxSessionFiles: limits.maxSessionFiles,
+            maxTotalRawBytes: limits.maxTotalRawBytes,
+            snapshotReader: snapshotReader,
+            onWarning: { url, error in
                 logWarn(
                     "[agy-scan] 无法读取 transcript 文件属性，保留 last-good cache: "
                         + "\(url.path), error: \(errorSummary(error))"
                 )
-                continue
             }
-            guard let snapshot else { continue }
-            guard snapshot.sizeBytes > 0 else { continue }
-            candidates.append(snapshot)
-        }
-        let ordered = candidates.sorted { lhs, rhs in
-            if lhs.modifiedAt != rhs.modifiedAt {
-                return lhs.modifiedAt > rhs.modifiedAt
-            }
-            return lhs.url.path < rhs.url.path
-        }
-        let fileCapped = Array(ordered.prefix(limits.maxSessionFiles))
-        var selected: [AgyLogFileSnapshot] = []
-        var currentBytes = 0
-        var byteLimited = false
-        for snapshot in fileCapped {
-            let accumulated = SaturatingArithmetic.add(currentBytes, snapshot.sizeBytes)
-            if accumulated > limits.maxTotalRawBytes {
-                byteLimited = true
-                break
-            }
-            currentBytes = accumulated
-            selected.append(snapshot)
-        }
-        return AgyFileSelection(
-            snapshots: selected,
-            availableCount: candidates.count,
-            byteLimited: byteLimited,
-            failedFileCount: failedFileURLs.count
         )
     }
 
@@ -784,46 +752,9 @@ final class AgyLocalUsageScanner: LocalUsageScannerBase<AgyLocalUsage>, @uncheck
 
 // MARK: - Fingerprint/index
 
-struct AgyLogFileSnapshot: Sendable {
-    let url: URL
-    let modifiedAt: Date
-    let sizeBytes: Int
-
-    init(url: URL, fileManager: FileManagerBox) throws {
-        let attributes = try fileManager.attributesOfItem(atPath: url.path)
-        self.url = url
-        self.modifiedAt = (attributes[.modificationDate] as? Date) ?? Date.distantPast
-        self.sizeBytes = (attributes[.size] as? NSNumber)?.intValue ?? 0
-    }
-
-    var fingerprint: AgyLogFileFingerprint {
-        AgyLogFileFingerprint(
-            path: url.path,
-            modificationMs: modifiedAt.timeIntervalSince1970 * 1_000,
-            sizeBytes: sizeBytes
-        )
-    }
-}
-
-/// Result of transcript-file selection: the newest-first slice that fits both
-/// caps, plus counters for diagnostics.
-struct AgyFileSelection: Sendable {
-    let snapshots: [AgyLogFileSnapshot]
-    /// Valid, non-empty snapshots discovered before any cap was applied.
-    let availableCount: Int
-    /// True when the raw-byte cap dropped at least one otherwise-selected file.
-    let byteLimited: Bool
-    /// Number of files whose fingerprint/stat read failed before selection.
-    let failedFileCount: Int
-
-    var truncatedByFileLimit: Bool { snapshots.count < availableCount }
-}
-
-struct AgyLogFileFingerprint: Codable, Equatable, Sendable {
-    let path: String
-    let modificationMs: Double
-    let sizeBytes: Int
-}
+typealias AgyLogFileSnapshot = LogFileSnapshot
+typealias AgyLogFileFingerprint = LogFileFingerprint
+typealias AgyFileSelection = LogFileSelection
 
 private struct CacheFingerprint: Sendable {
     let files: [AgyLogFileFingerprint]

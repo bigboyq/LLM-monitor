@@ -375,50 +375,18 @@ final class DshLocalUsageScanner: LocalUsageScannerBase<DshLocalUsage>, @uncheck
         limits: DshLocalUsageScanLimits,
         snapshotReader: ((URL) throws -> DshLogFileSnapshot)? = nil
     ) -> DshFileSelection {
-        var candidates: [DshLogFileSnapshot] = []
-        candidates.reserveCapacity(filePaths.count)
-        var failedFileURLs: [URL] = []
-        for url in filePaths {
-            let snapshot: DshLogFileSnapshot?
-            do {
-                snapshot = try snapshotReader.map { try $0(url) }
-                    ?? DshLogFileSnapshot(url: url, fileManager: fileManager)
-            } catch {
-                failedFileURLs.append(url)
+        LogFileSelector.select(
+            filePaths: filePaths,
+            fileManager: fileManager,
+            maxSessionFiles: limits.maxSessionFiles,
+            maxTotalRawBytes: limits.maxTotalRawBytes,
+            snapshotReader: snapshotReader,
+            onWarning: { url, error in
                 logWarn(
                     "[dsh-scan] 无法读取 session 文件属性，保留 last-good cache: "
                         + "\(url.path), error: \(errorSummary(error))"
                 )
-                continue
             }
-            guard let snapshot else { continue }
-            guard snapshot.sizeBytes > 0 else { continue }
-            candidates.append(snapshot)
-        }
-        let ordered = candidates.sorted { lhs, rhs in
-            if lhs.modifiedAt != rhs.modifiedAt {
-                return lhs.modifiedAt > rhs.modifiedAt
-            }
-            return lhs.url.path < rhs.url.path
-        }
-        let fileCapped = Array(ordered.prefix(limits.maxSessionFiles))
-        var selected: [DshLogFileSnapshot] = []
-        var currentBytes = 0
-        var byteLimited = false
-        for snapshot in fileCapped {
-            let accumulated = SaturatingArithmetic.add(currentBytes, snapshot.sizeBytes)
-            if accumulated > limits.maxTotalRawBytes {
-                byteLimited = true
-                break
-            }
-            currentBytes = accumulated
-            selected.append(snapshot)
-        }
-        return DshFileSelection(
-            snapshots: selected,
-            availableCount: candidates.count,
-            byteLimited: byteLimited,
-            failedFileCount: failedFileURLs.count
         )
     }
 
@@ -494,40 +462,9 @@ final class DshLocalUsageScanner: LocalUsageScannerBase<DshLocalUsage>, @uncheck
 
 // MARK: - Parsed data
 
-struct DshLogFileSnapshot: Sendable {
-    let url: URL
-    let modifiedAt: Date
-    let sizeBytes: Int
-
-    init(url: URL, fileManager: FileManagerBox) throws {
-        let attributes = try fileManager.attributesOfItem(atPath: url.path)
-        self.url = url
-        self.modifiedAt = (attributes[.modificationDate] as? Date) ?? Date.distantPast
-        self.sizeBytes = (attributes[.size] as? NSNumber)?.intValue ?? 0
-    }
-
-    var fingerprint: DshLogFileFingerprint {
-        DshLogFileFingerprint(
-            path: url.path,
-            modificationMs: modifiedAt.timeIntervalSince1970 * 1_000,
-            sizeBytes: sizeBytes
-        )
-    }
-}
-
-/// Result of DSH session-file selection: the newest-first slice that fits both
-/// the file-count and raw-byte caps, plus counters for diagnostics.
-struct DshFileSelection: Sendable {
-    let snapshots: [DshLogFileSnapshot]
-    /// Valid, non-empty snapshots discovered before any cap was applied.
-    let availableCount: Int
-    /// True when the raw-byte cap dropped at least one otherwise-selected file.
-    let byteLimited: Bool
-    /// Number of files whose fingerprint/stat read failed before selection.
-    let failedFileCount: Int
-
-    var truncatedByFileLimit: Bool { snapshots.count < availableCount }
-}
+typealias DshLogFileSnapshot = LogFileSnapshot
+typealias DshLogFileFingerprint = LogFileFingerprint
+typealias DshFileSelection = LogFileSelection
 
 private struct DshRawEvent: Decodable {
     let type: String
@@ -1293,12 +1230,6 @@ private extension DshDailyUsage {
 }
 
 // MARK: - Fingerprint/index
-
-struct DshLogFileFingerprint: Codable, Equatable, Sendable {
-    let path: String
-    let modificationMs: Double
-    let sizeBytes: Int
-}
 
 private struct CacheFingerprint: Sendable {
     let files: [DshLogFileFingerprint]
