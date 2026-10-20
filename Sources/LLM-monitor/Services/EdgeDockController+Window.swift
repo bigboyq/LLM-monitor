@@ -191,9 +191,14 @@ extension EdgeDockController {
         // 隐藏，visibleFrame 的预留会让贴上/下边的 dock 悬空——此时贴物理边缘；
         // 非全屏时预留即真实占用（含侧边系统 Dock 的避让）。判定翻转有时要等
         // 阶梯补测（全屏动画约 1s），期间短暂停在旧位置属已知时序。
+        let targetScreen = Self.targetScreen
+        lastMenuBarState = ScreenChromeProbe.menuBarState(
+            on: targetScreen,
+            isFullscreenSpace: isFullscreenSpace
+        )
         let target = EdgeDockGeometry.frame(
             visibleFrame: ScreenChromeProbe.effectiveVisibleFrame(
-                on: Self.targetScreen,
+                on: targetScreen,
                 isFullscreenSpace: isFullscreenSpace
             ),
             edge: edge,

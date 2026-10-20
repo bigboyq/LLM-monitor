@@ -199,6 +199,28 @@ final class ScreenChromeProbeTests: EdgeDockTestCase {
         if NSScreen.screens.count > 1 {
             let hasSecondary = ScreenChromeProbe.hasMenuBarWindow(on: secondaryScreen, customEntries: [primaryMenu])
             XCTAssertEqual(hasSecondary, false, "副屏区间未覆盖该菜单栏窗口，判定无菜单栏")
+
+            // 当副屏动态唤出菜单栏时（例如用户鼠标滑至副屏顶端）
+            let secondaryMenu = FullscreenProbe.WindowEntry(
+                ownerPID: 420,
+                layer: mainMenuLayer,
+                bounds: CGRect(x: secondaryScreen.frame.minX, y: 0, width: secondaryScreen.frame.width, height: 30)
+            )
+            let secondaryState = ScreenChromeProbe.menuBarState(
+                on: secondaryScreen,
+                isFullscreenSpace: false,
+                windowEntries: [secondaryMenu]
+            )
+            XCTAssertEqual(secondaryState.isVisible, true, "副屏检测到自身菜单栏窗口，判定状态栏可见")
+            XCTAssertEqual(secondaryState.height, 30, "副屏状态栏实测高度为 30pt")
+
+            let dynamicInsets = ScreenChromeProbe.effectiveInsets(
+                screenFrame: secondaryScreen.frame,
+                visibleFrame: secondaryScreen.visibleFrame,
+                isMenuBarVisible: secondaryState.isVisible,
+                menuBarHeight: secondaryState.height
+            )
+            XCTAssertEqual(dynamicInsets.top, 30, "动态避让 30pt 状态栏")
         }
     }
 }

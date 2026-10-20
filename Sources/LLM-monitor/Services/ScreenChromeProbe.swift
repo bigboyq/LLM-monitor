@@ -19,6 +19,12 @@ import AppKit
 ///   - 副屏在 `NSScreen.screensHaveSeparateSpaces == false` 时**完全没有状态栏**，顶边直接吸附；
 ///   - 副屏的全屏状态独立判定，不与主屏互相影响。
 enum ScreenChromeProbe {
+    /// 状态栏的显隐状态与高度。
+    struct MenuBarState: Equatable {
+        var isVisible: Bool
+        var height: CGFloat
+    }
+
     /// 屏幕四条边缘各自的安全避让（Insets，AppKit 坐标系）。
     struct Insets: Equatable {
         var top: CGFloat
@@ -34,11 +40,13 @@ enum ScreenChromeProbe {
     ///   - screenFrame: 物理屏幕区域（AppKit 坐标系）
     ///   - visibleFrame: 系统静态安全区（AppKit 坐标系）
     ///   - isMenuBarVisible: 状态栏是否在此屏幕上出现
+    ///   - menuBarHeight: 状态栏实测高度（若有实测则优先使用，例如副屏动态唤出时的 30pt）
     ///   - keepDockClearance: 是否保持对 Dock 的避让（默认为 true，左右下绝不与 Dock 重叠）
     static func effectiveInsets(
         screenFrame: CGRect,
         visibleFrame: CGRect,
         isMenuBarVisible: Bool,
+        menuBarHeight: CGFloat? = nil,
         keepDockClearance: Bool = true
     ) -> Insets {
         guard screenFrame.width > 0, screenFrame.height > 0 else {
@@ -47,7 +55,18 @@ enum ScreenChromeProbe {
 
         // 顶边：状态栏
         let staticTop = max(screenFrame.maxY - visibleFrame.maxY, 0)
-        let top = isMenuBarVisible ? staticTop : 0
+        let top: CGFloat
+        if isMenuBarVisible {
+            if let customHeight = menuBarHeight, customHeight > 0 {
+                top = customHeight
+            } else if staticTop > 0 {
+                top = staticTop
+            } else {
+                top = 30
+            }
+        } else {
+            top = 0
+        }
 
         // 底边与侧边：Dock（左、右、下均有可能）
         let staticBottom = max(visibleFrame.minY - screenFrame.minY, 0)
@@ -70,6 +89,7 @@ enum ScreenChromeProbe {
         screenFrame: CGRect,
         visibleFrame: CGRect,
         isMenuBarVisible: Bool,
+        menuBarHeight: CGFloat? = nil,
         keepDockClearance: Bool = true
     ) -> CGRect {
         guard screenFrame.width > 0, screenFrame.height > 0 else {
@@ -80,6 +100,7 @@ enum ScreenChromeProbe {
             screenFrame: screenFrame,
             visibleFrame: visibleFrame,
             isMenuBarVisible: isMenuBarVisible,
+            menuBarHeight: menuBarHeight,
             keepDockClearance: keepDockClearance
         )
 
@@ -113,66 +134,76 @@ enum ScreenChromeProbe {
     }
 
     /// 薄包装：按目标屏幕对象及其全屏判定，计算真实有效可视区。
-    /// 自动处理主屏副屏、单独 Spaces 拓扑、全屏状态与 Dock 避让。
+    /// 自动处理主屏副屏、单独 Spaces 拓扑、全屏状态、状态栏实测显隐/高度与 Dock 避让。
     static func effectiveVisibleFrame(on screen: NSScreen, isFullscreenSpace: Bool) -> CGRect {
-        let menuBarVisible = isMenuBarVisible(on: screen, isFullscreenSpace: isFullscreenSpace)
+        let state = menuBarState(on: screen, isFullscreenSpace: isFullscreenSpace)
         return effectiveVisibleFrame(
             screenFrame: screen.frame,
             visibleFrame: screen.visibleFrame,
-            isMenuBarVisible: menuBarVisible,
+            isMenuBarVisible: state.isVisible,
+            menuBarHeight: state.height,
             keepDockClearance: true
         )
     }
 
-    /// 状态栏是否在当前屏幕上真实出现。
-    ///
-    /// 必须同时满足：
-    /// 1. 当前屏幕上确实存在可见的系统菜单栏窗口（layer == kCGMainMenuWindowLevel，且水平跨越该屏幕）；
-    /// 2. 当前屏幕未处于 App 全屏状态（全屏时系统隐藏状态栏）。
+    /// 状态栏是否在当前屏幕上真实出现及其高度。
+    static func menuBarState(
+        on screen: NSScreen,
+        isFullscreenSpace: Bool,
+        windowEntries: [FullscreenProbe.WindowEntry]? = nil
+    ) -> MenuBarState {
+        // 1. 实时窗口检测：检查 CoreGraphics 窗口列表中属于该屏幕且处于 onScreen 状态的 Menubar 窗口
+        if let info = menuBarWindowInfo(on: screen, customEntries: windowEntries) {
+            return info
+        }
+
+        // 2. 窗口列表读取失败时的保守几何兜底：
+        if isFullscreenSpace {
+            return MenuBarState(isVisible: false, height: 0)
+        }
+        if !NSScreen.screensHaveSeparateSpaces && !isPrimaryScreen(screen) {
+            return MenuBarState(isVisible: false, height: 0)
+        }
+        let staticTop = screen.frame.maxY - screen.visibleFrame.maxY
+        return MenuBarState(isVisible: staticTop > 1, height: max(staticTop, 0))
+    }
+
+    /// 状态栏是否在当前屏幕上真实出现（向后兼容）。
     static func isMenuBarVisible(
         on screen: NSScreen,
         isFullscreenSpace: Bool,
         windowEntries: [FullscreenProbe.WindowEntry]? = nil
     ) -> Bool {
-        // 1. 全屏状态下，系统隐藏状态栏
-        if isFullscreenSpace {
-            return false
-        }
-
-        // 2. 静态几何层：若系统 visibleFrame 顶部压根没有预留高度，状态栏不可能出现（例如自动隐藏菜单栏）
-        let staticTop = screen.frame.maxY - screen.visibleFrame.maxY
-        guard staticTop > 1 else { return false }
-
-        // 3. 实时窗口检测：检查系统是否在当前屏幕的水平区间内生成了可见的 Menubar 窗口（layer 24）
-        if let hasMenu = hasMenuBarWindow(on: screen, customEntries: windowEntries) {
-            return hasMenu
-        }
-
-        // 4. 窗口列表读取失败时的保守兜底：
-        // 若系统未开启"显示器具有单独的 Spaces"，macOS 机制保证副屏绝对无状态栏
-        if !NSScreen.screensHaveSeparateSpaces && !isPrimaryScreen(screen) {
-            return false
-        }
-
-        return true
+        menuBarState(on: screen, isFullscreenSpace: isFullscreenSpace, windowEntries: windowEntries).isVisible
     }
 
-    /// 检查 CoreGraphics 窗口列表中是否有属于该屏幕的系统菜单栏窗口。
-    static func hasMenuBarWindow(
+    /// 检查 CoreGraphics 窗口列表中属于该屏幕且可见的菜单栏窗口信息。
+    static func menuBarWindowInfo(
         on screen: NSScreen,
         customEntries: [FullscreenProbe.WindowEntry]? = nil
-    ) -> Bool? {
+    ) -> MenuBarState? {
         let mainMenuLayer = Int(CGWindowLevelForKey(.mainMenuWindow))
         let screenMinX = screen.frame.minX
         let screenMaxX = screen.frame.maxX
 
+        // 转换当前屏幕上沿至 CoreGraphics 坐标系（主屏原点在左上角，AppKit 原点在左下角）
+        let primaryHeight = (NSScreen.screens.first { $0.frame.origin == .zero } ?? screen).frame.height
+        let screenTopCG = primaryHeight - screen.frame.maxY
+
         if let entries = customEntries {
-            return entries.contains { entry in
-                guard entry.layer == mainMenuLayer else { return false }
+            for entry in entries {
+                guard entry.layer == mainMenuLayer else { continue }
                 let overlapMinX = max(entry.bounds.minX, screenMinX)
                 let overlapMaxX = min(entry.bounds.maxX, screenMaxX)
-                return (overlapMaxX - overlapMinX) > 100
+                guard (overlapMaxX - overlapMinX) > 100 else { continue }
+
+                let nearTop = entry.bounds.minY >= screenTopCG - 5 && entry.bounds.minY <= screenTopCG + 5
+                let validHeight = entry.bounds.height >= 15
+                if nearTop && validHeight {
+                    return MenuBarState(isVisible: true, height: entry.bounds.height)
+                }
             }
+            return MenuBarState(isVisible: false, height: 0)
         }
 
         let options: CGWindowListOption = [.optionOnScreenOnly]
@@ -188,11 +219,23 @@ enum ScreenChromeProbe {
 
             let overlapMinX = max(rect.minX, screenMinX)
             let overlapMaxX = min(rect.maxX, screenMaxX)
-            if (overlapMaxX - overlapMinX) > 100 {
-                return true
+            guard (overlapMaxX - overlapMinX) > 100 else { continue }
+
+            let nearTop = rect.minY >= screenTopCG - 5 && rect.minY <= screenTopCG + 5
+            let validHeight = rect.height >= 15
+            if nearTop && validHeight {
+                return MenuBarState(isVisible: true, height: rect.height)
             }
         }
-        return false
+        return MenuBarState(isVisible: false, height: 0)
+    }
+
+    /// 保留原 `hasMenuBarWindow` 供已有调用点使用。
+    static func hasMenuBarWindow(
+        on screen: NSScreen,
+        customEntries: [FullscreenProbe.WindowEntry]? = nil
+    ) -> Bool? {
+        menuBarWindowInfo(on: screen, customEntries: customEntries)?.isVisible
     }
 
     /// 是否为主屏（在 AppKit 坐标系中，主屏的原点必然为 (0,0)）。

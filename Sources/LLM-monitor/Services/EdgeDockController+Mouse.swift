@@ -193,6 +193,9 @@ extension EdgeDockController {
         guard let panel = self.panel,
               config.mode.isVisible, !isHiddenByFullscreen, !isDragging else { return }
 
+        // 顶部悬浮窗动态感知菜单栏的出现与隐藏（例如鼠标移至副屏上沿唤出状态栏），动态平滑位移避让
+        checkDynamicMenuBar(at: mouse)
+
         let inDock = panel.frame.insetBy(dx: -Self.hoverPadding, dy: -Self.hoverPadding).contains(mouse)
         // 卡片**不可见时不参与判定**：`orderOut` 只把窗口藏起来，frame 还留在
         // 上次出现的位置——不过滤 `isVisible` 的话，卡片曾经占据（现在已消失）
@@ -462,6 +465,29 @@ extension EdgeDockController {
         if selectedIndex != nil {
             selectedIndex = nil
             updatePopover()
+        }
+    }
+
+    /// 检查顶部状态栏动态显隐是否发生变化。
+    /// 当用户将鼠标移至屏幕上沿调出状态栏，或移开后状态栏自动隐藏时，
+    /// 驱动悬浮窗平滑下移避让或上移复位。
+    func checkDynamicMenuBar(at mouse: CGPoint) {
+        guard config.edge == .top, !isDragging, !isFormMorphInFlight else { return }
+        let screen = Self.targetScreen
+
+        // 若指针不在当前屏幕，且当前状态栏未显示，则系统绝不可能在该屏幕唤出状态栏，直接跳过查询
+        if !screen.frame.contains(mouse) && lastMenuBarState?.isVisible != true {
+            return
+        }
+
+        let current = ScreenChromeProbe.menuBarState(on: screen, isFullscreenSpace: isFullscreenSpace)
+        if let last = lastMenuBarState {
+            if current != last {
+                lastMenuBarState = current
+                reconcile(animated: true)
+            }
+        } else {
+            lastMenuBarState = current
         }
     }
 }

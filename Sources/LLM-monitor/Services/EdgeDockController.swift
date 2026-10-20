@@ -43,9 +43,9 @@ final class EdgeDockController: ObservableObject {
     /// 0.5s 为上限到达）。
     ///
     /// 鼠标一旦进到 dock 附近，`captureMouse()` 会起 `capturePollInterval`（0.2s）
-    /// 的巡检定时器，hover 延迟随之降到 0.2s——真正看得见的 0.5s 只发生在"指针
-    /// 正在过来的那半秒"上。
-    static let hoverPollInterval: TimeInterval = 0.5
+    /// 的巡检定时器，hover 延迟随之降到 0.2s——真正看得见的 0.25s 只发生在"指针
+    /// 正在过来的片刻"上。4Hz 巡检兼顾了顶部状态栏动态唤出的快速响应与近乎为零的能耗。
+    static let hoverPollInterval: TimeInterval = 0.25
     /// 按下后位移超过这么多 pt 才算拖动；以内松手视为"没拖动"，不做任何事
     /// （详情跟随 hover，按钮本身没有点击语义）。
     static let dragThreshold: CGFloat = 4
@@ -211,6 +211,9 @@ final class EdgeDockController: ObservableObject {
 
     /// hover 探测的**轮询定时器**：只在 dock 可见期间存在（见 `startHoverPoll`）。
     var hoverPollTimer: Timer?
+
+    /// 最近一次测得的目标屏幕状态栏动态显隐状态。
+    var lastMenuBarState: ScreenChromeProbe.MenuBarState?
 
 
     /// 各 provider 外圈在**视图坐标系**（= NSHostingView）下的真实矩形，由 `EdgeDockContentView`
@@ -442,6 +445,7 @@ final class EdgeDockController: ObservableObject {
         popoverHostingView = nil
         panel = nil
         hostingView = nil
+        lastMenuBarState = nil
         // 接管标记也必须复位：`captureMouse()` 的入口是 `!isMouseCaptured`，
         // 留着 true 的话，之后重建出来的面板（`ensurePanel` 一律以
         // `ignoresMouseEvents = true` 新建）**永远接管不了鼠标**——hover 退化成
