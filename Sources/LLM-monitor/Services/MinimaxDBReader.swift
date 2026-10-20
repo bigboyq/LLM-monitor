@@ -142,7 +142,11 @@ final class MinimaxDBReader {
     /// 极端边界 (token_usage 完成在 23:59:58,message_rows 落盘在 00:00:01):
     /// 直接 SQL 聚合 v2 的 `local_runtime_token_usage` 表 → per-day MinimaxDailyUsage + 总 session/event/turn 数。
     func aggregate(calendar: Calendar = .current,
-                   cutoff: Date? = nil) throws -> MinimaxDBAggregate {
+                   cutoff: Date? = nil,
+                   sessionModelResolver: MinimaxSessionModelResolver? = nil) throws -> MinimaxDBAggregate {
+        // 本地 var：resolver 内部有 per-session 缓存，样本 map 闭包里要能写它
+        // （闭包是 non-escaping，捕获的是引用）。
+        var resolver = sessionModelResolver
         let resolvedTableName = Self.runtimeTableName
         let cutoffMs = cutoff.map { Int64($0.timeIntervalSince1970 * 1000) }
         let safeRawExpr = "CASE WHEN json_valid(t.raw) THEN t.raw ELSE '{}' END"
@@ -254,11 +258,23 @@ final class MinimaxDBReader {
         // record_json.effectiveModel。优先使用 row 自己的 model，再回退到
         // session model；若整个 ledger 只有一个明确模型，最后再使用这个
         // 唯一模型作为保守回退，避免把多模型数据错误合并。
-        let hasSessionModelProjection = sessionColumns.contains("session_id")
-            && sessionColumns.contains("record_json")
+        //
+        // **但这条回退链写出来的模型名是不可信的**：账本行与 session 投影里
+        // 存的都是泛化标签 `minimax/MiniMax-M3`，不是真实模型。真实模型只写在
+        // session 目录的 `llm-call.json` 里（见 `MinimaxSessionModelResolver`），
+        // 由调用方通过 `sessionModelResolver` 传入：它有值时**优先于**下面整条
+        // 链。否则窗口内全部 M3.1 Flash 用量都会被归到 M3 名下（模型名错，
+        // 定价也跟着错）。
+        let hasSessionJoin = sessionColumns.contains("session_id")
+            && (sessionColumns.contains("record_json") || sessionColumns.contains("history_relative_dir"))
+        let hasSessionModelProjection = hasSessionJoin && sessionColumns.contains("record_json")
         let ledgerModelExpression = hasModelColumn ? "NULLIF(TRIM(t.model), '')" : "NULL"
         let sessionModelExpression = hasSessionModelProjection
             ? "NULLIF(TRIM(json_extract(CASE WHEN json_valid(s.record_json) THEN s.record_json ELSE '{}' END, '$.effectiveModel')), '')"
+            : "NULL"
+        // session 相对目录（`~/.minimax/v2/sessions/<dir>`）——真实模型的落点。
+        let sessionRelativeDirExpression = hasSessionJoin && sessionColumns.contains("history_relative_dir")
+            ? "NULLIF(TRIM(s.history_relative_dir), '')"
             : "NULL"
         let observedModels: [String] = hasModelColumn
             ? try conn.query(sql: """
@@ -273,7 +289,7 @@ final class MinimaxDBReader {
         let uniqueObservedModel = observedModels.count == 1 ? observedModels[0] : nil
         let uniqueObservedModelExpression = uniqueObservedModel == nil ? "NULL" : "?"
         let sampleModelExpression = "COALESCE(\(ledgerModelExpression), \(sessionModelExpression), \(uniqueObservedModelExpression))"
-        let sessionJoin = hasSessionModelProjection
+        let sessionJoin = hasSessionJoin
             ? "LEFT JOIN local_runtime_sessions s ON s.session_id = t.session_id"
             : ""
         let sampleSQL = """
@@ -285,7 +301,8 @@ final class MinimaxDBReader {
               t.input_tokens,
               t.output_tokens,
               t.reasoning_tokens,
-              t.cache_read_tokens
+              t.cache_read_tokens,
+              \(sessionRelativeDirExpression) AS session_relative_dir
             FROM \(resolvedTableName) t
             \(sessionJoin)
             \(sampleWhere)
@@ -326,7 +343,7 @@ final class MinimaxDBReader {
 
                 let sessionID = try SQLiteConnection.requiredText(stmt, column: 0)
                 let turnID = optionalText(1)
-                let modelName = optionalText(2)
+                let sqlModelName = optionalText(2)
                 let timestampMs = SQLiteConnection.nnClamp(
                     try SQLiteConnection.requiredInt64(stmt, column: 3)
                 )
@@ -334,6 +351,13 @@ final class MinimaxDBReader {
                 let output = SQLiteConnection.nnClamp(sqlite3_column_int64(stmt, 5))
                 let reasoning = SQLiteConnection.nnClamp(sqlite3_column_int64(stmt, 6))
                 let cachedInput = SQLiteConnection.nnClamp(sqlite3_column_int64(stmt, 7))
+                // 真实模型（session 目录 llm-call.json）优先于账本/投影里的泛化标签。
+                let sessionRelativeDir = optionalText(8)
+                var sessionModelName: String?
+                if let sessionRelativeDir {
+                    sessionModelName = resolver?.modelName(forRelativeDir: sessionRelativeDir)
+                }
+                let modelName = sessionModelName ?? sqlModelName
                 let promptComponent = turnID ?? "event-\(timestampMs)"
                 // MiniMax raw input is uncached and cache-read is separate;
                 // route raw→桶 through the harness catalog and rebuild the

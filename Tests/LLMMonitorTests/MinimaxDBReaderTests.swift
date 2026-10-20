@@ -91,6 +91,78 @@ final class MinimaxDBReaderTests: XCTestCase {
         XCTAssertNil(aggregate.samples.last?.modelName)
     }
 
+    // MARK: - 真实模型名来自 session 目录的 llm-call.json
+
+    /// 账本行与 session 投影里存的都是**泛化标签** `minimax/MiniMax-M3`，
+    /// 真实模型只写在 session 目录的 `llm-call.json` 里。有 session 目录时，
+    /// reader 必须用目录里的真实模型（`MiniMax-M3.1-Flash`）——否则 M3.1 Flash
+    /// 的用量被归到 M3 名下，模型名错、定价也跟着错。
+    func testV2ReaderPrefersSessionDirectoryModelOverGenericLedgerLabel() throws {
+        let base = Int64(Date().timeIntervalSince1970 * 1000)
+        let sessionsRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("minimax-sessions-\(UUID().uuidString)")
+        let relativeDir = "2026/10/20/11-34-17-643-session_xxx"
+        try writeSessionCallFile(
+            sessionsRoot: sessionsRoot,
+            relativeDir: relativeDir,
+            model: "MiniMax-M3.1-Flash"
+        )
+        defer { try? FileManager.default.removeItem(at: sessionsRoot) }
+
+        let databaseURL = try makeV2Database(
+            tokenRows: [
+                TokenRow(sessionID: "sess-m31", turnID: "t1", timestampMs: base,
+                         input: 10, output: 1, reasoning: 0, cacheRead: 0, cacheWrite: 0,
+                         raw: nil, model: "minimax/MiniMax-M3"),
+            ],
+            sessionModels: [
+                SessionModelRow(sessionID: "sess-m31", effectiveModel: "minimax/MiniMax-M3",
+                                historyRelativeDir: relativeDir)
+            ]
+        )
+        defer { try? FileManager.default.removeItem(at: databaseURL) }
+
+        let reader = try MinimaxDBReader(path: databaseURL)
+        defer { reader.close() }
+        let aggregate = try reader.aggregate(
+            calendar: .current,
+            sessionModelResolver: MinimaxSessionModelResolver(sessionsRoot: sessionsRoot)
+        )
+
+        XCTAssertEqual(aggregate.samples.map(\.modelName), ["MiniMax-M3.1-Flash"])
+    }
+
+    /// session 目录读不到（目录已清理 / `llm-call.json` 缺失）时退回原有回退链，
+    /// 不崩也不猜：仍应拿到 session 投影里的 `effectiveModel`。
+    func testV2ReaderFallsBackWhenSessionDirectoryModelIsUnavailable() throws {
+        let base = Int64(Date().timeIntervalSince1970 * 1000)
+        let emptySessionsRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("minimax-sessions-empty-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: emptySessionsRoot) }
+
+        let databaseURL = try makeV2Database(
+            tokenRows: [
+                TokenRow(sessionID: "sess-m31", turnID: "t1", timestampMs: base,
+                         input: 10, output: 1, reasoning: 0, cacheRead: 0, cacheWrite: 0,
+                         raw: nil),
+            ],
+            sessionModels: [
+                SessionModelRow(sessionID: "sess-m31", effectiveModel: "minimax/MiniMax-M3",
+                                historyRelativeDir: "2026/10/20/gone-session")
+            ]
+        )
+        defer { try? FileManager.default.removeItem(at: databaseURL) }
+
+        let reader = try MinimaxDBReader(path: databaseURL)
+        defer { reader.close() }
+        let aggregate = try reader.aggregate(
+            calendar: .current,
+            sessionModelResolver: MinimaxSessionModelResolver(sessionsRoot: emptySessionsRoot)
+        )
+
+        XCTAssertEqual(aggregate.samples.map(\.modelName), ["minimax/MiniMax-M3"])
+    }
+
     func testV2ReaderClampsNegativeValuesAndUsesPerRowReasoningMaximum() throws {
         let base = Int64(Date().timeIntervalSince1970 * 1000)
         let databaseURL = try makeV2Database(tokenRows: [
@@ -262,6 +334,15 @@ struct TokenRow {
 struct SessionModelRow {
     let sessionID: String
     let effectiveModel: String
+    /// session 目录相对路径（`~/.minimax/v2/sessions/<dir>`）。给了的话 reader
+    /// 会去读该目录下的 `llm-call.json` 取**真实模型名**。
+    let historyRelativeDir: String?
+
+    init(sessionID: String, effectiveModel: String, historyRelativeDir: String? = nil) {
+        self.sessionID = sessionID
+        self.effectiveModel = effectiveModel
+        self.historyRelativeDir = historyRelativeDir
+    }
 }
 
 struct MessageRow {
@@ -326,13 +407,14 @@ func makeV2Database(
         database: database
     )
     if !sessionModels.isEmpty {
+        // `history_relative_dir` 是 v2 runtime 后加的列：只有 fixture 用到它时
+        // 才建，缺列时 reader 的 PRAGMA 探测会把这一步退化成 NULL。
+        let hasRelativeDir = sessionModels.contains { $0.historyRelativeDir != nil }
+        let columns = hasRelativeDir
+            ? "session_id TEXT PRIMARY KEY, record_json TEXT NOT NULL, history_relative_dir TEXT"
+            : "session_id TEXT PRIMARY KEY, record_json TEXT NOT NULL"
         try execute(
-            """
-            CREATE TABLE local_runtime_sessions (
-                session_id TEXT PRIMARY KEY,
-                record_json TEXT NOT NULL
-            );
-            """,
+            "CREATE TABLE local_runtime_sessions (\(columns));",
             database: database
         )
     }
@@ -376,7 +458,10 @@ func makeV2Database(
     }
 
     for row in sessionModels {
-        let sql = "INSERT INTO local_runtime_sessions (session_id, record_json) VALUES (?, ?)"
+        let hasRelativeDir = row.historyRelativeDir != nil
+        let sql = hasRelativeDir
+            ? "INSERT INTO local_runtime_sessions (session_id, record_json, history_relative_dir) VALUES (?, ?, ?)"
+            : "INSERT INTO local_runtime_sessions (session_id, record_json) VALUES (?, ?)"
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK,
               let statement else {
@@ -386,6 +471,9 @@ func makeV2Database(
         sqlite3_bind_text(statement, 1, row.sessionID, -1, transientDestructor)
         let record = "{\"effectiveModel\":\(jsonString(row.effectiveModel))}"
         sqlite3_bind_text(statement, 2, record, -1, transientDestructor)
+        if let relativeDir = row.historyRelativeDir {
+            sqlite3_bind_text(statement, 3, relativeDir, -1, transientDestructor)
+        }
         XCTAssertEqual(sqlite3_step(statement), SQLITE_DONE)
     }
 
@@ -410,8 +498,19 @@ func makeV2Database(
     return databaseURL
 }
 
-func execute(_ sql: String, database: OpaquePointer) throws {
-    var errorMessage: UnsafeMutablePointer<CChar>?
+/// 在 session 根目录下写一份 `llm-call.json`（真实模型名的落点）。
+func writeSessionCallFile(sessionsRoot: URL, relativeDir: String, model: String) throws {
+    let sessionDir = sessionsRoot.appendingPathComponent(relativeDir)
+    try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
+    let payload = "{\"api\":\"anthropic-messages\",\"model\":\(jsonString(model)),\"provider\":\"minimax\"}"
+    try payload.write(
+        to: sessionDir.appendingPathComponent("llm-call.json"),
+        atomically: true,
+        encoding: .utf8
+    )
+}
+
+func execute(_ sql: String, database: OpaquePointer) throws {    var errorMessage: UnsafeMutablePointer<CChar>?
     guard sqlite3_exec(database, sql, nil, nil, &errorMessage) == SQLITE_OK else {
         let message = errorMessage.map { String(cString: $0) } ?? "SQL failed"
         if let errorMessage { sqlite3_free(errorMessage) }

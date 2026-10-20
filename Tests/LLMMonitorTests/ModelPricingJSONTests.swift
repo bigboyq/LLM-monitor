@@ -61,7 +61,7 @@ final class ModelPricingJSONTests: XCTestCase {
         let catalog = try loadPricingJSON()
         // 定价目录的"改价日"钉在这里：它是**快照基准**，不是"今天"，
         // 所以改 ModelPricing.json 的内容时必须同步改这一行。
-        XCTAssertEqual(catalog.lastUpdated, "2026-10-16")
+        XCTAssertEqual(catalog.lastUpdated, "2026-10-20")
 
         let requiredProviders = ["minimax", "openai", "antigravity", "zhipu", "deepseek"]
         for providerID in requiredProviders {
@@ -270,21 +270,25 @@ final class ModelPricingJSONTests: XCTestCase {
         XCTAssertEqual(m3?.outputPerMillion, 8.4)
     }
 
-    // MARK: - 新增模型：MiniMax M3.1 Flash（与 M3 同价，沿用 M3 人民币价目）
+    // MARK: - 新增模型：MiniMax M3.1 Flash（独立价目，低于 M3）
 
-    /// M3.1 Flash 系列（ZCode 里的真实 model_id 是 `MiniMax-M3.1-Flash-Preview`）
-    /// 此前会被 contains 关键字 "m3" 误兜到 M3 条目上——价格恰好相同，但那条目
-    /// 的 label/语义是 M3。JSON 中 3.1-flash 条目必须排在 m3 条目之前，
+    /// M3.1 Flash 系列（ZCode 里的真实 model_id 是 `MiniMax-M3.1-Flash-Preview`，
+    /// MiniMax Code 的 session 目录里是 `MiniMax-M3.1-Flash`）此前会被 contains
+    /// 关键字 "m3" 误兜到 M3 条目上。JSON 中 3.1-flash 条目必须排在 m3 条目之前，
     /// 否则首条命中语义会让它永远走不到；调换顺序本测试必须变红。
+    ///
+    /// M3.1 Flash 的价目**低于** M3（¥1 / ¥0.1 / ¥4 对 ¥2.1 / ¥0.42 / ¥8.4），
+    /// 所以价格断言本身就能发现条目被调换——不像同价时代那样需要额外断言顺序。
     func testMinimaxM31FlashHitsDedicatedEntryBeforeM3() {
         for modelName in ["MiniMax-M3.1-Flash-Preview", "minimax-3.1-flash",
-                          "MiniMax-M3.1-Flash-Preview-2026-10-01", "MINIMAX-M3.1-FLASH"] {
+                          "MiniMax-M3.1-Flash-Preview-2026-10-01", "MINIMAX-M3.1-FLASH",
+                          "MiniMax-M3.1-Flash"] {
             let pricing = ModelPricingCatalog.pricing(for: modelName, quotaProviderID: QuotaProviderID.minimax)
             XCTAssertNotNil(pricing, modelName)
             XCTAssertEqual(pricing?.currency, .cny, modelName)
-            XCTAssertEqual(pricing?.inputPerMillion, 2.1, modelName)
-            XCTAssertEqual(pricing?.cacheReadPerMillion, 0.42, modelName)
-            XCTAssertEqual(pricing?.outputPerMillion, 8.4, modelName)
+            XCTAssertEqual(pricing?.inputPerMillion, 1, modelName)
+            XCTAssertEqual(pricing?.cacheReadPerMillion, 0.1, modelName)
+            XCTAssertEqual(pricing?.outputPerMillion, 4, modelName)
             XCTAssertEqual(pricing?.modelLabel, modelName, "modelLabel 必须保留样本原始模型名")
         }
 
@@ -296,10 +300,9 @@ final class ModelPricingJSONTests: XCTestCase {
         XCTAssertEqual(m3?.outputPerMillion, 8.4)
     }
 
-    /// 两条目价格相同，因此上面的价格断言**无法**发现顺序被调换（撞到 m3 条目
-    /// 同样是 2.1/0.42/8.4），而 `pricing(for:)` 返回的 modelLabel 是样本原始模型名
-    /// 而非条目 label。顺序必须直接对 JSON 数组断言：3.1-flash 条目在 m3 条目之前，
-    /// 否则 M3.1 Flash 永远走不到自己的条目。
+    /// 两条目价格**不同**（M3.1 Flash ¥1/¥0.1/¥4 vs M3 ¥2.1/¥0.42/¥8.4），
+    /// 所以上面的价格断言就能发现顺序被调换；顺序仍直接对 JSON 数组断言，
+    /// 让失败信息指向具体位置而不是间接的价格差异。
     func testMinimaxM31FlashEntryPrecedesM3EntryInJSON() throws {
         let entries = try XCTUnwrap(
             loadPricingJSON().providers["minimax"]?.models,

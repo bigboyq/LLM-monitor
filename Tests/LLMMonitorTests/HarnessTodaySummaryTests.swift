@@ -254,13 +254,15 @@ final class HarnessTodaySummaryTests: XCTestCase {
         XCTAssertEqual(row(named: "gemini-3.8-flash-n").modelName, "gemini-3.8-flash-n")
     }
 
-    /// MiniMax 系三种真实形态都要压成"只剩模型名"：供应商命名空间
-    /// (`minimax/`) 与品牌段 (`MiniMax-` / `Minimax-`) 都不该占展示列的宽度。
+    /// MiniMax 系各种真实形态都要归一成**同一个模型名**：供应商命名空间
+    /// (`minimax/`) 不该占展示列的宽度，M3.1 家族的变体后缀
+    /// (`-Flash` / `-Flash-Preview`) 也不该——它们是同一个模型、同一份价目。
     ///
-    /// 真实账本里的三种写法：MiniMax Code 记 `minimax/MiniMax-M3`、
-    /// ZCode 记 `MiniMax-M3.1-Flash-Preview`、DSH 记
-    /// `Minimax-M3.1-flash-preview`（首字母小写）。
-    func testCompactDisplayNameDropsMinimaxNamespaceAndBrand() {
+    /// 真实账本里的写法：MiniMax Code 记 `minimax/MiniMax-M3`（旧泛化标签）与
+    /// `MiniMax-M3.1-Flash`（session 目录里的真实模型）、ZCode 记
+    /// `MiniMax-M3.1-Flash-Preview`、DSH 记 `Minimax-M3.1-flash-preview`
+    /// （首字母小写）。
+    func testCompactDisplayNameNormalizesMinimaxFamily() {
         func row(named model: String) -> HarnessModelRow {
             HarnessModelRow(
                 dayStart: now, clientID: "minimax-code", quotaProviderID: "minimax",
@@ -269,21 +271,30 @@ final class HarnessTodaySummaryTests: XCTestCase {
                 calendar: calendar
             )
         }
-        XCTAssertEqual(row(named: "minimax/MiniMax-M3").compactDisplayName, "M3")
-        XCTAssertEqual(row(named: "MiniMax-M3").compactDisplayName, "M3")
-        XCTAssertEqual(row(named: "MiniMax-M3.1-Flash-Preview").compactDisplayName, "M3.1-Flash-Preview")
+        XCTAssertEqual(row(named: "minimax/MiniMax-M3").compactDisplayName, "MiniMax-M3")
+        XCTAssertEqual(row(named: "MiniMax-M3").compactDisplayName, "MiniMax-M3")
+        XCTAssertEqual(row(named: "MiniMax-M3.1-Flash-Preview").compactDisplayName, "MiniMax-M3.1")
+        XCTAssertEqual(row(named: "MiniMax-M3.1-Flash").compactDisplayName, "MiniMax-M3.1")
         // 大小写不敏感：DSH 的写法首字母小写
-        XCTAssertEqual(row(named: "Minimax-M3.1-flash-preview").compactDisplayName, "M3.1-flash-preview")
+        XCTAssertEqual(row(named: "Minimax-M3.1-flash-preview").compactDisplayName, "MiniMax-M3.1")
         // 展示压缩不改动原始 ID：分组键与定价统计仍用原名
         XCTAssertEqual(row(named: "minimax/MiniMax-M3").modelName, "minimax/MiniMax-M3")
         XCTAssertEqual(row(named: "minimax/MiniMax-M3").displayName, "minimax/MiniMax-M3")
+    }
+
+    /// 变体后缀只在 MiniMax 家族内剥：gemini 的 `-flash` 是变体标识
+    /// （`3.8-flash-n` / `3.8-flash-tiered` 靠它区分），砍掉就不可分辨了。
+    func testCompactDisplayNameKeepsGeminiFlashVariant() {
+        XCTAssertEqual(HarnessModelRow.compactedDisplayName(for: "gemini-3.8-flash-n"), "3.8-flash-n")
+        XCTAssertEqual(HarnessModelRow.compactedDisplayName(for: "gemini-3.8-flash-tiered"), "3.8-flash-tiered")
+        XCTAssertEqual(HarnessModelRow.compactedDisplayName(for: "gemini-3.8-flash"), "3.8-flash")
     }
 
     /// 命名空间剥离不能把展示名剥成空白：原始 ID 形如 `/` 时保留原名。
     func testCompactDisplayNameKeepsNonEmptyResult() {
         XCTAssertEqual(HarnessModelRow.compactedDisplayName(for: "/"), "/")
         XCTAssertEqual(HarnessModelRow.compactedDisplayName(for: "minimax/"), "minimax/")
-        XCTAssertEqual(HarnessModelRow.compactedDisplayName(for: "minimax/MiniMax-M3"), "M3")
+        XCTAssertEqual(HarnessModelRow.compactedDisplayName(for: "minimax/MiniMax-M3"), "MiniMax-M3")
     }
 
     /// 三种"没有今日活动"都不该产生段：完全没样本的 provider、只有昨天的样本、

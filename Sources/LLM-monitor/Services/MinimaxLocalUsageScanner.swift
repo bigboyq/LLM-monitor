@@ -68,8 +68,20 @@ final class MinimaxLocalUsageScanner: LocalUsageScannerBase<MinimaxLocalUsage>, 
     nonisolated static let defaultCacheDir: URL =
         TokenMonitorPaths.cacheFile(for: .minimax)
 
+    /// session 目录根（`~/.minimax/v2/sessions`）。**真实模型名**只写在每个
+    /// session 目录的 `llm-call.json` 里：账本 `model` 列与 session 投影
+    /// `effectiveModel` 存的都是泛化标签 `minimax/MiniMax-M3`，不读这里就会把
+    /// M3.1 Flash 的用量归到 M3 名下。详见 `MinimaxSessionModelResolver`。
+    nonisolated static let defaultSessionsRoot: URL = {
+        URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent(".minimax", isDirectory: true)
+            .appendingPathComponent("v2", isDirectory: true)
+            .appendingPathComponent("sessions", isDirectory: true)
+    }()
+
     private let runtimeDBURL: URL
     private let cacheDir: URL
+    private let sessionsRoot: URL
     private let fileManager: FileManagerBox
     private let calendar: Calendar
     private let now: @Sendable () -> Date
@@ -99,11 +111,13 @@ final class MinimaxLocalUsageScanner: LocalUsageScannerBase<MinimaxLocalUsage>, 
 
     init(runtimeDBURL: URL = MinimaxLocalUsageScanner.defaultRuntimeDBURL,
          cacheDir: URL = MinimaxLocalUsageScanner.defaultCacheDir,
+         sessionsRoot: URL = MinimaxLocalUsageScanner.defaultSessionsRoot,
          fileManager: FileManagerBox = FileManagerBox(),
          calendar: Calendar = .autoupdatingCurrent,
          now: @escaping @Sendable () -> Date = { Date() }) {
         self.runtimeDBURL = runtimeDBURL
         self.cacheDir = cacheDir
+        self.sessionsRoot = sessionsRoot
         self.fileManager = fileManager
         self.calendar = calendar
         self.now = now
@@ -129,6 +143,7 @@ final class MinimaxLocalUsageScanner: LocalUsageScannerBase<MinimaxLocalUsage>, 
     ) -> @Sendable () async throws -> MinimaxLocalUsage {
         let runtimeDBURL = self.runtimeDBURL
         let cacheDir = self.cacheDir
+        let sessionsRoot = self.sessionsRoot
         let fileManager = self.fileManager
         let calendar = self.calendar
         let now = self.now
@@ -139,6 +154,7 @@ final class MinimaxLocalUsageScanner: LocalUsageScannerBase<MinimaxLocalUsage>, 
             try await Self.performScanPure(
                 runtimeDBURL: runtimeDBURL,
                 cacheDir: cacheDir,
+                sessionsRoot: sessionsRoot,
                 fileManager: fileManager,
                 calendar: calendar,
                 now: now,
@@ -177,6 +193,7 @@ final class MinimaxLocalUsageScanner: LocalUsageScannerBase<MinimaxLocalUsage>, 
     nonisolated static func performScanPure(
         runtimeDBURL: URL,
         cacheDir: URL,
+        sessionsRoot: URL? = nil,
         fileManager: FileManagerBox,
         calendar: Calendar,
         now: @escaping @Sendable () -> Date,
@@ -211,6 +228,7 @@ final class MinimaxLocalUsageScanner: LocalUsageScannerBase<MinimaxLocalUsage>, 
             let result = try Self.performScanPureImpl(
                 runtimeDBURL: runtimeDBURL,
                 cacheDir: cacheDir,
+                sessionsRoot: sessionsRoot,
                 fileManager: fileManager,
                 calendar: calendar,
                 now: now,
@@ -236,6 +254,7 @@ final class MinimaxLocalUsageScanner: LocalUsageScannerBase<MinimaxLocalUsage>, 
     nonisolated static func performScanPureImpl(
         runtimeDBURL: URL,
         cacheDir: URL,
+        sessionsRoot: URL? = nil,
         fileManager: FileManagerBox,
         calendar: Calendar,
         now: @escaping @Sendable () -> Date,
@@ -312,7 +331,8 @@ final class MinimaxLocalUsageScanner: LocalUsageScannerBase<MinimaxLocalUsage>, 
                 let aggregate = try Self.aggregateFromDB(
                     dbPath: info.url,
                     calendar: calendar,
-                    cutoff: now().addingTimeInterval(-LocalUsageRetentionWindow.seconds)
+                    cutoff: now().addingTimeInterval(-LocalUsageRetentionWindow.seconds),
+                    sessionsRoot: sessionsRoot
                 )
 
                 // 字符分摊 outputTokens → reasoningTokens。raw.reasoning 永远 0 时
@@ -530,7 +550,7 @@ extension MinimaxLocalUsageScanner {
         var calendarSignature: String? = nil
 
         static let empty = CacheIndex(
-            version: 14, // v14 重新规范化 inputTokens 为 uncached + cached
+            version: 15, // v15 模型名改从 session 目录 llm-call.json 解析真实模型
             lastScannedAt: Date(timeIntervalSince1970: 0),
             sources: [:],
             dailyBySource: [:],
@@ -636,7 +656,7 @@ extension MinimaxLocalUsageScanner {
         try ScannerIndexIO.loadIndex(
             cacheDir: cacheDir,
             fileManager: fileManager,
-            currentVersion: 14,
+            currentVersion: 15,
             empty: .empty,
             version: { $0.version },
             logTag: "[minimax-scan]"
@@ -701,17 +721,23 @@ extension MinimaxLocalUsageScanner {
     /// 读一个 .db → per-day aggregate。
     ///
     /// 直接 read 原 .db；CANTOPEN / BUSY 时 copy 到 /tmp 副本 read。详见 `SQLiteTempCopy`。
+    ///
+    /// `sessionsRoot` 给了的话，样本的模型名会优先取 session 目录
+    /// `llm-call.json` 里的**真实模型**（见 `MinimaxSessionModelResolver`）；
+    /// 不给就退回账本/投影里的模型名。
     nonisolated static func aggregateFromDB(
         dbPath: URL,
         calendar: Calendar,
-        cutoff: Date? = nil
+        cutoff: Date? = nil,
+        sessionsRoot: URL? = nil
     ) throws -> MinimaxDBAggregate {
         try SQLiteTempCopy.read(dbPath: dbPath, logTag: "[minimax-scan]") { url in
             let reader = try MinimaxDBReader(path: url, readOnly: url.path == dbPath.path)
             defer { reader.close() }
             return try reader.aggregate(
                 calendar: calendar,
-                cutoff: cutoff
+                cutoff: cutoff,
+                sessionModelResolver: sessionsRoot.map { MinimaxSessionModelResolver(sessionsRoot: $0) }
             )
         }
     }

@@ -269,14 +269,13 @@ struct HarnessModelRow: Identifiable, Equatable, Sendable {
     }
 
     /// UI 展示用的压缩名：去掉供应商命名空间（`minimax/`）与已知品牌前缀
-    /// （`gemini-` / `claude-` / `minimax-`），让**模型名本身**在定宽列里
-    /// 完整可见。
+    /// （`gemini-` / `claude-`），MiniMax 家族另做变体后缀与品牌大小写归一，
+    /// 让**模型名本身**在定宽列里完整可见。
     ///
     /// 为什么是「去命名空间 + 去品牌」两步：`minimax/MiniMax-M3` 里
-    /// `minimax/` 是供应商命名空间、`MiniMax-` 是品牌段，用户想看的是模型名
-    /// `M3`。压缩前两者占满整列，模型名被尾截断成 `minimax/MiniMa…`——
-    /// 供应商名占位置、模型名看不见。`gemini-` / `claude-` 早就在压，
-    /// MiniMax 系此前漏了。
+    /// `minimax/` 是供应商命名空间、`MiniMax-` 是品牌段，用户想看的是模型名。
+    /// 压缩前供应商名占满整列，模型名被尾截断成 `minimax/MiniMa…`——
+    /// 供应商名占位置、模型名看不见。`gemini-` / `claude-` 早就在压。
     ///
     /// 只影响展示：分组键（`id`）、定价与统计一律仍用原始 `modelName`，
     /// hover 提示继续显示完整原始 ID。
@@ -293,8 +292,11 @@ struct HarnessModelRow: Identifiable, Equatable, Sendable {
     /// 1. **供应商命名空间**：模型名里第一个 `/` 之前是供应商
     ///    （`minimax/MiniMax-M3` → `MiniMax-M3`）。命名空间在菜单里已经由
     ///    段头（客户端名）与 hover 卡交代过，展示列不必再占宽度。
-    /// 2. **品牌前缀**：已知长品牌前缀大小写不敏感地剥掉，让变体后缀在定宽
-    ///    列里可区分——原始 ID 下两个变体都会被尾部截断成相同开头，肉眼无法分辨。
+    /// 2. **MiniMax 家族**：单独归一（见 `minimaxDisplayName`）——变体后缀
+    ///    `-Flash[-Preview]` 剥掉、品牌段大小写统一。
+    /// 3. **其它家族的品牌前缀**：已知长品牌前缀大小写不敏感地剥掉，让变体
+    ///    后缀在定宽列里可区分——原始 ID 下两个变体都会被尾部截断成相同开头，
+    ///    肉眼无法分辨。
     ///
     /// 短前缀（如 `gpt-`）不压：压缩收益小，`deepseek-` 去掉后裸 `flash` 在
     /// 多 provider 段里反而更难归属。
@@ -307,6 +309,9 @@ struct HarnessModelRow: Identifiable, Equatable, Sendable {
                 result = stripped
             }
         }
+        if result.lowercased().hasPrefix(minimaxBrandPrefix) {
+            return minimaxDisplayName(result)
+        }
         let lowered = result.lowercased()
         for prefix in compactBrandPrefixes where lowered.hasPrefix(prefix) {
             return String(result.dropFirst(prefix.count))
@@ -314,13 +319,43 @@ struct HarnessModelRow: Identifiable, Equatable, Sendable {
         return result
     }
 
-    /// 只压掉**已知超长品牌前缀**（7–8 字符档）：能显著缩短且不引入歧义。
+    /// MiniMax 品牌段前缀（小写比较用）。
+    static let minimaxBrandPrefix = "minimax-"
+
+    /// MiniMax 家族的变体后缀，**长后缀在前**：`-flash-preview` 必须排在
+    /// `-flash` 前面，否则 `MiniMax-M3.1-Flash-Preview` 只会剥掉 `-preview`。
+    static let minimaxVariantSuffixes = ["-flash-preview", "-flash", "-preview"]
+
+    /// MiniMax 家族的展示名：剥掉变体后缀（`-Flash` / `-Flash-Preview`），
+    /// 再把品牌段大小写归一成 `MiniMax-`。
+    ///
+    /// 同一个模型在不同 harness 里写法不同：ZCode 记 `MiniMax-M3.1-Flash-Preview`、
+    /// DSH 记 `Minimax-M3.1-flash-preview`、MiniMax Code 记 `MiniMax-M3.1-Flash`。
+    /// 不归一的话同一段里会出现三个"看起来不同"的模型，其实它们是同一个模型、
+    /// 同一份价目（`3.1-flash` 关键字命中同一条目）。
+    ///
+    /// 变体后缀**只在 MiniMax 家族内**剥：`gemini-3.8-flash` 的 `-flash` 是
+    /// 变体标识（`3.8-flash-n` / `3.8-flash-tiered` 靠它区分），泛化地砍会
+    /// 让变体重新变得不可分辨。
+    static func minimaxDisplayName(_ name: String) -> String {
+        var result = name
+        let lowered = result.lowercased()
+        for suffix in minimaxVariantSuffixes where lowered.hasSuffix(suffix) {
+            result = String(result.dropLast(suffix.count))
+            break
+        }
+        if result.lowercased().hasPrefix(minimaxBrandPrefix) {
+            result = "MiniMax-" + String(result.dropFirst(minimaxBrandPrefix.count))
+        }
+        return result
+    }
+
+    /// 只压掉**已知超长品牌前缀**（7 字符档）：能显著缩短且不引入歧义。
     /// 短前缀（如 `gpt-`）压缩收益小，`deepseek-` 去掉后裸 `flash` 在
     /// 多 provider 段里反而更难归属，都不压。
     ///
-    /// 大小写不敏感：真实账本里同一个模型家族有两种写法——ZCode 记
-    /// `MiniMax-M3.1-Flash-Preview`，DSH 记 `Minimax-M3.1-flash-preview`。
-    static let compactBrandPrefixes: [String] = ["gemini-", "claude-", "minimax-"]
+    /// 大小写不敏感：真实账本里同一个模型家族有两种写法。
+    static let compactBrandPrefixes: [String] = ["gemini-", "claude-"]
 
     init(
         dayStart: Date,
