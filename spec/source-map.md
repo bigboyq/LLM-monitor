@@ -163,8 +163,11 @@
 | `Sources/LLM-monitor/Views/SettingsClientsPane.swift` | 设置页「客户端」tab：本地客户端用量诊断 + client ↔ quota 绑定开关（从 SettingsView 拆出） |
 | `Sources/LLM-monitor/Views/ClientSegmentedControl.swift` | 设置页「客户端」切换条：原生 `NSSegmentedControl` 包装（段宽按文字测量写死，客户端变多时整体变宽并横向滚动，不压成省略号） |
 | `Sources/LLM-monitor/Views/SettingsComponents.swift` | 设置窗口共享组件与统一字体角色（`SettingsTypography` / `SettingsSection` / `SettingsControlRow` / `SettingsPaneHeader`） |
+| `Sources/LLM-monitor/Views/SettingsFields.swift` | 设置页通用表单输入组件与数值/路径辅助函数（`intervalSliderField`、`secretField`、`apiKeyField`、`selectAuthFile`、`tildePath`） |
+| `Sources/LLM-monitor/Views/SettingsGeneralPane.swift` | 设置页常规 pane：全局刷新、状态栏主题与健康色、边缘状态窗、Provider 顺序、Bark 推送与节假日源 |
+| `Sources/LLM-monitor/Views/SettingsProviderPanes.swift` | 设置页各 Provider 设置 pane（MiniMax / ChatGPT / Antigravity / GLM / DeepSeek）与四类额度通知配置 |
 | `Sources/LLM-monitor/Views/SettingsSaveTransaction.swift` | 设置保存事务：login item 更新 + config 保存的失败回滚语义 |
-| `Sources/LLM-monitor/Views/SettingsView.swift` | 设置面板 |
+| `Sources/LLM-monitor/Views/SettingsView.swift` | 设置面板主框架：侧边栏、Tab 路由、表单草稿状态与保存事务入口 |
 | `scripts/build-app.sh` | Release arm64 `.app` bundle build（dSYM 导出 + strip）和 ad-hoc signing |
 | `scripts/build-release.sh` | 发行编排入口：依次 build-app.sh → build-dmg.sh 并产出 SHA-256 校验和，签名 / notarization 变量透传 |
 | `scripts/test-build-config.sh` | `build-app.sh` 构建期常量的 shell 冒烟测试（BUNDLE_ID 等「格式对但值被改」的回归护栏，自带框架） |
@@ -183,4 +186,4 @@
 - **串行执行是既定选择**：`swift test --parallel` 实测（2026-10-02，5 连跑 3 败）不可用——`SQLiteTempCopyTests` 的临时副本断言扫描跨进程共享目录，并行 worker 互相误判；且慢测试为睡眠型，并行的 wall 收益仅 ~4s。并行化前提：先给 SQLiteTempCopy 的副本目录引入进程级隔离，再复评。
 - 慢用例的等待注入缝已建立：调度器（now/sleep）、Bark 退避（retryDelay）、vnode 合并窗口（coalescingWindow 参数）；新增耗时敏感测试时优先走注入缝，不要写死真实 sleep。
 
-> 核对基线：2026-10-20 · 代码 b814b28
+> 核对基线：2026-10-20 · 代码 4d25d50
