@@ -195,6 +195,32 @@ The model-name column is **fixed-width**, not `maxWidth`: `TokenBucketBar` wraps
 `HarnessUsageMenuViewTests` pins both the column budget and the row's natural width
 (328pt) so that regression cannot come back silently.
 
+**Model name display** (`HarnessModelRow.compactDisplayName`, model layer): the
+column shows a *compacted* name, so that what fits in the 100pt budget is the
+**model** rather than the vendor. Two rules, applied in order:
+
+1. **Vendor namespace** — everything up to and including the first `/` is dropped
+   (`minimax/MiniMax-M3` → `MiniMax-M3`). The namespace is already stated by the
+   section header and the hover card, so repeating it in the name column only
+   steals width from the model.
+2. **Brand prefix** — known long brand prefixes are stripped case-insensitively
+   (`gemini-`, `claude-`, `minimax-`): `minimax/MiniMax-M3` → `M3`,
+   `MiniMax-M3.1-Flash-Preview` → `M3.1-Flash-Preview`,
+   `Minimax-M3.1-flash-preview` → `M3.1-flash-preview`. Case-insensitive because
+   the ledgers disagree on casing (ZCode writes `MiniMax-…`, DSH writes
+   `Minimax-…`). Short prefixes (`gpt-`) are **not** stripped: the saving is
+   small, and a bare `flash` is harder to attribute inside a multi-provider
+   section.
+
+Before this compaction the MiniMax Code row read `minimax/MiniMa…` — the vendor
+namespace filled the column and the model name was truncated away; the ZCode row
+read `MiniMax-M3.1-F…` for the same reason. Names still wider than 100pt stay
+tail-truncated (`M3.1-Flash-Prev…`, `opus-4-6-thinki…`) — the column budget is
+unchanged, only the vendor prefix no longer eats it.
+
+Compaction is **display-only**: the grouping key (`id`), pricing and statistics all
+keep the raw `modelName`, and the row's hover tip still shows the full original ID.
+
 Tokens are always counted from the same-day subset of each provider contribution's
 `recentSamples` (through `UnifiedTokenUsageAggregator.day`), so the extra day that
 scanners keep for quota-window math never leaks into "today".
@@ -867,4 +893,4 @@ The card's failure row is the one place in this table that is a **literal** 11pt
 than a `MenuTypography` role: the `errorMessage` role had no call site and was deleted
 rather than left as an unused role. The rendered size is unchanged.
 
-> 核对基线：2026-10-19 · 代码 dde25f8
+> 核对基线：2026-10-20 · 代码 2513764
