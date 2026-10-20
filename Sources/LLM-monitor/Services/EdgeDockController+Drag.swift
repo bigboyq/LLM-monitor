@@ -52,15 +52,19 @@ extension EdgeDockController {
         )
     }
 
-    /// 拖拽开始时探测一次全部屏的真实可视区（`dragFrameByDisplayID`）。
+    /// 拖拽开始时选好一次全部屏的真实可视区（`dragFrameByDisplayID`）。
     ///
-    /// 逐事件跑 CGWindowList（60~120Hz）会把主线程打满；菜单栏/系统 Dock 的
-    /// 显隐在单次拖拽的秒级窗口里不会变。挂在 `.leftMouseDown` 上调用。
+    /// 全屏判定取的是 mousedown 那一刻的 `isFullscreenSpace`：拖拽是秒级动作，
+    /// 期间 Space 形态不会变（变也会有 spaceDidChange 驱动 reconcile 兜底）。
+    /// 挂在 `.leftMouseDown` 上调用。
     func primeDragFrames() {
         var frames: [CGDirectDisplayID: CGRect] = [:]
         for screen in NSScreen.screens {
             guard let id = EdgeDockDisplay.displayID(of: screen) else { continue }
-            frames[id] = ScreenChromeProbe.effectiveVisibleFrame(on: screen)
+            frames[id] = ScreenChromeProbe.effectiveVisibleFrame(
+                on: screen,
+                isFullscreenSpace: isFullscreenSpace
+            )
         }
         dragFrameByDisplayID = frames
     }
@@ -92,13 +96,16 @@ extension EdgeDockController {
         return frame
     }
 
-    /// 单块屏的拖拽参考框：mousedown 缓存优先，缓存没有（拖拽中新插的屏）现探。
+    /// 单块屏的拖拽参考框：mousedown 缓存优先，缓存没有（拖拽中新插的屏）现选。
     private func cachedDragFrame(for screen: NSScreen) -> CGRect {
         if let id = EdgeDockDisplay.displayID(of: screen),
            let cached = dragFrameByDisplayID[id] {
             return cached
         }
-        return ScreenChromeProbe.effectiveVisibleFrame(on: screen)
+        return ScreenChromeProbe.effectiveVisibleFrame(
+            on: screen,
+            isFullscreenSpace: isFullscreenSpace
+        )
     }
 
     /// 配置里指定的屏在当前系统上找不到时，把它清掉并落盘。
