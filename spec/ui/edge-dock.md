@@ -1170,29 +1170,41 @@ every rebuild, and it answers "is this window fullscreen" without saying *which 
 fullscreen window on another Space still reports `true`, which would hide the dock on a
 plain desktop.
 
-#### Snapping picks between `screen.frame` and `visibleFrame` by Space shape
+#### Snapping uses a per-edge clearance model (menu bar & Dock decoupled)
 
 `NSScreen.visibleFrame` is **static**: it always reserves the menu bar and the system Dock
-whether or not they are on screen right now. In a native fullscreen Space both are hidden
-by the system, so a dock snapped to `visibleFrame` floats a menu-bar / Dock height away
-from the physical edge. `ScreenChromeProbe.effectiveVisibleFrame` is the single entry the
-consumers read instead — `reconcile`'s snap, `updatePopover`'s clamps, and the drag
-pipeline (probed **once at mouse-down** into `dragFrameByDisplayID`, keyed by display id,
-beside `dragEntryCount`'s same precedent, because 60–120 Hz events must not pay a probe
-each; the verdicts come from `FullscreenProbe.fullscreenVerdicts`, which judges **each
-screen independently** off one shared window-list walk — the fullscreen secondary display
-must not drag the primary's baseline to the physical edge with it). The `EdgeDockGeometry`
-functions themselves are untouched: they always took a rectangle, so only the producers
-changed.
+whether or not they are on screen right now. In a native fullscreen Space, with auto-hide menu bar,
+or on secondary displays without separate Spaces, the menu bar is absent, so a dock snapped to
+`visibleFrame` floats a menu-bar height away from the physical edge.
+`ScreenChromeProbe.effectiveVisibleFrame` implements a **per-edge clearance model** (`Insets`):
 
-The rule is one branch on **Space shape**: fullscreen Space (the `FullscreenProbe` verdict
-the controller already holds) → `screen.frame`, because the system guarantees the menu bar
-and the Dock are hidden there and the reservation is fiction; non-fullscreen →
-`visibleFrame`, because then the reservation *is* the real occlusion — including the
-per-side avoidance for a system Dock parked on the left or right, which AppKit already
-computes. If the chosen rectangle is degenerate (the headless `NSScreen()` fallback), the
-probe returns the other source; both degenerate yields `.zero`, which
-`EdgeDockGeometry.frame` already guards.
+- **Top edge (Menu bar)**: Decoupled from Dock. When the menu bar is **not visible** (App fullscreen,
+  system-wide menu bar auto-hide, or secondary display when `screensHaveSeparateSpaces == false`),
+  `topInset` is 0 and the dock snaps **flush to the physical top edge** (`screen.frame.maxY`),
+  completely eliminating the floating gap. When the menu bar is visible, `topInset` preserves the
+  menu bar reservation.
+- **Bottom / Left / Right edges (System Dock)**: Decoupled from the menu bar. The system Dock may reside
+  at the bottom, left, or right edge. Whenever a system Dock occupies space on an edge, the edge
+  retains its reservation (`keepDockClearance = true`), guaranteeing that the edge status dock
+  **never overlaps the system Dock**.
+- **AppKit frame constraint override (`constrainFrameRect`)**: AppKit's default `NSWindow.constrainFrameRect(_:to:)`
+  unconditionally clamps windows within the system's static `screen.visibleFrame`. Because `visibleFrame` statically reserves
+  the menu bar height (approx 30pt) across screens even when absent on secondary displays or in fullscreen, any call to
+  `setFrame` on a standard `NSPanel` causes AppKit to silently push the window downwards by 30pt. Both `EdgeDockPanel` and
+  `PopoverPanel` override `constrainFrameRect(_:to:) -> NSRect { frameRect }` to prevent AppKit from overriding the geometry
+  calculated by `ScreenChromeProbe` and `EdgeDockGeometry`, guaranteeing that the panel docks flush against the physical edge.
+- **Multi-display (Main vs Auxiliary)**: Each screen's effective frame is evaluated independently
+  (`ScreenChromeProbe.effectiveVisibleFrame(on:isFullscreenSpace:)`), taking into account whether
+  displays have separate Spaces and per-screen fullscreen verdicts (`FullscreenProbe.fullscreenVerdicts`).
+- **Notch tolerance**: `FullscreenProbe.covers` accommodates MacBook notch-avoiding fullscreen apps
+  (32–44pt notch margin) so that fullscreen is never missed on notch-bearing screens.
+
+The consumers read `ScreenChromeProbe.effectiveVisibleFrame` — `reconcile`'s snap, `updatePopover`'s
+clamps, and the drag pipeline (probed **once at mouse-down** into `dragFrameByDisplayID`, keyed by
+display id, beside `dragEntryCount`'s same precedent, because 60–120 Hz events must not pay a probe
+each; the verdicts come from `FullscreenProbe.fullscreenVerdicts`, which judges **each
+screen independently** off one shared window-list walk). The `EdgeDockGeometry` functions
+themselves are untouched: they always took a rectangle, so only the producers changed.
 
 That verdict is **per screen**, and a cross-display drag changes which screen it applies
 to — dragging itself triggers no app activation or Space change, so nothing else would
@@ -1234,4 +1246,4 @@ default has to preserve it — defaulting to off would put a dock inside every f
 window for every existing user. Because the setting can be flipped while the user is
 already fullscreen, a policy change re-probes instead of reusing the cached verdict.
 
-> 核对基线：2026-10-20 · 代码 ef10e09
+> 核对基线：2026-10-20 · 代码 dacbb80
