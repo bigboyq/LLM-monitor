@@ -129,7 +129,7 @@ value when local model samples are available.
 
 ### 首份 config.json 模板的语义
 
-`ConfigStore.writeTemplate(to:)` 走 `AppConfig.init` 的默认参数，因此模板里写入的是完整的 `ClientProviderBinding.defaultBindings`——**全部 10 条**（其中 6 条 `enabled: true`）。解码端另有两层兜底：缺 `clientBindings` 的旧文件先由 `AppConfig.legacyClientBindings(from:)` 从 provider 级 `mergeOpencodeUsage` 开关迁移，随后 `AppConfig.mergingMissingDefaultBindings(_:)` 把缺失的默认绑定补回去（`ConfigStore.swift` `init(from:)`）。也就是说**模板写不写这 10 条，运行行为一致**；保留自文档化（让首份 `config.json` 直接显示完整绑定表）是刻意的取舍，不是不一致。
+`ConfigStore.writeTemplate(to:)` 走 `AppConfig.init` 的默认参数，因此模板里写入的是完整的 `ClientProviderBinding.defaultBindings`——**全部 10 条**（其中 6 条 `enabled: true`）。解码端另有两层兜底：缺 `clientBindings` 的旧文件先由 `AppConfig.legacyClientBindings(from:)` 从 provider 级 `mergeOpencodeUsage` 开关迁移，随后 `AppConfig.mergingMissingDefaultBindings(_:)` 把缺失的默认绑定补回去（`Models/AppConfig.swift` `init(from:)`）。也就是说**模板写不写这 10 条，运行行为一致**；保留自文档化（让首份 `config.json` 直接显示完整绑定表）是刻意的取舍，不是不一致。
 
 ## Runtime Files
 
@@ -239,4 +239,4 @@ CHANGELOG 最新条目、两份 README 的「当前版本」/DMG 名/build-relea
 的旧文案「按本机时区计算、可在设置中调整」直到发版前才发现，只因 `build-release.sh` 的
 版本门禁全绿而放行。**功能口径变了，用户文档必须同轮改**。
 
-> 核对基线：2026-10-05 · 代码 79dee29
+> 核对基线：2026-10-20 · 代码 f6530fe
