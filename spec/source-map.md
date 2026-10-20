@@ -114,6 +114,7 @@
 | `Sources/LLM-monitor/Services/Infra/ScheduledTask.swift` | 主线程延时调度工具集：`FixedDeadlineTask`（固定截止时间节流防饿死）、`KeyedScheduledTask`（按目标键固定截止调度）、`DebouncedTask`（经典静默防抖） |
 | `Sources/LLM-monitor/Services/Infra/LRUCache.swift` | 通用 $O(1)$ LRU 缓存容器（双向链表 + 字典；动态容量收缩与白名单键裁剪；Codex 本地扫描器复用） |
 | `Sources/LLM-monitor/Services/Infra/DshLogDecoder.swift` | DSH zstd 日志流式解压器（优先调用 zstd CLI，Node 22+ zlib 回退；单文件 1GB 明文上限与堆内存约束） |
+| `Sources/LLM-monitor/Services/Infra/LogFileSnapshot.swift` | 通用日志文件快照（`LogFileSnapshot`）、增量失效指纹（`LogFileFingerprint`）与双预算切片选取器（`LogFileSelector.select`，DSH 与 Agy 共用） |
 | `Sources/LLM-monitor/Services/LocalUsageScanRunner.swift` | 本地用量 scanner 共享的 lifecycle helper（generation 守门 / cancellation filter / defer generation 守门），消除镜像 boilerplate |
 | `Sources/LLM-monitor/Services/SingleDBSnapshotScanner.swift` | 单库全量快照 scanner 基座（db + WAL 双维指纹与缓存 index；GLM / OpenCode scanner 复用） |
 | `Sources/LLM-monitor/Services/DailyUsageAggregation.swift` | minimax / antigravity 共享的 per-day 聚合（补零填充 + 跨 source 合并） |
@@ -190,4 +191,4 @@
 - **串行执行是既定选择**：`swift test --parallel` 实测（2026-10-02，5 连跑 3 败）不可用——`SQLiteTempCopyTests` 的临时副本断言扫描跨进程共享目录，并行 worker 互相误判；且慢测试为睡眠型，并行的 wall 收益仅 ~4s。并行化前提：先给 SQLiteTempCopy 的副本目录引入进程级隔离，再复评。
 - 慢用例的等待注入缝已建立：调度器（now/sleep）、Bark 退避（retryDelay）、vnode 合并窗口（coalescingWindow 参数）；新增耗时敏感测试时优先走注入缝，不要写死真实 sleep。
 
-> 核对基线：2026-10-20 · 代码 aa85332
+> 核对基线：2026-10-20 · 代码 55292db
