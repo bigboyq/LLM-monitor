@@ -68,7 +68,8 @@
 | `Sources/LLM-monitor/Services/AppLog.swift` | stdout / 文件 (5MB rotate) / os.Logger (`.private`) 三路日志；测试进程改写日志路径到 `NSTemporaryDirectory()`（`LLM_MONITOR_LOG_PATH` 最优先） |
 | `Sources/LLM-monitor/Services/ConfigStore.swift` | config.json 读写 + 内容指纹跟踪 + 模板生成 + **单文件 `DispatchSource` watcher**（`startWatching()` / `startConfigWatcher()`，debounce + 原子替换后重开 fd + 退避重试，由 `AppState.start()` 调用） |
 | `Sources/LLM-monitor/Services/LoginItemService.swift` | `SMAppService.mainApp` 包装 + 状态显示 |
-| `Sources/LLM-monitor/Services/Formatters.swift` | token / percent / 时间 / codex window 标签格式化；相对时间类（`formatRelativeShort` / `formatResetSuffix`）的 `now:` 必填——视图层显式传宿主展示时钟，不取渲染时墙钟 |
+| `Sources/LLM-monitor/Services/Formatters.swift` | 基础格式化工具：Token 紧凑计数（K/M/G 阶梯）、格式化整数、百分比与额度百分比（去无效 .0）、FormatterCache 缓存 |
+| `Sources/LLM-monitor/Services/Formatters+Time.swift` | 时间与倒计时格式化扩展：相对时间（`formatRelativeShort`）、英文压缩倒计时（`formatResetSuffix`）、中文紧凑倒计时（`formatPeakDuration`）、数字时钟持续时长（`formatDigitalDuration`）、绝对时钟与日期（`formatClock` / `formatTimeOfDay` / `formatMonthDayMinute` 等）及 Codex 窗口标签与刷新间隔 |
 | `Sources/LLM-monitor/Services/Infra/HTTPClient.swift` | 共享 HTTP 客户端（minimax / codex 三个 fetch 路径）；`ResponseByteLimits` 响应体硬上限（标准额度 8 MiB / Antigravity trajectory 64 MiB）由 `CappedDownloader.data` 在**响应体返回后**校验——超限抛 `responseTooLarge`，该错误为非瞬时（不重试、不进通知冷却）。async `session.data(for:delegate:)` 不向 per-task delegate 投递 `didReceive response` / `didReceive data` 内容回调（macOS 27 实测：URLProtocol 桩与真实网络均不触发），因此 `CappedDownloadDelegate` 的流式计数在当前调用方式下**不执行**，真正的拦截点是后置字节校验；delegate 保留待将来改用回调系任务。峰值内存仍由 URLSession 缓冲决定——该上限保证超限响应不进入调用方解析链路，不保证单次响应不被完整缓冲 |
 | `Sources/LLM-monitor/Services/LocalUsageCoordinator.swift` | scanner 协议 + Combine wire-up 容器 |
 | `Sources/LLM-monitor/Services/ProviderRefreshScheduler.swift` | 循环 A（额度循环）：单一 Task 管理所有 Provider 的 quota 定时排期，睡眠至最早截止时间，并发刷新 + 条目级隔离；配置重载走差异化重排 `reconfigure(managed:)`（未变 provider 保留 deadline 与首刷状态，避免每次写配置全员重抓）；loop 带实例 token（`cancelAll` 后旧 loop 收尾不再清新 loop 的 sleepTask、不再进入下一轮迭代） |
@@ -186,4 +187,4 @@
 - **串行执行是既定选择**：`swift test --parallel` 实测（2026-10-02，5 连跑 3 败）不可用——`SQLiteTempCopyTests` 的临时副本断言扫描跨进程共享目录，并行 worker 互相误判；且慢测试为睡眠型，并行的 wall 收益仅 ~4s。并行化前提：先给 SQLiteTempCopy 的副本目录引入进程级隔离，再复评。
 - 慢用例的等待注入缝已建立：调度器（now/sleep）、Bark 退避（retryDelay）、vnode 合并窗口（coalescingWindow 参数）；新增耗时敏感测试时优先走注入缝，不要写死真实 sleep。
 
-> 核对基线：2026-10-20 · 代码 4d25d50
+> 核对基线：2026-10-20 · 代码 87e9941
