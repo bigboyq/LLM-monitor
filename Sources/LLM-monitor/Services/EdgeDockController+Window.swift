@@ -171,8 +171,11 @@ extension EdgeDockController {
             compactSize: config.compactSize
         )
 
+        // 真实可视区，不是 visibleFrame：后者静态预留菜单栏/系统 Dock（全屏
+        // Space 上两者都隐藏 → 悬空一条；系统 Dock 在侧边 → 基准错位）。探测
+        // 失败回退 visibleFrame（fail-open，见 ScreenChromeProbe）。
         let target = EdgeDockGeometry.frame(
-            visibleFrame: Self.targetScreen.visibleFrame,
+            visibleFrame: ScreenChromeProbe.effectiveVisibleFrame(on: Self.targetScreen),
             edge: edge,
             size: size,
             offset: config.offset

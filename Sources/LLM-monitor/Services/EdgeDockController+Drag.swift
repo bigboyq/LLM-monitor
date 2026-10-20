@@ -14,7 +14,7 @@ extension EdgeDockController {
     /// 由 `.leftMouseDragged` 逐事件调用（见 `handleMouseEvent`），不是定时轮询。
     func applyDrag(at mouse: CGPoint) {
         guard let panel else { return }
-        let visibleFrame = dragVisibleFrame(for: mouse)
+        let visibleFrame = dragEffectiveFrame(for: mouse)
 
         // 鼠标明显更靠近另一条边时才换边（带 margin，避免角落来回闪）。
         let edge = EdgeDockGeometry.edgeAfterDrag(
@@ -52,7 +52,20 @@ extension EdgeDockController {
         )
     }
 
-    /// 本次拖拽按**哪块屏**的可用区算：鼠标越过屏幕边界就换屏。
+    /// 拖拽开始时探测一次全部屏的真实可视区（`dragFrameByDisplayID`）。
+    ///
+    /// 逐事件跑 CGWindowList（60~120Hz）会把主线程打满；菜单栏/系统 Dock 的
+    /// 显隐在单次拖拽的秒级窗口里不会变。挂在 `.leftMouseDown` 上调用。
+    func primeDragFrames() {
+        var frames: [CGDirectDisplayID: CGRect] = [:]
+        for screen in NSScreen.screens {
+            guard let id = EdgeDockDisplay.displayID(of: screen) else { continue }
+            frames[id] = ScreenChromeProbe.effectiveVisibleFrame(on: screen)
+        }
+        dragFrameByDisplayID = frames
+    }
+
+    /// 本次拖拽按**哪块屏**的真实可视区算：鼠标越过屏幕边界就换屏。
     ///
     /// 换屏写进 `config.screenUUID` 而不是记一个临时变量——`targetScreen` 下一帧
     /// 就能确定性地解析到新屏（不依赖焦点，也不依赖窗口碰巧已经搬过去）。写完
@@ -60,20 +73,32 @@ extension EdgeDockController {
     ///
     /// 判定用"鼠标落在**别的**屏的可用区里"，而不是比较几何距离：相邻两屏拼接时
     /// 边界只有一条，鼠标越过它时它在两块屏里都算落在边界附近，用距离会来回抖。
-    private func dragVisibleFrame(for mouse: CGPoint) -> CGRect {
+    /// 可用区一律走 mousedown 时的探测缓存（`cachedDragFrame`）——全屏 Space 里
+    /// 拖拽不该被静态 visibleFrame 的菜单栏/Dock 预留顶下来。
+    private func dragEffectiveFrame(for mouse: CGPoint) -> CGRect {
         let current = Self.targetScreen
         let screens = NSScreen.screens
         let index = EdgeDockDisplay.crossedIndex(
             currentDisplayID: EdgeDockDisplay.displayID(of: current),
             mouse: mouse,
-            candidates: screens.map { (EdgeDockDisplay.displayID(of: $0), $0.visibleFrame) }
+            candidates: screens.map { (EdgeDockDisplay.displayID(of: $0), cachedDragFrame(for: $0)) }
         )
         guard let index, let uuid = EdgeDockDisplay.uuid(of: screens[index]) else {
-            return current.visibleFrame
+            return cachedDragFrame(for: current)
         }
         applyRuntimeConfig { $0.screenUUID = uuid }
-        logInfo("EdgeDock: 拖拽跨屏 → uuid=\(uuid) frame=\(Self.describe(screens[index].visibleFrame))")
-        return screens[index].visibleFrame
+        let frame = cachedDragFrame(for: screens[index])
+        logInfo("EdgeDock: 拖拽跨屏 → uuid=\(uuid) frame=\(Self.describe(frame))")
+        return frame
+    }
+
+    /// 单块屏的拖拽参考框：mousedown 缓存优先，缓存没有（拖拽中新插的屏）现探。
+    private func cachedDragFrame(for screen: NSScreen) -> CGRect {
+        if let id = EdgeDockDisplay.displayID(of: screen),
+           let cached = dragFrameByDisplayID[id] {
+            return cached
+        }
+        return ScreenChromeProbe.effectiveVisibleFrame(on: screen)
     }
 
     /// 配置里指定的屏在当前系统上找不到时，把它清掉并落盘。

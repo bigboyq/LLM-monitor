@@ -178,6 +178,12 @@ final class EdgeDockController: ObservableObject {
     var isDragging = false
     /// 拖拽开始时取一次的条目数，供逐事件的 `applyDrag` 复用。
     var dragEntryCount = 0
+    /// 拖拽开始时探测一次的**真实可视区**（按 display id，见 `ScreenChromeProbe`）。
+    ///
+    /// 拖拽是 60~120Hz 的逐事件驱动，每个事件都跑一遍 CGWindowList 会把主线程
+    /// 打满；菜单栏/系统 Dock 的显隐在单次拖拽的秒级窗口里不会变，mousedown
+    /// 探一次就够——与 `dragEntryCount` 的"开始时取一次"同一先例。
+    var dragFrameByDisplayID: [CGDirectDisplayID: CGRect] = [:]
     /// 按下时的屏幕坐标与"是否已越过拖动阈值"。位移在阈值内松手 = 原地松开
     /// （保持当前悬停状态），越过阈值 = 真拖动（收起详情、移动窗口）。避免微小手抖
     /// 把 dock 拖走几像素。
@@ -450,6 +456,7 @@ final class EdgeDockController: ObservableObject {
         pressBecameDrag = false
         dragEntryCount = 0
         dragOffset = nil
+        dragFrameByDisplayID = [:]
         isExpanded = false
         hoveredIndex = nil
         selectedIndex = nil

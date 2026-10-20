@@ -53,6 +53,9 @@ extension EdgeDockController {
                 // 条目数在拖拽开始时取一次：拖动事件是 60~120Hz，而重新投影要走一遍
                 // 全部 provider 的额度聚合，没必要每帧重来。
                 dragEntryCount = orderedEntries().count
+                // 真实可视区同理：mousedown 探一次（当前屏 + 候选屏），见
+                // `dragFrameByDisplayID`。
+                primeDragFrames()
                 pressScreenLocation = NSEvent.mouseLocation
                 pressBecameDrag = false
                 // 上一段拖拽的临时位置不能带进这一次：没越过阈值就松手时
