@@ -1199,16 +1199,21 @@ or on secondary displays without separate Spaces, the menu bar is absent, so a d
     Crucially, cursor proximity and ceiling touch gating are strictly constrained to the target screen's bounds
     (`isMouseOnThisScreen = screen.frame.contains(mouse)`), completely preventing multi-display cross-talk where cursor
     activity near the top of an adjacent display falsely pushes down the dock on another display.
-  - **Screen capability awareness**: Proactive avoidance activates only on screens capable of dynamically revealing a menu bar
-    (`supportsDynamicMenuBar = isFullscreenSpace || ((screensHaveSeparateSpaces || isPrimaryScreen) && staticTop <= 1)`).
-    On secondary displays without separate Spaces in desktop mode (where macOS never shows a menu bar), or on screens with
-    statically pinned menu bars, redundant dynamic triggers and polling are completely bypassed.
+  - **Screen capability awareness**: Proactive avoidance activates on any screen where the menu bar is not permanently pinned
+    (`supportsDynamicMenuBar = isFullscreenSpace || staticTop <= 1`). This covers fullscreen spaces, secondary displays without
+    separate Spaces, and displays with macOS auto-hidden menu bars. On screens with permanently pinned menu bars in non-fullscreen desktop mode,
+    redundant dynamic triggers and polling are completely bypassed.
   - **Slide frame detection**: Layer-24 detection (`ScreenChromeProbe.menuBarState`) catches the window as soon as its bottom edge
     enters the screen (`rect.maxY > screenTopCG + 1`), rather than waiting for the slide animation to finish.
   - **Responsive timer**: Polling at `0.08s` (~12.5Hz, `hoverPollInterval` / `capturePollInterval`) reduces response latency
     from ~800ms down to <100ms (measured at 89ms start, 182ms settled).
-  - **Reconcile synchronization**: `reconcile()` and `updatePopover()` directly consume `lastMenuBarState`, preventing
-    premature probe overwrites while WindowServer is in the pre-animation window.
+  - **Reconcile synchronization & cross-window cache invalidation**: `reconcile()` and `updatePopover()` consume `lastMenuBarState`,
+    preventing premature probe overwrites while WindowServer is in the pre-animation window. Crucially, when switching windows,
+    spaces, or activating/deactivating apps, `evaluateFullscreen()` re-probes both fullscreen and `ScreenChromeProbe.menuBarState`
+    simultaneously via `FullscreenProbe.queryWindowEntries()`, updating `lastMenuBarState` and triggering `reconcile(animated: true)`
+    whenever either status changes. In addition, workspace notifications (`didActivateApplication`, `didDeactivateApplication`,
+    `didHideApplication`, `didUnhideApplication`) schedule retry ladders (`scheduleFullscreenRechecks()`), ensuring that the dock
+    automatically repositions itself to avoid or clear the menu bar once window transition animations settle without requiring cursor movement.
   - **Smooth return**: When the cursor leaves the top ceiling or moves across displays and the menu bar slides back up into hidden state,
     the dock smoothly glides back up flush against the physical top edge.
   - **Distance gating (IPC optimization)**: Polling avoids issuing cross-process `CGWindowListCopyWindowInfo` queries when
@@ -1278,4 +1283,4 @@ default has to preserve it — defaulting to off would put a dock inside every f
 window for every existing user. Because the setting can be flipped while the user is
 already fullscreen, a policy change re-probes instead of reusing the cached verdict.
 
-> 核对基线：2026-10-20 · 代码 590a053
+> 核对基线：2026-10-20 · 代码 a023b61
