@@ -268,24 +268,59 @@ struct HarnessModelRow: Identifiable, Equatable, Sendable {
         modelName ?? HarnessTodaySummary.missingModelNameText
     }
 
-    /// UI 展示用的压缩名：去掉超长品牌前缀（`gemini-` / `claude-`），让
-    /// `3.8-flash-n` 与 `3.8-flash-tiered` 这类变体后缀在定宽列里可区分——
-    /// 原始 ID 下两个变体都会被尾部截断成相同开头，肉眼无法分辨。
-    /// 只影响展示：分组键（`id`）、定价与统计一律仍用原始 `modelName`。
+    /// UI 展示用的压缩名：去掉供应商命名空间（`minimax/`）与已知品牌前缀
+    /// （`gemini-` / `claude-` / `minimax-`），让**模型名本身**在定宽列里
+    /// 完整可见。
+    ///
+    /// 为什么是「去命名空间 + 去品牌」两步：`minimax/MiniMax-M3` 里
+    /// `minimax/` 是供应商命名空间、`MiniMax-` 是品牌段，用户想看的是模型名
+    /// `M3`。压缩前两者占满整列，模型名被尾截断成 `minimax/MiniMa…`——
+    /// 供应商名占位置、模型名看不见。`gemini-` / `claude-` 早就在压，
+    /// MiniMax 系此前漏了。
+    ///
+    /// 只影响展示：分组键（`id`）、定价与统计一律仍用原始 `modelName`，
+    /// hover 提示继续显示完整原始 ID。
     var compactDisplayName: String {
         guard let name = modelName else {
             return HarnessTodaySummary.missingModelNameText
         }
-        for prefix in Self.compactBrandPrefixes where name.hasPrefix(prefix) {
-            return String(name.dropFirst(prefix.count))
-        }
-        return name
+        return HarnessModelRow.compactedDisplayName(for: name)
     }
 
-    /// 只压掉**已知超长品牌前缀**（7 字符档）：能显著缩短且不引入歧义。
+    /// 展示名压缩的纯函数形式（规则本身可被单测直接钉住）。
+    ///
+    /// 规则按顺序：
+    /// 1. **供应商命名空间**：模型名里第一个 `/` 之前是供应商
+    ///    （`minimax/MiniMax-M3` → `MiniMax-M3`）。命名空间在菜单里已经由
+    ///    段头（客户端名）与 hover 卡交代过，展示列不必再占宽度。
+    /// 2. **品牌前缀**：已知长品牌前缀大小写不敏感地剥掉，让变体后缀在定宽
+    ///    列里可区分——原始 ID 下两个变体都会被尾部截断成相同开头，肉眼无法分辨。
+    ///
+    /// 短前缀（如 `gpt-`）不压：压缩收益小，`deepseek-` 去掉后裸 `flash` 在
+    /// 多 provider 段里反而更难归属。
+    static func compactedDisplayName(for name: String) -> String {
+        var result = name
+        if let slash = result.firstIndex(of: "/") {
+            let stripped = String(result[result.index(after: slash)...])
+            // 剥完是空串（原始 ID 形如 `/`）时保留原名，不让展示名变成空白。
+            if !stripped.isEmpty {
+                result = stripped
+            }
+        }
+        let lowered = result.lowercased()
+        for prefix in compactBrandPrefixes where lowered.hasPrefix(prefix) {
+            return String(result.dropFirst(prefix.count))
+        }
+        return result
+    }
+
+    /// 只压掉**已知超长品牌前缀**（7–8 字符档）：能显著缩短且不引入歧义。
     /// 短前缀（如 `gpt-`）压缩收益小，`deepseek-` 去掉后裸 `flash` 在
     /// 多 provider 段里反而更难归属，都不压。
-    static let compactBrandPrefixes: [String] = ["gemini-", "claude-"]
+    ///
+    /// 大小写不敏感：真实账本里同一个模型家族有两种写法——ZCode 记
+    /// `MiniMax-M3.1-Flash-Preview`，DSH 记 `Minimax-M3.1-flash-preview`。
+    static let compactBrandPrefixes: [String] = ["gemini-", "claude-", "minimax-"]
 
     init(
         dayStart: Date,

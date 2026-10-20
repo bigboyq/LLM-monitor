@@ -254,6 +254,38 @@ final class HarnessTodaySummaryTests: XCTestCase {
         XCTAssertEqual(row(named: "gemini-3.8-flash-n").modelName, "gemini-3.8-flash-n")
     }
 
+    /// MiniMax 系三种真实形态都要压成"只剩模型名"：供应商命名空间
+    /// (`minimax/`) 与品牌段 (`MiniMax-` / `Minimax-`) 都不该占展示列的宽度。
+    ///
+    /// 真实账本里的三种写法：MiniMax Code 记 `minimax/MiniMax-M3`、
+    /// ZCode 记 `MiniMax-M3.1-Flash-Preview`、DSH 记
+    /// `Minimax-M3.1-flash-preview`（首字母小写）。
+    func testCompactDisplayNameDropsMinimaxNamespaceAndBrand() {
+        func row(named model: String) -> HarnessModelRow {
+            HarnessModelRow(
+                dayStart: now, clientID: "minimax-code", quotaProviderID: "minimax",
+                modelName: model,
+                samples: [sample(model: model, at: now, input: 100, cached: 0, output: 10, promptID: "p")],
+                calendar: calendar
+            )
+        }
+        XCTAssertEqual(row(named: "minimax/MiniMax-M3").compactDisplayName, "M3")
+        XCTAssertEqual(row(named: "MiniMax-M3").compactDisplayName, "M3")
+        XCTAssertEqual(row(named: "MiniMax-M3.1-Flash-Preview").compactDisplayName, "M3.1-Flash-Preview")
+        // 大小写不敏感：DSH 的写法首字母小写
+        XCTAssertEqual(row(named: "Minimax-M3.1-flash-preview").compactDisplayName, "M3.1-flash-preview")
+        // 展示压缩不改动原始 ID：分组键与定价统计仍用原名
+        XCTAssertEqual(row(named: "minimax/MiniMax-M3").modelName, "minimax/MiniMax-M3")
+        XCTAssertEqual(row(named: "minimax/MiniMax-M3").displayName, "minimax/MiniMax-M3")
+    }
+
+    /// 命名空间剥离不能把展示名剥成空白：原始 ID 形如 `/` 时保留原名。
+    func testCompactDisplayNameKeepsNonEmptyResult() {
+        XCTAssertEqual(HarnessModelRow.compactedDisplayName(for: "/"), "/")
+        XCTAssertEqual(HarnessModelRow.compactedDisplayName(for: "minimax/"), "minimax/")
+        XCTAssertEqual(HarnessModelRow.compactedDisplayName(for: "minimax/MiniMax-M3"), "M3")
+    }
+
     /// 三种"没有今日活动"都不该产生段：完全没样本的 provider、只有昨天的样本、
     /// 贡献本身无任何活动（`hasActivity` 为 false，与设置页同一口径）。
     func testContributionsWithoutTodayActivityProduceNoSections() {
