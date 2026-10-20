@@ -1183,6 +1183,13 @@ or on secondary displays without separate Spaces, the menu bar is absent, so a d
   `topInset` is 0 and the dock snaps **flush to the physical top edge** (`screen.frame.maxY`),
   completely eliminating the floating gap. When the menu bar is visible, `topInset` preserves the
   menu bar reservation.
+- **Dynamic Menu Bar Tracking (`checkDynamicMenuBar`)**: When docked to the top edge (`config.edge == .top`),
+  the dock dynamically tracks menu bar appearance/disappearance (such as when the user moves the cursor to the top
+  edge of a secondary display or fullscreen space to reveal the menu bar). CoreGraphics `optionOnScreenOnly` window
+  inspection (`ScreenChromeProbe.menuBarState`) detects on-screen layer-24 menu bar windows and their exact height
+  (typically 30–33pt), triggering `reconcile(animated: true)` to smoothly animate the dock down by 30pt. When the
+  cursor moves away and the menu bar slides back up into hidden state, the dock smoothly glides back up flush against
+  the physical top edge.
 - **Bottom / Left / Right edges (System Dock)**: Decoupled from the menu bar. The system Dock may reside
   at the bottom, left, or right edge. Whenever a system Dock occupies space on an edge, the edge
   retains its reservation (`keepDockClearance = true`), guaranteeing that the edge status dock
@@ -1246,4 +1253,4 @@ default has to preserve it — defaulting to off would put a dock inside every f
 window for every existing user. Because the setting can be flipped while the user is
 already fullscreen, a policy change re-probes instead of reusing the cached verdict.
 
-> 核对基线：2026-10-20 · 代码 dacbb80
+> 核对基线：2026-10-20 · 代码 1921112
