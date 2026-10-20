@@ -129,56 +129,33 @@ extension EdgeDockController {
     /// 依次展开又收起每张卡；停在哪，哪张才展开。任务到点时再复核一次
     /// `hoveredIndex`——延迟期间鼠标可能已经移走或移到了别的圆上。
     ///
-    /// 固定 deadline：同一行的任务若已在挂起中，必须保持原计时，绝不能防抖重排——
-    /// 否则当巡检周期（0.08s）小于延迟（0.15s）时，每帧 probe 都会掐死上一次，
-    /// 导致任务永远无法到期。
+    /// 固定 deadline（防饿死）：通过 `selectionTask`（`KeyedScheduledTask`）调度，
+    /// 同一 index 保持原计时推进，换行即刻重排，避免 0.08s 巡检陷入防抖饿死。
     func scheduleSelection(_ index: Int) {
-        if pendingSelectionIndex == index, pendingSelectionWorkItem != nil {
-            return
-        }
-        cancelPendingSelection()
         cancelPendingDeselection()
-        pendingSelectionIndex = index
-        let work = DispatchWorkItem { [weak self] in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                self.pendingSelectionIndex = nil
-                self.pendingSelectionWorkItem = nil
-                guard self.hoveredIndex == index, self.selectedIndex != index else { return }
-                self.selectedIndex = index
-                self.updatePopover()
-            }
+        selectionTask.schedule(key: index, delay: Self.hoverOpenDelay) { [weak self] in
+            guard let self, self.hoveredIndex == index, self.selectedIndex != index else { return }
+            self.selectedIndex = index
+            self.updatePopover()
         }
-        pendingSelectionWorkItem = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.hoverOpenDelay, execute: work)
     }
 
     func cancelPendingSelection() {
-        pendingSelectionWorkItem?.cancel()
-        pendingSelectionWorkItem = nil
-        pendingSelectionIndex = nil
+        selectionTask.cancel()
     }
 
     /// 鼠标离开 provider 圆环后延迟收起详情（经 `hoverCloseDelay`）。
     /// 如果鼠标是在移向卡片，期间进入卡片区域即取消该任务；如果停在留白处，到点收起。
     func scheduleDeselection() {
-        guard pendingDeselectionWorkItem == nil else { return }
-        let work = DispatchWorkItem { [weak self] in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                self.pendingDeselectionWorkItem = nil
-                guard self.selectedIndex != nil, self.hoveredIndex == nil else { return }
-                self.selectedIndex = nil
-                self.updatePopover()
-            }
+        deselectionTask.schedule(delay: Self.hoverCloseDelay) { [weak self] in
+            guard let self, self.selectedIndex != nil, self.hoveredIndex == nil else { return }
+            self.selectedIndex = nil
+            self.updatePopover()
         }
-        pendingDeselectionWorkItem = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.hoverCloseDelay, execute: work)
     }
 
     func cancelPendingDeselection() {
-        pendingDeselectionWorkItem?.cancel()
-        pendingDeselectionWorkItem = nil
+        deselectionTask.cancel()
     }
 
     /// 松手的统一收尾：有位移 = 拖动（吸附 + 记住位置），无位移 = 保持现状（悬停模式由鼠标位置驱动）。
@@ -313,22 +290,20 @@ extension EdgeDockController {
 
     /// 鼠标离开保持区后的延时收起：到点复核（静止回来的极端情形没有新鼠标事件，
     /// 必须在触发时再核一次），仍在外面才真正释放与收拢。
+    ///
+    /// 固定 deadline（防饿死）：通过 `collapseTask`（`FixedDeadlineTask`）调度，
+    /// 无论 0.08s 巡检多高频进入本分支，倒计时均按固定截止时间推进。
     private func scheduleCollapse() {
-        guard collapseWorkItem == nil else { return }
-        let item = DispatchWorkItem { [weak self] in
+        collapseTask.schedule(delay: Self.collapseDelay) { [weak self] in
             guard let self else { return }
-            self.collapseWorkItem = nil
             guard !self.cursorInsideKeepAliveRegion(NSEvent.mouseLocation) else { return }
             self.releaseMouseCapture()
             self.collapseExpandedDockIfNeeded()
         }
-        collapseWorkItem = item
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.collapseDelay, execute: item)
     }
 
     func cancelPendingCollapse() {
-        collapseWorkItem?.cancel()
-        collapseWorkItem = nil
+        collapseTask.cancel()
     }
 
     /// 鼠标是否还在"保持接管"区：dock frame，或**可见的**详情卡片 frame，

@@ -317,9 +317,10 @@ final class HoverPanelController {
     private var hostingView: NSHostingView<AnyView>?
     private var pendingDetail: AnyView?
     private var pendingSample: HoverSample?
-    private var showWorkItem: DispatchWorkItem?
-    /// 悬停桥的延迟隐藏任务：行退出后给鼠标留出移向卡上的时间窗。
-    private var hideWorkItem: DispatchWorkItem?
+    /// 悬停卡片的延时展示调度器：同一 sourceID 保持原 deadline（手抖不饿死），换行即刻重排。
+    private let showTask = KeyedScheduledTask<UUID>()
+    /// 悬停桥的延迟隐藏任务：行退出后给鼠标留出移向卡上的时间窗（固定 deadline 节流防饿死）。
+    private let hideTask = FixedDeadlineTask()
     /// 鼠标当前是否真的在卡上。scheduleHide 的守卫：行退出（菜单窗口）与面板
     /// 进入（NSPanel）分属两个窗口，事件到达顺序不保证——若先 panelEntered 后
     /// rowExited，没有这个守卫的话，鼠标明明已停在卡上仍会被 rowExited 安排隐藏。
@@ -330,8 +331,7 @@ final class HoverPanelController {
     func hoverMoved(sourceID: UUID, detail: AnyView, sample: HoverSample, delay: TimeInterval) {
         // 鼠标从卡上移回信息行时，可能仍有一笔 scheduleHide 在途（0.25s 未到）；
         // 先取消，否则防抖缓冲的 0.08s 窗口内卡会被延迟隐藏杀掉。
-        hideWorkItem?.cancel()
-        hideWorkItem = nil
+        hideTask.cancel()
 
         activeSourceID = sourceID
         pendingDetail = detail
@@ -341,24 +341,20 @@ final class HoverPanelController {
         // 避免鼠标从上到下划过紧邻的多个 HoverInfoRow 时产生快速连环重绘闪烁。
         let effectiveDelay: TimeInterval = (panel?.isVisible == true) ? 0.08 : delay
 
-        showWorkItem?.cancel()
-        let item = DispatchWorkItem { [weak self] in
-            self?.showWorkItem = nil
+        // 同一 sourceID（如鼠标在同一行内微动）保持原有 deadline 推进，防止手抖或慢滑导致卡片展开被无限推迟饿死；
+        // 移到新 sourceID 时立即切换并重新计时。
+        showTask.schedule(key: sourceID, delay: effectiveDelay) { [weak self] in
             guard let detail = self?.pendingDetail,
                   let sample = self?.pendingSample else { return }
             self?.present(detail: detail, sample: sample)
         }
-        showWorkItem = item
-        DispatchQueue.main.asyncAfter(deadline: .now() + effectiveDelay, execute: item)
     }
 
     /// 立即隐藏：菜单整体关闭（MenuWindowAutoCloseBridge）等"必须当场消失"的
     /// 路径专用；顺带取消在途的延迟隐藏，避免关掉菜单后卡又被 workItem 弹回。
     func hide() {
-        showWorkItem?.cancel()
-        showWorkItem = nil
-        hideWorkItem?.cancel()
-        hideWorkItem = nil
+        showTask.cancel()
+        hideTask.cancel()
         isMouseInsidePanel = false
         activeSourceID = nil
         pendingDetail = nil
@@ -381,21 +377,16 @@ final class HoverPanelController {
     func scheduleHide() {
         // 鼠标仍在卡上（跨窗口事件乱序）时，这次"退出"是假的，直接吞掉。
         guard !isMouseInsidePanel else { return }
-        hideWorkItem?.cancel()
-        let item = DispatchWorkItem { [weak self] in
-            self?.hideWorkItem = nil
+        hideTask.schedule(delay: 0.25) { [weak self] in
             self?.hide()
         }
-        hideWorkItem = item
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: item)
     }
 
     /// 面板内侧跟踪回调：进入卡面 → 取消在途隐藏；离开卡面 → 安排延迟隐藏。
     private func panelHoverChanged(_ inside: Bool) {
         isMouseInsidePanel = inside
         if inside {
-            hideWorkItem?.cancel()
-            hideWorkItem = nil
+            hideTask.cancel()
         } else {
             scheduleHide()
         }

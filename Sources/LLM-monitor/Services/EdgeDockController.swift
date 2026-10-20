@@ -185,13 +185,12 @@ final class EdgeDockController: ObservableObject {
     /// deadline 永远被推后、收起永不发生。
     /// Space 切换后阶梯式补测全屏的挂起任务。见 `scheduleFullscreenRechecks`。
     var fullscreenRetryWorkItems: [DispatchWorkItem] = []
-    var collapseWorkItem: DispatchWorkItem?
-    /// 挂起的「展开某行详情」任务，见 `scheduleSelection`。
-    var pendingSelectionWorkItem: DispatchWorkItem?
-    /// 挂起中的目标 provider 行下标，防高频轮询防抖无限推迟。
-    var pendingSelectionIndex: Int?
-    /// 挂起的「收起详情」任务，见 `scheduleDeselection`。
-    var pendingDeselectionWorkItem: DispatchWorkItem?
+    /// 挂起中的延时收起任务，固定 deadline 节流防饿死。见 `scheduleCollapse`。
+    let collapseTask = FixedDeadlineTask()
+    /// 挂起的「展开某行详情」任务，按行下标固定 deadline 节流防饿死。见 `scheduleSelection`。
+    let selectionTask = KeyedScheduledTask<Int>()
+    /// 挂起的「收起详情」任务，固定 deadline 节流防饿死。见 `scheduleDeselection`。
+    let deselectionTask = FixedDeadlineTask()
     /// 形态过渡进行中标记 + 到期解除任务：期间标准过渡（刷新广播等）不得碰
     /// 窗口 frame——按动画中间态帧重算并 setFrame 会打断正在播放的窗口动画，
     /// 表现为半途抽一下。
