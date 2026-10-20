@@ -1118,12 +1118,18 @@ Hover therefore runs on a **2Hz poll** (`hoverPollInterval`) instead of an event
   (≈37 µs) costs 0.007% of a core, and a TTL'd cache would be pure complexity.
 
 **Latency is the price, and it is bounded where it matters.** Ring highlight, card
-open and proximity-expand all land within `hoverPollInterval` (0.5s) of the pointer
+open and proximity-expand all land within `hoverPollInterval` (0.08s) of the pointer
 arriving. Once the cursor is actually over the dock, `captureMouse()` starts the
-0.2s `capturePollInterval` timer, and hover drops to 0.2s — the visible 0.5s is
-confined to the half-second *before* arrival. Releasing the capture stays prompt
-too: the 0.2s timer is what detects the pointer leaving, followed by the 0.5s
+0.08s `capturePollInterval` timer, and hover probes every 80ms. Releasing the capture stays prompt
+too: the 0.08s timer is what detects the pointer leaving, followed by the 0.5s
 `collapseDelay` grace.
+
+**Fixed deadline for card selection (`pendingSelectionIndex` guard).** Because `capturePollInterval`
+(0.08s) is shorter than `hoverOpenDelay` (0.15s), `scheduleSelection` must adhere to a **fixed deadline**:
+repeatedly probing over the same circle preserves the in-flight countdown rather than debouncing/rescheduling
+it, which would otherwise continuously re-arm the timer and permanently starve the selection work item
+(leaving the popover unable to open). Switching target circles immediately cancels the previous task and arms
+a new 0.15s delay. Upon expiration, the work item verifies `hoveredIndex == index` before displaying the popover.
 
 Swapping back is one constant: raising `hoverPollInterval` back to a frame and
 restoring `.mouseMoved` to the two masks reinstates event-driven hover, with the
@@ -1259,4 +1265,4 @@ default has to preserve it — defaulting to off would put a dock inside every f
 window for every existing user. Because the setting can be flipped while the user is
 already fullscreen, a policy change re-probes instead of reusing the cached verdict.
 
-> 核对基线：2026-10-20 · 代码 4b49fa9
+> 核对基线：2026-10-20 · 代码 50d38f1
