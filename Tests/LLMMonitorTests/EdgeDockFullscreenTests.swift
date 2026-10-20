@@ -304,4 +304,84 @@ final class EdgeDockFullscreenTests: EdgeDockTestCase {
             "取消后不应残留挂起项"
         )
     }
+
+    // MARK: - 顶部状态栏动态避让与复位测试
+
+    @MainActor
+    func testDynamicMenuBarTouchingTopEdgeRequiresMouseToBeOnTargetScreen() {
+        let controller = EdgeDockController.shared
+        let originalConfig = controller.config
+        let originalState = controller.lastMenuBarState
+        addTeardownBlock {
+            controller.applyRuntimeConfig { $0 = originalConfig }
+            controller.lastMenuBarState = originalState
+        }
+
+        controller.applyRuntimeConfig {
+            $0.edge = .top
+            $0.mode = .statusWindow
+        }
+        let targetScreen = EdgeDockController.targetScreen
+        controller.lastMenuBarState = ScreenChromeProbe.MenuBarState(isVisible: false, height: 0)
+
+        // 模拟鼠标在另一块屏幕顶端（例如 X 坐标在 targetScreen.frame 范围外 500pt，Y 在顶沿 <= 6pt 处）
+        let outsideX = targetScreen.frame.maxX + 500
+        let topY = targetScreen.frame.maxY - 2
+        let mouseOutside = CGPoint(x: outsideX, y: topY)
+
+        controller.checkDynamicMenuBar(at: mouseOutside)
+
+        // 鼠标不在本屏，即便 Y 坐标位于顶沿，绝不能误判为本屏顶沿触碰
+        XCTAssertEqual(
+            controller.lastMenuBarState?.isVisible,
+            false,
+            "指针在其他屏幕顶沿活动时，本屏 dock 绝不能被跨屏误触顶下来"
+        )
+    }
+
+    @MainActor
+    func testDynamicMenuBarRecoversWhenMouseLeavesTopEdgeOrScreen() {
+        let controller = EdgeDockController.shared
+        let originalConfig = controller.config
+        let originalState = controller.lastMenuBarState
+        addTeardownBlock {
+            controller.applyRuntimeConfig { $0 = originalConfig }
+            controller.lastMenuBarState = originalState
+        }
+
+        controller.applyRuntimeConfig {
+            $0.edge = .top
+            $0.mode = .statusWindow
+        }
+        let targetScreen = EdgeDockController.targetScreen
+
+        // 预设状态栏当前处于被唤出避让状态（isVisible = true）
+        controller.lastMenuBarState = ScreenChromeProbe.MenuBarState(isVisible: true, height: 30)
+
+        // 鼠标移至屏幕中央（远离顶端）
+        let centerMouse = CGPoint(x: targetScreen.frame.midX, y: targetScreen.frame.midY)
+        controller.checkDynamicMenuBar(at: centerMouse)
+
+        // 状态栏已消失（且鼠标远离顶端），必须恢复为不可见并触发上移复位
+        if !ScreenChromeProbe.isMenuBarVisible(on: targetScreen, isFullscreenSpace: controller.isFullscreenSpace) {
+            XCTAssertEqual(
+                controller.lastMenuBarState?.isVisible,
+                false,
+                "光标移开顶端且状态栏收起后，lastMenuBarState 必须恢复为 false，悬浮窗回弹贴顶"
+            )
+        }
+
+        // 若鼠标进一步跨屏移出当前屏幕
+        controller.lastMenuBarState = ScreenChromeProbe.MenuBarState(isVisible: true, height: 30)
+        let outsideMouse = CGPoint(x: targetScreen.frame.maxX + 500, y: targetScreen.frame.midY)
+        controller.checkDynamicMenuBar(at: outsideMouse)
+
+        if !ScreenChromeProbe.isMenuBarVisible(on: targetScreen, isFullscreenSpace: controller.isFullscreenSpace) {
+            XCTAssertEqual(
+                controller.lastMenuBarState?.isVisible,
+                false,
+                "光标移出屏幕后，状态栏收起时同样必须复位为 false"
+            )
+        }
+    }
 }

@@ -175,6 +175,7 @@ extension EdgeDockController {
         // 各自 reconcile 一次）再落位，否则"从全屏屏拖到桌面屏"会停在物理
         // 边缘、与系统 Dock 重合，或反向悬空一条预留，直到下一次无关事件。
         evaluateFullscreen()
+        lastMenuBarState = nil
         reconcile(animated: true)
         persistConfig()
     }
@@ -457,34 +458,48 @@ extension EdgeDockController {
     func checkDynamicMenuBar(at mouse: CGPoint) {
         guard config.edge == .top, !isDragging, !isFormMorphInFlight else { return }
         let screen = Self.targetScreen
+        let isMouseOnThisScreen = screen.frame.contains(mouse)
 
         // 若指针不在当前屏幕，且当前状态栏未显示，直接跳过查询
-        if !screen.frame.contains(mouse) && lastMenuBarState?.isVisible != true {
+        if !isMouseOnThisScreen && lastMenuBarState?.isVisible != true {
             return
         }
 
+        // 该屏幕是否可能具有动态弹出式菜单栏：
+        // 1. 全屏空间下：所有屏幕均可在指针推至顶沿时滑出菜单栏；
+        // 2. 非全屏空间下：
+        //    - 若 `screensHaveSeparateSpaces == false` 且当前为副屏，macOS 绝不会显示菜单栏；
+        //    - 若系统已常驻保留菜单栏（visibleFrame 已扣除顶部），菜单栏恒定可见，无需动态唤出判定。
+        let staticTop = screen.frame.maxY - screen.visibleFrame.maxY
+        let supportsDynamicMenuBar = isFullscreenSpace || (
+            (NSScreen.screensHaveSeparateSpaces || ScreenChromeProbe.isPrimaryScreen(screen))
+            && staticTop <= 1
+        )
+
         // 顶边感应区距离门控：
         // macOS 只有在鼠标推至屏幕物理顶沿时才会唤出动态菜单栏。
-        // 1. 已有基准且当前状态栏未显示时，若光标距离屏幕顶沿超过 60pt，
-        //    状态栏绝不可能自发唤出，跳过昂贵的跨进程 WindowServer IPC 查询。
-        // 2. 若当前为非全屏且系统已常驻保留菜单栏（系统设置从不自动隐藏），菜单栏恒定可见，亦无需轮询。
-        // （若状态栏当前正处于自动隐藏模式下的可见/退出动画中，则必须保持轮询直到完全收起）
+        // 1. 若当前屏幕不支持动态菜单栏，或非全屏且菜单栏恒定常驻，无需对顶边 hover 频繁探查；
+        // 2. 若当前状态栏未显示，光标必须在当前屏幕内且距离物理顶沿 <= 60pt，否则状态栏绝不可能自发唤出。
         let topProximityThreshold: CGFloat = 60.0
         if let last = lastMenuBarState {
             if !last.isVisible {
+                guard supportsDynamicMenuBar, isMouseOnThisScreen else { return }
                 let isNearTopEdge = mouse.y >= screen.frame.maxY - topProximityThreshold
                 if !isNearTopEdge {
                     return
                 }
-            } else if !isFullscreenSpace && (screen.frame.maxY - screen.visibleFrame.maxY) > 1 {
+            } else if !supportsDynamicMenuBar && !isFullscreenSpace && staticTop > 1 {
+                // 常驻菜单栏且当前已是对齐状态，无需重复查询
                 return
             }
         }
 
         // 1. 物理顶边触碰判定（极速前置触发）：
-        // 当光标推至屏幕物理顶沿区域（距顶沿 <= 6pt）时，macOS 必然唤出状态栏。
-        // 无需等待 WindowServer 数百毫秒的系统动画滞后，提前 0 延迟避让。
-        let isTouchingTopEdge = mouse.y >= screen.frame.maxY - 6.0
+        // 仅在当前屏幕支持动态菜单栏，且光标确实推至本屏幕物理顶沿区域（距顶沿 <= 6pt）时触发。
+        // 绝不可用无视屏幕横向边界的裸 Y 坐标误伤相邻屏幕。
+        let isTouchingTopEdge = supportsDynamicMenuBar
+            && isMouseOnThisScreen
+            && mouse.y >= screen.frame.maxY - 6.0
 
         // 2. 实时窗口层级探查（覆盖系统动画中与已展开态）
         var current = ScreenChromeProbe.menuBarState(on: screen, isFullscreenSpace: isFullscreenSpace)

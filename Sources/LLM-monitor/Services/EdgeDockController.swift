@@ -346,6 +346,7 @@ final class EdgeDockController: ObservableObject {
                 // `targetScreen` 拿它去匹配会一直失败（虽然结果碰巧也是"找不到"，
                 // 但留着就是随时会骗人的状态）。
                 EdgeDockDisplay.pruneCache(to: NSScreen.screens)
+                self.lastMenuBarState = nil
                 self.reconcile(animated: false)
                 self.evaluateFullscreen()
             }
