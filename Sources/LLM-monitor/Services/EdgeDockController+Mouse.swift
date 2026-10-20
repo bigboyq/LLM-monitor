@@ -128,12 +128,23 @@ extension EdgeDockController {
     /// 换行就换任务：鼠标竖着扫过一列圆时，每个圆都重新计时，于是"扫过去"不会
     /// 依次展开又收起每张卡；停在哪，哪张才展开。任务到点时再复核一次
     /// `hoveredIndex`——延迟期间鼠标可能已经移走或移到了别的圆上。
-    private func scheduleSelection(_ index: Int) {
+    ///
+    /// 固定 deadline：同一行的任务若已在挂起中，必须保持原计时，绝不能防抖重排——
+    /// 否则当巡检周期（0.08s）小于延迟（0.15s）时，每帧 probe 都会掐死上一次，
+    /// 导致任务永远无法到期。
+    func scheduleSelection(_ index: Int) {
+        if pendingSelectionIndex == index, pendingSelectionWorkItem != nil {
+            return
+        }
         cancelPendingSelection()
         cancelPendingDeselection()
+        pendingSelectionIndex = index
         let work = DispatchWorkItem { [weak self] in
             MainActor.assumeIsolated {
-                guard let self, self.hoveredIndex == index, self.selectedIndex != index else { return }
+                guard let self else { return }
+                self.pendingSelectionIndex = nil
+                self.pendingSelectionWorkItem = nil
+                guard self.hoveredIndex == index, self.selectedIndex != index else { return }
                 self.selectedIndex = index
                 self.updatePopover()
             }
@@ -145,15 +156,18 @@ extension EdgeDockController {
     func cancelPendingSelection() {
         pendingSelectionWorkItem?.cancel()
         pendingSelectionWorkItem = nil
+        pendingSelectionIndex = nil
     }
 
     /// 鼠标离开 provider 圆环后延迟收起详情（经 `hoverCloseDelay`）。
     /// 如果鼠标是在移向卡片，期间进入卡片区域即取消该任务；如果停在留白处，到点收起。
-    private func scheduleDeselection() {
+    func scheduleDeselection() {
         guard pendingDeselectionWorkItem == nil else { return }
         let work = DispatchWorkItem { [weak self] in
             MainActor.assumeIsolated {
-                guard let self, self.selectedIndex != nil, self.hoveredIndex == nil else { return }
+                guard let self else { return }
+                self.pendingDeselectionWorkItem = nil
+                guard self.selectedIndex != nil, self.hoveredIndex == nil else { return }
                 self.selectedIndex = nil
                 self.updatePopover()
             }
@@ -269,6 +283,8 @@ extension EdgeDockController {
             cancelPendingDeselection()
             if newIndex != selectedIndex {
                 scheduleSelection(newIndex)
+            } else {
+                cancelPendingSelection()
             }
         } else {
             cancelPendingSelection()

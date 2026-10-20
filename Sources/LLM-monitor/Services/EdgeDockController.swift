@@ -188,6 +188,8 @@ final class EdgeDockController: ObservableObject {
     var collapseWorkItem: DispatchWorkItem?
     /// 挂起的「展开某行详情」任务，见 `scheduleSelection`。
     var pendingSelectionWorkItem: DispatchWorkItem?
+    /// 挂起中的目标 provider 行下标，防高频轮询防抖无限推迟。
+    var pendingSelectionIndex: Int?
     /// 挂起的「收起详情」任务，见 `scheduleDeselection`。
     var pendingDeselectionWorkItem: DispatchWorkItem?
     /// 形态过渡进行中标记 + 到期解除任务：期间标准过渡（刷新广播等）不得碰

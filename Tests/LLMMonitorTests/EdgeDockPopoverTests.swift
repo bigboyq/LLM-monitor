@@ -323,4 +323,74 @@ final class EdgeDockPopoverTests: EdgeDockTestCase {
         controller.updatePopover()
         XCTAssertNil(controller.popoverPanel, "selectedIndex 为 nil 时 updatePopover 必须调用 hidePopover 销毁面板")
     }
+
+    // MARK: - 高频轮询下的选择展开与防饿死（固定 deadline 机制）
+
+    @MainActor
+    func testScheduleSelectionMaintainsFixedDeadlineToPreventStarvationUnderHighFrequencyPoll() {
+        let controller = EdgeDockController.shared
+        controller.cancelPendingSelection()
+        controller.selectedIndex = nil
+        controller.hoveredIndex = 1
+
+        // 模拟 0.08s（或更高频的 20ms）高频 probeMouse 巡检：
+        // 在 0.15s 到期前连续多次触发相同 index 的 scheduleSelection
+        controller.scheduleSelection(1)
+        let firstWorkItem = controller.pendingSelectionWorkItem
+        XCTAssertNotNil(firstWorkItem, "首次调度应创建 pendingSelectionWorkItem")
+        XCTAssertEqual(controller.pendingSelectionIndex, 1)
+
+        // 高频重复调用同 index
+        for _ in 0..<5 {
+            controller.scheduleSelection(1)
+            XCTAssertIdentical(
+                controller.pendingSelectionWorkItem,
+                firstWorkItem,
+                "相同 index 的重复调度不得取消重排原有 workItem（固定 deadline），否则任务会被无限饿死"
+            )
+        }
+
+        // 等待 hoverOpenDelay (0.15s) 到期触发
+        let exp = expectation(description: "等待展开任务触发")
+        DispatchQueue.main.asyncAfter(deadline: .now() + EdgeDockController.hoverOpenDelay + 0.05) {
+            XCTAssertEqual(controller.selectedIndex, 1, "到期后 selectedIndex 应被成功赋值")
+            XCTAssertNil(controller.pendingSelectionWorkItem, "执行完毕后 workItem 应复位为 nil")
+            XCTAssertNil(controller.pendingSelectionIndex, "执行完毕后 pendingSelectionIndex 应复位为 nil")
+            exp.fulfill()
+        }
+        wait(for: [exp], timeout: 1.0)
+
+        // 清理状态
+        controller.cancelPendingSelection()
+        controller.selectedIndex = nil
+        controller.hoveredIndex = nil
+        controller.hidePopover()
+    }
+
+    @MainActor
+    func testScheduleSelectionResetsTimerWhenTargetIndexChanges() {
+        let controller = EdgeDockController.shared
+        controller.cancelPendingSelection()
+        controller.selectedIndex = nil
+        controller.hoveredIndex = 1
+
+        controller.scheduleSelection(1)
+        let item1 = controller.pendingSelectionWorkItem
+        XCTAssertNotNil(item1)
+        XCTAssertEqual(controller.pendingSelectionIndex, 1)
+
+        // 切换目标至 index 2（扫过不同 provider 圆）
+        controller.hoveredIndex = 2
+        controller.scheduleSelection(2)
+        let item2 = controller.pendingSelectionWorkItem
+        XCTAssertNotNil(item2)
+        XCTAssertFalse(item1 === item2, "换行时应取消上一行的任务并重新计时")
+        XCTAssertTrue(item1?.isCancelled == true, "旧任务必须被取消")
+        XCTAssertEqual(controller.pendingSelectionIndex, 2)
+
+        // 清理
+        controller.cancelPendingSelection()
+        controller.selectedIndex = nil
+        controller.hoveredIndex = nil
+    }
 }
