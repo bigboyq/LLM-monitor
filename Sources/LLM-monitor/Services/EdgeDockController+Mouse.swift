@@ -179,6 +179,11 @@ extension EdgeDockController {
         }
         dragOffset = nil
         applyRuntimeConfig { $0.offset = offset }
+        // 跨屏拖拽后目标屏变了，而全屏判定还停在**按下那块屏**的值——拖拽
+        // 本身不触发激活 / Space 切换，没人会来刷新它。先重判（可能翻转并
+        // 各自 reconcile 一次）再落位，否则"从全屏屏拖到桌面屏"会停在物理
+        // 边缘、与系统 Dock 重合，或反向悬空一条预留，直到下一次无关事件。
+        evaluateFullscreen()
         reconcile(animated: true)
         persistConfig()
     }

@@ -85,6 +85,46 @@ final class EdgeDockFullscreenTests: EdgeDockTestCase {
         )
     }
 
+    // MARK: - 多屏各自判定（拖拽吸附按屏选基准的信号源）
+
+    /// 一次窗口列表出的多屏判定必须**逐屏独立**：副屏全屏不把主屏也判成全屏。
+    /// 这正是拖拽吸附的信号源——从全屏副屏把 dock 拖到桌面主屏时，主屏的基准
+    /// 必须是 visibleFrame（避开系统 Dock），否则先闪到物理边缘、松手才弹回。
+    func testVerdictsArePerScreen() {
+        // 主屏 (0,0,1920,1080) 桌面；副屏在左侧 (-1920,0,1920,1080) 全屏。
+        let primaryFrame = CGRect(x: 0, y: 0, width: 1920, height: 1080)
+        let secondaryFrame = CGRect(x: -1920, y: 0, width: 1920, height: 1080)
+        let entries = [
+            window(777, secondaryFrame), // 副屏的全屏窗口
+            window(778, CGRect(x: 100, y: 100, width: 400, height: 300)), // 主屏普通小窗
+        ]
+        let verdicts = FullscreenProbe.verdicts(
+            among: [(displayID: 1, frame: primaryFrame), (displayID: 2, frame: secondaryFrame)],
+            entries: entries,
+            primaryScreenHeight: 1080,
+            ownProcessIdentifier: Self.probeOwnPID
+        )
+        XCTAssertEqual(verdicts[1], false, "主屏当前 Space 是桌面，判非全屏")
+        XCTAssertEqual(verdicts[2], true, "副屏当前 Space 有盖满窗口且无桌面装饰，判全屏")
+    }
+
+    /// 两块屏各自都有盖满窗口时各自为真——判定不共享、不互相压制。
+    func testVerdictsWhenBothScreensAreFullscreen() {
+        let primaryFrame = CGRect(x: 0, y: 0, width: 1920, height: 1080)
+        let secondaryFrame = CGRect(x: -1920, y: 0, width: 1920, height: 1080)
+        let verdicts = FullscreenProbe.verdicts(
+            among: [(displayID: 1, frame: primaryFrame), (displayID: 2, frame: secondaryFrame)],
+            entries: [
+                window(777, primaryFrame),
+                window(778, secondaryFrame),
+            ],
+            primaryScreenHeight: 1080,
+            ownProcessIdentifier: Self.probeOwnPID
+        )
+        XCTAssertEqual(verdicts[1], true)
+        XCTAssertEqual(verdicts[2], true)
+    }
+
     /// 判据必须**精确等于** `kCGDesktopIconWindowLevel`。桌面那一带上还有窗口服务器
     /// 与 WindowManager 的常驻窗口（壁纸后板、Space 切换层等），全屏时它们照样在；
     /// 一旦放宽成"层 <= 桌面图标层"，真全屏就会被判成普通 Space（漏判，dock 留在

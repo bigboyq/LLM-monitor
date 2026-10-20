@@ -54,16 +54,22 @@ extension EdgeDockController {
 
     /// 拖拽开始时选好一次全部屏的真实可视区（`dragFrameByDisplayID`）。
     ///
-    /// 全屏判定取的是 mousedown 那一刻的 `isFullscreenSpace`：拖拽是秒级动作，
-    /// 期间 Space 形态不会变（变也会有 spaceDidChange 驱动 reconcile 兜底）。
-    /// 挂在 `.leftMouseDown` 上调用。
+    /// 全屏判定**按屏各自**出（`FullscreenProbe.fullscreenVerdicts`，一次窗口
+    /// 列表共享）：副屏在全屏里时主屏仍是非全屏，拖过去必须落 visibleFrame——
+    /// 否则会先闪到物理边缘、与系统 Dock 重合，松手才弹回。列表读取失败按
+    /// 非全屏回落（控制器现值兜底）。挂在 `.leftMouseDown` 上调用。
     func primeDragFrames() {
+        let screens = NSScreen.screens
+        let verdicts = FullscreenProbe.fullscreenVerdicts(
+            for: screens,
+            excludingProcessIdentifier: ProcessInfo.processInfo.processIdentifier
+        )
         var frames: [CGDirectDisplayID: CGRect] = [:]
-        for screen in NSScreen.screens {
+        for screen in screens {
             guard let id = EdgeDockDisplay.displayID(of: screen) else { continue }
             frames[id] = ScreenChromeProbe.effectiveVisibleFrame(
                 on: screen,
-                isFullscreenSpace: isFullscreenSpace
+                isFullscreenSpace: verdicts[id] ?? isFullscreenSpace
             )
         }
         dragFrameByDisplayID = frames

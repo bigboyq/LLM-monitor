@@ -150,6 +150,57 @@ enum FullscreenProbe {
         )
     }
 
+    /// 一次窗口列表，对**多块屏各自**判定"当前 Space 是否全屏"。
+    ///
+    /// 拖拽 mousedown 要给每块屏各选一个吸附基准，而全屏判定是**按屏**的——
+    /// 用单屏接口循环会对每块屏重复拉一遍窗口列表，这里一次遍历共享。
+    /// 薄 IO：列表读取失败返回空表（fail-open，调用方按非全屏回落 visibleFrame）。
+    static func fullscreenVerdicts(
+        for screens: [NSScreen],
+        excludingProcessIdentifier ownProcessIdentifier: pid_t
+    ) -> [CGDirectDisplayID: Bool] {
+        let options: CGWindowListOption = [.optionOnScreenOnly]
+        guard let raw = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
+            return [:]
+        }
+        let entries = raw.compactMap { item -> WindowEntry? in
+            guard let ownerPID = item[kCGWindowOwnerPID as String] as? pid_t,
+                  let layer = item[kCGWindowLayer as String] as? Int,
+                  let bounds = item[kCGWindowBounds as String] as? [String: Any],
+                  let rect = CGRect(dictionaryRepresentation: bounds as CFDictionary)
+            else { return nil }
+            return WindowEntry(ownerPID: ownerPID, layer: layer, bounds: rect)
+        }
+        return verdicts(
+            among: screens.compactMap { screen in
+                EdgeDockDisplay.displayID(of: screen).map { (displayID: $0, frame: screen.frame) }
+            },
+            entries: entries,
+            primaryScreenHeight: NSScreen.screens.first?.frame.height ?? 0,
+            ownProcessIdentifier: ownProcessIdentifier
+        )
+    }
+
+    /// 纯核心：多屏判定。与 `containsFullscreenWindow` 同一套判据，逐屏独立——
+    /// 副屏的全屏不改变主屏"当前 Space 非全屏"的事实。
+    static func verdicts(
+        among screens: [(displayID: CGDirectDisplayID, frame: CGRect)],
+        entries: [WindowEntry],
+        primaryScreenHeight: CGFloat,
+        ownProcessIdentifier: pid_t
+    ) -> [CGDirectDisplayID: Bool] {
+        var result: [CGDirectDisplayID: Bool] = [:]
+        for screen in screens {
+            result[screen.displayID] = containsFullscreenWindow(
+                among: entries,
+                screenFrame: screen.frame,
+                primaryScreenHeight: primaryScreenHeight,
+                ownProcessIdentifier: ownProcessIdentifier
+            )
+        }
+        return result
+    }
+
     /// 判定明细，供日志定位"为什么判成/没判成全屏"。
     ///
     /// 只在判定**翻转**时被读——常驻开销与 `isAnyFullscreenWindow` 同阶
