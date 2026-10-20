@@ -427,4 +427,20 @@ final class EdgeDockFullscreenTests: EdgeDockTestCase {
             "evaluateFullscreen 必须主动同步真实菜单栏状态，消除过期状态栏缓存锁死"
         )
     }
+
+    func testMultiWindowBySamePIDUnionDetectedAsFullscreen() {
+        let screen = CGRect(x: 0, y: 0, width: 1512, height: 982)
+        // 模拟 Chrome 全屏：拆分为工具栏窗口 (0, 33, 1512, 122) 与 网页内容视图 (0, 155, 1512, 827)
+        let chromePID: pid_t = 1955
+        let toolbar = FullscreenProbe.WindowEntry(ownerPID: chromePID, layer: 0, bounds: CGRect(x: 0, y: 33, width: 1512, height: 122))
+        let webContent = FullscreenProbe.WindowEntry(ownerPID: chromePID, layer: 0, bounds: CGRect(x: 0, y: 155, width: 1512, height: 827))
+
+        let isFs = FullscreenProbe.containsFullscreenWindow(
+            among: [toolbar, webContent],
+            screenFrame: screen,
+            primaryScreenHeight: 982,
+            ownProcessIdentifier: 9999
+        )
+        XCTAssertTrue(isFs, "拆分为工具栏与渲染视图的同 PID 组合窗口必须准确识别为全屏")
+    }
 }

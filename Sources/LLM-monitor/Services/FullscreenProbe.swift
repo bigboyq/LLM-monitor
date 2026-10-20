@@ -100,12 +100,29 @@ enum FullscreenProbe {
         let screenRect = cgRect(fromAppKitRect: screenFrame, primaryScreenHeight: primaryScreenHeight)
         // 桌面装饰还在 = 普通 Space，铺满的窗口只是被缩放到 visibleFrame 的大窗口。
         guard !hasDesktopChrome(among: entries, screenRect: screenRect) else { return false }
-        return entries.contains { entry in
-            guard entry.ownerPID != ownProcessIdentifier else { return false }
+
+        // 1. 单窗口覆盖判定
+        for entry in entries {
+            guard entry.ownerPID != ownProcessIdentifier else { continue }
             // 只看普通层级窗口：菜单 / tooltip / 阴影层铺满屏幕不代表全屏。
-            guard entry.layer == 0 else { return false }
-            return covers(entry.bounds, screenRect)
+            guard entry.layer == 0 else { continue }
+            if covers(entry.bounds, screenRect) {
+                return true
+            }
         }
+
+        // 2. 同 PID 窗口并集判定（针对 Chrome / Electron 等将全屏拆分为工具栏与渲染内容窗口的应用）
+        let validEntries = entries.filter { $0.layer == 0 && $0.ownerPID != ownProcessIdentifier }
+        let byPID = Dictionary(grouping: validEntries, by: \.ownerPID)
+        for (_, pidEntries) in byPID {
+            guard pidEntries.count > 1 else { continue }
+            let unionBounds = pidEntries.reduce(CGRect.null) { $0.union($1.bounds) }
+            if covers(unionBounds, screenRect) {
+                return true
+            }
+        }
+
+        return false
     }
 
     /// 这块屏幕上是否还画着桌面装饰。
@@ -253,8 +270,8 @@ enum FullscreenProbe {
     }
 
     /// 应用窗口是否铺满屏幕。
-    /// 吸收 2pt 边框容差，并支持配备刘海（Notch）的 MacBook 全屏应用避让刘海（32~44pt）的真实场景。
-    static func covers(_ rect: CGRect, _ screenRect: CGRect, notchTolerance: CGFloat = 44) -> Bool {
+    /// 吸收 2pt 边框容差，并支持配备刘海（Notch）的 MacBook 及全屏避让顶栏工具条（32~160pt）的应用场景。
+    static func covers(_ rect: CGRect, _ screenRect: CGRect, notchTolerance: CGFloat = 160) -> Bool {
         if coversStrictly(rect, screenRect) {
             return true
         }

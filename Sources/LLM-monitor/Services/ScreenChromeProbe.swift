@@ -35,6 +35,10 @@ enum ScreenChromeProbe {
         static let zero = Insets(top: 0, bottom: 0, left: 0, right: 0)
     }
 
+    /// 系统 Dock 的浮动毛玻璃外壳与通知未读红点（Badge）视觉高度通常超出 visibleFrame 扣除量，
+    /// 增加 8pt 的安全吸附呼吸区，确保在窗口模式停靠在 Dock 上方时紧密贴合且不与 Dock 背景/角标穿模重叠。
+    static let dockClearancePadding: CGFloat = 8
+
     /// 计算给定屏幕条件下的四边有效避让。
     /// - Parameters:
     ///   - screenFrame: 物理屏幕区域（AppKit 坐标系）
@@ -73,9 +77,9 @@ enum ScreenChromeProbe {
         let staticLeft = max(visibleFrame.minX - screenFrame.minX, 0)
         let staticRight = max(screenFrame.maxX - visibleFrame.maxX, 0)
 
-        let bottom = keepDockClearance ? staticBottom : 0
-        let left = keepDockClearance ? staticLeft : 0
-        let right = keepDockClearance ? staticRight : 0
+        let bottom = (keepDockClearance && staticBottom > 0) ? (staticBottom + dockClearancePadding) : 0
+        let left = (keepDockClearance && staticLeft > 0) ? (staticLeft + dockClearancePadding) : 0
+        let right = (keepDockClearance && staticRight > 0) ? (staticRight + dockClearancePadding) : 0
 
         return Insets(top: top, bottom: bottom, left: left, right: right)
     }
