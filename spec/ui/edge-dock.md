@@ -1179,8 +1179,11 @@ from the physical edge. `ScreenChromeProbe.effectiveVisibleFrame` is the single 
 consumers read instead — `reconcile`'s snap, `updatePopover`'s clamps, and the drag
 pipeline (probed **once at mouse-down** into `dragFrameByDisplayID`, keyed by display id,
 beside `dragEntryCount`'s same precedent, because 60–120 Hz events must not pay a probe
-each). The `EdgeDockGeometry` functions themselves are untouched: they always took a
-rectangle, so only the producers changed.
+each; the verdicts come from `FullscreenProbe.fullscreenVerdicts`, which judges **each
+screen independently** off one shared window-list walk — the fullscreen secondary display
+must not drag the primary's baseline to the physical edge with it). The `EdgeDockGeometry`
+functions themselves are untouched: they always took a rectangle, so only the producers
+changed.
 
 The rule is one branch on **Space shape**: fullscreen Space (the `FullscreenProbe` verdict
 the controller already holds) → `screen.frame`, because the system guarantees the menu bar
@@ -1190,6 +1193,13 @@ per-side avoidance for a system Dock parked on the left or right, which AppKit a
 computes. If the chosen rectangle is degenerate (the headless `NSScreen()` fallback), the
 probe returns the other source; both degenerate yields `.zero`, which
 `EdgeDockGeometry.frame` already guards.
+
+That verdict is **per screen**, and a cross-display drag changes which screen it applies
+to — dragging itself triggers no app activation or Space change, so nothing else would
+refresh it. `finishPressOrDrag` therefore re-runs `evaluateFullscreen()` before the final
+snap: releasing on the other display re-probes against the new target screen first, or the
+dock would sit on the physical edge over the system Dock (or floating a reservation below
+the top) until the next unrelated event re-probed.
 
 A window-list detour was tried first and falsified on 2026-10 (macOS 26): the menu bar is
 **not exposed as an independent window** at all (the level-24 list is empty on a machine
@@ -1224,4 +1234,4 @@ default has to preserve it — defaulting to off would put a dock inside every f
 window for every existing user. Because the setting can be flipped while the user is
 already fullscreen, a policy change re-probes instead of reusing the cached verdict.
 
-> 核对基线：2026-10-20 · 代码 d82fce0
+> 核对基线：2026-10-20 · 代码 ef10e09
