@@ -115,7 +115,7 @@ enum FullscreenProbe {
     /// 不会因此多藏一次 dock。
     private static func hasDesktopChrome(among entries: [WindowEntry], screenRect: CGRect) -> Bool {
         entries.contains { entry in
-            entry.layer == desktopChromeLayer && covers(entry.bounds, screenRect)
+            entry.layer == desktopChromeLayer && coversStrictly(entry.bounds, screenRect)
         }
     }
 
@@ -255,7 +255,23 @@ enum FullscreenProbe {
         return "屏=\(screen.localizedName) 盖满候选=[\(cover)] 桌面装饰=[\(chromeText)]"
     }
 
-    private static func covers(_ rect: CGRect, _ screenRect: CGRect) -> Bool {
+    /// 桌面装饰是否铺满屏幕（必须严格全屏覆盖）。
+    private static func coversStrictly(_ rect: CGRect, _ screenRect: CGRect) -> Bool {
         rect.insetBy(dx: -coverageTolerance, dy: -coverageTolerance).contains(screenRect)
+    }
+
+    /// 应用窗口是否铺满屏幕。
+    /// 吸收 2pt 边框容差，并支持配备刘海（Notch）的 MacBook 全屏应用避让刘海（32~44pt）的真实场景。
+    static func covers(_ rect: CGRect, _ screenRect: CGRect, notchTolerance: CGFloat = 44) -> Bool {
+        if coversStrictly(rect, screenRect) {
+            return true
+        }
+        // 刘海屏避让模式：横向铺满、垂直贴底、顶端延伸至刘海区且高度覆盖绝大部分屏幕
+        let widthMatches = abs(rect.width - screenRect.width) <= coverageTolerance * 2
+            && abs(rect.minX - screenRect.minX) <= coverageTolerance * 2
+        let bottomMatches = abs(rect.maxY - screenRect.maxY) <= coverageTolerance * 2
+        let topNearNotch = rect.minY <= screenRect.minY + notchTolerance + coverageTolerance
+        let heightCovers = rect.height >= screenRect.height - notchTolerance - coverageTolerance
+        return widthMatches && bottomMatches && topNearNotch && heightCovers
     }
 }

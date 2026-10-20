@@ -231,6 +231,11 @@ extension EdgeDockController {
     private final class PopoverPanel: NSPanel {
         override var canBecomeKey: Bool { false }
         override var canBecomeMain: Bool { false }
+
+        /// 同 EdgeDockPanel：避免 AppKit 默认行为按过期的 visibleFrame 将浮层下压。
+        override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
+            frameRect
+        }
     }
 
     private final class PopoverHostingView<Content: View>: NSHostingView<Content> {

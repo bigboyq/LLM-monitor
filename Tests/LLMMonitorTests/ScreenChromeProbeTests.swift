@@ -20,12 +20,26 @@ final class ScreenChromeProbeTests: EdgeDockTestCase {
         )
     }
 
-    // MARK: - Space 形态选边
+    // MARK: - Space 形态与四边解耦选边
 
-    /// 全屏 Space：菜单栏与系统 Dock 被系统保证隐藏，visibleFrame 的预留是
-    /// 假的 → 必须贴物理屏幕边缘（经典 bug：贴上边的 dock 悬空一条菜单栏）。
-    func testFullscreenSpaceUsesThePhysicalScreenFrame() {
-        XCTAssertEqual(effective(isFullscreenSpace: true), screen)
+    /// 全屏模式：状态栏不出现，顶边必须贴齐物理屏幕上边缘（消除 25pt 悬空）；
+    /// 同时严格保持对 Dock 的避让（60pt），底边不与 Dock 重叠。
+    func testFullscreenSpaceUsesTopEdgeWhilePreservingDockClearance() {
+        let expected = CGRect(x: 0, y: 60, width: 1920, height: 1020)
+        XCTAssertEqual(effective(isFullscreenSpace: true), expected)
+        XCTAssertEqual(effective(isFullscreenSpace: true).maxY, screen.maxY, "顶边吸附物理上沿")
+        XCTAssertEqual(effective(isFullscreenSpace: true).minY, 60, "底边保留 Dock 避让，不与 Dock 重叠")
+    }
+
+    /// 在无 Dock 的屏幕（如副屏）上全屏：顶边与底边均贴齐物理屏幕。
+    func testFullscreenSpaceWithoutDockUsesEntirePhysicalScreen() {
+        let noDockVisible = CGRect(x: 0, y: 0, width: 1920, height: 1055) // 仅顶部 25pt 菜单栏，无底部 Dock
+        let result = ScreenChromeProbe.effectiveVisibleFrame(
+            screenFrame: screen,
+            visibleFrame: noDockVisible,
+            isFullscreenSpace: true
+        )
+        XCTAssertEqual(result, screen, "无 Dock 且全屏时完全贴合物理屏幕")
     }
 
     /// 非全屏：visibleFrame 的预留此刻真实（菜单栏/Dock 在屏，侧边 Dock 的
@@ -33,6 +47,42 @@ final class ScreenChromeProbeTests: EdgeDockTestCase {
     func testNonFullscreenKeepsTheVisibleFrameReservation() {
         XCTAssertEqual(effective(isFullscreenSpace: false), visible)
         XCTAssertNotEqual(effective(isFullscreenSpace: false), screen)
+    }
+
+    // MARK: - Dock 位于左侧与右侧的避让测试
+
+    /// Dock 在左侧：悬浮窗无论全屏与否都避让左侧 Dock，全屏时顶边贴物理顶边。
+    func testDockOnLeftEdgeClearance() {
+        let dockWidth: CGFloat = 70
+        let leftDockVisible = CGRect(x: dockWidth, y: 0, width: 1920 - dockWidth, height: 1055)
+        let nonFs = ScreenChromeProbe.effectiveVisibleFrame(
+            screenFrame: screen,
+            visibleFrame: leftDockVisible,
+            isFullscreenSpace: false
+        )
+        XCTAssertEqual(nonFs.minX, dockWidth, "非全屏避让左侧 Dock")
+        XCTAssertEqual(nonFs.maxY, 1055, "非全屏预留顶部状态栏")
+
+        let fs = ScreenChromeProbe.effectiveVisibleFrame(
+            screenFrame: screen,
+            visibleFrame: leftDockVisible,
+            isFullscreenSpace: true
+        )
+        XCTAssertEqual(fs.minX, dockWidth, "全屏时仍避让左侧 Dock，不重叠")
+        XCTAssertEqual(fs.maxY, screen.maxY, "全屏时顶边吸附物理上沿")
+    }
+
+    /// Dock 在右侧：悬浮窗无论全屏与否都避让右侧 Dock，全屏时顶边贴物理顶边。
+    func testDockOnRightEdgeClearance() {
+        let dockWidth: CGFloat = 80
+        let rightDockVisible = CGRect(x: 0, y: 0, width: 1920 - dockWidth, height: 1055)
+        let fs = ScreenChromeProbe.effectiveVisibleFrame(
+            screenFrame: screen,
+            visibleFrame: rightDockVisible,
+            isFullscreenSpace: true
+        )
+        XCTAssertEqual(fs.maxX, screen.maxX - dockWidth, "全屏时避让右侧 Dock，不重叠")
+        XCTAssertEqual(fs.maxY, screen.maxY, "全屏时顶边吸附物理上沿")
     }
 
     // MARK: - fail-open：选中来源退化时回退另一个
@@ -99,5 +149,56 @@ final class ScreenChromeProbeTests: EdgeDockTestCase {
         XCTAssertEqual(bottom.minY, visible.minY, accuracy: 0.001)
         XCTAssertEqual(bottom.minY, 60, accuracy: 0.001)
         XCTAssertTrue(visible.contains(bottom))
+    }
+
+    // MARK: - 状态栏可见性判定与四边 Insets
+
+    func testEffectiveInsetsCalculation() {
+        let insets = ScreenChromeProbe.effectiveInsets(
+            screenFrame: screen,
+            visibleFrame: visible, // top: 25, bottom: 60
+            isMenuBarVisible: false,
+            keepDockClearance: true
+        )
+        XCTAssertEqual(insets.top, 0, "状态栏不可见时 top inset 为 0")
+        XCTAssertEqual(insets.bottom, 60, "底边保持 60pt Dock 避让")
+        XCTAssertEqual(insets.left, 0)
+        XCTAssertEqual(insets.right, 0)
+
+        let visibleInsets = ScreenChromeProbe.effectiveInsets(
+            screenFrame: screen,
+            visibleFrame: visible,
+            isMenuBarVisible: true,
+            keepDockClearance: true
+        )
+        XCTAssertEqual(visibleInsets.top, 25, "状态栏可见时预留 25pt")
+        XCTAssertEqual(visibleInsets.bottom, 60)
+    }
+
+    func testIsPrimaryScreen() {
+        let primary = NSScreen.screens.first ?? NSScreen()
+        XCTAssertTrue(ScreenChromeProbe.isPrimaryScreen(primary))
+    }
+
+    func testHasMenuBarWindowDetection() {
+        let mainMenuLayer = Int(CGWindowLevelForKey(.mainMenuWindow))
+        let primaryScreen = NSScreen.screens.first ?? NSScreen()
+        
+        // 主屏菜单栏窗口 (0, 0, 1512, 33)
+        let primaryMenu = FullscreenProbe.WindowEntry(
+            ownerPID: 420,
+            layer: mainMenuLayer,
+            bounds: CGRect(x: 0, y: 0, width: 1512, height: 33)
+        )
+        // 副屏没有菜单栏
+        let secondaryScreen = NSScreen.screens.count > 1 ? NSScreen.screens[1] : NSScreen()
+
+        let hasPrimary = ScreenChromeProbe.hasMenuBarWindow(on: primaryScreen, customEntries: [primaryMenu])
+        XCTAssertEqual(hasPrimary, true, "主屏有横跨自身的菜单栏窗口")
+
+        if NSScreen.screens.count > 1 {
+            let hasSecondary = ScreenChromeProbe.hasMenuBarWindow(on: secondaryScreen, customEntries: [primaryMenu])
+            XCTAssertEqual(hasSecondary, false, "副屏区间未覆盖该菜单栏窗口，判定无菜单栏")
+        }
     }
 }

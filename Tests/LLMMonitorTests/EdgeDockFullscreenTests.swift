@@ -48,6 +48,24 @@ final class EdgeDockFullscreenTests: EdgeDockTestCase {
         XCTAssertFalse(probe([window(777, maximized)]))
     }
 
+    /// 配备刘海（Notch）的 MacBook 上（如 1512x982，刘海占用 32~44pt），
+    /// 全屏应用在无桌面装饰的全屏 Space 下避让刘海（从 y=32 延伸到底端 982），
+    /// 必须被准确识别为全屏窗口，不能因为顶端这 32pt 而漏判。
+    func testNotchScreenFullscreenWindowIsDetected() {
+        let notchScreen = CGRect(x: 0, y: 0, width: 1512, height: 982)
+        // 全屏窗口避开刘海 32pt，铺满其余区域 (0, 32, 1512, 950)
+        let notchFullscreenWindow = CGRect(x: 0, y: 32, width: 1512, height: 950)
+        XCTAssertTrue(
+            FullscreenProbe.containsFullscreenWindow(
+                among: [window(777, notchFullscreenWindow)],
+                screenFrame: notchScreen,
+                primaryScreenHeight: 982,
+                ownProcessIdentifier: Self.probeOwnPID
+            ),
+            "刘海屏全屏窗口必须被准确识别，不能漏判"
+        )
+    }
+
     // MARK: - 全屏判定：桌面装饰区分「真全屏」与「缩放」
 
     /// 单独那条覆盖判据挡不住的误判：菜单栏和 Dock 都设成自动隐藏时

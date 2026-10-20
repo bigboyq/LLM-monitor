@@ -9,10 +9,26 @@ import SwiftUI
 extension EdgeDockController {
     // MARK: - 窗口
 
+    private final class EdgeDockPanel: NSPanel {
+        override var canBecomeKey: Bool { false }
+        override var canBecomeMain: Bool { false }
+
+        /// 防止 AppKit 默认实现把窗口限制在 `screen.visibleFrame` 内。
+        ///
+        /// 系统 `visibleFrame` 在全屏空间或副屏（无论有无菜单栏）上，通常会静态扣除顶部
+        /// 菜单栏高度（30pt 左右）。若走默认 `constrainFrameRect`，AppKit 会在 `setFrame`
+        /// 时强行把贴在上边缘的窗口下压 30pt，导致悬浮在半空中。
+        /// 悬浮窗贴边与状态栏/Dock 避让逻辑完全由 `ScreenChromeProbe` 精确计算并维护，
+        /// 故此处直接返回目标矩形，不让 AppKit 自作主张裁剪。
+        override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
+            frameRect
+        }
+    }
+
     private func ensurePanel() {
         guard panel == nil, let state, let configStore else { return }
 
-        let panel = NSPanel(
+        let panel = EdgeDockPanel(
             contentRect: .zero,
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
