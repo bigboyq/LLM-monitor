@@ -35,19 +35,13 @@ extension EdgeDockController {
     private static let fullscreenRetryLadder: [TimeInterval] = [0.25, 0.6, 1.1, 1.8, 2.8]
 
     func scheduleFullscreenRechecks() {
-        cancelFullscreenRechecks()
-        fullscreenRetryWorkItems = Self.fullscreenRetryLadder.map { delay in
-            let work = DispatchWorkItem { [weak self] in
-                self?.evaluateFullscreen()
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
-            return work
+        fullscreenRecheckTask.schedule(ladder: Self.fullscreenRetryLadder) { [weak self] in
+            self?.evaluateFullscreen()
         }
     }
 
     func cancelFullscreenRechecks() {
-        fullscreenRetryWorkItems.forEach { $0.cancel() }
-        fullscreenRetryWorkItems.removeAll()
+        fullscreenRecheckTask.cancel()
     }
 
     func evaluateFullscreen() {

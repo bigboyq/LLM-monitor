@@ -183,8 +183,12 @@ final class EdgeDockController: ObservableObject {
     /// 或状态变化（拖动 / 隐藏 / 释放接管）则取消。是**固定 deadline** 而不是
     /// 防抖：巡检定时器每 0.2s 会重复走"还在外面"的分支，防抖式重排会让
     /// deadline 永远被推后、收起永不发生。
-    /// Space 切换后阶梯式补测全屏的挂起任务。见 `scheduleFullscreenRechecks`。
-    var fullscreenRetryWorkItems: [DispatchWorkItem] = []
+    /// Space 切换后阶梯式补测全屏的调度器。见 `scheduleFullscreenRechecks`。
+    let fullscreenRecheckTask = LadderScheduledTask()
+    /// 兼容现有单测对挂起 workItem 的直接状态断言
+    var fullscreenRetryWorkItems: [DispatchWorkItem] {
+        fullscreenRecheckTask.workItems
+    }
     /// 挂起中的延时收起任务，固定 deadline 节流防饿死。见 `scheduleCollapse`。
     let collapseTask = FixedDeadlineTask()
     /// 挂起的「展开某行详情」任务，按行下标固定 deadline 节流防饿死。见 `scheduleSelection`。
@@ -194,7 +198,7 @@ final class EdgeDockController: ObservableObject {
     /// 形态过渡进行中标记 + 到期解除任务：期间标准过渡（刷新广播等）不得碰
     /// 窗口 frame——按动画中间态帧重算并 setFrame 会打断正在播放的窗口动画，
     /// 表现为半途抽一下。
-    var formMorphGuardWorkItem: DispatchWorkItem?
+    let formMorphGuardTask = DebouncedTask()
     var isFormMorphInFlight = false
     /// dock 是否已接管鼠标（`ignoresMouseEvents == false`）。与 `hoveredIndex` 分开：
     /// 鼠标停在 popover 上时不需要再 hover 某个圆，但接管状态必须继续保持。

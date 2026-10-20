@@ -334,23 +334,15 @@ extension EdgeDockController {
 
     /// 形态过渡期间拒绝标准过渡抢窗口 frame；动画结束后自动解除。
     func beginFormMorphGuard() {
-        cancelFormMorphGuard()
         isFormMorphInFlight = true
-        let item = DispatchWorkItem { [weak self] in
-            self?.formMorphGuardWorkItem = nil
+        // +0.05s 余量：SwiftUI 动画的实际结束略晚于名义 duration。
+        formMorphGuardTask.schedule(delay: Self.contentMorphDuration + 0.05) { [weak self] in
             self?.isFormMorphInFlight = false
         }
-        formMorphGuardWorkItem = item
-        // +0.05s 余量：SwiftUI 动画的实际结束略晚于名义 duration。
-        DispatchQueue.main.asyncAfter(
-            deadline: .now() + Self.contentMorphDuration + 0.05,
-            execute: item
-        )
     }
 
     func cancelFormMorphGuard() {
-        formMorphGuardWorkItem?.cancel()
-        formMorphGuardWorkItem = nil
+        formMorphGuardTask.cancel()
         isFormMorphInFlight = false
     }
 

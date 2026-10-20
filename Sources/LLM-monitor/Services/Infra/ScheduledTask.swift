@@ -9,10 +9,11 @@ import Foundation
 /// 若轮询间隔小于延时时间，纯 Debounce 会导致正在等待的 WorkItem 被无限取消重排，
 /// 任务永远无法到期执行（**防抖饿死 / Starvation**）。
 ///
-/// 本模块将三种核心调度语义明确建模为类型：
+/// 本模块将四种核心调度语义明确建模为类型：
 /// 1. `FixedDeadlineTask`：固定截止时间节流（防饿死）。一旦排期，倒计时期间的重复调用被忽略，到期必执行。
 /// 2. `KeyedScheduledTask<Key>`：带目标键的固定截止调度。相同 Key 保持原倒计时防饿死，目标切换时立即重置。
 /// 3. `DebouncedTask`：经典静默防抖。每次调用推迟截止时间，直到完全静默指定时长后才执行一次。
+/// 4. `LadderScheduledTask`：多阶梯重试调度。给定一系列时间间隔，在每个时间点依次执行 action，重排时取消之前全部阶梯。
 
 // MARK: - FixedDeadlineTask
 
@@ -143,5 +144,43 @@ final class DebouncedTask {
     func cancel() {
         workItem?.cancel()
         workItem = nil
+    }
+}
+
+// MARK: - LadderScheduledTask
+
+/// 阶梯重试调度器（Ladder / Multi-delay Retries）
+///
+/// 语义：给定一系列递增延迟阶梯（如 `[0.25, 0.6, 1.1, 1.8, 2.8]`），在每个时间点依次执行 action。
+/// 重新 schedule 时取消之前所有未执行的阶梯。
+///
+/// 典型场景：
+/// - Space 切换后随窗口动画过渡过程的阶梯式补测（如全屏状态探测）
+@MainActor
+final class LadderScheduledTask {
+    private(set) var workItems: [DispatchWorkItem] = []
+
+    var isPending: Bool {
+        !workItems.isEmpty
+    }
+
+    /// 排期阶梯任务：取消先前的所有阶梯，为新的延迟数组生成任务并挂起
+    func schedule(ladder: [TimeInterval], action: @escaping @MainActor () -> Void) {
+        cancel()
+        workItems = ladder.map { delay in
+            let item = DispatchWorkItem {
+                MainActor.assumeIsolated {
+                    action()
+                }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
+            return item
+        }
+    }
+
+    /// 取消当前挂起的所有阶梯并清空
+    func cancel() {
+        workItems.forEach { $0.cancel() }
+        workItems.removeAll()
     }
 }
