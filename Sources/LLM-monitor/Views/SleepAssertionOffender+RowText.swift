@@ -21,13 +21,9 @@ extension SleepAssertionOffender {
         return "\(processName) · PID \(pid) · \(assertionDisplayName) · 已持续 \(Self.formatHeldDuration(duration))"
     }
 
-    /// 时长展示：超过 1 小时为 h:mm:ss，否则 mm:ss。
+    /// 时长展示：超过 1 小时为 h:mm:ss，否则 mm:ss。统一由 `Formatters.formatDigitalDuration` 实现。
     static func formatHeldDuration(_ seconds: TimeInterval) -> String {
-        let total = max(0, Int(seconds.rounded()))
-        if total >= 3600 {
-            return String(format: "%d:%02d:%02d", total / 3600, (total % 3600) / 60, total % 60)
-        }
-        return String(format: "%02d:%02d", total / 60, total % 60)
+        Formatters.formatDigitalDuration(seconds)
     }
 }
 

@@ -34,13 +34,7 @@ struct PeakIndicatorView<Peak: View, OffPeak: View>: View {
 }
 
 /// 紧凑倒计时："2天8小时" / "1小时30分" / "1小时" / "30分"。
-/// GLM / DeepSeek 两个高峰提示行共用，避免两份逐字复制后漂移。
+/// 统一转发至 `Formatters.formatPeakDuration`，保留本方法以兼容调用点。
 func formatPeakDuration(_ seconds: TimeInterval) -> String {
-    let total = max(Int(seconds.rounded()), 0)
-    let days = total / 86_400
-    let hours = (total % 86_400) / 3_600
-    let minutes = (total % 3_600) / 60
-    if days > 0 { return "\(days)天\(hours)小时" }
-    if hours > 0 { return minutes > 0 ? "\(hours)小时\(minutes)分" : "\(hours)小时" }
-    return "\(max(minutes, 1))分"
+    Formatters.formatPeakDuration(seconds)
 }
