@@ -117,9 +117,8 @@ enum ScreenChromeProbe {
 
     /// 针对 `isFullscreenSpace: Bool` 的二元接口（与原有调用点对齐）。
     ///
-    /// - `isFullscreenSpace == true`（全屏模式）：状态栏未出现（顶边吸附物理上沿）；
-    /// - `isFullscreenSpace == false`（非全屏）：按系统静态预留判断状态栏；
-    /// - Dock 保持避让（`keepDockClearance = true`），确保无论在哪种形态下都不与 Dock 重叠。
+    /// - `isFullscreenSpace == true`（全屏模式）：状态栏未出现（顶边吸附物理上沿），且全屏下无常驻 Dock（底/左/右吸附物理屏幕边缘）；
+    /// - `isFullscreenSpace == false`（非全屏窗口模式）：按系统静态预留避让状态栏，且保持对 Dock 的避让，吸附在 Dock 上。
     static func effectiveVisibleFrame(
         screenFrame: CGRect,
         visibleFrame: CGRect,
@@ -129,7 +128,7 @@ enum ScreenChromeProbe {
             screenFrame: screenFrame,
             visibleFrame: visibleFrame,
             isMenuBarVisible: !isFullscreenSpace,
-            keepDockClearance: true
+            keepDockClearance: !isFullscreenSpace
         )
     }
 
@@ -142,7 +141,7 @@ enum ScreenChromeProbe {
             visibleFrame: screen.visibleFrame,
             isMenuBarVisible: state.isVisible,
             menuBarHeight: state.height,
-            keepDockClearance: true
+            keepDockClearance: !isFullscreenSpace
         )
     }
 

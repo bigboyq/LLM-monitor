@@ -49,7 +49,7 @@ extension EdgeDockController {
             visibleFrame: targetScreen.visibleFrame,
             isMenuBarVisible: mbState.isVisible,
             menuBarHeight: mbState.height,
-            keepDockClearance: true
+            keepDockClearance: !isFullscreenSpace
         )
         let (popover, hosting) = ensurePopoverPanel()
         let backdrop = EdgeDockTheme.popoverPadding

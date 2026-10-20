@@ -217,7 +217,7 @@ extension EdgeDockController {
                 visibleFrame: targetScreen.visibleFrame,
                 isMenuBarVisible: mbState.isVisible,
                 menuBarHeight: mbState.height,
-                keepDockClearance: true
+                keepDockClearance: !isFullscreenSpace
             ),
             edge: edge,
             size: size,

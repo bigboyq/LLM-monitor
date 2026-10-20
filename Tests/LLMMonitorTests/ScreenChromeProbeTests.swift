@@ -22,13 +22,11 @@ final class ScreenChromeProbeTests: EdgeDockTestCase {
 
     // MARK: - Space 形态与四边解耦选边
 
-    /// 全屏模式：状态栏不出现，顶边必须贴齐物理屏幕上边缘（消除 25pt 悬空）；
-    /// 同时严格保持对 Dock 的避让（60pt），底边不与 Dock 重叠。
-    func testFullscreenSpaceUsesTopEdgeWhilePreservingDockClearance() {
-        let expected = CGRect(x: 0, y: 60, width: 1920, height: 1020)
-        XCTAssertEqual(effective(isFullscreenSpace: true), expected)
+    /// 全屏模式：无常驻 Dock 也无常驻状态栏，悬浮窗直接贴齐物理屏幕四边缘（消除 Dock/菜单栏悬空）。
+    func testFullscreenSpaceSnapsToPhysicalEdgesWithoutDockClearance() {
+        XCTAssertEqual(effective(isFullscreenSpace: true), screen)
         XCTAssertEqual(effective(isFullscreenSpace: true).maxY, screen.maxY, "顶边吸附物理上沿")
-        XCTAssertEqual(effective(isFullscreenSpace: true).minY, 60, "底边保留 Dock 避让，不与 Dock 重叠")
+        XCTAssertEqual(effective(isFullscreenSpace: true).minY, 0, "全屏页无常驻 Dock，底边直接吸附物理下沿")
     }
 
     /// 在无 Dock 的屏幕（如副屏）上全屏：顶边与底边均贴齐物理屏幕。
@@ -49,9 +47,9 @@ final class ScreenChromeProbeTests: EdgeDockTestCase {
         XCTAssertNotEqual(effective(isFullscreenSpace: false), screen)
     }
 
-    // MARK: - Dock 位于左侧与右侧的避让测试
+    // MARK: - Dock 位于左侧、右侧与底部的避让测试
 
-    /// Dock 在左侧：悬浮窗无论全屏与否都避让左侧 Dock，全屏时顶边贴物理顶边。
+    /// Dock 在左侧：窗口时避让左侧 Dock，吸附在 Dock 上；全屏页无常驻 Dock，吸附在屏幕左物理边。
     func testDockOnLeftEdgeClearance() {
         let dockWidth: CGFloat = 70
         let leftDockVisible = CGRect(x: dockWidth, y: 0, width: 1920 - dockWidth, height: 1055)
@@ -60,7 +58,7 @@ final class ScreenChromeProbeTests: EdgeDockTestCase {
             visibleFrame: leftDockVisible,
             isFullscreenSpace: false
         )
-        XCTAssertEqual(nonFs.minX, dockWidth, "非全屏避让左侧 Dock")
+        XCTAssertEqual(nonFs.minX, dockWidth, "非全屏窗口模式避让左侧 Dock，吸附在 Dock 上")
         XCTAssertEqual(nonFs.maxY, 1055, "非全屏预留顶部状态栏")
 
         let fs = ScreenChromeProbe.effectiveVisibleFrame(
@@ -68,21 +66,47 @@ final class ScreenChromeProbeTests: EdgeDockTestCase {
             visibleFrame: leftDockVisible,
             isFullscreenSpace: true
         )
-        XCTAssertEqual(fs.minX, dockWidth, "全屏时仍避让左侧 Dock，不重叠")
+        XCTAssertEqual(fs.minX, 0, "全屏页无 Dock，直接吸附在屏幕物理左边缘")
         XCTAssertEqual(fs.maxY, screen.maxY, "全屏时顶边吸附物理上沿")
     }
 
-    /// Dock 在右侧：悬浮窗无论全屏与否都避让右侧 Dock，全屏时顶边贴物理顶边。
+    /// Dock 在右侧：窗口时避让右侧 Dock，吸附在 Dock 上；全屏页无常驻 Dock，吸附在屏幕右物理边。
     func testDockOnRightEdgeClearance() {
         let dockWidth: CGFloat = 80
         let rightDockVisible = CGRect(x: 0, y: 0, width: 1920 - dockWidth, height: 1055)
+        let nonFs = ScreenChromeProbe.effectiveVisibleFrame(
+            screenFrame: screen,
+            visibleFrame: rightDockVisible,
+            isFullscreenSpace: false
+        )
+        XCTAssertEqual(nonFs.maxX, screen.maxX - dockWidth, "非全屏窗口模式避让右侧 Dock，吸附在 Dock 上")
+
         let fs = ScreenChromeProbe.effectiveVisibleFrame(
             screenFrame: screen,
             visibleFrame: rightDockVisible,
             isFullscreenSpace: true
         )
-        XCTAssertEqual(fs.maxX, screen.maxX - dockWidth, "全屏时避让右侧 Dock，不重叠")
+        XCTAssertEqual(fs.maxX, screen.maxX, "全屏页无 Dock，直接吸附在屏幕物理右边缘")
         XCTAssertEqual(fs.maxY, screen.maxY, "全屏时顶边吸附物理上沿")
+    }
+
+    /// Dock 在底部：窗口时吸附在底部 Dock 上；全屏页无常驻 Dock，吸附在屏幕底边。
+    func testDockOnBottomEdgeClearance() {
+        let dockHeight: CGFloat = 65
+        let bottomDockVisible = CGRect(x: 0, y: dockHeight, width: 1920, height: 1080 - dockHeight - 25)
+        let nonFs = ScreenChromeProbe.effectiveVisibleFrame(
+            screenFrame: screen,
+            visibleFrame: bottomDockVisible,
+            isFullscreenSpace: false
+        )
+        XCTAssertEqual(nonFs.minY, dockHeight, "非全屏窗口模式吸附在 Dock 上")
+
+        let fs = ScreenChromeProbe.effectiveVisibleFrame(
+            screenFrame: screen,
+            visibleFrame: bottomDockVisible,
+            isFullscreenSpace: true
+        )
+        XCTAssertEqual(fs.minY, 0, "全屏页无 Dock，直接吸附在屏幕物理底边")
     }
 
     // MARK: - fail-open：选中来源退化时回退另一个
