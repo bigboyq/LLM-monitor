@@ -224,6 +224,15 @@ final class EdgeDockController: ObservableObject {
     /// 上一次的显隐判定签名，用于只在"为什么没出现 / 出现在哪"变化时写日志。
     var lastVisibilitySignature = ""
 
+    /// `orderedEntries()` 的计算结果缓存，避免 12.5Hz 鼠标探测及拖拽期间重复计算 provider 聚合健康度与倍率。
+    /// 在状态变更、高峰期边界翻转、配置更新时置 nil 失效。
+    var cachedOrderedEntries: [EdgeDockEntry]?
+
+    /// 清空 `orderedEntries()` 缓存。
+    func invalidateOrderedEntriesCache() {
+        cachedOrderedEntries = nil
+    }
+
     /// 进程级事实：`applicationDidFinishLaunching` 是否已经发过。`teardown()` 不复位
     /// ——它是**进程**的事实，不是本控制器的接线状态；重新 `attach` 时若 launch 早已
     /// 发生，直接进入可用态而不是再等一个永不到来的通知。
@@ -258,6 +267,7 @@ final class EdgeDockController: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 guard let self else { return }
+                self.invalidateOrderedEntriesCache()
                 self.reconcile(animated: true)
                 if self.selectedIndex != nil {
                     self.updatePopover()
@@ -270,6 +280,7 @@ final class EdgeDockController: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 guard let self else { return }
+                self.invalidateOrderedEntriesCache()
                 self.reconcile(animated: true)
                 if self.selectedIndex != nil {
                     self.updatePopover()
@@ -282,6 +293,7 @@ final class EdgeDockController: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] newConfig in
                 guard let self else { return }
+                self.invalidateOrderedEntriesCache()
                 let next = newConfig.effectiveEdgeDockConfig
                 let modeChanged = next.mode != self.config.mode
                 let fullscreenPolicyChanged = next.hideInFullscreen != self.config.hideInFullscreen
@@ -427,6 +439,7 @@ final class EdgeDockController: ObservableObject {
         statusCancellable = nil
         evaluationCancellable = nil
         configCancellable = nil
+        invalidateOrderedEntriesCache()
         hidePopover()
         panel?.orderOut(nil)
         // 断开 `controller → hostingView → rootView → controller` 这个环。单例进程

@@ -471,6 +471,24 @@ extension EdgeDockController {
             return
         }
 
+        // 顶边感应区距离门控：
+        // macOS 只有在鼠标推至屏幕物理顶沿时才会唤出动态菜单栏。
+        // 1. 已有基准且当前状态栏未显示时，若光标距离屏幕顶沿超过 60pt，
+        //    状态栏绝不可能自发唤出，跳过昂贵的跨进程 WindowServer IPC 查询。
+        // 2. 若当前为非全屏且系统已常驻保留菜单栏（系统设置从不自动隐藏），菜单栏恒定可见，亦无需轮询。
+        // （若状态栏当前正处于自动隐藏模式下的可见/退出动画中，则必须保持轮询直到完全收起）
+        let topProximityThreshold: CGFloat = 60.0
+        if let last = lastMenuBarState {
+            if !last.isVisible {
+                let isNearTopEdge = mouse.y >= screen.frame.maxY - topProximityThreshold
+                if !isNearTopEdge {
+                    return
+                }
+            } else if !isFullscreenSpace && (screen.frame.maxY - screen.visibleFrame.maxY) > 1 {
+                return
+            }
+        }
+
         // 1. 物理顶边触碰判定（极速前置触发）：
         // 当光标推至屏幕物理顶沿区域（距顶沿 <= 6pt）时，macOS 必然唤出状态栏。
         // 无需等待 WindowServer 数百毫秒的系统动画滞后，提前 0 延迟避让。

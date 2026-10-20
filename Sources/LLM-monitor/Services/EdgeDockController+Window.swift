@@ -82,12 +82,20 @@ extension EdgeDockController {
     /// **控制器侧的唯一定义**：窗口尺寸、命中下标、popover 取 status 全走这里。
     /// 视图（`EdgeDockContentView`）用同一个 `EdgeDockProjection.entries` 和同一份
     /// 配置算出同样的顺序——两边只要有一处自己排，就会出现"高亮的是 A、弹出的是 B"。
+    ///
+    /// 结果通过 `cachedOrderedEntries` 缓存，仅在状态变化、配置刷新或显式失效时重算，
+    /// 消除 12.5Hz 鼠标高频巡检中的反复开销。
     func orderedEntries() -> [EdgeDockEntry] {
+        if let cached = cachedOrderedEntries {
+            return cached
+        }
         guard let state else { return [] }
-        return EdgeDockProjection.entries(
+        let entries = EdgeDockProjection.entries(
             from: state.statuses,
             preferredIDs: configStore?.config.providerCardOrder
         )
+        cachedOrderedEntries = entries
+        return entries
     }
 
     /// 唯一的布局/显隐收口：算条目 → 决定显隐 → 定尺寸 → 贴边 → 排序。

@@ -11,17 +11,15 @@ actor CodexUsageDetailsCache {
         let details: CodexUsageDetails
     }
 
-    private var entries: [String: Entry] = [:]
-    private var recency: [String] = []
+    private let cache = LRUCache<String, Entry>(capacity: maximumEntryCount)
 
     func value(for codexHome: URL, windowFingerprint: String, sourceFingerprint: String) -> CodexUsageDetails? {
         let key = codexHome.path
-        guard let entry = entries[key],
+        guard let entry = cache.value(forKey: key),
               entry.windowFingerprint == windowFingerprint,
               entry.sourceFingerprint == sourceFingerprint else {
             return nil
         }
-        touch(key)
         return entry.details
     }
 
@@ -32,22 +30,14 @@ actor CodexUsageDetailsCache {
         sourceFingerprint: String
     ) {
         let key = codexHome.path
-        entries[key] = Entry(
-            windowFingerprint: windowFingerprint,
-            sourceFingerprint: sourceFingerprint,
-            details: details
+        cache.setValue(
+            Entry(
+                windowFingerprint: windowFingerprint,
+                sourceFingerprint: sourceFingerprint,
+                details: details
+            ),
+            forKey: key
         )
-        touch(key)
-        while recency.count > Self.maximumEntryCount {
-            entries.removeValue(forKey: recency.removeFirst())
-        }
-    }
-
-    private func touch(_ key: String) {
-        if let index = recency.firstIndex(of: key) {
-            recency.remove(at: index)
-        }
-        recency.append(key)
     }
 }
 
@@ -162,38 +152,26 @@ actor CodexSessionEventCache {
         let reachedEOF: Bool
     }
 
-    private var entries: [String: Entry] = [:]
-    private var recency: [String] = []
+    private let cache = LRUCache<String, Entry>(capacity: 64)
 
     func state(for fileURL: URL, parsingFingerprint: String) -> Entry? {
         let key = fileURL.path
-        guard let entry = entries[key],
+        guard let entry = cache.value(forKey: key),
               entry.parsingFingerprint == parsingFingerprint else {
             return nil
         }
-        touch(key)
         return entry
     }
 
     func store(_ entry: Entry, for fileURL: URL, maximumEntryCount: Int) {
-        let key = fileURL.path
-        entries[key] = entry
-        touch(key)
-        while recency.count > maximumEntryCount {
-            entries.removeValue(forKey: recency.removeFirst())
+        if cache.capacity != maximumEntryCount {
+            cache.capacity = maximumEntryCount
         }
+        cache.setValue(entry, forKey: fileURL.path)
     }
 
     func removeAll(except filePaths: Set<String>) {
-        entries = entries.filter { filePaths.contains($0.key) }
-        recency.removeAll { !filePaths.contains($0) }
-    }
-
-    private func touch(_ key: String) {
-        if let index = recency.firstIndex(of: key) {
-            recency.remove(at: index)
-        }
-        recency.append(key)
+        cache.removeAll(except: filePaths)
     }
 }
 
