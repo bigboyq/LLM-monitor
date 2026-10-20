@@ -1170,42 +1170,44 @@ every rebuild, and it answers "is this window fullscreen" without saying *which 
 fullscreen window on another Space still reports `true`, which would hide the dock on a
 plain desktop.
 
-#### Snapping uses the real visible frame, not `NSScreen.visibleFrame`
+#### Snapping picks between `screen.frame` and `visibleFrame` by Space shape
 
 `NSScreen.visibleFrame` is **static**: it always reserves the menu bar and the system Dock
-whether or not they are on screen right now. In a native fullscreen Space both are hidden,
-so a dock snapped to `visibleFrame` floats a menu-bar / Dock height away from the physical
-edge; with the system Dock on the left or right (a common setup this app does not control),
-the perpendicular anchor sits on the wrong baseline too. Every consumer that used to read
-`visibleFrame` — `reconcile`'s snap, `updatePopover`'s clamps, and the drag pipeline — now
-reads `ScreenChromeProbe.effectiveVisibleFrame(on:)` instead. The `EdgeDockGeometry`
-functions themselves are untouched: they always took a rectangle, so only the producers
-changed.
+whether or not they are on screen right now. In a native fullscreen Space both are hidden
+by the system, so a dock snapped to `visibleFrame` floats a menu-bar / Dock height away
+from the physical edge. `ScreenChromeProbe.effectiveVisibleFrame` is the single entry the
+consumers read instead — `reconcile`'s snap, `updatePopover`'s clamps, and the drag
+pipeline (probed **once at mouse-down** into `dragFrameByDisplayID`, keyed by display id,
+beside `dragEntryCount`'s same precedent, because 60–120 Hz events must not pay a probe
+each). The `EdgeDockGeometry` functions themselves are untouched: they always took a
+rectangle, so only the producers changed.
 
-`ScreenChromeProbe` walks the same `CGWindowListCopyWindowInfo(.optionOnScreenOnly)` list
-as `FullscreenProbe` and subtracts what is *actually on screen* at the public window
-levels — `kCGMainMenuWindowLevel` (menu bar) and `kCGDockWindowLevel` (system Dock) — from
-`screen.frame`. A hidden auto-hide Dock slides off screen and a fullscreen Space has neither
-window, so the occlusion set is simply empty there and the dock snaps to the physical edge;
-fullscreen needs no special case. Shrinking keys on the occlusion's **band shape**, not on
-edge-pinning counts: a menu bar is a horizontal strip (it pins left *and* right), a side
-Dock is a vertical strip (it pins top *and* bottom) — counting pins would misclassify both.
-Square occlusions (a fullscreen window happens to sit on a chrome level) and strips that
-float without pinning any edge are skipped, and a shrink that would collapse the frame
-below a valid rectangle is dropped on its own, keeping earlier shrinks.
+The rule is one branch on **Space shape**: fullscreen Space (the `FullscreenProbe` verdict
+the controller already holds) → `screen.frame`, because the system guarantees the menu bar
+and the Dock are hidden there and the reservation is fiction; non-fullscreen →
+`visibleFrame`, because then the reservation *is* the real occlusion — including the
+per-side avoidance for a system Dock parked on the left or right, which AppKit already
+computes. If the chosen rectangle is degenerate (the headless `NSScreen()` fallback), the
+probe returns the other source; both degenerate yields `.zero`, which
+`EdgeDockGeometry.frame` already guards.
 
-fail-open matches the fullscreen probe's discipline: if the window list cannot be read, or
-no valid rectangle survives, the probe returns `screen.visibleFrame` — the old behaviour —
-rather than placing the window off screen. The probe runs where the consumers already run
-(`reconcile` and `updatePopover` re-probe, both low frequency); the drag pipeline probes
-**once at mouse-down** into `dragFrameByDisplayID` (keyed by display id, beside
-`dragEntryCount`'s same precedent) because 60–120 Hz events must not pay a window-list
-walk each.
+A window-list detour was tried first and falsified on 2026-10 (macOS 26): the menu bar is
+**not exposed as an independent window** at all (the level-24 list is empty on a machine
+whose menu bar is visibly showing), and the system Dock's on-screen window bounds are the
+**whole screen rectangle** (`owner=程序坞 cg=(0,0,1512,982)`) with the icon strip being
+merely its visible part — a band-shape classifier can only skip it, which is exactly how
+the dock ended up overlapping the real Dock. "What chrome is on screen" is answered
+reliably by the Space shape (the fullscreen verdict), not by hunting decoration windows.
+
+Known timing: the fullscreen verdict flips only after `FullscreenProbe` sees a covering
+window, which during the ~1s enter-fullscreen animation lands on the staggered rechecks
+(0.25s+). The dock sits at its pre-fullscreen position for that beat and then snaps —
+bounded, and invisible once `hideInFullscreen` is off and the dock stays put.
 
 One deliberate consequence: the normalized `offset` ratio is now expressed against the
-real visible frame instead of `visibleFrame`, so after upgrading an existing offset lands
-a few pixels to a few dozen pixels from where it used to (still on screen); one drag
-re-anchors it, and the persisted format is unchanged.
+chosen baseline, so after upgrading an existing offset lands a few pixels to a few dozen
+pixels from where it used to (still on screen); one drag re-anchors it, and the persisted
+format is unchanged.
 
 Dragging moves the panel freely (`isMovableByWindowBackground`); on release it snaps
 to the nearest edge and persists `{edge, offset}` through `ConfigStore.applyAndSave`.
@@ -1222,4 +1224,4 @@ default has to preserve it — defaulting to off would put a dock inside every f
 window for every existing user. Because the setting can be flipped while the user is
 already fullscreen, a policy change re-probes instead of reusing the cached verdict.
 
-> 核对基线：2026-10-20 · 代码 142fa66
+> 核对基线：2026-10-20 · 代码 d82fce0
