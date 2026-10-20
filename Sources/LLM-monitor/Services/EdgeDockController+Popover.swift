@@ -39,9 +39,17 @@ extension EdgeDockController {
 
         // 真实可视区（与 dock 常驻定位同源，见 reconcile 处注释）：宽度钳位、
         // 高度帽与 popoverFrame 的屏内钳制都按它算，全屏里浮层才不会同样悬空。
-        let visibleFrame = ScreenChromeProbe.effectiveVisibleFrame(
-            on: Self.targetScreen,
+        let targetScreen = Self.targetScreen
+        let mbState = lastMenuBarState ?? ScreenChromeProbe.menuBarState(
+            on: targetScreen,
             isFullscreenSpace: isFullscreenSpace
+        )
+        let visibleFrame = ScreenChromeProbe.effectiveVisibleFrame(
+            screenFrame: targetScreen.frame,
+            visibleFrame: targetScreen.visibleFrame,
+            isMenuBarVisible: mbState.isVisible,
+            menuBarHeight: mbState.height,
+            keepDockClearance: true
         )
         let (popover, hosting) = ensurePopoverPanel()
         let backdrop = EdgeDockTheme.popoverPadding

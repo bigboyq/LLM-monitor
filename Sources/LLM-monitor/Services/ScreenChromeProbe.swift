@@ -197,9 +197,9 @@ enum ScreenChromeProbe {
                 let overlapMaxX = min(entry.bounds.maxX, screenMaxX)
                 guard (overlapMaxX - overlapMinX) > 100 else { continue }
 
-                let nearTop = entry.bounds.minY >= screenTopCG - 5 && entry.bounds.minY <= screenTopCG + 5
+                let entersTop = entry.bounds.maxY > screenTopCG + 1 && entry.bounds.minY <= screenTopCG + 5
                 let validHeight = entry.bounds.height >= 15
-                if nearTop && validHeight {
+                if entersTop && validHeight {
                     return MenuBarState(isVisible: true, height: entry.bounds.height)
                 }
             }
@@ -221,9 +221,9 @@ enum ScreenChromeProbe {
             let overlapMaxX = min(rect.maxX, screenMaxX)
             guard (overlapMaxX - overlapMinX) > 100 else { continue }
 
-            let nearTop = rect.minY >= screenTopCG - 5 && rect.minY <= screenTopCG + 5
+            let entersTop = rect.maxY > screenTopCG + 1 && rect.minY <= screenTopCG + 5
             let validHeight = rect.height >= 15
-            if nearTop && validHeight {
+            if entersTop && validHeight {
                 return MenuBarState(isVisible: true, height: rect.height)
             }
         }

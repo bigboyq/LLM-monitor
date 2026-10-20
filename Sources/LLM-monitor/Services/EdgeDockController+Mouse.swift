@@ -475,12 +475,24 @@ extension EdgeDockController {
         guard config.edge == .top, !isDragging, !isFormMorphInFlight else { return }
         let screen = Self.targetScreen
 
-        // 若指针不在当前屏幕，且当前状态栏未显示，则系统绝不可能在该屏幕唤出状态栏，直接跳过查询
+        // 若指针不在当前屏幕，且当前状态栏未显示，直接跳过查询
         if !screen.frame.contains(mouse) && lastMenuBarState?.isVisible != true {
             return
         }
 
-        let current = ScreenChromeProbe.menuBarState(on: screen, isFullscreenSpace: isFullscreenSpace)
+        // 1. 物理顶边触碰判定（极速前置触发）：
+        // 当光标推至屏幕物理顶沿区域（距顶沿 <= 6pt）时，macOS 必然唤出状态栏。
+        // 无需等待 WindowServer 数百毫秒的系统动画滞后，提前 0 延迟避让。
+        let isTouchingTopEdge = mouse.y >= screen.frame.maxY - 6.0
+
+        // 2. 实时窗口层级探查（覆盖系统动画中与已展开态）
+        var current = ScreenChromeProbe.menuBarState(on: screen, isFullscreenSpace: isFullscreenSpace)
+
+        // 若光标正在顶沿触碰中，但窗口尚未移入屏幕（系统前置等待期），提前置为可见态
+        if isTouchingTopEdge && !current.isVisible {
+            current = ScreenChromeProbe.MenuBarState(isVisible: true, height: 30)
+        }
+
         if let last = lastMenuBarState {
             if current != last {
                 lastMenuBarState = current

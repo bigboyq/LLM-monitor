@@ -32,20 +32,10 @@ final class EdgeDockController: ObservableObject {
     /// 一点视觉余量——恰好擦着黑条边缘走时不会一跳一跳地收起。
     static let hoverPadding: CGFloat = 12
     /// 接管后的巡检间隔，兼作拖拽期间的松手检测。
-    static let capturePollInterval: TimeInterval = 0.2
+    static let capturePollInterval: TimeInterval = 0.08
 
-    /// 未接管时的 hover 轮询间隔（**2Hz**）。
-    ///
-    /// 指针在系统上动一下就把本进程唤醒一次，是这套交互里唯一压不掉的固定开销
-    ///（100~1000Hz，而唤醒才是大头，不是探测本身）。hover 要回答的问题变化极慢——
-    /// 只有指针位置变了才需要重判——所以它不必跟着事件频率走：2Hz 把唤醒次数压到
-    /// 每秒 2 次，代价是 hover 最多晚 0.5s 生效（圆环高亮、详情卡片、靠近展开都以
-    /// 0.5s 为上限到达）。
-    ///
-    /// 鼠标一旦进到 dock 附近，`captureMouse()` 会起 `capturePollInterval`（0.2s）
-    /// 的巡检定时器，hover 延迟随之降到 0.2s——真正看得见的 0.25s 只发生在"指针
-    /// 正在过来的片刻"上。4Hz 巡检兼顾了顶部状态栏动态唤出的快速响应与近乎为零的能耗。
-    static let hoverPollInterval: TimeInterval = 0.25
+    /// 未接管时的 hover 轮询间隔。0.08s（~12.5Hz）巡检保证了顶部状态栏动态唤出的即时响应（<100ms）与极低能耗。
+    static let hoverPollInterval: TimeInterval = 0.08
     /// 按下后位移超过这么多 pt 才算拖动；以内松手视为"没拖动"，不做任何事
     /// （详情跟随 hover，按钮本身没有点击语义）。
     static let dragThreshold: CGFloat = 4

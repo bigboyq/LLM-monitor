@@ -192,14 +192,24 @@ extension EdgeDockController {
         // 非全屏时预留即真实占用（含侧边系统 Dock 的避让）。判定翻转有时要等
         // 阶梯补测（全屏动画约 1s），期间短暂停在旧位置属已知时序。
         let targetScreen = Self.targetScreen
-        lastMenuBarState = ScreenChromeProbe.menuBarState(
-            on: targetScreen,
-            isFullscreenSpace: isFullscreenSpace
-        )
-        let target = EdgeDockGeometry.frame(
-            visibleFrame: ScreenChromeProbe.effectiveVisibleFrame(
+        let mbState: ScreenChromeProbe.MenuBarState
+        if let current = lastMenuBarState {
+            mbState = current
+        } else {
+            let probed = ScreenChromeProbe.menuBarState(
                 on: targetScreen,
                 isFullscreenSpace: isFullscreenSpace
+            )
+            lastMenuBarState = probed
+            mbState = probed
+        }
+        let target = EdgeDockGeometry.frame(
+            visibleFrame: ScreenChromeProbe.effectiveVisibleFrame(
+                screenFrame: targetScreen.frame,
+                visibleFrame: targetScreen.visibleFrame,
+                isMenuBarVisible: mbState.isVisible,
+                menuBarHeight: mbState.height,
+                keepDockClearance: true
             ),
             edge: edge,
             size: size,
