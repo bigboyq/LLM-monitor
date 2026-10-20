@@ -176,10 +176,11 @@ to the next line, so a replayed event can never stall the scan.
 | Field-level merge and format conversion | `Sources/LLM-monitor/Models/UsageProjectionKernel.swift`（DSH 帧适配 `DshHarnessFrames` + `UsageProjectionKernel.project`，旧 `DshUsageMerger` 已吸收删除；`dsh:dsh:` 双层 promptID 前缀随之清理为单层） |
 | Provider alias bindings | `Sources/LLM-monitor/Models/ClientIdentity.swift`（`ClientProviderBinding.defaultBindings` 里 `clientID == ClientID.dsh` 的三条，别名字面量是归属解析的唯一事实源） |
 | JSONL/zstd scanner, cache, and seven-day snapshot | `Sources/LLM-monitor/Services/DshLocalUsageScanner.swift` |
+| Streaming zstd decoder | `Sources/LLM-monitor/Services/Infra/DshLogDecoder.swift` |
 | File discovery | `Sources/LLM-monitor/Services/Infra/FileManagerBox.swift`（目录遍历是通用的；`session.jsonl` / `*.jsonl.zstd` / `*.jsonl.zst` 的筛选规则留在 DSH scanner 里） |
 | Retention window constant | `Sources/LLM-monitor/Models/LocalUsageRetentionWindow.swift`（`days = 8`，落盘口径；展示面仍是 7 天） |
 | Client diagnostics | `Sources/LLM-monitor/Views/SettingsClientsPane.swift` |
 | Card integration | `Sources/LLM-monitor/Views/ProviderCardView.swift` |
 | Regression tests | `Tests/LLMMonitorTests/DshLocalUsageScannerTests.swift`, `DshHarnessFramesTests.swift`, `ScannerRetentionContractTests.swift` |
 
-> 核对基线：2026-10-05 · 代码 79dee29
+> 核对基线：2026-10-20 · 代码 aa85332

@@ -113,6 +113,7 @@
 | `Sources/LLM-monitor/Services/Infra/HTTPTimeouts.swift` | HTTP timeout 集中地（国内 domestic 10s / 海外 overseas 15s / antigravity 本机回环），改一处全局生效 |
 | `Sources/LLM-monitor/Services/Infra/ScheduledTask.swift` | 主线程延时调度工具集：`FixedDeadlineTask`（固定截止时间节流防饿死）、`KeyedScheduledTask`（按目标键固定截止调度）、`DebouncedTask`（经典静默防抖） |
 | `Sources/LLM-monitor/Services/Infra/LRUCache.swift` | 通用 $O(1)$ LRU 缓存容器（双向链表 + 字典；动态容量收缩与白名单键裁剪；Codex 本地扫描器复用） |
+| `Sources/LLM-monitor/Services/Infra/DshLogDecoder.swift` | DSH zstd 日志流式解压器（优先调用 zstd CLI，Node 22+ zlib 回退；单文件 1GB 明文上限与堆内存约束） |
 | `Sources/LLM-monitor/Services/LocalUsageScanRunner.swift` | 本地用量 scanner 共享的 lifecycle helper（generation 守门 / cancellation filter / defer generation 守门），消除镜像 boilerplate |
 | `Sources/LLM-monitor/Services/SingleDBSnapshotScanner.swift` | 单库全量快照 scanner 基座（db + WAL 双维指纹与缓存 index；GLM / OpenCode scanner 复用） |
 | `Sources/LLM-monitor/Services/DailyUsageAggregation.swift` | minimax / antigravity 共享的 per-day 聚合（补零填充 + 跨 source 合并） |
@@ -132,7 +133,7 @@
 | `Sources/LLM-monitor/Views/MenuWindowAutoCloseBridge.swift` | 失焦立即关 + 30s 无交互关闭（菜单内 mouse/scroll/key 重置计时）；关闭统一出口 `performClose` 并发 `onPanelClose`（菜单展示时钟随之停表）；30s 计时为单个可复用 `DispatchSourceTimer`（reset 只改 deadline，鼠标事件不再重建句柄） |
 | `Sources/LLM-monitor/Views/ProviderCardDerived.swift` | 卡片 body 的派生值入口：投影 + 额度窗口快照 + 「今」行 + 「闲」行（GLM 今日闲时，`offPeakUsageRow`）打包成一个 memo 值（共享失效条件；键 = 全值 `status` + 墙钟日 + 展示日 + `HolidayCalendar.sharedRevision` + 时区标识），展示时钟每秒 tick 不再重算 O(samples) 定价 |
 | `Sources/LLM-monitor/Views/ProviderCardView.swift` | provider 卡片 + `ProviderStateLabel` + `QuotaSummary`（卡内状态点已随菜单改版移除，状态由 `ProviderStateLabel` 胶囊承载）；body 派生值经 `ProviderCardDerivedValues` 值键 memo |
-| `Sources/LLM-monitor/Views/QuotaViews.swift` | 各种 quota 行 + 进度条（`CombinedQuotaWindowRow` / `CombinedQuotaBar` / `SingleQuotaBar` / `ModelQuotaDockBlock` / `DeepseekBalanceRow` / `ChatGPTPlanModelRow` / `CompactResetCreditsRow` / `QuotaBarTooltip`）；重置倒计时与过期判定随宿主展示时钟推进（`\.displayDate`）。`OffPeakUsageFootnote` 已删除，GLM 闲时用量改由「额度窗口」表格「闲」行承担 |
+| `Sources/LLM-monitor/Views/QuotaViews.swift` | 各种 quota 行 + 进度条（`CombinedQuotaWindowRow` / `CombinedQuotaBar` / `SingleQuotaBar` / `ModelQuotaDockBlock` / `CompactResetCreditsRow` / `QuotaBarTooltip`）；重置倒计时与过期判定随宿主展示时钟推进（`\.displayDate`）。`OffPeakUsageFootnote` 已删除，GLM 闲时用量改由「额度窗口」表格「闲」行承担 |
 | `Sources/LLM-monitor/Views/QuotaWindowUsageViews.swift` | 「额度窗口用量」区块族：模块标题 / 细分隔线、四桶绝对值与三个比率（`QuotaWindowUsageMetrics`）、双段 capsule 切换（`QuotaWindowUsageSegmentControl` / `QuotaWindowUsageSegment`）、reset credits 明细（`ResetCreditsDetailList`）与合并统一 7 列 Grid 骨架的总段 `QuotaWindowUsageSection`；重置日期格倒计时随宿主展示时钟推进（`\.displayDate`） |
 | `Sources/LLM-monitor/Views/QuotaHoverViews.swift` | 空文件，仅留删除记录注释：`UsageMetricHoverSummaryView`（额度用量指标 hover 摘要）随其唯一宿主 `OffPeakUsageFootnote` 一并删除；旧 `QuotaWindowsHoverView` 族已随 menuLayout 死分支整体删除 |
 | `Sources/LLM-monitor/Views/HoverPanel.swift` | `HoverInfoRow` / `HoverPanelController` / 浮层管理；浮层显隐驱动共享展示时钟（经 `DisplayClockScope` 注入） |
@@ -189,4 +190,4 @@
 - **串行执行是既定选择**：`swift test --parallel` 实测（2026-10-02，5 连跑 3 败）不可用——`SQLiteTempCopyTests` 的临时副本断言扫描跨进程共享目录，并行 worker 互相误判；且慢测试为睡眠型，并行的 wall 收益仅 ~4s。并行化前提：先给 SQLiteTempCopy 的副本目录引入进程级隔离，再复评。
 - 慢用例的等待注入缝已建立：调度器（now/sleep）、Bark 退避（retryDelay）、vnode 合并窗口（coalescingWindow 参数）；新增耗时敏感测试时优先走注入缝，不要写死真实 sleep。
 
-> 核对基线：2026-10-20 · 代码 94f4f6c
+> 核对基线：2026-10-20 · 代码 aa85332
