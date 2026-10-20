@@ -167,7 +167,9 @@ through `entries[index].id`, so the view's order and the controller's order must
 be the *same* order or hover highlights one circle and pops another provider's
 card. Both sides therefore go through `EdgeDockProjection.entries(from:preferredIDs:)`
 against the same config; `EdgeDockController.orderedEntries()` is the controller's
-single entry point.
+single entry point. Results are cached in `cachedOrderedEntries` and invalidated only on
+status updates, evaluation date boundary transitions, or config changes, avoiding repeated
+provider metric and aggregate health re-projections during 12.5Hz mouse sweeps.
 
 Two consequences worth keeping in mind:
 
@@ -1202,6 +1204,10 @@ or on secondary displays without separate Spaces, the menu bar is absent, so a d
     premature probe overwrites while WindowServer is in the pre-animation window.
   - **Smooth return**: When the cursor leaves and the menu bar slides back up into hidden state, the dock smoothly glides
     back up flush against the physical top edge.
+  - **Distance gating (IPC optimization)**: Polling avoids issuing cross-process `CGWindowListCopyWindowInfo` queries when
+    the menu bar is hidden and the cursor is far from the top ceiling (`mouse.y < screen.frame.maxY - 60.0`), or when the screen
+    has a permanently pinned menu bar in non-fullscreen desktop mode. Polling activates only within the 60pt proximity band or
+    while tracking an active transition.
 - **Bottom / Left / Right edges (System Dock)**: Decoupled from the menu bar. The system Dock may reside
   at the bottom, left, or right edge. Whenever a system Dock occupies space on an edge, the edge
   retains its reservation (`keepDockClearance = true`), guaranteeing that the edge status dock
@@ -1265,4 +1271,4 @@ default has to preserve it — defaulting to off would put a dock inside every f
 window for every existing user. Because the setting can be flipped while the user is
 already fullscreen, a policy change re-probes instead of reusing the cached verdict.
 
-> 核对基线：2026-10-20 · 代码 f7c0d2a
+> 核对基线：2026-10-20 · 代码 5083d97

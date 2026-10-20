@@ -108,6 +108,7 @@
 | `Sources/LLM-monitor/Services/Infra/FileManagerBox.swift` | `FileManager` 的 `@unchecked Sendable` 包装 + `fileManager` 字段 `private`（同文件 extension 之外不能直接拿到底层 `FileManager`）。`Tests/LLMMonitorTests/ConfigStoreTests.swift` 验证该访问约束；`temporaryURL()` 落 App 自有临时根（供 DSH 解压，崩溃残留可被启动 sweep 回收）。命名约定：本套 spec 说「`index.json`」指**版本化索引文档本身**（schema 名，也是目录形态输入与测试下的文件名）；生产落盘文件是 `token-monitor/<provider>.json`（`antigravity.json` / `minimax.json` / `dsh.json` / `glm-zcode.json` / `opencode.json` / `agy.json`，见 `config.md` 运行时文件表） |
 | `Sources/LLM-monitor/Services/Infra/HTTPTimeouts.swift` | HTTP timeout 集中地（国内 domestic 10s / 海外 overseas 15s / antigravity 本机回环），改一处全局生效 |
 | `Sources/LLM-monitor/Services/Infra/ScheduledTask.swift` | 主线程延时调度工具集：`FixedDeadlineTask`（固定截止时间节流防饿死）、`KeyedScheduledTask`（按目标键固定截止调度）、`DebouncedTask`（经典静默防抖） |
+| `Sources/LLM-monitor/Services/Infra/LRUCache.swift` | 通用 $O(1)$ LRU 缓存容器（双向链表 + 字典；动态容量收缩与白名单键裁剪；Codex 本地扫描器复用） |
 | `Sources/LLM-monitor/Services/LocalUsageScanRunner.swift` | 本地用量 scanner 共享的 lifecycle helper（generation 守门 / cancellation filter / defer generation 守门），消除镜像 boilerplate |
 | `Sources/LLM-monitor/Services/SingleDBSnapshotScanner.swift` | 单库全量快照 scanner 基座（db + WAL 双维指纹与缓存 index；GLM / OpenCode scanner 复用） |
 | `Sources/LLM-monitor/Services/DailyUsageAggregation.swift` | minimax / antigravity 共享的 per-day 聚合（补零填充 + 跨 source 合并） |
@@ -179,4 +180,4 @@
 - **串行执行是既定选择**：`swift test --parallel` 实测（2026-10-02，5 连跑 3 败）不可用——`SQLiteTempCopyTests` 的临时副本断言扫描跨进程共享目录，并行 worker 互相误判；且慢测试为睡眠型，并行的 wall 收益仅 ~4s。并行化前提：先给 SQLiteTempCopy 的副本目录引入进程级隔离，再复评。
 - 慢用例的等待注入缝已建立：调度器（now/sleep）、Bark 退避（retryDelay）、vnode 合并窗口（coalescingWindow 参数）；新增耗时敏感测试时优先走注入缝，不要写死真实 sleep。
 
-> 核对基线：2026-10-20 · 代码 f7c0d2a
+> 核对基线：2026-10-20 · 代码 5083d97
