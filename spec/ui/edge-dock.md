@@ -1221,9 +1221,13 @@ or on secondary displays without separate Spaces, the menu bar is absent, so a d
     or when the screen has a permanently pinned menu bar in non-fullscreen desktop mode. Polling activates only within the 60pt
     proximity band of the target display or while tracking an active transition.
 - **Bottom / Left / Right edges (System Dock)**: Decoupled from the menu bar. The system Dock may reside
-  at the bottom, left, or right edge. Whenever a system Dock occupies space on an edge, the edge
-  retains its reservation (`keepDockClearance = true`), guaranteeing that the edge status dock
-  **never overlaps the system Dock**.
+  at the bottom, left, or right edge.
+  - **Window/Desktop mode (`!isFullscreenSpace`)**: Whenever a system Dock occupies space on an edge, the edge
+    retains its reservation (`keepDockClearance = true`), guaranteeing that the dock snaps flush against the system Dock
+    and **never overlaps the system Dock**.
+  - **Fullscreen Space (`isFullscreenSpace`)**: In macOS native fullscreen spaces, the system Dock is automatically hidden.
+    The dock clears the reservation (`keepDockClearance = false`) and snaps flush against the physical screen edge,
+    eliminating artificial floating gaps.
 - **AppKit frame constraint override (`constrainFrameRect`)**: AppKit's default `NSWindow.constrainFrameRect(_:to:)`
   unconditionally clamps windows within the system's static `screen.visibleFrame`. Because `visibleFrame` statically reserves
   the menu bar height (approx 30pt) across screens even when absent on secondary displays or in fullscreen, any call to
@@ -1283,4 +1287,4 @@ default has to preserve it — defaulting to off would put a dock inside every f
 window for every existing user. Because the setting can be flipped while the user is
 already fullscreen, a policy change re-probes instead of reusing the cached verdict.
 
-> 核对基线：2026-10-20 · 代码 a023b61
+> 核对基线：2026-10-20 · 代码 71d1d4c
