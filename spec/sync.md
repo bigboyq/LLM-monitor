@@ -179,12 +179,20 @@ node_meta → 任何可见变化递增 generation。窗口按 `endAt` 早于
   移除 → `removeNodeFromFleet`）、全局摘要、各 provider 额度来源、
   归因指纹不一致标黄（`FleetNodeSnapshot.attributionFingerprint`）。
 
-### 仍留给后续
+### 收尾（6b90b16，原遗留三项已全部实现）
 
-- 边缘窗**常驻圆环**改读生效额度（现仍读本机 `lastSuccess`；hover 卡已覆盖）。
-- node 侧 GET 兜底拉取的调度（端点已实现，`SyncClient.fetchSnapshot` 可用）。
-- 全局窗口范围显示的「hub 生效边界优先」选择器（§10.7.1 已裁定，当前
-  `cardUsage` 直接展示快照里全部范围行）。
+- **边缘窗常驻圆环读生效额度**：`AppState.fleetQuotaEffectiveStatuses()`
+  在入列并集之上，把「本机无有效额度但 fleet 有 elected」的卡替换为
+  `.ok(elected)`；`EdgeDockContentView` 与 `EdgeDockController+Window`
+  两个投影调用点都切换到该视图。缓存失效随既有 statusDidChange 广播。
+- **node 侧 GET 兜底**：推送被 hub 拒（4xx/5xx）但链路通时拉一次快照
+  （`SyncClient.fetchSnapshot`），走同一 upstreamKey+hubUUID+generation
+  门控；429 仍只记日志不算离线。
+- **窗口范围选择器**（§10.7.1 W 裁定，2026-10-24 已确认）：
+  `cardUsage(preferredWindowEnds:)` 对同 (model, kind) 的多个已报告范围，
+  优先取与当前生效额度边界**完全一致**的范围（`preferredRange`），无匹配
+  取 `endAt` 最新者；偏好边界由 `AppState.preferredWindowEnds(of:)` 从
+  生效额度主 model 的 `intervalResetsAt` / `weeklyResetsAt` 派生。
 
 ## 测试
 
@@ -198,4 +206,4 @@ node 协调器上线与缓存落盘）、`FleetUsageModelsTests`（生效额度�
 标注、菜单单节点退化 / 双行合计 / 节点排序、卡片窗口行与不完整标记、
 混币金额文案）。
 
-> 核对基线：2026-10-24 · 代码 b5006a6
+> 核对基线：2026-10-24 · 代码 6b90b16
