@@ -105,7 +105,7 @@
 > **「手动改过」在 v1 几乎不可能发生——设置页根本没有归因开关。**
 > `Views/SettingsView.swift:283-286` 明写「OpenCode merge 状态不再进入设置表单：设置页没有独立 Toggle，`clientBindings[]` 是唯一事实源」；`AppConfig.setClientBindingEnabled`（`Models/AppConfig.swift:424`）**只有测试在调用，Views 里零调用**。
 > 所以分歧的唯一来源是**手工编辑 `config.json`**（或 schema v1 以下的 legacy 迁移）。
-> 而 `config.json` 通常会跟着 dotfile 同步到多台机器——§6.2 之所以把 `nodeID` 排除在 `config.json` 之外，正是因为「它是机器身份，不是用户设置，不该跟着 dotfile 同步」。**归因设置反而是会跟着同步的那一类**，于是各机天然一致。
+> `config.json` 通常会跟着 dotfile 同步到多台机器（2026-10-24 起本设计的 `nodeID` 也存 config，见 §6.2 的代价说明）。**归因设置正是会跟着同步的那一类**，于是各机天然一致。
 >
 > 结论：**这不是一个需要在协议里解决的问题**，它只是一个几乎不会触发的边角。§7.8 的指纹是它的保险，不是它的解药。
 
@@ -463,7 +463,7 @@ CREATE TABLE sync_records (
 ```text
 Models/SyncModels.swift             设计 DTO、校验与纯合并/选举函数
 Models/FleetUsageModels.swift       L3 视图投影
-Services/Sync/NodeIdentity.swift    Keychain UUID + lastIssuedSeq
+（已删除 NodeIdentity.swift）nodeID 存 config.json · seq 存 fleet.sqlite（见 §6.2）
 Services/Sync/UsageReportBuilder.swift 日桶、窗口、额度 DTO 构建
 Services/Sync/FleetStore.swift      fleet.sqlite 唯一表及事务
 Services/Sync/HubServer.swift       hub HTTP 服务
@@ -475,7 +475,11 @@ Models 不依赖 Services；Services 不依赖 Views。窗口聚合的可复用�
 
 ### 6.2 节点身份
 
-`nodeID` 与 `lastIssuedSeq` 放在同一个 Keychain 条目中（明确设置 `kSecAttrSynchronizable = false`）。首次启动生成 UUID 并一次性保存；之后读取失败或写入失败时停止同步，不得静默换 UUID。`SyncCoordinator` 串行分配序号，先持久化递增后的 `lastIssuedSeq`，成功后才发送该序号的报告；Keychain 读写失败则不发送。这样迟到报告可由 hub 的最大已接受 seq 拒绝，不需要 epoch、node-id/node-state 文件或身份恢复握手。
+**用户裁定（2026-10-24）：不用 Keychain，`nodeID` 直接生成后写进 `config.json` 的 `sync.nodeID`。** 首次启用联动时生成 UUID 并一次性写回；之后每次启动原样读取（换签名、重装、跨进程都稳定）。手工把 `nodeID` 写坏（非法 UUID）时记警告后重新生成——旧 nodeID 在 hub 侧保留，可手动移除。
+
+> 代价（明说）：`config.json` 常跟 dotfile 同步到多台机器，直接复制会带着同一个 `nodeID`，两台机会被 hub 当成同一个节点、报告互相顶掉。dotfile 部署必须给每台机器改不同的 `sync.nodeID`。这是「身份就是配置值」换来的简单性。
+
+`lastIssuedSeq` 不进 config（每轮推送都要递增，写配置文件会把配置热加载管线变成推送回路），存 `fleet.sqlite` 的 `kind=seq` 单行：`SyncCoordinator` 事务内 读→+1→写，**持久化成功才发送**该序号的报告。这样迟到报告仍可由 hub 的最大已接受 seq 拒绝，不需要 epoch 或身份恢复握手。
 
 用户明确执行“强制换 UUID”时生成新身份并视为新节点；hub 保留旧 nodeID 记录，用户可手动移除。`nodeName` 默认 hostname，可在同步设置中编辑并保存在普通配置中。
 
@@ -529,7 +533,7 @@ hub 自己作为一个节点参加合并；来源是否本机只通过 `nodeID =
 
 ### 7.3 稳定身份与 seq
 
-每个稳定 nodeID 的 Keychain 条目同时持有 `lastIssuedSeq`。发送前持久化递增 seq；hub 仅接受 `seq > node_meta.lastAcceptedSeq`，事务中更新 node_meta 与成功通过验证的通道。重复/乱序报告不重放旧数据。日桶清理与报告替换不清除 node_meta high-water。Keychain 失败则不发、不换 UUID；强制重置产生新 nodeID，旧节点保留至手动删除。
+`lastIssuedSeq` 存 `fleet.sqlite`（`kind=seq`，2026-10-24 起，原先 Keychain 方案已裁掉）。发送前事务持久化递增 seq；hub 仅接受 `seq > node_meta.lastAcceptedSeq`，事务中更新 node_meta 与成功通过验证的通道。重复/乱序报告不重放旧数据。日桶清理与报告替换不清除 node_meta high-water。持久化失败则不发；强制重置（改 config 的 `nodeID`）产生新 nodeID，旧节点保留至手动删除。
 
 ### 7.4 stale 标记
 
@@ -585,7 +589,7 @@ attributionFingerprint = hex(SHA256(规范化绑定表))[0..8]
 
 ## 8. 失败与降级
 
-网络失败保留 `fleet.sqlite` 中最后一次经验证且 generation 新的快照，展示离线状态；source/hubUUID 未验证时不得写空快照。hub 重启从 SQLite 事务数据恢复。seq 的 Keychain 读写失败时本轮不发送并报告同步错误，不更换身份。hub 本机抓取失败但有有效 `lastSuccess` 时额度仍本机优先，同时保留需重试状态；本机没有有效额度才回退 elected。stale 节点数据继续计入同一当前范围并注明离线/截止时间；不匹配窗口边界的节点不混加，汇总展示 incomplete。额度通知继续仅由本机 provider 状态和既有通知门控决定，远端 elected 不触发本机抓取通知。
+网络失败保留 `fleet.sqlite` 中最后一次经验证且 generation 新的快照，展示离线状态；source/hubUUID 未验证时不得写空快照。hub 重启从 SQLite 事务数据恢复。seq 持久化失败时本轮不发送并报告同步错误，不更换身份（`sync.nodeID` 不受影响）。hub 本机抓取失败但有有效 `lastSuccess` 时额度仍本机优先，同时保留需重试状态；本机没有有效额度才回退 elected。stale 节点数据继续计入同一当前范围并注明离线/截止时间；不匹配窗口边界的节点不混加，汇总展示 incomplete。额度通知继续仅由本机 provider 状态和既有通知门控决定，远端 elected 不触发本机抓取通知。
 
 ## 9. 安全
 
@@ -842,9 +846,9 @@ elected quota 来自**某台机器的账号**，不是"全局真相"。所有展
 
 ### 13.1 已裁定与技术默认
 
-**用户明确裁定：** 多副一主、不级联；副节点上报额度，主节点自身有额度时优先采用；多账号语义推迟；v1 不认证、使用明文传输；不支持跨时区；Dock 全局/本机切换与菜单节点分组。节点 UUID 首次运行生成并存入 Keychain，强制更换 UUID 就视为多个副节点；上报及回传数据使用独立同步表，不往原表添加来源区分字段。副节点明确上报统计起止时间，由 hub 判断是否能相加；不同范围不混加。额度候选按 `fetchedAt` 排序、全局窗口范围选择采用「边界匹配优先、最新 `endAt` 兜底」（均 2026-10-24）。
+**用户明确裁定：** 多副一主、不级联；副节点上报额度，主节点自身有额度时优先采用；多账号语义推迟；v1 不认证、使用明文传输；不支持跨时区；Dock 全局/本机切换与菜单节点分组。节点 UUID 首次运行生成并写进 `config.json` 的 `sync.nodeID`（2026-10-24 裁定，取代 Keychain 方案），强制更换 UUID 就视为多个副节点；上报及回传数据使用独立同步表，不往原表添加来源区分字段。副节点明确上报统计起止时间，由 hub 判断是否能相加；不同范围不混加。额度候选按 `fetchedAt` 排序、全局窗口范围选择采用「边界匹配优先、最新 `endAt` 兜底」（均 2026-10-24）。
 
-**技术默认，非用户另行裁定：** UUID 不经 iCloud 同步，Keychain 失败时不自动换身份；`fleet.sqlite` / `sync_records` 的名称和单表结构；UUID 与 `lastIssuedSeq` 同一 Keychain 项、序号先持久化再发送；scope、窗口记录和 generation 的持久化与缓存隔离；同范围离线贡献保留并标注截止时间。全局窗口默认优先匹配 hub 生效额度边界，否则选最新 `endAt`；这是展示选择，不改变副节点上报的范围，也不要求主节点下发范围。所有 DTO 与新存储均尚未实现。
+**技术默认，非用户另行裁定：** `nodeID` 落 config 不经 iCloud 同步；`fleet.sqlite` / `sync_records` 的名称和单表结构；`lastIssuedSeq` 落 `fleet.sqlite` 的 `kind=seq` 行、序号先持久化再发送；scope、窗口记录和 generation 的持久化与缓存隔离；同范围离线贡献保留并标注截止时间。全局窗口默认优先匹配 hub 生效额度边界，否则选最新 `endAt`；这是展示选择，不改变副节点上报的范围，也不要求主节点下发范围。所有 DTO 与新存储均尚未实现。
 
 ### 13.2 待用户确认
 

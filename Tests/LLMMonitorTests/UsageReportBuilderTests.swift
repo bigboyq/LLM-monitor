@@ -93,7 +93,7 @@ final class UsageReportBuilderTests: XCTestCase {
 
     private func makeInput(_ statuses: [ProviderStatus]) -> UsageReportInput {
         UsageReportInput(
-            identity: NodeIdentity(nodeID: UUID(), lastIssuedSeq: 0),
+            nodeID: UUID(),
             nodeName: "Test-Mac",
             bindings: ClientProviderBinding.defaultBindings,
             statuses: statuses,

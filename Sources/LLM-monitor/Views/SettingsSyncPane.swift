@@ -46,7 +46,7 @@ struct SettingsSyncPane: View {
                             .textFieldStyle(.roundedBorder)
                             .frame(width: SettingsLayout.standardControlWidth)
                             .onSubmit(commitNodeName)
-                            .help("其他机器的菜单节点分组里显示这个名字；默认 \(NodeIdentityStore.defaultNodeName())。按回车保存。")
+                            .help("其他机器的菜单节点分组里显示这个名字；默认 \(SyncConfig.defaultNodeName())。按回车保存。")
                     }
                 }
             }

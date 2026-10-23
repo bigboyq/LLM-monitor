@@ -4,7 +4,7 @@ import Foundation
 
 /// 副节点报告的构建输入：身份、配置与当前 UI 同源的状态快照。
 struct UsageReportInput {
-    let identity: NodeIdentity
+    let nodeID: UUID
     let nodeName: String
     let bindings: [ClientProviderBinding]
     let statuses: [ProviderStatus]
@@ -12,14 +12,14 @@ struct UsageReportInput {
     var calendar: Calendar = .current
 
     init(
-        identity: NodeIdentity,
+        nodeID: UUID,
         nodeName: String,
         bindings: [ClientProviderBinding],
         statuses: [ProviderStatus],
         now: Date = Date(),
         calendar: Calendar = .current
     ) {
-        self.identity = identity
+        self.nodeID = nodeID
         self.nodeName = nodeName
         self.bindings = bindings
         self.statuses = statuses
@@ -39,7 +39,7 @@ struct UsageReportInput {
 ///   GLM 闲时窗口单独成行（`windowKind = glmOffPeak`）；
 /// - 额度通道只报有有效 `lastSuccess` 的 provider（§5.1）。
 ///
-/// seq 由 `NodeIdentityStore.allocateSeq()` 在发送前持久化分配，这里只填充。
+/// seq 由 `FleetStore.allocateLocalSeq()` 在发送前持久化分配，这里只填充。
 enum UsageReportBuilder {
     static func build(_ input: UsageReportInput, seq: Int) -> NodeUsageReport {
         var entryRows: [EntryKey: EntryAccumulator] = [:]
@@ -130,7 +130,7 @@ enum UsageReportBuilder {
         return NodeUsageReport(
             protocolVersion: FleetProtocol.version,
             node: FleetNodeIdentity(
-                nodeID: input.identity.nodeID,
+                nodeID: input.nodeID,
                 nodeName: input.nodeName,
                 timezoneID: TimeZone.current.identifier,
                 platform: "macOS"

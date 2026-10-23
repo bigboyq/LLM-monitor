@@ -207,6 +207,11 @@ struct SyncConfig: Codable, Equatable, Sendable {
     var quotaMaxAgeSeconds: Int
     /// hub 保留多少天的历史日桶 / 窗口范围。
     var retainDays: Int
+    /// 本机稳定节点身份（UUID 字符串）。首次启用联动时生成并**写回 config.json**
+    /// （用户裁定 2026-10-24，取代 Keychain 方案）；之后每次启动原样读取。
+    /// 用 dotfile 同步 config.json 的部署要注意：两台机器必须改成不同值，
+    /// 否则会被 hub 当成同一个节点。
+    var nodeID: String?
 
     static let `default` = SyncConfig(
         enabled: false,
@@ -222,7 +227,7 @@ struct SyncConfig: Codable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case enabled, hubURL, pushIntervalSeconds, hubBindHost, hubPort
-        case nodeName, staleAfterSeconds, quotaMaxAgeSeconds, retainDays
+        case nodeName, staleAfterSeconds, quotaMaxAgeSeconds, retainDays, nodeID
     }
 
     init(
@@ -234,7 +239,8 @@ struct SyncConfig: Codable, Equatable, Sendable {
         nodeName: String = "",
         staleAfterSeconds: Int = 900,
         quotaMaxAgeSeconds: Int = 1800,
-        retainDays: Int = 7
+        retainDays: Int = 7,
+        nodeID: String? = nil
     ) {
         self.enabled = enabled
         self.hubURL = hubURL
@@ -245,6 +251,7 @@ struct SyncConfig: Codable, Equatable, Sendable {
         self.staleAfterSeconds = staleAfterSeconds
         self.quotaMaxAgeSeconds = quotaMaxAgeSeconds
         self.retainDays = retainDays
+        self.nodeID = nodeID
     }
 
     init(from decoder: Decoder) throws {
@@ -273,6 +280,12 @@ struct SyncConfig: Codable, Equatable, Sendable {
             (try? c.decode(Int.self, forKey: .retainDays)) ?? 7,
             range: 1...365, fallback: 7
         )
+        nodeID = (try? c.decode(String.self, forKey: .nodeID)) ?? nil
+    }
+
+    /// 默认节点显示名：hostname。
+    static func defaultNodeName() -> String {
+        Host.current().localizedName ?? ProcessInfo.processInfo.hostName
     }
 
     private static func clamped(_ value: Int, range: ClosedRange<Int>, fallback: Int) -> Int {

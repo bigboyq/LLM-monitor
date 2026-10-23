@@ -244,6 +244,17 @@ final class FleetStoreTests: XCTestCase {
         XCTAssertEqual(state.nodes.first?.seq, 1, "窗口清理不丢 high-water（§7.6）")
     }
 
+    // MARK: - 本机序号
+
+    func testAllocateLocalSeqPersistsAndIncrements() throws {
+        XCTAssertEqual(try store.allocateLocalSeq(), 1)
+        XCTAssertEqual(try store.allocateLocalSeq(), 2)
+        XCTAssertEqual(try store.allocateLocalSeq(), 3)
+        // 重开（模拟进程重启）：序号延续，迟到报告可被 hub 的 high-water 拒绝。
+        let reopened = try FleetStore(url: directory.appendingPathComponent("fleet.sqlite"))
+        XCTAssertEqual(try reopened.allocateLocalSeq(), 4)
+    }
+
     // MARK: - generation
 
     func testGenerationMonotonicAndPersistsAcrossReopen() throws {

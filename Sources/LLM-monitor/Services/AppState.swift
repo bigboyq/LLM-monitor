@@ -361,8 +361,21 @@ final class AppState: ObservableObject {
                 .deletingLastPathComponent()
                 .appendingPathComponent("fleet.sqlite")
             let coordinator = FleetSyncCoordinator(
-                identityStore: NodeIdentityStore(backend: KeychainNodeIdentityBackend()),
-                store: try FleetStore(url: storeURL)
+                store: try FleetStore(url: storeURL),
+                provisionNodeID: { [weak self] uuid in
+                    // 身份就是配置值（用户裁定 2026-10-24）：首次生成后写回
+                    // config.json 的 sync.nodeID，之后原样读取。
+                    guard let self else { return }
+                    var config = self.configStore.config
+                    var sync = config.sync ?? SyncConfig.default
+                    sync.nodeID = uuid.uuidString
+                    config.sync = sync
+                    do {
+                        try self.configStore.applyAndSave(config)
+                    } catch {
+                        logError("[fleet] 写回 sync.nodeID 失败: \(error.localizedDescription)")
+                    }
+                }
             )
             fleetSync = coordinator
             // coordinator 的两个 @Published 转发到 AppState：视图只观察 AppState，

@@ -7,22 +7,22 @@ import XCTest
 @MainActor
 final class FleetSyncIntegrationTests: XCTestCase {
 
-    private final class MemoryBackend: NodeIdentityBackend, @unchecked Sendable {
+    private final class ProvisionRecorder: @unchecked Sendable {
         private let lock = NSLock()
-        private var data: Data?
-        func load() throws -> Data? {
+        private var ids: [UUID] = []
+        func record(_ uuid: UUID) {
             lock.lock(); defer { lock.unlock() }
-            return data
+            ids.append(uuid)
         }
-        func save(_ data: Data) throws {
+        var generated: [UUID] {
             lock.lock(); defer { lock.unlock() }
-            self.data = data
+            return ids
         }
     }
 
     private var directory: URL!
     private var hub: FleetSyncCoordinator!
-    private var hubBackend: MemoryBackend!
+    private var hubProvision: ProvisionRecorder!
     private var client: SyncClient!
 
     override func setUpWithError() throws {
@@ -36,10 +36,10 @@ final class FleetSyncIntegrationTests: XCTestCase {
     }
 
     private func startHub(statuses: [ProviderStatus] = []) async throws -> UInt16 {
-        hubBackend = MemoryBackend()
+        hubProvision = ProvisionRecorder()
         hub = FleetSyncCoordinator(
-            identityStore: NodeIdentityStore(backend: hubBackend),
-            store: try FleetStore(url: directory.appendingPathComponent("fleet.sqlite"))
+            store: try FleetStore(url: directory.appendingPathComponent("fleet.sqlite")),
+            provisionNodeID: { [hubProvision] uuid in hubProvision.record(uuid) }
         )
         var config = AppConfig.default
         config.sync = SyncConfig(enabled: true, hubURL: "", hubPort: 0) // 0 = 系统分配端口
@@ -112,8 +112,7 @@ final class FleetSyncIntegrationTests: XCTestCase {
         let health = try await client.fetchHealth()
         XCTAssertTrue(health.ok)
         XCTAssertEqual(health.protocolVersion, FleetProtocol.version)
-        XCTAssertEqual(health.nodeID, try NodeIdentityStore(backend: hubBackend).identity().nodeID,
-                       "hubUUID = hub 的稳定 nodeID")
+        XCTAssertEqual(health.nodeID, hub.localNodeID, "hubUUID = hub 的稳定 nodeID")
         _ = port
     }
 
@@ -124,7 +123,7 @@ final class FleetSyncIntegrationTests: XCTestCase {
             nodeReport(seq: 1, nodeID: nodeID, input: 100, quotas: [nodeQuota()])
         )
         XCTAssertEqual(snapshot.protocolVersion, FleetProtocol.version)
-        XCTAssertEqual(snapshot.hubUUID, try NodeIdentityStore(backend: hubBackend).identity().nodeID)
+        XCTAssertEqual(snapshot.hubUUID, hub.localNodeID)
         XCTAssertGreaterThanOrEqual(snapshot.generation, 1, "接受报告递增 generation")
 
         let nodeEntry = try XCTUnwrap(snapshot.nodes.first { $0.nodeID == nodeID })
@@ -282,7 +281,7 @@ final class FleetSyncIntegrationTests: XCTestCase {
 
         // hub 本机有有效 zhipu 之外的 openai 额度：openai 选举落 hub 自己。
         let openAI = try XCTUnwrap(snapshot.electedQuotas.first { $0.quotaProviderID == QuotaProviderID.openAI })
-        let hubID = try NodeIdentityStore(backend: hubBackend).identity().nodeID
+        let hubID = try XCTUnwrap(hub.localNodeID)
         XCTAssertEqual(openAI.sourceNodeID, hubID, "hub 本机有效额度优先（§2.1）")
     }
 
@@ -290,10 +289,10 @@ final class FleetSyncIntegrationTests: XCTestCase {
 
     func testNodeCoordinatorPushesAndCachesSnapshot() async throws {
         try await startHub()
-        let nodeBackend = MemoryBackend()
+        let nodeProvision = ProvisionRecorder()
         let node = FleetSyncCoordinator(
-            identityStore: NodeIdentityStore(backend: nodeBackend),
-            store: try FleetStore(url: directory.appendingPathComponent("node-fleet.sqlite"))
+            store: try FleetStore(url: directory.appendingPathComponent("node-fleet.sqlite")),
+            provisionNodeID: { [nodeProvision] uuid in nodeProvision.record(uuid) }
         )
         var config = AppConfig.default
         config.sync = SyncConfig(

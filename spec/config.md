@@ -60,7 +60,7 @@ The app reads and writes this shape:
 | Field | Scope | Meaning |
 |---|---|---|
 | `schemaVersion` | global | Configuration schema version. Missing legacy values decode as version 0 and are normalized to the current version; unsupported future versions are rejected rather than silently defaulted. Schema 3 adds the `sync` block (multi-machine fleet sync, see `spec/sync.md`). |
-| `sync` | global | 多机联动配置（`SyncConfig`）。缺省或不写 = `enabled: false`，完全不参与（现有用户零影响）；坏值按未配置处理（逐字段容错，只回退该字段）。字段：`enabled`（缺省 false）、`hubURL`（空 = 本机为主节点 hub；非空 = 副节点 node，且不监听端口——角色由 `SyncRole.derive` 单源派生）、`pushIntervalSeconds`（默认 60，clamp 5s...24h）、`hubBindHost`（默认 `0.0.0.0`；`127.0.0.1`/`localhost` 时只绑回环）、`hubPort`（默认 8787）、`nodeName`（空 = hostname）、`staleAfterSeconds`（默认 900）、`quotaMaxAgeSeconds`（默认 1800）、`retainDays`（默认 7）。协议与运行时见 `spec/sync.md`。 |
+| `sync` | global | 多机联动配置（`SyncConfig`）。缺省或不写 = `enabled: false`，完全不参与（现有用户零影响）；坏值按未配置处理（逐字段容错，只回退该字段）。字段：`enabled`（缺省 false）、`hubURL`（空 = 本机为主节点 hub；非空 = 副节点 node，且不监听端口——角色由 `SyncRole.derive` 单源派生）、`pushIntervalSeconds`（默认 60，clamp 5s...24h）、`hubBindHost`（默认 `0.0.0.0`；`127.0.0.1`/`localhost` 时只绑回环）、`hubPort`（默认 8787）、`nodeName`（空 = hostname）、`staleAfterSeconds`（默认 900）、`quotaMaxAgeSeconds`（默认 1800）、`retainDays`（默认 7）、`nodeID`（节点身份 UUID，首次启用联动时自动生成写回；dotfile 同步 config 的部署须给每台机器改成不同值）。协议与运行时见 `spec/sync.md`。 |
 | `refreshIntervalSeconds` | global | Default refresh interval in seconds. Current default is `300`; effective values are clamped to 10 seconds...30 days. |
 | `statusBarIconStyle` | global | Selected menu-bar icon theme. Missing or invalid values use `chartBar`. |
 | `statusBarHealthDotEnabled` | global | Shows the 6 pt health dot on the menu-bar icon. Missing or invalid values default to `true`. |

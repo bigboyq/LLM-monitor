@@ -374,6 +374,40 @@ final class FleetStore: @unchecked Sendable {
         )
     }
 
+    // MARK: - 本机序号
+
+    /// 本机报告序号（`kind=seq` 单行）：事务内 读 → +1 → 写，**持久化成功才
+    /// 返回**（§7.3：hub 的 high-water 据此拒绝迟到报告）。存这里而不是
+    /// config.json：每轮推送都要递增，写配置文件会把配置管线变成推送回路。
+    @discardableResult
+    func allocateLocalSeq() throws -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        try beginTransaction()
+        do {
+            let current = try queryInt64(
+                sql: "SELECT seq FROM sync_records WHERE kind = 'seq' AND scope = 'local' AND node_id = '' AND record_key = 'current'",
+                bind: []
+            ) ?? 0
+            let next = current + 1
+            try upsertRow(
+                kind: "seq",
+                scope: "local",
+                nodeID: "",
+                recordKey: "current",
+                seq: next,
+                generation: nil,
+                updatedAt: Date(),
+                payload: Data("{}".utf8)
+            )
+            try commit()
+            return Int(next)
+        } catch {
+            try? rollback()
+            throw error
+        }
+    }
+
     // MARK: - generation
 
     /// hub 本机数据变化也递增 generation（§6.5）。

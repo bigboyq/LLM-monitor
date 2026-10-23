@@ -29,8 +29,12 @@ final class FleetSyncCoordinator: ObservableObject {
     /// node：hub 回传的最近快照；hub：本机装配的最近快照。
     @Published private(set) var latestSnapshot: FleetSnapshot?
 
-    private let identityStore: NodeIdentityStore
     private let store: FleetStore
+    /// 身份落盘回调（AppState 写回 config.json 的 sync.nodeID）。
+    private let provisionNodeID: ((UUID) -> Void)?
+    /// 本机稳定节点身份：来自 config 的 sync.nodeID；缺失时生成一次并经
+    /// `provisionNodeID` 写回（用户裁定 2026-10-24：身份就是配置值，无 Keychain）。
+    private var nodeID: UUID?
     private var client: SyncClient?
     private var server: HubServer?
     private var config = SyncConfig.default
@@ -55,18 +59,16 @@ final class FleetSyncCoordinator: ObservableObject {
     /// node 侧：数据变更唤醒的最小推送间隔；短于它的变更由周期节拍覆盖。
     private var lastPushAt: Date?
 
-    init(identityStore: NodeIdentityStore, store: FleetStore) {
-        self.identityStore = identityStore
+    init(store: FleetStore, provisionNodeID: ((UUID) -> Void)? = nil) {
         self.store = store
+        self.provisionNodeID = provisionNodeID
     }
 
     /// hub 实际监听端口（端口 0 时由系统分配；测试/发现用）。
     var listeningPort: UInt16? { server?.boundPort }
 
     /// 本机稳定 nodeID（UI 标「本机」节点 / 生效额度来源判断用）。
-    var localNodeID: UUID? {
-        try? identityStore.identity().nodeID
-    }
+    var localNodeID: UUID? { nodeID }
 
     /// 设置页「移除节点」：删除该节点的报告 / 窗口 / high-water（§10.4 / §7.6）。
     func removeNodeFromFleet(nodeID: UUID) {
@@ -89,11 +91,12 @@ final class FleetSyncCoordinator: ObservableObject {
     // MARK: - 生命周期
 
     func start(config appConfig: AppConfig, statuses: [ProviderStatus]) {
+        resolveNodeID(from: appConfig.effectiveSyncConfig)
         self.statuses = statuses
         self.bindings = appConfig.clientBindings
         self.config = appConfig.effectiveSyncConfig
         self.nodeName = self.config.effectiveNodeName.isEmpty
-            ? NodeIdentityStore.defaultNodeName()
+            ? SyncConfig.defaultNodeName()
             : self.config.effectiveNodeName
         boot()
     }
@@ -111,7 +114,7 @@ final class FleetSyncCoordinator: ObservableObject {
         self.bindings = appConfig.clientBindings
         self.config = newConfig
         self.nodeName = newConfig.effectiveNodeName.isEmpty
-            ? NodeIdentityStore.defaultNodeName()
+            ? SyncConfig.defaultNodeName()
             : newConfig.effectiveNodeName
 
         switch newRole {
@@ -156,6 +159,22 @@ final class FleetSyncCoordinator: ObservableObject {
     }
 
     // MARK: - 启动 / 停机
+
+    /// 身份解析：config 里已有合法 UUID → 原样用（换签名/重装都不变）；
+    /// 缺失 → 生成一次并写回 config；手工写坏 → 记警告后重新生成
+    /// （旧 nodeID 在 hub 侧保留，可手动移除）。
+    private func resolveNodeID(from sync: SyncConfig) {
+        if let raw = sync.nodeID?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty {
+            if let uuid = UUID(uuidString: raw) {
+                nodeID = uuid
+                return
+            }
+            logWarn("[fleet] sync.nodeID 非法（\(raw)），重新生成——节点身份将变化，hub 侧旧节点可手动移除")
+        }
+        let uuid = UUID()
+        provisionNodeID?(uuid)
+        nodeID = uuid
+    }
 
     private func boot() {
         role = SyncRole.derive(config: currentAppConfigProxy)
@@ -202,14 +221,12 @@ final class FleetSyncCoordinator: ObservableObject {
     // MARK: - Hub 侧
 
     private var hubScope: String {
-        // scope = hubUUID（§5.7）。identity 失败时用兜底串——applyReport 会因
-        // identity 错误根本走不到这里。
-        (try? identityStore.identity().nodeID.uuidString) ?? "hub-unavailable"
+        nodeID?.uuidString ?? "hub-unavailable"
     }
 
     private func startHub() {
         do {
-            let identity = try identityStore.identity()
+            guard let identityNodeID = nodeID else { throw HubBootError.noIdentity }
             let loopbackOnly = config.hubBindHost == "127.0.0.1" || config.hubBindHost == "localhost"
             let server = HubServer(handlers: HubServerHandlers(
                 processReport: { [weak self] body in
@@ -226,7 +243,7 @@ final class FleetSyncCoordinator: ObservableObject {
             try server.start(port: port, loopbackOnly: loopbackOnly)
             self.server = server
             status.online = true
-            logInfo("[fleet-hub] 监听端口 \(server.boundPort.map(String.init) ?? String(port))（scope=\(identity.nodeID.uuidString)）")
+            logInfo("[fleet-hub] 监听端口 \(server.boundPort.map(String.init) ?? String(port))（scope=\(identityNodeID.uuidString)）")
             applyOwnReport()
             startHubMaintenance()
         } catch {
@@ -260,12 +277,14 @@ final class FleetSyncCoordinator: ObservableObject {
     }
 
     /// hub 本机数据变化：同一 builder 生成报告，不经 HTTP（§7.2）。
+    private enum HubBootError: Error { case noIdentity }
+
     private func applyOwnReport() {
         do {
-            let identity = try identityStore.identity()
-            let seq = try identityStore.allocateSeq()
+            guard let identity = nodeID else { throw HubBootError.noIdentity }
+            let seq = try store.allocateLocalSeq()
             let input = UsageReportInput(
-                identity: identity,
+                nodeID: identity,
                 nodeName: nodeName,
                 bindings: bindings,
                 statuses: statuses
@@ -327,11 +346,13 @@ final class FleetSyncCoordinator: ObservableObject {
     }
 
     private func hubHealthResponse() async -> HubServerResponse {
+        guard let nodeID else {
+            return HubServerResponse.error(500, "Internal Server Error", "身份不可用")
+        }
         do {
-            let identity = try identityStore.identity()
             let payload = FleetHealth(
                 ok: true,
-                nodeID: identity.nodeID,
+                nodeID: nodeID,
                 protocolVersion: FleetProtocol.version
             )
             return HubServerResponse.json(200, "OK", try FleetCodec.encode(payload))
@@ -359,8 +380,8 @@ final class FleetSyncCoordinator: ObservableObject {
 
     /// 纯读装配：不修改 store。可见签名变化时递增 generation（持久）。
     func assembleSnapshot(now: Date) throws -> FleetSnapshot {
-        let identity = try identityStore.identity()
-        let scope = identity.nodeID.uuidString
+        guard let identity = nodeID else { throw HubBootError.noIdentity }
+        let scope = identity.uuidString
         let state = try store.loadHubState(scope: scope)
         let staleAfter = TimeInterval(config.staleAfterSeconds)
 
@@ -404,17 +425,17 @@ final class FleetSyncCoordinator: ObservableObject {
         }
         let elected = FleetMerger.electQuotas(
             candidates: candidates,
-            hubNodeID: identity.nodeID,
+            hubNodeID: identity,
             quotaMaxAgeSeconds: TimeInterval(config.quotaMaxAgeSeconds),
             now: now
         )
 
         let snapshot = FleetSnapshot(
             protocolVersion: FleetProtocol.version,
-            hubUUID: identity.nodeID,
+            hubUUID: identity,
             generation: state.generation,
             hub: FleetNodeIdentity(
-                nodeID: identity.nodeID,
+                nodeID: identity,
                 nodeName: nodeName,
                 timezoneID: TimeZone.current.identifier,
                 platform: "macOS"
@@ -457,7 +478,10 @@ final class FleetSyncCoordinator: ObservableObject {
         do {
             let client = try SyncClient(hubURL: config.effectiveHubURL)
             self.client = client
-            _ = try? identityStore.identity() // 启动即验证身份可用；失败走错误态
+            guard nodeID != nil else {
+                status.lastError = "节点身份不可用"
+                return
+            }
         } catch {
             status.online = false
             status.lastError = error.localizedDescription
@@ -491,11 +515,11 @@ final class FleetSyncCoordinator: ObservableObject {
         let versionAtStart = configVersion
         lastPushAt = Date()
         do {
-            let identity = try identityStore.identity()
-            // 先持久化递增 seq，成功后才发送（§6.2）。
-            let seq = try identityStore.allocateSeq()
+            guard let identity = nodeID else { return }
+            // 先持久化递增 seq（fleet.sqlite），成功后才发送（§7.3）。
+            let seq = try store.allocateLocalSeq()
             let input = UsageReportInput(
-                identity: identity,
+                nodeID: identity,
                 nodeName: nodeName,
                 bindings: bindings,
                 statuses: statuses

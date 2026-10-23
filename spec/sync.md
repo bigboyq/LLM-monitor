@@ -79,17 +79,18 @@ clientProviders 汇总逐字段核对）；窗口行失败只丢该行；`seq <=
   超过 `quotaMaxAgeSeconds` 只标 `isStale` 不淘汰。来源经
   `sourceNodeID/sourceNodeName` 表达，wire 不传 `isLocal`。
 
-## 5. 身份与序号（`Services/Sync/NodeIdentity.swift`）
+## 5. 身份与序号（用户裁定 2026-10-24：config 方案，无 Keychain）
 
-`nodeID`（UUID）与 `lastIssuedSeq` 存**同一个** Keychain 条目
-（`kSecAttrSynchronizable = false` + `ThisDeviceOnly`，不随 iCloud
-同步——用户裁定）。**优先 Data Protection Keychain**
-（`kSecUseDataProtectionKeychain`，无 ACL 弹窗的现代形态），ad-hoc 本地
-构建缺 entitlement（-34018）时静默回退经典钥匙串；形态判定进程内缓存，
-读路径 `ItemNotFound` 时探测另一种形态，避免换形态静默换 UUID。
-`allocateSeq` 先持久化递增后的序号、成功才返回；Keychain 读写失败抛错、
-不发送、**不静默换 UUID**；损坏负载报错而不是重置。强制换 UUID
-（`forceReset`）= 新节点，旧 nodeID 由 hub 保留至用户手动移除。
+`nodeID`（UUID 字符串）就是配置值：首次启用联动时生成并写回
+`config.json` 的 `sync.nodeID`（AppState 注入的 `provisionNodeID` 闭包），
+之后每次启动原样读取——换签名、重装、跨进程都稳定。手工写坏（非法 UUID）
+记警告后重新生成，旧 nodeID 在 hub 侧保留可手动移除。**dotfile 部署注意**：
+直接复制 config 会带着同一身份，每台机器必须改成不同的 `sync.nodeID`。
+
+`lastIssuedSeq` 不进 config（每轮推送都递增，写配置会把热加载管线变成
+推送回路），存 `fleet.sqlite` 的 `kind=seq` 单行：
+`FleetStore.allocateLocalSeq()` 事务内 读→+1→写，**持久化成功才返回**——
+hub 的 high-water 据此拒绝迟到报告（§7.3）。持久化失败本轮不发送、不换身份。
 
 ## 6. 存储（`Services/Sync/FleetStore.swift`）
 
@@ -149,7 +150,8 @@ node_meta → 任何可见变化递增 generation。窗口按 `endAt` 早于
 §Config Schema 的 `sync` 行。
 
 `AppState`：`start()` 时仅当 `sync.enabled` 才构造 `FleetSyncCoordinator`
-（`fleet.sqlite` 落 `config.json` 同目录；Keychain 身份）；运行期配置启用由
+（`fleet.sqlite` 落 `config.json` 同目录；身份经 `provisionNodeID` 闭包写回
+config）；运行期配置启用由
 配置订阅补启动；`statusDidChange`（quota 刷新 / scanner 应用 / rebuild 的
 统一广播）驱动 `update(config:statuses:)`；`stop()` 停机。未启用时
 `fleetSync == nil`，现有行为零变化。
