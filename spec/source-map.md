@@ -17,6 +17,8 @@
 | `Sources/LLM-monitor/Services/Sync/HubServer.swift` | NWListener 上的 HTTP/1.1 最小子集 hub 服务：定长 body、4MiB/2MiB 上下限、路径白名单、每 nodeID 1s 限流、连接看门狗；业务全部委托 HubServerHandlers |
 | `Sources/LLM-monitor/Services/Sync/SyncClient.swift` | node 侧 HTTP 客户端（复用 Infra/HTTPClient）：POST 报告推+取一次往返、GET 快照兜底、GET /v1/health 学习 hubUUID；upstreamKey 归一化 |
 | `Sources/LLM-monitor/Services/Sync/UsageReportBuilder.swift` | 从 ProviderStatus.usageProjection 构建 NodeUsageReport：七日权威日桶（FleetTotals(summing:) 规范化汇总）、同样本计价的模型明细与窗口行（interval/weekly/glmOffPeak）、有效 lastSuccess 额度通道；扫描中省略日桶 |
+| `Sources/LLM-monitor/Models/FleetUsageModels.swift` | Fleet UI 投影（L3）：FleetScope、FleetEffectiveQuota（本机优先→elected + 来源标注）、FleetCardUsage / FleetWindowUsageRow（卡片全局 scope 用量）、FleetMenuSummary（菜单双行 + client→node→model 三层）、FleetCardContext（scope 分段与生效额度载体，闭包不参与相等比较） |
+| `Sources/LLM-monitor/Views/SettingsSyncPane.swift` | 设置页「多机联动」pane：角色字段（写穿持久化）、复制局域网地址、已连接节点列表（移除 → removeNodeFromFleet）、全局摘要、各 provider 额度来源、归因指纹不一致提示 |
 | `Sources/LLM-monitor/Services/Sync/SyncCoordinator.swift` | 多机联动运行时编排（@MainActor ObservableObject）：hub 起 HubServer 并不经 HTTP 并入自身数据（防抖 2s）+ 维护节拍递增 generation；node 周期+唤醒推送循环、health 握手、generation/configVersion 门控、快照缓存 |
 | `Sources/LLM-monitor/Models/DerivedValueMemo.swift` | 渲染期派生值的**值键 memo**（`Slot` 分槽、每槽只留最近一次、条目数有界）：键逐字相等才复用，刻意不做脏标记广播——漏一次失效等于界面静默显示过期数字；重算在锁外 |
 | `Sources/LLM-monitor/Models/ClientIdentity.swift` | 身份语汇（QuotaProviderID / ClientID / ClientDescriptor / ClientProviderBinding）与默认绑定矩阵字面量（单一事实源） |
@@ -195,8 +197,8 @@
 
 ## Test Suite
 
-- 规模：`Tests/LLMMonitorTests/` 按主题一文件组织（2026-10 重组后 134 文件 / 1293 用例；含 fleet sync 5 文件 52 例：SyncModelsTests / NodeIdentityTests / FleetStoreTests / UsageReportBuilderTests / FleetSyncIntegrationTests——后者走真实 NWListener 回环端到端）。
+- 规模：`Tests/LLMMonitorTests/` 按主题一文件组织（2026-10 重组后 135 文件 / 1302 用例；含 fleet sync 6 文件 61 例（另 FleetUsageModelsTests 9 例）：SyncModelsTests / NodeIdentityTests / FleetStoreTests / UsageReportBuilderTests / FleetSyncIntegrationTests / FleetUsageModelsTests——后者走真实 NWListener 回环端到端）。
 - **串行执行是既定选择**：`swift test --parallel` 实测（2026-10-02，5 连跑 3 败）不可用——`SQLiteTempCopyTests` 的临时副本断言扫描跨进程共享目录，并行 worker 互相误判；且慢测试为睡眠型，并行的 wall 收益仅 ~4s。并行化前提：先给 SQLiteTempCopy 的副本目录引入进程级隔离，再复评。
 - 慢用例的等待注入缝已建立：调度器（now/sleep）、Bark 退避（retryDelay）、vnode 合并窗口（coalescingWindow 参数）；新增耗时敏感测试时优先走注入缝，不要写死真实 sleep。
 
-> 核对基线：2026-10-24 · 代码 a3d4553
+> 核对基线：2026-10-24 · 代码 b5006a6

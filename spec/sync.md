@@ -150,14 +150,41 @@ node_meta → 任何可见变化递增 generation。窗口按 `endAt` 早于
 统一广播）驱动 `update(config:statuses:)`；`stop()` 停机。未启用时
 `fleetSync == nil`，现有行为零变化。
 
-## 10. 尚未实现（下一批）
+## 10. UI 落点（已实现，2.0 第二批 · b5006a6）
 
-- UI：dock 卡片「本机/全局」分段控制、菜单节点分组与两个合计、额度来源标注
-  （设计稿 §10，细则 §10.6 已定）。
-- 设置页「多机联动」pane（§10.4，含复制地址 / 已连接节点 / 移除 / 归因一致性
-  提示）。
-- `effectiveQuota(for:)` 统一解析入口（§7.7 的入列并集规则）。
+两条轴（§10.0）：**用量 scope** 用户切（`AppState.fleetScope`，dock 浮层与
+菜单兜底 hover 卡共用同一份，仅内存态）；**额度来源** 自动
+（`AppState.fleetEffectiveQuota(for:)` 统一入口：本机有效 lastSuccess 优先，
+否则 elected，来源经 `FleetEffectiveQuota.sourceTagText` 标注——本机不标 /
+`来自 X` / `来自 X · 已过期`）。额度不跟 scope 走。
+
+- **卡片**（`ProviderCardView` + `FleetCardContext`，两宿主同源注入）：
+  多节点时标题行出现「本机/全局」分段 + 来源标注；全局 scope 下窗口表
+  （5h/周/闲/fleet 今行）与 7 天卡读 `FleetUsageProjection.cardUsage`
+  （快照口径），额度区块照常走生效额度。圆环/边缘窗常驻面仍读本机
+  provider 状态（§10.1 的圆环改造未做，见下）。
+- **菜单**（`HarnessUsageMenuView`）：fleet 多节点时顶部「今日全部 /
+  今日本机」并排两行 + fleet 占比条；client 段头 = 该 client 的 fleet
+  权威日合计；段内**节点行全宽不缩进**（细分隔线 + 次要色，§10.6 K），
+  本机第一、其余 token 降序、stale 标「离线」；模型行各节点明细
+  （`nodes[].entries`，不反推段头）。**单节点 / 未启用时整棵树逐字保持
+  现状**（§10.6 L 退化规则，`FleetMenuSummary.multiNode` 门控）。
+- **入列并集**（§7.7）：`AppState.fleetVisibleStatuses()` = 本机已启用
+  provider ∪ 仅有 elected 额度的 provider（后者合成最小 status，卡片上有
+  来源标注说明非本机抓取）；菜单兜底行与 iconDuo
+  （`statusBarQuotaMetrics`）都走它。
+- **设置页**（`SettingsSyncPane`，SettingsTab.sync）：启用开关、hubURL /
+  端口 / 上报周期 / 节点名（`ConfigStore.applyAndSave` 写穿持久化）、
+  主节点复制局域网地址（en0 IPv4）、已连接节点（最后上报 / seq / 离线 /
+  移除 → `removeNodeFromFleet`）、全局摘要、各 provider 额度来源、
+  归因指纹不一致标黄（`FleetNodeSnapshot.attributionFingerprint`）。
+
+### 仍留给后续
+
+- 边缘窗**常驻圆环**改读生效额度（现仍读本机 `lastSuccess`；hover 卡已覆盖）。
 - node 侧 GET 兜底拉取的调度（端点已实现，`SyncClient.fetchSnapshot` 可用）。
+- 全局窗口范围显示的「hub 生效边界优先」选择器（§10.7.1 已裁定，当前
+  `cardUsage` 直接展示快照里全部范围行）。
 
 ## 测试
 
@@ -167,6 +194,8 @@ node_meta → 任何可见变化递增 generation。窗口按 `endAt` 早于
 快照缓存隔离）、`UsageReportBuilderTests`（七桶权威 totals、同样本计价、
 额度门控、扫描省略日桶）、`FleetSyncIntegrationTests`（回环端到端：health
 握手、合并与选举入快照、重放不覆盖、心跳、429/413/415/404、hub 本机并入、
-node 协调器上线与缓存落盘）。
+node 协调器上线与缓存落盘）、`FleetUsageModelsTests`（生效额度三态与来源
+标注、菜单单节点退化 / 双行合计 / 节点排序、卡片窗口行与不完整标记、
+混币金额文案）。
 
-> 核对基线：2026-10-24 · 代码 a3d4553
+> 核对基线：2026-10-24 · 代码 b5006a6
