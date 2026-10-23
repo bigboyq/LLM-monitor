@@ -3,10 +3,12 @@ import AppKit
 
 /// 设置页「多机联动」pane（§10.4）。副节点 / 主节点两套视角由 `hubURL` 派生。
 ///
-/// 持久化走 `ConfigStore.applyAndSave` **写穿**（toggle / 字段 commit 即存盘），
-/// 不进设置窗的草稿-保存事务：同步配置是机器身份类设置（与 `providerCardOrder`
-/// 那类草稿字段不同），立即生效正是这个 pane 的语义——角色切换、端口监听
-/// 都不该等一次「保存」。
+/// 持久化走 `ConfigStore.applyAndSave` **写穿**（toggle / 字段回车即存盘），
+/// 不进设置窗的草稿-保存事务：同步配置是机器身份类设置，立即生效正是这个
+/// pane 的语义——角色切换、端口监听都不该等一次「保存」。
+///
+/// 排版走设置页统一组件（`SettingsSection` / `SettingsToggleRow` /
+/// `SettingsControlRow`），与其余 pane 同一套行距与控件宽度。
 struct SettingsSyncPane: View {
     @ObservedObject var state: AppState
 
@@ -16,12 +18,40 @@ struct SettingsSyncPane: View {
     @State private var pushIntervalDraft = ""
 
     var body: some View {
-        Form {
-            Section("多机联动") {
-                enabledToggle
+        VStack(alignment: .leading, spacing: 20) {
+            SettingsSection(
+                title: "多机联动",
+                footer: "多副一主：留空主节点地址 = 本机是主节点（接收并合并副节点报告）；填地址 = 本机是副节点（只上报、不监听端口）。文本修改后按回车保存，立即生效。"
+            ) {
+                SettingsToggleRow(label: "启用多机联动", isOn: Binding(
+                    get: { syncConfig.enabled },
+                    set: { value in update { $0.enabled = value } }
+                ))
+                if syncConfig.enabled {
+                    SettingsControlRow("上级主节点地址") {
+                        TextField("", text: $hubURLDraft, prompt: Text("http://192.168.1.20:8787（留空 = 本机为主节点）"))
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: SettingsLayout.standardControlWidth)
+                            .onSubmit(commitHubURL)
+                            .help("按回车保存；留空时本机作为主节点")
+                    }
+                    roleStatusRow
+                    if role == .hub {
+                        hubFields
+                    } else if role == .node {
+                        nodeFields
+                    }
+                    SettingsControlRow("本机名称") {
+                        TextField("", text: $nodeNameDraft, prompt: Text("默认 hostname"))
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: SettingsLayout.standardControlWidth)
+                            .onSubmit(commitNodeName)
+                            .help("其他机器的菜单节点分组里显示这个名字；默认 \(NodeIdentityStore.defaultNodeName())。按回车保存。")
+                    }
+                }
             }
+
             if syncConfig.enabled {
-                roleFields
                 connectionSection
                 quotaSourceSection
                 if state.fleetAttributionInconsistent {
@@ -29,7 +59,6 @@ struct SettingsSyncPane: View {
                 }
             }
         }
-        .formStyle(.grouped)
         .onAppear { loadDrafts() }
     }
 
@@ -43,51 +72,22 @@ struct SettingsSyncPane: View {
         SyncRole.derive(config: state.configStore.config)
     }
 
-    private var enabledToggle: some View {
-        Toggle("启用多机联动", isOn: Binding(
-            get: { syncConfig.enabled },
-            set: { value in update { $0.enabled = value } }
-        ))
+    /// 角色是派生值（hubURL 决定），只读展示 + 连接状态徽标。
+    private var roleStatusRow: some View {
+        HStack {
+            Text(roleTitle)
+                .font(SettingsTypography.rowLabel)
+                .foregroundStyle(.primary)
+            Spacer()
+            connectionBadge
+        }
     }
 
-    /// 角色字段：hubURL 空 = 本机是主节点；非空 = 副节点（§6.4）。
-    @ViewBuilder
-    private var roleFields: some View {
-        Section("本机角色") {
-            TextField(
-                "上级主节点地址（留空 = 本机为主节点）",
-                text: $hubURLDraft
-            )
-            .onSubmit { commitHubURL() }
-            if role == .node {
-                HStack {
-                    Text("角色：副节点 · 定期上报并同步全局快照")
-                    Spacer()
-                    connectionBadge
-                }
-                LabeledContent("上报周期（秒）") {
-                    TextField("60", text: $pushIntervalDraft)
-                        .frame(width: 80)
-                        .onSubmit { commitPushInterval() }
-                }
-            } else if role == .hub {
-                HStack {
-                    Text("角色：主节点 · 接收并合并副节点报告")
-                    Spacer()
-                    connectionBadge
-                }
-                LabeledContent("监听端口") {
-                    TextField("8787", text: $portDraft)
-                        .frame(width: 80)
-                        .onSubmit { commitPort() }
-                }
-                copyAddressButton
-            }
-            LabeledContent("本机名称（空 = hostname）") {
-                TextField(NodeIdentityStore.defaultNodeName(), text: $nodeNameDraft)
-                    .frame(width: 200)
-                    .onSubmit { commitNodeName() }
-            }
+    private var roleTitle: String {
+        switch role {
+        case .hub: return "角色：主节点 · 接收并合并副节点报告"
+        case .node: return "角色：副节点 · 定期上报并同步全局快照"
+        case .off: return "角色：未启用"
         }
     }
 
@@ -96,44 +96,80 @@ struct SettingsSyncPane: View {
             if state.fleetRuntimeStatus.online {
                 Text("已连接\(state.fleetRuntimeStatus.lastSyncAt.map { " · 上次同步 \(Formatters.formatClock($0))" } ?? "")")
                     .foregroundStyle(.green)
-            } else if role != .off {
-                Text("离线")
+            } else {
+                Text(role == .hub ? "监听中" : "离线")
                     .foregroundStyle(.secondary)
             }
         }
         .font(SettingsTypography.status)
     }
 
+    @ViewBuilder
+    private var hubFields: some View {
+        SettingsControlRow("监听端口") {
+            TextField("", text: $portDraft, prompt: Text("8787"))
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 100)
+                .onSubmit(commitPort)
+                .help("按回车保存")
+        }
+        copyAddressButton
+    }
+
+    @ViewBuilder
+    private var nodeFields: some View {
+        SettingsControlRow("上报周期（秒）") {
+            TextField("", text: $pushIntervalDraft, prompt: Text("60"))
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 100)
+                .onSubmit(commitPushInterval)
+                .help("按回车保存")
+        }
+    }
+
     /// 主节点「复制地址」：副节点粘这个就行（§10.4）。
     private var copyAddressButton: some View {
-        HStack {
-            let address = "http://\(Self.lanAddress()):\(syncConfig.hubPort)"
-            Text("副节点地址：\(address)")
+        HStack(spacing: 8) {
+            Text("副节点地址：\(lanAddress)")
                 .font(SettingsTypography.status)
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)
             Button("复制地址") {
                 NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(address, forType: .string)
+                NSPasteboard.general.setString(lanAddress, forType: .string)
             }
         }
     }
 
-    // MARK: - 连接 / 节点（主节点视角）
+    private var lanAddress: String {
+        "http://\(Self.lanAddress()):\(syncConfig.hubPort)"
+    }
+
+    // MARK: - 已连接节点（主节点视角，不含本机）
+
+    /// 副节点列表只列**别人**：hub 自己虽以节点身份参加合并（§7.2），
+    /// 但它对本机用户不是「连接对象」，列出来只有噪音。
+    private var remoteNodes: [FleetNodeSnapshot] {
+        guard let snapshot = state.fleetSnapshot else { return [] }
+        return snapshot.nodes.filter { $0.nodeID != state.fleetLocalNodeID }
+    }
 
     @ViewBuilder
     private var connectionSection: some View {
-        if role == .hub, let snapshot = state.fleetSnapshot {
-            Section("已连接节点") {
-                if snapshot.nodes.isEmpty {
-                    Text("暂无副节点上报。副节点在 config.json 配 \(syncConfig.hubPort) 端口地址即可接入。")
+        if role == .hub {
+            SettingsSection(
+                title: "已连接节点",
+                footer: "副节点在 config.json 填上面的地址即可接入。离线节点在保留期内仍计入同日合计；「移除」删除该节点的全部同步数据。"
+            ) {
+                if remoteNodes.isEmpty {
+                    Text("暂无副节点上报")
                         .font(SettingsTypography.status)
                         .foregroundStyle(.secondary)
                 }
-                ForEach(snapshot.nodes, id: \.nodeID) { node in
+                ForEach(remoteNodes, id: \.nodeID) { node in
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(node.nodeName + (node.nodeID == state.fleetLocalNodeID ? "（本机）" : ""))
+                            Text(node.nodeName)
                             Text("最后上报 \(Formatters.formatClock(node.lastSeenAt)) · seq \(node.seq)")
                                 .font(SettingsTypography.status)
                                 .foregroundStyle(.secondary)
@@ -148,9 +184,12 @@ struct SettingsSyncPane: View {
                     }
                 }
             }
-            Section("已收到的全局摘要") {
-                if let today = snapshot.fleet.dailyBuckets.last {
-                    LabeledContent("节点数") { Text("\(snapshot.nodes.count)") }
+            SettingsSection(title: "全局摘要") {
+                if let snapshot = state.fleetSnapshot,
+                   let today = snapshot.fleet.dailyBuckets.last {
+                    LabeledContent("fleet 节点数（含本机）") {
+                        Text("\(snapshot.nodes.count)")
+                    }
                     LabeledContent("今日全部 token") {
                         Text(Formatters.formatTokenCountCompact(
                             today.totals.input + today.totals.cacheRead
@@ -169,7 +208,10 @@ struct SettingsSyncPane: View {
     // MARK: - 各 provider 额度来源（§10.3 / §7.7）
 
     private var quotaSourceSection: some View {
-        Section("各 Provider 的额度来源") {
+        SettingsSection(
+            title: "各 Provider 的额度来源",
+            footer: "生效额度 = 本机有效额度优先，否则取 fleet 选举结果；菜单、图标与卡片读的都是这一份。"
+        ) {
             ForEach(ProviderKind.allCases, id: \.providerID) { kind in
                 let effective = state.fleetEffectiveQuota(for: kind)
                 HStack {
@@ -187,9 +229,9 @@ struct SettingsSyncPane: View {
 
     /// 归因指纹不一致 → 标黄提示（§7.8：不阻断、不弹窗）。
     private var attributionNotice: some View {
-        Section {
+        SettingsSection(title: "归因设置不一致") {
             Label(
-                "归因设置不一致：各机的客户端 × Provider 归因不同，全局数字为各机口径之和",
+                "各机的客户端 × Provider 归因不同，全局数字为各机口径之和",
                 systemImage: "exclamationmark.triangle.fill"
             )
             .foregroundStyle(.orange)
