@@ -248,6 +248,59 @@ final class FleetUsageModelsTests: XCTestCase {
         XCTAssertEqual(usage.incompleteNotice, "部分节点缺该范围或已离线")
     }
 
+    // MARK: - 窗口范围选择（§10.7.1 W 裁定）
+
+    func testPreferredRangePrefersExactBoundaryOverNewerEnd() {
+        let boundary = Date(timeIntervalSince1970: 1_800_000_000)
+        let matching = Self.aggregate(endAt: boundary, input: 10)
+        let newer = Self.aggregate(endAt: boundary.addingTimeInterval(600), input: 99)
+        let picked = FleetUsageProjection.preferredRange(matching, over: newer, preferredEnd: boundary)
+        XCTAssertEqual(picked.endAt, boundary, "边界命中的范围优先于 endAt 更新的范围")
+        let noMatch = FleetUsageProjection.preferredRange(matching, over: newer, preferredEnd: nil)
+        XCTAssertEqual(noMatch.endAt, newer.endAt, "无匹配取 endAt 最新者")
+        let flipped = FleetUsageProjection.preferredRange(newer, over: matching, preferredEnd: boundary)
+        XCTAssertEqual(flipped.endAt, boundary, "参数顺序无关：命中边界的赢")
+    }
+
+    private static func aggregate(endAt: Date, input: Int) -> FleetWindowAggregate {
+        FleetWindowAggregate(
+            quotaProviderID: QuotaProviderID.openAI, modelID: "chatgpt_plan",
+            windowKind: "interval", startAt: endAt.addingTimeInterval(-5 * 60 * 60), endAt: endAt,
+            input: input, cacheRead: 0, output: 0, reasoning: 0,
+            valueByCurrency: [:], coverage: .none, complete: true,
+            contributingNodeIDs: [], staleNodeIDs: [], missingNodeIDs: []
+        )
+    }
+
+    func testCardUsageSelectsOneRangePerModelAndKind() {
+        let snapshot = menuSnapshot(nodeCount: 2, perNodeInput: [100, 100])
+        let boundary = now
+        let staleRange = Self.aggregate(endAt: boundary.addingTimeInterval(-3600), input: 7)
+        let boundaryRange = Self.aggregate(endAt: boundary, input: 40)
+        var withRanges = snapshot
+        withRanges = FleetSnapshot(
+            protocolVersion: snapshot.protocolVersion,
+            hubUUID: snapshot.hubUUID,
+            generation: snapshot.generation,
+            hub: snapshot.hub,
+            generatedAt: snapshot.generatedAt,
+            nodes: snapshot.nodes,
+            fleet: FleetAggregate(
+                dailyBuckets: snapshot.fleet.dailyBuckets,
+                windowUsage: [staleRange, boundaryRange]
+            ),
+            electedQuotas: []
+        )
+        let usage = FleetUsageProjection.cardUsage(
+            snapshot: withRanges,
+            quotaProviderID: QuotaProviderID.openAI,
+            now: now,
+            preferredWindowEnds: ["interval": boundary]
+        )!
+        XCTAssertEqual(usage.windowRows.count, 1, "同 (model, kind) 多范围只展示选中的一个")
+        XCTAssertEqual(usage.windowRows[0].input, 40, "选中与生效额度边界一致的范围")
+    }
+
     // MARK: - 金额文案
 
     func testCostTextMixedCurrencyAndUnpriced() {

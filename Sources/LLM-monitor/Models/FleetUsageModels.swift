@@ -251,7 +251,8 @@ enum FleetUsageProjection {
         snapshot: FleetSnapshot,
         quotaProviderID: String,
         now: Date = Date(),
-        calendar: Calendar = .current
+        calendar: Calendar = .current,
+        preferredWindowEnds: [String: Date] = [:]
     ) -> FleetCardUsage? {
         var daily: [UnifiedDailyTokenUsage] = []
         var dayValues: [FleetCardUsage.DayValue] = []
@@ -278,9 +279,29 @@ enum FleetUsageProjection {
             return ModelCostEstimate(value: value, currency: currency, pricedModelNames: [], unpricedModelNames: [])
         }
 
+        // 范围选择（§10.7.1 W 裁定，2026-10-24 已确认）：同 (model, kind) 存在
+        // 多个已报告范围时，优先取与当前生效额度边界**完全一致**的范围，
+        // 无匹配取 `endAt` 最新者；其余范围不展示（范围不同的摘要不混加）。
+        struct RangeGroupKey: Hashable {
+            let modelID: String
+            let windowKind: String
+        }
+        var selectedAggregates: [RangeGroupKey: FleetWindowAggregate] = [:]
+        for aggregate in snapshot.fleet.windowUsage where aggregate.quotaProviderID == quotaProviderID {
+            let key = RangeGroupKey(modelID: aggregate.modelID, windowKind: aggregate.windowKind)
+            if let current = selectedAggregates[key] {
+                selectedAggregates[key] = preferredRange(
+                    aggregate, over: current,
+                    preferredEnd: preferredWindowEnds[aggregate.windowKind]
+                )
+            } else {
+                selectedAggregates[key] = aggregate
+            }
+        }
+
         var windowRows: [FleetWindowUsageRow] = []
         var anyIncomplete = false
-        for aggregate in snapshot.fleet.windowUsage where aggregate.quotaProviderID == quotaProviderID {
+        for aggregate in selectedAggregates.values {
             let label = windowLabel(for: aggregate.windowKind)
             let incomplete = !aggregate.missingNodeIDs.isEmpty
                 || !aggregate.staleNodeIDs.isEmpty
@@ -333,6 +354,19 @@ enum FleetUsageProjection {
             result[currency.rawValue, default: 0] += value
         }
         return result
+    }
+
+    /// 边界命中的范围优先于 endAt 更新的范围；两边都不命中取 endAt 新者。
+    static func preferredRange(
+        _ candidate: FleetWindowAggregate,
+        over current: FleetWindowAggregate,
+        preferredEnd: Date?
+    ) -> FleetWindowAggregate {
+        if let preferredEnd {
+            if candidate.endAt == preferredEnd { return candidate }
+            if current.endAt == preferredEnd { return current }
+        }
+        return candidate.endAt >= current.endAt ? candidate : current
     }
 
     static func windowLabel(for kind: String) -> String {

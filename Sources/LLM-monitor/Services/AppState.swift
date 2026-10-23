@@ -446,6 +446,22 @@ final class AppState: ObservableObject {
         return result
     }
 
+    /// statuses 的「生效额度视图」（§10.1 圆环改造）：入列并集之上，把本机
+    /// 没有有效额度、但 fleet 有 elected 的卡替换为 `.ok(elected)`——边缘窗
+    /// 常驻圆环据此读到 fleet 余量（hover 卡另有来源标注说明非本机抓取）。
+    /// 本机有有效额度时原样保留（本机优先，§2.1）。
+    func fleetQuotaEffectiveStatuses() -> [ProviderStatus] {
+        fleetVisibleStatuses().map { status in
+            let localValid = !(status.lastSuccess?.activeModels.isEmpty ?? true)
+            if localValid { return status }
+            let effective = fleetEffectiveQuota(for: status.kind)
+            guard let quota = effective.quota else { return status }
+            var copy = status
+            copy.state = .ok(quota)
+            return copy
+        }
+    }
+
     /// hover 卡 / dock 浮层共用的 fleet 上下文（§10.1）。无快照时 nil：
     /// 卡片回到现状渲染。
     func fleetCardContext(for kind: ProviderKind) -> FleetCardContext? {
@@ -455,13 +471,26 @@ final class AppState: ObservableObject {
             multiNode: snapshot.nodes.count > 1,
             usage: FleetUsageProjection.cardUsage(
                 snapshot: snapshot,
-                quotaProviderID: kind.quotaProviderID
+                quotaProviderID: kind.quotaProviderID,
+                preferredWindowEnds: Self.preferredWindowEnds(
+                    of: fleetEffectiveQuota(for: kind)
+                )
             ),
             effectiveQuota: fleetEffectiveQuota(for: kind),
             onScopeChange: { [weak self] newScope in
                 self?.fleetScope = newScope
             }
         )
+    }
+
+    /// 当前生效额度的窗口边界（§10.7.1 W 裁定）：全局窗口范围显示优先匹配
+    /// 该边界，无匹配时取已报告窗口中 `endAt` 最新者。
+    static func preferredWindowEnds(of effective: FleetEffectiveQuota) -> [String: Date] {
+        guard let model = effective.quota?.primaryModel else { return [:] }
+        var ends: [String: Date] = [:]
+        if model.hasIntervalWindow { ends["interval"] = model.intervalResetsAt }
+        if model.hasWeeklyWindow { ends["weekly"] = model.weeklyResetsAt }
+        return ends
     }
 
     /// fleet 内归因设置是否不一致（§7.8：提示，不阻断）。

@@ -44,8 +44,10 @@ struct EdgeDockContentView: View {
     /// 条目顺序 = 配置里的 provider 顺序（与菜单卡片一致，见 `orderedEntries`）。
     private var entries: [EdgeDockEntry] {
         _ = tick
+        // 生效额度视图（§10.1）：本机无有效额度而 fleet 有 elected 时，
+        // 圆环读 fleet 余量（hover 卡上有来源标注）。
         return EdgeDockProjection.entries(
-            from: state.statuses,
+            from: state.fleetQuotaEffectiveStatuses(),
             preferredIDs: configStore.config.providerCardOrder
         )
     }

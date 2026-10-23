@@ -518,6 +518,16 @@ final class FleetSyncCoordinator: ObservableObject {
             status.lastSyncAt = Date()
             status.lastError = nil
         } catch {
+            // 推送被拒但链路是通的（4xx/5xx）：兜底拉一次快照（§4.2 GET），
+            // 让离线期间的额度/用量变化仍能同步回来。
+            if case QuotaError.httpError = error {
+                if let snapshot = try? await client.fetchSnapshot() {
+                    guard configVersion == versionAtStart else { return }
+                    try? acceptSnapshot(snapshot, from: client)
+                    status.online = true
+                    status.lastSyncAt = Date()
+                }
+            }
             // 429（间隔限流）不算离线：本轮已被 hub 拒收，等下个节拍。
             if case QuotaError.httpError(let statusCode, _) = error, statusCode == 429 {
                 logInfo("[fleet-node] 推送被限流，下个节拍重试")
