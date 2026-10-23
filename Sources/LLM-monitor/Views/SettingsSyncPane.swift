@@ -64,6 +64,10 @@ struct SettingsSyncPane: View {
             }
         }
         .onAppear { loadDrafts() }
+        // 配置管线每次落盘后（rebuildStatuses → statusDidChange）强制重排：
+        // 角色行/连接徽标读的是 configStore.config，AppState 自己不发
+        // objectWillChange，不挂这条保存后界面会停留在旧角色。
+        .onReceive(state.statusDidChange) { _ in }
     }
 
     // MARK: - 基础
