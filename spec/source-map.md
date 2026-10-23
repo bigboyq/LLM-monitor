@@ -11,6 +11,13 @@
 | `Sources/LLM-monitor/Fetchers/FetcherDescriptor.swift` | `FetcherDescriptor` (provider 注册元信息 single source of truth) |
 | `Sources/LLM-monitor/Models/AppConfig.swift` | 应用配置与 Provider 配置契约模型（`StatusBarIconStyle` / `StatusBarHealthColors` / `BarkConfig` / `AppConfig` / `ProviderConfig`，从 ConfigStore.swift 解耦） |
 | `Sources/LLM-monitor/Models/ProviderClientModel.swift` | quota Provider / Client IDs、显式绑定、provider 中立 usage projection 与设置页摘要模型 |
+| `Sources/LLM-monitor/Models/SyncModels.swift` | Fleet Sync wire DTO（NodeUsageReport / FleetSnapshot 等）、FleetCodec（iso8601 唯一编解码入口）、通道级报告校验（FleetReportValidator）、日桶/窗口合并与额度选举纯函数（FleetMerger）、归因指纹（SHA256 前 8 hex）、SyncRole 单源派生 |
+| `Sources/LLM-monitor/Services/Sync/NodeIdentity.swift` | 节点身份：Keychain 单条目存 nodeID+lastIssuedSeq（不同步 iCloud），allocateSeq 先持久化再返回，失败不换 UUID；KeychainNodeIdentityBackend 可注入 |
+| `Sources/LLM-monitor/Services/Sync/FleetStore.swift` | 应用自有 fleet.sqlite 单表 sync_records 的事务存储：报告通道独立落库、high-water seq、窗口 upsert 与过期清理、generation 持久化、副节点快照缓存（scope = upstreamKey+hubUUID 隔离） |
+| `Sources/LLM-monitor/Services/Sync/HubServer.swift` | NWListener 上的 HTTP/1.1 最小子集 hub 服务：定长 body、4MiB/2MiB 上下限、路径白名单、每 nodeID 1s 限流、连接看门狗；业务全部委托 HubServerHandlers |
+| `Sources/LLM-monitor/Services/Sync/SyncClient.swift` | node 侧 HTTP 客户端（复用 Infra/HTTPClient）：POST 报告推+取一次往返、GET 快照兜底、GET /v1/health 学习 hubUUID；upstreamKey 归一化 |
+| `Sources/LLM-monitor/Services/Sync/UsageReportBuilder.swift` | 从 ProviderStatus.usageProjection 构建 NodeUsageReport：七日权威日桶（FleetTotals(summing:) 规范化汇总）、同样本计价的模型明细与窗口行（interval/weekly/glmOffPeak）、有效 lastSuccess 额度通道；扫描中省略日桶 |
+| `Sources/LLM-monitor/Services/Sync/SyncCoordinator.swift` | 多机联动运行时编排（@MainActor ObservableObject）：hub 起 HubServer 并不经 HTTP 并入自身数据（防抖 2s）+ 维护节拍递增 generation；node 周期+唤醒推送循环、health 握手、generation/configVersion 门控、快照缓存 |
 | `Sources/LLM-monitor/Models/DerivedValueMemo.swift` | 渲染期派生值的**值键 memo**（`Slot` 分槽、每槽只留最近一次、条目数有界）：键逐字相等才复用，刻意不做脏标记广播——漏一次失效等于界面静默显示过期数字；重算在锁外 |
 | `Sources/LLM-monitor/Models/ClientIdentity.swift` | 身份语汇（QuotaProviderID / ClientID / ClientDescriptor / ClientProviderBinding）与默认绑定矩阵字面量（单一事实源） |
 | `Sources/LLM-monitor/Models/UsageFrameExtractors.swift` | 帧抽取注册表 `usageFrameExtractors`（各 harness 的 ProviderStatus 字段 → `HarnessUsageFrame`，L1 适配） |
@@ -188,8 +195,8 @@
 
 ## Test Suite
 
-- 规模：`Tests/LLMMonitorTests/` 按主题一文件组织（2026-10 重组后 126 文件 / 1166 用例）。
+- 规模：`Tests/LLMMonitorTests/` 按主题一文件组织（2026-10 重组后 134 文件 / 1293 用例；含 fleet sync 5 文件 52 例：SyncModelsTests / NodeIdentityTests / FleetStoreTests / UsageReportBuilderTests / FleetSyncIntegrationTests——后者走真实 NWListener 回环端到端）。
 - **串行执行是既定选择**：`swift test --parallel` 实测（2026-10-02，5 连跑 3 败）不可用——`SQLiteTempCopyTests` 的临时副本断言扫描跨进程共享目录，并行 worker 互相误判；且慢测试为睡眠型，并行的 wall 收益仅 ~4s。并行化前提：先给 SQLiteTempCopy 的副本目录引入进程级隔离，再复评。
 - 慢用例的等待注入缝已建立：调度器（now/sleep）、Bark 退避（retryDelay）、vnode 合并窗口（coalescingWindow 参数）；新增耗时敏感测试时优先走注入缝，不要写死真实 sleep。
 
-> 核对基线：2026-10-20 · 代码 83e1c03
+> 核对基线：2026-10-24 · 代码 a3d4553

@@ -8,7 +8,7 @@ The app reads and writes this shape:
 
 ```json
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "refreshIntervalSeconds": 300,
   "providers": {
     "minimax_token_plan": {
@@ -59,7 +59,8 @@ The app reads and writes this shape:
 
 | Field | Scope | Meaning |
 |---|---|---|
-| `schemaVersion` | global | Configuration schema version. Missing legacy values decode as version 0 and are normalized to the current version; unsupported future versions are rejected rather than silently defaulted. |
+| `schemaVersion` | global | Configuration schema version. Missing legacy values decode as version 0 and are normalized to the current version; unsupported future versions are rejected rather than silently defaulted. Schema 3 adds the `sync` block (multi-machine fleet sync, see `spec/sync.md`). |
+| `sync` | global | 多机联动配置（`SyncConfig`）。缺省或不写 = `enabled: false`，完全不参与（现有用户零影响）；坏值按未配置处理（逐字段容错，只回退该字段）。字段：`enabled`（缺省 false）、`hubURL`（空 = 本机为主节点 hub；非空 = 副节点 node，且不监听端口——角色由 `SyncRole.derive` 单源派生）、`pushIntervalSeconds`（默认 60，clamp 5s...24h）、`hubBindHost`（默认 `0.0.0.0`；`127.0.0.1`/`localhost` 时只绑回环）、`hubPort`（默认 8787）、`nodeName`（空 = hostname）、`staleAfterSeconds`（默认 900）、`quotaMaxAgeSeconds`（默认 1800）、`retainDays`（默认 7）。协议与运行时见 `spec/sync.md`。 |
 | `refreshIntervalSeconds` | global | Default refresh interval in seconds. Current default is `300`; effective values are clamped to 10 seconds...30 days. |
 | `statusBarIconStyle` | global | Selected menu-bar icon theme. Missing or invalid values use `chartBar`. |
 | `statusBarHealthDotEnabled` | global | Shows the 6 pt health dot on the menu-bar icon. Missing or invalid values default to `true`. |
@@ -239,4 +240,4 @@ CHANGELOG 最新条目、两份 README 的「当前版本」/DMG 名/build-relea
 的旧文案「按本机时区计算、可在设置中调整」直到发版前才发现，只因 `build-release.sh` 的
 版本门禁全绿而放行。**功能口径变了，用户文档必须同轮改**。
 
-> 核对基线：2026-10-20 · 代码 f6530fe
+> 核对基线：2026-10-24 · 代码 a3d4553

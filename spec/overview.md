@@ -77,6 +77,7 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 | `runtime.md` | 组件接线图、启动流程、刷新调度、provider 状态机、本地认证探测、UI 广播、数据模型、健康度算法、错误兜底、provider 注册契约、产品边界 |
 | `accounting.md` | token 计量四桶口径、harness 对齐矩阵、promptID 命名空间、跨 provider 金额汇总 |
 | `local-usage-reconcile.md` | reconcile 三层模型与三种扫描模式、provider 策略矩阵、scanner 并发模型 |
+| `sync.md` | 多机联动（Fleet Sync）核心链路：角色派生与拓扑不变量、wire 协议、报告/快照形状、合并与选举、Keychain 身份与 seq、fleet.sqlite 单表存储、报告构建、协调器编排与 AppState 接线 |
 | `notifications.md` | 额度事件检测与触发语义、渠道层（系统通知 / Bark）、通知配置与设置 UI |
 | `ui-design.md` | UI 主题索引（拆分后的导航入口，内容分流到 `ui/*.md`） |
 | `ui/edge-dock.md` | 屏幕边缘状态窗：几何、锚点、命中判定、拖拽、鼠标轮询、全屏门控、dock 形态 |
@@ -116,6 +117,7 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 | 改开机自启入口 | `ui/settings.md` §Launch At Login (Settings Window) |
 | 改 token 计量、思考分摊、价格与金额汇总 | `accounting.md` §Harness 对齐矩阵 |
 | 改扫描调度、缓存指纹、reconcile 分层 | `local-usage-reconcile.md` §Scanner Concurrency (本地用量 scanner 的并发模型) |
+| 改多机联动（协议 / 存储 / 合并选举 / 上报构建 / 协调器） | `sync.md`（设计裁定与未实现项见 `docs/reviews/fleet-sync-design.md`） |
 | 改 `config.json` 字段、运行时文件、构建打包 | `config.md` §Config Schema |
 | 改通知触发语义、渠道与去抖 | `notifications.md` §3. 事件模型与触发语义 |
 | 改额度健康度分档与状态胶囊配色 | `runtime.md` §Health Algorithm |
@@ -126,6 +128,7 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 
 - 计量 / 价格 / 思考分摊 → `accounting.md`
 - 扫描调度 / 缓存 / reconcile → `local-usage-reconcile.md`
+- 多机联动 / fleet 协议与存储 → `sync.md`
 - 通知触发与渠道 → `notifications.md`
 - 配置字段与默认值 → `config.md`
 - 身份语汇（client / provider / 绑定矩阵） → `Models/ClientIdentity.swift` + `runtime.md` §Provider Registration Contract
@@ -141,4 +144,4 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 - Automatic updates and in-app version checks — upgrading means downloading a new build from
   GitHub Releases manually (release gating and the pre-release checklist: `spec/config.md`).
 
-> 核对基线：2026-10-05 · 代码 79dee29
+> 核对基线：2026-10-24 · 代码 a3d4553
