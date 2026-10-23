@@ -173,11 +173,13 @@ node_meta → 任何可见变化递增 generation。窗口按 `endAt` 早于
   provider ∪ 仅有 elected 额度的 provider（后者合成最小 status，卡片上有
   来源标注说明非本机抓取）；菜单兜底行与 iconDuo
   （`statusBarQuotaMetrics`）都走它。
-- **设置页**（`SettingsSyncPane`，SettingsTab.sync）：启用开关、hubURL /
+- **设置页**（`SettingsSyncPane`，SettingsTab.sync，排版走设置页统一组件
+  `SettingsSection`/`SettingsControlRow`，字段回车即存）：启用开关、hubURL /
   端口 / 上报周期 / 节点名（`ConfigStore.applyAndSave` 写穿持久化）、
-  主节点复制局域网地址（en0 IPv4）、已连接节点（最后上报 / seq / 离线 /
-  移除 → `removeNodeFromFleet`）、全局摘要、各 provider 额度来源、
-  归因指纹不一致标黄（`FleetNodeSnapshot.attributionFingerprint`）。
+  主节点复制局域网地址（en0 IPv4）、已连接节点（**只列副节点，hub 自身
+  参加合并但不进列表**；最后上报 / seq / 离线 / 移除 →
+  `removeNodeFromFleet`）、全局摘要（节点数标注含本机）、各 provider
+  额度来源、归因指纹不一致标黄（`FleetNodeSnapshot.attributionFingerprint`）。
 
 ### 收尾（6b90b16，原遗留三项已全部实现）
 
@@ -206,4 +208,4 @@ node 协调器上线与缓存落盘）、`FleetUsageModelsTests`（生效额度�
 标注、菜单单节点退化 / 双行合计 / 节点排序、卡片窗口行与不完整标记、
 混币金额文案）。
 
-> 核对基线：2026-10-24 · 代码 6b90b16
+> 核对基线：2026-10-24 · 代码 094110e
