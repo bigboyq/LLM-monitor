@@ -15,54 +15,99 @@ protocol NodeIdentityBackend: Sendable {
     func save(_ data: Data) throws
 }
 
-/// Keychain 后端。`kSecAttrSynchronizable = false`：nodeID 是机器身份，
-/// 不随 iCloud Keychain 同步到其它机器（用户裁定 2026-10-24）。
+/// Keychain 后端：**优先 Data Protection Keychain**（`kSecUseDataProtectionKeychain`，
+/// 现代「无密码」形态——条目不进经典文件钥匙串、无 ACL 授权弹窗，重建/重签后
+/// 自建自读也永不要求 login 密码），**缺 entitlement 时透明回退经典钥匙串**：
+/// ad-hoc 签名的本地构建（`swift build` / build-app.sh 的 `-` identity）没有
+/// keychain entitlement，DP 钥匙串返回 `errSecMissingEntitlement(-34018)`——
+/// 经典钥匙串里自建自读同样静默，只是同一台机器换了签名身份再访问旧条目
+/// 可能弹授权框（开发期重建即如此；正式 Developer ID 构建走 DP 不受影响）。
+///
+/// `kSecAttrSynchronizable = false`（DP 形态下再叠加 `ThisDeviceOnly`）：
+/// nodeID 是机器身份，不随 iCloud 同步（用户裁定 2026-10-24）。
 final class KeychainNodeIdentityBackend: NodeIdentityBackend {
     private let service: String
     private let account: String
+    /// 进程内缓存的 DP 可用性：首次操作探测，之后固定走同一种形态，
+    /// 避免「写入走 DP、读取走经典」永远读不到对方条目。
+    private var dataProtectionAvailable: Bool?
 
     init(service: String = "LLM-monitor.fleet-sync", account: String = "node-identity") {
         self.service = service
         self.account = account
     }
 
-    private var baseQuery: [String: Any] {
-        [
+    private func baseQuery(useDataProtection: Bool) -> [String: Any] {
+        var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
             kSecAttrSynchronizable as String: false
         ]
+        if useDataProtection {
+            query[kSecUseDataProtectionKeychain as String] = true
+            query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        }
+        return query
     }
 
+    /// 读：按已缓存形态优先；`ItemNotFound` 时再把另一种形态也查一遍——
+    /// 条目可能由旧构建写在另一种形态里，直接判「不存在」会静默换 UUID。
     func load() throws -> Data? {
-        var query = baseQuery
-        query[kSecReturnData as String] = true
-        query[kSecMatchLimit as String] = kSecMatchLimitOne
-        var item: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &item)
-        switch status {
-        case errSecSuccess:
-            return item as? Data
-        case errSecItemNotFound:
-            return nil
-        default:
-            throw NodeIdentityError.keychainStatus(status)
+        for useDP in candidateForms() {
+            var search = baseQuery(useDataProtection: useDP)
+            search[kSecReturnData as String] = true
+            search[kSecMatchLimit as String] = kSecMatchLimitOne
+            var item: CFTypeRef?
+            let status = SecItemCopyMatching(search as CFDictionary, &item)
+            switch status {
+            case errSecSuccess:
+                if dataProtectionAvailable == nil { dataProtectionAvailable = useDP }
+                return item as? Data
+            case errSecItemNotFound:
+                continue
+            case errSecMissingEntitlement:
+                // DP 形态不可用（无 entitlement 的本地构建）：固定走经典。
+                dataProtectionAvailable = false
+                continue
+            default:
+                throw NodeIdentityError.keychainStatus(status)
+            }
         }
+        return nil
     }
 
+    /// 写：按已缓存形态执行；add 冲突则 update（避免 delete + add 的身份空窗）。
     func save(_ data: Data) throws {
-        var query = baseQuery
-        query[kSecValueData as String] = data
-        // 先 add，冲突（已存在）则 update：避免 delete + add 之间的身份空窗。
-        var status = SecItemAdd(query as CFDictionary, nil)
-        if status == errSecDuplicateItem {
-            let update = [kSecValueData as String: data]
-            status = SecItemUpdate(baseQuery as CFDictionary, update as CFDictionary)
+        for useDP in candidateForms() {
+            let query = baseQuery(useDataProtection: useDP)
+            var add = query
+            add[kSecValueData as String] = data
+            var status = SecItemAdd(add as CFDictionary, nil)
+            if status == errSecDuplicateItem {
+                let update = [kSecValueData as String: data]
+                status = SecItemUpdate(query as CFDictionary, update as CFDictionary)
+            }
+            if status == errSecMissingEntitlement {
+                dataProtectionAvailable = false
+                continue
+            }
+            guard status == errSecSuccess else {
+                throw NodeIdentityError.keychainStatus(status)
+            }
+            if dataProtectionAvailable == nil { dataProtectionAvailable = useDP }
+            return
         }
-        guard status == errSecSuccess else {
-            throw NodeIdentityError.keychainStatus(status)
+        throw NodeIdentityError.keychainStatus(errSecMissingEntitlement)
+    }
+
+    /// 探测顺序：已缓存 → 只试缓存形态；未缓存 → [DP, 经典]。
+    /// 后续形态固定，避免「写进 DP、读走经典」永远错开。
+    private func candidateForms() -> [Bool] {
+        if let known = dataProtectionAvailable {
+            return [known]
         }
+        return [true, false]
     }
 }
 
