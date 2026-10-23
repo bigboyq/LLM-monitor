@@ -143,6 +143,12 @@ final class AppState: ObservableObject {
 
     private var sleepHealthCancellable: AnyCancellable?
 
+    /// 多机联动（2.0 核心链路）：hub 服务 / node 推送的运行时。
+    /// `sync.enabled = false`（缺省）时为 nil——现有用户零影响。
+    /// `internal` 供测试注入与观测。
+    private(set) var fleetSync: FleetSyncCoordinator?
+    private var fleetSyncCancellable: AnyCancellable?
+
     /// 统一的 statuses 广播通道。
     ///
     /// 之前是 3 个独立 publisher + 手动 `objectWillChange.send()`：
@@ -283,6 +289,11 @@ final class AppState: ObservableObject {
         // `stop()` 也会取消配置 watcher；允许生命周期重启时恢复配置热加载。
         configStore.startWatching()
 
+        // 多机联动：仅在配置显式启用时启动（缺省 false）。
+        if configStore.config.effectiveSyncConfig.enabled {
+            startFleetSync()
+        }
+
         // 启动时立即对「节能」睡眠健康度进行一次首评（不等错峰延迟，立即展示健康灯）
         sleepHealth.refreshNow()
 
@@ -315,10 +326,42 @@ final class AppState: ObservableObject {
         nextRefreshAt = nil
         sleepHealth.stop()
         configStore.stopWatching()
+        fleetSync?.stop()
         // 停机兜底：基线正常走 actor 异步串行落盘，进程可能在 encode + fsync 的
         // 毫秒级窗口里退出而丢掉最后一次基线（重启后停机期间的耗尽/恢复就补报不了）。
         // stop() 是同步路径，不能 await actor，这里同步写完再返回。
         triggerStateStore.flushSynchronously()
+    }
+
+    // MARK: - 多机联动接线（2.0 核心链路）
+
+    /// 构造并启动 `FleetSyncCoordinator`：身份走 Keychain，状态存同目录
+    /// `fleet.sqlite`（独立于 token-monitor 缓存，§5.7）。构造失败只记日志，
+    /// 不影响主功能——本地显示永不依赖网络（§3 不变量 3）。
+    private func startFleetSync() {
+        if let fleetSync {
+            fleetSync.update(config: configStore.config, statuses: statuses)
+            return
+        }
+        do {
+            let storeURL = configStore.configURL
+                .deletingLastPathComponent()
+                .appendingPathComponent("fleet.sqlite")
+            let coordinator = FleetSyncCoordinator(
+                identityStore: NodeIdentityStore(backend: KeychainNodeIdentityBackend()),
+                store: try FleetStore(url: storeURL)
+            )
+            fleetSync = coordinator
+            // 所有 statuses 变更（quota 刷新、scanner 应用、rebuildStatuses）
+            // 都驱动同步运行时：hub 防抖重建本机报告，node 唤醒推送循环。
+            fleetSyncCancellable = statusDidChange.sink { [weak self] _ in
+                guard let self, let fleetSync = self.fleetSync else { return }
+                fleetSync.update(config: self.configStore.config, statuses: self.statuses)
+            }
+            coordinator.start(config: configStore.config, statuses: statuses)
+        } catch {
+            logError("[fleet] fleet.sqlite 初始化失败，多机联动未启动: \(error.localizedDescription)")
+        }
     }
 
     /// 配置变更后的重排入口（差异化：只重锚新增 / 重新启用 / interval 变化的 provider）。
@@ -566,6 +609,10 @@ final class AppState: ObservableObject {
                 self.authProber.reset()
                 self.rebuildStatuses()
                 self.rescheduleAll()
+                // 运行期打开多机联动开关（start() 之后再启用）。
+                if newConfig.effectiveSyncConfig.enabled, self.fleetSync == nil {
+                    self.startFleetSync()
+                }
                 // 节假日数据源变更 → 重新走解析链并按需取数；源未变时内部 no-op。
                 self.holidayCalendarService.handleConfigChange(
                     source: newConfig.effectiveHolidaySource
