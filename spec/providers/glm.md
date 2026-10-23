@@ -539,11 +539,12 @@ zcode SaaS 活动套餐（如周末体验套餐 `ZCode Weekend Build`）的 used
 |---|---|
 | 数据源 | `~/.zcode/v2/logs/YYYY-MM-DD.log` 尾部（≤512KB）最后一条 `billing/balance 请求完成` 行 |
 | 文件回退 | 今天无标记行 → 读昨天的；两天都没有 → `nil`（未解析） |
-| 解析 | `payload.data.plans[]`（plan_id→name）+ `payload.data.balances[]`（entitlement 级 total/used/remaining/expires_at/capabilities） |
+| 解析 | `payload.data.plans[]`（plan_id→name；`entitlements[]` 带 grant_units / effective_at / capabilities，用于生效前预告）+ `payload.data.balances[]`（entitlement 级 total/used/remaining/expires_at/capabilities）。balances 与 previews 同源——同一条日志行（`GlmActivityPlanBalanceRead`） |
 | 过期口径 | `expires_at <= now` 的条目直接剔除（"plan expire 就不显示"）；服务端对未领取/失效套餐返回空 `balances` |
-| 开关 | `providers.glm_coding_plan.parseZcodeBalanceLog`（缺省关闭；关闭时不读日志，并清除已显示的缓存余额，不依赖用量数据库发生变化）。`LocalUsageOrchestration.updateGlmBalanceLogParsing` 在 `rebuildStatuses`（init + 每次配置变更）推送 |
-| 展示 | `GlmActivityPlanBalancesView`：每条 entitlement 一行 `🎁 套餐名 94% (283M/300M) 08-31 09:00`——剩余占比（与额度窗口同一取整口径）+ 可用/总量 + 过期时间，全部行内显示（菜单栏弹层里 `.help` 悬浮不生效）。挂在 GLM 卡额度行下方；balances 空则整块不渲染 |
-| 单位 | `*_units` 是 token（`unit_type: "token"`）；`expires_at` 是 unix **秒** |
+| 生效前预告 | 额度生效前 `balances` 为空数组，改从 `plans[].entitlements[]` 产出预告（`GlmActivityPlanPreview`，`Models/GlmLocalUsage.swift`）。三条判定：balances 已有对应桶（生效后不重复）、`effective_at <= now`、plan 的 `ends_at`（若有）`<= now`，任一命中即不预告；`grant_units` clamp ≥ 0 |
+| 开关 | `providers.glm_coding_plan.parseZcodeBalanceLog`（缺省关闭；关闭时不读日志，并清除已显示的缓存余额与预告，不依赖用量数据库发生变化）。`LocalUsageOrchestration.updateGlmBalanceLogParsing` 在 `rebuildStatuses`（init + 每次配置变更）推送 |
+| 展示 | `GlmActivityPlanBalancesView`：余额行每条 entitlement 一行 `🎁 套餐名 · 模型名 94% (283M/300M) 08-31 09:00`——剩余占比（与额度窗口同一取整口径）+ 可用/总量 + 过期时间，全部行内显示（菜单栏弹层里 `.help` 悬浮不生效）；模型名与套餐名忽略大小写同名 / 为空 / 实为 entitlementID 回退值时省略（`displayTitle` 静态纯函数）。预告行渲染在余额行之后：`🎁 套餐名 · 模型名 生效时间：MM-dd HH:mm（300M）`——无百分比、无已用/剩余，整行 `.tertiary` 弱化。挂在 GLM 卡额度行下方；balances 与 previews 都空则整块不渲染 |
+| 单位 | `*_units` 是 token（`unit_type: "token"`）；`expires_at` / `effective_at` 是 unix **秒** |
 
 边界：ZCode 未运行时不产生新快照，UI 展示日志中最近一次观测值（`observedAt` 记录
 日志行时间）；日志格式无官方契约，解析失败静默降级为「无活动套餐」。billing/balance
@@ -605,11 +606,11 @@ Bigmodel-Target-Type: PERSONAL                    # 团队套餐为 TEAM + Bigmo
 
 | Responsibility | Source |
 |---|---|
-| Data model | `Sources/LLM-monitor/Models/GlmLocalUsage.swift` |
+| Data model | `Sources/LLM-monitor/Models/GlmLocalUsage.swift`（`GlmActivityPlanBalance` / `GlmActivityPlanPreview` 同文件） |
 | SQLite reader | `Sources/LLM-monitor/Services/GlmZcodeDBReader.swift` |
 | Off-peak window reader | `Sources/LLM-monitor/Services/GlmZcodeOffPeakReader.swift` |
 | Scanner, cache, and seven-day snapshot | `Sources/LLM-monitor/Services/GlmZcodeLocalUsageScanner.swift` |
-| Activity-plan balance log reader | `Sources/LLM-monitor/Services/GlmZcodeBalanceLogReader.swift` |
+| Activity-plan balance log reader（balances + 生效前 previews，同一条日志行） | `Sources/LLM-monitor/Services/GlmZcodeBalanceLogReader.swift` |
 | Provider-neutral projection with OpenCode | `Sources/LLM-monitor/Models/ProviderClientModel.swift` (`ProviderStatus.usageProjection`，帧抽取表 `usageFrameExtractors`) + `UsageProjectionKernel` |
 | Window summary + off-peak exclusion | `Sources/LLM-monitor/Models/LocalTokenUsageSample.swift` (`summary(excludeGlmOffPeak:)`；今日闲时样本筛选/聚合 `offPeakTodaySamples` / `offPeakTodaySummary`) |
 | Card integration | `Sources/LLM-monitor/Views/ProviderCardView.swift` + `QuotaViews.swift`；「额度窗口」表格「闲」行的构造在 `Sources/LLM-monitor/Views/ProviderCardDerived.swift`（`ProviderCardDerivedValues.offPeakUsageRow`） |
@@ -700,4 +701,4 @@ whether the quota batch succeeded. GLM's former dedicated periodic trigger
 The scanner's db+WAL fingerprint check is unchanged: when nothing changed only a `stat()`
 runs (microseconds); SQL (~1.5ms) only runs when the WAL actually moved.
 
-> 核对基线：2026-10-09 · 代码 87c17b8
+> 核对基线：2026-10-23 · 代码 5fea520

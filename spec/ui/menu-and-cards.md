@@ -661,7 +661,7 @@ look for a hover route to this data — the card carries it inline.
 - 数据来源：远程 `GET open.bigmodel.cn/api/monitor/usage/quota/limit`，Coding Plan Key 作裸 token 放 `Authorization`。鉴权失败（HTTP 200 + `code:1000`）在 parse 阶段捕获并映射成 401 语义。
 - **高峰期提示**：额度行下方一行（`PeakIndicatorView` 外壳 + `GlmPeakIndicatorView` 的文案），纯本地计算（北京时间，与 API 无关）。颜色分 3 档：高峰期 🔥 红色 `高峰期 · 还剩 X`；非高峰期距高峰 < 1 小时 ❄️ 橙色、≥ 1 小时 ❄️ 绿色 `距高峰期 X · 非高峰 5 折`。Mon–Fri 14–18（官方规则：高峰全价、非高峰 50% 折），窗口固定不可调（北京时间、法定节假日除外，设置页只读展示，见 `spec/ui/settings.md`）。倒计时读环境里的 `\.displayDate`——共享展示时钟 `DisplayClock`（每个宿主各持一个实例），由卡片实际所在的宿主各自注入并随面板显隐 start/stop：菜单内容（`MenuContentView` 内联）、菜单兜底行 hover 浮层（`HoverPanelController`）与 dock 浮层（`EdgeDockController`）都持有时钟、经 `DisplayClockScope` 注入环境；不需要自己挂 `TimelineView`。
 - **闲时用量**：不再独立成块——原额度条下方的闲时脚注已删除，用量并入「额度窗口」表格的「闲」行（GLM-only，行序在「今」之后，重置日期格恒 `—`，口径说明句挂在「闲」字类型格的 tooltip 上；详见 `spec/ui/edge-dock.md` §Quota window usage block）。
-- **活动套餐余额**（`GlmActivityPlanBalancesView`，仅在开启 `parseZcodeBalanceLog` 且有未过期 entitlement 时出现）：每条一行 `🎁 套餐名 94% (283M/300M) 08-31 09:00`，排在额度段之后、余额之前。
+- **活动套餐余额**（`GlmActivityPlanBalancesView`，仅在开启 `parseZcodeBalanceLog` 且有未过期 entitlement 或生效前预告时出现）：余额行每条一行 `🎁 套餐名 · 模型名 94% (283M/300M) 08-31 09:00`（模型名与套餐名忽略大小写同名 / 为空 / 实为 entitlementID 回退值时省略）；预告行（套餐已发放但 `effective_at` 未到、balances 无对应桶）排在余额行之后：`🎁 套餐名 · 模型名 生效时间：MM-dd HH:mm（300M）`——无百分比、无已用/剩余，整行 `.tertiary` 弱化。两种行都空则整块不渲染，排在额度段之后、余额之前。
 - **OpenCode 数据合并**：`zhipuai-coding-plan` 绑定默认开启（`clientBindings[]`）。卡片底部展示 native ZCode 与 OpenCode 合并后的今日与最近 7 天 Input / Cache / Output / Reason 以及 R/T；绑定关闭后只显示 native ZCode local Scanner 数据。设置页没有该开关，调整方式见下节。
 
 ### OpenCode client bindings（无设置页开关）
@@ -908,4 +908,4 @@ The card's failure row is the one place in this table that is a **literal** 11pt
 than a `MenuTypography` role: the `errorMessage` role had no call site and was deleted
 rather than left as an unused role. The rendered size is unchanged.
 
-> 核对基线：2026-10-20 · 代码 ff9e2f5
+> 核对基线：2026-10-23 · 代码 5fea520
