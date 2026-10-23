@@ -82,7 +82,11 @@ clientProviders 汇总逐字段核对）；窗口行失败只丢该行；`seq <=
 ## 5. 身份与序号（`Services/Sync/NodeIdentity.swift`）
 
 `nodeID`（UUID）与 `lastIssuedSeq` 存**同一个** Keychain 条目
-（`kSecAttrSynchronizable = false`，不随 iCloud 同步——用户裁定）。
+（`kSecAttrSynchronizable = false` + `ThisDeviceOnly`，不随 iCloud
+同步——用户裁定）。**优先 Data Protection Keychain**
+（`kSecUseDataProtectionKeychain`，无 ACL 弹窗的现代形态），ad-hoc 本地
+构建缺 entitlement（-34018）时静默回退经典钥匙串；形态判定进程内缓存，
+读路径 `ItemNotFound` 时探测另一种形态，避免换形态静默换 UUID。
 `allocateSeq` 先持久化递增后的序号、成功才返回；Keychain 读写失败抛错、
 不发送、**不静默换 UUID**；损坏负载报错而不是重置。强制换 UUID
 （`forceReset`）= 新节点，旧 nodeID 由 hub 保留至用户手动移除。
