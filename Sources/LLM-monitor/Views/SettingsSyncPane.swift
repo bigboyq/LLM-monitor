@@ -16,6 +16,8 @@ struct SettingsSyncPane: View {
     @State private var nodeNameDraft = ""
     @State private var portDraft = ""
     @State private var pushIntervalDraft = ""
+    /// 打字停顿 600ms 自动保存的防抖 task（回车仍立即保存）。
+    @State private var commitDebounce: Task<Void, Never>?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -33,6 +35,7 @@ struct SettingsSyncPane: View {
                             .textFieldStyle(.roundedBorder)
                             .frame(width: SettingsLayout.standardControlWidth)
                             .onSubmit(commitHubURL)
+                            .onChange(of: hubURLDraft) { _, _ in debouncedCommit(commitHubURL) }
                             .help("按回车保存；留空时本机作为主节点")
                     }
                     roleStatusRow
@@ -46,6 +49,7 @@ struct SettingsSyncPane: View {
                             .textFieldStyle(.roundedBorder)
                             .frame(width: SettingsLayout.standardControlWidth)
                             .onSubmit(commitNodeName)
+                            .onChange(of: nodeNameDraft) { _, _ in debouncedCommit(commitNodeName) }
                             .help("其他机器的菜单节点分组里显示这个名字；默认 \(SyncConfig.defaultNodeName())。按回车保存。")
                     }
                 }
@@ -111,6 +115,7 @@ struct SettingsSyncPane: View {
                 .textFieldStyle(.roundedBorder)
                 .frame(width: 100)
                 .onSubmit(commitPort)
+                            .onChange(of: portDraft) { _, _ in debouncedCommit(commitPort) }
                 .help("按回车保存")
         }
         copyAddressButton
@@ -123,6 +128,7 @@ struct SettingsSyncPane: View {
                 .textFieldStyle(.roundedBorder)
                 .frame(width: 100)
                 .onSubmit(commitPushInterval)
+                            .onChange(of: pushIntervalDraft) { _, _ in debouncedCommit(commitPushInterval) }
                 .help("按回车保存")
         }
     }
@@ -260,21 +266,37 @@ struct SettingsSyncPane: View {
         pushIntervalDraft = String(syncConfig.pushIntervalSeconds)
     }
 
+    /// 打字停顿后自动保存。commit 函数先比对已持久化值：onAppear 的
+    /// loadDrafts 会触发一轮 onChange，值没变就不落盘（打开设置页不该
+    /// 白跑一次配置管线）。
+    private func debouncedCommit(_ commit: @escaping () -> Void) {
+        commitDebounce?.cancel()
+        commitDebounce = Task {
+            try? await Task.sleep(nanoseconds: 600_000_000)
+            guard !Task.isCancelled else { return }
+            commit()
+        }
+    }
+
     private func commitHubURL() {
+        guard hubURLDraft != syncConfig.hubURL else { return }
         update { $0.hubURL = hubURLDraft }
     }
 
     private func commitNodeName() {
+        guard nodeNameDraft != syncConfig.nodeName else { return }
         update { $0.nodeName = nodeNameDraft }
     }
 
     private func commitPort() {
-        guard let port = Int(portDraft.trimmingCharacters(in: .whitespaces)), (1...65535).contains(port) else { return }
+        guard let port = Int(portDraft.trimmingCharacters(in: .whitespaces)), (1...65535).contains(port),
+              port != syncConfig.hubPort else { return }
         update { $0.hubPort = port }
     }
 
     private func commitPushInterval() {
-        guard let seconds = Int(pushIntervalDraft.trimmingCharacters(in: .whitespaces)), seconds >= 5 else { return }
+        guard let seconds = Int(pushIntervalDraft.trimmingCharacters(in: .whitespaces)), seconds >= 5,
+              seconds != syncConfig.pushIntervalSeconds else { return }
         update { $0.pushIntervalSeconds = seconds }
     }
 
