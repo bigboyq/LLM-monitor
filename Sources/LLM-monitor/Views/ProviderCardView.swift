@@ -110,6 +110,10 @@ extension EnvironmentValues {
 /// mode 的地方加 `.equatable()`，就必须把它们也纳入比较。
 struct ProviderCardView: View, Equatable {
     let status: ProviderStatus
+    /// 多机联动上下文（§10.1）：nil = 未启用联动（现状），现有渲染零变化。
+    /// 非 nil 时标题行出现「本机 / 全局」分段（仅 multiNode），额度读数走
+    /// 生效额度（本机优先，否则 elected），「全局」scope 的用量区块读 fleet 快照。
+    var fleet: FleetCardContext? = nil
 
     /// 「今」行取哪一天：宿主注入的展示时钟（随浮层显隐起停），与卡内其它
     /// 倒计时/新鲜度消费者同一个 now，不取渲染时的墙钟。
@@ -138,7 +142,21 @@ struct ProviderCardView: View, Equatable {
     // nonisolated：View 结构体因 View 协议推断为 @MainActor，而 Equatable 的 ==
     //  witnesses 必须可从任意隔离域调用；status 是 Sendable 值类型，非隔离比较安全。
     nonisolated static func == (lhs: ProviderCardView, rhs: ProviderCardView) -> Bool {
-        lhs.status == rhs.status
+        lhs.status == rhs.status && lhs.fleet == rhs.fleet
+    }
+
+    /// 「全局」scope 且有 fleet 用量数据时，用量区块（窗口表 / 7 天卡）切到
+    /// fleet 口径；额度区块不跟 scope 走（§10.0 两条轴）。
+    private var fleetUsageActive: Bool {
+        fleet?.scope == .fleet && fleet?.usage != nil
+    }
+
+    /// 生效额度：有 fleet 上下文时一律走它（本机优先，否则 elected，§7.7）；
+    /// nil 时保持只读本地 `.ok` 语义（现状）。
+    private var effectiveQuotaInfo: QuotaInfo? {
+        if let effective = fleet?.effectiveQuota { return effective.quota }
+        if case .ok(let info) = status.state { return info }
+        return nil
     }
 
     var body: some View {
@@ -182,20 +200,47 @@ struct ProviderCardView: View, Equatable {
     private func dockBody(derived: ProviderCardDerived) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             headerContent
-            if case .ok(let info) = status.state {
+            // 有生效额度（本地 .ok，或 fleet elected）就走完整三段；否则回退
+            // 单卡（.loading / .failed / .notConfigured 的本地路径不变）。
+            if let info = effectiveQuotaInfo {
                 dockCard {
                     accountInfoRow(info: info)
                     planModules(info: info, derived: derived)
                 }
-                dockSectionTitle(projection: derived.projection)
+                dockSectionTitle(showFreshnessBadge: !fleetUsageActive, projection: derived.projection)
+                if let notice = fleet?.usage?.incompleteNotice, fleetUsageActive {
+                    Text(notice)
+                        .font(MenuTypography.hint)
+                        .foregroundStyle(Color.secondaryLabel)
+                        .padding(.top, 2)
+                }
                 dockCard {
-                    localUsage(projection: derived.projection, part: .detail)
+                    usageBlock(derived: derived)
                 }
             } else {
                 dockCard {
                     content(derived: derived)
                 }
             }
+        }
+    }
+
+    /// 用量区块：fleet scope 读快照（7 天柱图 + 逐日表），本地 scope 走投影。
+    @ViewBuilder
+    private func usageBlock(derived: ProviderCardDerived) -> some View {
+        if fleetUsageActive, let usage = fleet?.usage {
+            LocalUsageFooterView(
+                dailyTokenUsage: usage.daily,
+                recentSamples: [],
+                quotaProviderID: status.kind.quotaProviderID,
+                scannedAt: nil,
+                isScanning: false,
+                isReady: !usage.daily.isEmpty,
+                emptyHint: emptyUsageHint,
+                part: .detail
+            )
+        } else {
+            localUsage(projection: derived.projection, part: .detail)
         }
     }
 
@@ -284,6 +329,19 @@ struct ProviderCardView: View, Equatable {
     /// 每次刷新闪一下。
     @ViewBuilder
     private func quotaWindowUsage(info: QuotaInfo, derived: ProviderCardDerived) -> some View {
+        // fleet scope：整块行集来自 fleet 窗口聚合 + fleet「今」/「闲」行（§10.1）。
+        // 复用 `QuotaWindowUsageSection` 的行形状与排版，快照槽位按 label 映射。
+        if fleetUsageActive, let usage = fleet?.usage {
+            quotaUsageDivider
+            QuotaWindowUsageSection(
+                snapshot: Self.fleetWindowSnapshot(rows: usage.windowRows),
+                tint: accentColor,
+                today: Self.fleetRow(usage.todayRow),
+                offPeak: Self.fleetRow(usage.windowRows.first { $0.label == "闲" }),
+                resetCredits: info.resetCredits,
+                refreshIntervalSeconds: status.refreshIntervalSeconds
+            )
+        } else {
         let snapshot = derived.windowUsageSnapshot
         let today = derived.todayUsageRow
         let offPeak = derived.offPeakUsageRow
@@ -305,6 +363,47 @@ struct ProviderCardView: View, Equatable {
                 refreshIntervalSeconds: status.refreshIntervalSeconds
             )
         }
+        }
+    }
+
+    /// fleet 窗口行 → 本地窗口快照的槽位映射（5h / 周进 interval/weekly，
+    /// 「闲」由调用方单独传入 offPeak 槽）。
+    static func fleetWindowSnapshot(rows: [FleetWindowUsageRow]) -> QuotaWindowUsageSnapshot {
+        func window(_ label: String) -> QuotaWindowUsageSnapshot.Window? {
+            guard let row = rows.first(where: { $0.label == label }) else { return nil }
+            return QuotaWindowUsageSnapshot.Window(
+                label: row.label,
+                usage: UsageMetricSummary(
+                    prompts: 0,
+                    rounds: 0,
+                    inputTokens: row.input + row.cachedInput,
+                    cachedInputTokens: row.cachedInput,
+                    outputTokens: row.output,
+                    reasoningOutputTokens: row.reasoning
+                ),
+                resetsAt: row.endAt,
+                cost: row.cost
+            )
+        }
+        return QuotaWindowUsageSnapshot(
+            interval: window("5h"),
+            weekly: window("周"),
+            poolCount: rows.count
+        )
+    }
+
+    static func fleetRow(_ row: FleetWindowUsageRow?) -> QuotaWindowUsageSection.Row? {
+        guard let row else { return nil }
+        return QuotaWindowUsageSection.Row(
+            label: row.label,
+            metrics: QuotaWindowUsageMetrics(
+                input: row.input,
+                cachedInput: row.cachedInput,
+                output: row.output,
+                reasoning: row.reasoning
+            ),
+            cost: row.cost
+        )
     }
 
     /// 今行的行标签（第五轮改版从「今日」缩成「今」，与「5h」「周」同一长度档）。
@@ -352,7 +451,10 @@ struct ProviderCardView: View, Equatable {
     /// **两个标题行同一套字体与样式**（`MenuTypography.cardTitle` + `primaryLabel`）：
     /// 它们是同一层级的东西——各自那张卡的名字。第二张曾经用更小的 `dataLabel`
     /// 加次要色，读起来像正文里的一句小标题，而不是与第一张并列的卡片标题。
-    private func dockSectionTitle(projection: ProviderUsageProjection) -> some View {
+    private func dockSectionTitle(
+        showFreshnessBadge: Bool = true,
+        projection: ProviderUsageProjection
+    ) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text("最近7天token用量")
                 .font(MenuTypography.cardTitle)
@@ -362,24 +464,26 @@ struct ProviderCardView: View, Equatable {
             // 请求），与标题行额度时间戳的刷新互不牵连；手势同样挂在卡片这个使用点。
             // 采用 Button(.plain) 确保后台悬浮窗（EdgeDock popover）下首击直接响应，
             // 行为与「分析/用量」切换控件完全一致。
-            if let cardUsageRefreshAction {
-                Button {
-                    logInfo("ProviderCardView: 点击 7 天用量时间戳重扫本地用量")
-                    cardUsageRefreshAction()
-                } label: {
+            if showFreshnessBadge {
+                if let cardUsageRefreshAction {
+                    Button {
+                        logInfo("ProviderCardView: 点击 7 天用量时间戳重扫本地用量")
+                        cardUsageRefreshAction()
+                    } label: {
+                        LocalUsageFreshnessBadge(
+                            scannedAt: projection.scannedAt,
+                            isScanning: status.isScanningLocalUsage || projection.localUsageFreshness == .scanning
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .onHover { updatePointingCursor($0) }
+                    .help("重新扫描本地用量")
+                } else {
                     LocalUsageFreshnessBadge(
                         scannedAt: projection.scannedAt,
                         isScanning: status.isScanningLocalUsage || projection.localUsageFreshness == .scanning
                     )
                 }
-                .buttonStyle(.plain)
-                .onHover { updatePointingCursor($0) }
-                .help("重新扫描本地用量")
-            } else {
-                LocalUsageFreshnessBadge(
-                    scannedAt: projection.scannedAt,
-                    isScanning: status.isScanningLocalUsage || projection.localUsageFreshness == .scanning
-                )
             }
         }
         .padding(.top, 4)
@@ -433,7 +537,27 @@ struct ProviderCardView: View, Equatable {
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .help(displayTitle)
+            // 生效额度来自其它节点时必须标来源（§10.3）：单账号余量不是全局余量。
+            if let tag = fleet?.effectiveQuota?.sourceTagText {
+                Text(tag)
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .help(tag)
+            }
             Spacer()
+            if fleet?.multiNode == true, let fleet {
+                Picker("范围", selection: Binding(
+                    get: { fleet.scope },
+                    set: { fleet.onScopeChange?($0) }
+                )) {
+                    Text("本机").tag(FleetScope.local)
+                    Text("全局").tag(FleetScope.fleet)
+                }
+                .pickerStyle(.segmented)
+                .controlSize(.mini)
+                .frame(width: 96)
+            }
             if case .loading = status.state {
                 ProgressView()
                     .scaleEffect(0.55)

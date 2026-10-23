@@ -219,6 +219,9 @@ struct FleetNodeSnapshot: Codable, Equatable, Sendable {
     let dailyBuckets: [FleetDailyBucket]
     let windowUsage: [FleetWindowUsage]
     let quotas: [FleetQuotaReport]
+    /// 该节点的归因设置指纹（§7.8）：≥2 种不同指纹 → 设置页提示「口径之和」。
+    /// 旧快照缺该字段按 nil（未知，不参与比较）。
+    let attributionFingerprint: String?
 }
 
 struct FleetElectedQuota: Codable, Equatable, Sendable {

@@ -71,18 +71,19 @@ extension AppState {
         // 也按 provider 维度取 kind 对应的高峰状态，收集时顺带记录。deepseek 已被
         // 下面过滤器排除（其 deepseekPeakWindow 无需处理）；其他 kind 的
         // glmPeakWindow 为 nil，自然不算高峰。
+        //
+        // 额度读数走 `fleetEffectiveQuota`（§10.5 统一入口）：本机有效额度优先，
+        // 否则 fleet elected——本机未配置某 provider 而 fleet 有其余量时，图标会
+        // 开始显示那个额度（来源在卡片 / 设置页可查）。
         var activeWindowedModels: [(kind: ProviderKind, model: ModelQuota, isPeak: Bool)] = []
         // DeepSeek is balance-only and intentionally has no quota window
-        // semantics; it is excluded from the quotaLogo aggregate just as the
-        // notification pipeline excludes non-windowed providers.
-        for status in enabled where status.kind != .deepseek {
+        // semantics; it is excluded from the quotaLogo aggregate just as
+        // the notification pipeline excludes non-windowed providers.
+        for status in fleetVisibleStatuses() where status.kind != .deepseek {
             // 高峰判定跟随 systemHealthLevel 现状：isGlmPeak 命中 .peak 即 true。
             let isPeak = status.isGlmPeak(at: now)
-            switch status.state {
-            case .ok(let info), .loading(lastSuccess: let info?), .failed(message: _, lastSuccess: let info?):
+            if let info = fleetEffectiveQuota(for: status.kind).quota {
                 activeWindowedModels.append(contentsOf: info.aggregateQuotaModels(providerKind: status.kind).map { (kind: status.kind, model: $0, isPeak: isPeak) })
-            case .notConfigured, .ready, .loading(lastSuccess: nil), .failed(message: _, lastSuccess: nil):
-                break
             }
         }
         let allActiveModels = activeWindowedModels.map(\.model)

@@ -63,6 +63,29 @@ final class FleetSyncCoordinator: ObservableObject {
     /// hub 实际监听端口（端口 0 时由系统分配；测试/发现用）。
     var listeningPort: UInt16? { server?.boundPort }
 
+    /// 本机稳定 nodeID（UI 标「本机」节点 / 生效额度来源判断用）。
+    var localNodeID: UUID? {
+        try? identityStore.identity().nodeID
+    }
+
+    /// 设置页「移除节点」：删除该节点的报告 / 窗口 / high-water（§10.4 / §7.6）。
+    func removeNodeFromFleet(nodeID: UUID) {
+        do {
+            try store.removeNode(scope: hubScope, nodeID: nodeID)
+            _ = try assembleSnapshot(now: Date())
+        } catch {
+            logWarn("[fleet-hub] 移除节点失败: \(error.localizedDescription)")
+        }
+    }
+
+    /// fleet 内是否出现 ≥2 种非空归因指纹（§7.8：提示，不阻断）。
+    var attributionFingerprintsInconsistent: Bool {
+        let fingerprints = Set((latestSnapshot?.nodes ?? [])
+            .compactMap(\.attributionFingerprint)
+            .filter { !$0.isEmpty })
+        return fingerprints.count > 1
+    }
+
     // MARK: - 生命周期
 
     func start(config appConfig: AppConfig, statuses: [ProviderStatus]) {
@@ -350,7 +373,8 @@ final class FleetSyncCoordinator: ObservableObject {
                 stale: now.timeIntervalSince(record.lastSeenAt) > staleAfter,
                 dailyBuckets: record.report.dailyBuckets ?? [],
                 windowUsage: record.windowRows,
-                quotas: record.report.quotas ?? []
+                quotas: record.report.quotas ?? [],
+                attributionFingerprint: record.report.attributionFingerprint
             )
         }
 

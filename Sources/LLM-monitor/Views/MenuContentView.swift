@@ -231,12 +231,14 @@ struct MenuContentView: View {
                     }
                     HarnessUsageMenuView(
                         summary: todaySummary,
-                        // 兜底行按**用户配置的顺序**排（与改造前那屏 provider 卡同一
-                        // 数据源 `providerCardOrder`）；"只显示已启用的"与"放不下时留
-                        // 谁"由 `ProviderStatusStrip` 自己负责，不在这里重复过滤。
+                        fleetSummary: state.fleetMenuSummary,
+                        fleetContext: { status in state.fleetCardContext(for: status.kind) },
+                        // 兜底行按**用户配置的顺序**排；statuses 走**入列并集**
+                        // （本机已启用 ∪ 仅有 elected 额度的 provider，§7.7），
+                        // 顺序仍由 `providerCardOrder` 统一。
                         providerStrip: ProviderStatusStrip.snapshot(
                             statuses: DisplayOrder.ordered(
-                                state.statuses,
+                                state.fleetVisibleStatuses(),
                                 preferredIDs: state.configStore.config.providerCardOrder,
                                 id: { $0.kind.quotaProviderID },
                                 by: ProviderStatus.displayNameAscending

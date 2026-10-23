@@ -16,6 +16,11 @@ import SwiftUI
 /// 数字变化不会把整行往右顶。预算由 `HarnessUsageMenuViewTests` 钉住。
 struct HarnessUsageMenuView: View {
     let summary: HarnessTodaySummary
+    /// fleet 汇总（§10.2）。nil（未启用联动）或单节点（`multiNode == false`）时
+    /// 整棵树保持今天的单行形态——老用户看到的界面与现在逐字一致（§10.6 L）。
+    var fleetSummary: FleetMenuSummary? = nil
+    /// 兜底行 hover 卡的 fleet 上下文（透传给 `ProviderStatusStripView`）。
+    var fleetContext: (ProviderStatus) -> FleetCardContext? = { _ in nil }
     /// 底部的 provider 兜底行（见 `ProviderStatusStripView`）。空快照不渲染任何东西。
     var providerStrip: ProviderStatusStrip.Snapshot = ProviderStatusStrip.Snapshot(entries: [], hiddenCount: 0)
     /// hover 卡 7 天区块时间戳的点击动作：只重扫本地用量计算，不发额度请求。
@@ -28,10 +33,21 @@ struct HarnessUsageMenuView: View {
     /// 刷新实现由 `MenuContentView` 注入（它持有 `AppState`）。
     var onRefreshProvider: (String) -> Void = { _ in }
 
+    /// fleet 汇总可用且多于一个节点时启用双行 + 节点分组形态。
+    private var fleetMenuActive: Bool { fleetSummary?.multiNode == true }
+
     var body: some View {
         VStack(alignment: .leading, spacing: HarnessUsageMenuView.sectionSpacing) {
-            todayOverview
-            if summary.sections.isEmpty {
+            if fleetMenuActive, let fleet = fleetSummary {
+                fleetTodayOverview(fleet: fleet)
+                if fleet.sections.isEmpty {
+                    emptyTodayState
+                } else {
+                    ForEach(fleet.sections) { section in
+                        FleetClientSectionView(section: section)
+                    }
+                }
+            } else if summary.sections.isEmpty {
                 emptyTodayState
             } else {
                 ForEach(summary.sections) { section in
@@ -43,6 +59,7 @@ struct HarnessUsageMenuView: View {
             }
             ProviderStatusStripView(
                 snapshot: providerStrip,
+                fleetContext: fleetContext,
                 onRefreshUsageRescan: onRefreshUsageRescan,
                 onRefreshProvider: onRefreshProvider
             )
@@ -241,6 +258,9 @@ struct HarnessSectionView: View {
 /// - **hover** → 弹完整卡，纯只读，**不触发任何网络请求**。
 struct ProviderStatusStripView: View {
     let snapshot: ProviderStatusStrip.Snapshot
+    /// hover 卡的 fleet 上下文（scope 分段 / fleet 用量 / 生效额度来源标注）。
+    /// 默认恒 nil：未启用联动时 hover 卡与现在完全一致。
+    var fleetContext: (ProviderStatus) -> FleetCardContext? = { _ in nil }
     /// hover 卡 7 天区块时间戳（本地用量新鲜度胶囊）的点击动作：只重扫本地用量
     /// 计算，不发额度请求（`MenuContentView.refreshUsageRescanFromMenu` →
     /// `AppState.triggerLocalUsageRescan`）。经环境键 `\.cardUsageRefreshAction`
@@ -367,7 +387,7 @@ struct ProviderStatusStripView: View {
                 ProviderStateLabel(status: entry.status)
             }
         } detail: {
-            ProviderCardView(status: entry.status)
+            ProviderCardView(status: entry.status, fleet: fleetContext(entry.status))
                 .environment(\.hoverRevealMode, Self.cardRevealMode)
                 .environment(\.quotaWindowSegmentEditable, false)
                 // 卡上两处时间戳的点击刷新，按数据种类分两条路：额度时间戳 →
@@ -454,5 +474,169 @@ struct HarnessModelRowView: View {
     /// 命中率文案复用汇总块的同一实现，避免两处小数位规则漂移。
     static func percentText(_ rate: Double?) -> String {
         HarnessUsageMenuView.hitRateText(rate)
+    }
+}
+
+
+// MARK: - Fleet 菜单形态（§10.2）
+
+extension HarnessUsageMenuView {
+    /// 顶部两行：「今日全部」（fleet）与「今日本机」（local），并排给出——
+    /// 分段控制二选一会丢掉节点层（§10.6 J）。下方一条 fleet 占比条。
+    @ViewBuilder
+    private func fleetTodayOverview(fleet: FleetMenuSummary) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            fleetOverviewRow(
+                label: "今日全部",
+                tokens: fleet.fleetTotals.tokens,
+                hitRate: fleet.fleetTotals.hitRate,
+                valueText: fleet.fleetTotals.valueText
+            )
+            fleetOverviewRow(
+                label: "今日本机",
+                tokens: summary.totalTokens,
+                hitRate: summary.cacheHitRate,
+                valueText: summary.valueText
+            )
+            TokenBucketBar(buckets: fleet.fleetTotals.buckets)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 7)
+        .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 7))
+    }
+
+    private func fleetOverviewRow(
+        label: String,
+        tokens: Int,
+        hitRate: Double?,
+        valueText: String
+    ) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Text(label)
+                .font(MenuTypography.metricLabel)
+                .foregroundStyle(Color.secondaryLabel)
+            Text(Formatters.formatTokenCountCompact(tokens))
+                .font(MenuTypography.metricValue)
+                .foregroundStyle(Color.primaryLabel)
+                .frame(width: HarnessUsageMenuView.totalWidth, alignment: .leading)
+            Spacer(minLength: 4)
+            Text(HarnessUsageMenuView.hitRateText(hitRate))
+                .font(MenuTypography.metricValue)
+                .foregroundStyle(Color.secondaryLabel)
+                .frame(width: HarnessUsageMenuView.hitRateWidth, alignment: .trailing)
+            Text(valueText)
+                .font(MenuTypography.metricValue)
+                .foregroundStyle(Color.primaryLabel)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+        }
+    }
+}
+
+/// fleet 形态的客户端段：段头 = 该 client 的 fleet 权威日合计；段内节点行全宽
+/// 不缩进（细分隔线 + 次要色节点名做分组，§10.6 K），模型行只缩进一级。
+struct FleetClientSectionView: View {
+    let section: FleetMenuSummary.ClientSection
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: HarnessModelRowView.rowSpacing) {
+            header
+            ForEach(section.nodes) { node in
+                FleetNodeGroupView(node: node, models: section.models.filter { $0.nodeID == node.id })
+            }
+        }
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                Image(systemName: section.iconSystemName)
+                    .font(.system(size: 9))
+                    .foregroundStyle(Color.accentColor)
+                Text(section.displayName)
+                    .font(MenuTypography.dataLabel)
+                    .foregroundStyle(Color.primaryLabel)
+                    .lineLimit(1)
+                Spacer(minLength: 6)
+                Text(Formatters.formatTokenCountCompact(section.totalTokens))
+                    .font(MenuTypography.metricValue)
+                    .foregroundStyle(Color.secondaryLabel)
+                Text(section.costText)
+                    .font(MenuTypography.metricValue)
+                    .foregroundStyle(Color.primaryLabel)
+                    .frame(width: HarnessUsageMenuView.valueWidth, alignment: .trailing)
+            }
+            .padding(.bottom, 1)
+            .overlay(alignment: .bottom) {
+                MenuHairline.horizontal
+            }
+        }
+    }
+}
+
+/// 一个节点组：全宽节点行（名称 + 本机/离线标记 + 该节点合计）+ 该节点的模型行。
+struct FleetNodeGroupView: View {
+    let node: FleetMenuSummary.NodeRow
+    let models: [FleetMenuSummary.ModelRow]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: HarnessModelRowView.rowSpacing) {
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                Text("── \(node.nodeName)\(node.isLocal ? "（本机）" : "")")
+                    .font(MenuTypography.dataLabel)
+                    .foregroundStyle(Color.secondaryLabel)
+                    .lineLimit(1)
+                if node.stale {
+                    Text("离线")
+                        .font(MenuTypography.hint)
+                        .foregroundStyle(Color.orange)
+                }
+                Spacer(minLength: 6)
+                Text(Formatters.formatTokenCountCompact(node.totalTokens))
+                    .font(MenuTypography.dataValue)
+                    .foregroundStyle(Color.secondaryLabel)
+                Text(node.costText)
+                    .font(MenuTypography.dataValue)
+                    .foregroundStyle(Color.primaryLabel)
+                    .frame(width: HarnessUsageMenuView.valueWidth, alignment: .trailing)
+            }
+            ForEach(models) { model in
+                FleetModelRowView(row: model)
+            }
+        }
+    }
+}
+
+/// fleet 模型行：与本地模型行同一套列宽与层级（§10.2 K：只相对段头缩进一级）。
+struct FleetModelRowView: View {
+    let row: FleetMenuSummary.ModelRow
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(row.modelName)
+                .font(MenuTypography.modelTitle)
+                .foregroundStyle(row.stale ? Color.secondaryLabel : Color.primaryLabel)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(width: HarnessModelRowView.modelNameWidth, alignment: .leading)
+            TokenBucketBar(buckets: row.buckets)
+                .frame(minWidth: HarnessModelRowView.bucketBarMinWidth, maxWidth: .infinity)
+            Text(Formatters.formatTokenCountCompact(row.totalTokens))
+                .font(MenuTypography.dataValue)
+                .foregroundStyle(Color.secondaryLabel)
+                .frame(width: HarnessModelRowView.tokenWidth, alignment: .trailing)
+            Text(HarnessModelRowView.percentText(row.hitRate))
+                .font(MenuTypography.dataValue)
+                .foregroundStyle(Color.secondaryLabel)
+                .frame(width: HarnessModelRowView.hitRateWidth, alignment: .trailing)
+            Text(row.costText)
+                .font(MenuTypography.dataValue)
+                .foregroundStyle(Color.primaryLabel)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(width: HarnessModelRowView.valueWidth, alignment: .trailing)
+        }
+        .padding(.leading, 8)
     }
 }
