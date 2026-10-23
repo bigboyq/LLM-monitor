@@ -54,6 +54,11 @@ struct GlmLocalUsage: Equatable, Codable, Sendable {
     /// 尚未扫到），`[]` = 解析成功但当前无活动套餐。UI 按空数组处理 nil。
     let activityPlanBalances: [GlmActivityPlanBalance]?
 
+    /// 活动套餐生效前预告（entitlement 已随 plans[] 下发、`effective_at` 未到且
+    /// balances 里没有对应桶）。与 `activityPlanBalances` 同源同一条日志行；
+    /// optional 让 v11 旧快照仍可解码，UI 按空数组处理 nil。
+    let activityPlanPreviews: [GlmActivityPlanPreview]?
+
     /// 非智谱 provider 分片（`ZcodeProviderSlice`），key = 分片 rawValue
     /// （`minimax` / `deepseek`）。ZCode 是一份多 provider 共享账本，这些分片
     /// 与智谱系行同表同扫，但并入的是 MiniMax / DeepSeek 卡而不是 GLM 卡。
@@ -91,6 +96,7 @@ struct GlmLocalUsage: Equatable, Codable, Sendable {
         recentSamples: [LocalTokenUsageSample]? = nil,
         offPeakWindows: [GlmOffPeakWindow] = [],
         activityPlanBalances: [GlmActivityPlanBalance]? = nil,
+        activityPlanPreviews: [GlmActivityPlanPreview]? = nil,
         providerSlices: [String: OpencodeProviderUsage]? = nil
     ) {
         self.today = today
@@ -102,6 +108,7 @@ struct GlmLocalUsage: Equatable, Codable, Sendable {
         self.recentSamples = recentSamples
         self.offPeakWindows = offPeakWindows
         self.activityPlanBalances = activityPlanBalances
+        self.activityPlanPreviews = activityPlanPreviews
         self.providerSlices = providerSlices
     }
 
@@ -111,7 +118,7 @@ struct GlmLocalUsage: Equatable, Codable, Sendable {
     /// 每次都打 logInfo + 触发 `@Published` willSet 无意义 UI reload。
     /// 业务字段（`today` / `dailyTokenUsage` / `sessionCount` / `eventCount` /
     /// `failedSessionCount` / `offPeakWindows` / `activityPlanBalances` /
-    /// `providerSlices`）决定内容是否真变。
+    /// `activityPlanPreviews` / `providerSlices`）决定内容是否真变。
     /// Codable 自动合成的 CodingKeys 不受影响 —— `scannedAt` 仍然被编解码。
     static func == (lhs: GlmLocalUsage, rhs: GlmLocalUsage) -> Bool {
         lhs.today == rhs.today
@@ -122,6 +129,7 @@ struct GlmLocalUsage: Equatable, Codable, Sendable {
             && lhs.recentSamples == rhs.recentSamples
             && lhs.offPeakWindows == rhs.offPeakWindows
             && lhs.activityPlanBalances == rhs.activityPlanBalances
+            && lhs.activityPlanPreviews == rhs.activityPlanPreviews
             && lhs.providerSlices == rhs.providerSlices
     }
 }
@@ -172,5 +180,29 @@ struct GlmActivityPlanBalance: Equatable, Codable, Sendable {
     /// 套餐过期时间（unix 秒）。缺失 / 解析失败为 nil
     let expiresAt: Date?
     /// 该快照在日志里的落盘时间（用于 UI 标注数据新旧；ZCode 未运行时不更新）
+    let observedAt: Date?
+}
+
+/// ZCode 活动套餐生效前的一条 entitlement 预告。
+///
+/// 活动套餐额度生效前，balance 接口的 `balances` 为空数组，但 `plans[].entitlements[]`
+/// 已带 `grant_units` / `effective_at`。reader 据此产出预告（无桶、未来生效、plan 未
+/// 过期三条判定），让 UI 在额度生效前就能显示"什么时候有多少"。与
+/// `GlmActivityPlanBalance` 同源——同一条 billing/balance 日志行；生效后 balances
+/// 出现对应桶，预告随之消失（同一 entitlement 不重复出现）。
+struct GlmActivityPlanPreview: Equatable, Codable, Sendable {
+    let planID: String
+    let planName: String
+    let entitlementID: String
+    /// 展示名（通常为模型名，如 `GLM-5.3-Flash`）；缺失时回退 entitlementID
+    let showName: String
+    /// 从 `capabilities` 的 `model:xxx` 提取的模型 ID；缺失时回退 `[showName]`
+    /// （与 `GlmActivityPlanBalance` 同口径）
+    let modelNames: [String]
+    /// 授予 token 量（grant_units，clamp ≥ 0）
+    let grantUnits: Int
+    /// 生效时间（unix 秒）
+    let effectiveAt: Date
+    /// 该快照在日志里的落盘时间（ZCode 未运行时不更新）
     let observedAt: Date?
 }

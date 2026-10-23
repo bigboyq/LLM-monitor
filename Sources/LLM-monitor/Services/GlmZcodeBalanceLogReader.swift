@@ -1,5 +1,12 @@
 import Foundation
 
+/// 一次余额日志解析的产出。balances 与 previews 同源——同一条最后匹配的
+/// billing/balance 日志行，保证两条数据不会来自不同的轮询时刻。
+struct GlmActivityPlanBalanceRead: Equatable, Sendable {
+    let balances: [GlmActivityPlanBalance]
+    let previews: [GlmActivityPlanPreview]
+}
+
 /// 解析 ZCode 余额轮询日志，产出最新活动套餐余额快照。
 ///
 /// 文件发现策略：先读**今天**的 `YYYY-MM-DD.log`，没有任何 billing/balance 行时
@@ -17,14 +24,14 @@ enum GlmZcodeBalanceLogReader {
     /// 尾部读取字节数。每条余额响应约 2-4KB，512KB 足以覆盖最后几十条轮询。
     nonisolated static let tailByteCount = 512 * 1024
 
-    /// 取最新的活动套餐余额。今天找不到标记行时回退昨天；两天都没有 → nil。
-    /// 返回 `[]` 表示「解析成功但当前无活动套餐」（如未领取体验套餐），
-    /// 与 nil（无法解析）语义不同，调用方据此区分展示。
-    nonisolated static func latestBalances(
+    /// 取最新的活动套餐余额 + 生效前预告。今天找不到标记行时回退昨天；
+    /// 两天都没有 → nil。返回的 `balances` 为 `[]` 表示「解析成功但当前无活动
+    /// 套餐」（如未领取体验套餐），与 nil（无法解析）语义不同，调用方据此区分展示。
+    nonisolated static func latestRead(
         logDirectory: URL = defaultLogDirectoryURL,
         now: Date = Date(),
         calendar: Calendar = .current
-    ) -> [GlmActivityPlanBalance]? {
+    ) -> GlmActivityPlanBalanceRead? {
         let dayFormatter = DateFormatter()
         dayFormatter.dateFormat = "yyyy-MM-dd"
         dayFormatter.locale = Locale(identifier: "en_US_POSIX")
@@ -34,19 +41,28 @@ enum GlmZcodeBalanceLogReader {
                 .appendingPathComponent(dayFormatter.string(from: day), isDirectory: false)
                 .appendingPathExtension("log")
             guard let text = readTail(fileURL: fileURL) else { continue }
-            if let balances = latestBalances(inLogText: text, now: now) {
-                return balances
+            if let read = latestRead(inLogText: text, now: now) {
+                return read
             }
         }
         return nil
     }
 
+    /// 兼容薄封装：只要余额列表（既有测试 / 调用表面）。
+    nonisolated static func latestBalances(
+        logDirectory: URL = defaultLogDirectoryURL,
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> [GlmActivityPlanBalance]? {
+        latestRead(logDirectory: logDirectory, now: now, calendar: calendar)?.balances
+    }
+
     /// 在一段日志文本里找**最后一条** billing/balance 行并解析。
     /// 没有匹配行 → nil；有行但 JSON 缺 balances → `[]`。
-    nonisolated static func latestBalances(
+    nonisolated static func latestRead(
         inLogText text: String,
         now: Date = Date()
-    ) -> [GlmActivityPlanBalance]? {
+    ) -> GlmActivityPlanBalanceRead? {
         var lastMatch: (observedAt: Date?, json: String)?
         for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
             guard let range = line.range(of: lineMarker) else { continue }
@@ -55,34 +71,59 @@ enum GlmZcodeBalanceLogReader {
             lastMatch = (parseLogTimestamp(String(line)), String(json))
         }
         guard let match = lastMatch else { return nil }
-        return decodeBalances(json: String(match.json), observedAt: match.observedAt, now: now)
+        return decodeRead(json: String(match.json), observedAt: match.observedAt, now: now)
+    }
+
+    /// 兼容薄封装：只要余额列表（既有测试表面）。
+    nonisolated static func latestBalances(
+        inLogText text: String,
+        now: Date = Date()
+    ) -> [GlmActivityPlanBalance]? {
+        latestRead(inLogText: text, now: now)?.balances
     }
 
     // MARK: - 单行解析（纯函数，测试表面）
 
-    /// 解析一条完整日志行为余额列表。过期条目（expires_at < now）直接剔除，
-    /// 与「plan expire 就不显示」的口径一致。
+    /// 解析一条完整日志行为余额 + 生效前预告。
+    nonisolated static func parseLine(
+        _ line: String,
+        now: Date = Date()
+    ) -> GlmActivityPlanBalanceRead? {
+        guard let range = line.range(of: lineMarker) else { return nil }
+        let json = line[range.upperBound...]
+        guard !json.isEmpty else { return nil }
+        return decodeRead(json: String(json), observedAt: parseLogTimestamp(line), now: now)
+    }
+
+    /// 兼容薄封装：只要余额列表（既有测试表面）。过期条目（expires_at < now）
+    /// 直接剔除，与「plan expire 就不显示」的口径一致。
     nonisolated static func parseBalanceLine(
         _ line: String,
         now: Date = Date()
     ) -> [GlmActivityPlanBalance]? {
-        guard let range = line.range(of: lineMarker) else { return nil }
-        let json = line[range.upperBound...]
-        guard !json.isEmpty else { return nil }
-        return decodeBalances(json: String(json), observedAt: parseLogTimestamp(line), now: now)
+        parseLine(line, now: now)?.balances
     }
 
-    private nonisolated static func decodeBalances(
+    private nonisolated static func decodeRead(
         json: String,
         observedAt: Date?,
         now: Date
-    ) -> [GlmActivityPlanBalance]? {
+    ) -> GlmActivityPlanBalanceRead? {
         struct Payload: Decodable {
             struct Data: Decodable {
+                struct Entitlement: Decodable {
+                    let entitlement_id: String?
+                    let show_name: String?
+                    let capabilities: [String]?
+                    let grant_units: Int?
+                    let effective_at: Double?
+                }
                 struct Plan: Decodable {
                     let plan_id: String?
                     let name: String?
                     let status: String?
+                    let ends_at: Double?
+                    let entitlements: [Entitlement]?
                 }
                 struct Balance: Decodable {
                     let plan_id: String?
@@ -107,8 +148,9 @@ enum GlmZcodeBalanceLogReader {
         // 以 payload.data 为准（含 expires_at / capabilities）；顶层 summaries 是
         // host 日志的复制摘要，字段更少，不作数据源。
         let data = payload.payload?.data
+        let plans = data?.plans ?? []
         let planNameByID = Dictionary(
-            uniqueKeysWithValues: (data?.plans ?? []).compactMap { plan in
+            uniqueKeysWithValues: plans.compactMap { plan in
                 plan.plan_id.map { ($0, plan.name ?? $0) }
             }
         )
@@ -118,11 +160,6 @@ enum GlmZcodeBalanceLogReader {
             }
             let planID = balance.plan_id ?? ""
             let showName = balance.show_name ?? entitlementID
-            let modelNames = (balance.capabilities ?? [])
-                .map { $0.trimmingCharacters(in: .whitespaces) }
-                .filter { $0.lowercased().hasPrefix("model:") }
-                .map { String($0.dropFirst("model:".count)).trimmingCharacters(in: .whitespaces) }
-                .filter { !$0.isEmpty }
             // 过期即不显示：expires_at 缺失时保守保留，交给 UI 按缺失处理。
             if let expiresAt = balance.expires_at {
                 let date = Date(timeIntervalSince1970: expiresAt)
@@ -133,7 +170,7 @@ enum GlmZcodeBalanceLogReader {
                 planName: planNameByID[planID] ?? planID,
                 entitlementID: entitlementID,
                 showName: showName,
-                modelNames: modelNames.isEmpty ? [showName] : modelNames,
+                modelNames: modelNames(from: balance.capabilities, fallback: showName),
                 totalUnits: max(balance.total_units ?? 0, 0),
                 usedUnits: max(balance.used_units ?? 0, 0),
                 remainingUnits: max(balance.remaining_units ?? 0, 0),
@@ -141,7 +178,54 @@ enum GlmZcodeBalanceLogReader {
                 observedAt: observedAt
             )
         }
-        return balances
+
+        // 生效前预告：活动套餐额度生效前 balances 为空，plans[].entitlements[]
+        // 是唯一信息源。三条判定（与展示口径对齐）：balances 已有对应桶的不预告
+        //（生效后不重复）；effective_at 未到才预告；plan 已过 ends_at 的整组剔除。
+        let coveredEntitlementIDs = Set((data?.balances ?? []).compactMap(\.entitlement_id))
+        let previews = plans.flatMap { plan -> [GlmActivityPlanPreview] in
+            let planID = plan.plan_id ?? ""
+            let planName = plan.name ?? planID
+            if let endsAt = plan.ends_at, Date(timeIntervalSince1970: endsAt) <= now {
+                return []
+            }
+            return (plan.entitlements ?? []).compactMap { entitlement -> GlmActivityPlanPreview? in
+                guard let entitlementID = entitlement.entitlement_id, !entitlementID.isEmpty else {
+                    return nil
+                }
+                guard !coveredEntitlementIDs.contains(entitlementID) else { return nil }
+                guard let effectiveAt = entitlement.effective_at else { return nil }
+                let effectiveDate = Date(timeIntervalSince1970: effectiveAt)
+                guard effectiveDate > now else { return nil }
+                let showName = entitlement.show_name ?? entitlementID
+                return GlmActivityPlanPreview(
+                    planID: planID,
+                    planName: planName,
+                    entitlementID: entitlementID,
+                    showName: showName,
+                    modelNames: modelNames(from: entitlement.capabilities, fallback: showName),
+                    grantUnits: max(entitlement.grant_units ?? 0, 0),
+                    effectiveAt: effectiveDate,
+                    observedAt: observedAt
+                )
+            }
+        }
+
+        return GlmActivityPlanBalanceRead(balances: balances, previews: previews)
+    }
+
+    /// capabilities 里 `model:` 前缀的模型 ID；缺失时回退 `[fallback]`
+    ///（balances 与 previews 共用同一口径）。
+    private nonisolated static func modelNames(
+        from capabilities: [String]?,
+        fallback: String
+    ) -> [String] {
+        let names = (capabilities ?? [])
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { $0.lowercased().hasPrefix("model:") }
+            .map { String($0.dropFirst("model:".count)).trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        return names.isEmpty ? [fallback] : names
     }
 
     /// 日志行前缀 `[2026-08-28 20:56:24.518]` → 本地时间。解析失败为 nil。

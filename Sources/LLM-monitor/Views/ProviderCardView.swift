@@ -576,7 +576,10 @@ struct ProviderCardView: View, Equatable {
                 betweenBarAndColumns: between
             )
             if status.kind == .glmCodingPlan {
-                GlmActivityPlanBalancesView(balances: status.glmActivityPlanBalances)
+                GlmActivityPlanBalancesView(
+                    balances: status.glmActivityPlanBalances,
+                    previews: status.glmActivityPlanPreviews
+                )
             }
         }
     }

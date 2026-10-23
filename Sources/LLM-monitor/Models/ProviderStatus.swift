@@ -70,6 +70,15 @@ struct ProviderStatus: Identifiable, Equatable, Sendable {
         glmLocalUsage?.activityPlanBalances ?? []
     }
 
+    /// ZCode 活动套餐生效前预告（UI 投影）。`nil`（未解析 / 开关关闭）与 `[]`
+    ///（无未生效 entitlement）合并成"没有预告可显示"，口径与 `glmActivityPlanBalances`
+    /// 一致——视图不必下钻 `glmLocalUsage` 的内部结构。
+    ///
+    /// 只有 `.glmCodingPlan` 的卡片读它（`GlmActivityPlanBalancesView`）。
+    var glmActivityPlanPreviews: [GlmActivityPlanPreview] {
+        glmLocalUsage?.activityPlanPreviews ?? []
+    }
+
     /// GLM 闲时任务窗口（UI 投影）。非 GLM 卡恒为空——ZCode 是一份多 provider
     /// 账本，`glmLocalUsage` 也挂在 MiniMax / DeepSeek 卡上，闲时窗口只属于智谱任务。
     var glmOffPeakWindows: [GlmOffPeakWindow] {

@@ -14,7 +14,9 @@ import os
 ///
 /// 开启 `parseZcodeBalanceLog` 设置后，每次构建快照还会 tail 读 ZCode 余额轮询
 /// 日志（`GlmZcodeBalanceLogReader`），把活动套餐（zcode-plan，如周末体验套餐）
-/// 的 used/remaining/expires_at 挂到 `GlmLocalUsage.activityPlanBalances`。
+/// 的 used/remaining/expires_at 挂到 `GlmLocalUsage.activityPlanBalances`，
+/// 生效前 entitlement 预告挂到 `GlmLocalUsage.activityPlanPreviews`
+///（两条数据同源同一条日志行，开关门控同语义）。
 ///
 /// 生命周期外壳、db+WAL 指纹、快照缓存与 7 天 rebase 都在
 /// `SingleDBSnapshotScanner` 基座；本类型只声明路径、缓存版本与三个 pipeline hook
@@ -127,7 +129,7 @@ final class GlmZcodeLocalUsageScanner: SingleDBSnapshotScanner<GlmLocalUsage>, @
             calendar: calendar,
             sampleCutoff: now.addingTimeInterval(-LocalUsageRetentionWindow.seconds)
         )
-        let activityPlanBalances = readActivityPlanBalances(now: now)
+        let balanceRead = readActivityPlanBalanceRead(now: now)
         let snapshot = Self.buildSnapshot(
             adjustedPerDay: aggregate.perDay,
             sessionCount: aggregate.sessionCount,
@@ -135,29 +137,34 @@ final class GlmZcodeLocalUsageScanner: SingleDBSnapshotScanner<GlmLocalUsage>, @
             samples: aggregate.samples,
             providerSlices: Self.providerSlices(from: aggregate.providerSlices, calendar: calendar, now: now),
             offPeakWindows: offPeakWindows,
-            activityPlanBalances: activityPlanBalances,
+            activityPlanBalances: balanceRead?.balances,
+            activityPlanPreviews: balanceRead?.previews,
             calendar: calendar,
             now: now
         )
-        logInfo("\(logTag) ✓ rounds=\(aggregate.roundCount) sessions=\(aggregate.sessionCount) offPeak=\(offPeakWindows.count) activityPlans=\(activityPlanBalances?.count ?? -1) slices=\(snapshot.providerSlices?.count ?? 0)")
+        logInfo("\(logTag) ✓ rounds=\(aggregate.roundCount) sessions=\(aggregate.sessionCount) offPeak=\(offPeakWindows.count) activityPlans=\(balanceRead?.balances.count ?? -1) previews=\(balanceRead?.previews.count ?? -1) slices=\(snapshot.providerSlices?.count ?? 0)")
         return snapshot
     }
 
     override nonisolated func rebaseSnapshot(_ snapshot: GlmLocalUsage, now: Date) throws -> GlmLocalUsage {
         var rebased = Self.rebaseCachedSnapshot(snapshot, calendar: calendar, now: now)
-        // 闲时窗口 / 活动套餐余额都可能在新一轮 scan 间期变化（新任务完成、ZCode
-        // 轮询日志更新），rebase 时同步刷新。
+        // 闲时窗口 / 活动套餐余额（含生效前预告）都可能在新一轮 scan 间期变化
+        //（新任务完成、ZCode 轮询日志更新），rebase 时同步刷新。
         let offPeakWindows = readOffPeakWindowsWithFallback()
         let parsingEnabled = isBalanceLogParsingEnabled
-        let activityPlanBalances = parsingEnabled ? readActivityPlanBalances(now: now) : nil
+        let balanceRead = parsingEnabled ? readActivityPlanBalanceRead(now: now) : nil
         // A disabled parser is an explicit user choice and must clear cached
         // balances.  When parsing remains enabled, a transient read failure is
         // different: retain the last good cached value.
         let effectiveActivityPlanBalances = parsingEnabled
-            ? (activityPlanBalances ?? rebased.activityPlanBalances)
+            ? (balanceRead?.balances ?? rebased.activityPlanBalances)
+            : nil
+        let effectiveActivityPlanPreviews = parsingEnabled
+            ? (balanceRead?.previews ?? rebased.activityPlanPreviews)
             : nil
         if rebased.offPeakWindows != offPeakWindows
-            || rebased.activityPlanBalances != effectiveActivityPlanBalances {
+            || rebased.activityPlanBalances != effectiveActivityPlanBalances
+            || rebased.activityPlanPreviews != effectiveActivityPlanPreviews {
             rebased = GlmLocalUsage(
                 today: rebased.today,
                 dailyTokenUsage: rebased.dailyTokenUsage,
@@ -168,25 +175,26 @@ final class GlmZcodeLocalUsageScanner: SingleDBSnapshotScanner<GlmLocalUsage>, @
                 recentSamples: rebased.recentSamples,
                 offPeakWindows: offPeakWindows,
                 activityPlanBalances: effectiveActivityPlanBalances,
+                activityPlanPreviews: effectiveActivityPlanPreviews,
                 providerSlices: rebased.providerSlices
             )
         }
         return rebased
     }
 
-    /// 开关开启时解析 ZCode 余额轮询日志；关闭或解析失败返回 nil（UI 按空处理，
-    /// 快照保留 nil 语义，与「未解析」一致）。
-    nonisolated private func readActivityPlanBalances(now: Date) -> [GlmActivityPlanBalance]? {
+    /// 开关开启时解析 ZCode 余额轮询日志（balances + previews 同源同读）；
+    /// 关闭或解析失败返回 nil（UI 按空处理，快照保留 nil 语义，与「未解析」一致）。
+    nonisolated private func readActivityPlanBalanceRead(now: Date) -> GlmActivityPlanBalanceRead? {
         guard isBalanceLogParsingEnabled else { return nil }
-        let balances = GlmZcodeBalanceLogReader.latestBalances(
+        let read = GlmZcodeBalanceLogReader.latestRead(
             logDirectory: balanceLogDirectoryURL,
             now: now,
             calendar: calendar
         )
-        if balances == nil {
+        if read == nil {
             logDebug("\(logTag) 活动套餐余额日志未解析到 billing/balance 行")
         }
-        return balances
+        return read
     }
 
     private nonisolated func readOffPeakWindowsWithFallback() -> [GlmOffPeakWindow] {
@@ -234,6 +242,7 @@ final class GlmZcodeLocalUsageScanner: SingleDBSnapshotScanner<GlmLocalUsage>, @
         providerSlices: [String: OpencodeProviderUsage] = [:],
         offPeakWindows: [GlmOffPeakWindow],
         activityPlanBalances: [GlmActivityPlanBalance]? = nil,
+        activityPlanPreviews: [GlmActivityPlanPreview]? = nil,
         calendar: Calendar,
         now: Date
     ) -> GlmLocalUsage {
@@ -253,6 +262,7 @@ final class GlmZcodeLocalUsageScanner: SingleDBSnapshotScanner<GlmLocalUsage>, @
             recentSamples: samples,
             offPeakWindows: offPeakWindows,
             activityPlanBalances: activityPlanBalances,
+            activityPlanPreviews: activityPlanPreviews,
             providerSlices: providerSlices
         )
     }
@@ -323,6 +333,7 @@ final class GlmZcodeLocalUsageScanner: SingleDBSnapshotScanner<GlmLocalUsage>, @
             recentSamples: (snapshot.recentSamples ?? []).filter { $0.completedAt >= sampleCutoff },
             offPeakWindows: snapshot.offPeakWindows,
             activityPlanBalances: snapshot.activityPlanBalances,
+            activityPlanPreviews: snapshot.activityPlanPreviews,
             providerSlices: rebaseProviderSlices(snapshot.providerSlices, calendar: calendar, now: now)
         )
     }
