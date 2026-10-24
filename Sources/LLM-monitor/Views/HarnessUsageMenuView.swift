@@ -423,7 +423,9 @@ struct HarnessModelRowView: View {
 
 extension HarnessUsageMenuView {
     /// 顶部两行：「今日全部」（fleet）与「今日本机」（local），并排给出——
-    /// 分段控制二选一会丢掉节点层（§10.6 J）。下方一条 fleet 占比条。
+    /// 分段控制二选一会丢掉节点层（§10.6 J）。**每行各带一根构成条**
+    /// （input / cacheRead / output 占比，与单行形态同款）：全局与本机的
+    /// token 构成可以直接对比，不用猜条跟的是哪一行。
     @ViewBuilder
     private func fleetTodayOverview(fleet: FleetMenuSummary) -> some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -433,13 +435,14 @@ extension HarnessUsageMenuView {
                 hitRate: fleet.fleetTotals.hitRate,
                 valueText: fleet.fleetTotals.valueText
             )
+            TokenBucketBar(buckets: fleet.fleetTotals.buckets)
             fleetOverviewRow(
                 label: "今日本机",
                 tokens: summary.totalTokens,
                 hitRate: summary.cacheHitRate,
                 valueText: summary.valueText
             )
-            TokenBucketBar(buckets: fleet.fleetTotals.buckets)
+            TokenBucketBar(buckets: summary.buckets)
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 7)
