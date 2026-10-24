@@ -482,6 +482,9 @@ extension HarnessUsageMenuView {
 /// 不缩进（细分隔线 + 次要色节点名做分组，§10.6 K），模型行只缩进一级。
 struct FleetClientSectionView: View {
     let section: FleetMenuSummary.ClientSection
+    /// 段头右键「刷新 <客户端名>」：按 clientID 回宿主（与本地形态
+    /// `HarnessSectionView` 的段头右键同一语义，fleet 段头不能丢）。
+    var onRefreshClient: (String) -> Void = { _ in }
 
     var body: some View {
         VStack(alignment: .leading, spacing: HarnessModelRowView.rowSpacing) {
@@ -514,6 +517,9 @@ struct FleetClientSectionView: View {
             .padding(.bottom, 1)
             .overlay(alignment: .bottom) {
                 MenuHairline.horizontal
+            }
+            .contextMenu {
+                Button("刷新 \(section.displayName)") { onRefreshClient(section.clientID) }
             }
         }
     }
