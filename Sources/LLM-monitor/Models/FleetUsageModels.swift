@@ -191,6 +191,8 @@ enum FleetUsageProjection {
                 let nodeBuckets = nodeRowsForClient.reduce(TokenUsageBuckets.zero) { acc, row in
                     acc + TokenUsageBuckets(input: row.input, cacheRead: row.cacheRead, output: row.output, reasoning: row.reasoning)
                 }
+                // 节点在该客户端下没有实际用量（全零行）→ 不出节点行（用户裁定）。
+                guard nodeBuckets.totalTokens > 0 else { continue }
                 nodeRows.append(FleetMenuSummary.NodeRow(
                     id: node.nodeID,
                     nodeName: node.nodeName,
@@ -211,6 +213,11 @@ enum FleetUsageProjection {
             for node in snapshot.nodes {
                 guard let nodeToday = node.dailyBuckets.first(where: { $0.dayKey == todayKey }) else { continue }
                 for entry in nodeToday.entries where entry.clientID == clientID {
+                    let entryBuckets = TokenUsageBuckets(
+                        input: entry.input, cacheRead: entry.cacheRead,
+                        output: entry.output, reasoning: entry.reasoning
+                    )
+                    guard entryBuckets.totalTokens > 0 else { continue }
                     modelRows.append(FleetMenuSummary.ModelRow(
                         nodeID: node.nodeID,
                         nodeName: node.nodeName,
@@ -222,6 +229,8 @@ enum FleetUsageProjection {
                 }
             }
 
+            // 段本身全零（该客户端今天 fleet 内无实际用量）→ 整段不出。
+            guard sectionBuckets.totalTokens > 0 else { continue }
             sections.append(FleetMenuSummary.ClientSection(
                 clientID: clientID,
                 displayName: descriptor?.displayName ?? clientID,

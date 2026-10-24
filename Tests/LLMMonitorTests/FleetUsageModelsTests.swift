@@ -176,6 +176,25 @@ final class FleetUsageModelsTests: XCTestCase {
         XCTAssertEqual(section.models.count, 3, "各节点模型明细（不反推段头 totals）")
     }
 
+    func testMenuSummaryHidesZeroDataNodesAndSections() {
+        // node1 有量、node2 该客户端全零：只出 node1 的节点行；
+        // 若整段全零（唯一客户端为空）则整段不出。
+        let snapshot = menuSnapshot(nodeCount: 2, perNodeInput: [100, 0])
+        let summary = FleetUsageProjection.menuSummary(
+            snapshot: snapshot, localNodeID: nil, now: now
+        )!
+        XCTAssertEqual(summary.sections.count, 1)
+        XCTAssertEqual(summary.sections[0].nodes.count, 1, "全零贡献的节点不展示节点行")
+        XCTAssertEqual(summary.sections[0].nodes[0].totalTokens, 100)
+        XCTAssertEqual(summary.sections[0].models.count, 1, "全零明细不出模型行")
+
+        let allZero = menuSnapshot(nodeCount: 2, perNodeInput: [0, 0])
+        let empty = FleetUsageProjection.menuSummary(
+            snapshot: allZero, localNodeID: nil, now: now
+        )!
+        XCTAssertTrue(empty.sections.isEmpty, "整段全零 → 段不出现")
+    }
+
     // MARK: - 卡片用量（§10.1）
 
     func testCardUsageWindowRowsAndTodayRow() {
