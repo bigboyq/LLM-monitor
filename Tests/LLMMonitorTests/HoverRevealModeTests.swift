@@ -88,43 +88,6 @@ final class HoverRevealModeTests: XCTestCase {
         )
     }
 
-    /// 菜单底部兜底行 hover 出来的那张卡，**必须**以 `.alwaysVisible` 渲染。
-    ///
-    /// 浮层 `ignoresMouseEvents = true`，收不到鼠标事件。第二轮改版（三段式）之后
-    /// 卡里已经**没有**「悬停才展开」的折叠段——四桶原始值表、逐张重置卡清单、
-    /// 账号行全部变成与 reveal mode 无关的常驻模块，曾经"不钉 mode 就一份也看不到"
-    /// 的前提随之消失；钉 mode 剩下的理由是 7 天图表的卡内标题行：`.alwaysVisible`
-    /// 下它由卡外的 `dockSectionTitle` 承担（`SevenDayTokenUsageHoverView` 不画），
-    /// 其它 mode 下图表自己画——mode 串了会出现两份或零份标题。
-    ///
-    /// 常驻化把"可达性不依赖鼠标"这件事从 mode 保证挪成了结构保证，所以这里把
-    /// 它钉成结构断言：重置卡的高度差在**两个 mode 下都必须在场**——`.onHover`
-    /// 一侧若消失，说明有人把清单又拴回了展开态。
-    @MainActor
-    func testStripHoverCardMustUseTheAlwaysVisibleRevealMode() {
-        XCTAssertEqual(
-            ProviderStatusStripView.cardRevealMode, .alwaysVisible,
-            "兜底行的 hover 卡必须钉死 .alwaysVisible（浮层不吃鼠标事件）"
-        )
-        XCTAssertEqual(
-            ProviderStatusStripView.cardWidth,
-            EdgeDockTheme.popoverWidth - EdgeDockTheme.popoverPadding * 2,
-            "hover 卡必须与 dock 浮层那张卡同宽（7 天图表那 420pt 不能被压掉）"
-        )
-
-        let withCredits = Self.makeChatGPTStatus(state: .failed, resetCredits: true)
-        let withoutCredits = Self.makeChatGPTStatus(state: .failed, resetCredits: false)
-        XCTAssertGreaterThan(
-            measuredHeight(mode: ProviderStatusStripView.cardRevealMode, status: withCredits),
-            measuredHeight(mode: ProviderStatusStripView.cardRevealMode, status: withoutCredits),
-            "兜底行的 hover 卡必须画出重置卡"
-        )
-        XCTAssertGreaterThan(
-            measuredHeight(mode: .onHover, status: withCredits),
-            measuredHeight(mode: .onHover, status: withoutCredits),
-            "重置卡折叠行 + 逐张清单已常驻：onHover 下也必须在场（可达性不依赖展开态）"
-        )
-    }
 
     // MARK: - 卡片 fixture（ChatGPT 卡，LayoutMetricsTests 也复用这一份）
 

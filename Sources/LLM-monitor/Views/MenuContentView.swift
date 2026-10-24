@@ -244,7 +244,6 @@ struct MenuContentView: View {
                                 by: ProviderStatus.displayNameAscending
                             )
                         ),
-                        onRefreshUsageRescan: refreshUsageRescanFromMenu,
                         onRefreshSection: refreshSectionFromMenu,
                         onRefreshProvider: refreshProviderFromMenu
                     )
@@ -268,17 +267,11 @@ struct MenuContentView: View {
         summaryCache.value(for: state.statuses.filter(\.isEnabled))
     }
 
-    /// 「立即刷新全部」的入口：hover 卡两处时间戳的点击已按数据种类拆走
-    /// （额度 → `refreshProviderFromMenu`、本地用量 → `refreshUsageRescanFromMenu`），
-    /// 这里只剩 headerBar 的刷新按钮，外加菜单打开时 `.ready` 兜底（onAppear）。
-    /// 段头右键也已改为按段刷新（`refreshSectionFromMenu`），不共用这条全量路径。
+    /// 「立即刷新全部」的入口：headerBar 的刷新按钮 + 菜单打开时 `.ready` 兜底
+    /// （onAppear）。段头右键按段刷新（`refreshSectionFromMenu`），不共用这条
+    /// 全量路径。
     private func refreshAllFromMenu() {
         Task { await state.refreshAll() }
-    }
-
-    /// Provider 卡 7 天区块时间戳的点击入口：只重扫本地用量，不碰额度抓取。
-    private func refreshUsageRescanFromMenu() {
-        Task { await state.triggerLocalUsageRescan() }
     }
 
     /// 「刷新该 Provider」的唯一入口：兜底行每个 provider 元素的**左键点按**

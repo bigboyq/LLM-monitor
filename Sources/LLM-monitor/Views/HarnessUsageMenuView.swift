@@ -23,9 +23,6 @@ struct HarnessUsageMenuView: View {
     var fleetContext: (ProviderStatus) -> FleetCardContext? = { _ in nil }
     /// 底部的 provider 兜底行（见 `ProviderStatusStripView`）。空快照不渲染任何东西。
     var providerStrip: ProviderStatusStrip.Snapshot = ProviderStatusStrip.Snapshot(entries: [], hiddenCount: 0)
-    /// hover 卡 7 天区块时间戳的点击动作：只重扫本地用量计算，不发额度请求。
-    /// 默认空实现：菜单内容在任何只读渲染（测试、预览）里都能构造。
-    var onRefreshUsageRescan: () -> Void = {}
     /// 段头右键「刷新 <客户端名>」：按该段今日贡献行刷新涉及的 provider 卡。
     /// 动作实现由 `MenuContentView` 注入（它持有 `AppState`）。
     var onRefreshSection: (HarnessSection) -> Void = { _ in }
@@ -59,8 +56,6 @@ struct HarnessUsageMenuView: View {
             }
             ProviderStatusStripView(
                 snapshot: providerStrip,
-                fleetContext: fleetContext,
-                onRefreshUsageRescan: onRefreshUsageRescan,
                 onRefreshProvider: onRefreshProvider
             )
         }
@@ -233,39 +228,22 @@ struct HarnessSectionView: View {
     }
 }
 
-/// 菜单内容区**底部**的 provider 兜底行：一行横排全部已启用 provider 的极简状态
-/// 元素（品牌图标 + `ProviderStateLabel` 胶囊，红/黄/绿新鲜度）。
+/// 菜单内容区**底部**的 provider 兜底行：一行横排全部已启用 provider 的品牌
+/// 图标（用户裁定 2026-10-24：不放更新时间胶囊，也没有 hover 二次弹卡——
+/// 额度明细去边缘窗 / 设置页看，这一行只回答「哪些 provider 在场」）。
 ///
 /// 它存在的理由：菜单主体已经改成客户端视角（"今天烧了多少"），**额度**那一面
 /// 只剩边缘状态窗与设置页；没开边缘窗的用户在这一屏就彻底看不到额度状态了。
 /// 这一行把它兜回来，且**不与 harness 段混淆**——独立一行（无文字标题，图标 +
 /// 状态胶囊的序列自解释），不占段头、不进段的行序。
 ///
-/// hover 任一元素 → 独立 `NSPanel` 弹出**完整 `ProviderCardView(status:)`**
-/// （`HoverInfoRow` + `HoverPanelController`，与菜单里其它 hover 详情同一机制）。
-/// 卡片按 `.alwaysVisible` 渲染：浮层是随行 hover 显隐的弹层，在里面再要求
-/// "悬停才展开"等于在 hover 驱动的窗口里再造一层 hover 依赖，弹层收起的瞬间
-/// 折叠区跟着失联（与 `EdgeDockController+Popover.popoverContent` 同一理由）。
-///
-/// 一个元素上叠着**两种交互**，分工是：
-///
-/// - **左键点按** → 立即刷新这一个 provider。菜单主体改成客户端视角后，这一行
-///   元素是面板上唯一能"点到某个具体 provider"的地方：hover 卡上可点的只有
-///   「刷新全部」级的时间戳动作，header 的「立即刷新全部」范围又太大。
-///   连点的安全性由 `AppState.refreshOne` 的全局在飞闸门兜（见下），UI 侧
-///   不做禁用态；曾经还有右键菜单提供同一动作的显式入口，与左键完全重复后
-///   删掉了。
-/// - **hover** → 弹完整卡，纯只读，**不触发任何网络请求**。
+/// 每个元素只剩一种交互：**左键点按 → 立即刷新这一个 provider**（连点的安全
+/// 性由 `AppState.refreshOne` 的全局在飞闸门兜，UI 侧不做禁用态）。
 struct ProviderStatusStripView: View {
     let snapshot: ProviderStatusStrip.Snapshot
     /// hover 卡的 fleet 上下文（scope 分段 / fleet 用量 / 生效额度来源标注）。
     /// 默认恒 nil：未启用联动时 hover 卡与现在完全一致。
     var fleetContext: (ProviderStatus) -> FleetCardContext? = { _ in nil }
-    /// hover 卡 7 天区块时间戳（本地用量新鲜度胶囊）的点击动作：只重扫本地用量
-    /// 计算，不发额度请求（`MenuContentView.refreshUsageRescanFromMenu` →
-    /// `AppState.triggerLocalUsageRescan`）。经环境键 `\.cardUsageRefreshAction`
-    /// 注进 hover 卡，跟随 detail 闭包进入浮层宿主。
-    var onRefreshUsageRescan: () -> Void = {}
     /// 单个 provider 的刷新动作。参数是 providerID，实际刷新路径由
     /// 宿主（`MenuContentView` → `AppState.refreshOne`）决定，这一层不碰网络。
     var onRefreshProvider: (String) -> Void = { _ in }
@@ -308,25 +286,6 @@ struct ProviderStatusStripView: View {
     /// 视觉上比正文行还松。
     static let entrySpacing: CGFloat = 4
 
-    /// hover 卡宽度：与 dock 浮层那张卡**逐像素同宽**
-    /// （`EdgeDockTheme.popoverWidth` 减去背板内边距）。写死成菜单宽度会让 7 天
-    /// 图表的 420pt 内容被压掉一截——dock 侧当初就是因为这个才把宽度从 360
-    /// 推到 `popoverWidth` 的。
-    static var cardWidth: CGFloat {
-        EdgeDockTheme.popoverWidth - EdgeDockTheme.popoverPadding * 2
-    }
-
-    /// hover 卡的折叠方式，**必须钉死成 `.alwaysVisible`**。
-    ///
-    /// 浮层是随行 hover 显隐的弹层，卡里那些「悬停才展开」的部分在弹层收起的
-    /// 瞬间跟着失联，在弹层里再造 hover 依赖只会更脆；不钉这个值时（环境默认
-    /// 是 `.onHover`）弹出来的是一张缺重置卡、缺高峰期倒计时、额度行也是简版的卡
-    /// ——比不弹还糟。理由与 `EdgeDockController+Popover.popoverContent` 完全一致。
-    ///
-    /// 提成常量是为了让 `HoverRevealModeTests` 能直接断言"兜底行用的是哪一种"，
-    /// 而不是只能对着视图猜。
-    static let cardRevealMode: HoverRevealMode = .alwaysVisible
-
     /// 品牌图标边长。常规 18pt 在这一行太大：一行要放下
     /// `ProviderStatusStrip.maximumVisibleCount` 个元素，18pt 图标会把时间胶囊
     /// 挤到只剩 30pt。11pt 仍能认出是哪个品牌。
@@ -334,10 +293,8 @@ struct ProviderStatusStripView: View {
 
     var body: some View {
         if !snapshot.isEmpty {
-            // 不带文字标签：一行「品牌图标 + 状态胶囊」的序列自解释（红/黄/绿胶囊
-            // 的语义由 `ProviderStateLabel` 承载），去掉约 74pt 的标签换来的宽度
-            // 正好把可见容量从 4 个 provider 放到 5 个（核算见
-            // `ProviderStatusStrip.maximumVisibleCount`）。
+            // 一行纯品牌图标序列（用户裁定：不放时间胶囊），可见容量核算见
+            // `ProviderStatusStrip.maximumVisibleCount`。
             HStack(spacing: Self.entrySpacing) {
                 ForEach(snapshot.entries) { entry in
                     entryView(entry)
@@ -379,29 +336,13 @@ struct ProviderStatusStripView: View {
     ///   provider）。UI 再维护一份"这一行点不动"的状态只会和
     ///   `AppState.isRefreshJobActive` 的全局口径漂移，而且用户连点时看到"没反应"
     ///   比看到"已在刷新"更困惑——反馈交给既有状态胶囊自然变化（更新中 → HH:mm）。
+    /// 单个 provider 元素：品牌图标 + 单刷点按。不放更新时间胶囊、不挂 hover
+    /// 弹卡（用户裁定 2026-10-24）；点击交出去的还是 `RefreshMenuItem`。
     private func entryView(_ entry: ProviderStatusStrip.Entry) -> some View {
         let item = Self.refreshMenuItem(for: entry)
-        return HoverInfoRow {
-            HStack(spacing: 3) {
-                BrandLogoView(kind: entry.status.kind, size: Self.logoSize)
-                ProviderStateLabel(status: entry.status)
-            }
-        } detail: {
-            ProviderCardView(status: entry.status, fleet: fleetContext(entry.status))
-                .environment(\.hoverRevealMode, Self.cardRevealMode)
-                .environment(\.quotaWindowSegmentEditable, false)
-                // 卡上两处时间戳的点击刷新，按数据种类分两条路：额度时间戳 →
-                // `onRefreshProvider`（refreshOne），用量时间戳 →
-                // `onRefreshUsageRescan`（本地用量重扫）。必须挂在 detail 闭包内：
-                // hover 卡在 `HoverPanelController` 自己的 NSHostingView 里渲染，
-                // 外层（MenuContentView）的环境进不来，只有随视图显式注入的键值能
-                // 跨宿主存活——与上面两个环境键同一原因。Optional 包一层让泛型
-                // `V` 精确匹配键的可选值类型。
-                .environment(\.cardQuotaRefreshAction, Optional(onRefreshProvider))
-                .environment(\.cardUsageRefreshAction, Optional(onRefreshUsageRescan))
-                .frame(width: Self.cardWidth)
-        }
-        .onTapGesture(perform: Self.tapHandler(for: item, onRefresh: onRefreshProvider))
+        return BrandLogoView(kind: entry.status.kind, size: Self.logoSize)
+            .help("点击刷新 \(entry.displayName)")
+            .onTapGesture(perform: Self.tapHandler(for: item, onRefresh: onRefreshProvider))
     }
 }
 
