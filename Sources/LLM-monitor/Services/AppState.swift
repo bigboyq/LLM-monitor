@@ -296,11 +296,18 @@ final class AppState: ObservableObject {
         descriptors.first(where: { $0.kind == kind })?.id
     }
 
+    /// 外观写入 `NSApp.appearance`（nil = 跟随系统）。设置窗与全部面板随之
+    /// 切换；菜单栏 MenubarExtra 的原生呈现仍由系统决定。
+    func applyAppearance() {
+        NSApp.appearance = configStore.config.effectiveAppearance.nsAppearance
+    }
+
     // MARK: - 生命周期
 
     func start() {
         // `stop()` 也会取消配置 watcher；允许生命周期重启时恢复配置热加载。
         configStore.startWatching()
+        applyAppearance()
 
         // 多机联动：仅在配置显式启用时启动（缺省 false）。
         if configStore.config.effectiveSyncConfig.enabled {
@@ -755,6 +762,7 @@ final class AppState: ObservableObject {
                 self.authReadyCache.removeAll()
                 self.authProber.reset()
                 self.rebuildStatuses()
+                self.applyAppearance()
                 self.rescheduleAll()
                 // 运行期打开多机联动开关（start() 之后再启用）。
                 if newConfig.effectiveSyncConfig.enabled, self.fleetSync == nil {

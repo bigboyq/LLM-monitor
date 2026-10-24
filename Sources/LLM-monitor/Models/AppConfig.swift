@@ -180,6 +180,34 @@ extension BarkConfig {
     }
 }
 
+// MARK: - 外观（2.0）
+
+/// 应用外观：浅色 / 深色 / 自动（跟随系统，缺省）。写进 `NSApp.appearance`，
+/// 对设置窗与所有 SwiftUI 面板生效；菜单栏 MenubarExtra 的原生样式仍随系统。
+enum AppAppearance: String, Codable, CaseIterable, Identifiable, Sendable {
+    case light
+    case dark
+    case auto
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .light: return "浅色"
+        case .dark: return "深色"
+        case .auto: return "自动"
+        }
+    }
+
+    var nsAppearance: NSAppearance? {
+        switch self {
+        case .light: return NSAppearance(named: .aqua)
+        case .dark: return NSAppearance(named: .darkAqua)
+        case .auto: return nil
+        }
+    }
+}
+
 // MARK: - Fleet Sync Config（多机联动，2.0）
 
 /// 多机联动配置。`enabled` 缺省 false → 现有用户零影响；`hubURL` 空 = 本机是
@@ -348,6 +376,9 @@ struct AppConfig: Codable, Equatable {
     /// 与 statusBar* 同为纯外观字段，手改出错按缺失处理，不进损坏恢复流程。
     var edgeDock: EdgeDockConfig?
 
+    /// 应用外观（浅色 / 深色 / 自动）。缺省（nil）= 自动跟随系统。
+    var appearance: AppAppearance?
+
     /// 法定节假日数据源（URL 或本地文件路径），供 `HolidayCalendar` 解析链取数。
     /// nil（缺省）= 上游 chinese-days CDN JSON（`HolidayCalendar.defaultSourceURL`，
     /// 与 `scripts/sync-holiday-data.sh` 的 `UPSTREAM_URL` 同值）；显式空串 =
@@ -380,6 +411,11 @@ struct AppConfig: Codable, Equatable {
     /// 显式空串原样返回（`HolidayCalendar.parseSource` 把它判为「仅内置快照」）。
     var effectiveHolidaySource: String {
         holidaySource ?? HolidayCalendar.defaultSourceURL
+    }
+
+    /// 生效外观：缺省自动跟随系统。
+    var effectiveAppearance: AppAppearance {
+        appearance ?? .auto
     }
 
     /// 生效的多机联动配置：未配置 = 关闭态默认值。
@@ -425,6 +461,7 @@ struct AppConfig: Codable, Equatable {
         bark: BarkConfig? = nil,
         edgeDock: EdgeDockConfig? = nil,
         holidaySource: String? = nil,
+        appearance: AppAppearance? = nil,
         sync: SyncConfig? = nil
     ) {
         self.schemaVersion = schemaVersion
@@ -438,6 +475,7 @@ struct AppConfig: Codable, Equatable {
         self.bark = bark
         self.edgeDock = edgeDock
         self.holidaySource = holidaySource
+        self.appearance = appearance
         self.sync = sync
     }
 
@@ -449,6 +487,7 @@ struct AppConfig: Codable, Equatable {
         case bark
         case edgeDock
         case holidaySource
+        case appearance
         case sync
     }
 
@@ -533,6 +572,12 @@ struct AppConfig: Codable, Equatable {
         } catch {
             logWarn("[config] holidaySource 字段解析失败，已按缺省（上游 CDN）处理：\(error.localizedDescription)")
             self.holidaySource = nil
+        }
+        do {
+            self.appearance = (try? container.decode(String.self, forKey: .appearance))
+                .flatMap(AppAppearance.init(rawValue:))
+        } catch {
+            self.appearance = nil
         }
         // 多机联动：坏值按未配置处理，不进损坏恢复流程——配置损坏不应让一个
         // 纯增量功能的缺失拖垮整份 provider 配置。
