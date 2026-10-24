@@ -299,7 +299,7 @@ final class AppState: ObservableObject {
     /// 外观写入 `NSApp.appearance`（nil = 跟随系统）。设置窗与全部面板随之
     /// 切换；菜单栏 MenubarExtra 的原生呈现仍由系统决定。
     func applyAppearance() {
-        NSApp.appearance = configStore.config.effectiveAppearance.nsAppearance
+        NSApp?.appearance = configStore.config.effectiveAppearance.nsAppearance
     }
 
     // MARK: - 生命周期
