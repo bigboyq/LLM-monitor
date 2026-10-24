@@ -298,8 +298,20 @@ final class AppState: ObservableObject {
 
     /// 外观写入 `NSApp.appearance`（nil = 跟随系统）。设置窗与全部面板随之
     /// 切换；菜单栏 MenubarExtra 的原生呈现仍由系统决定。
+    ///
+    /// `start()` 在应用入口早期执行，彼时 SwiftUI App 机制可能还没把
+    /// NSApplication 建出来——静默跳过就是「启动不生效、改配置才生效」。
+    /// NSApp 未就绪时下一个主循环重试一次（只重试一次，测试进程里
+    /// NSApp 恒 nil 时不会排成自旋）。
     func applyAppearance() {
-        NSApp?.appearance = configStore.config.effectiveAppearance.nsAppearance
+        guard let app = NSApp else {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, NSApp != nil else { return }
+                self.applyAppearance()
+            }
+            return
+        }
+        app.appearance = configStore.config.effectiveAppearance.nsAppearance
     }
 
     // MARK: - 生命周期
