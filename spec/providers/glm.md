@@ -254,7 +254,8 @@ The card shows the standard two-window layout (5h + weekly remaining %, reset co
 and a tier pill (`Lite` / `Pro` / `Max`). The footer renders the shared seven-day
 Input/Cache/Output/Reason local-usage chart, fed by the native ZCode scanner with OpenCode's
 `zhipuai-coding-plan` slice optionally merged on top (`clientBindings[]`, default on).
-The merged samples also feed the 「额度窗口」 usage table and its 「闲」 row. The settings UI has no separate
+The merged samples also feed the 「额度窗口」 usage table and its 「闲 / 免 / 速 / 它」
+today rows. The settings UI has no separate
 OpenCode toggle; edit `clientBindings[]` and save the config file when a non-default binding is
 needed.
 
@@ -459,7 +460,7 @@ the full input masquerading as new input.
 
 ### Off-peak tasks (闲时任务)
 
-### Provider 分类（Coding Plan / Start Plan / 闲时 / 其他）与额度窗口白名单
+### Provider 分类（Coding Plan / Start Plan / 加速卡 / 闲时 / 其他）与额度窗口白名单
 
 ZCode 的 `model_usage` 表是共享账本，GLM 卡按 `provider_id` 分类：
 
@@ -468,18 +469,20 @@ ZCode 的 `model_usage` 表是共享账本，GLM 卡按 `provider_id` 分类：
 | Coding Plan | `account:bigmodel-individual-coding-plan`、`account:bigmodel-team-coding-plan`、`account:zai-individual-coding-plan`、`account:zai-team-coding-plan`、`builtin:bigmodel-coding-plan` | 交互式 Coding Plan 调用（2026-09-17 `0020_provider_model_selection` 迁移后账号套餐改写 `account:` 前缀；显式枚举于 `zcodeGlmCodingPlanProviderIDs`，通配写法已删，新套餐需显式登记） | **是**（唯一计入来源） | 是 |
 | 闲时任务 | `account:bigmodel-offpeak-idle-plan`、`account:zai-offpeak-idle-plan`、`offpeak-idle-plan`（0020 迁移前历史裸值） | 系统赠送的后台任务 | 否 | 是 |
 | Start Plan | `provider_id` 含 `bigmodel-start-plan`（`account:bigmodel-start-plan` / `builtin:bigmodel-start-plan`） | 智谱体验套餐；从「其他」里单独摘出成行（`isGlmStartPlanSample`） | 否 | 是 |
+| 加速卡 | `account:bigmodel-highspeed-card`、`account:zai-highspeed-card`（显式枚举于 `zcodeGlmHighspeedProviderIDs`；2026-10-25 实测只有 bigmodel 变体出现，zai 变体按账号化命名规律预防性登记） | ZCode 加速卡权益（highspeed-card，`model_id` 就是普通 `GLM-5.3`，不是独立模型）；从「其他」里单独摘出成行（`isGlmHighspeedSample`） | 否 | 是 |
 | 其他任务 | 其余 `builtin:bigmodel-%` / `account:bigmodel-%` / `account:zai-%`（含 `account:zai-start-plan`） | 未登记的未来智谱新套餐 | 否 | 是 |
 | （不进 GLM 卡，按前缀进分片） | 不带 `builtin:bigmodel-` / `account:bigmodel-` / `account:zai-` 前缀的一切 provider | ZCode 接入的非智谱服务（如 `minimax` / `deepseek`，经 `ZcodeProviderSlice` 并入对应卡片；reasoning 口径见「非智谱 provider 分片的 reasoning 口径」，不走 Method A） | — | — |
 
-Start Plan 与「其他」任务都不消耗 Coding Plan 积分，额度窗口统计排除，避免高估消耗；
-token 柱图保留真实消耗。拆行只是展示层的细分：`isGlmOtherPlanSample` 仍把 Start Plan
-一起覆盖，额度窗口口径与拆行前完全一致。前缀通配保证未来智谱新套餐自动落进「其他」。
+Start Plan、加速卡与「其他」任务都不消耗 Coding Plan 积分，额度窗口统计排除，避免高估
+消耗；token 柱图保留真实消耗。拆行只是展示层的细分：`isGlmOtherPlanSample` 仍把
+Start Plan 与加速卡一起覆盖，额度窗口口径与拆行前完全一致。前缀通配保证未来智谱新套餐
+自动落进「其他」。
 非智谱 provider 不会被误算进 GLM 卡：它们由 `ZcodeProviderSlice` 的前缀谓词切出
 `providerSlices`，在 `clientBindings` 对应绑定开启时并入 DeepSeek / MiniMax 卡（默认开启）。
 
 设置 → 客户端 → ZCode 按 `GlmUsageCategory.classify`（与额度窗口白名单同一判定，拆行实现
 在 `Services/ClientUsageAggregation.glmUsageRows`）把
-ZCode 贡献的样本拆成 Coding Plan → Start Plan → 闲时任务 → 其他任务四行（行序 =
+ZCode 贡献的样本拆成 Coding Plan → Start Plan → 加速卡 → 闲时任务 → 其他任务五行（行序 =
 `GlmUsageCategory.allCases` 声明序，无用量的分类不出行），各自独立 token 柱图与计价
 ——对齐 Antigravity 按模型分组拆行的模式；弹窗卡片维持合并汇总不拆。之后依次是同一
 客户端列里 DeepSeek / MiniMax 两个分片行（来自各自卡的 ZCode 贡献，受
@@ -492,19 +495,27 @@ ZCode 的闲时任务是系统赠送的、**不消耗 Coding Plan 积分**的后
 行仍是裸值 `offpeak-idle-plan`；均不是正式 Coding Plan provider）；落在
 `off_peak_tasks.[started_at, ended_at]` 时间窗口内的调用不扣积分。
 
-| 位置 | 是否包含闲时 / Start Plan / 其他任务 token |
+| 位置 | 是否包含闲时 / Start Plan / 加速卡 / 其他任务 token |
 |---|---|
 | 今日 / 7 天本地 token 柱图（footer） | **包含**（真实 token 消耗，按日聚合不经过窗口过滤） |
 | 5h / 周额度窗口行（「额度窗口」表格，`ProviderCardDerivedValues.windowUsageSnapshot` → `LocalUsageSummaryBuilder.windowUsage` 的白名单口径） | **排除**（不消耗积分，计入会高估额度消耗） |
-| 额度窗口表格「闲」行 | 单独拆出展示（今日闲时切片，与 5h / 周 / 今 并列，不计入窗口统计） |
+| 额度窗口表格「闲 / 免 / 速 / 它」四条今日动态行 | 单独拆出展示（各分类的今日切片，与 5h / 周 / 今 并列，不计入窗口统计） |
 
-「额度窗口」表格的「闲」行是闲时用量的唯一卡内出口：曾经的独立闲时脚注
-（`OffPeakUsageFootnote`）已删除，用量并入表格——由 `ProviderCardDerivedValues.offPeakUsageRow`
-构造，数据与被删脚注同源同口径（`LocalUsageSummaryBuilder.offPeakTodaySummary`，今日闲时
-样本的筛选谓词全仓仅 `offPeakTodaySamples` 一份），价值列对同一批今日闲时样本走
-`ModelPricingCatalog.estimate` 计价（原币种，格内不加「零积分」说明）；仅
-`status.kind == .glmCodingPlan` 构造，重置日期格恒 `—`，说明句
-「ZCode 闲时任务真实消耗；不影响 5h / 周积分余额」逐字保留为「闲」行类型格的 tooltip。
+「额度窗口」表格的「闲」行曾是闲时用量的唯一卡内出口，如今与「免 / 速 / 它」并列为
+**四条今日动态行**（闲 / 免 / 速 / 它，同一构造模式，闲在前，全部今日切片、无量整行不画）：
+曾经的独立闲时脚注（`OffPeakUsageFootnote`）已删除，用量并入表格。「闲」行由
+`ProviderCardDerivedValues.offPeakUsageRow` 构造，「免 / 速 / 它」三行由
+`ProviderCardDerivedValues.glmCategoryUsageRows` 对 `[.startPlan, .highSpeed, .other]`
+三个分类各产一行（行标签 `QuotaWindowUsageSection.startPlanRowLabel` = 「免」 /
+`highSpeedRowLabel` = 「速」 / `otherPlanRowLabel` = 「它」，单字，与「闲」同一长度档）。
+数据与被删脚注同源同口径（`LocalUsageSummaryBuilder.offPeakTodaySummary` /
+`glmCategoryTodaySummary`，今日样本筛选谓词全仓仅 `offPeakTodaySamples` /
+`glmCategoryTodaySamples` 一份——后者是前者的按 `GlmUsageCategory` 泛化形态），
+价值列对同一批今日样本走 `ModelPricingCatalog.estimate` 计价（原币种，格内不加
+「零积分」说明），速度列对同一批样本走 `windowTokenRate`；仅
+`status.kind == .glmCodingPlan` 构造，重置日期格恒 `—`，四桶合计为 0 由 `visibleRows`
+统一跳过，说明句「ZCode 闲时任务真实消耗；不影响 5h / 周积分余额」逐字保留为「闲」行
+类型格的 tooltip（免 / 速 / 它暂无专属说明句）。
 
 实现：`GlmZcodeDBReader` 读 `builtin:bigmodel-%` / `account:bigmodel-%` / `account:zai-%`
 三前缀 LIKE + `offpeak-idle-plan` 裸值精确匹配（每个前缀一个 `LIKE ?`，再加一个精确 `= ?`，
@@ -616,8 +627,8 @@ Bigmodel-Target-Type: PERSONAL                    # 团队套餐为 TEAM + Bigmo
 | Scanner, cache, and seven-day snapshot | `Sources/LLM-monitor/Services/GlmZcodeLocalUsageScanner.swift` |
 | Activity-plan balance log reader（balances + 生效前 previews，同一条日志行） | `Sources/LLM-monitor/Services/GlmZcodeBalanceLogReader.swift` |
 | Provider-neutral projection with OpenCode | `Sources/LLM-monitor/Models/ProviderClientModel.swift` (`ProviderStatus.usageProjection`，帧抽取表 `usageFrameExtractors`) + `UsageProjectionKernel` |
-| Window summary + off-peak exclusion | `Sources/LLM-monitor/Models/LocalTokenUsageSample.swift` (`summary(excludeGlmOffPeak:)`；今日闲时样本筛选/聚合 `offPeakTodaySamples` / `offPeakTodaySummary`) |
-| Card integration | `Sources/LLM-monitor/Views/ProviderCardView.swift` + `QuotaViews.swift`；「额度窗口」表格「闲」行的构造在 `Sources/LLM-monitor/Views/ProviderCardDerived.swift`（`ProviderCardDerivedValues.offPeakUsageRow`） |
+| Window summary + off-peak exclusion | `Sources/LLM-monitor/Models/LocalTokenUsageSample.swift` (`summary(excludeGlmOffPeak:)`；今日闲时样本筛选/聚合 `offPeakTodaySamples` / `offPeakTodaySummary`，与按 `GlmUsageCategory` 泛化的 `glmCategoryTodaySamples` / `glmCategoryTodaySummary` 共享同一谓词) |
+| Card integration | `Sources/LLM-monitor/Views/ProviderCardView.swift` + `QuotaViews.swift`；「额度窗口」表格「闲」行的构造在 `Sources/LLM-monitor/Views/ProviderCardDerived.swift`（`ProviderCardDerivedValues.offPeakUsageRow`），「免 / 速 / 它」三行在 `ProviderCardDerivedValues.glmCategoryUsageRows` |
 | Regression tests | `Tests/LLMMonitorTests/GlmCodingPlanFetcherTests.swift 等 5 个按 MARK 段拆分的 GLM 测试文件` |
 
 ## API Error Handling
@@ -690,6 +701,10 @@ GlmOffPeakTests.swift / GlmBalanceLogReaderTests.swift / GlmUsageCategoryTests.s
 | `testOffPeakUsageRowMirrorsTheDeletedFootnote` | 「闲」行与被删脚注同源同口径：四桶映射与 `offPeakTodaySummary` 一致（Input 为未缓存输入），命中率与 `summary.cacheHitRate` 相等，价值对同批 `offPeakTodaySamples` 与目录逐分一致（¥ 原币种）；正常任务样本不进「闲」行 |
 | `testOffPeakUsageRowIsNilWithoutOffPeakSamplesToday` | 当天无闲时样本 →「闲」行整个不画（nil，不是全零行） |
 | `testOffPeakUsageRowIsNilForNonGlmProviders` | 非 `glmCodingPlan` kind 恒返回 nil（闲时窗口只属于智谱任务，不泄漏到共用 ZCode 账本的 MiniMax / DeepSeek 卡） |
+| `testGlmCategoryUsageRowsMirrorTheOffPeakRowConstruction` | 「免 / 速 / 它」三行与「闲」行同构：行序 免 → 速 → 它、四桶与 `glmCategoryTodaySummary` 一致、价值/速度对同批 `glmCategoryTodaySamples` 逐分一致、重置格恒 `—`、正常与闲时样本不进动态行 |
+| `testGlmCategoryUsageRowsAreEmptyWithoutMatchingSamplesToday` | 当天三分类都无样本 → 空数组（不凭空造行） |
+| `testGlmCategoryUsageRowsAreEmptyForNonGlmProviders` | 非 `glmCodingPlan` kind 恒返回空数组（同「闲」行的防泄漏理由） |
+| `testGlmHighspeedSampleStaysExcludedFromQuotaWindow` | 加速卡拆行不影响额度窗口口径：`isGlmOtherPlanSample` 仍覆盖、无来源标记不误判、与 Start Plan 互斥 |
 
 The native ZCode scanner and OpenCode merge coverage is included above.
 
@@ -705,4 +720,4 @@ whether the quota batch succeeded. GLM's former dedicated periodic trigger
 The scanner's db+WAL fingerprint check is unchanged: when nothing changed only a `stat()`
 runs (microseconds); SQL (~1.5ms) only runs when the WAL actually moved.
 
-> 核对基线：2026-10-25 · 代码 46f63e6
+> 核对基线：2026-10-25 · 代码 a6f7f51

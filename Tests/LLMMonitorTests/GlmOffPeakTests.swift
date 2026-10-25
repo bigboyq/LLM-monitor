@@ -474,6 +474,181 @@ final class GlmOffPeakTests: GlmTestCase {
         }
     }
 
+    // MARK: - 「免 / 速 / 它」今日动态行（与「闲」行同一构造模式）
+
+    /// GLM 卡「额度窗口」表格的三条今日动态行
+    /// （`ProviderCardDerivedValues.glmCategoryUsageRows`）：与「闲」行**同源同
+    /// 口径**。钉四件事：
+    /// 1. 行序固定 免 → 速 → 它（当日无样本的分类整行缺席）；
+    /// 2. 四桶映射与 `glmCategoryTodaySummary` 一致（Input 是未缓存输入）；
+    /// 3. 价值对同一批今日样本（`glmCategoryTodaySamples`）走目录计价，
+    ///    速度对同一批样本走 `windowTokenRate`；
+    /// 4. 正常任务与闲时样本不进动态行（分类互斥）。
+    func testGlmCategoryUsageRowsMirrorTheOffPeakRowConstruction() throws {
+        let cal = localCalendar()
+        let today = Self.todayMidnight(calendar: cal)
+        let window = GlmOffPeakWindow(startedAt: today.addingTimeInterval(3600),
+                                      endedAt: today.addingTimeInterval(7200))
+        let displayDate = today.addingTimeInterval(10_000)
+
+        func sample(_ seconds: TimeInterval, promptID: String, input: Int, cached: Int,
+                    output: Int, reasoning: Int, provider: String) -> LocalTokenUsageSample {
+            LocalTokenUsageSample(
+                completedAt: today.addingTimeInterval(seconds),
+                modelName: "GLM-5.3",
+                promptID: promptID,
+                inputTokens: input + cached,
+                cachedInputTokens: cached,
+                outputTokens: output,
+                reasoningOutputTokens: reasoning,
+                sourceProviderID: provider,
+                durationSeconds: 10
+            )
+        }
+        // 三个分类各一条 + 一条正常任务 + 一条闲时样本（都不进动态行）。
+        let samples = [
+            sample(5400, promptID: "sp:t1", input: 100, cached: 0, output: 50, reasoning: 200,
+                   provider: "builtin:bigmodel-start-plan"),
+            sample(6000, promptID: "hs:t1", input: 300, cached: 100, output: 20, reasoning: 0,
+                   provider: "account:bigmodel-highspeed-card"),
+            sample(6600, promptID: "ot:t1", input: 700, cached: 0, output: 30, reasoning: 0,
+                   provider: "builtin:bigmodel-future-plan"),
+            sample(6000, promptID: "cp:t1", input: 9_999, cached: 0, output: 0, reasoning: 0,
+                   provider: "builtin:bigmodel-coding-plan"),
+            sample(5400, promptID: "op:t1", input: 8_888, cached: 0, output: 0, reasoning: 0,
+                   provider: "offpeak-idle-plan"),
+        ]
+        let status = Self.makeGlmStatus(
+            samples: samples, now: displayDate, calendar: cal, offPeakWindows: [window]
+        )
+        let projection = status.usageProjection(for: status.lastSuccess, now: displayDate)
+        let rows = ProviderCardDerivedValues.glmCategoryUsageRows(
+            status: status, projection: projection, displayDate: displayDate, calendar: cal
+        )
+        XCTAssertEqual(
+            rows.map(\.label),
+            [
+                QuotaWindowUsageSection.startPlanRowLabel,
+                QuotaWindowUsageSection.highSpeedRowLabel,
+                QuotaWindowUsageSection.otherPlanRowLabel,
+            ],
+            "行序固定 免 → 速 → 它"
+        )
+        XCTAssertTrue(rows.allSatisfy { $0.resetsAt == nil },
+                      "三类任务都不占积分余额，重置日期格恒 —（与今/闲行同一机制）")
+
+        // 同源同口径：四桶与各分类的 glmCategoryTodaySummary 一致（Input 未缓存）。
+        func summary(_ category: GlmUsageCategory) throws -> UsageMetricSummary {
+            try XCTUnwrap(LocalUsageSummaryBuilder.glmCategoryTodaySummary(
+                samples: projection.recentSamples,
+                providerKind: .glmCodingPlan,
+                quotaModelName: "glm_coding_plan",
+                category: category,
+                offPeakWindows: [window],
+                now: displayDate,
+                calendar: cal
+            ))
+        }
+        let startPlanRow = rows[0]
+        XCTAssertEqual(startPlanRow.metrics.input, 100)
+        XCTAssertEqual(startPlanRow.metrics.output, 50)
+        XCTAssertEqual(startPlanRow.metrics.reasoning, 200)
+        XCTAssertEqual(startPlanRow.metrics.input, try summary(.startPlan).uncachedInputTokens)
+        let highSpeedRow = rows[1]
+        XCTAssertEqual(highSpeedRow.metrics.input, 300, "Input 桶是未缓存输入（(300 + 100) − 100）")
+        XCTAssertEqual(highSpeedRow.metrics.cachedInput, 100)
+        let otherRow = rows[2]
+        XCTAssertEqual(otherRow.metrics.input, try summary(.other).uncachedInputTokens)
+
+        // 价值与速度对同一批分类样本逐分 / 逐字一致。
+        let highSpeedSamples = LocalUsageSummaryBuilder.glmCategoryTodaySamples(
+            samples: projection.recentSamples,
+            providerKind: .glmCodingPlan,
+            quotaModelName: "glm_coding_plan",
+            category: .highSpeed,
+            offPeakWindows: [window],
+            now: displayDate,
+            calendar: cal
+        )
+        XCTAssertEqual(highSpeedSamples.count, 1, "计价样本与汇总样本必须是同一批")
+        XCTAssertEqual(
+            highSpeedRow.cost?.value ?? 0,
+            ModelPricingCatalog.estimate(
+                samples: highSpeedSamples, quotaProviderID: QuotaProviderID.zhipu
+            ).value ?? 0,
+            accuracy: 1e-9,
+            "速行金额必须与目录对同一批样本的估价逐分一致"
+        )
+        XCTAssertEqual(
+            highSpeedRow.tokensPerSecond,
+            LocalUsageSummaryBuilder.windowTokenRate(samples: highSpeedSamples),
+            "速行速度与对同一批计价样本直接调 windowTokenRate 逐字一致"
+        )
+    }
+
+    /// 当天三个分类都没有样本 → 一行都不出（空数组，不是全零行）。
+    func testGlmCategoryUsageRowsAreEmptyWithoutMatchingSamplesToday() {
+        let cal = localCalendar()
+        let today = Self.todayMidnight(calendar: cal)
+        let displayDate = today.addingTimeInterval(10_000)
+        // 只有正常任务与闲时样本：两个分类都不产行动态行。
+        let samples = [
+            LocalTokenUsageSample(
+                completedAt: displayDate,
+                modelName: "glm-5.3", promptID: "cp:t1",
+                inputTokens: 100, cachedInputTokens: 0, outputTokens: 1, reasoningOutputTokens: 0,
+                sourceProviderID: "builtin:bigmodel-coding-plan"
+            ),
+            LocalTokenUsageSample(
+                completedAt: displayDate,
+                modelName: "glm-5.3", promptID: "op:t1",
+                inputTokens: 100, cachedInputTokens: 0, outputTokens: 1, reasoningOutputTokens: 0,
+                sourceProviderID: "offpeak-idle-plan"
+            ),
+        ]
+        let status = Self.makeGlmStatus(
+            samples: samples, now: displayDate, calendar: cal,
+            offPeakWindows: [GlmOffPeakWindow(startedAt: today, endedAt: displayDate)]
+        )
+        let projection = status.usageProjection(for: status.lastSuccess, now: displayDate)
+        XCTAssertEqual(
+            ProviderCardDerivedValues.glmCategoryUsageRows(
+                status: status, projection: projection, displayDate: displayDate, calendar: cal
+            ),
+            [],
+            "没有对应样本时不该凭空造行"
+        )
+    }
+
+    /// 非 GLM provider 恒不出动态行：与「闲」行同一理由——`glmLocalUsage` 也挂在
+    /// MiniMax / DeepSeek 卡上，泄漏过去就会把别的 provider 的样本误报成智谱套餐。
+    func testGlmCategoryUsageRowsAreEmptyForNonGlmProviders() {
+        let cal = localCalendar()
+        let today = Self.todayMidnight(calendar: cal)
+        let displayDate = today.addingTimeInterval(10_000)
+        let samples = [LocalTokenUsageSample(
+            completedAt: displayDate,
+            modelName: "glm-5.3", promptID: "hs:t1",
+            inputTokens: 100, cachedInputTokens: 0, outputTokens: 1, reasoningOutputTokens: 0,
+            sourceProviderID: "account:bigmodel-highspeed-card"
+        )]
+        for kind in ProviderKind.allCases where kind != .glmCodingPlan {
+            let status = Self.makeGlmStatus(
+                samples: samples, now: displayDate, calendar: cal,
+                offPeakWindows: [GlmOffPeakWindow(startedAt: today, endedAt: displayDate)],
+                kind: kind
+            )
+            let projection = status.usageProjection(for: status.lastSuccess, now: displayDate)
+            XCTAssertEqual(
+                ProviderCardDerivedValues.glmCategoryUsageRows(
+                    status: status, projection: projection, displayDate: displayDate, calendar: cal
+                ),
+                [],
+                "\(kind) 不得产出「免 / 速 / 它」动态行"
+            )
+        }
+    }
+
     /// 闲时窗口语义（旧 mergeGlm 测试的迁移）：offPeakWindows 只属于 native
     /// ZCode 源，卡片直接从 `status.glmLocalUsage` 读取（ProviderCardView），
     /// `usageProjection` 不携带也不修改它 —— 合并路径无法再影响闲时窗口。

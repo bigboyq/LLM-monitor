@@ -1,16 +1,18 @@
 import Foundation
 
-/// 卡片 body 一次要用的四个派生产物：provider-neutral 投影、额度窗口用量快照、
-/// 「今」行、「闲」行。四者都只由 `status`（+ 两个"今天"）决定，所以一起算、一起缓存。
+/// 卡片 body 一次要用的派生产物：provider-neutral 投影、额度窗口用量快照、
+/// 「今」行、「闲」行、「免 / 速 / 它」今日动态行。都只由 `status`（+ 两个"今天"）
+/// 决定，所以一起算、一起缓存。
 ///
 /// 为什么要打包成一个值：它们共享同一个失效条件集合（见
-/// `ProviderCardDerivedValues.Key`），分成四个 memo 只会把同一份 O(samples)
-/// 的键比较做四遍。
+/// `ProviderCardDerivedValues.Key`），分成多个 memo 只会把同一份 O(samples)
+/// 的键比较做多遍。
 struct ProviderCardDerived: Equatable {
     let projection: ProviderUsageProjection
     let windowUsageSnapshot: QuotaWindowUsageSnapshot
     let todayUsageRow: QuotaWindowUsageSection.Row?
     let offPeakUsageRow: QuotaWindowUsageSection.Row?
+    let glmCategoryUsageRows: [QuotaWindowUsageSection.Row]
 }
 
 /// `ProviderCardView.body` 的唯一派生值入口（`ProviderCardView` 仍是 thin
@@ -102,6 +104,12 @@ enum ProviderCardDerivedValues {
                 calendar: calendar
             ),
             offPeakUsageRow: offPeakUsageRow(
+                status: status,
+                projection: projection,
+                displayDate: displayDate,
+                calendar: calendar
+            ),
+            glmCategoryUsageRows: glmCategoryUsageRows(
                 status: status,
                 projection: projection,
                 displayDate: displayDate,
@@ -236,6 +244,83 @@ enum ProviderCardDerivedValues {
             cost: cost,
             tokensPerSecond: LocalUsageSummaryBuilder.windowTokenRate(samples: costSamples)
         )
+    }
+
+    // MARK: - 「免 / 速 / 它」今日动态行
+
+    /// 额度窗口表格要拆行的 GLM 分类与行标签（行序固定 免 → 速 → 它；闲行走
+    /// `offPeakUsageRow` 专属构造，normal 是窗口白名单本体，都不在这里）。
+    /// 标签字面量钉在 `QuotaWindowUsageSection`，与「闲」同一层。
+    private static let quotaWindowSplitCategories: [(category: GlmUsageCategory, label: String)] = [
+        (.startPlan, QuotaWindowUsageSection.startPlanRowLabel),
+        (.highSpeed, QuotaWindowUsageSection.highSpeedRowLabel),
+        (.other, QuotaWindowUsageSection.otherPlanRowLabel),
+    ]
+
+    /// 「免 / 速 / 它」三条 GLM 今日动态行：Start Plan / 加速卡 / 其他智谱任务
+    /// 的今日切片，与「闲」行**完全同构**——仅 `status.kind == .glmCodingPlan`
+    /// 构造；token 四桶走 `LocalUsageSummaryBuilder.glmCategoryTodaySummary`
+    /// （`glmCategoryTodaySamples` 的聚合形态），summary 为 nil（当日无该分类
+    /// 样本）则该行不产；金额与速度对同一批样本分别走
+    /// `ModelPricingCatalog.estimate`（原币种）与
+    /// `LocalUsageSummaryBuilder.windowTokenRate`（时长未知的调用不参与）。
+    /// 四桶合计为 0 时照常返回 `Row`，由 `QuotaWindowUsageSection.visibleRows`
+    /// 统一跳过；重置日期格恒 `—`（三类任务都不占积分余额，没有"重置"一说）。
+    ///
+    /// 「今天」以展示时钟为准（`now: displayDate`），与 `todayUsageRow` /
+    /// `offPeakUsageRow` 同一个自然日判定；取值只依赖 `displayDate` 所在自然日
+    /// （`Key.displayDay`），同一自然日内展示时钟每 tick 都命中 memo。
+    /// 非 GLM kind 恒返回 `[]`（ZCode 是多 provider 账本，动态行不能泄漏到
+    /// 共用账本的 MiniMax / DeepSeek 卡）。
+    static func glmCategoryUsageRows(
+        status: ProviderStatus,
+        projection: ProviderUsageProjection,
+        displayDate: Date,
+        calendar: Calendar = .current
+    ) -> [QuotaWindowUsageSection.Row] {
+        guard status.kind == .glmCodingPlan else { return [] }
+        guard let quotaModelName = status.lastSuccess?.activeModels.first?.modelName else {
+            return []
+        }
+        let offPeakWindows = offPeakWindows(status: status)
+        return quotaWindowSplitCategories.compactMap { entry in
+            let summary = LocalUsageSummaryBuilder.glmCategoryTodaySummary(
+                samples: projection.recentSamples,
+                providerKind: status.kind,
+                quotaModelName: quotaModelName,
+                category: entry.category,
+                offPeakWindows: offPeakWindows,
+                now: displayDate,
+                calendar: calendar
+            )
+            guard let summary else { return nil }
+            let metrics = QuotaWindowUsageMetrics(usage: summary)
+            // 金额与 token 数用同一批样本：今日切片谓词只有
+            // glmCategoryTodaySamples 一份，summary 是它的聚合形态，
+            // 两处参数必须逐字一致。
+            let costSamples = LocalUsageSummaryBuilder.glmCategoryTodaySamples(
+                samples: projection.recentSamples,
+                providerKind: status.kind,
+                quotaModelName: quotaModelName,
+                category: entry.category,
+                offPeakWindows: offPeakWindows,
+                now: displayDate,
+                calendar: calendar
+            )
+            let cost: ModelCostEstimate? = costSamples.isEmpty
+                ? nil
+                : ModelPricingCatalog.estimate(
+                    samples: costSamples,
+                    quotaProviderID: status.kind.quotaProviderID,
+                    deepseekPeakWindow: status.deepseekPeakWindow ?? .defaultWindow
+                )
+            return QuotaWindowUsageSection.Row(
+                label: entry.label,
+                metrics: metrics,
+                cost: cost,
+                tokensPerSecond: LocalUsageSummaryBuilder.windowTokenRate(samples: costSamples)
+            )
+        }
     }
 
     // MARK: - 额度窗口用量快照

@@ -156,6 +156,12 @@ struct QuotaWindowUsageSection: View {
     /// （`ProviderCardDerivedValues.offPeakUsageRow`），四桶合计为 0 时照常传入，
     /// 由 `visibleRows` 统一跳过。
     var offPeak: Row?
+    /// 「免 / 速 / 它」三条 GLM 今日动态行（Start Plan / 加速卡 / 其他智谱任务，
+    /// 今日切片、与「闲」行同一构造模式）。空数组 = 非 GLM provider 或当天无
+    /// 对应样本；某分类当日无样本则该行缺席。数据由宿主取
+    /// （`ProviderCardDerivedValues.glmCategoryUsageRows`），四桶合计为 0 的行
+    /// 照常传入，由 `visibleRows` 统一跳过。
+    var glmCategoryRows: [Row] = []
     /// 重置卡信息；`availableCount == 0` 或 `nil` 时重置卡模块整块不画。
     var resetCredits: ResetCreditsInfo?
     /// 重置卡折叠行的过期判定用刷新周期（秒），透传给 `CompactResetCreditsRow`。
@@ -212,6 +218,14 @@ struct QuotaWindowUsageSection: View {
     /// 测试钉住，改文案必须连测试一起改。
     static let offPeakRowLabel = "闲"
 
+    /// 「免 / 速 / 它」三条 GLM 今日动态行的行标签（Start Plan 体验套餐 /
+    /// 加速卡 / 其他智谱任务的今日切片）。行本身由
+    /// `ProviderCardDerivedValues.glmCategoryUsageRows` 产出；单字，与
+    /// 「5h」「周」「今」「闲」同一长度档。测试钉住，改文案必须连测试一起改。
+    static let startPlanRowLabel = "免"
+    static let highSpeedRowLabel = "速"
+    static let otherPlanRowLabel = "它"
+
     /// segment 持久化 key。
     static let segmentStorageKey = "quotaWindowUsageSegment"
 
@@ -251,9 +265,15 @@ struct QuotaWindowUsageSection: View {
         )
     }
 
-    /// **全零行跳过**后的可见行集：某行（5h/周/今/闲）四个桶 token 合计为 0 时整行跳过，两态都不出现该行。
-    /// 行序固定 5h → 周 → 今 → 闲；今 / 闲两行的重置日期格强制 `nil`（渲染 `—`）。
-    static func visibleRows(snapshot: QuotaWindowUsageSnapshot, today: Row?, offPeak: Row?) -> [Row] {
+    /// **全零行跳过**后的可见行集：某行（5h/周/今/闲/免/速/它）四个桶 token 合计为 0 时整行跳过，两态都不出现该行。
+    /// 行序固定 5h → 周 → 今 → 闲 → 免 → 速 → 它；今 / 闲与三条动态行的重置日期格强制 `nil`（渲染 `—`）。
+    /// `glmCategoryRows` 缺省 `[]`：非 GLM 形态（fleet 行 / 既有测试）零改动。
+    static func visibleRows(
+        snapshot: QuotaWindowUsageSnapshot,
+        today: Row?,
+        offPeak: Row?,
+        glmCategoryRows: [Row] = []
+    ) -> [Row] {
         var result: [Row] = []
         if let interval = snapshot.interval {
             result.append(Row(
@@ -291,6 +311,15 @@ struct QuotaWindowUsageSection: View {
                 tokensPerSecond: offPeak.tokensPerSecond
             ))
         }
+        for row in glmCategoryRows {
+            result.append(Row(
+                label: row.label,
+                metrics: row.metrics,
+                cost: row.cost,
+                resetsAt: nil,
+                tokensPerSecond: row.tokensPerSecond
+            ))
+        }
         return result.filter { $0.metrics.totalTokens > 0 }
     }
 
@@ -301,9 +330,10 @@ struct QuotaWindowUsageSection: View {
         snapshot: QuotaWindowUsageSnapshot,
         today: Row?,
         offPeak: Row?,
+        glmCategoryRows: [Row] = [],
         resetCredits: ResetCreditsInfo?
     ) -> Bool {
-        !visibleRows(snapshot: snapshot, today: today, offPeak: offPeak).isEmpty
+        !visibleRows(snapshot: snapshot, today: today, offPeak: offPeak, glmCategoryRows: glmCategoryRows).isEmpty
             || (resetCredits?.availableCount ?? 0) > 0
     }
 
@@ -653,7 +683,12 @@ struct QuotaWindowUsageSection: View {
     }
 
     private var rows: [Row] {
-        Self.visibleRows(snapshot: snapshot, today: today, offPeak: offPeak)
+        Self.visibleRows(
+            snapshot: snapshot,
+            today: today,
+            offPeak: offPeak,
+            glmCategoryRows: glmCategoryRows
+        )
     }
 }
 

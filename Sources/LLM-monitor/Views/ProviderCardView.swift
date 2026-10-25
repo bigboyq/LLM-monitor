@@ -338,6 +338,15 @@ struct ProviderCardView: View, Equatable {
                 tint: accentColor,
                 today: Self.fleetRow(usage.todayRow),
                 offPeak: Self.fleetRow(usage.windowRows.first { $0.label == "闲" }),
+                // fleet 的「免 / 速 / 它」按行标签从 windowRows 映射（与「闲」同一
+                // 口径；wire 协议尚未上报这些行，当前恒为空，上报后自动出现）。
+                glmCategoryRows: [
+                    QuotaWindowUsageSection.startPlanRowLabel,
+                    QuotaWindowUsageSection.highSpeedRowLabel,
+                    QuotaWindowUsageSection.otherPlanRowLabel,
+                ].compactMap { label in
+                    Self.fleetRow(usage.windowRows.first { $0.label == label })
+                },
                 resetCredits: info.resetCredits,
                 refreshIntervalSeconds: status.refreshIntervalSeconds
             )
@@ -345,10 +354,12 @@ struct ProviderCardView: View, Equatable {
         let snapshot = derived.windowUsageSnapshot
         let today = derived.todayUsageRow
         let offPeak = derived.offPeakUsageRow
+        let glmCategoryRows = derived.glmCategoryUsageRows
         let hasUsageModules = QuotaWindowUsageSection.hasVisibleContent(
             snapshot: snapshot,
             today: today,
             offPeak: offPeak,
+            glmCategoryRows: glmCategoryRows,
             resetCredits: info.resetCredits
         )
         if hasUsageModules {
@@ -359,6 +370,7 @@ struct ProviderCardView: View, Equatable {
                 tint: accentColor,
                 today: today,
                 offPeak: offPeak,
+                glmCategoryRows: glmCategoryRows,
                 resetCredits: info.resetCredits,
                 refreshIntervalSeconds: status.refreshIntervalSeconds
             )

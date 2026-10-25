@@ -166,7 +166,8 @@ UI 消费：「额度窗口」模块**用量态**第 6 列从「价值」换为�
 58pt 列宽不变；**分析态仍显示价值**）。分档格式 `speedText`（先分档再格式化）：
 `< 100` 一位小数（`50.1`）、`≥ 100` 整数（`246`）、nil 显示 `—`；表头 tooltip
 注明口径「窗口内 (Output+Reason) ÷ 调用时长，tok/s；时长未知的调用不参与」。
-今 / 闲行速率与金额用同一批样本（`todaySamples` / `offPeakTodaySamples`）。
+今 / 闲 / 免 / 速 / 它行速率与金额用同一批样本（`todaySamples` / `offPeakTodaySamples` /
+`glmCategoryTodaySamples`）。
 
 ## promptID 命名空间登记表
 
@@ -234,4 +235,4 @@ UI 消费：「额度窗口」模块**用量态**第 6 列从「价值」换为�
 任何新 harness 必须先补充本矩阵、provider spec 和 `TokenAccountingCatalog`，再接入 UI；
 不要在 view 或 pricing 分支里重新猜测 input/cache/reasoning 的关系。
 
-> 核对基线：2026-10-25 · 代码 0304521
+> 核对基线：2026-10-25 · 代码 a6f7f51

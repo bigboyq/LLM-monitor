@@ -1295,6 +1295,96 @@ final class QuotaWindowUsageValueTests: XCTestCase {
         )
     }
 
+    /// 「免 / 速 / 它」三条 GLM 今日动态行追加在「闲」之后：行序固定
+    /// 5h → 周 → 今 → 闲 → 免 → 速 → 它；全零的动态行整行跳过（与今/闲同一
+    /// 机制）；重置日期格强制 `—`；有量的动态行可独自点亮区块、全零不能。
+    func testVisibleRowOrderAppendsGlmCategoryRowsAfterOffPeak() {
+        let now = Date()
+        let snapshot = LocalUsageSummaryBuilder.windowUsage(
+            model: Self.model(name: "glm_coding_plan", interval: true, weekly: true, now: now),
+            providerKind: .glmCodingPlan,
+            samples: [Self.sample(at: now.addingTimeInterval(-600), prompt: "p1", model: "glm-4.6")],
+            intervalLabel: "5h",
+            weeklyLabel: "周"
+        )
+        func row(_ label: String, metrics: QuotaWindowUsageMetrics) -> QuotaWindowUsageSection.Row {
+            QuotaWindowUsageSection.Row(label: label, metrics: metrics, cost: nil)
+        }
+        let today = row(
+            ProviderCardView.todayRowLabel,
+            metrics: QuotaWindowUsageMetrics(input: 10, cachedInput: 0, output: 5, reasoning: 0)
+        )
+        let offPeak = row(
+            QuotaWindowUsageSection.offPeakRowLabel,
+            metrics: QuotaWindowUsageMetrics(input: 20, cachedInput: 0, output: 5, reasoning: 0)
+        )
+        let dynamicRows = [
+            row(QuotaWindowUsageSection.startPlanRowLabel,
+                metrics: QuotaWindowUsageMetrics(input: 30, cachedInput: 0, output: 5, reasoning: 0)),
+            row(QuotaWindowUsageSection.highSpeedRowLabel,
+                metrics: QuotaWindowUsageMetrics(input: 40, cachedInput: 0, output: 5, reasoning: 0)),
+            row(QuotaWindowUsageSection.otherPlanRowLabel,
+                metrics: QuotaWindowUsageMetrics(input: 50, cachedInput: 0, output: 5, reasoning: 0)),
+        ]
+        let zeroDynamicRows = [
+            row(QuotaWindowUsageSection.startPlanRowLabel,
+                metrics: QuotaWindowUsageMetrics(input: 0, cachedInput: 0, output: 0, reasoning: 0)),
+            row(QuotaWindowUsageSection.highSpeedRowLabel,
+                metrics: QuotaWindowUsageMetrics(input: 0, cachedInput: 0, output: 0, reasoning: 0)),
+            row(QuotaWindowUsageSection.otherPlanRowLabel,
+                metrics: QuotaWindowUsageMetrics(input: 0, cachedInput: 0, output: 0, reasoning: 0)),
+        ]
+
+        XCTAssertEqual(
+            QuotaWindowUsageSection.visibleRows(
+                snapshot: snapshot, today: today, offPeak: offPeak, glmCategoryRows: dynamicRows
+            ).map(\.label),
+            [
+                "5h", "周", ProviderCardView.todayRowLabel, QuotaWindowUsageSection.offPeakRowLabel,
+                QuotaWindowUsageSection.startPlanRowLabel,
+                QuotaWindowUsageSection.highSpeedRowLabel,
+                QuotaWindowUsageSection.otherPlanRowLabel,
+            ],
+            "行序固定 5h → 周 → 今 → 闲 → 免 → 速 → 它"
+        )
+        XCTAssertTrue(
+            QuotaWindowUsageSection.visibleRows(
+                snapshot: snapshot, today: today, offPeak: offPeak, glmCategoryRows: dynamicRows
+            ).suffix(3).allSatisfy { $0.resetsAt == nil },
+            "三条动态行的重置日期格强制 nil（渲染 —），与今/闲行同一机制"
+        )
+        XCTAssertEqual(
+            QuotaWindowUsageSection.visibleRows(
+                snapshot: snapshot, today: today, offPeak: offPeak, glmCategoryRows: zeroDynamicRows
+            ).map(\.label),
+            ["5h", "周", ProviderCardView.todayRowLabel, QuotaWindowUsageSection.offPeakRowLabel],
+            "全零的动态行整行跳过"
+        )
+
+        // 整块显隐判定：有量动态行可独自点亮区块；全零动态行不能。
+        let empty = LocalUsageSummaryBuilder.windowUsage(
+            model: Self.model(name: "deepseek_balance", interval: false, weekly: false, now: now),
+            providerKind: .deepseek,
+            samples: [],
+            intervalLabel: "5h",
+            weeklyLabel: "周"
+        )
+        XCTAssertTrue(
+            QuotaWindowUsageSection.hasVisibleContent(
+                snapshot: empty, today: nil, offPeak: nil,
+                glmCategoryRows: dynamicRows, resetCredits: nil
+            ),
+            "动态行有量时区块可见"
+        )
+        XCTAssertFalse(
+            QuotaWindowUsageSection.hasVisibleContent(
+                snapshot: empty, today: nil, offPeak: nil,
+                glmCategoryRows: zeroDynamicRows, resetCredits: nil
+            ),
+            "全零动态行不能独自点亮区块"
+        )
+    }
+
     /// 「闲」行文案钉在这里：行标签与类型格 hover 说明句（原独立闲时脚注的说明句，
     /// 逐字保留，挂在类型格上——产出比格有自己的 `.help`，不能互相打架）。
     /// 改文案必须连测试一起改。
@@ -1307,6 +1397,14 @@ final class QuotaWindowUsageValueTests: XCTestCase {
             QuotaWindowUsageSection.offPeakRowHelp,
             "ZCode 闲时任务真实消耗；不影响 5h / 周积分余额"
         )
+    }
+
+    /// 「免 / 速 / 它」三条今日动态行的行标签钉在这里（单字，与「5h」「周」
+    /// 「今」「闲」同一长度档）。改文案必须连测试一起改。
+    func testGlmCategoryRowLabelsArePinned() {
+        XCTAssertEqual(QuotaWindowUsageSection.startPlanRowLabel, "免", "Start Plan 体验套餐的今日动态行")
+        XCTAssertEqual(QuotaWindowUsageSection.highSpeedRowLabel, "速", "加速卡（highspeed-card）的今日动态行")
+        XCTAssertEqual(QuotaWindowUsageSection.otherPlanRowLabel, "它", "无法归类的其他智谱任务的今日动态行")
     }
 
     /// 重置日期列固定宽常量里**刨去前置间隙**的文字空间必须 ≥ 最长形态的自然宽

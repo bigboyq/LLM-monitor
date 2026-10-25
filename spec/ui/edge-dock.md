@@ -792,7 +792,7 @@ Data source and calibration:
   off-peak tasks, Start Plan and unregistered 智谱 plans included — the same caliber as the 7-day chart),
   while the **5h / 周 rows are the plan's billing caliber** (the whitelist that matches the primary quota).
 - The **闲 row** (label 「闲」, `QuotaWindowUsageSection.offPeakRowLabel`) sits after 今 in
-  the fixed row order 5h → 周 → 今 → 闲: the off-peak slice of 今 broken out on its own, so
+  the fixed row order 5h → 周 → 今 → 闲 → 免 → 速 → 它: the off-peak slice of 今 broken out on its own, so
   the 今 − 闲 split is readable inside the table. It is **GLM-only** — constructed by
   `ProviderCardDerivedValues.offPeakUsageRow` only for `status.kind == .glmCodingPlan`,
   every other kind yields `nil` and the row never draws, and so does a day with no
@@ -811,8 +811,23 @@ Data source and calibration:
   **type cell** (`typeCell`'s `help` parameter, so it cannot clash with the 产出比 cell's
   own `.help`): `offPeakRowHelp` = 「ZCode 闲时任务真实消耗；不影响 5h / 周积分余额」 — the
   deleted footnote's sentence kept verbatim, pinned by a test.
+- The **免 / 速 / 它 rows** (`QuotaWindowUsageSection.startPlanRowLabel` /
+  `highSpeedRowLabel` / `otherPlanRowLabel`) are three more GLM-only today rows appended
+  after 闲, one per `GlmUsageCategory` slice of 今: 「免」 = Start Plan 体验套餐,
+  「速」 = 加速卡（highspeed-card 权益）, 「它」 = 无法归类的其他智谱任务（排除
+  Start Plan 与加速卡，互斥）. They are constructed by
+  `ProviderCardDerivedValues.glmCategoryUsageRows` over `[.startPlan, .highSpeed, .other]`
+  — the exact same pattern as the 闲 row (`glmCategoryTodaySummary` /
+  `glmCategoryTodaySamples`, the per-category generalization of the off-peak today filter,
+  `now` = the host display clock, memoised on `Key.displayDay`): a category with no
+  samples today simply yields no row; 价值 prices the same sample set through
+  `ModelPricingCatalog` (original currency), 速度 rates it via `windowTokenRate`, the
+  reset date cell is forced `—`, and the all-zero rule skips them like any row. Non-GLM
+  kinds yield an empty array. They carry no dedicated tooltip (only 闲 keeps the deleted
+  footnote's sentence). Fleet scope maps these rows by label from `windowRows` when the
+  wire ever reports them (today it does not, so fleet tables show none).
 - **All-zero rules & Degenerate cases**:
-  - **All-zero rows skipped**: a row (5h/周/今/闲) whose four buckets sum to 0 is skipped
+  - **All-zero rows skipped**: a row (5h/周/今/闲/免/速/它) whose four buckets sum to 0 is skipped
     entirely via `visibleRows` — appearing in neither mode.
   - **All-zero columns hide module-wide**: evaluated per active segment across visible rows.
     In analysis mode (`statsColumnVisibility`), `命中` disappears when cached tokens sum to 0
@@ -1288,4 +1303,4 @@ default has to preserve it — defaulting to off would put a dock inside every f
 window for every existing user. Because the setting can be flipped while the user is
 already fullscreen, a policy change re-probes instead of reusing the cached verdict.
 
-> 核对基线：2026-10-25 · 代码 0304521
+> 核对基线：2026-10-25 · 代码 a6f7f51

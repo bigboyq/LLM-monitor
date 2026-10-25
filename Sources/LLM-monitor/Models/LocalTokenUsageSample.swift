@@ -123,6 +123,46 @@ enum LocalUsageSummaryBuilder {
         }
     }
 
+    /// 按 `GlmUsageCategory` 取**今日**样本：`now` 所在本地自然日内、分类命中
+    /// 的样本，返回样本本身而不是聚合值。
+    ///
+    /// 这是「闲」行（`offPeakTodaySamples`）与「免 / 速 / 它」今日动态行
+    /// （`ProviderCardDerivedValues.glmCategoryUsageRows`）共享的唯一今日切片
+    /// 谓词——「全仓仅一份」的语义从 offPeak 专属泛化到按分类。判定与
+    /// `GlmUsageCategory.classify` 同一互斥口径；唯一例外是 **offPeak**：旧缓存
+    /// 没有来源标记的样本要靠 `offPeakWindows` 时间窗口回退（classify 不带
+    /// 窗口，无法回退），normal 侧对应地把带窗口回退的闲时样本排除，其余分类
+    /// 的样本必有来源标记、与 classify 恒等。
+    nonisolated static func glmCategoryTodaySamples(
+        samples: [LocalTokenUsageSample],
+        providerKind: ProviderKind,
+        quotaModelName: String,
+        category: GlmUsageCategory,
+        offPeakWindows: [GlmOffPeakWindow] = [],
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> [LocalTokenUsageSample] {
+        let todayStart = calendar.startOfDay(for: now)
+        guard let todayEnd = calendar.date(byAdding: .day, value: 1, to: todayStart) else { return [] }
+        let categorySamples = samples.filter { sample in
+            guard sample.completedAt >= todayStart, sample.completedAt < todayEnd else { return false }
+            switch category {
+            case .offPeak:
+                return isGlmOffPeakSample(sample, fallbackWindows: offPeakWindows)
+            case .normal:
+                return !isGlmOffPeakSample(sample, fallbackWindows: offPeakWindows)
+                    && GlmUsageCategory.classify(sample) == .normal
+            case .startPlan, .highSpeed, .other:
+                return GlmUsageCategory.classify(sample) == category
+            }
+        }
+        return matchingSamples(
+            categorySamples,
+            providerKind: providerKind,
+            quotaModelName: quotaModelName
+        )
+    }
+
     /// 今日闲时（off-peak）任务的**样本**筛选：取 `now` 所在本地自然日内、落在
     /// `offPeakWindows` 时间窗口内（或来源标记为闲时 provider）的样本，返回样本
     /// 本身而不是聚合值。
@@ -130,7 +170,8 @@ enum LocalUsageSummaryBuilder {
     /// 存在的理由与 `windowSamples` 相同：计价（`ModelPricingCatalog.estimate`）要的
     /// 是样本。「闲」行（`ProviderCardDerivedValues.offPeakUsageRow`）的 token 数与
     /// 金额必须落在同一批样本上，所以筛选单独提出来，`offPeakTodaySummary` 与
-    /// 「闲」行的**金额**都走它。
+    /// 「闲」行的**金额**都走它。实现委托共享助手 `glmCategoryTodaySamples`
+    /// （`.offPeak` 分类），对外签名与行为不变。
     ///
     /// - OpenCode 合并样本（promptID 带 `opencode:` 前缀）是正常消耗，不算闲时，排除。
     /// - 闲时任务不消耗 Coding Plan 积分，额度窗口统计排除它们（见 `summary(excludeWindows:)`），
@@ -143,17 +184,39 @@ enum LocalUsageSummaryBuilder {
         now: Date = Date(),
         calendar: Calendar = .current
     ) -> [LocalTokenUsageSample] {
-        let todayStart = calendar.startOfDay(for: now)
-        guard let todayEnd = calendar.date(byAdding: .day, value: 1, to: todayStart) else { return [] }
-        let offPeakSamples = samples.filter { sample in
-            guard sample.completedAt >= todayStart, sample.completedAt < todayEnd else { return false }
-            return isGlmOffPeakSample(sample, fallbackWindows: offPeakWindows)
-        }
-        return matchingSamples(
-            offPeakSamples,
+        glmCategoryTodaySamples(
+            samples: samples,
             providerKind: providerKind,
-            quotaModelName: quotaModelName
+            quotaModelName: quotaModelName,
+            category: .offPeak,
+            offPeakWindows: offPeakWindows,
+            now: now,
+            calendar: calendar
         )
+    }
+
+    /// 按 `GlmUsageCategory` 聚合**今日** token 汇总（`glmCategoryTodaySamples`
+    /// 的聚合形态）。「免 / 速 / 它」今日动态行的 token 四桶走它。
+    nonisolated static func glmCategoryTodaySummary(
+        samples: [LocalTokenUsageSample],
+        providerKind: ProviderKind,
+        quotaModelName: String,
+        category: GlmUsageCategory,
+        offPeakWindows: [GlmOffPeakWindow] = [],
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> UsageMetricSummary? {
+        let matching = glmCategoryTodaySamples(
+            samples: samples,
+            providerKind: providerKind,
+            quotaModelName: quotaModelName,
+            category: category,
+            offPeakWindows: offPeakWindows,
+            now: now,
+            calendar: calendar
+        )
+        guard !matching.isEmpty else { return nil }
+        return aggregate(matching)
     }
 
     /// 今日闲时（off-peak）任务 token 汇总：取 `now` 所在本地自然日内、落在
@@ -168,16 +231,15 @@ enum LocalUsageSummaryBuilder {
         now: Date = Date(),
         calendar: Calendar = .current
     ) -> UsageMetricSummary? {
-        let matching = offPeakTodaySamples(
+        glmCategoryTodaySummary(
             samples: samples,
             providerKind: providerKind,
             quotaModelName: quotaModelName,
+            category: .offPeak,
             offPeakWindows: offPeakWindows,
             now: now,
             calendar: calendar
         )
-        guard !matching.isEmpty else { return nil }
-        return aggregate(matching)
     }
 
     /// 优先使用 ZCode `model_usage.provider_id` 精确识别闲时样本（显式枚举判定
@@ -206,6 +268,19 @@ enum LocalUsageSummaryBuilder {
     nonisolated static func isGlmStartPlanSample(_ sample: LocalTokenUsageSample) -> Bool {
         guard let sourceProviderID = sample.sourceProviderID else { return false }
         return sourceProviderID.contains("bigmodel-start-plan")
+    }
+
+    /// 加速卡（highspeed-card）：`provider_id` 命中显式集合
+    /// `OpencodeLocalUsage.zcodeGlmHighspeedProviderIDs`
+    /// （`account:bigmodel-highspeed-card` 等）。
+    ///
+    /// 与 Start Plan 同一处理：判定放在 `isGlmOtherPlanSample` 之前单独摘出，
+    /// 这里只影响设置页拆行与「额度窗口」表格的今日动态行；额度窗口排除仍由
+    /// `isGlmOtherPlanSample` 整体覆盖（加速卡同样不消耗积分，继续排除在
+    /// 5h / 周窗口之外），两处口径互不影响。
+    nonisolated static func isGlmHighspeedSample(_ sample: LocalTokenUsageSample) -> Bool {
+        guard let sourceProviderID = sample.sourceProviderID else { return false }
+        return OpencodeLocalUsage.isZcodeGlmHighspeedProvider(sourceProviderID)
     }
 
     /// 「其他」智谱任务：智谱前缀（`builtin:bigmodel-` / `account:bigmodel-` /
@@ -582,9 +657,9 @@ extension LocalUsageSummaryBuilder {
 /// 弹窗卡片维持合并汇总；设置 → 客户端 → ZCode 按此分类拆行展示
 /// （对齐 Antigravity 按模型分组拆行的模式）。
 ///
-/// **声明序即行序**：`SettingsView.glmUsageRows` 按 `allCases` 顺序输出空组被
-/// 跳过的行，所以新增 case 时把它放在想要的位置即可（GLM 行之下再跟
-/// DeepSeek / MiniMax 分片行，见 `SettingsView.zcodeRowOrder`）。
+/// **声明序即行序**：`ClientUsageAggregation.glmUsageRows` 按 `allCases` 顺序输出
+/// 空组被跳过的行，所以新增 case 时把它放在想要的位置即可（GLM 行之下再跟
+/// DeepSeek / MiniMax 分片行，见 `ClientUsageAggregation.zcodeRowRank`）。
 enum GlmUsageCategory: String, CaseIterable, Sendable {
     /// 正式 Coding Plan（显式全集见
     /// `OpencodeLocalUsage.zcodeGlmCodingPlanProviderIDs`，唯一计入额度窗口的
@@ -595,6 +670,11 @@ enum GlmUsageCategory: String, CaseIterable, Sendable {
     /// 从「其他任务」里单独拆出成行，不消耗积分 —— 额度窗口口径不受影响
     /// （仍由 `isGlmOtherPlanSample` 整体排除，见 `summary(excludeWindows:)`）。
     case startPlan
+    /// 加速卡（显式全集见 `OpencodeLocalUsage.zcodeGlmHighspeedProviderIDs`，
+    /// ZCode highspeed-card 权益，model_id 是普通 GLM 模型）。从「其他任务」里
+    /// 单独拆出成行，不消耗积分 —— 额度窗口口径不受影响（仍由
+    /// `isGlmOtherPlanSample` 整体覆盖，见 `summary(excludeWindows:)`）。
+    case highSpeed
     /// 闲时任务（显式全集见 `OpencodeLocalUsage.zcodeOffPeakProviderIDs`，
     /// 含账号化新 ID 与历史裸值，不消耗积分）
     case offPeak
@@ -606,6 +686,7 @@ enum GlmUsageCategory: String, CaseIterable, Sendable {
         switch self {
         case .normal: return "Coding Plan"
         case .startPlan: return "Start Plan"
+        case .highSpeed: return "加速卡"
         case .offPeak: return "闲时任务"
         case .other: return "其他任务"
         }
@@ -613,12 +694,16 @@ enum GlmUsageCategory: String, CaseIterable, Sendable {
 
     /// sample → 分类。无来源标记（旧缓存 / 手工构造）与 OpenCode / DSH 合并
     /// 样本都归 Coding Plan —— 与额度窗口白名单的兼容回退语义保持一致。
+    /// 判定序 offPeak → startPlan → highSpeed → other 保持五个分类互斥。
     nonisolated static func classify(_ sample: LocalTokenUsageSample) -> GlmUsageCategory {
         if LocalUsageSummaryBuilder.isGlmOffPeakSample(sample, fallbackWindows: []) {
             return .offPeak
         }
         if LocalUsageSummaryBuilder.isGlmStartPlanSample(sample) {
             return .startPlan
+        }
+        if LocalUsageSummaryBuilder.isGlmHighspeedSample(sample) {
+            return .highSpeed
         }
         if LocalUsageSummaryBuilder.isGlmOtherPlanSample(sample) {
             return .other

@@ -99,11 +99,11 @@ final class SettingsClientsPaneTests: XCTestCase {
 
     // MARK: - ZCode 客户端区的行（分类行 + 分片行）
 
-    /// GLM 四类拆行 + DeepSeek / MiniMax 分片行的行名与行序。
+    /// GLM 五类拆行 + DeepSeek / MiniMax 分片行的行名与行序。
     ///
     /// 行序不是字母序：分类行按 `GlmUsageCategory.allCases` 声明序，两个分片行
     /// （provider 而非套餐）固定排在分类行之后。行名同时钉住「日常任务 → Coding Plan」
-    /// 的改名。
+    /// 的改名与「加速卡」的插入位（Start Plan 之后、闲时之前）。
     @MainActor
     func testZcodeRowsSplitIntoPlanLinesThenProviderSlices() {
         // 聚合逻辑已提取为 ClientUsageAggregation 纯函数：不再经 SettingsView，
@@ -125,12 +125,13 @@ final class SettingsClientsPaneTests: XCTestCase {
         let rows = ClientUsageAggregation.clientProviderUsageByClient(for: state.statuses)[ClientID.zcode] ?? []
         XCTAssertEqual(
             rows.map(\.providerName),
-            ["Coding Plan", "Start Plan", "闲时任务", "其他任务", "DeepSeek", "minimax Token Plan"]
+            ["Coding Plan", "Start Plan", "加速卡", "闲时任务", "其他任务", "DeepSeek", "minimax Token Plan"]
         )
         // 分类行的 token 各自独立：Start Plan 的 900 不能混进 Coding Plan
         let byName = Dictionary(uniqueKeysWithValues: rows.map { ($0.providerName, $0) })
         XCTAssertEqual(byName["Coding Plan"]?.totalTokens, 1_000)
         XCTAssertEqual(byName["Start Plan"]?.totalTokens, 900)
+        XCTAssertEqual(byName["加速卡"]?.totalTokens, 750)
         XCTAssertEqual(byName["闲时任务"]?.totalTokens, 800)
         XCTAssertEqual(byName["其他任务"]?.totalTokens, 700)
         XCTAssertEqual(byName["DeepSeek"]?.totalTokens, 300)
@@ -192,7 +193,7 @@ final class SettingsClientsPaneTests: XCTestCase {
         )
         XCTAssertEqual(
             rows.map(\.providerName),
-            ["Coding Plan", "Start Plan", "闲时任务", "其他任务", "minimax Token Plan"]
+            ["Coding Plan", "Start Plan", "加速卡", "闲时任务", "其他任务", "minimax Token Plan"]
         )
     }
 
@@ -343,10 +344,11 @@ final class SettingsClientsPaneTests: XCTestCase {
         ]
         return GlmLocalUsage(
             today: nil, dailyTokenUsage: [], scannedAt: nil,
-            sessionCount: 4, eventCount: 6, failedSessionCount: 0,
+            sessionCount: 5, eventCount: 7, failedSessionCount: 0,
             recentSamples: [
                 fixtureSample(provider: "account:bigmodel-individual-coding-plan", input: 1_000, promptID: "cp:t1"),
                 fixtureSample(provider: "account:bigmodel-start-plan", input: 900, promptID: "sp:t1"),
+                fixtureSample(provider: "account:bigmodel-highspeed-card", input: 750, promptID: "hs:t1"),
                 fixtureSample(provider: "account:bigmodel-offpeak-idle-plan", input: 800, promptID: "op:t1"),
                 fixtureSample(provider: "account:bigmodel-future-plan", input: 700, promptID: "ot:t1")
             ],

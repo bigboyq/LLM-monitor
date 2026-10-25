@@ -74,7 +74,10 @@ provider pane. It has two halves:
   rate and the API-price estimate. The list is keyed by `.id(client.id)` so switching
   clients rebuilds the column and the expansion state falls back to the computed default
   (expanded only when the client has exactly one provider) instead of SwiftUI reusing
-  the previous client's expansion by position.
+  the previous client's expansion by position. ZCode 的 GLM 贡献在此按
+  `GlmUsageCategory` 拆成多行展示（Coding Plan → Start Plan → 加速卡 → 闲时任务 →
+  其他任务，行序 = `allCases` 声明序，空分类不出行；判定与口径见
+  `spec/providers/glm.md` §Provider 分类）。
 
 The per-provider OpenCode merge switch is **not** in this pane (nor in the provider
 panes) — `clientBindings[]` in `config.json` is its only source of truth, so saving the
@@ -252,4 +255,4 @@ appearance-neutral.
 - General pane 有一个「Bark 推送」全局节：`enabled` / `serverURL` / `deviceKey` / `sound` / `skipWhenAwakeAndUnlocked` / `ttl` / `group`。
 - 字段默认值与逐字段容错见 `spec/notifications.md` §5；JSON 契约见 `spec/config.md` §Config Schema 的 `notify*` 与 `bark` 字段。
 
-> 核对基线：2026-10-05 · 代码 79dee29
+> 核对基线：2026-10-25 · 代码 a6f7f51

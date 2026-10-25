@@ -57,6 +57,16 @@ struct OpencodeLocalUsage: Equatable, Codable, Sendable {
         // 0020 迁移前的历史裸值
         "offpeak-idle-plan",
     ]
+    /// ZCode 中智谱加速卡（highspeed-card）权益的 provider_id 全集。ZCode 的
+    /// 加速卡权益不消耗 Coding Plan 积分、model_id 就是普通 GLM 模型
+    /// （2026-10-25 实测 `account:bigmodel-highspeed-card` / `GLM-5.3`）；
+    /// `account:zai-` 镜像变体未观测到，按 0020 迁移的账号化命名规律一并
+    /// 预防性登记。
+    static let zcodeGlmHighspeedProviderIDs: Set<String> = [
+        "account:bigmodel-highspeed-card",
+        // 未观测到的 zai 镜像变体（截至 2026-10-25 只有 bigmodel 变体实测出现）
+        "account:zai-highspeed-card",
+    ]
     /// ZCode 中智谱系 provider 的统一前缀集合（GLM 家族超集）。现在只承担两个
     /// 职责：(1) SQL 读取层超集过滤 —— `GlmZcodeDBReader` 按前缀 LIKE 把所有
     /// 智谱系行读进来（含未知新套餐），token 柱图计入真实消耗；(2) 未知新套餐
@@ -82,6 +92,12 @@ struct OpencodeLocalUsage: Equatable, Codable, Sendable {
     /// 显式枚举 `zcodeOffPeakProviderIDs`（账号化新 ID + 历史裸值）。
     nonisolated static func isZcodeOffPeakProvider(_ providerID: String) -> Bool {
         zcodeOffPeakProviderIDs.contains(providerID)
+    }
+    /// 是否 ZCode 智谱加速卡 provider（highspeed-card 权益，不消耗 Coding Plan
+    /// 积分）。显式枚举 `zcodeGlmHighspeedProviderIDs`；未登记的 ID 一律返回
+    /// false（落「其他」分类）。
+    nonisolated static func isZcodeGlmHighspeedProvider(_ providerID: String) -> Bool {
+        zcodeGlmHighspeedProviderIDs.contains(providerID)
     }
     /// minimax 在 opencode 里的 providerID。
     /// 注意：这是「本地能力账本」，只进 OpenCode 诊断页、不参与 Minimax 卡归因，
