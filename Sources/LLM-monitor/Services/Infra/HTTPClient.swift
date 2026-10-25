@@ -165,6 +165,10 @@ enum HTTPRequestLogSanitizer {
             return "网络连接中断"
         case .notConnectedToInternet:
             return "当前没有网络连接"
+        case .appTransportSecurityRequiresSecureConnection:
+            return "系统安全策略阻止了此 HTTP 连接"
+        case .dataNotAllowed:
+            return "网络访问被系统限制，请检查网络权限"
         case .secureConnectionFailed, .serverCertificateUntrusted,
              .serverCertificateHasBadDate, .serverCertificateHasUnknownRoot,
              .serverCertificateNotYetValid:

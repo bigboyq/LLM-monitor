@@ -4,11 +4,11 @@
 
 LLM Monitor is a macOS 14+ menu bar app for viewing quota, balance, reset times, health, and local token usage across multiple LLM services.
 
-> Current version: **1.23.3** · Apple Silicon (arm64) · Credentials and usage caches stay on your Mac
+> Current version: **1.24.0** · Apple Silicon (arm64) · Credentials and usage caches stay on your Mac
 
 ## Download
 
-1. Download `LLM-monitor-1.23.3.dmg` from [GitHub Releases](https://github.com/bigboyq/LLM-monitor/releases/latest).
+1. Download `LLM-monitor-1.24.0.dmg` from [GitHub Releases](https://github.com/bigboyq/LLM-monitor/releases/latest).
 2. Open the DMG and drag **LLM-monitor.app** to **Applications**.
 3. Launch the app, click its menu bar icon, open Settings, and enable the providers you use.
 
@@ -39,6 +39,7 @@ config.json). All client-local usage can be inspected under Settings → Clients
 - Quota notifications split into four events (5-hour / weekly × restored / exhausted), each with an independent channel: system notification or Bark push. Restored fires on a rise above 5 pp or climbing back above 98%; exhausted is edge-triggered. Detection baselines persist across relaunches.
 - Bark push supports the official or self-hosted server (POST JSON, overwrite IDs, serial queue with cooldown and retry) plus an optional "skip while you are at the Mac" policy (display awake and session unlocked); notification permission is checked at app launch.
 - Local token totals and seven-day charts for supported clients.
+- Hub-and-node usage sync across devices: a hub aggregates reports from nodes, with global, local, and per-node views.
 - The main menu provider cards can be arranged with a custom order under Settings → General → Main Menu Provider Order; other provider and client lists remain alphabetized.
 - Per-provider refresh intervals, exponential retry backoff, and live config reload.
 - GLM and DeepSeek peak-period indicators. Peak hours are always evaluated in Beijing time (Asia/Shanghai) and exclude statutory public holidays; the holiday table refreshes over the network by default and can be pinned to the bundled snapshot in Settings — see the [user guide](docs/help.en.md#holiday-data-source).
@@ -104,7 +105,7 @@ Run the test and audit gates:
 Create a deterministic release app, DMG, and checksum file:
 
 ```bash
-./scripts/build-release.sh 1.23.3 193
+./scripts/build-release.sh 1.24.0
 ```
 
 `build-app.sh` controls whether the repository's `.build_number` changes:

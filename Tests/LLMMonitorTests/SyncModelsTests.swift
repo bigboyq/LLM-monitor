@@ -180,10 +180,19 @@ final class SyncModelsTests: XCTestCase {
         XCTAssertEqual(result.windowDroppedRowCount, 0)
     }
 
-    func testValidationRejectsWrongBucketCount() {
-        let six = Array(sevenBuckets().dropLast())
-        let result = FleetReportValidator.validate(report(daily: six))
-        XCTAssertNotNil(result.dailyBucketsError, "必须恰有七个日桶")
+    func testValidationAcceptsPartialDayChannelAndRejectsOverSeven() {
+        // 增量裁定 2026-10-24：通道可只带部分天（补发/修正），0–7 桶合法。
+        let single = [sevenBuckets()[6]]
+        XCTAssertNil(FleetReportValidator.validate(report(daily: single)).dailyBucketsError,
+                     "只带今天的部分通道应通过校验")
+
+        var eight = sevenBuckets()
+        eight.append(FleetDailyBucket(
+            dayKey: "2020-01-01", totals: .zero, clientProviders: [], entries: [],
+            totalsComplete: true, modelDetailsComplete: true, sourceTruncated: false
+        ))
+        XCTAssertNotNil(FleetReportValidator.validate(report(daily: eight)).dailyBucketsError,
+                        "超过 7 桶仍拒收")
     }
 
     func testValidationRejectsTotalsMismatch() {
@@ -216,6 +225,114 @@ final class SyncModelsTests: XCTestCase {
         XCTAssertNotNil(FleetReportValidator.validate(report(daily: rows)).dailyBucketsError, "重复 dayKey 拒收")
     }
 
+    func testDayKeyRequiresASCIIZeroPaddedRealGregorianDate() {
+        XCTAssertTrue(FleetReportValidator.isValidDayKey("2024-02-29"), "有效闰日通过")
+        XCTAssertTrue(FleetReportValidator.isValidDayKey("2000-02-29"), "400 年规则下的闰日通过")
+        XCTAssertFalse(FleetReportValidator.isValidDayKey("2024-02-31"), "不存在的日期拒收")
+        XCTAssertFalse(FleetReportValidator.isValidDayKey("2023-02-29"), "非闰年的 2 月 29 日拒收")
+        XCTAssertFalse(FleetReportValidator.isValidDayKey("2024-2-09"), "月份必须补零")
+        XCTAssertFalse(FleetReportValidator.isValidDayKey("2024-02-9"), "日期必须补零")
+        XCTAssertFalse(FleetReportValidator.isValidDayKey("２０２４-02-29"), "只接受 ASCII 数字")
+    }
+
+    func testValidationRejectsIncompleteDailyTotalsWithoutBlockingOtherChannels() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let day = FleetMerger.dayKeyWindow(now: now)[6]
+        let incomplete = bucket(dayKey: day, rows: [], totalsComplete: false, truncated: true)
+        let validation = FleetReportValidator.validate(report(
+            daily: [incomplete], windows: [windowRow()], quotas: [quota()], now: now
+        ))
+        XCTAssertNotNil(validation.dailyBucketsError, "不完整日桶不能替换 hub 的权威桶")
+        XCTAssertEqual(validation.windowRows.count, 1, "日桶拒绝不阻断有效窗口行")
+        XCTAssertNil(validation.quotasError, "日桶拒绝不阻断有效额度通道")
+    }
+
+    func testSourceAwarePartialDailyBucketValidatesAndRejectsUnavailableRows() {
+        let day = FleetMerger.dayKeyWindow(now: Date(timeIntervalSince1970: 1_800_000_000)).last!
+        let healthy = clientRow(input: 12)
+        let unavailable = FleetDailyUnavailableSource(
+            clientID: ClientID.dsh,
+            quotaProviderID: QuotaProviderID.deepseek,
+            reason: .failed
+        )
+        let partial = FleetDailyBucket(
+            dayKey: day,
+            totals: FleetTotals(summing: [healthy]),
+            clientProviders: [healthy],
+            entries: [],
+            totalsComplete: false,
+            modelDetailsComplete: false,
+            sourceTruncated: false,
+            unavailableSources: [unavailable]
+        )
+        XCTAssertNil(FleetReportValidator.validate(report(daily: [partial])).dailyBucketsError,
+                     "明确标记未覆盖来源时，健康来源仍可落库")
+
+        let conflictingRow = clientRow(client: ClientID.dsh, provider: QuotaProviderID.deepseek, input: 7)
+        let inconsistent = FleetDailyBucket(
+            dayKey: day,
+            totals: FleetTotals(summing: [healthy, conflictingRow]),
+            clientProviders: [healthy, conflictingRow],
+            entries: [],
+            totalsComplete: false,
+            modelDetailsComplete: false,
+            sourceTruncated: false,
+            unavailableSources: [unavailable]
+        )
+        XCTAssertNotNil(FleetReportValidator.validate(report(daily: [inconsistent])).dailyBucketsError,
+                       "不可用来源不能同时出现在本次行数据中")
+
+        let duplicate = FleetDailyBucket(
+            dayKey: day,
+            totals: FleetTotals(summing: [healthy]),
+            clientProviders: [healthy],
+            entries: [],
+            totalsComplete: false,
+            modelDetailsComplete: false,
+            sourceTruncated: false,
+            unavailableSources: [unavailable, unavailable]
+        )
+        XCTAssertNotNil(FleetReportValidator.validate(report(daily: [duplicate])).dailyBucketsError,
+                       "同一来源重复声明必须拒收")
+    }
+
+    func testDayKeysUseGregorianCalendarAndKeepCallerTimezone() {
+        var utc = Calendar(identifier: .gregorian)
+        utc.timeZone = TimeZone(secondsFromGMT: 0)!
+        let boundary = utc.date(from: DateComponents(year: 2026, month: 10, day: 25, hour: 0, minute: 30))!
+
+        var buddhist = Calendar(identifier: .buddhist)
+        buddhist.timeZone = TimeZone(identifier: "Asia/Shanghai")!
+        var beijingGregorian = Calendar(identifier: .gregorian)
+        beijingGregorian.timeZone = buddhist.timeZone
+        let buddhistKey = FleetMerger.dayKey(of: boundary, calendar: buddhist)
+        XCTAssertEqual(buddhistKey, "2026-10-25")
+        XCTAssertTrue(FleetReportValidator.isValidDayKey(buddhistKey))
+        XCTAssertEqual(
+            FleetMerger.dayKeyWindow(now: boundary, calendar: buddhist),
+            FleetMerger.dayKeyWindow(now: boundary, calendar: beijingGregorian),
+            "非Gregorian系统日历仍应按同一时区产出Gregorian窗口"
+        )
+        let bucket = bucket(dayKey: buddhistKey, rows: [])
+        XCTAssertEqual(
+            FleetMerger.mergeDailyBuckets([[bucket]], now: boundary, calendar: buddhist).map(\.dayKey),
+            [buddhistKey],
+            "生成、校验和hub窗口筛选采用同一种Gregorian日键"
+        )
+
+        var losAngelesJapanese = Calendar(identifier: .japanese)
+        losAngelesJapanese.timeZone = TimeZone(identifier: "America/Los_Angeles")!
+        var losAngelesGregorian = Calendar(identifier: .gregorian)
+        losAngelesGregorian.timeZone = losAngelesJapanese.timeZone
+        let japaneseKey = FleetMerger.dayKey(of: boundary, calendar: losAngelesJapanese)
+        XCTAssertEqual(japaneseKey, "2026-10-24", "日界使用输入calendar的时区")
+        XCTAssertTrue(FleetReportValidator.isValidDayKey(japaneseKey))
+        XCTAssertEqual(
+            FleetMerger.dayKeyWindow(now: boundary, calendar: losAngelesJapanese),
+            FleetMerger.dayKeyWindow(now: boundary, calendar: losAngelesGregorian)
+        )
+    }
+
     func testValidationDropsBadWindowRowsIndividually() {
         let badBoundary = windowRow(start: Date(timeIntervalSince1970: 1_800_000_000),
                                     end: Date(timeIntervalSince1970: 1_799_000_000))
@@ -241,6 +358,65 @@ final class SyncModelsTests: XCTestCase {
         XCTAssertNotNil(FleetReportValidator.validate(bad).envelopeError, "protocolVersion 不匹配整包拒绝")
     }
 
+    // MARK: - 逐天摘要回执（增量日桶，2026-10-24 裁定）
+
+    func testDailyDigestStableAcrossCodecRoundTripAndSensitiveToContent() throws {
+        let bucket = sevenBuckets(rows: [clientRow(input: 5)])[3]
+        let digest = FleetDailyDigest.digest(bucket)
+        XCTAssertEqual(digest.count, 16, "SHA256 前 16 个十六进制字符")
+        XCTAssertEqual(digest, FleetDailyDigest.digest(bucket), "同内容跨调用稳定")
+
+        // hub 侧是对落库后（JSON 往返）的日桶计算摘要：往返必须不改变摘要。
+        let roundTripped = try FleetCodec.decode(
+            FleetDailyBucket.self, from: FleetCodec.encode(bucket)
+        )
+        XCTAssertEqual(FleetDailyDigest.digest(roundTripped), digest, "编解码往返后摘要不变")
+
+        // 内容修正（历史天被扫描补齐/改数）→ 摘要必须变化，否则修正传不过去。
+        let revised = FleetDailyBucket(
+            dayKey: bucket.dayKey, totals: FleetTotals(summing: [clientRow(input: 6)]),
+            clientProviders: [clientRow(input: 6)], entries: [],
+            totalsComplete: true, modelDetailsComplete: true, sourceTruncated: false
+        )
+        XCTAssertNotEqual(FleetDailyDigest.digest(revised), digest)
+    }
+
+    func testDailyBackfillKeepsFullOnEmptyReceiptAndFiltersMatchingDays() {
+        var reportWithData = report(daily: sevenBuckets(rows: [clientRow(input: 5)]))
+        let buckets = reportWithData.dailyBuckets!
+
+        // 回执为空（首次配置 / 重启 / hub 丢数据）→ 全量七天。
+        FleetDailyBackfill.filterReport(&reportWithData, cachedDigests: [:])
+        XCTAssertEqual(reportWithData.dailyBuckets?.count, 7, "空回执保持全量建立基线")
+
+        // 回执与本地完全一致 → 整条通道置 nil（等价心跳）。
+        var same = report(daily: buckets)
+        let receipts = Dictionary(uniqueKeysWithValues: buckets.map {
+            ($0.dayKey, FleetDailyDigest.digest($0))
+        })
+        FleetDailyBackfill.filterReport(&same, cachedDigests: receipts)
+        XCTAssertNil(same.dailyBuckets, "全部一致则不发日桶")
+
+        // 只修正一天 → 只补发那天的修正值。
+        var revised = buckets
+        revised[2] = FleetDailyBucket(
+            dayKey: revised[2].dayKey,
+            totals: FleetTotals(summing: [clientRow(input: 42)]),
+            clientProviders: [clientRow(input: 42)],
+            entries: [], totalsComplete: true, modelDetailsComplete: true, sourceTruncated: false
+        )
+        var partial = report(daily: revised)
+        FleetDailyBackfill.filterReport(&partial, cachedDigests: receipts)
+        XCTAssertEqual(partial.dailyBuckets?.map(\.dayKey), [revised[2].dayKey],
+                       "只有摘要不一致的天进入补发")
+    }
+
+    func testDailyBackfillIgnoresReportWithoutDailyChannel() {
+        var heartbeat = report(daily: nil)
+        FleetDailyBackfill.filterReport(&heartbeat, cachedDigests: [:])
+        XCTAssertNil(heartbeat.dailyBuckets, "通道本就缺席，过滤保持缺席")
+    }
+
     // MARK: - 日桶合并（§7.1）
 
     func testMergeDailyBucketsSumsAuthoritativeTotals() {
@@ -253,6 +429,33 @@ final class SyncModelsTests: XCTestCase {
         XCTAssertEqual(merged[0].totals.input, 42)
         XCTAssertEqual(merged[0].totals.output, 13)
         XCTAssertEqual(merged[0].clientProviders.count, 1, "同 (client, provider) 相加而不是并列两行")
+    }
+
+    func testMergeDailyBucketsPropagatesPartialSourceCoverage() throws {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let day = FleetMerger.dayKeyWindow(now: now).last!
+        let unavailable = FleetDailyUnavailableSource(
+            clientID: ClientID.dsh,
+            quotaProviderID: QuotaProviderID.deepseek,
+            reason: .truncated
+        )
+        let partial = FleetDailyBucket(
+            dayKey: day,
+            totals: FleetTotals(summing: [clientRow(input: 10)]),
+            clientProviders: [clientRow(input: 10)],
+            entries: [],
+            totalsComplete: false,
+            modelDetailsComplete: false,
+            sourceTruncated: true,
+            unavailableSources: [unavailable]
+        )
+        let complete = bucket(dayKey: day, rows: [clientRow(input: 5)])
+        let merged = try XCTUnwrap(FleetMerger.mergeDailyBuckets([[partial], [complete]], now: now).first)
+        XCTAssertEqual(merged.totals.input, 15)
+        XCTAssertFalse(merged.totalsComplete)
+        XCTAssertFalse(merged.modelDetailsComplete)
+        XCTAssertTrue(merged.sourceTruncated)
+        XCTAssertEqual(merged.unavailableSources, [unavailable])
     }
 
     func testMergeCoverageFullPlusNoneIsPartial() {
@@ -276,6 +479,43 @@ final class SyncModelsTests: XCTestCase {
         XCTAssertEqual(merged[0].entries[0].coverage, .partial, "full + none → partial（§7.1 / §10.7.2）")
         XCTAssertEqual(merged[0].entries[0].input, 2)
         XCTAssertEqual(merged[0].entries[0].value, 0.5, "金额只覆盖有价贡献")
+    }
+
+    func testMergeCoveragePreservesPartialEntryWithAmount() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let day = FleetMerger.dayKeyWindow(now: now)[6]
+        let partial = FleetUsageEntry(
+            clientID: ClientID.codex, quotaProviderID: QuotaProviderID.openAI,
+            modelName: "gpt-5.1", input: 10, cacheRead: 0, output: 2, reasoning: 0,
+            value: 0.5, currency: .usd, coverage: .partial, truncated: false
+        )
+        let merged = FleetMerger.mergeDailyBuckets(
+            [[bucket(dayKey: day, rows: [], entries: [partial])]], now: now
+        )
+        XCTAssertEqual(merged.first?.entries.first?.coverage, .partial,
+                       "已有金额不代表所有输入样本均已计价")
+
+        let partialWithoutAggregateAmount = FleetUsageEntry(
+            clientID: ClientID.codex, quotaProviderID: QuotaProviderID.openAI,
+            modelName: "gpt-5.1", input: 1, cacheRead: 0, output: 1, reasoning: 0,
+            value: nil, currency: nil, coverage: .partial, truncated: false
+        )
+        let stillPartial = FleetMerger.mergeDailyBuckets(
+            [[bucket(dayKey: day, rows: [], entries: [partialWithoutAggregateAmount])]], now: now
+        )
+        XCTAssertEqual(stillPartial.first?.entries.first?.coverage, .partial,
+                       "原partial状态不能因本行没有可合并金额而丢失")
+
+        let malformedNoneWithAmount = FleetUsageEntry(
+            clientID: ClientID.codex, quotaProviderID: QuotaProviderID.openAI,
+            modelName: "gpt-5.1", input: 1, cacheRead: 0, output: 1, reasoning: 0,
+            value: 0.1, currency: .usd, coverage: .none, truncated: false
+        )
+        let conservative = FleetMerger.mergeDailyBuckets(
+            [[bucket(dayKey: day, rows: [], entries: [malformedNoneWithAmount])]], now: now
+        )
+        XCTAssertEqual(conservative.first?.entries.first?.coverage, .partial,
+                       "none+amount 的不一致wire行不得升级为full")
     }
 
     func testMergeTruncatedEntryCannotBeFullEvenIfPriced() {
@@ -332,6 +572,32 @@ final class SyncModelsTests: XCTestCase {
         XCTAssertEqual(result.count, 1, "同范围同键合并为一行")
         XCTAssertEqual(result[0].valueByCurrency["USD"], 1.5, "金额按币种分开保存，不做跨币种折算合并")
         XCTAssertEqual(result[0].valueByCurrency["CNY"], 9.9)
+    }
+
+    func testWindowAggregationPreservesPartialAndIncompleteCoverage() {
+        let node = UUID()
+        let partial = windowRow(coverage: .partial)
+        let partialResult = FleetMerger.aggregateWindows(
+            [.init(nodeID: node, stale: false, rows: [partial])], knownNodeIDs: [node]
+        )
+        XCTAssertEqual(partialResult.first?.coverage, .partial,
+                       "有非零金额但来源声明partial时仍需显示部分计价")
+
+        let incomplete = windowRow(coverage: .full, complete: false)
+        let incompleteResult = FleetMerger.aggregateWindows(
+            [.init(nodeID: node, stale: false, rows: [incomplete])], knownNodeIDs: [node]
+        )
+        XCTAssertEqual(incompleteResult.first?.coverage, .partial,
+                       "complete=false不能聚合成full")
+        XCTAssertFalse(incompleteResult.first?.complete ?? true)
+
+        let malformedNoneWithAmount = windowRow(coverage: .none)
+        let conservative = FleetMerger.aggregateWindows(
+            [.init(nodeID: node, stale: false, rows: [malformedNoneWithAmount])],
+            knownNodeIDs: [node]
+        )
+        XCTAssertEqual(conservative.first?.coverage, .partial,
+                       "none+amount的wire不一致状态不得聚合成full")
     }
 
     // MARK: - 额度选举（§2.1 / §7.7，M 裁定 = fetchedAt）

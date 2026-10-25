@@ -225,9 +225,14 @@ interval 变化的 provider，未变者保留既有 deadline 与首刷标记，�
 走显式 publisher 通道，两路保险。之前是 `objectWillChange.send() + in-place mutation` +
 3 个独立 PassthroughSubject（`antigravityUsageDidChange` / `minimaxUsageDidChange`），已合并。
 
+多机联动（Fleet Sync）状态不走这条通道：`AppState.fleetDidChange` 是独立的
+`PassthroughSubject<Void, Never>`，在 fleet 快照接受 / scope 变化时 fire，订阅方是
+MenuContentView、MenuBarLabel、EdgeDockContentView 与 EdgeDockController（详见 `sync.md` §10）。
+`statusDidChange` 仍是 quota / 本地用量状态唯一的广播通道，两套互不替代。
+
 ## Launch At Login
 
-The Settings panel includes a launch-at-login toggle backed by `SMAppService.mainApp`. The menu footer displays read-only status text (`自启 ✓` / `自启 ✗`).
+The Settings panel includes a launch-at-login toggle backed by `SMAppService.mainApp`. The menu footer's 自启 entry is **also a toggle button**（`FooterActionButton`，2026-10-24 起）：单击调 `LoginItemService.setEnabled`，状态由图标表达——已启用 `power`（实心电源）、未启用 `power.dotted`（虚线电源），标题只写「自启」二字、无 ✓/✗ 文字。UI 结构细节见 `ui/menu-and-cards.md` §Footer。
 
 Behavior:
 
@@ -244,6 +249,11 @@ Implementation notes:
 - This works best from a packaged `.app`, especially when the bundle lives in `/Applications`.
 - The toggle does not write to `config.json`; it talks directly to the system login-item service.
 - Registration failures are shown in the Settings panel and written to `log.txt`.
+- Settings refreshes the login-item service before initializing its draft, then subscribes
+  to the published state. Actual state changes synchronize the draft; repeated unchanged
+  state refreshes preserve local edits. An untouched draft uses the current service value
+  at save time, so saving another field cannot undo a menu toggle. Save success or failure
+  (including rollback) rebases the draft to the final actual state.
 
 ## Data Model
 
@@ -317,6 +327,10 @@ of the remaining-time percentage and 50%. 三个 `healthLevel` 派生属性
 | `.failed(_, let last)` | `aggregateHealthLevel(at:)`（同上；`last` 为 nil 则 nil） |
 | `.ready` / `.notConfigured` | `nil`（UI 显示灰点，不归类为"健康"） |
 
+`ProviderStatus.aggregateHealthLevel(at:)` 在 `glmPeakWindow` 命中 GLM 高峰时段时保底
+`.warning`（红色优先于普通档位结论）；`QuotaInfo.aggregateHealthLevel(providerKind:isPeakPrice:)`
+同步接收高峰倍率入参。阈值细节见 `providers/glm.md`。
+
 `nil` 让 UI 端的状态胶囊用 secondary 灰色渲染，明确区分"没数据"和"有数据但健康"。菜单栏的 `iconDuo` 仪表盘会随额度指标与节能/睡眠健康度变化；`quotaLogo`（App 图标）是固定设计稿、不随健康度变化；标准 SF Symbol 样式则保留右下角状态点与刷新中的图标替换。卡片状态点和进度颜色同样反映健康度。
 
 跨 model 的聚合读数不遍历全部 `activeModels`：`ProviderStatus.aggregateHealthLevel`、
@@ -352,9 +366,17 @@ Fetcher errors use `QuotaError`:
 |---|---|
 | `missingAPIKey` | `未配置 API Key` |
 | `invalidResponse` | `响应格式无效` |
-| `httpError(status, body)` | `HTTP <status>: <first 200 chars>` |
+| `httpError(status, body)` | `HTTP <status>: <first 200 chars>`（body 预览已自带 `HTTP <status>` 前缀时不重复拼接） |
+| `responseTooLarge(limit, actual, redactedPath)` | `响应过大（上限 N bytes）：<redactedPath>` |
 | `decodingError(message)` | `解析失败：<message>` |
 | `networkError(message)` | `网络错误：<message>` |
+
+`HTTPRequestLogSanitizer.networkErrorDescription` 对 ATS 拒绝映射为
+`系统安全策略阻止了此 HTTP 连接`，对 `URLError.dataNotAllowed` 映射为
+`网络访问被系统限制，请检查网络权限`；后者不能直接断言是本地网络授权拒绝。
+文案不回显底层错误的 URL、userinfo、query 或 fragment；其他既有超时 / DNS /
+连接错误分类保持不变。2026-10-25 工作区定向验证：`HTTPErrorSanitizerTests` 6 例通过；
+打包脚本 `bash -n` 及临时 plist 的用途说明 / ATS 嵌套布尔校验通过，未在另一台机器验收。
 
 Antigravity-specific note:
 
@@ -393,8 +415,11 @@ Adding a provider currently requires:
 11. 在 `Services/LocalUsageOrchestration.swift` 加一个 `lazy var xxxCoordinator = LocalUsageCoordinator<XxxLocalUsage>(...)`
     （参考 `antigravityCoordinator`），`AppState.localUsage` 会随该结构自动携带。apply 闭包走
     `applyLocalUsage<T: Equatable>(kind:field:...)` 通用函数；具名薄 wrapper（一行委托通用
-    函数，见 `AppState.swift` 约 :1163-1198 的 `applyAntigravityLocalUsage` 等）是允许的
-    现状形态——不要再写第二套完整镜像实现。
+    函数，见 `Services/AppState+LocalUsage.swift` 的 `applyAntigravityLocalUsage` :7 /
+    `applyMinimaxLocalUsage` :33 / `applyGlmLocalUsage` :52 / 通用 `applyLocalUsage` :140）
+    是允许的现状形态——不要再写第二套完整镜像实现。（`AppState.swift` 已拆出
+    `+LocalUsage` / `+Metrics` / `+Rebuild` 三个同类型 extension，本地用量入口全部在
+    `+LocalUsage`。）
 12. 本地用量扫描由 `ProviderRefreshScheduler` 的 `onBatchSettled` 驱动：每批 Provider
     请求全部返回后（不论成功/失败）投递一次 `LocalUsageOrchestration` reconcile。
     **reconcile 每拍都跑**，不是只在 FSEvents 报 dirty 时才跑：常规档是 `.full`
@@ -430,11 +455,11 @@ through this path. Two known edges (intentional, not bugs):
    but stored locally because the fetcher is a `Sendable` value that may be used
    independently of the registry.
 
-**SettingsView 派生 tab**（不是硬编码）：`SettingsTab` 是 `.general` / `.energy` /
+**SettingsView 派生 tab**（不是硬编码）：`SettingsTab` 是 `.general` / `.energy` / `.sync` /
 `.provider(FetcherDescriptor)` / `.clients` 的 enum。`SettingsView.allTabs` 是
-`[.general, .energy] + sortedProviderDescriptors.map { .provider($0) } + [.clients]`
+`[.general, .energy, .sync] + sortedProviderDescriptors.map { .provider($0) } + [.clients]`
 （provider 段按显示名升序），侧栏 icon / 标题 / 副标题从 descriptor 拿，**新增 provider
-不用改 `SettingsTab` 枚举本身**。
+不用改 `SettingsTab` 枚举本身**（`.sync` 是多机联动 pane，见 `sync.md`）。
 `providerPane(for: ProviderKind)` 是 kind 派发，加新 provider 在那里加一个 `case` 写
 pane UI（默认模板：enabled toggle + 独立刷新间隔；特殊字段如 API Key / authPath
 在 case 里加）。`SettingsPaneHeader` 也走同一个 `SettingsTab`，不再 hardcoded icon / title。
@@ -459,4 +484,5 @@ These are documented product boundaries:
   have their own SQLite readers, Antigravity is pure RPC, and Codex parses JSONL on
   demand for the 7-day chart.
 
-> 核对基线：2026-10-19 · 代码 dde25f8
+> 核对基线：2026-10-25 · 代码 6f11831
+> 2026-10-25 自启草稿与菜单实际状态同步已随 6f11831 入库：定向 27 例、完整 1422 例均通过；完整验证记录见 `spec/sync.md`。

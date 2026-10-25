@@ -267,7 +267,8 @@ final class DshLocalUsageScanner: LocalUsageScannerBase<DshLocalUsage>, @uncheck
                 sessionCount: 0,
                 eventCount: 0,
                 scannedAt: now(),
-                isTruncated: isBudgetTruncated
+                isTruncated: isBudgetTruncated,
+                recentSamplesLimit: limits.maxRecentSamples
             )
             try saveIndex(
                 DshCacheIndex(
@@ -288,13 +289,23 @@ final class DshLocalUsageScanner: LocalUsageScannerBase<DshLocalUsage>, @uncheck
             logInfo("[dsh-scan] calendar signature changed，重新解析文件以重建当前日桶")
         }
         if !forceFull, !calendarChanged, index.matches(fingerprint), let cached = index.snapshot {
-            let scanNow = now()
-            let rebased = rebaseCached(cached, calendar: calendar, now: scanNow)
-            if rebased != cached {
-                index.snapshot = rebased
-                try saveIndex(index, cacheDir: cacheDir, fileManager: fileManager)
+            let providersHaveKnownSampleCompleteness = cached.byProvider.values.allSatisfy {
+                $0.recentSamplesTruncated != nil
             }
-            return rebased
+            let cachedSampleMetadataKnown = providersHaveKnownSampleCompleteness
+                && (cached.byProvider.isEmpty || cached.recentSamplesLimit != nil)
+            let sampleLimitMatches = cached.byProvider.isEmpty
+                || cached.recentSamplesLimit == limits.maxRecentSamples
+            if cachedSampleMetadataKnown && sampleLimitMatches {
+                let scanNow = now()
+                let rebased = rebaseCached(cached, calendar: calendar, now: scanNow, limits: limits)
+                if rebased != cached {
+                    index.snapshot = rebased
+                    try saveIndex(index, cacheDir: cacheDir, fileManager: fileManager)
+                }
+                return rebased
+            }
+            logInfo("[dsh-scan] legacy/sample-limit cache缺少样本完整性元数据，重新聚合文件")
         }
 
         let scanNow = now()
@@ -400,19 +411,28 @@ final class DshLocalUsageScanner: LocalUsageScannerBase<DshLocalUsage>, @uncheck
         now: Date,
         maxCount: Int
     ) -> [LocalTokenUsageSample] {
+        boundedRecentSampleResult(samples, calendar: calendar, now: now, maxCount: maxCount).samples
+    }
+
+    private nonisolated static func boundedRecentSampleResult(
+        _ samples: [LocalTokenUsageSample],
+        calendar: Calendar,
+        now: Date,
+        maxCount: Int
+    ) -> (samples: [LocalTokenUsageSample], truncated: Bool, latestOmittedAt: Date?) {
         guard let cutoff = calendar.date(
             byAdding: .day,
             value: -(LocalUsageRetentionWindow.days - 1),
             to: calendar.startOfDay(for: now)
         ) else {
-            return []
+            return ([], false, nil)
         }
-        return Array(
-            samples
-                .filter { $0.completedAt >= cutoff }
-                .sorted { $0.completedAt < $1.completedAt }
-                .suffix(maxCount)
-        )
+        let eligible = samples
+            .filter { $0.completedAt >= cutoff }
+            .sorted { $0.completedAt < $1.completedAt }
+        let truncated = eligible.count > maxCount
+        let latestOmittedAt = truncated ? eligible[eligible.count - maxCount - 1].completedAt : nil
+        return (Array(eligible.suffix(maxCount)), truncated, latestOmittedAt)
     }
 
     /// Reapply the current seven-day window to a cached snapshot. This keeps a
@@ -429,17 +449,36 @@ final class DshLocalUsageScanner: LocalUsageScannerBase<DshLocalUsage>, @uncheck
                 today: calendar.startOfDay(for: now),
                 calendar: calendar
             )
+            let sampleResult = boundedRecentSampleResult(
+                provider.recentSamples,
+                calendar: calendar,
+                now: now,
+                maxCount: limits.maxRecentSamples
+            )
+            let wasPreviouslyTruncated = provider.recentSamplesTruncated
+            let retentionCutoff = calendar.date(
+                byAdding: .day,
+                value: -(LocalUsageRetentionWindow.days - 1),
+                to: calendar.startOfDay(for: now)
+            )
+            let priorOmissionsStillRetained: Bool
+            if wasPreviouslyTruncated == nil {
+                priorOmissionsStillRetained = true
+            } else if let latestOmitted = provider.latestOmittedSampleAt, let retentionCutoff {
+                priorOmissionsStillRetained = latestOmitted >= retentionCutoff
+            } else {
+                priorOmissionsStillRetained = wasPreviouslyTruncated == true
+            }
+            let samplesTruncated = priorOmissionsStillRetained || sampleResult.truncated
             return DshProviderUsage(
                 today: daily.last.flatMap { $0.hasActivity ? $0 : nil },
                 dailyTokenUsage: daily,
                 sessionCount: provider.sessionCount,
                 roundCount: provider.roundCount,
-                recentSamples: boundedRecentSamples(
-                    provider.recentSamples,
-                    calendar: calendar,
-                    now: now,
-                    maxCount: limits.maxRecentSamples
-                )
+                recentSamples: sampleResult.samples,
+                recentSamplesTruncated: samplesTruncated,
+                latestOmittedSampleAt: sampleResult.latestOmittedAt
+                    ?? (priorOmissionsStillRetained ? provider.latestOmittedSampleAt : nil)
             )
         }
         // isTruncated 描述的是聚合数字本身的口径（是否被预算截断），不是新鲜
@@ -452,7 +491,8 @@ final class DshLocalUsageScanner: LocalUsageScannerBase<DshLocalUsage>, @uncheck
             sessionCount: snapshot.sessionCount,
             eventCount: snapshot.eventCount,
             scannedAt: snapshot.scannedAt,
-            isTruncated: snapshot.isTruncated
+            isTruncated: snapshot.isTruncated,
+            recentSamplesLimit: snapshot.recentSamplesLimit
         )
     }
 }
@@ -1087,7 +1127,7 @@ private extension DshLocalUsageScanner {
                 today: today,
                 calendar: calendar
             )
-            let boundedSamples = boundedRecentSamples(
+            let sampleResult = boundedRecentSampleResult(
                 mutable.recentSamples,
                 calendar: calendar,
                 now: now,
@@ -1098,7 +1138,9 @@ private extension DshLocalUsageScanner {
                 dailyTokenUsage: recent7,
                 sessionCount: mutable.sessions.count,
                 roundCount: SaturatingArithmetic.sum(allDaily.lazy.map(\.rounds)),
-                recentSamples: boundedSamples
+                recentSamples: sampleResult.samples,
+                recentSamplesTruncated: sampleResult.truncated,
+                latestOmittedSampleAt: sampleResult.latestOmittedAt
             )
         }
         return DshLocalUsage(
@@ -1108,7 +1150,8 @@ private extension DshLocalUsageScanner {
             sessionCount: aggregate.sessions.count,
             eventCount: aggregate.eventCount,
             scannedAt: now,
-            isTruncated: isTruncated
+            isTruncated: isTruncated,
+            recentSamplesLimit: limits.maxRecentSamples
         )
     }
 

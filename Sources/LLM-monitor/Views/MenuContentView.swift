@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 // 展示时钟（`DisplayClock` / `DisplayClockScope` / `\.displayDate` 环境键）
 // 定义在 `Views/DisplayClock.swift`：跨宿主共享（菜单内容 / hover 浮层 /
@@ -12,6 +13,9 @@ struct MenuContentView: View {
     @StateObject private var displayClock = DisplayClock()
     /// 强制本地 UI 重渲染计数（用于同步响应 sleepHealth 状态变更）
     @State private var energyUpdateTick = 0
+    /// `MenuBarExtra` 缓存有时不跟随 ObservableObject 的嵌套变化；fleet 快照
+    /// 与 scope 走专属广播，在此显式刷新菜单视图，不使本地汇总缓存失效。
+    @State private var fleetUpdateTick = 0
     /// 动态测量卡片列表的自然排版高度
     @State private var measuredCardsHeight: CGFloat = 0
     /// 菜单所在屏幕的可用高度（从顶部菜单栏到屏幕底部的实际空间）
@@ -40,6 +44,9 @@ struct MenuContentView: View {
     }
 
     var body: some View {
+        // 将 scope revision 作为 body 的显式输入，确保 MenuBarExtra 缓存的菜单
+        // 在快照 / scope 更新后重算。
+        let _ = fleetUpdateTick
         VStack(spacing: 0) {
             headerBar
             content
@@ -105,6 +112,9 @@ struct MenuContentView: View {
         .onReceive(state.statusDidChange) { _ in
             summaryCache.invalidate()
         }
+        .onReceive(state.fleetDidChange) { _ in
+            fleetUpdateTick &+= 1
+        }
         // 「节能」健康灯的数据在 SleepHealthService（AppState 之外的嵌套
         // ObservableObject）上；通过改变 @State 强制触发 body 重 eval，
         // 保证圆点颜色即时更新。
@@ -114,6 +124,17 @@ struct MenuContentView: View {
     }
 
     // MARK: - header（紧凑 padding）
+
+    /// 标题栏尾部内边距（磅）。
+    private static let headerTrailingPadding: CGFloat = 12
+
+    /// 右侧功能组内「scope 组 ↔ 刷新按钮」的间距（磅）。
+    ///
+    /// 刷新图标在自己的 26pt 点击槽里居中（左右各 8.25pt），它两侧的**可见**
+    /// 留白要相等：左边 = 本间距 + scope 按钮的尾部内边距（实测 4.25pt），
+    /// 右边 = 面板尾部内边距（12pt）。令两者相等 → 本间距 ≈ 7.75pt，取 8pt
+    /// （2× 实测：左 21pt / 右 20.5pt，差 0.5pt，在抗锯齿误差内）。
+    private static let headerGroupSpacing: CGFloat = 8
 
     private var headerBar: some View {
         HStack(spacing: 8) {
@@ -130,45 +151,84 @@ struct MenuContentView: View {
                     .foregroundStyle(.secondary)
             }
             // 标题与睡眠锁提示按文字基线对齐，小字标注落在标题同一底线，
-            // 不随外层（图标 / 刷新按钮）垂直居中。
+            // 不随外层（图标 / 刷新按钮）垂直居中。标题不折行：右侧功能组一旦
+            // 变宽，标题被挤成两行会把整行节奏打散。
             HStack(alignment: .firstTextBaseline, spacing: 4) {
                 Text("LLM Monitor")
                     .font(MenuTypography.headerTitle)
                     .foregroundStyle(Color.primaryLabel)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
                 if let report = state.sleepHealth.report, !report.offenders.isEmpty {
-                    headerSleepBlockersNotice(offenders: report.offenders)
+                    // scope 组最长 120pt，窄面板里标题右侧的提示会被挤没。
+                    // `ViewThatFits` 让它**降级成短文案**（"2 个应用"），而不是被
+                    // 截成 "2 个应…" 这种读不出来的残句；放不下时提示仍然完整，
+                    // hover 详情照常列出全部应用。
+                    ViewThatFits(in: .horizontal) {
+                        headerSleepBlockersNotice(offenders: report.offenders, compact: false)
+                        headerSleepBlockersNotice(offenders: report.offenders, compact: true)
+                    }
                 }
             }
             Spacer()
+            // 右侧功能组：scope 切换 + 刷新，成组右对齐。
+            //
+            // 三个标记（scope 文字、ellipsis、刷新）之间是**一条等距节奏线**：
+            // 刷新图标在自己的 26pt 点击槽里居中，组内间距取
+            // `headerGroupSpacing`，于是「scope 组右缘 → 刷新图标」与「刷新
+            // 图标 → 面板内容右缘」两侧留白相等（推导见该常量注释）。
+            HStack(spacing: Self.headerGroupSpacing) {
+            // scope 切换：当前范围文字 + ellipsis 触发下拉菜单（用户裁定：
+            // 不用 Picker 组件本体）。未启用联动（无节点）不出现。
+            //
+            // 实现与 dock 详情浮层的卡头共用 `FleetScopeMenu`（见该文件的
+            // 平台怪癖说明）：ellipsis 是**行内图**、宽度上限在字符串层、
+            // 按钮必须 `.fixedSize()`。
+            if !state.fleetScopeChoices.isEmpty,
+               FleetScopeControlStyle.preferred(choices: state.fleetScopeChoices) == .dropdown {
+                // scope 切换的**下拉形态**（选项 >4 时）：紧凑地待在标题栏右组，
+                // 刷新按钮左边。选项 ≤4 时它换成内容区「今日」卡片上方的分段行
+                // （`HarnessUsageMenuView.scopeRow`），标题栏不参与。
+                FleetScopeMenu(scope: state.fleetScope, choices: state.fleetScopeChoices) { newScope in
+                    state.fleetScope = newScope
+                }
+                .help("切换显示范围：全局 / 本机 / 各节点")
+            }
             if state.isRefreshJobActive {
                 ProgressView()
                     .controlSize(.small)
-                    .frame(width: 26, height: 24, alignment: .trailing)
+                    // 与刷新图标同槽同位（居中，不是靠右）：刷新中不换位。
+                    .frame(width: 26, height: 24, alignment: .center)
                     .help("正在刷新")
             } else {
                 Button(action: refreshAllFromMenu) {
                     Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 11, weight: .medium))
+                        .font(MenuTypography.headerAction)
                         .foregroundStyle(.secondary)
-                        // 点击区域保留 26pt，但图标本身右对齐到卡片外边缘。
-                        .frame(width: 26, height: 24, alignment: .trailing)
+                        // 点击区域 26pt；图标在槽内居中（左右 padding 一致）。
+                        .frame(width: 26, height: 24, alignment: .center)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .help("立即刷新全部")
             }
+            }
         }
         .padding(.leading, 14)
-        .padding(.trailing, 12)
+        .padding(.trailing, Self.headerTrailingPadding)
         .padding(.vertical, 7)
     }
 
     /// 标题旁的睡眠锁提示：有第三方应用阻止休眠时显示数量，悬浮展开
     /// 应用清单（与设置页节能 Tab 检查项一同源）；无应用时整体隐藏。
     /// 仅 hover 展示、不可点击，与主面板其他 hover 区域行为一致。
-    private func headerSleepBlockersNotice(offenders: [SleepAssertionOffender]) -> some View {
+    ///
+    /// `compact` 是**降级文案**：完整句放不下时用短句（见 headerBar 里
+    /// `ViewThatFits` 的用法）。`.fixedSize` 是必需的——没有它，被测量的
+    /// 宽度等于「被压缩后的宽度」，永远算作「放得下」，降级分支就不会触发。
+    private func headerSleepBlockersNotice(offenders: [SleepAssertionOffender], compact: Bool) -> some View {
         HoverInfoRow {
-            Text("\(offenders.count) 个应用正在阻止休眠")
+            Text(compact ? "\(offenders.count) 个应用" : "\(offenders.count) 个应用正在阻止休眠")
                 .font(MenuTypography.metricLabel)
                 // 面板为玻璃材质，层级色 .secondary 会被 vibrancy 混得偏淡
                 // （浅色下尤其明显）；用与标题同体系的固定 NSColor 次级色。
@@ -177,6 +237,7 @@ struct MenuContentView: View {
         } detail: {
             SleepOffendersHoverView(offenders: offenders)
         }
+        .fixedSize(horizontal: true, vertical: false)
     }
 
     // MARK: - content（Harness 客户端视角：全局今日汇总 + 按客户端分段）
@@ -232,18 +293,10 @@ struct MenuContentView: View {
                     HarnessUsageMenuView(
                         summary: todaySummary,
                         fleetSummary: state.fleetMenuSummary,
-                        fleetContext: { status in state.fleetCardContext(for: status.kind) },
-                        // 兜底行按**用户配置的顺序**排；statuses 走**入列并集**
-                        // （本机已启用 ∪ 仅有 elected 额度的 provider，§7.7），
-                        // 顺序仍由 `providerCardOrder` 统一。
-                        providerStrip: ProviderStatusStrip.snapshot(
-                            statuses: DisplayOrder.ordered(
-                                state.fleetVisibleStatuses(),
-                                preferredIDs: state.configStore.config.providerCardOrder,
-                                id: { $0.kind.quotaProviderID },
-                                by: ProviderStatus.displayNameAscending
-                            )
-                        ),
+                        activeScope: state.fleetScope,
+                        scopeChoices: state.fleetScopeChoices,
+                        onScopeChange: { state.fleetScope = $0 },
+                        nodeSummary: state.fleetMenuNodeSummary,
                         onRefreshSection: refreshSectionFromMenu,
                         onRefreshProvider: refreshProviderFromMenu
                     )
@@ -266,6 +319,9 @@ struct MenuContentView: View {
     private var todaySummary: HarnessTodaySummary {
         summaryCache.value(for: state.statuses.filter(\.isEnabled))
     }
+
+    /// scope 切换的 label / 截断逻辑在 `FleetScopeMenu`（菜单标题栏与 dock
+    /// 详情浮层的卡头共用同一实现）。
 
     /// 「立即刷新全部」的入口：headerBar 的刷新按钮 + 菜单打开时 `.ready` 兜底
     /// （onAppear）。段头右键按段刷新（`refreshSectionFromMenu`），不共用这条
@@ -343,8 +399,12 @@ struct MenuContentView: View {
 
 
     private var footerBar: some View {
+        // 左：更新状态；右：功能按钮组（自启 / 设置 / 节能 / 日志 / 退出）。
         HStack(spacing: 8) {
             footerStatus
+            Spacer(minLength: 8)
+            autostartToggle
+            footerSeparator
             FooterActionButton(icon: "gearshape", title: "设置") {
                     openSettingsWindow()
                 }
@@ -416,16 +476,23 @@ struct MenuContentView: View {
                 Text("就绪")
                     .font(MenuTypography.footer)
             }
-
-            footerSeparator
-
-            Text("自启 \(loginItemService.isEnabled ? "✓" : "✗")")
-                .font(MenuTypography.footer)
         }
         .lineLimit(1)
         .fixedSize(horizontal: true, vertical: false)
         .layoutPriority(1)
         .foregroundStyle(Color.secondary.opacity(0.75))
+    }
+
+    /// 自启动：状态 + 单击切换（与「节能」同款交互）。
+    private var autostartToggle: some View {
+        FooterActionButton(
+            icon: loginItemService.isEnabled ? "power" : "power.dotted",
+            title: "自启",
+            dotColor: nil
+        ) {
+            Task { await loginItemService.setEnabled(!loginItemService.isEnabled) }
+        }
+        .help(loginItemService.isEnabled ? "单击关闭开机自启动" : "单击开启开机自启动")
     }
 
     private var footerSeparator: some View {

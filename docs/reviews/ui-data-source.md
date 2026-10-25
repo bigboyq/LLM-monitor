@@ -289,7 +289,7 @@ token 数在 SQLite `local_runtime_token_usage`；**真实模型名在文件** `
 
 **Fleet Sync 设计输入（用户裁定与当前设计方案，2026-10-24；以下均为设计输入，不代表已实现）：**
 
-- **【用户确认】节点身份：**UUID 首次生成后存入 Keychain 并复用，不启用 iCloud 同步；用户更换 UUID 时按新节点处理，不按 hostname 自动合并。
+- **【历史用户确认，已由 2026-10-25 裁定取代】节点身份：**旧记录曾写为 UUID 存入 Keychain 并复用。现行决定是 config 同目录 `.deviceId` 文件；旧 `config.sync.nodeID` 不迁移。首次升级缺文件时生成新身份，复制 config 无需改 ID，但不得复制 `.deviceId`。
 - **【用户确认】同步存储边界：**上报记录与 hub 回传快照使用应用自有、独立的同步表；不写入 Codex、ZCode、OpenCode 等客户端原表，也不往现有本机用量数据模型添加同步来源字段。
 - **【当前设计命名】同步存储：**独立 SQLite 文件命名为 `fleet.sqlite`，表命名为 `sync_records`。这是当前实现方案的名字，不是用户另行指定的文件名或表名。
 - **【当前协议字段与归并规则】窗口：**副节点报告窗口的 `startAt` / `endAt`；hub 只相加 provider、model、kind 和窗口范围都相同的记录，不由 hub 下发或重新解释窗口。

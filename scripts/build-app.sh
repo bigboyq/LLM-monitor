@@ -235,6 +235,9 @@ fi
 /usr/bin/plutil -insert NSPrincipalClass -string "NSApplication" "$INFO_PLIST"
 /usr/bin/plutil -insert NSSupportsAutomaticTermination -bool true "$INFO_PLIST"
 /usr/bin/plutil -insert NSSupportsSuddenTermination -bool true "$INFO_PLIST"
+/usr/bin/plutil -insert NSLocalNetworkUsageDescription -string "用于连接您配置的局域网 Fleet 同步服务器。" "$INFO_PLIST"
+/usr/bin/plutil -insert NSAppTransportSecurity -dictionary "$INFO_PLIST"
+/usr/bin/plutil -insert NSAppTransportSecurity.NSAllowsLocalNetworking -bool true "$INFO_PLIST"
 
 echo "    Validating Info.plist"
 /usr/bin/plutil -lint "$INFO_PLIST"

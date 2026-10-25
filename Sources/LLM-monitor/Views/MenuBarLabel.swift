@@ -69,6 +69,9 @@ struct MenuBarLabel: View {
                     rerenderIfNeeded()
                 }
             }
+            .onReceive(state.fleetDidChange) { _ in
+                DispatchQueue.main.async { rerenderIfNeeded() }
+            }
             .onReceive(configStore.$config.dropFirst()) { _ in
                 rerenderIfNeeded()
             }

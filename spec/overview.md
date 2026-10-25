@@ -13,8 +13,11 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 | UI model | Menu bar drop-down plus a native Settings window; lightweight setup guidance appears when all providers are unconfigured |
 | Edge dock | Optional screen-edge panel, one circle per enabled Provider, click-through by default and hidden while the frontmost App is fullscreen (`hideInFullscreen`, default `true`). Shape is a four-way `EdgeDockMode` picker (无 / 状态窗 / 小圆环 / 自动隐藏状态窗) whose default is **auto-hide window** — the feature ships on, occupying only a 7pt ring column until the mouse approaches |
 | Hover details | Delayed floating hover panels for compact quota details |
-| Login item | Settings-window launch-at-login toggle backed by `SMAppService.mainApp`; menu footer is read-only |
+| Appearance | Settings General pane 「外观」 section: 浅色 / 深色 / 自动 (default), applied to `NSApp.appearance` immediately on save; `MenuBarExtra` native presentation follows the system |
+| Login item | Settings-window launch-at-login toggle backed by `SMAppService.mainApp`; menu footer's 自启 entry is also a toggle button (状态化图标 `power` / `power.dotted`) |
+| Fleet Sync (多机联动) | Optional LAN sync between one hub and one or more secondary nodes: node→hub periodic usage reports, hub-merged fleet snapshot, scope switching (全局 / 本机 / 节点) in menu and dock cards, effective-quota fallback for stale local fetches. Wire protocol, storage and coordinator: `sync.md` |
 | Config | `~/Library/Application Support/LLM-monitor/config.json`, JSON, permission `0600` |
+| Fleet device identity | `~/Library/Application Support/LLM-monitor/.deviceId`; independent of config synchronization; only created when Fleet Sync is enabled |
 | Instance | One process per user config directory, enforced by `instance.lock` |
 | Runtime log | `~/Library/Application Support/LLM-monitor/log.txt` plus stdout and `os.Logger` (privacy `.private`, Console.app 默认脱敏)；测试进程改写至 `NSTemporaryDirectory()`（`LLM_MONITOR_LOG_PATH` 覆盖最优先） |
 | Quota Providers | `minimax_token_plan`, `codex_chatgpt`, `antigravity`, `glm_coding_plan`, `deepseek` |
@@ -77,7 +80,7 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 | `runtime.md` | 组件接线图、启动流程、刷新调度、provider 状态机、本地认证探测、UI 广播、数据模型、健康度算法、错误兜底、provider 注册契约、产品边界 |
 | `accounting.md` | token 计量四桶口径、harness 对齐矩阵、promptID 命名空间、跨 provider 金额汇总 |
 | `local-usage-reconcile.md` | reconcile 三层模型与三种扫描模式、provider 策略矩阵、scanner 并发模型 |
-| `sync.md` | 多机联动（Fleet Sync）核心链路：角色派生与拓扑不变量、wire 协议、报告/快照形状、合并与选举、Keychain 身份与 seq、fleet.sqlite 单表存储、报告构建、协调器编排与 AppState 接线 |
+| `sync.md` | 多机联动（Fleet Sync）核心链路：角色派生与拓扑不变量、wire 协议、报告/快照形状、合并与选举、独立 `.deviceId` 身份文件与 seq、fleet.sqlite 单表存储、报告构建、协调器编排与 AppState 接线 |
 | `notifications.md` | 额度事件检测与触发语义、渠道层（系统通知 / Bark）、通知配置与设置 UI |
 | `ui-design.md` | UI 主题索引（拆分后的导航入口，内容分流到 `ui/*.md`） |
 | `ui/edge-dock.md` | 屏幕边缘状态窗：几何、锚点、命中判定、拖拽、鼠标轮询、全屏门控、dock 形态 |
@@ -144,4 +147,5 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 - Automatic updates and in-app version checks — upgrading means downloading a new build from
   GitHub Releases manually (release gating and the pre-release checklist: `spec/config.md`).
 
-> 核对基线：2026-10-24 · 代码 a3d4553
+> 核对基线：2026-10-25 · 代码 6f11831
+> 独立 `.deviceId` 身份规则已随 6f11831 入库，验证记录见 `spec/sync.md`。

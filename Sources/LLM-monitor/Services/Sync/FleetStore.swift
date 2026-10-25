@@ -18,11 +18,14 @@ enum FleetRecordKind {
 }
 
 /// `kind=report` 的落盘形状：日桶与额度是**独立通道**——新报告省略或校验失败
-/// 的通道保留旧值，只有验证通过的通道整体替换（§5.1 / §6.5）。
+/// 的通道保留旧值；来源感知日桶只替换健康来源并保留显式不可用来源（§5.1 / §6.5）。
 /// `nodeName` / `timezoneID` 随任何被接受的信封更新（快照装配需要展示名；
 /// timezoneID 仅诊断，§2.3）。
 struct FleetStoredReport: Codable, Equatable, Sendable {
     var dailyBuckets: [FleetDailyBucket]?
+    /// Digest of the last accepted input for each stored day. For partial
+    /// source-aware buckets this differs from the merged stored bucket digest.
+    var dailyInputDigests: [String: String]? = nil
     var quotas: [FleetQuotaReport]?
     var attributionFingerprint: String?
     var nodeName: String?
@@ -37,10 +40,24 @@ struct FleetReportApplyOutcome: Equatable, Sendable {
     var quotasApplied: Bool
     var windowRowsApplied: Int
     var heartbeatUpdated: Bool
+    /// hub 侧已接受的 high-water。seq 被拒时把它回给 node：node 据此重建
+    /// 本机序号（否则同一份报告会**永久**被拒，而 node 只看到 200，
+    /// 表现为「在线但数据永远没进 hub」）。
+    var highWaterSeq: Int
 
     var anyChange: Bool {
         dailyApplied || quotasApplied || windowRowsApplied > 0 || heartbeatUpdated
     }
+}
+
+/// hub 对「报告序号落后」的响应体（HTTP 409）。
+///
+/// - `highWaterSeq`：让 node 一次性把本机序号抬到 hub 之上（§7.3）。
+/// - 响应体保持很小（不含快照）：HTTPClient 的错误体只保留前 500 字符，
+///   快照塞进来会被截断成非法 JSON。node 拿到 409 后用 GET 兜底取快照。
+struct FleetStaleSeqPayload: Codable, Sendable {
+    let error: String
+    let highWaterSeq: Int
 }
 
 /// hub 侧一次快照装配所需的全部落盘状态。
@@ -139,7 +156,8 @@ final class FleetStore: @unchecked Sendable {
                 dailyApplied: false,
                 quotasApplied: false,
                 windowRowsApplied: 0,
-                heartbeatUpdated: false
+                heartbeatUpdated: false,
+                highWaterSeq: Int(highWater)
             )
         }
 
@@ -150,13 +168,49 @@ final class FleetStore: @unchecked Sendable {
                 dailyApplied: false,
                 quotasApplied: false,
                 windowRowsApplied: 0,
-                heartbeatUpdated: false
+                heartbeatUpdated: false,
+                highWaterSeq: Int(highWater)
             )
             var stored = try storedReport(scope: scope, nodeID: nodeID) ?? FleetStoredReport()
             let oldStored = stored
 
             if let buckets = report.dailyBuckets, validation.dailyBucketsError == nil {
-                stored.dailyBuckets = buckets
+                // 增量日桶（2026-10-24 裁定）：按 dayKey upsert，通道缺席的天保留旧值。
+                //
+                // 保留策略：**最新的 N 天**（N = 协议上限 7），按 dayKey 排序取尾部。
+                // 不按 hub 当前日期裁剪：节点的报告窗口按**节点自己的**时钟滚动，
+                // hub 与节点时钟差一点（跨零点、手动改时区）时，按 hub 的窗口裁剪
+                // 会把节点最新的那天裁掉（数据凭空消失）。按数据本身保留最新 N 天
+                // 与时钟无关，也与「日桶通道最多 7 桶」一致。
+                //
+                // 不裁剪的后果：节点的窗口逐日滚动，每天多一个 dayKey 且永不删除
+                // → 快照载荷越界（2 MiB 上限 → 全员 500）、节点卡片画出 N 根柱子。
+                var byDay = Dictionary(
+                    (stored.dailyBuckets ?? []).map { ($0.dayKey, $0) },
+                    uniquingKeysWith: { _, new in new }
+                )
+                var inputDigests = stored.dailyInputDigests ?? [:]
+                for bucket in buckets {
+                    if let unavailableSources = bucket.unavailableSources {
+                        byDay[bucket.dayKey] = mergeSourceAwareDailyBucket(
+                            incoming: bucket,
+                            existing: byDay[bucket.dayKey],
+                            unavailableSources: unavailableSources
+                        )
+                    } else {
+                        // Legacy complete buckets retain their original whole-day replacement.
+                        byDay[bucket.dayKey] = bucket
+                    }
+                    inputDigests[bucket.dayKey] = FleetDailyDigest.digest(bucket)
+                }
+                let retainedBuckets = byDay.values
+                    .sorted { $0.dayKey < $1.dayKey }
+                    .suffix(FleetProtocol.maxDailyBuckets)
+                    .map { $0 }
+                let retainedKeys = Set(retainedBuckets.map(\.dayKey))
+                inputDigests = inputDigests.filter { retainedKeys.contains($0.key) }
+                stored.dailyBuckets = retainedBuckets
+                stored.dailyInputDigests = inputDigests.isEmpty ? nil : inputDigests
             }
             if let quotas = report.quotas, validation.quotasError == nil {
                 stored.quotas = quotas
@@ -171,7 +225,8 @@ final class FleetStore: @unchecked Sendable {
             }
             applied.dailyApplied = report.dailyBuckets != nil
                 && validation.dailyBucketsError == nil
-                && stored.dailyBuckets != oldStored.dailyBuckets
+                && (stored.dailyBuckets != oldStored.dailyBuckets
+                    || stored.dailyInputDigests != oldStored.dailyInputDigests)
             applied.quotasApplied = report.quotas != nil
                 && validation.quotasError == nil
                 && stored.quotas != oldStored.quotas
@@ -227,6 +282,37 @@ final class FleetStore: @unchecked Sendable {
         }
     }
 
+    private func mergeSourceAwareDailyBucket(
+        incoming: FleetDailyBucket,
+        existing: FleetDailyBucket?,
+        unavailableSources: [FleetDailyUnavailableSource]
+    ) -> FleetDailyBucket {
+        let unavailableKeys = Set(unavailableSources.map(\.sourceKey))
+        let retainedRows = (existing?.clientProviders ?? []).filter {
+            unavailableKeys.contains($0.clientID + "|" + $0.quotaProviderID)
+        }
+        let retainedEntries = (existing?.entries ?? []).filter {
+            unavailableKeys.contains($0.clientID + "|" + $0.quotaProviderID)
+        }
+        let rows = (incoming.clientProviders + retainedRows).sorted {
+            ($0.clientID, $0.quotaProviderID) < ($1.clientID, $1.quotaProviderID)
+        }
+        let entries = (incoming.entries + retainedEntries).sorted {
+            ($0.clientID, $0.quotaProviderID, $0.modelName ?? "")
+                < ($1.clientID, $1.quotaProviderID, $1.modelName ?? "")
+        }
+        return FleetDailyBucket(
+            dayKey: incoming.dayKey,
+            totals: FleetTotals(summing: rows),
+            clientProviders: rows,
+            entries: entries,
+            totalsComplete: unavailableSources.isEmpty,
+            modelDetailsComplete: incoming.modelDetailsComplete && unavailableSources.isEmpty,
+            sourceTruncated: incoming.sourceTruncated,
+            unavailableSources: unavailableSources
+        )
+    }
+
     private struct HighWaterPayload: Codable {
         let lastSeenAt: Date
     }
@@ -242,17 +328,30 @@ final class FleetStore: @unchecked Sendable {
             bind: [.text(scope)]
         )
         var nodes: [FleetHubStoredState.NodeRecord] = []
+        var corruptRowIDs: [Int64] = []
         for nodeIDText in nodeIDTexts {
             guard let nodeID = UUID(uuidString: nodeIDText) else { continue }
             var stored = FleetStoredReport()
             if let data = try queryPayload(sql: reportPayloadSQL, bind: [.text(scope), .text(nodeIDText)]) {
-                stored = try decodePayload(FleetStoredReport.self, data, kind: FleetRecordKind.report, recordKey: "current")
+                // 坏行（磁盘损坏 / 跨版本 DTO 形状变化写下的旧行）不能让整次
+                // 装配失败：一次坏行 = hub 对所有节点都回 500 = 全员中断。
+                // 降级成「该节点暂无报告」，并把坏行删掉。
+                if let decoded = try? FleetCodec.decode(FleetStoredReport.self, from: data) {
+                    stored = decoded
+                } else {
+                    logWarn("[fleet-hub] 报告行损坏，按空报告处理并清理：node=\(nodeIDText)")
+                    corruptRowIDs.append(contentsOf: try queryRowIDs(sql: reportRowIDSQL, bind: [.text(scope), .text(nodeIDText)]))
+                }
             }
-            let windowRows: [FleetWindowUsage] = try queryRows(
-                sql: "SELECT payload_json FROM sync_records WHERE kind = ? AND scope = ? AND node_id = ?",
+            let windowRowsResult = try queryRowsSkippingCorrupt(
+                FleetWindowUsage.self,
+                sql: "SELECT rowid, payload_json FROM sync_records WHERE kind = ? AND scope = ? AND node_id = ?",
                 bind: [.text(FleetRecordKind.window), .text(scope), .text(nodeIDText)]
-            ) { data in
-                try decodePayload(FleetWindowUsage.self, data, kind: FleetRecordKind.window, recordKey: "-")
+            )
+            let windowRows = windowRowsResult.rows.map(\.value)
+            if !windowRowsResult.corruptRowIDs.isEmpty {
+                logWarn("[fleet-hub] 窗口行损坏 \(windowRowsResult.corruptRowIDs.count) 条，已跳过并清理")
+                corruptRowIDs.append(contentsOf: windowRowsResult.corruptRowIDs)
             }
             let meta = try queryInt64AndPayload(
                 sql: "SELECT seq, payload_json FROM sync_records WHERE kind = ? AND scope = ? AND node_id = ? AND record_key = 'high-water'",
@@ -274,11 +373,19 @@ final class FleetStore: @unchecked Sendable {
                 lastSeenAt: lastSeen
             ))
         }
+        if !corruptRowIDs.isEmpty {
+            try deleteCorruptRowsLocked(rowIDs: corruptRowIDs, scope: scope)
+        }
         return FleetHubStoredState(nodes: nodes, generation: try generationLocked(scope: scope))
     }
 
     private let reportPayloadSQL = """
         SELECT payload_json FROM sync_records
+        WHERE kind = 'report' AND scope = ? AND node_id = ? AND record_key = 'current'
+        """
+
+    private let reportRowIDSQL = """
+        SELECT rowid FROM sync_records
         WHERE kind = 'report' AND scope = ? AND node_id = ? AND record_key = 'current'
         """
 
@@ -290,20 +397,26 @@ final class FleetStore: @unchecked Sendable {
     func pruneWindows(scope: String, olderThan cutoff: Date) throws -> Int {
         lock.lock()
         defer { lock.unlock() }
-        let rows = try queryRowsWithRowid(
+        // 坏行（无法解码）跳过并清理：原来这里一抛错，整批过期窗口就再也
+        // 清不掉（每次维护节拍都失败 → 窗口表只增不减）。
+        let result = try queryRowsSkippingCorrupt(
+            FleetWindowUsage.self,
             sql: "SELECT rowid, payload_json FROM sync_records WHERE kind = ? AND scope = ?",
             bind: [.text(FleetRecordKind.window), .text(scope)]
-        ) { data in
-            try decodePayload(FleetWindowUsage.self, data, kind: FleetRecordKind.window, recordKey: "-")
-        }
-        let expired = rows.filter { $0.value.endAt < cutoff }
-        guard !expired.isEmpty else { return 0 }
+        )
+        let expired = result.rows.filter { $0.value.endAt < cutoff }
+        guard !expired.isEmpty || !result.corruptRowIDs.isEmpty else { return 0 }
         try beginTransaction()
         do {
             for item in expired {
                 try execute("DELETE FROM sync_records WHERE rowid = ?", bind: [.int64(item.rowid)])
             }
-            _ = try bumpGenerationLocked(scope: scope)
+            for rowID in result.corruptRowIDs {
+                try execute("DELETE FROM sync_records WHERE rowid = ?", bind: [.int64(rowID)])
+            }
+            if !expired.isEmpty || !result.corruptRowIDs.isEmpty {
+                _ = try bumpGenerationLocked(scope: scope)
+            }
             try commit()
             return expired.count
         } catch {
@@ -408,6 +521,32 @@ final class FleetStore: @unchecked Sendable {
         }
     }
 
+    /// 重建本机序号基线：hub 回报「你的序号落后」时，把本机序号一次性抬到
+    /// hub 的 high-water 之上（§7.3）。否则同一份报告会被**永久**拒收，
+    /// 而 node 只看到 200 —— 表现为「在线但数据永远没进 hub」。
+    func resetLocalSeq(to seq: Int) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        let target = max(0, seq)
+        try beginTransaction()
+        do {
+            try upsertRow(
+                kind: "seq",
+                scope: "local",
+                nodeID: "",
+                recordKey: "current",
+                seq: Int64(target),
+                generation: nil,
+                updatedAt: Date(),
+                payload: Data("{}".utf8)
+            )
+            try commit()
+        } catch {
+            try? rollback()
+            throw error
+        }
+    }
+
     // MARK: - generation
 
     /// hub 本机数据变化也递增 generation（§6.5）。
@@ -472,6 +611,67 @@ final class FleetStore: @unchecked Sendable {
             return try FleetCodec.decode(type, from: data)
         } catch {
             throw FleetStoreError.corruptedRow(kind: kind, recordKey: recordKey)
+        }
+    }
+
+    // MARK: - 坏行处理
+
+    /// 读行并**跳过**无法解码的坏行（返回行 + 坏行 rowid）。
+    /// 单条坏行不该让整次查询失败：报告行 / 窗口行的形状会随版本变化，
+    /// 旧库里的行解码失败时降级为「这行没有」，而不是让整个 hub 停摆。
+    private func queryRowsSkippingCorrupt<T: Decodable>(
+        _ type: T.Type,
+        sql: String,
+        bind: [Bind] = []
+    ) throws -> (rows: [(rowid: Int64, value: T)], corruptRowIDs: [Int64]) {
+        let stmt = try prepare(sql, bind: bind)
+        defer { sqlite3_finalize(stmt) }
+        var rows: [(rowid: Int64, value: T)] = []
+        var corrupt: [Int64] = []
+        while true {
+            let rc = sqlite3_step(stmt)
+            if rc == SQLITE_ROW {
+                let rowID = sqlite3_column_int64(stmt, 0)
+                let data = Self.columnPayload(stmt, column: 1)
+                if let value = try? FleetCodec.decode(type, from: data) {
+                    rows.append((rowid: rowID, value: value))
+                } else {
+                    corrupt.append(rowID)
+                }
+            } else if rc == SQLITE_DONE {
+                break
+            } else {
+                throw FleetStoreError.sqlFailed(
+                    code: sqlite3_errcode(handle),
+                    extendedCode: sqlite3_extended_errcode(handle),
+                    message: String(cString: sqlite3_errmsg(handle)),
+                    sql: sql
+                )
+            }
+        }
+        return (rows, corrupt)
+    }
+
+    /// 查一组 rowid（用于定位坏行）。
+    private func queryRowIDs(sql: String, bind: [Bind]) throws -> [Int64] {
+        try mapRows(sql: sql, bind: bind) { statement in
+            sqlite3_column_int64(statement, 0)
+        }
+    }
+
+    /// 删除坏行（调用方必须已持锁）。
+    private func deleteCorruptRowsLocked(rowIDs: [Int64], scope: String) throws {
+        guard !rowIDs.isEmpty else { return }
+        try beginTransaction()
+        do {
+            for rowID in rowIDs {
+                try execute("DELETE FROM sync_records WHERE rowid = ?", bind: [.int64(rowID)])
+            }
+            _ = try bumpGenerationLocked(scope: scope)
+            try commit()
+        } catch {
+            try? rollback()
+            throw error
         }
     }
 

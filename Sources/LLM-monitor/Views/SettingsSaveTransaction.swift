@@ -38,6 +38,42 @@ struct LoginItemUpdateOutcome: Equatable {
     let requiresApproval: Bool
 }
 
+/// Settings' deferred launch-at-login edit, kept separate from the service's live state.
+/// Menu actions may change the actual state while the Settings window is open.
+struct SettingsLoginItemDraft: Equatable, Sendable {
+    private(set) var baseline: Bool
+    var draft: Bool
+
+    init(baseline: Bool, draft: Bool) {
+        self.baseline = baseline
+        self.draft = draft
+    }
+
+    var hasLocalEdit: Bool {
+        draft != baseline
+    }
+
+    /// Rebase only when the actual system state really changed. Repeated refreshes with the
+    /// same value must not erase an in-progress Settings edit.
+    mutating func sync(actual: Bool) {
+        guard actual != baseline else { return }
+        baseline = actual
+        draft = actual
+    }
+
+    /// A clean draft follows the live service value, including before a queued publisher
+    /// callback arrives. A dirty draft remains the user's explicit Settings choice.
+    func requestedValue(actual: Bool) -> Bool {
+        hasLocalEdit ? draft : actual
+    }
+
+    /// After applying or rolling back a save transaction, adopt the service's final state.
+    mutating func syncToActual(actual: Bool) {
+        baseline = actual
+        draft = actual
+    }
+}
+
 /// 设置保存的事务边界：登录项先变更，配置随后落盘；配置失败时回滚登录项。
 ///
 /// 依赖通过 closure 注入，视图只负责构造 AppConfig 草稿和展示最终错误。

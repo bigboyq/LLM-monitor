@@ -16,7 +16,7 @@ final class HarnessUsageMenuViewTests: XCTestCase {
         MenuPanelHeightBridge.width - LayoutMetrics.cardColumnHorizontalPadding * 2
     }
 
-    /// 六列定宽 + 五段间距不得超出内容区。少一个 term 就说明新增/加宽了某一列。
+    /// 六列定宽、五段间距与 scope 缩进不得超出内容区。少一个 term 就说明漏算了布局占宽。
     func testRowColumnBudgetFitsTheMenuContentWidth() {
         let columns = [
             HarnessModelRowView.modelNameWidth,
@@ -26,7 +26,7 @@ final class HarnessUsageMenuViewTests: XCTestCase {
             HarnessModelRowView.speedWidth,
             HarnessModelRowView.valueWidth
         ]
-        let budget = columns.reduce(0, +) + CGFloat(columns.count - 1) * 6
+        let budget = columns.reduce(0, +) + CGFloat(columns.count - 1) * 6 + 8
         XCTAssertLessThanOrEqual(
             budget, contentWidth,
             "模型行六列（\(budget)pt）超出内容区 \(contentWidth)pt，模型名或占比条会被压没"
@@ -69,6 +69,62 @@ final class HarnessUsageMenuViewTests: XCTestCase {
         )
     }
 
+    /// 联动未启用时，传统菜单仍要在客户端段之前显示今日总览。
+    @MainActor
+    func testLegacyMenuIncludesTodayOverviewBeforeClientSections() {
+        let summary = HarnessTodaySummary.summarize(
+            statuses: [Self.codexFixture()],
+            now: Date(),
+            calendar: .current
+        )
+        guard let section = summary.sections.first else {
+            XCTFail("fixture 必须产生一个客户端段")
+            return
+        }
+        let viewHeight = height(of: HarnessUsageMenuView(summary: summary))
+        let sectionHeight = height(of: HarnessSectionView(section: section))
+        XCTAssertGreaterThan(
+            viewHeight, sectionHeight + 30,
+            "单机菜单须包含顶部今日总览，不能只剩客户端段"
+        )
+    }
+
+    func testMissingSelectedNodeDoesNotResolveToLocalContent() {
+        XCTAssertTrue(HarnessUsageMenuView.isMissingNodeSelection(
+            scope: .node(UUID()), nodeSummary: nil
+        ))
+        XCTAssertFalse(HarnessUsageMenuView.isMissingNodeSelection(
+            scope: .local, nodeSummary: nil
+        ))
+    }
+
+    @MainActor
+    func testMissingGlobalDailyDataKeepsGlobalUnavailableRendering() {
+        let summary = FleetMenuSummary(
+            multiNode: true,
+            hasDailyData: false,
+            dailyNotice: "全局今日用量尚未同步",
+            fleetTotals: FleetMenuSummary.TotalsRow(
+                tokens: 0, hitRate: nil, valueText: "—", buckets: .zero
+            ),
+            sections: []
+        )
+        XCTAssertTrue(HarnessUsageMenuView.isUnavailableFleetSelection(
+            scope: .fleet, summary: summary
+        ))
+        XCTAssertFalse(HarnessUsageMenuView.isUnavailableFleetSelection(
+            scope: .local, summary: summary
+        ), "切回本机后仍使用本机菜单内容")
+
+        let view = HarnessUsageMenuView(
+            summary: HarnessTodaySummary.summarize(statuses: [Self.codexFixture()], now: Date()),
+            fleetSummary: summary,
+            activeScope: .fleet,
+            scopeChoices: [FleetNodeChoice(id: UUID(), name: "远端", stale: false)]
+        )
+        XCTAssertGreaterThan(height(of: view), 0, "未同步状态必须实际布局出来")
+    }
+
     /// 真的布局一次：最宽形态（长模型名 + 9 字符 token + 部分计价）下自然宽不得
     /// 超过内容区。定宽常量是这条的**前提**——任何一个数字列去掉 `.frame(width:)`
     /// 都会让自然宽按文案涨上去。
@@ -100,7 +156,7 @@ final class HarnessUsageMenuViewTests: XCTestCase {
     /// 曾经的写法是 `Text(...).frame(maxWidth:)` + 给占比条 `.layoutPriority(1)`：
     /// `TokenBucketBar` 内部是 `GeometryReader`（贪婪），优先级一高就把整行吃光，
     /// 模型名列被压成 0pt——**自然宽**因此只剩三个定宽数字列（约 150pt），
-    /// 而定宽写法下自然宽正好是六列之和 334pt。这条断言就是那次 bug 的守门。
+    /// 而定宽写法下自然宽正好是六列、列间距和 scope 缩进之和 334pt。这条断言就是守门。
     @MainActor
     func testModelRowNaturalWidthCoversAllSixColumns() {
         let row = HarnessModelRow(
@@ -122,6 +178,7 @@ final class HarnessUsageMenuViewTests: XCTestCase {
             + HarnessModelRowView.speedWidth
             + HarnessModelRowView.valueWidth
             + 5 * 6
+            + 8
         XCTAssertEqual(
             hosting.fittingSize.width, expected, accuracy: 0.5,
             "模型行自然宽应等于六列定宽之和（模型名列塌成 0pt 时会明显更小）"
@@ -174,6 +231,65 @@ final class HarnessUsageMenuViewTests: XCTestCase {
         XCTAssertGreaterThan(
             truncated, complete,
             "被截断的段必须多出橙色截断提示行（否则一份残缺统计被当完整统计读）"
+        )
+    }
+
+    // MARK: - fleet 段头右键刷新（§10.2）
+
+    /// fleet 段头右键「刷新 <客户端名>」刷的是**本机**这一段：交出去的是
+    /// clientID 对应的那一段，不是别的段、也不是全部段。
+    ///
+    /// 这条钉的是"点 A 刷 A"：fleet 段头给的是 clientID，路由取错段的话，用户
+    /// 点一个客户端的右键却刷了另一个客户端的卡（而且毫无反馈）。
+    @MainActor
+    func testFleetSectionRefreshRoutesToTheMatchingLocalSection() {
+        let sections = [
+            Self.sectionFixture(rowCount: 1, clientID: ClientID.openCode),
+            Self.sectionFixture(rowCount: 1, clientID: ClientID.dsh)
+        ]
+        var refreshed: [String] = []
+        HarnessUsageMenuView.refreshLocalSection(
+            clientID: ClientID.dsh,
+            sections: sections
+        ) { refreshed.append($0.clientID) }
+        XCTAssertEqual(refreshed, [ClientID.dsh], "只刷命中的那一段")
+    }
+
+    /// 本机没有这一段（该客户端今天只有远端数据）→ 什么都不做：不改刷别的段，
+    /// 不崩。
+    @MainActor
+    func testFleetSectionRefreshDoesNothingWithoutAMatchingLocalSection() {
+        let sections = [Self.sectionFixture(rowCount: 1, clientID: ClientID.openCode)]
+        var refreshed: [String] = []
+        HarnessUsageMenuView.refreshLocalSection(
+            clientID: ClientID.zcode,
+            sections: sections
+        ) { refreshed.append($0.clientID) }
+        XCTAssertTrue(refreshed.isEmpty, "本机没有这一段时不该刷任何段")
+    }
+
+    /// fleet 段头右键项的文案钉死：「刷新本机 <客户端名>」——「本机」二字是
+    /// 语义的一部分（刷的是本机数据，不是 fleet 合计）。
+    @MainActor
+    func testFleetSectionRefreshMenuTitleKeepsTheLocalWording() {
+        XCTAssertEqual(
+            FleetClientSectionView.refreshMenuTitle(displayName: "OpenCode"),
+            "刷新本机 OpenCode"
+        )
+    }
+
+    /// 节点形态的段头**没有**右键刷新：刷的是本机数据，对单节点视图无意义。
+    /// 全局形态才有（节点分支不传 `onRefreshClient`）。
+    @MainActor
+    func testNodeScopedFleetSectionHasNoRefreshMenu() {
+        let section = Self.fleetClientSectionFixture()
+        XCTAssertFalse(
+            FleetClientSectionView(section: section).hasRefreshMenu,
+            "节点形态不该出现段头右键刷新"
+        )
+        XCTAssertTrue(
+            FleetClientSectionView(section: section, onRefreshClient: { _ in }).hasRefreshMenu,
+            "全局形态必须保留段头右键刷新"
         )
     }
 
@@ -268,16 +384,17 @@ final class HarnessUsageMenuViewTests: XCTestCase {
     }
 
     /// 一个客户端 + 一个极长模型名的行：模型名列尾截断，右侧五列仍定宽。
-    /// `displayName` 供段头自然宽测试换成最长的注册客户端名。
+    /// `clientID` 可切换测试数据段；`displayName` 可覆盖段头的展示名。
     private static func sectionFixture(
         rowCount: Int,
         isTruncated: Bool = false,
-        displayName: String = "OpenCode"
+        clientID: String = ClientID.openCode,
+        displayName: String? = nil
     ) -> HarnessSection {
         let rows = (0..<rowCount).map { index in
             HarnessModelRow(
                 dayStart: Calendar.current.startOfDay(for: Date()),
-                clientID: ClientID.openCode,
+                clientID: clientID,
                 quotaProviderID: QuotaProviderID.openAI,
                 modelName: index == 0
                     ? "claude-sonnet-4-6-thinking-extended-preview-20260101"
@@ -287,14 +404,32 @@ final class HarnessUsageMenuViewTests: XCTestCase {
             )
         }
         return HarnessSection(
-            clientID: ClientID.openCode,
-            displayName: displayName,
+            clientID: clientID,
+            displayName: displayName ?? clientID,
             iconSystemName: "terminal",
             buckets: TokenUsageBuckets(input: 400_000, cacheRead: 600_000, output: 200_000, reasoning: 100_000),
             tokensPerSecond: nil,
             value: MixedCurrencyEstimate(usd: 11.3, cny: 0),
             rows: rows,
             isTruncated: isTruncated
+        )
+    }
+
+    /// fleet 形态的一个客户端段（段头 + 节点/模型行）。右键刷新的门控只关心
+    /// 段本身，节点行与模型行留空即可。
+    private static func fleetClientSectionFixture(
+        clientID: String = ClientID.openCode
+    ) -> FleetMenuSummary.ClientSection {
+        FleetMenuSummary.ClientSection(
+            clientID: clientID,
+            displayName: "OpenCode",
+            iconSystemName: "terminal",
+            buckets: TokenUsageBuckets(input: 1_000, cacheRead: 0, output: 0, reasoning: 0),
+            costText: "¥1.00",
+            isTruncated: false,
+            nodes: [],
+            models: [],
+            mergedModels: []
         )
     }
 

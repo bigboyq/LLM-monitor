@@ -207,7 +207,7 @@ extension SettingsView {
             }
 
             SettingsSection(title: "开机自启动", footer: "在系统登录时自动后台运行 LLM Monitor。") {
-                SettingsToggleRow(label: "开启开机自启动", isOn: $launchAtLogin)
+                SettingsToggleRow(label: "开启开机自启动", isOn: $launchAtLoginDraft.draft)
 
                 if let lastErrorMessage = loginItemService.lastErrorMessage, !lastErrorMessage.isEmpty {
                     Text(lastErrorMessage)

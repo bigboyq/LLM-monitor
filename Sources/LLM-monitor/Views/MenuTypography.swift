@@ -4,6 +4,8 @@ import SwiftUI
 enum MenuTypography {
     /// 顶部主标题 (LLM Monitor)
     static let headerTitle = Font.system(size: 13, weight: .semibold)
+    /// 顶部右侧操作字形（scope 切换标记 ellipsis / 刷新图标 arrow.clockwise）
+    static let headerAction = Font.system(size: 11, weight: .medium)
     /// 卡片主标题 (Provider 名称)
     static let cardTitle = Font.system(size: 13, weight: .bold)
     /// 状态标签与微型 Pill (未配置 / 待更新 / Team / AI Pro)

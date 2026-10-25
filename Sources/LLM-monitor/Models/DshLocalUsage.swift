@@ -37,6 +37,9 @@ struct DshLocalUsage: Equatable, Codable, Sendable {
     /// part of the result's meaning rather than a freshness flag (and unlike
     /// `isPartial` it participates in `==`).
     var isTruncated: Bool? = nil
+    /// Recent-sample cap used to build this snapshot. Optional for old caches;
+    /// a missing value forces a rescan before the snapshot can claim sample completeness.
+    var recentSamplesLimit: Int? = nil
 
     static let empty = DshLocalUsage(
         byProvider: [:],
@@ -60,6 +63,7 @@ struct DshLocalUsage: Equatable, Codable, Sendable {
             && lhs.sessionCount == rhs.sessionCount
             && lhs.eventCount == rhs.eventCount
             && lhs.isTruncated == rhs.isTruncated
+            && lhs.recentSamplesLimit == rhs.recentSamplesLimit
     }
 }
 
@@ -69,4 +73,10 @@ struct DshProviderUsage: Equatable, Codable, Sendable {
     let sessionCount: Int
     let roundCount: Int
     let recentSamples: [LocalTokenUsageSample]
+    /// nil means an older cache cannot prove the retained samples were uncapped.
+    /// It is conservatively treated as incomplete until a full scan rebuilds it.
+    var recentSamplesTruncated: Bool? = nil
+    /// Newest sample omitted by the cap. It lets cached rebases clear truncation
+    /// once all omitted samples have aged outside the retention window.
+    var latestOmittedSampleAt: Date? = nil
 }

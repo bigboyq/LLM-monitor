@@ -97,6 +97,154 @@ final class FleetUsageModelsTests: XCTestCase {
         XCTAssertNil(result.quota)
     }
 
+    // MARK: - 「今」行金额（§10.7）
+
+    /// 节点带金额的日桶 → 节点口径的「今」行要给金额。
+    private func nodeWithEntries(
+        entries: [FleetUsageEntry],
+        dayKey: String? = nil
+    ) -> FleetNodeSnapshot {
+        let key = dayKey ?? FleetMerger.dayKey(of: now)
+        let rows = [FleetClientProviderUsage(
+            clientID: ClientID.codex, quotaProviderID: QuotaProviderID.openAI,
+            input: 100, cacheRead: 0, output: 0, reasoning: 0, turns: 1, rounds: 1
+        )]
+        let bucket = FleetDailyBucket(
+            dayKey: key, totals: FleetTotals(summing: rows),
+            clientProviders: rows, entries: entries,
+            totalsComplete: true, modelDetailsComplete: true, sourceTruncated: false
+        )
+        return FleetNodeSnapshot(
+            nodeID: UUID(), nodeName: "iMac",
+            lastSeenAt: now, seq: 1, stale: false,
+            dailyBuckets: [bucket], windowUsage: [], quotas: [],
+            attributionFingerprint: "deadbeef",
+            dailyDigests: [bucket.dayKey: FleetDailyDigest.digest(bucket)]
+        )
+    }
+
+    func testNodeScopeTodayRowCarriesCost() throws {
+        let entry = FleetUsageEntry(
+            clientID: ClientID.codex, quotaProviderID: QuotaProviderID.openAI,
+            modelName: "gpt-5.5", input: 100, cacheRead: 0, output: 0, reasoning: 0,
+            value: 1.25, currency: .usd, coverage: .full, truncated: false
+        )
+        let usage = FleetUsageProjection.nodeCardUsage(
+            node: nodeWithEntries(entries: [entry]),
+            quotaProviderID: QuotaProviderID.openAI,
+            now: now
+        )
+        let today = try XCTUnwrap(usage.todayRow)
+        XCTAssertEqual(today.cost?.value, 1.25, "节点口径的「今」行要带金额")
+        XCTAssertNil(today.costText, "单币种走 cost，不出混币文案")
+    }
+
+    func testPartialPricingIsShownWithNonNilTodayAndWindowAmounts() throws {
+        let partialEntry = FleetUsageEntry(
+            clientID: ClientID.codex, quotaProviderID: QuotaProviderID.openAI,
+            modelName: "gpt-5.5", input: 100, cacheRead: 0, output: 0, reasoning: 0,
+            value: 1.25, currency: .usd, coverage: .partial, truncated: false
+        )
+        let base = nodeWithEntries(entries: [partialEntry])
+        let window = FleetWindowUsage(
+            quotaProviderID: QuotaProviderID.openAI, modelID: "chatgpt_plan", windowKind: "interval",
+            startAt: now.addingTimeInterval(-18_000), endAt: now, observedAt: now,
+            input: 50, cacheRead: 0, output: 0, reasoning: 0,
+            value: 0.5, currency: .usd, coverage: .partial, complete: false, sourceTruncated: false
+        )
+        let node = FleetNodeSnapshot(
+            nodeID: base.nodeID, nodeName: base.nodeName, lastSeenAt: now, seq: 1, stale: false,
+            dailyBuckets: base.dailyBuckets, windowUsage: [window], quotas: [],
+            attributionFingerprint: base.attributionFingerprint, dailyDigests: base.dailyDigests
+        )
+        let usage = FleetUsageProjection.nodeCardUsage(
+            node: node, quotaProviderID: QuotaProviderID.openAI, now: now
+        )
+        XCTAssertEqual(usage.todayRow?.cost?.value, 1.25)
+        XCTAssertTrue(try XCTUnwrap(usage.todayRow?.costText).contains("部分计价"))
+        XCTAssertEqual(usage.windowRows.first?.cost?.value, 0.5)
+        XCTAssertTrue(try XCTUnwrap(usage.windowRows.first?.costText).contains("部分计价"))
+        XCTAssertTrue(try XCTUnwrap(usage.dayValues.first?.valueText).contains("部分计价"))
+    }
+
+    func testNodeWindowUsageSelectsPreferredSingleHistoryPerModelAndKind() throws {
+        let base = nodeWithEntries(entries: [])
+        let preferredEnd = now
+        let windows = [
+            FleetWindowUsage(
+                quotaProviderID: QuotaProviderID.openAI, modelID: "chatgpt_plan", windowKind: "interval",
+                startAt: preferredEnd.addingTimeInterval(-18_000), endAt: preferredEnd,
+                observedAt: now, input: 40, cacheRead: 0, output: 0, reasoning: 0,
+                value: 1, currency: .usd, coverage: .full, complete: true, sourceTruncated: false
+            ),
+            FleetWindowUsage(
+                quotaProviderID: QuotaProviderID.openAI, modelID: "chatgpt_plan", windowKind: "interval",
+                startAt: preferredEnd.addingTimeInterval(-18_000), endAt: preferredEnd.addingTimeInterval(600),
+                observedAt: now, input: 99, cacheRead: 0, output: 0, reasoning: 0,
+                value: 2, currency: .usd, coverage: .full, complete: true, sourceTruncated: false
+            ),
+            FleetWindowUsage(
+                quotaProviderID: QuotaProviderID.zhipu, modelID: "chatgpt_plan", windowKind: "interval",
+                startAt: preferredEnd.addingTimeInterval(-18_000), endAt: preferredEnd,
+                observedAt: now, input: 700, cacheRead: 0, output: 0, reasoning: 0,
+                value: 3, currency: .usd, coverage: .full, complete: true, sourceTruncated: false
+            )
+        ]
+        let node = FleetNodeSnapshot(
+            nodeID: base.nodeID, nodeName: base.nodeName, lastSeenAt: now, seq: 1, stale: false,
+            dailyBuckets: base.dailyBuckets, windowUsage: windows, quotas: [],
+            attributionFingerprint: base.attributionFingerprint, dailyDigests: base.dailyDigests
+        )
+        let usage = FleetUsageProjection.nodeCardUsage(
+            node: node, quotaProviderID: QuotaProviderID.openAI, now: now,
+            preferredWindowEnds: ["interval": preferredEnd]
+        )
+        XCTAssertEqual(usage.windowRows.count, 1, "按 model/kind 选择一个历史窗口，且过滤其他 provider")
+        XCTAssertEqual(usage.windowRows.first?.input, 40, "优先与当前生效额度边界一致的窗口")
+    }
+
+    func testTodayRowMixedCurrencyFallsBackToCostText() {
+        // fleet 混币（USD + CNY）时金额不该退化成「—」：单币种 estimate 装不下，
+        // 走混币文案（CNY 折算总额 + USD 构成标注）。
+        let entries = [
+            FleetUsageEntry(
+                clientID: ClientID.codex, quotaProviderID: QuotaProviderID.openAI,
+                modelName: "gpt-5.5", input: 100, cacheRead: 0, output: 0, reasoning: 0,
+                value: 2.0, currency: .usd, coverage: .full, truncated: false
+            ),
+            FleetUsageEntry(
+                clientID: ClientID.codex, quotaProviderID: QuotaProviderID.zhipu,
+                modelName: "glm-5", input: 100, cacheRead: 0, output: 0, reasoning: 0,
+                value: 10.0, currency: .cny, coverage: .full, truncated: false
+            )
+        ]
+        let usage = FleetUsageProjection.nodeCardUsage(
+            node: nodeWithEntries(entries: entries),
+            quotaProviderID: QuotaProviderID.openAI,
+            now: now
+        )
+        let today = usage.todayRow
+        XCTAssertNil(today?.cost, "混币没有单币种 estimate")
+        XCTAssertNotNil(today?.costText, "混币给出文案而不是「—」")
+        XCTAssertTrue(today?.costText?.contains("$") == true, "文案里带 USD 构成标注")
+    }
+
+    // MARK: - 合并模型行的身份
+
+    func testMergedModelRowIdentityIsStableAcrossComputations() {
+        // 合并行没有节点归属，但 ModelRow 的身份由 nodeID 拼出 → 原来每次
+        // 重算都生成新 UUID，ForEach 判定为「另一批行」→ 整段每秒重建。
+        let entries = [FleetUsageEntry(
+            clientID: ClientID.codex, quotaProviderID: QuotaProviderID.openAI,
+            modelName: "gpt-5.5", input: 100, cacheRead: 0, output: 0, reasoning: 0,
+            value: 0.5, currency: .usd, coverage: .full, truncated: false
+        )]
+        let first = FleetUsageProjection.mergedModelRows(entries: entries)
+        let second = FleetUsageProjection.mergedModelRows(entries: entries)
+        XCTAssertEqual(first.map(\.id), second.map(\.id), "同一份数据每次算出同一个身份")
+        XCTAssertEqual(first.first?.id, "\(FleetUsageProjection.stableUUID(for: "\(ClientID.codex)|\(QuotaProviderID.openAI)|gpt-5.5").uuidString):gpt-5.5")
+    }
+
     // MARK: - 菜单汇总（§10.2）
 
     private func menuSnapshot(nodeCount: Int, perNodeInput: [Int]) -> FleetSnapshot {
@@ -121,7 +269,8 @@ final class FleetUsageModelsTests: XCTestCase {
                 nodeID: nodeID, nodeName: nodeName,
                 lastSeenAt: now, seq: 1, stale: stale,
                 dailyBuckets: [bucket], windowUsage: [], quotas: [],
-                attributionFingerprint: "deadbeef"
+                attributionFingerprint: "deadbeef",
+                dailyDigests: [bucket.dayKey: FleetDailyDigest.digest(bucket)]
             )
         }
         let nodes = (0..<nodeCount).map { index in
@@ -153,6 +302,166 @@ final class FleetUsageModelsTests: XCTestCase {
         )
         XCTAssertNotNil(summary)
         XCTAssertFalse(summary!.multiNode, "单节点时菜单保持今天的单行形态（§10.6 L）")
+    }
+
+    func testMissingFleetTodayBucketProducesUnavailableSummaryNotLocalFallback() {
+        let populated = menuSnapshot(nodeCount: 2, perNodeInput: [100, 300])
+        let nodes = populated.nodes.map { node in
+            FleetNodeSnapshot(
+                nodeID: node.nodeID,
+                nodeName: node.nodeName,
+                lastSeenAt: node.lastSeenAt,
+                seq: node.seq,
+                stale: node.stale,
+                dailyBuckets: [],
+                windowUsage: node.windowUsage,
+                quotas: node.quotas,
+                attributionFingerprint: node.attributionFingerprint,
+                dailyDigests: [:]
+            )
+        }
+        let emptyDailySnapshot = FleetSnapshot(
+            protocolVersion: populated.protocolVersion,
+            hubUUID: populated.hubUUID,
+            generation: populated.generation,
+            hub: populated.hub,
+            generatedAt: populated.generatedAt,
+            nodes: nodes,
+            fleet: FleetAggregate(dailyBuckets: [], windowUsage: []),
+            electedQuotas: populated.electedQuotas
+        )
+
+        let summary = FleetUsageProjection.menuSummary(
+            snapshot: emptyDailySnapshot,
+            localNodeID: populated.hubUUID,
+            now: now
+        )
+        XCTAssertEqual(summary?.multiNode, true)
+        XCTAssertEqual(summary?.hasDailyData, false)
+        XCTAssertEqual(summary?.dailyNotice, "全局今日用量尚未同步")
+        XCTAssertTrue(summary?.sections.isEmpty == true)
+
+        let card = FleetUsageProjection.cardUsage(
+            snapshot: emptyDailySnapshot,
+            quotaProviderID: QuotaProviderID.openAI,
+            now: now
+        )
+        XCTAssertNotNil(card)
+        XCTAssertTrue(card?.daily.isEmpty == true)
+        XCTAssertNil(card?.todayRow)
+        XCTAssertEqual(card?.dailyNotice, "全局今日用量尚未同步")
+    }
+
+    func testPartialDailyBucketKeepsKnownTotalsAndSurfacesUnavailableSource() {
+        let populated = menuSnapshot(nodeCount: 2, perNodeInput: [100, 300])
+        let complete = populated.fleet.dailyBuckets[0]
+        let partial = FleetDailyBucket(
+            dayKey: complete.dayKey,
+            totals: complete.totals,
+            clientProviders: complete.clientProviders,
+            entries: complete.entries,
+            totalsComplete: false,
+            modelDetailsComplete: false,
+            sourceTruncated: false,
+            unavailableSources: [FleetDailyUnavailableSource(
+                clientID: ClientID.codex,
+                quotaProviderID: QuotaProviderID.openAI,
+                reason: .failed
+            )]
+        )
+        let partialSnapshot = FleetSnapshot(
+            protocolVersion: populated.protocolVersion,
+            hubUUID: populated.hubUUID,
+            generation: populated.generation,
+            hub: populated.hub,
+            generatedAt: populated.generatedAt,
+            nodes: populated.nodes,
+            fleet: FleetAggregate(dailyBuckets: [partial], windowUsage: []),
+            electedQuotas: populated.electedQuotas
+        )
+
+        let summary = try! XCTUnwrap(FleetUsageProjection.menuSummary(
+            snapshot: partialSnapshot,
+            localNodeID: populated.hubUUID,
+            now: now
+        ))
+        XCTAssertTrue(summary.hasDailyData, "partial bucket still carries known data")
+        XCTAssertEqual(summary.fleetTotals.tokens, 400, "partiality must not erase healthy/retained totals")
+        XCTAssertTrue(summary.dailyNotice?.contains("Codex") == true)
+        XCTAssertTrue(summary.dailyNotice?.contains(QuotaProviderID.openAI) == false,
+                      "UI notice does not expose raw provider IDs")
+
+        let card = try! XCTUnwrap(FleetUsageProjection.cardUsage(
+            snapshot: partialSnapshot,
+            quotaProviderID: QuotaProviderID.openAI,
+            now: now
+        ))
+        XCTAssertTrue(card.dailyNotice?.contains("Codex") == true)
+    }
+
+    func testNodeCardDailyNoticeDistinguishesMissingPartialAndCompleteZero() {
+        let populated = menuSnapshot(nodeCount: 2, perNodeInput: [100, 300])
+        let sourceNode = populated.nodes[0]
+        let dayKey = FleetMerger.dayKey(of: now)
+        let zeroBucket = FleetDailyBucket(
+            dayKey: dayKey,
+            totals: .zero,
+            clientProviders: [],
+            entries: [],
+            totalsComplete: true,
+            modelDetailsComplete: true,
+            sourceTruncated: false,
+            unavailableSources: []
+        )
+        func node(with buckets: [FleetDailyBucket]) -> FleetNodeSnapshot {
+            FleetNodeSnapshot(
+                nodeID: sourceNode.nodeID,
+                nodeName: sourceNode.nodeName,
+                lastSeenAt: sourceNode.lastSeenAt,
+                seq: sourceNode.seq,
+                stale: false,
+                dailyBuckets: buckets,
+                windowUsage: [],
+                quotas: [],
+                attributionFingerprint: sourceNode.attributionFingerprint,
+                dailyDigests: nil
+            )
+        }
+
+        let completeZero = FleetUsageProjection.nodeCardUsage(
+            node: node(with: [zeroBucket]),
+            quotaProviderID: QuotaProviderID.openAI,
+            now: now
+        )
+        XCTAssertNil(completeZero.dailyNotice, "完整的零用量是合法数据，不应提示未同步")
+
+        let partialBucket = FleetDailyBucket(
+            dayKey: dayKey,
+            totals: .zero,
+            clientProviders: [],
+            entries: [],
+            totalsComplete: false,
+            modelDetailsComplete: false,
+            sourceTruncated: false,
+            unavailableSources: [FleetDailyUnavailableSource(
+                clientID: ClientID.codex,
+                quotaProviderID: QuotaProviderID.openAI,
+                reason: .failed
+            )]
+        )
+        let partial = FleetUsageProjection.nodeCardUsage(
+            node: node(with: [partialBucket]),
+            quotaProviderID: QuotaProviderID.openAI,
+            now: now
+        )
+        XCTAssertTrue(partial.dailyNotice?.contains("Codex") == true)
+
+        let missing = FleetUsageProjection.nodeCardUsage(
+            node: node(with: []),
+            quotaProviderID: QuotaProviderID.openAI,
+            now: now
+        )
+        XCTAssertEqual(missing.dailyNotice, "该节点今日用量尚未同步")
     }
 
     func testMenuSummaryFleetTotalsAndNodeOrdering() {
@@ -235,6 +544,117 @@ final class FleetUsageModelsTests: XCTestCase {
         XCTAssertEqual(usage.todayRow?.input, 200, "fleet 今行 = 今日 bucket 合计")
     }
 
+    func testDailyCardTotalsRemainAllProviderWhileWindowsFilterProvider() throws {
+        let base = menuSnapshot(nodeCount: 1, perNodeInput: [10])
+        let nodeID = base.nodes[0].nodeID
+        let openAINodeWindow = FleetWindowUsage(
+            quotaProviderID: QuotaProviderID.openAI, modelID: "chatgpt_plan", windowKind: "interval",
+            startAt: now.addingTimeInterval(-100), endAt: now, observedAt: now,
+            input: 7, cacheRead: 0, output: 0, reasoning: 0,
+            value: nil, currency: nil, coverage: .none, complete: true, sourceTruncated: false
+        )
+        let zhipuNodeWindow = FleetWindowUsage(
+            quotaProviderID: QuotaProviderID.zhipu, modelID: "glm", windowKind: "interval",
+            startAt: now.addingTimeInterval(-100), endAt: now, observedAt: now,
+            input: 99, cacheRead: 0, output: 0, reasoning: 0,
+            value: nil, currency: nil, coverage: .none, complete: true, sourceTruncated: false
+        )
+        let providers = [
+            FleetClientProviderUsage(
+                clientID: ClientID.codex, quotaProviderID: QuotaProviderID.openAI,
+                input: 10, cacheRead: 0, output: 0, reasoning: 0, turns: 1, rounds: 1
+            ),
+            FleetClientProviderUsage(
+                clientID: ClientID.codex, quotaProviderID: QuotaProviderID.zhipu,
+                input: 20, cacheRead: 0, output: 0, reasoning: 0, turns: 1, rounds: 1
+            )
+        ]
+        let bucket = FleetDailyBucket(
+            dayKey: FleetMerger.dayKey(of: now), totals: FleetTotals(summing: providers),
+            clientProviders: providers, entries: [], totalsComplete: true,
+            modelDetailsComplete: true, sourceTruncated: false
+        )
+        let node = FleetNodeSnapshot(
+            nodeID: nodeID, nodeName: "hub", lastSeenAt: now, seq: 1, stale: false,
+            dailyBuckets: [bucket], windowUsage: [openAINodeWindow, zhipuNodeWindow], quotas: [],
+            attributionFingerprint: "deadbeef", dailyDigests: [bucket.dayKey: FleetDailyDigest.digest(bucket)]
+        )
+        let openAIWindow = FleetWindowAggregate(
+            quotaProviderID: QuotaProviderID.openAI, modelID: "chatgpt_plan", windowKind: "interval",
+            startAt: now.addingTimeInterval(-100), endAt: now,
+            input: 7, cacheRead: 0, output: 0, reasoning: 0,
+            valueByCurrency: [:], coverage: .none, complete: true,
+            contributingNodeIDs: [nodeID], staleNodeIDs: [], missingNodeIDs: []
+        )
+        let zhipuWindow = FleetWindowAggregate(
+            quotaProviderID: QuotaProviderID.zhipu, modelID: "glm", windowKind: "interval",
+            startAt: now.addingTimeInterval(-100), endAt: now,
+            input: 99, cacheRead: 0, output: 0, reasoning: 0,
+            valueByCurrency: [:], coverage: .none, complete: true,
+            contributingNodeIDs: [nodeID], staleNodeIDs: [], missingNodeIDs: []
+        )
+        let snapshot = FleetSnapshot(
+            protocolVersion: base.protocolVersion, hubUUID: base.hubUUID, generation: 1,
+            hub: base.hub, generatedAt: now, nodes: [node],
+            fleet: FleetAggregate(dailyBuckets: [bucket], windowUsage: [openAIWindow, zhipuWindow]),
+            electedQuotas: []
+        )
+
+        let fleetUsage = try XCTUnwrap(FleetUsageProjection.cardUsage(
+            snapshot: snapshot, quotaProviderID: QuotaProviderID.openAI, now: now
+        ))
+        let nodeUsage = FleetUsageProjection.nodeCardUsage(
+            node: node, quotaProviderID: QuotaProviderID.openAI, now: now
+        )
+        XCTAssertEqual(fleetUsage.todayRow?.input, 30, "全局日桶按设计保留所有 provider 的合计")
+        XCTAssertEqual(nodeUsage.todayRow?.input, 30, "单节点日桶按设计保留所有 provider 的合计")
+        XCTAssertEqual(fleetUsage.windowRows.map(\.input), [7], "窗口摘要仍按当前 provider 筛选")
+        XCTAssertEqual(nodeUsage.windowRows.map(\.input), [7], "节点窗口摘要仍按当前 provider 筛选")
+    }
+
+    func testCardUsageParsesGregorianDayKeysWithCallerTimezone() throws {
+        var utc = Calendar(identifier: .gregorian)
+        utc.timeZone = TimeZone(secondsFromGMT: 0)!
+        let probeNow = utc.date(from: DateComponents(year: 2026, month: 10, day: 25, hour: 0, minute: 30))!
+        var japanese = Calendar(identifier: .japanese)
+        japanese.timeZone = TimeZone(identifier: "America/Los_Angeles")!
+        let key = FleetMerger.dayKey(of: probeNow, calendar: japanese)
+        XCTAssertEqual(key, "2026-10-24")
+
+        let nodeID = UUID()
+        let rows = [FleetClientProviderUsage(
+            clientID: ClientID.codex, quotaProviderID: QuotaProviderID.openAI,
+            input: 12, cacheRead: 0, output: 0, reasoning: 0, turns: 1, rounds: 1
+        )]
+        let bucket = FleetDailyBucket(
+            dayKey: key, totals: FleetTotals(summing: rows), clientProviders: rows,
+            entries: [], totalsComplete: true, modelDetailsComplete: true, sourceTruncated: false
+        )
+        let node = FleetNodeSnapshot(
+            nodeID: nodeID, nodeName: "hub", lastSeenAt: probeNow, seq: 1, stale: false,
+            dailyBuckets: [bucket], windowUsage: [], quotas: [],
+            attributionFingerprint: "deadbeef", dailyDigests: [key: FleetDailyDigest.digest(bucket)]
+        )
+        let snapshot = FleetSnapshot(
+            protocolVersion: FleetProtocol.version, hubUUID: nodeID, generation: 1,
+            hub: FleetNodeIdentity(nodeID: nodeID, nodeName: "hub", timezoneID: "America/Los_Angeles", platform: "macOS"),
+            generatedAt: probeNow, nodes: [node],
+            fleet: FleetAggregate(dailyBuckets: [bucket], windowUsage: []), electedQuotas: []
+        )
+        let expectedStart = FleetMerger.gregorianDayCalendar(matching: japanese).startOfDay(for: probeNow)
+
+        let fleetUsage = try XCTUnwrap(FleetUsageProjection.cardUsage(
+            snapshot: snapshot, quotaProviderID: QuotaProviderID.openAI,
+            now: probeNow, calendar: japanese
+        ))
+        let nodeUsage = FleetUsageProjection.nodeCardUsage(
+            node: node, quotaProviderID: QuotaProviderID.openAI,
+            now: probeNow, calendar: japanese
+        )
+        XCTAssertEqual(fleetUsage.daily.first?.dayStart, expectedStart)
+        XCTAssertEqual(nodeUsage.daily.first?.dayStart, expectedStart)
+    }
+
     func testCardUsageMarksIncompleteWhenNodeMissingRange() {
         let snapshot = menuSnapshot(nodeCount: 2, perNodeInput: [100, 100])
         var withWindow = snapshot
@@ -267,6 +687,46 @@ final class FleetUsageModelsTests: XCTestCase {
         XCTAssertEqual(usage.incompleteNotice, "部分节点缺该范围或已离线")
     }
 
+    func testCardUsageMarksStaleDailyContributionWithoutWindowRows() {
+        let snapshot = menuSnapshot(nodeCount: 3, perNodeInput: [100, 100, 20])
+        let usage = try! XCTUnwrap(FleetUsageProjection.cardUsage(
+            snapshot: snapshot, quotaProviderID: QuotaProviderID.openAI, now: now
+        ))
+        XCTAssertTrue(usage.windowRows.isEmpty)
+        XCTAssertNotNil(usage.incompleteNotice, "窗口行缺席时也须提示正在展示 stale 节点的日桶")
+
+        let dayKey = FleetMerger.dayKey(of: now)
+        let zeroBucket = FleetDailyBucket(
+            dayKey: dayKey, totals: .zero, clientProviders: [], entries: [],
+            totalsComplete: true, modelDetailsComplete: true, sourceTruncated: false
+        )
+        let staleZeroNode = FleetNodeSnapshot(
+            nodeID: UUID(), nodeName: "offline-empty", lastSeenAt: now, seq: 1, stale: true,
+            dailyBuckets: [zeroBucket], windowUsage: [], quotas: [],
+            attributionFingerprint: nil, dailyDigests: nil
+        )
+        let activeSnapshot = FleetSnapshot(
+            protocolVersion: snapshot.protocolVersion,
+            hubUUID: snapshot.hubUUID,
+            generation: snapshot.generation,
+            hub: snapshot.hub,
+            generatedAt: snapshot.generatedAt,
+            nodes: [snapshot.nodes[0], snapshot.nodes[1], staleZeroNode],
+            fleet: FleetAggregate(
+                dailyBuckets: FleetMerger.mergeDailyBuckets(
+                    [snapshot.nodes[0].dailyBuckets, snapshot.nodes[1].dailyBuckets, staleZeroNode.dailyBuckets],
+                    now: now
+                ),
+                windowUsage: []
+            ),
+            electedQuotas: []
+        )
+        let zeroOnlyUsage = FleetUsageProjection.cardUsage(
+            snapshot: activeSnapshot, quotaProviderID: QuotaProviderID.openAI, now: now
+        )
+        XCTAssertNil(zeroOnlyUsage?.incompleteNotice, "无用量/金额贡献的 stale 节点不应挂告警")
+    }
+
     // MARK: - 窗口范围选择（§10.7.1 W 裁定）
 
     func testPreferredRangePrefersExactBoundaryOverNewerEnd() {
@@ -279,6 +739,78 @@ final class FleetUsageModelsTests: XCTestCase {
         XCTAssertEqual(noMatch.endAt, newer.endAt, "无匹配取 endAt 最新者")
         let flipped = FleetUsageProjection.preferredRange(newer, over: matching, preferredEnd: boundary)
         XCTAssertEqual(flipped.endAt, boundary, "参数顺序无关：命中边界的赢")
+    }
+
+    func testGlobalAndNodeRangeSelectionMatchesWireSecondAfterCodecRoundTrip() throws {
+        let preferredEnd = try XCTUnwrap(DateParser.parse("2026-07-18T00:47:58.918242Z"))
+        let precise = Self.aggregate(endAt: preferredEnd, input: 10)
+        let decodedPrecise = try FleetCodec.decode(
+            FleetWindowAggregate.self, from: FleetCodec.encode(precise)
+        )
+        XCTAssertNotEqual(decodedPrecise.endAt, preferredEnd, "FleetCodec 的线格式只保留整秒")
+        XCTAssertTrue(FleetISO8601.matchesWholeSecond(decodedPrecise.endAt, preferredEnd))
+        let newer = Self.aggregate(endAt: preferredEnd.addingTimeInterval(600), input: 99)
+        let snapshot = menuSnapshot(nodeCount: 1, perNodeInput: [100])
+        let globalSnapshot = FleetSnapshot(
+            protocolVersion: snapshot.protocolVersion,
+            hubUUID: snapshot.hubUUID,
+            generation: snapshot.generation,
+            hub: snapshot.hub,
+            generatedAt: snapshot.generatedAt,
+            nodes: snapshot.nodes,
+            fleet: FleetAggregate(
+                dailyBuckets: snapshot.fleet.dailyBuckets,
+                windowUsage: [decodedPrecise, newer]
+            ),
+            electedQuotas: []
+        )
+        let globalUsage = try XCTUnwrap(FleetUsageProjection.cardUsage(
+            snapshot: globalSnapshot,
+            quotaProviderID: QuotaProviderID.openAI,
+            now: now,
+            preferredWindowEnds: ["interval": preferredEnd]
+        ))
+        XCTAssertEqual(globalUsage.windowRows.first?.input, 10, "全局卡应选中协议秒精度匹配的较旧范围")
+
+        let preciseNodeRow = FleetWindowUsage(
+            quotaProviderID: QuotaProviderID.openAI,
+            modelID: "chatgpt_plan",
+            windowKind: "interval",
+            startAt: decodedPrecise.startAt,
+            endAt: decodedPrecise.endAt,
+            observedAt: decodedPrecise.endAt,
+            input: 10, cacheRead: 0, output: 0, reasoning: 0,
+            value: nil, currency: nil, coverage: .none, complete: true, sourceTruncated: false
+        )
+        let newerNodeRow = FleetWindowUsage(
+            quotaProviderID: QuotaProviderID.openAI,
+            modelID: "chatgpt_plan",
+            windowKind: "interval",
+            startAt: newer.startAt,
+            endAt: newer.endAt,
+            observedAt: newer.endAt,
+            input: 99, cacheRead: 0, output: 0, reasoning: 0,
+            value: nil, currency: nil, coverage: .none, complete: true, sourceTruncated: false
+        )
+        let node = FleetNodeSnapshot(
+            nodeID: snapshot.nodes[0].nodeID,
+            nodeName: snapshot.nodes[0].nodeName,
+            lastSeenAt: snapshot.nodes[0].lastSeenAt,
+            seq: snapshot.nodes[0].seq,
+            stale: false,
+            dailyBuckets: snapshot.nodes[0].dailyBuckets,
+            windowUsage: [preciseNodeRow, newerNodeRow],
+            quotas: [],
+            attributionFingerprint: nil,
+            dailyDigests: nil
+        )
+        let nodeUsage = FleetUsageProjection.nodeCardUsage(
+            node: node,
+            quotaProviderID: QuotaProviderID.openAI,
+            now: now,
+            preferredWindowEnds: ["interval": preferredEnd]
+        )
+        XCTAssertEqual(nodeUsage.windowRows.first?.input, 10, "单节点卡也应使用相同的协议精度规则")
     }
 
     private static func aggregate(endAt: Date, input: Int) -> FleetWindowAggregate {
@@ -344,5 +876,15 @@ final class FleetUsageModelsTests: XCTestCase {
         XCTAssertTrue(mixed.contains("含$"), "USD 原额以构成标注呈现")
         XCTAssertEqual(FleetUsageProjection.costText(entries: [priced, unpriced]).contains("部分计价"), true)
         XCTAssertEqual(FleetUsageProjection.costText(entries: [unpriced]), "未定价")
+
+        let partialPriced = FleetUsageEntry(
+            clientID: ClientID.codex, quotaProviderID: QuotaProviderID.openAI,
+            modelName: "a", input: 1, cacheRead: 0, output: 0, reasoning: 0,
+            value: 1.0, currency: .usd, coverage: .partial, truncated: false
+        )
+        XCTAssertTrue(FleetUsageProjection.costText(entries: [partialPriced]).contains("部分计价"),
+                      "有金额但 coverage 不完整时也必须明示部分计价")
+        XCTAssertTrue(FleetUsageProjection.mergedModelRows(entries: [partialPriced]).first?.costText.contains("部分计价") == true,
+                      "合并模型明细行须保留 coverage")
     }
 }

@@ -33,6 +33,36 @@ enum LocalUsageSource: String, CaseIterable, Hashable, Sendable {
     case dsh
     case opencode
     case agy
+
+    var clientID: String {
+        switch self {
+        case .codex: return ClientID.codex
+        case .antigravity: return ClientID.antigravity
+        case .minimaxCode: return ClientID.minimaxCode
+        case .zcode: return ClientID.zcode
+        case .dsh: return ClientID.dsh
+        case .opencode: return ClientID.openCode
+        case .agy: return ClientID.agy
+        }
+    }
+}
+
+/// One local scanner source as consumed by a quota-provider status. Shared
+/// sources such as DSH, OpenCode, and ZCode can have several consumer rows.
+struct LocalUsageConsumer: Equatable, Hashable, Sendable {
+    let source: LocalUsageSource
+    let clientID: String
+    let quotaProviderID: String
+
+    init(source: LocalUsageSource, quotaProviderID: String) {
+        self.source = source
+        self.clientID = source.clientID
+        self.quotaProviderID = quotaProviderID
+    }
+
+    var sourceKey: String {
+        "\(clientID)|\(quotaProviderID)"
+    }
 }
 
 /// Value-type storage for source freshness on `ProviderStatus`.

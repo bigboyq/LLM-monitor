@@ -2,7 +2,9 @@
 
 This file is one of the three UI specs split out of `spec/ui-design.md` (now the
 index). It documents the menu bar item, the menu window structure and the shared
-`ProviderCardView` that both the edge-dock popover and the menu hover strip render.
+`ProviderCardView` — whose only live host is the edge-dock popover (the menu's
+provider strip hover card is gone with the strip itself, see §Provider fallback
+strip below).
 
 ## Menu Bar Item
 
@@ -152,22 +154,163 @@ height: content-driven, fixedSize(vertical: true)
 | ⚠ 会话文件超出单轮扫描预算，已按最新优先截断…   |   truncation notice (that section only)
 | ...                                            |
 +------------------------------------------------+
-| ◉10:23 ◉需重试 ◉未配置 ◉10:31 ◉10:05           |   provider fallback strip (no label)
-+------------------------------------------------+
-| 更新于 HH:mm / 下次 HH:mm / 就绪  自启 ✓|✗  设置 节能 日志 退出 |
+| 更新于 HH:mm / 下次 HH:mm / 就绪   ⏻ 自启 | 设置 | 节能 | 日志 | 退出 |
 +------------------------------------------------+
 ```
+
+（provider fallback strip 行已随 8e7278a 从菜单移除，图中不再有该行；footer 右侧
+功能组竖线分隔，自启是 power / power.dotted 状态化图标按钮，无 ✓/✗ 文字。）
 
 The menu is the **Harness (client) view**, not the Provider view. The header and
 footer are unchanged, but the content area answers "which clients burned how many
 tokens today" instead of "how much quota is left per provider". The menu no longer
 renders provider cards; the per-provider quota reading lives in the edge status
-dock, the hover panels, Settings — and in the **one-line provider fallback strip at
-the bottom of the content area**, so that users without the edge dock still get a
-quota read in the menu.
+dock, the hover panels and Settings（原内容区底部的 provider 兜底 strip 已随 8e7278a
+整体移除，见下文删除记录）.
+
+**Scope switcher** (`FleetScopeSwitcher`): one shared control, used by the menu
+header (right group, next to the refresh button) **and** by the provider-card
+header in the dock detail popover. It has two forms, split by the **option count**
+(全局 + 本机 + remote nodes):
+
+- **≤ 4 options → segmented control** — a `Picker` with `.pickerStyle(.segmented)`
+  (mini size): 全局 / 本机 / each remote node. One click to switch, everything
+  visible at once. Node names go in verbatim (no "（离线）" suffix — a segmented
+  control has no width budget and would truncate them).
+- **> 4 options → dropdown** — the range text plus the `ellipsis` marker as an
+  **inline image attachment** (`Text("\(truncated) \(Image(systemName: "ellipsis"))")`).
+  On macOS, SwiftUI maps a `Menu` label onto an AppKit `NSButton` (image + title): a
+  standalone `Image` placed in the label is hoisted to the **leading** edge (the text
+  ends up to its right) and width limits applied inside the label are ignored. The
+  inline attachment is part of the title string, so the marker always stays after the
+  text and the button hugs the label.
+
+Both hosts use the same option-count split (`FleetScopeControlStyle.preferred`),
+but the two hosts **place the forms differently**:
+
+- **Dock card** — segmented form (≤ 4) below the card header row; dropdown (> 4)
+  in the card header.
+- **Menu panel** — the header only ever carries the **dropdown** form (> 4,
+  next to the refresh button). At ≤ 4 options the header shows **no scope control
+  at all**; the segmented form renders in the content area, above the 今日 card
+  (`HarnessUsageMenuView.scopeRow`).
+
+**Position** — the control's place depends on the host **and** on the form:
+
+- **Segmented form (≤ 4 options)** — a dedicated row of its own, spanning the
+  full card width:
+  - **Dock detail popover**: directly **below the card header row**
+    (`ProviderCardView.scopeRow`), inset by `LayoutMetrics.cardContentPadding`
+    so it lines up with the card blocks underneath.
+  - **Menu panel**: **above the 今日 card** (`HarnessUsageMenuView.scopeRow`),
+    at the **same full width as that card's background** — the card's 8pt padding
+    sits *inside* its background (`HarnessUsageMenuView.swift` 的注释明确此点), so the
+    row must **not** add its own 8pt inset or it ends up narrower than the card.
+
+  The row has to be full width and on its own: a segmented control has no width
+  budget, so sharing the header row pushed the provider name down to
+  "minimax To…".
+- **Dropdown form (> 4 options)** — compact, in the header:
+  - **Menu panel**: the header's right group, immediately left of the refresh
+    button.
+  - **Dock detail popover**: the card header's right side, left of the freshness
+    pill.
+
+  Both forms of a host therefore share one position for the same option count:
+  the segmented row appears only while the option count is ≤ 4, and the compact
+  dropdown takes over once there are more.
+
+- **Width cap** — `FleetScopeMenu.maxLabelWidth` = **120pt** for the whole
+  group (range text + marker). The text itself is cut by
+  `FleetScopeMenu.truncated(_:maxWidth:)`, a pure function that
+  measures the string in the 11pt medium font and trims the tail with `…`; the
+  marker is always kept (`FleetScopeMenu.glyphReserve` = 16pt is reserved at the
+  text's trailing edge so truncated text never collides with it). The cut is done on
+  the string rather than with SwiftUI layout because a `Menu` label ignores inner
+  width limits (AppKit `NSButton` mapping) and a `maxWidth` frame on the `Menu` is
+  treated as flexible by the header `HStack` — it would eat the leftover space and
+  open a gap between the text and the marker.
+- **Fixed button width** — the `Menu` keeps `.fixedSize()`. Without it SwiftUI
+  sizes the button to the **widest item of its own menu** (a node name plus
+  "（离线）", measured 109pt), so the scope group's width would drift with the node
+  name and the whitespace next to the refresh glyph would change with it.
+- **Menu items** — 全局 / 本机, then a 节点 section with the remote nodes
+  (`FleetNodeChoice`; stale ones carry "（离线）"). The current scope's text comes
+  from `FleetScopeMenu.labelText(_:choices:)`.
+
+**Fleet usage semantics.** A Provider card's selected Fleet or node scope selects
+the source bucket, not a provider-filtered daily total. The seven-day chart, the
+「今」 row, and daily amount use the selected scope's complete daily bucket across
+all providers. `quotaProviderID` filters only quota-window rows. This preserves
+the authoritative day total even when the selected quota owner has only part of
+that bucket's activity. Window rows select one history per `(modelID, windowKind)`:
+prefer the range whose `endAt` matches the effective quota reset boundary at wire
+whole-second precision; otherwise use the latest `endAt`. Partial pricing and
+incomplete coverage remain visible beside any available amount as 「部分计价」. A
+bucket with no priced sample continues to show 「未定价」 rather than suggesting a
+partial amount. A stale node's nonzero usage or amount in a displayed daily bucket
+also triggers the card's 「部分节点缺该范围或已离线」 notice, even when no current
+window row exists for that provider; stale nodes with no daily contribution do not.
+Fleet amount text survives both UI adapters: `QuotaWindowUsageSnapshot.Window.costText`
+retains the window text, and `QuotaWindowUsageSection.visibleRows` preserves it for
+5h / weekly / today / off-peak rows. This keeps partial-pricing markers and mixed-currency
+totals visible instead of reducing them to a complete single-currency amount or `—`.
+
+Fleet snapshot and scope changes travel on `fleetDidChange`, separate from
+`statusDidChange`, so refreshing the visible Fleet snapshot does not recursively
+rebuild a hub report. Closing Fleet Sync or changing upstream clears the prior
+snapshot and returns unavailable Fleet/node scope to local.
+
+**Header right group** (scope switcher + refresh): the scope dropdown sits next
+to the refresh button, both right-aligned as one group. **The group only exists
+when there is something to switch** — the dropdown renders only when fleet sync
+is enabled, node choices are non-empty and the option count is > 4
+(`FleetScopeControlStyle.preferred == .dropdown`); without a scope group
+(联动未启用 / 选项 ≤ 4) the refresh button sits alone, flush right
+(`MenuContentView.swift` 的 header right group 分支).
+
+- **Even spacing** — the group's inner spacing is `headerGroupSpacing` = **8pt**.
+  The refresh glyph sits centered in its own 26pt hit slot, so the visible
+  whitespace on its left is the spacing **plus** the scope button's own trailing
+  padding (AppKit borderless button, measured 4.25pt), while the whitespace on its
+  right is the header's trailing padding (`headerTrailingPadding` = 12pt). Equal
+  whitespace therefore needs 12 − 4.25 ≈ 7.75pt, rounded to 8pt (measured at
+  2× pixels: 21pt on the left, 20.5pt on the right — a 0.5pt difference, within
+  the antialiasing error). The in-flight spinner takes the same slot so starting
+  a refresh does not shift the row.
+- **One horizontal line** — the marker's dots and the refresh glyph are both
+  centered in the header row, so the two marks share one baseline of their own.
+- The header title no longer wraps to two lines (`lineLimit(1)` + `fixedSize`):
+  a long sleep notice must not reflow the row. The sleep-blockers notice itself
+  degrades instead of being cut into an unreadable stub: a `ViewThatFits` falls
+  back from "N 个应用正在阻止休眠" to "N 个应用" when the 120pt scope cap leaves
+  no room for the full sentence.
+- Both glyphs use the `MenuTypography.headerAction` role (11pt medium).
 
 **Content structure** (`HarnessUsageMenuView`, driven by the pure
-`HarnessTodaySummary.summarize(statuses:now:calendar:)`):
+`HarnessTodaySummary.summarize(statuses:now:calendar:)`). 下述「Global today summary →
+per-client sections」描述的是**本机 scope** 的内容区；多机联动启用且 multiNode 时，
+内容区按所选 scope 统一为「一行『今日』总览 + 平铺段」结构，见本节开头的
+**Fleet scope 内容区**：
+
+**Fleet scope 内容区**（三 scope 统一规则，302b8b3 定稿；细则的单一事实源是
+`spec/sync.md` §10.2，此处只放 UI 侧口径）：
+
+- 三个 scope（全局 / 本机 / 各远端节点）各渲染**一行同名「今日」总览** + 构成条
+  （`scopeOverview(label: "今日", …)`）——标签统一「今日」，不再「今日全部 / 今日本机」；
+  范围语义由顶部 scope 控制表达，总览行不重复。
+- **无设备子层**：全局 = 跨节点合并段、本机 = 本地段、节点 = 该节点平铺段
+  （`FleetClientSectionView`）；节点 scope 的段头**没有**右键刷新。
+- 全局 / 节点段内的模型行与金额直接使用 fleet **已合并**条目（hub 已做同币相加、
+  混币冲突置空并给出 `costText`），视图不再自行折算。
+- 模型行展示名与本机同口径，一律 `compactDisplayName`。
+- **零数据不占位**：节点行 / 模型行 / 整段按非零过滤（5400d11）；整 scope 无段
+  才出「今日暂无 Token 用量」。缺今日桶显示“尚未同步”及 `—`，不回落本机；
+  来源部分不可用时显示已知合计并提示原因及可能包含上次数据。卡片保留历史日图。
+- 右键刷新仅全局 / 本机形态的段头提供，文案「刷新本机 <客户端名>」——见下文
+  §Section header context menu。
+
+本机 scope 的结构：
 
 - **Global today summary** — total tokens, total cache-hit rate, total value, plus
   one `TokenBucketBar` for the three-bucket composition. The value is a
@@ -211,8 +354,9 @@ quota read in the menu.
   The global summary row carries no speed — the rate is a per-client/per-model
   metric, not a global one.
 
-Row column budget: 100 + 40 + 40 + 36 + 32 + 56 = 304pt plus 5×6pt spacing = 334pt,
-inside the 336pt content area (360pt panel − 2×12pt padding). Numeric columns are
+Row column budget: 92 + 40 + 40 + 36 + 32 + 56 = 296pt plus 5×6pt spacing and 8pt
+scope indentation = 334pt, inside the 336pt content area (360pt panel − 2×12pt padding).
+Numeric columns are
 fixed-width, right-aligned and `monospacedDigit`, so a refresh never shifts the row.
 The bar minimum used to be 72pt; when the speed column was added (2026-10) the six
 columns no longer fit and the bar floor was compressed first — a truncated model
@@ -223,7 +367,7 @@ name loses more information than a narrower bar. The model-name column is
 (334pt) so that regression cannot come back silently.
 
 **Model name display** (`HarnessModelRow.compactDisplayName`, model layer): the
-column shows a *compacted* name, so that what fits in the 100pt budget is the
+column shows a *compacted* name, so that what fits in the 92pt budget is the
 **model** rather than the vendor. Two rules, applied in order:
 
 1. **Vendor namespace** — everything up to and including the first `/` is dropped
@@ -269,8 +413,10 @@ scanners keep for quota-window math never leaks into "today".
 
 The two-level empty states (no provider registered / no provider enabled) and the
 first-run setup guide are unchanged. A third, narrower state — clients present but
-no activity today — renders a single 「今日暂无本地 Token 用量」 line inside the
-content area.
+no activity today — renders a single 「今日暂无 Token 用量」 line inside the
+content area. Fleet scope 另有**不可用总览态**：全局 / 所选节点缺少今日权威日桶时，
+总览行显示「尚未同步」占位（零值不得显示为已完成合计），数据侧规则见
+`spec/sync.md` §10.2 日桶可用性。
 
 **Global freshness (bare time)** — the top summary block's **number row ends** with
 `LocalUsageFreshnessText`: 「计算中…」 (with a mini spinner) while *any* enabled data
@@ -290,8 +436,8 @@ the state judgement and the clock text (including the
 public types and their interfaces are unchanged. The bucket bar below it therefore owns
 its **whole row** (no badge at its tail), which also widens the three buckets' read. With
 no scan ever recorded the bare time renders nothing at all (no placeholder, no phantom
-space). The capsule variant keeps its other hosts (the 7-day card title in the dock
-popover / strip hover card).
+space). The capsule variant keeps its other host (the 7-day card title in the dock
+popover——菜单 strip hover 宿主已随兜底行移除).
 
 **Truncation notice** — a section whose sources were truncated (DSH file/byte budget
 dropping the oldest sessions) shows a **one-line** short notice (`部分较早会话未计入`,
@@ -302,25 +448,34 @@ truncated ⇒ truncated" rule as `ProviderUsageProjection.isTruncated`. Sections
 without truncation show nothing — the numbers are right either way, they are just not
 complete, and staying silent would let a partial total read as a complete one.
 
-**Section header context menu** — right-click a section header for 「刷新 <客户端名>」:
+**Section header context menu** — right-click a section header for 「刷新本机 <客户端名>」
+（本机 scope 的 `HarnessSectionView` 与 fleet 全局 / 本机形态的
+`FleetClientSectionView.refreshMenuTitle` 同文案）:
 `HarnessSection.refreshProviderStatusIDs(in:)` resolves the provider cards this
 section's today contributions came from (a ZCode section spanning GLM / minimax /
 deepseek shard rows refreshes all of them), and `MenuContentView.refreshSectionFromMenu`
 then runs `AppState.refreshOne` over those cards sequentially. 「打开配置文件」 used to
 live here too; it moved to the menu-bar icon's right-click menu (刷新 / 配置 / 退出).
 The menu is attached to the header rather than the whole section so that the right-click
-target reads as "these numbers".
+target reads as "these numbers". **节点 scope 的段头没有右键**——刷新只对本机数据有意义，
+节点数据由同步链路维护（`spec/sync.md` §10.2）。
 
-**Provider fallback strip** (`ProviderStatusStripView`, the last row of the content
-area) — one minimal element per enabled provider, **no leading label**: brand logo
-(11pt) + `ProviderStateLabel` capsule (`10:23` / `需重试` / `未配置` …, already
-tri-colour by refresh freshness). The capsule's time is a **day-independent bare
-`HH:mm`** (`Formatters.formatTimeOfDay`) — it never degrades to `MM-dd HH:mm`
-across midnight, unlike the header's freshness text, because the strip's 54pt width
-budget below assumes the 5-character capsule; "which day" is carried by the capsule's
-freshness colour, not by widening the text. The label was removed in the 2026-10 first-round UI
-pass — the icon+capsule sequence is self-explanatory, and the ~74pt it freed is what
-raises visible capacity. It is separated from the sections above by a
+**Provider fallback strip — removed from the menu** (用户裁定 2026-10-24, 8e7278a):
+the last-row provider strip no longer renders in the menu at all (its remaining
+meaning was "which providers are present", which the user read as noise). The
+`ProviderStatusStripView` struct and its tests are retained but unreferenced by
+production. Quota presence is visible in Settings and the edge-dock cards. The
+`ProviderStateLabel` freshness capsule **and the hover `ProviderCardView` popover
+were removed** (用户裁定 2026-10-24, ac170ca): the strip only answers "which
+providers are present"; quota detail lives in the edge-dock hover card and
+Settings. Each element keeps its single interaction — left-click refreshes that
+provider (`RefreshMenuItem` chain unchanged).
+
+**以下直到 busy-state 段的 strip 布局 / 可见集 / hover 卡 / 点击刷新描述均为删除记录**
+——它们描述的是移除前（以及结构体保留至今）的行为档案，生产菜单不再渲染任何 strip 行。
+Visible set = 本机已启用 ∪ 仅有
+elected 额度的 provider（`AppState.fleetVisibleStatuses`）. It is separated from
+the sections above by a
 `MenuHairline.horizontal`, and its data comes from the pure projection
 `ProviderStatusStrip.snapshot(statuses:limit:)`:
 
@@ -470,9 +625,10 @@ The menu footer contains:
 
 ## Provider Card
 
-`ProviderCardView` 现在只有**一个**渲染宿主形态：边缘状态窗的 provider 详情浮层，
-以及菜单底部 provider 兜底行 hover 出来的那张卡（两者都固定 `.alwaysVisible`）。
-菜单内容区是客户端视角，不再渲染 provider 卡，因此这张卡没有"菜单形态"了。
+`ProviderCardView` 只有**一个**渲染宿主形态：边缘状态窗的 provider 详情浮层（固定
+`.alwaysVisible`）。菜单内容区是客户端视角，不再渲染 provider 卡；原「菜单底部
+provider 兜底行 hover 出来的那张卡」宿主已随兜底行移除（8e7278a，见上文删除记录），
+这张卡没有"菜单形态"了。
 
 **卡上两处时间戳统一为裸 "hh:mm"，点击按位置刷各自的数据（2026-10-13 引入，2026-10-18
 拆分语义）**：headerContent 右侧的 `ProviderStateLabel` 与段3 标题行的
@@ -489,16 +645,15 @@ The menu footer contains:
 
 在飞事务由 `beginExternalJob` 闸门合并，反馈交给既有状态胶囊自然变化。动作经环境键
 传递（默认 `nil` = 无操作，只读渲染免注入）——`ProviderCardView` 是 `Equatable`
-值语义视图，不能携带闭包存储属性。注入链路：菜单兜底行走
-`MenuContentView.refreshProviderFromMenu` / `refreshUsageRescanFromMenu` →
-`HarnessUsageMenuView` → `ProviderStatusStripView` 的 `onRefreshProvider` /
-`onRefreshUsageRescan`，在 detail 闭包内挂上卡（浮层宿主是
-`HoverPanelController` 自己的 NSHostingView，外层环境进不来，只有随视图显式注入的
-键值能跨宿主存活，与 `\.hoverRevealMode` 同因）；dock 浮层由
+值语义视图，不能携带闭包存储属性。注入链路：唯一宿主 dock 浮层由
 `EdgeDockController+Popover` 的 `popoverContent` 用 controller 经 `attach(state:)`
-持有的 `AppState` 注入。手势挂在 `ProviderCardView` 的两个使用点上，**不进**
-`ProviderStateLabel` 内部——兜底行本体复用该视图做 headline，行级已有自己的
-tap（刷新单个 provider），手势进视图内部会打架。
+持有的 `AppState` 注入（浮层宿主是 `HoverPanelController` 自己的 NSHostingView，外层
+环境进不来，只有随视图显式注入的键值能跨宿主存活，与 `\.hoverRevealMode` 同因）。
+原菜单兜底行的注入链路（`MenuContentView.refreshProviderFromMenu` /
+`refreshUsageRescanFromMenu` → `ProviderStatusStripView`）随 strip 移除而消失。
+手势挂在 `ProviderCardView` 的两个使用点上，**不进** `ProviderStateLabel`
+内部——原兜底行本体复用该视图做 headline，行级已有自己的 tap（刷新单个 provider），
+手势进视图内部会打架；该约束随宿主减少而只剩历史意义，保留以防新增宿主重蹈。
 
 `ProviderCardView` 是 thin coordinator，额度行、浮层、图表和账号详情按职责分文件维护；body 的派生值（投影 / 额度窗口快照 / 「今」行 / 「闲」行）收在 `Views/ProviderCardDerived.swift` 的值键 memo 里（`Models/DerivedValueMemo.swift`），只有输入真的变了才重算：
 - `QuotaViews.swift` — 所有 quota 行 / 进度条 / 重置卡 / `EquivalentQuotaAllocation`
@@ -566,6 +721,11 @@ Row-level tint rules:
 | State tag | compact `未配置` / `待更新` / `已更新` / `需重试` label; a spinner replaces it while loading. `未配置` (not `未启用`): `.notConfigured` covers a missing API key, missing external auth and missing login as well as a disabled provider, and `未启用` made an enabled-but-keyless provider read as switched off |
 | Account block hover | **已删除**。邮箱 / 数据来源原本按 provider 分三路包在标题行的 `HoverInfoRow` 里，只为菜单那张卡服务；菜单不再渲染 provider 卡，浮层又不吃鼠标事件，这个折叠区展不开，直接不画 |
 | Seven-day local statistics | 不在标题行，在**本地用量那一段**（`LocalUsageFooterView` → `SevenDayTokenUsageHoverView`）：`.alwaysVisible` 下就地展开成第二张卡的内容，`.onHover` 下才是悬停弹层。逐日表末列在 provider 卡路径**跟随「额度窗口」的 分析/用量 segment**（`lastColumnFollowsSegment: true` + `@AppStorage(quotaWindowUsageSegment)`）：分析态显示 价值（现状渲染），用量态显示 速度（`LocalUsageSpeedByDay` 按 `startOfDay(completedAt)` 分组逐日 `windowTokenRate`，文案 `speedText`，单日无有效时长 `—`，无样本不画列；两列同宽 62pt 切换零回流）。Settings 客户端页与 fleet 路径保持默认参数：永远价值列，不受 segment 影响 |
+
+scope 切换**不在标题行**：选项 ≤4 时它是标题行**下方**独占的一行
+（`ProviderCardView.scopeRow`，宽度与卡片一致，见 *Scope switcher* 小节——
+分段控件塞标题行会把 provider 名挤成「minimax To…」）；选项 >4 时它的紧凑
+形态才回到标题行（状态胶囊左边）。
 
 状态点的配色（已连同视图删除）原为：healthy 绿 / warning 橙 / critical 红，
 `nil` 健康度显示灰点；三档语义色本身由 `healthyTint` / `warningTint` /
@@ -918,6 +1078,7 @@ The UI intentionally hides reset-credit id, title, description, and grant time.
 | Element | Font |
 |---|---|
 | Header title (`MenuTypography.headerTitle`) | 13pt semibold |
+| Header action glyphs — scope 切换标记 / 刷新图标 (`MenuTypography.headerAction`) | 11pt medium |
 | Card / provider title (`MenuTypography.cardTitle`) | 13pt bold |
 | Provider icon | not text — the bundled brand asset at 18pt (`BrandLogoView.defaultSize`) |
 | Model name (`MenuTypography.modelTitle`) | 11pt semibold |
@@ -935,4 +1096,5 @@ The card's failure row is the one place in this table that is a **literal** 11pt
 than a `MenuTypography` role: the `errorMessage` role had no call site and was deleted
 rather than left as an unused role. The rendered size is unchanged.
 
-> 核对基线：2026-10-25 · 代码 46f63e6
+> 核对基线：2026-10-25 · 代码 6f11831
+> 统一验证通过，详细结果见 `spec/sync.md`。

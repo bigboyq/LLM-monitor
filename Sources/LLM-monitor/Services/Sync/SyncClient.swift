@@ -50,6 +50,10 @@ final class SyncClient: @unchecked Sendable {
     }
 
     /// 推 + 取一次往返：POST 报告，返回 hub 合并后的全局快照（R3）。
+    ///
+    /// `includeBodyInError: true`：hub 用 409 回「本机序号落后」并在响应体里
+    /// 带 high-water，node 据此重建本机序号（否则这份报告会永久被拒）。
+    /// 响应体是本协议自己的错误 JSON，不含敏感数据。
     func postReport(_ report: NodeUsageReport) async throws -> FleetSnapshot {
         let body = try FleetCodec.encode(report)
         var request = URLRequest(url: baseURL.appendingPathComponent(FleetProtocol.usageDayPath))
@@ -57,7 +61,7 @@ final class SyncClient: @unchecked Sendable {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("\(body.count)", forHTTPHeaderField: "Content-Length")
         request.httpBody = body
-        let (data, _) = try await http.send(request)
+        let (data, _) = try await http.send(request, includeBodyInError: true)
         return try FleetCodec.decode(FleetSnapshot.self, from: data)
     }
 

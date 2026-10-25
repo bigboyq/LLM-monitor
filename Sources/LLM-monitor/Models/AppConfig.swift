@@ -215,13 +215,13 @@ enum AppAppearance: String, Codable, CaseIterable, Identifiable, Sendable {
 /// 单源派生，没有第二条路径。
 ///
 /// 解码逐字段容错（与 `BarkConfig` 同档）：手改坏单个字段只回退该字段默认值，
-/// 不拖垮整份配置；`nodeName` 是机器身份的一部分（默认 hostname），跟
-/// `nodeID`（Keychain）一样**不**随 dotfile 同步语义变化。
+/// 不拖垮整份配置；`nodeName` 是机器显示名（默认 hostname）；稳定设备身份
+/// 单独存放在配置目录的 `.deviceId`，不属于可同步配置。
 struct SyncConfig: Codable, Equatable, Sendable {
     var enabled: Bool
     /// 副节点：主节点地址（`http://<主节点IP>:8787`）；留空 = 本机是主节点。
     var hubURL: String
-    /// 上报周期（秒），默认 60。
+    /// 上报周期（秒），默认 0 表示跟随全局刷新间隔。
     var pushIntervalSeconds: Int
     /// 主节点监听地址，默认 `0.0.0.0`（局域网）；可改 `127.0.0.1` 限本机。
     var hubBindHost: String
@@ -235,16 +235,10 @@ struct SyncConfig: Codable, Equatable, Sendable {
     var quotaMaxAgeSeconds: Int
     /// hub 保留多少天的历史日桶 / 窗口范围。
     var retainDays: Int
-    /// 本机稳定节点身份（UUID 字符串）。首次启用联动时生成并**写回 config.json**
-    /// （用户裁定 2026-10-24，取代 Keychain 方案）；之后每次启动原样读取。
-    /// 用 dotfile 同步 config.json 的部署要注意：两台机器必须改成不同值，
-    /// 否则会被 hub 当成同一个节点。
-    var nodeID: String?
-
     static let `default` = SyncConfig(
         enabled: false,
         hubURL: "",
-        pushIntervalSeconds: 60,
+        pushIntervalSeconds: 0,
         hubBindHost: "0.0.0.0",
         hubPort: 8787,
         nodeName: "",
@@ -255,20 +249,19 @@ struct SyncConfig: Codable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case enabled, hubURL, pushIntervalSeconds, hubBindHost, hubPort
-        case nodeName, staleAfterSeconds, quotaMaxAgeSeconds, retainDays, nodeID
+        case nodeName, staleAfterSeconds, quotaMaxAgeSeconds, retainDays
     }
 
     init(
         enabled: Bool = false,
         hubURL: String = "",
-        pushIntervalSeconds: Int = 60,
+        pushIntervalSeconds: Int = 0,
         hubBindHost: String = "0.0.0.0",
         hubPort: Int = 8787,
         nodeName: String = "",
         staleAfterSeconds: Int = 900,
         quotaMaxAgeSeconds: Int = 1800,
-        retainDays: Int = 7,
-        nodeID: String? = nil
+        retainDays: Int = 7
     ) {
         self.enabled = enabled
         self.hubURL = hubURL
@@ -279,7 +272,6 @@ struct SyncConfig: Codable, Equatable, Sendable {
         self.staleAfterSeconds = staleAfterSeconds
         self.quotaMaxAgeSeconds = quotaMaxAgeSeconds
         self.retainDays = retainDays
-        self.nodeID = nodeID
     }
 
     init(from decoder: Decoder) throws {
@@ -287,8 +279,8 @@ struct SyncConfig: Codable, Equatable, Sendable {
         enabled = (try? c.decode(Bool.self, forKey: .enabled)) ?? false
         hubURL = (try? c.decode(String.self, forKey: .hubURL)) ?? ""
         pushIntervalSeconds = Self.clamped(
-            (try? c.decode(Int.self, forKey: .pushIntervalSeconds)) ?? 60,
-            range: 5...(24 * 60 * 60), fallback: 60
+            (try? c.decode(Int.self, forKey: .pushIntervalSeconds)) ?? 0,
+            range: 0...(24 * 60 * 60), fallback: 0
         )
         hubBindHost = (try? c.decode(String.self, forKey: .hubBindHost)) ?? "0.0.0.0"
         hubPort = Self.clamped(
@@ -308,7 +300,6 @@ struct SyncConfig: Codable, Equatable, Sendable {
             (try? c.decode(Int.self, forKey: .retainDays)) ?? 7,
             range: 1...365, fallback: 7
         )
-        nodeID = (try? c.decode(String.self, forKey: .nodeID)) ?? nil
     }
 
     /// 默认节点显示名：hostname。
@@ -592,6 +583,14 @@ struct AppConfig: Codable, Equatable {
     /// 全局生效的刷新间隔：clamp 到 10s...30d（供 Provider scheduler 使用）。
     var effectiveGlobalRefreshInterval: TimeInterval {
         TimeInterval(min(max(refreshIntervalSeconds, 10), Self.maximumRefreshIntervalSeconds))
+    }
+
+    /// Fleet node 的唯一有效推送周期入口。配置为 0 时跟随全局刷新周期；
+    /// 正值保留秒级设置，并限制在配置允许的 24 小时范围内。
+    var effectiveFleetSyncPushInterval: TimeInterval {
+        let configured = effectiveSyncConfig.pushIntervalSeconds
+        if configured == 0 { return effectiveGlobalRefreshInterval }
+        return TimeInterval(min(max(configured, 1), 24 * 60 * 60))
     }
 
     /// 实际生效的刷新间隔：优先用 provider 自己的，否则用全局，最后 clamp 到 10s...30d。

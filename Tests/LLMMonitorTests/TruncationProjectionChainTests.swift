@@ -16,7 +16,8 @@ final class TruncationProjectionChainTests: XCTestCase {
                     dailyTokenUsage: [],
                     sessionCount: 1,
                     roundCount: 1,
-                    recentSamples: []
+                    recentSamples: [],
+                    recentSamplesTruncated: false
                 )
             ],
             modelsByProvider: ["deepseek-official": ["deepseek-v4-flash"]],
@@ -53,8 +54,8 @@ final class TruncationProjectionChainTests: XCTestCase {
     }
 
     func testDshTruncationFlagSurfacesThroughProjectionAndSummaryRows() throws {
-        // 快照上的 isTruncated 必须穿透 usageProjection 的 DSH contribution 到达
-        // 展示模型；nil（旧缓存快照）不得触发提示。
+        // 快照上的 source-level isTruncated 必须穿透 usageProjection；样本完整性
+        // 在此夹具中显式声明为完整，避免与这项测试的 source 截断语义混淆。
         var status = ProviderStatus(
             id: "deepseek",
             displayName: "DeepSeek",
@@ -82,7 +83,7 @@ final class TruncationProjectionChainTests: XCTestCase {
         let unknownContribution = try XCTUnwrap(
             unknownProjection.contributions.first { $0.clientID == ClientID.dsh }
         )
-        XCTAssertFalse(unknownContribution.isTruncated, "nil 视为未截断/未知，不显示提示")
+        XCTAssertFalse(unknownContribution.isTruncated, "source truncation nil 不显示来源截断提示")
         XCTAssertFalse(unknownProjection.isTruncated)
 
         // 全部来源未截断 → 整卡不提示。

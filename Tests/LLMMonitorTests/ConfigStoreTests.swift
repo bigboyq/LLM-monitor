@@ -96,6 +96,18 @@ final class ConfigStoreTests: StateTestCase {
         XCTAssertTrue(store.ensureProvidersPresent(descriptors: LLMMonitorApp.makeDescriptors()))
         XCTAssertEqual(store.config.providers.count, ProviderKind.allCases.count)
     }
+
+    func testLegacySyncNodeIDIsIgnoredAndNotReencoded() throws {
+        let legacy = Data(#"{"enabled":true,"hubURL":"http://127.0.0.1:8787","nodeID":"00000000-0000-0000-0000-000000000001"}"#.utf8)
+        let sync = try JSONDecoder().decode(SyncConfig.self, from: legacy)
+        let encoded = try JSONEncoder().encode(sync)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+
+        XCTAssertTrue(sync.enabled)
+        XCTAssertEqual(sync.effectiveHubURL, "http://127.0.0.1:8787")
+        XCTAssertNil(object["nodeID"], "旧 nodeID 配置不得迁移或继续传播设备身份")
+    }
+
     func testAppConfigSchemaVersionIsWrittenAndFutureVersionIsRejected() throws {
         let config = AppConfig(refreshIntervalSeconds: 300, providers: [:])
         let data = try JSONEncoder().encode(config)

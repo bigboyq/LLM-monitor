@@ -156,6 +156,18 @@ to the next line, so a replayed event can never stall the scan.
   A budget-truncated scan is a complete scan of a deliberately reduced file set, so it
   publishes normally and sets `DshLocalUsage.isTruncated` — the 7-day hover view and
   Settings → Clients then label the numbers as a newest-first subset.
+  The provider projection also retains this source-level flag when the retained files
+  contain no usage events and `byProvider` is empty. It applies only to providers with
+  an enabled DSH binding; Fleet reports keep their daily/window completeness false
+  rather than treating the missing frames as authoritative zero usage.
+  A sample-count cap is tracked separately by per-provider
+  `DshProviderUsage.recentSamplesTruncated`: daily totals still include every scanned
+  usage event, while model/window details built from retained samples are incomplete.
+  The snapshot records its `recentSamplesLimit`; old caches without this metadata or
+  caches made with a different limit are rebuilt before reuse. A cached rebase retains
+  known sample truncation and never treats unknown old sample coverage as complete.
+  `latestOmittedSampleAt` records the newest omitted sample so a cached rebase can
+  restore sample completeness once all omitted events leave the retention window.
 - Parsing streams from disk with a line buffer bounded by the 8 MiB line cap — plain
   JSONL and streamed archive decompression alike never load a whole file into memory;
   a single session's decompressed archive output is capped at 1 GiB.
@@ -191,4 +203,5 @@ to the next line, so a replayed event can never stall the scan.
 | Card integration | `Sources/LLM-monitor/Views/ProviderCardView.swift` |
 | Regression tests | `Tests/LLMMonitorTests/DshLocalUsageScannerTests.swift`, `DshHarnessFramesTests.swift`, `ScannerRetentionContractTests.swift` |
 
-> 核对基线：2026-10-25 · 代码 0304521
+> 核对基线：2026-10-25 · 代码 6f11831
+> 源级截断、样本完整性与缓存恢复验证结果见 `spec/sync.md`。

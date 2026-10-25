@@ -1170,6 +1170,129 @@ final class DshLocalUsageScannerTests: XCTestCase {
         XCTAssertEqual(deepseek.recentSamples.count, 3)
     }
 
+    func testRecentSampleCapMetadataSurvivesCacheAndCanRecoverAfterRetention() throws {
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let calendar = makeUTCGregorianCalendar()
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("llm-monitor-dsh-sample-cap-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let cache = root.appendingPathComponent(".token-monitor", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let body = [
+            #"{"type":"session","version":0,"id":"sample-cap","createdAt":1700000000000,"cwd":"/tmp","delegationDepth":0}"#,
+            #"{"type":"request/context","seq":1,"time":1700000000000,"data":{"provider":"minimax-cn","model":"MiniMax-M3"}}"#,
+            makeUsageLine(seq: 2, turn: 1, step: 0,
+                          timeMs: Int64((base.timeIntervalSince1970 - 100) * 1_000), input: 100),
+            makeUsageLine(seq: 3, turn: 2, step: 0,
+                          timeMs: Int64((base.timeIntervalSince1970 - 40) * 1_000), input: 200)
+        ].joined(separator: "\n") + "\n"
+        try writeSessionLog(root: sessionsRoot, sessionID: "sample-cap", body: body)
+
+        func scan(maxRecentSamples: Int, scanNow: Date) throws -> DshLocalUsage {
+            try DshLocalUsageScanner.performScanPure(
+                sessionsRoot: sessionsRoot,
+                cacheDir: cache,
+                fileManager: FileManagerBox(),
+                calendar: calendar,
+                now: { scanNow },
+                limits: DshLocalUsageScanLimits(
+                    maxSessionFiles: 8,
+                    maxTotalRawBytes: 1_000_000,
+                    maxJSONLLineBytes: 1_000_000,
+                    maxRecentSamples: maxRecentSamples
+                )
+            )
+        }
+
+        let capped = try scan(maxRecentSamples: 1, scanNow: base)
+        let cappedProvider = try XCTUnwrap(capped.byProvider["minimax-cn"])
+        XCTAssertEqual(capped.isTruncated, false, "样本上限不应改变文件/字节 totals 截断语义")
+        XCTAssertEqual(cappedProvider.today?.inputTokens, 300, "daily total 仍聚合两个事件")
+        XCTAssertEqual(cappedProvider.recentSamples.map(\.inputTokens), [200])
+        XCTAssertEqual(cappedProvider.recentSamplesTruncated, true)
+        XCTAssertEqual(
+            cappedProvider.latestOmittedSampleAt,
+            Date(timeIntervalSince1970: base.timeIntervalSince1970 - 100)
+        )
+
+        // 同一 cap 的 cache hit 保留遗漏时间；扩大 cap 必须重新聚合原文件，
+        // 不能仅从之前被裁剪的快照推断完整。
+        let cacheHit = try scan(maxRecentSamples: 1, scanNow: base.addingTimeInterval(5))
+        XCTAssertEqual(cacheHit.byProvider["minimax-cn"]?.recentSamplesTruncated, true)
+        XCTAssertEqual(cacheHit.byProvider["minimax-cn"]?.latestOmittedSampleAt,
+                       cappedProvider.latestOmittedSampleAt)
+        let expanded = try scan(maxRecentSamples: 2, scanNow: base)
+        XCTAssertEqual(expanded.recentSamplesLimit, 2)
+        XCTAssertEqual(expanded.byProvider["minimax-cn"]?.recentSamples.count, 2)
+        XCTAssertEqual(expanded.byProvider["minimax-cn"]?.recentSamplesTruncated, false)
+
+        // Once every omitted sample is older than the retained calendar window,
+        // cached rebasing can safely clear the old sample-detail incompleteness.
+        let aged = DshLocalUsageScanner.rebaseCached(
+            capped,
+            calendar: calendar,
+            now: base.addingTimeInterval(9 * 24 * 60 * 60),
+            limits: DshLocalUsageScanLimits(
+                maxSessionFiles: 8,
+                maxTotalRawBytes: 1_000_000,
+                maxJSONLLineBytes: 1_000_000,
+                maxRecentSamples: 1
+            )
+        )
+        XCTAssertEqual(aged.byProvider["minimax-cn"]?.recentSamples, [])
+        XCTAssertEqual(aged.byProvider["minimax-cn"]?.recentSamplesTruncated, false)
+        XCTAssertNil(aged.byProvider["minimax-cn"]?.latestOmittedSampleAt)
+    }
+
+    func testLegacyCacheWithoutSampleCompletenessMetadataIsRebuilt() throws {
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let calendar = makeUTCGregorianCalendar()
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("llm-monitor-dsh-legacy-sample-cache-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let cache = root.appendingPathComponent(".token-monitor", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try writeSessionLog(
+            root: sessionsRoot,
+            sessionID: "legacy-sample-cache",
+            body: usageBody(inputTokens: 100)
+        )
+        let limits = DshLocalUsageScanLimits(
+            maxSessionFiles: 8,
+            maxTotalRawBytes: 1_000_000,
+            maxJSONLLineBytes: 1_000_000,
+            maxRecentSamples: 8
+        )
+        _ = try DshLocalUsageScanner.performScanPure(
+            sessionsRoot: sessionsRoot, cacheDir: cache, fileManager: FileManagerBox(),
+            calendar: calendar, now: { base }, limits: limits
+        )
+
+        let indexURL = cache.appendingPathComponent("index.json")
+        var index = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: indexURL)) as? [String: Any]
+        )
+        var snapshot = try XCTUnwrap(index["snapshot"] as? [String: Any])
+        snapshot.removeValue(forKey: "recentSamplesLimit")
+        var byProvider = try XCTUnwrap(snapshot["byProvider"] as? [String: Any])
+        var provider = try XCTUnwrap(byProvider["deepseek-official"] as? [String: Any])
+        provider.removeValue(forKey: "recentSamplesTruncated")
+        provider.removeValue(forKey: "latestOmittedSampleAt")
+        byProvider["deepseek-official"] = provider
+        snapshot["byProvider"] = byProvider
+        index["snapshot"] = snapshot
+        try JSONSerialization.data(withJSONObject: index, options: [.sortedKeys]).write(to: indexURL)
+
+        let rebuilt = try DshLocalUsageScanner.performScanPure(
+            sessionsRoot: sessionsRoot, cacheDir: cache, fileManager: FileManagerBox(),
+            calendar: calendar, now: { base }, limits: limits
+        )
+        XCTAssertEqual(rebuilt.recentSamplesLimit, limits.maxRecentSamples)
+        XCTAssertEqual(rebuilt.byProvider["deepseek-official"]?.recentSamplesTruncated, false,
+                       "旧缓存未知状态应触发文件重聚合，而非永久保留 unknown")
+    }
+
     func testDshSelectionPrefersNewestFilesWhenOverFileLimit() throws {
         // spec：文件数超限时必须按 mtime 最新优先，而不是路径字典序截断。
         let root = FileManager.default.temporaryDirectory
