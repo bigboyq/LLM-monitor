@@ -11,9 +11,12 @@ import SwiftUI
 /// 这一层兜底。
 ///
 /// 排版宽度（菜单 360pt，内容区 336pt，见 `MenuPanelHeightBridge.width`）：
-/// 模型名 ≤108 + 占比条 ≥72 + Token 40 + 命中 36 + 价值 48 + 4×6 间距 = 328pt，
-/// 余量 8pt 留给字体度量误差。数字列全部定宽右对齐 + `monospacedDigit`，刷新时
-/// 数字变化不会把整行往右顶。预算由 `HarnessUsageMenuViewTests` 钉住。
+/// 模型名 100 + 占比条 ≥40 + Token 40 + 命中 36 + 速度 32 + 价值 56 +
+/// 5×6 间距 = 334pt，余量 2pt 留给字体度量误差。数字列全部定宽右对齐 +
+/// `monospacedDigit`，刷新时数字变化不会把整行往右顶。段头右侧的数值格组
+/// （`SectionHeaderMetricsView`：Token 小计 / 命中占位 / 速度汇总 / 价值）
+/// 复用同一批列宽常量与列间距，段头数字与下方模型行逐列对齐。预算由
+/// `HarnessUsageMenuViewTests` 钉住。
 struct HarnessUsageMenuView: View {
     let summary: HarnessTodaySummary
     /// fleet 汇总（§10.2）。nil（未启用联动）或单节点（`multiNode == false`）时
@@ -168,13 +171,18 @@ struct HarnessSectionView: View {
     /// 段价值是 `MixedCurrencyEstimate`——同一个客户端横跨多个 provider 分片时
     /// （OpenCode / DSH / ZCode）必然混币，必须折算成 CNY 总额而不是裸相加。
     ///
+    /// 右侧数值格（`SectionHeaderMetricsView`）与模型行**同构**：Token 小计 /
+    /// 命中占位 / 速度汇总 / 价值四格全部复用模型行的列宽常量与列间距。token
+    /// 小计曾经是自然宽——模型行 2026-10 加「速度」列后，它漂到了速度列上方，
+    /// 读起来像速度列的小计；定宽对齐后每个数字都压在自己的列上。
+    ///
     /// 右键菜单挂在**段头**（不是整段）：菜单内容区现在是客户端视角，右键一个
     /// 段名才是"针对这些数据"的语义；「刷新 <客户端名>」按本段今日贡献行刷新
     /// 涉及的 provider 卡（`HarnessSection.refreshProviderStatusIDs(in:)`），
     /// 动作实现由 `MenuContentView` 注入。
     private var header: some View {
         VStack(alignment: .leading, spacing: 2) {
-            HStack(alignment: .firstTextBaseline, spacing: 5) {
+            HStack(alignment: .firstTextBaseline, spacing: HarnessModelRowView.columnSpacing) {
                 Image(systemName: section.iconSystemName)
                     .font(.system(size: 9))
                     .foregroundStyle(Color.accentColor)
@@ -183,13 +191,11 @@ struct HarnessSectionView: View {
                     .foregroundStyle(Color.primaryLabel)
                     .lineLimit(1)
                 Spacer(minLength: 6)
-                Text(Formatters.formatTokenCountCompact(section.totalTokens))
-                    .font(MenuTypography.metricValue)
-                    .foregroundStyle(Color.secondaryLabel)
-                Text(section.valueText)
-                    .font(MenuTypography.metricValue)
-                    .foregroundStyle(Color.primaryLabel)
-                    .frame(width: HarnessUsageMenuView.valueWidth, alignment: .trailing)
+                SectionHeaderMetricsView(
+                    totalTokens: section.totalTokens,
+                    tokensPerSecond: section.tokensPerSecond,
+                    valueText: section.valueText
+                )
             }
             .padding(.bottom, 1)
             .overlay(alignment: .bottom) {
@@ -225,6 +231,47 @@ struct HarnessSectionView: View {
                 .lineLimit(1)
                 .help(ClientUsageTruncationNotice.text)
         }
+    }
+}
+
+/// 段头右侧的数值格组：Token 小计 / 命中率占位 / 速度汇总 / 价值，四格全部
+/// 定宽右对齐，**列宽与列间距复用 `HarnessModelRowView` 的常量**——段头没有
+/// 表头行，数字必须与下方模型行的同名列站在同一条竖线上（本地段与 fleet 段
+/// 的段头共用这一组，两种形态的段头读法一致）。
+///
+/// 命中率列由透明占位守住（段头不显示命中率，但没有它 Token 与速度列就会
+/// 左移 42pt）：`Color.clear` 没有命中区域、不可交互；高度定 0，不参与行高、
+/// 也不影响基线对齐——它只负责把 Token 与速度列的 x 位置撑到与模型行一致。
+///
+/// 颜色沿用段头现状：Token / 速度汇总是次级（汇总不是行明细），价值保持
+/// primary；字体沿用段头的 `metricValue`（与模型行的 `dataValue` 同为
+/// 10pt 等宽数字，定宽列装得下同一批文案）。速度文案复用
+/// `QuotaWindowUsageSection.speedText` 的分档，口径说明与模型行速度格共用
+/// `HarnessModelRowView.speedColumnHelp`。
+private struct SectionHeaderMetricsView: View {
+    let totalTokens: Int
+    /// 段速度汇总。本地段 = `HarnessSection.tokensPerSecond`（该 client 今日
+    /// 全部样本的 `windowTokenRate`）；fleet 段没有本地样本，调用方传 nil。
+    let tokensPerSecond: Double?
+    let valueText: String
+
+    @ViewBuilder
+    var body: some View {
+        Text(Formatters.formatTokenCountCompact(totalTokens))
+            .font(MenuTypography.metricValue)
+            .foregroundStyle(Color.secondaryLabel)
+            .frame(width: HarnessModelRowView.tokenWidth, alignment: .trailing)
+        Color.clear
+            .frame(width: HarnessModelRowView.hitRateWidth, height: 0)
+        Text(QuotaWindowUsageSection.speedText(tokensPerSecond))
+            .font(MenuTypography.metricValue)
+            .foregroundStyle(Color.secondaryLabel)
+            .frame(width: HarnessModelRowView.speedWidth, alignment: .trailing)
+            .help(HarnessModelRowView.speedColumnHelp)
+        Text(valueText)
+            .font(MenuTypography.metricValue)
+            .foregroundStyle(Color.primaryLabel)
+            .frame(width: HarnessUsageMenuView.valueWidth, alignment: .trailing)
     }
 }
 
@@ -346,7 +393,7 @@ struct ProviderStatusStripView: View {
     }
 }
 
-/// 段内单条模型行：模型名 + 三段占比条 + Token / 命中率 / 价值。
+/// 段内单条模型行：模型名 + 三段占比条 + Token / 命中率 / 速度 / 价值。
 ///
 /// 价值是**行级**的 `ModelCostEstimate.displayText` 原样文案（单 provider 单币种
 /// 原额）。行级绝不做跨币种相加——同一段里不同 provider 的行金额可能不同币种，
@@ -359,8 +406,13 @@ struct HarnessModelRowView: View {
     /// 行与行的间距。刻意小于段间距（`sectionSpacing`），让分组层级一眼可辨。
     static let rowSpacing: CGFloat = 3
 
+    /// 行内列间距：六列之间的水平间隔。段头的数值格组
+    /// （`SectionHeaderMetricsView`）复用同一常量——两边只要差 1pt，段头的
+    /// 数字与下方模型行的同名列就会错开一条肉眼可见的斜线。
+    static let columnSpacing: CGFloat = 6
+
     var body: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: Self.columnSpacing) {
             // 模型名**定宽**，不是 `maxWidth`：同行的 `TokenBucketBar` 内部是
             // `GeometryReader`（贪婪填充），不定宽的名字列会被它整列吃掉——实测
             // 模型名会宽到 0pt，整行只剩条和数字。名字定宽 + 条吃剩余，是这里
@@ -383,6 +435,13 @@ struct HarnessModelRowView: View {
                 .font(MenuTypography.dataValue)
                 .foregroundStyle(Color.secondaryLabel)
                 .frame(width: HarnessModelRowView.hitRateWidth, alignment: .trailing)
+            // 速度是数值指标，样式跟 Token / 命中率同级（次级色），不跟价值的主色。
+            // 文案复用额度窗口区块的同一分档实现，避免两处小数位规则漂移。
+            Text(QuotaWindowUsageSection.speedText(row.tokensPerSecond))
+                .font(MenuTypography.dataValue)
+                .foregroundStyle(Color.secondaryLabel)
+                .frame(width: HarnessModelRowView.speedWidth, alignment: .trailing)
+                .help(HarnessModelRowView.speedColumnHelp)
             Text(row.costText)
                 .font(MenuTypography.dataValue)
                 .foregroundStyle(Color.primaryLabel)
@@ -397,17 +456,24 @@ struct HarnessModelRowView: View {
     /// 模型名列定宽。长模型名（`claude-sonnet-4-5-20250929-thinking`）走 tail
     /// 截断，保留最有辨识度的前缀。
     ///
-    /// 五列合计 100 + 72 + 40 + 36 + 56 = 304pt，加 4 段 6pt 间距 = 328pt，
-    /// 在 336pt 内容区里留 8pt 余量给字体度量误差——数字列都是定宽右对齐，
+    /// 六列合计 100 + 40 + 40 + 36 + 32 + 56 = 304pt，加 5 段 6pt 间距 = 334pt，
+    /// 在 336pt 内容区里留 2pt 余量给字体度量误差——数字列都是定宽右对齐，
     /// 余量被吃掉也只是让占比条窄一点，不会串列。
     static let modelNameWidth: CGFloat = 100
     /// 占比条下限：模型名列再长也要留住能看出三段比例的宽度。
-    static let bucketBarMinWidth: CGFloat = 72
+    ///
+    /// 曾经是 72：2026-10 模型行加「速度」列后原五列放不下六列，优先压这里
+    /// （模型名截断损失更大，三个数字列的定宽都比它更不可让），40pt 仍能
+    /// 分辨三段的相对长短。
+    static let bucketBarMinWidth: CGFloat = 40
     /// Token 列定宽。`formatTokenCountCompact` 的最宽形态是五字符的 `9,999`
     /// （≥10000 走 `10K` / `1.2M` 阶梯），10pt 等宽数字下 40pt 够。
     static let tokenWidth: CGFloat = 40
     /// 命中率列定宽。`100%` 是最宽形态。
     static let hitRateWidth: CGFloat = 36
+    /// 速度列定宽。最宽形态是四字符——`99.9`（<100 档一位小数）或 `1234`
+    /// （≥100 档整数；万位 tok/s 不现实），`—` 更窄；10pt 等宽数字下 32pt 够。
+    static let speedWidth: CGFloat = 32
     /// 价值列定宽。`$1234.56`（八字符，实测最宽的常见形态）走定宽；
     /// `（部分计价）` 之类更长的文案走 middle 截断，而不是把整行往左挤。
     static let valueWidth: CGFloat = 56
@@ -416,6 +482,11 @@ struct HarnessModelRowView: View {
     static func percentText(_ rate: Double?) -> String {
         HarnessUsageMenuView.hitRateText(rate)
     }
+
+    /// 速度格的 hover 说明：模型行没有表头，口径只能挂在格子上。与额度窗口
+    /// 区块那处（`QuotaWindowUsageSection.speedColumnHelp`）只差时间口径词——
+    /// 这里的分母是「今日」的调用时长。
+    static let speedColumnHelp = "今日 (Output+Reason) ÷ 调用时长，tok/s；时长未知的调用不参与"
 }
 
 
@@ -497,7 +568,7 @@ struct FleetClientSectionView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 2) {
-            HStack(alignment: .firstTextBaseline, spacing: 5) {
+            HStack(alignment: .firstTextBaseline, spacing: HarnessModelRowView.columnSpacing) {
                 Image(systemName: section.iconSystemName)
                     .font(.system(size: 9))
                     .foregroundStyle(Color.accentColor)
@@ -506,13 +577,14 @@ struct FleetClientSectionView: View {
                     .foregroundStyle(Color.primaryLabel)
                     .lineLimit(1)
                 Spacer(minLength: 6)
-                Text(Formatters.formatTokenCountCompact(section.totalTokens))
-                    .font(MenuTypography.metricValue)
-                    .foregroundStyle(Color.secondaryLabel)
-                Text(section.costText)
-                    .font(MenuTypography.metricValue)
-                    .foregroundStyle(Color.primaryLabel)
-                    .frame(width: HarnessUsageMenuView.valueWidth, alignment: .trailing)
+                // fleet 段没有本地样本：fleet 同步只有聚合桶，没有单次调用时长，
+                // 速度汇总无从算起——恒传 nil，速度格显示「—」（不是 0）。
+                // 列形状与本地段头一致，两种形态切换时数字列不跳动。
+                SectionHeaderMetricsView(
+                    totalTokens: section.totalTokens,
+                    tokensPerSecond: nil,
+                    valueText: section.costText
+                )
             }
             .padding(.bottom, 1)
             .overlay(alignment: .bottom) {
@@ -563,7 +635,7 @@ struct FleetModelRowView: View {
     let row: FleetMenuSummary.ModelRow
 
     var body: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: HarnessModelRowView.columnSpacing) {
             Text(row.modelName)
                 .font(MenuTypography.modelTitle)
                 .foregroundStyle(row.stale ? Color.secondaryLabel : Color.primaryLabel)

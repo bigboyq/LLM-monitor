@@ -129,8 +129,14 @@ extension AntigravityLocalUsageScanner {
         /// 收敛。可选字段，旧 index.json decode 时默认 nil，保证向后兼容。
         var partialHitWarnedBySession: [String: Set<String>]? = nil
 
+        /// v8：`parseUsageEvent` 新增事件原生调用时长 `durationSeconds`
+        /// （`timeToFirstToken` + `streamingDuration`），且思考计量口径修正
+        /// （RPC `outputTokens` 已含思考，catalog 改 `.reasoningIncluded`，
+        /// 规范化 Output = rawOutput − reasoning）。迁移清空
+        /// `samplesBySession`（见 `AntigravityFilesystem.loadIndex`）让全部
+        /// session 一次性全量重建，时长与新口径立即生效。
         static let empty = CacheIndex(
-            version: 7,
+            version: 8,
             lastScannedAt: Date(timeIntervalSince1970: 0),
             sessions: [:],
             dailyBySession: [:],

@@ -56,9 +56,11 @@ class AntigravityConvergenceTestCase: AntigravityTestCase {
     }
 
     /// 单 session 收敛测试夹具：non-empty `.db` + 带 last-good（offset/事件数可配、
-    /// 当日 daily 桶 input=500、空 samples）但指纹过期的 v7 index。calendarSignature
-    /// 默认与 testCalendar 一致（避免触发冷重建全量路径），可注入旧日历签名
-    /// 模拟时区变更冷重建。
+    /// 当日 daily 桶 input=500、空 samples）但指纹过期的当前版本（v8）index。
+    /// version 必须跟当前缓存版本走：写旧版本会被 loadIndex 迁移清空
+    /// `samplesBySession`，把本应走增量 plan 的 session 推回 full plan。
+    /// calendarSignature 默认与 testCalendar 一致（避免触发冷重建全量路径），可注入
+    /// 旧日历签名模拟时区变更冷重建。
     func makeConvergenceFixture(
         cachedOffset: Int,
         cachedEventCount: Int,
@@ -83,7 +85,7 @@ class AntigravityConvergenceTestCase: AntigravityTestCase {
         let dayKey = LocalUsageDayKey.make(dayStart, calendar: testCalendar)
         let seededAt = Date(timeIntervalSince1970: 1_789_990_000)
         let index = AntigravityLocalUsageScanner.CacheIndex(
-            version: 7,
+            version: 8,
             lastScannedAt: seededAt,
             sessions: [sessionID: .init(
                 mtimeMs: liveMtimeMs - 60_000,              // 过期指纹 → dirty

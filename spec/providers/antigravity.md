@@ -23,10 +23,15 @@ This provider does not call Google quota APIs with a saved OAuth access token. I
 
 ## Accounting contract
 
-Antigravity event 的 `inputTokens` 是 uncached input，`cacheReadTokens` 独立记录命中缓存，
-output/reasoning 也是独立字段。daily 直接进入统一 `Input / Cache read / Output / Reason`
-四桶；sample 为兼容历史结构将 input 保存为 `input + cacheRead`。`cacheWriteTokens` 只
-保留在 raw 诊断数据，不进入统一 total、图表或价值估算。见
+Antigravity event 的 `inputTokens` 是 uncached input，`cacheReadTokens` 独立记录命中缓存。
+RPC 的 `usage.outputTokens` **已含思考**——用户在本机 271 个会话（60,373 条含 token 事件）
+上实测 100% 满足 `outputTokens == thinkingOutputTokens + responseOutputTokens`。因此
+`TokenAccountingCatalog.antigravity` 声明 `output: .reasoningIncluded`（与 DSH 同款关系）：
+规范化 `Output = outputTokens − thinkingOutputTokens`、`Reason = thinkingOutputTokens`，
+`Output + Reason == rawOutputTokens`，四桶守恒；daily 与 sample 的 raw→桶都走该 catalog
+唯一入口（`AntigravityLocalUsageAggregation.aggregateDaily` / `makeSample`）。sample 为
+兼容历史结构将 input 保存为 `input + cacheRead`，`reasoningOutputTokens` 保存分拆后的
+思考桶。`cacheWriteTokens` 只保留在 raw 诊断数据，不进入统一 total、图表或价值估算。见
 [`spec/accounting.md`](../accounting.md)。
 | Configurable install path | Removed — fully auto-discovered via process scan |
 
@@ -369,7 +374,7 @@ Request body:
 }
 ```
 
-Response shape (field names may vary between Antigravity versions; parser walks the tree recursively and matches key names against regex patterns):
+Response shape (field names may vary between Antigravity versions; parser walks the tree recursively and matches key names against regex patterns). `chatModel` additionally carries the per-call native durations (Protobuf Duration strings):
 
 ```json
 {
@@ -377,6 +382,10 @@ Response shape (field names may vary between Antigravity versions; parser walks 
     {
       "timestamp": "2026-07-15T10:30:00Z",
       "model": "gemini-2.5-pro",
+      "chatModel": {
+        "timeToFirstToken": "11.669597334s",
+        "streamingDuration": "0.891494208s"
+      },
       "inputTokens": 100,
       "outputTokens": 50,
       "cacheReadTokens": 20,
@@ -437,6 +446,25 @@ second, so `metadata.chatModel.model` beats an outer descriptive field:
 dropped (so unrelated strings such as placeholders are not misread as the model
 name); remaining ties at the same priority and depth break lexicographically, so
 JSON field order never decides.
+
+**Per-call duration (`UsageEvent.durationSeconds`)**. Each `chatModel` natively
+carries two Protobuf Duration strings, `timeToFirstToken` + `streamingDuration`
+(present on 100% of 60,373 events measured across 271 local sessions; their sum
+matches the `steps` table `DONE − createdAt` to sub-millisecond). The parser
+extracts both with a dedicated key match (`AntigravityFetcher.nativeCallDurationComponent`):
+the key is normalized to letters only (camelCase / snake_case / kebab-case
+alike) and fully matched against `timetofirsttoken` / `streamingduration` — the
+same normalization `timestampPriority` uses, so these keys deliberately never
+enter the timestamp whitelist and never pollute any token regex (the values are
+strings such as `"11.669597334s"`, parsed by stripping the trailing `s`; bare
+numbers are accepted as seconds). Duplicate carries across wrapper layers take
+the max, mirroring the token strategy. The event's `durationSeconds` is the sum
+of the two components and is `nil` when both are missing, a value is
+non-positive / unparseable, or the sum is ≤ 0. It flows through
+`AntigravityLocalUsageAggregation.makeSample` into
+`LocalTokenUsageSample.durationSeconds` (the token/s numerator/denominator
+contract in `spec/accounting.md`); the `.distantPast` fallback sample for a
+timestampless event deliberately carries no duration.
 
 Events with no token data at all (just a timestamp + model) are skipped — the
 guard is `finalTotal > 0 || cacheWriteTokens > 0`, so an entry carrying only
@@ -563,7 +591,8 @@ dragged every session through full-plan RPC rounds each scan:
   dirty and re-ran the full RPC every scan.
 
 Both are now finite windows with terminal states. The persisted state is additive
-and optional in `index.json` (still version 7 — unknown keys are ignored by old
+and optional in `index.json` (version 8 since the durationSeconds / thinking-caliber
+rebuild — unknown keys are ignored by old
 readers, and new fields decode with defaults via `decodeIfPresent`):
 
 | New state | Where | Meaning |
@@ -741,7 +770,7 @@ tree idempotently on every scan (a failure is logged, never fatal).
 
 ```json
 {
-  "version": 7,
+  "version": 8,
   "lastScannedAt": "2026-07-15T02:00:00Z",
   "calendarSignature": "gregorian|Asia/Shanghai",
   "sessions": {
@@ -763,12 +792,17 @@ tree idempotently on every scan (a failure is logged, never fatal).
   },
   "samplesBySession": {
     "41272769-fe7d-4802-a174-b5b28b526ade": [
-      { "completedAt": "...", "promptID": "...", "inputTokens": 1000, "outputTokens": 800 }
+      { "completedAt": "...", "promptID": "...", "inputTokens": 1000, "outputTokens": 800, "durationSeconds": 12.561091542 }
     ]
   },
   "emptyFullStrikesBySession": {}
 }
 ```
+
+v8（2026-10-25）：样本新增 `durationSeconds`（TTFT + streamingDuration）且思考口径修正
+（raw `outputTokens` 含思考，catalog 改 `.reasoningIncluded`）。迁移把 v2…v7 的
+`samplesBySession` 清空——每个现有 session 因「缺逐次调用缓存」排一次 offset=0 全量
+RPC，样本与 daily 都按新口径立即重建（`dailyBySession` 在重建前保留为 last-good）。
 
 `calendarSignature` (`LocalUsageCalendarSignature.make`: `calendar.identifier|timeZone.identifier`)
 is optional and gates the cold rebuild: a signature that no longer matches the
@@ -803,9 +837,11 @@ The scanner does heavy work in the background and is built for low-cost re-runs:
 
 ### Per-event field count (5 + total)
 
-Every `UsageEvent` carries 5 token categories (input / output / cacheRead / cacheWrite / reasoning). Its consumption `totalTokens` is derived from `input + cacheRead + output + reasoning`; server totals and cache-write bookkeeping are not allowed to inflate it.
+Every `UsageEvent` carries 5 token categories (input / output / cacheRead / cacheWrite / reasoning). Its consumption `totalTokens` is derived from `input + cacheRead + output + reasoning`; server totals and cache-write bookkeeping are not allowed to inflate it. Raw `outputTokens` **includes** thinking (the measured invariant above), so the normalized `Output` bucket is `outputTokens − reasoningTokens` and the raw counters only survive in diagnostics.
 
-In the daily aggregate (`AntigravityDailyUsage`), the 5 categories are summed per day; `totalTokens` is the day sum. `cacheWriteTokens` is intentionally **excluded from `totalTokens`** because it's bookkeeping (writes to a future read cache) rather than actual quota consumption — but it's still tracked separately for visibility.
+Every event additionally carries the optional native call `durationSeconds` (TTFT + streaming, see above) which flows into `LocalTokenUsageSample.durationSeconds` for the tok/s rate.
+
+In the daily aggregate (`AntigravityDailyUsage`), the 5 categories are summed per day after the per-event catalog normalization (same entry point as samples), so `totalTokens` is the four-bucket day sum and stays conservation-consistent with the samples. `cacheWriteTokens` is intentionally **excluded from `totalTokens`** because it's bookkeeping (writes to a future read cache) rather than actual quota consumption — but it's still tracked separately for visibility.
 
 ## Session file formats (`.db` vs `.pb`)
 
@@ -1246,8 +1282,10 @@ Antigravity and Codex report cache reads using **incompatible semantic models**.
 
 ```swift
 // Models/TokenAccounting.swift — TokenAccountingCatalog.antigravity is
-// TokenAccountingDefinition(input: .uncachedOnly, output: .independent), so the
-// raw counters map to disjoint buckets without any per-provider arithmetic:
+// TokenAccountingDefinition(input: .uncachedOnly, output: .reasoningIncluded):
+// raw outputTokens already includes thinking, so the catalog splits it
+// (Output = rawOutput − reasoning, Reason = reasoning) and the raw counters
+// map to conservation-safe buckets without any per-provider arithmetic:
 let buckets = TokenAccountingCatalog.antigravity.normalizedBuckets(
     rawInput: event.inputTokens,
     cacheRead: event.cacheReadTokens,
@@ -1260,7 +1298,7 @@ buckets.totalTokens          // = input + cacheRead + output + reasoning
 // LocalDailyTokenUsage.cacheHitRate = cacheRead / (cacheRead + input)
 ```
 
-`cacheWriteTokens` is bookkeeping (writes to a future read cache) and is **never** part of `totalTokens`. Reasoning tokens may overlap with output tokens; both are reported independently.
+`cacheWriteTokens` is bookkeeping (writes to a future read cache) and is **never** part of `totalTokens`. Raw `outputTokens` already includes reasoning (`outputTokens == thinkingOutputTokens + responseOutputTokens` on 100% of measured events); the catalog's `.reasoningIncluded` relation splits it so the normalized `Output` bucket excludes thinking.
 
 ### Codex model: `cachedInputTokens` is a SUBSET of `inputTokens`
 
@@ -1277,8 +1315,8 @@ buckets.totalTokens          // = input + cacheRead + output + reasoning
 | Per-round data | All 5 fields per LLM call | 4 fields per `token_count` event (`input_tokens`, `cached_input_tokens`, `output_tokens`, `reasoning_output_tokens`) |
 | Data source | RPC `GetCascadeTrajectoryGeneratorMetadata` (live) | Local JSONL `~/.codex/sessions/**/*.jsonl` (near-realtime) |
 | Data lag when source idle | None while IDE is running; data lost on IDE exit if session never flushes | None — CLI flushes JSONL continuously |
-| Reasoning vs output | Independently reported (may overlap) | Summed into `outputTotal = output + reasoning` |
-| Total tokens formula | `input + cacheRead + output + reasoning` (excludes `cacheWrite`) | `input + output + reasoning` (already includes cached) |
+| Reasoning vs output | Raw `outputTokens` includes reasoning; normalized `Output = rawOutput − reasoning` | Summed into `outputTotal = output + reasoning` |
+| Total tokens formula | `input + cacheRead + outputTokens`（raw output 已含思考，规范化后 = 四桶和；excludes `cacheWrite`） | `input + output + reasoning` (already includes cached) |
 
 ### Why this matters in practice
 
@@ -1334,7 +1372,7 @@ After normalization, cross-provider sum, average, and chart rendering can treat 
 
 ### 2. Empty-RPC retention and cache migration
 - **Issue**: A session queried against the wrong workspace server, or a server that is not ready yet, can return an empty event list. Treating that response as a successful empty session would freeze the cache at zero.
-- **Fix**: Empty RPC responses are not trustworthy success: the scanner retains last-good daily/samples data, does not advance the file fingerprint, and retries on a later scan — now bounded by the three-strike / two-strike convergence rules documented above. Cache indexes are migrated to **v7** (`loadIndex` accepts v2…v6); v5 and earlier additionally have their per-event samples cleared, and every existing session is forced through the pure-RPC path once because a missing `samplesBySession[id]` entry schedules an offset=0 full plan.
+- **Fix**: Empty RPC responses are not trustworthy success: the scanner retains last-good daily/samples data, does not advance the file fingerprint, and retries on a later scan — now bounded by the three-strike / two-strike convergence rules documented above. Cache indexes are migrated to **v8** (`loadIndex` accepts v2…v7); the migration clears per-event samples (`samplesBySession`) so every existing session is forced through one offset=0 full RPC — originally because v5 and earlier samples could come from the removed SQLite path, and since v8 because samples gained `durationSeconds` and the thinking-caliber fix (raw output includes reasoning) requires rebuilding both samples and daily buckets.
 
 ### 3. Pure-RPC Turn/Round approximation
 - **Issue**: The removed SQLite implementation could count `step_type=14/15` directly, but it did not work uniformly across `.db` and `.pb` formats and required reading the IDE's database files.
@@ -1357,4 +1395,4 @@ This script:
 3. calls `RetrieveUserQuotaSummary`
 4. prints or writes the raw JSON
 
-> 核对基线：2026-10-16 · 代码 ac70b39
+> 核对基线：2026-10-25 · 代码 5400d11

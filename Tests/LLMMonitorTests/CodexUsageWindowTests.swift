@@ -377,6 +377,127 @@ final class CodexUsageWindowTests: XCTestCase {
         XCTAssertEqual(sample.completedAt, newerDate)
     }
 
+    // MARK: - 单次调用时长（token_usage_record 混合差分）
+
+    /// 真实事件序 R_i 完成 → 工具落盘 → C_i：首调用的发起锚是 task_started。
+    private func summarizeDurationEvents(
+        base: Date,
+        events: [CodexSessionEvent]
+    ) -> CodexFetcher.LocalUsageScanResult {
+        CodexFetcher.summarizeLocalUsage(
+            windows: [:],
+            dailyWindows: [CodexFetcher.DailyUsageWindow(
+                startDate: base.addingTimeInterval(-1),
+                endDate: base.addingTimeInterval(86_400)
+            )],
+            sessionFiles: [CodexSessionFileEvents(
+                fileURL: URL(fileURLWithPath: "/tmp/codex-duration-\(UUID().uuidString).jsonl"),
+                events: events
+            )]
+        )
+    }
+
+    private func codexCountEvent(_ seconds: TimeInterval, input: Int = 10) -> CodexSessionEvent {
+        .tokenCount(
+            timestamp: Date(timeIntervalSince1970: 20_000 + seconds),
+            usage: CodexTokenUsageEvent(inputTokens: input, cachedInputTokens: 0, outputTokens: 1, reasoningOutputTokens: 0)
+        )
+    }
+
+    private func codexRecordEvent(_ seconds: TimeInterval, turnID: String) -> CodexSessionEvent {
+        .tokenUsageRecord(timestamp: Date(timeIntervalSince1970: 20_000 + seconds), turnID: turnID)
+    }
+
+    private func codexStartEvent(_ seconds: TimeInterval, turnID: String) -> CodexSessionEvent {
+        .taskStarted(timestamp: Date(timeIntervalSince1970: 20_000 + seconds), turnID: turnID)
+    }
+
+    /// 首调用用 task_started 锚：taskStarted(t0) → R(t0+2) → C(t0+3) → 时长 2s。
+    func testCodexSampleDurationAnchorsFirstCallAtTaskStarted() throws {
+        let result = summarizeDurationEvents(base: Date(timeIntervalSince1970: 20_000), events: [
+            codexStartEvent(0, turnID: "turn-a"),
+            codexRecordEvent(2, turnID: "turn-a"),
+            codexCountEvent(3),
+        ])
+        let sample = try XCTUnwrap(result.recentSamples.first)
+        XCTAssertEqual(sample.durationSeconds, 2.0, "首调用发起锚 = task_started 时刻")
+    }
+
+    /// 后续调用用上一条 token_count 作发起代理：R1 → C1 → R2 → C2，
+    /// 第二段时长 = R2 − C1（不是 R2 − R1）。
+    func testCodexSampleDurationUsesTokenCountProxyForSubsequentCalls() throws {
+        let result = summarizeDurationEvents(base: Date(timeIntervalSince1970: 20_000), events: [
+            codexStartEvent(0, turnID: "turn-b"),
+            codexRecordEvent(2, turnID: "turn-b"),
+            codexCountEvent(3),
+            codexRecordEvent(5, turnID: "turn-b"),
+            codexCountEvent(7),
+        ])
+        XCTAssertEqual(result.recentSamples.count, 2)
+        XCTAssertEqual(result.recentSamples[0].durationSeconds, 2.0, "R1 − task_started")
+        XCTAssertEqual(result.recentSamples[1].durationSeconds, 2.0, "R2 − C1（token_count 代理）")
+    }
+
+    /// record 无 token_count 消费时降级相邻差分：R1 → R2 → C，
+    /// 时长 = R2 − R1（lastRecordEnd 锚）。
+    func testCodexRecordWithoutTokenCountDegradesToAdjacentRecordDiff() throws {
+        let result = summarizeDurationEvents(base: Date(timeIntervalSince1970: 20_000), events: [
+            codexStartEvent(0, turnID: "turn-c"),
+            codexRecordEvent(2, turnID: "turn-c"),
+            codexRecordEvent(4, turnID: "turn-c"),
+            codexCountEvent(5),
+        ])
+        let sample = try XCTUnwrap(result.recentSamples.first)
+        XCTAssertEqual(sample.durationSeconds, 2.0, "R2 − R1（相邻 record 差分）")
+    }
+
+    /// 挂起时长消费后置 nil 防复用：R1 → C1（拿到 R1 时长）→ C2（无新 record → nil）。
+    func testCodexPendingDurationConsumedAfterTokenCount() throws {
+        let result = summarizeDurationEvents(base: Date(timeIntervalSince1970: 20_000), events: [
+            codexStartEvent(0, turnID: "turn-d"),
+            codexRecordEvent(2, turnID: "turn-d"),
+            codexCountEvent(3),
+            codexCountEvent(4),
+        ])
+        XCTAssertEqual(result.recentSamples.count, 2)
+        XCTAssertEqual(result.recentSamples[0].durationSeconds, 2.0)
+        XCTAssertNil(result.recentSamples[1].durationSeconds, "消费后不得复用上一条 record 的时长")
+    }
+
+    /// 非法场景全落 nil：无 record 的 token_count、record 无任何锚点（孤儿 turn）、
+    /// 差值超 1h、差值非正。
+    func testCodexSampleDurationNilForMissingAnchorsOrOutOfRange() throws {
+        // token_count 无前置 record（只有 task_started 锚也不够——时长来自 record 差分）
+        let noRecord = summarizeDurationEvents(base: Date(timeIntervalSince1970: 20_000), events: [
+            codexStartEvent(0, turnID: "turn-e1"),
+            codexCountEvent(3),
+        ])
+        XCTAssertNil(try XCTUnwrap(noRecord.recentSamples.first).durationSeconds)
+
+        // 孤儿 record（turn 无 task_started、无 token_count 归属）→ 两侧都无锚
+        let orphan = summarizeDurationEvents(base: Date(timeIntervalSince1970: 20_000), events: [
+            codexRecordEvent(2, turnID: "turn-e2"),
+            codexCountEvent(3),
+        ])
+        XCTAssertNil(try XCTUnwrap(orphan.recentSamples.first).durationSeconds)
+
+        // 差值超 1h：taskStarted(t0) → R(t0+3601) → C → nil
+        let overHour = summarizeDurationEvents(base: Date(timeIntervalSince1970: 20_000), events: [
+            codexStartEvent(0, turnID: "turn-e3"),
+            codexRecordEvent(3601, turnID: "turn-e3"),
+            codexCountEvent(3602),
+        ])
+        XCTAssertNil(try XCTUnwrap(overHour.recentSamples.first).durationSeconds)
+
+        // 差值非正：taskStarted(t0) → R(t0−1)（早于 turn 开始）→ C → nil
+        let nonPositive = summarizeDurationEvents(base: Date(timeIntervalSince1970: 20_000), events: [
+            codexStartEvent(0, turnID: "turn-e4"),
+            codexRecordEvent(-1, turnID: "turn-e4"),
+            codexCountEvent(1),
+        ])
+        XCTAssertNil(try XCTUnwrap(nonPositive.recentSamples.first).durationSeconds)
+    }
+
     // MARK: - ChatGPT 行用量（合并自 UIUsageRegressionTests）
 
     @MainActor

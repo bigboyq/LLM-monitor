@@ -21,7 +21,8 @@ class AntigravityTestCase: XCTestCase {
         reasoning: Int = 0,
         total: Int = 0,
         stepIndices: [Int]? = nil,
-        missingComponents: [String]? = nil
+        missingComponents: [String]? = nil,
+        duration: Double? = nil
     ) -> AntigravityFetcher.UsageEvent {
         AntigravityFetcher.UsageEvent(
             timestamp: timestamp,
@@ -33,7 +34,8 @@ class AntigravityTestCase: XCTestCase {
             reasoningTokens: reasoning,
             totalTokens: total,
             stepIndices: stepIndices,
-            missingComponents: missingComponents
+            missingComponents: missingComponents,
+            durationSeconds: duration
         )
     }
 

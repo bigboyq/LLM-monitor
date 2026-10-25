@@ -694,6 +694,8 @@ final class CodexLocalUsageScannerTests: XCTestCase {
                 turns.append("complete:\(turnID)")
             case .tokenCount(_, let usage):
                 usages.append(usage)
+            case .tokenUsageRecord:
+                break
             }
         }
 
@@ -705,5 +707,72 @@ final class CodexLocalUsageScannerTests: XCTestCase {
         XCTAssertEqual(usages.first?.outputTokens, 3)
         XCTAssertEqual(usages.first?.reasoningOutputTokens, 1)
         XCTAssertEqual(events.count, 4, "marker 出现在字符串值中的行、无 marker 行与空行都不得产出事件")
+    }
+
+    // MARK: - token_usage_record（单次调用时长锚点）
+
+    /// 顶层 `token_usage_record` 行解析为 `.tokenUsageRecord`（timestamp/turn_id），
+    /// 且不产出 token 计量事件——token 只认 token_count，双源会翻倍。
+    func testTokenUsageRecordParsesToDurationAnchorWithoutTokenAccounting() async throws {
+        let fm = FileManager.default
+        let url = fm.temporaryDirectory
+            .appendingPathComponent("codex-record-\(UUID().uuidString).jsonl")
+        defer { try? fm.removeItem(at: url) }
+
+        let recordPayload: [String: Any] = [
+            "turn_id": "turn-rec",
+            "response_id": "resp-1",
+            "usage": [
+                "input_tokens": 99,
+                "cached_input_tokens": 9,
+                "output_tokens": 88,
+                "reasoning_output_tokens": 8,
+            ],
+        ]
+        let content = [
+            codexJSONLine(timestamp: "2026-08-12T00:00:01Z", type: "event_msg", payload: ["type": "task_started", "turn_id": "turn-rec"]),
+            codexJSONLine(
+                timestamp: "2026-08-12T00:00:02Z",
+                type: "token_usage_record",
+                payload: recordPayload
+            ),
+            codexJSONLine(
+                timestamp: "2026-08-12T00:00:03Z",
+                type: "event_msg",
+                payload: ["type": "token_count", "info": ["last_token_usage": [
+                    "input_tokens": 7, "cached_input_tokens": 2,
+                    "output_tokens": 3, "reasoning_output_tokens": 1,
+                ]]]
+            ),
+        ]
+        .joined(separator: "\n") + "\n"
+        try content.write(to: url, atomically: true, encoding: .utf8)
+
+        let snap = f2MakeSnapshot(url: url, fileSize: content.utf8.count)
+        let limits = CodexLocalScanLimits(
+            maxSessionFiles: 8, maxEventsPerFile: 100, maxTotalParsedBytes: 64 * 1024 * 1024,
+            maxJSONLLineBytes: 8 * 1024 * 1024, readChunkBytes: 24
+        )
+        let files = await CodexFetcher.cachedSessionEvents(for: [snap], limits: limits)
+        let events = files.first?.events ?? []
+
+        XCTAssertEqual(events.count, 3)
+        guard case .tokenUsageRecord(let recordTimestamp, let recordTurnID) = events[1] else {
+            return XCTFail("第二条事件必须是 tokenUsageRecord，实际 \(events[1])")
+        }
+        XCTAssertEqual(recordTurnID, "turn-rec")
+        XCTAssertEqual(
+            recordTimestamp,
+            try XCTUnwrap(DateParser.parse("2026-08-12T00:00:02Z")),
+            "timestamp 走统一 DateParser 口径"
+        )
+        // token 计量保持 token_count 单一来源：record 的 usage 不得二次计入
+        let tokenCounts = events.compactMap { event -> CodexTokenUsageEvent? in
+            if case .tokenCount(_, let usage) = event { return usage }
+            return nil
+        }
+        XCTAssertEqual(tokenCounts.count, 1)
+        XCTAssertEqual(tokenCounts.first?.inputTokens, 7)
+        XCTAssertEqual(tokenCounts.first?.outputTokens, 3)
     }
 }

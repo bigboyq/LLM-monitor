@@ -248,6 +248,12 @@ struct HarnessModelRow: Identifiable, Equatable, Sendable {
     /// `nil` = 样本没有可用模型名，UI 渲染成「模型名缺失」行。
     let modelName: String?
     let buckets: TokenUsageBuckets
+    /// 行级今日 token 速度（tok/s）：`init` 里对**同一批今日样本**调
+    /// `LocalUsageSummaryBuilder.windowTokenRate`（全仓唯一速率口径，
+    /// Σ(Output+Reason) ÷ Σ调用时长，时长 ∈ [0.2, 3600]s 的样本才参与）——
+    /// 与 `cachedCostEstimate` 同源同批样本：金额算得出来的行，速率也在同一批
+    /// 样本上算。`nil` = 批内没有时长有效的样本（不是"速度为 0"），UI 显示「—」。
+    let tokensPerSecond: Double?
     private let cachedCostEstimate: ModelCostEstimate
 
     var id: String { "\(clientID):\(quotaProviderID):\(modelName ?? "")" }
@@ -381,6 +387,7 @@ struct HarnessModelRow: Identifiable, Equatable, Sendable {
             output: day.output,
             reasoning: day.reasoning
         )
+        self.tokensPerSecond = LocalUsageSummaryBuilder.windowTokenRate(samples: samples)
         self.cachedCostEstimate = ModelPricingCatalog.estimate(
             samples: samples,
             quotaProviderID: quotaProviderID,
@@ -397,6 +404,13 @@ struct HarnessSection: Identifiable, Equatable, Sendable {
     let displayName: String
     let iconSystemName: String
     let buckets: TokenUsageBuckets
+    /// 段级今日 token 速度（tok/s）：对该段（clientID）的**今日全部样本**调
+    /// `LocalUsageSummaryBuilder.windowTokenRate`（与行速度同一个全仓唯一口径）。
+    /// 样本全集 = 段内各行的分组样本并集（跨 provider 分片一起进 Σ/Σ），
+    /// 单 provider 客户段因此与 popwindow「额度窗口」表格「今」行的速度同值
+    /// （同一批今日样本、同一函数）。`nil` = 批内没有时长有效的样本（不是
+    /// "速度为 0"），UI 显示「—」；fleet 段没有本地样本，恒 nil。
+    let tokensPerSecond: Double?
     let value: MixedCurrencyEstimate
     let rows: [HarnessModelRow]
     /// 本段任一贡献来源的统计口径被截断（如 DSH 文件数/字节预算挤出最旧 session）。
@@ -468,6 +482,10 @@ struct HarnessTodaySummary: Equatable, Sendable {
     ) -> HarnessTodaySummary {
         let dayStart = calendar.startOfDay(for: now)
         var samplesByRow: [HarnessRowKey: HarnessRowAccumulator] = [:]
+        // 段级速度的样本全集：按 clientID 收集**今日全部样本**（与行分组同一次
+        // 遍历、同一个 isToday 谓词，所以恒等于段内各行样本的并集）。段速度在
+        // 并集上算 Σ/Σ，而不是各行速率的平均——后者会被样本量小的行带偏。
+        var samplesByClient: [String: [LocalTokenUsageSample]] = [:]
         var displayNameByClient: [String: String] = [:]
         var truncatedClients: Set<String> = []
         var isScanningLocalUsage = false
@@ -499,6 +517,7 @@ struct HarnessTodaySummary: Equatable, Sendable {
                         modelName: normalizedModelName(sample.modelName)
                     )
                     samplesByRow[key, default: HarnessRowAccumulator(peakWindow: peakWindow)].samples.append(sample)
+                    samplesByClient[contribution.clientID, default: []].append(sample)
                 }
             }
         }
@@ -524,6 +543,9 @@ struct HarnessTodaySummary: Equatable, Sendable {
                     ?? clientID,
                 iconSystemName: descriptor?.iconSystemName ?? "terminal",
                 buckets: Self.sum(clientRows.map(\.buckets)),
+                tokensPerSecond: LocalUsageSummaryBuilder.windowTokenRate(
+                    samples: samplesByClient[clientID] ?? []
+                ),
                 value: MixedCurrencyEstimate(estimates: clientRows.map(\.costEstimate)),
                 rows: clientRows.sorted(by: modelRowOrder),
                 isTruncated: truncatedClients.contains(clientID)

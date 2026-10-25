@@ -25,11 +25,19 @@ data.tokens.output
 data.tokens.reasoning
 data.tokens.cache.read
 data.tokens.cache.write
+data.time.created
+data.time.completed
 ```
 
 `tokens.input` is the uncached input amount. `cache.read` is kept as a separate
 cache bucket. The displayed total is `input + cache.read + output + reasoning`;
 `cache.write` is reported separately and is not included in the consumption total.
+
+`data.time.completed`（SQL 侧 `json_extract(m.data,'$.time.completed')`，不重复解码整行）
+与样本时间源 `time_created` 的差 /1000 写入 sample 的 `durationSeconds`（token/s 分母：
+单次调用完整时长，发起→完成含 TTFT）；completed 缺失、差值非正或超出 1h 有效域落 nil
+（L0 校验与 Codex / DSH / ZCode 同口径 (0, 3600] s；实测 8815 行 assistant 中仅 1 行缺
+completed）。
 
 这也是统一 accounting contract：daily 的 `input` 已是 uncached input，sample 只为兼容
 历史结构保存 cache-inclusive input；进入价格估算时再拆成 `Input` 与 `Cache read`。

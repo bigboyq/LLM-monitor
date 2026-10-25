@@ -107,6 +107,19 @@ struct SevenDayTokenUsageHoverView<Daily: LocalUsageDaily>: View {
     /// `ModelPricingCatalog` 定价估算——即使 hover 图从未打开。收闭包并只在
     /// 本 view 的 body 内调用，定价计算才真正惰性化。
     private let priceByDayProvider: () -> [Date: String]
+    /// 「用量」segment 下末列（速度）的逐日文案（`[dayStart: tok/s 文案]`，
+    /// 调用方算好；空字典 = 没有任何速度数据）。惰性纪律与 `priceByDay` 相同：
+    /// autoclosure，只在本 view 的 body 内调用。
+    private let speedByDayProvider: () -> [Date: String]
+    /// 末列是否跟随「额度窗口」的「分析/用量」segment：popwindow 路径传 true
+    /// （分析 → 价值列、用量 → 速度列，速度列 `speedByDay` 非空才画）；
+    /// Settings 客户端页等没有 segment 上下文的宿主保持默认 false——有
+    /// `priceByDay` 就永远画价值列，行为与引入该参数之前逐字一致。
+    private let lastColumnFollowsSegment: Bool
+
+    /// 「额度窗口」segment 的持久化值（与 `QuotaWindowUsageSection` 同一 key）：
+    /// 浮层里同一张卡上的 segment 控件写它，7 天表末列读它，切换即时生效。
+    @AppStorage(QuotaWindowUsageSection.segmentStorageKey) private var segmentRawValue: String = QuotaWindowUsageSegment.analysis.rawValue
 
     /// 宿主形态：dock 详情浮层的 `.alwaysVisible` 里，标题与新鲜度徽章都被提到了
     /// 卡片外面（见 `ProviderCardView.dockSectionTitle`），这里不能再画一遍。
@@ -117,13 +130,17 @@ struct SevenDayTokenUsageHoverView<Daily: LocalUsageDaily>: View {
         scannedAt: Date?,
         isScanning: Bool,
         isTruncated: Bool = false,
-        priceByDay: @autoclosure @escaping () -> [Date: String] = [:]
+        priceByDay: @autoclosure @escaping () -> [Date: String] = [:],
+        speedByDay: @autoclosure @escaping () -> [Date: String] = [:],
+        lastColumnFollowsSegment: Bool = false
     ) {
         self.days = days
         self.scannedAt = scannedAt
         self.isScanning = isScanning
         self.isTruncated = isTruncated
         self.priceByDayProvider = priceByDay
+        self.speedByDayProvider = speedByDay
+        self.lastColumnFollowsSegment = lastColumnFollowsSegment
     }
 
     private let inputColor = Color.tokenInputTint
@@ -134,6 +151,16 @@ struct SevenDayTokenUsageHoverView<Daily: LocalUsageDaily>: View {
     var body: some View {
         let chartScale = LocalUsageChartScale(days: days)
         let priceByDay = priceByDayProvider()
+        // 末列显隐：默认（Settings 等无 segment 上下文的宿主）只认 priceByDay，
+        // 与引入 segment 跟随之前逐字一致；popwindow 路径跟随「额度窗口」segment
+        // ——分析态画价值、用量态画速度（speedByDay 非空才画，与价值列的
+        // isEmpty 判定同构）。三元只求值命中的分支：不跟用量段就绝不调
+        // speedByDayProvider，惰性纪律与 priceByDay 相同。
+        let followsUsageSegment = lastColumnFollowsSegment
+            && QuotaWindowUsageSegment(rawValue: segmentRawValue) == .usage
+        let speedByDay = followsUsageSegment ? speedByDayProvider() : [:]
+        let showsValueColumn = followsUsageSegment ? false : priceByDay.isEmpty == false
+        let showsSpeedColumn = followsUsageSegment && speedByDay.isEmpty == false
 
         VStack(alignment: .leading, spacing: 9) {
             // dock 详情浮层里整行标题都被提到了卡片外面（标题是「最近7天token用量」，
@@ -192,8 +219,11 @@ struct SevenDayTokenUsageHoverView<Daily: LocalUsageDaily>: View {
                     tableHeader("Cache", width: 58, alignment: .trailing)
                     tableHeader("Output", width: 58, alignment: .trailing)
                     tableHeader("Reason", width: 58, alignment: .trailing)
-                    if priceByDay.isEmpty == false {
+                    if showsValueColumn {
                         tableHeader("价值", width: 62, alignment: .trailing)
+                    }
+                    if showsSpeedColumn {
+                        tableHeader("速度", width: 62, alignment: .trailing)
                     }
                 }
                 ForEach(days) { day in
@@ -208,8 +238,11 @@ struct SevenDayTokenUsageHoverView<Daily: LocalUsageDaily>: View {
                         tokenValue(metrics.cacheTotal, color: cacheColor, width: 58)
                         tokenValue(metrics.output, color: outputColor, width: 58)
                         tokenValue(metrics.reasoning, color: reasonColor, width: 58)
-                        if priceByDay.isEmpty == false {
+                        if showsValueColumn {
                             priceValue(priceByDay[day.dayStart] ?? "—", width: 62)
+                        }
+                        if showsSpeedColumn {
+                            speedValue(speedByDay[day.dayStart] ?? "—", width: 62)
                         }
                     }
                 }
@@ -226,10 +259,11 @@ struct SevenDayTokenUsageHoverView<Daily: LocalUsageDaily>: View {
             }
         }
         // 宽度必须装下柱区（415）：旧的 390 会让首尾两天的柱溢出 frame 被浮层裁掉。
+        // 价值列与速度列同宽（62pt）且互斥出现，任一在场即取带末列的宽度。
         .frame(
-            width: priceByDay.isEmpty
-                ? SevenDayUsageChartMetrics.barsWidth
-                : SevenDayUsageChartMetrics.pricedWidth,
+            width: showsValueColumn || showsSpeedColumn
+                ? SevenDayUsageChartMetrics.pricedWidth
+                : SevenDayUsageChartMetrics.barsWidth,
             alignment: .leading
         )
     }
@@ -254,6 +288,18 @@ struct SevenDayTokenUsageHoverView<Daily: LocalUsageDaily>: View {
             .foregroundStyle(
                 value == "未定价" || value.contains("部分计价") ? .orange : .secondary
             )
+            .frame(width: width, alignment: .trailing)
+            .lineLimit(1)
+            .minimumScaleFactor(0.65)
+    }
+
+    /// 「用量」segment 的速度格：排版与价值格同一套（10pt medium 等宽数字、
+    /// trailing 对齐、可缩排一行），只是速度文案没有「未定价 / 部分计价」的
+    /// 橙色态（时长无效那天是 `—`，恒 secondary）。
+    private func speedValue(_ value: String, width: CGFloat) -> some View {
+        Text(value)
+            .font(.system(size: 10, weight: .medium).monospacedDigit())
+            .foregroundStyle(.secondary)
             .frame(width: width, alignment: .trailing)
             .lineLimit(1)
             .minimumScaleFactor(0.65)
@@ -480,6 +526,13 @@ struct LocalUsageFooterView<Daily: LocalUsageDaily>: View {
     let freshness: LocalUsageFreshness
     /// 来源快照被扫描预算截断时为 true，透传给 7 天柱图 hover 提示口径。
     let isTruncated: Bool
+    /// 「用量」segment 的逐日速度文案（`[dayStart: tok/s 文案]`，调用方算好）。
+    /// 与 priceByDay 同一惰性纪律：autoclosure，7 天卡的 body 展开才求值。
+    /// 仅 popwindow 本地路径传非默认值；fleet 路径与测试夹具走默认空字典。
+    private let speedByDayProvider: () -> [Date: String]
+    /// 末列是否跟随「额度窗口」segment（见 `SevenDayTokenUsageHoverView`）。
+    /// 仅 popwindow 本地路径传 true；fleet 路径保持默认 false——价值列行为不变。
+    let lastColumnFollowsSegment: Bool
     let isReady: Bool
     /// "本机无 Antigravity 会话数据（~/.gemini/antigravity/conversations 为空）" 等
     /// provider 特定的"扫描完毕但还没数据"提示
@@ -496,6 +549,8 @@ struct LocalUsageFooterView<Daily: LocalUsageDaily>: View {
         isScanning: Bool,
         freshness: LocalUsageFreshness = .clean,
         isTruncated: Bool = false,
+        speedByDay: @autoclosure @escaping () -> [Date: String] = [:],
+        lastColumnFollowsSegment: Bool = false,
         isReady: Bool,
         emptyHint: String,
         part: LocalUsagePart = .detail
@@ -508,6 +563,8 @@ struct LocalUsageFooterView<Daily: LocalUsageDaily>: View {
         self.isScanning = isScanning
         self.freshness = freshness
         self.isTruncated = isTruncated
+        self.speedByDayProvider = speedByDay
+        self.lastColumnFollowsSegment = lastColumnFollowsSegment
         self.isReady = isReady
         self.emptyHint = emptyHint
         self.part = part
@@ -538,7 +595,9 @@ struct LocalUsageFooterView<Daily: LocalUsageDaily>: View {
             scannedAt: scannedAt,
             isScanning: isScanning,
             isTruncated: isTruncated,
-            priceByDay: priceByDay
+            priceByDay: priceByDay,
+            speedByDay: speedByDayProvider(),
+            lastColumnFollowsSegment: lastColumnFollowsSegment
         )
     }
 
@@ -647,5 +706,43 @@ enum LocalUsagePriceByDay {
                 deepseekPeakWindow: deepseekPeakWindow
             )
         }
+    }
+}
+
+/// 7 天用量的**当日速度文案**（`[dayStart: tok/s 文案]`）——「用量」segment 下
+/// 7 天表末列（速度）的数据源，与 `LocalUsagePriceByDay`（价值列）同一分工：
+/// 调用方在构造点以 autoclosure 携带，7 天卡的 body 真正展开时才算。
+///
+/// 分组口径与 `ModelPricingCatalog.estimateByDay` 一致（`Calendar.current` 的
+/// `startOfDay(for: completedAt)`），产物 key 用 days 的 `dayStart`（构造链里
+/// 已按同一 calendar 归一，见 `UnifiedDailyUsageNormalizer`），速率口径唯一
+/// 实现在 `LocalUsageSummaryBuilder.windowTokenRate`（Σ(Output+Reason) ÷ Σ
+/// 调用时长），文案统一走 `QuotaWindowUsageSection.speedText`（与「额度窗口」
+/// 用量态的速度格同分档）。
+///
+/// 不像 priceByDay 那样上 memo：这里只有一次按日分组 + 逐日一次 `windowTokenRate`
+/// 线性 pass，没有逐样本定价表查询与节假日/峰谷判定，单秒重算的成本比定价链路
+/// 低一个量级；若 profile 显示有热，再按同一 Key 模式补 memo。
+enum LocalUsageSpeedByDay {
+    /// `recentSamples` 为空 = 没有任何速度数据 → 空字典（usage 段不画末列）；
+    /// 有样本但某天没有时长有效的样本（或那天根本没样本）→ 该天 `—`。
+    static func texts(
+        dayStarts: [Date],
+        recentSamples: [LocalTokenUsageSample]
+    ) -> [Date: String] {
+        guard recentSamples.isEmpty == false else { return [:] }
+        let calendar = Calendar.current
+        let grouped = Dictionary(grouping: recentSamples) {
+            calendar.startOfDay(for: $0.completedAt)
+        }
+        return Dictionary(uniqueKeysWithValues: dayStarts.map { dayStart in
+            let rate: Double?
+            if let samples = grouped[calendar.startOfDay(for: dayStart)] {
+                rate = LocalUsageSummaryBuilder.windowTokenRate(samples: samples)
+            } else {
+                rate = nil
+            }
+            return (dayStart, QuotaWindowUsageSection.speedText(rate))
+        })
     }
 }

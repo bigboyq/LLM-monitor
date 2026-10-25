@@ -30,7 +30,7 @@ completion，而不是仅可见文字。
 | DSH | `inputTokens` = uncached | 独立字段 | `outputTokens` 含 reasoning，`reasoningTokens` 是子集 | 原生 reason 存在时 `Output = output - reason`、`Reason = reasoning`；仅对 DSH 内部的 MiniMax-M3，在原生 reason 缺失时按同一 message 的 `reasoning/text/tool-call.arguments` 字符比例估算（比例公式已收敛到共享 `ReasoningCharSplit`）；其他缺失场景 `Reason=0`、`Output=raw output` |
 | MiniMax Code | `input` = uncached | 独立字段 | 当前账单 output 可能不含可分离 reasoning；reader 用原生字段或 thinking 字符比例拆分 | 能拆分则 `Output/Reason` 守恒（比例公式同样走共享 `ReasoningCharSplit`）；不能拆分则 raw output 全放 `Output`、`Reason=0` |
 | Codex | `inputTokens` 含 cache | `cachedInputTokens` 是子集 | output/reasoning 独立 | `Input = max(input - cache, 0)`；Output/Reason 直接映射 |
-| Antigravity | event `inputTokens` = uncached | 独立字段 | output/reasoning 独立 | daily 直接映射；sample 保留 cache-inclusive input |
+| Antigravity | event `inputTokens` = uncached | 独立字段 | `outputTokens` **含思考**（`thinkingOutputTokens` 是子集；实测全量事件 100% 满足 `outputTokens == thinking + response`） | catalog `output: .reasoningIncluded`：`Output = rawOutput − thinking`、`Reason = thinking`，四桶守恒（修掉历史思考双重计量）；daily 与 sample 同经 catalog 统一；sample 保留 cache-inclusive input |
 | agy | transcript `input_tokens` = uncached | 独立字段 | `output_tokens` 含思考，无原生 reasoning 计数 | `thinking` 非空时按字符占比走共享 `ReasoningCharSplit` 守恒拆分（`Reason + Output = raw output`）；无 thinking 则 `Reason=0`、`Output=raw output`；daily 直接映射；sample 保留 cache-inclusive input。agy 在 `TokenAccountingCatalog` 里没有独立条目，计数口径与 `antigravity` 一致，在 reader 层直接映射（见「唯一入口」的例外说明） |
 | OpenCode | `tokens.input` = uncached | `tokens.cache.read` 独立 | output/reasoning 独立，但 `tokens.reasoning` 对 `minimax` 前缀恒 0 | native reasoning 原样透传；仅 `minimax` 前缀在 native 为 0 时按 `part` 表字符比例 fallback 分摊（极老库缺 `part` 表时降级为 `Reason=0`，聚合不失败）；daily 直接映射；sample 保留 cache-inclusive input |
 | ZCode / GLM | `model_usage.input_tokens` 含 cache | `cache_read_input_tokens` 是子集 | 智谱行由 reader 的 Method A 归类；非智谱分片另有三段式 | daily 先减 cache；sample 保留完整 input；不再二次拆分。智谱行走 Method A 整轮归类；**非智谱分片走字符分摊三段式**：① native `reasoning_tokens > 0` 原样透传 → ② 否则按 `part` 表字符比例分摊（day 级聚合 / 行级样本）→ ③ 都没有保持 `Reason=0` |
@@ -138,6 +138,36 @@ catalog 的结果已经在 reader 层固化，重建逻辑必须逐字段原样�
 倍率表只登记按量计费类 provider（当前仅 DeepSeek），勿给积分套餐类 provider
 （GLM Coding Plan 这类共享积分池）加价值系数。
 
+## Token/s 速率口径（「额度窗口」用量态「速度」列）
+
+token 速率（tok/s）只在 sample 级定义，不进入帧 / 投影内核：分子 = `Output + Reason`
+（billable output，与四桶规范化同源）；分母 = 单次模型调用完整时长（发起→完成，
+含 TTFT、不含工具执行），由各家 reader 写入 `LocalTokenUsageSample.durationSeconds`
+（可选字段，旧缓存解码得 nil）。窗口聚合 = Σ分子 ÷ Σ时长（加权平均，排除空闲与
+工具等待），**唯一实现在 `LocalUsageSummaryBuilder.windowTokenRate`**
+（`Models/LocalTokenUsageSample.swift`）；有效性域 duration ∈ [0.2, 3600] s，
+时长缺失或越界的样本分子分母都不计——宁出 `—` 不出假平均。
+
+| Harness | durationSeconds 来源 |
+|---|---|
+| ZCode | `model_usage.duration_ms` 显式列（主表与非智谱分片同口径） |
+| OpenCode | `data.time.completed − time_created`（data JSON 内嵌双时间戳） |
+| DSH | `assistant/message.time − step/start.time` 差分（工具执行在 message 之后，结构上不混入） |
+| Codex | `token_usage_record` 混合差分：发起锚 = max(上一条 `token_count` 时刻, 上一条 record 时刻)，回退 `task_started`；token 计量保持 `token_count` 单源，record 只计时（详见 `providers/codex.md` Rules） |
+| Antigravity | RPC `chatModel.timeToFirstToken + streamingDuration`（`parseUsageEvent` 提取，事件→sample 透传；含 TTFT、不含工具执行；缓存 v8 重建） |
+| MiniMax | `local_runtime_message_rows.$.usage.request_duration_ms`（独立守门窗口查询 + `(session, turn)` FIFO 配对、以 input/output tokens 核对回填；缓存 v16。**禁止** `created_at_ms` 差分——toolUse 行记录的是工具完成时刻，会把工具耗时算入） |
+| agy | `conversations/<session>.db` steps metadata 纳秒差（field 7 流式完成 − field 1 发起，主路径，100% 覆盖含纯文本终答）；.db 缺失时降级 transcript 后继 `MODEL:GENERIC` 锚点差分（秒级，约 94% 覆盖）；缓存 v3 重建。**禁止**前驱行差分——transcript `created_at` 是发起时刻 ⌊f1⌋，差分量的是调度延迟/上轮工具耗时 |
+
+多额度池合并（`combineWindowUsage`）按 Σ分子 / Σ时长 相加后再除；合并产物带
+`rateNumerator` / `rateDenominator` 中间量，多层合并不丢精度，缺中间量的手工构造
+窗口不参与速率加权。fleet 行的远端上报无时长，速度列显示 `—`（wire 协议未扩展）。
+
+UI 消费：「额度窗口」模块**用量态**第 6 列从「价值」换为「速度」（`speedCell`，
+58pt 列宽不变；**分析态仍显示价值**）。分档格式 `speedText`（先分档再格式化）：
+`< 100` 一位小数（`50.1`）、`≥ 100` 整数（`246`）、nil 显示 `—`；表头 tooltip
+注明口径「窗口内 (Output+Reason) ÷ 调用时长，tok/s；时长未知的调用不参与」。
+今 / 闲行速率与金额用同一批样本（`todaySamples` / `offPeakTodaySamples`）。
+
 ## promptID 命名空间登记表
 
 同一台机器上多份本地账本可能恰好使用相同的 prompt ID（几乎都是裸 `session:turn`）。
@@ -192,6 +222,7 @@ catalog 的结果已经在 reader 层固化，重建逻辑必须逐字段原样�
 | Harness 原始字段定义 | `Sources/LLM-monitor/Models/TokenAccounting.swift` 的 `TokenAccountingCatalog` |
 | raw → 四桶（唯一入口） | `TokenAccountingDefinition.normalizedBuckets(rawInput:cacheRead:rawOutput:rawReasoning:)` |
 | 高峰倍率登记 | `ModelPricingCatalog.pricingMultipliers` |
+| 窗口 token 速率（唯一入口） | `LocalUsageSummaryBuilder.windowTokenRate` + `QuotaWindowUsageSnapshot.Window.tokensPerSecond`（`Models/LocalTokenUsageSample.swift`） |
 | 跨 provider 金额汇总 | `Sources/LLM-monitor/Models/MixedCurrencyEstimate.swift` |
 | Daily 统一字段 | `Sources/LLM-monitor/Models/LocalUsageDaily.swift` |
 | Sample → 估算四桶 | `TokenUsageBuckets.fromSample(_:)` |

@@ -90,7 +90,7 @@ final class AntigravityIndexRoundTripTests: AntigravityTestCase {
             fileManager: FileManagerBox(fm)
         )
 
-        XCTAssertEqual(migrated.version, 7)
+        XCTAssertEqual(migrated.version, 8)
         XCTAssertEqual(migrated.sessions.count, 1)
         XCTAssertTrue(migrated.samplesBySession?.isEmpty == true,
                       "v5 的逐次调用缓存必须清空，确保现有 session 重新走纯 RPC")
@@ -123,7 +123,12 @@ final class AntigravityIndexRoundTripTests: AntigravityTestCase {
         XCTAssertEqual(decoded.eventCount, 50)
     }
 
-    func testCacheIndexV6MigrationPreservesSamplesAndUpgradesToV7() throws {
+    /// v8 迁移：v6 / v7 索引升级到 v8 时**清空** samples（一次逆转 v7 保留语义）。
+    /// v8 样本携带 durationSeconds 且 output 桶按「raw outputTokens 含思考」规范化，
+    /// 旧样本既没有时长、Output 又把思考算了两遍，必须全量重建（v7 曾保留 v6
+    /// 样本；v8 的时长 + 口径修正优先级更高）。daily 保留为 last-good fallback，
+    /// 全量重扫成功后被按新口径整体替换。
+    func testCacheIndexV6MigrationClearsSamplesAndUpgradesToV8() throws {
         let fm = FileManager.default
         let cacheDir = fm.temporaryDirectory
             .appendingPathComponent("antigravity-cache-v6-migration-\(UUID().uuidString)", isDirectory: true)
@@ -161,10 +166,10 @@ final class AntigravityIndexRoundTripTests: AntigravityTestCase {
             fileManager: FileManagerBox(fm)
         )
 
-        XCTAssertEqual(migrated.version, 7)
+        XCTAssertEqual(migrated.version, 8)
         XCTAssertEqual(migrated.sessions.count, 1)
         XCTAssertEqual(migrated.sessions["session-1"]?.generatorMetadataOffset, 0, "旧版本未存 offset 时安全默认 0")
-        XCTAssertEqual(migrated.samplesBySession?["session-1"]?.count, 1, "v6 升级到 v7 应保留已有 samples")
+        XCTAssertTrue(migrated.samplesBySession?.isEmpty == true, "v6/v7 升级到 v8 必须清空 samples 强制全量重建")
         XCTAssertEqual(migrated.dailyBySession["session-1"]?.first?.value.turns, 1)
     }
 

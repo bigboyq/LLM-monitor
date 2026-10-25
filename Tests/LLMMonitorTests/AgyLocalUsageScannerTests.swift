@@ -1,11 +1,13 @@
 import XCTest
+import SQLite3
 @testable import LLM_monitor
 
 /// agy（Antigravity CLI 分支）本地 transcript scanner 的回归护栏。
 ///
 /// 全部用临时目录 fixture，禁止依赖本机真实 `~/.gemini` 数据。覆盖：
 /// MODEL 行解析（thinking 分摊守恒）、模型名 join（log 命中 / 兜底）、
-/// 主文件与分块去重、非 DONE 行跳过、fingerprint 缓存短路、预算截断，
+/// 主文件与分块去重、非 DONE 行跳过、fingerprint 缓存短路、预算截断、
+/// 单次调用时长（方案 A conversations .db 真值 / 方案 B GENERIC 后继降级），
 /// 以及 agy 帧投影到 `.antigravity` 卡的命名空间。
 final class AgyLocalUsageScannerTests: XCTestCase {
 
@@ -92,7 +94,8 @@ final class AgyLocalUsageScannerTests: XCTestCase {
         cacheRead: Int? = 20,
         output: Int? = 50,
         thinking: String? = nil,
-        content: String? = "answer"
+        content: String? = "answer",
+        toolCalls: [[String: Any]]? = nil
     ) -> String {
         var object: [String: Any] = [
             "source": source,
@@ -106,6 +109,7 @@ final class AgyLocalUsageScannerTests: XCTestCase {
         if let output { object["output_tokens"] = output }
         if let thinking { object["thinking"] = thinking }
         if let content { object["content"] = content }
+        if let toolCalls { object["tool_calls"] = toolCalls }
         let data = try! JSONSerialization.data(withJSONObject: object)
         return String(decoding: data, as: UTF8.self)
     }
@@ -114,6 +118,109 @@ final class AgyLocalUsageScannerTests: XCTestCase {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime]
         return formatter.string(from: date)
+    }
+
+    // MARK: - 时长 fixture（方案 A .db / 方案 B GENERIC）
+
+    /// t0 = 2026-03-15T10:00:00Z（与缺省扫描时刻同一天，7 天窗口内）。
+    private let t0 = Date(timeIntervalSince1970: 1_773_568_800)
+
+    private func varintBytes(_ value: UInt64) -> [UInt8] {
+        var value = value
+        var bytes: [UInt8] = []
+        repeat {
+            var byte = UInt8(value & 0x7F)
+            value >>= 7
+            if value != 0 { byte |= 0x80 }
+            bytes.append(byte)
+        } while value != 0
+        return bytes
+    }
+
+    /// steps.metadata protobuf 信封：field 1 = 发起 Timestamp、field 7 = 流式
+    /// 完成 Timestamp（field 1 键 0x0A、field 7 键 0x3A；与
+    /// `AntigravityStepTimestampTests` 同一款 varint 构造）。
+    private func stepMetadata(
+        startSeconds: UInt64,
+        startNanos: UInt64 = 0,
+        endSeconds: UInt64,
+        endNanos: UInt64 = 0
+    ) -> Data {
+        func timestamp(_ seconds: UInt64, _ nanos: UInt64) -> [UInt8] {
+            [0x08] + varintBytes(seconds) + [0x10] + varintBytes(nanos)
+        }
+        let start = timestamp(startSeconds, startNanos)
+        let end = timestamp(endSeconds, endNanos)
+        return Data([0x0A, UInt8(start.count)] + start + [0x3A, UInt8(end.count)] + end)
+    }
+
+    /// 建一个 `conversations/<sessionID>.db`（steps 表形态与真实 schema 的读取
+    /// 面一致：idx / step_type / metadata BLOB）。
+    @discardableResult
+    private func writeConversationDB(
+        _ fixture: Fixture,
+        sessionID: String,
+        steps: [(idx: Int, stepType: Int, metadata: Data?)]
+    ) throws -> URL {
+        let conversations = fixture.brainRoot.deletingLastPathComponent()
+            .appendingPathComponent("conversations", isDirectory: true)
+        try FileManager.default.createDirectory(at: conversations, withIntermediateDirectories: true)
+        let dbURL = conversations.appendingPathComponent("\(sessionID).db")
+
+        var database: OpaquePointer?
+        XCTAssertEqual(
+            sqlite3_open_v2(
+                dbURL.path,
+                &database,
+                SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE,
+                nil
+            ),
+            SQLITE_OK
+        )
+        guard let database else {
+            XCTFail("failed to create SQLite fixture")
+            return dbURL
+        }
+        defer { sqlite3_close(database) }
+        XCTAssertEqual(
+            sqlite3_exec(
+                database,
+                "CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, metadata BLOB);",
+                nil,
+                nil,
+                nil
+            ),
+            SQLITE_OK
+        )
+        var statement: OpaquePointer?
+        XCTAssertEqual(
+            sqlite3_prepare_v2(database, "INSERT INTO steps VALUES (?, ?, ?);", -1, &statement, nil),
+            SQLITE_OK
+        )
+        guard let statement else {
+            XCTFail("failed to prepare SQLite fixture insert")
+            return dbURL
+        }
+        defer { sqlite3_finalize(statement) }
+        let transient = unsafeBitCast(Int(-1), to: sqlite3_destructor_type.self)
+        for step in steps {
+            sqlite3_reset(statement)
+            sqlite3_bind_int64(statement, 1, Int64(step.idx))
+            sqlite3_bind_int64(statement, 2, Int64(step.stepType))
+            if let metadata = step.metadata {
+                metadata.withUnsafeBytes { bytes in
+                    sqlite3_bind_blob(statement, 3, bytes.baseAddress, Int32(metadata.count), transient)
+                }
+            } else {
+                sqlite3_bind_null(statement, 3)
+            }
+            XCTAssertEqual(sqlite3_step(statement), SQLITE_DONE)
+        }
+        return dbURL
+    }
+
+    private func sample(_ result: AgyLocalUsage, _ promptID: String) throws -> LocalTokenUsageSample {
+        try XCTUnwrap(result.recentSamples.first { $0.promptID == promptID }, "缺少样本 \(promptID)")
     }
 
     private func scan(
@@ -729,5 +836,252 @@ final class AgyLocalUsageScannerTests: XCTestCase {
             projection.perModel.keys.contains(ProviderHarnessProjection.unknownModelName),
             "无模型名的样本按 unknownModelName 分组（与现有兜底口径一致）"
         )
+    }
+
+    // MARK: - 单次调用时长（方案 A .db 真值 + 方案 B GENERIC 后继降级）
+
+    /// reader 层：steps.metadata 双 Timestamp（field 1 发起 / field 7 流式完成）
+    /// 的纳秒差解析。
+    func testStepTimestampReaderParsesStreamDurationFields() {
+        let metadata = stepMetadata(startSeconds: UInt64(t0.timeIntervalSince1970), endSeconds: UInt64(t0.timeIntervalSince1970) + 12, endNanos: 250_000_000)
+        let nanos = AntigravityStepTimestampReader.streamDurationNanosForTest(from: metadata)
+        XCTAssertEqual(nanos ?? 0, 12_250_000_000, accuracy: 0)
+
+        // field 7 缺失（旧 schema 只有发起时刻）→ nil，不产出时长。
+        let startMessage: [UInt8] = [0x08] + varintBytes(UInt64(t0.timeIntervalSince1970))
+        let startOnly = Data([0x0A, UInt8(startMessage.count)] + startMessage)
+        XCTAssertNil(AntigravityStepTimestampReader.streamDurationNanosForTest(from: startOnly))
+        // 坏 blob → nil。
+        XCTAssertNil(AntigravityStepTimestampReader.streamDurationNanosForTest(from: Data([0x08, 0x01])))
+    }
+
+    /// 方案 A：conversations/<session>.db 的 (step_type=15, idx==step_index) 映射
+    /// 直接给出真值时长，且优先于方案 B（同 step 存在 GENERIC 标记也不覆盖）；
+    /// .db 无匹配 idx 的计量行保持 nil。
+    func testConversationDBProvidesStepDurationAndTakesPrecedence() throws {
+        let fixture = makeFixture()
+        let epoch = UInt64(t0.timeIntervalSince1970)
+        writeSession(fixture, sessionID: "session-a", mainLines: [
+            agyLine(
+                type: "PLANNER_RESPONSE", createdAt: iso(t0), stepIndex: 1,
+                input: 10, cacheRead: 0, output: 5,
+                toolCalls: [["name": "read_file", "args": "{}"]]
+            ),
+            // 方案 B 标记（若被误用会得到 99s）：GENERIC 子工具步骤创建行。
+            agyLine(type: "GENERIC", status: "RUNNING", createdAt: iso(t0.addingTimeInterval(99)), stepIndex: 2, input: nil, cacheRead: nil, output: nil, content: nil),
+            // 纯文本终答：.db 无 idx=4 行、也无 tool_calls → 时长 nil。
+            agyLine(type: "PLANNER_RESPONSE", createdAt: iso(t0.addingTimeInterval(120)), stepIndex: 4, input: 7, cacheRead: 0, output: 1, content: "done")
+        ])
+        try writeConversationDB(fixture, sessionID: "session-a", steps: [
+            // 真值：f7 − f1 = 12.25s（纳秒精度）。
+            (idx: 1, stepType: 15, metadata: stepMetadata(startSeconds: epoch, endSeconds: epoch + 12, endNanos: 250_000_000)),
+            // 噪声：step_type 不是 15，查询必须过滤。
+            (idx: 2, stepType: 99, metadata: stepMetadata(startSeconds: epoch, endSeconds: epoch + 999)),
+            // 坏 metadata（缺 field 7）→ 不进映射。
+            (idx: 5, stepType: 15, metadata: Data([0x0A, 0x05, 0x08] + varintBytes(epoch)))
+        ])
+
+        let result = try scan(fixture)
+
+        let withDB = try sample(result, "session-a:step:1")
+        XCTAssertEqual(withDB.durationSeconds ?? 0, 12.25, accuracy: 0.0001, "方案 A 真值优先于方案 B")
+        let unmapped = try sample(result, "session-a:step:4")
+        XCTAssertNil(unmapped.durationSeconds, ".db 无匹配 idx 且无 tool_calls → 保持 nil")
+        XCTAssertEqual(result.eventCount, 2)
+    }
+
+    /// 方案 A 时长出 (0, 3600] 有效域 → 视为无效，落回方案 B 或保持 nil。
+    func testPlanADurationValidityDomain() throws {
+        let fixture = makeFixture()
+        let epoch = UInt64(t0.timeIntervalSince1970)
+        writeSession(fixture, sessionID: "session-a", mainLines: [
+            agyLine(type: "PLANNER_RESPONSE", createdAt: iso(t0), stepIndex: 1, input: 1, cacheRead: 0, output: 1),
+            agyLine(type: "PLANNER_RESPONSE", createdAt: iso(t0.addingTimeInterval(60)), stepIndex: 2, input: 1, cacheRead: 0, output: 1)
+        ])
+        try writeConversationDB(fixture, sessionID: "session-a", steps: [
+            // 恰好 3600s：闭区间上界，有效。
+            (idx: 1, stepType: 15, metadata: stepMetadata(startSeconds: epoch, endSeconds: epoch + 3_600)),
+            // 3600s + 1ns：超界，无效。
+            (idx: 2, stepType: 15, metadata: stepMetadata(startSeconds: epoch, endSeconds: epoch + 3_600, endNanos: 1))
+        ])
+
+        let result = try scan(fixture)
+
+        XCTAssertEqual(
+            try sample(result, "session-a:step:1").durationSeconds ?? 0, 3_600, accuracy: 0.0001,
+            "(0, 3600] 闭区间上界有效"
+        )
+        XCTAssertNil(
+            try sample(result, "session-a:step:2").durationSeconds,
+            "超出 3600s 的 .db 时长必须被丢弃"
+        )
+    }
+
+    /// 方案 B：.db 缺失时带 tool_calls 的 PLANNER_RESPONSE 用同会话首个
+    /// step_index 更大的 MODEL:GENERIC 行结算（近似真值）；纯文本终答
+    /// （无 tool_calls）不结算，保持 nil。
+    func testMissingConversationDBUsesGenericSuccessorFallback() throws {
+        let fixture = makeFixture()
+        writeSession(fixture, sessionID: "session-a", mainLines: [
+            agyLine(
+                type: "PLANNER_RESPONSE", createdAt: iso(t0), stepIndex: 1,
+                input: 10, cacheRead: 0, output: 5,
+                toolCalls: [["name": "edit_file", "args": "{\"path\":\"a.swift\"}"]]
+            ),
+            // 子工具步骤创建行（无 token 字段、中间态）。
+            agyLine(type: "GENERIC", status: "RUNNING", createdAt: iso(t0.addingTimeInterval(7)), stepIndex: 2, input: nil, cacheRead: nil, output: nil, content: nil),
+            // 纯文本终答（无 tool_calls）：即便后面有下一轮的 GENERIC 行也不结算。
+            agyLine(type: "PLANNER_RESPONSE", createdAt: iso(t0.addingTimeInterval(60)), stepIndex: 3, input: 7, cacheRead: 0, output: 1, content: "final"),
+            agyLine(type: "GENERIC", status: "RUNNING", createdAt: iso(t0.addingTimeInterval(69)), stepIndex: 4, input: nil, cacheRead: nil, output: nil, content: nil)
+        ])
+
+        let result = try scan(fixture)
+
+        XCTAssertEqual(
+            try sample(result, "session-a:step:1").durationSeconds ?? 0, 7, accuracy: 0.0001,
+            "GENERIC.created_at − planner.created_at（秒级近似）"
+        )
+        XCTAssertNil(
+            try sample(result, "session-a:step:3").durationSeconds,
+            "纯文本终答无 tool_calls，不产生 GENERIC 后继结算，保持 nil"
+        )
+        XCTAssertEqual(result.eventCount, 2)
+    }
+
+    /// 方案 B 只认 MODEL:GENERIC 标记行：下一轮 USER_INPUT 行与同 source 的
+    /// 非 GENERIC MODEL 行都不得用于结算。
+    func testNonGenericRowsDoNotSettlePlannerDuration() throws {
+        let fixture = makeFixture()
+        writeSession(fixture, sessionID: "session-a", mainLines: [
+            agyLine(
+                type: "PLANNER_RESPONSE", createdAt: iso(t0), stepIndex: 1,
+                input: 10, cacheRead: 0, output: 5,
+                toolCalls: [["name": "grep", "args": "{}"]]
+            ),
+            // 下一轮 USER_INPUT 行（字节级预过滤就进不了 consumeLine）。
+            agyLine(source: "USER", type: "USER_INPUT", createdAt: iso(t0.addingTimeInterval(100)), stepIndex: 2, input: nil, cacheRead: nil, output: nil),
+            // 带 "source":"MODEL" 但 type 不是 GENERIC 的行：不得当作标记。
+            agyLine(type: "PLANNER_RESPONSE", status: "RUNNING", createdAt: iso(t0.addingTimeInterval(200)), stepIndex: 3, input: nil, cacheRead: nil, output: nil, content: nil)
+        ])
+
+        let result = try scan(fixture)
+
+        XCTAssertNil(
+            try sample(result, "session-a:step:1").durationSeconds,
+            "USER_INPUT 与非 GENERIC 的 MODEL 行都不能结算时长"
+        )
+        XCTAssertEqual(result.eventCount, 1)
+    }
+
+    /// 方案 B 跨文件：planner 与其 GENERIC 后继被轮转拆到主文件 / 分块两侧
+    /// （主文件先于 chunks 解析）时仍正确配对——结算与文件处理顺序无关。
+    func testGenericSuccessorAcrossMainAndChunkFiles() throws {
+        let fixture = makeFixture()
+        // 主文件（新行）：GENERIC 标记 + 其后的新计量行。
+        writeSession(
+            fixture,
+            sessionID: "session-a",
+            mainLines: [
+                agyLine(type: "GENERIC", status: "RUNNING", createdAt: iso(t0.addingTimeInterval(7)), stepIndex: 2, input: nil, cacheRead: nil, output: nil, content: nil),
+                agyLine(type: "PLANNER_RESPONSE", createdAt: iso(t0.addingTimeInterval(60)), stepIndex: 3, input: 7, cacheRead: 0, output: 1, content: "next")
+            ],
+            // 分块（旧行）：planner 计量行在轮转边界被切进分块。
+            chunkLines: [
+                agyLine(
+                    type: "PLANNER_RESPONSE", createdAt: iso(t0), stepIndex: 1,
+                    input: 10, cacheRead: 0, output: 5,
+                    toolCalls: [["name": "read_file", "args": "{}"]]
+                )
+            ]
+        )
+
+        // 顺序约定：同一会话内主文件先于 chunks。
+        let urls = try AgyLocalUsageScanner.transcriptFileURLs(
+            in: fixture.brainRoot,
+            fileManager: FileManagerBox()
+        )
+        let snapshots = try urls.map { try AgyLogFileSnapshot(url: $0, fileManager: FileManagerBox()) }
+        let ordered = AgyLocalUsageScanner.orderedSessionFiles(snapshots)
+        XCTAssertEqual(
+            ordered.map(\.url.lastPathComponent),
+            ["transcript.jsonl", "00000000.jsonl"],
+            "主文件必须先于 chunks（路径排序下 chunks 在前，需要显式重排）"
+        )
+
+        let result = try scan(fixture)
+
+        XCTAssertEqual(
+            try sample(result, "session-a:step:1").durationSeconds ?? 0, 7, accuracy: 0.0001,
+            "标记先于 planner 被解析（主文件在前）也必须在会话结算期回配"
+        )
+        XCTAssertNil(try sample(result, "session-a:step:3").durationSeconds)
+    }
+
+    /// 方案 B 的 (0, 3600] 有效域：同秒（0）与超一小时（3601）不产出时长，
+    /// 1s 与恰好 3600s 有效。
+    func testFallbackDurationValidityDomain() throws {
+        let fixture = makeFixture()
+        func planner(_ step: Int, at time: Date, toolCalls: Bool) -> String {
+            agyLine(
+                type: "PLANNER_RESPONSE", createdAt: iso(time), stepIndex: step,
+                input: 1, cacheRead: 0, output: 1,
+                toolCalls: toolCalls ? [["name": "t", "args": "{}"]] : nil
+            )
+        }
+        func marker(_ step: Int, at time: Date) -> String {
+            agyLine(type: "GENERIC", status: "RUNNING", createdAt: iso(time), stepIndex: step, input: nil, cacheRead: nil, output: nil, content: nil)
+        }
+        writeSession(fixture, sessionID: "session-a", mainLines: [
+            planner(10, at: t0, toolCalls: true), marker(11, at: t0.addingTimeInterval(1)),
+            planner(20, at: t0, toolCalls: true), marker(21, at: t0),
+            planner(30, at: t0, toolCalls: true), marker(31, at: t0.addingTimeInterval(3_600)),
+            planner(40, at: t0, toolCalls: true), marker(41, at: t0.addingTimeInterval(3_601))
+        ])
+
+        let result = try scan(fixture)
+
+        XCTAssertEqual(try sample(result, "session-a:step:10").durationSeconds ?? 0, 1, accuracy: 0.0001)
+        XCTAssertNil(try sample(result, "session-a:step:20").durationSeconds, "同秒差为 0：无效域")
+        XCTAssertEqual(try sample(result, "session-a:step:30").durationSeconds ?? 0, 3_600, accuracy: 0.0001)
+        XCTAssertNil(try sample(result, "session-a:step:40").durationSeconds, "3601s 超界：无效域")
+    }
+
+    /// 缓存失效：v2 旧索引（无样本时长）必须被版本守卫一次性拒绝并全量重建，
+    /// 重建后的索引以 v3 落盘。
+    func testCacheVersionBumpRebuildsStaleV2Index() throws {
+        let fixture = makeFixture()
+        writeSession(
+            fixture,
+            sessionID: "session-a",
+            mainLines: [agyLine(createdAt: iso(t0), input: 10, cacheRead: 0, output: 5)]
+        )
+        // 手写一份 v2 旧格式索引（content 与真实文件集不符，若被采纳会短路出 99 个事件）。
+        let stale = AgyLocalUsage(
+            dailyTokenUsage: [],
+            models: [],
+            recentSamples: [],
+            sessionsRoot: "/stale",
+            sessionCount: 42,
+            eventCount: 99,
+            scannedAt: t0
+        )
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let snapshotJSON = try JSONSerialization.jsonObject(with: encoder.encode(stale))
+        let legacyIndex: [String: Any] = [
+            "version": 2,
+            "files": [] as [[String: Any]],
+            "snapshot": snapshotJSON,
+            "calendarSignature": LocalUsageCalendarSignature.make(fixture.calendar)
+        ]
+        try JSONSerialization.data(withJSONObject: legacyIndex).write(to: fixture.cacheDir, options: .atomic)
+
+        let result = try scan(fixture)
+
+        XCTAssertEqual(result.eventCount, 1, "v2 索引必须被拒绝，按真实文件重新聚合")
+        let saved = try JSONSerialization.jsonObject(with: Data(contentsOf: fixture.cacheDir)) as? [String: Any]
+        XCTAssertEqual(saved?["version"] as? Int, 3, "重建后的索引以 v3 落盘")
+        let rebuilt = try sample(result, "session-a:step:1")
+        XCTAssertNil(rebuilt.durationSeconds, "无 .db、无 GENERIC 标记的行时长保持 nil（重建路径不炸）")
     }
 }

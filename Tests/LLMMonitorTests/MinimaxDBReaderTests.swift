@@ -284,6 +284,177 @@ final class MinimaxDBReaderTests: XCTestCase {
         let daily = aggregate.perDay.values.first
         XCTAssertEqual(daily?.reasoningTokens, 100, "单行同时有 native(50) + raw(100) 时，SQL perRowReasoningExpr 应取 MAX (100)")
     }
+
+    // MARK: - request_duration_ms 回填（durationSeconds FIFO 配对）
+
+    /// 正常 1:1 回填：同 (session_id, turn_id) 的 message 行按 FIFO 配对到账本行，
+    /// `$.usage.request_duration_ms` / 1000 写入 `durationSeconds`；跨 turn 互不串。
+    func testV2DurationBackfillPairsFIFOAcrossTurns() throws {
+        let base = Int64(Date().timeIntervalSince1970 * 1000)
+        let databaseURL = try makeV2Database(
+            tokenRows: [
+                TokenRow(sessionID: "s1", turnID: "turn-a", timestampMs: base,
+                         input: 100, output: 50, reasoning: 0, cacheRead: 10, cacheWrite: 0, raw: nil),
+                TokenRow(sessionID: "s1", turnID: "turn-a", timestampMs: base + 1_000,
+                         input: 200, output: 80, reasoning: 0, cacheRead: 20, cacheWrite: 0, raw: nil),
+                TokenRow(sessionID: "s1", turnID: "turn-b", timestampMs: base + 2_000,
+                         input: 300, output: 120, reasoning: 0, cacheRead: 30, cacheWrite: 0, raw: nil),
+            ],
+            messageRows: [
+                MessageRow(sessionID: "s1", messageID: "m1", timestampMs: base + 10,
+                           data: assistantUsageJSON(input: 100, output: 50, durationMs: 12_345),
+                           turnID: "turn-a"),
+                MessageRow(sessionID: "s1", messageID: "m2", timestampMs: base + 1_010,
+                           data: assistantUsageJSON(input: 200, output: 80, durationMs: 23_456),
+                           turnID: "turn-a"),
+                MessageRow(sessionID: "s1", messageID: "m3", timestampMs: base + 2_010,
+                           data: assistantUsageJSON(input: 300, output: 120, durationMs: 34_567),
+                           turnID: "turn-b"),
+            ]
+        )
+        defer { try? FileManager.default.removeItem(at: databaseURL) }
+
+        let reader = try MinimaxDBReader(path: databaseURL)
+        defer { reader.close() }
+        let aggregate = try reader.aggregate(calendar: .current)
+
+        XCTAssertEqual(aggregate.samples.count, 3)
+        XCTAssertEqual(aggregate.samples[0].durationSeconds, 12.345)
+        XCTAssertEqual(aggregate.samples[1].durationSeconds, 23.456)
+        XCTAssertEqual(aggregate.samples[2].durationSeconds, 34.567)
+        // 主账本字段不受回填影响。
+        XCTAssertEqual(aggregate.samples[0].inputTokens, 110, "uncached 100 + cacheRead 10")
+        XCTAssertEqual(aggregate.samples[0].outputTokens, 50)
+    }
+
+    /// 核对失败的条目按序丢弃，不阻塞同 turn 后续 FIFO 配对（防空行 / 错位把
+    /// 时长安到错误的调用上）。
+    func testV2DurationBackfillSkipsMismatchedEntryAndKeepsFIFOOrder() throws {
+        let base = Int64(Date().timeIntervalSince1970 * 1000)
+        let databaseURL = try makeV2Database(
+            tokenRows: [
+                TokenRow(sessionID: "s1", turnID: "turn-a", timestampMs: base,
+                         input: 100, output: 50, reasoning: 0, cacheRead: 0, cacheWrite: 0, raw: nil),
+                TokenRow(sessionID: "s1", turnID: "turn-a", timestampMs: base + 1_000,
+                         input: 200, output: 80, reasoning: 0, cacheRead: 0, cacheWrite: 0, raw: nil),
+            ],
+            messageRows: [
+                // 第一条 token 核对失败（如属于窗口外的账本行）→ 丢弃，继续向后配对。
+                MessageRow(sessionID: "s1", messageID: "m1", timestampMs: base + 10,
+                           data: assistantUsageJSON(input: 999, output: 999, durationMs: 11_111),
+                           turnID: "turn-a"),
+                MessageRow(sessionID: "s1", messageID: "m2", timestampMs: base + 20,
+                           data: assistantUsageJSON(input: 100, output: 50, durationMs: 12_345),
+                           turnID: "turn-a"),
+                MessageRow(sessionID: "s1", messageID: "m3", timestampMs: base + 1_010,
+                           data: assistantUsageJSON(input: 200, output: 80, durationMs: 23_456),
+                           turnID: "turn-a"),
+            ]
+        )
+        defer { try? FileManager.default.removeItem(at: databaseURL) }
+
+        let reader = try MinimaxDBReader(path: databaseURL)
+        defer { reader.close() }
+        let aggregate = try reader.aggregate(calendar: .current)
+
+        XCTAssertEqual(aggregate.samples.count, 2)
+        XCTAssertEqual(aggregate.samples[0].durationSeconds, 12.345, "核对失败的 m1 被丢弃，样本拿到第二条的时长")
+        XCTAssertEqual(aggregate.samples[1].durationSeconds, 23.456)
+    }
+
+    /// 空行（`$.usage` 整体缺失）永不匹配；命中的条目缺 `request_duration_ms`
+    /// 或值为 0 时 `durationSeconds` 保持 nil（时长未知 ≠ 0）。
+    func testV2DurationBackfillEmptyRowAndMissingOrZeroDurationGivesNil() throws {
+        let base = Int64(Date().timeIntervalSince1970 * 1000)
+        let databaseURL = try makeV2Database(
+            tokenRows: [
+                TokenRow(sessionID: "s1", turnID: "turn-a", timestampMs: base,
+                         input: 100, output: 50, reasoning: 0, cacheRead: 0, cacheWrite: 0, raw: nil),
+                TokenRow(sessionID: "s1", turnID: "turn-b", timestampMs: base + 1_000,
+                         input: 200, output: 80, reasoning: 0, cacheRead: 0, cacheWrite: 0, raw: nil),
+                TokenRow(sessionID: "s1", turnID: "turn-c", timestampMs: base + 2_000,
+                         input: 300, output: 120, reasoning: 0, cacheRead: 0, cacheWrite: 0, raw: nil),
+            ],
+            messageRows: [
+                // turn-a：队头空行（无 usage 字段）被丢弃，第二条命中但缺 request_duration_ms。
+                MessageRow(sessionID: "s1", messageID: "m1", timestampMs: base + 10,
+                           data: "{\"thinking_content\":\"t\"}",
+                           turnID: "turn-a"),
+                MessageRow(sessionID: "s1", messageID: "m2", timestampMs: base + 20,
+                           data: assistantUsageJSON(input: 100, output: 50, durationMs: nil),
+                           turnID: "turn-a"),
+                // turn-b：request_duration_ms = 0 → nil。
+                MessageRow(sessionID: "s1", messageID: "m3", timestampMs: base + 1_010,
+                           data: assistantUsageJSON(input: 200, output: 80, durationMs: 0),
+                           turnID: "turn-b"),
+                // turn-c：无 message 行 → 队列耗尽 → nil。
+            ]
+        )
+        defer { try? FileManager.default.removeItem(at: databaseURL) }
+
+        let reader = try MinimaxDBReader(path: databaseURL)
+        defer { reader.close() }
+        let aggregate = try reader.aggregate(calendar: .current)
+
+        XCTAssertEqual(aggregate.samples.count, 3)
+        XCTAssertNil(aggregate.samples[0].durationSeconds, "命中条目缺 request_duration_ms → nil")
+        XCTAssertNil(aggregate.samples[1].durationSeconds, "request_duration_ms = 0 → nil")
+        XCTAssertNil(aggregate.samples[2].durationSeconds, "无 message 行 → nil")
+    }
+
+    /// 故障隔离：message 表坏 schema（缺 `data_json` 列，`breakMessageTableSchema`
+    /// 既有模式）时时长回填查询失败，但不 throw、主 token 账本与样本字段全部
+    /// 原样保留（durationSeconds 保持 nil）；字符聚合照旧置 degraded。
+    func testV2DurationSQLFailureKeepsSamplesUnaffected() throws {
+        let base = Int64(Date().timeIntervalSince1970 * 1000)
+        let databaseURL = try makeV2Database(
+            tokenRows: [TokenRow(sessionID: "s1", turnID: "turn-a", timestampMs: base,
+                                 input: 100, output: 50, reasoning: 0, cacheRead: 20, cacheWrite: 0, raw: nil)]
+        )
+        defer { try? FileManager.default.removeItem(at: databaseURL) }
+        try breakMessageTableSchema(at: databaseURL)
+
+        let reader = try MinimaxDBReader(path: databaseURL)
+        defer { reader.close() }
+        let aggregate = try reader.aggregate(calendar: .current)
+
+        XCTAssertEqual(aggregate.samples.count, 1, "样本路径不受时长查询失败影响")
+        XCTAssertEqual(aggregate.samples[0].inputTokens, 120)
+        XCTAssertEqual(aggregate.samples[0].outputTokens, 50)
+        XCTAssertNil(aggregate.samples[0].durationSeconds, "时长查询失败 → durationSeconds 保持 nil")
+        XCTAssertTrue(aggregate.charAggregationDegraded, "字符聚合的 degraded 语义保持不变")
+        let day = try XCTUnwrap(aggregate.perDay.values.first)
+        XCTAssertEqual(day.inputTokens, 100)
+        XCTAssertEqual(day.outputTokens, 50)
+    }
+
+    /// FIFO 弹出 + 双核对的纯逻辑契约：缺 usage 的空行永不匹配；核对失败按序
+    /// 丢弃；命中即停（不吞后续条目）；命中条目缺时长返回 nil；队列耗尽 → nil。
+    func testVerifiedDurationPopsFIFOUntilTokenMatch() {
+        func entry(input: Int?, output: Int?, seconds: Double?) -> MinimaxMessageDurationEntry {
+            MinimaxMessageDurationEntry(inputTokens: input, outputTokens: output, durationSeconds: seconds)
+        }
+
+        var queue = [
+            entry(input: nil, output: nil, seconds: 1.0),   // 空行：永不匹配
+            entry(input: 999, output: 999, seconds: 2.0),   // 核对失败：丢弃
+            entry(input: 100, output: 50, seconds: 3.5),    // 命中
+            entry(input: 100, output: 50, seconds: 9.9),    // 命中后必须留在队列
+        ]
+        XCTAssertEqual(
+            MinimaxDBReader.verifiedDuration(from: &queue, ledgerInputTokens: 100, ledgerOutputTokens: 50),
+            3.5
+        )
+        XCTAssertEqual(queue, [entry(input: 100, output: 50, seconds: 9.9)], "命中即停，后续条目留给下一个样本")
+
+        var exhausted = [entry(input: 1, output: 1, seconds: 1.0)]
+        XCTAssertNil(MinimaxDBReader.verifiedDuration(from: &exhausted, ledgerInputTokens: 100, ledgerOutputTokens: 50))
+        XCTAssertTrue(exhausted.isEmpty, "队列耗尽仍无匹配 → nil，条目按序丢弃")
+
+        var noDuration = [entry(input: 100, output: 50, seconds: nil)]
+        XCTAssertNil(MinimaxDBReader.verifiedDuration(from: &noDuration, ledgerInputTokens: 100, ledgerOutputTokens: 50))
+        XCTAssertTrue(noDuration.isEmpty, "命中但缺时长 → nil，条目仍被消费")
+    }
 }
 
 // MARK: - v2 DB fixture（与 MinimaxLocalUsageScannerTests 共用）
@@ -350,6 +521,9 @@ struct MessageRow {
     let messageID: String
     let timestampMs: Int64
     let data: String
+    /// message 行的 `turn_id`。生产数据（2026-08-15 迁移后）与账本行 100% 同
+    /// UUID；时长回填只配对非空 turn_id。缺省 nil（NULL，不参与配对）。
+    var turnID: String? = nil
 }
 
 func makeV2Database(
@@ -480,8 +654,8 @@ func makeV2Database(
     for row in messageRows {
         let sql = """
         INSERT INTO local_runtime_message_rows
-          (session_id, msg_id, role, created_at_ms, data_json)
-        VALUES (?, ?, 'assistant', ?, ?)
+          (session_id, msg_id, role, turn_id, created_at_ms, data_json)
+        VALUES (?, ?, 'assistant', ?, ?, ?)
         """
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK,
@@ -491,8 +665,13 @@ func makeV2Database(
         defer { sqlite3_finalize(statement) }
         sqlite3_bind_text(statement, 1, row.sessionID, -1, transientDestructor)
         sqlite3_bind_text(statement, 2, row.messageID, -1, transientDestructor)
-        sqlite3_bind_int64(statement, 3, row.timestampMs)
-        sqlite3_bind_text(statement, 4, row.data, -1, transientDestructor)
+        if let turnID = row.turnID {
+            sqlite3_bind_text(statement, 3, turnID, -1, transientDestructor)
+        } else {
+            sqlite3_bind_null(statement, 3)
+        }
+        sqlite3_bind_int64(statement, 4, row.timestampMs)
+        sqlite3_bind_text(statement, 5, row.data, -1, transientDestructor)
         XCTAssertEqual(sqlite3_step(statement), SQLITE_DONE)
     }
     return databaseURL
@@ -526,6 +705,17 @@ private func jsonString(_ value: String) -> String {
     "\"" + value
         .replacingOccurrences(of: "\\", with: "\\\\")
         .replacingOccurrences(of: "\"", with: "\\\"") + "\""
+}
+
+/// assistant 行 `data_json` 的 `$.usage` 夹具：字段按需出现（nil = 整个字段缺失，
+/// 模拟空行 / 旧 schema 行），与生产 `$.usage.input_tokens` / `$.usage.output_tokens`
+/// / `$.usage.request_duration_ms` 的键名逐字一致。
+private func assistantUsageJSON(input: Int?, output: Int?, durationMs: Int?) -> String {
+    var fields: [String] = []
+    if let input { fields.append("\"input_tokens\":\(input)") }
+    if let output { fields.append("\"output_tokens\":\(output)") }
+    if let durationMs { fields.append("\"request_duration_ms\":\(durationMs)") }
+    return "{\"usage\":{" + fields.joined(separator: ",") + "}}"
 }
 
 /// 把 message 表替换成缺 `data_json` 列的坏 schema，让字符聚合 SQL 确定性失败。

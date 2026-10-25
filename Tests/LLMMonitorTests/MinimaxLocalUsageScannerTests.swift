@@ -24,7 +24,7 @@ final class MinimaxLocalUsageScannerTests: XCTestCase {
             turns: 1, rounds: 2
         )
         let index = MinimaxLocalUsageScanner.CacheIndex(
-            version: 15,
+            version: 16,
             lastScannedAt: now,
             sources: ["runtime": MinimaxLocalUsageScanner.SourceIndexEntry(
                 mtimeMs: 1, sizeBytes: 2, walMtimeMs: 0, walSizeBytes: 0,
@@ -97,7 +97,7 @@ final class MinimaxLocalUsageScannerTests: XCTestCase {
             reasoningOutputTokens: 0
         )
         let index = MinimaxLocalUsageScanner.CacheIndex(
-            version: 15,
+            version: 16,
             lastScannedAt: now.addingTimeInterval(-60),
             sources: ["runtime": MinimaxLocalUsageScanner.SourceIndexEntry(
                 mtimeMs: mtimeMs,              // 新鲜指纹 → 不 dirty、不走 SQL
@@ -245,6 +245,38 @@ final class MinimaxLocalUsageScannerTests: XCTestCase {
         )
     }
 
+    /// `applyReasoningSplit(samples:)` 重建 sample 时必须原样带回 durationSeconds：
+    /// 丢了会退化成 nil，该样本在窗口 tok/s 的分子分母里都不计，速率分母被算小。
+    func testApplyReasoningSplitPreservesDurationSeconds() {
+        let day = Calendar.current.startOfDay(for: Date())
+        let sample = LocalTokenUsageSample(
+            completedAt: day.addingTimeInterval(3_600),
+            modelName: "MiniMax-M3",
+            promptID: "s:turn-1",
+            inputTokens: 100,
+            cachedInputTokens: 0,
+            outputTokens: 1000,
+            reasoningOutputTokens: 0,
+            durationSeconds: 12.5
+        )
+        let rawPerDay = [day: MinimaxDailyUsage(dayStart: day, outputTokens: 1000)]
+        let adjustedPerDay = [day: MinimaxDailyUsage(
+            dayStart: day, outputTokens: 250, reasoningTokens: 750
+        )]
+
+        let split = MinimaxLocalUsageScanner.applyReasoningSplit(
+            samples: [sample],
+            rawPerDay: rawPerDay,
+            adjustedPerDay: adjustedPerDay,
+            calendar: .current
+        )
+
+        XCTAssertEqual(split.count, 1)
+        XCTAssertEqual(split[0].reasoningOutputTokens, 750, "分摊比例按 per-day 750/1000")
+        XCTAssertEqual(split[0].outputTokens, 250)
+        XCTAssertEqual(split[0].durationSeconds, 12.5, "durationSeconds 必须原样保留")
+    }
+
     func testV2CacheMigrationResetsLegacySourceData() throws {
         let cacheDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("minimax-v2-cache-\(UUID().uuidString)", isDirectory: true)
@@ -265,7 +297,7 @@ final class MinimaxLocalUsageScannerTests: XCTestCase {
             cacheDir: cacheDir,
             fileManager: FileManagerBox()
         )
-        XCTAssertEqual(current.version, 15)
+        XCTAssertEqual(current.version, 16)
         XCTAssertTrue(current.sources.isEmpty)
         XCTAssertTrue(current.dailyBySource.isEmpty)
         XCTAssertEqual(current.samplesBySource, [:])

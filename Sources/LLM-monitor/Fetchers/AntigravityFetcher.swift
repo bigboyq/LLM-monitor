@@ -117,6 +117,12 @@ struct AntigravityFetcher: QuotaFetcher {
         /// 分量名（input/output/cacheRead/reasoning）。随事件带回调用方，由
         /// scanner 聚合点按 session 去重后告警（本层不再逐事件 logWarn）。
         let missingComponents: [String]?
+        /// 单次 LLM 调用的原生耗时（秒）：RPC 在 `chatModel` 下携带
+        /// `timeToFirstToken` + `streamingDuration` 两个 Protobuf Duration，
+        /// 两者之和即「发起→完成，含 TTFT、不含工具执行」。与
+        /// `LocalTokenUsageSample.durationSeconds` 同一口径；任一分量缺失或
+        /// 和 ≤ 0 时为 nil（见 `parseUsageEvent` 的提取规则）。
+        let durationSeconds: Double?
 
         init(
             timestamp: Date?,
@@ -128,7 +134,8 @@ struct AntigravityFetcher: QuotaFetcher {
             reasoningTokens: Int,
             totalTokens: Int,
             stepIndices: [Int]? = nil,
-            missingComponents: [String]? = nil
+            missingComponents: [String]? = nil,
+            durationSeconds: Double? = nil
         ) {
             self.timestamp = timestamp
             self.model = model
@@ -140,6 +147,7 @@ struct AntigravityFetcher: QuotaFetcher {
             self.totalTokens = totalTokens
             self.stepIndices = stepIndices
             self.missingComponents = missingComponents
+            self.durationSeconds = durationSeconds
         }
 
         func withTimestamp(_ timestamp: Date) -> UsageEvent {
@@ -153,7 +161,8 @@ struct AntigravityFetcher: QuotaFetcher {
                 reasoningTokens: reasoningTokens,
                 totalTokens: totalTokens,
                 stepIndices: stepIndices,
-                missingComponents: missingComponents
+                missingComponents: missingComponents,
+                durationSeconds: durationSeconds
             )
         }
     }
@@ -266,6 +275,10 @@ struct AntigravityFetcher: QuotaFetcher {
     ///   白名单。候选按 key 语义、嵌套深度和日期排序，结果不受 JSON 字段遍历顺序
     ///   影响；duration / latency / time_to_first_token 等耗时字段不会参与匹配。
     ///   `parseTimestamp` 同时限制日期必须落在合理的现代 epoch 范围内。
+    /// - durationSeconds：`chatModel` 下的 `timeToFirstToken` + `streamingDuration`
+    ///   两个 Protobuf Duration 单列提取（键名「仅字母归一」匹配，见
+    ///   `nativeCallDurationComponent`），之和 > 0 才随事件带出；其他耗时字段
+    ///   （`generation_time_ms` 等）一律忽略。
     /// - model：只在顶层取，避免把嵌套层的 model 列表（数组）当主 model。
     /// - token 数字：每一类取递归遍历中出现的最大值，而不是把不同嵌套层相加。
     ///   RPC 的若干版本会在 wrapper 和 usage 对象中重复携带同一份计数；累加会
@@ -290,6 +303,11 @@ struct AntigravityFetcher: QuotaFetcher {
         var extractedStepIndices: [Int]? = nil
         var timestampCandidates: [(priority: Int, depth: Int, date: Date)] = []
         var modelCandidates: [(priority: Int, depth: Int, value: String)] = []
+        // 原生调用耗时的两个分量（秒）。真实响应在每条 generatorMetadata 的
+        // chatModel 下携带 Protobuf Duration 字符串；与 token 计数同款「取最大」
+        // 策略应对 wrapper 层重复携带同一份值。
+        var timeToFirstTokenSeconds: Double? = nil
+        var streamingDurationSeconds: Double? = nil
 
         func visit(_ value: AnyJSON, depth: Int) {
             guard depth < 32 else { return }
@@ -313,6 +331,19 @@ struct AntigravityFetcher: QuotaFetcher {
                     if let priority = Self.timestampPriority(forKey: lower),
                        let parsed = Self.parseTimestamp(child) {
                         timestampCandidates.append((priority, depth, parsed))
+                    }
+                    // 单次调用耗时（TTFT / streaming）：键名经「仅字母归一」完整
+                    // 匹配，camelCase / snake_case 都命中；`timestampPriority` 的
+                    // 白名单刻意不含这两个键（"time" 只做完整字符串匹配，不会把
+                    // timetofirsttoken 误当事件时间），token 正则对字符串值也不
+                    // 命中，因此这里单列提取不影响任何既有归类。
+                    if let seconds = Self.nativeCallDurationComponent(forKey: lower, value: child) {
+                        switch seconds.key {
+                        case .timeToFirstToken:
+                            timeToFirstTokenSeconds = max(timeToFirstTokenSeconds ?? 0, seconds.value)
+                        case .streamingDuration:
+                            streamingDurationSeconds = max(streamingDurationSeconds ?? 0, seconds.value)
+                        }
                     }
                     // generator metadata 的真实响应会把 model 放在
                     // metadata.chatModel.model 等嵌套层级。旧逻辑只读顶层，
@@ -410,6 +441,15 @@ struct AntigravityFetcher: QuotaFetcher {
         guard finalTotal > 0 || cacheWriteTokens > 0 else {
             return nil
         }
+        // durationSeconds：两个分量之和（分量在提取处已保证 > 0）。任一分量缺失
+        // 时以另一分量为和（不影响合法性）；两者全缺 → nil，和 ≤ 0 → nil。
+        let durationSeconds: Double?
+        if timeToFirstTokenSeconds != nil || streamingDurationSeconds != nil {
+            let total = (timeToFirstTokenSeconds ?? 0) + (streamingDurationSeconds ?? 0)
+            durationSeconds = total > 0 ? total : nil
+        } else {
+            durationSeconds = nil
+        }
         return UsageEvent(
             timestamp: timestamp,
             model: model,
@@ -420,8 +460,51 @@ struct AntigravityFetcher: QuotaFetcher {
             reasoningTokens: reasoningTokens,
             totalTokens: finalTotal,
             stepIndices: extractedStepIndices,
-            missingComponents: missingComponents
+            missingComponents: missingComponents,
+            durationSeconds: durationSeconds
         )
+    }
+
+    /// 原生调用耗时分量键（`GetCascadeTrajectoryGeneratorMetadata` 响应中
+    /// `chatModel` 下的两个 Protobuf Duration 字段；实测 60,373 条事件 100% 携带，
+    /// 两者之和与 steps 表 DONE−createdAt 亚毫秒吻合）。
+    private nonisolated enum NativeCallDurationKey {
+        case timeToFirstToken
+        case streamingDuration
+    }
+
+    /// 耗时键匹配 + 值解析。键名经「仅字母归一」后做完整字符串匹配（与
+    /// `timestampPriority` 同款归一化，camelCase / snake_case / kebab-case 统一），
+    /// 因此 `timeToFirstToken` / `time_to_first_token` 都命中，而 `generationTimeMs`
+    /// 等其他耗时字段不会误入。值支持 Protobuf Duration 字符串（`"11.669597334s"`，
+    /// 去掉尾部 `s` 后按十进制秒解析）与裸数字（秒）。非正 / 非有限的值按缺失
+    /// 处理（返回 nil），由调用方的「和 > 0」门控决定事件是否携带时长。
+    private nonisolated static func nativeCallDurationComponent(
+        forKey key: String,
+        value: AnyJSON
+    ) -> (key: NativeCallDurationKey, value: Double)? {
+        let normalized = key.filter(\.isLetter).lowercased()
+        let durationKey: NativeCallDurationKey
+        switch normalized {
+        case "timetofirsttoken":
+            durationKey = .timeToFirstToken
+        case "streamingduration":
+            durationKey = .streamingDuration
+        default:
+            return nil
+        }
+        let rawSeconds: Double?
+        if let text = value.stringValue {
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let withoutSuffix = trimmed.hasSuffix("s") ? String(trimmed.dropLast()) : trimmed
+            rawSeconds = Double(withoutSuffix)
+        } else {
+            rawSeconds = value.doubleValue
+        }
+        guard let seconds = rawSeconds, seconds.isFinite, seconds > 0 else {
+            return nil
+        }
+        return (durationKey, seconds)
     }
 
     /// 明确模型字段优先于包含 "model" 的兼容字段；深度只作为同优先级的

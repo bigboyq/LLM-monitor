@@ -73,6 +73,11 @@ extension AntigravityLocalUsageScanner {
     /// 把 events 按本地自然日分组聚合。
     /// 没有 timestamp 的事件跳过（没法归到任何一天）。
     ///
+    /// raw→桶与 `makeSample` 同走 `TokenAccountingCatalog.antigravity` 唯一入口：
+    /// RPC 的 `outputTokens` 已含思考（`== thinkingOutputTokens + responseOutputTokens`），
+    /// 规范化 Output = rawOutput − reasoning、Reason = reasoning，daily 四桶才与
+    /// sample / 计价口径守恒（`totalTokens` = 四桶和，不含 cacheWrite 簿记）。
+    ///
     /// `counts` 可传入调用方已经预算好的 per-day turns/rounds（避免 scanner 成功分支里
     /// 把同一份 counts 再叠加一次造成双倍计数）；未传时由本函数自行计算，保持原有契约。
     nonisolated static func aggregateDaily(
@@ -86,6 +91,12 @@ extension AntigravityLocalUsageScanner {
             guard let timestamp = event.timestamp else { continue }
             let dayStart = calendar.startOfDay(for: timestamp)
             let key = LocalUsageDayKey.make(dayStart, calendar: calendar)
+            let buckets = TokenAccountingCatalog.antigravity.normalizedBuckets(
+                rawInput: event.inputTokens,
+                cacheRead: event.cacheReadTokens,
+                rawOutput: event.outputTokens,
+                rawReasoning: event.reasoningTokens
+            )
             let existing = byDay[key] ?? AntigravityDailyUsage(
                 dayStart: dayStart,
                 turns: resolvedCounts.perDay[dayStart]?.turns ?? 0,
@@ -93,12 +104,13 @@ extension AntigravityLocalUsageScanner {
             )
             byDay[key] = AntigravityDailyUsage(
                 dayStart: dayStart,
-                inputTokens: SaturatingArithmetic.add(existing.inputTokens, event.inputTokens),
-                outputTokens: SaturatingArithmetic.add(existing.outputTokens, event.outputTokens),
-                cacheReadTokens: SaturatingArithmetic.add(existing.cacheReadTokens, event.cacheReadTokens),
+                inputTokens: SaturatingArithmetic.add(existing.inputTokens, buckets.input),
+                outputTokens: SaturatingArithmetic.add(existing.outputTokens, buckets.output),
+                cacheReadTokens: SaturatingArithmetic.add(existing.cacheReadTokens, buckets.cacheRead),
+                // cacheWrite 是缓存簿记，在四桶规范化之外原样保留诊断值。
                 cacheWriteTokens: SaturatingArithmetic.add(existing.cacheWriteTokens, event.cacheWriteTokens),
-                reasoningTokens: SaturatingArithmetic.add(existing.reasoningTokens, event.reasoningTokens),
-                totalTokens: SaturatingArithmetic.add(existing.totalTokens, event.totalTokens),
+                reasoningTokens: SaturatingArithmetic.add(existing.reasoningTokens, buckets.reasoning),
+                totalTokens: SaturatingArithmetic.add(existing.totalTokens, buckets.totalTokens),
                 turns: existing.turns,
                 rounds: existing.rounds
             )
@@ -238,6 +250,9 @@ extension AntigravityLocalUsageScanner {
             rawOutput: event.outputTokens,
             rawReasoning: event.reasoningTokens
         )
+        // timestamp 缺失落 .distantPast 的兜底样本不携带时长：RPC duration 与
+        // timestamp 同源于一次真实调用，时间戳都无法归日的事件其时长也不可信。
+        let durationSeconds = event.timestamp == nil ? nil : event.durationSeconds
         return LocalTokenUsageSample(
             completedAt: event.timestamp ?? .distantPast,
             modelName: event.model,
@@ -245,7 +260,8 @@ extension AntigravityLocalUsageScanner {
             inputTokens: buckets.cacheInclusiveInput,
             cachedInputTokens: buckets.cacheRead,
             outputTokens: buckets.output,
-            reasoningOutputTokens: buckets.reasoning
+            reasoningOutputTokens: buckets.reasoning,
+            durationSeconds: durationSeconds
         )
     }
 

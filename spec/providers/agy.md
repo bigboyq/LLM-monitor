@@ -54,6 +54,41 @@ sample 层遵守 `LocalTokenUsageSample` 历史语义：`inputTokens` 存 cache-
 `TokenUsageBuckets.fromSample` 还原拆分。agy transcript 没有 cacheWrite 字段，
 统一估算层自然也不涉及。
 
+## 单次调用时长（durationSeconds）
+
+样本的 `durationSeconds`（发起 → 流式完成，不含工具执行，与
+`AntigravityFetcher` 的 RPC 口径同域）按会话两级来源解析：
+
+**方案 A（真值）**：`~/.gemini/antigravity-cli/conversations/<session>.db` 与
+brain 会话目录 100% 一一对应（91/91 实测）。`.db` 的 `steps` 表 `step_type = 15`
+行的 `metadata` protobuf 携带两个 Timestamp：field 1 = 该 step 的**发起**时刻
+（与 transcript 行 `created_at` 同值，整秒），field 7 = **流式完成**时刻（纳秒级）。
+`AntigravityStepTimestampReader.llmStepStreamDurationNanos` 把全部 LLM steps 的
+`f7 − f1` 纳秒差按 `idx` 收成映射（SQLite 经 `SQLiteTempCopy.read` 打开，与
+antigravity timestamp fallback 同一 READONLY / WAL 竞态纪律），scanner 过
+(0, 3600] 有效域后按 `idx == step_index` 供给计量行。覆盖 100%（含纯文本终答），
+91 库全扫实测 ~110ms。
+
+**方案 B（降级）**：`.db` 缺失 / 打不开 / 表缺失 / 该行无匹配 idx 时，带
+`tool_calls` 的 `MODEL:PLANNER_RESPONSE:DONE`（step_index=s）流式结束后，agy
+立即创建子工具步骤 `MODEL:GENERIC`（step_index=g>s，通常是中间态、无 token
+字段），其 `created_at` 恰为流式完成整秒 ⌊f7⌋。结算取 step_index 大于 s 的
+**最小** GENERIC 标记，`duration = ⌊f7⌋ − ⌊f1⌋`（秒级，与真值差 3.7%，覆盖
+94.28%），过 (0, 3600] 有效域。纯文本终答（无 tool_calls）无 GENERIC 后继，
+保持 nil——USER_INPUT 行进不了字节级预过滤、带 `"source":"MODEL"` 但 type 非
+GENERIC 的行也不作为标记，都不会误食。字节级 `"source":"MODEL"` 预过滤天然
+同时覆盖 PLANNER_RESPONSE 与 GENERIC 两类行。planner 与标记被轮转拆到主文件 /
+分块两侧时仍正确配对：方案 B 在会话全部文件解析完后结算（`AgySessionDurationContext`
+暂存 + `fallbackDurations`），与文件处理顺序无关；同一会话内主文件
+`transcript.jsonl` 先于 `chunks/transcript/*.jsonl` 解析是确定性约定
+（`AgyLocalUsageScanner.orderedSessionFiles`，路径排序下 chunks 恰好在主文件之前，需显式重排）。
+
+**禁止前驱差分**：transcript `created_at` 是整秒级且记录的是该 step 的**发起**
+时刻 ⌊f1⌋（不是完成时刻），`row[i] − row[i−1]` 仅 21.8% 落入有效域，完全失真。
+
+缓存：指纹缓存升级 `AgyCacheIndex` v3——旧 v2 快照无样本时长，版本不匹配
+一次性失效重建（无迁移路径，与 v1 → v2 同款）。
+
 ## Provider mapping
 
 | Card | 归属模式 |
@@ -109,12 +144,12 @@ Recent samples 的 promptID 以裸格式落盘；`agy:` 命名空间由帧构造
   尾部数据永久缺失。单文件行数超过预算（`maxSessionFiles × 10_000` 行）同样
   必须抛错（`AgyLineBudgetExceededError`）：超预算文件按失败隔离（partial），
   不入指纹，下一轮重试，而不是静默半结果入库。
-- 指纹缓存 `AgyCacheIndex` v2（per-file mtime/size 指纹 + **cli log 时间线签名**
+- 指纹缓存 `AgyCacheIndex` v3（per-file mtime/size 指纹 + **cli log 时间线签名**
   + 全量快照 + 日历签名）：指纹含 transcript 文件与时间线签名两部分，任一变化
   都触发重聚合（log-only 变化由此刷新模型名）；全部未变只做 midnight rebase
   （按当前日历重算 7 天窗口并重剪样本，业务字段原样保留）；日历签名变更强制
   重建日桶；显式 hard-full 才绕过缓存。时间线为空签名记 nil，空 log 目录不破坏
-  短路；v1 → v2 无迁移，旧缓存一次性失效重建。
+  短路；v2 → v3 无迁移（样本新增 durationSeconds），旧缓存一次性失效重建。
 - **partial 永不入盘**不变量：stat 失败或聚合中有坏文件（含行数熔断）时保留
   last-good cache 并按 partial 暴露（`scanResultIsComplete`）；stat 失败的
   last-good 视图按当前日历 rebase 7 天窗口并推进 `scannedAt`（对齐 DSH 同分支），
@@ -156,13 +191,14 @@ agy 不挂独立 timer、没有 quota 依赖：由 `ProviderRefreshScheduler` �
 | Responsibility | Source |
 |---|---|
 | 快照模型（isPartial 出相等 / isTruncated 入相等） | `Sources/LLM-monitor/Models/AgyLocalUsage.swift` |
-| 行解析 / 去重 / 模型 join / thinking 分摊 / 日聚合纯函数 | `Sources/LLM-monitor/Services/AgyLocalUsageAggregation.swift` |
-| scanner（预算截断 / cli log 时间线 / 指纹缓存 / partial 不变量） | `Sources/LLM-monitor/Services/AgyLocalUsageScanner.swift` |
+| 行解析 / 去重 / 模型 join / thinking 分摊 / 方案 B 时长上下文与结算 / 日聚合纯函数 | `Sources/LLM-monitor/Services/AgyLocalUsageAggregation.swift` |
+| scanner（预算截断 / cli log 时间线 / 会话分组与主文件先序 / 方案 A `.db` 时长加载 / 指纹缓存 / partial 不变量） | `Sources/LLM-monitor/Services/AgyLocalUsageScanner.swift` |
+| 方案 A 的 steps.metadata 双 Timestamp（field 1 发起 / field 7 流式完成）解析与 `.db` 查询 | `Sources/LLM-monitor/Services/AntigravityStepTimestampReader.swift`（`llmStepStreamDurationNanos` / `streamDurationNanosForTest`，增量添加） |
 | 文件快照与选取器 | `Sources/LLM-monitor/Services/Infra/LogFileSnapshot.swift`（与 DSH 共用） |
 | 帧适配 + `agy:` 命名空间 | `Sources/LLM-monitor/Models/UsageFrameExtractors.swift`（`agyFrames`）+ `Models/UsageProjectionKernel.swift`（`UsageSampleNamespace.agy`） |
 | 编排与卡片接线 | `Sources/LLM-monitor/Services/LocalUsageOrchestration.swift`（`agyCoordinator` / `ActiveSources.agy` / readiness 短路）+ `Services/AppState.swift`（`applyAgyUsage`） |
 | 缓存路径 | `Sources/LLM-monitor/Services/TokenMonitorPaths.swift`（`TokenMonitorProvider.agy` → `token-monitor/agy.json`） |
 | Client 身份与描述符 | `Sources/LLM-monitor/Models/ClientIdentity.swift`（`ClientID.agy` + `ClientDescriptor`） |
-| Regression tests | `Tests/LLMMonitorTests/AgyLocalUsageScannerTests.swift`（16 个用例：MODEL 行解析与 thinking 分摊守恒、无 thinking 全记 output、非 DONE / 无 token 行跳过、主文件与分块去重、模型名 join 命中与目录缺失兜底、指纹缓存短路、stat 失败保留 last-good 且窗口重算、log-only 变化解除短路重建缓存、行数熔断失败隔离不入指纹、文件数 / 字节预算截断最旧优先并置位、超长行丢弃与恢复、`AgyLocalUsage.==` 语义、帧投影 `.antigravity` 卡命名空间、unknownModelName 归桶） |
+| Regression tests | `Tests/LLMMonitorTests/AgyLocalUsageScannerTests.swift`（24 个用例：MODEL 行解析与 thinking 分摊守恒、无 thinking 全记 output、非 DONE / 无 token 行跳过、主文件与分块去重、模型名 join 命中与目录缺失兜底、指纹缓存短路、stat 失败保留 last-good 且窗口重算、log-only 变化解除短路重建缓存、行数熔断失败隔离不入指纹、文件数 / 字节预算截断最旧优先并置位、超长行丢弃与恢复、`AgyLocalUsage.==` 语义、帧投影 `.antigravity` 卡命名空间、unknownModelName 归桶、时长方案 A `.db` 真值优先于方案 B、方案 A (0, 3600] 有效域、.db 缺失走方案 B GENERIC 后继结算、纯文本终答保持 nil、USER_INPUT / 非 GENERIC MODEL 行不误食、跨主文件 / 分块配对与主文件先序、方案 B 有效域边界、v2 旧索引一次性失效重建） |
 
-> 核对基线：2026-10-20 · 代码 55292db
+> 核对基线：2026-10-25 · 代码 5400d11

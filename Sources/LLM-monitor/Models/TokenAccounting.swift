@@ -187,10 +187,17 @@ enum TokenAccountingCatalog {
         output: .independent
     )
 
+    /// Antigravity RPC 的 `usage.outputTokens` **已含思考**：用户在本机 271 个
+    /// 会话（60,373 条含 token 事件）上实测 100% 满足
+    /// `outputTokens == thinkingOutputTokens + responseOutputTokens`。这里必须走
+    /// `.reasoningIncluded`（与 DSH 同款关系），让规范化 Output = rawOutput −
+    /// reasoning、Reason = reasoning，四桶才守恒——`.independent` 会把思考算两遍
+    /// （Output+Reason 虚高）。agy 无独立条目：口径与 antigravity raw 一致、在
+    /// `AgyLocalUsageAggregation` reader 层经字符分摊守恒拆分，不经本条目。
     static let antigravity = TokenAccountingDefinition(
         name: "Antigravity",
         input: .uncachedOnly,
-        output: .independent
+        output: .reasoningIncluded
     )
 
     static let opencode = TokenAccountingDefinition(

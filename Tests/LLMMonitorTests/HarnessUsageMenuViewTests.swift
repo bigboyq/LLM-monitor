@@ -16,23 +16,24 @@ final class HarnessUsageMenuViewTests: XCTestCase {
         MenuPanelHeightBridge.width - LayoutMetrics.cardColumnHorizontalPadding * 2
     }
 
-    /// 五列定宽 + 四段间距不得超出内容区。少一个 term 就说明新增/加宽了某一列。
+    /// 六列定宽 + 五段间距不得超出内容区。少一个 term 就说明新增/加宽了某一列。
     func testRowColumnBudgetFitsTheMenuContentWidth() {
         let columns = [
             HarnessModelRowView.modelNameWidth,
             HarnessModelRowView.bucketBarMinWidth,
             HarnessModelRowView.tokenWidth,
             HarnessModelRowView.hitRateWidth,
+            HarnessModelRowView.speedWidth,
             HarnessModelRowView.valueWidth
         ]
         let budget = columns.reduce(0, +) + CGFloat(columns.count - 1) * 6
         XCTAssertLessThanOrEqual(
             budget, contentWidth,
-            "模型行五列（\(budget)pt）超出内容区 \(contentWidth)pt，模型名或占比条会被压没"
+            "模型行六列（\(budget)pt）超出内容区 \(contentWidth)pt，模型名或占比条会被压没"
         )
         XCTAssertGreaterThanOrEqual(
-            HarnessModelRowView.bucketBarMinWidth, 72,
-            "占比条低于 72pt 就看不出三段比例了"
+            HarnessModelRowView.bucketBarMinWidth, 40,
+            "占比条低于 40pt 就看不出三段比例了（2026-10 加速度列时从 72 压到 40）"
         )
     }
 
@@ -99,9 +100,9 @@ final class HarnessUsageMenuViewTests: XCTestCase {
     /// 曾经的写法是 `Text(...).frame(maxWidth:)` + 给占比条 `.layoutPriority(1)`：
     /// `TokenBucketBar` 内部是 `GeometryReader`（贪婪），优先级一高就把整行吃光，
     /// 模型名列被压成 0pt——**自然宽**因此只剩三个定宽数字列（约 150pt），
-    /// 而定宽写法下自然宽正好是五列之和 328pt。这条断言就是那次 bug 的守门。
+    /// 而定宽写法下自然宽正好是六列之和 334pt。这条断言就是那次 bug 的守门。
     @MainActor
-    func testModelRowNaturalWidthCoversAllFiveColumns() {
+    func testModelRowNaturalWidthCoversAllSixColumns() {
         let row = HarnessModelRow(
             dayStart: Calendar.current.startOfDay(for: Date()),
             clientID: ClientID.openCode,
@@ -118,12 +119,28 @@ final class HarnessUsageMenuViewTests: XCTestCase {
             + HarnessModelRowView.bucketBarMinWidth
             + HarnessModelRowView.tokenWidth
             + HarnessModelRowView.hitRateWidth
+            + HarnessModelRowView.speedWidth
             + HarnessModelRowView.valueWidth
-            + 4 * 6
+            + 5 * 6
         XCTAssertEqual(
             hosting.fittingSize.width, expected, accuracy: 0.5,
-            "模型行自然宽应等于五列定宽之和（模型名列塌成 0pt 时会明显更小）"
+            "模型行自然宽应等于六列定宽之和（模型名列塌成 0pt 时会明显更小）"
         )
+    }
+
+    /// 段头与模型行同构（Token 小计 / 命中占位 / 速度汇总 / 价值四格定宽）后，
+    /// 段头的自然宽仍不得超出内容区：最长的注册客户端名 + 图标 + Spacer 最小宽
+    /// + 四格定宽 + 列间距要装进 336pt。名称列是行里唯一的弹性部分——数值格组
+    /// 再多占一点宽度，最先被挤没的就是段名。
+    @MainActor
+    func testSectionHeaderFitsTheMenuContentWidth() {
+        let section = Self.sectionFixture(rowCount: 1, displayName: "MiniMax Code")
+        let width = self.width(of: HarnessSectionView(section: section))
+        XCTAssertLessThanOrEqual(
+            width, contentWidth,
+            "段头自然宽 \(width)pt 超出内容区 \(contentWidth)pt——段头数值格组挤掉了段名"
+        )
+        XCTAssertGreaterThan(width, 0)
     }
 
     /// 段数 / 行数增加时高度增长（有内容可滚），但单段视图本身必须矮——
@@ -250,8 +267,13 @@ final class HarnessUsageMenuViewTests: XCTestCase {
         return hosting.fittingSize.width
     }
 
-    /// 一个客户端 + 一个极长模型名的行：模型名列尾截断，右侧四列仍定宽。
-    private static func sectionFixture(rowCount: Int, isTruncated: Bool = false) -> HarnessSection {
+    /// 一个客户端 + 一个极长模型名的行：模型名列尾截断，右侧五列仍定宽。
+    /// `displayName` 供段头自然宽测试换成最长的注册客户端名。
+    private static func sectionFixture(
+        rowCount: Int,
+        isTruncated: Bool = false,
+        displayName: String = "OpenCode"
+    ) -> HarnessSection {
         let rows = (0..<rowCount).map { index in
             HarnessModelRow(
                 dayStart: Calendar.current.startOfDay(for: Date()),
@@ -266,9 +288,10 @@ final class HarnessUsageMenuViewTests: XCTestCase {
         }
         return HarnessSection(
             clientID: ClientID.openCode,
-            displayName: "OpenCode",
+            displayName: displayName,
             iconSystemName: "terminal",
             buckets: TokenUsageBuckets(input: 400_000, cacheRead: 600_000, output: 200_000, reasoning: 100_000),
+            tokensPerSecond: nil,
             value: MixedCurrencyEstimate(usd: 11.3, cny: 0),
             rows: rows,
             isTruncated: isTruncated

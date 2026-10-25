@@ -726,6 +726,11 @@ struct ProviderCardView: View, Equatable {
                 && (status.kind != .codexChatGpt || projection.dailyTokenUsage.count == 7),
             freshness: projection.localUsageFreshness,
             isTruncated: projection.isTruncated,
+            speedByDay: LocalUsageSpeedByDay.texts(
+                dayStarts: projection.dailyTokenUsage.map(\.dayStart),
+                recentSamples: projection.recentSamples
+            ),
+            lastColumnFollowsSegment: true,
             emptyHint: emptyUsageHint,
             part: part
         )
@@ -751,6 +756,8 @@ struct ProviderCardView: View, Equatable {
         isReady: Bool,
         freshness: LocalUsageFreshness,
         isTruncated: Bool,
+        speedByDay: @autoclosure @escaping () -> [Date: String] = [:],
+        lastColumnFollowsSegment: Bool = false,
         emptyHint: String,
         part: LocalUsagePart
     ) -> some View {
@@ -763,6 +770,8 @@ struct ProviderCardView: View, Equatable {
             isScanning: status.isScanningLocalUsage || freshness == .scanning,
             freshness: freshness,
             isTruncated: isTruncated,
+            speedByDay: speedByDay(),
+            lastColumnFollowsSegment: lastColumnFollowsSegment,
             isReady: isReady,
             emptyHint: emptyHint,
             part: part
