@@ -935,4 +935,4 @@ The card's failure row is the one place in this table that is a **literal** 11pt
 than a `MenuTypography` role: the `errorMessage` role had no call site and was deleted
 rather than left as an unused role. The rendered size is unchanged.
 
-> 核对基线：2026-10-25 · 代码 a6f7f51
+> 核对基线：2026-10-25 · 代码 6235ee4
