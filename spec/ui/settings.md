@@ -7,7 +7,7 @@ content, launch-at-login, footer) and how the quota notifications surface in the
 ## Settings Window
 
 The native Settings window has a 220pt sidebar and a scrollable detail pane. Its minimum
-size is `720x480pt`, with an ideal size of `760x520pt`. General, Energy, provider, and Clients
+size is `720x480pt`, with an ideal size of `760x520pt`. General, Energy, Sync, provider, and Clients
 pages share the same visual hierarchy and reusable section components.
 
 Settings layout rules:
@@ -23,6 +23,17 @@ Typography is semantic rather than chosen independently by each pane: 20pt bold 
 titles, `subheadline` for subtitles and supporting text, `caption` for section titles,
 footers, and metadata, `body` for row labels, and `footnote` for inline status messages.
 
+Sync writes through immediately and has its own per-field drafts and save errors
+(see [`spec/sync.md`](../sync.md) §10). `SettingsView` owns that controller so switching
+tabs preserves failed edits. Outside Sync, the bottom bar shows 「多机联动配置未保存」
+and a 「查看」 action that returns to the Sync pane; unrelated general-form save errors
+remain visible independently.
+Sync-only config changes do not reload the General/provider form or discard its
+unsaved edits. Relevant external form changes still reload from the configuration
+published by `ConfigStore`, without reading the previous value during `willSet`.
+Dock position-only writes compare normalized effective values, so a first write
+from an absent dock config to an explicit default payload also preserves form drafts.
+
 ### Per-provider 「立即刷新」 (single-provider refresh)
 
 Every provider pane (five: minimax, chatgpt, antigravity, glm, deepseek) carries one
@@ -37,8 +48,8 @@ toggle does **not** gate it: a disabled provider is exactly the one a user wants
 retry.
 
 It routes to `AppState.refreshOne(providerID:)`, the **same chain** as the menu's
-provider-strip right-click item (see `spec/ui/menu-and-cards.md` §Window Structure →
-*Provider fallback strip*): one provider's request,
+client section header right-click item（「刷新本机 <客户端名>」，见
+`spec/ui/menu-and-cards.md` §Section header context menu）: one provider's request,
 one provider's schedule re-anchored, every other provider's next tick untouched. On
 Antigravity it sits **beside** the local-usage hard rebuild, not instead of it — one
 re-fetches quota and re-anchors the schedule, the other force-rescans every local
@@ -83,6 +94,25 @@ The per-provider OpenCode merge switch is **not** in this pane (nor in the provi
 panes) — `clientBindings[]` in `config.json` is its only source of truth, so saving the
 form never rolls a hand-edited value back. See `spec/ui/menu-and-cards.md`
 §Provider-Specific Card Details → *OpenCode client bindings*.
+
+### 常规 pane「外观」节
+
+General pane 第二节（「全局刷新间隔」之后、「状态栏图标」之前，
+`SettingsGeneralPane.swift`）是「外观」节（2f44084 引入）：`SettingsSection(title: "外观",
+footer: "浅色 / 深色固定显示，自动跟随系统设置；保存后立即生效。")`，行标签「界面外观」，
+**分段 Picker**（`.pickerStyle(.segmented)`），选项即 `AppAppearance.allCases` 的
+浅色 / 深色 / 自动（`displayName`），宽度 `SettingsLayout.standardControlWidth`。
+
+语义：
+
+- selection 读 `config.effectiveAppearance`（config 缺省 nil → `.auto`）。
+- 写入**不走** General 表单草稿：setter 写 `config.appearance`（选「自动」落 nil、
+  其余落枚举值）后直接 `configStore.applyAndSave` **写穿立即保存**，与本页其它
+  draft/save 字段不同。
+- 应用点在 `AppState.applyAppearance`：写 `NSApp.appearance`。`start()` 在应用入口
+  早期执行时 `NSApplication` 可能尚未创建，此时**下一个主循环重试一次**（`NSApp`
+  非 nil 守卫，测试进程 NSApp 恒 nil 不会自旋）；`start()` 与每次配置变更都会调用。
+- 边界：`MenuBarExtra` 原生呈现（菜单栏图标本身）仍随系统外观，不受此设置控制。
 
 ### GLM 高峰期提示（只读）与「节假日数据源」
 
@@ -139,7 +169,8 @@ Implemented in `MenuContentView.headerBar`.
 | Leading icon | Full app icon (`icon-master.png`, 24×24, original colors; falls back to `chart.bar.xaxis` 13pt semibold secondary if the asset fails to load) |
 | Title | `LLM Monitor`, 13pt semibold |
 | Sleep-blocker notice | `N 个应用正在阻止休眠`, 10pt medium `Color.secondaryLabel` (fixed NSColor — the glass panel's vibrancy washes out hierarchical `.secondary`, especially in light mode), after the title, rendered only when `sleepHealth.report.offenders` is non-empty; hovering opens the offender list (`SleepOffendersHoverView`, same rows as Settings → Energy check 1), hidden otherwise, hover-only with no click action |
-| Refresh control | Plain button with `arrow.clockwise`, tooltip `立即刷新全部` |
+| Scope switcher (conditional) | > 4 options（多机联动启用、节点 choices 非空）时，刷新按钮左侧出现「范围文字 + `ellipsis`」下拉（`FleetScopeSwitcher`，系统 `Menu`：全局 / 本机 / 「节点」分组）；≤ 4 项或未启用联动时标题栏没有 scope 控件——分段形态渲染在内容区「今日」卡上方。几何、截断与菜单项规则见 `spec/ui/menu-and-cards.md` §Scope switcher |
+| Refresh control | Plain button with `arrow.clockwise`, tooltip `立即刷新全部`，图标在 26pt 点击槽内居中，与 scope 组间距 8pt、同右对齐组 |
 | Spinner | Shows while at least one provider request is in flight; the refresh button is replaced to prevent accidental duplicate requests |
 
 Clicking refresh runs:
@@ -165,17 +196,19 @@ Otherwise:
 - vertical padding 8pt
 - optionally the first-run setup guide (`MenuContentView.shouldShowSetupGuide`: every
   enabled provider is `.notConfigured`)
-- `HarnessUsageMenuView` (global summary + per-client sections) and, as its last row,
-  `ProviderStatusStripView` — **not** a `ProviderCardView` per status
+- `HarnessUsageMenuView`（scope 总览 + client sections）。多机联动启用且 multiNode 时
+  内容区顶部还有 scope 控件（≤ 4 项的分段形态在「今日」卡上方）与三 scope 统一总览，
+  规则见 `spec/ui/menu-and-cards.md` §Scope switcher 与 §Content structure。
+  **provider 兜底 strip 已随 8e7278a 从菜单移除**（`ProviderStatusStripView` 结构体
+  保留但生产无引用）——`ProviderStatusStripView` 不再是内容区最后一行
 
-The two context menus that used to hang off each provider card now hang off narrower
+The context menus that used to hang off each provider card now hang off narrower
 targets:
 
 | Target | Menu item | Action |
 |---|---|---|
-| Client section header (`HarnessSectionView`) | `立即刷新全部` | `AppState.refreshAll` (same entry point as the header refresh button) |
-| Client section header | `打开配置文件` | `state.openConfigFile()` |
-| Provider strip element | `刷新 <provider>` | `state.refreshOne(providerID:)` |
+| Client section header（本机 scope 的 `HarnessSectionView`，及 fleet 全局 / 本机形态的 `FleetClientSectionView`） | `刷新本机 <客户端名>` | `AppState.refreshOne` over the section's provider cards |
+| Menu-bar icon（右键菜单栏图标） | 刷新 / 打开配置文件 / 退出 | `refreshAll` / `openConfigFile` / terminate——「打开配置文件」已从段头右键移到这里 |
 
 When the menu appears, `MenuContentView.onAppear` refreshes the login-item status and
 forces a sleep-health probe, and — if **any** provider is `.ready` — triggers
@@ -185,8 +218,16 @@ forces a sleep-health probe, and — if **any** provider is `.ready` — trigger
 
 ## Launch At Login (Settings Window)
 
-The launch-at-login control lives in the Settings window. The menu footer only
-shows the current status and does not contain the toggle.
+The Settings window and menu footer share `LoginItemService`. The menu toggle applies
+immediately; the Settings toggle remains a draft until 「保存并应用」. Both read the
+system login-item state rather than a `config.json` field.
+
+`SettingsLoginItemDraft` tracks the last actual state and the local edit. A real
+menu/system state change synchronizes the open Settings toggle; repeated same-state
+refreshes preserve an unsaved local edit. Saving unrelated settings uses the live
+service value when the toggle has not been edited, even before a pending status
+notification arrives. After save, registration failure or rollback, the draft adopts
+the final actual state. Pending system approval remains distinct from enabled.
 
 | Element | Current behavior |
 |---|---|
@@ -200,6 +241,7 @@ Expected user flow:
 - copy the packaged `.app` to `/Applications`
 - open Settings from the menu footer
 - enable `开机自启动`
+- click 「保存并应用」
 - if macOS requires approval, finish it in System Settings
 
 ## Footer
@@ -223,6 +265,7 @@ Right actions:
 
 | Button | Icon | Action |
 |---|---|---|
+| `自启` | `power` / `power.dotted` | toggle the shared `LoginItemService` immediately; synchronize the open Settings draft to the resulting actual state |
 | `设置` | `gearshape` | open the graphical Settings window |
 | `节能` / `防休眠` | `powersleep` / `cup.and.saucer.fill` | `state.sleepHealth.setKeepAwake(_:)` — one click, in memory, no `IOPMAssertion` written to disk; the tri-colour health dot turns red while keep-awake is on |
 | `日志` | `doc.text.magnifyingglass` | reveal `log.txt` in Finder |
@@ -255,4 +298,6 @@ appearance-neutral.
 - General pane 有一个「Bark 推送」全局节：`enabled` / `serverURL` / `deviceKey` / `sound` / `skipWhenAwakeAndUnlocked` / `ttl` / `group`。
 - 字段默认值与逐字段容错见 `spec/notifications.md` §5；JSON 契约见 `spec/config.md` §Config Schema 的 `notify*` 与 `bark` 字段。
 
-> 核对基线：2026-10-25 · 代码 6235ee4
+> 核对基线：2026-10-25 · 代码 6f11831
+> Sync 草稿跨 tab 保留、表单隔离与保存失败提示验证结果见 `spec/sync.md`。
+> 2026-10-25 菜单 / 设置自启同步已随 6f11831 入库：相关定向测试 27 例、完整测试 1422 例均 0 失败；测试使用模拟登录项操作，不执行真实注册 / 注销。

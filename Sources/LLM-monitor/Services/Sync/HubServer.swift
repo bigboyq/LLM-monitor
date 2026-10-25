@@ -40,6 +40,11 @@ struct HubServerHandlers {
 ///
 /// hub 从不主动连副节点（§3 不变量 2）——本类型只监听。
 final class HubServer: @unchecked Sendable {
+    enum ListenerEvent: Sendable {
+        case ready(UInt16)
+        case failed(String)
+    }
+
     private let queue = DispatchQueue(label: "LLM-monitor.fleet.hub-server")
     private var listener: NWListener?
     private var connections: [ObjectIdentifier: HubConnection] = [:]
@@ -48,7 +53,17 @@ final class HubServer: @unchecked Sendable {
     private var connectionWatchdogs: [ObjectIdentifier: DispatchSourceTimer] = [:]
 
     /// 实际监听端口（端口传 0 时由系统分配；测试用）。
-    private(set) var boundPort: UInt16?
+    ///
+    /// 端口在 listener 的私有队列上写入、在 MainActor 上读取 → 必须加锁，
+    /// 否则是跨线程数据竞争（@unchecked Sendable 类上的裸 var）。
+    private let boundPortLock = NSLock()
+    private var storedBoundPort: UInt16?
+
+    var boundPort: UInt16? {
+        boundPortLock.lock()
+        defer { boundPortLock.unlock() }
+        return storedBoundPort
+    }
 
     init(handlers: HubServerHandlers) {
         self.handlers = handlers
@@ -57,7 +72,11 @@ final class HubServer: @unchecked Sendable {
     /// - Parameters:
     ///   - port: 监听端口；0 = 系统分配。
     ///   - loopbackOnly: 只绑 `127.0.0.1`（`hubBindHost` 为回环地址时）。
-    func start(port: UInt16, loopbackOnly: Bool = false) throws {
+    func start(
+        port: UInt16,
+        loopbackOnly: Bool = false,
+        stateHandler: @escaping @Sendable (ListenerEvent) -> Void = { _ in }
+    ) throws {
         let parameters = NWParameters.tcp
         parameters.allowLocalEndpointReuse = true
         if loopbackOnly {
@@ -74,18 +93,34 @@ final class HubServer: @unchecked Sendable {
         }
         listener.stateUpdateHandler = { [weak self] state in
             if case .ready = state {
-                self?.boundPort = listener.port?.rawValue
+                if let port = listener.port?.rawValue {
+                    self?.setBoundPort(port)
+                    stateHandler(.ready(port))
+                }
             }
             if case .failed(let error) = state {
-                logError("[fleet-hub] NWListener 失败: \(error.localizedDescription)")
+                stateHandler(.failed(error.localizedDescription))
             }
         }
         listener.start(queue: queue)
     }
 
+    private func setBoundPort(_ port: UInt16) {
+        boundPortLock.lock()
+        storedBoundPort = port
+        boundPortLock.unlock()
+    }
+
+    private func clearBoundPort() {
+        boundPortLock.lock()
+        storedBoundPort = nil
+        boundPortLock.unlock()
+    }
+
     func stop() {
         listener?.cancel()
         listener = nil
+        clearBoundPort()
         connectionsLock.lock()
         let active = Array(connections.values)
         connections.removeAll()
@@ -190,10 +225,21 @@ final class HubConnection: @unchecked Sendable {
     private func consume() {
         if requestHandled { return }
         guard let headerEnd = buffer.range(of: Data("\r\n\r\n".utf8)) else {
+            // 头部还没收齐：超过上限立刻 431 并断开（头部缓冲不设上限的话，
+            // 对端可以一直灌而不触发任何检查）。
             if buffer.count > FleetProtocol.maxHeaderBytes {
                 respondAndClose(HubServerResponse.error(431, "Request Header Fields Too Large", "请求头超限"))
                 requestHandled = true
             }
+            return
+        }
+        // 头部已收齐：**同样**要量尺寸。原实现只在上一个分支里检查上限，
+        // 于是「一次写完的 20 KiB 请求头」会被当正常请求处理（spec §2 要求
+        // >16 KiB ⇒ 431），且头部缓冲没有任何上限。
+        let headerSize = headerEnd.lowerBound
+        guard headerSize <= FleetProtocol.maxHeaderBytes else {
+            respondAndClose(HubServerResponse.error(431, "Request Header Fields Too Large", "请求头超限"))
+            requestHandled = true
             return
         }
         let headerData = buffer.subdata(in: 0..<headerEnd.lowerBound)
@@ -261,8 +307,12 @@ final class HubConnection: @unchecked Sendable {
             switch (raw.method, raw.path) {
             case ("POST", FleetProtocol.usageDayPath):
                 // Content-Type 必须是 application/json（§4.3）。
-                let contentType = (raw.headers["content-type"] ?? "").lowercased()
-                guard contentType.contains("application/json") else {
+                let contentType = raw.headers["content-type"] ?? ""
+                let mediaType = contentType
+                    .split(separator: ";", maxSplits: 1, omittingEmptySubsequences: false)
+                    .first?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                guard mediaType?.caseInsensitiveCompare("application/json") == .orderedSame else {
                     response = HubServerResponse.error(415, "Unsupported Media Type", "Content-Type 必须是 application/json")
                     break
                 }

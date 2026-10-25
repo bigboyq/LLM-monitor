@@ -10,6 +10,8 @@ struct ClientUsageContribution: Equatable, Sendable {
     /// 来源快照的统计口径被截断（如 DSH 文件数/字节预算挤出最旧 session）。
     /// true 时 UI 必须提示"数字不完整"；无截断概念的来源保持 false。
     let isTruncated: Bool
+    /// Samples were capped; daily totals may still be authoritative.
+    let samplesTruncated: Bool
 
     var hasActivity: Bool {
         dailyTokenUsage.contains {
@@ -23,7 +25,8 @@ struct ClientUsageContribution: Equatable, Sendable {
         dailyTokenUsage: [Daily],
         recentSamples: [LocalTokenUsageSample] = [],
         scannedAt: Date? = nil,
-        isTruncated: Bool = false
+        isTruncated: Bool = false,
+        samplesTruncated: Bool = false
     ) {
         self.clientID = clientID
         self.displayName = displayName
@@ -35,6 +38,7 @@ struct ClientUsageContribution: Equatable, Sendable {
         )
         self.scannedAt = scannedAt
         self.isTruncated = isTruncated
+        self.samplesTruncated = samplesTruncated
     }
 
     /// 从内核投影构造（`UsageProjectionKernel.project` 的产物）。
@@ -46,6 +50,7 @@ struct ClientUsageContribution: Equatable, Sendable {
         self.recentSamples = projection.samples
         self.scannedAt = projection.scannedAt
         self.isTruncated = projection.isTruncated
+        self.samplesTruncated = projection.samplesTruncated
     }
 }
 
@@ -58,6 +63,8 @@ struct ProviderUsageProjection: Equatable, Sendable {
     let recentSamples: [LocalTokenUsageSample]
     let scannedAt: Date?
     let localUsageFreshness: LocalUsageFreshness
+    /// Snapshot-level truncation for consumers whose source may have no surviving frame.
+    private let sourceTruncated: Bool
 
     var clientIDs: [String] { contributions.map(\.clientID) }
     var hasActivity: Bool {
@@ -67,14 +74,19 @@ struct ProviderUsageProjection: Equatable, Sendable {
     }
     /// 截断标志的聚合规则：任一贡献来源截断即整卡按截断处理（保守取 true）。
     var isTruncated: Bool {
-        contributions.contains(where: \.isTruncated)
+        sourceTruncated || contributions.contains(where: \.isTruncated)
+    }
+    var samplesTruncated: Bool {
+        contributions.contains(where: \.samplesTruncated)
     }
 
     init(
         contributions: [ClientUsageContribution],
-        localUsageFreshness: LocalUsageFreshness = .clean
+        localUsageFreshness: LocalUsageFreshness = .clean,
+        sourceTruncated: Bool = false
     ) {
         self.contributions = contributions
+        self.sourceTruncated = sourceTruncated
 
         var dailyByDate: [Date: UnifiedDailyTokenUsage] = [:]
         for contribution in contributions {
@@ -327,6 +339,8 @@ extension ProviderStatus {
     ///   显式传进来，好让 memo 的键与实际取值来自同一个时刻；不传则取墙钟。
     func usageProjection(for info: QuotaInfo?, now: Date = Date()) -> ProviderUsageProjection {
         let frames = Self.usageFrameExtractors[kind]?.flatMap { $0(self, info) } ?? []
+        let dshSnapshotTruncated = dshUsage?.isTruncated == true
+            && isClientBindingEnabled(clientID: ClientID.dsh, quotaProviderID: kind.quotaProviderID)
         let projections = UsageProjectionKernel.project(
             frames: frames,
             bindings: clientBindings,
@@ -343,7 +357,8 @@ extension ProviderStatus {
                     displayName: ClientDescriptor.displayName(forClientID: $0.clientID)
                 )
             },
-            localUsageFreshness: effectiveLocalUsageFreshness
+            localUsageFreshness: effectiveLocalUsageFreshness,
+            sourceTruncated: dshSnapshotTruncated
         )
     }
 }

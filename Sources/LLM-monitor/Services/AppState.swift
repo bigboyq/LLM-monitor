@@ -46,7 +46,7 @@ enum SettingsTab: Identifiable {
         switch self {
         case .general: return "gearshape"
         case .energy: return "powersleep"
-        case .sync: return "personalhotspot"
+        case .sync: return "point.3.connected.trianglepath.dotted"
         case .provider(let d): return d.iconSystemName
         case .clients: return "terminal"
         }
@@ -159,7 +159,16 @@ final class AppState: ObservableObject {
     /// 同步运行时状态（连接 / 错误 / generation），设置页与菜单消费。
     @Published private(set) var fleetRuntimeStatus = FleetSyncStatusInfo()
     /// 用量 scope（§10.0 两条轴之一）：dock 浮层与菜单 hover 卡共用；仅内存态。
-    @Published var fleetScope: FleetScope = .local
+    @Published var fleetScope: FleetScope = .local {
+        didSet {
+            guard !isApplyingFleetPresentationUpdate, oldValue != fleetScope else { return }
+            fleetDidChange.send()
+        }
+    }
+    /// Fleet 展示变化广播。与 `statusDidChange` 分开，避免快照刷新触发 hub
+    /// 重建报告，再产生新快照的反馈循环。
+    let fleetDidChange = PassthroughSubject<Void, Never>()
+    private var isApplyingFleetPresentationUpdate = false
     private var fleetStateCancellables = Set<AnyCancellable>()
 
     /// 统一的 statuses 广播通道。
@@ -367,8 +376,8 @@ final class AppState: ObservableObject {
 
     // MARK: - 多机联动接线（2.0 核心链路）
 
-    /// 构造并启动 `FleetSyncCoordinator`：身份走 Keychain，状态存同目录
-    /// `fleet.sqlite`（独立于 token-monitor 缓存，§5.7）。构造失败只记日志，
+    /// 构造并启动 `FleetSyncCoordinator`：设备身份存同目录 `.deviceId`，状态存
+    /// `fleet.sqlite`。构造失败只记日志，
     /// 不影响主功能——本地显示永不依赖网络（§3 不变量 3）。
     private func startFleetSync() {
         if let fleetSync {
@@ -379,29 +388,19 @@ final class AppState: ObservableObject {
             let storeURL = configStore.configURL
                 .deletingLastPathComponent()
                 .appendingPathComponent("fleet.sqlite")
+            let identityStore = DeviceIdentityStore(
+                configDirectory: configStore.configURL.deletingLastPathComponent()
+            )
             let coordinator = FleetSyncCoordinator(
                 store: try FleetStore(url: storeURL),
-                provisionNodeID: { [weak self] uuid in
-                    // 身份就是配置值（用户裁定 2026-10-24）：首次生成后写回
-                    // config.json 的 sync.nodeID，之后原样读取。
-                    guard let self else { return }
-                    var config = self.configStore.config
-                    var sync = config.sync ?? SyncConfig.default
-                    sync.nodeID = uuid.uuidString
-                    config.sync = sync
-                    do {
-                        try self.configStore.applyAndSave(config)
-                    } catch {
-                        logError("[fleet] 写回 sync.nodeID 失败: \(error.localizedDescription)")
-                    }
-                }
+                loadDeviceID: { try identityStore.loadOrCreate() }
             )
             fleetSync = coordinator
             // coordinator 的两个 @Published 转发到 AppState：视图只观察 AppState，
             // 不感知协调器对象。快照 / 状态变化同样驱动整屏菜单重排。
             coordinator.$latestSnapshot
                 .receive(on: RunLoop.main)
-                .sink { [weak self] snapshot in self?.fleetSnapshot = snapshot }
+                .sink { [weak self] snapshot in self?.applyFleetSnapshot(snapshot) }
                 .store(in: &fleetStateCancellables)
             coordinator.$status
                 .receive(on: RunLoop.main)
@@ -417,6 +416,28 @@ final class AppState: ObservableObject {
         } catch {
             logError("[fleet] fleet.sqlite 初始化失败，多机联动未启动: \(error.localizedDescription)")
         }
+    }
+
+    /// 安装 fleet 快照，并把指向已消失节点的 scope 原子地回到本机。
+    /// 广播走专属通道，不进入 statusDidChange，避免驱动 hub 再次生成报告。
+    func applyFleetSnapshot(_ snapshot: FleetSnapshot?) {
+        let snapshotChanged = fleetSnapshot != snapshot
+        let selectedScopeUnavailable: Bool
+        switch fleetScope {
+        case .local:
+            selectedScopeUnavailable = false
+        case .fleet:
+            selectedScopeUnavailable = (snapshot?.nodes.count ?? 0) <= 1
+        case .node(let id):
+            selectedScopeUnavailable = snapshot?.nodes.contains(where: { $0.nodeID == id }) != true
+        }
+        guard snapshotChanged || selectedScopeUnavailable else { return }
+
+        isApplyingFleetPresentationUpdate = true
+        fleetSnapshot = snapshot
+        if selectedScopeUnavailable { fleetScope = .local }
+        isApplyingFleetPresentationUpdate = false
+        fleetDidChange.send()
     }
 
     // MARK: - Fleet UI 解析入口（§7.7 / §10）
@@ -446,15 +467,22 @@ final class AppState: ObservableObject {
     /// 入列并集（§7.7）：本机已启用 provider ∪ 仅存在 elected 额度的 provider。
     /// elected-only 的 provider 合成一个最小 status（state = .ok(elected)，
     /// 卡片上另有来源标注「来自 X」说明这不是本机抓取）。
+    ///
+    /// 口径要点：**用户显式禁用的 provider 不入列**。原来这里原样返回
+    /// `statuses`（含 `isEnabled == false` 的项），于是用户在 config 里关掉
+    /// 的 provider 仍会因为别的机器有额度而出现在状态栏圆环里；而
+    /// elected-only 的合成分支因为 `statuses` 恒含全部 kind（5 个 provider
+    /// 永远有一份 status）而是死代码。
     func fleetVisibleStatuses() -> [ProviderStatus] {
-        var result = statuses
+        var result = statuses.filter(\.isEnabled)
         guard let snapshot = fleetSnapshot, !snapshot.electedQuotas.isEmpty else { return result }
-        let enabledKinds = Set(statuses.filter(\.isEnabled).map(\.kind))
+        var present = Set(result.map(\.kind))
         for elected in snapshot.electedQuotas {
             guard let kind = ProviderKind.allCases.first(where: { $0.quotaProviderID == elected.quotaProviderID }),
-                  !enabledKinds.contains(kind),
-                  !statuses.contains(where: { $0.kind == kind })
+                  !present.contains(kind)
             else { continue }
+            // 本机显式禁用 → 不合成：禁用优先于远端额度。
+            guard !statuses.contains(where: { $0.kind == kind && !$0.isEnabled }) else { continue }
             let info = QuotaInfo(
                 models: elected.models,
                 resetCredits: elected.resetCredits,
@@ -474,6 +502,7 @@ final class AppState: ObservableObject {
                 refreshIntervalSeconds: 300,
                 state: .ok(info)
             ))
+            present.insert(kind)
         }
         return result
     }
@@ -498,16 +527,37 @@ final class AppState: ObservableObject {
     /// 卡片回到现状渲染。
     func fleetCardContext(for kind: ProviderKind) -> FleetCardContext? {
         guard let snapshot = fleetSnapshot else { return nil }
+        // 全部 scope 的用量变体一次算好（dock 浮层是静态快照，切换靠卡片自选）：
+        // fleet 聚合 + 每个节点单机口径；本机 scope 卡片回落本地投影（无变体）。
+        // 不能用 `uniqueKeysWithValues:`：快照里出现重复 nodeID 时它直接 trap
+        // （协议 v1 无认证，node 会解码配置里那个上游返回的任何东西）→ 整个
+        // App 崩。这里改成「后出现的覆盖先出现的」。
+        let nodeUsages = Dictionary(
+            snapshot.nodes.map {
+                ($0.nodeID, FleetUsageProjection.nodeCardUsage(
+                    node: $0,
+                    quotaProviderID: kind.quotaProviderID,
+                    preferredWindowEnds: Self.preferredWindowEnds(
+                        of: fleetEffectiveQuota(for: kind)
+                    )
+                ))
+            },
+            uniquingKeysWith: { _, new in new }
+        )
         return FleetCardContext(
             scope: fleetScope,
             multiNode: snapshot.nodes.count > 1,
-            usage: FleetUsageProjection.cardUsage(
+            nodeChoices: snapshot.nodes
+                .filter { $0.nodeID != fleetSync?.localNodeID }
+                .map { FleetNodeChoice(id: $0.nodeID, name: $0.nodeName, stale: $0.stale) },
+            fleetUsage: FleetUsageProjection.cardUsage(
                 snapshot: snapshot,
                 quotaProviderID: kind.quotaProviderID,
                 preferredWindowEnds: Self.preferredWindowEnds(
                     of: fleetEffectiveQuota(for: kind)
                 )
             ),
+            nodeUsages: nodeUsages,
             effectiveQuota: fleetEffectiveQuota(for: kind),
             onScopeChange: { [weak self] newScope in
                 self?.fleetScope = newScope
@@ -523,6 +573,20 @@ final class AppState: ObservableObject {
         if model.hasIntervalWindow { ends["interval"] = model.intervalResetsAt }
         if model.hasWeeklyWindow { ends["weekly"] = model.weeklyResetsAt }
         return ends
+    }
+
+    /// 菜单顶部 scope 控制的节点选项（远端节点）。
+    var fleetScopeChoices: [FleetNodeChoice] {
+        guard let snapshot = fleetSnapshot, snapshot.nodes.count > 1 else { return [] }
+        return snapshot.nodes
+            .filter { $0.nodeID != fleetSync?.localNodeID }
+            .map { FleetNodeChoice(id: $0.nodeID, name: $0.nodeName, stale: $0.stale) }
+    }
+
+    /// 当前 scope 为具体节点时的菜单汇总。
+    var fleetMenuNodeSummary: FleetMenuSummary? {
+        guard let snapshot = fleetSnapshot, case .node(let id) = fleetScope else { return nil }
+        return FleetUsageProjection.nodeMenuSummary(snapshot: snapshot, nodeID: id)
     }
 
     /// fleet 内归因设置是否不一致（§7.8：提示，不阻断）。

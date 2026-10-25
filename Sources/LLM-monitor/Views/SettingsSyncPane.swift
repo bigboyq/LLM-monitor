@@ -1,5 +1,206 @@
 import SwiftUI
 import AppKit
+import Combine
+
+/// Per-field write-through drafts for the fleet settings pane.
+@MainActor
+final class SettingsSyncDraftController: ObservableObject {
+    enum Field: Hashable { case enabled, hubURL, nodeName, port, pushInterval }
+
+    @Published private(set) var hubURLDraft: String
+    @Published private(set) var nodeNameDraft: String
+    @Published private(set) var portDraft: String
+    @Published private(set) var pushIntervalDraft: String
+    @Published private(set) var hubURLError: String?
+    @Published private(set) var saveErrors: [Field: String] = [:]
+
+    private let configStore: ConfigStore
+    private let debounceNanoseconds: UInt64
+    private var hubURLBaseline: String
+    private var nodeNameBaseline: String
+    private var portBaseline: Int
+    private var pushIntervalBaseline: Int
+    private var enabledBaseline: Bool
+    private var hubURLTask: Task<Void, Never>?
+    private var nodeNameTask: Task<Void, Never>?
+    private var portTask: Task<Void, Never>?
+    private var configCancellable: AnyCancellable?
+
+    var hasSaveErrors: Bool { !saveErrors.isEmpty }
+
+    init(configStore: ConfigStore, debounceNanoseconds: UInt64 = 600_000_000) {
+        self.configStore = configStore
+        self.debounceNanoseconds = debounceNanoseconds
+        let sync = configStore.config.effectiveSyncConfig
+        hubURLDraft = sync.hubURL
+        nodeNameDraft = sync.nodeName
+        portDraft = String(sync.hubPort)
+        pushIntervalDraft = String(sync.pushIntervalSeconds)
+        hubURLBaseline = sync.hubURL
+        nodeNameBaseline = sync.nodeName
+        portBaseline = sync.hubPort
+        pushIntervalBaseline = sync.pushIntervalSeconds
+        enabledBaseline = sync.enabled
+
+        // ConfigStore is MainActor-isolated and publishes synchronously in applyAndSave.
+        // Handle the exact new config before a later keystroke can be mistaken for stale state.
+        configCancellable = configStore.$config
+            .dropFirst()
+            .sink { [weak self] config in self?.applyPersistedConfig(config) }
+    }
+
+    func setHubURLDraft(_ value: String) { hubURLDraft = value; schedule(.hubURL) }
+    func setNodeNameDraft(_ value: String) { nodeNameDraft = value; schedule(.nodeName) }
+    func setPortDraft(_ value: String) { portDraft = value; schedule(.port) }
+
+    func saveError(for field: Field) -> String? { saveErrors[field] }
+
+    func setEnabled(_ enabled: Bool) {
+        guard enabled != configStore.config.effectiveSyncConfig.enabled else {
+            clearSaveError(.enabled)
+            return
+        }
+        persist(.enabled) { $0.enabled = enabled }
+    }
+
+    /// Slider values keep their immediate write-through behavior.
+    func setPushInterval(_ seconds: Int) {
+        let normalized = min(max(seconds, 0), 3600)
+        pushIntervalDraft = String(normalized)
+        guard normalized != configStore.config.effectiveSyncConfig.pushIntervalSeconds else {
+            clearSaveError(.pushInterval)
+            return
+        }
+        persist(.pushInterval) { $0.pushIntervalSeconds = normalized }
+    }
+
+    func submitHubURL() { cancel(.hubURL); commit(.hubURL) }
+    func submitNodeName() { cancel(.nodeName); commit(.nodeName) }
+    func submitPort() { cancel(.port); commit(.port) }
+
+    /// Flush pending valid drafts when leaving the pane; invalid URL/port values still reject.
+    func flushPendingEdits() {
+        cancelAll()
+        commit(.hubURL)
+        commit(.nodeName)
+        commit(.port)
+    }
+
+    private func schedule(_ field: Field) {
+        cancel(field)
+        let delay = debounceNanoseconds
+        let task = Task { [weak self] in
+            do { try await Task.sleep(nanoseconds: delay) } catch { return }
+            guard !Task.isCancelled else { return }
+            self?.commit(field)
+        }
+        switch field {
+        case .hubURL: hubURLTask = task
+        case .nodeName: nodeNameTask = task
+        case .port: portTask = task
+        case .enabled, .pushInterval: break
+        }
+    }
+
+    private func cancel(_ field: Field) {
+        switch field {
+        case .hubURL: hubURLTask?.cancel(); hubURLTask = nil
+        case .nodeName: nodeNameTask?.cancel(); nodeNameTask = nil
+        case .port: portTask?.cancel(); portTask = nil
+        case .enabled, .pushInterval: break
+        }
+    }
+
+    private func cancelAll() {
+        cancel(.hubURL)
+        cancel(.nodeName)
+        cancel(.port)
+    }
+
+    private func commit(_ field: Field) {
+        cancel(field)
+        switch field {
+        case .hubURL:
+            let trimmed = hubURLDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+            switch SettingsSyncPane.checkHubURL(trimmed) {
+            case .invalid(let message): hubURLError = message; return
+            case .valid: hubURLError = nil
+            }
+            guard trimmed != configStore.config.effectiveSyncConfig.hubURL else {
+                clearSaveError(.hubURL)
+                return
+            }
+            persist(.hubURL) { $0.hubURL = trimmed }
+        case .nodeName:
+            guard nodeNameDraft != configStore.config.effectiveSyncConfig.nodeName else {
+                clearSaveError(.nodeName)
+                return
+            }
+            persist(.nodeName) { $0.nodeName = nodeNameDraft }
+        case .port:
+            let current = configStore.config.effectiveSyncConfig.hubPort
+            switch SettingsSyncPane.portCommit(draft: portDraft, stored: current) {
+            case .invalid:
+                portDraft = String(current)
+                clearSaveError(.port)
+            case .unchanged: clearSaveError(.port)
+            case .apply(let port): persist(.port) { $0.hubPort = port }
+            }
+        case .enabled, .pushInterval:
+            break
+        }
+    }
+
+    private func persist(_ field: Field, mutate: (inout SyncConfig) -> Void) {
+        var config = configStore.config
+        var sync = config.effectiveSyncConfig
+        mutate(&sync)
+        config.sync = sync
+        do {
+            try configStore.applyAndSave(config)
+            clearSaveError(field)
+        } catch {
+            saveErrors[field] = "保存失败：\(error.localizedDescription)"
+            logError("[fleet-settings] 保存 sync 配置失败: \(error.localizedDescription)")
+        }
+    }
+
+    private func clearSaveError(_ field: Field) {
+        saveErrors[field] = nil
+    }
+
+    private func applyPersistedConfig(_ config: AppConfig) {
+        let sync = config.effectiveSyncConfig
+        if sync.enabled != enabledBaseline {
+            enabledBaseline = sync.enabled
+            clearSaveError(.enabled)
+        }
+        if sync.hubURL != hubURLBaseline {
+            cancel(.hubURL)
+            hubURLBaseline = sync.hubURL
+            hubURLDraft = sync.hubURL
+            hubURLError = nil
+            clearSaveError(.hubURL)
+        }
+        if sync.nodeName != nodeNameBaseline {
+            cancel(.nodeName)
+            nodeNameBaseline = sync.nodeName
+            nodeNameDraft = sync.nodeName
+            clearSaveError(.nodeName)
+        }
+        if sync.hubPort != portBaseline {
+            cancel(.port)
+            portBaseline = sync.hubPort
+            portDraft = String(sync.hubPort)
+            clearSaveError(.port)
+        }
+        if sync.pushIntervalSeconds != pushIntervalBaseline {
+            pushIntervalBaseline = sync.pushIntervalSeconds
+            pushIntervalDraft = String(sync.pushIntervalSeconds)
+            clearSaveError(.pushInterval)
+        }
+    }
+}
 
 /// 设置页「多机联动」pane（§10.4）。副节点 / 主节点两套视角由 `hubURL` 派生。
 ///
@@ -11,13 +212,20 @@ import AppKit
 /// `SettingsControlRow`），与其余 pane 同一套行距与控件宽度。
 struct SettingsSyncPane: View {
     @ObservedObject var state: AppState
+    @StateObject private var lanAddressMonitor = LANAddressMonitor()
+    @ObservedObject private var drafts: SettingsSyncDraftController
+    /// 配置分段：0 = 主节点配置，1 = 副节点配置（UI 组织用；实际角色仍由
+    /// 上级地址是否为空派生——填了地址就是副节点，清空就是主节点）。
+    @State private var configSegment = 0
 
-    @State private var hubURLDraft = ""
-    @State private var nodeNameDraft = ""
-    @State private var portDraft = ""
-    @State private var pushIntervalDraft = ""
-    /// 打字停顿 600ms 自动保存的防抖 task（回车仍立即保存）。
-    @State private var commitDebounce: Task<Void, Never>?
+    @MainActor
+    init(state: AppState, drafts: SettingsSyncDraftController? = nil) {
+        self.state = state
+        let controller = drafts ?? SettingsSyncDraftController(configStore: state.configStore)
+        _drafts = ObservedObject(wrappedValue: controller)
+    }
+
+    var draftController: SettingsSyncDraftController { drafts }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -27,31 +235,23 @@ struct SettingsSyncPane: View {
             ) {
                 SettingsToggleRow(label: "启用多机联动", isOn: Binding(
                     get: { syncConfig.enabled },
-                    set: { value in update { $0.enabled = value } }
+                    set: { value in drafts.setEnabled(value) }
                 ))
-                if syncConfig.enabled {
-                    SettingsControlRow("上级主节点地址") {
-                        TextField("", text: $hubURLDraft, prompt: Text("http://192.168.1.20:8787（留空 = 本机为主节点）"))
-                            .textFieldStyle(.roundedBorder)
-                            .frame(width: SettingsLayout.standardControlWidth)
-                            .onSubmit(commitHubURL)
-                            .onChange(of: hubURLDraft) { _, _ in debouncedCommit(commitHubURL) }
-                            .help("按回车保存；留空时本机作为主节点")
-                    }
-                    roleStatusRow
-                    if role == .hub {
-                        hubFields
-                    } else if role == .node {
-                        nodeFields
-                    }
-                    SettingsControlRow("本机名称") {
-                        TextField("", text: $nodeNameDraft, prompt: Text("默认 hostname"))
-                            .textFieldStyle(.roundedBorder)
-                            .frame(width: SettingsLayout.standardControlWidth)
-                            .onSubmit(commitNodeName)
-                            .onChange(of: nodeNameDraft) { _, _ in debouncedCommit(commitNodeName) }
-                            .help("其他机器的菜单节点分组里显示这个名字；默认 \(SyncConfig.defaultNodeName())。按回车保存。")
-                    }
+                if let error = drafts.saveError(for: .enabled) {
+                    saveErrorLabel(error)
+                }
+                roleStatusRow
+                nodeNameRow
+                Picker("", selection: $configSegment) {
+                    Text("主节点配置").tag(0)
+                    Text("副节点配置").tag(1)
+                }
+                .pickerStyle(.segmented)
+                .frame(maxWidth: .infinity)
+                if configSegment == 0 {
+                    hubFields
+                } else {
+                    nodeFields
                 }
             }
 
@@ -63,7 +263,14 @@ struct SettingsSyncPane: View {
                 }
             }
         }
-        .onAppear { loadDrafts() }
+        .onAppear {
+            configSegment = role == .node ? 1 : 0
+            lanAddressMonitor.start()
+        }
+        .onDisappear {
+            drafts.flushPendingEdits()
+            lanAddressMonitor.stop()
+        }
         // 配置管线每次落盘后（rebuildStatuses → statusDidChange）强制重排：
         // 角色行/连接徽标读的是 configStore.config，AppState 自己不发
         // objectWillChange，不挂这条保存后界面会停留在旧角色。
@@ -80,80 +287,208 @@ struct SettingsSyncPane: View {
         SyncRole.derive(config: state.configStore.config)
     }
 
-    /// 角色是派生值（hubURL 决定），只读展示 + 连接状态徽标。
-    private var roleStatusRow: some View {
-        HStack {
-            Text(roleTitle)
-                .font(SettingsTypography.rowLabel)
-                .foregroundStyle(.primary)
-            Spacer()
-            connectionBadge
-        }
-    }
-
-    private var roleTitle: String {
-        switch role {
-        case .hub: return "角色：主节点 · 接收并合并副节点报告"
-        case .node: return "角色：副节点 · 定期上报并同步全局快照"
-        case .off: return "角色：未启用"
-        }
-    }
-
-    private var connectionBadge: some View {
-        Group {
-            if state.fleetRuntimeStatus.online {
-                Text("已连接\(state.fleetRuntimeStatus.lastSyncAt.map { " · 上次同步 \(Formatters.formatClock($0))" } ?? "")")
-                    .foregroundStyle(.green)
-            } else {
-                Text(role == .hub ? "监听中" : "离线")
-                    .foregroundStyle(.secondary)
+    /// 本机名称：默认值在输入框 placeholder 展示。
+    private var nodeNameRow: some View {
+        SettingsControlRow("本机名称") {
+            VStack(alignment: .trailing, spacing: 4) {
+                TextField("", text: Binding(
+                    get: { drafts.nodeNameDraft },
+                    set: { drafts.setNodeNameDraft($0) }
+                ), prompt: Text("默认：\(SyncConfig.defaultNodeName())"))
+                    .textFieldStyle(.roundedBorder)
+                    .multilineTextAlignment(.trailing)
+                    .frame(width: SettingsLayout.standardControlWidth)
+                    .onSubmit(drafts.submitNodeName)
+                    .help("其他机器的菜单节点分组里显示这个名字；留空 = 默认名称。按回车保存。")
+                if let error = drafts.saveError(for: .nodeName) {
+                    saveErrorLabel(error)
+                }
             }
         }
-        .font(SettingsTypography.status)
     }
 
+    /// 连接状态（只读）：主节点 = 监听情况；副节点 = 与主节点的连接情况。
+    /// 角色不再用文字复述——分段选择与上级地址的填空已表达角色。
+    ///
+    /// 失败原因（`fleetRuntimeStatus.lastError`）必须一并露出来：只写「离线」
+    /// 两个字时用户无从下手（地址写错 / 漏了 scheme / 主节点没开 / 端口不通）。
+    /// 该字段是 `@Published` 驱动的，运行时失败原因一变这里就跟着变。
+    private var roleStatusRow: some View {
+        SettingsControlRow("连接状态", alignment: .top) {
+            VStack(alignment: .trailing, spacing: 4) {
+                Text(Self.connectionText(
+                    enabled: syncConfig.enabled,
+                    role: role,
+                    hubPort: syncConfig.hubPort,
+                    status: state.fleetRuntimeStatus
+                ))
+                    .font(SettingsTypography.status)
+                    .foregroundStyle(syncConfig.enabled && state.fleetRuntimeStatus.online ? .green : .secondary)
+                    .frame(width: SettingsLayout.standardControlWidth, alignment: .trailing)
+                if syncConfig.enabled,
+                   let lastError = Self.visibleConnectionError(
+                    enabled: syncConfig.enabled,
+                    lastError: state.fleetRuntimeStatus.lastError
+                   ), !lastError.isEmpty {
+                    Text(lastError)
+                        .font(SettingsTypography.metadata)
+                        .foregroundStyle(.red)
+                        .multilineTextAlignment(.trailing)
+                        .frame(width: SettingsLayout.standardControlWidth, alignment: .trailing)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
+    static func connectionText(
+        enabled: Bool,
+        role: SyncRole,
+        hubPort: Int,
+        status: FleetSyncStatusInfo
+    ) -> String {
+        guard enabled else { return "未启用" }
+        if role == .hub {
+            return status.online
+                ? "监听中（端口 \(hubPort)）"
+                : "未监听"
+        }
+        guard status.online else { return "离线" }
+        return "已连接\(status.lastSyncAt.map { " · 上次同步 \(Formatters.formatClock($0))" } ?? "")"
+    }
+
+    static func visibleConnectionError(enabled: Bool, lastError: String?) -> String? {
+        enabled ? lastError : nil
+    }
+
+    private func saveErrorLabel(_ message: String) -> some View {
+        Text(message)
+            .font(SettingsTypography.metadata)
+            .foregroundStyle(.red)
+            .multilineTextAlignment(.trailing)
+            .frame(width: SettingsLayout.standardControlWidth, alignment: .trailing)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    /// 主节点配置：监听端口在前；主节点地址（本机局域网 IP）右侧「复制」。
     @ViewBuilder
     private var hubFields: some View {
         SettingsControlRow("监听端口") {
-            TextField("", text: $portDraft, prompt: Text("8787"))
-                .textFieldStyle(.roundedBorder)
-                .frame(width: 100)
-                .onSubmit(commitPort)
-                            .onChange(of: portDraft) { _, _ in debouncedCommit(commitPort) }
-                .help("按回车保存")
-        }
-        copyAddressButton
-    }
-
-    @ViewBuilder
-    private var nodeFields: some View {
-        SettingsControlRow("上报周期（秒）") {
-            TextField("", text: $pushIntervalDraft, prompt: Text("60"))
-                .textFieldStyle(.roundedBorder)
-                .frame(width: 100)
-                .onSubmit(commitPushInterval)
-                            .onChange(of: pushIntervalDraft) { _, _ in debouncedCommit(commitPushInterval) }
-                .help("按回车保存")
-        }
-    }
-
-    /// 主节点「复制地址」：副节点粘这个就行（§10.4）。
-    private var copyAddressButton: some View {
-        HStack(spacing: 8) {
-            Text("副节点地址：\(lanAddress)")
-                .font(SettingsTypography.status)
-                .foregroundStyle(.secondary)
-                .textSelection(.enabled)
-            Button("复制地址") {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(lanAddress, forType: .string)
+            VStack(alignment: .trailing, spacing: 4) {
+                TextField("", text: Binding(
+                    get: { drafts.portDraft },
+                    set: { drafts.setPortDraft($0) }
+                ), prompt: Text("8787"))
+                    .textFieldStyle(.roundedBorder)
+                    .multilineTextAlignment(.trailing)
+                    .frame(width: 100)
+                    .onSubmit(drafts.submitPort)
+                    .help("按回车保存")
+                if let error = drafts.saveError(for: .port) {
+                    saveErrorLabel(error)
+                }
             }
         }
+        SettingsControlRow("主节点地址") { hubAddressControl }
     }
 
-    private var lanAddress: String {
-        "http://\(Self.lanAddress()):\(syncConfig.hubPort)"
+    /// 主节点地址一格：地址文案 + 「复制」。
+    ///
+    /// 局域网地址来自异步缓存（`getifaddrs` 不在 View 求值期间执行）。取不到时给的是提示而不是
+    /// 地址——127.0.0.1 只有本机能访问，副节点拿它当主节点地址永远连不上，
+    /// 摆在「主节点地址」这一格里等于骗用户去复制一条废地址。
+    ///
+    /// 探测与挑选规则见 `LANAddressResolver`：按硬件语义挑接口
+    /// （Wi-Fi → 有线 → 其它），排除虚拟 / 桥接接口，不拿 127.0.0.1 兜底。
+    private var hubAddressControl: some View {
+        let addressText = lanAddressMonitor.address.map { "http://\($0):\(syncConfig.hubPort)" }
+        return HStack(spacing: 8) {
+            Spacer(minLength: 6)
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(addressText ?? "未检测到局域网地址")
+                    .font(SettingsTypography.status)
+                    .foregroundStyle(addressText == nil ? .orange : .secondary)
+                    .textSelection(.enabled)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                if addressText == nil {
+                    Text("请检查网络连接")
+                        .font(SettingsTypography.metadata)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            Button("复制") {
+                guard let addressText else { return }
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(addressText, forType: .string)
+            }
+            .disabled(addressText == nil)
+        }
+        .frame(width: SettingsLayout.standardControlWidth)
     }
+
+    /// 副节点配置：上报频率滑条（0 = 跟随常规里的全局刷新间隔）+ 主节点地址。
+    @ViewBuilder
+    private var nodeFields: some View {
+        SettingsControlRow("主节点地址", alignment: .top) {
+            VStack(alignment: .trailing, spacing: 4) {
+                TextField("", text: Binding(
+                    get: { drafts.hubURLDraft },
+                    set: { drafts.setHubURLDraft($0) }
+                ), prompt: Text("http://192.168.1.20:8787"))
+                    .textFieldStyle(.roundedBorder)
+                    .multilineTextAlignment(.trailing)
+                    .frame(width: SettingsLayout.standardControlWidth)
+                    .onSubmit(drafts.submitHubURL)
+                    .help("按回车保存；清空则本机变回主节点")
+                // 校验不过时的原因就地显示：地址没落盘，用户看得见自己输的是什么、
+                // 为什么不能用（行内错误文案来自 `checkHubURL`）。
+                if let hubURLError = drafts.hubURLError {
+                    Text(hubURLError)
+                        .font(SettingsTypography.metadata)
+                        .foregroundStyle(.red)
+                        .multilineTextAlignment(.trailing)
+                        .frame(width: SettingsLayout.standardControlWidth, alignment: .trailing)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if let error = drafts.saveError(for: .hubURL) {
+                    saveErrorLabel(error)
+                }
+            }
+        }
+        SettingsControlRow("上报频率", alignment: .top) {
+            VStack(alignment: .trailing, spacing: 6) {
+                Slider(
+                    value: Binding(
+                        get: { Double(Int(drafts.pushIntervalDraft) ?? 0) },
+                        set: { drafts.setPushInterval(Int($0)) }
+                    ),
+                    in: 0...3600,
+                    label: { EmptyView() },
+                    minimumValueLabel: {
+                        Text("跟随常规").font(SettingsTypography.metadata).foregroundStyle(.secondary)
+                    },
+                    maximumValueLabel: {
+                        Text("1 小时").font(SettingsTypography.metadata).foregroundStyle(.secondary)
+                    }
+                )
+                Text("当前：\(Self.pushIntervalText(drafts.pushIntervalDraft))")
+                    .font(SettingsTypography.numericValue)
+                    .foregroundStyle(.secondary)
+                if let error = drafts.saveError(for: .pushInterval) {
+                    saveErrorLabel(error)
+                }
+            }
+            .frame(width: SettingsLayout.standardControlWidth)
+        }
+    }
+
+    private static func pushIntervalText(_ raw: String) -> String {
+        guard let seconds = Int(raw.trimmingCharacters(in: .whitespaces)) else { return "跟随常规" }
+        return seconds <= 0 ? "跟随常规（全局刷新间隔）" : Formatters.formatInterval(seconds: seconds)
+    }
+
 
     // MARK: - 已连接节点（主节点视角，不含本机）
 
@@ -192,24 +527,6 @@ struct SettingsSyncPane: View {
                             state.fleetSync?.removeNodeFromFleet(nodeID: node.nodeID)
                         }
                     }
-                }
-            }
-            SettingsSection(title: "全局摘要") {
-                if let snapshot = state.fleetSnapshot,
-                   let today = snapshot.fleet.dailyBuckets.last {
-                    LabeledContent("fleet 节点数（含本机）") {
-                        Text("\(snapshot.nodes.count)")
-                    }
-                    LabeledContent("今日全部 token") {
-                        Text(Formatters.formatTokenCountCompact(
-                            today.totals.input + today.totals.cacheRead
-                                + today.totals.output + today.totals.reasoning
-                        ))
-                    }
-                } else {
-                    Text("暂无全局数据")
-                        .font(SettingsTypography.status)
-                        .foregroundStyle(.secondary)
                 }
             }
         }
@@ -251,87 +568,47 @@ struct SettingsSyncPane: View {
 
     // MARK: - 持久化（写穿）
 
-    private func update(_ mutate: (inout SyncConfig) -> Void) {
-        var config = state.configStore.config
-        var sync = config.sync ?? SyncConfig.default
-        mutate(&sync)
-        config.sync = sync
-        do {
-            try state.configStore.applyAndSave(config)
-        } catch {
-            logError("[fleet-settings] 保存 sync 配置失败: \(error.localizedDescription)")
+    /// 主节点地址校验结果。空串合法（清空 = 本机变回主节点）；非空必须能解析成
+    /// http/https URL 且 host 非空。
+    enum HubURLCheck: Equatable {
+        case valid
+        case invalid(String)
+    }
+
+    /// 主节点地址校验。规则与 `SyncClient.init` 的解析口径一致（能解析成 URL、
+    /// scheme 是 http/https、host 非空），**同一把尺子**——这里放过的东西到了
+    /// 运行期也一定能用，不会出现「设置页说填好了、连的时候才炸」。
+    static func checkHubURL(_ raw: String) -> HubURLCheck {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        // 清空 = 本机变回主节点（`SyncRole.derive` 按「空即 hub」派生），合法。
+        if trimmed.isEmpty { return .valid }
+        guard let url = URL(string: trimmed),
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              url.host()?.isEmpty == false
+        else {
+            return .invalid(
+                "主节点地址需为完整地址（http:// 或 https:// 开头），例如 http://192.168.1.20:8787"
+            )
         }
+        return .valid
     }
 
-    private func loadDrafts() {
-        hubURLDraft = syncConfig.hubURL
-        nodeNameDraft = syncConfig.nodeName
-        portDraft = String(syncConfig.hubPort)
-        pushIntervalDraft = String(syncConfig.pushIntervalSeconds)
+    /// 端口字段的提交判定。
+    enum PortCommit: Equatable {
+        /// 与已存值相同：不落盘。
+        case unchanged
+        /// 合法的新端口：落盘。
+        case apply(Int)
+        /// 非法（不是整数 / 超出 1...65535）：不落盘，输入框回滚到已存值。
+        case invalid
     }
 
-    /// 打字停顿后自动保存。commit 函数先比对已持久化值：onAppear 的
-    /// loadDrafts 会触发一轮 onChange，值没变就不落盘（打开设置页不该
-    /// 白跑一次配置管线）。
-    private func debouncedCommit(_ commit: @escaping () -> Void) {
-        commitDebounce?.cancel()
-        commitDebounce = Task {
-            try? await Task.sleep(nanoseconds: 600_000_000)
-            guard !Task.isCancelled else { return }
-            commit()
-        }
+    /// 端口草稿的落盘判定。
+    static func portCommit(draft: String, stored: Int) -> PortCommit {
+        guard let port = Int(draft.trimmingCharacters(in: .whitespaces)),
+              (1...65535).contains(port) else { return .invalid }
+        return port == stored ? .unchanged : .apply(port)
     }
 
-    private func commitHubURL() {
-        guard hubURLDraft != syncConfig.hubURL else { return }
-        update { $0.hubURL = hubURLDraft }
-    }
-
-    private func commitNodeName() {
-        guard nodeNameDraft != syncConfig.nodeName else { return }
-        update { $0.nodeName = nodeNameDraft }
-    }
-
-    private func commitPort() {
-        guard let port = Int(portDraft.trimmingCharacters(in: .whitespaces)), (1...65535).contains(port),
-              port != syncConfig.hubPort else { return }
-        update { $0.hubPort = port }
-    }
-
-    private func commitPushInterval() {
-        guard let seconds = Int(pushIntervalDraft.trimmingCharacters(in: .whitespaces)), seconds >= 5,
-              seconds != syncConfig.pushIntervalSeconds else { return }
-        update { $0.pushIntervalSeconds = seconds }
-    }
-
-    /// 本机局域网地址（en0 优先）；拿不到时退化 localhost——地址文本只是给用户
-    /// 复制的建议值，真实连通性由副节点侧的 health 校验兜底。
-    static func lanAddress() -> String {
-        var address: String?
-        var ifaddr: UnsafeMutablePointer<ifaddrs>?
-        if getifaddrs(&ifaddr) == 0, let first = ifaddr {
-            var cursor: UnsafeMutablePointer<ifaddrs>? = first
-            while let current = cursor {
-                let interface = current.pointee
-                if let name = String(validatingUTF8: interface.ifa_name), name.hasPrefix("en"),
-                   interface.ifa_addr.pointee.sa_family == UInt8(AF_INET) {
-                    let sockaddrIn = interface.ifa_addr.withMemoryRebound(
-                        to: sockaddr_in.self, capacity: 1
-                    ) { $0.pointee }
-                    var addr = sockaddrIn.sin_addr
-                    var buffer = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
-                    if inet_ntop(AF_INET, &addr, &buffer, socklen_t(INET_ADDRSTRLEN)) != nil {
-                        let candidate = String(cString: buffer)
-                        if candidate != "127.0.0.1" {
-                            address = candidate
-                            break
-                        }
-                    }
-                }
-                cursor = interface.ifa_next
-            }
-            freeifaddrs(ifaddr)
-        }
-        return address ?? "127.0.0.1"
-    }
 }

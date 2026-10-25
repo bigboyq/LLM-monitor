@@ -44,16 +44,78 @@ enum UsageReportBuilder {
     static func build(_ input: UsageReportInput, seq: Int) -> NodeUsageReport {
         var entryRows: [EntryKey: EntryAccumulator] = [:]
         var clientDayRows: [ClientDayKey: FleetClientProviderUsage] = [:]
-        var anySourceIncomplete = false
+        var unavailableSourcesByKey: [String: FleetDailyUnavailableSource] = [:]
+        var anySampleDetailsIncomplete = false
+
+        // 每个 provider 的 L2 投影只算一次：日桶通道与窗口通道共用同一份。
+        // 原来两条通道各算一遍 —— 主线程上白跑一次全量投影（帧抽取 + 日聚合
+        // + 当日 max 修补），而报告构建发生在每次状态变化的防抖之后。
+        var projections: [ProviderKind: ProviderUsageProjection] = [:]
+        for status in input.statuses {
+            // 用量通道也尊重 isEnabled：用户在 config 里禁用的 provider 仍会
+            // 保留扫描缓存（LocalUsageOrchestration 的约定），那些缓存不该
+            // 被上报并计入 hub 的权威合计。额度通道本来就有这道门控（§5.1），
+            // 同一份报告里两套口径会自相矛盾。
+            guard status.isEnabled else { continue }
+            projections[status.kind] = status.usageProjection(for: status.lastSuccess, now: input.now)
+        }
 
         for status in input.statuses {
-            let projection = status.usageProjection(for: status.lastSuccess, now: input.now)
+            guard status.isEnabled else { continue }
+            guard let projection = projections[status.kind] else { continue }
+            let quotaProviderID = status.kind.quotaProviderID
+
+            // Freshness is stored per scanner source, while this legacy flag has
+            // provider scope. Conservatively apply the flag only to sources this
+            // status actually consumes, and keep precise failed/scanning states.
+            for consumer in status.localUsageConsumers {
+                let sourceFreshness = status.localUsageFreshness[consumer.source]
+                let reason: FleetDailyUnavailableReason?
+                switch sourceFreshness {
+                case .failed:
+                    reason = .failed
+                case .scanning:
+                    reason = .scanning
+                case .clean, .dirty:
+                    reason = status.isScanningLocalUsage ? .scanning : nil
+                }
+                if let reason {
+                    Self.markUnavailable(consumer, reason: reason, in: &unavailableSourcesByKey)
+                }
+            }
+
+            // DSH's scan budget can truncate the source even when no retained
+            // provider frame exists. Do not let that empty projection look like
+            // a verified zero, and do not let it affect unrelated consumers.
+            if status.dshUsage?.isTruncated == true,
+               let dshConsumer = status.localUsageConsumers.first(where: { $0.source == .dsh }) {
+                Self.markUnavailable(dshConsumer, reason: .truncated, in: &unavailableSourcesByKey)
+            }
+
+            for contribution in projection.contributions {
+                let key = "\(contribution.clientID)|\(quotaProviderID)"
+                if contribution.isTruncated,
+                   status.localUsageConsumers.contains(where: { $0.sourceKey == key }) {
+                    Self.markUnavailable(
+                        clientID: contribution.clientID,
+                        quotaProviderID: quotaProviderID,
+                        reason: .truncated,
+                        in: &unavailableSourcesByKey
+                    )
+                }
+            }
+        }
+
+        for status in input.statuses {
+            guard status.isEnabled else { continue }
+            guard let projection = projections[status.kind] else { continue }
             let quotaProviderID = status.kind.quotaProviderID
 
             for contribution in projection.contributions {
-                if contribution.isTruncated || projection.localUsageFreshness == .failed {
-                    anySourceIncomplete = true
-                }
+                let sourceKey = "\(contribution.clientID)|\(quotaProviderID)"
+                if unavailableSourcesByKey[sourceKey] != nil { continue }
+                if contribution.samplesTruncated { anySampleDetailsIncomplete = true }
+
                 for day in contribution.dailyTokenUsage {
                     let dayKey = FleetMerger.dayKey(of: day.dayStart, calendar: input.calendar)
                     let key = ClientDayKey(
@@ -76,7 +138,10 @@ enum UsageReportBuilder {
                         modelName: HarnessTodaySummary.normalizedModelName(sample.modelName)
                     )
                     entryRows[key, default: EntryAccumulator(key: key, quotaProviderID: quotaProviderID)]
-                        .add(sample: sample, truncated: contribution.isTruncated)
+                        .add(
+                            sample: sample,
+                            truncated: contribution.samplesTruncated
+                        )
                 }
             }
         }
@@ -101,19 +166,24 @@ enum UsageReportBuilder {
                     ($0.clientID, $0.quotaProviderID, $0.modelName ?? "")
                         < ($1.clientID, $1.quotaProviderID, $1.modelName ?? "")
                 }
+            let unavailableSources = unavailableSourcesByKey.values.sorted {
+                ($0.clientID, $0.quotaProviderID) < ($1.clientID, $1.quotaProviderID)
+            }
             buckets.append(FleetDailyBucket(
                 dayKey: dayKey,
                 totals: totals,
                 clientProviders: clientRows,
                 entries: entries,
-                totalsComplete: !anySourceIncomplete,
-                modelDetailsComplete: !anySourceIncomplete,
-                sourceTruncated: anySourceIncomplete
+                totalsComplete: unavailableSources.isEmpty,
+                modelDetailsComplete: unavailableSources.isEmpty && !anySampleDetailsIncomplete,
+                sourceTruncated: unavailableSources.contains { $0.reason == .truncated },
+                unavailableSources: unavailableSources.isEmpty ? nil : unavailableSources
             ))
         }
 
-        let windowRows = input.statuses.flatMap { status in
-            buildWindowRows(status: status, now: input.now)
+        let windowRows: [FleetWindowUsage] = input.statuses.flatMap { status -> [FleetWindowUsage] in
+            guard let projection = projections[status.kind] else { return [] }
+            return buildWindowRows(status: status, projection: projection, now: input.now)
         }
         let quotaReports = input.statuses.compactMap { status -> FleetQuotaReport? in
             guard status.isEnabled, let info = status.lastSuccess else { return nil }
@@ -121,12 +191,9 @@ enum UsageReportBuilder {
             return report.hasActiveQuotaWindow ? report : nil
         }
 
-        // reconcile 跑动中不宣称权威日总量：省略整条日桶通道（§6.3——缓存
-        // 恢复值不等于已验证，不能当权威零值覆盖 hub），额度/心跳照常。
-        let anyScanning = input.statuses.contains {
-            $0.isScanningLocalUsage || $0.effectiveLocalUsageFreshness == .scanning
-        }
-
+        // Failed/scanning sources are carried in daily buckets as source markers so
+        // healthy clients still contribute. Window rows remain omitted for unavailable
+        // provider scopes; an empty window array preserves the hub's last-known values.
         return NodeUsageReport(
             protocolVersion: FleetProtocol.version,
             node: FleetNodeIdentity(
@@ -138,7 +205,7 @@ enum UsageReportBuilder {
             seq: seq,
             generatedAt: input.now,
             attributionFingerprint: FleetAttributionFingerprint.compute(input.bindings),
-            dailyBuckets: anyScanning ? nil : buckets,
+            dailyBuckets: buckets,
             windowUsage: windowRows,
             quotas: quotaReports
         )
@@ -163,12 +230,20 @@ enum UsageReportBuilder {
 
     /// 按 provider 每个 model 的真实窗口边界筛样本、同样本计价；
     /// GLM 闲时任务窗口单独成行（真实边界，§10.7.1）。
-    static func buildWindowRows(status: ProviderStatus, now: Date) -> [FleetWindowUsage] {
+    static func buildWindowRows(
+        status: ProviderStatus,
+        projection: ProviderUsageProjection,
+        now: Date
+    ) -> [FleetWindowUsage] {
+        // 同日桶通道：禁用 provider 的窗口摘要不上报。
+        guard status.isEnabled else { return [] }
+        // 空 projection 可能是失败/扫描中的本地账本，而非真实零用量。
+        // 省略这些 provider 的窗口行，让 hub 保留相同边界上的最后有效摘要。
+        guard !localUsageUnavailable(status) else { return [] }
         guard let info = status.lastSuccess else { return [] }
         let quotaProviderID = status.kind.quotaProviderID
-        let projection = status.usageProjection(for: info, now: now)
         let samples = projection.recentSamples
-        let truncated = projection.isTruncated
+        let truncated = projection.isTruncated || projection.samplesTruncated
         let peakWindow = status.deepseekPeakWindow ?? DeepseekPeakWindow.defaultWindow
         var rows: [FleetWindowUsage] = []
 
@@ -244,6 +319,50 @@ enum UsageReportBuilder {
             }
         }
         return rows
+    }
+
+    private static func localUsageUnavailable(_ status: ProviderStatus) -> Bool {
+        let freshness = status.effectiveLocalUsageFreshness
+        return status.isScanningLocalUsage || freshness == .scanning || freshness == .failed
+    }
+
+    private static func markUnavailable(
+        _ consumer: LocalUsageConsumer,
+        reason: FleetDailyUnavailableReason,
+        in sources: inout [String: FleetDailyUnavailableSource]
+    ) {
+        markUnavailable(
+            clientID: consumer.clientID,
+            quotaProviderID: consumer.quotaProviderID,
+            reason: reason,
+            in: &sources
+        )
+    }
+
+    private static func markUnavailable(
+        clientID: String,
+        quotaProviderID: String,
+        reason: FleetDailyUnavailableReason,
+        in sources: inout [String: FleetDailyUnavailableSource]
+    ) {
+        let marker = FleetDailyUnavailableSource(
+            clientID: clientID,
+            quotaProviderID: quotaProviderID,
+            reason: reason
+        )
+        // Failure/scanning is more informative than truncation when a source is
+        // simultaneously stale and budget-limited.
+        func priority(_ reason: FleetDailyUnavailableReason) -> Int {
+            switch reason {
+            case .failed: return 3
+            case .scanning: return 2
+            case .truncated: return 1
+            }
+        }
+        if let existing = sources[marker.sourceKey], priority(existing.reason) >= priority(reason) {
+            return
+        }
+        sources[marker.sourceKey] = marker
     }
 
     private static func windowUsageRow(

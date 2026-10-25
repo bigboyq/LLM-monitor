@@ -60,7 +60,7 @@ The app reads and writes this shape:
 | Field | Scope | Meaning |
 |---|---|---|
 | `schemaVersion` | global | Configuration schema version. Missing legacy values decode as version 0 and are normalized to the current version; unsupported future versions are rejected rather than silently defaulted. Schema 3 adds the `sync` block (multi-machine fleet sync, see `spec/sync.md`). |
-| `sync` | global | 多机联动配置（`SyncConfig`）。缺省或不写 = `enabled: false`，完全不参与（现有用户零影响）；坏值按未配置处理（逐字段容错，只回退该字段）。字段：`enabled`（缺省 false）、`hubURL`（空 = 本机为主节点 hub；非空 = 副节点 node，且不监听端口——角色由 `SyncRole.derive` 单源派生）、`pushIntervalSeconds`（默认 60，clamp 5s...24h）、`hubBindHost`（默认 `0.0.0.0`；`127.0.0.1`/`localhost` 时只绑回环）、`hubPort`（默认 8787）、`nodeName`（空 = hostname）、`staleAfterSeconds`（默认 900）、`quotaMaxAgeSeconds`（默认 1800）、`retainDays`（默认 7）、`nodeID`（节点身份 UUID，首次启用联动时自动生成写回；dotfile 同步 config 的部署须给每台机器改成不同值）。协议与运行时见 `spec/sync.md`。 |
+| `sync` | global | 多机联动配置（`SyncConfig`）。缺省或不写 = `enabled: false`，完全不参与（现有用户零影响）；坏值按未配置处理（逐字段容错，只回退该字段）。字段：`enabled`（缺省 false）、`hubURL`（空 = 本机为主节点 hub；非空 = 副节点 node，且不监听端口——角色由 `SyncRole.derive` 单源派生）、`pushIntervalSeconds`（默认 `0`，缺失、类型错误或越界值也回退 `0`；`0` 跟随 `effectiveGlobalRefreshInterval`，即“跟随常规”；显式正数保持原值；config 允许 `1...86400` 秒，设置页输入范围仍为 `0...3600` 秒，即跟随全局或 1 秒至 1 小时）、`hubBindHost`（默认 `0.0.0.0`；`127.0.0.1`/`localhost` 时只绑回环）、`hubPort`（默认 8787）、`nodeName`（空 = hostname）、`staleAfterSeconds`（默认 900）、`quotaMaxAgeSeconds`（默认 1800）、`retainDays`（默认 7）。旧文件中的 `sync.nodeID` 不再是身份来源，也不会迁移到设备身份文件。启用联动时的本机 UUID 独立存放在 config 同目录的 `.deviceId`；复制 config 无需改旧 UUID，但不得复制 `.deviceId`。配置变化会热更新角色、监听端口、上游与推送周期。协议与运行时见 `spec/sync.md`。 |
 | `refreshIntervalSeconds` | global | Default refresh interval in seconds. Current default is `300`; effective values are clamped to 10 seconds...30 days. |
 | `statusBarIconStyle` | global | Selected menu-bar icon theme. Missing or invalid values use `chartBar`. |
 | `statusBarHealthDotEnabled` | global | Shows the 6 pt health dot on the menu-bar icon. Missing or invalid values default to `true`. |
@@ -138,6 +138,7 @@ value when local model samples are available.
 | File | Purpose |
 |---|---|
 | `~/Library/Application Support/LLM-monitor/config.json` | User-editable config |
+| `~/Library/Application Support/LLM-monitor/.deviceId` | 本机 Fleet Sync UUID 身份文件；首次启用联动且文件不存在时创建。复制 `config.json` 时不要复制此文件。旧 `sync.nodeID` 不迁移。 |
 | `~/Library/Application Support/LLM-monitor/holidays-cache.json` | 法定节假日数据源缓存（与打包资源同 schema：source / fetchedAt / holidays）。取数成功后经 `FileManagerBox.writePrivate` 回写（文件 0600 / 目录 0700）；缺失 / 损坏 / bundledOnly 模式时回落内置快照 |
 | `~/Library/Application Support/LLM-monitor/notification-state.json` | 通知触发器基线（每次成功刷新回写，供边沿检测跨重启连续） |
 | `~/Library/Application Support/LLM-monitor/log.txt` | Rotated runtime log (5 MB 上限 rotate, 保留 active + .1 + .2 共 3 份)；测试进程（XCTest）自动改写到 `NSTemporaryDirectory()/LLM-monitor-tests/log.txt`（裸 `swift test` 不再污染真实日志），`LLM_MONITOR_LOG_PATH` 显式覆盖最优先 |
@@ -181,6 +182,12 @@ guessing a historical product path — the real directory moves with toolchain /
 guessed path silently repacks a stale binary into a freshly-timestamped `.app`. A `lipo -archs` gate
 then rejects anything that is not arm64-only, creates `build/LLM-monitor.app`, writes
 `Info.plist`, sets `LSUIElement=true`, and ad-hoc signs the app.
+
+Fleet 局域网访问声明同样由此脚本写入 `Info.plist`：
+`NSLocalNetworkUsageDescription` 说明连接局域网主节点以同步用量和额度的用途；
+`NSAppTransportSecurity.NSAllowsLocalNetworking=true` 允许局域网 HTTP（IP / 本地名称），
+不设置全局 `NSAllowsArbitraryLoads`。这些是应用包配置，修改后须重新打包安装；
+`swift test` 的裸可执行文件回环测试不能代替打包应用的 ATS / 本地网络授权验证。
 
 ### App icon packaging（双路线设计，已裁定勿再翻转）
 
@@ -241,4 +248,6 @@ CHANGELOG 最新条目、两份 README 的「当前版本」/DMG 名/build-relea
 的旧文案「按本机时区计算、可在设置中调整」直到发版前才发现，只因 `build-release.sh` 的
 版本门禁全绿而放行。**功能口径变了，用户文档必须同轮改**。
 
-> 核对基线：2026-10-24 · 代码 a3d4553
+> 核对基线：2026-10-25 · 代码 6f11831
+> 2026-10-25 统一验证通过，详见 `spec/sync.md`。
+> `.deviceId` 身份与旧 `sync.nodeID` 忽略语义已随 6f11831 入库，验证记录见 `spec/sync.md`。

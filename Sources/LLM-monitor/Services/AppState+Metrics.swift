@@ -65,7 +65,6 @@ extension AppState {
     /// 判定（实际可用口径 + 高峰 floor）红 > 黄 > 绿排列。聚合 model 集合已排除
     /// minimax video / antigravity Claude and GPT 组（`QuotaInfo.aggregateQuotaModels`）。
     func statusBarQuotaMetrics(at now: Date = Date()) -> StatusBarQuotaMetrics {
-        let enabled = statuses.filter(\.isEnabled)
         // (kind, model, isPeak) 三元组：中心扇形与底部三点的「实际可用」口径需要
         // provider 的周等效倍率 N（与卡片分段条 min(5h, 周 × N) 同源），高峰 floor
         // 也按 provider 维度取 kind 对应的高峰状态，收集时顺带记录。deepseek 已被

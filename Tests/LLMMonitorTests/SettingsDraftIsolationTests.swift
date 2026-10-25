@@ -124,4 +124,95 @@ final class SettingsDraftIsolationTests: XCTestCase {
             "形态差异必须被看见——否则整块 edgeDock 被抹平会让形态变化失去热重载"
         )
     }
+
+    /// Sync pane writes through independently. Its local writes and external config reloads
+    /// must not reload the General/provider form and discard drafts owned by this view.
+    @MainActor
+    func testSyncOnlyChangesDoNotReloadGeneralOrProviderDrafts() {
+        let (_, _, store) = makeSettings()
+        let base = store.config
+
+        // Local immediate save and external file change both reach the same config publisher
+        // gate; only the Sync payload differs in these cases.
+        var localSyncUpdate = base
+        localSyncUpdate.sync = SyncConfig(
+            enabled: true,
+            hubURL: "http://127.0.0.1:8787",
+            nodeName: "Local edit"
+        )
+        XCTAssertFalse(
+            SettingsView.hasFormRelevantChange(from: base, to: localSyncUpdate),
+            "a local Sync save must not reload unrelated General/provider drafts"
+        )
+
+        var externalSyncUpdate = base
+        externalSyncUpdate.sync = SyncConfig(
+            enabled: true,
+            hubURL: "http://192.168.1.20:8787",
+            nodeName: "External edit"
+        )
+        XCTAssertFalse(
+            SettingsView.hasFormRelevantChange(from: base, to: externalSyncUpdate),
+            "an external Sync-only change must not reload unrelated drafts"
+        )
+
+        // Legacy config with no sync section and an explicit disabled default are equivalent
+        // for this form, as are Sync changes combined with ignored dock position writes.
+        var explicitDefault = base
+        explicitDefault.sync = .default
+        XCTAssertFalse(SettingsView.hasFormRelevantChange(from: base, to: explicitDefault))
+        XCTAssertEqual(
+            SettingsView.formRelevantProjection(of: base),
+            SettingsView.formRelevantProjection(of: explicitDefault),
+            "nil and default Sync sections must be equivalent to the General/provider form"
+        )
+
+        var syncAndDockUpdate = localSyncUpdate
+        syncAndDockUpdate.edgeDock = EdgeDockConfig(
+            mode: base.effectiveEdgeDockConfig.mode,
+            edge: .left,
+            offset: 0.73,
+            screenUUID: "EXTERNAL-SCREEN",
+            hideInFullscreen: base.effectiveEdgeDockConfig.hideInFullscreen
+        )
+        XCTAssertFalse(
+            SettingsView.hasFormRelevantChange(from: base, to: syncAndDockUpdate),
+            "Sync and dock-position writes together remain unrelated to this form"
+        )
+
+        var firstPositionWrite = base
+        firstPositionWrite.edgeDock = EdgeDockConfig(
+            mode: base.effectiveEdgeDockConfig.mode,
+            edge: .left,
+            offset: 0.73,
+            screenUUID: "FIRST-EXPLICIT-POSITION",
+            hideInFullscreen: base.effectiveEdgeDockConfig.hideInFullscreen
+        )
+        XCTAssertFalse(
+            SettingsView.hasFormRelevantChange(from: base, to: firstPositionWrite),
+            "a first position-only write must treat nil and explicit default dock config as equivalent"
+        )
+
+        var changedDockMode = base
+        changedDockMode.edgeDock = EdgeDockConfig(
+            mode: .statusWindow,
+            edge: EdgeDockConfig.default.edge,
+            offset: EdgeDockConfig.default.offset,
+            hideInFullscreen: EdgeDockConfig.default.hideInFullscreen
+        )
+        XCTAssertTrue(
+            SettingsView.hasFormRelevantChange(from: base, to: changedDockMode),
+            "a real mode change must remain visible to the settings reload gate"
+        )
+
+        // Actual form changes must still reload so external edits to General/provider fields
+        // remain visible while the Settings window is open.
+        var generalUpdate = localSyncUpdate
+        generalUpdate.refreshIntervalSeconds += 1
+        XCTAssertTrue(SettingsView.hasFormRelevantChange(from: base, to: generalUpdate))
+
+        var providerUpdate = localSyncUpdate
+        providerUpdate.providers["probe-provider"] = ProviderConfig(enabled: true, apiKey: "external")
+        XCTAssertTrue(SettingsView.hasFormRelevantChange(from: base, to: providerUpdate))
+    }
 }

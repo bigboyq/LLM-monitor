@@ -145,10 +145,29 @@ struct ProviderCardView: View, Equatable {
         lhs.status == rhs.status && lhs.fleet == rhs.fleet
     }
 
-    /// 「全局」scope 且有 fleet 用量数据时，用量区块（窗口表 / 7 天卡）切到
-    /// fleet 口径；额度区块不跟 scope 走（§10.0 两条轴）。
+    /// dock 浮层的卡片是**一次性构建的值快照**（NSHostingView 的 rootView
+    /// 不随 AppState 重算），只靠 onScopeChange 写 AppState 会让 Picker 的
+    /// 绑定值原地不动、选完弹回。所以切换先落到本地 @State（立即生效），
+    /// 再同步给 AppState（下次打开浮层 / 其它界面沿用）。
+    @State private var scopeOverride: FleetScope?
+
+    private var effectiveScope: FleetScope {
+        scopeOverride ?? fleet?.scope ?? .local
+    }
+
+    /// 当前 scope 对应的 fleet/节点用量变体（本机 = nil，回落本地投影）。
+    private var activeUsage: FleetCardUsage? {
+        switch effectiveScope {
+        case .local: return nil
+        case .fleet: return fleet?.fleetUsage
+        case .node(let id): return fleet?.nodeUsages[id]
+        }
+    }
+
+    /// 非本机 scope（全局或具体节点）且有对应用量数据时，用量区块切到
+    /// fleet/节点口径；额度区块不跟 scope 走（§10.0 两条轴）。
     private var fleetUsageActive: Bool {
-        fleet?.scope == .fleet && fleet?.usage != nil
+        effectiveScope != .local && activeUsage != nil
     }
 
     /// 生效额度：有 fleet 上下文时一律走它（本机优先，否则 elected，§7.7）；
@@ -167,6 +186,11 @@ struct ProviderCardView: View, Equatable {
         // memo 之后只有输入真的变了才重算，数值与口径一字未改。
         let derived = ProviderCardDerivedValues.resolve(status: status, displayDate: displayDate)
         dockBody(derived: derived)
+            // popover root view 是快照，@State 会跨 rootView 更新保留。全局 scope
+            // 从菜单或节点清理变化时，跟随新的上下文，避免旧局部选择覆盖它。
+            .onChange(of: fleet?.scope) { _, newScope in
+                scopeOverride = newScope
+            }
     }
 
     /// **三段式**：段1「Account Info」行 → 段2「Plan详情」+ 四个模块 →
@@ -200,6 +224,9 @@ struct ProviderCardView: View, Equatable {
     private func dockBody(derived: ProviderCardDerived) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             headerContent
+            // scope 切换的分段形态：标题行**下方**独占一行，宽度与卡片一致
+            // （分段控件塞卡头会把 provider 名挤没，见 `scopeRow`）。
+            scopeRow
             // 有生效额度（本地 .ok，或 fleet elected）就走完整三段；否则回退
             // 单卡（.loading / .failed / .notConfigured 的本地路径不变）。
             if let info = effectiveQuotaInfo {
@@ -208,7 +235,13 @@ struct ProviderCardView: View, Equatable {
                     planModules(info: info, derived: derived)
                 }
                 dockSectionTitle(showFreshnessBadge: !fleetUsageActive, projection: derived.projection)
-                if let notice = fleet?.usage?.incompleteNotice, fleetUsageActive {
+                if let notice = activeUsage?.dailyNotice, fleetUsageActive {
+                    Text(notice)
+                        .font(MenuTypography.hint)
+                        .foregroundStyle(Color.secondaryLabel)
+                        .padding(.top, 2)
+                }
+                if let notice = activeUsage?.incompleteNotice, fleetUsageActive {
                     Text(notice)
                         .font(MenuTypography.hint)
                         .foregroundStyle(Color.secondaryLabel)
@@ -228,7 +261,7 @@ struct ProviderCardView: View, Equatable {
     /// 用量区块：fleet scope 读快照（7 天柱图 + 逐日表），本地 scope 走投影。
     @ViewBuilder
     private func usageBlock(derived: ProviderCardDerived) -> some View {
-        if fleetUsageActive, let usage = fleet?.usage {
+        if fleetUsageActive, let usage = activeUsage {
             LocalUsageFooterView(
                 dailyTokenUsage: usage.daily,
                 recentSamples: [],
@@ -331,7 +364,7 @@ struct ProviderCardView: View, Equatable {
     private func quotaWindowUsage(info: QuotaInfo, derived: ProviderCardDerived) -> some View {
         // fleet scope：整块行集来自 fleet 窗口聚合 + fleet「今」/「闲」行（§10.1）。
         // 复用 `QuotaWindowUsageSection` 的行形状与排版，快照槽位按 label 映射。
-        if fleetUsageActive, let usage = fleet?.usage {
+        if fleetUsageActive, let usage = activeUsage {
             quotaUsageDivider
             QuotaWindowUsageSection(
                 snapshot: Self.fleetWindowSnapshot(rows: usage.windowRows),
@@ -394,7 +427,8 @@ struct ProviderCardView: View, Equatable {
                     reasoningOutputTokens: row.reasoning
                 ),
                 resetsAt: row.endAt,
-                cost: row.cost
+                cost: row.cost,
+                costText: row.costText
             )
         }
         return QuotaWindowUsageSnapshot(
@@ -414,7 +448,8 @@ struct ProviderCardView: View, Equatable {
                 output: row.output,
                 reasoning: row.reasoning
             ),
-            cost: row.cost
+            cost: row.cost,
+            costText: row.costText
         )
     }
 
@@ -530,11 +565,53 @@ struct ProviderCardView: View, Equatable {
         }
     }
 
+    /// scope 切换的形态：按选项总数（全局 + 本机 + 远端节点）分叉。
+    ///
+    /// ≤4 → 分段（独占一行，见 `scopeRow`）；>4 → 下拉（紧凑形态，放卡头右侧，
+    /// 见 `headerContent`）。形态由选项数决定，**位置**由两处各自的落位决定，
+    /// 两边都用同一个 `FleetScopeControlStyle.preferred` 判定，不会各算各的。
+    private var fleetScopeStyle: FleetScopeControlStyle? {
+        guard let fleet, fleet.multiNode else { return nil }
+        return FleetScopeControlStyle.preferred(choices: fleet.nodeChoices)
+    }
+
+    /// scope 切换的**分段形态**：标题行**下方**独占一行，宽度与卡片一致。
+    ///
+    /// 为什么不在卡头（品牌图标 + provider 名 + 新鲜度胶囊那一行）：scope 切换
+    /// 在选项 ≤4 时是**分段控件**（全局 / 本机 / 各节点，四段两百多磅宽），塞进
+    /// 卡头会把 provider 名挤成「minimax To…」。分段控件没有宽度预算，节点名
+    /// 一长就截；卡头那一行的宽度预算只够放下一个名字 + 一个胶囊。
+    ///
+    /// 宽度与下面的卡片块一致：卡片块是 `padding(cardContentPadding)` **之后**才
+    /// 画背景的，圆角矩形铺满卡片整宽（padding 在背景里面）；这一行因此**不能
+    /// 再加这层内缩**——加了就比卡片窄一截，两边对不齐。
+    @ViewBuilder
+    private var scopeRow: some View {
+        if let fleet, fleetScopeStyle == .segmented {
+            FleetScopeSwitcher(
+                scope: effectiveScope,
+                choices: fleet.nodeChoices,
+                onSelect: { newScope in
+                    // 浮层是一次性快照：先落本地 @State（立即生效），再同步
+                    // AppState（下次打开浮层 / 其它界面沿用）。
+                    scopeOverride = newScope
+                    fleet.onScopeChange?(newScope)
+                },
+                style: .segmented
+            )
+            .help("切换显示范围：全局 / 本机 / 各节点")
+            .frame(maxWidth: .infinity)
+        }
+    }
+
     /// 卡片头部：品牌图标 + provider 名 + 右侧刷新状态。
     ///
     /// 套餐 pill **已从这里移除**（第二轮改版）：它挪进了卡片第一段「Account Info」
     /// 行（`QuotaWindowAccountInfoRow`），与账号邮箱组成同一行——账号是谁、
     /// 什么级别，本来就是同一个问题的两半。
+    ///
+    /// scope 切换的**下拉形态**（选项 >4 时）在这里，紧凑地跟在状态胶囊左边；
+    /// ≤4 时它换成标题行下方的分段行（`scopeRow`），卡头不参与。
     private var headerContent: some View {
         HStack(spacing: 8) {
             // 标题行不画状态点：它紧挨着品牌图标，两个小圆挤在一起读起来
@@ -558,17 +635,14 @@ struct ProviderCardView: View, Equatable {
                     .help(tag)
             }
             Spacer()
-            if fleet?.multiNode == true, let fleet {
-                Picker("范围", selection: Binding(
-                    get: { fleet.scope },
-                    set: { fleet.onScopeChange?($0) }
-                )) {
-                    Text("本机").tag(FleetScope.local)
-                    Text("全局").tag(FleetScope.fleet)
+            if let fleet, fleetScopeStyle == .dropdown {
+                // scope 的紧凑形态：选项 >4 时节点名放不进一行，收成
+                // 「label + ellipsis」下拉，贴在状态胶囊左边。
+                FleetScopeMenu(scope: effectiveScope, choices: fleet.nodeChoices) { newScope in
+                    scopeOverride = newScope
+                    fleet.onScopeChange?(newScope)
                 }
-                .pickerStyle(.segmented)
-                .controlSize(.mini)
-                .frame(width: 96)
+                .help("切换显示范围：全局 / 本机 / 各节点")
             }
             if case .loading = status.state {
                 ProgressView()

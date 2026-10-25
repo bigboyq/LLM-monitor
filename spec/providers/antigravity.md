@@ -1182,9 +1182,12 @@ boundary replacing the old hover divider between quota (now) and local usage
 - freshness lives in the section title row (`dockSectionTitle`): 「最近7天token用量」
   + `LocalUsageFreshnessBadge` (bare `HH:MM` from `scannedAt` — the 「更新于」 prefix
   was dropped 2026-10-13 to match the header timestamp, or 计算中… while scanning).
-  Both card timestamps (the header `ProviderStateLabel` and this badge) are tappable
-  and trigger the same forced refresh as the menu headerBar's 立即刷新全部
-  (`AppState.refreshAll` via `\.cardManualRefreshAction`, default nil = no-op)
+  The two card timestamps have **split** semantics (2026-10-18 起，见
+  `ui/menu-and-cards.md` §Provider Card)：header 的 `ProviderStateLabel`（额度时间戳）
+  点击经 `\.cardQuotaRefreshAction` → `AppState.refreshOne(providerID:)` 只重抓本卡
+  额度并只重锚其排期；本 badge（用量时间戳）点击经 `\.cardUsageRefreshAction` →
+  `AppState.triggerLocalUsageRescan()` 只补拍一次本地用量 reconcile（环境键默认
+  nil = 只读）
 
 Source: `AntigravityLocalUsage.dailyTokenUsage` (always the last 7 local days,
 missing days back-filled), summed from every session's events whose timestamp
@@ -1395,4 +1398,4 @@ This script:
 3. calls `RetrieveUserQuotaSummary`
 4. prints or writes the raw JSON
 
-> 核对基线：2026-10-25 · 代码 0304521
+> 核对基线：2026-10-25 · 代码 6f11831

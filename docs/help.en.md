@@ -57,6 +57,17 @@ The app reads `~/.local/share/opencode/opencode.db` and separates rows by `provi
 
 ZCode is a shared multi-provider ledger just like OpenCode: Zhipu-family rows feed the GLM card, while rows whose `provider_id` starts with `minimax` / `deepseek` are partitioned into slices and merged into the MiniMax / DeepSeek cards respectively. The matching `zcode` entries in `clientBindings[]` default to enabled; there is likewise no per-provider toggle in the settings window.
 
+## Multi-device Sync (Hub and Nodes)
+
+Enable sync under Settings → Multi-device on each Mac. The topology has one hub and one or more nodes: the hub aggregates incoming data, while nodes report periodically. Nodes do not relay data to downstream nodes.
+
+- **Set up the hub**: Enable sync, leave Hub address empty, choose a listening port, and keep LLM Monitor running. The settings pane shows a copyable LAN address and connected nodes.
+- **Set up a node**: Enable sync, enter the full hub address, such as `http://192.168.1.20:8787`, and give this Mac a recognizable name. The hub name must resolve and be reachable from each node. For plain HTTP, use a LAN IP address or a `.local` hostname; macOS ATS may block ordinary fully qualified domain names. The reporting interval can be customized; 0 follows the regular refresh interval.
+- **View data**: The main menu and provider cards can show global, local, or individual-node data. When a node is offline, its data is marked stale and shows the last successful sync.
+- **Network and security**: Each Mac must be able to reach the hub's listening port over the LAN. The current protocol uses HTTP without TLS or application-level authentication, so use it only on a trusted local network.
+
+An empty Hub address makes this Mac the hub; entering an address makes it a node. Changing roles recreates the matching listener or reporting connection.
+
 ## Holiday data source
 
 Both GLM and DeepSeek decide peak hours in Beijing time (Asia/Shanghai), counting a weekday as Monday to Friday **minus** statutory public holidays. This table is why Spring Festival and National Day no longer count as peak time, and why a make-up holiday that falls on a weekday is excluded too.

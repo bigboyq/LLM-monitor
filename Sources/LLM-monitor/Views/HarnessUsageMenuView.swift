@@ -11,8 +11,8 @@ import SwiftUI
 /// 这一层兜底。
 ///
 /// 排版宽度（菜单 360pt，内容区 336pt，见 `MenuPanelHeightBridge.width`）：
-/// 模型名 100 + 占比条 ≥40 + Token 40 + 命中 36 + 速度 32 + 价值 56 +
-/// 5×6 间距 = 334pt，余量 2pt 留给字体度量误差。数字列全部定宽右对齐 +
+/// 模型名 92 + 占比条 ≥40 + Token 40 + 命中 36 + 速度 32 + 价值 56 +
+/// 5×6 间距 + scope 行缩进 8pt = 334pt，余量 2pt 留给字体度量误差。数字列全部定宽右对齐 +
 /// `monospacedDigit`，刷新时数字变化不会把整行往右顶。段头右侧的数值格组
 /// （`SectionHeaderMetricsView`：Token 小计 / 命中占位 / 速度汇总 / 价值）
 /// 复用同一批列宽常量与列间距，段头数字与下方模型行逐列对齐。预算由
@@ -22,10 +22,16 @@ struct HarnessUsageMenuView: View {
     /// fleet 汇总（§10.2）。nil（未启用联动）或单节点（`multiNode == false`）时
     /// 整棵树保持今天的单行形态——老用户看到的界面与现在逐字一致（§10.6 L）。
     var fleetSummary: FleetMenuSummary? = nil
-    /// 兜底行 hover 卡的 fleet 上下文（透传给 `ProviderStatusStripView`）。
-    var fleetContext: (ProviderStatus) -> FleetCardContext? = { _ in nil }
-    /// 底部的 provider 兜底行（见 `ProviderStatusStripView`）。空快照不渲染任何东西。
-    var providerStrip: ProviderStatusStrip.Snapshot = ProviderStatusStrip.Snapshot(entries: [], hiddenCount: 0)
+    /// 当前 scope（全局/本机/节点）。scope 切换控件在**标题栏**（>4 项时是
+    /// 「label + ellipsis」下拉）与**内容区第一行**（≤4 项时是分段控件，
+    /// 见 `scopeRow`），本视图只按 scope 选内容。
+    var activeScope: FleetScope = .local
+    /// 远端节点选项（scope 切换控件的选项源）。空 = 未启用联动。
+    var scopeChoices: [FleetNodeChoice] = []
+    /// scope 切换回调（宿主注入：写 `AppState.fleetScope`）。
+    var onScopeChange: (FleetScope) -> Void = { _ in }
+    /// 当前 scope 为具体节点时的菜单汇总（宿主注入；nil 时该节点无数据）。
+    var nodeSummary: FleetMenuSummary? = nil
     /// 段头右键「刷新 <客户端名>」：按该段今日贡献行刷新涉及的 provider 卡。
     /// 动作实现由 `MenuContentView` 注入（它持有 `AppState`）。
     var onRefreshSection: (HarnessSection) -> Void = { _ in }
@@ -38,18 +44,77 @@ struct HarnessUsageMenuView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: HarnessUsageMenuView.sectionSpacing) {
-            if fleetMenuActive, let fleet = fleetSummary {
-                fleetTodayOverview(fleet: fleet)
-                if fleet.sections.isEmpty {
-                    emptyTodayState
+            // scope 切换的分段形态：选项 ≤4（全局 + 本机 + 远端节点）时，
+            // 标题栏放不下四段分段控件，改在这里占一整行——「今日」卡片上方，
+            // 宽度与那张卡片一致。>4 项时它在标题栏右侧（下拉形态），本行不出现。
+            scopeRow
+            if fleetMenuActive, activeScope == .fleet, let fleet = fleetSummary {
+                if Self.isUnavailableFleetSelection(scope: activeScope, summary: fleet) {
+                    unavailableScopeOverview(label: "今日", notice: fleet.dailyNotice)
                 } else {
-                    ForEach(fleet.sections) { section in
-                        FleetClientSectionView(section: section)
+                    scopeOverview(
+                        label: "今日",
+                        tokens: fleet.fleetTotals.tokens,
+                        hitRate: fleet.fleetTotals.hitRate,
+                        valueText: fleet.fleetTotals.valueText,
+                        buckets: fleet.fleetTotals.buckets
+                    )
+                    if let notice = fleet.dailyNotice { fleetNotice(notice) }
+                    if fleet.sections.isEmpty { emptyTodayState } else {
+                        ForEach(fleet.sections) { section in
+                            FleetClientSectionView(
+                                section: section,
+                                onRefreshClient: { clientID in onRefreshSectionForClient(clientID) }
+                            )
+                        }
                     }
                 }
+            } else if fleetMenuActive, activeScope == .local, let fleet = fleetSummary {
+                scopeOverview(
+                    label: "今日",
+                    tokens: summary.totalTokens,
+                    hitRate: summary.cacheHitRate,
+                    valueText: summary.valueText,
+                    buckets: summary.buckets
+                )
+                if summary.sections.isEmpty { emptyTodayState } else {
+                    ForEach(summary.sections) { section in
+                        HarnessSectionView(
+                            section: section,
+                            onRefreshSection: onRefreshSection
+                        )
+                    }
+                }
+            } else if fleetMenuActive, case .node = activeScope, let node = nodeSummary {
+                if node.hasDailyData {
+                    scopeOverview(
+                        label: "今日",
+                        tokens: node.fleetTotals.tokens,
+                        hitRate: node.fleetTotals.hitRate,
+                        valueText: node.fleetTotals.valueText,
+                        buckets: node.fleetTotals.buckets
+                    )
+                    if let notice = node.dailyNotice { fleetNotice(notice) }
+                    if node.sections.isEmpty { emptyTodayState } else {
+                        ForEach(node.sections) { section in
+                            FleetClientSectionView(section: section)
+                        }
+                    }
+                } else {
+                    unavailableScopeOverview(label: "今日", notice: node.dailyNotice)
+                }
+            } else if Self.isMissingNodeSelection(scope: activeScope, nodeSummary: nodeSummary) {
+                Text("所选节点已不在当前同步快照中")
+                    .font(MenuTypography.metricLabel)
+                    .foregroundStyle(Color.secondaryLabel)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.vertical, 8)
             } else if summary.sections.isEmpty {
+                todayOverview
                 emptyTodayState
             } else {
+                // 联动关闭 / 只有本机节点时保持传统客户端视图，并保留顶部总览。
+                todayOverview
                 ForEach(summary.sections) { section in
                     HarnessSectionView(
                         section: section,
@@ -57,10 +122,6 @@ struct HarnessUsageMenuView: View {
                     )
                 }
             }
-            ProviderStatusStripView(
-                snapshot: providerStrip,
-                onRefreshProvider: onRefreshProvider
-            )
         }
     }
 
@@ -120,7 +181,7 @@ struct HarnessUsageMenuView: View {
     /// 客户端有本地账本、只是今天还没跑过模型时的占位。与上面"没注册 provider"
     /// 的两级空态是不同层级：数据在，只是今天为空。
     private var emptyTodayState: some View {
-        Text("今日暂无本地 Token 用量")
+        Text("今日暂无 Token 用量")
             .font(MenuTypography.metricLabel)
             .foregroundStyle(Color.secondaryLabel)
             .frame(maxWidth: .infinity, alignment: .center)
@@ -129,10 +190,117 @@ struct HarnessUsageMenuView: View {
 
     // MARK: - 排版常量
 
+    /// scope 切换的**分段形态**一行：选项 ≤4 时占一整行，位于「今日」卡片上方。
+    ///
+    /// 宽度与那张卡片一致：下面的「今日」块是 `padding(.horizontal, 8)` **之后**
+    /// 才画背景的，所以它的圆角矩形铺满内容区整宽（padding 在背景里面）；这一行
+    /// 因此**不能再加这 8pt 内缩**——加了就比卡片窄一截，两边对不齐。
+    @ViewBuilder
+    private var scopeRow: some View {
+        if !scopeChoices.isEmpty,
+           FleetScopeControlStyle.preferred(choices: scopeChoices) == .segmented {
+            FleetScopeSwitcher(
+                scope: activeScope,
+                choices: scopeChoices,
+                onSelect: { onScopeChange($0) },
+                style: .segmented
+            )
+            .help("切换显示范围：全局 / 本机 / 各节点")
+            .frame(maxWidth: .infinity)
+        }
+    }
+
+    /// 统一的总览块：一行（标签 + token + 命中率 + 金额）+ 一根构成条。
+    /// 三个 scope 共用同一实现——样式、列宽、留白天然一致。
+    private func scopeOverview(
+        label: String,
+        tokens: Int,
+        hitRate: Double?,
+        valueText: String,
+        buckets: TokenUsageBuckets
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            fleetOverviewRow(
+                label: label, tokens: tokens, hitRate: hitRate, valueText: valueText
+            )
+            TokenBucketBar(buckets: buckets)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 7)
+        .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 7))
+    }
+
+    /// Missing daily data has a distinct visual state. In particular, zero is not
+    /// shown as a completed total when the fleet has not supplied today's bucket.
+    private func unavailableScopeOverview(label: String, notice: String?) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            fleetOverviewRow(label: label, tokensText: "—", hitRateText: "—", valueText: "—")
+            fleetNotice(notice ?? "今日用量尚未同步")
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 7)
+        .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 7))
+    }
+
+    private func fleetNotice(_ text: String) -> some View {
+        Text(text)
+            .font(MenuTypography.hint)
+            .foregroundStyle(Color.secondaryLabel)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 2)
+    }
+
+    /// 段头右键刷新按 clientID 路由到本机段（仅全局形态段头有右键）。
+    private func onRefreshSectionForClient(_ clientID: String) {
+        Self.refreshLocalSection(
+            clientID: clientID,
+            sections: summary.sections,
+            onRefreshSection: onRefreshSection
+        )
+    }
+
+    /// fleet 段头右键「刷新 <客户端名>」的路由（§10.2）。
+    ///
+    /// fleet 段头给的是 **clientID**，刷的是**本机**这一段：先把 clientID 翻译
+    /// 成**本机**的段（`HarnessSection`，取自 `summary.sections`），再交回宿主的
+    /// `onRefreshSection`——`MenuContentView.refreshSectionFromMenu` 按本段今日
+    /// 贡献行刷新涉及的 provider 卡（`HarnessSection.refreshProviderStatusIDs`），
+    /// 因此只动这个客户端的卡，不惊动别的 provider，也不去刷远端节点的数据。
+    ///
+    /// 本机没有这一段（该客户端今天只有远端数据）→ 什么都不做：不改刷别的段，
+    /// 不崩。
+    ///
+    /// 提成 `static` 是**测试缝**：`.contextMenu` 里的按钮没有可寻址的测试缝，
+    /// 只能钉住"交出去给宿主的到底是哪一段"。
+    static func refreshLocalSection(
+        clientID: String,
+        sections: [HarnessSection],
+        onRefreshSection: (HarnessSection) -> Void
+    ) {
+        guard let section = sections.first(where: { $0.clientID == clientID }) else { return }
+        onRefreshSection(section)
+    }
+
     /// 命中率文案：分母为 0（没有 input / cacheRead）显示「—」。
     static func hitRateText(_ rate: Double?) -> String {
         guard let rate else { return "—" }
         return String(format: "%.0f%%", rate * 100)
+    }
+
+    /// 已选节点已从快照移除时不可回退显示本机数据。
+    static func isMissingNodeSelection(
+        scope: FleetScope,
+        nodeSummary: FleetMenuSummary?
+    ) -> Bool {
+        if case .node = scope { return nodeSummary == nil }
+        return false
+    }
+
+    static func isUnavailableFleetSelection(
+        scope: FleetScope,
+        summary: FleetMenuSummary
+    ) -> Bool {
+        scope == .fleet && summary.multiNode && !summary.hasDailyData
     }
 
     /// 段与段之间的间距。段内行距更紧（`HarnessModelRowView.rowSpacing`），
@@ -202,7 +370,7 @@ struct HarnessSectionView: View {
                 MenuHairline.horizontal
             }
             .contextMenu {
-                Button("刷新 \(section.displayName)") { onRefreshSection(section) }
+                Button("刷新本机 \(section.displayName)") { onRefreshSection(section) }
             }
             // 截断提示只在该段的数据源真的被截断时出现：数字本身仍然是"对"的，
             // 只是"不全"——不说就等于把一份残缺统计当完整统计读。
@@ -449,6 +617,8 @@ struct HarnessModelRowView: View {
                 .truncationMode(.middle)
                 .frame(width: HarnessModelRowView.valueWidth, alignment: .trailing)
         }
+        // 与 fleet/节点视图的模型行同缩进（用户裁定：三种 scope 统一）。
+        .padding(.leading, 8)
     }
 
     // MARK: - 排版常量
@@ -456,10 +626,10 @@ struct HarnessModelRowView: View {
     /// 模型名列定宽。长模型名（`claude-sonnet-4-5-20250929-thinking`）走 tail
     /// 截断，保留最有辨识度的前缀。
     ///
-    /// 六列合计 100 + 40 + 40 + 36 + 32 + 56 = 304pt，加 5 段 6pt 间距 = 334pt，
-    /// 在 336pt 内容区里留 2pt 余量给字体度量误差——数字列都是定宽右对齐，
+    /// 六列合计 92 + 40 + 40 + 36 + 32 + 56 = 296pt，加 5 段 6pt 间距和 8pt scope 缩进
+    /// = 334pt，在 336pt 内容区里留 2pt 余量给字体度量误差——数字列都是定宽右对齐，
     /// 余量被吃掉也只是让占比条窄一点，不会串列。
-    static let modelNameWidth: CGFloat = 100
+    static let modelNameWidth: CGFloat = 92
     /// 占比条下限：模型名列再长也要留住能看出三段比例的宽度。
     ///
     /// 曾经是 72：2026-10 模型行加「速度」列后原五列放不下六列，优先压这里
@@ -493,32 +663,6 @@ struct HarnessModelRowView: View {
 // MARK: - Fleet 菜单形态（§10.2）
 
 extension HarnessUsageMenuView {
-    /// 顶部两行：「今日全部」（fleet）与「今日本机」（local），并排给出——
-    /// 分段控制二选一会丢掉节点层（§10.6 J）。**每行各带一根构成条**
-    /// （input / cacheRead / output 占比，与单行形态同款）：全局与本机的
-    /// token 构成可以直接对比，不用猜条跟的是哪一行。
-    @ViewBuilder
-    private func fleetTodayOverview(fleet: FleetMenuSummary) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            fleetOverviewRow(
-                label: "今日全部",
-                tokens: fleet.fleetTotals.tokens,
-                hitRate: fleet.fleetTotals.hitRate,
-                valueText: fleet.fleetTotals.valueText
-            )
-            TokenBucketBar(buckets: fleet.fleetTotals.buckets)
-            fleetOverviewRow(
-                label: "今日本机",
-                tokens: summary.totalTokens,
-                hitRate: summary.cacheHitRate,
-                valueText: summary.valueText
-            )
-            TokenBucketBar(buckets: summary.buckets)
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 7)
-        .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 7))
-    }
 
     private func fleetOverviewRow(
         label: String,
@@ -526,16 +670,30 @@ extension HarnessUsageMenuView {
         hitRate: Double?,
         valueText: String
     ) -> some View {
+        fleetOverviewRow(
+            label: label,
+            tokensText: Formatters.formatTokenCountCompact(tokens),
+            hitRateText: HarnessUsageMenuView.hitRateText(hitRate),
+            valueText: valueText
+        )
+    }
+
+    private func fleetOverviewRow(
+        label: String,
+        tokensText: String,
+        hitRateText: String,
+        valueText: String
+    ) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
             Text(label)
                 .font(MenuTypography.metricLabel)
                 .foregroundStyle(Color.secondaryLabel)
-            Text(Formatters.formatTokenCountCompact(tokens))
+            Text(tokensText)
                 .font(MenuTypography.metricValue)
                 .foregroundStyle(Color.primaryLabel)
                 .frame(width: HarnessUsageMenuView.totalWidth, alignment: .leading)
             Spacer(minLength: 4)
-            Text(HarnessUsageMenuView.hitRateText(hitRate))
+            Text(hitRateText)
                 .font(MenuTypography.metricValue)
                 .foregroundStyle(Color.secondaryLabel)
                 .frame(width: HarnessUsageMenuView.hitRateWidth, alignment: .trailing)
@@ -555,15 +713,26 @@ struct FleetClientSectionView: View {
     let section: FleetMenuSummary.ClientSection
     /// 段头右键「刷新 <客户端名>」：按 clientID 回宿主（与本地形态
     /// `HarnessSectionView` 的段头右键同一语义，fleet 段头不能丢）。
-    var onRefreshClient: (String) -> Void = { _ in }
+    /// nil（节点视图）时不出右键菜单：刷新的是本机数据，对单节点视图无意义。
+    var onRefreshClient: ((String) -> Void)? = nil
+
+    /// 该形态有没有段头右键刷新项。节点视图恒为 false：节点分支不传
+    /// `onRefreshClient`（刷的是**本机**数据，对单节点视图无意义，§10.2）。
+    var hasRefreshMenu: Bool { onRefreshClient != nil }
 
     var body: some View {
         VStack(alignment: .leading, spacing: HarnessModelRowView.rowSpacing) {
             header
-            ForEach(section.nodes) { node in
-                FleetNodeGroupView(node: node, models: section.models.filter { $0.nodeID == node.id })
+            ForEach(section.mergedModels) { model in
+                FleetModelRowView(row: model)
             }
         }
+    }
+
+    /// 段头右键项的标题。文案由 spec §10.2 定：「刷新本机 <客户端名>」——
+    /// 「本机」二字说明刷的是本机数据，不是 fleet 合计。
+    static func refreshMenuTitle(displayName: String) -> String {
+        "刷新本机 \(displayName)"
     }
 
     private var header: some View {
@@ -591,7 +760,11 @@ struct FleetClientSectionView: View {
                 MenuHairline.horizontal
             }
             .contextMenu {
-                Button("刷新 \(section.displayName)") { onRefreshClient(section.clientID) }
+                if let onRefreshClient {
+                    Button(Self.refreshMenuTitle(displayName: section.displayName)) {
+                        onRefreshClient(section.clientID)
+                    }
+                }
             }
         }
     }
@@ -636,11 +809,14 @@ struct FleetModelRowView: View {
 
     var body: some View {
         HStack(spacing: HarnessModelRowView.columnSpacing) {
-            Text(row.modelName)
+            // 压缩名与本机行同口径（去供应商命名空间/品牌前缀）：
+            // 原始名过长时尾截断会把 "-Flash" 截没，被误读成不同模型被合并。
+            Text(HarnessModelRow.compactedDisplayName(for: row.modelName))
                 .font(MenuTypography.modelTitle)
                 .foregroundStyle(row.stale ? Color.secondaryLabel : Color.primaryLabel)
                 .lineLimit(1)
                 .truncationMode(.tail)
+                .help(row.modelName)
                 .frame(width: HarnessModelRowView.modelNameWidth, alignment: .leading)
             TokenBucketBar(buckets: row.buckets)
                 .frame(minWidth: HarnessModelRowView.bucketBarMinWidth, maxWidth: .infinity)

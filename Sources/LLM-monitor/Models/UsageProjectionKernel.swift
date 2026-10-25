@@ -135,6 +135,8 @@ struct HarnessUsageFrame: Equatable, Sendable {
     let samples: [LocalTokenUsageSample]
     /// 来源快照的统计口径被截断（如 DSH 文件数/字节预算挤出最旧 session）。
     var isTruncated: Bool = false
+    /// Recent sample retention cap omitted model/window samples without changing daily totals.
+    var samplesTruncated: Bool = false
     let scannedAt: Date?
 
     init<Daily: LocalUsageDaily>(
@@ -145,6 +147,7 @@ struct HarnessUsageFrame: Equatable, Sendable {
         samples: [LocalTokenUsageSample] = [],
         namespace: UsageSampleNamespace = .passthrough,
         isTruncated: Bool = false,
+        samplesTruncated: Bool = false,
         scannedAt: Date? = nil
     ) {
         self.init(
@@ -154,6 +157,7 @@ struct HarnessUsageFrame: Equatable, Sendable {
             daily: daily.map { UnifiedDailyTokenUsage($0) },
             samples: namespace.apply(to: samples, sourceKey: sourceKey),
             isTruncated: isTruncated,
+            samplesTruncated: samplesTruncated,
             scannedAt: scannedAt
         )
     }
@@ -165,6 +169,7 @@ struct HarnessUsageFrame: Equatable, Sendable {
         daily: [UnifiedDailyTokenUsage],
         samples: [LocalTokenUsageSample] = [],
         isTruncated: Bool = false,
+        samplesTruncated: Bool = false,
         scannedAt: Date? = nil
     ) {
         self.clientID = clientID
@@ -173,6 +178,7 @@ struct HarnessUsageFrame: Equatable, Sendable {
         self.daily = daily
         self.samples = samples
         self.isTruncated = isTruncated
+        self.samplesTruncated = samplesTruncated
         self.scannedAt = scannedAt
     }
 }
@@ -197,6 +203,8 @@ struct ProviderHarnessProjection: Equatable, Sendable {
     let value: ModelCostEstimate
     /// 任一帧截断即整份展示数据按截断处理（保守取 true）。
     let isTruncated: Bool
+    /// A retained-sample cap can truncate model/window detail while daily totals remain authoritative.
+    let samplesTruncated: Bool
     let scannedAt: Date?
 
     /// perModel 里代表"模型名缺失"的键。
@@ -259,6 +267,7 @@ enum UsageProjectionKernel {
                     deepseekPeakWindow: deepseekPeakWindow
                 ),
                 isTruncated: group.isTruncated,
+                samplesTruncated: group.samplesTruncated,
                 scannedAt: group.scannedAt
             )
         }
@@ -267,6 +276,10 @@ enum UsageProjectionKernel {
     /// 截断标志的合并规则：任一来源截断即截断（快照级口径，不随 provider 分片稀释）。
     static func anyTruncated(_ frames: [HarnessUsageFrame]) -> Bool {
         frames.contains(where: \.isTruncated)
+    }
+
+    static func anySamplesTruncated(_ frames: [HarnessUsageFrame]) -> Bool {
+        frames.contains(where: \.samplesTruncated)
     }
 
     /// 帧未声明 quota 归属时，用绑定的 `sourceProviderAliases` 解析。
@@ -315,6 +328,7 @@ enum UsageProjectionKernel {
         var dailyByDay: [Date: UnifiedDailyTokenUsage] = [:]
         var samples: [LocalTokenUsageSample] = []
         var isTruncated: Bool = false
+        var samplesTruncated: Bool = false
         var scannedAt: Date?
 
         /// 组内逐日相加后的 daily（按日升序）。当日 max 修补由内核的
@@ -329,6 +343,7 @@ enum UsageProjectionKernel {
             }
             samples.append(contentsOf: frame.samples)
             isTruncated = isTruncated || frame.isTruncated
+            samplesTruncated = samplesTruncated || frame.samplesTruncated
             if let scanned = frame.scannedAt {
                 scannedAt = max(scannedAt ?? scanned, scanned)
             }
@@ -365,6 +380,7 @@ enum DshHarnessFrames {
                 samples: provider.recentSamples,
                 namespace: .dsh,
                 isTruncated: usage.isTruncated == true,
+                samplesTruncated: provider.recentSamplesTruncated != false,
                 scannedAt: usage.scannedAt
             )
         }

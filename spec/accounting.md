@@ -58,6 +58,13 @@ cache-inclusive，`cachedInputTokens` 保持独立 cache-read。`TokenUsageBucke
 是样本进入价格和汇总计算的唯一转换入口：它把 input 拆成 `Input + Cache read`，并将
 `outputTokens` 与 `reasoningOutputTokens` 视为已经互斥的 `Output/Reason`。
 
+**样本完整性与 daily 的关系（两条独立截断标志）**：`HarnessUsageFrame.isTruncated`
+是来源快照统计口径被截断（如 DSH 文件数/字节预算挤出最旧 session）；`samplesTruncated`
+（当前唯一置位来源是 DSH 的 `recentSamplesLimit` 保留上限，经
+`DshProviderUsage.recentSamplesTruncated` 冒泡）表示 model/window 级样本被挤出但
+**每日合计不变**。样本被截断时 per-model 明细与窗口金额来自留存样本、可能不完整，
+每日合计仍以 daily 四桶为权威；两标志在投影中独立透传、按「任一来源置位即置位」合并。
+
 ### 为什么需要统一汇总器
 
 `UnifiedTokenUsageAggregator` 是 sample 进入日汇总的唯一入口。Settings 页、Provider
@@ -235,4 +242,4 @@ UI 消费：「额度窗口」模块**用量态**第 6 列从「价值」换为�
 任何新 harness 必须先补充本矩阵、provider spec 和 `TokenAccountingCatalog`，再接入 UI；
 不要在 view 或 pricing 分支里重新猜测 input/cache/reasoning 的关系。
 
-> 核对基线：2026-10-25 · 代码 6235ee4
+> 核对基线：2026-10-25 · 代码 6f11831

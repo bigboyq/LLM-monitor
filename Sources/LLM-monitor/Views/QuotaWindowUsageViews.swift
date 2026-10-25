@@ -185,6 +185,9 @@ struct QuotaWindowUsageSection: View {
         let label: String
         let metrics: QuotaWindowUsageMetrics
         let cost: ModelCostEstimate?
+        /// 混币金额文案（多币种时给出 CNY 折算总额 + USD 构成标注）；单币种为 nil。
+        /// 有文案时优先于 `cost` 渲染（混币不是「没有金额」，不能退化成「—」）。
+        let costText: String?
         let resetsAt: Date?
         /// 用量态第 6 列的窗口 token 速度（tok/s）：Σ(Output+Reason) ÷ Σ单次调用
         /// 时长，口径唯一实现在 `LocalUsageSummaryBuilder.windowTokenRate`。
@@ -196,12 +199,14 @@ struct QuotaWindowUsageSection: View {
             label: String,
             metrics: QuotaWindowUsageMetrics,
             cost: ModelCostEstimate?,
+            costText: String? = nil,
             resetsAt: Date? = nil,
             tokensPerSecond: Double? = nil
         ) {
             self.label = label
             self.metrics = metrics
             self.cost = cost
+            self.costText = costText
             self.resetsAt = resetsAt
             self.tokensPerSecond = tokensPerSecond
         }
@@ -280,6 +285,7 @@ struct QuotaWindowUsageSection: View {
                 label: interval.label,
                 metrics: QuotaWindowUsageMetrics(usage: interval.usage),
                 cost: interval.cost,
+                costText: interval.costText,
                 resetsAt: interval.resetsAt,
                 tokensPerSecond: interval.tokensPerSecond
             ))
@@ -289,6 +295,7 @@ struct QuotaWindowUsageSection: View {
                 label: weekly.label,
                 metrics: QuotaWindowUsageMetrics(usage: weekly.usage),
                 cost: weekly.cost,
+                costText: weekly.costText,
                 resetsAt: weekly.resetsAt,
                 tokensPerSecond: weekly.tokensPerSecond
             ))
@@ -298,6 +305,7 @@ struct QuotaWindowUsageSection: View {
                 label: today.label,
                 metrics: today.metrics,
                 cost: today.cost,
+                costText: today.costText,
                 resetsAt: nil,
                 tokensPerSecond: today.tokensPerSecond
             ))
@@ -307,6 +315,7 @@ struct QuotaWindowUsageSection: View {
                 label: offPeak.label,
                 metrics: offPeak.metrics,
                 cost: offPeak.cost,
+                costText: offPeak.costText,
                 resetsAt: nil,
                 tokensPerSecond: offPeak.tokensPerSecond
             ))
@@ -575,7 +584,7 @@ struct QuotaWindowUsageSection: View {
                 if visibility.think {
                     rateCell(Self.rateText(row.metrics.reasoningShare, digits: 0), width: Self.middleColumnWidth)
                 }
-                valueCell(row.cost)
+                valueCell(row.cost, row.costText)
                 resetDateCell(row.resetsAt)
             }
         case .usage:
@@ -636,8 +645,8 @@ struct QuotaWindowUsageSection: View {
             .help(help ?? "")
     }
 
-    private func valueCell(_ cost: ModelCostEstimate?) -> some View {
-        Text(Self.costText(cost))
+    private func valueCell(_ cost: ModelCostEstimate?, _ costText: String? = nil) -> some View {
+        Text(costText ?? Self.costText(cost))
             .foregroundStyle(.secondary)
             .frame(width: Self.valueColumnWidth, alignment: .leading)
     }

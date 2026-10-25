@@ -444,6 +444,8 @@ struct QuotaWindowUsageSnapshot: Equatable, Sendable {
         /// 窗口内没有本地样本（还不值得估价）／样本全部未定价。后者由
         /// `ModelCostEstimate.displayText` 自己说，字段本身不重复这个信息。
         let cost: ModelCostEstimate?
+        /// Fleet 聚合的完整计价说明（部分计价或混币）；本地窗口默认由 `cost` 推导。
+        let costText: String?
         /// 窗口内本地 token 速度（tok/s）：Σ(Output+Reason) ÷ Σ单次调用时长，
         /// 只统计 `durationSeconds ∈ [0.2, 3600]` 的样本——口径唯一实现在
         /// `LocalUsageSummaryBuilder.windowTokenRate`。nil = 窗口内没有时长有效
@@ -455,6 +457,26 @@ struct QuotaWindowUsageSnapshot: Equatable, Sendable {
         /// 手工构造的 Window（fleet 行 / 测试夹具）缺省 nil，不参与速率合并。
         var rateNumerator: Double? = nil
         var rateDenominator: Double? = nil
+
+        init(
+            label: String,
+            usage: UsageMetricSummary?,
+            resetsAt: Date?,
+            cost: ModelCostEstimate?,
+            costText: String? = nil,
+            tokensPerSecond: Double? = nil,
+            rateNumerator: Double? = nil,
+            rateDenominator: Double? = nil
+        ) {
+            self.label = label
+            self.usage = usage
+            self.resetsAt = resetsAt
+            self.cost = cost
+            self.costText = costText
+            self.tokensPerSecond = tokensPerSecond
+            self.rateNumerator = rateNumerator
+            self.rateDenominator = rateDenominator
+        }
     }
 
     let interval: Window?

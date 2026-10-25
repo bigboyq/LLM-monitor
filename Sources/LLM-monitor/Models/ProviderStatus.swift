@@ -175,10 +175,12 @@ struct ProviderStatus: Identifiable, Equatable, Sendable {
     /// transition itself; source-level `.scanning` also works for shared data.
     var effectiveLocalUsageFreshness: LocalUsageFreshness {
         if isScanningLocalUsage { return .scanning }
-        return localUsageFreshness.resolved(for: localUsageSources)
+        return localUsageFreshness.resolved(for: localUsageConsumers.map(\.source))
     }
 
-    private var localUsageSources: [LocalUsageSource] {
+    /// Sources which can contribute to this status, after client-binding gates.
+    /// This is also the source→client/provider mapping used by Fleet freshness.
+    var localUsageConsumers: [LocalUsageConsumer] {
         // 共享账本来源的消费资格由 clientBindings 决定（P2 起，取代 merge bool）。
         let opencodeConsumer = isClientBindingEnabled(
             clientID: ClientID.openCode,
@@ -188,21 +190,33 @@ struct ProviderStatus: Identifiable, Equatable, Sendable {
             clientID: ClientID.zcode,
             quotaProviderID: kind.quotaProviderID
         )
+        let dshConsumer = isClientBindingEnabled(
+            clientID: ClientID.dsh,
+            quotaProviderID: kind.quotaProviderID
+        )
+
+        func consumers(_ sources: [LocalUsageSource]) -> [LocalUsageConsumer] {
+            sources.map { LocalUsageConsumer(source: $0, quotaProviderID: kind.quotaProviderID) }
+        }
+
         switch kind {
         case .codexChatGpt:
-            return [.codex] + (opencodeConsumer ? [.opencode] : [])
+            return consumers([.codex] + (opencodeConsumer ? [.opencode] : []))
         case .antigravity:
-            return [.antigravity, .agy] + (opencodeConsumer ? [.opencode] : [])
+            return consumers([.antigravity, .agy] + (opencodeConsumer ? [.opencode] : []))
         case .minimaxTokenPlan:
-            return [.minimaxCode, .dsh]
+            return consumers([.minimaxCode]
+                + (dshConsumer ? [.dsh] : [])
                 + (zcodeSliceConsumer ? [.zcode] : [])
-                + (opencodeConsumer ? [.opencode] : [])
+                + (opencodeConsumer ? [.opencode] : []))
         case .glmCodingPlan:
-            return [.zcode, .dsh] + (opencodeConsumer ? [.opencode] : [])
+            return consumers([.zcode]
+                + (dshConsumer ? [.dsh] : [])
+                + (opencodeConsumer ? [.opencode] : []))
         case .deepseek:
-            return [.dsh]
+            return consumers((dshConsumer ? [.dsh] : [])
                 + (zcodeSliceConsumer ? [.zcode] : [])
-                + (opencodeConsumer ? [.opencode] : [])
+                + (opencodeConsumer ? [.opencode] : []))
         }
     }
 

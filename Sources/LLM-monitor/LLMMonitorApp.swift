@@ -146,6 +146,9 @@ struct LLMMonitorApp: App {
         EdgeDockController.shared.attach(state: state, configStore: configStore)
         // R12: 启动时清理 SQLite 专属临时目录内超过 24 小时的残留副本（best-effort）。
         SQLiteTempCopy.sweepStaleCopies()
+        // 局域网地址探测：提前起 Network.framework 的接口类型 monitor，
+        // 让第一次 path 更新在用户打开设置页之前就落地（设置页取地址时不用等）。
+        LANInterfaceKindResolver.shared.start()
         logInfo("@main: AppState 启动完成")
     }
 

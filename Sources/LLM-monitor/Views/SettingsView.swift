@@ -9,11 +9,13 @@ struct SettingsView: View {
     @ObservedObject var state: AppState
     /// provider 注册元信息（id 由 descriptors 拿，不再硬编码）。
     let descriptors: [FetcherDescriptor]
+    /// Sync pane 草稿由设置窗持有，切换 tab 时保留未成功写入的值与错误。
+    @StateObject var syncDrafts: SettingsSyncDraftController
 
     @State var currentTab: SettingsTab = .general
 
     @State var globalInterval: Int = 300
-    @State var launchAtLogin: Bool = false
+    @State var launchAtLoginDraft = SettingsLoginItemDraft(baseline: false, draft: false)
     @State var statusBarIconStyle: StatusBarIconStyle = .chartBar
     @State var statusBarHealthDotEnabled: Bool = true
     @State var statusBarHealthColors: StatusBarHealthColors = .default
@@ -78,6 +80,23 @@ struct SettingsView: View {
 
     @Environment(\.dismiss) var dismiss
 
+    @MainActor
+    init(
+        configStore: ConfigStore,
+        loginItemService: LoginItemService,
+        state: AppState,
+        descriptors: [FetcherDescriptor],
+        syncDrafts: SettingsSyncDraftController? = nil
+    ) {
+        self.configStore = configStore
+        self.loginItemService = loginItemService
+        self.state = state
+        self.descriptors = descriptors
+        _syncDrafts = StateObject(
+            wrappedValue: syncDrafts ?? SettingsSyncDraftController(configStore: configStore)
+        )
+    }
+
     /// 全部 tab（`.general` / `.energy` + descriptors 派生的 provider tab）。
     /// `Identifiable` 让 `ForEach` 走 `id` 区分，切换不会触发整列重渲染。
     var allTabs: [SettingsTab] {
@@ -107,8 +126,9 @@ struct SettingsView: View {
         )
         .background(SettingsWindowFocusBridge())
         .onAppear {
-            loadCurrentConfig()
             loginItemService.refreshStatus()
+            launchAtLoginDraft.syncToActual(actual: loginItemService.isEnabled)
+            loadCurrentConfig()
             // 主面板 footer「节能」等入口可能在窗口创建前就置了跳转信号；
             // 出现时兜底消费一次，规避订阅时机竞态。
             consumePendingSettingsTab()
@@ -117,12 +137,17 @@ struct SettingsView: View {
             consumePendingSettingsTab()
         }
         .onReceive(configStore.$config.dropFirst()) { newConfig in
-            // 外部编辑配置文件时刷新设置页。两道闸门：
+            // 更新设置页草稿。两道闸门：
             //  - 自己正在保存 → 保留草稿（保存会广播一次 `config`）。
-            //  - 变的只是边缘窗位置 → 保留草稿（拖 dock 会写盘，但那三个字段表单管不到；
-            //    不挡的话，用户输了一半的 API key 会被盘上的旧值无声刷回去）。
+            //  - 变化仅在独立即时保存的 Sync 区或边缘窗位置 → 保留 General/provider 草稿。
+            //    这两类变更不属于此表单；重载会无声丢弃用户尚未保存的编辑。
             guard !isSaving, hasFormRelevantChange(to: newConfig) else { return }
-            loadCurrentConfig()
+            // `@Published` 在 willSet 阶段发送新值，此时 configStore.config 仍可能是旧值。
+            // 直接用 publisher 给出的配置重载，避免快照与草稿回退到上一版。
+            loadCurrentConfig(from: newConfig)
+        }
+        .onReceive(loginItemService.$state) { newState in
+            launchAtLoginDraft.sync(actual: newState == .enabled)
         }
         .onDisappear {
             NSApp.setActivationPolicy(MenuBarAppActivation.policy)
@@ -191,7 +216,7 @@ struct SettingsView: View {
                 case .energy:
                     energyPane
                 case .sync:
-                    SettingsSyncPane(state: state)
+                    SettingsSyncPane(state: state, drafts: syncDrafts)
                 case .provider(let d):
                     // 派发到对应 provider 的 pane view。`providerPane(for:)` 是
                     // kind 派发，加新 provider 只需在那加一个 case，**不要**在这里
@@ -208,6 +233,13 @@ struct SettingsView: View {
 
     var bottomActionBar: some View {
         HStack(spacing: 12) {
+            if syncDrafts.hasSaveErrors && currentTab.id != SettingsTab.syncID {
+                Text("多机联动配置未保存")
+                    .font(SettingsTypography.status)
+                    .foregroundStyle(.red)
+                    .lineLimit(2)
+                Button("查看") { currentTab = .sync }
+            }
             if let saveErrorMessage {
                 Text(saveErrorMessage)
                     .font(SettingsTypography.status)
@@ -241,10 +273,9 @@ struct SettingsView: View {
         .padding(.vertical, 12)
     }
 
-    func loadCurrentConfig() {
-        let config = configStore.config
+    func loadCurrentConfig(from publishedConfig: AppConfig? = nil) {
+        let config = publishedConfig ?? configStore.config
         globalInterval = config.refreshIntervalSeconds
-        launchAtLogin = loginItemService.isEnabled
         statusBarIconStyle = config.effectiveStatusBarIconStyle
         statusBarHealthDotEnabled = config.effectiveStatusBarHealthDotEnabled
         statusBarHealthColors = config.effectiveStatusBarHealthColors
@@ -319,23 +350,25 @@ struct SettingsView: View {
         loadedConfigSnapshot = config
     }
 
-    /// 把边缘窗的**位置三兄弟**（贴边方向 / 沿边位置 / 所在屏）抹平成默认值。
+    /// 抹平不由常规设置表单管理的配置字段：Sync（独立即时保存）与边缘窗位置三兄弟。
     ///
-    /// 用它做对比，而不是逐个字段枚举"表单管得到哪些"：枚举一旦将来漏了新加的设置项，
-    /// 那个字段就会静默失去热重载。抹平位置字段之后，两份配置相等 ⟺
-    /// **除了 dock 停在哪，表单看到的任何东西都没变**。
+    /// 其余字段仍整体比较，避免逐个枚举表单字段导致新设置项漏掉热重载。
     static func formRelevantProjection(of config: AppConfig) -> AppConfig {
         var copy = config
-        if var dock = copy.edgeDock {
-            dock.edge = EdgeDockConfig.default.edge
-            dock.offset = EdgeDockConfig.default.offset
-            dock.screenUUID = nil
-            copy.edgeDock = dock
-        }
+        // Sync pane 独立逐字段即时保存，由 SettingsSyncDraftController 管理草稿与错误；
+        // 它的变化不得重载这里的 General/provider 表单。
+        copy.sync = nil
+        // Compare effective values so a first position-only write from `nil` to an explicit
+        // default payload is still ignored; mode and other form-controlled fields remain.
+        var dock = copy.effectiveEdgeDockConfig
+        dock.edge = EdgeDockConfig.default.edge
+        dock.offset = EdgeDockConfig.default.offset
+        dock.screenUUID = nil
+        copy.edgeDock = dock
         return copy
     }
 
-    /// `old` → `new` 之间，除边缘窗位置外还有没有别的差异？**纯函数**。
+    /// `old` → `new` 之间，常规设置表单负责的字段有没有变化？**纯函数**。
     ///
     /// 抽成 `static` 是因为它是全部的判断逻辑，而 `loadedConfigSnapshot` 活在
     /// `@State` 里——`@State` 的写入只在视图真正进入渲染层时才可靠，直接从
@@ -346,11 +379,9 @@ struct SettingsView: View {
 
     /// 配置变了，但**变的不是表单关心的东西**吗？
     ///
-    /// 边缘窗拖拽每次松手都会写 config.json（`EdgeDockController.persistConfig`），
-    /// 而它只动那三个位置字段——设置页表单一个都碰不到。少了这道判据，拖一次 dock
-    /// 就会让开着的设置页收到 `configStore.$config` 广播、整张表单重载，用户正在
-    /// 输入的 API key、刷新间隔、Bark 配置**无声地**刷回盘上的旧值（dock 面板是
-    /// nonactivating 的，完全可以在设置窗口开着的时候拖）。
+    /// Sync pane 逐字段即时写 config，常规 General/provider 表单则仍有独立的保存事务；
+    /// 若把 Sync 更新也当成常规表单变化，会无声丢弃尚未保存的刷新间隔/API key 草稿。
+    /// 边缘窗拖拽也会写 config，但贴边方向、沿边位置和所在屏不是表单控件，故同样忽略。
     ///
     /// 没有快照（还没载入过）时一律判 true：宁可多刷一次，也不要在状态不明时
     /// 顶着陈旧表单不刷新。
@@ -360,7 +391,8 @@ struct SettingsView: View {
     }
 
     func saveAndApply() async throws {
-        let previousLaunchAtLogin = loginItemService.isEnabled
+        let actualLaunchAtLogin = loginItemService.isEnabled
+        let requestedLaunchAtLogin = launchAtLoginDraft.requestedValue(actual: actualLaunchAtLogin)
 
         var config = configStore.config
         config.refreshIntervalSeconds = globalInterval
@@ -497,21 +529,30 @@ struct SettingsView: View {
             config.providers[id] = deepseek
         }
 
-        try await SettingsSaveTransaction.execute(
-            previousLaunchAtLogin: previousLaunchAtLogin,
-            requestedLaunchAtLogin: launchAtLogin,
-            updateLoginItem: { enabled in
-                await loginItemService.setEnabled(enabled)
-                return LoginItemUpdateOutcome(
-                    isEnabled: loginItemService.isEnabled,
-                    errorMessage: loginItemService.lastErrorMessage,
-                    requiresApproval: loginItemService.state == .requiresApproval
-                )
-            },
-            saveConfig: {
-                try configStore.applyAndSave(config)
-            }
-        )
+        do {
+            try await SettingsSaveTransaction.execute(
+                previousLaunchAtLogin: actualLaunchAtLogin,
+                requestedLaunchAtLogin: requestedLaunchAtLogin,
+                updateLoginItem: { enabled in
+                    await loginItemService.setEnabled(enabled)
+                    return LoginItemUpdateOutcome(
+                        isEnabled: loginItemService.isEnabled,
+                        errorMessage: loginItemService.lastErrorMessage,
+                        requiresApproval: loginItemService.state == .requiresApproval
+                    )
+                },
+                saveConfig: {
+                    try configStore.applyAndSave(config)
+                }
+            )
+            launchAtLoginDraft.syncToActual(actual: loginItemService.isEnabled)
+        } catch {
+            // LoginItemService may have changed before config save failed and the transaction
+            // rolled it back. Reflect the resulting actual status even if no publisher event
+            // is delivered before the view handles this error.
+            launchAtLoginDraft.syncToActual(actual: loginItemService.isEnabled)
+            throw error
+        }
     }
 }
 

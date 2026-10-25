@@ -20,6 +20,103 @@ final class AppStateTests: StateTestCase {
         cancellable.cancel()
         XCTAssertNotNil(subject)
     }
+
+    @MainActor
+    func testFleetPresentationChangesUseSeparatePublisherAndDeduplicateScope() {
+        let state = makeTestAppState()
+        var fleetChanges = 0
+        var statusChanges = 0
+        let fleetToken = state.fleetDidChange.sink { fleetChanges += 1 }
+        let statusToken = state.statusDidChange.sink { statusChanges += 1 }
+
+        state.fleetScope = .fleet
+        state.fleetScope = .fleet
+
+        XCTAssertEqual(fleetChanges, 1, "同值 scope 赋值不得重复广播")
+        XCTAssertEqual(statusChanges, 0, "scope 变化不得触发 hub status 更新")
+        withExtendedLifetime((fleetToken, statusToken)) {}
+    }
+
+    @MainActor
+    func testClearingSnapshotResetsUnavailableNodeScopeWithoutStatusBroadcast() {
+        let state = makeTestAppState()
+        state.fleetScope = .node(UUID())
+        var fleetChanges = 0
+        var statusChanges = 0
+        let fleetToken = state.fleetDidChange.sink { fleetChanges += 1 }
+        let statusToken = state.statusDidChange.sink { statusChanges += 1 }
+
+        state.applyFleetSnapshot(nil)
+        state.applyFleetSnapshot(nil)
+
+        XCTAssertEqual(state.fleetScope, .local)
+        XCTAssertEqual(fleetChanges, 1, "清除快照并重置 scope 应作为一次 UI 更新广播")
+        XCTAssertEqual(statusChanges, 0, "fleet 展示更新不得重建 hub 报告")
+        withExtendedLifetime((fleetToken, statusToken)) {}
+    }
+
+    @MainActor
+    func testClearingSnapshotResetsFleetScopeToLocal() {
+        let state = makeTestAppState()
+        state.fleetScope = .fleet
+
+        state.applyFleetSnapshot(nil)
+
+        XCTAssertEqual(state.fleetScope, .local)
+    }
+
+    @MainActor
+    func testFleetChangePublishesAfterSnapshotAndScopeAreUpdated() {
+        let state = makeTestAppState()
+        let removedNodeID = UUID()
+        state.fleetScope = .node(removedNodeID)
+
+        let hubID = UUID()
+        let node = FleetNodeSnapshot(
+            nodeID: hubID,
+            nodeName: "hub",
+            lastSeenAt: Date(),
+            seq: 1,
+            stale: false,
+            dailyBuckets: [],
+            windowUsage: [],
+            quotas: [],
+            attributionFingerprint: nil,
+            dailyDigests: nil
+        )
+        let snapshot = FleetSnapshot(
+            protocolVersion: FleetProtocol.version,
+            hubUUID: hubID,
+            generation: 1,
+            hub: FleetNodeIdentity(
+                nodeID: hubID,
+                nodeName: "hub",
+                timezoneID: "Asia/Shanghai",
+                platform: "macOS"
+            ),
+            generatedAt: Date(),
+            nodes: [node],
+            fleet: FleetAggregate(dailyBuckets: [], windowUsage: []),
+            electedQuotas: []
+        )
+
+        var observedSnapshot: FleetSnapshot?
+        var observedScope: FleetScope?
+        var statusChanges = 0
+        let fleetToken = state.fleetDidChange.sink {
+            observedSnapshot = state.fleetSnapshot
+            observedScope = state.fleetScope
+        }
+        let statusToken = state.statusDidChange.sink { statusChanges += 1 }
+
+        state.applyFleetSnapshot(snapshot)
+
+        XCTAssertEqual(observedSnapshot, snapshot, "通知到达时应已安装新快照")
+        XCTAssertEqual(observedScope, .local, "通知到达时失效的节点 scope 应已回退到本机")
+        XCTAssertEqual(statusChanges, 0, "UI 快照通知不能驱动 statusDidChange 反馈环")
+        withExtendedLifetime((fleetToken, statusToken)) {}
+    }
+
     // MARK: - 测试 AppState 构造 helper
     /// 构造一个最小可用的 AppState 用于测试：
     /// - 注入临时目录的 ConfigStore，不读取或改写用户配置

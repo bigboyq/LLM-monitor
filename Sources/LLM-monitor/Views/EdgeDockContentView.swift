@@ -167,6 +167,7 @@ struct EdgeDockContentView: View {
             value: formSignature
         )
         .onReceive(state.statusDidChange) { _ in tick &+= 1 }
+        .onReceive(state.fleetDidChange) { _ in tick &+= 1 }
         .onReceive(state.$healthEvaluationDate) { _ in tick &+= 1 }
     }
 

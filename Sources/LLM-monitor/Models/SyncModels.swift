@@ -33,6 +33,9 @@ enum FleetProtocol {
     static let maxHeaderBytes = 16 * 1024
     /// 同一 nodeID 两次请求的最小间隔（§4.3）。
     static let minRequestInterval: TimeInterval = 1
+    /// 日桶通道的天数上限（today + previous six）。既是校验上限，也是 hub
+    /// 侧落库保留的天数（§6：逐日滚动的窗口不裁剪就会一天涨一格）。
+    static let maxDailyBuckets = 7
 
     static let usageDayPath = "/v1/usage/day"
     static let healthPath = "/v1/health"
@@ -97,6 +100,18 @@ struct FleetClientProviderUsage: Codable, Equatable, Sendable {
     let input, cacheRead, output, reasoning, turns, rounds: Int
 }
 
+enum FleetDailyUnavailableReason: String, Codable, Sendable, Equatable {
+    case failed, scanning, truncated
+}
+
+struct FleetDailyUnavailableSource: Codable, Equatable, Sendable {
+    let clientID: String
+    let quotaProviderID: String
+    let reason: FleetDailyUnavailableReason
+
+    var sourceKey: String { clientID + "|" + quotaProviderID }
+}
+
 struct FleetTotals: Codable, Equatable, Sendable {
     let input, cacheRead, output, reasoning, turns, rounds: Int
 
@@ -154,6 +169,9 @@ struct FleetDailyBucket: Codable, Equatable, Sendable {
     let totalsComplete: Bool
     let modelDetailsComplete: Bool
     let sourceTruncated: Bool
+    /// nil preserves legacy all-or-nothing validation. A nonnil list declares
+    /// provider-scoped coverage; unavailable rows are retained by the hub.
+    var unavailableSources: [FleetDailyUnavailableSource]? = nil
 }
 
 struct FleetWindowUsage: Codable, Equatable, Sendable {
@@ -202,8 +220,9 @@ struct NodeUsageReport: Codable, Equatable, Sendable {
     let seq: Int
     let generatedAt: Date
     let attributionFingerprint: String
-    /// nil：本次不更新日桶；存在时必须恰为七个（today + previous six）。
-    let dailyBuckets: [FleetDailyBucket]?
+    /// nil：本次不更新日桶；存在时最多七个且 dayKey 互异（增量裁定 2026-10-24：
+    /// 可只带需要补发/修正的天，见 `FleetDailyBackfill`）。
+    var dailyBuckets: [FleetDailyBucket]?
     /// nil：无窗口更新；行按完整边界独立 upsert，空数组不删除旧范围。
     let windowUsage: [FleetWindowUsage]?
     /// nil：不更新；空数组清除该节点额度集合。
@@ -222,6 +241,10 @@ struct FleetNodeSnapshot: Codable, Equatable, Sendable {
     /// 该节点的归因设置指纹（§7.8）：≥2 种不同指纹 → 设置页提示「口径之和」。
     /// 旧快照缺该字段按 nil（未知，不参与比较）。
     let attributionFingerprint: String?
+    /// hub 对该节点已存每个日桶的内容摘要回执（dayKey → `FleetDailyDigest`，
+    /// 增量裁定 2026-10-24）。副节点据此判断哪些天需要补发/修正；旧快照缺该
+    /// 字段按 nil（等效空回执 → 触发全量补发）。
+    let dailyDigests: [String: String]?
 }
 
 struct FleetElectedQuota: Codable, Equatable, Sendable {
@@ -281,6 +304,15 @@ enum FleetISO8601 {
     static func dateString(_ date: Date) -> String {
         formatter.string(from: date)
     }
+
+    /// Wire/storage ISO8601 dates carry whole-second precision. Match boundaries at
+    /// that same precision when comparing a decoded snapshot with a local reset time.
+    static func matchesWholeSecond(_ lhs: Date, _ rhs: Date) -> Bool {
+        let left = lhs.timeIntervalSince1970
+        let right = rhs.timeIntervalSince1970
+        guard left.isFinite, right.isFinite else { return false }
+        return floor(left) == floor(right)
+    }
 }
 
 /// 唯一的出网/入网 JSON 编解码入口：date 策略只写一次。任何一侧漏设
@@ -297,6 +329,34 @@ enum FleetCodec {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         return try decoder.decode(type, from: data)
+    }
+}
+
+// MARK: - 逐天摘要回执（增量日桶，2026-10-24 裁定）
+
+/// 日桶内容摘要：`FleetCodec` 规范编码（sortedKeys）后取 SHA256 前 16 个十六进制
+/// 字符。副节点对本机构建的输入桶计算；hub通常按已存桶回执，来源感知partial桶
+/// 则回执最后接受的输入摘要（落在 `FleetStoredReport.dailyInputDigests`）。摘要失配
+/// 最坏多发一次幂等补发，不会丢数据——绝不为对齐摘要改变日桶内容。
+enum FleetDailyDigest {
+    static func digest(_ bucket: FleetDailyBucket) -> String {
+        guard let data = try? FleetCodec.encode(bucket) else { return "" }
+        let hash = SHA256.hash(data: data)
+        return hash.map { String(format: "%02x", $0) }.joined().prefix(16).description
+    }
+}
+
+/// 副节点上报侧的增量过滤：把报告的日桶通道收窄到「回执摘要与本地不一致」的天。
+/// - `cachedDigests` 为空（首次接触该 hub / 本机重启 / hub 丢数据）→ 保持全量
+///   七天，重建回执基线；
+/// - 否则只保留摘要不一致的天——历史天被扫描修正、hub 缺天都表现为不一致；
+/// - 全部一致 → 整条通道置 nil（等价心跳，仅刷新 lastSeen）。
+enum FleetDailyBackfill {
+    static func filterReport(_ report: inout NodeUsageReport, cachedDigests: [String: String]) {
+        guard var buckets = report.dailyBuckets else { return }
+        guard !cachedDigests.isEmpty else { return }
+        buckets = buckets.filter { FleetDailyDigest.digest($0) != cachedDigests[$0.dayKey] }
+        report.dailyBuckets = buckets.isEmpty ? nil : buckets
     }
 }
 
@@ -360,11 +420,46 @@ enum FleetReportValidator {
     }
 
     private static func validateDailyBuckets(_ buckets: [FleetDailyBucket]) -> String? {
-        guard buckets.count == 7 else { return "dailyBuckets 必须恰有 7 桶，实际 \(buckets.count)" }
+        // 增量裁定 2026-10-24：允许 0–7 桶（只补发/修正部分天），dayKey 仍须互异。
+        guard buckets.count <= FleetProtocol.maxDailyBuckets else {
+            return "dailyBuckets 最多 \(FleetProtocol.maxDailyBuckets) 桶，实际 \(buckets.count)"
+        }
         let dayKeys = buckets.map(\.dayKey)
-        guard Set(dayKeys).count == 7 else { return "dailyBuckets 存在重复 dayKey" }
+        guard Set(dayKeys).count == dayKeys.count else { return "dailyBuckets 存在重复 dayKey" }
         for bucket in buckets {
             guard isValidDayKey(bucket.dayKey) else { return "dayKey \(bucket.dayKey) 不是 yyyy-MM-dd" }
+            let unavailableKeys: Set<String>
+            if let unavailableSources = bucket.unavailableSources {
+                let keys = unavailableSources.map(\.sourceKey)
+                guard Set(keys).count == keys.count else {
+                    return "日桶 \(bucket.dayKey) 的 unavailableSources 存在重复来源"
+                }
+                for source in unavailableSources {
+                    guard FleetProtocol.knownClientIDs.contains(source.clientID),
+                          FleetProtocol.knownQuotaProviderIDs.contains(source.quotaProviderID) else {
+                        return "unavailableSources 含未注册 ID: \(source.clientID)/\(source.quotaProviderID)"
+                    }
+                }
+                let expectsComplete = unavailableSources.isEmpty
+                guard bucket.totalsComplete == expectsComplete else {
+                    return "日桶 \(bucket.dayKey) totalsComplete 与 unavailableSources 不一致"
+                }
+                let expectsTruncated = unavailableSources.contains { $0.reason == .truncated }
+                guard bucket.sourceTruncated == expectsTruncated else {
+                    return "日桶 \(bucket.dayKey) sourceTruncated 与 unavailableSources 不一致"
+                }
+                guard unavailableSources.isEmpty || !bucket.modelDetailsComplete else {
+                    return "日桶 \(bucket.dayKey) 不完整来源不能标记 modelDetailsComplete"
+                }
+                unavailableKeys = Set(keys)
+            } else {
+                // Legacy reports have no source-level coverage. Preserve the
+                // original all-or-nothing contract for incomplete totals.
+                guard bucket.totalsComplete else {
+                    return "dailyBuckets 含非权威 totals，保留 hub 已存日桶"
+                }
+                unavailableKeys = []
+            }
             guard bucket.totals == bucket.clientProviders else {
                 return "日桶 \(bucket.dayKey) 的 totals 与 clientProviders 汇总不一致"
             }
@@ -376,6 +471,9 @@ enum FleetReportValidator {
                 guard nonNegative(row.input, row.cacheRead, row.output, row.reasoning, row.turns, row.rounds) else {
                     return "clientProviders 含负计数"
                 }
+                guard !unavailableKeys.contains(row.clientID + "|" + row.quotaProviderID) else {
+                    return "日桶 \(bucket.dayKey) 本次数据包含不可用来源 \(row.clientID)/\(row.quotaProviderID)"
+                }
             }
             for entry in bucket.entries {
                 guard FleetProtocol.knownClientIDs.contains(entry.clientID),
@@ -385,6 +483,9 @@ enum FleetReportValidator {
                 guard nonNegative(entry.input, entry.cacheRead, entry.output, entry.reasoning),
                       amountIsConsistent(entry.value, entry.currency) else {
                     return "entries \(entry.clientID)/\(entry.quotaProviderID) 数值非法"
+                }
+                guard !unavailableKeys.contains(entry.clientID + "|" + entry.quotaProviderID) else {
+                    return "日桶 \(bucket.dayKey) entries 包含不可用来源 \(entry.clientID)/\(entry.quotaProviderID)"
                 }
             }
         }
@@ -418,14 +519,29 @@ enum FleetReportValidator {
     }
 
     static func isValidDayKey(_ dayKey: String) -> Bool {
-        let parts = dayKey.split(separator: "-")
-        guard parts.count == 3,
-              parts.allSatisfy({ !$0.isEmpty && $0.allSatisfy(\.isNumber) })
-        else { return false }
-        let year = Int(parts[0]) ?? 0
-        let month = Int(parts[1]) ?? 0
-        let day = Int(parts[2]) ?? 0
-        return (2000...2999).contains(year) && (1...12).contains(month) && (1...31).contains(day)
+        let bytes = Array(dayKey.utf8)
+        guard bytes.count == 10, bytes[4] == 45, bytes[7] == 45 else { return false }
+        let digitPositions = [0, 1, 2, 3, 5, 6, 8, 9]
+        guard digitPositions.allSatisfy({ (48...57).contains(bytes[$0]) }) else { return false }
+
+        func number(_ range: Range<Int>) -> Int {
+            range.reduce(0) { $0 * 10 + Int(bytes[$1] - 48) }
+        }
+        let year = number(0..<4)
+        let month = number(5..<7)
+        let day = number(8..<10)
+        guard (2000...2999).contains(year), (1...12).contains(month) else { return false }
+
+        var gregorianUTC = Calendar(identifier: .gregorian)
+        gregorianUTC.timeZone = TimeZone(secondsFromGMT: 0)!
+        var requested = DateComponents()
+        requested.year = year
+        requested.month = month
+        requested.day = day
+        requested.hour = 12
+        guard let date = gregorianUTC.date(from: requested) else { return false }
+        let resolved = gregorianUTC.dateComponents([.year, .month, .day], from: date)
+        return resolved.year == year && resolved.month == month && resolved.day == day
     }
 
     private static func nonNegative(_ values: Int...) -> Bool {
@@ -476,9 +592,10 @@ enum FleetMerger {
     // MARK: 日桶
 
     /// 各节点的当前七日日桶按 dayKey 合并成 fleet 聚合：
-    /// 权威 totals 独立求和；clientProviders 按 (client, provider) 求和；
+    /// totals 独立求和；clientProviders 按 (client, provider) 求和；
     /// entries 按 (client, provider, model) 求和、金额仅同币种相加、
-    /// coverage 按「有价 + 完整」重推导。只保留 today + previous six。
+    /// coverage 按「有价 + 完整」重推导；不可用来源稳定去重并保留partial标志。
+    /// 只保留 today + previous six。
     static func mergeDailyBuckets(
         _ nodeBuckets: [[FleetDailyBucket]],
         now: Date,
@@ -529,6 +646,7 @@ enum FleetMerger {
             }
         }
 
+        let unavailableSources = mergedUnavailableSources(contributions)
         return FleetDailyBucket(
             dayKey: dayKey,
             totals: totals,
@@ -546,7 +664,36 @@ enum FleetMerger {
             totalsComplete: contributions.allSatisfy(\.totalsComplete),
             modelDetailsComplete: contributions.allSatisfy(\.modelDetailsComplete),
             sourceTruncated: contributions.contains(where: \.sourceTruncated)
+                || (unavailableSources?.contains { $0.reason == .truncated } ?? false),
+            unavailableSources: unavailableSources
         )
+    }
+
+    private static func mergedUnavailableSources(
+        _ contributions: [FleetDailyBucket]
+    ) -> [FleetDailyUnavailableSource]? {
+        guard contributions.contains(where: { $0.unavailableSources != nil }) else { return nil }
+        var byKey: [String: FleetDailyUnavailableSource] = [:]
+        for source in contributions.flatMap({ $0.unavailableSources ?? [] }) {
+            if let existing = byKey[source.sourceKey] {
+                // Deterministic if nodes report different unavailable reasons
+                // for the same source in the same day.
+                if unavailableReasonPriority(source.reason) > unavailableReasonPriority(existing.reason) {
+                    byKey[source.sourceKey] = source
+                }
+            } else {
+                byKey[source.sourceKey] = source
+            }
+        }
+        return byKey.values.sorted { $0.sourceKey < $1.sourceKey }
+    }
+
+    private static func unavailableReasonPriority(_ reason: FleetDailyUnavailableReason) -> Int {
+        switch reason {
+        case .scanning: return 1
+        case .failed: return 2
+        case .truncated: return 3
+        }
     }
 
     /// 模型明细行：token 从样本聚合，金额由同一批样本计价（同源硬纪律）。
@@ -577,6 +724,8 @@ enum FleetMerger {
             output = SaturatingArithmetic.add(output, entry.output)
             reasoning = SaturatingArithmetic.add(reasoning, entry.reasoning)
             truncated = truncated || entry.truncated
+            if entry.coverage != .none { anyPriced = true }
+            if entry.coverage != .full { hasUnpriced = true }
             if let amount = entry.value, let coin = entry.currency {
                 anyPriced = true
                 if let existing = value, let base = currency, base == coin {
@@ -661,7 +810,9 @@ enum FleetMerger {
                 if let value = row.value, let currency = row.currency {
                     valueByCurrency[currency.rawValue, default: 0] += value
                     anyPriced = true
-                } else {
+                }
+                if row.coverage != .full || !row.complete || row.sourceTruncated
+                    || row.value == nil || row.currency == nil {
                     allPriced = false
                 }
             }
@@ -677,9 +828,9 @@ enum FleetMerger {
                 reasoning: SaturatingArithmetic.sum(members.lazy.map { $0.row.reasoning }),
                 valueByCurrency: valueByCurrency,
                 coverage: FleetCostCoverage(
-                    priced: anyPriced,
+                    priced: anyPriced || members.contains { $0.row.coverage != .none },
                     fullyPriced: allPriced,
-                    complete: members.allSatisfy { !$0.row.sourceTruncated }
+                    complete: members.allSatisfy { $0.row.complete && !$0.row.sourceTruncated }
                 ),
                 complete: members.allSatisfy(\.row.complete),
                 contributingNodeIDs: contributing,
@@ -744,16 +895,25 @@ enum FleetMerger {
 
     // MARK: dayKey 工具
 
-    /// today + previous six 的 dayKey 序列（升序，旧 → 新）。
+    /// Gregorian today + previous six 的 dayKey 序列（升序，旧 → 新），保留调用方时区。
     static func dayKeyWindow(now: Date, calendar: Calendar = .current) -> [String] {
-        let today = calendar.startOfDay(for: now)
+        let dayCalendar = gregorianDayCalendar(matching: calendar)
+        let today = dayCalendar.startOfDay(for: now)
         return (0..<7).reversed().compactMap { offset in
-            calendar.date(byAdding: .day, value: -offset, to: today).map { dayKey(of: $0, calendar: calendar) }
+            dayCalendar.date(byAdding: .day, value: -offset, to: today)
+                .map { dayKey(of: $0, calendar: dayCalendar) }
         }
     }
 
     static func dayKey(of date: Date, calendar: Calendar = .current) -> String {
-        let comps = calendar.dateComponents([.year, .month, .day], from: date)
+        let comps = gregorianDayCalendar(matching: calendar).dateComponents([.year, .month, .day], from: date)
         return String(format: "%04d-%02d-%02d", comps.year ?? 0, comps.month ?? 0, comps.day ?? 0)
+    }
+
+    /// Day keys always carry Gregorian civil dates; inherit only the caller's time zone.
+    static func gregorianDayCalendar(matching calendar: Calendar) -> Calendar {
+        var gregorian = Calendar(identifier: .gregorian)
+        gregorian.timeZone = calendar.timeZone
+        return gregorian
     }
 }

@@ -9,17 +9,18 @@
 | `Sources/LLM-monitor/LLMMonitorApp.swift` | App entry point, lifecycle delegate, `FetcherDescriptor` registry, fixed menu bar label |
 | `Sources/LLM-monitor/Services/AppInstanceLock.swift` | Per-user single-instance lock held for the process lifetime |
 | `Sources/LLM-monitor/Fetchers/FetcherDescriptor.swift` | `FetcherDescriptor` (provider 注册元信息 single source of truth) |
-| `Sources/LLM-monitor/Models/AppConfig.swift` | 应用配置与 Provider 配置契约模型（`StatusBarIconStyle` / `StatusBarHealthColors` / `BarkConfig` / `AppConfig` / `ProviderConfig`，从 ConfigStore.swift 解耦） |
-| `Sources/LLM-monitor/Models/ProviderClientModel.swift` | quota Provider / Client IDs、显式绑定、provider 中立 usage projection 与设置页摘要模型 |
-| `Sources/LLM-monitor/Models/SyncModels.swift` | Fleet Sync wire DTO（NodeUsageReport / FleetSnapshot 等）、FleetCodec（iso8601 唯一编解码入口）、通道级报告校验（FleetReportValidator）、日桶/窗口合并与额度选举纯函数（FleetMerger）、归因指纹（SHA256 前 8 hex）、SyncRole 单源派生 |
-| `Sources/LLM-monitor/Services/Sync/NodeIdentity.swift` | 节点身份：Keychain 单条目存 nodeID+lastIssuedSeq（不同步 iCloud），allocateSeq 先持久化再返回，失败不换 UUID；KeychainNodeIdentityBackend 可注入 |
-| `Sources/LLM-monitor/Services/Sync/FleetStore.swift` | 应用自有 fleet.sqlite 单表 sync_records 的事务存储：报告通道独立落库、high-water seq、窗口 upsert 与过期清理、generation 持久化、副节点快照缓存（scope = upstreamKey+hubUUID 隔离） |
+| `Sources/LLM-monitor/Models/AppConfig.swift` | 应用配置与 Provider 配置契约模型（`SyncConfig` 的逐字段容错、推送周期 effective 值、`StatusBarIconStyle` / `StatusBarHealthColors` / `BarkConfig` / `AppConfig` / `ProviderConfig`，从 ConfigStore.swift 解耦） |
+| `Sources/LLM-monitor/Models/ProviderClientModel.swift` | quota Provider / Client IDs、显式绑定、provider 中立 usage projection（区分日总量源级截断与模型 / 窗口样本截断，含无贡献时的 DSH 源级状态）与设置页摘要模型 |
+| `Sources/LLM-monitor/Models/SyncModels.swift` | Fleet Sync wire DTO（NodeUsageReport / FleetSnapshot 等）、FleetCodec（iso8601 唯一编解码入口与整秒窗口边界匹配）、通道级报告校验（含 ASCII / Gregorian 日键校验）、日桶/窗口合并与额度选举纯函数（FleetMerger）、归因指纹（SHA256 前 8 hex）、SyncRole 单源派生 |
+| `Sources/LLM-monitor/Services/Sync/FleetStore.swift` | 应用自有 fleet.sqlite 单表 sync_records 的事务存储：报告通道独立落库、本机 seq 与节点 high-water、窗口 upsert / 过期及坏行清理（可见清理同步递增 generation）、副节点快照缓存（scope = upstreamKey+hubUUID 隔离） |
+| `Sources/LLM-monitor/Services/Sync/DeviceIdentityStore.swift` | Fleet Sync 本机节点身份 UUID 持久化；在 config 同目录独立读写 `.deviceId`，不继承 config 中旧 `sync.nodeID` |
 | `Sources/LLM-monitor/Services/Sync/HubServer.swift` | NWListener 上的 HTTP/1.1 最小子集 hub 服务：定长 body、4MiB/2MiB 上下限、路径白名单、每 nodeID 1s 限流、连接看门狗；业务全部委托 HubServerHandlers |
 | `Sources/LLM-monitor/Services/Sync/SyncClient.swift` | node 侧 HTTP 客户端（复用 Infra/HTTPClient）：POST 报告推+取一次往返、GET 快照兜底、GET /v1/health 学习 hubUUID；upstreamKey 归一化 |
-| `Sources/LLM-monitor/Services/Sync/UsageReportBuilder.swift` | 从 ProviderStatus.usageProjection 构建 NodeUsageReport：七日权威日桶（FleetTotals(summing:) 规范化汇总）、同样本计价的模型明细与窗口行（interval/weekly/glmOffPeak）、有效 lastSuccess 额度通道；扫描中省略日桶 |
-| `Sources/LLM-monitor/Models/FleetUsageModels.swift` | Fleet UI 投影（L3）：FleetScope、FleetEffectiveQuota（本机优先→elected + 来源标注）、FleetCardUsage / FleetWindowUsageRow（卡片全局 scope 用量）、FleetMenuSummary（菜单双行 + client→node→model 三层）、FleetCardContext（scope 分段与生效额度载体，闭包不参与相等比较） |
-| `Sources/LLM-monitor/Views/SettingsSyncPane.swift` | 设置页「多机联动」pane：角色字段（写穿持久化）、复制局域网地址、已连接节点列表（移除 → removeNodeFromFleet）、全局摘要、各 provider 额度来源、归因指纹不一致提示 |
-| `Sources/LLM-monitor/Services/Sync/SyncCoordinator.swift` | 多机联动运行时编排（@MainActor ObservableObject）：hub 起 HubServer 并不经 HTTP 并入自身数据（防抖 2s）+ 维护节拍递增 generation；node 周期+唤醒推送循环、health 握手、generation/configVersion 门控、快照缓存 |
+| `Sources/LLM-monitor/Services/Sync/UsageReportBuilder.swift` | 从启用 Provider 的 `usageProjection` 构建 NodeUsageReport：七日日桶、同样本计价的模型明细与窗口行、有效 lastSuccess 额度通道；按实际 client/provider 隔离失败、扫描或预算截断来源，健康日桶行继续上报，不可用来源显式标记并由 Store 保留旧值；对应 provider 窗口仍省略 |
+| `Sources/LLM-monitor/Models/FleetUsageModels.swift` | Fleet UI 投影（L3）：FleetScope、FleetEffectiveQuota（本机优先→elected + 来源标注）、FleetCardUsage / FleetWindowUsageRow（全 provider 日桶、provider-filtered 窗口及历史窗口选择 / 部分计价提示 / stale 日桶贡献提示）、FleetMenuSummary、FleetCardContext |
+| `Sources/LLM-monitor/Services/LANAddressResolver.swift` | 本机局域网地址异步探测与挑选：view 不等待阻塞探测；采集（`getifaddrs`，排除回环 / 未 UP / 虚拟前缀 / 与 `bridge0` 同 MAC 的雷雳桥腿；正确处理 `sockaddr_dl` 中可变长度接口名偏移以解析 MAC）+ 硬件分类缓存（Network.framework 的 `NWPathMonitor`）+ 挑选（Wi-Fi → 有线 → 其它，不拿 127.0.0.1 兜底） |
+| `Sources/LLM-monitor/Views/SettingsSyncPane.swift` | 设置页「多机联动」pane：角色字段（写穿持久化）、复制局域网地址（探测在 `LANAddressResolver`）、已连接节点列表（移除 → removeNodeFromFleet）、全局摘要、各 provider 额度来源、归因指纹不一致提示、字段独立防抖草稿 controller 与逐字段保存错误 / 重试 |
+| `Sources/LLM-monitor/Services/Sync/SyncCoordinator.swift` | 多机联动运行时编排（@MainActor ObservableObject）：由 `DeviceIdentityStore` 提供稳定 nodeID（持久化成功才采用；启用前不创建、读写错误不降级成临时身份）、hub/node 生命周期与监听 ready/failed、热配置重启/重排与非法上游修正后的 node runtime 恢复、hub 本机报告合并与 generation 维护、node 周期+唤醒推送、health 握手、409 序号自愈、快照缓存与当前 POST 序号确认的 hub 数据库恢复 |
 | `Sources/LLM-monitor/Models/DerivedValueMemo.swift` | 渲染期派生值的**值键 memo**（`Slot` 分槽、每槽只留最近一次、条目数有界）：键逐字相等才复用，刻意不做脏标记广播——漏一次失效等于界面静默显示过期数字；重算在锁外 |
 | `Sources/LLM-monitor/Models/ClientIdentity.swift` | 身份语汇（QuotaProviderID / ClientID / ClientDescriptor / ClientProviderBinding）与默认绑定矩阵字面量（单一事实源） |
 | `Sources/LLM-monitor/Models/UsageFrameExtractors.swift` | 帧抽取注册表 `usageFrameExtractors`（各 harness 的 ProviderStatus 字段 → `HarnessUsageFrame`，L1 适配） |
@@ -39,21 +40,36 @@
 | `Sources/LLM-monitor/Models/AnyJSON.swift` | 弱类型 JSON（Antigravity 递归解析用） |
 | `Sources/LLM-monitor/Models/LocalUsageDaily.swift` | Antigravity / Agy / Codex / Minimax / GLM / DSH / OpenCode 共享的 7-day chart 协议 + 默认实现 |
 | `Sources/LLM-monitor/Models/LocalDailyTokenUsage.swift` | 六个本地数据源共享的单日 token 聚合结构（统一收口原 `XxxDailyUsage`，on-disk JSON 键兼容） |
-| `Sources/LLM-monitor/Models/LocalTokenUsageSample.swift` | Provider 中立的单次模型调用 sample（cache-inclusive input 口径 + `TokenUsageBuckets` 规范化入口） |
+| `Sources/LLM-monitor/Models/LocalTokenUsageSample.swift` | Provider 中立的单次模型调用 sample（cache-inclusive input 口径 + `TokenUsageBuckets` 规范化入口）；额度窗口快照携带可选 Fleet 金额说明 `costText` |
 | `Sources/LLM-monitor/Models/TokenAccounting.swift` | harness raw input / output 计数口径的元数据枚举（cacheInclusive / uncachedOnly 等） |
 | `Sources/LLM-monitor/Models/ReasoningCharSplit.swift` | 「思考字符数 → 思考 token 数」的守恒拆分纯函数（`reasoning + output == 账面 output` 恒成立）；5 处调用方：GLM/ZCode（`GlmZcodeDBReader`）、MiniMax Code（`MinimaxLocalUsageAggregation`）、Dsh M3（`DshLocalUsageScanner`）、OpenCode（`OpencodeDBReader`）、Agy（`AgyLocalUsageAggregation`） |
 | `Sources/LLM-monitor/Models/LocalUsageRetentionWindow.swift` | 本地用量「落盘前保留窗口」的唯一口径（`LocalUsageRetentionWindow`，Antigravity / Agy / DSH / GLM-ZCode / Minimax / OpenCode 六个 scanner 共享）；刻意区别于展示层 7 天窗口，契约由 `ScannerRetentionContractTests` 锁定——该契约逐条覆盖其中五个（Antigravity / Minimax / DSH / Opencode / GLM-ZCode），Agy 尚无逐条断言 |
-| `Sources/LLM-monitor/Models/LocalUsageFreshness.swift` | 本地用量数据新鲜度（clean / dirty / scanning / failed），刻意独立于额度健康度 |
+| `Sources/LLM-monitor/Models/LocalUsageFreshness.swift` | 本地用量数据新鲜度（clean / dirty / scanning / failed），独立于额度健康度；LocalUsageSource.clientID 与 LocalUsageConsumer 映射 scanner 到 client/provider，用于 Fleet 来源隔离 |
 | `Sources/LLM-monitor/Models/DisplayOrder.swift` | Stable-ID ordering helper for configurable Provider cards and alphabetical fallback lists |
 | `Sources/LLM-monitor/Models/OpencodeLocalUsage.swift` | OpenCode provider 分片、今日 / 7 天聚合与逐次 samples |
 | `Sources/LLM-monitor/Models/UsageProjectionKernel.swift` | Provider × Harness 投影内核：`HarnessUsageFrame` 适配（clientID/sourceKey/quota 归属）→ `UsageProjectionKernel.project` 出 per-client × per-provider 投影（daily + per-model 桶 + 名义价值）；promptID 命名空间规则表（`UsageSampleNamespace`）与 DSH 帧适配（`DshHarnessFrames`）在此，旧 `DshUsageMerger` / `OpencodeUsageMerger` 已吸收删除 |
 | `Sources/LLM-monitor/Models/GlmLocalUsage.swift` | GLM ZCode 本地 token 用量聚合模型（单源、原生 reasoning / turn_id、闲时窗口挂载、非智谱 provider 分片挂载） |
 | `Sources/LLM-monitor/Models/ZcodeProviderSlice.swift` | ZCode 非智谱 provider 分片枚举（`minimax` / `deepseek` 前缀谓词、quota 卡映射与样本 promptID 命名空间） |
-| `Sources/LLM-monitor/Models/DshLocalUsage.swift` | DeepSeek Harness session token 数据模型与 provider 分片 |
-| `Sources/LLM-monitor/Services/DshLocalUsageScanner.swift` | 读取 `~/.dsh/sessions` 的 JSONL/zstd session 日志，按 provider 聚合 7 天用量 |
+| `Sources/LLM-monitor/Models/DshLocalUsage.swift` | DeepSeek Harness session token 数据模型与 provider 分片；分别记录扫描预算截断、样本数量截断、样本上限与最新遗漏样本时刻 |
+| `Sources/LLM-monitor/Services/DshLocalUsageScanner.swift` | 读取 `~/.dsh/sessions` 的 JSONL/zstd session 日志，按 provider 聚合 7 天用量；样本 cap 完整性元数据、旧缓存 / 上限变化重建及 cached rebase 老化恢复 |
 | `Sources/LLM-monitor/Models/AgyLocalUsage.swift` | agy CLI 本地 transcript token 用量快照模型（`isPartial` 出相等 / `isTruncated` 入相等的设计注释） |
 | `Sources/LLM-monitor/Services/AgyLocalUsageScanner.swift` | 读取 `~/.gemini/antigravity-cli/brain/` 的 transcript JSONL + cli log 模型名时间线，聚合 7 天用量（预算截断 / 指纹缓存） |
 | `Tests/LLMMonitorTests/AgyLocalUsageScannerTests.swift` | agy scanner 回归护栏（MODEL 行解析 / 去重 / 模型名 join / 缓存短路 / 预算截断 / 帧投影命名空间） |
+| `Tests/LLMMonitorTests/FleetScopeSwitcherTests.swift` | Fleet scope 控件阈值、全局/本机/节点选项、分段与紧凑菜单切换及文案截断 |
+| `Tests/LLMMonitorTests/LANAddressResolverTests.swift` | 局域网地址候选与挑选、接口类别优先级、MAC 偏移边界、虚拟与桥接网卡排除 |
+| `Tests/LLMMonitorTests/SettingsSyncPaneTests.swift` | Fleet Sync 设置 pane 渲染、上游地址 / 端口校验、局域网地址检查、字段级草稿防抖 / rebase / 离开 pane flush、真实写盘失败的逐字段反馈和跨 pane 重建保留草稿 |
+| `Tests/LLMMonitorTests/UsageReportBuilderTests.swift` | Fleet 日桶/窗口构建、失败空贡献标记不可用并省略对应窗口、健康来源继续上报、DSH 失败恢复及 binding 关闭、截断空帧不覆盖旧值、部分计价经合并仍保留 |
+| `Tests/LLMMonitorTests/SyncModelsTests.swift` | Fleet DTO / 校验 / 合并、ASCII Gregorian 日键与跨系统日历生成、legacy 不完整日桶拒收、来源感知 partial 校验及金额覆盖度保留 |
+| `Tests/LLMMonitorTests/FleetUsageModelsTests.swift` | Fleet 菜单与卡片投影、provider 全量日桶 / provider 窗口筛选、窗口历史与 wire 整秒比较、金额 coverage 和 stale 日桶提示 |
+| `Tests/LLMMonitorTests/FleetCostTextPropagationTests.swift` | Fleet 金额说明从真实 DSH builder / 合并投影传到最终可见行：部分计价、混币 5h / 周 / 今及闲行文案 |
+| `Tests/LLMMonitorTests/SettingsDraftIsolationTests.swift` | General/provider 草稿隔离：仅 Sync 或边缘窗位置写入不重载，真实表单外部变化仍触发热重载 |
+| `Tests/LLMMonitorTests/DshLocalUsageScannerTests.swift` | DSH 真实日志扫描、预算及样本 cap、缓存命中 / 旧完整性元数据重建、限额变化和遗漏样本老化恢复 |
+| `Tests/LLMMonitorTests/UsageProjectionKernelTests.swift` | Harness 帧归属、日聚合与模型计价、DSH 分片及独立样本完整性标记传播 |
+| `Tests/LLMMonitorTests/TruncationProjectionChainTests.swift` | 截断状态沿扫描快照 / 帧 / 内核 / provider 投影到消费层的传播回归与已知完整样本夹具 |
+| `Tests/LLMMonitorTests/FleetStoreTests.swift` | Fleet SQLite 通道/窗口持久化、坏行清理与 generation、序号及快照缓存 |
+| `Tests/LLMMonitorTests/AppStateTests.swift` | AppState 发布行为，包括 Fleet 快照 / scope 专属通知、无效 scope 回退和展示状态更新后再广播 |
+| `Tests/LLMMonitorTests/FleetSyncLifecycleTests.swift` | Fleet node 周期推送、非法 URL 修正后 runtime 恢复、hub listener 生命周期、配置热更新、0 周期序列化、禁用清快照、旧 runtime 响应隔离、同 UUID hub 数据库重建回填、设备身份独立于 config、关闭不创建与读失败重试 |
+| `Tests/LLMMonitorTests/DeviceIdentityStoreTests.swift` | 独立 `.deviceId` 创建与复用、legacy config UUID 不继承、坏文件 fail-closed、私有权限及写入失败后可重试 |
 | `Sources/LLM-monitor/Models/ProviderLocalUsage.swift` | Antigravity / minimax 共享的本地用量数据模型（保留历史类型别名） |
 | `Sources/LLM-monitor/Fetchers/QuotaFetcher.swift` | `QuotaFetcher` protocol + 默认实现 |
 | `Sources/LLM-monitor/Services/Infra/QuotaError.swift` | 统一错误类型 |
@@ -67,7 +83,7 @@
 | `Sources/LLM-monitor/Models/PeakWindow.swift` | GLM / DeepSeek 共用的参数化高峰窗口判定（`slots` × `weekdaysOnly` × `HolidayCalendar`；统一北京时间 + Rule A 工作日口径，两家只差 slots 数量：GLM 单窗口（官方固定 14–18，不可调），DeepSeek 双窗口固定、高峰永不含周末） |
 | `Sources/LLM-monitor/Models/HolidayCalendar.swift` | 法定节假日快照模型（Rule A 的节假日数据源）：`Set<Int>` yyyyMMdd 日期键 + source/fetchedAt 元信息，`isHoliday` / `covers(year:)`；解析链纯函数（`parseSource` 源语义 / `parseSourceDates` 快照+上游 chinese-days 双格式 / `resolve` 缓存→bundle→empty / `isStale` 7 天新鲜度）与可更新的 `shared`（锁保护，`applyResolved` 替换）；bundle 加载 `loadBundled()` 先过 `ResourceBundleProbe`（资源 bundle 整体缺失时降级路径才可达）、缺失 / 损坏退化为空表并记日志；`sharedRevision` 随 `applyResolved` 递增（派生值 memo 的失效键）；上游 chinese-days 格式要求三键齐全（缺 `holidays`/`workdays`/`inLieuDays` 任一即按「格式不支持」拒绝，schema 变化不静默接受） |
 | `Sources/LLM-monitor/Services/HolidayCalendarService.swift` | 节假日数据源服务（解析链编排 + best-effort 取数）：config `holidaySource` 的触发判定（启动 / 源变更 / 设置页立即更新）、缓存 `holidays-cache.json` 读写、HTTP 走 `HTTPClient` / 本地路径直读、成功后应用 `shared` + 宿主回调（UI 刷新）；失败不清空既有数据；设置页状态行 / 覆盖提示纯函数；缓存回写经 `FileManagerBox.writePrivate`（0600 / 0700） |
-| `Sources/LLM-monitor/Services/AppState.swift` | 全局状态生命周期、刷新调度、配置 reload 接线（`configStore.startWatching()`）与 Provider batch/LocalUsage reconcile |
+| `Sources/LLM-monitor/Services/AppState.swift` | 全局状态生命周期、刷新调度、配置 reload 接线（`configStore.startWatching()`）与 Provider batch/LocalUsage reconcile；显式启用 Fleet Sync 后以 config 同目录 `.deviceId` 构造 DeviceIdentityStore |
 | `Sources/LLM-monitor/Services/AppState+Metrics.swift` | `AppState` 的系统健康度（`systemHealthLevel`）与状态栏配额读数（`statusBarQuotaMetrics`）聚合计算 extension |
 | `Sources/LLM-monitor/Services/AppState+LocalUsage.swift` | `AppState` 的本地用量扫描结果分发与回写（`LocalUsageStatusWriting`）extension（Antigravity/Agy/Minimax/ZCode/DSH/OpenCode） |
 | `Sources/LLM-monitor/Services/AppState+Rebuild.swift` | `AppState` 的 Provider 状态派生（`deriveState`）与跨重建保留字段（`PreservedStatusFields`）extension |
@@ -138,12 +154,13 @@
 | `Sources/LLM-monitor/Services/SleepHealthEvaluator.swift` | 睡眠锁与系统电源参数的健康度评估 |
 | `Sources/LLM-monitor/Views/MenuBarLabel.swift` | 菜单栏 label 视图（可见输入签名去重重绘 + 分钟时钟监听，App 图标 / Icon Duo / SF Symbol 多样式） |
 | `Sources/LLM-monitor/Views/MenuContentView.swift` | 主面板（header / content / footer）+ 高度桥 `MenuPanelHeightBridge`（`contentMaxSize` = 屏幕可见高 × 0.70）+ `MenuHairline`；展示时钟经 `\.displayDate` 注入卡片 |
+| `Sources/LLM-monitor/Views/FleetScopeSwitcher.swift` | fleet scope 切换控件（菜单面板与 dock 详情浮层共用：≤4 段整行、>4 紧凑下拉）：`FleetScopeSwitcher` 按选项总数分叉（≤4 分段 `Picker`、>4 下拉 `FleetScopeMenu`），`FleetScopeMenu` 是下拉形态——范围文字 + 行内 `ellipsis` 标记，整组上限 120pt，截断走纯函数 `FleetScopeMenu.truncated(_:maxWidth:)`；三个 macOS `Menu` 平台怪癖（行内图 / 字符串层限宽 / 必须 `fixedSize`）写在文件头 |
 | `Sources/LLM-monitor/Views/DisplayClock.swift` | 跨宿主共享的展示时钟：`DisplayClock` + `DisplayClockScope` + `\.displayDate` 环境键；菜单内容 / hover 浮层 / dock 浮层各自持有实例、随宿主显隐 start/stop 并注入环境 |
-| `Sources/LLM-monitor/Views/HarnessUsageMenuView.swift` | 菜单的 Harness（客户端）视角：顶部一屏全局今日汇总（`HarnessUsageMenuView`）→ 按客户端分段（`HarnessSectionView`）→ 段内按模型一行（`HarnessModelRowView`）→ 底部 provider 兜底状态条（`ProviderStatusStripView`，hover 出完整卡片）。与 `ProviderCardView` 并列而非替代；模型行的 334pt 宽度预算（菜单 360pt / 内容 336pt）由 `HarnessUsageMenuViewTests` 钉住 |
+| `Sources/LLM-monitor/Views/HarnessUsageMenuView.swift` | 菜单的 Harness（客户端）视角：顶部一屏全局今日汇总（`HarnessUsageMenuView`）→ 按客户端分段（`HarnessSectionView`）→ 段内按模型一行（`HarnessModelRowView`）→ 底部 provider 兜底状态条（`ProviderStatusStripView`，hover 出完整卡片）。与 `ProviderCardView` 并列而非替代；模型行的 334pt 宽度预算（含 8pt 缩进，菜单 360pt / 内容 336pt）由 `HarnessUsageMenuViewTests` 钉住 |
 | `Sources/LLM-monitor/Views/MenuTypography.swift` | 菜单面板与悬浮层统一排版常量（语义角色，禁止散落硬编码字号） |
 | `Sources/LLM-monitor/Views/MenuWindowAutoCloseBridge.swift` | 失焦立即关 + 30s 无交互关闭（菜单内 mouse/scroll/key 重置计时）；关闭统一出口 `performClose` 并发 `onPanelClose`（菜单展示时钟随之停表）；30s 计时为单个可复用 `DispatchSourceTimer`（reset 只改 deadline，鼠标事件不再重建句柄） |
 | `Sources/LLM-monitor/Views/ProviderCardDerived.swift` | 卡片 body 的派生值入口：投影 + 额度窗口快照 + 「今」行 + 「闲」行（GLM 今日闲时，`offPeakUsageRow`）+ 「免 / 速 / 它」今日动态行（`glmCategoryUsageRows`，按 `GlmUsageCategory` 今日切片）打包成一个 memo 值（共享失效条件；键 = 全值 `status` + 墙钟日 + 展示日 + `HolidayCalendar.sharedRevision` + 时区标识），展示时钟每秒 tick 不再重算 O(samples) 定价 |
-| `Sources/LLM-monitor/Views/ProviderCardView.swift` | provider 卡片 + `ProviderStateLabel` + `QuotaSummary`（卡内状态点已随菜单改版移除，状态由 `ProviderStateLabel` 胶囊承载）；body 派生值经 `ProviderCardDerivedValues` 值键 memo |
+| `Sources/LLM-monitor/Views/ProviderCardView.swift` | provider 卡片 + `ProviderStateLabel` + `QuotaSummary`（卡内状态点已随菜单改版移除，状态由 `ProviderStateLabel` 胶囊承载）；body 派生值经 `ProviderCardDerivedValues` 值键 memo；多节点时的 scope 控制用 `FleetScopeSwitcher`（≤4：标题行下方的分段整行；>4：卡头右侧的下拉） |
 | `Sources/LLM-monitor/Views/QuotaViews.swift` | 各种 quota 行 + 进度条（`CombinedQuotaWindowRow` / `CombinedQuotaBar` / `SingleQuotaBar` / `ModelQuotaDockBlock` / `CompactResetCreditsRow` / `QuotaBarTooltip`）；重置倒计时与过期判定随宿主展示时钟推进（`\.displayDate`）。`OffPeakUsageFootnote` 已删除，GLM 闲时用量改由「额度窗口」表格「闲」行承担 |
 | `Sources/LLM-monitor/Views/QuotaWindowUsageViews.swift` | 「额度窗口用量」区块族：模块标题 / 细分隔线、四桶绝对值与三个比率（`QuotaWindowUsageMetrics`）、双段 capsule 切换（`QuotaWindowUsageSegmentControl` / `QuotaWindowUsageSegment`）、reset credits 明细（`ResetCreditsDetailList`）与合并统一 7 列 Grid 骨架的总段 `QuotaWindowUsageSection`；重置日期格倒计时随宿主展示时钟推进（`\.displayDate`） |
 | `Sources/LLM-monitor/Views/QuotaHoverViews.swift` | 空文件，仅留删除记录注释：`UsageMetricHoverSummaryView`（额度用量指标 hover 摘要）随其唯一宿主 `OffPeakUsageFootnote` 一并删除；旧 `QuotaWindowsHoverView` 族已随 menuLayout 死分支整体删除 |
@@ -181,8 +198,9 @@
 | `Sources/LLM-monitor/Views/SettingsFields.swift` | 设置页通用表单输入组件与数值/路径辅助函数（`intervalSliderField`、`secretField`、`apiKeyField`、`selectAuthFile`、`tildePath`） |
 | `Sources/LLM-monitor/Views/SettingsGeneralPane.swift` | 设置页常规 pane：全局刷新、状态栏主题与健康色、边缘状态窗、Provider 顺序、Bark 推送与节假日源 |
 | `Sources/LLM-monitor/Views/SettingsProviderPanes.swift` | 设置页各 Provider 设置 pane（MiniMax / ChatGPT / Antigravity / GLM / DeepSeek）与四类额度通知配置 |
-| `Sources/LLM-monitor/Views/SettingsSaveTransaction.swift` | 设置保存事务：login item 更新 + config 保存的失败回滚语义 |
-| `Sources/LLM-monitor/Views/SettingsView.swift` | 设置面板主框架：侧边栏、Tab 路由、表单草稿状态与保存事务入口 |
+| `Sources/LLM-monitor/Views/SettingsSaveTransaction.swift` | 设置保存事务：login item 更新 + config 保存的失败回滚语义；`SettingsLoginItemDraft` 区分系统实际状态与未保存编辑，保护菜单切换不被旧草稿覆盖 |
+| `Tests/LLMMonitorTests/SettingsLoginItemDraftTests.swift` | 菜单/设置开机自启状态同步、重复状态刷新保留本地编辑、未修改草稿服从系统实际值 |
+| `Sources/LLM-monitor/Views/SettingsView.swift` | 设置面板主框架：侧边栏、Tab 路由、表单草稿状态与保存事务入口；持有联动草稿 controller，跨 tab 保留未保存状态并在底栏提示 |
 | `scripts/build-app.sh` | Release arm64 `.app` bundle build（dSYM 导出 + strip）和 ad-hoc signing |
 | `scripts/build-release.sh` | 发行编排入口：依次 build-app.sh → build-dmg.sh 并产出 SHA-256 校验和，签名 / notarization 变量透传 |
 | `scripts/test-build-config.sh` | `build-app.sh` 构建期常量的 shell 冒烟测试（BUNDLE_ID 等「格式对但值被改」的回归护栏，自带框架） |
@@ -197,8 +215,10 @@
 
 ## Test Suite
 
-- 规模：`Tests/LLMMonitorTests/` 按主题一文件组织（2026-10 重组后 135 文件 / 1302 用例；含 fleet sync 6 文件 61 例（另 FleetUsageModelsTests 9 例）：SyncModelsTests / NodeIdentityTests / FleetStoreTests / UsageReportBuilderTests / FleetSyncIntegrationTests / FleetUsageModelsTests——后者走真实 NWListener 回环端到端）。
+- 规模：`Tests/LLMMonitorTests/` 按主题一文件组织。Fleet Sync 覆盖协议/合并、存储、报告构建、UI 投影、HTTP 集成、scope 控件、设置页与 LAN 地址解析；用例数随工作区改动变化，不在职责地图中固定记录。
 - **串行执行是既定选择**：`swift test --parallel` 实测（2026-10-02，5 连跑 3 败）不可用——`SQLiteTempCopyTests` 的临时副本断言扫描跨进程共享目录，并行 worker 互相误判；且慢测试为睡眠型，并行的 wall 收益仅 ~4s。并行化前提：先给 SQLiteTempCopy 的副本目录引入进程级隔离，再复评。
 - 慢用例的等待注入缝已建立：调度器（now/sleep）、Bark 退避（retryDelay）、vnode 合并窗口（coalescingWindow 参数）；新增耗时敏感测试时优先走注入缝，不要写死真实 sleep。
 
-> 核对基线：2026-10-25 · 代码 6235ee4
+> 核对基线：2026-10-25 · 代码 6f11831
+> 统一验证通过，详细结果见 `spec/sync.md`。本文件登记已新增的 Fleet Sync 测试文件。
+> `DeviceIdentityStore` 及其回归测试已随 6f11831 入库，详见 `spec/sync.md`。

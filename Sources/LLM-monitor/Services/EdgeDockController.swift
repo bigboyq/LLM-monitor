@@ -151,6 +151,7 @@ final class EdgeDockController: ObservableObject {
     /// `static let` 的进程级兜底值——永远冻结。
     let popoverDisplayClock = DisplayClock()
     private var statusCancellable: AnyCancellable?
+    private var fleetCancellable: AnyCancellable?
     private var evaluationCancellable: AnyCancellable?
     private var configCancellable: AnyCancellable?
     private var screenObserver: NSObjectProtocol?
@@ -268,6 +269,19 @@ final class EdgeDockController: ObservableObject {
 
         // 条目数 / 健康色变化 → 重算窗口尺寸，并同步刷新正展示的 popover 卡片
         statusCancellable = state.statusDidChange
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                self.invalidateOrderedEntriesCache()
+                self.reconcile(animated: true)
+                if self.selectedIndex != nil {
+                    self.updatePopover()
+                }
+            }
+
+        // 快照 / scope 是 UI 派生输入，不属于 provider statuses。独立订阅以刷新
+        // 圆环缓存和当前 popover，同时避免把它们塞进 statusDidChange 后重建 hub 报告。
+        fleetCancellable = state.fleetDidChange
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 guard let self else { return }
@@ -451,11 +465,13 @@ final class EdgeDockController: ObservableObject {
         launchObserver = nil
         spaceObserver = nil
         statusCancellable?.cancel()
+        fleetCancellable?.cancel()
         evaluationCancellable?.cancel()
         // 三个订阅缺一不可：漏掉 `configCancellable` 会让"卸载后 config 又变了"
         // 继续驱动一次 reconcile，而此时订阅者本该已经没了。
         configCancellable?.cancel()
         statusCancellable = nil
+        fleetCancellable = nil
         evaluationCancellable = nil
         configCancellable = nil
         invalidateOrderedEntriesCache()

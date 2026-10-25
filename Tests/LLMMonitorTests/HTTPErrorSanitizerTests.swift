@@ -58,4 +58,36 @@ final class HTTPErrorSanitizerTests: XCTestCase {
         XCTAssertFalse(description.contains("password"))
         XCTAssertFalse(description.contains("secret"))
     }
+
+    func testHTTPNetworkErrorDescriptionSanitizesAppTransportSecurityFailure() {
+        let secretURL = URL(string: "http://user:password@192.168.1.20:8787/v1/usage?token=secret#private")!
+        let error = URLError(
+            .appTransportSecurityRequiresSecureConnection,
+            userInfo: [NSURLErrorFailingURLErrorKey: secretURL]
+        )
+
+        let description = HTTPRequestLogSanitizer.networkErrorDescription(error)
+
+        XCTAssertEqual(description, "系统安全策略阻止了此 HTTP 连接")
+        XCTAssertFalse(description.contains("192.168.1.20"))
+        XCTAssertFalse(description.contains("password"))
+        XCTAssertFalse(description.contains("secret"))
+        XCTAssertFalse(description.contains("private"))
+    }
+
+    func testHTTPNetworkErrorDescriptionSanitizesDataNotAllowedFailure() {
+        let secretURL = URL(string: "http://user:password@192.168.1.20:8787/v1/usage?token=secret#private")!
+        let error = URLError(
+            .dataNotAllowed,
+            userInfo: [NSURLErrorFailingURLErrorKey: secretURL]
+        )
+
+        let description = HTTPRequestLogSanitizer.networkErrorDescription(error)
+
+        XCTAssertEqual(description, "网络访问被系统限制，请检查网络权限")
+        XCTAssertFalse(description.contains("192.168.1.20"))
+        XCTAssertFalse(description.contains("password"))
+        XCTAssertFalse(description.contains("secret"))
+        XCTAssertFalse(description.contains("private"))
+    }
 }

@@ -1,9 +1,15 @@
 # 多机联动设计（Fleet Sync）— 2.0 大版本
 
-> 状态：设计稿（未实现）。实现完成后应毕业为 `spec/sync.md`，并在 `spec/overview.md` §Spec 地图与任务路由 登记入口。
-> 基线代码：`main` @ `bd26c3a` / 分支 `2.0.0`。
-> 本次修订：2026-10-24，落实 UUID、独立同步表及副节点自报窗口范围的决定；同日裁定 §13.2-M（额度候选按 `fetchedAt`）并确认 §13.2-W（窗口范围技术默认），§13.2 已无待确认项。
+> 状态：2.0.0 功能已在工作区实现；当前行为以 `spec/sync.md` 为准，本文件保留需求拆解、裁定过程与设计背景。
+> 基线代码：设计起点为 `main` @ `bd26c3a`；当前核对代码基线 `ee250a0`；2026-10-25 统一验证通过，详见 `spec/sync.md`。
+> 本次修订：2026-10-24，落实 UUID、独立同步表及副节点自报窗口范围的决定；同日裁定 §13.2-M（额度候选按 `fetchedAt`）并确认 §13.2-W（窗口范围技术默认），§13.2 已无待确认项。同日第二修订：日桶通道改**增量补发**（逐天摘要回执，见 §5.1 / §6.3 / §13.1），取代「每次全量七桶整体替换」。 同日第三修订：菜单形态改**标题栏 scope 切换 + 段内合并模型行**（见 §10.6 的后续修订），取代本节 J/K 早先裁定的「并排两行 + 节点层」。
 > 口径：**多副一主**，不级联。每个实例对自己本机数据永远有权威解释权。
+> 2026-10-25 来源隔离修订（用户授权修复“本机有数据、全局为空”）：以 client/provider
+> 为日桶更新单位，健康来源继续写入，扫描中、失败或预算截断来源显式标记并保留
+> 上次有效行；取代下文早期“任一来源失败省略整条日桶”的保护策略。完整健康零值
+> 仍清除旧值。partial 桶回执最后接受的输入摘要，避免合并旧值后反复补发。
+> 全局 / 节点缺今日桶显示未同步，partial 显示已知值和来源提示。窗口保持原 provider
+> 级保护。协议为可选 v1 扩展，新版 hub 兼容旧完整报告；多机部署应先升级 hub。
 
 ---
 
@@ -16,7 +22,7 @@
 | # | 原文 | 实现规则 |
 |---|---|---|
 | R1 | 每个实例将自己作为主节点 | 角色由 `sync.hubURL` 派生：无 upstream 的 hub 接收并合并副节点报告；有 upstream 的 node 只向该 hub 上报并消费回传快照，不转发报告、不监听端口。 |
-| R2 | 定期发送当天完整数据 | 报告携带今天及前六天日桶；用量来源有效且七个 authoritative totals 均 complete 才整体替换日桶。模型明细完整度独立，可不完整并明确标记。窗口摘要按范围独立 upsert，缺失范围不会删除保留期内的既有范围。额度与心跳通道可独立更新。 |
+| R2 | 定期发送当天完整数据 | 报告默认携带今天及前六天日桶基线；**增量裁定（2026-10-24）**：快照回传逐天摘要回执（dayKey → 内容 digest），副节点只上报与回执不一致的天（首次接触 / 重启 / hub 丢数据时回执为空 → 全量七天重建基线；全部一致时省略通道，等价心跳）。用量来源无效或扫描中省略整条通道。模型明细完整度独立，可不完整并明确标记。窗口摘要按范围独立 upsert，缺失范围不会删除保留期内的既有范围。额度与心跳通道可独立更新。 |
 | R3 | 获取主节点合并后的全局数据 | 同一次往返返回经 `hubUUID + generation` 标记的全局快照；副节点仅接受已验证 hub 且 generation 更新的快照。 |
 | R4 | 不级联、多副一主 | node 不转发任何上游/其他节点数据；拓扑严格两层。 |
 | **R5** | **用户裁定额度上报与优先级** | hub 本机有效额度优先，否则从副节点有效额度选一份；各 node 本机有效 `lastSuccess` 优先，否则采用 elected。候选排序按 `fetchedAt`（2026-10-24 已裁定）。 |
@@ -105,7 +111,7 @@
 > **「手动改过」在 v1 几乎不可能发生——设置页根本没有归因开关。**
 > `Views/SettingsView.swift:283-286` 明写「OpenCode merge 状态不再进入设置表单：设置页没有独立 Toggle，`clientBindings[]` 是唯一事实源」；`AppConfig.setClientBindingEnabled`（`Models/AppConfig.swift:424`）**只有测试在调用，Views 里零调用**。
 > 所以分歧的唯一来源是**手工编辑 `config.json`**（或 schema v1 以下的 legacy 迁移）。
-> `config.json` 通常会跟着 dotfile 同步到多台机器（2026-10-24 起本设计的 `nodeID` 也存 config，见 §6.2 的代价说明）。**归因设置正是会跟着同步的那一类**，于是各机天然一致。
+> `config.json` 通常会跟着 dotfile 同步到多台机器。**归因设置正是会跟着同步的那一类**，于是各机天然一致；设备身份另存于 config 同目录的 `.deviceId`（2026-10-25 新裁定，见 §6.2），不要复制该文件。
 >
 > 结论：**这不是一个需要在协议里解决的问题**，它只是一个几乎不会触发的边角。§7.8 的指纹是它的保险，不是它的解药。
 
@@ -220,7 +226,7 @@ enum SyncRole: Equatable {
 
 ### 5.1 副 → 主：`NodeUsageReport`
 
-报告外壳以稳定 `nodeID` 和持久单调 `seq` 标识。`dailyBuckets` 是可选日用量通道：省略或 `null` 表示本次不更新；存在时必须包含今天及前六天，且七个 bucket 的 authoritative totals 均 complete 才替换。`modelDetailsComplete=false` 可接受并保留明细缺口标记。`windowUsage` 是可选窗口增量：省略或 `null` 表示无窗口更新，数组中每行按完整边界 upsert，空数组不删除保留期内的旧范围。`quotas` 同样可选；`null` 表示不更新额度，数组（可空）表示替换该节点额度集合。来源校验失败时不更新用量通道；daily totals 不完整时保留旧七日日桶。明细不完整不阻止 totals 更新。此处来源/完整性校验指同步 builder 的采集来源与覆盖证据，不是认证；v1 按用户裁定不提供身份认证。额度通道独立校验，可按验证结果更新额度、lastSeen 和 seq。
+报告外壳以稳定 `nodeID` 和持久单调 `seq` 标识。`dailyBuckets` 是可选日用量通道：省略或 `null` 表示本次不更新；存在时最多七个、dayKey 互异，**按 dayKey 逐桶 upsert（增量裁定 2026-10-24）**——通道里出现的天是「本地权威值」，缺席的天表示该天无更新（旧值保留）。基线重建（首次配置、重启、hub 丢数据）时副节点发全量七天。`modelDetailsComplete=false` 可接受并保留明细缺口标记。`windowUsage` 是可选窗口增量：省略或 `null` 表示无窗口更新，数组中每行按完整边界 upsert，空数组不删除保留期内的旧范围。`quotas` 同样可选；`null` 表示不更新额度，数组（可空）表示替换该节点额度集合。来源校验失败或扫描中不更新用量通道。明细不完整不阻止 totals 更新。此处来源/完整性校验指同步 builder 的采集来源与覆盖证据，不是认证；v1 按用户裁定不提供身份认证。额度通道独立校验，可按验证结果更新额度、lastSeen 和 seq。
 
 ```jsonc
 {
@@ -234,7 +240,7 @@ enum SyncRole: Equatable {
      "clientProviders":[/* client × provider totals */],
      "entries":[/* FleetUsageEntry model detail */],
      "totalsComplete":true,"modelDetailsComplete":true,"sourceTruncated":false}
-    /* 固定七个日桶：today + previous six */
+    /* 至多七个日桶：增量裁定后可只带需补发/修正的天 */
   ],
   "windowUsage": [
     {"quotaProviderID":"openai","modelID":"chatgpt_plan","windowKind":"interval",
@@ -260,7 +266,9 @@ enum SyncRole: Equatable {
   "protocolVersion":1,"hub":{"nodeID":"...","nodeName":"iMac","timezoneID":"Asia/Shanghai","platform":"macOS"},
   "hubUUID":"...","generation":104,"generatedAt":"2026-10-23T06:32:00Z",
   "nodes":[{"nodeID":"...","nodeName":"MacBook-Pro","lastSeenAt":"2026-10-23T06:32:00Z","seq":42,"stale":false,
-             "dailyBuckets":[/* FleetDailyBucket[] */],"windowUsage":[/* 范围独立保存 */],"quotas":[/* FleetQuotaReport[] */]}],
+             "dailyBuckets":[/* FleetDailyBucket[] */],
+             "dailyDigests":{"2026-10-17":"a1b2…","/* … */":"…"},
+             "windowUsage":[/* 范围独立保存 */],"quotas":[/* FleetQuotaReport[] */]}],
   "fleet":{"dailyBuckets":[/* 合并的 FleetDailyBucket[] */],"windowUsage":[/* FleetWindowAggregate：同范围合并并列贡献节点 */]},
   "electedQuotas":[{"quotaProviderID":"openai","sourceNodeID":"...","sourceNodeName":"iMac",
                      "fetchedAt":"2026-10-23T06:32:00Z","models":[/* ModelQuota */],
@@ -268,7 +276,7 @@ enum SyncRole: Equatable {
 }
 ```
 
-`generation` 在 hub 上任何可见状态变更时递增，包括接受额度/心跳更新、本机数据变化和 stale 状态变化；它须持久跨重启比较。node 仅缓存同一 `upstreamKey + hubUUID` 下更新的 generation。`fleet` 是 `FleetAggregate`，包含 dailyBuckets 与 windowUsage；节点来源由 nodeID 推导，不带 `isLocal`。
+`generation` 在 hub 上任何可见状态变更时递增，包括接受额度/心跳更新、本机数据变化和 stale 状态变化；它须持久跨重启比较。node 仅缓存同一 `upstreamKey + hubUUID` 下更新的 generation。`fleet` 是 `FleetAggregate`，包含 dailyBuckets 与 windowUsage；节点来源由 nodeID 推导，不带 `isLocal`。每个 node 条目携带 `dailyDigests` 逐天摘要回执（增量裁定 2026-10-24）：hub 对该节点已存每个日桶用 `FleetCodec` 规范编码取 SHA256 前 16 hex；副节点对本机构建的日桶计算同一摘要，**只上报摘要不一致的天**——首次配置、本机重启、hub 丢数据（含节点被移除后重入）时回执为空 → 全量七天重建基线；历史天被扫描修正 → 摘要变化 → 自动补发该天。回执最坏失效模式是多发一次幂等补发。
 
 ### 5.3 编码约定
 
@@ -320,7 +328,7 @@ enum SyncRole: Equatable {
 
 ---
 
-### 5.5 精确 Schema（设计 DTO，尚未实现）
+### 5.5 精确 Schema（设计记录；现行 DTO 见 `spec/sync.md` §3）
 
 以下是协议草案的语义形状；实现时以 DTO 为准。用量、额度和同步来源分开表达，既有账本与本机缓存模型不增加 local/remote 字段。
 
@@ -436,11 +444,11 @@ struct FleetSnapshot: Codable, Sendable {
 }
 ```
 
-DTO 的 `FleetQuotaReport`、`FleetElectedQuota` 与 `FleetWindowUsage` 均使用 `quotaProviderID`，与示例保持一致；快照 `fleet` 对应 `FleetAggregate`。报告通道 nil/empty 语义见 §5.1。`FleetClientProviderUsage` 的总量行不能由可能截断的模型明细反推。每日权威 totals 与 model detail 完整度分别携带；金额与 token 必须来自同一批样本。wire 使用 `FleetCostCoverage: String, Codable` 映射，避免要求既有 `CostCoverage` 增加 Codable。当前设计尚未实现这些 DTO。
+DTO 的 `FleetQuotaReport`、`FleetElectedQuota` 与 `FleetWindowUsage` 均使用 `quotaProviderID`，与示例保持一致；快照 `fleet` 对应 `FleetAggregate`。报告通道 nil/empty 语义见 §5.1。`FleetClientProviderUsage` 的总量行不能由可能截断的模型明细反推。每日权威 totals 与 model detail 完整度分别携带；金额与 token 必须来自同一批样本。wire 使用 `FleetCostCoverage: String, Codable` 映射，避免要求既有 `CostCoverage` 增加 Codable。以上是设计记录，当前运行时口径以 `spec/sync.md` 为准。
 
 ### 5.6 字段校验规则（hub 收到报告时）
 
-校验 UUID、已注册 provider/client ID、非负计数、有限金额、`startAt < endAt`、有效 dayKey、dailyBuckets 通道存在时必须恰有七个唯一日桶、序号为非负整数及请求体大小。配对金额/币种不一致时将该金额视为缺失；未知枚举或无效边界拒绝该行并标记完整度不足。额度至少有一个 `ModelQuota.hasActiveQuotaWindow` 才参加选举；DeepSeek 余额为零仍是有效额度。窗口通知范围仍由 provider 类型单独门控。`seq <= node_meta.lastAcceptedSeq` 时不应用任何通道。日用量只有在来源和通道验证成功且七桶有效时更新；额度可独立通过校验并更新，窗口项通过校验后逐行 upsert。
+校验 UUID、已注册 provider/client ID、非负计数、有限金额、`startAt < endAt`、有效 dayKey、dailyBuckets 通道存在时至多七个唯一日桶（增量裁定 2026-10-24：允许部分天）、序号为非负整数及请求体大小。配对金额/币种不一致时将该金额视为缺失；未知枚举或无效边界拒绝该行并标记完整度不足。额度至少有一个 `ModelQuota.hasActiveQuotaWindow` 才参加选举；DeepSeek 余额为零仍是有效额度。窗口通知范围仍由 provider 类型单独门控。`seq <= node_meta.lastAcceptedSeq` 时不应用任何通道。日用量在来源和通道验证成功后按 dayKey 逐桶更新；额度可独立通过校验并更新，窗口项通过校验后逐行 upsert。
 
 ### 5.7 存储
 
@@ -463,7 +471,7 @@ CREATE TABLE sync_records (
 ```text
 Models/SyncModels.swift             设计 DTO、校验与纯合并/选举函数
 Models/FleetUsageModels.swift       L3 视图投影
-（已删除 NodeIdentity.swift）nodeID 存 config.json · seq 存 fleet.sqlite（见 §6.2）
+`DeviceIdentityStore` 在 config 同目录持久化 `.deviceId` · seq 存 fleet.sqlite（见 §6.2）
 Services/Sync/UsageReportBuilder.swift 日桶、窗口、额度 DTO 构建
 Services/Sync/FleetStore.swift      fleet.sqlite 唯一表及事务
 Services/Sync/HubServer.swift       hub HTTP 服务
@@ -475,19 +483,19 @@ Models 不依赖 Services；Services 不依赖 Views。窗口聚合的可复用�
 
 ### 6.2 节点身份
 
-**用户裁定（2026-10-24）：不用 Keychain，`nodeID` 直接生成后写进 `config.json` 的 `sync.nodeID`。** 首次启用联动时生成 UUID 并一次性写回；之后每次启动原样读取（换签名、重装、跨进程都稳定）。手工把 `nodeID` 写坏（非法 UUID）时记警告后重新生成——旧 nodeID 在 hub 侧保留，可手动移除。
+**历史用户裁定（2026-10-24，已由 2026-10-25 新裁定取代）：** 不用 Keychain，身份 UUID 写入 `config.json` 的 `sync.nodeID`。这项设计曾要求复制 config 后手动改 UUID；不得再作为当前实现或部署说明。
 
-> 代价（明说）：`config.json` 常跟 dotfile 同步到多台机器，直接复制会带着同一个 `nodeID`，两台机会被 hub 当成同一个节点、报告互相顶掉。dotfile 部署必须给每台机器改不同的 `sync.nodeID`。这是「身份就是配置值」换来的简单性。
+**现行用户裁定（2026-10-25）：** 节点 `nodeID` 仍是原 wire 字段，但本机身份由 `DeviceIdentityStore(configDirectory:)` 存在 config 同目录的 `.deviceId`。联动关闭时不创建；启用后有效文件复用，缺文件时生成新 UUID，成功写盘后才交给协调器。读写失败不得使用临时身份，应报错并允许重试。旧 `config.sync.nodeID` 不迁移、不继承；首次升级无 `.deviceId` 时会生成新节点，hub 上旧节点保留，可手动移除。复制 config 不需修改旧 UUID，但不得连 `.deviceId` 一起复制；替换 config 或编辑其中的旧 UUID 不改变身份。wire 字段与协议版本不变。
 
 `lastIssuedSeq` 不进 config（每轮推送都要递增，写配置文件会把配置热加载管线变成推送回路），存 `fleet.sqlite` 的 `kind=seq` 单行：`SyncCoordinator` 事务内 读→+1→写，**持久化成功才发送**该序号的报告。这样迟到报告仍可由 hub 的最大已接受 seq 拒绝，不需要 epoch 或身份恢复握手。
 
-用户明确执行“强制换 UUID”时生成新身份并视为新节点；hub 保留旧 nodeID 记录，用户可手动移除。`nodeName` 默认 hostname，可在同步设置中编辑并保存在普通配置中。
+若身份文件丢失并在后续启用时重建，新 UUID 会被 hub 视为新节点；旧 nodeID 记录保留，用户可手动移除。单独替换 config 或编辑其中遗留的 `sync.nodeID` 不会更换身份。`nodeName` 默认 hostname，可在同步设置中编辑并保存在普通配置中。
 
 ### 6.3 推送内容的构建路径
 
 额度 DTO 读取 provider 最近一次成功数据；每日 token totals / model 明细沿用现有投影和归因结果；窗口摘要从真实样本按 provider、model、windowKind、startAt、endAt 计算。hub 不下发窗口计划。当前 Codex `recentSamples` 有预算上限，日桶或窗口金额若由截尾样本构造，必须标记 incomplete；不能把完整 token 总量与截尾样本的金额配成 full。优先复用现有 `LocalUsageSummaryBuilder.windowBounds/windowSamples` 与同样本成本逻辑；必要时在截尾前为共享内核增加日×模型及窗口金额汇总。此处允许 scanner 变更，不允许 Services 依赖 Views，也不新增计价路径。
 
-副节点报告最近七个日桶（今天及之前六天），并分别发送窗口摘要。额度、窗口和每日用量是独立信息：缺少窗口边界的节点不猜边界，也不以日合计填充窗口。
+副节点默认只上报与逐天摘要回执不一致的天（基线重建时发全量七天，见 §5.2），并分别发送窗口摘要。额度、窗口和每日用量是独立信息：缺少窗口边界的节点不猜边界，也不以日合计填充窗口。
 
 ### 6.4 配置 schema 扩展
 
@@ -495,7 +503,7 @@ Models 不依赖 Services；Services 不依赖 Views。窗口聚合的可复用�
 "sync": {
   "enabled": true,
   "hubURL": "http://192.168.1.20:8787",   // 副节点：主节点地址；留空 = 本机是主节点
-  "pushIntervalSeconds": 60,              // 上报周期，默认 60
+  "pushIntervalSeconds": 0,               // 上报周期，默认跟随常规（0）
   "hubBindHost": "0.0.0.0",               // 主节点监听地址
   "hubPort": 8787,
   "nodeName": "",                         // 空 = 用 hostname
@@ -523,7 +531,7 @@ Node 周期或数据变更时串行分配 seq、生成报告并 POST；hub 在�
 
 ### 7.1 幂等与合并
 
-hub 将每节点有效日用量作为当前报告中的七日日桶整体替换，按 dayKey 合并。权威 totals 独立求和，client/provider totals 用于 UI 分组；模型明细按键合并并单独传播完整度。若有定价贡献也有无定价贡献，coverage 为 partial；只有全贡献有价且完整才是 full；全无价才是 none。金额仅同币种相加。报告的 usage 来源无效或七个 authoritative totals 不完整时保持已有日用量，不让空/不完整 totals 覆盖它；totals 完整但 modelDetails 不完整时可更新 totals，并将明细缺口显式标记。
+hub 将每节点有效日用量按 dayKey 逐桶 upsert（增量裁定 2026-10-24，取代整体替换）：报告带的天替换同 dayKey 旧值，缺席的天保留。权威 totals 独立求和，client/provider totals 用于 UI 分组；模型明细按键合并并单独传播完整度。若有定价贡献也有无定价贡献，coverage 为 partial；只有全贡献有价且完整才是 full；全无价才是 none。金额仅同币种相加。报告的 usage 来源无效或扫描中时保持已有日用量，不让空/不完整 totals 覆盖它；totals 完整但 modelDetails 不完整时可更新 totals，并将明细缺口显式标记。
 
 `windowUsage` 不随每节点当前报告替换。每个摘要按 `(quotaProviderID, modelID, windowKind, startAt, endAt)` 在 `kind=window` 中独立 upsert；新报告没带某范围不删除旧范围，按 retainDays 过期，并以各窗口的 last-observed time 显示数据新鲜度。严格比较起止时刻，不舍入。聚合只合并完全相同范围。stale 节点的同范围摘要仍贡献并显示离线/最后上报时间及 incomplete；范围不同的摘要不混加。缺边界节点不猜测，也不以日桶补窗口。金额与 token 来自同样本集合；部分扫描不得标 full。
 
@@ -533,7 +541,7 @@ hub 自己作为一个节点参加合并；来源是否本机只通过 `nodeID =
 
 ### 7.3 稳定身份与 seq
 
-`lastIssuedSeq` 存 `fleet.sqlite`（`kind=seq`，2026-10-24 起，原先 Keychain 方案已裁掉）。发送前事务持久化递增 seq；hub 仅接受 `seq > node_meta.lastAcceptedSeq`，事务中更新 node_meta 与成功通过验证的通道。重复/乱序报告不重放旧数据。日桶清理与报告替换不清除 node_meta high-water。持久化失败则不发；强制重置（改 config 的 `nodeID`）产生新 nodeID，旧节点保留至手动删除。
+`lastIssuedSeq` 存 `fleet.sqlite`（`kind=seq`，2026-10-24 起，原先 Keychain seq 方案已裁掉）。发送前事务持久化递增 seq；hub 仅接受 `seq > node_meta.lastAcceptedSeq`，事务中更新 node_meta 与成功通过验证的通道。重复/乱序报告不重放旧数据。日桶清理与报告替换不清除 node_meta high-water。持久化失败则不发，也不更换身份。
 
 ### 7.4 stale 标记
 
@@ -545,7 +553,7 @@ hub 自己作为一个节点参加合并；来源是否本机只通过 `nodeID =
 
 ### 7.6 节点清理
 
-强制更换 UUID 后旧节点仍保留，直到用户手动移除；stale 节点在保留期内继续计入其匹配日桶及窗口。`retainDays` 清理过期日桶/窗口，但不得清理 node_meta 高水位或把旧 UUID 自动映射到新身份。
+身份文件丢失并重建后，旧 UUID 节点仍保留，直到用户手动移除；stale 节点在保留期内继续计入其匹配日桶及窗口。`retainDays` 清理过期日桶/窗口，但不得清理 node_meta 高水位或把旧 UUID 自动映射到新身份。
 
 ### 7.7 额度选举
 
@@ -589,7 +597,7 @@ attributionFingerprint = hex(SHA256(规范化绑定表))[0..8]
 
 ## 8. 失败与降级
 
-网络失败保留 `fleet.sqlite` 中最后一次经验证且 generation 新的快照，展示离线状态；source/hubUUID 未验证时不得写空快照。hub 重启从 SQLite 事务数据恢复。seq 持久化失败时本轮不发送并报告同步错误，不更换身份（`sync.nodeID` 不受影响）。hub 本机抓取失败但有有效 `lastSuccess` 时额度仍本机优先，同时保留需重试状态；本机没有有效额度才回退 elected。stale 节点数据继续计入同一当前范围并注明离线/截止时间；不匹配窗口边界的节点不混加，汇总展示 incomplete。额度通知继续仅由本机 provider 状态和既有通知门控决定，远端 elected 不触发本机抓取通知。
+网络失败保留 `fleet.sqlite` 中最后一次经验证且 generation 新的快照，展示离线状态；source/hubUUID 未验证时不得写空快照。hub 重启从 SQLite 事务数据恢复。seq 持久化失败时本轮不发送并报告同步错误，不更换身份（`.deviceId` 不受影响）。hub 本机抓取失败但有有效 `lastSuccess` 时额度仍本机优先，同时保留需重试状态；本机没有有效额度才回退 elected。stale 节点数据继续计入同一当前范围并注明离线/截止时间；不匹配窗口边界的节点不混加，汇总展示 incomplete。额度通知继续仅由本机 provider 状态和既有通知门控决定，远端 elected 不触发本机抓取通知。
 
 ## 9. 安全
 
@@ -779,7 +787,7 @@ elected quota 来自**某台机器的账号**，不是"全局真相"。所有展
 |---|---|---|
 | 启用多机联动 | 开关 | 关闭 = 完全不参与 |
 | 上级主节点地址 | 文本框 | `http://192.168.1.20:8787`；留空 = 本机为主节点 |
-| 上报周期 | 数值 | 默认 60s |
+| 上报周期 | 数值 | 默认 0，跟随常规刷新间隔 |
 | 本机名称 | 文本框 | 默认 hostname |
 | 连接状态 | 只读 | 「已连接 · 上次同步 14:32」/「离线」 |
 | 已收到的全局摘要 | 只读 | 节点数、全局 token、全局金额 |
@@ -814,6 +822,13 @@ elected quota 来自**某台机器的账号**，不是"全局真相"。所有展
 
 **L 的一条推论（也一并定下）：** 单节点时顶部也只显示「今日合计」一行，「今日全部 / 今日本机」两行不出现。
 
+**后续修订（2026-10-24，实现侧定案）**：J/K 被标题栏 scope 切换取代——菜单
+顶部是一个 scope 下拉（全局 / 本机 / 各节点），当前范围只有**一行**总览
+（标签统一「今日」），client 段内**不分设备**、直接展示 fleet 已合并的模型
+明细。节点层（`section.nodes` / `FleetNodeGroupView`）不再渲染。
+L（单节点退化）与「fleet 退化到只有自己时整个 UI 退化成今天的样子」的原则
+不变，仍然成立。事实源以 `spec/sync.md` §10 为准。
+
 > 这三条合起来是一条原则：**fleet 退化到「只有自己」时，整个 UI 退化成今天的样子**——不出现「全局 / 本机」的分段、不出现节点层、不出现第二个合计行。老用户没开多机联动时看到的界面与现在**逐字一致**。
 
 ### 10.7 UI 倒逼出来的 wire 增补
@@ -828,27 +843,27 @@ elected quota 来自**某台机器的账号**，不是"全局真相"。所有展
 
 ### 10.7.2 「最近 7 天 token 用量」
 
-`dailyBuckets` 固定包含今天和之前六天。每日权威 client/provider totals 与模型明细分开携带完整度：即使模型明细因预算截断不完整，权威日总量仍可完整；UI 分别标记总量和明细覆盖。成本聚合依据实际有价/无价贡献推导 coverage（有价且无价为 partial），不能取 coverage 枚举最差值。窗口摘要不从这七个日桶派生。
+`dailyBuckets` 语义为「各节点的七天权威日桶，按 dayKey 逐桶维护」（增量裁定 2026-10-24 后不再要求每拍全量传输）。每日权威 client/provider totals 与模型明细分开携带完整度：即使模型明细因预算截断不完整，权威日总量仍可完整；UI 分别标记总量和明细覆盖。成本聚合依据实际有价/无价贡献推导 coverage（有价且无价为 partial），不能取 coverage 枚举最差值。窗口摘要不从日桶派生。
 
 ## 11. 与现有架构的关系
 
 同步是独立 DTO 与独立 `fleet.sqlite`，不修改任何 client ledger 或本机缓存，不把来源字段塞进既有模型。每日归因沿用现有 L2 投影；窗口金额沿用现有 `LocalUsageSummaryBuilder.windowBounds/windowSamples` 和同样本计价。Codex `recentSamples` 有限额，可能需要 scanner 在截尾前生成共享日×模型/窗口摘要；未确认覆盖前标 incomplete。不得承诺零 scanner 改动，也不得让 Services 依赖 Views 的 `ProviderCardDerived`。不新增计价口径。
 
-额度展示采用有效本机 `lastSuccess` 优先，否则 elected；失败但保留有效 lastSuccess 时仍优先。额度可用性与本机状态/展示入列分开，enabled 本机 provider 或拥有 elected quota 的 provider 均可入列。通知和禁用状态仍按现有本机规则，不因 elected 改写本机状态。额度来源按 nodeID 相等判断，不传 isLocal 字段。
+额度展示采用有效本机 `lastSuccess` 优先，否则 elected；失败但保留有效 lastSuccess 时仍优先。额度可用性与本机状态/展示入列分开：启用的本机 provider 入列；有 elected quota 且未被本机显式禁用的 provider 可作为远端额度卡入列。显式禁用始终优先，即使存在 elected quota 也不入列。旧设计中「任何 elected provider 均可入列」的描述已由现行规则取代。通知和禁用状态仍按现有本机规则，不因 elected 改写本机状态。额度来源按 nodeID 相等判断，不传 isLocal 字段。
 
-## 12. 实施分解
+## 12. 实施分解（已落地）
 
-本设计 DTO 尚未实现。建议顺序：协议 DTO / 日桶窗口聚合与校验 → Keychain identity+seq → `fleet.sqlite` 单表事务（generation 可比较到重启前的值）→ 报告 builder/scanner 覆盖 → hub 合并、额度选举与 generation → HTTP/Coordinator → UI 有效额度门控及范围状态 → 设置页与验收。
+最初实施顺序为：协议 DTO / 日桶窗口聚合与校验 → 稳定 nodeID 与 seq → `fleet.sqlite` 单表事务（generation 可比较到重启前的值）→ 报告 builder/scanner 覆盖 → hub 合并、额度选举与 generation → HTTP/Coordinator → UI 有效额度门控及范围状态 → 设置页与验收。当前实现状态与接口见 `spec/sync.md`；身份方案现为 `.deviceId` 文件（2026-10-25 用户裁定），本机 seq 持久化于 `fleet.sqlite`；旧 `sync.nodeID` 方案仅作历史记录且不迁移身份。
 
-验收至少覆盖：Keychain 读取/写入失败不发且不换 UUID；seq 先持久化、日桶清理不丢 high-water、乱序响应不覆盖；报告省略日桶仍可更新验证通过的额度和 lastSeen；遗漏旧窗口范围不删除 retainDays 内摘要；hub 本机数据变化及重启后 generation 单调可比；强制新 UUID 后旧节点保留可手删；本机失败但有效 lastSuccess 仍优先；DeepSeek 零余额仍可选举且不触发窗口通知；disabled provider 有 elected 时入列但本机状态不被改写；`full + none => partial`；截尾样本不能让金额 coverage 标 full；同范围 stale 窗口计入并标离线、不匹配范围排除；没有边界不猜测；hub 缓存按 upstreamKey+hubUUID 隔离，未验证来源或旧 generation 不覆盖；fleet.sqlite 更新原子且不触碰客户端账本/缓存。
+验收覆盖项：`.deviceId` 创建/复用、旧 `sync.nodeID` 不继承、关闭联动不创建、读写失败不采用临时身份且可重试；seq 先持久化与 stale-seq 自愈；日桶清理不丢 high-water、乱序响应不覆盖；报告省略日桶仍可更新验证通过的额度和 lastSeen；遗漏旧窗口范围不删除 retainDays 内摘要；坏行清理与 generation 变更原子可见；hub 本机数据变化及重启后 generation 单调可比；身份文件丢失重建后旧节点保留可手动移除；本机失败但有效 lastSuccess 仍优先；DeepSeek 零余额仍可选举且不触发窗口通知；**现行口径：用户显式禁用的 provider 即使有 elected quota 也不入列**（旧设计中「elected 可使 provider 入列」已由现行规则取代）；`full + none => partial`；截尾样本不能让金额 coverage 标 full；同范围 stale 窗口计入并标离线、不匹配范围排除；没有边界不猜测；hub 缓存按 upstreamKey+hubUUID 隔离，未验证来源或旧 generation 不覆盖；Fleet 卡片日桶按所选 node/fleet 展示全 provider 合计、额度窗口按 provider 过滤；fleet.sqlite 更新原子且不触碰客户端账本/缓存。
 
 ## 13. 裁定状态
 
 ### 13.1 已裁定与技术默认
 
-**用户明确裁定：** 多副一主、不级联；副节点上报额度，主节点自身有额度时优先采用；多账号语义推迟；v1 不认证、使用明文传输；不支持跨时区；Dock 全局/本机切换与菜单节点分组。节点 UUID 首次运行生成并写进 `config.json` 的 `sync.nodeID`（2026-10-24 裁定，取代 Keychain 方案），强制更换 UUID 就视为多个副节点；上报及回传数据使用独立同步表，不往原表添加来源区分字段。副节点明确上报统计起止时间，由 hub 判断是否能相加；不同范围不混加。额度候选按 `fetchedAt` 排序、全局窗口范围选择采用「边界匹配优先、最新 `endAt` 兜底」（均 2026-10-24）。
+**用户明确裁定：**（2026-10-24）多副一主、不级联；副节点上报额度，主节点自身有额度时优先采用；多账号语义推迟；v1 不认证、使用明文传输；不支持跨时区；Dock 全局/本机切换与菜单节点分组（菜单节点分组后续改由标题栏 scope 切换与合并模型行取代，见 §10.6）。节点 UUID 最初裁定写入 `config.json` 的 `sync.nodeID`（2026-10-24，曾取代 Keychain 方案），已由 2026-10-25 新裁定取代：独立存入 config 同目录 `.deviceId`，旧字段不迁移；复制 config 不需改 UUID，但不可复制 `.deviceId`。上报及回传数据使用独立同步表，不往原表添加来源区分字段。副节点明确上报统计起止时间，由 hub 判断是否能相加；不同范围不混加。额度候选按 `fetchedAt` 排序、窗口选择采用「边界匹配优先、最新 `endAt` 兜底」（均 2026-10-24）。**日桶通道增量补发（2026-10-24 技术裁定）：** 快照回执携带逐天内容摘要，副节点只上报摘要不一致的天（空回执 → 全量基线），取代「每拍全量七桶」；动机是消除带宽冗余并让历史天修正 / hub 丢数据（含移除重入）可自愈。回执是内存态，重启即重建基线。另确认 Fleet Provider 卡片日图、今行与日金额取当前所选 fleet/node 的完整全 provider 日桶；`quotaProviderID` 只筛额度窗口。失败 freshness 即使没有 contribution 也省略日桶通道，防止空帧被当作权威零桶。
 
-**技术默认，非用户另行裁定：** `nodeID` 落 config 不经 iCloud 同步；`fleet.sqlite` / `sync_records` 的名称和单表结构；`lastIssuedSeq` 落 `fleet.sqlite` 的 `kind=seq` 行、序号先持久化再发送；scope、窗口记录和 generation 的持久化与缓存隔离；同范围离线贡献保留并标注截止时间。全局窗口默认优先匹配 hub 生效额度边界，否则选最新 `endAt`；这是展示选择，不改变副节点上报的范围，也不要求主节点下发范围。所有 DTO 与新存储均尚未实现。
+**技术默认，非用户另行裁定：** `nodeID` 落 config 同目录 `.deviceId` 文件；`fleet.sqlite` / `sync_records` 的名称和单表结构；本机 seq 落 `fleet.sqlite` 的 `kind=seq` 行、序号先持久化再发送；scope、窗口记录和 generation 的持久化与缓存隔离；同范围离线贡献保留并标注截止时间。窗口选择是展示规则，不改变副节点上报的范围，也不要求主节点下发范围。实现细节以 `spec/sync.md` 为准。
 
 ### 13.2 待用户确认
 

@@ -36,10 +36,15 @@ final class FleetSyncIntegrationTests: XCTestCase {
     }
 
     private func startHub(statuses: [ProviderStatus] = []) async throws -> UInt16 {
-        hubProvision = ProvisionRecorder()
+        let provisionRecorder = ProvisionRecorder()
+        hubProvision = provisionRecorder
         hub = FleetSyncCoordinator(
             store: try FleetStore(url: directory.appendingPathComponent("fleet.sqlite")),
-            provisionNodeID: { [hubProvision] uuid in hubProvision.record(uuid) }
+            loadDeviceID: { [provisionRecorder] in
+                let uuid = UUID()
+                provisionRecorder.record(uuid)
+                return uuid
+            }
         )
         var config = AppConfig.default
         config.sync = SyncConfig(enabled: true, hubURL: "", hubPort: 0) // 0 = 系统分配端口
@@ -148,11 +153,34 @@ final class FleetSyncIntegrationTests: XCTestCase {
         let first = try await client.postReport(nodeReport(seq: 10, nodeID: nodeID, input: 100))
         // 每节点限流 1s（§4.3）：两次请求之间稍等，让重放真正进业务逻辑。
         try await Task.sleep(nanoseconds: 1_100_000_000)
-        let replay = try await client.postReport(nodeReport(seq: 10, nodeID: nodeID, input: 999))
-        XCTAssertEqual(replay.fleet.dailyBuckets.last?.totals.input, 100, "重复/乱序报告不重放旧数据")
+
+        // 重放被拒：回 409（讲清楚「没收」）。回 200 会让 node 以为推送成功
+        // ——数据永远不落地，而界面一直显示「已连接」。
+        do {
+            _ = try await client.postReport(nodeReport(seq: 10, nodeID: nodeID, input: 999))
+            XCTFail("重放应被拒（409）")
+        } catch QuotaError.httpError(let status, let body) {
+            XCTAssertEqual(status, 409)
+            let payload = try FleetCodec.decode(FleetStaleSeqPayload.self, from: Data(body.utf8))
+            XCTAssertEqual(payload.highWaterSeq, 10, "响应体带 hub 侧 high-water")
+        }
+
+        // 兜底 GET 仍能拿到全局数据（被拒的旧数据没被覆盖）。
+        let snapshot = try await client.fetchSnapshot()
+        XCTAssertEqual(snapshot.fleet.dailyBuckets.last?.totals.input, 100, "重复/乱序报告不重放旧数据")
+        XCTAssertEqual(snapshot.generation, first.generation, "拒绝重放不递增 generation")
+
         try await Task.sleep(nanoseconds: 1_100_000_000)
         // 更低 seq 同样被拒。
-        let older = try await client.postReport(nodeReport(seq: 3, nodeID: nodeID, input: 777))
+        do {
+            _ = try await client.postReport(nodeReport(seq: 3, nodeID: nodeID, input: 777))
+            XCTFail("更低的 seq 应被拒（409）")
+        } catch QuotaError.httpError(let status, let body) {
+            XCTAssertEqual(status, 409)
+            let payload = try FleetCodec.decode(FleetStaleSeqPayload.self, from: Data(body.utf8))
+            XCTAssertEqual(payload.highWaterSeq, 10)
+        }
+        let older = try await client.fetchSnapshot()
         XCTAssertEqual(older.fleet.dailyBuckets.last?.totals.input, 100)
         XCTAssertEqual(older.generation, first.generation, "拒绝重放不递增 generation")
     }
@@ -178,6 +206,114 @@ final class FleetSyncIntegrationTests: XCTestCase {
         let node = try XCTUnwrap(snapshot.nodes.first { $0.nodeID == nodeID })
         XCTAssertEqual(node.seq, 2)
         XCTAssertEqual(node.dailyBuckets.last?.totals.input, 50, "省略日桶保留旧值")
+    }
+
+    func testPartialDayChannelMergesAndCarriesDigestReceipts() async throws {
+        try await startHub()
+        let nodeID = UUID()
+        let first = try await client.postReport(nodeReport(seq: 1, nodeID: nodeID, input: 100))
+        let entry = try XCTUnwrap(first.nodes.first { $0.nodeID == nodeID })
+        // 回执覆盖 hub 已存的每个日桶，且与内容摘要一致。
+        XCTAssertEqual(entry.dailyDigests?.count, entry.dailyBuckets.count)
+        for bucket in entry.dailyBuckets {
+            XCTAssertEqual(entry.dailyDigests?[bucket.dayKey], FleetDailyDigest.digest(bucket))
+        }
+
+        // 只带今天的部分通道（增量补发）：旧天保留，今天被替换，回执同步更新。
+        try await Task.sleep(nanoseconds: 1_100_000_000)
+        var partial = nodeReport(seq: 2, nodeID: nodeID, input: 200)
+        partial.dailyBuckets = [try XCTUnwrap(partial.dailyBuckets?.last)]
+        let second = try await client.postReport(partial)
+        let secondEntry = try XCTUnwrap(second.nodes.first { $0.nodeID == nodeID })
+        XCTAssertEqual(secondEntry.dailyBuckets.count, 7, "未补发的天保留旧值")
+        XCTAssertEqual(secondEntry.dailyBuckets.last?.totals.input, 200, "补发的天替换为新值")
+        XCTAssertEqual(Array(secondEntry.dailyBuckets.dropLast()),
+                       Array(entry.dailyBuckets.dropLast()),
+                       "未补发的天与首拍逐字节一致")
+        XCTAssertEqual(secondEntry.dailyDigests?.count, 7, "回执始终覆盖 hub 已存的全部天")
+        XCTAssertEqual(second.fleet.dailyBuckets.last?.totals.input, 200, "fleet 聚合使用合并后的值")
+    }
+
+    func testSourceAwarePartialReceiptAcknowledgesInputAcrossMergedSnapshot() async throws {
+        try await startHub()
+        let nodeID = UUID()
+        var initial = nodeReport(seq: 1, nodeID: nodeID, input: 100)
+        let day = try XCTUnwrap(initial.dailyBuckets?.last?.dayKey)
+        let dshOld = FleetClientProviderUsage(
+            clientID: ClientID.dsh, quotaProviderID: QuotaProviderID.deepseek,
+            input: 40, cacheRead: 0, output: 0, reasoning: 0, turns: 1, rounds: 1
+        )
+        initial.dailyBuckets = initial.dailyBuckets?.map { bucket in
+            guard bucket.dayKey == day else { return bucket }
+            let rows = bucket.clientProviders + [dshOld]
+            return FleetDailyBucket(
+                dayKey: bucket.dayKey, totals: FleetTotals(summing: rows),
+                clientProviders: rows, entries: [], totalsComplete: true,
+                modelDetailsComplete: true, sourceTruncated: false
+            )
+        }
+        _ = try await client.postReport(initial)
+
+        let codex = FleetClientProviderUsage(
+            clientID: ClientID.codex, quotaProviderID: QuotaProviderID.openAI,
+            input: 200, cacheRead: 0, output: 0, reasoning: 0, turns: 2, rounds: 2
+        )
+        let partial = FleetDailyBucket(
+            dayKey: day, totals: FleetTotals(summing: [codex]),
+            clientProviders: [codex], entries: [], totalsComplete: false,
+            modelDetailsComplete: false, sourceTruncated: false,
+            unavailableSources: [FleetDailyUnavailableSource(
+                clientID: ClientID.dsh, quotaProviderID: QuotaProviderID.deepseek, reason: .failed
+            )]
+        )
+        try await Task.sleep(nanoseconds: 1_100_000_000)
+        var secondReport = nodeReport(seq: 2, nodeID: nodeID, input: 200)
+        secondReport.dailyBuckets = [partial]
+        let secondSnapshot = try await client.postReport(secondReport)
+        let secondNode = try XCTUnwrap(secondSnapshot.nodes.first { $0.nodeID == nodeID })
+        let storedPartial = try XCTUnwrap(secondNode.dailyBuckets.first { $0.dayKey == day })
+        XCTAssertEqual(storedPartial.totals.input, 240, "健康新值加失败来源旧值")
+        XCTAssertEqual(secondNode.dailyDigests?[day], FleetDailyDigest.digest(partial),
+                       "快照回执必须是已接受的partial输入摘要")
+        XCTAssertNotEqual(secondNode.dailyDigests?[day], FleetDailyDigest.digest(storedPartial),
+                          "merged bucket摘要不能代替输入回执")
+
+        try await Task.sleep(nanoseconds: 1_100_000_000)
+        var repeatedReport = nodeReport(seq: 3, nodeID: nodeID, input: 200)
+        repeatedReport.dailyBuckets = [partial]
+        let repeatedSnapshot = try await client.postReport(repeatedReport)
+        let repeatedNode = try XCTUnwrap(repeatedSnapshot.nodes.first { $0.nodeID == nodeID })
+        XCTAssertEqual(repeatedNode.dailyBuckets.first { $0.dayKey == day }?.totals.input, 240,
+                       "重复partial请求不能累计旧失败值")
+        XCTAssertEqual(repeatedNode.dailyDigests?[day], FleetDailyDigest.digest(partial),
+                       "稳定partial输入持续得到稳定ACK")
+    }
+
+    func testStaleSeqReportIsRejectedWithConflictAndHighWater() async throws {
+        // 序号落后必须回**可区分**的状态码：回 200 的话 node 会以为推送成功，
+        // 而 hub 一份都没收——数据永远不落地，且 hub 上同 nodeID 的另一台机器
+        // 的数据会被当成本机的显示。
+        try await startHub()
+        let nodeID = UUID()
+        _ = try await client.postReport(nodeReport(seq: 10, nodeID: nodeID, input: 100))
+        try await Task.sleep(nanoseconds: 1_100_000_000)
+
+        do {
+            _ = try await client.postReport(nodeReport(seq: 3, nodeID: nodeID, input: 200))
+            XCTFail("序号落后应被拒")
+        } catch QuotaError.httpError(let status, let body) {
+            XCTAssertEqual(status, 409, "陈旧 seq 回 409（可区分），不是 200")
+            let payload = try FleetCodec.decode(FleetStaleSeqPayload.self, from: Data(body.utf8))
+            XCTAssertEqual(payload.highWaterSeq, 10, "响应体带 hub 侧 high-water")
+        }
+        // 兜底 GET 仍能取到快照（幂等重试不丢全局数据）。
+        let fallback = try await client.fetchSnapshot()
+        XCTAssertEqual(fallback.fleet.dailyBuckets.last?.totals.input, 100)
+
+        // hub 状态不受影响：被拒的报告一份都没应用。
+        let state = try XCTUnwrap(hub.latestSnapshot)
+        let entry = try XCTUnwrap(state.nodes.first { $0.nodeID == nodeID })
+        XCTAssertEqual(entry.dailyBuckets.last?.totals.input, 100, "被拒的报告没有覆盖已存数据")
     }
 
     func testRapidDuplicatePostGetsRateLimited() async throws {
@@ -224,10 +360,14 @@ final class FleetSyncIntegrationTests: XCTestCase {
             let (_, response) = try await URLSession.shared.data(for: request)
             XCTAssertEqual((response as! HTTPURLResponse).statusCode, 413)
         } catch {
-            // hub 超限即断开：客户端可能表现为连接被取消 / 上传超时而不是读到
-            // 413——两种结果都证明请求没有进入业务逻辑。
+            // hub 超限即断开（不等 body 读完就回 413 并关闭连接）：客户端可能
+            // 表现为连接被取消 / 上传超时 / 连接被重置，而不是读到 413 ——
+            // 这几种结果都证明请求没有进入业务逻辑。
             let code = (error as? URLError)?.code
-            XCTAssertTrue(code == .cancelled || code == .timedOut, "意外错误：\(String(describing: code))")
+            XCTAssertTrue(
+                code == .cancelled || code == .timedOut || code == .networkConnectionLost,
+                "意外错误：\(String(describing: code))"
+            )
         }
     }
 
@@ -285,6 +425,88 @@ final class FleetSyncIntegrationTests: XCTestCase {
         XCTAssertEqual(openAI.sourceNodeID, hubID, "hub 本机有效额度优先（§2.1）")
     }
 
+    func testHubHealthyLocalUsageSurvivesEmptyNodePostWhileDshIsFailed() async throws {
+        let now = Date()
+        let todayStart = Calendar.current.startOfDay(for: now)
+        var codex = ProviderStatus(
+            id: ProviderKind.codexChatGpt.providerID,
+            displayName: "ChatGPT Plan",
+            kind: .codexChatGpt,
+            iconSystemName: "dollarsign.circle",
+            accentColor: .chatgpt,
+            refreshIntervalSeconds: 300,
+            state: .ok(QuotaInfo(
+                models: [], resetCredits: nil, planLabel: "Plus", accountEmail: nil,
+                codexUsageDetails: CodexUsageDetails(
+                    primary: nil,
+                    secondary: nil,
+                    dailyTokenUsage: [DailyTokenUsage(
+                        dayStart: todayStart,
+                        inputTokens: 210, cachedInputTokens: 10,
+                        outputTokens: 20, reasoningOutputTokens: 0,
+                        rounds: 2, turns: 1
+                    )],
+                    recentSamples: [],
+                    scannedAt: now
+                ),
+                fetchedAt: now, balanceDetail: nil
+            ))
+        )
+        codex.isEnabled = true
+
+        var deepseek = ProviderStatus(
+            id: ProviderKind.deepseek.providerID,
+            displayName: "DeepSeek",
+            kind: .deepseek,
+            iconSystemName: "dollarsign.circle",
+            accentColor: .deepseek,
+            refreshIntervalSeconds: 300,
+            state: .failed(message: "DSH scan failed", lastSuccess: nil)
+        )
+        deepseek.isEnabled = true
+        deepseek.localUsageFreshness[.dsh] = .failed
+
+        try await startHub(statuses: [codex, deepseek])
+        let hubID = try XCTUnwrap(hub.localNodeID)
+        let dayKey = FleetMerger.dayKey(of: todayStart)
+
+        // Verify the hub's own real Builder→Store path before a remote node arrives.
+        let initialHub = try XCTUnwrap(hub.latestSnapshot)
+        let localNode = try XCTUnwrap(initialHub.nodes.first { $0.nodeID == hubID })
+        let localToday = try XCTUnwrap(localNode.dailyBuckets.first { $0.dayKey == dayKey })
+        XCTAssertEqual(localToday.totals.input, 200)
+        XCTAssertEqual(localToday.unavailableSources, [FleetDailyUnavailableSource(
+            clientID: ClientID.dsh,
+            quotaProviderID: QuotaProviderID.deepseek,
+            reason: .failed
+        )])
+        XCTAssertFalse(localToday.totalsComplete)
+
+        // A separate empty node builds a normal report and sends it over the real loopback HTTP client.
+        let emptyNodeID = UUID()
+        let emptyReport = UsageReportBuilder.build(UsageReportInput(
+            nodeID: emptyNodeID,
+            nodeName: "Empty-Node",
+            bindings: ClientProviderBinding.defaultBindings,
+            statuses: [],
+            now: now
+        ), seq: 1)
+        let snapshot = try await client.postReport(emptyReport)
+
+        let remoteNode = try XCTUnwrap(snapshot.nodes.first { $0.nodeID == emptyNodeID })
+        XCTAssertEqual(remoteNode.dailyBuckets.first { $0.dayKey == dayKey }?.totals, .zero)
+        let hubNode = try XCTUnwrap(snapshot.nodes.first { $0.nodeID == hubID })
+        let hubToday = try XCTUnwrap(hubNode.dailyBuckets.first { $0.dayKey == dayKey })
+        XCTAssertEqual(hubToday.totals.input, 200)
+        XCTAssertEqual(hubToday.unavailableSources, localToday.unavailableSources)
+
+        let fleetToday = try XCTUnwrap(snapshot.fleet.dailyBuckets.first { $0.dayKey == dayKey })
+        XCTAssertEqual(fleetToday.totals.input, 200, "空node的零桶不能清掉hub本机健康贡献")
+        XCTAssertEqual(fleetToday.unavailableSources, localToday.unavailableSources,
+                       "hub本机DSH失败标记在Fleet聚合后仍保留")
+        XCTAssertFalse(fleetToday.totalsComplete)
+    }
+
     // MARK: - node 协调器端到端
 
     func testNodeCoordinatorPushesAndCachesSnapshot() async throws {
@@ -292,7 +514,11 @@ final class FleetSyncIntegrationTests: XCTestCase {
         let nodeProvision = ProvisionRecorder()
         let node = FleetSyncCoordinator(
             store: try FleetStore(url: directory.appendingPathComponent("node-fleet.sqlite")),
-            provisionNodeID: { [nodeProvision] uuid in nodeProvision.record(uuid) }
+            loadDeviceID: { [nodeProvision] in
+                let uuid = UUID()
+                nodeProvision.record(uuid)
+                return uuid
+            }
         )
         var config = AppConfig.default
         config.sync = SyncConfig(

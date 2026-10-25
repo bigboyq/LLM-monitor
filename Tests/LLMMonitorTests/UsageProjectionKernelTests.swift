@@ -122,7 +122,8 @@ final class UsageProjectionKernelTests: XCTestCase {
                     sourceProviderID: "dsh:\(key)",
                     offset: 3600 + TimeInterval(index)
                 )
-            }
+            },
+            recentSamplesTruncated: false
         )
     }
 
@@ -1106,7 +1107,8 @@ private enum LegacyProjector {
             dailyTokenUsage: sortedDaily,
             sessionCount: sessionCount,
             roundCount: roundCount,
-            recentSamples: samples
+            recentSamples: samples,
+            recentSamplesTruncated: false
         )
     }
 
