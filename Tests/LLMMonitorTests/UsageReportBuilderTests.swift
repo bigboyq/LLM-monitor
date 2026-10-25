@@ -779,4 +779,114 @@ final class UsageReportBuilderTests: XCTestCase {
                       "干净扫描且禁用 DSH 路由时，真实零用量窗口仍应完整上报")
         XCTAssertEqual(disabledWindow.coverage, .none)
     }
+
+    // MARK: GLM「免 / 速 / 它」今日窗口行（与本地卡动态行同源同口径）
+
+    private func glmStatus(
+        samples: [LocalTokenUsageSample],
+        offPeakWindows: [GlmOffPeakWindow] = []
+    ) -> ProviderStatus {
+        var status = ProviderStatus(
+            id: ProviderKind.glmCodingPlan.providerID,
+            displayName: "GLM Coding Plan",
+            kind: .glmCodingPlan,
+            iconSystemName: "circle",
+            accentColor: .glm,
+            refreshIntervalSeconds: 300,
+            state: .ok(QuotaInfo(
+                models: [ModelQuota(
+                    modelName: "glm_coding_plan",
+                    intervalTotalCount: 100, intervalUsageCount: 40,
+                    intervalRemainingPercent: 60, intervalStatus: .present,
+                    intervalResetsAt: now.addingTimeInterval(2 * 3_600),
+                    intervalWindowSeconds: 5 * 3_600,
+                    weeklyTotalCount: 700, weeklyUsageCount: 300,
+                    weeklyRemainingPercent: 60, weeklyStatus: .present,
+                    weeklyResetsAt: now.addingTimeInterval(3 * 86_400),
+                    weeklyWindowSeconds: 7 * 24 * 3_600
+                )],
+                resetCredits: nil, planLabel: "Pro", accountEmail: nil,
+                codexUsageDetails: nil, fetchedAt: now, balanceDetail: nil
+            ))
+        )
+        status.glmLocalUsage = GlmLocalUsage(
+            today: GlmDailyUsage(
+                dayStart: Calendar.current.startOfDay(for: now),
+                inputTokens: 0, rounds: 0
+            ),
+            dailyTokenUsage: [],
+            scannedAt: now,
+            sessionCount: samples.count,
+            eventCount: samples.count,
+            failedSessionCount: 0,
+            recentSamples: samples,
+            offPeakWindows: offPeakWindows
+        )
+        return status
+    }
+
+    private func glmSample(
+        _ seconds: TimeInterval, provider: String, input: Int
+    ) -> LocalTokenUsageSample {
+        LocalTokenUsageSample(
+            completedAt: Calendar.current.startOfDay(for: now).addingTimeInterval(seconds),
+            modelName: "GLM-5.3",
+            promptID: "glm-\(provider)-\(seconds)",
+            inputTokens: input, cachedInputTokens: 0,
+            outputTokens: 1, reasoningOutputTokens: 0,
+            sourceProviderID: provider
+        )
+    }
+
+    /// 三个分类各自上报一行自然日窗口（`glmStartPlan` / `glmHighspeed` /
+    /// `glmOtherPlan`），token 与本地卡动态行同一份切片谓词：正常任务与闲时
+    /// 样本不进这三行；边界取报告时刻所在自然日 `[startOfDay, +1d)`。
+    func testBuildWindowRowsReportGlmCategoryTodayRows() throws {
+        let calendar = Calendar.current
+        let todayStart = calendar.startOfDay(for: now)
+        let todayEnd = try XCTUnwrap(calendar.date(byAdding: .day, value: 1, to: todayStart))
+        let status = glmStatus(samples: [
+            glmSample(3_600, provider: "builtin:bigmodel-start-plan", input: 100),
+            glmSample(4_200, provider: "account:bigmodel-highspeed-card", input: 200),
+            glmSample(4_800, provider: "builtin:bigmodel-future-plan", input: 300),
+            glmSample(5_400, provider: "builtin:bigmodel-coding-plan", input: 9_999),
+            glmSample(6_000, provider: "offpeak-idle-plan", input: 8_888),
+        ])
+        let report = UsageReportBuilder.build(makeInput([status]), seq: 1)
+        let rows = try! XCTUnwrap(report.windowUsage)
+
+        let expected: [(kind: String, input: Int)] = [
+            ("glmStartPlan", 100),
+            ("glmHighspeed", 200),
+            ("glmOtherPlan", 300),
+        ]
+        for expectation in expected {
+            let row = try XCTUnwrap(rows.first { $0.windowKind == expectation.kind },
+                                    "\(expectation.kind) 必须成行")
+            XCTAssertEqual(row.input, expectation.input,
+                           "\(expectation.kind) 只含本分类今日样本（uncached 口径）")
+            XCTAssertEqual(row.modelID, "glm_coding_plan")
+            XCTAssertEqual(row.startAt.timeIntervalSince1970, todayStart.timeIntervalSince1970,
+                           accuracy: 0.5, "\(expectation.kind) 边界起点是自然日起点")
+            XCTAssertEqual(row.endAt.timeIntervalSince1970, todayEnd.timeIntervalSince1970,
+                           accuracy: 0.5, "\(expectation.kind) 边界终点是次自然日起点")
+            XCTAssertTrue(row.complete, "干净扫描时窗口行完整")
+        }
+    }
+
+    /// 当日无样本的分类照常上报**全零**行：展示层 `visibleRows` 统一跳过全零行，
+    /// 而上报侧省略会让 hub 把当日无用量的 GLM 节点误标 missing（窗口聚合只
+    /// 合并边界完全相同的行，缺行的节点进 missingNodeIDs、聚合被打上不完整）。
+    func testBuildWindowRowsReportZeroGlmCategoryRowsWithoutSamplesToday() throws {
+        let status = glmStatus(samples: [])
+        let report = UsageReportBuilder.build(makeInput([status]), seq: 1)
+        let rows = try! XCTUnwrap(report.windowUsage)
+        for kind in ["glmStartPlan", "glmHighspeed", "glmOtherPlan"] {
+            let row = try XCTUnwrap(rows.first { $0.windowKind == kind },
+                                    "\(kind) 无样本也要上报全零行，避免同边界聚合误标 missing")
+            XCTAssertEqual(row.input, 0)
+            XCTAssertEqual(row.cacheRead, 0)
+            XCTAssertNil(row.value, "空样本的真实零窗口不伪造估算金额")
+        }
+    }
 }

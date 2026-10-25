@@ -317,6 +317,48 @@ enum UsageReportBuilder {
                 ) else { continue }
                 rows.append(row)
             }
+
+            // 「免 / 速 / 它」今日切片（Start Plan / 加速卡 / 其他智谱任务）：与
+            // 本地卡动态行（`ProviderCardDerivedValues.glmCategoryUsageRows`）
+            // 同源同口径——同一份 `glmCategoryTodaySamples` 切片谓词。窗口边界取
+            // 报告时刻所在自然日 `[startOfDay, +1d)`：各 GLM 节点同日同时区则边界
+            // 完全一致，hub 的窗口聚合只合并边界相同的行，同边界键才不会把当日
+            // 无用量的节点误标 missing。当日无样本的分类照常上报全零行（展示层
+            // `visibleRows` 统一跳过全零行，与本地卡同一机制）。
+            let calendar = Calendar.current
+            let todayStart = calendar.startOfDay(for: now)
+            if let todayEnd = calendar.date(byAdding: .day, value: 1, to: todayStart),
+               let quotaModelName = info.activeModels.first?.modelName {
+                let glms: [(windowKind: String, category: GlmUsageCategory)] = [
+                    ("glmStartPlan", .startPlan),
+                    ("glmHighspeed", .highSpeed),
+                    ("glmOtherPlan", .other),
+                ]
+                for glm in glms {
+                    let matched = LocalUsageSummaryBuilder.glmCategoryTodaySamples(
+                        samples: samples,
+                        providerKind: status.kind,
+                        quotaModelName: quotaModelName,
+                        category: glm.category,
+                        offPeakWindows: status.glmOffPeakWindows,
+                        now: now,
+                        calendar: calendar
+                    )
+                    if let row = windowUsageRow(
+                        quotaProviderID: quotaProviderID,
+                        modelID: quotaModelName,
+                        windowKind: glm.windowKind,
+                        bounds: LocalUsageWindowBounds(start: todayStart, end: todayEnd),
+                        samples: matched,
+                        observedAt: now,
+                        truncated: truncated,
+                        quotaProviderIDForPricing: quotaProviderID,
+                        peakWindow: peakWindow
+                    ) {
+                        rows.append(row)
+                    }
+                }
+            }
         }
         return rows
     }

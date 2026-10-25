@@ -713,6 +713,12 @@ enum FleetUsageProjection {
         case "interval": return "5h"
         case "weekly": return "周"
         case "glmOffPeak": return "闲"
+        // 「免 / 速 / 它」直接引用本地卡的行标签常量：fleet 路径按行标签从
+        // windowRows 取行（`ProviderCardView` 的 fleetRow 映射），两端必须逐字
+        // 同源，改文案只动 `QuotaWindowUsageSection` 一处（测试钉住）。
+        case "glmStartPlan": return QuotaWindowUsageSection.startPlanRowLabel
+        case "glmHighspeed": return QuotaWindowUsageSection.highSpeedRowLabel
+        case "glmOtherPlan": return QuotaWindowUsageSection.otherPlanRowLabel
         default: return kind
         }
     }

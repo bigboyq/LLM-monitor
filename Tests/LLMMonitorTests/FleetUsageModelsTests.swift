@@ -887,4 +887,33 @@ final class FleetUsageModelsTests: XCTestCase {
         XCTAssertTrue(FleetUsageProjection.mergedModelRows(entries: [partialPriced]).first?.costText.contains("部分计价") == true,
                       "合并模型明细行须保留 coverage")
     }
+
+    // MARK: - 窗口行标签
+
+    /// wire windowKind → 行标签映射：「免 / 速 / 它」必须与本地卡的行标签常量
+    /// 逐字同源——fleet 路径按行标签从 windowRows 取行
+    /// （`ProviderCardView` 的 fleetRow 映射），标签漂移会让行静默消失。
+    /// 未知 kind 原样返回（不吞掉未来新增 kind 的可诊断性）。
+    func testWindowLabelMapsGlmCategoryKindsToLocalRowLabels() {
+        XCTAssertEqual(
+            FleetUsageProjection.windowLabel(for: "glmStartPlan"),
+            QuotaWindowUsageSection.startPlanRowLabel,
+            "glmStartPlan = Start Plan 体验套餐行（免）"
+        )
+        XCTAssertEqual(
+            FleetUsageProjection.windowLabel(for: "glmHighspeed"),
+            QuotaWindowUsageSection.highSpeedRowLabel,
+            "glmHighspeed = 加速卡行（速）"
+        )
+        XCTAssertEqual(
+            FleetUsageProjection.windowLabel(for: "glmOtherPlan"),
+            QuotaWindowUsageSection.otherPlanRowLabel,
+            "glmOtherPlan = 其他智谱任务行（它）"
+        )
+        XCTAssertEqual(FleetUsageProjection.windowLabel(for: "interval"), "5h")
+        XCTAssertEqual(FleetUsageProjection.windowLabel(for: "weekly"), "周")
+        XCTAssertEqual(FleetUsageProjection.windowLabel(for: "glmOffPeak"), "闲")
+        XCTAssertEqual(FleetUsageProjection.windowLabel(for: "mystery"), "mystery",
+                       "未知 windowKind 原样返回")
+    }
 }

@@ -848,8 +848,11 @@ Data source and calibration:
   `ModelPricingCatalog` (original currency), 速度 rates it via `windowTokenRate`, the
   reset date cell is forced `—`, and the all-zero rule skips them like any row. Non-GLM
   kinds yield an empty array. They carry no dedicated tooltip (only 闲 keeps the deleted
-  footnote's sentence). Fleet scope maps these rows by label from `windowRows` when the
-  wire ever reports them (today it does not, so fleet tables show none).
+  footnote's sentence). Fleet scope maps these rows by label from `windowRows`: the sender
+  reports each category as a calendar-day window row (`windowKind = glmStartPlan` /
+  `glmHighspeed` / `glmOtherPlan`, same `glmCategoryTodaySamples` slice as the local rows,
+  zero rows reported even without samples today so peer nodes are not mislabelled missing),
+  and `FleetUsageProjection.windowLabel` maps those kinds back to these very label constants.
 - **All-zero rules & Degenerate cases**:
   - **All-zero rows skipped**: a row (5h/周/今/闲/免/速/它) whose four buckets sum to 0 is skipped
     entirely via `visibleRows` — appearing in neither mode.

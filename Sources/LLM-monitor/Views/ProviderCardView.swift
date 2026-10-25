@@ -372,7 +372,9 @@ struct ProviderCardView: View, Equatable {
                 today: Self.fleetRow(usage.todayRow),
                 offPeak: Self.fleetRow(usage.windowRows.first { $0.label == "闲" }),
                 // fleet 的「免 / 速 / 它」按行标签从 windowRows 映射（与「闲」同一
-                // 口径；wire 协议尚未上报这些行，当前恒为空，上报后自动出现）。
+                // 口径）；上报侧把三个分类切成 windowKind `glmStartPlan` /
+                // `glmHighspeed` / `glmOtherPlan` 的自然日窗口行，标签经
+                // `FleetUsageProjection.windowLabel` 回到同一组常量。
                 glmCategoryRows: [
                     QuotaWindowUsageSection.startPlanRowLabel,
                     QuotaWindowUsageSection.highSpeedRowLabel,

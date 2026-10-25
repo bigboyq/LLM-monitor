@@ -190,7 +190,13 @@ node_meta → 任何可见变化递增 generation。日桶按 **dayKey 逐桶 up
   complete 日桶，旧版 hub 会拒收新 partial 日桶，因此多机部署应先升级 hub。
 - 窗口行：按各 model 的真实窗口边界（`LocalUsageSummaryBuilder.windowBounds`
   + `windowSamples`，同样本计价）产出 `interval` / `weekly` 行；GLM 闲时任务
-  每窗口单独一行（`windowKind = glmOffPeak`，真实起止）。
+  每窗口单独一行（`windowKind = glmOffPeak`，真实起止）；GLM「免 / 速 / 它」
+  三分类（Start Plan / 加速卡 / 其他智谱任务）各一行自然日窗口
+  （`windowKind = glmStartPlan` / `glmHighspeed` / `glmOtherPlan`，边界
+  `[startOfDay, +1d)`、与本地卡动态行同一份 `glmCategoryTodaySamples` 切片；
+  当日无样本的分类照常上报全零行——展示层跳过全零，而缺行会让 hub 把同边界
+  聚合误标 missing）。展示侧 `windowLabel` 把三个 kind 映回本地卡的行标签常量
+  （免 / 速 / 它）。
 - 额度：仅有有效 `lastSuccess` 且 ≥1 活跃窗口的 provider 上报；
   DTO 裁掉与用量重复的 `codexUsageDetails`。
 
