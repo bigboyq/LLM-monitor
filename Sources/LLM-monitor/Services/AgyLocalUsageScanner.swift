@@ -139,6 +139,14 @@ final class AgyLocalUsageScanner: LocalUsageScannerBase<AgyLocalUsage>, @uncheck
             .appendingPathComponent("log", isDirectory: true)
     }
 
+    /// 方案 A 的会话数据库目录：brain 的兄弟目录
+    /// `~/.gemini/antigravity-cli/conversations/`，`<session>.db` 与 brain 会话
+    /// 目录 100% 一一对应（本机 91/91 实测）。
+    nonisolated static func conversationsDirectory(for brainRoot: URL) -> URL {
+        brainRoot.deletingLastPathComponent()
+            .appendingPathComponent("conversations", isDirectory: true)
+    }
+
     nonisolated static let defaultCacheDir: URL = {
         TokenMonitorPaths.cacheFile(for: .agy)
     }()
@@ -291,6 +299,7 @@ final class AgyLocalUsageScanner: LocalUsageScannerBase<AgyLocalUsage>, @uncheck
         now: @escaping @Sendable () -> Date,
         limits: AgyLocalUsageScanLimits = .production,
         forceFull: Bool = false,
+        conversationsDirectory: URL? = nil,
         snapshotReader: ((URL) throws -> AgyLogFileSnapshot)? = nil
     ) throws -> AgyLocalUsage {
         guard fileManager.fileExists(atPath: brainRoot.path) else {
@@ -350,7 +359,7 @@ final class AgyLocalUsageScanner: LocalUsageScannerBase<AgyLocalUsage>, @uncheck
             )
             try saveIndex(
                 AgyCacheIndex(
-                    version: 2,
+                    version: 3,
                     files: [],
                     snapshot: empty,
                     calendarSignature: currentCalendarSignature
@@ -397,6 +406,9 @@ final class AgyLocalUsageScanner: LocalUsageScannerBase<AgyLocalUsage>, @uncheck
         let outcome = try aggregateFiles(
             snapshots: selection.snapshots,
             brainRoot: brainRoot,
+            conversationsDirectory: conversationsDirectory
+                ?? Self.conversationsDirectory(for: brainRoot),
+            fileManager: fileManager,
             timeline: timeline,
             calendar: calendar,
             limits: limits
@@ -427,7 +439,7 @@ final class AgyLocalUsageScanner: LocalUsageScannerBase<AgyLocalUsage>, @uncheck
         )
         try saveIndex(
             AgyCacheIndex(
-                version: 2,
+                version: 3,
                 files: outcome.processedFingerprints,
                 snapshot: snapshot,
                 calendarSignature: currentCalendarSignature,
@@ -535,6 +547,8 @@ final class AgyLocalUsageScanner: LocalUsageScannerBase<AgyLocalUsage>, @uncheck
     private nonisolated static func aggregateFiles(
         snapshots: [AgyLogFileSnapshot],
         brainRoot: URL,
+        conversationsDirectory: URL,
+        fileManager: FileManagerBox,
         timeline: [AgyCliLogEntry],
         calendar: Calendar,
         limits: AgyLocalUsageScanLimits
@@ -543,33 +557,110 @@ final class AgyLocalUsageScanner: LocalUsageScannerBase<AgyLocalUsage>, @uncheck
         // 防重复集合跨**本轮全部文件**共享：主 transcript 与其分块、分块彼此
         // 之间的重叠行都由 (sessionID, created_at, step_index) 去重兜底。
         var seen = Set<String>()
+        // 会话分组（保持 selection 首现序）：单次调用时长按会话解析——方案 A
+        // 的 .db 映射、方案 B 的 GENERIC 后继结算都以会话为作用域。
+        var sessionOrder: [String] = []
+        var bySession: [String: [AgyLogFileSnapshot]] = [:]
         for snapshot in snapshots {
+            let session = sessionID(for: snapshot.url, in: brainRoot)
+            if bySession[session] == nil { sessionOrder.append(session) }
+            bySession[session, default: []].append(snapshot)
+        }
+        // 指纹按 url.path 记账，最终重建为 selection 顺序（缓存 index 的 files
+        // 数组必须与下一轮 selection.snapshots.map(\.fingerprint) 逐位相等，
+        // 会话分组重排了处理序，不能按处理序追加）。
+        var processedByPath: [String: AgyLogFileFingerprint] = [:]
+        for session in sessionOrder {
             try Task.checkCancellation()
-            do {
-                let usages = try parseFile(
-                    fileURL: snapshot.url,
-                    sessionID: sessionID(for: snapshot.url, in: brainRoot),
-                    timeline: timeline,
-                    limits: limits,
-                    seen: &seen
-                )
-                outcome.processedFingerprints.append(snapshot.fingerprint)
-                for usage in usages {
-                    try Task.checkCancellation()
-                    AgyLocalUsageAggregation.apply(usage, to: &outcome.aggregate, calendar: calendar)
+            let group = orderedSessionFiles(bySession[session] ?? [])
+            // 方案 A：conversations/<session>.db 的 step_index → 流式时长。
+            // .db 缺失 / 打不开 / 表缺失 / 无匹配行 → 空映射，该会话计量行走
+            // 方案 B；.db 故障绝不阻断扫描。
+            let planA = loadPlanADurations(
+                sessionID: session,
+                conversationsDirectory: conversationsDirectory,
+                fileManager: fileManager
+            )
+            var context = AgyLocalUsageAggregation.AgySessionDurationContext(planADurations: planA)
+            var sessionUsages: [AgyParsedUsage] = []
+            for snapshot in group {
+                try Task.checkCancellation()
+                do {
+                    let usages = try parseFile(
+                        fileURL: snapshot.url,
+                        sessionID: session,
+                        timeline: timeline,
+                        limits: limits,
+                        seen: &seen,
+                        context: &context
+                    )
+                    processedByPath[snapshot.url.path] = snapshot.fingerprint
+                    sessionUsages.append(contentsOf: usages)
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    // 单文件可恢复错误：隔离坏文件，其余继续聚合。
+                    outcome.failedFileCount += 1
+                    logWarn(
+                        "[agy-scan] 跳过无法读取的 transcript 文件（已隔离，下一轮重试）: "
+                            + "\(snapshot.url.path), error: \(errorSummary(error))"
+                    )
                 }
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                // 单文件可恢复错误：隔离坏文件，其余继续聚合。
-                outcome.failedFileCount += 1
-                logWarn(
-                    "[agy-scan] 跳过无法读取的 transcript 文件（已隔离，下一轮重试）: "
-                        + "\(snapshot.url.path), error: \(errorSummary(error))"
-                )
+            }
+            // 方案 B 结算：方案 A 未覆盖的计量行用 GENERIC 子步骤创建时刻回填
+            // （会话全部文件解析完后进行，标记与 planner 的先后到达序无关）。
+            AgyLocalUsageAggregation.settleFallbackDurations(into: &sessionUsages, context: context)
+            for usage in sessionUsages {
+                try Task.checkCancellation()
+                AgyLocalUsageAggregation.apply(usage, to: &outcome.aggregate, calendar: calendar)
             }
         }
+        outcome.processedFingerprints = snapshots.compactMap { processedByPath[$0.url.path] }
         return outcome
+    }
+
+    /// 会话内文件处理顺序：主 `transcript.jsonl` 先于 `chunks/transcript/*.jsonl`
+    /// （方案 B 的 GENERIC 结算依赖同会话内确定的文件次序；结算本身与顺序无关，
+    /// 此处是确定性约定），其余按路径升序稳定排序。
+    nonisolated static func orderedSessionFiles(_ snapshots: [AgyLogFileSnapshot]) -> [AgyLogFileSnapshot] {
+        let main = snapshots.filter { $0.url.lastPathComponent == "transcript.jsonl" }
+        let rest = snapshots
+            .filter { $0.url.lastPathComponent != "transcript.jsonl" }
+            .sorted { $0.url.path < $1.url.path }
+        return main + rest
+    }
+
+    /// 方案 A：读取 `conversations/<session>.db` 全部 LLM steps 的流式时长（秒），
+    /// 过 (0, 3600] 有效域（与窗口 token 速度过滤同口径）。任何失败只降级为空
+    /// 映射（该会话走方案 B），记录警告，绝不抛出阻断扫描。
+    private nonisolated static func loadPlanADurations(
+        sessionID: String,
+        conversationsDirectory: URL,
+        fileManager: FileManagerBox
+    ) -> [Int: Double] {
+        let dbURL = conversationsDirectory.appendingPathComponent("\(sessionID).db")
+        guard fileManager.fileExists(atPath: dbURL.path) else { return [:] }
+        do {
+            let nanosByIndex = try SQLiteTempCopy.read(
+                dbPath: dbURL,
+                logTag: "[agy-scan] step duration"
+            ) { dbPath in
+                try AntigravityStepTimestampReader.llmStepStreamDurationNanos(dbPath: dbPath)
+            }
+            var durations: [Int: Double] = [:]
+            for (index, nanos) in nanosByIndex {
+                let seconds = Double(nanos) / 1_000_000_000
+                guard seconds > 0, seconds <= 3600 else { continue }
+                durations[index] = seconds
+            }
+            return durations
+        } catch {
+            logWarn(
+                "[agy-scan] 读取会话步骤时长失败（该会话走 GENERIC 后继降级）: "
+                    + "\(dbURL.path), error: \(errorSummary(error))"
+            )
+            return [:]
+        }
     }
 
     /// MODEL 行的判定 marker（纯 ASCII，不会出现在 UTF-8 多字节序列内部）。
@@ -592,13 +683,15 @@ final class AgyLocalUsageScanner: LocalUsageScannerBase<AgyLocalUsage>, @uncheck
 
     /// 流式解析单个 transcript 文件。行缓冲受 maxJSONLLineBytes 约束，峰值内存
     /// 与文件大小无关；取消按读取分块检查，且取消必须抛 CancellationError
-    /// （静默半结果会被写进指纹缓存，尾部数据永久缺失）。
+    /// （静默半结果会被写进指纹缓存，尾部数据永久缺失）。方案 A/B 的时长上下文
+    /// 按会话共享（`context`），跨文件收集 GENERIC 标记与 planner 暂存。
     private nonisolated static func parseFile(
         fileURL: URL,
         sessionID: String,
         timeline: [AgyCliLogEntry],
         limits: AgyLocalUsageScanLimits,
-        seen: inout Set<String>
+        seen: inout Set<String>,
+        context: inout AgyLocalUsageAggregation.AgySessionDurationContext
     ) throws -> [AgyParsedUsage] {
         let handle = try FileHandle(forReadingFrom: fileURL)
         defer { try? handle.close() }
@@ -643,6 +736,7 @@ final class AgyLocalUsageScanner: LocalUsageScannerBase<AgyLocalUsage>, @uncheck
                         timeline: timeline,
                         limits: limits,
                         seen: &seen,
+                        context: &context,
                         usages: &usages
                     )
                 }
@@ -670,6 +764,7 @@ final class AgyLocalUsageScanner: LocalUsageScannerBase<AgyLocalUsage>, @uncheck
                 timeline: timeline,
                 limits: limits,
                 seen: &seen,
+                context: &context,
                 usages: &usages
             )
         }
@@ -682,23 +777,34 @@ final class AgyLocalUsageScanner: LocalUsageScannerBase<AgyLocalUsage>, @uncheck
         timeline: [AgyCliLogEntry],
         limits: AgyLocalUsageScanLimits,
         seen: inout Set<String>,
+        context: inout AgyLocalUsageAggregation.AgySessionDurationContext,
         usages: inout [AgyParsedUsage]
     ) {
-        guard let row = AgyLocalUsageAggregation.parseModelRow(
+        guard let object = AgyLocalUsageAggregation.parseLineObject(
             line,
             maxLineBytes: limits.maxJSONLLineBytes
         ) else { return }
+        // 方案 B 标记：MODEL:GENERIC 子工具步骤创建行（与计量行共用一次 JSON
+        // 解析；字节级 `"source":"MODEL"` 预过滤天然同时覆盖两类行）。USER /
+        // SYSTEM 行进不了这里，下一轮 USER_INPUT 不会被误食。
+        if let marker = AgyLocalUsageAggregation.parseGenericMarkerRow(object) {
+            context.recordGenericMarker(stepIndex: marker.stepIndex, createdAt: marker.createdAt)
+        }
+        guard let row = AgyLocalUsageAggregation.parseModelRow(object) else { return }
         // 去重只跳过本行的聚合；外层读取循环继续推进。
         guard seen.insert(AgyLocalUsageAggregation.dedupeKey(sessionID: sessionID, row: row)).inserted else {
             return
         }
+        // 方案 B 暂存：带 tool_calls 的 PLANNER_RESPONSE（纯文本终答不入暂存）。
+        context.recordMeteredRow(row)
         usages.append(AgyLocalUsageAggregation.makeUsage(
             raw: row,
             sessionID: sessionID,
             modelName: AgyLocalUsageAggregation.resolvedModelName(
                 createdAt: row.createdAt,
                 timeline: timeline
-            )
+            ),
+            planADurationSeconds: context.planADuration(stepIndex: row.stepIndex)
         ))
     }
 
@@ -772,7 +878,9 @@ private struct AgyCacheIndex: Codable, Equatable, Sendable {
     var timelineSignature: String? = nil
 
     func matches(_ fingerprint: CacheFingerprint) -> Bool {
-        version == 2
+        // v3：样本新增 durationSeconds（方案 A .db 真值 + 方案 B GENERIC 后继
+        // 降级）；旧 v2 快照无时长，版本不匹配即整体重建。
+        version == 3
             && files == fingerprint.files
             && timelineSignature == fingerprint.timelineSignature
     }
@@ -786,8 +894,8 @@ private extension AgyLocalUsageScanner {
         try ScannerIndexIO.loadIndex(
             cacheDir: cacheDir,
             fileManager: fileManager,
-            currentVersion: 2,
-            empty: AgyCacheIndex(version: 2, files: [], snapshot: nil, calendarSignature: nil),
+            currentVersion: 3,
+            empty: AgyCacheIndex(version: 3, files: [], snapshot: nil, calendarSignature: nil),
             version: { $0.version },
             logTag: "[agy-scan]"
         )

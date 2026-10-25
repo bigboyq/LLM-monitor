@@ -414,7 +414,7 @@ The application uses the same local aggregation rules directly in
 | 5 h window (`primary`) | `intervalResetsAt - windowSeconds` to `intervalResetsAt` | prompts, rounds, input, cached, output, reasoning output |
 | weekly window (`secondary`) | `weeklyResetsAt - windowSeconds` to `weeklyResetsAt` | same fields over the weekly window |
 | 7-day chart (`dailyTokenUsage`) | local calendar days, today and the previous 6 | daily `turns` / `rounds` / token totals |
-| recent samples | whole scan | per-`token_count` `LocalTokenUsageSample` (cache-inclusive input, `codex:` promptID, `sourceProviderID = openai`), newest 65,536 kept |
+| recent samples | whole scan | per-`token_count` `LocalTokenUsageSample` (cache-inclusive input, `codex:` promptID, `sourceProviderID = openai`), newest 65,536 kept; `durationSeconds` from the `token_usage_record` pairing rule below (nil without a valid anchor) |
 
 Window lengths are the parser's `limitWindowSeconds` (falling back to 5 h / 7 d when the
 API omits them), not the literal 5 h / 7 d.
@@ -424,6 +424,14 @@ Rules:
 - `prompts` counts unique `task_started.turn_id` values inside the window
 - `rounds` counts matching `token_count` events
 - token totals sum `last_token_usage.*`
+- `durationSeconds` (token/s denominator, mixed differencing validated on real rollouts):
+  each rollout also carries top-level `token_usage_record` events (one per model response,
+  `timestamp` ms + `payload.turn_id`), parsed **for timing only** — token accounting stays
+  single-sourced on `token_count` (the two event kinds are ~1:1, double-counting risk).
+  Start anchor for a record = max(last `token_count` timestamp, last record timestamp) of
+  that turn, falling back to `task_started`; the derived duration rides the **next**
+  `token_count` sample of the same turn (consumed once, stale/invalid anchors discarded,
+  (0, 3600] s valid, state scoped per session file — turn IDs are global UUIDs).
 
 ## Reset Credits Endpoint
 
@@ -725,4 +733,4 @@ To compare or sum daily usage across both providers, normalize both into a singl
 
 After normalization, cross-provider sum, average, and chart rendering can treat the two providers as a single data source.
 
-> 核对基线：2026-10-05 · 代码 79dee29
+> 核对基线：2026-10-25 · 代码 0304521

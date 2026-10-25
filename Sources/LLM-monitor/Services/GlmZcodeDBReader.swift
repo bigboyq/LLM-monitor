@@ -284,7 +284,8 @@ final class GlmZcodeDBReader {
             ELSE 0
           END AS reasoning_output,
           mu.cache_read_input_tokens,
-          mu.provider_id
+          mu.provider_id,
+          mu.duration_ms
         FROM model_usage mu
         WHERE \(Self.providerFilterSQL("mu.provider_id"))
           AND mu.status = 'completed'
@@ -298,7 +299,7 @@ final class GlmZcodeDBReader {
         ORDER BY mu.started_at, mu.id
         """
         let cutoffMs = cutoff.map { Int64($0.timeIntervalSince1970 * 1000) }
-        let rows: [(String, String, Int64, String?, String?, Int64, Int64, Int64, Int64, String)] = try connection.query(
+        let rows: [(String, String, Int64, String?, String?, Int64, Int64, Int64, Int64, String, Int64?)] = try connection.query(
             sql: sql,
             bind: { stmt in
                 let provider = Self.bindProviders(to: stmt, index: 1)
@@ -316,12 +317,13 @@ final class GlmZcodeDBReader {
                 let reasoning = SQLiteConnection.optionalInt64(stmt, column: 7)
                 let cacheRead = SQLiteConnection.optionalInt64(stmt, column: 8)
                 let providerID = try SQLiteConnection.requiredText(stmt, column: 9)
-                return (id, sessionID, timestamp, turn, model, input, output, reasoning, cacheRead, providerID)
+                let durationMs = SQLiteConnection.optionalInt64(stmt, column: 10)
+                return (id, sessionID, timestamp, turn, model, input, output, reasoning, cacheRead, providerID, durationMs)
             }
         )
 
         var samples: [LocalTokenUsageSample] = []
-        for (id, sessionID, timestamp, turn, model, input, output, reasoning, cacheRead, providerID) in rows {
+        for (id, sessionID, timestamp, turn, model, input, output, reasoning, cacheRead, providerID, durationMs) in rows {
             let promptComponent = turn ?? "event-\(id)"
             // R9: 读取层非负饱和；input 用 nn(input)，cachedInput 用 nn(cacheRead)。
             let inNN = SQLiteConnection.nnClamp(input)
@@ -337,7 +339,8 @@ final class GlmZcodeDBReader {
                 cachedInputTokens: crNN,
                 outputTokens: SQLiteConnection.nnClamp(output),
                 reasoningOutputTokens: SQLiteConnection.nnClamp(reasoning),
-                sourceProviderID: providerID
+                sourceProviderID: providerID,
+                durationSeconds: durationMs.flatMap { $0 > 0 && $0 <= 3_600_000 ? Double($0) / 1000.0 : nil }
             )
             samples.append(sample)
         }
@@ -651,7 +654,8 @@ final class GlmZcodeDBReader {
             )
             FROM part p
             WHERE p.message_id = mu.assistant_message_id
-          ), 0) AS visible_chars
+          ), 0) AS visible_chars,
+          mu.duration_ms
         FROM model_usage mu
         WHERE \(Self.sliceFilterSQL("mu.provider_id"))
           AND mu.status = 'completed'
@@ -665,7 +669,7 @@ final class GlmZcodeDBReader {
         ORDER BY mu.started_at, mu.id
         """
         let cutoffMs = cutoff.map { Int64($0.timeIntervalSince1970 * 1000) }
-        let rows: [(String, String, Int64, String?, String?, String, Int64, Int64, Int64, Int64, Int64, Int64)] = try connection.query(
+        let rows: [(String, String, Int64, String?, String?, String, Int64, Int64, Int64, Int64, Int64, Int64, Int64?)] = try connection.query(
             sql: sql,
             bind: { stmt in
                 let provider = Self.bindSlices(to: stmt, index: 1)
@@ -687,15 +691,16 @@ final class GlmZcodeDBReader {
             let cacheRead = SQLiteConnection.optionalInt64(stmt, column: 9)
             let reasoningChars = SQLiteConnection.optionalInt64(stmt, column: 10)
             let visibleChars = SQLiteConnection.optionalInt64(stmt, column: 11)
+            let durationMs = SQLiteConnection.optionalInt64(stmt, column: 12)
             return (
                 id, sessionID, timestamp, turn, model, providerID, input, output, reasoning, cacheRead,
-                reasoningChars, visibleChars
+                reasoningChars, visibleChars, durationMs
             )
             }
         )
         var out: [String: [LocalTokenUsageSample]] = [:]
         for (id, sessionID, timestamp, turn, model, providerID, input, output, reasoning, cacheRead,
-             reasoningChars, visibleChars) in rows {
+             reasoningChars, visibleChars, durationMs) in rows {
             guard let slice = ZcodeProviderSlice(providerID: providerID) else { continue }
             let promptComponent = turn ?? "event-\(id)"
             // native reasoning 优先原样透传；否则按本行 part 字符比例分摊（守恒：
@@ -720,7 +725,8 @@ final class GlmZcodeDBReader {
                 cachedInputTokens: SQLiteConnection.nnClamp(cacheRead),
                 outputTokens: split?.output ?? nativeOutput,
                 reasoningOutputTokens: split?.reasoning ?? nativeReasoning,
-                sourceProviderID: providerID
+                sourceProviderID: providerID,
+                durationSeconds: durationMs.flatMap { $0 > 0 && $0 <= 3_600_000 ? Double($0) / 1000.0 : nil }
             )
             out[slice.rawValue, default: []].append(sample)
         }

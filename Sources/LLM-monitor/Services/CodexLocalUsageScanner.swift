@@ -53,13 +53,18 @@ enum CodexSessionEvent: Sendable, Equatable {
     case taskCompleted(timestamp: Date, turnID: String)
     case modelContext(timestamp: Date, modelName: String)
     case tokenCount(timestamp: Date, usage: CodexTokenUsageEvent)
+    /// rollout 顶层的 `token_usage_record` 事件：一次模型响应完成的账面记录。
+    /// 本期只取 timestamp/turnID 作为单次调用时长差分的锚点；payload.usage
+    /// 刻意不读——token 计量保持 token_count 单一来源，双源会翻倍。
+    case tokenUsageRecord(timestamp: Date, turnID: String)
 
     var timestamp: Date {
         switch self {
         case .taskStarted(let timestamp, _),
              .taskCompleted(let timestamp, _),
              .modelContext(let timestamp, _),
-             .tokenCount(let timestamp, _):
+             .tokenCount(let timestamp, _),
+             .tokenUsageRecord(let timestamp, _):
             return timestamp
         }
     }
@@ -296,6 +301,21 @@ extension CodexFetcher {
             scannedFileCount += 1
             var activeTurnID: String?
             var currentModelName: String?
+            // 单次调用时长差分的 per-turn 状态（作用域为单个 session 文件：
+            // turn_id 是全局 UUID，跨文件不复用；跨文件锚定只会引入对不上的
+            // 脏锚点，宁缺勿假）。
+            // - turnStart[turnID]：task_started 时刻，turn 首调用的锚点；
+            // - lastTokenCount[turnID]：上一条 token_count 时刻，下一次调用的
+            //   发起代理（真实数据里 R_i 完成 → 工具落盘 → C_i，C_i 恰好落在
+            //   相邻两条 record 之间）；
+            // - lastRecordEnd[turnID]：上一条 token_usage_record 时刻（该次
+            //   调用的完成时刻），record 无 token_count 时降级为相邻差分锚点；
+            // - pendingDuration[turnID]：最近一条 record 差分出的时长，等待
+            //   下一条 token_count 构造 sample 时消费（消费即清除，防复用）。
+            var turnStart: [String: Date] = [:]
+            var lastTokenCount: [String: Date] = [:]
+            var lastRecordEnd: [String: Date] = [:]
+            var pendingDuration: [String: Double] = [:]
             for event in sessionFile.events {
                 guard !Task.isCancelled else { break }
                 let timestamp = event.timestamp
@@ -305,6 +325,10 @@ extension CodexFetcher {
                 switch event {
                 case .taskStarted(_, let turnID):
                     activeTurnID = turnID
+                    turnStart[turnID] = timestamp
+                    lastRecordEnd.removeValue(forKey: turnID)
+                    lastTokenCount.removeValue(forKey: turnID)
+                    pendingDuration.removeValue(forKey: turnID)
                     for key in matchingKeys {
                         promptIDs[key, default: []].insert(turnID)
                     }
@@ -317,9 +341,42 @@ extension CodexFetcher {
                     if activeTurnID == turnID {
                         activeTurnID = nil
                     }
+                case .tokenUsageRecord(let recordTimestamp, let turnID):
+                    // 调用发起锚点 = max(上一条 token_count, 上一条 record)，
+                    // 两者都缺时回退 task_started。时长为正且 ≤ 1h 才挂起
+                    //（下一条 token_count 消费），非法值清除挂起位防止把过期
+                    // 锚点误配给后续样本；lastRecordEnd 无条件推进。
+                    let anchor: Date?
+                    switch (lastTokenCount[turnID], lastRecordEnd[turnID]) {
+                    case let (a?, b?): anchor = max(a, b)
+                    case let (a?, nil): anchor = a
+                    case let (nil, b?): anchor = b
+                    case (nil, nil): anchor = turnStart[turnID]
+                    }
+                    if let anchor {
+                        let duration = recordTimestamp.timeIntervalSince(anchor)
+                        if duration > 0, duration <= 3600 {
+                            pendingDuration[turnID] = duration
+                        } else {
+                            pendingDuration.removeValue(forKey: turnID)
+                        }
+                    }
+                    lastRecordEnd[turnID] = recordTimestamp
                 case .modelContext(_, let modelName):
                     currentModelName = modelName
                 case .tokenCount(let timestamp, let usage):
+                    // 时长簿记先于窗口匹配：挂起时长的消费与 lastTokenCount 的
+                    // 推进对每条 token_count 生效，与样本是否落进统计窗口无关
+                    // ——否则窗口外的 token_count 会让下一条样本读到上一条
+                    // record 的过期 pendingDuration（错误归属）。
+                    let pendingDurationSeconds: Double?
+                    if let turnID = activeTurnID {
+                        pendingDurationSeconds = pendingDuration[turnID]
+                        pendingDuration.removeValue(forKey: turnID)
+                        lastTokenCount[turnID] = timestamp
+                    } else {
+                        pendingDurationSeconds = nil
+                    }
                     for key in matchingKeys {
                         tokenSummaries[key, default: MutableUsageSummary()].add(usage)
                     }
@@ -354,7 +411,8 @@ extension CodexFetcher {
                                 cachedInputTokens: buckets.cacheRead,
                                 outputTokens: buckets.output,
                                 reasoningOutputTokens: buckets.reasoning,
-                                sourceProviderID: QuotaProviderID.openAI
+                                sourceProviderID: QuotaProviderID.openAI,
+                                durationSeconds: pendingDurationSeconds
                             )
                         )
                     }
@@ -577,11 +635,14 @@ extension CodexFetcher {
     private static let turnContextMarker = Data("turn_context".utf8)
     /// 二级类型过滤 marker：真实数据里 level-1 命中行含大量 CJK prompt 文本，
     /// `String.contains` 在其上走慢路径（实测 ~11MB/s，占冷扫描 95% 耗时）；
-    /// 四个类型标记均为纯 ASCII，memmem 命中与 contains 严格等价，且只有
+    /// 五个类型标记均为纯 ASCII，memmem 命中与 contains 严格等价，且只有
     /// 二级命中的行（约 5% 字节）才需要解码 String 与 JSON 解析。
     private static let taskStartedMarker = Data("task_started".utf8)
     private static let taskCompleteMarker = Data("task_complete".utf8)
     private static let tokenCountMarker = Data("token_count".utf8)
+    /// 顶层 `token_usage_record`（非 event_msg）：一次模型响应完成记录，
+    /// 为时长差分提供完成锚点（payload 只取 turn_id，usage 不读）。
+    private static let tokenUsageRecordMarker = Data("token_usage_record".utf8)
 
     nonisolated static func parseSessionEvents(
         from fileURL: URL,
@@ -617,14 +678,16 @@ extension CodexFetcher {
             // 继续走原有的二级判断与 JSON 路径；误命中（marker 出现在字符串值中间）
             // 只是多解析一行，不影响正确性。
             guard lineData.range(of: eventMsgMarker) != nil
-                || lineData.range(of: turnContextMarker) != nil else { return true }
+                || lineData.range(of: turnContextMarker) != nil
+                || lineData.range(of: tokenUsageRecordMarker) != nil else { return true }
             // 二级类型过滤同样在字节层完成（理由见 marker 声明处）；命中的行才解码，
             // 继续走 JSON 路径。误命中（marker 出现在字符串值中间）只是多解析一行，
             // 不影响正确性。
             guard lineData.range(of: taskStartedMarker) != nil
                 || lineData.range(of: taskCompleteMarker) != nil
                 || lineData.range(of: tokenCountMarker) != nil
-                || lineData.range(of: turnContextMarker) != nil else { return true }
+                || lineData.range(of: turnContextMarker) != nil
+                || lineData.range(of: tokenUsageRecordMarker) != nil else { return true }
             let line = String(decoding: lineData, as: UTF8.self)
 
             guard let object = parseJSONObject(from: line),
@@ -637,6 +700,15 @@ extension CodexFetcher {
                let modelName = payload["model"] as? String,
                !modelName.isEmpty {
                 events.append(.modelContext(timestamp: timestamp, modelName: modelName))
+                return true
+            }
+
+            if object["type"] as? String == "token_usage_record" {
+                // 顶层 record = 一次模型响应完成。只取 turn_id 做时长差分锚点；
+                // usage 不读，token 计量保持 token_count 单一来源（避免双源翻倍）。
+                if let turnID = payload["turn_id"] as? String {
+                    events.append(.tokenUsageRecord(timestamp: timestamp, turnID: turnID))
+                }
                 return true
             }
 

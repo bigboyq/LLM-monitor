@@ -270,20 +270,23 @@ extension AntigravityLocalUsageScanner {
         try ScannerIndexIO.loadIndex(
             cacheDir: cacheDir,
             fileManager: fileManager,
-            currentVersion: 7,
+            currentVersion: 8,
             empty: .empty,
             version: { $0.version },
             migrate: { idx in
-                guard (2...6).contains(idx.version) else { return false }
-                if idx.version <= 5 {
-                    // v5 及更早版本的 per-session samples / daily R/T 可能来自
-                    // 旧版本的 samples / R/T 结果可能来自 SQLite 读取路径。纯 RPC
-                    // 版本的 stepIndices 推断结果不能与旧结果混用；清空逐次调用索引，使每个现有 session 都因
-                    // samplesBySession?[sessionId] == nil 而强制重新走 RPC。
-                    // dailyBySession 保留为 RPC 失败时的 last-good fallback。
-                    idx.samplesBySession = [:]
-                }
-                idx.version = 7
+                guard (2...7).contains(idx.version) else { return false }
+                // 清空逐次调用索引的两次原因（任一命中都必须让每个现有 session 因
+                // samplesBySession?[sessionId] == nil 而强制走一次 offset=0 全量
+                // RPC 重建；dailyBySession 保留为 RPC 失败时的 last-good fallback）：
+                // - v5 及更早版本的 per-session samples 可能来自旧 SQLite 读取路径，
+                //   纯 RPC 版本的 stepIndices 推断结果不能与旧结果混用；
+                // - v8：样本新增 durationSeconds（timeToFirstToken + streamingDuration）
+                //   且思考口径修正（raw outputTokens 含思考，catalog 改
+                //   .reasoningIncluded，Output = rawOutput − reasoning）——旧 v7 缓存
+                //   的样本既没有时长、Output 桶又把思考算了两遍，daily 同样要靠这次
+                //   全量重扫按新口径重建。
+                idx.samplesBySession = [:]
+                idx.version = 8
                 return true
             },
             logTag: "[antigravity-scan]"

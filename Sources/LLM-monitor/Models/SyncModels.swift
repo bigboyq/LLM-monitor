@@ -1,0 +1,759 @@
+import Foundation
+import CryptoKit
+
+// MARK: - 角色（§3）
+
+/// 同步角色由配置**单源派生**：无 upstream 的实例是 hub，有 upstream 的是 node，
+/// 未启用则完全不参与。角色判定与 server 启动在同一个 switch 分支里，
+/// 不存在「既监听又上报」的可能。
+enum SyncRole: Equatable, Sendable {
+    /// 无 upstream → 主节点
+    case hub
+    /// 有 upstream → 副节点
+    case node
+    /// sync 未启用 → 不参与
+    case off
+
+    static func derive(config: AppConfig) -> SyncRole {
+        guard config.sync?.enabled == true else { return .off }
+        let upstream = config.sync?.hubURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (upstream?.isEmpty == false) ? .node : .hub
+    }
+}
+
+// MARK: - 协议常量（§4）
+
+enum FleetProtocol {
+    static let version = 1
+    /// 请求体上限 4 MiB（§4.2）。
+    static let maxRequestBodyBytes = 4 * 1024 * 1024
+    /// 响应体上限 2 MiB（§4.2）。
+    static let maxResponseBodyBytes = 2 * 1024 * 1024
+    /// 请求头（含请求行）的解析上限；超过按 431 断开。
+    static let maxHeaderBytes = 16 * 1024
+    /// 同一 nodeID 两次请求的最小间隔（§4.3）。
+    static let minRequestInterval: TimeInterval = 1
+
+    static let usageDayPath = "/v1/usage/day"
+    static let healthPath = "/v1/health"
+
+    /// 参与校验的已注册 quota provider / client ID（§5.6）。
+    static let knownQuotaProviderIDs: Set<String> = [
+        QuotaProviderID.minimax,
+        QuotaProviderID.openAI,
+        QuotaProviderID.antigravity,
+        QuotaProviderID.zhipu,
+        QuotaProviderID.deepseek
+    ]
+    static let knownClientIDs: Set<String> = [
+        ClientID.codex, ClientID.antigravity, ClientID.zcode,
+        ClientID.openCode, ClientID.dsh, ClientID.minimaxCode, ClientID.agy
+    ]
+}
+
+// MARK: - Wire DTO（§5.5）
+
+struct FleetNodeIdentity: Codable, Equatable, Sendable {
+    let nodeID: UUID
+    let nodeName: String
+    /// 诊断元数据：单时区前提下不产生任何换算分支（§2.3）。
+    let timezoneID: String
+    let platform: String
+}
+
+/// wire 侧的计价覆盖度。与既有 `CostCoverage`（非 Codable）分开表达，
+/// full 额外要求样本集完整（未截断）——截尾样本的金额不能配完整 token 标 full。
+enum FleetCostCoverage: String, Codable, Sendable, Equatable {
+    case none, partial, full
+
+    /// 从「价目覆盖度 × 样本完整性」推导：全有价且完整才是 full；
+    /// 有价但不完整 / 部分有价是 partial；全无价是 none（§10.7.2）。
+    init(priced: Bool, fullyPriced: Bool, complete: Bool) {
+        if !priced {
+            self = .none
+        } else if fullyPriced && complete {
+            self = .full
+        } else {
+            self = .partial
+        }
+    }
+}
+
+struct FleetUsageEntry: Codable, Equatable, Sendable {
+    let clientID: String
+    let quotaProviderID: String
+    let modelName: String?
+    let input, cacheRead, output, reasoning: Int
+    /// 原币金额。金额与上述 token 必须来自同一批样本（§2.2）。
+    let value: Double?
+    let currency: ModelPriceCurrency?
+    let coverage: FleetCostCoverage
+    let truncated: Bool
+}
+
+struct FleetClientProviderUsage: Codable, Equatable, Sendable {
+    let clientID: String
+    let quotaProviderID: String
+    let input, cacheRead, output, reasoning, turns, rounds: Int
+}
+
+struct FleetTotals: Codable, Equatable, Sendable {
+    let input, cacheRead, output, reasoning, turns, rounds: Int
+
+    static let zero = FleetTotals(input: 0, cacheRead: 0, output: 0, reasoning: 0, turns: 0, rounds: 0)
+
+    init(input: Int, cacheRead: Int, output: Int, reasoning: Int, turns: Int, rounds: Int) {
+        self.input = input
+        self.cacheRead = cacheRead
+        self.output = output
+        self.reasoning = reasoning
+        self.turns = turns
+        self.rounds = rounds
+    }
+
+    static func + (lhs: FleetTotals, rhs: FleetTotals) -> FleetTotals {
+        FleetTotals(
+            input: SaturatingArithmetic.add(lhs.input, rhs.input),
+            cacheRead: SaturatingArithmetic.add(lhs.cacheRead, rhs.cacheRead),
+            output: SaturatingArithmetic.add(lhs.output, rhs.output),
+            reasoning: SaturatingArithmetic.add(lhs.reasoning, rhs.reasoning),
+            turns: SaturatingArithmetic.add(lhs.turns, rhs.turns),
+            rounds: SaturatingArithmetic.add(lhs.rounds, rhs.rounds)
+        )
+    }
+
+    /// 权威日合计与同桶 clientProviders 的规范化汇总逐字段核对（§5.1）。
+    static func == (_ lhs: FleetTotals, _ rhs: [FleetClientProviderUsage]) -> Bool {
+        lhs == FleetTotals(summing: rhs)
+    }
+}
+
+extension FleetTotals {
+    /// 权威日合计：同桶 clientProviders 的规范化计数汇总（§5.1）。
+    init(summing rows: [FleetClientProviderUsage]) {
+        self = rows.reduce(FleetTotals.zero) { acc, row in
+            FleetTotals(
+                input: SaturatingArithmetic.add(acc.input, row.input),
+                cacheRead: SaturatingArithmetic.add(acc.cacheRead, row.cacheRead),
+                output: SaturatingArithmetic.add(acc.output, row.output),
+                reasoning: SaturatingArithmetic.add(acc.reasoning, row.reasoning),
+                turns: SaturatingArithmetic.add(acc.turns, row.turns),
+                rounds: SaturatingArithmetic.add(acc.rounds, row.rounds)
+            )
+        }
+    }
+}
+
+struct FleetDailyBucket: Codable, Equatable, Sendable {
+    let dayKey: String                 // today + previous six days
+    /// 权威日总量，不能从可能截断的 entries 反推。
+    let totals: FleetTotals
+    let clientProviders: [FleetClientProviderUsage]
+    /// 模型明细；完整度独立于 totals。
+    let entries: [FleetUsageEntry]
+    let totalsComplete: Bool
+    let modelDetailsComplete: Bool
+    let sourceTruncated: Bool
+}
+
+struct FleetWindowUsage: Codable, Equatable, Sendable {
+    let quotaProviderID: String
+    let modelID: String
+    /// interval / weekly / glmOffPeak / provider 自定义 kind。
+    let windowKind: String
+    /// 实际观察到的边界；startAt < endAt。
+    let startAt, endAt: Date
+    /// hub 侧覆盖为接收时刻（不信任上报值）；节点侧是观察时刻。
+    var observedAt: Date
+    let input, cacheRead, output, reasoning: Int
+    let value: Double?
+    let currency: ModelPriceCurrency?
+    let coverage: FleetCostCoverage
+    let complete: Bool
+    let sourceTruncated: Bool
+
+    var recordKey: String {
+        [quotaProviderID, modelID, windowKind,
+         FleetISO8601.dateString(startAt), FleetISO8601.dateString(endAt)]
+            .joined(separator: "|")
+    }
+}
+
+struct FleetQuotaReport: Codable, Equatable, Sendable {
+    let quotaProviderID: String
+    let fetchedAt: Date
+    let models: [ModelQuota]
+    let resetCredits: ResetCreditsInfo?
+    let planLabel: String?
+    let accountEmail: String?
+    let balanceDetail: DeepseekBalanceDetail?
+
+    /// 有效额度：至少一个 model 存在活跃额度窗口。DeepSeek 的 present 余额
+    /// 窗口（含零余额）符合有效性（§2.1）。
+    var hasActiveQuotaWindow: Bool {
+        models.contains(where: \.hasActiveQuotaWindow)
+    }
+}
+
+struct NodeUsageReport: Codable, Equatable, Sendable {
+    let protocolVersion: Int
+    let node: FleetNodeIdentity
+    /// 对稳定 nodeID 单调递增；hub 只接受更新的序号（§7.3）。
+    let seq: Int
+    let generatedAt: Date
+    let attributionFingerprint: String
+    /// nil：本次不更新日桶；存在时必须恰为七个（today + previous six）。
+    let dailyBuckets: [FleetDailyBucket]?
+    /// nil：无窗口更新；行按完整边界独立 upsert，空数组不删除旧范围。
+    let windowUsage: [FleetWindowUsage]?
+    /// nil：不更新；空数组清除该节点额度集合。
+    let quotas: [FleetQuotaReport]?
+}
+
+struct FleetNodeSnapshot: Codable, Equatable, Sendable {
+    let nodeID: UUID
+    let nodeName: String
+    let lastSeenAt: Date
+    let seq: Int
+    let stale: Bool
+    let dailyBuckets: [FleetDailyBucket]
+    let windowUsage: [FleetWindowUsage]
+    let quotas: [FleetQuotaReport]
+    /// 该节点的归因设置指纹（§7.8）：≥2 种不同指纹 → 设置页提示「口径之和」。
+    /// 旧快照缺该字段按 nil（未知，不参与比较）。
+    let attributionFingerprint: String?
+}
+
+struct FleetElectedQuota: Codable, Equatable, Sendable {
+    let quotaProviderID: String
+    let sourceNodeID: UUID
+    let sourceNodeName: String
+    let fetchedAt: Date
+    let models: [ModelQuota]
+    let resetCredits: ResetCreditsInfo?
+    let planLabel: String?
+    let accountEmail: String?
+    let balanceDetail: DeepseekBalanceDetail?
+    let isStale: Bool
+}
+
+struct FleetWindowAggregate: Codable, Equatable, Sendable {
+    let quotaProviderID, modelID, windowKind: String
+    let startAt, endAt: Date
+    let input, cacheRead, output, reasoning: Int
+    /// 金额按币种分开保存，不做跨币种折算合并（§7.1）。
+    let valueByCurrency: [String: Double]
+    let coverage: FleetCostCoverage
+    let complete: Bool
+    let contributingNodeIDs, staleNodeIDs: [UUID]
+    /// 已知相关但缺该范围的节点。
+    let missingNodeIDs: [UUID]
+}
+
+struct FleetAggregate: Codable, Equatable, Sendable {
+    let dailyBuckets: [FleetDailyBucket]
+    let windowUsage: [FleetWindowAggregate]
+}
+
+struct FleetSnapshot: Codable, Equatable, Sendable {
+    let protocolVersion: Int
+    let hubUUID: UUID
+    /// hub 上任何可见状态变更时递增；跨重启持久可比（§5.2）。
+    /// hub 装配时若可见签名变化需要改写它，故为 var。
+    var generation: Int64
+    let hub: FleetNodeIdentity
+    let generatedAt: Date
+    let nodes: [FleetNodeSnapshot]
+    let fleet: FleetAggregate
+    let electedQuotas: [FleetElectedQuota]
+}
+
+// MARK: - 编解码（§5.3）
+
+/// ISO8601 时刻的统一格式化入口：wire / 存储键共用，避免两处格式漂移。
+enum FleetISO8601 {
+    static let formatter: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        return f
+    }()
+
+    static func dateString(_ date: Date) -> String {
+        formatter.string(from: date)
+    }
+}
+
+/// 唯一的出网/入网 JSON 编解码入口：date 策略只写一次。任何一侧漏设
+/// iso8601，`Date` 会被编成 2001 基准的 Double，静默错出几十年的时刻。
+enum FleetCodec {
+    static func encode<T: Encodable>(_ value: T) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.sortedKeys]
+        return try encoder.encode(value)
+    }
+
+    static func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try decoder.decode(type, from: data)
+    }
+}
+
+// MARK: - 报告校验（§5.6）
+
+/// hub 收到报告后的通道级校验结果：信封、日桶、窗口、额度分别裁决，
+/// 单一通道失败不卡住其余通道（心跳与额度通道不被用量问题阻塞，§6.5）。
+struct FleetReportValidation: Equatable, Sendable {
+    /// 整包拒绝（protocolVersion / 身份 / seq 结构问题）→ HTTP 400。
+    let envelopeError: String?
+    /// nil = 通道缺席；非 nil = 通道存在但校验失败（保留旧数据）。
+    let dailyBucketsError: String?
+    /// 行级过滤后的窗口行（校验失败的行被丢弃，不整通道拒绝）。
+    let windowRows: [FleetWindowUsage]
+    let windowDroppedRowCount: Int
+    /// nil = 通道缺席；非 nil = 通道存在但校验失败。
+    let quotasError: String?
+
+    var envelopeValid: Bool { envelopeError == nil }
+}
+
+enum FleetReportValidator {
+    static func validate(_ report: NodeUsageReport) -> FleetReportValidation {
+        var envelopeError: String?
+        if report.protocolVersion != FleetProtocol.version {
+            envelopeError = "protocolVersion \(report.protocolVersion) != \(FleetProtocol.version)"
+        } else if report.node.nodeID.uuidString == "00000000-0000-0000-0000-000000000000" {
+            envelopeError = "nodeID 全零"
+        } else if report.seq < 0 {
+            envelopeError = "seq \(report.seq) 为负"
+        } else if report.generatedAt.timeIntervalSinceReferenceDate.isFinite == false {
+            envelopeError = "generatedAt 非有限时刻"
+        }
+
+        var dailyError: String?
+        if let buckets = report.dailyBuckets {
+            dailyError = validateDailyBuckets(buckets)
+        }
+
+        var windowRows: [FleetWindowUsage] = []
+        var dropped = 0
+        if let rows = report.windowUsage {
+            for row in rows where rowPassesValidation(row) {
+                windowRows.append(row)
+            }
+            dropped = rows.count - windowRows.count
+        }
+
+        var quotasError: String?
+        if let quotas = report.quotas {
+            quotasError = validateQuotas(quotas)
+        }
+
+        return FleetReportValidation(
+            envelopeError: envelopeError,
+            dailyBucketsError: dailyError,
+            windowRows: windowRows,
+            windowDroppedRowCount: dropped,
+            quotasError: quotasError
+        )
+    }
+
+    private static func validateDailyBuckets(_ buckets: [FleetDailyBucket]) -> String? {
+        guard buckets.count == 7 else { return "dailyBuckets 必须恰有 7 桶，实际 \(buckets.count)" }
+        let dayKeys = buckets.map(\.dayKey)
+        guard Set(dayKeys).count == 7 else { return "dailyBuckets 存在重复 dayKey" }
+        for bucket in buckets {
+            guard isValidDayKey(bucket.dayKey) else { return "dayKey \(bucket.dayKey) 不是 yyyy-MM-dd" }
+            guard bucket.totals == bucket.clientProviders else {
+                return "日桶 \(bucket.dayKey) 的 totals 与 clientProviders 汇总不一致"
+            }
+            for row in bucket.clientProviders {
+                guard FleetProtocol.knownClientIDs.contains(row.clientID),
+                      FleetProtocol.knownQuotaProviderIDs.contains(row.quotaProviderID) else {
+                    return "clientProviders 含未注册 ID: \(row.clientID)/\(row.quotaProviderID)"
+                }
+                guard nonNegative(row.input, row.cacheRead, row.output, row.reasoning, row.turns, row.rounds) else {
+                    return "clientProviders 含负计数"
+                }
+            }
+            for entry in bucket.entries {
+                guard FleetProtocol.knownClientIDs.contains(entry.clientID),
+                      FleetProtocol.knownQuotaProviderIDs.contains(entry.quotaProviderID) else {
+                    return "entries 含未注册 ID: \(entry.clientID)/\(entry.quotaProviderID)"
+                }
+                guard nonNegative(entry.input, entry.cacheRead, entry.output, entry.reasoning),
+                      amountIsConsistent(entry.value, entry.currency) else {
+                    return "entries \(entry.clientID)/\(entry.quotaProviderID) 数值非法"
+                }
+            }
+        }
+        return nil
+    }
+
+    private static func validateQuotas(_ quotas: [FleetQuotaReport]) -> String? {
+        let ids = quotas.map(\.quotaProviderID)
+        guard Set(ids).count == ids.count else { return "quotas 存在重复 provider" }
+        for quota in quotas {
+            guard FleetProtocol.knownQuotaProviderIDs.contains(quota.quotaProviderID) else {
+                return "quotas 含未注册 provider: \(quota.quotaProviderID)"
+            }
+            guard quota.fetchedAt.timeIntervalSinceReferenceDate.isFinite else {
+                return "quotas \(quota.quotaProviderID) fetchedAt 非有限时刻"
+            }
+        }
+        return nil
+    }
+
+    static func rowPassesValidation(_ row: FleetWindowUsage) -> Bool {
+        guard FleetProtocol.knownQuotaProviderIDs.contains(row.quotaProviderID),
+              !row.modelID.isEmpty,
+              !row.windowKind.isEmpty,
+              row.startAt < row.endAt,
+              nonNegative(row.input, row.cacheRead, row.output, row.reasoning),
+              amountIsConsistent(row.value, row.currency),
+              row.observedAt.timeIntervalSinceReferenceDate.isFinite
+        else { return false }
+        return true
+    }
+
+    static func isValidDayKey(_ dayKey: String) -> Bool {
+        let parts = dayKey.split(separator: "-")
+        guard parts.count == 3,
+              parts.allSatisfy({ !$0.isEmpty && $0.allSatisfy(\.isNumber) })
+        else { return false }
+        let year = Int(parts[0]) ?? 0
+        let month = Int(parts[1]) ?? 0
+        let day = Int(parts[2]) ?? 0
+        return (2000...2999).contains(year) && (1...12).contains(month) && (1...31).contains(day)
+    }
+
+    private static func nonNegative(_ values: Int...) -> Bool {
+        values.allSatisfy { $0 >= 0 }
+    }
+
+    /// 配对金额/币种不一致（一有一无）时金额视为缺失（§5.6）；
+    /// 双双存在还要求金额有限。
+    static func amountIsConsistent(_ value: Double?, _ currency: ModelPriceCurrency?) -> Bool {
+        switch (value, currency) {
+        case (nil, nil): return true
+        case let (value?, currency?): return value.isFinite && value >= 0 && currency.rawValue.isEmpty == false
+        default: return false
+        }
+    }
+}
+
+// MARK: - 归因指纹（§7.8）
+
+/// 跨机可比较的归因设置指纹：SHA256 前 8 个十六进制字符。不能用 `Hasher`
+/// ——它的种子每个进程不同。别名与 enabled 都进指纹：两者任何一个变化都会
+/// 改变归属结果。
+enum FleetAttributionFingerprint {
+    static func compute(_ bindings: [ClientProviderBinding]) -> String {
+        let normalized = bindings
+            .sorted { lhs, rhs in
+                if lhs.clientID != rhs.clientID { return lhs.clientID < rhs.clientID }
+                return lhs.quotaProviderID < rhs.quotaProviderID
+            }
+            .map { binding in
+                [
+                    binding.clientID,
+                    binding.quotaProviderID,
+                    binding.enabled ? "1" : "0",
+                    binding.sourceProviderAliases.joined(separator: ",")
+                ].joined(separator: "|")
+            }
+            .joined(separator: "\n")
+        let digest = SHA256.hash(data: Data(normalized.utf8))
+        return digest.map { String(format: "%02x", $0) }.joined().prefix(8).description
+    }
+}
+
+// MARK: - 合并与选举（§7）
+
+/// 纯函数合并内核：hub 与测试共用，不持有任何状态。
+enum FleetMerger {
+    // MARK: 日桶
+
+    /// 各节点的当前七日日桶按 dayKey 合并成 fleet 聚合：
+    /// 权威 totals 独立求和；clientProviders 按 (client, provider) 求和；
+    /// entries 按 (client, provider, model) 求和、金额仅同币种相加、
+    /// coverage 按「有价 + 完整」重推导。只保留 today + previous six。
+    static func mergeDailyBuckets(
+        _ nodeBuckets: [[FleetDailyBucket]],
+        now: Date,
+        calendar: Calendar = .current
+    ) -> [FleetDailyBucket] {
+        let allowedKeys = Set(dayKeyWindow(now: now, calendar: calendar))
+        var byDay: [String: [FleetDailyBucket]] = [:]
+        for buckets in nodeBuckets {
+            for bucket in buckets where allowedKeys.contains(bucket.dayKey) {
+                byDay[bucket.dayKey, default: []].append(bucket)
+            }
+        }
+        return dayKeyWindow(now: now, calendar: calendar).compactMap { dayKey in
+            guard let contributions = byDay[dayKey], !contributions.isEmpty else { return nil }
+            return mergeSingleDay(dayKey: dayKey, contributions: contributions)
+        }
+    }
+
+    private static func mergeSingleDay(dayKey: String, contributions: [FleetDailyBucket]) -> FleetDailyBucket {
+        let totals = contributions.map(\.totals).reduce(FleetTotals.zero, +)
+
+        var clientRows: [String: FleetClientProviderUsage] = [:]
+        for bucket in contributions {
+            for row in bucket.clientProviders {
+                let key = row.clientID + "\u{0}" + row.quotaProviderID
+                if let existing = clientRows[key] {
+                    clientRows[key] = FleetClientProviderUsage(
+                        clientID: existing.clientID,
+                        quotaProviderID: existing.quotaProviderID,
+                        input: SaturatingArithmetic.add(existing.input, row.input),
+                        cacheRead: SaturatingArithmetic.add(existing.cacheRead, row.cacheRead),
+                        output: SaturatingArithmetic.add(existing.output, row.output),
+                        reasoning: SaturatingArithmetic.add(existing.reasoning, row.reasoning),
+                        turns: SaturatingArithmetic.add(existing.turns, row.turns),
+                        rounds: SaturatingArithmetic.add(existing.rounds, row.rounds)
+                    )
+                } else {
+                    clientRows[key] = row
+                }
+            }
+        }
+
+        var entryRows: [String: EntryAccumulator] = [:]
+        for bucket in contributions {
+            for entry in bucket.entries {
+                let key = [entry.clientID, entry.quotaProviderID, entry.modelName ?? ""].joined(separator: "\u{0}")
+                entryRows[key, default: EntryAccumulator(entry: entry)].add(entry)
+            }
+        }
+
+        return FleetDailyBucket(
+            dayKey: dayKey,
+            totals: totals,
+            clientProviders: clientRows.values.sorted {
+                $0.clientID == $1.clientID
+                    ? $0.quotaProviderID < $1.quotaProviderID
+                    : $0.clientID < $1.clientID
+            },
+            entries: entryRows.values
+                .map(\.finalized)
+                .sorted {
+                    ($0.clientID, $0.quotaProviderID, $0.modelName ?? "")
+                        < ($1.clientID, $1.quotaProviderID, $1.modelName ?? "")
+                },
+            totalsComplete: contributions.allSatisfy(\.totalsComplete),
+            modelDetailsComplete: contributions.allSatisfy(\.modelDetailsComplete),
+            sourceTruncated: contributions.contains(where: \.sourceTruncated)
+        )
+    }
+
+    /// 模型明细行：token 从样本聚合，金额由同一批样本计价（同源硬纪律）。
+    /// init 不做累加——首条贡献由调用点的 `.add` 统一处理，避免默认值
+    /// 下标 + 显式 add 重复计数。
+    private struct EntryAccumulator {
+        let clientID: String
+        let quotaProviderID: String
+        let modelName: String?
+        var input = 0, cacheRead = 0, output = 0, reasoning = 0
+        var value: Double?
+        var currency: ModelPriceCurrency?
+        var anyPriced = false
+        var hasUnpriced = false
+        /// 币种冲突后金额整体作废：宁可缺金额，不给跨币种假总价（§7.1）。
+        var currencyConflict = false
+        var truncated = false
+
+        init(entry: FleetUsageEntry) {
+            self.clientID = entry.clientID
+            self.quotaProviderID = entry.quotaProviderID
+            self.modelName = entry.modelName
+        }
+
+        mutating func add(_ entry: FleetUsageEntry) {
+            input = SaturatingArithmetic.add(input, entry.input)
+            cacheRead = SaturatingArithmetic.add(cacheRead, entry.cacheRead)
+            output = SaturatingArithmetic.add(output, entry.output)
+            reasoning = SaturatingArithmetic.add(reasoning, entry.reasoning)
+            truncated = truncated || entry.truncated
+            if let amount = entry.value, let coin = entry.currency {
+                anyPriced = true
+                if let existing = value, let base = currency, base == coin {
+                    value = existing + amount
+                } else if value == nil, currency == nil, !currencyConflict {
+                    value = amount
+                    currency = coin
+                } else {
+                    currencyConflict = true
+                    value = nil
+                    currency = nil
+                }
+            } else {
+                hasUnpriced = true
+            }
+        }
+
+        var finalized: FleetUsageEntry {
+            let hasAmount = value != nil && currency != nil && !currencyConflict
+            return FleetUsageEntry(
+                clientID: clientID,
+                quotaProviderID: quotaProviderID,
+                modelName: modelName,
+                input: input,
+                cacheRead: cacheRead,
+                output: output,
+                reasoning: reasoning,
+                value: value,
+                currency: currency,
+                coverage: FleetCostCoverage(
+                    priced: anyPriced,
+                    fullyPriced: hasAmount && !hasUnpriced,
+                    complete: !truncated
+                ),
+                truncated: truncated
+            )
+        }
+    }
+
+    // MARK: 窗口
+
+    struct NodeWindowContribution: Sendable {
+        let nodeID: UUID
+        let stale: Bool
+        let rows: [FleetWindowUsage]
+    }
+
+    /// 窗口聚合只合并边界**完全相同**的行（键含 provider/model/kind/start/end，
+    /// 时刻精确比较不舍入）；范围不同不混加；缺该范围的已知节点进 missingNodeIDs。
+    static func aggregateWindows(
+        _ contributions: [NodeWindowContribution],
+        knownNodeIDs: [UUID]
+    ) -> [FleetWindowAggregate] {
+        struct Key: Hashable {
+            let quotaProviderID: String
+            let modelID: String
+            let windowKind: String
+            let startAt: Date
+            let endAt: Date
+        }
+        var grouped: [Key: [(nodeID: UUID, stale: Bool, row: FleetWindowUsage)]] = [:]
+        for contribution in contributions {
+            for row in contribution.rows {
+                let key = Key(
+                    quotaProviderID: row.quotaProviderID,
+                    modelID: row.modelID,
+                    windowKind: row.windowKind,
+                    startAt: row.startAt,
+                    endAt: row.endAt
+                )
+                grouped[key, default: []].append((contribution.nodeID, contribution.stale, row))
+            }
+        }
+        let known = Set(knownNodeIDs)
+        return grouped.map { key, members in
+            let contributing = members.map(\.nodeID)
+            let missing = known.subtracting(contributing).sorted { $0.uuidString < $1.uuidString }
+            var valueByCurrency: [String: Double] = [:]
+            var anyPriced = false
+            var allPriced = true
+            for (_, _, row) in members {
+                if let value = row.value, let currency = row.currency {
+                    valueByCurrency[currency.rawValue, default: 0] += value
+                    anyPriced = true
+                } else {
+                    allPriced = false
+                }
+            }
+            return FleetWindowAggregate(
+                quotaProviderID: key.quotaProviderID,
+                modelID: key.modelID,
+                windowKind: key.windowKind,
+                startAt: key.startAt,
+                endAt: key.endAt,
+                input: SaturatingArithmetic.sum(members.lazy.map { $0.row.input }),
+                cacheRead: SaturatingArithmetic.sum(members.lazy.map { $0.row.cacheRead }),
+                output: SaturatingArithmetic.sum(members.lazy.map { $0.row.output }),
+                reasoning: SaturatingArithmetic.sum(members.lazy.map { $0.row.reasoning }),
+                valueByCurrency: valueByCurrency,
+                coverage: FleetCostCoverage(
+                    priced: anyPriced,
+                    fullyPriced: allPriced,
+                    complete: members.allSatisfy { !$0.row.sourceTruncated }
+                ),
+                complete: members.allSatisfy(\.row.complete),
+                contributingNodeIDs: contributing,
+                staleNodeIDs: members.filter(\.stale).map(\.nodeID),
+                missingNodeIDs: Array(missing)
+            )
+        }
+        .sorted {
+            if $0.quotaProviderID != $1.quotaProviderID { return $0.quotaProviderID < $1.quotaProviderID }
+            if $0.modelID != $1.modelID { return $0.modelID < $1.modelID }
+            if $0.windowKind != $1.windowKind { return $0.windowKind < $1.windowKind }
+            return $0.startAt < $1.startAt
+        }
+    }
+
+    // MARK: 额度选举（§2.1 / §7.7）
+
+    struct QuotaCandidate: Sendable {
+        let sourceNodeID: UUID
+        let sourceNodeName: String
+        let report: FleetQuotaReport
+    }
+
+    /// hub 本机有效额度优先（即使本机最近抓取失败，有有效 lastSuccess 就用）；
+    /// 本机无有效额度才从副节点候选里选 `fetchedAt` 最新的一份
+    /// （2026-10-24 裁定按 fetchedAt，不按上报时刻）。过期只标 stale 不淘汰。
+    static func electQuotas(
+        candidates: [QuotaCandidate],
+        hubNodeID: UUID,
+        quotaMaxAgeSeconds: TimeInterval,
+        now: Date
+    ) -> [FleetElectedQuota] {
+        var byProvider: [String: [QuotaCandidate]] = [:]
+        for candidate in candidates where candidate.report.hasActiveQuotaWindow {
+            byProvider[candidate.report.quotaProviderID, default: []].append(candidate)
+        }
+        return byProvider.map { providerID, list -> FleetElectedQuota in
+            let winner: QuotaCandidate
+            if let hubLocal = list.first(where: { $0.sourceNodeID == hubNodeID }) {
+                winner = hubLocal
+            } else {
+                winner = list.max { lhs, rhs in
+                    lhs.report.fetchedAt < rhs.report.fetchedAt
+                }!
+            }
+            let stale = now.timeIntervalSince(winner.report.fetchedAt) > quotaMaxAgeSeconds
+            return FleetElectedQuota(
+                quotaProviderID: providerID,
+                sourceNodeID: winner.sourceNodeID,
+                sourceNodeName: winner.sourceNodeName,
+                fetchedAt: winner.report.fetchedAt,
+                models: winner.report.models,
+                resetCredits: winner.report.resetCredits,
+                planLabel: winner.report.planLabel,
+                accountEmail: winner.report.accountEmail,
+                balanceDetail: winner.report.balanceDetail,
+                isStale: stale
+            )
+        }
+        .sorted { $0.quotaProviderID < $1.quotaProviderID }
+    }
+
+    // MARK: dayKey 工具
+
+    /// today + previous six 的 dayKey 序列（升序，旧 → 新）。
+    static func dayKeyWindow(now: Date, calendar: Calendar = .current) -> [String] {
+        let today = calendar.startOfDay(for: now)
+        return (0..<7).reversed().compactMap { offset in
+            calendar.date(byAdding: .day, value: -offset, to: today).map { dayKey(of: $0, calendar: calendar) }
+        }
+    }
+
+    static func dayKey(of date: Date, calendar: Calendar = .current) -> String {
+        let comps = calendar.dateComponents([.year, .month, .day], from: date)
+        return String(format: "%04d-%02d-%02d", comps.year ?? 0, comps.month ?? 0, comps.day ?? 0)
+    }
+}

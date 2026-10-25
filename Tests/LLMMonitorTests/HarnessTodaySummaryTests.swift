@@ -96,6 +96,115 @@ final class HarnessTodaySummaryTests: XCTestCase {
         XCTAssertNil(summary.sections[0].rows[0].cacheHitRate)
     }
 
+    // MARK: - 行速度（tok/s）
+
+    /// 行速度 = Σ(Output+Reason) ÷ Σ调用时长（`windowTokenRate` 的 Σ/Σ 加权口径，
+    /// 不是各样本速率的算术平均），与行价值同源同批今日样本。
+    func testRowTokensPerSecondIsTheDurationWeightedQuotient() {
+        let status = codexStatus(samples: [
+            // 600 billable tokens / 2s = 300 tok/s
+            sample(model: "gpt-5.5", at: now, input: 1_000, output: 400, reasoning: 200, promptID: "a", duration: 2),
+            // 300 billable tokens / 3s = 100 tok/s
+            sample(model: "gpt-5.5", at: now, input: 1_000, output: 300, promptID: "b", duration: 3)
+        ])
+
+        let row = try! XCTUnwrap(
+            HarnessTodaySummary.summarize(statuses: [status], now: now, calendar: calendar)
+                .sections.first?.rows.first
+        )
+
+        // Σ/Σ = 900 / 5 = 180；算术平均会是 (300 + 100) / 2 = 200。
+        XCTAssertEqual(row.tokensPerSecond ?? 0, 180, accuracy: 1e-9)
+    }
+
+    /// 时长未知的调用不参与：全行都没有有效时长时行速度是 nil（UI 显示「—」，
+    /// 是"没得算"而不是 0）；混入 nil 样本时速率只由带时长的样本决定。
+    func testRowTokensPerSecondIgnoresSamplesWithoutValidDuration() {
+        let allNil = HarnessTodaySummary.summarize(
+            statuses: [codexStatus(samples: [
+                sample(model: "gpt-5.5", at: now, input: 1_000, output: 5_000, promptID: "a"),
+                sample(model: "gpt-5.5", at: now, input: 1_000, output: 5_000, promptID: "b")
+            ])],
+            now: now, calendar: calendar
+        ).sections[0].rows[0]
+        XCTAssertNil(allNil.tokensPerSecond, "全行都没有时长 →「—」（没得算），不是 0")
+
+        let mixed = HarnessTodaySummary.summarize(
+            statuses: [codexStatus(samples: [
+                sample(model: "gpt-5.5", at: now, input: 1_000, output: 999_000, promptID: "a"),
+                sample(model: "gpt-5.5", at: now, input: 1_000, output: 400, promptID: "b", duration: 2)
+            ])],
+            now: now, calendar: calendar
+        ).sections[0].rows[0]
+        XCTAssertEqual(
+            mixed.tokensPerSecond ?? 0, 200, accuracy: 1e-9,
+            "时长未知的调用不参与，速率只由带时长的样本决定"
+        )
+    }
+
+    // MARK: - 段速度（tok/s）
+
+    /// 段速度 = 该 client **今日全部样本**的 Σ/Σ（`windowTokenRate` 唯一口径），
+    /// 不是各行速率的算术平均：样本全集 = 段内各行分组样本的并集。
+    /// 单 provider 客户段由此与 popwindow「额度窗口」表格「今」行的速度同值
+    /// （同一批今日样本、同一函数）。
+    func testSectionTokensPerSecondIsTheQuotientOverAllClientSamples() {
+        // 两行不同模型：600 billable/2s 与 300/3s。段速度 Σ/Σ = 900/5 = 180；
+        // 若误用各行速率的算术平均会得到 (300 + 100) / 2 = 200。
+        let status = codexStatus(samples: [
+            sample(model: "gpt-5.5", at: now, input: 1_000, output: 400, reasoning: 200, promptID: "a", duration: 2),
+            sample(model: "gpt-5.2", at: now, input: 1_000, output: 300, promptID: "b", duration: 3)
+        ])
+
+        let section = HarnessTodaySummary.summarize(statuses: [status], now: now, calendar: calendar)
+            .sections[0]
+
+        XCTAssertEqual(section.rows.count, 2, "前提：两个模型各占一行，段速度聚合在行之上")
+        XCTAssertEqual(section.tokensPerSecond ?? 0, 180, accuracy: 1e-9, "Σ/Σ = 900/5 = 180")
+    }
+
+    /// 段速度的样本全集横跨同一段里的多个 provider 分片：OpenCode 段在两张卡上
+    /// 各有一份贡献，段速度在两份样本的**并集**上算 Σ/Σ，而不是任一分片的速率
+    /// （单分片速率分别是 300 与 100，都 ≠ 180）。
+    func testSectionTokensPerSecondMergesSamplesAcrossProviderShards() {
+        let openAI = opencodeStatus(
+            kind: .codexChatGpt,
+            providerID: OpencodeLocalUsage.openAIProviderID,
+            samples: [sample(model: "gpt-5.5", at: now, input: 1_000, output: 400, reasoning: 200, promptID: "a", duration: 2)]
+        )
+        let zhipu = opencodeStatus(
+            kind: .glmCodingPlan,
+            providerID: OpencodeLocalUsage.glmProviderID,
+            samples: [sample(model: "GLM-5.3", at: now, input: 1_000, output: 300, promptID: "b", duration: 3)]
+        )
+
+        let summary = HarnessTodaySummary.summarize(statuses: [openAI, zhipu], now: now, calendar: calendar)
+
+        XCTAssertEqual(summary.sections.count, 1)
+        let section = summary.sections[0]
+        XCTAssertEqual(section.clientID, ClientID.openCode)
+        XCTAssertEqual(section.rows.count, 2)
+        XCTAssertEqual(
+            section.tokensPerSecond ?? 0, 180, accuracy: 1e-9,
+            "跨分片并集 Σ/Σ = 900/5 = 180，不是任一单分片的 300 或 100"
+        )
+    }
+
+    /// 该 client 今日样本全都没有有效时长 → 段速度 nil（UI 显示「—」，是
+    /// "没得算"而不是 0）。
+    func testSectionTokensPerSecondIsNilWhenNoSampleHasValidDuration() {
+        let status = codexStatus(samples: [
+            sample(model: "gpt-5.5", at: now, input: 1_000, output: 5_000, promptID: "a"),
+            sample(model: "gpt-5.2", at: now, input: 1_000, output: 5_000, promptID: "b")
+        ])
+
+        let section = HarnessTodaySummary.summarize(statuses: [status], now: now, calendar: calendar)
+            .sections[0]
+
+        XCTAssertEqual(section.rows.count, 2)
+        XCTAssertNil(section.tokensPerSecond, "全段都没有时长 →「—」（没得算），不是 0")
+    }
+
     // MARK: - 跨币种段价值
 
     /// 一个客户端横跨两个 provider 分片时（OpenCode 的 openai 分片 + 智谱分片），
@@ -470,6 +579,7 @@ final class HarnessTodaySummaryTests: XCTestCase {
             displayName: "ZCode",
             iconSystemName: "chevron.left.forwardslash.chevron.right",
             buckets: TokenUsageBuckets.zero,
+            tokensPerSecond: nil,
             value: MixedCurrencyEstimate(usd: 0, cny: 0),
             rows: [
                 row(quotaProviderID: QuotaProviderID.zhipu, modelName: "GLM-5.3"),
@@ -525,7 +635,8 @@ final class HarnessTodaySummaryTests: XCTestCase {
         cached: Int = 0,
         output: Int = 0,
         reasoning: Int = 0,
-        promptID: String = "p1"
+        promptID: String = "p1",
+        duration: Double? = nil
     ) -> LocalTokenUsageSample {
         LocalTokenUsageSample(
             completedAt: date,
@@ -534,7 +645,8 @@ final class HarnessTodaySummaryTests: XCTestCase {
             inputTokens: input,
             cachedInputTokens: cached,
             outputTokens: output,
-            reasoningOutputTokens: reasoning
+            reasoningOutputTokens: reasoning,
+            durationSeconds: duration
         )
     }
 

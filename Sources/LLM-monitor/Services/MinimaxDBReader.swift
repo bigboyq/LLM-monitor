@@ -80,6 +80,24 @@ private struct TotalsRow {
     let events: Int
 }
 
+/// `local_runtime_message_rows`(role='assistant') 单行的时长回填条目。
+/// `inputTokens` / `outputTokens` 是 `data_json.$.usage` 里的未缓存输入与输出——
+/// 与 `local_runtime_token_usage` 对应列**逐行相等**（实测 11838/11838，全历史），
+/// 用作 FIFO 配对前的核对依据；`nil` = `$.usage` 缺该字段（空行），永不匹配。
+/// `durationSeconds` = `$.usage.request_duration_ms` / 1000（缺失 / ≤0 → nil）。
+internal struct MinimaxMessageDurationEntry: Equatable {
+    let inputTokens: Int?
+    let outputTokens: Int?
+    let durationSeconds: Double?
+}
+
+/// FIFO 配对键：`(session_id, turn_id)`。`turn_id` 为 NULL / 空串的 message 行
+/// 不参与配对（无法与样本可靠对齐，宁可缺时长也不猜）。
+internal struct MinimaxMessageDurationKey: Hashable {
+    let sessionID: String
+    let turnID: String
+}
+
 /// minimax v2 runtime 数据库的只读 reader。线程模型：单 instance 单线程使用。
 ///
 /// minimax 的 db reader 跟 antigravity 的关键区别：
@@ -239,6 +257,28 @@ final class MinimaxDBReader {
         let sessionCount = totals.first?.sessions ?? 0
         let eventCount = totals.first?.events ?? 0
 
+        // request_duration_ms 回填队列（独立守门，与字符聚合的 degraded 互不影响）。
+        // `local_runtime_message_rows`(role='assistant') 的
+        // `data_json.$.usage.request_duration_ms` 是单次 LLM 请求的完整耗时
+        // （含 TTFT + decode，严格不含工具执行）。**不能**用
+        // `created_at_ms − token 行 ts` 差分替代：95.8% 的 assistant 行
+        // finish_reason="toolUse"，其 created_at_ms 记录的是工具执行完成时刻
+        // （要把 tool_call_result_data 内嵌进同一条行才落盘），差分会把工具耗时
+        // （P90 +30s）算进"模型耗时"。
+        // 本查询失败（坏表 / 缺列 / 锁）只让样本 durationSeconds 保持 nil——主
+        // token 账本、字符聚合与 charAggregationDegraded 都不受影响。不置
+        // degraded 强制重扫：时长是纯增强数据，缺了不改任何 token 数字，只影响
+        // tok/s 的分母覆盖面，活跃 runtime 的指纹 diff（~2 min）很快自然重试。
+        var durationQueues: [MinimaxMessageDurationKey: [MinimaxMessageDurationEntry]] = [:]
+        do {
+            durationQueues = try runtimeAssistantDurationQueues(cutoffMs: cutoffMs)
+        } catch {
+            logWarn(
+                "[minimax/reader] request_duration_ms 回填查询失败，样本 durationSeconds 保持 nil: "
+                    + "source=\(conn.path), error=\(error.localizedDescription)"
+            )
+        }
+
         // 逐次调用只保留 UI 需要的最近窗口。inputTokens 归一为
         // uncached + cacheRead，和 Codex UsageMetricSummary 的语义一致。
         let sampleWhere = cutoffMs == nil
@@ -370,6 +410,22 @@ final class MinimaxDBReader {
                     rawOutput: output,
                     rawReasoning: reasoning
                 )
+                // request_duration_ms 回填：同 (session_id, turn_id) 的 message 行
+                // 按 FIFO 顺序弹出，`$.usage.input_tokens` / `output_tokens` 与账本
+                // 行原始值（nnClamp 后）双核对通过才采纳时长——对不上的条目按序
+                // 丢弃（空行 / 窗口边缘不对齐），队列耗尽仍无匹配则保持 nil，
+                // 宁可缺时长也不把时长安到错误的调用上。
+                var sampleDuration: Double? = nil
+                if let turnID, !turnID.isEmpty {
+                    let key = MinimaxMessageDurationKey(sessionID: sessionID, turnID: turnID)
+                    var queue = durationQueues[key] ?? []
+                    sampleDuration = Self.verifiedDuration(
+                        from: &queue,
+                        ledgerInputTokens: uncachedInput,
+                        ledgerOutputTokens: output
+                    )
+                    durationQueues[key] = queue
+                }
                 return LocalTokenUsageSample(
                     completedAt: Date(timeIntervalSince1970: Double(timestampMs) / 1000),
                     modelName: modelName,
@@ -377,7 +433,8 @@ final class MinimaxDBReader {
                     inputTokens: buckets.cacheInclusiveInput,
                     cachedInputTokens: buckets.cacheRead,
                     outputTokens: buckets.output,
-                    reasoningOutputTokens: buckets.reasoning
+                    reasoningOutputTokens: buckets.reasoning,
+                    durationSeconds: sampleDuration
                 )
             }
         )
@@ -483,6 +540,103 @@ final class MinimaxDBReader {
             }
         }
         return perDayChars
+    }
+
+    /// request_duration_ms 回填队列：保留窗口内 assistant message 行按
+    /// `(session_id, turn_id)` 分组，`id` 升序（行写入序；同 turn 内与账本行
+    /// `ts` 序实测一致，全历史 11838 对 100% 配对）。与字符聚合同表同过滤风格
+    /// （`role = 'assistant'` + created_at_ms cutoff），但**独立守门**——失败由
+    /// `aggregate()` 自己的 do/catch 接住，不进 `charAggregationDegraded`。
+    /// 表不存在 / 缺列（旧 schema、坏 fixture）在 prepare 阶段抛 SQLITE_ERROR，
+    /// 调用方 catch 后队列为空，样本 durationSeconds 全部保持 nil。
+    private func runtimeAssistantDurationQueues(
+        cutoffMs: Int64?
+    ) throws -> [MinimaxMessageDurationKey: [MinimaxMessageDurationEntry]] {
+        let cutoffPredicate = cutoffMs == nil
+            ? ""
+            : " AND (? IS NULL OR created_at_ms >= ?)"
+        let sql = """
+            SELECT
+              session_id,
+              turn_id,
+              json_extract(data_json, '$.usage.input_tokens'),
+              json_extract(data_json, '$.usage.output_tokens'),
+              json_extract(data_json, '$.usage.request_duration_ms')
+            FROM local_runtime_message_rows
+            WHERE role = 'assistant'
+              AND turn_id IS NOT NULL AND turn_id <> ''\(cutoffPredicate)
+            ORDER BY id
+            """
+        struct Row {
+            let sessionID: String
+            let turnID: String
+            let inputTokens: Int?
+            let outputTokens: Int?
+            let durationMs: Double?
+        }
+        let rows = try conn.query(
+            sql: sql,
+            // cutoff 为 nil 时谓词整个不进 SQL（无占位符），必须传 bind: nil。
+            bind: cutoffMs == nil ? nil : SQLiteConnection.bindNullableMsCutoff(cutoffMs, startingAt: 1)
+        ) { stmt -> Row in
+            // `$.usage` 缺字段时 json_extract 返回 SQL NULL；nil 让核对永不匹配
+            // （空行不能把任何时长锁死在队头），而不是当 0 参与比较。
+            func optionalJSONInt(_ column: Int32) -> Int? {
+                guard sqlite3_column_type(stmt, column) != SQLITE_NULL else { return nil }
+                return SQLiteConnection.nnClamp(sqlite3_column_int64(stmt, column))
+            }
+            func optionalJSONDouble(_ column: Int32) -> Double? {
+                guard sqlite3_column_type(stmt, column) != SQLITE_NULL else { return nil }
+                return sqlite3_column_double(stmt, column)
+            }
+            return Row(
+                sessionID: try SQLiteConnection.requiredText(stmt, column: 0),
+                turnID: try SQLiteConnection.requiredText(stmt, column: 1),
+                inputTokens: optionalJSONInt(2),
+                outputTokens: optionalJSONInt(3),
+                durationMs: optionalJSONDouble(4)
+            )
+        }
+        var queues: [MinimaxMessageDurationKey: [MinimaxMessageDurationEntry]] = [:]
+        queues.reserveCapacity(rows.count)
+        for row in rows {
+            guard !row.sessionID.isEmpty, !row.turnID.isEmpty else { continue }
+            let durationSeconds: Double?
+            if let durationMs = row.durationMs, durationMs.isFinite, durationMs > 0 {
+                durationSeconds = durationMs / 1000.0
+            } else {
+                // request_duration_ms 缺失 / 0 / 负值 → nil：tok/s 分母只认有效时长
+                // （0.2–3600s），0 会被 0.2 下界滤掉，但直接不写更诚实。
+                durationSeconds = nil
+            }
+            queues[MinimaxMessageDurationKey(sessionID: row.sessionID, turnID: row.turnID), default: []]
+                .append(MinimaxMessageDurationEntry(
+                    inputTokens: row.inputTokens,
+                    outputTokens: row.outputTokens,
+                    durationSeconds: durationSeconds
+                ))
+        }
+        return queues
+    }
+
+    /// 从 FIFO 队头找出第一条 `input_tokens` / `output_tokens` 都与账本行相等的
+    /// message 条目并返回其时长；核对不上的条目按序丢弃（空行 / 窗口边缘
+    /// 不对齐的行不阻塞后续配对），队列耗尽仍无匹配返回 nil——宁可缺时长，
+    /// 也不把时长安到错误的调用上。`queue` 以 inout 传出让丢弃结果留在队列里。
+    /// static 纯逻辑，单测可直接验证 FIFO / 核对语义（不需要构造 DB）。
+    static func verifiedDuration(
+        from queue: inout [MinimaxMessageDurationEntry],
+        ledgerInputTokens: Int,
+        ledgerOutputTokens: Int
+    ) -> Double? {
+        while !queue.isEmpty {
+            let entry = queue.removeFirst()
+            if let input = entry.inputTokens, let output = entry.outputTokens,
+               input == ledgerInputTokens, output == ledgerOutputTokens {
+                return entry.durationSeconds
+            }
+        }
+        return nil
     }
 
     // MARK: - helpers

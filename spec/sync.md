@@ -1,0 +1,217 @@
+# 多机联动（Fleet Sync）— 核心链路
+
+多副一主的局域网用量/额度联动：每个实例默认只当本机监控；配置了 `sync` 后，
+无 upstream 的实例成为 hub（监听端口、合并报告），有 upstream 的实例成为
+node（定期上报、消费回传快照）。拓扑严格两层，不级联。
+
+- 设计事实源：`docs/reviews/fleet-sync-design.md`（含全部用户裁定与技术默认的
+  裁定记录）。本文件只登记**已实现**的核心链路；UI 与设置页落点尚未实现，
+  见该设计稿 §10 / §10.4。
+- 实现范围（2.0 第一批）：协议 DTO 与校验、Keychain 身份与 seq、`fleet.sqlite`
+  单表存储、报告构建、hub HTTP 服务、node 推送与快照缓存、AppConfig `sync`
+  节（schemaVersion 3）、AppState 按需启动。
+
+## 1. 角色与拓扑不变量
+
+角色由 `SyncRole.derive(config:)` 单源派生（`Models/SyncModels.swift`）：
+
+| 条件 | 角色 |
+|---|---|
+| `sync.enabled != true`（缺省） | `.off`——完全不参与，现有用户零影响 |
+| `sync.enabled` 且 `hubURL` 空白 | `.hub`——监听 `hubPort` |
+| `sync.enabled` 且 `hubURL` 非空 | `.node`——只上报，**不创建** `NWListener` |
+
+写进代码的不变量（§3 of 设计稿）：node 不监听端口；hub 从不主动连 node；
+任一节点的本地显示永不依赖网络（`AppState.startFleetSync` 构造失败只记日志）。
+
+## 2. Wire 协议（HTTP/1.1 最小子集）
+
+| 方法 | 路径 | 语义 |
+|---|---|---|
+| `POST` | `/v1/usage/day` | node 上报 `NodeUsageReport`，hub 同响应回 `FleetSnapshot`（推 + 取一次往返） |
+| `GET` | `/v1/usage/day` | 兜底拉取当前快照 |
+| `GET` | `/v1/health` | `{"ok":true,"nodeID":"<hubUUID>","protocolVersion":1}`——node 靠它验证 hub 身份 |
+
+服务端（`Services/Sync/HubServer.swift`，`NWListener`）：`Content-Length` 定长
+body（不支持 chunked）、`Connection: close`、请求体上限 4 MiB（超限立即 `413`
+不等 body 读完）、响应体上限 2 MiB、路径白名单外 `404`、`Content-Type` 非
+JSON `415`、同一 nodeID 两次请求间隔 < 1s `429`、请求头 > 16 KiB `431`、
+30s 连接看门狗。v1 无认证无 TLS（用户裁定；认证缝见设计稿 §9.2）。
+日志只记 `status bytes`，不记 body/header（§9.3）。
+
+编解码统一走 `FleetCodec.encode/decode`（`dateEncodingStrategy = .iso8601`
+只写一次；漏设会把 `Date` 静默错成 2001 基准 Double）。时刻一律 ISO8601、
+日历日键用 `yyyy-MM-dd` 字符串 `dayKey`（单时区前提，用户裁定；`timezoneID`
+仅诊断元数据，不产生换算分支）。
+
+## 3. 报告与快照形状
+
+DTO 全集（`Models/SyncModels.swift`，对齐设计稿 §5.5）：`NodeUsageReport`
+（外壳：nodeID + 单调 `seq` + `attributionFingerprint`；三通道
+`dailyBuckets` / `windowUsage` / `quotas` 均可选）与 `FleetSnapshot`
+（`hubUUID` + 持久 `generation` + `nodes[]` + `fleet` 聚合 + `electedQuotas`）。
+
+通道语义（§5.1）：`nil` = 本次不更新；日桶存在时必须恰有 7 桶
+（today + previous six）且 authoritative totals 均 complete 才整体替换；
+窗口行按完整边界 `(provider, model, kind, startAt, endAt)` 独立 upsert，
+空数组不删除保留期内旧范围；额度通道独立校验独立替换。金额与 token 必须
+来自同一批样本（同源计价硬纪律）；`FleetCostCoverage` full 额外要求样本集
+完整（截尾金额不能配完整 token 标 full）。
+
+hub 侧校验（`FleetReportValidator`，§5.6）：信封（protocolVersion / UUID /
+seq / 时刻有限性）失败整包 400；日桶校验失败保留旧值（totals 与
+clientProviders 汇总逐字段核对）；窗口行失败只丢该行；`seq <= high-water`
+时所有通道不应用但仍回当前快照（幂等重试）。
+
+## 4. 合并与选举（`FleetMerger` 纯函数）
+
+- 日桶：按 dayKey 求权威 totals；clientProviders 按 (client, provider) 相加；
+  entries 按 (client, provider, model) 相加——金额仅同币种相加，币种冲突整体
+  作废金额（不给跨币种假总价）；coverage 按「有价 + 完整」重推导（full+none
+  → partial）；`totalsComplete` 取 AND、`sourceTruncated` 取 OR。快照只含
+  today + previous six（日切由装配时的 `now` 决定，不等新报告）。
+- 窗口：只合并边界完全相同的行（时刻精确比较）；stale 节点同范围仍贡献并进
+  `staleNodeIDs`；缺该范围的已知节点进 `missingNodeIDs`；金额按币种分列
+  `valueByCurrency`。
+- 额度选举（§2.1 / §7.7）：候选须有 ≥1 `ModelQuota.hasActiveQuotaWindow`
+  （DeepSeek present 余额含 0% 有效）；hub 本机有效额度无条件优先（即使更陈旧）；
+  否则取副节点候选中 `fetchedAt` 最新者（2026-10-24 用户裁定，不按上报时刻）；
+  超过 `quotaMaxAgeSeconds` 只标 `isStale` 不淘汰。来源经
+  `sourceNodeID/sourceNodeName` 表达，wire 不传 `isLocal`。
+
+## 5. 身份与序号（用户裁定 2026-10-24：config 方案，无 Keychain）
+
+`nodeID`（UUID 字符串）就是配置值：首次启用联动时生成并写回
+`config.json` 的 `sync.nodeID`（AppState 注入的 `provisionNodeID` 闭包），
+之后每次启动原样读取——换签名、重装、跨进程都稳定。手工写坏（非法 UUID）
+记警告后重新生成，旧 nodeID 在 hub 侧保留可手动移除。**dotfile 部署注意**：
+直接复制 config 会带着同一身份，每台机器必须改成不同的 `sync.nodeID`。
+
+`lastIssuedSeq` 不进 config（每轮推送都递增，写配置会把热加载管线变成
+推送回路），存 `fleet.sqlite` 的 `kind=seq` 单行：
+`FleetStore.allocateLocalSeq()` 事务内 读→+1→写，**持久化成功才返回**——
+hub 的 high-water 据此拒绝迟到报告（§7.3）。持久化失败本轮不发送、不换身份。
+
+## 6. 存储（`Services/Sync/FleetStore.swift`）
+
+应用自有 `fleet.sqlite`（与 `config.json` 同目录）单表 `sync_records`，
+主键 `(kind, scope, node_id, record_key)`，WAL 模式，NSLock 串行：
+
+| kind | 内容 |
+|---|---|
+| `report` | 每节点当前接受的报告（`FleetStoredReport`：daily/quotas 独立通道 + nodeName/timezoneID/指纹） |
+| `node_meta` | high-water seq + lastSeen（窗口/日桶清理不清除，§7.6） |
+| `window` | 每节点每窗口范围一行；`observedAt` 由 hub 覆写为接收时刻（不信任上报值） |
+| `hub_meta` | generation（跨重启单调可比） |
+| `snapshot` | 副节点快照缓存（scope = upstreamKey + hubUUID，隔离不同上游） |
+
+`applyReport` 单事务：seq 门控 → 通道独立替换/保留 → 窗口 upsert →
+node_meta → 任何可见变化递增 generation。窗口按 `endAt` 早于
+`now - retainDays` 清理；`removeNode` 删除该节点全部行并递增 generation。
+
+## 7. 报告构建（`Services/Sync/UsageReportBuilder.swift`）
+
+从 `ProviderStatus.usageProjection`（既有 L1→L2 投影，归属已裁决）构建：
+
+- 日桶：权威 totals = 各 (client, provider) 日聚合的规范化汇总
+  （`FleetTotals(summing:)`，uncached input / cacheRead 分列，
+  与 `TokenUsageBuckets.fromSample` 同口径）；模型明细从 `recentSamples`
+  分组，金额走 `ModelPricingCatalog.estimate`（同一批样本）。任一来源截断
+  或 freshness `.failed` → `totalsComplete/modelDetailsComplete = false`、
+  `sourceTruncated = true`。
+- reconcile 扫描中（`isScanningLocalUsage` 或 freshness `.scanning`）**省略
+  整条日桶通道**（缓存恢复值不等于已验证，不能当权威值覆盖 hub）；窗口与
+  额度照常。
+- 窗口行：按各 model 的真实窗口边界（`LocalUsageSummaryBuilder.windowBounds`
+  + `windowSamples`，同样本计价）产出 `interval` / `weekly` 行；GLM 闲时任务
+  每窗口单独一行（`windowKind = glmOffPeak`，真实起止）。
+- 额度：仅有有效 `lastSuccess` 且 ≥1 活跃窗口的 provider 上报；
+  DTO 裁掉与用量重复的 `codexUsageDetails`。
+
+## 8. 运行时编排（`Services/Sync/SyncCoordinator.swift`，@MainActor）
+
+- hub：`startHub` 起 `HubServer`（`hubBindHost` 为回环地址时只绑 127.0.0.1）；
+  本机数据变化（防抖 2s）→ 同一 builder 生成报告**不经 HTTP** 直接
+  `applyReport` 并入合并（hub 自己就是一个节点）；60s 维护节拍做窗口清理
+  与快照重算——日切 / stale 翻转这类无报告变化经「可见签名」比对递增
+  generation（§7.5）。
+- node：推送循环由周期节拍（`pushIntervalSeconds`）与数据变更唤醒（5s 节流）
+  共同驱动；每轮 `allocateSeq` → build → （首次）`/v1/health` 握手学 hubUUID
+  → POST。仅当响应对应当前 upstreamKey、已验证 hubUUID 且 generation 严格更新
+  时才写快照缓存（§6.5）；`configVersion` 在任何配置/角色变化时递增，迟到响应
+  丢弃。网络失败保留最后有效快照并标离线；429 视为限流不算离线。
+- 状态：`FleetSyncStatusInfo`（role / online / lastSyncAt / lastError /
+  snapshotGeneration）与 `latestSnapshot` 已 `@Published`，供后续 UI 批次消费。
+
+## 9. 配置与接线
+
+`config.json` 新增 `sync` 节（`SyncConfig`，逐字段容错，坏值按未配置处理），
+`schemaVersion` 2 → 3；缺省 `enabled = false`。字段与默认值见 `config.md`
+§Config Schema 的 `sync` 行。
+
+`AppState`：`start()` 时仅当 `sync.enabled` 才构造 `FleetSyncCoordinator`
+（`fleet.sqlite` 落 `config.json` 同目录；身份经 `provisionNodeID` 闭包写回
+config）；运行期配置启用由
+配置订阅补启动；`statusDidChange`（quota 刷新 / scanner 应用 / rebuild 的
+统一广播）驱动 `update(config:statuses:)`；`stop()` 停机。未启用时
+`fleetSync == nil`，现有行为零变化。
+
+## 10. UI 落点（已实现，2.0 第二批 · b5006a6）
+
+两条轴（§10.0）：**用量 scope** 用户切（`AppState.fleetScope`，dock 浮层与
+菜单兜底 hover 卡共用同一份，仅内存态）；**额度来源** 自动
+（`AppState.fleetEffectiveQuota(for:)` 统一入口：本机有效 lastSuccess 优先，
+否则 elected，来源经 `FleetEffectiveQuota.sourceTagText` 标注——本机不标 /
+`来自 X` / `来自 X · 已过期`）。额度不跟 scope 走。
+
+- **卡片**（`ProviderCardView` + `FleetCardContext`，两宿主同源注入）：
+  多节点时标题行出现「本机/全局」分段 + 来源标注；全局 scope 下窗口表
+  （5h/周/闲/fleet 今行）与 7 天卡读 `FleetUsageProjection.cardUsage`
+  （快照口径），额度区块照常走生效额度。圆环/边缘窗常驻面仍读本机
+  provider 状态（§10.1 的圆环改造未做，见下）。
+- **菜单**（`HarnessUsageMenuView`）：fleet 多节点时顶部「今日全部 /
+  今日本机」并排两行 + fleet 占比条；client 段头 = 该 client 的 fleet
+  权威日合计；段内**节点行全宽不缩进**（细分隔线 + 次要色，§10.6 K），
+  本机第一、其余 token 降序、stale 标「离线」；模型行各节点明细
+  （`nodes[].entries`，不反推段头）。**单节点 / 未启用时整棵树逐字保持
+  现状**（§10.6 L 退化规则，`FleetMenuSummary.multiNode` 门控）。
+- **入列并集**（§7.7）：`AppState.fleetVisibleStatuses()` = 本机已启用
+  provider ∪ 仅有 elected 额度的 provider（后者合成最小 status，卡片上有
+  来源标注说明非本机抓取）；菜单兜底行与 iconDuo
+  （`statusBarQuotaMetrics`）都走它。
+- **设置页**（`SettingsSyncPane`，SettingsTab.sync，排版走设置页统一组件
+  `SettingsSection`/`SettingsControlRow`，字段回车即存）：启用开关、hubURL /
+  端口 / 上报周期 / 节点名（`ConfigStore.applyAndSave` 写穿持久化）、
+  主节点复制局域网地址（en0 IPv4）、已连接节点（**只列副节点，hub 自身
+  参加合并但不进列表**；最后上报 / seq / 离线 / 移除 →
+  `removeNodeFromFleet`）、全局摘要（节点数标注含本机）、各 provider
+  额度来源、归因指纹不一致标黄（`FleetNodeSnapshot.attributionFingerprint`）。
+
+### 收尾（6b90b16，原遗留三项已全部实现）
+
+- **边缘窗常驻圆环读生效额度**：`AppState.fleetQuotaEffectiveStatuses()`
+  在入列并集之上，把「本机无有效额度但 fleet 有 elected」的卡替换为
+  `.ok(elected)`；`EdgeDockContentView` 与 `EdgeDockController+Window`
+  两个投影调用点都切换到该视图。缓存失效随既有 statusDidChange 广播。
+- **node 侧 GET 兜底**：推送被 hub 拒（4xx/5xx）但链路通时拉一次快照
+  （`SyncClient.fetchSnapshot`），走同一 upstreamKey+hubUUID+generation
+  门控；429 仍只记日志不算离线。
+- **窗口范围选择器**（§10.7.1 W 裁定，2026-10-24 已确认）：
+  `cardUsage(preferredWindowEnds:)` 对同 (model, kind) 的多个已报告范围，
+  优先取与当前生效额度边界**完全一致**的范围（`preferredRange`），无匹配
+  取 `endAt` 最新者；偏好边界由 `AppState.preferredWindowEnds(of:)` 从
+  生效额度主 model 的 `intervalResetsAt` / `weeklyResetsAt` 派生。
+
+## 测试
+
+`SyncModelsTests`（codec 往返 / 校验 / 合并 / 选举 / 指纹 / 角色派生）、
+`NodeIdentityTests`（seq 先持久化、失败不换身份、强制重置）、
+`FleetStoreTests`（重放拒绝、通道独立、窗口 upsert 与清理、generation 跨重启、
+快照缓存隔离）、`UsageReportBuilderTests`（七桶权威 totals、同样本计价、
+额度门控、扫描省略日桶）、`FleetSyncIntegrationTests`（回环端到端：health
+握手、合并与选举入快照、重放不覆盖、心跳、429/413/415/404、hub 本机并入、
+node 协调器上线与缓存落盘）、`FleetUsageModelsTests`（生效额度三态与来源
+标注、菜单单节点退化 / 双行合计 / 节点排序、卡片窗口行与不完整标记、
+混币金额文案）。
+
+> 核对基线：2026-10-24 · 代码 094110e

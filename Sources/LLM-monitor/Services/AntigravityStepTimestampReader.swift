@@ -60,6 +60,129 @@ enum AntigravityStepTimestampReader {
         })
     }
 
+    // MARK: - agy 方案 A：LLM step 流式时长（field 1 发起 → field 7 流式完成）
+
+    /// agy 本地会话 `conversations/<session>.db` 的 `steps` 表里，`step_type = 15`
+    /// 行的 metadata protobuf 携带两个 Timestamp：field 1 = 该 step 的发起时刻
+    /// （与 transcript 行 `created_at` 同值，整秒），field 7 = 流式完成时刻
+    /// （纳秒级）。本查询把全部 LLM steps 的 `f7 − f1` 纳秒差按 `idx` 收成映射；
+    /// metadata 缺失或两个 Timestamp 任一不可解析的行不出现在结果里。
+    ///
+    /// 必须经 `SQLiteTempCopy.read` 调用（原路径 READONLY + WAL 竞态兜底由外层
+    /// 负责，与 `timestamps(dbPath:stepIndices:)` 同一纪律）。
+    static func llmStepStreamDurationNanos(dbPath: URL) throws -> [Int: Int64] {
+        let connection = try SQLiteConnection(path: dbPath, readOnly: opensReadOnly(dbPath: dbPath))
+        let rows = try connection.query(
+            sql: """
+                SELECT idx, metadata
+                FROM steps
+                WHERE step_type = 15
+                """,
+            map: { statement in
+                let index = Int(sqlite3_column_int64(statement, 0))
+                guard sqlite3_column_type(statement, 1) != SQLITE_NULL,
+                      let blob = sqlite3_column_blob(statement, 1) else {
+                    return (index, Optional<Int64>.none)
+                }
+                let length = Int(sqlite3_column_bytes(statement, 1))
+                return (index, Self.streamDurationNanos(from: Data(bytes: blob, count: length)))
+            }
+        )
+        return Dictionary(uniqueKeysWithValues: rows.compactMap { index, nanos in
+            guard let nanos else { return nil }
+            return (index, nanos)
+        })
+    }
+
+    /// Test surface：单条 metadata blob 的双 Timestamp 解析（`f7 − f1` 纳秒差）。
+    nonisolated static func streamDurationNanosForTest(from metadata: Data) -> Int64? {
+        streamDurationNanos(from: metadata)
+    }
+
+    /// 解析 metadata protobuf 信封里的 field 1（发起）与 field 7（流式完成）两个
+    /// length-delim Timestamp 子消息，返回 `f7 − f1` 纳秒差。与 `timestamp(from:)`
+    /// 同一套 varint 上界纪律（varint 一律不得越过自己的消息边界）；任一字段
+    /// 缺失或 Timestamp 不完整 → nil。只做增量添加，不改变既有解析行为。
+    private static func streamDurationNanos(from metadata: Data) -> Int64? {
+        var startNanos: Int64?
+        var endNanos: Int64?
+        var cursor = 0
+        while cursor < metadata.count {
+            guard let key = readVarint(from: metadata, cursor: &cursor, limit: metadata.count) else { return nil }
+            let field = key >> 3
+            let wireType = key & 7
+            switch wireType {
+            case 2:
+                // 先比 cursor <= count 再比 length：双保险防止 readVarint 越过
+                // 消息边界后 count - cursor 变负、UInt64(负数) 前置条件 trap。
+                guard cursor <= metadata.count,
+                      let length = readVarint(from: metadata, cursor: &cursor, limit: metadata.count),
+                      length <= UInt64(metadata.count - cursor),
+                      length <= UInt64(Int.max) else { return nil }
+                let end = cursor + Int(length)
+                let submessage = metadata.subdata(in: cursor..<end)
+                if field == 1 { startNanos = timestampNanos(from: submessage) }
+                if field == 7 { endNanos = timestampNanos(from: submessage) }
+                cursor = end
+            case 0:
+                guard readVarint(from: metadata, cursor: &cursor, limit: metadata.count) != nil else { return nil }
+            case 1:
+                guard cursor <= metadata.count - 8 else { return nil }
+                cursor += 8
+            case 5:
+                guard cursor <= metadata.count - 4 else { return nil }
+                cursor += 4
+            default:
+                return nil
+            }
+        }
+        guard let startNanos, let endNanos else { return nil }
+        return endNanos - startNanos
+    }
+
+    /// 单个 protobuf Timestamp 子消息（field 1 = seconds varint、field 2 = nanos
+    /// varint）→ 绝对纳秒。epoch 合理域与 `timestamp(from:)` 同款（2000–2100）。
+    private static func timestampNanos(from data: Data) -> Int64? {
+        var cursor = 0
+        var seconds: Int64?
+        var nanos: Int64 = 0
+        while cursor < data.count {
+            guard let key = readVarint(from: data, cursor: &cursor, limit: data.count) else { return nil }
+            let field = key >> 3
+            let wireType = key & 7
+            switch wireType {
+            case 0:
+                guard let value = readVarint(from: data, cursor: &cursor, limit: data.count) else { return nil }
+                if field == 1 {
+                    seconds = Int64(bitPattern: value)
+                } else if field == 2 {
+                    guard value <= UInt64(Int64.max) else { return nil }
+                    nanos = Int64(value)
+                }
+            case 1:
+                guard cursor <= data.count - 8 else { return nil }
+                cursor += 8
+            case 2:
+                guard cursor <= data.count,
+                      let nestedLength = readVarint(from: data, cursor: &cursor, limit: data.count),
+                      nestedLength <= UInt64(data.count - cursor),
+                      nestedLength <= UInt64(Int.max) else { return nil }
+                cursor += Int(nestedLength)
+            case 5:
+                guard cursor <= data.count - 4 else { return nil }
+                cursor += 4
+            default:
+                return nil
+            }
+        }
+        guard let seconds, (0 ... 999_999_999).contains(nanos) else { return nil }
+        let date = Date(timeIntervalSince1970: Double(seconds) + Double(nanos) / 1_000_000_000)
+        let epoch = date.timeIntervalSince1970
+        guard epoch >= 946_684_800, epoch < 4_102_444_800 else { return nil }
+        // epoch 守卫已保证 seconds 为正且 < 4_102_444_800，乘积不会溢出 Int64。
+        return seconds * 1_000_000_000 + nanos
+    }
+
     /// Test surface for the small protobuf envelope used by `steps.metadata`.
     nonisolated static func timestampForTest(from metadata: Data) -> Date? {
         timestamp(from: metadata)

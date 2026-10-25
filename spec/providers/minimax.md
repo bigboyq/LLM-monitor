@@ -38,6 +38,7 @@ contributors are specified in their own files.
 | Local table | `local_runtime_token_usage` |
 | Local scanner | `MinimaxLocalUsageScanner` — mtime/size + WAL mtime/size diff + single-source scan + 7-day display window (8-day retention on disk) |
 | Local R/T | `COUNT(*)` rounds + `COUNT(DISTINCT turn_id)` turns, computed in SQL (no cross-source join) |
+| Local duration | 样本 `durationSeconds` 来自 `local_runtime_message_rows.data_json.$.usage.request_duration_ms`（按 `(session_id, turn_id)` FIFO 配对 + input/output 双核对回填，见 §SQL aggregation strategy 的 "request_duration_ms 回填"；**不能**用 `created_at_ms − ts` 差分——toolUse 行的 created_at_ms 是工具完成时刻） |
 | Local reasoning | 字符比例分摊 `output_tokens` — 从 `local_runtime_message_rows.data_json` 的 `thinking_content` + `msg_content` + `tool_calls[].tool_call_args` 字符数按 `R/(R+C)` 比例分摊账单 output。守恒 `reason + realOutput == output`。公式走共享工具 `Models/ReasoningCharSplit.swift`（`split(outputTokens:reasoningChars:visibleChars:)`），与 ZCode 非智谱 provider 分片、OpenCode `minimax` 分片、DSH M3、Agy 同一实现 |
 | SQLite read strategy | Direct read `SQLITE_OPEN_READONLY`（无 `-shm` 且无非空 `-wal` 时走 `file:...?immutable=1`）+ `busy_timeout(300)` + `extended_result_codes(1)`；file-level 错误（CANTOPEN 14 / BUSY 5 / READONLY 8 / IOERR 10 / CORRUPT 11）回退 `/tmp/{uuid}.db` 副本，副本以 `SQLITE_OPEN_READWRITE` 打开完成 WAL recovery |
 | Models | M3（`minimax/MiniMax-M3`，99.97% of data）；定价目录仅支持 M3 及以上 —— M2 系列（M2.7 / M2.5 / M2.1）已退休，其历史用量显示"未定价"（有意行为）。M3.1 Flash 系列有独立条目（关键字 `3.1-flash`，contains，**¥1 / ¥0.1 / ¥4**，比 M3 的 ¥2.1 / ¥0.42 / ¥8.4 便宜），真实 model_id 有三种写法：ZCode `MiniMax-M3.1-Flash-Preview`、DSH `Minimax-M3.1-flash-preview`、MiniMax Code session 目录 `MiniMax-M3.1-Flash`；该条目必须排在 `m3` 条目**之前** —— 否则 "首条命中" 会让 M3.1 Flash 落到 M3 条目上。**注意**：`minimax/MiniMax-M3` 是 runtime 写的泛化标签，不是真实模型（见 §Model resolution for samples） |
@@ -274,7 +275,7 @@ dirty source via direct SQLite queries on the `local_runtime_token_usage` table.
 
 ```json
 {
-  "version": 14,
+  "version": 16,
   "lastScannedAt": "2026-07-16T00:00:00Z",
   "sources": {
     "runtime": {
@@ -318,10 +319,12 @@ only the changed source's contribution without rebuilding unrelated cache state.
    | v13 | `MinimaxDBReader` 增加 model 回退链：row-level `model` → session-level `record_json.effectiveModel` → ledger 唯一模型（仅当 ledger 只有一个 distinct model；多模型时不猜）；旧 samples 全量重建以应用新模型解析 |
    | v14 | 重新规范化样本 `inputTokens` 为 `uncached + cache_read`（cache-inclusive），与 Codex/DSH 的 sample 字段语义对齐；`tokenComponents` 统一假设 cache-inclusive 输入后，无需再为 Minimax 走特殊分支。旧 snapshots 全量重建 |
    | v15 | 模型名改从 session 目录的 `llm-call.json` 取**真实模型**（见 §Model resolution for samples），账本/投影里的 `minimax/MiniMax-M3` 泛化标签不再当模型名用。旧 samples 带的是错标模型名，必须全量重建才能改对 |
+   | v16 | 样本 `durationSeconds` 改由 `local_runtime_message_rows.$.usage.request_duration_ms` FIFO 回填（单次 LLM 请求完整耗时，供窗口 tok/s 分母，见 §SQL aggregation strategy 的 "request_duration_ms 回填"）。旧 samples 没有时长值，必须全量重建才能补上 |
 
-   当前 scanner 的 `currentVersion` 是 15（`CacheIndex.empty.version` 与
-   `loadIndex(currentVersion: 15)` 两处一致）。v15 的 bump 理由见
-   `CacheIndex.empty` 的行内注释（`MinimaxLocalUsageScanner.swift`），v12 / v13 / v14 见上表。
+   当前 scanner 的 `currentVersion` 是 16（`CacheIndex.empty.version` 与
+   `loadIndex(currentVersion: 16)` 两处一致）。v16 的 bump 理由见
+   `CacheIndex.empty` 的行内注释（`MinimaxLocalUsageScanner.swift`），
+   v12 / v13 / v14 / v15 见上表。
 
    **Why WAL dimension was added**: minimax v2 runtime uses SQLite WAL mode and may go **36+ hours without checkpointing** — new writes accumulate in `runtime-state.sqlite-wal` (observed up to 5.4MB before flush) while `.db`'s mtime/size stay frozen. The old two-dimension diff (`mtime || size`) could not detect this, leaving the UI without 7/25-7/26 data until the runtime finally flushed. The WAL size is a direct signal: `walSize` increasing = new data waiting. WAL truncation on checkpoint is captured by `.db`'s mtime jump (runtime `fsync` after WAL write), so the old dimension still catches that case. WAL **mtime** was added alongside size because a checkpoint can rewrite a WAL back to a similar size, and size alone would miss a content-only update.
 2. **Per-source incremental aggregation**: `index.dailyBySource["runtime"]` stores the day-keyed breakdown. When runtime changes, only its daily map is replaced.
@@ -521,6 +524,36 @@ UI 只消费最近 7 天，dirty 重扫时无下界的全表 `GROUP BY` 是纯�
 把 `charSplitDegraded` 写进 source 的 fingerprint entry（optional 字段，旧 cache 解码
 为 nil，无需 bump 版本），下一轮扫描即使 db 指纹未变也强制重扫重试，直到字符聚合
 恢复成功并清除标记。warning 日志只含 source 路径与错误摘要，不落消息正文。
+
+**request_duration_ms 回填（样本 durationSeconds，cache v16）**: 样本的
+`LocalTokenUsageSample.durationSeconds`（单次 LLM 请求完整耗时，窗口 tok/s 分母
+`LocalUsageSummaryBuilder.windowTokenRate` 只认 0.2–3600 秒）来自同一张
+`local_runtime_message_rows`（role='assistant'）的
+`data_json.$.usage.request_duration_ms`（毫秒；含 TTFT + decode，严格不含工具执行）。
+reader 在 `runtimeAssistantDurationQueues` 里把窗口内 assistant 行按
+`(session_id, turn_id)` 分组成 FIFO 队列（`ORDER BY id` 行写入序，同 turn 内与账本行
+`ts` 序实测一致），再在样本 map 闭包里经
+`MinimaxDBReader.verifiedDuration(from:ledgerInputTokens:ledgerOutputTokens:)` 逐样本
+弹出：条目的 `$.usage.input_tokens` / `$.usage.output_tokens` 与账本行原始值
+**双核对通过**才采纳——实测两者与账本对应列逐行相等（全历史 11838/11838 对；
+`$.usage.input_tokens` 是未缓存口径，不是 cache-inclusive），对不上的条目按序丢弃
+（空行 / 窗口边缘不对齐的行不阻塞后续配对），队列耗尽仍无匹配则 `durationSeconds`
+保持 nil——宁可缺时长，也不把时长安到错误的调用上。`request_duration_ms` 缺失 /
+0 / 负值同样写 nil。`turn_id` 为 NULL / 空串的 message 行（SQL 侧过滤）与 `turnID`
+为 nil 的样本（promptID 落 `event-<ts>`，子代理旧数据）都不参与配对。
+
+**为何不能用 created_at 差分**：`created_at_ms − token 行 ts` 对
+`finish_reason="toolUse"`（占 95.8%）的 assistant 行算出的是**工具执行完成时刻**与
+请求发起时刻的差——这类行要把 `tool_call_result_data` 内嵌进同一条 assistant 行才
+落盘，差分会把工具耗时（P90 +30.1s）算进"模型耗时"。`request_duration_ms` 是
+runtime 原生记录的单次请求耗时，无此污染。实测保留窗口 3054/3054（100%）精确配对。
+
+**独立守门**：时长查询与字符聚合同表同过滤风格，但 do/catch 各自独立——查询失败
+（坏表 / 缺列 / 锁）只让全部样本 `durationSeconds` 保持 nil，主 token 账本、字符聚合
+与 `charAggregationDegraded` 均不受影响，也**不**置 degraded 强制重扫：时长是纯增强
+数据，缺了不改任何 token 数字，只影响 tok/s 分母覆盖面，活跃 runtime 的指纹 diff
+（~2 min）很快自然重试。`applyReasoningSplit(samples:)` 重建样本时原样保留
+`durationSeconds`（有单测锁定）。
 
 ### Reasoning split (output → realOutput + reason)
 
@@ -884,7 +917,7 @@ semantic used by GLM; other non-zero business codes remain decoding errors.
 | `aggregateFromDB` throws SQL error (e.g. wrong table name) | `logInfo` + skip；`index.dailyBySource[source]` 与 `samplesBySource[source]` 保留（不覆盖），指纹不推进，下一轮自然重试 |
 | `aggregateFromDB` throws any other error | `logInfo` + skip；existing data preserved |
 | 唯一的 runtime source 失败 | `failedSessionCount > 0` → `scanResultIsComplete` 为 false，source 保持 dirty / failed 供下一轮 reconcile 重试；已有日桶仍展示 |
-| `index.json` version mismatch (≠ 14) | Reset to `.empty`, full re-scan next time |
+| `index.json` version mismatch (≠ 16) | Reset to `.empty`, full re-scan next time |
 | `index.json` parse error | Reset to `.empty`, full re-scan next time |
 | 冷启动时 `calendarSignature` 不匹配 | 不展示旧快照（返回 nil），等第一次 scan 按当前日历重建 |
 | 字符聚合 SQL 失败（token 账本仍成功） | 主账本照常返回，Reason = 0，`charSplitDegraded` 置位并强制下一轮重扫 |
@@ -1005,9 +1038,15 @@ Minimax tests are located in `Tests/LLMMonitorTests/MinimaxResponseParsingTests.
   - `testV2CharacterAggregationUsesToolArgsExcludesResultsAndPreservesOutput`: verifies v2 character aggregation filters and output conservation.
   - `testV2CharSQLFailureKeepsTokenLedgerAndMarksDegradedForRetry`: keeps the token ledger and marks character aggregation degraded.
   - `testPerRowReasoningExprTakesMaxOfNativeAndRaw`: verifies single-row dual-source `MAX` selection between native `reasoning_tokens` and `raw.reasoning`.
+  - `testV2DurationBackfillPairsFIFOAcrossTurns`: `request_duration_ms` 按 `(session_id, turn_id)` FIFO 1:1 回填 `durationSeconds`，跨 turn 互不串；主账本字段不受影响。
+  - `testV2DurationBackfillSkipsMismatchedEntryAndKeepsFIFOOrder`: input/output 核对失败的条目按序丢弃，不阻塞同 turn 后续配对。
+  - `testV2DurationBackfillEmptyRowAndMissingOrZeroDurationGivesNil`: `$.usage` 缺失的空行永不匹配；命中条目缺 `request_duration_ms` / 值 0 / 无 message 行 → `durationSeconds` 保持 nil。
+  - `testV2DurationSQLFailureKeepsSamplesUnaffected`: 坏表（`breakMessageTableSchema` 缺 `data_json`）时时长查询独立守门——不 throw、样本路径与主账本原样、`charAggregationDegraded` 语义不变。
+  - `testVerifiedDurationPopsFIFOUntilTokenMatch`: FIFO 弹出 + 双核对的纯逻辑契约（空行永不匹配 / 命中即停 / 队列耗尽 → nil）。
 - **v2 Scanner (`MinimaxLocalUsageScannerTests.swift`)**:
   - `testV2DegradedSourceIsRetriedAndRecovers`: retries a degraded source and clears the flag after recovery.
   - `testV2UnsafeCharacterRatioDropsOnlyMisalignedDay`: filters abnormal character-count days.
+  - `testApplyReasoningSplitPreservesDurationSeconds`: 字符分摊重建样本时原样保留 `durationSeconds`（丢了该样本在 tok/s 分子分母里都不计）。
   - `testV2CacheMigrationResetsLegacySourceData`: resets incompatible cached source data for the v2-only policy.
   - `testScannerReadsOnlyRuntimeDatabaseEvenWhenSiblingLegacyDatabaseExists`: ignores a sibling legacy database.
   - `testMinimaxRestoresCachedUsageOnColdStart` / `testPrunesDailyBucketsOlderThanEightDayWindowOnSave`: cached-result restore and 8-day bucket hygiene.
@@ -1046,4 +1085,4 @@ reasoning maximum, character aggregation, and output conservation.
 
     To realize this split, the fetcher must persist every `current_interval_remaining_percent` sample with a timestamp. Currently it only stores the most recent value in `ModelQuota`; a `local_runtime_quota_snapshots(model_name, ts, interval_remaining_percent, weekly_remaining_percent, interval_total_count, interval_usage_count, weekly_total_count, weekly_usage_count)` table is needed, and `local_runtime_token_usage` should gain a `quota_snapshot_id` so each row can be tagged "inside plan" vs "credits".
 
-> 核对基线：2026-10-20 · 代码 ff9e2f5
+> 核对基线：2026-10-25 · 代码 0304521

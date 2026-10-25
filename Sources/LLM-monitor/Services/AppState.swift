@@ -13,17 +13,20 @@ import AppKit
 enum SettingsTab: Identifiable {
     case general
     case energy
+    case sync
     case provider(FetcherDescriptor)
     case clients
 
     static let generalID = "general"
     static let energyID = "energy"
+    static let syncID = "sync"
     static let clientsID = "clients"
 
     var id: String {
         switch self {
         case .general: return Self.generalID
         case .energy: return Self.energyID
+        case .sync: return Self.syncID
         case .provider(let d): return d.id
         case .clients: return Self.clientsID
         }
@@ -33,6 +36,7 @@ enum SettingsTab: Identifiable {
         switch self {
         case .general: return "常规"
         case .energy: return "节能"
+        case .sync: return "多机联动"
         case .provider(let d): return d.settingsTabTitle ?? d.displayName
         case .clients: return "客户端"
         }
@@ -42,6 +46,7 @@ enum SettingsTab: Identifiable {
         switch self {
         case .general: return "gearshape"
         case .energy: return "powersleep"
+        case .sync: return "personalhotspot"
         case .provider(let d): return d.iconSystemName
         case .clients: return "terminal"
         }
@@ -51,6 +56,7 @@ enum SettingsTab: Identifiable {
         switch self {
         case .general: return "刷新节奏与应用启动行为"
         case .energy: return "系统睡眠健康度与防止休眠"
+        case .sync: return "多台机器的用量与额度联动"
         case .provider(let d): return d.settingsTabSubtitle ?? ""
         case .clients: return "本地客户端用量与 Provider 映射"
         }
@@ -142,6 +148,19 @@ final class AppState: ObservableObject {
     }()
 
     private var sleepHealthCancellable: AnyCancellable?
+
+    /// 多机联动（2.0 核心链路）：hub 服务 / node 推送的运行时。
+    /// `sync.enabled = false`（缺省）时为 nil——现有用户零影响。
+    /// `internal` 供测试注入与观测。
+    private(set) var fleetSync: FleetSyncCoordinator?
+    private var fleetSyncCancellable: AnyCancellable?
+    /// node：hub 回传的最近快照（hub：本机装配快照）。UI 唯一的 fleet 数据入口。
+    @Published private(set) var fleetSnapshot: FleetSnapshot?
+    /// 同步运行时状态（连接 / 错误 / generation），设置页与菜单消费。
+    @Published private(set) var fleetRuntimeStatus = FleetSyncStatusInfo()
+    /// 用量 scope（§10.0 两条轴之一）：dock 浮层与菜单 hover 卡共用；仅内存态。
+    @Published var fleetScope: FleetScope = .local
+    private var fleetStateCancellables = Set<AnyCancellable>()
 
     /// 统一的 statuses 广播通道。
     ///
@@ -277,11 +296,35 @@ final class AppState: ObservableObject {
         descriptors.first(where: { $0.kind == kind })?.id
     }
 
+    /// 外观写入 `NSApp.appearance`（nil = 跟随系统）。设置窗与全部面板随之
+    /// 切换；菜单栏 MenubarExtra 的原生呈现仍由系统决定。
+    ///
+    /// `start()` 在应用入口早期执行，彼时 SwiftUI App 机制可能还没把
+    /// NSApplication 建出来——静默跳过就是「启动不生效、改配置才生效」。
+    /// NSApp 未就绪时下一个主循环重试一次（只重试一次，测试进程里
+    /// NSApp 恒 nil 时不会排成自旋）。
+    func applyAppearance() {
+        guard let app = NSApp else {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, NSApp != nil else { return }
+                self.applyAppearance()
+            }
+            return
+        }
+        app.appearance = configStore.config.effectiveAppearance.nsAppearance
+    }
+
     // MARK: - 生命周期
 
     func start() {
         // `stop()` 也会取消配置 watcher；允许生命周期重启时恢复配置热加载。
         configStore.startWatching()
+        applyAppearance()
+
+        // 多机联动：仅在配置显式启用时启动（缺省 false）。
+        if configStore.config.effectiveSyncConfig.enabled {
+            startFleetSync()
+        }
 
         // 启动时立即对「节能」睡眠健康度进行一次首评（不等错峰延迟，立即展示健康灯）
         sleepHealth.refreshNow()
@@ -315,10 +358,176 @@ final class AppState: ObservableObject {
         nextRefreshAt = nil
         sleepHealth.stop()
         configStore.stopWatching()
+        fleetSync?.stop()
         // 停机兜底：基线正常走 actor 异步串行落盘，进程可能在 encode + fsync 的
         // 毫秒级窗口里退出而丢掉最后一次基线（重启后停机期间的耗尽/恢复就补报不了）。
         // stop() 是同步路径，不能 await actor，这里同步写完再返回。
         triggerStateStore.flushSynchronously()
+    }
+
+    // MARK: - 多机联动接线（2.0 核心链路）
+
+    /// 构造并启动 `FleetSyncCoordinator`：身份走 Keychain，状态存同目录
+    /// `fleet.sqlite`（独立于 token-monitor 缓存，§5.7）。构造失败只记日志，
+    /// 不影响主功能——本地显示永不依赖网络（§3 不变量 3）。
+    private func startFleetSync() {
+        if let fleetSync {
+            fleetSync.update(config: configStore.config, statuses: statuses)
+            return
+        }
+        do {
+            let storeURL = configStore.configURL
+                .deletingLastPathComponent()
+                .appendingPathComponent("fleet.sqlite")
+            let coordinator = FleetSyncCoordinator(
+                store: try FleetStore(url: storeURL),
+                provisionNodeID: { [weak self] uuid in
+                    // 身份就是配置值（用户裁定 2026-10-24）：首次生成后写回
+                    // config.json 的 sync.nodeID，之后原样读取。
+                    guard let self else { return }
+                    var config = self.configStore.config
+                    var sync = config.sync ?? SyncConfig.default
+                    sync.nodeID = uuid.uuidString
+                    config.sync = sync
+                    do {
+                        try self.configStore.applyAndSave(config)
+                    } catch {
+                        logError("[fleet] 写回 sync.nodeID 失败: \(error.localizedDescription)")
+                    }
+                }
+            )
+            fleetSync = coordinator
+            // coordinator 的两个 @Published 转发到 AppState：视图只观察 AppState，
+            // 不感知协调器对象。快照 / 状态变化同样驱动整屏菜单重排。
+            coordinator.$latestSnapshot
+                .receive(on: RunLoop.main)
+                .sink { [weak self] snapshot in self?.fleetSnapshot = snapshot }
+                .store(in: &fleetStateCancellables)
+            coordinator.$status
+                .receive(on: RunLoop.main)
+                .sink { [weak self] info in self?.fleetRuntimeStatus = info }
+                .store(in: &fleetStateCancellables)
+            // 所有 statuses 变更（quota 刷新、scanner 应用、rebuildStatuses）
+            // 都驱动同步运行时：hub 防抖重建本机报告，node 唤醒推送循环。
+            fleetSyncCancellable = statusDidChange.sink { [weak self] _ in
+                guard let self, let fleetSync = self.fleetSync else { return }
+                fleetSync.update(config: self.configStore.config, statuses: self.statuses)
+            }
+            coordinator.start(config: configStore.config, statuses: statuses)
+        } catch {
+            logError("[fleet] fleet.sqlite 初始化失败，多机联动未启动: \(error.localizedDescription)")
+        }
+    }
+
+    // MARK: - Fleet UI 解析入口（§7.7 / §10）
+
+    /// 本机稳定 nodeID（菜单节点行的「本机」标记、生效额度来源判断）。
+    var fleetLocalNodeID: UUID? { fleetSync?.localNodeID }
+
+    /// 生效额度：本机有效 `lastSuccess` 优先，否则 elected（§7.7 统一入口）。
+    /// 所有读额度的界面（iconDuo / 卡片 / 状态条）都从这里取，口径只有一处。
+    func fleetEffectiveQuota(for kind: ProviderKind) -> FleetEffectiveQuota {
+        FleetUsageProjection.effectiveQuota(
+            status: statuses.first { $0.kind == kind },
+            elected: fleetSnapshot?.electedQuotas ?? [],
+            for: kind.quotaProviderID
+        )
+    }
+
+    /// 菜单 fleet 汇总（今日全部 + 节点分组）；无快照时 nil → 菜单保持今天的样子。
+    var fleetMenuSummary: FleetMenuSummary? {
+        guard let fleetSnapshot else { return nil }
+        return FleetUsageProjection.menuSummary(
+            snapshot: fleetSnapshot,
+            localNodeID: fleetSync?.localNodeID
+        )
+    }
+
+    /// 入列并集（§7.7）：本机已启用 provider ∪ 仅存在 elected 额度的 provider。
+    /// elected-only 的 provider 合成一个最小 status（state = .ok(elected)，
+    /// 卡片上另有来源标注「来自 X」说明这不是本机抓取）。
+    func fleetVisibleStatuses() -> [ProviderStatus] {
+        var result = statuses
+        guard let snapshot = fleetSnapshot, !snapshot.electedQuotas.isEmpty else { return result }
+        let enabledKinds = Set(statuses.filter(\.isEnabled).map(\.kind))
+        for elected in snapshot.electedQuotas {
+            guard let kind = ProviderKind.allCases.first(where: { $0.quotaProviderID == elected.quotaProviderID }),
+                  !enabledKinds.contains(kind),
+                  !statuses.contains(where: { $0.kind == kind })
+            else { continue }
+            let info = QuotaInfo(
+                models: elected.models,
+                resetCredits: elected.resetCredits,
+                planLabel: elected.planLabel,
+                accountEmail: elected.accountEmail,
+                codexUsageDetails: nil,
+                fetchedAt: elected.fetchedAt,
+                balanceDetail: elected.balanceDetail
+            )
+            let descriptor = descriptors.first { $0.kind == kind }
+            result.append(ProviderStatus(
+                id: kind.providerID,
+                displayName: descriptor?.displayName ?? kind.providerID,
+                kind: kind,
+                iconSystemName: descriptor?.iconSystemName ?? "dollarsign.circle",
+                accentColor: .custom,
+                refreshIntervalSeconds: 300,
+                state: .ok(info)
+            ))
+        }
+        return result
+    }
+
+    /// statuses 的「生效额度视图」（§10.1 圆环改造）：入列并集之上，把本机
+    /// 没有有效额度、但 fleet 有 elected 的卡替换为 `.ok(elected)`——边缘窗
+    /// 常驻圆环据此读到 fleet 余量（hover 卡另有来源标注说明非本机抓取）。
+    /// 本机有有效额度时原样保留（本机优先，§2.1）。
+    func fleetQuotaEffectiveStatuses() -> [ProviderStatus] {
+        fleetVisibleStatuses().map { status in
+            let localValid = !(status.lastSuccess?.activeModels.isEmpty ?? true)
+            if localValid { return status }
+            let effective = fleetEffectiveQuota(for: status.kind)
+            guard let quota = effective.quota else { return status }
+            var copy = status
+            copy.state = .ok(quota)
+            return copy
+        }
+    }
+
+    /// hover 卡 / dock 浮层共用的 fleet 上下文（§10.1）。无快照时 nil：
+    /// 卡片回到现状渲染。
+    func fleetCardContext(for kind: ProviderKind) -> FleetCardContext? {
+        guard let snapshot = fleetSnapshot else { return nil }
+        return FleetCardContext(
+            scope: fleetScope,
+            multiNode: snapshot.nodes.count > 1,
+            usage: FleetUsageProjection.cardUsage(
+                snapshot: snapshot,
+                quotaProviderID: kind.quotaProviderID,
+                preferredWindowEnds: Self.preferredWindowEnds(
+                    of: fleetEffectiveQuota(for: kind)
+                )
+            ),
+            effectiveQuota: fleetEffectiveQuota(for: kind),
+            onScopeChange: { [weak self] newScope in
+                self?.fleetScope = newScope
+            }
+        )
+    }
+
+    /// 当前生效额度的窗口边界（§10.7.1 W 裁定）：全局窗口范围显示优先匹配
+    /// 该边界，无匹配时取已报告窗口中 `endAt` 最新者。
+    static func preferredWindowEnds(of effective: FleetEffectiveQuota) -> [String: Date] {
+        guard let model = effective.quota?.primaryModel else { return [:] }
+        var ends: [String: Date] = [:]
+        if model.hasIntervalWindow { ends["interval"] = model.intervalResetsAt }
+        if model.hasWeeklyWindow { ends["weekly"] = model.weeklyResetsAt }
+        return ends
+    }
+
+    /// fleet 内归因设置是否不一致（§7.8：提示，不阻断）。
+    var fleetAttributionInconsistent: Bool {
+        fleetSync?.attributionFingerprintsInconsistent ?? false
     }
 
     /// 配置变更后的重排入口（差异化：只重锚新增 / 重新启用 / interval 变化的 provider）。
@@ -565,7 +774,12 @@ final class AppState: ObservableObject {
                 self.authReadyCache.removeAll()
                 self.authProber.reset()
                 self.rebuildStatuses()
+                self.applyAppearance()
                 self.rescheduleAll()
+                // 运行期打开多机联动开关（start() 之后再启用）。
+                if newConfig.effectiveSyncConfig.enabled, self.fleetSync == nil {
+                    self.startFleetSync()
+                }
                 // 节假日数据源变更 → 重新走解析链并按需取数；源未变时内部 no-op。
                 self.holidayCalendarService.handleConfigChange(
                     source: newConfig.effectiveHolidaySource

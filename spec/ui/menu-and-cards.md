@@ -144,11 +144,11 @@ height: content-driven, fixedSize(vertical: true)
 | 今日合计 1.2M   60%  ¥18.40（含$2.5）    21:09 |   global today summary + bare refresh time
 |  ████████████████  input / cache / output      |
 +------------------------------------------------+
-| ▸ OpenCode                      820K    10.5   |   section: client + subtotal + value
-|   gpt-5.5    ███░░░  620K  62%  $11.30         |   model row
-|   GLM-5.3    ██░░░░  200K  40%   ¥33.00        |
-| ▸ Codex                         380K   $7.10   |
-|   gpt-5.5    ██░░░░  380K  58%   $7.10         |
+| ▸ OpenCode                820K      205  10.5  |   section: client + subtotal + speed + value
+|   gpt-5.5   ███░░░  620K  62%  246  $11.30     |   model row (speed = tok/s)
+|   GLM-5.3   ██░░░░  200K  40%  118   ¥33.00    |
+| ▸ Codex                    380K  190  $7.10    |
+|   gpt-5.5   ██░░░░  380K  58%  190   $7.10     |   header speed == row speed for a single-provider client
 | ⚠ 会话文件超出单轮扫描预算，已按最新优先截断…   |   truncation notice (that section only)
 | ...                                            |
 +------------------------------------------------+
@@ -176,24 +176,51 @@ quota read in the menu.
 - **Per-client sections**, ordered by today-token descending. A client with no
   today activity is dropped entirely rather than shown as an empty section. Each
   section header carries the client name (`ClientDescriptor`), the section token
-  subtotal and the section value — again a `MixedCurrencyEstimate`, because one
-  client may span several provider slices (OpenCode / DSH / ZCode) and therefore
-  several currencies.
+  subtotal, the section speed summary and the section value — the value again a
+  `MixedCurrencyEstimate`, because one client may span several provider slices
+  (OpenCode / DSH / ZCode) and therefore several currencies. The header's four
+  numeric cells (`SectionHeaderMetricsView`: tokens 40pt / an invisible 36pt
+  placeholder where the rows show the hit rate / speed 32pt / value 56pt) reuse
+  the model row's fixed-width constants and 6pt column spacing
+  (`HarnessModelRowView.columnSpacing`), so every header number sits exactly on
+  its column below — the token subtotal used to be natural-width and drifted
+  over the speed column once the rows gained one. The placeholder is
+  `Color.clear` (no hit area, height 0) — it only pins the x positions.
 - **Per-model rows inside a section**, keyed by
   `(clientID, quotaProviderID, modelName)`; samples with no usable model name
   collapse into a single 「模型名缺失」 row. Each row is: model name (tail-truncated,
-  100pt) + `TokenBucketBar` (fills the remainder, ≥72pt) + tokens (40pt) + hit rate
-  (36pt) + value (56pt). The row value is the **single-provider, single-currency**
-  original amount (`ModelCostEstimate.displayText`: `¥3.21` / `$9.80` / `未定价`) —
-  cross currency folding happens only at section and global level, never per row.
+  100pt) + `TokenBucketBar` (fills the remainder, ≥40pt) + tokens (40pt) + hit rate
+  (36pt) + speed (32pt) + value (56pt). The row value is the **single-provider,
+  single-currency** original amount (`ModelCostEstimate.displayText`: `¥3.21` /
+  `$9.80` / `未定价`) — cross currency folding happens only at section and global
+  level, never per row. The speed cell shows the row's today token rate in tok/s
+  (`HarnessModelRow.tokensPerSecond`): the **same batch of today samples** the row
+  cost is estimated from, run through the repo-wide single implementation
+  `LocalUsageSummaryBuilder.windowTokenRate` (Σ(Output+Reason) ÷ Σ call duration;
+  durations in [0.2, 3600]s participate), formatted by the same
+  `QuotaWindowUsageSection.speedText` tiering as the quota-window block — `—` when
+  no sample in the row has a valid duration (not "speed is 0"). Model rows have no
+  column header, so the cell's hover states the formula. The section header carries
+  the same metric at **section level**: `HarnessSection.tokensPerSecond` runs
+  `LocalUsageSummaryBuilder.windowTokenRate` over the client's **whole today
+  sample set** — the union of its rows' sample groups, collected per clientID in
+  the same `summarize` pass — so it is a Σ/Σ over the union, never an average of
+  row rates, and a single-provider client's header rate equals the dock popover's
+  quota-window 「今」 row (same samples, same function). Fleet sections aggregate
+  remote buckets with no local samples, so their header speed cell is always `—`.
+  The global summary row carries no speed — the rate is a per-client/per-model
+  metric, not a global one.
 
-Row column budget: 100 + 72 + 40 + 36 + 56 = 304pt plus 4×6pt spacing = 328pt,
+Row column budget: 100 + 40 + 40 + 36 + 32 + 56 = 304pt plus 5×6pt spacing = 334pt,
 inside the 336pt content area (360pt panel − 2×12pt padding). Numeric columns are
 fixed-width, right-aligned and `monospacedDigit`, so a refresh never shifts the row.
-The model-name column is **fixed-width**, not `maxWidth`: `TokenBucketBar` wraps a
+The bar minimum used to be 72pt; when the speed column was added (2026-10) the six
+columns no longer fit and the bar floor was compressed first — a truncated model
+name loses more information than a narrower bar. The model-name column is
+**fixed-width**, not `maxWidth`: `TokenBucketBar` wraps a
 `GeometryReader` (greedy), and a flexible name column loses the whole row to it.
 `HarnessUsageMenuViewTests` pins both the column budget and the row's natural width
-(328pt) so that regression cannot come back silently.
+(334pt) so that regression cannot come back silently.
 
 **Model name display** (`HarnessModelRow.compactDisplayName`, model layer): the
 column shows a *compacted* name, so that what fits in the 100pt budget is the
@@ -538,7 +565,7 @@ Row-level tint rules:
 | Plan tag | **已从标题行移除**（2026-10 第二轮改版）。套餐 pill 挪进卡片第一段「Account Info」行（`QuotaWindowAccountInfoRow`），与账号名同一行——账号是谁、什么级别是同一个问题的两半 |
 | State tag | compact `未配置` / `待更新` / `已更新` / `需重试` label; a spinner replaces it while loading. `未配置` (not `未启用`): `.notConfigured` covers a missing API key, missing external auth and missing login as well as a disabled provider, and `未启用` made an enabled-but-keyless provider read as switched off |
 | Account block hover | **已删除**。邮箱 / 数据来源原本按 provider 分三路包在标题行的 `HoverInfoRow` 里，只为菜单那张卡服务；菜单不再渲染 provider 卡，浮层又不吃鼠标事件，这个折叠区展不开，直接不画 |
-| Seven-day local statistics | 不在标题行，在**本地用量那一段**（`LocalUsageFooterView` → `SevenDayTokenUsageHoverView`）：`.alwaysVisible` 下就地展开成第二张卡的内容，`.onHover` 下才是悬停弹层 |
+| Seven-day local statistics | 不在标题行，在**本地用量那一段**（`LocalUsageFooterView` → `SevenDayTokenUsageHoverView`）：`.alwaysVisible` 下就地展开成第二张卡的内容，`.onHover` 下才是悬停弹层。逐日表末列在 provider 卡路径**跟随「额度窗口」的 分析/用量 segment**（`lastColumnFollowsSegment: true` + `@AppStorage(quotaWindowUsageSegment)`）：分析态显示 价值（现状渲染），用量态显示 速度（`LocalUsageSpeedByDay` 按 `startOfDay(completedAt)` 分组逐日 `windowTokenRate`，文案 `speedText`，单日无有效时长 `—`，无样本不画列；两列同宽 62pt 切换零回流）。Settings 客户端页与 fleet 路径保持默认参数：永远价值列，不受 segment 影响 |
 
 状态点的配色（已连同视图删除）原为：healthy 绿 / warning 橙 / critical 红，
 `nil` 健康度显示灰点；三档语义色本身由 `healthyTint` / `warningTint` /
@@ -908,4 +935,4 @@ The card's failure row is the one place in this table that is a **literal** 11pt
 than a `MenuTypography` role: the `errorMessage` role had no call site and was deleted
 rather than left as an unused role. The rendered size is unchanged.
 
-> 核对基线：2026-10-23 · 代码 5fea520
+> 核对基线：2026-10-25 · 代码 0304521

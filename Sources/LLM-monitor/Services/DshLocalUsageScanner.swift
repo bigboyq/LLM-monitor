@@ -513,6 +513,10 @@ private struct DshParsedUsage: Sendable {
     let cacheWriteTokens: Int
     let outputTokens: Int
     let reasoningTokens: Int
+    /// 单次模型调用时长（`assistant/message.time` − 对应 `step/start.time`，秒）。
+    /// 解析期差分好再落 `DshFileParseResult`，缓存命中时无需重放事件序。
+    /// nil = step/start 缺失、turn/step 对不上或差值非法。
+    let durationSeconds: Double?
     let turn: Int?
     let step: Int?
     let seq: Int?
@@ -766,6 +770,7 @@ private extension DshLocalUsageScanner {
         limits: DshLocalUsageScanLimits
     ) throws -> DshFileParseResult {
         var context: DshProviderContext?
+        var stepStarts: [String: Int] = [:]
         var usages: [DshParsedUsage] = []
         var activeProviders = Set<String>()
         var seen = Set<String>()
@@ -790,6 +795,7 @@ private extension DshLocalUsageScanner {
                     decoder: decoder,
                     limits: limits,
                     context: &context,
+                    stepStarts: &stepStarts,
                     usages: &usages,
                     activeProviders: &activeProviders,
                     seen: &seen
@@ -817,6 +823,7 @@ private extension DshLocalUsageScanner {
 
         let decoder = JSONDecoder()
         var context: DshProviderContext?
+        var stepStarts: [String: Int] = [:]
         var usages: [DshParsedUsage] = []
         var activeProviders = Set<String>()
         var seen = Set<String>()
@@ -858,6 +865,7 @@ private extension DshLocalUsageScanner {
                         decoder: decoder,
                         limits: limits,
                         context: &context,
+                        stepStarts: &stepStarts,
                         usages: &usages,
                         activeProviders: &activeProviders,
                         seen: &seen
@@ -883,6 +891,7 @@ private extension DshLocalUsageScanner {
                 decoder: decoder,
                 limits: limits,
                 context: &context,
+                stepStarts: &stepStarts,
                 usages: &usages,
                 activeProviders: &activeProviders,
                 seen: &seen
@@ -891,12 +900,15 @@ private extension DshLocalUsageScanner {
         return DshFileParseResult(usages: usages, activeProviders: activeProviders)
     }
 
-    /// 一级过滤 marker 的字节形态：只有这两类行会被 `consumeLine` 消费，
+    /// 一级过滤 marker 的字节形态：只有这四类行会被 `consumeLine` 消费，
     /// 其余行（assistant/chunk、tool-call 等占解压后字节的绝大多数）无需进
     /// JSONDecoder。marker 为纯 ASCII，不会出现在 UTF-8 多字节序列内部，
-    /// 字节级命中与解码后的 type 判断一致，不会漏判。
+    /// 字节级命中与解码后的 type 判断一致，不会漏判。step/start / step/end
+    /// 只为差分出单次调用时长（发起时刻表进、清除防泄漏），不产 token。
     private nonisolated static let requestContextMarker = Data("request/context".utf8)
     private nonisolated static let assistantMessageMarker = Data("assistant/message".utf8)
+    private nonisolated static let stepStartMarker = Data("step/start".utf8)
+    private nonisolated static let stepEndMarker = Data("step/end".utf8)
 
     private nonisolated static func consumeLine(
         _ line: Data,
@@ -904,6 +916,7 @@ private extension DshLocalUsageScanner {
         decoder: JSONDecoder,
         limits: DshLocalUsageScanLimits,
         context: inout DshProviderContext?,
+        stepStarts: inout [String: Int],
         usages: inout [DshParsedUsage],
         activeProviders: inout Set<String>,
         seen: inout Set<String>
@@ -913,7 +926,9 @@ private extension DshLocalUsageScanner {
               // 字节级预过滤：与用量无关的行不进 JSONDecoder（解压后逐行
               // decode 是 DSH 扫描的主要 CPU 成本）
               line.range(of: requestContextMarker) != nil
-                  || line.range(of: assistantMessageMarker) != nil,
+                  || line.range(of: assistantMessageMarker) != nil
+                  || line.range(of: stepStartMarker) != nil
+                  || line.range(of: stepEndMarker) != nil,
               let event = try? decoder.decode(DshRawEvent.self, from: line) else {
             return
         }
@@ -924,6 +939,17 @@ private extension DshLocalUsageScanner {
                     provider: provider,
                     model: normalizedOptionalString(event.data?.model)
                 )
+            }
+        } else if event.type == "step/start" {
+            // 记录本次模型调用的发起时刻；step/end 清除防泄漏，assistant/message
+            // 命中即弹出（同一步不应二次计价）。turn/step 缺一的事件没有稳定
+            // 归属键，assistant/message 侧同样要求两者齐全，对不上自然落 nil。
+            if let turn = event.data?.turn, let step = event.data?.step, let time = event.time {
+                stepStarts[stepStartKey(sessionID: sessionID, turn: turn, step: step)] = time
+            }
+        } else if event.type == "step/end" {
+            if let turn = event.data?.turn, let step = event.data?.step {
+                stepStarts.removeValue(forKey: stepStartKey(sessionID: sessionID, turn: turn, step: step))
             }
         } else if event.type == "assistant/message",
                   let usage = event.data?.usage,
@@ -940,6 +966,18 @@ private extension DshLocalUsageScanner {
             // Dedup only skips aggregation of this line. It must not stop the
             // surrounding reader from advancing to the next line.
             if seen.insert(key).inserted {
+                // 时长差分：assistant/message.time − step/start.time（毫秒），覆盖
+                // 发起→完成的完整调用窗口（含 TTFT、不含工具执行——工具在
+                // assistant/message 之后）。step/start 缺失、key 对不上、差值非正
+                // 或超 1h（账本异常）都落 nil，宁缺勿假。
+                var durationSeconds: Double? = nil
+                if let turn = event.data?.turn, let step = event.data?.step, let timeMs = event.time,
+                   let startMs = stepStarts.removeValue(forKey: stepStartKey(sessionID: sessionID, turn: turn, step: step)) {
+                    let deltaMs = timeMs - startMs
+                    if deltaMs > 0, deltaMs <= 3_600_000 {
+                        durationSeconds = Double(deltaMs) / 1000.0
+                    }
+                }
                 let parsed = normalizeUsage(
                     usage,
                     provider: provider,
@@ -953,6 +991,7 @@ private extension DshLocalUsageScanner {
                     cacheWriteTokens: parsed.cacheWrite,
                     outputTokens: parsed.output,
                     reasoningTokens: parsed.reasoning,
+                    durationSeconds: durationSeconds,
                     turn: event.data?.turn,
                     step: event.data?.step,
                     seq: event.seq,
@@ -1019,7 +1058,8 @@ private extension DshLocalUsageScanner {
             // `tokenComponents` with the same cache-inclusive input bucket.
             // The `sourceProviderID` marker stays so diagnostics can still
             // tell where each sample came from.
-            sourceProviderID: "dsh:\(usage.provider)"
+            sourceProviderID: "dsh:\(usage.provider)",
+            durationSeconds: usage.durationSeconds
         )
         provider.recentSamples.append(sample)
         aggregate.providers[usage.provider] = provider
@@ -1200,6 +1240,12 @@ private extension DshLocalUsageScanner {
         let turnPart = turn.map { "t\($0)" } ?? "t-"
         let identity = seq.map { "seq\($0)" } ?? "time\(time.map(String.init) ?? "-")"
         return "fb:\(sessionID):\(provider):\(turnPart):\(identity)"
+    }
+
+    /// step 发起时刻表的归属键：`(sessionID, turn, step)`。step/start 与
+    /// step/end 都不带 provider，时序归属是 harness 层概念，不掺 provider。
+    private nonisolated static func stepStartKey(sessionID: String, turn: Int, step: Int) -> String {
+        "\(sessionID):turn:\(turn):step:\(step)"
     }
 
     private nonisolated static func normalizedProvider(_ raw: String?) -> String {

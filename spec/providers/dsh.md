@@ -54,6 +54,13 @@ scanner 在 DSH 内部读取同一 `assistant/message` 的 `reasoning`、`text`�
 MiniMax Code 的优势——后者必须在自己的两张表之间按天对齐（见
 [`minimax.md`](./minimax.md) 的 "P1-1 v2 字符聚合风险"）。
 
+单次调用时长（token/s 分母）：scanner 流式解析时维护 step 发起时刻表（key 为
+`sessionID:turn:step`——step 事件自身不带 provider，不掺路由键），`assistant/message`
+到达时以 `message.time − step/start.time` 差分出该次调用的完整时长（发起→完成含
+TTFT；工具执行在 `assistant/message` **之后**，事件结构上不混入），写入 sample 的
+`durationSeconds`（(0, 3600] s 才有效，否则 nil）；`step/end` 清表与「命中即弹出」
+双保险防同一步复用锚点。三代格式（v1 / v3 / v4）的 `step/start` 事件结构一致。
+
 The UI splits dsh's inclusive `outputTokens` into visible output and reasoning so the
 existing four-category chart stays consistent:
 
@@ -184,4 +191,4 @@ to the next line, so a replayed event can never stall the scan.
 | Card integration | `Sources/LLM-monitor/Views/ProviderCardView.swift` |
 | Regression tests | `Tests/LLMMonitorTests/DshLocalUsageScannerTests.swift`, `DshHarnessFramesTests.swift`, `ScannerRetentionContractTests.swift` |
 
-> 核对基线：2026-10-20 · 代码 55292db
+> 核对基线：2026-10-25 · 代码 0304521

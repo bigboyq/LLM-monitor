@@ -304,6 +304,10 @@ The scanner reads the following columns from each GLM `model_usage` row:
 
 ```text
 started_at                     # epoch ms, source of per-day aggregation
+duration_ms                    # epoch ms of the full call (发起→完成, incl. TTFT);
+                               #   /1000 → sample.durationSeconds (token/s denominator,
+                               #   main rows and non-智谱 slices share the same rule);
+                               #   L0 validity domain (0, 3600] s — out of range → nil
 turn_id                        # native turn grouping (one user prompt → one turn)
 session_id                     # session dedup for sessionCount
 model_id                       # diagnosis + per-row modelName
@@ -701,4 +705,4 @@ whether the quota batch succeeded. GLM's former dedicated periodic trigger
 The scanner's db+WAL fingerprint check is unchanged: when nothing changed only a `stat()`
 runs (microseconds); SQL (~1.5ms) only runs when the WAL actually moved.
 
-> 核对基线：2026-10-23 · 代码 5fea520
+> 核对基线：2026-10-25 · 代码 0304521

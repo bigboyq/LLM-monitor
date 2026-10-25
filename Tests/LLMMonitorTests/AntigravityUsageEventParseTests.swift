@@ -233,6 +233,126 @@ final class AntigravityUsageEventParseTests: AntigravityTestCase {
         XCTAssertNil(noTimestamp?.timestamp)
     }
 
+    /// durationSeconds 提取（实测响应形态）：`chatModel` 下的
+    /// `timeToFirstToken` / `streamingDuration` 两个 Protobuf Duration 字符串
+    /// 之和随事件带出；token / timestamp 归类不受这两个键干扰。
+    func testParseUsageEventExtractsNativeCallDuration() throws {
+        // 1. 实测形态：字符串值 + 尾部 "s"，和 = TTFT + streaming
+        let real = try parseUsageEvent("""
+        {
+          "timestamp": "2026-07-15T10:30:00Z",
+          "model": "gemini-3-pro",
+          "chatModel": {
+            "timeToFirstToken": "11.669597334s",
+            "streamingDuration": "0.891494208s",
+            "usage": {
+              "inputTokens": 100, "outputTokens": 50,
+              "thinkingOutputTokens": 10, "responseOutputTokens": 40
+            }
+          }
+        }
+        """)
+        XCTAssertEqual(
+            real?.durationSeconds ?? 0,
+            11.669597334 + 0.891494208,
+            accuracy: 1e-9,
+            "durationSeconds = TTFT + streamingDuration"
+        )
+        XCTAssertEqual(real?.timestamp?.timeIntervalSince1970 ?? 0,
+                       try XCTUnwrap(DateParser.parse("2026-07-15T10:30:00Z")).timeIntervalSince1970,
+                       accuracy: 0.001,
+                       "耗时键不得污染 timestamp 白名单")
+        XCTAssertEqual(real?.inputTokens, 100)
+        XCTAssertEqual(real?.outputTokens, 50)
+        XCTAssertEqual(real?.reasoningTokens, 10, "thinkingOutputTokens 仍归 reasoning 桶")
+
+        // 2. snake_case 键 + 裸数字值（容错形态）也命中
+        let snake = try parseUsageEvent("""
+        {
+          "timestamp": "2026-07-15T10:30:00Z",
+          "inputTokens": 100,
+          "time_to_first_token": 2.5,
+          "streaming_duration": 3.5
+        }
+        """)
+        XCTAssertEqual(snake?.durationSeconds ?? 0, 6.0, accuracy: 1e-9)
+
+        // 3. 只有单个分量 → 以该分量为时长
+        let single = try parseUsageEvent("""
+        {"timestamp":"2026-07-15T10:30:00Z","inputTokens":1,"streamingDuration":"4.25s"}
+        """)
+        XCTAssertEqual(single?.durationSeconds ?? 0, 4.25, accuracy: 1e-9)
+    }
+
+    /// durationSeconds 缺失 / 非法值 → nil（和为 0 / 负、分量非正都按缺失处理）。
+    func testParseUsageEventDurationMissingOrNonPositiveStaysNil() throws {
+        // 1. 两个分量都缺 → nil
+        let missing = try parseUsageEvent("""
+        {"timestamp":"2026-07-15T10:30:00Z","inputTokens":100,"outputTokens":5}
+        """)
+        XCTAssertNil(missing?.durationSeconds)
+
+        // 2. 和为 0（两个分量都是 "0s"）→ nil
+        let zeroSum = try parseUsageEvent("""
+        {"timestamp":"2026-07-15T10:30:00Z","inputTokens":100,
+         "timeToFirstToken":"0s","streamingDuration":"0s"}
+        """)
+        XCTAssertNil(zeroSum?.durationSeconds, "和为 0 的时长不得带出")
+
+        // 3. 负分量按缺失处理，剩余正分量照常（−3s + 5s → 5）
+        let negative = try parseUsageEvent("""
+        {"timestamp":"2026-07-15T10:30:00Z","inputTokens":100,
+         "timeToFirstToken":"-3s","streamingDuration":"5s"}
+        """)
+        XCTAssertEqual(negative?.durationSeconds ?? 0, 5.0, accuracy: 1e-9)
+
+        // 4. 全部非正 → nil
+        let allNegative = try parseUsageEvent("""
+        {"timestamp":"2026-07-15T10:30:00Z","inputTokens":100,
+         "timeToFirstToken":"-1s","streamingDuration":"0s"}
+        """)
+        XCTAssertNil(allNegative?.durationSeconds)
+
+        // 5. 非法字符串（解析不出数字）→ nil
+        let garbage = try parseUsageEvent("""
+        {"timestamp":"2026-07-15T10:30:00Z","inputTokens":100,
+         "timeToFirstToken":"soon","streamingDuration":"1s"}
+        """)
+        XCTAssertEqual(garbage?.durationSeconds ?? 0, 1.0, accuracy: 1e-9,
+                       "非法分量缺失、合法分量照常")
+    }
+
+    /// 事件 → sample 透传：durationSeconds 原样进 sample；output 桶按新口径
+    /// 拆思考；timestamp 缺失的事件不产生样本（`.distantPast` 兜底分支不可达，
+    /// 兜底样本不带时长的规则由 makeSample 的 nil 门控保证）。
+    func testDurationSecondsFlowsFromEventToSample() {
+        let day = testCalendar.startOfDay(for: Date())
+        let ts = testCalendar.date(bySettingHour: 10, minute: 0, second: 0, of: day)!
+        let event = makeEvent(
+            timestamp: ts,
+            model: "gemini-3-pro",
+            input: 100, output: 50,
+            cacheRead: 0, cacheWrite: 0,
+            reasoning: 30, total: 150,
+            duration: 12.561091542
+        )
+        let samples = AntigravityLocalUsageScanner.fallbackSamples(
+            sessionID: "duration-session",
+            events: [event]
+        )
+        XCTAssertEqual(samples.count, 1)
+        XCTAssertEqual(samples.first?.durationSeconds, 12.561091542, "时长必须原样透传进 sample")
+        XCTAssertEqual(samples.first?.outputTokens, 20, "Output = rawOutput − thinking（50 − 30）")
+        XCTAssertEqual(samples.first?.reasoningOutputTokens, 30)
+        XCTAssertEqual(samples.first?.inputTokens, 100, "uncached input 原样（sample 层 cache-inclusive 合并）")
+
+        // timestamp 缺失的事件被 fallbackSamples 过滤，不产生兜底样本
+        let timestampless = makeEvent(timestamp: nil, input: 1, total: 1, duration: 3)
+        XCTAssertTrue(
+            AntigravityLocalUsageScanner.fallbackSamples(sessionID: "duration-session", events: [timestampless]).isEmpty
+        )
+    }
+
     func testComputeTurnRoundDetailsSingleDay() {
         let day = testCalendar.startOfDay(for: Date())
         let ts = testCalendar.date(bySettingHour: 10, minute: 0, second: 0, of: day)!
@@ -356,12 +476,14 @@ final class AntigravityUsageEventParseTests: AntigravityTestCase {
         XCTAssertEqual(usage?.rounds, details.counts.perDay[day]?.rounds)
         XCTAssertEqual(usage?.turns, 2)
         XCTAssertEqual(usage?.rounds, 4)
-        // token 仍按饱和加法正确累加
+        // daily 与 sample 同走 catalog 唯一入口：raw outputTokens 含思考，
+        // Output = rawOutput − reasoning（50 − 5 = 45/次），Reason = thinking。
+        // totalTokens = 四桶和（input 100 + cacheRead 10 + output 45 + reasoning 5）。
         XCTAssertEqual(usage?.inputTokens, 400)
-        XCTAssertEqual(usage?.outputTokens, 200)
+        XCTAssertEqual(usage?.outputTokens, 180)
         XCTAssertEqual(usage?.cacheReadTokens, 40)
         XCTAssertEqual(usage?.reasoningTokens, 20)
-        XCTAssertEqual(usage?.totalTokens, 600)
+        XCTAssertEqual(usage?.totalTokens, 640)
     }
 
     /// F1：跨日 events 经 scanner 聚合路径后，每天 turns/rounds 等于 details，不翻倍。

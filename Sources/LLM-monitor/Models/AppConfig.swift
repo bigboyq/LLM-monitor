@@ -180,12 +180,164 @@ extension BarkConfig {
     }
 }
 
+// MARK: - 外观（2.0）
+
+/// 应用外观：浅色 / 深色 / 自动（跟随系统，缺省）。写进 `NSApp.appearance`，
+/// 对设置窗与所有 SwiftUI 面板生效；菜单栏 MenubarExtra 的原生样式仍随系统。
+enum AppAppearance: String, Codable, CaseIterable, Identifiable, Sendable {
+    case light
+    case dark
+    case auto
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .light: return "浅色"
+        case .dark: return "深色"
+        case .auto: return "自动"
+        }
+    }
+
+    var nsAppearance: NSAppearance? {
+        switch self {
+        case .light: return NSAppearance(named: .aqua)
+        case .dark: return NSAppearance(named: .darkAqua)
+        case .auto: return nil
+        }
+    }
+}
+
+// MARK: - Fleet Sync Config（多机联动，2.0）
+
+/// 多机联动配置。`enabled` 缺省 false → 现有用户零影响；`hubURL` 空 = 本机是
+/// 主节点（hub），非空 = 副节点（node，且不监听端口）。角色由 `SyncRole.derive`
+/// 单源派生，没有第二条路径。
+///
+/// 解码逐字段容错（与 `BarkConfig` 同档）：手改坏单个字段只回退该字段默认值，
+/// 不拖垮整份配置；`nodeName` 是机器身份的一部分（默认 hostname），跟
+/// `nodeID`（Keychain）一样**不**随 dotfile 同步语义变化。
+struct SyncConfig: Codable, Equatable, Sendable {
+    var enabled: Bool
+    /// 副节点：主节点地址（`http://<主节点IP>:8787`）；留空 = 本机是主节点。
+    var hubURL: String
+    /// 上报周期（秒），默认 60。
+    var pushIntervalSeconds: Int
+    /// 主节点监听地址，默认 `0.0.0.0`（局域网）；可改 `127.0.0.1` 限本机。
+    var hubBindHost: String
+    /// 主节点监听端口，默认 8787。
+    var hubPort: Int
+    /// 空 = 用 hostname。
+    var nodeName: String
+    /// 超过该时长未上报的节点标 stale（默认 15 分钟）。
+    var staleAfterSeconds: Int
+    /// 副节点来源额度超过该时长标「额度已过期」（默认 30 分钟）。
+    var quotaMaxAgeSeconds: Int
+    /// hub 保留多少天的历史日桶 / 窗口范围。
+    var retainDays: Int
+    /// 本机稳定节点身份（UUID 字符串）。首次启用联动时生成并**写回 config.json**
+    /// （用户裁定 2026-10-24，取代 Keychain 方案）；之后每次启动原样读取。
+    /// 用 dotfile 同步 config.json 的部署要注意：两台机器必须改成不同值，
+    /// 否则会被 hub 当成同一个节点。
+    var nodeID: String?
+
+    static let `default` = SyncConfig(
+        enabled: false,
+        hubURL: "",
+        pushIntervalSeconds: 60,
+        hubBindHost: "0.0.0.0",
+        hubPort: 8787,
+        nodeName: "",
+        staleAfterSeconds: 900,
+        quotaMaxAgeSeconds: 1800,
+        retainDays: 7
+    )
+
+    private enum CodingKeys: String, CodingKey {
+        case enabled, hubURL, pushIntervalSeconds, hubBindHost, hubPort
+        case nodeName, staleAfterSeconds, quotaMaxAgeSeconds, retainDays, nodeID
+    }
+
+    init(
+        enabled: Bool = false,
+        hubURL: String = "",
+        pushIntervalSeconds: Int = 60,
+        hubBindHost: String = "0.0.0.0",
+        hubPort: Int = 8787,
+        nodeName: String = "",
+        staleAfterSeconds: Int = 900,
+        quotaMaxAgeSeconds: Int = 1800,
+        retainDays: Int = 7,
+        nodeID: String? = nil
+    ) {
+        self.enabled = enabled
+        self.hubURL = hubURL
+        self.pushIntervalSeconds = pushIntervalSeconds
+        self.hubBindHost = hubBindHost
+        self.hubPort = hubPort
+        self.nodeName = nodeName
+        self.staleAfterSeconds = staleAfterSeconds
+        self.quotaMaxAgeSeconds = quotaMaxAgeSeconds
+        self.retainDays = retainDays
+        self.nodeID = nodeID
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        enabled = (try? c.decode(Bool.self, forKey: .enabled)) ?? false
+        hubURL = (try? c.decode(String.self, forKey: .hubURL)) ?? ""
+        pushIntervalSeconds = Self.clamped(
+            (try? c.decode(Int.self, forKey: .pushIntervalSeconds)) ?? 60,
+            range: 5...(24 * 60 * 60), fallback: 60
+        )
+        hubBindHost = (try? c.decode(String.self, forKey: .hubBindHost)) ?? "0.0.0.0"
+        hubPort = Self.clamped(
+            (try? c.decode(Int.self, forKey: .hubPort)) ?? 8787,
+            range: 1...65535, fallback: 8787
+        )
+        nodeName = (try? c.decode(String.self, forKey: .nodeName)) ?? ""
+        staleAfterSeconds = Self.clamped(
+            (try? c.decode(Int.self, forKey: .staleAfterSeconds)) ?? 900,
+            range: 60...(30 * 24 * 60 * 60), fallback: 900
+        )
+        quotaMaxAgeSeconds = Self.clamped(
+            (try? c.decode(Int.self, forKey: .quotaMaxAgeSeconds)) ?? 1800,
+            range: 60...(30 * 24 * 60 * 60), fallback: 1800
+        )
+        retainDays = Self.clamped(
+            (try? c.decode(Int.self, forKey: .retainDays)) ?? 7,
+            range: 1...365, fallback: 7
+        )
+        nodeID = (try? c.decode(String.self, forKey: .nodeID)) ?? nil
+    }
+
+    /// 默认节点显示名：hostname。
+    static func defaultNodeName() -> String {
+        Host.current().localizedName ?? ProcessInfo.processInfo.hostName
+    }
+
+    private static func clamped(_ value: Int, range: ClosedRange<Int>, fallback: Int) -> Int {
+        range.contains(value) ? value : fallback
+    }
+
+    /// 生效的主节点地址：去空白；空串保持空（= hub 角色）。
+    var effectiveHubURL: String {
+        hubURL.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// 生效的节点显示名：空 = hostname（由调用方解析）。
+    var effectiveNodeName: String {
+        nodeName.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
 // MARK: - App Config
 
 struct AppConfig: Codable, Equatable {
     /// 当前配置 schema。缺失该字段的历史配置按 schema 0 解码并规范化到当前版本；
-    /// schema 1 的 provider-level OpenCode 开关会迁移到 clientBindings。
-    static let currentSchemaVersion = 2
+    /// schema 1 的 provider-level OpenCode 开关会迁移到 clientBindings；
+    /// schema 3 新增多机联动 `sync` 配置节。
+    static let currentSchemaVersion = 3
     /// 防止手工配置的极大整数经过 `TimeInterval` 转换后无法安全转回 `Int`，
     /// 同时避免一次拼写错误让 provider 实际上永久停止刷新。
     static let maximumRefreshIntervalSeconds = 30 * 24 * 60 * 60
@@ -224,11 +376,18 @@ struct AppConfig: Codable, Equatable {
     /// 与 statusBar* 同为纯外观字段，手改出错按缺失处理，不进损坏恢复流程。
     var edgeDock: EdgeDockConfig?
 
+    /// 应用外观（浅色 / 深色 / 自动）。缺省（nil）= 自动跟随系统。
+    var appearance: AppAppearance?
+
     /// 法定节假日数据源（URL 或本地文件路径），供 `HolidayCalendar` 解析链取数。
     /// nil（缺省）= 上游 chinese-days CDN JSON（`HolidayCalendar.defaultSourceURL`，
     /// 与 `scripts/sync-holiday-data.sh` 的 `UPSTREAM_URL` 同值）；显式空串 =
     /// 只用随 App 打包的内置快照、不联网。类型写错按缺失处理（缺省语义）。
     var holidaySource: String?
+
+    /// 多机联动配置。nil（未配置）或 `enabled=false` 都表示不参与联动，
+    /// 现有用户零影响；坏值按缺失处理。
+    var sync: SyncConfig?
 
     var effectiveStatusBarIconStyle: StatusBarIconStyle {
         statusBarIconStyle ?? .chartBar
@@ -252,6 +411,16 @@ struct AppConfig: Codable, Equatable {
     /// 显式空串原样返回（`HolidayCalendar.parseSource` 把它判为「仅内置快照」）。
     var effectiveHolidaySource: String {
         holidaySource ?? HolidayCalendar.defaultSourceURL
+    }
+
+    /// 生效外观：缺省自动跟随系统。
+    var effectiveAppearance: AppAppearance {
+        appearance ?? .auto
+    }
+
+    /// 生效的多机联动配置：未配置 = 关闭态默认值。
+    var effectiveSyncConfig: SyncConfig {
+        sync ?? .default
     }
 
     static let `default` = AppConfig(
@@ -291,7 +460,9 @@ struct AppConfig: Codable, Equatable {
         providerCardOrder: [String]? = nil,
         bark: BarkConfig? = nil,
         edgeDock: EdgeDockConfig? = nil,
-        holidaySource: String? = nil
+        holidaySource: String? = nil,
+        appearance: AppAppearance? = nil,
+        sync: SyncConfig? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.refreshIntervalSeconds = refreshIntervalSeconds
@@ -304,6 +475,8 @@ struct AppConfig: Codable, Equatable {
         self.bark = bark
         self.edgeDock = edgeDock
         self.holidaySource = holidaySource
+        self.appearance = appearance
+        self.sync = sync
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -314,6 +487,8 @@ struct AppConfig: Codable, Equatable {
         case bark
         case edgeDock
         case holidaySource
+        case appearance
+        case sync
     }
 
     init(from decoder: Decoder) throws {
@@ -397,6 +572,20 @@ struct AppConfig: Codable, Equatable {
         } catch {
             logWarn("[config] holidaySource 字段解析失败，已按缺省（上游 CDN）处理：\(error.localizedDescription)")
             self.holidaySource = nil
+        }
+        do {
+            self.appearance = (try? container.decode(String.self, forKey: .appearance))
+                .flatMap(AppAppearance.init(rawValue:))
+        } catch {
+            self.appearance = nil
+        }
+        // 多机联动：坏值按未配置处理，不进损坏恢复流程——配置损坏不应让一个
+        // 纯增量功能的缺失拖垮整份 provider 配置。
+        do {
+            self.sync = try container.decodeIfPresent(SyncConfig.self, forKey: .sync)
+        } catch {
+            logWarn("[config] sync 字段解析失败，已按未配置处理：\(error.localizedDescription)")
+            self.sync = nil
         }
     }
 

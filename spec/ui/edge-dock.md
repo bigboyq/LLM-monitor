@@ -714,7 +714,7 @@ apart again.
 
 | Module | Content |
 |---|---|
-| Quota window (`windowUsageModule`) | Titled 「额度窗口」 (`QuotaWindowUsageSection.windowUsageTitle`). Merges the former 「额度分析」 and 「额度详情」 into a single switchable module with zero-reflow between states. The title row hosts a custom capsule `QuotaWindowUsageSegmentControl` on the right (rendered when `quotaWindowSegmentEditable` is true), offering **「分析」** (default) and **「用量」** (`QuotaWindowUsageSegment`, persisted via `@AppStorage(QuotaWindowUsageSection.segmentStorageKey)` = `"quotaWindowUsageSegment"`). The time-composition bar (`QuotaWindowTimeShareBar`) was completely removed. Below the title row sits **one unified `Grid` of 7 columns** (`horizontalSpacing: 8`, `verticalSpacing: 3`) across all visible rows (5h / 周 / 今 / 闲). Fixed columns: **类型** (left, natural width ~16pt), **价值** (fixed 58pt, `QuotaWindowUsageSection.valueColumnWidth`, left-aligned cell), and **重置日期** (right, fixed 126pt, `QuotaWindowUsageSection.resetDateColumnWidth`, including 9pt leading gutter `QuotaWindowUsageSection.resetDateColumnLeadingGap`). The middle 4 columns switch by segment: in **「分析」** mode: `类型 | 用量 | 命中 | 产出比 | 思考 | 价值 | 重置日期` (`statsHeaders`); in **「用量」** mode: `类型 | Input | Cached | Output | Reason | 价值 | 重置日期` (`rawTableHeaders`). Middle columns share a fixed width of **42pt** (`middleColumnWidth`) and right-alignment (headers follow cell alignment). The 420pt budget: `natural (~16pt) + 4×42pt + 58pt + 126pt + 6×8pt = 416pt ≤ 420pt` (measured header 「类型」 at 20pt yields `420pt ≤ 420pt`). Both modes share the exact same Grid skeleton and column dimensions, guaranteeing zero reflow (pinned by height-equality test). Reset date is formatted as `MM-dd HH:mm (倒计时)`, 今 / 闲 rows display `—`; its 126pt width removes the former 1.2× factor, fitting the longest form `09-30 15:07 (23h59m)` (117pt) + 9pt gutter with 0pt surplus, guarded by `testResetDateColumnWidthCoversTheLongestForm`. The countdown inside the parentheses takes its value from the host-injected display clock (`\.displayDate`, started/stopped with the panel) — not the wall clock at render time. With multiple pools, a footnote below the Grid explains totals are summed and reset date is the earliest. |
+| Quota window (`windowUsageModule`) | Titled 「额度窗口」 (`QuotaWindowUsageSection.windowUsageTitle`). Merges the former 「额度分析」 and 「额度详情」 into a single switchable module with zero-reflow between states. The title row hosts a custom capsule `QuotaWindowUsageSegmentControl` on the right (rendered when `quotaWindowSegmentEditable` is true), offering **「分析」** (default) and **「用量」** (`QuotaWindowUsageSegment`, persisted via `@AppStorage(QuotaWindowUsageSection.segmentStorageKey)` = `"quotaWindowUsageSegment"`). The time-composition bar (`QuotaWindowTimeShareBar`) was completely removed. Below the title row sits **one unified `Grid` of 7 columns** (`horizontalSpacing: 8`, `verticalSpacing: 3`) across all visible rows (5h / 周 / 今 / 闲). Fixed columns: **类型** (left, natural width ~16pt), **价值** (fixed 58pt, `QuotaWindowUsageSection.valueColumnWidth`, left-aligned cell; the 「用量」 mode re-labels this same column to **速度** — see below), and **重置日期** (right, fixed 126pt, `QuotaWindowUsageSection.resetDateColumnWidth`, including 9pt leading gutter `QuotaWindowUsageSection.resetDateColumnLeadingGap`). The middle 4 columns switch by segment: in **「分析」** mode: `类型 | 用量 | 命中 | 产出比 | 思考 | 价值 | 重置日期` (`statsHeaders`); in **「用量」** mode: `类型 | Input | Cached | Output | Reason | 速度 | 重置日期` (`rawTableHeaders`, `value` key retained with the 「速度」 label). Middle columns share a fixed width of **42pt** (`middleColumnWidth`) and right-alignment (headers follow cell alignment). The 420pt budget: `natural (~16pt) + 4×42pt + 58pt + 126pt + 6×8pt = 416pt ≤ 420pt` (measured header 「类型」 at 20pt yields `420pt ≤ 420pt`). Both modes share the exact same Grid skeleton and column dimensions, guaranteeing zero reflow (pinned by height-equality test). Reset date is formatted as `MM-dd HH:mm (倒计时)`, 今 / 闲 rows display `—`; its 126pt width removes the former 1.2× factor, fitting the longest form `09-30 15:07 (23h59m)` (117pt) + 9pt gutter with 0pt surplus, guarded by `testResetDateColumnWidthCoversTheLongestForm`. The countdown inside the parentheses takes its value from the host-injected display clock (`\.displayDate`, started/stopped with the panel) — not the wall clock at render time. With multiple pools, a footnote below the Grid explains totals are summed and reset date is the earliest. |
 | Reset credits (`resetCreditsModule`) | Titled 「重置卡详情」 (`QuotaWindowUsageSection.resetCreditsTitle`). The collapsed row (**`重置卡数量：N`** + nearest expiry) followed by the **per-card list** (`ResetCreditsDetailList`): N available credits render as N+1 lines. **Zero available → the whole module is omitted** (not a `重置卡数量：0` line) |
 
 **Value (the sixth metric)** — `ModelPricingCatalog.estimate` over the window's
@@ -726,7 +726,12 @@ the client summary. DeepSeek's ×2 peak multiplier is evaluated **per sample tim
 boundary is not doubled as a whole. `—` means no local samples in the window; `未定价`
 means samples are present but the catalog has no price for them. Summing several model
 pools adds their money only while the currencies agree — a mixed-currency sum returns
-nil rather than a meaningless total.
+nil rather than a meaningless total. This column renders in the **「分析」 mode only**;
+in 「用量」 mode the same slot becomes the **速度 (tok/s) column** (`speedCell`,
+`speedText`: < 100 one decimal / ≥ 100 integer / `—` without valid durations;
+`LocalUsageSummaryBuilder.windowTokenRate` Σ(output+reason) ÷ Σduration over the same
+window samples, header tooltip states the caliber; fleet rows show `—` — the wire
+protocol carries no durations; see `spec/accounting.md` §Token/s 速率口径).
 
 **Amounts ≥ 100,000 switch to compact units** (`¥123.5K`, `¥1.23M` / `$2.50B`; the K
 rung uses one decimal); below that the
@@ -798,7 +803,9 @@ Data source and calibration:
   very same sample set (`offPeakTodaySamples` — today's off-peak sample filter exists in
   exactly one place, and the summary is its aggregate) through `ModelPricingCatalog`,
   original currency, and shows the money **directly — no 「零积分」 annotation in the
-  cell** (deliberate user decision; the caliber lives in the tooltip). Its reset date cell is forced `—` (off-peak
+  cell** (deliberate user decision; the caliber lives in the tooltip); in 「用量」 mode
+  the 速度 cell rates the **same sample set** via `windowTokenRate` (nil without valid
+  durations → `—`). Its reset date cell is forced `—` (off-peak
   consumes no credits, nothing to reset), the all-zero rule skips it like any row, and it
   joins both segments' cross-row column-visibility sums. The tooltip hangs on the row's
   **type cell** (`typeCell`'s `help` parameter, so it cannot clash with the 产出比 cell's
@@ -812,7 +819,7 @@ Data source and calibration:
     across all visible rows, and `思考` disappears when reasoning tokens sum to 0 across all
     visible rows. In usage mode (`numericColumnVisibility`), each of `Input`, `Cached`,
     `Output`, and `Reason` disappears when its respective bucket sums to 0 across all visible
-    rows. Fixed columns (`类型`, `价值`, `重置日期`) are always present and never hide.
+    rows. Fixed columns (`类型`, `价值`/`速度`, `重置日期`) are always present and never hide.
   - **Whole module disappearance**: when no row survives the filter, the entire 「额度窗口」
     module — title and segment control included — disappears. If no reset credits are available
     either (`hasVisibleContent` is false), the whole section and the card's `quotaUsageDivider`
@@ -1281,4 +1288,4 @@ default has to preserve it — defaulting to off would put a dock inside every f
 window for every existing user. Because the setting can be flipped while the user is
 already fullscreen, a policy change re-probes instead of reusing the cached verdict.
 
-> 核对基线：2026-10-20 · 代码 83e1c03
+> 核对基线：2026-10-25 · 代码 0304521

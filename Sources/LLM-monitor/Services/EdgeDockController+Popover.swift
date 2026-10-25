@@ -71,7 +71,7 @@ extension EdgeDockController {
         /// 位置会跳。固定宽度才和菜单那一屏看起来是同一个东西。
         @ViewBuilder
         func card() -> some View {
-            ProviderCardView(status: status)
+            ProviderCardView(status: status, fleet: state.fleetCardContext(for: status.kind))
                 .frame(width: cardContentWidth)
                 .padding(backdrop)
                 .edgeDockPopoverSystemMaterialBackground()

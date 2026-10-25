@@ -81,6 +81,25 @@ extension SettingsView {
                 }
             }
 
+            SettingsSection(title: "外观", footer: "浅色 / 深色固定显示，自动跟随系统设置；保存后立即生效。") {
+                SettingsControlRow("界面外观") {
+                    Picker("", selection: Binding(
+                        get: { state.configStore.config.effectiveAppearance },
+                        set: { value in
+                            var config = state.configStore.config
+                            config.appearance = value == .auto ? nil : value
+                            try? state.configStore.applyAndSave(config)
+                        }
+                    )) {
+                        ForEach(AppAppearance.allCases) { item in
+                            Text(item.displayName).tag(item)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: SettingsLayout.standardControlWidth)
+                }
+            }
+
             SettingsSection(title: "状态栏图标", footer: "可自定义正常、预警、异常三种状态颜色；系统图标使用状态圆点。App 图标直接使用设计稿（与下面的预览同一张图），是固定图片，不随额度与健康度变化。Icon Duo 为额度仪表盘：左右弧线显示 5 小时与周额度，中心扇形按最低剩余比例动态显示 0～360°，底部三个套餐状态点与顶部节能状态圆点。") {
                 VStack(alignment: .leading, spacing: 16) {
                     SettingsControlRow("图标主题") {

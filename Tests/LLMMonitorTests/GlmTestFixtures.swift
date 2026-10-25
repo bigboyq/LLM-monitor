@@ -42,7 +42,8 @@ class GlmTestCase: XCTestCase {
             model_id TEXT NOT NULL, provider_id TEXT NOT NULL DEFAULT 'builtin:bigmodel-coding-plan',
             input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0,
             reasoning_tokens INTEGER NOT NULL DEFAULT 0, cache_read_input_tokens INTEGER NOT NULL DEFAULT 0,
-            cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0, assistant_message_id TEXT
+            cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0, assistant_message_id TEXT,
+            duration_ms INTEGER
         );
         CREATE TABLE part (
             id TEXT PRIMARY KEY, message_id TEXT, data TEXT
@@ -52,11 +53,11 @@ class GlmTestCase: XCTestCase {
         return path
     }
 
-    func insert(databaseURL path: String, id: String, sessionID: String, turnID: String?, timestamp: Int64, input: Int, output: Int, reasoning: Int = 0, cacheRead: Int = 0, cacheWrite: Int = 0, status: String = "completed", model: String = "GLM-5.2", provider: String = "builtin:bigmodel-coding-plan", assistantMessageID: String? = nil) throws {
+    func insert(databaseURL path: String, id: String, sessionID: String, turnID: String?, timestamp: Int64, input: Int, output: Int, reasoning: Int = 0, cacheRead: Int = 0, cacheWrite: Int = 0, status: String = "completed", model: String = "GLM-5.2", provider: String = "builtin:bigmodel-coding-plan", assistantMessageID: String? = nil, durationMs: Int64? = nil) throws {
         var db: OpaquePointer?
         guard sqlite3_open(path, &db) == SQLITE_OK else { return }
         defer { sqlite3_close(db) }
-        let sql = "INSERT INTO model_usage (id, session_id, turn_id, started_at, status, model_id, provider_id, input_tokens, output_tokens, reasoning_tokens, cache_read_input_tokens, cache_creation_input_tokens, assistant_message_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);"
+        let sql = "INSERT INTO model_usage (id, session_id, turn_id, started_at, status, model_id, provider_id, input_tokens, output_tokens, reasoning_tokens, cache_read_input_tokens, cache_creation_input_tokens, assistant_message_id, duration_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);"
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
         defer { sqlite3_finalize(stmt) }
@@ -73,6 +74,7 @@ class GlmTestCase: XCTestCase {
         sqlite3_bind_int(stmt, 11, Int32(cacheRead))
         sqlite3_bind_int(stmt, 12, Int32(cacheWrite))
         if let assistantMessageID { sqlite3_bind_text(stmt, 13, (assistantMessageID as NSString).utf8String, -1, nil) } else { sqlite3_bind_null(stmt, 13) }
+        if let durationMs { sqlite3_bind_int64(stmt, 14, durationMs) } else { sqlite3_bind_null(stmt, 14) }
         sqlite3_step(stmt)
     }
 

@@ -81,7 +81,7 @@ struct SettingsView: View {
     /// 全部 tab（`.general` / `.energy` + descriptors 派生的 provider tab）。
     /// `Identifiable` 让 `ForEach` 走 `id` 区分，切换不会触发整列重渲染。
     var allTabs: [SettingsTab] {
-        [.general, .energy] + sortedProviderDescriptors.map { .provider($0) } + [.clients]
+        [.general, .energy, .sync] + sortedProviderDescriptors.map { .provider($0) } + [.clients]
     }
 
     var sortedProviderDescriptors: [FetcherDescriptor] {
@@ -190,6 +190,8 @@ struct SettingsView: View {
                     generalPane
                 case .energy:
                     energyPane
+                case .sync:
+                    SettingsSyncPane(state: state)
                 case .provider(let d):
                     // 派发到对应 provider 的 pane view。`providerPane(for:)` 是
                     // kind 派发，加新 provider 只需在那加一个 case，**不要**在这里
@@ -584,6 +586,7 @@ extension SettingsTab {
         switch self {
         case .general: return nil
         case .energy: return nil
+        case .sync: return nil
         case .provider(let d): return .provider(d.kind)
         case .clients: return nil
         }

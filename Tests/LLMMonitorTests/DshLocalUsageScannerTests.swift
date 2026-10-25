@@ -203,6 +203,108 @@ final class DshLocalUsageScannerTests: XCTestCase {
         })
     }
 
+    /// `step/start` → `assistant/message` 差分出单次调用时长（毫秒 → 秒）：
+    /// 工具执行在 assistant/message 之后，所以该窗口是干净的完整调用时长；
+    /// `step/end` 清除发起时刻表防泄漏，下一步的样本不会读到上一步的锚点。
+    func testDshSamplesCarryStepDurationFromStepStart() throws {
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let calendar = makeUTCGregorianCalendar()
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("llm-monitor-dsh-duration-\(UUID().uuidString)", isDirectory: true)
+        let cache = root.appendingPathComponent(".token-monitor", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let t0: Int64 = 1_700_000_000_000
+        let lines: [String] = [
+            #"{"type":"session","version":0,"id":"session-dur","createdAt":\#(t0),"cwd":"/tmp","delegationDepth":0}"#,
+            #"{"type":"request/context","seq":1,"time":\#(t0),"data":{"provider":"deepseek-official","model":"deepseek-v4-flash"}}"#,
+            // step 0：发起 → 完成 4523ms
+            #"{"type":"step/start","seq":2,"time":\#(t0),"data":{"turn":1,"step":0}}"#,
+            #"{"type":"assistant/message","seq":3,"time":\#(t0 + 4523),"data":{"turn":1,"step":0,"usage":{"inputTokens":100,"outputTokens":30,"reasoningTokens":10}}}"#,
+            #"{"type":"step/end","seq":4,"time":\#(t0 + 4600),"data":{"turn":1,"step":0}}"#,
+            // step 1：发起 → 完成 1000ms
+            #"{"type":"step/start","seq":5,"time":\#(t0 + 5000),"data":{"turn":1,"step":1}}"#,
+            #"{"type":"assistant/message","seq":6,"time":\#(t0 + 6000),"data":{"turn":1,"step":1,"usage":{"inputTokens":50,"outputTokens":5,"reasoningTokens":0}}}"#,
+            #"{"type":"step/end","seq":7,"time":\#(t0 + 6100),"data":{"turn":1,"step":1}}"#,
+        ]
+        try writeSessionLog(
+            root: root.appendingPathComponent("sessions", isDirectory: true),
+            sessionID: "session-dur",
+            body: lines.joined(separator: "\n") + "\n"
+        )
+
+        let snapshot = try DshLocalUsageScanner.performScanPure(
+            sessionsRoot: root.appendingPathComponent("sessions", isDirectory: true),
+            cacheDir: cache,
+            fileManager: FileManagerBox(),
+            calendar: calendar,
+            now: { base },
+            decompressor: { $0 },
+            limits: DshLocalUsageScanLimits.production
+        )
+
+        let deepseek = try XCTUnwrap(snapshot.byProvider["deepseek-official"])
+        XCTAssertEqual(deepseek.recentSamples.count, 2)
+        XCTAssertEqual(deepseek.recentSamples[0].durationSeconds, 4.523, "毫秒 → 秒")
+        XCTAssertEqual(deepseek.recentSamples[1].durationSeconds, 1.0, "step/end 清除后下一步独立差分")
+    }
+
+    /// step/start 缺失、差值非正、差值超 1h、`step/end` 后残留锚点（防泄漏）
+    /// 四种非法场景都落 nil，宁缺勿假。
+    func testDshDurationNilWhenStepStartMissingOrInvalid() throws {
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let calendar = makeUTCGregorianCalendar()
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("llm-monitor-dsh-dur-nil-\(UUID().uuidString)", isDirectory: true)
+        let cache = root.appendingPathComponent(".token-monitor", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let t0: Int64 = 1_700_000_000_000
+        let hourMs: Int64 = 3_600_000
+        let lines: [String] = [
+            #"{"type":"session","version":0,"id":"session-dur-nil","createdAt":\#(t0),"cwd":"/tmp","delegationDepth":0}"#,
+            #"{"type":"request/context","seq":1,"time":\#(t0),"data":{"provider":"deepseek-official","model":"deepseek-v4-flash"}}"#,
+            // 无 step/start → nil
+            #"{"type":"assistant/message","seq":2,"time":\#(t0 + 1000),"data":{"turn":1,"step":0,"usage":{"inputTokens":10,"outputTokens":1,"reasoningTokens":0}}}"#,
+            // 差值非正（message 早于 start）→ nil
+            #"{"type":"step/start","seq":3,"time":\#(t0 + 2000),"data":{"turn":1,"step":1}}"#,
+            #"{"type":"assistant/message","seq":4,"time":\#(t0 + 1999),"data":{"turn":1,"step":1,"usage":{"inputTokens":10,"outputTokens":1,"reasoningTokens":0}}}"#,
+            #"{"type":"step/end","seq":5,"time":\#(t0 + 2100),"data":{"turn":1,"step":1}}"#,
+            // 差值超 1h（账本异常）→ nil
+            #"{"type":"step/start","seq":6,"time":\#(t0 + 3000),"data":{"turn":1,"step":2}}"#,
+            #"{"type":"assistant/message","seq":7,"time":\#(t0 + 3000 + hourMs + 1),"data":{"turn":1,"step":2,"usage":{"inputTokens":10,"outputTokens":1,"reasoningTokens":0}}}"#,
+            #"{"type":"step/end","seq":8,"time":\#(t0 + 3000 + hourMs + 2),"data":{"turn":1,"step":2}}"#,
+            // step/end 已清除锚点（step 3 无 step/start）→ 同 turn/step 复用旧 key 也不得读到过期值
+            #"{"type":"step/start","seq":9,"time":\#(t0 + 4000),"data":{"turn":1,"step":3}}"#,
+            #"{"type":"step/end","seq":10,"time":\#(t0 + 4100),"data":{"turn":1,"step":3}}"#,
+            #"{"type":"assistant/message","seq":11,"time":\#(t0 + 4200),"data":{"turn":1,"step":3,"usage":{"inputTokens":10,"outputTokens":1,"reasoningTokens":0}}}"#,
+        ]
+        try writeSessionLog(
+            root: root.appendingPathComponent("sessions", isDirectory: true),
+            sessionID: "session-dur-nil",
+            body: lines.joined(separator: "\n") + "\n"
+        )
+
+        let snapshot = try DshLocalUsageScanner.performScanPure(
+            sessionsRoot: root.appendingPathComponent("sessions", isDirectory: true),
+            cacheDir: cache,
+            fileManager: FileManagerBox(),
+            calendar: calendar,
+            now: { base },
+            decompressor: { $0 },
+            limits: DshLocalUsageScanLimits.production
+        )
+
+        let deepseek = try XCTUnwrap(snapshot.byProvider["deepseek-official"])
+        XCTAssertEqual(deepseek.recentSamples.count, 4)
+        for (index, sample) in deepseek.recentSamples.enumerated() {
+            XCTAssertNil(
+                sample.durationSeconds,
+                "第 \(index) 条样本（completedAt=\(sample.completedAt)）时长必须为 nil"
+            )
+        }
+    }
+
     func testMiniMaxM3EstimatesReasoningFromSameMessageContent() throws {
         let base = Date(timeIntervalSince1970: 1_700_000_000)
         let calendar = makeUTCGregorianCalendar()

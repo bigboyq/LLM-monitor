@@ -8,7 +8,7 @@ The app reads and writes this shape:
 
 ```json
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "refreshIntervalSeconds": 300,
   "providers": {
     "minimax_token_plan": {
@@ -59,7 +59,8 @@ The app reads and writes this shape:
 
 | Field | Scope | Meaning |
 |---|---|---|
-| `schemaVersion` | global | Configuration schema version. Missing legacy values decode as version 0 and are normalized to the current version; unsupported future versions are rejected rather than silently defaulted. |
+| `schemaVersion` | global | Configuration schema version. Missing legacy values decode as version 0 and are normalized to the current version; unsupported future versions are rejected rather than silently defaulted. Schema 3 adds the `sync` block (multi-machine fleet sync, see `spec/sync.md`). |
+| `sync` | global | 多机联动配置（`SyncConfig`）。缺省或不写 = `enabled: false`，完全不参与（现有用户零影响）；坏值按未配置处理（逐字段容错，只回退该字段）。字段：`enabled`（缺省 false）、`hubURL`（空 = 本机为主节点 hub；非空 = 副节点 node，且不监听端口——角色由 `SyncRole.derive` 单源派生）、`pushIntervalSeconds`（默认 60，clamp 5s...24h）、`hubBindHost`（默认 `0.0.0.0`；`127.0.0.1`/`localhost` 时只绑回环）、`hubPort`（默认 8787）、`nodeName`（空 = hostname）、`staleAfterSeconds`（默认 900）、`quotaMaxAgeSeconds`（默认 1800）、`retainDays`（默认 7）、`nodeID`（节点身份 UUID，首次启用联动时自动生成写回；dotfile 同步 config 的部署须给每台机器改成不同值）。协议与运行时见 `spec/sync.md`。 |
 | `refreshIntervalSeconds` | global | Default refresh interval in seconds. Current default is `300`; effective values are clamped to 10 seconds...30 days. |
 | `statusBarIconStyle` | global | Selected menu-bar icon theme. Missing or invalid values use `chartBar`. |
 | `statusBarHealthDotEnabled` | global | Shows the 6 pt health dot on the menu-bar icon. Missing or invalid values default to `true`. |
@@ -67,6 +68,7 @@ The app reads and writes this shape:
 | `edgeDock` | global | 屏幕边缘状态窗配置（`EdgeDockConfig`）。缺省等价于 `EdgeDockConfig.default`：`mode = .autoHideWindow`（默认开启、平时收起为小圆环）、`edge = .right`、`offset = 0.5`、`hideInFullscreen = true`、`compactSize = .small`、`independentRingColors = true`。`screenUUID` 为 nil 时跟随当前所在屏。**逐字段容错**：手改坏值只回退该字段，不整块报废（外层用 `try?` 解码，整块失败会连用户拖好的位置一起静默重置）。详见 `spec/ui/edge-dock.md`。 |
 | `bark` | global | Bark 推送渠道（`BarkConfig`：`enabled` / `serverURL` / `deviceKey` / `sound` / `skipWhenAwakeAndUnlocked` / `ttl` / `group`）。字段缺失或 `enabled == false` 都表示不推送。详见 `spec/notifications.md`。 |
 | `holidaySource` | global | 法定节假日数据源（URL 或本地文件路径），供 `HolidayCalendar` 解析链取数。缺省（不写键）= 上游 chinese-days CDN JSON（`HolidayCalendar.defaultSourceURL`，与 `scripts/sync-holiday-data.sh` 的 `UPSTREAM_URL` 同值）；**显式空串** = 只用随 App 打包的内置快照、不联网；其余值按 http(s) URL 或本地文件路径解析。类型写错按缺失处理（回退缺省语义）。缓存文件、取数触发与设置页展示见 `spec/ui/settings.md` 的「节假日数据源」。 |
+| `appearance` | global | 应用外观（`AppAppearance`：`light` / `dark` / 缺省=自动跟随系统）。`AppState.applyAppearance` 写 `NSApp.appearance`，start 与每次配置变更时应用；设置页常规 pane「外观」节写穿保存，选「自动」时字段不落盘。 |
 | `providerCardOrder` | global | Optional ordered list of stable canonical Quota Provider IDs (for example `deepseek` or `minimax`) for the main menu cards. Missing, empty, unknown, or duplicate IDs are normalized; omitted items are appended by Provider display name. |
 | `providers.<id>.enabled` | provider | Disabled providers stay visible but are not fetched. Missing `enabled` decodes as `true`. |
 | `providers.<id>.apiKey` | provider | API key for providers that do not manage external auth. Used by minimax. |
@@ -239,4 +241,4 @@ CHANGELOG 最新条目、两份 README 的「当前版本」/DMG 名/build-relea
 的旧文案「按本机时区计算、可在设置中调整」直到发版前才发现，只因 `build-release.sh` 的
 版本门禁全绿而放行。**功能口径变了，用户文档必须同轮改**。
 
-> 核对基线：2026-10-20 · 代码 f6530fe
+> 核对基线：2026-10-24 · 代码 a3d4553

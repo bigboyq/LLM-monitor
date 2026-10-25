@@ -17,6 +17,12 @@ import Foundation
 /// input = 未缓存输入，cacheRead = 缓存读，output 含思考。无原生 reasoning
 /// 计数，用 `thinking` 文本按字符占比把 output 守恒拆成 reasoning + output
 /// （`ReasoningCharSplit`，逐行与日聚合两级都保持守恒）。
+///
+/// 单次调用时长（`durationSeconds`）两级来源：方案 A——scanner 预读
+/// `conversations/<session>.db` 的 LLM step protobuf（field 1 发起 → field 7
+/// 流式完成，真值）；方案 B——`.db` 未覆盖时用同会话内后继 `MODEL:GENERIC`
+/// 子工具步骤创建行（created_at 恰为流式完成整秒 ⌊f7⌋）结算近似值。
+/// transcript `created_at` 是整秒级**发起**时刻，前驱行差分完全失真，禁止使用。
 
 /// 一条 MODEL 行解析出的原始计数（token 未拆分、模型名未 join）。
 struct AgyRawModelRow: Sendable {
@@ -27,6 +33,10 @@ struct AgyRawModelRow: Sendable {
     let outputTokens: Int
     let thinkingChars: Int
     let visibleChars: Int
+    /// 行 `type`（`PLANNER_RESPONSE` / `GENERIC` 等），方案 B 的暂存判定键。
+    let rowType: String?
+    /// `tool_calls` 是否非空（带工具调用的 planner 响应才有 GENERIC 子步骤后继）。
+    let hasToolCalls: Bool
 }
 
 /// join + 分摊后的一次模型响应样本。
@@ -44,19 +54,29 @@ struct AgyParsedUsage: Sendable {
     /// 裸 promptID（`session:step:N`）；`agy:` 命名空间由帧构造统一施加。
     let promptID: String
     let sessionID: String
+    /// 会话内步骤号（方案 A/B 时长映射键；缺失时不参与时长解析）。
+    let stepIndex: Int?
+    /// 单次调用流式时长（秒）：构造时带方案 A 映射值，方案 B 由 scanner 在
+    /// 会话全部文件解析完后回填（var 以便结算期写入）。
+    var durationSeconds: Double?
 }
 
 enum AgyLocalUsageAggregation {
     /// MODEL 行的 JSON 键集不固定，用 JSONSerialization 按需取值（缺键 = nil）。
-    /// 返回 nil 表示该行与计量无关（非 MODEL / 非 DONE / 无 token 字段 /
-    /// created_at 缺失或不可解析）。
-    static func parseModelRow(
+    /// 字节级 `"source":"MODEL"` 预过滤之后的二级解析；超长行 / 坏 JSON 返回 nil。
+    /// 计量行判定与方案 B 的 GENERIC 标记行共用这一次解析（见 `consumeLine`）。
+    static func parseLineObject(
         _ line: Data,
         maxLineBytes: Int
-    ) -> AgyRawModelRow? {
-        guard line.count <= maxLineBytes,
-              let object = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any],
-              object["source"] as? String == "MODEL",
+    ) -> [String: Any]? {
+        guard line.count <= maxLineBytes else { return nil }
+        return (try? JSONSerialization.jsonObject(with: line)) as? [String: Any]
+    }
+
+    /// 计量行判定（`parseLineObject` 结果 → 原始计数）。返回 nil 表示该行与
+    /// 计量无关（非 DONE / 无 token 字段 / created_at 缺失或不可解析）。
+    static func parseModelRow(_ object: [String: Any]) -> AgyRawModelRow? {
+        guard object["source"] as? String == "MODEL",
               object["status"] as? String == "DONE",
               // token 三键成组；全缺 = 未计量响应（非 DONE 的中间行同理被
               // status 过滤），不产出样本也不计轮次。
@@ -73,8 +93,25 @@ enum AgyLocalUsageAggregation {
             cacheReadTokens: max(intValue(object["cache_read_tokens"]), 0),
             outputTokens: max(intValue(object["output_tokens"]), 0),
             thinkingChars: (object["thinking"] as? String)?.count ?? 0,
-            visibleChars: visibleCharCount(in: object)
+            visibleChars: visibleCharCount(in: object),
+            rowType: object["type"] as? String,
+            hasToolCalls: hasToolCalls(in: object)
         )
+    }
+
+    /// 方案 B 标记行：`MODEL:GENERIC`（工具子步骤）。status 不限——创建行通常是
+    /// 中间态且不带 token 字段；必须带 `step_index` 与可解析 `created_at`。带
+    /// tool_calls 的 PLANNER_RESPONSE 流式结束瞬间 agy 立即创建该子步骤，其
+    /// `created_at` 恰为流式完成整秒 ⌊f7⌋；同 step 的后续状态行 created_at 只会
+    /// 更晚，由 context 的 min 保留创建行。
+    static func parseGenericMarkerRow(_ object: [String: Any]) -> (stepIndex: Int, createdAt: Date)? {
+        guard object["source"] as? String == "MODEL",
+              object["type"] as? String == "GENERIC",
+              let stepIndex = (object["step_index"] as? NSNumber)?.intValue,
+              let createdAt = DateParser.parse(object["created_at"]) else {
+            return nil
+        }
+        return (stepIndex, createdAt)
     }
 
     /// 同一会话内（跨主文件与分块）的防重复键。
@@ -98,11 +135,13 @@ enum AgyLocalUsageAggregation {
         return candidate?.modelName ?? timeline.first?.modelName
     }
 
-    /// 原始行 → 可聚合样本：模型名 join + thinking 字符占比分摊（守恒）。
+    /// 原始行 → 可聚合样本：模型名 join + thinking 字符占比分摊（守恒）+ 方案 A
+    /// 时长映射（`.db` 未覆盖时保持 nil，落给方案 B 会话级结算回填）。
     static func makeUsage(
         raw: AgyRawModelRow,
         sessionID: String,
-        modelName: String?
+        modelName: String?,
+        planADurationSeconds: Double? = nil
     ) -> AgyParsedUsage {
         let split = ReasoningCharSplit.split(
             outputTokens: raw.outputTokens,
@@ -119,8 +158,82 @@ enum AgyLocalUsageAggregation {
             reasoningTokens: split?.reasoning ?? 0,
             modelName: modelName,
             promptID: "\(sessionID):step:\(stepKey)",
-            sessionID: sessionID
+            sessionID: sessionID,
+            stepIndex: raw.stepIndex,
+            durationSeconds: planADurationSeconds
         )
+    }
+
+    // MARK: - 单次调用时长（方案 A .db 真值 + 方案 B GENERIC 后继降级）
+
+    /// 单会话的时长解析上下文。方案 A 是 scanner 预读的 `.db` 映射（真值）；
+    /// 方案 B 在 transcript 流式扫描中暂存/收集，会话全部文件解析完后结算
+    /// （`fallbackDurations` → `settleFallbackDurations`）。
+    struct AgySessionDurationContext: Sendable {
+        /// 方案 A：`conversations/<session>.db` 的 `step_index → 流式时长（秒）`，
+        /// 已过 (0, 3600] 有效域。`.db` 缺失 / 打不开 / 表缺失 / 无匹配行为空映射。
+        let planADurations: [Int: Double]
+        /// 方案 B 暂存：带 tool_calls 的 `MODEL:PLANNER_RESPONSE:DONE` 行
+        ///（step_index → created_at = 发起整秒 ⌊f1⌋）。纯文本终答（无
+        /// tool_calls）不入暂存，保持 nil——不误食下一轮 USER_INPUT 行。
+        var pendingPlanners: [Int: Date] = [:]
+        /// 方案 B 标记：`MODEL:GENERIC` 行（step_index → 最早 created_at =
+        /// 流式完成整秒 ⌊f7⌋；同 step 的后续状态行更晚，min 保留创建行）。
+        var genericMarkers: [Int: Date] = [:]
+
+        /// 方案 A 取值（映射外的 step_index 返回 nil）。
+        func planADuration(stepIndex: Int?) -> Double? {
+            guard let stepIndex else { return nil }
+            return planADurations[stepIndex]
+        }
+
+        /// 计量行入上下文：带 tool_calls 的 PLANNER_RESPONSE 暂存待结算。
+        mutating func recordMeteredRow(_ row: AgyRawModelRow) {
+            if row.rowType == "PLANNER_RESPONSE", row.hasToolCalls, let stepIndex = row.stepIndex {
+                pendingPlanners[stepIndex] = row.createdAt
+            }
+        }
+
+        mutating func recordGenericMarker(stepIndex: Int, createdAt: Date) {
+            if let existing = genericMarkers[stepIndex] {
+                genericMarkers[stepIndex] = min(existing, createdAt)
+            } else {
+                genericMarkers[stepIndex] = createdAt
+            }
+        }
+    }
+
+    /// 方案 B 结算（纯函数）：对每个暂存 planner（step s），取 step_index 大于 s
+    /// 的最小 GENERIC 标记——即流式结束瞬间创建的子工具步骤，`duration =
+    /// ⌊f7⌋ − ⌊f1⌋`，过 (0, 3600] 有效域。与文件处理顺序无关：标记先于 planner
+    /// 到达（主文件先于 chunks 的约定下合法）也在结算期回配。
+    static func fallbackDurations(from context: AgySessionDurationContext) -> [Int: Double] {
+        var durations: [Int: Double] = [:]
+        for (step, plannerStart) in context.pendingPlanners {
+            guard let markerStep = context.genericMarkers.keys
+                    .filter({ $0 > step })
+                    .min(),
+                  let streamEnd = context.genericMarkers[markerStep] else { continue }
+            let duration = streamEnd.timeIntervalSince(plannerStart)
+            if duration > 0, duration <= 3600 {
+                durations[step] = duration
+            }
+        }
+        return durations
+    }
+
+    /// 结算回填：方案 A 未覆盖（`durationSeconds == nil`）的计量样本按
+    /// step_index 取方案 B 结果；已有方案 A 值的样本不覆盖。
+    static func settleFallbackDurations(
+        into usages: inout [AgyParsedUsage],
+        context: AgySessionDurationContext
+    ) {
+        let fallback = fallbackDurations(from: context)
+        guard !fallback.isEmpty else { return }
+        for index in usages.indices where usages[index].durationSeconds == nil {
+            guard let step = usages[index].stepIndex, let duration = fallback[step] else { continue }
+            usages[index].durationSeconds = duration
+        }
     }
 
     // MARK: - 聚合
@@ -178,7 +291,8 @@ enum AgyLocalUsageAggregation {
             cachedInputTokens: usage.cacheReadTokens,
             outputTokens: usage.outputTokens,
             reasoningOutputTokens: usage.reasoningTokens,
-            sourceProviderID: ClientID.agy
+            sourceProviderID: ClientID.agy,
+            durationSeconds: usage.durationSeconds
         ))
     }
 
@@ -291,6 +405,12 @@ enum AgyLocalUsageAggregation {
             return contentCount
         }
         return SaturatingArithmetic.add(contentCount, text.count)
+    }
+
+    /// `tool_calls` 是否非空（与 `visibleCharCount` 同一形态约定）。
+    private static func hasToolCalls(in object: [String: Any]) -> Bool {
+        guard let toolCalls = object["tool_calls"] as? [[String: Any]] else { return false }
+        return !toolCalls.isEmpty
     }
 }
 

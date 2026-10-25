@@ -180,12 +180,24 @@ struct QuotaWindowUsageSection: View {
         let metrics: QuotaWindowUsageMetrics
         let cost: ModelCostEstimate?
         let resetsAt: Date?
+        /// 用量态第 6 列的窗口 token 速度（tok/s）：Σ(Output+Reason) ÷ Σ单次调用
+        /// 时长，口径唯一实现在 `LocalUsageSummaryBuilder.windowTokenRate`。
+        /// 「分析」态不读它（价值格照旧）；nil = 窗口内没有时长有效的样本
+        /// （显示 `—`，不是 0）。默认 nil 让既有构造点（fleet 行、测试夹具）零改动。
+        let tokensPerSecond: Double?
 
-        init(label: String, metrics: QuotaWindowUsageMetrics, cost: ModelCostEstimate?, resetsAt: Date? = nil) {
+        init(
+            label: String,
+            metrics: QuotaWindowUsageMetrics,
+            cost: ModelCostEstimate?,
+            resetsAt: Date? = nil,
+            tokensPerSecond: Double? = nil
+        ) {
             self.label = label
             self.metrics = metrics
             self.cost = cost
             self.resetsAt = resetsAt
+            self.tokensPerSecond = tokensPerSecond
         }
     }
 
@@ -209,10 +221,11 @@ struct QuotaWindowUsageSection: View {
         outputInput: "产出比", think: "思考", value: "价值", resetDate: "重置日期"
     )
 
-    /// 「用量」态表头行文案（七列）。
+    /// 「用量」态表头行文案（七列）。第 6 列是窗口 token 速度（tok/s），
+    /// 不再是价值（金额仍在「分析」态的价值列）。
     static let rawTableHeaders = (
         type: "类型", input: "Input", cached: "Cached",
-        output: "Output", reason: "Reason", value: "价值", resetDate: "重置日期"
+        output: "Output", reason: "Reason", value: "速度", resetDate: "重置日期"
     )
 
     // MARK: - 列宽预算与排版常量（卡内容宽 420pt 约束）
@@ -247,7 +260,8 @@ struct QuotaWindowUsageSection: View {
                 label: interval.label,
                 metrics: QuotaWindowUsageMetrics(usage: interval.usage),
                 cost: interval.cost,
-                resetsAt: interval.resetsAt
+                resetsAt: interval.resetsAt,
+                tokensPerSecond: interval.tokensPerSecond
             ))
         }
         if let weekly = snapshot.weekly {
@@ -255,7 +269,8 @@ struct QuotaWindowUsageSection: View {
                 label: weekly.label,
                 metrics: QuotaWindowUsageMetrics(usage: weekly.usage),
                 cost: weekly.cost,
-                resetsAt: weekly.resetsAt
+                resetsAt: weekly.resetsAt,
+                tokensPerSecond: weekly.tokensPerSecond
             ))
         }
         if let today {
@@ -263,7 +278,8 @@ struct QuotaWindowUsageSection: View {
                 label: today.label,
                 metrics: today.metrics,
                 cost: today.cost,
-                resetsAt: nil
+                resetsAt: nil,
+                tokensPerSecond: today.tokensPerSecond
             ))
         }
         if let offPeak {
@@ -271,7 +287,8 @@ struct QuotaWindowUsageSection: View {
                 label: offPeak.label,
                 metrics: offPeak.metrics,
                 cost: offPeak.cost,
-                resetsAt: nil
+                resetsAt: nil,
+                tokensPerSecond: offPeak.tokensPerSecond
             ))
         }
         return result.filter { $0.metrics.totalTokens > 0 }
@@ -315,6 +332,24 @@ struct QuotaWindowUsageSection: View {
             return String(format: "%.2f%%", percent)
         }
     }
+
+    /// 窗口 token 速度（tok/s）的分档格式化（纯函数）：
+    /// - nil → `—`（窗口内没有时长有效的样本，不是"速度为 0"）
+    /// - < 100 → 1 位小数（`50.1`）
+    /// - ≥ 100 → 整数（`246`）
+    /// 分档按原始值判定（先分档再格式化，不是舍入后再分档）：
+    /// `99.96` 原始值 < 100 属一位小数档，`%.1f` 四舍五入成 `100.0`。
+    static func speedText(_ rate: Double?) -> String {
+        guard let rate else { return "—" }
+        if rate >= 100 {
+            return String(format: "%.0f", rate)
+        }
+        return String(format: "%.1f", rate)
+    }
+
+    /// 用量态「速度」表头的 hover 说明：列名只有「速度」两个字，光标停上去才
+    /// 说得出口径（分子是哪两桶、哪些调用不参与）——与产出比格的 help 同一模式。
+    static let speedColumnHelp = "窗口内 (Output+Reason) ÷ 调用时长，tok/s；时长未知的调用不参与"
 
     /// 产出比格子的 hover 说明：格子里只有一个百分比或一个 `—`，
     /// 光标停上去才说得出代表什么——`—` 尤其需要，它不是 0%。
@@ -471,6 +506,7 @@ struct QuotaWindowUsageSection: View {
                     headerCell(Self.rawTableHeaders.reason, width: Self.middleColumnWidth, alignment: .trailing)
                 }
                 headerCell(Self.rawTableHeaders.value, width: Self.valueColumnWidth, alignment: .leading)
+                    .help(Self.speedColumnHelp)
                 resetDateHeader
             }
         }
@@ -528,7 +564,7 @@ struct QuotaWindowUsageSection: View {
                 if visibility.reason {
                     cell(Formatters.formatTokenCountCompact(row.metrics.reasoning), width: Self.middleColumnWidth)
                 }
-                valueCell(row.cost)
+                speedCell(row.tokensPerSecond)
                 resetDateCell(row.resetsAt)
             }
         }
@@ -572,6 +608,14 @@ struct QuotaWindowUsageSection: View {
 
     private func valueCell(_ cost: ModelCostEstimate?) -> some View {
         Text(Self.costText(cost))
+            .foregroundStyle(.secondary)
+            .frame(width: Self.valueColumnWidth, alignment: .leading)
+    }
+
+    /// 用量态第 6 列的速度格：纯数字（tok/s），nil → `—`。58pt 宽与 leading 对齐
+    /// 同「分析」态的价值列，两态切换骨架零迁移；口径说明挂在表头（speedColumnHelp）。
+    private func speedCell(_ rate: Double?) -> some View {
+        Text(Self.speedText(rate))
             .foregroundStyle(.secondary)
             .frame(width: Self.valueColumnWidth, alignment: .leading)
     }

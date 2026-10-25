@@ -225,7 +225,7 @@ final class AntigravityCacheMaintenanceTests: AntigravityConvergenceTestCase {
             reasoningOutputTokens: 0
         )
         let index = AntigravityLocalUsageScanner.CacheIndex(
-            version: 7,
+            version: 8,
             lastScannedAt: now.addingTimeInterval(-60),
             sessions: [sessionID: .init(
                 mtimeMs: liveMtimeMs,          // 新鲜指纹 → 不 dirty、不发 RPC
@@ -335,9 +335,13 @@ final class AntigravityCacheMaintenanceTests: AntigravityConvergenceTestCase {
             "首次部分命中：记录该 session 观测到的未命中分量集合"
         )
         let dayKey = LocalUsageDayKey.make(testCalendar.startOfDay(for: now), calendar: testCalendar)
+        // daily 与 sample 同走 catalog 唯一入口：该事件只有 cacheRead 命中，其余
+        // 分量按缺失处理，totalTokens = 四桶和 = cacheRead（server 权威 total 只
+        // 保留在 raw 事件诊断，不进入 daily 四桶口径——见 accounting.md 的
+        // 「totalTokens 只使用四个统一桶」）。
         XCTAssertEqual(
-            saved.dailyBySession[sessionID]?[dayKey]?.totalTokens, 99_999,
-            "去重不改口径：total 仍采用 server 权威值"
+            saved.dailyBySession[sessionID]?[dayKey]?.totalTokens, 300,
+            "去重不改口径：total 为四桶和（此处仅 cacheRead 命中）"
         )
 
         // 集合不变（重新扫描同一形态的部分命中事件）：去重状态保持，不再重复告警

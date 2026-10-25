@@ -841,6 +841,47 @@ final class OpencodeUsageTests: XCTestCase {
         XCTAssertEqual(samples[0].cachedInputTokens, 30)
     }
 
+    /// `data.time.completed` − 列 `time_created` 差分出 sample 的 `durationSeconds`
+    ///（毫秒 → 秒）；completed 缺失（旧版本账本）或差值非正落 nil。
+    func testOpencodeSamplesCarryDurationFromTimeCompleted() throws {
+        let databaseURL = try makeDatabase()
+        defer { try? FileManager.default.removeItem(at: databaseURL) }
+        let timestamp: Int64 = 1_800_000_000_000
+
+        // 正常：completed − created = 1250ms → 1.25s
+        try insert(
+            databaseURL: databaseURL, id: "a1", sessionID: "session-1", timestamp: timestamp,
+            payload: payload(parent: "u1", input: 10, output: 4, completedMs: timestamp + 1250)
+        )
+        // completed 缺失（旧版本账本）→ nil
+        try insert(
+            databaseURL: databaseURL, id: "a2", sessionID: "session-1", timestamp: timestamp + 1,
+            payload: payload(parent: "u2", input: 10, output: 4)
+        )
+        // completed <= time_created（差值非正）→ nil
+        try insert(
+            databaseURL: databaseURL, id: "a3", sessionID: "session-1", timestamp: timestamp + 2,
+            payload: payload(parent: "u3", input: 10, output: 4, completedMs: timestamp + 2)
+        )
+        // 差值超出 1h 有效域（L0 统一校验，与 Codex / DSH / ZCode 同口径）→ nil
+        try insert(
+            databaseURL: databaseURL, id: "a4", sessionID: "session-1", timestamp: timestamp + 3,
+            payload: payload(parent: "u4", input: 10, output: 4, completedMs: timestamp + 3 + 3_600_001)
+        )
+
+        let calendar = Calendar(identifier: .gregorian)
+        let reader = try OpencodeDBReader(path: databaseURL)
+        defer { reader.close() }
+        let aggregate = try reader.aggregate(calendar: calendar)
+
+        let samples = try XCTUnwrap(aggregate.samples["zhipuai-coding-plan"])
+        XCTAssertEqual(samples.count, 4)
+        XCTAssertEqual(samples[0].durationSeconds, 1.25, "毫秒 → 秒")
+        XCTAssertNil(samples[1].durationSeconds, "completed 缺失落 nil")
+        XCTAssertNil(samples[2].durationSeconds, "差值非正落 nil")
+        XCTAssertNil(samples[3].durationSeconds, "差值超 1h 有效域落 nil")
+    }
+
     func testGLMOpencodeSamplesMatchQuotaModel() {
         XCTAssertTrue(
             LocalUsageSummaryBuilder.modelMatches(
@@ -974,10 +1015,14 @@ final class OpencodeUsageTests: XCTestCase {
         reasoning: Int = 0,
         cacheRead: Int = 0,
         cacheWrite: Int = 0,
-        provider: String = "zhipuai-coding-plan"
+        provider: String = "zhipuai-coding-plan",
+        completedMs: Int64? = nil
     ) -> String {
-        """
-        {"role":"assistant","providerID":"\(provider)","modelID":"glm-5.2","parentID":"\(parent)","tokens":{"input":\(input),"output":\(output),"reasoning":\(reasoning),"cache":{"read":\(cacheRead),"write":\(cacheWrite)}}}
+        // `time.completed` 是 reader 推导单次调用时长的来源（epoch 毫秒）；
+        // 缺省时不写 `time` 键，模拟旧版本账本（时长落 nil）。
+        let timeJSON = completedMs.map { #","time":{"completed":\#($0)}"# } ?? ""
+        return """
+        {"role":"assistant","providerID":"\(provider)","modelID":"glm-5.2","parentID":"\(parent)","tokens":{"input":\(input),"output":\(output),"reasoning":\(reasoning),"cache":{"read":\(cacheRead),"write":\(cacheWrite)}}\(timeJSON)}
         """
     }
 

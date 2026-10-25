@@ -117,7 +117,9 @@ enum ProviderCardDerivedValues {
     /// token 四桶取 `dailyTokenUsage` 的今天那一条（与"今天 X tokens / 命中率"
     /// 同一份数据，比率公式也同一个：出/入 = (reasoning+output)/(input+cached)、
     /// 思考 = reasoning/(reasoning+output)、命中为缓存占比）；
-    /// 价值取当天样本逐条计价。
+    /// 价值取当天样本逐条计价；速度取同批样本的
+    /// `LocalUsageSummaryBuilder.windowTokenRate`（Σ(Output+Reason) ÷ Σ时长，
+    /// 时长未知的调用不参与；全无有效时长 → nil → 用量态显示 `—`）。
     ///
     /// 当天无本地数据 → 返回 `nil`，今行整个不画。它不是额度窗口，只是
     /// `QuotaWindowUsageSection` 的同一份 `Row` 格式（行首标签「今」，第五轮
@@ -162,7 +164,8 @@ enum ProviderCardDerivedValues {
         return QuotaWindowUsageSection.Row(
             label: ProviderCardView.todayRowLabel,
             metrics: metrics,
-            cost: cost
+            cost: cost,
+            tokensPerSecond: LocalUsageSummaryBuilder.windowTokenRate(samples: todaySamples)
         )
     }
 
@@ -176,7 +179,8 @@ enum ProviderCardDerivedValues {
     /// 传入的值一致，保证数字一致）；summary → 四桶的映射与「今」行同构
     /// （Input 是未缓存输入，与 7 天柱图 / 今行口径一致）。价值对同一批今日闲时
     /// 样本（`offPeakTodaySamples`，与 summary 共享同一份谓词）走
-    /// `ModelPricingCatalog.estimate` 计价。
+    /// `ModelPricingCatalog.estimate` 计价；速度对同一批样本走
+    /// `LocalUsageSummaryBuilder.windowTokenRate`（时长未知的调用不参与）。
     ///
     /// 仅 `status.kind == .glmCodingPlan` 时构造，其余 kind 恒 `nil`——闲时窗口
     /// 只属于智谱任务（见 `offPeakWindows` 的按 kind 取值理由）。当天无闲时样本
@@ -229,7 +233,8 @@ enum ProviderCardDerivedValues {
         return QuotaWindowUsageSection.Row(
             label: QuotaWindowUsageSection.offPeakRowLabel,
             metrics: metrics,
-            cost: cost
+            cost: cost,
+            tokensPerSecond: LocalUsageSummaryBuilder.windowTokenRate(samples: costSamples)
         )
     }
 

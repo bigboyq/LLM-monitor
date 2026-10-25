@@ -353,6 +353,129 @@ final class QuotaWindowUsageTests: XCTestCase {
         XCTAssertEqual(QuotaWindowUsageSection.rateText(0.41, digits: 0), "41%")
     }
 
+    // MARK: - token 速度（tok/s）
+
+    /// `windowTokenRate` 是 Σ(Output+Reason) ÷ Σ时长的**加权**聚合：
+    /// (150 + 300) / (10 + 30) = 11.25 tok/s，而不是各样本速率 (15 + 10) / 2 = 12.5
+    /// 的算术平均——慢请求时长权重大，才是"这一窗每秒烧了多少 token"的真值。
+    func testWindowTokenRateWeightsBySummedTokensOverSummedDurations() throws {
+        let now = Date()
+        let samples = [
+            Self.timedSample(at: now, prompt: "fast", output: 100, reasoning: 50, duration: 10),
+            Self.timedSample(at: now, prompt: "slow", output: 200, reasoning: 100, duration: 30),
+        ]
+        let rate = try XCTUnwrap(LocalUsageSummaryBuilder.windowTokenRate(samples: samples))
+        XCTAssertEqual(rate, 450.0 / 40.0, accuracy: 1e-9, "必须是 Σ/Σ 加权")
+        XCTAssertNotEqual(rate, 12.5, accuracy: 1e-9, "前提不成立：两样本速率不同才挡得住算术平均回归")
+    }
+
+    /// `durationSeconds == nil`（账本未提供时长）的样本分子分母都不计——它的
+    /// token 数若被记进分子，速率会被系统性高估。
+    func testWindowTokenRateSkipsSamplesWithoutDuration() throws {
+        let now = Date()
+        let rate = try XCTUnwrap(LocalUsageSummaryBuilder.windowTokenRate(samples: [
+            Self.timedSample(at: now, prompt: "known", output: 100, reasoning: 50, duration: 10),
+            Self.timedSample(at: now, prompt: "unknown", output: 9_000, reasoning: 0, duration: nil),
+        ]))
+        XCTAssertEqual(rate, 150.0 / 10.0, accuracy: 1e-9, "只有时长已知的那条参与分子分母")
+    }
+
+    /// 有效性过滤 `duration ∈ [0.2, 3600]`：两端都是闭区间，界外剔除。
+    func testWindowTokenRateFiltersDurationsOutsideTheValidityRange() throws {
+        let now = Date()
+        let rate = try XCTUnwrap(LocalUsageSummaryBuilder.windowTokenRate(samples: [
+            Self.timedSample(at: now, prompt: "too-fast", output: 10_000, reasoning: 0, duration: 0.1),
+            Self.timedSample(at: now, prompt: "lower-bound", output: 20, reasoning: 0, duration: 0.2),
+            Self.timedSample(at: now, prompt: "upper-bound", output: 300, reasoning: 0, duration: 3600),
+            Self.timedSample(at: now, prompt: "too-slow", output: 40_000, reasoning: 0, duration: 3600.1),
+        ]))
+        XCTAssertEqual(rate, 320.0 / 3600.2, accuracy: 1e-9, "0.2s 与 3600s 参与运算，0.1s 与 3600.1s 剔除")
+    }
+
+    /// 空数组与全无效样本都返回 nil（UI 显示 `—`），不是 0。
+    func testWindowTokenRateReturnsNilWithoutValidSamples() {
+        XCTAssertNil(LocalUsageSummaryBuilder.windowTokenRate(samples: []))
+        let now = Date()
+        XCTAssertNil(LocalUsageSummaryBuilder.windowTokenRate(samples: [
+            Self.timedSample(at: now, prompt: "no-duration", output: 10, reasoning: 0, duration: nil),
+        ]), "时长全未知的样本集合没有速率")
+        XCTAssertNil(LocalUsageSummaryBuilder.windowTokenRate(samples: [
+            Self.timedSample(at: now, prompt: "out-of-range", output: 10, reasoning: 0, duration: 7200),
+        ]), "全被有效性过滤剔除时同样没有速率")
+    }
+
+    /// `windowUsage` 把速率写进产物：与 cost 同源（同一批 windowSamples），
+    /// 分子分母一并带出供 `combineWindowUsage` 合并；时长全未知的窗口三元组全 nil。
+    func testWindowUsageCarriesTokenRateWithMergeInputs() {
+        let now = Date()
+        let snapshot = LocalUsageSummaryBuilder.windowUsage(
+            model: Self.glmModel(now: now),
+            providerKind: .glmCodingPlan,
+            samples: [
+                Self.timedSample(at: now.addingTimeInterval(-600), prompt: "p1", output: 100, reasoning: 50, duration: 10),
+                Self.timedSample(at: now.addingTimeInterval(-300), prompt: "p2", output: 0, reasoning: 0, duration: nil),
+            ],
+            intervalLabel: "5h",
+            weeklyLabel: "周",
+            excludeGlmOffPeak: true
+        )
+        XCTAssertEqual(snapshot.interval?.tokensPerSecond ?? 0, 150.0 / 10.0, accuracy: 1e-9)
+        XCTAssertEqual(snapshot.interval?.rateNumerator ?? 0, 150, accuracy: 1e-9)
+        XCTAssertEqual(snapshot.interval?.rateDenominator ?? 0, 10, accuracy: 1e-9)
+
+        let withoutDurations = LocalUsageSummaryBuilder.windowUsage(
+            model: Self.glmModel(now: now),
+            providerKind: .glmCodingPlan,
+            samples: [Self.sample(at: now.addingTimeInterval(-600), prompt: "legacy")],
+            intervalLabel: "5h",
+            weeklyLabel: "周",
+            excludeGlmOffPeak: true
+        )
+        XCTAssertNil(withoutDurations.interval?.tokensPerSecond, "时长全未知的窗口没有速率（不是 0）")
+        XCTAssertNil(withoutDurations.interval?.rateNumerator)
+        XCTAssertNil(withoutDurations.interval?.rateDenominator)
+    }
+
+    /// 多池速率合并是 Σ分子 ÷ Σ时长：(150 + 300) / (10 + 30) = 11.25，不是
+    /// (15 + 10) / 2 = 12.5 的各池速率平均——与单池 Σ/Σ 同口径。合并产物仍带
+    /// 分子分母，可继续参与上层合并不丢精度；缺中间量的窗口缺席，不出假平均。
+    func testCombineWindowUsageMergesTokenRatesBySummedNumeratorAndDenominator() throws {
+        let now = Date()
+        func pool(prompt: String, output: Int, reasoning: Int, duration: Double?) -> QuotaWindowUsageSnapshot {
+            LocalUsageSummaryBuilder.windowUsage(
+                model: Self.glmModel(now: now),
+                providerKind: .glmCodingPlan,
+                samples: [Self.timedSample(
+                    at: now.addingTimeInterval(-600),
+                    prompt: prompt,
+                    output: output,
+                    reasoning: reasoning,
+                    duration: duration
+                )],
+                intervalLabel: "5h",
+                weeklyLabel: "周",
+                excludeGlmOffPeak: true
+            )
+        }
+        let fast = pool(prompt: "fast", output: 100, reasoning: 50, duration: 10)   // 15 tok/s
+        let slow = pool(prompt: "slow", output: 200, reasoning: 100, duration: 30)  // 10 tok/s
+        XCTAssertEqual(fast.interval?.tokensPerSecond ?? 0, 15, accuracy: 1e-9, "前提：单池速率")
+        XCTAssertEqual(slow.interval?.tokensPerSecond ?? 0, 10, accuracy: 1e-9)
+
+        let merged = LocalUsageSummaryBuilder.combineWindowUsage([fast, slow])
+        let rate = try XCTUnwrap(merged.interval?.tokensPerSecond)
+        XCTAssertEqual(rate, 450.0 / 40.0, accuracy: 1e-9, "合并 = Σ分子 ÷ Σ时长")
+        XCTAssertNotEqual(rate, 12.5, accuracy: 1e-9, "前提不成立：两池速率不同才挡得住假平均")
+        XCTAssertEqual(merged.interval?.rateNumerator ?? 0, 450, accuracy: 1e-9)
+        XCTAssertEqual(merged.interval?.rateDenominator ?? 0, 40, accuracy: 1e-9)
+
+        // 一侧时长全未知：合并 = 另一侧自己的速率（缺中间量的窗口缺席）。
+        let unknown = pool(prompt: "unknown", output: 9_000, reasoning: 0, duration: nil)
+        XCTAssertNil(unknown.interval?.tokensPerSecond)
+        let mergedWithUnknown = LocalUsageSummaryBuilder.combineWindowUsage([fast, unknown])
+        XCTAssertEqual(mergedWithUnknown.interval?.tokensPerSecond ?? 0, 15, accuracy: 1e-9)
+    }
+
 
     // MARK: - 文案
 
@@ -470,5 +593,26 @@ final class QuotaWindowUsageTests: XCTestCase {
             reasoningOutputTokens: 2_000,
             sourceProviderID: source
         )
+    }
+
+    /// 带单次调用时长的样本（token 速度用例专用）：分子 = output + reason。
+    private static func timedSample(
+        at date: Date,
+        prompt: String,
+        output: Int,
+        reasoning: Int,
+        duration: Double?
+    ) -> LocalTokenUsageSample {
+        var sample = LocalTokenUsageSample(
+            completedAt: date,
+            modelName: "glm-4.6",
+            promptID: prompt,
+            inputTokens: 1_000,
+            cachedInputTokens: 0,
+            outputTokens: output,
+            reasoningOutputTokens: reasoning
+        )
+        sample.durationSeconds = duration
+        return sample
     }
 }

@@ -30,8 +30,9 @@ extension MinimaxLocalUsageScanner {
                 Int((Double(sample.outputTokens) * ratio).rounded()),
                 sample.outputTokens
             )
-            // 重建 sample 时必须原样带回 sourceProviderID：reader 写入了该
-            // 诊断字段，per-turn 分摊若丢掉它，hover / 汇总就无法再追溯来源。
+            // 重建 sample 时必须原样带回诊断字段：sourceProviderID 供 hover / 汇总
+            // 追溯来源；durationSeconds 供窗口 token 速度统计——丢了会退化成 nil，
+            // 该样本分子分母都不计，速率分母被算小。
             return LocalTokenUsageSample(
                 completedAt: sample.completedAt,
                 modelName: sample.modelName,
@@ -40,7 +41,8 @@ extension MinimaxLocalUsageScanner {
                 cachedInputTokens: sample.cachedInputTokens,
                 outputTokens: max(sample.outputTokens - reasoning, 0),
                 reasoningOutputTokens: reasoning,
-                sourceProviderID: sample.sourceProviderID
+                sourceProviderID: sample.sourceProviderID,
+                durationSeconds: sample.durationSeconds
             )
         }
     }

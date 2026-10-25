@@ -351,7 +351,7 @@ final class QuotaWindowUsageValueTests: XCTestCase {
         XCTAssertEqual(QuotaWindowUsageSection.rawTableHeaders.cached, "Cached")
         XCTAssertEqual(QuotaWindowUsageSection.rawTableHeaders.output, "Output")
         XCTAssertEqual(QuotaWindowUsageSection.rawTableHeaders.reason, "Reason")
-        XCTAssertEqual(QuotaWindowUsageSection.rawTableHeaders.value, "价值")
+        XCTAssertEqual(QuotaWindowUsageSection.rawTableHeaders.value, "速度")
         XCTAssertEqual(QuotaWindowUsageSection.rawTableHeaders.resetDate, "重置日期")
     }
 
@@ -380,6 +380,190 @@ final class QuotaWindowUsageValueTests: XCTestCase {
         XCTAssertEqual(QuotaWindowUsageSection.outputInputRateText(0.0099), "0.99%")
         XCTAssertEqual(QuotaWindowUsageSection.outputInputRateText(0.0012), "0.12%")
         XCTAssertEqual(QuotaWindowUsageSection.outputInputRateText(0.0), "0.00%")
+    }
+
+    // MARK: - 用量态「速度」列（tok/s，替换原价值列）
+
+    /// 窗口 token 速度的分档格式化（纯函数）：
+    /// - nil → `—`（窗口内没有时长有效的样本，不是"速度为 0"）
+    /// - < 100 → 1 位小数（`50.1`）
+    /// - ≥ 100 → 整数（`246`）
+    /// 分档按原始值判定（先分档再格式化，不是舍入后再分档）：
+    /// `99.96` 原始值 < 100 属一位小数档，`%.1f` 四舍五入成 `100.0`（与产出比
+    /// `9.99% → "10.0%"` 同一条"先分档再格式化"纪律）。
+    func testSpeedTextAdaptiveFormatting() {
+        // nil
+        XCTAssertEqual(QuotaWindowUsageSection.speedText(nil), "—")
+
+        // 1. < 100 档（1 位小数）
+        XCTAssertEqual(QuotaWindowUsageSection.speedText(0), "0.0")
+        XCTAssertEqual(QuotaWindowUsageSection.speedText(50.14), "50.1")
+        XCTAssertEqual(QuotaWindowUsageSection.speedText(99.94), "99.9")
+        // 阶梯边界：99.96 原始值 < 100，属于 1 位小数档，先分档再格式化为 "100.0"
+        XCTAssertEqual(QuotaWindowUsageSection.speedText(99.96), "100.0")
+
+        // 2. ≥ 100 档（整数）
+        XCTAssertEqual(QuotaWindowUsageSection.speedText(100), "100")
+        XCTAssertEqual(QuotaWindowUsageSection.speedText(100.4), "100")
+        XCTAssertEqual(QuotaWindowUsageSection.speedText(245.7), "246")
+    }
+
+    /// visibleRows 必须把速度带进行：5h / 周行取 `Window.tokensPerSecond`
+    /// （基础层 `windowUsage` 写入；本例 (1000+2000) ÷ 10 = 300 tok/s，两个窗口
+    /// 都含这条样本），今 / 闲行把宿主 Row 上的速率**原样透传**（重置格强制 nil
+    /// 的改写不得顺手丢字段）。
+    func testVisibleRowsCarryTokensPerSecondFromSnapshotAndHostRows() throws {
+        let now = Date()
+        let snapshot = LocalUsageSummaryBuilder.windowUsage(
+            model: Self.model(name: "glm_coding_plan", interval: true, weekly: true, now: now),
+            providerKind: .glmCodingPlan,
+            samples: [Self.sample(at: now.addingTimeInterval(-600), prompt: "p1", model: "glm-5.3", duration: 10)],
+            intervalLabel: "5h",
+            weeklyLabel: "周"
+        )
+        let windowRate = try XCTUnwrap(
+            snapshot.interval?.tokensPerSecond,
+            "前提不成立：带时长的样本必须算出窗口速率"
+        )
+        XCTAssertEqual(windowRate, 3_000.0 / 10.0, accuracy: 1e-9, "前提不成立：速率为 Σ(Output+Reason) ÷ Σ时长")
+
+        let today = QuotaWindowUsageSection.Row(
+            label: ProviderCardView.todayRowLabel,
+            metrics: QuotaWindowUsageMetrics(input: 10, cachedInput: 0, output: 5, reasoning: 0),
+            cost: nil,
+            tokensPerSecond: 12.5
+        )
+        let offPeak = QuotaWindowUsageSection.Row(
+            label: QuotaWindowUsageSection.offPeakRowLabel,
+            metrics: QuotaWindowUsageMetrics(input: 20, cachedInput: 0, output: 5, reasoning: 0),
+            cost: nil,
+            tokensPerSecond: 7.5
+        )
+
+        let rows = QuotaWindowUsageSection.visibleRows(snapshot: snapshot, today: today, offPeak: offPeak)
+        XCTAssertEqual(
+            rows.map(\.label),
+            ["5h", "周", ProviderCardView.todayRowLabel, QuotaWindowUsageSection.offPeakRowLabel],
+            "前提不成立：四行都应可见"
+        )
+        XCTAssertEqual(rows[0].tokensPerSecond, windowRate, "5h 行速度来自 Window.tokensPerSecond")
+        XCTAssertEqual(rows[1].tokensPerSecond, windowRate, "周行速度来自 Window.tokensPerSecond")
+        XCTAssertEqual(rows[2].tokensPerSecond, 12.5, "今行速度由宿主传入，原样透传")
+        XCTAssertEqual(rows[3].tokensPerSecond, 7.5, "闲行速度由宿主传入，原样透传")
+    }
+
+    /// 「今」行的速度：对当天样本走 `windowTokenRate`——Σ(Output+Reason) ÷ Σ时长
+    /// = (1500 + 500) ÷ (10 + 5)；时长全未知的旧账本 → nil（不是 0）。
+    func testTodayUsageRowCarriesWindowTokenRate() throws {
+        let now = Date()
+        let day = Calendar.current.startOfDay(for: now)
+        let samples = [
+            Self.dshSample("t1", at: now, output: 1_000, reasoning: 500, duration: 10),
+            Self.dshSample("t2", at: now, output: 500, reasoning: 0, duration: 5),
+        ]
+        let fixture = Self.dshFixture(samples: samples, day: day, scannedAt: now)
+        let row = try XCTUnwrap(
+            ProviderCardDerivedValues.todayUsageRow(
+                status: fixture.status,
+                projection: fixture.projection,
+                displayDate: now
+            ),
+            "当天有本地数据时必须产出「今」行"
+        )
+        XCTAssertEqual(
+            row.tokensPerSecond ?? 0, 2_000.0 / 15.0, accuracy: 1e-9,
+            "今行速度 = Σ(Output+Reason) ÷ Σ时长，只计时长有效的样本"
+        )
+        XCTAssertEqual(
+            row.tokensPerSecond,
+            LocalUsageSummaryBuilder.windowTokenRate(samples: samples),
+            "今行速度与对同批样本直接调 windowTokenRate 逐字一致"
+        )
+
+        // 时长全未知（旧缓存）→ 没有速率（nil，不是 0），行本身照常产出。
+        let legacy = Self.dshFixture(
+            samples: [Self.dshSample("t1", at: now, output: 1_000, reasoning: 500, duration: nil)],
+            day: day,
+            scannedAt: now
+        )
+        let legacyRow = try XCTUnwrap(
+            ProviderCardDerivedValues.todayUsageRow(
+                status: legacy.status,
+                projection: legacy.projection,
+                displayDate: now
+            )
+        )
+        XCTAssertNil(legacyRow.tokensPerSecond, "时长全未知的今行没有速率（不是 0）")
+    }
+
+    /// 「闲」行的速度：对同一批今日闲时样本（与金额/汇总同一份谓词筛出的
+    /// `offPeakTodaySamples`）走 `windowTokenRate`；时长未知的闲时样本分子分母
+    /// 都不计，时长全未知 → nil。
+    func testOffPeakUsageRowCarriesWindowTokenRate() throws {
+        let today = Calendar.current.startOfDay(for: Date())
+        let window = GlmOffPeakWindow(
+            startedAt: today.addingTimeInterval(3600),
+            endedAt: today.addingTimeInterval(7200)
+        )
+        let displayDate = today.addingTimeInterval(10_000)
+
+        func sample(_ seconds: TimeInterval, promptID: String, output: Int, reasoning: Int, duration: Double?)
+            -> LocalTokenUsageSample {
+            LocalTokenUsageSample(
+                completedAt: today.addingTimeInterval(seconds),
+                modelName: "glm-5.3",
+                promptID: promptID,
+                inputTokens: 100,
+                cachedInputTokens: 0,
+                outputTokens: output,
+                reasoningOutputTokens: reasoning,
+                sourceProviderID: "offpeak-idle-plan",
+                durationSeconds: duration
+            )
+        }
+        // 一条带时长 + 一条时长未知（旧账本形态）；后者不参与速率。
+        let samples = [
+            sample(5400, promptID: "s1:t1", output: 50, reasoning: 200, duration: 10),
+            sample(6000, promptID: "s1:t2", output: 20, reasoning: 0, duration: nil),
+        ]
+        let status = Self.glmStatus(samples: samples, offPeakWindows: [window], now: displayDate)
+        let projection = status.usageProjection(for: status.lastSuccess, now: displayDate)
+        let row = try XCTUnwrap(
+            ProviderCardDerivedValues.offPeakUsageRow(status: status, projection: projection, displayDate: displayDate),
+            "当天有闲时样本时必须产出「闲」行"
+        )
+        XCTAssertEqual(
+            row.tokensPerSecond ?? 0, 250.0 / 10.0, accuracy: 1e-9,
+            "闲行速度 = Σ(Output+Reason) ÷ Σ时长，只计时长有效的样本"
+        )
+        let costSamples = LocalUsageSummaryBuilder.offPeakTodaySamples(
+            samples: projection.recentSamples,
+            providerKind: .glmCodingPlan,
+            quotaModelName: "glm_coding_plan",
+            offPeakWindows: [window],
+            now: displayDate
+        )
+        XCTAssertEqual(costSamples.count, 2, "前提不成立：两条闲时样本都进同一批")
+        XCTAssertEqual(
+            row.tokensPerSecond,
+            LocalUsageSummaryBuilder.windowTokenRate(samples: costSamples),
+            "闲行速度与对同一批计价样本直接调 windowTokenRate 逐字一致"
+        )
+
+        // 时长全未知 → 无速率（nil，不是 0），行本身照常产出。
+        let legacy = Self.glmStatus(
+            samples: [sample(5400, promptID: "s2:t1", output: 50, reasoning: 200, duration: nil)],
+            offPeakWindows: [window],
+            now: displayDate
+        )
+        let legacyRow = try XCTUnwrap(
+            ProviderCardDerivedValues.offPeakUsageRow(
+                status: legacy,
+                projection: legacy.usageProjection(for: legacy.lastSuccess, now: displayDate),
+                displayDate: displayDate
+            )
+        )
+        XCTAssertNil(legacyRow.tokensPerSecond, "时长全未知的闲行没有速率（不是 0）")
     }
 
     /// 产出比格的 hover 说明（第七轮）：格子里只有一个 `xx.xxx%` 或一个 `—`，
@@ -1439,7 +1623,8 @@ final class QuotaWindowUsageValueTests: XCTestCase {
     private static func sample(
         at date: Date,
         prompt: String,
-        model: String
+        model: String,
+        duration: Double? = nil
     ) -> LocalTokenUsageSample {
         LocalTokenUsageSample(
             completedAt: date,
@@ -1449,8 +1634,94 @@ final class QuotaWindowUsageValueTests: XCTestCase {
             cachedInputTokens: 9_000,
             outputTokens: 1_000,
             reasoningOutputTokens: 2_000,
-            sourceProviderID: nil
+            sourceProviderID: nil,
+            durationSeconds: duration
         )
+    }
+
+    /// DSH 来源的 DeepSeek 样本（带可选时长），给「今」行速度测试用。
+    private static func dshSample(
+        _ promptID: String,
+        at date: Date,
+        output: Int,
+        reasoning: Int,
+        duration: Double?
+    ) -> LocalTokenUsageSample {
+        LocalTokenUsageSample(
+            completedAt: date,
+            modelName: "deepseek-chat",
+            promptID: promptID,
+            inputTokens: 1_000,
+            cachedInputTokens: 0,
+            outputTokens: output,
+            reasoningOutputTokens: reasoning,
+            sourceProviderID: "dsh:deepseek-official",
+            durationSeconds: duration
+        )
+    }
+
+    /// 一张 DeepSeek 卡 + 直接构造的投影（形态同 `ProviderCardDerivedMemoTests`
+    /// 的 fixture，但不走 DSH 路由的全局绑定，投影经 contributions 直造），
+    /// 供「今」行（`ProviderCardDerivedValues.todayUsageRow`）的取数路径用；
+    /// `dailyTokenUsage` 放当天一条（值不重要，今行存在即可）。
+    private static func dshFixture(
+        samples: [LocalTokenUsageSample],
+        day: Date,
+        scannedAt: Date
+    ) -> (status: ProviderStatus, projection: ProviderUsageProjection) {
+        let contribution = ClientUsageContribution(
+            clientID: "test-dsh",
+            displayName: "DSH",
+            dailyTokenUsage: [UnifiedDailyTokenUsage(dayStart: day, rounds: samples.count)],
+            recentSamples: samples,
+            scannedAt: scannedAt
+        )
+        let status = ProviderStatus(
+            id: ProviderKind.deepseek.providerID,
+            displayName: "DeepSeek",
+            kind: .deepseek,
+            iconSystemName: "circle",
+            accentColor: .deepseek,
+            refreshIntervalSeconds: 300,
+            state: .ready
+        )
+        return (status, ProviderUsageProjection(contributions: [contribution]))
+    }
+
+    /// 一张挂好 `glmLocalUsage`（样本 + 闲时窗口）的 GLM 卡（形态同
+    /// `GlmOffPeakTests.makeGlmStatus`），供「闲」行速度测试用。
+    private static func glmStatus(
+        samples: [LocalTokenUsageSample],
+        offPeakWindows: [GlmOffPeakWindow],
+        now: Date
+    ) -> ProviderStatus {
+        var status = ProviderStatus(
+            id: ProviderKind.glmCodingPlan.providerID,
+            displayName: "GLM",
+            kind: .glmCodingPlan,
+            iconSystemName: "circle",
+            accentColor: .glm,
+            refreshIntervalSeconds: 300,
+            state: .ok(QuotaInfo(
+                models: [Self.model(name: "glm_coding_plan", interval: true, weekly: false, now: now)],
+                resetCredits: nil,
+                planLabel: "Pro",
+                accountEmail: nil,
+                codexUsageDetails: nil,
+                fetchedAt: now
+            ))
+        )
+        status.glmLocalUsage = GlmLocalUsage(
+            today: GlmDailyUsage(dayStart: now, inputTokens: 0, rounds: 0),
+            dailyTokenUsage: [],
+            scannedAt: now,
+            sessionCount: samples.count,
+            eventCount: samples.count,
+            failedSessionCount: 0,
+            recentSamples: samples,
+            offPeakWindows: offPeakWindows
+        )
+        return status
     }
 
     private static func credit(id: String, status: String, expiresAt: Date?) -> ResetCreditEntry {

@@ -21,6 +21,11 @@ struct LocalTokenUsageSample: Equatable, Codable, Sendable {
     /// 原始账本中的 provider 标识。只有数据源能可靠提供时才填写；旧缓存和
     /// 其他 scanner 缺失该字段时保持 nil，由调用方使用兼容回退逻辑。
     var sourceProviderID: String? = nil
+    /// 单次模型调用完整时长（发起→完成，含 TTFT、不含工具执行），秒。
+    /// nil = 账本未提供（旧缓存 / 不记录时长的 harness）。窗口 token 速度
+    /// （`LocalUsageSummaryBuilder.windowTokenRate`，全仓唯一实现）只认
+    /// `0.2...3600` 秒内的值，nil 样本分子分母都不计。
+    var durationSeconds: Double? = nil
 
     var usage: UsageMetricSummary {
         UsageMetricSummary(
@@ -44,7 +49,8 @@ struct LocalTokenUsageSample: Equatable, Codable, Sendable {
             cachedInputTokens: cachedInputTokens,
             outputTokens: outputTokens,
             reasoningOutputTokens: reasoningOutputTokens,
-            sourceProviderID: sourceProviderID
+            sourceProviderID: sourceProviderID,
+            durationSeconds: durationSeconds
         )
     }
 }
@@ -306,6 +312,39 @@ enum LocalUsageSummaryBuilder {
             reasoningOutputTokens: SaturatingArithmetic.sum(samples.lazy.map(\.reasoningOutputTokens))
         )
     }
+
+    /// 窗口 token 速度（tok/s）的**唯一**实现：Σ(Output+Reason) ÷ Σ单次调用时长。
+    ///
+    /// 口径：分子 = `outputTokens + reasoningOutputTokens`（billable 两桶）；分母 =
+    /// 单次调用完整时长（发起→完成，含 TTFT、不含工具执行）。聚合是 **Σ/Σ 加权**
+    /// ——等价于把窗口内所有秒摊到一起看平均速度，而不是各样本速率的算术平均
+    /// （那会让大量短请求淹没长请求）。有效性过滤 `durationSeconds ∈ [0.2, 3600]`：
+    /// 亚秒样本把速率拉成噪声，超 1h 的多为账本异常；`durationSeconds == nil`
+    /// （账本未提供时长）的样本分子分母都不计。没有有效样本返回 nil。
+    nonisolated static func windowTokenRate(
+        samples: [LocalTokenUsageSample]
+    ) -> Double? {
+        windowTokenRateComponents(samples: samples).map { $0.numerator / $0.denominator }
+    }
+
+    /// `windowTokenRate` 的分量形态：返回 (Σ分子, Σ分母)，让 `windowUsage` 把
+    /// 中间量一并写进产物（`QuotaWindowUsageSnapshot.Window.rateNumerator` /
+    /// `rateDenominator`），`combineWindowUsage` 才能跨池先加和再相除。过滤规则
+    /// 与口径全仓只有这一份，`windowTokenRate` 是它的商值形态。
+    private nonisolated static func windowTokenRateComponents(
+        samples: [LocalTokenUsageSample]
+    ) -> (numerator: Double, denominator: Double)? {
+        let valid = samples.compactMap { sample -> (tokens: Int, seconds: Double)? in
+            guard let duration = sample.durationSeconds,
+                  duration >= 0.2, duration <= 3600 else { return nil }
+            return (SaturatingArithmetic.sum(sample.outputTokens, sample.reasoningOutputTokens), duration)
+        }
+        guard !valid.isEmpty else { return nil }
+        let numerator = SaturatingArithmetic.sum(valid.lazy.map(\.tokens))
+        let denominator = valid.reduce(0.0) { $0 + $1.seconds }
+        guard denominator.isFinite, denominator > 0 else { return nil }
+        return (numerator: Double(numerator), denominator: denominator)
+    }
 }
 
 /// 额度窗口内的本地 token 用量：短周期（`5h`）窗口与周窗口各一条。
@@ -330,6 +369,17 @@ struct QuotaWindowUsageSnapshot: Equatable, Sendable {
         /// 窗口内没有本地样本（还不值得估价）／样本全部未定价。后者由
         /// `ModelCostEstimate.displayText` 自己说，字段本身不重复这个信息。
         let cost: ModelCostEstimate?
+        /// 窗口内本地 token 速度（tok/s）：Σ(Output+Reason) ÷ Σ单次调用时长，
+        /// 只统计 `durationSeconds ∈ [0.2, 3600]` 的样本——口径唯一实现在
+        /// `LocalUsageSummaryBuilder.windowTokenRate`。nil = 窗口内没有时长有效
+        /// 的样本（不是"速度为 0"），UI 与 cost 的 `—` 同款处理。
+        var tokensPerSecond: Double? = nil
+        /// 速率合并用的中间量：Σ(Output+Reason)（billable 分子）与 Σ时长（秒，
+        /// 分母）。与 `tokensPerSecond` 同源同批样本、由 `windowUsage` 一并写入，
+        /// `combineWindowUsage` 靠它们先加和再相除（Σ/Σ，不是各池速率的平均）。
+        /// 手工构造的 Window（fleet 行 / 测试夹具）缺省 nil，不参与速率合并。
+        var rateNumerator: Double? = nil
+        var rateDenominator: Double? = nil
     }
 
     let interval: Window?
@@ -399,6 +449,10 @@ extension LocalUsageSummaryBuilder {
                 excludeWindows: excludeWindows,
                 excludeGlmOffPeak: excludeGlmOffPeak
             )
+            // token 速度与金额同源：同用这批 windowSamples（usageOverride 存在时
+            // 也是——cost 同样不因 override 跳过），分子分母一并带出给
+            // combineWindowUsage 做 Σ/Σ 合并。
+            let tokenRate = Self.windowTokenRateComponents(samples: windowSamples)
             return QuotaWindowUsageSnapshot.Window(
                 label: label,
                 usage: usageOverride ?? (windowSamples.isEmpty
@@ -409,7 +463,10 @@ extension LocalUsageSummaryBuilder {
                     samples: windowSamples,
                     quotaProviderID: quotaProviderID,
                     deepseekPeakWindow: deepseekPeakWindow
-                )
+                ),
+                tokensPerSecond: tokenRate.map { $0.numerator / $0.denominator },
+                rateNumerator: tokenRate?.numerator,
+                rateDenominator: tokenRate?.denominator
             )
         }
 
@@ -467,11 +524,33 @@ extension LocalUsageSummaryBuilder {
             let total: UsageMetricSummary? = present.isEmpty
                 ? nil
                 : present.dropFirst().reduce(present[0], +)
+            // 速率合并走 Σ分子 ÷ Σ时长（与单池同口径，精度优先），不是各池
+            // tokensPerSecond 的算术平均——各池样本量与时长不同，平均会算错总速度。
+            // 中间量只有 windowUsage 产出的窗口带（手工构造的 Window 缺省 nil），
+            // 缺中间量的窗口无法参与加权，只能缺席：合并速率为 nil 时 UI 显示 —，
+            // 不给一个口径错误的假平均。
+            let rateParts = windows.compactMap { (window: QuotaWindowUsageSnapshot.Window)
+                -> (numerator: Double, denominator: Double)? in
+                guard let numerator = window.rateNumerator,
+                      let denominator = window.rateDenominator else { return nil }
+                return (numerator, denominator)
+            }
+            var mergedRate: (numerator: Double, denominator: Double)? = nil
+            if !rateParts.isEmpty {
+                let numerator = rateParts.reduce(0) { $0 + $1.numerator }
+                let denominator = rateParts.reduce(0) { $0 + $1.denominator }
+                if denominator.isFinite, denominator > 0 {
+                    mergedRate = (numerator, denominator)
+                }
+            }
             return QuotaWindowUsageSnapshot.Window(
                 label: first.label,
                 usage: total,
                 resetsAt: windows.compactMap(\.resetsAt).min(),
-                cost: mergeCost(windows.compactMap(\.cost))
+                cost: mergeCost(windows.compactMap(\.cost)),
+                tokensPerSecond: mergedRate.map { $0.numerator / $0.denominator },
+                rateNumerator: mergedRate?.numerator,
+                rateDenominator: mergedRate?.denominator
             )
         }
         return QuotaWindowUsageSnapshot(

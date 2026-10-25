@@ -340,7 +340,8 @@ final class OpencodeDBReader {
           json_extract(m.data,'$.tokens.reasoning') AS trsn,
           json_extract(m.data,'$.tokens.cache.read') AS tcr,
           \(rcharsSelect) AS rchars,
-          \(vcharsSelect) AS vchars
+          \(vcharsSelect) AS vchars,
+          json_extract(m.data,'$.time.completed') AS tcompleted
         FROM message m
         WHERE json_extract(m.data,'$.role')='assistant'
           AND json_extract(m.data,'$.tokens') IS NOT NULL
@@ -355,7 +356,7 @@ final class OpencodeDBReader {
         ORDER BY m.time_created, m.id
         """
         let cutoffMs = cutoff.map { Int64($0.timeIntervalSince1970 * 1000) }
-        let rows: [(String, String, Int64, String, String?, String?, Int64, Int64, Int64, Int64, Int64, Int64)] = try connection.query(
+        let rows: [(String, String, Int64, String, String?, String?, Int64, Int64, Int64, Int64, Int64, Int64, Int64?)] = try connection.query(
             sql: sql,
             bind: SQLiteConnection.bindNullableMsCutoff(cutoffMs, startingAt: 1),
             map: { stmt in
@@ -371,16 +372,17 @@ final class OpencodeDBReader {
                 let cacheRead = SQLiteConnection.optionalInt64(stmt, column: 9)
                 let reasoningChars = SQLiteConnection.optionalInt64(stmt, column: 10)
                 let visibleChars = SQLiteConnection.optionalInt64(stmt, column: 11)
+                let completedMs = SQLiteConnection.optionalInt64(stmt, column: 12)
                 return (
                     messageID, sessionID, timestamp, provider, parent, model, input, output, reasoning,
-                    cacheRead, reasoningChars, visibleChars
+                    cacheRead, reasoningChars, visibleChars, completedMs
                 )
             }
         )
 
         var samplesByProvider: [String: [LocalTokenUsageSample]] = [:]
         for (messageID, sessionID, timestamp, provider, parent, model, input, output, reasoning, cacheRead,
-             reasoningChars, visibleChars) in rows {
+             reasoningChars, visibleChars, completedMs) in rows {
             let promptComponent = parent ?? "event-\(messageID)"
             // R9: 读取层非负饱和；raw→桶转换统一走 TokenAccountingCatalog。
             let inNN = SQLiteConnection.nnClamp(input)
@@ -408,6 +410,14 @@ final class OpencodeDBReader {
                 rawOutput: split?.output ?? nativeOutput,
                 rawReasoning: split?.reasoning ?? nativeReasoning
             )
+            // 时长：`data.time.completed` − 列 `time_created`（同为 epoch 毫秒），
+            // 覆盖单次模型调用完整窗口（发起→完成，含 TTFT、不含工具执行）。
+            // completed 缺失（极老版本账本）、差值非正或超出 1h 有效域时落 nil，
+            // 不伪造时长（与 Codex / DSH 的 L0 校验同口径）。
+            let durationSeconds = completedMs.flatMap { ms in
+                let diff = ms - timestamp
+                return diff > 0 && diff <= 3_600_000 ? Double(diff) / 1000.0 : nil
+            }
             let sample = LocalTokenUsageSample(
                 completedAt: Date(timeIntervalSince1970: Double(timestamp) / 1000),
                 modelName: model,
@@ -415,7 +425,8 @@ final class OpencodeDBReader {
                 inputTokens: buckets.cacheInclusiveInput,
                 cachedInputTokens: buckets.cacheRead,
                 outputTokens: buckets.output,
-                reasoningOutputTokens: buckets.reasoning
+                reasoningOutputTokens: buckets.reasoning,
+                durationSeconds: durationSeconds
             )
             samplesByProvider[provider, default: []].append(sample)
         }

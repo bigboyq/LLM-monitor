@@ -369,4 +369,45 @@ final class GlmZcodeDBReaderTests: GlmTestCase {
         XCTAssertTrue(sampleIDs.contains("zcode:native:1"))
         XCTAssertTrue(sampleIDs.contains("opencode:\(OpencodeLocalUsage.glmProviderID):p1"))
     }
+
+    /// `model_usage.duration_ms`（epoch 毫秒，显式列）写入 sample 的
+    /// `durationSeconds`（秒）：正常值毫秒→秒、NULL 落 nil、负值落 nil；
+    /// 智谱主样本与非智谱分片样本两个构造点同口径。
+    func testGlmZcodeDBReaderWritesDurationSecondsIntoSamples() throws {
+        let db = try makeDatabase()
+        defer { try? FileManager.default.removeItem(atPath: db) }
+        let day = Self.todayMidnight(calendar: localCalendar())
+        let ts = ms(day)
+        let cal = localCalendar()
+
+        // 正常：1250ms → 1.25s
+        try insert(databaseURL: db, id: "d1", sessionID: "s1", turnID: "t1", timestamp: ts,
+                   input: 100, output: 10, durationMs: 1250)
+        // 缺失（NULL）：旧版本账本行 → nil
+        try insert(databaseURL: db, id: "d2", sessionID: "s1", turnID: "t2", timestamp: ts + 1,
+                   input: 100, output: 10)
+        // 负值：账本异常 → nil
+        try insert(databaseURL: db, id: "d3", sessionID: "s1", turnID: "t3", timestamp: ts + 2,
+                   input: 100, output: 10, durationMs: -5)
+        // 超出 1h 有效域（L0 统一校验，与 Codex / DSH 同口径）→ nil
+        try insert(databaseURL: db, id: "d5", sessionID: "s1", turnID: "t5", timestamp: ts + 4,
+                   input: 100, output: 10, durationMs: 3_600_001)
+        // 非智谱分片行（deepseek）同样带时长
+        try insert(databaseURL: db, id: "d4", sessionID: "s2", turnID: "t4", timestamp: ts + 3,
+                   input: 200, output: 20, model: "deepseek-flash", provider: "deepseek",
+                   durationMs: 2000)
+
+        let aggregate = try GlmZcodeLocalUsageScanner.aggregateFromDB(dbPath: URL(fileURLWithPath: db), calendar: cal)
+
+        XCTAssertEqual(aggregate.samples.count, 4)
+        XCTAssertEqual(aggregate.samples[0].promptID, "s1:t1")
+        XCTAssertEqual(aggregate.samples[0].durationSeconds, 1.25, "毫秒 → 秒")
+        XCTAssertNil(aggregate.samples[1].durationSeconds, "duration_ms 缺失落 nil")
+        XCTAssertNil(aggregate.samples[2].durationSeconds, "duration_ms 负值落 nil")
+        XCTAssertNil(aggregate.samples[3].durationSeconds, "duration_ms 超 1h 有效域落 nil")
+
+        let deepseekSamples = try XCTUnwrap(aggregate.providerSlices.samples["deepseek"])
+        XCTAssertEqual(deepseekSamples.count, 1)
+        XCTAssertEqual(deepseekSamples[0].durationSeconds, 2.0, "分片构造点同口径（毫秒 → 秒）")
+    }
 }
