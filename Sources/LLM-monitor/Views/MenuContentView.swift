@@ -171,12 +171,12 @@ struct MenuContentView: View {
                 }
             }
             Spacer()
-            // 右侧功能组：scope 切换 + 刷新，成组右对齐。
+            // 右侧功能组：scope 切换 + 用量时间 + 刷新，成组右对齐。
             //
-            // 三个标记（scope 文字、ellipsis、刷新）之间是**一条等距节奏线**：
-            // 刷新图标在自己的 26pt 点击槽里居中，组内间距取
-            // `headerGroupSpacing`，于是「scope 组右缘 → 刷新图标」与「刷新
-            // 图标 → 面板内容右缘」两侧留白相等（推导见该常量注释）。
+            // 组内间距统一 `headerGroupSpacing`；「scope 组右缘 ↔ 刷新图标 ↔
+            // 面板内容右缘」的等距推导见该常量注释——用量时间插进来后，刷新
+            // 图标左侧的可见留白 = 本间距（时间文本无尾部内边距），不再与右侧
+            // 12pt 严格相等，属可接受的取舍：时间是裸文本，读数优先于节奏。
             HStack(spacing: Self.headerGroupSpacing) {
             // scope 切换：当前范围文字 + ellipsis 触发下拉菜单（用户裁定：
             // 不用 Picker 组件本体）。未启用联动（无节点）不出现。
@@ -194,6 +194,14 @@ struct MenuContentView: View {
                 }
                 .help("切换显示范围：全局 / 本机 / 各节点")
             }
+            // 本地用量的新鲜度（裸 HH:mm / 「计算中…」）：原在「今日合计」数字行
+            // 尾部（金额右侧），2026-10 挪到刷新按钮左边。它是**全局**读数（与
+            // scope 无关），放标题栏后总览卡数字行不再带时间。无扫描记录时整体
+            // 不渲染（`LocalUsageFreshnessText` 自己处理空态）。
+            LocalUsageFreshnessText(
+                scannedAt: todaySummary.localUsageScannedAt,
+                isScanning: todaySummary.isScanningLocalUsage
+            )
             if state.isRefreshJobActive {
                 ProgressView()
                     .controlSize(.small)

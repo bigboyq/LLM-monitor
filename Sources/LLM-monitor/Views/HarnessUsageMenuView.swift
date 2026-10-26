@@ -136,7 +136,8 @@ struct HarnessUsageMenuView: View {
     /// 「今天这些 token 是被哪些客户端烧掉的」。
     ///
     /// 数字行（第一行）从左到右：标签 / 总 token（定宽）/ 命中率（裸值，定宽）/
-    /// 价值（撑满、右对齐）/ 裸刷新时间。宽度核算见下方各常量与
+    /// 价值（撑满、右对齐）。本地用量的裸刷新时间在标题栏右组（刷新按钮左边，
+    /// 见 `MenuContentView.headerBar`）。宽度核算见下方各常量与
     /// `HarnessUsageMenuViewTests.testTodayOverviewRowFitsItsInnerWidth`。
     private var todayOverview: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -150,8 +151,10 @@ struct HarnessUsageMenuView: View {
         .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 7))
     }
 
-    /// 今日合计数字行：标签 / 总 token / 命中率 / 价值 / 裸刷新时间（列宽预算见
-    /// `testTodayOverviewRowFitsItsInnerWidth`）。
+    /// 今日合计数字行：标签 / 总 token / 命中率 / 价值（列宽预算见
+    /// `testTodayOverviewRowFitsItsInnerWidth`）。本地用量的新鲜度时间不在
+    /// 这里——它已挪到标题栏刷新按钮左边（`MenuContentView.headerBar`）：
+    /// 全局读数与 scope 无关，三个 scope 的总览行不再各自带时间。
     private var todayNumberRow: some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
             Text("今日合计")
@@ -164,7 +167,7 @@ struct HarnessUsageMenuView: View {
                 .frame(width: HarnessUsageMenuView.totalWidth, alignment: .leading)
             Spacer(minLength: 4)
             // 命中率是裸值（`100%` / `—`），不再带「命中」前缀：一行的读者已经
-            // 知道这列是什么，省下的 20pt 留给混币价值与刷新时间。
+            // 知道这列是什么，省下的 20pt 留给混币价值。
             Text(Self.hitRateText(summary.cacheHitRate))
                 .font(MenuTypography.metricValue)
                 .foregroundStyle(Color.secondaryLabel)
@@ -177,15 +180,6 @@ struct HarnessUsageMenuView: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .frame(maxWidth: .infinity, alignment: .trailing)
-            // 行尾刷新时间是**裸文本**（HH:mm，跨天退化成 `MM-dd HH:mm`），不带
-            // 胶囊底色——数字行没有胶囊的宽度预算。颜色语义与
-            // 「计算中…」状态由 `LocalUsageFreshnessText` 保持在悬浮窗 7 天卡那枚
-            // 胶囊（`LocalUsageFreshnessBadge`）的同款。时间自然宽、不压缩：空间
-            // 不足时先被截断的是上面的混币价值（tail），时间格始终完整可读。
-            LocalUsageFreshnessText(
-                scannedAt: summary.localUsageScannedAt,
-                isScanning: summary.isScanningLocalUsage
-            )
         }
     }
 

@@ -153,7 +153,7 @@
 | `Sources/LLM-monitor/Services/SleepHealthService.swift` | 睡眠健康度快照、防休眠断言与周期健康边界刷新 |
 | `Sources/LLM-monitor/Services/SleepHealthEvaluator.swift` | 睡眠锁与系统电源参数的健康度评估 |
 | `Sources/LLM-monitor/Views/MenuBarLabel.swift` | 菜单栏 label 视图（可见输入签名去重重绘 + 分钟时钟监听，App 图标 / Icon Duo / SF Symbol 多样式） |
-| `Sources/LLM-monitor/Views/MenuContentView.swift` | 主面板（header / content / footer）+ 高度桥 `MenuPanelHeightBridge`（`contentMaxSize` = 屏幕可见高 × 0.70）+ `MenuHairline`；展示时钟经 `\.displayDate` 注入卡片 |
+| `Sources/LLM-monitor/Views/MenuContentView.swift` | 主面板（header / content / footer；header 右组 = scope 下拉 + 本地用量裸刷新时间 + 刷新）+ 高度桥 `MenuPanelHeightBridge`（`contentMaxSize` = 屏幕可见高 × 0.70）+ `MenuHairline`；展示时钟经 `\.displayDate` 注入卡片 |
 | `Sources/LLM-monitor/Views/FleetScopeSwitcher.swift` | fleet scope 切换控件（菜单面板与 dock 详情浮层共用：≤4 段整行、>4 紧凑下拉）：`FleetScopeSwitcher` 按选项总数分叉（≤4 分段 `Picker`、>4 下拉 `FleetScopeMenu`），`FleetScopeMenu` 是下拉形态——范围文字 + 行内 `ellipsis` 标记，整组上限 120pt，截断走纯函数 `FleetScopeMenu.truncated(_:maxWidth:)`；三个 macOS `Menu` 平台怪癖（行内图 / 字符串层限宽 / 必须 `fixedSize`）写在文件头 |
 | `Sources/LLM-monitor/Views/DisplayClock.swift` | 跨宿主共享的展示时钟：`DisplayClock` + `DisplayClockScope` + `\.displayDate` 环境键；菜单内容 / hover 浮层 / dock 浮层各自持有实例、随宿主显隐 start/stop 并注入环境 |
 | `Sources/LLM-monitor/Views/HarnessUsageMenuView.swift` | 菜单的 Harness（客户端）视角：顶部一屏全局今日汇总（`HarnessUsageMenuView`：数字行 + 客户端占比条 `HarnessClientProportionBar` + 图例 `HarnessClientLegend`）→ 按客户端分段（`HarnessSectionView`）→ 段内按模型一行（`HarnessModelRowView`）→ 底部 provider 兜底状态条（`ProviderStatusStripView`，hover 出完整卡片）。与 `ProviderCardView` 并列而非替代；模型行的 334pt 宽度预算（含 8pt 缩进，菜单 360pt / 内容 336pt）由 `HarnessUsageMenuViewTests` 钉住 |

@@ -141,9 +141,9 @@ width: 360pt
 height: content-driven, fixedSize(vertical: true)
 
 +------------------------------------------------+
-| chart.bar.xaxis  LLM Monitor              ↻    |
+| chart.bar.xaxis  LLM Monitor      21:09  ↻   |
 +------------------------------------------------+
-| 今日合计 1.2M   60%  ¥18.40（含$2.5）    21:09 |   global today summary + bare refresh time
+| 今日合计 1.2M   60%  ¥18.40（含$2.5）          |   global today summary（刷新时间在标题栏右组）
 |  █████▓▓▓▓░░░  客户端占比条（色=主力provider）  |
 |  ⌘ MiniMax Code  ⌘ Codex …                     |   legend: 着色客户端图标 + 名字，放不下换行
 +------------------------------------------------+
@@ -262,18 +262,24 @@ Fleet snapshot and scope changes travel on `fleetDidChange`, separate from
 rebuild a hub report. Closing Fleet Sync or changing upstream clears the prior
 snapshot and returns unavailable Fleet/node scope to local.
 
-**Header right group** (scope switcher + refresh): the scope dropdown sits next
-to the refresh button, both right-aligned as one group. **The group only exists
-when there is something to switch** — the dropdown renders only when fleet sync
+**Header right group** (scope switcher + usage freshness + refresh): the scope
+dropdown sits next to the refresh button, both right-aligned as one group; 本地用量
+的裸刷新时间（`LocalUsageFreshnessText`，见下文 Global freshness）在两者之间——
+**scope 下拉（若有）→ 时间 → 刷新**。**The scope dropdown only exists
+when there is something to switch** — it renders only when fleet sync
 is enabled, node choices are non-empty and the option count is > 4
 (`FleetScopeControlStyle.preferred == .dropdown`); without a scope group
-(联动未启用 / 选项 ≤ 4) the refresh button sits alone, flush right
-(`MenuContentView.swift` 的 header right group 分支).
+(联动未启用 / 选项 ≤ 4) the usage time + refresh button sit alone, flush right
+(`MenuContentView.swift` 的 header right group 分支). 时间是全局读数，无论有无
+scope 下拉都在刷新按钮左边。
 
 - **Even spacing** — the group's inner spacing is `headerGroupSpacing` = **8pt**.
-  The refresh glyph sits centered in its own 26pt hit slot, so the visible
-  whitespace on its left is the spacing **plus** the scope button's own trailing
-  padding (AppKit borderless button, measured 4.25pt), while the whitespace on its
+  The refresh glyph sits centered in its own 26pt hit slot; the equality
+  derivation below was measured between the scope button and the refresh glyph
+  （时间文本 2026-10 插入后，刷新图标左侧可见留白 = 本间距——时间文本无尾部
+  内边距——不再与右侧 12pt 严格相等，读数优先于节奏）. The scope button's own trailing
+  padding (AppKit borderless button, measured 4.25pt) participates in the
+  scope-side whitespace, while the whitespace on the refresh glyph's
   right is the header's trailing padding (`headerTrailingPadding` = 12pt). Equal
   whitespace therefore needs 12 − 4.25 ≈ 7.75pt, rounded to 8pt (measured at
   2× pixels: 21pt on the left, 20.5pt on the right — a 0.5pt difference, within
@@ -446,27 +452,21 @@ content area. Fleet scope 另有**不可用总览态**：全局 / 所选节点�
 总览行显示「尚未同步」占位（零值不得显示为已完成合计），数据侧规则见
 `spec/sync.md` §10.2 日桶可用性。
 
-**Global freshness (bare time)** — the top summary block's **number row ends** with
-`LocalUsageFreshnessText`: 「计算中…」 (with a mini spinner) while *any* enabled data
-source is scanning (per-card `effectiveLocalUsageFreshness`, which already resolves
-"scanning wins over failed over dirty"), otherwise the bare clock (`HH:mm`, falling
-back to `MM-dd HH:mm` across midnight) from the latest `scannedAt` across those cards.
-Both values are computed once in `HarnessTodaySummary.summarize`, so the view never
-walks `statuses` itself. It is the **bare-text variant** of `LocalUsageFreshnessBadge`
-(same state machine, same `.secondary` grey, no capsule background — since 2026-10-13
-the badge dropped its 「更新于」 prefix too, so both skins render the same bare clock)
-— the number row has no width budget for a capsule: its segments are all
-fixed-width or greedy, and a capsule there would push the mixed-currency total into a
-second line. The two skins are now literally one decision: both read a shared
-`LocalUsageFreshnessState` (internal so state-level tests can pin the bare clock), so
-the state judgement and the clock text (including the
-`MM-dd HH:mm` midnight degradation) are written once and only the wrapping differs. Both
-public types and their interfaces are unchanged. The composition rows below it
-(client proportion bar + legend) therefore own the card below the number row (no badge
-at its tail). With
-no scan ever recorded the bare time renders nothing at all (no placeholder, no phantom
-space). The capsule variant keeps its other host (the 7-day card title in the dock
-popover——菜单 strip hover 宿主已随兜底行移除).
+**Global freshness (bare time)** — 本地用量的新鲜度时间（`LocalUsageFreshnessText`，
+裸文本：任一启用数据源在扫时「计算中…」带 mini spinner（卡级
+`effectiveLocalUsageFreshness`，"扫描 > 失败 > 脏 > 干净"取最差），否则各卡最新
+`scannedAt` 的裸时钟 `HH:mm`（跨天退化 `MM-dd HH:mm`））**渲染在标题栏右组、
+刷新按钮左边**（`MenuContentView.headerBar`，2026-10 从「今日合计」数字行尾部
+挪来）。它是**全局**读数、与 scope 无关，放标题栏后三个 scope 的总览数字行不再
+各自带时间；数字行收在混币价值上，宽度预算测试相应去掉了时间格。两个值都在
+`HarnessTodaySummary.summarize` 里算一次（`localUsageScannedAt` /
+`isScanningLocalUsage`），headerBar 与总览卡读同一份缓存，视图不自己走 `statuses`。
+它是 `LocalUsageFreshnessBadge` 的**裸文本变体**（同一状态机、同样 `.secondary`
+灰、无胶囊底——2026-10-13 起徽章也去掉了「更新于」前缀，两种皮肤渲染同一个裸
+时钟）：两种皮肤共享同一个 `LocalUsageFreshnessState`（internal，状态级测试可直接
+钉裸时钟），状态判定与时钟文案（含跨天退化）只写一份、仅包装不同。从未扫描过时
+裸时间整体不渲染（无占位、无幻影空格）。胶囊变体的宿主只剩 dock 浮层 7 天卡
+标题（菜单 strip hover 宿主已随兜底行移除）。
 
 **Truncation notice** — a section whose sources were truncated (DSH file/byte budget
 dropping the oldest sessions) shows a **one-line** short notice (`部分较早会话未计入`,
