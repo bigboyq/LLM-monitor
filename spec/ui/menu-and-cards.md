@@ -144,7 +144,8 @@ height: content-driven, fixedSize(vertical: true)
 | chart.bar.xaxis  LLM Monitor              ↻    |
 +------------------------------------------------+
 | 今日合计 1.2M   60%  ¥18.40（含$2.5）    21:09 |   global today summary + bare refresh time
-|  ████████████████  input / cache / output      |
+|  █████▓▓▓▓░░░  客户端占比条（色=主力provider）  |
+|  ● MiniMax Code 355M  ● Codex 107M …           |   legend: 色点 + 客户端名 + 今日 token，放不下换行
 +------------------------------------------------+
 | ▸ OpenCode                820K      205  10.5  |   section: client + subtotal + speed + value
 |   gpt-5.5   ███░░░  620K  62%  246  $11.30     |   model row (speed = tok/s)
@@ -296,9 +297,12 @@ per-client sections」描述的是**本机 scope** 的内容区；多机联动�
 **Fleet scope 内容区**（三 scope 统一规则，302b8b3 定稿；细则的单一事实源是
 `spec/sync.md` §10.2，此处只放 UI 侧口径）：
 
-- 三个 scope（全局 / 本机 / 各远端节点）各渲染**一行同名「今日」总览** + 构成条
-  （`scopeOverview(label: "今日", …)`）——标签统一「今日」，不再「今日全部 / 今日本机」；
-  范围语义由顶部 scope 控制表达，总览行不重复。
+- 三个 scope（全局 / 本机 / 各远端节点）各渲染**一行同名「今日」总览** + 客户端
+  占比条 + 图例（`scopeOverview(label:…)`，与本机 scope 的总览卡同一实现，
+  见上文 Global today summary）——标签统一「今日」，不再「今日全部 / 今日本机」；
+  范围语义由顶部 scope 控制表达，总览行不重复。fleet 路径的段来自
+  `FleetMenuSummary.sections`（主 provider 由 `ClientSection.dominantQuotaProviderID`
+  带过来）。
 - **无设备子层**：全局 = 跨节点合并段、本机 = 本地段、节点 = 该节点平铺段
   （`FleetClientSectionView`）；节点 scope 的段头**没有**右键刷新。
 - 全局 / 节点段内的模型行与金额直接使用 fleet **已合并**条目（hub 已做同币相加、
@@ -312,10 +316,31 @@ per-client sections」描述的是**本机 scope** 的内容区；多机联动�
 
 本机 scope 的结构：
 
-- **Global today summary** — total tokens, total cache-hit rate, total value, plus
-  one `TokenBucketBar` for the three-bucket composition. The value is a
+- **Global today summary** — total tokens, total cache-hit rate, total value. The value is a
   `MixedCurrencyEstimate`: mixed-currency totals render as `10.5（含$1)` (CNY
-  equivalent total, USD original in parentheses).
+  equivalent total, USD original in parentheses). 数字行下面是**客户端占比条**
+  （`HarnessClientProportionBar`，2026-10 起，取代原全局 input / cacheRead /
+  output 三段条——三桶构成在下面每个模型行上仍有一条，全局粒度上更有信息量的
+  构成是「被哪些客户端烧掉」）+ 一行图例（`HarnessClientLegend`）：
+
+  - 占比条**一段一个今天有 token 活动的 harness**（`HarnessTodaySummary.clientSegments(from:)`
+    按 `sections` 既有的 token 降序输出、零段过滤），段宽 = 该客户端今日 token
+    占全部客户端的比例；
+  - **段色 = 主力 provider 的卡 accent 色**：客户端横跨多个 provider 分片时
+    （ZCode / DSH / OpenCode）取今日 token 最大的一路，并列取 quotaProviderID
+    字典序小者（`HarnessClientSegment.dominantQuotaProviderID`，本地路径按段内
+    模型行现算、fleet 路径由投影层在 `FleetMenuSummary.ClientSection.dominantQuotaProviderID`
+    带过来，同一纯函数）。色值经 `AccentColor.cardAccentColor`（`Color+Theme.swift`，
+    与 provider 卡描边 / 进度条健康态同源；minimax 紫 / chatgpt 绿 / antigravity 蓝 /
+    glm 靛蓝 / deepseek 青），未知 / 缺失的 providerID 回退灰。段内不再按
+    provider 细分色——那是二维矩阵，读不回来；
+  - 归一化口径与 `TokenBucketBar` 一致：负值按 0、Double 累加分母、总量 ≤ 0 全 0
+    （纯灰底），不产生 NaN；条高沿用 `TokenBucketBar.standardHeight`（7pt，同一张
+    卡里的条不齐会很难看）；每段挂 `.help`：「MiniMax Code 355M（77%）」；
+  - **图例**把颜色翻译回客户端：`● MiniMax Code 355M ● Codex 107M …`（色点与段色
+    同源、token 走 `formatTokenCountCompact`），chip 超出行宽**换行**
+    （`WrapLayout`）而不是截断——被截掉的恰是占比最小的客户端，名字别处没有；
+    段列表为空（今日无活动）时条只剩灰底、图例整行不画。
 - **Per-client sections**, ordered by today-token descending. A client with no
   today activity is dropped entirely rather than shown as an empty section. Each
   section header carries the client name (`ClientDescriptor`), the section token
@@ -433,8 +458,9 @@ second line. The two skins are now literally one decision: both read a shared
 `LocalUsageFreshnessState` (internal so state-level tests can pin the bare clock), so
 the state judgement and the clock text (including the
 `MM-dd HH:mm` midnight degradation) are written once and only the wrapping differs. Both
-public types and their interfaces are unchanged. The bucket bar below it therefore owns
-its **whole row** (no badge at its tail), which also widens the three buckets' read. With
+public types and their interfaces are unchanged. The composition rows below it
+(client proportion bar + legend) therefore own the card below the number row (no badge
+at its tail). With
 no scan ever recorded the bare time renders nothing at all (no placeholder, no phantom
 space). The capsule variant keeps its other host (the 7-day card title in the dock
 popover——菜单 strip hover 宿主已随兜底行移除).

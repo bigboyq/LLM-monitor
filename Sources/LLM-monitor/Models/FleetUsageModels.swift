@@ -121,6 +121,10 @@ struct FleetMenuSummary: Equatable, Sendable {
         var totalTokens: Int { buckets.totalTokens }
         let costText: String
         let isTruncated: Bool
+        /// 段内今日 token 最大的 quota provider（菜单今日占比条的段色归属）。
+        /// 由同桶 clientProviders 行算出；本地路径（`HarnessSection`）在视图层
+        /// 按模型行现算，两条路径共用同一个纯函数与并列口径。
+        var dominantQuotaProviderID: String? = nil
         /// 本机第一，其余按 token 降序（§10.2 节点行排序）。
         let nodes: [NodeRow]
         let models: [ModelRow]
@@ -275,6 +279,7 @@ enum FleetUsageProjection {
                     complete: todayBucket.modelDetailsComplete && todayBucket.totalsComplete && !todayBucket.sourceTruncated
                 ),
                 isTruncated: todayBucket.sourceTruncated,
+                dominantQuotaProviderID: dominantProviderID(in: rows),
                 nodes: nodeRows,
                 models: modelRows,
                 mergedModels: Self.mergedModelRows(
@@ -293,6 +298,18 @@ enum FleetUsageProjection {
             fleetTotals: fleetTotals,
             sections: sections
         )
+    }
+
+    /// 段内今日 token 最大的 quota provider。与本地路径（`HarnessSection` 的
+    /// 模型行）共用 `HarnessClientSegment.dominantQuotaProviderID` 同一个纯函数，
+    /// 并列口径逐字一致：取字典序小者。
+    private static func dominantProviderID(in rows: [FleetClientProviderUsage]) -> String? {
+        HarnessClientSegment.dominantQuotaProviderID(rows.map { row in
+            (row.quotaProviderID, SaturatingArithmetic.sum([
+                SaturatingArithmetic.add(row.input, row.cacheRead),
+                SaturatingArithmetic.add(row.output, row.reasoning)
+            ]))
+        })
     }
 
     private static func unavailableMenuSummary(

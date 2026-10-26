@@ -289,7 +289,9 @@ node_meta → 任何可见变化递增 generation。日桶按 **dayKey 逐桶 up
   是标题栏右组的下拉（`FleetScopeMenu`：全局 / 本机 / 各节点）。段内**不分设备**——每个 client 段
   头 = 该 client 的 fleet 权威日合计，段内直接是 fleet 已合并的模型明细
   （同币相加、币种冲突置空由 hub 完成）。当前范围只有**一行**总览（标签统一
-  「今日」，范围由顶部切换表达）+ 一根构成条。**零数据不占位**（2026-10-24
+  「今日」，范围由顶部切换表达）+ 一根客户端占比条与图例（与本机 scope 的总览
+  卡同一实现；段 = `FleetMenuSummary.sections`，段色 = `ClientSection.dominantQuotaProviderID`
+  的 provider 卡 accent，细节见 `ui/menu-and-cards.md` Global today summary）。**零数据不占位**（2026-10-24
   裁定）：段内模型行 token 为 0 不出，整段全零不出段。fleet 段头有右键
   「刷新本机 <客户端名>」——按 clientID 复用本地段的 `refreshSectionFromMenu`
   （只刷本机数据）。**单节点 / 未启用时整棵树逐字保持

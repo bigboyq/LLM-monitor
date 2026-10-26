@@ -1,7 +1,9 @@
 import SwiftUI
 
-/// 水平三段占比条（input / cacheRead / output），为 Harness（客户端视角）
-/// 菜单的「今日 token 汇总」设计，也可用于任意单行 token 构成展示。
+/// 水平三段占比条（input / cacheRead / output）：菜单客户端段里每个模型行的
+/// token 构成展示，也可用于任意单行 token 构成。
+/// （总览行 2026-10 起改用 `HarnessClientProportionBar` 的客户端占比条——
+/// 全局粒度上更有信息量的构成是「被哪些客户端烧掉」，三桶构成留在模型行。）
 ///
 /// 输入直接收 `TokenAccounting` 的归一化桶 `TokenUsageBuckets`（四桶），展示为
 /// **三个计费段**：input / cacheRead / `billableOutput`（output + reasoning，

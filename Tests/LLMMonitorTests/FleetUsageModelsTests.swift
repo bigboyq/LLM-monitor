@@ -304,6 +304,65 @@ final class FleetUsageModelsTests: XCTestCase {
         XCTAssertFalse(summary!.multiNode, "单节点时菜单保持今天的单行形态（§10.6 L）")
     }
 
+    /// 菜单 fleet 汇总的客户端段带「主力 provider」：今日占比条的段色归属。
+    /// 与本地路径同一个纯函数、同一个并列口径（字典序小者）。
+    func testMenuSummaryClientSectionCarriesDominantProvider() {
+        let rows = [
+            FleetClientProviderUsage(
+                clientID: ClientID.zcode, quotaProviderID: QuotaProviderID.zhipu,
+                input: 100, cacheRead: 0, output: 0, reasoning: 0, turns: 1, rounds: 1),
+            FleetClientProviderUsage(
+                clientID: ClientID.zcode, quotaProviderID: QuotaProviderID.minimax,
+                input: 300, cacheRead: 0, output: 0, reasoning: 0, turns: 1, rounds: 1),
+            FleetClientProviderUsage(
+                clientID: ClientID.zcode, quotaProviderID: QuotaProviderID.deepseek,
+                input: 200, cacheRead: 0, output: 0, reasoning: 0, turns: 1, rounds: 1),
+            FleetClientProviderUsage(
+                clientID: ClientID.codex, quotaProviderID: QuotaProviderID.openAI,
+                input: 50, cacheRead: 0, output: 0, reasoning: 0, turns: 1, rounds: 1),
+        ]
+        let entries = rows.map { row in
+            FleetUsageEntry(
+                clientID: row.clientID, quotaProviderID: row.quotaProviderID,
+                modelName: "m", input: row.input, cacheRead: 0, output: 0, reasoning: 0,
+                value: nil, currency: nil, coverage: .full, truncated: false)
+        }
+        let bucket = FleetDailyBucket(
+            dayKey: FleetMerger.dayKey(of: now, calendar: .current),
+            totals: FleetTotals(summing: rows),
+            clientProviders: rows, entries: entries,
+            totalsComplete: true, modelDetailsComplete: true, sourceTruncated: false
+        )
+        let hubID = UUID()
+        let node = FleetNodeSnapshot(
+            nodeID: hubID, nodeName: "hub",
+            lastSeenAt: now, seq: 1, stale: false,
+            dailyBuckets: [bucket], windowUsage: [], quotas: [],
+            attributionFingerprint: "deadbeef",
+            dailyDigests: [bucket.dayKey: FleetDailyDigest.digest(bucket)]
+        )
+        let snapshot = FleetSnapshot(
+            protocolVersion: FleetProtocol.version,
+            hubUUID: hubID, generation: 1,
+            hub: FleetNodeIdentity(nodeID: hubID, nodeName: "hub",
+                                   timezoneID: "Asia/Shanghai", platform: "macOS"),
+            generatedAt: now, nodes: [node],
+            fleet: FleetAggregate(
+                dailyBuckets: FleetMerger.mergeDailyBuckets([node.dailyBuckets], now: now),
+                windowUsage: []),
+            electedQuotas: []
+        )
+
+        let summary = try! XCTUnwrap(FleetUsageProjection.menuSummary(
+            snapshot: snapshot, localNodeID: hubID, now: now
+        ))
+        let zcode = try! XCTUnwrap(summary.sections.first { $0.clientID == ClientID.zcode })
+        XCTAssertEqual(zcode.dominantQuotaProviderID, QuotaProviderID.minimax,
+                       "主 provider 是段内今日 token 最大的一路")
+        let codex = try! XCTUnwrap(summary.sections.first { $0.clientID == ClientID.codex })
+        XCTAssertEqual(codex.dominantQuotaProviderID, QuotaProviderID.openAI)
+    }
+
     func testMissingFleetTodayBucketProducesUnavailableSummaryNotLocalFallback() {
         let populated = menuSnapshot(nodeCount: 2, perNodeInput: [100, 300])
         let nodes = populated.nodes.map { node in

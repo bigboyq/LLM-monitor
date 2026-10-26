@@ -557,14 +557,7 @@ struct ProviderCardView: View, Equatable {
     }
 
     private var accentColor: Color {
-        switch status.accentColor {
-        case .minimax:     return .purple
-        case .chatgpt:     return .green
-        case .antigravity: return .blue
-        case .glm:         return .glmBrand
-        case .deepseek:    return .cyan
-        case .custom:      return .gray
-        }
+        status.accentColor.cardAccentColor
     }
 
     /// scope 切换的形态：按选项总数（全局 + 本机 + 远端节点）分叉。

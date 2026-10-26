@@ -17,7 +17,7 @@
 | `Sources/LLM-monitor/Services/Sync/HubServer.swift` | NWListener 上的 HTTP/1.1 最小子集 hub 服务：定长 body、4MiB/2MiB 上下限、路径白名单、每 nodeID 1s 限流、连接看门狗；业务全部委托 HubServerHandlers |
 | `Sources/LLM-monitor/Services/Sync/SyncClient.swift` | node 侧 HTTP 客户端（复用 Infra/HTTPClient）：POST 报告推+取一次往返、GET 快照兜底、GET /v1/health 学习 hubUUID；upstreamKey 归一化 |
 | `Sources/LLM-monitor/Services/Sync/UsageReportBuilder.swift` | 从启用 Provider 的 `usageProjection` 构建 NodeUsageReport：七日日桶、同样本计价的模型明细与窗口行、有效 lastSuccess 额度通道；按实际 client/provider 隔离失败、扫描或预算截断来源，健康日桶行继续上报，不可用来源显式标记并由 Store 保留旧值；对应 provider 窗口仍省略 |
-| `Sources/LLM-monitor/Models/FleetUsageModels.swift` | Fleet UI 投影（L3）：FleetScope、FleetEffectiveQuota（本机优先→elected + 来源标注）、FleetCardUsage / FleetWindowUsageRow（全 provider 日桶、provider-filtered 窗口及历史窗口选择 / 部分计价提示 / stale 日桶贡献提示）、FleetMenuSummary、FleetCardContext |
+| `Sources/LLM-monitor/Models/FleetUsageModels.swift` | Fleet UI 投影（L3）：FleetScope、FleetEffectiveQuota（本机优先→elected + 来源标注）、FleetCardUsage / FleetWindowUsageRow（全 provider 日桶、provider-filtered 窗口及历史窗口选择 / 部分计价提示 / stale 日桶贡献提示）、FleetMenuSummary（段带 `dominantQuotaProviderID` 主力 provider）、FleetCardContext |
 | `Sources/LLM-monitor/Services/LANAddressResolver.swift` | 本机局域网地址异步探测与挑选：view 不等待阻塞探测；采集（`getifaddrs`，排除回环 / 未 UP / 虚拟前缀 / 与 `bridge0` 同 MAC 的雷雳桥腿；正确处理 `sockaddr_dl` 中可变长度接口名偏移以解析 MAC）+ 硬件分类缓存（Network.framework 的 `NWPathMonitor`）+ 挑选（Wi-Fi → 有线 → 其它，不拿 127.0.0.1 兜底） |
 | `Sources/LLM-monitor/Views/SettingsSyncPane.swift` | 设置页「多机联动」pane：角色字段（写穿持久化）、复制局域网地址（探测在 `LANAddressResolver`）、已连接节点列表（移除 → removeNodeFromFleet）、全局摘要、各 provider 额度来源、归因指纹不一致提示、字段独立防抖草稿 controller 与逐字段保存错误 / 重试 |
 | `Sources/LLM-monitor/Services/Sync/SyncCoordinator.swift` | 多机联动运行时编排（@MainActor ObservableObject）：由 `DeviceIdentityStore` 提供稳定 nodeID（持久化成功才采用；启用前不创建、读写错误不降级成临时身份）、hub/node 生命周期与监听 ready/failed、热配置重启/重排与非法上游修正后的 node runtime 恢复、hub 本机报告合并与 generation 维护、node 周期+唤醒推送、health 握手、409 序号自愈、快照缓存与当前 POST 序号确认的 hub 数据库恢复 |
@@ -26,7 +26,7 @@
 | `Sources/LLM-monitor/Models/UsageFrameExtractors.swift` | 帧抽取注册表 `usageFrameExtractors`（各 harness 的 ProviderStatus 字段 → `HarnessUsageFrame`，L1 适配） |
 | `Sources/LLM-monitor/Models/UnifiedDailyTokenUsage.swift` | provider 中立日桶与当日 max 修补（`UnifiedDailyUsageNormalizer`） |
 | `Sources/LLM-monitor/Models/MixedCurrencyEstimate.swift` | 跨 provider 金额汇总的统一折算类型（USD ×7 → CNY） |
-| `Sources/LLM-monitor/Services/ClientUsageAggregation.swift` | L3 视图模型纯函数：设置页客户端拆行、菜单 `HarnessTodaySummary`、`ProviderStatusStrip` 投影、`HarnessSummaryCache` |
+| `Sources/LLM-monitor/Services/ClientUsageAggregation.swift` | L3 视图模型纯函数：设置页客户端拆行、菜单 `HarnessTodaySummary` 与今日占比条段 `HarnessClientSegment`、`ProviderStatusStrip` 投影、`HarnessSummaryCache` |
 | `Sources/LLM-monitor/Services/LayoutMetrics.swift` | Services 与 Views 共读的排版常量（图表宽 / 卡片列与内容层内边距） |
 | `Sources/LLM-monitor/Models/ModelPricingCatalog.swift` | 计价引擎：加载 `Resources/ModelPricing.json`（首条命中 / exact / matchAll / zhipu 兜底 / 下划线归一化）并应用 DeepSeek 高峰倍率；资源 bundle 整体缺失时先过 `ResourceBundleProbe`、降级为空目录并记 error（不再启动即崩），bundle 在而 JSON 缺失 / 解析失败仍 preconditionFailure |
 | `Sources/LLM-monitor/Models/ResourceBundleProbe.swift` | 资源 bundle 探测：按 SwiftPM 生成的 accessor 同序候选路径判断 `Bundle.module` 是否可用（`probe` 可注入、`isResourceBundleAvailable` 进程内缓存），供定价 / 节假日资源加载在缺失时走降级而不是 fatalError |
@@ -114,7 +114,7 @@
 | `Sources/LLM-monitor/Services/TokenMonitorPaths.swift` | 全部本地用量 scanner 的共享落盘位置（`~/Library/Application Support/LLM-monitor/token-monitor/<provider>.json`）+ Antigravity 旧缓存目录 `legacyAntigravityCacheDir` |
 | `Sources/LLM-monitor/Services/Infra/SQLiteConnection.swift` | SQLite3 通用连接层（三层读策略：无 -shm 且无 dirty WAL 时 immutable=1 直读；活跃时共享内存只读；异常由 SQLiteTempCopy 走 /tmp 副本 recovery） |
 | `Sources/LLM-monitor/Services/Infra/SQLiteTempCopy.swift` | `/tmp` 副本 fallback：回退白名单 CANTOPEN / BUSY / READONLY 家族 / IOERR 家族 / CORRUPT，以及 immutable 直读打开后复检发现 `-shm`/`-wal` 出现的 `lostImmutableRace`（直读前提失效，非扫描失败）。副本读取同样 CORRUPT 时按源指纹（db/-wal/-shm 的 mtime+size，进程内不落盘）记忆为持久损坏，后续轮次跳过全量拷贝快速失败，指纹变化即失效恢复重拷——并发 checkpoint 撕裂页的重拷自愈路径不受影响。拷贝循环逐文件校验源指纹：db 拷完立即复验，失效即放弃本轮 wal/shm 拷贝，最多 3 轮后抛 `sourceChangedDuringSnapshot`；App 自有临时根 `$TMPDIR/llm-monitor-sqlite/`（0700）由启动 sweep 回收：DSH 解压残留（`llm-monitor-dsh-` 前缀）无条件删除、SQLite 副本按 24h 年龄 |
-| `Sources/LLM-monitor/Views/Color+Theme.swift` | 品牌色常量 |
+| `Sources/LLM-monitor/Views/Color+Theme.swift` | 品牌色常量 + provider 卡 accent 映射（`AccentColor.cardAccentColor`，卡片与今日占比条共用） |
 | `Sources/LLM-monitor/Services/MenuBarRightClickHandler.swift` | 状态栏按钮右键菜单（best-effort） |
 | `Sources/LLM-monitor/Services/StatusBarQuotaMetrics.swift` | 状态栏额度指标结构（`QuotaRingMetrics` / `StatusBarQuotaMetrics`），由 Icon Duo 仪表盘消费；原 App 图标 SVG 生成器已随「App 图标」改用固定设计稿而删除 |
 | `Sources/LLM-monitor/Services/IconDuoSVGBuilder.swift` | Icon Duo 状态栏额度仪表盘的参数化 SVG 生成（左右额度弧 / 中心扇形 / 底部模型健康点 / 顶部节能点） |
@@ -156,7 +156,7 @@
 | `Sources/LLM-monitor/Views/MenuContentView.swift` | 主面板（header / content / footer）+ 高度桥 `MenuPanelHeightBridge`（`contentMaxSize` = 屏幕可见高 × 0.70）+ `MenuHairline`；展示时钟经 `\.displayDate` 注入卡片 |
 | `Sources/LLM-monitor/Views/FleetScopeSwitcher.swift` | fleet scope 切换控件（菜单面板与 dock 详情浮层共用：≤4 段整行、>4 紧凑下拉）：`FleetScopeSwitcher` 按选项总数分叉（≤4 分段 `Picker`、>4 下拉 `FleetScopeMenu`），`FleetScopeMenu` 是下拉形态——范围文字 + 行内 `ellipsis` 标记，整组上限 120pt，截断走纯函数 `FleetScopeMenu.truncated(_:maxWidth:)`；三个 macOS `Menu` 平台怪癖（行内图 / 字符串层限宽 / 必须 `fixedSize`）写在文件头 |
 | `Sources/LLM-monitor/Views/DisplayClock.swift` | 跨宿主共享的展示时钟：`DisplayClock` + `DisplayClockScope` + `\.displayDate` 环境键；菜单内容 / hover 浮层 / dock 浮层各自持有实例、随宿主显隐 start/stop 并注入环境 |
-| `Sources/LLM-monitor/Views/HarnessUsageMenuView.swift` | 菜单的 Harness（客户端）视角：顶部一屏全局今日汇总（`HarnessUsageMenuView`）→ 按客户端分段（`HarnessSectionView`）→ 段内按模型一行（`HarnessModelRowView`）→ 底部 provider 兜底状态条（`ProviderStatusStripView`，hover 出完整卡片）。与 `ProviderCardView` 并列而非替代；模型行的 334pt 宽度预算（含 8pt 缩进，菜单 360pt / 内容 336pt）由 `HarnessUsageMenuViewTests` 钉住 |
+| `Sources/LLM-monitor/Views/HarnessUsageMenuView.swift` | 菜单的 Harness（客户端）视角：顶部一屏全局今日汇总（`HarnessUsageMenuView`：数字行 + 客户端占比条 `HarnessClientProportionBar` + 图例 `HarnessClientLegend`）→ 按客户端分段（`HarnessSectionView`）→ 段内按模型一行（`HarnessModelRowView`）→ 底部 provider 兜底状态条（`ProviderStatusStripView`，hover 出完整卡片）。与 `ProviderCardView` 并列而非替代；模型行的 334pt 宽度预算（含 8pt 缩进，菜单 360pt / 内容 336pt）由 `HarnessUsageMenuViewTests` 钉住 |
 | `Sources/LLM-monitor/Views/MenuTypography.swift` | 菜单面板与悬浮层统一排版常量（语义角色，禁止散落硬编码字号） |
 | `Sources/LLM-monitor/Views/MenuWindowAutoCloseBridge.swift` | 失焦立即关 + 30s 无交互关闭（菜单内 mouse/scroll/key 重置计时）；关闭统一出口 `performClose` 并发 `onPanelClose`（菜单展示时钟随之停表）；30s 计时为单个可复用 `DispatchSourceTimer`（reset 只改 deadline，鼠标事件不再重建句柄） |
 | `Sources/LLM-monitor/Views/ProviderCardDerived.swift` | 卡片 body 的派生值入口：投影 + 额度窗口快照 + 「今」行 + 「闲」行（GLM 今日闲时，`offPeakUsageRow`）+ 「免 / 速 / 它」今日动态行（`glmCategoryUsageRows`，按 `GlmUsageCategory` 今日切片）打包成一个 memo 值（共享失效条件；键 = 全值 `status` + 墙钟日 + 展示日 + `HolidayCalendar.sharedRevision` + 时区标识），展示时钟每秒 tick 不再重算 O(samples) 定价 |

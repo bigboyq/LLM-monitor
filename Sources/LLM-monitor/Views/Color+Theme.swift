@@ -41,3 +41,18 @@ extension Color {
     static let tokenOutputTint = Color(red: 0.11, green: 0.64, blue: 0.34)
 }
 
+extension AccentColor {
+    /// provider 卡的 accent 色（卡片描边 / 进度条健康态同源）。凡是「复用 provider
+    /// 身份色」的视图（菜单今日占比条等）都从这里取色，避免第二份映射各自漂移。
+    var cardAccentColor: Color {
+        switch self {
+        case .minimax:     return .purple
+        case .chatgpt:     return .green
+        case .antigravity: return .blue
+        case .glm:         return .glmBrand
+        case .deepseek:    return .cyan
+        case .custom:      return .gray
+        }
+    }
+}
+

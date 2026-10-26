@@ -364,6 +364,159 @@ final class HarnessUsageMenuViewTests: XCTestCase {
         XCTAssertEqual(MenuHairline.verticalLength, 10, "footer 分隔竖线一直是 10pt")
     }
 
+    // MARK: - 今日占比条（客户端占比）
+
+    /// 占比条段 = 有今日活动的客户端段：顺序跟随 sections（调用方已按 token 降序），
+    /// 零活动段整段过滤，主 provider 是段内今日 token 最大的那一路。
+    func testClientSegmentsFollowSectionsAndCarryDominantProvider() {
+        let minimaxSection = Self.segmentFixture(
+            clientID: ClientID.minimaxCode, displayName: "MiniMax Code",
+            rows: [(QuotaProviderID.minimax, 355_000_000)]
+        )
+        let codexSection = Self.segmentFixture(
+            clientID: ClientID.codex, displayName: "Codex",
+            rows: [(QuotaProviderID.openAI, 107_000_000)]
+        )
+        let emptySection = Self.segmentFixture(
+            clientID: ClientID.dsh, displayName: "DSH", rows: []
+        )
+        let segments = HarnessTodaySummary.clientSegments(
+            from: [minimaxSection, codexSection, emptySection]
+        )
+        XCTAssertEqual(
+            segments.map(\.clientID), [ClientID.minimaxCode, ClientID.codex],
+            "顺序跟随 sections，零活动段不占位"
+        )
+        XCTAssertEqual(segments.map(\.totalTokens), [355_000_000, 107_000_000])
+        XCTAssertEqual(
+            segments.map(\.dominantQuotaProviderID),
+            [QuotaProviderID.minimax, QuotaProviderID.openAI]
+        )
+    }
+
+    /// 多 provider 分片客户端（ZCode 型）的主 provider 取今日 token 最大的一路；
+    /// 并列时取 quotaProviderID 字典序小者，结果与行序无关（字典遍历无序）。
+    func testDominantProviderPicksLargestShareAndTieBreaksLexicographically() {
+        let mixed = Self.segmentFixture(
+            clientID: ClientID.zcode, displayName: "ZCode",
+            rows: [
+                (QuotaProviderID.zhipu, 100),
+                (QuotaProviderID.minimax, 300),
+                (QuotaProviderID.deepseek, 200)
+            ]
+        )
+        XCTAssertEqual(
+            HarnessTodaySummary.clientSegments(from: [mixed]).first?.dominantQuotaProviderID,
+            QuotaProviderID.minimax
+        )
+        XCTAssertEqual(
+            HarnessClientSegment.dominantQuotaProviderID([
+                ("zhipu", 100), ("deepseek", 100)
+            ]),
+            QuotaProviderID.deepseek,
+            "并列取字典序小者（deepseek < zhipu）"
+        )
+        XCTAssertEqual(
+            HarnessClientSegment.dominantQuotaProviderID([
+                ("deepseek", 100), ("zhipu", 100)
+            ]),
+            QuotaProviderID.deepseek,
+            "同一批行换行序仍算出同一个归属"
+        )
+    }
+
+    /// 占比条数学：段宽 = 段 token / 全部段 token；空段与全零总量都退回全 0
+    /// （纯灰底），任何输入不产生 NaN。
+    func testProportionBarFractionsMatchTokenShares() {
+        let fractions = HarnessClientProportionBar.fractions(for: [
+            HarnessClientSegment(
+                clientID: "a", displayName: "A", totalTokens: 355_000_000,
+                dominantQuotaProviderID: QuotaProviderID.minimax),
+            HarnessClientSegment(
+                clientID: "b", displayName: "B", totalTokens: 107_000_000,
+                dominantQuotaProviderID: QuotaProviderID.openAI),
+        ])
+        XCTAssertEqual(fractions.count, 2)
+        XCTAssertEqual(fractions[0], 355.0 / 462.0, accuracy: 1e-12)
+        XCTAssertEqual(fractions[1], 107.0 / 462.0, accuracy: 1e-12)
+        XCTAssertEqual(fractions.reduce(0, +), 1.0, accuracy: 1e-12)
+
+        XCTAssertTrue(HarnessClientProportionBar.fractions(for: []).isEmpty)
+        let zero = HarnessClientProportionBar.fractions(for: [
+            HarnessClientSegment(
+                clientID: "a", displayName: "A", totalTokens: 0, dominantQuotaProviderID: nil)
+        ])
+        XCTAssertEqual(zero, [0.0], "全零总量退回纯灰底")
+    }
+
+    /// 段色映射覆盖五个 quota provider；nil / 未知 ID 回退 nil → 灰（与 .custom
+    /// 同款，「不知道是谁」不读成某个品牌）。
+    func testProportionBarAccentCoversEveryQuotaProvider() {
+        XCTAssertEqual(
+            HarnessClientProportionBar.accent(forQuotaProviderID: QuotaProviderID.minimax),
+            .minimax
+        )
+        XCTAssertEqual(
+            HarnessClientProportionBar.accent(forQuotaProviderID: QuotaProviderID.openAI),
+            .chatgpt
+        )
+        XCTAssertEqual(
+            HarnessClientProportionBar.accent(forQuotaProviderID: QuotaProviderID.antigravity),
+            .antigravity
+        )
+        XCTAssertEqual(
+            HarnessClientProportionBar.accent(forQuotaProviderID: QuotaProviderID.zhipu),
+            .glm
+        )
+        XCTAssertEqual(
+            HarnessClientProportionBar.accent(forQuotaProviderID: QuotaProviderID.deepseek),
+            .deepseek
+        )
+        XCTAssertNil(HarnessClientProportionBar.accent(forQuotaProviderID: nil))
+        XCTAssertNil(HarnessClientProportionBar.accent(forQuotaProviderID: "unknown"))
+    }
+
+    /// tooltip 文案：「名 token（占比%）」；总量为 0 时退回只有 token 数——0 做
+    /// 分母的占比没有意义。
+    func testProportionBarTooltipTextStatesShareOfTotal() {
+        let segment = HarnessClientSegment(
+            clientID: ClientID.minimaxCode, displayName: "MiniMax Code",
+            totalTokens: 355_000_000, dominantQuotaProviderID: QuotaProviderID.minimax
+        )
+        XCTAssertEqual(
+            HarnessClientProportionBar.tooltipText(for: segment, totalTokens: 462_000_000),
+            "MiniMax Code 355M（77%）"
+        )
+        XCTAssertEqual(
+            HarnessClientProportionBar.tooltipText(for: segment, totalTokens: 0),
+            "MiniMax Code 355M"
+        )
+    }
+
+    /// 占比条 + 图例真的布局出来：条高 = 标准槽高；7 个客户端的图例超出一行宽
+    /// 时必须换行（高度涨上去），而不是把占比最小的那批客户端截没。
+    @MainActor
+    func testClientProportionBarAndLegendRenderAndWrap() {
+        let segments = (0..<7).map { index in
+            HarnessClientSegment(
+                clientID: "c\(index)", displayName: "Client \(index)",
+                totalTokens: 100 + index, dominantQuotaProviderID: QuotaProviderID.zhipu
+            )
+        }
+        let barHeight = self.height(of: HarnessClientProportionBar(segments: segments))
+        XCTAssertEqual(
+            barHeight, HarnessClientProportionBar.standardHeight, accuracy: 0.5,
+            "占比条与模型行的三段条同高（同一张卡里条高不齐很难看）"
+        )
+        let legendHeight = self.height(of: HarnessClientLegend(
+            segments: segments, totalTokens: segments.reduce(0) { $0 + $1.totalTokens }
+        ))
+        XCTAssertGreaterThan(
+            legendHeight, 16,
+            "7 个 chip 一行放不下，图例必须换行（不换行时高度只有单行 ~13pt）"
+        )
+    }
+
     // MARK: - helpers
 
     @MainActor
@@ -430,6 +583,52 @@ final class HarnessUsageMenuViewTests: XCTestCase {
             nodes: [],
             models: [],
             mergedModels: []
+        )
+    }
+
+    /// 占比条测试用的一个客户端段：`rows` 是 (quotaProviderID, 今日 token) 对，
+    /// 每行一个模型样本（cached 为 0，行 token = 输入 token）。空 `rows` 造出
+    /// 零活动段（`clientSegments(from:)` 必须把它滤掉）。
+    private static func segmentFixture(
+        clientID: String,
+        displayName: String,
+        rows: [(quotaProviderID: String, tokens: Int)]
+    ) -> HarnessSection {
+        let modelRows = rows.map { row in
+            HarnessModelRow(
+                dayStart: Calendar.current.startOfDay(for: Date()),
+                clientID: clientID,
+                quotaProviderID: row.quotaProviderID,
+                modelName: "model-\(row.quotaProviderID)",
+                samples: [LocalTokenUsageSample(
+                    completedAt: Date(),
+                    modelName: "model-\(row.quotaProviderID)",
+                    promptID: "p-\(row.quotaProviderID)",
+                    inputTokens: row.tokens,
+                    cachedInputTokens: 0,
+                    outputTokens: 0,
+                    reasoningOutputTokens: 0
+                )],
+                calendar: .current
+            )
+        }
+        let buckets = modelRows.reduce(TokenUsageBuckets.zero) { acc, row in
+            TokenUsageBuckets(
+                input: acc.input + row.buckets.input,
+                cacheRead: acc.cacheRead + row.buckets.cacheRead,
+                output: acc.output + row.buckets.output,
+                reasoning: acc.reasoning + row.buckets.reasoning
+            )
+        }
+        return HarnessSection(
+            clientID: clientID,
+            displayName: displayName,
+            iconSystemName: "terminal",
+            buckets: buckets,
+            tokensPerSecond: nil,
+            value: MixedCurrencyEstimate(estimates: modelRows.map(\.costEstimate)),
+            rows: modelRows,
+            isTruncated: false
         )
     }
 

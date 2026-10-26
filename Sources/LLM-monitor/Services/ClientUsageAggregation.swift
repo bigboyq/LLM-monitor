@@ -442,6 +442,86 @@ struct HarnessSection: Identifiable, Equatable, Sendable {
     }
 }
 
+/// 「今日占比条」的一段：一个今天有 token 活动的客户端（harness）。
+///
+/// 颜色不进模型：视图层按 `dominantQuotaProviderID` 查 provider 卡 accent
+/// （`AccentColor.cardAccentColor`）。同一客户端横跨多个 provider 分片时
+/// （ZCode / DSH / OpenCode）只有一个段，颜色取今日 token 最大的一路。
+struct HarnessClientSegment: Identifiable, Equatable, Sendable {
+    let clientID: String
+    let displayName: String
+    let totalTokens: Int
+    /// 该客户端今日 token 最大的 quota provider；nil = 行没有可归属的 provider
+    /// （理论不出现，防御回退灰色）。
+    let dominantQuotaProviderID: String?
+
+    var id: String { clientID }
+
+    /// 本地路径（`HarnessSection`）的构造入口：主 provider 由调用方按段内模型行
+    /// 现算（`clientSegments(from:)`）。
+    init(
+        clientID: String,
+        displayName: String,
+        totalTokens: Int,
+        dominantQuotaProviderID: String?
+    ) {
+        self.clientID = clientID
+        self.displayName = displayName
+        self.totalTokens = totalTokens
+        self.dominantQuotaProviderID = dominantQuotaProviderID
+    }
+
+    /// fleet 段（`FleetMenuSummary.ClientSection`）→ 占比条段：主 provider 由
+    /// 投影层在同桶 `clientProviders` 行上算好带过来（fleet 行没有本地模型行
+    /// 可分组）。
+    init(clientSection: FleetMenuSummary.ClientSection) {
+        self.clientID = clientSection.clientID
+        self.displayName = clientSection.displayName
+        self.totalTokens = clientSection.totalTokens
+        self.dominantQuotaProviderID = clientSection.dominantQuotaProviderID
+    }
+
+    /// 今日 token 最大的 quota provider（并列取 quotaProviderID 字典序小者，
+    /// 保证同一批行每次算出同一个归属）。`rows` 是 (quotaProviderID, 今日四桶
+    /// 合计) 对；本地路径来自段内模型行，fleet 路径来自同桶 clientProviders 行。
+    static func dominantQuotaProviderID(
+        _ rows: [(quotaProviderID: String, totalTokens: Int)]
+    ) -> String? {
+        var totals: [String: Int] = [:]
+        for row in rows {
+            totals[row.quotaProviderID, default: 0] += max(0, row.totalTokens)
+        }
+        var best: (id: String, tokens: Int)?
+        for (id, tokens) in totals {
+            guard let current = best else {
+                best = (id, tokens)
+                continue
+            }
+            if tokens > current.tokens || (tokens == current.tokens && id < current.id) {
+                best = (id, tokens)
+            }
+        }
+        return best?.id
+    }
+}
+
+extension HarnessTodaySummary {
+    /// 今日占比条的段列表：`sections` 已按今日 token 降序且只含有活动的客户端，
+    /// 这里只补「主力 provider 归属」并防御性滤掉零段。
+    static func clientSegments(from sections: [HarnessSection]) -> [HarnessClientSegment] {
+        sections.filter { $0.totalTokens > 0 }.map { section in
+            HarnessClientSegment(
+                clientID: section.clientID,
+                displayName: section.displayName,
+                totalTokens: section.totalTokens,
+                dominantQuotaProviderID: HarnessClientSegment.dominantQuotaProviderID(
+                    section.rows.map { ($0.quotaProviderID, $0.totalTokens) }
+                )
+            )
+        }
+    }
+}
+
 /// 状态栏下拉菜单的 Harness 视角数据：全局今日汇总 + 按客户端分段的今日用量。
 ///
 /// 与设置页 `clientProviderUsageByClient` 的区别在时间口径：设置页是「最近 7 天按

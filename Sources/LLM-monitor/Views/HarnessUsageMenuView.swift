@@ -57,7 +57,7 @@ struct HarnessUsageMenuView: View {
                         tokens: fleet.fleetTotals.tokens,
                         hitRate: fleet.fleetTotals.hitRate,
                         valueText: fleet.fleetTotals.valueText,
-                        buckets: fleet.fleetTotals.buckets
+                        segments: fleet.sections.map(HarnessClientSegment.init(clientSection:))
                     )
                     if let notice = fleet.dailyNotice { fleetNotice(notice) }
                     if fleet.sections.isEmpty { emptyTodayState } else {
@@ -69,13 +69,13 @@ struct HarnessUsageMenuView: View {
                         }
                     }
                 }
-            } else if fleetMenuActive, activeScope == .local, let fleet = fleetSummary {
+            } else if fleetMenuActive, activeScope == .local, fleetSummary != nil {
                 scopeOverview(
                     label: "今日",
                     tokens: summary.totalTokens,
                     hitRate: summary.cacheHitRate,
                     valueText: summary.valueText,
-                    buckets: summary.buckets
+                    segments: HarnessTodaySummary.clientSegments(from: summary.sections)
                 )
                 if summary.sections.isEmpty { emptyTodayState } else {
                     ForEach(summary.sections) { section in
@@ -92,7 +92,7 @@ struct HarnessUsageMenuView: View {
                         tokens: node.fleetTotals.tokens,
                         hitRate: node.fleetTotals.hitRate,
                         valueText: node.fleetTotals.valueText,
-                        buckets: node.fleetTotals.buckets
+                        segments: node.sections.map(HarnessClientSegment.init(clientSection:))
                     )
                     if let notice = node.dailyNotice { fleetNotice(notice) }
                     if node.sections.isEmpty { emptyTodayState } else {
@@ -128,54 +128,78 @@ struct HarnessUsageMenuView: View {
     // MARK: - 全局今日汇总
 
     /// 顶部一屏结论：今天一共烧了多少、缓存命中率多少、折算成 CNY 值多少，
-    /// 底下一行三段占比条给出这批 token 的构成（input / cacheRead / output）。
+    /// 底下一根**客户端占比条**给出这批 token 的构成——一段一个今天有活动的
+    /// harness，段宽即占比、段色即该客户端主力 provider 的卡 accent 色
+    /// （`HarnessClientProportionBar`），再配一行图例把颜色翻译回客户端名与
+    /// token 数。原来的全局 input / cacheRead / output 三段条不再在总览出现：
+    /// 那个构成在下面每个模型行上仍有一条，全局粒度上更有信息量的读法是
+    /// 「今天这些 token 是被哪些客户端烧掉的」。
     ///
     /// 数字行（第一行）从左到右：标签 / 总 token（定宽）/ 命中率（裸值，定宽）/
     /// 价值（撑满、右对齐）/ 裸刷新时间。宽度核算见下方各常量与
     /// `HarnessUsageMenuViewTests.testTodayOverviewRowFitsItsInnerWidth`。
     private var todayOverview: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text("今日合计")
-                    .font(MenuTypography.metricLabel)
-                    .foregroundStyle(Color.secondaryLabel)
-                // 定宽：token 数位变化不该把右边两列推来推去。
-                Text(Formatters.formatTokenCountCompact(summary.totalTokens))
-                    .font(MenuTypography.metricValue)
-                    .foregroundStyle(Color.primaryLabel)
-                    .frame(width: HarnessUsageMenuView.totalWidth, alignment: .leading)
-                Spacer(minLength: 4)
-                // 命中率是裸值（`100%` / `—`），不再带「命中」前缀：一行的读者已经
-                // 知道这列是什么，省下的 20pt 留给混币价值与刷新时间。
-                Text(Self.hitRateText(summary.cacheHitRate))
-                    .font(MenuTypography.metricValue)
-                    .foregroundStyle(Color.secondaryLabel)
-                    .frame(width: HarnessUsageMenuView.hitRateWidth, alignment: .trailing)
-                // 混合币种文案（`53270.9（含$7610)`）比单币种长得多，这里吃剩余
-                // 空间而不是定宽——定宽会把混币总额折成两行。
-                Text(summary.valueText)
-                    .font(MenuTypography.metricValue)
-                    .foregroundStyle(Color.primaryLabel)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .frame(maxWidth: .infinity, alignment: .trailing)
-                // 行尾刷新时间是**裸文本**（HH:mm，跨天退化成 `MM-dd HH:mm`），不带
-                // 胶囊底色——数字行没有胶囊的宽度预算。颜色语义与
-                // 「计算中…」状态由 `LocalUsageFreshnessText` 保持在悬浮窗 7 天卡那枚
-                // 胶囊（`LocalUsageFreshnessBadge`）的同款。时间自然宽、不压缩：空间
-                // 不足时先被截断的是上面的混币价值（tail），时间格始终完整可读。
-                LocalUsageFreshnessText(
-                    scannedAt: summary.localUsageScannedAt,
-                    isScanning: summary.isScanningLocalUsage
-                )
-            }
-            // 占比条独占一整行：数字行已经放不下任何徽标（见上），而占比条是
-            // `GeometryReader`（贪婪），独占整行也让三段比例的读数更宽。
-            TokenBucketBar(buckets: summary.buckets)
+            todayNumberRow
+            clientComposition(
+                segments: HarnessTodaySummary.clientSegments(from: summary.sections)
+            )
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 7)
         .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 7))
+    }
+
+    /// 今日合计数字行：标签 / 总 token / 命中率 / 价值 / 裸刷新时间（列宽预算见
+    /// `testTodayOverviewRowFitsItsInnerWidth`）。
+    private var todayNumberRow: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Text("今日合计")
+                .font(MenuTypography.metricLabel)
+                .foregroundStyle(Color.secondaryLabel)
+            // 定宽：token 数位变化不该把右边两列推来推去。
+            Text(Formatters.formatTokenCountCompact(summary.totalTokens))
+                .font(MenuTypography.metricValue)
+                .foregroundStyle(Color.primaryLabel)
+                .frame(width: HarnessUsageMenuView.totalWidth, alignment: .leading)
+            Spacer(minLength: 4)
+            // 命中率是裸值（`100%` / `—`），不再带「命中」前缀：一行的读者已经
+            // 知道这列是什么，省下的 20pt 留给混币价值与刷新时间。
+            Text(Self.hitRateText(summary.cacheHitRate))
+                .font(MenuTypography.metricValue)
+                .foregroundStyle(Color.secondaryLabel)
+                .frame(width: HarnessUsageMenuView.hitRateWidth, alignment: .trailing)
+            // 混合币种文案（`53270.9（含$7610)`）比单币种长得多，这里吃剩余
+            // 空间而不是定宽——定宽会把混币总额折成两行。
+            Text(summary.valueText)
+                .font(MenuTypography.metricValue)
+                .foregroundStyle(Color.primaryLabel)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+            // 行尾刷新时间是**裸文本**（HH:mm，跨天退化成 `MM-dd HH:mm`），不带
+            // 胶囊底色——数字行没有胶囊的宽度预算。颜色语义与
+            // 「计算中…」状态由 `LocalUsageFreshnessText` 保持在悬浮窗 7 天卡那枚
+            // 胶囊（`LocalUsageFreshnessBadge`）的同款。时间自然宽、不压缩：空间
+            // 不足时先被截断的是上面的混币价值（tail），时间格始终完整可读。
+            LocalUsageFreshnessText(
+                scannedAt: summary.localUsageScannedAt,
+                isScanning: summary.isScanningLocalUsage
+            )
+        }
+    }
+
+    /// 总览卡的构成部分：占比条 + 图例。三个 scope 共用；零活动（无段）时只剩
+    /// 纯灰底槽，图例整行不画。
+    @ViewBuilder
+    private func clientComposition(segments: [HarnessClientSegment]) -> some View {
+        HarnessClientProportionBar(segments: segments)
+        if !segments.isEmpty {
+            HarnessClientLegend(
+                segments: segments,
+                totalTokens: segments.reduce(0) { $0 + max(0, $1.totalTokens) }
+            )
+        }
     }
 
     /// 客户端有本地账本、只是今天还没跑过模型时的占位。与上面"没注册 provider"
@@ -210,20 +234,21 @@ struct HarnessUsageMenuView: View {
         }
     }
 
-    /// 统一的总览块：一行（标签 + token + 命中率 + 金额）+ 一根构成条。
-    /// 三个 scope 共用同一实现——样式、列宽、留白天然一致。
+    /// 统一的总览块：一行（标签 + token + 命中率 + 金额）+ 客户端占比条 + 图例。
+    /// 三个 scope 共用同一实现——样式、列宽、留白天然一致。段数据来自所选
+    /// scope 的客户端段（本机 = 本地段；全局 / 节点 = fleet 合并段）。
     private func scopeOverview(
         label: String,
         tokens: Int,
         hitRate: Double?,
         valueText: String,
-        buckets: TokenUsageBuckets
+        segments: [HarnessClientSegment]
     ) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             fleetOverviewRow(
                 label: label, tokens: tokens, hitRate: hitRate, valueText: valueText
             )
-            TokenBucketBar(buckets: buckets)
+            clientComposition(segments: segments)
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 7)
@@ -312,6 +337,190 @@ struct HarnessUsageMenuView: View {
     static let hitRateWidth: CGFloat = 32
     /// 段价值列定宽。与模型行的价值列同宽，两个"价值"数字右对齐成一条竖线。
     static let valueWidth: CGFloat = 56
+}
+
+/// 「今日合计」卡里的**客户端占比条**：一段一个今天有 token 活动的 harness，
+/// 段宽 = 该客户端今日 token 占全部客户端的比例，段色 = 主力 quota provider 的
+/// 卡 accent 色（`AccentColor.cardAccentColor`，与 provider 卡描边 / 进度条同源）。
+///
+/// 颜色取「主力」provider（今日 token 最大的一路）而不是按 provider 细分：一个
+/// ZCode 段可能同时含智谱 / minimax / deepseek 分片，段内再切色会把占比条变成
+/// 二维矩阵，读不回来。多 provider 构成在段下方的客户端段里有明细。
+///
+/// 取代了总览里原来的全局 input / cacheRead / output 三段条（`TokenBucketBar`
+/// 仍在模型行上承担该职责）。零活动（无段）时只剩纯灰底槽。
+///
+/// 归一化口径与 `TokenBucketBar` 一致：负值按 0、Double 累加做分母、总量 ≤ 0
+/// 全 0——保证任何输入（含总量 0 的 0/0 除法）不产生 NaN 或负宽。每段挂
+/// `.help`：「MiniMax Code 355M（77%）」。
+struct HarnessClientProportionBar: View {
+    let segments: [HarnessClientSegment]
+
+    /// 标准槽高：与 `TokenBucketBar` 同一根槽线（同一张卡里的条高不齐会很难看）。
+    static let standardHeight: CGFloat = TokenBucketBar.standardHeight
+
+    var body: some View {
+        GeometryReader { geo in
+            let width = geo.size.width
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(Color.primary.opacity(0.08))
+                HStack(spacing: 0) {
+                    ForEach(Array(segmentFractions.enumerated()), id: \.offset) { pair in
+                        Rectangle()
+                            .fill(Self.tint(forQuotaProviderID: segments[pair.offset].dominantQuotaProviderID))
+                            .frame(width: width * pair.element)
+                            .help(Self.tooltipText(
+                                for: segments[pair.offset],
+                                totalTokens: segments.reduce(0) { $0 + $1.totalTokens }
+                            ))
+                    }
+                }
+                .frame(width: width, height: Self.standardHeight)
+                .clipShape(Capsule())
+            }
+            .frame(width: width, height: Self.standardHeight)
+        }
+        .frame(height: Self.standardHeight)
+    }
+
+    /// 各段宽度占比（0...1），与 `segments` 同序。internal（非 private）：
+    /// 纯计算、无渲染依赖，测试直接断言占比数学。
+    var segmentFractions: [Double] {
+        Self.fractions(for: segments)
+    }
+
+    /// 占比归一化：负值按 0，分母 Double 累加（多段 Int 饱和和会互相挤占，
+    /// Double 对常规量级既不溢出也不产生 NaN），总量 ≤ 0 时全 0（纯灰底）。
+    static func fractions(for segments: [HarnessClientSegment]) -> [Double] {
+        let tokens = segments.map { max(0, $0.totalTokens) }
+        let total = tokens.reduce(0.0) { $0 + Double($1) }
+        guard total > 0 else { return Array(repeating: 0, count: segments.count) }
+        return tokens.map { Double($0) / total }
+    }
+
+    /// 段色 = 主力 provider 的卡 accent 色。未知 / 缺失的 providerID 回退灰
+    /// （与 `.custom` 同款——「不知道是谁」不该被读成某个品牌）。
+    static func tint(forQuotaProviderID id: String?) -> Color {
+        accent(forQuotaProviderID: id)?.cardAccentColor ?? .gray
+    }
+
+    /// quotaProviderID → AccentColor（纯函数，不带 UI 色，测试直接断言）。
+    static func accent(forQuotaProviderID id: String?) -> AccentColor? {
+        switch id {
+        case QuotaProviderID.minimax: return .minimax
+        case QuotaProviderID.openAI: return .chatgpt
+        case QuotaProviderID.antigravity: return .antigravity
+        case QuotaProviderID.zhipu: return .glm
+        case QuotaProviderID.deepseek: return .deepseek
+        default: return nil
+        }
+    }
+
+    /// 段的 hover 文案：「MiniMax Code 355M（77%）」。总量为 0（空条）时退回
+    /// 只有 token 数——0 做分母的占比没有意义。
+    static func tooltipText(for segment: HarnessClientSegment, totalTokens: Int) -> String {
+        let tokens = Formatters.formatTokenCountCompact(segment.totalTokens)
+        let total = max(0, totalTokens)
+        guard total > 0, segment.totalTokens > 0 else {
+            return "\(segment.displayName) \(tokens)"
+        }
+        let percent = Formatters.formatPercent(Double(segment.totalTokens) / Double(total))
+        return "\(segment.displayName) \(tokens)（\(percent)）"
+    }
+}
+
+/// 占比条下的图例行：`● MiniMax Code 355M  ● Codex 107M …`。色点与占比条段色
+/// 同源（同一个 `tint(forQuotaProviderID:)`），回答「哪种颜色是谁、各多少」——
+/// 占比太小的段窄到点不到 tooltip，图例是那批客户端唯一的可读出口。
+///
+/// chip 超出行宽**换行**（`WrapLayout`）而不是截断：被截掉的恰是占比最小的
+/// 客户端，名字与 token 数别处没有。最多 7 个注册客户端，两行内必然放得下。
+struct HarnessClientLegend: View {
+    let segments: [HarnessClientSegment]
+    /// 全部段的今日合计（tooltip 占比文案的分母）。
+    let totalTokens: Int
+
+    var body: some View {
+        WrapLayout(horizontalSpacing: 10, verticalSpacing: 4) {
+            ForEach(segments) { segment in
+                chip(segment)
+            }
+        }
+    }
+
+    private func chip(_ segment: HarnessClientSegment) -> some View {
+        HStack(spacing: 4) {
+            Circle()
+                .fill(HarnessClientProportionBar.tint(forQuotaProviderID: segment.dominantQuotaProviderID))
+                .frame(width: 6, height: 6)
+            Text(segment.displayName)
+                .font(MenuTypography.metricLabel)
+                .foregroundStyle(Color.secondaryLabel)
+                .lineLimit(1)
+            Text(Formatters.formatTokenCountCompact(segment.totalTokens))
+                .font(MenuTypography.metricValue)
+                .foregroundStyle(Color.primaryLabel)
+                .lineLimit(1)
+        }
+        .fixedSize()
+        .help(HarnessClientProportionBar.tooltipText(for: segment, totalTokens: totalTokens))
+    }
+}
+
+/// 最小流式布局：子视图放不进当前行就换到下一行。只服务 `HarnessClientLegend`
+/// 的图例 chip（每个 chip `.fixedSize` 自然宽、不拉伸），不是通用布局。
+private struct WrapLayout: Layout {
+    var horizontalSpacing: CGFloat
+    var verticalSpacing: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let maxWidth = proposal.width ?? .infinity
+        let rows = Self.rowHeights(
+            subviews: subviews, maxWidth: maxWidth, spacing: horizontalSpacing
+        )
+        let totalHeight = rows.reduce(0, +) + CGFloat(max(0, rows.count - 1)) * verticalSpacing
+        let width = maxWidth.isFinite ? maxWidth : 0
+        return CGSize(width: width, height: totalHeight)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var x = bounds.minX
+        var y = bounds.minY
+        var rowHeight: CGFloat = 0
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x > bounds.minX, x - bounds.minX + size.width > bounds.width {
+                x = bounds.minX
+                y += rowHeight + verticalSpacing
+                rowHeight = 0
+            }
+            subview.place(at: CGPoint(x: x, y: y), anchor: .topLeading, proposal: .unspecified)
+            x += size.width + horizontalSpacing
+            rowHeight = max(rowHeight, size.height)
+        }
+    }
+
+    /// 每行的行高（换行判定与 `placeSubviews` 同一条规则），供求总高。
+    private static func rowHeights(
+        subviews: Subviews, maxWidth: CGFloat, spacing: CGFloat
+    ) -> [CGFloat] {
+        var rows: [CGFloat] = []
+        var x: CGFloat = 0
+        var rowHeight: CGFloat = 0
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x > 0, x + size.width > maxWidth {
+                rows.append(rowHeight)
+                x = 0
+                rowHeight = 0
+            }
+            x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
+        }
+        if x > 0 { rows.append(rowHeight) }
+        return rows
+    }
 }
 
 /// 一个客户端段：段头（名称 + 今日小计 + 段价值）+ 段内模型行。
