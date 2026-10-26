@@ -430,12 +430,13 @@ struct HarnessClientProportionBar: View {
     }
 }
 
-/// 占比条下的图例行：`● MiniMax Code 355M  ● Codex 107M …`。色点与占比条段色
-/// 同源（同一个 `tint(forQuotaProviderID:)`），回答「哪种颜色是谁、各多少」——
+/// 占比条下的图例行：`<着色图标> MiniMax Code  <着色图标> Codex …`。图标即颜色
+/// 载体（`tint(forQuotaProviderID:)` 与占比条段色同源），回答「哪种颜色是谁」——
 /// 占比太小的段窄到点不到 tooltip，图例是那批客户端唯一的可读出口。
 ///
-/// chip 超出行宽**换行**（`WrapLayout`）而不是截断：被截掉的恰是占比最小的
-/// 客户端，名字与 token 数别处没有。最多 7 个注册客户端，两行内必然放得下。
+/// token 不进图例：下方每个客户端段的段头就有今日小计，图例只负责把颜色
+/// 翻译回身份。chip 超出行宽**换行**（`WrapLayout`）而不是截断：被截掉的恰是
+/// 占比最小的客户端，名字别处没有。最多 7 个注册客户端，两行内必然放得下。
 struct HarnessClientLegend: View {
     let segments: [HarnessClientSegment]
     /// 全部段的今日合计（tooltip 占比文案的分母）。
@@ -451,16 +452,14 @@ struct HarnessClientLegend: View {
 
     private func chip(_ segment: HarnessClientSegment) -> some View {
         HStack(spacing: 4) {
-            Circle()
-                .fill(HarnessClientProportionBar.tint(forQuotaProviderID: segment.dominantQuotaProviderID))
-                .frame(width: 6, height: 6)
+            Image(systemName: ClientDescriptor.iconSystemName(forClientID: segment.clientID))
+                .font(.system(size: 10))
+                .foregroundStyle(
+                    HarnessClientProportionBar.tint(forQuotaProviderID: segment.dominantQuotaProviderID)
+                )
             Text(segment.displayName)
                 .font(MenuTypography.metricLabel)
                 .foregroundStyle(Color.secondaryLabel)
-                .lineLimit(1)
-            Text(Formatters.formatTokenCountCompact(segment.totalTokens))
-                .font(MenuTypography.metricValue)
-                .foregroundStyle(Color.primaryLabel)
                 .lineLimit(1)
         }
         .fixedSize()

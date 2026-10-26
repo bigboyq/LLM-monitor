@@ -229,4 +229,10 @@ struct ClientDescriptor: Identifiable, Equatable, Sendable {
     static func displayName(forClientID clientID: String) -> String {
         all.first { $0.id == clientID }?.displayName ?? clientID
     }
+
+    /// 图标（菜单今日占比条图例按 clientID 取用）。未登记的 clientID 回退
+    /// `terminal`，与 `summarize` / fleet 投影的段图标兜底同款。
+    static func iconSystemName(forClientID clientID: String) -> String {
+        all.first { $0.id == clientID }?.iconSystemName ?? "terminal"
+    }
 }

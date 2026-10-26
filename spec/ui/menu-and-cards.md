@@ -145,7 +145,7 @@ height: content-driven, fixedSize(vertical: true)
 +------------------------------------------------+
 | 今日合计 1.2M   60%  ¥18.40（含$2.5）    21:09 |   global today summary + bare refresh time
 |  █████▓▓▓▓░░░  客户端占比条（色=主力provider）  |
-|  ● MiniMax Code 355M  ● Codex 107M …           |   legend: 色点 + 客户端名 + 今日 token，放不下换行
+|  ⌘ MiniMax Code  ⌘ Codex …                     |   legend: 着色客户端图标 + 名字，放不下换行
 +------------------------------------------------+
 | ▸ OpenCode                820K      205  10.5  |   section: client + subtotal + speed + value
 |   gpt-5.5   ███░░░  620K  62%  246  $11.30     |   model row (speed = tok/s)
@@ -337,8 +337,11 @@ per-client sections」描述的是**本机 scope** 的内容区；多机联动�
   - 归一化口径与 `TokenBucketBar` 一致：负值按 0、Double 累加分母、总量 ≤ 0 全 0
     （纯灰底），不产生 NaN；条高沿用 `TokenBucketBar.standardHeight`（7pt，同一张
     卡里的条不齐会很难看）；每段挂 `.help`：「MiniMax Code 355M（77%）」；
-  - **图例**把颜色翻译回客户端：`● MiniMax Code 355M ● Codex 107M …`（色点与段色
-    同源、token 走 `formatTokenCountCompact`），chip 超出行宽**换行**
+  - **图例**把颜色翻译回客户端：`<着色图标> MiniMax Code  <着色图标> Codex …`。
+    图标取 `ClientDescriptor.iconSystemName(forClientID:)`（与段头图标同源），
+    **着色即段色**（同一个 `tint(forQuotaProviderID:)`）；**token 不进图例**——
+    下方每个客户端段的段头就有今日小计，图例只负责「哪种颜色是谁」，hover 上
+    仍挂「MiniMax Code 355M（77%）」tooltip。chip 超出行宽**换行**
     （`WrapLayout`）而不是截断——被截掉的恰是占比最小的客户端，名字别处没有；
     段列表为空（今日无活动）时条只剩灰底、图例整行不画。
 - **Per-client sections**, ordered by today-token descending. A client with no
