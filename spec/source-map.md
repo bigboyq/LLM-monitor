@@ -219,6 +219,6 @@
 - **串行执行是既定选择**：`swift test --parallel` 实测（2026-10-02，5 连跑 3 败）不可用——`SQLiteTempCopyTests` 的临时副本断言扫描跨进程共享目录，并行 worker 互相误判；且慢测试为睡眠型，并行的 wall 收益仅 ~4s。并行化前提：先给 SQLiteTempCopy 的副本目录引入进程级隔离，再复评。
 - 慢用例的等待注入缝已建立：调度器（now/sleep）、Bark 退避（retryDelay）、vnode 合并窗口（coalescingWindow 参数）；新增耗时敏感测试时优先走注入缝，不要写死真实 sleep。
 
-> 核对基线：2026-10-25 · 代码 85541c7
+> 核对基线：2026-10-26 · 代码 ca4d511
 > 统一验证通过，详细结果见 `spec/sync.md`。本文件登记已新增的 Fleet Sync 测试文件。
 > `DeviceIdentityStore` 及其回归测试已随 6f11831 入库，详见 `spec/sync.md`。
