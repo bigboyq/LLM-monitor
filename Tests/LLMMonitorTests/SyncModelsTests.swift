@@ -584,6 +584,102 @@ final class SyncModelsTests: XCTestCase {
         XCTAssertEqual(frontier.filter { $0.windowKind == "interval" }.count, 2)
     }
 
+    // MARK: - 日桶金额汇总与下行瘦身（2026-10-27 裁定）
+
+    private func pricedEntry(
+        model: String, input: Int, value: Double?, currency: ModelPriceCurrency?,
+        coverage: FleetCostCoverage = .full, truncated: Bool = false
+    ) -> FleetUsageEntry {
+        FleetUsageEntry(
+            clientID: ClientID.codex, quotaProviderID: QuotaProviderID.openAI,
+            modelName: model, input: input, cacheRead: 0, output: 0, reasoning: 0,
+            value: value, currency: currency, coverage: coverage, truncated: truncated
+        )
+    }
+
+    private func nodeBucket(
+        _ dayKey: String, entries: [FleetUsageEntry], complete: Bool = true
+    ) -> FleetDailyBucket {
+        let rows: [FleetClientProviderUsage] = entries.isEmpty ? [] : [
+            FleetClientProviderUsage(
+                clientID: ClientID.codex, quotaProviderID: QuotaProviderID.openAI,
+                input: entries.reduce(0) { $0 + $1.input }, cacheRead: 0, output: 0,
+                reasoning: 0, turns: 1, rounds: 1
+            )
+        ]
+        return FleetDailyBucket(
+            dayKey: dayKey,
+            totals: FleetTotals(summing: rows),
+            clientProviders: rows,
+            entries: entries,
+            totalsComplete: complete,
+            modelDetailsComplete: complete,
+            sourceTruncated: false
+        )
+    }
+
+    func testMergeDailyBucketsComputesValueRollupAndCostPartial() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let dayKey = FleetMerger.dayKey(of: now)
+        let merged = FleetMerger.mergeDailyBuckets(
+            [[nodeBucket(dayKey, entries: [
+                pricedEntry(model: "gpt-5.5", input: 10, value: 0.4, currency: .usd),
+                pricedEntry(model: "glm", input: 20, value: 7.0, currency: .cny),
+                pricedEntry(model: "free", input: 30, value: nil, currency: nil, coverage: .none),
+            ])]],
+            now: now
+        )
+        XCTAssertEqual(merged.count, 1)
+        let bucket = merged[0]
+        XCTAssertEqual(bucket.valueByCurrency?["USD"], 0.4, "桶级金额按币种分列汇总")
+        XCTAssertEqual(bucket.valueByCurrency?["CNY"], 7.0)
+        XCTAssertTrue(bucket.costPartial, "存在未计价贡献时置 costPartial（纯金额汇总表达不了）")
+    }
+
+    func testNodeResponseStripsOldDailyBucketsKeepingRollup() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        func snapshot(withDays days: [String]) -> FleetSnapshot {
+            // fleet 聚合桶来自 mergeDailyBuckets——valueByCurrency 由合并侧计算。
+            let raw = days.enumerated().map { offset, day in
+                nodeBucket(day, entries: [
+                    pricedEntry(model: "m\(offset)", input: 10, value: 1.0, currency: .usd)
+                ])
+            }
+            return FleetSnapshot(
+                protocolVersion: FleetProtocol.version,
+                hubUUID: UUID(),
+                generation: 3,
+                hub: FleetNodeIdentity(nodeID: UUID(), nodeName: "hub",
+                                       timezoneID: "Asia/Shanghai", platform: "macOS"),
+                generatedAt: now,
+                nodes: [],
+                fleet: FleetAggregate(
+                    dailyBuckets: FleetMerger.mergeDailyBuckets([raw], now: now),
+                    windowUsage: []
+                ),
+                electedQuotas: [],
+                participantCount: 2
+            )
+        }
+
+        let dayKeys = FleetMerger.dayKeyWindow(now: now)
+        let full = snapshot(withDays: dayKeys)
+        let forNode = full.nodeResponse(acknowledging: nil)
+
+        let fullDayKeys = Set(dayKeys.suffix(FleetProtocol.fullDailyBucketsForNode))
+        for bucket in forNode.fleet.dailyBuckets {
+            if fullDayKeys.contains(bucket.dayKey) {
+                XCTAssertFalse(bucket.entries.isEmpty, "最新 2 天保持完整桶")
+                XCTAssertFalse(bucket.clientProviders.isEmpty)
+            } else {
+                XCTAssertTrue(bucket.entries.isEmpty, "历史天明细被裁掉")
+                XCTAssertTrue(bucket.clientProviders.isEmpty)
+                XCTAssertEqual(bucket.totals.input, 10, "历史天保留权威 totals")
+                XCTAssertEqual(bucket.valueByCurrency?["USD"], 1.0, "历史天保留金额汇总")
+            }
+        }
+    }
+
     func testWindowAggregationKeepsCurrenciesSeparateInValueMap() {
         let node = UUID()
         let usd = windowRow(value: 1.5, currency: .usd)

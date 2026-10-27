@@ -41,6 +41,11 @@ enum FleetProtocol {
     /// 边界匹配），消费端每组也只取一条（preferredRange）；保留 2 条容忍
     /// 多账号并存的不同边界与跨零点时钟差。
     static let windowFrontierPerGroup = 2
+    /// 日桶下行保留的完整桶天数（2026-10-27 裁定）：只有最新 2 天下发
+    /// entries/clientProviders 明细，更早的天裁成 totals + 金额汇总——
+    /// 消费端对历史天只用日图 totals 与逐日金额文案。留 2 天容忍跨零点
+    /// 时钟差，节点眼中的「今天」始终在完整桶里。
+    static let fullDailyBucketsForNode = 2
 
     static let usageDayPath = "/v1/usage/day"
     static let healthPath = "/v1/health"
@@ -177,6 +182,32 @@ struct FleetDailyBucket: Codable, Equatable, Sendable {
     /// nil preserves legacy all-or-nothing validation. A nonnil list declares
     /// provider-scoped coverage; unavailable rows are retained by the hub.
     var unavailableSources: [FleetDailyUnavailableSource]? = nil
+    /// 桶级金额汇总（按币种分开，不跨币折算）：合并侧从 entries 顺手算出，
+    /// 历史天明细不下发后逐日金额文案从这组值渲染（2026-10-27 裁定）。
+    /// nil = 无汇总信息（节点上报桶 / 旧载荷），消费端回退明细路径。
+    var valueByCurrency: [String: Double]? = nil
+    /// 有贡献未完整计价（未计价 / 截断 / partial coverage）。纯金额汇总
+    /// 表达不了它，单独携带以渲染「（部分计价）」标注。
+    var costPartial: Bool = false
+
+    /// 下发给副节点的瘦身形态：保留最新 `fullDailyBucketsForNode` 天完整桶，
+    /// 更早的天剥掉 entries/clientProviders 明细（消费端只用 totals 与金额
+    /// 汇总），完整性标志与不可用来源原样保留。
+    func strippedForNode(keepFullDayKeys: Set<String>) -> FleetDailyBucket {
+        guard !keepFullDayKeys.contains(dayKey) else { return self }
+        return FleetDailyBucket(
+            dayKey: dayKey,
+            totals: totals,
+            clientProviders: [],
+            entries: [],
+            totalsComplete: totalsComplete,
+            modelDetailsComplete: modelDetailsComplete,
+            sourceTruncated: sourceTruncated,
+            unavailableSources: unavailableSources,
+            valueByCurrency: valueByCurrency,
+            costPartial: costPartial
+        )
+    }
 }
 
 struct FleetWindowUsage: Codable, Equatable, Sendable {
@@ -337,6 +368,16 @@ struct FleetSnapshot: Codable, Equatable, Sendable {
                 missingNodeIDs: []
             )
         }
+        // 日桶下行瘦身（2026-10-27 裁定）：消费端对非今天桶只用 totals 与
+        // 逐日金额文案（合并侧已算好 valueByCurrency/costPartial），历史天
+        // 不再下发 entries/clientProviders 明细；保留最新 2 天完整桶，容忍
+        // hub/节点跨零点的时钟差。
+        let fullDayKeys = Set(
+            fleet.dailyBuckets.map(\.dayKey)
+                .sorted()
+                .suffix(FleetProtocol.fullDailyBucketsForNode)
+        )
+        let dailyForNode = fleet.dailyBuckets.map { $0.strippedForNode(keepFullDayKeys: fullDayKeys) }
         return FleetSnapshot(
             protocolVersion: protocolVersion,
             hubUUID: hubUUID,
@@ -344,7 +385,7 @@ struct FleetSnapshot: Codable, Equatable, Sendable {
             hub: hub,
             generatedAt: generatedAt,
             nodes: own.map { [$0] } ?? [],
-            fleet: FleetAggregate(dailyBuckets: fleet.dailyBuckets, windowUsage: aggregateWindows),
+            fleet: FleetAggregate(dailyBuckets: dailyForNode, windowUsage: aggregateWindows),
             electedQuotas: electedQuotas,
             participantCount: participantCount ?? nodes.count
         )
@@ -710,6 +751,25 @@ enum FleetMerger {
         }
 
         let unavailableSources = mergedUnavailableSources(contributions)
+        let finalizedEntries = entryRows.values
+            .map(\.finalized)
+            .sorted {
+                ($0.clientID, $0.quotaProviderID, $0.modelName ?? "")
+                    < ($1.clientID, $1.quotaProviderID, $1.modelName ?? "")
+            }
+        // 桶级金额汇总（2026-10-27 裁定）：与展示端 costText 同口径——按币种
+        // 分列、跨币不折算；任何贡献未完整计价则置 costPartial。
+        var valueByCurrency: [String: Double] = [:]
+        var costPartial = false
+        for entry in finalizedEntries {
+            if let value = entry.value, let currency = entry.currency {
+                valueByCurrency[currency.rawValue, default: 0] += value
+            }
+            if entry.value == nil || entry.currency == nil
+                || entry.coverage != .full || entry.truncated {
+                costPartial = true
+            }
+        }
         return FleetDailyBucket(
             dayKey: dayKey,
             totals: totals,
@@ -718,17 +778,14 @@ enum FleetMerger {
                     ? $0.quotaProviderID < $1.quotaProviderID
                     : $0.clientID < $1.clientID
             },
-            entries: entryRows.values
-                .map(\.finalized)
-                .sorted {
-                    ($0.clientID, $0.quotaProviderID, $0.modelName ?? "")
-                        < ($1.clientID, $1.quotaProviderID, $1.modelName ?? "")
-                },
+            entries: finalizedEntries,
             totalsComplete: contributions.allSatisfy(\.totalsComplete),
             modelDetailsComplete: contributions.allSatisfy(\.modelDetailsComplete),
             sourceTruncated: contributions.contains(where: \.sourceTruncated)
                 || (unavailableSources?.contains { $0.reason == .truncated } ?? false),
-            unavailableSources: unavailableSources
+            unavailableSources: unavailableSources,
+            valueByCurrency: valueByCurrency,
+            costPartial: costPartial
         )
     }
 
