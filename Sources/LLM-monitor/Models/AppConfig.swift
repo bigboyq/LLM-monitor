@@ -360,6 +360,9 @@ struct AppConfig: Codable, Equatable {
     /// Provider 显示名称字母顺序；这里只保存 canonical QuotaProviderID，不保存显示名。
     var providerCardOrder: [String]?
 
+    /// 状态栏小眼睛锚定的 Provider ID（nil 表示全 Provider 聚合，非零最小值）。
+    var statusBarPinnedProvider: String?
+
     /// Bark 推送配置。nil 或 enabled=false 都表示不推送。
     var bark: BarkConfig?
 
@@ -449,6 +452,7 @@ struct AppConfig: Codable, Equatable {
         statusBarHealthDotEnabled: Bool? = nil,
         statusBarHealthColors: StatusBarHealthColors? = nil,
         providerCardOrder: [String]? = nil,
+        statusBarPinnedProvider: String? = nil,
         bark: BarkConfig? = nil,
         edgeDock: EdgeDockConfig? = nil,
         holidaySource: String? = nil,
@@ -463,6 +467,7 @@ struct AppConfig: Codable, Equatable {
         self.statusBarHealthDotEnabled = statusBarHealthDotEnabled
         self.statusBarHealthColors = statusBarHealthColors
         self.providerCardOrder = providerCardOrder
+        self.statusBarPinnedProvider = statusBarPinnedProvider
         self.bark = bark
         self.edgeDock = edgeDock
         self.holidaySource = holidaySource
@@ -475,6 +480,7 @@ struct AppConfig: Codable, Equatable {
         case statusBarIconStyle, statusBarHealthDotEnabled
         case statusBarHealthColors
         case providerCardOrder
+        case statusBarPinnedProvider
         case bark
         case edgeDock
         case holidaySource
@@ -537,6 +543,12 @@ struct AppConfig: Codable, Equatable {
             logWarn("[config] providerCardOrder 字段解析失败，已按缺省处理：\(error.localizedDescription)")
             self.providerCardOrder = nil
         }
+        do {
+            self.statusBarPinnedProvider = try container.decodeIfPresent(String.self, forKey: .statusBarPinnedProvider)
+        } catch {
+            logWarn("[config] statusBarPinnedProvider 字段解析失败，已按未配置处理：\(error.localizedDescription)")
+            self.statusBarPinnedProvider = nil
+        }
         // 边缘窗同属外观字段：坏值按"没配过"处理，不能拖垮整份 provider 配置。
         //
         // 记一条告警：静默重置的位置/形态是排障噩梦——用户看到的是 dock 莫名回到
@@ -564,12 +576,8 @@ struct AppConfig: Codable, Equatable {
             logWarn("[config] holidaySource 字段解析失败，已按缺省（上游 CDN）处理：\(error.localizedDescription)")
             self.holidaySource = nil
         }
-        do {
-            self.appearance = (try? container.decode(String.self, forKey: .appearance))
-                .flatMap(AppAppearance.init(rawValue:))
-        } catch {
-            self.appearance = nil
-        }
+        self.appearance = (try? container.decode(String.self, forKey: .appearance))
+            .flatMap(AppAppearance.init(rawValue:))
         // 多机联动：坏值按未配置处理，不进损坏恢复流程——配置损坏不应让一个
         // 纯增量功能的缺失拖垮整份 provider 配置。
         do {

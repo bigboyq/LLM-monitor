@@ -79,14 +79,12 @@ on by default). On: the outer ring takes the colour of the **effective 5h quota*
 the same bottleneck model its arc length comes from — and the inner ring the colour
 of the **weekly window alone**, each through
 `ModelQuota.colorLevel(percent:timeFraction:)` — the same thresholds the segmented
-bar uses. The weekly ring therefore passes `weeklyTimeRemainingFraction(at:)` and
-gets the *time-aware* yellow line (`min(time%, 50)`): a weekly budget that is
-half spent with a day left is a warning, with six days left it is not. The outer
-ring's time fraction **follows the binding window**: when the 5h window is the
-bottleneck it passes `timeFraction: nil` and gets the fixed 30% line — the dynamic
-line is a long-window rule, and a window that resets every five hours has no
-meaningful "fraction of the window remaining" to tighten it — but when the weekly
-window binds (weekly × N tighter than 5h remaining) it passes the weekly time
+bar uses. The weekly ring passes `weeklyTimeRemainingFraction(at:)` and
+gets the unified time-aware pacing line (分母 = `100% * t`, `< 20%` critical, `< 50%` warning).
+The outer ring's time fraction **follows the binding window**: when the 5h window is the
+bottleneck it passes `intervalTimeRemainingFraction(at:)`, applying the same dynamic
+pacing rule (ensuring e.g. 15% quota remaining with 5 minutes left is correctly treated as healthy);
+when the weekly window binds (weekly × N tighter than 5h remaining) it passes the weekly time
 fraction and gets the same dynamic line, matching `aggregateHealthLevel`. Both take
 the **worst** model — for the outer ring the one with the lowest effective quota —
 matching how their lengths are computed, so length and colour never
@@ -572,7 +570,7 @@ the circle (the 1.10× scale).
 |---|---|
 | Dock window | Fixed size while expanded. Only the hovered **circle** scales to `EdgeDockGeometry.hoverScale` (1.10×) inside its fixed row — the row frame, the number label and the window never move |
 | Popover trigger | **Hover**, with a **0.15s open delay** (`selectedIndex` trails `hoveredIndex` by it; the click is reserved for dragging). `scheduleSelection` re-checks `hoveredIndex` when the delay elapses, so sweeping the cursor down a column of circles re-arms the timer for each one instead of flashing every card in turn. `scheduleDeselection` collapses the card 0.20s after the cursor leaves the circle, unless it entered the card itself. The delay is not cosmetic: the dock is **permanently** on the screen edge, and a cursor merely passing by (dragging a window to the edge, turning a page) would otherwise make cards strobe. Clicking is a drag candidate only — `dragMoved` gates on a 4pt threshold and a press that never crosses it does nothing at all |
-| Popover | Second `NSPanel` (`PopoverPanel`: `canBecomeKey = false` / `canBecomeMain = false`), `ignoresMouseEvents = false`, `acceptsMouseMovedEvents = true`, `allowsToolTipsWhenApplicationIsInactive = true`, `NSHostingView` 覆写 `acceptsFirstMouse = true`（`.nonactivatingPanel`，后台单次点击直接穿透生效而不被系统当作激活拦截，`.help` Tooltip 与 hover 正常触发，绝不抢 key / 焦点），level `.popUpMenu` so it sits above the dock. Renders `ProviderCardView(status:fleet:)`——浮层是这张卡的唯一存活宿主（菜单 strip hover 卡已随兜底行移除），启用多机联动时 `fleet` 传入 `state.fleetCardContext(for:)`、未启用时为 nil 且渲染零变化. In the dock it lays out as **two cards with their titles outside**, see *Two cards, titles outside* below. An open card is re-rendered on every status broadcast (`reconcile`'s no-op-frame branch refreshes it) **and on `state.fleetDidChange`** (`selectedIndex != nil` 时 `updatePopover()`), so it never shows numbers frozen at the moment it opened. 对 fleet 上下文而言卡片仍是**打开时的静态值快照**：全部 scope 的用量变体已一次预构建进 `FleetCardContext`，scope 切换靠卡内本地 `@State`（`scopeOverride`）先落再同步 AppState，宿主不重建也能即时切换——详见 `ui/menu-and-cards.md` §Scope switcher 与 `sync.md` §10 |
+| Popover | Second `NSPanel` (`PopoverPanel`: `canBecomeKey = false` / `canBecomeMain = false`), `ignoresMouseEvents = false`, `acceptsMouseMovedEvents = true`, `allowsToolTipsWhenApplicationIsInactive = true`, `NSHostingView` 覆写 `acceptsFirstMouse = true`（`.nonactivatingPanel`，后台单次点击直接穿透生效而不被系统当作激活拦截，`.help` Tooltip 与 hover 正常触发，绝不抢 key / 焦点），level `.popUpMenu` so it sits above the dock. Renders `ProviderCardView(status:fleet:isPinnedToStatusBar:)`——浮层是这张卡的唯一存活宿主（菜单 strip hover 卡已随兜底行移除），启用多机联动时 `fleet` 传入 `state.fleetCardContext(for:)`、未启用时为 nil 且渲染零变化；`isPinnedToStatusBar` 绑定 `config.statusBarPinnedProvider == status.id`，并在环境注入 `\.cardPinStatusBarAction` 驱动单选锚定。 In the dock it lays out as **two cards with their titles outside**, see *Two cards, titles outside* below. An open card is re-rendered on every status broadcast (`reconcile`'s no-op-frame branch refreshes it) **and on `state.fleetDidChange`** (`selectedIndex != nil` 时 `updatePopover()`), so it never shows numbers frozen at the moment it opened. 对 fleet 上下文而言卡片仍是**打开时的静态值快照**：全部 scope 的用量变体已一次预构建进 `FleetCardContext`，scope 切换靠卡内本地 `@State`（`scopeOverride`）先落再同步 AppState，宿主不重建也能即时切换——详见 `ui/menu-and-cards.md` §Scope switcher 与 `sync.md` §10 |
 | Hit test | `EdgeDockController.circleIndex(at:circles:currentHovered:minimumRadius:)` — the provider's **outer circle only** (radius + 0.5pt), which deliberately excludes the number label below it and the gaps between rows. The hovered circle's disc grows by `hoverScale` to match its on-screen scale animation. `minimumRadius` is a floor, not an override: the compact dock's circles are 7pt (radius 3.5) and it passes **half a row pitch** (7.5pt) so adjacent discs meet at their midpoint — pointing at a 7px target without it snaps to a neighbour. Circles come from `resolveCircleRects` (measured, with an `EdgeDockGeometry` fallback that is **appearance-aware** — the full-approach constants put compact row 0 about 24pt off). Never recomputed from constants alone — see *Edge status dock → Layout* |
 | Anchor | Vertically centred on the hovered **row** (measured rect when available; `EdgeDockGeometry.rowCenter` is only the "not measured yet" fallback), opening **inward** (docked right → opens left) |
 | Size | **Fixed width** `EdgeDockTheme.popoverWidth` (derived from the 7-day chart, see *Popover width*), height = natural card size clamped to 95% of screen height; a `ScrollView` replaces the plain card only when it exceeds the height cap, so overflow scrolls instead of being clipped |
@@ -1326,4 +1324,4 @@ default has to preserve it — defaulting to off would put a dock inside every f
 window for every existing user. Because the setting can be flipped while the user is
 already fullscreen, a policy change re-probes instead of reusing the cached verdict.
 
-> 核对基线：2026-10-26 · 代码 f4873a2
+> 核对基线：2026-10-27 · 代码 788463b

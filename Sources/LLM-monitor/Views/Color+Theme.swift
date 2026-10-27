@@ -6,7 +6,7 @@ extension Color {
     static let primaryLabel = Color(nsColor: .labelColor)
     static let secondaryLabel = Color(nsColor: .secondaryLabelColor)
 
-    static let minimaxBrand = Color(red: 0.76, green: 0.06, blue: 0.82)
+    static let minimaxBrand = Color(red: 0.66, green: 0.33, blue: 0.97)
     static let chatgptBrand = Color(red: 0.01, green: 0.70, blue: 0.28)
     static let antigravityGemini = Color(red: 0.10, green: 0.49, blue: 0.96)
     static let antigravityClaude = Color(red: 0.86, green: 0.45, blue: 0.16)
@@ -46,7 +46,7 @@ extension AccentColor {
     /// 身份色」的视图（菜单今日占比条等）都从这里取色，避免第二份映射各自漂移。
     var cardAccentColor: Color {
         switch self {
-        case .minimax:     return .purple
+        case .minimax:     return .minimaxBrand
         case .chatgpt:     return .green
         case .antigravity: return .blue
         case .glm:         return .glmBrand

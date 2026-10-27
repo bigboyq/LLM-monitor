@@ -756,13 +756,13 @@ struct AntigravityFetcher: QuotaFetcher {
                     intervalRemainingPercent: fiveHourPercent,
                     intervalStatus: fiveHour == nil ? .absent : .present,
                     intervalResetsAt: fiveHour?.resetTime,
-                    intervalWindowSeconds: nil,
+                    intervalWindowSeconds: fiveHour == nil ? nil : 5 * 3600,
                     weeklyTotalCount: 0,
                     weeklyUsageCount: 0,
                     weeklyRemainingPercent: weeklyPercent,
                     weeklyStatus: weekly == nil ? .absent : .present,
                     weeklyResetsAt: weekly?.resetTime,
-                    weeklyWindowSeconds: nil
+                    weeklyWindowSeconds: weekly == nil ? nil : 7 * 24 * 3600
                 ))
             } catch {
                 logWarn("[antigravity] 跳过 \(group.displayName) group: \(error.localizedDescription)")

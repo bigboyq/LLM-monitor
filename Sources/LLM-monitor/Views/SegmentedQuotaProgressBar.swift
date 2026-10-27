@@ -15,6 +15,25 @@ struct SegmentedQuotaProgressBar: View {
     let segments: Int
     let height: CGFloat
     let timeRemainingFraction: Double?
+    let primaryTimeRemainingFraction: Double?
+
+    init(
+        primaryFraction: Double,
+        weeklyFraction: Double,
+        tint: Color,
+        segments: Int,
+        height: CGFloat,
+        timeRemainingFraction: Double?,
+        primaryTimeRemainingFraction: Double? = nil
+    ) {
+        self.primaryFraction = primaryFraction
+        self.weeklyFraction = weeklyFraction
+        self.tint = tint
+        self.segments = segments
+        self.height = height
+        self.timeRemainingFraction = timeRemainingFraction
+        self.primaryTimeRemainingFraction = primaryTimeRemainingFraction
+    }
 
     private let triangleSize = CGSize(width: 6, height: 4)
     private let triangleGap: CGFloat = 1
@@ -29,6 +48,31 @@ struct SegmentedQuotaProgressBar: View {
         timeRemainingFraction.map { min(max($0, 0), 1) }
     }
 
+    /// 各段自适应栅格数：使得整条宽度上总栅格数始终保持在 35~42 格左右，
+    /// 视觉间距与宽度极其均匀。
+    static func ticksPerSegment(for segmentCount: Int) -> Int {
+        let count = max(segmentCount, 1)
+        switch count {
+        case 1:  return 40
+        case 2:  return 20
+        case 5:  return 7
+        case 6:  return 7
+        case 7:  return 6
+        case 10: return 4
+        default:
+            return max(3, min(40, Int((40.0 / Double(count)).rounded())))
+        }
+    }
+
+    /// 根据当前段 fill 比例计算点亮的栅格数。
+    /// 当 fill > 0 时向上取整并保底点亮至少 1 格，避免小额配额在视觉上显现全空。
+    static func activeTickCount(fill: Double, totalTicks: Int) -> Int {
+        guard totalTicks > 0 else { return 0 }
+        let clamped = min(max(fill, 0.0), 1.0)
+        if clamped <= 0 { return 0 }
+        return max(1, min(totalTicks, Int((clamped * Double(totalTicks)).rounded(.up))))
+    }
+
     var body: some View {
         let segmentFills = EquivalentQuotaAllocation.segmentFills(
             primaryFraction: primaryFraction,
@@ -38,11 +82,19 @@ struct SegmentedQuotaProgressBar: View {
         let segmentCount = max(segmentFills.count, 1)
 
         GeometryReader { geo in
-            let segmentWidth = geo.size.width / CGFloat(segmentCount)
+            let totalWidth = geo.size.width
+            let macroGap: CGFloat = segmentCount > 1 ? 4 : 0
+            let totalGaps = CGFloat(segmentCount - 1) * macroGap
+            let segmentWidth = max(0, (totalWidth - totalGaps) / CGFloat(segmentCount))
+            let numTicks = Self.ticksPerSegment(for: segmentCount)
+            let tickGap: CGFloat = 1.5
+            let totalTickGaps = CGFloat(max(numTicks - 1, 0)) * tickGap
+            let tickWidth = max(1.5, (segmentWidth - totalTickGaps) / CGFloat(numTicks))
+
             ZStack(alignment: .topLeading) {
                 if let f = clampedFraction {
                     let halfWidth = triangleSize.width / 2
-                    let posX = max(halfWidth, min(geo.size.width - halfWidth, geo.size.width * CGFloat(f)))
+                    let posX = max(halfWidth, min(totalWidth - halfWidth, totalWidth * CGFloat(f)))
                     DownwardTriangle()
                         .fill(Color.red)
                         .frame(width: triangleSize.width, height: triangleSize.height)
@@ -53,36 +105,36 @@ struct SegmentedQuotaProgressBar: View {
                 }
 
                 ZStack(alignment: .leading) {
-                    Capsule()
-                        .fill(Color.primary.opacity(0.08))
-                        .frame(height: height)
+                    HStack(spacing: macroGap) {
+                        ForEach(0..<segmentCount, id: \.self) { segIndex in
+                            let fill = segmentFills[segIndex]
+                            let activeTicks = Self.activeTickCount(fill: fill, totalTicks: numTicks)
+                            let segColor = segIndex == 0 ? intervalSegmentColor : weeklySegmentColor.opacity(0.68)
 
-                    ForEach(0..<segmentCount, id: \.self) { index in
-                        let fill = segmentFills[index]
-                        if fill > 0 {
-                            let color = index == 0 ? intervalSegmentColor : weeklySegmentColor
-                            Rectangle()
-                                .fill(index == 0 ? color : color.opacity(0.72))
-                                .frame(width: segmentWidth * fill, height: height)
-                                .offset(x: segmentWidth * CGFloat(index))
+                            HStack(spacing: tickGap) {
+                                ForEach(0..<numTicks, id: \.self) { tickIndex in
+                                    let isActive = tickIndex < activeTicks
+                                    RoundedRectangle(cornerRadius: 1.5)
+                                        .fill(isActive ? segColor : Color.primary.opacity(0.10))
+                                        .frame(width: tickWidth, height: height)
+                                }
+                            }
+                            .frame(width: segmentWidth, height: height)
                         }
                     }
 
-                    ForEach(1..<segmentCount, id: \.self) { index in
-                            Rectangle()
-                                .fill(Color.primary.opacity(0.32))
-                                .frame(width: 1, height: height + 2)
-                                .position(
-                                    x: geo.size.width * CGFloat(index) / CGFloat(segmentCount),
-                                    y: height / 2
-                                )
+                    if segmentCount > 1 {
+                        let dividerX = segmentWidth + macroGap / 2
+                        RoundedRectangle(cornerRadius: 0.75)
+                            .fill(Color.primary.opacity(0.28))
+                            .frame(width: 1.5, height: height + 2)
+                            .position(x: dividerX, y: height / 2)
                     }
                 }
-                .frame(width: geo.size.width, height: height)
-                .clipShape(Capsule())
+                .frame(width: totalWidth, height: height)
                 .offset(y: markerHeight)
             }
-            .frame(width: geo.size.width, height: totalHeight)
+            .frame(width: totalWidth, height: totalHeight)
         }
         .frame(height: totalHeight)
     }
@@ -99,7 +151,8 @@ struct SegmentedQuotaProgressBar: View {
         case .singleWeekly:
             return color(for: ModelQuota.colorLevel(percent: weeklyFraction * 100.0, timeFraction: clampedFraction))
         case .singleInterval, .combined:
-            return color(for: ModelQuota.colorLevel(percent: primaryFraction * 100.0, timeFraction: nil))
+            let tf = primaryTimeRemainingFraction ?? (segments == 1 ? clampedFraction : nil)
+            return color(for: ModelQuota.colorLevel(percent: primaryFraction * 100.0, timeFraction: tf))
         }
     }
 

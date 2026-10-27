@@ -303,18 +303,35 @@ and rebases it after midnight even when the database fingerprint has not changed
 
 ## Health Algorithm
 
-Health is computed from remaining percent:
+Health is computed from remaining percent and remaining time fraction:
 
 ```swift
-if percent < 15 { .critical }
-else if timeFraction == nil && percent < 30 { .warning } // 5h / short window
-else if let timeFraction, percent < min(timeFraction * 100, 50) { .warning } // weekly
-else { .healthy }
+if percent <= 0 { return .critical }
+
+guard let timeFraction else {
+    if percent < 20.0 { return .critical }
+    if percent < 50.0 { return .warning }
+    return .healthy
+}
+
+let t = min(max(timeFraction, 0.0), 1.0)
+if t <= 0 { return .healthy } // 周期已耗尽或刚到点，只要有剩余额度即算健康（成功撑过周期）
+
+// 分母 = 100% * 剩余时间百分比 (t)
+if percent < 20.0 * t { return .critical }
+if percent < 50.0 * t { return .warning }
+return .healthy
 ```
 
 `ModelQuota.colorLevel` is the single source of truth for both health and progress-bar
-colors. Short windows use a fixed 30% warning threshold; long windows use the smaller
-of the remaining-time percentage and 50%. 三个 `healthLevel` 派生属性
+colors. 统一周额度与 5h 短窗口/滚动窗口节奏标色算法：
+分母 = `100% * 剩余时间百分比 (t)`。
+- Pacing ratio `< 20%`（即 `percent < 20% * t`）：红色 `.critical`
+- Pacing ratio `< 50%`（即 `percent < 50% * t`）：黄色 `.warning`
+- Pacing ratio `≥ 50%`：绿色 `.healthy`
+- 当 `t <= 0`（周期已耗尽或刚到重置时刻）：余量只要大于 0 即代表平稳撑过当前窗口，判为 `.healthy`。
+- 当 `timeFraction == nil`（无窗口定义或重置时间缺失）：分母回退为基准 100%（`< 20%` 红色，`< 50%` 黄色，`>= 50%` 绿色）。
+此规则彻底解决了“距离重置仅剩几分钟、剩余 15% 明明充裕却因绝对值低而误报红色”的假警报问题。三个 `healthLevel` 派生属性
 （`ModelQuota.healthLevel` / `QuotaInfo.healthLevel` / `ProviderStatus.healthLevel`）
 已于 2026-10-09 随死代码清理删除：生产消费面为零，跨 model 读数统一走
 `aggregateHealthLevel`；`colorLevel` 与 `stateHasSuccessData` 不受影响。`stateHasSuccessData` helper 用来判断一个 state
@@ -341,6 +358,11 @@ of the remaining-time percentage and 50%. 三个 `healthLevel` 派生属性
 GPT models）/ `gemini_argon`（Gemini 4 Argon）。这些都是独立配额池，余量与主力模型水位无关，
 2026-10 用户裁定不计入聚合；滤后为空回退 `activeModels`（排除只允许「少算」）。卡片逐 model
 展示与通知管线（`QuotaEventDetector` 逐 model 窗口事件）不受影响。
+
+状态栏双环（Icon Duo）与健康度圆点支持服务商小眼睛锚定（`statusBarPinnedProvider`）：
+- 缺省或为 nil 时，`AppState.statusBarQuotaMetrics` 与 `systemHealthLevel(at:)` 综合所有已启用 Provider 计算全局非零最小值与健康度；
+- 当 `statusBarPinnedProvider` 指定了有效的窗口服务商 ID，且该服务商在可见列表中已启用并持有有效额度数据时，状态栏双环指标与健康度圆点仅计算该服务商的数据；
+- 若锚定的服务商被禁用、未配置凭据或尚无有效配额读数，系统自动回退到全 Provider 聚合，避免状态栏出现空白。
 
 ## Error And Fallback
 
@@ -484,5 +506,5 @@ These are documented product boundaries:
   have their own SQLite readers, Antigravity is pure RPC, and Codex parses JSONL on
   demand for the 7-day chart.
 
-> 核对基线：2026-10-25 · 代码 6f11831
+> 核对基线：2026-10-27 · 代码 788463b
 > 2026-10-25 自启草稿与菜单实际状态同步已随 6f11831 入库：定向 27 例、完整 1422 例均通过；完整验证记录见 `spec/sync.md`。

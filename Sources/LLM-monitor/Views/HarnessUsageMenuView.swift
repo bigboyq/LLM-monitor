@@ -127,60 +127,112 @@ struct HarnessUsageMenuView: View {
 
     // MARK: - 全局今日汇总
 
-    /// 顶部一屏结论：今天一共烧了多少、缓存命中率多少、折算成 CNY 值多少，
-    /// 底下一根**客户端占比条**给出这批 token 的构成——一段一个今天有活动的
-    /// harness，段宽即占比、段色即该客户端主力 provider 的卡 accent 色
-    /// （`HarnessClientProportionBar`），再配一行图例把颜色翻译回客户端名与
-    /// token 数。原来的全局 input / cacheRead / output 三段条不再在总览出现：
-    /// 那个构成在下面每个模型行上仍有一条，全局粒度上更有信息量的读法是
-    /// 「今天这些 token 是被哪些客户端烧掉的」。
-    ///
-    /// 数字行（第一行）从左到右：标签 / 总 token（定宽）/ 命中率（裸值，定宽）/
-    /// 价值（撑满、右对齐）。本地用量的裸刷新时间在标题栏右组（刷新按钮左边，
-    /// 见 `MenuContentView.headerBar`）。宽度核算见下方各常量与
-    /// `HarnessUsageMenuViewTests.testTodayOverviewRowFitsItsInnerWidth`。
-    private var todayOverview: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            todayNumberRow
-            clientComposition(
-                segments: HarnessTodaySummary.clientSegments(from: summary.sections)
-            )
+    private static let dayMonthFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MM-dd"
+        return formatter
+    }()
+
+    /// 将金额文本解析为主展示额与副标题（处理多币种混合情况）。
+    /// 单一币种："¥385.0" -> primary: "¥385.0", subtitle: "今日花费"
+    /// 混合币种："385.0（含$47.6）" -> primary: "¥385.0", subtitle: "折合总额（含$47.6）"
+    /// 缺失："—" -> primary: "—", subtitle: "今日花费"
+    static func heroCostParts(from valueText: String) -> (primary: String, subtitle: String) {
+        if valueText == "—" {
+            return ("—", "今日花费")
+        }
+        if let parenRange = valueText.range(of: "（含") {
+            let rawPrimary = String(valueText[..<parenRange.lowerBound]).trimmingCharacters(in: .whitespaces)
+            let breakdown = String(valueText[parenRange.lowerBound...])
+            let primary = rawPrimary.hasPrefix("¥") || rawPrimary.hasPrefix("$") ? rawPrimary : "¥" + rawPrimary
+            let subtitle = "折合总额" + breakdown
+            return (primary, subtitle)
+        }
+        return (valueText, "今日花费")
+    }
+
+    private func hitRateBadge(_ hitRate: Double?) -> some View {
+        HStack(spacing: 3) {
+            Text("命中")
+                .font(.system(size: 9, weight: .medium))
+                .foregroundStyle(Color.secondaryLabel)
+            Text(Self.hitRateText(hitRate))
+                .font(.system(size: 9, weight: .bold).monospacedDigit())
+                .foregroundStyle(Color.primaryLabel)
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 2)
+        .background(Color.primary.opacity(0.06), in: Capsule())
+    }
+
+    /// 统一的双焦点 Hero 今日汇总卡片：
+    /// 顶栏（标题 + 命中率胶囊）+ 核心行（大号 Token 与大号金额）+ 客户端占比条与图例。
+    private func heroOverviewCard(
+        headerTitle: String,
+        tokensText: String,
+        hitRate: Double?,
+        valueText: String,
+        segments: [HarnessClientSegment]
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .center) {
+                Text(headerTitle)
+                    .font(MenuTypography.metricLabel)
+                    .foregroundStyle(Color.secondaryLabel)
+                Spacer()
+                hitRateBadge(hitRate)
+            }
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(tokensText)
+                        .font(MenuTypography.todayHeroValue)
+                        .foregroundStyle(Color.primaryLabel)
+                        .lineLimit(1)
+                    Text("今日总 Token")
+                        .font(MenuTypography.todayHeroSubtitle)
+                        .foregroundStyle(Color.secondaryLabel)
+                }
+                Spacer(minLength: 12)
+                let cost = Self.heroCostParts(from: valueText)
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(cost.primary)
+                        .font(MenuTypography.todayHeroValue)
+                        .foregroundStyle(Color.primaryLabel)
+                        .lineLimit(1)
+                    Text(cost.subtitle)
+                        .font(MenuTypography.todayHeroSubtitle)
+                        .foregroundStyle(Color.secondaryLabel)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+            }
+            clientComposition(segments: segments)
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 7)
-        .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 7))
+        .background(
+            RoundedRectangle(cornerRadius: 7)
+                .fill(Color.primary.opacity(0.045))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 7)
+                        .stroke(Color.primary.opacity(0.07), lineWidth: 1)
+                )
+        )
     }
 
-    /// 今日合计数字行：标签 / 总 token / 命中率 / 价值（列宽预算见
-    /// `testTodayOverviewRowFitsItsInnerWidth`）。本地用量的新鲜度时间不在
-    /// 这里——它已挪到标题栏刷新按钮左边（`MenuContentView.headerBar`）：
-    /// 全局读数与 scope 无关，三个 scope 的总览行不再各自带时间。
-    private var todayNumberRow: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Text("今日合计")
-                .font(MenuTypography.metricLabel)
-                .foregroundStyle(Color.secondaryLabel)
-            // 定宽：token 数位变化不该把右边两列推来推去。
-            Text(Formatters.formatTokenCountCompact(summary.totalTokens))
-                .font(MenuTypography.metricValue)
-                .foregroundStyle(Color.primaryLabel)
-                .frame(width: HarnessUsageMenuView.totalWidth, alignment: .leading)
-            Spacer(minLength: 4)
-            // 命中率是裸值（`100%` / `—`），不再带「命中」前缀：一行的读者已经
-            // 知道这列是什么，省下的 20pt 留给混币价值。
-            Text(Self.hitRateText(summary.cacheHitRate))
-                .font(MenuTypography.metricValue)
-                .foregroundStyle(Color.secondaryLabel)
-                .frame(width: HarnessUsageMenuView.hitRateWidth, alignment: .trailing)
-            // 混合币种文案（`53270.9（含$7610)`）比单币种长得多，这里吃剩余
-            // 空间而不是定宽——定宽会把混币总额折成两行。
-            Text(summary.valueText)
-                .font(MenuTypography.metricValue)
-                .foregroundStyle(Color.primaryLabel)
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .frame(maxWidth: .infinity, alignment: .trailing)
-        }
+    private var todayHeaderTitle: String {
+        let date = Self.dayMonthFormatter.string(from: summary.dayStart)
+        return "今日 \(date)"
+    }
+
+    private var todayOverview: some View {
+        heroOverviewCard(
+            headerTitle: todayHeaderTitle,
+            tokensText: Formatters.formatTokenCountCompact(summary.totalTokens),
+            hitRate: summary.cacheHitRate,
+            valueText: summary.valueText,
+            segments: HarnessTodaySummary.clientSegments(from: summary.sections)
+        )
     }
 
     /// 总览卡的构成部分：占比条 + 图例。三个 scope 共用；零活动（无段）时只剩
@@ -228,7 +280,7 @@ struct HarnessUsageMenuView: View {
         }
     }
 
-    /// 统一的总览块：一行（标签 + token + 命中率 + 金额）+ 客户端占比条 + 图例。
+    /// 统一的总览块：双焦点大字卡 + 客户端占比条 + 图例。
     /// 三个 scope 共用同一实现——样式、列宽、留白天然一致。段数据来自所选
     /// scope 的客户端段（本机 = 本地段；全局 / 节点 = fleet 合并段）。
     private func scopeOverview(
@@ -238,27 +290,57 @@ struct HarnessUsageMenuView: View {
         valueText: String,
         segments: [HarnessClientSegment]
     ) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            fleetOverviewRow(
-                label: label, tokens: tokens, hitRate: hitRate, valueText: valueText
-            )
-            clientComposition(segments: segments)
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 7)
-        .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 7))
+        heroOverviewCard(
+            headerTitle: label,
+            tokensText: Formatters.formatTokenCountCompact(tokens),
+            hitRate: hitRate,
+            valueText: valueText,
+            segments: segments
+        )
     }
 
     /// Missing daily data has a distinct visual state. In particular, zero is not
     /// shown as a completed total when the fleet has not supplied today's bucket.
     private func unavailableScopeOverview(label: String, notice: String?) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            fleetOverviewRow(label: label, tokensText: "—", hitRateText: "—", valueText: "—")
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .center) {
+                Text(label)
+                    .font(MenuTypography.metricLabel)
+                    .foregroundStyle(Color.secondaryLabel)
+                Spacer()
+                hitRateBadge(nil)
+            }
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("—")
+                        .font(MenuTypography.todayHeroValue)
+                        .foregroundStyle(Color.secondaryLabel)
+                    Text("今日总 Token")
+                        .font(MenuTypography.todayHeroSubtitle)
+                        .foregroundStyle(Color.secondaryLabel)
+                }
+                Spacer(minLength: 12)
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text("—")
+                        .font(MenuTypography.todayHeroValue)
+                        .foregroundStyle(Color.secondaryLabel)
+                    Text("今日花费")
+                        .font(MenuTypography.todayHeroSubtitle)
+                        .foregroundStyle(Color.secondaryLabel)
+                }
+            }
             fleetNotice(notice ?? "今日用量尚未同步")
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 7)
-        .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 7))
+        .background(
+            RoundedRectangle(cornerRadius: 7)
+                .fill(Color.primary.opacity(0.045))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 7)
+                        .stroke(Color.primary.opacity(0.07), lineWidth: 1)
+                )
+        )
     }
 
     private func fleetNotice(_ text: String) -> some View {
@@ -455,6 +537,12 @@ struct HarnessClientLegend: View {
                 .font(MenuTypography.metricLabel)
                 .foregroundStyle(Color.secondaryLabel)
                 .lineLimit(1)
+            if segment.totalTokens > 0 {
+                Text(Formatters.formatTokenCountCompact(segment.totalTokens))
+                    .font(MenuTypography.footerNumber)
+                    .foregroundStyle(Color.secondaryLabel.opacity(0.85))
+                    .lineLimit(1)
+            }
         }
         .fixedSize()
         .help(HarnessClientProportionBar.tooltipText(for: segment, totalTokens: totalTokens))

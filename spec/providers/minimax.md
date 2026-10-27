@@ -203,8 +203,7 @@ synthesizing a 7-day boundary.
 00:00 / 05:00 / 10:00 / 15:00 / 20:00（本地时区），最后一段 20:00→24:00 只有 4 小时，
 响应本身不携带窗口长度，fetcher 按 `end_time` 反推：end 落在 0 点 → 14400，其余边界
 → 18000（`MinimaxTokenPlanFetcher.intervalWindowLength`）；video 记录保持 nil——其
-日窗口的 24h 兜底长度在 end 已知时本就落在 0 点边界，而填 86400 会激活
-`intervalTimeRemainingFraction` 的 ≥24h 长窗口动态黄线规则，属另一个口径变更。
+日窗口的 24h 兜底长度在 end 已知时本就落在 0 点边界，且 video 作为独立模型已被排除在聚合之外。
 消费方 `windowBounds` 用 `end − 长度` 反推窗口起点：20~23:59 区间若仍走 5h 兜底，
 起点会退到 19:00，把上一窗口最后 1 小时的样本多算进「额度窗口」5h 行（token 与
 金额双双虚高）——这就是派生该字段的理由。`end_time` 缺失时长度为 nil，按原 5h 兜底降级。
@@ -1027,7 +1026,7 @@ Minimax tests are located in `Tests/LLMMonitorTests/MinimaxResponseParsingTests.
   - `testMinimaxParseVideoRecordKeepsIntervalWindowSecondsNil` / `testMinimaxParseRecordWithoutEndTimeKeepsIntervalWindowSecondsNil`: video 与缺 `end_time` 的记录长度保持 nil。
 - **额度窗口用量回归（`QuotaWindowUsageTests.swift`，跨 provider 文件中的 minimax 区块）**：
   - `testWindowBoundsPinnedToRealStartWhenMinimaxEndsAtMidnight`：end 为次日 0 点、长度 14400 时 `windowBounds` 起点 = 当日 20:00（不回退 5h 兜底错推的 19:00）。
-  - `testMinimaxShortWindowUsageExcludesPreviousWindowWhenLengthIsKnown`：20:00–24:00 段内 19:30 样本被真实 4h 长度排除、nil 对照组多算（修复前行为）；4h/5h 均 < 86400，`intervalTimeRemainingFraction` 恒 nil。
+  - `testMinimaxShortWindowUsageExcludesPreviousWindowWhenLengthIsKnown`：20:00–24:00 段内 19:30 样本被真实 4h 长度排除、nil 对照组多算（修复前行为）；在统一节奏算法下，真实 4h/5h 长度准确计算出 `intervalTimeRemainingFraction` 参与时间感知标色。
 - **Reader (`MinimaxDBReaderTests.swift`)**:
   - `testV2ReaderAggregatesRowsSessionsTurnsAndSamples`: aggregates v2 rows, sessions, turns, and samples.
   - `testV2ReaderRecoversMissingModelFromSessionAndUniqueLedgerModel`: the row → `record_json.effectiveModel` → unique-ledger-model fallback chain.
@@ -1085,4 +1084,4 @@ reasoning maximum, character aggregation, and output conservation.
 
     To realize this split, the fetcher must persist every `current_interval_remaining_percent` sample with a timestamp. Currently it only stores the most recent value in `ModelQuota`; a `local_runtime_quota_snapshots(model_name, ts, interval_remaining_percent, weekly_remaining_percent, interval_total_count, interval_usage_count, weekly_total_count, weekly_usage_count)` table is needed, and `local_runtime_token_usage` should gain a `quota_snapshot_id` so each row can be tagged "inside plan" vs "credits".
 
-> 核对基线：2026-10-25 · 代码 6f11831
+> 核对基线：2026-10-27 · 代码 788463b

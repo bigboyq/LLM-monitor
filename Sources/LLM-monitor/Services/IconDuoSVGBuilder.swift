@@ -39,11 +39,9 @@ enum IconDuoSVGBuilder {
         energyHealth: HealthLevel? = nil
     ) -> String {
         let trackColor = "#48484A"
-        // 统一 colorLevel 判定（方案 A）：左弧 = interval avg，5h 短窗口固定 30%
-        // 黄线（intervalTimeFraction 为 nil）；≥24h 长 interval 窗口（如 ChatGPT
-        // Plan 单主窗口）按最宽剩余时间比例走动态黄线 min(time%, 50)——与右弧、
-        // 中心扇形同规则，避免长窗口下左弧与中心扇形反向。右弧 = 周 avg + 最宽周
-        // 剩余时间比例（动态黄线 min(time%, 50)）。弧线不参与高峰 floor——高峰只
+        // 统一时间感知 colorLevel 判定：左弧（interval / 5h avg）与右弧（周 avg）
+        // 均以最宽剩余时间比例作为 timeFraction 输入（分母 = 100% * timeFraction，
+        // < 20% 红色，< 50% 黄色，否则绿色）。弧线不参与高峰 floor——高峰只
         // 作用于底部三点与卡片头部点（见 `ModelQuota.aggregateHealthLevel`）。
         let leftQuotaLevel = ModelQuota.colorLevel(
             percent: metrics.interval.avgAvailable * 100,

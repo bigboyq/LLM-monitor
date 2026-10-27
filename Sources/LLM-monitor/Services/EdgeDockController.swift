@@ -347,6 +347,9 @@ final class EdgeDockController: ObservableObject {
                 if modeChanged || fullscreenPolicyChanged {
                     self.evaluateFullscreen()
                 }
+                if self.selectedIndex != nil {
+                    self.updatePopover()
+                }
             }
 
         screenObserver = NotificationCenter.default.addObserver(

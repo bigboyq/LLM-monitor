@@ -142,4 +142,33 @@ final class SegmentedQuotaProgressBarTests: XCTestCase {
     func testStandardSlotHeightContract() {
         XCTAssertEqual(SegmentedQuotaProgressBar.standardSlotHeight, 13)
     }
+
+    // MARK: - 微栅格自适应与点亮算法
+
+    func testTicksPerSegmentAdaptation() {
+        XCTAssertEqual(SegmentedQuotaProgressBar.ticksPerSegment(for: 1), 40)
+        XCTAssertEqual(SegmentedQuotaProgressBar.ticksPerSegment(for: 2), 20)
+        XCTAssertEqual(SegmentedQuotaProgressBar.ticksPerSegment(for: 5), 7)
+        XCTAssertEqual(SegmentedQuotaProgressBar.ticksPerSegment(for: 6), 7)
+        XCTAssertEqual(SegmentedQuotaProgressBar.ticksPerSegment(for: 7), 6)
+        XCTAssertEqual(SegmentedQuotaProgressBar.ticksPerSegment(for: 10), 4)
+    }
+
+    func testActiveTickCountRoundingAndFloor() {
+        // 0% -> 0 格
+        XCTAssertEqual(SegmentedQuotaProgressBar.activeTickCount(fill: 0.0, totalTicks: 7), 0)
+        XCTAssertEqual(SegmentedQuotaProgressBar.activeTickCount(fill: -0.1, totalTicks: 7), 0)
+
+        // 只要大于 0，向上取整保底 1 格，避免微量配额全空
+        XCTAssertEqual(SegmentedQuotaProgressBar.activeTickCount(fill: 0.01, totalTicks: 7), 1)
+        XCTAssertEqual(SegmentedQuotaProgressBar.activeTickCount(fill: 0.14, totalTicks: 7), 1)
+        XCTAssertEqual(SegmentedQuotaProgressBar.activeTickCount(fill: 0.15, totalTicks: 7), 2)
+
+        // 50% -> 4 格（7 格的一半向上取整）
+        XCTAssertEqual(SegmentedQuotaProgressBar.activeTickCount(fill: 0.50, totalTicks: 7), 4)
+
+        // 100% -> 满格
+        XCTAssertEqual(SegmentedQuotaProgressBar.activeTickCount(fill: 1.0, totalTicks: 7), 7)
+        XCTAssertEqual(SegmentedQuotaProgressBar.activeTickCount(fill: 1.5, totalTicks: 7), 7)
+    }
 }

@@ -825,6 +825,25 @@ final class AppState: ObservableObject {
         NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 
+    /// 切换状态栏小眼睛锚定的 Provider ID。
+    /// 若当前已锚定该 provider 则取消（置 nil 回退到全 provider 聚合）；
+    /// 若未锚定则设为该 providerID 并持久化。
+    func toggleStatusBarPinnedProvider(_ providerID: String) {
+        var cfg = configStore.config
+        if cfg.statusBarPinnedProvider == providerID {
+            cfg.statusBarPinnedProvider = nil
+        } else {
+            cfg.statusBarPinnedProvider = providerID
+        }
+        do {
+            try configStore.applyAndSave(cfg)
+        } catch {
+            logError("[AppState] 保存 statusBarPinnedProvider 失败: \(error)")
+        }
+        objectWillChange.send()
+        statusDidChange.send(())
+    }
+
     // MARK: - 配置变化监听
 
     private func setupConfigSubscription() {

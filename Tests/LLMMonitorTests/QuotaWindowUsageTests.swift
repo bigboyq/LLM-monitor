@@ -293,8 +293,10 @@ final class QuotaWindowUsageTests: XCTestCase {
         )
         XCTAssertEqual(legacy.interval?.usage?.rounds, 2, "无 windowSeconds 退回 5h 兜底：19:30 被多算 1 条（修复前行为，对照组）")
 
-        XCTAssertNil(fixedModel.intervalTimeRemainingFraction, "4h < 86400：长窗口动态黄线规则不激活")
-        XCTAssertNil(legacyModel.intervalTimeRemainingFraction, "5h < 86400：长窗口动态黄线规则不激活")
+        // 统一时间感知算法下，4h/5h 短窗口均产生准确的时间比例
+        let twoHoursBeforeMidnight = at(15, 22, 0)
+        XCTAssertEqual(fixedModel.intervalTimeRemainingFraction(at: twoHoursBeforeMidnight), 0.5, "4h 窗口距 0 点剩 2 小时为 50%")
+        XCTAssertEqual(legacyModel.intervalTimeRemainingFraction(at: twoHoursBeforeMidnight), 0.4, "5h 兜底窗口距 0 点剩 2 小时为 40%")
     }
 
     // MARK: - 三个比率

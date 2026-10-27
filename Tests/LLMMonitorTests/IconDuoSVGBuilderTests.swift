@@ -188,11 +188,12 @@ final class IconDuoSVGBuilderTests: XCTestCase {
         XCTAssertFalse(svg.contains("#FFD60A"), "长窗口 20%+20% 时左弧与中心都按动态黄线判绿，不得出现黄色")
         XCTAssertTrue(svg.contains("#34C759"), "左弧应与中心扇形一致为绿色")
 
-        // 2. 短 interval 窗口（5h）：行为不变——固定 30% 黄线，20% 仍为黄。
+        // 2. 短 interval 窗口（5h）：统一时间感知标色——20% 额度 + 20% 窗口时间同样判绿。
         setChatGPTPlanQuota(intervalPercent: 20, windowSeconds: 5 * 3600)
         let shortMetrics = appState.statusBarQuotaMetrics(at: now)
-        XCTAssertNil(shortMetrics.intervalTimeFraction, "5h 短窗口不应产生 interval 剩余时间比例")
+        XCTAssertEqual(shortMetrics.intervalTimeFraction ?? -1, 0.2, accuracy: 0.001)
         let shortSVG = IconDuoSVGBuilder.buildSVG(metrics: shortMetrics)
-        XCTAssertTrue(shortSVG.contains("#FFD60A"), "5h 短窗口 20% 左弧仍为固定 30% 黄线的黄色")
+        XCTAssertFalse(shortSVG.contains("#FFD60A"), "5h 短窗口 20%+20% 时按统一时间感知判绿，不应为黄")
+        XCTAssertTrue(shortSVG.contains("#34C759"), "5h 短窗口应与周窗口一致为绿色")
     }
 }

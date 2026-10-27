@@ -27,6 +27,10 @@ enum MenuTypography {
     /// 今日指标与小徽标
     static let metricLabel = Font.system(size: 10, weight: .medium)
     static let metricValue = Font.system(size: 10, weight: .medium).monospacedDigit()
+    /// 今日卡片主焦点大字号（总 Token / 总花费）
+    static let todayHeroValue = Font.system(size: 20, weight: .bold, design: .rounded).monospacedDigit()
+    /// 今日卡片主焦点副标题
+    static let todayHeroSubtitle = Font.system(size: 9, weight: .medium)
     /// 占位文本与空提示
     static let hint = Font.system(size: 10)
     static let caption = Font.system(size: 11)

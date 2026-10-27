@@ -201,34 +201,34 @@ final class EdgeDockProjectionTests: EdgeDockTestCase {
     /// 这条测试钉住「颜色跟随有效额度、时间比例随瓶颈窗口走」的行为变化。
     func testOuterRingHealthFollowsEffectiveQuotaWithWeeklyBinding() {
         let status = makeStatus(id: "codex", kind: .codexChatGpt, state: .ok(makeInfo([
-            quotaModel(intervalPercent: 40, weeklyPercent: 5, weeklyTimeFraction: 0.6),
+            quotaModel(intervalPercent: 40, weeklyPercent: 4, weeklyTimeFraction: 0.6),
         ])))
         XCTAssertEqual(
             EdgeDockProjection.intervalFraction(status, at: Self.makeNow) ?? -1,
-            0.30, accuracy: 0.0001
+            0.24, accuracy: 0.0001
         )
         XCTAssertEqual(
             EdgeDockProjection.intervalHealth(status, at: Self.makeNow), .warning,
-            "瓶颈是周窗口：30% 低于动态黄线 min(60, 50) = 50；若按原始 5h（40% + 固定 30% 黄线）会是 healthy"
+            "瓶颈是周窗口：24% 低于动态黄线 50% * 60% = 30%；若按原始 5h（40%）会是 healthy"
         )
     }
 
     /// 多 model 时有效额度也取**最低**的那个，且颜色与弧长来自同一个瓶颈：
-    /// a 的 min(90, 90×6→封顶 100) = 90，b 的 min(80, 5×6 = 30) = 30 → 外环 30%，
-    /// 颜色也按 b 的瓶颈（周窗口、动态黄线 50）判定 → 黄。若颜色另取 model
+    /// a 的 min(90, 90×6→封顶 100) = 90，b 的 min(80, 4×6 = 24) = 24 → 外环 24%，
+    /// 颜色也按 b 的瓶颈（周窗口、动态黄线 30）判定 → 黄。若颜色另取 model
     /// （比如 a 的 90% 是绿的），弧长与颜色就指向两个不同的瓶颈。
     func testOuterRingEffectiveQuotaTakesWorstModel() {
         let status = makeStatus(id: "multi", kind: .codexChatGpt, state: .ok(makeInfo([
             quotaModel(intervalPercent: 90, weeklyPercent: 90, weeklyTimeFraction: 0.6),
-            quotaModel(intervalPercent: 80, weeklyPercent: 5, weeklyTimeFraction: 0.6),
+            quotaModel(intervalPercent: 80, weeklyPercent: 4, weeklyTimeFraction: 0.6),
         ])))
         XCTAssertEqual(
             EdgeDockProjection.intervalFraction(status, at: Self.makeNow) ?? -1,
-            0.30, accuracy: 0.0001
+            0.24, accuracy: 0.0001
         )
         XCTAssertEqual(
             EdgeDockProjection.intervalHealth(status, at: Self.makeNow), .warning,
-            "颜色来自瓶颈 model b（周瓶颈、30%），不与弧长脱钩"
+            "颜色来自瓶颈 model b（周瓶颈、24%），不与弧长脱钩"
         )
     }
 
@@ -293,14 +293,14 @@ final class EdgeDockProjectionTests: EdgeDockTestCase {
     /// 仍按 video 判定，不退化为「无读数」。
     func testProjectionFallsBackWhenOnlyExcludedModelRemains() {
         let status = makeStatus(id: "minimax", kind: .minimaxTokenPlan, state: .ok(makeInfo([
-            makeModel(name: "video", intervalPercent: 40, now: Self.makeNow),
+            makeModel(name: "video", intervalPercent: 60, now: Self.makeNow),
         ])))
         XCTAssertEqual(
             EdgeDockProjection.intervalFraction(status, at: Self.makeNow) ?? -1,
-            0.40, accuracy: 0.0001,
-            "只有 video 时回退全集，外环仍画 video 的 40%"
+            0.60, accuracy: 0.0001,
+            "只有 video 时回退全集，外环仍画 video 的 60%"
         )
-        XCTAssertEqual(EdgeDockProjection.intervalHealth(status, at: Self.makeNow), .healthy, "40% 高于固定 30% 黄线")
+        XCTAssertEqual(EdgeDockProjection.intervalHealth(status, at: Self.makeNow), .healthy, "60% 高于 50% 黄线")
         XCTAssertNil(
             EdgeDockProjection.weeklyFraction(status, at: Self.makeNow),
             "回退后的 video 无周窗口，内环仍为 nil"
@@ -368,16 +368,16 @@ final class EdgeDockProjectionTests: EdgeDockTestCase {
 
     // MARK: - 逐窗口色档（内外环独立取色的输入）
 
-    /// 5h 档位：无周窗口（瓶颈 = 5h 短窗口，`bindingTimeFraction == nil`）时固定
-    /// 30% 黄线、固定 15% 红线。三个值分别落在红、黄、绿三段上——任何一个阈值漂了
-    /// （比如有人把黄线改成 20%），这条会跟着红。
-    func testIntervalHealthUsesFixedThirtyPercentYellowLine() {
+    /// 5h 档位：统一时间感知标色（分母 = 100% * 剩余时间百分比%）。
+    /// 当 tf=1.0（分母 100%）时：< 20% 红线，< 50% 黄线。
+    /// 三个值 10%（红）、25%（黄）、55%（绿）分别落在红、黄、绿三段上。
+    func testIntervalHealthFollowsUnifiedPacing() {
         let red = makeStatus(id: "red", state: .ok(makeInfo([
             makeModel(name: "g", intervalPercent: 10),
         ])))
         XCTAssertEqual(
             EdgeDockProjection.intervalHealth(red, at: Self.makeNow), .critical,
-            "10% 低于固定 15% 的红线"
+            "10% 低于 20% 的红线"
         )
 
         let yellow = makeStatus(id: "yellow", state: .ok(makeInfo([
@@ -385,15 +385,24 @@ final class EdgeDockProjectionTests: EdgeDockTestCase {
         ])))
         XCTAssertEqual(
             EdgeDockProjection.intervalHealth(yellow, at: Self.makeNow), .warning,
-            "25% 在 15% 红线与 30% 黄线之间"
+            "25% 在 20% 红线与 50% 黄线之间"
         )
 
         let green = makeStatus(id: "green", state: .ok(makeInfo([
-            makeModel(name: "g", intervalPercent: 30),
+            makeModel(name: "g", intervalPercent: 55),
         ])))
         XCTAssertEqual(
             EdgeDockProjection.intervalHealth(green, at: Self.makeNow), .healthy,
-            "30% 正好压线，不吃动态黄线"
+            "55% 高于 50% 黄线"
+        )
+
+        // 统一时间感知：5h 窗口剩余 20% 时间 (t=0.20, 分母=20%) 时，15% 额度明明够用，判定为绿
+        let timeTightGreen = makeStatus(id: "tightGreen", state: .ok(makeInfo([
+            makeModel(name: "g", intervalPercent: 15, intervalTimeFraction: 0.2),
+        ])))
+        XCTAssertEqual(
+            EdgeDockProjection.intervalHealth(timeTightGreen, at: Self.makeNow), .healthy,
+            "剩余 20% 时间时 15% 额度明明够用，为绿"
         )
     }
 
@@ -402,19 +411,19 @@ final class EdgeDockProjectionTests: EdgeDockTestCase {
     /// 同一个百分比、不同的剩余时间给出不同的颜色，正是"时间感知阈值"存在的理由。
     func testWeeklyHealthTightensWithRemainingTime() {
         let plentyOfTime = makeStatus(id: "plenty", state: .ok(makeInfo([
-            weeklyModel(percent: 40, timeFraction: 0.6),
+            weeklyModel(percent: 25, timeFraction: 0.6),
         ])))
         XCTAssertEqual(
             EdgeDockProjection.weeklyHealth(plentyOfTime, at: Self.makeNow), .warning,
-            "剩余时间 60% 时黄线是 min(60, 50) = 50，40% 在黄线以下"
+            "剩余时间 60% 时黄线是 50% * 60% = 30，25% 在黄线以下为黄"
         )
 
         let runningOut = makeStatus(id: "short", state: .ok(makeInfo([
-            weeklyModel(percent: 40, timeFraction: 0.2),
+            weeklyModel(percent: 25, timeFraction: 0.2),
         ])))
         XCTAssertEqual(
             EdgeDockProjection.weeklyHealth(runningOut, at: Self.makeNow), .healthy,
-            "剩余时间 20% 时黄线是 20，40% 在黄线以上"
+            "剩余时间 20% 时黄线是 50% * 20% = 10，25% 在黄线以上为绿"
         )
     }
 
@@ -490,15 +499,15 @@ final class EdgeDockProjectionTests: EdgeDockTestCase {
         // (名字, 5h%, 周%, 剩余时间比例, 5h档, 周档, 期望圆点)
         let cases: [(String, Double, Double, Double, HealthLevel, HealthLevel, HealthLevel?)] = [
             // 周不差于 5h → 无点：同档（黄/黄、红/红、绿/绿）与周更健康都不画。
-            ("both_warning", 25, 40, 0.6, .warning, .warning, nil),
+            ("both_warning", 25, 20, 0.6, .warning, .warning, nil),
             ("both_critical", 10, 10, 0.6, .critical, .critical, nil),
             ("both_healthy", 60, 90, 0.2, .healthy, .healthy, nil),
             // 周更健康（黄/绿）→ 无点。5h 已告急时周只到黄也不算"更差"——
             // 升级提示说的是「瓶颈已经从 5h 挪到周」，瓶颈还在 5h 就不是。
             ("weekly_healthier_warning", 25, 90, 0.2, .warning, .healthy, nil),
-            ("weekly_healthier_critical", 10, 40, 0.6, .critical, .warning, nil),
+            ("weekly_healthier_critical", 10, 20, 0.6, .critical, .warning, nil),
             // 周严格更差 → 有点，颜色 = 周档位。
-            ("weekly_worse_warning", 60, 40, 0.6, .healthy, .warning, .warning),
+            ("weekly_worse_warning", 60, 20, 0.6, .healthy, .warning, .warning),
             ("weekly_worse_critical", 25, 10, 0.6, .warning, .critical, .critical),
             ("weekly_worse_critical_from_healthy", 60, 10, 0.6, .healthy, .critical, .critical),
         ]

@@ -158,7 +158,7 @@ struct ProviderStatus: Identifiable, Equatable, Sendable {
             isPeak = false
         }
         return info.aggregateQuotaModels(providerKind: kind)
-            .map { $0.aggregateHealthLevel(providerKind: kind, isPeakPrice: isPeak) }
+            .map { $0.aggregateHealthLevel(providerKind: kind, isPeakPrice: isPeak, at: now) }
             .min() ?? .critical
     }
 

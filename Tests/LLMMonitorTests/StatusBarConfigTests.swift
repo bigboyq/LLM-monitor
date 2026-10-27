@@ -16,6 +16,7 @@ final class StatusBarConfigTests: XCTestCase {
             warningHex: "#ABCDEF",
             criticalHex: "#654321"
         )
+        config.statusBarPinnedProvider = "minimax"
 
         let encoder = JSONEncoder()
         let data = try encoder.encode(config)
@@ -26,6 +27,7 @@ final class StatusBarConfigTests: XCTestCase {
         XCTAssertEqual(decoded.statusBarIconStyle, .sparkles)
         XCTAssertEqual(decoded.statusBarHealthDotEnabled, false)
         XCTAssertEqual(decoded.statusBarHealthColors, config.statusBarHealthColors)
+        XCTAssertEqual(decoded.statusBarPinnedProvider, "minimax")
         XCTAssertEqual(decoded.effectiveStatusBarIconStyle, .sparkles)
         XCTAssertFalse(decoded.effectiveStatusBarHealthDotEnabled)
         XCTAssertEqual(decoded.effectiveStatusBarHealthColors, config.statusBarHealthColors)

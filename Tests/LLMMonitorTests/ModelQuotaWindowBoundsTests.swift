@@ -36,14 +36,16 @@ final class ModelQuotaWindowBoundsTests: XCTestCase {
             XCTFail("ChatGPT Plan 单 7d 窗口应能取到 interval 剩余时间比例")
         }
 
-        // 2. 5h short interval window (18000s) -> should return nil for intervalTimeRemainingFraction
+        // 2. 5h short interval window (18000s) -> now participates in intervalTimeRemainingFraction
+        let now = Date()
+        let halfWindowDate = now.addingTimeInterval(2.5 * 3600)
         let shortQuota = ModelQuota(
             modelName: "general",
             intervalTotalCount: 0,
             intervalUsageCount: 0,
             intervalRemainingPercent: 50,
             intervalStatus: .present,
-            intervalResetsAt: futureDate,
+            intervalResetsAt: halfWindowDate,
             intervalWindowSeconds: 5 * 60 * 60,
             weeklyTotalCount: 0,
             weeklyUsageCount: 0,
@@ -52,8 +54,10 @@ final class ModelQuotaWindowBoundsTests: XCTestCase {
             weeklyResetsAt: futureDate,
             weeklyWindowSeconds: 7 * 24 * 60 * 60
         )
-        XCTAssertNil(shortQuota.intervalTimeRemainingFraction)
-        XCTAssertNil(shortQuota.intervalTimeRemainingFraction(at: Date()))
+        XCTAssertNotNil(shortQuota.intervalTimeRemainingFraction)
+        if let fraction = shortQuota.intervalTimeRemainingFraction(at: now) {
+            XCTAssertEqual(fraction, 0.5, accuracy: 0.01)
+        }
         XCTAssertNotNil(shortQuota.weeklyTimeRemainingFraction)
     }
 
@@ -136,40 +140,62 @@ final class ModelQuotaWindowBoundsTests: XCTestCase {
 
     // MARK: - ModelQuota.colorLevel (barColor / healthLevel / summaryColor 共享阈值)
 
-    func testModelQuotaColorLevelShortWindow() {
-        // timeFraction=nil: 5h 短窗口，固定 30% 黄阈值
+    func testModelQuotaColorLevelNilTimeFraction() {
+        // timeFraction=nil: 无重置时间/无窗口，基线分母 100%：< 20% 红，< 50% 黄，>= 50% 绿
         XCTAssertEqual(ModelQuota.colorLevel(percent: 0, timeFraction: nil), .critical)
-        XCTAssertEqual(ModelQuota.colorLevel(percent: 14.9, timeFraction: nil), .critical)
-        XCTAssertEqual(ModelQuota.colorLevel(percent: 15, timeFraction: nil), .warning)
-        XCTAssertEqual(ModelQuota.colorLevel(percent: 29.9, timeFraction: nil), .warning)
-        XCTAssertEqual(ModelQuota.colorLevel(percent: 30, timeFraction: nil), .healthy)
+        XCTAssertEqual(ModelQuota.colorLevel(percent: 19.9, timeFraction: nil), .critical)
+        XCTAssertEqual(ModelQuota.colorLevel(percent: 20, timeFraction: nil), .warning)
+        XCTAssertEqual(ModelQuota.colorLevel(percent: 49.9, timeFraction: nil), .warning)
+        XCTAssertEqual(ModelQuota.colorLevel(percent: 50, timeFraction: nil), .healthy)
         XCTAssertEqual(ModelQuota.colorLevel(percent: 100, timeFraction: nil), .healthy)
     }
 
-    func testModelQuotaColorLevelLongWindowTimeAware() {
-        // timeFraction!=nil: 长窗口，黄阈值 = min(time% * 100, 50)
-        // 还剩 100% 时间 → 阈值 50%
-        XCTAssertEqual(ModelQuota.colorLevel(percent: 49, timeFraction: 1.0), .warning)
+    func testModelQuotaColorLevelTimeAware() {
+        // 周额度与 5h 额度统一的时间感知标色算法：
+        // 分母 = 100% * 剩余时间百分比%
+        // < 20% 红色，< 50% 黄色，>= 50% 绿色
+
+        // 1. 还剩 100% 时间 (刚重置，t=1.0) → 分母 100%
+        XCTAssertEqual(ModelQuota.colorLevel(percent: 0, timeFraction: 1.0), .critical)
+        XCTAssertEqual(ModelQuota.colorLevel(percent: 19.9, timeFraction: 1.0), .critical)
+        XCTAssertEqual(ModelQuota.colorLevel(percent: 20, timeFraction: 1.0), .warning)
+        XCTAssertEqual(ModelQuota.colorLevel(percent: 49.9, timeFraction: 1.0), .warning)
         XCTAssertEqual(ModelQuota.colorLevel(percent: 50, timeFraction: 1.0), .healthy)
-        // 还剩 20% 时间 → 阈值 20%
-        XCTAssertEqual(ModelQuota.colorLevel(percent: 19, timeFraction: 0.2), .warning)
-        XCTAssertEqual(ModelQuota.colorLevel(percent: 20, timeFraction: 0.2), .healthy)
-        // 临界永远是 15%
-        XCTAssertEqual(ModelQuota.colorLevel(percent: 14.9, timeFraction: 0.2), .critical)
+
+        // 2. 还剩 50% 时间 (t=0.5) → 分母 50%
+        // 临界 = 20% * 0.5 = 10%，预警 = 50% * 0.5 = 25%
+        XCTAssertEqual(ModelQuota.colorLevel(percent: 9.9, timeFraction: 0.5), .critical)
+        XCTAssertEqual(ModelQuota.colorLevel(percent: 10, timeFraction: 0.5), .warning)
+        XCTAssertEqual(ModelQuota.colorLevel(percent: 24.9, timeFraction: 0.5), .warning)
+        XCTAssertEqual(ModelQuota.colorLevel(percent: 25, timeFraction: 0.5), .healthy)
+
+        // 3. 用户经典诉求场景：5h 窗口还剩 5 分钟 (t = 5/300 = 1/60 ≈ 0.0167)
+        // 额度剩余 15%：明明够用，绝对不是红色，也不是黄色，而是健康（绿色）！
+        let fiveMinutesInFiveHours = 5.0 / 300.0
+        XCTAssertEqual(ModelQuota.colorLevel(percent: 15, timeFraction: fiveMinutesInFiveHours), .healthy)
+        // 即使只剩 1% 额度，对于 5 分钟（0.833% 预警线）而言也是健康的
+        XCTAssertEqual(ModelQuota.colorLevel(percent: 1.0, timeFraction: fiveMinutesInFiveHours), .healthy)
+        // 临界线 = 20% * (1/60) ≈ 0.333%，剩 0.2% 时才标红
+        XCTAssertEqual(ModelQuota.colorLevel(percent: 0.2, timeFraction: fiveMinutesInFiveHours), .critical)
+        // 预警线 = 50% * (1/60) ≈ 0.833%，剩 0.5% 时标黄
+        XCTAssertEqual(ModelQuota.colorLevel(percent: 0.5, timeFraction: fiveMinutesInFiveHours), .warning)
+
+        // 4. 重置时刻已到或已过 (t <= 0)
+        XCTAssertEqual(ModelQuota.colorLevel(percent: 15, timeFraction: 0.0), .healthy)
+        XCTAssertEqual(ModelQuota.colorLevel(percent: 0, timeFraction: 0.0), .critical)
     }
 
-    func testIntervalTimeRemainingFractionDropsModelNameHack() {
-        // modelName 不再决定 fallback：必须显式有 intervalWindowSeconds
+    func testIntervalTimeRemainingFractionNilWhenResetMissing() {
         let q = ModelQuota(
-            modelName: "chatgpt_plan",
+            modelName: "general",
             intervalTotalCount: 0, intervalUsageCount: 0,
             intervalRemainingPercent: 100, intervalStatus: .present,
-            intervalResetsAt: Date().addingTimeInterval(7 * 24 * 60 * 60),
-            intervalWindowSeconds: nil,  // 显式 nil
+            intervalResetsAt: nil,  // 缺 reset 时间
+            intervalWindowSeconds: 5 * 3600,
             weeklyTotalCount: 0, weeklyUsageCount: 0,
             weeklyRemainingPercent: 0, weeklyStatus: .absent,
             weeklyResetsAt: nil, weeklyWindowSeconds: nil
         )
-        XCTAssertNil(q.intervalTimeRemainingFraction, "没有 intervalWindowSeconds 就不能 fallback 到 modelName=chatgpt_plan")
+        XCTAssertNil(q.intervalTimeRemainingFraction, "没有 intervalResetsAt 就降级为 nil")
     }
 }

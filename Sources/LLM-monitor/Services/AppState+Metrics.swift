@@ -17,6 +17,15 @@ extension AppState {
         let enabled = statuses.filter(\.isEnabled)
         guard !enabled.isEmpty else { return nil }
 
+        let targetStatuses: [ProviderStatus]
+        if let pinnedID = configStore.config.statusBarPinnedProvider,
+           let pinned = enabled.first(where: { $0.id == pinnedID }),
+           pinned.isConfigured {
+            targetStatuses = [pinned]
+        } else {
+            targetStatuses = enabled
+        }
+
         var levels: [HealthLevel] = []
 
         // DeepSeek is balance-only and intentionally has no quota window
@@ -32,7 +41,7 @@ extension AppState {
         // balance reading always went through; the remaining known scope
         // difference is that DeepSeek participates here while being excluded
         // from the quotaLogo aggregate.
-        for status in enabled {
+        for status in targetStatuses {
             switch status.state {
             case .failed(message: _, lastSuccess: nil):
                 // 无缓存的失败仍是最严重档；aggregateHealthLevel 对
@@ -75,10 +84,21 @@ extension AppState {
         // 否则 fleet elected——本机未配置某 provider 而 fleet 有其余量时，图标会
         // 开始显示那个额度（来源在卡片 / 设置页可查）。
         var activeWindowedModels: [(kind: ProviderKind, model: ModelQuota, isPeak: Bool)] = []
+        let visibleStatuses = fleetVisibleStatuses()
+        let targetStatuses: [ProviderStatus]
+        if let pinnedID = configStore.config.statusBarPinnedProvider,
+           let pinned = visibleStatuses.first(where: { $0.id == pinnedID }),
+           pinned.kind != .deepseek,
+           fleetEffectiveQuota(for: pinned.kind).quota != nil {
+            targetStatuses = [pinned]
+        } else {
+            targetStatuses = visibleStatuses
+        }
+
         // DeepSeek is balance-only and intentionally has no quota window
         // semantics; it is excluded from the quotaLogo aggregate just as
         // the notification pipeline excludes non-windowed providers.
-        for status in fleetVisibleStatuses() where status.kind != .deepseek {
+        for status in targetStatuses where status.kind != .deepseek {
             // 高峰判定跟随 systemHealthLevel 现状：isGlmPeak 命中 .peak 即 true。
             let isPeak = status.isGlmPeak(at: now)
             if let info = fleetEffectiveQuota(for: status.kind).quota {
@@ -132,13 +152,13 @@ extension AppState {
             centerTimeFraction = nil
         }
         let quotaHealthLevels = activeWindowedModels.map {
-            $0.model.aggregateHealthLevel(providerKind: $0.kind, isPeakPrice: $0.isPeak)
+            $0.model.aggregateHealthLevel(providerKind: $0.kind, isPeakPrice: $0.isPeak, at: now)
         }
-        // 聚合右弧的动态黄线输入：所有周窗口套餐剩余时间比例的最大值。
+        // 聚合右弧的统一时间感知输入：所有周窗口套餐剩余时间比例的最大值。
         let weeklyTimeFraction = allActiveModels
             .compactMap { $0.weeklyTimeRemainingFraction(at: now) }
             .max()
-        // 聚合左弧的动态黄线输入同理：所有长 interval 窗口剩余时间比例的最大值。
+        // 聚合左弧的统一时间感知输入同理：所有 interval 窗口剩余时间比例的最大值。
         let intervalTimeFraction = allActiveModels
             .compactMap { $0.intervalTimeRemainingFraction(at: now) }
             .max()

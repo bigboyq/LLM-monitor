@@ -89,14 +89,14 @@ final class AggregateHealthLevelTests: XCTestCase {
 
         XCTAssertEqual(appState.systemHealthLevel, .healthy)
 
-        // 设为 warning
+        // 设为 warning（刚重置时分母 100%，20% < 50% 判黄）
         let warningModel = ModelQuota(
             modelName: "general",
             intervalTotalCount: 100,
             intervalUsageCount: 80,
             intervalRemainingPercent: 20.0,
             intervalStatus: .present,
-            intervalResetsAt: Date().addingTimeInterval(3600),
+            intervalResetsAt: Date().addingTimeInterval(18000),
             intervalWindowSeconds: 18000,
             weeklyTotalCount: 0,
             weeklyUsageCount: 0,
@@ -197,8 +197,8 @@ final class AggregateHealthLevelTests: XCTestCase {
             intervalUsageCount: 60,
             intervalRemainingPercent: 40.0,
             intervalStatus: .present,
-            intervalResetsAt: nil,
-            intervalWindowSeconds: nil,
+            intervalResetsAt: now.addingTimeInterval(2 * 3600),
+            intervalWindowSeconds: 5 * 3600,
             weeklyTotalCount: 100,
             weeklyUsageCount: 92,
             weeklyRemainingPercent: 8.0,
@@ -233,16 +233,20 @@ final class AggregateHealthLevelTests: XCTestCase {
         func makeModel(
             intervalPercent: Double?,
             weeklyPercent: Double?,
+            intervalTimeFraction: Double = 1.0,
             weeklyTimeFraction: Double = 1.0
         ) -> ModelQuota {
-            ModelQuota(
+            let fiveHours = 5.0 * 3600
+            return ModelQuota(
                 modelName: "model",
                 intervalTotalCount: 100,
                 intervalUsageCount: 100 - Int(intervalPercent ?? 0),
                 intervalRemainingPercent: intervalPercent ?? 0,
                 intervalStatus: intervalPercent != nil ? .present : .absent,
-                intervalResetsAt: intervalPercent != nil ? Date().addingTimeInterval(3600) : nil,
-                intervalWindowSeconds: intervalPercent != nil ? 5 * 3600 : nil,
+                intervalResetsAt: intervalPercent != nil
+                    ? Date().addingTimeInterval(fiveHours * intervalTimeFraction)
+                    : nil,
+                intervalWindowSeconds: intervalPercent != nil ? Int(fiveHours) : nil,
                 weeklyTotalCount: 100,
                 weeklyUsageCount: 100 - Int(weeklyPercent ?? 0),
                 weeklyRemainingPercent: weeklyPercent ?? 0,
@@ -261,10 +265,16 @@ final class AggregateHealthLevelTests: XCTestCase {
             .critical
         )
 
-        // 2. 仅 5h 短窗口：固定 30% 黄线、< 15 红。35% 绿 / 25% 黄 / 10% 红。
-        XCTAssertEqual(makeModel(intervalPercent: 35, weeklyPercent: nil).aggregateHealthLevel(providerKind: .glmCodingPlan), .healthy)
-        XCTAssertEqual(makeModel(intervalPercent: 25, weeklyPercent: nil).aggregateHealthLevel(providerKind: .glmCodingPlan), .warning)
-        XCTAssertEqual(makeModel(intervalPercent: 10, weeklyPercent: nil).aggregateHealthLevel(providerKind: .glmCodingPlan), .critical)
+        // 2. 仅 5h 短窗口：统一时间感知标色（分母 = 100% * timeFraction）。
+        // 当 tf=1.0（分母 100%）：60% 绿 / 35% 黄 / 10% 红。
+        XCTAssertEqual(makeModel(intervalPercent: 60, weeklyPercent: nil, intervalTimeFraction: 1.0).aggregateHealthLevel(providerKind: .glmCodingPlan), .healthy)
+        XCTAssertEqual(makeModel(intervalPercent: 35, weeklyPercent: nil, intervalTimeFraction: 1.0).aggregateHealthLevel(providerKind: .glmCodingPlan), .warning)
+        XCTAssertEqual(makeModel(intervalPercent: 10, weeklyPercent: nil, intervalTimeFraction: 1.0).aggregateHealthLevel(providerKind: .glmCodingPlan), .critical)
+
+        // 当 tf=0.2（剩 20% 时间，分母 20%）：25% 绿（>>10%）/ 8% 黄 / 2% 红。
+        XCTAssertEqual(makeModel(intervalPercent: 25, weeklyPercent: nil, intervalTimeFraction: 0.2).aggregateHealthLevel(providerKind: .glmCodingPlan), .healthy)
+        XCTAssertEqual(makeModel(intervalPercent: 8, weeklyPercent: nil, intervalTimeFraction: 0.2).aggregateHealthLevel(providerKind: .glmCodingPlan), .warning)
+        XCTAssertEqual(makeModel(intervalPercent: 2, weeklyPercent: nil, intervalTimeFraction: 0.2).aggregateHealthLevel(providerKind: .glmCodingPlan), .critical)
 
         // 3. 仅周窗口：周 × N 折算参与。GLM N=5：周 8% → 40%，瓶颈周（tf≈1 →
         //    黄线 50）→ 黄。若未折算，8% 会直接落进 < 15 的红区。
@@ -278,10 +288,12 @@ final class AggregateHealthLevelTests: XCTestCase {
             .warning
         )
 
-        // 4. 双窗口并列（5h 40% = 周 8%×5）：并列取 5h → tf 为 nil（固定 30% 黄线）
-        //    → 40% 绿。若错误地取周瓶颈（tf≈1 → 黄线 50），40% 会是黄。
+        // 4. 双窗口并列（5h 40% = 周 8%×5）：并列取 5h。
+        //    当 5h 剩余时间 tf=0.2（分母 20%）而周 tf=1.0 时，
+        //    若取 5h 则 40% >= 10% 为绿；若错误地取周瓶颈（tf=1.0）则 40% < 50% 会是黄。
         XCTAssertEqual(
-            makeModel(intervalPercent: 40, weeklyPercent: 8).aggregateHealthLevel(providerKind: .glmCodingPlan),
+            makeModel(intervalPercent: 40, weeklyPercent: 8, intervalTimeFraction: 0.2, weeklyTimeFraction: 1.0)
+                .aggregateHealthLevel(providerKind: .glmCodingPlan),
             .healthy
         )
 

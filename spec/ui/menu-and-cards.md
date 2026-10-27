@@ -63,14 +63,14 @@ yellow and green are omitted); the top dot (enlarged to r=48) mirrors the Energy
 The popover window top edge is snapped to `screen.visibleFrame.maxY + 10` on every presentation, absorbing popover margins to stay flush
 with the bottom edge of the macOS menu bar.
 All `iconDuo` red/yellow/green decisions — the three bottom dots, both arcs, and the
-center sector — go through the time-aware `ModelQuota.colorLevel` thresholds (`< 15` red;
-`< 30` for short windows / `< min(time%, 50)` for long windows yellow; otherwise green),
+center sector — go through the time-aware `ModelQuota.colorLevel` thresholds (`< 20% * t` red;
+`< 50% * t` yellow; otherwise green, with dynamic denominator `100% * t`),
 the same rule the provider cards use, replacing the retired fixed `HealthLevel.standard`
 thresholds. Composite elements (the bottom dots and the center sector) read the
 "actual available" caliber — per model `min(5h, weekly × N)` via
 `ModelQuota.aggregateActualAvailable` / `aggregateHealthLevel` — while the left/right
-arcs keep their raw per-window averages (the weekly arc uses the widest remaining-time
-fraction across models for its dynamic yellow threshold). During GLM peak hours a peak
+arcs keep their raw per-window averages (both short and weekly arcs use the widest remaining-time
+fraction across models for their dynamic thresholds). During GLM peak hours a peak
 floor raises a provider's composite status to at least `.warning` (red wins); the floor
 only applies to the iconDuo bottom dots and the card header dots — arcs and the center
 sector are exempt.
@@ -322,34 +322,14 @@ per-client sections」描述的是**本机 scope** 的内容区；多机联动�
 
 本机 scope 的结构：
 
-- **Global today summary** — total tokens, total cache-hit rate, total value. The value is a
-  `MixedCurrencyEstimate`: mixed-currency totals render as `10.5（含$1)` (CNY
-  equivalent total, USD original in parentheses). 数字行下面是**客户端占比条**
-  （`HarnessClientProportionBar`，2026-10 起，取代原全局 input / cacheRead /
-  output 三段条——三桶构成在下面每个模型行上仍有一条，全局粒度上更有信息量的
-  构成是「被哪些客户端烧掉」）+ 一行图例（`HarnessClientLegend`）：
-
-  - 占比条**一段一个今天有 token 活动的 harness**（`HarnessTodaySummary.clientSegments(from:)`
-    按 `sections` 既有的 token 降序输出、零段过滤），段宽 = 该客户端今日 token
-    占全部客户端的比例；
-  - **段色 = 主力 provider 的卡 accent 色**：客户端横跨多个 provider 分片时
-    （ZCode / DSH / OpenCode）取今日 token 最大的一路，并列取 quotaProviderID
-    字典序小者（`HarnessClientSegment.dominantQuotaProviderID`，本地路径按段内
-    模型行现算、fleet 路径由投影层在 `FleetMenuSummary.ClientSection.dominantQuotaProviderID`
-    带过来，同一纯函数）。色值经 `AccentColor.cardAccentColor`（`Color+Theme.swift`，
-    与 provider 卡描边 / 进度条健康态同源；minimax 紫 / chatgpt 绿 / antigravity 蓝 /
-    glm 靛蓝 / deepseek 青），未知 / 缺失的 providerID 回退灰。段内不再按
-    provider 细分色——那是二维矩阵，读不回来；
-  - 归一化口径与 `TokenBucketBar` 一致：负值按 0、Double 累加分母、总量 ≤ 0 全 0
-    （纯灰底），不产生 NaN；条高沿用 `TokenBucketBar.standardHeight`（7pt，同一张
-    卡里的条不齐会很难看）；每段挂 `.help`：「MiniMax Code 355M（77%）」；
-  - **图例**把颜色翻译回客户端：`<着色图标> MiniMax Code  <着色图标> Codex …`。
-    图标取 `ClientDescriptor.iconSystemName(forClientID:)`（与段头图标同源），
-    **着色即段色**（同一个 `tint(forQuotaProviderID:)`）；**token 不进图例**——
-    下方每个客户端段的段头就有今日小计，图例只负责「哪种颜色是谁」，hover 上
-    仍挂「MiniMax Code 355M（77%）」tooltip。chip 超出行宽**换行**
-    （`WrapLayout`）而不是截断——被截掉的恰是占比最小的客户端，名字别处没有；
-    段列表为空（今日无活动）时条只剩灰底、图例整行不画。
+- **Global today summary** — 双焦点 Hero 大字卡布局（2026-10 升级）：
+  - **顶栏（Header）**：左侧为范围与日期标题（单机为 `今日 MM-dd`，多机 Fleet 为 `全局 · 今日` / `本机 · 今日` / `<节点名> · 今日`），右侧为胶囊徽标 `命中 97%`（无缓存读数显示 `命中 —`）；
+  - **核心数值区（Hero Row）**：左侧大号等宽粗体总 Token（如 `132M`）+ 下方副标签 `今日总 Token`；右侧大号等宽粗体总价值（单一币种直接展示如 `¥385.0` / `$47.60`，混合币种折合总额如 `¥385.0`）+ 下方副标签（单一币种 `今日花费`，混合币种展示明细 `折合总额（含$47.6）`）；
+  - 核心数值区下方是**客户端占比条**（`HarnessClientProportionBar`，2026-10 起，取代原全局 input / cacheRead / output 三段条——三桶构成在下面每个模型行上仍有一条，全局粒度上更有信息量的构成是「被哪些客户端烧掉」）+ 一行图例（`HarnessClientLegend`）：
+    - 占比条**一段一个今天有 token 活动的 harness**（`HarnessTodaySummary.clientSegments(from:)` 按 `sections` 既有的 token 降序输出、零段过滤），段宽 = 该客户端今日 token 占全部客户端的比例；
+    - **段色 = 主力 provider 的卡 accent 色**：客户端横跨多个 provider 分片时（ZCode / DSH / OpenCode）取今日 token 最大的一路，并列取 quotaProviderID 字典序小者（`HarnessClientSegment.dominantQuotaProviderID`）。色值经 `AccentColor.cardAccentColor`（`Color+Theme.swift`，与 provider 卡描边 / 进度条健康态同源；minimax 亮紫 `#A855F7` / chatgpt 绿 / antigravity 蓝 / glm 靛蓝 / deepseek 青），未知 / 缺失的 providerID 回退灰；
+    - 归一化口径与 `TokenBucketBar` 一致：负值按 0、Double 累加分母、总量 ≤ 0 全 0（纯灰底），不产生 NaN；条高沿用 `TokenBucketBar.standardHeight`（7pt）；每段挂 `.help`：「MiniMax Code 355M（77%）」；
+    - **图例**把颜色翻译回客户端并直观标注量级：`<着色图标> MiniMax Code 355M  <着色图标> Codex 120M …`。图标取 `ClientDescriptor.iconSystemName(forClientID:)`，着色即段色，紧随其后展示该客户端紧凑 Token 读数；hover 上仍挂「MiniMax Code 355M（77%）」完整 tooltip。chip 超出行宽**换行**（`WrapLayout`）而不是截断；段列表为空（今日无活动）时条只剩灰底、图例整行不画。
 - **Per-client sections**, ordered by today-token descending. A client with no
   today activity is dropped entirely rather than shown as an empty section. Each
   section header carries the client name (`ClientDescriptor`), the section token
@@ -670,7 +650,11 @@ provider 兜底行 hover 出来的那张卡」宿主已随兜底行移除（8e72
   `AppState.refreshOne(providerID:)`：只重抓这张卡的额度并只重锚它自己的排期；
 - **用量时间戳**（段3 标题行，tooltip「重新扫描本地用量」）→ 环境键
   `\.cardUsageRefreshAction`（`(() -> Void)?`）→ `AppState.triggerLocalUsageRescan()`：
-  只补拍一次本地用量 reconcile，不发额度请求、不动任何 provider 的排期。
+  只补拍一次本地用量 reconcile，不发额度请求、不动任何 provider 的排期；
+- **状态栏锚定小眼睛**（窗口型 Provider 标题行刷新胶囊左侧，`eye.fill` / `eye.slash`）：经环境键
+  `\.cardPinStatusBarAction`（`((String) -> Void)?`，参数 `status.id`）→
+  `AppState.toggleStatusBarPinnedProvider(_:)`：单选勾选将该服务商写入 `config.statusBarPinnedProvider`
+  （状态栏双环与健康点独占展示该服务商指标），再点同一卡片取消锚定（置 `nil` 回退全 Provider 聚合）。
 
 在飞事务由 `beginExternalJob` 闸门合并，反馈交给既有状态胶囊自然变化。动作经环境键
 传递（默认 `nil` = 无操作，只读渲染免注入）——`ProviderCardView` 是 `Equatable`
@@ -1040,28 +1024,33 @@ color, the `ProviderStateLabel` red capsule, the weekly-bottleneck `(N%有效)` 
 and the reset-credit row's three tiers all read them. `systemRed` is the reason the critical tier needed a token too: SwiftUI's
 `.red` is a **fixed** colour that does not follow the appearance, so on a light card it
 stays the same hot red its dark-card contrast was chosen for, exactly the problem
-`healthyTint` already had. Custom `statusBarHealthColors` are **not** wired into these
-tokens yet — that config still feeds only the menu-bar icon dot and the dock circle,
-and making it reach the card means plumbing a dynamic colour through `AppState`; it is
-deliberately future work rather than a silent half-wiring.
+`healthyTint` already had.
+
+Provider 品牌色从 `Color+Theme.swift` 统一派发：MiniMax 品牌色已统一为亮紫 `#A855F7`（`Color(red: 0.66, green: 0.33, blue: 0.97)`），`Color.minimaxBrand` 与 `AccentColor.minimax.cardAccentColor` 保持单源，卡片描边、配额条健康态、窗口 Token 条与今日汇总客户端占比条完全一致。
+
+分段配额进度条（`SegmentedQuotaProgressBar`）：
+- **标准槽高**严格锁定为 `13pt`（`8pt` 条高 + `4pt` 顶部时间锚点三角 ▼ + `1pt` 间距），保持所有卡片行高稳定；
+- **微栅格分段渲染（Hybrid Micro-Ticks）**：条体划分为 `N = max(segments, 1)` 个大段，段间保留 `4pt` 宏观间隙；当 `N > 1` 时，在第 0 段与第 1 段间隙正中绘制 `1.5pt` 宽、`10pt` 高的分界锚线（`Color.primary.opacity(0.28)`），直观区分当前 5h 窗口与未来周配额；
+- **自适应微栅格与点亮保证**：每段内含自适应垂直圆角栅格（`ticksPerSegment(for:)`，整条维持 35~42 格，圆角 `1.5pt`，格间距 `1.5pt`）；填充算法 `activeTickCount(fill:totalTicks:)` 对 `fill > 0` 向上取整且保底点亮至少 1 格，杜绝“显示 >0% 但格子全空”；首段点亮栅格用 `intervalSegmentColor`（100% 不透明度），后续周段点亮栅格用 `weeklySegmentColor.opacity(0.68)`，底槽栅格用 `Color.primary.opacity(0.10)`。
+- **时间感知与三角标记解耦**：首格颜色由 `primaryTimeRemainingFraction`（即 5h 短窗口/滚动窗口的剩余时间比例）参与统一 pacing 计算（分母 = `100% * t`，`< 20%` 红色，`< 50%` 黄色，`>= 50%` 绿色）；而顶部时间锚点三角 ▼ 仅在长周期窗口（`>= 86400` 秒，如周配额）呈现，短窗口（`< 86400` 秒）不显示三角，避免短频跳动引起视觉干扰。
 
 Progress bar fill (`SegmentedQuotaProgressBar.intervalSegmentColor` /
 `weeklySegmentColor` and `ModelQuota.colorLevel`):
 
-| Remaining percent | Health Level | Color |
+| Remaining percent vs Pacing (分母 = 100% * t) | Health Level | Color |
 |---|---|---|
-| `< 15` | critical | `Color.criticalTint` |
-| `< 30` (5h) / `< min(time%, 50)` (weekly) | warning | `Color.warningTint` |
-| otherwise | healthy | provider/model tint |
+| `< 20% * t` (或 percent <= 0，缺失 t 时 `< 20%`) | critical | `Color.criticalTint` |
+| `< 50% * t` (缺失 t 时 `< 50%`) | warning | `Color.warningTint` |
+| otherwise (包括 `t <= 0` 且 `percent > 0`) | healthy | provider/model tint |
 
-Reset time color (`summaryColor(for:)`):
+Reset time color (`summaryColor(for:timeFraction:)`):
 
-| Remaining percent | Color |
+| Remaining percent vs Pacing (分母 = 100% * t) | Color |
 |---|---|
-| `< 15` | `Color.criticalTint` |
-| `< 30` (5h) / `< min(time%, 50)` (weekly) | `Color.warningTint` |
-| `> 80` | `Color.healthyTint` |
-| otherwise | primary |
+| `< 20% * t` (或 percent <= 0，缺失 t 时 `< 20%`) | `Color.criticalTint` |
+| `< 50% * t` (缺失 t 时 `< 50%`) | `Color.warningTint` |
+| `> 80%` (在 healthy 档位且绝对百分比高) | `Color.healthyTint` |
+| otherwise (healthy 档位基线) | primary |
 
 ## Reset Credits
 
@@ -1125,5 +1114,5 @@ The card's failure row is the one place in this table that is a **literal** 11pt
 than a `MenuTypography` role: the `errorMessage` role had no call site and was deleted
 rather than left as an unused role. The rendered size is unchanged.
 
-> 核对基线：2026-10-26 · 代码 56a72be
+> 核对基线：2026-10-27 · 代码 788463b
 > 统一验证通过，详细结果见 `spec/sync.md`。

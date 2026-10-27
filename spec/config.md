@@ -70,6 +70,7 @@ The app reads and writes this shape:
 | `holidaySource` | global | 法定节假日数据源（URL 或本地文件路径），供 `HolidayCalendar` 解析链取数。缺省（不写键）= 上游 chinese-days CDN JSON（`HolidayCalendar.defaultSourceURL`，与 `scripts/sync-holiday-data.sh` 的 `UPSTREAM_URL` 同值）；**显式空串** = 只用随 App 打包的内置快照、不联网；其余值按 http(s) URL 或本地文件路径解析。类型写错按缺失处理（回退缺省语义）。缓存文件、取数触发与设置页展示见 `spec/ui/settings.md` 的「节假日数据源」。 |
 | `appearance` | global | 应用外观（`AppAppearance`：`light` / `dark` / 缺省=自动跟随系统）。`AppState.applyAppearance` 写 `NSApp.appearance`，start 与每次配置变更时应用；设置页常规 pane「外观」节写穿保存，选「自动」时字段不落盘。 |
 | `providerCardOrder` | global | Optional ordered list of stable canonical Quota Provider IDs (for example `deepseek` or `minimax`) for the main menu cards. Missing, empty, unknown, or duplicate IDs are normalized; omitted items are appended by Provider display name. |
+| `statusBarPinnedProvider` | global | 状态栏小眼睛锚定的 Provider ID（规范化 ID，如 `minimax`、`antigravity` 等）。缺省或 nil 表示全 Provider 聚合（取已启用且有有效配额的各 Provider 5h/周非零最小值）；非空且对应的 Provider 已启用且有有效配额时，状态栏双环（Icon Duo）与健康度圆点仅展示该服务商指标。卡片小眼睛点击单选/再点取消即时写穿。类型错误按缺失（nil）容错处理。 |
 | `providers.<id>.enabled` | provider | Disabled providers stay visible but are not fetched. Missing `enabled` decodes as `true`. |
 | `providers.<id>.apiKey` | provider | API key for providers that do not manage external auth. Used by minimax. |
 | `providers.<id>.displayName` | provider | Optional UI label override. |
@@ -248,6 +249,6 @@ CHANGELOG 最新条目、两份 README 的「当前版本」/DMG 名/build-relea
 的旧文案「按本机时区计算、可在设置中调整」直到发版前才发现，只因 `build-release.sh` 的
 版本门禁全绿而放行。**功能口径变了，用户文档必须同轮改**。
 
-> 核对基线：2026-10-25 · 代码 6f11831
+> 核对基线：2026-10-27 · 代码 788463b
 > 2026-10-25 统一验证通过，详见 `spec/sync.md`。
 > `.deviceId` 身份与旧 `sync.nodeID` 忽略语义已随 6f11831 入库，验证记录见 `spec/sync.md`。

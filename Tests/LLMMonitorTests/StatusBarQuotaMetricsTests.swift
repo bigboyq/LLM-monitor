@@ -320,11 +320,26 @@ final class StatusBarQuotaMetricsTests: XCTestCase {
 
         // 聚合右弧的动态黄线输入取所有周窗口剩余时间比例的最大值：A = 0.6、B = 0.2 → 0.6。
         XCTAssertEqual(metrics.weeklyTimeFraction ?? -1, 0.6, accuracy: 0.001)
-        // 中心 argmin 是套餐 A（40% < 80%），瓶颈为 5h 短窗口 → timeFraction 为 nil。
-        XCTAssertNil(metrics.centerTimeFraction)
+        // 中心 argmin 是套餐 A（40% < 80%），瓶颈为 5h 短窗口 → 统一透传其剩余时间比例（1h / 5h = 0.2）。
+        XCTAssertEqual(metrics.centerTimeFraction ?? -1, 0.2, accuracy: 0.001)
 
-        // 状态栏统一 colorLevel：短窗口固定 30% 黄线 → 20% 为黄、10% 为红
-        // （旧 standard 阈值下 35% 黄 / 15% 红，现已随统一规则重算）。
+        // 验证 statusBarPinnedProvider 锚定生效：若锚定到 test_b，则仅计算 test_b 的指标
+        appState.toggleStatusBarPinnedProvider("test_b")
+
+        let pinnedMetrics = appState.statusBarQuotaMetrics(at: now)
+        XCTAssertEqual(pinnedMetrics.interval.minAvailable, 0.8, accuracy: 0.001)
+        XCTAssertEqual(pinnedMetrics.interval.avgAvailable, 0.8, accuracy: 0.001)
+        XCTAssertEqual(pinnedMetrics.weekly.minAvailable, 0.4, accuracy: 0.001)
+        XCTAssertEqual(pinnedMetrics.weekly.avgAvailable, 0.4, accuracy: 0.001)
+        XCTAssertEqual(pinnedMetrics.centerAvailable ?? -1, 0.8, accuracy: 0.001)
+
+        // 取消锚定：再点一次 toggleOff，回退到全 provider 聚合
+        appState.toggleStatusBarPinnedProvider("test_b")
+        let unpinnedMetrics = appState.statusBarQuotaMetrics(at: now)
+        XCTAssertEqual(unpinnedMetrics.interval.minAvailable, 0.4, accuracy: 0.001)
+
+        // 状态栏统一 colorLevel（分母 = 100% * timeFraction）：刚重置时分母 100% →
+        // 20% 为黄 (< 50%)、10% 为红 (< 20%)。
         func makeStandardModel(intervalPercent: Double) -> ModelQuota {
             ModelQuota(
                 modelName: "standard-model",
@@ -332,7 +347,7 @@ final class StatusBarQuotaMetricsTests: XCTestCase {
                 intervalUsageCount: Int(100.0 - intervalPercent),
                 intervalRemainingPercent: intervalPercent,
                 intervalStatus: .present,
-                intervalResetsAt: now.addingTimeInterval(3600),
+                intervalResetsAt: now.addingTimeInterval(5 * 3600),
                 intervalWindowSeconds: 5 * 3600,
                 weeklyTotalCount: 100,
                 weeklyUsageCount: 20,
@@ -544,15 +559,15 @@ final class StatusBarQuotaMetricsTests: XCTestCase {
             "40%×5 与 30%×6 均超过满格，中心应 clamp 到 100%"
         )
 
-        // 5. 仅 5h 窗口：直接按 5h 剩余参与，与原语义一致；瓶颈是 5h 短窗口
-        //    → 中心 timeFraction 保持 nil（固定 30% 黄线）。
+        // 5. 仅 5h 窗口：直接按 5h 剩余参与，与原语义一致；中心 timeFraction
+        //    统一透传其 5h 剩余时间比例（0.2）。
         setQuotas(
             a: makeModel(modelName: "glm_coding_plan", intervalPercent: 25, weeklyPercent: nil),
             b: makeModel(modelName: "chatgpt_plan", intervalPercent: 35, weeklyPercent: nil)
         )
         metrics = appState.statusBarQuotaMetrics(at: now)
         XCTAssertEqual(metrics.centerAvailable ?? -1, 0.25, accuracy: 0.001)
-        XCTAssertNil(metrics.centerTimeFraction)
+        XCTAssertEqual(metrics.centerTimeFraction ?? -1, 0.2, accuracy: 0.001)
 
         // 6. 所有套餐都没有任何窗口：中心保持 nil。
         setQuotas(a: nil, b: nil)
@@ -646,7 +661,7 @@ final class StatusBarQuotaMetricsTests: XCTestCase {
             accuracy: 0.001,
             "接力场景：A 耗尽后中心应显示接力套餐 B 的实际可用 35%，而不是 0"
         )
-        XCTAssertNil(metrics.centerTimeFraction, "B 的瓶颈为 5h 短窗口，中心 timeFraction 应为 nil")
+        XCTAssertEqual(metrics.centerTimeFraction ?? -1, 0.2, accuracy: 0.001, "B 的瓶颈为 5h 短窗口，中心 timeFraction 统一透传剩余时间比例 0.2")
         // 底部三点不排除耗尽套餐：A 的点保持红，B 的点为绿。
         XCTAssertEqual(metrics.quotaHealthLevels, [.critical, .healthy, .healthy])
 
@@ -743,8 +758,7 @@ final class StatusBarQuotaMetricsTests: XCTestCase {
 
         let svg = IconDuoSVGBuilder.buildSVG(metrics: metrics)
         XCTAssertTrue(svg.contains("id=\"center-sector\" data-value=\"24\""))
-        XCTAssertFalse(svg.contains("#FFD60A"), "周瓶颈 late-window 时中心按动态黄线应为绿色，不得虚黄（无任何黄色元素）")
-        XCTAssertTrue(svg.contains("#34C759"), "中心应为绿色")
+        XCTAssertTrue(svg.contains("fill=\"#34C759\""), "周瓶颈 late-window 时中心按时间感知标色应为绿色，不得虚黄")
     }
 
     /// minimax 的 `video`（视频生成）是独立小配额池，不参与 iconDuo 聚合

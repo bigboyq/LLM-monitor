@@ -37,32 +37,58 @@ final class HarnessUsageMenuViewTests: XCTestCase {
         )
     }
 
-    /// 今日合计**数字行**的宽度预算：标签 + 总 token 列 + 裸命中率列 + 最宽常见
-    /// 混币价值 + 各段间距，不得超出卡片内宽（内容区 − 卡片自带的两侧 8pt
-    /// padding）。超出时先被 tail 截断的是混币价值——这条钉住的是"常见最坏形态
-    /// 不必动用截断"。本地用量的刷新时间已挪到标题栏右组，不再是数字行成员。
+    /// 今日汇总**双焦点 Hero 卡片**的宽度预算：
+    /// 1. 顶栏：标签 + 命中率胶囊，两端对齐且留有 Spacer。
+    /// 2. 核心大字行：大号 Token + 最宽混币大号主金额，两端对齐且留有 Spacer。
+    /// 不得超出卡片内宽（内容区 − 卡片两侧 8pt padding）。
     @MainActor
     func testTodayOverviewRowFitsItsInnerWidth() {
         let innerWidth = contentWidth - 16
-        let label = self.width(of: Text("今日合计").font(MenuTypography.metricLabel))
-        let hitRate = self.width(
-            of: Text(HarnessUsageMenuView.hitRateText(1.0)).font(MenuTypography.metricValue)
-        )
-        // 混币价值最宽的常见形态：跨币种 + 两位小数（`MixedCurrencyEstimate` 的
-        // 呈现口径，trim 后无分组分隔符）。
-        let value = MixedCurrencyEstimate(usd: 7610.55, cny: 45659.85)
-        let valueText = self.width(of: Text(value.displayText).font(MenuTypography.metricValue))
-
-        let row = label
-            + HarnessUsageMenuView.totalWidth
-            + HarnessUsageMenuView.hitRateWidth
-            + valueText
-            + 3 * 6   // HStack 三段固定间距
-            + 4       // Spacer 最小宽
+        // 1. 顶栏：标签 + 命中率胶囊
+        let label = self.width(of: Text("今日 10-27").font(MenuTypography.metricLabel))
+        let hitBadge = self.width(
+            of: HStack(spacing: 3) {
+                Text("命中").font(.system(size: 9, weight: .medium))
+                Text(HarnessUsageMenuView.hitRateText(1.0)).font(.system(size: 9, weight: .bold))
+            }
+        ) + 12 // capsule horizontal padding 6 * 2
+        let topRow = label + hitBadge + 12 // min spacer
         XCTAssertLessThanOrEqual(
-            row, innerWidth,
-            "今日合计行最坏 \(row)pt 超出卡片内宽 \(innerWidth)pt，混币价值会被截断"
+            topRow, innerWidth,
+            "今日汇总顶栏超出卡片内宽 \(innerWidth)pt"
         )
+
+        // 2. 核心大字行：大号 Token + 大号金额（跨币种最宽形态）
+        let tokensWidth = self.width(of: Text("1,041M").font(MenuTypography.todayHeroValue))
+        let value = MixedCurrencyEstimate(usd: 7610.55, cny: 45659.85)
+        let costParts = HarnessUsageMenuView.heroCostParts(from: value.displayText)
+        XCTAssertEqual(costParts.primary, "¥98933.7")
+        XCTAssertEqual(costParts.subtitle, "折合总额（含$7610.55）")
+
+        let costPrimaryWidth = self.width(of: Text(costParts.primary).font(MenuTypography.todayHeroValue))
+        let heroRow = tokensWidth + costPrimaryWidth + 12 // min spacer
+        XCTAssertLessThanOrEqual(
+            heroRow, innerWidth,
+            "今日汇总核心 Hero 行最坏 \(heroRow)pt 超出卡片内宽 \(innerWidth)pt"
+        )
+    }
+
+    func testHeroCostPartsFormatting() {
+        let singleCNY = HarnessUsageMenuView.heroCostParts(from: "¥385.00")
+        XCTAssertEqual(singleCNY.primary, "¥385.00")
+        XCTAssertEqual(singleCNY.subtitle, "今日花费")
+
+        let singleUSD = HarnessUsageMenuView.heroCostParts(from: "$47.60")
+        XCTAssertEqual(singleUSD.primary, "$47.60")
+        XCTAssertEqual(singleUSD.subtitle, "今日花费")
+
+        let mixed = HarnessUsageMenuView.heroCostParts(from: "385.0（含$47.6）")
+        XCTAssertEqual(mixed.primary, "¥385.0")
+        XCTAssertEqual(mixed.subtitle, "折合总额（含$47.6）")
+
+        let missing = HarnessUsageMenuView.heroCostParts(from: "—")
+        XCTAssertEqual(missing.primary, "—")
+        XCTAssertEqual(missing.subtitle, "今日花费")
     }
 
     /// 联动未启用时，传统菜单仍要在客户端段之前显示今日总览。

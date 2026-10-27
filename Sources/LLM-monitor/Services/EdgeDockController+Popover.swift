@@ -71,7 +71,11 @@ extension EdgeDockController {
         /// 位置会跳。固定宽度才和菜单那一屏看起来是同一个东西。
         @ViewBuilder
         func card() -> some View {
-            ProviderCardView(status: status, fleet: state.fleetCardContext(for: status.kind))
+            ProviderCardView(
+                status: status,
+                fleet: state.fleetCardContext(for: status.kind),
+                isPinnedToStatusBar: configStore?.config.statusBarPinnedProvider == status.id
+            )
                 .frame(width: cardContentWidth)
                 .padding(backdrop)
                 .edgeDockPopoverSystemMaterialBackground()
@@ -203,6 +207,17 @@ extension EdgeDockController {
                 .environment(\.quotaWindowSegmentEditable, true)
                 .environment(\.cardQuotaRefreshAction, cardQuotaRefreshAction)
                 .environment(\.cardUsageRefreshAction, cardUsageRefreshAction)
+                .environment(\.cardPinStatusBarAction, cardPinStatusBarAction)
+        }
+    }
+
+    private var cardPinStatusBarAction: ((String) -> Void)? {
+        guard let state else { return nil }
+        return { [weak self, weak state] id in
+            state?.toggleStatusBarPinnedProvider(id)
+            if self?.selectedIndex != nil {
+                self?.updatePopover()
+            }
         }
     }
 

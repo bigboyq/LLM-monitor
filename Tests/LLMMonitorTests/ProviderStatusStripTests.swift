@@ -261,7 +261,7 @@ final class ProviderStatusStripTests: XCTestCase {
         // 后者会让测试和生产走两套判定。
         let usedFraction: Double = switch health {
         case .healthy: 0.05
-        case .warning: 0.75
+        case .warning: 0.70
         case .critical: 0.90
         }
         let remainingPercent = Double(((1 - usedFraction) * 100).rounded())
@@ -273,13 +273,13 @@ final class ProviderStatusStripTests: XCTestCase {
                     intervalUsageCount: Int(100 - remainingPercent),
                     intervalRemainingPercent: remainingPercent,
                     intervalStatus: .present,
-                    intervalResetsAt: now.addingTimeInterval(3600),
+                    intervalResetsAt: now.addingTimeInterval(5 * 3600),
                     intervalWindowSeconds: 5 * 3600,
                     weeklyTotalCount: 100,
                     weeklyUsageCount: Int(100 - remainingPercent),
                     weeklyRemainingPercent: remainingPercent,
                     weeklyStatus: .present,
-                    weeklyResetsAt: now.addingTimeInterval(6 * 24 * 3600),
+                    weeklyResetsAt: now.addingTimeInterval(7 * 24 * 3600),
                     weeklyWindowSeconds: 7 * 24 * 3600
                 )
             ],

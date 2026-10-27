@@ -243,7 +243,8 @@ struct CombinedQuotaBar: View {
             tint: tint,
             segments: weeklyEquivalentMultiplier,
             height: 8,
-            timeRemainingFraction: model.weeklyTimeRemainingFraction
+            timeRemainingFraction: model.weeklyTimeRemainingFraction,
+            primaryTimeRemainingFraction: model.intervalTimeRemainingFraction
         )
         .frame(maxWidth: .infinity)
         .help(QuotaBarTooltip.text(
@@ -259,6 +260,8 @@ struct SingleQuotaBar: View {
     let tint: Color
     /// 顶部红三角位置 (0=即将过期, 1=刚重置)。nil = 不画。
     let timeRemainingFraction: Double?
+    /// 用于配额标色的时间比例（如 5h 剩余时间）。未传则降级到 timeRemainingFraction。
+    var colorTimeRemainingFraction: Double? = nil
 
     var body: some View {
         SegmentedQuotaProgressBar(
@@ -267,7 +270,8 @@ struct SingleQuotaBar: View {
             tint: tint,
             segments: 1,
             height: 8,
-            timeRemainingFraction: timeRemainingFraction
+            timeRemainingFraction: timeRemainingFraction,
+            primaryTimeRemainingFraction: colorTimeRemainingFraction ?? timeRemainingFraction
         )
         .frame(maxWidth: .infinity)
     }
@@ -368,16 +372,21 @@ struct QuotaBarWithMetadata: View {
                 if let single = Self.singleWindow(
                     model: model, primaryLabel: primaryLabel, secondaryLabel: secondaryLabel
                 ) {
+                    let colorFraction = model.hasIntervalWindow
+                        ? model.intervalTimeRemainingFraction
+                        : model.weeklyTimeRemainingFraction
                     SingleQuotaMetadataLine(
                         name: model.displayName,
                         label: single.label,
                         percent: single.percent,
-                        resetsAt: single.resetsAt
+                        resetsAt: single.resetsAt,
+                        timeFraction: colorFraction
                     )
                     SingleQuotaBar(
                         percent: single.percent,
                         tint: tint,
-                        timeRemainingFraction: single.timeRemainingFraction
+                        timeRemainingFraction: single.timeRemainingFraction,
+                        colorTimeRemainingFraction: colorFraction
                     )
                     .padding(.vertical, 3)
                 }
@@ -402,8 +411,11 @@ struct QuotaBarWithMetadata: View {
         secondaryLabel: String
     ) -> (label: String, percent: Double, resetsAt: Date?, timeRemainingFraction: Double?)? {
         if model.hasIntervalWindow {
-            return (primaryLabel, model.intervalRemainingPercent, model.intervalResetsAt,
-                    model.intervalTimeRemainingFraction)
+            // 短周期窗口（<24h，如 5h）不画顶部 ▼ 时间标记三角（与产品偏好一致）；
+            // 长周期窗口（>=24h，如 ChatGPT Plan）保留 ▼ 标记。
+            let isLongWindow = (model.intervalWindowSeconds ?? (5 * 3600)) >= 86400
+            let marker = isLongWindow ? model.intervalTimeRemainingFraction : nil
+            return (primaryLabel, model.intervalRemainingPercent, model.intervalResetsAt, marker)
         }
         if model.hasWeeklyWindow {
             // 单窗口时标签一律在 `primaryLabel`：`secondaryLabel` 此时是空串。
@@ -558,6 +570,7 @@ private struct SingleQuotaMetadataLine: View {
     let label: String
     let percent: Double
     let resetsAt: Date?
+    var timeFraction: Double? = nil
     /// 同 `CombinedQuotaMetadataLine`：读数一律聚在行尾，对齐不再按环境分叉。
 
     var body: some View {
@@ -570,7 +583,7 @@ private struct SingleQuotaMetadataLine: View {
                     .foregroundStyle(Color.primaryLabel)
                 Text(Formatters.formatQuotaPercent(percent))
                     .font(MenuTypography.dataValue)
-                    .foregroundStyle(summaryColor(for: percent))
+                    .foregroundStyle(summaryColor(for: percent, timeFraction: timeFraction))
                     .frame(width: 40, alignment: .trailing)
             }
             .frame(width: quotaSingleDataColumnWidth, alignment: .trailing)

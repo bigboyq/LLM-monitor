@@ -66,7 +66,8 @@ class EdgeDockTestCase: XCTestCase {
         name: String,
         intervalPercent: Double?,
         weeklyPercent: Double? = nil,
-        now: Date = Date()
+        intervalTimeFraction: Double? = 1.0,
+        now: Date = EdgeDockTestCase.makeNow
     ) -> ModelQuota {
         // 窗口标记为 present 时**必须**同时给出 reset 时间：`ModelQuota` 在 debug 下
         // 对"present 但没有重置时间"是 assertionFailure 直接 trap，那不是合法夹具。
@@ -76,7 +77,7 @@ class EdgeDockTestCase: XCTestCase {
             intervalUsageCount: 0,
             intervalRemainingPercent: intervalPercent ?? 0,
             intervalStatus: intervalPercent == nil ? .absent : .present,
-            intervalResetsAt: intervalPercent == nil ? nil : now.addingTimeInterval(2 * 3600),
+            intervalResetsAt: intervalPercent == nil ? nil : now.addingTimeInterval((intervalTimeFraction ?? 1.0) * 18000),
             intervalWindowSeconds: intervalPercent == nil ? nil : 18000,
             weeklyTotalCount: 100,
             weeklyUsageCount: 0,
@@ -103,6 +104,7 @@ class EdgeDockTestCase: XCTestCase {
         intervalPercent: Double?,
         weeklyPercent: Double? = nil,
         weeklyTimeFraction: Double? = nil,
+        intervalTimeFraction: Double? = 1.0,
         now: Date = EdgeDockTestCase.makeNow
     ) -> ModelQuota {
         ModelQuota(
@@ -111,9 +113,9 @@ class EdgeDockTestCase: XCTestCase {
             intervalUsageCount: 0,
             intervalRemainingPercent: intervalPercent ?? 0,
             intervalStatus: intervalPercent == nil ? .absent : .present,
-            intervalResetsAt: intervalPercent == nil ? nil : now.addingTimeInterval(2 * 3600),
-            // 5h 短窗（< 24h）：`intervalTimeRemainingFraction` 按定义返回 nil，
-            // 外环色档走固定 30% 黄线。
+            intervalResetsAt: intervalPercent == nil
+                ? nil
+                : now.addingTimeInterval((intervalTimeFraction ?? 1.0) * 18000),
             intervalWindowSeconds: intervalPercent == nil ? nil : 18000,
             weeklyTotalCount: 100,
             weeklyUsageCount: 0,

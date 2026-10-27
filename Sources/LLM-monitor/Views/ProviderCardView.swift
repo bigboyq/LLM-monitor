@@ -82,6 +82,10 @@ private struct CardUsageRefreshActionKey: EnvironmentKey {
     static let defaultValue: (() -> Void)? = nil
 }
 
+private struct CardPinStatusBarActionKey: EnvironmentKey {
+    static let defaultValue: ((String) -> Void)? = nil
+}
+
 extension EnvironmentValues {
     var cardQuotaRefreshAction: ((String) -> Void)? {
         get { self[CardQuotaRefreshActionKey.self] }
@@ -91,6 +95,11 @@ extension EnvironmentValues {
     var cardUsageRefreshAction: (() -> Void)? {
         get { self[CardUsageRefreshActionKey.self] }
         set { self[CardUsageRefreshActionKey.self] = newValue }
+    }
+
+    var cardPinStatusBarAction: ((String) -> Void)? {
+        get { self[CardPinStatusBarActionKey.self] }
+        set { self[CardPinStatusBarActionKey.self] = newValue }
     }
 }
 
@@ -102,27 +111,26 @@ extension EnvironmentValues {
 /// 的 `.equatable()`，任一 provider 的任一状态变化只会重算真正变化的那几张卡，
 /// 而不是整屏菜单面板。
 ///
-/// ⚠️ `==` 只比较 `status`，**不**比较 `revealMode` / `cardQuotaRefreshAction` /
-/// `cardUsageRefreshAction` ——
-/// 它们是 Environment，取不到。保留这条注释是因为比较仍然只按 `status` 走：菜单里
-/// 已无 provider 卡，而唯一两个宿主（dock 浮层、菜单兜底行的 hover 卡）都是每次
-/// 重建 `rootView` / 直接新建视图，不走任何跨帧缓存。将来若有人在仍可能出现两种
-/// mode 的地方加 `.equatable()`，就必须把它们也纳入比较。
+/// ⚠️ `==` 只比较 `status`、`fleet` 和 `isPinnedToStatusBar`，**不**比较 `revealMode` /
+/// `cardQuotaRefreshAction` / `cardUsageRefreshAction` / `cardPinStatusBarAction` ——
+/// 它们是 Environment，取不到。
 struct ProviderCardView: View, Equatable {
     let status: ProviderStatus
     /// 多机联动上下文（§10.1）：nil = 未启用联动（现状），现有渲染零变化。
     /// 非 nil 时标题行出现「本机 / 全局」分段（仅 multiNode），额度读数走
     /// 生效额度（本机优先，否则 elected），「全局」scope 的用量区块读 fleet 快照。
     var fleet: FleetCardContext? = nil
+    /// 是否在状态栏小眼睛锚定
+    var isPinnedToStatusBar: Bool = false
 
     /// 「今」行取哪一天：宿主注入的展示时钟（随浮层显隐起停），与卡内其它
     /// 倒计时/新鲜度消费者同一个 now，不取渲染时的墙钟。
     @Environment(\.displayDate) private var displayDate
 
-    /// 两处时间戳各自的点击刷新动作（额度 → `CardQuotaRefreshActionKey`，
-    /// 本地用量 → `CardUsageRefreshActionKey`）。
+    /// 点击刷新动作与状态栏锚定动作
     @Environment(\.cardQuotaRefreshAction) private var cardQuotaRefreshAction
     @Environment(\.cardUsageRefreshAction) private var cardUsageRefreshAction
+    @Environment(\.cardPinStatusBarAction) private var cardPinStatusBarAction
 
     /// 光标反馈用 `set` 覆盖而不是 `push/pop`：卡在光标下方被 orderOut 时
     /// `onHover(false)` 不保证送达，push 进栈的手型永远弹不出来（无凭据的
@@ -142,7 +150,7 @@ struct ProviderCardView: View, Equatable {
     // nonisolated：View 结构体因 View 协议推断为 @MainActor，而 Equatable 的 ==
     //  witnesses 必须可从任意隔离域调用；status 是 Sendable 值类型，非隔离比较安全。
     nonisolated static func == (lhs: ProviderCardView, rhs: ProviderCardView) -> Bool {
-        lhs.status == rhs.status && lhs.fleet == rhs.fleet
+        lhs.status == rhs.status && lhs.fleet == rhs.fleet && lhs.isPinnedToStatusBar == rhs.isPinnedToStatusBar
     }
 
     /// dock 浮层的卡片是**一次性构建的值快照**（NSHostingView 的 rootView
@@ -638,6 +646,27 @@ struct ProviderCardView: View, Equatable {
                     fleet.onScopeChange?(newScope)
                 }
                 .help("切换显示范围：全局 / 本机 / 各节点")
+            }
+            if ProviderKind.windowedKinds.contains(status.kind), let cardPinStatusBarAction {
+                Button {
+                    logInfo("ProviderCardView: 点击状态栏锚定切换 provider=\(status.id)")
+                    cardPinStatusBarAction(status.id)
+                } label: {
+                    Image(systemName: isPinnedToStatusBar ? "eye.fill" : "eye.slash")
+                        .font(.system(size: 11, weight: isPinnedToStatusBar ? .semibold : .regular))
+                        .foregroundStyle(isPinnedToStatusBar ? Color.primaryLabel : Color.secondaryLabel.opacity(0.6))
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 3)
+                        .background(
+                            isPinnedToStatusBar
+                                ? Color.primary.opacity(0.12)
+                                : Color.clear,
+                            in: RoundedRectangle(cornerRadius: 4)
+                        )
+                }
+                .buttonStyle(.plain)
+                .onHover { updatePointingCursor($0) }
+                .help(isPinnedToStatusBar ? "取消在状态栏固定显示该服务商" : "在状态栏固定显示该服务商的 5h/周配额")
             }
             if case .loading = status.state {
                 ProgressView()
