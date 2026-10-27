@@ -78,7 +78,7 @@ final class FleetStoreTests: XCTestCase {
     ) -> FleetWindowUsage {
         FleetWindowUsage(
             quotaProviderID: provider, modelID: "chatgpt_plan", windowKind: "interval",
-            startAt: end.addingTimeInterval(-5 * 60 * 60), endAt: end, observedAt: end,
+            startAt: end.addingTimeInterval(-5 * 60 * 60), endAt: end,
             input: 10, cacheRead: 0, output: 0, reasoning: 0,
             value: nil, currency: nil, coverage: .none,
             complete: true, sourceTruncated: false
@@ -449,17 +449,24 @@ final class FleetStoreTests: XCTestCase {
         XCTAssertEqual(upserted.nodes.first?.windowRows.count, 2)
     }
 
-    func testObservedAtOverwrittenWithHubReceiveTime() throws {
+    func testPruneWindowsTrimsHistoryBeyondNewestTwoPerGroup() throws {
         let node = UUID()
-        let row = windowRow()
-        let rawReport = report(seq: 1, nodeID: node, windows: [row])
-        let receivedAt = Date(timeIntervalSince1970: 1_999_000_000)
-        try store.applyReport(rawReport,
-                              validation: FleetReportValidator.validate(rawReport),
-                              scope: scope, receivedAt: receivedAt)
+        let oldest = windowRow(end: Date(timeIntervalSince1970: 7_000_000_000))
+        let middle = windowRow(end: Date(timeIntervalSince1970: 8_000_000_000))
+        let newest = windowRow(end: Date(timeIntervalSince1970: 9_000_000_000))
+        let reportWithWindows = report(seq: 1, nodeID: node, windows: [oldest, middle, newest])
+        try store.applyReport(
+            reportWithWindows,
+            validation: FleetReportValidator.validate(reportWithWindows),
+            scope: scope
+        )
+
+        // cutoff 早于全部行：过期清理一条不删，前沿修剪只删同组最旧一条
+        //（窗口边界前沿，2026-10-27 裁定：历史边界没有新贡献也没有消费方）。
+        let removed = try store.pruneWindows(scope: scope, olderThan: Date(timeIntervalSince1970: 1_000_000_000))
+        XCTAssertEqual(removed, 1)
         let state = try store.loadHubState(scope: scope)
-        XCTAssertEqual(state.nodes.first?.windowRows.first?.observedAt, receivedAt,
-                       "hub 用接收时刻覆盖不信任的上报 observedAt（§5.5）")
+        XCTAssertEqual(state.nodes.first?.windowRows.map(\.endAt), [middle.endAt, newest.endAt])
     }
 
     func testPruneWindowsRemovesOnlyExpiredAndKeepsNodeMeta() throws {

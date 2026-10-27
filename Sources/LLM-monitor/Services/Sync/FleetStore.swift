@@ -134,7 +134,7 @@ final class FleetStore: @unchecked Sendable {
     // MARK: - hub：接受报告（事务）
 
     /// 校验后的报告落库。`receivedAt` 是 hub 的接收时刻——窗口行的
-    /// `observedAt` 以它为准（不信任上报值，§5.5）；lastSeen / updated_at 同。
+    /// `updated_at` 与 lastSeen 以它为准（§5.5）。
     ///
     /// 事务保证：报告（daily/quotas）、node_meta high-water、窗口行、
     /// generation 的递增要么全部提交，要么全部回滚（§5.7）。
@@ -244,8 +244,7 @@ final class FleetStore: @unchecked Sendable {
                 )
             }
 
-            for var row in validation.windowRows {
-                row.observedAt = receivedAt
+            for row in validation.windowRows {
                 try upsertRow(
                     kind: FleetRecordKind.window,
                     scope: scope,
@@ -391,7 +390,11 @@ final class FleetStore: @unchecked Sendable {
 
     // MARK: - hub：窗口过期清理 / 节点移除
 
-    /// 清理 `endAt` 早于 `cutoff` 的窗口行。不清理 node_meta（high-water 与
+    /// 清理窗口行（§7.6）：(1) `endAt` 早于 `cutoff` 的过期行；(2) 同
+    /// (node, provider, model, kind) 组内 `endAt` 不是最新
+    /// `FleetProtocol.windowFrontierPerGroup` 条的行——边界随额度重置滚动，
+    /// 历史边界不会再等来新贡献也没有消费方，只增不删会让存储与快照随时间
+    /// 线性膨胀（2026-10-27 裁定）。不清理 node_meta（high-water 与
     /// lastSeen 不因窗口清理丢失，§7.6）。
     @discardableResult
     func pruneWindows(scope: String, olderThan cutoff: Date) throws -> Int {
@@ -399,26 +402,48 @@ final class FleetStore: @unchecked Sendable {
         defer { lock.unlock() }
         // 坏行（无法解码）跳过并清理：原来这里一抛错，整批过期窗口就再也
         // 清不掉（每次维护节拍都失败 → 窗口表只增不减）。
-        let result = try queryRowsSkippingCorrupt(
-            FleetWindowUsage.self,
-            sql: "SELECT rowid, payload_json FROM sync_records WHERE kind = ? AND scope = ?",
+        let scanned: [(rowid: Int64, nodeID: String, row: FleetWindowUsage?)] = try mapRows(
+            sql: "SELECT rowid, node_id, payload_json FROM sync_records WHERE kind = ? AND scope = ?",
             bind: [.text(FleetRecordKind.window), .text(scope)]
-        )
-        let expired = result.rows.filter { $0.value.endAt < cutoff }
-        guard !expired.isEmpty || !result.corruptRowIDs.isEmpty else { return 0 }
+        ) { statement in
+            (
+                sqlite3_column_int64(statement, 0),
+                try SQLiteConnection.requiredText(statement, column: 1),
+                try? FleetCodec.decode(FleetWindowUsage.self, from: Self.columnPayload(statement, column: 2))
+            )
+        }
+        var rowIDsToDelete: Set<Int64> = []
+        var removedWindowRows = 0
+        var byGroup: [String: [(rowid: Int64, endAt: Date)]] = [:]
+        for item in scanned {
+            guard let row = item.row else {
+                rowIDsToDelete.insert(item.rowid)
+                continue
+            }
+            if row.endAt < cutoff {
+                if rowIDsToDelete.insert(item.rowid).inserted { removedWindowRows += 1 }
+            }
+            let key = [item.nodeID, row.quotaProviderID, row.modelID, row.windowKind]
+                .joined(separator: "\u{0}")
+            byGroup[key, default: []].append((item.rowid, row.endAt))
+        }
+        for members in byGroup.values where members.count > FleetProtocol.windowFrontierPerGroup {
+            let excess = members
+                .sorted { $0.endAt > $1.endAt }
+                .dropFirst(FleetProtocol.windowFrontierPerGroup)
+            for member in excess where rowIDsToDelete.insert(member.rowid).inserted {
+                removedWindowRows += 1
+            }
+        }
+        guard !rowIDsToDelete.isEmpty else { return 0 }
         try beginTransaction()
         do {
-            for item in expired {
-                try execute("DELETE FROM sync_records WHERE rowid = ?", bind: [.int64(item.rowid)])
-            }
-            for rowID in result.corruptRowIDs {
+            for rowID in rowIDsToDelete {
                 try execute("DELETE FROM sync_records WHERE rowid = ?", bind: [.int64(rowID)])
             }
-            if !expired.isEmpty || !result.corruptRowIDs.isEmpty {
-                _ = try bumpGenerationLocked(scope: scope)
-            }
+            _ = try bumpGenerationLocked(scope: scope)
             try commit()
-            return expired.count
+            return removedWindowRows
         } catch {
             try? rollback()
             throw error

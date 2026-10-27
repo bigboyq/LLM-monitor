@@ -36,6 +36,11 @@ enum FleetProtocol {
     /// 日桶通道的天数上限（today + previous six）。既是校验上限，也是 hub
     /// 侧落库保留的天数（§6：逐日滚动的窗口不裁剪就会一天涨一格）。
     static let maxDailyBuckets = 7
+    /// 窗口边界前沿：装配下发与存储修剪对每个 (provider, model, kind) 保留的
+    /// 最新边界数（2026-10-27 裁定）。历史边界不会再等来新贡献（聚合按精确
+    /// 边界匹配），消费端每组也只取一条（preferredRange）；保留 2 条容忍
+    /// 多账号并存的不同边界与跨零点时钟差。
+    static let windowFrontierPerGroup = 2
 
     static let usageDayPath = "/v1/usage/day"
     static let healthPath = "/v1/health"
@@ -179,10 +184,9 @@ struct FleetWindowUsage: Codable, Equatable, Sendable {
     let modelID: String
     /// interval / weekly / glmOffPeak / provider 自定义 kind。
     let windowKind: String
-    /// 实际观察到的边界；startAt < endAt。
+    /// 实际观察到的边界；startAt < endAt。接收时刻记在存储行的 updated_at
+    /// 列上，不进 payload（payload 内容稳定，数值不变就不产生重写差异）。
     let startAt, endAt: Date
-    /// hub 侧覆盖为接收时刻（不信任上报值）；节点侧是观察时刻。
-    var observedAt: Date
     let input, cacheRead, output, reasoning: Int
     let value: Double?
     let currency: ModelPriceCurrency?
@@ -572,8 +576,7 @@ enum FleetReportValidator {
               !row.windowKind.isEmpty,
               row.startAt < row.endAt,
               nonNegative(row.input, row.cacheRead, row.output, row.reasoning),
-              amountIsConsistent(row.value, row.currency),
-              row.observedAt.timeIntervalSinceReferenceDate.isFinite
+              amountIsConsistent(row.value, row.currency)
         else { return false }
         return true
     }
@@ -897,6 +900,31 @@ enum FleetMerger {
                 staleNodeIDs: members.filter(\.stale).map(\.nodeID),
                 missingNodeIDs: Array(missing)
             )
+        }
+        .sorted {
+            if $0.quotaProviderID != $1.quotaProviderID { return $0.quotaProviderID < $1.quotaProviderID }
+            if $0.modelID != $1.modelID { return $0.modelID < $1.modelID }
+            if $0.windowKind != $1.windowKind { return $0.windowKind < $1.windowKind }
+            return $0.startAt < $1.startAt
+        }
+    }
+
+    /// 窗口前沿过滤（2026-10-27 裁定）：每个 (provider, model, kind) 只保留
+    /// `endAt` 最新的 `FleetProtocol.windowFrontierPerGroup` 个边界组。窗口
+    /// 边界随额度重置滚动，历史边界组在聚合里永远等不来新贡献（精确边界
+    /// 匹配），消费端每组也只取一条（preferredRange）；不过滤的话快照载荷
+    /// 会把存储的历史累积原样透传给每个节点。
+    static func windowFrontier(_ rows: [FleetWindowAggregate]) -> [FleetWindowAggregate] {
+        var byGroup: [String: [FleetWindowAggregate]] = [:]
+        for row in rows {
+            let key = [row.quotaProviderID, row.modelID, row.windowKind].joined(separator: "\u{0}")
+            byGroup[key, default: []].append(row)
+        }
+        return byGroup.flatMap { _, group in
+            group.sorted { lhs, rhs in
+                lhs.endAt == rhs.endAt ? lhs.startAt > rhs.startAt : lhs.endAt > rhs.endAt
+            }
+            .prefix(FleetProtocol.windowFrontierPerGroup)
         }
         .sorted {
             if $0.quotaProviderID != $1.quotaProviderID { return $0.quotaProviderID < $1.quotaProviderID }

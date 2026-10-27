@@ -633,9 +633,14 @@ final class FleetSyncCoordinator: ObservableObject {
                 rows: node.windowUsage
             )
         }
-        let fleetWindows = FleetMerger.aggregateWindows(
-            windowContributions,
-            knownNodeIDs: nodeSnapshots.map(\.nodeID)
+        // 窗口前沿过滤（2026-10-27）：快照只携带每 (provider, model, kind)
+        // 最新的少数边界——历史边界组没有新贡献也没有消费方，透传它们只会
+        // 把存储的历史累积搬进下发给每个节点的载荷。
+        let fleetWindows = FleetMerger.windowFrontier(
+            FleetMerger.aggregateWindows(
+                windowContributions,
+                knownNodeIDs: nodeSnapshots.map(\.nodeID)
+            )
         )
         let candidates = nodeSnapshots.flatMap { node in
             node.quotas.map { quota in

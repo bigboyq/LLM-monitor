@@ -86,7 +86,7 @@ final class SyncModelsTests: XCTestCase {
     ) -> FleetWindowUsage {
         FleetWindowUsage(
             quotaProviderID: provider, modelID: model, windowKind: kind,
-            startAt: start, endAt: end, observedAt: end,
+            startAt: start, endAt: end,
             input: input, cacheRead: cacheRead, output: output, reasoning: reasoning,
             value: value, currency: currency, coverage: coverage,
             complete: complete, sourceTruncated: truncated
@@ -559,6 +559,29 @@ final class SyncModelsTests: XCTestCase {
         XCTAssertEqual(Set(aggregate.staleNodeIDs), [node2], "stale 节点同范围仍贡献并标注")
         XCTAssertEqual(aggregate.missingNodeIDs, [node3], "缺该范围的已知节点进 missingNodeIDs")
         XCTAssertEqual(result.first { $0.input == 7 }?.windowKind, "interval")
+    }
+
+    func testWindowFrontierKeepsNewestBoundariesPerGroup() {
+        func aggregate(end: TimeInterval, kind: String = "interval") -> FleetWindowAggregate {
+            let endAt = Date(timeIntervalSince1970: end)
+            return FleetWindowAggregate(
+                quotaProviderID: QuotaProviderID.openAI, modelID: "chatgpt_plan", windowKind: kind,
+                startAt: endAt.addingTimeInterval(-18_000), endAt: endAt,
+                input: Int(end - 1_798_000_000), cacheRead: 0, output: 0, reasoning: 0,
+                valueByCurrency: [:], coverage: .none, complete: true,
+                contributingNodeIDs: [], staleNodeIDs: [], missingNodeIDs: []
+            )
+        }
+        let frontier = FleetMerger.windowFrontier([
+            aggregate(end: 1_799_000_000),   // 同组最旧：超出前沿，丢弃
+            aggregate(end: 1_799_500_000),
+            aggregate(end: 1_800_000_000),
+            aggregate(end: 1_800_000_000, kind: "weekly"),  // 不同 kind 独立成组
+        ])
+        XCTAssertEqual(frontier.count, 3, "每组只保留最新两个边界，weekly 独立成组")
+        XCTAssertNil(frontier.first { $0.windowKind == "interval" && $0.input == 1_000_000 },
+                     "最旧的 interval 边界被前沿过滤丢弃")
+        XCTAssertEqual(frontier.filter { $0.windowKind == "interval" }.count, 2)
     }
 
     func testWindowAggregationKeepsCurrenciesSeparateInValueMap() {

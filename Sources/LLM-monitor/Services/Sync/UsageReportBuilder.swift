@@ -275,7 +275,6 @@ enum UsageReportBuilder {
                     windowKind: kind,
                     bounds: bounds,
                     samples: matched,
-                    observedAt: now,
                     truncated: truncated,
                     quotaProviderIDForPricing: quotaProviderID,
                     peakWindow: peakWindow
@@ -310,7 +309,6 @@ enum UsageReportBuilder {
                     windowKind: "glmOffPeak",
                     bounds: LocalUsageWindowBounds(start: window.startedAt, end: window.endedAt),
                     samples: matched,
-                    observedAt: now,
                     truncated: truncated,
                     quotaProviderIDForPricing: quotaProviderID,
                     peakWindow: peakWindow
@@ -350,7 +348,6 @@ enum UsageReportBuilder {
                         windowKind: glm.windowKind,
                         bounds: LocalUsageWindowBounds(start: todayStart, end: todayEnd),
                         samples: matched,
-                        observedAt: now,
                         truncated: truncated,
                         quotaProviderIDForPricing: quotaProviderID,
                         peakWindow: peakWindow
@@ -413,7 +410,6 @@ enum UsageReportBuilder {
         windowKind: String,
         bounds: LocalUsageWindowBounds,
         samples: [LocalTokenUsageSample],
-        observedAt: Date,
         truncated: Bool,
         quotaProviderIDForPricing: String,
         peakWindow: DeepseekPeakWindow
@@ -443,7 +439,6 @@ enum UsageReportBuilder {
             windowKind: windowKind,
             startAt: bounds.start,
             endAt: bounds.end,
-            observedAt: observedAt,
             input: tokenSums.input,
             cacheRead: tokenSums.cacheRead,
             output: tokenSums.output,

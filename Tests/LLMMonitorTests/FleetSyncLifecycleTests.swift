@@ -223,7 +223,7 @@ final class FleetSyncLifecycleTests: XCTestCase {
         node.start(config: config(hubURL: upstream, port: hubPort), statuses: [])
         try await waitUntil(timeout: 8) {
             node.status.online && (node.status.snapshotGeneration ?? 0) > 500
-                && node.latestSnapshot?.nodes.first(where: { $0.nodeID == nodeID })?.dailyBuckets.count == 7
+                && oldHub.latestSnapshot?.nodes.first(where: { $0.nodeID == nodeID })?.dailyBuckets.count == 7
         }
         let scope = upstream + "|" + hubID.uuidString
         let oldGeneration = try XCTUnwrap(try nodeStore.cachedSnapshotGeneration(upstreamScope: scope))
