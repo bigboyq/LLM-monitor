@@ -77,9 +77,10 @@ Fleet 窗口聚合给副节点时清空 contributor/stale/missing 节点 ID 列�
 dayKey 互异）。旧格式（`unavailableSources == nil`）仍要求 totals complete 才逐桶替换；
 来源感知格式按 `(clientID, quotaProviderID)` 更新健康来源，明确不可用来源保留旧值；
 窗口行按完整边界 `(provider, model, kind, startAt, endAt)` 独立 upsert，
-空数组不删除保留期内旧范围；额度通道独立校验独立替换。金额与 token 必须
-来自同一批样本（同源计价硬纪律）；`FleetCostCoverage` full 额外要求样本集
-完整（截尾金额不能配完整 token 标 full）。
+空数组不删除保留期内旧范围（`FleetWindowUsage` 不带观测时刻字段，接收时刻
+记在存储行 `updated_at` 列，payload 内容稳定）；额度通道独立校验独立替换。
+金额与 token 必须来自同一批样本（同源计价硬纪律）；`FleetCostCoverage` full
+额外要求样本集完整（截尾金额不能配完整 token 标 full）。
 
 **逐天摘要回执（增量裁定 2026-10-24）**：快照的每个节点条目带
 `dailyDigests`（dayKey → 内容摘要，`FleetCodec` 规范编码后 SHA256 前 16 hex）。
@@ -113,6 +114,13 @@ clientProviders 汇总逐字段核对；来源感知桶另校验不可用来源�
   `valueByCurrency`。输入行已有的部分计价状态必须保留，不能仅因金额非空便
   升级为 full；窗口不完整或来源截断同样不能标 full。日桶模型明细合并也保留
   输入明细的部分计价状态。
+- **窗口边界前沿过滤（2026-10-27 裁定）**：装配时 `fleet.windowUsage` 每个
+  `(provider, model, kind)` 只保留 `endAt` 最新的 2 个边界组
+  （`FleetProtocol.windowFrontierPerGroup`）。窗口边界随额度重置滚动
+  （interval ~5h 一换、GLM 免/速/它每日新切片、闲时任务每窗唯一），历史边界
+  组在聚合里永远等不来新贡献（精确边界匹配），消费端每组也只取一条
+  （`preferredRange`）；不过滤的话快照载荷会把存储的逐日累积原样透传给每个
+  副节点。保留 2 条容忍多账号并存的不同边界与跨零点时钟差。
 - 额度选举（§2.1 / §7.7）：候选须有 ≥1 `ModelQuota.hasActiveQuotaWindow`
   （DeepSeek present 余额含 0% 有效）；hub 本机有效额度无条件优先（即使更陈旧）；
   否则取副节点候选中 `fetchedAt` 最新者（2026-10-24 用户裁定，不按上报时刻）；
@@ -151,7 +159,7 @@ hub 的 high-water 据此拒绝迟到报告（§7.3）。持久化失败本轮�
 |---|---|
 | `report` | 每节点当前接受的报告（`FleetStoredReport`：daily/quotas 独立通道 + nodeName/timezoneID/指纹） |
 | `node_meta` | high-water seq + lastSeen（窗口/日桶清理不清除，§7.6） |
-| `window` | 每节点每窗口范围一行；`observedAt` 由 hub 覆写为接收时刻（不信任上报值） |
+| `window` | 每节点每窗口范围一行；接收时刻记在行 `updated_at` 列（payload 无观测时刻字段，内容稳定） |
 | `hub_meta` | generation（跨重启单调可比） |
 | `snapshot` | 副节点快照缓存（scope = upstreamKey + hubUUID，隔离不同上游） |
 
@@ -163,8 +171,11 @@ node_meta → 任何可见变化递增 generation。日桶按 **dayKey 逐桶 up
 来源感知日桶只保留旧桶中显式不可用来源的 clientProviders/entries，与本次健康
 行合并后重算 totals；健康真实零值、禁用或移除的来源清除旧贡献，不累加新旧整桶。
 输入摘要与日桶一同裁剪、持久化；无需新增 SQLite 表，旧 payload 可直接解码。
-窗口按 `endAt` 早于 `now - retainDays` 清理；`removeNode` 删除该节点全部行
-并递增 generation。
+窗口清理是双重的（2026-10-27 裁定）：`endAt` 早于 `now - retainDays` 的过期行，
+以及同 `(node, provider, model, kind)` 组内 `endAt` 不是最新
+`windowFrontierPerGroup` 条的行——边界随重置滚动，历史边界没有新贡献也没有
+消费方，只增不删会让存储与快照随时间线性膨胀；`retainDays` 退化为兜底。
+`removeNode` 删除该节点全部行并递增 generation。
 
 **坏行降级**：无法解码的行（磁盘损坏 / 跨版本 DTO 形状变化写下的旧行）
 跳过并删除，不让整次装配失败。`loadHubState` 与 `pruneWindows` 的坏行清理
@@ -399,6 +410,7 @@ node 协调器上线与缓存落盘）、`FleetUsageModelsTests`（生效额度�
 Sync / dock 位置写入不清常规草稿，含首次从 nil 写入默认 dock 配置；DSH scanner
 与 builder 测试覆盖样本 cap、旧缓存重建、限额变化、样本老化恢复和权威日桶保留。
 
-> 核对基线：2026-10-26 · 代码 ca4d511
+> 核对基线：2026-10-27 · 代码 7c13cd7
 > 历史验证（代码 6f11831；记录于文档提交 3ccb3de）：`swift test` 1401 例 0 失败（63.1s）；定向验证 `FleetCostTextPropagationTests` 4 例、`UsageReportBuilderTests|SettingsDraftIsolationTests` 15 例均通过。
 > 2026-10-25 提交前全量验证（即本基线工作区）：`swift test` 1435 例 0 失败（64.5s），覆盖独立 `.deviceId` 身份、默认上报周期跟随常规、菜单 / 设置自启同步、来源级日桶更新 / 输入摘要回执、节点卡片缺桶 / partial / 完整零提示，以及主节点健康用量 + DSH 失败 + 空副节点真实 POST 接入的集成回归。未替换或重启现场应用，DSH 解压依赖缺失仍通过来源不可用提示表达。
+> 2026-10-27 提交前全量验证（即本基线工作区）：`swift test` 1513 例 0 失败（63.2s），覆盖窗口边界前沿过滤（装配下发与存储修剪每 (provider, model, kind) 最新 2 组）、`FleetWindowUsage` 移除 `observedAt`（接收时刻记行 `updated_at` 列），并对齐 683a575 聚合快照下发契约的集成测试（POST 回包轻量回执断言 + hub 侧全量快照断言）。`observedAt` 移除为破坏性 wire 变更，混跑部署须 hub 与副节点同步升级。

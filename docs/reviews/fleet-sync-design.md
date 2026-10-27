@@ -865,6 +865,8 @@ L（单节点退化）与「fleet 退化到只有自己时整个 UI 退化成今
 
 **用户明确裁定：**（2026-10-24）多副一主、不级联；副节点上报额度，主节点自身有额度时优先采用；多账号语义推迟；v1 不认证、使用明文传输；不支持跨时区；Dock 全局/本机切换与菜单节点分组（菜单节点分组后续改由标题栏 scope 切换与合并模型行取代，见 §10.6）。节点 UUID 最初裁定写入 `config.json` 的 `sync.nodeID`（2026-10-24，曾取代 Keychain 方案），已由 2026-10-25 新裁定取代：独立存入 config 同目录 `.deviceId`，旧字段不迁移；复制 config 不需改 UUID，但不可复制 `.deviceId`。上报及回传数据使用独立同步表，不往原表添加来源区分字段。副节点明确上报统计起止时间，由 hub 判断是否能相加；不同范围不混加。额度候选按 `fetchedAt` 排序、窗口选择采用「边界匹配优先、最新 `endAt` 兜底」（均 2026-10-24）。**日桶通道增量补发（2026-10-24 技术裁定）：** 快照回执携带逐天内容摘要，副节点只上报摘要不一致的天（空回执 → 全量基线），取代「每拍全量七桶」；动机是消除带宽冗余并让历史天修正 / hub 丢数据（含移除重入）可自愈。回执是内存态，重启即重建基线。另确认 Fleet Provider 卡片日图、今行与日金额取当前所选 fleet/node 的完整全 provider 日桶；`quotaProviderID` 只筛额度窗口。失败 freshness 即使没有 contribution 也省略日桶通道，防止空帧被当作权威零桶。
 
+**窗口边界前沿过滤（2026-10-27 技术裁定）：** 用户确认下行 windowUsage 冗余主要由存储模型引发后落地。窗口边界随额度重置滚动（interval ~5h 一换、GLM 免/速/它每日新切片、闲时任务每窗唯一），历史边界既不会再等来新贡献（聚合按精确边界匹配）也没有消费方（展示每组只取一条）；此前存储仅按 `retainDays` 时间清理、装配全量透传，hub 存储与下行载荷随时间线性膨胀。现装配侧 `fleet.windowUsage` 每 (provider, model, kind) 只保留 `endAt` 最新 2 组（`FleetProtocol.windowFrontierPerGroup`，容忍多账号并存边界与跨零点时钟差），存储侧 `pruneWindows` 同口径修剪（`retainDays` 退化为兜底）；同时移除 `FleetWindowUsage.observedAt` 字段——接收时刻记行 `updated_at` 列，原 hub 覆写导致 payload 每拍必变。该字段移除是破坏性 wire 变更，混跑部署须 hub 与副节点同步升级。
+
 **技术默认，非用户另行裁定：** `nodeID` 落 config 同目录 `.deviceId` 文件；`fleet.sqlite` / `sync_records` 的名称和单表结构；本机 seq 落 `fleet.sqlite` 的 `kind=seq` 行、序号先持久化再发送；scope、窗口记录和 generation 的持久化与缓存隔离；同范围离线贡献保留并标注截止时间。窗口选择是展示规则，不改变副节点上报的范围，也不要求主节点下发范围。实现细节以 `spec/sync.md` 为准。
 
 ### 13.2 待用户确认
