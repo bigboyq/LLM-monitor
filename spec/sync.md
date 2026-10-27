@@ -305,9 +305,11 @@ hub 的 high-water 据此拒绝迟到报告（§7.3）。持久化失败本轮�
   全局 / 本机。scope 控制用 `FleetScopeSwitcher`
   ——**选项总数（全局 + 本机 + 远端节点）≤4 走分段控件**（一步切换），**>4 走
   菜单栏标题栏那套「label + ellipsis」下拉**（节点名放得下；形态见
-  `spec/ui/menu-and-cards.md`）。位置：≤4 项时是标题行**下方**独占一行
-  （`ProviderCardView.scopeRow`，宽度与卡片一致）——分段控件塞标题行会把
-  provider 名挤成「minimax To…」；>4 项时紧凑形态回到卡头（状态胶囊左边）。
+  `spec/ui/menu-and-cards.md`）。位置：≤4 项时通常在标题行**下方**独占一行
+  （`ProviderCardView.scopeRow`，宽度与卡片一致）；若 Dock 贴屏幕**下边缘**，
+  详情浮层在 Dock 上方，分段控件移至整段详情内容的最下方、靠近 Dock。分段控件
+  不塞标题行，避免 provider 名被挤成「minimax To…」；>4 项时紧凑形态仍在卡头
+  （状态胶囊左边）。
   下拉顺序**全局 → 本机 → 各远端节点**（`FleetNodeChoice`）。选具体节点时用量区块切到该节点
   **单机口径**（`FleetUsageProjection.nodeCardUsage`：它自己的 7 天日桶 /
   窗口行 / 今行，离线展示最后上报数据并提示），额度区块照常走生效额度

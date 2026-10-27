@@ -511,6 +511,7 @@ enum EdgeDockGeometry {
         edge: DockEdge,
         visibleFrame: CGRect,
         measuredRowCenter: CGPoint? = nil,
+        preservedTop: CGFloat? = nil,
         appearance: DockAppearance = .full,
         compactSize: EdgeDockCompactSize = .default
     ) -> CGRect {
@@ -524,18 +525,29 @@ enum EdgeDockGeometry {
             )
 
         let x: CGFloat
-        let y: CGFloat
+        let proposedY: CGFloat
         if edge.isVertical {
             x = edge == .right ? dockFrame.minX - popoverGap - w : dockFrame.maxX + popoverGap
-            y = center.y - h / 2
+            proposedY = center.y - h / 2
         } else {
-            y = edge == .top ? dockFrame.minY - popoverGap - h : dockFrame.maxY + popoverGap
+            proposedY = edge == .top ? dockFrame.minY - popoverGap - h : dockFrame.maxY + popoverGap
             x = center.x - w / 2
+        }
+
+        let y: CGFloat
+        if edge.isVertical, let preservedTop {
+            let screenMaxY = visibleFrame.maxY - h
+            let topAnchoredY = preservedTop - h
+            // 左右 dock 的浮层以悬停行中心作首次锚点；后续重排保持顶部，
+            // 使高度变化发生在下方。屏幕边界仍优先，避免浮层被裁出可视区。
+            y = min(max(topAnchoredY, visibleFrame.minY), screenMaxY)
+        } else {
+            y = min(max(proposedY, visibleFrame.minY), visibleFrame.maxY - h)
         }
 
         return CGRect(
             x: min(max(x, visibleFrame.minX), visibleFrame.maxX - w),
-            y: min(max(y, visibleFrame.minY), visibleFrame.maxY - h),
+            y: y,
             width: w,
             height: h
         )

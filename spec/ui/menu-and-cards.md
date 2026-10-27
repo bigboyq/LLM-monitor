@@ -189,8 +189,9 @@ header in the dock detail popover. It has two forms, split by the **option count
 Both hosts use the same option-count split (`FleetScopeControlStyle.preferred`),
 but the two hosts **place the forms differently**:
 
-- **Dock card** — segmented form (≤ 4) below the card header row; dropdown (> 4)
-  in the card header.
+- **Dock card** — segmented form (≤ 4) below the card header row, except when the
+  dock is attached to the bottom edge: then it moves to the end of the detail
+  content, nearest the dock; dropdown (> 4) stays in the card header.
 - **Menu panel** — the header only ever carries the **dropdown** form (> 4,
   next to the refresh button). At ≤ 4 options the header shows **no scope control
   at all**; the segmented form renders in the content area, above the 今日 card
@@ -200,9 +201,11 @@ but the two hosts **place the forms differently**:
 
 - **Segmented form (≤ 4 options)** — a dedicated row of its own, spanning the
   full card width:
-  - **Dock detail popover**: directly **below the card header row**
+  - **Dock detail popover**: directly **below the card header row** by default
     (`ProviderCardView.scopeRow`), inset by `LayoutMetrics.cardContentPadding`
-    so it lines up with the card blocks underneath.
+    so it lines up with the card blocks underneath. When the dock is on the
+    **bottom edge**, the popover opens above it, so the segmented row moves to
+    the **end of the detail content** to stay nearest the dock.
   - **Menu panel**: **above the 今日 card** (`HarnessUsageMenuView.scopeRow`),
     at the **same full width as that card's background** — the card's 8pt padding
     sits *inside* its background (`HarnessUsageMenuView.swift` 的注释明确此点), so the
@@ -217,9 +220,13 @@ but the two hosts **place the forms differently**:
   - **Dock detail popover**: the card header's right side, left of the freshness
     pill.
 
-  Both forms of a host therefore share one position for the same option count:
-  the segmented row appears only while the option count is ≤ 4, and the compact
-  dropdown takes over once there are more.
+  The option-count split is unchanged: the segmented row appears only while the
+  option count is ≤ 4, and the compact dropdown takes over once there are more.
+  Only the dock segmented row changes position for a bottom-edge dock.
+
+  For a left/right dock, the detail popover initially aligns to the hovered row.
+  Once open, scope changes preserve its top edge while the content height changes;
+  screen bounds still clamp the panel.
 
 - **Width cap** — `FleetScopeMenu.maxLabelWidth` = **120pt** for the whole
   group (range text + marker). The text itself is cut by
