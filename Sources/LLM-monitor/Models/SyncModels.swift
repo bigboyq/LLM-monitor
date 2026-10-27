@@ -267,8 +267,10 @@ struct NodeUsageReport: Codable, Equatable, Sendable {
     let seq: Int
     let generatedAt: Date
     let attributionFingerprint: String
-    /// nil：本次不更新日桶；存在时最多七个且 dayKey 互异（增量裁定 2026-10-24：
-    /// 可只带需要补发/修正的天，见 `FleetDailyBackfill`）。
+    /// nil：本次不更新日桶；存在时最多七个且 dayKey 互异，hub 按 dayKey 逐桶
+    /// upsert（缺席的天保留旧值）。增量摘要回执（2026-10-24 裁定）已于
+    /// 2026-10-27 撤销：节点每拍全量上报，内容不变的重发被 hub 的内容判变
+    /// 幂等吸收（不重写、不递增 generation）。
     var dailyBuckets: [FleetDailyBucket]?
     /// nil：无窗口更新；行按完整边界独立 upsert，空数组不删除旧范围。
     let windowUsage: [FleetWindowUsage]?
@@ -288,10 +290,6 @@ struct FleetNodeSnapshot: Codable, Equatable, Sendable {
     /// 该节点的归因设置指纹（§7.8）：≥2 种不同指纹 → 设置页提示「口径之和」。
     /// 旧快照缺该字段按 nil（未知，不参与比较）。
     let attributionFingerprint: String?
-    /// hub 对该节点已存每个日桶的内容摘要回执（dayKey → `FleetDailyDigest`，
-    /// 增量裁定 2026-10-24）。副节点据此判断哪些天需要补发/修正；旧快照缺该
-    /// 字段按 nil（等效空回执 → 触发全量补发）。
-    let dailyDigests: [String: String]?
 }
 
 struct FleetElectedQuota: Codable, Equatable, Sendable {
@@ -357,8 +355,7 @@ struct FleetSnapshot: Codable, Equatable, Sendable {
                 dailyBuckets: [],
                 windowUsage: [],
                 quotas: [],
-                attributionFingerprint: nil,
-                dailyDigests: node.dailyDigests
+                attributionFingerprint: nil
             )
         }
         let aggregateWindows = fleet.windowUsage.map { row in
@@ -446,34 +443,6 @@ enum FleetCodec {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         return try decoder.decode(type, from: data)
-    }
-}
-
-// MARK: - 逐天摘要回执（增量日桶，2026-10-24 裁定）
-
-/// 日桶内容摘要：`FleetCodec` 规范编码（sortedKeys）后取 SHA256 前 16 个十六进制
-/// 字符。副节点对本机构建的输入桶计算；hub通常按已存桶回执，来源感知partial桶
-/// 则回执最后接受的输入摘要（落在 `FleetStoredReport.dailyInputDigests`）。摘要失配
-/// 最坏多发一次幂等补发，不会丢数据——绝不为对齐摘要改变日桶内容。
-enum FleetDailyDigest {
-    static func digest(_ bucket: FleetDailyBucket) -> String {
-        guard let data = try? FleetCodec.encode(bucket) else { return "" }
-        let hash = SHA256.hash(data: data)
-        return hash.map { String(format: "%02x", $0) }.joined().prefix(16).description
-    }
-}
-
-/// 副节点上报侧的增量过滤：把报告的日桶通道收窄到「回执摘要与本地不一致」的天。
-/// - `cachedDigests` 为空（首次接触该 hub / 本机重启 / hub 丢数据）→ 保持全量
-///   七天，重建回执基线；
-/// - 否则只保留摘要不一致的天——历史天被扫描修正、hub 缺天都表现为不一致；
-/// - 全部一致 → 整条通道置 nil（等价心跳，仅刷新 lastSeen）。
-enum FleetDailyBackfill {
-    static func filterReport(_ report: inout NodeUsageReport, cachedDigests: [String: String]) {
-        guard var buckets = report.dailyBuckets else { return }
-        guard !cachedDigests.isEmpty else { return }
-        buckets = buckets.filter { FleetDailyDigest.digest($0) != cachedDigests[$0.dayKey] }
-        report.dailyBuckets = buckets.isEmpty ? nil : buckets
     }
 }
 

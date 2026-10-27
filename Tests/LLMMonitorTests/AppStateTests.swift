@@ -81,8 +81,7 @@ final class AppStateTests: StateTestCase {
             dailyBuckets: [],
             windowUsage: [],
             quotas: [],
-            attributionFingerprint: nil,
-            dailyDigests: nil
+            attributionFingerprint: nil
         )
         let snapshot = FleetSnapshot(
             protocolVersion: FleetProtocol.version,

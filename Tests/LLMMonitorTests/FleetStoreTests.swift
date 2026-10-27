@@ -260,16 +260,12 @@ final class FleetStoreTests: XCTestCase {
         XCTAssertEqual(merged.totals.input, 170)
         XCTAssertFalse(merged.totalsComplete)
         XCTAssertEqual(Set(merged.entries.compactMap(\.modelName)), Set(["gpt", "deepseek"]))
-        XCTAssertEqual(storedReport.dailyInputDigests?[day], FleetDailyDigest.digest(partial),
-                       "ACK记住部分输入摘要而不是合并后存桶的摘要")
-        XCTAssertNotEqual(storedReport.dailyInputDigests?[day], FleetDailyDigest.digest(merged))
 
-        // 同一 partial 输入即使再次到达，落库和ACK都稳定，不会把保留行再累加一份。
+        // 同一 partial 输入即使再次到达，落库稳定，不会把保留行再累加一份。
         let repeated = report(seq: 3, nodeID: node, daily: [partial])
         try store.applyReport(repeated, validation: FleetReportValidator.validate(repeated), scope: scope)
         let afterRepeat = try XCTUnwrap(store.loadHubState(scope: scope).nodes.first?.report)
         XCTAssertEqual(afterRepeat.dailyBuckets?.first?.totals.input, 170)
-        XCTAssertEqual(afterRepeat.dailyInputDigests?[day], FleetDailyDigest.digest(partial))
 
         // 来源恢复后完整桶替换整天，不重复合并旧失败值。
         let codexRecovered = codexUpdated
@@ -303,12 +299,11 @@ final class FleetStoreTests: XCTestCase {
         XCTAssertTrue(afterZero.clientProviders.isEmpty, "健康来源确认零量时旧贡献被删除")
         XCTAssertEqual(afterZero.unavailableSources, [])
 
-        // 可选digest映射随report payload跨Store重启保存。
-        let zeroDigest = FleetDailyDigest.digest(zero)
+        // report payload 跨 Store 重启保存。
         store = nil
         store = try FleetStore(url: directory.appendingPathComponent("fleet.sqlite"))
         let reloaded = try XCTUnwrap(store.loadHubState(scope: scope).nodes.first?.report)
-        XCTAssertEqual(reloaded.dailyInputDigests?[day], zeroDigest)
+        XCTAssertEqual(reloaded.dailyBuckets?.first, afterZero)
     }
 
     func testFirstPartialReportShowsHealthySourceWithNoPriorStoredBucket() throws {

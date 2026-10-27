@@ -358,65 +358,6 @@ final class SyncModelsTests: XCTestCase {
         XCTAssertNotNil(FleetReportValidator.validate(bad).envelopeError, "protocolVersion 不匹配整包拒绝")
     }
 
-    // MARK: - 逐天摘要回执（增量日桶，2026-10-24 裁定）
-
-    func testDailyDigestStableAcrossCodecRoundTripAndSensitiveToContent() throws {
-        let bucket = sevenBuckets(rows: [clientRow(input: 5)])[3]
-        let digest = FleetDailyDigest.digest(bucket)
-        XCTAssertEqual(digest.count, 16, "SHA256 前 16 个十六进制字符")
-        XCTAssertEqual(digest, FleetDailyDigest.digest(bucket), "同内容跨调用稳定")
-
-        // hub 侧是对落库后（JSON 往返）的日桶计算摘要：往返必须不改变摘要。
-        let roundTripped = try FleetCodec.decode(
-            FleetDailyBucket.self, from: FleetCodec.encode(bucket)
-        )
-        XCTAssertEqual(FleetDailyDigest.digest(roundTripped), digest, "编解码往返后摘要不变")
-
-        // 内容修正（历史天被扫描补齐/改数）→ 摘要必须变化，否则修正传不过去。
-        let revised = FleetDailyBucket(
-            dayKey: bucket.dayKey, totals: FleetTotals(summing: [clientRow(input: 6)]),
-            clientProviders: [clientRow(input: 6)], entries: [],
-            totalsComplete: true, modelDetailsComplete: true, sourceTruncated: false
-        )
-        XCTAssertNotEqual(FleetDailyDigest.digest(revised), digest)
-    }
-
-    func testDailyBackfillKeepsFullOnEmptyReceiptAndFiltersMatchingDays() {
-        var reportWithData = report(daily: sevenBuckets(rows: [clientRow(input: 5)]))
-        let buckets = reportWithData.dailyBuckets!
-
-        // 回执为空（首次配置 / 重启 / hub 丢数据）→ 全量七天。
-        FleetDailyBackfill.filterReport(&reportWithData, cachedDigests: [:])
-        XCTAssertEqual(reportWithData.dailyBuckets?.count, 7, "空回执保持全量建立基线")
-
-        // 回执与本地完全一致 → 整条通道置 nil（等价心跳）。
-        var same = report(daily: buckets)
-        let receipts = Dictionary(uniqueKeysWithValues: buckets.map {
-            ($0.dayKey, FleetDailyDigest.digest($0))
-        })
-        FleetDailyBackfill.filterReport(&same, cachedDigests: receipts)
-        XCTAssertNil(same.dailyBuckets, "全部一致则不发日桶")
-
-        // 只修正一天 → 只补发那天的修正值。
-        var revised = buckets
-        revised[2] = FleetDailyBucket(
-            dayKey: revised[2].dayKey,
-            totals: FleetTotals(summing: [clientRow(input: 42)]),
-            clientProviders: [clientRow(input: 42)],
-            entries: [], totalsComplete: true, modelDetailsComplete: true, sourceTruncated: false
-        )
-        var partial = report(daily: revised)
-        FleetDailyBackfill.filterReport(&partial, cachedDigests: receipts)
-        XCTAssertEqual(partial.dailyBuckets?.map(\.dayKey), [revised[2].dayKey],
-                       "只有摘要不一致的天进入补发")
-    }
-
-    func testDailyBackfillIgnoresReportWithoutDailyChannel() {
-        var heartbeat = report(daily: nil)
-        FleetDailyBackfill.filterReport(&heartbeat, cachedDigests: [:])
-        XCTAssertNil(heartbeat.dailyBuckets, "通道本就缺席，过滤保持缺席")
-    }
-
     // MARK: - 日桶合并（§7.1）
 
     func testMergeDailyBucketsSumsAuthoritativeTotals() {

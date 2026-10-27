@@ -23,9 +23,6 @@ enum FleetRecordKind {
 /// timezoneID 仅诊断，§2.3）。
 struct FleetStoredReport: Codable, Equatable, Sendable {
     var dailyBuckets: [FleetDailyBucket]?
-    /// Digest of the last accepted input for each stored day. For partial
-    /// source-aware buckets this differs from the merged stored bucket digest.
-    var dailyInputDigests: [String: String]? = nil
     var quotas: [FleetQuotaReport]?
     var attributionFingerprint: String?
     var nodeName: String?
@@ -173,7 +170,8 @@ final class FleetStore: @unchecked Sendable {
             let oldStored = stored
 
             if let buckets = report.dailyBuckets, validation.dailyBucketsError == nil {
-                // 增量日桶（2026-10-24 裁定）：按 dayKey upsert，通道缺席的天保留旧值。
+                // 按 dayKey upsert，通道缺席的天保留旧值（增量摘要回执已撤销，
+                // 2026-10-27 裁定：节点每拍全量上报，本逻辑退化为幂等替换）。
                 //
                 // 保留策略：**最新的 N 天**（N = 协议上限 7），按 dayKey 排序取尾部。
                 // 不按 hub 当前日期裁剪：节点的报告窗口按**节点自己的**时钟滚动，
@@ -187,7 +185,6 @@ final class FleetStore: @unchecked Sendable {
                     (stored.dailyBuckets ?? []).map { ($0.dayKey, $0) },
                     uniquingKeysWith: { _, new in new }
                 )
-                var inputDigests = stored.dailyInputDigests ?? [:]
                 for bucket in buckets {
                     if let unavailableSources = bucket.unavailableSources {
                         byDay[bucket.dayKey] = mergeSourceAwareDailyBucket(
@@ -199,16 +196,11 @@ final class FleetStore: @unchecked Sendable {
                         // Legacy complete buckets retain their original whole-day replacement.
                         byDay[bucket.dayKey] = bucket
                     }
-                    inputDigests[bucket.dayKey] = FleetDailyDigest.digest(bucket)
                 }
-                let retainedBuckets = byDay.values
+                stored.dailyBuckets = byDay.values
                     .sorted { $0.dayKey < $1.dayKey }
                     .suffix(FleetProtocol.maxDailyBuckets)
                     .map { $0 }
-                let retainedKeys = Set(retainedBuckets.map(\.dayKey))
-                inputDigests = inputDigests.filter { retainedKeys.contains($0.key) }
-                stored.dailyBuckets = retainedBuckets
-                stored.dailyInputDigests = inputDigests.isEmpty ? nil : inputDigests
             }
             if let quotas = report.quotas, validation.quotasError == nil {
                 stored.quotas = quotas
@@ -223,8 +215,7 @@ final class FleetStore: @unchecked Sendable {
             }
             applied.dailyApplied = report.dailyBuckets != nil
                 && validation.dailyBucketsError == nil
-                && (stored.dailyBuckets != oldStored.dailyBuckets
-                    || stored.dailyInputDigests != oldStored.dailyInputDigests)
+                && stored.dailyBuckets != oldStored.dailyBuckets
             applied.quotasApplied = report.quotas != nil
                 && validation.quotasError == nil
                 && stored.quotas != oldStored.quotas

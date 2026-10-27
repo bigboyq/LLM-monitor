@@ -19,8 +19,7 @@ private func makeLifecycleSnapshot(hubID: UUID, nodeID: UUID, seq: Int, generati
             dailyBuckets: [],
             windowUsage: [],
             quotas: [],
-            attributionFingerprint: nil,
-            dailyDigests: [:]
+            attributionFingerprint: nil
         )],
         fleet: FleetAggregate(dailyBuckets: [], windowUsage: []),
         electedQuotas: []
