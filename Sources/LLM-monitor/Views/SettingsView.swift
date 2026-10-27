@@ -19,6 +19,7 @@ struct SettingsView: View {
     @State var statusBarIconStyle: StatusBarIconStyle = .chartBar
     @State var statusBarHealthDotEnabled: Bool = true
     @State var statusBarHealthColors: StatusBarHealthColors = .default
+    @State var statusBarPinnedProvider: String = ""
 
     // 贴边方向**没有** @State：设置页不提供它（见下方保存处的注释），而拖拽会在
     // 设置窗口开着的时候改它——从 @State 写回就会把用户刚拖出来的位置抹掉。
@@ -279,6 +280,7 @@ struct SettingsView: View {
         statusBarIconStyle = config.effectiveStatusBarIconStyle
         statusBarHealthDotEnabled = config.effectiveStatusBarHealthDotEnabled
         statusBarHealthColors = config.effectiveStatusBarHealthColors
+        statusBarPinnedProvider = config.statusBarPinnedProvider ?? ""
         let edgeDock = config.effectiveEdgeDockConfig
         edgeDockMode = edgeDock.mode
         edgeDockHideInFullscreen = edgeDock.hideInFullscreen
@@ -401,6 +403,9 @@ struct SettingsView: View {
         config.statusBarHealthColors = statusBarHealthColors == .default
             ? nil
             : statusBarHealthColors
+        config.statusBarPinnedProvider = statusBarPinnedProvider.isEmpty
+            ? nil
+            : statusBarPinnedProvider
         // 边缘窗：只带形态与全屏隐藏这两个**设置页真的有控件**的字段；贴边方向、
         // 沿边位置、所在屏由拖拽实时写盘，一律在保存这一刻现读
         // `configStore.config.effectiveEdgeDockConfig`。

@@ -114,6 +114,16 @@ footer: "浅色 / 深色固定显示，自动跟随系统设置；保存后立�
   非 nil 守卫，测试进程 NSApp 恒 nil 不会自旋）；`start()` 与每次配置变更都会调用。
 - 边界：`MenuBarExtra` 原生呈现（菜单栏图标本身）仍随系统外观，不受此设置控制。
 
+### 常规 pane「状态栏图标」节与指标来源
+
+General pane「状态栏图标」节（`SettingsGeneralPane.swift`）提供图标样式与监控目标配置：
+- **图标主题 Picker**（`StatusBarIconStyle`）：App 图标、Icon Duo 双环仪表盘、系统符号等样式及实时烘焙预览；
+- **指标来源 Picker**（`statusBarPinnedProvider`）：
+  - 「全部聚合（非零最小值）」（缺省 / tag `""` / 落盘 `nil`）：综合所有已启用 Provider 计算非零最小值；
+  - 窗口 Provider（MiniMax、ChatGPT、Antigravity、GLM 等）：将状态栏 Icon Duo 双环及健康度圆点单选锚定至该 Provider；
+  - 与 Provider 卡片标题栏的「小眼睛」按钮双向联动，保存时写回 `config.json` 的 `statusBarPinnedProvider` 字段；
+- **状态圆点与三色拾色器**（`statusBarHealthDotEnabled`、`statusBarHealthColors`）。
+
 ### GLM 高峰期提示（只读）与「节假日数据源」
 
 GLM provider pane 的「高峰期提示」段是**只读展示**（与 DeepSeek 同款
@@ -298,6 +308,6 @@ appearance-neutral.
 - General pane 有一个「Bark 推送」全局节：`enabled` / `serverURL` / `deviceKey` / `sound` / `skipWhenAwakeAndUnlocked` / `ttl` / `group`。
 - 字段默认值与逐字段容错见 `spec/notifications.md` §5；JSON 契约见 `spec/config.md` §Config Schema 的 `notify*` 与 `bark` 字段。
 
-> 核对基线：2026-10-25 · 代码 85541c7
+> 核对基线：2026-10-27 · 代码 107ca87
 > Sync 草稿跨 tab 保留、表单隔离与保存失败提示验证结果见 `spec/sync.md`。
 > 2026-10-25 菜单 / 设置自启同步已随 6f11831 入库：相关定向测试 27 例、完整测试 1422 例均 0 失败；测试使用模拟登录项操作，不执行真实注册 / 注销。

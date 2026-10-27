@@ -1,5 +1,7 @@
 import XCTest
 import Foundation
+import SwiftUI
+import AppKit
 @testable import LLM_monitor
 
 final class StatusBarConfigTests: XCTestCase {
@@ -48,5 +50,36 @@ final class StatusBarConfigTests: XCTestCase {
             preview.tiffRepresentation, design?.tiffRepresentation,
             "picker 若直接复用 22pt 的设计稿，AppKit 绘制菜单行时会按 intrinsic size 画成 22pt"
         )
+    }
+
+    @MainActor
+    func testSettingsViewLoadsAndSavesStatusBarPinnedProvider() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("llm-pinned-provider-test-\(UUID().uuidString)", isDirectory: true)
+        let store = ConfigStore(configURL: root.appendingPathComponent("config.json"))
+        var initial = store.config
+        initial.statusBarPinnedProvider = "minimax_token_plan"
+        try store.applyAndSave(initial)
+
+        let state = AppState(descriptors: [], configStore: store)
+        let settings = SettingsView(
+            configStore: store,
+            loginItemService: LoginItemService(),
+            state: state,
+            descriptors: []
+        )
+        let hosting = NSHostingView(rootView: settings)
+        _ = hosting.fittingSize
+
+        // 1. 验证 hasFormRelevantChange 能正确识别 statusBarPinnedProvider 变化
+        var changed = initial
+        changed.statusBarPinnedProvider = "codex_chatgpt"
+        XCTAssertTrue(SettingsView.hasFormRelevantChange(from: initial, to: changed))
+
+        var cleared = initial
+        cleared.statusBarPinnedProvider = nil
+        XCTAssertTrue(SettingsView.hasFormRelevantChange(from: initial, to: cleared))
+
+        XCTAssertFalse(SettingsView.hasFormRelevantChange(from: initial, to: initial))
     }
 }

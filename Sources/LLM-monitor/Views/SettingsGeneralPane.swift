@@ -100,7 +100,10 @@ extension SettingsView {
                 }
             }
 
-            SettingsSection(title: "状态栏图标", footer: "可自定义正常、预警、异常三种状态颜色；系统图标使用状态圆点。App 图标直接使用设计稿（与下面的预览同一张图），是固定图片，不随额度与健康度变化。Icon Duo 为额度仪表盘：左右弧线显示 5 小时与周额度，中心扇形按最低剩余比例动态显示 0～360°，底部三个套餐状态点与顶部节能状态圆点。") {
+            SettingsSection(
+                title: "状态栏图标",
+                footer: "可自定义正常、预警、异常三种状态颜色；系统图标使用状态圆点。App 图标直接使用设计稿（与下面的预览同一张图），是固定图片，不随额度与健康度变化。Icon Duo 为额度仪表盘：左右弧线显示 5 小时与周额度，中心扇形按最低剩余比例动态显示 0～360°，底部三个套餐状态点与顶部节能状态圆点。指标来源可选「全部聚合」或指定特定服务商（与卡片标题栏小眼睛单选联动）。"
+            ) {
                 VStack(alignment: .leading, spacing: 16) {
                     SettingsControlRow("图标主题") {
                         Picker("", selection: $statusBarIconStyle) {
@@ -112,6 +115,17 @@ extension SettingsView {
                                     Text(style.displayName)
                                 }
                                 .tag(style)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .frame(width: SettingsLayout.standardControlWidth, alignment: .trailing)
+                    }
+
+                    SettingsControlRow("指标来源") {
+                        Picker("", selection: $statusBarPinnedProvider) {
+                            Text("全部聚合（非零最小值）").tag("")
+                            ForEach(descriptors.filter { ProviderKind.windowedKinds.contains($0.kind) }, id: \.id) { descriptor in
+                                Text(descriptor.displayName).tag(descriptor.id)
                             }
                         }
                         .pickerStyle(.menu)
