@@ -924,7 +924,13 @@ final class FleetSyncCoordinator: ObservableObject {
         }
         if let cached, snapshot.generation <= cached, !confirmsSubmittedReport { return false }
         let nodeSnapshot = nodeID.map(snapshot.compactedForNode) ?? snapshot
-        try store.saveSnapshot(nodeSnapshot, upstreamScope: upstreamScope)
+        // 内容未变化的快照不重写缓存（2026-10-27 裁定）：generation 未推进
+        // 且仅凭本轮 seq 确认接受 ⇒ hub 可见状态与缓存同代（generatedAt /
+        // 本节点 seq 每拍必变，字节比较没有意义）。digest 回执仍照常更新。
+        let contentUnchanged = snapshot.generation == cached && confirmsSubmittedReport
+        if !contentUnchanged {
+            try store.saveSnapshot(nodeSnapshot, upstreamScope: upstreamScope)
+        }
         // 回执只在快照被接受时更新：hub 未应用我们的数据（重放拒绝等）时，
         // 回执保持旧值 → 下拍按差异自然重发。
         if let identity = nodeID,

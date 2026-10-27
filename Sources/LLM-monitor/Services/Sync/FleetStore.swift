@@ -32,22 +32,20 @@ struct FleetStoredReport: Codable, Equatable, Sendable {
     var timezoneID: String?
 }
 
-/// 报告落库结果：哪些通道被应用。任何可见变化都递增 generation。
+/// 报告落库结果：哪些通道被应用。generation 只随可见内容变化递增（2026-10-27
+/// 裁定，见 `applyReport`）；心跳本身不再推动 generation。
 struct FleetReportApplyOutcome: Equatable, Sendable {
     /// seq 不新于 high-water：所有通道都不应用（§5.6）。
     var rejectedStaleSeq: Bool
     var dailyApplied: Bool
     var quotasApplied: Bool
+    /// 本次实际**改变了内容**的窗口行数（数值不变的重复上报不计）。
     var windowRowsApplied: Int
     var heartbeatUpdated: Bool
     /// hub 侧已接受的 high-water。seq 被拒时把它回给 node：node 据此重建
     /// 本机序号（否则同一份报告会**永久**被拒，而 node 只看到 200，
     /// 表现为「在线但数据永远没进 hub」）。
     var highWaterSeq: Int
-
-    var anyChange: Bool {
-        dailyApplied || quotasApplied || windowRowsApplied > 0 || heartbeatUpdated
-    }
 }
 
 /// hub 对「报告序号落后」的响应体（HTTP 409）。
@@ -231,7 +229,8 @@ final class FleetStore: @unchecked Sendable {
                 && validation.quotasError == nil
                 && stored.quotas != oldStored.quotas
 
-            if stored != oldStored {
+            let reportRowChanged = stored != oldStored
+            if reportRowChanged {
                 try upsertRow(
                     kind: FleetRecordKind.report,
                     scope: scope,
@@ -244,7 +243,13 @@ final class FleetStore: @unchecked Sendable {
                 )
             }
 
+            // 窗口行按内容判变：observedAt 出 payload 后，数值不变的重复上报
+            // 字节稳定，跳过重写也不计变化（2026-10-27 裁定）。
+            let existingWindowPayloads = try queryWindowPayloads(scope: scope, nodeID: nodeID)
+            var windowContentChanged = false
             for row in validation.windowRows {
+                let payload = try FleetCodec.encode(row)
+                guard existingWindowPayloads[row.recordKey] != payload else { continue }
                 try upsertRow(
                     kind: FleetRecordKind.window,
                     scope: scope,
@@ -253,9 +258,10 @@ final class FleetStore: @unchecked Sendable {
                     seq: Int64(report.seq),
                     generation: nil,
                     updatedAt: receivedAt,
-                    payload: try FleetCodec.encode(row)
+                    payload: payload
                 )
                 applied.windowRowsApplied += 1
+                windowContentChanged = true
             }
 
             try upsertRow(
@@ -270,7 +276,11 @@ final class FleetStore: @unchecked Sendable {
             )
             applied.heartbeatUpdated = true
 
-            if applied.anyChange {
+            // generation 只随**可见内容**变化递增（2026-10-27 裁定）：纯心跳
+            // （所有通道与已存内容一致）不再递增——stale 翻转 / 日切仍由装配
+            // 侧 60s 可见签名覆盖；节点据 generation 门控自然跳过无变化的快照，
+            // 快照缓存不再每拍整包重写。
+            if reportRowChanged || windowContentChanged {
                 _ = try bumpGenerationLocked(scope: scope)
             }
             try commit()
@@ -314,6 +324,21 @@ final class FleetStore: @unchecked Sendable {
 
     private struct HighWaterPayload: Codable {
         let lastSeenAt: Date
+    }
+
+    /// 该节点已存窗口行的 payload（recordKey → 字节）。applyReport 据此按
+    /// 内容判变，数值不变的行不重写、不推 generation。
+    private func queryWindowPayloads(scope: String, nodeID: String) throws -> [String: Data] {
+        try mapRows(
+            sql: "SELECT record_key, payload_json FROM sync_records WHERE kind = ? AND scope = ? AND node_id = ?",
+            bind: [.text(FleetRecordKind.window), .text(scope), .text(nodeID)]
+        ) { statement in
+            (try SQLiteConnection.requiredText(statement, column: 0),
+             Self.columnPayload(statement, column: 1))
+        }
+        .reduce(into: [:]) { result, pair in
+            result[pair.0] = pair.1
+        }
     }
 
     // MARK: - hub：读状态 / 快照

@@ -531,18 +531,41 @@ final class FleetStoreTests: XCTestCase {
 
     // MARK: - generation
 
-    func testGenerationMonotonicAndPersistsAcrossReopen() throws {
+    func testGenerationAdvancesOnlyOnVisibleContentChange() throws {
+        let node = UUID()
         XCTAssertEqual(try store.generation(scope: scope), 0)
-        try store.applyReport(report(seq: 1), validation: emptyValidation(), scope: scope)
+        // 首拍带内容 → 递增。
+        try store.applyReport(
+            report(seq: 1, nodeID: node, daily: buckets(input: 10)),
+            validation: emptyValidation(),
+            scope: scope
+        )
         let afterFirst = try store.generation(scope: scope)
         XCTAssertGreaterThanOrEqual(afterFirst, 1)
-        try store.applyReport(report(seq: 2), validation: emptyValidation(), scope: scope)
-        let afterSecond = try store.generation(scope: scope)
-        XCTAssertGreaterThan(afterSecond, afterFirst, "心跳更新也递增 generation（§5.2）")
+
+        // 纯心跳（通道缺席）不递增（2026-10-27 裁定）：stale 翻转 / 日切由
+        // 装配侧 60s 可见签名覆盖，节点据 generation 门控跳过无变化快照。
+        try store.applyReport(report(seq: 2, nodeID: node), validation: emptyValidation(), scope: scope)
+        XCTAssertEqual(try store.generation(scope: scope), afterFirst, "纯心跳不递增 generation")
+
+        // 内容变化（日桶更新）→ 递增；相同内容重发 → 不递增。
+        try store.applyReport(
+            report(seq: 3, nodeID: node, daily: buckets(input: 20)),
+            validation: emptyValidation(),
+            scope: scope
+        )
+        let afterThird = try store.generation(scope: scope)
+        XCTAssertGreaterThan(afterThird, afterFirst)
+        try store.applyReport(
+            report(seq: 4, nodeID: node, daily: buckets(input: 20)),
+            validation: emptyValidation(),
+            scope: scope
+        )
+        XCTAssertEqual(try store.generation(scope: scope), afterThird, "内容不变的重发不递增 generation")
 
         // 重开数据库：generation 跨重启可比（§5.2）。
         let reopened = try FleetStore(url: directory.appendingPathComponent("fleet.sqlite"))
-        XCTAssertEqual(try reopened.generation(scope: scope), afterSecond)
+        XCTAssertEqual(try reopened.generation(scope: scope), afterThird)
     }
 
     // MARK: - 节点移除与信封信息
