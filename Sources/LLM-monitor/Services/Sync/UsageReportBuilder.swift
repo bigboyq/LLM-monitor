@@ -391,14 +391,7 @@ enum UsageReportBuilder {
         )
         // Failure/scanning is more informative than truncation when a source is
         // simultaneously stale and budget-limited.
-        func priority(_ reason: FleetDailyUnavailableReason) -> Int {
-            switch reason {
-            case .failed: return 3
-            case .scanning: return 2
-            case .truncated: return 1
-            }
-        }
-        if let existing = sources[marker.sourceKey], priority(existing.reason) >= priority(reason) {
+        if let existing = sources[marker.sourceKey], existing.severity >= marker.severity {
             return
         }
         sources[marker.sourceKey] = marker

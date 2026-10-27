@@ -120,6 +120,18 @@ struct FleetDailyUnavailableSource: Codable, Equatable, Sendable {
     let reason: FleetDailyUnavailableReason
 
     var sourceKey: String { clientID + "|" + quotaProviderID }
+
+    /// 同一来源多个原因并存时的展示优先级：failed（真故障）> scanning（进行
+    /// 中）> truncated（数据受限）。builder（节点内合并）与 merger（跨节点
+    /// 合并）共用同一序——原来两处序相反，同一对原因在「同机冲突」与
+    /// 「跨机冲突」时胜出者会不同（2026-10-27 统一，按 builder 原序）。
+    var severity: Int {
+        switch reason {
+        case .failed: return 3
+        case .scanning: return 2
+        case .truncated: return 1
+        }
+    }
 }
 
 struct FleetTotals: Codable, Equatable, Sendable {
@@ -798,7 +810,7 @@ enum FleetMerger {
             if let existing = byKey[source.sourceKey] {
                 // Deterministic if nodes report different unavailable reasons
                 // for the same source in the same day.
-                if unavailableReasonPriority(source.reason) > unavailableReasonPriority(existing.reason) {
+                if source.severity > existing.severity {
                     byKey[source.sourceKey] = source
                 }
             } else {
@@ -806,14 +818,6 @@ enum FleetMerger {
             }
         }
         return byKey.values.sorted { $0.sourceKey < $1.sourceKey }
-    }
-
-    private static func unavailableReasonPriority(_ reason: FleetDailyUnavailableReason) -> Int {
-        switch reason {
-        case .scanning: return 1
-        case .failed: return 2
-        case .truncated: return 3
-        }
     }
 
     /// 模型明细行：token 从样本聚合，金额由同一批样本计价（同源硬纪律）。

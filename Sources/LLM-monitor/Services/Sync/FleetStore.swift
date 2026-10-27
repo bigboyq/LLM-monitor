@@ -272,7 +272,7 @@ final class FleetStore: @unchecked Sendable {
                 seq: Int64(report.seq),
                 generation: nil,
                 updatedAt: receivedAt,
-                payload: try FleetCodec.encode(HighWaterPayload(lastSeenAt: receivedAt))
+                payload: Data("{}".utf8)
             )
             applied.heartbeatUpdated = true
 
@@ -320,10 +320,6 @@ final class FleetStore: @unchecked Sendable {
             sourceTruncated: incoming.sourceTruncated,
             unavailableSources: unavailableSources
         )
-    }
-
-    private struct HighWaterPayload: Codable {
-        let lastSeenAt: Date
     }
 
     /// 该节点已存窗口行的 payload（recordKey → 字节）。applyReport 据此按
@@ -377,17 +373,17 @@ final class FleetStore: @unchecked Sendable {
                 logWarn("[fleet-hub] 窗口行损坏 \(windowRowsResult.corruptRowIDs.count) 条，已跳过并清理")
                 corruptRowIDs.append(contentsOf: windowRowsResult.corruptRowIDs)
             }
-            let meta = try queryInt64AndPayload(
-                sql: "SELECT seq, payload_json FROM sync_records WHERE kind = ? AND scope = ? AND node_id = ? AND record_key = 'high-water'",
+            // lastSeen 直接读行的 updated_at 列（与写入时的接收时刻同值），
+            // 不再为它维护一个 JSON payload。
+            let meta = try queryInt64AndDouble(
+                sql: "SELECT seq, updated_at FROM sync_records WHERE kind = ? AND scope = ? AND node_id = ? AND record_key = 'high-water'",
                 bind: [.text(FleetRecordKind.nodeMeta), .text(scope), .text(nodeIDText)]
             )
             var seq = 0
             var lastSeen = Date.distantPast
             if let meta {
                 seq = Int(meta.int64)
-                if let payload = try? FleetCodec.decode(HighWaterPayload.self, from: meta.payload) {
-                    lastSeen = payload.lastSeenAt
-                }
+                lastSeen = Date(timeIntervalSince1970: meta.double)
             }
             nodes.append(FleetHubStoredState.NodeRecord(
                 nodeID: nodeID,
@@ -841,34 +837,13 @@ final class FleetStore: @unchecked Sendable {
         }.first
     }
 
-    private func queryInt64AndPayload(
+    private func queryInt64AndDouble(
         sql: String,
         bind: [Bind] = []
-    ) throws -> (int64: Int64, payload: Data)? {
+    ) throws -> (int64: Int64, double: Double)? {
         try mapRows(sql: sql, bind: bind) { statement in
-            (sqlite3_column_int64(statement, 0), Self.columnPayload(statement, column: 1))
+            (sqlite3_column_int64(statement, 0), sqlite3_column_double(statement, 1))
         }.first
-    }
-
-    /// 单列 payload 查询（SQL 只 SELECT payload_json 一列）。
-    private func queryRows<T>(
-        sql: String,
-        bind: [Bind] = [],
-        map: (Data) throws -> T
-    ) throws -> [T] {
-        try mapRows(sql: sql, bind: bind) { statement in
-            try map(Self.columnPayload(statement, column: 0))
-        }
-    }
-
-    private func queryRowsWithRowid<T>(
-        sql: String,
-        bind: [Bind] = [],
-        map: (Data) throws -> T
-    ) throws -> [(rowid: Int64, value: T)] {
-        try mapRows(sql: sql, bind: bind) { statement in
-            (sqlite3_column_int64(statement, 0), try map(Self.columnPayload(statement, column: 1)))
-        }
     }
 
     private func mapRows<T>(
