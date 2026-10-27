@@ -61,7 +61,7 @@ final class ModelPricingJSONTests: XCTestCase {
         let catalog = try loadPricingJSON()
         // 定价目录的"改价日"钉在这里：它是**快照基准**，不是"今天"，
         // 所以改 ModelPricing.json 的内容时必须同步改这一行。
-        XCTAssertEqual(catalog.lastUpdated, "2026-10-20")
+        XCTAssertEqual(catalog.lastUpdated, "2026-10-27")
 
         let requiredProviders = ["minimax", "openai", "antigravity", "zhipu", "deepseek"]
         for providerID in requiredProviders {
@@ -360,6 +360,26 @@ final class ModelPricingJSONTests: XCTestCase {
         XCTAssertEqual(luna?.cacheReadPerMillion, 0.01)
         XCTAssertEqual(luna?.outputPerMillion, 0.5)
         XCTAssertEqual(luna?.modelLabel, "gpt-6-luna")
+    }
+
+    // MARK: - 新增模型：GPT-6.1 Terra（官方标准价 1.00 / 0.05 / 5.00）
+
+    func testOpenAIGPT61TerraPricing() {
+        let terra = ModelPricingCatalog.pricing(for: "gpt-6.1-terra", quotaProviderID: QuotaProviderID.openAI)
+        XCTAssertEqual(terra?.currency, .usd)
+        XCTAssertEqual(terra?.inputPerMillion, 1)
+        XCTAssertEqual(terra?.cacheReadPerMillion, 0.05)
+        XCTAssertEqual(terra?.outputPerMillion, 5)
+        XCTAssertEqual(terra?.modelLabel, "gpt-6.1-terra")
+
+        // 引擎在小写域精确匹配：大小写变体照样命中，非全等 slug 不命中
+        // （spec 约束：变体后缀需要显式入表才会被计价）。
+        XCTAssertNotNil(
+            ModelPricingCatalog.pricing(for: "GPT-6.1-Terra", quotaProviderID: QuotaProviderID.openAI)
+        )
+        XCTAssertNil(
+            ModelPricingCatalog.pricing(for: "gpt-6.1-terra-high", quotaProviderID: QuotaProviderID.openAI)
+        )
     }
 
     // MARK: - 新增模型：Gemini 4 Argon（推广期定价至 2026-11-30：2.00 / 0.10 / 10.00）

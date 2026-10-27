@@ -1,5 +1,5 @@
 {
-  "lastUpdated": "2026-10-20",
+  "lastUpdated": "2026-10-27",
   "providers": {
     "minimax": {
       "models": [
@@ -33,6 +33,15 @@
           "inputPerMillion": 2,
           "cacheReadPerMillion": 0.1,
           "outputPerMillion": 10
+        },
+        {
+          "match": "exact",
+          "keywords": ["gpt-6.1-terra"],
+          "label": "GPT-6.1 Terra",
+          "currency": "USD",
+          "inputPerMillion": 1,
+          "cacheReadPerMillion": 0.05,
+          "outputPerMillion": 5
         },
         {
           "match": "exact",

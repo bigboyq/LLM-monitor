@@ -183,6 +183,7 @@ secondary window remains `.present` even when its remaining percentage is `0%`.
 | gpt-5.6-terra | 2.00 | 0.20 | 12.00 |
 | gpt-5.6-luna | 0.20 | 0.02 | 1.20 |
 | gpt-6.1-sol | 2.00 | 0.10 | 10.00 |
+| gpt-6.1-terra | 1.00 | 0.05 | 5.00 |
 | gpt-6-sol | 2.00 | 0.20 | 10.00 |
 | gpt-6-luna | 0.10 | 0.01 | 0.50 |
 | gpt-6-astra | 10.00 | 1.00 | 50.00 |
@@ -733,4 +734,4 @@ To compare or sum daily usage across both providers, normalize both into a singl
 
 After normalization, cross-provider sum, average, and chart rendering can treat the two providers as a single data source.
 
-> 核对基线：2026-10-25 · 代码 6f11831
+> 核对基线：2026-10-27 · 代码 <FEAT>
