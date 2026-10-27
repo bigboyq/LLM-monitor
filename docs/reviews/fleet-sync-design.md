@@ -867,6 +867,8 @@ L（单节点退化）与「fleet 退化到只有自己时整个 UI 退化成今
 
 **窗口边界前沿过滤（2026-10-27 技术裁定）：** 用户确认下行 windowUsage 冗余主要由存储模型引发后落地。窗口边界随额度重置滚动（interval ~5h 一换、GLM 免/速/它每日新切片、闲时任务每窗唯一），历史边界既不会再等来新贡献（聚合按精确边界匹配）也没有消费方（展示每组只取一条）；此前存储仅按 `retainDays` 时间清理、装配全量透传，hub 存储与下行载荷随时间线性膨胀。现装配侧 `fleet.windowUsage` 每 (provider, model, kind) 只保留 `endAt` 最新 2 组（`FleetProtocol.windowFrontierPerGroup`，容忍多账号并存边界与跨零点时钟差），存储侧 `pruneWindows` 同口径修剪（`retainDays` 退化为兜底）；同时移除 `FleetWindowUsage.observedAt` 字段——接收时刻记行 `updated_at` 列，原 hub 覆写导致 payload 每拍必变。该字段移除是破坏性 wire 变更，混跑部署须 hub 与副节点同步升级。
 
+**日桶下行瘦身与 generation 内容化（2026-10-27 技术裁定）：** 逐字段核实 UI 消费后确认——副节点对非今天桶只用 totals 与逐日金额文案，过去 6 天的 `entries` / `clientProviders` 是纯冗余。落地：合并桶携带桶级 `valueByCurrency`（按币种分列）与 `costPartial`（有贡献未完整计价，纯金额汇总表达不了，单独携带）；下发只保留最新 `fullDailyBucketsForNode = 2` 天完整桶（容忍跨零点时钟差），更早的天剥明细只留 totals + 汇总 + 完整性标志；展示端 `bucketCostText` 双路径（有汇总直接渲染 / 无汇总回退明细）文案逐字一致。同时 generation 语义收窄为**只随可见内容变化递增**：纯心跳与内容不变的重发不再递增（stale 翻转 / 日切仍由装配侧 60s 可见签名覆盖），窗口行按 payload 字节判变、数值不变不重写，节点侧同代 seq 确认接受时不重写快照缓存——消除每拍空转的存储重写与下行重复采纳。配套清理：unavailable 原因优先级统一为 `severity`（failed > scanning > truncated，builder 与 merger 原序相反，按 builder 序统一）；`node_meta` 的 lastSeen 改读行 `updated_at` 列（payload 恒 `{}`）。
+
 **技术默认，非用户另行裁定：** `nodeID` 落 config 同目录 `.deviceId` 文件；`fleet.sqlite` / `sync_records` 的名称和单表结构；本机 seq 落 `fleet.sqlite` 的 `kind=seq` 行、序号先持久化再发送；scope、窗口记录和 generation 的持久化与缓存隔离；同范围离线贡献保留并标注截止时间。窗口选择是展示规则，不改变副节点上报的范围，也不要求主节点下发范围。实现细节以 `spec/sync.md` 为准。
 
 ### 13.2 待用户确认

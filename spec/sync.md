@@ -60,6 +60,13 @@ DTO 全集（`Models/SyncModels.swift`）：hub 内部的 `FleetSnapshot`
 回包中含本节点轻量回执（nodeID / seq / dailyDigests，日桶、窗口、额度数组均为空），
 GET 回包则为空数组。`participantCount` 只传节点总数，不传其他节点身份。副节点
 收到旧 hub 的完整快照时，也会在缓存 / 发布前裁掉其他节点明细。
+**日桶下行瘦身（2026-10-27 裁定）**：`fleet.dailyBuckets` 只保留最新
+`fullDailyBucketsForNode = 2` 天完整桶（容忍跨零点时钟差，节点眼中的「今天」
+始终完整），更早的天剥掉 `entries` / `clientProviders` 明细，只带 totals、
+完整性标志与桶级金额汇总 `valueByCurrency` / `costPartial`（合并侧从 entries
+计算；纯金额汇总表达不了「有贡献未完整计价」，故单独携带 partial 布尔）。
+展示端逐日金额文案统一走 `FleetUsageProjection.bucketCostText`：有汇总直接
+渲染，无汇总（节点上报桶 / 旧缓存）回退明细路径，两种路径文案逐字一致。
 两种回包都含 `fleet` 汇总与 `electedQuotas`（每个 provider 的单一胜出额度仍带来源标注，
 用于解释当前额度来源；不携带逐节点额度列表）。副节点只提供「全局 / 本机」范围切换，
 不展示远端节点标签或节点拆分；主节点才展示逐节点范围和已连接节点列表。
@@ -104,6 +111,8 @@ clientProviders 汇总逐字段核对；来源感知桶另校验不可用来源�
 ## 4. 合并与选举（`FleetMerger` 纯函数）
 
 - 日桶：按 dayKey 求权威 totals；clientProviders 按 (client, provider) 相加；
+  合并桶同时计算桶级金额汇总 `valueByCurrency`（按币种分列）与 `costPartial`
+  （任何贡献未完整计价）——历史天明细不下发后，逐日金额文案从这两个字段渲染；
   entries 按 (client, provider, model) 相加——金额仅同币种相加，币种冲突整体
   作废金额（不给跨币种假总价）；coverage 按「有价 + 完整」重推导（full+none
   → partial）；`totalsComplete` 取 AND、`sourceTruncated` 取 OR。快照只含
@@ -158,13 +167,16 @@ hub 的 high-water 据此拒绝迟到报告（§7.3）。持久化失败本轮�
 | kind | 内容 |
 |---|---|
 | `report` | 每节点当前接受的报告（`FleetStoredReport`：daily/quotas 独立通道 + nodeName/timezoneID/指纹） |
-| `node_meta` | high-water seq + lastSeen（窗口/日桶清理不清除，§7.6） |
+| `node_meta` | high-water seq + lastSeen（lastSeen 即行 `updated_at` 列，payload 恒 `{}`；窗口/日桶清理不清除，§7.6） |
 | `window` | 每节点每窗口范围一行；接收时刻记在行 `updated_at` 列（payload 无观测时刻字段，内容稳定） |
 | `hub_meta` | generation（跨重启单调可比） |
 | `snapshot` | 副节点快照缓存（scope = upstreamKey + hubUUID，隔离不同上游） |
 
-`applyReport` 单事务：seq 门控 → 通道独立替换/保留 → 窗口 upsert →
-node_meta → 任何可见变化递增 generation。日桶按 **dayKey 逐桶 upsert**
+`applyReport` 单事务：seq 门控 → 通道独立替换/保留 → 窗口按内容判变 upsert
+（数值不变的重复上报不重写，2026-10-27 裁定）→ node_meta → **generation 只随
+可见内容变化递增**（2026-10-27 裁定）：纯心跳与内容不变的重发不递增——stale
+翻转 / 日切仍由装配侧 60s 可见签名覆盖，节点据 generation 门控自然跳过无变化
+的快照，快照缓存不再每拍整包重写。日桶按 **dayKey 逐桶 upsert**
 （通道缺席的天保留旧值），**窗口外的天必须清掉**——节点的报告窗口逐日
 滚动，只增不删会让 hub 存的天数一天涨一格（快照载荷越界 → 全员 500；
 节点卡片画出 N 根柱子而不是 7 根）；协议把日桶通道限死在 7 桶，窗口即上限。
@@ -232,7 +244,9 @@ node_meta → 任何可见变化递增 generation。日桶按 **dayKey 逐桶 up
 - node：推送循环由周期节拍（`pushIntervalSeconds`）与数据变更唤醒（5s 节流）
   共同驱动；每轮 `allocateSeq` → build → （首次）`/v1/health` 握手学 hubUUID
   → POST。仅当响应对应当前 upstreamKey、已验证 hubUUID 且 generation 严格更新
-  时才写快照缓存（§6.5）。网络失败保留最后有效快照并标离线；429 视为限流
+  （或 POST 回执精确确认本轮 seq，见下条）时才采纳快照；**generation 未推进且
+  仅凭 seq 确认接受时不重写缓存载荷**（2026-10-27 裁定，generation 已内容化），
+  digest 回执仍照常更新。网络失败保留最后有效快照并标离线；429 视为限流
   不算离线；hub 返回 5xx 是 hub 侧的问题（链路仍通）→ 报错但不判离线。
   GET 兜底成功仅恢复聚合快照读取，不等价于报告上传成功；非 429 的 POST 错误仍
   保留在 `lastError`，直到后续 POST 成功。409 保留序号重建提示，429 不清除旧错误。
@@ -410,7 +424,8 @@ node 协调器上线与缓存落盘）、`FleetUsageModelsTests`（生效额度�
 Sync / dock 位置写入不清常规草稿，含首次从 nil 写入默认 dock 配置；DSH scanner
 与 builder 测试覆盖样本 cap、旧缓存重建、限额变化、样本老化恢复和权威日桶保留。
 
-> 核对基线：2026-10-27 · 代码 7c13cd7
+> 核对基线：2026-10-27 · 代码 18ae5f0
 > 历史验证（代码 6f11831；记录于文档提交 3ccb3de）：`swift test` 1401 例 0 失败（63.1s）；定向验证 `FleetCostTextPropagationTests` 4 例、`UsageReportBuilderTests|SettingsDraftIsolationTests` 15 例均通过。
 > 2026-10-25 提交前全量验证（即本基线工作区）：`swift test` 1435 例 0 失败（64.5s），覆盖独立 `.deviceId` 身份、默认上报周期跟随常规、菜单 / 设置自启同步、来源级日桶更新 / 输入摘要回执、节点卡片缺桶 / partial / 完整零提示，以及主节点健康用量 + DSH 失败 + 空副节点真实 POST 接入的集成回归。未替换或重启现场应用，DSH 解压依赖缺失仍通过来源不可用提示表达。
-> 2026-10-27 提交前全量验证（即本基线工作区）：`swift test` 1513 例 0 失败（63.2s），覆盖窗口边界前沿过滤（装配下发与存储修剪每 (provider, model, kind) 最新 2 组）、`FleetWindowUsage` 移除 `observedAt`（接收时刻记行 `updated_at` 列），并对齐 683a575 聚合快照下发契约的集成测试（POST 回包轻量回执断言 + hub 侧全量快照断言）。`observedAt` 移除为破坏性 wire 变更，混跑部署须 hub 与副节点同步升级。
+> 2026-10-27（一）提交前全量验证：`swift test` 1513 例 0 失败（63.2s），覆盖窗口边界前沿过滤（装配下发与存储修剪每 (provider, model, kind) 最新 2 组）、`FleetWindowUsage` 移除 `observedAt`（接收时刻记行 `updated_at` 列），并对齐 683a575 聚合快照下发契约的集成测试（POST 回包轻量回执断言 + hub 侧全量快照断言）。`observedAt` 移除为破坏性 wire 变更，混跑部署须 hub 与副节点同步升级。
+> 2026-10-27（二）提交前全量验证（即本基线工作区）：`swift test` 1515 例 0 失败（63.2s / 61.6s / 63.2s 三轮），覆盖 7c13cd7 窗口前沿之后的：日桶下行瘦身（`valueByCurrency`/`costPartial` 桶级汇总 + `nodeResponse` 只留最新 2 天完整桶 + `bucketCostText` 双路径等价）、generation 内容化（纯心跳与内容不变重发不递增；窗口行按内容判变；`acceptSnapshot` 同代 seq 确认不重写缓存）、unavailable 原因优先级统一（builder/merger 共用 `severity`）、node_meta payload 去 `{lastSeenAt}` 冗余与 FleetStore 死代码删除。
