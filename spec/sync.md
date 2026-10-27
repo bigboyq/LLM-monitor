@@ -27,8 +27,8 @@ node（定期上报、消费回传快照）。拓扑严格两层，不级联。
 
 | 方法 | 路径 | 语义 |
 |---|---|---|
-| `POST` | `/v1/usage/day` | node 上报 `NodeUsageReport`，hub 同响应回 `FleetSnapshot`（推 + 取一次往返）；**报告序号落后**（`seq ≤ high-water`）回 `409` + `{"error":…,"highWaterSeq":N}`，node 据此重建本机序号；仅通过序号门控的报告回 200 |
-| `GET` | `/v1/usage/day` | 兜底拉取当前快照 |
+| `POST` | `/v1/usage/day` | node 只上报自己的 `NodeUsageReport`；hub 同响应回全局聚合 + 本节点轻量回执（推 + 取一次往返）；**报告序号落后**（`seq ≤ high-water`）回 `409` + `{"error":…,"highWaterSeq":N}`，node 据此重建本机序号；仅通过序号门控的报告回 200 |
+| `GET` | `/v1/usage/day` | 兜底拉取全局聚合快照，不包含逐节点明细 |
 | `GET` | `/v1/health` | `{"ok":true,"nodeID":"<hubUUID>","protocolVersion":1}`——node 靠它验证 hub 身份 |
 
 服务端（`Services/Sync/HubServer.swift`，`NWListener`）：`Content-Length` 定长
@@ -55,11 +55,22 @@ ATS 拦截、系统限制网络、超时及无法连接应显示各自的脱敏�
 
 ## 3. 报告与快照形状
 
-DTO 全集（`Models/SyncModels.swift`，对齐设计稿 §5.5）：`NodeUsageReport`
+DTO 全集（`Models/SyncModels.swift`）：hub 内部的 `FleetSnapshot`
+保留完整 `nodes[]`，供主节点 UI 拆分查看；出网给副节点时，`nodes[]` 只在 POST
+回包中含本节点轻量回执（nodeID / seq / dailyDigests，日桶、窗口、额度数组均为空），
+GET 回包则为空数组。`participantCount` 只传节点总数，不传其他节点身份。副节点
+收到旧 hub 的完整快照时，也会在缓存 / 发布前裁掉其他节点明细。
+两种回包都含 `fleet` 汇总与 `electedQuotas`（每个 provider 的单一胜出额度仍带来源标注，
+用于解释当前额度来源；不携带逐节点额度列表）。副节点只提供「全局 / 本机」范围切换，
+不展示远端节点标签或节点拆分；主节点才展示逐节点范围和已连接节点列表。
+Fleet 窗口聚合给副节点时清空 contributor/stale/missing 节点 ID 列表，并把缺失或
+过期状态折入 `complete`，保留完整性提示但不泄露逐节点身份。
+
+`NodeUsageReport`
 （外壳：nodeID + 单调 `seq` + `attributionFingerprint`；三通道
 `dailyBuckets` / `windowUsage` / `quotas` 均可选）与 `FleetSnapshot`
-（`hubUUID` + 持久 `generation` + `nodes[]`（每条带 `dailyDigests` 回执）+
-`fleet` 聚合 + `electedQuotas`）。
+（hubUUID + 持久 `generation` + `participantCount` + `fleet` 聚合 +
+`electedQuotas`；hub 内部完整快照另保留逐节点 `nodes[]`）。
 
 通道语义（§5.1）：`nil` = 本次不更新；日桶存在时**最多 7 桶**
 （today + previous six；增量裁定 2026-10-24：可只带需要补发/修正的天，
@@ -212,7 +223,7 @@ node_meta → 任何可见变化递增 generation。日桶按 **dayKey 逐桶 up
   → POST。仅当响应对应当前 upstreamKey、已验证 hubUUID 且 generation 严格更新
   时才写快照缓存（§6.5）。网络失败保留最后有效快照并标离线；429 视为限流
   不算离线；hub 返回 5xx 是 hub 侧的问题（链路仍通）→ 报错但不判离线。
-  GET 兜底成功仅恢复快照读取，不等价于报告上传成功；非 429 的 POST 错误仍
+  GET 兜底成功仅恢复聚合快照读取，不等价于报告上传成功；非 429 的 POST 错误仍
   保留在 `lastError`，直到后续 POST 成功。409 保留序号重建提示，429 不清除旧错误。
 - **hub 数据库重建 / 回滚恢复**：当前串行 POST 成功、已验证 hub 身份与配置版本
   均匹配，且响应内本节点的 seq 精确等于本次提交 seq 时，允许重建 generation
@@ -259,14 +270,16 @@ node_meta → 任何可见变化递增 generation。日桶按 **dayKey 逐桶 up
 
 ## 10. UI 落点（已实现）
 
-两条轴（§10.0）：**用量 scope** 用户切（`AppState.fleetScope`，dock 浮层与
-菜单兜底 hover 卡共用同一份，仅内存态）；**额度来源** 自动
+两条轴（§10.0）：**用量 scope** 在主节点切全局 / 本机 / 远端节点；副节点只切
+全局 / 本机（`AppState.fleetScope`，dock 浮层与菜单兜底 hover 卡共用同一份，
+仅内存态）；**额度来源** 自动
 （`AppState.fleetEffectiveQuota(for:)` 统一入口：本机有效 lastSuccess 优先，
 否则 elected，来源经 `FleetEffectiveQuota.sourceTagText` 标注——本机不标 /
 `来自 X` / `来自 X · 已过期`）。额度不跟 scope 走。
 
 - **卡片**（`ProviderCardView` + `FleetCardContext`，两宿主同源注入）：
-  多节点时出现 scope 控制 + 来源标注。scope 控制用 `FleetScopeSwitcher`
+  多节点时出现 scope 控制 + 来源标注。主节点显示远端节点选项；副节点只显示
+  全局 / 本机。scope 控制用 `FleetScopeSwitcher`
   ——**选项总数（全局 + 本机 + 远端节点）≤4 走分段控件**（一步切换），**>4 走
   菜单栏标题栏那套「label + ellipsis」下拉**（节点名放得下；形态见
   `spec/ui/menu-and-cards.md`）。位置：≤4 项时是标题行**下方**独占一行
@@ -284,9 +297,9 @@ node_meta → 任何可见变化递增 generation。日桶按 **dayKey 逐桶 up
   与 `—`，不回落本机数据、不冒充完整零值；卡片仍保留已同步的历史日图。
   partial 桶显示健康来源及保留值，并提示不可用客户端、原因及可能包含上次数据。
   完整零桶照常显示 0；单节点退化规则保持不变。
-- **菜单**（`HarnessUsageMenuView`）：**范围切换**：≤4 项时是「今日」卡片**上方**
-  独占一行（分段控件，宽度与卡片一致，`HarnessUsageMenuView.scopeRow`）；>4 项时
-  是标题栏右组的下拉（`FleetScopeMenu`：全局 / 本机 / 各节点）。段内**不分设备**——每个 client 段
+- **菜单**（`HarnessUsageMenuView`）：**范围切换**：主节点 ≤4 项时是「今日」卡片**上方**
+  独占一行（分段控件，宽度与卡片一致，`HarnessUsageMenuView.scopeRow`）；主节点 >4 项时
+  是标题栏右组的下拉（`FleetScopeMenu`：全局 / 本机 / 各节点）；副节点只有全局 / 本机。段内**不分设备**——每个 client 段
   头 = 该 client 的 fleet 权威日合计，段内直接是 fleet 已合并的模型明细
   （同币相加、币种冲突置空由 hub 完成）。当前范围只有**一行**总览（标签统一
   「今日」，范围由顶部切换表达）+ 一根客户端占比条与图例（与本机 scope 的总览

@@ -511,7 +511,7 @@ final class FleetSyncCoordinator: ObservableObject {
             // 日志纪律（§9.3）：只记状态与尺寸，不记 body/header——对端可控的
             // nodeName / dayKey 不进日志（可注入换行伪造日志行）。
             logInfo("[fleet-hub] POST \(FleetProtocol.usageDayPath) status=200 bytes=\(body.count)")
-            return snapshotResponse()
+            return snapshotResponse(acknowledging: report.node.nodeID)
         } catch {
             logError("[fleet-hub] 报告落库失败: \(error.localizedDescription)")
             return HubServerResponse.error(500, "Internal Server Error", "报告落库失败")
@@ -556,10 +556,15 @@ final class FleetSyncCoordinator: ObservableObject {
         }
     }
 
-    private func snapshotResponse() -> HubServerResponse {
+    private func snapshotResponse(acknowledging nodeID: UUID? = nil) -> HubServerResponse {
         do {
             let snapshot = try assembleSnapshot(now: Date())
-            let data = try FleetCodec.encode(snapshot)
+            // The hub keeps the full per-node snapshot for its own UI. A node only
+            // needs the fleet aggregate plus its own compact sequence/digest ACK;
+            // returning every node's detail duplicates the aggregate and scales
+            // the response with all local histories.
+            let responseSnapshot = snapshot.nodeResponse(acknowledging: nodeID)
+            let data = try FleetCodec.encode(responseSnapshot)
             guard data.count <= FleetProtocol.maxResponseBodyBytes else {
                 logError("[fleet-hub] 快照超过 \(FleetProtocol.maxResponseBodyBytes) bytes")
                 return HubServerResponse.error(500, "Internal Server Error", "快照超过响应上限")
@@ -661,7 +666,8 @@ final class FleetSyncCoordinator: ObservableObject {
             generatedAt: now,
             nodes: nodeSnapshots.sorted { $0.nodeID.uuidString < $1.nodeID.uuidString },
             fleet: FleetAggregate(dailyBuckets: fleetDaily, windowUsage: fleetWindows),
-            electedQuotas: elected
+            electedQuotas: elected,
+            participantCount: nodeSnapshots.count
         )
 
         // 可见签名（stale 集合 / 日窗 / generation 基线）变化 → 递增 generation，
@@ -912,15 +918,16 @@ final class FleetSyncCoordinator: ObservableObject {
             confirmsSubmittedReport = false
         }
         if let cached, snapshot.generation <= cached, !confirmsSubmittedReport { return false }
-        try store.saveSnapshot(snapshot, upstreamScope: upstreamScope)
+        let nodeSnapshot = nodeID.map(snapshot.compactedForNode) ?? snapshot
+        try store.saveSnapshot(nodeSnapshot, upstreamScope: upstreamScope)
         // 回执只在快照被接受时更新：hub 未应用我们的数据（重放拒绝等）时，
         // 回执保持旧值 → 下拍按差异自然重发。
         if let identity = nodeID,
-           let own = snapshot.nodes.first(where: { $0.nodeID == identity }) {
+           let own = nodeSnapshot.nodes.first(where: { $0.nodeID == identity }) {
             dailyDigestCache[upstreamScope] = own.dailyDigests ?? [:]
         }
-        latestSnapshot = snapshot
-        status.snapshotGeneration = snapshot.generation
+        latestSnapshot = nodeSnapshot
+        status.snapshotGeneration = nodeSnapshot.generation
         return true
     }
 }

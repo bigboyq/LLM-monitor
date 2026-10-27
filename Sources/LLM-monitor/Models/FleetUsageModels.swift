@@ -191,7 +191,7 @@ enum FleetUsageProjection {
             // A singleton continues to use the legacy local menu. For multi-node
             // scope, keep a summary-shaped unavailable state so the caller cannot
             // fall through to local values while the selector still says “全局”.
-            guard snapshot.nodes.count > 1 else { return nil }
+            guard snapshot.isMultiNode else { return nil }
             return unavailableMenuSummary(
                 multiNode: true,
                 notice: "全局今日用量尚未同步"
@@ -293,7 +293,7 @@ enum FleetUsageProjection {
         }
 
         return FleetMenuSummary(
-            multiNode: snapshot.nodes.count > 1,
+            multiNode: snapshot.isMultiNode,
             dailyNotice: dailyBucketNotice(todayBucket),
             fleetTotals: fleetTotals,
             sections: sections

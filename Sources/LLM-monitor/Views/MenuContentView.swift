@@ -184,7 +184,7 @@ struct MenuContentView: View {
             // 实现与 dock 详情浮层的卡头共用 `FleetScopeMenu`（见该文件的
             // 平台怪癖说明）：ellipsis 是**行内图**、宽度上限在字符串层、
             // 按钮必须 `.fixedSize()`。
-            if !state.fleetScopeChoices.isEmpty,
+            if state.fleetScopeControlEnabled,
                FleetScopeControlStyle.preferred(choices: state.fleetScopeChoices) == .dropdown {
                 // scope 切换的**下拉形态**（选项 >4 时）：紧凑地待在标题栏右组，
                 // 刷新按钮左边。选项 ≤4 时它换成内容区「今日」卡片上方的分段行
@@ -192,7 +192,9 @@ struct MenuContentView: View {
                 FleetScopeMenu(scope: state.fleetScope, choices: state.fleetScopeChoices) { newScope in
                     state.fleetScope = newScope
                 }
-                .help("切换显示范围：全局 / 本机 / 各节点")
+                .help(state.fleetScopeChoices.isEmpty
+                    ? "切换显示范围：全局 / 本机"
+                    : "切换显示范围：全局 / 本机 / 各节点")
             }
             // 本地用量的新鲜度（裸 HH:mm / 「计算中…」）：原在「今日合计」数字行
             // 尾部（金额右侧），2026-10 挪到刷新按钮左边。它是**全局**读数（与

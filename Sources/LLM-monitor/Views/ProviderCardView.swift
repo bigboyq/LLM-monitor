@@ -602,7 +602,9 @@ struct ProviderCardView: View, Equatable {
                 },
                 style: .segmented
             )
-            .help("切换显示范围：全局 / 本机 / 各节点")
+            .help(fleet.nodeChoices.isEmpty
+                ? "切换显示范围：全局 / 本机"
+                : "切换显示范围：全局 / 本机 / 各节点")
             .frame(maxWidth: .infinity)
         }
     }
@@ -645,7 +647,9 @@ struct ProviderCardView: View, Equatable {
                     scopeOverride = newScope
                     fleet.onScopeChange?(newScope)
                 }
-                .help("切换显示范围：全局 / 本机 / 各节点")
+                .help(fleet.nodeChoices.isEmpty
+                    ? "切换显示范围：全局 / 本机"
+                    : "切换显示范围：全局 / 本机 / 各节点")
             }
             if ProviderKind.windowedKinds.contains(status.kind), let cardPinStatusBarAction {
                 Button {

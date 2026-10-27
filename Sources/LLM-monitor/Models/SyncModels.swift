@@ -289,6 +289,66 @@ struct FleetSnapshot: Codable, Equatable, Sendable {
     let nodes: [FleetNodeSnapshot]
     let fleet: FleetAggregate
     let electedQuotas: [FleetElectedQuota]
+    /// Hub-side fleet size. Node responses may retain this count while omitting
+    /// other nodes' identities and details, so nodes can choose aggregate/local
+    /// presentation without learning per-node data.
+    var participantCount: Int? = nil
+
+    var isMultiNode: Bool { (participantCount ?? nodes.count) > 1 }
+
+    /// Keep only this node's compact report acknowledgement when a node consumes
+    /// a hub snapshot. Old hubs may still send full node records; discard those
+    /// details before caching or publishing the snapshot locally.
+    func nodeResponse(acknowledging nodeID: UUID? = nil) -> FleetSnapshot {
+        let own = nodeID.flatMap { id in nodes.first { $0.nodeID == id } }.map { node in
+            FleetNodeSnapshot(
+                nodeID: node.nodeID,
+                nodeName: "",
+                lastSeenAt: node.lastSeenAt,
+                seq: node.seq,
+                stale: false,
+                dailyBuckets: [],
+                windowUsage: [],
+                quotas: [],
+                attributionFingerprint: nil,
+                dailyDigests: node.dailyDigests
+            )
+        }
+        let aggregateWindows = fleet.windowUsage.map { row in
+            FleetWindowAggregate(
+                quotaProviderID: row.quotaProviderID,
+                modelID: row.modelID,
+                windowKind: row.windowKind,
+                startAt: row.startAt,
+                endAt: row.endAt,
+                input: row.input,
+                cacheRead: row.cacheRead,
+                output: row.output,
+                reasoning: row.reasoning,
+                valueByCurrency: row.valueByCurrency,
+                coverage: row.coverage,
+                complete: row.complete && row.staleNodeIDs.isEmpty && row.missingNodeIDs.isEmpty,
+                contributingNodeIDs: [],
+                staleNodeIDs: [],
+                missingNodeIDs: []
+            )
+        }
+        return FleetSnapshot(
+            protocolVersion: protocolVersion,
+            hubUUID: hubUUID,
+            generation: generation,
+            hub: hub,
+            generatedAt: generatedAt,
+            nodes: own.map { [$0] } ?? [],
+            fleet: FleetAggregate(dailyBuckets: fleet.dailyBuckets, windowUsage: aggregateWindows),
+            electedQuotas: electedQuotas,
+            participantCount: participantCount ?? nodes.count
+        )
+    }
+
+    func compactedForNode(_ nodeID: UUID) -> FleetSnapshot {
+        nodeResponse(acknowledging: nodeID)
+    }
 }
 
 // MARK: - 编解码（§5.3）

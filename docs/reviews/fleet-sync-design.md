@@ -278,6 +278,8 @@ enum SyncRole: Equatable {
 
 `generation` 在 hub 上任何可见状态变更时递增，包括接受额度/心跳更新、本机数据变化和 stale 状态变化；它须持久跨重启比较。node 仅缓存同一 `upstreamKey + hubUUID` 下更新的 generation。`fleet` 是 `FleetAggregate`，包含 dailyBuckets 与 windowUsage；节点来源由 nodeID 推导，不带 `isLocal`。每个 node 条目携带 `dailyDigests` 逐天摘要回执（增量裁定 2026-10-24）：hub 对该节点已存每个日桶用 `FleetCodec` 规范编码取 SHA256 前 16 hex；副节点对本机构建的日桶计算同一摘要，**只上报摘要不一致的天**——首次配置、本机重启、hub 丢数据（含节点被移除后重入）时回执为空 → 全量七天重建基线；历史天被扫描修正 → 摘要变化 → 自动补发该天。回执最坏失效模式是多发一次幂等补发。
 
+> **2026-10-27 用户裁定（覆盖上面的旧 wire 示例）：**完整 `nodes[]` 只留在 hub 内部，供 hub 的设置与用量 scope 展示。新 hub 对副节点返回 `fleet` 聚合、`electedQuotas`、`participantCount`，不返回其他节点的用量明细；单一胜出额度仍保留来源标注。POST 可附一个仅含上报节点 `nodeID` / `seq` / `dailyDigests` 的回执壳，GET 不含回执。聚合窗口回包移除 contributor/stale/missing 节点 ID，并把缺失 / 过期折入 `complete`。node 只显示「全局 / 本机」，没有远端节点标签或逐节点用量拆分；收到旧 hub 的完整快照也会在本机落库前压缩为该形状。报告仍严格只含上报节点自己的数据。
+
 ### 5.3 编码约定
 
 | 约定 | 理由 |
