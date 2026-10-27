@@ -57,7 +57,7 @@ ATS 拦截、系统限制网络、超时及无法连接应显示各自的脱敏�
 
 DTO 全集（`Models/SyncModels.swift`）：hub 内部的 `FleetSnapshot`
 保留完整 `nodes[]`，供主节点 UI 拆分查看；出网给副节点时，`nodes[]` 只在 POST
-回包中含本节点轻量回执（nodeID / seq / dailyDigests，日桶、窗口、额度数组均为空），
+回包中含本节点轻量回执（nodeID / seq / lastSeen，日桶、窗口、额度数组均为空），
 GET 回包则为空数组。`participantCount` 只传节点总数，不传其他节点身份。副节点
 收到旧 hub 的完整快照时，也会在缓存 / 发布前裁掉其他节点明细。
 **日桶下行瘦身（2026-10-27 裁定）**：`fleet.dailyBuckets` 只保留最新
@@ -80,8 +80,7 @@ Fleet 窗口聚合给副节点时清空 contributor/stale/missing 节点 ID 列�
 `electedQuotas`；hub 内部完整快照另保留逐节点 `nodes[]`）。
 
 通道语义（§5.1）：`nil` = 本次不更新；日桶存在时**最多 7 桶**
-（today + previous six；增量裁定 2026-10-24：可只带需要补发/修正的天，
-dayKey 互异）。旧格式（`unavailableSources == nil`）仍要求 totals complete 才逐桶替换；
+（today + previous six，dayKey 互异）。旧格式（`unavailableSources == nil`）仍要求 totals complete 才逐桶替换；
 来源感知格式按 `(clientID, quotaProviderID)` 更新健康来源，明确不可用来源保留旧值；
 窗口行按完整边界 `(provider, model, kind, startAt, endAt)` 独立 upsert，
 空数组不删除保留期内旧范围（`FleetWindowUsage` 不带观测时刻字段，接收时刻
@@ -89,14 +88,14 @@ dayKey 互异）。旧格式（`unavailableSources == nil`）仍要求 totals co
 金额与 token 必须来自同一批样本（同源计价硬纪律）；`FleetCostCoverage` full
 额外要求样本集完整（截尾金额不能配完整 token 标 full）。
 
-**逐天摘要回执（增量裁定 2026-10-24）**：快照的每个节点条目带
-`dailyDigests`（dayKey → 内容摘要，`FleetCodec` 规范编码后 SHA256 前 16 hex）。
-副节点据此**只上报摘要不一致的天**（首次配置 / 本机重启 / hub 丢数据时回执
-为空 → 全量七天重建基线；全部一致 → 整条通道置 nil，等价心跳）。
-摘要失配的最坏后果是多发一次幂等补发。回执与日桶同窗口（只覆盖节点还会
-产出的天）。来源感知 partial 桶落库后可能含保留的旧数据，因此回执使用最后接受的
-**输入桶**摘要（`dailyInputDigests`），而非合并后桶摘要；旧记录缺该字段时回退
-存桶摘要。被拒收的通道不更新回执，恢复完整后的输入摘要变化会触发重传。
+**日桶全量上报（2026-10-27 裁定，撤销 2026-10-24 增量摘要回执）**：节点
+每拍全量上报七桶，hub 按 dayKey 逐桶幂等 upsert——内容不变的重发不重写
+行、不递增 generation（见 §6 内容判变），历史天扫描修正与 hub 丢数据
+（`removeNode` 重入、DB 重建）由全量自然覆盖，无需回执状态机。撤销动机：
+报告每拍本就全量重建，增量只省请求体中日桶通道的字节（窗口/额度两通道
+与下行快照始终全量），而代价是 hub 输入摘要存储、回执装配、节点缓存与
+双语义回执 fallback 四件套状态；2026-10-27 的下行瘦身（窗口前沿 + 日桶
+rollup）与 generation 内容化落地后，该机制的复杂度已无对价。
 
 hub 侧校验（`FleetReportValidator`，§5.6）：信封（protocolVersion / UUID /
 seq / 时刻有限性）失败整包 400；日桶校验失败保留旧值（totals 与
@@ -182,7 +181,6 @@ hub 的 high-water 据此拒绝迟到报告（§7.3）。持久化失败本轮�
 节点卡片画出 N 根柱子而不是 7 根）；协议把日桶通道限死在 7 桶，窗口即上限。
 来源感知日桶只保留旧桶中显式不可用来源的 clientProviders/entries，与本次健康
 行合并后重算 totals；健康真实零值、禁用或移除的来源清除旧贡献，不累加新旧整桶。
-输入摘要与日桶一同裁剪、持久化；无需新增 SQLite 表，旧 payload 可直接解码。
 窗口清理是双重的（2026-10-27 裁定）：`endAt` 早于 `now - retainDays` 的过期行，
 以及同 `(node, provider, model, kind)` 组内 `endAt` 不是最新
 `windowFrontierPerGroup` 条的行——边界随重置滚动，历史边界没有新贡献也没有
@@ -243,21 +241,21 @@ hub 的 high-water 据此拒绝迟到报告（§7.3）。持久化失败本轮�
   generation（§7.5）。
 - node：推送循环由周期节拍（`pushIntervalSeconds`）与数据变更唤醒（5s 节流）
   共同驱动；每轮 `allocateSeq` → build → （首次）`/v1/health` 握手学 hubUUID
-  → POST。仅当响应对应当前 upstreamKey、已验证 hubUUID 且 generation 严格更新
-  （或 POST 回执精确确认本轮 seq，见下条）时才采纳快照；**generation 未推进且
-  仅凭 seq 确认接受时不重写缓存载荷**（2026-10-27 裁定，generation 已内容化），
-  digest 回执仍照常更新。网络失败保留最后有效快照并标离线；429 视为限流
+  → POST（每拍全量上报，见 §3）。仅当响应对应当前 upstreamKey、已验证 hubUUID
+  且 generation 严格更新（或 POST 回执精确确认本轮 seq，见下条）时才采纳快照；
+  **generation 未推进且仅凭 seq 确认接受时不重写缓存载荷**（2026-10-27 裁定，
+  generation 已内容化）。网络失败保留最后有效快照并标离线；429 视为限流
   不算离线；hub 返回 5xx 是 hub 侧的问题（链路仍通）→ 报错但不判离线。
   GET 兜底成功仅恢复聚合快照读取，不等价于报告上传成功；非 429 的 POST 错误仍
   保留在 `lastError`，直到后续 POST 成功。409 保留序号重建提示，429 不清除旧错误。
 - **hub 数据库重建 / 回滚恢复**：当前串行 POST 成功、已验证 hub 身份与配置版本
   均匹配，且响应内本节点的 seq 精确等于本次提交 seq 时，允许重建 generation
-  基线并更新摘要回执；空 / 旧回执使下一拍补发缺失日桶。普通 GET、序号不匹配
+  基线；hub 丢失的日桶由下一拍全量上报自然回填。普通 GET、序号不匹配
   和配置切换后的迟到响应仍不允许用低 generation 覆盖缓存。
 - **`configVersion` 只在配置/角色变化时递增**（不是每次数据变化）：statuses
   变化（每次配额刷新、每次扫描落库、每次 rebuild）也走同一条更新路径，若
-  一并自增，在飞推送的响应会被当成「迟到响应」丢掉——快照不落缓存、摘要
-  回执不推进（增量补发退化成每拍全量）、`lastSyncAt` 不刷新。
+  一并自增，在飞推送的响应会被当成「迟到响应」丢掉——快照不落缓存、
+  `lastSyncAt` 不刷新。
 - **hub 身份复验**：响应的 `hubUUID` 与已验证身份不一致（hub 在同一地址换机）
   → 不采纳该快照、清空已验证身份、下拍重新握手，并把原因写进 `lastError`；
   不复验的话 node 会永远收不到数据而界面仍显示「已连接」。
@@ -424,8 +422,9 @@ node 协调器上线与缓存落盘）、`FleetUsageModelsTests`（生效额度�
 Sync / dock 位置写入不清常规草稿，含首次从 nil 写入默认 dock 配置；DSH scanner
 与 builder 测试覆盖样本 cap、旧缓存重建、限额变化、样本老化恢复和权威日桶保留。
 
-> 核对基线：2026-10-27 · 代码 18ae5f0
+> 核对基线：2026-10-27 · 代码 af82fa8
 > 历史验证（代码 6f11831；记录于文档提交 3ccb3de）：`swift test` 1401 例 0 失败（63.1s）；定向验证 `FleetCostTextPropagationTests` 4 例、`UsageReportBuilderTests|SettingsDraftIsolationTests` 15 例均通过。
 > 2026-10-25 提交前全量验证（即本基线工作区）：`swift test` 1435 例 0 失败（64.5s），覆盖独立 `.deviceId` 身份、默认上报周期跟随常规、菜单 / 设置自启同步、来源级日桶更新 / 输入摘要回执、节点卡片缺桶 / partial / 完整零提示，以及主节点健康用量 + DSH 失败 + 空副节点真实 POST 接入的集成回归。未替换或重启现场应用，DSH 解压依赖缺失仍通过来源不可用提示表达。
 > 2026-10-27（一）提交前全量验证：`swift test` 1513 例 0 失败（63.2s），覆盖窗口边界前沿过滤（装配下发与存储修剪每 (provider, model, kind) 最新 2 组）、`FleetWindowUsage` 移除 `observedAt`（接收时刻记行 `updated_at` 列），并对齐 683a575 聚合快照下发契约的集成测试（POST 回包轻量回执断言 + hub 侧全量快照断言）。`observedAt` 移除为破坏性 wire 变更，混跑部署须 hub 与副节点同步升级。
-> 2026-10-27（二）提交前全量验证（即本基线工作区）：`swift test` 1515 例 0 失败（63.2s / 61.6s / 63.2s 三轮），覆盖 7c13cd7 窗口前沿之后的：日桶下行瘦身（`valueByCurrency`/`costPartial` 桶级汇总 + `nodeResponse` 只留最新 2 天完整桶 + `bucketCostText` 双路径等价）、generation 内容化（纯心跳与内容不变重发不递增；窗口行按内容判变；`acceptSnapshot` 同代 seq 确认不重写缓存）、unavailable 原因优先级统一（builder/merger 共用 `severity`）、node_meta payload 去 `{lastSeenAt}` 冗余与 FleetStore 死代码删除。
+> 2026-10-27（二）提交前全量验证：`swift test` 1515 例 0 失败（63.2s / 61.6s / 63.2s 三轮），覆盖 7c13cd7 窗口前沿之后的：日桶下行瘦身（`valueByCurrency`/`costPartial` 桶级汇总 + `nodeResponse` 只留最新 2 天完整桶 + `bucketCostText` 双路径等价）、generation 内容化（纯心跳与内容不变重发不递增；窗口行按内容判变；`acceptSnapshot` 同代 seq 确认不重写缓存）、unavailable 原因优先级统一（builder/merger 共用 `severity`）、node_meta payload 去 `{lastSeenAt}` 冗余与 FleetStore 死代码删除。
+> 2026-10-27（三）提交前全量验证（即本基线工作区）：`swift test` 1512 例 0 失败（61.1s），覆盖撤销逐天摘要回执（2026-10-27 裁定，回退每拍全量上报）：删除 `FleetDailyDigest`/`FleetDailyBackfill`/`dailyDigests`/`dailyInputDigests`/节点侧 digest 缓存全套状态（净删 164 行），按天 upsert 与来源感知 partial 合并语义保留并由既有用例钉住。
