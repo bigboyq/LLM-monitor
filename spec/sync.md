@@ -424,7 +424,7 @@ node 协调器上线与缓存落盘）、`FleetUsageModelsTests`（生效额度�
 Sync / dock 位置写入不清常规草稿，含首次从 nil 写入默认 dock 配置；DSH scanner
 与 builder 测试覆盖样本 cap、旧缓存重建、限额变化、样本老化恢复和权威日桶保留。
 
-> 核对基线：2026-10-27 · 代码 af82fa8
+> 核对基线：2026-10-28 · 代码 47312ab
 > 历史验证（代码 6f11831；记录于文档提交 3ccb3de）：`swift test` 1401 例 0 失败（63.1s）；定向验证 `FleetCostTextPropagationTests` 4 例、`UsageReportBuilderTests|SettingsDraftIsolationTests` 15 例均通过。
 > 2026-10-25 提交前全量验证（即本基线工作区）：`swift test` 1435 例 0 失败（64.5s），覆盖独立 `.deviceId` 身份、默认上报周期跟随常规、菜单 / 设置自启同步、来源级日桶更新 / 输入摘要回执、节点卡片缺桶 / partial / 完整零提示，以及主节点健康用量 + DSH 失败 + 空副节点真实 POST 接入的集成回归。未替换或重启现场应用，DSH 解压依赖缺失仍通过来源不可用提示表达。
 > 2026-10-27（一）提交前全量验证：`swift test` 1513 例 0 失败（63.2s），覆盖窗口边界前沿过滤（装配下发与存储修剪每 (provider, model, kind) 最新 2 组）、`FleetWindowUsage` 移除 `observedAt`（接收时刻记行 `updated_at` 列），并对齐 683a575 聚合快照下发契约的集成测试（POST 回包轻量回执断言 + hub 侧全量快照断言）。`observedAt` 移除为破坏性 wire 变更，混跑部署须 hub 与副节点同步升级。
