@@ -67,6 +67,27 @@ tokens，模型名小写 + `_` 归一为 `-` 后按 contains 匹配，数组顺�
 - Antigravity 没有兜底价：未知模型保持"未定价"并在客户端 tab 明确列出（与 zhipu 的
   永远兜底口径不同）。
 
+## Window Value Anchors（窗口价值锚，调研记录）
+
+> 2026-10-28 校准记录。额度 API 只提供 `remainingFraction` 百分比，无金额语义；以下锚点
+> 由「本地目录价折算的用量 ÷ 官方已用百分比」互推得出，仅供余量折算美元参考——
+> **不进任何代码路径**（app 不展示窗口美元值）。价格口径即 §Model Pricing 的 Gemini
+> intro 折扣价。本地账本只覆盖本机 IDE + agy CLI，锚点是**下界**：账号在其他设备的
+> 用量不计入，实际配额只会更高。
+
+| 组 / bucket | 窗口结构 | 整窗价值锚 | 依据 |
+|---|---|---|---|
+| `Gemini Models`（`gemini-5h` / `gemini-weekly`） | 5h + weekly，周 = 6 × 5h | **$30 / 5h，$180 / 周** | 2026-10-28 按当前 Gemini 折扣价确认；与 `weeklyEquivalentMultiplier = 6` 自洽 |
+| `Gemini 4 Argon`（`gemini-argon-wtu-weekly`） | 仅周窗，独立重置时间 | **≈ $15 / 周**（实测 $14.8，取整） | 见下 |
+| `Claude and GPT models`（`3p-5h` / `3p-weekly`） | 5h + weekly，周 = 2 × 5h | 无锚点（本机 3p 用量不足以校准） | — |
+
+**Argon $15 校准（2026-10-28）**：周期 2026-10-25 21:00（北京）起，本机
+`gemini-4-argon-trial` 164 个样本——首条 13:00:17Z（重置边界后 17 秒），与 10-26 /
+10-27 两个完整本地日的日桶逐 token 对账一致，无采样裁剪。已用价值 **$7.01** =
+1.415M uncached input × $2 + 22.49M cacheRead × $0.10 + 192.8K (output+reason) × $10，
+对应官方已用 47.4% → $7.01 ÷ 0.474 ≈ $14.8 ≈ **$15**，推算剩余 ≈ $7.8。周期内消费
+为单一模型，金额锚与 token 锚（bucketId 的 `wtu`）成严格正比，两种口径互不冲突。
+
 ## Config
 
 Full config shape:

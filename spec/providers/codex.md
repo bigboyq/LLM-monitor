@@ -316,6 +316,22 @@ Two complete 100% depletion cycles were monitored and logged in session JSONL fi
    - **Server admission**: Uses `floor()` semantics on usage percentage to protect users from early cutoff (e.g. 99.79% is held at 99.0%).
    - **Client UI**: Formats remaining quota using standard `round()` (e.g. 81.04% used $\implies 81\%$ used, displaying exactly 19% remaining).
 
+### 2026-10 update: load-dependent 5h anchor (2026-10-28)
+
+Official behavior confirmed on 2026-10-28: the 5h window value is **not a fixed \$10.00** —
+it floats in the **\$8 ~ \$10** band depending on server load, with \$10 as the upper bound.
+The weekly anchor (**\$60**, 6 × upper-bound 5h) is unchanged.
+
+Consequences for the canonical model above:
+
+- The 2026-09-09 dual-cycle calibration (99.63% precision against \$10.00) is reinterpreted as
+  an **upper-bound-day sample**; the model coefficients (Astra 1.00 / Sol 0.70 / Luna 1.00 /
+  Terra 1.00) remain the working set.
+- Deriving "remaining dollars" from the fixed \$10 anchor **overestimates** remaining quota on
+  low-load days: if the day's true window is \$8, a displayed 50% remaining is \$4, not \$5.
+- The overshoot mechanics (\$10.05 ~ \$10.70 observed at hard block) stay consistent with the
+  \$10 upper bound; on low-load days the hard block lands correspondingly earlier in dollars.
+
 ### Provider-batch reconciliation (2026-09-14)
 
 Codex local usage details are produced by `LocalUsageOrchestration.reconcile()` after a
@@ -734,4 +750,4 @@ To compare or sum daily usage across both providers, normalize both into a singl
 
 After normalization, cross-provider sum, average, and chart rendering can treat the two providers as a single data source.
 
-> 核对基线：2026-10-27 · 代码 914b017
+> 核对基线：2026-10-28 · 代码 85f6ba9
