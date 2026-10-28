@@ -2,12 +2,13 @@
 
 > 状态：2.0.0 功能已在工作区实现；当前行为以 `spec/sync.md` 为准，本文件保留需求拆解、裁定过程与设计背景。
 > 基线代码：设计起点为 `main` @ `bd26c3a`；当前核对代码基线 `ee250a0`；2026-10-25 统一验证通过，详见 `spec/sync.md`。
-> 本次修订：2026-10-24，落实 UUID、独立同步表及副节点自报窗口范围的决定；同日裁定 §13.2-M（额度候选按 `fetchedAt`）并确认 §13.2-W（窗口范围技术默认），§13.2 已无待确认项。同日第二修订：日桶通道改**增量补发**（逐天摘要回执，见 §5.1 / §6.3 / §13.1），取代「每次全量七桶整体替换」。 同日第三修订：菜单形态改**标题栏 scope 切换 + 段内合并模型行**（见 §10.6 的后续修订），取代本节 J/K 早先裁定的「并排两行 + 节点层」。
+> 本次修订：2026-10-24，落实 UUID、独立同步表及副节点自报窗口范围的决定；同日裁定 §13.2-M（额度候选按 `fetchedAt`）并确认 §13.2-W（窗口范围技术默认），§13.2 已无待确认项。同日第二修订：日桶通道改**增量补发**（逐天摘要回执，见 §5.1 / §6.3 / §13.1），取代「每次全量七桶整体替换」——**该修订已于 2026-10-27 撤销，现行协议为每拍全量七桶 + hub 按 dayKey 幂等 upsert（见 §13.1 撤销注）**。 同日第三修订：菜单形态改**标题栏 scope 切换 + 段内合并模型行**（见 §10.6 的后续修订），取代本节 J/K 早先裁定的「并排两行 + 节点层」。
 > 口径：**多副一主**，不级联。每个实例对自己本机数据永远有权威解释权。
 > 2026-10-25 来源隔离修订（用户授权修复“本机有数据、全局为空”）：以 client/provider
 > 为日桶更新单位，健康来源继续写入，扫描中、失败或预算截断来源显式标记并保留
 > 上次有效行；取代下文早期“任一来源失败省略整条日桶”的保护策略。完整健康零值
-> 仍清除旧值。partial 桶回执最后接受的输入摘要，避免合并旧值后反复补发。
+> 仍清除旧值。（原「partial 桶回执最后接受的输入摘要」机制已随 2026-10-27
+> 撤销增量回执一并移除，保留行不再依赖回执去重。）
 > 全局 / 节点缺今日桶显示未同步，partial 显示已知值和来源提示。窗口保持原 provider
 > 级保护。协议为可选 v1 扩展，新版 hub 兼容旧完整报告；多机部署应先升级 hub。
 
@@ -22,7 +23,7 @@
 | # | 原文 | 实现规则 |
 |---|---|---|
 | R1 | 每个实例将自己作为主节点 | 角色由 `sync.hubURL` 派生：无 upstream 的 hub 接收并合并副节点报告；有 upstream 的 node 只向该 hub 上报并消费回传快照，不转发报告、不监听端口。 |
-| R2 | 定期发送当天完整数据 | 报告默认携带今天及前六天日桶基线；**增量裁定（2026-10-24）**：快照回传逐天摘要回执（dayKey → 内容 digest），副节点只上报与回执不一致的天（首次接触 / 重启 / hub 丢数据时回执为空 → 全量七天重建基线；全部一致时省略通道，等价心跳）。用量来源无效或扫描中省略整条通道。模型明细完整度独立，可不完整并明确标记。窗口摘要按范围独立 upsert，缺失范围不会删除保留期内的既有范围。额度与心跳通道可独立更新。 |
+| R2 | 定期发送当天完整数据 | 报告默认携带今天及前六天日桶基线；**增量摘要回执裁定（2026-10-24）已于 2026-10-27 撤销**：现行协议每拍全量携带七桶，hub 按 dayKey 逐桶幂等 upsert，内容不变的重发不重写、不递增 generation（见 §13.1 撤销注）。用量来源无效或扫描中省略整条通道。模型明细完整度独立，可不完整并明确标记。窗口摘要按范围独立 upsert，缺失范围不会删除保留期内的既有范围（存储侧另有窗口前沿修剪，见 §13.1）。额度与心跳通道可独立更新。 |
 | R3 | 获取主节点合并后的全局数据 | 同一次往返返回经 `hubUUID + generation` 标记的全局快照；副节点仅接受已验证 hub 且 generation 更新的快照。 |
 | R4 | 不级联、多副一主 | node 不转发任何上游/其他节点数据；拓扑严格两层。 |
 | **R5** | **用户裁定额度上报与优先级** | hub 本机有效额度优先，否则从副节点有效额度选一份；各 node 本机有效 `lastSuccess` 优先，否则采用 elected。候选排序按 `fetchedAt`（2026-10-24 已裁定）。 |
@@ -226,7 +227,7 @@ enum SyncRole: Equatable {
 
 ### 5.1 副 → 主：`NodeUsageReport`
 
-报告外壳以稳定 `nodeID` 和持久单调 `seq` 标识。`dailyBuckets` 是可选日用量通道：省略或 `null` 表示本次不更新；存在时最多七个、dayKey 互异，**按 dayKey 逐桶 upsert（增量裁定 2026-10-24）**——通道里出现的天是「本地权威值」，缺席的天表示该天无更新（旧值保留）。基线重建（首次配置、重启、hub 丢数据）时副节点发全量七天。`modelDetailsComplete=false` 可接受并保留明细缺口标记。`windowUsage` 是可选窗口增量：省略或 `null` 表示无窗口更新，数组中每行按完整边界 upsert，空数组不删除保留期内的旧范围。`quotas` 同样可选；`null` 表示不更新额度，数组（可空）表示替换该节点额度集合。来源校验失败或扫描中不更新用量通道。明细不完整不阻止 totals 更新。此处来源/完整性校验指同步 builder 的采集来源与覆盖证据，不是认证；v1 按用户裁定不提供身份认证。额度通道独立校验，可按验证结果更新额度、lastSeen 和 seq。
+报告外壳以稳定 `nodeID` 和持久单调 `seq` 标识。`dailyBuckets` 是可选日用量通道：省略或 `null` 表示本次不更新；存在时最多七个、dayKey 互异，**按 dayKey 逐桶 upsert**——通道里出现的天是「本地权威值」，缺席的天表示该天无更新（旧值保留）。**现行协议每拍全量携带七桶**（2026-10-27 裁定，撤销 2026-10-24 增量摘要回执）：内容不变的重发被 hub 的内容判变幂等吸收，历史修正与 hub 丢数据由全量自然覆盖。`modelDetailsComplete=false` 可接受并保留明细缺口标记。`windowUsage` 是可选窗口增量：省略或 `null` 表示无窗口更新，数组中每行按完整边界 upsert，空数组不删除保留期内的旧范围。`quotas` 同样可选；`null` 表示不更新额度，数组（可空）表示替换该节点额度集合。来源校验失败或扫描中不更新用量通道。明细不完整不阻止 totals 更新。此处来源/完整性校验指同步 builder 的采集来源与覆盖证据，不是认证；v1 按用户裁定不提供身份认证。额度通道独立校验，可按验证结果更新额度、lastSeen 和 seq。
 
 ```jsonc
 {
@@ -240,11 +241,11 @@ enum SyncRole: Equatable {
      "clientProviders":[/* client × provider totals */],
      "entries":[/* FleetUsageEntry model detail */],
      "totalsComplete":true,"modelDetailsComplete":true,"sourceTruncated":false}
-    /* 至多七个日桶：增量裁定后可只带需补发/修正的天 */
+    /* 至多七个日桶，每拍全量携带 */
   ],
   "windowUsage": [
     {"quotaProviderID":"openai","modelID":"chatgpt_plan","windowKind":"interval",
-     "startAt":"2026-10-23T01:32:00Z","endAt":"2026-10-23T06:32:00Z","observedAt":"2026-10-23T06:32:00Z",
+     "startAt":"2026-10-23T01:32:00Z","endAt":"2026-10-23T06:32:00Z",
      "input":10,"cacheRead":20,"output":30,"reasoning":0,
      "value":0.12,"currency":"USD","coverage":"full","complete":true,"sourceTruncated":false}
   ],
@@ -255,7 +256,7 @@ enum SyncRole: Equatable {
 }
 ```
 
-日桶 totals 由同桶 clientProviders 的规范化计数汇总；接收时核对两者一致，不一致则跳过该日用量通道并提示报告错误。日合计是权威总量，不能从可能截断的 entries 反推；entries 完整度独立。金额必须与对应 token 来自同一样本集合。窗口键为 `quotaProviderID + modelID + windowKind + startAt + endAt`，时刻精确比较不舍入；hub 为每条独立摘要记录可信的最后观察时刻；GLM 闲时行使用 `windowKind = glmOffPeak`，仍须携带真实边界与同样本成本。
+日桶 totals 由同桶 clientProviders 的规范化计数汇总；接收时核对两者一致，不一致则跳过该日用量通道并提示报告错误。日合计是权威总量，不能从可能截断的 entries 反推；entries 完整度独立。金额必须与对应 token 来自同一样本集合。窗口键为 `quotaProviderID + modelID + windowKind + startAt + endAt`，时刻精确比较不舍入（`FleetWindowUsage` 不带观测时刻字段，2026-10-27 移除——接收时刻记存储行 `updated_at` 列）；GLM 闲时行使用 `windowKind = glmOffPeak`，仍须携带真实边界与同样本成本。
 
 额度仅包含本节点具有有效 `lastSuccess` 的 provider；未配置或 disabled provider 不报本机额度。DTO 带 `balanceDetail`，裁掉与用量重复的 `codexUsageDetails`。
 
@@ -267,18 +268,18 @@ enum SyncRole: Equatable {
   "hubUUID":"...","generation":104,"generatedAt":"2026-10-23T06:32:00Z",
   "nodes":[{"nodeID":"...","nodeName":"MacBook-Pro","lastSeenAt":"2026-10-23T06:32:00Z","seq":42,"stale":false,
              "dailyBuckets":[/* FleetDailyBucket[] */],
-             "dailyDigests":{"2026-10-17":"a1b2…","/* … */":"…"},
              "windowUsage":[/* 范围独立保存 */],"quotas":[/* FleetQuotaReport[] */]}],
-  "fleet":{"dailyBuckets":[/* 合并的 FleetDailyBucket[] */],"windowUsage":[/* FleetWindowAggregate：同范围合并并列贡献节点 */]},
+  "fleet":{"dailyBuckets":[/* 合并的 FleetDailyBucket[]（下行只留最新 2 天完整桶，历史天为 totals+金额汇总，见下方裁定） */],
+           "windowUsage":[/* FleetWindowAggregate：同范围合并；下行每 (provider, model, kind) 只保留最新 2 个边界 */]},
   "electedQuotas":[{"quotaProviderID":"openai","sourceNodeID":"...","sourceNodeName":"iMac",
                      "fetchedAt":"2026-10-23T06:32:00Z","models":[/* ModelQuota */],
                      "resetCredits":null,"planLabel":"Plus","accountEmail":"user@example.com","balanceDetail":null,"isStale":false}]
 }
 ```
 
-`generation` 在 hub 上任何可见状态变更时递增，包括接受额度/心跳更新、本机数据变化和 stale 状态变化；它须持久跨重启比较。node 仅缓存同一 `upstreamKey + hubUUID` 下更新的 generation。`fleet` 是 `FleetAggregate`，包含 dailyBuckets 与 windowUsage；节点来源由 nodeID 推导，不带 `isLocal`。每个 node 条目携带 `dailyDigests` 逐天摘要回执（增量裁定 2026-10-24）：hub 对该节点已存每个日桶用 `FleetCodec` 规范编码取 SHA256 前 16 hex；副节点对本机构建的日桶计算同一摘要，**只上报摘要不一致的天**——首次配置、本机重启、hub 丢数据（含节点被移除后重入）时回执为空 → 全量七天重建基线；历史天被扫描修正 → 摘要变化 → 自动补发该天。回执最坏失效模式是多发一次幂等补发。
+`generation` **只随可见内容变化递增**（2026-10-27 裁定，generation 内容化）：报告行或窗口行内容变化、坏行清理、stale 翻转 / 日切（经装配侧 60s 可见签名）才递增；纯心跳与内容不变的重发不递增。它须持久跨重启比较。node 仅缓存同一 `upstreamKey + hubUUID` 下更新的 generation（POST 回执精确确认本轮 seq 时允许重建基线；generation 未推进的同代确认不重写缓存载荷）。`fleet` 是 `FleetAggregate`，包含 dailyBuckets 与 windowUsage；节点来源由 nodeID 推导，不带 `isLocal`。（节点条目曾携带 `dailyDigests` 逐天摘要回执——2026-10-24 增量裁定，**已于 2026-10-27 撤销**，见 §13.1。）
 
-> **2026-10-27 用户裁定（覆盖上面的旧 wire 示例）：**完整 `nodes[]` 只留在 hub 内部，供 hub 的设置与用量 scope 展示。新 hub 对副节点返回 `fleet` 聚合、`electedQuotas`、`participantCount`，不返回其他节点的用量明细；单一胜出额度仍保留来源标注。POST 可附一个仅含上报节点 `nodeID` / `seq` / `dailyDigests` 的回执壳，GET 不含回执。聚合窗口回包移除 contributor/stale/missing 节点 ID，并把缺失 / 过期折入 `complete`。node 只显示「全局 / 本机」，没有远端节点标签或逐节点用量拆分；收到旧 hub 的完整快照也会在本机落库前压缩为该形状。报告仍严格只含上报节点自己的数据。
+> **2026-10-27 用户裁定（覆盖上面的旧 wire 示例）：**完整 `nodes[]` 只留在 hub 内部，供 hub 的设置与用量 scope 展示。新 hub 对副节点返回 `fleet` 聚合、`electedQuotas`、`participantCount`，不返回其他节点的用量明细；单一胜出额度仍保留来源标注。POST 可附一个仅含上报节点 `nodeID` / `seq` 的回执壳（`lastSeenAt` 亦携带），GET 不含回执。聚合窗口回包移除 contributor/stale/missing 节点 ID，并把缺失 / 过期折入 `complete`。日桶下行只保留最新 2 天完整桶，更早的天剥明细只带 totals + 桶级金额汇总（`valueByCurrency`/`costPartial`）。node 只显示「全局 / 本机」，没有远端节点标签或逐节点用量拆分；收到旧 hub 的完整快照也会在本机落库前压缩为该形状。报告仍严格只含上报节点自己的数据。
 
 ### 5.3 编码约定
 
@@ -373,7 +374,8 @@ struct FleetWindowUsage: Codable, Sendable {
     let quotaProviderID, modelID: String
     let windowKind: String             // interval, weekly, or provider-defined kind
     let startAt, endAt: Date           // observed actual boundaries; startAt < endAt
-    let observedAt: Date               // hub receive time in snapshot; hub overwrites untrusted report value
+    // observedAt removed 2026-10-27: receive time lives in the storage row's
+    // updated_at column, keeping the payload byte-stable across re-reports.
     let input, cacheRead, output, reasoning: Int
     let value: Double?
     let currency: ModelPriceCurrency?
@@ -450,7 +452,7 @@ DTO 的 `FleetQuotaReport`、`FleetElectedQuota` 与 `FleetWindowUsage` 均使�
 
 ### 5.6 字段校验规则（hub 收到报告时）
 
-校验 UUID、已注册 provider/client ID、非负计数、有限金额、`startAt < endAt`、有效 dayKey、dailyBuckets 通道存在时至多七个唯一日桶（增量裁定 2026-10-24：允许部分天）、序号为非负整数及请求体大小。配对金额/币种不一致时将该金额视为缺失；未知枚举或无效边界拒绝该行并标记完整度不足。额度至少有一个 `ModelQuota.hasActiveQuotaWindow` 才参加选举；DeepSeek 余额为零仍是有效额度。窗口通知范围仍由 provider 类型单独门控。`seq <= node_meta.lastAcceptedSeq` 时不应用任何通道。日用量在来源和通道验证成功后按 dayKey 逐桶更新；额度可独立通过校验并更新，窗口项通过校验后逐行 upsert。
+校验 UUID、已注册 provider/client ID、非负计数、有限金额、`startAt < endAt`、有效 dayKey、dailyBuckets 通道存在时至多七个唯一日桶（0–7 桶均合法，dayKey 互异）、序号为非负整数及请求体大小。配对金额/币种不一致时将该金额视为缺失；未知枚举或无效边界拒绝该行并标记完整度不足。额度至少有一个 `ModelQuota.hasActiveQuotaWindow` 才参加选举；DeepSeek 余额为零仍是有效额度。窗口通知范围仍由 provider 类型单独门控。`seq <= node_meta.lastAcceptedSeq` 时不应用任何通道。日用量在来源和通道验证成功后按 dayKey 逐桶更新；额度可独立通过校验并更新，窗口项通过校验后逐行 upsert（数值不变不重写，2026-10-27 内容判变）。
 
 ### 5.7 存储
 
@@ -464,7 +466,7 @@ CREATE TABLE sync_records (
 );
 ```
 
-`kind=report, record_key=current` 保存日桶与额度快照；`kind=node_meta, record_key=high-water` 保存 seq；`kind=window` 每个时间范围一行；`kind=hub_meta` 与 `kind=snapshot` 各自使用固定 record_key。报告及 node_meta 在事务中更新，hub 重启后 high-water seq 不因日桶清理而丢失。窗口摘要用 `kind=window`、`record_key=quotaProviderID|modelID|windowKind|startAt|endAt` 独立 upsert；`updated_at` 是可信的最后观察时刻，snapshot 的 `observedAt` 使用该值。新报告没有某个范围时不删除旧范围，按 `retainDays` 清理过期窗口。快照、hub_meta 和 node_meta 亦为不同 kind，同表事务提交。hub 本机数据变化也持久递增 generation。来源未验证或 authoritative daily totals 不完整时不替换旧日桶；model detail 不完整可单独标记。独立通过验证的额度、lastSeen、seq 可更新。不得修改任何客户端账本或原本机缓存，不再使用 `fleet-state.json` / `fleet-snapshot.json`。
+`kind=report, record_key=current` 保存日桶与额度快照；`kind=node_meta, record_key=high-water` 保存 seq（lastSeen 即行 `updated_at` 列，payload 恒 `{}`，2026-10-27 去冗余）；`kind=window` 每个时间范围一行；`kind=hub_meta` 与 `kind=snapshot` 各自使用固定 record_key。报告及 node_meta 在事务中更新，hub 重启后 high-water seq 不因日桶清理而丢失。窗口摘要用 `kind=window`、`record_key=quotaProviderID|modelID|windowKind|startAt|endAt` 独立 upsert（数值不变的重复上报不重写）；`updated_at` 是可信的接收时刻（payload 不带观测时刻字段）。新报告没有某个范围时不删除旧范围；窗口清理是双重的（2026-10-27 裁定）：`endAt` 早于 `now - retainDays` 的过期行，以及同组内 `endAt` 不是最新 `windowFrontierPerGroup` 条的行（`retainDays` 退化为兜底）。快照、hub_meta 和 node_meta 亦为不同 kind，同表事务提交。hub 本机数据变化也持久递增 generation（内容不变不递增，2026-10-27 裁定）。来源未验证或 authoritative daily totals 不完整时不替换旧日桶；model detail 不完整可单独标记。独立通过验证的额度、lastSeen、seq 可更新。不得修改任何客户端账本或原本机缓存，不再使用 `fleet-state.json` / `fleet-snapshot.json`。
 
 ## 6. 运行时接线
 
@@ -497,7 +499,7 @@ Models 不依赖 Services；Services 不依赖 Views。窗口聚合的可复用�
 
 额度 DTO 读取 provider 最近一次成功数据；每日 token totals / model 明细沿用现有投影和归因结果；窗口摘要从真实样本按 provider、model、windowKind、startAt、endAt 计算。hub 不下发窗口计划。当前 Codex `recentSamples` 有预算上限，日桶或窗口金额若由截尾样本构造，必须标记 incomplete；不能把完整 token 总量与截尾样本的金额配成 full。优先复用现有 `LocalUsageSummaryBuilder.windowBounds/windowSamples` 与同样本成本逻辑；必要时在截尾前为共享内核增加日×模型及窗口金额汇总。此处允许 scanner 变更，不允许 Services 依赖 Views，也不新增计价路径。
 
-副节点默认只上报与逐天摘要回执不一致的天（基线重建时发全量七天，见 §5.2），并分别发送窗口摘要。额度、窗口和每日用量是独立信息：缺少窗口边界的节点不猜边界，也不以日合计填充窗口。
+副节点每拍全量上报七桶并分别发送窗口摘要（2026-10-27 裁定，撤销增量摘要回执；内容不变的重发由 hub 幂等吸收）。额度、窗口和每日用量是独立信息：缺少窗口边界的节点不猜边界，也不以日合计填充窗口。
 
 ### 6.4 配置 schema 扩展
 
@@ -533,7 +535,7 @@ Node 周期或数据变更时串行分配 seq、生成报告并 POST；hub 在�
 
 ### 7.1 幂等与合并
 
-hub 将每节点有效日用量按 dayKey 逐桶 upsert（增量裁定 2026-10-24，取代整体替换）：报告带的天替换同 dayKey 旧值，缺席的天保留。权威 totals 独立求和，client/provider totals 用于 UI 分组；模型明细按键合并并单独传播完整度。若有定价贡献也有无定价贡献，coverage 为 partial；只有全贡献有价且完整才是 full；全无价才是 none。金额仅同币种相加。报告的 usage 来源无效或扫描中时保持已有日用量，不让空/不完整 totals 覆盖它；totals 完整但 modelDetails 不完整时可更新 totals，并将明细缺口显式标记。
+hub 将每节点有效日用量按 dayKey 逐桶 upsert：报告带的天替换同 dayKey 旧值，缺席的天保留（每拍全量上报下自然覆盖，2026-10-27）。权威 totals 独立求和，client/provider totals 用于 UI 分组；模型明细按键合并并单独传播完整度，合并桶同时携带桶级金额汇总 `valueByCurrency`/`costPartial`（历史天明细不下发给副节点后，逐日金额从该汇总渲染）。若有定价贡献也有无定价贡献，coverage 为 partial；只有全贡献有价且完整才是 full；全无价才是 none。金额仅同币种相加。报告的 usage 来源无效或扫描中时保持已有日用量，不让空/不完整 totals 覆盖它；totals 完整但 modelDetails 不完整时可更新 totals，并将明细缺口显式标记。
 
 `windowUsage` 不随每节点当前报告替换。每个摘要按 `(quotaProviderID, modelID, windowKind, startAt, endAt)` 在 `kind=window` 中独立 upsert；新报告没带某范围不删除旧范围，按 retainDays 过期，并以各窗口的 last-observed time 显示数据新鲜度。严格比较起止时刻，不舍入。聚合只合并完全相同范围。stale 节点的同范围摘要仍贡献并显示离线/最后上报时间及 incomplete；范围不同的摘要不混加。缺边界节点不猜测，也不以日桶补窗口。金额与 token 来自同样本集合；部分扫描不得标 full。
 
@@ -845,7 +847,7 @@ L（单节点退化）与「fleet 退化到只有自己时整个 UI 退化成今
 
 ### 10.7.2 「最近 7 天 token 用量」
 
-`dailyBuckets` 语义为「各节点的七天权威日桶，按 dayKey 逐桶维护」（增量裁定 2026-10-24 后不再要求每拍全量传输）。每日权威 client/provider totals 与模型明细分开携带完整度：即使模型明细因预算截断不完整，权威日总量仍可完整；UI 分别标记总量和明细覆盖。成本聚合依据实际有价/无价贡献推导 coverage（有价且无价为 partial），不能取 coverage 枚举最差值。窗口摘要不从日桶派生。
+`dailyBuckets` 语义为「各节点的七天权威日桶，按 dayKey 逐桶维护」（每拍全量传输，hub 幂等吸收，2026-10-27 裁定）。每日权威 client/provider totals 与模型明细分开携带完整度：即使模型明细因预算截断不完整，权威日总量仍可完整；UI 分别标记总量和明细覆盖。成本聚合依据实际有价/无价贡献推导 coverage（有价且无价为 partial），不能取 coverage 枚举最差值。窗口摘要不从日桶派生。
 
 ## 11. 与现有架构的关系
 
