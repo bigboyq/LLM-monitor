@@ -36,4 +36,4 @@ index and holds only what is cross-cutting.
 
 These are useful future changes if the app grows:
 
-> 核对基线：2026-10-25 · 代码 6f11831
+> 核对基线：2026-10-28 · 代码 85f6ba9

@@ -203,5 +203,5 @@ to the next line, so a replayed event can never stall the scan.
 | Card integration | `Sources/LLM-monitor/Views/ProviderCardView.swift` |
 | Regression tests | `Tests/LLMMonitorTests/DshLocalUsageScannerTests.swift`, `DshHarnessFramesTests.swift`, `ScannerRetentionContractTests.swift` |
 
-> 核对基线：2026-10-25 · 代码 6f11831
+> 核对基线：2026-10-28 · 代码 85f6ba9
 > 源级截断、样本完整性与缓存恢复验证结果见 `spec/sync.md`。

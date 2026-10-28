@@ -196,9 +196,9 @@ agy 不挂独立 timer、没有 quota 依赖：由 `ProviderRefreshScheduler` �
 | 方案 A 的 steps.metadata 双 Timestamp（field 1 发起 / field 7 流式完成）解析与 `.db` 查询 | `Sources/LLM-monitor/Services/AntigravityStepTimestampReader.swift`（`llmStepStreamDurationNanos` / `streamDurationNanosForTest`，增量添加） |
 | 文件快照与选取器 | `Sources/LLM-monitor/Services/Infra/LogFileSnapshot.swift`（与 DSH 共用） |
 | 帧适配 + `agy:` 命名空间 | `Sources/LLM-monitor/Models/UsageFrameExtractors.swift`（`agyFrames`）+ `Models/UsageProjectionKernel.swift`（`UsageSampleNamespace.agy`） |
-| 编排与卡片接线 | `Sources/LLM-monitor/Services/LocalUsageOrchestration.swift`（`agyCoordinator` / `ActiveSources.agy` / readiness 短路）+ `Services/AppState.swift`（`applyAgyUsage`） |
+| 编排与卡片接线 | `Sources/LLM-monitor/Services/LocalUsageOrchestration.swift`（`agyCoordinator` / `ActiveSources.agy` / readiness 短路）+ `Services/AppState+LocalUsage.swift`（`applyAgyUsage`） |
 | 缓存路径 | `Sources/LLM-monitor/Services/TokenMonitorPaths.swift`（`TokenMonitorProvider.agy` → `token-monitor/agy.json`） |
 | Client 身份与描述符 | `Sources/LLM-monitor/Models/ClientIdentity.swift`（`ClientID.agy` + `ClientDescriptor`） |
 | Regression tests | `Tests/LLMMonitorTests/AgyLocalUsageScannerTests.swift`（24 个用例：MODEL 行解析与 thinking 分摊守恒、无 thinking 全记 output、非 DONE / 无 token 行跳过、主文件与分块去重、模型名 join 命中与目录缺失兜底、指纹缓存短路、stat 失败保留 last-good 且窗口重算、log-only 变化解除短路重建缓存、行数熔断失败隔离不入指纹、文件数 / 字节预算截断最旧优先并置位、超长行丢弃与恢复、`AgyLocalUsage.==` 语义、帧投影 `.antigravity` 卡命名空间、unknownModelName 归桶、时长方案 A `.db` 真值优先于方案 B、方案 A (0, 3600] 有效域、.db 缺失走方案 B GENERIC 后继结算、纯文本终答保持 nil、USER_INPUT / 非 GENERIC MODEL 行不误食、跨主文件 / 分块配对与主文件先序、方案 B 有效域边界、v2 旧索引一次性失效重建） |
 
-> 核对基线：2026-10-25 · 代码 6f11831
+> 核对基线：2026-10-28 · 代码 85f6ba9

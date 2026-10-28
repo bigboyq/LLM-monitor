@@ -51,7 +51,7 @@ flowchart TD
 | `Services/TriggerStateStore.swift` | `QuotaSnapshot` / `QuotaWindowBaseline` / `TriggerStateStore`（MainActor 内存权威 + 每次更新经 actor `TriggerStateWriter` 异步串行写盘：0600 / 临时文件 / fsync / rename，`seq` 丢弃迟到旧快照；`update` 返回后内存态立即可读；`AppState.stop()` 另做一次同步兜底写（`flushSynchronously` + 写高水位，排队旧快照不回退） |
 | `Services/AppState.swift` | 刷新成功分支的事件源 + windowedKinds 门控 + notConfigured 时 reset 基线 |
 | `Views/SettingsView.swift` | 「常规 > Bark 推送」全局节 + 各窗口类 provider「通知配置」节 |
-| `Services/ConfigStore.swift` | `AppConfig.bark: BarkConfig?` + `ProviderConfig.notify*` 四字段 |
+| `Models/AppConfig.swift` | `AppConfig.bark: BarkConfig?`（`BarkConfig` 同文件）+ `ProviderConfig.notify*` 四字段与 `setNotifyChannel`；`Services/ConfigStore.swift` 只持便捷访问器（`var bark { config.bark }`） |
 
 ## 3. 事件模型与触发语义
 
@@ -155,7 +155,7 @@ DeepSeek 不参与：余额被二值化为 0/100 percent，无窗口语义；其
 
 ## 5. 配置 Schema（config.json）
 
-`schemaVersion` 维持 2；全部字段 optional、缺失即默认。容错两层：
+`schemaVersion` 当前为 3（多机联动 `sync` 配置节入库时 bump 至 3，通知字段此后未再单独 bump）；全部字段 optional、缺失即默认。容错两层：
 provider 的渠道枚举坏值按缺失处理（`try? + rawValue`）；`bark` 块**逐字段容错**
 （`BarkConfig` 自定义 `init(from:)`，单字段类型写错只回退该字段默认值，
 `ttl` 非法输入归一化为 0，不再拖垮整个 bark 块）。结构级错误（bark 不是对象）
@@ -163,7 +163,7 @@ provider 的渠道枚举坏值按缺失处理（`try? + rawValue`）；`bark` �
 
 ```jsonc
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "bark": {                                  // 全局 Bark 配置，整块 optional（do/catch 容错）
     "enabled": true,
     "serverURL": "https://api.day.app",
@@ -244,4 +244,4 @@ provider 的渠道枚举坏值按缺失处理（`try? + rawValue`）；`bark` �
 - 决策记录：屏幕跳过语义与恢复公式阈值见 §3.2 / §4.3 的裁定标注（2026-09-13）；
   余额触发器延后（裁定）。
 
-> 核对基线：2026-10-25 · 代码 6f11831
+> 核对基线：2026-10-28 · 代码 85f6ba9

@@ -61,7 +61,7 @@ Supported provider fields:
 | `apiKey` | DeepSeek API Key. Empty values and `REPLACE...` placeholders are treated as missing (`ProviderConfig.usableAPIKey`). |
 | `refreshIntervalSeconds` | Optional independent refresh interval (overrides global default of 300s). |
 | `displayName` | Optional card title override. |
-| `clientBindings[]` | The canonical client-to-quota binding controls whether client `deepseek` samples are projected into the card. `zcode` 与 `dsh` 两条绑定**默认开启**、OpenCode `deepseek` 绑定**默认关闭**（事实源是 `Sources/LLM-monitor/Models/ClientIdentity.swift` 的 `ClientProviderBinding.defaultBindings`；`Sources/LLM-monitor/Services/ConfigStore.swift` 的 `defaultClientBindings` 是它的兼容再导出别名）。The legacy provider-level field is migration compatibility only. |
+| `clientBindings[]` | The canonical client-to-quota binding controls whether client `deepseek` samples are projected into the card. `zcode` 与 `dsh` 两条绑定**默认开启**、OpenCode `deepseek` 绑定**默认关闭**（事实源是 `Sources/LLM-monitor/Models/ClientIdentity.swift` 的 `ClientProviderBinding.defaultBindings`；`Sources/LLM-monitor/Models/AppConfig.swift` 的 `AppConfig.defaultClientBindings` 是它的兼容再导出别名）。The legacy provider-level field is migration compatibility only. |
 
 > **Note**: `deepseekPeakWeekdaysOnly` was removed together with the settings toggle
 > (peak never includes weekends is now fixed official policy). Old config files that
@@ -171,10 +171,10 @@ raw daily 诊断字段，不进入统一 total / 图表 / 金额。详见 [`dsh.
 |---|---|
 | Balance fetcher + parse | `Sources/LLM-monitor/Fetchers/DeepseekFetcher.swift` |
 | Peak window (Beijing time) | `Sources/LLM-monitor/Models/PeakWindow.swift` (`DeepseekPeakWindow` is a compatibility typealias) |
-| Balance row + peak indicator | `Sources/LLM-monitor/Views/QuotaViews.swift`（`DeepseekBalanceRow`）、`Views/DeepseekPeakIndicatorView.swift` |
-| Settings pane | `Sources/LLM-monitor/Views/SettingsView.swift`（`deepseekPane`） |
+| Balance row + peak indicator | `Sources/LLM-monitor/Views/DeepseekBalanceRow.swift`（`DeepseekBalanceRow`）、`Views/DeepseekPeakIndicatorView.swift` |
+| Settings pane | `Sources/LLM-monitor/Views/SettingsProviderPanes.swift`（`deepseekPane`，`extension SettingsView`） |
 | Card integration | `Sources/LLM-monitor/Views/ProviderCardView.swift` |
 | Brand logo | `Sources/LLM-monitor/Resources/BrandLogos/deepseek.svg`、`Views/BrandLogoView.swift` |
 | Regression tests | `Tests/LLMMonitorTests/DeepseekFetcherTests.swift`、`PeakWindowTests.swift` |
 
-> 核对基线：2026-10-25 · 代码 6f11831
+> 核对基线：2026-10-28 · 代码 85f6ba9
