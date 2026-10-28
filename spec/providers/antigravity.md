@@ -123,7 +123,14 @@ p25/p75 = 9.4K/14.2K——三者合并在 input 水位中不可分离，System P
    **不要用下一 turn 的 max**：turn 内工具循环会继续推高水位（均值 +15K，极端 +288K），
    混入本 turn 新增。新用户消息用非压缩相邻对的 `first − prev_last` 估计，中位仅 1.5K。
 3. 检测：相邻 turn 满足 `prev_last ≥ 120K 且 next_first < prev_last × 0.55` 记为一次压缩。
-4. 陷阱：会话 fork/克隆在 RPC metadata 里表现为**逐秒相同时间戳的副本 session**
+4. **压缩摘要原文**（`# Resuming from a compaction` 模板）落盘在
+   `~/.gemini/antigravity/brain/<session-id>/.system_generated/logs/transcript_full.jsonl`
+   的 `type == "CHECKPOINT"` 条目（实测 4 条，时间戳与水位检测的压缩事件逐一吻合，
+   6.8K~19.5K 字符）。同文件 `USER_INPUT` 条目是用户输入原文；但 **system prompt 与
+   工具定义不落盘**（db 与 transcript 均只存过程流：用户输入 / 模型输出 / 工具结果，
+   请求层的 systemInstruction 与 tool schema 不在其中），底座 10.7K 的内部拆分只能靠
+   turn-1 first input 总量推断。
+5. 陷阱：会话 fork/克隆在 RPC metadata 里表现为**逐秒相同时间戳的副本 session**
    （实测 `739a3bba` 有两个克隆；另有一秒内 47 事件的 302K 快照回放），统计前必须按
    时间戳去重，否则事件数虚高、起步水位失真。
 
