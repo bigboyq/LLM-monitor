@@ -624,6 +624,50 @@ Bigmodel-Target-Type: PERSONAL                    # 团队套餐为 TEAM + Bigmo
 `nextResetTime` 重新滚动——LLM-monitor 不做「疑似用卡」推断展示，卡片只反映
 接口原始值。
 
+### ZCode 上下文压缩行为（调研记录，2026-10-29）
+
+> 只读调研（窗口 10-21~10-28：4,375 completed 智谱行、91 sessions / 299 turns）。
+> 非官方契约，随 ZCode 版本可能变化；本节只记录发现，不进任何代码路径。
+
+**核心结论：ZCode（3.16.3）没有自动会话压缩（compact）。** 上下文水位单调增长，
+实测 main_turn 持续水位 **435,978 tokens**（15.1 小时、+389K、零压缩），单行尖峰
+**586,892**（GLM-5.3 正常返回 tool-calls，无 context_exceeded）；「prev ≥ 120K 且
+next < 0.55×prev」的 antigravity 式骤降检测命中的 3 次全部是**单次请求注入的尖峰
+假信号**（下一调用立即回到 prev+微涨、cache 前缀不变 cr/in=0.983），不是压缩。
+无 summary 模型条目、message 表无 compact 事件类型、日志无 compact 记录。
+
+ZCode 真正的上下文管理手段（rollout model-io 字段实证）：
+
+| 机制 | 行为 |
+|---|---|
+| **请求窗口三分法**（`messagesKind` / `messageOffset` / `messageCount`） | `full`（全量消息库）/ `tail`（**固定最后 64 条**，offset=count−64）/ `delta`（仅新增 2~3 条）；水位 = 底座 + 窗口内容 |
+| **turn 边界 reasoning 剥离** | 新用户消息后，窗口内旧 assistant 消息的 reasoning 块全部不发。实测 diff：reasoning 46,471 字符 → 0、text 原样，input 236,681 → 171,636（−65K，回落比 0.72~0.81，6 次同类）；**cache_read 全部崩塌到 18.5~23.4K**（cr/in≈0.11~0.21，前缀从头改写） |
+| **静态底座** | system prompt + 56 个工具定义 ≈ **22,080~23,360 tokens**（缓存失效后幸存的幸存前缀）；session 首行 input p50 = 30,690（含首条消息） |
+
+其余量：增长斜率（435K session）≈ +25.8K tokens/hour；turn 级水位（n=223）p50 =
+170,610 / p90 = 417,654 / max = 586,892；subagent 行水位 p50 = 86,639、max = 403,929
+（分 agent 上限：G53-General 272K、general-purpose 404K、Explore 116K）。
+
+**与 Antigravity / Codex 的路线差异**：ZCode 的水位由「窗口构造」决定而非「全部
+历史」，压缩式骤降检测在 ZCode 上不可用；真实削减只有 turn 边界的 reasoning 剥离
+（削 19~27% 且 cache 全断）。
+
+**数据在哪看**：
+
+```bash
+# WAL 活跃库：三件套拷到 /tmp 只读，勿直查原文件
+cp ~/.zcode/cli/db/db.sqlite{,-wal,-shm} /tmp/zc.db
+sqlite3 -readonly /tmp/zc.db "SELECT session_id,started_at,turn_id,input_tokens,
+  cache_read_input_tokens,output_tokens,model_id FROM model_usage
+  WHERE provider_id LIKE 'account:bigmodel-%' AND status='completed'
+  ORDER BY session_id,started_at;"
+```
+
+`query_source` 区分 main_turn / subagent / session_title（session_title 行 input 仅
+236~732，剔除）；3.16.3 的 turn_id 无 NULL。请求构造的实证文件在
+`~/.zcode/cli/rollout/model-io-session_*.jsonl`（**只保留最近 3 个 session**，尖峰
+session 不一定在内）。
+
 ### Implementation map
 
 | Responsibility | Source |

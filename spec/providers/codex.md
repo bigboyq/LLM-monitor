@@ -332,6 +332,49 @@ Consequences for the canonical model above:
 - The overshoot mechanics (\$10.05 ~ \$10.70 observed at hard block) stay consistent with the
   \$10 upper bound; on low-load days the hard block lands correspondingly earlier in dollars.
 
+## Context compaction（上下文压缩，调研记录）
+
+> 2026-10-28/29 观测（窗口 10-21~10-28：83 个 rollout 文件、8,312 条 token_count 事件、
+> **56 次真实压缩**）。非官方契约，随版本可能变化；本节只记录发现，不进任何代码路径。
+
+**设计模式：按 context window 的百分比触发（p50 = 80%，硬阈值簇 ≈ 94.5%），压到 ~44K
+起步**。与 antigravity 的绝对水位（~300K）不同，Codex 的触发跟随模型窗口缩放。
+
+| 观测量 | 值 |
+|---|---|
+| 触发水位（pre，压缩前最后一次非零 input） | 156.8K ~ 449.3K，p50 = 224.2K；**按 window 百分比**：p50 = 80%，双峰——17 次聚在 94.0%~94.8% 的硬阈值簇（auto-compact 触发线 ≈ 0.945 × window），39 次散布 60%~87% 的早压缩（其中 19 次前 120s 有 task_started，疑为新用户消息投影检查触发；未找到 `/compact` 明文命令，手动/自动无法区分） |
+| 模型窗口 | `model_context_window` 逐响应变化：gpt-6.1-sol = 475,000 / gpt-6-luna = 258,400（session 内可切模型）；luna 组 pre p50 = 206K（80%）、sol 组 p50 = 374.7K（79%） |
+| 压缩完成水位（post，压缩后第一条非零 input） | 30.5K ~ 62.7K，**p50 = 43.9K**（≈ window 的 16%） |
+| 底座（新会话首事件 input，含首条消息） | 30.2K ~ 42.0K，**p50 ≈ 35.0K**（比 antigravity 的 ~10.7K 大一个量级） |
+| 压缩比 | 表观（post/pre）p50 = 18%；**扣除底座后对话内容的真实压缩比 ≈ 4.7%**——压缩后上下文里 ~80% 是固定底座 |
+| 摘要形态 | `compacted` 事件的 `replacement_history` 含 `{type:"compaction", encrypted_content:...}`——**服务端加密摘要**（base64 p50 34,744 字符 ≈ 26KB ≈ 6~7K token，固定形状，与 post−底座差值吻合），本地读不到明文；另有若干 retained 原始 user 消息（带 `retained_source` 指回原 id） |
+| 增长斜率（相邻两次模型调用的 input 增量，n=7,895） | 轮内（工具循环）p50 +909、p90 +5,795、max +20.5K；跨轮（新用户消息）p50 +725、p90 +3,220、max +32.8K |
+
+**数据在哪看（复现路径）**：
+
+1. `~/.codex/sessions/YYYY/MM/DD/rollout-<UTC时间>-<thread_id>.jsonl`，每行
+   `{ordinal, timestamp, type, payload}`。**水位字段**：`type=="event_msg"` 且
+   `payload.type=="token_count"` → `payload.info.last_token_usage.input_tokens`
+   （cache-inclusive，`cached_input_tokens` 是其子集；同轮内严格单调递增，除压缩点外
+   零例外）。时间戳用顶层 `.timestamp`（ISO-8601 UTC ms）。
+2. **压缩点双标记**：(a) 顶层 `type=="compacted"`；(b) 同秒一条 `input=0` 的
+   token_count。两标记 56/56 双向 ±5s 匹配，零漏检零误检；跳过零事件后套用
+   「prev ≥ 120K 且 next < prev × 0.55」骤降规则得到完全相同的 56 个点。
+3. **组键必须用文件**，不能用 `session_meta.payload.id`：resume/子代理文件会继承父 id
+   （文件名 `parent_child` 双 id 或开头拷贝父 meta）。
+
+**数据质量陷阱**：
+
+- 71/83 文件是 `luna_worker` 子代理线程（`source.subagent.thread_spawn`，depth=1）：
+  spawn 文件首调用**继承父会话全部上下文**（最高 310K），其首事件 input 不是底座；
+  其中 4 次压缩是「spawn 继承超限 → 立即压缩」。
+- resume 文件开头会重放一条 compacted 事件（12 条，无零标记、无 pre/post），不计入
+  压缩次数。
+- 一次压缩连发两条 `input=0` 的 token_count（相隔 1~3s），按「连续零折叠」去重，
+  否则 56 会虚增为 60。
+- `input=0` 的事件里 `total_token_usage` 仍是累计值（13.6M 级），做日用量统计时勿把
+  `last` 与 `total` 混用（与 §Local session aggregation 的 DailyTokenUsage 口径一致）。
+
 ### Provider-batch reconciliation (2026-09-14)
 
 Codex local usage details are produced by `LocalUsageOrchestration.reconcile()` after a
