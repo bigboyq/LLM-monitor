@@ -613,6 +613,13 @@ Bigmodel-Target-Type: PERSONAL                    # 团队套餐为 TEAM + Bigmo
 调用与响应（全部历史日志检索 `coding-plan/reset` / `available_*_resets` 零命中），
 活动套餐的日志解析路线对重置卡不可行。
 
+> 2026-10-28 复测补充：`~/.zcode/v2/credentials.json` 的全部条目（`zcodejwttoken` /
+> `oauth:bigmodel:access_token` / 各套餐 `account-provider:...:api-key`）均为 `enc:v1:`
+> 前缀的**密文**（文件随 ZCode 运行持续刷新，明文只在进程内，本地无法解出）——②的
+> "读文件拿 token"路线从根上不存在。同日用密文直发 `/reset/status`、用 Coding Plan Key
+> （raw `Authorization`）直发均 HTTP 401；`~/.zcode/v2/coding-plan-cache.json` 只有套餐
+> 可用性（`entryStatus`），无重置卡数据。
+
 **可观测副作用**：用卡成功后 monitor 接口对应窗口的 `remaining` 立即回满、
 `nextResetTime` 重新滚动——LLM-monitor 不做「疑似用卡」推断展示，卡片只反映
 接口原始值。
@@ -720,4 +727,4 @@ whether the quota batch succeeded. GLM's former dedicated periodic trigger
 The scanner's db+WAL fingerprint check is unchanged: when nothing changed only a `stat()`
 runs (microseconds); SQL (~1.5ms) only runs when the WAL actually moved.
 
-> 核对基线：2026-10-25 · 代码 85541c7
+> 核对基线：2026-10-28 · 代码 85f6ba9

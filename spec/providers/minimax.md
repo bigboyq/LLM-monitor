@@ -195,9 +195,10 @@ When a raw status is absent, the default is derived from the percent: no percent
 that carries only a weekly window) succeed instead of failing the whole provider
 refresh. Declaring a window `.present` (raw status 1/2, or a percent-only default)
 while its percent is missing is still rejected. A missing `weekly_end_time` passes
-`weeklyResetsAt = nil` through unchanged — the consumer degrades safely (fixed yellow
-line, local window bucketing skipped) rather than fabricating a reset time by
-synthesizing a 7-day boundary.
+`weeklyResetsAt = nil` through unchanged — the consumer degrades safely (time-aware
+coloring falls back to the baseline 100% denominator: `< 20%` red / `< 50%` yellow /
+otherwise green, since `timeFraction` is nil; local window bucketing skipped) rather
+than fabricating a reset time by synthesizing a 7-day boundary.
 
 `intervalWindowSeconds` 是**派生值**而非透传。minimax 的 5h 窗口贴固定日边界
 00:00 / 05:00 / 10:00 / 15:00 / 20:00（本地时区），最后一段 20:00→24:00 只有 4 小时，
@@ -994,6 +995,46 @@ total_5h_cost    = cost_in_plan + cost_out_of_plan
 
 A working hypothesis (DSH 2026-08-17 10:00+5h): `cost_in_plan ≈ ¥24`, `cost_out_of_plan ≈ ¥6`, `total ≈ ¥30`. To realize this split empirically, see Open Questions § 5h-quota cross-window attribution — it requires persisting every quota snapshot.
 
+## 额度重置卡（调研记录，未接入）
+
+> 2026-10-28 调研结论。桌面端私有接口，LLM-monitor **有意不接入**；本节只记录发现，
+> 供未来官方开放 API 或桌面端行为变化时参考。背景：据公开资料 Token Plan 已于
+> 2026-10-01 停售、被 M Plan（全模态统一额度）取代，重置卡语义可能随套餐迁移继续变化。
+
+**接口来源**：MiniMax Agent 桌面端 3.1.6 的 IPC Proxy 日志（`~/Library/Logs/MiniMax/api-*.log`
+逐条记录请求头——Authorization 脱敏——与响应状态）+ `/Applications/MiniMax Code.app` 内
+`app.asar` 字符串逆向。host 与 open platform 同为 `www.minimaxi.com`，但走
+`/backend/account/` 路由前缀；裸 `/backend/account/reset_card` 是 404——它是**路由前缀**，
+子路径才是端点：
+
+| 端点 | 方法 | 说明 |
+|---|---|---|
+| `/backend/account/reset_card/list` | GET | 可用重置卡列表（asar 逆向所得，日志未观测到调用） |
+| `/backend/account/reset_card/flows` | GET | 近 30 天获得/使用记录；query：`create_time`（记录窗口起点 ms，观测值早于请求 ~11 天，精确语义未确认）/ `page` / `size` / `business=Agent` / `device_platform=desktop`。桌面端日志实测 HTTP 200 + `baseRespStatusCode: 0`（面板打开时触发） |
+| `/backend/account/reset_card/use` | POST | 用卡（asar 逆向所得，日志未观测到调用） |
+
+响应走与 `/v1/token_plan/remains` 相同的 `base_resp` envelope（`status_code=1004` = 未登录）。
+同鉴权域的兄弟端点：`/backend/account/token_plan/remains_percent`（桌面端版余额百分比，
+桌面端约每 10s 轮询）、`/backend/account/token_plan_credit`（积分；asar 内另有
+`credit_spending` / `my_credit_usage` / `fallback` 子路径）。
+
+**鉴权**（桌面端登录会话域；桌面端请求全部携带，`Authorization` 实测必要）：
+
+```
+Authorization: Bearer <MiniMax Agent 桌面端登录 JWT>   # sharedAuth；日志字段 accessTokenGeneration 代际轮换
+X-Group-Id: <op_group_id>                             # 工作区/群组 id（观测值为纯数字）
+Origin / Referer: https://www.minimaxi.com
+User-Agent: MiniMaxAgent Mozilla/5.0 (...) MiniMax/3.1.6 Chrome/... Safari/537.36
+```
+
+**不可获取的原因**（2026-10-28 实测）：LLM-monitor 手里两把钥匙都被
+`1004 not login` 拒绝——① config 的 `sk-cp-...` Token Plan API key（open platform 鉴权域，
+即 `/v1/token_plan/remains` 同一把）；② `~/.minimax/local-runtime.auth.json` 的 CLI
+runtime JWT（明文可读，但它是 Code CLI 会话，不是桌面 Agent 会话）。桌面端现行 JWT
+无明文落盘：`~/Library/Application Support/MiniMax/Local Storage/leveldb` 只有陈旧过期
+残片，现行 token 由主进程持有（safeStorage/Keychain 域）——ZCode 余额日志那条
+「解析客户端落盘数据」的旁路对 MiniMax 不可行。
+
 ## Known Limitations
 
 - `cost_usd` is present in `local_runtime_token_usage` but is **not read at all** by the reader, let alone shown in the UI — the scanner only keeps `input/output/cache/rounds/turns`. (Pricing for the chart's money column comes from `ModelPricing.json` × tokens, not from the ledger's own `cost_usd`.) Future work: add a "今天 $0.42" suffix to the footer.
@@ -1084,4 +1125,4 @@ reasoning maximum, character aggregation, and output conservation.
 
     To realize this split, the fetcher must persist every `current_interval_remaining_percent` sample with a timestamp. Currently it only stores the most recent value in `ModelQuota`; a `local_runtime_quota_snapshots(model_name, ts, interval_remaining_percent, weekly_remaining_percent, interval_total_count, interval_usage_count, weekly_total_count, weekly_usage_count)` table is needed, and `local_runtime_token_usage` should gain a `quota_snapshot_id` so each row can be tagged "inside plan" vs "credits".
 
-> 核对基线：2026-10-27 · 代码 788463b
+> 核对基线：2026-10-28 · 代码 85f6ba9
