@@ -88,6 +88,37 @@ tokens，模型名小写 + `_` 归一为 `-` 后按 contains 匹配，数组顺�
 对应官方已用 47.4% → $7.01 ÷ 0.474 ≈ $14.8 ≈ **$15**，推算剩余 ≈ $7.8。周期内消费
 为单一模型，金额锚与 token 锚（bucketId 的 `wtu`）成严格正比，两种口径互不冲突。
 
+## Context compaction（上下文压缩，调研记录）
+
+> 2026-10-28 观测结论（最近一周 6276 事件 / 34 会话 / 550 turns，27 个独立压缩事件）。
+> 非官方契约，随 IDE 版本可能变化；本节只记录发现，不进任何代码路径。
+
+**设计模式：~300K 预判触发 → 压到 ~20K 起步**（中位场景压掉 93%）。
+
+| 观测量 | 值 |
+|---|---|
+| 触发时点水位（pre） | 129K ~ 298K，p50 = 265K；**预判式**而非固定水位——`当前水位 + 本 turn 预期增量 > ~300K` 即触发，重 turn（单 turn 增幅 +60K~290K 的工具循环）在 130K~230K 提前触发，轻 turn 涨到 290K+ 才触发 |
+| 压缩完成水位（post） | 11K ~ 118K，**p50 = 19K**，p25 = 15K |
+| 压缩比（post/pre） | 5% ~ 54%，p50 = 7%，p75 = 22% |
+| 重度会话节奏 | `739a3bba`（10-22）一天 5 次：05:51 从 35K 起步、4h/19 turns 涨到 271K 触顶，之后 37min → 1h35m → 2h10m → 42min 压一次；连环场景 17 分钟内连压 3 次（199K→63K→232K→66K→272K→73K） |
+
+**数据在哪看（复现路径）**：
+
+1. 事件账本：`~/Library/Application Support/LLM-monitor/token-monitor/antigravity.json`
+   的 `samplesBySession`——scanner 经 RPC `GetCascadeTrajectoryGeneratorMetadata` 拉取的
+   全量逐事件样本（非采样），每个样本带 `completedAt` / `inputTokens`（cache-inclusive，
+   即该轮喂给模型的完整上下文）/ `promptID`（`<session>:turn-N`）。原始 db
+   （`~/.gemini/antigravity/conversations/<uuid>.db`）存的是 protobuf blob，不便直读。
+2. 水位口径：按 `promptID` 聚 turn，**压缩前水位 = pre turn 的 last input**（turn 内
+   递增，末次调用 = 完整历史，最后一条 input 已进历史、会被一起摘要，不扣）；
+   **压缩完成水位 = 下一 turn 的 first input**（= 摘要 + 保留消息 + 新用户消息）——
+   **不要用下一 turn 的 max**：turn 内工具循环会继续推高水位（均值 +15K，极端 +288K），
+   混入本 turn 新增。新用户消息用非压缩相邻对的 `first − prev_last` 估计，中位仅 1.5K。
+3. 检测：相邻 turn 满足 `prev_last ≥ 120K 且 next_first < prev_last × 0.55` 记为一次压缩。
+4. 陷阱：会话 fork/克隆在 RPC metadata 里表现为**逐秒相同时间戳的副本 session**
+   （实测 `739a3bba` 有两个克隆；另有一秒内 47 事件的 302K 快照回放），统计前必须按
+   时间戳去重，否则事件数虚高、起步水位失真。
+
 ## Config
 
 Full config shape:
