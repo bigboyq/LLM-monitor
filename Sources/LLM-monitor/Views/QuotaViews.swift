@@ -61,17 +61,31 @@ struct CompactResetCreditsRow: View {
                 .help(staleHelp)
             }
 
+            let expColor = Self.expiryColor(for: resets.nearestExpiry, now: displayDate)
             HStack(spacing: 4) {
                 Image(systemName: "clock.arrow.circlepath")
                     .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(expColor)
                 Text(expiryText)
                     .font(MenuTypography.resetDate)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(expColor)
                     .lineLimit(1)
             }
         }
         .padding(.vertical, 2)
+    }
+
+    /// 最近重置卡过期时间颜色：<=24h 红色、<=48h 黄色、>48h 次要灰
+    static func expiryColor(for nearestExpiry: Date?, now: Date) -> Color {
+        guard let nearestExpiry else { return .secondary }
+        let remaining = nearestExpiry.timeIntervalSince(now)
+        if remaining <= 24 * 3600 {
+            return .criticalTint
+        } else if remaining <= 48 * 3600 {
+            return .warningTint
+        } else {
+            return .secondary
+        }
     }
 
     private var expiryText: String {
@@ -110,7 +124,7 @@ struct CreditEntryRow: View {
     var body: some View {
         HStack(spacing: 6) {
             Circle()
-                .fill(Color.healthyTint)
+                .fill(Self.dotColor(for: entry.expiresAt, now: displayDate))
                 .frame(width: 5, height: 5)
 
             if let expiresAt = entry.expiresAt {
@@ -120,7 +134,7 @@ struct CreditEntryRow: View {
 
                 Text(Formatters.formatRelativeShort(from: expiresAt, now: displayDate))
                     .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Self.relativeTextColor(for: expiresAt, now: displayDate))
             } else {
                 Text("过期时间未知")
                     .font(.system(size: 11))
@@ -128,6 +142,32 @@ struct CreditEntryRow: View {
             }
 
             Spacer(minLength: 0)
+        }
+    }
+
+    /// 到期紧迫度颜色辅助函数：<=24h 红色、<=48h 黄色、>48h 绿色（用于指示圆点）
+    static func dotColor(for expiresAt: Date?, now: Date) -> Color {
+        guard let expiresAt else { return .secondary }
+        let remaining = expiresAt.timeIntervalSince(now)
+        if remaining <= 24 * 3600 {
+            return .criticalTint
+        } else if remaining <= 48 * 3600 {
+            return .warningTint
+        } else {
+            return .healthyTint
+        }
+    }
+
+    /// 剩余时间相对文案颜色：<=24h 红色、<=48h 黄色、>48h 次要灰
+    static func relativeTextColor(for expiresAt: Date?, now: Date) -> Color {
+        guard let expiresAt else { return .secondary }
+        let remaining = expiresAt.timeIntervalSince(now)
+        if remaining <= 24 * 3600 {
+            return .criticalTint
+        } else if remaining <= 48 * 3600 {
+            return .warningTint
+        } else {
+            return .secondary
         }
     }
 }

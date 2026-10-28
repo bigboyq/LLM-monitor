@@ -1517,6 +1517,81 @@ final class QuotaWindowUsageValueTests: XCTestCase {
         XCTAssertEqual(resets.availableCount, 3, "折叠态那句『重置卡数量』与清单长度必须一致")
     }
 
+    /// 重置卡到期紧迫度颜色规则：
+    /// - <=24h（含已过期）：.criticalTint（红）
+    /// - <=48h 且 >24h：.warningTint（黄）
+    /// - >48h：折叠行与文本走 .secondary（灰），明细圆点走 .healthyTint（绿）
+    /// - nil（无日期）：折叠行走 .secondary，明细行走 .tertiary
+    func testResetCreditsExpiryColorRules() {
+        let now = Date()
+
+        // 1. CompactResetCreditsRow.expiryColor
+        XCTAssertEqual(
+            CompactResetCreditsRow.expiryColor(for: now.addingTimeInterval(24 * 3600), now: now),
+            .criticalTint
+        )
+        XCTAssertEqual(
+            CompactResetCreditsRow.expiryColor(for: now.addingTimeInterval(12 * 3600), now: now),
+            .criticalTint
+        )
+        XCTAssertEqual(
+            CompactResetCreditsRow.expiryColor(for: now.addingTimeInterval(-10), now: now),
+            .criticalTint
+        )
+        XCTAssertEqual(
+            CompactResetCreditsRow.expiryColor(for: now.addingTimeInterval(24 * 3600 + 1), now: now),
+            .warningTint
+        )
+        XCTAssertEqual(
+            CompactResetCreditsRow.expiryColor(for: now.addingTimeInterval(48 * 3600), now: now),
+            .warningTint
+        )
+        XCTAssertEqual(
+            CompactResetCreditsRow.expiryColor(for: now.addingTimeInterval(48 * 3600 + 1), now: now),
+            .secondary
+        )
+        XCTAssertEqual(
+            CompactResetCreditsRow.expiryColor(for: nil, now: now),
+            .secondary
+        )
+
+        // 2. CreditEntryRow.dotColor
+        XCTAssertEqual(
+            CreditEntryRow.dotColor(for: now.addingTimeInterval(24 * 3600), now: now),
+            .criticalTint
+        )
+        XCTAssertEqual(
+            CreditEntryRow.dotColor(for: now.addingTimeInterval(48 * 3600), now: now),
+            .warningTint
+        )
+        XCTAssertEqual(
+            CreditEntryRow.dotColor(for: now.addingTimeInterval(48 * 3600 + 1), now: now),
+            .healthyTint
+        )
+        XCTAssertEqual(
+            CreditEntryRow.dotColor(for: nil, now: now),
+            .secondary
+        )
+
+        // 3. CreditEntryRow.relativeTextColor
+        XCTAssertEqual(
+            CreditEntryRow.relativeTextColor(for: now.addingTimeInterval(24 * 3600), now: now),
+            .criticalTint
+        )
+        XCTAssertEqual(
+            CreditEntryRow.relativeTextColor(for: now.addingTimeInterval(48 * 3600), now: now),
+            .warningTint
+        )
+        XCTAssertEqual(
+            CreditEntryRow.relativeTextColor(for: now.addingTimeInterval(48 * 3600 + 1), now: now),
+            .secondary
+        )
+        XCTAssertEqual(
+            CreditEntryRow.relativeTextColor(for: nil, now: now),
+            .secondary
+        )
+    }
+
     // MARK: - 账号行的可见性（段1 Account Info）
 
     /// 账号行可见性的**唯一判定来源**是 `QuotaWindowAccountInfo.make`：

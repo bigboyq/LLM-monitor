@@ -1085,11 +1085,22 @@ tokens, not literals, so all three tiers hold their contrast in both appearances
 | `1` | `Color.warningTint` (systemOrange) |
 | `>= 2` | `Color.healthyTint` (systemGreen) |
 
+Trailing reset date color (`CompactResetCreditsRow.expiryColor`，时钟图标与日期文本同步):
+- `<= 24h`（或已过期）：`Color.criticalTint`
+- `<= 48h`（且 `> 24h`）：`Color.warningTint`
+- `> 48h` 或无到期日：`.secondary`
+
 The per-card list (`ResetCreditsDetailList`) filters to `status == "available"` and sorts
-by expiry ascending (entries with no expiry last, then by id for stability), so the
-status-based dot colours the list used to switch on are **no longer needed**: every
-row that survives the filter is available, and its 5pt dot is unconditionally
-`Color.healthyTint`. An entry with no expiry is still listed, as 「过期时间未知」.
+by expiry ascending (entries with no expiry last, then by id for stability).
+Each row's 5pt dot (`CreditEntryRow.dotColor`) and relative time text (`CreditEntryRow.relativeTextColor`)
+dynamically indicate expiry urgency:
+
+| Expiry time remaining | Dot Color (`dotColor`) | Relative Text Color (`relativeTextColor`) |
+|---|---|---|
+| `<= 24h` (或已过期) | `Color.criticalTint` (systemRed) | `Color.criticalTint` |
+| `<= 48h` (且 `> 24h`) | `Color.warningTint` (systemOrange) | `Color.warningTint` |
+| `> 48h` | `Color.healthyTint` (systemGreen) | `.secondary` |
+| 未知到期日 (`nil`) | `.secondary` | `.secondary`（文案为「过期时间未知」并带 `.tertiary`） |
 
 ```text
 ●  2026-10-30 09:00  约 3 天 4 小时 后
@@ -1121,5 +1132,5 @@ The card's failure row is the one place in this table that is a **literal** 11pt
 than a `MenuTypography` role: the `errorMessage` role had no call site and was deleted
 rather than left as an unused role. The rendered size is unchanged.
 
-> 核对基线：2026-10-28 · 代码 47312ab
+> 核对基线：2026-10-28 · 代码 7dcde66
 > 统一验证通过，详细结果见 `spec/sync.md`。
