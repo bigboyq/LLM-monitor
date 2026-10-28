@@ -36,6 +36,16 @@ enum FleetProtocol {
     /// 日桶通道的天数上限（today + previous six）。既是校验上限，也是 hub
     /// 侧落库保留的天数（§6：逐日滚动的窗口不裁剪就会一天涨一格）。
     static let maxDailyBuckets = 7
+    /// 窗口边界前沿：装配下发与存储修剪对每个 (provider, model, kind) 保留的
+    /// 最新边界数（2026-10-27 裁定）。历史边界不会再等来新贡献（聚合按精确
+    /// 边界匹配），消费端每组也只取一条（preferredRange）；保留 2 条容忍
+    /// 多账号并存的不同边界与跨零点时钟差。
+    static let windowFrontierPerGroup = 2
+    /// 日桶下行保留的完整桶天数（2026-10-27 裁定）：只有最新 2 天下发
+    /// entries/clientProviders 明细，更早的天裁成 totals + 金额汇总——
+    /// 消费端对历史天只用日图 totals 与逐日金额文案。留 2 天容忍跨零点
+    /// 时钟差，节点眼中的「今天」始终在完整桶里。
+    static let fullDailyBucketsForNode = 2
 
     static let usageDayPath = "/v1/usage/day"
     static let healthPath = "/v1/health"
@@ -110,6 +120,18 @@ struct FleetDailyUnavailableSource: Codable, Equatable, Sendable {
     let reason: FleetDailyUnavailableReason
 
     var sourceKey: String { clientID + "|" + quotaProviderID }
+
+    /// 同一来源多个原因并存时的展示优先级：failed（真故障）> scanning（进行
+    /// 中）> truncated（数据受限）。builder（节点内合并）与 merger（跨节点
+    /// 合并）共用同一序——原来两处序相反，同一对原因在「同机冲突」与
+    /// 「跨机冲突」时胜出者会不同（2026-10-27 统一，按 builder 原序）。
+    var severity: Int {
+        switch reason {
+        case .failed: return 3
+        case .scanning: return 2
+        case .truncated: return 1
+        }
+    }
 }
 
 struct FleetTotals: Codable, Equatable, Sendable {
@@ -172,6 +194,32 @@ struct FleetDailyBucket: Codable, Equatable, Sendable {
     /// nil preserves legacy all-or-nothing validation. A nonnil list declares
     /// provider-scoped coverage; unavailable rows are retained by the hub.
     var unavailableSources: [FleetDailyUnavailableSource]? = nil
+    /// 桶级金额汇总（按币种分开，不跨币折算）：合并侧从 entries 顺手算出，
+    /// 历史天明细不下发后逐日金额文案从这组值渲染（2026-10-27 裁定）。
+    /// nil = 无汇总信息（节点上报桶 / 旧载荷），消费端回退明细路径。
+    var valueByCurrency: [String: Double]? = nil
+    /// 有贡献未完整计价（未计价 / 截断 / partial coverage）。纯金额汇总
+    /// 表达不了它，单独携带以渲染「（部分计价）」标注。
+    var costPartial: Bool = false
+
+    /// 下发给副节点的瘦身形态：保留最新 `fullDailyBucketsForNode` 天完整桶，
+    /// 更早的天剥掉 entries/clientProviders 明细（消费端只用 totals 与金额
+    /// 汇总），完整性标志与不可用来源原样保留。
+    func strippedForNode(keepFullDayKeys: Set<String>) -> FleetDailyBucket {
+        guard !keepFullDayKeys.contains(dayKey) else { return self }
+        return FleetDailyBucket(
+            dayKey: dayKey,
+            totals: totals,
+            clientProviders: [],
+            entries: [],
+            totalsComplete: totalsComplete,
+            modelDetailsComplete: modelDetailsComplete,
+            sourceTruncated: sourceTruncated,
+            unavailableSources: unavailableSources,
+            valueByCurrency: valueByCurrency,
+            costPartial: costPartial
+        )
+    }
 }
 
 struct FleetWindowUsage: Codable, Equatable, Sendable {
@@ -179,10 +227,9 @@ struct FleetWindowUsage: Codable, Equatable, Sendable {
     let modelID: String
     /// interval / weekly / glmOffPeak / provider 自定义 kind。
     let windowKind: String
-    /// 实际观察到的边界；startAt < endAt。
+    /// 实际观察到的边界；startAt < endAt。接收时刻记在存储行的 updated_at
+    /// 列上，不进 payload（payload 内容稳定，数值不变就不产生重写差异）。
     let startAt, endAt: Date
-    /// hub 侧覆盖为接收时刻（不信任上报值）；节点侧是观察时刻。
-    var observedAt: Date
     let input, cacheRead, output, reasoning: Int
     let value: Double?
     let currency: ModelPriceCurrency?
@@ -220,8 +267,10 @@ struct NodeUsageReport: Codable, Equatable, Sendable {
     let seq: Int
     let generatedAt: Date
     let attributionFingerprint: String
-    /// nil：本次不更新日桶；存在时最多七个且 dayKey 互异（增量裁定 2026-10-24：
-    /// 可只带需要补发/修正的天，见 `FleetDailyBackfill`）。
+    /// nil：本次不更新日桶；存在时最多七个且 dayKey 互异，hub 按 dayKey 逐桶
+    /// upsert（缺席的天保留旧值）。增量摘要回执（2026-10-24 裁定）已于
+    /// 2026-10-27 撤销：节点每拍全量上报，内容不变的重发被 hub 的内容判变
+    /// 幂等吸收（不重写、不递增 generation）。
     var dailyBuckets: [FleetDailyBucket]?
     /// nil：无窗口更新；行按完整边界独立 upsert，空数组不删除旧范围。
     let windowUsage: [FleetWindowUsage]?
@@ -241,10 +290,6 @@ struct FleetNodeSnapshot: Codable, Equatable, Sendable {
     /// 该节点的归因设置指纹（§7.8）：≥2 种不同指纹 → 设置页提示「口径之和」。
     /// 旧快照缺该字段按 nil（未知，不参与比较）。
     let attributionFingerprint: String?
-    /// hub 对该节点已存每个日桶的内容摘要回执（dayKey → `FleetDailyDigest`，
-    /// 增量裁定 2026-10-24）。副节点据此判断哪些天需要补发/修正；旧快照缺该
-    /// 字段按 nil（等效空回执 → 触发全量补发）。
-    let dailyDigests: [String: String]?
 }
 
 struct FleetElectedQuota: Codable, Equatable, Sendable {
@@ -289,6 +334,75 @@ struct FleetSnapshot: Codable, Equatable, Sendable {
     let nodes: [FleetNodeSnapshot]
     let fleet: FleetAggregate
     let electedQuotas: [FleetElectedQuota]
+    /// Hub-side fleet size. Node responses may retain this count while omitting
+    /// other nodes' identities and details, so nodes can choose aggregate/local
+    /// presentation without learning per-node data.
+    var participantCount: Int? = nil
+
+    var isMultiNode: Bool { (participantCount ?? nodes.count) > 1 }
+
+    /// Keep only this node's compact report acknowledgement when a node consumes
+    /// a hub snapshot. Old hubs may still send full node records; discard those
+    /// details before caching or publishing the snapshot locally.
+    func nodeResponse(acknowledging nodeID: UUID? = nil) -> FleetSnapshot {
+        let own = nodeID.flatMap { id in nodes.first { $0.nodeID == id } }.map { node in
+            FleetNodeSnapshot(
+                nodeID: node.nodeID,
+                nodeName: "",
+                lastSeenAt: node.lastSeenAt,
+                seq: node.seq,
+                stale: false,
+                dailyBuckets: [],
+                windowUsage: [],
+                quotas: [],
+                attributionFingerprint: nil
+            )
+        }
+        let aggregateWindows = fleet.windowUsage.map { row in
+            FleetWindowAggregate(
+                quotaProviderID: row.quotaProviderID,
+                modelID: row.modelID,
+                windowKind: row.windowKind,
+                startAt: row.startAt,
+                endAt: row.endAt,
+                input: row.input,
+                cacheRead: row.cacheRead,
+                output: row.output,
+                reasoning: row.reasoning,
+                valueByCurrency: row.valueByCurrency,
+                coverage: row.coverage,
+                complete: row.complete && row.staleNodeIDs.isEmpty && row.missingNodeIDs.isEmpty,
+                contributingNodeIDs: [],
+                staleNodeIDs: [],
+                missingNodeIDs: []
+            )
+        }
+        // 日桶下行瘦身（2026-10-27 裁定）：消费端对非今天桶只用 totals 与
+        // 逐日金额文案（合并侧已算好 valueByCurrency/costPartial），历史天
+        // 不再下发 entries/clientProviders 明细；保留最新 2 天完整桶，容忍
+        // hub/节点跨零点的时钟差。
+        let fullDayKeys = Set(
+            fleet.dailyBuckets.map(\.dayKey)
+                .sorted()
+                .suffix(FleetProtocol.fullDailyBucketsForNode)
+        )
+        let dailyForNode = fleet.dailyBuckets.map { $0.strippedForNode(keepFullDayKeys: fullDayKeys) }
+        return FleetSnapshot(
+            protocolVersion: protocolVersion,
+            hubUUID: hubUUID,
+            generation: generation,
+            hub: hub,
+            generatedAt: generatedAt,
+            nodes: own.map { [$0] } ?? [],
+            fleet: FleetAggregate(dailyBuckets: dailyForNode, windowUsage: aggregateWindows),
+            electedQuotas: electedQuotas,
+            participantCount: participantCount ?? nodes.count
+        )
+    }
+
+    func compactedForNode(_ nodeID: UUID) -> FleetSnapshot {
+        nodeResponse(acknowledging: nodeID)
+    }
 }
 
 // MARK: - 编解码（§5.3）
@@ -329,34 +443,6 @@ enum FleetCodec {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         return try decoder.decode(type, from: data)
-    }
-}
-
-// MARK: - 逐天摘要回执（增量日桶，2026-10-24 裁定）
-
-/// 日桶内容摘要：`FleetCodec` 规范编码（sortedKeys）后取 SHA256 前 16 个十六进制
-/// 字符。副节点对本机构建的输入桶计算；hub通常按已存桶回执，来源感知partial桶
-/// 则回执最后接受的输入摘要（落在 `FleetStoredReport.dailyInputDigests`）。摘要失配
-/// 最坏多发一次幂等补发，不会丢数据——绝不为对齐摘要改变日桶内容。
-enum FleetDailyDigest {
-    static func digest(_ bucket: FleetDailyBucket) -> String {
-        guard let data = try? FleetCodec.encode(bucket) else { return "" }
-        let hash = SHA256.hash(data: data)
-        return hash.map { String(format: "%02x", $0) }.joined().prefix(16).description
-    }
-}
-
-/// 副节点上报侧的增量过滤：把报告的日桶通道收窄到「回执摘要与本地不一致」的天。
-/// - `cachedDigests` 为空（首次接触该 hub / 本机重启 / hub 丢数据）→ 保持全量
-///   七天，重建回执基线；
-/// - 否则只保留摘要不一致的天——历史天被扫描修正、hub 缺天都表现为不一致；
-/// - 全部一致 → 整条通道置 nil（等价心跳，仅刷新 lastSeen）。
-enum FleetDailyBackfill {
-    static func filterReport(_ report: inout NodeUsageReport, cachedDigests: [String: String]) {
-        guard var buckets = report.dailyBuckets else { return }
-        guard !cachedDigests.isEmpty else { return }
-        buckets = buckets.filter { FleetDailyDigest.digest($0) != cachedDigests[$0.dayKey] }
-        report.dailyBuckets = buckets.isEmpty ? nil : buckets
     }
 }
 
@@ -512,8 +598,7 @@ enum FleetReportValidator {
               !row.windowKind.isEmpty,
               row.startAt < row.endAt,
               nonNegative(row.input, row.cacheRead, row.output, row.reasoning),
-              amountIsConsistent(row.value, row.currency),
-              row.observedAt.timeIntervalSinceReferenceDate.isFinite
+              amountIsConsistent(row.value, row.currency)
         else { return false }
         return true
     }
@@ -647,6 +732,25 @@ enum FleetMerger {
         }
 
         let unavailableSources = mergedUnavailableSources(contributions)
+        let finalizedEntries = entryRows.values
+            .map(\.finalized)
+            .sorted {
+                ($0.clientID, $0.quotaProviderID, $0.modelName ?? "")
+                    < ($1.clientID, $1.quotaProviderID, $1.modelName ?? "")
+            }
+        // 桶级金额汇总（2026-10-27 裁定）：与展示端 costText 同口径——按币种
+        // 分列、跨币不折算；任何贡献未完整计价则置 costPartial。
+        var valueByCurrency: [String: Double] = [:]
+        var costPartial = false
+        for entry in finalizedEntries {
+            if let value = entry.value, let currency = entry.currency {
+                valueByCurrency[currency.rawValue, default: 0] += value
+            }
+            if entry.value == nil || entry.currency == nil
+                || entry.coverage != .full || entry.truncated {
+                costPartial = true
+            }
+        }
         return FleetDailyBucket(
             dayKey: dayKey,
             totals: totals,
@@ -655,17 +759,14 @@ enum FleetMerger {
                     ? $0.quotaProviderID < $1.quotaProviderID
                     : $0.clientID < $1.clientID
             },
-            entries: entryRows.values
-                .map(\.finalized)
-                .sorted {
-                    ($0.clientID, $0.quotaProviderID, $0.modelName ?? "")
-                        < ($1.clientID, $1.quotaProviderID, $1.modelName ?? "")
-                },
+            entries: finalizedEntries,
             totalsComplete: contributions.allSatisfy(\.totalsComplete),
             modelDetailsComplete: contributions.allSatisfy(\.modelDetailsComplete),
             sourceTruncated: contributions.contains(where: \.sourceTruncated)
                 || (unavailableSources?.contains { $0.reason == .truncated } ?? false),
-            unavailableSources: unavailableSources
+            unavailableSources: unavailableSources,
+            valueByCurrency: valueByCurrency,
+            costPartial: costPartial
         )
     }
 
@@ -678,7 +779,7 @@ enum FleetMerger {
             if let existing = byKey[source.sourceKey] {
                 // Deterministic if nodes report different unavailable reasons
                 // for the same source in the same day.
-                if unavailableReasonPriority(source.reason) > unavailableReasonPriority(existing.reason) {
+                if source.severity > existing.severity {
                     byKey[source.sourceKey] = source
                 }
             } else {
@@ -686,14 +787,6 @@ enum FleetMerger {
             }
         }
         return byKey.values.sorted { $0.sourceKey < $1.sourceKey }
-    }
-
-    private static func unavailableReasonPriority(_ reason: FleetDailyUnavailableReason) -> Int {
-        switch reason {
-        case .scanning: return 1
-        case .failed: return 2
-        case .truncated: return 3
-        }
     }
 
     /// 模型明细行：token 从样本聚合，金额由同一批样本计价（同源硬纪律）。
@@ -837,6 +930,31 @@ enum FleetMerger {
                 staleNodeIDs: members.filter(\.stale).map(\.nodeID),
                 missingNodeIDs: Array(missing)
             )
+        }
+        .sorted {
+            if $0.quotaProviderID != $1.quotaProviderID { return $0.quotaProviderID < $1.quotaProviderID }
+            if $0.modelID != $1.modelID { return $0.modelID < $1.modelID }
+            if $0.windowKind != $1.windowKind { return $0.windowKind < $1.windowKind }
+            return $0.startAt < $1.startAt
+        }
+    }
+
+    /// 窗口前沿过滤（2026-10-27 裁定）：每个 (provider, model, kind) 只保留
+    /// `endAt` 最新的 `FleetProtocol.windowFrontierPerGroup` 个边界组。窗口
+    /// 边界随额度重置滚动，历史边界组在聚合里永远等不来新贡献（精确边界
+    /// 匹配），消费端每组也只取一条（preferredRange）；不过滤的话快照载荷
+    /// 会把存储的历史累积原样透传给每个节点。
+    static func windowFrontier(_ rows: [FleetWindowAggregate]) -> [FleetWindowAggregate] {
+        var byGroup: [String: [FleetWindowAggregate]] = [:]
+        for row in rows {
+            let key = [row.quotaProviderID, row.modelID, row.windowKind].joined(separator: "\u{0}")
+            byGroup[key, default: []].append(row)
+        }
+        return byGroup.flatMap { _, group in
+            group.sorted { lhs, rhs in
+                lhs.endAt == rhs.endAt ? lhs.startAt > rhs.startAt : lhs.endAt > rhs.endAt
+            }
+            .prefix(FleetProtocol.windowFrontierPerGroup)
         }
         .sorted {
             if $0.quotaProviderID != $1.quotaProviderID { return $0.quotaProviderID < $1.quotaProviderID }

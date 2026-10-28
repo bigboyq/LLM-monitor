@@ -52,6 +52,11 @@ extension EdgeDockController {
             keepDockClearance: !isFullscreenSpace
         )
         let (popover, hosting) = ensurePopoverPanel()
+        // 左右 dock 的浮层按悬停行中心垂直对齐；内容高度变化时记住已打开浮层的
+        // 顶部，让范围切换导致的收缩发生在下方，避免顶部随锚点重新居中而下掉。
+        let preservedTop = config.edge.isVertical && popover.isVisible
+            ? popover.frame.maxY
+            : nil
         let backdrop = EdgeDockTheme.popoverPadding
         // 固定宽度 = 主菜单宽度；屏幕装不下才钳位。卡片内容宽 = 面板宽 - 两侧内边距，
         // 与主菜单里卡片拿到的是同一个数。
@@ -73,6 +78,7 @@ extension EdgeDockController {
         func card() -> some View {
             ProviderCardView(
                 status: status,
+                dockEdge: config.edge,
                 fleet: state.fleetCardContext(for: status.kind),
                 isPinnedToStatusBar: configStore?.config.statusBarPinnedProvider == status.id
             )
@@ -113,6 +119,7 @@ extension EdgeDockController {
             edge: config.edge,
             visibleFrame: visibleFrame,
             measuredRowCenter: anchorCenter,
+            preservedTop: preservedTop,
             appearance: isCompactAppearance ? .compact : .full,
             compactSize: config.compactSize
         )

@@ -116,6 +116,9 @@ extension EnvironmentValues {
 /// 它们是 Environment，取不到。
 struct ProviderCardView: View, Equatable {
     let status: ProviderStatus
+    /// 当前 edge dock 的贴靠边：底边 dock 的浮层在 dock 上方，分段控件放到
+    /// 内容末尾，使其靠近触发详情的 dock；其余边缘仍放在标题下方。
+    var dockEdge: DockEdge = .right
     /// 多机联动上下文（§10.1）：nil = 未启用联动（现状），现有渲染零变化。
     /// 非 nil 时标题行出现「本机 / 全局」分段（仅 multiNode），额度读数走
     /// 生效额度（本机优先，否则 elected），「全局」scope 的用量区块读 fleet 快照。
@@ -150,7 +153,10 @@ struct ProviderCardView: View, Equatable {
     // nonisolated：View 结构体因 View 协议推断为 @MainActor，而 Equatable 的 ==
     //  witnesses 必须可从任意隔离域调用；status 是 Sendable 值类型，非隔离比较安全。
     nonisolated static func == (lhs: ProviderCardView, rhs: ProviderCardView) -> Bool {
-        lhs.status == rhs.status && lhs.fleet == rhs.fleet && lhs.isPinnedToStatusBar == rhs.isPinnedToStatusBar
+        lhs.status == rhs.status
+            && lhs.dockEdge == rhs.dockEdge
+            && lhs.fleet == rhs.fleet
+            && lhs.isPinnedToStatusBar == rhs.isPinnedToStatusBar
     }
 
     /// dock 浮层的卡片是**一次性构建的值快照**（NSHostingView 的 rootView
@@ -232,9 +238,9 @@ struct ProviderCardView: View, Equatable {
     private func dockBody(derived: ProviderCardDerived) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             headerContent
-            // scope 切换的分段形态：标题行**下方**独占一行，宽度与卡片一致
-            // （分段控件塞卡头会把 provider 名挤没，见 `scopeRow`）。
-            scopeRow
+            // 底边 dock 的详情浮层开在 dock 上方，因此把分段控件移到内容末尾，
+            // 让它靠近 dock；其它边缘仍放在标题下方。>4 项的下拉控件始终留在卡头。
+            if dockEdge != .bottom { scopeRow }
             // 有生效额度（本地 .ok，或 fleet elected）就走完整三段；否则回退
             // 单卡（.loading / .failed / .notConfigured 的本地路径不变）。
             if let info = effectiveQuotaInfo {
@@ -263,6 +269,7 @@ struct ProviderCardView: View, Equatable {
                     content(derived: derived)
                 }
             }
+            if dockEdge == .bottom { scopeRow }
         }
     }
 
@@ -602,7 +609,9 @@ struct ProviderCardView: View, Equatable {
                 },
                 style: .segmented
             )
-            .help("切换显示范围：全局 / 本机 / 各节点")
+            .help(fleet.nodeChoices.isEmpty
+                ? "切换显示范围：全局 / 本机"
+                : "切换显示范围：全局 / 本机 / 各节点")
             .frame(maxWidth: .infinity)
         }
     }
@@ -645,7 +654,9 @@ struct ProviderCardView: View, Equatable {
                     scopeOverride = newScope
                     fleet.onScopeChange?(newScope)
                 }
-                .help("切换显示范围：全局 / 本机 / 各节点")
+                .help(fleet.nodeChoices.isEmpty
+                    ? "切换显示范围：全局 / 本机"
+                    : "切换显示范围：全局 / 本机 / 各节点")
             }
             if ProviderKind.windowedKinds.contains(status.kind), let cardPinStatusBarAction {
                 Button {

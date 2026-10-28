@@ -78,7 +78,7 @@ final class FleetStoreTests: XCTestCase {
     ) -> FleetWindowUsage {
         FleetWindowUsage(
             quotaProviderID: provider, modelID: "chatgpt_plan", windowKind: "interval",
-            startAt: end.addingTimeInterval(-5 * 60 * 60), endAt: end, observedAt: end,
+            startAt: end.addingTimeInterval(-5 * 60 * 60), endAt: end,
             input: 10, cacheRead: 0, output: 0, reasoning: 0,
             value: nil, currency: nil, coverage: .none,
             complete: true, sourceTruncated: false
@@ -260,16 +260,12 @@ final class FleetStoreTests: XCTestCase {
         XCTAssertEqual(merged.totals.input, 170)
         XCTAssertFalse(merged.totalsComplete)
         XCTAssertEqual(Set(merged.entries.compactMap(\.modelName)), Set(["gpt", "deepseek"]))
-        XCTAssertEqual(storedReport.dailyInputDigests?[day], FleetDailyDigest.digest(partial),
-                       "ACK记住部分输入摘要而不是合并后存桶的摘要")
-        XCTAssertNotEqual(storedReport.dailyInputDigests?[day], FleetDailyDigest.digest(merged))
 
-        // 同一 partial 输入即使再次到达，落库和ACK都稳定，不会把保留行再累加一份。
+        // 同一 partial 输入即使再次到达，落库稳定，不会把保留行再累加一份。
         let repeated = report(seq: 3, nodeID: node, daily: [partial])
         try store.applyReport(repeated, validation: FleetReportValidator.validate(repeated), scope: scope)
         let afterRepeat = try XCTUnwrap(store.loadHubState(scope: scope).nodes.first?.report)
         XCTAssertEqual(afterRepeat.dailyBuckets?.first?.totals.input, 170)
-        XCTAssertEqual(afterRepeat.dailyInputDigests?[day], FleetDailyDigest.digest(partial))
 
         // 来源恢复后完整桶替换整天，不重复合并旧失败值。
         let codexRecovered = codexUpdated
@@ -303,12 +299,11 @@ final class FleetStoreTests: XCTestCase {
         XCTAssertTrue(afterZero.clientProviders.isEmpty, "健康来源确认零量时旧贡献被删除")
         XCTAssertEqual(afterZero.unavailableSources, [])
 
-        // 可选digest映射随report payload跨Store重启保存。
-        let zeroDigest = FleetDailyDigest.digest(zero)
+        // report payload 跨 Store 重启保存。
         store = nil
         store = try FleetStore(url: directory.appendingPathComponent("fleet.sqlite"))
         let reloaded = try XCTUnwrap(store.loadHubState(scope: scope).nodes.first?.report)
-        XCTAssertEqual(reloaded.dailyInputDigests?[day], zeroDigest)
+        XCTAssertEqual(reloaded.dailyBuckets?.first, afterZero)
     }
 
     func testFirstPartialReportShowsHealthySourceWithNoPriorStoredBucket() throws {
@@ -449,17 +444,24 @@ final class FleetStoreTests: XCTestCase {
         XCTAssertEqual(upserted.nodes.first?.windowRows.count, 2)
     }
 
-    func testObservedAtOverwrittenWithHubReceiveTime() throws {
+    func testPruneWindowsTrimsHistoryBeyondNewestTwoPerGroup() throws {
         let node = UUID()
-        let row = windowRow()
-        let rawReport = report(seq: 1, nodeID: node, windows: [row])
-        let receivedAt = Date(timeIntervalSince1970: 1_999_000_000)
-        try store.applyReport(rawReport,
-                              validation: FleetReportValidator.validate(rawReport),
-                              scope: scope, receivedAt: receivedAt)
+        let oldest = windowRow(end: Date(timeIntervalSince1970: 7_000_000_000))
+        let middle = windowRow(end: Date(timeIntervalSince1970: 8_000_000_000))
+        let newest = windowRow(end: Date(timeIntervalSince1970: 9_000_000_000))
+        let reportWithWindows = report(seq: 1, nodeID: node, windows: [oldest, middle, newest])
+        try store.applyReport(
+            reportWithWindows,
+            validation: FleetReportValidator.validate(reportWithWindows),
+            scope: scope
+        )
+
+        // cutoff 早于全部行：过期清理一条不删，前沿修剪只删同组最旧一条
+        //（窗口边界前沿，2026-10-27 裁定：历史边界没有新贡献也没有消费方）。
+        let removed = try store.pruneWindows(scope: scope, olderThan: Date(timeIntervalSince1970: 1_000_000_000))
+        XCTAssertEqual(removed, 1)
         let state = try store.loadHubState(scope: scope)
-        XCTAssertEqual(state.nodes.first?.windowRows.first?.observedAt, receivedAt,
-                       "hub 用接收时刻覆盖不信任的上报 observedAt（§5.5）")
+        XCTAssertEqual(state.nodes.first?.windowRows.map(\.endAt), [middle.endAt, newest.endAt])
     }
 
     func testPruneWindowsRemovesOnlyExpiredAndKeepsNodeMeta() throws {
@@ -524,18 +526,41 @@ final class FleetStoreTests: XCTestCase {
 
     // MARK: - generation
 
-    func testGenerationMonotonicAndPersistsAcrossReopen() throws {
+    func testGenerationAdvancesOnlyOnVisibleContentChange() throws {
+        let node = UUID()
         XCTAssertEqual(try store.generation(scope: scope), 0)
-        try store.applyReport(report(seq: 1), validation: emptyValidation(), scope: scope)
+        // 首拍带内容 → 递增。
+        try store.applyReport(
+            report(seq: 1, nodeID: node, daily: buckets(input: 10)),
+            validation: emptyValidation(),
+            scope: scope
+        )
         let afterFirst = try store.generation(scope: scope)
         XCTAssertGreaterThanOrEqual(afterFirst, 1)
-        try store.applyReport(report(seq: 2), validation: emptyValidation(), scope: scope)
-        let afterSecond = try store.generation(scope: scope)
-        XCTAssertGreaterThan(afterSecond, afterFirst, "心跳更新也递增 generation（§5.2）")
+
+        // 纯心跳（通道缺席）不递增（2026-10-27 裁定）：stale 翻转 / 日切由
+        // 装配侧 60s 可见签名覆盖，节点据 generation 门控跳过无变化快照。
+        try store.applyReport(report(seq: 2, nodeID: node), validation: emptyValidation(), scope: scope)
+        XCTAssertEqual(try store.generation(scope: scope), afterFirst, "纯心跳不递增 generation")
+
+        // 内容变化（日桶更新）→ 递增；相同内容重发 → 不递增。
+        try store.applyReport(
+            report(seq: 3, nodeID: node, daily: buckets(input: 20)),
+            validation: emptyValidation(),
+            scope: scope
+        )
+        let afterThird = try store.generation(scope: scope)
+        XCTAssertGreaterThan(afterThird, afterFirst)
+        try store.applyReport(
+            report(seq: 4, nodeID: node, daily: buckets(input: 20)),
+            validation: emptyValidation(),
+            scope: scope
+        )
+        XCTAssertEqual(try store.generation(scope: scope), afterThird, "内容不变的重发不递增 generation")
 
         // 重开数据库：generation 跨重启可比（§5.2）。
         let reopened = try FleetStore(url: directory.appendingPathComponent("fleet.sqlite"))
-        XCTAssertEqual(try reopened.generation(scope: scope), afterSecond)
+        XCTAssertEqual(try reopened.generation(scope: scope), afterThird)
     }
 
     // MARK: - 节点移除与信封信息

@@ -60,9 +60,6 @@ final class FleetSyncCoordinator: ObservableObject {
     /// hub 侧：本机报告重建的 2s 防抖（statuses 变更很频繁：每次 quota 刷新、
     /// 每次 scanner 应用结果都会 fire）。
     private var ownReportDebounceTask: Task<Void, Never>?
-    /// node 侧：最近一次被接受快照回执的逐天摘要（upstreamScope → dayKey → digest）。
-    /// 内存态即可：重启/换 hub 后为空 → 首拍全量重建基线（等价首次配置）。
-    private var dailyDigestCache: [String: [String: String]] = [:]
     /// node 侧：数据变更唤醒的最小推送间隔；短于它的变更由周期节拍覆盖。
     private var lastPushAt: Date?
 
@@ -163,7 +160,7 @@ final class FleetSyncCoordinator: ObservableObject {
         // statuses 变化也走
         // 这条路（每次配额刷新、每次扫描落库、每次 rebuildStatuses 都广播），
         // 若一并自增，在飞推送的响应会被当成「迟到响应」丢掉：快照不落缓存、
-        // 摘要回执不推进（增量补发退化成每拍全量）、lastSyncAt 不刷新。
+        // lastSyncAt 不刷新。
         if newConfig != config || roleChanged || bindingsChanged || effectiveIntervalChanged {
             configVersion += 1
         }
@@ -244,7 +241,6 @@ final class FleetSyncCoordinator: ObservableObject {
 
     private func resetNodeSnapshotState() {
         verifiedHubUUID = nil
-        dailyDigestCache.removeAll()
         lastPushAt = nil
         latestSnapshot = nil
         status.online = false
@@ -314,7 +310,6 @@ final class FleetSyncCoordinator: ObservableObject {
         server = nil
         client = nil
         verifiedHubUUID = nil
-        dailyDigestCache.removeAll()
         lastRequestByNode.removeAll()
         lastAssembledSignature = nil
         role = .off
@@ -322,7 +317,6 @@ final class FleetSyncCoordinator: ObservableObject {
         status.online = false
         if clearSyncedState {
             latestSnapshot = nil
-            dailyDigestCache.removeAll()
             lastPushAt = nil
             status.lastSyncAt = nil
             status.snapshotGeneration = nil
@@ -511,7 +505,7 @@ final class FleetSyncCoordinator: ObservableObject {
             // 日志纪律（§9.3）：只记状态与尺寸，不记 body/header——对端可控的
             // nodeName / dayKey 不进日志（可注入换行伪造日志行）。
             logInfo("[fleet-hub] POST \(FleetProtocol.usageDayPath) status=200 bytes=\(body.count)")
-            return snapshotResponse()
+            return snapshotResponse(acknowledging: report.node.nodeID)
         } catch {
             logError("[fleet-hub] 报告落库失败: \(error.localizedDescription)")
             return HubServerResponse.error(500, "Internal Server Error", "报告落库失败")
@@ -556,10 +550,15 @@ final class FleetSyncCoordinator: ObservableObject {
         }
     }
 
-    private func snapshotResponse() -> HubServerResponse {
+    private func snapshotResponse(acknowledging nodeID: UUID? = nil) -> HubServerResponse {
         do {
             let snapshot = try assembleSnapshot(now: Date())
-            let data = try FleetCodec.encode(snapshot)
+            // The hub keeps the full per-node snapshot for its own UI. A node only
+            // needs the fleet aggregate plus its own compact sequence/digest ACK;
+            // returning every node's detail duplicates the aggregate and scales
+            // the response with all local histories.
+            let responseSnapshot = snapshot.nodeResponse(acknowledging: nodeID)
+            let data = try FleetCodec.encode(responseSnapshot)
             guard data.count <= FleetProtocol.maxResponseBodyBytes else {
                 logError("[fleet-hub] 快照超过 \(FleetProtocol.maxResponseBodyBytes) bytes")
                 return HubServerResponse.error(500, "Internal Server Error", "快照超过响应上限")
@@ -596,24 +595,7 @@ final class FleetSyncCoordinator: ObservableObject {
                 dailyBuckets: buckets,
                 windowUsage: record.windowRows,
                 quotas: record.report.quotas ?? [],
-                attributionFingerprint: record.report.attributionFingerprint,
-                // 逐天摘要回执（增量日桶 2026-10-24）：node 据此只补发不一致的天。
-                // 回执覆盖**已存的全部天**（不是只覆盖上面发布的那几天）：hub 与
-                // 节点时钟差一天时，节点那天不在 hub 的窗口里、不会进快照，但回执
-                // 仍要认它——否则 node 每拍都在重发那一天（回执永远不覆盖它）。
-                // 整条日桶通道缺席时回执也缺席（等效空回执 → 触发全量补发）。
-                dailyDigests: record.report.dailyBuckets == nil ? nil : Dictionary(
-                    (record.report.dailyBuckets ?? []).map { bucket in
-                        // A source-aware partial bucket is stored as a merged
-                        // view, so ACK the last accepted input digest instead
-                        // of hashing that merged view. Older rows have no input
-                        // digest map and fall back to their stored bucket hash.
-                        let digest = record.report.dailyInputDigests?[bucket.dayKey]
-                            ?? FleetDailyDigest.digest(bucket)
-                        return (bucket.dayKey, digest)
-                    },
-                    uniquingKeysWith: { _, new in new }
-                )
+                attributionFingerprint: record.report.attributionFingerprint
             )
         }
 
@@ -628,9 +610,14 @@ final class FleetSyncCoordinator: ObservableObject {
                 rows: node.windowUsage
             )
         }
-        let fleetWindows = FleetMerger.aggregateWindows(
-            windowContributions,
-            knownNodeIDs: nodeSnapshots.map(\.nodeID)
+        // 窗口前沿过滤（2026-10-27）：快照只携带每 (provider, model, kind)
+        // 最新的少数边界——历史边界组没有新贡献也没有消费方，透传它们只会
+        // 把存储的历史累积搬进下发给每个节点的载荷。
+        let fleetWindows = FleetMerger.windowFrontier(
+            FleetMerger.aggregateWindows(
+                windowContributions,
+                knownNodeIDs: nodeSnapshots.map(\.nodeID)
+            )
         )
         let candidates = nodeSnapshots.flatMap { node in
             node.quotas.map { quota in
@@ -661,7 +648,8 @@ final class FleetSyncCoordinator: ObservableObject {
             generatedAt: now,
             nodes: nodeSnapshots.sorted { $0.nodeID.uuidString < $1.nodeID.uuidString },
             fleet: FleetAggregate(dailyBuckets: fleetDaily, windowUsage: fleetWindows),
-            electedQuotas: elected
+            electedQuotas: elected,
+            participantCount: nodeSnapshots.count
         )
 
         // 可见签名（stale 集合 / 日窗 / generation 基线）变化 → 递增 generation，
@@ -778,7 +766,10 @@ final class FleetSyncCoordinator: ObservableObject {
                 bindings: bindings,
                 statuses: statuses
             )
-            var report = UsageReportBuilder.build(input, seq: seq)
+            // 每拍全量上报（增量摘要回执已于 2026-10-27 撤销）：hub 按 dayKey
+            // 幂等 upsert，内容不变的重发不重写、不递增 generation。seq 已
+            // 持久化，节拍不跳号。
+            let report = UsageReportBuilder.build(input, seq: seq)
 
             if verifiedHubUUID == nil {
                 let health = try await client.fetchHealth()
@@ -788,15 +779,6 @@ final class FleetSyncCoordinator: ObservableObject {
                     return
                 }
                 verifiedHubUUID = health.nodeID
-            }
-            // 增量日桶（2026-10-24）：按回执摘要只发不一致的天；缓存为空（首次
-            // 接触/重启/hub 丢数据）时保持全量。seq 已持久化，心跳节拍不跳号。
-            if let verified = verifiedHubUUID {
-                let upstreamScope = client.upstreamKey + "|" + verified.uuidString
-                FleetDailyBackfill.filterReport(
-                    &report,
-                    cachedDigests: dailyDigestCache[upstreamScope] ?? [:]
-                )
             }
             let snapshot = try await client.postReport(report)
             // 迟到响应丢弃：配置版本已变（§6.5）。
@@ -912,15 +894,16 @@ final class FleetSyncCoordinator: ObservableObject {
             confirmsSubmittedReport = false
         }
         if let cached, snapshot.generation <= cached, !confirmsSubmittedReport { return false }
-        try store.saveSnapshot(snapshot, upstreamScope: upstreamScope)
-        // 回执只在快照被接受时更新：hub 未应用我们的数据（重放拒绝等）时，
-        // 回执保持旧值 → 下拍按差异自然重发。
-        if let identity = nodeID,
-           let own = snapshot.nodes.first(where: { $0.nodeID == identity }) {
-            dailyDigestCache[upstreamScope] = own.dailyDigests ?? [:]
+        let nodeSnapshot = nodeID.map(snapshot.compactedForNode) ?? snapshot
+        // 内容未变化的快照不重写缓存（2026-10-27 裁定）：generation 未推进
+        // 且仅凭本轮 seq 确认接受 ⇒ hub 可见状态与缓存同代（generatedAt /
+        // 本节点 seq 每拍必变，字节比较没有意义）。
+        let contentUnchanged = snapshot.generation == cached && confirmsSubmittedReport
+        if !contentUnchanged {
+            try store.saveSnapshot(nodeSnapshot, upstreamScope: upstreamScope)
         }
-        latestSnapshot = snapshot
-        status.snapshotGeneration = snapshot.generation
+        latestSnapshot = nodeSnapshot
+        status.snapshotGeneration = nodeSnapshot.generation
         return true
     }
 }

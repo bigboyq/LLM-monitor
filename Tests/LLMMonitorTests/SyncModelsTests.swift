@@ -86,7 +86,7 @@ final class SyncModelsTests: XCTestCase {
     ) -> FleetWindowUsage {
         FleetWindowUsage(
             quotaProviderID: provider, modelID: model, windowKind: kind,
-            startAt: start, endAt: end, observedAt: end,
+            startAt: start, endAt: end,
             input: input, cacheRead: cacheRead, output: output, reasoning: reasoning,
             value: value, currency: currency, coverage: coverage,
             complete: complete, sourceTruncated: truncated
@@ -358,65 +358,6 @@ final class SyncModelsTests: XCTestCase {
         XCTAssertNotNil(FleetReportValidator.validate(bad).envelopeError, "protocolVersion 不匹配整包拒绝")
     }
 
-    // MARK: - 逐天摘要回执（增量日桶，2026-10-24 裁定）
-
-    func testDailyDigestStableAcrossCodecRoundTripAndSensitiveToContent() throws {
-        let bucket = sevenBuckets(rows: [clientRow(input: 5)])[3]
-        let digest = FleetDailyDigest.digest(bucket)
-        XCTAssertEqual(digest.count, 16, "SHA256 前 16 个十六进制字符")
-        XCTAssertEqual(digest, FleetDailyDigest.digest(bucket), "同内容跨调用稳定")
-
-        // hub 侧是对落库后（JSON 往返）的日桶计算摘要：往返必须不改变摘要。
-        let roundTripped = try FleetCodec.decode(
-            FleetDailyBucket.self, from: FleetCodec.encode(bucket)
-        )
-        XCTAssertEqual(FleetDailyDigest.digest(roundTripped), digest, "编解码往返后摘要不变")
-
-        // 内容修正（历史天被扫描补齐/改数）→ 摘要必须变化，否则修正传不过去。
-        let revised = FleetDailyBucket(
-            dayKey: bucket.dayKey, totals: FleetTotals(summing: [clientRow(input: 6)]),
-            clientProviders: [clientRow(input: 6)], entries: [],
-            totalsComplete: true, modelDetailsComplete: true, sourceTruncated: false
-        )
-        XCTAssertNotEqual(FleetDailyDigest.digest(revised), digest)
-    }
-
-    func testDailyBackfillKeepsFullOnEmptyReceiptAndFiltersMatchingDays() {
-        var reportWithData = report(daily: sevenBuckets(rows: [clientRow(input: 5)]))
-        let buckets = reportWithData.dailyBuckets!
-
-        // 回执为空（首次配置 / 重启 / hub 丢数据）→ 全量七天。
-        FleetDailyBackfill.filterReport(&reportWithData, cachedDigests: [:])
-        XCTAssertEqual(reportWithData.dailyBuckets?.count, 7, "空回执保持全量建立基线")
-
-        // 回执与本地完全一致 → 整条通道置 nil（等价心跳）。
-        var same = report(daily: buckets)
-        let receipts = Dictionary(uniqueKeysWithValues: buckets.map {
-            ($0.dayKey, FleetDailyDigest.digest($0))
-        })
-        FleetDailyBackfill.filterReport(&same, cachedDigests: receipts)
-        XCTAssertNil(same.dailyBuckets, "全部一致则不发日桶")
-
-        // 只修正一天 → 只补发那天的修正值。
-        var revised = buckets
-        revised[2] = FleetDailyBucket(
-            dayKey: revised[2].dayKey,
-            totals: FleetTotals(summing: [clientRow(input: 42)]),
-            clientProviders: [clientRow(input: 42)],
-            entries: [], totalsComplete: true, modelDetailsComplete: true, sourceTruncated: false
-        )
-        var partial = report(daily: revised)
-        FleetDailyBackfill.filterReport(&partial, cachedDigests: receipts)
-        XCTAssertEqual(partial.dailyBuckets?.map(\.dayKey), [revised[2].dayKey],
-                       "只有摘要不一致的天进入补发")
-    }
-
-    func testDailyBackfillIgnoresReportWithoutDailyChannel() {
-        var heartbeat = report(daily: nil)
-        FleetDailyBackfill.filterReport(&heartbeat, cachedDigests: [:])
-        XCTAssertNil(heartbeat.dailyBuckets, "通道本就缺席，过滤保持缺席")
-    }
-
     // MARK: - 日桶合并（§7.1）
 
     func testMergeDailyBucketsSumsAuthoritativeTotals() {
@@ -559,6 +500,125 @@ final class SyncModelsTests: XCTestCase {
         XCTAssertEqual(Set(aggregate.staleNodeIDs), [node2], "stale 节点同范围仍贡献并标注")
         XCTAssertEqual(aggregate.missingNodeIDs, [node3], "缺该范围的已知节点进 missingNodeIDs")
         XCTAssertEqual(result.first { $0.input == 7 }?.windowKind, "interval")
+    }
+
+    func testWindowFrontierKeepsNewestBoundariesPerGroup() {
+        func aggregate(end: TimeInterval, kind: String = "interval") -> FleetWindowAggregate {
+            let endAt = Date(timeIntervalSince1970: end)
+            return FleetWindowAggregate(
+                quotaProviderID: QuotaProviderID.openAI, modelID: "chatgpt_plan", windowKind: kind,
+                startAt: endAt.addingTimeInterval(-18_000), endAt: endAt,
+                input: Int(end - 1_798_000_000), cacheRead: 0, output: 0, reasoning: 0,
+                valueByCurrency: [:], coverage: .none, complete: true,
+                contributingNodeIDs: [], staleNodeIDs: [], missingNodeIDs: []
+            )
+        }
+        let frontier = FleetMerger.windowFrontier([
+            aggregate(end: 1_799_000_000),   // 同组最旧：超出前沿，丢弃
+            aggregate(end: 1_799_500_000),
+            aggregate(end: 1_800_000_000),
+            aggregate(end: 1_800_000_000, kind: "weekly"),  // 不同 kind 独立成组
+        ])
+        XCTAssertEqual(frontier.count, 3, "每组只保留最新两个边界，weekly 独立成组")
+        XCTAssertNil(frontier.first { $0.windowKind == "interval" && $0.input == 1_000_000 },
+                     "最旧的 interval 边界被前沿过滤丢弃")
+        XCTAssertEqual(frontier.filter { $0.windowKind == "interval" }.count, 2)
+    }
+
+    // MARK: - 日桶金额汇总与下行瘦身（2026-10-27 裁定）
+
+    private func pricedEntry(
+        model: String, input: Int, value: Double?, currency: ModelPriceCurrency?,
+        coverage: FleetCostCoverage = .full, truncated: Bool = false
+    ) -> FleetUsageEntry {
+        FleetUsageEntry(
+            clientID: ClientID.codex, quotaProviderID: QuotaProviderID.openAI,
+            modelName: model, input: input, cacheRead: 0, output: 0, reasoning: 0,
+            value: value, currency: currency, coverage: coverage, truncated: truncated
+        )
+    }
+
+    private func nodeBucket(
+        _ dayKey: String, entries: [FleetUsageEntry], complete: Bool = true
+    ) -> FleetDailyBucket {
+        let rows: [FleetClientProviderUsage] = entries.isEmpty ? [] : [
+            FleetClientProviderUsage(
+                clientID: ClientID.codex, quotaProviderID: QuotaProviderID.openAI,
+                input: entries.reduce(0) { $0 + $1.input }, cacheRead: 0, output: 0,
+                reasoning: 0, turns: 1, rounds: 1
+            )
+        ]
+        return FleetDailyBucket(
+            dayKey: dayKey,
+            totals: FleetTotals(summing: rows),
+            clientProviders: rows,
+            entries: entries,
+            totalsComplete: complete,
+            modelDetailsComplete: complete,
+            sourceTruncated: false
+        )
+    }
+
+    func testMergeDailyBucketsComputesValueRollupAndCostPartial() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let dayKey = FleetMerger.dayKey(of: now)
+        let merged = FleetMerger.mergeDailyBuckets(
+            [[nodeBucket(dayKey, entries: [
+                pricedEntry(model: "gpt-5.5", input: 10, value: 0.4, currency: .usd),
+                pricedEntry(model: "glm", input: 20, value: 7.0, currency: .cny),
+                pricedEntry(model: "free", input: 30, value: nil, currency: nil, coverage: .none),
+            ])]],
+            now: now
+        )
+        XCTAssertEqual(merged.count, 1)
+        let bucket = merged[0]
+        XCTAssertEqual(bucket.valueByCurrency?["USD"], 0.4, "桶级金额按币种分列汇总")
+        XCTAssertEqual(bucket.valueByCurrency?["CNY"], 7.0)
+        XCTAssertTrue(bucket.costPartial, "存在未计价贡献时置 costPartial（纯金额汇总表达不了）")
+    }
+
+    func testNodeResponseStripsOldDailyBucketsKeepingRollup() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        func snapshot(withDays days: [String]) -> FleetSnapshot {
+            // fleet 聚合桶来自 mergeDailyBuckets——valueByCurrency 由合并侧计算。
+            let raw = days.enumerated().map { offset, day in
+                nodeBucket(day, entries: [
+                    pricedEntry(model: "m\(offset)", input: 10, value: 1.0, currency: .usd)
+                ])
+            }
+            return FleetSnapshot(
+                protocolVersion: FleetProtocol.version,
+                hubUUID: UUID(),
+                generation: 3,
+                hub: FleetNodeIdentity(nodeID: UUID(), nodeName: "hub",
+                                       timezoneID: "Asia/Shanghai", platform: "macOS"),
+                generatedAt: now,
+                nodes: [],
+                fleet: FleetAggregate(
+                    dailyBuckets: FleetMerger.mergeDailyBuckets([raw], now: now),
+                    windowUsage: []
+                ),
+                electedQuotas: [],
+                participantCount: 2
+            )
+        }
+
+        let dayKeys = FleetMerger.dayKeyWindow(now: now)
+        let full = snapshot(withDays: dayKeys)
+        let forNode = full.nodeResponse(acknowledging: nil)
+
+        let fullDayKeys = Set(dayKeys.suffix(FleetProtocol.fullDailyBucketsForNode))
+        for bucket in forNode.fleet.dailyBuckets {
+            if fullDayKeys.contains(bucket.dayKey) {
+                XCTAssertFalse(bucket.entries.isEmpty, "最新 2 天保持完整桶")
+                XCTAssertFalse(bucket.clientProviders.isEmpty)
+            } else {
+                XCTAssertTrue(bucket.entries.isEmpty, "历史天明细被裁掉")
+                XCTAssertTrue(bucket.clientProviders.isEmpty)
+                XCTAssertEqual(bucket.totals.input, 10, "历史天保留权威 totals")
+                XCTAssertEqual(bucket.valueByCurrency?["USD"], 1.0, "历史天保留金额汇总")
+            }
+        }
     }
 
     func testWindowAggregationKeepsCurrenciesSeparateInValueMap() {

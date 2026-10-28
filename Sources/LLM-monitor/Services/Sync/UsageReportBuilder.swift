@@ -275,7 +275,6 @@ enum UsageReportBuilder {
                     windowKind: kind,
                     bounds: bounds,
                     samples: matched,
-                    observedAt: now,
                     truncated: truncated,
                     quotaProviderIDForPricing: quotaProviderID,
                     peakWindow: peakWindow
@@ -310,7 +309,6 @@ enum UsageReportBuilder {
                     windowKind: "glmOffPeak",
                     bounds: LocalUsageWindowBounds(start: window.startedAt, end: window.endedAt),
                     samples: matched,
-                    observedAt: now,
                     truncated: truncated,
                     quotaProviderIDForPricing: quotaProviderID,
                     peakWindow: peakWindow
@@ -350,7 +348,6 @@ enum UsageReportBuilder {
                         windowKind: glm.windowKind,
                         bounds: LocalUsageWindowBounds(start: todayStart, end: todayEnd),
                         samples: matched,
-                        observedAt: now,
                         truncated: truncated,
                         quotaProviderIDForPricing: quotaProviderID,
                         peakWindow: peakWindow
@@ -394,14 +391,7 @@ enum UsageReportBuilder {
         )
         // Failure/scanning is more informative than truncation when a source is
         // simultaneously stale and budget-limited.
-        func priority(_ reason: FleetDailyUnavailableReason) -> Int {
-            switch reason {
-            case .failed: return 3
-            case .scanning: return 2
-            case .truncated: return 1
-            }
-        }
-        if let existing = sources[marker.sourceKey], priority(existing.reason) >= priority(reason) {
+        if let existing = sources[marker.sourceKey], existing.severity >= marker.severity {
             return
         }
         sources[marker.sourceKey] = marker
@@ -413,7 +403,6 @@ enum UsageReportBuilder {
         windowKind: String,
         bounds: LocalUsageWindowBounds,
         samples: [LocalTokenUsageSample],
-        observedAt: Date,
         truncated: Bool,
         quotaProviderIDForPricing: String,
         peakWindow: DeepseekPeakWindow
@@ -443,7 +432,6 @@ enum UsageReportBuilder {
             windowKind: windowKind,
             startAt: bounds.start,
             endAt: bounds.end,
-            observedAt: observedAt,
             input: tokenSums.input,
             cacheRead: tokenSums.cacheRead,
             output: tokenSums.output,

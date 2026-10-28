@@ -427,7 +427,7 @@ final class AppState: ObservableObject {
         case .local:
             selectedScopeUnavailable = false
         case .fleet:
-            selectedScopeUnavailable = (snapshot?.nodes.count ?? 0) <= 1
+            selectedScopeUnavailable = snapshot?.isMultiNode != true
         case .node(let id):
             selectedScopeUnavailable = snapshot?.nodes.contains(where: { $0.nodeID == id }) != true
         }
@@ -546,7 +546,7 @@ final class AppState: ObservableObject {
         )
         return FleetCardContext(
             scope: fleetScope,
-            multiNode: snapshot.nodes.count > 1,
+            multiNode: snapshot.isMultiNode,
             nodeChoices: snapshot.nodes
                 .filter { $0.nodeID != fleetSync?.localNodeID }
                 .map { FleetNodeChoice(id: $0.nodeID, name: $0.nodeName, stale: $0.stale) },
@@ -577,11 +577,16 @@ final class AppState: ObservableObject {
 
     /// 菜单顶部 scope 控制的节点选项（远端节点）。
     var fleetScopeChoices: [FleetNodeChoice] {
-        guard let snapshot = fleetSnapshot, snapshot.nodes.count > 1 else { return [] }
+        guard let snapshot = fleetSnapshot, snapshot.isMultiNode else { return [] }
         return snapshot.nodes
             .filter { $0.nodeID != fleetSync?.localNodeID }
             .map { FleetNodeChoice(id: $0.nodeID, name: $0.nodeName, stale: $0.stale) }
     }
+
+    /// Whether a fleet/local scope switch is useful. A node receives the hub's
+    /// participant count and aggregate but no remote node choices, so it still
+    /// gets a two-way fleet/local switch.
+    var fleetScopeControlEnabled: Bool { fleetSnapshot?.isMultiNode == true }
 
     /// 当前 scope 为具体节点时的菜单汇总。
     var fleetMenuNodeSummary: FleetMenuSummary? {

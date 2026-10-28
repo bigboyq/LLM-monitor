@@ -267,7 +267,7 @@ struct HarnessUsageMenuView: View {
     /// 因此**不能再加这 8pt 内缩**——加了就比卡片窄一截，两边对不齐。
     @ViewBuilder
     private var scopeRow: some View {
-        if !scopeChoices.isEmpty,
+        if fleetMenuActive,
            FleetScopeControlStyle.preferred(choices: scopeChoices) == .segmented {
             FleetScopeSwitcher(
                 scope: activeScope,
@@ -275,7 +275,9 @@ struct HarnessUsageMenuView: View {
                 onSelect: { onScopeChange($0) },
                 style: .segmented
             )
-            .help("切换显示范围：全局 / 本机 / 各节点")
+            .help(scopeChoices.isEmpty
+                ? "切换显示范围：全局 / 本机"
+                : "切换显示范围：全局 / 本机 / 各节点")
             .frame(maxWidth: .infinity)
         }
     }

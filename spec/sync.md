@@ -27,8 +27,8 @@ node（定期上报、消费回传快照）。拓扑严格两层，不级联。
 
 | 方法 | 路径 | 语义 |
 |---|---|---|
-| `POST` | `/v1/usage/day` | node 上报 `NodeUsageReport`，hub 同响应回 `FleetSnapshot`（推 + 取一次往返）；**报告序号落后**（`seq ≤ high-water`）回 `409` + `{"error":…,"highWaterSeq":N}`，node 据此重建本机序号；仅通过序号门控的报告回 200 |
-| `GET` | `/v1/usage/day` | 兜底拉取当前快照 |
+| `POST` | `/v1/usage/day` | node 只上报自己的 `NodeUsageReport`；hub 同响应回全局聚合 + 本节点轻量回执（推 + 取一次往返）；**报告序号落后**（`seq ≤ high-water`）回 `409` + `{"error":…,"highWaterSeq":N}`，node 据此重建本机序号；仅通过序号门控的报告回 200 |
+| `GET` | `/v1/usage/day` | 兜底拉取全局聚合快照，不包含逐节点明细 |
 | `GET` | `/v1/health` | `{"ok":true,"nodeID":"<hubUUID>","protocolVersion":1}`——node 靠它验证 hub 身份 |
 
 服务端（`Services/Sync/HubServer.swift`，`NWListener`）：`Content-Length` 定长
@@ -55,29 +55,47 @@ ATS 拦截、系统限制网络、超时及无法连接应显示各自的脱敏�
 
 ## 3. 报告与快照形状
 
-DTO 全集（`Models/SyncModels.swift`，对齐设计稿 §5.5）：`NodeUsageReport`
+DTO 全集（`Models/SyncModels.swift`）：hub 内部的 `FleetSnapshot`
+保留完整 `nodes[]`，供主节点 UI 拆分查看；出网给副节点时，`nodes[]` 只在 POST
+回包中含本节点轻量回执（nodeID / seq / lastSeen，日桶、窗口、额度数组均为空），
+GET 回包则为空数组。`participantCount` 只传节点总数，不传其他节点身份。副节点
+收到旧 hub 的完整快照时，也会在缓存 / 发布前裁掉其他节点明细。
+**日桶下行瘦身（2026-10-27 裁定）**：`fleet.dailyBuckets` 只保留最新
+`fullDailyBucketsForNode = 2` 天完整桶（容忍跨零点时钟差，节点眼中的「今天」
+始终完整），更早的天剥掉 `entries` / `clientProviders` 明细，只带 totals、
+完整性标志与桶级金额汇总 `valueByCurrency` / `costPartial`（合并侧从 entries
+计算；纯金额汇总表达不了「有贡献未完整计价」，故单独携带 partial 布尔）。
+展示端逐日金额文案统一走 `FleetUsageProjection.bucketCostText`：有汇总直接
+渲染，无汇总（节点上报桶 / 旧缓存）回退明细路径，两种路径文案逐字一致。
+两种回包都含 `fleet` 汇总与 `electedQuotas`（每个 provider 的单一胜出额度仍带来源标注，
+用于解释当前额度来源；不携带逐节点额度列表）。副节点只提供「全局 / 本机」范围切换，
+不展示远端节点标签或节点拆分；主节点才展示逐节点范围和已连接节点列表。
+Fleet 窗口聚合给副节点时清空 contributor/stale/missing 节点 ID 列表，并把缺失或
+过期状态折入 `complete`，保留完整性提示但不泄露逐节点身份。
+
+`NodeUsageReport`
 （外壳：nodeID + 单调 `seq` + `attributionFingerprint`；三通道
 `dailyBuckets` / `windowUsage` / `quotas` 均可选）与 `FleetSnapshot`
-（`hubUUID` + 持久 `generation` + `nodes[]`（每条带 `dailyDigests` 回执）+
-`fleet` 聚合 + `electedQuotas`）。
+（hubUUID + 持久 `generation` + `participantCount` + `fleet` 聚合 +
+`electedQuotas`；hub 内部完整快照另保留逐节点 `nodes[]`）。
 
 通道语义（§5.1）：`nil` = 本次不更新；日桶存在时**最多 7 桶**
-（today + previous six；增量裁定 2026-10-24：可只带需要补发/修正的天，
-dayKey 互异）。旧格式（`unavailableSources == nil`）仍要求 totals complete 才逐桶替换；
+（today + previous six，dayKey 互异）。旧格式（`unavailableSources == nil`）仍要求 totals complete 才逐桶替换；
 来源感知格式按 `(clientID, quotaProviderID)` 更新健康来源，明确不可用来源保留旧值；
 窗口行按完整边界 `(provider, model, kind, startAt, endAt)` 独立 upsert，
-空数组不删除保留期内旧范围；额度通道独立校验独立替换。金额与 token 必须
-来自同一批样本（同源计价硬纪律）；`FleetCostCoverage` full 额外要求样本集
-完整（截尾金额不能配完整 token 标 full）。
+空数组不删除保留期内旧范围（`FleetWindowUsage` 不带观测时刻字段，接收时刻
+记在存储行 `updated_at` 列，payload 内容稳定）；额度通道独立校验独立替换。
+金额与 token 必须来自同一批样本（同源计价硬纪律）；`FleetCostCoverage` full
+额外要求样本集完整（截尾金额不能配完整 token 标 full）。
 
-**逐天摘要回执（增量裁定 2026-10-24）**：快照的每个节点条目带
-`dailyDigests`（dayKey → 内容摘要，`FleetCodec` 规范编码后 SHA256 前 16 hex）。
-副节点据此**只上报摘要不一致的天**（首次配置 / 本机重启 / hub 丢数据时回执
-为空 → 全量七天重建基线；全部一致 → 整条通道置 nil，等价心跳）。
-摘要失配的最坏后果是多发一次幂等补发。回执与日桶同窗口（只覆盖节点还会
-产出的天）。来源感知 partial 桶落库后可能含保留的旧数据，因此回执使用最后接受的
-**输入桶**摘要（`dailyInputDigests`），而非合并后桶摘要；旧记录缺该字段时回退
-存桶摘要。被拒收的通道不更新回执，恢复完整后的输入摘要变化会触发重传。
+**日桶全量上报（2026-10-27 裁定，撤销 2026-10-24 增量摘要回执）**：节点
+每拍全量上报七桶，hub 按 dayKey 逐桶幂等 upsert——内容不变的重发不重写
+行、不递增 generation（见 §6 内容判变），历史天扫描修正与 hub 丢数据
+（`removeNode` 重入、DB 重建）由全量自然覆盖，无需回执状态机。撤销动机：
+报告每拍本就全量重建，增量只省请求体中日桶通道的字节（窗口/额度两通道
+与下行快照始终全量），而代价是 hub 输入摘要存储、回执装配、节点缓存与
+双语义回执 fallback 四件套状态；2026-10-27 的下行瘦身（窗口前沿 + 日桶
+rollup）与 generation 内容化落地后，该机制的复杂度已无对价。
 
 hub 侧校验（`FleetReportValidator`，§5.6）：信封（protocolVersion / UUID /
 seq / 时刻有限性）失败整包 400；日桶校验失败保留旧值（totals 与
@@ -92,6 +110,8 @@ clientProviders 汇总逐字段核对；来源感知桶另校验不可用来源�
 ## 4. 合并与选举（`FleetMerger` 纯函数）
 
 - 日桶：按 dayKey 求权威 totals；clientProviders 按 (client, provider) 相加；
+  合并桶同时计算桶级金额汇总 `valueByCurrency`（按币种分列）与 `costPartial`
+  （任何贡献未完整计价）——历史天明细不下发后，逐日金额文案从这两个字段渲染；
   entries 按 (client, provider, model) 相加——金额仅同币种相加，币种冲突整体
   作废金额（不给跨币种假总价）；coverage 按「有价 + 完整」重推导（full+none
   → partial）；`totalsComplete` 取 AND、`sourceTruncated` 取 OR。快照只含
@@ -102,6 +122,13 @@ clientProviders 汇总逐字段核对；来源感知桶另校验不可用来源�
   `valueByCurrency`。输入行已有的部分计价状态必须保留，不能仅因金额非空便
   升级为 full；窗口不完整或来源截断同样不能标 full。日桶模型明细合并也保留
   输入明细的部分计价状态。
+- **窗口边界前沿过滤（2026-10-27 裁定）**：装配时 `fleet.windowUsage` 每个
+  `(provider, model, kind)` 只保留 `endAt` 最新的 2 个边界组
+  （`FleetProtocol.windowFrontierPerGroup`）。窗口边界随额度重置滚动
+  （interval ~5h 一换、GLM 免/速/它每日新切片、闲时任务每窗唯一），历史边界
+  组在聚合里永远等不来新贡献（精确边界匹配），消费端每组也只取一条
+  （`preferredRange`）；不过滤的话快照载荷会把存储的逐日累积原样透传给每个
+  副节点。保留 2 条容忍多账号并存的不同边界与跨零点时钟差。
 - 额度选举（§2.1 / §7.7）：候选须有 ≥1 `ModelQuota.hasActiveQuotaWindow`
   （DeepSeek present 余额含 0% 有效）；hub 本机有效额度无条件优先（即使更陈旧）；
   否则取副节点候选中 `fetchedAt` 最新者（2026-10-24 用户裁定，不按上报时刻）；
@@ -139,21 +166,26 @@ hub 的 high-water 据此拒绝迟到报告（§7.3）。持久化失败本轮�
 | kind | 内容 |
 |---|---|
 | `report` | 每节点当前接受的报告（`FleetStoredReport`：daily/quotas 独立通道 + nodeName/timezoneID/指纹） |
-| `node_meta` | high-water seq + lastSeen（窗口/日桶清理不清除，§7.6） |
-| `window` | 每节点每窗口范围一行；`observedAt` 由 hub 覆写为接收时刻（不信任上报值） |
+| `node_meta` | high-water seq + lastSeen（lastSeen 即行 `updated_at` 列，payload 恒 `{}`；窗口/日桶清理不清除，§7.6） |
+| `window` | 每节点每窗口范围一行；接收时刻记在行 `updated_at` 列（payload 无观测时刻字段，内容稳定） |
 | `hub_meta` | generation（跨重启单调可比） |
 | `snapshot` | 副节点快照缓存（scope = upstreamKey + hubUUID，隔离不同上游） |
 
-`applyReport` 单事务：seq 门控 → 通道独立替换/保留 → 窗口 upsert →
-node_meta → 任何可见变化递增 generation。日桶按 **dayKey 逐桶 upsert**
+`applyReport` 单事务：seq 门控 → 通道独立替换/保留 → 窗口按内容判变 upsert
+（数值不变的重复上报不重写，2026-10-27 裁定）→ node_meta → **generation 只随
+可见内容变化递增**（2026-10-27 裁定）：纯心跳与内容不变的重发不递增——stale
+翻转 / 日切仍由装配侧 60s 可见签名覆盖，节点据 generation 门控自然跳过无变化
+的快照，快照缓存不再每拍整包重写。日桶按 **dayKey 逐桶 upsert**
 （通道缺席的天保留旧值），**窗口外的天必须清掉**——节点的报告窗口逐日
 滚动，只增不删会让 hub 存的天数一天涨一格（快照载荷越界 → 全员 500；
 节点卡片画出 N 根柱子而不是 7 根）；协议把日桶通道限死在 7 桶，窗口即上限。
 来源感知日桶只保留旧桶中显式不可用来源的 clientProviders/entries，与本次健康
 行合并后重算 totals；健康真实零值、禁用或移除的来源清除旧贡献，不累加新旧整桶。
-输入摘要与日桶一同裁剪、持久化；无需新增 SQLite 表，旧 payload 可直接解码。
-窗口按 `endAt` 早于 `now - retainDays` 清理；`removeNode` 删除该节点全部行
-并递增 generation。
+窗口清理是双重的（2026-10-27 裁定）：`endAt` 早于 `now - retainDays` 的过期行，
+以及同 `(node, provider, model, kind)` 组内 `endAt` 不是最新
+`windowFrontierPerGroup` 条的行——边界随重置滚动，历史边界没有新贡献也没有
+消费方，只增不删会让存储与快照随时间线性膨胀；`retainDays` 退化为兜底。
+`removeNode` 删除该节点全部行并递增 generation。
 
 **坏行降级**：无法解码的行（磁盘损坏 / 跨版本 DTO 形状变化写下的旧行）
 跳过并删除，不让整次装配失败。`loadHubState` 与 `pruneWindows` 的坏行清理
@@ -209,19 +241,21 @@ node_meta → 任何可见变化递增 generation。日桶按 **dayKey 逐桶 up
   generation（§7.5）。
 - node：推送循环由周期节拍（`pushIntervalSeconds`）与数据变更唤醒（5s 节流）
   共同驱动；每轮 `allocateSeq` → build → （首次）`/v1/health` 握手学 hubUUID
-  → POST。仅当响应对应当前 upstreamKey、已验证 hubUUID 且 generation 严格更新
-  时才写快照缓存（§6.5）。网络失败保留最后有效快照并标离线；429 视为限流
+  → POST（每拍全量上报，见 §3）。仅当响应对应当前 upstreamKey、已验证 hubUUID
+  且 generation 严格更新（或 POST 回执精确确认本轮 seq，见下条）时才采纳快照；
+  **generation 未推进且仅凭 seq 确认接受时不重写缓存载荷**（2026-10-27 裁定，
+  generation 已内容化）。网络失败保留最后有效快照并标离线；429 视为限流
   不算离线；hub 返回 5xx 是 hub 侧的问题（链路仍通）→ 报错但不判离线。
-  GET 兜底成功仅恢复快照读取，不等价于报告上传成功；非 429 的 POST 错误仍
+  GET 兜底成功仅恢复聚合快照读取，不等价于报告上传成功；非 429 的 POST 错误仍
   保留在 `lastError`，直到后续 POST 成功。409 保留序号重建提示，429 不清除旧错误。
 - **hub 数据库重建 / 回滚恢复**：当前串行 POST 成功、已验证 hub 身份与配置版本
   均匹配，且响应内本节点的 seq 精确等于本次提交 seq 时，允许重建 generation
-  基线并更新摘要回执；空 / 旧回执使下一拍补发缺失日桶。普通 GET、序号不匹配
+  基线；hub 丢失的日桶由下一拍全量上报自然回填。普通 GET、序号不匹配
   和配置切换后的迟到响应仍不允许用低 generation 覆盖缓存。
 - **`configVersion` 只在配置/角色变化时递增**（不是每次数据变化）：statuses
   变化（每次配额刷新、每次扫描落库、每次 rebuild）也走同一条更新路径，若
-  一并自增，在飞推送的响应会被当成「迟到响应」丢掉——快照不落缓存、摘要
-  回执不推进（增量补发退化成每拍全量）、`lastSyncAt` 不刷新。
+  一并自增，在飞推送的响应会被当成「迟到响应」丢掉——快照不落缓存、
+  `lastSyncAt` 不刷新。
 - **hub 身份复验**：响应的 `hubUUID` 与已验证身份不一致（hub 在同一地址换机）
   → 不采纳该快照、清空已验证身份、下拍重新握手，并把原因写进 `lastError`；
   不复验的话 node 会永远收不到数据而界面仍显示「已连接」。
@@ -259,19 +293,23 @@ node_meta → 任何可见变化递增 generation。日桶按 **dayKey 逐桶 up
 
 ## 10. UI 落点（已实现）
 
-两条轴（§10.0）：**用量 scope** 用户切（`AppState.fleetScope`，dock 浮层与
-菜单兜底 hover 卡共用同一份，仅内存态）；**额度来源** 自动
+两条轴（§10.0）：**用量 scope** 在主节点切全局 / 本机 / 远端节点；副节点只切
+全局 / 本机（`AppState.fleetScope`，dock 浮层与菜单兜底 hover 卡共用同一份，
+仅内存态）；**额度来源** 自动
 （`AppState.fleetEffectiveQuota(for:)` 统一入口：本机有效 lastSuccess 优先，
 否则 elected，来源经 `FleetEffectiveQuota.sourceTagText` 标注——本机不标 /
 `来自 X` / `来自 X · 已过期`）。额度不跟 scope 走。
 
 - **卡片**（`ProviderCardView` + `FleetCardContext`，两宿主同源注入）：
-  多节点时出现 scope 控制 + 来源标注。scope 控制用 `FleetScopeSwitcher`
+  多节点时出现 scope 控制 + 来源标注。主节点显示远端节点选项；副节点只显示
+  全局 / 本机。scope 控制用 `FleetScopeSwitcher`
   ——**选项总数（全局 + 本机 + 远端节点）≤4 走分段控件**（一步切换），**>4 走
   菜单栏标题栏那套「label + ellipsis」下拉**（节点名放得下；形态见
-  `spec/ui/menu-and-cards.md`）。位置：≤4 项时是标题行**下方**独占一行
-  （`ProviderCardView.scopeRow`，宽度与卡片一致）——分段控件塞标题行会把
-  provider 名挤成「minimax To…」；>4 项时紧凑形态回到卡头（状态胶囊左边）。
+  `spec/ui/menu-and-cards.md`）。位置：≤4 项时通常在标题行**下方**独占一行
+  （`ProviderCardView.scopeRow`，宽度与卡片一致）；若 Dock 贴屏幕**下边缘**，
+  详情浮层在 Dock 上方，分段控件移至整段详情内容的最下方、靠近 Dock。分段控件
+  不塞标题行，避免 provider 名被挤成「minimax To…」；>4 项时紧凑形态仍在卡头
+  （状态胶囊左边）。
   下拉顺序**全局 → 本机 → 各远端节点**（`FleetNodeChoice`）。选具体节点时用量区块切到该节点
   **单机口径**（`FleetUsageProjection.nodeCardUsage`：它自己的 7 天日桶 /
   窗口行 / 今行，离线展示最后上报数据并提示），额度区块照常走生效额度
@@ -284,9 +322,9 @@ node_meta → 任何可见变化递增 generation。日桶按 **dayKey 逐桶 up
   与 `—`，不回落本机数据、不冒充完整零值；卡片仍保留已同步的历史日图。
   partial 桶显示健康来源及保留值，并提示不可用客户端、原因及可能包含上次数据。
   完整零桶照常显示 0；单节点退化规则保持不变。
-- **菜单**（`HarnessUsageMenuView`）：**范围切换**：≤4 项时是「今日」卡片**上方**
-  独占一行（分段控件，宽度与卡片一致，`HarnessUsageMenuView.scopeRow`）；>4 项时
-  是标题栏右组的下拉（`FleetScopeMenu`：全局 / 本机 / 各节点）。段内**不分设备**——每个 client 段
+- **菜单**（`HarnessUsageMenuView`）：**范围切换**：主节点 ≤4 项时是「今日」卡片**上方**
+  独占一行（分段控件，宽度与卡片一致，`HarnessUsageMenuView.scopeRow`）；主节点 >4 项时
+  是标题栏右组的下拉（`FleetScopeMenu`：全局 / 本机 / 各节点）；副节点只有全局 / 本机。段内**不分设备**——每个 client 段
   头 = 该 client 的 fleet 权威日合计，段内直接是 fleet 已合并的模型明细
   （同币相加、币种冲突置空由 hub 完成）。当前范围只有**一行**总览（标签统一
   「今日」，范围由顶部切换表达）+ 一根客户端占比条与图例（与本机 scope 的总览
@@ -386,6 +424,9 @@ node 协调器上线与缓存落盘）、`FleetUsageModelsTests`（生效额度�
 Sync / dock 位置写入不清常规草稿，含首次从 nil 写入默认 dock 配置；DSH scanner
 与 builder 测试覆盖样本 cap、旧缓存重建、限额变化、样本老化恢复和权威日桶保留。
 
-> 核对基线：2026-10-26 · 代码 ca4d511
+> 核对基线：2026-10-28 · 代码 47312ab
 > 历史验证（代码 6f11831；记录于文档提交 3ccb3de）：`swift test` 1401 例 0 失败（63.1s）；定向验证 `FleetCostTextPropagationTests` 4 例、`UsageReportBuilderTests|SettingsDraftIsolationTests` 15 例均通过。
 > 2026-10-25 提交前全量验证（即本基线工作区）：`swift test` 1435 例 0 失败（64.5s），覆盖独立 `.deviceId` 身份、默认上报周期跟随常规、菜单 / 设置自启同步、来源级日桶更新 / 输入摘要回执、节点卡片缺桶 / partial / 完整零提示，以及主节点健康用量 + DSH 失败 + 空副节点真实 POST 接入的集成回归。未替换或重启现场应用，DSH 解压依赖缺失仍通过来源不可用提示表达。
+> 2026-10-27（一）提交前全量验证：`swift test` 1513 例 0 失败（63.2s），覆盖窗口边界前沿过滤（装配下发与存储修剪每 (provider, model, kind) 最新 2 组）、`FleetWindowUsage` 移除 `observedAt`（接收时刻记行 `updated_at` 列），并对齐 683a575 聚合快照下发契约的集成测试（POST 回包轻量回执断言 + hub 侧全量快照断言）。`observedAt` 移除为破坏性 wire 变更，混跑部署须 hub 与副节点同步升级。
+> 2026-10-27（二）提交前全量验证：`swift test` 1515 例 0 失败（63.2s / 61.6s / 63.2s 三轮），覆盖 7c13cd7 窗口前沿之后的：日桶下行瘦身（`valueByCurrency`/`costPartial` 桶级汇总 + `nodeResponse` 只留最新 2 天完整桶 + `bucketCostText` 双路径等价）、generation 内容化（纯心跳与内容不变重发不递增；窗口行按内容判变；`acceptSnapshot` 同代 seq 确认不重写缓存）、unavailable 原因优先级统一（builder/merger 共用 `severity`）、node_meta payload 去 `{lastSeenAt}` 冗余与 FleetStore 死代码删除。
+> 2026-10-27（三）提交前全量验证（即本基线工作区）：`swift test` 1512 例 0 失败（61.1s），覆盖撤销逐天摘要回执（2026-10-27 裁定，回退每拍全量上报）：删除 `FleetDailyDigest`/`FleetDailyBackfill`/`dailyDigests`/`dailyInputDigests`/节点侧 digest 缓存全套状态（净删 164 行），按天 upsert 与来源感知 partial 合并语义保留并由既有用例钉住。

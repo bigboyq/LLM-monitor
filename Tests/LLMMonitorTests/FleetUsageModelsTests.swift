@@ -118,8 +118,7 @@ final class FleetUsageModelsTests: XCTestCase {
             nodeID: UUID(), nodeName: "iMac",
             lastSeenAt: now, seq: 1, stale: false,
             dailyBuckets: [bucket], windowUsage: [], quotas: [],
-            attributionFingerprint: "deadbeef",
-            dailyDigests: [bucket.dayKey: FleetDailyDigest.digest(bucket)]
+            attributionFingerprint: "deadbeef"
         )
     }
 
@@ -148,14 +147,14 @@ final class FleetUsageModelsTests: XCTestCase {
         let base = nodeWithEntries(entries: [partialEntry])
         let window = FleetWindowUsage(
             quotaProviderID: QuotaProviderID.openAI, modelID: "chatgpt_plan", windowKind: "interval",
-            startAt: now.addingTimeInterval(-18_000), endAt: now, observedAt: now,
+            startAt: now.addingTimeInterval(-18_000), endAt: now,
             input: 50, cacheRead: 0, output: 0, reasoning: 0,
             value: 0.5, currency: .usd, coverage: .partial, complete: false, sourceTruncated: false
         )
         let node = FleetNodeSnapshot(
             nodeID: base.nodeID, nodeName: base.nodeName, lastSeenAt: now, seq: 1, stale: false,
             dailyBuckets: base.dailyBuckets, windowUsage: [window], quotas: [],
-            attributionFingerprint: base.attributionFingerprint, dailyDigests: base.dailyDigests
+            attributionFingerprint: base.attributionFingerprint
         )
         let usage = FleetUsageProjection.nodeCardUsage(
             node: node, quotaProviderID: QuotaProviderID.openAI, now: now
@@ -174,26 +173,26 @@ final class FleetUsageModelsTests: XCTestCase {
             FleetWindowUsage(
                 quotaProviderID: QuotaProviderID.openAI, modelID: "chatgpt_plan", windowKind: "interval",
                 startAt: preferredEnd.addingTimeInterval(-18_000), endAt: preferredEnd,
-                observedAt: now, input: 40, cacheRead: 0, output: 0, reasoning: 0,
+                input: 40, cacheRead: 0, output: 0, reasoning: 0,
                 value: 1, currency: .usd, coverage: .full, complete: true, sourceTruncated: false
             ),
             FleetWindowUsage(
                 quotaProviderID: QuotaProviderID.openAI, modelID: "chatgpt_plan", windowKind: "interval",
                 startAt: preferredEnd.addingTimeInterval(-18_000), endAt: preferredEnd.addingTimeInterval(600),
-                observedAt: now, input: 99, cacheRead: 0, output: 0, reasoning: 0,
+                input: 99, cacheRead: 0, output: 0, reasoning: 0,
                 value: 2, currency: .usd, coverage: .full, complete: true, sourceTruncated: false
             ),
             FleetWindowUsage(
                 quotaProviderID: QuotaProviderID.zhipu, modelID: "chatgpt_plan", windowKind: "interval",
                 startAt: preferredEnd.addingTimeInterval(-18_000), endAt: preferredEnd,
-                observedAt: now, input: 700, cacheRead: 0, output: 0, reasoning: 0,
+                input: 700, cacheRead: 0, output: 0, reasoning: 0,
                 value: 3, currency: .usd, coverage: .full, complete: true, sourceTruncated: false
             )
         ]
         let node = FleetNodeSnapshot(
             nodeID: base.nodeID, nodeName: base.nodeName, lastSeenAt: now, seq: 1, stale: false,
             dailyBuckets: base.dailyBuckets, windowUsage: windows, quotas: [],
-            attributionFingerprint: base.attributionFingerprint, dailyDigests: base.dailyDigests
+            attributionFingerprint: base.attributionFingerprint
         )
         let usage = FleetUsageProjection.nodeCardUsage(
             node: node, quotaProviderID: QuotaProviderID.openAI, now: now,
@@ -269,8 +268,7 @@ final class FleetUsageModelsTests: XCTestCase {
                 nodeID: nodeID, nodeName: nodeName,
                 lastSeenAt: now, seq: 1, stale: stale,
                 dailyBuckets: [bucket], windowUsage: [], quotas: [],
-                attributionFingerprint: "deadbeef",
-                dailyDigests: [bucket.dayKey: FleetDailyDigest.digest(bucket)]
+                attributionFingerprint: "deadbeef"
             )
         }
         let nodes = (0..<nodeCount).map { index in
@@ -338,8 +336,7 @@ final class FleetUsageModelsTests: XCTestCase {
             nodeID: hubID, nodeName: "hub",
             lastSeenAt: now, seq: 1, stale: false,
             dailyBuckets: [bucket], windowUsage: [], quotas: [],
-            attributionFingerprint: "deadbeef",
-            dailyDigests: [bucket.dayKey: FleetDailyDigest.digest(bucket)]
+            attributionFingerprint: "deadbeef"
         )
         let snapshot = FleetSnapshot(
             protocolVersion: FleetProtocol.version,
@@ -375,8 +372,7 @@ final class FleetUsageModelsTests: XCTestCase {
                 dailyBuckets: [],
                 windowUsage: node.windowUsage,
                 quotas: node.quotas,
-                attributionFingerprint: node.attributionFingerprint,
-                dailyDigests: [:]
+                attributionFingerprint: node.attributionFingerprint
             )
         }
         let emptyDailySnapshot = FleetSnapshot(
@@ -482,8 +478,7 @@ final class FleetUsageModelsTests: XCTestCase {
                 dailyBuckets: buckets,
                 windowUsage: [],
                 quotas: [],
-                attributionFingerprint: sourceNode.attributionFingerprint,
-                dailyDigests: nil
+                attributionFingerprint: sourceNode.attributionFingerprint
             )
         }
 
@@ -608,13 +603,13 @@ final class FleetUsageModelsTests: XCTestCase {
         let nodeID = base.nodes[0].nodeID
         let openAINodeWindow = FleetWindowUsage(
             quotaProviderID: QuotaProviderID.openAI, modelID: "chatgpt_plan", windowKind: "interval",
-            startAt: now.addingTimeInterval(-100), endAt: now, observedAt: now,
+            startAt: now.addingTimeInterval(-100), endAt: now,
             input: 7, cacheRead: 0, output: 0, reasoning: 0,
             value: nil, currency: nil, coverage: .none, complete: true, sourceTruncated: false
         )
         let zhipuNodeWindow = FleetWindowUsage(
             quotaProviderID: QuotaProviderID.zhipu, modelID: "glm", windowKind: "interval",
-            startAt: now.addingTimeInterval(-100), endAt: now, observedAt: now,
+            startAt: now.addingTimeInterval(-100), endAt: now,
             input: 99, cacheRead: 0, output: 0, reasoning: 0,
             value: nil, currency: nil, coverage: .none, complete: true, sourceTruncated: false
         )
@@ -636,7 +631,7 @@ final class FleetUsageModelsTests: XCTestCase {
         let node = FleetNodeSnapshot(
             nodeID: nodeID, nodeName: "hub", lastSeenAt: now, seq: 1, stale: false,
             dailyBuckets: [bucket], windowUsage: [openAINodeWindow, zhipuNodeWindow], quotas: [],
-            attributionFingerprint: "deadbeef", dailyDigests: [bucket.dayKey: FleetDailyDigest.digest(bucket)]
+            attributionFingerprint: "deadbeef"
         )
         let openAIWindow = FleetWindowAggregate(
             quotaProviderID: QuotaProviderID.openAI, modelID: "chatgpt_plan", windowKind: "interval",
@@ -692,7 +687,7 @@ final class FleetUsageModelsTests: XCTestCase {
         let node = FleetNodeSnapshot(
             nodeID: nodeID, nodeName: "hub", lastSeenAt: probeNow, seq: 1, stale: false,
             dailyBuckets: [bucket], windowUsage: [], quotas: [],
-            attributionFingerprint: "deadbeef", dailyDigests: [key: FleetDailyDigest.digest(bucket)]
+            attributionFingerprint: "deadbeef"
         )
         let snapshot = FleetSnapshot(
             protocolVersion: FleetProtocol.version, hubUUID: nodeID, generation: 1,
@@ -762,7 +757,7 @@ final class FleetUsageModelsTests: XCTestCase {
         let staleZeroNode = FleetNodeSnapshot(
             nodeID: UUID(), nodeName: "offline-empty", lastSeenAt: now, seq: 1, stale: true,
             dailyBuckets: [zeroBucket], windowUsage: [], quotas: [],
-            attributionFingerprint: nil, dailyDigests: nil
+            attributionFingerprint: nil
         )
         let activeSnapshot = FleetSnapshot(
             protocolVersion: snapshot.protocolVersion,
@@ -837,7 +832,6 @@ final class FleetUsageModelsTests: XCTestCase {
             windowKind: "interval",
             startAt: decodedPrecise.startAt,
             endAt: decodedPrecise.endAt,
-            observedAt: decodedPrecise.endAt,
             input: 10, cacheRead: 0, output: 0, reasoning: 0,
             value: nil, currency: nil, coverage: .none, complete: true, sourceTruncated: false
         )
@@ -847,7 +841,6 @@ final class FleetUsageModelsTests: XCTestCase {
             windowKind: "interval",
             startAt: newer.startAt,
             endAt: newer.endAt,
-            observedAt: newer.endAt,
             input: 99, cacheRead: 0, output: 0, reasoning: 0,
             value: nil, currency: nil, coverage: .none, complete: true, sourceTruncated: false
         )
@@ -860,8 +853,7 @@ final class FleetUsageModelsTests: XCTestCase {
             dailyBuckets: snapshot.nodes[0].dailyBuckets,
             windowUsage: [preciseNodeRow, newerNodeRow],
             quotas: [],
-            attributionFingerprint: nil,
-            dailyDigests: nil
+            attributionFingerprint: nil
         )
         let nodeUsage = FleetUsageProjection.nodeCardUsage(
             node: node,

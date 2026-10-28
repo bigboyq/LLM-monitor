@@ -191,7 +191,7 @@ enum FleetUsageProjection {
             // A singleton continues to use the legacy local menu. For multi-node
             // scope, keep a summary-shaped unavailable state so the caller cannot
             // fall through to local values while the selector still says “全局”.
-            guard snapshot.nodes.count > 1 else { return nil }
+            guard snapshot.isMultiNode else { return nil }
             return unavailableMenuSummary(
                 multiNode: true,
                 notice: "全局今日用量尚未同步"
@@ -293,7 +293,7 @@ enum FleetUsageProjection {
         }
 
         return FleetMenuSummary(
-            multiNode: snapshot.nodes.count > 1,
+            multiNode: snapshot.isMultiNode,
             dailyNotice: dailyBucketNotice(todayBucket),
             fleetTotals: fleetTotals,
             sections: sections
@@ -437,8 +437,7 @@ enum FleetUsageProjection {
                 turns: bucket.totals.turns,
                 rounds: bucket.totals.rounds
             ))
-            let detailsComplete = bucket.modelDetailsComplete && bucket.totalsComplete && !bucket.sourceTruncated
-            let text = costText(entries: bucket.entries, complete: detailsComplete)
+            let text = bucketCostText(bucket)
             dayValues.append(FleetCardUsage.DayValue(dayKey: bucket.dayKey, valueText: text))
         }
 
@@ -648,10 +647,7 @@ enum FleetUsageProjection {
             ))
             dayValues.append(FleetCardUsage.DayValue(
                 dayKey: bucket.dayKey,
-                valueText: costText(
-                    entries: bucket.entries,
-                    complete: bucket.modelDetailsComplete && bucket.totalsComplete && !bucket.sourceTruncated
-                )
+                valueText: bucketCostText(bucket)
             ))
         }
 
@@ -780,6 +776,32 @@ enum FleetUsageProjection {
         let mixed = MixedCurrencyEstimate(estimates: estimates).displayText
         let partial = !complete || hasPartialCost(entries: entries)
         return partial ? mixed + "（部分计价）" : mixed
+    }
+
+    /// 桶级逐日金额文案：合并侧已算好 `valueByCurrency`/`costPartial` 时直接
+    /// 渲染（历史天的明细不下发给副节点，2026-10-27 裁定）；无汇总的桶
+    /// （节点上报桶 / 旧缓存快照）回退明细路径。口径与 `costText(entries:)`
+    /// 一致：无价贡献 → 「未定价」，混币走折算文案，未完整计价加标注。
+    static func bucketCostText(_ bucket: FleetDailyBucket) -> String {
+        if let values = bucket.valueByCurrency {
+            guard !values.isEmpty else { return "未定价" }
+            let estimates = values.compactMap { raw, value -> ModelCostEstimate? in
+                guard let currency = ModelPriceCurrency(rawValue: raw) else { return nil }
+                return ModelCostEstimate(
+                    value: value, currency: currency,
+                    pricedModelNames: [], unpricedModelNames: []
+                )
+            }
+            guard !estimates.isEmpty else { return "未定价" }
+            let mixed = MixedCurrencyEstimate(estimates: estimates).displayText
+            let partial = bucket.costPartial
+                || !bucket.modelDetailsComplete || !bucket.totalsComplete || bucket.sourceTruncated
+            return partial ? mixed + "（部分计价）" : mixed
+        }
+        return costText(
+            entries: bucket.entries,
+            complete: bucket.modelDetailsComplete && bucket.totalsComplete && !bucket.sourceTruncated
+        )
     }
 
     private static func entryCostText(entry: FleetUsageEntry) -> String {

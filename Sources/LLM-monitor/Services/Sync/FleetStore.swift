@@ -23,31 +23,26 @@ enum FleetRecordKind {
 /// timezoneID 仅诊断，§2.3）。
 struct FleetStoredReport: Codable, Equatable, Sendable {
     var dailyBuckets: [FleetDailyBucket]?
-    /// Digest of the last accepted input for each stored day. For partial
-    /// source-aware buckets this differs from the merged stored bucket digest.
-    var dailyInputDigests: [String: String]? = nil
     var quotas: [FleetQuotaReport]?
     var attributionFingerprint: String?
     var nodeName: String?
     var timezoneID: String?
 }
 
-/// 报告落库结果：哪些通道被应用。任何可见变化都递增 generation。
+/// 报告落库结果：哪些通道被应用。generation 只随可见内容变化递增（2026-10-27
+/// 裁定，见 `applyReport`）；心跳本身不再推动 generation。
 struct FleetReportApplyOutcome: Equatable, Sendable {
     /// seq 不新于 high-water：所有通道都不应用（§5.6）。
     var rejectedStaleSeq: Bool
     var dailyApplied: Bool
     var quotasApplied: Bool
+    /// 本次实际**改变了内容**的窗口行数（数值不变的重复上报不计）。
     var windowRowsApplied: Int
     var heartbeatUpdated: Bool
     /// hub 侧已接受的 high-water。seq 被拒时把它回给 node：node 据此重建
     /// 本机序号（否则同一份报告会**永久**被拒，而 node 只看到 200，
     /// 表现为「在线但数据永远没进 hub」）。
     var highWaterSeq: Int
-
-    var anyChange: Bool {
-        dailyApplied || quotasApplied || windowRowsApplied > 0 || heartbeatUpdated
-    }
 }
 
 /// hub 对「报告序号落后」的响应体（HTTP 409）。
@@ -134,7 +129,7 @@ final class FleetStore: @unchecked Sendable {
     // MARK: - hub：接受报告（事务）
 
     /// 校验后的报告落库。`receivedAt` 是 hub 的接收时刻——窗口行的
-    /// `observedAt` 以它为准（不信任上报值，§5.5）；lastSeen / updated_at 同。
+    /// `updated_at` 与 lastSeen 以它为准（§5.5）。
     ///
     /// 事务保证：报告（daily/quotas）、node_meta high-water、窗口行、
     /// generation 的递增要么全部提交，要么全部回滚（§5.7）。
@@ -175,7 +170,8 @@ final class FleetStore: @unchecked Sendable {
             let oldStored = stored
 
             if let buckets = report.dailyBuckets, validation.dailyBucketsError == nil {
-                // 增量日桶（2026-10-24 裁定）：按 dayKey upsert，通道缺席的天保留旧值。
+                // 按 dayKey upsert，通道缺席的天保留旧值（增量摘要回执已撤销，
+                // 2026-10-27 裁定：节点每拍全量上报，本逻辑退化为幂等替换）。
                 //
                 // 保留策略：**最新的 N 天**（N = 协议上限 7），按 dayKey 排序取尾部。
                 // 不按 hub 当前日期裁剪：节点的报告窗口按**节点自己的**时钟滚动，
@@ -189,7 +185,6 @@ final class FleetStore: @unchecked Sendable {
                     (stored.dailyBuckets ?? []).map { ($0.dayKey, $0) },
                     uniquingKeysWith: { _, new in new }
                 )
-                var inputDigests = stored.dailyInputDigests ?? [:]
                 for bucket in buckets {
                     if let unavailableSources = bucket.unavailableSources {
                         byDay[bucket.dayKey] = mergeSourceAwareDailyBucket(
@@ -201,16 +196,11 @@ final class FleetStore: @unchecked Sendable {
                         // Legacy complete buckets retain their original whole-day replacement.
                         byDay[bucket.dayKey] = bucket
                     }
-                    inputDigests[bucket.dayKey] = FleetDailyDigest.digest(bucket)
                 }
-                let retainedBuckets = byDay.values
+                stored.dailyBuckets = byDay.values
                     .sorted { $0.dayKey < $1.dayKey }
                     .suffix(FleetProtocol.maxDailyBuckets)
                     .map { $0 }
-                let retainedKeys = Set(retainedBuckets.map(\.dayKey))
-                inputDigests = inputDigests.filter { retainedKeys.contains($0.key) }
-                stored.dailyBuckets = retainedBuckets
-                stored.dailyInputDigests = inputDigests.isEmpty ? nil : inputDigests
             }
             if let quotas = report.quotas, validation.quotasError == nil {
                 stored.quotas = quotas
@@ -225,13 +215,13 @@ final class FleetStore: @unchecked Sendable {
             }
             applied.dailyApplied = report.dailyBuckets != nil
                 && validation.dailyBucketsError == nil
-                && (stored.dailyBuckets != oldStored.dailyBuckets
-                    || stored.dailyInputDigests != oldStored.dailyInputDigests)
+                && stored.dailyBuckets != oldStored.dailyBuckets
             applied.quotasApplied = report.quotas != nil
                 && validation.quotasError == nil
                 && stored.quotas != oldStored.quotas
 
-            if stored != oldStored {
+            let reportRowChanged = stored != oldStored
+            if reportRowChanged {
                 try upsertRow(
                     kind: FleetRecordKind.report,
                     scope: scope,
@@ -244,8 +234,13 @@ final class FleetStore: @unchecked Sendable {
                 )
             }
 
-            for var row in validation.windowRows {
-                row.observedAt = receivedAt
+            // 窗口行按内容判变：observedAt 出 payload 后，数值不变的重复上报
+            // 字节稳定，跳过重写也不计变化（2026-10-27 裁定）。
+            let existingWindowPayloads = try queryWindowPayloads(scope: scope, nodeID: nodeID)
+            var windowContentChanged = false
+            for row in validation.windowRows {
+                let payload = try FleetCodec.encode(row)
+                guard existingWindowPayloads[row.recordKey] != payload else { continue }
                 try upsertRow(
                     kind: FleetRecordKind.window,
                     scope: scope,
@@ -254,9 +249,10 @@ final class FleetStore: @unchecked Sendable {
                     seq: Int64(report.seq),
                     generation: nil,
                     updatedAt: receivedAt,
-                    payload: try FleetCodec.encode(row)
+                    payload: payload
                 )
                 applied.windowRowsApplied += 1
+                windowContentChanged = true
             }
 
             try upsertRow(
@@ -267,11 +263,15 @@ final class FleetStore: @unchecked Sendable {
                 seq: Int64(report.seq),
                 generation: nil,
                 updatedAt: receivedAt,
-                payload: try FleetCodec.encode(HighWaterPayload(lastSeenAt: receivedAt))
+                payload: Data("{}".utf8)
             )
             applied.heartbeatUpdated = true
 
-            if applied.anyChange {
+            // generation 只随**可见内容**变化递增（2026-10-27 裁定）：纯心跳
+            // （所有通道与已存内容一致）不再递增——stale 翻转 / 日切仍由装配
+            // 侧 60s 可见签名覆盖；节点据 generation 门控自然跳过无变化的快照，
+            // 快照缓存不再每拍整包重写。
+            if reportRowChanged || windowContentChanged {
                 _ = try bumpGenerationLocked(scope: scope)
             }
             try commit()
@@ -313,8 +313,19 @@ final class FleetStore: @unchecked Sendable {
         )
     }
 
-    private struct HighWaterPayload: Codable {
-        let lastSeenAt: Date
+    /// 该节点已存窗口行的 payload（recordKey → 字节）。applyReport 据此按
+    /// 内容判变，数值不变的行不重写、不推 generation。
+    private func queryWindowPayloads(scope: String, nodeID: String) throws -> [String: Data] {
+        try mapRows(
+            sql: "SELECT record_key, payload_json FROM sync_records WHERE kind = ? AND scope = ? AND node_id = ?",
+            bind: [.text(FleetRecordKind.window), .text(scope), .text(nodeID)]
+        ) { statement in
+            (try SQLiteConnection.requiredText(statement, column: 0),
+             Self.columnPayload(statement, column: 1))
+        }
+        .reduce(into: [:]) { result, pair in
+            result[pair.0] = pair.1
+        }
     }
 
     // MARK: - hub：读状态 / 快照
@@ -353,17 +364,17 @@ final class FleetStore: @unchecked Sendable {
                 logWarn("[fleet-hub] 窗口行损坏 \(windowRowsResult.corruptRowIDs.count) 条，已跳过并清理")
                 corruptRowIDs.append(contentsOf: windowRowsResult.corruptRowIDs)
             }
-            let meta = try queryInt64AndPayload(
-                sql: "SELECT seq, payload_json FROM sync_records WHERE kind = ? AND scope = ? AND node_id = ? AND record_key = 'high-water'",
+            // lastSeen 直接读行的 updated_at 列（与写入时的接收时刻同值），
+            // 不再为它维护一个 JSON payload。
+            let meta = try queryInt64AndDouble(
+                sql: "SELECT seq, updated_at FROM sync_records WHERE kind = ? AND scope = ? AND node_id = ? AND record_key = 'high-water'",
                 bind: [.text(FleetRecordKind.nodeMeta), .text(scope), .text(nodeIDText)]
             )
             var seq = 0
             var lastSeen = Date.distantPast
             if let meta {
                 seq = Int(meta.int64)
-                if let payload = try? FleetCodec.decode(HighWaterPayload.self, from: meta.payload) {
-                    lastSeen = payload.lastSeenAt
-                }
+                lastSeen = Date(timeIntervalSince1970: meta.double)
             }
             nodes.append(FleetHubStoredState.NodeRecord(
                 nodeID: nodeID,
@@ -391,7 +402,11 @@ final class FleetStore: @unchecked Sendable {
 
     // MARK: - hub：窗口过期清理 / 节点移除
 
-    /// 清理 `endAt` 早于 `cutoff` 的窗口行。不清理 node_meta（high-water 与
+    /// 清理窗口行（§7.6）：(1) `endAt` 早于 `cutoff` 的过期行；(2) 同
+    /// (node, provider, model, kind) 组内 `endAt` 不是最新
+    /// `FleetProtocol.windowFrontierPerGroup` 条的行——边界随额度重置滚动，
+    /// 历史边界不会再等来新贡献也没有消费方，只增不删会让存储与快照随时间
+    /// 线性膨胀（2026-10-27 裁定）。不清理 node_meta（high-water 与
     /// lastSeen 不因窗口清理丢失，§7.6）。
     @discardableResult
     func pruneWindows(scope: String, olderThan cutoff: Date) throws -> Int {
@@ -399,26 +414,48 @@ final class FleetStore: @unchecked Sendable {
         defer { lock.unlock() }
         // 坏行（无法解码）跳过并清理：原来这里一抛错，整批过期窗口就再也
         // 清不掉（每次维护节拍都失败 → 窗口表只增不减）。
-        let result = try queryRowsSkippingCorrupt(
-            FleetWindowUsage.self,
-            sql: "SELECT rowid, payload_json FROM sync_records WHERE kind = ? AND scope = ?",
+        let scanned: [(rowid: Int64, nodeID: String, row: FleetWindowUsage?)] = try mapRows(
+            sql: "SELECT rowid, node_id, payload_json FROM sync_records WHERE kind = ? AND scope = ?",
             bind: [.text(FleetRecordKind.window), .text(scope)]
-        )
-        let expired = result.rows.filter { $0.value.endAt < cutoff }
-        guard !expired.isEmpty || !result.corruptRowIDs.isEmpty else { return 0 }
+        ) { statement in
+            (
+                sqlite3_column_int64(statement, 0),
+                try SQLiteConnection.requiredText(statement, column: 1),
+                try? FleetCodec.decode(FleetWindowUsage.self, from: Self.columnPayload(statement, column: 2))
+            )
+        }
+        var rowIDsToDelete: Set<Int64> = []
+        var removedWindowRows = 0
+        var byGroup: [String: [(rowid: Int64, endAt: Date)]] = [:]
+        for item in scanned {
+            guard let row = item.row else {
+                rowIDsToDelete.insert(item.rowid)
+                continue
+            }
+            if row.endAt < cutoff {
+                if rowIDsToDelete.insert(item.rowid).inserted { removedWindowRows += 1 }
+            }
+            let key = [item.nodeID, row.quotaProviderID, row.modelID, row.windowKind]
+                .joined(separator: "\u{0}")
+            byGroup[key, default: []].append((item.rowid, row.endAt))
+        }
+        for members in byGroup.values where members.count > FleetProtocol.windowFrontierPerGroup {
+            let excess = members
+                .sorted { $0.endAt > $1.endAt }
+                .dropFirst(FleetProtocol.windowFrontierPerGroup)
+            for member in excess where rowIDsToDelete.insert(member.rowid).inserted {
+                removedWindowRows += 1
+            }
+        }
+        guard !rowIDsToDelete.isEmpty else { return 0 }
         try beginTransaction()
         do {
-            for item in expired {
-                try execute("DELETE FROM sync_records WHERE rowid = ?", bind: [.int64(item.rowid)])
-            }
-            for rowID in result.corruptRowIDs {
+            for rowID in rowIDsToDelete {
                 try execute("DELETE FROM sync_records WHERE rowid = ?", bind: [.int64(rowID)])
             }
-            if !expired.isEmpty || !result.corruptRowIDs.isEmpty {
-                _ = try bumpGenerationLocked(scope: scope)
-            }
+            _ = try bumpGenerationLocked(scope: scope)
             try commit()
-            return expired.count
+            return removedWindowRows
         } catch {
             try? rollback()
             throw error
@@ -791,34 +828,13 @@ final class FleetStore: @unchecked Sendable {
         }.first
     }
 
-    private func queryInt64AndPayload(
+    private func queryInt64AndDouble(
         sql: String,
         bind: [Bind] = []
-    ) throws -> (int64: Int64, payload: Data)? {
+    ) throws -> (int64: Int64, double: Double)? {
         try mapRows(sql: sql, bind: bind) { statement in
-            (sqlite3_column_int64(statement, 0), Self.columnPayload(statement, column: 1))
+            (sqlite3_column_int64(statement, 0), sqlite3_column_double(statement, 1))
         }.first
-    }
-
-    /// 单列 payload 查询（SQL 只 SELECT payload_json 一列）。
-    private func queryRows<T>(
-        sql: String,
-        bind: [Bind] = [],
-        map: (Data) throws -> T
-    ) throws -> [T] {
-        try mapRows(sql: sql, bind: bind) { statement in
-            try map(Self.columnPayload(statement, column: 0))
-        }
-    }
-
-    private func queryRowsWithRowid<T>(
-        sql: String,
-        bind: [Bind] = [],
-        map: (Data) throws -> T
-    ) throws -> [(rowid: Int64, value: T)] {
-        try mapRows(sql: sql, bind: bind) { statement in
-            (sqlite3_column_int64(statement, 0), try map(Self.columnPayload(statement, column: 1)))
-        }
     }
 
     private func mapRows<T>(

@@ -131,10 +131,13 @@ final class FleetSyncIntegrationTests: XCTestCase {
         XCTAssertEqual(snapshot.hubUUID, hub.localNodeID)
         XCTAssertGreaterThanOrEqual(snapshot.generation, 1, "接受报告递增 generation")
 
+        // POST 回包只含本节点轻量回执（§3）；完整逐节点数据在 hub 侧快照。
         let nodeEntry = try XCTUnwrap(snapshot.nodes.first { $0.nodeID == nodeID })
-        XCTAssertEqual(nodeEntry.nodeName, "Node-MBP")
-        XCTAssertFalse(nodeEntry.stale)
-        XCTAssertEqual(nodeEntry.dailyBuckets.last?.totals.input, 100)
+        XCTAssertTrue(nodeEntry.dailyBuckets.isEmpty)
+        let hubNode = try XCTUnwrap(hub.latestSnapshot?.nodes.first { $0.nodeID == nodeID })
+        XCTAssertEqual(hubNode.nodeName, "Node-MBP")
+        XCTAssertFalse(hubNode.stale)
+        XCTAssertEqual(hubNode.dailyBuckets.last?.totals.input, 100)
 
         // fleet 聚合 = hub 自己（空）+ node：今天的总量来自 node。
         let today = try XCTUnwrap(snapshot.fleet.dailyBuckets.last)
@@ -205,36 +208,31 @@ final class FleetSyncIntegrationTests: XCTestCase {
         let snapshot = try await client.postReport(heartbeat)
         let node = try XCTUnwrap(snapshot.nodes.first { $0.nodeID == nodeID })
         XCTAssertEqual(node.seq, 2)
-        XCTAssertEqual(node.dailyBuckets.last?.totals.input, 50, "省略日桶保留旧值")
+        let stored = try XCTUnwrap(hub.latestSnapshot?.nodes.first { $0.nodeID == nodeID })
+        XCTAssertEqual(stored.dailyBuckets.last?.totals.input, 50, "省略日桶保留旧值")
     }
 
-    func testPartialDayChannelMergesAndCarriesDigestReceipts() async throws {
+    func testPartialDayChannelMergesPerDayKey() async throws {
         try await startHub()
         let nodeID = UUID()
-        let first = try await client.postReport(nodeReport(seq: 1, nodeID: nodeID, input: 100))
-        let entry = try XCTUnwrap(first.nodes.first { $0.nodeID == nodeID })
-        // 回执覆盖 hub 已存的每个日桶，且与内容摘要一致。
-        XCTAssertEqual(entry.dailyDigests?.count, entry.dailyBuckets.count)
-        for bucket in entry.dailyBuckets {
-            XCTAssertEqual(entry.dailyDigests?[bucket.dayKey], FleetDailyDigest.digest(bucket))
-        }
+        _ = try await client.postReport(nodeReport(seq: 1, nodeID: nodeID, input: 100))
+        let firstStored = try XCTUnwrap(hub.latestSnapshot?.nodes.first { $0.nodeID == nodeID })
 
-        // 只带今天的部分通道（增量补发）：旧天保留，今天被替换，回执同步更新。
+        // 只带今天的日桶通道：按 dayKey 逐桶 upsert，缺席的天保留旧值。
         try await Task.sleep(nanoseconds: 1_100_000_000)
         var partial = nodeReport(seq: 2, nodeID: nodeID, input: 200)
         partial.dailyBuckets = [try XCTUnwrap(partial.dailyBuckets?.last)]
         let second = try await client.postReport(partial)
-        let secondEntry = try XCTUnwrap(second.nodes.first { $0.nodeID == nodeID })
-        XCTAssertEqual(secondEntry.dailyBuckets.count, 7, "未补发的天保留旧值")
-        XCTAssertEqual(secondEntry.dailyBuckets.last?.totals.input, 200, "补发的天替换为新值")
-        XCTAssertEqual(Array(secondEntry.dailyBuckets.dropLast()),
-                       Array(entry.dailyBuckets.dropLast()),
-                       "未补发的天与首拍逐字节一致")
-        XCTAssertEqual(secondEntry.dailyDigests?.count, 7, "回执始终覆盖 hub 已存的全部天")
+        let secondStored = try XCTUnwrap(hub.latestSnapshot?.nodes.first { $0.nodeID == nodeID })
+        XCTAssertEqual(secondStored.dailyBuckets.count, 7, "未携带的天保留旧值")
+        XCTAssertEqual(secondStored.dailyBuckets.last?.totals.input, 200, "携带的天替换为新值")
+        XCTAssertEqual(Array(secondStored.dailyBuckets.dropLast()),
+                       Array(firstStored.dailyBuckets.dropLast()),
+                       "未携带的天与首拍逐字节一致")
         XCTAssertEqual(second.fleet.dailyBuckets.last?.totals.input, 200, "fleet 聚合使用合并后的值")
     }
 
-    func testSourceAwarePartialReceiptAcknowledgesInputAcrossMergedSnapshot() async throws {
+    func testSourceAwarePartialMergeRetainsFailedSourceValues() async throws {
         try await startHub()
         let nodeID = UUID()
         var initial = nodeReport(seq: 1, nodeID: nodeID, input: 100)
@@ -269,24 +267,18 @@ final class FleetSyncIntegrationTests: XCTestCase {
         try await Task.sleep(nanoseconds: 1_100_000_000)
         var secondReport = nodeReport(seq: 2, nodeID: nodeID, input: 200)
         secondReport.dailyBuckets = [partial]
-        let secondSnapshot = try await client.postReport(secondReport)
-        let secondNode = try XCTUnwrap(secondSnapshot.nodes.first { $0.nodeID == nodeID })
-        let storedPartial = try XCTUnwrap(secondNode.dailyBuckets.first { $0.dayKey == day })
+        _ = try await client.postReport(secondReport)
+        let secondStored = try XCTUnwrap(hub.latestSnapshot?.nodes.first { $0.nodeID == nodeID })
+        let storedPartial = try XCTUnwrap(secondStored.dailyBuckets.first { $0.dayKey == day })
         XCTAssertEqual(storedPartial.totals.input, 240, "健康新值加失败来源旧值")
-        XCTAssertEqual(secondNode.dailyDigests?[day], FleetDailyDigest.digest(partial),
-                       "快照回执必须是已接受的partial输入摘要")
-        XCTAssertNotEqual(secondNode.dailyDigests?[day], FleetDailyDigest.digest(storedPartial),
-                          "merged bucket摘要不能代替输入回执")
 
         try await Task.sleep(nanoseconds: 1_100_000_000)
         var repeatedReport = nodeReport(seq: 3, nodeID: nodeID, input: 200)
         repeatedReport.dailyBuckets = [partial]
-        let repeatedSnapshot = try await client.postReport(repeatedReport)
-        let repeatedNode = try XCTUnwrap(repeatedSnapshot.nodes.first { $0.nodeID == nodeID })
-        XCTAssertEqual(repeatedNode.dailyBuckets.first { $0.dayKey == day }?.totals.input, 240,
+        _ = try await client.postReport(repeatedReport)
+        let repeatedStored = try XCTUnwrap(hub.latestSnapshot?.nodes.first { $0.nodeID == nodeID })
+        XCTAssertEqual(repeatedStored.dailyBuckets.first { $0.dayKey == day }?.totals.input, 240,
                        "重复partial请求不能累计旧失败值")
-        XCTAssertEqual(repeatedNode.dailyDigests?[day], FleetDailyDigest.digest(partial),
-                       "稳定partial输入持续得到稳定ACK")
     }
 
     func testStaleSeqReportIsRejectedWithConflictAndHighWater() async throws {
@@ -493,9 +485,11 @@ final class FleetSyncIntegrationTests: XCTestCase {
         ), seq: 1)
         let snapshot = try await client.postReport(emptyReport)
 
-        let remoteNode = try XCTUnwrap(snapshot.nodes.first { $0.nodeID == emptyNodeID })
+        // 逐节点明细在 hub 侧快照（POST 回包只有本节点轻量回执）。
+        let afterPost = try XCTUnwrap(hub.latestSnapshot)
+        let remoteNode = try XCTUnwrap(afterPost.nodes.first { $0.nodeID == emptyNodeID })
         XCTAssertEqual(remoteNode.dailyBuckets.first { $0.dayKey == dayKey }?.totals, .zero)
-        let hubNode = try XCTUnwrap(snapshot.nodes.first { $0.nodeID == hubID })
+        let hubNode = try XCTUnwrap(afterPost.nodes.first { $0.nodeID == hubID })
         let hubToday = try XCTUnwrap(hubNode.dailyBuckets.first { $0.dayKey == dayKey })
         XCTAssertEqual(hubToday.totals.input, 200)
         XCTAssertEqual(hubToday.unavailableSources, localToday.unavailableSources)
