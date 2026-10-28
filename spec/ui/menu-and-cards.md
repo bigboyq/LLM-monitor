@@ -742,10 +742,10 @@ Row-level tint rules:
 | Account block hover | **已删除**。邮箱 / 数据来源原本按 provider 分三路包在标题行的 `HoverInfoRow` 里，只为菜单那张卡服务；菜单不再渲染 provider 卡，浮层又不吃鼠标事件，这个折叠区展不开，直接不画 |
 | Seven-day local statistics | 不在标题行，在**本地用量那一段**（`LocalUsageFooterView` → `SevenDayTokenUsageHoverView`）：`.alwaysVisible` 下就地展开成第二张卡的内容，`.onHover` 下才是悬停弹层。逐日表末列在 provider 卡路径**跟随「额度窗口」的 分析/用量 segment**（`lastColumnFollowsSegment: true` + `@AppStorage(quotaWindowUsageSegment)`）：分析态显示 价值（现状渲染），用量态显示 速度（`LocalUsageSpeedByDay` 按 `startOfDay(completedAt)` 分组逐日 `windowTokenRate`，文案 `speedText`，单日无有效时长 `—`，无样本不画列；两列同宽 62pt 切换零回流）。Settings 客户端页与 fleet 路径保持默认参数：永远价值列，不受 segment 影响 |
 
-scope 切换**不在标题行**：选项 ≤4 时它是标题行**下方**独占的一行
-（`ProviderCardView.scopeRow`，宽度与卡片一致，见 *Scope switcher* 小节——
-分段控件塞标题行会把 provider 名挤成「minimax To…」）；选项 >4 时它的紧凑
-形态才回到标题行（状态胶囊左边）。
+scope 切换**不在标题行**：选项 ≤4 时默认在标题行**下方**独占一行
+（`ProviderCardView.scopeRow`，宽度与卡片一致）；dock 贴底边时该行移到详情内容末尾、靠近
+dock。选项 >4 时才使用标题行里的紧凑下拉控件（状态胶囊左边）。分段控件单独占行，避免
+把 provider 名挤成「minimax To…」。
 
 状态点的配色（已连同视图删除）原为：healthy 绿 / warning 橙 / critical 红，
 `nil` 健康度显示灰点；三档语义色本身由 `healthyTint` / `warningTint` /
