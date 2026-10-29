@@ -55,6 +55,31 @@ struct LocalTokenUsageSample: Equatable, Codable, Sendable {
     }
 }
 
+/// Per-prompt token-speed distribution for a set of local usage samples.
+///
+/// A prompt is included in the distribution only when every call in that prompt
+/// has a valid duration. This avoids presenting partial multi-call prompts as a
+/// complete request speed. `latest` always refers to the newest prompt in the
+/// input, and is nil when that prompt is incomplete; it never falls back to an
+/// older prompt.
+struct PromptSpeedStatistics: Equatable, Sendable {
+    let minimum: Double?
+    let maximum: Double?
+    let p50: Double?
+    let latest: Double?
+    let validPromptCount: Int
+    let totalPromptCount: Int
+
+    static let empty = PromptSpeedStatistics(
+        minimum: nil,
+        maximum: nil,
+        p50: nil,
+        latest: nil,
+        validPromptCount: 0,
+        totalPromptCount: 0
+    )
+}
+
 /// 本地用量摘要使用的闭区间边界（实际过滤区间为 [start, end)）。
 /// 当服务端没有返回 reset time 时，使用调用时刻 + 窗口长度作为临时 end，
 /// 避免把缓存中保留的全部历史样本误算进当前窗口。
@@ -402,6 +427,66 @@ enum LocalUsageSummaryBuilder {
         windowTokenRateComponents(samples: samples).map { $0.numerator / $0.denominator }
     }
 
+    /// Prompt-level speed distribution. Calls sharing a namespaced `promptID`
+    /// form one statistical sample; its speed is the combined billable output
+    /// divided by the combined valid call duration. A prompt with any missing or
+    /// out-of-range call duration is omitted from min/max/P50 in its entirety.
+    /// The newest prompt is selected by its latest `completedAt`; promptID
+    /// ascending is the deterministic tie break when timestamps match.
+    nonisolated static func promptSpeedStatistics(
+        samples: [LocalTokenUsageSample]
+    ) -> PromptSpeedStatistics {
+        let grouped = Dictionary(grouping: samples, by: \.promptID)
+        guard !grouped.isEmpty else { return .empty }
+
+        struct PromptRate {
+            let promptID: String
+            let completedAt: Date
+            let rate: Double?
+        }
+
+        let prompts = grouped.map { promptID, calls -> PromptRate in
+            let completedAt = calls.map(\.completedAt).max() ?? .distantPast
+            guard calls.allSatisfy({ hasValidTokenRateDuration($0) }),
+                  let rate = windowTokenRate(samples: calls) else {
+                return PromptRate(promptID: promptID, completedAt: completedAt, rate: nil)
+            }
+            return PromptRate(
+                promptID: promptID,
+                completedAt: completedAt,
+                rate: rate
+            )
+        }
+
+        let latestPrompt = prompts.sorted {
+            if $0.completedAt != $1.completedAt { return $0.completedAt > $1.completedAt }
+            return $0.promptID < $1.promptID
+        }.first!
+        let rates = prompts.compactMap(\.rate).sorted()
+        guard !rates.isEmpty else {
+            return PromptSpeedStatistics(
+                minimum: nil,
+                maximum: nil,
+                p50: nil,
+                latest: latestPrompt.rate,
+                validPromptCount: 0,
+                totalPromptCount: prompts.count
+            )
+        }
+        let middle = rates.count / 2
+        let p50 = rates.count.isMultiple(of: 2)
+            ? (rates[middle - 1] + rates[middle]) / 2
+            : rates[middle]
+        return PromptSpeedStatistics(
+            minimum: rates.first,
+            maximum: rates.last,
+            p50: p50,
+            latest: latestPrompt.rate,
+            validPromptCount: rates.count,
+            totalPromptCount: prompts.count
+        )
+    }
+
     /// `windowTokenRate` 的分量形态：返回 (Σ分子, Σ分母)，让 `windowUsage` 把
     /// 中间量一并写进产物（`QuotaWindowUsageSnapshot.Window.rateNumerator` /
     /// `rateDenominator`），`combineWindowUsage` 才能跨池先加和再相除。过滤规则
@@ -410,8 +495,8 @@ enum LocalUsageSummaryBuilder {
         samples: [LocalTokenUsageSample]
     ) -> (numerator: Double, denominator: Double)? {
         let valid = samples.compactMap { sample -> (tokens: Int, seconds: Double)? in
-            guard let duration = sample.durationSeconds,
-                  duration >= 0.2, duration <= 3600 else { return nil }
+            guard hasValidTokenRateDuration(sample),
+                  let duration = sample.durationSeconds else { return nil }
             return (SaturatingArithmetic.sum(sample.outputTokens, sample.reasoningOutputTokens), duration)
         }
         guard !valid.isEmpty else { return nil }
@@ -419,6 +504,14 @@ enum LocalUsageSummaryBuilder {
         let denominator = valid.reduce(0.0) { $0 + $1.seconds }
         guard denominator.isFinite, denominator > 0 else { return nil }
         return (numerator: Double(numerator), denominator: denominator)
+    }
+
+    /// Shared duration gate for both call-level rates and complete-prompt gating.
+    private nonisolated static func hasValidTokenRateDuration(
+        _ sample: LocalTokenUsageSample
+    ) -> Bool {
+        guard let duration = sample.durationSeconds else { return false }
+        return duration.isFinite && duration >= 0.2 && duration <= 3600
     }
 }
 

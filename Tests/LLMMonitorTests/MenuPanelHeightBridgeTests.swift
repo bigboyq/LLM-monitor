@@ -52,10 +52,10 @@ final class MenuPanelHeightBridgeTests: XCTestCase {
         XCTAssertLessThan(f, 0.85, "高度上限 > 85% 会贴顶/贴 Dock 风险")
     }
 
-    /// 用量页维持 360pt 固定宽度。
-    func testWidthIs360() {
-        XCTAssertEqual(MenuPanelHeightBridge.width, 360, "宽度固定 360pt；改这里请同步 spec")
-        XCTAssertEqual(MenuPanelHeightBridge.width(for: .usage), 360)
+    /// 用量页与额度页共享宽度，容纳紧凑四指标摘要。
+    func testUsageWidthFitsCompactSummary() {
+        XCTAssertEqual(MenuPanelHeightBridge.width, 484, "用量页宽度应与额度页共享")
+        XCTAssertEqual(MenuPanelHeightBridge.width(for: .usage), 484)
     }
 
     /// 额度页按共享 Plan 图表的 420pt 内容宽度推导，并覆盖卡片、菜单行和菜单列内边距。
@@ -72,13 +72,13 @@ final class MenuPanelHeightBridgeTests: XCTestCase {
 
     func testWidthTransitionKeepsRightEdgeAnchoredAndClampsFrameToVisibleScreen() {
         let visible = CGRect(x: 0, y: 0, width: 1440, height: 900)
-        let usageFrame = CGRect(x: 1080, y: 200, width: 360, height: 500)
+        let usageFrame = CGRect(x: 956, y: 200, width: 484, height: 500)
         let widenedX = MenuWindowAlignment.alignedOriginX(
             currentFrame: usageFrame,
             targetWidth: MenuPanelHeightBridge.quotaWidth,
             visibleFrame: visible
         )
-        XCTAssertEqual(widenedX, 956, "切到额度页时固定右边缘，向左扩展")
+        XCTAssertEqual(widenedX, 956, "页面切换保持右边缘")
 
         let quotaFrame = CGRect(x: widenedX, y: 200, width: 484, height: 500)
         let narrowedX = MenuWindowAlignment.alignedOriginX(
@@ -86,9 +86,9 @@ final class MenuPanelHeightBridgeTests: XCTestCase {
             targetWidth: MenuPanelHeightBridge.width,
             visibleFrame: visible
         )
-        XCTAssertEqual(narrowedX, 1080, "切回用量页时恢复右边缘，不累积横向漂移")
+        XCTAssertEqual(narrowedX, 956, "页面切换不累积横向漂移")
 
-        let overflowFrame = CGRect(x: 1200, y: 200, width: 360, height: 500)
+        let overflowFrame = CGRect(x: 1200, y: 200, width: 484, height: 500)
         let clampedX = MenuWindowAlignment.alignedOriginX(
             currentFrame: overflowFrame,
             targetWidth: MenuPanelHeightBridge.quotaWidth,
@@ -97,7 +97,7 @@ final class MenuPanelHeightBridgeTests: XCTestCase {
         XCTAssertEqual(clampedX + MenuPanelHeightBridge.quotaWidth, visible.maxX)
 
         let leftOverflowX = MenuWindowAlignment.alignedOriginX(
-            currentFrame: CGRect(x: -20, y: 200, width: 360, height: 500),
+            currentFrame: CGRect(x: -20, y: 200, width: 484, height: 500),
             targetWidth: MenuPanelHeightBridge.quotaWidth,
             visibleFrame: visible
         )

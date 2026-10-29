@@ -7,8 +7,7 @@ import SwiftUI
 /// 用量页回答"今天我在哪些客户端里烧了多少 token、命中率多少、值多少钱"。
 /// 额度页独立回答"各 Provider 还剩多少"，不依赖边缘状态窗。
 ///
-/// 用量模型行在 336pt 内容区内改为两行布局：模型名 + token 总量、占比条、
-/// 带标签的缓存命中率 / 速度 / 价值。Client 段头仍独立呈现总量、速度与金额。
+/// 用量客户端段按紧凑两行摘要呈现；展开模型行后展示 Prompt 速度范围。
 /// 宽度与多行自然高度由 `HarnessUsageMenuViewTests` 覆盖。
 struct HarnessUsageMenuView: View {
     let summary: HarnessTodaySummary
@@ -30,6 +29,13 @@ struct HarnessUsageMenuView: View {
     var onRefreshSection: (HarnessSection) -> Void = { _ in }
     /// fleet 汇总可用且多于一个节点时启用双行 + 节点分组形态。
     private var fleetMenuActive: Bool { fleetSummary?.multiNode == true }
+    private var localSpeedScaleMaximum: Double? {
+        let values = summary.sections.flatMap { section in
+            [section.promptSpeedStatistics.maximum].compactMap { $0 }
+                + section.rows.compactMap { $0.promptSpeedStatistics.maximum }
+        }.filter { $0.isFinite && $0 > 0 }
+        return values.max()
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: HarnessUsageMenuView.sectionSpacing) {
@@ -70,7 +76,9 @@ struct HarnessUsageMenuView: View {
                     ForEach(summary.sections) { section in
                         HarnessSectionView(
                             section: section,
-                            onRefreshSection: onRefreshSection
+                            onRefreshSection: onRefreshSection,
+                            updateTime: summary.localUsageScannedAt,
+                            sharedSpeedMaximum: localSpeedScaleMaximum
                         )
                     }
                 }
@@ -107,7 +115,9 @@ struct HarnessUsageMenuView: View {
                 ForEach(summary.sections) { section in
                     HarnessSectionView(
                         section: section,
-                        onRefreshSection: onRefreshSection
+                        onRefreshSection: onRefreshSection,
+                        updateTime: summary.localUsageScannedAt,
+                        sharedSpeedMaximum: localSpeedScaleMaximum
                     )
                 }
             }
@@ -605,26 +615,34 @@ struct HarnessSectionView: View {
     let section: HarnessSection
     /// 段头右键「刷新 <客户端名>」：按本段今日贡献行刷新涉及的 provider 卡。
     var onRefreshSection: (HarnessSection) -> Void = { _ in }
+    var updateTime: Date? = nil
+    var sharedSpeedMaximum: Double? = nil
     @State private var isExpanded = false
 
     var body: some View {
-        DisclosureGroup(isExpanded: $isExpanded) {
-            ForEach(section.rows) { row in
-                HarnessModelRowView(row: row)
+        VStack(alignment: .leading, spacing: 4) {
+            Button { isExpanded.toggle() } label: {
+                header
             }
-        } label: {
-            header
+            .buttonStyle(.plain)
+            .contextMenu {
+                Button("刷新本机 \(section.displayName)") { onRefreshSection(section) }
+            }
+            if isExpanded {
+                ForEach(section.rows) { row in
+                    HarnessModelRowView(row: row, sharedSpeedMaximum: sharedSpeedMaximum)
+                }
+            }
         }
-        .tint(Color.secondaryLabel)
+        .padding(8)
+        .background(
+            RoundedRectangle(cornerRadius: 7)
+                .fill(Color.primary.opacity(0.045))
+                .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.primary.opacity(0.07), lineWidth: 1))
+        )
     }
 
-    /// 段头：一行里同时给出"这是谁"和"今天它花了多少"。
-    /// 段价值是 `MixedCurrencyEstimate`——同一个客户端横跨多个 provider 分片时
-    /// （OpenCode / DSH / ZCode）必然混币，必须折算成 CNY 总额而不是裸相加。
-    ///
-    /// 右侧数值格（`SectionHeaderMetricsView`）固定展示 Token 小计 / 速度汇总 /
-    /// 价值。Fleet 行继续复用列宽对齐；本地模型明细使用两行布局，不再假定
-    /// 段头指标与模型行逐列对齐。
+    /// 紧凑两行卡头：首行客户端身份、用量更新时间与展开控件；次行展示今日摘要。
     ///
     /// 右键菜单挂在**段头**（不是整段）：菜单内容区现在是客户端视角，右键一个
     /// 段名才是"针对这些数据"的语义；「刷新 <客户端名>」按本段今日贡献行刷新
@@ -632,7 +650,7 @@ struct HarnessSectionView: View {
     /// 动作实现由 `MenuContentView` 注入。
     private var header: some View {
         VStack(alignment: .leading, spacing: 2) {
-            HStack(alignment: .firstTextBaseline, spacing: HarnessModelRowView.columnSpacing) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Image(systemName: section.iconSystemName)
                     .font(.system(size: 9))
                     .foregroundStyle(Color.accentColor)
@@ -640,20 +658,23 @@ struct HarnessSectionView: View {
                     .font(MenuTypography.dataLabel)
                     .foregroundStyle(Color.primaryLabel)
                     .lineLimit(1)
-                Spacer(minLength: 6)
-                SectionHeaderMetricsView(
-                    totalTokens: section.totalTokens,
-                    tokensPerSecond: section.tokensPerSecond,
-                    valueText: section.valueText
-                )
+                Spacer(minLength: 4)
+                if let updateTime {
+                    Text(Formatters.formatTimeOfDay(updateTime))
+                        .font(MenuTypography.hint)
+                        .foregroundStyle(Color.secondaryLabel)
+                        .monospacedDigit()
+                        .help("本地用量更新时间")
+                }
+                Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                    .font(MenuTypography.hint)
+                    .foregroundStyle(Color.secondaryLabel)
             }
-            .padding(.bottom, 1)
             .overlay(alignment: .bottom) {
                 MenuHairline.horizontal
             }
-            .contextMenu {
-                Button("刷新本机 \(section.displayName)") { onRefreshSection(section) }
-            }
+            clientSummary
+                .padding(.top, 1)
             // 截断提示只在该段的数据源真的被截断时出现：数字本身仍然是"对"的，
             // 只是"不全"——不说就等于把一份残缺统计当完整统计读。
             if section.isTruncated {
@@ -662,10 +683,55 @@ struct HarnessSectionView: View {
         }
     }
 
+    private var clientSummary: some View {
+        let tokens = Formatters.formatTokenCountCompact(section.totalTokens)
+        let value = section.valueText
+        let hitRate = HarnessUsageMenuView.hitRateText(section.cacheHitRate)
+        let p50 = PromptSpeedRangeLineView.speedText(section.promptSpeedStatistics.p50)
+        return ViewThatFits(in: .horizontal) {
+            summaryLine(tokens: tokens, value: value, hitRate: hitRate, p50: p50, includeThinking: true)
+            summaryLine(tokens: tokens, value: value, hitRate: hitRate, p50: p50, includeThinking: false)
+            WrapLayout(horizontalSpacing: 7, verticalSpacing: 2) {
+                Text("今日 Token: \(tokens)")
+                Text("价值: \(value)")
+                Text("命中率: \(hitRate)")
+                Text("速度: P50 \(p50)")
+            }
+            .font(MenuTypography.hint)
+            .foregroundStyle(Color.secondaryLabel)
+        }
+    }
+
+    private func summaryLine(tokens: String, value: String, hitRate: String, p50: String, includeThinking: Bool) -> some View {
+        HStack(spacing: 7) {
+            Text("今日 Token: \(tokens)")
+            Text("价值: \(value)")
+            Text("命中率: \(hitRate)")
+            if includeThinking, let thinking = Self.thinkingPercent(section.buckets) {
+                Text("思考: \(thinking)")
+            }
+            Text("速度: P50 \(p50)")
+        }
+        .font(MenuTypography.hint)
+        .foregroundStyle(Color.secondaryLabel)
+        .lineLimit(1)
+        .fixedSize(horizontal: true, vertical: false)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+    }
+
+    private static func thinkingPercent(_ buckets: TokenUsageBuckets) -> String? {
+        let output = max(0, buckets.output)
+        let reasoning = max(0, buckets.reasoning)
+        let denominator = SaturatingArithmetic.add(output, reasoning)
+        guard denominator > 0 else { return nil }
+        return Formatters.formatPercent(Double(reasoning) / Double(denominator))
+    }
+
     /// 橙色截断提示，**单行**短文案。
     ///
     /// 完整说明是 `ClientUsageTruncationNotice.text`（设置页展开行与 7 天柱图
-    /// footer 用的那一句），但那一句二十多个字，在段头底下 336pt 宽的位置要占两行，
+    /// footer 用的那一句），
     /// 而菜单里这一行的读者只需要知道"数字不全"——具体怎么截断的，鼠标悬停
     /// （`.help`）再看。
     static let truncationShortText = "部分较早会话未计入"
@@ -702,18 +768,29 @@ enum MenuQuotaPresentation {
     static func summary(
         providerKind: ProviderKind,
         models: [ModelQuota],
-        balance: DeepseekBalanceDetail?
+        balance: DeepseekBalanceDetail?,
+        now: Date = Date()
     ) -> String {
-        let intervals = models.filter(\.hasIntervalWindow).map(\.intervalRemainingPercent)
-        let weeks = models.filter(\.hasWeeklyWindow).map(\.weeklyRemainingPercent)
+        let intervals = models.filter(\.hasIntervalWindow)
+        let weeks = models.filter(\.hasWeeklyWindow)
         var pieces: [String] = []
-        if let interval = intervals.min() { pieces.append("5h \(Formatters.formatQuotaPercent(interval))") }
-        if let weekly = weeks.min() { pieces.append("周 \(Formatters.formatQuotaPercent(weekly))") }
+        if let interval = intervals.min(by: { $0.intervalRemainingPercent < $1.intervalRemainingPercent }) {
+            pieces.append("5h \(Formatters.formatQuotaPercent(interval.intervalRemainingPercent)) · \(resetText(interval.intervalResetsAt, now: now))")
+        }
+        if let weekly = weeks.min(by: { $0.weeklyRemainingPercent < $1.weeklyRemainingPercent }) {
+            pieces.append("周 \(Formatters.formatQuotaPercent(weekly.weeklyRemainingPercent)) · \(resetText(weekly.weeklyResetsAt, now: now))")
+        }
         if !pieces.isEmpty { return pieces.joined(separator: " · ") }
         if providerKind == .deepseek, let balance {
             return "余额 \(balance.symbol)\(String(format: "%.2f", balance.total))"
         }
         return "暂无窗口额度"
+    }
+
+    private static func resetText(_ date: Date?, now: Date) -> String {
+        guard let date else { return "重置时间未知" }
+        guard date > now else { return "待更新" }
+        return "\(Formatters.formatResetSuffix(from: date, now: now))后重置"
     }
 }
 
@@ -796,21 +873,26 @@ private struct MenuQuotaProviderRow: View {
                     .lineLimit(1)
                     .truncationMode(.tail)
                     .help(status.displayName)
+                if let event = peakHeaderEvent {
+                    Text(event.title)
+                        .font(MenuTypography.hint)
+                        .foregroundStyle(event.color)
+                        .lineLimit(1)
+                }
+                if let event = resetCreditHeaderEvent {
+                    Text(event.title)
+                        .font(MenuTypography.hint)
+                        .foregroundStyle(event.color)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 4)
                 if let fetchedAt = quota?.fetchedAt {
-                    Text(Formatters.formatClock(fetchedAt))
+                    Text(Formatters.formatTimeOfDay(fetchedAt))
                         .font(MenuTypography.hint)
                         .foregroundStyle(Color.secondaryLabel)
                         .monospacedDigit()
                         .help("额度数据更新时间；\(status.displayName)额度请求时间，不代表本机用量更新时间")
                 }
-                if let source = effective?.sourceTagText {
-                    Text(effective?.isStale == true ? "\(source) · 已过期" : source)
-                        .font(MenuTypography.hint)
-                        .foregroundStyle(effective?.isStale == true ? Color.warningTint : Color.secondaryLabel)
-                        .lineLimit(1)
-                        .help(effective?.isStale == true ? "此额度来自其他节点，快照已过期" : "此额度来自其他节点")
-                }
-                Spacer(minLength: 4)
                 if case .loading = localStatus.state {
                     ProgressView()
                         .controlSize(.mini)
@@ -829,7 +911,7 @@ private struct MenuQuotaProviderRow: View {
 
             HStack(spacing: 7) {
                 if !models.isEmpty || (status.kind == .deepseek && quota?.balanceDetail != nil) {
-                    Text(summary)
+                    Text(summary(now: displayDate))
                         .font(MenuTypography.dataValue)
                         .foregroundStyle(Color.primaryLabel)
                         .lineLimit(1)
@@ -858,6 +940,14 @@ private struct MenuQuotaProviderRow: View {
                     .buttonStyle(.link)
                     .help("在独立窗口查看 \(status.displayName) 的完整详情")
                     .accessibilityLabel("在独立窗口打开 \(status.displayName) 详情")
+            }
+
+            if let source = effective?.sourceTagText {
+                Text(effective?.isStale == true ? "\(source) · 已过期" : source)
+                    .font(MenuTypography.hint)
+                    .foregroundStyle(effective?.isStale == true ? Color.warningTint : Color.secondaryLabel)
+                    .lineLimit(1)
+                    .help(effective?.isStale == true ? "此额度来自其他节点，快照已过期" : "此额度来自其他节点")
             }
 
             if case .notConfigured(let reason) = localStatus.state {
@@ -908,57 +998,48 @@ private struct MenuQuotaProviderRow: View {
         )
     }
 
-    private var summary: String {
+    private func summary(now: Date) -> String {
         MenuQuotaPresentation.summary(
             providerKind: status.kind,
             models: models,
-            balance: quota?.balanceDetail
+            balance: quota?.balanceDetail,
+            now: now
         )
     }
-}
 
-/// 段头右侧的数值格组：Token 小计 / 命中率占位 / 速度汇总 / 价值，四格全部
-/// 定宽右对齐，**列宽与列间距复用 `HarnessModelRowView` 的常量**——段头没有
-/// 表头行，数字必须与下方模型行的同名列站在同一条竖线上（本地段与 fleet 段
-/// 的段头共用这一组，两种形态的段头读法一致）。
-///
-/// 命中率列由透明占位守住（段头不显示命中率，但没有它 Token 与速度列就会
-/// 左移 42pt）：`Color.clear` 没有命中区域、不可交互；高度定 0，不参与行高、
-/// 也不影响基线对齐——它只负责把 Token 与速度列的 x 位置撑到与模型行一致。
-///
-/// 颜色沿用段头现状：Token / 速度汇总是次级（汇总不是行明细），价值保持
-/// primary；字体沿用段头的 `metricValue`（与模型行的 `dataValue` 同为
-/// 10pt 等宽数字，定宽列装得下同一批文案）。速度文案复用
-/// `QuotaWindowUsageSection.speedText` 的分档，口径说明与模型行速度格共用
-/// `HarnessModelRowView.speedColumnHelp`。
-private struct SectionHeaderMetricsView: View {
-    let totalTokens: Int
-    /// 段速度汇总。本地段 = `HarnessSection.tokensPerSecond`（该 client 今日
-    /// 全部样本的 `windowTokenRate`）；fleet 段没有本地样本，调用方传 nil。
-    let tokensPerSecond: Double?
-    let valueText: String
+    private var peakHeaderEvent: (title: String, color: Color)? {
+        let window: PeakWindow?
+        switch status.kind {
+        case .glmCodingPlan: window = status.glmPeakWindow
+        case .deepseek: window = status.deepseekPeakWindow
+        default: window = nil
+        }
+        guard let window else { return nil }
+        switch window.status(at: displayDate, calendar: PeakWindow.beijingCalendar) {
+        case .peak:
+            return ("高峰中", .criticalTint)
+        case .offPeak(until: let start) where start.timeIntervalSince(displayDate) < 3600:
+            return ("即将高峰", .warningTint)
+        case .offPeak:
+            return nil
+        }
+    }
 
-    @ViewBuilder
-    var body: some View {
-        Text(Formatters.formatTokenCountCompact(totalTokens))
-            .font(MenuTypography.metricValue)
-            .foregroundStyle(Color.secondaryLabel)
-            .frame(width: HarnessModelRowView.tokenWidth, alignment: .trailing)
-        Color.clear
-            .frame(width: HarnessModelRowView.hitRateWidth, height: 0)
-        Text(QuotaWindowUsageSection.speedText(tokensPerSecond))
-            .font(MenuTypography.metricValue)
-            .foregroundStyle(Color.secondaryLabel)
-            .frame(width: HarnessModelRowView.speedWidth, alignment: .trailing)
-            .help(HarnessModelRowView.speedColumnHelp)
-        Text(valueText)
-            .font(MenuTypography.metricValue)
-            .foregroundStyle(Color.primaryLabel)
-            .frame(width: HarnessUsageMenuView.valueWidth, alignment: .trailing)
+    private var resetCreditHeaderEvent: (title: String, color: Color)? {
+        guard let resets = quota?.resetCredits,
+              resets.availableCount > 0,
+              let expiry = resets.nearestExpiry else { return nil }
+        let remaining = expiry.timeIntervalSince(displayDate)
+        guard remaining <= 48 * 3600 else { return nil }
+        let color = CreditEntryRow.dotColor(for: expiry, now: displayDate)
+        let title = remaining <= 0
+            ? "重置卡已过期"
+            : "重置卡临期 \(Formatters.formatRelativeShort(from: expiry, now: displayDate))"
+        return (title, color)
     }
 }
 
-/// 本地段内单条模型行：模型名 + Token、三段占比条、带标签的缓存命中率 / 速度 / 价值。
+/// 本地段内单条模型行：模型名 + Token、Prompt 速度范围线、缓存命中率与价值。
 ///
 /// 价值是**行级**的 `ModelCostEstimate.displayText` 原样文案（单 provider 单币种
 /// 原额）。行级绝不做跨币种相加——同一段里不同 provider 的行金额可能不同币种，
@@ -966,6 +1047,7 @@ private struct SectionHeaderMetricsView: View {
 /// 其中旧列宽常量仍供 Fleet 行渲染复用；本地模型行使用弹性名称和两层度量信息。
 struct HarnessModelRowView: View {
     let row: HarnessModelRow
+    var sharedSpeedMaximum: Double? = nil
 
     /// 行与行的间距。刻意小于段间距（`sectionSpacing`），让分组层级一眼可辨。
     static let rowSpacing: CGFloat = 3
@@ -989,16 +1071,11 @@ struct HarnessModelRowView: View {
                     .lineLimit(1)
                     .fixedSize(horizontal: true, vertical: false)
             }
-            TokenBucketBar(buckets: row.buckets)
-                .frame(minHeight: 7)
+            PromptSpeedRangeLineView(statistics: row.promptSpeedStatistics, scaleMaximum: sharedSpeedMaximum)
             HStack(spacing: 6) {
                 Text("缓存命中 \(Self.percentText(row.cacheHitRate))")
                     .font(MenuTypography.hint)
                     .foregroundStyle(Color.secondaryLabel)
-                Text("速度 \(QuotaWindowUsageSection.speedText(row.tokensPerSecond))")
-                    .font(MenuTypography.hint)
-                    .foregroundStyle(Color.secondaryLabel)
-                    .help(Self.speedColumnHelp)
                 Spacer(minLength: 3)
                 Text("值 \(row.costText)")
                     .font(MenuTypography.hint)
@@ -1007,48 +1084,15 @@ struct HarnessModelRowView: View {
                     .truncationMode(.middle)
             }
             .accessibilityElement(children: .combine)
-            .accessibilityLabel("缓存命中率 \(Self.percentText(row.cacheHitRate))；速度 \(QuotaWindowUsageSection.speedText(row.tokensPerSecond))；价值 \(row.costText)")
+            .accessibilityLabel("缓存命中率 \(Self.percentText(row.cacheHitRate))；价值 \(row.costText)")
         }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(row.displayName)
     }
 
-    // MARK: - Fleet 行列宽常量
-
-    /// 这些定宽列供下方 Fleet 单行模型行复用；本地 Harness 明细使用上方的
-    /// 两行弹性布局，不使用这组列宽。长模型名走 tail 截断。
-    ///
-    /// Fleet 单行六列合计 92 + 40 + 40 + 36 + 32 + 56 = 296pt，加 5 段 6pt 间距和 8pt scope 缩进
-    /// = 334pt，在 336pt 内容区里留 2pt 余量给字体度量误差——数字列都是定宽右对齐，
-    /// 余量被吃掉也只是让占比条窄一点，不会串列。
-    static let modelNameWidth: CGFloat = 92
-    /// 占比条下限：模型名列再长也要留住能看出三段比例的宽度。
-    ///
-    /// 曾经是 72：2026-10 Fleet 单行模型行加「速度」列后原五列放不下六列，优先压这里
-    /// （模型名截断损失更大，三个数字列的定宽都比它更不可让），40pt 仍能
-    /// 分辨三段的相对长短。
-    static let bucketBarMinWidth: CGFloat = 40
-    /// Token 列定宽。`formatTokenCountCompact` 的最宽形态是五字符的 `9,999`
-    /// （≥10000 走 `10K` / `1.2M` 阶梯），10pt 等宽数字下 40pt 够。
-    static let tokenWidth: CGFloat = 40
-    /// 命中率列定宽。`100%` 是最宽形态。
-    static let hitRateWidth: CGFloat = 36
-    /// 速度列定宽。最宽形态是四字符——`99.9`（<100 档一位小数）或 `1234`
-    /// （≥100 档整数；万位 tok/s 不现实），`—` 更窄；10pt 等宽数字下 32pt 够。
-    static let speedWidth: CGFloat = 32
-    /// 价值列定宽。`$1234.56`（八字符，实测最宽的常见形态）走定宽；
-    /// `（部分计价）` 之类更长的文案走 middle 截断，而不是把整行往左挤。
-    static let valueWidth: CGFloat = 56
-
-    /// 命中率文案复用汇总块的同一实现，避免两处小数位规则漂移。
+    /// 命中率文案复用汇总块的同一实现。
     static func percentText(_ rate: Double?) -> String {
         HarnessUsageMenuView.hitRateText(rate)
     }
 
-    /// 速度格的 hover 说明：模型行没有表头，口径只能挂在格子上。与额度窗口
-    /// 区块那处（`QuotaWindowUsageSection.speedColumnHelp`）只差时间口径词——
-    /// 这里的分母是「今日」的调用时长。
-    static let speedColumnHelp = "今日 (Output+Reason) ÷ 调用时长，tok/s；时长未知的调用不参与"
 }
 
 
@@ -1114,14 +1158,30 @@ struct FleetClientSectionView: View {
     var hasRefreshMenu: Bool { onRefreshClient != nil }
 
     var body: some View {
-        DisclosureGroup(isExpanded: $isExpanded) {
-            ForEach(section.mergedModels) { model in
-                FleetModelRowView(row: model)
+        VStack(alignment: .leading, spacing: 4) {
+            Button { isExpanded.toggle() } label: {
+                header
             }
-        } label: {
-            header
+            .buttonStyle(.plain)
+            .contextMenu {
+                if let onRefreshClient {
+                    Button(Self.refreshMenuTitle(displayName: section.displayName)) {
+                        onRefreshClient(section.clientID)
+                    }
+                }
+            }
+            if isExpanded {
+                ForEach(section.mergedModels) { model in
+                    FleetModelRowView(row: model)
+                }
+            }
         }
-        .tint(Color.secondaryLabel)
+        .padding(8)
+        .background(
+            RoundedRectangle(cornerRadius: 7)
+                .fill(Color.primary.opacity(0.045))
+                .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.primary.opacity(0.07), lineWidth: 1))
+        )
     }
 
     /// 段头右键项的标题。文案由 spec §10.2 定：「刷新本机 <客户端名>」——
@@ -1132,7 +1192,7 @@ struct FleetClientSectionView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 2) {
-            HStack(alignment: .firstTextBaseline, spacing: HarnessModelRowView.columnSpacing) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Image(systemName: section.iconSystemName)
                     .font(.system(size: 9))
                     .foregroundStyle(Color.accentColor)
@@ -1140,28 +1200,49 @@ struct FleetClientSectionView: View {
                     .font(MenuTypography.dataLabel)
                     .foregroundStyle(Color.primaryLabel)
                     .lineLimit(1)
-                Spacer(minLength: 6)
-                // fleet 段没有本地样本：fleet 同步只有聚合桶，没有单次调用时长，
-                // 速度汇总无从算起——恒传 nil，速度格显示「—」（不是 0）。
-                // 列形状与本地段头一致，两种形态切换时数字列不跳动。
-                SectionHeaderMetricsView(
-                    totalTokens: section.totalTokens,
-                    tokensPerSecond: nil,
-                    valueText: section.costText
-                )
+                Spacer(minLength: 4)
+                Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                    .font(MenuTypography.hint)
+                    .foregroundStyle(Color.secondaryLabel)
             }
-            .padding(.bottom, 1)
             .overlay(alignment: .bottom) {
                 MenuHairline.horizontal
             }
-            .contextMenu {
-                if let onRefreshClient {
-                    Button(Self.refreshMenuTitle(displayName: section.displayName)) {
-                        onRefreshClient(section.clientID)
+            ViewThatFits(in: .horizontal) {
+                fleetSummaryLine
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 7) {
+                        Text("今日 Token: \(Formatters.formatTokenCountCompact(section.totalTokens))")
+                        Text("价值: \(section.costText)")
+                    }
+                    HStack(spacing: 7) {
+                        Text("命中率: \(HarnessUsageMenuView.hitRateText(HarnessTodaySummary.cacheHitRate(for: section.buckets)))")
+                        Text("速度: P50 —")
                     }
                 }
+                .font(MenuTypography.hint)
+                .foregroundStyle(Color.secondaryLabel)
+            }
+            if section.isTruncated {
+                Text(HarnessSectionView.truncationShortText)
+                    .font(MenuTypography.hint)
+                    .foregroundStyle(Color.orange)
+                    .help(ClientUsageTruncationNotice.text)
             }
         }
+    }
+
+    private var fleetSummaryLine: some View {
+        HStack(spacing: 7) {
+            Text("今日 Token: \(Formatters.formatTokenCountCompact(section.totalTokens))")
+            Text("价值: \(section.costText)")
+            Text("命中率: \(HarnessUsageMenuView.hitRateText(HarnessTodaySummary.cacheHitRate(for: section.buckets)))")
+            Text("速度: P50 —")
+        }
+        .font(MenuTypography.hint)
+        .foregroundStyle(Color.secondaryLabel)
+        .lineLimit(1)
+        .fixedSize(horizontal: true, vertical: false)
     }
 }
 
@@ -1206,7 +1287,8 @@ struct FleetModelRowView: View {
     let row: FleetMenuSummary.ModelRow
 
     var body: some View {
-        HStack(spacing: HarnessModelRowView.columnSpacing) {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 6) {
             // 压缩名与本机行同口径（去供应商命名空间/品牌前缀）：
             // 原始名过长时尾截断会把 "-Flash" 截没，被误读成不同模型被合并。
             Text(HarnessModelRow.compactedDisplayName(for: row.modelName))
@@ -1215,23 +1297,26 @@ struct FleetModelRowView: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .help(row.modelName)
-                .frame(width: HarnessModelRowView.modelNameWidth, alignment: .leading)
-            TokenBucketBar(buckets: row.buckets)
-                .frame(minWidth: HarnessModelRowView.bucketBarMinWidth, maxWidth: .infinity)
-            Text(Formatters.formatTokenCountCompact(row.totalTokens))
-                .font(MenuTypography.dataValue)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                Text("\(Formatters.formatTokenCountCompact(row.totalTokens)) tokens")
+                    .font(MenuTypography.dataValue)
+                    .foregroundStyle(Color.secondaryLabel)
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+            Text("速度范围 —（节点同步不含调用时长）")
+                .font(MenuTypography.hint)
                 .foregroundStyle(Color.secondaryLabel)
-                .frame(width: HarnessModelRowView.tokenWidth, alignment: .trailing)
+            HStack(spacing: 6) {
             Text(HarnessModelRowView.percentText(row.hitRate))
-                .font(MenuTypography.dataValue)
+                .font(MenuTypography.hint)
                 .foregroundStyle(Color.secondaryLabel)
-                .frame(width: HarnessModelRowView.hitRateWidth, alignment: .trailing)
-            Text(row.costText)
-                .font(MenuTypography.dataValue)
+            Text("值 \(row.costText)")
+                .font(MenuTypography.hint)
                 .foregroundStyle(Color.primaryLabel)
                 .lineLimit(1)
                 .truncationMode(.middle)
-                .frame(width: HarnessModelRowView.valueWidth, alignment: .trailing)
+                Spacer(minLength: 0)
+            }
         }
         .padding(.leading, 8)
     }

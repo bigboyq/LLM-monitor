@@ -263,7 +263,7 @@ widest thing the card can contain — the 7-day token usage chart
 It used to equal the main-menu width (360), which left the card only 312pt of content
 width and clipped the first/last day of the chart — exactly the layout damage a fixed
 width was supposed to prevent, just caused by the width being too small in the first
-place. The usage page keeps its 360pt width; the quota page is 484pt to fit the shared
+place. The usage and quota pages are both 484pt to fit the metric summaries and shared
 Plan modules, while the popover remains 468pt for its 420pt chart plus its host padding.
 Clamped only when the
 screen is narrower than the popover. The same derivation also sets
@@ -724,7 +724,7 @@ it hides with its module; each module is hidden when it has no data, the whole b
 
 **Every width in both tables is budgeted against 420pt, the card content width** —
 `EdgeDockTheme.popoverWidth` (468) − 2×12pt backdrop padding − 2×12pt
-card padding. That is the number to use, *not* the main menu's 360/312. The grids are
+card padding. That is the number to use, *not* the main menu's outer width. The grids are
 greedy so they always fill whatever they are given, but every number *derived* from the
 width — the per-column budget, the "does the three-character header still fit" argument,
 where the compact-money threshold is measured — was being computed against a menu that
@@ -734,7 +734,7 @@ apart again.
 
 | Module | Content |
 |---|---|
-| Quota window (`windowUsageModule`) | Titled 「额度窗口」 (`QuotaWindowUsageSection.windowUsageTitle`). Merges the former 「额度分析」 and 「额度详情」 into a single switchable module with zero-reflow between states. The title row hosts a custom capsule `QuotaWindowUsageSegmentControl` on the right (rendered when `quotaWindowSegmentEditable` is true), offering **「分析」** (default) and **「用量」** (`QuotaWindowUsageSegment`, persisted via `@AppStorage(QuotaWindowUsageSection.segmentStorageKey)` = `"quotaWindowUsageSegment"`). The time-composition bar (`QuotaWindowTimeShareBar`) was completely removed. Below the title row sits **one unified `Grid` of 7 columns** (`horizontalSpacing: 8`, `verticalSpacing: 3`) across all visible rows (5h / 周 / 今 / 闲). Fixed columns: **类型** (left, natural width ~16pt), **价值** (fixed 58pt, `QuotaWindowUsageSection.valueColumnWidth`, left-aligned cell; the 「用量」 mode re-labels this same column to **速度** — see below), and **重置日期** (right, fixed 126pt, `QuotaWindowUsageSection.resetDateColumnWidth`, including 9pt leading gutter `QuotaWindowUsageSection.resetDateColumnLeadingGap`). The middle 4 columns switch by segment: in **「分析」** mode: `类型 | 用量 | 命中 | 产出比 | 思考 | 价值 | 重置日期` (`statsHeaders`); in **「用量」** mode: `类型 | Input | Cached | Output | Reason | 速度 | 重置日期` (`rawTableHeaders`, `value` key retained with the 「速度」 label). Middle columns share a fixed width of **42pt** (`middleColumnWidth`) and right-alignment (headers follow cell alignment). The 420pt budget: `natural (~16pt) + 4×42pt + 58pt + 126pt + 6×8pt = 416pt ≤ 420pt` (measured header 「类型」 at 20pt yields `420pt ≤ 420pt`). Both modes share the exact same Grid skeleton and column dimensions, guaranteeing zero reflow (pinned by height-equality test). Reset date is formatted as `MM-dd HH:mm (倒计时)`, 今 / 闲 rows display `—`; its 126pt width removes the former 1.2× factor, fitting the longest form `09-30 15:07 (23h59m)` (117pt) + 9pt gutter with 0pt surplus, guarded by `testResetDateColumnWidthCoversTheLongestForm`. The countdown inside the parentheses takes its value from the host-injected display clock (`\.displayDate`, started/stopped with the panel) — not the wall clock at render time. With multiple pools, a footnote below the Grid explains totals are summed and reset date is the earliest. |
+| Quota window (`windowUsageModule`) | Titled 「额度窗口」 (`QuotaWindowUsageSection.windowUsageTitle`). Merges the former 「额度分析」 and 「额度详情」 into a single switchable module with zero-reflow between states. The title row hosts a custom capsule `QuotaWindowUsageSegmentControl` on the right (rendered when `quotaWindowSegmentEditable` is true), offering **「分析」** (default) and **「用量」** (`QuotaWindowUsageSegment`, persisted via `@AppStorage(QuotaWindowUsageSection.segmentStorageKey)` = `"quotaWindowUsageSegment"`). The time-composition bar (`QuotaWindowTimeShareBar`) was completely removed. Below the title row sits **one unified `Grid` of 7 columns** (`horizontalSpacing: 8`, `verticalSpacing: 3`) across all visible rows (5h / 周 / 今 / 闲). Fixed columns: **类型** (left, natural width ~16pt), **价值** (fixed 58pt, `QuotaWindowUsageSection.valueColumnWidth`, right-aligned cell; the 「用量」 mode re-labels this same column to **速度** — see below), and **重置日期** (right, fixed 126pt, `QuotaWindowUsageSection.resetDateColumnWidth`, including 6pt leading gutter `QuotaWindowUsageSection.resetDateColumnLeadingGap`). The middle 4 columns switch by segment: in **「分析」** mode: `类型 | 用量 | 命中 | 产出比 | 思考 | 价值 | 重置日期` (`statsHeaders`); in **「用量」** mode: `类型 | Input | Cached | Output | Reason | 速度 | 重置日期` (`rawTableHeaders`, `value` key retained with the 「速度」 label). Middle columns share a fixed width of **42pt** (`middleColumnWidth`) and right-alignment (headers follow cell alignment). The 420pt budget: `natural (~16pt) + 4×42pt + 58pt + 126pt + 6×8pt = 416pt ≤ 420pt` (measured header 「类型」 at 20pt yields `420pt ≤ 420pt`). Both modes share the exact same Grid skeleton and column dimensions, guaranteeing zero reflow (pinned by height-equality test). Reset date is formatted as `MM-dd HH:mm (倒计时)`, 今 / 闲 rows display `—`; its 126pt width removes the former 1.2× factor, fitting the longest form `09-30 15:07 (23h59m)` (117pt) + 6pt gutter with 3pt surplus, guarded by `testResetDateColumnWidthCoversTheLongestForm`. The countdown inside the parentheses takes its value from the host-injected display clock (`\.displayDate`, started/stopped with the panel) — not the wall clock at render time. With multiple pools, a footnote below the Grid explains totals are summed and reset date is the earliest. |
 | Reset credits (`resetCreditsModule`) | Titled 「重置卡详情」 (`QuotaWindowUsageSection.resetCreditsTitle`). The collapsed row (**`重置卡数量：N`** + nearest expiry) followed by the **per-card list** (`ResetCreditsDetailList`): N available credits render as N+1 lines. **Zero available → the whole module is omitted** (not a `重置卡数量：0` line) |
 
 **Value (the sixth metric)** — `ModelPricingCatalog.estimate` over the window's
@@ -750,6 +750,10 @@ nil rather than a meaningless total. **Fleet rows can also carry `costText`**
 (`QuotaWindowUsageSnapshot.Window.costText`), the hub-converted total with currency breakdown;
 it takes precedence over local `cost` in analysis mode. Local rows never produce `costText`,
 so the mixed-currency rule above still applies.
+
+Value and speed headers and numbers are right-aligned. The reset-date header and
+body share the same leading origin (6pt inset); the Grid adds its normal 8pt column
+spacing. The 126pt reset-date column width is retained to fit the longest countdown.
 
 This column renders in the **「分析」 mode only**;
 in 「用量」 mode the same slot becomes the **速度 (tok/s) column** (`speedCell`,

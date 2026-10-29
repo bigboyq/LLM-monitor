@@ -40,7 +40,8 @@
 | `Sources/LLM-monitor/Models/AnyJSON.swift` | 弱类型 JSON（Antigravity 递归解析用） |
 | `Sources/LLM-monitor/Models/LocalUsageDaily.swift` | Antigravity / Agy / Codex / Minimax / GLM / DSH / OpenCode 共享的 7-day chart 协议 + 默认实现 |
 | `Sources/LLM-monitor/Models/LocalDailyTokenUsage.swift` | 六个本地数据源共享的单日 token 聚合结构（统一收口原 `XxxDailyUsage`，on-disk JSON 键兼容） |
-| `Sources/LLM-monitor/Models/LocalTokenUsageSample.swift` | Provider 中立的单次模型调用 sample（cache-inclusive input 口径 + `TokenUsageBuckets` 规范化入口）；额度窗口快照携带可选 Fleet 金额说明 `costText` |
+| `Sources/LLM-monitor/Models/LocalTokenUsageSample.swift` | Provider 中立的单次模型调用 sample（cache-inclusive input 口径 + `TokenUsageBuckets` 规范化入口）；`PromptSpeedStatistics` 按 Prompt 聚合速度分布与最新值；额度窗口快照携带可选 Fleet 金额说明 `costText` |
+| `Tests/LLMMonitorTests/PromptSpeedStatisticsTests.swift` | Prompt 多轮合并、缺失时长整组排除、最新值不回退、奇偶 P50、时间并列与零速率回归 |
 | `Sources/LLM-monitor/Models/TokenAccounting.swift` | harness raw input / output 计数口径的元数据枚举（cacheInclusive / uncachedOnly 等） |
 | `Sources/LLM-monitor/Models/ReasoningCharSplit.swift` | 「思考字符数 → 思考 token 数」的守恒拆分纯函数（`reasoning + output == 账面 output` 恒成立）；5 处调用方：GLM/ZCode（`GlmZcodeDBReader`）、MiniMax Code（`MinimaxLocalUsageAggregation`）、Dsh M3（`DshLocalUsageScanner`）、OpenCode（`OpencodeDBReader`）、Agy（`AgyLocalUsageAggregation`） |
 | `Sources/LLM-monitor/Models/LocalUsageRetentionWindow.swift` | 本地用量「落盘前保留窗口」的唯一口径（`LocalUsageRetentionWindow`，Antigravity / Agy / DSH / GLM-ZCode / Minimax / OpenCode 六个 scanner 共享）；刻意区别于展示层 7 天窗口，契约由 `ScannerRetentionContractTests` 锁定——该契约逐条覆盖其中五个（Antigravity / Minimax / DSH / Opencode / GLM-ZCode），Agy 尚无逐条断言 |
@@ -157,8 +158,9 @@
 | `Sources/LLM-monitor/Views/MenuContentView.swift` | 主面板（header / content / footer；header 右组 = scope 下拉 + 本地用量裸刷新时间 + 刷新）+ 高度桥 `MenuPanelHeightBridge`（`contentMaxSize` = 屏幕可见高 × 0.70）+ `MenuHairline`；展示时钟经 `\.displayDate` 注入卡片 |
 | `Sources/LLM-monitor/Views/FleetScopeSwitcher.swift` | fleet scope 切换控件（菜单面板与 dock 详情浮层共用：≤4 段整行、>4 紧凑下拉）：`FleetScopeSwitcher` 按选项总数分叉（≤4 分段 `Picker`、>4 下拉 `FleetScopeMenu`），`FleetScopeMenu` 是下拉形态——范围文字 + 行内 `ellipsis` 标记，整组上限 120pt，截断走纯函数 `FleetScopeMenu.truncated(_:maxWidth:)`；三个 macOS `Menu` 平台怪癖（行内图 / 字符串层限宽 / 必须 `fixedSize`）写在文件头 |
 | `Sources/LLM-monitor/Views/DisplayClock.swift` | 跨宿主共享的展示时钟：`DisplayClock` + `DisplayClockScope` + `\.displayDate` 环境键；菜单内容 / hover 浮层 / dock 浮层 / provider 详情窗口各自持有实例、随宿主显隐 start/stop 并注入环境 |
-| `Sources/LLM-monitor/Views/HarnessUsageMenuView.swift` | 菜单用量摘要与紧凑额度摘要（`HarnessUsageMenuView` / `MenuQuotaOverviewView`）：今日汇总与客户端占比条 → 默认折叠的客户端段 / 模型明细；额度行复用 fleet effective quota 并标注远端来源、新鲜度和窗口重置时间，DeepSeek 保留无窗口时的余额显示；额度页每个 Provider 行可打开完整详情；`MenuContentMode` 由 `MenuContentView` 持久化。模型明细两行布局的自然宽度由 `HarnessUsageMenuViewTests` 覆盖 |
+| `Sources/LLM-monitor/Views/HarnessUsageMenuView.swift` | 菜单用量与额度紧凑卡片（`HarnessUsageMenuView` / `MenuQuotaOverviewView`）：今日汇总、客户端占比、默认折叠的客户端摘要与模型 Prompt 速度范围线；摘要按实际宽度显隐思考占比，窄时四核心指标换行。额度行展示有效额度、窗口重置倒计时、临期/高峰事件、右侧时间与刷新，展开复用共享 Plan，独立窗口可达；`MenuContentMode` 由宿主持久化。布局回归见 `HarnessUsageMenuViewTests` |
 | `Sources/LLM-monitor/Views/MenuTypography.swift` | 菜单面板与悬浮层统一排版常量（语义角色，禁止散落硬编码字号） |
+| `Sources/LLM-monitor/Views/PromptSpeedRangeLineView.swift` | 展开模型行的 Prompt 速度范围线：共享刻度的 min/max、P50、最新 Prompt 标记与有效样本披露，不依赖鼠标悬停展示主体 |
 | `Sources/LLM-monitor/Views/MenuWindowAutoCloseBridge.swift` | 失焦立即关 + 30s 无交互关闭（菜单内 mouse/scroll/key 重置计时）；关闭统一出口 `performClose` 并发 `onPanelClose`（菜单展示时钟随之停表）；30s 计时为单个可复用 `DispatchSourceTimer`（reset 只改 deadline，鼠标事件不再重建句柄） |
 | `Sources/LLM-monitor/Views/ProviderCardDerived.swift` | 卡片 body 的派生值入口：投影 + 额度窗口快照 + 「今」行 + 「闲」行（GLM 今日闲时，`offPeakUsageRow`）+ 「免 / 速 / 它」今日动态行（`glmCategoryUsageRows`，按 `GlmUsageCategory` 今日切片）打包成一个 memo 值（共享失效条件；键 = 全值 `status` + 墙钟日 + 展示日 + `HolidayCalendar.sharedRevision` + 时区标识），展示时钟每秒 tick 不再重算 O(samples) 定价 |
 | `Sources/LLM-monitor/Views/ProviderCardView.swift` | provider 卡片 + `ProviderStateLabel` + `QuotaSummary`（卡内状态点已随菜单改版移除，状态由 `ProviderStateLabel` 胶囊承载）；body 派生值经 `ProviderCardDerivedValues` 值键 memo；多节点时的 scope 控制用 `FleetScopeSwitcher`（≤4：标题行下方的分段整行；>4：卡头右侧的下拉） |

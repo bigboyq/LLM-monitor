@@ -254,6 +254,9 @@ struct HarnessModelRow: Identifiable, Equatable, Sendable {
     /// 与 `cachedCostEstimate` 同源同批样本：金额算得出来的行，速率也在同一批
     /// 样本上算。`nil` = 批内没有时长有效的样本（不是"速度为 0"），UI 显示「—」。
     let tokensPerSecond: Double?
+    /// Prompt-level today speed distribution. Incomplete prompts are excluded
+    /// from the distribution and remain visible in `totalPromptCount`.
+    let promptSpeedStatistics: PromptSpeedStatistics
     private let cachedCostEstimate: ModelCostEstimate
 
     var id: String { "\(clientID):\(quotaProviderID):\(modelName ?? "")" }
@@ -388,6 +391,7 @@ struct HarnessModelRow: Identifiable, Equatable, Sendable {
             reasoning: day.reasoning
         )
         self.tokensPerSecond = LocalUsageSummaryBuilder.windowTokenRate(samples: samples)
+        self.promptSpeedStatistics = LocalUsageSummaryBuilder.promptSpeedStatistics(samples: samples)
         self.cachedCostEstimate = ModelPricingCatalog.estimate(
             samples: samples,
             quotaProviderID: quotaProviderID,
@@ -411,12 +415,36 @@ struct HarnessSection: Identifiable, Equatable, Sendable {
     /// （同一批今日样本、同一函数）。`nil` = 批内没有时长有效的样本（不是
     /// "速度为 0"），UI 显示「—」；fleet 段没有本地样本，恒 nil。
     let tokensPerSecond: Double?
+    /// Client-level prompt speed distribution over today's samples.
+    let promptSpeedStatistics: PromptSpeedStatistics
     let value: MixedCurrencyEstimate
     let rows: [HarnessModelRow]
     /// 本段任一贡献来源的统计口径被截断（如 DSH 文件数/字节预算挤出最旧 session）。
     /// 段头据此加橙色截断提示——**段级**聚合，规则与
     /// `ProviderUsageProjection.isTruncated` 相同（任一来源截断即整段截断）。
     let isTruncated: Bool
+
+    init(
+        clientID: String,
+        displayName: String,
+        iconSystemName: String,
+        buckets: TokenUsageBuckets,
+        tokensPerSecond: Double?,
+        promptSpeedStatistics: PromptSpeedStatistics = .empty,
+        value: MixedCurrencyEstimate,
+        rows: [HarnessModelRow],
+        isTruncated: Bool
+    ) {
+        self.clientID = clientID
+        self.displayName = displayName
+        self.iconSystemName = iconSystemName
+        self.buckets = buckets
+        self.tokensPerSecond = tokensPerSecond
+        self.promptSpeedStatistics = promptSpeedStatistics
+        self.value = value
+        self.rows = rows
+        self.isTruncated = isTruncated
+    }
 
     var id: String { clientID }
     var totalTokens: Int { buckets.totalTokens }
@@ -624,6 +652,9 @@ struct HarnessTodaySummary: Equatable, Sendable {
                 iconSystemName: descriptor?.iconSystemName ?? "terminal",
                 buckets: Self.sum(clientRows.map(\.buckets)),
                 tokensPerSecond: LocalUsageSummaryBuilder.windowTokenRate(
+                    samples: samplesByClient[clientID] ?? []
+                ),
+                promptSpeedStatistics: LocalUsageSummaryBuilder.promptSpeedStatistics(
                     samples: samplesByClient[clientID] ?? []
                 ),
                 value: MixedCurrencyEstimate(estimates: clientRows.map(\.costEstimate)),

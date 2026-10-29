@@ -251,7 +251,7 @@ struct QuotaWindowUsageSection: View {
     static let horizontalSpacing: CGFloat = 8
     static let middleColumnWidth: CGFloat = 42
     static let valueColumnWidth: CGFloat = 58
-    static let resetDateColumnLeadingGap: CGFloat = 9
+    static let resetDateColumnLeadingGap: CGFloat = 6
     static let resetDateColumnWidth: CGFloat = 126
 
     /// 「分析」态的列显隐（模块内跨行判定）：「命中」「思考」两列各自在所有可见行的合计为 0 时整列隐藏。
@@ -525,7 +525,7 @@ struct QuotaWindowUsageSection: View {
                 if visibility.think {
                     headerCell(Self.statsHeaders.think, width: Self.middleColumnWidth, alignment: .trailing)
                 }
-                headerCell(Self.statsHeaders.value, width: Self.valueColumnWidth, alignment: .leading)
+                headerCell(Self.statsHeaders.value, width: Self.valueColumnWidth, alignment: .trailing)
                 resetDateHeader
             }
         case .usage:
@@ -544,7 +544,7 @@ struct QuotaWindowUsageSection: View {
                 if visibility.reason {
                     headerCell(Self.rawTableHeaders.reason, width: Self.middleColumnWidth, alignment: .trailing)
                 }
-                headerCell(Self.rawTableHeaders.value, width: Self.valueColumnWidth, alignment: .leading)
+                headerCell(Self.rawTableHeaders.value, width: Self.valueColumnWidth, alignment: .trailing)
                     .help(Self.speedColumnHelp)
                 resetDateHeader
             }
@@ -556,7 +556,7 @@ struct QuotaWindowUsageSection: View {
             .font(MenuTypography.metricLabel)
             .foregroundStyle(.secondary)
             .padding(.leading, Self.resetDateColumnLeadingGap)
-            .frame(width: Self.resetDateColumnWidth, alignment: .center)
+            .frame(width: Self.resetDateColumnWidth, alignment: .leading)
     }
 
     @ViewBuilder
@@ -648,15 +648,15 @@ struct QuotaWindowUsageSection: View {
     private func valueCell(_ cost: ModelCostEstimate?, _ costText: String? = nil) -> some View {
         Text(costText ?? Self.costText(cost))
             .foregroundStyle(.secondary)
-            .frame(width: Self.valueColumnWidth, alignment: .leading)
+            .frame(width: Self.valueColumnWidth, alignment: .trailing)
     }
 
-    /// 用量态第 6 列的速度格：纯数字（tok/s），nil → `—`。58pt 宽与 leading 对齐
+    /// 用量态第 6 列的速度格：纯数字（tok/s），nil → `—`。58pt 宽与 trailing 对齐
     /// 同「分析」态的价值列，两态切换骨架零迁移；口径说明挂在表头（speedColumnHelp）。
     private func speedCell(_ rate: Double?) -> some View {
         Text(Self.speedText(rate))
             .foregroundStyle(.secondary)
-            .frame(width: Self.valueColumnWidth, alignment: .leading)
+            .frame(width: Self.valueColumnWidth, alignment: .trailing)
     }
 
     private func resetDateCell(_ resetsAt: Date?) -> some View {

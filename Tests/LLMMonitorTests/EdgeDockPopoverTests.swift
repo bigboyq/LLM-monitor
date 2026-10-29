@@ -17,7 +17,8 @@ final class EdgeDockPopoverTests: EdgeDockTestCase {
                 + LayoutMetrics.cardContentPadding * 2
                 + EdgeDockTheme.popoverPadding * 2
         )
-        XCTAssertGreaterThan(EdgeDockTheme.popoverWidth, MenuPanelHeightBridge.width)
+        // 菜单现在也展示完整 Plan，宽度由它自己的嵌套内边距推导；
+        // 不再要求浮层比菜单宽，实际图表内容宽由下一项回归约束。
     }
 
     func testPopoverCardInnerWidthFitsChart() {

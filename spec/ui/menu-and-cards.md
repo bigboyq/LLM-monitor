@@ -134,12 +134,12 @@ Runtime behavior:
 - hover details are shown in a separate floating `NSPanel`
 - Antigravity process availability is discovered asynchronously and cached, so opening the menu does not synchronously run process inspection.
 
-`MenuContentView` layout: usage remains 360pt wide; quota uses a fixed 484pt width so
-the shared Plan chart fits at 420pt. Quota width is the same when rows are collapsed,
-expanded, or empty; switching back to usage restores 360pt.
+`MenuContentView` layout: usage and quota both use a fixed 484pt width. The usage width
+fits the compact four-metric client summary; quota width fits the shared Plan chart at
+420pt. Page switching keeps one width, including collapsed, expanded, and empty states.
 
 ```text
-width: 360pt (usage) / 484pt (quota)
+width: 484pt (usage and quota)
 height: content-driven, fixedSize(vertical: true)
 
 +------------------------------------------------+
@@ -150,9 +150,10 @@ height: content-driven, fixedSize(vertical: true)
 |  █████▓▓▓▓░░░  客户端占比条（色=主力provider）  |
 |  ⌘ MiniMax Code  ⌘ Codex …                     |   legend: 着色客户端图标 + 名字，放不下换行
 +------------------------------------------------+
-| ▸ OpenCode                820K      205  10.5  |   collapsed client section
-|   gpt-5.5                         620K tokens   |   expanded model details use two compact rows
-|     [token buckets]  缓存命中 62%  值 $11.30    |
+| ▸ OpenCode                         21:09       |   collapsed client section
+|   今日 Token: 820K  价值: ¥10  命中率: 62%  速度: P50 205 tok/s |
+|   gpt-5.5                         620K tokens   |   expanded model details use compact rows
+|     min ───── ● ─── max   P50 … 最近 … tok/s     |
 | ⚠ 会话文件超出单轮扫描预算，已按最新优先截断…   |   truncation notice (that section only)
 | ...                                            |
 +------------------------------------------------+
@@ -160,10 +161,12 @@ height: content-driven, fixedSize(vertical: true)
 +------------------------------------------------+
 ```
 
-额度页按启用 provider 顺序呈现紧凑摘要，支持单 Provider 刷新、未配置项定位到
-对应设置，以及可展开的 Plan 详情；折叠行目标为两行：Provider 名称与额度更新时间，
-然后是额度摘要、展开/收起按钮与独立窗口入口。正常状态不再另占更新时间行或详情页脚；
+额度页按启用 provider 顺序呈现与用量相同的紧凑卡片外壳，支持单 Provider 刷新、未配置项定位到
+对应设置，以及可展开的 Plan 详情；折叠行目标为两行：首行左侧 Provider 名称与临期/高峰事件，
+右侧额度更新时间贴近刷新按钮；次行是额度摘要、展开/收起按钮与独立窗口入口。正常状态不再另占更新时间行或详情页脚；
 更新时间仅显示 `HH:mm`，help 说明它代表 provider 额度读取时间，刷新动作只刷新该 Provider。
+窗口摘要在 5h 与周余量后分别显示对应瓶颈模型的重置倒计时（未知显示「重置时间未知」，已到期显示「待更新」）；详情保留完整重置时间。
+重置卡在现有 48h / 24h 紧迫度分档下进入摘要首行（橙 / 红）；GLM 与 DeepSeek 仅在既有高峰规则判断为临近或正在高峰时显示事件。
 loading、failed、notConfigured 可按需增加状态行，错误始终可见。DeepSeek 即使没有窗口额度也显示余额。
 额度始终使用本机优先、必要时 elected 的全局有效值。菜单顶部 scope 仅切换用量；
 多节点额度页会标明当前用量范围与额度仍为全局有效值。内容高度由当前页实测，
@@ -350,54 +353,48 @@ per-client sections」描述的是**本机 scope** 的内容区；多机联动�
 - **Global today summary** — 双焦点 Hero 大字卡布局（2026-10 升级）：
   - **顶栏（Header）**：左侧为范围与日期标题（单机为 `今日 MM-dd`，多机 Fleet 为 `全局 · 今日` / `本机 · 今日` / `<节点名> · 今日`），右侧为胶囊徽标 `命中 97%`（无缓存读数显示 `命中 —`）；
   - **核心数值区（Hero Row）**：左侧大号等宽粗体总 Token（如 `132M`）+ 下方副标签 `今日总 Token`；右侧大号等宽粗体总价值（单一币种直接展示如 `¥385.0` / `$47.60`，混合币种折合总额如 `¥385.0`）+ 下方副标签（单一币种 `今日花费`，混合币种展示明细 `折合总额（含$47.6）`）；
-  - 核心数值区下方是**客户端占比条**（`HarnessClientProportionBar`，2026-10 起，取代原全局 input / cacheRead / output 三段条——三桶构成在下面每个模型行上仍有一条，全局粒度上更有信息量的构成是「被哪些客户端烧掉」）+ 一行图例（`HarnessClientLegend`）：
+  - 核心数值区下方是**客户端占比条**（`HarnessClientProportionBar`，2026-10 起，取代原全局 input / cacheRead / output 三段条；模型行现以 Prompt 速度范围线呈现分布）+ 一行图例（`HarnessClientLegend`）：
     - 占比条**一段一个今天有 token 活动的 harness**（`HarnessTodaySummary.clientSegments(from:)` 按 `sections` 既有的 token 降序输出、零段过滤），段宽 = 该客户端今日 token 占全部客户端的比例；
     - **段色 = 主力 provider 的卡 accent 色**：客户端横跨多个 provider 分片时（ZCode / DSH / OpenCode）取今日 token 最大的一路，并列取 quotaProviderID 字典序小者（`HarnessClientSegment.dominantQuotaProviderID`）。色值经 `AccentColor.cardAccentColor`（`Color+Theme.swift`，与 provider 卡描边 / 进度条健康态同源；minimax 亮紫 `#A855F7` / chatgpt 绿 / antigravity 蓝 / glm 靛蓝 / deepseek 青），未知 / 缺失的 providerID 回退灰；
     - 归一化口径与 `TokenBucketBar` 一致：负值按 0、Double 累加分母、总量 ≤ 0 全 0（纯灰底），不产生 NaN；条高沿用 `TokenBucketBar.standardHeight`（7pt）；每段挂 `.help`：「MiniMax Code 355M（77%）」；
     - **图例**把颜色翻译回客户端并直观标注量级：`<着色图标> MiniMax Code 355M  <着色图标> Codex 120M …`。图标取 `ClientDescriptor.iconSystemName(forClientID:)`，着色即段色，紧随其后展示该客户端紧凑 Token 读数；hover 上仍挂「MiniMax Code 355M（77%）」完整 tooltip。chip 超出行宽**换行**（`WrapLayout`）而不是截断；段列表为空（今日无活动）时条只剩灰底、图例整行不画。
 - **Per-client sections**, ordered by today-token descending and collapsed by
-  default; the disclosure header keeps the client subtotal visible. A client with no
+  default; the disclosure header follows the quota-card two-line shape: client name,
+  latest local usage scan time (`HH:mm`), and disclosure control on line one; line two shows
+  `今日 Token`、`价值`、`命中率` and prompt-speed P50. `思考` is inserted between hit
+  rate and speed only when `ViewThatFits` confirms the complete summary fits; reasoning
+  is a share of `output + reasoning`, never added to output a second time. A client with no
   today activity is dropped entirely rather than shown as an empty section. Each
-  section header carries the client name (`ClientDescriptor`), the section token
-  subtotal, the section speed summary and the section value — the value again a
-  `MixedCurrencyEstimate`, because one client may span several provider slices
-  (OpenCode / DSH / ZCode) and therefore several currencies. The header's four
-  numeric cells (`SectionHeaderMetricsView`: tokens 40pt / an invisible 36pt
-  placeholder where the rows show the hit rate / speed 32pt / value 56pt) reuse
-  the model row's fixed-width constants and 6pt column spacing
-  (`HarnessModelRowView.columnSpacing`), so every header number sits exactly on
-  its column below — the token subtotal used to be natural-width and drifted
-  over the speed column once the rows gained one. The placeholder is
-  `Color.clear` (no hit area, height 0) — it only pins the x positions.
+  section subtotal and value. The value is a `MixedCurrencyEstimate`, because one
+  client may span several provider slices (OpenCode / DSH / ZCode) and currencies.
+  The scan time is the latest local usage scan time for the summary; Fleet client
+  sections have no local scan time and do not fabricate one.
 - **Per-model rows inside an expanded section**, keyed by
   `(clientID, quotaProviderID, modelName)`; samples with no usable model name
-  collapse into a single 「模型名缺失」 row. Each row is a compact two-line block:
-  model name + token total; `TokenBucketBar`; then labeled cache-hit percentage,
-  speed and value. The row value is the **single-provider,
+  collapse into a single 「模型名缺失」 row. Each row is a compact block:
+  model name + token total; prompt-speed range line (min/max endpoints, P50 marker,
+  recent prompt marker) with min/P50/max/recent values and valid/total prompt count;
+  then labeled cache-hit percentage and value. Every local model range uses the same
+  menu-wide speed scale. Single-value and zero-value markers have vertical offsets so
+  coincident readings remain distinguishable; missing or non-finite readings show `—`.
+  Fleet client sections use the same compact card summary and disclosure interaction;
+  without local call durations they display speed `—`, including expanded Fleet model
+  rows, and never draw a fabricated range. The row value is the **single-provider,
   single-currency** original amount (`ModelCostEstimate.displayText`: `¥3.21` /
   `$9.80` / `未定价`) — cross currency folding happens only at section and global
-  level, never per row. The speed cell shows the row's today token rate in tok/s
-  (`HarnessModelRow.tokensPerSecond`): the **same batch of today samples** the row
-  cost is estimated from, run through the repo-wide single implementation
-  `LocalUsageSummaryBuilder.windowTokenRate` (Σ(Output+Reason) ÷ Σ call duration;
-  durations in [0.2, 3600]s participate), formatted by the same
-  `QuotaWindowUsageSection.speedText` tiering as the quota-window block — `—` when
-  no sample in the row has a valid duration (not "speed is 0"). Model rows have no
-  column header, so the cell's hover states the formula. The section header carries
-  the same metric at **section level**: `HarnessSection.tokensPerSecond` runs
-  `LocalUsageSummaryBuilder.windowTokenRate` over the client's **whole today
-  sample set** — the union of its rows' sample groups, collected per clientID in
-  the same `summarize` pass — so it is a Σ/Σ over the union, never an average of
-  row rates, and a single-provider client's header rate equals the dock popover's
-  quota-window 「今」 row (same samples, same function). Fleet sections aggregate
-  remote buckets with no local samples, so their header speed cell is always `—`.
-  The global summary row carries no speed — the rate is a per-client/per-model
-  metric, not a global one.
+  level, never per row. Prompt speed is `Σ(Output+Reason) ÷ Σ call duration` over
+  all calls in one prompt. A prompt joins the distribution only when all call
+  durations are valid; `latest` is the newest prompt and is `—` when that newest
+  prompt is incomplete (never an older fallback). Rows include valid/total prompt
+  counts so exclusions remain visible. The client summary P50 is calculated from
+  all of that client's daily prompts, not by averaging model-row percentiles. The
+  global summary row carries no speed — the rate is a per-client/per-model metric.
 
-The current two-line rows use the available 336pt content width without the old
-six-column reservation. This keeps names and the labeled value/cache metrics
-readable, while the disclosure groups keep the default menu height compact. The
-row natural width is covered by `HarnessUsageMenuViewTests`.
+The 484pt menu gives the compact client summary room for four core metrics and adds
+the thinking share only when `ViewThatFits` confirms the full row fits. A narrower
+host wraps the four core values rather than truncating an essential metric. Expanded
+model rows use flexible names and natural labels instead of reserving the old six
+columns. Layout is covered by `HarnessUsageMenuViewTests`.
 
 **Model name display** (`HarnessModelRow.compactDisplayName`, model layer): the
 column shows a *compacted* name, so that what fits in the 92pt budget is the
@@ -471,7 +468,7 @@ content area. Fleet scope 另有**不可用总览态**：全局 / 所选节点�
 dropping the oldest sessions) shows a **one-line** short notice (`部分较早会话未计入`,
 `HarnessSectionView.truncationShortText`) in orange on the header's second line; the
 full `ClientUsageTruncationNotice.text` stays in its `.help` tooltip. The long sentence
-wrapped onto two lines under a 336pt content area and pushed the section's rows down. Section-level aggregation, same "any source
+wrapped onto two lines under a 460pt content area and pushed the section's rows down. Section-level aggregation, same "any source
 truncated ⇒ truncated" rule as `ProviderUsageProjection.isTruncated`. Sections
 without truncation show nothing — the numbers are right either way, they are just not
 complete, and staying silent would let a partial total read as a complete one.

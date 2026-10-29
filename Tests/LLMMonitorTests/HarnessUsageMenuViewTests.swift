@@ -6,7 +6,7 @@ import XCTest
 /// 菜单 Harness 视图的排版预算与客户端/fleet 范围选择测试。
 final class HarnessUsageMenuViewTests: XCTestCase {
 
-    /// 菜单内容区宽度：360pt 面板减去 `LayoutMetrics.cardColumnHorizontalPadding`
+    /// 菜单内容区宽度：484pt 面板减去 `LayoutMetrics.cardColumnHorizontalPadding`
     /// 两侧内边距。改菜单宽度时这里必须跟着动。
     private var contentWidth: CGFloat {
         MenuPanelHeightBridge.width - LayoutMetrics.cardColumnHorizontalPadding * 2
@@ -33,10 +33,15 @@ final class HarnessUsageMenuViewTests: XCTestCase {
             quotaModel(name: "first", interval: 64, weekly: 48),
             quotaModel(name: "second", interval: 32, weekly: 72)
         ]
-        XCTAssertEqual(
-            MenuQuotaPresentation.summary(providerKind: .codexChatGpt, models: windows, balance: nil),
-            "5h 32% · 周 48%"
+        let quotaSummary = MenuQuotaPresentation.summary(
+            providerKind: .codexChatGpt,
+            models: windows,
+            balance: nil,
+            now: Date(timeIntervalSince1970: 1_700_000_000)
         )
+        XCTAssertTrue(quotaSummary.contains("5h 32%"))
+        XCTAssertTrue(quotaSummary.contains("周 48%"))
+        XCTAssertTrue(quotaSummary.contains("后重置"))
 
         let balance = DeepseekBalanceDetail(currency: "CNY", total: 12.3, toppedUp: 10, granted: 2.3)
         XCTAssertEqual(
@@ -252,6 +257,17 @@ final class HarnessUsageMenuViewTests: XCTestCase {
             "段头自然宽 \(width)pt 超出内容区 \(contentWidth)pt——段头数值格组挤掉了段名"
         )
         XCTAssertGreaterThan(width, 0)
+    }
+
+    /// 核心摘要在窄容器里保留所有四项并换行，不把速度或价值挤出可见区域。
+    @MainActor
+    func testSectionSummaryWrapsWithinNarrowContainer() {
+        let view = HarnessSectionView(
+            section: Self.sectionFixture(rowCount: 1, displayName: "OpenCode")
+        ).frame(width: 230)
+        let height = self.height(of: view)
+        XCTAssertGreaterThan(height, 48, "窄宽度下的摘要应自然换行")
+        XCTAssertLessThan(height, 140, "折叠卡摘要不应异常撑高")
     }
 
     /// 段数 / 行数增加时高度增长（有内容可滚），但单段视图本身必须矮——

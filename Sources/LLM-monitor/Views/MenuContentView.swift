@@ -666,7 +666,9 @@ struct MenuPanelHeightBridge: NSViewRepresentable {
     /// 7859f2d 的 commit body（"screen-relative height cap"）的视觉评估。
     static let heightCapFraction: CGFloat = 0.70
     /// F4: 菜单固定宽度。改这里会改所有 menu 卡片列宽。
-    static let width: CGFloat = 360
+    /// 用量卡摘要需要同时容纳 token、价值、缓存命中率与 prompt 速度；使用与额度页
+    /// 同档宽度，让摘要通过自然排版布局，而不是压缩字体或挤成六列。
+    static let width: CGFloat = 484
     /// 额度页固定宽度：420pt Plan 图表 + Provider 卡内边距 24pt + 菜单行壳 16pt
     /// + 菜单列边距 24pt。展开行数不会改变宽度；空态也沿用额度页宽度。
     static var quotaWidth: CGFloat {

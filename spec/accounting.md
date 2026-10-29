@@ -145,7 +145,7 @@ catalog 的结果已经在 reader 层固化，重建逻辑必须逐字段原样�
 倍率表只登记按量计费类 provider（当前仅 DeepSeek），勿给积分套餐类 provider
 （GLM Coding Plan 这类共享积分池）加价值系数。
 
-## Token/s 速率口径（「额度窗口」用量态「速度」列）
+## Token/s 速率口径（调用级窗口速度）
 
 token 速率（tok/s）只在 sample 级定义，不进入帧 / 投影内核：分子 = `Output + Reason`
 （billable output，与四桶规范化同源）；分母 = 单次模型调用完整时长（发起→完成，
@@ -175,6 +175,29 @@ UI 消费：「额度窗口」模块**用量态**第 6 列从「价值」换为�
 注明口径「窗口内 (Output+Reason) ÷ 调用时长，tok/s；时长未知的调用不参与」。
 今 / 闲 / 免 / 速 / 它行速率与金额用同一批样本（`todaySamples` / `offPeakTodaySamples` /
 `glmCategoryTodaySamples`）。
+
+## Prompt 速度分布（菜单用量）
+
+菜单用量的速度分布以 `promptID` 为最小统计单位，由
+`LocalUsageSummaryBuilder.promptSpeedStatistics` 计算。多个 sample 共享一个命名空间化
+`promptID` 时表示一次用户请求中的多轮模型调用：先合并这些调用的
+`Output + Reason` 与有效时长，再算该 prompt 的速度 `Σ(Output+Reason) ÷ Σ时长`；
+这样一次多轮 prompt 只在分布中占一个样本，不会因轮数较多而加权。
+
+有效时长仍采用调用级的 `[0.2, 3600]` 秒边界，并要求有限数值。一个 prompt 中只要有
+任一调用的时长缺失、越界或非有限，该 prompt 就整体不进入 min / max / P50 分布，避免
+将部分 token 与部分时长冒充完整 prompt 速度。`validPromptCount` / `totalPromptCount`
+供 UI 披露覆盖率；没有有效 prompt 时 min、max、P50 都为 nil。
+
+`latest` 取 `completedAt` 最新的 prompt，即使该 prompt 时长无效也返回 nil，不回退到更旧
+的有效 prompt。若多个 prompt 的最新时间相同，按 `promptID` 字典序升序稳定打破并列。
+P50 为有效 prompt 速度的中位数；偶数个样本时取中间两个速度的算术平均。输出为零但
+时长完整的 prompt 是有效样本，速度为 `0 tok/s`。
+
+菜单客户端段的统计覆盖该 client 当日全部本地样本；模型行则只覆盖同一
+`quotaProviderID + modelName` 行的当日样本。两者都只使用本地 sample；fleet 未上报调用时长，
+不构造 prompt 速度。原 `tokensPerSecond` / `windowTokenRate` 调用级加权窗口速度继续保留，
+新分布独立提供 min / max / P50 / latest，不改变额度窗口速度和价格、token 桶或日归桶口径。
 
 ## promptID 命名空间登记表
 

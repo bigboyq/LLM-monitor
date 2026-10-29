@@ -857,7 +857,7 @@ final class QuotaWindowUsageValueTests: XCTestCase {
         XCTAssertEqual(QuotaWindowUsageSection.middleColumnWidth, 42)
         XCTAssertEqual(QuotaWindowUsageSection.valueColumnWidth, 58)
         XCTAssertEqual(QuotaWindowUsageSection.resetDateColumnWidth, 126)
-        XCTAssertEqual(QuotaWindowUsageSection.resetDateColumnLeadingGap, 9)
+        XCTAssertEqual(QuotaWindowUsageSection.resetDateColumnLeadingGap, 6)
         XCTAssertEqual(QuotaWindowUsageSection.horizontalSpacing, 8)
 
         // 验证两态下 visibleRows 相同
@@ -1410,7 +1410,7 @@ final class QuotaWindowUsageValueTests: XCTestCase {
     /// 重置日期列固定宽常量里**刨去前置间隙**的文字空间必须 ≥ 最长形态的自然宽
     /// （`MM-dd HH:mm (23h59m)`，`formatResetSuffix` 最宽的后缀——比 `2d23h`/
     /// `已过期`/`365d` 都宽），也别宽得离谱（×1.2 的本意）。第七轮起常量含
-    /// 9pt 前置间隙（126 − 9 = 117pt 零冗余），口径为「常量 − 间隙」。系统字体度量变了先红
+    /// 6pt 前置间隙（126 − 6 = 120pt，最长文字约117pt），口径为「常量 − 间隙」。系统字体度量变了先红
     /// 在这里。
     @MainActor
     func testResetDateColumnWidthCoversTheLongestForm() {
