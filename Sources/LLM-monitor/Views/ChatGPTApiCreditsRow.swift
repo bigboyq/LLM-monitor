@@ -35,22 +35,28 @@ struct ChatGPTApiCreditsRow: View {
                 )
                 .frame(maxWidth: .infinity)
 
-                Text("剩余 \(amount(credits.remainingAmount)) / 总\(amount(credits.totalQuota)) · 已用 \(usedAmountText)")
-                    .font(MenuTypography.dataValue)
-                    .foregroundStyle(Color.secondaryLabel)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.82)
+                HStack(spacing: 6) {
+                    Text("已用 \(usedAmountText) 剩余：\(remainingQuotaText)")
+                        .font(MenuTypography.dataValue)
+                        .foregroundStyle(Color.secondaryLabel)
+                        .lineLimit(1)
 
-                HStack(spacing: 4) {
-                    Text("周期至 \(Formatters.formatMonthDayMinute(credits.cycleEnd)) (\(expiryCountdownText))")
-                    Spacer(minLength: 4)
-                    Text(updateStatusText(for: credits))
+                    Spacer(minLength: 6)
+
+                    HStack(spacing: 3) {
+                        if credits.lastAttemptFailed == true || error != nil {
+                            Image(systemName: "exclamationmark.triangle")
+                                .font(.system(size: 9))
+                                .foregroundStyle(.orange)
+                        }
+                        Text("周期至 \(Formatters.formatMonthDayMinute(credits.cycleEnd))（\(expiryCountdownText)）")
+                            .font(MenuTypography.resetDate)
+                            .foregroundStyle(Color.secondaryLabel)
+                            .lineLimit(1)
+                    }
                 }
-                .font(MenuTypography.resetDate)
-                .foregroundStyle(Color.secondaryLabel)
-                .lineLimit(1)
-                .minimumScaleFactor(0.82)
-                .help(error ?? (credits.lastAttemptFailed == true ? "最近一次 API 赠金抓取失败，显示上次成功的数据" : ""))
+                .minimumScaleFactor(0.85)
+                .help(error ?? (credits.lastAttemptFailed == true ? "最近一次 API 赠金抓取失败，显示上次成功的数据" : "总额度: $\(formatQuota(credits.totalQuota))，已用: $\(usedAmountText)，剩余: $\(formatNumber(credits.remainingAmount))"))
             } else {
                 Text(error ?? "API赠金暂无数据")
                     .font(MenuTypography.dataLabel)
@@ -61,26 +67,42 @@ struct ChatGPTApiCreditsRow: View {
 
     private var usedAmountText: String {
         guard let credits else { return "—" }
-        return amount(credits.usedAmount)
+        return String(format: "%.2f", credits.usedAmount)
+    }
+
+    private var remainingQuotaText: String {
+        guard let credits else { return "—" }
+        return "\(formatNumber(credits.remainingAmount))/\(formatQuota(credits.totalQuota))"
     }
 
     private var expiryCountdownText: String {
         guard let credits else { return "—" }
-        return Formatters.formatBillingRemainingDuration(credits.cycleEnd.timeIntervalSince(displayDate))
-    }
-
-    private func updateStatusText(for credits: OpenAIApiCreditDetails) -> String {
-        let updatedAt = credits.fetchedAt.map { Formatters.formatClock($0) }
-        if credits.lastAttemptFailed == true || error != nil {
-            return "更新失败" + (updatedAt.map { " · 上次 \($0)" } ?? "")
+        let delta = credits.cycleEnd.timeIntervalSince(displayDate)
+        guard delta > 0 else { return "已到期" }
+        let total = Int(delta.rounded())
+        let days = total / 86400
+        let hours = (total % 86400) / 3600
+        let minutes = (total % 3600) / 60
+        if days > 0 {
+            return "剩余\(days)天"
+        } else if hours > 0 {
+            return minutes > 0 ? "剩余\(hours)小时\(minutes)分" : "剩余\(hours)小时"
+        } else {
+            return "剩余\(max(minutes, 1))分"
         }
-        return updatedAt.map { "更新 \($0)" } ?? "已更新"
     }
 
-    private func amount(_ value: Double) -> String {
+    private func formatNumber(_ value: Double) -> String {
         if value.truncatingRemainder(dividingBy: 1) == 0 {
-            return String(format: "$%.0f", value)
+            return String(format: "%.0f", value)
         }
-        return String(format: "$%.2f", value)
+        return String(format: "%.2f", value)
+    }
+
+    private func formatQuota(_ value: Double) -> String {
+        if value.truncatingRemainder(dividingBy: 1) == 0 {
+            return String(format: "%.0f", value)
+        }
+        return String(format: "%.2f", value)
     }
 }

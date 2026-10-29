@@ -200,11 +200,10 @@ Authorization: Bearer <admin_api_key>
 
 ### UI 呈现（`ChatGPTApiCreditsRow`）
 
-在 ChatGPT Provider 卡片内紧凑自适应展示：
+在 ChatGPT Provider 卡片内紧凑自适应展示（三行紧凑结构）：
 - **标题行**：`API赠金`（11pt semibold）与空间/组织名称（次要色靠右）；组织名取不到时显示「未知组织」。
 - **进度条**：单段 `SegmentedQuotaProgressBar`（高 8pt，健康度绿/黄/红自适应着色，带有表示周期时间进度的红色倒三角 `▼`），独占整行通栏显示，条两侧不放标签。
-- **金额行**：`剩余 $x / 总$x · 已用 $xx.xx`。
-- **状态行**：账单周期结束时间与倒计时，以及 `更新 HH:mm`；最近一次赠金请求失败时显示 `更新失败 · 上次 HH:mm`。首次失败且无旧明细时展示错误状态。
+- **明细行**：单行整合呈现「已用 <used> 剩余：<remaining>/<total>」与「周期至 MM-dd HH:mm（剩余xx）」，省略「更新 HH:mm」，节省一行垂直高度；抓取失败通过行首警告图标与 tooltip 提示。首次失败且无旧明细时展示错误状态。
 
 ## Local Pricing Snapshot
 
@@ -829,4 +828,4 @@ To compare or sum daily usage across both providers, normalize both into a singl
 
 After normalization, cross-provider sum, average, and chart rendering can treat the two providers as a single data source.
 
-> 核对基线：2026-10-29 · 代码 b315c98
+> 核对基线：2026-10-29 · 代码 709cac7
