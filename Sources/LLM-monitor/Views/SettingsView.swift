@@ -52,6 +52,12 @@ struct SettingsView: View {
     @State var chatgptEnabled: Bool = false
     @State var chatgptInterval: Int = 0
     @State var chatgptAuthPath: String = ""
+    @State var chatgptAdminCreditsEnabled: Bool = false
+    @State var chatgptAdminApiKey: String = ""
+    @State var showChatgptAdminKey: Bool = false
+    @State var chatgptBillingDay: Int = 11
+    @State var chatgptBillingTime: Date = defaultBillingTime()
+    @State var chatgptMonthlyQuotaLimit: String = "40"
 
     @State var antigravityEnabled: Bool = false
     @State var antigravityInterval: Int = 0
@@ -113,6 +119,8 @@ struct SettingsView: View {
             barkGroup, barkTTL, barkSkipWhenAwakeAndUnlocked.description,
             String(minimaxEnabled), String(minimaxInterval), minimaxApiKey,
             String(chatgptEnabled), String(chatgptInterval), chatgptAuthPath,
+            String(chatgptAdminCreditsEnabled), chatgptAdminApiKey, String(chatgptBillingDay),
+            Formatters.formatTimeOfDay(chatgptBillingTime), chatgptMonthlyQuotaLimit,
             String(antigravityEnabled), String(antigravityInterval),
             String(glmEnabled), String(glmInterval), glmApiKey, String(glmBalanceLogParsing),
             String(deepseekEnabled), String(deepseekInterval), deepseekApiKey
@@ -484,6 +492,15 @@ struct SettingsView: View {
             chatgptEnabled = chatgpt.enabled
             chatgptAuthPath = chatgpt.authPath ?? ""
             chatgptInterval = chatgpt.refreshIntervalSeconds ?? 0
+            chatgptAdminCreditsEnabled = chatgpt.adminApiCreditsEnabled ?? false
+            chatgptAdminApiKey = chatgpt.adminApiKey ?? ""
+            chatgptBillingDay = chatgpt.adminBillingDay ?? 11
+            chatgptBillingTime = Self.parseBillingTime(from: chatgpt.adminBillingTime)
+            if let limit = chatgpt.adminMonthlyQuotaLimit {
+                chatgptMonthlyQuotaLimit = limit.truncatingRemainder(dividingBy: 1) == 0 ? String(format: "%.0f", limit) : String(limit)
+            } else {
+                chatgptMonthlyQuotaLimit = "40"
+            }
         }
 
         if let id = providerID(for: .antigravity), let antigravity = config.providers[id] {
@@ -680,6 +697,15 @@ struct SettingsView: View {
             chatgpt.enabled = chatgptEnabled
             chatgpt.authPath = trimmedString(chatgptAuthPath)
             chatgpt.refreshIntervalSeconds = providerRefreshInterval(from: chatgptInterval)
+            chatgpt.adminApiCreditsEnabled = chatgptAdminCreditsEnabled
+            chatgpt.adminApiKey = trimmedString(chatgptAdminApiKey)
+            chatgpt.adminBillingDay = chatgptBillingDay
+            chatgpt.adminBillingTime = Formatters.formatTimeOfDay(chatgptBillingTime)
+            if let limitDouble = Double(chatgptMonthlyQuotaLimit.trimmingCharacters(in: .whitespacesAndNewlines)), limitDouble > 0 {
+                chatgpt.adminMonthlyQuotaLimit = limitDouble
+            } else {
+                chatgpt.adminMonthlyQuotaLimit = 40.0
+            }
             config.providers[id] = chatgpt
         }
 
@@ -735,6 +761,22 @@ struct SettingsView: View {
             launchAtLoginDraft.syncToActual(actual: loginItemService.isEnabled)
             throw error
         }
+    }
+
+    static func defaultBillingTime(hour: Int = 0, minute: Int = 0) -> Date {
+        var comp = Calendar.current.dateComponents([.year, .month, .day], from: Date())
+        comp.hour = hour
+        comp.minute = minute
+        comp.second = 0
+        return Calendar.current.date(from: comp) ?? Date()
+    }
+
+    static func parseBillingTime(from timeString: String?) -> Date {
+        guard let timeString else { return defaultBillingTime(hour: 0, minute: 0) }
+        let parts = timeString.split(separator: ":")
+        let hour = parts.count > 0 ? (Int(parts[0]) ?? 0) : 0
+        let minute = parts.count > 1 ? (Int(parts[1]) ?? 0) : 0
+        return defaultBillingTime(hour: hour, minute: minute)
     }
 }
 

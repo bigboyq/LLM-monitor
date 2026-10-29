@@ -13,6 +13,12 @@ import Foundation
 ///     值与原 fetchedAt，并标记 `lastAttemptFailed`，让 UI 显示"可能过期"。
 /// 不用主 `QuotaInfo.fetchedAt` 冒充 reset credits 的子接口时间。
 struct CodexFillingMissingMerger: RefreshResultMerger {
+    let adminApiCreditsEnabled: Bool
+
+    init(adminApiCreditsEnabled: Bool = false) {
+        self.adminApiCreditsEnabled = adminApiCreditsEnabled
+    }
+
     func merge(new: QuotaInfo, previous: QuotaInfo?, mode: RefreshMode) -> QuotaInfo {
         guard let previous else { return new }
         let mergedResetCredits: ResetCreditsInfo?
@@ -29,13 +35,23 @@ struct CodexFillingMissingMerger: RefreshResultMerger {
         } else {
             mergedResetCredits = nil
         }
+
+        let mergedApiCredits: OpenAIApiCreditDetails?
+        if !adminApiCreditsEnabled {
+            mergedApiCredits = nil
+        } else {
+            mergedApiCredits = new.openAIApiCredits ?? previous.openAIApiCredits
+        }
+
         return QuotaInfo(
             models: new.models,
             resetCredits: mergedResetCredits,
             planLabel: new.planLabel,
             accountEmail: new.accountEmail,
             codexUsageDetails: new.codexUsageDetails ?? previous.codexUsageDetails,
-            fetchedAt: new.fetchedAt
+            fetchedAt: new.fetchedAt,
+            balanceDetail: new.balanceDetail ?? previous.balanceDetail,
+            openAIApiCredits: mergedApiCredits
         )
     }
 }

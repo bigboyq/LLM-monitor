@@ -78,6 +78,11 @@ The app reads and writes this shape:
 | `providers.<id>.refreshIntervalSeconds` | provider | Optional provider-specific timer interval, with the same 10-second...30-day clamp. |
 | `providers.<id>.authPath` | provider | External-auth path used by Codex. Accepts either an `auth.json` file path or its parent directory. |
 | `providers.<id>.parseZcodeBalanceLog` | provider | 是否解析 ZCode 余额轮询日志、在 GLM 卡显示活动套餐余额。字段不存在 = 关闭（不读日志）。 |
+| `providers.<id>.adminApiCreditsEnabled` | provider | 是否启用 OpenAI API 赠金监测（ChatGPT 专用）。缺省或 false 表示关闭；开启时在 ChatGPT 卡渲染「API赠金」进度条。 |
+| `providers.<id>.adminApiKey` | provider | OpenAI Admin API Key（`sk-admin-...`），用于查询组织消耗 `v1/organization/costs`。 |
+| `providers.<id>.adminBillingDay` | provider | 每月账单日（1-31，缺省 11）。 |
+| `providers.<id>.adminBillingTime` | provider | 账单重置时间（`HH:mm`，如 `00:00` 或 `08:00`，缺省 `00:00`）。 |
+| `providers.<id>.adminMonthlyQuotaLimit` | provider | 每月 API 赠金额度上限（美元，缺省 40.0）。 |
 | `providers.<id>.notifyIntervalRestored` / `notifyIntervalExhausted` / `notifyWeeklyRestored` / `notifyWeeklyExhausted` | provider | 四类额度事件各自的推送渠道（`QuotaNotifyChannel`：`none` / `system` / `barkAndSystem`）。字段不存在 = 默认渠道（恢复 → 系统通知，耗尽 → 不通知），与引入通知配置前的行为一致。 |
 | `clientBindings[]` | client → quota Provider | Canonical source of truth for which Client usage slices contribute to a quota card. Schema v2; missing bindings are migrated from the legacy provider-level OpenCode switches by `AppConfig.legacyClientBindings(from:)`. |
 | `providers.<id>.mergeOpencodeUsage` | legacy compatibility | Decoded for older config files and projected into runtime status for compatibility. The canonical source is `clientBindings[]`; Settings does not expose a per-provider OpenCode toggle and `applyAndSave` preserves this legacy field rather than rewriting it. Defaults are encoded in `ProviderConfig.shouldMergeOpencodeUsage(for:)` (GLM `true`, others `false`), and users with non-default needs edit `config.json`. |
@@ -250,6 +255,6 @@ CHANGELOG 最新条目、两份 README 的「当前版本」/DMG 名/build-relea
 的旧文案「按本机时区计算、可在设置中调整」直到发版前才发现，只因 `build-release.sh` 的
 版本门禁全绿而放行。**功能口径变了，用户文档必须同轮改**。
 
-> 核对基线：2026-10-29 · 代码 4382e1b
+> 核对基线：2026-10-29 · 代码 013a82e
 > 2026-10-25 统一验证通过，详见 `spec/sync.md`。
 > `.deviceId` 身份与旧 `sync.nodeID` 忽略语义已随 6f11831 入库，验证记录见 `spec/sync.md`。

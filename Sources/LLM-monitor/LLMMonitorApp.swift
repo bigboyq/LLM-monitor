@@ -206,9 +206,18 @@ struct LLMMonitorApp: App {
                 kind: .codexChatGpt,
                 iconSystemName: "sparkles",
                 accentColor: .chatgpt,
-                makeFetcher: { config in CodexFetcher(authPath: config.authPath) },
+                makeFetcher: { config in
+                    CodexFetcher(
+                        authPath: config.authPath,
+                        adminApiCreditsEnabled: config.adminApiCreditsEnabled ?? false,
+                        adminApiKey: config.adminApiKey,
+                        adminBillingDay: config.adminBillingDay ?? 11,
+                        adminBillingTime: config.adminBillingTime ?? "00:00",
+                        adminMonthlyQuotaLimit: config.adminMonthlyQuotaLimit ?? 40.0
+                    )
+                },
                 settingsTabTitle: "ChatGPT",
-                settingsTabSubtitle: "本地 Codex 登录信息与刷新频率"
+                settingsTabSubtitle: "本地 Codex 登录信息、API 赠金与刷新频率"
             ),
             FetcherDescriptor(
                 id: ProviderKind.antigravity.providerID,

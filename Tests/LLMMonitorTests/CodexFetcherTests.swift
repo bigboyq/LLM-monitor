@@ -487,7 +487,239 @@ final class CodexFetcherTests: XCTestCase {
         XCTAssertEqual(info.resetCredits?.totalEarnedCount, 3)
     }
 
+    // MARK: - OpenAI Admin API 赠金测试
+
+    func testBillingCycleCalculationMinuteGranularity() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+
+        // Case 1: 账单日 11 日 08:30。当前时间 10-11 08:31（已过当前月锚点）
+        var comp = DateComponents(year: 2026, month: 10, day: 11, hour: 8, minute: 31, second: 0)
+        let nowAfter = calendar.date(from: comp)!
+        let (start1, end1) = OpenAIApiCreditDetails.currentBillingCycle(
+            day: 11, hour: 8, minute: 30, now: nowAfter, calendar: calendar
+        )
+        let startComp1 = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: start1)
+        let endComp1 = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: end1)
+        XCTAssertEqual(startComp1.year, 2026)
+        XCTAssertEqual(startComp1.month, 10)
+        XCTAssertEqual(startComp1.day, 11)
+        XCTAssertEqual(startComp1.hour, 8)
+        XCTAssertEqual(startComp1.minute, 30)
+        XCTAssertEqual(endComp1.year, 2026)
+        XCTAssertEqual(endComp1.month, 11)
+        XCTAssertEqual(endComp1.day, 11)
+        XCTAssertEqual(endComp1.hour, 8)
+        XCTAssertEqual(endComp1.minute, 30)
+
+        // Case 2: 当前时间 10-11 08:29（未到当前月锚点）
+        comp.minute = 29
+        let nowBefore = calendar.date(from: comp)!
+        let (start2, end2) = OpenAIApiCreditDetails.currentBillingCycle(
+            day: 11, hour: 8, minute: 30, now: nowBefore, calendar: calendar
+        )
+        let startComp2 = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: start2)
+        let endComp2 = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: end2)
+        XCTAssertEqual(startComp2.year, 2026)
+        XCTAssertEqual(startComp2.month, 9)
+        XCTAssertEqual(startComp2.day, 11)
+        XCTAssertEqual(startComp2.hour, 8)
+        XCTAssertEqual(startComp2.minute, 30)
+        XCTAssertEqual(endComp2.year, 2026)
+        XCTAssertEqual(endComp2.month, 10)
+        XCTAssertEqual(endComp2.day, 11)
+        XCTAssertEqual(endComp2.hour, 8)
+        XCTAssertEqual(endComp2.minute, 30)
+
+        // Case 3: 跨年测试（1 月锚点前取上一年度 12 月）
+        comp = DateComponents(year: 2027, month: 1, day: 5, hour: 0, minute: 0, second: 0)
+        let nowJan = calendar.date(from: comp)!
+        let (start3, end3) = OpenAIApiCreditDetails.currentBillingCycle(
+            day: 11, hour: 0, minute: 0, now: nowJan, calendar: calendar
+        )
+        let startComp3 = calendar.dateComponents([.year, .month, .day], from: start3)
+        let endComp3 = calendar.dateComponents([.year, .month, .day], from: end3)
+        XCTAssertEqual(startComp3.year, 2026)
+        XCTAssertEqual(startComp3.month, 12)
+        XCTAssertEqual(startComp3.day, 11)
+        XCTAssertEqual(endComp3.year, 2027)
+        XCTAssertEqual(endComp3.month, 1)
+        XCTAssertEqual(endComp3.day, 11)
+
+        // Case 4: 2 月天数夹取（31 日夹到 28/29 日）
+        comp = DateComponents(year: 2026, month: 2, day: 15, hour: 0, minute: 0, second: 0)
+        let nowFeb = calendar.date(from: comp)!
+        let (start4, end4) = OpenAIApiCreditDetails.currentBillingCycle(
+            day: 31, hour: 0, minute: 0, now: nowFeb, calendar: calendar
+        )
+        let startComp4 = calendar.dateComponents([.year, .month, .day], from: start4)
+        let endComp4 = calendar.dateComponents([.year, .month, .day], from: end4)
+        XCTAssertEqual(startComp4.year, 2026)
+        XCTAssertEqual(startComp4.month, 1)
+        XCTAssertEqual(startComp4.day, 31)
+        XCTAssertEqual(endComp4.year, 2026)
+        XCTAssertEqual(endComp4.month, 2)
+        XCTAssertEqual(endComp4.day, 28) // 2026 非闰年
+    }
+
+    func testOpenAIApiCreditDetailsProperties() {
+        let start = Date(timeIntervalSince1970: 1_000_000)
+        let end = Date(timeIntervalSince1970: 2_000_000)
+        let details = OpenAIApiCreditDetails(
+            organizationName: "Personal",
+            totalQuota: 40.0,
+            usedAmount: 10.0,
+            cycleStart: start,
+            cycleEnd: end
+        )
+        XCTAssertEqual(details.remainingAmount, 30.0)
+        XCTAssertEqual(details.remainingPercent, 75.0)
+
+        // 中间时刻：剩 50% 时间
+        let mid = Date(timeIntervalSince1970: 1_500_000)
+        XCTAssertEqual(details.timeRemainingFraction(at: mid), 0.5, accuracy: 0.001)
+
+        // 刚开始时刻：剩 100% 时间
+        XCTAssertEqual(details.timeRemainingFraction(at: start), 1.0, accuracy: 0.001)
+
+        // 过期时刻：剩 0%
+        XCTAssertEqual(details.timeRemainingFraction(at: end), 0.0, accuracy: 0.001)
+    }
+
+    func testCodexFetcherFetchAdminCostsSuccess() async throws {
+        let authURL = try makeAuthFile()
+        StubURLProtocol.responses[Self.usagePath] = .init(
+            statusCode: 200,
+            headers: ["Content-Type": "application/json"],
+            body: Self.validUsageJSON()
+        )
+        StubURLProtocol.responses[Self.costsPath] = .init(
+            statusCode: 200,
+            headers: ["Content-Type": "application/json"],
+            body: Self.validCostsJSON(value: 0.09219, orgName: "My Workspace")
+        )
+
+        let fetcher = CodexFetcher(
+            authPath: authURL.path,
+            adminApiCreditsEnabled: true,
+            adminApiKey: "sk-admin-testkey123",
+            adminBillingDay: 11,
+            adminBillingTime: "08:00",
+            adminMonthlyQuotaLimit: 40.0,
+            session: makeSession()
+        )
+
+        let info = try await fetcher.fetch(mode: .full)
+        let credits = try XCTUnwrap(info.openAIApiCredits)
+        XCTAssertEqual(credits.totalQuota, 40.0)
+        XCTAssertEqual(credits.usedAmount, 0.09219, accuracy: 0.0001)
+        XCTAssertEqual(credits.organizationName, "My Workspace")
+        XCTAssertEqual(credits.remainingAmount, 40.0 - 0.09219, accuracy: 0.0001)
+
+        let captured = try XCTUnwrap(StubURLProtocol.capturedHeaders[Self.costsPath])
+        XCTAssertEqual(captured["Authorization"], "Bearer sk-admin-testkey123")
+    }
+
+    func testCodexFetcherAdminCostsFallsBackToMeForOrgName() async throws {
+        let authURL = try makeAuthFile()
+        StubURLProtocol.responses[Self.usagePath] = .init(
+            statusCode: 200,
+            headers: ["Content-Type": "application/json"],
+            body: Self.validUsageJSON()
+        )
+        // costs 接口返回 null orgName
+        StubURLProtocol.responses[Self.costsPath] = .init(
+            statusCode: 200,
+            headers: ["Content-Type": "application/json"],
+            body: Self.validCostsJSON(value: 0.0, orgName: nil)
+        )
+        // me 接口返回 title
+        StubURLProtocol.responses[Self.mePath] = .init(
+            statusCode: 200,
+            headers: ["Content-Type": "application/json"],
+            body: Self.validMeJSON(title: "Fallback Org")
+        )
+
+        let fetcher = CodexFetcher(
+            authPath: authURL.path,
+            adminApiCreditsEnabled: true,
+            adminApiKey: "sk-admin-testkey456",
+            session: makeSession()
+        )
+
+        let info = try await fetcher.fetch(mode: .full)
+        let credits = try XCTUnwrap(info.openAIApiCredits)
+        XCTAssertEqual(credits.organizationName, "Fallback Org")
+    }
+
+    func testCodexFetcherAdminCostsDisabledDoesNotFetch() async throws {
+        let authURL = try makeAuthFile()
+        StubURLProtocol.responses[Self.usagePath] = .init(
+            statusCode: 200,
+            headers: ["Content-Type": "application/json"],
+            body: Self.validUsageJSON()
+        )
+
+        let fetcher = CodexFetcher(
+            authPath: authURL.path,
+            adminApiCreditsEnabled: false,
+            adminApiKey: "sk-admin-ignored",
+            session: makeSession()
+        )
+
+        let info = try await fetcher.fetch(mode: .full)
+        XCTAssertNil(info.openAIApiCredits)
+        XCTAssertEqual(StubURLProtocol.callCounts[Self.costsPath] ?? 0, 0)
+    }
+
     // MARK: - 辅助 JSON 构造
+
+    private static let costsPath = "/v1/organization/costs"
+    private static let mePath = "/v1/me"
+
+    /// 合法的 `v1/organization/costs` 响应
+    private static func validCostsJSON(value: Double = 0.09219, orgName: String? = "Personal") -> Data {
+        let result: [String: Any] = [
+            "object": "organization.costs.result",
+            "amount": [
+                "currency": "usd",
+                "value": value
+            ],
+            "line_item": NSNull(),
+            "project_id": NSNull(),
+            "organization_name": orgName as Any
+        ]
+        let json: [String: Any] = [
+            "object": "page",
+            "data": [
+                [
+                    "object": "bucket",
+                    "start_time": 1791676800,
+                    "end_time": 1791763200,
+                    "results": [result]
+                ]
+            ],
+            "has_more": false
+        ]
+        return try! JSONSerialization.data(withJSONObject: json)
+    }
+
+    /// 合法的 `v1/me` 响应
+    private static func validMeJSON(title: String = "Personal Org") -> Data {
+        let json: [String: Any] = [
+            "object": "user",
+            "id": "user-test",
+            "orgs": [
+                "data": [
+                    [
+                        "id": "org-test",
+                        "title": title
+                    ]
+                ]
+            ]
+        ]
+        return try! JSONSerialization.data(withJSONObject: json)
+    }
 
     /// 合法的 `wham/usage` 响应：primary 用了 20%（剩 80%），window 1800s。
     private static func validUsageJSON() -> Data {

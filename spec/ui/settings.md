@@ -88,6 +88,16 @@ addressable seam — the tests pin the action, the view only draws it. The greye
 first layer is UX, not correctness: repeated clicks are absorbed by `refreshOne`'s
 transaction gate.
 
+### ChatGPT Provider Pane 与「API 赠金」设置
+
+ChatGPT 设置 pane（`SettingsProviderPanes.swift:chatgptPane`）在基础的 `auth.json 路径` 与刷新频率之外，提供「API 赠金」专用配置节：
+- **开关**：「启用 API 赠金监测」（`chatgptAdminCreditsEnabled`）。默认关闭；开启后向下展开选项，关闭时全部选项隐藏。
+- **Admin API Key**：`secretField` 掩码输入框（带明文/掩码切换眼标图标），支持 `sk-admin-...` 前缀的官方管理员 Key。
+- **赠金额度 ($)**：每月额度上限输入框（`chatgptMonthlyQuotaLimit`，默认 40）。
+- **账单日**：`Picker` 下拉框（每月 1 日至 31 日，默认 11 日）。
+- **重置时间**：`DatePicker`（时分输入组件，精确至分钟粒度，如 `00:00` 或 `08:00`）。
+- **草稿与保存**：所有字段绑定 `SettingsView` 草稿状态并参与 `draftFingerprint` 脏检查；保存时写回 `config.providers["codex_chatgpt"]`。
+
 ### 客户端 (Clients) 与用量 pane
 
 侧栏的「用量」分节将每个本地客户端（`ClientDescriptor.all`）提升为第一级设置 Tab，
@@ -325,6 +335,6 @@ appearance-neutral.
 - 系统通知声音绑定 `systemNotificationSoundEnabledDraft`，随普通表单保存；缺省保持出声。系统测试使用当前草稿开关，正式通知使用已保存值；Bark 铃声单独配置。
 - 字段默认值与逐字段容错见 `spec/notifications.md` §5；JSON 契约见 `spec/config.md` §Config Schema 的 `notify*` 与 `bark` 字段。
 
-> 核对基线：2026-10-29 · 代码 361d485
+> 核对基线：2026-10-29 · 代码 013a82e
 > Sync 草稿跨 tab 保留、表单隔离与保存失败提示验证结果见 `spec/sync.md`。
 > 2026-10-25 菜单 / 设置自启同步已随 6f11831 入库：相关定向测试 27 例、完整测试 1422 例均 0 失败；测试使用模拟登录项操作，不执行真实注册 / 注销。

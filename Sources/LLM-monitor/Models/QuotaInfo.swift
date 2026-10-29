@@ -267,6 +267,9 @@ struct QuotaInfo: Equatable, Codable, Sendable {
     /// 其他 provider 永远 nil。
     let balanceDetail: DeepseekBalanceDetail?
 
+    /// OpenAI API 赠金用量与周期详情（ChatGPT 扩展）
+    let openAIApiCredits: OpenAIApiCreditDetails?
+
     /// 数据抓取时刻
     let fetchedAt: Date
 
@@ -277,7 +280,8 @@ struct QuotaInfo: Equatable, Codable, Sendable {
         accountEmail: String?,
         codexUsageDetails: CodexUsageDetails?,
         fetchedAt: Date,
-        balanceDetail: DeepseekBalanceDetail? = nil
+        balanceDetail: DeepseekBalanceDetail? = nil,
+        openAIApiCredits: OpenAIApiCreditDetails? = nil
     ) {
         self.models = models
         self.resetCredits = resetCredits
@@ -285,6 +289,7 @@ struct QuotaInfo: Equatable, Codable, Sendable {
         self.accountEmail = accountEmail
         self.codexUsageDetails = codexUsageDetails
         self.balanceDetail = balanceDetail
+        self.openAIApiCredits = openAIApiCredits
         self.fetchedAt = fetchedAt
     }
 
@@ -590,6 +595,91 @@ struct DeepseekBalanceDetail: Equatable, Codable, Sendable {
     }
 }
 
+/// OpenAI API 赠金用量与周期详情（ChatGPT 扩展）
+struct OpenAIApiCreditDetails: Equatable, Codable, Sendable {
+    /// 空间 / 组织名称（如 "Personal"）
+    let organizationName: String?
+    /// 总额度（美元，如 40.0）
+    let totalQuota: Double
+    /// 当前周期内已消耗金额（美元）
+    let usedAmount: Double
+    /// 当前周期起始时间（含时分）
+    let cycleStart: Date
+    /// 当前周期结束 / 下次重置时间（含时分）
+    let cycleEnd: Date
+
+    /// 剩余金额（美元）
+    var remainingAmount: Double {
+        max(0, totalQuota - usedAmount)
+    }
+
+    /// 剩余比例百分比 [0, 100]
+    var remainingPercent: Double {
+        guard totalQuota > 0 else { return 0 }
+        return min(max((remainingAmount / totalQuota) * 100.0, 0), 100)
+    }
+
+    /// 当前周期剩余时间比例 [0, 1]（0: 刚过期/重置点，1: 刚开始）。
+    /// 用于 SegmentedQuotaProgressBar 顶部的红色时间进度三角 ▼。
+    func timeRemainingFraction(at now: Date = Date()) -> Double {
+        let total = cycleEnd.timeIntervalSince(cycleStart)
+        guard total > 0 else { return 0 }
+        let remaining = cycleEnd.timeIntervalSince(now)
+        return min(max(remaining / total, 0), 1)
+    }
+
+    /// 根据用户配置的账单日 (1-31)、重置时 (0-23)、重置分 (0-59)，计算当前时刻所属的滑动账单周期
+    static func currentBillingCycle(
+        day: Int,
+        hour: Int = 0,
+        minute: Int = 0,
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> (start: Date, end: Date) {
+        let dayClamped = max(1, min(day, 31))
+        let hourClamped = max(0, min(hour, 23))
+        let minuteClamped = max(0, min(minute, 59))
+
+        func makeDate(year: Int, month: Int) -> Date {
+            var comp = DateComponents(year: year, month: month, day: 1)
+            guard let firstDay = calendar.date(from: comp),
+                  let range = calendar.range(of: .day, in: .month, for: firstDay) else {
+                return now
+            }
+            let actualDay = min(dayClamped, range.count)
+            comp.day = actualDay
+            comp.hour = hourClamped
+            comp.minute = minuteClamped
+            comp.second = 0
+            return calendar.date(from: comp) ?? now
+        }
+
+        let nowComponents = calendar.dateComponents([.year, .month], from: now)
+        guard let year = nowComponents.year, let month = nowComponents.month else {
+            return (now, now.addingTimeInterval(30 * 86400))
+        }
+
+        let thisMonthAnchor = makeDate(year: year, month: month)
+
+        let start: Date
+        let end: Date
+
+        if now >= thisMonthAnchor {
+            start = thisMonthAnchor
+            let nextYear = month == 12 ? year + 1 : year
+            let nextMonth = month == 12 ? 1 : month + 1
+            end = makeDate(year: nextYear, month: nextMonth)
+        } else {
+            let prevYear = month == 1 ? year - 1 : year
+            let prevMonth = month == 1 ? 12 : month - 1
+            start = makeDate(year: prevYear, month: prevMonth)
+            end = thisMonthAnchor
+        }
+
+        return (start, end)
+    }
+}
+
 enum HealthLevel: String, Sendable, Comparable {
     case healthy
     case warning
@@ -619,7 +709,8 @@ extension QuotaInfo {
             accountEmail: accountEmail,
             codexUsageDetails: details,
             fetchedAt: fetchedAt,
-            balanceDetail: balanceDetail
+            balanceDetail: balanceDetail,
+            openAIApiCredits: openAIApiCredits
         )
     }
 }

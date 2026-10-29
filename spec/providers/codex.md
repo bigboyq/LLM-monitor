@@ -46,6 +46,11 @@ Supported provider fields:
 | `refreshIntervalSeconds` | Optional independent refresh interval. |
 | `displayName` | Optional card title override. |
 | `authPath` | Optional custom auth location. Accepts either an `auth.json` file path or its parent directory. |
+| `adminApiCreditsEnabled` | 是否启用 OpenAI API 赠金监测。缺省为 false。开启后在卡内追加「API赠金」进度条。 |
+| `adminApiKey` | OpenAI Admin API Key (`sk-admin-..`)，用于调用官方组织成本接口。 |
+| `adminBillingDay` | 每月账单日（1-31，缺省 11）。 |
+| `adminBillingTime` | 账单重置时间（`HH:mm`，如 `00:00` 或 `08:00`，缺省 `00:00`）。 |
+| `adminMonthlyQuotaLimit` | 每月赠金额度上限（美元，缺省 40.0）。 |
 | `notifyIntervalRestored` etc. (4 fields) | Optional per-event notification channels (5h/weekly × restored/exhausted): `none` / `system` / `barkAndSystem`. Defaults: restored → `system`, exhausted → `none`. See `spec/notifications.md`. |
 
 ## Auth File
@@ -169,6 +174,35 @@ passes `resetsAt = nil` through rather than fabricating a boundary.
 If `rate_limit` or its primary window is missing/invalid, parsing fails instead of fabricating a
 healthy quota. A missing or invalid secondary window maps to `weeklyStatus = .absent`; a valid
 secondary window remains `.present` even when its remaining percentage is `0%`.
+
+## OpenAI API 赠金（API 赠金）
+
+ChatGPT 用户每月可享受官方免费 API 额度福利（API 赠金）。本模块通过 OpenAI 官方 Admin 接口监测组织用量，并按滑动账单周期计算当前周期的额度消耗与剩余有效期。
+
+### 端点与鉴权
+
+```http
+GET https://api.openai.com/v1/organization/costs?start_time=<cycle_start_epoch>&bucket_width=1d&limit=35
+Authorization: Bearer <admin_api_key>
+```
+
+- **数据解析**：按日 bucket 聚合所有 `results` 下 `amount.value`，累加得到当前账单周期内的已消耗金额 `usedAmount`。
+- **空间名称获取**：优先从 costs 响应 results 的 `organization_name` 获取；若当周期刚开始尚无用量消费导致 results 为空，则回退调用 `GET https://api.openai.com/v1/me` 读取 `orgs.data[0].title`（兜底 "Personal"）。
+- **容错设计**：`adminCosts` 抓取异常不会导致 ChatGPT Plan 5h/周配额刷新失败；失败时安全降级保留上一轮有效值。
+
+### 账单周期算法
+
+- 由 `OpenAIApiCreditDetails.currentBillingCycle(day:hour:minute:now:)` 计算：
+  - 账单日：`1...31`（自动夹取至当月实际最大天数，如 2 月 28/29 日）；
+  - 重置时刻：`HH:mm`（时分级切换精度，如 `08:00`）；
+  - 滑动周期判定：若 `now >= 当月重置锚点`，周期为 `[当月锚点, 次月锚点)`；若 `now < 当月重置锚点`，周期为 `[上月锚点, 当月锚点)`。跨年时 12 月与 1 月正确滚转。
+
+### UI 呈现（`ChatGPTApiCreditsRow`）
+
+在 ChatGPT Provider 卡片内以 3 行结构紧凑展示：
+- **行 1**：`API赠金`（11pt semibold）与空间/组织名称（次要色靠右）；
+- **行 2**：`剩余额度:`（固定 52pt）+ 单段分段进度条 `SegmentedQuotaProgressBar`（高 8pt，健康度绿/黄/红自适应着色，带有表示周期时间进度的红色倒三角 `▼`）+ 总额度标签（如 `$40`）；
+- **行 3**：`已用：$xx.xx`（等宽次要色）+ `有效期：MM-dd HH:mm (xx天/xx小时后)`（次要色靠右，由 `Formatters.formatBillingRemainingDuration` 紧凑格式化）。
 
 ## Local Pricing Snapshot
 
@@ -793,4 +827,4 @@ To compare or sum daily usage across both providers, normalize both into a singl
 
 After normalization, cross-provider sum, average, and chart rendering can treat the two providers as a single data source.
 
-> 核对基线：2026-10-28 · 代码 85f6ba9
+> 核对基线：2026-10-29 · 代码 013a82e

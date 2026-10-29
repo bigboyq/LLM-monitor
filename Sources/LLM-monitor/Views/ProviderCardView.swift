@@ -1155,6 +1155,16 @@ struct QuotaSummary: View {
                 }
             }
 
+            if let credits = info.openAIApiCredits {
+                if !displayedModels.isEmpty {
+                    Divider().opacity(0.3)
+                }
+                ChatGPTApiCreditsRow(
+                    credits: credits,
+                    tint: .chatgptBrand
+                )
+            }
+
             // 一个 model 都没有时 `ForEach` 不产出任何行，而卡片级信息是挂在
             // `index == 0` 上的——它会跟着一起消失。那块（高峰期倒计时）是
             // "现在能不能便宜用"的唯一出处，丢了就只剩一张空卡。

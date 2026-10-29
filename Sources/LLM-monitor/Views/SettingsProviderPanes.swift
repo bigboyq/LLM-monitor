@@ -83,6 +83,52 @@ extension SettingsView {
                         providerRefreshButton(for: .codexChatGpt)
                     }
                 }
+
+                SettingsSection(
+                    title: "API 赠金",
+                    footer: "开启后监测每月官方赠送的 API 额度与消耗；账单重置时间与额度上限支持按需自定义。"
+                ) {
+                    SettingsToggleRow(label: "启用 API 赠金监测", isOn: $chatgptAdminCreditsEnabled)
+
+                    if chatgptAdminCreditsEnabled {
+                        Divider()
+                            .padding(.vertical, 4)
+
+                        SettingsControlRow("Admin API Key") {
+                            secretField(text: $chatgptAdminApiKey, isVisible: $showChatgptAdminKey, prompt: "sk-admin-...")
+                        }
+
+                        Divider()
+                            .padding(.vertical, 4)
+
+                        SettingsControlRow("赠金额度 ($)") {
+                            TextField("", text: $chatgptMonthlyQuotaLimit, prompt: Text("40"))
+                                .textFieldStyle(.roundedBorder)
+                                .frame(width: SettingsLayout.standardControlWidth)
+                        }
+
+                        Divider()
+                            .padding(.vertical, 4)
+
+                        SettingsControlRow("账单日") {
+                            Picker("", selection: $chatgptBillingDay) {
+                                ForEach(1...31, id: \.self) { day in
+                                    Text("每月 \(day) 日").tag(day)
+                                }
+                            }
+                            .frame(width: SettingsLayout.standardControlWidth)
+                        }
+
+                        Divider()
+                            .padding(.vertical, 4)
+
+                        SettingsControlRow("重置时间") {
+                            DatePicker("", selection: $chatgptBillingTime, displayedComponents: .hourAndMinute)
+                                .labelsHidden()
+                                .frame(width: SettingsLayout.standardControlWidth, alignment: .trailing)
+                        }
+                    }
+                }
             }
         }
     }

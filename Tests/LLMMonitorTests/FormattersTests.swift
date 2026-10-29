@@ -106,6 +106,15 @@ final class FormattersTests: XCTestCase {
         XCTAssertEqual(Formatters.formatPeakDuration(0), "1分")
         XCTAssertEqual(Formatters.formatPeakDuration(-100), "1分")
 
+        // formatBillingRemainingDuration: 账单周期倒计时
+        XCTAssertEqual(Formatters.formatBillingRemainingDuration(2 * 86_400 + 8 * 3_600), "2天8小时后")
+        XCTAssertEqual(Formatters.formatBillingRemainingDuration(2 * 86_400), "2天后")
+        XCTAssertEqual(Formatters.formatBillingRemainingDuration(1 * 3_600 + 30 * 60), "1小时30分后")
+        XCTAssertEqual(Formatters.formatBillingRemainingDuration(1 * 3_600), "1小时后")
+        XCTAssertEqual(Formatters.formatBillingRemainingDuration(30 * 60), "30分后")
+        XCTAssertEqual(Formatters.formatBillingRemainingDuration(0), "已到期")
+        XCTAssertEqual(Formatters.formatBillingRemainingDuration(-50), "已到期")
+
         // formatDigitalDuration: 数字时钟
         XCTAssertEqual(Formatters.formatDigitalDuration(0), "00:00")
         XCTAssertEqual(Formatters.formatDigitalDuration(-5), "00:00")

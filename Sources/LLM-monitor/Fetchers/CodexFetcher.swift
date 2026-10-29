@@ -22,18 +22,35 @@ struct CodexFetcher: QuotaFetcher {
     let kind: ProviderKind = .codexChatGpt
     /// reset credits + usage details 不是每次主 quota 刷新都会带回来；
     /// 缺失时回退到上次的值，避免 UI 看到空白。
-    let resultMerger: RefreshResultMerger = CodexFillingMissingMerger()
+    let resultMerger: RefreshResultMerger
 
     /// auth.json 文件路径（默认 ~/.codex/auth.json），可被环境变量 CODEX_HOME 或 config.json 的 authPath 覆盖
     let authFileURL: URL
+
+    /// 是否启用 OpenAI API 赠金监测
+    let adminApiCreditsEnabled: Bool
+    /// OpenAI Admin API Key (sk-admin-...)
+    let adminApiKey: String?
+    /// 每月账单日（1-31）
+    let adminBillingDay: Int
+    /// 账单重置时间（"HH:mm"，如 "08:00"）
+    let adminBillingTime: String
+    /// 每月 API 赠金额度上限（美元，如 40.0）
+    let adminMonthlyQuotaLimit: Double
 
     private let usageURL: URL
     private let resetCreditsURL: URL
     private let usageClient: HTTPClient
     private let resetCreditsClient: HTTPClient
+    private let adminCostsClient: HTTPClient
 
     /// 从 config.json 传入的 authPath（可选，~ 开头会展开）
     init(authPath: String? = nil,
+         adminApiCreditsEnabled: Bool = false,
+         adminApiKey: String? = nil,
+         adminBillingDay: Int = 11,
+         adminBillingTime: String = "00:00",
+         adminMonthlyQuotaLimit: Double = 40.0,
          usageURL: URL = URL(string: "https://chatgpt.com/backend-api/wham/usage")!,
          resetCreditsURL: URL = URL(string: "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits")!,
          session: URLSession = .shared) {
@@ -44,12 +61,19 @@ struct CodexFetcher: QuotaFetcher {
             resolvedAuthURL = Self.defaultAuthFileURL()
         }
         self.authFileURL = resolvedAuthURL
+        self.adminApiCreditsEnabled = adminApiCreditsEnabled
+        self.adminApiKey = adminApiKey
+        self.adminBillingDay = adminBillingDay
+        self.adminBillingTime = adminBillingTime
+        self.adminMonthlyQuotaLimit = adminMonthlyQuotaLimit
+        self.resultMerger = CodexFillingMissingMerger(adminApiCreditsEnabled: adminApiCreditsEnabled)
         self.usageURL = usageURL
         self.resetCreditsURL = resetCreditsURL
         // session 不再存为 stored property——HTTPClient 持 URLSession，不需要在 fetcher
         // 里保留 reference。init 参数保留是为了方便测试时注入 mock URLSession。
         self.usageClient = HTTPClient(session: session, logTag: "[codex/usage]", defaultTimeout: HTTPTimeouts.overseas)
         self.resetCreditsClient = HTTPClient(session: session, logTag: "[codex/reset-credits]", defaultTimeout: HTTPTimeouts.overseas)
+        self.adminCostsClient = HTTPClient(session: session, logTag: "[codex/admin-costs]", defaultTimeout: HTTPTimeouts.overseas)
     }
 
     nonisolated static func defaultAuthFileURL() -> URL {
@@ -111,10 +135,47 @@ struct CodexFetcher: QuotaFetcher {
 
     func hasLocalAuth() -> Bool {
         FileManager.default.fileExists(atPath: authFileURL.path)
+            || (adminApiCreditsEnabled && !(adminApiKey?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true))
     }
 
     func fetch(mode: RefreshMode) async throws -> QuotaInfo {
-        let auth = try loadAuth()
+        let authResult = Result { try loadAuth() }
+
+        // 并行抓取 API 赠金（若启用且 key 存在）
+        async let adminCreditsTask: OpenAIApiCreditDetails? = {
+            guard adminApiCreditsEnabled,
+                  let rawKey = adminApiKey,
+                  !rawKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return nil
+            }
+            do {
+                let details = try await fetchAdminCosts(apiKey: rawKey)
+                logInfo("[codex] admin credits fetched: used $\(String(format: "%.2f", details.usedAmount)) / $\(String(format: "%.0f", details.totalQuota))")
+                return details
+            } catch {
+                try? Task.checkCancellation()
+                logWarn("[codex] admin costs 拉取失败: \(error.localizedDescription)，忽略")
+                return nil
+            }
+        }()
+
+        guard case .success(let auth) = authResult else {
+            // 主 auth 不可用（如无 auth.json），但 admin 赠金获取成功
+            if let adminCredits = await adminCreditsTask {
+                return QuotaInfo(
+                    models: [],
+                    resetCredits: nil,
+                    planLabel: nil,
+                    accountEmail: nil,
+                    codexUsageDetails: nil,
+                    fetchedAt: Date(),
+                    openAIApiCredits: adminCredits
+                )
+            }
+            _ = try authResult.get()
+            fatalError("Unreachable")
+        }
+
         let headers = try Self.authHeaders(from: auth)
 
         // full 模式下 usage 与 reset-credits 两个 GET 用 async let 并行，省一个 RTT；
@@ -148,6 +209,7 @@ struct CodexFetcher: QuotaFetcher {
             resetCredits = nil
         }
         let model = try Self.parseUsage(usageResponse)
+        let adminCredits = await adminCreditsTask
 
         return QuotaInfo(
             models: [model],
@@ -155,8 +217,89 @@ struct CodexFetcher: QuotaFetcher {
             planLabel: Self.planLabel(from: auth),
             accountEmail: auth.accountEmail,
             codexUsageDetails: nil,
-            fetchedAt: Date()
+            fetchedAt: Date(),
+            openAIApiCredits: adminCredits
         )
+    }
+
+    // MARK: - Admin Costs Fetching
+
+    func fetchAdminCosts(apiKey: String) async throws -> OpenAIApiCreditDetails {
+        var cleanKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if cleanKey.lowercased().hasPrefix("bearer ") {
+            cleanKey = String(cleanKey.dropFirst(7)).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        let timeParts = adminBillingTime.split(separator: ":")
+        let hour = timeParts.count > 0 ? (Int(timeParts[0]) ?? 0) : 0
+        let minute = timeParts.count > 1 ? (Int(timeParts[1]) ?? 0) : 0
+
+        let (cycleStart, cycleEnd) = OpenAIApiCreditDetails.currentBillingCycle(
+            day: adminBillingDay,
+            hour: hour,
+            minute: minute,
+            now: Date()
+        )
+        let startTimeEpoch = Int(cycleStart.timeIntervalSince1970)
+
+        guard var components = URLComponents(string: "https://api.openai.com/v1/organization/costs") else {
+            throw URLError(.badURL)
+        }
+        components.queryItems = [
+            URLQueryItem(name: "start_time", value: String(startTimeEpoch)),
+            URLQueryItem(name: "bucket_width", value: "1d"),
+            URLQueryItem(name: "limit", value: "35")
+        ]
+        guard let url = components.url else {
+            throw URLError(.badURL)
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(cleanKey)", forHTTPHeaderField: "Authorization")
+
+        let (data, _) = try await adminCostsClient.send(request)
+        let page = try JSONDecoder().decode(OpenAICostsPage.self, from: data)
+
+        var totalCost: Double = 0
+        var orgName: String? = nil
+
+        for bucket in page.data {
+            for result in bucket.results {
+                if let val = result.amount?.value {
+                    totalCost += val
+                }
+                if orgName == nil, let org = result.organizationName, !org.isEmpty {
+                    orgName = org
+                }
+            }
+        }
+
+        if orgName == nil {
+            orgName = await fetchOrganizationTitle(apiKey: cleanKey)
+        }
+
+        return OpenAIApiCreditDetails(
+            organizationName: orgName ?? "Personal",
+            totalQuota: adminMonthlyQuotaLimit,
+            usedAmount: totalCost,
+            cycleStart: cycleStart,
+            cycleEnd: cycleEnd
+        )
+    }
+
+    private func fetchOrganizationTitle(apiKey: String) async -> String? {
+        guard let url = URL(string: "https://api.openai.com/v1/me") else { return nil }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        do {
+            let (data, _) = try await adminCostsClient.send(request)
+            let me = try JSONDecoder().decode(OpenAIMeResponse.self, from: data)
+            return me.orgs?.data.first?.title ?? me.orgs?.data.first?.name
+        } catch {
+            return nil
+        }
     }
 
     nonisolated static func loadUsageDetailsAsync(
@@ -634,3 +777,56 @@ struct CodexFetcher: QuotaFetcher {
     }
 
 }
+
+// MARK: - OpenAI Admin Costs & Me Decodables
+
+private struct OpenAICostsPage: Decodable {
+    let data: [OpenAICostsBucket]
+    let hasMore: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case data
+        case hasMore = "has_more"
+    }
+}
+
+private struct OpenAICostsBucket: Decodable {
+    let startTime: Int
+    let endTime: Int
+    let results: [OpenAICostsResult]
+
+    enum CodingKeys: String, CodingKey {
+        case startTime = "start_time"
+        case endTime = "end_time"
+        case results
+    }
+}
+
+private struct OpenAICostsResult: Decodable {
+    let amount: OpenAICostsAmount?
+    let organizationName: String?
+
+    enum CodingKeys: String, CodingKey {
+        case amount
+        case organizationName = "organization_name"
+    }
+}
+
+private struct OpenAICostsAmount: Decodable {
+    let currency: String?
+    let value: Double?
+}
+
+private struct OpenAIMeResponse: Decodable {
+    let orgs: OpenAIMeOrgs?
+}
+
+private struct OpenAIMeOrgs: Decodable {
+    let data: [OpenAIMeOrgItem]
+}
+
+private struct OpenAIMeOrgItem: Decodable {
+    let title: String?
+    let name: String?
+}
+

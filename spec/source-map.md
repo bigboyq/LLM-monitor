@@ -192,6 +192,7 @@
 | `Sources/LLM-monitor/Views/DeepseekPeakIndicatorView.swift` | DeepSeek 高峰期提示行（北京时间倒计时，内嵌余额行右侧） |
 | `Sources/LLM-monitor/Views/DeepseekBalanceRow.swift` | DeepSeek API 余额专用展示行（充值与赠金明细、高峰提示布局与 between 注入） |
 | `Sources/LLM-monitor/Views/ChatGPTPlanModelRow.swift` | ChatGPT Plan 专用模型行（双窗口 dock 进度条与本地 token 聚合计算） |
+| `Sources/LLM-monitor/Views/ChatGPTApiCreditsRow.swift` | ChatGPT API 赠金用量与周期进度行（三行紧凑排版：空间名称、单段额度条+时间标记三角、已用与有效期倒计时） |
 | `Sources/LLM-monitor/Views/PeakIndicatorView.swift` | 高峰提示行公共组件（`TimelineView` 外壳 + `formatDuration`，GLM / DeepSeek 共用） |
 | `Sources/LLM-monitor/Views/BrandLogoView.swift` | provider 品牌 logo 资源加载 + SF Symbol fallback |
 | `Sources/LLM-monitor/Views/LocalUsageHoverViews.swift` | 旧七天入口兼容包装与泛型 footer；数值逐日价格 / Prompt P50 memo，生产渲染委托共享折线历史组件 |
@@ -229,6 +230,6 @@
 - **串行执行是既定选择**：`swift test --parallel` 实测（2026-10-02，5 连跑 3 败）不可用——`SQLiteTempCopyTests` 的临时副本断言扫描跨进程共享目录，并行 worker 互相误判；且慢测试为睡眠型，并行的 wall 收益仅 ~4s。并行化前提：先给 SQLiteTempCopy 的副本目录引入进程级隔离，再复评。
 - 慢用例的等待注入缝已建立：调度器（now/sleep）、Bark 退避（retryDelay）、vnode 合并窗口（coalescingWindow 参数）；新增耗时敏感测试时优先走注入缝，不要写死真实 sleep。
 
-> 核对基线：2026-10-29 · 代码 d96b2b3
+> 核对基线：2026-10-29 · 代码 013a82e
 > 统一验证通过，详细结果见 `spec/sync.md`。本文件登记已新增的 Fleet Sync 测试文件。
 > `DeviceIdentityStore` 及其回归测试已随 6f11831 入库，详见 `spec/sync.md`。

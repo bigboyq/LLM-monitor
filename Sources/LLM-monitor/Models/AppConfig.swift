@@ -738,12 +738,32 @@ struct ProviderConfig: Codable, Equatable {
     var notifyWeeklyRestored: QuotaNotifyChannel?
     var notifyWeeklyExhausted: QuotaNotifyChannel?
 
+    /// 是否启用 OpenAI API 赠金监测（ChatGPT 专用）
+    var adminApiCreditsEnabled: Bool?
+
+    /// OpenAI Admin API Key (sk-admin-...)
+    var adminApiKey: String?
+
+    /// 每月账单日（1-31）
+    var adminBillingDay: Int?
+
+    /// 账单重置时间（"HH:mm"，如 "08:00"）
+    var adminBillingTime: String?
+
+    /// 每月 API 赠金额度上限（美元，如 40.0）
+    var adminMonthlyQuotaLimit: Double?
+
     enum CodingKeys: String, CodingKey {
         case enabled, apiKey, displayName, refreshIntervalSeconds, authPath
         case mergeOpencodeUsage
         case parseZcodeBalanceLog
         case notifyIntervalRestored, notifyIntervalExhausted
         case notifyWeeklyRestored, notifyWeeklyExhausted
+        case adminApiCreditsEnabled
+        case adminApiKey
+        case adminBillingDay
+        case adminBillingTime
+        case adminMonthlyQuotaLimit
     }
 
     init(enabled: Bool = true,
@@ -756,7 +776,12 @@ struct ProviderConfig: Codable, Equatable {
          notifyIntervalRestored: QuotaNotifyChannel? = nil,
          notifyIntervalExhausted: QuotaNotifyChannel? = nil,
          notifyWeeklyRestored: QuotaNotifyChannel? = nil,
-         notifyWeeklyExhausted: QuotaNotifyChannel? = nil) {
+         notifyWeeklyExhausted: QuotaNotifyChannel? = nil,
+         adminApiCreditsEnabled: Bool? = nil,
+         adminApiKey: String? = nil,
+         adminBillingDay: Int? = nil,
+         adminBillingTime: String? = nil,
+         adminMonthlyQuotaLimit: Double? = nil) {
         self.enabled = enabled
         self.apiKey = apiKey
         self.displayName = displayName
@@ -768,6 +793,11 @@ struct ProviderConfig: Codable, Equatable {
         self.notifyIntervalExhausted = notifyIntervalExhausted
         self.notifyWeeklyRestored = notifyWeeklyRestored
         self.notifyWeeklyExhausted = notifyWeeklyExhausted
+        self.adminApiCreditsEnabled = adminApiCreditsEnabled
+        self.adminApiKey = adminApiKey
+        self.adminBillingDay = adminBillingDay
+        self.adminBillingTime = adminBillingTime
+        self.adminMonthlyQuotaLimit = adminMonthlyQuotaLimit
     }
 
     /// 自定义 decode 只为一个默认值：`enabled` 缺失按 true 处理（编译器合成的
@@ -792,6 +822,11 @@ struct ProviderConfig: Codable, Equatable {
             .flatMap(QuotaNotifyChannel.init(rawValue:))
         self.notifyWeeklyExhausted = (try? c.decode(String.self, forKey: .notifyWeeklyExhausted))
             .flatMap(QuotaNotifyChannel.init(rawValue:))
+        self.adminApiCreditsEnabled = try c.decodeIfPresent(Bool.self, forKey: .adminApiCreditsEnabled)
+        self.adminApiKey = try c.decodeIfPresent(String.self, forKey: .adminApiKey)
+        self.adminBillingDay = try c.decodeIfPresent(Int.self, forKey: .adminBillingDay)
+        self.adminBillingTime = try c.decodeIfPresent(String.self, forKey: .adminBillingTime)
+        self.adminMonthlyQuotaLimit = try c.decodeIfPresent(Double.self, forKey: .adminMonthlyQuotaLimit)
     }
 }
 
