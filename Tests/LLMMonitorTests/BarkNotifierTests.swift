@@ -756,6 +756,9 @@ final class BarkNotifierTests: XCTestCase {
             screenInActiveUse: { true }
         )
         XCTAssertTrue(message.contains("正在使用电脑"))
+        XCTAssertTrue(message.contains("测试未发送"))
+        XCTAssertTrue(message.contains("未验证服务端地址和 Device Key"))
+        XCTAssertFalse(message.contains("配置本身无误"))
         XCTAssertTrue(RecordingURLProtocol.requests.isEmpty)
     }
 

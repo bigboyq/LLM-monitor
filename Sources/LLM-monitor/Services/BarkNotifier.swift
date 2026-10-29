@@ -140,7 +140,7 @@ final class BarkQuotaNotifier: QuotaUpdateNotifying {
             return "请先填写服务端地址和 Device Key"
         }
         if config.skipWhenAwakeAndUnlocked ?? false, screenInActiveUse() {
-            return "当前正在使用电脑（屏幕亮且未锁屏），已按「人在电脑前时跳过推送」跳过本次测试；配置本身无误。"
+            return "测试未发送：当前正在使用电脑，已按「人在电脑前时跳过推送」跳过。本次未验证服务端地址和 Device Key。"
         }
         guard let request = buildRequest(
             config: config,

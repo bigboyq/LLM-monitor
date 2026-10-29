@@ -1,7 +1,8 @@
 import AppKit
 import Foundation
+import SwiftUI
 
-/// 拦截菜单栏图标的右键点击事件，显示“刷新”“配置”和“退出”菜单。
+/// 拦截菜单栏图标的右键点击事件，显示“刷新”“打开设置”“打开配置文件”和“退出”菜单。
 @MainActor
 final class MenuBarRightClickHandler: NSObject, NSMenuDelegate {
     private var statusButton: NSButton?
@@ -94,9 +95,30 @@ final class MenuBarRightClickHandler: NSObject, NSMenuDelegate {
         refreshItem.target = self
         menu.addItem(refreshItem)
 
+        let settingsItem = NSMenuItem()
+        settingsItem.title = "打开设置…"
+        settingsItem.view = NSHostingView(
+            rootView: SettingsLink {
+                Text("打开设置…")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .accessibilityLabel("打开设置")
+            }
+            .buttonStyle(.plain)
+            .simultaneousGesture(TapGesture().onEnded { [weak menu] in
+                MenuBarAppActivation.activateForWindowPresentation()
+                DispatchQueue.main.async {
+                    menu?.cancelTracking()
+                }
+            })
+            .frame(width: 150, height: 24)
+        )
+        menu.addItem(settingsItem)
+
         // 打开配置文件：与菜单面板空态里那个「打开配置文件」按钮同一路径
         // （`AppState.openConfigFile`）。不带快捷键——r/q 之外不挤占系统键位。
-        let configItem = NSMenuItem(title: "配置", action: #selector(configClicked), keyEquivalent: "")
+        let configItem = NSMenuItem(title: "打开配置文件", action: #selector(configClicked), keyEquivalent: "")
         configItem.target = self
         menu.addItem(configItem)
 
@@ -123,7 +145,7 @@ final class MenuBarRightClickHandler: NSObject, NSMenuDelegate {
         logInfo("RightClickHandler: 触发右键菜单打开配置文件")
         state?.openConfigFile()
     }
-    
+
     @objc private func quitClicked() {
         logInfo("RightClickHandler: 触发右键退出应用")
         NSApplication.shared.terminate(nil)

@@ -193,10 +193,11 @@ provider 的渠道枚举坏值按缺失处理（`try? + rawValue`）；`bark` �
 
 > 本节只描述通知相关控件的字段与行为；设置页整体结构、布局与其他设置分组见 `spec/ui/settings.md`。本文件负责触发逻辑、阈值、渠道与防抖。
 
-- **全局**（设置 > 常规 > 「Bark 推送」节）：启用开关、服务端地址、Device Key
+- **全局**（设置 > 常规 > 「Bark 推送」节；集中化前的当前位置）：启用开关、服务端地址、Device Key
   （SecureField + 显示开关）、铃声、分组、消息有效期 TTL（秒；空/0/负数归一化为
   不携带，`BarkConfig.parseTTL`）、「人在电脑前时跳过推送」、发送测试推送
   （读当前草稿、复用规范化/构造/屏幕策略、绕过队列冷却、行内返回结果文案）。
+  当屏幕策略使测试被跳过时，文案明确表示测试未发送且未验证服务端地址/Device Key；只有收到 2xx 响应才显示“测试推送已发送”。
 - **每 Provider**（窗口类 pane 顶部、「认证与刷新」之前）：「通知配置」节，四行
   `QuotaNotificationKind` × 渠道 Picker（不通知 / 系统通知 / Bark + 系统通知），
   key = providerID 的字典草稿，`saveAndApply` 走 `setNotifyChannel` 归一化。

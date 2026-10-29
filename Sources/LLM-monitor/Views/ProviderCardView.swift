@@ -541,7 +541,8 @@ struct ProviderCardView: View, Equatable {
                     }
                     .buttonStyle(.plain)
                     .onHover { updatePointingCursor($0) }
-                    .help("重新扫描本地用量")
+                    .help("本地用量更新时间；点击重新扫描本地用量")
+                    .accessibilityLabel("本地用量更新时间；点击重新扫描本地用量")
                 } else {
                     LocalUsageFreshnessBadge(
                         scannedAt: projection.scannedAt,
@@ -699,7 +700,8 @@ struct ProviderCardView: View, Equatable {
                     }
                     .buttonStyle(.plain)
                     .onHover { updatePointingCursor($0) }
-                    .help("立即刷新该 Provider")
+                    .help("额度更新时间；点击立即刷新该 Provider")
+                    .accessibilityLabel("额度更新时间；点击立即刷新该 Provider")
                 } else {
                     ProviderStateLabel(status: status)
                 }

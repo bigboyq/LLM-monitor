@@ -465,6 +465,9 @@ struct LocalUsageFreshnessBadge: View {
             .padding(.vertical, 3)
             .background(Color.secondary.opacity(0.1), in: Capsule())
             .contentShape(Capsule())
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("本地用量更新时间")
+            .help("本地用量更新时间")
     }
 }
 
@@ -485,6 +488,9 @@ struct LocalUsageFreshnessText: View {
     var body: some View {
         if state.isPresent {
             state.content()
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("本地用量更新时间")
+                .help("本地用量更新时间")
         }
     }
 

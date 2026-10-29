@@ -471,7 +471,8 @@ complete, and staying silent would let a partial total read as a complete one.
 section's today contributions came from (a ZCode section spanning GLM / minimax /
 deepseek shard rows refreshes all of them), and `MenuContentView.refreshSectionFromMenu`
 then runs `AppState.refreshOne` over those cards sequentially. 「打开配置文件」 used to
-live here too; it moved to the menu-bar icon's right-click menu (刷新 / 配置 / 退出).
+live here too; it moved to the menu-bar icon's right-click menu, whose entries distinguish
+「打开设置…」 from 「打开配置文件」. The Settings entry uses a hosted public SwiftUI `SettingsLink`.
 The menu is attached to the header rather than the whole section so that the right-click
 target reads as "these numbers". **节点 scope 的段头没有右键**——刷新只对本机数据有意义，
 节点数据由同步链路维护（`spec/sync.md` §10.2）。
@@ -652,10 +653,10 @@ provider 兜底行 hover 出来的那张卡」宿主已随兜底行移除（8e72
 `LocalUsageFreshnessState.content()` 随之删除前缀参数）。两个时间戳本来就是两种数据的
 新鲜度，点击各刷各的，不再共用全量刷新：
 
-- **额度时间戳**（标题行胶囊，tooltip「立即刷新该 Provider」）→ 环境键
+- **额度时间戳**（标题行胶囊，VoiceOver/help 明示「额度更新时间；点击立即刷新该 Provider」）→ 环境键
   `\.cardQuotaRefreshAction`（`((String) -> Void)?`，参数 `status.id`）→
   `AppState.refreshOne(providerID:)`：只重抓这张卡的额度并只重锚它自己的排期；
-- **用量时间戳**（段3 标题行，tooltip「重新扫描本地用量」）→ 环境键
+- **用量时间戳**（段3 标题行，VoiceOver/help 明示「本地用量更新时间；点击重新扫描本地用量」）→ 环境键
   `\.cardUsageRefreshAction`（`(() -> Void)?`）→ `AppState.triggerLocalUsageRescan()`：
   只补拍一次本地用量 reconcile，不发额度请求、不动任何 provider 的排期；
 - **状态栏锚定小眼睛**（窗口型 Provider 标题行刷新胶囊左侧，`eye.fill` / `eye.slash`）：经环境键
