@@ -34,10 +34,32 @@ struct SevenDayUsageHistoryView: View {
         days.map { UsageHistoryNumber.finiteNonnegative($0.value(for: selectedMetric)) }
     }
 
-    private var selectedMaximum: Double {
-        let maxVal = selectedPoints.compactMap { $0 }.max() ?? 0
+    private var validPoints: [Double] {
+        selectedPoints.compactMap { $0 }
+    }
+
+    private var selectedMinimum: Double {
+        guard let minVal = validPoints.min() else { return 0 }
         if selectedMetric.isRate {
-            return max(maxVal, 1.0)
+            let maxVal = validPoints.max() ?? 0
+            if minVal == maxVal {
+                return max(0, minVal * 0.8)
+            }
+            return minVal
+        }
+        return 0
+    }
+
+    private var selectedMaximum: Double {
+        guard let maxVal = validPoints.max() else {
+            return selectedMetric.isRate ? 1.0 : 1.0
+        }
+        if selectedMetric.isRate {
+            if maxVal == 0 { return 1.0 }
+            if maxVal == validPoints.min() {
+                return maxVal * 1.2
+            }
+            return maxVal
         }
         return max(maxVal, 1)
     }
@@ -171,13 +193,13 @@ struct SevenDayUsageHistoryView: View {
         VStack(alignment: .trailing, spacing: 0) {
             Text(axisText(selectedMaximum))
             Spacer(minLength: 0)
-            Text(axisText(selectedMaximum / 2))
+            Text(axisText((selectedMaximum + selectedMinimum) / 2))
             Spacer(minLength: 0)
-            Text(selectedMetric.isRate ? "0%" : "0")
+            Text(axisText(selectedMinimum))
         }
         .font(MenuTypography.badge)
         .foregroundStyle(.tertiary)
-        .frame(width: 38, height: 72)
+        .frame(width: 44, height: 72)
     }
 
     private var plot: some View {
@@ -339,7 +361,16 @@ struct SevenDayUsageHistoryView: View {
         case .speed:
             return Formatters.formatSpeed(value)
         case .hit, .thinking:
-            return Formatters.formatPercent(value, digits: 0)
+            let pct = value * 100
+            if pct == 0 {
+                return "0%"
+            } else if pct < 1.0 {
+                return String(format: "%.2f%%", pct)
+            } else if pct < 10.0 {
+                return String(format: "%.1f%%", pct)
+            } else {
+                return Formatters.formatPercent(value, digits: 0)
+            }
         case .outputRatio:
             return QuotaWindowUsageSection.outputInputRateText(value)
         }
@@ -396,13 +427,17 @@ struct SevenDayUsageHistoryView: View {
     private func chartPoints(in size: CGSize) -> [CGPoint?] {
         let available = selectedPoints
         let maximum = selectedMaximum
+        let minimum = selectedMinimum
+        let range = max(maximum - minimum, 0.000001)
         let slots = max(available.count, 1)
         return available.enumerated().map { index, value in
             guard let value else { return nil }
             // A center for each fixed slot keeps dots aligned with dates and leaves
             // enough inset for a 6pt point at both ends of the plot.
             let x = size.width * (CGFloat(index) + 0.5) / CGFloat(slots)
-            let y = size.height - CGFloat(value / maximum) * (size.height - 7) - 3
+            let normalized = CGFloat((value - minimum) / range)
+            let clamped = min(max(normalized, 0), 1)
+            let y = size.height - clamped * (size.height - 7) - 3
             return CGPoint(x: x, y: y)
         }
     }

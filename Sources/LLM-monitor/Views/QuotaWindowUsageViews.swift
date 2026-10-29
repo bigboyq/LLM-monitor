@@ -547,7 +547,7 @@ struct QuotaWindowUsageSection: View {
             .font(MenuTypography.metricLabel)
             .foregroundStyle(.secondary)
             .padding(.leading, Self.resetDateColumnLeadingGap)
-            .frame(width: Self.resetDateColumnWidth, alignment: .leading)
+            .frame(width: Self.resetDateColumnWidth, alignment: .center)
     }
 
     @ViewBuilder
@@ -661,7 +661,7 @@ struct QuotaWindowUsageSection: View {
             }
         }
         .padding(.leading, Self.resetDateColumnLeadingGap)
-        .gridCellAnchor(.leading)
+        .frame(width: Self.resetDateColumnWidth, alignment: .center)
     }
 
     @ViewBuilder
