@@ -52,6 +52,7 @@ extension SettingsView {
 
     var generalPane: some View {
         VStack(alignment: .leading, spacing: 20) {
+            if currentTab.id == SettingsTab.generalID {
             SettingsSection(
                 title: "全局刷新间隔",
                 footer: "没有设置独立频率的 Provider 将继承此刷新时间。"
@@ -81,15 +82,14 @@ extension SettingsView {
                 }
             }
 
-            SettingsSection(title: "外观", footer: "浅色 / 深色固定显示，自动跟随系统设置；保存后立即生效。") {
+            }
+
+            if currentTab.id == SettingsTab.interfaceID {
+            SettingsSection(title: "外观", footer: "浅色 / 深色固定显示，自动跟随系统设置；保存并应用后生效。") {
                 SettingsControlRow("界面外观") {
                     Picker("", selection: Binding(
-                        get: { state.configStore.config.effectiveAppearance },
-                        set: { value in
-                            var config = state.configStore.config
-                            config.appearance = value == .auto ? nil : value
-                            try? state.configStore.applyAndSave(config)
-                        }
+                        get: { appearanceDraft },
+                        set: { appearanceDraft = $0 }
                     )) {
                         ForEach(AppAppearance.allCases) { item in
                             Text(item.displayName).tag(item)
@@ -102,7 +102,7 @@ extension SettingsView {
 
             SettingsSection(
                 title: "状态栏图标",
-                footer: "可自定义正常、预警、异常三种状态颜色；系统图标使用状态圆点。App 图标直接使用设计稿（与下面的预览同一张图），是固定图片，不随额度与健康度变化。Icon Duo 为额度仪表盘：左右弧线显示 5 小时与周额度，中心扇形按最低剩余比例动态显示 0～360°，底部三个套餐状态点与顶部节能状态圆点。指标来源可选「全部聚合」或指定特定服务商（与卡片标题栏小眼睛单选联动）。"
+                footer: "此处三色只用于菜单栏状态点与边缘状态窗状态提示，不改变 Provider 品牌色或额度卡进度条。App 图标是固定设计稿；Icon Duo 展示额度仪表盘。"
             ) {
                 VStack(alignment: .leading, spacing: 16) {
                     SettingsControlRow("图标主题") {
@@ -191,6 +191,16 @@ extension SettingsView {
                         .font(SettingsTypography.status)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
+                    EdgeDockModePreviewView(mode: edgeDockMode)
+                    SettingsControlRow("位置") {
+                        Button("恢复默认位置") { resetDockPosition() }
+                            .help("重置贴靠边、沿边位置和所在屏；立即生效，不影响待保存设置")
+                    }
+                    if let dockPositionMessage {
+                        Text(dockPositionMessage)
+                            .font(SettingsTypography.status)
+                            .foregroundStyle(dockPositionMessage.hasPrefix("恢复位置失败") ? .orange : .secondary)
+                    }
 
                     SettingsControlRow("小圆环尺寸") {
                         Picker("", selection: $edgeDockCompactSize) {
@@ -219,7 +229,9 @@ extension SettingsView {
                         .disabled(!edgeDockMode.isVisible)
                 }
             }
+            }
 
+            if currentTab.id == SettingsTab.generalID {
             SettingsSection(title: "开机自启动", footer: "在系统登录时自动后台运行 LLM Monitor。") {
                 SettingsToggleRow(label: "开启开机自启动", isOn: $launchAtLoginDraft.draft)
 
@@ -233,10 +245,13 @@ extension SettingsView {
                         .foregroundStyle(.orange)
                 }
             }
+            }
 
+            if currentTab.id == SettingsTab.notificationsID {
+            notificationAuthorizationSection
             SettingsSection(
                 title: "Bark 推送",
-                footer: "按各 Provider 的通知配置，把 5 小时 / 周额度的恢复与耗尽事件推送到 iPhone。服务端默认官方 api.day.app，也可填自建地址；Device Key 从 Bark App 复制。保存后生效。"
+                footer: "按各 Provider 的通知配置，把 5 小时 / 周额度的恢复与耗尽事件推送到 iPhone。服务端默认官方 api.day.app，也可填自建地址；Device Key 从 Bark App 复制。正式提醒可按下方策略跳过；主动测试会忽略跳过策略并实际发送。保存后生效。"
             ) {
                 VStack(alignment: .leading, spacing: 16) {
                     SettingsToggleRow(label: "启用 Bark 推送", isOn: $barkEnabled)
@@ -280,7 +295,7 @@ extension SettingsView {
                     .disabled(!barkEnabled)
 
                     HStack(spacing: 12) {
-                        Button("发送测试推送") {
+                        Button("主动发送测试推送") {
                             sendBarkTest()
                         }
                         .disabled(!barkEnabled || isSendingBarkTest)
@@ -293,16 +308,30 @@ extension SettingsView {
                         }
                         Spacer()
                     }
+                    Text(barkSkipWhenAwakeAndUnlocked
+                        ? "正式提醒：按各 Provider 渠道发送，屏幕亮且未锁定时跳过。主动测试会发送一条测试消息，仅验证当前草稿的连接。"
+                        : "正式提醒按各 Provider 渠道发送；主动测试会发送一条测试消息，仅验证当前草稿的连接。")
+                        .font(SettingsTypography.status)
+                        .foregroundStyle(.secondary)
                 }
             }
+            ForEach(ProviderKind.windowedKinds, id: \.quotaProviderID) { kind in
+                if let providerID = providerID(for: kind) {
+                    notifySection(providerID: providerID)
+                }
+            }
+            }
 
+            if currentTab.id == SettingsTab.interfaceID {
             SettingsSection(
                 title: "主菜单 Provider 顺序",
                 footer: "未配置时按 Provider 名称排序。这里只调整主菜单卡片；客户端和设置页保持字母排序。"
             ) {
                 providerCardOrderEditor
             }
+            }
 
+            if currentTab.id == SettingsTab.generalID {
             SettingsSection(
                 title: "节假日数据源",
                 footer: "GLM / DeepSeek 高峰判定与高峰倍率所用的法定节假日表来源。支持 URL 或本地文件路径（本项目 JSON 快照格式，可用 scripts/sync-holiday-data.sh 生成）；填回默认地址即恢复默认（chinese-days 的 CDN JSON，App 内自动转换为快照口径）；清空表示只用随 App 打包的内置快照、不联网。取数失败时保留既有数据。"
@@ -312,13 +341,58 @@ extension SettingsView {
                     draft: $holidaySourceDraft
                 )
             }
+            }
 
+            if currentTab.id == SettingsTab.generalID {
             SettingsSection(title: "关于") {
                 SettingsControlRow("LLM Monitor") {
                     Text("版本 \(AppMetadata.version)（\(AppMetadata.build)）")
                         .font(SettingsTypography.numericValue)
                         .foregroundStyle(.secondary)
                 }
+            }
+            }
+        }
+    }
+
+    var notificationAuthorizationSection: some View {
+        SettingsSection(
+            title: "系统通知权限",
+            footer: "macOS 的通知样式与横幅显示由系统设置控制。授权表示允许发送，不保证系统一定显示横幅。"
+        ) {
+            SettingsControlRow("当前状态") {
+                Text(notificationAuthorization.displayText)
+                    .font(SettingsTypography.status)
+                    .foregroundStyle(notificationAuthorization == .denied ? .orange : .secondary)
+            }
+            if notificationAuthorization == .notDetermined {
+                Button("请求系统通知权限") {
+                    Task {
+                        do {
+                            _ = try await SystemQuotaUpdateNotifier.requestAuthorizationIfNeeded()
+                            refreshNotificationAuthorization()
+                        } catch {
+                            saveErrorMessage = "请求通知权限失败：\(error.localizedDescription)"
+                        }
+                    }
+                }
+            } else if notificationAuthorization == .denied {
+                Button("打开系统通知设置") {
+                    if let url = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+            }
+            if notificationAuthorization == .authorized {
+                Button("发送系统通知测试") {
+                    Task { systemNotificationTestMessage = await SystemQuotaUpdateNotifier.sendTestNotification() }
+                }
+            }
+            if let systemNotificationTestMessage {
+                Text(systemNotificationTestMessage)
+                    .font(SettingsTypography.status)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
@@ -418,7 +492,7 @@ extension SettingsView {
     }
 
     /// 用当前表单草稿（未保存的配置也行）发一条 Bark 测试推送。
-    /// 复用正式推送的规范化、URL 构造与屏幕跳过策略（BarkQuotaNotifier.sendTestPush）。
+    /// 复用正式推送的规范化与 URL 构造；主动测试不受正式推送的屏幕跳过策略限制。
     func sendBarkTest() {
         let config = BarkConfig(
             enabled: true,
@@ -432,9 +506,42 @@ extension SettingsView {
         isSendingBarkTest = true
         barkTestMessage = nil
         Task {
-            barkTestMessage = await BarkQuotaNotifier.sendTestPush(config: config)
+            barkTestMessage = await BarkQuotaNotifier.sendTestPush(config: config, respectScreenPolicy: false)
             isSendingBarkTest = false
         }
+    }
+}
+
+private struct EdgeDockModePreviewView: View {
+    let mode: EdgeDockMode
+
+    var body: some View {
+        HStack(spacing: 12) {
+            ZStack(alignment: .trailing) {
+                RoundedRectangle(cornerRadius: 7)
+                    .fill(Color.secondary.opacity(0.12))
+                    .frame(width: 126, height: 56)
+                if mode.isVisible {
+                    RoundedRectangle(cornerRadius: 5)
+                        .fill(Color.accentColor.opacity(0.18))
+                        .frame(width: mode == .autoHideWindow ? 8 : 28, height: 42)
+                        .overlay {
+                            if mode != .autoHideWindow {
+                                Circle().stroke(Color.accentColor, lineWidth: 1.5).frame(width: 14, height: 14)
+                            }
+                        }
+                        .padding(.trailing, mode == .autoHideWindow ? 0 : 4)
+                }
+            }
+            VStack(alignment: .leading, spacing: 3) {
+                Text(mode.displayName).font(SettingsTypography.rowEmphasis)
+                Text(mode == .autoHideWindow ? "靠近屏幕边缘展开；可拖动圆环调整位置。" : mode.isVisible ? "可拖动圆环调整位置。" : "边缘状态窗已关闭。")
+                    .font(SettingsTypography.status)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+        }
+        .accessibilityElement(children: .combine)
     }
 }
 

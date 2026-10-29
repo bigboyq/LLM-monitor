@@ -763,6 +763,22 @@ final class BarkNotifierTests: XCTestCase {
     }
 
     @MainActor
+    func testExplicitConnectionTestBypassesFormalScreenSkipPolicy() async {
+        RecordingURLProtocol.reset()
+        let message = await BarkQuotaNotifier.sendTestPush(
+            config: BarkConfig(
+                enabled: true, serverURL: "https://api.day.app", deviceKey: "k1",
+                sound: nil, skipWhenAwakeAndUnlocked: true, group: nil
+            ),
+            session: sessionWith(RecordingURLProtocol.self),
+            respectScreenPolicy: false,
+            screenInActiveUse: { true }
+        )
+        XCTAssertEqual(message, "测试推送已发送，请在手机上查看")
+        XCTAssertEqual(RecordingURLProtocol.requests.count, 1)
+    }
+
+    @MainActor
     func testTestPushRejectsIncompleteConfig() async {
         RecordingURLProtocol.reset()
         let message = await BarkQuotaNotifier.sendTestPush(

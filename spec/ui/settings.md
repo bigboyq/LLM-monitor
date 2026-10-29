@@ -7,8 +7,13 @@ content, launch-at-login, footer) and how the quota notifications surface in the
 ## Settings Window
 
 The native Settings window has a 220pt sidebar and a scrollable detail pane. Its minimum
-size is `720x480pt`, with an ideal size of `760x520pt`. General, Energy, Sync, provider, and Clients
-pages share the same visual hierarchy and reusable section components.
+size is `720x480pt`, with an ideal size of `760x520pt`. General, Interface, Notifications,
+Energy, Sync, provider, and Clients pages share the same visual hierarchy and reusable
+section components. General contains refresh, launch-at-login, holiday source and About;
+Interface contains appearance, status-bar icon, edge dock preview/configuration and menu
+Provider order; Notifications contains system authorization, Bark and all windowed-provider
+event channels. Provider panes link to the central Notifications page instead of duplicating
+channel editors.
 
 Settings layout rules:
 
@@ -29,10 +34,22 @@ tabs preserves failed edits. Outside Sync, the bottom bar shows 「多机联动�
 and a 「查看」 action that returns to the Sync pane; unrelated general-form save errors
 remain visible independently.
 Sync-only config changes do not reload the General/provider form or discard its
-unsaved edits. Relevant external form changes still reload from the configuration
-published by `ConfigStore`, without reading the previous value during `willSet`.
+unsaved edits. Relevant external form changes reload a clean form from the configuration
+published by `ConfigStore`, without reading the previous value during `willSet`. If ordinary
+form edits are dirty, the window asks whether to reload (discarding those edits) or keep them;
+keeping the current form means its values for ordinary settings take precedence at save time;
+Sync and dock-position writes remain independent. This is intentionally a whole-form choice,
+not a per-field merge. Dirty state covers persisted
+ordinary form fields plus a locally changed launch-item draft, while service-driven launch-item
+changes rebase the launch-item draft instead of marking the form dirty. Password visibility,
+test status, and dock position are presentation/live state and do not count as form edits.
+Cancel with dirty ordinary edits confirms discard; immediately saved Sync changes and dock
+drag position are not undone by Cancel.
 Dock position-only writes compare normalized effective values, so a first write
 from an absent dock config to an explicit default payload also preserves form drafts.
+The Interface pane's 「恢复默认位置」 action writes the default edge/offset and clears the
+screen UUID immediately, using the latest config snapshot while preserving dock mode,
+fullscreen behavior, compact size, independent ring colors, and unrelated form drafts.
 
 ### Per-provider 「立即刷新」 (single-provider refresh)
 

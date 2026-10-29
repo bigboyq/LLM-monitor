@@ -50,7 +50,7 @@ flowchart TD
 | `Services/BarkNotifier.swift` | `BarkQuotaNotifier`（渠道实现 + 屏幕/锁屏判定 + 测试推送）+ `BarkSendQueue`（actor 串行队列） |
 | `Services/TriggerStateStore.swift` | `QuotaSnapshot` / `QuotaWindowBaseline` / `TriggerStateStore`（MainActor 内存权威 + 每次更新经 actor `TriggerStateWriter` 异步串行写盘：0600 / 临时文件 / fsync / rename，`seq` 丢弃迟到旧快照；`update` 返回后内存态立即可读；`AppState.stop()` 另做一次同步兜底写（`flushSynchronously` + 写高水位，排队旧快照不回退） |
 | `Services/AppState.swift` | 刷新成功分支的事件源 + windowedKinds 门控 + notConfigured 时 reset 基线 |
-| `Views/SettingsView.swift` | 「常规 > Bark 推送」全局节 + 各窗口类 provider「通知配置」节 |
+| `Views/SettingsView.swift` / `Views/SettingsGeneralPane.swift` | 「通知」pane：系统权限、Bark 全局配置及各窗口类 provider 通知规则 |
 | `Models/AppConfig.swift` | `AppConfig.bark: BarkConfig?`（`BarkConfig` 同文件）+ `ProviderConfig.notify*` 四字段与 `setNotifyChannel`；`Services/ConfigStore.swift` 只持便捷访问器（`var bark { config.bark }`） |
 
 ## 3. 事件模型与触发语义
@@ -193,14 +193,20 @@ provider 的渠道枚举坏值按缺失处理（`try? + rawValue`）；`bark` �
 
 > 本节只描述通知相关控件的字段与行为；设置页整体结构、布局与其他设置分组见 `spec/ui/settings.md`。本文件负责触发逻辑、阈值、渠道与防抖。
 
-- **全局**（设置 > 常规 > 「Bark 推送」节；集中化前的当前位置）：启用开关、服务端地址、Device Key
+- **系统权限**（设置 > 通知）：进入页面与应用重新激活时刷新授权状态；未决定时可主动请求，已拒绝时提供系统通知设置入口，不重复请求。macOS 授权不保证横幅一定显示。
+- 授权后可发送系统测试通知；文案表示系统是否接受请求，不承诺系统一定显示横幅。
+- **Bark 全局配置**（设置 > 通知 > 「Bark 推送」节）：启用开关、服务端地址、Device Key
   （SecureField + 显示开关）、铃声、分组、消息有效期 TTL（秒；空/0/负数归一化为
-  不携带，`BarkConfig.parseTTL`）、「人在电脑前时跳过推送」、发送测试推送
-  （读当前草稿、复用规范化/构造/屏幕策略、绕过队列冷却、行内返回结果文案）。
-  当屏幕策略使测试被跳过时，文案明确表示测试未发送且未验证服务端地址/Device Key；只有收到 2xx 响应才显示“测试推送已发送”。
-- **每 Provider**（窗口类 pane 顶部、「认证与刷新」之前）：「通知配置」节，四行
+  不携带，`BarkConfig.parseTTL`）、「人在电脑前时跳过推送」、主动发送测试推送
+  （读当前草稿、复用规范化/构造，绕过正式屏幕跳过策略和队列冷却，行内区分未发送、
+  失败与服务端接受）。测试是明确的主动发送动作，不代表手机端一定显示。
+  正式 Bark 推送继续遵循 Provider 渠道与屏幕策略；主动测试只发一条当前草稿配置的
+  测试消息，不受 Provider 事件渠道设置影响。
+  测试主动忽略正式发送的屏幕跳过策略；只有收到 2xx 响应才显示“测试推送已发送”。正式提醒仍遵循屏幕策略。
+- **所有 Provider**（集中通知 pane）：窗口类 Provider 各有四行
   `QuotaNotificationKind` × 渠道 Picker（不通知 / 系统通知 / Bark + 系统通知），
-  key = providerID 的字典草稿，`saveAndApply` 走 `setNotifyChannel` 归一化。
+  key = providerID 的字典草稿，`saveAndApply` 走 `setNotifyChannel` 归一化。Provider
+  pane 的通知区域仅提供跳转链接，避免重复编辑器。DeepSeek 暂无余额阈值提醒。
 - 保存路径与既有设置一致（草稿 + `SettingsSaveTransaction` 事务），无新增事务边界。
 
 ## 7. 测试地图（XCTest）

@@ -2,6 +2,17 @@ import SwiftUI
 import UniformTypeIdentifiers
 import AppKit
 
+enum SettingsFormExternalUpdateAction: Equatable {
+    case ignore
+    case reload
+    case askUser
+
+    static func resolve(formChanged: Bool, isDirty: Bool) -> Self {
+        guard formChanged else { return .ignore }
+        return isDirty ? .askUser : .reload
+    }
+}
+
 struct SettingsView: View {
 
     @ObservedObject var configStore: ConfigStore
@@ -20,6 +31,10 @@ struct SettingsView: View {
     @State var statusBarHealthDotEnabled: Bool = true
     @State var statusBarHealthColors: StatusBarHealthColors = .default
     @State var statusBarPinnedProvider: String = ""
+    @State var appearanceDraft: AppAppearance = .auto
+    @State var notificationAuthorization: QuotaNotificationAuthorization = .unavailable
+    @State var systemNotificationTestMessage: String?
+    @State var dockPositionMessage: String?
 
     // 贴边方向**没有** @State：设置页不提供它（见下方保存处的注释），而拖拽会在
     // 设置窗口开着的时候改它——从 @State 写回就会把用户刚拖出来的位置抹掉。
@@ -77,7 +92,47 @@ struct SettingsView: View {
     @State var isSaving: Bool = false
     /// 表单当前对应的那一版配置快照，只用于「这次变化与表单无关吗」的判据。
     @State var loadedConfigSnapshot: AppConfig?
+    @State var baselineDraftFingerprint: [String] = []
+    @State var pendingExternalConfig: AppConfig?
+    @State var showsExternalConfigConflict = false
+    @State var showsDiscardConfirmation = false
     @State var saveErrorMessage: String?
+
+    var draftFingerprint: [String] {
+        var values = [
+            String(globalInterval),
+            statusBarIconStyle.rawValue, statusBarHealthDotEnabled.description,
+            statusBarHealthColors.healthyHex, statusBarHealthColors.warningHex,
+            statusBarHealthColors.criticalHex, statusBarPinnedProvider, appearanceDraft.rawValue,
+            edgeDockMode.rawValue, edgeDockHideInFullscreen.description,
+            edgeDockCompactSize.rawValue, edgeDockIndependentRingColors.description,
+            holidaySourceDraft, providerCardOrder.joined(separator: "\u{1f}"),
+            barkEnabled.description, barkServerURL, barkDeviceKey, barkSound,
+            barkGroup, barkTTL, barkSkipWhenAwakeAndUnlocked.description,
+            String(minimaxEnabled), String(minimaxInterval), minimaxApiKey,
+            String(chatgptEnabled), String(chatgptInterval), chatgptAuthPath,
+            String(antigravityEnabled), String(antigravityInterval),
+            String(glmEnabled), String(glmInterval), glmApiKey, String(glmBalanceLogParsing),
+            String(deepseekEnabled), String(deepseekInterval), deepseekApiKey
+        ]
+        for providerID in notifyChannels.keys.sorted() {
+            values.append(providerID)
+            for kind in QuotaNotificationKind.allCases {
+                values.append(notifyChannels[providerID]?[kind]?.rawValue ?? "<default>")
+            }
+        }
+        return values
+    }
+
+    var isDirty: Bool {
+        draftFingerprint != baselineDraftFingerprint || launchAtLoginDraft.hasLocalEdit
+    }
+
+    func refreshNotificationAuthorization() {
+        Task {
+            notificationAuthorization = await SystemQuotaUpdateNotifier.authorizationStatus()
+        }
+    }
 
     @Environment(\.dismiss) var dismiss
 
@@ -101,7 +156,7 @@ struct SettingsView: View {
     /// 全部 tab（`.general` / `.energy` + descriptors 派生的 provider tab）。
     /// `Identifiable` 让 `ForEach` 走 `id` 区分，切换不会触发整列重渲染。
     var allTabs: [SettingsTab] {
-        [.general, .energy, .sync] + sortedProviderDescriptors.map { .provider($0) } + [.clients]
+        [.general, .interface, .notifications, .energy, .sync] + sortedProviderDescriptors.map { .provider($0) } + [.clients]
     }
 
     var sortedProviderDescriptors: [FetcherDescriptor] {
@@ -133,6 +188,7 @@ struct SettingsView: View {
             // 主面板 footer「节能」等入口可能在窗口创建前就置了跳转信号；
             // 出现时兜底消费一次，规避订阅时机竞态。
             consumePendingSettingsTab()
+            refreshNotificationAuthorization()
         }
         .onReceive(state.$pendingSettingsTab) { _ in
             consumePendingSettingsTab()
@@ -142,7 +198,20 @@ struct SettingsView: View {
             //  - 自己正在保存 → 保留草稿（保存会广播一次 `config`）。
             //  - 变化仅在独立即时保存的 Sync 区或边缘窗位置 → 保留 General/provider 草稿。
             //    这两类变更不属于此表单；重载会无声丢弃用户尚未保存的编辑。
-            guard !isSaving, hasFormRelevantChange(to: newConfig) else { return }
+            guard !isSaving else { return }
+            switch SettingsFormExternalUpdateAction.resolve(
+                formChanged: hasFormRelevantChange(to: newConfig),
+                isDirty: isDirty
+            ) {
+            case .ignore:
+                return
+            case .askUser:
+                pendingExternalConfig = newConfig
+                showsExternalConfigConflict = true
+                return
+            case .reload:
+                break
+            }
             // `@Published` 在 willSet 阶段发送新值，此时 configStore.config 仍可能是旧值。
             // 直接用 publisher 给出的配置重载，避免快照与草稿回退到上一版。
             loadCurrentConfig(from: newConfig)
@@ -150,8 +219,40 @@ struct SettingsView: View {
         .onReceive(loginItemService.$state) { newState in
             launchAtLoginDraft.sync(actual: newState == .enabled)
         }
+        .onChange(of: currentTab.id) { _, tabID in
+            if tabID == SettingsTab.notificationsID { refreshNotificationAuthorization() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            if currentTab.id == SettingsTab.notificationsID { refreshNotificationAuthorization() }
+        }
         .onDisappear {
             NSApp.setActivationPolicy(MenuBarAppActivation.policy)
+        }
+        .confirmationDialog(
+            "配置已在其他位置更改",
+            isPresented: $showsExternalConfigConflict,
+            titleVisibility: .visible
+        ) {
+            Button("重新载入配置", role: .destructive) {
+                if let pendingExternalConfig { loadCurrentConfig(from: pendingExternalConfig) }
+                self.pendingExternalConfig = nil
+            }
+            Button("保留当前表单") {
+                if let pendingExternalConfig { loadedConfigSnapshot = pendingExternalConfig }
+                self.pendingExternalConfig = nil
+            }
+        } message: {
+            Text("重新载入会丢弃当前编辑。保留当前表单后保存，会以表单中的普通设置值为准；Sync 配置和边缘窗拖动位置仍保留各自的即时保存结果。")
+        }
+        .confirmationDialog(
+            "放弃未保存的更改？",
+            isPresented: $showsDiscardConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("放弃更改", role: .destructive) { dismiss() }
+            Button("继续编辑", role: .cancel) {}
+        } message: {
+            Text("尚未保存的普通设置将丢弃；Sync 已即时保存的字段和边缘窗拖动位置不会撤销。")
         }
     }
 
@@ -214,6 +315,8 @@ struct SettingsView: View {
                 switch currentTab {
                 case .general:
                     generalPane
+                case .interface, .notifications:
+                    generalPane
                 case .energy:
                     energyPane
                 case .sync:
@@ -234,6 +337,15 @@ struct SettingsView: View {
 
     var bottomActionBar: some View {
         HStack(spacing: 12) {
+            if isDirty {
+                Text("有未保存更改")
+                    .font(SettingsTypography.status)
+                    .foregroundStyle(.orange)
+            }
+            if pendingExternalConfig != nil {
+                Button("处理外部配置变更…") { showsExternalConfigConflict = true }
+                    .font(SettingsTypography.status)
+            }
             if syncDrafts.hasSaveErrors && currentTab.id != SettingsTab.syncID {
                 Text("多机联动配置未保存")
                     .font(SettingsTypography.status)
@@ -249,7 +361,8 @@ struct SettingsView: View {
             }
             Spacer()
             Button("取消", role: .cancel) {
-                dismiss()
+                if isDirty { showsDiscardConfirmation = true }
+                else { dismiss() }
             }
             .keyboardShortcut(.cancelAction)
             .disabled(isSaving)
@@ -268,7 +381,7 @@ struct SettingsView: View {
                 }
             }
             .keyboardShortcut(.defaultAction)
-            .disabled(isSaving)
+            .disabled(isSaving || !isDirty)
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 12)
@@ -281,6 +394,7 @@ struct SettingsView: View {
         statusBarHealthDotEnabled = config.effectiveStatusBarHealthDotEnabled
         statusBarHealthColors = config.effectiveStatusBarHealthColors
         statusBarPinnedProvider = config.statusBarPinnedProvider ?? ""
+        appearanceDraft = config.effectiveAppearance
         let edgeDock = config.effectiveEdgeDockConfig
         edgeDockMode = edgeDock.mode
         edgeDockHideInFullscreen = edgeDock.hideInFullscreen
@@ -350,6 +464,7 @@ struct SettingsView: View {
         }
         // 记下"表单当前对应的是哪一版配置"，供下面的重载判据用。
         loadedConfigSnapshot = config
+        baselineDraftFingerprint = draftFingerprint
     }
 
     /// 抹平不由常规设置表单管理的配置字段：Sync（独立即时保存）与边缘窗位置三兄弟。
@@ -379,6 +494,25 @@ struct SettingsView: View {
         formRelevantProjection(of: old) != formRelevantProjection(of: new)
     }
 
+    static func resettingDockPosition(in config: AppConfig) -> AppConfig {
+        var copy = config
+        var dock = config.effectiveEdgeDockConfig
+        dock.edge = EdgeDockConfig.default.edge
+        dock.offset = EdgeDockConfig.default.offset
+        dock.screenUUID = nil
+        copy.edgeDock = dock == .default ? nil : dock
+        return copy
+    }
+
+    func resetDockPosition() {
+        do {
+            try configStore.applyAndSave(Self.resettingDockPosition(in: configStore.config))
+            dockPositionMessage = "边缘状态窗位置已恢复默认，并立即生效。"
+        } catch {
+            dockPositionMessage = "恢复位置失败：\(error.localizedDescription)"
+        }
+    }
+
     /// 配置变了，但**变的不是表单关心的东西**吗？
     ///
     /// Sync pane 逐字段即时写 config，常规 General/provider 表单则仍有独立的保存事务；
@@ -406,6 +540,7 @@ struct SettingsView: View {
         config.statusBarPinnedProvider = statusBarPinnedProvider.isEmpty
             ? nil
             : statusBarPinnedProvider
+        config.appearance = appearanceDraft == .auto ? nil : appearanceDraft
         // 边缘窗：只带形态与全屏隐藏这两个**设置页真的有控件**的字段；贴边方向、
         // 沿边位置、所在屏由拖拽实时写盘，一律在保存这一刻现读
         // `configStore.config.effectiveEdgeDockConfig`。
@@ -631,6 +766,8 @@ extension SettingsTab {
     var brandAsset: BrandLogoAsset? {
         switch self {
         case .general: return nil
+        case .interface: return nil
+        case .notifications: return nil
         case .energy: return nil
         case .sync: return nil
         case .provider(let d): return .provider(d.kind)

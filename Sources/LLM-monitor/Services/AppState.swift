@@ -12,12 +12,16 @@ import AppKit
 /// Views）以扩展的形式留在 `Views/SettingsView.swift`。
 enum SettingsTab: Identifiable {
     case general
+    case interface
+    case notifications
     case energy
     case sync
     case provider(FetcherDescriptor)
     case clients
 
     static let generalID = "general"
+    static let interfaceID = "interface"
+    static let notificationsID = "notifications"
     static let energyID = "energy"
     static let syncID = "sync"
     static let clientsID = "clients"
@@ -25,6 +29,8 @@ enum SettingsTab: Identifiable {
     var id: String {
         switch self {
         case .general: return Self.generalID
+        case .interface: return Self.interfaceID
+        case .notifications: return Self.notificationsID
         case .energy: return Self.energyID
         case .sync: return Self.syncID
         case .provider(let d): return d.id
@@ -35,6 +41,8 @@ enum SettingsTab: Identifiable {
     var displayTitle: String {
         switch self {
         case .general: return "常规"
+        case .interface: return "界面"
+        case .notifications: return "通知"
         case .energy: return "节能"
         case .sync: return "多机联动"
         case .provider(let d): return d.settingsTabTitle ?? d.displayName
@@ -45,6 +53,8 @@ enum SettingsTab: Identifiable {
     var iconSystemName: String {
         switch self {
         case .general: return "gearshape"
+        case .interface: return "macwindow"
+        case .notifications: return "bell"
         case .energy: return "powersleep"
         case .sync: return "point.3.connected.trianglepath.dotted"
         case .provider(let d): return d.iconSystemName
@@ -55,6 +65,8 @@ enum SettingsTab: Identifiable {
     var subtitle: String {
         switch self {
         case .general: return "刷新节奏与应用启动行为"
+        case .interface: return "菜单栏、额度菜单与边缘状态窗"
+        case .notifications: return "系统通知、Bark 与额度事件规则"
         case .energy: return "系统睡眠健康度与防止休眠"
         case .sync: return "多台机器的用量与额度联动"
         case .provider(let d): return d.settingsTabSubtitle ?? ""

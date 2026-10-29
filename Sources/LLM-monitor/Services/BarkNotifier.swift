@@ -133,13 +133,14 @@ final class BarkQuotaNotifier: QuotaUpdateNotifying {
     static func sendTestPush(
         config draft: BarkConfig,
         session: URLSession = .shared,
+        respectScreenPolicy: Bool = true,
         screenInActiveUse: @escaping () -> Bool = BarkQuotaNotifier.defaultScreenInActiveUse
     ) async -> String {
         let config = draft.normalized
         guard config.enabled, config.isComplete else {
             return "请先填写服务端地址和 Device Key"
         }
-        if config.skipWhenAwakeAndUnlocked ?? false, screenInActiveUse() {
+        if respectScreenPolicy, config.skipWhenAwakeAndUnlocked ?? false, screenInActiveUse() {
             return "测试未发送：当前正在使用电脑，已按「人在电脑前时跳过推送」跳过。本次未验证服务端地址和 Device Key。"
         }
         guard let request = buildRequest(

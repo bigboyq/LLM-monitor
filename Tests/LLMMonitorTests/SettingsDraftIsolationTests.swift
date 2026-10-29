@@ -13,6 +13,13 @@ import XCTest
 /// 会被盘上的旧值**无声地**刷回去，没有任何视觉提示。
 final class SettingsDraftIsolationTests: XCTestCase {
 
+    func testExternalFormChangeDecisionPromptsOnlyWhenFormIsDirty() {
+        XCTAssertEqual(SettingsFormExternalUpdateAction.resolve(formChanged: false, isDirty: false), .ignore)
+        XCTAssertEqual(SettingsFormExternalUpdateAction.resolve(formChanged: false, isDirty: true), .ignore)
+        XCTAssertEqual(SettingsFormExternalUpdateAction.resolve(formChanged: true, isDirty: false), .reload)
+        XCTAssertEqual(SettingsFormExternalUpdateAction.resolve(formChanged: true, isDirty: true), .askUser)
+    }
+
     @MainActor
     private func makeSettings() -> (view: SettingsView, state: AppState, store: ConfigStore) {
         let root = FileManager.default.temporaryDirectory
@@ -214,5 +221,39 @@ final class SettingsDraftIsolationTests: XCTestCase {
         var providerUpdate = localSyncUpdate
         providerUpdate.providers["probe-provider"] = ProviderConfig(enabled: true, apiKey: "external")
         XCTAssertTrue(SettingsView.hasFormRelevantChange(from: base, to: providerUpdate))
+    }
+
+    @MainActor
+    func testAppearanceIsPartOfTheOrdinarySettingsProjection() {
+        let (_, _, store) = makeSettings()
+        var changed = store.config
+        changed.appearance = .dark
+        XCTAssertTrue(SettingsView.hasFormRelevantChange(from: store.config, to: changed))
+    }
+
+    @MainActor
+    func testResettingDockPositionKeepsDockPreferencesAndOtherConfig() {
+        let (_, _, store) = makeSettings()
+        var base = store.config
+        base.refreshIntervalSeconds = 777
+        base.edgeDock = EdgeDockConfig(
+            mode: .compactRings,
+            edge: .left,
+            offset: 0.73,
+            screenUUID: "SECOND-SCREEN",
+            hideInFullscreen: false,
+            compactSize: .large,
+            independentRingColors: true
+        )
+        let reset = SettingsView.resettingDockPosition(in: base)
+        let dock = reset.effectiveEdgeDockConfig
+        XCTAssertEqual(dock.edge, EdgeDockConfig.default.edge)
+        XCTAssertEqual(dock.offset, EdgeDockConfig.default.offset)
+        XCTAssertNil(dock.screenUUID)
+        XCTAssertEqual(dock.mode, .compactRings)
+        XCTAssertFalse(dock.hideInFullscreen)
+        XCTAssertEqual(dock.compactSize, .large)
+        XCTAssertTrue(dock.independentRingColors)
+        XCTAssertEqual(reset.refreshIntervalSeconds, 777)
     }
 }

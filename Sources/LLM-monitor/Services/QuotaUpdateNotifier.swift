@@ -26,6 +26,24 @@ enum QuotaNotifyChannel: String, Codable, CaseIterable, Identifiable, Sendable {
     }
 }
 
+enum QuotaNotificationAuthorization: Equatable, Sendable {
+    case unavailable
+    case notDetermined
+    case denied
+    case authorized
+}
+
+extension QuotaNotificationAuthorization {
+    var displayText: String {
+        switch self {
+        case .unavailable: return "当前运行方式不支持系统通知"
+        case .notDetermined: return "尚未请求权限"
+        case .denied: return "已拒绝；请在系统设置中允许"
+        case .authorized: return "已允许（横幅样式由 macOS 控制）"
+        }
+    }
+}
+
 /// 四类通知事件：5 小时 / 周额度窗口的恢复与耗尽。
 enum QuotaNotificationKind: String, Codable, CaseIterable, Identifiable, Sendable {
     case intervalRestored
@@ -347,6 +365,53 @@ final class SystemQuotaUpdateNotifier: NSObject,
                 logDebug("[quota-notification] 启动权限检查: 用户已拒绝")
             @unknown default:
                 logWarn("[quota-notification] 启动权限检查遇到未知授权状态")
+            }
+        }
+    }
+
+    nonisolated static func authorizationStatus() async -> QuotaNotificationAuthorization {
+        guard Bundle.main.bundleIdentifier != nil else { return .unavailable }
+        let settings = await UNUserNotificationCenter.current().notificationSettings()
+        switch settings.authorizationStatus {
+        case .notDetermined: return .notDetermined
+        case .denied: return .denied
+        case .authorized, .provisional, .ephemeral: return .authorized
+        @unknown default: return .unavailable
+        }
+    }
+
+    nonisolated static func requestAuthorizationIfNeeded() async throws -> Bool {
+        guard Bundle.main.bundleIdentifier != nil else { return false }
+        let center = UNUserNotificationCenter.current()
+        let settings = await center.notificationSettings()
+        guard settings.authorizationStatus == .notDetermined else {
+            return settings.authorizationStatus == .authorized
+                || settings.authorizationStatus == .provisional
+        }
+        return try await center.requestAuthorization(options: [.alert, .sound])
+    }
+
+    nonisolated static func sendTestNotification() async -> String {
+        guard Bundle.main.bundleIdentifier != nil else { return "当前运行方式不支持系统通知" }
+        let center = UNUserNotificationCenter.current()
+        let settings = await center.notificationSettings()
+        guard settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional else {
+            return settings.authorizationStatus == .notDetermined
+                ? "请先请求系统通知权限"
+                : "系统通知未获授权；请检查系统设置"
+        }
+        let content = UNMutableNotificationContent()
+        content.title = "LLM Monitor 测试通知"
+        content.body = "系统已接受这条测试通知；是否显示横幅由 macOS 通知设置决定。"
+        content.sound = .default
+        let request = UNNotificationRequest(identifier: "llmmonitor-system-test-\(UUID().uuidString)", content: content, trigger: nil)
+        return await withCheckedContinuation { continuation in
+            center.add(request) { error in
+                if let error {
+                    continuation.resume(returning: "系统通知测试失败：\(error.localizedDescription)")
+                } else {
+                    continuation.resume(returning: "系统已接受测试通知；横幅显示由 macOS 控制")
+                }
             }
         }
     }

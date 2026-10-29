@@ -256,20 +256,20 @@ extension SettingsView {
     func notifySection(providerID: String) -> some View {
         SettingsSection(
             title: "通知配置",
-            footer: "5 小时 / 周额度恢复或耗尽时的提醒方式。Bark 推送需要在「常规」里启用并配置 Bark。"
+            footer: "通知渠道集中在「通知」设置中管理。"
         ) {
-            ForEach(QuotaNotificationKind.allCases) { kind in
-                SettingsControlRow(kind.displayName) {
-                    Picker("", selection: notifyChannelBinding(providerID: providerID, kind: kind)) {
-                        ForEach(QuotaNotifyChannel.allCases) { channel in
-                            Text(channel.displayName).tag(channel)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    .frame(width: SettingsLayout.standardControlWidth, alignment: .trailing)
-                }
+            Button("前往通知设置") {
+                currentTab = .notifications
             }
+            .help("集中设置所有 Provider 的恢复与耗尽提醒")
+            Text("此 Provider：\(providerDisplayName(for: providerID))")
+                .font(SettingsTypography.status)
+                .foregroundStyle(.secondary)
         }
+    }
+
+    private func providerDisplayName(for id: String) -> String {
+        descriptors.first { $0.kind.quotaProviderID == id }?.displayName ?? id
     }
 
     private func notifyChannelBinding(
