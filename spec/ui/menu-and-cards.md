@@ -151,13 +151,13 @@ height: content-driven, fixedSize(vertical: true)
 |  ⌘ MiniMax Code  ⌘ Codex …                     |   legend: 着色客户端图标 + 名字，放不下换行
 +------------------------------------------------+
 | ▸ OpenCode                         21:09       |   collapsed client section
-|   今日 Token: 820K  价值: ¥10  命中率: 62%  速度: P50 205 tok/s |
+|   今日 Token: 820K  价值: ¥10  命中率: 62%  速度(P50): 205 tok/s |
 |   gpt-5.5                         620K tokens   |   expanded model details use compact rows
 |     min ───── ● ─── max   P50 … 最近 … tok/s     |
 | ⚠ 会话文件超出单轮扫描预算，已按最新优先截断…   |   truncation notice (that section only)
 | ...                                            |
 +------------------------------------------------+
-| 更新于 HH:mm / 下次 HH:mm / 就绪   ⏻ 自启 | 设置 | 节能 | ⋯ |
+|                                ⏻ 自启 | 设置 | 节能 | ⋯ |
 +------------------------------------------------+
 ```
 
@@ -290,9 +290,9 @@ Fleet snapshot and scope changes travel on `fleetDidChange`, separate from
 rebuild a hub report. Closing Fleet Sync or changing upstream clears the prior
 snapshot and returns unavailable Fleet/node scope to local.
 
-**Header right group** (scope switcher + usage freshness + refresh): the scope
-dropdown sits next to the refresh button, both right-aligned as one group; 本地用量
-的裸刷新时间（`LocalUsageFreshnessText`，见下文 Global freshness）在两者之间——
+**Header right group** (scope switcher + page freshness + refresh): the scope
+dropdown sits next to the refresh button, both right-aligned as one group; 当前页
+数据源的裸刷新时间（见下文 Global freshness）在两者之间——
 **scope 下拉（若有）→ 时间 → 刷新**。**The scope dropdown only exists
 when there is something to switch** — it renders only when fleet sync
 is enabled, node choices are non-empty and the option count is > 4
@@ -371,10 +371,15 @@ per-client sections」描述的是**本机 scope** 的内容区；多机联动�
   sections have no local scan time and do not fabricate one.
 - **Per-model rows inside an expanded section**, keyed by
   `(clientID, quotaProviderID, modelName)`; samples with no usable model name
-  collapse into a single 「模型名缺失」 row. Each row is a compact block:
-  model name + token total; prompt-speed range line (min/max endpoints, P50 marker,
-  recent prompt marker) with min/P50/max/recent values and valid/total prompt count;
-  then labeled cache-hit percentage and value. Every local model range uses the same
+  collapse into a single 「模型名缺失」 row. Each row starts with a natural flow:
+  `模型名 → Pmt → Token → 价值 → 命中 → 思考 → 速度(P50)`, wrapping in order
+  when space is insufficient; a single over-wide item is measured within the container.
+  The prompt-speed range follows the metrics (min/max endpoints, P50 and recent markers).
+  `Pmt` counts all recorded promptIDs, including prompts excluded from speed statistics.
+  min/P50 labels sit above their markers; recent/max labels sit below. Each label pair
+  starts at its first marker when it fits, moves apart on collision, and shifts left only
+  to stay inside the host. Prompt coverage is available in help/accessibility, without
+  a persistent `Prompt x/y` row. Every local model range uses the same
   menu-wide speed scale. Single-value and zero-value markers have vertical offsets so
   coincident readings remain distinguishable; missing or non-finite readings show `—`.
   Fleet client sections use the same compact card summary and disclosure interaction;
@@ -385,8 +390,8 @@ per-client sections」描述的是**本机 scope** 的内容区；多机联动�
   level, never per row. Prompt speed is `Σ(Output+Reason) ÷ Σ call duration` over
   all calls in one prompt. A prompt joins the distribution only when all call
   durations are valid; `latest` is the newest prompt and is `—` when that newest
-  prompt is incomplete (never an older fallback). Rows include valid/total prompt
-  counts so exclusions remain visible. The client summary P50 is calculated from
+  prompt is incomplete (never an older fallback). Help explains excluded samples.
+  The client summary `速度(P50)` is calculated from
   all of that client's daily prompts, not by averaging model-row percentiles. The
   global summary row carries no speed — the rate is a per-client/per-model metric.
 
@@ -448,21 +453,15 @@ content area. Fleet scope 另有**不可用总览态**：全局 / 所选节点�
 总览行显示「尚未同步」占位（零值不得显示为已完成合计），数据侧规则见
 `spec/sync.md` §10.2 日桶可用性。
 
-**Global freshness (bare time)** — 本地用量的新鲜度时间（`LocalUsageFreshnessText`，
-裸文本：任一启用数据源在扫时「计算中…」带 mini spinner（卡级
-`effectiveLocalUsageFreshness`，"扫描 > 失败 > 脏 > 干净"取最差），否则各卡最新
-`scannedAt` 的裸时钟 `HH:mm`（跨天退化 `MM-dd HH:mm`））**渲染在标题栏右组、
-刷新按钮左边**（`MenuContentView.headerBar`，2026-10 从「今日合计」数字行尾部
-挪来）。它是**全局**读数、与 scope 无关，放标题栏后三个 scope 的总览数字行不再
-各自带时间；数字行收在混币价值上，宽度预算测试相应去掉了时间格。两个值都在
-`HarnessTodaySummary.summarize` 里算一次（`localUsageScannedAt` /
-`isScanningLocalUsage`），headerBar 与总览卡读同一份缓存，视图不自己走 `statuses`。
-它是 `LocalUsageFreshnessBadge` 的**裸文本变体**（同一状态机、同样 `.secondary`
-灰、无胶囊底——2026-10-13 起徽章也去掉了「更新于」前缀，两种皮肤渲染同一个裸
-时钟）：两种皮肤共享同一个 `LocalUsageFreshnessState`（internal，状态级测试可直接
-钉裸时钟），状态判定与时钟文案（含跨天退化）只写一份、仅包装不同。从未扫描过时
-裸时间整体不渲染（无占位、无幻影空格）。胶囊变体的宿主只剩 dock 浮层 7 天卡
-标题（菜单 strip hover 宿主已随兜底行移除）。
+**Global freshness (bare time)** — 页面级刷新与时间只保留标题栏右上角一处，
+footer 不再显示另一套请求完成/下次刷新时间。用量页取缓存摘要的
+`localUsageScannedAt`，点击只调用 `AppState.triggerLocalUsageRescan`；scope 为全局或
+节点时 help 明示仍是本机扫描时间，不冒充远端采集时间。额度页通过
+`MenuContentView.providerQuotaUpdatedAt` 取启用 Provider 有效额度的最近成功读取时间
+（含 elected，优先 quota.fetchedAt，再回退持久的 lastRefreshedAt），不是会在失败时也
+更新的 `AppState.lastRefreshAt`。这是最近一张卡的成功时间，不表示所有 Provider 同时更新；
+每张卡仍显示自己的额度时间与单卡刷新。额度页主刷新沿用 `AppState.refreshAll` 的完整
+路径。两页时间显示 HH:mm，无记录显示「待更新」，进行中以刷新槽 spinner 反馈。
 
 **Truncation notice** — a section whose sources were truncated (DSH file/byte budget
 dropping the oldest sessions) shows a **one-line** short notice (`部分较早会话未计入`,
@@ -534,7 +533,6 @@ scrolling never pushes content under the Dock, while the menu still reads as
 
 The menu footer contains:
 - the autostart state icon (with help text)
-- refresh status (`更新于 HH:mm` / `下次 HH:mm` / `就绪`)
 - `设置` (opens native Settings window)
 - `节能` (1-click keep-awake in-memory toggle; the icon flips `powersleep` →
   `cup.and.saucer.fill` and the label to `防休眠` while it is on, and the overlay dot

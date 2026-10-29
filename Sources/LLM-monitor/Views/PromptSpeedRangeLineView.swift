@@ -20,52 +20,79 @@ struct PromptSpeedRangeLineView: View {
                     let xMax = x(for: maximum, width: width)
                     let xP50 = p50.map { x(for: $0, width: width) }
                     let xLatest = latest.map { x(for: $0, width: width) }
-                    ZStack(alignment: .leading) {
-                        Capsule().fill(Color.primary.opacity(0.10)).frame(height: 2)
+
+                    ZStack(alignment: .topLeading) {
+                        Capsule()
+                            .fill(Color.primary.opacity(0.10))
+                            .frame(width: width, height: 2)
+                            .position(x: width / 2, y: 24)
                         Capsule()
                             .fill(Color.accentColor.opacity(0.75))
                             .frame(width: max(xMax - xMin, 2), height: 3)
-                            .offset(x: xMin)
+                            .position(x: (xMin + xMax) / 2, y: 24)
+
                         Circle().stroke(Color.secondary, lineWidth: 1.2)
-                            .frame(width: 6, height: 6).position(x: xMin, y: 7)
+                            .frame(width: 6, height: 6).position(x: xMin, y: 20)
                         Circle().stroke(Color.secondary, lineWidth: 1.2)
-                            .frame(width: 6, height: 6).position(x: xMax, y: 13)
+                            .frame(width: 6, height: 6).position(x: xMax, y: 28)
                         if let xP50 {
                             Circle().fill(Color.accentColor)
-                                .frame(width: 7, height: 7).position(x: xP50, y: 6)
+                                .frame(width: 7, height: 7).position(x: xP50, y: 20)
                         }
                         if let xLatest {
                             RoundedRectangle(cornerRadius: 1)
                                 .fill(Color.primaryLabel)
-                                .frame(width: 3, height: 8).position(x: xLatest, y: 14)
+                                .frame(width: 3, height: 8).position(x: xLatest, y: 28)
+                        }
+
+                        PromptSpeedLabelPairLayout(markerPositions: [xMin, xP50 ?? xMin]) {
+                            Text("min: \(Self.speedValue(minimum))")
+                            Text("P50: \(Self.speedValue(p50))")
+                        }
+                        .font(MenuTypography.hint.monospacedDigit())
+                        .foregroundStyle(Color.secondaryLabel)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                        .frame(width: width, height: 12, alignment: .topLeading)
+
+                        if let xLatest {
+                            PromptSpeedLabelPairLayout(markerPositions: [xLatest, xMax]) {
+                                Text("最近: \(Self.speedValue(latest))")
+                                Text("max: \(Self.speedValue(maximum))")
+                            }
+                            .font(MenuTypography.hint.monospacedDigit())
+                            .foregroundStyle(Color.secondaryLabel)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
+                            .frame(width: width, height: 12, alignment: .topLeading)
+                            .position(x: width / 2, y: 42)
+                        } else {
+                            PromptSpeedLabelPairLayout(markerPositions: [xMax, xMax]) {
+                                Text("最近: —")
+                                Text("max: \(Self.speedValue(maximum))")
+                            }
+                            .font(MenuTypography.hint.monospacedDigit())
+                            .foregroundStyle(Color.secondaryLabel)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
+                            .frame(width: width, height: 12, alignment: .topLeading)
+                            .position(x: width / 2, y: 42)
                         }
                     }
-                    .frame(width: width, height: 20)
+                    .frame(width: width, height: 48, alignment: .topLeading)
                     .padding(.horizontal, 6)
                 }
-                .frame(height: 20)
-                HStack(spacing: 8) {
-                    Text("min \(Self.speedValue(minimum))")
-                    Text("P50 \(Self.speedValue(p50))")
-                    Text("max \(Self.speedValue(maximum))")
-                    Text("最近 \(Self.speedValue(latest)) tok/s")
-                    Text("Prompt \(statistics.validPromptCount)/\(statistics.totalPromptCount)")
-                        .help("有效 Prompt / 今日已记录 Prompt；任一调用缺失有效时长时，整个 Prompt 不参与速度分布。最近 Prompt 缺失时长显示 —，不回填旧值。")
-                    Spacer(minLength: 0)
-                }
-                .font(MenuTypography.hint)
-                .foregroundStyle(Color.secondaryLabel)
-                .monospacedDigit()
-                .lineLimit(1)
-                .help("按 Prompt 统计的速度范围；圆点为 P50，竖线为最近一次 Prompt")
+                .frame(height: 48)
+                .help("按 Prompt 统计的速度范围；圆点为 P50，竖线为最近一次 Prompt，速度单位为 tok/s。有效 Prompt / 今日已记录 Prompt：\(statistics.validPromptCount)/\(statistics.totalPromptCount)。任一调用缺失有效时长时，整个 Prompt 不参与速度分布。最近 Prompt 缺失时长显示 —，不回填旧值。")
             } else {
-                Text("速度范围 —（有效 Prompt \(statistics.validPromptCount)/\(statistics.totalPromptCount)）")
+                Text("速度范围 —")
                     .font(MenuTypography.hint)
                     .foregroundStyle(Color.secondaryLabel)
+                    .help("没有可用的完整 Prompt 速度样本；速度单位为 tok/s。有效 Prompt / 今日已记录 Prompt：\(statistics.validPromptCount)/\(statistics.totalPromptCount)。")
             }
         }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("速度范围：最小 \(Self.speedText(minimum))，P50 \(Self.speedText(p50))，最大 \(Self.speedText(maximum))，最近 Prompt \(Self.speedText(latest))，有效 Prompt \(statistics.validPromptCount)/\(statistics.totalPromptCount)")
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("速度范围，单位 tok/s：最小 \(Self.speedValue(minimum))，P50 \(Self.speedValue(p50))，最大 \(Self.speedValue(maximum))，最近 Prompt \(Self.speedValue(latest))，有效 Prompt \(statistics.validPromptCount)/\(statistics.totalPromptCount)")
     }
 
     static func speedText(_ value: Double?) -> String {
@@ -83,8 +110,93 @@ struct PromptSpeedRangeLineView: View {
     }
 
     private func x(for value: Double, width: CGFloat) -> CGFloat {
-        let bound = (scaleMaximum.flatMap { $0.isFinite && $0 > 0 ? $0 : nil } ?? maximum ?? 0)
-        guard bound > 0 else { return width / 2 }
-        return min(max(CGFloat(value / bound) * width, 0), width)
+        PromptSpeedRangeGeometry.x(
+            for: value,
+            scaleMaximum: scaleMaximum,
+            fallbackMaximum: maximum,
+            width: width
+        )
+    }
+}
+
+/// Places a pair of labels near its actual markers. If the preferred starts
+/// collide, keep the first label at its marker and move the second to its right.
+/// Only the screen boundary can force the pair left; marker coordinates never move.
+struct PromptSpeedLabelPairLayout: Layout {
+    let markerPositions: [CGFloat]
+    var gap: CGFloat = 6
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        CGSize(width: proposal.width ?? 0, height: proposal.height ?? 0)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard subviews.count == 2 else { return }
+
+        let availableWidth = max(bounds.width, 0)
+        let desiredSizes = subviews.map { $0.sizeThatFits(.unspecified) }
+        let effectiveGap = min(gap, availableWidth)
+        let totalWidth = desiredSizes[0].width + desiredSizes[1].width + effectiveGap
+        let labelWidths: [CGFloat]
+        if totalWidth > availableWidth {
+            let eachWidth = max((availableWidth - effectiveGap) / 2, 0)
+            labelWidths = [eachWidth, eachWidth]
+        } else {
+            labelWidths = desiredSizes.map(\.width)
+        }
+        let sizes = zip(subviews, labelWidths).map { pair in
+            pair.0.sizeThatFits(ProposedViewSize(width: pair.1, height: bounds.height))
+        }
+        let firstAnchor = markerPositions.indices.contains(0) ? markerPositions[0] : 0
+        let secondAnchor = markerPositions.indices.contains(1) ? markerPositions[1] : firstAnchor
+        let origins = PromptSpeedLabelPlacement.resolve(
+            firstAnchor: firstAnchor,
+            secondAnchor: secondAnchor,
+            firstWidth: sizes[0].width,
+            secondWidth: sizes[1].width,
+            gap: effectiveGap,
+            containerWidth: availableWidth
+        )
+
+        for index in 0..<2 {
+            subviews[index].place(
+                at: CGPoint(x: bounds.minX + origins[index], y: bounds.minY),
+                proposal: ProposedViewSize(width: labelWidths[index], height: bounds.height)
+            )
+        }
+    }
+}
+
+/// Pure geometry shared by the SwiftUI layout and layout regression tests.
+enum PromptSpeedLabelPlacement {
+    static func resolve(
+        firstAnchor: CGFloat,
+        secondAnchor: CGFloat,
+        firstWidth: CGFloat,
+        secondWidth: CGFloat,
+        gap: CGFloat,
+        containerWidth: CGFloat
+    ) -> [CGFloat] {
+        let width = max(containerWidth, 0)
+        let firstLabelWidth = min(max(firstWidth, 0), width)
+        let secondLabelWidth = min(max(secondWidth, 0), width)
+        let spacing = max(gap, 0)
+        let first = min(max(firstAnchor, 0), max(width - firstLabelWidth, 0))
+        let second = min(max(secondAnchor, 0), max(width - secondLabelWidth, 0))
+        let requiredSecond = max(second, first + firstLabelWidth + spacing)
+        guard requiredSecond + secondLabelWidth > width else { return [first, requiredSecond] }
+        let resolvedSecond = max(width - secondLabelWidth, 0)
+        let resolvedFirst = max(min(first, resolvedSecond - firstLabelWidth - spacing), 0)
+        return [resolvedFirst, resolvedSecond]
+    }
+}
+
+enum PromptSpeedRangeGeometry {
+    static func x(for value: Double, scaleMaximum: Double?, fallbackMaximum: Double?, width: CGFloat) -> CGFloat {
+        let bound = scaleMaximum.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
+            ?? fallbackMaximum.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
+            ?? 0
+        guard bound > 0, value.isFinite else { return max(width, 0) / 2 }
+        return min(max(CGFloat(value / bound) * max(width, 0), 0), max(width, 0))
     }
 }

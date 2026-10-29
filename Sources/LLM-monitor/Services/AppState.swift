@@ -117,7 +117,7 @@ final class AppState: ObservableObject {
     /// UI/入口据此禁止 Manual，避免只看 loading 状态导致本地扫描期间重复刷新。
     @Published private(set) var isRefreshJobActive: Bool = false
 
-    /// 最近一次 provider 请求完成时间（用于 footer 显示，不限定为 full refresh）
+    /// 最近一次 provider 请求完成时间（含失败，不限定为 full refresh）。
     @Published private(set) var lastRefreshAt: Date?
 
     /// 下次自动刷新时间

@@ -28,6 +28,26 @@ struct MenuContentView: View {
     private var panelContentWidth: CGFloat {
         MenuPanelHeightBridge.width(for: MenuContentMode(rawValue: menuContentMode) ?? .usage)
     }
+    private var displayedPage: MenuContentMode {
+        MenuContentMode(rawValue: menuContentMode) ?? .usage
+    }
+    private var displayedRefreshDate: Date? {
+        displayedPage == .usage
+            ? todaySummary.localUsageScannedAt
+            : Self.providerQuotaUpdatedAt(statuses: state.fleetQuotaEffectiveStatuses())
+    }
+    private var isDisplayedPageRefreshing: Bool {
+        state.isRefreshJobActive || (displayedPage == .usage
+            ? todaySummary.isScanningLocalUsage
+            : state.isRefreshing)
+    }
+
+    /// 额度页显示有效额度的最近成功读取时间；失败请求的完成时间不冒充新数据。
+    static func providerQuotaUpdatedAt(statuses: [ProviderStatus]) -> Date? {
+        statuses.filter(\.isEnabled).compactMap {
+            $0.lastSuccess?.fetchedAt ?? $0.lastRefreshedAt
+        }.max()
+    }
     /// 菜单所在屏幕的可用高度（从顶部菜单栏到屏幕底部的实际空间）
     @State private var screenAvailableHeight: CGFloat = 0
     /// 菜单所在屏幕的可见高度（扣除 Dock 等后的可见区域，用于 70% 封顶）
@@ -155,7 +175,8 @@ struct MenuContentView: View {
     private static let headerGroupSpacing: CGFloat = 8
 
     private var headerBar: some View {
-        HStack(spacing: 8) {
+        let refreshTime = displayedRefreshDate.map(Formatters.formatTimeOfDay) ?? "待更新"
+        return HStack(spacing: 8) {
             // 主面板左上角使用完整 App 图标（icon-master.png）；加载失败兜底回原系统符号。
             if let appIcon = MenuBarLabel.appIconMasterImage {
                 Image(nsImage: appIcon)
@@ -189,7 +210,7 @@ struct MenuContentView: View {
                 }
             }
             Spacer()
-            // 右侧功能组：scope 切换 + 用量时间 + 刷新，成组右对齐。
+            // 唯一的页面级刷新入口：scope 切换 + 当前页数据时间 + 刷新。
             //
             // 组内间距统一 `headerGroupSpacing`；「scope 组右缘 ↔ 刷新图标 ↔
             // 面板内容右缘」的等距推导见该常量注释——用量时间插进来后，刷新
@@ -214,22 +235,22 @@ struct MenuContentView: View {
                     ? "切换显示范围：全局 / 本机"
                     : "切换显示范围：全局 / 本机 / 各节点")
             }
-            // 本地用量的新鲜度（裸 HH:mm / 「计算中…」）：原在「今日合计」数字行
-            // 尾部（金额右侧），2026-10 挪到刷新按钮左边。它是**全局**读数（与
-            // scope 无关），放标题栏后总览卡数字行不再带时间。无扫描记录时整体
-            // 不渲染（`LocalUsageFreshnessText` 自己处理空态）。
-            LocalUsageFreshnessText(
-                scannedAt: todaySummary.localUsageScannedAt,
-                isScanning: todaySummary.isScanningLocalUsage
-            )
-            if state.isRefreshJobActive {
+            Text(refreshTime)
+                .font(MenuTypography.metricValue)
+                .foregroundStyle(Color.secondaryLabel)
+                .monospacedDigit()
+                .help(displayedPage == .usage
+                    ? "LocalUsage 最近扫描时间；刷新仅重新扫描本机用量，不请求 Provider 额度"
+                    : "Provider 有效额度最近成功读取时间；各 Provider 的具体时间见对应卡片，不表示全部同时更新")
+                .accessibilityLabel("\(displayedPage == .usage ? "LocalUsage 更新时间" : "Provider 额度更新时间") \(refreshTime)")
+            if isDisplayedPageRefreshing {
                 ProgressView()
                     .controlSize(.small)
                     // 与刷新图标同槽同位（居中，不是靠右）：刷新中不换位。
                     .frame(width: 26, height: 24, alignment: .center)
-                    .help("正在刷新")
+                    .help(displayedPage == .usage ? "正在更新本地用量" : "正在刷新额度")
             } else {
-                Button(action: refreshAllFromMenu) {
+                Button(action: refreshDisplayedPage) {
                     Image(systemName: "arrow.clockwise")
                         .font(MenuTypography.headerAction)
                         .foregroundStyle(.secondary)
@@ -238,7 +259,8 @@ struct MenuContentView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help("立即刷新全部")
+                .help(displayedPage == .usage ? "重新扫描本机 LocalUsage" : "刷新全部 Provider 额度")
+                .accessibilityLabel(displayedPage == .usage ? "刷新本地用量" : "刷新 Provider 额度")
             }
             }
         }
@@ -400,11 +422,15 @@ struct MenuContentView: View {
     /// scope 切换的 label / 截断逻辑在 `FleetScopeMenu`（菜单标题栏与 dock
     /// 详情浮层的卡头共用同一实现）。
 
-    /// 「立即刷新全部」的入口：headerBar 的刷新按钮 + 菜单打开时 `.ready` 兜底
-    /// （onAppear）。段头右键按段刷新（`refreshSectionFromMenu`），不共用这条
-    /// 全量路径。
-    private func refreshAllFromMenu() {
-        Task { await state.refreshAll() }
+    /// 刷新当前页的数据源；首次打开菜单的 `.ready` 抓取仍由 onAppear 兜底。
+    private func refreshDisplayedPage() {
+        let page = displayedPage
+        Task {
+            switch page {
+            case .usage: await state.triggerLocalUsageRescan()
+            case .quota: await state.refreshAll()
+            }
+        }
     }
 
     /// 「刷新该 Provider」的唯一入口：额度摘要行的刷新按钮。
@@ -489,9 +515,8 @@ struct MenuContentView: View {
     // MARK: - footer（紧凑 padding）
 
     private var footerBar: some View {
-        // 左：更新状态；右：常驻功能按钮与「更多操作」。
+        // 刷新与时间统一放在 header，footer 只保留常驻功能。
         HStack(spacing: 8) {
-            footerStatus
             Spacer(minLength: 8)
             autostartToggle
             footerSeparator
@@ -558,27 +583,6 @@ struct MenuContentView: View {
         default:
             return "单击切换防休眠模式"
         }
-    }
-
-    private var footerStatus: some View {
-        HStack(spacing: 4) {
-            Image(systemName: "clock")
-                .font(MenuTypography.footer)
-            if let last = state.lastRefreshAt {
-                Text("更新于 \(Formatters.formatClock(last))")
-                    .font(MenuTypography.footerNumber)
-            } else if let next = state.nextRefreshAt {
-                Text("下次 \(Formatters.formatClock(next))")
-                    .font(MenuTypography.footerNumber)
-            } else {
-                Text("就绪")
-                    .font(MenuTypography.footer)
-            }
-        }
-        .lineLimit(1)
-        .fixedSize(horizontal: true, vertical: false)
-        .layoutPriority(1)
-        .foregroundStyle(Color.secondary.opacity(0.75))
     }
 
     /// 自启动：状态 + 单击切换（与「节能」同款交互）。

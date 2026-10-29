@@ -225,17 +225,19 @@ final class HarnessUsageMenuViewTests: XCTestCase {
         XCTAssertGreaterThan(size.height, 0)
     }
 
-    /// 两行排版在指定菜单宽度下可布局，不再要求六列都挤进同一行。
+    /// 模型指标在指定菜单宽度下自然换行；Pmt 统计包含没有有效时长的 Prompt。
     @MainActor
     func testModelRowNaturalWidthFitsCompactContent() {
         let row = HarnessModelRow(
             dayStart: Calendar.current.startOfDay(for: Date()),
             clientID: ClientID.openCode,
             quotaProviderID: QuotaProviderID.openAI,
-            modelName: "gpt-5.5",
+            modelName: "gpt-5.5-very-long-model-name-that-must-wrap-or-truncate-within-the-menu-width",
             samples: [Self.sample(at: Date())],
             calendar: .current
         )
+        XCTAssertEqual(row.promptSpeedStatistics.totalPromptCount, 1)
+        XCTAssertEqual(row.promptSpeedStatistics.validPromptCount, 0)
         let hosting = NSHostingView(rootView: AnyView(HarnessModelRowView(row: row)))
         hosting.frame = CGRect(x: 0, y: 0, width: contentWidth, height: 10_000)
         hosting.layoutSubtreeIfNeeded()

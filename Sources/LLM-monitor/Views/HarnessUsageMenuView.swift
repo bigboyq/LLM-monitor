@@ -550,8 +550,8 @@ struct HarnessClientLegend: View {
     }
 }
 
-/// 最小流式布局：子视图放不进当前行就换到下一行。只服务 `HarnessClientLegend`
-/// 的图例 chip（每个 chip `.fixedSize` 自然宽、不拉伸），不是通用布局。
+/// 最小流式布局：子视图放不进当前行就换到下一行。用于客户端图例 chip 与模型指标；
+/// 普通项保持自然宽，只有单项本身宽过容器时才按容器宽度重测。
 private struct WrapLayout: Layout {
     var horizontalSpacing: CGFloat
     var verticalSpacing: CGFloat
@@ -571,13 +571,14 @@ private struct WrapLayout: Layout {
         var y = bounds.minY
         var rowHeight: CGFloat = 0
         for subview in subviews {
-            let size = subview.sizeThatFits(.unspecified)
+            let item = Self.itemLayout(subview, maxWidth: bounds.width)
+            let size = item.size
             if x > bounds.minX, x - bounds.minX + size.width > bounds.width {
                 x = bounds.minX
                 y += rowHeight + verticalSpacing
                 rowHeight = 0
             }
-            subview.place(at: CGPoint(x: x, y: y), anchor: .topLeading, proposal: .unspecified)
+            subview.place(at: CGPoint(x: x, y: y), anchor: .topLeading, proposal: item.proposal)
             x += size.width + horizontalSpacing
             rowHeight = max(rowHeight, size.height)
         }
@@ -591,7 +592,7 @@ private struct WrapLayout: Layout {
         var x: CGFloat = 0
         var rowHeight: CGFloat = 0
         for subview in subviews {
-            let size = subview.sizeThatFits(.unspecified)
+            let size = itemLayout(subview, maxWidth: maxWidth).size
             if x > 0, x + size.width > maxWidth {
                 rows.append(rowHeight)
                 x = 0
@@ -602,6 +603,21 @@ private struct WrapLayout: Layout {
         }
         if x > 0 { rows.append(rowHeight) }
         return rows
+    }
+
+    /// 普通项保持自然尺寸；只有比容器还宽的单项才按容器宽度重测与放置。
+    /// 这让长模型名可以在首项内截断，同时不会把普通图例 chip 拉伸到整行。
+    private static func itemLayout(
+        _ subview: LayoutSubview,
+        maxWidth: CGFloat
+    ) -> (size: CGSize, proposal: ProposedViewSize) {
+        let naturalSize = subview.sizeThatFits(.unspecified)
+        guard maxWidth.isFinite, maxWidth > 0, naturalSize.width > maxWidth else {
+            return (naturalSize, .unspecified)
+        }
+        let proposal = ProposedViewSize(width: maxWidth, height: nil)
+        let proposedSize = subview.sizeThatFits(proposal)
+        return (CGSize(width: min(proposedSize.width, maxWidth), height: proposedSize.height), proposal)
     }
 }
 
@@ -695,7 +711,7 @@ struct HarnessSectionView: View {
                 Text("今日 Token: \(tokens)")
                 Text("价值: \(value)")
                 Text("命中率: \(hitRate)")
-                Text("速度: P50 \(p50)")
+                Text("速度(P50): \(p50)")
             }
             .font(MenuTypography.hint)
             .foregroundStyle(Color.secondaryLabel)
@@ -707,10 +723,10 @@ struct HarnessSectionView: View {
             Text("今日 Token: \(tokens)")
             Text("价值: \(value)")
             Text("命中率: \(hitRate)")
-            if includeThinking, let thinking = Self.thinkingPercent(section.buckets) {
+            if includeThinking, let thinking = HarnessModelRowView.thinkingPercent(section.buckets) {
                 Text("思考: \(thinking)")
             }
-            Text("速度: P50 \(p50)")
+            Text("速度(P50): \(p50)")
         }
         .font(MenuTypography.hint)
         .foregroundStyle(Color.secondaryLabel)
@@ -718,14 +734,6 @@ struct HarnessSectionView: View {
         .fixedSize(horizontal: true, vertical: false)
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
-    }
-
-    private static func thinkingPercent(_ buckets: TokenUsageBuckets) -> String? {
-        let output = max(0, buckets.output)
-        let reasoning = max(0, buckets.reasoning)
-        let denominator = SaturatingArithmetic.add(output, reasoning)
-        guard denominator > 0 else { return nil }
-        return Formatters.formatPercent(Double(reasoning) / Double(denominator))
     }
 
     /// 橙色截断提示，**单行**短文案。
@@ -1039,12 +1047,12 @@ private struct MenuQuotaProviderRow: View {
     }
 }
 
-/// 本地段内单条模型行：模型名 + Token、Prompt 速度范围线、缓存命中率与价值。
+/// 本地段内单条模型行：模型名、统一顺序的今日指标、Prompt 速度范围线。
 ///
 /// 价值是**行级**的 `ModelCostEstimate.displayText` 原样文案（单 provider 单币种
 /// 原额）。行级绝不做跨币种相加——同一段里不同 provider 的行金额可能不同币种，
 /// 相加必须留到段头 / 全局的 `MixedCurrencyEstimate`。
-/// 其中旧列宽常量仍供 Fleet 行渲染复用；本地模型行使用弹性名称和两层度量信息。
+/// 本机与 Fleet 的模型指标均按相同顺序自然换行；速度范围仅本机有有效时长时绘制。
 struct HarnessModelRowView: View {
     let row: HarnessModelRow
     var sharedSpeedMaximum: Double? = nil
@@ -1057,35 +1065,38 @@ struct HarnessModelRowView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Self.columnSpacing) {
-            HStack(spacing: 6) {
+            WrapLayout(horizontalSpacing: 7, verticalSpacing: 2) {
                 Text(row.compactDisplayName)
                     .font(MenuTypography.modelTitle)
                     .foregroundStyle(Color.primaryLabel)
                     .lineLimit(1)
                     .truncationMode(.tail)
                     .help(row.displayName)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                Text("\(Formatters.formatTokenCountCompact(row.totalTokens)) tokens")
-                    .font(MenuTypography.dataValue)
-                    .foregroundStyle(Color.secondaryLabel)
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
+                Text("Pmt: \(row.promptSpeedStatistics.totalPromptCount)")
+                Text("Token: \(Formatters.formatTokenCountCompact(row.totalTokens))")
+                Text("价值: \(row.costText)")
+                Text("命中: \(Self.percentText(row.cacheHitRate))")
+                Text("思考: \(Self.thinkingPercent(row.buckets) ?? "—")")
+                Text("速度(P50): \(PromptSpeedRangeLineView.speedText(row.promptSpeedStatistics.p50))")
             }
-            PromptSpeedRangeLineView(statistics: row.promptSpeedStatistics, scaleMaximum: sharedSpeedMaximum)
-            HStack(spacing: 6) {
-                Text("缓存命中 \(Self.percentText(row.cacheHitRate))")
-                    .font(MenuTypography.hint)
-                    .foregroundStyle(Color.secondaryLabel)
-                Spacer(minLength: 3)
-                Text("值 \(row.costText)")
-                    .font(MenuTypography.hint)
-                    .foregroundStyle(Color.primaryLabel)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
+            .font(MenuTypography.hint)
+            .foregroundStyle(Color.secondaryLabel)
             .accessibilityElement(children: .combine)
-            .accessibilityLabel("缓存命中率 \(Self.percentText(row.cacheHitRate))；价值 \(row.costText)")
+            .accessibilityLabel(Self.accessibilityMetrics(for: row))
+            PromptSpeedRangeLineView(statistics: row.promptSpeedStatistics, scaleMaximum: sharedSpeedMaximum)
         }
+    }
+
+    static func thinkingPercent(_ buckets: TokenUsageBuckets) -> String? {
+        let output = max(0, buckets.output)
+        let reasoning = max(0, buckets.reasoning)
+        let denominator = SaturatingArithmetic.add(output, reasoning)
+        guard denominator > 0 else { return nil }
+        return Formatters.formatPercent(Double(reasoning) / Double(denominator))
+    }
+
+    private static func accessibilityMetrics(for row: HarnessModelRow) -> String {
+        "\(row.compactDisplayName)；Prompt \(row.promptSpeedStatistics.totalPromptCount)；Token \(Formatters.formatTokenCountCompact(row.totalTokens))；价值 \(row.costText)；命中率 \(percentText(row.cacheHitRate))；思考 \(thinkingPercent(row.buckets) ?? "—")；速度 P50 \(PromptSpeedRangeLineView.speedText(row.promptSpeedStatistics.p50))"
     }
 
     /// 命中率文案复用汇总块的同一实现。
@@ -1217,7 +1228,7 @@ struct FleetClientSectionView: View {
                     }
                     HStack(spacing: 7) {
                         Text("命中率: \(HarnessUsageMenuView.hitRateText(HarnessTodaySummary.cacheHitRate(for: section.buckets)))")
-                        Text("速度: P50 —")
+                        Text("速度(P50): —")
                     }
                 }
                 .font(MenuTypography.hint)
@@ -1237,7 +1248,7 @@ struct FleetClientSectionView: View {
             Text("今日 Token: \(Formatters.formatTokenCountCompact(section.totalTokens))")
             Text("价值: \(section.costText)")
             Text("命中率: \(HarnessUsageMenuView.hitRateText(HarnessTodaySummary.cacheHitRate(for: section.buckets)))")
-            Text("速度: P50 —")
+            Text("速度(P50): —")
         }
         .font(MenuTypography.hint)
         .foregroundStyle(Color.secondaryLabel)
@@ -1287,36 +1298,29 @@ struct FleetModelRowView: View {
     let row: FleetMenuSummary.ModelRow
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 6) {
+        VStack(alignment: .leading, spacing: 4) {
             // 压缩名与本机行同口径（去供应商命名空间/品牌前缀）：
             // 原始名过长时尾截断会把 "-Flash" 截没，被误读成不同模型被合并。
-            Text(HarnessModelRow.compactedDisplayName(for: row.modelName))
-                .font(MenuTypography.modelTitle)
-                .foregroundStyle(row.stale ? Color.secondaryLabel : Color.primaryLabel)
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .help(row.modelName)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                Text("\(Formatters.formatTokenCountCompact(row.totalTokens)) tokens")
-                    .font(MenuTypography.dataValue)
-                    .foregroundStyle(Color.secondaryLabel)
-                    .fixedSize(horizontal: true, vertical: false)
+            WrapLayout(horizontalSpacing: 7, verticalSpacing: 2) {
+                Text(HarnessModelRow.compactedDisplayName(for: row.modelName))
+                    .font(MenuTypography.modelTitle)
+                    .foregroundStyle(row.stale ? Color.secondaryLabel : Color.primaryLabel)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .help(row.modelName)
+                Text("Pmt: —")
+                Text("Token: \(Formatters.formatTokenCountCompact(row.totalTokens))")
+                Text("价值: \(row.costText)")
+                Text("命中: \(HarnessModelRowView.percentText(row.hitRate))")
+                Text("思考: \(HarnessModelRowView.thinkingPercent(row.buckets) ?? "—")")
+                Text("速度(P50): —")
             }
+            .font(MenuTypography.hint)
+            .foregroundStyle(Color.secondaryLabel)
+            .accessibilityElement(children: .combine)
             Text("速度范围 —（节点同步不含调用时长）")
                 .font(MenuTypography.hint)
                 .foregroundStyle(Color.secondaryLabel)
-            HStack(spacing: 6) {
-            Text(HarnessModelRowView.percentText(row.hitRate))
-                .font(MenuTypography.hint)
-                .foregroundStyle(Color.secondaryLabel)
-            Text("值 \(row.costText)")
-                .font(MenuTypography.hint)
-                .foregroundStyle(Color.primaryLabel)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                Spacer(minLength: 0)
-            }
         }
         .padding(.leading, 8)
     }

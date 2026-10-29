@@ -193,13 +193,15 @@ Implemented in `MenuContentView.headerBar`.
 | Title | `LLM Monitor`, 13pt semibold |
 | Sleep-blocker notice | `N 个应用正在阻止休眠`, 10pt medium `Color.secondaryLabel` (fixed NSColor — the glass panel's vibrancy washes out hierarchical `.secondary`, especially in light mode), after the title, rendered only when `sleepHealth.report.offenders` is non-empty; hovering opens the offender list (`SleepOffendersHoverView`, same rows as Settings → Energy check 1), hidden otherwise, hover-only with no click action |
 | Scope switcher (conditional) | > 4 options（多机联动启用、节点 choices 非空）时，刷新按钮左侧出现「范围文字 + `ellipsis`」下拉（`FleetScopeSwitcher`，系统 `Menu`：全局 / 本机 / 「节点」分组）；≤ 4 项或未启用联动时标题栏没有 scope 控件——分段形态渲染在内容区「今日」卡上方。几何、截断与菜单项规则见 `spec/ui/menu-and-cards.md` §Scope switcher |
-| Refresh control | Plain button with `arrow.clockwise`, tooltip `立即刷新全部`，图标在 26pt 点击槽内居中，与 scope 组间距 8pt、同右对齐组 |
-| Spinner | Shows while at least one provider request is in flight; the refresh button is replaced to prevent accidental duplicate requests |
+| Refresh control | 页面级唯一刷新按钮；用量重扫本机 LocalUsage，额度刷新 Provider；对应数据时间在按钮左侧。图标在 26pt 点击槽内居中，与 scope 组间距 8pt |
+| Spinner | Replaces refresh during a full job, LocalUsage scanning on 用量, or Provider fetching on 额度; retains the last known data timestamp |
 
 Clicking refresh runs:
 
 ```swift
-Task { await state.refreshAll() }
+// MenuContentView.refreshDisplayedPage：按当前页面选择数据源。
+// 用量：await state.triggerLocalUsageRescan()
+// 额度：await state.refreshAll()
 ```
 
 ## Content
@@ -271,18 +273,9 @@ Expected user flow:
 
 Implemented in `MenuContentView.footerBar`.
 
-Left status text:
-
-| State | Text |
-|---|---|
-| `lastRefreshAt != nil` | `更新于 <HH:mm or MM-dd HH:mm>` |
-| `nextRefreshAt != nil` | `下次 <HH:mm or MM-dd HH:mm>` |
-| otherwise | `就绪` |
-
-`nextRefreshAt` is the earliest next due time across enabled providers, published by the
-single `ProviderRefreshScheduler` Task (no per-provider timers). After
-the first request completes, the footer therefore shows a useful next-refresh time even when
-providers use different intervals.
+Page refresh and freshness now appear only in the header: LocalUsage scan time on
+用量, Provider successful quota time on 额度. The footer does not repeat request or
+next-refresh timestamps; provider scheduling itself remains unchanged.
 
 Right actions:
 
