@@ -640,7 +640,7 @@ window, the Account Info row gives the content three reading sections: *who is t
 |---|---|---|
 | Provider header | Brand logo + provider name, with quota refresh time / state on the right and the pinned-provider action where supported. The timestamp refreshes only this provider's quota via `\.cardQuotaRefreshAction`. Scope control appears below the header (or at the bottom for the bottom-edge dock). | Same shared Provider header and quota refresh action. |
 | Plan | **Account Info + Plan**: account name and plan pill, 「Plan详情」 title, provider quota bars, quota-window usage / analysis-usage switch and reset-credit details. | Same shared Account Info + Plan. |
-| History | Not rendered. | Separate card titled 「最近7天使用历史」. Its local-scope freshness timestamp is tappable and triggers only local usage rescanning; for Fleet / node scope the local timestamp and rescan action are hidden. The shared chart has seven day slots and nine independently selectable series (total, Rounds, Turns, value, speed, Input, Cache, Reason, Output), defaulting to total. Missing dates are gaps; today is marked incomplete. Speed is daily Prompt P50, and Fleet history has no speed because Fleet snapshots contain no prompt durations. |
+| History | Not rendered. | Separate card titled 「最近7天使用历史」. Its local-scope freshness timestamp is tappable and triggers only local usage rescanning; for Fleet / node scope the local timestamp and rescan action are hidden. The shared chart has seven day slots and seven independently selectable series (total, Rounds, value, speed, hit rate, thinking share, output-to-input ratio), defaulting to total. Missing dates are gaps; today is marked incomplete. Speed is daily Prompt P50, and Fleet history has no speed because Fleet snapshots contain no prompt durations. |
 
 **Section 1 — Account Info** is `QuotaWindowAccountInfoRow`, one row, no section
 title: account name (email, monospaced, tail-truncated) + the plan pill (the very
@@ -1326,4 +1326,4 @@ default has to preserve it — defaulting to off would put a dock inside every f
 window for every existing user. Because the setting can be flipped while the user is
 already fullscreen, a policy change re-probes instead of reusing the cached verdict.
 
-> 核对基线：2026-10-29 · 代码 d96b2b3
+> 核对基线：2026-10-29 · 代码 8e0f239
