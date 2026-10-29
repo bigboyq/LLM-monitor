@@ -112,28 +112,24 @@ panes) — `clientBindings[]` in `config.json` is its only source of truth, so s
 form never rolls a hand-edited value back. See `spec/ui/menu-and-cards.md`
 §Provider-Specific Card Details → *OpenCode client bindings*.
 
-### 常规 pane「外观」节
+### 界面 pane「外观」节
 
-General pane 第二节（「全局刷新间隔」之后、「状态栏图标」之前，
-`SettingsGeneralPane.swift`）是「外观」节（2f44084 引入）：`SettingsSection(title: "外观",
-footer: "浅色 / 深色固定显示，自动跟随系统设置；保存后立即生效。")`，行标签「界面外观」，
+Interface pane 的「外观」节（`SettingsGeneralPane.swift`）行标签「界面外观」，
 **分段 Picker**（`.pickerStyle(.segmented)`），选项即 `AppAppearance.allCases` 的
 浅色 / 深色 / 自动（`displayName`），宽度 `SettingsLayout.standardControlWidth`。
 
 语义：
 
-- selection 读 `config.effectiveAppearance`（config 缺省 nil → `.auto`）。
-- 写入**不走** General 表单草稿：setter 写 `config.appearance`（选「自动」落 nil、
-  其余落枚举值）后直接 `configStore.applyAndSave` **写穿立即保存**，与本页其它
-  draft/save 字段不同。
+- selection 绑定 `appearanceDraft`，加载自 `config.effectiveAppearance`（缺省 nil → `.auto`）。
+- 通过普通表单 `saveAndApply` 保存（「自动」落 nil），取消不保存外观；失败保留草稿并展示错误。
 - 应用点在 `AppState.applyAppearance`：写 `NSApp.appearance`。`start()` 在应用入口
   早期执行时 `NSApplication` 可能尚未创建，此时**下一个主循环重试一次**（`NSApp`
   非 nil 守卫，测试进程 NSApp 恒 nil 不会自旋）；`start()` 与每次配置变更都会调用。
 - 边界：`MenuBarExtra` 原生呈现（菜单栏图标本身）仍随系统外观，不受此设置控制。
 
-### 常规 pane「状态栏图标」节与指标来源
+### 界面 pane「状态栏图标」节与指标来源
 
-General pane「状态栏图标」节（`SettingsGeneralPane.swift`）提供图标样式与监控目标配置：
+Interface pane「状态栏图标」节（`SettingsGeneralPane.swift`）提供图标样式与监控目标配置：
 - **图标主题 Picker**（`StatusBarIconStyle`）：App 图标、Icon Duo 双环仪表盘、系统符号等样式及实时烘焙预览；
 - **指标来源 Picker**（`statusBarPinnedProvider`）：
   - 「全部聚合（非零最小值）」（缺省 / tag `""` / 落盘 `nil`）：综合所有已启用 Provider 计算非零最小值；
@@ -150,7 +146,7 @@ footer 注明按北京时间计算、官方口径、不可调。曾经的开始/
 `peakWeekdaysOnly` 键移除，残留键由 `JSONDecoder` 静默忽略，见 `spec/config.md`
 §Config Schema）；DeepSeek pane 的 footer 同步补了「法定节假日除外」口径。
 
-General pane 末尾（「主菜单 Provider 顺序」之后、「关于」之前）新增
+General pane 的「关于」之前有
 「节假日数据源」节（`HolidaySourceSection`，单独 View 以 `@ObservedObject` 观察
 `AppState.holidayCalendarService` 的刷新状态与结果文案）：
 
@@ -321,8 +317,8 @@ appearance-neutral.
 
 本节只管设置页的呈现与入口位置；通知的触发逻辑、事件边沿阈值、渠道行为与防抖的**单一事实源**在 `spec/notifications.md`（§3 事件模型与触发语义 / §4 渠道层 / §5 配置 Schema），本节不复述其规则。
 
-- 四个有窗口事件的 provider pane（ChatGPT / GLM / minimax / Antigravity）各有一个「通知配置」节：恢复 / 耗尽两个事件各自的渠道选择（`不通知` / `系统通知` / `Bark + 系统通知`，即 `QuotaNotifyChannel` 的 `none` / `system` / `barkAndSystem`）。
-- General pane 有一个「Bark 推送」全局节：`enabled` / `serverURL` / `deviceKey` / `sound` / `skipWhenAwakeAndUnlocked` / `ttl` / `group`。
+- Notifications pane 集中四个窗口类 provider 的四类事件渠道选择（`不通知` / `系统通知` / `Bark + 系统通知`）。Provider pane 保留跳转入口，不维护第二份通知草稿。
+- 同页提供系统权限查询/申请/拒绝后的设置引导/测试，以及 Bark 全局配置：`enabled` / `serverURL` / `deviceKey` / `sound` / `skipWhenAwakeAndUnlocked` / `ttl` / `group`。主动 Bark 测试使用当前草稿且明确绕过正式屏幕跳过策略。
 - 字段默认值与逐字段容错见 `spec/notifications.md` §5；JSON 契约见 `spec/config.md` §Config Schema 的 `notify*` 与 `bark` 字段。
 
 > 核对基线：2026-10-29 · 代码 ceb6e2b

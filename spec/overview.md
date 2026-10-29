@@ -13,7 +13,7 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 | UI model | Menu bar drop-down plus a native Settings window; lightweight setup guidance appears when all providers are unconfigured |
 | Edge dock | Optional screen-edge panel, one circle per enabled Provider, click-through by default and hidden while the frontmost App is fullscreen (`hideInFullscreen`, default `true`). Shape is a four-way `EdgeDockMode` picker (无 / 状态窗 / 小圆环 / 自动隐藏状态窗) whose default is **auto-hide window** — the feature ships on, occupying only a 7pt ring column until the mouse approaches |
 | Hover details | Delayed floating hover panels for compact quota details |
-| Appearance | Settings General pane 「外观」 section: 浅色 / 深色 / 自动 (default), applied to `NSApp.appearance` immediately on save; `MenuBarExtra` native presentation follows the system |
+| Appearance | Settings Interface pane 「外观」 section: 浅色 / 深色 / 自动 (default), drafted with ordinary settings and applied to `NSApp.appearance` on save; `MenuBarExtra` native presentation follows the system |
 | Login item | Settings-window launch-at-login toggle backed by `SMAppService.mainApp`; menu footer's 自启 entry is also a toggle button (状态化图标 `power` / `power.dotted`) |
 | Fleet Sync (多机联动) | Optional LAN sync between one hub and one or more secondary nodes: node→hub periodic usage reports, hub-merged fleet snapshot, scope switching (全局 / 本机 / 节点) in menu and dock cards, effective-quota fallback for stale local fetches. Wire protocol, storage and coordinator: `sync.md` |
 | Config | `~/Library/Application Support/LLM-monitor/config.json`, JSON, permission `0600` |
@@ -147,5 +147,5 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 - Automatic updates and in-app version checks — upgrading means downloading a new build from
   GitHub Releases manually (release gating and the pre-release checklist: `spec/config.md`).
 
-> 核对基线：2026-10-29 · 代码 651d4f5
+> 核对基线：2026-10-29 · 代码 ceb6e2b
 > 独立 `.deviceId` 身份规则已入库，验证记录见 `spec/sync.md`。
