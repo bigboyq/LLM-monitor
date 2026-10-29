@@ -25,6 +25,9 @@ struct MenuContentView: View {
     private var measuredCardsHeight: CGFloat {
         measuredPageHeight + measuredSwitcherHeight + HarnessUsageMenuView.sectionSpacing
     }
+    private var panelContentWidth: CGFloat {
+        MenuPanelHeightBridge.width(for: MenuContentMode(rawValue: menuContentMode) ?? .usage)
+    }
     /// 菜单所在屏幕的可用高度（从顶部菜单栏到屏幕底部的实际空间）
     @State private var screenAvailableHeight: CGFloat = 0
     /// 菜单所在屏幕的可见高度（扣除 Dock 等后的可见区域，用于 70% 封顶）
@@ -62,7 +65,7 @@ struct MenuContentView: View {
             content
             footerBar
         }
-        .frame(width: MenuPanelHeightBridge.width)
+        .frame(width: panelContentWidth)
         .background {
             MenuPanelSurface()
         }
@@ -82,7 +85,7 @@ struct MenuContentView: View {
         ))
         // F4: 窗口高度与位置由 MenuWindowAlignment 基于卡片真实内容高度与
         // 屏幕可用高度及 70% 封顶动态驱动：能展示就自然展开，超标则封顶 70% 并在内部滚动。
-        .background(MenuPanelHeightBridge(measuredCardsHeight: measuredCardsHeight) { availH, visH in
+        .background(MenuPanelHeightBridge(measuredCardsHeight: measuredCardsHeight, contentWidth: panelContentWidth) { availH, visH in
             if abs(screenAvailableHeight - availH) > 0.5 || abs(screenVisibleHeight - visH) > 0.5 {
                 DispatchQueue.main.async {
                     screenAvailableHeight = availH
@@ -664,6 +667,18 @@ struct MenuPanelHeightBridge: NSViewRepresentable {
     static let heightCapFraction: CGFloat = 0.70
     /// F4: 菜单固定宽度。改这里会改所有 menu 卡片列宽。
     static let width: CGFloat = 360
+    /// 额度页固定宽度：420pt Plan 图表 + Provider 卡内边距 24pt + 菜单行壳 16pt
+    /// + 菜单列边距 24pt。展开行数不会改变宽度；空态也沿用额度页宽度。
+    static var quotaWidth: CGFloat {
+        SevenDayUsageChartMetrics.pricedWidth
+            + LayoutMetrics.cardContentPadding * 2
+            + 8 * 2
+            + LayoutMetrics.cardColumnHorizontalPadding * 2
+    }
+
+    static func width(for mode: MenuContentMode) -> CGFloat {
+        mode == .quota ? quotaWidth : width
+    }
     // 卡片列的水平内边距搬到了 `LayoutMetrics.cardColumnHorizontalPadding`
     // （Services 侧的 `EdgeDockTheme.popoverPadding` 要读它，声明留在这里会变成
     // Services → Views 的反向依赖）。
@@ -679,30 +694,34 @@ struct MenuPanelHeightBridge: NSViewRepresentable {
     }
 
     var measuredCardsHeight: CGFloat = 0
+    var contentWidth: CGFloat = width
     var onScreenDimensions: ((CGFloat, CGFloat) -> Void)? = nil
 
     func makeNSView(context: Context) -> HeightProbeView {
         let view = HeightProbeView()
         view.measuredCardsHeight = measuredCardsHeight
+        view.contentWidth = contentWidth
         view.onScreenDimensions = onScreenDimensions
         return view
     }
 
     func updateNSView(_ nsView: HeightProbeView, context: Context) {
         nsView.measuredCardsHeight = measuredCardsHeight
+        nsView.contentWidth = contentWidth
         nsView.onScreenDimensions = onScreenDimensions
         nsView.applyMaxSize()
     }
 
     final class HeightProbeView: NSView {
         var measuredCardsHeight: CGFloat = 0
+        var contentWidth: CGFloat = MenuPanelHeightBridge.width
         var onScreenDimensions: ((CGFloat, CGFloat) -> Void)? = nil
-        private var lastMaxHeight: CGFloat = 0
+        private var lastMaxSize = NSSize.zero
         /// `applyMaxSize` 早退守卫的输入。菜单开着时 `updateNSView` 每秒被
         /// `DisplayClock` 的 tick 驱动一次，而本方法末尾的
         /// `MenuWindowAlignment.align` 内部要读 `window.contentView?.fittingSize`
         /// ——那是真实的 SwiftUI 布局测量。输入没变时这一整趟都是白算。
-        private var lastAppliedInput: (cards: CGFloat, screen: NSScreen?)?
+        private var lastAppliedInput: (cards: CGFloat, width: CGFloat, screen: NSScreen?)?
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
@@ -727,10 +746,10 @@ struct MenuPanelHeightBridge: NSViewRepresentable {
             // 决定，不由本方法设置），因此不构成漏算路径。`force` 供
             // viewDidMoveToWindow / updateTrackingAreas 显式绕过守卫。
             if !force, let last = lastAppliedInput,
-               last.cards == measuredCardsHeight, last.screen === screen {
+               last.cards == measuredCardsHeight, last.width == contentWidth, last.screen === screen {
                 return
             }
-            lastAppliedInput = (measuredCardsHeight, screen)
+            lastAppliedInput = (measuredCardsHeight, contentWidth, screen)
             let visibleHeight = screen.visibleFrame.height
             // 真实可用高度：从顶部菜单栏到屏幕底部的实际空间
             let availableHeight = max(visibleHeight, screen.frame.height - 35)
@@ -741,13 +760,14 @@ struct MenuPanelHeightBridge: NSViewRepresentable {
             // 能放下时允许自然撑开至 availableHeight；超标放不下时才封顶 maxHeight (70%)
             let windowMaxHeight = totalNaturalHeight > availableHeight ? maxHeight : availableHeight
 
-            if windowMaxHeight != lastMaxHeight {
-                lastMaxHeight = windowMaxHeight
-                window.contentMaxSize = NSSize(width: MenuPanelHeightBridge.width, height: windowMaxHeight)
+            let maxSize = NSSize(width: min(contentWidth, screen.visibleFrame.width), height: windowMaxHeight)
+            if maxSize != lastMaxSize {
+                lastMaxSize = maxSize
+                window.contentMaxSize = maxSize
             }
 
             // 确保下拉窗口上边缘紧贴菜单栏底边并吸收系统 popover 顶部留白（+10pt），彻底消除空白空间缝隙
-            MenuWindowAlignment.align(window: window, cardsHeight: measuredCardsHeight)
+            MenuWindowAlignment.align(window: window, cardsHeight: measuredCardsHeight, contentWidth: contentWidth)
         }
     }
 }

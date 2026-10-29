@@ -23,7 +23,19 @@ enum MenuWindowAlignment {
         return NSScreen.main ?? NSScreen.screens.first ?? NSScreen()
     }
 
-    static func align(window: NSWindow, cardsHeight: CGFloat = 0) {
+    /// Resize from the right edge when the current menu is right-anchored; otherwise keep
+    /// its left edge and clamp the new frame into the screen's visible horizontal bounds.
+    static func alignedOriginX(currentFrame: CGRect, targetWidth: CGFloat, visibleFrame: CGRect) -> CGFloat {
+        let boundedWidth = min(targetWidth, visibleFrame.width)
+        let maximumOriginX = visibleFrame.maxX - boundedWidth
+        if abs(currentFrame.maxX - visibleFrame.maxX) <= 1 {
+            return max(visibleFrame.minX, maximumOriginX)
+        }
+        return min(max(currentFrame.minX, visibleFrame.minX), maximumOriginX)
+    }
+
+    static func align(window: NSWindow, cardsHeight: CGFloat = 0, contentWidth: CGFloat? = nil) {
+        let contentWidth = contentWidth ?? MenuPanelHeightBridge.width
         guard !isAligning else { return }
         let screen = effectiveScreen(for: window)
         isAligning = true
@@ -34,8 +46,18 @@ enum MenuWindowAlignment {
 
         // 卡片尚未就绪时仅做顶部吸附，绝不缩减窗口高度避免卡片坍缩
         guard cardsHeight > 0 else {
-            if abs(window.frame.maxY - targetTopY) > 0.5 {
-                window.setFrameTopLeftPoint(NSPoint(x: window.frame.origin.x, y: targetTopY))
+            let alignedWidth = min(contentWidth, visible.width)
+            let alignedX = alignedOriginX(currentFrame: window.frame, targetWidth: alignedWidth, visibleFrame: visible)
+            if abs(window.frame.width - alignedWidth) > 0.5
+                || abs(window.frame.minX - alignedX) > 0.5
+                || abs(window.frame.maxY - targetTopY) > 0.5 {
+                let targetRect = NSRect(
+                    x: alignedX,
+                    y: targetTopY - window.frame.height,
+                    width: alignedWidth,
+                    height: window.frame.height
+                )
+                window.setFrame(targetRect, display: true)
             }
             return
         }
@@ -58,14 +80,19 @@ enum MenuWindowAlignment {
             targetHeight = maxHeight70
         }
 
+        let alignedWidth = min(contentWidth, visible.width)
+        let alignedX = alignedOriginX(currentFrame: window.frame, targetWidth: alignedWidth, visibleFrame: visible)
         let targetRect = NSRect(
-            x: window.frame.origin.x,
+            x: alignedX,
             y: targetTopY - targetHeight,
-            width: MenuPanelHeightBridge.width,
+            width: alignedWidth,
             height: targetHeight
         )
 
-        if abs(window.frame.height - targetHeight) > 0.5 || abs(window.frame.maxY - targetTopY) > 0.5 {
+        if abs(window.frame.width - alignedWidth) > 0.5
+            || abs(window.frame.minX - alignedX) > 0.5
+            || abs(window.frame.height - targetHeight) > 0.5
+            || abs(window.frame.maxY - targetTopY) > 0.5 {
             window.setFrame(targetRect, display: true)
         }
     }

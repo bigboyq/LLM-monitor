@@ -263,22 +263,24 @@ widest thing the card can contain — the 7-day token usage chart
 It used to equal the main-menu width (360), which left the card only 312pt of content
 width and clipped the first/last day of the chart — exactly the layout damage a fixed
 width was supposed to prevent, just caused by the width being too small in the first
-place. The menu keeps its own 360; only the popover widens. Clamped only when the
+place. The usage page keeps its 360pt width; the quota page is 484pt to fit the shared
+Plan modules, while the popover remains 468pt for its 420pt chart plus its host padding.
+Clamped only when the
 screen is narrower than the popover. The same derivation also sets
 `HoverPanelController.maximumPanelWidth` (it used to be chart + 2×10pt = 440, sized
-only for the chart). **`ProviderCardView` 的唯一存活宿主是 dock 浮层**——菜单侧的
+only for the chart). **完整 `ProviderCardView` 的存活宿主是 dock 浮层与独立详情窗**；
+菜单额度行仅复用 Plan-only 子模块——菜单侧的
 provider strip hover 卡先随 ac170ca 精简、整条兜底行再随 8e7278a 从菜单移除（见
-`ui/menu-and-cards.md` §Provider fallback strip），所以这个 468pt 上限如今只服务菜单
-header 的 `HoverInfoRow` 弹卡（睡眠阻断提示等文本行，实际远窄于此），保留同源常量只为
-两处不再各养一份宽度推导。The panel is still clamped to the screen's visible frame,
-as before.
+`ui/menu-and-cards.md` §Provider fallback strip）。468pt 服务 dock 浮层与独立详情窗，
+也作为菜单 header 的 `HoverInfoRow` 弹卡宽度上限（睡眠阻断提示等文本行实际远窄于此）；
+三处共用同源宽度推导。The panel is still clamped to the screen's visible frame, as before.
 
 ### Collapsed sections are open in the popover
 
-**Since the 2026-10 second-round pass the provider card has no hover-collapsed
+**Since the 2026-10 second-round pass the full provider card has no hover-collapsed
 sections left.** The account row, the quota-window usage block (`QuotaWindowUsageSection`),
-the per-card reset-credit list and the 7-day footer are all **resident** — the card's
-only live host is a hover-driven popup whose lifetime the card does not own (the dock
+the per-card reset-credit list and the 7-day footer are all **resident** — the full card's
+live hosts are a hover-driven popup and a standalone detail window; their lifetimes the card does not own (the dock
 popover accepts mouse events — first among the panels — but its visibility still
 follows the circle's hover), so residency remains the only form that works
 without an unreachable "hover of a hover".（菜单侧的 provider strip hover 卡宿主已随
@@ -562,15 +564,15 @@ neither, and that asymmetry is intentional.
 The dock window **never changes size on hover** — with one deliberate exception:
 auto-hide mode (below), where proximity is what grows the window. **Hovering** a circle
 opens a separate popover window beside the dock, containing the **same
-`ProviderCardView(status:fleet:)` — the one card implementation, not a lightweight
-variant**（菜单 strip hover 宿主已随兜底行移除，浮层是这张卡唯一的存活宿主）. Hover alone only highlights
+`ProviderCardView(status:fleet:)` — the one full-card implementation**（菜单额度行复用
+同一实现的 Plan-only 子模块；它不渲染 Account Info 与七天用量卡）. Hover alone only highlights
 the circle (the 1.10× scale).
 
 | Aspect | Behaviour |
 |---|---|
 | Dock window | Fixed size while expanded. Only the hovered **circle** scales to `EdgeDockGeometry.hoverScale` (1.10×) inside its fixed row — the row frame, the number label and the window never move |
 | Popover trigger | **Hover**, with a **0.15s open delay** (`selectedIndex` trails `hoveredIndex` by it; the click is reserved for dragging). `scheduleSelection` re-checks `hoveredIndex` when the delay elapses, so sweeping the cursor down a column of circles re-arms the timer for each one instead of flashing every card in turn. `scheduleDeselection` collapses the card 0.20s after the cursor leaves the circle, unless it entered the card itself. The delay is not cosmetic: the dock is **permanently** on the screen edge, and a cursor merely passing by (dragging a window to the edge, turning a page) would otherwise make cards strobe. Clicking is a drag candidate only — `dragMoved` gates on a 4pt threshold and a press that never crosses it does nothing at all |
-| Popover | Second `NSPanel` (`PopoverPanel`: `canBecomeKey = false` / `canBecomeMain = false`), `ignoresMouseEvents = false`, `acceptsMouseMovedEvents = true`, `allowsToolTipsWhenApplicationIsInactive = true`, `NSHostingView` 覆写 `acceptsFirstMouse = true`（`.nonactivatingPanel`，后台单次点击直接穿透生效而不被系统当作激活拦截，`.help` Tooltip 与 hover 正常触发，绝不抢 key / 焦点），level `.popUpMenu` so it sits above the dock. Renders `ProviderCardView(status:fleet:isPinnedToStatusBar:)`——浮层是这张卡的唯一存活宿主（菜单 strip hover 卡已随兜底行移除），启用多机联动时 `fleet` 传入 `state.fleetCardContext(for:)`、未启用时为 nil 且渲染零变化；`isPinnedToStatusBar` 绑定 `config.statusBarPinnedProvider == status.id`，并在环境注入 `\.cardPinStatusBarAction` 驱动单选锚定。 In the dock it lays out as **two cards with their titles outside**, see *Two cards, titles outside* below. An open card is re-rendered on every status broadcast (`reconcile`'s no-op-frame branch refreshes it) **and on `state.fleetDidChange`** (`selectedIndex != nil` 时 `updatePopover()`), so it never shows numbers frozen at the moment it opened. 对 fleet 上下文而言卡片仍是**打开时的静态值快照**：全部 scope 的用量变体已一次预构建进 `FleetCardContext`，scope 切换靠卡内本地 `@State`（`scopeOverride`）先落再同步 AppState，宿主不重建也能即时切换——详见 `ui/menu-and-cards.md` §Scope switcher 与 `sync.md` §10 |
+| Popover | Second `NSPanel` (`PopoverPanel`: `canBecomeKey = false` / `canBecomeMain = false`), `ignoresMouseEvents = false`, `acceptsMouseMovedEvents = true`, `allowsToolTipsWhenApplicationIsInactive = true`, `NSHostingView` 覆写 `acceptsFirstMouse = true`（`.nonactivatingPanel`，后台单次点击直接穿透生效而不被系统当作激活拦截，`.help` Tooltip 与 hover 正常触发，绝不抢 key / 焦点），level `.popUpMenu` so it sits above the dock. Renders `ProviderCardView(status:fleet:isPinnedToStatusBar:)`——完整卡片由浮层与独立详情窗承载；启用多机联动时 `fleet` 传入 `state.fleetCardContext(for:)`、未启用时为 nil 且渲染零变化；`isPinnedToStatusBar` 绑定 `config.statusBarPinnedProvider == status.id`，并在环境注入 `\.cardPinStatusBarAction` 驱动单选锚定。 In the dock it lays out as **two cards with their titles outside**, see *Two cards, titles outside* below. An open card is re-rendered on every status broadcast (`reconcile`'s no-op-frame branch refreshes it) **and on `state.fleetDidChange`** (`selectedIndex != nil` 时 `updatePopover()`), so it never shows numbers frozen at the moment it opened. 对 fleet 上下文而言卡片仍是**打开时的静态值快照**：全部 scope 的用量变体已一次预构建进 `FleetCardContext`，scope 切换靠卡内本地 `@State`（`scopeOverride`）先落再同步 AppState，宿主不重建也能即时切换——详见 `ui/menu-and-cards.md` §Scope switcher 与 `sync.md` §10 |
 | Hit test | `EdgeDockController.circleIndex(at:circles:currentHovered:minimumRadius:)` — the provider's **outer circle only** (radius + 0.5pt), which deliberately excludes the number label below it and the gaps between rows. The hovered circle's disc grows by `hoverScale` to match its on-screen scale animation. `minimumRadius` is a floor, not an override: the compact dock's circles are 7pt (radius 3.5) and it passes **half a row pitch** (7.5pt) so adjacent discs meet at their midpoint — pointing at a 7px target without it snaps to a neighbour. Circles come from `resolveCircleRects` (measured, with an `EdgeDockGeometry` fallback that is **appearance-aware** — the full-approach constants put compact row 0 about 24pt off). Never recomputed from constants alone — see *Edge status dock → Layout* |
 | Anchor | The first presentation aligns the popover with the hovered **row** (measured rect when available; `EdgeDockGeometry.rowCenter` is only the "not measured yet" fallback), then clamps it to the visible screen frame. For a **left/right dock**, it opens inward (right → left, left → right). If the popover is already visible, `updatePopover()` captures its current top (`frame.maxY`) before re-layout and passes it as `preservedTop`: height changes, including a scope switch, are applied downward, so the top does not drop as the card gets shorter. The screen-boundary clamp still wins when preserving that top would put the popover off-screen. This preservation applies only to left/right docks and only after the popover is visible; the initial placement remains aligned to the hovered row. For a **top dock**, the popover opens below the dock and its top edge stays at the dock gap as height changes. For a **bottom dock**, it opens above the dock and its bottom edge stays at the dock gap, so its top moves when its height changes. Both horizontal-edge cases align the popover's horizontal centre to the hovered row and clamp it within the visible frame. |
 | Size | **Fixed width** `EdgeDockTheme.popoverWidth` (derived from the 7-day chart, see *Popover width*), height = natural card size clamped to 95% of screen height; a `ScrollView` replaces the plain card only when it exceeds the height cap, so overflow scrolls instead of being clipped |
@@ -710,7 +712,7 @@ Two knock-on details, both easy to miss:
 Inside card 1, **below** the quota/local-usage divider, there is one block that answers
 "how much did *this machine* burn inside the current quota window?". It is rendered by
 `QuotaWindowUsageSection` (`Views/QuotaWindowUsageViews.swift`), in the dock popover's
-`.alwaysVisible` card（该卡的唯一存活宿主；fleet / 节点 scope 下区块改读 fleet 口径数据，
+`.alwaysVisible` card and the menu's Plan-only expansion（完整卡另有独立详情窗；fleet / 节点 scope 下区块改读 fleet 口径数据，
 见上方多机联动叠加层指针）.
 Since the second-round pass the block is **fully resident** — the hover-expanded detail
 (`QuotaWindowUsageHoverView`) is deleted — and reads as up to two modules separated

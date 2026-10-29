@@ -796,27 +796,68 @@ private struct MenuQuotaProviderRow: View {
                     .lineLimit(1)
                     .truncationMode(.tail)
                     .help(status.displayName)
-                Spacer(minLength: 4)
+                if let fetchedAt = quota?.fetchedAt {
+                    Text(Formatters.formatClock(fetchedAt))
+                        .font(MenuTypography.hint)
+                        .foregroundStyle(Color.secondaryLabel)
+                        .monospacedDigit()
+                        .help("额度数据更新时间；\(status.displayName)额度请求时间，不代表本机用量更新时间")
+                }
                 if let source = effective?.sourceTagText {
-                    Text(source)
+                    Text(effective?.isStale == true ? "\(source) · 已过期" : source)
                         .font(MenuTypography.hint)
                         .foregroundStyle(effective?.isStale == true ? Color.warningTint : Color.secondaryLabel)
                         .lineLimit(1)
                         .help(effective?.isStale == true ? "此额度来自其他节点，快照已过期" : "此额度来自其他节点")
                 }
+                Spacer(minLength: 4)
+                if case .loading = localStatus.state {
+                    ProgressView()
+                        .controlSize(.mini)
+                        .help("正在刷新 \(status.displayName) 额度")
+                        .accessibilityLabel("正在刷新 \(status.displayName) 额度")
+                } else {
+                    Button(action: onRefresh) {
+                        Image(systemName: "arrow.clockwise")
+                            .font(MenuTypography.headerAction)
+                    }
+                    .buttonStyle(.plain)
+                    .help("刷新 \(status.displayName) 额度；仅重新读取此 provider")
+                    .accessibilityLabel("刷新 \(status.displayName) 额度")
+                }
+            }
+
+            HStack(spacing: 7) {
                 if !models.isEmpty || (status.kind == .deepseek && quota?.balanceDetail != nil) {
                     Text(summary)
                         .font(MenuTypography.dataValue)
                         .foregroundStyle(Color.primaryLabel)
                         .lineLimit(1)
+                } else if case .loading = localStatus.state {
+                    Text("正在获取套餐额度")
+                        .font(MenuTypography.hint)
+                        .foregroundStyle(Color.secondaryLabel)
+                        .lineLimit(1)
                 }
-                Button(action: onRefresh) {
-                    Image(systemName: "arrow.clockwise")
-                        .font(MenuTypography.headerAction)
+                Spacer(minLength: 0)
+                if !models.isEmpty {
+                    Button {
+                        isExpanded.toggle()
+                    } label: {
+                        Label(
+                            isExpanded ? "收起" : "套餐详情",
+                            systemImage: isExpanded ? "chevron.up" : "chevron.down"
+                        )
+                    }
+                    .font(MenuTypography.hint)
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(isExpanded ? "收起 \(status.displayName) 套餐详情" : "展开 \(status.displayName) 套餐详情")
                 }
-                .buttonStyle(.plain)
-                .help("刷新 \(status.displayName) 额度")
-                .accessibilityLabel("刷新 \(status.displayName) 额度")
+                Button("独立窗口") { onOpenDetails() }
+                    .font(MenuTypography.hint)
+                    .buttonStyle(.link)
+                    .help("在独立窗口查看 \(status.displayName) 的完整详情")
+                    .accessibilityLabel("在独立窗口打开 \(status.displayName) 详情")
             }
 
             if case .notConfigured(let reason) = localStatus.state {
@@ -844,63 +885,19 @@ private struct MenuQuotaProviderRow: View {
                     .help(message)
             }
 
-            HStack(spacing: 4) {
-                if case .loading = localStatus.state {
-                    ProgressView().controlSize(.mini)
-                    Text("正在更新额度")
-                } else if effective?.sourceTagText != nil, let fetchedAt = quota?.fetchedAt {
-                    Text(effective?.isStale == true
-                        ? "远端快照已过期 · \(Formatters.formatClock(fetchedAt))"
-                        : "远端快照于 \(Formatters.formatClock(fetchedAt))")
-                } else if let refreshedAt = localStatus.lastRefreshedAt {
-                    Text("额度更新于 \(Formatters.formatClock(refreshedAt))")
-                } else if let fetchedAt = quota?.fetchedAt {
-                    Text("额度数据于 \(Formatters.formatClock(fetchedAt))")
-                } else if quota == nil {
-                    Text("尚无成功的额度读取")
-                }
-            }
-            .font(MenuTypography.hint)
-            .foregroundStyle(effective?.isStale == true ? Color.warningTint : Color.secondaryLabel)
-
-            if !models.isEmpty {
-                DisclosureGroup(isExpanded: $isExpanded) {
-                    if status.kind == .deepseek, let info = quota, let model = models.first {
-                        DeepseekBalanceRow(
-                            model: model,
-                            planLabel: info.planLabel,
-                            balanceDetail: info.balanceDetail,
-                            tint: status.accentColor.cardAccentColor,
-                            peakWindow: localStatus.deepseekPeakWindow ?? .defaultWindow,
-                            showsPeakIndicator: true
-                        )
-                    } else {
-                        VStack(alignment: .leading, spacing: 6) {
-                            ForEach(models, id: \.modelName) { model in
-                                modelRow(model)
-                            }
-                        }
-                        .padding(.leading, 23)
-                    }
-                } label: {
-                    Text(isExpanded ? "收起套餐详情" : "查看套餐详情（\(models.count)）")
+            if isExpanded {
+                if quota != nil {
+                    ProviderCardView(status: status, fleet: fleet, showsPlanDetailsOnly: true)
+                        .equatable()
+                        .environment(\.hoverRevealMode, .alwaysVisible)
+                        .environment(\.displayDate, displayDate)
+                        .environment(\.quotaWindowSegmentEditable, true)
+                        .environment(\.cardQuotaRefreshAction, { _ in onRefresh() })
+                } else {
+                    Text("尚无成功的额度数据，详情将在首次读取后显示")
                         .font(MenuTypography.hint)
                         .foregroundStyle(Color.secondaryLabel)
                 }
-                .tint(Color.secondaryLabel)
-            } else if status.kind == .deepseek, let detail = quota?.balanceDetail {
-                Text("API 余额  \(detail.symbol)\(String(format: "%.2f", detail.total))")
-                    .font(MenuTypography.metricLabel)
-                    .foregroundStyle(Color.primaryLabel)
-                    .accessibilityLabel("DeepSeek API 账户余额 \(detail.symbol)\(String(format: "%.2f", detail.total))")
-            }
-
-            HStack {
-                Spacer(minLength: 0)
-                Button("查看完整详情", action: onOpenDetails)
-                    .font(MenuTypography.hint)
-                    .buttonStyle(.link)
-                    .accessibilityLabel("查看 \(status.displayName) 完整详情")
             }
         }
         .padding(8)
@@ -909,54 +906,6 @@ private struct MenuQuotaProviderRow: View {
                 .fill(Color.primary.opacity(0.045))
                 .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.primary.opacity(0.07), lineWidth: 1))
         )
-    }
-
-    private func modelRow(_ model: ModelQuota) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack {
-                Text(model.displayName)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                Spacer()
-                if model.hasIntervalWindow {
-                    Text("5h \(Formatters.formatQuotaPercent(model.intervalRemainingPercent))")
-                        .monospacedDigit()
-                }
-                if model.hasWeeklyWindow {
-                    Text("周 \(Formatters.formatQuotaPercent(model.weeklyRemainingPercent))")
-                        .monospacedDigit()
-                }
-                if !model.hasIntervalWindow && !model.hasWeeklyWindow,
-                   status.kind == .deepseek,
-                   let balance = quota?.balanceDetail {
-                    Text("余额 \(balance.symbol)\(String(format: "%.2f", balance.total))")
-                        .monospacedDigit()
-                }
-            }
-            .font(MenuTypography.hint)
-            .help(model.displayName)
-            if model.hasIntervalWindow {
-                ProgressView(value: min(max(model.intervalRemainingPercent / 100, 0), 1))
-                    .tint(status.accentColor.cardAccentColor)
-                    .accessibilityLabel("5 小时额度剩余")
-                    .accessibilityValue(Formatters.formatQuotaPercent(model.intervalRemainingPercent))
-            }
-            let resetLabels = [
-                model.hasIntervalWindow
-                    ? "5h 重置 \(QuotaWindowUsageSection.formatResetDateText(model.intervalResetsAt, now: displayDate))"
-                    : nil,
-                model.hasWeeklyWindow
-                    ? "周重置 \(QuotaWindowUsageSection.formatResetDateText(model.weeklyResetsAt, now: displayDate))"
-                    : nil
-            ].compactMap { $0 }
-            if !resetLabels.isEmpty {
-                Text(resetLabels.joined(separator: " · "))
-                    .font(MenuTypography.hint)
-                    .foregroundStyle(Color.secondaryLabel)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-            }
-        }
     }
 
     private var summary: String {

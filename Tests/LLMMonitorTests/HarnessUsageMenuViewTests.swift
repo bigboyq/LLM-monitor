@@ -18,6 +18,16 @@ final class HarnessUsageMenuViewTests: XCTestCase {
         XCTAssertEqual(HarnessModelRowView.columnSpacing, 4)
     }
 
+    /// 菜单额度行在展开时切换到 Plan-only 渲染；该模式参与 ProviderCardView 的值相等判断，
+    /// 以免 `.equatable()` 把完整卡片缓存为旧形态（或反过来）。
+    func testPlanOnlyModeParticipatesInProviderCardEquatableIdentity() {
+        let status = Self.codexFixture()
+        let fullCard = ProviderCardView(status: status)
+        let planOnly = ProviderCardView(status: status, showsPlanDetailsOnly: true)
+        XCTAssertNotEqual(fullCard, planOnly)
+        XCTAssertEqual(planOnly, ProviderCardView(status: status, showsPlanDetailsOnly: true))
+    }
+
     func testQuotaPresentationSummarizesWindowsAndDeepSeekBalanceWithoutWindows() {
         let windows = [
             quotaModel(name: "first", interval: 64, weekly: 48),

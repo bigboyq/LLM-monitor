@@ -134,10 +134,12 @@ Runtime behavior:
 - hover details are shown in a separate floating `NSPanel`
 - Antigravity process availability is discovered asynchronously and cached, so opening the menu does not synchronously run process inspection.
 
-`MenuContentView` layout:
+`MenuContentView` layout: usage remains 360pt wide; quota uses a fixed 484pt width so
+the shared Plan chart fits at 420pt. Quota width is the same when rows are collapsed,
+expanded, or empty; switching back to usage restores 360pt.
 
 ```text
-width: 360pt
+width: 360pt (usage) / 484pt (quota)
 height: content-driven, fixedSize(vertical: true)
 
 +------------------------------------------------+
@@ -159,7 +161,10 @@ height: content-driven, fixedSize(vertical: true)
 ```
 
 额度页按启用 provider 顺序呈现紧凑摘要，支持单 Provider 刷新、未配置项定位到
-对应设置，以及可展开的套餐/重置时间；DeepSeek 即使没有窗口额度也显示余额。
+对应设置，以及可展开的 Plan 详情；折叠行目标为两行：Provider 名称与额度更新时间，
+然后是额度摘要、展开/收起按钮与独立窗口入口。正常状态不再另占更新时间行或详情页脚；
+更新时间仅显示 `HH:mm`，help 说明它代表 provider 额度读取时间，刷新动作只刷新该 Provider。
+loading、failed、notConfigured 可按需增加状态行，错误始终可见。DeepSeek 即使没有窗口额度也显示余额。
 额度始终使用本机优先、必要时 elected 的全局有效值。菜单顶部 scope 仅切换用量；
 多节点额度页会标明当前用量范围与额度仍为全局有效值。内容高度由当前页实测，
 超过屏幕预算时内容区滚动，标题和 footer 保持固定。
@@ -168,8 +173,14 @@ height: content-driven, fixedSize(vertical: true)
 
 The menu offers two complementary views: **用量** answers which clients burned how
 many tokens today, and **额度** answers how much remains per enabled Provider. The
-quota page is available when the edge dock is hidden and remains a compact summary;
-full provider cards and their richer quota detail remain in the edge-dock popover.
+quota page is available when the edge dock is hidden. Expanding 套餐详情 embeds the
+same `ProviderCardView.planModules` composition as the edge-dock popover and standalone
+detail window: provider progress and specific modules, quota-window analysis/usage
+switcher, and reset-card details. It deliberately omits Account Info and the seven-day
+local usage card. The collapsed row keeps a separate “独立窗口” action for the complete
+provider view. Fleet effective quota remains independent from scope; quota-window usage
+modules continue to follow the selected fleet scope. Loading and failure states preserve
+last-success Plan data and retain visible status feedback.
 
 **Scope switcher** (`FleetScopeSwitcher`): one shared control, used by the menu
 header (right group, next to the refresh button) **and** by the provider-card
@@ -536,7 +547,7 @@ The menu footer contains:
 
 ### Full Provider Detail Window
 
-The quota page exposes “查看完整详情” for each enabled provider. It opens the same
+The quota page exposes “独立窗口” for each enabled provider. It opens the same
 `ProviderCardView` in one public SwiftUI `Window`, so all provider-specific sections
 remain reachable even when the edge dock is hidden. The window width follows
 `EdgeDockTheme.popoverWidth` (468pt at the current 420pt chart width, including card
@@ -547,8 +558,9 @@ settings. The pending route is in-memory only.
 
 ## Provider Card
 
-`ProviderCardView` 只有**一个**渲染宿主形态：边缘状态窗的 provider 详情浮层（固定
-`.alwaysVisible`）。菜单有独立额度摘要页，但不承载完整 provider 卡；旧「菜单底部
+`ProviderCardView` 完整卡片的渲染宿主是边缘状态窗的 provider 详情浮层（固定
+`.alwaysVisible`）及独立详情窗口；菜单额度行只启用 Plan-only 模式，复用同一
+`planModules`，不复制额度模块实现，也不承载完整 provider 卡。旧「菜单底部
 provider 兜底行 hover 卡」宿主已随兜底行移除（8e7278a，见上文删除记录）。
 
 **卡上两处时间戳统一为裸 "hh:mm"，点击按位置刷各自的数据（2026-10-13 引入，2026-10-18

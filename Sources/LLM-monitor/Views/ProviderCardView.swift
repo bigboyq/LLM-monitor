@@ -3,10 +3,9 @@ import AppKit
 
 /// 同一张 `ProviderCardView` 的排版规则。
 ///
-/// 菜单内容区有用量与额度两个紧凑视图，但不渲染完整 provider 卡。完整卡片只由
-/// 边缘状态窗浮层承载，因此这张卡只剩**一个**渲染宿主形态：`.alwaysVisible`
-/// （两个宿主都是随行 hover 显隐的弹层，卡的生命周期不归自己管，在里面再造
-/// 「悬停才展开」的依赖只会更脆——就地展开是唯一稳妥选项）。
+/// 菜单内容区有用量与额度两个视图；额度行通过 Plan-only 模式复用本卡的计划模块，
+/// 但不承载完整卡片。完整卡片由边缘状态窗浮层和独立详情窗口承载，均使用
+/// `.alwaysVisible`（卡内详情就地展开，不再依赖 hover 二次触发）。
 ///
 /// 曾经按 `HoverRevealMode` 分叉的规则至此**全部收敛**，这个类型只剩下面注释里
 /// 记录的历史。收敛的判据只有一条：`hoverRevealMode` 的两个注入点
@@ -104,15 +103,12 @@ extension EnvironmentValues {
 
 /// provider 卡片 — 一个 provider 的全部信息
 ///
-/// `Equatable`：卡片渲染依赖 `status`（值类型）**和** `@Environment(\.hoverRevealMode)`
-/// ——后者由**后代**读（`HoverInfoRow` 决定就地展开还是折叠），本视图自己已经不读了
-/// （见 `ProviderCardLayout`：所有按 mode 分叉的排版判据都已收敛成常量）。配合调用点
-/// 的 `.equatable()`，任一 provider 的任一状态变化只会重算真正变化的那几张卡，
-/// 而不是整屏菜单面板。
+/// `Equatable`：渲染依赖值类型 `status`、fleet 上下文、卡片位置/锚定状态与
+/// `showsPlanDetailsOnly`。`hoverRevealMode` 和动作闭包由后代从 Environment 读取，
+/// 不参与值比较。配合调用点的 `.equatable()`，任一 provider 的任一状态变化只会重算
+/// 真正变化的那几张卡，而不是整屏菜单面板。
 ///
-/// ⚠️ `==` 只比较 `status`、`fleet` 和 `isPinnedToStatusBar`，**不**比较 `revealMode` /
-/// `cardQuotaRefreshAction` / `cardUsageRefreshAction` / `cardPinStatusBarAction` ——
-/// 它们是 Environment，取不到。
+/// `==` 比较渲染所需的值输入（包括 Plan-only 模式）；环境动作仍不参与值比较。
 struct ProviderCardView: View, Equatable {
     let status: ProviderStatus
     /// 当前 edge dock 的贴靠边：底边 dock 的浮层在 dock 上方，分段控件放到
@@ -124,6 +120,9 @@ struct ProviderCardView: View, Equatable {
     var fleet: FleetCardContext? = nil
     /// 是否在状态栏小眼睛锚定
     var isPinnedToStatusBar: Bool = false
+    /// 菜单额度页只展开 Plan 段时也走同一组 Plan 子模块。
+    /// 账号行与七天本地用量仍由完整详情宿主展示。
+    var showsPlanDetailsOnly: Bool = false
 
     /// 「今」行取哪一天：宿主注入的展示时钟（随浮层显隐起停），与卡内其它
     /// 倒计时/新鲜度消费者同一个 now，不取渲染时的墙钟。
@@ -156,6 +155,7 @@ struct ProviderCardView: View, Equatable {
             && lhs.dockEdge == rhs.dockEdge
             && lhs.fleet == rhs.fleet
             && lhs.isPinnedToStatusBar == rhs.isPinnedToStatusBar
+            && lhs.showsPlanDetailsOnly == rhs.showsPlanDetailsOnly
     }
 
     /// dock 浮层的卡片是**一次性构建的值快照**（NSHostingView 的 rootView
@@ -198,12 +198,68 @@ struct ProviderCardView: View, Equatable {
         // （DeepSeek 还要逐条判北京时间峰谷）在 DSH 的数万条样本上重跑一遍。
         // memo 之后只有输入真的变了才重算，数值与口径一字未改。
         let derived = ProviderCardDerivedValues.resolve(status: status, displayDate: displayDate)
-        dockBody(derived: derived)
+        Group {
+            if showsPlanDetailsOnly {
+                planDetailsOnly(derived: derived)
+            } else {
+                dockBody(derived: derived)
+            }
+        }
             // popover root view 是快照，@State 会跨 rootView 更新保留。全局 scope
             // 从菜单或节点清理变化时，跟随新的上下文，避免旧局部选择覆盖它。
             .onChange(of: fleet?.scope) { _, newScope in
                 scopeOverride = newScope
             }
+    }
+
+    /// 菜单详情展开区与 Popwindow 共用 `planModules`，避免额度、
+    /// provider 专属模块、分析/用量切换和重置卡出现第二套呈现实现。
+    @ViewBuilder
+    private func planDetailsOnly(derived: ProviderCardDerived) -> some View {
+        if let info = effectiveQuotaInfo ?? status.lastSuccess {
+            dockCard {
+                planModules(info: info, derived: derived)
+                if case .failed(let message, _) = status.state {
+                    Label(message, systemImage: "exclamationmark.triangle.fill")
+                        .font(MenuTypography.hint)
+                        .foregroundStyle(Color.criticalTint)
+                        .lineLimit(2)
+                }
+            }
+        } else {
+            VStack(alignment: .leading, spacing: 6) {
+                planSectionTitle
+                switch status.state {
+                case .loading:
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text("正在获取套餐额度")
+                    }
+                    .font(MenuTypography.hint)
+                    .foregroundStyle(Color.secondaryLabel)
+                case .failed(let message, _):
+                    Label(message, systemImage: "exclamationmark.triangle.fill")
+                        .font(MenuTypography.hint)
+                        .foregroundStyle(Color.criticalTint)
+                        .lineLimit(2)
+                case .notConfigured(let reason):
+                    Text("尚未配置额度读取 · \(reason)")
+                        .font(MenuTypography.hint)
+                        .foregroundStyle(Color.secondaryLabel)
+                        .lineLimit(2)
+                case .ready:
+                    Text("等待首次额度数据")
+                        .font(MenuTypography.hint)
+                        .foregroundStyle(Color.secondaryLabel)
+                case .ok:
+                    EmptyView()
+                }
+            }
+            .padding(LayoutMetrics.cardContentPadding)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(cardBackground)
+            .overlay(cardBorder)
+        }
     }
 
     /// **三段式**：段1「Account Info」行 → 段2「Plan详情」+ 四个模块 →
