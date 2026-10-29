@@ -203,11 +203,12 @@ P50 为有效 prompt 速度的中位数；偶数个样本时取中间两个速�
 
 ## 七天历史趋势
 
-七天历史图的七种单选指标为总量、Rounds、价值、速度、命中、思考、产出。
+七天历史图的七种单选指标为总量、Rounds、价值、思考、产出、命中、速度。
 总量严格为规范化四桶之和（Input + Cache + Output + Reason），不含诊断字段 `cacheWrite`；
 Rounds 是模型 API call 数；命中率为 `cacheRead / (input + cacheRead)`，思考占比为 `reasoning / (output + reasoning)`，
 产出比为 `(output + reasoning) / (input + cacheRead)`。每次选择只使用所选指标自身的线性 Y 轴，
-图表固定保留最近七个自然日日槽。现存 daily 行里的零是已知零；缺少 daily 行表示未知，折线在
+图表固定保留最近七个自然日日槽。逐日明细表格采用「6 个基础列（日期、R/T、Input、Cache、Reason、Output）+ 选中的动态指标列」，
+固定呈现 7 列数据。现存 daily 行里的零是已知零；缺少 daily 行表示未知，折线在
 该槽断开；当前日标注为未完结。历史指标选择独立于额度窗口的「分析 / 用量」选择。
 
 价值图使用 `ModelCostEstimate.value` 与 `currency` 数值字段，不从格式化文案逆向解析。若七日内
@@ -285,4 +286,4 @@ Rounds 是模型 API call 数；命中率为 `cacheRead / (input + cacheRead)`�
 任何新 harness 必须先补充本矩阵、provider spec 和 `TokenAccountingCatalog`，再接入 UI；
 不要在 view 或 pricing 分支里重新猜测 input/cache/reasoning 的关系。
 
-> 核对基线：2026-10-29 · 代码 8e0f239
+> 核对基线：2026-10-29 · 代码 0ea7426

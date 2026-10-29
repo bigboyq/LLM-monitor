@@ -671,19 +671,17 @@ Row-level tint rules:
 | Plan tag | **已从标题行移除**（2026-10 第二轮改版）。套餐 pill 挪进卡片第一段「Account Info」行（`QuotaWindowAccountInfoRow`），与账号名同一行——账号是谁、什么级别是同一个问题的两半 |
 | State tag | compact `未配置` / `待更新` / `已更新` / `需重试` label; a spinner replaces it while loading. `未配置` (not `未启用`): `.notConfigured` covers a missing API key, missing external auth and missing login as well as a disabled provider, and `未启用` made an enabled-but-keyless provider read as switched off |
 | Account block hover | **已删除**。邮箱 / 数据来源原本按 provider 分三路包在标题行的 `HoverInfoRow` 里，只为菜单那张卡服务；菜单不再渲染 provider 卡，浮层又不吃鼠标事件，这个折叠区展不开，直接不画 |
-| Seven-day usage history | 外层标题为「最近7天使用历史」，右侧新鲜度时间只在本机 scope 显示并可重扫。共享 `SevenDayUsageHistoryView` 用 7 个自然日槽位展示单指标折线；缺失日断线，今天标注未完结。7 个可选指标为总量、Rounds、价值、速度、命中、思考、产出，默认总量；选择写入独立的 `@AppStorage("usageHistoryMetric")`，不随「额度窗口」分析/用量切换。速度按 Prompt 汇总为每日 P50；Fleet 使用当前 scope 的权威 `snapshot.daily`，无 Prompt 时长时速度显示 `—`。 |
+| Seven-day usage history | 外层标题为「最近7天使用历史」，右侧新鲜度时间只在本机 scope 显示并可重扫。共享 `SevenDayUsageHistoryView` 用 7 个自然日槽位展示单指标折线；缺失日断线，今天标注未完结。7 个可选指标为总量、Rounds、价值、思考、产出、命中、速度，默认总量；选择写入独立的 `@AppStorage("usageHistoryMetric")`，不随「额度窗口」分析/用量切换。速度按 Prompt 汇总为每日 P50；Fleet 使用当前 scope 的权威 `snapshot.daily`，无 Prompt 时长时速度显示 `—`。 |
 
-The metric picker renders a single-row capsule list: **总量 / Rounds / 价值 / 速度 / 命中 / 思考 / 产出**。
+The metric picker renders a single-row capsule list: **总量 / Rounds / 价值 / 思考 / 产出 / 命中 / 速度**。
 Total is Input + Cache + Output + Reason; cache-write tokens are excluded.
-Rounds count tokenized API calls. The three rate metrics are:
-- **命中** (hit rate): `cacheRead / (input + cacheRead)`
+Rounds count tokenized API calls; Turns count distinct user prompts. The three rate metrics are:
 - **思考** (thinking share): `reasoning / (output + reasoning)`
 - **产出** (output-to-input ratio): `(output + reasoning) / (input + cacheRead)`
-The daily table defaults to 6 columns: `日期` (34pt), `Rounds` (50pt), `总量` (56pt), `命中` (48pt), `思考` (48pt), and `产出` (48pt).
-Selecting 价值 or 速度 appends a 7th column (62pt): single-currency value keeps its currency,
-mixed currencies are converted to CNY using the existing mixed-currency rate, and incomplete pricing is marked partial.
-Speed is Prompt-level P50 per day; unavailable durations remain `—`. Fleet uses its current-scope
-authoritative daily snapshot and has no prompt-duration data, so Fleet speed stays `—`.
+- **命中** (hit rate): `cacheRead / (input + cacheRead)`
+The daily table consists of 6 base columns plus 1 selected dynamic column (always 7 columns):
+- **Base columns**: `日期` (34pt), `R/T` (54pt, Rounds / Turns), `Input` (46pt), `Cache` (46pt), `Reason` (46pt), `Output` (46pt).
+- **Dynamic column** (7th column, 58pt): mirrors whichever metric is currently selected in the chart (总量, Rounds, 价值, 思考, 产出, 命中, 速度). Single-currency value keeps its currency, mixed currencies are converted to CNY using the existing mixed-currency rate, and incomplete pricing is marked partial. Speed is Prompt-level P50 per day; unavailable durations remain `—`. Fleet uses its current-scope authoritative daily snapshot and has no prompt-duration data, so Fleet speed stays `—`.
 
 scope 切换**不在标题行**：选项 ≤4 时默认在标题行**下方**独占一行
 （`ProviderCardView.scopeRow`，宽度与卡片一致）；dock 贴底边时该行移到详情内容末尾、靠近
@@ -1069,5 +1067,5 @@ The UI intentionally hides reset-credit id, title, description, and grant time.
 The shared Plan fallback uses the same 10pt `MenuTypography.hint` role for loading and
 failure feedback; there is no separate error-message typography role.
 
-> 核对基线：2026-10-29 · 代码 8e0f239
+> 核对基线：2026-10-29 · 代码 0ea7426
 > 统一验证通过，详细结果见 `spec/sync.md`。
