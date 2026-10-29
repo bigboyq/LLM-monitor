@@ -115,7 +115,14 @@ DeepSeek 不参与：余额被二值化为 0/100 percent，无窗口语义；其
 - 权限：启动时仅 `.notDetermined` 弹窗（`applicationDidFinishLaunching`）；发送时
   `.notDetermined` 现场补申请，`.denied` 静默跳过。
 - `threadIdentifier = "quota-update-{providerID}-{modelName}"`（provider 维度，
-  不同 provider 同名模型不串线程）；前台 `willPresent` 返回 `[.banner, .sound]`。
+  不同 provider 同名模型不串线程）；每条通知的 `userInfo` 带 `providerID` 与
+  `modelName`，默认点击打开该 Provider 的完整详情卡，并只标注模型上下文，不声称
+  自动筛选或滚动到模型。前台 `willPresent` 总显示 banner，声音遵循本机设置。
+- `systemNotificationSoundEnabled` 为本机 config.json 设置，缺省开启；通知的
+  `content.sound` 与前台 `willPresent` 声音选项都遵循此值。测试通知也遵循当前设置草稿。
+- 点击路由交给 `AppState` 内存态，由菜单栏常驻 label 的公开 `openWindow` bridge
+  打开单实例 SwiftUI Window。已知停用目标提示并提供对应设置；未知目标提供通知设置入口。
+  不将待处理路由持久化；冷启动通知点击路径未经实机验证，不作为已交付能力承诺。
 - 标题按事件类型：纯耗尽 →「{provider} 额度已用完」、纯恢复 →「额度已恢复」、
   混合 →「额度提醒」；正文 `messageLine`：恢复为「短周期/周额度 X% → Y%」，
   耗尽为「5 小时/周额度已用完（剩 X%）」。

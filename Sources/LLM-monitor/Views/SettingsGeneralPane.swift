@@ -102,7 +102,7 @@ extension SettingsView {
 
             SettingsSection(
                 title: "状态栏图标",
-                footer: "此处三色只用于菜单栏状态点与边缘状态窗状态提示，不改变 Provider 品牌色或额度卡进度条。App 图标是固定设计稿；Icon Duo 展示额度仪表盘。"
+                footer: "此处三色只用于菜单栏健康度圆点与边缘状态窗额度圆环；不改变 Provider 品牌色、额度卡进度条或其他语义状态色。App 图标是固定设计稿；Icon Duo 展示额度仪表盘。"
             ) {
                 VStack(alignment: .leading, spacing: 16) {
                     SettingsControlRow("图标主题") {
@@ -360,6 +360,10 @@ extension SettingsView {
             title: "系统通知权限",
             footer: "macOS 的通知样式与横幅显示由系统设置控制。授权表示允许发送，不保证系统一定显示横幅。"
         ) {
+            SettingsToggleRow(
+                label: "系统通知播放提示音",
+                isOn: $systemNotificationSoundEnabledDraft
+            )
             SettingsControlRow("当前状态") {
                 Text(notificationAuthorization.displayText)
                     .font(SettingsTypography.status)
@@ -385,7 +389,12 @@ extension SettingsView {
             }
             if notificationAuthorization == .authorized {
                 Button("发送系统通知测试") {
-                    Task { systemNotificationTestMessage = await SystemQuotaUpdateNotifier.sendTestNotification() }
+                    let soundEnabled = systemNotificationSoundEnabledDraft
+                    Task {
+                        systemNotificationTestMessage = await SystemQuotaUpdateNotifier.sendTestNotification(
+                            soundEnabled: soundEnabled
+                        )
+                    }
                 }
             }
             if let systemNotificationTestMessage {

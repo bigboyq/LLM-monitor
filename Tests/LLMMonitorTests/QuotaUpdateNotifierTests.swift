@@ -191,6 +191,14 @@ final class QuotaUpdateNotifierTests: XCTestCase {
         XCTAssertNotEqual(minimax, antigravity)
     }
 
+    func testSystemNotificationSoundPreferenceControlsQueuedAndForegroundSound() {
+        XCTAssertNotNil(SystemQuotaUpdateNotifier.notificationSound(enabled: true))
+        XCTAssertNil(SystemQuotaUpdateNotifier.notificationSound(enabled: false))
+        XCTAssertTrue(SystemQuotaUpdateNotifier.presentationOptions(soundEnabled: true).contains(.sound))
+        XCTAssertFalse(SystemQuotaUpdateNotifier.presentationOptions(soundEnabled: false).contains(.sound))
+        XCTAssertTrue(SystemQuotaUpdateNotifier.presentationOptions(soundEnabled: false).contains(.banner))
+    }
+
     func testSystemNotificationCooldownSuppressesRapidRepeat() {
         // D2: 同一模型 60s 冷却窗口内的重复系统通知被抑制；不同模型不受影响。
         var lastNotified: [String: Date] = [:]

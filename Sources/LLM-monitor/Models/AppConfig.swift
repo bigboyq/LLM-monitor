@@ -356,6 +356,10 @@ struct AppConfig: Codable, Equatable {
     /// 状态栏健康度圆点颜色 (nil = 默认绿 / 黄 / 红)
     var statusBarHealthColors: StatusBarHealthColors?
 
+    /// 本机系统通知是否播放默认提示音（nil = 开启）。此设置保存在本机 config.json，
+    /// 不属于 Fleet 配额快照或节点同步内容。
+    var systemNotificationSoundEnabled: Bool?
+
     /// 主菜单 Provider 卡片的自定义顺序。nil 或空数组表示使用默认的
     /// Provider 显示名称字母顺序；这里只保存 canonical QuotaProviderID，不保存显示名。
     var providerCardOrder: [String]?
@@ -399,6 +403,10 @@ struct AppConfig: Codable, Equatable {
 
     var effectiveStatusBarHealthColors: StatusBarHealthColors {
         statusBarHealthColors ?? .default
+    }
+
+    var effectiveSystemNotificationSoundEnabled: Bool {
+        systemNotificationSoundEnabled ?? true
     }
 
     /// 生效的节假日数据源字符串：缺省（nil）= 上游 chinese-days CDN URL；
@@ -451,6 +459,7 @@ struct AppConfig: Codable, Equatable {
         statusBarIconStyle: StatusBarIconStyle? = nil,
         statusBarHealthDotEnabled: Bool? = nil,
         statusBarHealthColors: StatusBarHealthColors? = nil,
+        systemNotificationSoundEnabled: Bool? = nil,
         providerCardOrder: [String]? = nil,
         statusBarPinnedProvider: String? = nil,
         bark: BarkConfig? = nil,
@@ -466,6 +475,7 @@ struct AppConfig: Codable, Equatable {
         self.statusBarIconStyle = statusBarIconStyle
         self.statusBarHealthDotEnabled = statusBarHealthDotEnabled
         self.statusBarHealthColors = statusBarHealthColors
+        self.systemNotificationSoundEnabled = systemNotificationSoundEnabled
         self.providerCardOrder = providerCardOrder
         self.statusBarPinnedProvider = statusBarPinnedProvider
         self.bark = bark
@@ -479,6 +489,7 @@ struct AppConfig: Codable, Equatable {
         case schemaVersion, refreshIntervalSeconds, providers, clientBindings
         case statusBarIconStyle, statusBarHealthDotEnabled
         case statusBarHealthColors
+        case systemNotificationSoundEnabled
         case providerCardOrder
         case statusBarPinnedProvider
         case bark
@@ -536,6 +547,15 @@ struct AppConfig: Codable, Equatable {
         } catch {
             logWarn("[config] statusBarHealthColors 字段解析失败，已按缺省处理：\(error.localizedDescription)")
             self.statusBarHealthColors = nil
+        }
+        do {
+            self.systemNotificationSoundEnabled = try container.decodeIfPresent(
+                Bool.self,
+                forKey: .systemNotificationSoundEnabled
+            )
+        } catch {
+            logWarn("[config] systemNotificationSoundEnabled 字段解析失败，已按默认开启处理：\(error.localizedDescription)")
+            self.systemNotificationSoundEnabled = nil
         }
         do {
             self.providerCardOrder = try container.decodeIfPresent([String].self, forKey: .providerCardOrder)

@@ -119,6 +119,9 @@ struct LLMMonitorApp: App {
         configStore.ensureProvidersPresent(descriptors: descriptors)
         
         let quotaUpdateNotifier = SystemQuotaUpdateNotifier()
+        quotaUpdateNotifier.systemSoundEnabled = { [weak configStore] in
+            configStore?.config.effectiveSystemNotificationSoundEnabled ?? true
+        }
         let barkNotifier = BarkQuotaNotifier(configProvider: configStore)
         self.barkNotifier = barkNotifier
         let state = AppState(
@@ -135,6 +138,9 @@ struct LLMMonitorApp: App {
         appDelegate.appState = state
         appDelegate.quotaUpdateNotifier = quotaUpdateNotifier
         appDelegate.barkNotifier = barkNotifier
+        quotaUpdateNotifier.openProviderDetail = { [weak state] route in
+            state?.requestProviderDetail(route)
+        }
         rightClickHandler.setup(state: state)
         // 节假日数据源：启动解析链（缓存 → 内置快照）+ best-effort 取数。
         // 异步执行、失败保留既有表；放在 App 入口（而非 AppState.start），
@@ -157,8 +163,16 @@ struct LLMMonitorApp: App {
             MenuContentView(state: state, loginItemService: loginItemService)
         } label: {
             MenuBarLabel(state: state, configStore: configStore)
+                .background {
+                    ProviderDetailRouteBridge(state: state)
+                }
         }
         .menuBarExtraStyle(.window)
+
+        Window("Provider 额度详情", id: ProviderDetailWindowView.windowID) {
+            ProviderDetailWindowView(state: state, configStore: configStore)
+        }
+        .defaultSize(width: EdgeDockTheme.popoverWidth, height: 700)
 
         Settings {
             SettingsView(

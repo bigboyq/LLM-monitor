@@ -326,6 +326,8 @@ final class NoopQuotaUpdateNotifier: QuotaUpdateNotifying {
 /// 仅 `notify` / `enqueue` 显式 MainActor（由 MainActor 的 AppState 调用）。
 final class SystemQuotaUpdateNotifier: NSObject,
                                        UNUserNotificationCenterDelegate, @unchecked Sendable {
+    @MainActor var systemSoundEnabled: () -> Bool = { true }
+    @MainActor var openProviderDetail: ((ProviderDetailRoute) -> Void)?
     /// `LLMMonitorApp.init()` 发生在 NSApplication 完成启动之前。此时直接调用
     /// `UNUserNotificationCenter.current()` 会在部分 macOS 版本中触发运行时异常。
     /// 延迟到 applicationDidFinishLaunching 的权限检查（或更晚的通知发送）再创建。
@@ -391,7 +393,7 @@ final class SystemQuotaUpdateNotifier: NSObject,
         return try await center.requestAuthorization(options: [.alert, .sound])
     }
 
-    nonisolated static func sendTestNotification() async -> String {
+    nonisolated static func sendTestNotification(soundEnabled: Bool = true) async -> String {
         guard Bundle.main.bundleIdentifier != nil else { return "当前运行方式不支持系统通知" }
         let center = UNUserNotificationCenter.current()
         let settings = await center.notificationSettings()
@@ -403,7 +405,7 @@ final class SystemQuotaUpdateNotifier: NSObject,
         let content = UNMutableNotificationContent()
         content.title = "LLM Monitor 测试通知"
         content.body = "系统已接受这条测试通知；是否显示横幅由 macOS 通知设置决定。"
-        content.sound = .default
+        content.sound = Self.notificationSound(enabled: soundEnabled)
         let request = UNNotificationRequest(identifier: "llmmonitor-system-test-\(UUID().uuidString)", content: content, trigger: nil)
         return await withCheckedContinuation { continuation in
             center.add(request) { error in
@@ -509,7 +511,8 @@ final class SystemQuotaUpdateNotifier: NSObject,
                 events: group.systemEvents
             )
             content.body = lines.joined(separator: "\n")
-            content.sound = .default
+            content.sound = Self.notificationSound(enabled: systemSoundEnabled())
+            content.userInfo = ["providerID": providerID, "modelName": group.modelName]
             // 线程带 provider 维度：不同 Provider 的同名模型不会串进同一个
             // macOS 通知线程。
             content.threadIdentifier = Self.threadIdentifier(
@@ -535,6 +538,14 @@ final class SystemQuotaUpdateNotifier: NSObject,
     /// macOS 通知线程标识：provider + 模型，避免不同 Provider 的同名模型互串。
     static func threadIdentifier(providerID: String, modelName: String) -> String {
         "quota-update-\(providerID)-\(modelName)"
+    }
+
+    nonisolated static func notificationSound(enabled: Bool) -> UNNotificationSound? {
+        enabled ? .default : nil
+    }
+
+    nonisolated static func presentationOptions(soundEnabled: Bool) -> UNNotificationPresentationOptions {
+        soundEnabled ? [.banner, .sound] : [.banner]
     }
 
     // MARK: - 冷却（与 Bark 队列同口径，抑制阈值抖动刷屏）
@@ -594,8 +605,27 @@ final class SystemQuotaUpdateNotifier: NSObject,
         willPresent notification: UNNotification,
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
-        // 菜单窗口当前处于前台时也显示恢复提示。
-        completionHandler([.banner, .sound])
+        // 菜单窗口当前处于前台时也显示恢复提示；声音遵循本机设置。
+        Task { @MainActor [weak self] in
+            completionHandler(Self.presentationOptions(soundEnabled: self?.systemSoundEnabled() == true))
+        }
+    }
+
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        let userInfo = response.notification.request.content.userInfo
+        let providerID = userInfo["providerID"] as? String
+        let modelName = userInfo["modelName"] as? String
+        completionHandler()
+        guard response.actionIdentifier == UNNotificationDefaultActionIdentifier,
+              let providerID, !providerID.isEmpty
+        else { return }
+        Task { @MainActor [weak self] in
+            self?.openProviderDetail?(ProviderDetailRoute(providerID: providerID, modelName: modelName))
+        }
     }
 }
 

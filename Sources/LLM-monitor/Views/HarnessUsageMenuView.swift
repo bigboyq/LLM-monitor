@@ -723,6 +723,7 @@ struct MenuQuotaOverviewView: View {
     @ObservedObject var state: AppState
     let onRefreshProvider: (String) -> Void
     let onOpenSettings: (ProviderKind) -> Void
+    let onOpenDetails: (String) -> Void
     @State private var revision: UInt64 = 0
 
     private var orderedStatuses: [ProviderStatus] {
@@ -752,7 +753,8 @@ struct MenuQuotaOverviewView: View {
                     localStatus: state.statuses.first { $0.kind == status.kind } ?? status,
                     fleet: state.fleetCardContext(for: status.kind),
                     onRefresh: { onRefreshProvider(status.id) },
-                    onSettings: { onOpenSettings(status.kind) }
+                    onSettings: { onOpenSettings(status.kind) },
+                    onOpenDetails: { onOpenDetails(status.id) }
                 )
             }
         }
@@ -775,6 +777,7 @@ private struct MenuQuotaProviderRow: View {
     let fleet: FleetCardContext?
     let onRefresh: () -> Void
     let onSettings: () -> Void
+    let onOpenDetails: () -> Void
     @State private var isExpanded = false
     @Environment(\.displayDate) private var displayDate
 
@@ -890,6 +893,14 @@ private struct MenuQuotaProviderRow: View {
                     .font(MenuTypography.metricLabel)
                     .foregroundStyle(Color.primaryLabel)
                     .accessibilityLabel("DeepSeek API 账户余额 \(detail.symbol)\(String(format: "%.2f", detail.total))")
+            }
+
+            HStack {
+                Spacer(minLength: 0)
+                Button("查看完整详情", action: onOpenDetails)
+                    .font(MenuTypography.hint)
+                    .buttonStyle(.link)
+                    .accessibilityLabel("查看 \(status.displayName) 完整详情")
             }
         }
         .padding(8)

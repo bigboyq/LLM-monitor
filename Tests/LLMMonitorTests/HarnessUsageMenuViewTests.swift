@@ -46,6 +46,36 @@ final class HarnessUsageMenuViewTests: XCTestCase {
         XCTAssertEqual(MenuQuotaPresentation.emptyState(for: [disabled]), .noEnabledProviders)
     }
 
+    func testProviderDetailRouteKeepsModelContextAndFallsBackForDisabledOrMissingTargets() {
+        let descriptor = FetcherDescriptor(
+            id: "codex_chatgpt",
+            displayName: "ChatGPT Plan",
+            kind: .codexChatGpt,
+            iconSystemName: "sparkles",
+            accentColor: .chatgpt,
+            makeFetcher: { _ in TestQuotaFetcher(providerID: "codex_chatgpt", displayName: "ChatGPT Plan", kind: .codexChatGpt) }
+        )
+        let route = ProviderDetailRoute(providerID: "codex_chatgpt", modelName: "gpt-5")
+        XCTAssertEqual(route.modelName, "gpt-5")
+        XCTAssertEqual(
+            ProviderDetailRouting.target(route: route, statuses: [], descriptors: [descriptor]),
+            .disabled(.codexChatGpt)
+        )
+        XCTAssertEqual(
+            ProviderDetailRouting.target(route: route, statuses: [], descriptors: []),
+            .missing
+        )
+    }
+
+    func testSystemNotificationSoundDefaultsOnAndRoundTripsOff() throws {
+        XCTAssertTrue(AppConfig.default.effectiveSystemNotificationSoundEnabled)
+        var config = AppConfig.default
+        config.systemNotificationSoundEnabled = false
+        let data = try JSONEncoder().encode(config)
+        let decoded = try JSONDecoder().decode(AppConfig.self, from: data)
+        XCTAssertFalse(decoded.effectiveSystemNotificationSoundEnabled)
+    }
+
     /// 今日汇总**双焦点 Hero 卡片**的宽度预算：
     /// 1. 顶栏：标签 + 命中率胶囊，两端对齐且留有 Spacer。
     /// 2. 核心大字行：大号 Token + 最宽混币大号主金额，两端对齐且留有 Spacer。

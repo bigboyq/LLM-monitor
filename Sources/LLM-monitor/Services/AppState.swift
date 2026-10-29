@@ -75,6 +75,33 @@ enum SettingsTab: Identifiable {
     }
 }
 
+/// 完整 Provider 详情窗口的内存路由。modelName 只标明触发通知的模型，
+/// ProviderCardView 本身仍展示完整 Provider 信息，不声称自动滚动或筛选模型。
+struct ProviderDetailRoute: Equatable, Sendable {
+    let providerID: String
+    var modelName: String? = nil
+}
+
+enum ProviderDetailTarget: Equatable {
+    case enabled(ProviderStatus)
+    case disabled(ProviderKind)
+    case missing
+}
+
+enum ProviderDetailRouting {
+    static func target(
+        route: ProviderDetailRoute,
+        statuses: [ProviderStatus],
+        descriptors: [FetcherDescriptor]
+    ) -> ProviderDetailTarget {
+        guard let descriptor = descriptors.first(where: { $0.id == route.providerID }) else { return .missing }
+        guard let status = statuses.first(where: { $0.id == route.providerID }), status.isEnabled else {
+            return .disabled(descriptor.kind)
+        }
+        return .enabled(status)
+    }
+}
+
 /// 全局状态：从 ConfigStore 派生 provider 列表 + 定时刷新
 @MainActor
 final class AppState: ObservableObject {
@@ -111,6 +138,16 @@ final class AppState: ObservableObject {
     /// 窗口；SettingsView 在出现 / 值变化时消费并清 nil（双兜底规避窗口
     /// 尚未创建时的订阅竞态）。
     @Published var pendingSettingsTab: SettingsTab?
+
+    /// 由菜单栏常驻 label 的公开 `openWindow` bridge 消费；仅进程内暂存，
+    /// 路由只在进程内保留最新目标，不持久化跨启动重放。
+    @Published var pendingProviderDetailRoute: ProviderDetailRoute?
+    let providerDetailRouteRequests = PassthroughSubject<ProviderDetailRoute, Never>()
+
+    func requestProviderDetail(_ route: ProviderDetailRoute) {
+        pendingProviderDetailRoute = route
+        providerDetailRouteRequests.send(route)
+    }
 
     // MARK: - 内部
 

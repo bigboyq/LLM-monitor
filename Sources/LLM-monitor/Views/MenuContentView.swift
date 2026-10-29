@@ -342,7 +342,8 @@ struct MenuContentView: View {
                         MenuQuotaOverviewView(
                             state: state,
                             onRefreshProvider: refreshProviderFromMenu,
-                            onOpenSettings: openProviderSettings
+                            onOpenSettings: openProviderSettings,
+                            onOpenDetails: openProviderDetails
                         )
                     }
                     .padding(.horizontal, LayoutMetrics.cardColumnHorizontalPadding)
@@ -418,6 +419,11 @@ struct MenuContentView: View {
         guard let descriptor = state.descriptors.first(where: { $0.kind == kind }) else { return }
         state.pendingSettingsTab = .provider(descriptor)
         openSettingsWindow()
+    }
+
+    private func openProviderDetails(_ providerID: String) {
+        state.requestProviderDetail(ProviderDetailRoute(providerID: providerID))
+        MenuBarAppActivation.activateForWindowPresentation()
     }
 
     private func openEnergySettings() {

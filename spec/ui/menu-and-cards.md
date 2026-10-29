@@ -2,9 +2,9 @@
 
 This file is one of the three UI specs split out of `spec/ui-design.md` (now the
 index). It documents the menu bar item, the menu window structure and the shared
-`ProviderCardView` — whose only live host is the edge-dock popover. The menu has
+`ProviderCardView`, hosted by the edge-dock popover and the single-instance provider-detail window. The menu has
 separate compact usage and quota pages; quota rows reuse the same effective-quota
-and fleet context pipeline without rendering the full provider card.
+and fleet context pipeline; each provider also has a route to the full shared card.
 
 ## Menu Bar Item
 
@@ -533,6 +533,17 @@ The menu footer contains:
   reflects tri-color sleep health — immediately red when keep-awake is on)
 - `更多操作` menu containing `日志` (reveals `log.txt` in Finder) and `退出`
   (`NSApp.terminate`)
+
+### Full Provider Detail Window
+
+The quota page exposes “查看完整详情” for each enabled provider. It opens the same
+`ProviderCardView` in one public SwiftUI `Window`, so all provider-specific sections
+remain reachable even when the edge dock is hidden. The window width follows
+`EdgeDockTheme.popoverWidth` (468pt at the current 420pt chart width, including card
+and host padding). Routes keep an optional notification model name as context only;
+the card is not filtered or scrolled to that model. A disabled provider gets an
+explanation and its settings entry; an unknown provider falls back to Notifications
+settings. The pending route is in-memory only.
 
 ## Provider Card
 
