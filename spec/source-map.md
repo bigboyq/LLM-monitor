@@ -26,7 +26,7 @@
 | `Sources/LLM-monitor/Models/UsageFrameExtractors.swift` | 帧抽取注册表 `usageFrameExtractors`（各 harness 的 ProviderStatus 字段 → `HarnessUsageFrame`，L1 适配） |
 | `Sources/LLM-monitor/Models/UnifiedDailyTokenUsage.swift` | provider 中立日桶与当日 max 修补（`UnifiedDailyUsageNormalizer`） |
 | `Sources/LLM-monitor/Models/MixedCurrencyEstimate.swift` | 跨 provider 金额汇总的统一折算类型（USD ×7 → CNY） |
-| `Sources/LLM-monitor/Services/ClientUsageAggregation.swift` | L3 视图模型纯函数：设置页客户端拆行、菜单 `HarnessTodaySummary` 与今日占比条段 `HarnessClientSegment`、`ProviderStatusStrip` 投影、`HarnessSummaryCache` |
+| `Sources/LLM-monitor/Services/ClientUsageAggregation.swift` | L3 视图模型纯函数：设置页客户端拆行、菜单 `HarnessTodaySummary` 与今日占比条段 `HarnessClientSegment`、`HarnessSummaryCache` |
 | `Sources/LLM-monitor/Services/LayoutMetrics.swift` | Services 与 Views 共读的排版常量（图表宽 / 卡片列与内容层内边距） |
 | `Sources/LLM-monitor/Models/ModelPricingCatalog.swift` | 计价引擎：加载 `Resources/ModelPricing.json`（首条命中 / exact / matchAll / zhipu 兜底 / 下划线归一化）并应用 DeepSeek 高峰倍率；资源 bundle 整体缺失时先过 `ResourceBundleProbe`、降级为空目录并记 error（不再启动即崩），bundle 在而 JSON 缺失 / 解析失败仍 preconditionFailure |
 | `Sources/LLM-monitor/Models/ResourceBundleProbe.swift` | 资源 bundle 探测：按 SwiftPM 生成的 accessor 同序候选路径判断 `Bundle.module` 是否可用（`probe` 可注入、`isResourceBundleAvailable` 进程内缓存），供定价 / 节假日资源加载在缺失时走降级而不是 fatalError |
@@ -156,7 +156,7 @@
 | `Sources/LLM-monitor/Views/MenuContentView.swift` | 主面板（header / content / footer；header 右组 = scope 下拉 + 本地用量裸刷新时间 + 刷新）+ 高度桥 `MenuPanelHeightBridge`（`contentMaxSize` = 屏幕可见高 × 0.70）+ `MenuHairline`；展示时钟经 `\.displayDate` 注入卡片 |
 | `Sources/LLM-monitor/Views/FleetScopeSwitcher.swift` | fleet scope 切换控件（菜单面板与 dock 详情浮层共用：≤4 段整行、>4 紧凑下拉）：`FleetScopeSwitcher` 按选项总数分叉（≤4 分段 `Picker`、>4 下拉 `FleetScopeMenu`），`FleetScopeMenu` 是下拉形态——范围文字 + 行内 `ellipsis` 标记，整组上限 120pt，截断走纯函数 `FleetScopeMenu.truncated(_:maxWidth:)`；三个 macOS `Menu` 平台怪癖（行内图 / 字符串层限宽 / 必须 `fixedSize`）写在文件头 |
 | `Sources/LLM-monitor/Views/DisplayClock.swift` | 跨宿主共享的展示时钟：`DisplayClock` + `DisplayClockScope` + `\.displayDate` 环境键；菜单内容 / hover 浮层 / dock 浮层各自持有实例、随宿主显隐 start/stop 并注入环境 |
-| `Sources/LLM-monitor/Views/HarnessUsageMenuView.swift` | 菜单的 Harness（客户端）视角：顶部一屏全局今日汇总（`HarnessUsageMenuView`：数字行 + 客户端占比条 `HarnessClientProportionBar` + 图例 `HarnessClientLegend`）→ 按客户端分段（`HarnessSectionView`）→ 段内按模型一行（`HarnessModelRowView`）→ 底部 provider 兜底状态条（`ProviderStatusStripView`，hover 出完整卡片）。与 `ProviderCardView` 并列而非替代；模型行的 334pt 宽度预算（含 8pt 缩进，菜单 360pt / 内容 336pt）由 `HarnessUsageMenuViewTests` 钉住 |
+| `Sources/LLM-monitor/Views/HarnessUsageMenuView.swift` | 菜单用量摘要与紧凑额度摘要（`HarnessUsageMenuView` / `MenuQuotaOverviewView`）：今日汇总与客户端占比条 → 默认折叠的客户端段 / 模型明细；额度行复用 fleet effective quota 并标注远端来源、新鲜度和窗口重置时间，DeepSeek 保留无窗口时的余额显示；`MenuContentMode` 由 `MenuContentView` 持久化。模型明细两行布局的自然宽度由 `HarnessUsageMenuViewTests` 覆盖 |
 | `Sources/LLM-monitor/Views/MenuTypography.swift` | 菜单面板与悬浮层统一排版常量（语义角色，禁止散落硬编码字号） |
 | `Sources/LLM-monitor/Views/MenuWindowAutoCloseBridge.swift` | 失焦立即关 + 30s 无交互关闭（菜单内 mouse/scroll/key 重置计时）；关闭统一出口 `performClose` 并发 `onPanelClose`（菜单展示时钟随之停表）；30s 计时为单个可复用 `DispatchSourceTimer`（reset 只改 deadline，鼠标事件不再重建句柄） |
 | `Sources/LLM-monitor/Views/ProviderCardDerived.swift` | 卡片 body 的派生值入口：投影 + 额度窗口快照 + 「今」行 + 「闲」行（GLM 今日闲时，`offPeakUsageRow`）+ 「免 / 速 / 它」今日动态行（`glmCategoryUsageRows`，按 `GlmUsageCategory` 今日切片）打包成一个 memo 值（共享失效条件；键 = 全值 `status` + 墙钟日 + 展示日 + `HolidayCalendar.sharedRevision` + 时区标识），展示时钟每秒 tick 不再重算 O(samples) 定价 |

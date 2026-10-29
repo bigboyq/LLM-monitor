@@ -2,9 +2,9 @@
 
 This file is one of the three UI specs split out of `spec/ui-design.md` (now the
 index). It documents the menu bar item, the menu window structure and the shared
-`ProviderCardView` — whose only live host is the edge-dock popover (the menu's
-provider strip hover card is gone with the strip itself, see §Provider fallback
-strip below).
+`ProviderCardView` — whose only live host is the edge-dock popover. The menu has
+separate compact usage and quota pages; quota rows reuse the same effective-quota
+and fleet context pipeline without rendering the full provider card.
 
 ## Menu Bar Item
 
@@ -143,36 +143,43 @@ height: content-driven, fixedSize(vertical: true)
 +------------------------------------------------+
 | chart.bar.xaxis  LLM Monitor      21:09  ↻   |
 +------------------------------------------------+
-| 今日合计 1.2M   60%  ¥18.40（含$2.5）          |   global today summary（刷新时间在标题栏右组）
+| [ 用量 ] [ 额度 ]                             |   persisted local page choice
+| 今日合计 1.2M   60%  ¥18.40（含$2.5）          |   usage page; freshness is in the header
 |  █████▓▓▓▓░░░  客户端占比条（色=主力provider）  |
 |  ⌘ MiniMax Code  ⌘ Codex …                     |   legend: 着色客户端图标 + 名字，放不下换行
 +------------------------------------------------+
-| ▸ OpenCode                820K      205  10.5  |   section: client + subtotal + speed + value
-|   gpt-5.5   ███░░░  620K  62%  246  $11.30     |   model row (speed = tok/s)
-|   GLM-5.3   ██░░░░  200K  40%  118   ¥33.00    |
-| ▸ Codex                    380K  190  $7.10    |
-|   gpt-5.5   ██░░░░  380K  58%  190   $7.10     |   header speed == row speed for a single-provider client
+| ▸ OpenCode                820K      205  10.5  |   collapsed client section
+|   gpt-5.5                         620K tokens   |   expanded model details use two compact rows
+|     [token buckets]  缓存命中 62%  值 $11.30    |
 | ⚠ 会话文件超出单轮扫描预算，已按最新优先截断…   |   truncation notice (that section only)
 | ...                                            |
 +------------------------------------------------+
-| 更新于 HH:mm / 下次 HH:mm / 就绪   ⏻ 自启 | 设置 | 节能 | 日志 | 退出 |
+| 更新于 HH:mm / 下次 HH:mm / 就绪   ⏻ 自启 | 设置 | 节能 | ⋯ |
 +------------------------------------------------+
 ```
 
-（provider fallback strip 行已随 8e7278a 从菜单移除，图中不再有该行；footer 右侧
-功能组竖线分隔，自启是 power / power.dotted 状态化图标按钮，无 ✓/✗ 文字。）
+额度页按启用 provider 顺序呈现紧凑摘要，支持单 Provider 刷新、未配置项定位到
+对应设置，以及可展开的套餐/重置时间；DeepSeek 即使没有窗口额度也显示余额。
+额度始终使用本机优先、必要时 elected 的全局有效值。菜单顶部 scope 仅切换用量；
+多节点额度页会标明当前用量范围与额度仍为全局有效值。内容高度由当前页实测，
+超过屏幕预算时内容区滚动，标题和 footer 保持固定。
 
-The menu is the **Harness (client) view**, not the Provider view. The header and
-footer are unchanged, but the content area answers "which clients burned how many
-tokens today" instead of "how much quota is left per provider". The menu no longer
-renders provider cards; the per-provider quota reading lives in the edge status
-dock, the hover panels and Settings（原内容区底部的 provider 兜底 strip 已随 8e7278a
-整体移除，见下文删除记录）.
+（footer 右侧功能组竖线分隔，自启为状态化图标按钮；日志与退出收进「更多操作」。）
+
+The menu offers two complementary views: **用量** answers which clients burned how
+many tokens today, and **额度** answers how much remains per enabled Provider. The
+quota page is available when the edge dock is hidden and remains a compact summary;
+full provider cards and their richer quota detail remain in the edge-dock popover.
 
 **Scope switcher** (`FleetScopeSwitcher`): one shared control, used by the menu
 header (right group, next to the refresh button) **and** by the provider-card
 header in the dock detail popover. It has two forms, split by the **option count**
 (全局 + 本机 + remote nodes):
+
+In the menu, this control applies to the **用量** page only. The quota page always
+uses the sync layer's effective global quota (local first, elected fallback), and
+when multiple nodes are present it names the selected usage scope so the two data
+axes cannot be confused.
 
 - **≤ 4 options → segmented control** — a `Picker` with `.pickerStyle(.segmented)`
   (mini size): 全局 / 本机 / each remote node. One click to switch, everything
@@ -337,7 +344,8 @@ per-client sections」描述的是**本机 scope** 的内容区；多机联动�
     - **段色 = 主力 provider 的卡 accent 色**：客户端横跨多个 provider 分片时（ZCode / DSH / OpenCode）取今日 token 最大的一路，并列取 quotaProviderID 字典序小者（`HarnessClientSegment.dominantQuotaProviderID`）。色值经 `AccentColor.cardAccentColor`（`Color+Theme.swift`，与 provider 卡描边 / 进度条健康态同源；minimax 亮紫 `#A855F7` / chatgpt 绿 / antigravity 蓝 / glm 靛蓝 / deepseek 青），未知 / 缺失的 providerID 回退灰；
     - 归一化口径与 `TokenBucketBar` 一致：负值按 0、Double 累加分母、总量 ≤ 0 全 0（纯灰底），不产生 NaN；条高沿用 `TokenBucketBar.standardHeight`（7pt）；每段挂 `.help`：「MiniMax Code 355M（77%）」；
     - **图例**把颜色翻译回客户端并直观标注量级：`<着色图标> MiniMax Code 355M  <着色图标> Codex 120M …`。图标取 `ClientDescriptor.iconSystemName(forClientID:)`，着色即段色，紧随其后展示该客户端紧凑 Token 读数；hover 上仍挂「MiniMax Code 355M（77%）」完整 tooltip。chip 超出行宽**换行**（`WrapLayout`）而不是截断；段列表为空（今日无活动）时条只剩灰底、图例整行不画。
-- **Per-client sections**, ordered by today-token descending. A client with no
+- **Per-client sections**, ordered by today-token descending and collapsed by
+  default; the disclosure header keeps the client subtotal visible. A client with no
   today activity is dropped entirely rather than shown as an empty section. Each
   section header carries the client name (`ClientDescriptor`), the section token
   subtotal, the section speed summary and the section value — the value again a
@@ -350,11 +358,11 @@ per-client sections」描述的是**本机 scope** 的内容区；多机联动�
   its column below — the token subtotal used to be natural-width and drifted
   over the speed column once the rows gained one. The placeholder is
   `Color.clear` (no hit area, height 0) — it only pins the x positions.
-- **Per-model rows inside a section**, keyed by
+- **Per-model rows inside an expanded section**, keyed by
   `(clientID, quotaProviderID, modelName)`; samples with no usable model name
-  collapse into a single 「模型名缺失」 row. Each row is: model name (tail-truncated,
-  100pt) + `TokenBucketBar` (fills the remainder, ≥40pt) + tokens (40pt) + hit rate
-  (36pt) + speed (32pt) + value (56pt). The row value is the **single-provider,
+  collapse into a single 「模型名缺失」 row. Each row is a compact two-line block:
+  model name + token total; `TokenBucketBar`; then labeled cache-hit percentage,
+  speed and value. The row value is the **single-provider,
   single-currency** original amount (`ModelCostEstimate.displayText`: `¥3.21` /
   `$9.80` / `未定价`) — cross currency folding happens only at section and global
   level, never per row. The speed cell shows the row's today token rate in tok/s
@@ -375,17 +383,10 @@ per-client sections」描述的是**本机 scope** 的内容区；多机联动�
   The global summary row carries no speed — the rate is a per-client/per-model
   metric, not a global one.
 
-Row column budget: 92 + 40 + 40 + 36 + 32 + 56 = 296pt plus 5×6pt spacing and 8pt
-scope indentation = 334pt, inside the 336pt content area (360pt panel − 2×12pt padding).
-Numeric columns are
-fixed-width, right-aligned and `monospacedDigit`, so a refresh never shifts the row.
-The bar minimum used to be 72pt; when the speed column was added (2026-10) the six
-columns no longer fit and the bar floor was compressed first — a truncated model
-name loses more information than a narrower bar. The model-name column is
-**fixed-width**, not `maxWidth`: `TokenBucketBar` wraps a
-`GeometryReader` (greedy), and a flexible name column loses the whole row to it.
-`HarnessUsageMenuViewTests` pins both the column budget and the row's natural width
-(334pt) so that regression cannot come back silently.
+The current two-line rows use the available 336pt content width without the old
+six-column reservation. This keeps names and the labeled value/cache metrics
+readable, while the disclosure groups keep the default menu height compact. The
+row natural width is covered by `HarnessUsageMenuViewTests`.
 
 **Model name display** (`HarnessModelRow.compactDisplayName`, model layer): the
 column shows a *compacted* name, so that what fits in the 92pt budget is the
@@ -478,118 +479,11 @@ target reads as "these numbers". **节点 scope 的段头没有右键**——刷
 节点数据由同步链路维护（`spec/sync.md` §10.2）。
 
 **Provider fallback strip — removed from the menu** (用户裁定 2026-10-24, 8e7278a):
-the last-row provider strip no longer renders in the menu at all (its remaining
-meaning was "which providers are present", which the user read as noise). The
-`ProviderStatusStripView` struct and its tests are retained but unreferenced by
-production. Quota presence is visible in Settings and the edge-dock cards. The
-`ProviderStateLabel` freshness capsule **and the hover `ProviderCardView` popover
-were removed** (用户裁定 2026-10-24, ac170ca): the strip only answers "which
-providers are present"; quota detail lives in the edge-dock hover card and
-Settings. Each element keeps its single interaction — left-click refreshes that
-provider (`RefreshMenuItem` chain unchanged).
-
-**以下直到 busy-state 段的 strip 布局 / 可见集 / hover 卡 / 点击刷新描述均为删除记录**
-——它们描述的是移除前（以及结构体保留至今）的行为档案，生产菜单不再渲染任何 strip 行。
-Visible set = 本机已启用 ∪ 仅有
-elected 额度的 provider（`AppState.fleetVisibleStatuses`）. It is separated from
-the sections above by a
-`MenuHairline.horizontal`, and its data comes from the pure projection
-`ProviderStatusStrip.snapshot(statuses:limit:)`:
-
-- only **enabled** providers are shown — the filter lives in the projection, not in
-  the call site, so a forgotten filter cannot surface a card the user switched off;
-- providers **without** quota data (not configured / failed / pending) are shown too:
-  that is the whole point of the row, since "not displayed" and "no data" must not
-  look the same;
-- at most `maximumVisibleCount` (**5**) elements fit: the widest element (logo + an
-  `.ok` `HH:mm` capsule) measures 54pt, so five elements + 4×4pt spacing = **286pt**
-  inside the 336pt content area (50pt of drift margin); a sixth (344pt) would clip, so
-  it is not squeezed in. Whatever does not fit is folded into the count reported by
-  `hiddenCount` and rendered as 「+N」, so "five shown" is never read as "five
-  registered";
-- when truncation happens, the **worst** entries are the ones kept
-  (`ProviderStatusStrip.priority`: state first — failed > not configured/ready >
-  loading > ok — then quota health), because a failed card has no trustworthy
-  `aggregateHealthLevel()` (`nil`) and would sort last if health were ranked alone.
-  The kept entries stay in the user's configured order (`providerCardOrder`); only
-  *which* ones survive changes, never their order.
-
-Hovering one element opens the **full `ProviderCardView(status:)`** in the existing
-hover `NSPanel` (`HoverInfoRow` → `HoverPanelController`, the same mechanism as every
-other menu hover detail; 0.22s delay, 0.08s re-arm when switching, 6pt cursor gap,
-right edge flips to the cursor's left, bottom edge flips above the cursor). The panel
-accepts mouse events (`ignoresMouseEvents = false`, `acceptsMouseMovedEvents = true`,
-`allowsToolTipsWhenApplicationIsInactive = true`, plus `PanelTrackingView` / `HoverHostingView`
-`acceptsFirstMouse = true` and `canBecomeKey = false` / `canBecomeMain = false`
-overrides — the overrides are the load-bearing half: a borderless nonactivating panel
-becomes key on click by default, and the menu auto-closes on
-`didResignKeyNotification`, so without it the first click on the card would tear the
-menu down). A 0.25s hover bridge
-(`HoverPanelController.scheduleHide` on row exit + panel-side enter/exit tracking,
-guarded by `isMouseInsidePanel` against event reordering) keeps the card alive while
-the cursor is over it, making the timestamp taps reachable; `HoverPanelController.activeSourceID`
-binds the presenting strip row to the panel so model status transitions (e.g. entering
-`.loading` on tap) keep pushing live updates to the card even when the cursor has moved
-onto the panel; capsules carry `contentShape(Capsule())` and pointing-hand cursor
-feedback (a `set`-based overwrite reset to arrow when the panel hides — `push/pop`
-leaves a stuck hand when the card vanishes under the cursor without delivering
-`onHover(false)`) for reliable hit-testing. The panel
-host owns a shared display clock (`HoverPanelController.displayClock`) that starts/stops
-with the panel's show/hide and is injected through `DisplayClockScope` — without it
-the in-card peak countdown / freshness capsule would read the environment key's static
-fallback value (`DisplayDateKey.defaultValue` is a `static let`, evaluated once per
-process, permanently frozen). The card
-is pinned to `hoverRevealMode = .alwaysVisible` (`ProviderStatusStripView.cardRevealMode`)
-and to the dock popover's card width (`EdgeDockTheme.popoverWidth` minus its backdrop
-padding — writing the menu's 360pt there would cut 24pt off the 7-day chart) and is
-laid out exactly like the dock's card: the same three sections (Account Info row →
-Plan Info's four resident modules → the 7-day card), see `spec/ui/edge-dock.md`
-§Two cards, titles outside and §Quota window usage block. `.alwaysVisible` keeps one real job for the 7-day
-chart: in that mode the chart does not draw its own title row (the card title row
-outside carries it), so a wrong mode shows the title twice or not at all — the panel
-is a hover-driven popup (it accepts mouse events since 2026-10, but its lifetime still
-follows the row's hover), and every formerly hover-collapsed section has
-been **resident** since the 2026-10 second-round pass (the quota-window usage table,
-the per-card reset-credit list and the account row render in both modes). `HoverPanelController.maximumPanelWidth`
-was raised to `EdgeDockTheme.popoverWidth` for the same reason it used to be sized
-for the 7-day chart: the panel must fit the widest detail. Vertical fit is handled by
-`frameForPanel` clamping to the screen's visible frame (the resident form grew the
-fullest card; `LayoutMetricsTests` keeps it under an 800pt ceiling) — on a short
-display the clamp wins and the dock popover's `ScrollView` fallback
-(see `spec/ui/edge-dock.md` §Hover behaviour → Size) keeps the overflow reachable.
-
-**Two interactions share one element**, and the split between them is the point:
-
-| Input | Action | Why it is this one |
-|---|---|---|
-| **Left click** | Refresh this provider immediately | The element is the only thing in the panel you can left-click onto a *specific* provider with — the hover card's clickable affordances are the refresh-all-scoped timestamp taps, and the header's 「立即刷新全部」 is scoped to everything. No explicit menu, no discovery cost |
-| **Hover** | Pop the full `ProviderCardView` | Read-only. It issues **no** network request — a pointer merely crossing the row must not spend a provider's fetch budget |
-
-The tap path goes through `ProviderStatusStripView.RefreshMenuItem`, a plain value type
-carrying `providerID` + `displayName` and the `perform` routing (it used to back a
-right-click `刷新 <provider>` menu item as well; that duplicate entry point was removed
-once the left click covered the same action). The host is still
-`MenuContentView.refreshProviderFromMenu` → `AppState.refreshOne`. `onTapGesture`
-has no addressable seam in SwiftUI, so both the item and the tap closure
-(`tapHandler(for:onRefresh:)`) are `static` and pinned by tests instead.
-
-The single-provider refresh is the per-provider entry point the menu lost when the
-provider cards were replaced by the client view. It routes to
-`AppState.refreshOne(providerID:)` (the same call the old cards' single 「立即刷新」
-item used), so only that provider is fetched and only that provider's schedule is
-re-anchored; the other providers' next tick is untouched
-(`AppStateTests.testRefreshOneReanchorsOnlyRefreshedProvider`). It exists for **every**
-entry in the strip, including `.notConfigured` / `.failed` ones — retrying is exactly
-the action those need.
-
-**No element of the strip carries a UI-side busy state.** There is no per-provider
-in-flight flag to key on (and none was invented for this): `refreshOne` opens with the
-global in-flight gate (`refreshScheduler.beginExternalJob()`), so a repeat tap is a
-silent no-op that only re-anchors the same provider, and a UI-side busy state would
-only drift from the global verdict (the header spinner's `AppState.isRefreshJobActive`
-is the only such flag). Feedback comes from the capsule the element already carries
-(it moves to a refreshing state and then back to `HH:mm`) — a dead-looking button
-during a rapid re-click reads worse than one that just does nothing twice.
+the old last-row provider strip and its hover card remain removed. Phase 2 adds a
+separate quota page to the existing menu, so quota is directly available without
+the edge dock. The old strip projection, view, and strip-specific tests were deleted
+because no production host remained. The Settings provider refresh action is now
+independent of that removed menu feature.
 
 The content area scrolls when needed. `MenuPanelHeightBridge` caps the menu window at
 70% of the screen's visible height; when the cap is reached, only the content list
@@ -631,21 +525,20 @@ scrolling never pushes content under the Dock, while the menu still reads as
 `ScrollView` far too often.
 
 The menu footer contains:
-- `自启 ✓` / `自启 ✗` login item status indicator
+- the autostart state icon (with help text)
 - refresh status (`更新于 HH:mm` / `下次 HH:mm` / `就绪`)
 - `设置` (opens native Settings window)
 - `节能` (1-click keep-awake in-memory toggle; the icon flips `powersleep` →
   `cup.and.saucer.fill` and the label to `防休眠` while it is on, and the overlay dot
   reflects tri-color sleep health — immediately red when keep-awake is on)
-- `日志` (reveals `log.txt` in Finder)
-- `退出` (`NSApp.terminate`)
+- `更多操作` menu containing `日志` (reveals `log.txt` in Finder) and `退出`
+  (`NSApp.terminate`)
 
 ## Provider Card
 
 `ProviderCardView` 只有**一个**渲染宿主形态：边缘状态窗的 provider 详情浮层（固定
-`.alwaysVisible`）。菜单内容区是客户端视角，不再渲染 provider 卡；原「菜单底部
-provider 兜底行 hover 出来的那张卡」宿主已随兜底行移除（8e7278a，见上文删除记录），
-这张卡没有"菜单形态"了。
+`.alwaysVisible`）。菜单有独立额度摘要页，但不承载完整 provider 卡；旧「菜单底部
+provider 兜底行 hover 卡」宿主已随兜底行移除（8e7278a，见上文删除记录）。
 
 **卡上两处时间戳统一为裸 "hh:mm"，点击按位置刷各自的数据（2026-10-13 引入，2026-10-18
 拆分语义）**：headerContent 右侧的 `ProviderStateLabel` 与段3 标题行的
@@ -670,11 +563,9 @@ provider 兜底行 hover 出来的那张卡」宿主已随兜底行移除（8e72
 `EdgeDockController+Popover` 的 `popoverContent` 用 controller 经 `attach(state:)`
 持有的 `AppState` 注入（浮层宿主是 `HoverPanelController` 自己的 NSHostingView，外层
 环境进不来，只有随视图显式注入的键值能跨宿主存活，与 `\.hoverRevealMode` 同因）。
-原菜单兜底行的注入链路（`MenuContentView.refreshProviderFromMenu` /
-`refreshUsageRescanFromMenu` → `ProviderStatusStripView`）随 strip 移除而消失。
-手势挂在 `ProviderCardView` 的两个使用点上，**不进** `ProviderStateLabel`
-内部——原兜底行本体复用该视图做 headline，行级已有自己的 tap（刷新单个 provider），
-手势进视图内部会打架；该约束随宿主减少而只剩历史意义，保留以防新增宿主重蹈。
+旧菜单 strip 的用量重扫与 hover 注入链路随 strip 移除而消失；当前额度页的单 Provider
+刷新走 `MenuContentView.refreshProviderFromMenu`，仅刷新目标 Provider。卡片手势不进入
+`ProviderStateLabel` 内部，dock 卡时间戳仍由宿主注入动作。
 
 `ProviderCardView` 是 thin coordinator，额度行、浮层、图表和账号详情按职责分文件维护；body 的派生值（投影 / 额度窗口快照 / 「今」行 / 「闲」行 / 「免 / 速 / 它」今日动态行）收在 `Views/ProviderCardDerived.swift` 的值键 memo 里（`Models/DerivedValueMemo.swift`），只有输入真的变了才重算：
 - `QuotaViews.swift` — 所有 quota 行 / 进度条 / 重置卡 / `EquivalentQuotaAllocation`
@@ -820,16 +711,10 @@ Current behavior:
 - if the bottom does not fit, clamp to the screen visible frame
 - attach to the menu window via parent-child relationship
 
-This is currently used for exactly two things:
+This is currently used for exactly one thing:
 
 - the header's **sleep-blockers notice** (`SleepOffendersHoverView`, the same rows as
   Settings → Energy check 1) — hover-only, no click action
-- **the menu's provider fallback strip**: hovering one provider element shows the full
-  `ProviderCardView(status:)` for that provider, at the dock popover's card width
-  (`EdgeDockTheme.popoverWidth` − backdrop padding) and in its `.alwaysVisible` layout
-  — the same card the dock shows, reached from the menu. Vertical fit is handled by
-  `frameForPanel` clamping to the screen's visible frame; `LayoutMetricsTests` keeps
-  the resident card under an 800pt ceiling (900pt for the fullest fixture).
 
 Everything else that used to hang off a hover panel is gone: the ChatGPT `Last Prompt`
 summary, the merged `5h / 周` local-usage column, the quota-window detail views and the

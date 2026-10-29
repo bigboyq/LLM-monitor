@@ -13,10 +13,9 @@ flowchart TD
   App --> AppState["AppState\n@MainActor"]
 
   MenuBar --> MenuContentView["MenuContentView"]
-  MenuContentView --> Harness["HarnessUsageMenuView\n(客户端视角: 汇总/分段/兜底行)"]
+  MenuContentView --> Harness["HarnessUsageMenuView\n(用量: 汇总/可折叠客户端)"]
+  MenuContentView --> QuotaOverview["MenuQuotaOverviewView\n(额度: 有效额度/余额/套餐详情)"]
   MenuContentView --> AutoClose["MenuWindowAutoCloseBridge"]
-  Harness --> Strip["ProviderStatusStripView\n(兜底行, hover 出完整卡片)"]
-  Strip --> HoverPanel["floating hover panel\nNSPanel + parent-child\n(clickable, 0.25s hover bridge)"]
 
   AppState --> Statuses["[ProviderStatus]"]
   AppState --> LoopA["循环 A: ProviderRefreshScheduler\n(单 Task 额度循环 / 最早截止时间休眠 / 并发隔离)"]

@@ -564,7 +564,7 @@ struct SettingsView: View {
 /// 设置页 provider pane 里那枚「立即刷新」按钮的**数据形态**（路由 + 禁用
 /// 决策，不含 SwiftUI 视图）。
 ///
-/// 提成值类型与菜单侧 `ProviderStatusStripView.RefreshMenuItem` 同一理由：
+/// 将刷新路由提成值类型，使设置页按钮的 provider id 与在飞禁用策略可独立验证：
 /// SwiftUI `Button` 没有可寻址的测试缝，断言只能落在喂给它的这份数据与
 /// `perform` 的路由上——「按钮把哪个 providerID 交出去」「在飞时禁不禁用」
 /// 都在这里被单测钉住，视图只负责把结果画出来。

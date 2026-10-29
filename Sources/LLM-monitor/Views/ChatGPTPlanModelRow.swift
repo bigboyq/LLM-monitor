@@ -15,8 +15,8 @@ struct ChatGPTPlanModelRow: View {
 
     /// 直接渲染 dock 形态。此前是 `if isDockLayout { dockBlock } else { menuLayout }`：
     /// 判据 `ProviderCardLayout.liftsProgressBar(mode:)` 恒为真（生产路径上唯一的宿主
-    /// 就是这张卡，而两个宿主都注入 `.alwaysVisible`——`EdgeDockController.popoverContent` /
-    /// `HarnessUsageMenuView.cardRevealMode`），所以菜单那一支跑不到，连同它的独占
+    /// 就是这张卡，`EdgeDockController.popoverContent` 注入 `.alwaysVisible`；旧菜单
+    /// provider-card 宿主已删除，所以菜单那一支跑不到，连同它的独占
     /// 子视图（`QuotaCombinedUsageRow` / `QuotaSingleUsageRow` /
     /// `LastPromptHoverSummaryView`）一并删除。
     /// 新的渲染宿主若要换形态，届时是**恢复分支**而不是从死代码里挑。

@@ -209,8 +209,8 @@ Otherwise:
 - `HarnessUsageMenuView`（scope 总览 + client sections）。多机联动启用且 multiNode 时
   内容区顶部还有 scope 控件（≤ 4 项的分段形态在「今日」卡上方）与三 scope 统一总览，
   规则见 `spec/ui/menu-and-cards.md` §Scope switcher 与 §Content structure。
-  **provider 兜底 strip 已随 8e7278a 从菜单移除**（`ProviderStatusStripView` 结构体
-  保留但生产无引用）——`ProviderStatusStripView` 不再是内容区最后一行
+  菜单提供「用量 / 额度」切换；额度页使用 `MenuQuotaOverviewView`，独立于 edge dock。
+  旧 provider 兜底条的无宿主实现及专属测试已清理。
 
 The context menus that used to hang off each provider card now hang off narrower
 targets:

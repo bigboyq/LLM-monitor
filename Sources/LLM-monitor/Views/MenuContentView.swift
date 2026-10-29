@@ -10,14 +10,21 @@ struct MenuContentView: View {
     @ObservedObject var state: AppState
     @ObservedObject var loginItemService: LoginItemService
     @Environment(\.openSettings) private var openSettings
+    @AppStorage("menu.contentMode") private var menuContentMode = MenuContentMode.usage.rawValue
     @StateObject private var displayClock = DisplayClock()
     /// 强制本地 UI 重渲染计数（用于同步响应 sleepHealth 状态变更）
     @State private var energyUpdateTick = 0
     /// `MenuBarExtra` 缓存有时不跟随 ObservableObject 的嵌套变化；fleet 快照
     /// 与 scope 走专属广播，在此显式刷新菜单视图，不使本地汇总缓存失效。
     @State private var fleetUpdateTick = 0
-    /// 动态测量卡片列表的自然排版高度
-    @State private var measuredCardsHeight: CGFloat = 0
+    /// 当前页非 Lazy 子内容的自然高度（在 ScrollView 内测量，不受 viewport 约束）。
+    @State private var measuredPageHeight: CGFloat = 0
+    /// segmented page selector 的实际布局高度。
+    @State private var measuredSwitcherHeight: CGFloat = 0
+    /// 面板高度桥接使用包含 selector 的自然内容高度。
+    private var measuredCardsHeight: CGFloat {
+        measuredPageHeight + measuredSwitcherHeight + HarnessUsageMenuView.sectionSpacing
+    }
     /// 菜单所在屏幕的可用高度（从顶部菜单栏到屏幕底部的实际空间）
     @State private var screenAvailableHeight: CGFloat = 0
     /// 菜单所在屏幕的可见高度（扣除 Dock 等后的可见区域，用于 70% 封顶）
@@ -33,13 +40,16 @@ struct MenuContentView: View {
 
     /// “如果屏幕能展示就展示，不能展示按屏幕大小 70% 做”
     private var maxScrollViewHeight: CGFloat? {
-        guard screenAvailableHeight > 0, measuredCardsHeight > 0 else { return nil }
+        guard screenAvailableHeight > 0, measuredPageHeight > 0, measuredSwitcherHeight > 0 else { return nil }
         let totalNaturalHeight = measuredCardsHeight + MenuPanelHeightBridge.chromeHeight
         if totalNaturalHeight <= screenAvailableHeight {
             return nil // 能展示就展示：无高度上限，全部自然展开
         }
         // 不能展示，按屏幕大小 70% 做：
-        let budget = MenuPanelHeightBridge.cappedHeight(screenVisibleHeight) - MenuPanelHeightBridge.chromeHeight
+        let budget = MenuPanelHeightBridge.cappedHeight(screenVisibleHeight)
+            - MenuPanelHeightBridge.chromeHeight
+            - measuredSwitcherHeight
+            - HarnessUsageMenuView.sectionSpacing
         return max(budget, 120)
     }
 
@@ -82,8 +92,13 @@ struct MenuContentView: View {
         })
         .fixedSize(horizontal: false, vertical: true)
         .onPreferenceChange(CardsContentHeightKey.self) { h in
-            if h > 0 && abs(measuredCardsHeight - h) > 0.5 {
-                measuredCardsHeight = h
+            if h > 0 && abs(measuredPageHeight - h) > 0.5 {
+                measuredPageHeight = h
+            }
+        }
+        .onPreferenceChange(MenuPageSwitcherHeightKey.self) { h in
+            if h > 0 && abs(measuredSwitcherHeight - h) > 0.5 {
+                measuredSwitcherHeight = h
             }
         }
         .environmentObject(displayClock)
@@ -237,89 +252,137 @@ struct MenuContentView: View {
     /// `ViewThatFits` 的用法）。`.fixedSize` 是必需的——没有它，被测量的
     /// 宽度等于「被压缩后的宽度」，永远算作「放得下」，降级分支就不会触发。
     private func headerSleepBlockersNotice(offenders: [SleepAssertionOffender], compact: Bool) -> some View {
-        HoverInfoRow {
-            Text(compact ? "\(offenders.count) 个应用" : "\(offenders.count) 个应用正在阻止休眠")
-                .font(MenuTypography.metricLabel)
-                // 面板为玻璃材质，层级色 .secondary 会被 vibrancy 混得偏淡
-                // （浅色下尤其明显）；用与标题同体系的固定 NSColor 次级色。
-                .foregroundStyle(Color.secondaryLabel)
-                .lineLimit(1)
-        } detail: {
-            SleepOffendersHoverView(offenders: offenders)
+        HStack(spacing: 4) {
+            HoverInfoRow {
+                Text(compact ? "\(offenders.count) 个应用" : "\(offenders.count) 个应用正在阻止休眠")
+                    .font(MenuTypography.metricLabel)
+                    .foregroundStyle(Color.secondaryLabel)
+                    .lineLimit(1)
+            } detail: {
+                SleepOffendersHoverView(offenders: offenders)
+            }
+            Button(action: openEnergySettings) {
+                Image(systemName: "arrow.up.right.square")
+                    .font(MenuTypography.hint)
+            }
+            .buttonStyle(.plain)
+            .help("打开节能设置查看阻止休眠的应用")
+            .accessibilityLabel("打开节能设置查看阻止休眠的应用")
         }
         .fixedSize(horizontal: true, vertical: false)
     }
 
-    // MARK: - content（Harness 客户端视角：全局今日汇总 + 按客户端分段）
+    // MARK: - content（用量 / 额度双视图）
 
     @ViewBuilder
     private var content: some View {
         // 汇总口径与分段口径同源：都在这一处按"启用的 provider"取输入，
         // `HarnessTodaySummary` 自己只认传入的 statuses（纯函数，不隐式过滤）。
         let enabled = state.statuses.filter { $0.isEnabled }
+        let emptyState = MenuQuotaPresentation.emptyState(for: state.statuses)
 
-        if enabled.isEmpty {
-            VStack(spacing: 8) {
-                if state.statuses.isEmpty {
-                    Text("没有注册 provider")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                    Button("打开配置文件") { state.openConfigFile() }
-                        .buttonStyle(.link)
-                        .font(.system(size: 11))
-                } else {
-                    Image(systemName: "square.stack.3d.up.slash")
-                        .font(.system(size: 20))
-                        .foregroundStyle(.secondary)
-                    Text("暂无启用的 Provider 监控")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(Color.primaryLabel)
-                    Text("可在设置中勾选需要监控的 Provider")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                    Button("打开设置") {
-                        openSettingsWindow()
-                    }
-                    .buttonStyle(.link)
-                    .font(.system(size: 11, weight: .medium))
-                }
+        VStack(spacing: HarnessUsageMenuView.sectionSpacing) {
+            Picker("显示", selection: $menuContentMode) {
+                Text("用量").tag(MenuContentMode.usage.rawValue)
+                Text("额度").tag(MenuContentMode.quota.rawValue)
             }
-            .frame(maxWidth: .infinity)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 16)
-            .background(
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .accessibilityLabel("菜单内容")
+            .padding(.horizontal, 2)
+            .background {
                 GeometryReader { geo in
-                    Color.clear.preference(key: CardsContentHeightKey.self, value: geo.size.height)
+                    Color.clear.preference(key: MenuPageSwitcherHeightKey.self, value: geo.size.height)
                 }
-            )
-        } else {
-            ScrollView(.vertical, showsIndicators: false) {
-                // 非 Lazy：内容高度要喂给 `MenuPanelHeightBridge` 决定窗口高度，
-                // Lazy 容器在测量时只布局可视区，会把真实高度报小。
-                VStack(spacing: HarnessUsageMenuView.sectionSpacing) {
-                    if Self.shouldShowSetupGuide(for: enabled) {
-                        setupGuide
-                    }
-                    HarnessUsageMenuView(
-                        summary: todaySummary,
-                        fleetSummary: state.fleetMenuSummary,
-                        activeScope: state.fleetScope,
-                        scopeChoices: state.fleetScopeChoices,
-                        onScopeChange: { state.fleetScope = $0 },
-                        nodeSummary: state.fleetMenuNodeSummary,
-                        onRefreshSection: refreshSectionFromMenu,
-                        onRefreshProvider: refreshProviderFromMenu
-                    )
-                }
-                .padding(.horizontal, LayoutMetrics.cardColumnHorizontalPadding)
-                .padding(.vertical, 8)
-                .background(
-                    GeometryReader { geo in
-                        Color.clear.preference(key: CardsContentHeightKey.self, value: geo.size.height)
-                    }
-                )
             }
-            .frame(maxHeight: maxScrollViewHeight)
+
+            if enabled.isEmpty {
+                ScrollView(.vertical, showsIndicators: false) {
+                    VStack(spacing: 8) {
+                        if emptyState == .noProviders {
+                            Text("没有注册 provider")
+                                .font(.system(size: 12))
+                                .foregroundStyle(.secondary)
+                            Button("打开配置文件") { state.openConfigFile() }
+                                .buttonStyle(.link)
+                                .font(.system(size: 11))
+                        } else {
+                            Image(systemName: "square.stack.3d.up.slash")
+                                .font(.system(size: 20))
+                                .foregroundStyle(.secondary)
+                            Text("暂无启用的 Provider 监控")
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(Color.primaryLabel)
+                            Text("可在设置中勾选需要监控的 Provider")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                            Button("打开设置") {
+                                openSettingsWindow()
+                            }
+                            .buttonStyle(.link)
+                            .font(.system(size: 11, weight: .medium))
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 16)
+                    .background {
+                        GeometryReader { geo in
+                            Color.clear.preference(key: CardsContentHeightKey.self, value: geo.size.height)
+                        }
+                    }
+                }
+                .frame(maxHeight: maxScrollViewHeight)
+            } else if MenuContentMode(rawValue: menuContentMode) == .quota {
+                ScrollView(.vertical, showsIndicators: false) {
+                    VStack(spacing: HarnessUsageMenuView.sectionSpacing) {
+                        if Self.shouldShowSetupGuide(for: enabled) {
+                            setupGuide
+                        }
+                        MenuQuotaOverviewView(
+                            state: state,
+                            onRefreshProvider: refreshProviderFromMenu,
+                            onOpenSettings: openProviderSettings
+                        )
+                    }
+                    .padding(.horizontal, LayoutMetrics.cardColumnHorizontalPadding)
+                    .padding(.vertical, 8)
+                    .background {
+                        GeometryReader { geo in
+                            Color.clear.preference(key: CardsContentHeightKey.self, value: geo.size.height)
+                        }
+                    }
+                }
+                .frame(maxHeight: maxScrollViewHeight)
+            } else {
+                ScrollView(.vertical, showsIndicators: false) {
+                    // 非 Lazy：内容高度要喂给 `MenuPanelHeightBridge` 决定窗口高度，
+                    // Lazy 容器在测量时只布局可视区，会把真实高度报小。GeometryReader
+                    // 在该自然内容 VStack 上，避免误读被 maxHeight 限制的 viewport。
+                    VStack(spacing: HarnessUsageMenuView.sectionSpacing) {
+                        if Self.shouldShowSetupGuide(for: enabled) {
+                            setupGuide
+                        }
+                        HarnessUsageMenuView(
+                            summary: todaySummary,
+                            fleetSummary: state.fleetMenuSummary,
+                            activeScope: state.fleetScope,
+                            scopeChoices: state.fleetScopeChoices,
+                            onScopeChange: { state.fleetScope = $0 },
+                            nodeSummary: state.fleetMenuNodeSummary,
+                            onRefreshSection: refreshSectionFromMenu
+                        )
+                    }
+                    .padding(.horizontal, LayoutMetrics.cardColumnHorizontalPadding)
+                    .padding(.vertical, 8)
+                    .background {
+                        GeometryReader { geo in
+                            Color.clear.preference(key: CardsContentHeightKey.self, value: geo.size.height)
+                        }
+                    }
+                }
+                .frame(maxHeight: maxScrollViewHeight)
+            }
         }
     }
 
@@ -340,8 +403,7 @@ struct MenuContentView: View {
         Task { await state.refreshAll() }
     }
 
-    /// 「刷新该 Provider」的唯一入口：兜底行每个 provider 元素的**左键点按**
-    /// （右键菜单已删——它与左键是同一个动作的重复入口）。
+    /// 「刷新该 Provider」的唯一入口：额度摘要行的刷新按钮。
     ///
     /// 走 `AppState.refreshOne(providerID:)`——改造前 provider 卡的「立即刷新」
     /// 用的就是它（3b3538e 把那批卡从菜单里删掉时入口一起没了）。`refreshOne`
@@ -350,6 +412,17 @@ struct MenuContentView: View {
     /// （回归见 `AppStateTests.testRefreshOneReanchorsOnlyRefreshedProvider`）。
     private func refreshProviderFromMenu(_ providerID: String) {
         Task { await state.refreshOne(providerID: providerID) }
+    }
+
+    private func openProviderSettings(_ kind: ProviderKind) {
+        guard let descriptor = state.descriptors.first(where: { $0.kind == kind }) else { return }
+        state.pendingSettingsTab = .provider(descriptor)
+        openSettingsWindow()
+    }
+
+    private func openEnergySettings() {
+        state.pendingSettingsTab = .energy
+        openSettingsWindow()
     }
 
     /// 段头右键「刷新 <客户端名>」的唯一入口：按本段今日贡献行刷新涉及的
@@ -406,10 +479,8 @@ struct MenuContentView: View {
 
     // MARK: - footer（紧凑 padding）
 
-
-
     private var footerBar: some View {
-        // 左：更新状态；右：功能按钮组（自启 / 设置 / 节能 / 日志 / 退出）。
+        // 左：更新状态；右：常驻功能按钮与「更多操作」。
         HStack(spacing: 8) {
             footerStatus
             Spacer(minLength: 8)
@@ -429,15 +500,23 @@ struct MenuContentView: View {
                 energyUpdateTick &+= 1
             }
                 .help(energyActionTooltip)
-            footerSeparator
-            FooterActionButton(icon: "doc.text.magnifyingglass", title: "日志") {
-                state.revealLogFile()
+            Menu {
+                Button("在 Finder 中显示日志", systemImage: "doc.text.magnifyingglass") {
+                    state.revealLogFile()
+                }
+                Divider()
+                Button("退出 LLM Monitor", systemImage: "xmark.circle", role: .destructive) {
+                    NSApp.terminate(nil)
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(MenuTypography.footer)
+                    .frame(width: 22, height: 20)
+                    .contentShape(Rectangle())
             }
-                .help("在 Finder 中显示 log.txt")
-            footerSeparator
-            FooterActionButton(icon: "xmark.circle", title: "退出") {
-                NSApp.terminate(nil)
-            }
+            .menuStyle(.borderlessButton)
+            .help("更多操作：日志、退出")
+            .accessibilityLabel("更多操作")
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 7)
@@ -510,8 +589,7 @@ struct MenuContentView: View {
     }
 }
 
-/// 菜单里的**发丝线**：段头下沿（`HarnessSectionView`）、兜底行上沿
-/// （`ProviderStatusStripView`）两道横线，以及 footer 里两处分隔竖线。
+/// 菜单里的**发丝线**：段头下沿（`HarnessSectionView`）及 footer 竖向分隔线。
 ///
 /// 三处原本各写一份 `Rectangle().fill(Color.primary.opacity(0.08)).frame(height: 1)`
 /// / `frame(width: 1, height: 10)`——它们本来就是**同一根线**的不同朝向：同层玻璃
@@ -715,6 +793,13 @@ struct CardsContentHeightKey: PreferenceKey {
     /// 而存储型 `static var` 是全局可变状态，Swift 6 语言模式下会被判
     /// `MutableGlobalVariable` 编译错误，卡住 `scripts/audit.sh` 的 Swift 6 门禁。
     /// 这条从 main 就存在，门禁一跑必红。
+    static var defaultValue: CGFloat { 0 }
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+private struct MenuPageSwitcherHeightKey: PreferenceKey {
     static var defaultValue: CGFloat { 0 }
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = max(value, nextValue())

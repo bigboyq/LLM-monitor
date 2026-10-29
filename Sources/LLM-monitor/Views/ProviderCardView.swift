@@ -3,16 +3,15 @@ import AppKit
 
 /// 同一张 `ProviderCardView` 的排版规则。
 ///
-/// 菜单内容区已改为 Harness（客户端）视角，**不再渲染 provider 卡**：额度那一面
-/// 由边缘状态窗浮层与菜单底部的 provider 兜底行（`ProviderStatusStripView`，hover
-/// 弹出的就是这张卡）承担。因此这张卡只剩**一个**渲染宿主形态：`.alwaysVisible`
+/// 菜单内容区有用量与额度两个紧凑视图，但不渲染完整 provider 卡。完整卡片只由
+/// 边缘状态窗浮层承载，因此这张卡只剩**一个**渲染宿主形态：`.alwaysVisible`
 /// （两个宿主都是随行 hover 显隐的弹层，卡的生命周期不归自己管，在里面再造
 /// 「悬停才展开」的依赖只会更脆——就地展开是唯一稳妥选项）。
 ///
 /// 曾经按 `HoverRevealMode` 分叉的规则至此**全部收敛**，这个类型只剩下面注释里
 /// 记录的历史。收敛的判据只有一条：`hoverRevealMode` 的两个注入点
-/// （`EdgeDockController.popoverContent`、`HarnessUsageMenuView.cardRevealMode`）
-/// **都写死 `.alwaysVisible`**，没有任何渲染宿主会读到 `.onHover`，于是每条以
+/// 仅存的 dock 注入点 `EdgeDockController.popoverContent` **写死 `.alwaysVisible`**；
+/// 菜单 strip 宿主已删除，没有渲染宿主会读到 `.onHover`，于是每条以
 /// `mode` 为参数的判据在生产路径上都恒为常量。
 enum ProviderCardLayout {
     // 曾有 `laysWindowDetailsSideBySide(mode:)`（`alwaysVisible` 即并排），已删除。

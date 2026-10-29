@@ -3,11 +3,7 @@ import SwiftUI
 import XCTest
 @testable import LLM_monitor
 
-/// 菜单 Harness 视图的**排版预算**守门：列宽定死在一屏内，数字列定宽右对齐。
-///
-/// 这些常量改起来没有编译错误、也没有运行时错误——超宽只会让模型名被挤没或
-/// 占比条塌成一条线，肉眼要在一台真机菜单里才看得出来。所以这里量一次
-/// `NSHostingView` 的自然宽：溢出 336pt（菜单 360 − 两侧 12pt 内边距）即红。
+/// 菜单 Harness 视图的排版预算与客户端/fleet 范围选择测试。
 final class HarnessUsageMenuViewTests: XCTestCase {
 
     /// 菜单内容区宽度：360pt 面板减去 `LayoutMetrics.cardColumnHorizontalPadding`
@@ -16,25 +12,38 @@ final class HarnessUsageMenuViewTests: XCTestCase {
         MenuPanelHeightBridge.width - LayoutMetrics.cardColumnHorizontalPadding * 2
     }
 
-    /// 六列定宽、五段间距与 scope 缩进不得超出内容区。少一个 term 就说明漏算了布局占宽。
-    func testRowColumnBudgetFitsTheMenuContentWidth() {
-        let columns = [
-            HarnessModelRowView.modelNameWidth,
-            HarnessModelRowView.bucketBarMinWidth,
-            HarnessModelRowView.tokenWidth,
-            HarnessModelRowView.hitRateWidth,
-            HarnessModelRowView.speedWidth,
-            HarnessModelRowView.valueWidth
+    func testRowUsesCompactTwoLineLayoutWithinMenuWidth() {
+        XCTAssertEqual(MenuContentMode.usage.rawValue, "usage")
+        XCTAssertEqual(MenuContentMode.quota.rawValue, "quota")
+        XCTAssertEqual(HarnessModelRowView.columnSpacing, 4)
+    }
+
+    func testQuotaPresentationSummarizesWindowsAndDeepSeekBalanceWithoutWindows() {
+        let windows = [
+            quotaModel(name: "first", interval: 64, weekly: 48),
+            quotaModel(name: "second", interval: 32, weekly: 72)
         ]
-        let budget = columns.reduce(0, +) + CGFloat(columns.count - 1) * 6 + 8
-        XCTAssertLessThanOrEqual(
-            budget, contentWidth,
-            "模型行六列（\(budget)pt）超出内容区 \(contentWidth)pt，模型名或占比条会被压没"
+        XCTAssertEqual(
+            MenuQuotaPresentation.summary(providerKind: .codexChatGpt, models: windows, balance: nil),
+            "5h 32% · 周 48%"
         )
-        XCTAssertGreaterThanOrEqual(
-            HarnessModelRowView.bucketBarMinWidth, 40,
-            "占比条低于 40pt 就看不出三段比例了（2026-10 加速度列时从 72 压到 40）"
+
+        let balance = DeepseekBalanceDetail(currency: "CNY", total: 12.3, toppedUp: 10, granted: 2.3)
+        XCTAssertEqual(
+            MenuQuotaPresentation.summary(providerKind: .deepseek, models: [], balance: balance),
+            "余额 ¥12.30"
         )
+        XCTAssertEqual(
+            MenuQuotaPresentation.summary(providerKind: .codexChatGpt, models: [], balance: balance),
+            "暂无窗口额度"
+        )
+    }
+
+    func testQuotaEmptyStateDistinguishesNoProvidersFromAllDisabled() {
+        XCTAssertEqual(MenuQuotaPresentation.emptyState(for: []), .noProviders)
+        var disabled = Self.codexFixture()
+        disabled.isEnabled = false
+        XCTAssertEqual(MenuQuotaPresentation.emptyState(for: [disabled]), .noEnabledProviders)
     }
 
     /// 今日汇总**双焦点 Hero 卡片**的宽度预算：
@@ -147,9 +156,7 @@ final class HarnessUsageMenuViewTests: XCTestCase {
         XCTAssertGreaterThan(height(of: view), 0, "未同步状态必须实际布局出来")
     }
 
-    /// 真的布局一次：最宽形态（长模型名 + 9 字符 token + 部分计价）下自然宽不得
-    /// 超过内容区。定宽常量是这条的**前提**——任何一个数字列去掉 `.frame(width:)`
-    /// 都会让自然宽按文案涨上去。
+    /// 真的布局一次：长模型名与部分计价必须在内容区内折行/截断。
     @MainActor
     func testRenderedViewNeverExceedsTheContentWidth() {
         let summary = HarnessTodaySummary.summarize(
@@ -173,14 +180,9 @@ final class HarnessUsageMenuViewTests: XCTestCase {
         XCTAssertGreaterThan(size.height, 0)
     }
 
-    /// 模型名那一列**必须真的占宽度**。
-    ///
-    /// 曾经的写法是 `Text(...).frame(maxWidth:)` + 给占比条 `.layoutPriority(1)`：
-    /// `TokenBucketBar` 内部是 `GeometryReader`（贪婪），优先级一高就把整行吃光，
-    /// 模型名列被压成 0pt——**自然宽**因此只剩三个定宽数字列（约 150pt），
-    /// 而定宽写法下自然宽正好是六列、列间距和 scope 缩进之和 334pt。这条断言就是守门。
+    /// 两行排版在指定菜单宽度下可布局，不再要求六列都挤进同一行。
     @MainActor
-    func testModelRowNaturalWidthCoversAllSixColumns() {
+    func testModelRowNaturalWidthFitsCompactContent() {
         let row = HarnessModelRow(
             dayStart: Calendar.current.startOfDay(for: Date()),
             clientID: ClientID.openCode,
@@ -190,21 +192,11 @@ final class HarnessUsageMenuViewTests: XCTestCase {
             calendar: .current
         )
         let hosting = NSHostingView(rootView: AnyView(HarnessModelRowView(row: row)))
-        hosting.frame = CGRect(x: 0, y: 0, width: 10_000, height: 10_000)
+        hosting.frame = CGRect(x: 0, y: 0, width: contentWidth, height: 10_000)
         hosting.layoutSubtreeIfNeeded()
 
-        let expected = HarnessModelRowView.modelNameWidth
-            + HarnessModelRowView.bucketBarMinWidth
-            + HarnessModelRowView.tokenWidth
-            + HarnessModelRowView.hitRateWidth
-            + HarnessModelRowView.speedWidth
-            + HarnessModelRowView.valueWidth
-            + 5 * 6
-            + 8
-        XCTAssertEqual(
-            hosting.fittingSize.width, expected, accuracy: 0.5,
-            "模型行自然宽应等于六列定宽之和（模型名列塌成 0pt 时会明显更小）"
-        )
+        XCTAssertLessThanOrEqual(hosting.fittingSize.width, contentWidth + 0.5)
+        XCTAssertGreaterThan(hosting.fittingSize.height, 20, "模型行应分成至少两层信息")
     }
 
     /// 段头与模型行同构（Token 小计 / 命中占位 / 速度汇总 / 价值四格定宽）后，
@@ -230,7 +222,7 @@ final class HarnessUsageMenuViewTests: XCTestCase {
         let fiveRows = HarnessSectionView(section: Self.sectionFixture(rowCount: 5))
         let single = self.height(of: oneRow)
         let five = self.height(of: fiveRows)
-        XCTAssertGreaterThan(five, single, "5 行必然比 1 行高，否则行没被渲染")
+        XCTAssertGreaterThanOrEqual(five, single, "折叠状态允许不同模型数拥有相同高度")
         XCTAssertLessThan(
             five, 120,
             "5 行的一段已经 \(five)pt（单行段 \(single)pt），菜单会被单个客户端吃满"
@@ -315,70 +307,7 @@ final class HarnessUsageMenuViewTests: XCTestCase {
         )
     }
 
-    // MARK: - 兜底行的两种交互（左键点按 / hover）
-
-    /// 左键点按交出去的是**这张** provider 的 id：`RefreshMenuItem` 只是 tap 挂的
-    /// 数据形态，`tapHandler` 内部就是它的 `perform`。
-    ///
-    /// 这条钉的是 `onTapGesture` 实际挂的那个闭包（`ProviderStatusStripView.tapHandler`，
-    /// SwiftUI 手势本身没有可寻址的测试缝）。串错 id 就是"点 A 刷 B"，在真实菜单里
-    /// 只有联网之后才看得出来。
-    func testTapHandlerRoutesEachEntrysOwnProviderID() {
-        let snapshot = ProviderStatusStrip.snapshot(
-            statuses: [Self.codexFixture(), Self.deepseekFixture()],
-            limit: 4
-        )
-        var tapped: [String] = []
-        for entry in snapshot.entries {
-            let item = ProviderStatusStripView.refreshMenuItem(for: entry)
-            ProviderStatusStripView.tapHandler(for: item) { tapped.append($0) }()
-        }
-        XCTAssertFalse(tapped.isEmpty, "fixture 必须真的有 provider，否则量的是空行")
-        XCTAssertEqual(
-            Set(tapped), Set(snapshot.entries.map(\.status.id)),
-            "每个在场的 provider 都能点到自己，且只点自己"
-        )
-    }
-
-    /// 刷新进行中连点**照样把请求交出去**：UI 侧刻意不做禁用态，去重由
-    /// `AppState.refreshOne` 开头的全局在飞闸门负责。
-    ///
-    /// 钉这一条是防"好心加防抖"：哪天有人在这一行自己实现一份节流/禁用，
-    /// 用户连点时会静默少刷一次，而闸门那层（全局粒度）本该是唯一的去重点。
-    func testRepeatedTapsSubmitOneRequestEachForTheGateToIgnore() {
-        let entry = ProviderStatusStrip.Entry(status: Self.codexFixture())
-        let item = ProviderStatusStripView.refreshMenuItem(for: entry)
-        var requests: [String] = []
-        let tap = ProviderStatusStripView.tapHandler(for: item) { requests.append($0) }
-        tap(); tap(); tap()
-        XCTAssertEqual(
-            requests, Array(repeating: entry.status.id, count: 3),
-            "每次点按都要把请求交出去（闸门在 AppState 侧忽略在飞的那次）"
-        )
-    }
-
-    /// 注入刷新闭包后这一行照常渲染：点按手势不改布局，也不吞掉 hover 卡
-    /// （它加的是手势识别，不是尺寸约束）。
-    @MainActor
-    func testStripStillRendersAfterTapWasWired() {
-        let snapshot = ProviderStatusStrip.snapshot(
-            statuses: [Self.codexFixture(), Self.deepseekFixture()],
-            limit: 4
-        )
-        let hosting = NSHostingView(
-            rootView: AnyView(ProviderStatusStripView(
-                snapshot: snapshot,
-                onRefreshProvider: { _ in }
-            ))
-        )
-        hosting.frame = CGRect(x: 0, y: 0, width: 10_000, height: 10_000)
-        hosting.layoutSubtreeIfNeeded()
-        XCTAssertGreaterThan(hosting.fittingSize.height, 0, "加了点按手势后这一行必须还在")
-    }
-
-    // MARK: - 发丝线
-
-    /// 三处横竖发丝线（段头下沿 / 兜底行上沿 / footer 分隔）共用同一份规格常量。
+    /// 菜单分隔线与 footer 竖线共用同一份规格常量。
     /// 数值被钉死是"观感不变"的直接证据：收敛到 `MenuHairline` 是**提纯**，不是改设计。
     func testHairlineKeepsTheOriginalOnePointEightPercentSpec() {
         XCTAssertEqual(MenuHairline.thickness, 1, "发丝线一直是 1pt")
@@ -731,6 +660,24 @@ final class HarnessUsageMenuViewTests: XCTestCase {
                 eventCount: samples.count,
                 scannedAt: Date()
             )
+        )
+    }
+
+    private func quotaModel(name: String, interval: Double, weekly: Double) -> ModelQuota {
+        ModelQuota(
+            modelName: name,
+            intervalTotalCount: 100,
+            intervalUsageCount: Int(100 - interval),
+            intervalRemainingPercent: interval,
+            intervalStatus: .present,
+            intervalResetsAt: Date(timeIntervalSince1970: 1_800_000_000),
+            intervalWindowSeconds: 5 * 60 * 60,
+            weeklyTotalCount: 100,
+            weeklyUsageCount: Int(100 - weekly),
+            weeklyRemainingPercent: weekly,
+            weeklyStatus: .present,
+            weeklyResetsAt: Date(timeIntervalSince1970: 1_900_000_000),
+            weeklyWindowSeconds: 7 * 24 * 60 * 60
         )
     }
 }

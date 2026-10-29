@@ -1,22 +1,15 @@
 import SwiftUI
 
-/// 状态栏下拉菜单的 **Harness（客户端）视角**内容：顶部一屏全局今日汇总，
-/// 下面按客户端分段、段内按模型一行一条，**最底部一行 provider 兜底状态**。
+/// 状态栏下拉菜单的 **Harness（客户端）视角**内容：顶部今日汇总，下面按客户端
+/// 分段；模型细节可折叠。额度由同文件的紧凑 Provider 视图提供。
 ///
 /// 与 `ProviderCardView`（Provider 视角）是**并列**的两套读法，不是替换关系：
-/// 悬浮窗（边缘状态窗）仍然按 Provider 卡渲染额度，菜单这里只回答"今天我在哪些
-/// 客户端里烧了多少 token、命中率多少、值多少钱"。额度（还能用多少）不再占一整屏，
-/// 但**不能从这一屏彻底消失**——否则没开边缘窗的用户在菜单里看不到任何额度信息；
-/// 底部的 `ProviderStatusStripView` 一行极简状态元素 + hover 弹出的完整卡片就是
-/// 这一层兜底。
+/// 用量页回答"今天我在哪些客户端里烧了多少 token、命中率多少、值多少钱"。
+/// 额度页独立回答"各 Provider 还剩多少"，不依赖边缘状态窗。
 ///
-/// 排版宽度（菜单 360pt，内容区 336pt，见 `MenuPanelHeightBridge.width`）：
-/// 模型名 92 + 占比条 ≥40 + Token 40 + 命中 36 + 速度 32 + 价值 56 +
-/// 5×6 间距 + scope 行缩进 8pt = 334pt，余量 2pt 留给字体度量误差。数字列全部定宽右对齐 +
-/// `monospacedDigit`，刷新时数字变化不会把整行往右顶。段头右侧的数值格组
-/// （`SectionHeaderMetricsView`：Token 小计 / 命中占位 / 速度汇总 / 价值）
-/// 复用同一批列宽常量与列间距，段头数字与下方模型行逐列对齐。预算由
-/// `HarnessUsageMenuViewTests` 钉住。
+/// 用量模型行在 336pt 内容区内改为两行布局：模型名 + token 总量、占比条、
+/// 带标签的缓存命中率 / 速度 / 价值。Client 段头仍独立呈现总量、速度与金额。
+/// 宽度与多行自然高度由 `HarnessUsageMenuViewTests` 覆盖。
 struct HarnessUsageMenuView: View {
     let summary: HarnessTodaySummary
     /// fleet 汇总（§10.2）。nil（未启用联动）或单节点（`multiNode == false`）时
@@ -35,10 +28,6 @@ struct HarnessUsageMenuView: View {
     /// 段头右键「刷新 <客户端名>」：按该段今日贡献行刷新涉及的 provider 卡。
     /// 动作实现由 `MenuContentView` 注入（它持有 `AppState`）。
     var onRefreshSection: (HarnessSection) -> Void = { _ in }
-    /// 兜底行单个 provider 的刷新动作（左键点按）。参数是 providerID，
-    /// 刷新实现由 `MenuContentView` 注入（它持有 `AppState`）。
-    var onRefreshProvider: (String) -> Void = { _ in }
-
     /// fleet 汇总可用且多于一个节点时启用双行 + 节点分组形态。
     private var fleetMenuActive: Bool { fleetSummary?.multiNode == true }
 
@@ -616,25 +605,26 @@ struct HarnessSectionView: View {
     let section: HarnessSection
     /// 段头右键「刷新 <客户端名>」：按本段今日贡献行刷新涉及的 provider 卡。
     var onRefreshSection: (HarnessSection) -> Void = { _ in }
+    @State private var isExpanded = false
 
     var body: some View {
-        // 行距取行视图自己的常量（比段间距小），"换了个客户端"才比"换了个模型"醒目。
-        VStack(alignment: .leading, spacing: HarnessModelRowView.rowSpacing) {
-            header
+        DisclosureGroup(isExpanded: $isExpanded) {
             ForEach(section.rows) { row in
                 HarnessModelRowView(row: row)
             }
+        } label: {
+            header
         }
+        .tint(Color.secondaryLabel)
     }
 
     /// 段头：一行里同时给出"这是谁"和"今天它花了多少"。
     /// 段价值是 `MixedCurrencyEstimate`——同一个客户端横跨多个 provider 分片时
     /// （OpenCode / DSH / ZCode）必然混币，必须折算成 CNY 总额而不是裸相加。
     ///
-    /// 右侧数值格（`SectionHeaderMetricsView`）与模型行**同构**：Token 小计 /
-    /// 命中占位 / 速度汇总 / 价值四格全部复用模型行的列宽常量与列间距。token
-    /// 小计曾经是自然宽——模型行 2026-10 加「速度」列后，它漂到了速度列上方，
-    /// 读起来像速度列的小计；定宽对齐后每个数字都压在自己的列上。
+    /// 右侧数值格（`SectionHeaderMetricsView`）固定展示 Token 小计 / 速度汇总 /
+    /// 价值。Fleet 行继续复用列宽对齐；本地模型明细使用两行布局，不再假定
+    /// 段头指标与模型行逐列对齐。
     ///
     /// 右键菜单挂在**段头**（不是整段）：菜单内容区现在是客户端视角，右键一个
     /// 段名才是"针对这些数据"的语义；「刷新 <客户端名>」按本段今日贡献行刷新
@@ -694,6 +684,279 @@ struct HarnessSectionView: View {
     }
 }
 
+enum MenuContentMode: String {
+    case usage
+    case quota
+}
+
+enum MenuQuotaEmptyState: Equatable {
+    case noProviders
+    case noEnabledProviders
+}
+
+enum MenuQuotaPresentation {
+    static func emptyState(for statuses: [ProviderStatus]) -> MenuQuotaEmptyState {
+        statuses.isEmpty ? .noProviders : .noEnabledProviders
+    }
+
+    static func summary(
+        providerKind: ProviderKind,
+        models: [ModelQuota],
+        balance: DeepseekBalanceDetail?
+    ) -> String {
+        let intervals = models.filter(\.hasIntervalWindow).map(\.intervalRemainingPercent)
+        let weeks = models.filter(\.hasWeeklyWindow).map(\.weeklyRemainingPercent)
+        var pieces: [String] = []
+        if let interval = intervals.min() { pieces.append("5h \(Formatters.formatQuotaPercent(interval))") }
+        if let weekly = weeks.min() { pieces.append("周 \(Formatters.formatQuotaPercent(weekly))") }
+        if !pieces.isEmpty { return pieces.joined(separator: " · ") }
+        if providerKind == .deepseek, let balance {
+            return "余额 \(balance.symbol)\(String(format: "%.2f", balance.total))"
+        }
+        return "暂无窗口额度"
+    }
+}
+
+/// 菜单里的紧凑额度视图。数据仍来自 ProviderStatus / fleet effective quota，
+/// 不复制额度计算，也不依赖 edge dock 是否可见。
+struct MenuQuotaOverviewView: View {
+    @ObservedObject var state: AppState
+    let onRefreshProvider: (String) -> Void
+    let onOpenSettings: (ProviderKind) -> Void
+    @State private var revision: UInt64 = 0
+
+    private var orderedStatuses: [ProviderStatus] {
+        _ = revision
+        let statuses = state.fleetQuotaEffectiveStatuses()
+        return DisplayOrder.ordered(
+            statuses,
+            preferredIDs: state.configStore.config.providerCardOrder,
+            id: { $0.kind.quotaProviderID },
+            by: { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+        )
+    }
+
+    var body: some View {
+        VStack(spacing: 6) {
+            if let fleetContext = state.fleetCardContext(for: orderedStatuses.first?.kind ?? .codexChatGpt),
+               fleetContext.multiNode {
+                Text("当前用量范围：\(scopeLabel(fleetContext.scope, choices: fleetContext.nodeChoices))；额度显示本机优先的全局有效值")
+                    .font(MenuTypography.hint)
+                    .foregroundStyle(Color.secondaryLabel)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityLabel("额度按本机优先的全局有效额度显示；当前用量范围：\(scopeLabel(fleetContext.scope, choices: fleetContext.nodeChoices))")
+            }
+            ForEach(orderedStatuses) { status in
+                MenuQuotaProviderRow(
+                    status: status,
+                    localStatus: state.statuses.first { $0.kind == status.kind } ?? status,
+                    fleet: state.fleetCardContext(for: status.kind),
+                    onRefresh: { onRefreshProvider(status.id) },
+                    onSettings: { onOpenSettings(status.kind) }
+                )
+            }
+        }
+        .onReceive(state.statusDidChange) { _ in revision &+= 1 }
+        .onReceive(state.fleetDidChange) { _ in revision &+= 1 }
+    }
+
+    private func scopeLabel(_ scope: FleetScope, choices: [FleetNodeChoice]) -> String {
+        switch scope {
+        case .local: return "本机"
+        case .fleet: return "全局"
+        case .node(let id): return choices.first { $0.id == id }?.name ?? "所选节点（已不在快照中）"
+        }
+    }
+}
+
+private struct MenuQuotaProviderRow: View {
+    let status: ProviderStatus
+    let localStatus: ProviderStatus
+    let fleet: FleetCardContext?
+    let onRefresh: () -> Void
+    let onSettings: () -> Void
+    @State private var isExpanded = false
+    @Environment(\.displayDate) private var displayDate
+
+    private var effective: FleetEffectiveQuota? { fleet?.effectiveQuota }
+    private var quota: QuotaInfo? { effective?.quota ?? status.lastSuccess }
+    private var models: [ModelQuota] {
+        quota?.aggregateQuotaModels(providerKind: status.kind) ?? []
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 7) {
+                BrandLogoView(kind: status.kind, size: 16)
+                Text(status.displayName)
+                    .font(MenuTypography.dataLabel)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .help(status.displayName)
+                Spacer(minLength: 4)
+                if let source = effective?.sourceTagText {
+                    Text(source)
+                        .font(MenuTypography.hint)
+                        .foregroundStyle(effective?.isStale == true ? Color.warningTint : Color.secondaryLabel)
+                        .lineLimit(1)
+                        .help(effective?.isStale == true ? "此额度来自其他节点，快照已过期" : "此额度来自其他节点")
+                }
+                if !models.isEmpty || (status.kind == .deepseek && quota?.balanceDetail != nil) {
+                    Text(summary)
+                        .font(MenuTypography.dataValue)
+                        .foregroundStyle(Color.primaryLabel)
+                        .lineLimit(1)
+                }
+                Button(action: onRefresh) {
+                    Image(systemName: "arrow.clockwise")
+                        .font(MenuTypography.headerAction)
+                }
+                .buttonStyle(.plain)
+                .help("刷新 \(status.displayName) 额度")
+                .accessibilityLabel("刷新 \(status.displayName) 额度")
+            }
+
+            if case .notConfigured(let reason) = localStatus.state {
+                HStack {
+                    Text("未配置 · \(reason)")
+                        .font(MenuTypography.hint)
+                        .foregroundStyle(Color.secondaryLabel)
+                        .lineLimit(2)
+                    Spacer()
+                    Button("完成设置", action: onSettings)
+                        .font(MenuTypography.hint)
+                        .buttonStyle(.link)
+                }
+            } else if case .ready = localStatus.state, quota == nil {
+                Text("等待首次额度数据")
+                    .font(MenuTypography.hint)
+                    .foregroundStyle(Color.secondaryLabel)
+            }
+
+            if case .failed(let message, _) = localStatus.state {
+                Label(message, systemImage: "exclamationmark.triangle.fill")
+                    .font(MenuTypography.hint)
+                    .foregroundStyle(Color.criticalTint)
+                    .lineLimit(2)
+                    .help(message)
+            }
+
+            HStack(spacing: 4) {
+                if case .loading = localStatus.state {
+                    ProgressView().controlSize(.mini)
+                    Text("正在更新额度")
+                } else if effective?.sourceTagText != nil, let fetchedAt = quota?.fetchedAt {
+                    Text(effective?.isStale == true
+                        ? "远端快照已过期 · \(Formatters.formatClock(fetchedAt))"
+                        : "远端快照于 \(Formatters.formatClock(fetchedAt))")
+                } else if let refreshedAt = localStatus.lastRefreshedAt {
+                    Text("额度更新于 \(Formatters.formatClock(refreshedAt))")
+                } else if let fetchedAt = quota?.fetchedAt {
+                    Text("额度数据于 \(Formatters.formatClock(fetchedAt))")
+                } else if quota == nil {
+                    Text("尚无成功的额度读取")
+                }
+            }
+            .font(MenuTypography.hint)
+            .foregroundStyle(effective?.isStale == true ? Color.warningTint : Color.secondaryLabel)
+
+            if !models.isEmpty {
+                DisclosureGroup(isExpanded: $isExpanded) {
+                    if status.kind == .deepseek, let info = quota, let model = models.first {
+                        DeepseekBalanceRow(
+                            model: model,
+                            planLabel: info.planLabel,
+                            balanceDetail: info.balanceDetail,
+                            tint: status.accentColor.cardAccentColor,
+                            peakWindow: localStatus.deepseekPeakWindow ?? .defaultWindow,
+                            showsPeakIndicator: true
+                        )
+                    } else {
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(models, id: \.modelName) { model in
+                                modelRow(model)
+                            }
+                        }
+                        .padding(.leading, 23)
+                    }
+                } label: {
+                    Text(isExpanded ? "收起套餐详情" : "查看套餐详情（\(models.count)）")
+                        .font(MenuTypography.hint)
+                        .foregroundStyle(Color.secondaryLabel)
+                }
+                .tint(Color.secondaryLabel)
+            } else if status.kind == .deepseek, let detail = quota?.balanceDetail {
+                Text("API 余额  \(detail.symbol)\(String(format: "%.2f", detail.total))")
+                    .font(MenuTypography.metricLabel)
+                    .foregroundStyle(Color.primaryLabel)
+                    .accessibilityLabel("DeepSeek API 账户余额 \(detail.symbol)\(String(format: "%.2f", detail.total))")
+            }
+        }
+        .padding(8)
+        .background(
+            RoundedRectangle(cornerRadius: 7)
+                .fill(Color.primary.opacity(0.045))
+                .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.primary.opacity(0.07), lineWidth: 1))
+        )
+    }
+
+    private func modelRow(_ model: ModelQuota) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Text(model.displayName)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Spacer()
+                if model.hasIntervalWindow {
+                    Text("5h \(Formatters.formatQuotaPercent(model.intervalRemainingPercent))")
+                        .monospacedDigit()
+                }
+                if model.hasWeeklyWindow {
+                    Text("周 \(Formatters.formatQuotaPercent(model.weeklyRemainingPercent))")
+                        .monospacedDigit()
+                }
+                if !model.hasIntervalWindow && !model.hasWeeklyWindow,
+                   status.kind == .deepseek,
+                   let balance = quota?.balanceDetail {
+                    Text("余额 \(balance.symbol)\(String(format: "%.2f", balance.total))")
+                        .monospacedDigit()
+                }
+            }
+            .font(MenuTypography.hint)
+            .help(model.displayName)
+            if model.hasIntervalWindow {
+                ProgressView(value: min(max(model.intervalRemainingPercent / 100, 0), 1))
+                    .tint(status.accentColor.cardAccentColor)
+                    .accessibilityLabel("5 小时额度剩余")
+                    .accessibilityValue(Formatters.formatQuotaPercent(model.intervalRemainingPercent))
+            }
+            let resetLabels = [
+                model.hasIntervalWindow
+                    ? "5h 重置 \(QuotaWindowUsageSection.formatResetDateText(model.intervalResetsAt, now: displayDate))"
+                    : nil,
+                model.hasWeeklyWindow
+                    ? "周重置 \(QuotaWindowUsageSection.formatResetDateText(model.weeklyResetsAt, now: displayDate))"
+                    : nil
+            ].compactMap { $0 }
+            if !resetLabels.isEmpty {
+                Text(resetLabels.joined(separator: " · "))
+                    .font(MenuTypography.hint)
+                    .foregroundStyle(Color.secondaryLabel)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+        }
+    }
+
+    private var summary: String {
+        MenuQuotaPresentation.summary(
+            providerKind: status.kind,
+            models: models,
+            balance: quota?.balanceDetail
+        )
+    }
+}
+
 /// 段头右侧的数值格组：Token 小计 / 命中率占位 / 速度汇总 / 价值，四格全部
 /// 定宽右对齐，**列宽与列间距复用 `HarnessModelRowView` 的常量**——段头没有
 /// 表头行，数字必须与下方模型行的同名列站在同一条竖线上（本地段与 fleet 段
@@ -735,196 +998,73 @@ private struct SectionHeaderMetricsView: View {
     }
 }
 
-/// 菜单内容区**底部**的 provider 兜底行：一行横排全部已启用 provider 的品牌
-/// 图标（用户裁定 2026-10-24：不放更新时间胶囊，也没有 hover 二次弹卡——
-/// 额度明细去边缘窗 / 设置页看，这一行只回答「哪些 provider 在场」）。
-///
-/// 它存在的理由：菜单主体已经改成客户端视角（"今天烧了多少"），**额度**那一面
-/// 只剩边缘状态窗与设置页；没开边缘窗的用户在这一屏就彻底看不到额度状态了。
-/// 这一行把它兜回来，且**不与 harness 段混淆**——独立一行（无文字标题，图标 +
-/// 状态胶囊的序列自解释），不占段头、不进段的行序。
-///
-/// 每个元素只剩一种交互：**左键点按 → 立即刷新这一个 provider**（连点的安全
-/// 性由 `AppState.refreshOne` 的全局在飞闸门兜，UI 侧不做禁用态）。
-struct ProviderStatusStripView: View {
-    let snapshot: ProviderStatusStrip.Snapshot
-    /// hover 卡的 fleet 上下文（scope 分段 / fleet 用量 / 生效额度来源标注）。
-    /// 默认恒 nil：未启用联动时 hover 卡与现在完全一致。
-    var fleetContext: (ProviderStatus) -> FleetCardContext? = { _ in nil }
-    /// 单个 provider 的刷新动作。参数是 providerID，实际刷新路径由
-    /// 宿主（`MenuContentView` → `AppState.refreshOne`）决定，这一层不碰网络。
-    var onRefreshProvider: (String) -> Void = { _ in }
-
-    /// 左键点按动作的**数据形态**（不含 SwiftUI 视图）。
-    ///
-    /// 单独提成值类型，是为了让"点下去交出去的是不是这张 provider 的 id"可以被
-    /// 单测钉住：`onTapGesture` 在 SwiftUI 里没有可寻址的测试缝，断言只能落在
-    /// 喂给它的这份数据与 `perform` 的路由上。
-    struct RefreshMenuItem: Identifiable, Equatable, Sendable {
-        let providerID: String
-        let displayName: String
-        var id: String { providerID }
-        /// 执行：把 providerID 原样交回宿主。
-        func perform(_ onRefresh: (String) -> Void) {
-            onRefresh(providerID)
-        }
-    }
-
-    /// 单个 provider 元素对应的单刷动作。**在场即有**——`.failed` /
-    /// `.notConfigured` 的 provider 同样能点，因为"重试"正是它们需要的动作。
-    static func refreshMenuItem(for entry: ProviderStatusStrip.Entry) -> RefreshMenuItem {
-        RefreshMenuItem(providerID: entry.status.id, displayName: entry.displayName)
-    }
-
-    /// 左键点按的动作闭包：只是 `RefreshMenuItem.perform` 的包装——数据形态
-    /// （点的是哪个 provider）与执行（交回宿主 → `AppState.refreshOne`）分离，
-    /// 让两边都能被单测独立钉住。
-    ///
-    /// 提成 `static` 是**测试缝**：`onTapGesture` 在 SwiftUI 里没有可寻址的接口，
-    /// 「点按交出去的是不是这张 provider 的 id」只能钉在这个闭包上。
-    static func tapHandler(
-        for item: RefreshMenuItem,
-        onRefresh: @escaping (String) -> Void
-    ) -> () -> Void {
-        { item.perform(onRefresh) }
-    }
-
-    /// 元素之间的间距。比模型行的 6pt 紧一档：这一行是**兜底**信息，不该在
-    /// 视觉上比正文行还松。
-    static let entrySpacing: CGFloat = 4
-
-    /// 品牌图标边长。常规 18pt 在这一行太大：一行要放下
-    /// `ProviderStatusStrip.maximumVisibleCount` 个元素，18pt 图标会把时间胶囊
-    /// 挤到只剩 30pt。11pt 仍能认出是哪个品牌。
-    static let logoSize: CGFloat = 11
-
-    var body: some View {
-        if !snapshot.isEmpty {
-            // 一行纯品牌图标序列（用户裁定：不放时间胶囊），可见容量核算见
-            // `ProviderStatusStrip.maximumVisibleCount`。
-            HStack(spacing: Self.entrySpacing) {
-                ForEach(snapshot.entries) { entry in
-                    entryView(entry)
-                }
-                // 有 provider 被折叠掉时必须说出来：否则"只显示 3 个"会被读成
-                // "只注册了 3 个"。
-                if snapshot.hiddenCount > 0 {
-                    Text("+\(snapshot.hiddenCount)")
-                        .font(MenuTypography.badge)
-                        .foregroundStyle(Color.secondaryLabel)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 3)
-                        .background(Color.secondary.opacity(0.1), in: Capsule())
-                        .help("还有 \(snapshot.hiddenCount) 个已启用 provider 未显示：额度异常优先占位")
-                }
-            }
-            .padding(.top, 2)
-            .overlay(alignment: .top) {
-                MenuHairline.horizontal
-                    .padding(.bottom, 2)
-            }
-        }
-    }
-
-    /// 单个 provider 的极简元素 + 它的完整卡浮层，以及叠在元素上的两种交互。
-    ///
-    /// 单刷入口（左键点按）挂在**整个元素**上（不是浮层里的卡）：菜单改版成
-    /// 客户端视角后，这一行是菜单里唯一还带 provider 身份的地方，单刷入口必须
-    /// 回到这里——旧 provider 卡的「立即刷新」是 3b3538e 随卡片一起下线的。
-    ///
-    /// 手势的挂载点说明（为什么这样挂不互相破坏）：
-    /// - `onTapGesture` 挂在 `HoverInfoRow` **外面**：它加的是 SwiftUI 手势识别，
-    ///   而 hover 走的是 `HoverTrackingView` 的 NSView tracking area，两条通道互不
-    ///   干涉，hover 弹卡照旧。命中区域直接沿用 `HoverInfoRow` 自己那层
-    ///   `contentShape`（6pt 圆角矩形），已经盖住图标与胶囊之间那 3pt 缝。
-    /// - **不做 `isRefreshJobActive` 置灰**：重复点按交出去的还是
-    ///   同一个 `AppState.refreshOne`，它开头就有全局在飞闸门
-    ///   （`refreshScheduler.beginExternalJob()`，在飞则整次忽略并只重锚被刷的
-    ///   provider）。UI 再维护一份"这一行点不动"的状态只会和
-    ///   `AppState.isRefreshJobActive` 的全局口径漂移，而且用户连点时看到"没反应"
-    ///   比看到"已在刷新"更困惑——反馈交给既有状态胶囊自然变化（更新中 → HH:mm）。
-    /// 单个 provider 元素：品牌图标 + 单刷点按。不放更新时间胶囊、不挂 hover
-    /// 弹卡（用户裁定 2026-10-24）；点击交出去的还是 `RefreshMenuItem`。
-    private func entryView(_ entry: ProviderStatusStrip.Entry) -> some View {
-        let item = Self.refreshMenuItem(for: entry)
-        return BrandLogoView(kind: entry.status.kind, size: Self.logoSize)
-            .help("点击刷新 \(entry.displayName)")
-            .onTapGesture(perform: Self.tapHandler(for: item, onRefresh: onRefreshProvider))
-    }
-}
-
-/// 段内单条模型行：模型名 + 三段占比条 + Token / 命中率 / 速度 / 价值。
+/// 本地段内单条模型行：模型名 + Token、三段占比条、带标签的缓存命中率 / 速度 / 价值。
 ///
 /// 价值是**行级**的 `ModelCostEstimate.displayText` 原样文案（单 provider 单币种
 /// 原额）。行级绝不做跨币种相加——同一段里不同 provider 的行金额可能不同币种，
 /// 相加必须留到段头 / 全局的 `MixedCurrencyEstimate`。
-/// 与 `HarnessSectionView` 同一条理由保持 internal：排版预算断言要直接读它的
-/// 定宽列常量。
+/// 其中旧列宽常量仍供 Fleet 行渲染复用；本地模型行使用弹性名称和两层度量信息。
 struct HarnessModelRowView: View {
     let row: HarnessModelRow
 
     /// 行与行的间距。刻意小于段间距（`sectionSpacing`），让分组层级一眼可辨。
     static let rowSpacing: CGFloat = 3
 
-    /// 行内列间距：六列之间的水平间隔。段头的数值格组
-    /// （`SectionHeaderMetricsView`）复用同一常量——两边只要差 1pt，段头的
-    /// 数字与下方模型行的同名列就会错开一条肉眼可见的斜线。
-    static let columnSpacing: CGFloat = 6
+    /// 模型块内部的垂直间距。
+    static let columnSpacing: CGFloat = 4
 
     var body: some View {
-        HStack(spacing: Self.columnSpacing) {
-            // 模型名**定宽**，不是 `maxWidth`：同行的 `TokenBucketBar` 内部是
-            // `GeometryReader`（贪婪填充），不定宽的名字列会被它整列吃掉——实测
-            // 模型名会宽到 0pt，整行只剩条和数字。名字定宽 + 条吃剩余，是这里
-            // 唯一稳定的分法。展示用压缩名（去品牌前缀，让变体后缀可区分），
-            // hover 提示兜底完整原始 ID。
-            Text(row.compactDisplayName)
-                .font(MenuTypography.modelTitle)
-                .foregroundStyle(Color.primaryLabel)
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .help(row.displayName)
-                .frame(width: HarnessModelRowView.modelNameWidth, alignment: .leading)
+        VStack(alignment: .leading, spacing: Self.columnSpacing) {
+            HStack(spacing: 6) {
+                Text(row.compactDisplayName)
+                    .font(MenuTypography.modelTitle)
+                    .foregroundStyle(Color.primaryLabel)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .help(row.displayName)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Text("\(Formatters.formatTokenCountCompact(row.totalTokens)) tokens")
+                    .font(MenuTypography.dataValue)
+                    .foregroundStyle(Color.secondaryLabel)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+            }
             TokenBucketBar(buckets: row.buckets)
-                .frame(minWidth: HarnessModelRowView.bucketBarMinWidth, maxWidth: .infinity)
-            Text(Formatters.formatTokenCountCompact(row.totalTokens))
-                .font(MenuTypography.dataValue)
-                .foregroundStyle(Color.secondaryLabel)
-                .frame(width: HarnessModelRowView.tokenWidth, alignment: .trailing)
-            Text(HarnessModelRowView.percentText(row.cacheHitRate))
-                .font(MenuTypography.dataValue)
-                .foregroundStyle(Color.secondaryLabel)
-                .frame(width: HarnessModelRowView.hitRateWidth, alignment: .trailing)
-            // 速度是数值指标，样式跟 Token / 命中率同级（次级色），不跟价值的主色。
-            // 文案复用额度窗口区块的同一分档实现，避免两处小数位规则漂移。
-            Text(QuotaWindowUsageSection.speedText(row.tokensPerSecond))
-                .font(MenuTypography.dataValue)
-                .foregroundStyle(Color.secondaryLabel)
-                .frame(width: HarnessModelRowView.speedWidth, alignment: .trailing)
-                .help(HarnessModelRowView.speedColumnHelp)
-            Text(row.costText)
-                .font(MenuTypography.dataValue)
-                .foregroundStyle(Color.primaryLabel)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .frame(width: HarnessModelRowView.valueWidth, alignment: .trailing)
+                .frame(minHeight: 7)
+            HStack(spacing: 6) {
+                Text("缓存命中 \(Self.percentText(row.cacheHitRate))")
+                    .font(MenuTypography.hint)
+                    .foregroundStyle(Color.secondaryLabel)
+                Text("速度 \(QuotaWindowUsageSection.speedText(row.tokensPerSecond))")
+                    .font(MenuTypography.hint)
+                    .foregroundStyle(Color.secondaryLabel)
+                    .help(Self.speedColumnHelp)
+                Spacer(minLength: 3)
+                Text("值 \(row.costText)")
+                    .font(MenuTypography.hint)
+                    .foregroundStyle(Color.primaryLabel)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("缓存命中率 \(Self.percentText(row.cacheHitRate))；速度 \(QuotaWindowUsageSection.speedText(row.tokensPerSecond))；价值 \(row.costText)")
         }
-        // 与 fleet/节点视图的模型行同缩进（用户裁定：三种 scope 统一）。
-        .padding(.leading, 8)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(row.displayName)
     }
 
-    // MARK: - 排版常量
+    // MARK: - Fleet 行列宽常量
 
-    /// 模型名列定宽。长模型名（`claude-sonnet-4-5-20250929-thinking`）走 tail
-    /// 截断，保留最有辨识度的前缀。
+    /// 这些定宽列供下方 Fleet 单行模型行复用；本地 Harness 明细使用上方的
+    /// 两行弹性布局，不使用这组列宽。长模型名走 tail 截断。
     ///
-    /// 六列合计 92 + 40 + 40 + 36 + 32 + 56 = 296pt，加 5 段 6pt 间距和 8pt scope 缩进
+    /// Fleet 单行六列合计 92 + 40 + 40 + 36 + 32 + 56 = 296pt，加 5 段 6pt 间距和 8pt scope 缩进
     /// = 334pt，在 336pt 内容区里留 2pt 余量给字体度量误差——数字列都是定宽右对齐，
     /// 余量被吃掉也只是让占比条窄一点，不会串列。
     static let modelNameWidth: CGFloat = 92
     /// 占比条下限：模型名列再长也要留住能看出三段比例的宽度。
     ///
-    /// 曾经是 72：2026-10 模型行加「速度」列后原五列放不下六列，优先压这里
+    /// 曾经是 72：2026-10 Fleet 单行模型行加「速度」列后原五列放不下六列，优先压这里
     /// （模型名截断损失更大，三个数字列的定宽都比它更不可让），40pt 仍能
     /// 分辨三段的相对长短。
     static let bucketBarMinWidth: CGFloat = 40
@@ -1007,18 +1147,21 @@ struct FleetClientSectionView: View {
     /// `HarnessSectionView` 的段头右键同一语义，fleet 段头不能丢）。
     /// nil（节点视图）时不出右键菜单：刷新的是本机数据，对单节点视图无意义。
     var onRefreshClient: ((String) -> Void)? = nil
+    @State private var isExpanded = false
 
     /// 该形态有没有段头右键刷新项。节点视图恒为 false：节点分支不传
     /// `onRefreshClient`（刷的是**本机**数据，对单节点视图无意义，§10.2）。
     var hasRefreshMenu: Bool { onRefreshClient != nil }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: HarnessModelRowView.rowSpacing) {
-            header
+        DisclosureGroup(isExpanded: $isExpanded) {
             ForEach(section.mergedModels) { model in
                 FleetModelRowView(row: model)
             }
+        } label: {
+            header
         }
+        .tint(Color.secondaryLabel)
     }
 
     /// 段头右键项的标题。文案由 spec §10.2 定：「刷新本机 <客户端名>」——
@@ -1066,9 +1209,14 @@ struct FleetClientSectionView: View {
 struct FleetNodeGroupView: View {
     let node: FleetMenuSummary.NodeRow
     let models: [FleetMenuSummary.ModelRow]
+    @State private var isExpanded = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: HarnessModelRowView.rowSpacing) {
+        DisclosureGroup(isExpanded: $isExpanded) {
+            ForEach(models) { model in
+                FleetModelRowView(row: model)
+            }
+        } label: {
             HStack(alignment: .firstTextBaseline, spacing: 5) {
                 Text("── \(node.nodeName)\(node.isLocal ? "（本机）" : "")")
                     .font(MenuTypography.dataLabel)
@@ -1088,10 +1236,8 @@ struct FleetNodeGroupView: View {
                     .foregroundStyle(Color.primaryLabel)
                     .frame(width: HarnessUsageMenuView.valueWidth, alignment: .trailing)
             }
-            ForEach(models) { model in
-                FleetModelRowView(row: model)
-            }
         }
+        .tint(Color.secondaryLabel)
     }
 }
 

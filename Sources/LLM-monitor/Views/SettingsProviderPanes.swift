@@ -341,7 +341,7 @@ extension SettingsView {
     }
 
     /// 「立即刷新该 Provider」在设置页的唯一落点：走 `AppState.refreshOne(providerID:)`，
-    /// 与菜单兜底行右键「刷新该 Provider」（`MenuContentView.refreshProviderFromMenu`）
+    /// 与菜单额度页「刷新该 Provider」（`MenuContentView.refreshProviderFromMenu`）
     /// **同一条链路**——只发这个 provider 的请求、只重锚它自己的排期，其他
     /// provider 的下一拍与周期 full 计数不受影响。重复点击由 `refreshOne` 的
     /// 全局事务闸门兜底（第二个 `beginExternalJob` 拿不到 token，静默 no-op）。
