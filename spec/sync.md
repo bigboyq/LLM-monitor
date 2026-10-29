@@ -318,6 +318,12 @@ hub 的 high-water 据此拒绝迟到报告（§7.3）。持久化失败本轮�
   日图、今行和逐日金额按所选 node 或全局的完整日桶展示全 provider 合计；
   `quotaProviderID` 只过滤额度窗口行。此口径由用户裁定，避免 provider 卡片
   日统计把共享日桶误当成 provider-filtered 总量。
+  七日历史消费层使用 `FleetCardUsage.DayValue.estimate` 数值金额与 `valueIsPartial`，
+  不解析 `valueText`。`FleetUsageProjection.bucketCostEstimate` 优先使用日桶
+  `valueByCurrency`，旧桶才回退逐模型数值；混币按既有 `MixedCurrencyEstimate`
+  CNY 估算口径合并。来源不完整、截断及未完整计价随部分标记保留。
+  这是 L3 投影，wire 未扩展；远端无 Prompt 时长，历史速度显示不可用。
+  菜单「套餐历史」及独立详情窗使用同一九维单指标折线，edge 浮层仅保留套餐详情。
 - **日桶可用性**：多节点全局 / 已存在的所选节点缺少今日桶时显示“尚未同步”
   与 `—`，不回落本机数据、不冒充完整零值；卡片仍保留已同步的历史日图。
   partial 桶显示健康来源及保留值，并提示不可用客户端、原因及可能包含上次数据。

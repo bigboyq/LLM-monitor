@@ -80,7 +80,8 @@ extension EdgeDockController {
                 status: status,
                 dockEdge: config.edge,
                 fleet: state.fleetCardContext(for: status.kind),
-                isPinnedToStatusBar: configStore?.config.statusBarPinnedProvider == status.id
+                isPinnedToStatusBar: configStore?.config.statusBarPinnedProvider == status.id,
+                presentation: .edgePlan
             )
                 .frame(width: cardContentWidth)
                 .padding(backdrop)

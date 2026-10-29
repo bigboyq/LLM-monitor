@@ -73,7 +73,8 @@ struct ProviderDetailWindowView: View {
                         ProviderCardView(
                             status: status,
                             fleet: state.fleetCardContext(for: status.kind),
-                            isPinnedToStatusBar: configStore.config.statusBarPinnedProvider == status.id
+                            isPinnedToStatusBar: configStore.config.statusBarPinnedProvider == status.id,
+                            presentation: .complete
                         )
                     }
                     .frame(width: EdgeDockTheme.popoverWidth - LayoutMetrics.cardColumnHorizontalPadding * 2)

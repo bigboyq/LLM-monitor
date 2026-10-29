@@ -162,8 +162,10 @@ height: content-driven, fixedSize(vertical: true)
 ```
 
 额度页按启用 provider 顺序呈现与用量相同的紧凑卡片外壳，支持单 Provider 刷新、未配置项定位到
-对应设置，以及可展开的 Plan 详情；折叠行目标为两行：首行左侧 Provider 名称与临期/高峰事件，
-右侧额度更新时间贴近刷新按钮；次行是额度摘要、展开/收起按钮与独立窗口入口。正常状态不再另占更新时间行或详情页脚；
+对应设置，以及可分别展开的「套餐详情」和「套餐历史」；两个折叠区初始均关闭，可同时打开。
+操作行始终保留「套餐详情」「套餐历史」「独立窗口」三个入口。额度摘要与三个操作优先同行；
+实际宽度不足时摘要移到独立一行，三个操作仍保持同行。首行左侧 Provider 名称与临期/高峰事件，
+右侧额度更新时间贴近刷新按钮。正常状态不再另占更新时间行或详情页脚；
 更新时间仅显示 `HH:mm`，help 说明它代表 provider 额度读取时间，刷新动作只刷新该 Provider。
 窗口摘要在 5h 与周余量后分别显示对应瓶颈模型的重置倒计时（未知显示「重置时间未知」，已到期显示「待更新」）；详情保留完整重置时间。
 重置卡在现有 48h / 24h 紧迫度分档下进入摘要首行（橙 / 红）；GLM 与 DeepSeek 仅在既有高峰规则判断为临近或正在高峰时显示事件。
@@ -176,14 +178,20 @@ loading、failed、notConfigured 可按需增加状态行，错误始终可见�
 
 The menu offers two complementary views: **用量** answers which clients burned how
 many tokens today, and **额度** answers how much remains per enabled Provider. The
-quota page is available when the edge dock is hidden. Expanding 套餐详情 embeds the
-same `ProviderCardView.planModules` composition as the edge-dock popover and standalone
-detail window: provider progress and specific modules, quota-window analysis/usage
-switcher, and reset-card details. It deliberately omits Account Info and the seven-day
-local usage card. The collapsed row keeps a separate “独立窗口” action for the complete
-provider view. Fleet effective quota remains independent from scope; quota-window usage
-modules continue to follow the selected fleet scope. Loading and failure states preserve
-last-success Plan data and retain visible status feedback.
+quota page is available when the edge dock is hidden. 「套餐详情」 and 「套餐历史」 are
+independent disclosure actions and may be open together. Plan uses the same
+`QuotaWindowAccountInfoRow` + `ProviderCardView.planModules` composition as the edge-dock
+popover and complete detail window. History uses the shared `SevenDayUsageHistoryView`;
+it remains available without quota data and shows an explicit empty state when history
+is unavailable. Opening both sections presents the same Plan and history content as the
+standalone window. 「独立窗口」 opens that complete view directly. Fleet effective quota
+remains independent from scope; history and quota-window usage continue to follow the
+selected fleet scope. Loading and failure states preserve last-success Plan data and
+retain visible status feedback.
+
+The quota summary row uses `ViewThatFits`: if the complete summary plus all three actions
+fit, they share one line. Otherwise the summary wraps onto its own line while the three
+actions stay together, so reset countdowns and 「独立窗口」 remain visible.
 
 **Scope switcher** (`FleetScopeSwitcher`): one shared control, used by the menu
 header (right group, next to the refresh button) **and** by the provider-card
@@ -376,9 +384,10 @@ per-client sections」描述的是**本机 scope** 的内容区；多机联动�
   when space is insufficient; a single over-wide item is measured within the container.
   The prompt-speed range follows the metrics (min/max endpoints, P50 and recent markers).
   `Pmt` counts all recorded promptIDs, including prompts excluded from speed statistics.
-  min/P50 labels sit above their markers; recent/max labels sit below. Each label pair
-  starts at its first marker when it fits, moves apart on collision, and shifts left only
-  to stay inside the host. Prompt coverage is available in help/accessibility, without
+  min/P50 labels sit above their markers; recent/max labels sit below. Each label's colon
+  center aligns to its marker when possible; labels clamp at the host edges and separate
+  by the smallest needed shift to avoid overlap, while marker positions stay fixed.
+  Prompt coverage is available in help/accessibility, without
   a persistent `Prompt x/y` row. Every local model range uses the same
   menu-wide speed scale. Single-value and zero-value markers have vertical offsets so
   coincident readings remain distinguishable; missing or non-finite readings show `—`.
@@ -542,9 +551,9 @@ The menu footer contains:
 
 ### Full Provider Detail Window
 
-The quota page exposes “独立窗口” for each enabled provider. It opens the same
-`ProviderCardView` in one public SwiftUI `Window`, so all provider-specific sections
-remain reachable even when the edge dock is hidden. The window width follows
+The quota page exposes “独立窗口” for each enabled provider. It opens the complete
+`ProviderCardView` in one public SwiftUI `Window`, showing Account Info + Plan and the
+seven-day history by default. The window width follows
 `EdgeDockTheme.popoverWidth` (468pt at the current 420pt chart width, including card
 and host padding). Routes keep an optional notification model name as context only;
 the card is not filtered or scrolled to that model. A disabled provider gets an
@@ -553,9 +562,11 @@ settings. The pending route is in-memory only.
 
 ## Provider Card
 
-`ProviderCardView` 完整卡片的渲染宿主是边缘状态窗的 provider 详情浮层（固定
-`.alwaysVisible`）及独立详情窗口；菜单额度行只启用 Plan-only 模式，复用同一
-`planModules`，不复制额度模块实现，也不承载完整 provider 卡。旧「菜单底部
+`ProviderCardView` 的共享呈现入口按宿主选择：边缘状态窗 popover 使用 `edgePlan`
+（Provider 标题 + scope + Account Info + Plan，不含 history）；独立详情窗口使用
+`complete`（Account Info + Plan + history）；菜单分别使用 `plan` 与 `history`，两个
+折叠区可同时展开。Plan 共用 `QuotaWindowAccountInfoRow` 与 `planModules`，history
+共用 `SevenDayUsageHistoryView`，不复制业务模块。旧「菜单底部
 provider 兜底行 hover 卡」宿主已随兜底行移除（8e7278a，见上文删除记录）。
 
 **卡上两处时间戳统一为裸 "hh:mm"，点击按位置刷各自的数据（2026-10-13 引入，2026-10-18
@@ -588,9 +599,9 @@ provider 兜底行 hover 卡」宿主已随兜底行移除（8e7278a，见上文
 `ProviderCardView` 是 thin coordinator，额度行、浮层、图表和账号详情按职责分文件维护；body 的派生值（投影 / 额度窗口快照 / 「今」行 / 「闲」行 / 「免 / 速 / 它」今日动态行）收在 `Views/ProviderCardDerived.swift` 的值键 memo 里（`Models/DerivedValueMemo.swift`），只有输入真的变了才重算：
 - `QuotaViews.swift` — 所有 quota 行 / 进度条 / 重置卡 / `EquivalentQuotaAllocation`
 - `QuotaWindowUsageViews.swift` — 「额度窗口用量」区块（包含「额度窗口」分析/用量可切换模块与「重置卡详情」模块，详见 `spec/ui/edge-dock.md` §Quota window usage block）
-- `LocalUsageHoverViews.swift` — 7 天本地用量卡与 `LocalUsageFreshnessBadge` / `LocalUsageFreshnessText`
+- `LocalUsageHoverViews.swift` — 本地历史数据适配与 `LocalUsageFreshnessBadge` / `LocalUsageFreshnessText`
+- `SevenDayUsageHistoryChart.swift` — 菜单、Provider 卡与 Settings 共用的 7 天多指标折线图
 - `HoverPanel.swift` (386 行) — `HoverInfoRow` / `HoverPanelController` / 浮层管理
-- `TokenChart.swift` (40 行) — 7-day 柱图基础组件
 - `QuotaHoverViews.swift` — 已空，只留删除记录注释：`UsageMetricHoverSummaryView` 随其唯一宿主 GLM 闲时脚注一并删除（脚注内容并入「额度窗口」表格「闲」行），额度窗口 hover 明细族则早已随 `menuLayout` 删除
 
 Visual structure:
@@ -604,13 +615,13 @@ Visual structure:
 |    <progress bar>                              |
 |  额度窗口（分析/用量 segment 切换）/ 重置卡详情   |
 |  -------------------------------------------  |
-|  最近7天token用量            <freshness pill>  |
+|  最近7天使用历史             <freshness pill>  |
 |  <chart + table>                               |
 +-----------------------------------------------+
 ```
 
-(The two `最近7天token用量` rows are the two card titles, each drawn **outside and
-above** its own card plate — see `spec/ui/edge-dock.md` §Two cards, titles outside.)
+(In the complete detail window these are the two card titles, each drawn **outside and
+above** its own card plate. The edge popover intentionally shows only the Plan card.)
 
 Card styling:
 
@@ -650,7 +661,17 @@ Row-level tint rules:
 | Plan tag | **已从标题行移除**（2026-10 第二轮改版）。套餐 pill 挪进卡片第一段「Account Info」行（`QuotaWindowAccountInfoRow`），与账号名同一行——账号是谁、什么级别是同一个问题的两半 |
 | State tag | compact `未配置` / `待更新` / `已更新` / `需重试` label; a spinner replaces it while loading. `未配置` (not `未启用`): `.notConfigured` covers a missing API key, missing external auth and missing login as well as a disabled provider, and `未启用` made an enabled-but-keyless provider read as switched off |
 | Account block hover | **已删除**。邮箱 / 数据来源原本按 provider 分三路包在标题行的 `HoverInfoRow` 里，只为菜单那张卡服务；菜单不再渲染 provider 卡，浮层又不吃鼠标事件，这个折叠区展不开，直接不画 |
-| Seven-day local statistics | 不在标题行，在**本地用量那一段**（`LocalUsageFooterView` → `SevenDayTokenUsageHoverView`）：`.alwaysVisible` 下就地展开成第二张卡的内容，`.onHover` 下才是悬停弹层。逐日表末列在 provider 卡路径**跟随「额度窗口」的 分析/用量 segment**（`lastColumnFollowsSegment: true` + `@AppStorage(quotaWindowUsageSegment)`）：分析态显示 价值（现状渲染），用量态显示 速度（`LocalUsageSpeedByDay` 按 `startOfDay(completedAt)` 分组逐日 `windowTokenRate`，文案 `speedText`，单日无有效时长 `—`，无样本不画列；两列同宽 62pt 切换零回流）。Settings 客户端页与 fleet 路径保持默认参数：永远价值列，不受 segment 影响 |
+| Seven-day usage history | 外层标题为「最近7天使用历史」，右侧新鲜度时间只在本机 scope 显示并可重扫。共享 `SevenDayUsageHistoryView` 用 7 个自然日槽位展示单指标折线；缺失日断线，今天标注未完结。9 个可选指标为总量、Rounds、Turns、价值、速度、Input、Cache、Reason、Output，默认总量；选择写入独立的 `@AppStorage("usageHistoryMetric")`，不随「额度窗口」分析/用量切换。速度按 Prompt 汇总为每日 P50；Fleet 使用当前 scope 的权威 `snapshot.daily`，无 Prompt 时长时速度显示 `—`。 |
+
+The metric picker uses two groups: **总量 / Rounds / Turns / 价值 / 速度**, then
+**Input / Cache / Reason / Output**. Total is Input + Cache + Output + Reason; cache-write
+tokens are excluded. Rounds count tokenized API calls; Turns count user prompts where the
+source exposes them (sources with inferred step boundaries retain their documented
+best-effort semantics). Selecting 价值 or 速度 adds that series to the daily table:
+single-currency value keeps its currency, mixed currencies are converted to CNY using the
+existing mixed-currency rate, and incomplete pricing is marked partial. Speed is
+Prompt-level P50 per day; unavailable durations remain `—`. Fleet uses its current-scope
+authoritative daily snapshot and has no prompt-duration data, so Fleet speed stays `—`.
 
 scope 切换**不在标题行**：选项 ≤4 时默认在标题行**下方**独占一行
 （`ProviderCardView.scopeRow`，宽度与卡片一致）；dock 贴底边时该行移到详情内容末尾、靠近
@@ -692,23 +713,26 @@ Reasons currently produced by `AppState`:
 Text:
 
 ```text
-准备就绪…
+等待首次额度数据
 ```
 
 This is a transient state. Opening the menu triggers `refreshAll()` if any provider is ready.
 
 ### Loading
 
-If `state.lastSuccess` exists, the card shows the cached form of the same three
-sections the `.ok` path renders — account row, `QuotaSummary` at 50% opacity, the
-resident usage block, the 7-day chart — so the brief mid-refresh flash does not
-re-layout the popover.
+If `state.lastSuccess` exists, the shared Plan presentation keeps the cached account and
+quota modules visible, with the same full presentation used by the menu Plan disclosure.
+The shared seven-day history remains in its own card for every state, so loading does not
+switch back to a legacy chart or re-layout the history section.
 
-If not, it shows:
+If not, the shared Plan placeholder shows:
 
 ```text
-正在获取…
+正在获取套餐额度
 ```
+
+The complete detail history remains independently visible; loading does not switch its
+chart implementation or hide its empty/scanning state.
 
 ### OK
 
@@ -793,8 +817,8 @@ watcher hot-reloads the config and rebuilds the cards, no app restart needed.
 The merge itself is provider-neutral: `ProviderStatus.usageProjection` folds every
 client contribution into the card; the switch only controls whether the OpenCode
 contribution appears. OpenCode rounds are tokenized assistant messages. Turns are
-distinct user-prompt parents. The 7-day chart shows R/T alongside Input, Cache,
-Output, and Reason.
+distinct user-prompt parents. The shared seven-day history chart shows selectable
+Rounds, Turns, Input, Cache, Output, Reason, total, value, and Prompt P50 speed trends.
 
 ChatGPT's 5h / weekly summaries retain the preaggregated native Codex totals and
 add only the enabled OpenCode contribution. The native samples already represented
@@ -803,21 +827,19 @@ the row falls back to aggregating the available combined samples.
 
 ### Failed
 
-Layout (off the cached `lastSuccess`, when one exists):
+The failed state uses the shared Plan presentation. When a cached `lastSuccess` exists,
+its Account Info and Plan modules remain visible with the error; otherwise the shared
+error placeholder is shown. The history card remains independent:
 
 ```text
-<account row>                     # only if the cached QuotaInfo has one
+<shared Account Info + Plan modules, if cached lastSuccess exists>
 exclamationmark.triangle.fill  <error message>
-上次成功：<clock>
-<previous quota bars>             # 55% opacity
-<quota-window usage block>        # resident, same as .ok
-<7-day chart>
+<shared seven-day usage history>
 ```
 
-The error message is red, 11pt, and limited to 2 lines. The fallback path runs through
-the same constructors as the `.ok` branch (`accountInfoRow` / `quotaWindowUsage` /
-`peakIndicator`), so a failure can no longer silently drop a section — the historic bug
-this structure exists to prevent was exactly that, a missed `between` parameter.
+The error message uses the critical tint, 10pt `MenuTypography.hint`, and is limited to 2 lines. Loading, failed, ready and
+not-configured states use the same shared Plan rendering as the menu disclosure; the
+history card stays mounted separately in all of them.
 
 ## Quota Summary
 
@@ -1029,12 +1051,11 @@ The UI intentionally hides reset-credit id, title, description, and grant time.
 | Plan pill (`MenuTypography.pill`) / state & count capsules (`MenuTypography.badge`) | 9pt semibold |
 | Quota-table body (`MenuTypography.metricValue`) | 10pt medium monospaced digit |
 | Table headers / module titles (`MenuTypography.metricLabel` / `QuotaModuleTitle`) | 10pt (semibold for module titles) |
-| Error message | 11pt |
+| Error message (`MenuTypography.hint`) | 10pt |
 | Footer text/buttons (`MenuTypography.footer`) | 9pt medium |
 
-The card's failure row is the one place in this table that is a **literal** 11pt rather
-than a `MenuTypography` role: the `errorMessage` role had no call site and was deleted
-rather than left as an unused role. The rendered size is unchanged.
+The shared Plan fallback uses the same 10pt `MenuTypography.hint` role for loading and
+failure feedback; there is no separate error-message typography role.
 
 > 核对基线：2026-10-29 · 代码 9de2149
 > 统一验证通过，详细结果见 `spec/sync.md`。

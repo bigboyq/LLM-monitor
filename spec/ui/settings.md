@@ -107,6 +107,13 @@ provider pane. It has two halves:
   其他任务，行序 = `allCases` 声明序，空分类不出行；判定与口径见
   `spec/providers/glm.md` §Provider 分类）。
 
+Each expanded provider also uses the shared `SevenDayUsageHistoryView` shown by provider
+cards. It plots one selected metric across seven daily slots: total, Rounds, Turns, value,
+speed, Input, Cache, Reason, or Output; total is the default. Missing dates appear as
+gaps and today is marked incomplete. Speed is calculated as daily Prompt P50. The selected
+metric is persisted independently under `usageHistoryMetric` and is not coupled to the
+quota-window Analysis/Usage switch.
+
 The per-provider OpenCode merge switch is **not** in this pane (nor in the provider
 panes) — `clientBindings[]` in `config.json` is its only source of truth, so saving the
 form never rolls a hand-edited value back. See `spec/ui/menu-and-cards.md`

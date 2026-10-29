@@ -162,12 +162,25 @@ private struct ClientProviderExpandedContent: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            SevenDayTokenUsageHoverView(
-                days: provider.dailyTokenUsage,
+            SevenDayUsageHistoryView(
+                days: UsageHistorySeriesBuilder.build(
+                    days: provider.dailyTokenUsage,
+                    costByDay: LocalUsagePriceByDay.estimates(
+                        dayStarts: provider.dailyTokenUsage.map(\.dayStart),
+                        recentSamples: provider.recentSamples,
+                        quotaProviderID: provider.quotaProviderID,
+                        deepseekPeakWindow: provider.deepseekPeakWindow
+                    ),
+                    speedByDay: LocalUsageSpeedByDay.statistics(
+                        dayStarts: provider.dailyTokenUsage.map(\.dayStart),
+                        recentSamples: provider.recentSamples
+                    ),
+                    samplesTruncated: provider.samplesTruncated,
+                    isTruncated: provider.isTruncated
+                ),
                 scannedAt: provider.scannedAt,
                 isScanning: false,
-                isTruncated: provider.isTruncated,
-                priceByDay: provider.priceTextByDay
+                isTruncated: provider.isTruncated
             )
 
             // 单行并排：聚合指标（总 Token / 命中率 / 价值）+ 分项 Token 桶，

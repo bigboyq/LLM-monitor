@@ -18,14 +18,23 @@ final class HarnessUsageMenuViewTests: XCTestCase {
         XCTAssertEqual(HarnessModelRowView.columnSpacing, 4)
     }
 
-    /// 菜单额度行在展开时切换到 Plan-only 渲染；该模式参与 ProviderCardView 的值相等判断，
-    /// 以免 `.equatable()` 把完整卡片缓存为旧形态（或反过来）。
-    func testPlanOnlyModeParticipatesInProviderCardEquatableIdentity() {
+    /// 宿主可独立展开套餐或历史；呈现模式参与值相等判断，避免 `.equatable()`
+    /// 把一种模式缓存成另一种。
+    func testPresentationModeParticipatesInProviderCardEquatableIdentity() {
         let status = Self.codexFixture()
         let fullCard = ProviderCardView(status: status)
-        let planOnly = ProviderCardView(status: status, showsPlanDetailsOnly: true)
-        XCTAssertNotEqual(fullCard, planOnly)
-        XCTAssertEqual(planOnly, ProviderCardView(status: status, showsPlanDetailsOnly: true))
+        let plan = ProviderCardView(status: status, presentation: .plan)
+        let edgePlan = ProviderCardView(status: status, presentation: .edgePlan)
+        let history = ProviderCardView(status: status, presentation: .history)
+        XCTAssertNotEqual(fullCard, plan)
+        XCTAssertNotEqual(fullCard, history)
+        XCTAssertNotEqual(plan, history)
+        XCTAssertNotEqual(plan, edgePlan)
+        XCTAssertEqual(plan, ProviderCardView(status: status, presentation: .plan))
+    }
+
+    func testProviderHistorySectionTitleNamesTheBroaderHistoryMetrics() {
+        XCTAssertEqual(ProviderCardView.localUsageSectionTitleText, "最近7天使用历史")
     }
 
     func testQuotaPresentationSummarizesWindowsAndDeepSeekBalanceWithoutWindows() {

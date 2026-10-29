@@ -44,6 +44,8 @@ struct FleetCardUsage: Equatable, Sendable {
     struct DayValue: Equatable, Sendable {
         let dayKey: String
         let valueText: String
+        var estimate: ModelCostEstimate? = nil
+        var valueIsPartial: Bool = false
     }
 
     /// 最近 7 天日桶（柱图口径与本地一致：input 是 uncached、cacheRead 单列）。
@@ -438,7 +440,11 @@ enum FleetUsageProjection {
                 rounds: bucket.totals.rounds
             ))
             let text = bucketCostText(bucket)
-            dayValues.append(FleetCardUsage.DayValue(dayKey: bucket.dayKey, valueText: text))
+            dayValues.append(FleetCardUsage.DayValue(
+                dayKey: bucket.dayKey, valueText: text,
+                estimate: bucketCostEstimate(bucket),
+                valueIsPartial: bucketCostIsPartial(bucket)
+            ))
         }
 
         // 范围选择（§10.7.1 W 裁定，2026-10-24 已确认）：同 (model, kind) 存在
@@ -647,7 +653,9 @@ enum FleetUsageProjection {
             ))
             dayValues.append(FleetCardUsage.DayValue(
                 dayKey: bucket.dayKey,
-                valueText: bucketCostText(bucket)
+                valueText: bucketCostText(bucket),
+                estimate: bucketCostEstimate(bucket),
+                valueIsPartial: bucketCostIsPartial(bucket)
             ))
         }
 
@@ -802,6 +810,53 @@ enum FleetUsageProjection {
             entries: bucket.entries,
             complete: bucket.modelDetailsComplete && bucket.totalsComplete && !bucket.sourceTruncated
         )
+    }
+
+    /// 历史趋势读取数值，不从金额文案反解析；保持与表格相同的桶汇总优先级。
+    static func bucketCostEstimate(_ bucket: FleetDailyBucket) -> ModelCostEstimate? {
+        let estimates: [ModelCostEstimate]
+        if let values = bucket.valueByCurrency {
+            estimates = values.compactMap { raw, value in
+                guard let currency = ModelPriceCurrency(rawValue: raw),
+                      value.isFinite, value >= 0 else { return nil }
+                return ModelCostEstimate(
+                    value: value, currency: currency,
+                    pricedModelNames: [], unpricedModelNames: []
+                )
+            }
+        } else {
+            estimates = bucket.entries.compactMap { entry in
+                guard let value = entry.value, let currency = entry.currency,
+                      value.isFinite, value >= 0 else { return nil }
+                return ModelCostEstimate(
+                    value: value, currency: currency,
+                    pricedModelNames: [], unpricedModelNames: []
+                )
+            }
+        }
+        guard let first = estimates.first else { return nil }
+        if estimates.allSatisfy({ $0.currency == first.currency }) {
+            let value = estimates.compactMap(\.value).reduce(0, +)
+            guard value.isFinite else { return nil }
+            return ModelCostEstimate(
+                value: value, currency: first.currency,
+                pricedModelNames: [], unpricedModelNames: []
+            )
+        }
+        let value = NSDecimalNumber(decimal: MixedCurrencyEstimate(estimates: estimates).cnyEquivalentTotal).doubleValue
+        guard value.isFinite else { return nil }
+        return ModelCostEstimate(value: value, currency: .cny, pricedModelNames: [], unpricedModelNames: [])
+    }
+
+    static func bucketCostIsPartial(_ bucket: FleetDailyBucket) -> Bool {
+        let incomplete = !bucket.modelDetailsComplete || !bucket.totalsComplete || bucket.sourceTruncated
+        if let values = bucket.valueByCurrency {
+            return bucket.costPartial || incomplete || values.contains { raw, value in
+                ModelPriceCurrency(rawValue: raw) == nil || !value.isFinite || value < 0
+            }
+        }
+        return bucket.costPartial || incomplete || hasPartialCost(entries: bucket.entries)
+            || bucket.entries.contains { $0.value.map { !$0.isFinite || $0 < 0 } ?? false }
     }
 
     private static func entryCostText(entry: FleetUsageEntry) -> String {

@@ -66,6 +66,7 @@ enum ClientUsageAggregation {
                             recentSamples: contribution.recentSamples,
                             scannedAt: contribution.scannedAt,
                             isTruncated: contribution.isTruncated,
+                            samplesTruncated: contribution.samplesTruncated,
                             deepseekPeakWindow: status.deepseekPeakWindow ?? .defaultWindow
                         )
                     )
@@ -153,6 +154,8 @@ enum ClientUsageAggregation {
                 dailyTokenUsage: daily,
                 recentSamples: samples,
                 scannedAt: contribution.scannedAt,
+                isTruncated: contribution.isTruncated,
+                samplesTruncated: contribution.samplesTruncated,
                 deepseekPeakWindow: status.deepseekPeakWindow ?? .defaultWindow
             )
         }
@@ -184,6 +187,8 @@ enum ClientUsageAggregation {
                 dailyTokenUsage: dailyUsage(for: samples, matching: contribution.dailyTokenUsage),
                 recentSamples: samples,
                 scannedAt: contribution.scannedAt,
+                isTruncated: contribution.isTruncated,
+                samplesTruncated: contribution.samplesTruncated,
                 deepseekPeakWindow: status.deepseekPeakWindow ?? .defaultWindow
             )
         }

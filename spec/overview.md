@@ -12,7 +12,7 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 | Build system | Swift Package Manager executable target (with `LLMMonitorTests` test target) |
 | UI model | Menu bar drop-down plus a native Settings window; lightweight setup guidance appears when all providers are unconfigured |
 | Edge dock | Optional screen-edge panel, one circle per enabled Provider, click-through by default and hidden while the frontmost App is fullscreen (`hideInFullscreen`, default `true`). Shape is a four-way `EdgeDockMode` picker (无 / 状态窗 / 小圆环 / 自动隐藏状态窗) whose default is **auto-hide window** — the feature ships on, occupying only a 7pt ring column until the mouse approaches |
-| Hover details | Delayed floating hover panels for compact quota details |
+| Hover details | Delayed floating edge panels show shared account / Plan details; quota menu expands Plan details and seven-day history independently, and the independent window combines both |
 | Appearance | Settings Interface pane 「外观」 section: 浅色 / 深色 / 自动 (default), drafted with ordinary settings and applied to `NSApp.appearance` on save; `MenuBarExtra` native presentation follows the system |
 | Login item | Settings-window launch-at-login toggle backed by `SMAppService.mainApp`; menu footer's 自启 entry is also a toggle button (状态化图标 `power` / `power.dotted`) |
 | Fleet Sync (多机联动) | Optional LAN sync between one hub and one or more secondary nodes: node→hub periodic usage reports, hub-merged fleet snapshot, scope switching (全局 / 本机 / 节点) in menu and dock cards, effective-quota fallback for stale local fetches. Wire protocol, storage and coordinator: `sync.md` |
@@ -142,7 +142,7 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 - Provider deletion from UI.
 - Push notifications beyond the Bark channel (no APNs integration, no third-party push
   services). See `spec/notifications.md`.
-- Usage history or cost analytics.
+- Long-term usage history and advanced cost analytics beyond the rolling seven-day usage trends.
 - Automatic provider discovery from remote sources.
 - Automatic updates and in-app version checks — upgrading means downloading a new build from
   GitHub Releases manually (release gating and the pre-release checklist: `spec/config.md`).

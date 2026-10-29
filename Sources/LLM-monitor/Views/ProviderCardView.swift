@@ -3,9 +3,9 @@ import AppKit
 
 /// 同一张 `ProviderCardView` 的排版规则。
 ///
-/// 菜单内容区有用量与额度两个视图；额度行通过 Plan-only 模式复用本卡的计划模块，
-/// 但不承载完整卡片。完整卡片由边缘状态窗浮层和独立详情窗口承载，均使用
-/// `.alwaysVisible`（卡内详情就地展开，不再依赖 hover 二次触发）。
+/// 菜单额度行以独立 disclosure 复用 Plan 与 history；边缘浮窗用 `edgePlan` 展示
+/// 标题、scope、Account Info 与 Plan；独立详情窗口用 `complete` 展示 Plan + history。
+/// Provider 详情不再依赖 hover 二次触发。
 ///
 /// 曾经按 `HoverRevealMode` 分叉的规则至此**全部收敛**，这个类型只剩下面注释里
 /// 记录的历史。收敛的判据只有一条：`hoverRevealMode` 的两个注入点
@@ -31,7 +31,8 @@ enum ProviderCardLayout {
     //
     // 它们的消费方**全在 `ProviderCardView.swift` 内**，而菜单侧那条 `.onHover`
     // 分支已经随 `menuBody` 一起没有渲染方了：重置卡与高峰期倒计时改由卡片层
-    // 无条件绘制，标题行的状态点不再画，卡片恒为「两张卡 + 标题在卡外」。
+    // 无条件绘制，标题行的状态点不再画。当前 edgePlan 是一张 Plan 卡；complete
+    // 独立详情是 Plan + history 两卡；菜单可分别打开两段。
     // 规则还在、却永远只取到 `true`，测试再断言它返回 `true` 就是三方一起给假
     // 信号——这正是当初 `expandsAccountSection` 被拆掉时的同一个组合。
 
@@ -101,14 +102,25 @@ extension EnvironmentValues {
     }
 }
 
+enum ProviderCardPresentation: Equatable, Sendable {
+    /// 套餐与历史均显示（独立窗口 / 完整卡片）。
+    case complete
+    /// 菜单内嵌套餐详情，不重复菜单行的 Provider 标题。
+    case plan
+    /// 边缘悬浮窗的套餐呈现，保留 Provider 标题和 scope 控件。
+    case edgePlan
+    /// 仅历史（菜单套餐历史）。
+    case history
+}
+
 /// provider 卡片 — 一个 provider 的全部信息
 ///
 /// `Equatable`：渲染依赖值类型 `status`、fleet 上下文、卡片位置/锚定状态与
-/// `showsPlanDetailsOnly`。`hoverRevealMode` 和动作闭包由后代从 Environment 读取，
+/// `presentation`。`hoverRevealMode` 和动作闭包由后代从 Environment 读取，
 /// 不参与值比较。配合调用点的 `.equatable()`，任一 provider 的任一状态变化只会重算
 /// 真正变化的那几张卡，而不是整屏菜单面板。
 ///
-/// `==` 比较渲染所需的值输入（包括 Plan-only 模式）；环境动作仍不参与值比较。
+/// `==` 比较渲染所需的值输入（包括呈现模式）；环境动作仍不参与值比较。
 struct ProviderCardView: View, Equatable {
     let status: ProviderStatus
     /// 当前 edge dock 的贴靠边：底边 dock 的浮层在 dock 上方，分段控件放到
@@ -120,9 +132,8 @@ struct ProviderCardView: View, Equatable {
     var fleet: FleetCardContext? = nil
     /// 是否在状态栏小眼睛锚定
     var isPinnedToStatusBar: Bool = false
-    /// 菜单额度页只展开 Plan 段时也走同一组 Plan 子模块。
-    /// 账号行与七天本地用量仍由完整详情宿主展示。
-    var showsPlanDetailsOnly: Bool = false
+    /// 同一张卡的共享呈现入口：完整详情、套餐或历史。
+    var presentation: ProviderCardPresentation = .complete
 
     /// 「今」行取哪一天：宿主注入的展示时钟（随浮层显隐起停），与卡内其它
     /// 倒计时/新鲜度消费者同一个 now，不取渲染时的墙钟。
@@ -155,7 +166,7 @@ struct ProviderCardView: View, Equatable {
             && lhs.dockEdge == rhs.dockEdge
             && lhs.fleet == rhs.fleet
             && lhs.isPinnedToStatusBar == rhs.isPinnedToStatusBar
-            && lhs.showsPlanDetailsOnly == rhs.showsPlanDetailsOnly
+            && lhs.presentation == rhs.presentation
     }
 
     /// dock 浮层的卡片是**一次性构建的值快照**（NSHostingView 的 rootView
@@ -199,10 +210,15 @@ struct ProviderCardView: View, Equatable {
         // memo 之后只有输入真的变了才重算，数值与口径一字未改。
         let derived = ProviderCardDerivedValues.resolve(status: status, displayDate: displayDate)
         Group {
-            if showsPlanDetailsOnly {
-                planDetailsOnly(derived: derived)
-            } else {
+            switch presentation {
+            case .complete:
                 dockBody(derived: derived)
+            case .plan:
+                planDetailsOnly(derived: derived)
+            case .edgePlan:
+                edgePlanDetailsOnly(derived: derived)
+            case .history:
+                historyDetailsOnly(derived: derived)
             }
         }
             // popover root view 是快照，@State 会跨 rootView 更新保留。全局 scope
@@ -218,6 +234,7 @@ struct ProviderCardView: View, Equatable {
     private func planDetailsOnly(derived: ProviderCardDerived) -> some View {
         if let info = effectiveQuotaInfo ?? status.lastSuccess {
             dockCard {
+                accountInfoRow(info: info)
                 planModules(info: info, derived: derived)
                 if case .failed(let message, _) = status.state {
                     Label(message, systemImage: "exclamationmark.triangle.fill")
@@ -243,10 +260,7 @@ struct ProviderCardView: View, Equatable {
                         .foregroundStyle(Color.criticalTint)
                         .lineLimit(2)
                 case .notConfigured(let reason):
-                    Text("尚未配置额度读取 · \(reason)")
-                        .font(MenuTypography.hint)
-                        .foregroundStyle(Color.secondaryLabel)
-                        .lineLimit(2)
+                    notConfiguredView(reason: reason)
                 case .ready:
                     Text("等待首次额度数据")
                         .font(MenuTypography.hint)
@@ -262,8 +276,34 @@ struct ProviderCardView: View, Equatable {
         }
     }
 
+    @ViewBuilder
+    private func edgePlanDetailsOnly(derived: ProviderCardDerived) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            headerContent
+            if dockEdge != .bottom { scopeRow }
+            planDetailsOnly(derived: derived)
+            if dockEdge == .bottom { scopeRow }
+        }
+    }
+
+    /// 历史独立展开仍使用完整详情里的同一标题与历史组件；没有历史数据时保留入口，
+    /// 由共享 history view 显示明确空态。Fleet scope 使用 snapshot.daily。
+    @ViewBuilder
+    private func historyDetailsOnly(derived: ProviderCardDerived) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            dockSectionTitle(showFreshnessBadge: effectiveScope == .local, projection: derived.projection)
+            if let notice = activeUsage?.dailyNotice, fleetUsageActive {
+                Text(notice).font(MenuTypography.hint).foregroundStyle(Color.secondaryLabel)
+            }
+            if let notice = activeUsage?.incompleteNotice, fleetUsageActive {
+                Text(notice).font(MenuTypography.hint).foregroundStyle(Color.secondaryLabel)
+            }
+            dockCard { usageBlock(derived: derived) }
+        }
+    }
+
     /// **三段式**：段1「Account Info」行 → 段2「Plan详情」+ 四个模块 →
-    /// 段3「最近7天token用量」卡。前两段住第一张卡，段3 独立成卡。
+    /// 段3「最近7天使用历史」卡。前两段住第一张卡，段3 独立成卡。
     ///
     /// 切分点不是新划的：额度那一组是"现在"、7 天用量那一组是"历史"，两者之间
     /// 本来就有 `HoverInfoRow` 的那条分隔线。卡片边界取代它之后，两组各自是一张
@@ -278,7 +318,7 @@ struct ProviderCardView: View, Equatable {
     /// 右侧是刷新时间/状态），套餐 pill 已从 header 挪进段1 的账号行
     /// （`QuotaWindowAccountInfoRow`）；**账号行本身不加标题**。段2 的段落标题
     /// 「Plan详情」画在卡内（`planModules` 开头）；标题 2 是段3 的
-    /// 「最近7天token用量」，右侧同一行放数据新鲜度（时间 / 计算中…）——
+    /// 「最近7天使用历史」，右侧同一行放数据新鲜度（时间 / 计算中…）——
     /// 段3 标题在卡外，段2 标题在卡内，两者都是 13pt 卡片标题级或 11pt 段落级，
     /// 压过模块标题（10pt secondary）。
     ///
@@ -296,55 +336,104 @@ struct ProviderCardView: View, Equatable {
             // 底边 dock 的详情浮层开在 dock 上方，因此把分段控件移到内容末尾，
             // 让它靠近 dock；其它边缘仍放在标题下方。>4 项的下拉控件始终留在卡头。
             if dockEdge != .bottom { scopeRow }
-            // 有生效额度（本地 .ok，或 fleet elected）就走完整三段；否则回退
-            // 单卡（.loading / .failed / .notConfigured 的本地路径不变）。
-            if let info = effectiveQuotaInfo {
-                dockCard {
-                    accountInfoRow(info: info)
-                    planModules(info: info, derived: derived)
-                }
-                dockSectionTitle(showFreshnessBadge: !fleetUsageActive, projection: derived.projection)
-                if let notice = activeUsage?.dailyNotice, fleetUsageActive {
-                    Text(notice)
-                        .font(MenuTypography.hint)
-                        .foregroundStyle(Color.secondaryLabel)
-                        .padding(.top, 2)
-                }
-                if let notice = activeUsage?.incompleteNotice, fleetUsageActive {
-                    Text(notice)
-                        .font(MenuTypography.hint)
-                        .foregroundStyle(Color.secondaryLabel)
-                        .padding(.top, 2)
-                }
-                dockCard {
-                    usageBlock(derived: derived)
-                }
-            } else {
-                dockCard {
-                    content(derived: derived)
-                }
+            planDetailsOnly(derived: derived)
+            dockSectionTitle(showFreshnessBadge: effectiveScope == .local, projection: derived.projection)
+            if let notice = activeUsage?.dailyNotice, fleetUsageActive {
+                Text(notice)
+                    .font(MenuTypography.hint)
+                    .foregroundStyle(Color.secondaryLabel)
+                    .padding(.top, 2)
+            }
+            if let notice = activeUsage?.incompleteNotice, fleetUsageActive {
+                Text(notice)
+                    .font(MenuTypography.hint)
+                    .foregroundStyle(Color.secondaryLabel)
+                    .padding(.top, 2)
+            }
+            dockCard {
+                usageBlock(derived: derived)
             }
             if dockEdge == .bottom { scopeRow }
         }
     }
 
-    /// 用量区块：fleet scope 读快照（7 天柱图 + 逐日表），本地 scope 走投影。
+    /// 用量区块：本地 scope 从投影构建历史趋势；fleet scope 使用当前范围的
+    /// snapshot.daily 与金额估算。Fleet 没有 prompt 时长，所以速度自然留空。
     @ViewBuilder
     private func usageBlock(derived: ProviderCardDerived) -> some View {
-        if fleetUsageActive, let usage = activeUsage {
-            LocalUsageFooterView(
-                dailyTokenUsage: usage.daily,
-                recentSamples: [],
-                quotaProviderID: status.kind.quotaProviderID,
-                scannedAt: nil,
-                isScanning: false,
-                isReady: !usage.daily.isEmpty,
-                emptyHint: emptyUsageHint,
-                part: .detail
-            )
+        if effectiveScope != .local {
+            if let usage = activeUsage {
+                let fleetCosts = fleetHistoryCosts(usage: usage)
+                SevenDayUsageHistoryView(
+                    days: UsageHistorySeriesBuilder.build(
+                        days: usage.daily,
+                        costByDay: fleetCosts.costByDay,
+                        speedByDay: [:],
+                        samplesTruncated: false,
+                        partialCostDays: fleetCosts.partialCostDays,
+                        now: displayDate
+                    ),
+                    scannedAt: nil,
+                    isScanning: false,
+                    showsHeader: false
+                )
+            } else {
+                SevenDayUsageHistoryView(
+                    days: [], scannedAt: nil, isScanning: false, showsHeader: false
+                )
+            }
         } else {
-            localUsage(projection: derived.projection, part: .detail)
+            let projection = derived.projection
+            SevenDayUsageHistoryView(
+                days: UsageHistorySeriesBuilder.build(
+                    days: projection.dailyTokenUsage,
+                    costByDay: LocalUsagePriceByDay.estimates(
+                        dayStarts: projection.dailyTokenUsage.map(\.dayStart),
+                        recentSamples: projection.recentSamples,
+                        quotaProviderID: status.kind.quotaProviderID,
+                        deepseekPeakWindow: status.deepseekPeakWindow ?? .defaultWindow
+                    ),
+                    speedByDay: LocalUsageSpeedByDay.statistics(
+                        dayStarts: projection.dailyTokenUsage.map(\.dayStart),
+                        recentSamples: projection.recentSamples
+                    ),
+                    samplesTruncated: projection.samplesTruncated,
+                    isTruncated: projection.isTruncated,
+                    now: displayDate
+                ),
+                scannedAt: projection.scannedAt,
+                isScanning: status.isScanningLocalUsage || projection.localUsageFreshness == .scanning,
+                isTruncated: projection.isTruncated,
+                showsHeader: false
+            )
         }
+    }
+
+    private func fleetHistoryCosts(usage: FleetCardUsage) -> (
+        costByDay: [Date: ModelCostEstimate],
+        partialCostDays: Set<Date>
+    ) {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = Calendar.current.timeZone
+        var costByDay: [Date: ModelCostEstimate] = [:]
+        var partialCostDays: Set<Date> = []
+        for dayValue in usage.dayValues {
+            guard let dayStart = LocalUsageDayKey.parse(dayValue.dayKey, calendar: calendar) else { continue }
+            if let estimate = dayValue.estimate { costByDay[dayStart] = estimate }
+            if dayValue.valueIsPartial { partialCostDays.insert(dayStart) }
+        }
+        return (costByDay, partialCostDays)
+    }
+
+    private var historySectionTitle: String {
+        guard effectiveScope != .local else { return Self.localUsageSectionTitleText }
+        let scope: String
+        switch effectiveScope {
+        case .local: scope = "本机"
+        case .fleet: scope = "全局范围"
+        case .node(let id): scope = fleet?.nodeChoices.first(where: { $0.id == id })?.name ?? "所选节点"
+        }
+        return "\(Self.localUsageSectionTitleText) · \(scope)"
     }
 
     /// 段1「Account Info」：账号名 + 账号级别 pill 的一行，无段落标题。
@@ -370,7 +459,7 @@ struct ProviderCardView: View, Equatable {
 
     /// 段2「Plan Info」的四个模块，按序：
     /// 0. **段落标题「Plan详情」**——账号行分隔线之后、进度条区之前。三段里只有
-    ///    账号行不配标题（它本来就是一行）；这个标题与段3 的「最近7天token用量」
+    ///    账号行不配标题（它本来就是一行）；这个标题与段3 的「最近7天使用历史」
     ///    同为段落级，但住在卡内（段3 的标题在卡外），层级压过模块标题：
     ///    11pt semibold（`hoverRowEmphasis`）对 10pt semibold secondary（`QuotaModuleTitle`，
     ///    第四轮起模块标题也加重字重，但字号与颜色仍在段落标题之下）。
@@ -390,6 +479,7 @@ struct ProviderCardView: View, Equatable {
 
     /// 段2 的段落标题。文案常量给测试引用；样式是段落级：11pt semibold、主色。
     static let planSectionTitleText = "Plan详情"
+    static let localUsageSectionTitleText = "最近7天使用历史"
 
     private var planSectionTitle: some View {
         Text(Self.planSectionTitleText)
@@ -575,9 +665,10 @@ struct ProviderCardView: View, Equatable {
         projection: ProviderUsageProjection
     ) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text("最近7天token用量")
+            Text(historySectionTitle)
                 .font(MenuTypography.cardTitle)
                 .foregroundStyle(Color.primaryLabel)
+                .help(fleetUsageActive ? "显示当前用量范围的历史，不按单个 Provider 过滤" : Self.localUsageSectionTitleText)
             Spacer(minLength: 8)
             // 这枚胶囊是**本地用量**的新鲜度：点击只重扫本地用量计算（不发额度
             // 请求），与标题行额度时间戳的刷新互不牵连；手势同样挂在卡片这个使用点。
@@ -768,86 +859,6 @@ struct ProviderCardView: View, Equatable {
     /// 段1「Account Info」行的 pill 里（见 `QuotaWindowAccountInfo.make`）。
     private var displayTitle: String {
         status.displayName
-    }
-
-    @ViewBuilder
-    /// 非 `.ok` 状态（`.loading` / `.failed`）的回退卡内容。结构与 `.ok` 分支的
-    /// 第一张卡一致：段1 账号行 → 段2 四个模块（额度条压暗示弱）→ 7 天图表。
-    /// 曾经这里是 `quotaBetween` 参数从 `dockBody` 传进来的——重置卡与倒计时漏传
-    /// 会在浮层里每次刷新闪一下；现在回退卡与 `.ok` 走同一批构造点
-    /// （`accountInfoRow` / `quotaWindowUsage` / `peakIndicator`），不存在"另一条
-    /// 路径忘了传"的缝隙。
-    private func content(derived: ProviderCardDerived) -> some View {
-        let projection = derived.projection
-        switch status.state {
-        case .notConfigured(let reason):
-            notConfiguredView(reason: reason)
-        case .ready:
-            placeholder("准备就绪…")
-        case .loading(let lastSuccess):
-            if let last = lastSuccess {
-                VStack(alignment: .leading, spacing: 6) {
-                    accountInfoRow(info: last)
-                    // 段2 标题与 `.ok` 路径同源：回退卡少一段，浮层每次刷新都会闪。
-                    planSectionTitle
-                    QuotaSummary(
-                        info: last,
-                        providerKind: status.kind,
-                        accentColor: status.accentColor,
-                        localSamples: projection.recentSamples,
-                        refreshIntervalSeconds: status.refreshIntervalSeconds,
-                        deepseekPeakWindow: status.deepseekPeakWindow ?? .defaultWindow,
-                        betweenBarAndColumns: AnyView(peakIndicator)
-                    )
-                    .opacity(0.5)
-                    quotaWindowUsage(info: last, derived: derived)
-                    localUsage(projection: projection, part: .detail)
-                }
-            } else {
-                placeholder("正在获取…")
-            }
-        case .ok(let info):
-            VStack(alignment: .leading, spacing: 6) {
-                accountInfoRow(info: info)
-                planModules(info: info, derived: derived)
-                localUsage(projection: projection, part: .detail)
-            }
-        case .failed(let message, let lastSuccess):
-            VStack(alignment: .leading, spacing: 6) {
-                accountInfoRow(info: lastSuccess)
-                HStack(spacing: 4) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.red)
-                    Text(message)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.red)
-                        .lineLimit(2)
-                }
-                if let last = lastSuccess {
-                    Text("上次成功：\(Formatters.formatClock(last.fetchedAt))")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
-                    // 与 `.loading` 同理：段2 标题随额度段一起走，别在刷新时闪。
-                    planSectionTitle
-                    QuotaSummary(
-                        info: last,
-                        providerKind: status.kind,
-                        accentColor: status.accentColor,
-                        localSamples: projection.recentSamples,
-                        refreshIntervalSeconds: status.refreshIntervalSeconds,
-                        deepseekPeakWindow: status.deepseekPeakWindow ?? .defaultWindow,
-                        // 与 `.loading` 那一支同源，别漏。高峰期倒计时**只**由这一格
-                        // 提供（`QuotaSummary` 不再自己画，`quotaSection` 里的 GLM
-                        // 倒计时这条路也已撤掉）。失败时恰恰最该看到它。
-                        betweenBarAndColumns: AnyView(peakIndicator)
-                    )
-                        .opacity(0.55)
-                    quotaWindowUsage(info: last, derived: derived)
-                    localUsage(projection: projection, part: .detail)
-                }
-            }
-        }
     }
 
     /// 「额度」这一段：额度窗口 + GLM 活动套餐余额。

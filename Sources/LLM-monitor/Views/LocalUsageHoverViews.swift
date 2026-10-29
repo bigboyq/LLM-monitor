@@ -79,19 +79,8 @@ struct LocalUsageChartScale: Equatable {
 // `SevenDayUsageChartMetrics` 搬到了 Services/LayoutMetrics.swift：Services 侧的
 // `EdgeDockTheme.popoverWidth` 要读它，留在本文件会让 Services 反向依赖视图。
 
-/// 7-day token 用量 hover 图表（泛型）—— 4 类 provider 数据共用。
-///
-/// 取代了原来 3 个几乎一样的 view，并接入 OpenCode daily 数据：
-/// - `AntigravitySevenDayHoverView`（原 ProviderCardView 内，行号随多次重构失效）
-/// - `SevenDayTokenUsageHoverView`（原 codex 侧，同上）
-/// - `MinimaxSevenDayHoverView` (我刚加的)
-///
-/// 视觉完全等价：相同的 4 色（input 蓝 / cache 青 / output 绿 / reason 橙）、
-/// 相同的柱高算法（25.6 input + 38.4 cache + 64.0 output）、
-/// 相同的 R/T 表格 + 相同的 390pt 宽度限制。
-///
-/// 字段访问通过 `LocalUsageDaily` 协议统一（见 `Models/LocalUsageDaily.swift`）：
-/// antigravity / codex / minimax 各自 computed property adapter。
+/// Compatibility wrapper for existing local provider call sites. All history rendering
+/// is delegated to the shared selectable line-chart view.
 struct SevenDayTokenUsageHoverView<Daily: LocalUsageDaily>: View {
     let days: [Daily]
     let scannedAt: Date?
@@ -99,37 +88,19 @@ struct SevenDayTokenUsageHoverView<Daily: LocalUsageDaily>: View {
     /// 来源快照被扫描预算截断（如 DSH 文件数/字节预算挤出最旧 session）时为 true：
     /// 图内数字只是最新优先子集，底部需提示口径（与设置页展开行同一文案常量）。
     let isTruncated: Bool
-    /// Optional per-day cost text. Client settings passes this so the table
-    /// reads `Reason → 价值`; provider cards keep the historical 6-column view.
-    ///
-    /// `@autoclosure`：`HoverInfoRow` 在 init 时就会求值 detail 闭包，若这里直接
-    /// 收 `[Date: String]`，卡片 footer 的每次 body 重算都会白跑一遍
-    /// `ModelPricingCatalog` 定价估算——即使 hover 图从未打开。收闭包并只在
-    /// 本 view 的 body 内调用，定价计算才真正惰性化。
-    private let priceByDayProvider: () -> [Date: String]
-    /// 「用量」segment 下末列（速度）的逐日文案（`[dayStart: tok/s 文案]`，
-    /// 调用方算好；空字典 = 没有任何速度数据）。惰性纪律与 `priceByDay` 相同：
-    /// autoclosure，只在本 view 的 body 内调用。
-    private let speedByDayProvider: () -> [Date: String]
-    /// 末列是否跟随「额度窗口」的「分析/用量」segment：popwindow 路径传 true
-    /// （分析 → 价值列、用量 → 速度列，速度列 `speedByDay` 非空才画）；
-    /// Settings 客户端页等没有 segment 上下文的宿主保持默认 false——有
-    /// `priceByDay` 就永远画价值列，行为与引入该参数之前逐字一致。
-    private let lastColumnFollowsSegment: Bool
-
-    /// 「额度窗口」segment 的持久化值（与 `QuotaWindowUsageSection` 同一 key）：
-    /// 浮层里同一张卡上的 segment 控件写它，7 天表末列读它，切换即时生效。
-    @AppStorage(QuotaWindowUsageSection.segmentStorageKey) private var segmentRawValue: String = QuotaWindowUsageSegment.analysis.rawValue
-
-    /// 宿主形态：dock 详情浮层的 `.alwaysVisible` 里，标题与新鲜度徽章都被提到了
-    /// 卡片外面（见 `ProviderCardView.dockSectionTitle`），这里不能再画一遍。
-    @Environment(\.hoverRevealMode) private var revealMode
+    private let costByDay: [Date: ModelCostEstimate]
+    private let speedStatisticsByDay: [Date: PromptSpeedStatistics]
+    private let samplesTruncated: Bool
 
     init(
         days: [Daily],
         scannedAt: Date?,
         isScanning: Bool,
         isTruncated: Bool = false,
+        costByDay: [Date: ModelCostEstimate] = [:],
+        speedStatisticsByDay: [Date: PromptSpeedStatistics] = [:],
+        samplesTruncated: Bool = false,
+        // Ignored compatibility parameters. Cost and speed must enter as numeric values.
         priceByDay: @autoclosure @escaping () -> [Date: String] = [:],
         speedByDay: @autoclosure @escaping () -> [Date: String] = [:],
         lastColumnFollowsSegment: Bool = false
@@ -138,183 +109,29 @@ struct SevenDayTokenUsageHoverView<Daily: LocalUsageDaily>: View {
         self.scannedAt = scannedAt
         self.isScanning = isScanning
         self.isTruncated = isTruncated
-        self.priceByDayProvider = priceByDay
-        self.speedByDayProvider = speedByDay
-        self.lastColumnFollowsSegment = lastColumnFollowsSegment
+        self.costByDay = costByDay
+        self.speedStatisticsByDay = speedStatisticsByDay
+        self.samplesTruncated = samplesTruncated
+        _ = priceByDay
+        _ = speedByDay
+        _ = lastColumnFollowsSegment
     }
 
-    private let inputColor = Color.tokenInputTint
-    private let cacheColor = Color.tokenCacheReadTint
-    private let outputColor = Color.tokenOutputTint
-    private let reasonColor = Color(red: 0.90, green: 0.46, blue: 0.16)
-
     var body: some View {
-        let chartScale = LocalUsageChartScale(days: days)
-        let priceByDay = priceByDayProvider()
-        // 末列显隐：默认（Settings 等无 segment 上下文的宿主）只认 priceByDay，
-        // 与引入 segment 跟随之前逐字一致；popwindow 路径跟随「额度窗口」segment
-        // ——分析态画价值、用量态画速度（speedByDay 非空才画，与价值列的
-        // isEmpty 判定同构）。三元只求值命中的分支：不跟用量段就绝不调
-        // speedByDayProvider，惰性纪律与 priceByDay 相同。
-        let followsUsageSegment = lastColumnFollowsSegment
-            && QuotaWindowUsageSegment(rawValue: segmentRawValue) == .usage
-        let speedByDay = followsUsageSegment ? speedByDayProvider() : [:]
-        let showsValueColumn = followsUsageSegment ? false : priceByDay.isEmpty == false
-        let showsSpeedColumn = followsUsageSegment && speedByDay.isEmpty == false
-
-        VStack(alignment: .leading, spacing: 9) {
-            // dock 详情浮层里整行标题都被提到了卡片外面（标题是「最近7天token用量」，
-            // 右侧是同一个新鲜度徽章，见 `ProviderCardView.dockSectionTitle`），
-            // 这里再画一遍就是同一行出现两次。菜单侧没有那一行，必须保留。
-            if revealMode != .alwaysVisible {
-                HStack(alignment: .firstTextBaseline) {
-                    Text("最近 7 天 Token 用量")
-                        .font(.system(size: 12, weight: .semibold))
-                    Spacer()
-                    LocalUsageFreshnessBadge(scannedAt: scannedAt, isScanning: isScanning)
-                }
-            }
-
-            HStack(spacing: 10) {
-                LocalUsageLegendDot(color: inputColor, title: "Input")
-                LocalUsageLegendDot(color: cacheColor, title: "Cache")
-                LocalUsageLegendDot(color: outputColor, title: "Output")
-                LocalUsageLegendDot(color: reasonColor, title: "Reason")
-            }
-
-            HStack(alignment: .bottom, spacing: 5) {
-                ForEach(days) { day in
-                    let metrics = LocalUsageChartDayMetrics(day)
-                    let uncachedHeight = CGFloat(25.6 * (Double(metrics.input) / chartScale.maxUncached))
-                    let cachedHeight = CGFloat(
-                        38.4 * (TokenChartScale.weight(for: metrics.cacheTotal) / chartScale.maxCachedWeight)
-                    )
-                    let outputHeight = CGFloat(64.0 * (metrics.outputChartValue / chartScale.maxOutputWeight))
-                    let reasoningHeight = CGFloat(64.0 * (metrics.reasoningChartValue / chartScale.maxOutputWeight))
-
-                    LocalUsageDayBar(
-                        day: day,
-                        uncachedHeight: uncachedHeight,
-                        cachedHeight: cachedHeight,
-                        outputHeight: outputHeight,
-                        reasoningHeight: reasoningHeight,
-                        inputColor: inputColor,
-                        cacheColor: cacheColor,
-                        outputColor: outputColor,
-                        reasonColor: reasonColor
-                    )
-                }
-            }
-            .frame(maxWidth: .infinity)
-
-            Divider().opacity(0.45)
-
-            Grid(alignment: .leading, horizontalSpacing: 3, verticalSpacing: 4) {
-                GridRow {
-                    tableHeader("日期", width: 34, alignment: .leading)
-                    // R/T 加宽 2 个等宽字符（48 → 60）：两位回合数（如 `99/999`）
-                    // 曾被截尾。表格总宽 403 仍装得下 415 / 420 的图表 frame。
-                    tableHeader("R/T", width: 60, alignment: .trailing)
-                    tableHeader("Input", width: 58, alignment: .trailing)
-                    tableHeader("Cache", width: 58, alignment: .trailing)
-                    tableHeader("Output", width: 58, alignment: .trailing)
-                    tableHeader("Reason", width: 58, alignment: .trailing)
-                    if showsValueColumn {
-                        tableHeader("价值", width: 62, alignment: .trailing)
-                    }
-                    if showsSpeedColumn {
-                        tableHeader("速度", width: 62, alignment: .trailing)
-                    }
-                }
-                ForEach(days) { day in
-                    let metrics = LocalUsageChartDayMetrics(day)
-                    GridRow {
-                        Text(Formatters.formatMonthDay(day.dayStart))
-                            .font(.system(size: 10, weight: .medium).monospacedDigit())
-                            .foregroundStyle(.secondary)
-                            .frame(width: 34, alignment: .leading)
-                        roundsTurnsValue(day, width: 60)
-                        tokenValue(metrics.input, color: inputColor, width: 58)
-                        tokenValue(metrics.cacheTotal, color: cacheColor, width: 58)
-                        tokenValue(metrics.output, color: outputColor, width: 58)
-                        tokenValue(metrics.reasoning, color: reasonColor, width: 58)
-                        if showsValueColumn {
-                            priceValue(priceByDay[day.dayStart] ?? "—", width: 62)
-                        }
-                        if showsSpeedColumn {
-                            speedValue(speedByDay[day.dayStart] ?? "—", width: 62)
-                        }
-                    }
-                }
-            }
-
-            Text("输入：Uncached 线性缩放（占最大高度 40%），Cache 按 Token^0.3 缩放（占最大高度 60%）；输出线性缩放。R/T = rounds / turns。")
-                .font(.system(size: 10))
-                .foregroundStyle(.tertiary)
-
-            if isTruncated {
-                Text(ClientUsageTruncationNotice.text)
-                    .font(.system(size: 8))
-                    .foregroundStyle(.orange)
-            }
-        }
-        // 宽度必须装下柱区（415）：旧的 390 会让首尾两天的柱溢出 frame 被浮层裁掉。
-        // 价值列与速度列同宽（62pt）且互斥出现，任一在场即取带末列的宽度。
-        .frame(
-            width: showsValueColumn || showsSpeedColumn
-                ? SevenDayUsageChartMetrics.pricedWidth
-                : SevenDayUsageChartMetrics.barsWidth,
-            alignment: .leading
+        SevenDayUsageHistoryView(
+            days: UsageHistorySeriesBuilder.build(
+                days: days,
+                costByDay: costByDay,
+                speedByDay: speedStatisticsByDay,
+                samplesTruncated: samplesTruncated,
+                isTruncated: isTruncated
+            ),
+            scannedAt: scannedAt,
+            isScanning: isScanning,
+            isTruncated: isTruncated
         )
     }
 
-    private func tableHeader(_ title: String, width: CGFloat, alignment: Alignment) -> some View {
-        Text(title)
-            .font(.system(size: 10, weight: .semibold))
-            .foregroundStyle(.secondary)
-            .frame(width: width, alignment: alignment)
-    }
-
-    private func tokenValue(_ value: Int, color: Color, width: CGFloat) -> some View {
-        Text(Formatters.formatTokenCountCompact(value))
-            .font(.system(size: 10, weight: .medium).monospacedDigit())
-            .foregroundStyle(color)
-            .frame(width: width, alignment: .trailing)
-    }
-
-    private func priceValue(_ value: String, width: CGFloat) -> some View {
-        Text(value)
-            .font(.system(size: 10, weight: .medium).monospacedDigit())
-            .foregroundStyle(
-                value == "未定价" || value.contains("部分计价") ? .orange : .secondary
-            )
-            .frame(width: width, alignment: .trailing)
-            .lineLimit(1)
-            .minimumScaleFactor(0.65)
-    }
-
-    /// 「用量」segment 的速度格：排版与价值格同一套（10pt medium 等宽数字、
-    /// trailing 对齐、可缩排一行），只是速度文案没有「未定价 / 部分计价」的
-    /// 橙色态（时长无效那天是 `—`，恒 secondary）。
-    private func speedValue(_ value: String, width: CGFloat) -> some View {
-        Text(value)
-            .font(.system(size: 10, weight: .medium).monospacedDigit())
-            .foregroundStyle(.secondary)
-            .frame(width: width, alignment: .trailing)
-            .lineLimit(1)
-            .minimumScaleFactor(0.65)
-    }
-
-    private func roundsTurnsValue(_ day: Daily, width: CGFloat) -> some View {
-        let hasActivity = day.rounds > 0 || day.turns > 0
-        let text = hasActivity
-            ? "\(Formatters.formatGroupedInt(day.rounds))/\(Formatters.formatGroupedInt(day.turns))"
-            : "—"
-        return Text(text)
-            .font(.system(size: 10, weight: .medium).monospacedDigit())
-            .foregroundStyle(hasActivity ? .primary : .secondary)
-            .frame(width: width, alignment: .trailing)
-    }
 }
 
 /// 单日柱图（泛型）—— 4 类 provider 数据共用，取代原来的 AntigravityDayBar /
@@ -532,13 +349,8 @@ struct LocalUsageFooterView<Daily: LocalUsageDaily>: View {
     let freshness: LocalUsageFreshness
     /// 来源快照被扫描预算截断时为 true，透传给 7 天柱图 hover 提示口径。
     let isTruncated: Bool
-    /// 「用量」segment 的逐日速度文案（`[dayStart: tok/s 文案]`，调用方算好）。
-    /// 与 priceByDay 同一惰性纪律：autoclosure，7 天卡的 body 展开才求值。
-    /// 仅 popwindow 本地路径传非默认值；fleet 路径与测试夹具走默认空字典。
-    private let speedByDayProvider: () -> [Date: String]
-    /// 末列是否跟随「额度窗口」segment（见 `SevenDayTokenUsageHoverView`）。
-    /// 仅 popwindow 本地路径传 true；fleet 路径保持默认 false——价值列行为不变。
-    let lastColumnFollowsSegment: Bool
+    /// Recent prompt samples can be truncated independently of authoritative daily buckets.
+    let samplesTruncated: Bool
     let isReady: Bool
     /// "本机无 Antigravity 会话数据（~/.gemini/antigravity/conversations 为空）" 等
     /// provider 特定的"扫描完毕但还没数据"提示
@@ -555,6 +367,9 @@ struct LocalUsageFooterView<Daily: LocalUsageDaily>: View {
         isScanning: Bool,
         freshness: LocalUsageFreshness = .clean,
         isTruncated: Bool = false,
+        samplesTruncated: Bool = false,
+        // Ignored compatibility parameters; the shared history view owns its own
+        // metric selection and receives numeric prompt-speed statistics.
         speedByDay: @autoclosure @escaping () -> [Date: String] = [:],
         lastColumnFollowsSegment: Bool = false,
         isReady: Bool,
@@ -569,20 +384,12 @@ struct LocalUsageFooterView<Daily: LocalUsageDaily>: View {
         self.isScanning = isScanning
         self.freshness = freshness
         self.isTruncated = isTruncated
-        self.speedByDayProvider = speedByDay
-        self.lastColumnFollowsSegment = lastColumnFollowsSegment
+        self.samplesTruncated = samplesTruncated
+        _ = speedByDay
+        _ = lastColumnFollowsSegment
         self.isReady = isReady
         self.emptyHint = emptyHint
         self.part = part
-    }
-
-    private var priceByDay: [Date: String] {
-        LocalUsagePriceByDay.values(
-            dayStarts: dailyTokenUsage.map(\.dayStart),
-            recentSamples: recentSamples,
-            quotaProviderID: quotaProviderID,
-            deepseekPeakWindow: deepseekPeakWindow
-        )
     }
 
     var body: some View {
@@ -594,16 +401,24 @@ struct LocalUsageFooterView<Daily: LocalUsageDaily>: View {
         }
     }
 
-    /// 明细：图例 + 柱图 + 用量表 + 脚注。标题与新鲜度徽章由宿主画在卡片外。
+    /// 明细：共享历史折线图与指标表。标题与新鲜度徽章由宿主画在卡片外。
     private var detailView: some View {
         SevenDayTokenUsageHoverView(
             days: dailyTokenUsage,
             scannedAt: scannedAt,
             isScanning: isScanning,
             isTruncated: isTruncated,
-            priceByDay: priceByDay,
-            speedByDay: speedByDayProvider(),
-            lastColumnFollowsSegment: lastColumnFollowsSegment
+            costByDay: LocalUsagePriceByDay.estimates(
+                dayStarts: dailyTokenUsage.map(\.dayStart),
+                recentSamples: recentSamples,
+                quotaProviderID: quotaProviderID,
+                deepseekPeakWindow: deepseekPeakWindow
+            ),
+            speedStatisticsByDay: LocalUsageSpeedByDay.statistics(
+                dayStarts: dailyTokenUsage.map(\.dayStart),
+                recentSamples: recentSamples
+            ),
+            samplesTruncated: samplesTruncated
         )
     }
 
@@ -660,11 +475,40 @@ enum LocalUsagePriceByDay {
     }
 
     private static let memo = DerivedValueMemo<String, Key, [Date: String]>()
+    private static let estimateMemo = DerivedValueMemo<String, Key, [Date: ModelCostEstimate]>()
 
     /// 真正算过几次（测试口径）。
     static var computeCount: Int { memo.computeCount }
     /// 清空（测试用）。
-    static func reset() { memo.reset() }
+    static func reset() {
+        memo.reset()
+        estimateMemo.reset()
+    }
+
+    /// Raw numeric estimates for history charts. Keep `value` and `currency` intact;
+    /// callers must never recover either field from `displayText`.
+    static func estimates(
+        dayStarts: [Date],
+        recentSamples: [LocalTokenUsageSample],
+        quotaProviderID: String,
+        deepseekPeakWindow: DeepseekPeakWindow
+    ) -> [Date: ModelCostEstimate] {
+        let key = Key(
+            dayStarts: dayStarts,
+            recentSamples: recentSamples,
+            quotaProviderID: quotaProviderID,
+            deepseekPeakWindow: deepseekPeakWindow,
+            holidayRevision: HolidayCalendar.sharedRevision,
+            timeZoneIdentifier: Calendar.current.timeZone.identifier
+        )
+        return estimateMemo.value(for: quotaProviderID, key: key) {
+            ModelPricingCatalog.estimateByDay(
+                samples: recentSamples,
+                quotaProviderID: quotaProviderID,
+                deepseekPeakWindow: deepseekPeakWindow
+            )
+        }
+    }
 
     /// 未走 memo 的直算路径（`values` 的 `compute`，测试的"逐字不变"对照也用它）。
     static func compute(
@@ -730,6 +574,47 @@ enum LocalUsagePriceByDay {
 /// 线性 pass，没有逐样本定价表查询与节假日/峰谷判定，单秒重算的成本比定价链路
 /// 低一个量级；若 profile 显示有热，再按同一 Key 模式补 memo。
 enum LocalUsageSpeedByDay {
+    private struct StatisticsKey: Equatable {
+        let dayStarts: [Date]
+        let recentSamples: [LocalTokenUsageSample]
+        let timeZoneIdentifier: String
+    }
+
+    private static let statisticsMemo = DerivedValueMemo<String, StatisticsKey, [Date: PromptSpeedStatistics]>()
+
+    /// Daily Prompt-level speed distribution for the selectable history chart.
+    /// No sample means unavailable (no key); a sampled day with no valid durations
+    /// retains an empty statistic so it is distinguishable from known zero speed.
+    static func statistics(
+        dayStarts: [Date],
+        recentSamples: [LocalTokenUsageSample]
+    ) -> [Date: PromptSpeedStatistics] {
+        guard !recentSamples.isEmpty else { return [:] }
+        let key = StatisticsKey(
+            dayStarts: dayStarts,
+            recentSamples: recentSamples,
+            timeZoneIdentifier: Calendar.current.timeZone.identifier
+        )
+        return statisticsMemo.value(for: "prompt-speed", key: key) {
+            computeStatistics(dayStarts: dayStarts, recentSamples: recentSamples)
+        }
+    }
+
+    private static func computeStatistics(
+        dayStarts: [Date],
+        recentSamples: [LocalTokenUsageSample]
+    ) -> [Date: PromptSpeedStatistics] {
+        let calendar = Calendar.current
+        let grouped = Dictionary(grouping: recentSamples) {
+            calendar.startOfDay(for: $0.completedAt)
+        }
+        return Dictionary(uniqueKeysWithValues: dayStarts.compactMap { dayStart in
+            let key = calendar.startOfDay(for: dayStart)
+            guard let samples = grouped[key] else { return nil }
+            return (key, LocalUsageSummaryBuilder.promptSpeedStatistics(samples: samples))
+        })
+    }
+
     /// `recentSamples` 为空 = 没有任何速度数据 → 空字典（usage 段不画末列）；
     /// 有样本但某天没有时长有效的样本（或那天根本没样本）→ 该天 `—`。
     static func texts(

@@ -125,5 +125,19 @@ final class TruncationProjectionChainTests: XCTestCase {
             isTruncated: true
         )
         XCTAssertTrue(summary.isTruncated)
+        XCTAssertFalse(summary.samplesTruncated, "来源日桶截断与调用样本覆盖分开传递")
+
+        let sampleLimitedSummary = ClientProviderUsageSummary(
+            clientID: ClientID.dsh,
+            quotaProviderID: QuotaProviderID.deepseek,
+            providerName: "DeepSeek",
+            usageGroupID: QuotaProviderID.deepseek,
+            dailyTokenUsage: [UnifiedDailyTokenUsage](),
+            recentSamples: [],
+            scannedAt: nil,
+            samplesTruncated: true
+        )
+        XCTAssertFalse(sampleLimitedSummary.isTruncated)
+        XCTAssertTrue(sampleLimitedSummary.samplesTruncated)
     }
 }

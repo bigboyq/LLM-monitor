@@ -46,8 +46,12 @@ struct PromptSpeedRangeLineView: View {
                         }
 
                         PromptSpeedLabelPairLayout(markerPositions: [xMin, xP50 ?? xMin]) {
-                            Text("min: \(Self.speedValue(minimum))")
-                            Text("P50: \(Self.speedValue(p50))")
+                            Text("min")
+                            Text(":")
+                            Text(" \(Self.speedValue(minimum))")
+                            Text("P50")
+                            Text(":")
+                            Text(" \(Self.speedValue(p50))")
                         }
                         .font(MenuTypography.hint.monospacedDigit())
                         .foregroundStyle(Color.secondaryLabel)
@@ -57,8 +61,12 @@ struct PromptSpeedRangeLineView: View {
 
                         if let xLatest {
                             PromptSpeedLabelPairLayout(markerPositions: [xLatest, xMax]) {
-                                Text("最近: \(Self.speedValue(latest))")
-                                Text("max: \(Self.speedValue(maximum))")
+                                Text("最近")
+                                Text(":")
+                                Text(" \(Self.speedValue(latest))")
+                                Text("max")
+                                Text(":")
+                                Text(" \(Self.speedValue(maximum))")
                             }
                             .font(MenuTypography.hint.monospacedDigit())
                             .foregroundStyle(Color.secondaryLabel)
@@ -68,8 +76,12 @@ struct PromptSpeedRangeLineView: View {
                             .position(x: width / 2, y: 42)
                         } else {
                             PromptSpeedLabelPairLayout(markerPositions: [xMax, xMax]) {
-                                Text("最近: —")
-                                Text("max: \(Self.speedValue(maximum))")
+                                Text("最近")
+                                Text(":")
+                                Text(" —")
+                                Text("max")
+                                Text(":")
+                                Text(" \(Self.speedValue(maximum))")
                             }
                             .font(MenuTypography.hint.monospacedDigit())
                             .foregroundStyle(Color.secondaryLabel)
@@ -119,9 +131,8 @@ struct PromptSpeedRangeLineView: View {
     }
 }
 
-/// Places a pair of labels near its actual markers. If the preferred starts
-/// collide, keep the first label at its marker and move the second to its right.
-/// Only the screen boundary can force the pair left; marker coordinates never move.
+/// Places two prefix/colon/value labels so each colon tracks its actual marker.
+/// If labels collide, it chooses the smallest in-bounds shift; marker coordinates never move.
 struct PromptSpeedLabelPairLayout: Layout {
     let markerPositions: [CGFloat]
     var gap: CGFloat = 6
@@ -131,37 +142,67 @@ struct PromptSpeedLabelPairLayout: Layout {
     }
 
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        guard subviews.count == 2 else { return }
+        guard subviews.count == 6 else { return }
 
         let availableWidth = max(bounds.width, 0)
         let desiredSizes = subviews.map { $0.sizeThatFits(.unspecified) }
         let effectiveGap = min(gap, availableWidth)
-        let totalWidth = desiredSizes[0].width + desiredSizes[1].width + effectiveGap
-        let labelWidths: [CGFloat]
-        if totalWidth > availableWidth {
-            let eachWidth = max((availableWidth - effectiveGap) / 2, 0)
-            labelWidths = [eachWidth, eachWidth]
-        } else {
-            labelWidths = desiredSizes.map(\.width)
-        }
-        let sizes = zip(subviews, labelWidths).map { pair in
-            pair.0.sizeThatFits(ProposedViewSize(width: pair.1, height: bounds.height))
+        let desiredLabelWidths = [
+            desiredSizes[0].width + desiredSizes[1].width + desiredSizes[2].width,
+            desiredSizes[3].width + desiredSizes[4].width + desiredSizes[5].width
+        ]
+        let totalWidth = desiredLabelWidths[0] + desiredLabelWidths[1] + effectiveGap
+        let labelWidthLimit = totalWidth > availableWidth
+            ? max((availableWidth - effectiveGap) / 2, 0)
+            : nil
+        var sizes: [CGSize] = []
+        var proposals: [CGFloat] = []
+        for labelIndex in 0..<2 {
+            let start = labelIndex * 3
+            let naturalWidth = desiredLabelWidths[labelIndex]
+            let scale = labelWidthLimit.map { naturalWidth > 0 ? min($0 / naturalWidth, 1) : 1 } ?? 1
+            for componentIndex in 0..<3 {
+                let index = start + componentIndex
+                let proposedWidth = desiredSizes[index].width * scale
+                proposals.append(proposedWidth)
+                sizes.append(subviews[index].sizeThatFits(
+                    ProposedViewSize(width: proposedWidth, height: bounds.height)
+                ))
+            }
         }
         let firstAnchor = markerPositions.indices.contains(0) ? markerPositions[0] : 0
         let secondAnchor = markerPositions.indices.contains(1) ? markerPositions[1] : firstAnchor
+        let firstWidth = sizes[0].width + sizes[1].width + sizes[2].width
+        let secondWidth = sizes[3].width + sizes[4].width + sizes[5].width
+        let firstColonOffset = PromptSpeedLabelPlacement.colonOffset(
+            prefixWidth: sizes[0].width,
+            colonWidth: sizes[1].width
+        )
+        let secondColonOffset = PromptSpeedLabelPlacement.colonOffset(
+            prefixWidth: sizes[3].width,
+            colonWidth: sizes[4].width
+        )
         let origins = PromptSpeedLabelPlacement.resolve(
             firstAnchor: firstAnchor,
             secondAnchor: secondAnchor,
-            firstWidth: sizes[0].width,
-            secondWidth: sizes[1].width,
+            firstColonOffset: firstColonOffset,
+            secondColonOffset: secondColonOffset,
+            firstWidth: firstWidth,
+            secondWidth: secondWidth,
             gap: effectiveGap,
             containerWidth: availableWidth
         )
 
-        for index in 0..<2 {
+        for index in 0..<6 {
+            let labelIndex = index / 3
+            let componentOffset = index % 3
+            let previousComponentWidths = (0..<componentOffset).reduce(CGFloat.zero) { partial, offset in
+                partial + sizes[labelIndex * 3 + offset].width
+            }
+            let labelOrigin = origins[labelIndex] + previousComponentWidths
             subviews[index].place(
-                at: CGPoint(x: bounds.minX + origins[index], y: bounds.minY),
-                proposal: ProposedViewSize(width: labelWidths[index], height: bounds.height)
+                at: CGPoint(x: bounds.minX + labelOrigin, y: bounds.minY),
+                proposal: ProposedViewSize(width: proposals[index], height: bounds.height)
             )
         }
     }
@@ -169,9 +210,15 @@ struct PromptSpeedLabelPairLayout: Layout {
 
 /// Pure geometry shared by the SwiftUI layout and layout regression tests.
 enum PromptSpeedLabelPlacement {
+    static func colonOffset(prefixWidth: CGFloat, colonWidth: CGFloat) -> CGFloat {
+        max(prefixWidth, 0) + max(colonWidth, 0) / 2
+    }
+
     static func resolve(
         firstAnchor: CGFloat,
         secondAnchor: CGFloat,
+        firstColonOffset: CGFloat,
+        secondColonOffset: CGFloat,
         firstWidth: CGFloat,
         secondWidth: CGFloat,
         gap: CGFloat,
@@ -181,13 +228,34 @@ enum PromptSpeedLabelPlacement {
         let firstLabelWidth = min(max(firstWidth, 0), width)
         let secondLabelWidth = min(max(secondWidth, 0), width)
         let spacing = max(gap, 0)
-        let first = min(max(firstAnchor, 0), max(width - firstLabelWidth, 0))
-        let second = min(max(secondAnchor, 0), max(width - secondLabelWidth, 0))
-        let requiredSecond = max(second, first + firstLabelWidth + spacing)
-        guard requiredSecond + secondLabelWidth > width else { return [first, requiredSecond] }
-        let resolvedSecond = max(width - secondLabelWidth, 0)
-        let resolvedFirst = max(min(first, resolvedSecond - firstLabelWidth - spacing), 0)
-        return [resolvedFirst, resolvedSecond]
+        let firstMaximum = max(width - firstLabelWidth, 0)
+        let secondMaximum = max(width - secondLabelWidth, 0)
+        let preferredFirst = min(max(firstAnchor - firstColonOffset, 0), firstMaximum)
+        let preferredSecond = min(max(secondAnchor - secondColonOffset, 0), secondMaximum)
+        guard preferredFirst + firstLabelWidth + spacing > preferredSecond else {
+            return [preferredFirst, preferredSecond]
+        }
+
+        let keepFirstSecond = preferredFirst + firstLabelWidth + spacing
+        let canKeepFirst = keepFirstSecond <= secondMaximum
+        let keepSecondFirst = preferredSecond - firstLabelWidth - spacing
+        let canKeepSecond = keepSecondFirst >= 0
+        if canKeepFirst && canKeepSecond {
+            let firstShift = abs(keepFirstSecond - preferredSecond)
+            let secondShift = abs(preferredFirst - keepSecondFirst)
+            return firstShift <= secondShift
+                ? [preferredFirst, keepFirstSecond]
+                : [keepSecondFirst, preferredSecond]
+        }
+        if canKeepFirst { return [preferredFirst, keepFirstSecond] }
+        if canKeepSecond { return [keepSecondFirst, preferredSecond] }
+
+        // Both anchors are displaced only when neither label can keep its preferred start.
+        let firstStart = min(
+            max((preferredFirst + preferredSecond - firstLabelWidth - spacing) / 2, 0),
+            max(width - firstLabelWidth - spacing - secondLabelWidth, 0)
+        )
+        return [firstStart, firstStart + firstLabelWidth + spacing]
     }
 }
 

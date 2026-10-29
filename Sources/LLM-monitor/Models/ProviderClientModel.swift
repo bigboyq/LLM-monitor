@@ -113,6 +113,8 @@ struct ClientProviderUsageSummary: Identifiable, Equatable, Sendable {
     let scannedAt: Date?
     /// 展示的统计口径被来源截断（如 DSH 预算截断）：展开行需提示数字不完整。
     let isTruncated: Bool
+    /// 日桶可完整，但保存的逐次调用样本可能被限额截断；价格和速度需独立披露。
+    let samplesTruncated: Bool
     let deepseekPeakWindow: DeepseekPeakWindow
 
     // These values are derived entirely from the immutable summary inputs. Keep
@@ -143,6 +145,7 @@ struct ClientProviderUsageSummary: Identifiable, Equatable, Sendable {
             recentSamples: projection.samples,
             scannedAt: projection.scannedAt,
             isTruncated: projection.isTruncated,
+            samplesTruncated: projection.samplesTruncated,
             deepseekPeakWindow: deepseekPeakWindow
         )
     }
@@ -156,6 +159,7 @@ struct ClientProviderUsageSummary: Identifiable, Equatable, Sendable {
         recentSamples: [LocalTokenUsageSample],
         scannedAt: Date?,
         isTruncated: Bool = false,
+        samplesTruncated: Bool = false,
         deepseekPeakWindow: DeepseekPeakWindow = .defaultWindow
     ) {
         self.clientID = clientID
@@ -170,6 +174,7 @@ struct ClientProviderUsageSummary: Identifiable, Equatable, Sendable {
         self.dailyTokenUsage = normalizedDaily
         self.scannedAt = scannedAt
         self.isTruncated = isTruncated
+        self.samplesTruncated = samplesTruncated
         self.deepseekPeakWindow = deepseekPeakWindow
 
         let displayedSamples = Self.samplesInDisplayedWindow(

@@ -199,6 +199,23 @@ P50 为有效 prompt 速度的中位数；偶数个样本时取中间两个速�
 不构造 prompt 速度。原 `tokensPerSecond` / `windowTokenRate` 调用级加权窗口速度继续保留，
 新分布独立提供 min / max / P50 / latest，不改变额度窗口速度和价格、token 桶或日归桶口径。
 
+## 七天历史趋势
+
+七天历史图的九种单选指标为总量、Rounds、Turns、价值、速度、Input、Cache、Reason、Output。
+总量严格为规范化四桶之和（Input + Cache + Output + Reason），不含诊断字段 `cacheWrite`；
+Rounds 是模型 API call 数，Turns 是 user prompt 数。每次选择只使用所选指标自身的线性 Y 轴，
+图表固定保留最近七个自然日日槽。现存 daily 行里的零是已知零；缺少 daily 行表示未知，折线在
+该槽断开；当前日标注为未完结。历史指标选择独立于额度窗口的「分析 / 用量」选择。
+
+价值图使用 `ModelCostEstimate.value` 与 `currency` 数值字段，不从格式化文案逆向解析。若七日内
+出现多种币种，整条价值序列统一换算为 CNY（USD 使用 `MixedCurrencyEstimate.usdToCNYRate`）；
+单币种序列保留原币种。部分计价、样本截断或来源日估价标记必须随价值数据披露。每日速度图
+只展示 `LocalUsageSummaryBuilder.promptSpeedStatistics` 的 P50；Fleet 无本地调用时长样本时
+速度不可用。每日权威 token 桶不因样本截断而变成部分值，但样本推导的价值 / 速度需标为部分。
+有效 Prompt 少于已记录 Prompt 时，P50 同样标注部分样本（缺少有效时长的 Prompt 不参与分布）。
+设置客户端页的 `ClientProviderUsageSummary.samplesTruncated` 沿投影传递样本覆盖状态，
+与日桶源级 `isTruncated` 分开保留；两者都会影响样本推导指标的完整性提示。
+
 ## promptID 命名空间登记表
 
 同一台机器上多份本地账本可能恰好使用相同的 prompt ID（几乎都是裸 `session:turn`）。

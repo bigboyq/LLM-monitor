@@ -256,7 +256,7 @@ the ring appear to turn the wrong way, which nothing in the UI reports.
 ### Popover width
 
 The popover is **fixed width**, not content-sized, and the width is derived from the
-widest thing the card can contain — the 7-day token usage chart
+widest thing the card can contain — the seven-day usage history chart
 (`SevenDayUsageChartMetrics.pricedWidth` = 420): chart + the card's own 12pt padding
 (`LayoutMetrics.cardContentPadding`) + the popover's 12pt backdrop padding
 (`LayoutMetrics.cardColumnHorizontalPadding`) = `EdgeDockTheme.popoverWidth` (468).
@@ -268,8 +268,8 @@ Plan modules, while the popover remains 468pt for its 420pt chart plus its host 
 Clamped only when the
 screen is narrower than the popover. The same derivation also sets
 `HoverPanelController.maximumPanelWidth` (it used to be chart + 2×10pt = 440, sized
-only for the chart). **完整 `ProviderCardView` 的存活宿主是 dock 浮层与独立详情窗**；
-菜单额度行仅复用 Plan-only 子模块——菜单侧的
+only for the chart). **`ProviderCardView` 的 edgePlan 宿主是 dock 浮层；complete 宿主是独立详情窗**；
+菜单额度行分别复用 Plan 与 history 子模块——菜单侧的
 provider strip hover 卡先随 ac170ca 精简、整条兜底行再随 8e7278a 从菜单移除（见
 `ui/menu-and-cards.md` §Provider fallback strip）。468pt 服务 dock 浮层与独立详情窗，
 也作为菜单 header 的 `HoverInfoRow` 弹卡宽度上限（睡眠阻断提示等文本行实际远窄于此）；
@@ -277,23 +277,22 @@ provider strip hover 卡先随 ac170ca 精简、整条兜底行再随 8e7278a �
 
 ### Collapsed sections are open in the popover
 
-**Since the 2026-10 second-round pass the full provider card has no hover-collapsed
-sections left.** The account row, the quota-window usage block (`QuotaWindowUsageSection`),
-the per-card reset-credit list and the 7-day footer are all **resident** — the full card's
-live hosts are a hover-driven popup and a standalone detail window; their lifetimes the card does not own (the dock
-popover accepts mouse events — first among the panels — but its visibility still
-follows the circle's hover), so residency remains the only form that works
+**Since the 2026-10 second-round pass the edge popover's Plan view has no hover-collapsed
+sections left.** The Account Info row, quota-window usage block (`QuotaWindowUsageSection`),
+and per-card reset-credit list are **resident**. The popover deliberately does not include
+the history card; the complete standalone detail window includes both Plan and history.
+Their lifetimes the card does not own (the dock popover accepts mouse events — first among
+the panels — but its visibility still follows the circle's hover), so residency remains the only form that works
 without an unreachable "hover of a hover".（菜单侧的 provider strip hover 卡宿主已随
-ac170ca / 8e7278a 消失，见上节。）What still branches on
-`hoverRevealMode` inside the card is one detail: the 7-day chart's own title row
-(`.alwaysVisible` hoists it into the card title outside; other modes draw it inside).
-Everything below still describes the `HoverInfoRow` mechanism, which the **main menu's
+ac170ca / 8e7278a 消失，见上节。）Provider-card history no longer branches on
+`hoverRevealMode` in this popover because it is not rendered here. Everything below
+still describes the `HoverInfoRow` mechanism, which the **main menu's
 own hover rows** continue to use:
 
 | Host | `hoverRevealMode` | Behaviour |
 |---|---|---|
 | Main menu — the header's sleep-blockers notice (`SleepOffendersHoverView`) | `.onHover` (the default) | Independent `NSPanel` after a delay |
-| Provider card in the edge dock popover | `.alwaysVisible` | Resident layout; the quota / 7-day groups are split into two cards, see *Two cards, titles outside*. The popover panel receives mouse events (`ignoresMouseEvents = false`), enabling segment switching, `.help` tooltips, and `ScrollView` scrolling |
+| Provider card in the edge dock popover | `.alwaysVisible` | Resident Plan layout: Account Info + quota modules in one card. No seven-day history is rendered there. The popover panel receives mouse events (`ignoresMouseEvents = false`), enabling segment switching, `.help` tooltips, and `ScrollView` scrolling |
 
 （2026-10-24 之前这里还有第三行「Provider card in the menu's provider strip
 hover」——该宿主已随兜底行移除而消失，其 pinned `.alwaysVisible` 行为与
@@ -350,7 +349,7 @@ branch:
 
 | Deleted rule | What replaced it |
 |---|---|
-| `splitsIntoTwoCards` | the card is unconditionally two cards with their titles outside |
+| `splitsIntoTwoCards` | removed; only the standalone complete presentation has separate Plan and history cards |
 | `hidesHeaderStatusDot` | the header row no longer draws a status dot at all (the `ProviderStateLabel` capsule on the same row already states the status) |
 | `hoistsResetCredits` | the card layer always draws the reset row, below the progress bar |
 | `hoistsPeakIndicator` | the card layer always draws the peak countdown, next to the reset row |
@@ -421,10 +420,10 @@ same card still align and the reset time does not jump. Full rules, including th
 colour rationale, are in `spec/ui/menu-and-cards.md` §Combined Quota Row →
 *Weekly-bottleneck suffix*.
 
-**No `QuotaDetailColumns`.** The popover used to show *Last Prompt | 5h | weekly*
+**No `QuotaDetailColumns`.** The Plan popover used to show *Last Prompt | 5h | weekly*
 as three equal columns under each bar. They are gone: all three report local token
 usage from the same local session scan, which card 2 already shows in full
-(`最近7天token用量` + its usage table), so the popover was saying the same thing
+(`最近7天使用历史` + its selectable trend view), so the popover was saying the same thing
 twice and burying the one thing that answers "how much is left" under three blocks
 of numbers. Their hover carriers (`LastPromptHoverSummaryView`,
 `QuotaUsageWindowColumn`, `QuotaWindowsHoverView`) were deleted with the menu's
@@ -432,14 +431,9 @@ provider cards, so the detail is not one hover away anywhere — card 2's 7-day 
 is now its only home. `ModelQuotaDockBlock` therefore has no `columns` parameter at
 all: the omission is structural, not a flag someone can flip.
 
-The divider stays, but it moved **up** to the card layer: it used to sit at the end of
-each model block, separating the quota overview from those three columns. It now
-separates the quota overview (every model's bar + the reset/peak rows) from the
-local-usage row below it, and since it has to span all models it is drawn once in
-`ProviderCardView.dockBody` rather than once per block — per-block it would stack
-into two adjacent lines between Antigravity's two models. Both sides come from
-different data sources — provider API vs local session scan — and without the line
-the local usage reads as a continuation of the quota.
+The divider stays within Plan's quota-window usage block, separating provider quota
+data from local session-derived usage. History itself is a separate card in the complete
+detail view and is not rendered by the edge popover.
 
 `ModelQuotaDockBlock` has a `bar` parameter and no `title` parameter, so the title
 omission is structural too.
@@ -563,19 +557,19 @@ neither, and that asymmetry is intentional.
 
 The dock window **never changes size on hover** — with one deliberate exception:
 auto-hide mode (below), where proximity is what grows the window. **Hovering** a circle
-opens a separate popover window beside the dock, containing the **same
-`ProviderCardView(status:fleet:)` — the one full-card implementation**（菜单额度行复用
-同一实现的 Plan-only 子模块；它不渲染 Account Info 与七天用量卡）. Hover alone only highlights
+opens a separate popover window beside the dock, containing the shared
+`ProviderCardView` in `edgePlan` presentation. The menu reuses the same Account Info +
+Plan modules and the shared history view through separate disclosures. Hover alone only highlights
 the circle (the 1.10× scale).
 
 | Aspect | Behaviour |
 |---|---|
 | Dock window | Fixed size while expanded. Only the hovered **circle** scales to `EdgeDockGeometry.hoverScale` (1.10×) inside its fixed row — the row frame, the number label and the window never move |
 | Popover trigger | **Hover**, with a **0.15s open delay** (`selectedIndex` trails `hoveredIndex` by it; the click is reserved for dragging). `scheduleSelection` re-checks `hoveredIndex` when the delay elapses, so sweeping the cursor down a column of circles re-arms the timer for each one instead of flashing every card in turn. `scheduleDeselection` collapses the card 0.20s after the cursor leaves the circle, unless it entered the card itself. The delay is not cosmetic: the dock is **permanently** on the screen edge, and a cursor merely passing by (dragging a window to the edge, turning a page) would otherwise make cards strobe. Clicking is a drag candidate only — `dragMoved` gates on a 4pt threshold and a press that never crosses it does nothing at all |
-| Popover | Second `NSPanel` (`PopoverPanel`: `canBecomeKey = false` / `canBecomeMain = false`), `ignoresMouseEvents = false`, `acceptsMouseMovedEvents = true`, `allowsToolTipsWhenApplicationIsInactive = true`, `NSHostingView` 覆写 `acceptsFirstMouse = true`（`.nonactivatingPanel`，后台单次点击直接穿透生效而不被系统当作激活拦截，`.help` Tooltip 与 hover 正常触发，绝不抢 key / 焦点），level `.popUpMenu` so it sits above the dock. Renders `ProviderCardView(status:fleet:isPinnedToStatusBar:)`——完整卡片由浮层与独立详情窗承载；启用多机联动时 `fleet` 传入 `state.fleetCardContext(for:)`、未启用时为 nil 且渲染零变化；`isPinnedToStatusBar` 绑定 `config.statusBarPinnedProvider == status.id`，并在环境注入 `\.cardPinStatusBarAction` 驱动单选锚定。 In the dock it lays out as **two cards with their titles outside**, see *Two cards, titles outside* below. An open card is re-rendered on every status broadcast (`reconcile`'s no-op-frame branch refreshes it) **and on `state.fleetDidChange`** (`selectedIndex != nil` 时 `updatePopover()`), so it never shows numbers frozen at the moment it opened. 对 fleet 上下文而言卡片仍是**打开时的静态值快照**：全部 scope 的用量变体已一次预构建进 `FleetCardContext`，scope 切换靠卡内本地 `@State`（`scopeOverride`）先落再同步 AppState，宿主不重建也能即时切换——详见 `ui/menu-and-cards.md` §Scope switcher 与 `sync.md` §10 |
+| Popover | Second `NSPanel` (`PopoverPanel`: `canBecomeKey = false` / `canBecomeMain = false`), `ignoresMouseEvents = false`, `acceptsMouseMovedEvents = true`, `allowsToolTipsWhenApplicationIsInactive = true`, `NSHostingView` 覆写 `acceptsFirstMouse = true`（`.nonactivatingPanel`，后台单次点击直接穿透生效而不被系统当作激活拦截，`.help` Tooltip 与 hover 正常触发，绝不抢 key / 焦点），level `.popUpMenu` so it sits above the dock. Renders `ProviderCardView` in `edgePlan` presentation: Provider header, scope, Account Info and Plan, with history omitted; multi-node `fleet` context and pinned-provider action remain wired as before. An open card is re-rendered on every status broadcast (`reconcile`'s no-op-frame branch refreshes it) **and on `state.fleetDidChange`** (`selectedIndex != nil` 时 `updatePopover()`), so it never shows numbers frozen at the moment it opened. 对 fleet 上下文而言卡片仍是**打开时的静态值快照**：全部 scope 的用量变体已一次预构建进 `FleetCardContext`，scope 切换靠卡内本地 `@State`（`scopeOverride`）先落再同步 AppState，宿主不重建也能即时切换——详见 `ui/menu-and-cards.md` §Scope switcher 与 `sync.md` §10 |
 | Hit test | `EdgeDockController.circleIndex(at:circles:currentHovered:minimumRadius:)` — the provider's **outer circle only** (radius + 0.5pt), which deliberately excludes the number label below it and the gaps between rows. The hovered circle's disc grows by `hoverScale` to match its on-screen scale animation. `minimumRadius` is a floor, not an override: the compact dock's circles are 7pt (radius 3.5) and it passes **half a row pitch** (7.5pt) so adjacent discs meet at their midpoint — pointing at a 7px target without it snaps to a neighbour. Circles come from `resolveCircleRects` (measured, with an `EdgeDockGeometry` fallback that is **appearance-aware** — the full-approach constants put compact row 0 about 24pt off). Never recomputed from constants alone — see *Edge status dock → Layout* |
 | Anchor | The first presentation aligns the popover with the hovered **row** (measured rect when available; `EdgeDockGeometry.rowCenter` is only the "not measured yet" fallback), then clamps it to the visible screen frame. For a **left/right dock**, it opens inward (right → left, left → right). If the popover is already visible, `updatePopover()` captures its current top (`frame.maxY`) before re-layout and passes it as `preservedTop`: height changes, including a scope switch, are applied downward, so the top does not drop as the card gets shorter. The screen-boundary clamp still wins when preserving that top would put the popover off-screen. This preservation applies only to left/right docks and only after the popover is visible; the initial placement remains aligned to the hovered row. For a **top dock**, the popover opens below the dock and its top edge stays at the dock gap as height changes. For a **bottom dock**, it opens above the dock and its bottom edge stays at the dock gap, so its top moves when its height changes. Both horizontal-edge cases align the popover's horizontal centre to the hovered row and clamp it within the visible frame. |
-| Size | **Fixed width** `EdgeDockTheme.popoverWidth` (derived from the 7-day chart, see *Popover width*), height = natural card size clamped to 95% of screen height; a `ScrollView` replaces the plain card only when it exceeds the height cap, so overflow scrolls instead of being clipped |
+| Size | **Fixed width** `EdgeDockTheme.popoverWidth` (derived from the seven-day history chart, see *Popover width*), height = natural Plan card size clamped to 95% of screen height; a `ScrollView` replaces the plain card only when it exceeds the height cap, so overflow scrolls instead of being clipped |
 | Dismiss | Cursor leaving either the dock or the popover **by frame** takes effect after a **0.5s grace delay** (cancelled on return; see *Auto-hide mode → Collapse*). Each window's frame + a 12pt tolerance; `hoverPadding` must stay > half of `popoverGap` so the two tolerance zones overlap in the 10pt gap between the windows and capture never drops while crossing. The popover's zone counts **only while the card is visible** — `orderOut` leaves the frame where the card last was, and an unfiltered read reserves keep-capture space for an invisible card. Capture is deliberately **not** hit-based: the circle hit area is a 38pt disc, which leaves the padding strips and gap diagonals of the black tab uncovered — releasing there collapsed the dock while the cursor was still visibly on it. Release clears `hoveredIndex` / `selectedIndex` and any pending open/close work item |
 
 Because both windows participate in the same capture region, moving the cursor
@@ -624,26 +618,29 @@ A corollary worth remembering if this ever misbehaves again: re-hovering the
 already showing for never re-enters `updatePopover`. Moving to another circle and
 back does.
 
-#### Two cards, titles outside
+#### Standalone complete detail: two cards, titles outside
 
-The dock popover is **two cards**, each with its title drawn *outside and above* it.
-This used to be `ProviderCardLayout.splitsIntoTwoCards` on for `.alwaysVisible` only,
-with the menu column of short cards keeping one card whose header sat inside it; that
-column is gone (the menu is the client view now), so the split is unconditional.
+The edge dock popover uses the shared `ProviderCardView` in **`edgePlan` presentation**:
+Provider header and scope control, then one card containing Account Info and Plan. It
+does not render the seven-day history. The standalone detail window uses `complete`
+presentation and displays Plan plus history as two cards with their titles outside and
+above the cards. The menu uses the same Plan and history sections as independent
+disclosures; opening both yields the same business content as the standalone window.
 **多机联动叠加层（不在本节展开，指针汇总）**：启用且存在多节点时，标题行 1 下方出现
 scope 分段行（≤4 选项；若 dock 贴屏幕下边缘，则移到详情内容最下方、靠近 dock）或
 卡头下拉（>4 选项，状态胶囊左侧）；额度读「生效额度」并带
-「来自 X · 已过期」来源标注；标题行 2 的新鲜度胶囊与本地重扫动作隐藏；用量区块 / 7 天卡
-按 effectiveScope 切全局 / 本机 / 节点口径；fleet 行可携带混币 `costText`——见
-`ui/menu-and-cards.md` §Scope switcher 与 `sync.md` §10。Since the 2026-10 second-round
-pass card 1 opens with the **Account Info row**, giving the whole thing three reading
-sections: *who is this* → *what does this round of quota look like* → *what did the
-last 7 days look like*.
+「来自 X · 已过期」来源标注；edgePlan 没有 history 标题行与本地重扫动作；Plan 内
+额度窗口用量按 effectiveScope 切全局 / 本机 / 节点口径，完整详情窗口的 history 也按该 scope
+读取 fleet 日桶并可携带混币估值——见
+`ui/menu-and-cards.md` §Scope switcher 与 `sync.md` §10。In the standalone complete detail
+window, the Account Info row gives the content three reading sections: *who is this* →
+*what does this round of quota look like* → *what did the last 7 days look like*.
 
-| | Title row (outside, above the card) | Card |
+| Component | Edge popover | Complete detail window |
 |---|---|---|
-| 1 | brand logo + provider name, with the refresh time / state label on the right — **no status dot** (the `ProviderStateLabel` capsule on the same row already states the status) and **no plan capsule** (it moved into the Account Info row). The timestamp is tappable: it refreshes **only this provider's** quota and re-anchors only its schedule (`AppState.refreshOne(providerID:)`, injected via `\.cardQuotaRefreshAction`, default nil = read-only)——不是菜单 headerBar 的「立即刷新全部」 | **Section 1 — Account Info**: one resident row, account name + plan pill (see below), no section title. **Section 2 — Plan Info**: the in-card section title 「Plan详情」 first, then three resident modules: per model `<name> 5h 62%[(30%有效)] weekly 30% <reset time>` + the progress bar (the peak-window countdown still rides *below* the first bar; the parenthesised suffix appears only when the weekly conversion binds — see *Collapsed sections are open in the popover*); a divider; then the **quota-window usage block** — unified 「额度窗口」 Grid (with 「分析」/「用量」 segment switch) and the reset-credit module (see below) |
-| 2 | `最近7天token用量`, with the local-usage freshness as a **capsule** (bare `HH:mm` since 2026-10-13 — the 「更新于」 prefix was dropped to match the header timestamp — / `计算中…`) on the right, tappable with the same refresh action as title row 1 — same font, weight and colour as title 1, because the two rows are the same kind of thing: the name of their card. **仅本机口径显示**：fleet / 节点 scope 下胶囊与「重扫本地用量」动作一并隐藏（fleet 数据没有本地重扫语义，见 `ui/menu-and-cards.md` §Scope switcher） | the 7-day chart, its usage table and the footnote |
+| Provider header | Brand logo + provider name, with quota refresh time / state on the right and the pinned-provider action where supported. The timestamp refreshes only this provider's quota via `\.cardQuotaRefreshAction`. Scope control appears below the header (or at the bottom for the bottom-edge dock). | Same shared Provider header and quota refresh action. |
+| Plan | **Account Info + Plan**: account name and plan pill, 「Plan详情」 title, provider quota bars, quota-window usage / analysis-usage switch and reset-credit details. | Same shared Account Info + Plan. |
+| History | Not rendered. | Separate card titled 「最近7天使用历史」. Its local-scope freshness timestamp is tappable and triggers only local usage rescanning; for Fleet / node scope the local timestamp and rescan action are hidden. The shared chart has seven day slots and nine independently selectable series (total, Rounds, Turns, value, speed, Input, Cache, Reason, Output), defaulting to total. Missing dates are gaps; today is marked incomplete. Speed is daily Prompt P50, and Fleet history has no speed because Fleet snapshots contain no prompt durations. |
 
 **Section 1 — Account Info** is `QuotaWindowAccountInfoRow`, one row, no section
 title: account name (email, monospaced, tail-truncated) + the plan pill (the very
@@ -658,7 +655,8 @@ minimaxTokenPlan has neither field. An empty/blank string counts as missing, so 
 first-refresh gap never lights the row up. A thin separator follows the row only when
 it renders.
 
-**Section 2 — Plan Info reads as three modules.** Since the third-round pass it
+**Account Info and Plan are shared by the edge popover, menu Plan disclosure, and complete
+detail window.** **Section 2 — Plan Info reads as three modules.** Since the third-round pass it
 opens with its own section title 「Plan详情」 (`ProviderCardView.planSectionTitle`,
 11pt semibold — the account row deliberately has none; the `.loading` / `.failed`
 fallback paths draw the same title so a mid-refresh flash cannot blink it). The
@@ -674,7 +672,7 @@ quota group; both sides come from different data sources — provider API above,
 session scan below — and without the line the usage reads as a continuation of the
 quota.
 
-**Type scale inside the two cards: 13 / 11 / 10.** Card titles are
+**Type scale: 13 / 11 / 10.** Card titles are
 `MenuTypography.cardTitle`; values and body text are 11 (`hoverBodyMonospaced` /
 `hoverRowEmphasis`, and `hoverTitle` was pulled down to 11 so a sub-title is no longer
 bigger than the values under it);
@@ -686,33 +684,26 @@ vocabulary, not a fixed list**: unreferenced roles are deleted rather than parke
 `MenuTypography` holds no multiplier / `hoverBody` / `hoverCaptionEmphasis` /
 `errorMessage` token waiting for a caller that never arrives.
 
-The cut is not arbitrary: the quota group is "now" and the 7-day group is "history", and
-`HoverInfoRow` already drew a separator between them. The card boundary replaces that
-separator, so the lower half stops reading as a table appended to the upper card. The
-split rides on `LocalUsagePart`, which today has exactly **one** case — `.detail`,
-i.e. card 2 gets the chart and card 1 gets everything else. The former `.summary` and
-`.combined` cases are gone: the summary row stopped rendering anywhere in the card in
-the second-round pass (its content moved into the usage block's 今 row) and the combined
-form was for the old menu column, which no longer exists, so both were branches that
-could only ever be false. This is also why the chart no longer draws its own title row
-in `.alwaysVisible`: the title and the freshness badge moved up into title row 2.
+The split applies to the standalone complete detail window: the quota group is "now" and
+the seven-day group is "history". The edge popover stays Plan-only and the menu can open
+either section or both. `SevenDayUsageHistoryView` owns the chart selection; its choice is
+independent from the quota-window Analysis/Usage segment.
 
 Two knock-on details, both easy to miss:
 
-- Both cards use `.frame(maxWidth: .infinity)`. Sized to their content they would have
+- In the complete detail window both cards use `.frame(maxWidth: .infinity)`. Sized to their content they would have
   different widths (card 2 is only the chart) and the stack would show two misaligned
   plates.
-- The non-`.ok` fallback (loading / failed) renders the **same three sections** off the
-  cached `lastSuccess` — account row, quota bars (dimmed), usage block, 7-day chart —
-  through the same constructors as the `.ok` path, so a `.loading` flash mid-refresh
-  cannot drop a section. `.notConfigured` alone stays a bare placeholder.
+- Loading, failed, ready and not-configured states use the same shared Plan presentation
+  as the menu disclosure; cached `lastSuccess` remains visible when present. The complete
+  detail history remains independently rendered, with an empty state when no usage exists.
 
 #### Quota window usage block
 
 Inside card 1, **below** the quota/local-usage divider, there is one block that answers
 "how much did *this machine* burn inside the current quota window?". It is rendered by
 `QuotaWindowUsageSection` (`Views/QuotaWindowUsageViews.swift`), in the dock popover's
-`.alwaysVisible` card and the menu's Plan-only expansion（完整卡另有独立详情窗；fleet / 节点 scope 下区块改读 fleet 口径数据，
+`.alwaysVisible` card and the menu's shared Account Info + Plan disclosure（完整卡另有独立详情窗；fleet / 节点 scope 下区块改读 fleet 口径数据，
 见上方多机联动叠加层指针）.
 Since the second-round pass the block is **fully resident** — the hover-expanded detail
 (`QuotaWindowUsageHoverView`) is deleted — and reads as up to two modules separated

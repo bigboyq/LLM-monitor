@@ -17,7 +17,7 @@
 | `Sources/LLM-monitor/Services/Sync/HubServer.swift` | NWListener 上的 HTTP/1.1 最小子集 hub 服务：定长 body、4MiB/2MiB 上下限、路径白名单、每 nodeID 1s 限流、连接看门狗；业务全部委托 HubServerHandlers |
 | `Sources/LLM-monitor/Services/Sync/SyncClient.swift` | node 侧 HTTP 客户端（复用 Infra/HTTPClient）：POST 报告推+取一次往返、GET 快照兜底、GET /v1/health 学习 hubUUID；upstreamKey 归一化 |
 | `Sources/LLM-monitor/Services/Sync/UsageReportBuilder.swift` | 从启用 Provider 的 `usageProjection` 构建 NodeUsageReport：七日日桶、同样本计价的模型明细与窗口行、有效 lastSuccess 额度通道；按实际 client/provider 隔离失败、扫描或预算截断来源，健康日桶行继续上报，不可用来源显式标记并由 Store 保留旧值；对应 provider 窗口仍省略 |
-| `Sources/LLM-monitor/Models/FleetUsageModels.swift` | Fleet UI 投影（L3）：FleetScope、FleetEffectiveQuota（本机优先→elected + 来源标注）、FleetCardUsage / FleetWindowUsageRow（全 provider 日桶、provider-filtered 窗口及历史窗口选择 / 部分计价提示 / stale 日桶贡献提示）、FleetMenuSummary（段带 `dominantQuotaProviderID` 主力 provider）、FleetCardContext |
+| `Sources/LLM-monitor/Models/FleetUsageModels.swift` | Fleet UI 投影（L3）：FleetScope、FleetEffectiveQuota（本机优先→elected + 来源标注）、FleetCardUsage / FleetWindowUsageRow（全 provider 日桶、provider-filtered 窗口及历史窗口选择 / 部分计价提示 / stale 日桶贡献提示）；DayValue 保留数值 estimate 与部分标记供历史趋势消费，FleetMenuSummary、FleetCardContext |
 | `Sources/LLM-monitor/Services/LANAddressResolver.swift` | 本机局域网地址异步探测与挑选：view 不等待阻塞探测；采集（`getifaddrs`，排除回环 / 未 UP / 虚拟前缀 / 与 `bridge0` 同 MAC 的雷雳桥腿；正确处理 `sockaddr_dl` 中可变长度接口名偏移以解析 MAC）+ 硬件分类缓存（Network.framework 的 `NWPathMonitor`）+ 挑选（Wi-Fi → 有线 → 其它，不拿 127.0.0.1 兜底） |
 | `Sources/LLM-monitor/Views/SettingsSyncPane.swift` | 设置页「多机联动」pane：角色字段（写穿持久化）、复制局域网地址（探测在 `LANAddressResolver`）、已连接节点列表（移除 → removeNodeFromFleet）、全局摘要、各 provider 额度来源、归因指纹不一致提示、字段独立防抖草稿 controller 与逐字段保存错误 / 重试 |
 | `Sources/LLM-monitor/Services/Sync/SyncCoordinator.swift` | 多机联动运行时编排（@MainActor ObservableObject）：由 `DeviceIdentityStore` 提供稳定 nodeID（持久化成功才采用；启用前不创建、读写错误不降级成临时身份）、hub/node 生命周期与监听 ready/failed、热配置重启/重排与非法上游修正后的 node runtime 恢复、hub 本机报告合并与 generation 维护、node 周期+唤醒推送、health 握手、409 序号自愈、快照缓存与当前 POST 序号确认的 hub 数据库恢复 |
@@ -63,6 +63,7 @@
 | `Tests/LLMMonitorTests/SyncModelsTests.swift` | Fleet DTO / 校验 / 合并、ASCII Gregorian 日键与跨系统日历生成、legacy 不完整日桶拒收、来源感知 partial 校验及金额覆盖度保留 |
 | `Tests/LLMMonitorTests/FleetUsageModelsTests.swift` | Fleet 菜单与卡片投影、provider 全量日桶 / provider 窗口筛选、窗口历史与 wire 整秒比较、金额 coverage 和 stale 日桶提示 |
 | `Tests/LLMMonitorTests/FleetCostTextPropagationTests.swift` | Fleet 金额说明从真实 DSH builder / 合并投影传到最终可见行：部分计价、混币 5h / 周 / 今及闲行文案 |
+| `Tests/LLMMonitorTests/FleetHistoryValueTests.swift` | Fleet 历史数值金额优先级、混币折算、旧桶回退与不可用/部分覆盖回归 |
 | `Tests/LLMMonitorTests/SettingsDraftIsolationTests.swift` | General/provider 草稿隔离：仅 Sync 或边缘窗位置写入不重载，真实表单外部变化仍触发热重载 |
 | `Tests/LLMMonitorTests/DshLocalUsageScannerTests.swift` | DSH 真实日志扫描、预算及样本 cap、缓存命中 / 旧完整性元数据重建、限额变化和遗漏样本老化恢复 |
 | `Tests/LLMMonitorTests/UsageProjectionKernelTests.swift` | Harness 帧归属、日聚合与模型计价、DSH 分片及独立样本完整性标记传播 |
@@ -158,14 +159,14 @@
 | `Sources/LLM-monitor/Views/MenuContentView.swift` | 主面板（header / content / footer；header 统一页面级刷新：用量读 LocalUsage 时间并重扫，额度读 Provider 成功数据时间并刷新；footer 无重复时间）+ 高度桥 `MenuPanelHeightBridge` + `MenuHairline`；展示时钟经 `\.displayDate` 注入卡片 |
 | `Sources/LLM-monitor/Views/FleetScopeSwitcher.swift` | fleet scope 切换控件（菜单面板与 dock 详情浮层共用：≤4 段整行、>4 紧凑下拉）：`FleetScopeSwitcher` 按选项总数分叉（≤4 分段 `Picker`、>4 下拉 `FleetScopeMenu`），`FleetScopeMenu` 是下拉形态——范围文字 + 行内 `ellipsis` 标记，整组上限 120pt，截断走纯函数 `FleetScopeMenu.truncated(_:maxWidth:)`；三个 macOS `Menu` 平台怪癖（行内图 / 字符串层限宽 / 必须 `fixedSize`）写在文件头 |
 | `Sources/LLM-monitor/Views/DisplayClock.swift` | 跨宿主共享的展示时钟：`DisplayClock` + `DisplayClockScope` + `\.displayDate` 环境键；菜单内容 / hover 浮层 / dock 浮层 / provider 详情窗口各自持有实例、随宿主显隐 start/stop 并注入环境 |
-| `Sources/LLM-monitor/Views/HarnessUsageMenuView.swift` | 菜单用量与额度紧凑卡片（`HarnessUsageMenuView` / `MenuQuotaOverviewView`）：今日汇总、客户端占比、默认折叠的客户端摘要与模型 Prompt 速度范围线；摘要按实际宽度显隐思考占比，窄时四核心指标换行。额度行展示有效额度、窗口重置倒计时、临期/高峰事件、右侧时间与刷新，展开复用共享 Plan，独立窗口可达；`MenuContentMode` 由宿主持久化。布局回归见 `HarnessUsageMenuViewTests` |
+| `Sources/LLM-monitor/Views/HarnessUsageMenuView.swift` | 菜单用量与额度紧凑卡片（`HarnessUsageMenuView` / `MenuQuotaOverviewView`）：今日汇总、客户端占比、默认折叠的客户端摘要与模型 Prompt 速度范围线；摘要按实际宽度显隐思考占比，窄时四核心指标换行。额度行展示有效额度、重置倒计时、临期/高峰事件、右侧时间与刷新；套餐详情/套餐历史独立折叠、独立窗口可达，长摘要与三操作分行；`MenuContentMode` 由宿主持久化。布局回归见 `HarnessUsageMenuViewTests` |
 | `Sources/LLM-monitor/Views/MenuTypography.swift` | 菜单面板与悬浮层统一排版常量（语义角色，禁止散落硬编码字号） |
-| `Sources/LLM-monitor/Views/PromptSpeedRangeLineView.swift` | 展开模型行的 Prompt 速度范围线：上排 min/P50、下排最近/max；标记共用刻度，`PromptSpeedLabelPairLayout` / `PromptSpeedLabelPlacement` 避让文字；样本覆盖仅在帮助/辅助功能说明 |
-| `Tests/LLMMonitorTests/PromptSpeedRangeLayoutTests.swift` | 标签同点、屏边界、窄容器、首标签锚定与共享速度刻度回归 |
+| `Sources/LLM-monitor/Views/PromptSpeedRangeLineView.swift` | 展开模型行的 Prompt 速度范围线：上排 min/P50、下排最近/max；标记共用刻度，`PromptSpeedLabelPairLayout` / `PromptSpeedLabelPlacement` 测量前缀与冒号宽度，以冒号中心锚点并避让文字；样本覆盖仅在帮助/辅助功能说明 |
+| `Tests/LLMMonitorTests/PromptSpeedRangeLayoutTests.swift` | 标签同点、屏边界、窄容器、冒号锚定、中文前缀与共享速度刻度回归 |
 | `Tests/LLMMonitorTests/MenuRefreshPresentationTests.swift` | 页面额度时间来源：启用项、失败保留成功数据、持久成功时间与空态 |
 | `Sources/LLM-monitor/Views/MenuWindowAutoCloseBridge.swift` | 失焦立即关 + 30s 无交互关闭（菜单内 mouse/scroll/key 重置计时）；关闭统一出口 `performClose` 并发 `onPanelClose`（菜单展示时钟随之停表）；30s 计时为单个可复用 `DispatchSourceTimer`（reset 只改 deadline，鼠标事件不再重建句柄） |
 | `Sources/LLM-monitor/Views/ProviderCardDerived.swift` | 卡片 body 的派生值入口：投影 + 额度窗口快照 + 「今」行 + 「闲」行（GLM 今日闲时，`offPeakUsageRow`）+ 「免 / 速 / 它」今日动态行（`glmCategoryUsageRows`，按 `GlmUsageCategory` 今日切片）打包成一个 memo 值（共享失效条件；键 = 全值 `status` + 墙钟日 + 展示日 + `HolidayCalendar.sharedRevision` + 时区标识），展示时钟每秒 tick 不再重算 O(samples) 定价 |
-| `Sources/LLM-monitor/Views/ProviderCardView.swift` | provider 卡片 + `ProviderStateLabel` + `QuotaSummary`（卡内状态点已随菜单改版移除，状态由 `ProviderStateLabel` 胶囊承载）；body 派生值经 `ProviderCardDerivedValues` 值键 memo；多节点时的 scope 控制用 `FleetScopeSwitcher`（≤4：标题行下方的分段整行；>4：卡头右侧的下拉） |
+| `Sources/LLM-monitor/Views/ProviderCardView.swift` | provider 卡片 + `ProviderStateLabel` + `QuotaSummary`；`ProviderCardPresentation` 分 complete / plan / edgePlan / history，共用账号+套餐模块与七天历史，含无额度时的历史兜底；body 派生值经 `ProviderCardDerivedValues` 值键 memo；多节点 scope 控制用 `FleetScopeSwitcher` |
 | `Sources/LLM-monitor/Views/QuotaViews.swift` | 各种 quota 行 + 进度条（`CombinedQuotaWindowRow` / `CombinedQuotaBar` / `SingleQuotaBar` / `ModelQuotaDockBlock` / `CompactResetCreditsRow` / `QuotaBarTooltip`）；重置倒计时与过期判定随宿主展示时钟推进（`\.displayDate`）。`OffPeakUsageFootnote` 已删除，GLM 闲时用量改由「额度窗口」表格「闲」行承担 |
 | `Sources/LLM-monitor/Views/QuotaWindowUsageViews.swift` | 「额度窗口用量」区块族：模块标题 / 细分隔线、四桶绝对值与三个比率（`QuotaWindowUsageMetrics`）、双段 capsule 切换（`QuotaWindowUsageSegmentControl` / `QuotaWindowUsageSegment`）、reset credits 明细（`ResetCreditsDetailList`）与合并统一 7 列 Grid 骨架的总段 `QuotaWindowUsageSection`；重置日期格倒计时随宿主展示时钟推进（`\.displayDate`） |
 | `Sources/LLM-monitor/Views/QuotaHoverViews.swift` | 空文件，仅留删除记录注释：`UsageMetricHoverSummaryView`（额度用量指标 hover 摘要）随其唯一宿主 `OffPeakUsageFootnote` 一并删除；旧 `QuotaWindowsHoverView` 族已随 menuLayout 死分支整体删除 |
@@ -193,11 +194,15 @@
 | `Sources/LLM-monitor/Views/ChatGPTPlanModelRow.swift` | ChatGPT Plan 专用模型行（双窗口 dock 进度条与本地 token 聚合计算） |
 | `Sources/LLM-monitor/Views/PeakIndicatorView.swift` | 高峰提示行公共组件（`TimelineView` 外壳 + `formatDuration`，GLM / DeepSeek 共用） |
 | `Sources/LLM-monitor/Views/BrandLogoView.swift` | provider 品牌 logo 资源加载 + SF Symbol fallback |
-| `Sources/LLM-monitor/Views/LocalUsageHoverViews.swift` | 7-day 泛型 chart + 泛型 footer |
+| `Sources/LLM-monitor/Views/LocalUsageHoverViews.swift` | 旧七天入口兼容包装与泛型 footer；数值逐日价格 / Prompt P50 memo，生产渲染委托共享折线历史组件 |
+| `Sources/LLM-monitor/Models/UsageHistorySeries.swift` | 九维历史指标、独立偏好键与数值日序列；固定七日槽、缺失与已知零、混币归一化及部分覆盖 |
+| `Sources/LLM-monitor/Views/SevenDayUsageHistoryChart.swift` | 菜单/详情窗口/设置共用七天单指标折线、两组指标图例、逐日表与来源提示 |
+| `Tests/LLMMonitorTests/UsageHistorySeriesTests.swift` | 七日槽、四桶守恒、数值价格/混币、P50、缺失/零与部分样本回归 |
+| `Tests/LLMMonitorTests/SevenDayUsageLastColumnTests.swift` | `SevenDayUsageHistoryMetricTests`：历史偏好独立于额度 segment、每日 Prompt P50 与 Fleet 无时长回归（替代旧末列耦合测试） |
 | `Sources/LLM-monitor/Views/SegmentedQuotaProgressBar.swift` | 5h / 周额度分段条、窗口颜色与 reset 标记 + `EquivalentQuotaAllocation`（binding constraint 文案与 `bindingWindow` 判定） |
 | `Sources/LLM-monitor/Views/SettingsEnergyPane.swift` | 设置页节能 pane：睡眠健康度、防休眠与电源参数矩阵 |
 | `Sources/LLM-monitor/Views/SleepAssertionOffender+RowText.swift` | 「阻止休眠的第三方应用」行文案（`SleepAssertionOffender` 的行格式化 extension）+ 主面板 header 悬浮清单 `SleepOffendersHoverView`，两处共用同一份格式 |
-| `Sources/LLM-monitor/Views/SettingsClientsPane.swift` | 设置页「客户端」tab：本地客户端用量诊断 + client ↔ quota 绑定开关（从 SettingsView 拆出） |
+| `Sources/LLM-monitor/Views/SettingsClientsPane.swift` | 设置页「客户端」tab：本地客户端用量诊断、共享九维七天历史 + client ↔ quota 绑定开关（从 SettingsView 拆出） |
 | `Sources/LLM-monitor/Views/ClientSegmentedControl.swift` | 设置页「客户端」切换条：原生 `NSSegmentedControl` 包装（段宽按文字测量写死，客户端变多时整体变宽并横向滚动，不压成省略号） |
 | `Sources/LLM-monitor/Views/SettingsComponents.swift` | 设置窗口共享组件与统一字体角色（`SettingsTypography` / `SettingsSection` / `SettingsControlRow` / `SettingsPaneHeader`） |
 | `Sources/LLM-monitor/Views/SettingsFields.swift` | 设置页通用表单输入组件与数值/路径辅助函数（`intervalSliderField`、`secretField`、`apiKeyField`、`selectAuthFile`、`tildePath`） |

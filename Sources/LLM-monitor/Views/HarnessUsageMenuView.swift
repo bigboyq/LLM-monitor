@@ -838,6 +838,7 @@ struct MenuQuotaOverviewView: View {
                     localStatus: state.statuses.first { $0.kind == status.kind } ?? status,
                     fleet: state.fleetCardContext(for: status.kind),
                     onRefresh: { onRefreshProvider(status.id) },
+                    onUsageRefresh: { Task { await state.triggerLocalUsageRescan() } },
                     onSettings: { onOpenSettings(status.kind) },
                     onOpenDetails: { onOpenDetails(status.id) }
                 )
@@ -861,9 +862,11 @@ private struct MenuQuotaProviderRow: View {
     let localStatus: ProviderStatus
     let fleet: FleetCardContext?
     let onRefresh: () -> Void
+    let onUsageRefresh: () -> Void
     let onSettings: () -> Void
     let onOpenDetails: () -> Void
-    @State private var isExpanded = false
+    @State private var isPlanExpanded = false
+    @State private var isHistoryExpanded = false
     @Environment(\.displayDate) private var displayDate
 
     private var effective: FleetEffectiveQuota? { fleet?.effectiveQuota }
@@ -917,37 +920,21 @@ private struct MenuQuotaProviderRow: View {
                 }
             }
 
-            HStack(spacing: 7) {
-                if !models.isEmpty || (status.kind == .deepseek && quota?.balanceDetail != nil) {
-                    Text(summary(now: displayDate))
-                        .font(MenuTypography.dataValue)
-                        .foregroundStyle(Color.primaryLabel)
-                        .lineLimit(1)
-                } else if case .loading = localStatus.state {
-                    Text("正在获取套餐额度")
-                        .font(MenuTypography.hint)
-                        .foregroundStyle(Color.secondaryLabel)
-                        .lineLimit(1)
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 7) {
+                    quotaSummaryLabel
+                        .fixedSize(horizontal: true, vertical: false)
+                    Spacer(minLength: 0)
+                    quotaActions
                 }
-                Spacer(minLength: 0)
-                if !models.isEmpty {
-                    Button {
-                        isExpanded.toggle()
-                    } label: {
-                        Label(
-                            isExpanded ? "收起" : "套餐详情",
-                            systemImage: isExpanded ? "chevron.up" : "chevron.down"
-                        )
+                VStack(alignment: .leading, spacing: 5) {
+                    quotaSummaryLabel
+                        .fixedSize(horizontal: false, vertical: true)
+                    HStack {
+                        Spacer(minLength: 0)
+                        quotaActions
                     }
-                    .font(MenuTypography.hint)
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(isExpanded ? "收起 \(status.displayName) 套餐详情" : "展开 \(status.displayName) 套餐详情")
                 }
-                Button("独立窗口") { onOpenDetails() }
-                    .font(MenuTypography.hint)
-                    .buttonStyle(.link)
-                    .help("在独立窗口查看 \(status.displayName) 的完整详情")
-                    .accessibilityLabel("在独立窗口打开 \(status.displayName) 详情")
             }
 
             if let source = effective?.sourceTagText {
@@ -983,19 +970,21 @@ private struct MenuQuotaProviderRow: View {
                     .help(message)
             }
 
-            if isExpanded {
-                if quota != nil {
-                    ProviderCardView(status: status, fleet: fleet, showsPlanDetailsOnly: true)
+            if isPlanExpanded {
+                ProviderCardView(status: status, fleet: fleet, presentation: .plan)
                         .equatable()
                         .environment(\.hoverRevealMode, .alwaysVisible)
                         .environment(\.displayDate, displayDate)
                         .environment(\.quotaWindowSegmentEditable, true)
                         .environment(\.cardQuotaRefreshAction, { _ in onRefresh() })
-                } else {
-                    Text("尚无成功的额度数据，详情将在首次读取后显示")
-                        .font(MenuTypography.hint)
-                        .foregroundStyle(Color.secondaryLabel)
-                }
+            }
+            if isHistoryExpanded {
+                ProviderCardView(status: status, fleet: fleet, presentation: .history)
+                    .equatable()
+                    .environment(\.hoverRevealMode, .alwaysVisible)
+                    .environment(\.displayDate, displayDate)
+                    .environment(\.quotaWindowSegmentEditable, true)
+                    .environment(\.cardUsageRefreshAction, onUsageRefresh)
             }
         }
         .padding(8)
@@ -1013,6 +1002,46 @@ private struct MenuQuotaProviderRow: View {
             balance: quota?.balanceDetail,
             now: now
         )
+    }
+
+    @ViewBuilder
+    private var quotaSummaryLabel: some View {
+        if !models.isEmpty || (status.kind == .deepseek && quota?.balanceDetail != nil) {
+            Text(summary(now: displayDate))
+                .font(MenuTypography.dataValue)
+                .foregroundStyle(Color.primaryLabel)
+        } else if case .loading = localStatus.state {
+            Text("正在获取套餐额度")
+                .font(MenuTypography.hint)
+                .foregroundStyle(Color.secondaryLabel)
+        }
+    }
+
+    private var quotaActions: some View {
+        HStack(spacing: 7) {
+            Button {
+                isPlanExpanded.toggle()
+            } label: {
+                Label("套餐详情", systemImage: isPlanExpanded ? "chevron.up" : "chevron.down")
+            }
+            .font(MenuTypography.hint)
+            .buttonStyle(.plain)
+            .accessibilityLabel(isPlanExpanded ? "收起 \(status.displayName) 套餐详情" : "展开 \(status.displayName) 套餐详情")
+            Button {
+                isHistoryExpanded.toggle()
+            } label: {
+                Label("套餐历史", systemImage: isHistoryExpanded ? "chevron.up" : "chevron.down")
+            }
+            .font(MenuTypography.hint)
+            .buttonStyle(.plain)
+            .accessibilityLabel(isHistoryExpanded ? "收起 \(status.displayName) 套餐历史" : "展开 \(status.displayName) 套餐历史")
+            Button("独立窗口") { onOpenDetails() }
+                .font(MenuTypography.hint)
+                .buttonStyle(.link)
+                .help("在独立窗口查看 \(status.displayName) 的完整详情")
+                .accessibilityLabel("在独立窗口打开 \(status.displayName) 详情")
+        }
+        .fixedSize(horizontal: true, vertical: false)
     }
 
     private var peakHeaderEvent: (title: String, color: Color)? {
