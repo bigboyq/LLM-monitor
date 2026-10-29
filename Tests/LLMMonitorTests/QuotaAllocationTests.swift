@@ -102,4 +102,56 @@ final class QuotaAllocationTests: XCTestCase {
             .weekly
         )
     }
+
+    func testAntigravityGeminiMultiplier3Point33() {
+        // 1. 容量分段：3.33 拆为 3 个 1.0 整段与 1 个 0.33 尾段
+        let capacities = EquivalentQuotaAllocation.segmentCapacities(multiplier: 3.33)
+        XCTAssertEqual(capacities.count, 4)
+        XCTAssertEqual(capacities[0], 1.0)
+        XCTAssertEqual(capacities[1], 1.0)
+        XCTAssertEqual(capacities[2], 1.0)
+        XCTAssertEqual(capacities[3], 0.33, accuracy: 0.0001)
+
+        // 2. 实测数据场景：5h 使用 4.48 剩 85%，周使用 39.77 剩 60.3%
+        // weeklyUnits = 0.603 * 3.33 ≈ 2.00799
+        // 5h 剩余 0.85 < 2.008 → 5h 为瓶颈，无周告急
+        let fills = EquivalentQuotaAllocation.segmentFills(
+            primaryFraction: 0.85,
+            weeklyFraction: 0.603,
+            multiplier: 3.33
+        )
+        XCTAssertEqual(fills.count, 4)
+        XCTAssertEqual(fills[0], 0.85, accuracy: 0.0001, "当前 5h 窗口充满 85%")
+        XCTAssertEqual(fills[1], 1.0, accuracy: 0.0001, "后续第 1 段满额")
+        // 剩余 = 2.00799 - 0.85 - 1.0 = 0.15799
+        XCTAssertEqual(fills[2], 0.15799, accuracy: 0.001, "后续第 2 段填入 0.158")
+        XCTAssertEqual(fills[3], 0.0, accuracy: 0.0001, "尾段无额度")
+
+        // 3. 瓶颈判定：当前 5h 为约束瓶颈
+        XCTAssertEqual(
+            EquivalentQuotaAllocation.bindingWindow(primaryFraction: 0.85, weeklyFraction: 0.603, multiplier: 3.33),
+            .primary
+        )
+
+        // 4. 周瓶颈场景：5h 85%、周只剩 15% (0.15 * 3.33 ≈ 0.4995 < 0.85)
+        XCTAssertEqual(
+            EquivalentQuotaAllocation.bindingWindow(primaryFraction: 0.85, weeklyFraction: 0.15, multiplier: 3.33),
+            .weekly
+        )
+        let bindingFills = EquivalentQuotaAllocation.segmentFills(
+            primaryFraction: 0.85,
+            weeklyFraction: 0.15,
+            multiplier: 3.33
+        )
+        XCTAssertEqual(bindingFills.count, 4)
+        XCTAssertEqual(bindingFills[0], 0.4995, accuracy: 0.001, "5h 被周限死在 ~50%")
+        XCTAssertEqual(bindingFills[1], 0.0)
+        XCTAssertEqual(bindingFills[2], 0.0)
+        XCTAssertEqual(bindingFills[3], 0.0)
+
+        // 5. Tooltip 文案测试：包含 3.33 倍说明
+        let tooltip = QuotaBarTooltip.text(multiplier: 3.33, hasTriangle: true)
+        XCTAssertTrue(tooltip.contains("3.33"))
+        XCTAssertTrue(tooltip.contains("▼"))
+    }
 }

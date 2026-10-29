@@ -179,7 +179,7 @@ struct CombinedQuotaWindowRow: View {
     let model: ModelQuota
     let primaryLabel: String
     let tint: Color
-    let weeklyEquivalentMultiplier: Int
+    let weeklyEquivalentMultiplier: Double
     /// 夹在进度条块与下方**本地用量**之间的卡片级信息（重置卡、高峰期），见
     /// `ModelQuotaDockBlock.between`。只有第一个 model 行会拿到非空值。
     var between: AnyView = AnyView(EmptyView())
@@ -273,21 +273,21 @@ struct CombinedQuotaWindowRow: View {
 struct CombinedQuotaBar: View {
     let model: ModelQuota
     let tint: Color
-    let weeklyEquivalentMultiplier: Int
+    let weeklyEquivalentMultiplier: Double
 
     var body: some View {
         SegmentedQuotaProgressBar(
             primaryFraction: model.intervalRemainingPercent / 100.0,
             weeklyFraction: model.weeklyRemainingPercent / 100.0,
             tint: tint,
-            segments: weeklyEquivalentMultiplier,
+            multiplier: weeklyEquivalentMultiplier,
             height: 8,
             timeRemainingFraction: model.weeklyTimeRemainingFraction,
             primaryTimeRemainingFraction: model.intervalTimeRemainingFraction
         )
         .frame(maxWidth: .infinity)
         .help(QuotaBarTooltip.text(
-            segments: weeklyEquivalentMultiplier,
+            multiplier: weeklyEquivalentMultiplier,
             hasTriangle: model.weeklyTimeRemainingFraction != nil
         ))
     }
@@ -374,7 +374,7 @@ struct QuotaBarWithMetadata: View {
     let model: ModelQuota
     let primaryLabel: String
     let secondaryLabel: String
-    let weeklyEquivalentMultiplier: Int
+    let weeklyEquivalentMultiplier: Double
     let tint: Color
 
     var body: some View {
@@ -396,7 +396,7 @@ struct QuotaBarWithMetadata: View {
                         weeklyFraction: model.weeklyRemainingPercent / 100.0,
                         primaryResetsAt: model.intervalResetsAt,
                         weeklyResetsAt: model.weeklyResetsAt,
-                        segments: weeklyEquivalentMultiplier
+                        multiplier: weeklyEquivalentMultiplier
                     )
                 )
                 CombinedQuotaBar(
@@ -473,16 +473,20 @@ struct QuotaBarWithMetadata: View {
     /// 判定与并列约定**复用** `EquivalentQuotaAllocation.bindingWindow`
     /// （weekly 严格小于 primary 才算周瓶颈），保证括号出现与否与这行自己的
     /// 分段条永远同源，不会条缩了文字没缩（或反过来）。
-    static func weeklyBindingEffectivePercent(model: ModelQuota, multiplier: Int) -> Double? {
+    static func weeklyBindingEffectivePercent(model: ModelQuota, multiplier: Double) -> Double? {
         guard model.hasIntervalWindow, model.hasWeeklyWindow else { return nil }
         let primary = model.intervalRemainingPercent / 100.0
         let weekly = model.weeklyRemainingPercent / 100.0
         guard EquivalentQuotaAllocation.bindingWindow(
-            primaryFraction: primary, weeklyFraction: weekly, segments: multiplier
+            primaryFraction: primary, weeklyFraction: weekly, multiplier: multiplier
         ) == .weekly else { return nil }
         return EquivalentQuotaAllocation.effectivePrimaryFraction(
-            primaryFraction: primary, weeklyFraction: weekly, segments: multiplier
+            primaryFraction: primary, weeklyFraction: weekly, multiplier: multiplier
         ) * 100
+    }
+
+    static func weeklyBindingEffectivePercent(model: ModelQuota, multiplier: Int) -> Double? {
+        weeklyBindingEffectivePercent(model: model, multiplier: Double(multiplier))
     }
 }
 
@@ -667,13 +671,17 @@ private struct ResetTimeSummary: View {
 /// （dock 把条提到 model 标题之上），文案不能再是某个 view 里的自由函数。
 enum QuotaBarTooltip {
     /// 精炼为清晰的配额与重置时间解释
-    static func text(segments: Int, hasTriangle: Bool) -> String {
-        let n = max(segments, 1)
+    static func text(multiplier: Double, hasTriangle: Bool) -> String {
+        let isInteger = abs(multiplier - multiplier.rounded()) < 0.001
         let parts: String
-        if n == 1 {
+        if multiplier <= 1.001 {
             parts = "单一窗口可用进度"
-        } else {
+        } else if isInteger {
+            let n = Int(multiplier.rounded())
             parts = "第 1 格为当前窗口余量；后续 \(n - 1) 格为等价周额度余量"
+        } else {
+            let formatted = String(format: "%.2f", multiplier)
+            parts = "第 1 格为当前窗口余量；后续各格为等价周额度余量（周额度等价于 \(formatted) 倍窗口额度）"
         }
         let triangle: String
         if hasTriangle {
@@ -682,6 +690,10 @@ enum QuotaBarTooltip {
             triangle = ""
         }
         return "分段额度：\n\(parts)。\(triangle)"
+    }
+
+    static func text(segments: Int, hasTriangle: Bool) -> String {
+        text(multiplier: Double(segments), hasTriangle: hasTriangle)
     }
 }
 

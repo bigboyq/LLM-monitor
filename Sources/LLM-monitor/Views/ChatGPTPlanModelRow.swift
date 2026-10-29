@@ -30,7 +30,7 @@ struct ChatGPTPlanModelRow: View {
     /// `.codexChatGpt` 分支同值——这一整块是 **ChatGPT Plan 专用行**，倍率对它
     /// 是常量，不该走那个按 provider 分派的函数（走一遍只会得到同样的 6，
     /// 却让人以为这里也支持别的 provider）。
-    private static let weeklyEquivalentMultiplier = 6
+    private static let weeklyEquivalentMultiplier: Double = 6.0
 
     /// dock 侧只有额度条这一块，明细（三列统计）已撤掉：条 + 元信息行回答
     /// "还剩多少、什么时候重置"，用量明细交给菜单侧的 hover 浮层。菜单侧仍然

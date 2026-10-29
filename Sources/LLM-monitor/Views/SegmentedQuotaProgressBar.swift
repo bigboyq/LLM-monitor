@@ -12,10 +12,32 @@ struct SegmentedQuotaProgressBar: View {
     let primaryFraction: Double
     let weeklyFraction: Double
     let tint: Color
-    let segments: Int
+    let multiplier: Double
     let height: CGFloat
     let timeRemainingFraction: Double?
     let primaryTimeRemainingFraction: Double?
+
+    var segments: Int {
+        Int(multiplier.rounded())
+    }
+
+    init(
+        primaryFraction: Double,
+        weeklyFraction: Double,
+        tint: Color,
+        multiplier: Double,
+        height: CGFloat,
+        timeRemainingFraction: Double?,
+        primaryTimeRemainingFraction: Double? = nil
+    ) {
+        self.primaryFraction = primaryFraction
+        self.weeklyFraction = weeklyFraction
+        self.tint = tint
+        self.multiplier = multiplier
+        self.height = height
+        self.timeRemainingFraction = timeRemainingFraction
+        self.primaryTimeRemainingFraction = primaryTimeRemainingFraction
+    }
 
     init(
         primaryFraction: Double,
@@ -26,13 +48,15 @@ struct SegmentedQuotaProgressBar: View {
         timeRemainingFraction: Double?,
         primaryTimeRemainingFraction: Double? = nil
     ) {
-        self.primaryFraction = primaryFraction
-        self.weeklyFraction = weeklyFraction
-        self.tint = tint
-        self.segments = segments
-        self.height = height
-        self.timeRemainingFraction = timeRemainingFraction
-        self.primaryTimeRemainingFraction = primaryTimeRemainingFraction
+        self.init(
+            primaryFraction: primaryFraction,
+            weeklyFraction: weeklyFraction,
+            tint: tint,
+            multiplier: Double(segments),
+            height: height,
+            timeRemainingFraction: timeRemainingFraction,
+            primaryTimeRemainingFraction: primaryTimeRemainingFraction
+        )
     }
 
     private let triangleSize = CGSize(width: 6, height: 4)
@@ -64,6 +88,16 @@ struct SegmentedQuotaProgressBar: View {
         }
     }
 
+    /// 各段栅格分配：对于等宽整段保持现有自适应栅格；
+    /// 对于非整数倍率（如 3.33），以 40 格为基准按容量权重分配各段栅格。
+    static func ticksForSegment(capacity: Double, totalCapacity: Double, segmentCount: Int) -> Int {
+        if totalCapacity.truncatingRemainder(dividingBy: 1.0) < 0.001 {
+            return ticksPerSegment(for: segmentCount)
+        }
+        let ratio = capacity / totalCapacity
+        return max(1, Int((40.0 * ratio).rounded()))
+    }
+
     /// 根据当前段 fill 比例计算点亮的栅格数。
     /// 当 fill > 0 时向上取整并保底点亮至少 1 格，避免小额配额在视觉上显现全空。
     static func activeTickCount(fill: Double, totalTicks: Int) -> Int {
@@ -74,22 +108,20 @@ struct SegmentedQuotaProgressBar: View {
     }
 
     var body: some View {
+        let capacities = EquivalentQuotaAllocation.segmentCapacities(multiplier: multiplier)
         let segmentFills = EquivalentQuotaAllocation.segmentFills(
             primaryFraction: primaryFraction,
             weeklyFraction: weeklyFraction,
-            segments: segments
+            multiplier: multiplier
         )
-        let segmentCount = max(segmentFills.count, 1)
+        let segmentCount = max(capacities.count, 1)
+        let totalCapacity = max(capacities.reduce(0, +), 1.0)
 
         GeometryReader { geo in
             let totalWidth = geo.size.width
             let macroGap: CGFloat = segmentCount > 1 ? 4 : 0
             let totalGaps = CGFloat(segmentCount - 1) * macroGap
-            let segmentWidth = max(0, (totalWidth - totalGaps) / CGFloat(segmentCount))
-            let numTicks = Self.ticksPerSegment(for: segmentCount)
-            let tickGap: CGFloat = 1.5
-            let totalTickGaps = CGFloat(max(numTicks - 1, 0)) * tickGap
-            let tickWidth = max(1.5, (segmentWidth - totalTickGaps) / CGFloat(numTicks))
+            let availableWidth = max(0, totalWidth - totalGaps)
 
             ZStack(alignment: .topLeading) {
                 if let f = clampedFraction {
@@ -107,9 +139,19 @@ struct SegmentedQuotaProgressBar: View {
                 ZStack(alignment: .leading) {
                     HStack(spacing: macroGap) {
                         ForEach(0..<segmentCount, id: \.self) { segIndex in
+                            let cap = capacities[segIndex]
+                            let segmentWidth = availableWidth * CGFloat(cap / totalCapacity)
                             let fill = segmentFills[segIndex]
+                            let numTicks = Self.ticksForSegment(
+                                capacity: cap,
+                                totalCapacity: totalCapacity,
+                                segmentCount: segmentCount
+                            )
                             let activeTicks = Self.activeTickCount(fill: fill, totalTicks: numTicks)
                             let segColor = segIndex == 0 ? intervalSegmentColor : weeklySegmentColor.opacity(0.68)
+                            let tickGap: CGFloat = 1.5
+                            let totalTickGaps = CGFloat(max(numTicks - 1, 0)) * tickGap
+                            let tickWidth = max(1.5, (segmentWidth - totalTickGaps) / CGFloat(numTicks))
 
                             HStack(spacing: tickGap) {
                                 ForEach(0..<numTicks, id: \.self) { tickIndex in
@@ -124,7 +166,8 @@ struct SegmentedQuotaProgressBar: View {
                     }
 
                     if segmentCount > 1 {
-                        let dividerX = segmentWidth + macroGap / 2
+                        let seg0Width = availableWidth * CGFloat(capacities[0] / totalCapacity)
+                        let dividerX = seg0Width + macroGap / 2
                         RoundedRectangle(cornerRadius: 0.75)
                             .fill(Color.primary.opacity(0.28))
                             .frame(width: 1.5, height: height + 2)
@@ -151,7 +194,7 @@ struct SegmentedQuotaProgressBar: View {
         case .singleWeekly:
             return color(for: ModelQuota.colorLevel(percent: weeklyFraction * 100.0, timeFraction: clampedFraction))
         case .singleInterval, .combined:
-            let tf = primaryTimeRemainingFraction ?? (segments == 1 ? clampedFraction : nil)
+            let tf = primaryTimeRemainingFraction ?? (multiplier <= 1.001 ? clampedFraction : nil)
             return color(for: ModelQuota.colorLevel(percent: primaryFraction * 100.0, timeFraction: tf))
         }
     }
@@ -173,9 +216,9 @@ struct SegmentedQuotaProgressBar: View {
     }
 
     /// 单窗口 / 组合窗口模式。
-    /// - singleWeekly：segments=1 且有时间标记（长窗口 / 周度），只看 weekLevel
-    /// - singleInterval：segments=1 且无时间标记（5h），只看 primaryLevel
-    /// - combined：segments>1（5h+周 组合条），各格独立着色
+    /// - singleWeekly：multiplier<=1 且有时间标记（长窗口 / 周度），只看 weekLevel
+    /// - singleInterval：multiplier<=1 且无时间标记（5h），只看 primaryLevel
+    /// - combined：multiplier>1（5h+周 组合条），各格独立着色
     private enum BarWindowMode {
         case singleWeekly
         case singleInterval
@@ -183,7 +226,7 @@ struct SegmentedQuotaProgressBar: View {
     }
 
     private var windowMode: BarWindowMode {
-        if segments > 1 { return .combined }
+        if multiplier > 1.001 { return .combined }
         return timeRemainingFraction != nil ? .singleWeekly : .singleInterval
     }
 }
@@ -199,13 +242,35 @@ enum BindingQuotaWindow: Equatable, Sendable {
 /// 将同时生效的短周期、周配额投影到等价短周期格。首格专属当前窗口；若周额度更高，
 /// 周剩余的余数格紧随其后，再接整格，避免截断周余额。
 enum EquivalentQuotaAllocation {
+    /// 计算每个分段的容量权重。整段容量为 1.0；尾段容量为余数。
+    static func segmentCapacities(multiplier: Double) -> [Double] {
+        let m = max(multiplier, 1.0)
+        let fullSegments = Int(m.rounded(.down))
+        let remainder = m - Double(fullSegments)
+        var capacities = Array(repeating: 1.0, count: max(fullSegments, 1))
+        if remainder > 0.001 {
+            capacities.append(remainder)
+        }
+        return capacities
+    }
+
+    static func effectivePrimaryFraction(primaryFraction: Double,
+                                         weeklyFraction: Double,
+                                         multiplier: Double) -> Double {
+        let m = max(multiplier, 1.0)
+        let normalizedPrimary = min(max(primaryFraction, 0), 1)
+        let weeklyUnits = min(max(weeklyFraction, 0), 1) * m
+        return min(normalizedPrimary, weeklyUnits)
+    }
+
     static func effectivePrimaryFraction(primaryFraction: Double,
                                          weeklyFraction: Double,
                                          segments: Int) -> Double {
-        let segmentCount = max(segments, 1)
-        let normalizedPrimary = min(max(primaryFraction, 0), 1)
-        let weeklyUnits = min(max(weeklyFraction, 0), 1) * Double(segmentCount)
-        return min(normalizedPrimary, weeklyUnits)
+        effectivePrimaryFraction(
+            primaryFraction: primaryFraction,
+            weeklyFraction: weeklyFraction,
+            multiplier: Double(segments)
+        )
     }
 
     /// 核心决策逻辑：判定哪一个窗口是约束瓶颈（Binding Window）。
@@ -216,12 +281,24 @@ enum EquivalentQuotaAllocation {
     static func bindingWindow(
         primaryFraction: Double,
         weeklyFraction: Double,
+        multiplier: Double
+    ) -> BindingQuotaWindow {
+        let m = max(multiplier, 1.0)
+        let normalizedPrimary = min(max(primaryFraction, 0), 1)
+        let weeklyUnits = min(max(weeklyFraction, 0), 1) * m
+        return weeklyUnits < normalizedPrimary ? .weekly : .primary
+    }
+
+    static func bindingWindow(
+        primaryFraction: Double,
+        weeklyFraction: Double,
         segments: Int
     ) -> BindingQuotaWindow {
-        let segmentCount = max(segments, 1)
-        let normalizedPrimary = min(max(primaryFraction, 0), 1)
-        let weeklyUnits = min(max(weeklyFraction, 0), 1) * Double(segmentCount)
-        return weeklyUnits < normalizedPrimary ? .weekly : .primary
+        bindingWindow(
+            primaryFraction: primaryFraction,
+            weeklyFraction: weeklyFraction,
+            multiplier: Double(segments)
+        )
     }
 
     /// 根据决策结果获取重置时间，另一个窗口作为缺失兜底。
@@ -229,54 +306,69 @@ enum EquivalentQuotaAllocation {
                                  weeklyFraction: Double,
                                  primaryResetsAt: Date?,
                                  weeklyResetsAt: Date?,
-                                 segments: Int) -> Date? {
+                                 multiplier: Double) -> Date? {
         let binding = bindingWindow(
             primaryFraction: primaryFraction,
             weeklyFraction: weeklyFraction,
-            segments: segments
+            multiplier: multiplier
         )
         let primaryChoice = primaryResetsAt ?? weeklyResetsAt
         let weeklyChoice = weeklyResetsAt ?? primaryResetsAt
         return binding == .weekly ? weeklyChoice : primaryChoice
     }
 
+    static func bindingResetDate(primaryFraction: Double,
+                                 weeklyFraction: Double,
+                                 primaryResetsAt: Date?,
+                                 weeklyResetsAt: Date?,
+                                 segments: Int) -> Date? {
+        bindingResetDate(
+            primaryFraction: primaryFraction,
+            weeklyFraction: weeklyFraction,
+            primaryResetsAt: primaryResetsAt,
+            weeklyResetsAt: weeklyResetsAt,
+            multiplier: Double(segments)
+        )
+    }
+
     static func segmentFills(primaryFraction: Double,
                              weeklyFraction: Double,
-                             segments: Int) -> [Double] {
-        let segmentCount = max(segments, 1)
-        let weeklyUnits = min(max(weeklyFraction, 0), 1) * Double(segmentCount)
+                             multiplier: Double) -> [Double] {
+        let capacities = segmentCapacities(multiplier: multiplier)
+        let totalCapacity = max(capacities.reduce(0, +), 1.0)
+        let weeklyUnits = min(max(weeklyFraction, 0), 1) * totalCapacity
         let currentWindowFill = effectivePrimaryFraction(
             primaryFraction: primaryFraction,
             weeklyFraction: weeklyFraction,
-            segments: segmentCount
+            multiplier: multiplier
         )
         guard weeklyUnits > currentWindowFill else {
-            var fills = [currentWindowFill]
-            if segmentCount > 1 {
-                fills.append(contentsOf: repeatElement(0.0, count: segmentCount - 1))
+            var fills = [capacities.isEmpty ? currentWindowFill : currentWindowFill / capacities[0]]
+            if capacities.count > 1 {
+                fills.append(contentsOf: repeatElement(0.0, count: capacities.count - 1))
             }
             return fills
         }
 
-        // 第一格始终代表当前窗口，因此未来额度最多只能占剩下的 N-1 格。
-        // 例如 primary=0 / weekly=100% 时，旧实现会返回 N+1 个元素。
-        let futureWeeklyUnits = min(
-            weeklyUnits - currentWindowFill,
-            Double(max(segmentCount - 1, 0))
+        var remainingFutureUnits = weeklyUnits - currentWindowFill
+        var fills = [currentWindowFill / capacities[0]]
+
+        for cap in capacities.dropFirst() {
+            let allocated = min(remainingFutureUnits, cap)
+            fills.append(allocated / cap)
+            remainingFutureUnits = max(0, remainingFutureUnits - allocated)
+        }
+        return fills
+    }
+
+    static func segmentFills(primaryFraction: Double,
+                             weeklyFraction: Double,
+                             segments: Int) -> [Double] {
+        segmentFills(
+            primaryFraction: primaryFraction,
+            weeklyFraction: weeklyFraction,
+            multiplier: Double(segments)
         )
-        let fullFutureCount = Int(futureWeeklyUnits.rounded(.down))
-        let partialFutureFill = futureWeeklyUnits.truncatingRemainder(dividingBy: 1)
-        var fills = [currentWindowFill]
-
-        fills.append(contentsOf: repeatElement(1.0, count: fullFutureCount))
-        if partialFutureFill > 0.000_001 {
-            fills.append(partialFutureFill)
-        }
-
-        if fills.count < segmentCount {
-            fills.append(contentsOf: repeatElement(0.0, count: segmentCount - fills.count))
-        }
-        return Array(fills.prefix(segmentCount))
     }
 }
 

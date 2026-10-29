@@ -1216,7 +1216,7 @@ struct QuotaSummary: View {
 
     /// 视图层兼容入口：倍率映射已下沉到 `ModelQuota`，让卡片分段条与状态栏
     /// 聚合（中心扇形的 min(5h, 周 × N)）共用同一份逻辑，现有调用点保持不动。
-    nonisolated static func weeklyEquivalentMultiplier(providerKind: ProviderKind, model: ModelQuota) -> Int {
+    nonisolated static func weeklyEquivalentMultiplier(providerKind: ProviderKind, model: ModelQuota) -> Double {
         ModelQuota.weeklyEquivalentMultiplier(providerKind: providerKind, model: model)
     }
 

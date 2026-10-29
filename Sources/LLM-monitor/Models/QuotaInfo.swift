@@ -111,7 +111,7 @@ struct ModelQuota: Equatable, Codable, Sendable {
         let weeklyUnits: Double? = hasWeeklyWindow
             ? min(
                 max(weeklyRemainingPercent, 0)
-                    * Double(ModelQuota.weeklyEquivalentMultiplier(providerKind: providerKind, model: self)),
+                    * ModelQuota.weeklyEquivalentMultiplier(providerKind: providerKind, model: self),
                 100
             )
             : nil
@@ -163,21 +163,22 @@ struct ModelQuota: Equatable, Codable, Sendable {
     /// Provider 的周等效倍率 N：把周窗口剩余比例换算成与 5h（video 为日）窗口
     /// 同量纲的等价额度份数。卡片分段条（`QuotaSummary`）与状态栏聚合
     /// （中心扇形的 min(5h, 周 × N) 实际可用口径）共用这一份映射，避免两处漂移。
-    static func weeklyEquivalentMultiplier(providerKind: ProviderKind, model: ModelQuota) -> Int {
+    static func weeklyEquivalentMultiplier(providerKind: ProviderKind, model: ModelQuota) -> Double {
         switch providerKind {
         case .minimaxTokenPlan:
             // video 用日窗口 → 1 天 ≈ 1/7 周；其他模型（general 等）走 5h 窗口 → 1/10 周
-            return MinimaxModelKind.isVideo(model.modelName) ? 7 : 10
+            return MinimaxModelKind.isVideo(model.modelName) ? 7.0 : 10.0
         case .codexChatGpt:
-            return 6
+            return 6.0
         case .antigravity:
-            // Claude and GPT：周窗口 = 2 × 5h 额度（Antigravity 2026-10 初从 3 下调到 1，2026-10-13 调回 2）；Gemini 维持 6。
-            return model.modelName.lowercased() == AntigravityModelKind.claudeAndGptModels.rawValue ? 2 : 6
+            // Claude and GPT：周窗口 = 2 × 5h 额度（Antigravity 2026-10 初从 3 下调到 1，2026-10-13 调回 2）；
+            // Gemini Models：周 = 3.33 × 5h 额度（2026-10-29 实测 5h $30 / 周 $100 校准，从 6 调为 3.33）。
+            return model.modelName.lowercased() == AntigravityModelKind.claudeAndGptModels.rawValue ? 2.0 : 3.33
         case .glmCodingPlan:
             // GLM Coding Plan：5h 积分 × 5 = 周积分（Lite 2000/10000、Pro 12000/60000、Max 28000/140000）
-            return 5
+            return 5.0
         case .deepseek:
-            return 1
+            return 1.0
         }
     }
 

@@ -77,7 +77,7 @@ tokens，模型名小写 + `_` 归一为 `-` 后按 contains 匹配，数组顺�
 
 | 组 / bucket | 窗口结构 | 整窗价值锚 | 依据 |
 |---|---|---|---|
-| `Gemini Models`（`gemini-5h` / `gemini-weekly`） | 5h + weekly，周 = 6 × 5h | **$30 / 5h，$180 / 周** | 2026-10-28 按当前 Gemini 折扣价确认；与 `weeklyEquivalentMultiplier = 6` 自洽 |
+| `Gemini Models`（`gemini-5h` / `gemini-weekly`） | 5h + weekly，周 = 3.33 × 5h | **$30 / 5h，$100 / 周** | 2026-10-29 实测数据校准（5h 消费 $4.48 剩 85% → $30；周消费 $39.77 剩 60.3% → $100）；周等效倍率校准为 3.33 |
 | `Gemini 4 Argon`（`gemini-argon-wtu-weekly`） | 仅周窗，独立重置时间 | **≈ $15 / 周**（实测 $14.8，取整） | 见下 |
 | `Claude and GPT models`（`3p-5h` / `3p-weekly`） | 5h + weekly，周 = 2 × 5h | 无锚点（本机 3p 用量不足以校准） | — |
 
@@ -1292,7 +1292,7 @@ Google Antigravity                                          01:44
 alice@example.com  [AI Pro]
 ───────────────────────────── Plan详情
 Gemini Models                          5h 100%  周 85%   <weekly reset time>
-[weekly bar in 6 segments]
+[weekly bar in 4 segments (3x 1.0 + 1x 0.33)]
 
 Gemini 4 Argon                                  周 100%  <weekly reset time>
 [single weekly bar]
@@ -1465,4 +1465,4 @@ This script:
 3. calls `RetrieveUserQuotaSummary`
 4. prints or writes the raw JSON
 
-> 核对基线：2026-10-28 · 代码 85f6ba9
+> 核对基线：2026-10-29 · 代码 56a12c1
