@@ -11,7 +11,7 @@ struct ChatGPTApiCreditsRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 6) {
-                Text("API赠金")
+                Text("API赠金 · USD")
                     .font(MenuTypography.hoverRowEmphasis)
                     .foregroundStyle(Color.primaryLabel)
 
@@ -48,6 +48,7 @@ struct ChatGPTApiCreditsRow: View {
                             Image(systemName: "exclamationmark.triangle")
                                 .font(.system(size: 9))
                                 .foregroundStyle(.orange)
+                                .accessibilityLabel("API赠金更新失败，显示上次成功的数据")
                         }
                         Text("周期至 \(Formatters.formatMonthDayMinute(credits.cycleEnd))（\(expiryCountdownText)）")
                             .font(MenuTypography.resetDate)
@@ -56,7 +57,9 @@ struct ChatGPTApiCreditsRow: View {
                     }
                 }
                 .minimumScaleFactor(0.85)
-                .help(error ?? (credits.lastAttemptFailed == true ? "最近一次 API 赠金抓取失败，显示上次成功的数据" : "总额度: $\(formatQuota(credits.totalQuota))，已用: $\(usedAmountText)，剩余: $\(formatNumber(credits.remainingAmount))"))
+                .help(credits.lastAttemptFailed == true || error != nil
+                    ? failureTooltip
+                    : "总额度: $\(formatQuota(credits.totalQuota))，已用: $\(usedAmountText)，剩余: $\(formatNumber(credits.remainingAmount))")
             } else {
                 Text(error ?? "API赠金暂无数据")
                     .font(MenuTypography.dataLabel)
@@ -73,6 +76,12 @@ struct ChatGPTApiCreditsRow: View {
     private var remainingQuotaText: String {
         guard let credits else { return "—" }
         return "\(formatNumber(credits.remainingAmount))/\(formatQuota(credits.totalQuota))"
+    }
+
+    private var failureTooltip: String {
+        let explanation = "API赠金更新失败，显示上次成功的数据"
+        guard let error, !error.isEmpty else { return explanation }
+        return "\(explanation)：\(error)"
     }
 
     private var expiryCountdownText: String {

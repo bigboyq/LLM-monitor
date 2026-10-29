@@ -598,6 +598,11 @@ final class CodexFetcherTests: XCTestCase {
             headers: ["Content-Type": "application/json"],
             body: Self.validCostsJSON(value: 0.09219, orgName: "My Workspace")
         )
+        StubURLProtocol.responses[Self.resetPath] = .init(
+            statusCode: 200,
+            headers: ["Content-Type": "application/json"],
+            body: Self.validResetCreditsJSON(availableCount: 0, totalEarned: 0)
+        )
 
         let fetcher = CodexFetcher(
             authPath: authURL.path,
@@ -695,6 +700,11 @@ final class CodexFetcherTests: XCTestCase {
             headers: ["Content-Type": "application/json"],
             body: Self.validMeJSON(title: "Fallback Org")
         )
+        StubURLProtocol.responses[Self.resetPath] = .init(
+            statusCode: 200,
+            headers: ["Content-Type": "application/json"],
+            body: Self.validResetCreditsJSON(availableCount: 0, totalEarned: 0)
+        )
 
         let fetcher = CodexFetcher(
             authPath: authURL.path,
@@ -708,12 +718,78 @@ final class CodexFetcherTests: XCTestCase {
         XCTAssertEqual(credits.organizationName, "Fallback Org")
     }
 
+    func testCodexFetcherAdminCostsKeepsSuccessWhenMeLookupFails() async throws {
+        StubURLProtocol.responses[Self.costsPath] = .init(
+            statusCode: 200,
+            headers: ["Content-Type": "application/json"],
+            body: Self.validCostsJSON(value: 0.5, orgName: nil)
+        )
+        StubURLProtocol.responses[Self.mePath] = .init(
+            statusCode: 500,
+            headers: ["Content-Type": "application/json"],
+            body: Data("{}".utf8)
+        )
+        let fetcher = CodexFetcher(
+            adminApiCreditsEnabled: true,
+            adminApiKey: "sk-admin-testkey789",
+            session: makeSession()
+        )
+
+        let credits = try await fetcher.fetchAdminCosts(apiKey: "sk-admin-testkey789")
+        XCTAssertEqual(credits.usedAmount, 0.5)
+        XCTAssertNil(credits.organizationName)
+    }
+
+    func testCodexFetcherAdminCostsPropagatesCancellationFromMeLookup() async throws {
+        StubURLProtocol.responses[Self.costsPath] = .init(
+            statusCode: 200,
+            headers: ["Content-Type": "application/json"],
+            body: Self.validCostsJSON(value: 0.5, orgName: nil)
+        )
+        StubURLProtocol.responses[Self.mePath] = .init(
+            statusCode: 200,
+            headers: ["Content-Type": "application/json"],
+            body: Self.validMeJSON(title: "Unused")
+        )
+        StubURLProtocol.neverRespondPaths.insert(Self.mePath)
+        let fetcher = CodexFetcher(
+            adminApiCreditsEnabled: true,
+            adminApiKey: "sk-admin-cancel-test",
+            session: makeSession()
+        )
+        let task = Task {
+            try await fetcher.fetchAdminCosts(apiKey: "sk-admin-cancel-test")
+        }
+
+        for _ in 0..<500 where (StubURLProtocol.callCounts[Self.mePath] ?? 0) == 0 {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertEqual(StubURLProtocol.callCounts[Self.costsPath], 1)
+        XCTAssertEqual(StubURLProtocol.callCounts[Self.mePath], 1, "costs 成功且无组织名后应请求 /v1/me")
+        task.cancel()
+
+        do {
+            _ = try await task.value
+            XCTFail("取消 /v1/me 查询后 fetchAdminCosts 必须传播取消")
+        } catch {
+            XCTAssertTrue(
+                error is CancellationError || (error as? URLError)?.code == .cancelled,
+                "期望取消错误，实际: \(error)"
+            )
+        }
+    }
+
     func testCodexFetcherAdminCostsDisabledDoesNotFetch() async throws {
         let authURL = try makeAuthFile()
         StubURLProtocol.responses[Self.usagePath] = .init(
             statusCode: 200,
             headers: ["Content-Type": "application/json"],
             body: Self.validUsageJSON()
+        )
+        StubURLProtocol.responses[Self.resetPath] = .init(
+            statusCode: 200,
+            headers: ["Content-Type": "application/json"],
+            body: Self.validResetCreditsJSON(availableCount: 0, totalEarned: 0)
         )
 
         let fetcher = CodexFetcher(

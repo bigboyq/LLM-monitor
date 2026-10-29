@@ -314,8 +314,9 @@ struct CodexFetcher: QuotaFetcher {
         }
 
         if orgName == nil {
-            orgName = await fetchOrganizationTitle(apiKey: cleanKey)
+            orgName = try await fetchOrganizationTitle(apiKey: cleanKey)
         }
+        try Task.checkCancellation()
 
         return OpenAIApiCreditDetails(
             organizationName: orgName,
@@ -328,7 +329,7 @@ struct CodexFetcher: QuotaFetcher {
         )
     }
 
-    private func fetchOrganizationTitle(apiKey: String) async -> String? {
+    private func fetchOrganizationTitle(apiKey: String) async throws -> String? {
         guard let url = URL(string: "https://api.openai.com/v1/me") else { return nil }
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
@@ -338,6 +339,9 @@ struct CodexFetcher: QuotaFetcher {
             let me = try JSONDecoder().decode(OpenAIMeResponse.self, from: data)
             return me.orgs?.data.first?.title ?? me.orgs?.data.first?.name
         } catch {
+            if CancellationFilter.shouldIgnore(error, isTaskCancelled: Task.isCancelled) {
+                throw CancellationError()
+            }
             return nil
         }
     }
