@@ -114,7 +114,7 @@
 | 1 反馈与命名 | 已完成（实机交互待验） | f177520；Bark 33 tests、build、diff check 通过；基线全量 1514 tests 通过 |
 | 2 菜单与信息分层 | 已完成（实机视觉待验） | 651d4f5；菜单行为24 tests、build、diff check通过；额度与用量两轴遵循 sync §10.0 |
 | 3 设置与事务 | 已完成（实机视觉待验） | ceb6e2b；BarkNotifierTests 34 通过；收尾 `swift test --filter Settings` 56 通过（含位置恢复、外部更新决策、外观投影）；待视觉实机验收 |
-| 4 提醒回流与验收 | 代码完成，待最终审查提交；实机待验 | 公开 Window 共享完整详情、通知点击路由、声音开关；筛选49 tests、build通过；最终全量1508 tests/0 failures（63.1s） |
+| 4 提醒回流与验收 | 已完成代码与自动验证；实机待验 | 4382e1b；独立审查未发现blocker； 公开 Window 共享完整详情、通知点击路由、声音开关；筛选49 tests、build通过；最终全量1508 tests/0 failures（63.1s） |
 
 ### 本轮最终验证记录与剩余验收
 
