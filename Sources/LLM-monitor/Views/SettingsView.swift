@@ -155,10 +155,22 @@ struct SettingsView: View {
         )
     }
 
-    /// 全部 tab（`.general` / `.energy` + descriptors 派生的 provider tab）。
+    var generalTabs: [SettingsTab] {
+        [.general, .interface, .notifications, .energy, .sync]
+    }
+
+    var providerTabs: [SettingsTab] {
+        sortedProviderDescriptors.map { .provider($0) }
+    }
+
+    var clientTabs: [SettingsTab] {
+        sortedClientDescriptors.map { .client($0) }
+    }
+
+    /// 全部 tab（`.general` / `.energy` + descriptors 派生的 provider tab + client tab）。
     /// `Identifiable` 让 `ForEach` 走 `id` 区分，切换不会触发整列重渲染。
     var allTabs: [SettingsTab] {
-        [.general, .interface, .notifications, .energy, .sync] + sortedProviderDescriptors.map { .provider($0) } + [.clients]
+        generalTabs + providerTabs + clientTabs
     }
 
     var sortedProviderDescriptors: [FetcherDescriptor] {
@@ -270,42 +282,66 @@ struct SettingsView: View {
     var sidebar: some View {
         VStack(spacing: 0) {
             ScrollView {
-                VStack(alignment: .leading, spacing: 4) {
-                    ForEach(allTabs) { tab in
-                        let isSelected = currentTab.id == tab.id
-                        Button {
-                            currentTab = tab
-                        } label: {
-                            HStack(spacing: 8) {
-                                if let brandAsset = tab.brandAsset {
-                                    BrandLogoView(asset: brandAsset)
-                                } else {
-                                    Image(systemName: tab.iconSystemName)
-                                        .font(.system(size: 14, weight: .medium))
-                                        .frame(width: 20, height: 20)
-                                }
-
-                                Text(tab.displayTitle)
-                            }
-                            .font(SettingsTypography.sidebarItem(isSelected: isSelected))
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 10)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                        .fill(isSelected ? Color.accentColor.opacity(0.14) : Color.clear)
-                                )
-                                .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                    }
+                VStack(alignment: .leading, spacing: 0) {
+                    sidebarSection(title: "通用", tabs: generalTabs, topSpacing: 4)
+                    sidebarSection(title: "额度", tabs: providerTabs)
+                    sidebarSection(title: "用量", tabs: clientTabs)
                 }
-                .padding(8)
+                .padding(.horizontal, 8)
+                .padding(.bottom, 12)
             }
         }
         .frame(width: 220)
         .frame(maxHeight: .infinity)
         .background(Color(NSColor.windowBackgroundColor).opacity(0.72))
+    }
+
+    @ViewBuilder
+    private func sidebarSection(title: String, tabs: [SettingsTab], topSpacing: CGFloat = 12) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 10)
+                .padding(.top, topSpacing)
+                .padding(.bottom, 2)
+
+            ForEach(tabs) { tab in
+                sidebarTabRow(tab)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func sidebarTabRow(_ tab: SettingsTab) -> some View {
+        let isSelected = currentTab.id == tab.id
+        Button {
+            currentTab = tab
+        } label: {
+            HStack(spacing: 8) {
+                if let brandAsset = tab.brandAsset {
+                    BrandLogoView(asset: brandAsset)
+                        .frame(width: 20, height: 20)
+                } else {
+                    Image(systemName: tab.iconSystemName)
+                        .font(.system(size: 14, weight: .medium))
+                        .frame(width: 20, height: 20)
+                }
+
+                Text(tab.displayTitle)
+                    .lineLimit(1)
+            }
+            .font(SettingsTypography.sidebarItem(isSelected: isSelected))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(isSelected ? Color.accentColor.opacity(0.14) : Color.clear)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     @ViewBuilder
@@ -328,6 +364,8 @@ struct SettingsView: View {
                     // kind 派发，加新 provider 只需在那加一个 case，**不要**在这里
                     // 改 `SettingsTab` 枚举。
                     providerPane(for: d.kind)
+                case .client(let c):
+                    clientPane(for: c)
                 case .clients:
                     clientsPane
                 }
@@ -775,6 +813,7 @@ extension SettingsTab {
         case .energy: return nil
         case .sync: return nil
         case .provider(let d): return .provider(d.kind)
+        case .client(let c): return c.id == ClientID.openCode ? .opencode : nil
         case .clients: return nil
         }
     }

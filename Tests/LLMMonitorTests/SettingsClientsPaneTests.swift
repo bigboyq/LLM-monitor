@@ -488,4 +488,39 @@ final class SettingsClientsPaneTests: XCTestCase {
         XCTAssertEqual(glmRows.first?.totalTokens, 700)
         XCTAssertEqual(glmRows.first?.recentSamples.count, 7)
     }
+
+    // MARK: - 侧栏分节（通用 / 额度 / 用量）
+
+    @MainActor
+    func testSidebarTabsGroupedIntoGeneralQuotaAndUsageSections() {
+        let (view, state) = makeSettings()
+        defer { state.stop() }
+
+        XCTAssertEqual(
+            view.generalTabs.map(\.id),
+            [SettingsTab.generalID, SettingsTab.interfaceID, SettingsTab.notificationsID, SettingsTab.energyID, SettingsTab.syncID]
+        )
+        XCTAssertEqual(view.providerTabs.count, 3)
+        XCTAssertEqual(view.clientTabs.count, ClientDescriptor.all.count)
+        XCTAssertEqual(view.allTabs.count, view.generalTabs.count + view.providerTabs.count + view.clientTabs.count)
+
+        // 校验 ID 无重复（包括同名 provider 与 client，如 antigravity）
+        let allIDs = view.allTabs.map(\.id)
+        XCTAssertEqual(Set(allIDs).count, allIDs.count, "设置侧栏所有 tab 的 ID 必须唯一无冲突")
+    }
+
+    @MainActor
+    func testClientTabPropertiesAndBrandAssets() {
+        let openCode = ClientDescriptor.all.first { $0.id == ClientID.openCode }!
+        let openCodeTab = SettingsTab.client(openCode)
+        XCTAssertEqual(openCodeTab.id, "client.opencode")
+        XCTAssertEqual(openCodeTab.displayTitle, "OpenCode")
+        XCTAssertEqual(openCodeTab.brandAsset, .opencode)
+
+        let antigravityClient = ClientDescriptor.all.first { $0.id == ClientID.antigravity }!
+        let antigravityClientTab = SettingsTab.client(antigravityClient)
+        XCTAssertEqual(antigravityClientTab.id, "client.antigravity")
+        XCTAssertEqual(antigravityClientTab.iconSystemName, "paperplane.circle.fill")
+        XCTAssertNil(antigravityClientTab.brandAsset)
+    }
 }

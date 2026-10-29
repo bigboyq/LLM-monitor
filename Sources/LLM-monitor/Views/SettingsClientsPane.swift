@@ -16,34 +16,45 @@ extension SettingsView {
             clientTabBar(clients, usageByClient: usageByClient)
 
             if let client = clients.first(where: { $0.id == selectedClientID }) {
-                let providers = usageByClient[client.id] ?? []
-                SettingsSection(
-                    title: "已识别的 Provider",
-                    footer: providers.isEmpty
-                        ? "暂未发现这个客户端产生的本地 Token 数据。使用客户端完成一次模型调用后，重新扫描即可显示。"
-                        : "仅显示最近扫描到实际 Token 活动的 Provider。展开行可查看总 Token、缓存命中率和按公开 API 单价估算的价值。"
-                ) {
-                    if providers.isEmpty {
-                        emptyClientState(client)
-                    } else {
-                        // `.id(client.id)`：切客户端时整列重建，于是展开态回到
-                        // 下面算出的默认值。少了它，SwiftUI 会按位置复用上一列的
-                        // 展开态——"只有一个 Provider 的客户端直接展开"就会被
-                        // 上一列多 Provider 客户端的折叠态顶掉（反过来也一样）。
-                        ForEach(providers) { provider in
-                            clientProviderDisclosure(
-                                provider,
-                                defaultExpanded: defaultProviderExpansion(forProviderCount: providers.count)
-                            )
-                        }
-                        .id(client.id)
-                    }
-                }
+                clientPane(for: client, usageByClient: usageByClient)
             }
         }
         .onAppear {
             if sortedClientDescriptors.contains(where: { $0.id == selectedClientID }) == false {
                 selectedClientID = sortedClientDescriptors.first?.id ?? ClientID.antigravity
+            }
+        }
+    }
+
+    func clientPane(
+        for client: ClientDescriptor,
+        usageByClient: [String: [ClientProviderUsageSummary]]? = nil
+    ) -> some View {
+        let resolvedUsage = usageByClient ?? ClientUsageAggregation.clientProviderUsageByClient(for: state.statuses)
+        let providers = resolvedUsage[client.id] ?? []
+
+        return VStack(alignment: .leading, spacing: 16) {
+            SettingsSection(
+                title: "已识别的 Provider",
+                footer: providers.isEmpty
+                    ? "暂未发现这个客户端产生的本地 Token 数据。使用客户端完成一次模型调用后，重新扫描即可显示。"
+                    : "仅显示最近扫描到实际 Token 活动的 Provider。展开行可查看总 Token、缓存命中率和按公开 API 单价估算的价值。"
+            ) {
+                if providers.isEmpty {
+                    emptyClientState(client)
+                } else {
+                    // `.id(client.id)`：切客户端时整列重建，于是展开态回到
+                    // 下面算出的默认值。少了它，SwiftUI 会按位置复用上一列的
+                    // 展开态——"只有一个 Provider 的客户端直接展开"就会被
+                    // 上一列多 Provider 客户端的折叠态顶掉（反过来也一样）。
+                    ForEach(providers) { provider in
+                        clientProviderDisclosure(
+                            provider,
+                            defaultExpanded: defaultProviderExpansion(forProviderCount: providers.count)
+                        )
+                    }
+                    .id(client.id)
+                }
             }
         }
     }

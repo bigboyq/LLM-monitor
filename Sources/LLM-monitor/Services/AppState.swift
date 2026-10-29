@@ -17,6 +17,7 @@ enum SettingsTab: Identifiable {
     case energy
     case sync
     case provider(FetcherDescriptor)
+    case client(ClientDescriptor)
     case clients
 
     static let generalID = "general"
@@ -34,6 +35,7 @@ enum SettingsTab: Identifiable {
         case .energy: return Self.energyID
         case .sync: return Self.syncID
         case .provider(let d): return d.id
+        case .client(let c): return "client.\(c.id)"
         case .clients: return Self.clientsID
         }
     }
@@ -46,6 +48,7 @@ enum SettingsTab: Identifiable {
         case .energy: return "节能"
         case .sync: return "多机联动"
         case .provider(let d): return d.settingsTabTitle ?? d.displayName
+        case .client(let c): return c.displayName
         case .clients: return "客户端"
         }
     }
@@ -58,6 +61,7 @@ enum SettingsTab: Identifiable {
         case .energy: return "powersleep"
         case .sync: return "point.3.connected.trianglepath.dotted"
         case .provider(let d): return d.iconSystemName
+        case .client(let c): return c.iconSystemName
         case .clients: return "terminal"
         }
     }
@@ -70,6 +74,7 @@ enum SettingsTab: Identifiable {
         case .energy: return "系统睡眠健康度与防止休眠"
         case .sync: return "多台机器的用量与额度联动"
         case .provider(let d): return d.settingsTabSubtitle ?? ""
+        case .client(let c): return c.subtitle
         case .clients: return "本地客户端用量与 Provider 映射"
         }
     }
