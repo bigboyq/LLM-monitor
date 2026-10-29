@@ -3,27 +3,40 @@ import SwiftUI
 /// Shared seven-day history section for local providers and fleet projections.
 /// It owns only history metric selection and never reads the quota-window segment.
 struct SevenDayUsageHistoryView: View {
+    enum LayoutMode: Sendable {
+        case compact
+        case expanded
+    }
+
     let days: [UsageHistoryDay]
     let scannedAt: Date?
     let isScanning: Bool
     let isTruncated: Bool
     let showsHeader: Bool
+    let layoutMode: LayoutMode?
 
     @AppStorage(UsageHistoryMetric.storageKey) private var metricRawValue = UsageHistoryMetric.total.rawValue
     @Environment(\.hoverRevealMode) private var revealMode
+    @Environment(\.usageHistoryLayoutMode) private var envLayoutMode
 
     init(
         days: [UsageHistoryDay],
         scannedAt: Date?,
         isScanning: Bool,
         isTruncated: Bool = false,
-        showsHeader: Bool = true
+        showsHeader: Bool = true,
+        layoutMode: LayoutMode? = nil
     ) {
         self.days = days
         self.scannedAt = scannedAt
         self.isScanning = isScanning
         self.isTruncated = isTruncated
         self.showsHeader = showsHeader
+        self.layoutMode = layoutMode
+    }
+
+    var effectiveLayoutMode: LayoutMode {
+        layoutMode ?? envLayoutMode
     }
 
     private var selectedMetric: UsageHistoryMetric {
@@ -72,6 +85,18 @@ struct SevenDayUsageHistoryView: View {
     }
 
     var body: some View {
+        Group {
+            if effectiveLayoutMode == .expanded {
+                historyContent
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                historyContent
+                    .frame(width: SevenDayUsageChartMetrics.pricedWidth, alignment: .leading)
+            }
+        }
+    }
+
+    private var historyContent: some View {
         VStack(alignment: .leading, spacing: 9) {
             if showsHeader, revealMode != .alwaysVisible {
                 HStack(alignment: .firstTextBaseline) {
@@ -112,7 +137,6 @@ struct SevenDayUsageHistoryView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .frame(width: SevenDayUsageChartMetrics.pricedWidth, alignment: .leading)
     }
 
     private var metricPicker: some View {
@@ -167,7 +191,7 @@ struct SevenDayUsageHistoryView: View {
                 if hasValues {
                     axisLabels
                 } else {
-                    Color.clear.frame(width: 38, height: 72)
+                    Color.clear.frame(width: 48, height: 72)
                 }
                 VStack(spacing: 3) {
                     if hasValues {
@@ -192,9 +216,9 @@ struct SevenDayUsageHistoryView: View {
             Spacer(minLength: 0)
             Text(axisText(selectedMinimum))
         }
-        .font(MenuTypography.badge)
-        .foregroundStyle(.tertiary)
-        .frame(width: 44, height: 72)
+        .font(MenuTypography.metricLabel)
+        .foregroundStyle(Color.secondaryLabel)
+        .frame(width: 48, height: 72)
     }
 
     private var plot: some View {
@@ -233,8 +257,8 @@ struct SevenDayUsageHistoryView: View {
         HStack(spacing: 0) {
             ForEach(days) { day in
                 Text(Calendar.current.isDateInToday(day.dayStart) ? "今天*" : Formatters.formatMonthDay(day.dayStart))
-                    .font(MenuTypography.footer)
-                    .foregroundStyle(day.isTodayIncomplete ? .primary : .tertiary)
+                    .font(effectiveLayoutMode == .expanded ? .system(size: 11, weight: .regular) : MenuTypography.metricLabel)
+                    .foregroundStyle(day.isTodayIncomplete ? Color.primaryLabel : Color.secondaryLabel)
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
                     .frame(maxWidth: .infinity)
@@ -242,33 +266,47 @@ struct SevenDayUsageHistoryView: View {
         }
     }
 
+    private var tableHeaderFont: Font {
+        effectiveLayoutMode == .expanded ? .system(size: 11.5, weight: .medium) : MenuTypography.dataLabel
+    }
+
+    private var tableValueFont: Font {
+        effectiveLayoutMode == .expanded ? .system(size: 11, weight: .regular).monospacedDigit() : MenuTypography.metricValue
+    }
+
+    private var dateColWidth: CGFloat { effectiveLayoutMode == .expanded ? 42 : 34 }
+    private var rtColWidth: CGFloat { effectiveLayoutMode == .expanded ? 66 : 54 }
+    private var bucketColWidth: CGFloat { effectiveLayoutMode == .expanded ? 56 : 46 }
+    private var dynamicColWidth: CGFloat { effectiveLayoutMode == .expanded ? 74 : 58 }
+    private var tableSpacing: CGFloat { effectiveLayoutMode == .expanded ? 10 : 4 }
+
     private var dailyTable: some View {
-        Grid(alignment: .leading, horizontalSpacing: 4, verticalSpacing: 4) {
+        Grid(alignment: .leading, horizontalSpacing: tableSpacing, verticalSpacing: effectiveLayoutMode == .expanded ? 6 : 4) {
             GridRow {
-                header("日期", width: 34, alignment: .leading)
-                header("R/T", width: 54)
-                header("Input", width: 46)
-                header("Cache", width: 46)
-                header("Reason", width: 46)
-                header("Output", width: 46)
+                header("日期", width: dateColWidth, alignment: .leading)
+                header("R/T", width: rtColWidth)
+                header("Input", width: bucketColWidth)
+                header("Cache", width: bucketColWidth)
+                header("Reason", width: bucketColWidth)
+                header("Output", width: bucketColWidth)
                 selectedDynamicHeader
             }
 
             ForEach(days) { day in
                 GridRow {
                     Text(Formatters.formatMonthDay(day.dayStart))
-                        .font(MenuTypography.metricValue)
+                        .font(tableValueFont)
                         .foregroundStyle(day.isTodayIncomplete ? .primary : .secondary)
-                        .frame(width: 34, alignment: .leading)
+                        .frame(width: dateColWidth, alignment: .leading)
                     Text(roundsTurns(day))
-                        .font(MenuTypography.metricValue)
+                        .font(tableValueFont)
                         .foregroundStyle(day.rounds != nil || day.turns != nil ? .primary : .secondary)
-                        .frame(width: 54, alignment: .trailing)
-                    token(day.input, color: .tokenInputTint, width: 46)
-                    token(day.cache, color: .tokenCacheReadTint, width: 46)
-                    token(day.reason, color: Color(red: 0.90, green: 0.46, blue: 0.16), width: 46)
-                    token(day.output, color: .tokenOutputTint, width: 46)
-                    selectedDynamicCell(day, width: 58)
+                        .frame(width: rtColWidth, alignment: .trailing)
+                    token(day.input, color: .tokenInputTint, width: bucketColWidth)
+                    token(day.cache, color: .tokenCacheReadTint, width: bucketColWidth)
+                    token(day.reason, color: Color(red: 0.90, green: 0.46, blue: 0.16), width: bucketColWidth)
+                    token(day.output, color: .tokenOutputTint, width: bucketColWidth)
+                    selectedDynamicCell(day, width: dynamicColWidth)
                 }
             }
         }
@@ -278,19 +316,19 @@ struct SevenDayUsageHistoryView: View {
     private var selectedDynamicHeader: some View {
         switch selectedMetric {
         case .total:
-            header("总量", width: 58).help("每日四桶 Token 合计")
+            header("总量", width: dynamicColWidth).help("每日四桶 Token 合计")
         case .rounds:
-            header("Rounds", width: 58).help("每日模型调用次数")
+            header("Rounds", width: dynamicColWidth).help("每日模型调用次数")
         case .value:
-            header("价值", width: 58).help("每日预估消耗金额")
+            header("价值", width: dynamicColWidth).help("每日预估消耗金额")
         case .thinking:
-            header("思考", width: 58).help("思考占比 = Reason / (Output + Reason)")
+            header("思考", width: dynamicColWidth).help("思考占比 = Reason / (Output + Reason)")
         case .outputRatio:
-            header("产出", width: 58).help("产出比 = (Output + Reason) / (Input + Cache)")
+            header("产出", width: dynamicColWidth).help("产出比 = (Output + Reason) / (Input + Cache)")
         case .hit:
-            header("命中", width: 58).help("Cache 命中率 = Cache / (Input + Cache)")
+            header("命中", width: dynamicColWidth).help("Cache 命中率 = Cache / (Input + Cache)")
         case .speed:
-            header("速度", width: 58).help("每日 Prompt 速度 P50，tok/s")
+            header("速度", width: dynamicColWidth).help("每日 Prompt 速度 P50，tok/s")
         }
     }
 
@@ -301,7 +339,7 @@ struct SevenDayUsageHistoryView: View {
             token(day.total, color: .tokenOutputTint, width: width)
         case .rounds:
             Text(UsageHistoryNumber.integer(day.rounds).map(Formatters.formatGroupedInt) ?? "—")
-                .font(MenuTypography.metricValue)
+                .font(tableValueFont)
                 .foregroundStyle(day.rounds != nil ? Color.purple : Color.secondary)
                 .frame(width: width, alignment: .trailing)
         case .value:
@@ -364,28 +402,28 @@ struct SevenDayUsageHistoryView: View {
 
     private func header(_ title: String, width: CGFloat, alignment: Alignment = .trailing) -> some View {
         Text(title)
-            .font(MenuTypography.dataLabel)
+            .font(tableHeaderFont)
             .foregroundStyle(.secondary)
             .frame(width: width, alignment: alignment)
     }
 
     private func rate(_ value: Double?, digits: Int, color: Color, width: CGFloat) -> some View {
         Text(value.map { Formatters.formatPercent($0, digits: digits) } ?? "—")
-            .font(MenuTypography.metricValue)
+            .font(tableValueFont)
             .foregroundStyle(value == nil ? Color.secondary : color)
             .frame(width: width, alignment: .trailing)
     }
 
     private func outputRate(_ value: Double?, color: Color, width: CGFloat) -> some View {
         Text(value.map(QuotaWindowUsageSection.outputInputRateText) ?? "—")
-            .font(MenuTypography.metricValue)
+            .font(tableValueFont)
             .foregroundStyle(value == nil ? Color.secondary : color)
             .frame(width: width, alignment: .trailing)
     }
 
     private func token(_ value: Double?, color: Color, width: CGFloat = 58) -> some View {
         Text(UsageHistoryNumber.integer(value).map(Formatters.formatTokenCountCompact) ?? "—")
-            .font(MenuTypography.metricValue)
+            .font(tableValueFont)
             .foregroundStyle(UsageHistoryNumber.finiteNonnegative(value) == nil ? Color.secondary : color)
             .frame(width: width, alignment: .trailing)
     }
@@ -394,7 +432,7 @@ struct SevenDayUsageHistoryView: View {
         Text(UsageHistoryNumber.finiteNonnegative(day.value).flatMap { value in
             day.currency.map { "\($0.symbol)\(String(format: "%.2f", value))" }
         } ?? "—")
-            .font(MenuTypography.metricValue)
+            .font(tableValueFont)
             .foregroundStyle(day.valueIsPartial ? Color.orange : Color.secondary)
             .frame(width: width, alignment: .trailing)
             .lineLimit(1)
@@ -404,7 +442,7 @@ struct SevenDayUsageHistoryView: View {
 
     private func selectedSpeed(_ day: UsageHistoryDay, width: CGFloat = 58) -> some View {
         Text(Formatters.formatSpeed(day.speed))
-            .font(MenuTypography.metricValue)
+            .font(tableValueFont)
             .foregroundStyle(day.speedIsPartial ? Color.orange : Color.secondary)
             .frame(width: width, alignment: .trailing)
             .help(day.speedIsPartial ? "部分样本：有 Prompt 缺少有效时长，或本地样本被截断；P50 仅统计完整 Prompt" : "")
@@ -456,5 +494,18 @@ struct SevenDayUsageHistoryView: View {
             ? "，部分估算"
             : speedPartial ? "，部分样本：缺少有效时长或样本截断" : ""
         return "\(Formatters.formatMonthDay(days[index].dayStart))，\(selectedMetric.title)：\(amount)\(note)"
+    }
+}
+
+// MARK: - Layout Mode Environment
+
+private struct UsageHistoryLayoutModeKey: EnvironmentKey {
+    static let defaultValue: SevenDayUsageHistoryView.LayoutMode = .compact
+}
+
+extension EnvironmentValues {
+    var usageHistoryLayoutMode: SevenDayUsageHistoryView.LayoutMode {
+        get { self[UsageHistoryLayoutModeKey.self] }
+        set { self[UsageHistoryLayoutModeKey.self] = newValue }
     }
 }

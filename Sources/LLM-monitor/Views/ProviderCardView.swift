@@ -109,7 +109,7 @@ enum ProviderCardPresentation: Equatable, Sendable {
     case plan
     /// 边缘悬浮窗的套餐呈现，保留 Provider 标题和 scope 控件。
     case edgePlan
-    /// 仅历史（菜单套餐历史）。
+    /// 仅历史（菜单用量历史）。
     case history
 }
 

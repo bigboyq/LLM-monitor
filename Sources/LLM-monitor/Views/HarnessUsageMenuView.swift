@@ -1060,11 +1060,11 @@ private struct MenuQuotaProviderRow: View {
             Button {
                 isHistoryExpanded.toggle()
             } label: {
-                Label("套餐历史", systemImage: isHistoryExpanded ? "chevron.up" : "chevron.down")
+                Label("用量历史", systemImage: isHistoryExpanded ? "chevron.up" : "chevron.down")
             }
             .font(MenuTypography.hint)
             .buttonStyle(.plain)
-            .accessibilityLabel(isHistoryExpanded ? "收起 \(status.displayName) 套餐历史" : "展开 \(status.displayName) 套餐历史")
+            .accessibilityLabel(isHistoryExpanded ? "收起 \(status.displayName) 用量历史" : "展开 \(status.displayName) 用量历史")
             Button("独立窗口") { onOpenDetails() }
                 .font(MenuTypography.hint)
                 .buttonStyle(.link)

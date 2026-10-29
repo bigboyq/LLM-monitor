@@ -191,7 +191,8 @@ private struct ClientProviderExpandedContent: View {
                 ),
                 scannedAt: provider.scannedAt,
                 isScanning: false,
-                isTruncated: provider.isTruncated
+                isTruncated: provider.isTruncated,
+                layoutMode: .expanded
             )
 
             // 单行并排：聚合指标（总 Token / 命中率 / 价值）+ 分项 Token 桶，

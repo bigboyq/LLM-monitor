@@ -38,9 +38,9 @@ final class DisplayClock: ObservableObject {
     var isRunning: Bool { task != nil }
 
     func start() {
+        date = Date()
         guard task == nil else { return }
         startCount += 1
-        date = Date()
         task = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 do {
@@ -53,6 +53,11 @@ final class DisplayClock: ObservableObject {
                 self.date = Date()
             }
         }
+    }
+
+    /// 立即同步最新系统墙钟时间。
+    func refreshNow() {
+        date = Date()
     }
 
     func stop() {

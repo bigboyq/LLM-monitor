@@ -89,14 +89,14 @@ struct MenuContentView: View {
         .background {
             MenuPanelSurface()
         }
-        // 面板每次打开即时刷新睡眠健康度：健康灯红黄绿必须在用户点开面板的
-        // 瞬间反映最新断言状态，而不是等下一个 60s 轮询周期（用户刚退出了
-        // 霸占睡眠锁的应用时，旧状态会误导）。
+        // 面板每次打开即时刷新展示时钟与睡眠健康度：菜单重开必须立即同步当前墙钟
+        // 时间并恢复 1s 轮询，健康灯红黄绿在用户点开面板的瞬间反映最新断言状态。
         // 关闭时对称地停掉展示时钟：关菜单走的是 orderOut，视图**不销毁**，
         // `.onDisappear` 不可依赖——只靠它，打开过一次之后 1s tick 就会常驻，
         // 每秒唤醒一次并让整棵菜单 body 重算。
         .background(MenuWindowAutoCloseBridge(
             onPanelOpen: {
+                displayClock.start()
                 state.sleepHealth.refreshNow()
             },
             onPanelClose: {
@@ -441,6 +441,7 @@ struct MenuContentView: View {
     /// 只重锚**它自己**的排期，其他 provider 的下一拍与周期 full 计数不受影响
     /// （回归见 `AppStateTests.testRefreshOneReanchorsOnlyRefreshedProvider`）。
     private func refreshProviderFromMenu(_ providerID: String) {
+        displayClock.start()
         Task { await state.refreshOne(providerID: providerID) }
     }
 
@@ -470,6 +471,7 @@ struct MenuContentView: View {
     /// 走一遍"发起抓取 → 重锚自己"，不与在飞事务抢闸门；段内跨卡数量最多三张
     /// （ZCode），顺序发出的延迟可忽略。
     private func refreshSectionFromMenu(_ section: HarnessSection) {
+        displayClock.start()
         let ids = section.refreshProviderStatusIDs(in: state.statuses)
         guard !ids.isEmpty else { return }
         Task {

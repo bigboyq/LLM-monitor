@@ -200,6 +200,11 @@ struct MenuWindowAutoCloseBridge: NSViewRepresentable {
                 guard let self, let window else { return }
                 self.alignToMenuBar(window: window)
             }
+            if window.isKeyWindow {
+                Task { @MainActor [weak self] in
+                    self?.onPanelOpen?()
+                }
+            }
 
             observerStore.values.append(NotificationCenter.default.addObserver(
                 forName: NSWindow.didBecomeKeyNotification,

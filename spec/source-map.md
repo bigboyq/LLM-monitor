@@ -158,8 +158,8 @@
 | `Sources/LLM-monitor/Views/ProviderDetailWindowView.swift` | 单实例 Provider 详情窗口、菜单栏公开 Window 路由桥、停用/缺失目标的设置回退；复用完整 `ProviderCardView` |
 | `Sources/LLM-monitor/Views/MenuContentView.swift` | 主面板（header / content / footer；header 统一页面级刷新：用量读 LocalUsage 时间并重扫，额度读 Provider 成功数据时间并刷新；footer 无重复时间）+ 高度桥 `MenuPanelHeightBridge` + `MenuHairline`；展示时钟经 `\.displayDate` 注入卡片 |
 | `Sources/LLM-monitor/Views/FleetScopeSwitcher.swift` | fleet scope 切换控件（菜单面板与 dock 详情浮层共用：≤4 段整行、>4 紧凑下拉）：`FleetScopeSwitcher` 按选项总数分叉（≤4 分段 `Picker`、>4 下拉 `FleetScopeMenu`），`FleetScopeMenu` 是下拉形态——范围文字 + 行内 `ellipsis` 标记，整组上限 120pt，截断走纯函数 `FleetScopeMenu.truncated(_:maxWidth:)`；三个 macOS `Menu` 平台怪癖（行内图 / 字符串层限宽 / 必须 `fixedSize`）写在文件头 |
-| `Sources/LLM-monitor/Views/DisplayClock.swift` | 跨宿主共享的展示时钟：`DisplayClock` + `DisplayClockScope` + `\.displayDate` 环境键；菜单内容 / hover 浮层 / dock 浮层 / provider 详情窗口各自持有实例、随宿主显隐 start/stop 并注入环境 |
-| `Sources/LLM-monitor/Views/HarnessUsageMenuView.swift` | 菜单用量与额度紧凑卡片（`HarnessUsageMenuView` / `MenuQuotaOverviewView`）：今日汇总、客户端占比、默认折叠的客户端摘要与模型 Prompt 速度范围线；本地模型行共用有效 min…max 速度域与单处图例。摘要按实际宽度显隐思考占比，窄时四核心指标换行。额度行展示有效额度、重置倒计时、临期/高峰事件、右侧时间与刷新；套餐详情/套餐历史独立折叠、独立窗口可达，长摘要与三操作分行；`MenuContentMode` 由宿主持久化。布局回归见 `HarnessUsageMenuViewTests` |
+| `Sources/LLM-monitor/Views/DisplayClock.swift` | 跨宿主共享的展示时钟：`DisplayClock` + `DisplayClockScope` + `\.displayDate` 环境键；菜单内容 / hover 浮层 / dock 浮层 / provider 详情窗口各自持有实例、随宿主显隐 start/stop 并注入环境，`start()` 与 `refreshNow()` 即时同步墙钟 |
+| `Sources/LLM-monitor/Views/HarnessUsageMenuView.swift` | 菜单用量与额度紧凑卡片（`HarnessUsageMenuView` / `MenuQuotaOverviewView`）：今日汇总、客户端占比、默认折叠的客户端摘要与模型 Prompt 速度范围线；本地模型行共用有效 min…max 速度域与单处图例。摘要按实际宽度显隐思考占比，窄时四核心指标换行。额度行展示有效额度、重置倒计时、临期/高峰事件、右侧时间与刷新；套餐详情/用量历史独立折叠、独立窗口可达，长摘要与三操作分行；`MenuContentMode` 由宿主持久化。布局回归见 `HarnessUsageMenuViewTests` |
 | `Sources/LLM-monitor/Views/MenuTypography.swift` | 菜单面板与悬浮层统一排版常量（语义角色，禁止散落硬编码字号） |
 | `Sources/LLM-monitor/Views/PromptSpeedRangeLineView.swift` | 展开模型行的 Prompt 速度范围线：细 min…max 线、端点短竖线、最近值菱形与固定 min/max/最近三栏；线性刻度使用菜单共享域，P50 数值只保留在模型指标行 |
 | `Tests/LLMMonitorTests/PromptSpeedRangeLayoutTests.swift` | 共享速度域坐标、零端点、全域同值居中、模型常量的共享位置与窄宽布局回归 |
@@ -197,7 +197,7 @@
 | `Sources/LLM-monitor/Views/BrandLogoView.swift` | provider 品牌 logo 资源加载 + SF Symbol fallback |
 | `Sources/LLM-monitor/Views/LocalUsageHoverViews.swift` | 旧七天入口兼容包装与泛型 footer；数值逐日价格 / Prompt P50 memo，生产渲染委托共享折线历史组件 |
 | `Sources/LLM-monitor/Models/UsageHistorySeries.swift` | 九维历史指标、独立偏好键与数值日序列；固定七日槽、缺失与已知零、混币归一化及部分覆盖 |
-| `Sources/LLM-monitor/Views/SevenDayUsageHistoryChart.swift` | 菜单/详情窗口/设置共用七天单指标折线、指标图例、逐日表与来源提示；比率轴按跨度格式化刻度 |
+| `Sources/LLM-monitor/Views/SevenDayUsageHistoryChart.swift` | 菜单/详情窗口/设置共用七天单指标折线、指标图例、逐日表与来源提示；支持 compact/expanded 布局模式，坐标轴与日期标签提升为 secondary |
 | `Tests/LLMMonitorTests/UsageHistorySeriesTests.swift` | 七日槽、四桶守恒、数值价格/混币、P50、缺失/零与部分样本回归 |
 | `Tests/LLMMonitorTests/SevenDayUsageLastColumnTests.swift` | `SevenDayUsageHistoryMetricTests`：历史偏好独立于额度 segment、每日 Prompt P50 与 Fleet 无时长回归（替代旧末列耦合测试） |
 | `Sources/LLM-monitor/Views/SegmentedQuotaProgressBar.swift` | 5h / 周额度分段条、窗口颜色与 reset 标记 + `EquivalentQuotaAllocation`（binding constraint 文案与 `bindingWindow` 判定） |
@@ -230,6 +230,6 @@
 - **串行执行是既定选择**：`swift test --parallel` 实测（2026-10-02，5 连跑 3 败）不可用——`SQLiteTempCopyTests` 的临时副本断言扫描跨进程共享目录，并行 worker 互相误判；且慢测试为睡眠型，并行的 wall 收益仅 ~4s。并行化前提：先给 SQLiteTempCopy 的副本目录引入进程级隔离，再复评。
 - 慢用例的等待注入缝已建立：调度器（now/sleep）、Bark 退避（retryDelay）、vnode 合并窗口（coalescingWindow 参数）；新增耗时敏感测试时优先走注入缝，不要写死真实 sleep。
 
-> 核对基线：2026-10-29 · 代码 72697e4
+> 核对基线：2026-10-29 · 代码 6b87146
 > 统一验证通过，详细结果见 `spec/sync.md`。本文件登记已新增的 Fleet Sync 测试文件。
 > `DeviceIdentityStore` 及其回归测试已随 6f11831 入库，详见 `spec/sync.md`。

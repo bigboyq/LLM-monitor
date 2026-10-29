@@ -173,7 +173,7 @@ extension SettingsView {
 
             SettingsSection(
                 title: "边缘状态窗",
-                footer: "在屏幕边缘常驻一个小型圆环窗，每个已启用的 Provider 一个双环圆——外环是 5 小时额度剩余比例，内环是周额度剩余比例（各取该 Provider 内最吃紧的套餐），中心是品牌图标，环的颜色沿用上方状态栏三色。鼠标默认穿透不挡点击，移上去才接管；悬停在某个圆环上会在旁边展开与主菜单相同的 Provider 卡片，移开鼠标收起。可直接拖到任意边缘、任意一块显示器上，位置会记住——贴靠哪一边、停在哪块屏都由拖动决定，这里没有下拉框（屏的拔出会让 dock 自动回到主屏）。下拉框选的是 dock 在屏幕上的**形态**，四选一；全屏时是否隐藏是另一件事，单独一个开关。"
+                footer: "在屏幕边缘常驻各 Provider 的双环额度圆环，可自由拖拽贴靠任意屏幕边缘；悬停展开详情卡片，移开鼠标收起。"
             ) {
                 VStack(alignment: .leading, spacing: 16) {
                     SettingsControlRow("形态") {
@@ -187,10 +187,30 @@ extension SettingsView {
                         .frame(width: SettingsLayout.standardControlWidth, alignment: .trailing)
                     }
 
-                    Text(edgeDockMode.summary)
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(edgeDockMode.summary)
+                            .font(SettingsTypography.status)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer()
+                        Button("了解更多…") {
+                            showsEdgeDockHelp.toggle()
+                        }
+                        .buttonStyle(.link)
                         .font(SettingsTypography.status)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                        .popover(isPresented: $showsEdgeDockHelp, arrowEdge: .trailing) {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("边缘状态窗机制")
+                                    .font(.headline)
+                                Text("• 每个已启用的 Provider 对应一个双环圆：外环为 5 小时额度比例，内环为周额度比例（各取最吃紧套餐），中心为品牌图标。\n• 鼠标默认穿透点击不挡操作，移入圆环接管并展开详情卡片。\n• 贴靠屏幕与沿边位置由拖动决定并自动记忆，断开外接屏时自动回到主屏。\n• 环颜色沿用状态栏三色，全屏时可单独设置是否隐藏。")
+                                    .font(SettingsTypography.status)
+                                    .foregroundStyle(.secondary)
+                                    .lineSpacing(2)
+                            }
+                            .padding(14)
+                            .frame(width: 320)
+                        }
+                    }
                     EdgeDockModePreviewView(mode: edgeDockMode)
                     SettingsControlRow("位置") {
                         Button("恢复默认位置") { resetDockPosition() }

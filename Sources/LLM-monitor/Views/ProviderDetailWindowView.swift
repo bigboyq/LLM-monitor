@@ -47,7 +47,10 @@ struct ProviderDetailWindowView: View {
         }
         .frame(minWidth: EdgeDockTheme.popoverWidth, idealWidth: EdgeDockTheme.popoverWidth, minHeight: 420, idealHeight: 700)
         .onAppear(perform: receivePendingRoute)
-        .onReceive(state.providerDetailRouteRequests) { route in self.route = route }
+        .onReceive(state.providerDetailRouteRequests) { route in
+            self.route = route
+            displayClock.start()
+        }
         .onDisappear {
             displayClock.stop()
         }
@@ -77,11 +80,12 @@ struct ProviderDetailWindowView: View {
                             presentation: .complete
                         )
                     }
-                    .frame(width: EdgeDockTheme.popoverWidth - LayoutMetrics.cardColumnHorizontalPadding * 2)
+                    .frame(minWidth: EdgeDockTheme.popoverWidth - LayoutMetrics.cardColumnHorizontalPadding * 2, maxWidth: .infinity)
                     .padding(.horizontal, LayoutMetrics.cardColumnHorizontalPadding)
                     .padding(.vertical, LayoutMetrics.cardColumnHorizontalPadding)
                 }
                 .environment(\.hoverRevealMode, .alwaysVisible)
+                .environment(\.usageHistoryLayoutMode, .expanded)
                 .environment(\.quotaWindowSegmentEditable, true)
                 .environment(\.cardQuotaRefreshAction, { id in
                     Task { await state.refreshOne(providerID: id) }
@@ -128,5 +132,6 @@ struct ProviderDetailWindowView: View {
 
     private func receivePendingRoute() {
         if let pending = state.pendingProviderDetailRoute { route = pending }
+        displayClock.start()
     }
 }

@@ -163,8 +163,8 @@ height: content-driven, fixedSize(vertical: true)
 ```
 
 额度页按启用 provider 顺序呈现与用量相同的紧凑卡片外壳，支持单 Provider 刷新、未配置项定位到
-对应设置，以及可分别展开的「套餐详情」和「套餐历史」；两个折叠区初始均关闭，可同时打开。
-操作行始终保留「套餐详情」「套餐历史」「独立窗口」三个入口。额度摘要与三个操作优先同行；
+对应设置，以及可分别展开的「套餐详情」和「用量历史」；两个折叠区初始均关闭，可同时打开。
+操作行始终保留「套餐详情」「用量历史」「独立窗口」三个入口。额度摘要与三个操作优先同行；
 实际宽度不足时摘要移到独立一行，三个操作仍保持同行。首行左侧 Provider 名称与临期/高峰事件，
 右侧额度更新时间贴近刷新按钮。正常状态不再另占更新时间行或详情页脚；
 更新时间仅显示 `HH:mm`，help 说明它代表 provider 额度读取时间，刷新动作只刷新该 Provider。
@@ -179,7 +179,7 @@ loading、failed、notConfigured 可按需增加状态行，错误始终可见�
 
 The menu offers two complementary views: **用量** answers which clients burned how
 many tokens today, and **额度** answers how much remains per enabled Provider. The
-quota page is available when the edge dock is hidden. 「套餐详情」 and 「套餐历史」 are
+quota page is available when the edge dock is hidden. 「套餐详情」 and 「用量历史」 are
 independent disclosure actions and may be open together. Plan uses the same
 `QuotaWindowAccountInfoRow` + `ProviderCardView.planModules` composition as the edge-dock
 popover and complete detail window. History uses the shared `SevenDayUsageHistoryView`;
@@ -808,7 +808,7 @@ look for a hover route to this data — the card carries it inline.
 - 账号行（第一段 Account Info）= 仅套餐档位 pill（`data.level` 首字母大写：`lite` → `Lite` / `Pro` / `Max`）。GLM 走 API Key 登录、拿不到邮箱，但**仅等级也显示账号行**；拿不到等级时整行不画。
 - 单条 `GLM Coding Plan` 模型行（`QuotaInfo.displayName`，不再硬编码具体模型名）：智谱 Coding Plan 的 5h + 周积分是套餐共享池，合成一条展示，周进度条按 5 个等价额度分段（`weeklyEquivalentMultiplier` = 5；周积分 = 5 × 5h 积分：Lite 2000/10000、Pro 12000/60000、Max 28000/140000）。
 - 数据来源：远程 `GET open.bigmodel.cn/api/monitor/usage/quota/limit`，Coding Plan Key 作裸 token 放 `Authorization`。鉴权失败（HTTP 200 + `code:1000`）在 parse 阶段捕获并映射成 401 语义。
-- **高峰期提示**：额度行下方一行（`PeakIndicatorView` 外壳 + `GlmPeakIndicatorView` 的文案），纯本地计算（北京时间，与 API 无关）。颜色分 3 档：高峰期 🔥 红色 `高峰期 · 还剩 X`；非高峰期距高峰 < 1 小时 ❄️ 橙色、≥ 1 小时 ❄️ 绿色 `距高峰期 X · 非高峰 5 折`。Mon–Fri 14–18（官方规则：高峰全价、非高峰 50% 折），窗口固定不可调（北京时间、法定节假日除外，设置页只读展示，见 `spec/ui/settings.md`）。倒计时读环境里的 `\.displayDate`——共享展示时钟 `DisplayClock`（每个宿主各持一个实例），由卡片实际所在的宿主各自注入并随面板显隐 start/stop：菜单内容（`MenuContentView` 内联）、菜单兜底行 hover 浮层（`HoverPanelController`）与 dock 浮层（`EdgeDockController`）都持有时钟、经 `DisplayClockScope` 注入环境；不需要自己挂 `TimelineView`。
+- **高峰期提示**：额度行下方一行（`PeakIndicatorView` 外壳 + `GlmPeakIndicatorView` 的文案），纯本地计算（北京时间，与 API 无关）。颜色分 3 档：高峰期 🔥 红色 `高峰期 · 还剩 X`；非高峰期距高峰 < 1 小时 ❄️ 橙色、≥ 1 小时 ❄️ 绿色 `距高峰期 X · 非高峰 5 折`。Mon–Fri 14–18（官方规则：高峰全价、非高峰 50% 折），窗口固定不可调（北京时间、法定节假日除外，设置页只读展示，见 `spec/ui/settings.md`）。倒计时读环境里的 `\.displayDate`——共享展示时钟 `DisplayClock`（每个宿主各持一个实例），由卡片实际所在的宿主各自注入并随面板显隐 start/stop：菜单内容（`MenuContentView` 内联，由 `MenuWindowAutoCloseBridge.onPanelOpen` 启动并同步当前墙钟、`onPanelClose` 停表）、菜单兜底行 hover 浮层（`HoverPanelController`）与 dock 浮层（`EdgeDockController`）都持有时钟、经 `DisplayClockScope` 注入环境；不需要自己挂 `TimelineView`。
 - **闲时用量**：不再独立成块——原额度条下方的闲时脚注已删除，用量并入「额度窗口」表格的「闲」行；同表还有「免 / 速 / 它」三条今日动态行（Start Plan / 加速卡 / 其他智谱任务的今日切片，与「闲」行同一构造模式，GLM-only，行序 5h → 周 → 今 → 闲 → 免 → 速 → 它，重置日期格恒 `—`，口径说明句挂在「闲」字类型格的 tooltip 上；详见 `spec/ui/edge-dock.md` §Quota window usage block）。
 - **活动套餐余额**（`GlmActivityPlanBalancesView`，仅在开启 `parseZcodeBalanceLog` 且有未过期 entitlement 或生效前预告时出现）：余额行每条一行 `🎁 套餐名 · 模型名 94% (283M/300M) 08-31 09:00`（模型名与套餐名忽略大小写同名 / 为空 / 实为 entitlementID 回退值时省略）；预告行（套餐已发放但 `effective_at` 未到、balances 无对应桶）排在余额行之后：`🎁 套餐名 · 模型名 生效时间：MM-dd HH:mm（300M）`——无百分比、无已用/剩余，整行 `.tertiary` 弱化。两种行都空则整块不渲染，排在额度段之后、余额之前。
 - **OpenCode 数据合并**：`zhipuai-coding-plan` 绑定默认开启（`clientBindings[]`）。卡片底部展示 native ZCode 与 OpenCode 合并后的今日与最近 7 天 Input / Cache / Output / Reason 以及 R/T；绑定关闭后只显示 native ZCode local Scanner 数据。设置页没有该开关，调整方式见下节。
@@ -1071,5 +1071,5 @@ The UI intentionally hides reset-credit id, title, description, and grant time.
 The shared Plan fallback uses the same 10pt `MenuTypography.hint` role for loading and
 failure feedback; there is no separate error-message typography role.
 
-> 核对基线：2026-10-29 · 代码 72697e4
+> 核对基线：2026-10-29 · 代码 6b87146
 > 统一验证通过，详细结果见 `spec/sync.md`。

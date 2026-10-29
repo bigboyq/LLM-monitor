@@ -91,15 +91,9 @@ extension SettingsView {
                     SettingsToggleRow(label: "启用 API 赠金监测", isOn: $chatgptAdminCreditsEnabled)
 
                     if chatgptAdminCreditsEnabled {
-                        Divider()
-                            .padding(.vertical, 4)
-
                         SettingsControlRow("Admin API Key") {
                             secretField(text: $chatgptAdminApiKey, isVisible: $showChatgptAdminKey, prompt: "sk-admin-...")
                         }
-
-                        Divider()
-                            .padding(.vertical, 4)
 
                         SettingsControlRow("赠金额度 ($)") {
                             VStack(alignment: .trailing, spacing: 4) {
@@ -114,9 +108,6 @@ extension SettingsView {
                             }
                         }
 
-                        Divider()
-                            .padding(.vertical, 4)
-
                         SettingsControlRow("账单日") {
                             Picker("", selection: $chatgptBillingDay) {
                                 ForEach(1...31, id: \.self) { day in
@@ -125,9 +116,6 @@ extension SettingsView {
                             }
                             .frame(width: SettingsLayout.standardControlWidth)
                         }
-
-                        Divider()
-                            .padding(.vertical, 4)
 
                         SettingsControlRow("重置时间") {
                             DatePicker("", selection: $chatgptBillingTime, displayedComponents: .hourAndMinute)

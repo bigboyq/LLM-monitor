@@ -43,6 +43,7 @@ struct SettingsView: View {
     @State var edgeDockHideInFullscreen: Bool = EdgeDockConfig.default.hideInFullscreen
     @State var edgeDockCompactSize: EdgeDockCompactSize = EdgeDockConfig.default.compactSize
     @State var edgeDockIndependentRingColors: Bool = EdgeDockConfig.default.independentRingColors
+    @State var showsEdgeDockHelp: Bool = false
 
     @State var minimaxEnabled: Bool = false
     @State var minimaxInterval: Int = 0
@@ -371,6 +372,7 @@ struct SettingsView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     SettingsPaneHeader(tab: currentTab)
+                        .id("settings-top")
 
                     switch currentTab {
                     case .general:
@@ -395,12 +397,15 @@ struct SettingsView: View {
                 .padding(20)
             }
             .onChange(of: currentTab.id) { _, tabID in
-                guard tabID == SettingsTab.notificationsID,
-                      let providerID = pendingNotificationProviderID else { return }
-                withAnimation {
-                    proxy.scrollTo("providerNotification.\(providerID)", anchor: .top)
+                if tabID == SettingsTab.notificationsID,
+                   let providerID = pendingNotificationProviderID {
+                    withAnimation {
+                        proxy.scrollTo("providerNotification.\(providerID)", anchor: .top)
+                    }
+                    pendingNotificationProviderID = nil
+                } else {
+                    proxy.scrollTo("settings-top", anchor: .top)
                 }
-                pendingNotificationProviderID = nil
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
