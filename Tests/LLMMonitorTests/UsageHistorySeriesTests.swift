@@ -44,8 +44,17 @@ final class UsageHistorySeriesTests: XCTestCase {
         XCTAssertEqual(series[5].total, 100, "Total is the four accounting buckets and excludes cache-write")
         XCTAssertEqual(series[5].rounds, 8)
         XCTAssertEqual(series[5].turns, 5)
+        XCTAssertEqual(try XCTUnwrap(series[5].hitRate), 20.0 / 30.0, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(series[5].thinkingShare), 40.0 / 70.0, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(series[5].outputToInputRate), 70.0 / 30.0, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(series[5].value(for: .hit)), 20.0 / 30.0, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(series[5].value(for: .thinking)), 40.0 / 70.0, accuracy: 0.0001)
+        XCTAssertEqual(try XCTUnwrap(series[5].value(for: .outputRatio)), 70.0 / 30.0, accuracy: 0.0001)
         XCTAssertTrue(series[6].isTodayIncomplete)
         XCTAssertNil(series[6].total)
+        XCTAssertNil(series[6].hitRate)
+        XCTAssertNil(series[6].thinkingShare)
+        XCTAssertNil(series[6].outputToInputRate)
     }
 
     func testKnownEmptyDailyRowIsZeroAndNumericCostPartialIsPreserved() throws {

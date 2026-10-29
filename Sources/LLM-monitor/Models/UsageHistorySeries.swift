@@ -1,10 +1,9 @@
 import Foundation
 
-/// The nine independently selectable measures in the seven-day local history.
+/// The seven independently selectable measures in the seven-day local history.
 /// This preference intentionally does not share the quota-window segment key.
 enum UsageHistoryMetric: String, CaseIterable, Identifiable {
-    case total, rounds, turns, value, speed
-    case input, cache, reason, output
+    case total, rounds, value, speed, hit, thinking, outputRatio
 
     static let storageKey = "usageHistoryMetric"
 
@@ -14,29 +13,33 @@ enum UsageHistoryMetric: String, CaseIterable, Identifiable {
         switch self {
         case .total: "总量"
         case .rounds: "Rounds"
-        case .turns: "Turns"
         case .value: "价值"
         case .speed: "速度"
-        case .input: "Input"
-        case .cache: "Cache"
-        case .reason: "Reason"
-        case .output: "Output"
+        case .hit: "命中"
+        case .thinking: "思考"
+        case .outputRatio: "产出"
         }
     }
 
     var unit: String {
         switch self {
-        case .total, .input, .cache, .reason, .output: "Token"
+        case .total: "Token"
         case .rounds: "Rounds"
-        case .turns: "Turns"
         case .value: "价值"
         case .speed: "tok/s"
+        case .hit, .thinking, .outputRatio: "%"
+        }
+    }
+
+    var isRate: Bool {
+        switch self {
+        case .hit, .thinking, .outputRatio: true
+        default: false
         }
     }
 
     static let groups: [[UsageHistoryMetric]] = [
-        [.total, .rounds, .turns, .value, .speed],
-        [.input, .cache, .reason, .output],
+        [.total, .rounds, .value, .speed, .hit, .thinking, .outputRatio]
     ]
 }
 
@@ -72,26 +75,28 @@ struct UsageHistoryDay: Equatable, Identifiable {
     let cache: Double?
     let reason: Double?
     let output: Double?
+    let hitRate: Double?
+    let thinkingShare: Double?
+    let outputToInputRate: Double?
     let isTodayIncomplete: Bool
 
     var id: Date { dayStart }
 
     var hasAnyData: Bool {
-        total != nil || rounds != nil || turns != nil || value != nil || speed != nil
-            || input != nil || cache != nil || reason != nil || output != nil
+        total != nil || rounds != nil || value != nil || speed != nil
+            || hitRate != nil || thinkingShare != nil || outputToInputRate != nil
+            || input != nil || cache != nil || reason != nil || output != nil || turns != nil
     }
 
     func value(for metric: UsageHistoryMetric) -> Double? {
         switch metric {
         case .total: total
         case .rounds: rounds
-        case .turns: turns
         case .value: value
         case .speed: speed
-        case .input: input
-        case .cache: cache
-        case .reason: reason
-        case .output: output
+        case .hit: hitRate
+        case .thinking: thinkingShare
+        case .outputRatio: outputToInputRate
         }
     }
 
@@ -145,6 +150,18 @@ enum UsageHistorySeriesBuilder {
                 costPartial = samplesTruncated || isTruncated
             }
 
+            let inputTokens = daily.map { Double(max($0.input, 0)) }
+            let cacheTokens = daily.map { Double(max($0.cacheRead, 0)) }
+            let reasonTokens = daily.map { Double(max($0.reasoning, 0)) }
+            let outputTokens = daily.map { Double(max($0.output, 0)) }
+
+            let inputSide = (inputTokens ?? 0) + (cacheTokens ?? 0)
+            let outputSide = (reasonTokens ?? 0) + (outputTokens ?? 0)
+
+            let hitRate: Double? = (daily != nil && inputSide > 0) ? ((cacheTokens ?? 0) / inputSide) : nil
+            let thinkingShare: Double? = (daily != nil && outputSide > 0) ? ((reasonTokens ?? 0) / outputSide) : nil
+            let outputToInputRate: Double? = (daily != nil && inputSide > 0) ? (outputSide / inputSide) : nil
+
             return UsageHistoryDay(
                 dayStart: dayStart,
                 total: daily.map { Double($0.totalTokens) },
@@ -156,10 +173,13 @@ enum UsageHistorySeriesBuilder {
                 speed: UsageHistoryNumber.finiteNonnegative(speedStats?.p50),
                 speedIsPartial: samplesTruncated || isTruncated
                     || (speedStats.map { $0.validPromptCount < $0.totalPromptCount } ?? false),
-                input: daily.map { Double(max($0.input, 0)) },
-                cache: daily.map { Double(max($0.cacheRead, 0)) },
-                reason: daily.map { Double(max($0.reasoning, 0)) },
-                output: daily.map { Double(max($0.output, 0)) },
+                input: inputTokens,
+                cache: cacheTokens,
+                reason: reasonTokens,
+                output: outputTokens,
+                hitRate: hitRate,
+                thinkingShare: thinkingShare,
+                outputToInputRate: outputToInputRate,
                 isTodayIncomplete: dayStart == today
             )
         }

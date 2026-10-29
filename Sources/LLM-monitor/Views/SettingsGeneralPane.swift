@@ -317,7 +317,7 @@ extension SettingsView {
             }
             ForEach(ProviderKind.windowedKinds, id: \.quotaProviderID) { kind in
                 if let providerID = providerID(for: kind) {
-                    notifySection(providerID: providerID)
+                    providerNotificationSettingsSection(providerID: providerID)
                 }
             }
             }
@@ -402,6 +402,25 @@ extension SettingsView {
                     .font(SettingsTypography.status)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    func providerNotificationSettingsSection(providerID: String) -> some View {
+        SettingsSection(
+            title: "\(providerDisplayName(for: providerID)) 额度事件提醒",
+            footer: "5 小时 / 周额度恢复或耗尽时的提醒方式。Bark 推送需在上方启用并配置 Bark。"
+        ) {
+            ForEach(QuotaNotificationKind.allCases) { kind in
+                SettingsControlRow(kind.displayName) {
+                    Picker("", selection: notifyChannelBinding(providerID: providerID, kind: kind)) {
+                        ForEach(QuotaNotifyChannel.allCases) { channel in
+                            Text(channel.displayName).tag(channel)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .frame(width: SettingsLayout.standardControlWidth, alignment: .trailing)
+                }
             }
         }
     }

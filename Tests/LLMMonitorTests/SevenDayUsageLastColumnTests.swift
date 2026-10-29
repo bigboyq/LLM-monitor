@@ -30,7 +30,11 @@ final class SevenDayUsageHistoryMetricTests: XCTestCase {
 
     func testHistoryMetricSelectionHasIndependentPersistenceKey() {
         XCTAssertNotEqual(UsageHistoryMetric.storageKey, QuotaWindowUsageSection.segmentStorageKey)
-        XCTAssertEqual(UsageHistoryMetric.allCases.count, 9)
+        XCTAssertEqual(UsageHistoryMetric.allCases.count, 7)
+        XCTAssertEqual(
+            UsageHistoryMetric.allCases,
+            [.total, .rounds, .value, .speed, .hit, .thinking, .outputRatio]
+        )
     }
 
     func testDailySpeedUsesPromptP50AndExcludesIncompletePrompts() {

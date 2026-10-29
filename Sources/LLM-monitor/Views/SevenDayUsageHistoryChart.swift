@@ -35,20 +35,22 @@ struct SevenDayUsageHistoryView: View {
     }
 
     private var selectedMaximum: Double {
-        max(selectedPoints.compactMap { $0 }.max() ?? 0, 1)
+        let maxVal = selectedPoints.compactMap { $0 }.max() ?? 0
+        if selectedMetric.isRate {
+            return max(maxVal, 1.0)
+        }
+        return max(maxVal, 1)
     }
 
     private var lineColor: Color {
         switch selectedMetric {
         case .total: Color.tokenOutputTint
         case .rounds: Color.purple
-        case .turns: Color.blue
         case .value: Color.orange
         case .speed: Color.cyan
-        case .input: Color.tokenInputTint
-        case .cache: Color.tokenCacheReadTint
-        case .reason: Color(red: 0.90, green: 0.46, blue: 0.16)
-        case .output: Color.tokenOutputTint
+        case .hit: Color.tokenCacheReadTint
+        case .thinking: Color(red: 0.90, green: 0.46, blue: 0.16)
+        case .outputRatio: Color.tokenInputTint
         }
     }
 
@@ -69,7 +71,7 @@ struct SevenDayUsageHistoryView: View {
                 Divider().opacity(0.45)
                 dailyTable
 
-                Text("总量 = Input + Cache + Output + Reason；Cache write 不计入。R/T = Rounds / Turns。速度为每日 Prompt P50。今天数据尚未结束；缺失日期以断线显示。")
+                Text("总量 = 四桶合计；Cache write 不计入。速度为每日 Prompt P50。今天数据尚未结束；缺失日期以断线显示。")
                     .font(MenuTypography.hint)
                     .foregroundStyle(.tertiary)
 
@@ -97,29 +99,25 @@ struct SevenDayUsageHistoryView: View {
     }
 
     private var metricPicker: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            ForEach(Array(UsageHistoryMetric.groups.enumerated()), id: \.offset) { _, group in
-                HStack(spacing: 5) {
-                    ForEach(group) { metric in
-                        Button {
-                            metricRawValue = metric.rawValue
-                        } label: {
-                            Text(metric.title)
-                                .font(selectedMetric == metric ? MenuTypography.dataLabel : MenuTypography.metricLabel)
-                                .foregroundStyle(selectedMetric == metric ? Color.primary : Color.secondary)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 3)
-                                .background(
-                                    selectedMetric == metric ? lineColor.opacity(0.20) : Color.secondary.opacity(0.08),
-                                    in: Capsule()
-                                )
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityAddTraits(selectedMetric == metric ? .isSelected : [])
-                    }
-                    Spacer(minLength: 0)
+        HStack(spacing: 5) {
+            ForEach(UsageHistoryMetric.allCases) { metric in
+                Button {
+                    metricRawValue = metric.rawValue
+                } label: {
+                    Text(metric.title)
+                        .font(selectedMetric == metric ? MenuTypography.dataLabel : MenuTypography.metricLabel)
+                        .foregroundStyle(selectedMetric == metric ? Color.primary : Color.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(
+                            selectedMetric == metric ? lineColor.opacity(0.20) : Color.secondary.opacity(0.08),
+                            in: Capsule()
+                        )
                 }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(selectedMetric == metric ? .isSelected : [])
             }
+            Spacer(minLength: 0)
         }
     }
 
@@ -175,7 +173,7 @@ struct SevenDayUsageHistoryView: View {
             Spacer(minLength: 0)
             Text(axisText(selectedMaximum / 2))
             Spacer(minLength: 0)
-            Text("0")
+            Text(selectedMetric.isRate ? "0%" : "0")
         }
         .font(MenuTypography.badge)
         .foregroundStyle(.tertiary)
@@ -228,14 +226,14 @@ struct SevenDayUsageHistoryView: View {
     }
 
     private var dailyTable: some View {
-        Grid(alignment: .leading, horizontalSpacing: 3, verticalSpacing: 4) {
+        Grid(alignment: .leading, horizontalSpacing: 4, verticalSpacing: 4) {
             GridRow {
                 header("日期", width: 34, alignment: .leading)
-                header("R/T", width: 60)
-                header("Input", width: 58)
-                header("Cache", width: 58)
-                header("Output", width: 58)
-                header("Reason", width: 58)
+                header("Rounds", width: 50)
+                header("总量", width: 56)
+                header("命中", width: 48)
+                header("思考", width: 48)
+                header("产出", width: 48)
                 if selectedMetric == .value { header("价值", width: 62) }
                 if selectedMetric == .speed { header("速度", width: 62).help("每日 Prompt 速度 P50，tok/s") }
             }
@@ -246,14 +244,14 @@ struct SevenDayUsageHistoryView: View {
                         .font(MenuTypography.metricValue)
                         .foregroundStyle(day.isTodayIncomplete ? .primary : .secondary)
                         .frame(width: 34, alignment: .leading)
-                    Text(roundsTurns(day))
+                    Text(UsageHistoryNumber.integer(day.rounds).map(Formatters.formatGroupedInt) ?? "—")
                         .font(MenuTypography.metricValue)
-                        .foregroundStyle(day.rounds != nil || day.turns != nil ? .primary : .secondary)
-                        .frame(width: 60, alignment: .trailing)
-                    token(day.input, color: .tokenInputTint)
-                    token(day.cache, color: .tokenCacheReadTint)
-                    token(day.output, color: .tokenOutputTint)
-                    token(day.reason, color: Color(red: 0.90, green: 0.46, blue: 0.16))
+                        .foregroundStyle(day.rounds != nil ? .primary : .secondary)
+                        .frame(width: 50, alignment: .trailing)
+                    token(day.total, color: .tokenOutputTint, width: 56)
+                    rate(day.hitRate, digits: 1, color: .tokenCacheReadTint, width: 48)
+                    rate(day.thinkingShare, digits: 0, color: Color(red: 0.90, green: 0.46, blue: 0.16), width: 48)
+                    outputRate(day.outputToInputRate, color: .tokenInputTint, width: 48)
                     if selectedMetric == .value { selectedValue(day) }
                     if selectedMetric == .speed { selectedSpeed(day) }
                 }
@@ -263,11 +261,11 @@ struct SevenDayUsageHistoryView: View {
 
     private var axisUnit: String {
         switch selectedMetric {
-        case .total, .input, .cache, .reason, .output: "tokens"
+        case .total: "tokens"
         case .rounds: "rounds"
-        case .turns: "turns"
         case .value: "金额"
         case .speed: "tok/s"
+        case .hit, .thinking, .outputRatio: "%"
         }
     }
 
@@ -275,19 +273,25 @@ struct SevenDayUsageHistoryView: View {
         switch selectedMetric {
         case .value: "暂无可计价数据"
         case .speed: "暂无有效 Prompt 时长"
+        case .hit, .outputRatio: "暂无输入数据"
+        case .thinking: "暂无输出数据"
         default: "暂无该指标的历史数据"
         }
     }
 
     private func axisText(_ value: Double) -> String {
         switch selectedMetric {
-        case .total, .input, .cache, .reason, .output, .rounds, .turns:
+        case .total, .rounds:
             return UsageHistoryNumber.integer(value).map(Formatters.formatTokenCountCompact) ?? "—"
         case .value:
             guard let currency = days.compactMap(\.currency).first else { return String(format: "%.2g", value) }
             return "\(currency.symbol)\(String(format: "%.2g", value))"
         case .speed:
             return Formatters.formatSpeed(value)
+        case .hit, .thinking:
+            return Formatters.formatPercent(value, digits: 0)
+        case .outputRatio:
+            return QuotaWindowUsageSection.outputInputRateText(value)
         }
     }
 
@@ -298,11 +302,25 @@ struct SevenDayUsageHistoryView: View {
             .frame(width: width, alignment: alignment)
     }
 
-    private func token(_ value: Double?, color: Color) -> some View {
+    private func rate(_ value: Double?, digits: Int, color: Color, width: CGFloat) -> some View {
+        Text(value.map { Formatters.formatPercent($0, digits: digits) } ?? "—")
+            .font(MenuTypography.metricValue)
+            .foregroundStyle(value == nil ? Color.secondary : color)
+            .frame(width: width, alignment: .trailing)
+    }
+
+    private func outputRate(_ value: Double?, color: Color, width: CGFloat) -> some View {
+        Text(value.map(QuotaWindowUsageSection.outputInputRateText) ?? "—")
+            .font(MenuTypography.metricValue)
+            .foregroundStyle(value == nil ? Color.secondary : color)
+            .frame(width: width, alignment: .trailing)
+    }
+
+    private func token(_ value: Double?, color: Color, width: CGFloat = 58) -> some View {
         Text(UsageHistoryNumber.integer(value).map(Formatters.formatTokenCountCompact) ?? "—")
             .font(MenuTypography.metricValue)
             .foregroundStyle(UsageHistoryNumber.finiteNonnegative(value) == nil ? Color.secondary : color)
-            .frame(width: 58, alignment: .trailing)
+            .frame(width: width, alignment: .trailing)
     }
 
     private func selectedValue(_ day: UsageHistoryDay) -> some View {
@@ -323,12 +341,6 @@ struct SevenDayUsageHistoryView: View {
             .foregroundStyle(day.speedIsPartial ? Color.orange : Color.secondary)
             .frame(width: 62, alignment: .trailing)
             .help(day.speedIsPartial ? "部分样本：有 Prompt 缺少有效时长，或本地样本被截断；P50 仅统计完整 Prompt" : "")
-    }
-
-    private func roundsTurns(_ day: UsageHistoryDay) -> String {
-        guard let rounds = UsageHistoryNumber.integer(day.rounds),
-              let turns = UsageHistoryNumber.integer(day.turns) else { return "—" }
-        return "\(Formatters.formatGroupedInt(rounds))/\(Formatters.formatGroupedInt(turns))"
     }
 
     private func chartPoints(in size: CGSize) -> [CGPoint?] {

@@ -268,11 +268,11 @@ extension SettingsView {
         }
     }
 
-    private func providerDisplayName(for id: String) -> String {
+    func providerDisplayName(for id: String) -> String {
         descriptors.first { $0.kind.quotaProviderID == id }?.displayName ?? id
     }
 
-    private func notifyChannelBinding(
+    func notifyChannelBinding(
         providerID: String,
         kind: QuotaNotificationKind
     ) -> Binding<QuotaNotifyChannel> {
