@@ -151,7 +151,7 @@ height: content-driven, fixedSize(vertical: true)
 |  ⌘ MiniMax Code  ⌘ Codex …                     |   legend: 着色客户端图标 + 名字，放不下换行
 +------------------------------------------------+
 | ▸ OpenCode                         21:09       |   collapsed client section
-|   今日 Token: 820K  价值: ¥10  命中率: 62%  速度(P50): 205 tok/s |
+|   今日 Token: 820K  价值: ¥10  命中率: 62%  速度: 205 tok/s |
 |   gpt-5.5                         620K tokens   |   expanded model details use compact rows
 |     min ───── ● ─── max   P50 … 最近 … tok/s     |
 | ⚠ 会话文件超出单轮扫描预算，已按最新优先截断…   |   truncation notice (that section only)
@@ -369,7 +369,8 @@ per-client sections」描述的是**本机 scope** 的内容区；多机联动�
 - **Per-client sections**, ordered by today-token descending and collapsed by
   default; the disclosure header follows the quota-card two-line shape: client name,
   latest local usage scan time (`HH:mm`), and disclosure control on line one; line two shows
-  `今日 Token`、`价值`、`命中率` and prompt-speed P50. `思考` is inserted between hit
+  `今日 Token`、`价值`、`命中率` and `速度`. The visible label is concise while the
+  metric remains Prompt P50. `思考` is inserted between hit
   rate and speed only when `ViewThatFits` confirms the complete summary fits; reasoning
   is a share of `output + reasoning`, never added to output a second time. A client with no
   today activity is dropped entirely rather than shown as an empty section. Each
@@ -379,9 +380,12 @@ per-client sections」描述的是**本机 scope** 的内容区；多机联动�
   sections have no local scan time and do not fabricate one.
 - **Per-model rows inside an expanded section**, keyed by
   `(clientID, quotaProviderID, modelName)`; samples with no usable model name
-  collapse into a single 「模型名缺失」 row. Each row starts with a natural flow:
-  `模型名 → Pmt → Token → 价值 → 命中 → 思考 → 速度(P50)`, wrapping in order
-  when space is insufficient; a single over-wide item is measured within the container.
+  collapse into a single 「模型名缺失」 row. Each row uses one shared text baseline:
+  `模型名 · Pmt · Token · 价值 · 命中 · 思考 · 速度`. The model name truncates to
+  preserve one line for the metrics; if the entire row still does not fit, `Pmt` is
+  omitted first. The model name keeps at least 80pt before it truncates. In the narrowest
+  fallback, gaps tighten and metric labels may scale to 82%. The speed label is concise;
+  help states that its value is the full-Prompt P50 in tok/s.
   The prompt-speed range follows the metrics (min/max endpoints, P50 and recent markers).
   `Pmt` counts all recorded promptIDs, including prompts excluded from speed statistics.
   min/P50 labels sit above their markers; recent/max labels sit below. Each label's colon
@@ -393,16 +397,22 @@ per-client sections」描述的是**本机 scope** 的内容区；多机联动�
   coincident readings remain distinguishable; missing or non-finite readings show `—`.
   Fleet client sections use the same compact card summary and disclosure interaction;
   without local call durations they display speed `—`, including expanded Fleet model
-  rows, and never draw a fabricated range. The row value is the **single-provider,
+  rows. Fleet model rows use the same single-baseline format and omit the unknown Pmt
+  count; help explains that duration data is not synchronized. The row value is the **single-provider,
   single-currency** original amount (`ModelCostEstimate.displayText`: `¥3.21` /
   `$9.80` / `未定价`) — cross currency folding happens only at section and global
   level, never per row. Prompt speed is `Σ(Output+Reason) ÷ Σ call duration` over
   all calls in one prompt. A prompt joins the distribution only when all call
   durations are valid; `latest` is the newest prompt and is `—` when that newest
   prompt is incomplete (never an older fallback). Help explains excluded samples.
-  The client summary `速度(P50)` is calculated from
+  The client summary `速度` is calculated from
   all of that client's daily prompts, not by averaging model-row percentiles. The
   global summary row carries no speed — the rate is a per-client/per-model metric.
+
+Visible speed readings share `Formatters.formatSpeed`: at most three numeric characters
+including the decimal point (`8.6` / `50` / `246`); larger magnitudes use a suffix such as
+`1.0K`. This changes display precision only; P50, range markers, and shared scales retain
+their original numerical values.
 
 The 484pt menu gives the compact client summary room for four core metrics and adds
 the thinking share only when `ViewThatFits` confirms the full row fits. A narrower
@@ -1057,5 +1067,5 @@ The UI intentionally hides reset-credit id, title, description, and grant time.
 The shared Plan fallback uses the same 10pt `MenuTypography.hint` role for loading and
 failure feedback; there is no separate error-message typography role.
 
-> 核对基线：2026-10-29 · 代码 ebb86dd
+> 核对基线：2026-10-29 · 代码 d96b2b3
 > 统一验证通过，详细结果见 `spec/sync.md`。

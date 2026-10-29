@@ -748,7 +748,7 @@ spacing. The 126pt reset-date column width is retained to fit the longest countd
 
 This column renders in the **「分析」 mode only**;
 in 「用量」 mode the same slot becomes the **速度 (tok/s) column** (`speedCell`,
-`speedText`: < 100 one decimal / ≥ 100 integer / `—` without valid durations;
+`speedText`: at most three numeric characters including the decimal point (`8.6` / `50` / `246`), magnitude suffixes for larger values, `—` without valid durations;
 `LocalUsageSummaryBuilder.windowTokenRate` Σ(output+reason) ÷ Σduration over the same
 window samples, header tooltip states the caliber; fleet rows show `—` — the wire
 protocol carries no durations; see `spec/accounting.md` §Token/s 速率口径).
@@ -861,8 +861,12 @@ Data source and calibration:
   - **Whole module disappearance**: when no row survives the filter, the entire 「额度窗口」
     module — title and segment control included — disappears. If no reset credits are available
     either (`hasVisibleContent` is false), the whole section and the card's `quotaUsageDivider`
-    above it disappear. A balance-only provider (DeepSeek API balance, no quota window at all)
-    renders **nothing**.
+    above it disappear. A balance-only provider (DeepSeek API balance) has a compatibility
+    interval on `deepseek_balance` for availability semantics, but no 5h pool or reset time;
+    `ProviderCardDerivedValues.windowUsageSnapshot` and the Fleet card presentation suppress
+    that synthetic interval and its local-use rows. The existing `DeepseekBalanceRow` remains
+    the single balance detail, showing total, recharge, and grant; the collapsed menu summary
+    shows total balance and grant. Therefore its quota-window table and segment are hidden.
 - **Host interactivity & environment**:
   - Dock popover panel: `ensurePopoverPanel` sets `ignoresMouseEvents = false` (`.nonactivatingPanel`,
     `canBecomeKey = false`, `canBecomeMain = false`), allowing users to click the segment switch,
@@ -1322,4 +1326,4 @@ default has to preserve it — defaulting to off would put a dock inside every f
 window for every existing user. Because the setting can be flipped while the user is
 already fullscreen, a policy change re-probes instead of reusing the cached verdict.
 
-> 核对基线：2026-10-29 · 代码 ebb86dd
+> 核对基线：2026-10-29 · 代码 d96b2b3

@@ -170,8 +170,10 @@ token 速率（tok/s）只在 sample 级定义，不进入帧 / 投影内核：�
 窗口不参与速率加权。fleet 行的远端上报无时长，速度列显示 `—`（wire 协议未扩展）。
 
 UI 消费：「额度窗口」模块**用量态**第 6 列从「价值」换为「速度」（`speedCell`，
-58pt 列宽不变；**分析态仍显示价值**）。分档格式 `speedText`（先分档再格式化）：
-`< 100` 一位小数（`50.1`）、`≥ 100` 整数（`246`）、nil 显示 `—`；表头 tooltip
+58pt 列宽不变；**分析态仍显示价值**）。`speedText` 转用统一 `Formatters.formatSpeed`：
+数值部分含小数点最多三个字符（`8.6` / `50` / `246`），舍入跨档后不保留多余小数；
+将进位到四位时使用 K / M / G 数量级后缀（后缀不计入数值宽度），更大数量级使用指数后缀。
+nil、负值或非有限读数显示 `—`。菜单摘要、模型范围与七天速度趋势复用同一格式；表头 tooltip
 注明口径「窗口内 (Output+Reason) ÷ 调用时长，tok/s；时长未知的调用不参与」。
 今 / 闲 / 免 / 速 / 它行速率与金额用同一批样本（`todaySamples` / `offPeakTodaySamples` /
 `glmCategoryTodaySamples`）。
@@ -282,4 +284,4 @@ Rounds 是模型 API call 数，Turns 是 user prompt 数。每次选择只使�
 任何新 harness 必须先补充本矩阵、provider spec 和 `TokenAccountingCatalog`，再接入 UI；
 不要在 view 或 pricing 分支里重新猜测 input/cache/reasoning 的关系。
 
-> 核对基线：2026-10-29 · 代码 ebb86dd
+> 核对基线：2026-10-29 · 代码 d96b2b3
