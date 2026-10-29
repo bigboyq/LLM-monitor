@@ -265,4 +265,4 @@ P50 为有效 prompt 速度的中位数；偶数个样本时取中间两个速�
 任何新 harness 必须先补充本矩阵、provider spec 和 `TokenAccountingCatalog`，再接入 UI；
 不要在 view 或 pricing 分支里重新猜测 input/cache/reasoning 的关系。
 
-> 核对基线：2026-10-25 · 代码 85541c7
+> 核对基线：2026-10-29 · 代码 d1912e6
