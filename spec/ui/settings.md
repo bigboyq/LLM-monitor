@@ -8,8 +8,13 @@ content, launch-at-login, footer) and how the quota notifications surface in the
 
 The native Settings window has a 220pt sidebar and a scrollable detail pane. Its minimum
 size is `720x480pt`, with an ideal size of `760x520pt`. General, Interface, Notifications,
-Energy, Sync, provider, and Clients pages share the same visual hierarchy and reusable
-section components. General contains refresh, launch-at-login, holiday source and About;
+Energy, Sync, provider, and client pages share the same visual hierarchy and reusable
+section components. The sidebar is structured into three native macOS sections:
+- **通用** (`generalTabs`): 常规、界面、通知、节能、多机联动；
+- **额度** (`providerTabs`): ChatGPT、Antigravity、GLM、MiniMax、DeepSeek 等注册的 Provider 配额设置页；
+- **用量** (`clientTabs`): Codex、Antigravity、Agy、ZCode、OpenCode、DSH、MiniMax Code 等本地客户端（`ClientDescriptor.all`），直接点击展示该客户端已识别的 Provider token 明细、7 天用量历史与估算价值，无需经由二级横向分段控件反复切换。同名条目（如 Antigravity 额度 vs 用量）通过前缀 `client.<id>` 隔离 ID。
+
+General contains refresh, launch-at-login, holiday source and About;
 Interface contains appearance, status-bar icon, edge dock preview/configuration and menu
 Provider order; Notifications contains system authorization, Bark and all windowed-provider
 event channels. Provider panes link to the central Notifications page instead of duplicating
@@ -83,20 +88,18 @@ addressable seam — the tests pin the action, the view only draws it. The greye
 first layer is UX, not correctness: repeated clicks are absorbed by `refreshOne`'s
 transaction gate.
 
-### 客户端 (Clients) pane
+### 客户端 (Clients) 与用量 pane
 
-`SettingsView.clientsPane` (`SettingsClientsPane.swift`) is the only pane that is not a
-provider pane. It has two halves:
+侧栏的「用量」分节将每个本地客户端（`ClientDescriptor.all`）提升为第一级设置 Tab，
+点击后直接由 `clientPane(for:)` 呈现该客户端的详细诊断，包括「已识别的 Provider」
+（按公开 API 单价估算的价值、7 天折线柱图与 Token 指标）；同名客户端与 Provider
+（如 Antigravity）通过带 `client.` 命名空间前缀的 ID 隔离。
 
-- A **client switch bar** — `ClientSegmentedControl`, an `NSViewRepresentable` over
-  `NSSegmentedControl`, wrapped in a horizontal `ScrollView`. The system control is
-  used instead of SwiftUI's segmented `Picker` for two measured reasons: the Picker does
-  not scroll and squeezes overflowed segments into ellipses (`MiniMax Code` truncates),
-  and it can only render `Text`, so a count badge cannot use a smaller secondary font.
-  Each segment is `title (N)` — the count in parentheses, because a bare `DSH 2` reads as
-  a version number; the full form goes in the tooltip (`标题 · N 个 Provider · 副标题`).
-  The tradeoff is explicit: no icons, since `NSSegmentedControl` cannot show an icon
-  beside a text label without giving up template tinting.
+对于向后兼容的聚合入口 `SettingsView.clientsPane` (`SettingsClientsPane.swift`)，
+仍保留两层结构：
+
+- A **client switch bar** — `ClientSegmentedControl`，由 `NSSegmentedControl` 构成的水平
+  分段切换条，支持横向滚动与 Provider 数量角标。
 - A **「已识别的 Provider」 section** — one `DisclosureGroup` per provider that actually
   produced local token activity for the selected client, showing total tokens, cache hit
   rate and the API-price estimate. The list is keyed by `.id(client.id)` so switching
@@ -322,6 +325,6 @@ appearance-neutral.
 - 系统通知声音绑定 `systemNotificationSoundEnabledDraft`，随普通表单保存；缺省保持出声。系统测试使用当前草稿开关，正式通知使用已保存值；Bark 铃声单独配置。
 - 字段默认值与逐字段容错见 `spec/notifications.md` §5；JSON 契约见 `spec/config.md` §Config Schema 的 `notify*` 与 `bark` 字段。
 
-> 核对基线：2026-10-29 · 代码 0ea7426
+> 核对基线：2026-10-29 · 代码 361d485
 > Sync 草稿跨 tab 保留、表单隔离与保存失败提示验证结果见 `spec/sync.md`。
 > 2026-10-25 菜单 / 设置自启同步已随 6f11831 入库：相关定向测试 27 例、完整测试 1422 例均 0 失败；测试使用模拟登录项操作，不执行真实注册 / 注销。

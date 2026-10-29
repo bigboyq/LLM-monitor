@@ -476,14 +476,16 @@ through this path. Two known edges (intentional, not bugs):
    but stored locally because the fetcher is a `Sendable` value that may be used
    independently of the registry.
 
-**SettingsView 派生 tab**（不是硬编码）：`SettingsTab` 是 `.general` / `.energy` / `.sync` /
-`.provider(FetcherDescriptor)` / `.clients` 的 enum。`SettingsView.allTabs` 是
-`[.general, .energy, .sync] + sortedProviderDescriptors.map { .provider($0) } + [.clients]`
-（provider 段按显示名升序），侧栏 icon / 标题 / 副标题从 descriptor 拿，**新增 provider
-不用改 `SettingsTab` 枚举本身**（`.sync` 是多机联动 pane，见 `sync.md`）。
-`providerPane(for: ProviderKind)` 是 kind 派发，加新 provider 在那里加一个 `case` 写
-pane UI（默认模板：enabled toggle + 独立刷新间隔；特殊字段如 API Key / authPath
-在 case 里加）。`SettingsPaneHeader` 也走同一个 `SettingsTab`，不再 hardcoded icon / title。
+**SettingsView 派生 tab**（不是硬编码）：`SettingsTab` 是 `.general` / `.interface` / `.notifications` / `.energy` / `.sync` /
+`.provider(FetcherDescriptor)` / `.client(ClientDescriptor)` / `.clients` 的 enum。
+`SettingsView` 将侧栏划分为三个原生 Section：
+- 通用 (`generalTabs`: `[.general, .interface, .notifications, .energy, .sync]`)
+- 额度 (`providerTabs`: `sortedProviderDescriptors.map { .provider($0) }`)
+- 用量 (`clientTabs`: `sortedClientDescriptors.map { .client($0) }`)
+`allTabs` 为三者拼接。侧栏 icon / 标题 / 副标题从 descriptor 拿，**新增 provider 或 client
+不用改 `SettingsTab` 枚举本身**。同名条目（如 Antigravity 额度 vs 用量）通过前缀 `client.<id>`
+彻底隔离 ID。`providerPane(for: ProviderKind)` 与 `clientPane(for: ClientDescriptor)` 分别派发到对应详情。
+`SettingsPaneHeader` 也走同一个 `SettingsTab`，不再 hardcoded icon / title。
 
 ## Current Design Boundaries
 
@@ -505,5 +507,5 @@ These are documented product boundaries:
   have their own SQLite readers, Antigravity is pure RPC, and Codex parses JSONL on
   demand for the 7-day chart.
 
-> 核对基线：2026-10-29 · 代码 651d4f5
+> 核对基线：2026-10-29 · 代码 361d485
 > 2026-10-25 自启草稿与菜单实际状态同步已随 6f11831 入库：定向 27 例、完整 1422 例均通过；完整验证记录见 `spec/sync.md`。
