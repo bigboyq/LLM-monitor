@@ -153,7 +153,8 @@ height: content-driven, fixedSize(vertical: true)
 | ▸ OpenCode                         21:09       |   collapsed client section
 |   今日 Token: 820K  价值: ¥10  命中率: 62%  速度: 205 tok/s |
 |   gpt-5.5                         620K tokens   |   expanded model details use compact rows
-|     min ───── ● ─── max   P50 … 最近 … tok/s     |
+|       ├────────◆────────┤                       |
+|     min 28            max 163          最近 137   |
 | ⚠ 会话文件超出单轮扫描预算，已按最新优先截断…   |   truncation notice (that section only)
 | ...                                            |
 +------------------------------------------------+
@@ -386,15 +387,18 @@ per-client sections」描述的是**本机 scope** 的内容区；多机联动�
   omitted first. The model name keeps at least 80pt before it truncates. In the narrowest
   fallback, gaps tighten and metric labels may scale to 82%. The speed label is concise;
   help states that its value is the full-Prompt P50 in tok/s.
-  The prompt-speed range follows the metrics (min/max endpoints, P50 and recent markers).
-  `Pmt` counts all recorded promptIDs, including prompts excluded from speed statistics.
-  min/P50 labels sit above their markers; recent/max labels sit below. Each label's colon
-  center aligns to its marker when possible; labels clamp at the host edges and separate
-  by the smallest needed shift to avoid overlap, while marker positions stay fixed.
-  Prompt coverage is available in help/accessibility, without
-  a persistent `Prompt x/y` row. Every local model range uses the same
-  menu-wide speed scale. Single-value and zero-value markers have vertical offsets so
-  coincident readings remain distinguishable; missing or non-finite readings show `—`.
+  The prompt-speed chart follows the metrics as one thin min–max line over a faint neutral
+  shared-axis hairline, with short endpoint ticks and a diamond for the latest Prompt.
+  Three fixed labels below the line are
+  min (left), max (center), and recent (right); the chart no longer repeats P50, which remains
+  in the metrics row. Every local model row uses one shared linear min…max domain built from
+  valid minimum/maximum values across all local model rows; zero is a valid endpoint, an
+  all-equal menu domain maps to the center, and a constant model row keeps its position in
+  the shared domain. If the latest Prompt lacks a valid duration, it shows `最近 —` with no
+  marker; no valid sample shows `速度范围 —`. A single light legend states
+  the shared `tok/s` scale and identifies the latest diamond. `Pmt` counts all recorded
+  promptIDs, including prompts excluded from speed statistics. Prompt coverage is available
+  in help/accessibility, without a persistent `Prompt x/y` row.
   Fleet client sections use the same compact card summary and disclosure interaction;
   without local call durations they display speed `—`, including expanded Fleet model
   rows. Fleet model rows use the same single-baseline format and omit the unknown Pmt

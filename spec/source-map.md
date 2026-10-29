@@ -159,10 +159,10 @@
 | `Sources/LLM-monitor/Views/MenuContentView.swift` | 主面板（header / content / footer；header 统一页面级刷新：用量读 LocalUsage 时间并重扫，额度读 Provider 成功数据时间并刷新；footer 无重复时间）+ 高度桥 `MenuPanelHeightBridge` + `MenuHairline`；展示时钟经 `\.displayDate` 注入卡片 |
 | `Sources/LLM-monitor/Views/FleetScopeSwitcher.swift` | fleet scope 切换控件（菜单面板与 dock 详情浮层共用：≤4 段整行、>4 紧凑下拉）：`FleetScopeSwitcher` 按选项总数分叉（≤4 分段 `Picker`、>4 下拉 `FleetScopeMenu`），`FleetScopeMenu` 是下拉形态——范围文字 + 行内 `ellipsis` 标记，整组上限 120pt，截断走纯函数 `FleetScopeMenu.truncated(_:maxWidth:)`；三个 macOS `Menu` 平台怪癖（行内图 / 字符串层限宽 / 必须 `fixedSize`）写在文件头 |
 | `Sources/LLM-monitor/Views/DisplayClock.swift` | 跨宿主共享的展示时钟：`DisplayClock` + `DisplayClockScope` + `\.displayDate` 环境键；菜单内容 / hover 浮层 / dock 浮层 / provider 详情窗口各自持有实例、随宿主显隐 start/stop 并注入环境 |
-| `Sources/LLM-monitor/Views/HarnessUsageMenuView.swift` | 菜单用量与额度紧凑卡片（`HarnessUsageMenuView` / `MenuQuotaOverviewView`）：今日汇总、客户端占比、默认折叠的客户端摘要与模型 Prompt 速度范围线；摘要按实际宽度显隐思考占比，窄时四核心指标换行。额度行展示有效额度、重置倒计时、临期/高峰事件、右侧时间与刷新；套餐详情/套餐历史独立折叠、独立窗口可达，长摘要与三操作分行；`MenuContentMode` 由宿主持久化。布局回归见 `HarnessUsageMenuViewTests` |
+| `Sources/LLM-monitor/Views/HarnessUsageMenuView.swift` | 菜单用量与额度紧凑卡片（`HarnessUsageMenuView` / `MenuQuotaOverviewView`）：今日汇总、客户端占比、默认折叠的客户端摘要与模型 Prompt 速度范围线；本地模型行共用有效 min…max 速度域与单处图例。摘要按实际宽度显隐思考占比，窄时四核心指标换行。额度行展示有效额度、重置倒计时、临期/高峰事件、右侧时间与刷新；套餐详情/套餐历史独立折叠、独立窗口可达，长摘要与三操作分行；`MenuContentMode` 由宿主持久化。布局回归见 `HarnessUsageMenuViewTests` |
 | `Sources/LLM-monitor/Views/MenuTypography.swift` | 菜单面板与悬浮层统一排版常量（语义角色，禁止散落硬编码字号） |
-| `Sources/LLM-monitor/Views/PromptSpeedRangeLineView.swift` | 展开模型行的 Prompt 速度范围线：上排 min/P50、下排最近/max；标记共用刻度，`PromptSpeedLabelPairLayout` / `PromptSpeedLabelPlacement` 测量前缀与冒号宽度，以冒号中心锚点并避让文字；样本覆盖仅在帮助/辅助功能说明 |
-| `Tests/LLMMonitorTests/PromptSpeedRangeLayoutTests.swift` | 标签同点、屏边界、窄容器、冒号锚定、中文前缀与共享速度刻度回归 |
+| `Sources/LLM-monitor/Views/PromptSpeedRangeLineView.swift` | 展开模型行的 Prompt 速度范围线：细 min…max 线、端点短竖线、最近值菱形与固定 min/max/最近三栏；线性刻度使用菜单共享域，P50 数值只保留在模型指标行 |
+| `Tests/LLMMonitorTests/PromptSpeedRangeLayoutTests.swift` | 共享速度域坐标、零端点、全域同值居中、模型常量的共享位置与窄宽布局回归 |
 | `Tests/LLMMonitorTests/MenuRefreshPresentationTests.swift` | 页面额度时间来源：启用项、失败保留成功数据、持久成功时间与空态 |
 | `Sources/LLM-monitor/Views/MenuWindowAutoCloseBridge.swift` | 失焦立即关 + 30s 无交互关闭（菜单内 mouse/scroll/key 重置计时）；关闭统一出口 `performClose` 并发 `onPanelClose`（菜单展示时钟随之停表）；30s 计时为单个可复用 `DispatchSourceTimer`（reset 只改 deadline，鼠标事件不再重建句柄） |
 | `Sources/LLM-monitor/Views/ProviderCardDerived.swift` | 卡片 body 的派生值入口：投影 + 额度窗口快照 + 「今」行 + 「闲」行（GLM 今日闲时，`offPeakUsageRow`）+ 「免 / 速 / 它」今日动态行（`glmCategoryUsageRows`，按 `GlmUsageCategory` 今日切片）打包成一个 memo 值（共享失效条件；键 = 全值 `status` + 墙钟日 + 展示日 + `HolidayCalendar.sharedRevision` + 时区标识），展示时钟每秒 tick 不再重算 O(samples) 定价 |

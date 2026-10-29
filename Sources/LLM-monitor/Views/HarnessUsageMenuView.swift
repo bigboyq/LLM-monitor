@@ -29,12 +29,35 @@ struct HarnessUsageMenuView: View {
     var onRefreshSection: (HarnessSection) -> Void = { _ in }
     /// fleet 汇总可用且多于一个节点时启用双行 + 节点分组形态。
     private var fleetMenuActive: Bool { fleetSummary?.multiNode == true }
-    private var localSpeedScaleMaximum: Double? {
-        let values = summary.sections.flatMap { section in
-            [section.promptSpeedStatistics.maximum].compactMap { $0 }
-                + section.rows.compactMap { $0.promptSpeedStatistics.maximum }
-        }.filter { $0.isFinite && $0 > 0 }
-        return values.max()
+    var localSpeedScaleRange: ClosedRange<Double>? {
+        Self.sharedSpeedRange(for: summary.sections)
+    }
+
+    static func sharedSpeedRange(for sections: [HarnessSection]) -> ClosedRange<Double>? {
+        let values = sections.flatMap(\.rows).flatMap { row in
+            [row.promptSpeedStatistics.minimum, row.promptSpeedStatistics.maximum]
+        }.compactMap { value -> Double? in
+            guard let value, value.isFinite, value >= 0 else { return nil }
+            return value
+        }
+        guard let minimum = values.min(), let maximum = values.max() else { return nil }
+        return minimum...maximum
+    }
+
+    @ViewBuilder
+    private var localSpeedScaleNote: some View {
+        if let range = localSpeedScaleRange {
+            HStack(spacing: 3) {
+                Spacer(minLength: 0)
+                Text("共享刻度 \(PromptSpeedRangeLineView.speedValue(range.lowerBound))–\(PromptSpeedRangeLineView.speedValue(range.upperBound)) tok/s")
+                Image(systemName: "diamond.fill")
+                    .font(.system(size: 6, weight: .medium))
+                Text("最近")
+            }
+            .font(MenuTypography.footer)
+            .foregroundStyle(Color.secondaryLabel.opacity(0.72))
+            .lineLimit(1)
+        }
     }
 
     var body: some View {
@@ -73,12 +96,13 @@ struct HarnessUsageMenuView: View {
                     segments: HarnessTodaySummary.clientSegments(from: summary.sections)
                 )
                 if summary.sections.isEmpty { emptyTodayState } else {
+                    localSpeedScaleNote
                     ForEach(summary.sections) { section in
                         HarnessSectionView(
                             section: section,
                             onRefreshSection: onRefreshSection,
                             updateTime: summary.localUsageScannedAt,
-                            sharedSpeedMaximum: localSpeedScaleMaximum
+                            sharedSpeedRange: localSpeedScaleRange
                         )
                     }
                 }
@@ -112,12 +136,13 @@ struct HarnessUsageMenuView: View {
             } else {
                 // 联动关闭 / 只有本机节点时保持传统客户端视图，并保留顶部总览。
                 todayOverview
+                localSpeedScaleNote
                 ForEach(summary.sections) { section in
                     HarnessSectionView(
                         section: section,
                         onRefreshSection: onRefreshSection,
                         updateTime: summary.localUsageScannedAt,
-                        sharedSpeedMaximum: localSpeedScaleMaximum
+                        sharedSpeedRange: localSpeedScaleRange
                     )
                 }
             }
@@ -632,7 +657,7 @@ struct HarnessSectionView: View {
     /// 段头右键「刷新 <客户端名>」：按本段今日贡献行刷新涉及的 provider 卡。
     var onRefreshSection: (HarnessSection) -> Void = { _ in }
     var updateTime: Date? = nil
-    var sharedSpeedMaximum: Double? = nil
+    var sharedSpeedRange: ClosedRange<Double>? = nil
     @State private var isExpanded = false
 
     var body: some View {
@@ -646,7 +671,7 @@ struct HarnessSectionView: View {
             }
             if isExpanded {
                 ForEach(section.rows) { row in
-                    HarnessModelRowView(row: row, sharedSpeedMaximum: sharedSpeedMaximum)
+                    HarnessModelRowView(row: row, sharedSpeedRange: sharedSpeedRange)
                 }
             }
         }
@@ -1089,7 +1114,7 @@ private struct MenuQuotaProviderRow: View {
 /// 本机与 Fleet 的模型指标均按相同顺序共用一条基线；速度范围仅本机有有效时长时绘制。
 struct HarnessModelRowView: View {
     let row: HarnessModelRow
-    var sharedSpeedMaximum: Double? = nil
+    var sharedSpeedRange: ClosedRange<Double>? = nil
 
     /// 行与行的间距。刻意小于段间距（`sectionSpacing`），让分组层级一眼可辨。
     static let rowSpacing: CGFloat = 3
@@ -1106,7 +1131,7 @@ struct HarnessModelRowView: View {
             }
             .accessibilityElement(children: .combine)
             .accessibilityLabel(Self.accessibilityMetrics(for: row))
-            PromptSpeedRangeLineView(statistics: row.promptSpeedStatistics, scaleMaximum: sharedSpeedMaximum)
+            PromptSpeedRangeLineView(statistics: row.promptSpeedStatistics, scaleRange: sharedSpeedRange)
         }
     }
 

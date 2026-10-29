@@ -18,6 +18,55 @@ final class HarnessUsageMenuViewTests: XCTestCase {
         XCTAssertEqual(HarnessModelRowView.columnSpacing, 4)
     }
 
+    func testSharedSpeedRangeUsesAllLocalModelEndpointsIncludingZero() {
+        let today = Calendar.current.startOfDay(for: Date())
+        func row(_ name: String, output: Int, duration: Double?) -> HarnessModelRow {
+            HarnessModelRow(
+                dayStart: today,
+                clientID: ClientID.openCode,
+                quotaProviderID: QuotaProviderID.openAI,
+                modelName: name,
+                samples: [LocalTokenUsageSample(
+                    completedAt: today.addingTimeInterval(60),
+                    modelName: name,
+                    promptID: name,
+                    inputTokens: 1,
+                    cachedInputTokens: 0,
+                    outputTokens: output,
+                    reasoningOutputTokens: 0,
+                    durationSeconds: duration
+                )],
+                calendar: .current
+            )
+        }
+        func section(_ clientID: String, rows: [HarnessModelRow]) -> HarnessSection {
+            HarnessSection(
+                clientID: clientID,
+                displayName: clientID,
+                iconSystemName: "terminal",
+                buckets: .zero,
+                tokensPerSecond: nil,
+                value: MixedCurrencyEstimate(estimates: []),
+                rows: rows,
+                isTruncated: false
+            )
+        }
+
+        let sections = [
+            section("slow", rows: [row("zero", output: 0, duration: 1), row("slow", output: 10, duration: 1)]),
+            section("fast", rows: [row("fast", output: 30, duration: 1)]),
+            section("missing", rows: [row("missing", output: 50, duration: nil)])
+        ]
+        let sharedRange = HarnessUsageMenuView.sharedSpeedRange(for: sections)
+
+        XCTAssertEqual(sharedRange?.lowerBound, 0)
+        XCTAssertEqual(sharedRange?.upperBound, 30)
+        XCTAssertNil(
+            sections[2].rows[0].promptSpeedStatistics.minimum,
+            "缺失时长不是 0 tok/s，也不应进入共享刻度"
+        )
+    }
+
     /// 宿主可独立展开套餐或历史；呈现模式参与值相等判断，避免 `.equatable()`
     /// 把一种模式缓存成另一种。
     func testPresentationModeParticipatesInProviderCardEquatableIdentity() {
