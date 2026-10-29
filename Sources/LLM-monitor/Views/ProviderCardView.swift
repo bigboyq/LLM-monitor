@@ -525,29 +525,42 @@ struct ProviderCardView: View, Equatable {
         // fleet scope：整块行集来自 fleet 窗口聚合 + fleet「今」/「闲」行（§10.1）。
         // 复用 `QuotaWindowUsageSection` 的行形状与排版，快照槽位按 label 映射。
         if fleetUsageActive, let usage = activeUsage {
-            quotaUsageDivider
-            QuotaWindowUsageSection(
-                snapshot: Self.fleetWindowSnapshot(rows: usage.windowRows),
-                tint: accentColor,
-                today: Self.fleetRow(usage.todayRow),
-                offPeak: Self.fleetRow(usage.windowRows.first { $0.label == "闲" }),
-                // fleet 的「免 / 速 / 它」按行标签从 windowRows 映射（与「闲」同一
-                // 口径）；上报侧把三个分类切成 windowKind `glmStartPlan` /
-                // `glmHighspeed` / `glmOtherPlan` 的自然日窗口行，标签经
-                // `FleetUsageProjection.windowLabel` 回到同一组常量。
-                glmCategoryRows: [
-                    QuotaWindowUsageSection.startPlanRowLabel,
-                    QuotaWindowUsageSection.highSpeedRowLabel,
-                    QuotaWindowUsageSection.otherPlanRowLabel,
-                ].compactMap { label in
-                    Self.fleetRow(usage.windowRows.first { $0.label == label })
-                },
-                resetCredits: info.resetCredits,
-                refreshIntervalSeconds: status.refreshIntervalSeconds
-            )
+            let isBalanceOnly = status.kind == .deepseek
+            let snapshot = isBalanceOnly
+                ? QuotaWindowUsageSnapshot(interval: nil, weekly: nil, poolCount: 0)
+                : Self.fleetWindowSnapshot(rows: usage.windowRows)
+            let today = isBalanceOnly ? nil : Self.fleetRow(usage.todayRow)
+            let offPeak = isBalanceOnly
+                ? nil
+                : Self.fleetRow(usage.windowRows.first { $0.label == "闲" })
+            let glmCategoryRows = isBalanceOnly ? [] : [
+                QuotaWindowUsageSection.startPlanRowLabel,
+                QuotaWindowUsageSection.highSpeedRowLabel,
+                QuotaWindowUsageSection.otherPlanRowLabel,
+            ].compactMap { label in
+                Self.fleetRow(usage.windowRows.first { $0.label == label })
+            }
+            if QuotaWindowUsageSection.hasVisibleContent(
+                snapshot: snapshot,
+                today: today,
+                offPeak: offPeak,
+                glmCategoryRows: glmCategoryRows,
+                resetCredits: info.resetCredits
+            ) {
+                quotaUsageDivider
+                QuotaWindowUsageSection(
+                    snapshot: snapshot,
+                    tint: accentColor,
+                    today: today,
+                    offPeak: offPeak,
+                    glmCategoryRows: glmCategoryRows,
+                    resetCredits: info.resetCredits,
+                    refreshIntervalSeconds: status.refreshIntervalSeconds
+                )
+            }
         } else {
         let snapshot = derived.windowUsageSnapshot
-        let today = derived.todayUsageRow
+        let today = status.kind == .deepseek ? nil : derived.todayUsageRow
         let offPeak = derived.offPeakUsageRow
         let glmCategoryRows = derived.glmCategoryUsageRows
         let hasUsageModules = QuotaWindowUsageSection.hasVisibleContent(

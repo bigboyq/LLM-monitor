@@ -711,7 +711,8 @@ struct HarnessSectionView: View {
                 Text("今日 Token: \(tokens)")
                 Text("价值: \(value)")
                 Text("命中率: \(hitRate)")
-                Text("速度(P50): \(p50)")
+                Text("速度: \(p50)")
+                    .help("完整 Prompt 速度 P50，单位 tok/s")
             }
             .font(MenuTypography.hint)
             .foregroundStyle(Color.secondaryLabel)
@@ -726,7 +727,8 @@ struct HarnessSectionView: View {
             if includeThinking, let thinking = HarnessModelRowView.thinkingPercent(section.buckets) {
                 Text("思考: \(thinking)")
             }
-            Text("速度(P50): \(p50)")
+            Text("速度: \(p50)")
+                .help("完整 Prompt 速度 P50，单位 tok/s")
         }
         .font(MenuTypography.hint)
         .foregroundStyle(Color.secondaryLabel)
@@ -779,6 +781,12 @@ enum MenuQuotaPresentation {
         balance: DeepseekBalanceDetail?,
         now: Date = Date()
     ) -> String {
+        if providerKind == .deepseek {
+            guard let balance else { return "余额暂无数据" }
+            let total = "余额 \(balance.symbol)\(String(format: "%.2f", balance.total))"
+            let grant = "赠金 \(balance.symbol)\(String(format: "%.2f", balance.granted))"
+            return "\(total) · \(grant)"
+        }
         let intervals = models.filter(\.hasIntervalWindow)
         let weeks = models.filter(\.hasWeeklyWindow)
         var pieces: [String] = []
@@ -789,9 +797,6 @@ enum MenuQuotaPresentation {
             pieces.append("周 \(Formatters.formatQuotaPercent(weekly.weeklyRemainingPercent)) · \(resetText(weekly.weeklyResetsAt, now: now))")
         }
         if !pieces.isEmpty { return pieces.joined(separator: " · ") }
-        if providerKind == .deepseek, let balance {
-            return "余额 \(balance.symbol)\(String(format: "%.2f", balance.total))"
-        }
         return "暂无窗口额度"
     }
 
@@ -1081,7 +1086,7 @@ private struct MenuQuotaProviderRow: View {
 /// 价值是**行级**的 `ModelCostEstimate.displayText` 原样文案（单 provider 单币种
 /// 原额）。行级绝不做跨币种相加——同一段里不同 provider 的行金额可能不同币种，
 /// 相加必须留到段头 / 全局的 `MixedCurrencyEstimate`。
-/// 本机与 Fleet 的模型指标均按相同顺序自然换行；速度范围仅本机有有效时长时绘制。
+/// 本机与 Fleet 的模型指标均按相同顺序共用一条基线；速度范围仅本机有有效时长时绘制。
 struct HarnessModelRowView: View {
     let row: HarnessModelRow
     var sharedSpeedMaximum: Double? = nil
@@ -1094,26 +1099,66 @@ struct HarnessModelRowView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Self.columnSpacing) {
-            WrapLayout(horizontalSpacing: 7, verticalSpacing: 2) {
-                Text(row.compactDisplayName)
-                    .font(MenuTypography.modelTitle)
-                    .foregroundStyle(Color.primaryLabel)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .help(row.displayName)
-                Text("Pmt: \(row.promptSpeedStatistics.totalPromptCount)")
-                Text("Token: \(Formatters.formatTokenCountCompact(row.totalTokens))")
-                Text("价值: \(row.costText)")
-                Text("命中: \(Self.percentText(row.cacheHitRate))")
-                Text("思考: \(Self.thinkingPercent(row.buckets) ?? "—")")
-                Text("速度(P50): \(PromptSpeedRangeLineView.speedText(row.promptSpeedStatistics.p50))")
+            ViewThatFits(in: .horizontal) {
+                metricsLine(showPromptCount: true, spacing: 7, minimumScaleFactor: 1)
+                metricsLine(showPromptCount: false, spacing: 7, minimumScaleFactor: 1)
+                metricsLine(showPromptCount: false, spacing: 3, minimumScaleFactor: 0.82)
             }
-            .font(MenuTypography.hint)
-            .foregroundStyle(Color.secondaryLabel)
             .accessibilityElement(children: .combine)
             .accessibilityLabel(Self.accessibilityMetrics(for: row))
             PromptSpeedRangeLineView(statistics: row.promptSpeedStatistics, scaleMaximum: sharedSpeedMaximum)
         }
+    }
+
+    /// Keep model identity and all metrics on one shared baseline. The name absorbs
+    /// available width and truncates; only when every metric cannot fit do we hide
+    /// the comparatively low-value Prompt count.
+    private func metricsLine(
+        showPromptCount: Bool,
+        spacing: CGFloat,
+        minimumScaleFactor: CGFloat
+    ) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: spacing) {
+            Text(row.compactDisplayName)
+                .font(MenuTypography.modelTitle)
+                .foregroundStyle(Color.primaryLabel)
+                .lineLimit(1)
+                .minimumScaleFactor(1)
+                .truncationMode(.tail)
+                .help(row.displayName)
+                .frame(minWidth: 80, maxWidth: .infinity, alignment: Alignment(horizontal: .leading, vertical: .firstTextBaseline))
+            if showPromptCount {
+                Text("Pmt: \(row.promptSpeedStatistics.totalPromptCount)")
+                    .lineLimit(1)
+                    .fixedSize(horizontal: minimumScaleFactor == 1, vertical: false)
+                    .minimumScaleFactor(minimumScaleFactor)
+            }
+            Text("Token: \(Formatters.formatTokenCountCompact(row.totalTokens))")
+                .lineLimit(1)
+                .fixedSize(horizontal: minimumScaleFactor == 1, vertical: false)
+                .minimumScaleFactor(minimumScaleFactor)
+            Text("价值: \(row.costText)")
+                .lineLimit(1)
+                .fixedSize(horizontal: minimumScaleFactor == 1, vertical: false)
+                .minimumScaleFactor(minimumScaleFactor)
+            Text("命中: \(Self.percentText(row.cacheHitRate))")
+                .lineLimit(1)
+                .fixedSize(horizontal: minimumScaleFactor == 1, vertical: false)
+                .minimumScaleFactor(minimumScaleFactor)
+            Text("思考: \(Self.thinkingPercent(row.buckets) ?? "—")")
+                .lineLimit(1)
+                .fixedSize(horizontal: minimumScaleFactor == 1, vertical: false)
+                .minimumScaleFactor(minimumScaleFactor)
+            Text("速度: \(PromptSpeedRangeLineView.speedText(row.promptSpeedStatistics.p50))")
+                .lineLimit(1)
+                .fixedSize(horizontal: minimumScaleFactor == 1, vertical: false)
+                .minimumScaleFactor(minimumScaleFactor)
+                .help("完整 Prompt 速度 P50，单位 tok/s")
+        }
+        .font(MenuTypography.hint)
+        .foregroundStyle(Color.secondaryLabel)
+        .lineLimit(1)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     static func thinkingPercent(_ buckets: TokenUsageBuckets) -> String? {
@@ -1257,7 +1302,8 @@ struct FleetClientSectionView: View {
                     }
                     HStack(spacing: 7) {
                         Text("命中率: \(HarnessUsageMenuView.hitRateText(HarnessTodaySummary.cacheHitRate(for: section.buckets)))")
-                        Text("速度(P50): —")
+                        Text("速度: —")
+                            .help("Fleet 未同步调用时长，速度不可用")
                     }
                 }
                 .font(MenuTypography.hint)
@@ -1277,7 +1323,8 @@ struct FleetClientSectionView: View {
             Text("今日 Token: \(Formatters.formatTokenCountCompact(section.totalTokens))")
             Text("价值: \(section.costText)")
             Text("命中率: \(HarnessUsageMenuView.hitRateText(HarnessTodaySummary.cacheHitRate(for: section.buckets)))")
-            Text("速度(P50): —")
+            Text("速度: —")
+                .help("Fleet 未同步调用时长，速度不可用")
         }
         .font(MenuTypography.hint)
         .foregroundStyle(Color.secondaryLabel)
@@ -1330,22 +1377,25 @@ struct FleetModelRowView: View {
         VStack(alignment: .leading, spacing: 4) {
             // 压缩名与本机行同口径（去供应商命名空间/品牌前缀）：
             // 原始名过长时尾截断会把 "-Flash" 截没，被误读成不同模型被合并。
-            WrapLayout(horizontalSpacing: 7, verticalSpacing: 2) {
+            HStack(alignment: .firstTextBaseline, spacing: 3) {
                 Text(HarnessModelRow.compactedDisplayName(for: row.modelName))
                     .font(MenuTypography.modelTitle)
                     .foregroundStyle(row.stale ? Color.secondaryLabel : Color.primaryLabel)
                     .lineLimit(1)
                     .truncationMode(.tail)
                     .help(row.modelName)
-                Text("Pmt: —")
+                    .frame(minWidth: 80, maxWidth: .infinity, alignment: Alignment(horizontal: .leading, vertical: .firstTextBaseline))
                 Text("Token: \(Formatters.formatTokenCountCompact(row.totalTokens))")
                 Text("价值: \(row.costText)")
                 Text("命中: \(HarnessModelRowView.percentText(row.hitRate))")
                 Text("思考: \(HarnessModelRowView.thinkingPercent(row.buckets) ?? "—")")
-                Text("速度(P50): —")
+                Text("速度: —")
+                    .help("Fleet 未同步调用时长，速度不可用")
             }
             .font(MenuTypography.hint)
             .foregroundStyle(Color.secondaryLabel)
+            .lineLimit(1)
+            .minimumScaleFactor(0.82)
             .accessibilityElement(children: .combine)
             Text("速度范围 —（节点同步不含调用时长）")
                 .font(MenuTypography.hint)

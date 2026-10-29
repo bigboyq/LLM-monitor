@@ -372,18 +372,9 @@ struct QuotaWindowUsageSection: View {
         }
     }
 
-    /// 窗口 token 速度（tok/s）的分档格式化（纯函数）：
-    /// - nil → `—`（窗口内没有时长有效的样本，不是"速度为 0"）
-    /// - < 100 → 1 位小数（`50.1`）
-    /// - ≥ 100 → 整数（`246`）
-    /// 分档按原始值判定（先分档再格式化，不是舍入后再分档）：
-    /// `99.96` 原始值 < 100 属一位小数档，`%.1f` 四舍五入成 `100.0`。
+    /// 与菜单和历史共用紧凑速度格式；数值部分含小数点最多三个字符。
     static func speedText(_ rate: Double?) -> String {
-        guard let rate else { return "—" }
-        if rate >= 100 {
-            return String(format: "%.0f", rate)
-        }
-        return String(format: "%.1f", rate)
+        Formatters.formatSpeed(rate)
     }
 
     /// 用量态「速度」表头的 hover 说明：列名只有「速度」两个字，光标停上去才

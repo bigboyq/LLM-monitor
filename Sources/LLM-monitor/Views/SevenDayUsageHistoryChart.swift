@@ -237,7 +237,7 @@ struct SevenDayUsageHistoryView: View {
                 header("Output", width: 58)
                 header("Reason", width: 58)
                 if selectedMetric == .value { header("价值", width: 62) }
-                if selectedMetric == .speed { header("速度(P50)", width: 62) }
+                if selectedMetric == .speed { header("速度", width: 62).help("每日 Prompt 速度 P50，tok/s") }
             }
 
             ForEach(days) { day in
@@ -287,7 +287,7 @@ struct SevenDayUsageHistoryView: View {
             guard let currency = days.compactMap(\.currency).first else { return String(format: "%.2g", value) }
             return "\(currency.symbol)\(String(format: "%.2g", value))"
         case .speed:
-            return String(format: value >= 100 ? "%.0f" : "%.1f", value)
+            return Formatters.formatSpeed(value)
         }
     }
 
@@ -318,9 +318,7 @@ struct SevenDayUsageHistoryView: View {
     }
 
     private func selectedSpeed(_ day: UsageHistoryDay) -> some View {
-        Text(UsageHistoryNumber.finiteNonnegative(day.speed).map {
-            String(format: $0 >= 100 ? "%.0f" : "%.1f", $0)
-        } ?? "—")
+        Text(Formatters.formatSpeed(day.speed))
             .font(MenuTypography.metricValue)
             .foregroundStyle(day.speedIsPartial ? Color.orange : Color.secondary)
             .frame(width: 62, alignment: .trailing)

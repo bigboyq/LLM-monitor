@@ -54,12 +54,18 @@ final class HarnessUsageMenuViewTests: XCTestCase {
 
         let balance = DeepseekBalanceDetail(currency: "CNY", total: 12.3, toppedUp: 10, granted: 2.3)
         XCTAssertEqual(
-            MenuQuotaPresentation.summary(providerKind: .deepseek, models: [], balance: balance),
-            "余额 ¥12.30"
+            MenuQuotaPresentation.summary(providerKind: .deepseek, models: windows, balance: balance),
+            "余额 ¥12.30 · 赠金 ¥2.30",
+            "DeepSeek 的兼容 interval 字段不应被读成 5h 配额"
         )
         XCTAssertEqual(
             MenuQuotaPresentation.summary(providerKind: .codexChatGpt, models: [], balance: balance),
             "暂无窗口额度"
+        )
+        XCTAssertEqual(
+            MenuQuotaPresentation.summary(providerKind: .deepseek, models: windows, balance: nil),
+            "余额暂无数据",
+            "缺少余额数据时也不应退回显示兼容 interval"
         )
     }
 
@@ -234,25 +240,28 @@ final class HarnessUsageMenuViewTests: XCTestCase {
         XCTAssertGreaterThan(size.height, 0)
     }
 
-    /// 模型指标在指定菜单宽度下自然换行；Pmt 统计包含没有有效时长的 Prompt。
+    /// 长模型名尾部截断，指标仍共享单行；Prompt 统计包含没有有效时长的 Prompt。
     @MainActor
-    func testModelRowNaturalWidthFitsCompactContent() {
+    func testLongModelNameKeepsMetricsWithinCompactContent() {
         let row = HarnessModelRow(
             dayStart: Calendar.current.startOfDay(for: Date()),
             clientID: ClientID.openCode,
             quotaProviderID: QuotaProviderID.openAI,
-            modelName: "gpt-5.5-very-long-model-name-that-must-wrap-or-truncate-within-the-menu-width",
+            modelName: "gpt-5.5-very-long-model-name-that-must-truncate-within-the-menu-width",
             samples: [Self.sample(at: Date())],
             calendar: .current
         )
         XCTAssertEqual(row.promptSpeedStatistics.totalPromptCount, 1)
         XCTAssertEqual(row.promptSpeedStatistics.validPromptCount, 0)
-        let hosting = NSHostingView(rootView: AnyView(HarnessModelRowView(row: row)))
+        let content = HarnessModelRowView(row: row)
+            .frame(width: contentWidth, alignment: .leading)
+        let hosting = NSHostingView(rootView: AnyView(content))
         hosting.frame = CGRect(x: 0, y: 0, width: contentWidth, height: 10_000)
         hosting.layoutSubtreeIfNeeded()
 
         XCTAssertLessThanOrEqual(hosting.fittingSize.width, contentWidth + 0.5)
-        XCTAssertGreaterThan(hosting.fittingSize.height, 20, "模型行应分成至少两层信息")
+        XCTAssertGreaterThan(hosting.fittingSize.height, 20, "指标行下方应保留 Prompt 速度范围图")
+        XCTAssertLessThan(hosting.fittingSize.height, 36, "模型指标应保持单行，只有速度范围另起内容行")
     }
 
     /// 段头与模型行同构（Token 小计 / 命中占位 / 速度汇总 / 价值四格定宽）后，

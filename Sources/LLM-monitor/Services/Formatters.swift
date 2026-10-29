@@ -61,6 +61,29 @@ enum Formatters {
 
     static let formatterCache = FormatterCache()
 
+    /// 紧凑速度读数：数值部分（含小数点）最多三个字符，数量级后缀另计。
+    static func formatSpeed(_ rate: Double?) -> String {
+        guard let rate, rate.isFinite, rate >= 0 else { return "—" }
+        var value = rate == 0 ? 0 : rate
+        var exponent = 0
+        // 舍入即将进位时先升级单位，避免 999.5 变成四位的 1000。
+        while value.rounded() >= 1_000 {
+            value /= 1_000
+            exponent += 3
+        }
+        let decimal = String(format: "%.1f", value)
+        let number = decimal.count <= 3 ? decimal : String(format: "%.0f", value)
+        let suffix: String
+        switch exponent {
+        case 0: suffix = ""
+        case 3: suffix = "K"
+        case 6: suffix = "M"
+        case 9: suffix = "G"
+        default: suffix = "e\(exponent)"
+        }
+        return number + suffix
+    }
+
     // MARK: - Tokens 格式化
 
     /// 使用最多四位数字的阶梯压缩：3,000 → 3,000；30,000 → 30K；

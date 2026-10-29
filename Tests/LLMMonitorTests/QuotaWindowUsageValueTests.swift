@@ -384,23 +384,17 @@ final class QuotaWindowUsageValueTests: XCTestCase {
 
     // MARK: - 用量态「速度」列（tok/s，替换原价值列）
 
-    /// 窗口 token 速度的分档格式化（纯函数）：
-    /// - nil → `—`（窗口内没有时长有效的样本，不是"速度为 0"）
-    /// - < 100 → 1 位小数（`50.1`）
-    /// - ≥ 100 → 整数（`246`）
-    /// 分档按原始值判定（先分档再格式化，不是舍入后再分档）：
-    /// `99.96` 原始值 < 100 属一位小数档，`%.1f` 四舍五入成 `100.0`（与产出比
-    /// `9.99% → "10.0%"` 同一条"先分档再格式化"纪律）。
+    /// 窗口和菜单共用三个字符的速度读数，舍入进位后也不泄漏多余小数位。
     func testSpeedTextAdaptiveFormatting() {
         // nil
         XCTAssertEqual(QuotaWindowUsageSection.speedText(nil), "—")
 
-        // 1. < 100 档（1 位小数）
+        // 单位数保留一位小数，两/三位数显示整数。
         XCTAssertEqual(QuotaWindowUsageSection.speedText(0), "0.0")
-        XCTAssertEqual(QuotaWindowUsageSection.speedText(50.14), "50.1")
-        XCTAssertEqual(QuotaWindowUsageSection.speedText(99.94), "99.9")
-        // 阶梯边界：99.96 原始值 < 100，属于 1 位小数档，先分档再格式化为 "100.0"
-        XCTAssertEqual(QuotaWindowUsageSection.speedText(99.96), "100.0")
+        XCTAssertEqual(QuotaWindowUsageSection.speedText(8.64), "8.6")
+        XCTAssertEqual(QuotaWindowUsageSection.speedText(50.14), "50")
+        XCTAssertEqual(QuotaWindowUsageSection.speedText(99.94), "100")
+        XCTAssertEqual(QuotaWindowUsageSection.speedText(99.96), "100")
 
         // 2. ≥ 100 档（整数）
         XCTAssertEqual(QuotaWindowUsageSection.speedText(100), "100")

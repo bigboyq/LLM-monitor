@@ -105,6 +105,41 @@ final class ProviderCardDerivedMemoTests: XCTestCase {
         return status
     }
 
+    func testDeepSeekBalanceCompatibilityIntervalIsNotProjectedAsAQuotaWindow() {
+        let now = Date()
+        let day = Calendar.current.startOfDay(for: now)
+        var status = makeStatus(samples: [], day: day, scannedAt: now)
+        let balanceModel = ModelQuota(
+            modelName: "deepseek_balance",
+            intervalTotalCount: 0,
+            intervalUsageCount: 0,
+            intervalRemainingPercent: 100,
+            intervalStatus: .present,
+            intervalResetsAt: nil,
+            intervalWindowSeconds: nil,
+            weeklyTotalCount: 0,
+            weeklyUsageCount: 0,
+            weeklyRemainingPercent: 100,
+            weeklyStatus: .absent,
+            weeklyResetsAt: nil,
+            weeklyWindowSeconds: nil
+        )
+        status.state = .ok(QuotaInfo(
+            models: [balanceModel],
+            resetCredits: nil,
+            planLabel: "¥12.30",
+            accountEmail: nil,
+            codexUsageDetails: nil,
+            fetchedAt: now,
+            balanceDetail: DeepseekBalanceDetail(currency: "CNY", total: 12.3, toppedUp: 10, granted: 2.3)
+        ))
+        let projection = status.usageProjection(for: status.lastSuccess, now: now)
+
+        let snapshot = ProviderCardDerivedValues.windowUsageSnapshot(status: status, projection: projection)
+
+        XCTAssertTrue(snapshot.isEmpty, "兼容 interval 只供余额状态语义，不是 5h 用量窗口")
+    }
+
     override func setUp() {
         super.setUp()
         ProviderCardDerivedValues.reset()

@@ -5,6 +5,18 @@ import Foundation
 /// `Formatters` 的数字 / 百分比 / 时间格式化规则。对应 `Formatters`。
 final class FormattersTests: XCTestCase {
 
+    func testSpeedFormattingKeepsThreeCharacterNumericBodyAcrossRoundingBoundaries() {
+        let examples: [(Double?, String)] = [
+            (nil, "—"), (-1, "—"), (.nan, "—"), (.infinity, "—"),
+            (-0.0, "0.0"), (0.04, "0.0"), (8.64, "8.6"), (9.94, "9.9"),
+            (9.96, "10"), (50.14, "50"), (99.96, "100"), (245.7, "246"),
+            (999.4, "999"), (999.5, "1.0K"), (12_345, "12K"), (999_500, "1.0M"),
+        ]
+        for (rate, expected) in examples {
+            XCTAssertEqual(Formatters.formatSpeed(rate), expected, "rate=\(String(describing: rate))")
+        }
+    }
+
     // MARK: - Formatters
 
     /// 数字格式化 2 in 1：formatTokenCountCompact (K/M) + formatPercent (% / 小数位)

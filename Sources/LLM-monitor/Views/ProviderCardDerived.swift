@@ -339,6 +339,12 @@ enum ProviderCardDerivedValues {
         status: ProviderStatus,
         projection: ProviderUsageProjection
     ) -> QuotaWindowUsageSnapshot {
+        // DeepSeek marks its balance model as an interval for legacy status/readiness
+        // semantics, but it has no consumable 5h pool or reset time. Its real total and
+        // grant are already shown by DeepseekBalanceRow; don't expose a fake window row.
+        guard status.kind != .deepseek else {
+            return QuotaWindowUsageSnapshot(interval: nil, weekly: nil, poolCount: 0)
+        }
         let quotaInfo = status.lastSuccess
         let models = quotaInfo?.aggregateQuotaModels(providerKind: status.kind) ?? []
         let snapshots = models.map { model -> QuotaWindowUsageSnapshot in
