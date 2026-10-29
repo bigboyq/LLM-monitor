@@ -80,6 +80,37 @@ final class EdgeDockProjectionTests: EdgeDockTestCase {
         XCTAssertFalse(entry?.hasAnyQuotaWindow ?? true)
     }
 
+    func testDeepseekBalanceAvailabilityDoesNotBecomeAFiveHourRing() {
+        let available = makeStatus(
+            id: "deepseek",
+            kind: .deepseek,
+            state: .ok(makeInfo([makeModel(name: "deepseek_balance", intervalPercent: 100)]))
+        )
+        let availableEntry = EdgeDockProjection.entries(from: [available], at: Self.makeNow)[0]
+        XCTAssertNil(availableEntry.intervalFraction)
+        XCTAssertNil(availableEntry.rawIntervalFraction)
+        XCTAssertNil(availableEntry.weeklyFraction)
+        XCTAssertFalse(availableEntry.hasAnyQuotaWindow)
+        XCTAssertNil(availableEntry.intervalHealth, "余额 provider 没有独立的 5h 窗口健康档")
+        XCTAssertEqual(availableEntry.health, .healthy, "整体健康档仍沿用现有余额可用性算法")
+        XCTAssertEqual(availableEntry.balanceAvailable, true)
+        XCTAssertEqual(EdgeDockProjection.balanceLabel(available: availableEntry.balanceAvailable), "可用")
+        XCTAssertEqual(EdgeDockProjection.balanceCaption(available: availableEntry.balanceAvailable), "账户可用")
+
+        let unavailable = makeStatus(
+            id: "deepseek",
+            kind: .deepseek,
+            state: .ok(makeInfo([makeModel(name: "deepseek_balance", intervalPercent: 0)]))
+        )
+        let unavailableEntry = EdgeDockProjection.entries(from: [unavailable], at: Self.makeNow)[0]
+        XCTAssertNil(unavailableEntry.intervalFraction)
+        XCTAssertNil(unavailableEntry.intervalHealth, "余额 provider 没有独立的 5h 窗口健康档")
+        XCTAssertEqual(unavailableEntry.health, .critical, "余额不可用仍保持现有整体告急色档")
+        XCTAssertEqual(unavailableEntry.balanceAvailable, false)
+        XCTAssertEqual(EdgeDockProjection.balanceLabel(available: unavailableEntry.balanceAvailable), "不可用")
+        XCTAssertEqual(EdgeDockProjection.balanceCaption(available: unavailableEntry.balanceAvailable), "账户不可用")
+    }
+
     func testProjectionKeepsLastSuccessWhileLoading() {
         // loading / failed 期间仍能用上次的成功数据画环，而不是闪成"无数据"。
         let info = makeInfo([makeModel(name: "g", intervalPercent: 42, weeklyPercent: 77)])

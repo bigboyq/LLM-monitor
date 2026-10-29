@@ -22,7 +22,9 @@ struct CodexFillingMissingMerger: RefreshResultMerger {
     func merge(new: QuotaInfo, previous: QuotaInfo?, mode: RefreshMode) -> QuotaInfo {
         guard let previous else { return new }
         let mergedResetCredits: ResetCreditsInfo?
-        if let newResets = new.resetCredits {
+        if new.mainQuotaError != nil {
+            mergedResetCredits = previous.resetCredits
+        } else if let newResets = new.resetCredits {
             mergedResetCredits = newResets
         } else if let prevResets = previous.resetCredits {
             if mode == .background {
@@ -37,21 +39,38 @@ struct CodexFillingMissingMerger: RefreshResultMerger {
         }
 
         let mergedApiCredits: OpenAIApiCreditDetails?
+        let mergedApiCreditsError: String?
         if !adminApiCreditsEnabled {
             mergedApiCredits = nil
+            mergedApiCreditsError = nil
+        } else if let newCredits = new.openAIApiCredits {
+            mergedApiCredits = newCredits
+            mergedApiCreditsError = nil
+        } else if let previousCredits = previous.openAIApiCredits {
+            if new.openAIApiCreditsError != nil {
+                mergedApiCredits = previousCredits.markingStale()
+            } else {
+                mergedApiCredits = previousCredits
+            }
+            mergedApiCreditsError = new.openAIApiCreditsError
         } else {
-            mergedApiCredits = new.openAIApiCredits ?? previous.openAIApiCredits
+            mergedApiCredits = nil
+            mergedApiCreditsError = new.openAIApiCreditsError
         }
 
+        let mainQuotaFailed = new.mainQuotaError != nil
+
         return QuotaInfo(
-            models: new.models,
+            models: mainQuotaFailed ? previous.models : new.models,
             resetCredits: mergedResetCredits,
-            planLabel: new.planLabel,
-            accountEmail: new.accountEmail,
+            planLabel: mainQuotaFailed ? previous.planLabel : new.planLabel,
+            accountEmail: mainQuotaFailed ? previous.accountEmail : new.accountEmail,
             codexUsageDetails: new.codexUsageDetails ?? previous.codexUsageDetails,
-            fetchedAt: new.fetchedAt,
+            fetchedAt: mainQuotaFailed ? previous.fetchedAt : new.fetchedAt,
             balanceDetail: new.balanceDetail ?? previous.balanceDetail,
-            openAIApiCredits: mergedApiCredits
+            openAIApiCredits: mergedApiCredits,
+            mainQuotaError: new.mainQuotaError,
+            openAIApiCreditsError: mergedApiCreditsError
         )
     }
 }

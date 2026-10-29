@@ -95,6 +95,7 @@ struct SettingsView: View {
     /// 有 5 小时 / 周额度窗口的 provider（ChatGPT、GLM）的四类通知渠道草稿。
     /// key = providerID，value = kind → 渠道；缺失的 kind 使用默认渠道。
     @State var notifyChannels: [String: [QuotaNotificationKind: QuotaNotifyChannel]] = [:]
+    @State var pendingNotificationProviderID: String?
 
     @State var isSaving: Bool = false
     /// 表单当前对应的那一版配置快照，只用于「这次变化与表单无关吗」的判据。
@@ -136,6 +137,18 @@ struct SettingsView: View {
 
     var isDirty: Bool {
         draftFingerprint != baselineDraftFingerprint || launchAtLoginDraft.hasLocalEdit
+    }
+
+    var chatgptMonthlyQuotaLimitError: String? {
+        guard chatgptEnabled, chatgptAdminCreditsEnabled,
+              Self.validMonthlyQuotaLimit(chatgptMonthlyQuotaLimit) == nil else { return nil }
+        return "请输入大于 0 的有限数字。"
+    }
+
+    static func validMonthlyQuotaLimit(_ rawValue: String) -> Double? {
+        guard let value = Double(rawValue.trimmingCharacters(in: .whitespacesAndNewlines)),
+              value.isFinite, value > 0 else { return nil }
+        return value
     }
 
     func refreshNotificationAuthorization() {
@@ -354,31 +367,41 @@ struct SettingsView: View {
 
     @ViewBuilder
     var detailContent: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                SettingsPaneHeader(tab: currentTab)
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    SettingsPaneHeader(tab: currentTab)
 
-                switch currentTab {
-                case .general:
-                    generalPane
-                case .interface, .notifications:
-                    generalPane
-                case .energy:
-                    energyPane
-                case .sync:
-                    SettingsSyncPane(state: state, drafts: syncDrafts)
-                case .provider(let d):
-                    // 派发到对应 provider 的 pane view。`providerPane(for:)` 是
-                    // kind 派发，加新 provider 只需在那加一个 case，**不要**在这里
-                    // 改 `SettingsTab` 枚举。
-                    providerPane(for: d.kind)
-                case .client(let c):
-                    clientPane(for: c)
-                case .clients:
-                    clientsPane
+                    switch currentTab {
+                    case .general:
+                        generalPane
+                    case .interface, .notifications:
+                        generalPane
+                    case .energy:
+                        energyPane
+                    case .sync:
+                        SettingsSyncPane(state: state, drafts: syncDrafts)
+                    case .provider(let d):
+                        // 派发到对应 provider 的 pane view。`providerPane(for:)` 是
+                        // kind 派发，加新 provider 只需在那加一个 case，**不要**在这里
+                        // 改 `SettingsTab` 枚举。
+                        providerPane(for: d.kind)
+                    case .client(let c):
+                        clientPane(for: c)
+                    case .clients:
+                        clientsPane
+                    }
                 }
+                .padding(20)
             }
-            .padding(20)
+            .onChange(of: currentTab.id) { _, tabID in
+                guard tabID == SettingsTab.notificationsID,
+                      let providerID = pendingNotificationProviderID else { return }
+                withAnimation {
+                    proxy.scrollTo("providerNotification.\(providerID)", anchor: .top)
+                }
+                pendingNotificationProviderID = nil
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
@@ -585,6 +608,15 @@ struct SettingsView: View {
     }
 
     func saveAndApply() async throws {
+        if chatgptEnabled, chatgptAdminCreditsEnabled,
+           Self.validMonthlyQuotaLimit(chatgptMonthlyQuotaLimit) == nil {
+            throw NSError(
+                domain: "SettingsValidation",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "赠金额度必须是大于 0 的有限数字。"]
+            )
+        }
+
         let actualLaunchAtLogin = loginItemService.isEnabled
         let requestedLaunchAtLogin = launchAtLoginDraft.requestedValue(actual: actualLaunchAtLogin)
 
@@ -701,10 +733,8 @@ struct SettingsView: View {
             chatgpt.adminApiKey = trimmedString(chatgptAdminApiKey)
             chatgpt.adminBillingDay = chatgptBillingDay
             chatgpt.adminBillingTime = Formatters.formatTimeOfDay(chatgptBillingTime)
-            if let limitDouble = Double(chatgptMonthlyQuotaLimit.trimmingCharacters(in: .whitespacesAndNewlines)), limitDouble > 0 {
-                chatgpt.adminMonthlyQuotaLimit = limitDouble
-            } else {
-                chatgpt.adminMonthlyQuotaLimit = 40.0
+            if let limit = Self.validMonthlyQuotaLimit(chatgptMonthlyQuotaLimit) {
+                chatgpt.adminMonthlyQuotaLimit = limit
             }
             config.providers[id] = chatgpt
         }

@@ -409,7 +409,7 @@ extension SettingsView {
     func providerNotificationSettingsSection(providerID: String) -> some View {
         SettingsSection(
             title: "\(providerDisplayName(for: providerID)) 额度事件提醒",
-            footer: "5 小时 / 周额度恢复或耗尽时的提醒方式。Bark 推送需在上方启用并配置 Bark。"
+            footer: "5 小时 / 周额度恢复或耗尽时的提醒方式。选择“Bark + 系统通知”时，Bark 不可用仍发送系统通知。"
         ) {
             ForEach(QuotaNotificationKind.allCases) { kind in
                 SettingsControlRow(kind.displayName) {
@@ -423,6 +423,7 @@ extension SettingsView {
                 }
             }
         }
+        .id("providerNotification.\(providerID)")
     }
 
     var providerCardOrderEditor: some View {

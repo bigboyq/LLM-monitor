@@ -188,7 +188,7 @@ Config reload path:
 | Fetcher | Merger | Behavior |
 |---|---|---|
 | `MinimaxTokenPlanFetcher` | `IdentityRefreshResultMerger`（默认） | 直接用新值。历史上的 `MinimaxVideoPreservingMerger`（`.background` 模式沿用上次 video 条目）已删除 |
-| `CodexFetcher` | `CodexFillingMissingMerger` | `resetCredits` / `codexUsageDetails` 缺失时回退到上次（避免 UI 空白）；reset credits 有独立新鲜度——`.background` 按设计跳过时保留原值与原时间，`.full` 抓取失败时保留旧值并标记「可能过期」，恢复成功清除 |
+| `CodexFetcher` | `CodexFillingMissingMerger` | `resetCredits` / `codexUsageDetails` 缺失时回退到上次；reset credits 在 `.background` 跳过时保留原值与时间，`.full` 失败时标记「可能过期」，恢复成功清除。API 赠金独立记录新鲜度，失败保留旧值并标记「更新失败」。Admin-only 或主 quota 失败结果携带主额度错误，merger 保留 Plan 数据与时间；AppState 进入 `.failed(lastSuccess:)`，不推进成功时间或额度通知基线 |
 | `AntigravityFetcher` / `GlmCodingPlanFetcher` / `DeepseekFetcher` | `IdentityRefreshResultMerger`（默认） | 直接用新值 |
 
 `CodexFetcher` 是当前**唯一**自带 merger 的 fetcher（`let resultMerger: RefreshResultMerger = CodexFillingMissingMerger()`）；其余走 `QuotaFetcher` 的默认实现。
@@ -266,6 +266,8 @@ Implementation notes:
 | `accountEmail` | Optional logged-in account. Only Antigravity provides it; other providers leave it nil (the card's Account Info row visibility is decided solely by `QuotaWindowAccountInfo.make`) |
 | `codexUsageDetails` | Optional local 5h / weekly token summary for Codex |
 | `balanceDetail` | Optional structured DeepSeek balance breakdown (`DeepseekBalanceDetail`); replaced the preformatted string that used to be stuffed into `accountEmail`. Always nil for other providers |
+| `openAIApiCredits` | Optional OpenAI API 赠金明细，包含独立成功时间与最近失败标记 |
+| `mainQuotaError` / `openAIApiCreditsError` | Optional Codex 部分抓取错误；主额度失败由 AppState 写入 `.failed`，赠金失败由赠金行单独呈现 |
 | `fetchedAt` | Successful fetch timestamp |
 
 `ModelQuota` carries two quota windows:

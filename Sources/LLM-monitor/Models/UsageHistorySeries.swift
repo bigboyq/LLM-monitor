@@ -38,9 +38,44 @@ enum UsageHistoryMetric: String, CaseIterable, Identifiable {
         }
     }
 
+    /// Hit and thinking are shares by definition; output-to-input can exceed 100%.
+    var isBoundedRate: Bool {
+        self == .hit || self == .thinking
+    }
+
     static let groups: [[UsageHistoryMetric]] = [
         [.total, .rounds, .value, .thinking, .outputRatio, .hit, .speed]
     ]
+}
+
+/// The shared min/max scale and labels for rate charts. Values are fractions; labels
+/// are percentages. Keeping this arithmetic outside SwiftUI makes the scale auditable.
+enum UsageHistoryRateAxis {
+    static func bounds(for metric: UsageHistoryMetric, values: [Double]) -> ClosedRange<Double> {
+        let finiteValues = values.filter { $0.isFinite && $0 >= 0 }
+        guard let minimum = finiteValues.min(), let maximum = finiteValues.max() else {
+            return 0...1
+        }
+
+        let cappedMaximum = metric.isBoundedRate ? min(maximum, 1) : maximum
+        let cappedMinimum = metric.isBoundedRate ? min(minimum, 1) : minimum
+        if cappedMinimum == cappedMaximum {
+            if metric.isBoundedRate, cappedMaximum == 1 {
+                return 0.8...1
+            }
+            let lower = max(0, cappedMinimum * 0.8)
+            let expandedUpper = cappedMaximum == 0 ? 1 : cappedMaximum * 1.2
+            let upper = metric.isBoundedRate ? min(expandedUpper, 1) : expandedUpper
+            return lower...max(lower.nextUp, upper)
+        }
+        return cappedMinimum...cappedMaximum
+    }
+
+    static func label(_ value: Double, bounds: ClosedRange<Double>) -> String {
+        let spanInPercentagePoints = (bounds.upperBound - bounds.lowerBound) * 100
+        let decimalPlaces = min(max(Int(ceil(-log10(max(spanInPercentagePoints / 2, 0.000001)))), 0), 6)
+        return String(format: "%.*f%%", decimalPlaces, value * 100)
+    }
 }
 
 enum UsageHistoryNumber {

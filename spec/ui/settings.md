@@ -17,8 +17,8 @@ section components. The sidebar is structured into three native macOS sections:
 General contains refresh, launch-at-login, holiday source and About;
 Interface contains appearance, status-bar icon, edge dock preview/configuration and menu
 Provider order; Notifications contains system authorization, Bark and all windowed-provider
-event channels. Provider panes link to the central Notifications page instead of duplicating
-channel editors.
+event channels. Provider panes place notification links after authentication/refresh settings;
+each link opens Notifications and scrolls to that Provider's channel rules.
 
 Settings layout rules:
 
@@ -94,8 +94,10 @@ ChatGPT 设置 pane（`SettingsProviderPanes.swift:chatgptPane`）在基础的 `
 - **开关**：「启用 API 赠金监测」（`chatgptAdminCreditsEnabled`）。默认关闭；开启后向下展开选项，关闭时全部选项隐藏。
 - **Admin API Key**：`secretField` 掩码输入框（带明文/掩码切换眼标图标），支持 `sk-admin-...` 前缀的官方管理员 Key。
 - **赠金额度 ($)**：每月额度上限输入框（`chatgptMonthlyQuotaLimit`，默认 40）。
+- 启用赠金监测时，该输入必须为大于 0 的有限数字；空值、非数字、非正数或非有限数值显示行内错误并阻止保存，保留输入草稿。关闭赠金监测时该项隐藏，输入校验不阻止保存。默认 40 仅用于未配置时的初始值。
 - **账单日**：`Picker` 下拉框（每月 1 日至 31 日，默认 11 日）。
 - **重置时间**：`DatePicker`（时分输入组件，精确至分钟粒度，如 `00:00` 或 `08:00`）。
+- API 赠金节 footer 说明首月统计可能存在偏差，后续按完整账期计算；保留现有赠金命名与算法，不做首月校准。
 - **草稿与保存**：所有字段绑定 `SettingsView` 草稿状态并参与 `draftFingerprint` 脏检查；保存时写回 `config.providers["codex_chatgpt"]`。
 
 ### 客户端 (Clients) 与用量 pane

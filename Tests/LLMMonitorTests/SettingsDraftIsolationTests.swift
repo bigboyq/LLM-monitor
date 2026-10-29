@@ -13,6 +13,46 @@ import XCTest
 /// 会被盘上的旧值**无声地**刷回去，没有任何视觉提示。
 final class SettingsDraftIsolationTests: XCTestCase {
 
+    func testChatGPTMonthlyQuotaLimitRequiresPositiveFiniteNumber() {
+        XCTAssertEqual(SettingsView.validMonthlyQuotaLimit("40"), 40)
+        XCTAssertEqual(SettingsView.validMonthlyQuotaLimit(" 2.5 "), 2.5)
+        for invalid in ["", "   ", "nope", "0", "-1", "nan", "infinity", "1e999"] {
+            XCTAssertNil(SettingsView.validMonthlyQuotaLimit(invalid), "Expected \(invalid.debugDescription) to be rejected")
+        }
+    }
+
+    @MainActor
+    func testProviderDisplayNameMatchesDescriptorConfigurationID() {
+        let descriptor = FetcherDescriptor(
+            id: "custom-chatgpt-id",
+            displayName: "Friendly ChatGPT",
+            kind: .codexChatGpt,
+            iconSystemName: "circle",
+            accentColor: .chatgpt,
+            makeFetcher: { _ in
+                TestQuotaFetcher(
+                    providerID: "custom-chatgpt-id",
+                    displayName: "Friendly ChatGPT",
+                    kind: .codexChatGpt
+                )
+            }
+        )
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("llm-provider-name-\(UUID().uuidString)", isDirectory: true)
+        let store = ConfigStore(configURL: root.appendingPathComponent("config.json"))
+        let state = AppState(descriptors: [descriptor], configStore: store)
+        defer { state.stop() }
+        let view = SettingsView(
+            configStore: store,
+            loginItemService: LoginItemService(),
+            state: state,
+            descriptors: [descriptor]
+        )
+
+        XCTAssertEqual(view.providerDisplayName(for: "custom-chatgpt-id"), "Friendly ChatGPT")
+        XCTAssertEqual(view.providerDisplayName(for: ProviderKind.codexChatGpt.quotaProviderID), ProviderKind.codexChatGpt.quotaProviderID)
+    }
+
     func testExternalFormChangeDecisionPromptsOnlyWhenFormIsDirty() {
         XCTAssertEqual(SettingsFormExternalUpdateAction.resolve(formChanged: false, isDirty: false), .ignore)
         XCTAssertEqual(SettingsFormExternalUpdateAction.resolve(formChanged: false, isDirty: true), .ignore)

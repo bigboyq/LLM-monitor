@@ -187,8 +187,9 @@ Authorization: Bearer <admin_api_key>
 ```
 
 - **数据解析**：按日 bucket 聚合所有 `results` 下 `amount.value`，累加得到当前账单周期内的已消耗金额 `usedAmount`。
-- **空间名称获取**：优先从 costs 响应 results 的 `organization_name` 获取；若当周期刚开始尚无用量消费导致 results 为空，则回退调用 `GET https://api.openai.com/v1/me` 读取 `orgs.data[0].title`（兜底 "Personal"）。
-- **容错设计**：`adminCosts` 抓取异常不会导致 ChatGPT Plan 5h/周配额刷新失败；失败时安全降级保留上一轮有效值。
+- **空间名称获取**：优先从 costs 响应 results 的 `organization_name` 获取；若当周期刚开始尚无用量消费导致 results 为空，则回退调用 `GET https://api.openai.com/v1/me` 读取 `orgs.data[0].title`；都取不到时显示「未知组织」。
+- **容错设计**：`adminCosts` 抓取异常不会导致 ChatGPT Plan 5h/周配额刷新失败；保留上一轮赠金值，并在赠金行标记「更新失败 · 上次 HH:mm」。赠金明细独立记录 `fetchedAt` 与 `lastAttemptFailed`。
+- **主 quota 失败**：当本地 Plan auth 缺失、但 Admin API Key 可用时，仍可独立更新赠金；Codex merger 保留上次 Plan model/账号/套餐和主 quota 时间，并将本次结果作为主 quota 失败写入 `ProviderStatus.failed`。主 quota HTTP/解析失败时，并行成功的 Admin 结果只更新赠金明细及其独立时间，不更新 Plan、provider 成功时间或 quota 通知基线；赠金失败则保留旧值并标记。没有旧赠金时也展示赠金抓取错误。
 
 ### 账单周期算法
 
@@ -199,10 +200,11 @@ Authorization: Bearer <admin_api_key>
 
 ### UI 呈现（`ChatGPTApiCreditsRow`）
 
-在 ChatGPT Provider 卡片内以 3 行结构紧凑展示：
-- **行 1**：`API赠金`（11pt semibold）与空间/组织名称（次要色靠右）；
-- **行 2**：`剩余额度:`（固定 52pt）+ 单段分段进度条 `SegmentedQuotaProgressBar`（高 8pt，健康度绿/黄/红自适应着色，带有表示周期时间进度的红色倒三角 `▼`）+ 总额度标签（如 `$40`）；
-- **行 3**：`已用：$xx.xx`（等宽次要色）+ `有效期：MM-dd HH:mm (xx天/xx小时后)`（次要色靠右，由 `Formatters.formatBillingRemainingDuration` 紧凑格式化）。
+在 ChatGPT Provider 卡片内紧凑自适应展示：
+- **标题行**：`API赠金`（11pt semibold）与空间/组织名称（次要色靠右）；组织名取不到时显示「未知组织」。
+- **进度条**：单段 `SegmentedQuotaProgressBar`（高 8pt，健康度绿/黄/红自适应着色，带有表示周期时间进度的红色倒三角 `▼`），独占整行通栏显示，条两侧不放标签。
+- **金额行**：`剩余 $x / 总$x · 已用 $xx.xx`。
+- **状态行**：账单周期结束时间与倒计时，以及 `更新 HH:mm`；最近一次赠金请求失败时显示 `更新失败 · 上次 HH:mm`。首次失败且无旧明细时展示错误状态。
 
 ## Local Pricing Snapshot
 

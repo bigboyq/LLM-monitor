@@ -31,7 +31,10 @@ struct SevenDayUsageHistoryView: View {
     }
 
     private var selectedPoints: [Double?] {
-        days.map { UsageHistoryNumber.finiteNonnegative($0.value(for: selectedMetric)) }
+        days.map { day in
+            guard let value = UsageHistoryNumber.finiteNonnegative(day.value(for: selectedMetric)) else { return nil }
+            return selectedMetric.isBoundedRate ? min(value, 1) : value
+        }
     }
 
     private var validPoints: [Double] {
@@ -39,27 +42,19 @@ struct SevenDayUsageHistoryView: View {
     }
 
     private var selectedMinimum: Double {
-        guard let minVal = validPoints.min() else { return 0 }
+        guard !validPoints.isEmpty else { return 0 }
         if selectedMetric.isRate {
-            let maxVal = validPoints.max() ?? 0
-            if minVal == maxVal {
-                return max(0, minVal * 0.8)
-            }
-            return minVal
+            return UsageHistoryRateAxis.bounds(for: selectedMetric, values: validPoints).lowerBound
         }
         return 0
     }
 
     private var selectedMaximum: Double {
         guard let maxVal = validPoints.max() else {
-            return selectedMetric.isRate ? 1.0 : 1.0
+            return 1.0
         }
         if selectedMetric.isRate {
-            if maxVal == 0 { return 1.0 }
-            if maxVal == validPoints.min() {
-                return maxVal * 1.2
-            }
-            return maxVal
+            return UsageHistoryRateAxis.bounds(for: selectedMetric, values: validPoints).upperBound
         }
         return max(maxVal, 1)
     }
@@ -361,18 +356,9 @@ struct SevenDayUsageHistoryView: View {
         case .speed:
             return Formatters.formatSpeed(value)
         case .hit, .thinking:
-            let pct = value * 100
-            if pct == 0 {
-                return "0%"
-            } else if pct < 1.0 {
-                return String(format: "%.2f%%", pct)
-            } else if pct < 10.0 {
-                return String(format: "%.1f%%", pct)
-            } else {
-                return Formatters.formatPercent(value, digits: 0)
-            }
+            return UsageHistoryRateAxis.label(value, bounds: selectedMinimum...selectedMaximum)
         case .outputRatio:
-            return QuotaWindowUsageSection.outputInputRateText(value)
+            return UsageHistoryRateAxis.label(value, bounds: selectedMinimum...selectedMaximum)
         }
     }
 

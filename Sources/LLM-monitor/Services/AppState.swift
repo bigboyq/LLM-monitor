@@ -1178,6 +1178,14 @@ final class AppState: ObservableObject {
                 previous: previousInfo,
                 mode: mode
             )
+            if let message = info.mainQuotaError {
+                logWarn("  [\(providerID)] 主额度刷新失败，保留上次额度: \(message)")
+                mutateStatus(at: newIdx) {
+                    $0.state = .failed(message: message, lastSuccess: info)
+                }
+                lastRefreshAt = Date()
+                return .completed(success: false)
+            }
             logInfo("  [\(providerID)] 刷新成功，\(info.models.count) 个 model (\(Int(Date().timeIntervalSince(startedAt) * 1000))ms)")
             for m in info.models {
                 if descriptor.kind == .codexChatGpt {

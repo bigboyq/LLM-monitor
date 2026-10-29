@@ -23,8 +23,6 @@ extension SettingsView {
             }
 
             if minimaxEnabled {
-                notifySection(providerID: providerID(for: .minimaxTokenPlan) ?? "")
-
                 SettingsSection(title: "认证与刷新") {
                     SettingsControlRow("API Key") {
                         apiKeyField(text: $minimaxApiKey, isVisible: $showMinimaxKey)
@@ -42,6 +40,8 @@ extension SettingsView {
                         providerRefreshButton(for: .minimaxTokenPlan)
                     }
                 }
+
+                notifySection(providerID: providerID(for: .minimaxTokenPlan) ?? "")
             }
         }
     }
@@ -53,8 +53,6 @@ extension SettingsView {
             }
 
             if chatgptEnabled {
-                notifySection(providerID: providerID(for: .codexChatGpt) ?? "")
-
                 SettingsSection(
                     title: "认证与刷新",
                     footer: "`authPath` 支持填写 `auth.json` 文件，或它所在目录；也可以直接点“选择…”。"
@@ -84,9 +82,11 @@ extension SettingsView {
                     }
                 }
 
+                notifySection(providerID: providerID(for: .codexChatGpt) ?? "")
+
                 SettingsSection(
                     title: "API 赠金",
-                    footer: "开启后监测每月官方赠送的 API 额度与消耗；账单重置时间与额度上限支持按需自定义。"
+                    footer: "开启后监测每月官方赠送的 API 额度与消耗；账单重置时间与额度上限支持按需自定义。首月统计可能存在偏差，后续按完整账期计算。"
                 ) {
                     SettingsToggleRow(label: "启用 API 赠金监测", isOn: $chatgptAdminCreditsEnabled)
 
@@ -102,9 +102,16 @@ extension SettingsView {
                             .padding(.vertical, 4)
 
                         SettingsControlRow("赠金额度 ($)") {
-                            TextField("", text: $chatgptMonthlyQuotaLimit, prompt: Text("40"))
-                                .textFieldStyle(.roundedBorder)
-                                .frame(width: SettingsLayout.standardControlWidth)
+                            VStack(alignment: .trailing, spacing: 4) {
+                                TextField("", text: $chatgptMonthlyQuotaLimit, prompt: Text("40"))
+                                    .textFieldStyle(.roundedBorder)
+                                    .frame(width: SettingsLayout.standardControlWidth)
+                                if let error = chatgptMonthlyQuotaLimitError {
+                                    Text(error)
+                                        .font(SettingsTypography.status)
+                                        .foregroundStyle(.red)
+                                }
+                            }
                         }
 
                         Divider()
@@ -140,8 +147,6 @@ extension SettingsView {
             }
 
             if antigravityEnabled {
-                notifySection(providerID: providerID(for: .antigravity) ?? "")
-
                 SettingsSection(
                     title: "刷新频率",
                     footer: "Antigravity 走自动发现：扫描 `language_server`（IDE）与 `agy` / `antigravity-cli`（CLI）进程，复用它们的本地登录态，无需任何配置。"
@@ -158,6 +163,8 @@ extension SettingsView {
                         providerRefreshButton(for: .antigravity)
                     }
                 }
+
+                notifySection(providerID: providerID(for: .antigravity) ?? "")
 
                 SettingsSection(
                     title: "本地用量缓存",
@@ -206,8 +213,6 @@ extension SettingsView {
             }
 
             if glmEnabled {
-                notifySection(providerID: providerID(for: .glmCodingPlan) ?? "")
-
                 SettingsSection(
                     title: "认证与刷新",
                     footer: "填写智谱 GLM Coding Plan 的 API Key（格式 `id.secret`，在 bigmodel.cn 套餐概览页新建）。该 Key 也是 Anthropic / OpenAI 协议接入用的同一个 Key。"
@@ -228,6 +233,8 @@ extension SettingsView {
                         providerRefreshButton(for: .glmCodingPlan)
                     }
                 }
+
+                notifySection(providerID: providerID(for: .glmCodingPlan) ?? "")
 
                 SettingsSection(
                     title: "高峰期提示",
@@ -304,18 +311,16 @@ extension SettingsView {
             title: "通知配置",
             footer: "通知渠道集中在「通知」设置中管理。"
         ) {
-            Button("前往通知设置") {
+            Button("编辑此 Provider 的通知规则") {
+                pendingNotificationProviderID = providerID
                 currentTab = .notifications
             }
             .help("集中设置所有 Provider 的恢复与耗尽提醒")
-            Text("此 Provider：\(providerDisplayName(for: providerID))")
-                .font(SettingsTypography.status)
-                .foregroundStyle(.secondary)
         }
     }
 
     func providerDisplayName(for id: String) -> String {
-        descriptors.first { $0.kind.quotaProviderID == id }?.displayName ?? id
+        descriptors.first { $0.id == id }?.displayName ?? id
     }
 
     func notifyChannelBinding(

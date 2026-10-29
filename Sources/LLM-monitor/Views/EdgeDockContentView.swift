@@ -248,7 +248,16 @@ struct EdgeDockContentView: View {
     /// 长出 / 收回而不是瞬间换内容。简版单环取 5h 有效额度、没有 5h 窗口的退到
     /// 周窗口（与数值文字同一取值口径）。
     private func circle(for entry: EdgeDockEntry) -> some View {
-        ZStack {
+        let hasNoWindow = !entry.hasAnyQuotaWindow
+        let ringHealth = hasNoWindow
+            ? entry.health
+            : (controller.config.independentRingColors
+                ? (entry.intervalHealth ?? entry.weeklyHealth)
+                : entry.health)
+        let emptyRingTint = hasNoWindow && entry.health != nil
+            ? healthTint(for: entry.health)
+            : nil
+        return ZStack {
             ring(
                 fraction: controller.isCompactAppearance
                     ? (entry.intervalFraction ?? entry.weeklyFraction)
@@ -259,14 +268,11 @@ struct EdgeDockContentView: View {
                 lineWidth: controller.isCompactAppearance
                     ? compactMetrics.ringLineWidth
                     : EdgeDockGeometry.ringLineWidth,
+                emptyTint: emptyRingTint,
                 // 外环读 5h 窗口的色档；简版只有一环，取值口径必须与它的**弧长**
                 // 回退一致（没有 5h 窗口时退到周窗口），否则会出现"弧长画的是周
                 // 窗口、颜色说的是 5h 窗口"的错配。
-                tint: healthTint(
-                    for: controller.config.independentRingColors
-                        ? (entry.intervalHealth ?? entry.weeklyHealth)
-                        : entry.health
-                )
+                tint: healthTint(for: ringHealth)
             )
 
             if !controller.isCompactAppearance {
@@ -277,11 +283,10 @@ struct EdgeDockContentView: View {
                     // 粗外细内：两环同样粗会读成"同一条弧画了两遍"，
                     // 层级消失。取值理由见 `EdgeDockGeometry.innerRingLineWidth`。
                     lineWidth: EdgeDockGeometry.innerRingLineWidth,
-                    tint: healthTint(
-                        for: controller.config.independentRingColors
-                            ? entry.weeklyHealth
-                            : entry.health
-                    )
+                    emptyTint: emptyRingTint,
+                    tint: healthTint(for: hasNoWindow
+                        ? entry.health
+                        : (controller.config.independentRingColors ? entry.weeklyHealth : entry.health))
                 )
                 .transition(.opacity)
 
@@ -353,6 +358,9 @@ struct EdgeDockContentView: View {
     }
 
     private func labelText(for entry: EdgeDockEntry) -> String {
+        if entry.kind == .deepseek {
+            return EdgeDockProjection.balanceLabel(available: entry.balanceAvailable)
+        }
         guard let fraction = entry.intervalFraction ?? entry.weeklyFraction else { return "—" }
         return Formatters.formatQuotaPercent(fraction * 100)
     }
@@ -370,6 +378,7 @@ struct EdgeDockContentView: View {
         fraction: Double?,
         diameter: CGFloat,
         lineWidth: CGFloat = EdgeDockGeometry.ringLineWidth,
+        emptyTint: Color? = nil,
         tint: Color
     ) -> some View {
         ZStack {
@@ -377,7 +386,11 @@ struct EdgeDockContentView: View {
                 .stroke(EdgeDockTheme.ringTrack, lineWidth: lineWidth)
                 .frame(width: diameter, height: diameter)
 
-            if let range = EdgeDockGeometry.arcTrimRange(fraction: fraction) {
+            if fraction == nil, let emptyTint {
+                Circle()
+                    .stroke(emptyTint.opacity(0.34), lineWidth: lineWidth)
+                    .frame(width: diameter, height: diameter)
+            } else if let range = EdgeDockGeometry.arcTrimRange(fraction: fraction) {
                 Circle()
                     .trim(from: range.lowerBound, to: range.upperBound)
                     .stroke(
@@ -414,6 +427,12 @@ struct EdgeDockContentView: View {
     /// 文案保留给 VoiceOver，视觉侧无感知。常驻数值（`quotaLabel`）不受影响，
     /// 仍然只显示有效额度。
     private func caption(for entry: EdgeDockEntry) -> String {
+        if entry.kind == .deepseek {
+            return [
+                EdgeDockProjection.balanceCaption(available: entry.balanceAvailable),
+                healthText(for: entry),
+            ].joined(separator: " · ")
+        }
         guard entry.hasAnyQuotaWindow else { return healthText(for: entry) }
         var parts: [String] = []
         if let interval = entry.intervalFraction {

@@ -1155,13 +1155,14 @@ struct QuotaSummary: View {
                 }
             }
 
-            if let credits = info.openAIApiCredits {
+            if info.openAIApiCredits != nil || info.openAIApiCreditsError != nil {
                 if !displayedModels.isEmpty {
                     Divider().opacity(0.3)
                 }
                 ChatGPTApiCreditsRow(
-                    credits: credits,
-                    tint: .chatgptBrand
+                    credits: info.openAIApiCredits,
+                    tint: .chatgptBrand,
+                    error: info.openAIApiCreditsError
                 )
             }
 

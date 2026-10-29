@@ -620,6 +620,62 @@ final class CodexFetcherTests: XCTestCase {
         XCTAssertEqual(captured["Authorization"], "Bearer sk-admin-testkey123")
     }
 
+    func testAdminOnlyFetchReportsMissingPlanQuotaWithoutFabricatingPlanData() async throws {
+        let missingAuthURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codex-admin-only-\(UUID().uuidString)/auth.json")
+        StubURLProtocol.responses[Self.costsPath] = .init(
+            statusCode: 200,
+            headers: ["Content-Type": "application/json"],
+            body: Self.validCostsJSON(value: 1.25, orgName: "Workspace")
+        )
+
+        let fetcher = CodexFetcher(
+            authPath: missingAuthURL.path,
+            adminApiCreditsEnabled: true,
+            adminApiKey: "sk-admin-testkey123",
+            session: makeSession()
+        )
+
+        let info = try await fetcher.fetch(mode: .full)
+        XCTAssertTrue(info.models.isEmpty)
+        XCTAssertEqual(info.mainQuotaError, "Codex Plan auth 缺失")
+        XCTAssertEqual(info.openAIApiCredits?.usedAmount, 1.25)
+        XCTAssertNotNil(info.openAIApiCredits?.fetchedAt)
+        XCTAssertEqual(StubURLProtocol.callCounts[Self.usagePath] ?? 0, 0)
+    }
+
+    func testPlanQuotaFailurePreservesConcurrentAdminCreditsSuccess() async throws {
+        let authURL = try makeAuthFile()
+        StubURLProtocol.responses[Self.usagePath] = .init(
+            statusCode: 401,
+            headers: ["Content-Type": "application/json"],
+            body: Data("{}".utf8)
+        )
+        StubURLProtocol.responses[Self.resetPath] = .init(
+            statusCode: 200,
+            headers: ["Content-Type": "application/json"],
+            body: Self.validResetCreditsJSON(availableCount: 0, totalEarned: 0)
+        )
+        StubURLProtocol.responses[Self.costsPath] = .init(
+            statusCode: 200,
+            headers: ["Content-Type": "application/json"],
+            body: Self.validCostsJSON(value: 1.25, orgName: "Workspace")
+        )
+
+        let fetcher = CodexFetcher(
+            authPath: authURL.path,
+            adminApiCreditsEnabled: true,
+            adminApiKey: "sk-admin-testkey123",
+            session: makeSession()
+        )
+
+        let info = try await fetcher.fetch(mode: .full)
+        XCTAssertTrue(info.models.isEmpty)
+        XCTAssertNotNil(info.mainQuotaError)
+        XCTAssertEqual(info.openAIApiCredits?.usedAmount, 1.25, "赠金有独立成功时间，wham 失败不应丢弃本次赠金")
+        XCTAssertEqual(StubURLProtocol.callCounts[Self.costsPath], 1)
+    }
+
     func testCodexFetcherAdminCostsFallsBackToMeForOrgName() async throws {
         let authURL = try makeAuthFile()
         StubURLProtocol.responses[Self.usagePath] = .init(

@@ -140,28 +140,31 @@ struct CodexFetcher: QuotaFetcher {
 
     func fetch(mode: RefreshMode) async throws -> QuotaInfo {
         let authResult = Result { try loadAuth() }
+        let shouldFetchAdminCredits = adminApiCreditsEnabled
+            && !(adminApiKey?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
 
         // 并行抓取 API 赠金（若启用且 key 存在）
-        async let adminCreditsTask: OpenAIApiCreditDetails? = {
-            guard adminApiCreditsEnabled,
-                  let rawKey = adminApiKey,
-                  !rawKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                return nil
+        async let adminCreditsTask: (credits: OpenAIApiCreditDetails?, error: String?) = {
+            guard shouldFetchAdminCredits, let rawKey = adminApiKey else {
+                return (nil, nil)
             }
             do {
                 let details = try await fetchAdminCosts(apiKey: rawKey)
                 logInfo("[codex] admin credits fetched: used $\(String(format: "%.2f", details.usedAmount)) / $\(String(format: "%.0f", details.totalQuota))")
-                return details
+                return (details, nil)
             } catch {
-                try? Task.checkCancellation()
+                if CancellationFilter.shouldIgnore(error, isTaskCancelled: Task.isCancelled) {
+                    throw CancellationError()
+                }
                 logWarn("[codex] admin costs 拉取失败: \(error.localizedDescription)，忽略")
-                return nil
+                return (nil, "API赠金抓取失败")
             }
         }()
 
         guard case .success(let auth) = authResult else {
-            // 主 auth 不可用（如无 auth.json），但 admin 赠金获取成功
-            if let adminCredits = await adminCreditsTask {
+            // 主 auth 不可用（如无 auth.json）时仍允许独立显示 Admin 赠金结果。
+            let adminResult = try await adminCreditsTask
+            if adminApiCreditsEnabled {
                 return QuotaInfo(
                     models: [],
                     resetCredits: nil,
@@ -169,7 +172,9 @@ struct CodexFetcher: QuotaFetcher {
                     accountEmail: nil,
                     codexUsageDetails: nil,
                     fetchedAt: Date(),
-                    openAIApiCredits: adminCredits
+                    openAIApiCredits: adminResult.credits,
+                    mainQuotaError: "Codex Plan auth 缺失",
+                    openAIApiCreditsError: adminResult.error
                 )
             }
             _ = try authResult.get()
@@ -189,7 +194,23 @@ struct CodexFetcher: QuotaFetcher {
         if mode == .full {
             async let usageTask = fetchUsage(headers: headers)
             async let resetTask = fetchResetCredits(headers: headers)
-            usageResponse = try await usageTask
+            do {
+                usageResponse = try await usageTask
+            } catch {
+                if CancellationFilter.shouldIgnore(error, isTaskCancelled: Task.isCancelled) {
+                    throw CancellationError()
+                }
+                guard shouldFetchAdminCredits else { throw error }
+                let adminResult = try await adminCreditsTask
+                let message = QuotaError.userFacingDescription(for: error, providerKind: .codexChatGpt)
+                return QuotaInfo(
+                    models: [], resetCredits: nil, planLabel: nil, accountEmail: nil,
+                    codexUsageDetails: nil, fetchedAt: Date(),
+                    openAIApiCredits: adminResult.credits,
+                    mainQuotaError: message,
+                    openAIApiCreditsError: adminResult.error
+                )
+            }
             do {
                 let reset = try await resetTask
                 resetCredits = reset.toInfo(fetchedAt: Date())
@@ -205,11 +226,27 @@ struct CodexFetcher: QuotaFetcher {
             }
         } else {
             logDebug("[codex] background refresh: 跳过 reset credits 请求")
-            usageResponse = try await fetchUsage(headers: headers)
+            do {
+                usageResponse = try await fetchUsage(headers: headers)
+            } catch {
+                if CancellationFilter.shouldIgnore(error, isTaskCancelled: Task.isCancelled) {
+                    throw CancellationError()
+                }
+                guard shouldFetchAdminCredits else { throw error }
+                let adminResult = try await adminCreditsTask
+                let message = QuotaError.userFacingDescription(for: error, providerKind: .codexChatGpt)
+                return QuotaInfo(
+                    models: [], resetCredits: nil, planLabel: nil, accountEmail: nil,
+                    codexUsageDetails: nil, fetchedAt: Date(),
+                    openAIApiCredits: adminResult.credits,
+                    mainQuotaError: message,
+                    openAIApiCreditsError: adminResult.error
+                )
+            }
             resetCredits = nil
         }
         let model = try Self.parseUsage(usageResponse)
-        let adminCredits = await adminCreditsTask
+        let adminResult = try await adminCreditsTask
 
         return QuotaInfo(
             models: [model],
@@ -218,7 +255,8 @@ struct CodexFetcher: QuotaFetcher {
             accountEmail: auth.accountEmail,
             codexUsageDetails: nil,
             fetchedAt: Date(),
-            openAIApiCredits: adminCredits
+            openAIApiCredits: adminResult.credits,
+            openAIApiCreditsError: adminResult.error
         )
     }
 
@@ -280,11 +318,13 @@ struct CodexFetcher: QuotaFetcher {
         }
 
         return OpenAIApiCreditDetails(
-            organizationName: orgName ?? "Personal",
+            organizationName: orgName,
             totalQuota: adminMonthlyQuotaLimit,
             usedAmount: totalCost,
             cycleStart: cycleStart,
-            cycleEnd: cycleEnd
+            cycleEnd: cycleEnd,
+            fetchedAt: Date(),
+            lastAttemptFailed: false
         )
     }
 

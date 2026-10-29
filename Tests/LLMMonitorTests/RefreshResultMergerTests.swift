@@ -108,6 +108,41 @@ final class RefreshResultMergerTests: StateTestCase {
             XCTAssertEqual(merged.resetCredits, nil, "没 previous 时直接用 new（保持 nil）")
         }
     }
+
+    func testAdminOnlyFailurePreservesPlanAndGiftFailureKeepsOldValueStale() {
+        let merger = CodexFillingMissingMerger(adminApiCreditsEnabled: true)
+        let fetchedAt = Date(timeIntervalSince1970: 1_000)
+        let oldGift = OpenAIApiCreditDetails(
+            organizationName: "Workspace",
+            totalQuota: 40,
+            usedAmount: 7,
+            cycleStart: fetchedAt.addingTimeInterval(-10_000),
+            cycleEnd: fetchedAt.addingTimeInterval(20_000),
+            fetchedAt: fetchedAt,
+            lastAttemptFailed: false
+        )
+        let plan = makeModel("chatgpt_plan", intervalPercent: 64)
+        let previous = QuotaInfo(
+            models: [plan], resetCredits: nil, planLabel: "Plus", accountEmail: "a@example.com",
+            codexUsageDetails: nil, fetchedAt: fetchedAt, openAIApiCredits: oldGift
+        )
+        let adminOnly = QuotaInfo(
+            models: [], resetCredits: nil, planLabel: nil, accountEmail: nil,
+            codexUsageDetails: nil, fetchedAt: fetchedAt.addingTimeInterval(5),
+            openAIApiCredits: nil, mainQuotaError: "Codex Plan auth 缺失",
+            openAIApiCreditsError: "API赠金抓取失败"
+        )
+
+        let merged = merger.merge(new: adminOnly, previous: previous, mode: .full)
+        XCTAssertEqual(merged.models, [plan])
+        XCTAssertEqual(merged.planLabel, "Plus")
+        XCTAssertEqual(merged.fetchedAt, fetchedAt, "主额度失败不能更新时间")
+        XCTAssertEqual(merged.mainQuotaError, "Codex Plan auth 缺失")
+        XCTAssertEqual(merged.openAIApiCredits?.usedAmount, oldGift.usedAmount)
+        XCTAssertEqual(merged.openAIApiCredits?.fetchedAt, fetchedAt)
+        XCTAssertEqual(merged.openAIApiCredits?.lastAttemptFailed, true)
+        XCTAssertEqual(merged.openAIApiCreditsError, "API赠金抓取失败")
+    }
     /// Merger 注入 / fetcher 接线 3 in 1：
     /// - IdentityRefreshResultMerger 不修改 models (always returns new)
     /// - MinimaxTokenPlanFetcher 用默认 identity merger (保留本次完整响应)

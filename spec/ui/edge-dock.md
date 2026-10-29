@@ -117,9 +117,19 @@ whether the weekly window has escalated past the 5h one.
 
 A provider with only one of the two windows draws just that ring; a provider with
 neither (balance-only DeepSeek, or no successful fetch yet) draws a dimmed full ring
-on both, reading as "health is known, remaining quantity is not". A grey ring would
-be indistinguishable from "no data" — which is also why a *missing* window gets a
-`nil` health level (neutral) rather than some guessed colour.
+on both when aggregate health is known, reading as "health is known, remaining
+quantity is not". The dim full rings use the aggregate health tint at reduced
+opacity; no arc or quota number is invented. With no known health, only the neutral
+track is shown — a *missing* window gets a `nil` per-window health rather than a
+guessed colour.
+
+DeepSeek's legacy `intervalStatus == .present` is account availability, not a 5h
+quota window. Its entry therefore keeps interval/weekly ring fractions and health
+nil, while retaining the existing aggregate health level. The persistent number
+says `可用` / `不可用`,
+and VoiceOver says `账户可用` / `账户不可用` with the health label. If there is no
+successful cached balance yet, the label is `—` / `余额状态未知`. It must never
+announce or draw a synthetic `5h 100%` reading.
 
 The dock background uses `EdgeDockTab`: an **asymmetric tab** — the side facing
 the screen is **square and flush**, the inward-facing end is a large convex corner
@@ -130,8 +140,8 @@ screen edge; a rounded corner there opens a sliver of desktop between screen and
 window and the backplate starts to read as a capsule floating above the screen.
 Square corners let it join the screen edge into one continuous line.
 
-Each row is **ring + persistent quota number** (effective 5h first, weekly as
-fallback, `—` when neither exists). The number is the only readable information
+Each row is **ring + persistent number** (effective 5h first, weekly as
+fallback, `—` when neither exists; DeepSeek uses its account-availability label). The number is the only readable information
 without hovering, so it is the 5h quota (effective: the same number the outer ring
 draws): that is what changes fastest and answers "can I
 still work right now". It stays a single value — the raw-vs-effective contrast

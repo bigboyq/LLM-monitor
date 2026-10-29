@@ -213,7 +213,8 @@ provider 的渠道枚举坏值按缺失处理（`try? + rawValue`）；`bark` �
 - **所有 Provider**（集中通知 pane）：窗口类 Provider 各有四行
   `QuotaNotificationKind` × 渠道 Picker（不通知 / 系统通知 / Bark + 系统通知），
   key = providerID 的字典草稿，`saveAndApply` 走 `setNotifyChannel` 归一化。Provider
-  pane 的通知区域仅提供跳转链接，避免重复编辑器。DeepSeek 暂无余额阈值提醒。
+  pane 在认证 / 刷新设置后仅提供简短跳转入口；入口打开集中通知 pane 并滚动到该
+  Provider 的规则。选择「Bark + 系统通知」时，Bark 不可用仍发送系统通知。DeepSeek 暂无余额阈值提醒。
 - 保存路径与既有设置一致（草稿 + `SettingsSaveTransaction` 事务），无新增事务边界。
 
 ## 7. 测试地图（XCTest）

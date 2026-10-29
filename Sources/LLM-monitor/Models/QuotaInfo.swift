@@ -270,6 +270,12 @@ struct QuotaInfo: Equatable, Codable, Sendable {
     /// OpenAI API 赠金用量与周期详情（ChatGPT 扩展）
     let openAIApiCredits: OpenAIApiCreditDetails?
 
+    /// Codex 部分抓取时主 Plan quota 的失败信息；由 AppState 保留 lastSuccess 并进入 failed 状态。
+    let mainQuotaError: String?
+
+    /// API 赠金子请求失败信息；有上次成功数据时由 merger 在明细上标记 stale。
+    let openAIApiCreditsError: String?
+
     /// 数据抓取时刻
     let fetchedAt: Date
 
@@ -281,7 +287,9 @@ struct QuotaInfo: Equatable, Codable, Sendable {
         codexUsageDetails: CodexUsageDetails?,
         fetchedAt: Date,
         balanceDetail: DeepseekBalanceDetail? = nil,
-        openAIApiCredits: OpenAIApiCreditDetails? = nil
+        openAIApiCredits: OpenAIApiCreditDetails? = nil,
+        mainQuotaError: String? = nil,
+        openAIApiCreditsError: String? = nil
     ) {
         self.models = models
         self.resetCredits = resetCredits
@@ -290,6 +298,8 @@ struct QuotaInfo: Equatable, Codable, Sendable {
         self.codexUsageDetails = codexUsageDetails
         self.balanceDetail = balanceDetail
         self.openAIApiCredits = openAIApiCredits
+        self.mainQuotaError = mainQuotaError
+        self.openAIApiCreditsError = openAIApiCreditsError
         self.fetchedAt = fetchedAt
     }
 
@@ -607,6 +617,40 @@ struct OpenAIApiCreditDetails: Equatable, Codable, Sendable {
     let cycleStart: Date
     /// 当前周期结束 / 下次重置时间（含时分）
     let cycleEnd: Date
+    /// API costs 子请求最近一次成功抓取时间，独立于 ChatGPT Plan quota。
+    let fetchedAt: Date?
+    /// 最近一次 API costs 子请求是否失败；nil 兼容新增状态前保存的数据。
+    let lastAttemptFailed: Bool?
+
+    init(
+        organizationName: String?,
+        totalQuota: Double,
+        usedAmount: Double,
+        cycleStart: Date,
+        cycleEnd: Date,
+        fetchedAt: Date? = Date(),
+        lastAttemptFailed: Bool? = false
+    ) {
+        self.organizationName = organizationName
+        self.totalQuota = totalQuota
+        self.usedAmount = usedAmount
+        self.cycleStart = cycleStart
+        self.cycleEnd = cycleEnd
+        self.fetchedAt = fetchedAt
+        self.lastAttemptFailed = lastAttemptFailed
+    }
+
+    func markingStale() -> OpenAIApiCreditDetails {
+        OpenAIApiCreditDetails(
+            organizationName: organizationName,
+            totalQuota: totalQuota,
+            usedAmount: usedAmount,
+            cycleStart: cycleStart,
+            cycleEnd: cycleEnd,
+            fetchedAt: fetchedAt,
+            lastAttemptFailed: true
+        )
+    }
 
     /// 剩余金额（美元）
     var remainingAmount: Double {
@@ -710,7 +754,9 @@ extension QuotaInfo {
             codexUsageDetails: details,
             fetchedAt: fetchedAt,
             balanceDetail: balanceDetail,
-            openAIApiCredits: openAIApiCredits
+            openAIApiCredits: openAIApiCredits,
+            mainQuotaError: mainQuotaError,
+            openAIApiCreditsError: openAIApiCreditsError
         )
     }
 }

@@ -362,12 +362,19 @@ final class QuotaUpdateNotifierTests: XCTestCase {
         let displayName = "Notify Test"
         let kind: ProviderKind
         let logTag = "[notify-test]"
+        let resultMerger: RefreshResultMerger
         private var snapshots: [QuotaInfo]
 
-        init(providerID: String, kind: ProviderKind, snapshots: [QuotaInfo]) {
+        init(
+            providerID: String,
+            kind: ProviderKind,
+            snapshots: [QuotaInfo],
+            resultMerger: RefreshResultMerger = IdentityRefreshResultMerger()
+        ) {
             self.providerID = providerID
             self.kind = kind
             self.snapshots = snapshots
+            self.resultMerger = resultMerger
         }
 
         func fetch(mode: RefreshMode) async throws -> QuotaInfo {
@@ -458,6 +465,61 @@ final class QuotaUpdateNotifierTests: XCTestCase {
         try configStore.applyAndSave(config)
         state.rebuildStatuses()
         XCTAssertNil(store.snapshot(for: fetcher.providerID))
+    }
+
+    @MainActor
+    func testCodexPartialFailureKeepsLastRefreshAndTriggerBaseline() async throws {
+        let providerID = ProviderKind.codexChatGpt.providerID
+        let firstFetchedAt = Date(timeIntervalSince1970: 1_000)
+        let oldGift = OpenAIApiCreditDetails(
+            organizationName: "Workspace", totalQuota: 40, usedAmount: 1,
+            cycleStart: firstFetchedAt.addingTimeInterval(-10_000),
+            cycleEnd: firstFetchedAt.addingTimeInterval(20_000), fetchedAt: firstFetchedAt
+        )
+        let newGift = OpenAIApiCreditDetails(
+            organizationName: "Workspace", totalQuota: 40, usedAmount: 2,
+            cycleStart: firstFetchedAt.addingTimeInterval(-10_000),
+            cycleEnd: firstFetchedAt.addingTimeInterval(20_000), fetchedAt: firstFetchedAt.addingTimeInterval(5)
+        )
+        let first = QuotaInfo(
+            models: [model("chatgpt_plan", interval: 20, weekly: 40)],
+            resetCredits: nil, planLabel: "Plus", accountEmail: nil,
+            codexUsageDetails: nil, fetchedAt: firstFetchedAt, openAIApiCredits: oldGift
+        )
+        let partial = QuotaInfo(
+            models: [], resetCredits: nil, planLabel: nil, accountEmail: nil,
+            codexUsageDetails: nil, fetchedAt: firstFetchedAt.addingTimeInterval(5),
+            openAIApiCredits: newGift, mainQuotaError: "Codex 主额度失败"
+        )
+        let fetcher = ScriptedQuotaFetcher(
+            providerID: providerID,
+            kind: .codexChatGpt,
+            snapshots: [first, partial],
+            resultMerger: CodexFillingMissingMerger(adminApiCreditsEnabled: true)
+        )
+        let notifier = SpyNotifier()
+        let (state, _, store, directory) = try makeScriptedState(
+            fetcher: fetcher, notifier: notifier, apiKey: "sk-codex-test"
+        )
+        defer {
+            state.stop()
+            try? FileManager.default.removeItem(at: directory)
+        }
+
+        _ = await state.refreshProviderDirectly(providerID: providerID, mode: .full)
+        let refreshedAt = try XCTUnwrap(state.statuses.first { $0.id == providerID }?.lastRefreshedAt)
+        let baseline = try XCTUnwrap(store.snapshot(for: providerID))
+        _ = await state.refreshProviderDirectly(providerID: providerID, mode: .full)
+
+        let status = try XCTUnwrap(state.statuses.first { $0.id == providerID })
+        guard case .failed(_, let lastSuccess) = status.state else {
+            return XCTFail("主 quota 部分失败必须保留 failed 状态")
+        }
+        XCTAssertEqual(status.lastRefreshedAt, refreshedAt, "赠金成功不能推进主额度成功时间")
+        XCTAssertEqual(lastSuccess?.models, first.models, "主 quota 失败需保留旧 Plan")
+        XCTAssertEqual(lastSuccess?.openAIApiCredits?.usedAmount, newGift.usedAmount, "赠金成功值应独立更新")
+        XCTAssertEqual(store.snapshot(for: providerID), baseline, "主 quota 失败不能推进额度通知基线")
+        XCTAssertTrue(notifier.recorded.isEmpty, "主 quota 失败不能触发额度通知")
     }
 
     @MainActor

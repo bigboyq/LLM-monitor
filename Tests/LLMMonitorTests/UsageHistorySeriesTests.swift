@@ -16,6 +16,35 @@ final class UsageHistorySeriesTests: XCTestCase {
 
     private let calendar = Calendar(identifier: .gregorian)
 
+    func testRateAxisKeepsMinMaxPrecisionAndProviderBounds() {
+        let narrow = UsageHistoryRateAxis.bounds(for: .hit, values: [0.498, 0.502])
+        XCTAssertEqual(narrow.lowerBound, 0.498, accuracy: 0.000001)
+        XCTAssertEqual(narrow.upperBound, 0.502, accuracy: 0.000001)
+        XCTAssertEqual(UsageHistoryRateAxis.label(narrow.lowerBound, bounds: narrow), "49.8%")
+        XCTAssertEqual(UsageHistoryRateAxis.label((narrow.lowerBound + narrow.upperBound) / 2, bounds: narrow), "50.0%")
+        XCTAssertEqual(UsageHistoryRateAxis.label(narrow.upperBound, bounds: narrow), "50.2%")
+
+        let fullHit = UsageHistoryRateAxis.bounds(for: .hit, values: [1])
+        XCTAssertEqual(fullHit.upperBound, 1, accuracy: 0.000001, "hit share cannot exceed 100%")
+        let fullThinking = UsageHistoryRateAxis.bounds(for: .thinking, values: [1])
+        XCTAssertEqual(fullThinking.upperBound, 1, accuracy: 0.000001, "thinking share cannot exceed 100%")
+
+        for constant in [0.99, 0.9] {
+            let bounded = UsageHistoryRateAxis.bounds(for: .hit, values: [constant])
+            XCTAssertLessThan(bounded.lowerBound, bounded.upperBound, "bounded constant must retain a drawable range")
+            XCTAssertEqual(bounded.upperBound, 1, accuracy: 0.000001, "bounded padding must stop at 100%")
+        }
+        let slightlyChanging = UsageHistoryRateAxis.bounds(for: .thinking, values: [0.899, 0.901])
+        XCTAssertLessThan(slightlyChanging.lowerBound, slightlyChanging.upperBound)
+        XCTAssertEqual(slightlyChanging.lowerBound, 0.899, accuracy: 0.000001)
+        XCTAssertEqual(slightlyChanging.upperBound, 0.901, accuracy: 0.000001)
+
+        let output = UsageHistoryRateAxis.bounds(for: .outputRatio, values: [1.4, 1.8])
+        XCTAssertEqual(output.lowerBound, 1.4, accuracy: 0.000001)
+        XCTAssertEqual(output.upperBound, 1.8, accuracy: 0.000001, "output-to-input can exceed 100%")
+        XCTAssertEqual(UsageHistoryRateAxis.label(output.upperBound, bounds: output), "180%")
+    }
+
     func testBuildsSevenSlotsAndTotalExcludesCacheWrite() throws {
         let today = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 10, day: 29)))
         let yesterday = try XCTUnwrap(calendar.date(byAdding: .day, value: -1, to: today))

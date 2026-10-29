@@ -15,6 +15,10 @@ struct EdgeDockEntry: Identifiable, Equatable, Sendable {
     /// 用于取品牌图标。`ProviderStatus.kind`。
     let kind: ProviderKind
 
+    /// DeepSeek's legacy interval field carries account availability, not a quota window.
+    /// Keep the availability for labels while leaving its ring fractions nil.
+    let balanceAvailable: Bool?
+
     /// 外环填充比例 `0...1`，5 小时**有效额度**（min(5h 剩余, 周剩余 × 周等效倍率 N)，
     /// 口径见 `EdgeDockProjection.intervalFraction`）。
     /// nil = 该 provider 没有 5 小时窗口（周窗口型 / 余额型）→ 该环不画弧。
@@ -108,14 +112,38 @@ enum EdgeDockProjection {
                 id: status.id,
                 displayName: status.displayName,
                 kind: status.kind,
-                intervalFraction: intervalFraction(status, at: now),
-                rawIntervalFraction: rawIntervalFraction(status),
+                balanceAvailable: balanceAvailability(status),
+                intervalFraction: status.kind == .deepseek ? nil : intervalFraction(status, at: now),
+                rawIntervalFraction: status.kind == .deepseek ? nil : rawIntervalFraction(status),
                 weeklyFraction: weeklyFraction(status, at: now),
                 health: status.aggregateHealthLevel(at: now),
-                intervalHealth: intervalHealth(status, at: now),
+                intervalHealth: status.kind == .deepseek ? nil : intervalHealth(status, at: now),
                 weeklyHealth: weeklyHealth(status, at: now)
             )
         }
+    }
+
+    static func balanceLabel(available: Bool?) -> String {
+        switch available {
+        case .some(true): "可用"
+        case .some(false): "不可用"
+        case nil: "—"
+        }
+    }
+
+    static func balanceCaption(available: Bool?) -> String {
+        switch available {
+        case .some(true): "账户可用"
+        case .some(false): "账户不可用"
+        case nil: "余额状态未知"
+        }
+    }
+
+    private static func balanceAvailability(_ status: ProviderStatus) -> Bool? {
+        guard status.kind == .deepseek,
+              let model = status.lastSuccess?.aggregateQuotaModels(providerKind: .deepseek)
+                .first(where: \.hasIntervalWindow) else { return nil }
+        return model.intervalRemainingPercent > 0
     }
 
     /// 5 小时**有效额度**：逐 model 取 min(5h 剩余, 周剩余 × 周等效倍率 N)
