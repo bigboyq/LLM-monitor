@@ -71,7 +71,7 @@ struct SevenDayUsageHistoryView: View {
                 Divider().opacity(0.45)
                 dailyTable
 
-                Text("总量 = 四桶合计；Cache write 不计入。速度为每日 Prompt P50。今天数据尚未结束；缺失日期以断线显示。")
+                Text("总量 = Input + Cache + Output + Reason；Cache write 不计入。R/T = Rounds / Turns。速度为每日 Prompt P50。今天数据尚未结束；缺失日期以断线显示。")
                     .font(MenuTypography.hint)
                     .foregroundStyle(.tertiary)
 
@@ -229,13 +229,12 @@ struct SevenDayUsageHistoryView: View {
         Grid(alignment: .leading, horizontalSpacing: 4, verticalSpacing: 4) {
             GridRow {
                 header("日期", width: 34, alignment: .leading)
-                header("Rounds", width: 50)
-                header("总量", width: 56)
-                header("命中", width: 48)
-                header("思考", width: 48)
-                header("产出", width: 48)
-                if selectedMetric == .value { header("价值", width: 62) }
-                if selectedMetric == .speed { header("速度", width: 62).help("每日 Prompt 速度 P50，tok/s") }
+                header("R/T", width: 54)
+                header("Input", width: 46)
+                header("Cache", width: 46)
+                header("Reason", width: 46)
+                header("Output", width: 46)
+                selectedDynamicHeader
             }
 
             ForEach(days) { day in
@@ -244,19 +243,70 @@ struct SevenDayUsageHistoryView: View {
                         .font(MenuTypography.metricValue)
                         .foregroundStyle(day.isTodayIncomplete ? .primary : .secondary)
                         .frame(width: 34, alignment: .leading)
-                    Text(UsageHistoryNumber.integer(day.rounds).map(Formatters.formatGroupedInt) ?? "—")
+                    Text(roundsTurns(day))
                         .font(MenuTypography.metricValue)
-                        .foregroundStyle(day.rounds != nil ? .primary : .secondary)
-                        .frame(width: 50, alignment: .trailing)
-                    token(day.total, color: .tokenOutputTint, width: 56)
-                    rate(day.hitRate, digits: 1, color: .tokenCacheReadTint, width: 48)
-                    rate(day.thinkingShare, digits: 0, color: Color(red: 0.90, green: 0.46, blue: 0.16), width: 48)
-                    outputRate(day.outputToInputRate, color: .tokenInputTint, width: 48)
-                    if selectedMetric == .value { selectedValue(day) }
-                    if selectedMetric == .speed { selectedSpeed(day) }
+                        .foregroundStyle(day.rounds != nil || day.turns != nil ? .primary : .secondary)
+                        .frame(width: 54, alignment: .trailing)
+                    token(day.input, color: .tokenInputTint, width: 46)
+                    token(day.cache, color: .tokenCacheReadTint, width: 46)
+                    token(day.reason, color: Color(red: 0.90, green: 0.46, blue: 0.16), width: 46)
+                    token(day.output, color: .tokenOutputTint, width: 46)
+                    selectedDynamicCell(day, width: 58)
                 }
             }
         }
+    }
+
+    @ViewBuilder
+    private var selectedDynamicHeader: some View {
+        switch selectedMetric {
+        case .total:
+            header("总量", width: 58).help("每日四桶 Token 合计")
+        case .rounds:
+            header("Rounds", width: 58).help("每日模型调用次数")
+        case .value:
+            header("价值", width: 58).help("每日预估消耗金额")
+        case .thinking:
+            header("思考", width: 58).help("思考占比 = Reason / (Output + Reason)")
+        case .outputRatio:
+            header("产出", width: 58).help("产出比 = (Output + Reason) / (Input + Cache)")
+        case .hit:
+            header("命中", width: 58).help("Cache 命中率 = Cache / (Input + Cache)")
+        case .speed:
+            header("速度", width: 58).help("每日 Prompt 速度 P50，tok/s")
+        }
+    }
+
+    @ViewBuilder
+    private func selectedDynamicCell(_ day: UsageHistoryDay, width: CGFloat = 58) -> some View {
+        switch selectedMetric {
+        case .total:
+            token(day.total, color: .tokenOutputTint, width: width)
+        case .rounds:
+            Text(UsageHistoryNumber.integer(day.rounds).map(Formatters.formatGroupedInt) ?? "—")
+                .font(MenuTypography.metricValue)
+                .foregroundStyle(day.rounds != nil ? Color.purple : Color.secondary)
+                .frame(width: width, alignment: .trailing)
+        case .value:
+            selectedValue(day, width: width)
+        case .thinking:
+            rate(day.thinkingShare, digits: 0, color: Color(red: 0.90, green: 0.46, blue: 0.16), width: width)
+        case .outputRatio:
+            outputRate(day.outputToInputRate, color: .tokenInputTint, width: width)
+        case .hit:
+            rate(day.hitRate, digits: 1, color: .tokenCacheReadTint, width: width)
+        case .speed:
+            selectedSpeed(day, width: width)
+        }
+    }
+
+    private func roundsTurns(_ day: UsageHistoryDay) -> String {
+        let roundsText = UsageHistoryNumber.integer(day.rounds).map(Formatters.formatGroupedInt)
+        let turnsText = UsageHistoryNumber.integer(day.turns).map(Formatters.formatGroupedInt)
+        if let roundsText, let turnsText {
+            return "\(roundsText)/\(turnsText)"
+        }
+        return roundsText ?? turnsText ?? "—"
     }
 
     private var axisUnit: String {
@@ -323,23 +373,23 @@ struct SevenDayUsageHistoryView: View {
             .frame(width: width, alignment: .trailing)
     }
 
-    private func selectedValue(_ day: UsageHistoryDay) -> some View {
+    private func selectedValue(_ day: UsageHistoryDay, width: CGFloat = 58) -> some View {
         Text(UsageHistoryNumber.finiteNonnegative(day.value).flatMap { value in
             day.currency.map { "\($0.symbol)\(String(format: "%.2f", value))" }
         } ?? "—")
             .font(MenuTypography.metricValue)
             .foregroundStyle(day.valueIsPartial ? Color.orange : Color.secondary)
-            .frame(width: 62, alignment: .trailing)
+            .frame(width: width, alignment: .trailing)
             .lineLimit(1)
             .minimumScaleFactor(0.65)
             .help(day.valueIsPartial ? "部分计价或样本被截断" : "")
     }
 
-    private func selectedSpeed(_ day: UsageHistoryDay) -> some View {
+    private func selectedSpeed(_ day: UsageHistoryDay, width: CGFloat = 58) -> some View {
         Text(Formatters.formatSpeed(day.speed))
             .font(MenuTypography.metricValue)
             .foregroundStyle(day.speedIsPartial ? Color.orange : Color.secondary)
-            .frame(width: 62, alignment: .trailing)
+            .frame(width: width, alignment: .trailing)
             .help(day.speedIsPartial ? "部分样本：有 Prompt 缺少有效时长，或本地样本被截断；P50 仅统计完整 Prompt" : "")
     }
 

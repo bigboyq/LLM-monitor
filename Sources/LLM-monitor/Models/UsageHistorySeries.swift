@@ -3,7 +3,7 @@ import Foundation
 /// The seven independently selectable measures in the seven-day local history.
 /// This preference intentionally does not share the quota-window segment key.
 enum UsageHistoryMetric: String, CaseIterable, Identifiable {
-    case total, rounds, value, speed, hit, thinking, outputRatio
+    case total, rounds, value, thinking, outputRatio, hit, speed
 
     static let storageKey = "usageHistoryMetric"
 
@@ -14,10 +14,10 @@ enum UsageHistoryMetric: String, CaseIterable, Identifiable {
         case .total: "总量"
         case .rounds: "Rounds"
         case .value: "价值"
-        case .speed: "速度"
-        case .hit: "命中"
         case .thinking: "思考"
         case .outputRatio: "产出"
+        case .hit: "命中"
+        case .speed: "速度"
         }
     }
 
@@ -39,7 +39,7 @@ enum UsageHistoryMetric: String, CaseIterable, Identifiable {
     }
 
     static let groups: [[UsageHistoryMetric]] = [
-        [.total, .rounds, .value, .speed, .hit, .thinking, .outputRatio]
+        [.total, .rounds, .value, .thinking, .outputRatio, .hit, .speed]
     ]
 }
 

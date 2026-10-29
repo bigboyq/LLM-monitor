@@ -33,7 +33,7 @@ final class SevenDayUsageHistoryMetricTests: XCTestCase {
         XCTAssertEqual(UsageHistoryMetric.allCases.count, 7)
         XCTAssertEqual(
             UsageHistoryMetric.allCases,
-            [.total, .rounds, .value, .speed, .hit, .thinking, .outputRatio]
+            [.total, .rounds, .value, .thinking, .outputRatio, .hit, .speed]
         )
     }
 
