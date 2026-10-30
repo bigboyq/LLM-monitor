@@ -76,6 +76,7 @@ struct SegmentedQuotaProgressBar: View {
     /// 遵循「肉眼对色块宽度敏感、对微小间距不敏感」的设计哲学，每组模型采用整除的专属点数：
     /// - 单窗口（Argon / DeepSeek）：100 点
     /// - 2 倍率（Claude / GPT）：每段 50 点，周共 100 点
+    /// - 4 倍率（Gemini Models）：每段 25 点，周共 100 点
     /// - 5 倍率（GLM Coding Plan）：每段 20 点，周共 100 点
     /// - 6 倍率（ChatGPT Codex）：每段 16 点，周共 96 点
     /// - 7 倍率（MiniMax Video）：每段 14 点，周共 98 点
@@ -87,6 +88,7 @@ struct SegmentedQuotaProgressBar: View {
         case 1:  return 100
         case 2:  return 50
         case 3:  return 33
+        case 4:  return 25
         case 5:  return 20
         case 6:  return 16
         case 7:  return 14
@@ -98,7 +100,7 @@ struct SegmentedQuotaProgressBar: View {
 
     /// 各段栅格分配：
     /// - 等宽整段按 `ticksPerSegment` 分配；
-    /// - 非整数倍率（如 Gemini 3.33，总容量 10/3：前 3 段各 30%、尾段 10%），
+    /// - 非整数倍率（如假设的 3.33，总容量 10/3：前 3 段各 30%、尾段 10%），
     ///   以 100 格为基准按容量权重分配（前 3 段各 30 点，尾段 10 点，周合计精准为 100 点）。
     static func ticksForSegment(capacity: Double, totalCapacity: Double, segmentCount: Int) -> Int {
         if totalCapacity.truncatingRemainder(dividingBy: 1.0) < 0.001 {

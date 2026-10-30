@@ -77,7 +77,7 @@ tokens，模型名小写 + `_` 归一为 `-` 后按 contains 匹配，数组顺�
 
 | 组 / bucket | 窗口结构 | 整窗价值锚 | 依据 |
 |---|---|---|---|
-| `Gemini Models`（`gemini-5h` / `gemini-weekly`） | 5h + weekly，周 = 3.33 × 5h | **$30 / 5h，$100 / 周** | 2026-10-29 实测数据校准（5h 消费 $4.48 剩 85% → $30；周消费 $39.77 剩 60.3% → $100）；周等效倍率校准为 3.33 |
+| `Gemini Models`（`gemini-5h` / `gemini-weekly`） | 5h + weekly，周 = 4 × 5h | **$25 / 5h，$100 / 周** | 2026-10-30 实测数据校准（5h $25 / 周 $100）；周等效倍率从 3.33 校准为 4.0（4 段等宽，每段 25 格，周合计 100 格） |
 | `Gemini 4 Argon`（`gemini-argon-wtu-weekly`） | 仅周窗，独立重置时间 | **≈ $15 / 周**（实测 $14.8，取整） | 见下 |
 | `Claude and GPT models`（`3p-5h` / `3p-weekly`） | 5h + weekly，周 = 2 × 5h | 无锚点（本机 3p 用量不足以校准） | — |
 
@@ -1465,4 +1465,4 @@ This script:
 3. calls `RetrieveUserQuotaSummary`
 4. prints or writes the raw JSON
 
-> 核对基线：2026-10-29 · 代码 56a12c1
+> 核对基线：2026-10-30 · 代码 be6fb65

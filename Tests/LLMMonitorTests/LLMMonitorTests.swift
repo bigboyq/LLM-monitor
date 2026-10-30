@@ -67,7 +67,7 @@ final class LLMMonitorTests: XCTestCase {
             XCTAssertEqual(QuotaSummary.weeklyEquivalentMultiplier(providerKind: .minimaxTokenPlan, model: makeModel(name: name)), expected)
         }
         XCTAssertEqual(QuotaSummary.weeklyEquivalentMultiplier(providerKind: .codexChatGpt, model: makeModel(name: "chatgpt_plan")), 6.0)
-        XCTAssertEqual(QuotaSummary.weeklyEquivalentMultiplier(providerKind: .antigravity, model: makeModel(name: "gemini_models")), 3.33)
+        XCTAssertEqual(QuotaSummary.weeklyEquivalentMultiplier(providerKind: .antigravity, model: makeModel(name: "gemini_models")), 4.0)
         XCTAssertEqual(QuotaSummary.weeklyEquivalentMultiplier(providerKind: .antigravity, model: makeModel(name: "claude_and_gpt_models")), 2.0)
 
         // Window labels

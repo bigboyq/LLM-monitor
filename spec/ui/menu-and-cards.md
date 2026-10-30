@@ -797,7 +797,7 @@ look for a hover route to this data — the card carries it inline.
 - 卡片标题 = `Google Antigravity`（provider 名），无 pill。
 - 账号行（第一段 Account Info）= 登录邮箱（来自 `GetUserStatus`）+ 套餐 pill（`planLabel` 去掉 `Google ` / `Antigravity ` 前缀，让 `Google AI Pro` → `AI Pro`）。两者皆缺时整行不画。这是一行**常驻**内容：菜单的 provider 卡删除前，邮箱与套餐曾按 provider 分三路包在标题行的 `HoverInfoRow` 浮层里；那些折叠区挂在随行 hover 显隐的弹层里，弹层不在场时无从展开，所以直接画成常驻行——provider 卡退出菜单后也没有「重新进入 hover 浮层」这条路径了。
 - `Gemini Models`、`Gemini 4 Argon` and `Claude and GPT models` are shown as separate model groups inside one provider card (display names align with the API-returned `displayName`).
-- 双窗口组把 5h / 周收为一条：Gemini 周等效倍率为 3.33（2026-10-29 实测 5h $30 / 周 $100 校准，从 6 调为 3.33，按 3 个整段 + 1 个 0.33 尾段比例分段展示），Claude and GPT models 按 2 个（`weeklyEquivalentMultiplier` = 3.33 / 2，周窗口即 2 × 5h 额度；2026-10-13 从 1 调回 2，2026-10 初曾从 3 下调到 1）；`Gemini 4 Argon` 在 Pro 套餐下仅返回周窗口，走单窗口路径。
+- 双窗口组把 5h / 周收为一条：Gemini 周等效倍率为 4.0（2026-10-30 实测 5h $25 / 周 $100 校准，从 3.33 调为 4.0，按 4 个整段等宽展示，每段 25 点），Claude and GPT models 按 2 个（`weeklyEquivalentMultiplier` = 2，周窗口即 2 × 5h 额度，每段 50 点；2026-10-13 从 1 调回 2，2026-10 初曾从 3 下调到 1）；`Gemini 4 Argon` 在 Pro 套餐下仅返回周窗口，走单窗口路径。
 - **`Claude and GPT models`（`claude_and_gpt_models`）与 `Gemini 4 Argon`（`gemini_argon`）不参与聚合读数**：状态栏 iconDuo、边缘窗圆环与 provider 综合健康度经 `QuotaInfo.aggregateQuotaModels(providerKind:)` 过滤，`ModelQuota.isExcludedFromQuotaAggregation` 把这两组排除（与 minimax `video` 同规则），只以主力 `Gemini Models` 代表聚合水位；卡片三组行照常展示，通知检测不受影响。
 - The countdown suffix uses `Formatters.formatResetSuffix`'s compact ladder (e.g. `3h41m`), the same reset-suffix formatter every provider row shares.
 - The countdown follows the model tint unless quota is low enough to trigger warning or critical colors.
@@ -977,8 +977,8 @@ Provider 品牌色从 `Color+Theme.swift` 统一派发：MiniMax 品牌色已统
 
 分段配额进度条（`SegmentedQuotaProgressBar`）：
 - **标准槽高**严格锁定为 `13pt`（`8pt` 条高 + `4pt` 顶部时间锚点三角 ▼ + `1pt` 间距），保持所有卡片行高稳定；
-- **微栅格分段渲染（Hybrid Micro-Ticks，约 100 槽微栅格体系）**：整条以约 100 槽（96~100 点）为全满基准分辨率，基于「肉眼对色块宽度敏感、对微小间距不敏感」的设计哲学，每组模型按整除需求分配专属段点数（单窗口 100 点、2 段各 50 点、5 段各 20 点、6 段各 16 点、7 段各 14 点、10 段各 10 点，Gemini 3.33 为 30+30+30+10 点），彻底根除同卡片各段间点数不等或锯齿问题；色块宽度（`tickWidth`）固定为全局恒定值 `2.0pt`（Retina 2x 屏幕下物理对应整整 4px，圆角 `1.0pt`，呈饱满垂直胶囊状），绝对不因分段动态拉伸或压缩；扣除所有色块固定宽度与分段大间隙（`macroGap = 8.0pt`，相当于整整 2 根线槽位的清晰视觉分隔，段间:段内比率近 4x）后的全部剩余空白空间平分到段内块与块的微间距（`tickGap` $\approx 2.0\sim 2.2\text{pt}$，与色块宽度形成近乎 1:1 的黄金呼吸节奏）；当 `N > 1` 时，在第 0 段与第 1 段间隙正中绘制 `1.5pt` 宽、`10pt` 高的分界锚线（`Color.primary.opacity(0.28)`），直观区分当前 5h 窗口与未来周配额；
-- **自适应栅格分配与点亮规则**：各段自适应栅格数（`ticksPerSegment(for:)`，单段 100、2 段各 50、5 段各 20、6 段各 16、7 段各 14、10 段各 10；非整数倍率如 Gemini 3.33 分为 30+30+30+10，四段总和严格为 100）；点亮算法 `activeTickCount(fill:totalTicks:)` 采用 Half-Down 最近邻吸附（贴近最近刻度，遇到小数部分恰为 0.5 的中点平局时向小取整，保守估计余量，例如 10 格区间中 44.9% 与 45% 亮 4 格、45.1% 亮 5 格；16 格区间 50% 亮 8 格，46.875% 亮 7 格、47.0% 亮 8 格）；首段点亮栅格用 `intervalSegmentColor`（100% 不透明度），后续周段点亮栅格用 `weeklySegmentColor.opacity(0.68)`，底槽栅格用 `Color.primary.opacity(0.10)`。
+- **微栅格分段渲染（Hybrid Micro-Ticks，约 100 槽微栅格体系）**：整条以约 100 槽（96~100 点）为全满基准分辨率，基于「肉眼对色块宽度敏感、对微小间距不敏感」的设计哲学，每组模型按整除需求分配专属段点数（单窗口 100 点、2 段各 50 点、4 段各 25 点、5 段各 20 点、6 段各 16 点、7 段各 14 点、10 段各 10 点），彻底根除同卡片各段间点数不等或锯齿问题；色块宽度（`tickWidth`）固定为全局恒定值 `2.0pt`（Retina 2x 屏幕下物理对应整整 4px，圆角 `1.0pt`，呈饱满垂直胶囊状），绝对不因分段动态拉伸或压缩；扣除所有色块固定宽度与分段大间隙（`macroGap = 8.0pt`，相当于整整 2 根线槽位的清晰视觉分隔，段间:段内比率近 4x）后的全部剩余空白空间平分到段内块与块的微间距（`tickGap` $\approx 2.0\sim 2.2\text{pt}$，与色块宽度形成近乎 1:1 的黄金呼吸节奏）；当 `N > 1` 时，在第 0 段与第 1 段间隙正中绘制 `1.5pt` 宽、`10pt` 高的分界锚线（`Color.primary.opacity(0.28)`），直观区分当前 5h 窗口与未来周配额；
+- **自适应栅格分配与点亮规则**：各段自适应栅格数（`ticksPerSegment(for:)`，单段 100、2 段各 50、4 段各 25、5 段各 20、6 段各 16、7 段各 14、10 段各 10；若遇非整数倍率则按容量权重分配并以 100 格为总基准）；点亮算法 `activeTickCount(fill:totalTicks:)` 采用 Half-Down 最近邻吸附（贴近最近刻度，遇到小数部分恰为 0.5 的中点平局时向小取整，保守估计余量，例如 10 格区间中 44.9% 与 45% 亮 4 格、45.1% 亮 5 格；16 格区间 50% 亮 8 格，46.875% 亮 7 格、47.0% 亮 8 格）；首段点亮栅格用 `intervalSegmentColor`（100% 不透明度），后续周段点亮栅格用 `weeklySegmentColor.opacity(0.68)`，底槽栅格用 `Color.primary.opacity(0.10)`。
 - **时间感知与三角标记解耦**：首格颜色由 `primaryTimeRemainingFraction`（即 5h 短窗口/滚动窗口的剩余时间比例）参与统一 pacing 计算（分母 = `100% * t`，`< 20%` 红色，`< 50%` 黄色，`>= 50%` 绿色）；而顶部时间锚点三角 ▼ 仅在长周期窗口（`>= 86400` 秒，如周配额）呈现，短窗口（`< 86400` 秒）不显示三角，避免短频跳动引起视觉干扰。
 
 Progress bar fill (`SegmentedQuotaProgressBar.intervalSegmentColor` /
@@ -1071,5 +1071,5 @@ The UI intentionally hides reset-credit id, title, description, and grant time.
 The shared Plan fallback uses the same 10pt `MenuTypography.hint` role for loading and
 failure feedback; there is no separate error-message typography role.
 
-> 核对基线：2026-10-30 · 代码 e23a098
+> 核对基线：2026-10-30 · 代码 be6fb65
 > 统一验证通过，详细结果见 `spec/sync.md`。

@@ -149,6 +149,7 @@ final class SegmentedQuotaProgressBarTests: XCTestCase {
         XCTAssertEqual(SegmentedQuotaProgressBar.ticksPerSegment(for: 1), 100)
         XCTAssertEqual(SegmentedQuotaProgressBar.ticksPerSegment(for: 2), 50)
         XCTAssertEqual(SegmentedQuotaProgressBar.ticksPerSegment(for: 3), 33)
+        XCTAssertEqual(SegmentedQuotaProgressBar.ticksPerSegment(for: 4), 25)
         XCTAssertEqual(SegmentedQuotaProgressBar.ticksPerSegment(for: 5), 20)
         XCTAssertEqual(SegmentedQuotaProgressBar.ticksPerSegment(for: 6), 16)
         XCTAssertEqual(SegmentedQuotaProgressBar.ticksPerSegment(for: 7), 14)
@@ -156,7 +157,7 @@ final class SegmentedQuotaProgressBarTests: XCTestCase {
     }
 
     func testTicksForSegmentWithFractionalCapacity() {
-        // Gemini 3.33 倍率（总容量 3.33：前 3 段为 1.0，尾段为 0.33）
+        // 非整数倍率（如假设的 3.33 倍率：总容量 3.33，前 3 段为 1.0，尾段为 0.33）
         let ticksStandard = SegmentedQuotaProgressBar.ticksForSegment(
             capacity: 1.0,
             totalCapacity: 3.33,
@@ -167,9 +168,17 @@ final class SegmentedQuotaProgressBarTests: XCTestCase {
             totalCapacity: 3.33,
             segmentCount: 4
         )
-        XCTAssertEqual(ticksStandard, 30, "Gemini 整段应分得 30 格")
-        XCTAssertEqual(ticksTail, 10, "Gemini 尾段应分得 10 格")
-        XCTAssertEqual(ticksStandard * 3 + ticksTail, 100, "Gemini 四段合计精确为 100 格")
+        XCTAssertEqual(ticksStandard, 30, "整段应分得 30 格")
+        XCTAssertEqual(ticksTail, 10, "尾段应分得 10 格")
+        XCTAssertEqual(ticksStandard * 3 + ticksTail, 100, "四段合计精确为 100 格")
+
+        // 整倍率 4.0（Gemini 4 倍率）：各段等宽 25 格
+        let ticksGemini4 = SegmentedQuotaProgressBar.ticksForSegment(
+            capacity: 1.0,
+            totalCapacity: 4.0,
+            segmentCount: 4
+        )
+        XCTAssertEqual(ticksGemini4, 25, "Gemini 4 倍率整段应分得 25 格")
     }
 
     func testActiveTickCountRoundingAndFloor() {
