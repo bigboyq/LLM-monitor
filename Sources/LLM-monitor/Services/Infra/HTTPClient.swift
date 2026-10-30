@@ -135,6 +135,7 @@ final class CappedDownloadDelegate: NSObject, URLSessionDataDelegate, @unchecked
     let maxBytes: Int
     let redactedPath: String
     private let state: CappedDownloadState?
+    private let parentDelegate: (any URLSessionDelegate)?
 
     private let lock = NSLock()
     var receivedBytes: Int = 0
@@ -149,11 +150,62 @@ final class CappedDownloadDelegate: NSObject, URLSessionDataDelegate, @unchecked
     init(
         maxBytes: Int,
         redactedPath: String,
-        state: CappedDownloadState? = nil
+        state: CappedDownloadState? = nil,
+        parentDelegate: (any URLSessionDelegate)? = nil
     ) {
         self.maxBytes = maxBytes
         self.redactedPath = redactedPath
         self.state = state
+        self.parentDelegate = parentDelegate
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        didReceive challenge: URLAuthenticationChallenge,
+        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+    ) {
+        if let parentDelegate,
+           parentDelegate.responds(to: #selector(URLSessionDelegate.urlSession(_:didReceive:completionHandler:))) {
+            parentDelegate.urlSession?(session, didReceive: challenge, completionHandler: completionHandler)
+            return
+        }
+
+        if challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+           let trust = challenge.protectionSpace.serverTrust,
+           ["127.0.0.1", "localhost"].contains(challenge.protectionSpace.host) {
+            completionHandler(.useCredential, URLCredential(trust: trust))
+            return
+        }
+
+        completionHandler(.performDefaultHandling, nil)
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        didReceive challenge: URLAuthenticationChallenge,
+        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+    ) {
+        if let taskDelegate = parentDelegate as? URLSessionTaskDelegate,
+           taskDelegate.responds(to: #selector(URLSessionTaskDelegate.urlSession(_:task:didReceive:completionHandler:))) {
+            taskDelegate.urlSession?(session, task: task, didReceive: challenge, completionHandler: completionHandler)
+            return
+        }
+
+        if let parentDelegate,
+           parentDelegate.responds(to: #selector(URLSessionDelegate.urlSession(_:didReceive:completionHandler:))) {
+            parentDelegate.urlSession?(session, didReceive: challenge, completionHandler: completionHandler)
+            return
+        }
+
+        if challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+           let trust = challenge.protectionSpace.serverTrust,
+           ["127.0.0.1", "localhost"].contains(challenge.protectionSpace.host) {
+            completionHandler(.useCredential, URLCredential(trust: trust))
+            return
+        }
+
+        completionHandler(.performDefaultHandling, nil)
     }
 
     func urlSession(
@@ -241,7 +293,8 @@ enum CappedDownloader {
         let delegate = CappedDownloadDelegate(
             maxBytes: maxBytes,
             redactedPath: redactedPath,
-            state: state
+            state: state,
+            parentDelegate: session.delegate
         )
         let queue = OperationQueue()
         queue.maxConcurrentOperationCount = 1

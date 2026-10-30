@@ -481,6 +481,80 @@ final class HTTPClientTests: XCTestCase {
         }
     }
 
+    private final class DummyChallengeSender: NSObject, URLAuthenticationChallengeSender {
+        func cancel(_ challenge: URLAuthenticationChallenge) {}
+        func continueWithoutCredential(for challenge: URLAuthenticationChallenge) {}
+        func performDefaultHandling(for challenge: URLAuthenticationChallenge) {}
+        func use(_ credential: URLCredential, for challenge: URLAuthenticationChallenge) {}
+    }
+
+    private final class MockChallengeParentDelegate: NSObject, URLSessionDelegate {
+        var didReceiveChallenge = false
+        func urlSession(
+            _ session: URLSession,
+            didReceive challenge: URLAuthenticationChallenge,
+            completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+        ) {
+            didReceiveChallenge = true
+            completionHandler(.performDefaultHandling, nil)
+        }
+    }
+
+    func testDelegateForwardsAuthenticationChallengeToParentDelegate() {
+        let parent = MockChallengeParentDelegate()
+        let delegate = CappedDownloadDelegate(maxBytes: 1000, redactedPath: redacted, parentDelegate: parent)
+        let space = URLProtectionSpace(
+            host: "api.example.com",
+            port: 443,
+            protocol: "https",
+            realm: nil,
+            authenticationMethod: NSURLAuthenticationMethodServerTrust
+        )
+        let challenge = URLAuthenticationChallenge(
+            protectionSpace: space,
+            proposedCredential: nil,
+            previousFailureCount: 0,
+            failureResponse: nil,
+            error: nil,
+            sender: DummyChallengeSender()
+        )
+        var called = false
+        delegate.urlSession(.shared, didReceive: challenge) { disposition, _ in
+            called = true
+            XCTAssertEqual(disposition, .performDefaultHandling)
+        }
+        XCTAssertTrue(called)
+        XCTAssertTrue(parent.didReceiveChallenge)
+    }
+
+    func testDelegateTaskChallengeForwardsToParentDelegate() {
+        let parent = MockChallengeParentDelegate()
+        let delegate = CappedDownloadDelegate(maxBytes: 1000, redactedPath: redacted, parentDelegate: parent)
+        let task = URLSession.shared.dataTask(with: testURL)
+        let space = URLProtectionSpace(
+            host: "api.example.com",
+            port: 443,
+            protocol: "https",
+            realm: nil,
+            authenticationMethod: NSURLAuthenticationMethodServerTrust
+        )
+        let challenge = URLAuthenticationChallenge(
+            protectionSpace: space,
+            proposedCredential: nil,
+            previousFailureCount: 0,
+            failureResponse: nil,
+            error: nil,
+            sender: DummyChallengeSender()
+        )
+        var called = false
+        delegate.urlSession(.shared, task: task, didReceive: challenge) { disposition, _ in
+            called = true
+            XCTAssertEqual(disposition, .performDefaultHandling)
+        }
+        XCTAssertTrue(called)
+        XCTAssertTrue(parent.didReceiveChallenge)
+    }
+
     override func tearDown() {
         TestURLProtocol.responder = nil
         TestURLProtocol.onStopLoading = nil
