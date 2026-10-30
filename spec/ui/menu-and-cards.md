@@ -977,7 +977,7 @@ Provider 品牌色从 `Color+Theme.swift` 统一派发：MiniMax 品牌色已统
 
 分段配额进度条（`SegmentedQuotaProgressBar`）：
 - **标准槽高**严格锁定为 `13pt`（`8pt` 条高 + `4pt` 顶部时间锚点三角 ▼ + `1pt` 间距），保持所有卡片行高稳定；
-- **微栅格分段渲染（Hybrid Micro-Ticks，约 100 槽微栅格体系）**：整条以约 100 槽（96~100 点）为全满基准分辨率，基于「肉眼对色块宽度敏感、对微小间距不敏感」的设计哲学，每组模型按整除需求分配专属段点数（单窗口 100 点、2 段各 50 点、5 段各 20 点、6 段各 16 点、7 段各 14 点、10 段各 10 点，Gemini 3.33 为 30+30+30+10 点），彻底根除同卡片各段间点数不等或锯齿问题；色块宽度（`tickWidth`）固定为全局恒定值 `2.0pt`（Retina 2x 屏幕下物理对应整整 4px，圆角 `1.0pt`，呈饱满垂直胶囊状），绝对不因分段动态拉伸或压缩；扣除所有色块固定宽度与分段大间隙（`macroGap = 4.5pt`）后的全部剩余空白空间平分到段内块与块的微间距（`tickGap` $\approx 2.0\sim 2.3\text{pt}$，与色块宽度形成近乎 1:1 的黄金呼吸节奏）；当 `N > 1` 时，在第 0 段与第 1 段间隙正中绘制 `1.5pt` 宽、`10pt` 高的分界锚线（`Color.primary.opacity(0.28)`），直观区分当前 5h 窗口与未来周配额；
+- **微栅格分段渲染（Hybrid Micro-Ticks，约 100 槽微栅格体系）**：整条以约 100 槽（96~100 点）为全满基准分辨率，基于「肉眼对色块宽度敏感、对微小间距不敏感」的设计哲学，每组模型按整除需求分配专属段点数（单窗口 100 点、2 段各 50 点、5 段各 20 点、6 段各 16 点、7 段各 14 点、10 段各 10 点，Gemini 3.33 为 30+30+30+10 点），彻底根除同卡片各段间点数不等或锯齿问题；色块宽度（`tickWidth`）固定为全局恒定值 `2.0pt`（Retina 2x 屏幕下物理对应整整 4px，圆角 `1.0pt`，呈饱满垂直胶囊状），绝对不因分段动态拉伸或压缩；扣除所有色块固定宽度与分段大间隙（`macroGap = 8.0pt`，相当于整整 2 根线槽位的清晰视觉分隔，段间:段内比率近 4x）后的全部剩余空白空间平分到段内块与块的微间距（`tickGap` $\approx 2.0\sim 2.2\text{pt}$，与色块宽度形成近乎 1:1 的黄金呼吸节奏）；当 `N > 1` 时，在第 0 段与第 1 段间隙正中绘制 `1.5pt` 宽、`10pt` 高的分界锚线（`Color.primary.opacity(0.28)`），直观区分当前 5h 窗口与未来周配额；
 - **自适应栅格分配与点亮规则**：各段自适应栅格数（`ticksPerSegment(for:)`，单段 100、2 段各 50、5 段各 20、6 段各 16、7 段各 14、10 段各 10；非整数倍率如 Gemini 3.33 分为 30+30+30+10，四段总和严格为 100）；点亮算法 `activeTickCount(fill:totalTicks:)` 采用 Half-Down 最近邻吸附（贴近最近刻度，遇到小数部分恰为 0.5 的中点平局时向小取整，保守估计余量，例如 10 格区间中 44.9% 与 45% 亮 4 格、45.1% 亮 5 格；16 格区间 50% 亮 8 格，46.875% 亮 7 格、47.0% 亮 8 格）；首段点亮栅格用 `intervalSegmentColor`（100% 不透明度），后续周段点亮栅格用 `weeklySegmentColor.opacity(0.68)`，底槽栅格用 `Color.primary.opacity(0.10)`。
 - **时间感知与三角标记解耦**：首格颜色由 `primaryTimeRemainingFraction`（即 5h 短窗口/滚动窗口的剩余时间比例）参与统一 pacing 计算（分母 = `100% * t`，`< 20%` 红色，`< 50%` 黄色，`>= 50%` 绿色）；而顶部时间锚点三角 ▼ 仅在长周期窗口（`>= 86400` 秒，如周配额）呈现，短窗口（`< 86400` 秒）不显示三角，避免短频跳动引起视觉干扰。
 
@@ -1071,5 +1071,5 @@ The UI intentionally hides reset-credit id, title, description, and grant time.
 The shared Plan fallback uses the same 10pt `MenuTypography.hint` role for loading and
 failure feedback; there is no separate error-message typography role.
 
-> 核对基线：2026-10-30 · 代码 ca42b76
+> 核对基线：2026-10-30 · 代码 e23a098
 > 统一验证通过，详细结果见 `spec/sync.md`。

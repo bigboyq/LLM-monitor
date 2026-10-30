@@ -153,7 +153,7 @@ struct SegmentedQuotaProgressBar: View {
         GeometryReader { geo in
             let totalWidth = geo.size.width
             let gapCount = max(segmentCount - 1, 0)
-            let macroGap: CGFloat = gapCount > 0 ? 4.5 : 0.0
+            let macroGap: CGFloat = gapCount > 0 ? 8.0 : 0.0
             let totalMacroGaps = CGFloat(gapCount) * macroGap
             let availableWidth = max(0, totalWidth - totalMacroGaps)
 
@@ -161,7 +161,8 @@ struct SegmentedQuotaProgressBar: View {
             // 绝不在各段之间拉伸压缩，保持极度锐利且一致的视觉宽度。
             let tickWidth: CGFloat = min(2.0, totalTicks > 0 ? availableWidth / CGFloat(totalTicks) : 2.0)
 
-            // 扣除所有固定色块宽度与分段大间距后，剩余的全部空白空间平分到块与块之间的间隔 tickGap（约 2.0~2.3pt）
+            // 扣除所有固定色块宽度与分段大间距（8.0pt，约 2 根线当量）后，
+            // 剩余的全部空白空间平分到块与块之间的间隔 tickGap（约 2.0~2.2pt）
             let totalInnerGaps = max(totalTicks - segmentCount, 1)
             let remainingBlank = max(0, availableWidth - CGFloat(totalTicks) * tickWidth)
             let tickGap: CGFloat = remainingBlank / CGFloat(totalInnerGaps)
