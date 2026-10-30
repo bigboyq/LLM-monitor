@@ -164,6 +164,8 @@ struct QuotaWindowUsageSection: View {
     var glmCategoryRows: [Row] = []
     /// 重置卡信息；`availableCount == 0` 或 `nil` 时重置卡模块整块不画。
     var resetCredits: ResetCreditsInfo?
+    /// GLM 额度重置卡快照（5小时卡与周卡）；`totalCardCount == 0` 或 `nil` 时重置卡模块整块不画。
+    var glmResetCards: GlmResetCardsSnapshot? = nil
     /// 重置卡折叠行的过期判定用刷新周期（秒），透传给 `CompactResetCreditsRow`。
     var refreshIntervalSeconds: Int = 300
     /// 显式覆盖 segment（供单元测试等直接指定态，不覆盖时走持久化状态）。
@@ -340,10 +342,12 @@ struct QuotaWindowUsageSection: View {
         today: Row?,
         offPeak: Row?,
         glmCategoryRows: [Row] = [],
-        resetCredits: ResetCreditsInfo?
+        resetCredits: ResetCreditsInfo?,
+        glmResetCards: GlmResetCardsSnapshot? = nil
     ) -> Bool {
         !visibleRows(snapshot: snapshot, today: today, offPeak: offPeak, glmCategoryRows: glmCategoryRows).isEmpty
             || (resetCredits?.availableCount ?? 0) > 0
+            || (glmResetCards?.totalCardCount ?? 0) > 0
     }
 
     // MARK: - 比率与金额格式化（从原 MetricRow 迁移）
@@ -449,7 +453,9 @@ struct QuotaWindowUsageSection: View {
 
     var body: some View {
         let hasRows = !rows.isEmpty
-        let showResets = (resetCredits?.availableCount ?? 0) > 0
+        let showCodexResets = (resetCredits?.availableCount ?? 0) > 0
+        let showGlmResets = (glmResetCards?.totalCardCount ?? 0) > 0
+        let showResets = showCodexResets || showGlmResets
         if hasRows || showResets {
             VStack(alignment: .leading, spacing: 6) {
                 if hasRows {
@@ -458,8 +464,10 @@ struct QuotaWindowUsageSection: View {
                 if hasRows && showResets {
                     moduleSeparator
                 }
-                if showResets {
+                if showCodexResets {
                     resetCreditsModule
+                } else if showGlmResets, let glmResetCards {
+                    glmResetCardsModule(glmResetCards)
                 }
             }
         }
@@ -685,6 +693,14 @@ struct QuotaWindowUsageSection: View {
                 )
                 ResetCreditsDetailList(resets: resetCredits)
             }
+        }
+    }
+
+    @ViewBuilder
+    private func glmResetCardsModule(_ snapshot: GlmResetCardsSnapshot) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            QuotaModuleTitle(text: Self.resetCreditsTitle)
+            GlmResetCardsBlock(snapshot: snapshot, tint: tint)
         }
     }
 

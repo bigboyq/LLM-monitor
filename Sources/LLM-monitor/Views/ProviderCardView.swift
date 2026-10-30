@@ -268,14 +268,21 @@ struct ProviderCardView: View, Equatable {
                 case .ok:
                     EmptyView()
                 }
-                let hasResetCards = (status.glmResetCards?.totalCardCount ?? 0) > 0
-                if status.kind == .glmCodingPlan && (!status.glmActivityPlanBalances.isEmpty || !status.glmActivityPlanPreviews.isEmpty || hasResetCards) {
+                let hasBalances = !status.glmActivityPlanBalances.isEmpty || !status.glmActivityPlanPreviews.isEmpty
+                if status.kind == .glmCodingPlan && hasBalances {
                     GlmActivityPlanBalancesView(
                         balances: status.glmActivityPlanBalances,
                         previews: status.glmActivityPlanPreviews,
-                        resetCards: status.glmResetCards,
                         tint: accentColor
                     )
+                }
+                let hasResetCards = (status.glmResetCards?.totalCardCount ?? 0) > 0
+                if status.kind == .glmCodingPlan && hasResetCards, let resetCards = status.glmResetCards {
+                    quotaUsageDivider
+                    VStack(alignment: .leading, spacing: 5) {
+                        QuotaModuleTitle(text: QuotaWindowUsageSection.resetCreditsTitle)
+                        GlmResetCardsBlock(snapshot: resetCards, tint: accentColor)
+                    }
                 }
             }
             .padding(LayoutMetrics.cardContentPadding)
@@ -549,12 +556,14 @@ struct ProviderCardView: View, Equatable {
             ].compactMap { label in
                 Self.fleetRow(usage.windowRows.first { $0.label == label })
             }
+            let glmResetCards = status.kind == .glmCodingPlan ? status.glmResetCards : nil
             if QuotaWindowUsageSection.hasVisibleContent(
                 snapshot: snapshot,
                 today: today,
                 offPeak: offPeak,
                 glmCategoryRows: glmCategoryRows,
-                resetCredits: info.resetCredits
+                resetCredits: info.resetCredits,
+                glmResetCards: glmResetCards
             ) {
                 quotaUsageDivider
                 QuotaWindowUsageSection(
@@ -564,6 +573,7 @@ struct ProviderCardView: View, Equatable {
                     offPeak: offPeak,
                     glmCategoryRows: glmCategoryRows,
                     resetCredits: info.resetCredits,
+                    glmResetCards: glmResetCards,
                     refreshIntervalSeconds: status.refreshIntervalSeconds
                 )
             }
@@ -572,12 +582,14 @@ struct ProviderCardView: View, Equatable {
         let today = status.kind == .deepseek ? nil : derived.todayUsageRow
         let offPeak = derived.offPeakUsageRow
         let glmCategoryRows = derived.glmCategoryUsageRows
+        let glmResetCards = status.kind == .glmCodingPlan ? status.glmResetCards : nil
         let hasUsageModules = QuotaWindowUsageSection.hasVisibleContent(
             snapshot: snapshot,
             today: today,
             offPeak: offPeak,
             glmCategoryRows: glmCategoryRows,
-            resetCredits: info.resetCredits
+            resetCredits: info.resetCredits,
+            glmResetCards: glmResetCards
         )
         if hasUsageModules {
             quotaUsageDivider
@@ -589,6 +601,7 @@ struct ProviderCardView: View, Equatable {
                 offPeak: offPeak,
                 glmCategoryRows: glmCategoryRows,
                 resetCredits: info.resetCredits,
+                glmResetCards: glmResetCards,
                 refreshIntervalSeconds: status.refreshIntervalSeconds
             )
         }
@@ -910,12 +923,11 @@ struct ProviderCardView: View, Equatable {
                 deepseekPeakWindow: status.deepseekPeakWindow ?? .defaultWindow,
                 betweenBarAndColumns: between
             )
-            let hasResetCards = (status.glmResetCards?.totalCardCount ?? 0) > 0
-            if status.kind == .glmCodingPlan && (!status.glmActivityPlanBalances.isEmpty || !status.glmActivityPlanPreviews.isEmpty || hasResetCards) {
+            let hasBalances = !status.glmActivityPlanBalances.isEmpty || !status.glmActivityPlanPreviews.isEmpty
+            if status.kind == .glmCodingPlan && hasBalances {
                 GlmActivityPlanBalancesView(
                     balances: status.glmActivityPlanBalances,
                     previews: status.glmActivityPlanPreviews,
-                    resetCards: status.glmResetCards,
                     tint: accentColor
                 )
             }

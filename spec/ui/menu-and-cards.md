@@ -815,10 +815,11 @@ look for a hover route to this data — the card carries it inline.
 - 单条 `GLM Coding Plan` 模型行（`QuotaInfo.displayName`，不再硬编码具体模型名）：智谱 Coding Plan 的 5h + 周积分是套餐共享池，合成一条展示，周进度条按 5 个等价额度分段（`weeklyEquivalentMultiplier` = 5；周积分 = 5 × 5h 积分：Lite 2000/10000、Pro 12000/60000、Max 28000/140000）。
 - 数据来源：远程 `GET open.bigmodel.cn/api/monitor/usage/quota/limit`，Coding Plan Key 作裸 token 放 `Authorization`。鉴权失败（HTTP 200 + `code:1000`）在 parse 阶段捕获并映射成 401 语义。
 - **高峰期提示**：额度行下方一行（`PeakIndicatorView` 外壳 + `GlmPeakIndicatorView` 的文案），纯本地计算（北京时间，与 API 无关）。颜色分 3 档：高峰期 🔥 红色 `高峰期 · 还剩 X`；非高峰期距高峰 < 1 小时 ❄️ 橙色、≥ 1 小时 ❄️ 绿色 `距高峰期 X · 非高峰 5 折`。Mon–Fri 14–18（官方规则：高峰全价、非高峰 50% 折），窗口固定不可调（北京时间、法定节假日除外，设置页只读展示，见 `spec/ui/settings.md`）。倒计时读环境里的 `\.displayDate`——共享展示时钟 `DisplayClock`（每个宿主各持一个实例），由卡片实际所在的宿主各自注入并随面板显隐 start/stop：菜单内容（`MenuContentView` 内联，由 `MenuWindowAutoCloseBridge.onPanelOpen` 启动并同步当前墙钟、`onPanelClose` 停表）、菜单兜底行 hover 浮层（`HoverPanelController`）与 dock 浮层（`EdgeDockController`）都持有时钟、经 `DisplayClockScope` 注入环境；不需要自己挂 `TimelineView`。
-- **活动套餐与重置卡**（`GlmActivityPlanBalancesView`，在开启 `parseZcodePlan` 且存在活动套餐或可用重置卡时渲染）：
-  - **活动套餐**：采用与 OpenAI API 赠金行同规格的配额卡片块展示。生效中套餐渲染独立进度条（8pt 单段）、`已用 X · 剩余：Y/Z (pct%)` 与 `失效时间：MM-dd HH:mm（剩余X小时）`，失效倒计时紧迫度分级（`<=1h` 红色、`<=2h` 黄色、`>2h` 正常）；生效前预告行整体置灰弱化，进度条置灰底 0%，渲染 `额度：Z` 与 `生效时间：MM-dd HH:mm（X小时后生效）`。
-  - **额度重置卡**：双列展示 5 小时卡与周卡，左侧 `5小时重置卡 (N)`、右侧 `周重置卡 (N)`；每列最多展示前 3 张（`prefix(3)`），显示 `MM-dd HH:mm 到期`；若某列卡片为 0 张则显示 `暂无可用卡`。
-  - 套餐与重置卡均无（`totalCardCount == 0` 且无活动套餐）则整块不渲染，排在额度段之后、余额之前。
+- **卡片段落布局（与 ChatGPT 对齐四段式流式结构）**：
+  1. **标准套餐额度**（`QuotaSummary`）：Coding Plan 5h & 周进度条与额度读数，卡片级高峰期倒计时夹在进度条下方；
+  2. **活动套餐额度**（`GlmActivityPlanBalancesView`，仅在存在活动套餐余额或预告时渲染）：紧跟标准套餐之后，`Divider().opacity(0.3)` 分隔。生效中套餐渲染独立进度条（8pt 单段）、`已用 X · 剩余：Y/Z (pct%)` 与 `失效时间：MM-dd HH:mm（剩余X小时）`，失效倒计时紧迫度分级（`<=1h` 红色、`<=2h` 黄色、`>2h` 正常）；生效前预告行整体置灰弱化，进度条置灰底 0%，渲染 `额度：Z` 与 `生效时间：MM-dd HH:mm（X小时后生效）`；
+  3. **额度窗口**（`QuotaWindowUsageSection.windowUsageModule`）：`quotaUsageDivider` 分隔，统一带有模块标题 `QuotaModuleTitle(text: "额度窗口")`、分析/用量分段切换器及 7 列网格（5h、周、今、闲、免、速、它）；
+  4. **重置卡详情**（`QuotaWindowUsageSection.glmResetCardsModule`，在存在可用重置卡时渲染）：`moduleSeparator` 分隔，对齐 ChatGPT 标题规范带有 `QuotaModuleTitle(text: "重置卡详情")`；内容区双列展示 5 小时卡与周卡（`GlmResetCardsBlock`），左侧 `5小时重置卡 (N)`、右侧 `周重置卡 (N)`；每列最多展示前 3 张（`prefix(3)`），显示到期紧迫度彩色圆点（`CreditEntryRow.dotColor`：<=24h 红色、<=48h 黄色、>48h 绿色）、`MM-dd HH:mm` 及相对到期倒计时；若某列卡片为 0 张则显示 `暂无可用卡`；无任何可用重置卡时整块不渲染且不占卡片高度。
 
 ### OpenCode client bindings（无设置页开关）
 
@@ -1078,5 +1079,5 @@ The UI intentionally hides reset-credit id, title, description, and grant time.
 The shared Plan fallback uses the same 10pt `MenuTypography.hint` role for loading and
 failure feedback; there is no separate error-message typography role.
 
-> 核对基线：2026-10-31 · 代码 0766401
+> 核对基线：2026-10-31 · 代码 40343a1
 > 统一验证通过，详细结果见 `spec/sync.md`。

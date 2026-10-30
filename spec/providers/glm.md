@@ -564,8 +564,8 @@ zcode SaaS 活动套餐（如周末体验套餐 `ZCode Weekend Build`）、额�
 | 过期口径 | `expires_at <= now` 的套餐条目直接剔除；重置卡按 `expireAt` 展示 |
 | 开关 | `providers.glm_coding_plan.parseZcodeCredential`（兼容旧配置 `parseZcodePlan` 与 `parseZcodeBalanceLog`；缺省关闭） |
 | 营销活动通知 | `providers.glm_coding_plan.notifyCampaign`（`QuotaNotifyChannel`：`none` / `system` / `barkAndSystem`；缺省关闭；在凭证解析关闭时禁用） |
-| 套餐展示 | `GlmActivityPlanBalancesView`：渲染生效中套餐进度条与失效倒计时，以及生效前预告置灰条 |
-| 重置卡展示 | `GlmActivityPlanBalancesView`：双列布局，左侧 5 小时卡 `5小时重置卡 (N)`、右侧周卡 `周重置卡 (N)`；每列最多展示前 3 张（`prefix(3)`），显示 `MM-dd HH:mm 到期`；无可用卡且无套餐时不占卡片高度 |
+| 套餐展示 | `GlmActivityPlanBalancesView`：排在标准额度之后，渲染生效中活动套餐进度条与失效倒计时，以及生效前预告置灰条 |
+| 重置卡展示 | `QuotaWindowUsageSection.glmResetCardsModule`（`GlmResetCardsBlock`）：排在「额度窗口」之后，带有标题「重置卡详情」（`QuotaModuleTitle`），双列布局，左侧 5 小时卡 `5小时重置卡 (N)`、右侧周卡 `周重置卡 (N)`；每列最多展示前 3 张（`prefix(3)`），显示彩色紧迫度圆点、`MM-dd HH:mm` 与相对倒计时；无可用卡时不占卡片高度 |
 
 ### 额度重置卡机制
 
@@ -795,4 +795,4 @@ whether the quota batch succeeded. GLM's former dedicated periodic trigger
 The scanner's db+WAL fingerprint check is unchanged: when nothing changed only a `stat()`
 runs (microseconds); SQL (~1.5ms) only runs when the WAL actually moved.
 
-> 核对基线：2026-10-31 · 代码 0766401
+> 核对基线：2026-10-31 · 代码 40343a1

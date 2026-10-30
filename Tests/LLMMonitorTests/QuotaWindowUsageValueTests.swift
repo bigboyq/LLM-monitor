@@ -1511,6 +1511,60 @@ final class QuotaWindowUsageValueTests: XCTestCase {
         XCTAssertEqual(resets.availableCount, 3, "折叠态那句『重置卡数量』与清单长度必须一致")
     }
 
+    /// GLM 额度重置卡模块呈现与显隐判定：
+    /// - 有重置卡时 `hasVisibleContent` 为真，`QuotaWindowUsageSection` 渲染非零高度
+    /// - 无重置卡且无窗口行时 `hasVisibleContent` 为假，高度为 0
+    @MainActor
+    func testGlmResetCardsModuleRendersWhenAvailable() {
+        let emptySnapshot = LocalUsageSummaryBuilder.windowUsage(
+            model: Self.model(name: "deepseek_balance", interval: false, weekly: false, now: Date()),
+            providerKind: .deepseek,
+            samples: [],
+            intervalLabel: "5h",
+            weeklyLabel: "周"
+        )
+        let now = Date()
+        let cards = GlmResetCardsSnapshot(
+            fiveHourResets: [GlmResetCardItem(expireAt: now.addingTimeInterval(3600))],
+            weekResets: []
+        )
+        let emptyCards = GlmResetCardsSnapshot(fiveHourResets: [], weekResets: [])
+
+        XCTAssertTrue(
+            QuotaWindowUsageSection.hasVisibleContent(
+                snapshot: emptySnapshot,
+                today: nil,
+                offPeak: nil,
+                resetCredits: nil,
+                glmResetCards: cards
+            ),
+            "GLM 重置卡非空时应判定为可见"
+        )
+        XCTAssertFalse(
+            QuotaWindowUsageSection.hasVisibleContent(
+                snapshot: emptySnapshot,
+                today: nil,
+                offPeak: nil,
+                resetCredits: nil,
+                glmResetCards: emptyCards
+            ),
+            "GLM 重置卡为空且无其他行时应判定为不可见"
+        )
+
+        let withCardsHeight = self.measuredHeight(
+            of: QuotaWindowUsageSection(snapshot: emptySnapshot, glmResetCards: cards),
+            width: Self.cardContentWidth
+        )
+        let withoutCardsHeight = self.measuredHeight(
+            of: QuotaWindowUsageSection(snapshot: emptySnapshot, glmResetCards: emptyCards),
+            width: Self.cardContentWidth
+        )
+
+        XCTAssertGreaterThan(withCardsHeight, 0, "有重置卡时必须渲染出模块标题与重置卡详情")
+        XCTAssertEqual(withoutCardsHeight, 0, "无重置卡且无用量行时高度必须为 0")
+        XCTAssertEqual(QuotaWindowUsageSection.resetCreditsTitle, "重置卡详情")
+    }
+
     /// 重置卡到期紧迫度颜色规则：
     /// - <=24h（含已过期）：.criticalTint（红）
     /// - <=48h 且 >24h：.warningTint（黄）
