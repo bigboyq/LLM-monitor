@@ -53,13 +53,6 @@ final class GlmZcodeLocalUsageScanner: SingleDBSnapshotScanner<GlmLocalUsage>, @
     /// ZCode tasks-index db（off_peak_tasks 表来源）
     let tasksDBURL: URL
 
-    /// ZCode 余额轮询日志目录（`billing/balance 请求完成` 行的来源）
-    nonisolated let balanceLogDirectoryURL: URL
-
-    /// 活动套餐余额日志解析开关（设置 `parseZcodeBalanceLog`）。AppState 在配置
-    /// 加载/变更时经 LocalUsageOrchestration 推送；扫描在后台线程执行，用 unfair
-    /// lock 保证跨线程可见。
-    private let balanceLogParsingEnabled = OSAllocatedUnfairLock<Bool>(initialState: false)
     nonisolated static let defaultTasksDBURL: URL = {
         URL(fileURLWithPath: NSHomeDirectory())
             .appendingPathComponent(".zcode", isDirectory: true)
@@ -73,12 +66,10 @@ final class GlmZcodeLocalUsageScanner: SingleDBSnapshotScanner<GlmLocalUsage>, @
     init(dbURL: URL = GlmZcodeLocalUsageScanner.defaultDBURL,
          tasksDBURL: URL = GlmZcodeLocalUsageScanner.defaultTasksDBURL,
          cacheDir: URL = GlmZcodeLocalUsageScanner.defaultCacheDir,
-         balanceLogDirectory: URL = GlmZcodeBalanceLogReader.defaultLogDirectoryURL,
          fileManager: FileManagerBox = FileManagerBox(),
          calendar: Calendar = .autoupdatingCurrent,
          now: @escaping @Sendable () -> Date = { Date() }) {
         self.tasksDBURL = tasksDBURL
-        self.balanceLogDirectoryURL = balanceLogDirectory
         super.init(
             dbURL: dbURL,
             cacheDir: cacheDir,
@@ -91,8 +82,7 @@ final class GlmZcodeLocalUsageScanner: SingleDBSnapshotScanner<GlmLocalUsage>, @
         configureSourceLifecycle(
             paths: [
                 dbURL.deletingLastPathComponent(),
-                tasksDBURL.deletingLastPathComponent(),
-                balanceLogDirectory
+                tasksDBURL.deletingLastPathComponent()
             ],
             watchedFiles: [
                 dbURL,
@@ -102,15 +92,6 @@ final class GlmZcodeLocalUsageScanner: SingleDBSnapshotScanner<GlmLocalUsage>, @
             ],
             excludedPaths: [TokenMonitorPaths.root]
         )
-    }
-
-    /// 设置层开关 → scanner。线程安全，可在任意时刻调用。
-    nonisolated func setBalanceLogParsingEnabled(_ enabled: Bool) {
-        balanceLogParsingEnabled.withLock { $0 = enabled }
-    }
-
-    nonisolated private var isBalanceLogParsingEnabled: Bool {
-        balanceLogParsingEnabled.withLock { $0 }
     }
 
     // MARK: - pipeline hooks
@@ -129,7 +110,6 @@ final class GlmZcodeLocalUsageScanner: SingleDBSnapshotScanner<GlmLocalUsage>, @
             calendar: calendar,
             sampleCutoff: now.addingTimeInterval(-LocalUsageRetentionWindow.seconds)
         )
-        let balanceRead = readActivityPlanBalanceRead(now: now)
         let snapshot = Self.buildSnapshot(
             adjustedPerDay: aggregate.perDay,
             sessionCount: aggregate.sessionCount,
@@ -137,34 +117,19 @@ final class GlmZcodeLocalUsageScanner: SingleDBSnapshotScanner<GlmLocalUsage>, @
             samples: aggregate.samples,
             providerSlices: Self.providerSlices(from: aggregate.providerSlices, calendar: calendar, now: now),
             offPeakWindows: offPeakWindows,
-            activityPlanBalances: balanceRead?.balances,
-            activityPlanPreviews: balanceRead?.previews,
+            activityPlanBalances: nil,
+            activityPlanPreviews: nil,
             calendar: calendar,
             now: now
         )
-        logInfo("\(logTag) ✓ rounds=\(aggregate.roundCount) sessions=\(aggregate.sessionCount) offPeak=\(offPeakWindows.count) activityPlans=\(balanceRead?.balances.count ?? -1) previews=\(balanceRead?.previews.count ?? -1) slices=\(snapshot.providerSlices?.count ?? 0)")
+        logInfo("\(logTag) ✓ rounds=\(aggregate.roundCount) sessions=\(aggregate.sessionCount) offPeak=\(offPeakWindows.count) slices=\(snapshot.providerSlices?.count ?? 0)")
         return snapshot
     }
 
     override nonisolated func rebaseSnapshot(_ snapshot: GlmLocalUsage, now: Date) throws -> GlmLocalUsage {
         var rebased = Self.rebaseCachedSnapshot(snapshot, calendar: calendar, now: now)
-        // 闲时窗口 / 活动套餐余额（含生效前预告）都可能在新一轮 scan 间期变化
-        //（新任务完成、ZCode 轮询日志更新），rebase 时同步刷新。
         let offPeakWindows = readOffPeakWindowsWithFallback()
-        let parsingEnabled = isBalanceLogParsingEnabled
-        let balanceRead = parsingEnabled ? readActivityPlanBalanceRead(now: now) : nil
-        // A disabled parser is an explicit user choice and must clear cached
-        // balances.  When parsing remains enabled, a transient read failure is
-        // different: retain the last good cached value.
-        let effectiveActivityPlanBalances = parsingEnabled
-            ? (balanceRead?.balances ?? rebased.activityPlanBalances)
-            : nil
-        let effectiveActivityPlanPreviews = parsingEnabled
-            ? (balanceRead?.previews ?? rebased.activityPlanPreviews)
-            : nil
-        if rebased.offPeakWindows != offPeakWindows
-            || rebased.activityPlanBalances != effectiveActivityPlanBalances
-            || rebased.activityPlanPreviews != effectiveActivityPlanPreviews {
+        if rebased.offPeakWindows != offPeakWindows {
             rebased = GlmLocalUsage(
                 today: rebased.today,
                 dailyTokenUsage: rebased.dailyTokenUsage,
@@ -174,27 +139,12 @@ final class GlmZcodeLocalUsageScanner: SingleDBSnapshotScanner<GlmLocalUsage>, @
                 failedSessionCount: rebased.failedSessionCount,
                 recentSamples: rebased.recentSamples,
                 offPeakWindows: offPeakWindows,
-                activityPlanBalances: effectiveActivityPlanBalances,
-                activityPlanPreviews: effectiveActivityPlanPreviews,
+                activityPlanBalances: rebased.activityPlanBalances,
+                activityPlanPreviews: rebased.activityPlanPreviews,
                 providerSlices: rebased.providerSlices
             )
         }
         return rebased
-    }
-
-    /// 开关开启时解析 ZCode 余额轮询日志（balances + previews 同源同读）；
-    /// 关闭或解析失败返回 nil（UI 按空处理，快照保留 nil 语义，与「未解析」一致）。
-    nonisolated private func readActivityPlanBalanceRead(now: Date) -> GlmActivityPlanBalanceRead? {
-        guard isBalanceLogParsingEnabled else { return nil }
-        let read = GlmZcodeBalanceLogReader.latestRead(
-            logDirectory: balanceLogDirectoryURL,
-            now: now,
-            calendar: calendar
-        )
-        if read == nil {
-            logDebug("\(logTag) 活动套餐余额日志未解析到 billing/balance 行")
-        }
-        return read
     }
 
     private nonisolated func readOffPeakWindowsWithFallback() -> [GlmOffPeakWindow] {

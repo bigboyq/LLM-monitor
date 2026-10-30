@@ -12,6 +12,8 @@ struct GlmActivityPlanBalancesView: View {
     let balances: [GlmActivityPlanBalance]?
     /// 生效前预告行；默认空，保持既有 `init(balances:)` 调用可编译。
     var previews: [GlmActivityPlanPreview] = []
+    /// 额度重置卡快照（5小时卡与周卡）
+    var resetCards: GlmResetCardsSnapshot? = nil
     /// 卡片主题色，默认 GLM 品牌色
     var tint: Color = .glmBrand
 
@@ -19,14 +21,74 @@ struct GlmActivityPlanBalancesView: View {
 
     var body: some View {
         let visible = balances ?? []
-        if !visible.isEmpty || !previews.isEmpty {
+        let hasBalances = !visible.isEmpty || !previews.isEmpty
+        let hasResetCards = resetCards != nil
+
+        if hasBalances || hasResetCards {
             VStack(alignment: .leading, spacing: 6) {
-                Divider().opacity(0.3)
-                ForEach(visible, id: \.entitlementID) { balance in
-                    activeBlock(for: balance)
+                if hasBalances {
+                    Divider().opacity(0.3)
+                    ForEach(visible, id: \.entitlementID) { balance in
+                        activeBlock(for: balance)
+                    }
+                    ForEach(previews, id: \.entitlementID) { preview in
+                        previewBlock(for: preview)
+                    }
                 }
-                ForEach(previews, id: \.entitlementID) { preview in
-                    previewBlock(for: preview)
+                if let resetCards {
+                    Divider().opacity(0.3)
+                    resetCardsBlock(for: resetCards)
+                }
+            }
+        }
+    }
+
+    // MARK: - 额度重置卡（Reset Cards）
+
+    @ViewBuilder
+    private func resetCardsBlock(for snapshot: GlmResetCardsSnapshot) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            resetCardColumn(
+                title: "5小时重置卡 (\(snapshot.fiveHourResets.count))",
+                cards: snapshot.fiveHourResets
+            )
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            resetCardColumn(
+                title: "周重置卡 (\(snapshot.weekResets.count))",
+                cards: snapshot.weekResets
+            )
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    @ViewBuilder
+    private func resetCardColumn(title: String, cards: [GlmResetCardItem]) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 4) {
+                Image(systemName: "arrow.counterclockwise.circle")
+                    .font(MenuTypography.badge)
+                    .foregroundStyle(tint)
+                Text(title)
+                    .font(MenuTypography.hoverRowEmphasis)
+                    .foregroundStyle(Color.primaryLabel)
+                    .lineLimit(1)
+            }
+
+            let shownCards = Array(cards.prefix(3))
+            if shownCards.isEmpty {
+                Text("暂无可用卡")
+                    .font(MenuTypography.resetDate)
+                    .foregroundStyle(Color.secondaryLabel)
+                    .lineLimit(1)
+            } else {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(Array(shownCards.enumerated()), id: \.offset) { _, card in
+                        Text("\(Formatters.formatMonthDayMinute(card.expireAt)) 到期")
+                            .font(MenuTypography.resetDate)
+                            .foregroundStyle(Color.secondaryLabel)
+                            .lineLimit(1)
+                    }
                 }
             }
         }

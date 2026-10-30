@@ -268,10 +268,11 @@ struct ProviderCardView: View, Equatable {
                 case .ok:
                     EmptyView()
                 }
-                if status.kind == .glmCodingPlan && (!status.glmActivityPlanBalances.isEmpty || !status.glmActivityPlanPreviews.isEmpty) {
+                if status.kind == .glmCodingPlan && (!status.glmActivityPlanBalances.isEmpty || !status.glmActivityPlanPreviews.isEmpty || status.glmResetCards != nil) {
                     GlmActivityPlanBalancesView(
                         balances: status.glmActivityPlanBalances,
                         previews: status.glmActivityPlanPreviews,
+                        resetCards: status.glmResetCards,
                         tint: accentColor
                     )
                 }
@@ -908,10 +909,11 @@ struct ProviderCardView: View, Equatable {
                 deepseekPeakWindow: status.deepseekPeakWindow ?? .defaultWindow,
                 betweenBarAndColumns: between
             )
-            if status.kind == .glmCodingPlan {
+            if status.kind == .glmCodingPlan && (!status.glmActivityPlanBalances.isEmpty || !status.glmActivityPlanPreviews.isEmpty || status.glmResetCards != nil) {
                 GlmActivityPlanBalancesView(
                     balances: status.glmActivityPlanBalances,
                     previews: status.glmActivityPlanPreviews,
+                    resetCards: status.glmResetCards,
                     tint: accentColor
                 )
             }

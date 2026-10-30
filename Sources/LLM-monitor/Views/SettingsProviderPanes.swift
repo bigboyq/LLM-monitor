@@ -213,10 +213,20 @@ extension SettingsView {
                 }
 
                 SettingsSection(
-                    title: "活动套餐余额",
-                    footer: "解析 ZCode 本地日志（~/.zcode/v2/logs）中活动套餐（如周末体验套餐）的余额轮询记录，在 GLM 卡片显示用量 / 剩余 / 过期时间。只读取本地文件，不发起网络请求；ZCode 未运行时展示最近一次快照。默认关闭。"
+                    title: "ZCode 套餐解析",
+                    footer: "通过 ZCode 接口解析活动套餐（如周末体验套餐）与额度重置卡。开启后可在 GLM 卡片展示套餐用量与重置卡状态，并支持运营活动推送提醒。默认关闭。"
                 ) {
-                    SettingsToggleRow(label: "解析活动套餐余额日志", isOn: $draft.glmBalanceLogParsing)
+                    SettingsToggleRow(label: "启用 ZCode 套餐解析", isOn: $draft.glmZcodePlanEnabled)
+                    SettingsControlRow("运营活动推送通知") {
+                        Picker("", selection: $draft.glmNotifyCampaign) {
+                            ForEach(QuotaNotifyChannel.allCases) { channel in
+                                Text(channel.displayName).tag(channel)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .frame(width: SettingsLayout.standardControlWidth, alignment: .trailing)
+                    }
+                    .disabled(!draft.glmZcodePlanEnabled)
                 }
             }
         }

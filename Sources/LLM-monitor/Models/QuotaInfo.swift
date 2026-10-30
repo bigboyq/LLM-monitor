@@ -282,6 +282,9 @@ struct QuotaInfo: Equatable, Codable, Sendable {
     /// OpenAI API 赠金用量与周期详情（ChatGPT 扩展）
     let openAIApiCredits: OpenAIApiCreditDetails?
 
+    /// ZCode 套餐余额与重置卡快照（GLM 扩展）
+    let glmZcodePackage: GlmZcodePackageSnapshot?
+
     /// Codex 部分抓取时主 Plan quota 的失败信息；由 AppState 保留 lastSuccess 并进入 failed 状态。
     let mainQuotaError: String?
 
@@ -300,6 +303,7 @@ struct QuotaInfo: Equatable, Codable, Sendable {
         fetchedAt: Date,
         balanceDetail: DeepseekBalanceDetail? = nil,
         openAIApiCredits: OpenAIApiCreditDetails? = nil,
+        glmZcodePackage: GlmZcodePackageSnapshot? = nil,
         mainQuotaError: String? = nil,
         openAIApiCreditsError: String? = nil
     ) {
@@ -310,6 +314,7 @@ struct QuotaInfo: Equatable, Codable, Sendable {
         self.codexUsageDetails = codexUsageDetails
         self.balanceDetail = balanceDetail
         self.openAIApiCredits = openAIApiCredits
+        self.glmZcodePackage = glmZcodePackage
         self.mainQuotaError = mainQuotaError
         self.openAIApiCreditsError = openAIApiCreditsError
         self.fetchedAt = fetchedAt
@@ -767,6 +772,24 @@ extension QuotaInfo {
             fetchedAt: fetchedAt,
             balanceDetail: balanceDetail,
             openAIApiCredits: openAIApiCredits,
+            glmZcodePackage: glmZcodePackage,
+            mainQuotaError: mainQuotaError,
+            openAIApiCreditsError: openAIApiCreditsError
+        )
+    }
+
+    /// 辅助方法：使用 ZCode 套餐与重置卡快照富化配额快照
+    func enriched(with package: GlmZcodePackageSnapshot?) -> QuotaInfo {
+        QuotaInfo(
+            models: models,
+            resetCredits: resetCredits,
+            planLabel: planLabel,
+            accountEmail: accountEmail,
+            codexUsageDetails: codexUsageDetails,
+            fetchedAt: fetchedAt,
+            balanceDetail: balanceDetail,
+            openAIApiCredits: openAIApiCredits,
+            glmZcodePackage: package,
             mainQuotaError: mainQuotaError,
             openAIApiCreditsError: openAIApiCreditsError
         )

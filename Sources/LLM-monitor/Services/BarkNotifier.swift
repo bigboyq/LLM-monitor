@@ -128,6 +128,45 @@ final class BarkQuotaNotifier: QuotaUpdateNotifying {
         }
     }
 
+    func notifyMarketingCampaign(
+        providerID: String,
+        providerName: String,
+        delivery: GlmMarketingDelivery,
+        channel: QuotaNotifyChannel
+    ) {
+        guard channel.sendsBarkPush else { return }
+        guard let bark = effectiveConfig else {
+            logDebug("[bark] 未启用或配置不完整，跳过 \(providerID) 活动 Bark 推送")
+            return
+        }
+
+        if bark.skipWhenAwakeAndUnlocked ?? false, screenInActiveUse() {
+            logDebug("[bark] 人在电脑前（屏幕亮且未锁屏），按配置跳过 \(providerID) 活动 Bark 推送")
+            return
+        }
+
+        let notificationID = "campaign-\(providerID)-\(delivery.id)"
+        guard let request = Self.buildRequest(
+            config: bark,
+            providerName: "\(providerName) 活动",
+            body: "\(delivery.title ?? "新活动提醒")\n\(delivery.body ?? "您有新的 ZCode 活动可领取")",
+            notificationID: notificationID
+        ) else {
+            logWarn("[bark] \(providerName) 活动推送请求构造失败，跳过")
+            return
+        }
+
+        let operation = BarkSendQueue.Operation(
+            request: request,
+            cooldownKey: notificationID,
+            label: "\(providerName)/campaign/\(delivery.id)",
+            eventCount: 1
+        )
+        Task { [sendQueue] in
+            await sendQueue.enqueue(operation)
+        }
+    }
+
     /// 设置页测试推送：与正式推送走同一套配置规范化、请求构造和屏幕策略，
     /// 仅绕过发送队列的冷却（允许连续点击验证）。返回面向用户的提示文案。
     static func sendTestPush(

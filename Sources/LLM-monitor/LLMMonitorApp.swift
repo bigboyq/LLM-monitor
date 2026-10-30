@@ -236,7 +236,10 @@ struct LLMMonitorApp: App {
                 iconSystemName: "chevron.left.forwardslash.chevron.right",
                 accentColor: .glm,
                 makeFetcher: { config in
-                    GlmCodingPlanFetcher(apiKey: config.usableAPIKey ?? "")
+                    GlmCodingPlanFetcher(
+                        apiKey: config.usableAPIKey ?? "",
+                        isZcodePlanEnabled: config.isZcodePlanEnabled
+                    )
                 },
                 settingsTabTitle: "GLM",
                 settingsTabSubtitle: "智谱 GLM Coding Plan 的 API Key 与刷新频率"

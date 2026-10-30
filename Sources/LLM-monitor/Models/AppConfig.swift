@@ -841,7 +841,19 @@ struct ProviderConfig: Codable, Equatable {
 
     /// 是否解析 ZCode 余额轮询日志，在 GLM 卡显示活动套餐（zcode-plan，如周末
     /// 体验套餐）的用量 / 剩余 / 过期时间。nil（字段不存在）= 关闭，不读日志。
+    /// （已由 parseZcodePlan 取代，保留以兼容历史配置）
     var parseZcodeBalanceLog: Bool?
+
+    /// 是否启用 ZCode 套餐解析（直连接口获取活动套餐、重置卡与营销活动）
+    var parseZcodePlan: Bool?
+
+    /// ZCode 运营活动推送通知渠道（none / system / barkAndSystem）
+    var notifyCampaign: QuotaNotifyChannel?
+
+    /// 便捷属性：是否启用 ZCode 套餐解析（兼容 parseZcodeBalanceLog）
+    var isZcodePlanEnabled: Bool {
+        parseZcodePlan ?? parseZcodeBalanceLog ?? false
+    }
 
     /// 四类额度事件的通知渠道（5 小时 / 周额度 × 恢复 / 耗尽）。
     /// nil（字段不存在）= 使用默认渠道（恢复 → 系统通知，耗尽 → 不通知），
@@ -870,6 +882,8 @@ struct ProviderConfig: Codable, Equatable {
         case enabled, apiKey, displayName, refreshIntervalSeconds, authPath
         case mergeOpencodeUsage
         case parseZcodeBalanceLog
+        case parseZcodePlan
+        case notifyCampaign
         case notifyIntervalRestored, notifyIntervalExhausted
         case notifyWeeklyRestored, notifyWeeklyExhausted
         case adminApiCreditsEnabled
@@ -886,6 +900,8 @@ struct ProviderConfig: Codable, Equatable {
          authPath: String? = nil,
          mergeOpencodeUsage: Bool? = nil,
          parseZcodeBalanceLog: Bool? = nil,
+         parseZcodePlan: Bool? = nil,
+         notifyCampaign: QuotaNotifyChannel? = nil,
          notifyIntervalRestored: QuotaNotifyChannel? = nil,
          notifyIntervalExhausted: QuotaNotifyChannel? = nil,
          notifyWeeklyRestored: QuotaNotifyChannel? = nil,
@@ -902,6 +918,8 @@ struct ProviderConfig: Codable, Equatable {
         self.authPath = authPath
         self.mergeOpencodeUsage = mergeOpencodeUsage
         self.parseZcodeBalanceLog = parseZcodeBalanceLog
+        self.parseZcodePlan = parseZcodePlan
+        self.notifyCampaign = notifyCampaign
         self.notifyIntervalRestored = notifyIntervalRestored
         self.notifyIntervalExhausted = notifyIntervalExhausted
         self.notifyWeeklyRestored = notifyWeeklyRestored
@@ -926,6 +944,9 @@ struct ProviderConfig: Codable, Equatable {
         self.authPath = try c.decodeIfPresent(String.self, forKey: .authPath)
         self.mergeOpencodeUsage = try c.decodeIfPresent(Bool.self, forKey: .mergeOpencodeUsage)
         self.parseZcodeBalanceLog = try c.decodeIfPresent(Bool.self, forKey: .parseZcodeBalanceLog)
+        self.parseZcodePlan = try c.decodeIfPresent(Bool.self, forKey: .parseZcodePlan)
+        self.notifyCampaign = (try? c.decode(String.self, forKey: .notifyCampaign))
+            .flatMap(QuotaNotifyChannel.init(rawValue:))
         // 渠道枚举值写错时按缺失处理，不让整份配置进入损坏恢复流程。
         self.notifyIntervalRestored = (try? c.decode(String.self, forKey: .notifyIntervalRestored))
             .flatMap(QuotaNotifyChannel.init(rawValue:))

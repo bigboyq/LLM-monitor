@@ -76,8 +76,8 @@ The app reads and writes this shape:
 | `providers.<id>.apiKey` | provider | API key for providers that do not manage external auth. Used by minimax. |
 | `providers.<id>.displayName` | provider | Optional UI label override. |
 | `providers.<id>.refreshIntervalSeconds` | provider | Optional provider-specific timer interval, with the same 10-second...30-day clamp. |
-| `providers.<id>.authPath` | provider | External-auth path used by Codex. Accepts either an `auth.json` file path or its parent directory. |
-| `providers.<id>.parseZcodeBalanceLog` | provider | 是否解析 ZCode 余额轮询日志、在 GLM 卡显示活动套餐余额。字段不存在 = 关闭（不读日志）。 |
+| `providers.<id>.parseZcodePlan` | provider | 是否启用 ZCode 套餐解析（直连 API 获取活动套餐余额、额度重置卡及营销活动），旧配置 `parseZcodeBalanceLog` 兼容向下解析。字段不存在或 false = 关闭。 |
+| `providers.<id>.notifyCampaign` | provider | 运营活动通知渠道（`QuotaNotifyChannel`：`none` / `system` / `barkAndSystem`），用于 GLM 营销活动触达推送。默认关闭（`none`），仅当 `parseZcodePlan` 开启时有效。 |
 | `providers.<id>.adminApiCreditsEnabled` | provider | 是否启用 OpenAI API 赠金监测（ChatGPT 专用）。缺省或 false 表示关闭；开启时在 ChatGPT 卡渲染「API赠金」进度条。 |
 | `providers.<id>.adminApiKey` | provider | OpenAI Admin API Key（`sk-admin-...`），用于查询组织消耗 `v1/organization/costs`。 |
 | `providers.<id>.adminBillingDay` | provider | 每月账单日（1-31，缺省 11）。 |
@@ -256,6 +256,6 @@ CHANGELOG 最新条目、两份 README 的「当前版本」/DMG 名/build-relea
 的旧文案「按本机时区计算、可在设置中调整」直到发版前才发现，只因 `build-release.sh` 的
 版本门禁全绿而放行。**功能口径变了，用户文档必须同轮改**。
 
-> 核对基线：2026-10-30 · 代码 81063ef
+> 核对基线：2026-10-31 · 代码 841a81e
 > 2026-10-25 统一验证通过，详见 `spec/sync.md`。
 > `.deviceId` 身份与旧 `sync.nodeID` 忽略语义已随 6f11831 入库，验证记录见 `spec/sync.md`。

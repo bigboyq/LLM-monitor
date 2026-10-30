@@ -176,6 +176,8 @@ final class AppState: ObservableObject {
     /// Startup 错峰期间先等待所有首拍 quota 结算，再只做一次 full reconcile。
     private var startupReconcilePendingProviderIDs: Set<String> = []
     private var startupReconcileCompleted = false
+    /// 已推送的 ZCode 运营活动 ID（内存去重，避免重复提醒）
+    private var notifiedMarketingDeliveryIDs: Set<String> = []
 
     /// 5 组本地 scanner 的编排（lazy 构造 / Provider batch reconcile / 条目隔离 / 去噪）。
     /// 扫描结果通过 `LocalUsageStatusWriting` 回写本类型。lazy：构造需要捕获 self。
@@ -931,11 +933,6 @@ final class AppState: ObservableObject {
     }
 
     func rebuildStatuses() {
-        // GLM 活动套餐余额日志解析开关跟随配置（init 与每次配置变更都会走到这里）。
-        localUsage.updateGlmBalanceLogParsing(
-            enabled: configStore.config.providers[providerID(for: .glmCodingPlan)
-                ?? ProviderKind.glmCodingPlan.providerID]?.parseZcodeBalanceLog ?? false
-        )
         statuses = descriptors.map { d in
             let pc = configStore.config.providers[d.id]
             // 抓一份"老的" status 用来保留 UI 状态（lastRefreshedAt /
@@ -1235,6 +1232,22 @@ final class AppState: ObservableObject {
                         weeklyExhausted: notifyConfig?.notifyWeeklyExhausted
                     )
                 )
+            }
+            if let deliveries = info.glmZcodePackage?.deliveries, !deliveries.isEmpty {
+                let notifyConfig = configStore.config.providers[providerID]
+                if let campaignChannel = notifyConfig?.notifyCampaign, campaignChannel != .none {
+                    for delivery in deliveries {
+                        if !notifiedMarketingDeliveryIDs.contains(delivery.id) {
+                            notifiedMarketingDeliveryIDs.insert(delivery.id)
+                            quotaUpdateNotifier.notifyMarketingCampaign(
+                                providerID: providerID,
+                                providerName: statuses[newIdx].displayName,
+                                delivery: delivery,
+                                channel: campaignChannel
+                            )
+                        }
+                    }
+                }
             }
             persistedRefreshTimes[providerID] = info.fetchedAt
             persistRefreshTimes()

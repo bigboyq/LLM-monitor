@@ -542,43 +542,33 @@ OpenCode / DSH 合并 sample（`zhipuai-coding-plan`、`dsh:glm` 等）不带 bi
 > 账号套餐行。**v9**：额度窗口改为"仅正式 Coding Plan 计入"白名单口径，纠正 v8 错误算入的
 > 其他套餐样本。）
 
-### Activity plan balances（活动套餐余额，可选）
+### ZCode 套餐解析与直连 API（Activity Plan、重置卡与营销活动）
 
-zcode SaaS 活动套餐（如周末体验套餐 `ZCode Weekend Build`）的 used/remaining/expires
-**不在** open.bigmodel.cn monitor 接口里，也不宜直调 `zcode.z.ai/api/v1/zcode-plan/billing/balance`
-（需要 ZCode OAuth token set，token 按 provider 轮换，静态凭证实测 401）。可行路径是
-解析 ZCode 自己的轮询日志：ZCode 桌面端每 ~60s 请求一次 balance 接口，并把**完整
-响应 JSON** 写进 `~/.zcode/v2/logs/YYYY-MM-DD.log`（行内标记 `billing/balance 请求完成`）。
+zcode SaaS 活动套餐（如周末体验套餐 `ZCode Weekend Build`）、额度重置卡与营销活动触达通过 `GlmZcodeAPIClient` 直调 `zcode.z.ai` 接口获取：
+- 凭证由 `GlmZcodeCredentialReader` 从 `~/.zcode/v2/telemetry-state.json` 与 `credentials.json` 自动解密；
+- 抓取随 `GlmCodingPlanFetcher.fetchQuota()` 并在后台静默聚合至 `GlmZcodePackageSnapshot`；
+- 直连失败静默回退，不影响 GLM 主卡额度抓取。
 
 | 项 | 值 |
 |---|---|
-| 数据源 | `~/.zcode/v2/logs/YYYY-MM-DD.log` 尾部（≤512KB）最后一条 `billing/balance 请求完成` 行 |
-| 文件回退 | 今天无标记行 → 读昨天的；两天都没有 → `nil`（未解析） |
-| 解析 | `payload.data.plans[]`（plan_id→name；`entitlements[]` 带 grant_units / effective_at / capabilities，用于生效前预告）+ `payload.data.balances[]`（entitlement 级 total/used/remaining/expires_at/capabilities）。balances 与 previews 同源——同一条日志行（`GlmActivityPlanBalanceRead`） |
-| 过期口径 | `expires_at <= now` 的条目直接剔除（"plan expire 就不显示"）；服务端对未领取/失效套餐返回空 `balances` |
-| 生效前预告 | 额度生效前 `balances` 为空数组，改从 `plans[].entitlements[]` 产出预告（`GlmActivityPlanPreview`，`Models/GlmLocalUsage.swift`）。三条判定：balances 已有对应桶（生效后不重复）、`effective_at <= now`、plan 的 `ends_at`（若有）`<= now`，任一命中即不预告；`grant_units` clamp ≥ 0 |
-| 开关 | `providers.glm_coding_plan.parseZcodeBalanceLog`（缺省关闭；关闭时不读日志，并清除已显示的缓存余额与预告，不依赖用量数据库发生变化）。`LocalUsageOrchestration.updateGlmBalanceLogParsing` 在 `rebuildStatuses`（init + 每次配置变更）推送 |
-| 展示 | `GlmActivityPlanBalancesView`（与 OpenAI API 赠金 / Google Argon 同款一等公民配额行）：生效中套餐每条 entitlement 渲染完整配额块——带独立进度条（`SegmentedQuotaProgressBar` 8pt，主色 `tint`）、`已用 X · 剩余：Y/Z (pct%)` 与 `失效时间：MM-dd HH:mm（剩余X小时）`，紧迫度分级（`<=1h` 红色、`<=2h` 黄色、`>2h` 次要灰）；预告行（`previews`，`effective_at` 未到）整体置灰弱化，进度条置灰底 0%，渲染 `额度：Z` 与 `生效时间：MM-dd HH:mm（X小时后生效）`。模型名与套餐名忽略大小写同名 / 为空 / 实为 entitlementID 回退值时省略（`displayTitle` 静态纯函数）。挂在 GLM 卡额度行下方；`balances` 与 `previews` 都空则整块不渲染 |
-| 单位 | `*_units` 是 token（`unit_type: "token"`）；`expires_at` / `effective_at` 是 unix **秒** |
+| 数据源 | 直连 API：`GlmZcodeAPIClient.fetchZcodePackage()` |
+| 接口 1：套餐余额 | `GET https://zcode.z.ai/api/v1/zcode-plan/billing/balance?app_version=...`（balances + 生效前 previews） |
+| 接口 2：重置卡 | `GET https://zcode.z.ai/api/v1/coding-plan/reset/status`（5h 卡与周卡列表及过期时间） |
+| 接口 3：营销活动 | `GET https://zcode.z.ai/api/v1/marketing/touch?seq=1`（未领取活动 deliveries） |
+| 过期口径 | `expires_at <= now` 的套餐条目直接剔除；重置卡按 `expireAt` 展示 |
+| 开关 | `providers.glm_coding_plan.parseZcodePlan`（兼容旧配置 `parseZcodeBalanceLog`；缺省关闭） |
+| 营销活动通知 | `providers.glm_coding_plan.notifyCampaign`（`QuotaNotifyChannel`：`none` / `system` / `barkAndSystem`；缺省关闭；在套餐解析关闭时禁用） |
+| 套餐展示 | `GlmActivityPlanBalancesView`：渲染生效中套餐进度条与失效倒计时，以及生效前预告置灰条 |
+| 重置卡展示 | `GlmActivityPlanBalancesView`：双列布局，左侧 5 小时卡 `5小时重置卡 (N)`、右侧周卡 `周重置卡 (N)`；每列最多展示前 3 张（`prefix(3)`），显示 `MM-dd HH:mm 到期`；无可用卡时显示 `暂无可用卡` |
 
-边界：ZCode 未运行时不产生新快照，UI 展示日志中最近一次观测值（`observedAt` 记录
-日志行时间）；日志格式无官方契约，解析失败静默降级为「无活动套餐」。billing/balance
-**不含**额度重置卡（见下节）。
-
-### 额度重置卡（调研记录，未接入）
-
-> 2026-08-28 调研结论。私有接口，LLM-monitor **有意不接入**；本节只记录发现，
-> 供未来官方开放 API 或 ZCode 行为变化时参考。
+### 额度重置卡机制
 
 **机制**（[官方使用统计文档](https://zcode.z.ai/cn/docs/usage-stats)）：额度重置卡分
 5 小时 / 每周两类，在有效期内使用可把对应额度立即恢复到 100%。ZCode 会在闲时自动向
 Coding Plan 用户下发 5 小时卡（闲时时段 + 5h 用量超阈值 + 当日下发次数未达上限）；
-其他活动的重置卡也在端内一并显示。多张卡时自动使用最早获得的。**只发给登录 ZCode
-并连接账号 Coding Plan 的用户**——纯 API Key 接入或未开通 Coding Plan 的账号没有卡，
-因此 API key 维度的 monitor 接口设计上就不含此数据。
+其他活动的重置卡也在端内一并显示。多张卡时自动使用最早获得的。
 
-**接口**（ZCode 3.10.1 二进制逆向，`/api/v1/coding-plan/reset/*`，host 与
-billing/balance 同为 `zcode.z.ai`）：
+**接口**（ZCode 客户端逆向，`/api/v1/coding-plan/reset/*`，host 为 `zcode.z.ai`）：
 
 | 端点 | 方法 | 说明 |
 |---|---|---|
@@ -587,38 +577,63 @@ billing/balance 同为 `zcode.z.ai`）：
 | `/api/v1/coding-plan/reset/opportunity` | POST | 闲时申领 5h 卡；业务码 `3301` = 未中签（`data.next_try_at`） |
 | `/api/v1/coding-plan/reset/history/read` | POST | 标记历史已读 |
 
-`GET /status` 响应（envelope `{code, msg, data}`，时间均为 unix **秒**）：
+`GET /status` 响应（envelope `{code, msg, data}`，时间戳为 unix **毫秒**）：
 
 ```json
 {
-  "available_five_hour_resets": [ { "expire_at": 1790870340 } ],
-  "available_week_resets":      [ { "expire_at": 1790870340 } ],
-  "latest_five_hour_reset_history": { "used_at": 1787900000 },
-  "latest_week_reset_history": null,
-  "has_unread_history": true
+  "code": 0,
+  "msg": "success",
+  "data": {
+    "available_five_hour_resets": [],
+    "available_week_resets": [
+      { "expire_at": 1797955199000 }
+    ],
+    "latest_five_hour_reset_history": { "used_at": 1793167845000 },
+    "latest_week_reset_history": { "used_at": 1793170881000 },
+    "has_unread_history": false
+  }
 }
 ```
 
 鉴权为**双头**（缺一不可）：
 
 ```
-Authorization: Bearer <zcodejwttoken>            # ZCode 活跃 JWT（按 provider 轮换）
-X-Bigmodel-Authorization: <bigmodel access token> # oauth:bigmodel:access_token（zai 账号则 oauth:zai:access_token）
-Bigmodel-Target-Type: PERSONAL                    # 团队套餐为 TEAM + Bigmodel-Organization / Bigmodel-Project
+Authorization: Bearer <zcodejwttoken>            # ZCode 活跃 JWT（由 GlmZcodeCredentialReader 从 credentials.json 解密）
+X-Bigmodel-Authorization: <bigmodel access token> # oauth:bigmodel:access_token（由 GlmZcodeCredentialReader 解密）
+Bigmodel-Target-Type: PERSONAL                    # 个人账号固定为 PERSONAL；团队套餐为 TEAM
 ```
 
-**不接入的原因**（三条独立成立）：① 私有接口，无契约，随 ZCode 版本变化；
-② 双 token 都在 ZCode OAuth token set 内按 provider 轮换，本地静态凭证实测 401
-（与 billing/balance 直调同一堵墙，且多一个必填头）；③ ZCode **不记录**该接口的
-调用与响应（全部历史日志检索 `coding-plan/reset` / `available_*_resets` 零命中），
-活动套餐的日志解析路线对重置卡不可行。
+### 2026-10-30 实测突破：ZCode 本地凭证解密与三大直连接口
 
-> 2026-10-28 复测补充：`~/.zcode/v2/credentials.json` 的全部条目（`zcodejwttoken` /
-> `oauth:bigmodel:access_token` / 各套餐 `account-provider:...:api-key`）均为 `enc:v1:`
-> 前缀的**密文**（文件随 ZCode 运行持续刷新，明文只在进程内，本地无法解出）——②的
-> "读文件拿 token"路线从根上不存在。同日用密文直发 `/reset/status`、用 Coding Plan Key
-> （raw `Authorization`）直发均 HTTP 401；`~/.zcode/v2/coding-plan-cache.json` 只有套餐
-> 可用性（`entryStatus`），无重置卡数据。
+2026-10-30 逆向确认并实现 `GlmZcodeCredentialReader.swift` 与 `GlmZcodeAPIClient.swift`：
+1. **凭证来源**：
+   - `deviceMid`：明文存储于 `~/.zcode/v2/telemetry-state.json`。
+   - `zcodejwttoken` 与 `oauth:bigmodel:access_token`：存储于 `~/.zcode/v2/credentials.json`，带 `enc:v1:` 前缀。
+   - 加密方式为固定 AES-256-GCM，密码源默认回退为 `zcode-credential-fallback:darwin:<homeDirectory>:<userName>` 的 SHA256 摘要。在 Swift 中使用 CryptoKit 即可透明无感知解出明文。
+2. **三大直连接口实测全部 HTTP 200 验证通过**：
+   - **重置卡状态**：`GET https://zcode.z.ai/api/v1/coding-plan/reset/status`
+     - 需 `Authorization: Bearer <jwt>` + `X-Bigmodel-Authorization: <token>` + `Bigmodel-Target-Type: PERSONAL`。
+     - 实测返回可用周卡 3 张（`expire_at: 1797955199000`），5 小时卡 0 张。
+   - **Start Plan 余额**：`GET https://zcode.z.ai/api/v1/zcode-plan/billing/balance?app_version=3.17.1`
+     - 需 `Authorization: Bearer <jwt>` + `X-Device-Mid` + `X-Client-Language: zh-CN` + `X-ZCode-App-Version` + `X-Bigmodel-Authorization` + `Bigmodel-Target-Type: PERSONAL`。
+     - 实测返回 `ZCODE WEEKEND BUILD` 套餐，总量 500,000,000 tokens，剩余 500,000,000 tokens，生效时间 `effective_at: 1793372400`，到期时间 `ends_at: 1793581200`（注意：此接口时间戳为**秒**，与重置卡的**毫秒**不同，客户端均自适应转换）。
+   - **营销活动触达（领鸡蛋）**：`GET https://zcode.z.ai/api/v1/marketing/touch?seq=1`
+     - 需 `Authorization: Bearer <jwt>` + `X-Device-Mid` + `X-Client-Language: zh-CN`。
+     - 实测返回 HTTP 200，`deliveries: []`（活动领取后为空；有活动未领取时返回活动 delivery 字典供触发推送）。
+
+### 直连接口 vs 日志解析 架构对比
+
+| 维度 | 直连 API 路线 | 本地轮询日志解析路线 (`GlmZcodeBalanceLogReader`) |
+|---|---|---|
+| **重置卡获取** | **支持**（5h / 周卡数量及过期时间） | **不支持**（日志完全不记录重置卡请求与响应） |
+| **未领运营活动（领鸡蛋）** | **支持**（可提前检测到未领弹窗，触发 Bark 推送提醒） | **不支持**（日志仅在用户手动点击领取后记录一条 success，无法做未领提醒） |
+| **实时性** | **高**（LLM-monitor 后台周期性静默请求，无需打开 ZCode 客户端） | **低**（依赖 ZCode 桌面端必须保持运行并持续轮询写入） |
+| **离线可用性** | 依赖网络 | **完全离线可用**（纯读本地 log 文件） |
+| **鉴权失效风险** | 若用户退登或 Token 过期且久未启动 ZCode，可能返回 401 | 无（日志已落盘，不存在实时鉴权问题） |
+
+**最佳架构决策**：**Direct-First + Log-Fallback（直连为主，日志兜底）**。
+- 当本地检测到 ZCode 凭证且网络可用时，优先直连 API，解锁重置卡与领鸡蛋提醒两大核心能力；
+- 当凭证缺失、失效或网络断开时，自动无缝降级至本地日志解析，保证数据不中断。
 
 **可观测副作用**：用卡成功后 monitor 接口对应窗口的 `remaining` 立即回满、
 `nextResetTime` 重新滚动——LLM-monitor 不做「疑似用卡」推断展示，卡片只反映
@@ -677,10 +692,12 @@ session 不一定在内）。
 | Off-peak window reader | `Sources/LLM-monitor/Services/GlmZcodeOffPeakReader.swift` |
 | Scanner, cache, and seven-day snapshot | `Sources/LLM-monitor/Services/GlmZcodeLocalUsageScanner.swift` |
 | Activity-plan balance log reader（balances + 生效前 previews，同一条日志行） | `Sources/LLM-monitor/Services/GlmZcodeBalanceLogReader.swift` |
+| ZCode 本地凭证读取（deviceMid 与 AES-256-GCM JWT 解密） | `Sources/LLM-monitor/Services/GlmZcodeCredentialReader.swift` |
+| ZCode 直连 API 客户端（套餐余额、重置卡、营销活动） | `Sources/LLM-monitor/Services/GlmZcodeAPIClient.swift` |
 | Provider-neutral projection with OpenCode | `Sources/LLM-monitor/Models/ProviderClientModel.swift` (`ProviderStatus.usageProjection`，帧抽取表 `usageFrameExtractors`) + `UsageProjectionKernel` |
 | Window summary + off-peak exclusion | `Sources/LLM-monitor/Models/LocalTokenUsageSample.swift` (`summary(excludeGlmOffPeak:)`；今日闲时样本筛选/聚合 `offPeakTodaySamples` / `offPeakTodaySummary`，与按 `GlmUsageCategory` 泛化的 `glmCategoryTodaySamples` / `glmCategoryTodaySummary` 共享同一谓词) |
 | Card integration | `Sources/LLM-monitor/Views/ProviderCardView.swift` + `QuotaViews.swift`；「额度窗口」表格「闲」行的构造在 `Sources/LLM-monitor/Views/ProviderCardDerived.swift`（`ProviderCardDerivedValues.offPeakUsageRow`），「免 / 速 / 它」三行在 `ProviderCardDerivedValues.glmCategoryUsageRows` |
-| Regression tests | `Tests/LLMMonitorTests/GlmCodingPlanFetcherTests.swift 等 5 个按 MARK 段拆分的 GLM 测试文件` |
+| Regression tests | `Tests/LLMMonitorTests/GlmCodingPlanFetcherTests.swift 等 6 个按 MARK 段拆分的 GLM 测试文件（含 GlmZcodeAPIClientTests.swift）` |
 
 ## API Error Handling
 
@@ -771,4 +788,4 @@ whether the quota batch succeeded. GLM's former dedicated periodic trigger
 The scanner's db+WAL fingerprint check is unchanged: when nothing changed only a `stat()`
 runs (microseconds); SQL (~1.5ms) only runs when the WAL actually moved.
 
-> 核对基线：2026-10-30 · 代码 c0a53d3
+> 核对基线：2026-10-31 · 代码 841a81e

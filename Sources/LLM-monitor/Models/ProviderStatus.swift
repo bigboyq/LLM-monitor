@@ -61,22 +61,30 @@ struct ProviderStatus: Identifiable, Equatable, Sendable {
     /// 只在 `kind == .glmCodingPlan` 时使用；其他 provider 永远 nil。
     var glmLocalUsage: GlmLocalUsage?
 
-    /// ZCode 活动套餐余额（UI 投影）。`nil`（未解析 / 开关关闭）与 `[]`（解析到但
-    /// 当前无套餐）在这里合并成"没有余额可显示"——视图不必知道 scanner 快照里
-    /// 这个字段是 optional，也不必下钻 `glmLocalUsage` 的内部结构。
-    ///
+    /// ZCode 活动套餐余额（UI 投影）。优先从 quotaInfo?.glmZcodePackage 获取，
+    /// 回退至本地 scanner 快照。
     /// 只有 `.glmCodingPlan` 的卡片读它（`GlmActivityPlanBalancesView`）。
     var glmActivityPlanBalances: [GlmActivityPlanBalance] {
-        glmLocalUsage?.activityPlanBalances ?? []
+        if let balances = lastSuccess?.glmZcodePackage?.activityPlanBalances {
+            return balances
+        }
+        return glmLocalUsage?.activityPlanBalances ?? []
     }
 
-    /// ZCode 活动套餐生效前预告（UI 投影）。`nil`（未解析 / 开关关闭）与 `[]`
-    ///（无未生效 entitlement）合并成"没有预告可显示"，口径与 `glmActivityPlanBalances`
-    /// 一致——视图不必下钻 `glmLocalUsage` 的内部结构。
-    ///
+    /// ZCode 活动套餐生效前预告（UI 投影）。优先从 quotaInfo?.glmZcodePackage 获取，
+    /// 回退至本地 scanner 快照。
     /// 只有 `.glmCodingPlan` 的卡片读它（`GlmActivityPlanBalancesView`）。
     var glmActivityPlanPreviews: [GlmActivityPlanPreview] {
-        glmLocalUsage?.activityPlanPreviews ?? []
+        if let previews = lastSuccess?.glmZcodePackage?.activityPlanPreviews {
+            return previews
+        }
+        return glmLocalUsage?.activityPlanPreviews ?? []
+    }
+
+    /// ZCode 额度重置卡快照（UI 投影）。
+    /// 只有 `.glmCodingPlan` 的卡片读它（`GlmActivityPlanBalancesView`）。
+    var glmResetCards: GlmResetCardsSnapshot? {
+        lastSuccess?.glmZcodePackage?.resetCards
     }
 
     /// GLM 闲时任务窗口（UI 投影）。非 GLM 卡恒为空——ZCode 是一份多 provider

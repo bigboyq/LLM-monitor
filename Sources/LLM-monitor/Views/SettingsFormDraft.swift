@@ -50,7 +50,14 @@ struct SettingsFormDraft: Equatable {
     var glmEnabled: Bool = false
     var glmInterval: Int = 0
     var glmApiKey: String = ""
-    var glmBalanceLogParsing: Bool = false
+    var glmZcodePlanEnabled: Bool = false
+    var glmNotifyCampaign: QuotaNotifyChannel = .none
+
+    /// 兼容历史测试与调用点
+    var glmBalanceLogParsing: Bool {
+        get { glmZcodePlanEnabled }
+        set { glmZcodePlanEnabled = newValue }
+    }
 
     var deepseekEnabled: Bool = false
     var deepseekInterval: Int = 0
@@ -156,7 +163,8 @@ struct SettingsFormDraft: Equatable {
             glmEnabled = pc.enabled
             glmApiKey = pc.apiKey ?? ""
             glmInterval = pc.refreshIntervalSeconds ?? 0
-            glmBalanceLogParsing = pc.parseZcodeBalanceLog ?? false
+            glmZcodePlanEnabled = pc.isZcodePlanEnabled
+            glmNotifyCampaign = pc.notifyCampaign ?? .none
         }
 
         if let id = pid(for: .deepseek), let pc = config.providers[id] {

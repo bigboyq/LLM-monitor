@@ -280,6 +280,23 @@ protocol QuotaUpdateNotifying: AnyObject {
         events: [QuotaEvent],
         channels: QuotaNotifyChannels
     )
+
+    /// 发送运营/营销活动触达通知
+    func notifyMarketingCampaign(
+        providerID: String,
+        providerName: String,
+        delivery: GlmMarketingDelivery,
+        channel: QuotaNotifyChannel
+    )
+}
+
+extension QuotaUpdateNotifying {
+    func notifyMarketingCampaign(
+        providerID: String,
+        providerName: String,
+        delivery: GlmMarketingDelivery,
+        channel: QuotaNotifyChannel
+    ) {}
 }
 
 @MainActor
@@ -305,6 +322,22 @@ final class CompositeQuotaUpdateNotifier: QuotaUpdateNotifying {
             )
         }
     }
+
+    func notifyMarketingCampaign(
+        providerID: String,
+        providerName: String,
+        delivery: GlmMarketingDelivery,
+        channel: QuotaNotifyChannel
+    ) {
+        for notifier in notifiers {
+            notifier.notifyMarketingCampaign(
+                providerID: providerID,
+                providerName: providerName,
+                delivery: delivery,
+                channel: channel
+            )
+        }
+    }
 }
 
 /// 测试和不需要系统通知的调用方使用；产品入口显式注入 SystemQuotaUpdateNotifier。
@@ -315,6 +348,13 @@ final class NoopQuotaUpdateNotifier: QuotaUpdateNotifying {
         providerName: String,
         events: [QuotaEvent],
         channels: QuotaNotifyChannels
+    ) {}
+
+    func notifyMarketingCampaign(
+        providerID: String,
+        providerName: String,
+        delivery: GlmMarketingDelivery,
+        channel: QuotaNotifyChannel
     ) {}
 }
 
@@ -418,7 +458,48 @@ final class SystemQuotaUpdateNotifier: NSObject,
         }
     }
 
-@MainActor
+    @MainActor
+    func notifyMarketingCampaign(
+        providerID: String,
+        providerName: String,
+        delivery: GlmMarketingDelivery,
+        channel: QuotaNotifyChannel
+    ) {
+        guard channel.sendsSystemNotification else { return }
+        guard let center else { return }
+
+        center.getNotificationSettings { [weak self] settings in
+            guard let self else { return }
+            guard settings.authorizationStatus == .authorized
+                || settings.authorizationStatus == .provisional else {
+                return
+            }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                let content = UNMutableNotificationContent()
+                content.title = "\(providerName): \(delivery.title ?? "新活动提醒")"
+                content.body = delivery.body ?? "您有新的 ZCode 活动可领取"
+                content.sound = Self.notificationSound(enabled: self.systemSoundEnabled())
+                content.userInfo = ["providerID": providerID, "deliveryID": delivery.id]
+                content.threadIdentifier = "quota-campaign-\(providerID)"
+
+                let request = UNNotificationRequest(
+                    identifier: "campaign-\(providerID)-\(delivery.id)",
+                    content: content,
+                    trigger: nil
+                )
+                self.center?.add(request) { error in
+                    if let error {
+                        logWarn("[quota-notification] 发送 \(providerName) 活动通知失败: \(error.localizedDescription)")
+                    } else {
+                        logInfo("[quota-notification] 已发送 \(providerName) 活动通知: \(delivery.title ?? delivery.id)")
+                    }
+                }
+            }
+        }
+    }
+
+    @MainActor
     func notify(
         providerID: String,
         providerName: String,

@@ -46,12 +46,15 @@ struct GlmCodingPlanFetcher: QuotaFetcher {
     private let apiKey: String
     private let endpoint: URL
     private let client: HTTPClient
+    let isZcodePlanEnabled: Bool
 
     init(apiKey: String,
          endpoint: URL = URL(string: "https://open.bigmodel.cn/api/monitor/usage/quota/limit")!,
+         isZcodePlanEnabled: Bool = false,
          session: URLSession = .shared) {
         self.apiKey = apiKey
         self.endpoint = endpoint
+        self.isZcodePlanEnabled = isZcodePlanEnabled
         self.client = HTTPClient(session: session, logTag: Self.logTag, defaultTimeout: HTTPTimeouts.domestic)
     }
 
@@ -71,7 +74,61 @@ struct GlmCodingPlanFetcher: QuotaFetcher {
         let (data, _) = try await client.send(req, includeBodyInError: false)
         try Task.checkCancellation()
 
-        return try Self.parse(data: data)
+        var quotaInfo = try Self.parse(data: data)
+
+        if isZcodePlanEnabled {
+            if let package = await fetchZcodePackageSilently() {
+                quotaInfo = quotaInfo.enriched(with: package)
+            }
+        }
+
+        return quotaInfo
+    }
+
+    private func fetchZcodePackageSilently() async -> GlmZcodePackageSnapshot? {
+        let creds = GlmZcodeCredentialReader.loadCredentials()
+        guard creds.hasCredentials else {
+            logDebug("\(logTag) ZCode 本地凭证缺失，跳过套餐与重置卡获取")
+            return nil
+        }
+
+        var balances: [GlmActivityPlanBalance] = []
+        var previews: [GlmActivityPlanPreview] = []
+        var resetCards: GlmResetCardsSnapshot? = nil
+        var deliveries: [GlmMarketingDelivery] = []
+
+        // 1. Balance
+        do {
+            let (b, p) = try await GlmZcodeAPIClient.fetchBalance(credentials: creds)
+            balances = b
+            previews = p
+        } catch {
+            logWarn("\(logTag) 获取 ZCode 套餐余额失败: \(error.localizedDescription)")
+        }
+
+        // 2. Reset Cards
+        if creds.bigmodelAccessToken != nil {
+            do {
+                resetCards = try await GlmZcodeAPIClient.fetchResetCards(credentials: creds)
+            } catch {
+                logWarn("\(logTag) 获取 ZCode 重置卡状态失败: \(error.localizedDescription)")
+            }
+        }
+
+        // 3. Marketing Touch
+        do {
+            deliveries = try await GlmZcodeAPIClient.fetchMarketingTouch(credentials: creds)
+        } catch {
+            logDebug("\(logTag) 获取 ZCode 营销触达失败: \(error.localizedDescription)")
+        }
+
+        return GlmZcodePackageSnapshot(
+            activityPlanBalances: balances,
+            activityPlanPreviews: previews,
+            resetCards: resetCards,
+            deliveries: deliveries,
+            fetchedAt: Date()
+        )
     }
 
     // MARK: - 响应解析

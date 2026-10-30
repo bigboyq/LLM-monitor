@@ -202,6 +202,13 @@ provider 的渠道枚举坏值按缺失处理（`try? + rawValue`）；`bark` �
   （`ProviderConfig.setNotifyChannel`），保持 config.json 干净。
 - notify* 字段对非窗口类 provider（DeepSeek）无语义；UI 不渲染、detector 不评估。
 
+### 4.4 营销活动触达通知（`notifyMarketingCampaign`）
+
+针对 GLM Coding Plan（ZCode 直连营销活动）：
+- 当 `parseZcodePlan` 开启且 `notifyCampaign` 不是 `.none` 时，`GlmZcodeAPIClient` 获取的 `deliveries` 中若存在未通知过的活动，触发营销活动通知。
+- 渠道：通过 `CompositeQuotaUpdateNotifier.notifyMarketingCampaign` 路由至系统通知与 Bark 推送（Bark id：`llmmonitor-{providerID}-campaign-{deliveryID}`，group 为 "运营活动"）。
+- 内存去重：`AppState` 维护 `notifiedMarketingDeliveryIDs: Set<String>`，避免相同活动重复弹出通知。
+
 ## 6. 设置 UI
 
 > 本节只描述通知相关控件的字段与行为；设置页整体结构、布局与其他设置分组见 `spec/ui/settings.md`。本文件负责触发逻辑、阈值、渠道与防抖。
@@ -271,4 +278,4 @@ provider 的渠道枚举坏值按缺失处理（`try? + rawValue`）；`bark` �
 - 决策记录：屏幕跳过语义与恢复公式阈值见 §3.2 / §4.3 的裁定标注（2026-09-13）；
   余额触发器延后（裁定）。
 
-> 核对基线：2026-10-30 · 代码 81063ef
+> 核对基线：2026-10-31 · 代码 841a81e

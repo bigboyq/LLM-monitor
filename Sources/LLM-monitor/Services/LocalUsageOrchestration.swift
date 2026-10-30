@@ -116,17 +116,11 @@ final class LocalUsageOrchestration {
     )
 
     /// GLM 本地 token 用量 scanner：读 ZCode 的 ~/.zcode/cli/db/db.sqlite。
-    /// `makeScanner` 捕获 `glmBalanceLogParsingEnabled` 作为构造期初值；运行中的
-    /// 更新走 `updateGlmBalanceLogParsing` 推送到已加载的实例。
     private lazy var glmCoordinator: LocalUsageCoordinator<GlmLocalUsage> = makeCoordinator(
         providerID: writer.providerID(for: .glmCodingPlan) ?? "",
         logTag: "glm-local",
         source: .zcode,
-        makeScanner: { [weak self] in
-            let scanner = GlmZcodeLocalUsageScanner()
-            scanner.setBalanceLogParsingEnabled(self?.glmBalanceLogParsingEnabled ?? false)
-            return scanner
-        },
+        makeScanner: { GlmZcodeLocalUsageScanner() },
         apply: { [weak writer] usage in writer?.applyGlmLocalUsage(usage) },
         setScanning: { [weak writer] isScanning in
             // ZCode 快照被三张卡消费，扫描态同步到每一张，否则 MiniMax / DeepSeek
@@ -138,10 +132,6 @@ final class LocalUsageOrchestration {
             }
         }
     )
-
-    /// GLM 活动套餐余额日志解析开关（设置 `parseZcodeBalanceLog`）。存编排层的
-    /// 原因：scanner 是 lazy 构造的，构造期也要拿到正确初值，不能只推已加载实例。
-    private var glmBalanceLogParsingEnabled = false
 
     /// opencode 本地用量 scanner（共享后台数据源，由各卡的合并开关决定是否消费）。
     /// opencode 自身不是 menu bar provider，不挂独立 scanning 状态。
@@ -254,17 +244,6 @@ final class LocalUsageOrchestration {
         }
     }
 
-    /// 推送「活动套餐余额日志解析」开关（设置 `parseZcodeBalanceLog`）。
-    /// 同时覆盖构造期初值与已加载实例；开关变化只标记 GLM source dirty，
-    /// 由下一次 Provider batch settle 后的 reconcile 统一处理。
-    func updateGlmBalanceLogParsing(enabled: Bool) {
-        let changed = glmBalanceLogParsingEnabled != enabled
-        glmBalanceLogParsingEnabled = enabled
-        glmCoordinator.withLoadedScanner { ($0 as? GlmZcodeLocalUsageScanner)?.setBalanceLogParsingEnabled(enabled) }
-        if changed {
-            glmCoordinator.markDirty()
-        }
-    }
 
     // MARK: - Reconcile lifecycle
 

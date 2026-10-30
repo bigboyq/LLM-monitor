@@ -333,54 +333,6 @@ final class GlmBalanceLogReaderTests: GlmTestCase {
         XCTAssertNil(GlmZcodeBalanceLogReader.latestBalances(logDirectory: dir, now: now))
     }
 
-    @MainActor
-    func testGlmScannerBalanceLogGating() throws {
-        let db = try makeDatabase()
-        defer { try? FileManager.default.removeItem(atPath: db) }
-        try insert(databaseURL: db, id: "r1", sessionID: "s", turnID: "t1", timestamp: ms(Date()),
-                   input: 10, output: 1)
-
-        let cacheDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("glm-scan-cache-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: cacheDir) }
-
-        let logDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("glm-scan-logs-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: logDir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: logDir) }
-
-        let dayFormatter = DateFormatter()
-        dayFormatter.dateFormat = "yyyy-MM-dd"
-        dayFormatter.locale = Locale(identifier: "en_US_POSIX")
-        let logURL = logDir.appendingPathComponent(dayFormatter.string(from: Date()))
-            .appendingPathExtension("log")
-        let expiresAt = Int(Date().timeIntervalSince1970) + 86_400
-        try makeBalanceLine(expiresAt: expiresAt).write(to: logURL, atomically: true, encoding: .utf8)
-
-        func makeScanner() -> GlmZcodeLocalUsageScanner {
-            GlmZcodeLocalUsageScanner(
-                dbURL: URL(fileURLWithPath: db),
-                tasksDBURL: URL(fileURLWithPath: "/nonexistent-tasks-\(UUID().uuidString)"),
-                cacheDir: cacheDir,
-                balanceLogDirectory: logDir
-            )
-        }
-
-        // 开关关闭（默认）→ 不读日志,快照不带活动套餐（余额与预告同门控）
-        let disabled = makeScanner()
-        let disabledSnapshot = try disabled.buildSnapshot(now: Date())
-        XCTAssertNil(disabledSnapshot.activityPlanBalances)
-        XCTAssertNil(disabledSnapshot.activityPlanPreviews)
-
-        // 开关打开 → 快照携带解析出的余额；fixture 行无未来生效的 entitlement,
-        // 预告解析成功但为空数组
-        let enabled = makeScanner()
-        enabled.setBalanceLogParsingEnabled(true)
-        let enabledSnapshot = try enabled.buildSnapshot(now: Date())
-        XCTAssertEqual(enabledSnapshot.activityPlanBalances?.first?.entitlementID, "ent_wk_test")
-        XCTAssertEqual(enabledSnapshot.activityPlanPreviews, [])
-    }
 
     func testGlmLocalUsageBalancesCodableBackwardCompatible() throws {
         // 旧快照 JSON 没有 activityPlanBalances / activityPlanPreviews 字段 →
@@ -428,49 +380,5 @@ final class GlmBalanceLogReaderTests: GlmTestCase {
         )
         let decoded = try JSONDecoder().decode(ProviderConfig.self, from: encoded)
         XCTAssertEqual(decoded.parseZcodeBalanceLog, true)
-    }
-    // MARK: - 解析开关对缓存余额的语义（自 ProviderRefreshSchedulerTests 归位）
-    @MainActor
-    func testDisablingBalanceParsingClearsCachedBalancesButReadFailureKeepsThem() throws {
-        let cacheDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("glm-refresh-balance-cache-\(UUID().uuidString)", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: cacheDir) }
-        let missingRoot = FileManager.default.temporaryDirectory
-            .appendingPathComponent("glm-refresh-balance-missing-\(UUID().uuidString)", isDirectory: true)
-
-        let scanner = GlmZcodeLocalUsageScanner(
-            dbURL: missingRoot.appendingPathComponent("db.sqlite"),
-            tasksDBURL: missingRoot.appendingPathComponent("tasks.sqlite"),
-            cacheDir: cacheDir,
-            balanceLogDirectory: missingRoot.appendingPathComponent("logs", isDirectory: true)
-        )
-        let balance = GlmActivityPlanBalance(
-            planID: "plan", planName: "Plan", entitlementID: "entitlement",
-            showName: "GLM", modelNames: ["glm"], totalUnits: 100,
-            usedUnits: 10, remainingUnits: 90,
-            expiresAt: Date(timeIntervalSince1970: 1_700_086_400),
-            observedAt: Date(timeIntervalSince1970: 1_700_000_000)
-        )
-        let preview = GlmActivityPlanPreview(
-            planID: "plan", planName: "Plan", entitlementID: "entitlement-future",
-            showName: "GLM", modelNames: ["glm"], grantUnits: 100,
-            effectiveAt: Date(timeIntervalSince1970: 1_700_086_400),
-            observedAt: Date(timeIntervalSince1970: 1_700_000_000)
-        )
-        let cached = GlmLocalUsage(
-            today: nil, dailyTokenUsage: [], scannedAt: Date(timeIntervalSince1970: 1_700_000_000),
-            sessionCount: 0, eventCount: 0, failedSessionCount: 0,
-            activityPlanBalances: [balance], activityPlanPreviews: [preview]
-        )
-
-        scanner.setBalanceLogParsingEnabled(false)
-        let disabled = try scanner.rebaseSnapshot(cached, now: Date(timeIntervalSince1970: 1_700_000_001))
-        XCTAssertNil(disabled.activityPlanBalances)
-        XCTAssertNil(disabled.activityPlanPreviews)
-
-        scanner.setBalanceLogParsingEnabled(true)
-        let readFailed = try scanner.rebaseSnapshot(cached, now: Date(timeIntervalSince1970: 1_700_000_002))
-        XCTAssertEqual(readFailed.activityPlanBalances, [balance])
-        XCTAssertEqual(readFailed.activityPlanPreviews, [preview])
     }
 }
