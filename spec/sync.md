@@ -210,6 +210,13 @@ hub 的 high-water 据此拒绝迟到报告（§7.3）。持久化失败本轮�
   `samplesTruncated` 按贡献来源 / provider 传递，关闭绑定的来源不影响该卡。
   旧缓存缺样本完整性元数据或样本上限发生变化时重新聚合；遗漏样本全部离开
   保留窗口后，cached rebase 可以恢复样本完整性。
+- **明细对账（2026-10-30）**：`samplesTruncated` 标志只有 DSH 帧维护，Codex 等
+  按 `maxRecentSamples` suffix 静默裁剪的来源没有标志位——标志失守时不能让
+  hub 把少算的 entries 金额当完整渲染。builder 装配每桶时把该日 entries 四桶
+  （饱和相加）与 clientProviders 权威日聚合对照，任一方向不齐即判该日
+  `modelDetailsComplete = false`（与菜单今日计量契约 `hasIncompleteSamples`
+  同构；逐日独立判定，健康天与权威零桶不受其他天牵连）。仅日汇总无样本的
+  天（entries 为空、totals > 0）同样打假，不得伪装成完整零明细。
 - reconcile 扫描中或失败时按 `ProviderStatus.localUsageConsumers` 映射到实际
   启用的 client/provider，使用 `FleetDailyUnavailableSource` 标记 `.scanning` /
   `.failed`；健康来源继续上报。失败来源没有 contribution 时也必须标记，
@@ -414,7 +421,7 @@ Gregorian 日键、不完整日桶拒收与部分计价保留）、
 `FleetStoreTests`（重放拒绝、通道独立、窗口 upsert 与清理、坏行清理的 generation、
 快照缓存隔离）、`UsageReportBuilderTests`（七桶权威 totals、同样本计价、
 额度门控、扫描/失败空贡献的来源标记、健康来源独立更新、DSH 恢复及关闭绑定、
-真实 DSH 截断空帧不会覆盖旧来源值）、
+真实 DSH 截断空帧不会覆盖旧来源值、无标志样本裁剪与仅日汇总的逐日明细对账）、
 `FleetSyncLifecycleTests`（同 UUID hub 数据库重建回填、POST 序号确认与 GET/迟到
 响应隔离、身份写盘失败停机及重试、关闭联动不生成身份）、`FleetSyncIntegrationTests`（回环端到端：health
 握手、合并与选举入快照、重放不覆盖、心跳、429/413/415/404、hub 本机并入、
@@ -436,3 +443,4 @@ Sync / dock 位置写入不清常规草稿，含首次从 nil 写入默认 dock 
 > 2026-10-27（一）提交前全量验证：`swift test` 1513 例 0 失败（63.2s），覆盖窗口边界前沿过滤（装配下发与存储修剪每 (provider, model, kind) 最新 2 组）、`FleetWindowUsage` 移除 `observedAt`（接收时刻记行 `updated_at` 列），并对齐 683a575 聚合快照下发契约的集成测试（POST 回包轻量回执断言 + hub 侧全量快照断言）。`observedAt` 移除为破坏性 wire 变更，混跑部署须 hub 与副节点同步升级。
 > 2026-10-27（二）提交前全量验证：`swift test` 1515 例 0 失败（63.2s / 61.6s / 63.2s 三轮），覆盖 7c13cd7 窗口前沿之后的：日桶下行瘦身（`valueByCurrency`/`costPartial` 桶级汇总 + `nodeResponse` 只留最新 2 天完整桶 + `bucketCostText` 双路径等价）、generation 内容化（纯心跳与内容不变重发不递增；窗口行按内容判变；`acceptSnapshot` 同代 seq 确认不重写缓存）、unavailable 原因优先级统一（builder/merger 共用 `severity`）、node_meta payload 去 `{lastSeenAt}` 冗余与 FleetStore 死代码删除。
 > 2026-10-27（三）提交前全量验证（即本基线工作区）：`swift test` 1512 例 0 失败（61.1s），覆盖撤销逐天摘要回执（2026-10-27 裁定，回退每拍全量上报）：删除 `FleetDailyDigest`/`FleetDailyBackfill`/`dailyDigests`/`dailyInputDigests`/节点侧 digest 缓存全套状态（净删 164 行），按天 upsert 与来源感知 partial 合并语义保留并由既有用例钉住。
+> 2026-10-31 明细对账验证：`swift test` 1601 例，唯一失败为 FleetSyncLifecycleTests 端口争用抖动（`NWListener: Address already in use` 连锁超时，隔离复跑 18 例 0 失败），其余全绿；覆盖 builder 逐日对照 entries 与权威日桶（无标志样本裁剪 / 仅日汇总无样本时 `modelDetailsComplete` 打假、健康天与权威零桶逐日独立保持完整、标志经合并 AND 传递并在下行金额文案渲染「部分计价」）。前一日工作区验证 1582 例 0 失败（61.8s）。

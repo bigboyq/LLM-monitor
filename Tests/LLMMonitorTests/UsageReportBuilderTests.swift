@@ -43,11 +43,19 @@ final class UsageReportBuilderTests: XCTestCase {
         )
     }
 
-    private func chatGPTQuotaInfo(scannedAt: Date) -> QuotaInfo {
+    private func chatGPTQuotaInfo(
+        scannedAt: Date,
+        recentSamples overrideSamples: [LocalTokenUsageSample]? = nil
+    ) -> QuotaInfo {
         let todayStart = Calendar.current.startOfDay(for: now)
         let yesterday = Calendar.current.date(byAdding: .day, value: -1, to: todayStart)!
         // 日聚合与 recentSamples 保持一致（inputTokens 是 cache-inclusive 总输入），
         // 让内核的「当日 max 修补」不改变结果，断言只落在构建逻辑上。
+        let recentSamples = overrideSamples ?? [
+            sample(at: now.addingTimeInterval(-60)),
+            sample(at: now.addingTimeInterval(-3600)),
+            sample(at: yesterday.addingTimeInterval(3600), input: 10, cached: 0, output: 5, reasoning: 0),
+        ]
         return QuotaInfo(
             models: [ModelQuota(
                 modelName: "chatgpt_plan",
@@ -80,11 +88,7 @@ final class UsageReportBuilderTests: XCTestCase {
                         rounds: 1, turns: 1
                     ),
                 ],
-                recentSamples: [
-                    sample(at: now.addingTimeInterval(-60)),
-                    sample(at: now.addingTimeInterval(-3600)),
-                    sample(at: yesterday.addingTimeInterval(3600), input: 10, cached: 0, output: 5, reasoning: 0),
-                ],
+                recentSamples: recentSamples,
                 scannedAt: scannedAt
             ),
             fetchedAt: now,
@@ -154,9 +158,11 @@ final class UsageReportBuilderTests: XCTestCase {
         XCTAssertEqual(today.clientProviders[0].quotaProviderID, QuotaProviderID.openAI)
         XCTAssertTrue(today.totalsComplete)
         XCTAssertTrue(today.totals == today.clientProviders, "totals 与 clientProviders 汇总一致（hub 校验可通过）")
+        XCTAssertTrue(today.modelDetailsComplete, "留存样本与日聚合对齐时明细完整")
 
         let yesterday = buckets[buckets.count - 2]
         XCTAssertEqual(yesterday.totals.input, 10)
+        XCTAssertTrue(yesterday.modelDetailsComplete, "对齐按日独立判定，健康天不受其他天牵连")
         // 没有数据的旧日是权威零桶，不是缺失。
         XCTAssertEqual(buckets.first?.totals, FleetTotals.zero)
     }
@@ -888,5 +894,51 @@ final class UsageReportBuilderTests: XCTestCase {
             XCTAssertEqual(row.cacheRead, 0)
             XCTAssertNil(row.value, "空样本的真实零窗口不伪造估算金额")
         }
+    }
+
+    /// 样本被 cap / 老化**静默**挤出且来源不带 `samplesTruncated` 标志（Codex 的
+    /// suffix 裁剪没有标志位，菜单侧用 hasIncompleteSamples 对照检测兜同一场景）：
+    /// builder 按日对照 entries 与权威日桶，把当日 modelDetailsComplete 打假，
+    /// 不把差额伪装成自信金额；对得齐的天逐日独立保持完整。合并侧 costText
+    /// 因此带上「（部分计价）」标注。
+    func testSilentlyPrunedSamplesMarkOnlyMismatchedDayDetailsIncomplete() throws {
+        let todayStart = Calendar.current.startOfDay(for: now)
+        let yesterday = Calendar.current.date(byAdding: .day, value: -1, to: todayStart)!
+        // 日聚合记两条今日样本的量，recentSamples 只留存一条——差额来自无标志
+        // 裁剪；昨天样本与日聚合一致，验证逐日粒度。
+        let info = chatGPTQuotaInfo(scannedAt: now, recentSamples: [
+            sample(at: now.addingTimeInterval(-60)),
+            sample(at: yesterday.addingTimeInterval(3600), input: 10, cached: 0, output: 5, reasoning: 0),
+        ])
+        let report = UsageReportBuilder.build(makeInput([codexStatus(state: .ok(info))]), seq: 3)
+        let buckets = try XCTUnwrap(report.dailyBuckets)
+
+        let today = buckets.last!
+        XCTAssertEqual(today.totals.input, 80, "权威日总量不受样本裁剪影响")
+        XCTAssertTrue(today.totalsComplete)
+        XCTAssertFalse(today.modelDetailsComplete, "entries 对不齐日桶时明细完整性必须打假")
+        XCTAssertEqual(today.entries.count, 1)
+        XCTAssertEqual(today.entries[0].input, 40, "entries 只覆盖留存样本")
+
+        XCTAssertTrue(buckets[buckets.count - 2].modelDetailsComplete, "对齐的天不受同报告其他天牵连")
+        XCTAssertTrue(buckets.first!.modelDetailsComplete, "权威零桶 0 == 0 仍然完整")
+
+        let merged = FleetMerger.mergeDailyBuckets([buckets], now: now)
+        let mergedToday = try XCTUnwrap(merged.first { $0.dayKey == FleetMerger.dayKey(of: now) })
+        XCTAssertFalse(mergedToday.modelDetailsComplete, "标志经合并 AND 传递到 fleet 聚合")
+        XCTAssertTrue(FleetUsageProjection.bucketCostText(mergedToday).contains("部分计价"),
+                      "下行金额文案因明细不完整带上部分计价标注")
+    }
+
+    /// 只有权威日桶、留存样本为 0（如持久化索引只保留日汇总）：entries 为空但
+    /// totals > 0——必须标 modelDetailsComplete=false，不得伪装成完整零明细。
+    func testDailyTotalsWithoutSamplesReportIncompleteDetails() throws {
+        let info = chatGPTQuotaInfo(scannedAt: now, recentSamples: [])
+        let report = UsageReportBuilder.build(makeInput([codexStatus(state: .ok(info))]), seq: 7)
+        let today = try XCTUnwrap(report.dailyBuckets?.last)
+        XCTAssertEqual(today.totals.input, 80, "权威日总量仍在")
+        XCTAssertEqual(today.entries.count, 0)
+        XCTAssertTrue(today.totalsComplete)
+        XCTAssertFalse(today.modelDetailsComplete, "仅日汇总无明细时不宣称完整")
     }
 }

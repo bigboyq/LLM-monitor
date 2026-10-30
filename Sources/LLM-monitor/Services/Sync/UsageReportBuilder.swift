@@ -166,6 +166,30 @@ enum UsageReportBuilder {
                     ($0.clientID, $0.quotaProviderID, $0.modelName ?? "")
                         < ($1.clientID, $1.quotaProviderID, $1.modelName ?? "")
                 }
+            // 明细对账（与菜单今日计量契约 hasIncompleteSamples 同构）：entries
+            // 只来自留存样本，clientProviders/totals 来自权威日聚合。样本被 cap
+            // 或老化挤出而来源未带 samplesTruncated 标志时（如 Codex 静默 suffix
+            // 裁剪），两者对不齐——按日把 modelDetailsComplete 打假，不把差额
+            // 伪装成零或自信金额。四桶饱和相加后整体比较，任一方向不齐都算不完整。
+            var entryTokens = TokenUsageBuckets.zero
+            for (key, accumulator) in entryRows where key.dayKey == dayKey {
+                entryTokens = entryTokens + TokenUsageBuckets(
+                    input: accumulator.input,
+                    cacheRead: accumulator.cacheRead,
+                    output: accumulator.output,
+                    reasoning: accumulator.reasoning
+                )
+            }
+            var rowTokens = TokenUsageBuckets.zero
+            for row in clientRows {
+                rowTokens = rowTokens + TokenUsageBuckets(
+                    input: row.input,
+                    cacheRead: row.cacheRead,
+                    output: row.output,
+                    reasoning: row.reasoning
+                )
+            }
+            let detailsReconciled = entryTokens == rowTokens
             let unavailableSources = unavailableSourcesByKey.values.sorted {
                 ($0.clientID, $0.quotaProviderID) < ($1.clientID, $1.quotaProviderID)
             }
@@ -175,7 +199,9 @@ enum UsageReportBuilder {
                 clientProviders: clientRows,
                 entries: entries,
                 totalsComplete: unavailableSources.isEmpty,
-                modelDetailsComplete: unavailableSources.isEmpty && !anySampleDetailsIncomplete,
+                modelDetailsComplete: unavailableSources.isEmpty
+                    && !anySampleDetailsIncomplete
+                    && detailsReconciled,
                 sourceTruncated: unavailableSources.contains { $0.reason == .truncated },
                 unavailableSources: unavailableSources.isEmpty ? nil : unavailableSources
             ))
