@@ -76,6 +76,38 @@ struct MixedCurrencyEstimate: Equatable, Sendable {
             + "（含" + ModelPriceCurrency.usd.symbol + Self.trimmedAmount(usdTotal) + "）"
     }
 
+    /// 是否混币（同时包含 USD 与 CNY 贡献）。
+    var isMixed: Bool {
+        usdTotal > 0 && cnyTotal > 0
+    }
+
+    /// 混币时的包含明细文本，如「（含$47.6）」。单币种或空时为 nil。
+    var breakdownText: String? {
+        guard isMixed else { return nil }
+        return "（含" + ModelPriceCurrency.usd.symbol + Self.trimmedAmount(usdTotal) + "）"
+    }
+
+    /// 菜单 Hero 卡展示的大字主金额（混币时带 ¥ 前缀；单币种为定长带符号文案）。
+    var heroPrimaryText: String {
+        if isMixed {
+            return ModelPriceCurrency.cny.symbol + Self.trimmedAmount(cnyEquivalentTotal)
+        }
+        return displayText
+    }
+
+    /// 菜单 Hero 卡展示的副标题（混币时为「折合总额（含$xx）」；单币种为「今日花费」）。
+    var heroSubtitleText: String {
+        if isMixed {
+            return "折合总额" + (breakdownText ?? "")
+        }
+        return "今日花费"
+    }
+
+    /// 菜单 Hero 卡结构化展示拆解（主额 + 副标题）。
+    var heroParts: (primary: String, subtitle: String) {
+        (heroPrimaryText, heroSubtitleText)
+    }
+
     // MARK: - 格式化
 
     /// 从 `ModelCostEstimate.value`（Double）取 Decimal 时截断二进制尾差：

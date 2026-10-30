@@ -17,6 +17,17 @@ enum QuotaProviderID {
     static let antigravity = "antigravity"
     static let zhipu = "zhipu"
     static let deepseek = "deepseek"
+
+    static func displayName(_ id: String) -> String {
+        switch id {
+        case minimax: return "MiniMax"
+        case openAI: return "Codex / OpenAI"
+        case antigravity: return "Antigravity"
+        case zhipu: return "智谱 GLM"
+        case deepseek: return "DeepSeek"
+        default: return id
+        }
+    }
 }
 
 /// Stable IDs for local applications that produce token usage.

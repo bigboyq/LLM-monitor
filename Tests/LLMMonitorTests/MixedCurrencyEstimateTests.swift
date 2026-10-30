@@ -122,6 +122,42 @@ final class MixedCurrencyEstimateTests: XCTestCase {
         XCTAssertEqual(collected.displayText, "¥0.30")
     }
 
+    // MARK: - 结构化 Hero 拆解展示
+
+    func testHeroDisplayPartsStructuredProperties() {
+        // 混合币种：主金额带 ¥ 前缀（保留有效小数位），副标题带括号明细
+        let mixed = MixedCurrencyEstimate(usd: Decimal(string: "47.6")!, cny: Decimal(string: "51.8")!)
+        XCTAssertTrue(mixed.isMixed)
+        XCTAssertEqual(mixed.breakdownText, "（含$47.6）")
+        XCTAssertEqual(mixed.heroPrimaryText, "¥385")
+        XCTAssertEqual(mixed.heroSubtitleText, "折合总额（含$47.6）")
+        XCTAssertEqual(mixed.heroParts.primary, "¥385")
+        XCTAssertEqual(mixed.heroParts.subtitle, "折合总额（含$47.6）")
+
+        // 纯 CNY：主金额两位定长，副标题为「今日花费」
+        let cnyOnly = MixedCurrencyEstimate(usd: 0, cny: Decimal(string: "385.0")!)
+        XCTAssertFalse(cnyOnly.isMixed)
+        XCTAssertNil(cnyOnly.breakdownText)
+        XCTAssertEqual(cnyOnly.heroPrimaryText, "¥385.00")
+        XCTAssertEqual(cnyOnly.heroSubtitleText, "今日花费")
+        XCTAssertEqual(cnyOnly.heroParts.primary, "¥385.00")
+        XCTAssertEqual(cnyOnly.heroParts.subtitle, "今日花费")
+
+        // 纯 USD：主金额两位定长，副标题为「今日花费」
+        let usdOnly = MixedCurrencyEstimate(usd: Decimal(string: "47.6")!, cny: 0)
+        XCTAssertFalse(usdOnly.isMixed)
+        XCTAssertNil(usdOnly.breakdownText)
+        XCTAssertEqual(usdOnly.heroPrimaryText, "$47.60")
+        XCTAssertEqual(usdOnly.heroSubtitleText, "今日花费")
+
+        // 零值：主金额 ¥0.00，副标题「今日花费」
+        let zero = MixedCurrencyEstimate(usd: 0, cny: 0)
+        XCTAssertFalse(zero.isMixed)
+        XCTAssertNil(zero.breakdownText)
+        XCTAssertEqual(zero.heroPrimaryText, "¥0.00")
+        XCTAssertEqual(zero.heroSubtitleText, "今日花费")
+    }
+
     private func makeEstimate(
         value: Double?,
         currency: ModelPriceCurrency?,

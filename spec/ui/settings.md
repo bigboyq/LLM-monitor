@@ -44,7 +44,10 @@ published by `ConfigStore`, without reading the previous value during `willSet`.
 form edits are dirty, the window asks whether to reload (discarding those edits) or keep them;
 keeping the current form means its values for ordinary settings take precedence at save time;
 Sync and dock-position writes remain independent. This is intentionally a whole-form choice,
-not a per-field merge. Dirty state covers persisted
+not a per-field merge. Ordinary settings form state is consolidated into a value-type
+`SettingsFormDraft: Equatable`, enabling unified dirty checking via
+`draft != baselineDraft || launchAtLoginDraft.hasLocalEdit` (eliminating manual string
+fingerprint concatenation). Dirty state covers persisted
 ordinary form fields plus a locally changed launch-item draft, while service-driven launch-item
 changes rebase the launch-item draft instead of marking the form dirty. Password visibility,
 test status, and dock position are presentation/live state and do not count as form edits.
@@ -129,9 +132,11 @@ gaps and today is marked incomplete. Speed is calculated as daily Prompt P50. Th
 metric is persisted independently under `usageHistoryMetric` and is not coupled to the
 quota-window Analysis/Usage switch.
 
-The per-provider OpenCode merge switch is **not** in this pane (nor in the provider
-panes) — `clientBindings[]` in `config.json` is its only source of truth, so saving the
-form never rolls a hand-edited value back. See `spec/ui/menu-and-cards.md`
+The per-client provider attribution switches are surfaced in this pane via
+`clientAttributionSection` (`SettingsClientsPane.swift`) — rendering visual toggles for
+each binding matching the active client in `draft.clientBindings`. Toggling a switch directly
+updates the draft and is saved with the form transaction, while preserving `clientBindings[]`
+as the canonical schema v2 source of truth. See `spec/ui/menu-and-cards.md`
 §Provider-Specific Card Details → *OpenCode client bindings*.
 
 ### 界面 pane「外观」节
@@ -334,7 +339,8 @@ appearance-neutral.
 
 - Notifications pane 集中四个窗口类 provider 的四类事件渠道选择（`不通知` / `系统通知` / `Bark + 系统通知`）。Provider pane 保留跳转入口，不维护第二份通知草稿。
 - 同页提供系统权限查询/申请/拒绝后的设置引导/测试，以及 Bark 全局配置：`enabled` / `serverURL` / `deviceKey` / `sound` / `skipWhenAwakeAndUnlocked` / `ttl` / `group`。主动 Bark 测试使用当前草稿且明确绕过正式屏幕跳过策略。
-- 系统通知声音绑定 `systemNotificationSoundEnabledDraft`，随普通表单保存；缺省保持出声。系统测试使用当前草稿开关，正式通知使用已保存值；Bark 铃声单独配置。
+- **告警阈值配置**（`alertThresholdsSection`）：提供 API 配额与 DeepSeek 余额的告警阈值调节控件（余量警告 %、余量危险 %、DeepSeek 余额警告、DeepSeek 余额危险）。各输入项直接绑定 `$draft.alerts...`，由 `SettingsFormDraft` 统一进行脏检查并保存。
+- 系统通知声音绑定 `draft.systemNotificationSoundEnabled`，随普通表单保存；缺省保持出声。系统测试使用当前草稿开关，正式通知使用已保存值；Bark 铃声单独配置。
 - 字段默认值与逐字段容错见 `spec/notifications.md` §5；JSON 契约见 `spec/config.md` §Config Schema 的 `notify*` 与 `bark` 字段。
 
 ### 设置页滚动位置与排版规范
@@ -343,6 +349,6 @@ appearance-neutral.
 - **历史图表空间适配**：`SevenDayUsageHistoryView` 增加紧凑（`.compact`）与宽松（`.expanded`）两种模式。设置页与独立详情窗口使用 `.expanded`，宽度撑满可用区域（`.frame(maxWidth: .infinity)`），表格字号适度提至 11–11.5pt、列宽与间距自适应拉开；菜单与浮层维持 `.compact`（420pt）。坐标轴与日期标签字体提至 10–11pt、配色提至 `.secondary`。
 - **说明文字与行距紧凑化**：边缘状态窗 footer 收敛为 2 句核心操作指引，双环机制与多屏行为放入「了解更多…」popover；ChatGPT API 赠金设置移除每行冗余的 `Divider().padding(.vertical, 4)`，对齐常规表单行距。
 
-> 核对基线：2026-10-29 · 代码 6b87146
+> 核对基线：2026-10-30 · 代码 81063ef
 > Sync 草稿跨 tab 保留、表单隔离与保存失败提示验证结果见 `spec/sync.md`。
 > 2026-10-25 菜单 / 设置自启同步已随 6f11831 入库：相关定向测试 27 例、完整测试 1422 例均 0 失败；测试使用模拟登录项操作，不执行真实注册 / 注销。

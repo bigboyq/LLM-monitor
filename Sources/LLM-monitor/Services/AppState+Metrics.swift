@@ -50,7 +50,7 @@ extension AppState {
             case .ok, .loading(lastSuccess: .some), .failed(message: _, lastSuccess: .some):
                 // 与卡片同一口径：卡片标题行的状态由 `ProviderStateLabel` 胶囊说出，
                 // 这里的聚合档位要与之同源。
-                if let level = status.aggregateHealthLevel(at: now) {
+                if let level = status.aggregateHealthLevel(alertThresholds: configStore.config.effectiveAlertThresholds, at: now) {
                     levels.append(level)
                 }
             case .notConfigured, .ready, .loading(lastSuccess: nil):
@@ -151,8 +151,14 @@ extension AppState {
             centerAvailable = hasAnyReading ? 0.0 : nil
             centerTimeFraction = nil
         }
+        let alertThresholds = configStore.config.effectiveAlertThresholds
         let quotaHealthLevels = activeWindowedModels.map {
-            $0.model.aggregateHealthLevel(providerKind: $0.kind, isPeakPrice: $0.isPeak, at: now)
+            $0.model.aggregateHealthLevel(
+                providerKind: $0.kind,
+                isPeakPrice: $0.isPeak,
+                alertThresholds: alertThresholds,
+                at: now
+            )
         }
         // 聚合右弧的统一时间感知输入：所有周窗口套餐剩余时间比例的最大值。
         let weeklyTimeFraction = allActiveModels
@@ -170,7 +176,8 @@ extension AppState {
             quotaHealthLevels: quotaHealthLevels,
             weeklyTimeFraction: weeklyTimeFraction,
             centerTimeFraction: centerTimeFraction,
-            intervalTimeFraction: intervalTimeFraction
+            intervalTimeFraction: intervalTimeFraction,
+            alertThresholds: alertThresholds
         )
     }
 

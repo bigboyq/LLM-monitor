@@ -21,7 +21,7 @@ extension SettingsView {
                 )
 
                 Text(value.wrappedValue == 0
-                     ? "当前：继承全局（\(Formatters.formatInterval(seconds: globalInterval))）"
+                     ? "当前：继承全局（\(Formatters.formatInterval(seconds: draft.globalInterval))）"
                      : "当前：\(Formatters.formatInterval(seconds: value.wrappedValue))")
                     .font(SettingsTypography.numericValue)
                     .foregroundStyle(.secondary)
@@ -103,7 +103,7 @@ extension SettingsView {
         panel.allowedContentTypes = [.json]
 
         if panel.runModal() == .OK, let url = panel.url {
-            chatgptAuthPath = tildePath(for: url.path)
+            draft.chatgptAuthPath = tildePath(for: url.path)
         }
     }
 

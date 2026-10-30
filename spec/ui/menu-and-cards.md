@@ -166,7 +166,7 @@ height: content-driven, fixedSize(vertical: true)
 对应设置，以及可分别展开的「套餐详情」和「用量历史」；两个折叠区初始均关闭，可同时打开。
 操作行始终保留「套餐详情」「用量历史」「独立窗口」三个入口。额度摘要与三个操作优先同行；
 实际宽度不足时摘要移到独立一行，三个操作仍保持同行。首行左侧 Provider 名称与临期/高峰事件，
-右侧额度更新时间贴近刷新按钮。正常状态不再另占更新时间行或详情页脚；
+右侧放置状态栏锚定小眼睛切换按钮（`eye.fill` / `eye.slash`，单选勾选将该服务商写入 `config.statusBarPinnedProvider`，再次点击取消锚定回退全局聚合）与额度更新时间，贴近刷新按钮。正常状态不再另占更新时间行或详情页脚；
 更新时间仅显示 `HH:mm`，help 说明它代表 provider 额度读取时间，刷新动作只刷新该 Provider。
 窗口摘要在 5h 与周余量后分别显示对应瓶颈模型的重置倒计时（未知显示「重置时间未知」，已到期显示「待更新」）；详情保留完整重置时间。
 重置卡在现有 48h / 24h 紧迫度分档下进入摘要首行（橙 / 红）；GLM 与 DeepSeek 仅在既有高峰规则判断为临近或正在高峰时显示事件。
@@ -174,6 +174,12 @@ loading、failed、notConfigured 可按需增加状态行，错误始终可见�
 额度始终使用本机优先、必要时 elected 的全局有效值。菜单顶部 scope 仅切换用量；
 多节点额度页会标明当前用量范围与额度仍为全局有效值。内容高度由当前页实测，
 超过屏幕预算时内容区滚动，标题和 footer 保持固定。
+
+在**用量页**中，段总 Token、4 桶、命中率与客户端占比条权威地从各客户端的 `dailyTokenUsage` 计算。
+模型明细、折算金额与速度继续从 `recentSamples` 推导。当样本因容量截断或早期样本滚动淘汰导致样本合计小于日桶总额时，
+段头与展开列表下方展示完整性说明（`sampleIntegrityNotice`：「部分早期样本已被清理，模型明细仅覆盖留存样本」）；
+若客户端今日有日桶总额但单次调用样本为 0（如早期会话全部归档），客户端依然正常保留展示，价值显示为 `—`，
+展开区域提示「仅保留日汇总数据，暂无单次调用模型明细」，严禁把未对齐差额随意分摊给模型或伪装成 0 元。
 
 （footer 右侧功能组整体向右对齐，竖线分隔，自启为状态化图标按钮，日志与退出为直属常驻操作。）
 
@@ -1071,5 +1077,5 @@ The UI intentionally hides reset-credit id, title, description, and grant time.
 The shared Plan fallback uses the same 10pt `MenuTypography.hint` role for loading and
 failure feedback; there is no separate error-message typography role.
 
-> 核对基线：2026-10-30 · 代码 be6fb65
+> 核对基线：2026-10-30 · 代码 81063ef
 > 统一验证通过，详细结果见 `spec/sync.md`。

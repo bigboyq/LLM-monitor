@@ -84,7 +84,8 @@ The app reads and writes this shape:
 | `providers.<id>.adminBillingTime` | provider | 账单重置时间（`HH:mm`，如 `00:00` 或 `08:00`，缺省 `00:00`）。 |
 | `providers.<id>.adminMonthlyQuotaLimit` | provider | 每月 API 赠金额度上限（美元，缺省 40.0）。 |
 | `providers.<id>.notifyIntervalRestored` / `notifyIntervalExhausted` / `notifyWeeklyRestored` / `notifyWeeklyExhausted` | provider | 四类额度事件各自的推送渠道（`QuotaNotifyChannel`：`none` / `system` / `barkAndSystem`）。字段不存在 = 默认渠道（恢复 → 系统通知，耗尽 → 不通知），与引入通知配置前的行为一致。 |
-| `clientBindings[]` | client → quota Provider | Canonical source of truth for which Client usage slices contribute to a quota card. Schema v2; missing bindings are migrated from the legacy provider-level OpenCode switches by `AppConfig.legacyClientBindings(from:)`. |
+| `clientBindings[]` | client → quota Provider | Canonical source of truth for which Client usage slices contribute to a quota card. Schema v2; missing bindings are migrated from the legacy provider-level OpenCode switches by `AppConfig.legacyClientBindings(from:)`. 设置页「客户端」pane 提供可视化绑定开关，按选中的客户端过滤并展示对应的 Provider 卡片归属开关，直接更新 `draft.clientBindings` 并随表单保存。 |
+| `alerts` | global | 集中告警阈值配置（`AlertThresholdConfig`）。缺省或 nil 使用默认值（API 配额余量警告 60%、危险 30%；DeepSeek 余额警告 10、危险 3）。字段：`apiQuotaWarningPercent` (1...100, 默认 60)、`apiQuotaCriticalPercent` (1...100, 默认 30)、`deepseekBalanceWarning` (0..., 默认 10)、`deepseekBalanceCritical` (0..., 默认 3)。始终自动约束 `critical <= warning`。控制状态栏健康圆点、双环色段、卡片头部及 Edge Dock 呼吸环的红黄告警分档。 |
 | `providers.<id>.mergeOpencodeUsage` | legacy compatibility | Decoded for older config files and projected into runtime status for compatibility. The canonical source is `clientBindings[]`; Settings does not expose a per-provider OpenCode toggle and `applyAndSave` preserves this legacy field rather than rewriting it. Defaults are encoded in `ProviderConfig.shouldMergeOpencodeUsage(for:)` (GLM `true`, others `false`), and users with non-default needs edit `config.json`. |
 
 `ProviderConfig.encode(to:)` omits nil optional fields, so saved config only includes relevant keys. `ConfigStore.applyAndSave()` writes pretty-printed, sorted-key JSON and reapplies `0600`.
@@ -123,14 +124,14 @@ The estimate uses recognized model names and the published currency for that
 provider; unknown models are explicitly marked as unpriced rather than assigned a
 fallback price (zhipu/GLM is the one deliberate exception: its catalog always falls
 back to GLM-5.3-Flash pricing). The OpenAI/Codex catalog recognizes GPT-5.5, GPT-5.6 Sol/Terra/Luna,
-and GPT-6 Astra/Sol/Luna plus GPT-6.1 Sol by exact (lowercased) name match; legacy GPT-4, o1, o3, and generic
+and GPT-6 Astra/Sol/Luna plus GPT-6.1 Sol/Terra by exact (lowercased) name match; legacy GPT-4, o1, o3, and generic
 GPT-5 names remain unpriced. Antigravity's
 independent GPT pricing rules are not affected. All price data lives in the bundled
 `Sources/LLM-monitor/Resources/ModelPricing.json`, which `ModelPricingCatalog` loads
 at startup (entries evaluated in array order, first hit wins; parse failures crash
 loudly because the file is a developer-controlled, test-guarded resource). The
 catalog records its update date in
-`ModelPricingCatalog.lastUpdated` (currently `2026-10-01`, read from the JSON). Codex local events keep
+`ModelPricingCatalog.lastUpdated` (currently `2026-10-27`, read from the JSON). Codex local events keep
 the model from `turn_context` so GPT-5.6 / GPT-6 variants can be priced separately.
 
 The main provider card footer also shows today's token total, cache hit rate, and
@@ -255,6 +256,6 @@ CHANGELOG 最新条目、两份 README 的「当前版本」/DMG 名/build-relea
 的旧文案「按本机时区计算、可在设置中调整」直到发版前才发现，只因 `build-release.sh` 的
 版本门禁全绿而放行。**功能口径变了，用户文档必须同轮改**。
 
-> 核对基线：2026-10-29 · 代码 013a82e
+> 核对基线：2026-10-30 · 代码 81063ef
 > 2026-10-25 统一验证通过，详见 `spec/sync.md`。
 > `.deviceId` 身份与旧 `sync.nodeID` 忽略语义已随 6f11831 入库，验证记录见 `spec/sync.md`。

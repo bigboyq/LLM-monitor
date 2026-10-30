@@ -87,6 +87,30 @@ final class GlmZcodeDBReaderTests: GlmTestCase {
         XCTAssertGreaterThanOrEqual(today.totalTokens, 0)
     }
 
+    /// 当上游上报异常导致 cacheRead > input 时（即 cacheRead 超过 rawInput 包络），
+    /// 统一按 TokenAccountingCatalog.zcode 规范处理：
+    /// effectiveCacheRead = min(cacheRead, safeInput)，uncachedInput = 0，
+    /// 四桶守恒：totalTokens 恒等于 rawInput + output + reasoning。
+    func testGlmCacheReadExceedingInputIsClampedAndPreservesConservation() throws {
+        let db = try makeDatabase()
+        defer { try? FileManager.default.removeItem(atPath: db) }
+        let day = Self.todayMidnight(calendar: localCalendar())
+        let ts = ms(day)
+        let cal = localCalendar()
+
+        // 插入一行 cacheRead (250) > input (100) 的异常行
+        try insert(databaseURL: db, id: "anom", sessionID: "s", turnID: "t1", timestamp: ts,
+                   input: 100, output: 50, cacheRead: 250)
+
+        let aggregate = try GlmZcodeLocalUsageScanner.aggregateFromDB(dbPath: URL(fileURLWithPath: db), calendar: cal)
+        let today = try XCTUnwrap(aggregate.perDay[day])
+
+        XCTAssertEqual(today.inputTokens, 0, "uncached input 必须为 0")
+        XCTAssertEqual(today.cacheReadTokens, 100, "cacheRead 必须截断至 input (100)")
+        XCTAssertEqual(today.outputTokens, 50)
+        XCTAssertEqual(today.totalTokens, 150, "totalTokens 守恒为 100 + 50 = 150")
+    }
+
     /// 2026-09-17 Zcode `0020_provider_model_selection` 迁移：登录账号套餐改写
     /// `account:bigmodel-` 前缀。同一天新旧前缀混写（真实迁移日的形态）时，
     /// 聚合 / totals / 样本都必须把两种前缀的智谱行都算进来，非智谱行仍排除；

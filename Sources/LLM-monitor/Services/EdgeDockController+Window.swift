@@ -92,7 +92,8 @@ extension EdgeDockController {
         guard let state else { return [] }
         let entries = EdgeDockProjection.entries(
             from: state.fleetQuotaEffectiveStatuses(),
-            preferredIDs: configStore?.config.providerCardOrder
+            preferredIDs: configStore?.config.providerCardOrder,
+            alertThresholds: configStore?.config.effectiveAlertThresholds ?? .default
         )
         cachedOrderedEntries = entries
         return entries

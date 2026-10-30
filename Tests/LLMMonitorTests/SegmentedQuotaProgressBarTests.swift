@@ -105,7 +105,7 @@ final class SegmentedQuotaProgressBarTests: XCTestCase {
     /// `Color.criticalTint`，不退回固定 `.red`。
     func testSummaryColorMappingIncludesGreenBoostAbove80() {
         XCTAssertEqual(summaryColor(for: 5), Color.criticalTint)
-        XCTAssertEqual(summaryColor(for: 50), Color.primary)
+        XCTAssertEqual(summaryColor(for: 70), Color.primary)
         XCTAssertEqual(summaryColor(for: 80), Color.primary, "80% 是边界，不含 > 80 的加成")
         XCTAssertEqual(summaryColor(for: 90), Color.healthyTint)
         XCTAssertNotEqual(
@@ -113,9 +113,9 @@ final class SegmentedQuotaProgressBarTests: XCTestCase {
             "健康色必须走随外观变化的 healthyTint，不能退回固定 .green"
         )
 
-        // 20% + 无时间系数 → 30% 固定黄阈值 → warning 档
+        // 40% + 无时间系数 → 60% 固定黄阈值，30% 红阈值 → warning 档
         //（排除 criticalTint / primary / healthyTint 唯一锁定 warningTint）
-        let warning = summaryColor(for: 20)
+        let warning = summaryColor(for: 40)
         XCTAssertNotEqual(warning, Color.criticalTint)
         XCTAssertNotEqual(warning, Color.primary)
         XCTAssertNotEqual(warning, Color.healthyTint)

@@ -46,6 +46,8 @@ struct StatusBarQuotaMetrics: Equatable, Sendable {
     /// 中心扇形颜色的统一时间感知输入：产生中心最小值的套餐在其瓶颈（binding）
     /// 窗口上的剩余时间比例；全部缺 reset 时间时为 nil（分母退回 100%）。
     var centerTimeFraction: Double?
+    /// 集中告警配置（默认 API 60%/30%，DeepSeek 10/3）
+    var alertThresholds: AlertThresholdConfig
 
     init(
         weekly: QuotaRingMetrics,
@@ -54,7 +56,8 @@ struct StatusBarQuotaMetrics: Equatable, Sendable {
         quotaHealthLevels: [HealthLevel] = Array(repeating: .healthy, count: 3),
         weeklyTimeFraction: Double? = nil,
         centerTimeFraction: Double? = nil,
-        intervalTimeFraction: Double? = nil
+        intervalTimeFraction: Double? = nil,
+        alertThresholds: AlertThresholdConfig = .default
     ) {
         self.weekly = weekly
         self.interval = interval
@@ -63,6 +66,7 @@ struct StatusBarQuotaMetrics: Equatable, Sendable {
         self.weeklyTimeFraction = weeklyTimeFraction
         self.centerTimeFraction = centerTimeFraction
         self.intervalTimeFraction = intervalTimeFraction
+        self.alertThresholds = alertThresholds
     }
 
     /// 优先显示红色（.critical），其次黄色（.warning），最后绿色（.healthy）；

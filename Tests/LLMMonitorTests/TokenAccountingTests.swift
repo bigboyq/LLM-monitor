@@ -115,6 +115,21 @@ final class TokenAccountingTests: XCTestCase {
         XCTAssertEqual(buckets, TokenUsageBuckets(input: 0, cacheRead: 0, output: 0, reasoning: 50))
     }
 
+    func testCacheInclusiveClampsCacheReadWhenExceedingRawInput() {
+        let buckets = TokenAccountingCatalog.zcode.normalizedBuckets(
+            rawInput: 100,
+            cacheRead: 160,
+            rawOutput: 30,
+            rawReasoning: 10
+        )
+
+        XCTAssertEqual(buckets.input, 0, "uncached input 必须截断至 0")
+        XCTAssertEqual(buckets.cacheRead, 100, "cacheRead 必须截断至 safeInput (100)，不得超越总 input 包络")
+        XCTAssertEqual(buckets.output, 30)
+        XCTAssertEqual(buckets.reasoning, 10)
+        XCTAssertEqual(buckets.totalTokens, 140, "四桶总和恒等于 rawInput + output + reasoning (100 + 30 + 10)")
+    }
+
     // MARK: - Harness 全量定义（合并自 TokenAccountingHarnessTests）
 
     func testAllHarnessDefinitionsProduceDisjointNormalizedBuckets() {

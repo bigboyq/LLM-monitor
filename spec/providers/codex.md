@@ -528,6 +528,13 @@ Rules:
   `token_count` sample of the same turn (consumed once, stale/invalid anchors discarded,
   (0, 3600] s valid, state scoped per session file — turn IDs are global UUIDs).
 
+### 跨进程缓存持久化（`ScannerIndexIO`）
+
+Codex 本地会话扫描索引经 `CodexScannerIndex: Codable, Sendable` 序列化并落盘：
+- **存储路径**：`~/Library/Caches/LLM-monitor/token-monitor/codex.json`（由 `TokenMonitorPaths.IndexName.codex` 定义）；
+- **生命周期**：扫描器首次或冷启动扫描前执行 `loadIfNeeded()` 读取暖索引，跳过未修改会话文件的重新解析；扫描完成时通过 `persistToDisk()` 原子写盘；
+- **增量判据**：保持基于文件 `mtime` 和 `size` 的指纹缓存，在不改动 session 内部状态的前提下杜绝冷启动全量 I/O。
+
 ## Reset Credits Endpoint
 
 ```http
@@ -828,4 +835,4 @@ To compare or sum daily usage across both providers, normalize both into a singl
 
 After normalization, cross-provider sum, average, and chart rendering can treat the two providers as a single data source.
 
-> 核对基线：2026-10-29 · 代码 92d122f
+> 核对基线：2026-10-30 · 代码 81063ef

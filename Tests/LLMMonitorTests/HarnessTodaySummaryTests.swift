@@ -526,6 +526,183 @@ final class HarnessTodaySummaryTests: XCTestCase {
         XCTAssertTrue(summary.sections.allSatisfy { $0.isTruncated == false })
     }
 
+    // MARK: - 权威日桶汇总与抽样样本差异契约
+
+    /// 当样本因容量限制被截断或滚动淘汰时，今日汇总（全局 4 桶、总 Token、命中率、段总 Token 与比例条）
+    /// 必须权威地来自 dailyTokenUsage，而模型细分行显示实际留存的样本子集，并带有独立完整性提示。
+    func testDailyTotalsAreAuthoritativeWhenRecentSamplesArePrunedOrTruncated() throws {
+        let sampleItem = sample(model: "deepseek-chat", at: now, input: 1_400, cached: 600, output: 400, reasoning: 200)
+        // sampleItem 对应 4 桶：uncached 800, cacheRead 600, output 400, reasoning 200 = 2,000 total.
+        // 而权威 dailyTokenUsage 记录的是今日完整 10,000 Token：
+        let dailyUsage = DshDailyUsage(
+            dayStart: today,
+            inputTokens: 4_000,
+            outputTokens: 2_000,
+            cacheReadTokens: 3_000,
+            reasoningTokens: 1_000,
+            totalTokens: 10_000,
+            turns: 10,
+            rounds: 20
+        )
+        let dsh = ProviderStatus(
+            id: "deepseek",
+            displayName: "DeepSeek",
+            kind: .deepseek,
+            iconSystemName: "circle",
+            accentColor: .deepseek,
+            refreshIntervalSeconds: 300,
+            state: .notConfigured(reason: "test"),
+            dshUsage: DshLocalUsage(
+                byProvider: ["deepseek": DshProviderUsage(
+                    today: dailyUsage,
+                    dailyTokenUsage: [dailyUsage],
+                    sessionCount: 5,
+                    roundCount: 20,
+                    recentSamples: [sampleItem],
+                    recentSamplesTruncated: true
+                )],
+                modelsByProvider: ["deepseek": ["deepseek-chat"]],
+                sessionsRoot: nil,
+                sessionCount: 5,
+                eventCount: 20,
+                scannedAt: now,
+                isTruncated: false
+            )
+        )
+
+        let summary = HarnessTodaySummary.summarize(statuses: [dsh], now: now, calendar: calendar)
+
+        // 权威日桶合计：10,000 Token
+        XCTAssertEqual(summary.totalTokens, 10_000, "全局总 Token 必须来自权威 dailyTokenUsage，而非被截断的 2,000 样本")
+        // 命中率 = 3,000 / (4,000 + 3,000) = 3/7
+        XCTAssertEqual(summary.cacheHitRate ?? 0, 3_000.0 / 7_000.0, accuracy: 1e-6)
+
+        XCTAssertEqual(summary.sections.count, 1)
+        let section = summary.sections[0]
+        XCTAssertEqual(section.clientID, ClientID.dsh)
+        XCTAssertEqual(section.totalTokens, 10_000)
+        XCTAssertEqual(section.buckets, TokenUsageBuckets(input: 4_000, cacheRead: 3_000, output: 2_000, reasoning: 1_000))
+        XCTAssertTrue(section.samplesTruncated, "section 必须继承 samplesTruncated 状态")
+        XCTAssertEqual(section.rows.count, 1)
+        XCTAssertEqual(section.rows[0].totalTokens, 2_000, "模型行仍展示留存样本子集的 2,000 Token")
+
+        let notice: String = try XCTUnwrap(section.sampleIntegrityNotice)
+        XCTAssertTrue(notice.contains("清理") || notice.contains("留存样本"))
+
+        let segments = HarnessTodaySummary.clientSegments(from: summary.sections)
+        XCTAssertEqual(segments.count, 1)
+        XCTAssertEqual(segments[0].totalTokens, 10_000)
+    }
+
+    /// 当客户端今天有日桶用量但抽样明细为 0 时（如旧会话滚动清除），该客户端依然必须展示，
+    /// 价值文本显示为 "—"（而非伪装成 0 元），模型行展开显示清晰说明，且不将差异随意分摊给任何模型。
+    func testClientWithDailyTotalsButNoSamplesIsStillDisplayed() throws {
+        let dailyUsage = DshDailyUsage(
+            dayStart: today,
+            inputTokens: 3_000,
+            outputTokens: 1_000,
+            cacheReadTokens: 1_000,
+            reasoningTokens: 0,
+            totalTokens: 5_000,
+            turns: 2,
+            rounds: 5
+        )
+        let dsh = ProviderStatus(
+            id: "deepseek",
+            displayName: "DeepSeek",
+            kind: .deepseek,
+            iconSystemName: "circle",
+            accentColor: .deepseek,
+            refreshIntervalSeconds: 300,
+            state: .notConfigured(reason: "test"),
+            dshUsage: DshLocalUsage(
+                byProvider: ["deepseek": DshProviderUsage(
+                    today: dailyUsage,
+                    dailyTokenUsage: [dailyUsage],
+                    sessionCount: 1,
+                    roundCount: 5,
+                    recentSamples: [],
+                    recentSamplesTruncated: false
+                )],
+                modelsByProvider: ["deepseek": ["deepseek-chat"]],
+                sessionsRoot: nil,
+                sessionCount: 1,
+                eventCount: 5,
+                scannedAt: now,
+                isTruncated: false
+            )
+        )
+
+        let summary = HarnessTodaySummary.summarize(statuses: [dsh], now: now, calendar: calendar)
+
+        XCTAssertEqual(summary.totalTokens, 5_000)
+        XCTAssertEqual(summary.valueText, "—", "缺少模型明细时全局价值显示为 —，不得伪装成 0")
+        XCTAssertEqual(summary.heroParts.primary, "—")
+        XCTAssertEqual(summary.heroParts.subtitle, "今日花费")
+        XCTAssertEqual(summary.sections.count, 1)
+        let section = summary.sections[0]
+        XCTAssertEqual(section.totalTokens, 5_000)
+        XCTAssertTrue(section.rows.isEmpty, "没有样本时模型明细行应为空")
+        XCTAssertEqual(section.valueText, "—", "缺少模型明细时价值显示为 —，不得伪装成 0")
+        let notice: String = try XCTUnwrap(section.sampleIntegrityNotice)
+        XCTAssertTrue(notice.contains("暂无") || notice.contains("单次调用模型明细"))
+
+        let segments = HarnessTodaySummary.clientSegments(from: summary.sections)
+        XCTAssertEqual(segments.count, 1)
+        XCTAssertEqual(segments[0].totalTokens, 5_000)
+    }
+
+    /// 当样本量小于日桶但未显式置位 samplesTruncated 时，hasIncompleteSamples 仍为 true 并输出清理说明。
+    func testHasIncompleteSamplesDetectsEvictedSamplesWithoutExplicitFlag() throws {
+        let sampleItem = sample(model: "gpt-5.5", at: now, input: 1_000)
+        let codex = codexStatus(samples: [sampleItem])
+        // codexStatus 默认用 samples 算 daily，此时 rowsTotalTokens == totalTokens，hasIncompleteSamples == false
+        let completeSummary = HarnessTodaySummary.summarize(statuses: [codex], now: now, calendar: calendar)
+        XCTAssertFalse(completeSummary.sections[0].hasIncompleteSamples)
+        XCTAssertNil(completeSummary.sections[0].sampleIntegrityNotice)
+
+        // 构造日桶 5,000 但只有 1,000 样本且 samplesTruncated = false（样本被时间窗口淘汰场景）
+        let dsh = ProviderStatus(
+            id: "dsh_test",
+            displayName: "DSH",
+            kind: .deepseek,
+            iconSystemName: "terminal",
+            accentColor: .chatgpt,
+            refreshIntervalSeconds: 300,
+            state: .notConfigured(reason: "test"),
+            dshUsage: DshLocalUsage(
+                byProvider: ["deepseek": DshProviderUsage(
+                    today: DshDailyUsage(
+                        dayStart: today, inputTokens: 4_000, outputTokens: 1_000,
+                        cacheReadTokens: 0, reasoningTokens: 0, totalTokens: 5_000,
+                        turns: 1, rounds: 1
+                    ),
+                    dailyTokenUsage: [DshDailyUsage(
+                        dayStart: today, inputTokens: 4_000, outputTokens: 1_000,
+                        cacheReadTokens: 0, reasoningTokens: 0, totalTokens: 5_000,
+                        turns: 1, rounds: 1
+                    )],
+                    sessionCount: 1,
+                    roundCount: 1,
+                    recentSamples: [sampleItem],
+                    recentSamplesTruncated: false
+                )],
+                modelsByProvider: ["deepseek": ["gpt-5.5"]],
+                sessionsRoot: nil,
+                sessionCount: 1,
+                eventCount: 1,
+                scannedAt: now,
+                isTruncated: false
+            )
+        )
+        let prunedSummary = HarnessTodaySummary.summarize(statuses: [dsh], now: now, calendar: calendar)
+        let prunedSection = prunedSummary.sections[0]
+        XCTAssertEqual(prunedSection.totalTokens, 5_000)
+        XCTAssertEqual(prunedSection.rowsTotalTokens, 1_000)
+        XCTAssertTrue(prunedSection.hasIncompleteSamples, "样本总和小于日桶时即便无 explicit flag 也应判定为 incomplete")
+        XCTAssertEqual(prunedSection.sampleIntegrityNotice, "部分早期样本已被清理，模型明细仅覆盖留存样本")
+    }
+
     /// 全局新鲜度：任一启用数据源在扫 → 「计算中…」；全 idle → 「更新于 HH:mm」
     /// （取各卡扫描时间的最大值）。两个状态都由 `summarize` 顺带算出，视图端
     /// 不再自己去遍历 statuses。
@@ -656,6 +833,16 @@ final class HarnessTodaySummaryTests: XCTestCase {
         samples: [LocalTokenUsageSample],
         isScanning: Bool = false
     ) -> ProviderStatus {
+        let grouped = Dictionary(grouping: samples, by: { calendar.startOfDay(for: $0.completedAt) })
+        let daily = grouped.map { day, daySamples in
+            DailyTokenUsage(
+                dayStart: day,
+                inputTokens: daySamples.map(\.inputTokens).reduce(0, +),
+                cachedInputTokens: daySamples.map(\.cachedInputTokens).reduce(0, +),
+                outputTokens: daySamples.map(\.outputTokens).reduce(0, +),
+                reasoningOutputTokens: daySamples.map(\.reasoningOutputTokens).reduce(0, +)
+            )
+        }
         let info = QuotaInfo(
             models: [],
             resetCredits: nil,
@@ -664,13 +851,7 @@ final class HarnessTodaySummaryTests: XCTestCase {
             codexUsageDetails: CodexUsageDetails(
                 primary: nil,
                 secondary: nil,
-                dailyTokenUsage: [DailyTokenUsage(
-                    dayStart: today,
-                    inputTokens: samples.map(\.inputTokens).reduce(0, +),
-                    cachedInputTokens: samples.map(\.cachedInputTokens).reduce(0, +),
-                    outputTokens: samples.map(\.outputTokens).reduce(0, +),
-                    reasoningOutputTokens: samples.map(\.reasoningOutputTokens).reduce(0, +)
-                )],
+                dailyTokenUsage: daily,
                 recentSamples: samples,
                 scannedAt: now
             ),

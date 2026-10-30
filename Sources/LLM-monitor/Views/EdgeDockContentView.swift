@@ -48,7 +48,8 @@ struct EdgeDockContentView: View {
         // 圆环读 fleet 余量（hover 卡上有来源标注）。
         return EdgeDockProjection.entries(
             from: state.fleetQuotaEffectiveStatuses(),
-            preferredIDs: configStore.config.providerCardOrder
+            preferredIDs: configStore.config.providerCardOrder,
+            alertThresholds: configStore.config.effectiveAlertThresholds
         )
     }
 

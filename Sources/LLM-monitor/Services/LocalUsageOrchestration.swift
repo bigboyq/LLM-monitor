@@ -59,11 +59,38 @@ final class LocalUsageOrchestration {
 
     private let writer: any LocalUsageStatusWriting
 
+    private func makeCoordinator<Usage: Equatable & Sendable>(
+        providerID: String,
+        logTag: String,
+        source: LocalUsageSource,
+        makeScanner: @escaping () -> any LocalUsageScanner<Usage>,
+        apply: @escaping (Usage?) -> Void,
+        setScanning: ((Bool) -> Void)? = nil
+    ) -> LocalUsageCoordinator<Usage> {
+        LocalUsageCoordinator<Usage>(
+            providerID: providerID,
+            logTag: logTag,
+            makeScanner: makeScanner,
+            apply: apply,
+            setScanning: setScanning,
+            onDirty: { [weak writer] in
+                writer?.setLocalUsageFreshness(.dirty, for: source)
+            },
+            onFresh: { [weak writer] in
+                writer?.setLocalUsageFreshness(.clean, for: source)
+            },
+            onFailed: { [weak writer] in
+                writer?.setLocalUsageFreshness(.failed, for: source)
+            }
+        )
+    }
+
     /// Antigravity 本地 token 用量 scanner：通过 `LocalUsageCoordinator` 包装
     /// singleton + Combine wire-up 逻辑，避免在编排层重复 30+ 行。
-    private lazy var antigravityCoordinator = LocalUsageCoordinator<AntigravityLocalUsage>(
+    private lazy var antigravityCoordinator: LocalUsageCoordinator<AntigravityLocalUsage> = makeCoordinator(
         providerID: writer.providerID(for: .antigravity) ?? "",
         logTag: "antigravity",
+        source: .antigravity,
         makeScanner: { [weak self] in
             if let factory = self?.testAntigravityScannerFactory {
                 return factory()
@@ -73,44 +100,28 @@ final class LocalUsageOrchestration {
         apply: { [weak writer] usage in writer?.applyAntigravityLocalUsage(usage) },
         setScanning: { [weak writer] isScanning in
             writer?.setScanningState(isScanning, for: writer?.providerID(for: .antigravity) ?? "")
-        },
-        onDirty: { [weak writer] in
-            writer?.setLocalUsageFreshness(.dirty, for: .antigravity)
-        },
-        onFresh: { [weak writer] in
-            writer?.setLocalUsageFreshness(.clean, for: .antigravity)
-        },
-        onFailed: { [weak writer] in
-            writer?.setLocalUsageFreshness(.failed, for: .antigravity)
         }
     )
 
     /// Minimax 本地 token 用量 scanner：只读取 v2 `runtime-state.sqlite`。
-    private lazy var minimaxCoordinator = LocalUsageCoordinator<ProviderLocalUsage>(
+    private lazy var minimaxCoordinator: LocalUsageCoordinator<ProviderLocalUsage> = makeCoordinator(
         providerID: writer.providerID(for: .minimaxTokenPlan) ?? "",
         logTag: "minimax",
+        source: .minimaxCode,
         makeScanner: { MinimaxLocalUsageScanner() },
         apply: { [weak writer] usage in writer?.applyMinimaxLocalUsage(usage) },
         setScanning: { [weak writer] isScanning in
             writer?.setScanningState(isScanning, for: writer?.providerID(for: .minimaxTokenPlan) ?? "")
-        },
-        onDirty: { [weak writer] in
-            writer?.setLocalUsageFreshness(.dirty, for: .minimaxCode)
-        },
-        onFresh: { [weak writer] in
-            writer?.setLocalUsageFreshness(.clean, for: .minimaxCode)
-        },
-        onFailed: { [weak writer] in
-            writer?.setLocalUsageFreshness(.failed, for: .minimaxCode)
         }
     )
 
     /// GLM 本地 token 用量 scanner：读 ZCode 的 ~/.zcode/cli/db/db.sqlite。
     /// `makeScanner` 捕获 `glmBalanceLogParsingEnabled` 作为构造期初值；运行中的
     /// 更新走 `updateGlmBalanceLogParsing` 推送到已加载的实例。
-    private lazy var glmCoordinator = LocalUsageCoordinator<GlmLocalUsage>(
+    private lazy var glmCoordinator: LocalUsageCoordinator<GlmLocalUsage> = makeCoordinator(
         providerID: writer.providerID(for: .glmCodingPlan) ?? "",
         logTag: "glm-local",
+        source: .zcode,
         makeScanner: { [weak self] in
             let scanner = GlmZcodeLocalUsageScanner()
             scanner.setBalanceLogParsingEnabled(self?.glmBalanceLogParsingEnabled ?? false)
@@ -125,15 +136,6 @@ final class LocalUsageOrchestration {
                 guard let providerID = writer.providerID(for: kind) else { continue }
                 writer.setScanningState(isScanning, for: providerID)
             }
-        },
-        onDirty: { [weak writer] in
-            writer?.setLocalUsageFreshness(.dirty, for: .zcode)
-        },
-        onFresh: { [weak writer] in
-            writer?.setLocalUsageFreshness(.clean, for: .zcode)
-        },
-        onFailed: { [weak writer] in
-            writer?.setLocalUsageFreshness(.failed, for: .zcode)
         }
     )
 
@@ -143,58 +145,33 @@ final class LocalUsageOrchestration {
 
     /// opencode 本地用量 scanner（共享后台数据源，由各卡的合并开关决定是否消费）。
     /// opencode 自身不是 menu bar provider，不挂独立 scanning 状态。
-    private lazy var opencodeCoordinator = LocalUsageCoordinator<OpencodeLocalUsage>(
+    private lazy var opencodeCoordinator: LocalUsageCoordinator<OpencodeLocalUsage> = makeCoordinator(
         providerID: "opencode",
         logTag: "opencode",
+        source: .opencode,
         makeScanner: { OpencodeUsageScanner() },
-        apply: { [weak writer] usage in writer?.applyOpencodeUsage(usage) },
-        setScanning: { _ in /* opencode 不暴露 scanning 状态 */ },
-        onDirty: { [weak writer] in
-            writer?.setLocalUsageFreshness(.dirty, for: .opencode)
-        },
-        onFresh: { [weak writer] in
-            writer?.setLocalUsageFreshness(.clean, for: .opencode)
-        },
-        onFailed: { [weak writer] in
-            writer?.setLocalUsageFreshness(.failed, for: .opencode)
-        }
+        apply: { [weak writer] usage in writer?.applyOpencodeUsage(usage) }
     )
 
     /// dsh 本地 session token 用量 scanner。dsh 不是菜单栏 provider；结果通过
     /// `usageProjection` 自动并入对应卡片。没有 UI 消费者，不传 `setScanning`。
-    private lazy var dshCoordinator = LocalUsageCoordinator<DshLocalUsage>(
+    private lazy var dshCoordinator: LocalUsageCoordinator<DshLocalUsage> = makeCoordinator(
         providerID: "dsh",
         logTag: "dsh",
+        source: .dsh,
         makeScanner: { DshLocalUsageScanner() },
-        apply: { [weak writer] usage in writer?.applyDshUsage(usage) },
-        onDirty: { [weak writer] in
-            writer?.setLocalUsageFreshness(.dirty, for: .dsh)
-        },
-        onFresh: { [weak writer] in
-            writer?.setLocalUsageFreshness(.clean, for: .dsh)
-        },
-        onFailed: { [weak writer] in
-            writer?.setLocalUsageFreshness(.failed, for: .dsh)
-        }
+        apply: { [weak writer] usage in writer?.applyDshUsage(usage) }
     )
 
     /// agy CLI（Antigravity 的命令行分支）本地 transcript token 用量 scanner。
     /// agy 同样不是菜单栏 provider：结果挂到 `.antigravity` 卡的 `agyUsage`
     /// 字段（该卡本地用量的贡献来源之一），没有独立 scanning 状态。
-    private lazy var agyCoordinator = LocalUsageCoordinator<AgyLocalUsage>(
+    private lazy var agyCoordinator: LocalUsageCoordinator<AgyLocalUsage> = makeCoordinator(
         providerID: "agy",
         logTag: "agy",
+        source: .agy,
         makeScanner: { AgyLocalUsageScanner() },
-        apply: { [weak writer] usage in writer?.applyAgyUsage(usage) },
-        onDirty: { [weak writer] in
-            writer?.setLocalUsageFreshness(.dirty, for: .agy)
-        },
-        onFresh: { [weak writer] in
-            writer?.setLocalUsageFreshness(.clean, for: .agy)
-        },
-        onFailed: { [weak writer] in
-            writer?.setLocalUsageFreshness(.failed, for: .agy)
-        }
+        apply: { [weak writer] usage in writer?.applyAgyUsage(usage) }
     )
 
     // MARK: - Reconcile state

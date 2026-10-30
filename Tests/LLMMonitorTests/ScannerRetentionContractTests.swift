@@ -200,14 +200,39 @@ final class ScannerRetentionContractTests: XCTestCase {
         XCTAssertEqual(slice.recentSamples.map(\.promptID), ["inside"], "8 天内的样本保留，9 天前的裁掉")
     }
 
+    /// Antigravity (Agy)：rebaseCached 按 retention window 裁剪 recentSamples。
+    func testAgyRebaseSampleWindowMatchesRetentionWindow() {
+        let inside = sample(insideDayStart, id: "inside")
+        let outside = sample(outsideDayStart, id: "outside")
+        let snapshot = AgyLocalUsage(
+            dailyTokenUsage: [],
+            models: [],
+            recentSamples: [inside, outside],
+            sessionsRoot: "/tmp",
+            sessionCount: 1,
+            eventCount: 1,
+            scannedAt: Self.now,
+            isTruncated: false
+        )
+        let rebased = AgyLocalUsageAggregation.rebaseCached(
+            snapshot,
+            calendar: calendar,
+            now: Self.now,
+            limits: .production
+        )
+        XCTAssertEqual(rebased.recentSamples.map(\.promptID), ["inside"], "8 天内的样本保留，9 天前的裁掉")
+    }
+
     // MARK: - 共享语义：所有入口对同一组时间戳给出同一裁决
 
-    /// 参数化汇总：把同一组 fixture 喂给全部 7 个裁剪入口，任一入口改口径
+    /// 参数化汇总：把同一组 fixture 喂给全部裁剪入口，任一入口改口径
     /// （或退回裸字面量 8 却与常量脱钩）都会在这条上暴露。
     func testEveryScannerCutoffAgreesOnTheSameTwoTimestamps() throws {
         let verdicts: [(scanner: String, keptInside: Bool, keptOutside: Bool)] = [
             ("Antigravity.pruneStaleDailyBuckets",
              antigravityKeepsInside(), antigravityKeepsOutside()),
+            ("Agy.rebaseCached",
+             agyKeepsInside(), agyKeepsOutside()),
             ("Minimax.pruneStaleDailyBuckets",
              minimaxKeepsInside(), minimaxKeepsOutside()),
             ("Dsh.boundedRecentSamples",
@@ -239,6 +264,25 @@ final class ScannerRetentionContractTests: XCTestCase {
         )
         AntigravityLocalUsageScanner.pruneStaleDailyBuckets(index: &index, now: Self.now)
         return index.dailyBySession["s"]?[dayKey(dayStart)] != nil
+    }
+
+    private func agyKeepsInside() -> Bool { agyKeeps(insideDayStart) }
+    private func agyKeepsOutside() -> Bool { agyKeeps(outsideDayStart) }
+
+    private func agyKeeps(_ dayStart: Date) -> Bool {
+        let snapshot = AgyLocalUsage(
+            dailyTokenUsage: [],
+            models: [],
+            recentSamples: [sample(dayStart, id: "probe")],
+            sessionsRoot: "/tmp",
+            sessionCount: 1,
+            eventCount: 1,
+            scannedAt: Self.now,
+            isTruncated: false
+        )
+        return AgyLocalUsageAggregation.rebaseCached(
+            snapshot, calendar: calendar, now: Self.now, limits: .production
+        ).recentSamples.count == 1
     }
 
     private func minimaxKeepsInside() -> Bool { minimaxKeeps(insideDayStart) }

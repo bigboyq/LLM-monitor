@@ -147,10 +147,27 @@ struct ProviderStatus: Identifiable, Equatable, Sendable {
     ///
     /// 高峰判定跟随 `AppState.systemHealthLevel` 现状：`glmPeakWindow` 命中 .peak
     /// 即保底 .warning（红色优先，floor 不吞掉红色）；`deepseekPeakWindow` 不参与
-    /// 卡头点 floor。deepseek 余额模型只有 5h 形态的窗口且无 reset 时间，
-    /// `colorLevel` 对它的输入与本方法迁移前完全一致，颜色行为不变。
-    func aggregateHealthLevel(at now: Date = Date()) -> HealthLevel? {
+    /// 卡头点 floor。deepseek 余额接入集中告警配置中心（余额 < 3 红色，< 10 黄色）。
+    func aggregateHealthLevel(
+        alertThresholds: AlertThresholdConfig = .default,
+        at now: Date = Date()
+    ) -> HealthLevel? {
         guard let info = lastSuccess else { return nil }
+        if kind == .deepseek {
+            if let balance = info.balanceDetail?.total {
+                if balance <= 0 || balance < alertThresholds.deepseekBalanceCritical {
+                    return .critical
+                } else if balance < alertThresholds.deepseekBalanceWarning {
+                    return .warning
+                } else {
+                    return .healthy
+                }
+            }
+            if let firstModel = info.aggregateQuotaModels(providerKind: .deepseek).first {
+                return firstModel.intervalRemainingPercent > 0 ? .healthy : .critical
+            }
+            return .critical
+        }
         let isPeak: Bool
         if let glmPeak = glmPeakWindow, case .peak = glmPeak.status(at: now, calendar: PeakWindow.beijingCalendar) {
             isPeak = true
@@ -158,7 +175,7 @@ struct ProviderStatus: Identifiable, Equatable, Sendable {
             isPeak = false
         }
         return info.aggregateQuotaModels(providerKind: kind)
-            .map { $0.aggregateHealthLevel(providerKind: kind, isPeakPrice: isPeak, at: now) }
+            .map { $0.aggregateHealthLevel(providerKind: kind, isPeakPrice: isPeak, alertThresholds: alertThresholds, at: now) }
             .min() ?? .critical
     }
 

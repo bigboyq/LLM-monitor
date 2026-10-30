@@ -371,13 +371,13 @@ final class StatusBarQuotaMetricsTests: XCTestCase {
             appState.mutateStatus(for: "test_b") { $0.state = .ok(info) }
         }
 
-        setStandardQuota(20.0)
+        setStandardQuota(40.0)
         let warningMetrics = appState.statusBarQuotaMetrics(at: now)
         XCTAssertEqual(warningMetrics.quotaHealthLevels, [.warning, .warning, .healthy])
         let warningSVG = IconDuoSVGBuilder.buildSVG(metrics: warningMetrics)
         XCTAssertTrue(warningSVG.contains("id=\"interval-available\""))
-        XCTAssertTrue(warningSVG.contains("id=\"interval-available\" d="), "20% 短窗口弧线仍显示可用段")
-        XCTAssertTrue(warningSVG.contains("stroke=\"#FFD60A\""), "20% 短窗口弧线和套餐点均为黄色")
+        XCTAssertTrue(warningSVG.contains("id=\"interval-available\" d="), "40% 短窗口弧线仍显示可用段")
+        XCTAssertTrue(warningSVG.contains("stroke=\"#FFD60A\""), "40% 短窗口弧线和套餐点均为黄色")
 
         setStandardQuota(10.0)
         let criticalMetrics = appState.statusBarQuotaMetrics(at: now)

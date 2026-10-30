@@ -8,33 +8,152 @@ enum ResponseByteLimits {
     static let antigravityTrajectory: Int = 64 * 1024 * 1024
 }
 
+final class CappedDownloadState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var isCancelled = false
+    private var task: URLSessionDataTask?
+    private var session: URLSession?
+    private var continuation: CheckedContinuation<(Data, HTTPURLResponse), Error>?
+
+    func setContinuation(_ cont: CheckedContinuation<(Data, HTTPURLResponse), Error>) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if isCancelled {
+            cont.resume(throwing: CancellationError())
+            return false
+        }
+        self.continuation = cont
+        return true
+    }
+
+    func attach(task: URLSessionDataTask, session: URLSession) {
+        lock.lock()
+        self.task = task
+        self.session = session
+        let cancelNow = isCancelled
+        lock.unlock()
+
+        if cancelNow {
+            task.cancel()
+            session.invalidateAndCancel()
+        }
+    }
+
+    func cancel() {
+        lock.lock()
+        isCancelled = true
+        let t = task
+        let s = session
+        task = nil
+        session = nil
+        let cont = continuation
+        continuation = nil
+        lock.unlock()
+
+        t?.cancel()
+        s?.invalidateAndCancel()
+        cont?.resume(throwing: CancellationError())
+    }
+
+    func complete(
+        declaredTooLarge: Bool,
+        declaredContentLength: Int64,
+        overflowed: Bool,
+        receivedBytes: Int,
+        maxBytes: Int,
+        redactedPath: String,
+        response: HTTPURLResponse?,
+        accumulatedData: Data,
+        error: Error?
+    ) {
+        lock.lock()
+        let s = session
+        task = nil
+        session = nil
+        guard let cont = continuation else {
+            lock.unlock()
+            s?.finishTasksAndInvalidate()
+            return
+        }
+        continuation = nil
+        lock.unlock()
+
+        s?.finishTasksAndInvalidate()
+
+        if declaredTooLarge {
+            let actualBytes = Int(clamping: declaredContentLength)
+            logError("[http] 响应头 Content-Length 过大：上限 \(maxBytes) bytes，声明 \(declaredContentLength) bytes，\(redactedPath)")
+            cont.resume(throwing: QuotaError.responseTooLarge(
+                limit: maxBytes,
+                actual: actualBytes,
+                redactedPath: redactedPath
+            ))
+            return
+        }
+
+        if overflowed {
+            logError("[http] 响应流过大：上限 \(maxBytes) bytes，实际至少 \(receivedBytes) bytes，\(redactedPath)")
+            cont.resume(throwing: QuotaError.responseTooLarge(
+                limit: maxBytes,
+                actual: receivedBytes,
+                redactedPath: redactedPath
+            ))
+            return
+        }
+
+        if let error {
+            if let urlError = error as? URLError, urlError.code == .cancelled {
+                cont.resume(throwing: CancellationError())
+            } else {
+                cont.resume(throwing: error)
+            }
+            return
+        }
+
+        guard let http = response else {
+            cont.resume(throwing: QuotaError.invalidResponse)
+            return
+        }
+
+        guard accumulatedData.count <= maxBytes else {
+            logError("[http] 响应过大：上限 \(maxBytes) bytes，实际 \(accumulatedData.count) bytes，\(redactedPath)")
+            cont.resume(throwing: QuotaError.responseTooLarge(
+                limit: maxBytes,
+                actual: accumulatedData.count,
+                redactedPath: redactedPath
+            ))
+            return
+        }
+
+        cont.resume(returning: (accumulatedData, http))
+    }
+}
+
 /// R2: per-task `URLSessionDataDelegate`：按下载流累计字节，Content-Length 超限
-/// 提前拒绝、实际字节超限取消任务。
-///
-/// 注意：这些回调只在 completion-handler 系任务上投递；async
-/// `session.data(for:delegate:)` 便捷 API 在当前系统上不投递 didReceive
-/// response / data 内容回调（macOS 27 实测，URLProtocol 桩与真实网络均不触发），
-/// 本 delegate 的计数实际不会执行。真正生效的上限是 `CappedDownloader.data`
-/// 在响应体返回后的字节校验：超限抛错、不进入调用方解析链路。单次响应的
-/// 峰值内存仍由 URLSession 缓冲决定，该校验只保证超限响应不进入解析链路；
-/// 要真正约束峰值需改用回调系任务 + delegate 流式计数（本 delegate 已保留
-/// 待该用途）。
-///
-/// Content-Length 只用于“提前拒绝”（didReceive response 阶段），不能代替实际字节
-/// 累计——服务端可能伪造或省略 Content-Length，也可能分块超限。保留本 delegate
-/// 以便将来改用回调系任务时恢复流式计数。
+/// 提前拒绝、流式实际字节超限即时中止任务，防止大响应体或分块流耗尽内存。
 final class CappedDownloadDelegate: NSObject, URLSessionDataDelegate, @unchecked Sendable {
     let maxBytes: Int
     let redactedPath: String
+    private let state: CappedDownloadState?
+
+    private let lock = NSLock()
     var receivedBytes: Int = 0
     /// 实际累计字节超过上限（didReceive data 阶段触发）。
     var overflowed = false
     /// Content-Length 声明已超上限（didReceive response 阶段提前拒绝）。
     var declaredTooLarge = false
+    private var declaredContentLength: Int64 = 0
+    private var response: HTTPURLResponse?
+    private var accumulatedData = Data()
 
-    init(maxBytes: Int, redactedPath: String) {
+    init(
+        maxBytes: Int,
+        redactedPath: String,
+        state: CappedDownloadState? = nil
+    ) {
         self.maxBytes = maxBytes
         self.redactedPath = redactedPath
+        self.state = state
     }
 
     func urlSession(
@@ -43,38 +162,69 @@ final class CappedDownloadDelegate: NSObject, URLSessionDataDelegate, @unchecked
         didReceive response: URLResponse,
         completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
     ) {
-        // 提前拒绝：Content-Length 只做 advisory early reject。
-        if let http = response as? HTTPURLResponse,
-           http.expectedContentLength > maxBytes {
-            declaredTooLarge = true
-            completionHandler(.cancel)
-            return
+        lock.lock()
+        defer { lock.unlock() }
+
+        if let http = response as? HTTPURLResponse {
+            self.response = http
+            // 提前拒绝：Content-Length 只做 advisory early reject。
+            if http.expectedContentLength > maxBytes {
+                declaredTooLarge = true
+                declaredContentLength = http.expectedContentLength
+                dataTask.cancel()
+                completionHandler(.cancel)
+                return
+            }
         }
         completionHandler(.allow)
     }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        lock.lock()
+        defer { lock.unlock() }
+
+        if declaredTooLarge { return }
+
         receivedBytes += data.count
         if receivedBytes > maxBytes {
             overflowed = true
             dataTask.cancel()
+            return
         }
+        accumulatedData.append(data)
     }
 
-    // 注：不重写 willCacheResponse。当前 SDK 把该可选 requirement 声明为 async，
-    // 同步实现只会“几乎匹配”并触发 warning，且实际不会被调用。R2 的字节计数上限
-    // 完全由 didReceive response / didReceive data 保证，不依赖缓存控制。
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        lock.lock()
+        let tooLarge = declaredTooLarge
+        let declLen = declaredContentLength
+        let ovf = overflowed
+        let recBytes = receivedBytes
+        let resp = response
+        let accData = accumulatedData
+        lock.unlock()
+
+        state?.complete(
+            declaredTooLarge: tooLarge,
+            declaredContentLength: declLen,
+            overflowed: ovf,
+            receivedBytes: recBytes,
+            maxBytes: maxBytes,
+            redactedPath: redactedPath,
+            response: resp,
+            accumulatedData: accData,
+            error: error
+        )
+    }
 }
 
 enum CappedDownloader {
     /// 用给定 session 下载并施加 `maxBytes` 硬上限，超限抛 `responseTooLarge`。
     ///
-    /// 实际生效的保证是响应体返回后的字节校验：async `session.data(for:delegate:)`
-    /// 不向 per-task delegate 投递内容回调（见 `CappedDownloadDelegate` 注释），
-    /// delegate 的流式计数/取消不会执行，超限响应体在返回后立即抛错，不进入
-    /// 调用方解析链路。单次响应的峰值内存仍由 URLSession 缓冲决定，本校验只
-    /// 保证超限响应不进入解析链路；要真正约束峰值需改用回调系任务 + delegate
-    /// 流式计数（delegate 已保留待该用途）。
+    /// 通过委托驱动的流式数据任务在传输过程中实时计量：
+    /// 1. Content-Length 超限时在 `didReceive response` 立即拒绝并中止连接；
+    /// 2. 分块传输或伪造/缺省 Content-Length 的响应流在累积字节超过 `maxBytes` 时
+    ///    在 `didReceive data` 立即取消任务并中止接收，避免无限制缓冲耗尽内存。
     ///
     /// `redactedPath` 仅用于错误日志与错误对象，不含 userinfo/query。
     static func data(
@@ -83,28 +233,38 @@ enum CappedDownloader {
         maxBytes: Int,
         redactedPath: String
     ) async throws -> (Data, HTTPURLResponse) {
-        let delegate = CappedDownloadDelegate(maxBytes: maxBytes, redactedPath: redactedPath)
-        let data: Data
-        let http: HTTPURLResponse
+        if Task.isCancelled {
+            throw CancellationError()
+        }
+
+        let state = CappedDownloadState()
+        let delegate = CappedDownloadDelegate(
+            maxBytes: maxBytes,
+            redactedPath: redactedPath,
+            state: state
+        )
+        let queue = OperationQueue()
+        queue.maxConcurrentOperationCount = 1
+
         do {
-            let (payload, response) = try await session.data(for: request, delegate: delegate)
-            guard let httpResponse = response as? HTTPURLResponse else {
-                throw QuotaError.invalidResponse
+            return try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { continuation in
+                    guard state.setContinuation(continuation) else { return }
+                    let downloadSession = URLSession(
+                        configuration: session.configuration,
+                        delegate: delegate,
+                        delegateQueue: queue
+                    )
+                    let task = downloadSession.dataTask(with: request)
+                    state.attach(task: task, session: downloadSession)
+                    task.resume()
+                }
+            } onCancel: {
+                state.cancel()
             }
-            data = payload
-            http = httpResponse
         } catch is CancellationError {
             throw CancellationError()
-        } catch let error as URLError where error.code == .cancelled {
-            // 我们的 overflow / declaredTooLarge 取消 vs Task 真取消，用 delegate 标志区分。
-            if delegate.overflowed || delegate.declaredTooLarge {
-                logError("[http] 响应过大：上限 \(maxBytes) bytes，实际 \(delegate.receivedBytes) bytes，\(redactedPath)")
-                throw QuotaError.responseTooLarge(
-                    limit: maxBytes,
-                    actual: delegate.receivedBytes,
-                    redactedPath: redactedPath
-                )
-            }
+        } catch let error as QuotaError {
             throw error
         } catch let error as URLError {
             throw error
@@ -112,16 +272,6 @@ enum CappedDownloader {
             let description = HTTPRequestLogSanitizer.networkErrorDescription(error)
             throw QuotaError.networkError(description)
         }
-        // 后置字节校验：这是 async data(for:delegate:) 路径上实际生效的上限。
-        guard data.count <= maxBytes else {
-            logError("[http] 响应过大：上限 \(maxBytes) bytes，实际 \(data.count) bytes，\(redactedPath)")
-            throw QuotaError.responseTooLarge(
-                limit: maxBytes,
-                actual: data.count,
-                redactedPath: redactedPath
-            )
-        }
-        return (data, http)
     }
 }
 

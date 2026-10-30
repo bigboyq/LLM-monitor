@@ -412,19 +412,19 @@ final class EdgeDockProjectionTests: EdgeDockTestCase {
         )
 
         let yellow = makeStatus(id: "yellow", state: .ok(makeInfo([
-            makeModel(name: "g", intervalPercent: 25),
+            makeModel(name: "g", intervalPercent: 45),
         ])))
         XCTAssertEqual(
             EdgeDockProjection.intervalHealth(yellow, at: Self.makeNow), .warning,
-            "25% 在 20% 红线与 50% 黄线之间"
+            "45% 在 30% 红线与 60% 黄线之间"
         )
 
         let green = makeStatus(id: "green", state: .ok(makeInfo([
-            makeModel(name: "g", intervalPercent: 55),
+            makeModel(name: "g", intervalPercent: 70),
         ])))
         XCTAssertEqual(
             EdgeDockProjection.intervalHealth(green, at: Self.makeNow), .healthy,
-            "55% 高于 50% 黄线"
+            "70% 高于 60% 黄线"
         )
 
         // 统一时间感知：5h 窗口剩余 20% 时间 (t=0.20, 分母=20%) 时，15% 额度明明够用，判定为绿
@@ -490,7 +490,7 @@ final class EdgeDockProjectionTests: EdgeDockTestCase {
     /// 视图据此落回中性灰：灰 ≠ 绿 ≠ 红。
     func testPerWindowHealthIsNilWithoutThatWindow() {
         let intervalOnly = makeStatus(id: "interval_only", state: .ok(makeInfo([
-            makeModel(name: "g", intervalPercent: 50),
+            makeModel(name: "g", intervalPercent: 70),
         ])))
         XCTAssertEqual(EdgeDockProjection.intervalHealth(intervalOnly, at: Self.makeNow), .healthy)
         XCTAssertNil(EdgeDockProjection.weeklyHealth(intervalOnly, at: Self.makeNow))
@@ -506,7 +506,7 @@ final class EdgeDockProjectionTests: EdgeDockTestCase {
     /// 漏带的后果是"弧长有、颜色却是灰的"——用户读成没有数据。
     func testProjectionCarriesPerWindowHealth() {
         let status = makeStatus(id: "dual", state: .ok(makeInfo([
-            quotaModel(intervalPercent: 20, weeklyPercent: 90, weeklyTimeFraction: 0.6),
+            quotaModel(intervalPercent: 40, weeklyPercent: 90, weeklyTimeFraction: 0.6),
         ])))
         let entry = EdgeDockProjection.entries(from: [status], at: Self.makeNow)[0]
         XCTAssertEqual(entry.intervalHealth, .warning)
@@ -530,17 +530,17 @@ final class EdgeDockProjectionTests: EdgeDockTestCase {
         // (名字, 5h%, 周%, 剩余时间比例, 5h档, 周档, 期望圆点)
         let cases: [(String, Double, Double, Double, HealthLevel, HealthLevel, HealthLevel?)] = [
             // 周不差于 5h → 无点：同档（黄/黄、红/红、绿/绿）与周更健康都不画。
-            ("both_warning", 25, 20, 0.6, .warning, .warning, nil),
+            ("both_warning", 45, 20, 0.6, .warning, .warning, nil),
             ("both_critical", 10, 10, 0.6, .critical, .critical, nil),
-            ("both_healthy", 60, 90, 0.2, .healthy, .healthy, nil),
+            ("both_healthy", 70, 90, 0.2, .healthy, .healthy, nil),
             // 周更健康（黄/绿）→ 无点。5h 已告急时周只到黄也不算"更差"——
             // 升级提示说的是「瓶颈已经从 5h 挪到周」，瓶颈还在 5h 就不是。
-            ("weekly_healthier_warning", 25, 90, 0.2, .warning, .healthy, nil),
+            ("weekly_healthier_warning", 45, 90, 0.2, .warning, .healthy, nil),
             ("weekly_healthier_critical", 10, 20, 0.6, .critical, .warning, nil),
             // 周严格更差 → 有点，颜色 = 周档位。
-            ("weekly_worse_warning", 60, 20, 0.6, .healthy, .warning, .warning),
-            ("weekly_worse_critical", 25, 10, 0.6, .warning, .critical, .critical),
-            ("weekly_worse_critical_from_healthy", 60, 10, 0.6, .healthy, .critical, .critical),
+            ("weekly_worse_warning", 70, 20, 0.6, .healthy, .warning, .warning),
+            ("weekly_worse_critical", 45, 10, 0.6, .warning, .critical, .critical),
+            ("weekly_worse_critical_from_healthy", 70, 10, 0.6, .healthy, .critical, .critical),
         ]
         for (name, intervalPct, weeklyPct, timeFraction, intervalLevel, weeklyLevel, expected) in cases {
             let status = makeStatus(id: name, state: .ok(makeInfo([
@@ -584,7 +584,7 @@ final class EdgeDockProjectionTests: EdgeDockTestCase {
         )
 
         let intervalOnly = makeStatus(id: "interval_only", state: .ok(makeInfo([
-            makeModel(name: "g", intervalPercent: 25, now: Self.makeNow),
+            makeModel(name: "g", intervalPercent: 40, now: Self.makeNow),
         ])))
         let intervalOnlyEntry = EdgeDockProjection.entries(from: [intervalOnly], at: Self.makeNow)[0]
         XCTAssertEqual(intervalOnlyEntry.intervalHealth, .warning)

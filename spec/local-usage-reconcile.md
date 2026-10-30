@@ -67,13 +67,13 @@ FSEvents/vnode 只负责把 source 标记为 dirty 和驱动 freshness UI；它�
 - 日历/时区失效进入 `hardFull`；手工、唤醒、自动和普通日切保留 dirty/offset 路径。
 - 保留 Antigravity 设置页显式 hard-full，不扩大为全局硬全量。
 - 所有可持久化的日窗口快照都绑定 calendar/time-zone signature；冷启动遇到缺失或不匹配的签名会重建。
+- Codex 会话与事件索引落地跨进程持久化（`CodexScannerIndex` 经 `ScannerIndexIO` 存入 `token-monitor/codex.json`），启动时复用暖缓存，避免数百 MiB/GiB 历史 JSONL 重复冷扫。
 - Antigravity、MiniMax、DSH 和 agy 的 partial/文件失败不会被标记为 fresh；DSH 在失败轮次不改动 index，保留上一份自洽的成功聚合和 fingerprint，agy 同款（失败文件不入成功指纹，整份 index 原样保留）。
 - reconcile 使用单一 `pendingMode` 和 calendar revision，保证 in-flight 的 `hardFull` 不被 dirty 降级或吞掉。
 
 ### 下一阶段
 
 - 为每个 Provider 输出统一的 decision log：`sourceFingerprint`、`decision`、`readBytes`、`rpcCount`、`cacheHit`、`fallback` 和 `commit`。
-- 将 Codex event cache 持久化评估为独立任务；在没有可靠跨进程 cache 前，重启 cold scan 是有意的兜底。
 - 以实际数据验证 startup、manual、automatic、calendar invalidation 四条路径的 no-op/incremental/full 比例和内存峰值，再决定是否引入 MiniMax ledger watermark 或其他 Provider 的增量接口。
 
 ## 验收条件
@@ -173,4 +173,4 @@ catch 块始终 `release()` 防止锁泄漏。
 测试可以注入一个 `TestGate.wait()` 让 worker 在 SQL/RPC 前阻塞, 精确控制 cancel+rescan
 时序. release build 的 binary 完全不带这个字段.
 
-> 核对基线：2026-10-28 · 代码 85f6ba9
+> 核对基线：2026-10-30 · 代码 81063ef

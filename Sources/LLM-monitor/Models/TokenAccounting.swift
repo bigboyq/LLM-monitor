@@ -104,6 +104,15 @@ struct TokenUsageBuckets: Equatable, Sendable {
         SaturatingArithmetic.add(input, cacheRead)
     }
 
+    static func + (lhs: TokenUsageBuckets, rhs: TokenUsageBuckets) -> TokenUsageBuckets {
+        TokenUsageBuckets(
+            input: SaturatingArithmetic.add(lhs.input, rhs.input),
+            cacheRead: SaturatingArithmetic.add(lhs.cacheRead, rhs.cacheRead),
+            output: SaturatingArithmetic.add(lhs.output, rhs.output),
+            reasoning: SaturatingArithmetic.add(lhs.reasoning, rhs.reasoning)
+        )
+    }
+
     /// Converts the persisted sample contract into the normalized buckets.
     /// Samples intentionally keep `inputTokens` cache-inclusive for backward
     /// compatibility; this is the single conversion used by pricing and

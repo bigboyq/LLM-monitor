@@ -108,11 +108,12 @@ reader / scanner / aggregation 不得自己写 `input + cacheRead` 或
 2. 拿到 `TokenUsageBuckets` 后，按各自持久化结构**重新组装**字段（sample 存
    cache-inclusive `inputTokens`、daily 存 `cacheReadTokens` 等）。
 
-例外（当前实现的既成事实，不要照抄）：`GlmZcodeDBReader` 的智谱行与非智谱分片在
-day 级聚合里手算 `max(input - cacheRead, 0)` 并直接重建 sample（智谱行 / 分片行
-都是如此，只在注释里与 `TokenAccountingCatalog.zcode` 的 `.normalized`「对齐」，
-没有真正调用它）；agy 的 transcript 行同样在 `AgyLocalUsageAggregation` 内直接
-组装四桶。新增 harness 必须走 catalog，这两处是历史存量。
+**上游异常（cacheRead > rawInput）的统一裁定**：
+在 cache-inclusive 口径（Codex / ZCode）下，raw input 代表包含缓存与未命中输入的总包络。当上游账单或遥测异常导致 `cacheRead > rawInput` 时，catalog 统一执行饱和截断：
+`effectiveCacheRead = min(safeCacheRead, safeInput)`，`uncachedInput = 0`。
+四桶总和守恒为 `safeInput + output + reasoning`，既杜绝负 uncached input，又防止 cacheRead 越界膨胀导致 totalTokens 虚高。`GlmZcodeDBReader` 的智谱主表与分片聚合已完全收拢至 `TokenAccountingCatalog.zcode.normalizedBuckets`，不再手算。
+
+例外（当前实现的既成事实，不要照抄）：agy 的 transcript 行在 `AgyLocalUsageAggregation` 内直接组装四桶。新增 harness 必须走 catalog。
 
 这样 clamping、cache-inclusive 减法、output/reasoning 拆分三处规则只有一份实现；
 `Tests/LLMMonitorTests/TokenAccountingTests.swift`（`testAllHarnessDefinitionsProduceDisjointNormalizedBuckets`
@@ -286,4 +287,4 @@ Rounds 是模型 API call 数；命中率为 `cacheRead / (input + cacheRead)`�
 任何新 harness 必须先补充本矩阵、provider spec 和 `TokenAccountingCatalog`，再接入 UI；
 不要在 view 或 pricing 分支里重新猜测 input/cache/reasoning 的关系。
 
-> 核对基线：2026-10-29 · 代码 0ea7426
+> 核对基线：2026-10-30 · 代码 81063ef

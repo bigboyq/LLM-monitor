@@ -180,6 +180,12 @@ provider 的渠道枚举坏值按缺失处理（`try? + rawValue`）；`bark` �
     "ttl": 3600,                             // 可选，消息有效期秒数；缺失/<=0 = 不携带
     "group": "LLMMonitor"                    // 可选，nil = 不携带 group
   },
+  "alerts": {                                // 集中告警阈值配置，整块 optional
+    "apiQuotaWarningPercent": 60,            // API 额度（余量*时间系数）警告阈值（默认 60%）
+    "apiQuotaCriticalPercent": 30,           // API 额度（余量*时间系数）危险阈值（默认 30%）
+    "deepseekBalanceWarning": 10.0,          // DeepSeek 余额（元/美元）警告阈值（默认 10）
+    "deepseekBalanceCritical": 3.0           // DeepSeek 余额（元/美元）危险阈值（默认 3）
+  },
   "providers": {
     "codex_chatgpt": {
       "enabled": true,
@@ -214,7 +220,13 @@ provider 的渠道枚举坏值按缺失处理（`try? + rawValue`）；`bark` �
   `QuotaNotificationKind` × 渠道 Picker（不通知 / 系统通知 / Bark + 系统通知），
   key = providerID 的字典草稿，`saveAndApply` 走 `setNotifyChannel` 归一化。Provider
   pane 在认证 / 刷新设置后仅提供简短跳转入口；入口打开集中通知 pane 并滚动到该
-  Provider 的规则。选择「Bark + 系统通知」时，Bark 不可用仍发送系统通知。DeepSeek 暂无余额阈值提醒。
+  Provider 的规则。选择「Bark + 系统通知」时，Bark 不可用仍发送系统通知。
+- **告警阈值配置中心**（集中通知 pane > 「告警阈值配置」节）：
+  集中配置 API 配额与 DeepSeek 余额的告警分档：
+  - API 配额警告阈值（默认 60%）与危险阈值（默认 30%），约束 `critical <= warning`；
+  - DeepSeek 余额警告阈值（默认 10）与危险阈值（默认 3），约束 `critical <= warning`；
+  - 阈值驱动 `StatusBarQuotaMetrics`、状态栏健康度圆点、Icon Duo 双环、卡片标题及 Edge Dock 呼吸环的动态红黄告警计算；
+  - DeepSeek `balanceDetail?.total` 纳入 `ProviderStatus.aggregateHealthLevel` 判定，实现余额偏低时状态栏和卡片的同步视觉告警。
 - 保存路径与既有设置一致（草稿 + `SettingsSaveTransaction` 事务），无新增事务边界。
 
 ## 7. 测试地图（XCTest）
@@ -259,4 +271,4 @@ provider 的渠道枚举坏值按缺失处理（`try? + rawValue`）；`bark` �
 - 决策记录：屏幕跳过语义与恢复公式阈值见 §3.2 / §4.3 的裁定标注（2026-09-13）；
   余额触发器延后（裁定）。
 
-> 核对基线：2026-10-29 · 代码 b315c98
+> 核对基线：2026-10-30 · 代码 81063ef

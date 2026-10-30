@@ -38,6 +38,10 @@ struct LocalTokenUsageSample: Equatable, Codable, Sendable {
         )
     }
 
+    var totalTokens: Int {
+        TokenUsageBuckets.fromSample(self).totalTokens
+    }
+
     /// 给跨数据源合并用的 prompt 命名空间，避免 native Scanner 与 OpenCode
     /// 恰好使用相同 ID 时被错误地算成同一个 turn。
     func withPromptIDPrefix(_ prefix: String) -> LocalTokenUsageSample {

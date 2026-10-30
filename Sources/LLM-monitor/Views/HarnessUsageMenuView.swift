@@ -93,6 +93,7 @@ struct HarnessUsageMenuView: View {
                     tokens: summary.totalTokens,
                     hitRate: summary.cacheHitRate,
                     valueText: summary.valueText,
+                    costParts: summary.heroParts,
                     segments: HarnessTodaySummary.clientSegments(from: summary.sections)
                 )
                 if summary.sections.isEmpty { emptyTodayState } else {
@@ -196,6 +197,7 @@ struct HarnessUsageMenuView: View {
         tokensText: String,
         hitRate: Double?,
         valueText: String,
+        costParts: (primary: String, subtitle: String)? = nil,
         segments: [HarnessClientSegment]
     ) -> some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -217,7 +219,7 @@ struct HarnessUsageMenuView: View {
                         .foregroundStyle(Color.secondaryLabel)
                 }
                 Spacer(minLength: 12)
-                let cost = Self.heroCostParts(from: valueText)
+                let cost = costParts ?? Self.heroCostParts(from: valueText)
                 VStack(alignment: .trailing, spacing: 2) {
                     Text(cost.primary)
                         .font(MenuTypography.todayHeroValue)
@@ -255,6 +257,7 @@ struct HarnessUsageMenuView: View {
             tokensText: Formatters.formatTokenCountCompact(summary.totalTokens),
             hitRate: summary.cacheHitRate,
             valueText: summary.valueText,
+            costParts: summary.heroParts,
             segments: HarnessTodaySummary.clientSegments(from: summary.sections)
         )
     }
@@ -314,6 +317,7 @@ struct HarnessUsageMenuView: View {
         tokens: Int,
         hitRate: Double?,
         valueText: String,
+        costParts: (primary: String, subtitle: String)? = nil,
         segments: [HarnessClientSegment]
     ) -> some View {
         heroOverviewCard(
@@ -321,6 +325,7 @@ struct HarnessUsageMenuView: View {
             tokensText: Formatters.formatTokenCountCompact(tokens),
             hitRate: hitRate,
             valueText: valueText,
+            costParts: costParts,
             segments: segments
         )
     }
@@ -670,8 +675,23 @@ struct HarnessSectionView: View {
                 Button("刷新本机 \(section.displayName)") { onRefreshSection(section) }
             }
             if isExpanded {
-                ForEach(section.rows) { row in
-                    HarnessModelRowView(row: row, sharedSpeedRange: sharedSpeedRange)
+                if section.rows.isEmpty {
+                    Text(section.sampleIntegrityNotice ?? "暂无模型明细")
+                        .font(MenuTypography.hint)
+                        .foregroundStyle(Color.secondaryLabel)
+                        .padding(.vertical, 4)
+                        .padding(.horizontal, 2)
+                } else {
+                    ForEach(section.rows) { row in
+                        HarnessModelRowView(row: row, sharedSpeedRange: sharedSpeedRange)
+                    }
+                    if let notice = section.sampleIntegrityNotice {
+                        Text(notice)
+                            .font(MenuTypography.hint)
+                            .foregroundStyle(Color.secondaryLabel)
+                            .padding(.top, 2)
+                            .padding(.horizontal, 2)
+                    }
                 }
             }
         }
@@ -720,6 +740,8 @@ struct HarnessSectionView: View {
             // 只是"不全"——不说就等于把一份残缺统计当完整统计读。
             if section.isTruncated {
                 truncationNotice
+            } else if section.hasIncompleteSamples {
+                samplesTruncationNotice
             }
         }
     }
@@ -781,6 +803,21 @@ struct HarnessSectionView: View {
                 .foregroundStyle(Color.orange)
                 .lineLimit(1)
                 .help(ClientUsageTruncationNotice.text)
+        }
+    }
+
+    static let samplesTruncationShortText = "明细采样已达上限"
+
+    private var samplesTruncationNotice: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 4) {
+            Image(systemName: "info.circle")
+                .font(.system(size: 8))
+                .foregroundStyle(Color.secondaryLabel)
+            Text(Self.samplesTruncationShortText)
+                .font(MenuTypography.hint)
+                .foregroundStyle(Color.secondaryLabel)
+                .lineLimit(1)
+                .help("近 24h 抽样明细受容量限制截断，今日累计 Token 仍按完整总量统计")
         }
     }
 }
@@ -867,6 +904,8 @@ struct MenuQuotaOverviewView: View {
                     status: status,
                     localStatus: state.statuses.first { $0.kind == status.kind } ?? status,
                     fleet: state.fleetCardContext(for: status.kind),
+                    isPinnedToStatusBar: state.configStore.config.statusBarPinnedProvider == status.id,
+                    onTogglePin: { state.toggleStatusBarPinnedProvider(status.id) },
                     onRefresh: { onRefreshProvider(status.id) },
                     onUsageRefresh: { Task { await state.triggerLocalUsageRescan() } },
                     onSettings: { onOpenSettings(status.kind) },
@@ -891,6 +930,8 @@ private struct MenuQuotaProviderRow: View {
     let status: ProviderStatus
     let localStatus: ProviderStatus
     let fleet: FleetCardContext?
+    var isPinnedToStatusBar: Bool = false
+    var onTogglePin: (() -> Void)? = nil
     let onRefresh: () -> Void
     let onUsageRefresh: () -> Void
     let onSettings: () -> Void
@@ -933,6 +974,24 @@ private struct MenuQuotaProviderRow: View {
                         .foregroundStyle(Color.secondaryLabel)
                         .monospacedDigit()
                         .help("额度数据更新时间；\(status.displayName)额度请求时间，不代表本机用量更新时间")
+                }
+                if ProviderKind.windowedKinds.contains(status.kind), let onTogglePin {
+                    Button(action: onTogglePin) {
+                        Image(systemName: isPinnedToStatusBar ? "eye.fill" : "eye.slash")
+                            .font(.system(size: 10, weight: isPinnedToStatusBar ? .semibold : .regular))
+                            .foregroundStyle(isPinnedToStatusBar ? Color.primaryLabel : Color.secondaryLabel.opacity(0.6))
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 2)
+                            .background(
+                                isPinnedToStatusBar
+                                    ? Color.primary.opacity(0.12)
+                                    : Color.clear,
+                                in: RoundedRectangle(cornerRadius: 4)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .help(isPinnedToStatusBar ? "取消在状态栏固定显示该服务商" : "在状态栏固定显示该服务商的 5h/周配额")
+                    .accessibilityLabel(isPinnedToStatusBar ? "取消在状态栏固定显示该服务商" : "在状态栏固定显示该服务商的 5h/周配额")
                 }
                 if case .loading = localStatus.state {
                     ProgressView()

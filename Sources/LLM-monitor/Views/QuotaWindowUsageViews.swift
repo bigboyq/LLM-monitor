@@ -390,6 +390,9 @@ struct QuotaWindowUsageSection: View {
     /// 格子里只有一个「闲」字，光标停上去才说得出这一行的口径。挂在类型格
     /// 而不是整行——产出比格有自己的 `.help`，不能互相打架。
     static let offPeakRowHelp = "ZCode 闲时任务真实消耗；不影响 5h / 周积分余额"
+    static let startPlanRowHelp = "Start Plan 体验套餐真实消耗；不影响 5h / 周积分余额"
+    static let highSpeedRowHelp = "ZCode 加速卡真实消耗；不影响 5h / 周积分余额"
+    static let otherPlanRowHelp = "其他智谱任务真实消耗；不影响 5h / 周积分余额"
 
     /// 金额超长时的紧凑单位起点：10 万。
     static let costCompactThreshold: Double = 100_000
@@ -552,10 +555,17 @@ struct QuotaWindowUsageSection: View {
 
     @ViewBuilder
     private func gridDataRow(_ row: Row) -> some View {
-        // 「闲」行的类型格挂说明句（格子的 Grid 身份就是 label，与 ForEach 的
-        // `id: \.label` 同一口径）；其余行的类型格不带 `.help`，避免和产出比格
-        // 自己的说明打架。
-        let typeHelp = row.label == Self.offPeakRowLabel ? Self.offPeakRowHelp : nil
+        // 「闲 / 免 / 速 / 它」GLM 动态行的类型格挂说明句；
+        // 其余行的类型格不带 `.help`，避免和产出比格自己的说明打架。
+        let typeHelp: String? = {
+            switch row.label {
+            case Self.offPeakRowLabel: return Self.offPeakRowHelp
+            case Self.startPlanRowLabel: return Self.startPlanRowHelp
+            case Self.highSpeedRowLabel: return Self.highSpeedRowHelp
+            case Self.otherPlanRowLabel: return Self.otherPlanRowHelp
+            default: return nil
+            }
+        }()
         switch activeSegment {
         case .analysis:
             let visibility = Self.statsColumnVisibility(rows: rows.map(\.metrics))

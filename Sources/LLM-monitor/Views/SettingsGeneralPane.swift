@@ -61,8 +61,8 @@ extension SettingsView {
                     VStack(alignment: .trailing, spacing: 6) {
                         Slider(
                             value: Binding(
-                                get: { Double(globalInterval) },
-                                set: { globalInterval = roundedInterval(from: $0) }
+                                get: { Double(draft.globalInterval) },
+                                set: { draft.globalInterval = roundedInterval(from: $0) }
                             ),
                             in: 10...3600,
                             label: { EmptyView() },
@@ -74,7 +74,7 @@ extension SettingsView {
                             }
                         )
 
-                        Text("当前：\(Formatters.formatInterval(seconds: globalInterval))")
+                        Text("当前：\(Formatters.formatInterval(seconds: draft.globalInterval))")
                             .font(SettingsTypography.numericValue)
                             .foregroundStyle(.secondary)
                     }
@@ -87,10 +87,7 @@ extension SettingsView {
             if currentTab.id == SettingsTab.interfaceID {
             SettingsSection(title: "外观", footer: "浅色 / 深色固定显示，自动跟随系统设置；保存并应用后生效。") {
                 SettingsControlRow("界面外观") {
-                    Picker("", selection: Binding(
-                        get: { appearanceDraft },
-                        set: { appearanceDraft = $0 }
-                    )) {
+                    Picker("", selection: $draft.appearance) {
                         ForEach(AppAppearance.allCases) { item in
                             Text(item.displayName).tag(item)
                         }
@@ -106,7 +103,7 @@ extension SettingsView {
             ) {
                 VStack(alignment: .leading, spacing: 16) {
                     SettingsControlRow("图标主题") {
-                        Picker("", selection: $statusBarIconStyle) {
+                        Picker("", selection: $draft.statusBarIconStyle) {
                             ForEach(StatusBarIconStyle.allCases) { style in
                                 HStack(spacing: 8) {
                                     Image(nsImage: Self.previewImage(for: style))
@@ -122,7 +119,7 @@ extension SettingsView {
                     }
 
                     SettingsControlRow("指标来源") {
-                        Picker("", selection: $statusBarPinnedProvider) {
+                        Picker("", selection: $draft.statusBarPinnedProvider) {
                             Text("全部聚合（非零最小值）").tag("")
                             ForEach(descriptors.filter { ProviderKind.windowedKinds.contains($0.kind) }, id: \.id) { descriptor in
                                 Text(descriptor.displayName).tag(descriptor.id)
@@ -132,7 +129,7 @@ extension SettingsView {
                         .frame(width: SettingsLayout.standardControlWidth, alignment: .trailing)
                     }
 
-                    SettingsToggleRow(label: "显示状态圆点", isOn: $statusBarHealthDotEnabled)
+                    SettingsToggleRow(label: "显示状态圆点", isOn: $draft.statusBarHealthDotEnabled)
 
                     SettingsControlRow("正常颜色") {
                         ColorPicker(
@@ -163,10 +160,10 @@ extension SettingsView {
 
                     SettingsControlRow("恢复默认颜色") {
                         Button("恢复默认") {
-                            statusBarHealthColors = .default
+                            draft.statusBarHealthColors = .default
                         }
                         .controlSize(.small)
-                        .disabled(statusBarHealthColors == .default)
+                        .disabled(draft.statusBarHealthColors == .default)
                     }
                 }
             }
@@ -177,7 +174,7 @@ extension SettingsView {
             ) {
                 VStack(alignment: .leading, spacing: 16) {
                     SettingsControlRow("形态") {
-                        Picker("", selection: $edgeDockMode) {
+                        Picker("", selection: $draft.edgeDockMode) {
                             ForEach(EdgeDockMode.allCases) { mode in
                                 Text(mode.displayName).tag(mode)
                             }
@@ -188,7 +185,7 @@ extension SettingsView {
                     }
 
                     HStack(alignment: .firstTextBaseline) {
-                        Text(edgeDockMode.summary)
+                        Text(draft.edgeDockMode.summary)
                             .font(SettingsTypography.status)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -211,7 +208,7 @@ extension SettingsView {
                             .frame(width: 320)
                         }
                     }
-                    EdgeDockModePreviewView(mode: edgeDockMode)
+                    EdgeDockModePreviewView(mode: draft.edgeDockMode)
                     SettingsControlRow("位置") {
                         Button("恢复默认位置") { resetDockPosition() }
                             .help("重置贴靠边、沿边位置和所在屏；立即生效，不影响待保存设置")
@@ -223,7 +220,7 @@ extension SettingsView {
                     }
 
                     SettingsControlRow("小圆环尺寸") {
-                        Picker("", selection: $edgeDockCompactSize) {
+                        Picker("", selection: $draft.edgeDockCompactSize) {
                             ForEach(EdgeDockCompactSize.allCases) { size in
                                 Text(size.displayName).tag(size)
                             }
@@ -232,12 +229,12 @@ extension SettingsView {
                         .pickerStyle(.menu)
                         .frame(width: SettingsLayout.standardControlWidth, alignment: .trailing)
                     }
-                    .disabled(!edgeDockMode.usesCompactAppearance)
+                    .disabled(!draft.edgeDockMode.usesCompactAppearance)
 
-                    SettingsToggleRow(label: "内外环独立取色", isOn: $edgeDockIndependentRingColors)
+                    SettingsToggleRow(label: "内外环独立取色", isOn: $draft.edgeDockIndependentRingColors)
 
                     Text(
-                        edgeDockIndependentRingColors
+                        draft.edgeDockIndependentRingColors
                             ? "开启后外环按 5 小时窗口、内环按周窗口各自的时间感知阈值取色；关闭后两环同色，取该 Provider 的整体健康度。"
                             : "两环同色，取该 Provider 的整体健康度；开启后可分别读出 5 小时与周窗口各自的吃紧程度。"
                     )
@@ -245,8 +242,8 @@ extension SettingsView {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
-                    SettingsToggleRow(label: "全屏时不显示", isOn: $edgeDockHideInFullscreen)
-                        .disabled(!edgeDockMode.isVisible)
+                    SettingsToggleRow(label: "全屏时不显示", isOn: $draft.edgeDockHideInFullscreen)
+                        .disabled(!draft.edgeDockMode.isVisible)
                 }
             }
             }
@@ -269,56 +266,57 @@ extension SettingsView {
 
             if currentTab.id == SettingsTab.notificationsID {
             notificationAuthorizationSection
+            alertThresholdsSection
             SettingsSection(
                 title: "Bark 推送",
                 footer: "按各 Provider 的通知配置，把 5 小时 / 周额度的恢复与耗尽事件推送到 iPhone。服务端默认官方 api.day.app，也可填自建地址；Device Key 从 Bark App 复制。正式提醒可按下方策略跳过；主动测试会忽略跳过策略并实际发送。保存后生效。"
             ) {
                 VStack(alignment: .leading, spacing: 16) {
-                    SettingsToggleRow(label: "启用 Bark 推送", isOn: $barkEnabled)
+                    SettingsToggleRow(label: "启用 Bark 推送", isOn: $draft.barkEnabled)
 
                     SettingsControlRow("服务端地址") {
                         TextField(
                             "",
-                            text: $barkServerURL,
+                            text: $draft.barkServerURL,
                             prompt: Text(BarkConfig.defaultServerURL)
                         )
                         .frame(width: SettingsLayout.standardControlWidth)
-                        .disabled(!barkEnabled)
+                        .disabled(!draft.barkEnabled)
                     }
 
                     SettingsControlRow("Device Key") {
-                        secretField(text: $barkDeviceKey, isVisible: $showBarkDeviceKey, prompt: "从 Bark App 复制")
+                        secretField(text: $draft.barkDeviceKey, isVisible: $showBarkDeviceKey, prompt: "从 Bark App 复制")
                     }
 
                     SettingsControlRow("铃声（可选）") {
-                        TextField("", text: $barkSound, prompt: Text("默认"))
+                        TextField("", text: $draft.barkSound, prompt: Text("默认"))
                             .frame(width: SettingsLayout.standardControlWidth)
-                            .disabled(!barkEnabled)
+                            .disabled(!draft.barkEnabled)
                     }
 
                     SettingsControlRow("分组（可选）") {
-                        TextField("", text: $barkGroup, prompt: Text(BarkConfig.defaultGroup))
+                        TextField("", text: $draft.barkGroup, prompt: Text(BarkConfig.defaultGroup))
                             .frame(width: SettingsLayout.standardControlWidth)
-                            .disabled(!barkEnabled)
+                            .disabled(!draft.barkEnabled)
                     }
 
                     SettingsControlRow("消息有效期 TTL（秒，可选）") {
-                        TextField("", text: $barkTTL, prompt: Text("0 = 不过期"))
+                        TextField("", text: $draft.barkTTL, prompt: Text("0 = 不过期"))
                             .frame(width: SettingsLayout.standardControlWidth)
-                            .disabled(!barkEnabled)
+                            .disabled(!draft.barkEnabled)
                     }
 
                     SettingsToggleRow(
                         label: "人在电脑前时跳过推送",
-                        isOn: $barkSkipWhenAwakeAndUnlocked
+                        isOn: $draft.barkSkipWhenAwakeAndUnlocked
                     )
-                    .disabled(!barkEnabled)
+                    .disabled(!draft.barkEnabled)
 
                     HStack(spacing: 12) {
                         Button("主动发送测试推送") {
                             sendBarkTest()
                         }
-                        .disabled(!barkEnabled || isSendingBarkTest)
+                        .disabled(!draft.barkEnabled || isSendingBarkTest)
 
                         if let barkTestMessage {
                             Text(barkTestMessage)
@@ -328,7 +326,7 @@ extension SettingsView {
                         }
                         Spacer()
                     }
-                    Text(barkSkipWhenAwakeAndUnlocked
+                    Text(draft.barkSkipWhenAwakeAndUnlocked
                         ? "正式提醒：按各 Provider 渠道发送，屏幕亮且未锁定时跳过。主动测试会发送一条测试消息，仅验证当前草稿的连接。"
                         : "正式提醒按各 Provider 渠道发送；主动测试会发送一条测试消息，仅验证当前草稿的连接。")
                         .font(SettingsTypography.status)
@@ -358,7 +356,7 @@ extension SettingsView {
             ) {
                 HolidaySourceSection(
                     service: state.holidayCalendarService,
-                    draft: $holidaySourceDraft
+                    draft: $draft.holidaySource
                 )
             }
             }
@@ -382,7 +380,7 @@ extension SettingsView {
         ) {
             SettingsToggleRow(
                 label: "系统通知播放提示音",
-                isOn: $systemNotificationSoundEnabledDraft
+                isOn: $draft.systemNotificationSoundEnabled
             )
             SettingsControlRow("当前状态") {
                 Text(notificationAuthorization.displayText)
@@ -409,7 +407,7 @@ extension SettingsView {
             }
             if notificationAuthorization == .authorized {
                 Button("发送系统通知测试") {
-                    let soundEnabled = systemNotificationSoundEnabledDraft
+                    let soundEnabled = draft.systemNotificationSoundEnabled
                     Task {
                         systemNotificationTestMessage = await SystemQuotaUpdateNotifier.sendTestNotification(
                             soundEnabled: soundEnabled
@@ -422,6 +420,72 @@ extension SettingsView {
                     .font(SettingsTypography.status)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    var alertThresholdsSection: some View {
+        SettingsSection(
+            title: "告警阈值配置",
+            footer: "控制状态栏指示器、卡片头部健康度及边缘状态窗的变色阈值。API 额度按（剩余比例 ÷ 时间系数）计算；DeepSeek 纯余额按剩余数值计算。"
+        ) {
+            VStack(alignment: .leading, spacing: 16) {
+                SettingsControlRow("API 额度预警阈值（黄色）") {
+                    HStack(spacing: 8) {
+                        Slider(value: $draft.alertThresholds.apiQuotaWarningPercent, in: 10...90, step: 5)
+                            .frame(width: 160)
+                        Text("\(Int(draft.alertThresholds.apiQuotaWarningPercent))%")
+                            .font(SettingsTypography.numericValue)
+                            .frame(width: 40, alignment: .trailing)
+                    }
+                    .frame(width: SettingsLayout.standardControlWidth, alignment: .leading)
+                }
+
+                SettingsControlRow("API 额度严重阈值（红色）") {
+                    HStack(spacing: 8) {
+                        Slider(value: $draft.alertThresholds.apiQuotaCriticalPercent, in: 5...50, step: 5)
+                            .frame(width: 160)
+                        Text("\(Int(draft.alertThresholds.apiQuotaCriticalPercent))%")
+                            .font(SettingsTypography.numericValue)
+                            .frame(width: 40, alignment: .trailing)
+                    }
+                    .frame(width: SettingsLayout.standardControlWidth, alignment: .leading)
+                }
+
+                Divider()
+                    .padding(.vertical, 4)
+
+                SettingsControlRow("DeepSeek 余额预警阈值（黄色）") {
+                    HStack(spacing: 8) {
+                        TextField(
+                            "",
+                            value: $draft.alertThresholds.deepseekBalanceWarning,
+                            format: .number
+                        )
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 80)
+                        Text("元 / 美元")
+                            .font(SettingsTypography.metadata)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(width: SettingsLayout.standardControlWidth, alignment: .leading)
+                }
+
+                SettingsControlRow("DeepSeek 余额严重阈值（红色）") {
+                    HStack(spacing: 8) {
+                        TextField(
+                            "",
+                            value: $draft.alertThresholds.deepseekBalanceCritical,
+                            format: .number
+                        )
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 80)
+                        Text("元 / 美元")
+                            .font(SettingsTypography.metadata)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(width: SettingsLayout.standardControlWidth, alignment: .leading)
+                }
             }
         }
     }
@@ -485,7 +549,7 @@ extension SettingsView {
     var providerDescriptorsInCardOrder: [FetcherDescriptor] {
         DisplayOrder.ordered(
             descriptors,
-            preferredIDs: providerCardOrder,
+            preferredIDs: draft.providerCardOrder,
             id: { $0.kind.quotaProviderID },
             by: providerDescriptorDisplayNameAscending
         )
@@ -507,7 +571,7 @@ extension SettingsView {
         let destination = index + offset
         guard order.indices.contains(index), order.indices.contains(destination) else { return }
         order.swapAt(index, destination)
-        providerCardOrder = order
+        draft.providerCardOrder = order
     }
 
     func statusBarColorBinding(
@@ -515,12 +579,12 @@ extension SettingsView {
     ) -> Binding<Color> {
         Binding(
             get: {
-                Color(nsColor: statusBarHealthColors.color(
-                    forHex: statusBarHealthColors[keyPath: keyPath]
+                Color(nsColor: draft.statusBarHealthColors.color(
+                    forHex: draft.statusBarHealthColors[keyPath: keyPath]
                 ) ?? .systemGray)
             },
             set: { newColor in
-                statusBarHealthColors[keyPath: keyPath] = hexString(from: NSColor(newColor))
+                draft.statusBarHealthColors[keyPath: keyPath] = hexString(from: NSColor(newColor))
             }
         )
     }
@@ -545,12 +609,12 @@ extension SettingsView {
     func sendBarkTest() {
         let config = BarkConfig(
             enabled: true,
-            serverURL: barkServerURL,
-            deviceKey: barkDeviceKey,
-            sound: barkSound,
-            skipWhenAwakeAndUnlocked: barkSkipWhenAwakeAndUnlocked ? true : nil,
-            ttl: BarkConfig.parseTTL(barkTTL),
-            group: barkGroup
+            serverURL: draft.barkServerURL,
+            deviceKey: draft.barkDeviceKey,
+            sound: draft.barkSound,
+            skipWhenAwakeAndUnlocked: draft.barkSkipWhenAwakeAndUnlocked ? true : nil,
+            ttl: BarkConfig.parseTTL(draft.barkTTL),
+            group: draft.barkGroup
         )
         isSendingBarkTest = true
         barkTestMessage = nil

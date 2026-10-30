@@ -428,6 +428,11 @@ struct HarnessSection: Identifiable, Equatable, Sendable {
     /// 段头据此加橙色截断提示——**段级**聚合，规则与
     /// `ProviderUsageProjection.isTruncated` 相同（任一来源截断即整段截断）。
     let isTruncated: Bool
+    /// 来源样本被截断（如 DSH recentSamplesLimit 挤出早期样本）。
+    /// true 时模型明细与金额来自留存样本、可能不完整，但 buckets 仍为权威日总量。
+    let samplesTruncated: Bool
+    /// 该段的主力 provider（今日 token 最大者），供客户端占比条着色。
+    let dominantQuotaProviderID: String?
 
     init(
         clientID: String,
@@ -438,7 +443,9 @@ struct HarnessSection: Identifiable, Equatable, Sendable {
         promptSpeedStatistics: PromptSpeedStatistics = .empty,
         value: MixedCurrencyEstimate,
         rows: [HarnessModelRow],
-        isTruncated: Bool
+        isTruncated: Bool,
+        samplesTruncated: Bool = false,
+        dominantQuotaProviderID: String? = nil
     ) {
         self.clientID = clientID
         self.displayName = displayName
@@ -449,23 +456,54 @@ struct HarnessSection: Identifiable, Equatable, Sendable {
         self.value = value
         self.rows = rows
         self.isTruncated = isTruncated
+        self.samplesTruncated = samplesTruncated
+        self.dominantQuotaProviderID = dominantQuotaProviderID
     }
 
     var id: String { clientID }
     var totalTokens: Int { buckets.totalTokens }
     var cacheHitRate: Double? { HarnessTodaySummary.cacheHitRate(for: buckets) }
-    var valueText: String { value.displayText }
+    var valueText: String {
+        if rows.isEmpty && totalTokens > 0 {
+            return "—"
+        }
+        return value.displayText
+    }
+
+    var rowsTotalTokens: Int {
+        rows.reduce(0) { $0 + max(0, $1.totalTokens) }
+    }
+
+    /// 样本存在截断或清理：samplesTruncated 置位，或留存样本总量小于权威日桶（且样本非空）。
+    var hasIncompleteSamples: Bool {
+        samplesTruncated || (rowsTotalTokens < totalTokens && !rows.isEmpty)
+    }
+
+    /// 模型明细完整性与未对齐原因说明。
+    /// 避免将差额随意分配给模型或伪装成零。
+    var sampleIntegrityNotice: String? {
+        if rows.isEmpty && totalTokens > 0 {
+            return "仅保留日汇总数据，暂无单次调用模型明细"
+        }
+        if samplesTruncated || rowsTotalTokens < totalTokens {
+            return "部分早期样本已被清理，模型明细仅覆盖留存样本"
+        }
+        return nil
+    }
 
     /// 段头右键「刷新 <客户端名>」要刷的 provider 卡 id：段头右键按**本段今日
     /// 贡献行**决定刷哪些卡——ZCode 段含 GLM / minimax / deepseek 分片行时一次
     /// 刷齐，且只动这些卡，不惊动与该段无关的 provider。
     ///
-    /// 取本段行的去重 `quotaProviderID` 集合，映射到 `statuses` 里匹配
+    /// 取本段行与主力 provider 的去重 `quotaProviderID` 集合，映射到 `statuses` 里匹配
     /// `kind.quotaProviderID` 的 status.id：**输出顺序跟随 statuses**（调用方传
     /// 的是展示顺序，与刷新请求次序同源）、按 status.id 去重、匹配不到的
     /// （段里有贡献行但已不在列表里的 provider）忽略。
     func refreshProviderStatusIDs(in statuses: [ProviderStatus]) -> [String] {
-        let contributedQuotaProviderIDs = Set(rows.map(\.quotaProviderID))
+        var contributedQuotaProviderIDs = Set(rows.map(\.quotaProviderID))
+        if let dominant = dominantQuotaProviderID {
+            contributedQuotaProviderIDs.insert(dominant)
+        }
         var emittedIDs: Set<String> = []
         return statuses.compactMap { status in
             guard contributedQuotaProviderIDs.contains(status.kind.quotaProviderID),
@@ -547,7 +585,7 @@ extension HarnessTodaySummary {
                 clientID: section.clientID,
                 displayName: section.displayName,
                 totalTokens: section.totalTokens,
-                dominantQuotaProviderID: HarnessClientSegment.dominantQuotaProviderID(
+                dominantQuotaProviderID: section.dominantQuotaProviderID ?? HarnessClientSegment.dominantQuotaProviderID(
                     section.rows.map { ($0.quotaProviderID, $0.totalTokens) }
                 )
             )
@@ -579,15 +617,30 @@ struct HarnessTodaySummary: Equatable, Sendable {
 
     var totalTokens: Int { buckets.totalTokens }
     var cacheHitRate: Double? { Self.cacheHitRate(for: buckets) }
-    var valueText: String { value.displayText }
+    var valueText: String {
+        if sections.allSatisfy({ $0.rows.isEmpty }) && totalTokens > 0 {
+            return "—"
+        }
+        return value.displayText
+    }
+
+    /// 菜单 Hero 卡结构化展示拆解（主额 + 副标题）。
+    /// 当全部客户端仅有权威日桶但单次调用样本为 0 时，主额显示「—」，严禁伪装为 0。
+    var heroParts: (primary: String, subtitle: String) {
+        if sections.allSatisfy({ $0.rows.isEmpty }) && totalTokens > 0 {
+            return ("—", "今日花费")
+        }
+        return value.heroParts
+    }
     var isEmpty: Bool { sections.isEmpty }
 
     /// 从各 provider 卡的 `usageProjection` 汇总出「今天」这一屏。
     ///
-    /// 口径：只消费公开的 `status.usageProjection(for:)`，因此投影层重构
-    /// （并行任务 D）不牵动这里。空贡献按设置页同一 `hasActivity` 判定跳过
-    /// （`ClientUsageAggregation.clientProviderUsageByClient` 的 guard）；贡献里
-    /// 没有任何今日样本时同样不产生行——「今天」这一屏不该出现 7 天前的活动。
+    /// 口径契约：
+    /// 1. 客户端及全局 Token 四桶、总 Token、命中率、客户端占比条及排序以权威日桶（contribution.dailyTokenUsage）计算。
+    /// 2. 模型明细、金额、速度继续从 samples 推导，并独立披露完整性。
+    /// 3. 只有日桶无样本的客户端也展示该客户端，不把缺失明细伪装成零。
+    /// 4. 明细与总计无法对齐时明确说明原因，不把差额随意分配给某个模型。
     static func summarize(
         statuses: [ProviderStatus],
         now: Date = Date(),
@@ -601,6 +654,10 @@ struct HarnessTodaySummary: Equatable, Sendable {
         var samplesByClient: [String: [LocalTokenUsageSample]] = [:]
         var displayNameByClient: [String: String] = [:]
         var truncatedClients: Set<String> = []
+        var samplesTruncatedClients: Set<String> = []
+        var dailyBucketsByClient: [String: TokenUsageBuckets] = [:]
+        var clientProviderTokens: [String: [String: Int]] = [:]
+        var activeClientIDs: Set<String> = []
         var isScanningLocalUsage = false
         var localUsageScannedAt: Date?
 
@@ -623,7 +680,23 @@ struct HarnessTodaySummary: Equatable, Sendable {
                 if contribution.isTruncated {
                     truncatedClients.insert(contribution.clientID)
                 }
-                for sample in contribution.recentSamples where isToday(sample.completedAt, dayStart: dayStart, calendar: calendar) {
+                if contribution.samplesTruncated {
+                    samplesTruncatedClients.insert(contribution.clientID)
+                }
+
+                let todayDaily = contribution.dailyTokenUsage.filter { isToday($0.dayStart, dayStart: dayStart, calendar: calendar) }
+                let todayDailyBuckets = todayDaily.reduce(TokenUsageBuckets.zero) { acc, day in
+                    acc + TokenUsageBuckets(input: day.input, cacheRead: day.cacheRead, output: day.output, reasoning: day.reasoning)
+                }
+                let todaySamples = contribution.recentSamples.filter { isToday($0.completedAt, dayStart: dayStart, calendar: calendar) }
+                guard todayDailyBuckets.totalTokens > 0 || !todaySamples.isEmpty else { continue }
+
+                activeClientIDs.insert(contribution.clientID)
+                dailyBucketsByClient[contribution.clientID] = (dailyBucketsByClient[contribution.clientID] ?? .zero) + todayDailyBuckets
+                let providerTokens = todayDailyBuckets.totalTokens > 0 ? todayDailyBuckets.totalTokens : todaySamples.map(\.totalTokens).reduce(0, +)
+                clientProviderTokens[contribution.clientID, default: [:]][quotaProviderID, default: 0] += providerTokens
+
+                for sample in todaySamples {
                     let key = HarnessRowKey(
                         clientID: contribution.clientID,
                         quotaProviderID: quotaProviderID,
@@ -647,15 +720,26 @@ struct HarnessTodaySummary: Equatable, Sendable {
             )
         }
 
-        let sections = Dictionary(grouping: rows, by: \.clientID).map { clientID, clientRows in
+        let rowsByClient = Dictionary(grouping: rows, by: \.clientID)
+
+        let sections = activeClientIDs.map { clientID in
+            let clientRows = rowsByClient[clientID] ?? []
             let descriptor = ClientDescriptor.all.first { $0.id == clientID }
+            let dailyB = dailyBucketsByClient[clientID] ?? .zero
+            let sampleB = Self.sum(clientRows.map(\.buckets))
+            let clientBuckets = dailyB.totalTokens > 0 ? dailyB : sampleB
+            let dominantQuotaProviderID = HarnessClientSegment.dominantQuotaProviderID(
+                clientProviderTokens[clientID]?.map { ($0.key, $0.value) } ?? []
+            ) ?? HarnessClientSegment.dominantQuotaProviderID(
+                clientRows.map { ($0.quotaProviderID, $0.totalTokens) }
+            )
             return HarnessSection(
                 clientID: clientID,
                 displayName: descriptor?.displayName
                     ?? displayNameByClient[clientID]
                     ?? clientID,
                 iconSystemName: descriptor?.iconSystemName ?? "terminal",
-                buckets: Self.sum(clientRows.map(\.buckets)),
+                buckets: clientBuckets,
                 tokensPerSecond: LocalUsageSummaryBuilder.windowTokenRate(
                     samples: samplesByClient[clientID] ?? []
                 ),
@@ -664,9 +748,12 @@ struct HarnessTodaySummary: Equatable, Sendable {
                 ),
                 value: MixedCurrencyEstimate(estimates: clientRows.map(\.costEstimate)),
                 rows: clientRows.sorted(by: modelRowOrder),
-                isTruncated: truncatedClients.contains(clientID)
+                isTruncated: truncatedClients.contains(clientID),
+                samplesTruncated: samplesTruncatedClients.contains(clientID),
+                dominantQuotaProviderID: dominantQuotaProviderID
             )
         }
+        .filter { $0.totalTokens > 0 || !$0.rows.isEmpty }
         .sorted { lhs, rhs in
             if lhs.totalTokens != rhs.totalTokens { return lhs.totalTokens > rhs.totalTokens }
             return lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName) == .orderedAscending
@@ -674,7 +761,7 @@ struct HarnessTodaySummary: Equatable, Sendable {
 
         return HarnessTodaySummary(
             dayStart: dayStart,
-            buckets: Self.sum(rows.map(\.buckets)),
+            buckets: Self.sum(sections.map(\.buckets)),
             value: MixedCurrencyEstimate(estimates: rows.map(\.costEstimate)),
             sections: sections,
             isScanningLocalUsage: isScanningLocalUsage,

@@ -41,13 +41,16 @@ enum IconDuoSVGBuilder {
         let trackColor = "#48484A"
         // 统一时间感知 colorLevel 判定：左弧（interval / 5h avg）与右弧（周 avg）
         // 均以最宽剩余时间比例作为 timeFraction 输入（分母 = 100% * timeFraction，
-        // < 20% 红色，< 50% 黄色，否则绿色）。弧线不参与高峰 floor——高峰只
+        // < criticalPercent 红色，< warningPercent 黄色，否则绿色）。弧线不参与高峰 floor——高峰只
         // 作用于底部三点与卡片头部点（见 `ModelQuota.aggregateHealthLevel`）。
-        let leftQuotaLevel = ModelQuota.colorLevel(
+        let leftQuotaLevel = metrics.alertThresholds.colorLevel(
             percent: metrics.interval.avgAvailable * 100,
             timeFraction: metrics.intervalTimeFraction
         )
-        let rightQuotaLevel = ModelQuota.colorLevel(percent: metrics.weekly.avgAvailable * 100, timeFraction: metrics.weeklyTimeFraction)
+        let rightQuotaLevel = metrics.alertThresholds.colorLevel(
+            percent: metrics.weekly.avgAvailable * 100,
+            timeFraction: metrics.weeklyTimeFraction
+        )
         let leftColor = resolvedHex(for: leftQuotaLevel, colors: healthColors)
         let rightColor = resolvedHex(for: rightQuotaLevel, colors: healthColors)
         let energyColor = energyHealth.map { resolvedHex(for: $0, colors: healthColors) }
@@ -118,6 +121,7 @@ enum IconDuoSVGBuilder {
         let centerSVG = buildCenterSectorSVG(
             centerAvailable: metrics.centerAvailable,
             centerTimeFraction: metrics.centerTimeFraction,
+            alertThresholds: metrics.alertThresholds,
             healthColors: healthColors
         )
 
@@ -135,6 +139,7 @@ enum IconDuoSVGBuilder {
     private static func buildCenterSectorSVG(
         centerAvailable: Double?,
         centerTimeFraction: Double?,
+        alertThresholds: AlertThresholdConfig,
         healthColors: StatusBarHealthColors
     ) -> String {
         let bgDisc = "<circle id=\"center-track\" cx=\"352\" cy=\"352\" r=\"135\" fill=\"#2C2C2E\" fill-opacity=\"0.6\"/>"
@@ -150,7 +155,7 @@ enum IconDuoSVGBuilder {
         // 中心与底部三点同用统一 colorLevel：输入是「实际可用」最小值（由
         // AppState 计算），timeFraction 透传产生该最小值的套餐在其瓶颈窗口上的
         // 剩余时间比例（5h 短窗口瓶颈时为 nil → 固定 30% 黄线）。
-        let healthLevel = ModelQuota.colorLevel(percent: p * 100, timeFraction: centerTimeFraction)
+        let healthLevel = alertThresholds.colorLevel(percent: p * 100, timeFraction: centerTimeFraction)
         let sectorColor = resolvedHex(for: healthLevel, colors: healthColors)
         let percentValue = Int((p * 100).rounded())
 

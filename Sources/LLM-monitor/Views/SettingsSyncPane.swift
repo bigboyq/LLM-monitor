@@ -231,7 +231,7 @@ struct SettingsSyncPane: View {
         VStack(alignment: .leading, spacing: 20) {
             SettingsSection(
                 title: "多机联动",
-                footer: "多副一主：留空主节点地址 = 本机是主节点（接收并合并副节点报告）；填地址 = 本机是副节点（只上报、不监听端口）。文本修改后按回车保存，立即生效。"
+                footer: "多副一主：留空主节点地址 = 本机是主节点（接收并合并副节点报告）；填地址 = 本机是副节点（只上报、不监听端口）。修改后自动保存并即时生效（亦可按回车立即生效）。"
             ) {
                 SettingsToggleRow(label: "启用多机联动", isOn: Binding(
                     get: { syncConfig.enabled },
@@ -299,7 +299,7 @@ struct SettingsSyncPane: View {
                     .multilineTextAlignment(.trailing)
                     .frame(width: SettingsLayout.standardControlWidth)
                     .onSubmit(drafts.submitNodeName)
-                    .help("其他机器的菜单节点分组里显示这个名字；留空 = 默认名称。按回车保存。")
+                    .help("其他机器的菜单节点分组里显示这个名字；留空 = 默认名称。修改后自动保存并即时生效（亦可按回车立即生效）。")
                 if let error = drafts.saveError(for: .nodeName) {
                     saveErrorLabel(error)
                 }
@@ -383,7 +383,7 @@ struct SettingsSyncPane: View {
                     .multilineTextAlignment(.trailing)
                     .frame(width: 100)
                     .onSubmit(drafts.submitPort)
-                    .help("按回车保存")
+                    .help("修改后自动保存并即时生效（亦可按回车立即生效）")
                 if let error = drafts.saveError(for: .port) {
                     saveErrorLabel(error)
                 }
@@ -441,7 +441,7 @@ struct SettingsSyncPane: View {
                     .multilineTextAlignment(.trailing)
                     .frame(width: SettingsLayout.standardControlWidth)
                     .onSubmit(drafts.submitHubURL)
-                    .help("按回车保存；清空则本机变回主节点")
+                    .help("清空则本机变回主节点。修改后自动保存并即时生效（亦可按回车立即生效）")
                 // 校验不过时的原因就地显示：地址没落盘，用户看得见自己输的是什么、
                 // 为什么不能用（行内错误文案来自 `checkHubURL`）。
                 if let hubURLError = drafts.hubURLError {

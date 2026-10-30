@@ -141,44 +141,44 @@ final class ModelQuotaWindowBoundsTests: XCTestCase {
     // MARK: - ModelQuota.colorLevel (barColor / healthLevel / summaryColor 共享阈值)
 
     func testModelQuotaColorLevelNilTimeFraction() {
-        // timeFraction=nil: 无重置时间/无窗口，基线分母 100%：< 20% 红，< 50% 黄，>= 50% 绿
+        // timeFraction=nil: 无重置时间/无窗口，基线分母 100%：< 30% 红，< 60% 黄，>= 60% 绿
         XCTAssertEqual(ModelQuota.colorLevel(percent: 0, timeFraction: nil), .critical)
-        XCTAssertEqual(ModelQuota.colorLevel(percent: 19.9, timeFraction: nil), .critical)
-        XCTAssertEqual(ModelQuota.colorLevel(percent: 20, timeFraction: nil), .warning)
-        XCTAssertEqual(ModelQuota.colorLevel(percent: 49.9, timeFraction: nil), .warning)
-        XCTAssertEqual(ModelQuota.colorLevel(percent: 50, timeFraction: nil), .healthy)
+        XCTAssertEqual(ModelQuota.colorLevel(percent: 29.9, timeFraction: nil), .critical)
+        XCTAssertEqual(ModelQuota.colorLevel(percent: 30, timeFraction: nil), .warning)
+        XCTAssertEqual(ModelQuota.colorLevel(percent: 59.9, timeFraction: nil), .warning)
+        XCTAssertEqual(ModelQuota.colorLevel(percent: 60, timeFraction: nil), .healthy)
         XCTAssertEqual(ModelQuota.colorLevel(percent: 100, timeFraction: nil), .healthy)
     }
 
     func testModelQuotaColorLevelTimeAware() {
         // 周额度与 5h 额度统一的时间感知标色算法：
         // 分母 = 100% * 剩余时间百分比%
-        // < 20% 红色，< 50% 黄色，>= 50% 绿色
+        // < 30% 红色，< 60% 黄色，>= 60% 绿色
 
         // 1. 还剩 100% 时间 (刚重置，t=1.0) → 分母 100%
         XCTAssertEqual(ModelQuota.colorLevel(percent: 0, timeFraction: 1.0), .critical)
-        XCTAssertEqual(ModelQuota.colorLevel(percent: 19.9, timeFraction: 1.0), .critical)
-        XCTAssertEqual(ModelQuota.colorLevel(percent: 20, timeFraction: 1.0), .warning)
-        XCTAssertEqual(ModelQuota.colorLevel(percent: 49.9, timeFraction: 1.0), .warning)
-        XCTAssertEqual(ModelQuota.colorLevel(percent: 50, timeFraction: 1.0), .healthy)
+        XCTAssertEqual(ModelQuota.colorLevel(percent: 29.9, timeFraction: 1.0), .critical)
+        XCTAssertEqual(ModelQuota.colorLevel(percent: 30, timeFraction: 1.0), .warning)
+        XCTAssertEqual(ModelQuota.colorLevel(percent: 59.9, timeFraction: 1.0), .warning)
+        XCTAssertEqual(ModelQuota.colorLevel(percent: 60, timeFraction: 1.0), .healthy)
 
         // 2. 还剩 50% 时间 (t=0.5) → 分母 50%
-        // 临界 = 20% * 0.5 = 10%，预警 = 50% * 0.5 = 25%
-        XCTAssertEqual(ModelQuota.colorLevel(percent: 9.9, timeFraction: 0.5), .critical)
-        XCTAssertEqual(ModelQuota.colorLevel(percent: 10, timeFraction: 0.5), .warning)
-        XCTAssertEqual(ModelQuota.colorLevel(percent: 24.9, timeFraction: 0.5), .warning)
-        XCTAssertEqual(ModelQuota.colorLevel(percent: 25, timeFraction: 0.5), .healthy)
+        // 临界 = 30% * 0.5 = 15%，预警 = 60% * 0.5 = 30%
+        XCTAssertEqual(ModelQuota.colorLevel(percent: 14.9, timeFraction: 0.5), .critical)
+        XCTAssertEqual(ModelQuota.colorLevel(percent: 15, timeFraction: 0.5), .warning)
+        XCTAssertEqual(ModelQuota.colorLevel(percent: 29.9, timeFraction: 0.5), .warning)
+        XCTAssertEqual(ModelQuota.colorLevel(percent: 30, timeFraction: 0.5), .healthy)
 
         // 3. 用户经典诉求场景：5h 窗口还剩 5 分钟 (t = 5/300 = 1/60 ≈ 0.0167)
         // 额度剩余 15%：明明够用，绝对不是红色，也不是黄色，而是健康（绿色）！
         let fiveMinutesInFiveHours = 5.0 / 300.0
         XCTAssertEqual(ModelQuota.colorLevel(percent: 15, timeFraction: fiveMinutesInFiveHours), .healthy)
-        // 即使只剩 1% 额度，对于 5 分钟（0.833% 预警线）而言也是健康的
-        XCTAssertEqual(ModelQuota.colorLevel(percent: 1.0, timeFraction: fiveMinutesInFiveHours), .healthy)
-        // 临界线 = 20% * (1/60) ≈ 0.333%，剩 0.2% 时才标红
-        XCTAssertEqual(ModelQuota.colorLevel(percent: 0.2, timeFraction: fiveMinutesInFiveHours), .critical)
-        // 预警线 = 50% * (1/60) ≈ 0.833%，剩 0.5% 时标黄
-        XCTAssertEqual(ModelQuota.colorLevel(percent: 0.5, timeFraction: fiveMinutesInFiveHours), .warning)
+        // 即使只剩 1.5% 额度，对于 5 分钟（1.0% 预警线）而言也是健康的
+        XCTAssertEqual(ModelQuota.colorLevel(percent: 1.5, timeFraction: fiveMinutesInFiveHours), .healthy)
+        // 临界线 = 30% * (1/60) = 0.5%，剩 0.3% 时才标红
+        XCTAssertEqual(ModelQuota.colorLevel(percent: 0.3, timeFraction: fiveMinutesInFiveHours), .critical)
+        // 预警线 = 60% * (1/60) = 1.0%，剩 0.7% 时标黄
+        XCTAssertEqual(ModelQuota.colorLevel(percent: 0.7, timeFraction: fiveMinutesInFiveHours), .warning)
 
         // 4. 重置时刻已到或已过 (t <= 0)
         XCTAssertEqual(ModelQuota.colorLevel(percent: 15, timeFraction: 0.0), .healthy)

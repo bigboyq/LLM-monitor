@@ -81,12 +81,18 @@ struct ModelQuota: Equatable, Codable, Sendable {
     func aggregateHealthLevel(
         providerKind: ProviderKind,
         isPeakPrice: Bool = false,
+        alertThresholds: AlertThresholdConfig = .default,
         at now: Date = Date()
     ) -> HealthLevel {
         guard let reading = aggregateActualAvailable(providerKind: providerKind, at: now) else {
             return .critical
         }
-        let level = Self.colorLevel(percent: reading.percent, timeFraction: reading.bindingTimeFraction)
+        let level = Self.colorLevel(
+            percent: reading.percent,
+            timeFraction: reading.bindingTimeFraction,
+            warningPercent: alertThresholds.apiQuotaWarningPercent,
+            criticalPercent: alertThresholds.apiQuotaCriticalPercent
+        )
         // HealthLevel 的 Comparable 方向：rank 越大越健康（critical 0 < warning 1 <
         // healthy 2），min 取两者中更差的一档 → healthy 被压到 .warning，而
         // .warning / .critical 保持不变（红色优先，floor 不吞掉红色）。
@@ -136,27 +142,32 @@ struct ModelQuota: Equatable, Codable, Sendable {
     ///
     /// - `percent <= 0`：额度耗尽，固定 `.critical`（红）
     /// - `timeFraction == nil`（未知重置时间 / 无窗口）：基线分母 100%
-    ///   - `percent < 20.0` → `.critical`（红）
-    ///   - `percent < 50.0` → `.warning`（黄）
+    ///   - `percent < criticalPercent`（默认 30%）→ `.critical`（红）
+    ///   - `percent < warningPercent`（默认 60%）→ `.warning`（黄）
     ///   - 否则 → `.healthy`（绿 / tint）
     /// - `timeFraction != nil`（已知重置时间）：
     ///   - 若 `t = min(max(timeFraction, 0), 1) <= 0`（已到重置点且 percent > 0）：`.healthy`（绿）
     ///   - 动态分母 = `100% * t`
     ///   - 进度比例 = `percent / 分母`
-    ///   - 比例 `< 20%`（即 `percent < 20.0 * t`）→ `.critical`（红）
-    ///   - 比例 `< 50%`（即 `percent < 50.0 * t`）→ `.warning`（黄）
+    ///   - 比例 `< criticalPercent`（即 `percent < criticalPercent * t`）→ `.critical`（红）
+    ///   - 比例 `< warningPercent`（即 `percent < warningPercent * t`）→ `.warning`（黄）
     ///   - 否则 → `.healthy`（绿 / tint）
-    static func colorLevel(percent: Double, timeFraction: Double?) -> HealthLevel {
+    static func colorLevel(
+        percent: Double,
+        timeFraction: Double?,
+        warningPercent: Double = 60.0,
+        criticalPercent: Double = 30.0
+    ) -> HealthLevel {
         if percent <= 0 { return .critical }
         guard let timeFraction else {
-            if percent < 20.0 { return .critical }
-            if percent < 50.0 { return .warning }
+            if percent < criticalPercent { return .critical }
+            if percent < warningPercent { return .warning }
             return .healthy
         }
         let t = min(max(timeFraction, 0.0), 1.0)
         if t <= 0 { return .healthy }
-        if percent < 20.0 * t { return .critical }
-        if percent < 50.0 * t { return .warning }
+        if percent < criticalPercent * t { return .critical }
+        if percent < warningPercent * t { return .warning }
         return .healthy
     }
 

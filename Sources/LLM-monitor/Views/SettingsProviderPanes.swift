@@ -16,28 +16,36 @@ extension SettingsView {
         }
     }
 
+    @ViewBuilder
+    func providerAuthAndRefreshSection<AuthContent: View>(
+        kind: ProviderKind,
+        footer: String? = nil,
+        interval: Binding<Int>,
+        @ViewBuilder authContent: () -> AuthContent
+    ) -> some View {
+        SettingsSection(title: "认证与刷新", footer: footer) {
+            authContent()
+            if !(AuthContent.self == EmptyView.self) {
+                Divider().padding(.vertical, 4)
+            }
+            intervalSliderField(label: "独立刷新频率", value: interval)
+            Divider().padding(.vertical, 4)
+            SettingsControlRow("立即刷新") {
+                providerRefreshButton(for: kind)
+            }
+        }
+    }
+
     var minimaxPane: some View {
         VStack(alignment: .leading, spacing: 20) {
             SettingsSection {
-                SettingsToggleRow(label: "启用 minimax Token Plan 监测", isOn: $minimaxEnabled)
+                SettingsToggleRow(label: "启用 minimax Token Plan 监测", isOn: $draft.minimaxEnabled)
             }
 
-            if minimaxEnabled {
-                SettingsSection(title: "认证与刷新") {
+            if draft.minimaxEnabled {
+                providerAuthAndRefreshSection(kind: .minimaxTokenPlan, interval: $draft.minimaxInterval) {
                     SettingsControlRow("API Key") {
-                        apiKeyField(text: $minimaxApiKey, isVisible: $showMinimaxKey)
-                    }
-
-                    Divider()
-                        .padding(.vertical, 4)
-
-                    intervalSliderField(label: "独立刷新频率", value: $minimaxInterval)
-
-                    Divider()
-                        .padding(.vertical, 4)
-
-                    SettingsControlRow("立即刷新") {
-                        providerRefreshButton(for: .minimaxTokenPlan)
+                        apiKeyField(text: $draft.minimaxApiKey, isVisible: $showMinimaxKey)
                     }
                 }
 
@@ -49,17 +57,18 @@ extension SettingsView {
     var chatgptPane: some View {
         VStack(alignment: .leading, spacing: 20) {
             SettingsSection {
-                SettingsToggleRow(label: "启用 ChatGPT Plan 监测", isOn: $chatgptEnabled)
+                SettingsToggleRow(label: "启用 ChatGPT Plan 监测", isOn: $draft.chatgptEnabled)
             }
 
-            if chatgptEnabled {
-                SettingsSection(
-                    title: "认证与刷新",
-                    footer: "`authPath` 支持填写 `auth.json` 文件，或它所在目录；也可以直接点“选择…”。"
+            if draft.chatgptEnabled {
+                providerAuthAndRefreshSection(
+                    kind: .codexChatGpt,
+                    footer: "`authPath` 支持填写 `auth.json` 文件，或它所在目录；也可以直接点“选择…”。",
+                    interval: $draft.chatgptInterval
                 ) {
                     SettingsControlRow("auth.json 路径") {
                         HStack(spacing: 8) {
-                            TextField("", text: $chatgptAuthPath, prompt: Text("~/.codex/auth.json 或 ~/.codex/"))
+                            TextField("", text: $draft.chatgptAuthPath, prompt: Text("~/.codex/auth.json 或 ~/.codex/"))
                                 .textFieldStyle(.roundedBorder)
                                 .frame(maxWidth: .infinity)
                             Button("选择…") {
@@ -67,18 +76,6 @@ extension SettingsView {
                             }
                         }
                         .frame(width: SettingsLayout.standardControlWidth)
-                    }
-
-                    Divider()
-                        .padding(.vertical, 4)
-
-                    intervalSliderField(label: "独立刷新频率", value: $chatgptInterval)
-
-                    Divider()
-                        .padding(.vertical, 4)
-
-                    SettingsControlRow("立即刷新") {
-                        providerRefreshButton(for: .codexChatGpt)
                     }
                 }
 
@@ -88,16 +85,16 @@ extension SettingsView {
                     title: "API 赠金",
                     footer: "开启后监测每月官方赠送的 API 额度与消耗；账单重置时间与额度上限支持按需自定义。首月统计可能存在偏差，后续按完整账期计算。"
                 ) {
-                    SettingsToggleRow(label: "启用 API 赠金监测", isOn: $chatgptAdminCreditsEnabled)
+                    SettingsToggleRow(label: "启用 API 赠金监测", isOn: $draft.chatgptAdminCreditsEnabled)
 
-                    if chatgptAdminCreditsEnabled {
+                    if draft.chatgptAdminCreditsEnabled {
                         SettingsControlRow("Admin API Key") {
-                            secretField(text: $chatgptAdminApiKey, isVisible: $showChatgptAdminKey, prompt: "sk-admin-...")
+                            secretField(text: $draft.chatgptAdminApiKey, isVisible: $showChatgptAdminKey, prompt: "sk-admin-...")
                         }
 
                         SettingsControlRow("赠金额度 ($)") {
                             VStack(alignment: .trailing, spacing: 4) {
-                                TextField("", text: $chatgptMonthlyQuotaLimit, prompt: Text("40"))
+                                TextField("", text: $draft.chatgptMonthlyQuotaLimit, prompt: Text("40"))
                                     .textFieldStyle(.roundedBorder)
                                     .frame(width: SettingsLayout.standardControlWidth)
                                 if let error = chatgptMonthlyQuotaLimitError {
@@ -109,7 +106,7 @@ extension SettingsView {
                         }
 
                         SettingsControlRow("账单日") {
-                            Picker("", selection: $chatgptBillingDay) {
+                            Picker("", selection: $draft.chatgptBillingDay) {
                                 ForEach(1...31, id: \.self) { day in
                                     Text("每月 \(day) 日").tag(day)
                                 }
@@ -118,7 +115,7 @@ extension SettingsView {
                         }
 
                         SettingsControlRow("重置时间") {
-                            DatePicker("", selection: $chatgptBillingTime, displayedComponents: .hourAndMinute)
+                            DatePicker("", selection: $draft.chatgptBillingTime, displayedComponents: .hourAndMinute)
                                 .labelsHidden()
                                 .frame(width: SettingsLayout.standardControlWidth, alignment: .trailing)
                         }
@@ -131,25 +128,16 @@ extension SettingsView {
     var antigravityPane: some View {
         VStack(alignment: .leading, spacing: 20) {
             SettingsSection {
-                SettingsToggleRow(label: "启用 Antigravity 监测", isOn: $antigravityEnabled)
+                SettingsToggleRow(label: "启用 Antigravity 监测", isOn: $draft.antigravityEnabled)
             }
 
-            if antigravityEnabled {
-                SettingsSection(
-                    title: "刷新频率",
-                    footer: "Antigravity 走自动发现：扫描 `language_server`（IDE）与 `agy` / `antigravity-cli`（CLI）进程，复用它们的本地登录态，无需任何配置。"
+            if draft.antigravityEnabled {
+                providerAuthAndRefreshSection(
+                    kind: .antigravity,
+                    footer: "Antigravity 走自动发现：扫描 `language_server`（IDE）与 `agy` / `antigravity-cli`（CLI）进程，复用它们的本地登录态，无需任何配置。",
+                    interval: $draft.antigravityInterval
                 ) {
-                    intervalSliderField(label: "独立刷新频率", value: $antigravityInterval)
-
-                    Divider()
-                        .padding(.vertical, 4)
-
-                    // 立即刷新（额度重取）与下方「本地用量缓存」的强制全量重建是
-                    // 两个动作：前者走 refreshOne 只重取额度并重锚排期，后者强制
-                    // 重扫本地 session 缓存。并列共存，互不替换。
-                    SettingsControlRow("立即刷新") {
-                        providerRefreshButton(for: .antigravity)
-                    }
+                    EmptyView()
                 }
 
                 notifySection(providerID: providerID(for: .antigravity) ?? "")
@@ -197,28 +185,17 @@ extension SettingsView {
     var glmPane: some View {
         VStack(alignment: .leading, spacing: 20) {
             SettingsSection {
-                SettingsToggleRow(label: "启用 GLM Coding Plan 监测", isOn: $glmEnabled)
+                SettingsToggleRow(label: "启用 GLM Coding Plan 监测", isOn: $draft.glmEnabled)
             }
 
-            if glmEnabled {
-                SettingsSection(
-                    title: "认证与刷新",
-                    footer: "填写智谱 GLM Coding Plan 的 API Key（格式 `id.secret`，在 bigmodel.cn 套餐概览页新建）。该 Key 也是 Anthropic / OpenAI 协议接入用的同一个 Key。"
+            if draft.glmEnabled {
+                providerAuthAndRefreshSection(
+                    kind: .glmCodingPlan,
+                    footer: "填写智谱 GLM Coding Plan 的 API Key（格式 `id.secret`，在 bigmodel.cn 套餐概览页新建）。该 Key 也是 Anthropic / OpenAI 协议接入用的同一个 Key。",
+                    interval: $draft.glmInterval
                 ) {
                     SettingsControlRow("API Key") {
                         glmApiKeyField
-                    }
-
-                    Divider()
-                        .padding(.vertical, 4)
-
-                    intervalSliderField(label: "独立刷新频率", value: $glmInterval)
-
-                    Divider()
-                        .padding(.vertical, 4)
-
-                    SettingsControlRow("立即刷新") {
-                        providerRefreshButton(for: .glmCodingPlan)
                     }
                 }
 
@@ -239,7 +216,7 @@ extension SettingsView {
                     title: "活动套餐余额",
                     footer: "解析 ZCode 本地日志（~/.zcode/v2/logs）中活动套餐（如周末体验套餐）的余额轮询记录，在 GLM 卡片显示用量 / 剩余 / 过期时间。只读取本地文件，不发起网络请求；ZCode 未运行时展示最近一次快照。默认关闭。"
                 ) {
-                    SettingsToggleRow(label: "解析活动套餐余额日志", isOn: $glmBalanceLogParsing)
+                    SettingsToggleRow(label: "解析活动套餐余额日志", isOn: $draft.glmBalanceLogParsing)
                 }
             }
         }
@@ -248,28 +225,17 @@ extension SettingsView {
     var deepseekPane: some View {
         VStack(alignment: .leading, spacing: 20) {
             SettingsSection {
-                SettingsToggleRow(label: "启用 DeepSeek 监测", isOn: $deepseekEnabled)
+                SettingsToggleRow(label: "启用 DeepSeek 监测", isOn: $draft.deepseekEnabled)
             }
 
-            if deepseekEnabled {
-                SettingsSection(
-                    title: "认证与刷新",
-                    footer: "填写 DeepSeek 开放平台 (platform.deepseek.com) 生成的 API Key（格式 `sk-...`）。"
+            if draft.deepseekEnabled {
+                providerAuthAndRefreshSection(
+                    kind: .deepseek,
+                    footer: "填写 DeepSeek 开放平台 (platform.deepseek.com) 生成的 API Key（格式 `sk-...`）。",
+                    interval: $draft.deepseekInterval
                 ) {
                     SettingsControlRow("API Key") {
-                        apiKeyField(text: $deepseekApiKey, isVisible: $showDeepseekKey)
-                    }
-
-                    Divider()
-                        .padding(.vertical, 4)
-
-                    intervalSliderField(label: "独立刷新频率", value: $deepseekInterval)
-
-                    Divider()
-                        .padding(.vertical, 4)
-
-                    SettingsControlRow("立即刷新") {
-                        providerRefreshButton(for: .deepseek)
+                        apiKeyField(text: $draft.deepseekApiKey, isVisible: $showDeepseekKey)
                     }
                 }
 
@@ -317,13 +283,13 @@ extension SettingsView {
     ) -> Binding<QuotaNotifyChannel> {
         Binding(
             get: {
-                notifyChannels[providerID]?[kind]
+                draft.notifyChannels[providerID]?[kind]
                     ?? QuotaNotifyChannels().channel(for: kind)
             },
             set: { newValue in
-                var entry = notifyChannels[providerID] ?? [:]
+                var entry = draft.notifyChannels[providerID] ?? [:]
                 entry[kind] = newValue
-                notifyChannels[providerID] = entry
+                draft.notifyChannels[providerID] = entry
             }
         )
     }
@@ -332,9 +298,9 @@ extension SettingsView {
         HStack(spacing: 8) {
             Group {
                 if showGlmKey {
-                    TextField("", text: $glmApiKey, prompt: Text("xxxxxxxx.xxxxxxxxxxxxxxxx"))
+                    TextField("", text: $draft.glmApiKey, prompt: Text("xxxxxxxx.xxxxxxxxxxxxxxxx"))
                 } else {
-                    SecureField("", text: $glmApiKey, prompt: Text("xxxxxxxx.xxxxxxxxxxxxxxxx"))
+                    SecureField("", text: $draft.glmApiKey, prompt: Text("xxxxxxxx.xxxxxxxxxxxxxxxx"))
                 }
             }
             .textFieldStyle(.roundedBorder)

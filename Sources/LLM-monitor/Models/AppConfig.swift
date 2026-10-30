@@ -112,6 +112,103 @@ struct StatusBarHealthColors: Codable, Equatable, Sendable {
     }
 }
 
+// MARK: - Alert Threshold Config
+
+/// 集中告警配置中心：控制 API 配额与账户余额的红黄健康度阈值。
+/// 逐字段容错解码：手改坏单个字段只回退该字段默认值。
+struct AlertThresholdConfig: Codable, Equatable, Sendable {
+    /// API 额度（用量 × 时间系数）黄色警告阈值百分比（默认 60%）
+    var apiQuotaWarningPercent: Double
+    /// API 额度（用量 × 时间系数）红色严重阈值百分比（默认 30%）
+    var apiQuotaCriticalPercent: Double
+    /// DeepSeek 余额黄色警告阈值（默认 10）
+    var deepseekBalanceWarning: Double
+    /// DeepSeek 余额红色严重阈值（默认 3）
+    var deepseekBalanceCritical: Double
+
+    static let `default` = AlertThresholdConfig(
+        apiQuotaWarningPercent: 60.0,
+        apiQuotaCriticalPercent: 30.0,
+        deepseekBalanceWarning: 10.0,
+        deepseekBalanceCritical: 3.0
+    )
+
+    init(
+        apiQuotaWarningPercent: Double = 60.0,
+        apiQuotaCriticalPercent: Double = 30.0,
+        deepseekBalanceWarning: Double = 10.0,
+        deepseekBalanceCritical: Double = 3.0
+    ) {
+        let warning = min(max(apiQuotaWarningPercent, 0.0), 100.0)
+        let critical = min(max(apiQuotaCriticalPercent, 0.0), warning)
+        self.apiQuotaWarningPercent = warning
+        self.apiQuotaCriticalPercent = critical
+
+        let dsWarning = max(deepseekBalanceWarning, 0.0)
+        let dsCritical = min(max(deepseekBalanceCritical, 0.0), dsWarning)
+        self.deepseekBalanceWarning = dsWarning
+        self.deepseekBalanceCritical = dsCritical
+    }
+}
+
+extension AlertThresholdConfig {
+    private enum CodingKeys: String, CodingKey {
+        case apiQuotaWarningPercent
+        case apiQuotaCriticalPercent
+        case deepseekBalanceWarning
+        case deepseekBalanceCritical
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let def = AlertThresholdConfig.default
+        let rawWarning = (try? c.decode(Double.self, forKey: .apiQuotaWarningPercent)) ?? def.apiQuotaWarningPercent
+        let rawCritical = (try? c.decode(Double.self, forKey: .apiQuotaCriticalPercent)) ?? def.apiQuotaCriticalPercent
+        let rawDsWarning = (try? c.decode(Double.self, forKey: .deepseekBalanceWarning)) ?? def.deepseekBalanceWarning
+        let rawDsCritical = (try? c.decode(Double.self, forKey: .deepseekBalanceCritical)) ?? def.deepseekBalanceCritical
+
+        let validWarning = (rawWarning.isFinite && rawWarning >= 0 && rawWarning <= 100) ? rawWarning : def.apiQuotaWarningPercent
+        let validCritical = (rawCritical.isFinite && rawCritical >= 0 && rawCritical <= 100) ? rawCritical : def.apiQuotaCriticalPercent
+        let validDsWarning = (rawDsWarning.isFinite && rawDsWarning >= 0) ? rawDsWarning : def.deepseekBalanceWarning
+        let validDsCritical = (rawDsCritical.isFinite && rawDsCritical >= 0) ? rawDsCritical : def.deepseekBalanceCritical
+
+        apiQuotaWarningPercent = validWarning
+        apiQuotaCriticalPercent = min(validCritical, validWarning)
+        deepseekBalanceWarning = validDsWarning
+        deepseekBalanceCritical = min(validDsCritical, validDsWarning)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(apiQuotaWarningPercent, forKey: .apiQuotaWarningPercent)
+        try c.encode(apiQuotaCriticalPercent, forKey: .apiQuotaCriticalPercent)
+        try c.encode(deepseekBalanceWarning, forKey: .deepseekBalanceWarning)
+        try c.encode(deepseekBalanceCritical, forKey: .deepseekBalanceCritical)
+    }
+
+    /// 计算百分比配额的健康度（时间感知分母 = 100% * timeFraction）
+    func colorLevel(percent: Double, timeFraction: Double?) -> HealthLevel {
+        ModelQuota.colorLevel(
+            percent: percent,
+            timeFraction: timeFraction,
+            warningPercent: apiQuotaWarningPercent,
+            criticalPercent: apiQuotaCriticalPercent
+        )
+    }
+
+    /// 计算 DeepSeek 纯余额健康度
+    func deepseekHealthLevel(balance: Double?) -> HealthLevel {
+        guard let balance else { return .critical }
+        if balance <= 0 || balance < deepseekBalanceCritical {
+            return .critical
+        } else if balance < deepseekBalanceWarning {
+            return .warning
+        } else {
+            return .healthy
+        }
+    }
+}
+
 // MARK: - Bark Notification Config
 
 /// 应用配置 — 从 ~/Library/Application Support/LLM-monitor/config.json 读
@@ -387,6 +484,13 @@ struct AppConfig: Codable, Equatable {
     /// 现有用户零影响；坏值按缺失处理。
     var sync: SyncConfig?
 
+    /// 集中告警阈值配置（nil = 默认阈值：API 60%/30%，DeepSeek 10/3）
+    var alerts: AlertThresholdConfig?
+
+    var effectiveAlertThresholds: AlertThresholdConfig {
+        alerts ?? .default
+    }
+
     var effectiveStatusBarIconStyle: StatusBarIconStyle {
         statusBarIconStyle ?? .chartBar
     }
@@ -466,7 +570,8 @@ struct AppConfig: Codable, Equatable {
         edgeDock: EdgeDockConfig? = nil,
         holidaySource: String? = nil,
         appearance: AppAppearance? = nil,
-        sync: SyncConfig? = nil
+        sync: SyncConfig? = nil,
+        alerts: AlertThresholdConfig? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.refreshIntervalSeconds = refreshIntervalSeconds
@@ -483,6 +588,7 @@ struct AppConfig: Codable, Equatable {
         self.holidaySource = holidaySource
         self.appearance = appearance
         self.sync = sync
+        self.alerts = alerts
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -497,6 +603,7 @@ struct AppConfig: Codable, Equatable {
         case holidaySource
         case appearance
         case sync
+        case alerts
     }
 
     init(from decoder: Decoder) throws {
@@ -605,6 +712,12 @@ struct AppConfig: Codable, Equatable {
         } catch {
             logWarn("[config] sync 字段解析失败，已按未配置处理：\(error.localizedDescription)")
             self.sync = nil
+        }
+        do {
+            self.alerts = try container.decodeIfPresent(AlertThresholdConfig.self, forKey: .alerts)
+        } catch {
+            logWarn("[config] alerts 字段解析失败，已按缺省阈值处理：\(error.localizedDescription)")
+            self.alerts = nil
         }
     }
 

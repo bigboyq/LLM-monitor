@@ -99,6 +99,7 @@ enum EdgeDockProjection {
     static func entries(
         from statuses: [ProviderStatus],
         preferredIDs: [String]? = nil,
+        alertThresholds: AlertThresholdConfig = .default,
         at now: Date = Date()
     ) -> [EdgeDockEntry] {
         DisplayOrder.ordered(
@@ -116,9 +117,9 @@ enum EdgeDockProjection {
                 intervalFraction: status.kind == .deepseek ? nil : intervalFraction(status, at: now),
                 rawIntervalFraction: status.kind == .deepseek ? nil : rawIntervalFraction(status),
                 weeklyFraction: weeklyFraction(status, at: now),
-                health: status.aggregateHealthLevel(at: now),
-                intervalHealth: status.kind == .deepseek ? nil : intervalHealth(status, at: now),
-                weeklyHealth: weeklyHealth(status, at: now)
+                health: status.aggregateHealthLevel(alertThresholds: alertThresholds, at: now),
+                intervalHealth: status.kind == .deepseek ? nil : intervalHealth(status, alertThresholds: alertThresholds, at: now),
+                weeklyHealth: weeklyHealth(status, alertThresholds: alertThresholds, at: now)
             )
         }
     }
@@ -234,9 +235,18 @@ enum EdgeDockProjection {
     /// **长窗口**规则：5h 窗口本来就每 5 小时重置一次，"周还剩多少"对它没有意义）；
     /// 瓶颈是周窗口（周 × N 比 5h 更紧）时为周剩余时间比例 → 长窗口动态黄线，
     /// 与 `aggregateHealthLevel` 同口径。
-    static func intervalHealth(_ status: ProviderStatus, at now: Date) -> HealthLevel? {
+    static func intervalHealth(
+        _ status: ProviderStatus,
+        alertThresholds: AlertThresholdConfig = .default,
+        at now: Date
+    ) -> HealthLevel? {
         worstEffectiveReading(status, at: now).map {
-            ModelQuota.colorLevel(percent: $0.percent, timeFraction: $0.bindingTimeFraction)
+            ModelQuota.colorLevel(
+                percent: $0.percent,
+                timeFraction: $0.bindingTimeFraction,
+                warningPercent: alertThresholds.apiQuotaWarningPercent,
+                criticalPercent: alertThresholds.apiQuotaCriticalPercent
+            )
         }
     }
 
@@ -245,9 +255,14 @@ enum EdgeDockProjection {
     ///
     /// 用**原始**周剩余百分比，不乘 `weeklyEquivalentMultiplier` —— 与
     /// `weeklyFraction` 同一个理由：内环表达的是"周额度本身还剩多少"。
-    static func weeklyHealth(_ status: ProviderStatus, at now: Date) -> HealthLevel? {
+    static func weeklyHealth(
+        _ status: ProviderStatus,
+        alertThresholds: AlertThresholdConfig = .default,
+        at now: Date
+    ) -> HealthLevel? {
         worstHealth(
             aggregateModels(status, hasWindow: { $0.hasWeeklyWindow }),
+            alertThresholds: alertThresholds,
             percent: { $0.weeklyRemainingPercent },
             timeFraction: { $0.weeklyTimeRemainingFraction(at: now) }
         )
@@ -257,12 +272,20 @@ enum EdgeDockProjection {
     /// 所以 `min` 正好是最差档；空集合返回 nil（该窗口不存在，而不是"很健康"）。
     private static func worstHealth(
         _ models: [ModelQuota]?,
+        alertThresholds: AlertThresholdConfig = .default,
         percent: (ModelQuota) -> Double,
         timeFraction: (ModelQuota) -> Double?
     ) -> HealthLevel? {
         guard let models, !models.isEmpty else { return nil }
         return models
-            .map { ModelQuota.colorLevel(percent: percent($0), timeFraction: timeFraction($0)) }
+            .map {
+                ModelQuota.colorLevel(
+                    percent: percent($0),
+                    timeFraction: timeFraction($0),
+                    warningPercent: alertThresholds.apiQuotaWarningPercent,
+                    criticalPercent: alertThresholds.apiQuotaCriticalPercent
+                )
+            }
             .min()
     }
 

@@ -30,7 +30,7 @@ struct FleetEffectiveQuota: Equatable, Sendable {
 
     /// 来源标注文案（§10.3）：本机额度不标；他机新鲜 → `来自 X`；陈旧 → `来自 X · 已过期`。
     var sourceTagText: String? {
-        guard let quota else { return nil }
+        guard quota != nil else { return nil }
         if isLocal { return nil }
         let base = "来自 \(sourceNodeName ?? "其他节点")"
         return isStale ? base + " · 已过期" : base
@@ -878,17 +878,6 @@ private extension FleetTotals {
             SaturatingArithmetic.add(input, cacheRead),
             SaturatingArithmetic.add(output, reasoning)
         ])
-    }
-}
-
-private extension TokenUsageBuckets {
-    static func + (lhs: TokenUsageBuckets, rhs: TokenUsageBuckets) -> TokenUsageBuckets {
-        TokenUsageBuckets(
-            input: SaturatingArithmetic.add(lhs.input, rhs.input),
-            cacheRead: SaturatingArithmetic.add(lhs.cacheRead, rhs.cacheRead),
-            output: SaturatingArithmetic.add(lhs.output, rhs.output),
-            reasoning: SaturatingArithmetic.add(lhs.reasoning, rhs.reasoning)
-        )
     }
 }
 

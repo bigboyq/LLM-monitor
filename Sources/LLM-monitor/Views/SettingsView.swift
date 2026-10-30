@@ -25,124 +25,43 @@ struct SettingsView: View {
 
     @State var currentTab: SettingsTab = .general
 
-    @State var globalInterval: Int = 300
+    @State var draft: SettingsFormDraft = SettingsFormDraft()
+    @State var baselineDraft: SettingsFormDraft = SettingsFormDraft()
+
     @State var launchAtLoginDraft = SettingsLoginItemDraft(baseline: false, draft: false)
-    @State var statusBarIconStyle: StatusBarIconStyle = .chartBar
-    @State var statusBarHealthDotEnabled: Bool = true
-    @State var statusBarHealthColors: StatusBarHealthColors = .default
-    @State var statusBarPinnedProvider: String = ""
-    @State var appearanceDraft: AppAppearance = .auto
-    @State var systemNotificationSoundEnabledDraft: Bool = true
     @State var notificationAuthorization: QuotaNotificationAuthorization = .unavailable
     @State var systemNotificationTestMessage: String?
     @State var dockPositionMessage: String?
-
-    // 贴边方向**没有** @State：设置页不提供它（见下方保存处的注释），而拖拽会在
-    // 设置窗口开着的时候改它——从 @State 写回就会把用户刚拖出来的位置抹掉。
-    @State var edgeDockMode: EdgeDockMode = EdgeDockConfig.default.mode
-    @State var edgeDockHideInFullscreen: Bool = EdgeDockConfig.default.hideInFullscreen
-    @State var edgeDockCompactSize: EdgeDockCompactSize = EdgeDockConfig.default.compactSize
-    @State var edgeDockIndependentRingColors: Bool = EdgeDockConfig.default.independentRingColors
     @State var showsEdgeDockHelp: Bool = false
 
-    @State var minimaxEnabled: Bool = false
-    @State var minimaxInterval: Int = 0
-    @State var minimaxApiKey: String = ""
     @State var showMinimaxKey: Bool = false
-
-    @State var chatgptEnabled: Bool = false
-    @State var chatgptInterval: Int = 0
-    @State var chatgptAuthPath: String = ""
-    @State var chatgptAdminCreditsEnabled: Bool = false
-    @State var chatgptAdminApiKey: String = ""
     @State var showChatgptAdminKey: Bool = false
-    @State var chatgptBillingDay: Int = 11
-    @State var chatgptBillingTime: Date = defaultBillingTime()
-    @State var chatgptMonthlyQuotaLimit: String = "40"
-
-    @State var antigravityEnabled: Bool = false
-    @State var antigravityInterval: Int = 0
     @State var isAntigravityHardFullRunning: Bool = false
     @State var antigravityHardFullMessage: String?
-    @State var glmEnabled: Bool = false
-    @State var glmInterval: Int = 0
-    @State var glmApiKey: String = ""
     @State var showGlmKey: Bool = false
-    @State var glmBalanceLogParsing: Bool = false
-
-    @State var deepseekEnabled: Bool = false
-    @State var deepseekInterval: Int = 0
-    @State var deepseekApiKey: String = ""
     @State var showDeepseekKey: Bool = false
 
-    /// 节假日数据源草稿（常规 pane）。nil 配置展示为默认上游 URL；
-    /// 保存时与默认一致写 nil、显式空串写 ""（仅内置快照），见 saveAndApply。
-    @State var holidaySourceDraft: String = ""
-
     @State var selectedClientID: String = ClientID.antigravity
-    @State var providerCardOrder: [String] = []
 
-    @State var barkEnabled: Bool = false
-    @State var barkServerURL: String = BarkConfig.defaultServerURL
-    @State var barkDeviceKey: String = ""
-    @State var barkSound: String = ""
-    @State var barkGroup: String = ""
-    @State var barkTTL: String = ""
-    @State var barkSkipWhenAwakeAndUnlocked: Bool = false
     @State var showBarkDeviceKey: Bool = false
     @State var isSendingBarkTest: Bool = false
     @State var barkTestMessage: String?
 
-    /// 有 5 小时 / 周额度窗口的 provider（ChatGPT、GLM）的四类通知渠道草稿。
-    /// key = providerID，value = kind → 渠道；缺失的 kind 使用默认渠道。
-    @State var notifyChannels: [String: [QuotaNotificationKind: QuotaNotifyChannel]] = [:]
     @State var pendingNotificationProviderID: String?
-
     @State var isSaving: Bool = false
-    /// 表单当前对应的那一版配置快照，只用于「这次变化与表单无关吗」的判据。
     @State var loadedConfigSnapshot: AppConfig?
-    @State var baselineDraftFingerprint: [String] = []
     @State var pendingExternalConfig: AppConfig?
     @State var showsExternalConfigConflict = false
     @State var showsDiscardConfirmation = false
     @State var saveErrorMessage: String?
 
-    var draftFingerprint: [String] {
-        var values = [
-            String(globalInterval),
-            statusBarIconStyle.rawValue, statusBarHealthDotEnabled.description,
-            statusBarHealthColors.healthyHex, statusBarHealthColors.warningHex,
-            statusBarHealthColors.criticalHex, statusBarPinnedProvider, appearanceDraft.rawValue,
-            systemNotificationSoundEnabledDraft.description,
-            edgeDockMode.rawValue, edgeDockHideInFullscreen.description,
-            edgeDockCompactSize.rawValue, edgeDockIndependentRingColors.description,
-            holidaySourceDraft, providerCardOrder.joined(separator: "\u{1f}"),
-            barkEnabled.description, barkServerURL, barkDeviceKey, barkSound,
-            barkGroup, barkTTL, barkSkipWhenAwakeAndUnlocked.description,
-            String(minimaxEnabled), String(minimaxInterval), minimaxApiKey,
-            String(chatgptEnabled), String(chatgptInterval), chatgptAuthPath,
-            String(chatgptAdminCreditsEnabled), chatgptAdminApiKey, String(chatgptBillingDay),
-            Formatters.formatTimeOfDay(chatgptBillingTime), chatgptMonthlyQuotaLimit,
-            String(antigravityEnabled), String(antigravityInterval),
-            String(glmEnabled), String(glmInterval), glmApiKey, String(glmBalanceLogParsing),
-            String(deepseekEnabled), String(deepseekInterval), deepseekApiKey
-        ]
-        for providerID in notifyChannels.keys.sorted() {
-            values.append(providerID)
-            for kind in QuotaNotificationKind.allCases {
-                values.append(notifyChannels[providerID]?[kind]?.rawValue ?? "<default>")
-            }
-        }
-        return values
-    }
-
     var isDirty: Bool {
-        draftFingerprint != baselineDraftFingerprint || launchAtLoginDraft.hasLocalEdit
+        draft != baselineDraft || launchAtLoginDraft.hasLocalEdit
     }
 
     var chatgptMonthlyQuotaLimitError: String? {
-        guard chatgptEnabled, chatgptAdminCreditsEnabled,
-              Self.validMonthlyQuotaLimit(chatgptMonthlyQuotaLimit) == nil else { return nil }
+        guard draft.chatgptEnabled, draft.chatgptAdminCreditsEnabled,
+              Self.validMonthlyQuotaLimit(draft.chatgptMonthlyQuotaLimit) == nil else { return nil }
         return "请输入大于 0 的有限数字。"
     }
 
@@ -465,92 +384,10 @@ struct SettingsView: View {
 
     func loadCurrentConfig(from publishedConfig: AppConfig? = nil) {
         let config = publishedConfig ?? configStore.config
-        globalInterval = config.refreshIntervalSeconds
-        statusBarIconStyle = config.effectiveStatusBarIconStyle
-        statusBarHealthDotEnabled = config.effectiveStatusBarHealthDotEnabled
-        statusBarHealthColors = config.effectiveStatusBarHealthColors
-        statusBarPinnedProvider = config.statusBarPinnedProvider ?? ""
-        appearanceDraft = config.effectiveAppearance
-        systemNotificationSoundEnabledDraft = config.effectiveSystemNotificationSoundEnabled
-        let edgeDock = config.effectiveEdgeDockConfig
-        edgeDockMode = edgeDock.mode
-        edgeDockHideInFullscreen = edgeDock.hideInFullscreen
-        edgeDockCompactSize = edgeDock.compactSize
-        edgeDockIndependentRingColors = edgeDock.independentRingColors
-        barkEnabled = config.bark?.enabled ?? false
-        barkServerURL = config.bark?.serverURL ?? BarkConfig.defaultServerURL
-        barkDeviceKey = config.bark?.deviceKey ?? ""
-        barkSound = config.bark?.sound ?? ""
-        barkGroup = config.bark?.group ?? ""
-        barkTTL = config.bark.map { $0.ttl > 0 ? String($0.ttl) : "" } ?? ""
-        barkSkipWhenAwakeAndUnlocked = config.bark?.skipWhenAwakeAndUnlocked ?? false
-        barkTestMessage = nil
-        // 节假日数据源：缺省键在输入框里展示为默认上游 URL（保存时与默认一致
-        // 写回 nil，保持 config.json 干净；显式空串 = 仅内置快照）。
-        holidaySourceDraft = config.holidaySource ?? HolidayCalendar.defaultSourceURL
-
-        notifyChannels = [:]
-        for kind in ProviderKind.windowedKinds {
-            guard let id = providerID(for: kind), let pc = config.providers[id] else { continue }
-            notifyChannels[id] = [
-                .intervalRestored: pc.notifyIntervalRestored ?? .system,
-                .intervalExhausted: pc.notifyIntervalExhausted ?? .none,
-                .weeklyRestored: pc.notifyWeeklyRestored ?? .system,
-                .weeklyExhausted: pc.notifyWeeklyExhausted ?? .none,
-            ]
-        }
-        providerCardOrder = DisplayOrder.normalizedIDs(
-            descriptors,
-            preferredIDs: config.providerCardOrder,
-            id: { $0.kind.quotaProviderID },
-            by: providerDescriptorDisplayNameAscending
-        )
-
-        // OpenCode merge 状态不再进入设置表单：设置页没有独立 Toggle，
-        // `clientBindings[]` 是唯一事实源（schema v1 以下配置在解码时由
-        // `legacyClientBindings` 迁移）。saveAndApply 只修改本表单真正编辑的字段，
-        // merge 状态随 `configStore.config` 原样透传，手工编辑不会被保存回滚。
-        if let id = providerID(for: .minimaxTokenPlan), let minimax = config.providers[id] {
-            minimaxEnabled = minimax.enabled
-            minimaxApiKey = minimax.apiKey ?? ""
-            minimaxInterval = minimax.refreshIntervalSeconds ?? 0
-        }
-
-        if let id = providerID(for: .codexChatGpt), let chatgpt = config.providers[id] {
-            chatgptEnabled = chatgpt.enabled
-            chatgptAuthPath = chatgpt.authPath ?? ""
-            chatgptInterval = chatgpt.refreshIntervalSeconds ?? 0
-            chatgptAdminCreditsEnabled = chatgpt.adminApiCreditsEnabled ?? false
-            chatgptAdminApiKey = chatgpt.adminApiKey ?? ""
-            chatgptBillingDay = chatgpt.adminBillingDay ?? 11
-            chatgptBillingTime = Self.parseBillingTime(from: chatgpt.adminBillingTime)
-            if let limit = chatgpt.adminMonthlyQuotaLimit {
-                chatgptMonthlyQuotaLimit = limit.truncatingRemainder(dividingBy: 1) == 0 ? String(format: "%.0f", limit) : String(limit)
-            } else {
-                chatgptMonthlyQuotaLimit = "40"
-            }
-        }
-
-        if let id = providerID(for: .antigravity), let antigravity = config.providers[id] {
-            antigravityEnabled = antigravity.enabled
-            antigravityInterval = antigravity.refreshIntervalSeconds ?? 0
-        }
-
-        if let id = providerID(for: .glmCodingPlan), let glm = config.providers[id] {
-            glmEnabled = glm.enabled
-            glmApiKey = glm.apiKey ?? ""
-            glmInterval = glm.refreshIntervalSeconds ?? 0
-            glmBalanceLogParsing = glm.parseZcodeBalanceLog ?? false
-        }
-
-        if let id = providerID(for: .deepseek), let deepseek = config.providers[id] {
-            deepseekEnabled = deepseek.enabled
-            deepseekApiKey = deepseek.apiKey ?? ""
-            deepseekInterval = deepseek.refreshIntervalSeconds ?? 0
-        }
-        // 记下"表单当前对应的是哪一版配置"，供下面的重载判据用。
+        draft = SettingsFormDraft(from: config, descriptors: descriptors)
+        baselineDraft = draft
         loadedConfigSnapshot = config
-        baselineDraftFingerprint = draftFingerprint
+        barkTestMessage = nil
     }
 
     /// 抹平不由常规设置表单管理的配置字段：Sync（独立即时保存）与边缘窗位置三兄弟。
@@ -613,8 +450,8 @@ struct SettingsView: View {
     }
 
     func saveAndApply() async throws {
-        if chatgptEnabled, chatgptAdminCreditsEnabled,
-           Self.validMonthlyQuotaLimit(chatgptMonthlyQuotaLimit) == nil {
+        if draft.chatgptEnabled, draft.chatgptAdminCreditsEnabled,
+           Self.validMonthlyQuotaLimit(draft.chatgptMonthlyQuotaLimit) == nil {
             throw NSError(
                 domain: "SettingsValidation",
                 code: 1,
@@ -626,45 +463,27 @@ struct SettingsView: View {
         let requestedLaunchAtLogin = launchAtLoginDraft.requestedValue(actual: actualLaunchAtLogin)
 
         var config = configStore.config
-        config.refreshIntervalSeconds = globalInterval
-        config.statusBarIconStyle = statusBarIconStyle
-        config.statusBarHealthDotEnabled = statusBarHealthDotEnabled
-        config.statusBarHealthColors = statusBarHealthColors == .default
+        config.refreshIntervalSeconds = draft.globalInterval
+        config.statusBarIconStyle = draft.statusBarIconStyle
+        config.statusBarHealthDotEnabled = draft.statusBarHealthDotEnabled
+        config.statusBarHealthColors = draft.statusBarHealthColors == .default
             ? nil
-            : statusBarHealthColors
-        config.statusBarPinnedProvider = statusBarPinnedProvider.isEmpty
+            : draft.statusBarHealthColors
+        config.statusBarPinnedProvider = draft.statusBarPinnedProvider.isEmpty
             ? nil
-            : statusBarPinnedProvider
-        config.appearance = appearanceDraft == .auto ? nil : appearanceDraft
-        config.systemNotificationSoundEnabled = systemNotificationSoundEnabledDraft ? nil : false
-        // 边缘窗：只带形态与全屏隐藏这两个**设置页真的有控件**的字段；贴边方向、
-        // 沿边位置、所在屏由拖拽实时写盘，一律在保存这一刻现读
-        // `configStore.config.effectiveEdgeDockConfig`。
-        //
-        // 三者都必须是"现读"而不是"开窗时读进 @State 再写回"：dock 的拖拽随时可能
-        // 改它们，而设置窗口并没有被阻塞（dock 是独立的 nonactivating panel，用户
-        // 完全可以一边开着设置、一边把 dock 拖到另一条边）。`offset` / `screenUUID`
-        // 本来就是现读的；`edge` 曾经用 @State，于是"开设置 → 拖 dock → 点保存"
-        // 这一条会把刚拖出来的贴边方向悄悄退回——正是上面这句话要防的事。
-        // 设置页没有贴边方向的 Picker（拖动才是唯一的决定方式），所以 `edge`
-        // 根本没有 UI 消费者，@State 纯属多余。
-        // 用 `effectiveEdgeDockConfig` 而不是裸的 `config.edgeDock`：后者是盘上的
-        // 原值，手改成 `"offset": 42` 时不会被 `normalized` 拉回 [0, 1]，于是每次
-        // 在设置页点保存都会把这个越界值原样写回去，而 dock 那边显示的是钳到 0.5 的
-        // 结果——两者长期不一致。`loadCurrentConfig` 已经用的是这个入口，这里对齐。
-        //
-        // 下面这个**逐字段重建**必须把每一个有 UI 消费者的字段都显式写出来：
-        // `EdgeDockConfig` 的 init 给了默认值，漏写一个不会报错、不会警告，只会在
-        // 用户点保存的那一刻把这个字段重置成默认（`edge` 曾经就踩过这个前科）。
+            : draft.statusBarPinnedProvider
+        config.appearance = draft.appearance == .auto ? nil : draft.appearance
+        config.systemNotificationSoundEnabled = draft.systemNotificationSoundEnabled ? nil : false
+
         let existingEdgeDock = configStore.config.effectiveEdgeDockConfig
         let nextEdgeDock = EdgeDockConfig(
-            mode: edgeDockMode,
+            mode: draft.edgeDockMode,
             edge: existingEdgeDock.edge,
             offset: existingEdgeDock.normalized.offset,
             screenUUID: existingEdgeDock.screenUUID,
-            hideInFullscreen: edgeDockHideInFullscreen,
-            compactSize: edgeDockCompactSize,
-            independentRingColors: edgeDockIndependentRingColors
+            hideInFullscreen: draft.edgeDockHideInFullscreen,
+            compactSize: draft.edgeDockCompactSize,
+            independentRingColors: draft.edgeDockIndependentRingColors
         )
         let defaultEdgeDock = EdgeDockConfig.default
         config.edgeDock = (nextEdgeDock == defaultEdgeDock) ? nil : nextEdgeDock
@@ -673,7 +492,7 @@ struct SettingsView: View {
             .map { $0.kind.quotaProviderID }
         let effectiveProviderOrder = DisplayOrder.normalizedIDs(
             descriptors,
-            preferredIDs: providerCardOrder,
+            preferredIDs: draft.providerCardOrder,
             id: { $0.kind.quotaProviderID },
             by: providerDescriptorDisplayNameAscending
         )
@@ -681,27 +500,24 @@ struct SettingsView: View {
             ? nil
             : effectiveProviderOrder
 
-        // 节假日数据源：与默认上游一致写 nil（不落键，保持 config.json 干净）；
-        // 显式空串原样写 ""（语义 = 只用内置快照、不联网）；其余 URL / 本地路径
-        // 原样保存。
-        let trimmedHolidaySource = holidaySourceDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedHolidaySource = draft.holidaySource.trimmingCharacters(in: .whitespacesAndNewlines)
         config.holidaySource = trimmedHolidaySource == HolidayCalendar.defaultSourceURL
             ? nil
             : trimmedHolidaySource
 
-        let trimmedBarkServer = trimmedString(barkServerURL) ?? BarkConfig.defaultServerURL
-        let trimmedBarkKey = trimmedString(barkDeviceKey)
-        let trimmedBarkSound = trimmedString(barkSound)
-        if barkEnabled || trimmedBarkKey != nil {
+        let trimmedBarkServer = trimmedString(draft.barkServerURL) ?? BarkConfig.defaultServerURL
+        let trimmedBarkKey = trimmedString(draft.barkDeviceKey)
+        let trimmedBarkSound = trimmedString(draft.barkSound)
+        if draft.barkEnabled || trimmedBarkKey != nil {
             config.bark = BarkConfig(
-                enabled: barkEnabled,
+                enabled: draft.barkEnabled,
                 serverURL: trimmedBarkServer,
                 deviceKey: trimmedBarkKey ?? "",
                 sound: trimmedBarkSound,
-                skipWhenAwakeAndUnlocked: barkSkipWhenAwakeAndUnlocked ? true : nil,
+                skipWhenAwakeAndUnlocked: draft.barkSkipWhenAwakeAndUnlocked ? true : nil,
                 // 空 / 非数字 / <= 0 归一化为 nil：不落盘、推送不携带 ttl。
-                ttl: BarkConfig.parseTTL(barkTTL),
-                group: trimmedString(barkGroup)
+                ttl: BarkConfig.parseTTL(draft.barkTTL),
+                group: trimmedString(draft.barkGroup)
             )
         } else {
             config.bark = nil
@@ -712,7 +528,7 @@ struct SettingsView: View {
         for kind in ProviderKind.windowedKinds {
             guard let id = providerID(for: kind) else { continue }
             var pc = config.providers[id] ?? ProviderConfig(enabled: false)
-            let channels = notifyChannels[id] ?? [:]
+            let channels = draft.notifyChannels[id] ?? [:]
             for notifyKind in QuotaNotificationKind.allCases {
                 if let channel = channels[notifyKind] {
                     pc.setNotifyChannel(channel, for: notifyKind)
@@ -723,22 +539,22 @@ struct SettingsView: View {
 
         if let id = providerID(for: .minimaxTokenPlan) {
             var minimax = config.providers[id] ?? ProviderConfig(enabled: false)
-            minimax.enabled = minimaxEnabled
-            minimax.apiKey = trimmedString(minimaxApiKey)
-            minimax.refreshIntervalSeconds = providerRefreshInterval(from: minimaxInterval)
+            minimax.enabled = draft.minimaxEnabled
+            minimax.apiKey = trimmedString(draft.minimaxApiKey)
+            minimax.refreshIntervalSeconds = providerRefreshInterval(from: draft.minimaxInterval)
             config.providers[id] = minimax
         }
 
         if let id = providerID(for: .codexChatGpt) {
             var chatgpt = config.providers[id] ?? ProviderConfig(enabled: false)
-            chatgpt.enabled = chatgptEnabled
-            chatgpt.authPath = trimmedString(chatgptAuthPath)
-            chatgpt.refreshIntervalSeconds = providerRefreshInterval(from: chatgptInterval)
-            chatgpt.adminApiCreditsEnabled = chatgptAdminCreditsEnabled
-            chatgpt.adminApiKey = trimmedString(chatgptAdminApiKey)
-            chatgpt.adminBillingDay = chatgptBillingDay
-            chatgpt.adminBillingTime = Formatters.formatTimeOfDay(chatgptBillingTime)
-            if let limit = Self.validMonthlyQuotaLimit(chatgptMonthlyQuotaLimit) {
+            chatgpt.enabled = draft.chatgptEnabled
+            chatgpt.authPath = trimmedString(draft.chatgptAuthPath)
+            chatgpt.refreshIntervalSeconds = providerRefreshInterval(from: draft.chatgptInterval)
+            chatgpt.adminApiCreditsEnabled = draft.chatgptAdminCreditsEnabled
+            chatgpt.adminApiKey = trimmedString(draft.chatgptAdminApiKey)
+            chatgpt.adminBillingDay = draft.chatgptBillingDay
+            chatgpt.adminBillingTime = Formatters.formatTimeOfDay(draft.chatgptBillingTime)
+            if let limit = Self.validMonthlyQuotaLimit(draft.chatgptMonthlyQuotaLimit) {
                 chatgpt.adminMonthlyQuotaLimit = limit
             }
             config.providers[id] = chatgpt
@@ -746,31 +562,30 @@ struct SettingsView: View {
 
         if let id = providerID(for: .antigravity) {
             var antigravity = config.providers[id] ?? ProviderConfig(enabled: false)
-            antigravity.enabled = antigravityEnabled
-            antigravity.refreshIntervalSeconds = providerRefreshInterval(from: antigravityInterval)
+            antigravity.enabled = draft.antigravityEnabled
+            antigravity.refreshIntervalSeconds = providerRefreshInterval(from: draft.antigravityInterval)
             config.providers[id] = antigravity
         }
 
         if let id = providerID(for: .glmCodingPlan) {
             var glm = config.providers[id] ?? ProviderConfig(enabled: false)
-            glm.enabled = glmEnabled
-            glm.apiKey = trimmedString(glmApiKey)
-            glm.refreshIntervalSeconds = providerRefreshInterval(from: glmInterval)
-            // 高峰窗口固定为官方口径，无 config 字段可写；旧版本残留的
-            // peakStartHour / peakEndHour / peakWeekdaysOnly 键由 JSONDecoder
-            // 静默忽略，保存时也不会再写回。
-            // 关闭时写 nil（配置文件不落该字段），与「字段不存在 = 不解析」一致。
-            glm.parseZcodeBalanceLog = glmBalanceLogParsing ? true : nil
+            glm.enabled = draft.glmEnabled
+            glm.apiKey = trimmedString(draft.glmApiKey)
+            glm.refreshIntervalSeconds = providerRefreshInterval(from: draft.glmInterval)
+            glm.parseZcodeBalanceLog = draft.glmBalanceLogParsing ? true : nil
             config.providers[id] = glm
         }
 
         if let id = providerID(for: .deepseek) {
             var deepseek = config.providers[id] ?? ProviderConfig(enabled: false)
-            deepseek.enabled = deepseekEnabled
-            deepseek.apiKey = trimmedString(deepseekApiKey)
-            deepseek.refreshIntervalSeconds = providerRefreshInterval(from: deepseekInterval)
+            deepseek.enabled = draft.deepseekEnabled
+            deepseek.apiKey = trimmedString(draft.deepseekApiKey)
+            deepseek.refreshIntervalSeconds = providerRefreshInterval(from: draft.deepseekInterval)
             config.providers[id] = deepseek
         }
+
+        config.clientBindings = draft.clientBindings
+        config.alerts = (draft.alertThresholds == .default) ? nil : draft.alertThresholds
 
         do {
             try await SettingsSaveTransaction.execute(
@@ -789,6 +604,7 @@ struct SettingsView: View {
                 }
             )
             launchAtLoginDraft.syncToActual(actual: loginItemService.isEnabled)
+            baselineDraft = draft
         } catch {
             // LoginItemService may have changed before config save failed and the transaction
             // rolled it back. Reflect the resulting actual status even if no publisher event

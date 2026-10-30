@@ -41,14 +41,14 @@ actor CodexUsageDetailsCache {
     }
 }
 
-struct CodexTokenUsageEvent: Sendable, Equatable {
+struct CodexTokenUsageEvent: Sendable, Equatable, Codable {
     let inputTokens: Int
     let cachedInputTokens: Int
     let outputTokens: Int
     let reasoningOutputTokens: Int
 }
 
-enum CodexSessionEvent: Sendable, Equatable {
+enum CodexSessionEvent: Sendable, Equatable, Codable {
     case taskStarted(timestamp: Date, turnID: String)
     case taskCompleted(timestamp: Date, turnID: String)
     case modelContext(timestamp: Date, modelName: String)
@@ -66,6 +66,61 @@ enum CodexSessionEvent: Sendable, Equatable {
              .tokenCount(let timestamp, _),
              .tokenUsageRecord(let timestamp, _):
             return timestamp
+        }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case type, timestamp, turnID, modelName, usage
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let type = try container.decode(String.self, forKey: .type)
+        let timestamp = try container.decode(Date.self, forKey: .timestamp)
+        switch type {
+        case "taskStarted":
+            let turnID = try container.decode(String.self, forKey: .turnID)
+            self = .taskStarted(timestamp: timestamp, turnID: turnID)
+        case "taskCompleted":
+            let turnID = try container.decode(String.self, forKey: .turnID)
+            self = .taskCompleted(timestamp: timestamp, turnID: turnID)
+        case "modelContext":
+            let modelName = try container.decode(String.self, forKey: .modelName)
+            self = .modelContext(timestamp: timestamp, modelName: modelName)
+        case "tokenCount":
+            let usage = try container.decode(CodexTokenUsageEvent.self, forKey: .usage)
+            self = .tokenCount(timestamp: timestamp, usage: usage)
+        case "tokenUsageRecord":
+            let turnID = try container.decode(String.self, forKey: .turnID)
+            self = .tokenUsageRecord(timestamp: timestamp, turnID: turnID)
+        default:
+            throw DecodingError.dataCorruptedError(forKey: .type, in: container, debugDescription: "Unknown event type: \(type)")
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .taskStarted(let timestamp, let turnID):
+            try container.encode("taskStarted", forKey: .type)
+            try container.encode(timestamp, forKey: .timestamp)
+            try container.encode(turnID, forKey: .turnID)
+        case .taskCompleted(let timestamp, let turnID):
+            try container.encode("taskCompleted", forKey: .type)
+            try container.encode(timestamp, forKey: .timestamp)
+            try container.encode(turnID, forKey: .turnID)
+        case .modelContext(let timestamp, let modelName):
+            try container.encode("modelContext", forKey: .type)
+            try container.encode(timestamp, forKey: .timestamp)
+            try container.encode(modelName, forKey: .modelName)
+        case .tokenCount(let timestamp, let usage):
+            try container.encode("tokenCount", forKey: .type)
+            try container.encode(timestamp, forKey: .timestamp)
+            try container.encode(usage, forKey: .usage)
+        case .tokenUsageRecord(let timestamp, let turnID):
+            try container.encode("tokenUsageRecord", forKey: .type)
+            try container.encode(timestamp, forKey: .timestamp)
+            try container.encode(turnID, forKey: .turnID)
         }
     }
 }
@@ -138,14 +193,20 @@ struct CodexLocalScanLimits: Sendable {
     }
 }
 
+/// Codex 本地扫描跨进程持久化索引。
+struct CodexScannerIndex: Codable, Sendable {
+    var version: Int = 1
+    var entries: [String: CodexSessionEventCache.Entry] = [:]
+}
+
 /// 按文件路径缓存已解析的 session 事件与续读偏移。活跃 JSONL 是 append-only：
-/// 文件增长时只解析新增尾部（增量状态仅存活于进程生命周期，App 重启即全量冷扫，
-/// 截断/替换/读错误等异常按文件整体重扫自愈），昨日及更早的文件直接复用，
-/// 避免每次刷新都做七天全量 JSON 解析。
+/// 文件增长时只解析新增尾部，昨日及更早的文件直接复用，避免每次刷新都做七天全量 JSON 解析。
+/// 跨进程持久化至 token-monitor/codex.json，App 重启后复用缓存，省去全量冷扫。
 actor CodexSessionEventCache {
     static let shared = CodexSessionEventCache()
+    nonisolated static let defaultCacheFileURL: URL = TokenMonitorPaths.cacheFile(for: .codex)
 
-    struct Entry: Sendable {
+    struct Entry: Sendable, Codable {
         let parsingFingerprint: String
         let lastModifiedAt: Date
         let parsedFileSize: Int
@@ -158,8 +219,45 @@ actor CodexSessionEventCache {
     }
 
     private let cache = LRUCache<String, Entry>(capacity: 64)
+    private var isLoadedFromDisk = false
+    private var isDirty = false
+    private let cacheFileURL: URL
+    private let fileManager: FileManagerBox
+
+    init(
+        cacheFileURL: URL = CodexSessionEventCache.defaultCacheFileURL,
+        fileManager: FileManagerBox = FileManagerBox()
+    ) {
+        self.cacheFileURL = cacheFileURL
+        self.fileManager = fileManager
+    }
+
+    func loadIfNeeded() {
+        guard !isLoadedFromDisk else { return }
+        isLoadedFromDisk = true
+        do {
+            try ScannerIndexIO.ensureCacheDirectory(for: cacheFileURL, fileManager: fileManager)
+            let index: CodexScannerIndex = try ScannerIndexIO.loadIndex(
+                cacheDir: cacheFileURL,
+                fileManager: fileManager,
+                currentVersion: 1,
+                empty: CodexScannerIndex(),
+                version: { $0.version },
+                logTag: "[codex/cache]"
+            )
+            for (path, entry) in index.entries {
+                cache.setValue(entry, forKey: path)
+            }
+            if !index.entries.isEmpty {
+                logInfo("[codex/cache] 从磁盘载入 \(index.entries.count) 个 session 缓存")
+            }
+        } catch {
+            logWarn("[codex/cache] 加载磁盘缓存失败: \(error.localizedDescription)")
+        }
+    }
 
     func state(for fileURL: URL, parsingFingerprint: String) -> Entry? {
+        loadIfNeeded()
         let key = fileURL.path
         guard let entry = cache.value(forKey: key),
               entry.parsingFingerprint == parsingFingerprint else {
@@ -169,15 +267,47 @@ actor CodexSessionEventCache {
     }
 
     func store(_ entry: Entry, for fileURL: URL, maximumEntryCount: Int) {
+        loadIfNeeded()
         if cache.capacity != maximumEntryCount {
             cache.capacity = maximumEntryCount
         }
         cache.setValue(entry, forKey: fileURL.path)
+        isDirty = true
     }
 
     func removeAll(except filePaths: Set<String>) {
+        loadIfNeeded()
         cache.removeAll(except: filePaths)
+        isDirty = true
     }
+
+    func persistToDisk() {
+        loadIfNeeded()
+        guard isDirty else { return }
+        do {
+            try ScannerIndexIO.ensureCacheDirectory(for: cacheFileURL, fileManager: fileManager)
+            var entries: [String: Entry] = [:]
+            for key in cache.keysOrderedByRecency {
+                if let val = cache.value(forKey: key) {
+                    entries[key] = val
+                }
+            }
+            let index = CodexScannerIndex(version: 1, entries: entries)
+            try ScannerIndexIO.saveIndex(index, cacheDir: cacheFileURL, fileManager: fileManager)
+            isDirty = false
+            logInfo("[codex/cache] 成功持久化 \(entries.count) 个 session 缓存到磁盘")
+        } catch {
+            logWarn("[codex/cache] 保存磁盘缓存失败: \(error.localizedDescription)")
+        }
+    }
+
+    #if DEBUG
+    func resetForTesting() {
+        isLoadedFromDisk = false
+        isDirty = false
+        cache.removeAll(except: [])
+    }
+    #endif
 }
 
 extension CodexFetcher {
@@ -522,6 +652,9 @@ extension CodexFetcher {
             "[codex/local] session cache: selected=\(selectedSnapshots.count), "
                 + "loaded=\(sessionFiles.count), parsed=\(parsedFileCount)"
         )
+        if parsedFileCount > 0 || !selectedSnapshots.isEmpty {
+            await CodexSessionEventCache.shared.persistToDisk()
+        }
         return CodexSessionScanResult(
             files: sessionFiles,
             hasPendingReads: hasPendingReads,

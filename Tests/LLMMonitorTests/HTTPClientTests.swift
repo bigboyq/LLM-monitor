@@ -151,13 +151,18 @@ final class HTTPClientTests: XCTestCase {
     /// 可注入响应的测试 URLProtocol，用于正常交付路径（不测 cancel race）。
     private final class TestURLProtocol: URLProtocol {
         static var responder: ((TestURLProtocol) -> Void)?
+        static var onStopLoading: (() -> Void)?
+        private(set) var isStopped = false
 
         override class func canInit(with request: URLRequest) -> Bool { true }
         override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
         override func startLoading() {
             TestURLProtocol.responder?(self)
         }
-        override func stopLoading() {}
+        override func stopLoading() {
+            isStopped = true
+            TestURLProtocol.onStopLoading?()
+        }
 
         func send(status: Int, body: Data, contentLength: Int?) {
             var headers: [String: String] = [:]
@@ -171,6 +176,37 @@ final class HTTPClientTests: XCTestCase {
             client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
             client?.urlProtocol(self, didLoad: body)
             client?.urlProtocolDidFinishLoading(self)
+        }
+
+        func sendChunked(
+            status: Int,
+            chunks: [Data],
+            contentLength: Int? = nil,
+            delayBetweenChunks: TimeInterval = 0.1,
+            onChunkSent: ((Int) -> Void)? = nil
+        ) {
+            var headers: [String: String] = [:]
+            if let contentLength { headers["Content-Length"] = String(contentLength) }
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: status,
+                httpVersion: "HTTP/1.1",
+                headerFields: headers
+            )!
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+
+            DispatchQueue.global().async {
+                Thread.sleep(forTimeInterval: delayBetweenChunks)
+                for (idx, chunk) in chunks.enumerated() {
+                    if self.isStopped { break }
+                    self.client?.urlProtocol(self, didLoad: chunk)
+                    onChunkSent?(idx + 1)
+                    Thread.sleep(forTimeInterval: delayBetweenChunks)
+                }
+                if !self.isStopped {
+                    self.client?.urlProtocolDidFinishLoading(self)
+                }
+            }
         }
     }
 
@@ -344,8 +380,110 @@ final class HTTPClientTests: XCTestCase {
         XCTAssertEqual(err.errorDescription, "响应过大（上限 100 bytes）：https://example.com/quota")
     }
 
+    /// 分块传输超限提前中止：收到第 2 块超出上限后立即 abort，第 3 块不会被投递。
+    func testChunkedStreamingAbortsEarlyWhenExceedingCapWithoutReadingLaterChunks() async {
+        let session = makeSession()
+        var chunksSent = 0
+        var stopLoadingCalled = false
+
+        TestURLProtocol.onStopLoading = {
+            stopLoadingCalled = true
+        }
+        TestURLProtocol.responder = { proto in
+            proto.sendChunked(
+                status: 200,
+                chunks: [
+                    Data(repeating: 0x41, count: 600), // chunk 1 (600 <= 1000)
+                    Data(repeating: 0x42, count: 600), // chunk 2 (1200 > 1000, 超限取消)
+                    Data(repeating: 0x43, count: 600)  // chunk 3 (应被跳过)
+                ],
+                contentLength: nil,
+                onChunkSent: { count in
+                    chunksSent = count
+                }
+            )
+        }
+
+        do {
+            _ = try await CappedDownloader.data(
+                for: URLRequest(url: testURL), session: session, maxBytes: 1_000, redactedPath: redacted
+            )
+            XCTFail("分块流超限应抛 responseTooLarge")
+        } catch let error as QuotaError {
+            XCTAssertEqual(
+                error,
+                .responseTooLarge(limit: 1_000, actual: 1_200, redactedPath: redacted)
+            )
+        } catch {
+            XCTFail("应抛 QuotaError.responseTooLarge，实际 \(error)")
+        }
+
+        XCTAssertEqual(chunksSent, 2, "第 3 块不应被发送或处理，流在超限时已提前终止")
+        XCTAssertTrue(stopLoadingCalled, "任务超限必须触发 stopLoading 中止连接")
+    }
+
+    /// 伪造过小的 Content-Length 无法绕过流式硬上限。
+    func testFakeSmallContentLengthDoesNotBypassStreamingCap() async {
+        let session = makeSession()
+        TestURLProtocol.responder = { proto in
+            proto.sendChunked(
+                status: 200,
+                chunks: [
+                    Data(repeating: 0x41, count: 600),
+                    Data(repeating: 0x42, count: 600)
+                ],
+                contentLength: 50 // 伪造 50 字节声明
+            )
+        }
+
+        do {
+            _ = try await CappedDownloader.data(
+                for: URLRequest(url: testURL), session: session, maxBytes: 1_000, redactedPath: redacted
+            )
+            XCTFail("伪造 Content-Length 不得绕过实际流式字节硬上限")
+        } catch let error as QuotaError {
+            XCTAssertEqual(
+                error,
+                .responseTooLarge(limit: 1_000, actual: 1_200, redactedPath: redacted)
+            )
+        } catch {
+            XCTFail("应抛 QuotaError.responseTooLarge，实际 \(error)")
+        }
+    }
+
+    /// 响应头 Content-Length 声明超限时在收到任何数据前提前拒绝。
+    /// 即使实际 body 只有 500 字节（未超 1000 上限），只要 Content-Length 声明超限，
+    /// 便根据头部提前拒绝并抛出声明值（actual: 50000），无需也不等待读取 body。
+    func testDeclaredContentLengthExceedingCapRejectsEarlyWithoutLoadingBody() async {
+        let session = makeSession()
+
+        TestURLProtocol.responder = { proto in
+            proto.send(
+                status: 200,
+                body: Data(repeating: 0x41, count: 500),
+                contentLength: 50_000 // 声明 50KB > 1KB 上限
+            )
+        }
+
+        do {
+            _ = try await CappedDownloader.data(
+                for: URLRequest(url: testURL), session: session, maxBytes: 1_000, redactedPath: redacted
+            )
+            XCTFail("声明超限时应提前拒绝")
+        } catch let error as QuotaError {
+            XCTAssertEqual(
+                error,
+                .responseTooLarge(limit: 1_000, actual: 50_000, redactedPath: redacted),
+                "应当按响应头声明的 50000 字节提前拒绝，而非实际传输的 500 字节"
+            )
+        } catch {
+            XCTFail("应抛 QuotaError.responseTooLarge，实际 \(error)")
+        }
+    }
+
     override func tearDown() {
         TestURLProtocol.responder = nil
+        TestURLProtocol.onStopLoading = nil
         super.tearDown()
     }
 }

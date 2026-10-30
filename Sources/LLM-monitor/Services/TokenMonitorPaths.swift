@@ -12,6 +12,7 @@ enum TokenMonitorProvider: String, CaseIterable, Sendable {
     case opencode
     case dsh
     case agy
+    case codex
 }
 
 enum TokenMonitorPaths {

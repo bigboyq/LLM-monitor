@@ -89,12 +89,12 @@ final class AggregateHealthLevelTests: XCTestCase {
 
         XCTAssertEqual(appState.systemHealthLevel, .healthy)
 
-        // 设为 warning（刚重置时分母 100%，20% < 50% 判黄）
+        // 设为 warning（刚重置时分母 100%，40% < 60% 判黄）
         let warningModel = ModelQuota(
             modelName: "general",
             intervalTotalCount: 100,
-            intervalUsageCount: 80,
-            intervalRemainingPercent: 20.0,
+            intervalUsageCount: 60,
+            intervalRemainingPercent: 40.0,
             intervalStatus: .present,
             intervalResetsAt: Date().addingTimeInterval(18000),
             intervalWindowSeconds: 18000,

@@ -199,19 +199,20 @@ final class GlmZcodeDBReader {
             let trsnNN = SQLiteConnection.nnClamp(trsn)
             let tcrNN = SQLiteConnection.nnClamp(tcr)
             let tcwNN = SQLiteConnection.nnClamp(tcw)
-            // uncached input = max(input_raw - cacheRead, 0)，用原始 Int64 饱和减法
-            let uncachedInput = Int(clamping: max(SaturatingArithmetic.subtract(tin, tcr), 0))
-            // total = uncached + cacheRead + output + reason（用 uncached 重算，
-            // 避免 cacheRead > input_raw 的取整误差让 total 偏小）
-            let total = SaturatingArithmetic.sum(uncachedInput, tcrNN, toutNN, trsnNN)
+            let buckets = TokenAccountingCatalog.zcode.normalizedBuckets(
+                rawInput: Int(clamping: tin),
+                cacheRead: tcrNN,
+                rawOutput: toutNN,
+                rawReasoning: trsnNN
+            )
             let usage = GlmDailyUsage(
                 dayStart: dayStart,
-                inputTokens: uncachedInput,
-                outputTokens: toutNN,
-                cacheReadTokens: tcrNN,
+                inputTokens: buckets.input,
+                outputTokens: buckets.output,
+                cacheReadTokens: buckets.cacheRead,
                 cacheWriteTokens: tcwNN,
-                reasoningTokens: trsnNN,
-                totalTokens: total,
+                reasoningTokens: buckets.reasoning,
+                totalTokens: buckets.totalTokens,
                 turns: max(0, Int(clamping: turns)),
                 rounds: max(0, Int(clamping: rounds))
             )
@@ -438,7 +439,6 @@ final class GlmZcodeDBReader {
             let trsnNN = SQLiteConnection.nnClamp(trsn)
             let tcrNN = SQLiteConnection.nnClamp(tcr)
             let tcwNN = SQLiteConnection.nnClamp(tcw)
-            let uncachedInput = Int(clamping: max(SaturatingArithmetic.subtract(tin, tcr), 0))
             // 三段式 reasoning：native 优先，否则用 part 表字符比例分摊（day 级），
             // 都没有则保持 0。分摊守恒，故 total 重算后仍是 input+cacheRead+output。
             let split = trsnNN > 0
@@ -450,18 +450,22 @@ final class GlmZcodeDBReader {
                         visibleChars: $0.visibleChars
                     )
                 }
-            let reasoningTokens = split?.reasoning ?? trsnNN
-            let outputTokens = split?.output ?? toutNN
+            let rawReasoning = split?.reasoning ?? trsnNN
+            let rawOutput = split?.output ?? toutNN
+            let buckets = TokenAccountingCatalog.zcode.normalizedBuckets(
+                rawInput: Int(clamping: tin),
+                cacheRead: tcrNN,
+                rawOutput: rawOutput,
+                rawReasoning: rawReasoning
+            )
             let usage = OpencodeDailyUsage(
                 dayStart: dayStart,
-                inputTokens: uncachedInput,
-                outputTokens: outputTokens,
-                cacheReadTokens: tcrNN,
+                inputTokens: buckets.input,
+                outputTokens: buckets.output,
+                cacheReadTokens: buckets.cacheRead,
                 cacheWriteTokens: tcwNN,
-                reasoningTokens: reasoningTokens,
-                totalTokens: SaturatingArithmetic.sum(
-                    uncachedInput, tcrNN, outputTokens, reasoningTokens
-                ),
+                reasoningTokens: buckets.reasoning,
+                totalTokens: buckets.totalTokens,
                 turns: max(0, Int(clamping: turns)),
                 rounds: max(0, Int(clamping: rounds))
             )
