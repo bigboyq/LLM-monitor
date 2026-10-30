@@ -72,39 +72,54 @@ struct SegmentedQuotaProgressBar: View {
         timeRemainingFraction.map { min(max($0, 0), 1) }
     }
 
-    /// 各段自适应栅格数：使得整条宽度上总栅格数始终保持在 35~42 格左右，
-    /// 视觉间距与宽度极其均匀。
+    /// 各段自适应栅格数：以 100 个数据栅格为全满基准，
+    /// 确保 0～100 精确对应；多出来的 ~10 个点当量作为分段间隔（呼吸留白）。
     static func ticksPerSegment(for segmentCount: Int) -> Int {
         let count = max(segmentCount, 1)
         switch count {
-        case 1:  return 40
-        case 2:  return 20
-        case 5:  return 7
-        case 6:  return 7
-        case 7:  return 6
-        case 10: return 4
+        case 1:  return 100
+        case 2:  return 50
+        case 5:  return 20
+        case 6:  return 17
+        case 7:  return 14
+        case 10: return 10
         default:
-            return max(3, min(40, Int((40.0 / Double(count)).rounded())))
+            return max(1, Int((100.0 / Double(count)).rounded()))
         }
     }
 
-    /// 各段栅格分配：对于等宽整段保持现有自适应栅格；
-    /// 对于非整数倍率（如 3.33），以 40 格为基准按容量权重分配各段栅格。
+    /// 各段栅格分配：对于等宽整段保持自适应栅格；
+    /// 对于非整数倍率（如 3.33），以 100 格为基准按容量权重分配各段栅格（如 30、30、30、10）。
     static func ticksForSegment(capacity: Double, totalCapacity: Double, segmentCount: Int) -> Int {
         if totalCapacity.truncatingRemainder(dividingBy: 1.0) < 0.001 {
             return ticksPerSegment(for: segmentCount)
         }
         let ratio = capacity / totalCapacity
-        return max(1, Int((40.0 * ratio).rounded()))
+        return max(1, Int((100.0 * ratio).rounded()))
     }
 
     /// 根据当前段 fill 比例计算点亮的栅格数。
-    /// 当 fill > 0 时向上取整并保底点亮至少 1 格，避免小额配额在视觉上显现全空。
+    /// 规则（Half-Down 最近邻吸附）：
+    /// - 贴近最近的整数刻度点；
+    /// - 若遇到两边距离相等（小数部分恰为 0.5），则选择小的那个（向下吸附，保守估计余量）。
+    /// 例如在 10 块区间中：44.9% 选 4 块 (40%)，45.1% 选 5 块 (50%)，45.0% 选 4 块 (40%)。
     static func activeTickCount(fill: Double, totalTicks: Int) -> Int {
         guard totalTicks > 0 else { return 0 }
         let clamped = min(max(fill, 0.0), 1.0)
         if clamped <= 0 { return 0 }
-        return max(1, min(totalTicks, Int((clamped * Double(totalTicks)).rounded(.up))))
+        if clamped >= 1.0 { return totalTicks }
+
+        let raw = clamped * Double(totalTicks)
+        let floorVal = floor(raw)
+        let remainder = raw - floorVal
+        // 浮点比较容差：遇中点 0.5（或因精度略小于等于 0.5000001）选择小的 floorVal
+        let selected: Int
+        if remainder <= 0.5 + 1e-9 {
+            selected = Int(floorVal)
+        } else {
+            selected = Int(floorVal) + 1
+        }
+        return min(max(selected, 0), totalTicks)
     }
 
     var body: some View {
@@ -119,8 +134,13 @@ struct SegmentedQuotaProgressBar: View {
 
         GeometryReader { geo in
             let totalWidth = geo.size.width
-            let macroGap: CGFloat = segmentCount > 1 ? 4 : 0
-            let totalGaps = CGFloat(segmentCount - 1) * macroGap
+            let gapCount = max(segmentCount - 1, 0)
+            // 多出来的 ~10 个点作为分割空间存在：
+            // 当存在多个分段时，以 110 槽（100 数据槽 + 10 间隙槽）为基准模数；单窗口为 100 槽。
+            let nominalSlots: Double = segmentCount > 1 ? 110.0 : 100.0
+            let slotPitch = max(totalWidth / CGFloat(nominalSlots), 2.0)
+            let macroGap: CGFloat = gapCount > 0 ? CGFloat((10.0 / Double(gapCount))) * slotPitch : 0
+            let totalGaps = CGFloat(gapCount) * macroGap
             let availableWidth = max(0, totalWidth - totalGaps)
 
             ZStack(alignment: .topLeading) {
@@ -149,14 +169,14 @@ struct SegmentedQuotaProgressBar: View {
                             )
                             let activeTicks = Self.activeTickCount(fill: fill, totalTicks: numTicks)
                             let segColor = segIndex == 0 ? intervalSegmentColor : weeklySegmentColor.opacity(0.68)
-                            let tickGap: CGFloat = 1.5
+                            let tickGap: CGFloat = 1.3
                             let totalTickGaps = CGFloat(max(numTicks - 1, 0)) * tickGap
-                            let tickWidth = max(1.5, (segmentWidth - totalTickGaps) / CGFloat(numTicks))
+                            let tickWidth = max(1.2, (segmentWidth - totalTickGaps) / CGFloat(numTicks))
 
                             HStack(spacing: tickGap) {
                                 ForEach(0..<numTicks, id: \.self) { tickIndex in
                                     let isActive = tickIndex < activeTicks
-                                    RoundedRectangle(cornerRadius: 1.5)
+                                    RoundedRectangle(cornerRadius: 1.0)
                                         .fill(isActive ? segColor : Color.primary.opacity(0.10))
                                         .frame(width: tickWidth, height: height)
                                 }

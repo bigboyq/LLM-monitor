@@ -143,32 +143,66 @@ final class SegmentedQuotaProgressBarTests: XCTestCase {
         XCTAssertEqual(SegmentedQuotaProgressBar.standardSlotHeight, 13)
     }
 
-    // MARK: - 微栅格自适应与点亮算法
+    // MARK: - 微栅格自适应与点亮算法（110 槽 / 100 数据点体系）
 
     func testTicksPerSegmentAdaptation() {
-        XCTAssertEqual(SegmentedQuotaProgressBar.ticksPerSegment(for: 1), 40)
-        XCTAssertEqual(SegmentedQuotaProgressBar.ticksPerSegment(for: 2), 20)
-        XCTAssertEqual(SegmentedQuotaProgressBar.ticksPerSegment(for: 5), 7)
-        XCTAssertEqual(SegmentedQuotaProgressBar.ticksPerSegment(for: 6), 7)
-        XCTAssertEqual(SegmentedQuotaProgressBar.ticksPerSegment(for: 7), 6)
-        XCTAssertEqual(SegmentedQuotaProgressBar.ticksPerSegment(for: 10), 4)
+        XCTAssertEqual(SegmentedQuotaProgressBar.ticksPerSegment(for: 1), 100)
+        XCTAssertEqual(SegmentedQuotaProgressBar.ticksPerSegment(for: 2), 50)
+        XCTAssertEqual(SegmentedQuotaProgressBar.ticksPerSegment(for: 5), 20)
+        XCTAssertEqual(SegmentedQuotaProgressBar.ticksPerSegment(for: 6), 17)
+        XCTAssertEqual(SegmentedQuotaProgressBar.ticksPerSegment(for: 7), 14)
+        XCTAssertEqual(SegmentedQuotaProgressBar.ticksPerSegment(for: 10), 10)
+    }
+
+    func testTicksForSegmentWithFractionalCapacity() {
+        // Gemini 3.33 倍率（总容量 3.33：前 3 段为 1.0，尾段为 0.33）
+        let ticksStandard = SegmentedQuotaProgressBar.ticksForSegment(
+            capacity: 1.0,
+            totalCapacity: 3.33,
+            segmentCount: 4
+        )
+        let ticksTail = SegmentedQuotaProgressBar.ticksForSegment(
+            capacity: 0.33,
+            totalCapacity: 3.33,
+            segmentCount: 4
+        )
+        XCTAssertEqual(ticksStandard, 30, "Gemini 整段应分得 30 格")
+        XCTAssertEqual(ticksTail, 10, "Gemini 尾段应分得 10 格")
+        XCTAssertEqual(ticksStandard * 3 + ticksTail, 100, "Gemini 四段合计精确为 100 格")
     }
 
     func testActiveTickCountRoundingAndFloor() {
-        // 0% -> 0 格
-        XCTAssertEqual(SegmentedQuotaProgressBar.activeTickCount(fill: 0.0, totalTicks: 7), 0)
-        XCTAssertEqual(SegmentedQuotaProgressBar.activeTickCount(fill: -0.1, totalTicks: 7), 0)
+        // 0% -> 0 格，溢出 clamp
+        XCTAssertEqual(SegmentedQuotaProgressBar.activeTickCount(fill: 0.0, totalTicks: 10), 0)
+        XCTAssertEqual(SegmentedQuotaProgressBar.activeTickCount(fill: -0.1, totalTicks: 10), 0)
+        XCTAssertEqual(SegmentedQuotaProgressBar.activeTickCount(fill: 1.0, totalTicks: 10), 10)
+        XCTAssertEqual(SegmentedQuotaProgressBar.activeTickCount(fill: 1.5, totalTicks: 10), 10)
 
-        // 只要大于 0，向上取整保底 1 格，避免微量配额全空
-        XCTAssertEqual(SegmentedQuotaProgressBar.activeTickCount(fill: 0.01, totalTicks: 7), 1)
-        XCTAssertEqual(SegmentedQuotaProgressBar.activeTickCount(fill: 0.14, totalTicks: 7), 1)
-        XCTAssertEqual(SegmentedQuotaProgressBar.activeTickCount(fill: 0.15, totalTicks: 7), 2)
+        // 核心规则验证（以 10 块区间为例）：
+        // 贴近最近邻刻度，两边距离相等（中点 .5）向小取整：
+        // 44.9% -> 选 4 块 (40%)
+        XCTAssertEqual(SegmentedQuotaProgressBar.activeTickCount(fill: 0.449, totalTicks: 10), 4)
+        // 45.1% -> 选 5 块 (50%)
+        XCTAssertEqual(SegmentedQuotaProgressBar.activeTickCount(fill: 0.451, totalTicks: 10), 5)
+        // 45.0% -> 两边距离相等，选较小者 4 块 (40%)
+        XCTAssertEqual(SegmentedQuotaProgressBar.activeTickCount(fill: 0.450, totalTicks: 10), 4)
 
-        // 50% -> 4 格（7 格的一半向上取整）
-        XCTAssertEqual(SegmentedQuotaProgressBar.activeTickCount(fill: 0.50, totalTicks: 7), 4)
+        // 100 块区间（1% 分辨率）：
+        // 44.5% -> 44.5 选 44
+        XCTAssertEqual(SegmentedQuotaProgressBar.activeTickCount(fill: 0.445, totalTicks: 100), 44)
+        // 44.6% -> 选 45
+        XCTAssertEqual(SegmentedQuotaProgressBar.activeTickCount(fill: 0.446, totalTicks: 100), 45)
+        // 45.0% -> 选 45
+        XCTAssertEqual(SegmentedQuotaProgressBar.activeTickCount(fill: 0.450, totalTicks: 100), 45)
+        // 45.5% -> 选 45 (平局选小)
+        XCTAssertEqual(SegmentedQuotaProgressBar.activeTickCount(fill: 0.455, totalTicks: 100), 45)
 
-        // 100% -> 满格
-        XCTAssertEqual(SegmentedQuotaProgressBar.activeTickCount(fill: 1.0, totalTicks: 7), 7)
-        XCTAssertEqual(SegmentedQuotaProgressBar.activeTickCount(fill: 1.5, totalTicks: 7), 7)
+        // 30 块区间（Gemini 主段）：
+        // 50% -> 15 块
+        XCTAssertEqual(SegmentedQuotaProgressBar.activeTickCount(fill: 0.50, totalTicks: 30), 15)
+        // 45% -> 13.5 选 13 块
+        XCTAssertEqual(SegmentedQuotaProgressBar.activeTickCount(fill: 0.45, totalTicks: 30), 13)
+        // 46% -> 13.8 选 14 块
+        XCTAssertEqual(SegmentedQuotaProgressBar.activeTickCount(fill: 0.46, totalTicks: 30), 14)
     }
 }

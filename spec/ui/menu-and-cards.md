@@ -977,8 +977,8 @@ Provider 品牌色从 `Color+Theme.swift` 统一派发：MiniMax 品牌色已统
 
 分段配额进度条（`SegmentedQuotaProgressBar`）：
 - **标准槽高**严格锁定为 `13pt`（`8pt` 条高 + `4pt` 顶部时间锚点三角 ▼ + `1pt` 间距），保持所有卡片行高稳定；
-- **微栅格分段渲染（Hybrid Micro-Ticks）**：条体划分为 `N = max(segments, 1)` 个大段，段间保留 `4pt` 宏观间隙；当 `N > 1` 时，在第 0 段与第 1 段间隙正中绘制 `1.5pt` 宽、`10pt` 高的分界锚线（`Color.primary.opacity(0.28)`），直观区分当前 5h 窗口与未来周配额；
-- **自适应微栅格与点亮保证**：每段内含自适应垂直圆角栅格（`ticksPerSegment(for:)`，整条维持 35~42 格，圆角 `1.5pt`，格间距 `1.5pt`）；填充算法 `activeTickCount(fill:totalTicks:)` 对 `fill > 0` 向上取整且保底点亮至少 1 格，杜绝“显示 >0% 但格子全空”；首段点亮栅格用 `intervalSegmentColor`（100% 不透明度），后续周段点亮栅格用 `weeklySegmentColor.opacity(0.68)`，底槽栅格用 `Color.primary.opacity(0.10)`。
+- **微栅格分段渲染（Hybrid Micro-Ticks，110 槽 / 100 数据点体系）**：整条以 110 槽为基准，数据有效刻度恒定为 100 点（1 点 = 1% 精准分辨率）；多出来的约 10 个槽位当量作为分段间的呼吸间隙（`macroGap`，由 10 个槽位等量平分给 $N-1$ 个间隙，如 6 段各 2 点宽、3.33 段各 3.33 点宽、2 段 10 点宽、单段为 100 点通栏）；当 `N > 1` 时，在第 0 段与第 1 段间隙正中绘制 `1.5pt` 宽、`10pt` 高的分界锚线（`Color.primary.opacity(0.28)`），直观区分当前 5h 窗口与未来周配额；
+- **自适应微栅格与点亮规则**：各段内含自适应垂直圆角栅格（`ticksPerSegment(for:)`，单段 100、2 段各 50、5 段各 20、10 段各 10；非整数倍率如 3.33 分为 30+30+30+10，圆角 `1.0pt`，格间距 `1.3pt`，点宽约 2.3~2.9pt）；点亮算法 `activeTickCount(fill:totalTicks:)` 采用 Half-Down 最近邻吸附（贴近最近刻度，遇到小数部分恰为 0.5 的中点平局时向小取整，保守估计余量，例如 10 格区间中 44.9% 与 45% 亮 4 格、45.1% 亮 5 格）；首段点亮栅格用 `intervalSegmentColor`（100% 不透明度），后续周段点亮栅格用 `weeklySegmentColor.opacity(0.68)`，底槽栅格用 `Color.primary.opacity(0.10)`。
 - **时间感知与三角标记解耦**：首格颜色由 `primaryTimeRemainingFraction`（即 5h 短窗口/滚动窗口的剩余时间比例）参与统一 pacing 计算（分母 = `100% * t`，`< 20%` 红色，`< 50%` 黄色，`>= 50%` 绿色）；而顶部时间锚点三角 ▼ 仅在长周期窗口（`>= 86400` 秒，如周配额）呈现，短窗口（`< 86400` 秒）不显示三角，避免短频跳动引起视觉干扰。
 
 Progress bar fill (`SegmentedQuotaProgressBar.intervalSegmentColor` /
@@ -1071,5 +1071,5 @@ The UI intentionally hides reset-credit id, title, description, and grant time.
 The shared Plan fallback uses the same 10pt `MenuTypography.hint` role for loading and
 failure feedback; there is no separate error-message typography role.
 
-> 核对基线：2026-10-30 · 代码 aa2b8f6
+> 核对基线：2026-10-30 · 代码 4bbc6bd
 > 统一验证通过，详细结果见 `spec/sync.md`。
