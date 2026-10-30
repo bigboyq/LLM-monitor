@@ -1,5 +1,6 @@
 import XCTest
 import SQLite3
+import SwiftUI
 @testable import LLM_monitor
 
 final class GlmBalanceLogReaderTests: GlmTestCase {
@@ -233,6 +234,72 @@ final class GlmBalanceLogReaderTests: GlmTestCase {
                 planName: "", showName: "GLM-5.3-Flash", entitlementID: "ent_flash"
             ),
             "GLM-5.3-Flash"
+        )
+    }
+
+    func testGlmActivityPlanCountdownAndColorThresholds() {
+        let now = Date(timeIntervalSince1970: 1793280000)
+
+        // 生效倒计时测试
+        XCTAssertEqual(
+            GlmActivityPlanBalancesView.formatEffectiveCountdown(from: now.addingTimeInterval(2 * 3600), now: now),
+            "2小时后生效"
+        )
+        XCTAssertEqual(
+            GlmActivityPlanBalancesView.formatEffectiveCountdown(from: now.addingTimeInterval(90 * 60), now: now),
+            "1小时30分后生效"
+        )
+        XCTAssertEqual(
+            GlmActivityPlanBalancesView.formatEffectiveCountdown(from: now.addingTimeInterval(45 * 60), now: now),
+            "45分后生效"
+        )
+        XCTAssertEqual(
+            GlmActivityPlanBalancesView.formatEffectiveCountdown(from: now.addingTimeInterval(-60), now: now),
+            "已生效"
+        )
+
+        // 失效倒计时测试
+        XCTAssertEqual(
+            GlmActivityPlanBalancesView.formatExpiryCountdown(from: now.addingTimeInterval(12 * 3600), now: now),
+            "剩余12小时"
+        )
+        XCTAssertEqual(
+            GlmActivityPlanBalancesView.formatExpiryCountdown(from: now.addingTimeInterval(2 * 3600), now: now),
+            "剩余2小时"
+        )
+        XCTAssertEqual(
+            GlmActivityPlanBalancesView.formatExpiryCountdown(from: now.addingTimeInterval(45 * 60), now: now),
+            "剩余45分"
+        )
+        XCTAssertEqual(
+            GlmActivityPlanBalancesView.formatExpiryCountdown(from: now.addingTimeInterval(-60), now: now),
+            "已失效"
+        )
+
+        // 紧迫度颜色：<=1h 红色、<=2h 黄色、>2h 灰色
+        XCTAssertEqual(
+            GlmActivityPlanBalancesView.expiryColor(for: now.addingTimeInterval(30 * 60), now: now),
+            Color.criticalTint
+        )
+        XCTAssertEqual(
+            GlmActivityPlanBalancesView.expiryColor(for: now.addingTimeInterval(3600), now: now),
+            Color.criticalTint
+        )
+        XCTAssertEqual(
+            GlmActivityPlanBalancesView.expiryColor(for: now.addingTimeInterval(90 * 60), now: now),
+            Color.warningTint
+        )
+        XCTAssertEqual(
+            GlmActivityPlanBalancesView.expiryColor(for: now.addingTimeInterval(2 * 3600), now: now),
+            Color.warningTint
+        )
+        XCTAssertEqual(
+            GlmActivityPlanBalancesView.expiryColor(for: now.addingTimeInterval(3 * 3600), now: now),
+            Color.secondaryLabel
+        )
+        XCTAssertEqual(
+            GlmActivityPlanBalancesView.expiryColor(for: now.addingTimeInterval(12 * 3600), now: now),
+            Color.secondaryLabel
         )
     }
 

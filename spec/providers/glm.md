@@ -558,7 +558,7 @@ zcode SaaS 活动套餐（如周末体验套餐 `ZCode Weekend Build`）的 used
 | 过期口径 | `expires_at <= now` 的条目直接剔除（"plan expire 就不显示"）；服务端对未领取/失效套餐返回空 `balances` |
 | 生效前预告 | 额度生效前 `balances` 为空数组，改从 `plans[].entitlements[]` 产出预告（`GlmActivityPlanPreview`，`Models/GlmLocalUsage.swift`）。三条判定：balances 已有对应桶（生效后不重复）、`effective_at <= now`、plan 的 `ends_at`（若有）`<= now`，任一命中即不预告；`grant_units` clamp ≥ 0 |
 | 开关 | `providers.glm_coding_plan.parseZcodeBalanceLog`（缺省关闭；关闭时不读日志，并清除已显示的缓存余额与预告，不依赖用量数据库发生变化）。`LocalUsageOrchestration.updateGlmBalanceLogParsing` 在 `rebuildStatuses`（init + 每次配置变更）推送 |
-| 展示 | `GlmActivityPlanBalancesView`：余额行每条 entitlement 一行 `🎁 套餐名 · 模型名 94% (283M/300M) 08-31 09:00`——剩余占比（与额度窗口同一取整口径）+ 可用/总量 + 过期时间，全部行内显示（菜单栏弹层里 `.help` 悬浮不生效）；模型名与套餐名忽略大小写同名 / 为空 / 实为 entitlementID 回退值时省略（`displayTitle` 静态纯函数）。预告行渲染在余额行之后：`🎁 套餐名 · 模型名 生效时间：MM-dd HH:mm（300M）`——无百分比、无已用/剩余，整行 `.tertiary` 弱化。挂在 GLM 卡额度行下方；balances 与 previews 都空则整块不渲染 |
+| 展示 | `GlmActivityPlanBalancesView`（与 OpenAI API 赠金 / Google Argon 同款一等公民配额行）：生效中套餐每条 entitlement 渲染完整配额块——带独立进度条（`SegmentedQuotaProgressBar` 8pt，主色 `tint`）、`已用 X · 剩余：Y/Z (pct%)` 与 `失效时间：MM-dd HH:mm（剩余X小时）`，紧迫度分级（`<=1h` 红色、`<=2h` 黄色、`>2h` 次要灰）；预告行（`previews`，`effective_at` 未到）整体置灰弱化，进度条置灰底 0%，渲染 `额度：Z` 与 `生效时间：MM-dd HH:mm（X小时后生效）`。模型名与套餐名忽略大小写同名 / 为空 / 实为 entitlementID 回退值时省略（`displayTitle` 静态纯函数）。挂在 GLM 卡额度行下方；`balances` 与 `previews` 都空则整块不渲染 |
 | 单位 | `*_units` 是 token（`unit_type: "token"`）；`expires_at` / `effective_at` 是 unix **秒** |
 
 边界：ZCode 未运行时不产生新快照，UI 展示日志中最近一次观测值（`observedAt` 记录
@@ -771,4 +771,4 @@ whether the quota batch succeeded. GLM's former dedicated periodic trigger
 The scanner's db+WAL fingerprint check is unchanged: when nothing changed only a `stat()`
 runs (microseconds); SQL (~1.5ms) only runs when the WAL actually moved.
 
-> 核对基线：2026-10-28 · 代码 85f6ba9
+> 核对基线：2026-10-30 · 代码 c0a53d3

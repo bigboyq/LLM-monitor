@@ -268,6 +268,13 @@ struct ProviderCardView: View, Equatable {
                 case .ok:
                     EmptyView()
                 }
+                if status.kind == .glmCodingPlan && (!status.glmActivityPlanBalances.isEmpty || !status.glmActivityPlanPreviews.isEmpty) {
+                    GlmActivityPlanBalancesView(
+                        balances: status.glmActivityPlanBalances,
+                        previews: status.glmActivityPlanPreviews,
+                        tint: accentColor
+                    )
+                }
             }
             .padding(LayoutMetrics.cardContentPadding)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -904,7 +911,8 @@ struct ProviderCardView: View, Equatable {
             if status.kind == .glmCodingPlan {
                 GlmActivityPlanBalancesView(
                     balances: status.glmActivityPlanBalances,
-                    previews: status.glmActivityPlanPreviews
+                    previews: status.glmActivityPlanPreviews,
+                    tint: accentColor
                 )
             }
         }
