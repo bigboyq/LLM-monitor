@@ -164,7 +164,7 @@ Interface pane「状态栏图标」节（`SettingsGeneralPane.swift`）提供图
   - 与 Provider 卡片标题栏的「小眼睛」按钮双向联动，保存时写回 `config.json` 的 `statusBarPinnedProvider` 字段；
 - **状态圆点与三色拾色器**（`statusBarHealthDotEnabled`、`statusBarHealthColors`）。
 
-### GLM 高峰期提示（只读）与「节假日数据源」
+### GLM 高峰期提示（只读）与「ZCode 凭证解析」
 
 GLM provider pane 的「高峰期提示」段是**只读展示**（与 DeepSeek 同款
 `SettingsControlRow` 写法）：值行为 `工作日 14:00–18:00（北京时间 · 法定节假日除外）`，
@@ -172,6 +172,10 @@ footer 注明按北京时间计算、官方口径、不可调。曾经的开始/
 「仅工作日」开关已随 GLM 去配置化删除（`peakStartHour` / `peakEndHour` /
 `peakWeekdaysOnly` 键移除，残留键由 `JSONDecoder` 静默忽略，见 `spec/config.md`
 §Config Schema）；DeepSeek pane 的 footer 同步补了「法定节假日除外」口径。
+
+此外，GLM pane 提供「ZCode 凭证解析」独立设置节：
+- **启用 ZCode 凭证解析**（`parseZcodeCredential`）：解密读取本地 `~/.zcode/v2` 凭据，手动开启后提供活动套餐余额查询、额度重置卡状态及运营活动推送配置。默认关闭。
+- **运营活动推送通知**（`notifyCampaign`）：下拉菜单（`none` / `system` / `barkAndSystem`），仅在凭证解析开启时可交互，关闭时置灰禁用。未配置通知时完全不发起运营活动轮询；开启后走固定倍率回退，发现活动 1h 内不重复推送。
 
 General pane 的「关于」之前有
 「节假日数据源」节（`HolidaySourceSection`，单独 View 以 `@ObservedObject` 观察

@@ -12,6 +12,7 @@ struct GlmActivityPlanBalanceRead: Equatable, Sendable {
 /// 文件发现策略：先读**今天**的 `YYYY-MM-DD.log`，没有任何 billing/balance 行时
 /// 回退到**昨天**的文件（ZCode 今天还没运行过的场景）。日志可能很大（几十 MB），
 /// 只读文件尾部若干 KB 再按行切分；尾部首行可能是半行，丢弃。
+@available(*, deprecated, message: "Use GlmZcodeAPIClient instead")
 enum GlmZcodeBalanceLogReader {
     nonisolated static let defaultLogDirectoryURL = URL(fileURLWithPath: NSHomeDirectory())
         .appendingPathComponent(".zcode", isDirectory: true)

@@ -572,9 +572,10 @@ struct SettingsView: View {
             glm.enabled = draft.glmEnabled
             glm.apiKey = trimmedString(draft.glmApiKey)
             glm.refreshIntervalSeconds = providerRefreshInterval(from: draft.glmInterval)
-            glm.parseZcodePlan = draft.glmZcodePlanEnabled ? true : nil
+            glm.parseZcodeCredential = draft.glmZcodeCredentialEnabled ? true : nil
+            glm.parseZcodePlan = nil
             glm.parseZcodeBalanceLog = nil
-            glm.notifyCampaign = (draft.glmZcodePlanEnabled && draft.glmNotifyCampaign != .none) ? draft.glmNotifyCampaign : nil
+            glm.notifyCampaign = (draft.glmZcodeCredentialEnabled && draft.glmNotifyCampaign != .none) ? draft.glmNotifyCampaign : nil
             config.providers[id] = glm
         }
 

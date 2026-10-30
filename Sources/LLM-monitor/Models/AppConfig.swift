@@ -841,18 +841,26 @@ struct ProviderConfig: Codable, Equatable {
 
     /// 是否解析 ZCode 余额轮询日志，在 GLM 卡显示活动套餐（zcode-plan，如周末
     /// 体验套餐）的用量 / 剩余 / 过期时间。nil（字段不存在）= 关闭，不读日志。
-    /// （已由 parseZcodePlan 取代，保留以兼容历史配置）
+    /// （已由 parseZcodeCredential 取代，保留以兼容历史配置）
     var parseZcodeBalanceLog: Bool?
 
-    /// 是否启用 ZCode 套餐解析（直连接口获取活动套餐、重置卡与营销活动）
+    /// 是否启用 ZCode 套餐解析（已由 parseZcodeCredential 取代，保留以兼容历史配置）
     var parseZcodePlan: Bool?
+
+    /// 是否启用 ZCode 凭据解析（解密读取 ~/.zcode/v2 本地凭据，获取活动套餐余额、额度重置卡状态与营销活动）
+    var parseZcodeCredential: Bool?
 
     /// ZCode 运营活动推送通知渠道（none / system / barkAndSystem）
     var notifyCampaign: QuotaNotifyChannel?
 
-    /// 便捷属性：是否启用 ZCode 套餐解析（兼容 parseZcodeBalanceLog）
+    /// 便捷属性：是否启用 ZCode 凭据解析（兼容 parseZcodePlan 与 parseZcodeBalanceLog）
+    var isZcodeCredentialEnabled: Bool {
+        parseZcodeCredential ?? parseZcodePlan ?? parseZcodeBalanceLog ?? false
+    }
+
+    /// 兼容历史计算属性：是否启用 ZCode 套餐解析
     var isZcodePlanEnabled: Bool {
-        parseZcodePlan ?? parseZcodeBalanceLog ?? false
+        isZcodeCredentialEnabled
     }
 
     /// 四类额度事件的通知渠道（5 小时 / 周额度 × 恢复 / 耗尽）。
@@ -883,6 +891,7 @@ struct ProviderConfig: Codable, Equatable {
         case mergeOpencodeUsage
         case parseZcodeBalanceLog
         case parseZcodePlan
+        case parseZcodeCredential
         case notifyCampaign
         case notifyIntervalRestored, notifyIntervalExhausted
         case notifyWeeklyRestored, notifyWeeklyExhausted
@@ -901,6 +910,7 @@ struct ProviderConfig: Codable, Equatable {
          mergeOpencodeUsage: Bool? = nil,
          parseZcodeBalanceLog: Bool? = nil,
          parseZcodePlan: Bool? = nil,
+         parseZcodeCredential: Bool? = nil,
          notifyCampaign: QuotaNotifyChannel? = nil,
          notifyIntervalRestored: QuotaNotifyChannel? = nil,
          notifyIntervalExhausted: QuotaNotifyChannel? = nil,
@@ -919,6 +929,7 @@ struct ProviderConfig: Codable, Equatable {
         self.mergeOpencodeUsage = mergeOpencodeUsage
         self.parseZcodeBalanceLog = parseZcodeBalanceLog
         self.parseZcodePlan = parseZcodePlan
+        self.parseZcodeCredential = parseZcodeCredential
         self.notifyCampaign = notifyCampaign
         self.notifyIntervalRestored = notifyIntervalRestored
         self.notifyIntervalExhausted = notifyIntervalExhausted
@@ -945,6 +956,7 @@ struct ProviderConfig: Codable, Equatable {
         self.mergeOpencodeUsage = try c.decodeIfPresent(Bool.self, forKey: .mergeOpencodeUsage)
         self.parseZcodeBalanceLog = try c.decodeIfPresent(Bool.self, forKey: .parseZcodeBalanceLog)
         self.parseZcodePlan = try c.decodeIfPresent(Bool.self, forKey: .parseZcodePlan)
+        self.parseZcodeCredential = try c.decodeIfPresent(Bool.self, forKey: .parseZcodeCredential)
         self.notifyCampaign = (try? c.decode(String.self, forKey: .notifyCampaign))
             .flatMap(QuotaNotifyChannel.init(rawValue:))
         // 渠道枚举值写错时按缺失处理，不让整份配置进入损坏恢复流程。

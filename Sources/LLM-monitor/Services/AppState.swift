@@ -176,8 +176,8 @@ final class AppState: ObservableObject {
     /// Startup 错峰期间先等待所有首拍 quota 结算，再只做一次 full reconcile。
     private var startupReconcilePendingProviderIDs: Set<String> = []
     private var startupReconcileCompleted = false
-    /// 已推送的 ZCode 运营活动 ID（内存去重，避免重复提醒）
-    private var notifiedMarketingDeliveryIDs: Set<String> = []
+    /// 上次推送 ZCode 运营活动通知的时间（按 delivery.id 记录，1 小时内不重复通知）
+    private var lastMarketingNotificationTimes: [String: Date] = [:]
 
     /// 5 组本地 scanner 的编排（lazy 构造 / Provider batch reconcile / 条目隔离 / 去噪）。
     /// 扫描结果通过 `LocalUsageStatusWriting` 回写本类型。lazy：构造需要捕获 self。
@@ -1236,9 +1236,16 @@ final class AppState: ObservableObject {
             if let deliveries = info.glmZcodePackage?.deliveries, !deliveries.isEmpty {
                 let notifyConfig = configStore.config.providers[providerID]
                 if let campaignChannel = notifyConfig?.notifyCampaign, campaignChannel != .none {
+                    let now = Date()
                     for delivery in deliveries {
-                        if !notifiedMarketingDeliveryIDs.contains(delivery.id) {
-                            notifiedMarketingDeliveryIDs.insert(delivery.id)
+                        let shouldNotify: Bool
+                        if let lastTime = lastMarketingNotificationTimes[delivery.id] {
+                            shouldNotify = now.timeIntervalSince(lastTime) >= 3600
+                        } else {
+                            shouldNotify = true
+                        }
+                        if shouldNotify {
+                            lastMarketingNotificationTimes[delivery.id] = now
                             quotaUpdateNotifier.notifyMarketingCampaign(
                                 providerID: providerID,
                                 providerName: statuses[newIdx].displayName,

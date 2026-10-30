@@ -46,16 +46,38 @@ struct GlmCodingPlanFetcher: QuotaFetcher {
     private let apiKey: String
     private let endpoint: URL
     private let client: HTTPClient
-    let isZcodePlanEnabled: Bool
+    let isZcodeCredentialEnabled: Bool
+    let pollMarketingCampaign: Bool
+    let resultMerger: RefreshResultMerger = GlmFillingMissingMerger()
+
+    /// 兼容历史命名
+    var isZcodePlanEnabled: Bool { isZcodeCredentialEnabled }
 
     init(apiKey: String,
          endpoint: URL = URL(string: "https://open.bigmodel.cn/api/monitor/usage/quota/limit")!,
-         isZcodePlanEnabled: Bool = false,
+         isZcodeCredentialEnabled: Bool = false,
+         pollMarketingCampaign: Bool = false,
          session: URLSession = .shared) {
         self.apiKey = apiKey
         self.endpoint = endpoint
-        self.isZcodePlanEnabled = isZcodePlanEnabled
+        self.isZcodeCredentialEnabled = isZcodeCredentialEnabled
+        self.pollMarketingCampaign = pollMarketingCampaign
         self.client = HTTPClient(session: session, logTag: Self.logTag, defaultTimeout: HTTPTimeouts.domestic)
+    }
+
+    /// 兼容已有调用与测试
+    init(apiKey: String,
+         endpoint: URL = URL(string: "https://open.bigmodel.cn/api/monitor/usage/quota/limit")!,
+         isZcodePlanEnabled: Bool,
+         pollMarketingCampaign: Bool = false,
+         session: URLSession = .shared) {
+        self.init(
+            apiKey: apiKey,
+            endpoint: endpoint,
+            isZcodeCredentialEnabled: isZcodePlanEnabled,
+            pollMarketingCampaign: pollMarketingCampaign,
+            session: session
+        )
     }
 
     func fetch(mode: RefreshMode) async throws -> QuotaInfo {
@@ -76,8 +98,8 @@ struct GlmCodingPlanFetcher: QuotaFetcher {
 
         var quotaInfo = try Self.parse(data: data)
 
-        if isZcodePlanEnabled {
-            if let package = await fetchZcodePackageSilently() {
+        if isZcodeCredentialEnabled {
+            if let package = await fetchZcodePackageSilently(mode: mode) {
                 quotaInfo = quotaInfo.enriched(with: package)
             }
         }
@@ -85,7 +107,7 @@ struct GlmCodingPlanFetcher: QuotaFetcher {
         return quotaInfo
     }
 
-    private func fetchZcodePackageSilently() async -> GlmZcodePackageSnapshot? {
+    private func fetchZcodePackageSilently(mode: RefreshMode) async -> GlmZcodePackageSnapshot? {
         let creds = GlmZcodeCredentialReader.loadCredentials()
         guard creds.hasCredentials else {
             logDebug("\(logTag) ZCode 本地凭证缺失，跳过套餐与重置卡获取")
@@ -96,30 +118,49 @@ struct GlmCodingPlanFetcher: QuotaFetcher {
         var previews: [GlmActivityPlanPreview] = []
         var resetCards: GlmResetCardsSnapshot? = nil
         var deliveries: [GlmMarketingDelivery] = []
+        var anySucceeded = false
 
-        // 1. Balance
+        // 1. 活动套餐余额：与 GLM 默认 Interval 保持一致，每次刷新都调用
         do {
             let (b, p) = try await GlmZcodeAPIClient.fetchBalance(credentials: creds)
             balances = b
             previews = p
+            anySucceeded = true
         } catch {
             logWarn("\(logTag) 获取 ZCode 套餐余额失败: \(error.localizedDescription)")
         }
 
-        // 2. Reset Cards
-        if creds.bigmodelAccessToken != nil {
-            do {
-                resetCards = try await GlmZcodeAPIClient.fetchResetCards(credentials: creds)
-            } catch {
-                logWarn("\(logTag) 获取 ZCode 重置卡状态失败: \(error.localizedDescription)")
+        // 2. 额度重置卡：类似 Codex 重置卡，走固定倍率回退，仅在 mode == .full 时拉取
+        if mode == .full {
+            if creds.bigmodelAccessToken != nil {
+                do {
+                    resetCards = try await GlmZcodeAPIClient.fetchResetCards(credentials: creds)
+                    anySucceeded = true
+                } catch {
+                    logWarn("\(logTag) 获取 ZCode 重置卡状态失败: \(error.localizedDescription)")
+                }
+            }
+        } else {
+            logDebug("\(logTag) background refresh: 跳过重置卡请求，走固定倍率回退")
+        }
+
+        // 3. 运营活动：仅在开启通知且 mode == .full 时轮询
+        if pollMarketingCampaign {
+            if mode == .full {
+                do {
+                    deliveries = try await GlmZcodeAPIClient.fetchMarketingTouch(credentials: creds)
+                    anySucceeded = true
+                } catch {
+                    logDebug("\(logTag) 获取 ZCode 营销触达失败: \(error.localizedDescription)")
+                }
+            } else {
+                logDebug("\(logTag) background refresh: 跳过运营活动轮询，走固定倍率回退")
             }
         }
 
-        // 3. Marketing Touch
-        do {
-            deliveries = try await GlmZcodeAPIClient.fetchMarketingTouch(credentials: creds)
-        } catch {
-            logDebug("\(logTag) 获取 ZCode 营销触达失败: \(error.localizedDescription)")
+        guard anySucceeded || mode == .background else {
+            logWarn("\(logTag) ZCode 全部接口请求失败，保留既有数据")
+            return nil
         }
 
         return GlmZcodePackageSnapshot(

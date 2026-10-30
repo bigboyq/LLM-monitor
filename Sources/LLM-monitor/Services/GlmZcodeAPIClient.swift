@@ -1,8 +1,7 @@
 import Foundation
 
 /// 单张 ZCode 额度重置卡
-struct GlmResetCardItem: Equatable, Codable, Sendable, Identifiable {
-    var id: Date { expireAt }
+struct GlmResetCardItem: Equatable, Codable, Sendable {
     let expireAt: Date
 
     init(expireAt: Date) {
@@ -206,6 +205,7 @@ enum GlmZcodeAPIClient {
                 let used_units: Int?
                 let remaining_units: Int?
                 let expires_at: Double?
+                let ends_at: Double?
             }
             struct DataBlock: Decodable {
                 let plans: [Plan]?
@@ -222,6 +222,12 @@ enum GlmZcodeAPIClient {
             var effectiveData: DataBlock? {
                 data ?? payload?.data
             }
+        }
+
+        func toDate(_ timestamp: Double?) -> Date? {
+            guard let timestamp, timestamp > 0 else { return nil }
+            let seconds = timestamp > 100_000_000_000 ? timestamp / 1000.0 : timestamp
+            return Date(timeIntervalSince1970: seconds)
         }
 
         guard let envelope = try? JSONDecoder().decode(BalanceEnvelope.self, from: data) else {
@@ -244,10 +250,8 @@ enum GlmZcodeAPIClient {
             }
             let planID = balance.plan_id ?? ""
             let showName = balance.show_name ?? entitlementID
-            if let expiresAt = balance.expires_at {
-                let date = Date(timeIntervalSince1970: expiresAt)
-                if date <= now { return nil }
-            }
+            let expiryDate = toDate(balance.expires_at ?? balance.ends_at)
+            if let expiryDate, expiryDate <= now { return nil }
             return GlmActivityPlanBalance(
                 planID: planID,
                 planName: planNameByID[planID] ?? planID,
@@ -257,7 +261,7 @@ enum GlmZcodeAPIClient {
                 totalUnits: max(balance.total_units ?? 0, 0),
                 usedUnits: max(balance.used_units ?? 0, 0),
                 remainingUnits: max(balance.remaining_units ?? 0, 0),
-                expiresAt: balance.expires_at.map { Date(timeIntervalSince1970: $0) },
+                expiresAt: expiryDate,
                 observedAt: now
             )
         }
@@ -266,7 +270,7 @@ enum GlmZcodeAPIClient {
         let previews: [GlmActivityPlanPreview] = plans.flatMap { plan -> [GlmActivityPlanPreview] in
             let planID = plan.plan_id ?? ""
             let planName = plan.name ?? planID
-            if let endsAt = plan.ends_at, Date(timeIntervalSince1970: endsAt) <= now {
+            if let endsAt = toDate(plan.ends_at), endsAt <= now {
                 return []
             }
             return (plan.entitlements ?? []).compactMap { entitlement -> GlmActivityPlanPreview? in
@@ -274,8 +278,7 @@ enum GlmZcodeAPIClient {
                     return nil
                 }
                 guard !coveredEntitlementIDs.contains(entitlementID) else { return nil }
-                guard let effectiveAt = entitlement.effective_at else { return nil }
-                let effectiveDate = Date(timeIntervalSince1970: effectiveAt)
+                guard let effectiveDate = toDate(entitlement.effective_at) else { return nil }
                 guard effectiveDate > now else { return nil }
                 let showName = entitlement.show_name ?? entitlementID
                 return GlmActivityPlanPreview(
@@ -300,6 +303,8 @@ enum GlmZcodeAPIClient {
     ) throws -> GlmResetCardsSnapshot {
         struct ResetCardRawItem: Decodable {
             let expire_at: Double?
+            let expires_at: Double?
+            var effectiveExpireAt: Double? { expire_at ?? expires_at }
         }
         struct HistoryRawItem: Decodable {
             let used_at: Double?
@@ -329,12 +334,12 @@ enum GlmZcodeAPIClient {
         }
 
         let fiveHourCards = (resetData.available_five_hour_resets ?? []).compactMap { item -> GlmResetCardItem? in
-            guard let date = toDate(item.expire_at) else { return nil }
+            guard let date = toDate(item.effectiveExpireAt) else { return nil }
             return GlmResetCardItem(expireAt: date)
         }.sorted { $0.expireAt < $1.expireAt }
 
         let weekCards = (resetData.available_week_resets ?? []).compactMap { item -> GlmResetCardItem? in
-            guard let date = toDate(item.expire_at) else { return nil }
+            guard let date = toDate(item.effectiveExpireAt) else { return nil }
             return GlmResetCardItem(expireAt: date)
         }.sorted { $0.expireAt < $1.expireAt }
 

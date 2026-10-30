@@ -205,9 +205,9 @@ provider 的渠道枚举坏值按缺失处理（`try? + rawValue`）；`bark` �
 ### 4.4 营销活动触达通知（`notifyMarketingCampaign`）
 
 针对 GLM Coding Plan（ZCode 直连营销活动）：
-- 当 `parseZcodePlan` 开启且 `notifyCampaign` 不是 `.none` 时，`GlmZcodeAPIClient` 获取的 `deliveries` 中若存在未通知过的活动，触发营销活动通知。
-- 渠道：通过 `CompositeQuotaUpdateNotifier.notifyMarketingCampaign` 路由至系统通知与 Bark 推送（Bark id：`llmmonitor-{providerID}-campaign-{deliveryID}`，group 为 "运营活动"）。
-- 内存去重：`AppState` 维护 `notifiedMarketingDeliveryIDs: Set<String>`，避免相同活动重复弹出通知。
+- **按需轮询与固定倍率回退**：仅当 `parseZcodeCredential` 开启且 `notifyCampaign` 不是 `.none` 时，才发起运营活动轮询；未选通知（`none`）完全不发起网络请求。轮询走固定倍率回退，仅在 `.full` 模式下请求，`.background` 跳过。
+- **通知渠道**：通过 `CompositeQuotaUpdateNotifier.notifyMarketingCampaign` 路由至系统通知与 Bark 推送（Bark id：`campaign-{providerID}-{deliveryID}`，group 为 "运营活动"）。
+- **时间防抖**：`AppState` 维护 `lastMarketingNotificationTimes: [String: Date]`，每当发现活动时通知一次，1 小时（3600 秒）以内不重复通知。
 
 ## 6. 设置 UI
 
@@ -278,4 +278,4 @@ provider 的渠道枚举坏值按缺失处理（`try? + rawValue`）；`bark` �
 - 决策记录：屏幕跳过语义与恢复公式阈值见 §3.2 / §4.3 的裁定标注（2026-09-13）；
   余额触发器延后（裁定）。
 
-> 核对基线：2026-10-31 · 代码 841a81e
+> 核对基线：2026-10-31 · 代码 0766401

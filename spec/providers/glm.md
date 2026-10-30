@@ -63,7 +63,8 @@ Full config shape:
     "glm_coding_plan": {
       "enabled": true,
       "apiKey": "your-coding-plan-key-id.secret",
-      "parseZcodeBalanceLog": true
+      "parseZcodePlan": true,
+      "notifyCampaign": "barkAndSystem"
     }
   }
 }
@@ -77,7 +78,8 @@ Supported provider fields:
 | `apiKey` | Coding Plan Key. Empty values and `REPLACE...` placeholders are treated as missing (`ProviderConfig.usableAPIKey`). |
 | `refreshIntervalSeconds` | Optional independent refresh interval (overrides global default of 300s). |
 | `displayName` | Optional card title override. |
-| `parseZcodeBalanceLog` | Parse ZCode's balance polling log and show activity-plan (zcode-plan, e.g. weekend trial) balances on the GLM card. Absent/false = off. |
+| `parseZcodePlan` | Enable ZCode plan and reset card parsing (direct API query to `zcode.z.ai` for activity-plan balances, reset cards, and marketing campaign touches). Compatible with legacy `parseZcodeBalanceLog`. Absent/false = off. |
+| `notifyCampaign` | Optional notification channel for new ZCode marketing campaigns (`none` / `system` / `barkAndSystem`). Disabled when `parseZcodePlan` is off. |
 | `notifyIntervalRestored` etc. (4 fields) | Optional per-event notification channels (5h/weekly × restored/exhausted): `none` / `system` / `barkAndSystem`. Defaults: restored → `system`, exhausted → `none`. See `spec/notifications.md`. |
 | `clientBindings[]` | Canonical client-to-quota binding for the optional OpenCode `zhipuai-coding-plan` slice. GLM defaults to enabled; the legacy provider-level field is migration compatibility only. |
 
@@ -542,24 +544,28 @@ OpenCode / DSH 合并 sample（`zhipuai-coding-plan`、`dsh:glm` 等）不带 bi
 > 账号套餐行。**v9**：额度窗口改为"仅正式 Coding Plan 计入"白名单口径，纠正 v8 错误算入的
 > 其他套餐样本。）
 
-### ZCode 套餐解析与直连 API（Activity Plan、重置卡与营销活动）
+### ZCode 凭证解析与直连 API（Activity Plan、重置卡与营销活动）
 
 zcode SaaS 活动套餐（如周末体验套餐 `ZCode Weekend Build`）、额度重置卡与营销活动触达通过 `GlmZcodeAPIClient` 直调 `zcode.z.ai` 接口获取：
-- 凭证由 `GlmZcodeCredentialReader` 从 `~/.zcode/v2/telemetry-state.json` 与 `credentials.json` 自动解密；
-- 抓取随 `GlmCodingPlanFetcher.fetchQuota()` 并在后台静默聚合至 `GlmZcodePackageSnapshot`；
+- 凭证由 `GlmZcodeCredentialReader` 从 `~/.zcode/v2/telemetry-state.json` 与 `credentials.json` 自动解密，需用户手动开启「启用 ZCode 凭证解析」；
+- 抓取随 `GlmCodingPlanFetcher` 并在后台静默聚合至 `GlmZcodePackageSnapshot`，由 `GlmFillingMissingMerger` 处理跨模式合并；
+- **轮询频率与回退策略**：
+  - **活动套餐余额**：与 GLM 默认 Interval 保持一致，每次刷新（`.full` 与 `.background`）均查询；
+  - **额度重置卡**：走固定倍率回退（类似 Codex 重置卡轮询），仅在 `.full` 模式下查询，`.background` 模式按设计跳过并从上次成功快照继承；
+  - **营销活动触达**：仅在选定通知渠道（`notifyCampaign != .none`）且在 `.full` 模式下发起轮询，未选通知完全不发请求；发现活动通知一次，1 小时内不重复通知；
 - 直连失败静默回退，不影响 GLM 主卡额度抓取。
 
 | 项 | 值 |
 |---|---|
-| 数据源 | 直连 API：`GlmZcodeAPIClient.fetchZcodePackage()` |
-| 接口 1：套餐余额 | `GET https://zcode.z.ai/api/v1/zcode-plan/billing/balance?app_version=...`（balances + 生效前 previews） |
-| 接口 2：重置卡 | `GET https://zcode.z.ai/api/v1/coding-plan/reset/status`（5h 卡与周卡列表及过期时间） |
-| 接口 3：营销活动 | `GET https://zcode.z.ai/api/v1/marketing/touch?seq=1`（未领取活动 deliveries） |
+| 数据源 | 直连 API：`GlmZcodeAPIClient.fetchBalance()` / `fetchResetCards()` / `fetchMarketingTouch()` |
+| 接口 1：套餐余额 | `GET https://zcode.z.ai/api/v1/zcode-plan/billing/balance?app_version=...`（与 GLM 默认 Interval 一致） |
+| 接口 2：重置卡 | `GET https://zcode.z.ai/api/v1/coding-plan/reset/status`（走固定倍率回退，仅 `.full` 模式查询） |
+| 接口 3：营销活动 | `GET https://zcode.z.ai/api/v1/marketing/touch?seq=1`（仅在通知开启且 `.full` 模式轮询，1h 内不重复） |
 | 过期口径 | `expires_at <= now` 的套餐条目直接剔除；重置卡按 `expireAt` 展示 |
-| 开关 | `providers.glm_coding_plan.parseZcodePlan`（兼容旧配置 `parseZcodeBalanceLog`；缺省关闭） |
-| 营销活动通知 | `providers.glm_coding_plan.notifyCampaign`（`QuotaNotifyChannel`：`none` / `system` / `barkAndSystem`；缺省关闭；在套餐解析关闭时禁用） |
+| 开关 | `providers.glm_coding_plan.parseZcodeCredential`（兼容旧配置 `parseZcodePlan` 与 `parseZcodeBalanceLog`；缺省关闭） |
+| 营销活动通知 | `providers.glm_coding_plan.notifyCampaign`（`QuotaNotifyChannel`：`none` / `system` / `barkAndSystem`；缺省关闭；在凭证解析关闭时禁用） |
 | 套餐展示 | `GlmActivityPlanBalancesView`：渲染生效中套餐进度条与失效倒计时，以及生效前预告置灰条 |
-| 重置卡展示 | `GlmActivityPlanBalancesView`：双列布局，左侧 5 小时卡 `5小时重置卡 (N)`、右侧周卡 `周重置卡 (N)`；每列最多展示前 3 张（`prefix(3)`），显示 `MM-dd HH:mm 到期`；无可用卡时显示 `暂无可用卡` |
+| 重置卡展示 | `GlmActivityPlanBalancesView`：双列布局，左侧 5 小时卡 `5小时重置卡 (N)`、右侧周卡 `周重置卡 (N)`；每列最多展示前 3 张（`prefix(3)`），显示 `MM-dd HH:mm 到期`；无可用卡且无套餐时不占卡片高度 |
 
 ### 额度重置卡机制
 
@@ -631,9 +637,10 @@ Bigmodel-Target-Type: PERSONAL                    # 个人账号固定为 PERSON
 | **离线可用性** | 依赖网络 | **完全离线可用**（纯读本地 log 文件） |
 | **鉴权失效风险** | 若用户退登或 Token 过期且久未启动 ZCode，可能返回 401 | 无（日志已落盘，不存在实时鉴权问题） |
 
-**最佳架构决策**：**Direct-First + Log-Fallback（直连为主，日志兜底）**。
-- 当本地检测到 ZCode 凭证且网络可用时，优先直连 API，解锁重置卡与领鸡蛋提醒两大核心能力；
-- 当凭证缺失、失效或网络断开时，自动无缝降级至本地日志解析，保证数据不中断。
+**最终架构决策**：**Direct API Only（纯直连接口解析，解耦日志）**。
+- 去除 `GlmZcodeLocalUsageScanner` 与 `LocalUsageOrchestration` 中的日志解析调用与目录监听；
+- 统一由 `GlmCodingPlanFetcher` 携带 `isZcodePlanEnabled`，通过 `GlmZcodeAPIClient` 直连接口获取活动套餐、重置卡与营销触达；
+- 当直连 API 失败或本地凭证缺失时静默降级（保留原有配额刷新，不阻断主流程），`GlmZcodeBalanceLogReader` 仅保留供历史测试兼容并标记为 deprecated。
 
 **可观测副作用**：用卡成功后 monitor 接口对应窗口的 `remaining` 立即回满、
 `nextResetTime` 重新滚动——LLM-monitor 不做「疑似用卡」推断展示，卡片只反映
@@ -788,4 +795,4 @@ whether the quota batch succeeded. GLM's former dedicated periodic trigger
 The scanner's db+WAL fingerprint check is unchanged: when nothing changed only a `stat()`
 runs (microseconds); SQL (~1.5ms) only runs when the WAL actually moved.
 
-> 核对基线：2026-10-31 · 代码 841a81e
+> 核对基线：2026-10-31 · 代码 0766401

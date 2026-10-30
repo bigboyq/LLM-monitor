@@ -236,9 +236,12 @@ struct LLMMonitorApp: App {
                 iconSystemName: "chevron.left.forwardslash.chevron.right",
                 accentColor: .glm,
                 makeFetcher: { config in
-                    GlmCodingPlanFetcher(
+                    let isCredentialEnabled = config.isZcodeCredentialEnabled
+                    let pollCampaign = isCredentialEnabled && (config.notifyCampaign != nil && config.notifyCampaign != QuotaNotifyChannel.none)
+                    return GlmCodingPlanFetcher(
                         apiKey: config.usableAPIKey ?? "",
-                        isZcodePlanEnabled: config.isZcodePlanEnabled
+                        isZcodeCredentialEnabled: isCredentialEnabled,
+                        pollMarketingCampaign: pollCampaign
                     )
                 },
                 settingsTabTitle: "GLM",

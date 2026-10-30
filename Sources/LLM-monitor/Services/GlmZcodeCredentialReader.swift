@@ -14,12 +14,17 @@ struct GlmZcodeCredentials: Equatable, Sendable {
     }
 
     var hasCredentials: Bool {
-        deviceMid != nil && jwtToken != nil
+        guard let jwtToken, !jwtToken.isEmpty else { return false }
+        return true
     }
 
     /// 是否具备调用需双 Token 鉴权接口（如重置卡状态与 Start Plan 额度）的完整凭证
     var hasFullCredentials: Bool {
-        deviceMid != nil && jwtToken != nil && bigmodelAccessToken != nil
+        guard let jwtToken, !jwtToken.isEmpty,
+              let bigmodelAccessToken, !bigmodelAccessToken.isEmpty else {
+            return false
+        }
+        return true
     }
 }
 

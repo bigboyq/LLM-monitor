@@ -50,13 +50,17 @@ struct SettingsFormDraft: Equatable {
     var glmEnabled: Bool = false
     var glmInterval: Int = 0
     var glmApiKey: String = ""
-    var glmZcodePlanEnabled: Bool = false
+    var glmZcodeCredentialEnabled: Bool = false
     var glmNotifyCampaign: QuotaNotifyChannel = .none
 
     /// 兼容历史测试与调用点
+    var glmZcodePlanEnabled: Bool {
+        get { glmZcodeCredentialEnabled }
+        set { glmZcodeCredentialEnabled = newValue }
+    }
     var glmBalanceLogParsing: Bool {
-        get { glmZcodePlanEnabled }
-        set { glmZcodePlanEnabled = newValue }
+        get { glmZcodeCredentialEnabled }
+        set { glmZcodeCredentialEnabled = newValue }
     }
 
     var deepseekEnabled: Bool = false
@@ -163,7 +167,7 @@ struct SettingsFormDraft: Equatable {
             glmEnabled = pc.enabled
             glmApiKey = pc.apiKey ?? ""
             glmInterval = pc.refreshIntervalSeconds ?? 0
-            glmZcodePlanEnabled = pc.isZcodePlanEnabled
+            glmZcodeCredentialEnabled = pc.isZcodeCredentialEnabled
             glmNotifyCampaign = pc.notifyCampaign ?? .none
         }
 

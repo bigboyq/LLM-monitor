@@ -11,12 +11,8 @@ import os
 /// 7 天窗口 + 最近 8 天逐次调用样本。Reasoning 归类在 `GlmZcodeDBReader.queryPerDay`
 /// 的 SQL `CASE` 内一次性走 Method A 完成（`reasoning_tokens` priority + `EXISTS` part 表
 /// `type='reasoning'` 的整轮归类），不再有 scanner 端字符分摊步骤。
-///
-/// 开启 `parseZcodeBalanceLog` 设置后，每次构建快照还会 tail 读 ZCode 余额轮询
-/// 日志（`GlmZcodeBalanceLogReader`），把活动套餐（zcode-plan，如周末体验套餐）
-/// 的 used/remaining/expires_at 挂到 `GlmLocalUsage.activityPlanBalances`，
-/// 生效前 entitlement 预告挂到 `GlmLocalUsage.activityPlanPreviews`
-///（两条数据同源同一条日志行，开关门控同语义）。
+/// 活动套餐（zcode-plan）与额度重置卡已改由 `GlmZcodeAPIClient` 直连接口解析，
+/// 本 scanner 仅负责扫描 SQLite（`db.sqlite` 与 `tasks-index.sqlite`）。
 ///
 /// 生命周期外壳、db+WAL 指纹、快照缓存与 7 天 rebase 都在
 /// `SingleDBSnapshotScanner` 基座；本类型只声明路径、缓存版本与三个 pipeline hook

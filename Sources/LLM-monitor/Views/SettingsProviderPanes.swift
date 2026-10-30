@@ -213,10 +213,10 @@ extension SettingsView {
                 }
 
                 SettingsSection(
-                    title: "ZCode 套餐解析",
-                    footer: "通过 ZCode 接口解析活动套餐（如周末体验套餐）与额度重置卡。开启后可在 GLM 卡片展示套餐用量与重置卡状态，并支持运营活动推送提醒。默认关闭。"
+                    title: "ZCode 凭证解析",
+                    footer: "解密读取本地 ZCode 凭证（~/.zcode/v2），手动开启后提供活动套餐余额查询、额度重置卡状态及运营活动推送配置。默认关闭。"
                 ) {
-                    SettingsToggleRow(label: "启用 ZCode 套餐解析", isOn: $draft.glmZcodePlanEnabled)
+                    SettingsToggleRow(label: "启用 ZCode 凭证解析", isOn: $draft.glmZcodeCredentialEnabled)
                     SettingsControlRow("运营活动推送通知") {
                         Picker("", selection: $draft.glmNotifyCampaign) {
                             ForEach(QuotaNotifyChannel.allCases) { channel in
@@ -226,7 +226,7 @@ extension SettingsView {
                         .pickerStyle(.menu)
                         .frame(width: SettingsLayout.standardControlWidth, alignment: .trailing)
                     }
-                    .disabled(!draft.glmZcodePlanEnabled)
+                    .disabled(!draft.glmZcodeCredentialEnabled)
                 }
             }
         }
