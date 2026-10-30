@@ -313,7 +313,8 @@ final class AppState: ObservableObject {
             },
             onHealthBoundary: { [weak self] boundary in
                 self?.handleHealthBoundary(at: boundary)
-            }
+            },
+            periodicFullEveryN: configStore.config.effectivePeriodicFullEveryN
         )
         self.authProber = AuthProber(
             fetcherProvider: { [weak self] providerID in
@@ -679,6 +680,7 @@ final class AppState: ObservableObject {
             .map(\.id)
         logInfo("AppState.rescheduleAll: 配置重载差异化重排，\(managedProviderIDs.count)/\(statuses.count) 个 provider 进入额度循环")
         refreshScheduler.reconfigure(managed: managedProviderIDs)
+        refreshScheduler.updatePeriodicFullEveryN(configStore.config.effectivePeriodicFullEveryN)
         rescheduleHealthBoundary(updateEvaluationDate: true)
     }
 

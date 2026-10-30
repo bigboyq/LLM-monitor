@@ -55,7 +55,7 @@ extension SettingsView {
             if currentTab.id == SettingsTab.generalID {
             SettingsSection(
                 title: "全局刷新间隔",
-                footer: "没有设置独立频率的 Provider 将继承此刷新时间。"
+                footer: "没有设置独立频率的 Provider 将继承此刷新时间。全量刷新倍率控制每隔 N 拍常规刷新后补跑一次 .full 全量模式。受影响范围包括：Codex 重置次数抓取与陈旧度容忍阈值、ZCode 额度重置卡状态拉取、ZCode 运营活动触达轮询（未开启通知时不请求）。默认 20 拍。"
             ) {
                 SettingsControlRow("刷新频率", alignment: .top) {
                     VStack(alignment: .trailing, spacing: 6) {
@@ -76,6 +76,25 @@ extension SettingsView {
 
                         Text("当前：\(Formatters.formatInterval(seconds: draft.globalInterval))")
                             .font(SettingsTypography.numericValue)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(width: SettingsLayout.standardControlWidth)
+                }
+
+                SettingsControlRow("全量补跑倍率", alignment: .top) {
+                    VStack(alignment: .trailing, spacing: 6) {
+                        Stepper(
+                            value: $draft.periodicFullEveryN,
+                            in: 1...100,
+                            step: 1
+                        ) {
+                            Text("每 \(draft.periodicFullEveryN) 拍常规刷新")
+                                .font(SettingsTypography.numericValue)
+                        }
+
+                        let totalSec = draft.globalInterval * max(draft.periodicFullEveryN, 1)
+                        Text("约每 \(Formatters.formatInterval(seconds: totalSec)) 补跑一次全量刷新")
+                            .font(SettingsTypography.metadata)
                             .foregroundStyle(.secondary)
                     }
                     .frame(width: SettingsLayout.standardControlWidth)

@@ -120,10 +120,10 @@ deriveState 返回 `.notConfigured` 时整个 state 重置，lastSuccess 跟着�
 
 **配置重载 ≠ 冷启动**：配置写盘（设置页保存、dock 拖拽落点 App 自写 config、auth 探测翻转）触发的重排走 `ProviderRefreshScheduler.reconfigure(managed:)` 差异化路径——仍启用且 interval 未变的 provider 原样保留既有 deadline 与首刷标记（下一拍继续 `.background`），只有新增 / 重新启用 / interval 变化的 provider 才按初始排期立即纳入；冷启动语义只属于 `AppState.start()`。
 
-**周期 full（reset credits 等“只在 full 抓取”的字段）**：`ProviderRefreshScheduler` 每累计
-`periodicFullEveryN`（默认 20）次 `.background` 后，下一次补跑一次 `.full`（走常规 deadline，
-不改变常规排期节奏）。这样 Codex 的 reset credits 不需要用户手动刷新也能周期性更新：默认 300s 间隔下
-约每 `20×300s ≈ 100min` 自动 full 一次。`.background` 仍只抓主 quota，不抓 reset credits。
+**周期 full（reset credits、重置卡与营销活动等“只在 full 抓取”的字段）**：`ProviderRefreshScheduler` 每累计
+`periodicFullEveryN`（默认 20，支持全局配置 `periodicFullEveryN` 动态热重载）次 `.background` 后，下一次补跑一次 `.full`（走常规 deadline，
+不改变常规排期节奏）。这样 Codex 的 reset credits 与 GLM 的重置卡 / 营销活动轮询不需要用户手动刷新也能周期性更新：默认 300s 间隔下
+约每 `20×300s ≈ 100min` 自动 full 一次。`.background` 仍只抓主 quota，不抓 reset credits / 重置卡。配置热重载时调度器即时生效。
 
 scheduler 集中持有排期与 in-flight 状态：`nextRefreshDates` / `resetCandidates` +
 `lastIntervalFinishedDates`（mid-cycle reset 点）/ `inFlightModes` / `inFlightWaiters` 等。
@@ -509,5 +509,5 @@ These are documented product boundaries:
   have their own SQLite readers, Antigravity is pure RPC, and Codex parses JSONL on
   demand for the 7-day chart.
 
-> 核对基线：2026-10-29 · 代码 b315c98
+> 核对基线：2026-10-31 · 代码 a69e749
 > 2026-10-25 自启草稿与菜单实际状态同步已随 6f11831 入库：定向 27 例、完整 1422 例均通过；完整验证记录见 `spec/sync.md`。

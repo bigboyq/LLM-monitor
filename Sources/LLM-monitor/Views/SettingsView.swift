@@ -464,6 +464,9 @@ struct SettingsView: View {
 
         var config = configStore.config
         config.refreshIntervalSeconds = draft.globalInterval
+        config.periodicFullEveryN = draft.periodicFullEveryN == ProviderRefreshScheduler.periodicFullEveryNDefault
+            ? nil
+            : draft.periodicFullEveryN
         config.statusBarIconStyle = draft.statusBarIconStyle
         config.statusBarHealthDotEnabled = draft.statusBarHealthDotEnabled
         config.statusBarHealthColors = draft.statusBarHealthColors == .default

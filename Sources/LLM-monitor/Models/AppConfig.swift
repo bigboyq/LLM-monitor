@@ -487,6 +487,19 @@ struct AppConfig: Codable, Equatable {
     /// 集中告警阈值配置（nil = 默认阈值：API 60%/30%，DeepSeek 10/3）
     var alerts: AlertThresholdConfig?
 
+    /// 全量刷新周期倍率（每 periodicFullEveryN 次 background 模式后补跑一次 full 模式，默认 20 拍）。
+    /// 影响范围：
+    /// 1. Provider 刷新调度器：连续 background 达到该次数后切换为 full 模式；
+    /// 2. Codex 重置次数（reset-credits）抓取时机与陈旧度容忍阈值（max(3 × N × interval, 15m)）；
+    /// 3. GLM ZCode 额度重置卡（5h/周卡）接口查询频率；
+    /// 4. GLM ZCode 运营活动营销触达接口轮询频率（在开启通知时生效）。
+    var periodicFullEveryN: Int?
+
+    var effectivePeriodicFullEveryN: Int {
+        let value = periodicFullEveryN ?? ProviderRefreshScheduler.periodicFullEveryNDefault
+        return min(max(value, 1), 100)
+    }
+
     var effectiveAlertThresholds: AlertThresholdConfig {
         alerts ?? .default
     }
@@ -571,7 +584,8 @@ struct AppConfig: Codable, Equatable {
         holidaySource: String? = nil,
         appearance: AppAppearance? = nil,
         sync: SyncConfig? = nil,
-        alerts: AlertThresholdConfig? = nil
+        alerts: AlertThresholdConfig? = nil,
+        periodicFullEveryN: Int? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.refreshIntervalSeconds = refreshIntervalSeconds
@@ -589,6 +603,7 @@ struct AppConfig: Codable, Equatable {
         self.appearance = appearance
         self.sync = sync
         self.alerts = alerts
+        self.periodicFullEveryN = periodicFullEveryN
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -604,6 +619,7 @@ struct AppConfig: Codable, Equatable {
         case appearance
         case sync
         case alerts
+        case periodicFullEveryN
     }
 
     init(from decoder: Decoder) throws {
@@ -718,6 +734,12 @@ struct AppConfig: Codable, Equatable {
         } catch {
             logWarn("[config] alerts 字段解析失败，已按缺省阈值处理：\(error.localizedDescription)")
             self.alerts = nil
+        }
+        do {
+            self.periodicFullEveryN = try container.decodeIfPresent(Int.self, forKey: .periodicFullEveryN)
+        } catch {
+            logWarn("[config] periodicFullEveryN 字段解析失败，已按缺省处理：\(error.localizedDescription)")
+            self.periodicFullEveryN = nil
         }
     }
 

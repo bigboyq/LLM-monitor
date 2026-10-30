@@ -91,6 +91,15 @@ addressable seam — the tests pin the action, the view only draws it. The greye
 first layer is UX, not correctness: repeated clicks are absorbed by `refreshOne`'s
 transaction gate.
 
+### 常规 pane「刷新」节与全量补跑倍率
+
+常规设置 pane（`SettingsGeneralPane.swift`）在「刷新」节提供全局刷新与全量周期的集中控制：
+- **全局刷新频率**（`refreshIntervalSeconds`）：`Picker` 下拉选择后台常规刷新间隔（30s、1m、2m、5m、10m、15m、30m、1h），默认 5 分钟。各 Provider 未单独指定频率时均沿用此全局间隔。
+- **全量补跑倍率**（`periodicFullEveryN`）：`Stepper` 步进调节（范围 1...100，默认 20）。展示当前拍数及按全局间隔折算的真实换算时间（如 `约每 1 小时 40 分钟 补跑一次全量刷新`）。
+  - 控制 Provider 调度器每连续执行 N 拍后台轻量模式（`.background`）后，自动补跑一次全量模式（`.full`）；
+  - 受影响范围包括：Codex 重置次数抓取与陈旧度判定（`max(3 × (N × interval), 15 min)`）、GLM ZCode 额度重置卡抓取、GLM ZCode 运营活动轮询；
+  - 绑定 `draft.periodicFullEveryN`，为默认值 20 时写回 nil，非默认值落盘，配置热重载时调度器动态更新生效。
+
 ### ChatGPT Provider Pane 与「API 赠金」设置
 
 ChatGPT 设置 pane（`SettingsProviderPanes.swift:chatgptPane`）在基础的 `auth.json 路径` 与刷新频率之外，提供「API 赠金」专用配置节：
@@ -353,6 +362,6 @@ appearance-neutral.
 - **历史图表空间适配**：`SevenDayUsageHistoryView` 增加紧凑（`.compact`）与宽松（`.expanded`）两种模式。设置页与独立详情窗口使用 `.expanded`，宽度撑满可用区域（`.frame(maxWidth: .infinity)`），表格字号适度提至 11–11.5pt、列宽与间距自适应拉开；菜单与浮层维持 `.compact`（420pt）。坐标轴与日期标签字体提至 10–11pt、配色提至 `.secondary`。
 - **说明文字与行距紧凑化**：边缘状态窗 footer 收敛为 2 句核心操作指引，双环机制与多屏行为放入「了解更多…」popover；ChatGPT API 赠金设置移除每行冗余的 `Divider().padding(.vertical, 4)`，对齐常规表单行距。
 
-> 核对基线：2026-10-30 · 代码 81063ef
+> 核对基线：2026-10-31 · 代码 a69e749
 > Sync 草稿跨 tab 保留、表单隔离与保存失败提示验证结果见 `spec/sync.md`。
 > 2026-10-25 菜单 / 设置自启同步已随 6f11831 入库：相关定向测试 27 例、完整测试 1422 例均 0 失败；测试使用模拟登录项操作，不执行真实注册 / 注销。

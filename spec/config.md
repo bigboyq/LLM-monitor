@@ -86,6 +86,7 @@ The app reads and writes this shape:
 | `providers.<id>.notifyIntervalRestored` / `notifyIntervalExhausted` / `notifyWeeklyRestored` / `notifyWeeklyExhausted` | provider | 四类额度事件各自的推送渠道（`QuotaNotifyChannel`：`none` / `system` / `barkAndSystem`）。字段不存在 = 默认渠道（恢复 → 系统通知，耗尽 → 不通知），与引入通知配置前的行为一致。 |
 | `clientBindings[]` | client → quota Provider | Canonical source of truth for which Client usage slices contribute to a quota card. Schema v2; missing bindings are migrated from the legacy provider-level OpenCode switches by `AppConfig.legacyClientBindings(from:)`. 设置页「客户端」pane 提供可视化绑定开关，按选中的客户端过滤并展示对应的 Provider 卡片归属开关，直接更新 `draft.clientBindings` 并随表单保存。 |
 | `alerts` | global | 集中告警阈值配置（`AlertThresholdConfig`）。缺省或 nil 使用默认值（API 配额余量警告 60%、危险 30%；DeepSeek 余额警告 10、危险 3）。字段：`apiQuotaWarningPercent` (1...100, 默认 60)、`apiQuotaCriticalPercent` (1...100, 默认 30)、`deepseekBalanceWarning` (0..., 默认 10)、`deepseekBalanceCritical` (0..., 默认 3)。始终自动约束 `critical <= warning`。控制状态栏健康圆点、双环色段、卡片头部及 Edge Dock 呼吸环的红黄告警分档。 |
+| `periodicFullEveryN` | global | 全量刷新周期倍率（Int，范围 1...100，默认 20）。每经过 N 拍常规后台（`.background`）刷新后，自动补跑一次全量（`.full`）模式。设置页「常规」Tab 全局刷新频率处可视化配置。受影响范围详见下文。 |
 | `providers.<id>.mergeOpencodeUsage` | legacy compatibility | Decoded for older config files and projected into runtime status for compatibility. The canonical source is `clientBindings[]`; Settings does not expose a per-provider OpenCode toggle and `applyAndSave` preserves this legacy field rather than rewriting it. Defaults are encoded in `ProviderConfig.shouldMergeOpencodeUsage(for:)` (GLM `true`, others `false`), and users with non-default needs edit `config.json`. |
 
 `ProviderConfig.encode(to:)` omits nil optional fields, so saved config only includes relevant keys. `ConfigStore.applyAndSave()` writes pretty-printed, sorted-key JSON and reapplies `0600`.
@@ -93,6 +94,21 @@ The app reads and writes this shape:
 Unknown or incorrectly typed `statusBarIconStyle` /
 `statusBarHealthDotEnabled` values fall back
 to their defaults; cosmetic config errors do not trigger recovery of the provider settings.
+
+### 全量刷新倍率（`periodicFullEveryN`）及其影响范围
+
+全局配置 `periodicFullEveryN`（默认 20，范围 1...100，在设置页「常规」Tab 的全局刷新频率下方配置）控制后台刷新调度器在连续执行若干次常规后台模式（`.background`）后，何时自动切换为一次全量模式（`.full`）。
+
+**受其影响的完整范围包括**：
+1. **调度器全量刷新循环**（`ProviderRefreshScheduler`）：
+   每个已启用的 Provider 在连续执行 `periodicFullEveryN` 次 `.background` 拍之后，下一次常规轮询自动切换为 `.full` 模式。若全局刷新间隔为 `interval`，则全量模式触发周期约为 `(N + 1) × interval`（例如默认 300s × 21 ≈ 105 分钟）。配置变更时调度器动态更新生效。
+2. **Codex / ChatGPT 重置次数（Rate-limit Reset Credits）抓取与过期判定**：
+   - 抓取时机：Codex 仅在 `.full` 模式下向 `chatgpt.com/backend-api/wham/rate-limit-reset-credits` 请求重置次数，`.background` 模式跳过并保持原值；
+   - 陈旧度判定：reset-credits 在卡片上标记为「可能过期」的时间阈值是 `max(3 × (periodicFullEveryN × refreshInterval), 15 min)`（默认约 5 小时），`periodicFullEveryN` 决定了该数据容许未更新的有效新鲜度窗口。
+3. **GLM Coding Plan 额度重置卡（Reset Cards）查询**：
+   - ZCode `coding-plan/reset/status` 走固定倍率回退，仅在 `.full` 模式下发起网络查询，`.background` 模式跳过并由 `GlmFillingMissingMerger` 从上一次成功快照继承；因此重置卡的实际抓取周期直接由 `periodicFullEveryN` 决定。
+4. **GLM Coding Plan 运营活动（Marketing Touch）轮询**：
+   - 营销触达接口（`marketing/touch`）仅在开启通知且模式为 `.full` 时发起轮询，未配置通知时完全不发起请求；其实际轮询频率同样由 `periodicFullEveryN` 约束（且受 1 小时防抖保护）。
 
 OpenCode and DSH are shared local Clients rather than menu-bar quota Providers. Their
 raw multi-provider slices are surfaced in the new "客户端" tab instead of a dedicated
@@ -256,6 +272,6 @@ CHANGELOG 最新条目、两份 README 的「当前版本」/DMG 名/build-relea
 的旧文案「按本机时区计算、可在设置中调整」直到发版前才发现，只因 `build-release.sh` 的
 版本门禁全绿而放行。**功能口径变了，用户文档必须同轮改**。
 
-> 核对基线：2026-10-31 · 代码 8ae2952
+> 核对基线：2026-10-31 · 代码 a69e749
 > 2026-10-25 统一验证通过，详见 `spec/sync.md`。
 > `.deviceId` 身份与旧 `sync.nodeID` 忽略语义已随 6f11831 入库，验证记录见 `spec/sync.md`。

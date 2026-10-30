@@ -147,7 +147,7 @@ final class ProviderRefreshScheduler {
     private let sleep: @Sendable (TimeInterval) async throws -> Void
     /// 每 N 次 background 刷新后补一次 .full（让 reset credits 等只在 full 抓取的字段
     /// 也能周期性更新）。生产默认 20。0 表示永不周期 full（只靠启动/手动 full）。
-    private let periodicFullEveryN: Int
+    private(set) var periodicFullEveryN: Int
     private let systemWakeWindow: TimeInterval
 
     /// reset credits 等“只在 .full 抓取”字段的实际刷新周期 = N × provider 间隔。
@@ -266,6 +266,14 @@ final class ProviderRefreshScheduler {
         onNextRefreshChange()
         wake()
         return true
+    }
+
+    /// 更新全量刷新周期倍率（每 N 次 background 补一次 full）。
+    func updatePeriodicFullEveryN(_ newN: Int) {
+        let valid = max(newN, 0)
+        guard periodicFullEveryN != valid else { return }
+        logInfo("ProviderRefreshScheduler: 全量刷新周期倍率变更 \(periodicFullEveryN) → \(valid)")
+        periodicFullEveryN = valid
     }
 
     /// 尝试开始一个由 AppState 托管的 Manual/Wakeup 全局事务。
