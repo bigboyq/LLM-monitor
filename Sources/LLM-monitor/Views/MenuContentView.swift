@@ -517,15 +517,15 @@ struct MenuContentView: View {
     // MARK: - footer（紧凑 padding）
 
     private var footerBar: some View {
-        // 刷新与时间统一放在 header，footer 只保留常驻功能。
+        // 刷新与时间统一放在 header，footer 只保留常驻功能；整体向右对齐。
         HStack(spacing: 8) {
             Spacer(minLength: 8)
             autostartToggle
             footerSeparator
             FooterActionButton(icon: "gearshape", title: "设置") {
-                    openSettingsWindow()
-                }
-                .help("打开设置面板")
+                openSettingsWindow()
+            }
+            .help("打开设置面板")
             footerSeparator
             FooterActionButton(
                 icon: state.sleepHealth.isKeepAwakeOn ? "cup.and.saucer.fill" : "powersleep",
@@ -535,24 +535,17 @@ struct MenuContentView: View {
                 state.sleepHealth.setKeepAwake(!state.sleepHealth.isKeepAwakeOn)
                 energyUpdateTick &+= 1
             }
-                .help(energyActionTooltip)
-            Menu {
-                Button("在 Finder 中显示日志", systemImage: "doc.text.magnifyingglass") {
-                    state.revealLogFile()
-                }
-                Divider()
-                Button("退出 LLM Monitor", systemImage: "xmark.circle", role: .destructive) {
-                    NSApp.terminate(nil)
-                }
-            } label: {
-                Image(systemName: "ellipsis")
-                    .font(MenuTypography.footer)
-                    .frame(width: 22, height: 20)
-                    .contentShape(Rectangle())
+            .help(energyActionTooltip)
+            footerSeparator
+            FooterActionButton(icon: "doc.text.magnifyingglass", title: "日志") {
+                state.revealLogFile()
             }
-            .menuStyle(.borderlessButton)
-            .help("更多操作：日志、退出")
-            .accessibilityLabel("更多操作")
+            .help("在 Finder 中显示日志文件")
+            footerSeparator
+            FooterActionButton(icon: "xmark.circle", title: "退出") {
+                NSApp.terminate(nil)
+            }
+            .help("退出 LLM Monitor")
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 7)

@@ -158,7 +158,7 @@ height: content-driven, fixedSize(vertical: true)
 | ⚠ 会话文件超出单轮扫描预算，已按最新优先截断…   |   truncation notice (that section only)
 | ...                                            |
 +------------------------------------------------+
-|                                ⏻ 自启 | 设置 | 节能 | ⋯ |
+|                   ⏻ 自启 | 设置 | 节能 | 日志 | 退出 |
 +------------------------------------------------+
 ```
 
@@ -175,7 +175,7 @@ loading、failed、notConfigured 可按需增加状态行，错误始终可见�
 多节点额度页会标明当前用量范围与额度仍为全局有效值。内容高度由当前页实测，
 超过屏幕预算时内容区滚动，标题和 footer 保持固定。
 
-（footer 右侧功能组竖线分隔，自启为状态化图标按钮；日志与退出收进「更多操作」。）
+（footer 右侧功能组整体向右对齐，竖线分隔，自启为状态化图标按钮，日志与退出为直属常驻操作。）
 
 The menu offers two complementary views: **用量** answers which clients burned how
 many tokens today, and **额度** answers how much remains per enabled Provider. The
@@ -554,14 +554,14 @@ scrolling never pushes content under the Dock, while the menu still reads as
 "floating" rather than wall-to-wall — 0.85+ feels wall-to-wall, 0.5- trips the
 `ScrollView` far too often.
 
-The menu footer contains:
+The menu footer contains (right-aligned, separated by vertical hairlines):
 - the autostart state icon (with help text)
 - `设置` (opens native Settings window)
 - `节能` (1-click keep-awake in-memory toggle; the icon flips `powersleep` →
   `cup.and.saucer.fill` and the label to `防休眠` while it is on, and the overlay dot
   reflects tri-color sleep health — immediately red when keep-awake is on)
-- `更多操作` menu containing `日志` (reveals `log.txt` in Finder) and `退出`
-  (`NSApp.terminate`)
+- `日志` (reveals `log.txt` in Finder)
+- `退出` (`NSApp.terminate`)
 
 ### Full Provider Detail Window
 
@@ -1071,5 +1071,5 @@ The UI intentionally hides reset-credit id, title, description, and grant time.
 The shared Plan fallback uses the same 10pt `MenuTypography.hint` role for loading and
 failure feedback; there is no separate error-message typography role.
 
-> 核对基线：2026-10-30 · 代码 c0a53d3
+> 核对基线：2026-10-30 · 代码 aa2b8f6
 > 统一验证通过，详细结果见 `spec/sync.md`。
