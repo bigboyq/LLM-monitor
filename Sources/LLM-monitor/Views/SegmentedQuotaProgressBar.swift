@@ -72,32 +72,40 @@ struct SegmentedQuotaProgressBar: View {
         timeRemainingFraction.map { min(max($0, 0), 1) }
     }
 
-    /// 各段自适应栅格数：以 210 个数据栅格为基准（2*3*5*7 = 210 最小公倍数），
-    /// 确保 1、2、3、5、6、7、10 分段均可严格整数等分，色块宽度保持全局恒定。
+    /// 各段自适应栅格数（约 100 槽微栅格体系）：
+    /// 遵循「肉眼对色块宽度敏感、对微小间距不敏感」的设计哲学，每组模型采用整除的专属点数：
+    /// - 单窗口（Argon / DeepSeek）：100 点
+    /// - 2 倍率（Claude / GPT）：每段 50 点，周共 100 点
+    /// - 5 倍率（GLM Coding Plan）：每段 20 点，周共 100 点
+    /// - 6 倍率（ChatGPT Codex）：每段 16 点，周共 96 点
+    /// - 7 倍率（MiniMax Video）：每段 14 点，周共 98 点
+    /// - 10 倍率（MiniMax General）：每段 10 点，周共 100 点
+    /// 彻底消除同一卡片各段之间点数不等（如 17 vs 16）或点宽被拉伸压缩的问题。
     static func ticksPerSegment(for segmentCount: Int) -> Int {
         let count = max(segmentCount, 1)
         switch count {
-        case 1:  return 210
-        case 2:  return 105
-        case 3:  return 70
-        case 5:  return 42
-        case 6:  return 35
-        case 7:  return 30
-        case 10: return 21
+        case 1:  return 100
+        case 2:  return 50
+        case 3:  return 33
+        case 5:  return 20
+        case 6:  return 16
+        case 7:  return 14
+        case 10: return 10
         default:
-            return max(1, Int((210.0 / Double(count)).rounded()))
+            return max(1, Int((100.0 / Double(count)).rounded()))
         }
     }
 
-    /// 各段栅格分配：对于等宽整段保持自适应栅格；
-    /// 对于非整数倍率（如 Gemini 3.33，总容量 10/3：前 3 段各 30%、尾段 10%），
-    /// 以 210 格为基准按容量权重严格分配各段栅格（如 63、63、63、21，合计严格等于 210）。
+    /// 各段栅格分配：
+    /// - 等宽整段按 `ticksPerSegment` 分配；
+    /// - 非整数倍率（如 Gemini 3.33，总容量 10/3：前 3 段各 30%、尾段 10%），
+    ///   以 100 格为基准按容量权重分配（前 3 段各 30 点，尾段 10 点，周合计精准为 100 点）。
     static func ticksForSegment(capacity: Double, totalCapacity: Double, segmentCount: Int) -> Int {
         if totalCapacity.truncatingRemainder(dividingBy: 1.0) < 0.001 {
             return ticksPerSegment(for: segmentCount)
         }
         let ratio = capacity / totalCapacity
-        return max(1, Int((210.0 * ratio).rounded()))
+        return max(1, Int((100.0 * ratio).rounded()))
     }
 
     /// 根据当前段 fill 比例计算点亮的栅格数。
@@ -145,15 +153,15 @@ struct SegmentedQuotaProgressBar: View {
         GeometryReader { geo in
             let totalWidth = geo.size.width
             let gapCount = max(segmentCount - 1, 0)
-            let macroGap: CGFloat = gapCount > 0 ? 4.0 : 0.0
+            let macroGap: CGFloat = gapCount > 0 ? 4.5 : 0.0
             let totalMacroGaps = CGFloat(gapCount) * macroGap
             let availableWidth = max(0, totalWidth - totalMacroGaps)
 
-            // 色块宽度固定为 1.0pt（Retina 2x 屏幕下物理对应整整 2px，圆角 0.5pt），
-            // 绝对不动态拉伸或压缩色块宽度，保持所有段色块完全等宽等精细度。
-            let tickWidth: CGFloat = min(1.0, totalTicks > 0 ? availableWidth / CGFloat(totalTicks) : 1.0)
+            // 色块宽度固定为 2.0pt（Retina 2x 屏幕下物理对应整整 4px，圆角 1.0pt 形成饱满垂直胶囊），
+            // 绝不在各段之间拉伸压缩，保持极度锐利且一致的视觉宽度。
+            let tickWidth: CGFloat = min(2.0, totalTicks > 0 ? availableWidth / CGFloat(totalTicks) : 2.0)
 
-            // 扣除所有固定色块宽度与大分段间距后，剩余的全部空白空间平分到块与块之间的间隔 tickGap
+            // 扣除所有固定色块宽度与分段大间距后，剩余的全部空白空间平分到块与块之间的间隔 tickGap（约 2.0~2.3pt）
             let totalInnerGaps = max(totalTicks - segmentCount, 1)
             let remainingBlank = max(0, availableWidth - CGFloat(totalTicks) * tickWidth)
             let tickGap: CGFloat = remainingBlank / CGFloat(totalInnerGaps)
@@ -183,7 +191,7 @@ struct SegmentedQuotaProgressBar: View {
                             HStack(spacing: tickGap) {
                                 ForEach(0..<numTicks, id: \.self) { tickIndex in
                                     let isActive = tickIndex < activeTicks
-                                    RoundedRectangle(cornerRadius: 0.5)
+                                    RoundedRectangle(cornerRadius: 1.0)
                                         .fill(isActive ? segColor : Color.primary.opacity(0.10))
                                         .frame(width: tickWidth, height: height)
                                 }
