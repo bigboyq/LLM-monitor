@@ -43,7 +43,8 @@ enum ClientUsageAggregation {
     ) -> [String: [ClientProviderUsageSummary]] {
         var rowsByClient: [String: [ClientProviderUsageSummary]] = [:]
         for status in statuses {
-            let projection = status.usageProjection(for: status.lastSuccess)
+            guard status.isEnabled else { continue }
+            let projection = status.diagnosticUsageProjection(for: status.lastSuccess)
             for contribution in projection.contributions {
                 guard contribution.hasActivity else { continue }
                 if contribution.clientID == ClientID.antigravity, status.kind == .antigravity {
@@ -662,6 +663,7 @@ struct HarnessTodaySummary: Equatable, Sendable {
         var localUsageScannedAt: Date?
 
         for status in statuses {
+            guard status.isEnabled else { continue }
             let quotaProviderID = status.kind.quotaProviderID
             let peakWindow = status.deepseekPeakWindow ?? .defaultWindow
             let projection = status.usageProjection(for: status.lastSuccess)

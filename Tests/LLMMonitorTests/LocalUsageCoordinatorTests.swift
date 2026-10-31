@@ -87,6 +87,17 @@ final class LocalUsageCoordinatorTests: StateTestCase {
         // ZCode 源必须扫描（分片消费方在位，见 ZcodeProviderSliceTests 的同语义用例）。
         XCTAssertTrue(active.glm)
         XCTAssertTrue(active.opencode)
+
+        var noDshEnabled = defaultEnabled
+        noDshEnabled.setClientBindingEnabled(
+            clientID: ClientID.dsh,
+            quotaProviderID: QuotaProviderID.minimax,
+            enabled: false
+        )
+        let activeWithoutDsh = LocalUsageOrchestration.activeSources(
+            for: [noDshEnabled, explicitlyDisabled]
+        )
+        XCTAssertFalse(activeWithoutDsh.dsh, "当没有有效启用的 DSH 绑定消费者时，DSH 源应被门控关闭")
     }
     @MainActor
     func testLocalUsageCoordinatorReusesScannerAcrossTriggers() async {

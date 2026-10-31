@@ -40,6 +40,23 @@ final class HarnessTodaySummaryTests: XCTestCase {
         XCTAssertEqual(summary.sections[0].rows[0].totalTokens, 1_000)
     }
 
+    /// 禁用 provider 的本地用量不计入今日合计与列表。
+    func testDisabledProviderIsFilteredOutFromTodaySummary() {
+        var disabled = codexStatus(samples: [sample(model: "gpt-5.5", at: now, input: 1_000)])
+        disabled.isEnabled = false
+        let enabled = opencodeStatus(
+            kind: .glmCodingPlan,
+            providerID: OpencodeLocalUsage.glmProviderID,
+            samples: [sample(model: "glm-4", at: now, input: 500)]
+        )
+
+        let summary = HarnessTodaySummary.summarize(statuses: [disabled, enabled], now: now, calendar: calendar)
+
+        XCTAssertEqual(summary.totalTokens, 500, "已禁用的 provider 不得进入今日合计")
+        XCTAssertEqual(summary.sections.count, 1)
+        XCTAssertEqual(summary.sections.first?.rows.first?.totalTokens, 500)
+    }
+
     /// `dayStart` 归一到自然日零点，段与全局共用同一个口径。
     func testDayStartIsNormalizedToStartOfDay() {
         let summary = HarnessTodaySummary.summarize(

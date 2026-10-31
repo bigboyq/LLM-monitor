@@ -41,14 +41,24 @@ final class LocalUsageOrchestration {
                 quotaProviderID: $0.kind.quotaProviderID
             )
         }
+        let dshEnabled = [
+            (ProviderKind.minimaxTokenPlan, ClientID.dsh),
+            (ProviderKind.glmCodingPlan, ClientID.dsh),
+            (ProviderKind.deepseek, ClientID.dsh),
+        ].contains { kind, client in
+            statuses.contains {
+                $0.isEnabled && $0.kind == kind && $0.isClientBindingEnabled(
+                    clientID: client,
+                    quotaProviderID: kind.quotaProviderID
+                )
+            }
+        }
         return ActiveSources(
             codex: enabledKinds.contains(.codexChatGpt),
             antigravity: enabledKinds.contains(.antigravity),
             minimax: enabledKinds.contains(.minimaxTokenPlan),
             glm: enabledKinds.contains(.glmCodingPlan) || hasZcodeSliceConsumer,
-            dsh: enabledKinds.contains(.minimaxTokenPlan)
-                || enabledKinds.contains(.glmCodingPlan)
-                || enabledKinds.contains(.deepseek),
+            dsh: dshEnabled,
             opencode: hasOpenCodeConsumer,
             // agy 的本地用量归 Antigravity 卡（帧自带 quotaProviderID 的
             // native 模式）：provider 启用即扫描；目录不存在时由

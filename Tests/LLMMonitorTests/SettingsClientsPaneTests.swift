@@ -19,6 +19,11 @@ final class SettingsClientsPaneTests: XCTestCase {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("llm-clients-pane-\(UUID().uuidString)", isDirectory: true)
         let store = ConfigStore(configURL: root.appendingPathComponent("config.json"))
+        var config = store.config
+        for kind in [ProviderKind.glmCodingPlan, .deepseek, .minimaxTokenPlan] {
+            config.providers[kind.providerID] = ProviderConfig(enabled: true)
+        }
+        try! store.applyAndSave(config)
         let descriptors = zcodeConsumerDescriptors()
         let state = AppState(descriptors: descriptors, configStore: store)
         return (SettingsView(
@@ -173,10 +178,10 @@ final class SettingsClientsPaneTests: XCTestCase {
         )
     }
 
-    /// 关闭 zcode → deepseek 绑定后 DeepSeek 行消失（GLM 分类行不受影响）。
-    /// 这一格是"行展示正确"与"门控"的分界：门控在 `clientBindings`，展示层不绕过它。
+    /// Option B：关闭 zcode → deepseek 绑定后，卡片用量投影（usageProjection）门控过滤该分片；
+    /// 但客户端诊断页（clientProviderUsageByClient）依据设置页 footer 声明保留独立用量行。
     @MainActor
-    func testDeepseekRowDisappearsWhenItsZcodeBindingIsOff() {
+    func testDeepseekSliceGatedInProjectionRetainedInClientDiagnosticsWhenBindingIsOff() {
         let (_, state) = makeSettings()
         defer { state.stop() }
         state.applyGlmLocalUsage(sliceFixture())
@@ -186,14 +191,38 @@ final class SettingsClientsPaneTests: XCTestCase {
             )
         }
 
-        let rows = ClientUsageAggregation.clientProviderUsageByClient(for: state.statuses)[ClientID.zcode] ?? []
+        let deepseekStatus = try! XCTUnwrap(state.statuses.first { $0.kind == .deepseek })
+        let projection = deepseekStatus.usageProjection(for: deepseekStatus.lastSuccess)
         XCTAssertFalse(
+            projection.contributions.contains { $0.clientID == ClientID.zcode },
+            "绑定关闭时，卡片用量投影应被门控过滤"
+        )
+
+        let rows = ClientUsageAggregation.clientProviderUsageByClient(for: state.statuses)[ClientID.zcode] ?? []
+        XCTAssertTrue(
             rows.contains { $0.providerName == "DeepSeek" },
-            "绑定关闭时不该出现 DeepSeek 行"
+            "客户端诊断页应按 Option B 保留独立诊断行"
         )
         XCTAssertEqual(
             rows.map(\.providerName),
-            ["Coding Plan", "Start Plan", "加速卡", "闲时任务", "其他任务", "minimax Token Plan"]
+            ["Coding Plan", "Start Plan", "加速卡", "闲时任务", "其他任务", "DeepSeek", "minimax Token Plan"]
+        )
+    }
+
+    /// 禁用的 Provider 不应出现在客户端诊断页（guard status.isEnabled 门控）。
+    @MainActor
+    func testDisabledProviderIsFilteredOutFromClientUsage() {
+        let (_, state) = makeSettings()
+        defer { state.stop() }
+        state.applyGlmLocalUsage(sliceFixture())
+        state.mutateStatus(for: ProviderKind.deepseek.providerID) {
+            $0.isEnabled = false
+        }
+
+        let rows = ClientUsageAggregation.clientProviderUsageByClient(for: state.statuses)[ClientID.zcode] ?? []
+        XCTAssertFalse(
+            rows.contains { $0.providerName == "DeepSeek" },
+            "已禁用的 Provider 不应出现在客户端诊断页"
         )
     }
 

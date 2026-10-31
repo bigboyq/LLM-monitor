@@ -366,4 +366,15 @@ extension ProviderStatus {
             sourceTruncated: dshSnapshotTruncated
         )
     }
+
+    /// 客户端诊断页专用的用量投影：忽略 clientBindings 的 enabled 门控，保留该客户端扫描到的全部原始分片。
+    func diagnosticUsageProjection(for info: QuotaInfo?, now: Date = Date()) -> ProviderUsageProjection {
+        var diagnosticStatus = self
+        diagnosticStatus.clientBindings = clientBindings.map {
+            var b = $0
+            b.enabled = true
+            return b
+        }
+        return diagnosticStatus.usageProjection(for: info, now: now)
+    }
 }
