@@ -50,11 +50,16 @@ struct SettingsFormDraft: Equatable {
 
     var glmEnabled: Bool = false
     var glmInterval: Int = 0
+    var glmAuthMode: GlmAuthMode = .apiKey
+    var glmAuthPath: String = ""
     var glmApiKey: String = ""
-    var glmZcodeCredentialEnabled: Bool = false
     var glmNotifyCampaign: QuotaNotifyChannel = .none
 
     /// 兼容历史测试与调用点
+    var glmZcodeCredentialEnabled: Bool {
+        get { glmAuthMode == .credential }
+        set { glmAuthMode = newValue ? .credential : .apiKey }
+    }
     var glmZcodePlanEnabled: Bool {
         get { glmZcodeCredentialEnabled }
         set { glmZcodeCredentialEnabled = newValue }
@@ -169,7 +174,8 @@ struct SettingsFormDraft: Equatable {
             glmEnabled = pc.enabled
             glmApiKey = pc.apiKey ?? ""
             glmInterval = pc.refreshIntervalSeconds ?? 0
-            glmZcodeCredentialEnabled = pc.isZcodeCredentialEnabled
+            glmAuthMode = pc.effectiveGlmAuthMode
+            glmAuthPath = pc.authPath ?? ""
             glmNotifyCampaign = pc.notifyCampaign ?? .none
         }
 

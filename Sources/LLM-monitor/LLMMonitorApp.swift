@@ -236,16 +236,17 @@ struct LLMMonitorApp: App {
                 iconSystemName: "chevron.left.forwardslash.chevron.right",
                 accentColor: .glm,
                 makeFetcher: { config in
-                    let isCredentialEnabled = config.isZcodeCredentialEnabled
-                    let pollCampaign = isCredentialEnabled && (config.notifyCampaign != nil && config.notifyCampaign != QuotaNotifyChannel.none)
+                    let authMode = config.effectiveGlmAuthMode
+                    let pollCampaign = (authMode == .credential) && (config.notifyCampaign != nil && config.notifyCampaign != QuotaNotifyChannel.none)
                     return GlmCodingPlanFetcher(
+                        authMode: authMode,
+                        authPath: config.authPath,
                         apiKey: config.usableAPIKey ?? "",
-                        isZcodeCredentialEnabled: isCredentialEnabled,
                         pollMarketingCampaign: pollCampaign
                     )
                 },
                 settingsTabTitle: "GLM",
-                settingsTabSubtitle: "智谱 GLM Coding Plan 的 API Key 与刷新频率"
+                settingsTabSubtitle: "智谱 GLM Coding Plan 的认证与刷新频率"
             ),
             FetcherDescriptor(
                 id: ProviderKind.deepseek.providerID,

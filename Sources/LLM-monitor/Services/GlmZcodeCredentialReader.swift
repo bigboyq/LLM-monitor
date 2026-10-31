@@ -63,6 +63,51 @@ enum GlmZcodeCredentialReader {
         let bigmodelAccessToken: String?
     }
 
+    /// 解析 authPath 对应的 telemetry-state.json 与 credentials.json 文件 URL。
+    /// - 若 authPath 为空，回退默认 ~/.zcode/v2 目录；
+    /// - 若 authPath 指向目录或无扩展名，在该目录下拼接 telemetry-state.json 与 credentials.json；
+    /// - 若 authPath 直接指向 credentials.json（或其它文件），以其所在父目录定位 telemetry-state.json。
+    nonisolated static func resolveURLs(from authPath: String?) -> (telemetryStateURL: URL, credentialsURL: URL) {
+        guard let authPath = authPath?.trimmingCharacters(in: .whitespacesAndNewlines), !authPath.isEmpty else {
+            return (defaultTelemetryStateURL, defaultCredentialsURL)
+        }
+        let rawURL = URL(fileURLWithPath: NSString(string: authPath).expandingTildeInPath)
+        let dirURL: URL
+        let credsURL: URL
+        if rawURL.hasDirectoryPath || rawURL.pathExtension.isEmpty {
+            dirURL = rawURL
+            credsURL = dirURL.appendingPathComponent("credentials.json", isDirectory: false)
+        } else {
+            dirURL = rawURL.deletingLastPathComponent()
+            credsURL = rawURL
+        }
+        let telemetryURL = dirURL.appendingPathComponent("telemetry-state.json", isDirectory: false)
+        return (telemetryURL, credsURL)
+    }
+
+    /// 判定指定 authPath 下本地 ZCode 凭证文件是否存在。
+    nonisolated static func hasLocalAuth(authPath: String? = nil) -> Bool {
+        let urls = resolveURLs(from: authPath)
+        return FileManager.default.fileExists(atPath: urls.credentialsURL.path)
+    }
+
+    /// 根据可选自定义 authPath 一次性加载 ZCode 本地凭证。
+    nonisolated static func loadCredentials(
+        authPath: String?,
+        homeDirectory: String = NSHomeDirectory(),
+        userName: String = NSUserName(),
+        environmentSecret: String? = ProcessInfo.processInfo.environment["ZCODE_CREDENTIAL_SECRET"]
+    ) -> GlmZcodeCredentials {
+        let urls = resolveURLs(from: authPath)
+        return loadCredentials(
+            telemetryStateURL: urls.telemetryStateURL,
+            credentialsURL: urls.credentialsURL,
+            homeDirectory: homeDirectory,
+            userName: userName,
+            environmentSecret: environmentSecret
+        )
+    }
+
     /// 一次性加载 ZCode 本地凭证（设备标识、JWT Token 与 BigModel Access Token）。
     nonisolated static func loadCredentials(
         telemetryStateURL: URL = defaultTelemetryStateURL,

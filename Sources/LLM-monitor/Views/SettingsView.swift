@@ -573,12 +573,14 @@ struct SettingsView: View {
         if let id = providerID(for: .glmCodingPlan) {
             var glm = config.providers[id] ?? ProviderConfig(enabled: false)
             glm.enabled = draft.glmEnabled
+            glm.glmAuthMode = draft.glmAuthMode
+            glm.authPath = trimmedString(draft.glmAuthPath)
             glm.apiKey = trimmedString(draft.glmApiKey)
             glm.refreshIntervalSeconds = providerRefreshInterval(from: draft.glmInterval)
-            glm.parseZcodeCredential = draft.glmZcodeCredentialEnabled ? true : nil
+            glm.notifyCampaign = (draft.glmAuthMode == .credential && draft.glmNotifyCampaign != .none) ? draft.glmNotifyCampaign : nil
+            glm.parseZcodeCredential = nil
             glm.parseZcodePlan = nil
             glm.parseZcodeBalanceLog = nil
-            glm.notifyCampaign = (draft.glmZcodeCredentialEnabled && draft.glmNotifyCampaign != .none) ? draft.glmNotifyCampaign : nil
             config.providers[id] = glm
         }
 

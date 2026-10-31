@@ -76,8 +76,10 @@ The app reads and writes this shape:
 | `providers.<id>.apiKey` | provider | API key for providers that do not manage external auth. Used by minimax. |
 | `providers.<id>.displayName` | provider | Optional UI label override. |
 | `providers.<id>.refreshIntervalSeconds` | provider | Optional provider-specific timer interval, with the same 10-second...30-day clamp. |
-| `providers.<id>.parseZcodeCredential` | provider | 是否启用 ZCode 凭证解析（解密读取 `~/.zcode/v2` 本地凭据，获取活动套餐余额、额度重置卡状态与营销活动），旧配置 `parseZcodePlan` 与 `parseZcodeBalanceLog` 兼容向下解析。字段不存在或 false = 关闭。 |
-| `providers.<id>.notifyCampaign` | provider | 运营活动通知渠道（`QuotaNotifyChannel`：`none` / `system` / `barkAndSystem`），用于 GLM 营销活动触达推送。默认关闭（`none`），仅当 `parseZcodeCredential` 开启且选定渠道时才发起轮询；走固定倍率回退（仅在 `.full` 模式下轮询），发现活动 1h 内不重复推送。 |
+| `providers.<id>.glmAuthMode` | provider | GLM 认证方式（`apiKey` / `credential`，缺省 `apiKey`）。选 `apiKey` 仅填写 API Key 并监控标准 5h 与周额度套餐；选 `credential` 自动读取本地 ZCode 凭据（免填 Key），支持标准套餐、活动套餐、额度重置卡与运营活动推送。 |
+| `providers.<id>.authPath` | provider | 自管认证文件或所在目录路径。Codex 为 `auth.json` 路径（缺省 `~/.codex/auth.json`）；GLM 为 ZCode 凭证目录或 `credentials.json` 路径（缺省 `~/.zcode/v2`）。 |
+| `providers.<id>.notifyCampaign` | provider | 运营活动通知渠道（`QuotaNotifyChannel`：`none` / `system` / `barkAndSystem`），用于 GLM 营销活动触达推送。默认关闭（`none`），仅在 `credential` 模式下生效且选定渠道时才发起轮询；走固定倍率回退（仅在 `.full` 模式下轮询），发现活动 1h 内不重复推送。 |
+| `providers.<id>.parseZcodeCredential` / `parseZcodePlan` / `parseZcodeBalanceLog` | legacy | 兼容历史配置字段。解码时若为 true 自动迁移至 `glmAuthMode = .credential`，保存时不落盘。 |
 | `providers.<id>.adminApiCreditsEnabled` | provider | 是否启用 OpenAI API 赠金监测（ChatGPT 专用）。缺省或 false 表示关闭；开启时在 ChatGPT 卡渲染「API赠金」进度条。 |
 | `providers.<id>.adminApiKey` | provider | OpenAI Admin API Key（`sk-admin-...`），用于查询组织消耗 `v1/organization/costs`。 |
 | `providers.<id>.adminBillingDay` | provider | 每月账单日（1-31，缺省 11）。 |
@@ -272,6 +274,6 @@ CHANGELOG 最新条目、两份 README 的「当前版本」/DMG 名/build-relea
 的旧文案「按本机时区计算、可在设置中调整」直到发版前才发现，只因 `build-release.sh` 的
 版本门禁全绿而放行。**功能口径变了，用户文档必须同轮改**。
 
-> 核对基线：2026-10-31 · 代码 a69e749
+> 核对基线：2026-10-31 · 代码 6f10b16
 > 2026-10-25 统一验证通过，详见 `spec/sync.md`。
 > `.deviceId` 身份与旧 `sync.nodeID` 忽略语义已随 6f11831 入库，验证记录见 `spec/sync.md`。

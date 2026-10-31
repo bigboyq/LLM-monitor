@@ -107,6 +107,20 @@ extension SettingsView {
         }
     }
 
+    func selectGlmAuthFile() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = true
+        panel.showsHiddenFiles = true
+        panel.treatsFilePackagesAsDirectories = true
+        panel.allowedContentTypes = [.json]
+
+        if panel.runModal() == .OK, let url = panel.url {
+            draft.glmAuthPath = tildePath(for: url.path)
+        }
+    }
+
     func trimmedString(_ value: String) -> String? {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed

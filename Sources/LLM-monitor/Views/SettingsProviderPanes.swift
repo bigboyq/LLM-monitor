@@ -182,6 +182,15 @@ extension SettingsView {
         }
     }
 
+    private var glmAuthFooter: String {
+        switch draft.glmAuthMode {
+        case .apiKey:
+            return "填写智谱 GLM Coding Plan 的 API Key（格式 `id.secret`，在 bigmodel.cn 套餐概览页新建）。此模式仅监控标准 5h 与周额度套餐。"
+        case .credential:
+            return "支持填写 ZCode 凭证目录（如 `~/.zcode/v2`）或 `credentials.json` 文件，也可以直接点“选择…”。自动解析登录状态，支持标准套餐、活动套餐、额度重置卡与运营活动推送。"
+        }
+    }
+
     var glmPane: some View {
         VStack(alignment: .leading, spacing: 20) {
             SettingsSection {
@@ -191,11 +200,45 @@ extension SettingsView {
             if draft.glmEnabled {
                 providerAuthAndRefreshSection(
                     kind: .glmCodingPlan,
-                    footer: "填写智谱 GLM Coding Plan 的 API Key（格式 `id.secret`，在 bigmodel.cn 套餐概览页新建）。该 Key 也是 Anthropic / OpenAI 协议接入用的同一个 Key。",
+                    footer: glmAuthFooter,
                     interval: $draft.glmInterval
                 ) {
-                    SettingsControlRow("API Key") {
-                        glmApiKeyField
+                    SettingsControlRow("认证方式") {
+                        Picker("", selection: $draft.glmAuthMode) {
+                            ForEach(GlmAuthMode.allCases) { mode in
+                                Text(mode.displayName).tag(mode)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .frame(width: SettingsLayout.standardControlWidth)
+                    }
+
+                    if draft.glmAuthMode == .apiKey {
+                        SettingsControlRow("API Key") {
+                            glmApiKeyField
+                        }
+                    } else {
+                        SettingsControlRow("ZCode 凭证路径") {
+                            HStack(spacing: 8) {
+                                TextField("", text: $draft.glmAuthPath, prompt: Text("~/.zcode/v2 或 credentials.json"))
+                                    .textFieldStyle(.roundedBorder)
+                                    .frame(maxWidth: .infinity)
+                                Button("选择…") {
+                                    selectGlmAuthFile()
+                                }
+                            }
+                            .frame(width: SettingsLayout.standardControlWidth)
+                        }
+
+                        SettingsControlRow("运营活动推送通知") {
+                            Picker("", selection: $draft.glmNotifyCampaign) {
+                                ForEach(QuotaNotifyChannel.allCases) { channel in
+                                    Text(channel.displayName).tag(channel)
+                                }
+                            }
+                            .pickerStyle(.menu)
+                            .frame(width: SettingsLayout.standardControlWidth, alignment: .trailing)
+                        }
                     }
                 }
 
@@ -210,23 +253,6 @@ extension SettingsView {
                             .font(SettingsTypography.numericValue)
                             .foregroundStyle(.secondary)
                     }
-                }
-
-                SettingsSection(
-                    title: "ZCode 凭证解析",
-                    footer: "解密读取本地 ZCode 凭证（~/.zcode/v2），手动开启后提供活动套餐余额查询、额度重置卡状态及运营活动推送配置。默认关闭。"
-                ) {
-                    SettingsToggleRow(label: "启用 ZCode 凭证解析", isOn: $draft.glmZcodeCredentialEnabled)
-                    SettingsControlRow("运营活动推送通知") {
-                        Picker("", selection: $draft.glmNotifyCampaign) {
-                            ForEach(QuotaNotifyChannel.allCases) { channel in
-                                Text(channel.displayName).tag(channel)
-                            }
-                        }
-                        .pickerStyle(.menu)
-                        .frame(width: SettingsLayout.standardControlWidth, alignment: .trailing)
-                    }
-                    .disabled(!draft.glmZcodeCredentialEnabled)
                 }
             }
         }

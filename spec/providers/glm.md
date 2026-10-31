@@ -16,8 +16,8 @@ through the matching `clientBindings[]` entry.
 
 | Item | Current implementation |
 |---|---|
-| Auth source | `providers.glm_coding_plan.apiKey` |
-| Required key type | GLM Coding Plan Key, format `<id>.<secret>` (the same key used for Anthropic / OpenAI protocol access) |
+| Auth source | `providers.glm_coding_plan.apiKey`（`apiKey` 模式）或 `providers.glm_coding_plan.authPath` / `~/.zcode/v2/credentials.json`（`credential` 模式） |
+| Required key type | API Key 模式下为 GLM Coding Plan Key（格式 `<id>.<secret>`）；Credential 模式下从本地 ZCode 凭据解密获取 `oauth:bigmodel:access_token`（免填 Key），同时支持 `apiKey` 作为备选回退 |
 | Quota endpoint | `GET https://open.bigmodel.cn/api/monitor/usage/quota/limit` |
 | Quota timeout | 10 seconds (`HTTPTimeouts.domestic`) |
 | Quota unit | Remaining credit percent, derived from `remaining / usage` (NOT the response `percentage` field, which is *used* percent) |
@@ -62,8 +62,9 @@ Full config shape:
   "providers": {
     "glm_coding_plan": {
       "enabled": true,
-      "apiKey": "your-coding-plan-key-id.secret",
-      "parseZcodePlan": true,
+      "glmAuthMode": "credential",
+      "authPath": "~/.zcode/v2",
+      "apiKey": "optional-fallback-key",
       "notifyCampaign": "barkAndSystem"
     }
   }
@@ -75,11 +76,13 @@ Supported provider fields:
 | Field | Meaning |
 |---|---|
 | `enabled` | Enables/disables this provider. |
-| `apiKey` | Coding Plan Key. Empty values and `REPLACE...` placeholders are treated as missing (`ProviderConfig.usableAPIKey`). |
+| `glmAuthMode` | 认证方式：`apiKey`（仅标准 5h 与周额度套餐）或 `credential`（标准套餐、活动套餐、额度重置卡与运营活动推送）。缺省按历史字段迁移，无历史字段时默认为 `apiKey`。 |
+| `authPath` | 可选 ZCode 凭证文件或所在目录路径（缺省 `~/.zcode/v2`，支持 `~/.zcode/v2/credentials.json` 或自定义路径）。 |
+| `apiKey` | Coding Plan Key。在 `apiKey` 模式下为必填；在 `credential` 模式下作为免密凭证缺失时的可选回退。 |
 | `refreshIntervalSeconds` | Optional independent refresh interval (overrides global default of 300s). |
 | `displayName` | Optional card title override. |
-| `parseZcodePlan` | Enable ZCode plan and reset card parsing (direct API query to `zcode.z.ai` for activity-plan balances, reset cards, and marketing campaign touches). Compatible with legacy `parseZcodeBalanceLog`. Absent/false = off. |
-| `notifyCampaign` | Optional notification channel for new ZCode marketing campaigns (`none` / `system` / `barkAndSystem`). Disabled when `parseZcodePlan` is off. |
+| `notifyCampaign` | Optional notification channel for new ZCode marketing campaigns (`none` / `system` / `barkAndSystem`). 仅在 `credential` 模式下生效。 |
+| `parseZcodeCredential` / `parseZcodePlan` / `parseZcodeBalanceLog` | 兼容历史配置字段。解码时若为 true 自动迁移至 `glmAuthMode = .credential`，保存时不落盘。 |
 | `notifyIntervalRestored` etc. (4 fields) | Optional per-event notification channels (5h/weekly × restored/exhausted): `none` / `system` / `barkAndSystem`. Defaults: restored → `system`, exhausted → `none`. See `spec/notifications.md`. |
 | `clientBindings[]` | Canonical client-to-quota binding for the optional OpenCode `zhipuai-coding-plan` slice. GLM defaults to enabled; the legacy provider-level field is migration compatibility only. |
 
@@ -89,7 +92,7 @@ The peak window is **fixed at the official default**（Mon–Fri 14:00–18:00�
 `peakWeekdaysOnly` 键由 `JSONDecoder` 静默忽略（见 `spec/config.md` §Config Schema），
 不进损坏恢复流程、不影响判定，下次保存时自然消失。
 
-`GlmCodingPlanFetcher.hasLocalAuth()` always returns `true`; `AppState` validates the config `apiKey`.
+`GlmCodingPlanFetcher.hasLocalAuth()` 在 `apiKey` 模式下校验 `apiKey` 非空；在 `credential` 模式下校验 `credentials.json` 文件是否存在。`AppState` 根据此派生 ready 状态。
 
 ## API Request
 
@@ -795,4 +798,4 @@ whether the quota batch succeeded. GLM's former dedicated periodic trigger
 The scanner's db+WAL fingerprint check is unchanged: when nothing changed only a `stat()`
 runs (microseconds); SQL (~1.5ms) only runs when the WAL actually moved.
 
-> 核对基线：2026-10-31 · 代码 40343a1
+> 核对基线：2026-10-31 · 代码 6f10b16

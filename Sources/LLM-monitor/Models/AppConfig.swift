@@ -837,6 +837,21 @@ struct AppConfig: Codable, Equatable {
 
 // MARK: - Provider Config
 
+/// GLM Coding Plan 认证方式
+enum GlmAuthMode: String, Codable, CaseIterable, Identifiable, Sendable {
+    case apiKey = "apiKey"
+    case credential = "credential"
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .apiKey: return "API Key"
+        case .credential: return "ZCode 凭证"
+        }
+    }
+}
+
 /// 单个 provider 的配置
 ///
 /// 所有字段除 `enabled` 外都是 optional。nil 字段在 JSON 里**完全不写**，
@@ -854,8 +869,11 @@ struct ProviderConfig: Codable, Equatable {
     /// 该 provider 自己的刷新间隔（秒）。nil = 用全局 config.refreshIntervalSeconds
     var refreshIntervalSeconds: Int?
 
-    /// 自管 auth 的 fetcher 用：auth.json 路径（如 codex 的 ~/.codex/auth.json）
+    /// 自管 auth 的 fetcher 用：auth 路径（如 codex 的 ~/.codex/auth.json 或 GLM 的 ~/.zcode/v2）
     var authPath: String?
+
+    /// GLM Coding Plan 认证方式（apiKey / credential）
+    var glmAuthMode: GlmAuthMode?
 
     /// 是否把对应的 OpenCode provider 用量合并到菜单栏卡片。
     /// nil = 使用 provider 的默认值：GLM 默认开启，其余 provider 默认关闭。
@@ -875,9 +893,18 @@ struct ProviderConfig: Codable, Equatable {
     /// ZCode 运营活动推送通知渠道（none / system / barkAndSystem）
     var notifyCampaign: QuotaNotifyChannel?
 
-    /// 便捷属性：是否启用 ZCode 凭据解析（兼容 parseZcodePlan 与 parseZcodeBalanceLog）
+    /// 便捷属性：生效的 GLM 认证方式（优先用 glmAuthMode，历史配置若开启过凭证/套餐/日志解析则迁移为 credential，否则回退 apiKey）
+    var effectiveGlmAuthMode: GlmAuthMode {
+        if let glmAuthMode { return glmAuthMode }
+        if (parseZcodeCredential ?? parseZcodePlan ?? parseZcodeBalanceLog ?? false) {
+            return .credential
+        }
+        return .apiKey
+    }
+
+    /// 便捷属性：是否启用 ZCode 凭据解析（由 effectiveGlmAuthMode 统一驱动）
     var isZcodeCredentialEnabled: Bool {
-        parseZcodeCredential ?? parseZcodePlan ?? parseZcodeBalanceLog ?? false
+        effectiveGlmAuthMode == .credential
     }
 
     /// 兼容历史计算属性：是否启用 ZCode 套餐解析
@@ -910,6 +937,7 @@ struct ProviderConfig: Codable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case enabled, apiKey, displayName, refreshIntervalSeconds, authPath
+        case glmAuthMode
         case mergeOpencodeUsage
         case parseZcodeBalanceLog
         case parseZcodePlan
@@ -929,6 +957,7 @@ struct ProviderConfig: Codable, Equatable {
          displayName: String? = nil,
          refreshIntervalSeconds: Int? = nil,
          authPath: String? = nil,
+         glmAuthMode: GlmAuthMode? = nil,
          mergeOpencodeUsage: Bool? = nil,
          parseZcodeBalanceLog: Bool? = nil,
          parseZcodePlan: Bool? = nil,
@@ -948,6 +977,7 @@ struct ProviderConfig: Codable, Equatable {
         self.displayName = displayName
         self.refreshIntervalSeconds = refreshIntervalSeconds
         self.authPath = authPath
+        self.glmAuthMode = glmAuthMode
         self.mergeOpencodeUsage = mergeOpencodeUsage
         self.parseZcodeBalanceLog = parseZcodeBalanceLog
         self.parseZcodePlan = parseZcodePlan
@@ -975,6 +1005,8 @@ struct ProviderConfig: Codable, Equatable {
         self.displayName = try c.decodeIfPresent(String.self, forKey: .displayName)
         self.refreshIntervalSeconds = try c.decodeIfPresent(Int.self, forKey: .refreshIntervalSeconds)
         self.authPath = try c.decodeIfPresent(String.self, forKey: .authPath)
+        self.glmAuthMode = (try? c.decode(String.self, forKey: .glmAuthMode))
+            .flatMap(GlmAuthMode.init(rawValue:))
         self.mergeOpencodeUsage = try c.decodeIfPresent(Bool.self, forKey: .mergeOpencodeUsage)
         self.parseZcodeBalanceLog = try c.decodeIfPresent(Bool.self, forKey: .parseZcodeBalanceLog)
         self.parseZcodePlan = try c.decodeIfPresent(Bool.self, forKey: .parseZcodePlan)

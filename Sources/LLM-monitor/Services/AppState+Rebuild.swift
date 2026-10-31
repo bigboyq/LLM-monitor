@@ -84,6 +84,25 @@ extension AppState {
             logInfo("  [\(id)] 在 config 中禁用")
             return .notConfigured(reason: "已在 config.json 中禁用")
         }
+        if descriptor.kind == .glmCodingPlan {
+            if pc.effectiveGlmAuthMode == .credential {
+                let probe = descriptor.makeFetcher(pc)
+                if !probe.hasLocalAuth() {
+                    let hint = hintProvider(descriptor.kind, pc)
+                    logInfo("  [\(id)] ZCode 本地凭证未就绪：\(hint)")
+                    return .notConfigured(reason: hint)
+                }
+                logInfo("  [\(id)] ZCode 凭证 ok，state=ready")
+                return .ready
+            } else {
+                guard pc.usableAPIKey != nil else {
+                    logInfo("  [\(id)] API Key 未填写或为模板占位符")
+                    return .notConfigured(reason: "API Key 未填写")
+                }
+                logInfo("  [\(id)] 配置 ok，state=ready")
+                return .ready
+            }
+        }
         if descriptor.kind.usesExternalAuth {
             let probe = descriptor.makeFetcher(pc)
             if !probe.hasLocalAuth() {

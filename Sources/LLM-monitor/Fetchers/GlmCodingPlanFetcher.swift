@@ -43,26 +43,48 @@ struct GlmCodingPlanFetcher: QuotaFetcher {
     static let logTag = "[glm]"
     var logTag: String { Self.logTag }
 
-    private let apiKey: String
+    let authMode: GlmAuthMode
+    let authPath: String?
+    let apiKey: String
     private let endpoint: URL
     private let client: HTTPClient
-    let isZcodeCredentialEnabled: Bool
     let pollMarketingCampaign: Bool
     let resultMerger: RefreshResultMerger = GlmFillingMissingMerger()
 
     /// 兼容历史命名
-    var isZcodePlanEnabled: Bool { isZcodeCredentialEnabled }
+    var isZcodeCredentialEnabled: Bool { authMode == .credential }
+    var isZcodePlanEnabled: Bool { authMode == .credential }
 
+    init(
+        authMode: GlmAuthMode = .apiKey,
+        authPath: String? = nil,
+        apiKey: String = "",
+        endpoint: URL = URL(string: "https://open.bigmodel.cn/api/monitor/usage/quota/limit")!,
+        pollMarketingCampaign: Bool = false,
+        session: URLSession = .shared
+    ) {
+        self.authMode = authMode
+        self.authPath = authPath
+        self.apiKey = apiKey
+        self.endpoint = endpoint
+        self.pollMarketingCampaign = pollMarketingCampaign
+        self.client = HTTPClient(session: session, logTag: Self.logTag, defaultTimeout: HTTPTimeouts.domestic)
+    }
+
+    /// 兼容已有调用与测试
     init(apiKey: String,
          endpoint: URL = URL(string: "https://open.bigmodel.cn/api/monitor/usage/quota/limit")!,
          isZcodeCredentialEnabled: Bool = false,
          pollMarketingCampaign: Bool = false,
          session: URLSession = .shared) {
-        self.apiKey = apiKey
-        self.endpoint = endpoint
-        self.isZcodeCredentialEnabled = isZcodeCredentialEnabled
-        self.pollMarketingCampaign = pollMarketingCampaign
-        self.client = HTTPClient(session: session, logTag: Self.logTag, defaultTimeout: HTTPTimeouts.domestic)
+        self.init(
+            authMode: isZcodeCredentialEnabled ? .credential : .apiKey,
+            authPath: nil,
+            apiKey: apiKey,
+            endpoint: endpoint,
+            pollMarketingCampaign: pollMarketingCampaign,
+            session: session
+        )
     }
 
     /// 兼容已有调用与测试
@@ -72,15 +94,34 @@ struct GlmCodingPlanFetcher: QuotaFetcher {
          pollMarketingCampaign: Bool = false,
          session: URLSession = .shared) {
         self.init(
+            authMode: isZcodePlanEnabled ? .credential : .apiKey,
+            authPath: nil,
             apiKey: apiKey,
             endpoint: endpoint,
-            isZcodeCredentialEnabled: isZcodePlanEnabled,
             pollMarketingCampaign: pollMarketingCampaign,
             session: session
         )
     }
 
+    func hasLocalAuth() -> Bool {
+        switch authMode {
+        case .apiKey:
+            return !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        case .credential:
+            return GlmZcodeCredentialReader.hasLocalAuth(authPath: authPath)
+        }
+    }
+
     func fetch(mode: RefreshMode) async throws -> QuotaInfo {
+        switch authMode {
+        case .apiKey:
+            return try await fetchWithAPIKey()
+        case .credential:
+            return try await fetchWithCredential(mode: mode)
+        }
+    }
+
+    private func fetchWithAPIKey() async throws -> QuotaInfo {
         guard !apiKey.isEmpty else { throw QuotaError.missingAPIKey }
 
         var req = URLRequest(url: endpoint)
@@ -90,26 +131,51 @@ struct GlmCodingPlanFetcher: QuotaFetcher {
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
         // 不打印 key —— 长度足够诊断（"auth set, key len=N"）。
-        logDebug("\(logTag) Authorization header set, key length=\(apiKey.count)")
+        logDebug("\(logTag) Authorization header set with API Key, key length=\(apiKey.count)")
 
         // 非 2xx 响应体可能带诊断数据，只记录状态与字节数（由 HTTPClient 统一处理）。
         let (data, _) = try await client.send(req, includeBodyInError: false)
         try Task.checkCancellation()
 
+        return try Self.parse(data: data)
+    }
+
+    private func fetchWithCredential(mode: RefreshMode) async throws -> QuotaInfo {
+        let creds = GlmZcodeCredentialReader.loadCredentials(authPath: authPath)
+        guard creds.hasCredentials else {
+            logWarn("\(logTag) ZCode 本地凭证缺失或未登录")
+            throw QuotaError.decodingError("ZCode 本地凭证缺失或未登录")
+        }
+
+        let token: String
+        if let bigmodelToken = creds.bigmodelAccessToken, !bigmodelToken.isEmpty {
+            token = bigmodelToken
+        } else if !apiKey.isEmpty {
+            token = apiKey
+        } else {
+            throw QuotaError.decodingError("ZCode 本地凭证缺少 bigmodel access token，且未配置备用 API Key")
+        }
+
+        var req = URLRequest(url: endpoint)
+        req.httpMethod = "GET"
+        req.setValue(token, forHTTPHeaderField: "Authorization")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        logDebug("\(logTag) Authorization header set with Credential token, length=\(token.count)")
+        let (data, _) = try await client.send(req, includeBodyInError: false)
+        try Task.checkCancellation()
+
         var quotaInfo = try Self.parse(data: data)
 
-        if isZcodeCredentialEnabled {
-            if let package = await fetchZcodePackageSilently(mode: mode) {
-                quotaInfo = quotaInfo.enriched(with: package)
-            }
+        if let package = await fetchZcodePackageSilently(mode: mode, credentials: creds) {
+            quotaInfo = quotaInfo.enriched(with: package)
         }
 
         return quotaInfo
     }
 
-    private func fetchZcodePackageSilently(mode: RefreshMode) async -> GlmZcodePackageSnapshot? {
-        let creds = GlmZcodeCredentialReader.loadCredentials()
-        guard creds.hasCredentials else {
+    private func fetchZcodePackageSilently(mode: RefreshMode, credentials: GlmZcodeCredentials) async -> GlmZcodePackageSnapshot? {
+        guard credentials.hasCredentials else {
             logDebug("\(logTag) ZCode 本地凭证缺失，跳过套餐与重置卡获取")
             return nil
         }
@@ -122,7 +188,7 @@ struct GlmCodingPlanFetcher: QuotaFetcher {
 
         // 1. 活动套餐余额：与 GLM 默认 Interval 保持一致，每次刷新都调用
         do {
-            let (b, p) = try await GlmZcodeAPIClient.fetchBalance(credentials: creds)
+            let (b, p) = try await GlmZcodeAPIClient.fetchBalance(credentials: credentials)
             balances = b
             previews = p
             anySucceeded = true
@@ -132,9 +198,9 @@ struct GlmCodingPlanFetcher: QuotaFetcher {
 
         // 2. 额度重置卡：类似 Codex 重置卡，走固定倍率回退，仅在 mode == .full 时拉取
         if mode == .full {
-            if creds.bigmodelAccessToken != nil {
+            if credentials.bigmodelAccessToken != nil {
                 do {
-                    resetCards = try await GlmZcodeAPIClient.fetchResetCards(credentials: creds)
+                    resetCards = try await GlmZcodeAPIClient.fetchResetCards(credentials: credentials)
                     anySucceeded = true
                 } catch {
                     logWarn("\(logTag) 获取 ZCode 重置卡状态失败: \(error.localizedDescription)")
@@ -148,7 +214,7 @@ struct GlmCodingPlanFetcher: QuotaFetcher {
         if pollMarketingCampaign {
             if mode == .full {
                 do {
-                    deliveries = try await GlmZcodeAPIClient.fetchMarketingTouch(credentials: creds)
+                    deliveries = try await GlmZcodeAPIClient.fetchMarketingTouch(credentials: credentials)
                     anySucceeded = true
                 } catch {
                     logDebug("\(logTag) 获取 ZCode 营销触达失败: \(error.localizedDescription)")

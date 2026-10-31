@@ -163,4 +163,114 @@ final class GlmCodingPlanFetcherTests: XCTestCase {
             snapshot
         )
     }
+
+    // MARK: - GLM Auth Mode & Credential Path Tests
+
+    func testGlmAuthModeConfigAndMigration() throws {
+        XCTAssertEqual(GlmAuthMode.apiKey.displayName, "API Key")
+        XCTAssertEqual(GlmAuthMode.credential.displayName, "ZCode 凭证")
+
+        // 显式 glmAuthMode
+        let credJSON = #"{"enabled":true,"glmAuthMode":"credential","authPath":"~/.zcode/v2"}"#
+        let credConfig = try JSONDecoder().decode(ProviderConfig.self, from: Data(credJSON.utf8))
+        XCTAssertEqual(credConfig.effectiveGlmAuthMode, .credential)
+        XCTAssertEqual(credConfig.authPath, "~/.zcode/v2")
+        XCTAssertTrue(credConfig.isZcodeCredentialEnabled)
+
+        let apiKeyJSON = #"{"enabled":true,"glmAuthMode":"apiKey","apiKey":"my-key"}"#
+        let apiKeyConfig = try JSONDecoder().decode(ProviderConfig.self, from: Data(apiKeyJSON.utf8))
+        XCTAssertEqual(apiKeyConfig.effectiveGlmAuthMode, .apiKey)
+        XCTAssertFalse(apiKeyConfig.isZcodeCredentialEnabled)
+
+        // 历史配置向后兼容迁移
+        let legacy1 = try JSONDecoder().decode(ProviderConfig.self, from: Data(#"{"enabled":true,"parseZcodeCredential":true}"#.utf8))
+        XCTAssertEqual(legacy1.effectiveGlmAuthMode, .credential)
+        XCTAssertTrue(legacy1.isZcodeCredentialEnabled)
+
+        let legacy2 = try JSONDecoder().decode(ProviderConfig.self, from: Data(#"{"enabled":true,"parseZcodePlan":true}"#.utf8))
+        XCTAssertEqual(legacy2.effectiveGlmAuthMode, .credential)
+
+        let legacy3 = try JSONDecoder().decode(ProviderConfig.self, from: Data(#"{"enabled":true,"parseZcodeBalanceLog":true}"#.utf8))
+        XCTAssertEqual(legacy3.effectiveGlmAuthMode, .credential)
+
+        let defaultCfg = try JSONDecoder().decode(ProviderConfig.self, from: Data(#"{"enabled":true}"#.utf8))
+        XCTAssertEqual(defaultCfg.effectiveGlmAuthMode, .apiKey)
+        XCTAssertFalse(defaultCfg.isZcodeCredentialEnabled)
+    }
+
+    func testGlmZcodeCredentialReaderURLResolution() {
+        let (defaultTelemetry, defaultCreds) = GlmZcodeCredentialReader.resolveURLs(from: nil)
+        XCTAssertTrue(defaultTelemetry.path.hasSuffix(".zcode/v2/telemetry-state.json"))
+        XCTAssertTrue(defaultCreds.path.hasSuffix(".zcode/v2/credentials.json"))
+
+        let (emptyTelemetry, emptyCreds) = GlmZcodeCredentialReader.resolveURLs(from: "   ")
+        XCTAssertEqual(emptyTelemetry, defaultTelemetry)
+        XCTAssertEqual(emptyCreds, defaultCreds)
+
+        let (dirTelemetry, dirCreds) = GlmZcodeCredentialReader.resolveURLs(from: "/tmp/custom_zcode")
+        XCTAssertEqual(dirTelemetry.path, "/tmp/custom_zcode/telemetry-state.json")
+        XCTAssertEqual(dirCreds.path, "/tmp/custom_zcode/credentials.json")
+
+        let (fileTelemetry, fileCreds) = GlmZcodeCredentialReader.resolveURLs(from: "/tmp/custom_zcode/credentials.json")
+        XCTAssertEqual(fileTelemetry.path, "/tmp/custom_zcode/telemetry-state.json")
+        XCTAssertEqual(fileCreds.path, "/tmp/custom_zcode/credentials.json")
+    }
+
+    func testGlmCodingPlanFetcherAuthModes() {
+        let apiKeyFetcherEmpty = GlmCodingPlanFetcher(authMode: .apiKey, apiKey: "")
+        XCTAssertFalse(apiKeyFetcherEmpty.hasLocalAuth())
+
+        let apiKeyFetcherValid = GlmCodingPlanFetcher(authMode: .apiKey, apiKey: "valid-key")
+        XCTAssertTrue(apiKeyFetcherValid.hasLocalAuth())
+        XCTAssertFalse(apiKeyFetcherValid.isZcodeCredentialEnabled)
+
+        let credFetcherNonExistent = GlmCodingPlanFetcher(authMode: .credential, authPath: "/nonexistent/path/\(UUID().uuidString)")
+        XCTAssertFalse(credFetcherNonExistent.hasLocalAuth())
+        XCTAssertTrue(credFetcherNonExistent.isZcodeCredentialEnabled)
+    }
+
+    func testSettingsFormDraftGlmAuthFields() {
+        var config = AppConfig(
+            schemaVersion: AppConfig.currentSchemaVersion,
+            refreshIntervalSeconds: 300,
+            providers: [
+                "glm_coding_plan": ProviderConfig(
+                    enabled: true,
+                    apiKey: "test-key",
+                    authPath: "~/.zcode/v2",
+                    glmAuthMode: .credential,
+                    notifyCampaign: .barkAndSystem
+                )
+            ],
+            clientBindings: []
+        )
+
+        let descriptors = [
+            FetcherDescriptor(
+                id: "glm_coding_plan",
+                displayName: "GLM Coding Plan",
+                kind: .glmCodingPlan,
+                iconSystemName: "circle",
+                accentColor: .glm,
+                makeFetcher: { _ in GlmCodingPlanFetcher(apiKey: "key") }
+            )
+        ]
+
+        let draft = SettingsFormDraft(from: config, descriptors: descriptors)
+        XCTAssertEqual(draft.glmAuthMode, .credential)
+        XCTAssertEqual(draft.glmAuthPath, "~/.zcode/v2")
+        XCTAssertEqual(draft.glmApiKey, "test-key")
+        XCTAssertTrue(draft.glmZcodeCredentialEnabled)
+        XCTAssertEqual(draft.glmNotifyCampaign, .barkAndSystem)
+
+        // 脏检查测试
+        var draft2 = draft
+        XCTAssertEqual(draft, draft2)
+        draft2.glmAuthMode = .apiKey
+        XCTAssertNotEqual(draft, draft2)
+
+        var draft3 = draft
+        draft3.glmAuthPath = "/other/path"
+        XCTAssertNotEqual(draft, draft3)
+    }
 }

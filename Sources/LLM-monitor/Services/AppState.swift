@@ -948,7 +948,9 @@ final class AppState: ObservableObject {
                 authProber: authProber,
                 hintProvider: externalAuthHint(for:config:)
             )
-            if d.kind.usesExternalAuth {
+            if d.kind == .glmCodingPlan {
+                authReadyCache[d.id] = (pc?.effectiveGlmAuthMode == .credential) ? (derived == .ready) : (pc?.usableAPIKey != nil)
+            } else if d.kind.usesExternalAuth {
                 authReadyCache[d.id] = (derived == .ready)
             } else {
                 authReadyCache[d.id] = (pc?.usableAPIKey != nil)
@@ -1127,7 +1129,21 @@ final class AppState: ObservableObject {
 
         // auth 就绪检查
         let fetcher: any QuotaFetcher
-        if descriptor.kind.usesExternalAuth {
+        if descriptor.kind == .glmCodingPlan {
+            let probe = descriptor.makeFetcher(pc)
+            if pc.effectiveGlmAuthMode == .credential {
+                if !probe.hasLocalAuth() {
+                    logDebug("refreshProviderDirectly[\(providerID)]: hasLocalAuth=false")
+                    return .deferred
+                }
+            } else {
+                guard pc.usableAPIKey != nil else {
+                    logDebug("refreshProviderDirectly[\(providerID)]: apiKey 无效")
+                    return .deferred
+                }
+            }
+            fetcher = probe
+        } else if descriptor.kind.usesExternalAuth {
             let probe = descriptor.makeFetcher(pc)
             if !probe.hasLocalAuth() {
                 logDebug("refreshProviderDirectly[\(providerID)]: hasLocalAuth=false")
@@ -1361,6 +1377,13 @@ final class AppState: ObservableObject {
             return cached
         }
         guard let descriptor = descriptors.first(where: { $0.id == providerID }) else { return false }
+        if descriptor.kind == .glmCodingPlan {
+            if pc.effectiveGlmAuthMode == .credential {
+                return descriptor.makeFetcher(pc).hasLocalAuth()
+            } else {
+                return pc.usableAPIKey != nil
+            }
+        }
         if descriptor.kind.usesExternalAuth {
             return descriptor.makeFetcher(pc).hasLocalAuth()
         } else {
@@ -1375,9 +1398,12 @@ final class AppState: ObservableObject {
             return "外部 auth 缺失：\(path)"
         case .antigravity:
             return "请先启动 Antigravity 并完成登录"
+        case .glmCodingPlan:
+            let path = config.authPath ?? "~/.zcode/v2"
+            return "ZCode 凭证缺失：\(path)"
         case .minimaxTokenPlan:
             return "外部 auth 未就绪"
-        case .glmCodingPlan, .deepseek:
+        case .deepseek:
             return "外部 auth 未就绪"
         }
     }

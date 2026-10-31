@@ -173,18 +173,14 @@ Interface pane「状态栏图标」节（`SettingsGeneralPane.swift`）提供图
   - 与 Provider 卡片标题栏的「小眼睛」按钮双向联动，保存时写回 `config.json` 的 `statusBarPinnedProvider` 字段；
 - **状态圆点与三色拾色器**（`statusBarHealthDotEnabled`、`statusBarHealthColors`）。
 
-### GLM 高峰期提示（只读）与「ZCode 凭证解析」
+### GLM 认证方式分段（Segment）与高峰期提示
 
-GLM provider pane 的「高峰期提示」段是**只读展示**（与 DeepSeek 同款
-`SettingsControlRow` 写法）：值行为 `工作日 14:00–18:00（北京时间 · 法定节假日除外）`，
-footer 注明按北京时间计算、官方口径、不可调。曾经的开始/结束小时 Stepper 与
-「仅工作日」开关已随 GLM 去配置化删除（`peakStartHour` / `peakEndHour` /
-`peakWeekdaysOnly` 键移除，残留键由 `JSONDecoder` 静默忽略，见 `spec/config.md`
-§Config Schema）；DeepSeek pane 的 footer 同步补了「法定节假日除外」口径。
-
-此外，GLM pane 提供「ZCode 凭证解析」独立设置节：
-- **启用 ZCode 凭证解析**（`parseZcodeCredential`）：解密读取本地 `~/.zcode/v2` 凭据，手动开启后提供活动套餐余额查询、额度重置卡状态及运营活动推送配置。默认关闭。
-- **运营活动推送通知**（`notifyCampaign`）：下拉菜单（`none` / `system` / `barkAndSystem`），仅在凭证解析开启时可交互，关闭时置灰禁用。未配置通知时完全不发起运营活动轮询；开启后走固定倍率回退，发现活动 1h 内不重复推送。
+GLM provider pane（`SettingsProviderPanes.swift:glmPane`）提供分段控制器（Segmented Control）切换认证模式：
+- **认证方式**（`glmAuthMode`）：分段选择「API Key」与「ZCode 凭证」。
+  - **API Key 模式**：显示 API Key 输入框（`glmApiKeyField`）；仅拉取并展示标准 5h 与周额度套餐，不查询活动套餐与重置卡，footer 提示仅监控标准额度。
+  - **ZCode 凭证模式**：类似 Codex 提供「ZCode 凭证路径」（`authPath`，支持直接填写目录或 `credentials.json` 文件路径，带「选择…」文件选择按钮与 `~` 相对路径解析）以及「运营活动推送通知」（`notifyCampaign`）下拉菜单；自动解密读取本地 Bearer Token 免 Key 请求标准套餐，同时拉取活动套餐余额、额度重置卡状态及运营活动推送。
+  - 原「启用 ZCode 凭证解析」独立设置开关已移除，由 Segment 分段直接决定功能边界与数据层分流。
+- **高峰期提示**：只读展示（与 DeepSeek 同款 `SettingsControlRow` 写法），值行为 `工作日 14:00–18:00（北京时间 · 法定节假日除外）`，footer 注明按北京时间计算、官方口径、不可调。曾经的开始/结束小时 Stepper 与「仅工作日」开关已随 GLM 去配置化删除（`peakStartHour` / `peakEndHour` / `peakWeekdaysOnly` 键移除，残留键由 `JSONDecoder` 静默忽略，见 `spec/config.md` §Config Schema）。
 
 General pane 的「关于」之前有
 「节假日数据源」节（`HolidaySourceSection`，单独 View 以 `@ObservedObject` 观察
@@ -362,6 +358,6 @@ appearance-neutral.
 - **历史图表空间适配**：`SevenDayUsageHistoryView` 增加紧凑（`.compact`）与宽松（`.expanded`）两种模式。设置页与独立详情窗口使用 `.expanded`，宽度撑满可用区域（`.frame(maxWidth: .infinity)`），表格字号适度提至 11–11.5pt、列宽与间距自适应拉开；菜单与浮层维持 `.compact`（420pt）。坐标轴与日期标签字体提至 10–11pt、配色提至 `.secondary`。
 - **说明文字与行距紧凑化**：边缘状态窗 footer 收敛为 2 句核心操作指引，双环机制与多屏行为放入「了解更多…」popover；ChatGPT API 赠金设置移除每行冗余的 `Divider().padding(.vertical, 4)`，对齐常规表单行距。
 
-> 核对基线：2026-10-31 · 代码 a69e749
+> 核对基线：2026-10-31 · 代码 6f10b16
 > Sync 草稿跨 tab 保留、表单隔离与保存失败提示验证结果见 `spec/sync.md`。
 > 2026-10-25 菜单 / 设置自启同步已随 6f11831 入库：相关定向测试 27 例、完整测试 1422 例均 0 失败；测试使用模拟登录项操作，不执行真实注册 / 注销。
