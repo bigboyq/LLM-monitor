@@ -46,7 +46,7 @@ FSEvents/vnode 只负责把 source 标记为 dirty 和驱动 freshness UI；它�
 | MiniMax | runtime DB + WAL 指纹，逐 source cache；缓存带日历签名 | 未变化复用；变化 source 重聚合最近窗口，保留 sample cache | stat/SQL 不确定、日历变化或 session 失败时保留 last-good，不推进成功指纹，结果不完整时保持 dirty |
 | GLM / OpenCode | DB + WAL 指纹，快照带日历签名 | 未变化 rebase 本地日窗口；变化时重建单库 snapshot | DB/WAL 不可读、日历变化或 cache 版本不匹配时重建；失败不覆盖 last-good |
 | DSH | session 文件集合和每文件 fingerprint；聚合快照带日历签名 | 未变化复用；只解析变化文件，复用 parsed-file cache。**样本保留上限是独立于预算的第二条截断轴**：fingerprint 命中还要求 cache 带样本完整性元数据（`recentSamplesLimit` 匹配、`recentSamplesTruncated` / `latestOmittedSampleAt` 已知，见 `Models/DshLocalUsage.swift`），旧格式 cache 或 limit 变化时即使指纹未变也强制重聚合一次（一次性迁移代价）；rebase 保留已知样本截断，被挤出样本滑出保留窗后经 `latestOmittedSampleAt` 自动恢复完整标记。细则见 `providers/dsh.md` | 删除/压缩重写/预算截断等不安全状态回退单文件或受限全量；单文件失败时整份 index 保持 last-good 且保持 dirty，避免 fingerprint 与 aggregate 不一致 |
-| Codex | session JSONL per-file `mtime/size`，并检测 append/truncate/rewrite | 进程内未变化复用；append 从 offset 续读；启动 cache 缺失时冷扫一次 | truncate、同尺寸改写、部分行或预算未读保留 pending，下一拍续读/重扫；当前事件 cache 不跨进程持久化 |
+| Codex | session JSONL per-file `mtime/size`，并检测 append/truncate/rewrite | 未变化复用 `token-monitor/codex.json` 磁盘缓存；append 从 offset 续读；冷启动无缓存时全量扫描并落盘 | truncate、同尺寸改写、部分行或预算未读保留 pending，下一拍续读/重扫；会话索引经 `ScannerIndexIO` 跨进程持久化至 `token-monitor/codex.json` |
 | agy | transcript 文件集合 + per-file `mtime/size` 指纹 + cli log 时间线签名（log-only 变化触发重聚合）；聚合快照带日历签名 | 未变化 rebase 本地 7 天窗口；变化时重聚合整个选中文件集（无 per-file 增量，靠 `(sessionID, created_at, step_index)` 跨文件去重兜底） | stat 失败或文件解析失败保留 last-good 且按 partial 暴露（partial 永不入盘、不推进成功指纹，失败文件下一轮重试）；预算截断是完整扫描，置 `isTruncated` 不算 partial |
 
 ## 事务和并发契约
@@ -173,4 +173,4 @@ catch 块始终 `release()` 防止锁泄漏。
 测试可以注入一个 `TestGate.wait()` 让 worker 在 SQL/RPC 前阻塞, 精确控制 cancel+rescan
 时序. release build 的 binary 完全不带这个字段.
 
-> 核对基线：2026-10-30 · 代码 81063ef
+> 核对基线：2026-10-31 · 代码 cf39ac1

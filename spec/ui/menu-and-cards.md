@@ -63,14 +63,16 @@ yellow and green are omitted); the top dot (enlarged to r=48) mirrors the Energy
 The popover window top edge is snapped to `screen.visibleFrame.maxY + 10` on every presentation, absorbing popover margins to stay flush
 with the bottom edge of the macOS menu bar.
 All `iconDuo` red/yellow/green decisions — the three bottom dots, both arcs, and the
-center sector — go through the time-aware `ModelQuota.colorLevel` thresholds (`< 20% * t` red;
-`< 50% * t` yellow; otherwise green, with dynamic denominator `100% * t`),
+center sector — go through the time-aware `ModelQuota.colorLevel` thresholds (`< 30% * t` red;
+`< 60% * t` yellow; otherwise green, with dynamic denominator `100% * t`, configurable via `AlertThresholdConfig`),
 the same rule the provider cards use, replacing the retired fixed `HealthLevel.standard`
 thresholds. Composite elements (the bottom dots and the center sector) read the
 "actual available" caliber — per model `min(5h, weekly × N)` via
 `ModelQuota.aggregateActualAvailable` / `aggregateHealthLevel` — while the left/right
 arcs keep their raw per-window averages (both short and weekly arcs use the widest remaining-time
-fraction across models for their dynamic thresholds). During GLM peak hours a peak
+fraction across models for their dynamic thresholds). DeepSeek balance health is determined
+by balance thresholds (`< 3` red, `< 10` yellow; default `deepseekBalanceCritical = 3.0`,
+`deepseekBalanceWarning = 10.0`). During GLM peak hours a peak
 floor raises a provider's composite status to at least `.warning` (red wins); the floor
 only applies to the iconDuo bottom dots and the card header dots — arcs and the center
 sector are exempt.
@@ -531,7 +533,7 @@ reported through `CardsContentHeightKey`, which the harness content reuses uncha
 content (`fixedSize(vertical: true)`) so a short client list gets a short window; the
 ceiling is `window.contentMaxSize` = `floor(visibleFrame.height × 0.70)`, set by
 `MenuPanelHeightBridge.HeightProbeView.applyMaxSize()`
-(`Views/MenuContentView.swift:540-570`，`HeightProbeView` 定义在同文件 `:515`). `cappedHeight(_:)` and `heightCapFraction`
+(`Views/MenuContentView.swift:727-757`，`HeightProbeView` 定义在同文件 `:716`). `cappedHeight(_:)` and `heightCapFraction`
 (0.70) are exposed as `static` precisely so `MenuPanelHeightBridgeTests` can pin the
 arithmetic without standing up an `NSWindow` / `NSScreen`. The cap is conditional:
 `windowMaxHeight` is `maxHeight` only when the natural height (measured cards +
@@ -915,7 +917,7 @@ Quota summary line:
 
 | Part | Style |
 |---|---|
-| Progress bar | **整行宽**（跟随卡片内容宽度，即两个宿主共同的 **420pt**；不是旧主菜单的 312pt），8pt height，上下各留 3pt。The first segment is `min(5h remaining, weekly remaining × N)`；若周额度尚有余量，下一格先显示 `(weekly remaining × N - 5h remaining) mod 1`，再显示整格周额度 |
+| Progress bar | **整行宽**（跟随卡片内容宽度，即两个宿主共同的 **420pt**；不是旧主菜单的 312pt），8pt height，上下各留 3pt。首格为 `min(5h remaining, weekly remaining × N)`；若周额度更高，优先填满后续的整格单位，余数格跟随其后（容量为余数） |
 | Data column | 双窗口 `5h X%  周 Y%` 使用 `quotaCombinedDataColumnWidth` 固定 **152pt** 宽，**显示周瓶颈括号时再加 `quotaCombinedEffectiveSuffixWidth`（56pt）= 208pt 档**；单窗口使用 `quotaSingleDataColumnWidth` 固定 **80pt** 宽。均右对齐，让 reset time 从一致的 x 位置开始。内部 per-percent 框保持 "5h" 和 "周" 列对齐。宽度是**定宽档**而不是自适应：同一张卡里显示括号的行共用 208pt、不显示的共用 152pt，各自成列，重置时间不会因为某一行的括号有无而左右乱跳 |
 | Labels (`5h`, `周`) | 10pt semibold, secondary |
 | Percent | 10pt semibold monospaced digit，每个用 40pt 固定右对齐宽（统一经 `Formatters.formatQuotaPercent` 格式化：至多一位小数，计算结果为整数则显示整数且绝不带 `.0`，如 `91.9%` / `92%` / `100%`） |
@@ -934,8 +936,8 @@ Claude and GPT models 组 N=2）。括号把差额摆到明面上。
 | Rule | Value |
 |---|---|
 | 显示条件 | `QuotaBarWithMetadata.weeklyBindingEffectivePercent(model:multiplier:)` 返回非 nil（`QuotaViews.swift:477`）——纯函数，双窗口以外一律 nil |
-| 判定谓词 | **复用** `EquivalentQuotaAllocation.bindingWindow(...) == .weekly`（`SegmentedQuotaProgressBar.swift:163`）：周 × N **严格**小于 5h 才算周瓶颈，并列按同一约定落到 5h、不显示括号。这样括号出现与否与本行的分段条永远同源，不会条缩了文字没缩 |
-| 括号值 | `EquivalentQuotaAllocation.effectivePrimaryFraction(...) × 100`（`SegmentedQuotaProgressBar.swift:149`），经 `Formatters.formatQuotaPercent` 格式化（至多一位小数、整数不带 `.0`，如 `30%` / `91.9%`） |
+| 判定谓词 | **复用** `EquivalentQuotaAllocation.bindingWindow(...) == .weekly`（`SegmentedQuotaProgressBar.swift:316`）：周 × N **严格**小于 5h 才算周瓶颈，并列按同一约定落到 5h、不显示括号。这样括号出现与否与本行的分段条永远同源，不会条缩了文字没缩 |
+| 括号值 | `EquivalentQuotaAllocation.effectivePrimaryFraction(...) × 100`（`SegmentedQuotaProgressBar.swift:292`），经 `Formatters.formatQuotaPercent` 格式化（至多一位小数、整数不带 `.0`，如 `30%` / `91.9%`） |
 | 渲染 | `Text("(\(Formatters.formatQuotaPercent(effectivePercent))有效)")`，`MenuTypography.dataValue`（10pt semibold monospacedDigit），`Color.criticalTint`，`.fixedSize()`（`QuotaViews.swift:598-602`） |
 | 颜色 | **告急同款红 `Color.criticalTint`**，不是 `.secondary` 灰：括号值是"周瓶颈下实际还能用多少"的告警数字，要在原始 5h 的绿色系旁边跳出来 |
 | 宽度 | 数据列按上表走 152 → 152+56 两档，括号本身 `fixedSize` 不参与压缩 |
@@ -987,23 +989,28 @@ Provider 品牌色从 `Color+Theme.swift` 统一派发：MiniMax 品牌色已统
 - **标准槽高**严格锁定为 `13pt`（`8pt` 条高 + `4pt` 顶部时间锚点三角 ▼ + `1pt` 间距），保持所有卡片行高稳定；
 - **微栅格分段渲染（Hybrid Micro-Ticks，约 100 槽微栅格体系）**：整条以约 100 槽（96~100 点）为全满基准分辨率，基于「肉眼对色块宽度敏感、对微小间距不敏感」的设计哲学，每组模型按整除需求分配专属段点数（单窗口 100 点、2 段各 50 点、4 段各 25 点、5 段各 20 点、6 段各 16 点、7 段各 14 点、10 段各 10 点），彻底根除同卡片各段间点数不等或锯齿问题；色块宽度（`tickWidth`）固定为全局恒定值 `2.0pt`（Retina 2x 屏幕下物理对应整整 4px，圆角 `1.0pt`，呈饱满垂直胶囊状），绝对不因分段动态拉伸或压缩；扣除所有色块固定宽度与分段大间隙（`macroGap = 8.0pt`，相当于整整 2 根线槽位的清晰视觉分隔，段间:段内比率近 4x）后的全部剩余空白空间平分到段内块与块的微间距（`tickGap` $\approx 2.0\sim 2.2\text{pt}$，与色块宽度形成近乎 1:1 的黄金呼吸节奏）；当 `N > 1` 时，在第 0 段与第 1 段间隙正中绘制 `1.5pt` 宽、`10pt` 高的分界锚线（`Color.primary.opacity(0.28)`），直观区分当前 5h 窗口与未来周配额；
 - **自适应栅格分配与点亮规则**：各段自适应栅格数（`ticksPerSegment(for:)`，单段 100、2 段各 50、4 段各 25、5 段各 20、6 段各 16、7 段各 14、10 段各 10；若遇非整数倍率则按容量权重分配并以 100 格为总基准）；点亮算法 `activeTickCount(fill:totalTicks:)` 采用 Half-Down 最近邻吸附（贴近最近刻度，遇到小数部分恰为 0.5 的中点平局时向小取整，保守估计余量，例如 10 格区间中 44.9% 与 45% 亮 4 格、45.1% 亮 5 格；16 格区间 50% 亮 8 格，46.875% 亮 7 格、47.0% 亮 8 格）；首段点亮栅格用 `intervalSegmentColor`（100% 不透明度），后续周段点亮栅格用 `weeklySegmentColor.opacity(0.68)`，底槽栅格用 `Color.primary.opacity(0.10)`。
-- **时间感知与三角标记解耦**：首格颜色由 `primaryTimeRemainingFraction`（即 5h 短窗口/滚动窗口的剩余时间比例）参与统一 pacing 计算（分母 = `100% * t`，`< 20%` 红色，`< 50%` 黄色，`>= 50%` 绿色）；而顶部时间锚点三角 ▼ 仅在长周期窗口（`>= 86400` 秒，如周配额）呈现，短窗口（`< 86400` 秒）不显示三角，避免短频跳动引起视觉干扰。
+- **时间感知与三角标记解耦**：首格颜色由 `primaryTimeRemainingFraction`（即 5h 短窗口/滚动窗口的剩余时间比例）参与统一 pacing 计算（分母 = `100% * t`，默认 `< 30%` 红色，`< 60%` 黄色，`>= 60%` 绿色，支持动态配置）；而顶部时间锚点三角 ▼ 仅在长周期窗口（`>= 86400` 秒，如周配额）呈现，短窗口（`< 86400` 秒）不显示三角，避免短频跳动引起视觉干扰。
 
 Progress bar fill (`SegmentedQuotaProgressBar.intervalSegmentColor` /
 `weeklySegmentColor` and `ModelQuota.colorLevel`):
 
 | Remaining percent vs Pacing (分母 = 100% * t) | Health Level | Color |
 |---|---|---|
-| `< 20% * t` (或 percent <= 0，缺失 t 时 `< 20%`) | critical | `Color.criticalTint` |
-| `< 50% * t` (缺失 t 时 `< 50%`) | warning | `Color.warningTint` |
+| `< 30% * t` (或 percent <= 0，缺失 t 时 `< 30%`) | critical | `Color.criticalTint` |
+| `< 60% * t` (缺失 t 时 `< 60%`) | warning | `Color.warningTint` |
 | otherwise (包括 `t <= 0` 且 `percent > 0`) | healthy | provider/model tint |
+
+DeepSeek API 账户余额健康度（`ProviderStatus.aggregateHealthLevel` / `AlertThresholdConfig`）：
+- 余额 `< 3` 元（或 `<= 0`）：红色 `.critical`（默认 `deepseekBalanceCritical = 3.0`）
+- 余额 `< 10` 元：黄色 `.warning`（默认 `deepseekBalanceWarning = 10.0`）
+- 余额 `≥ 10` 元：绿色 `.healthy`
 
 Reset time color (`summaryColor(for:timeFraction:)`):
 
 | Remaining percent vs Pacing (分母 = 100% * t) | Color |
 |---|---|
-| `< 20% * t` (或 percent <= 0，缺失 t 时 `< 20%`) | `Color.criticalTint` |
-| `< 50% * t` (缺失 t 时 `< 50%`) | `Color.warningTint` |
+| `< 30% * t` (或 percent <= 0，缺失 t 时 `< 30%`) | `Color.criticalTint` |
+| `< 60% * t` (缺失 t 时 `< 60%`) | `Color.warningTint` |
 | `> 80%` (在 healthy 档位且绝对百分比高) | `Color.healthyTint` |
 | otherwise (healthy 档位基线) | primary |
 
@@ -1079,5 +1086,4 @@ The UI intentionally hides reset-credit id, title, description, and grant time.
 The shared Plan fallback uses the same 10pt `MenuTypography.hint` role for loading and
 failure feedback; there is no separate error-message typography role.
 
-> 核对基线：2026-10-31 · 代码 40343a1
-> 统一验证通过，详细结果见 `spec/sync.md`。
+> 核对基线：2026-10-31 · 代码 cf39ac1

@@ -26,6 +26,7 @@
 | `Sources/LLM-monitor/Models/UsageFrameExtractors.swift` | 帧抽取注册表 `usageFrameExtractors`（各 harness 的 ProviderStatus 字段 → `HarnessUsageFrame`，L1 适配） |
 | `Sources/LLM-monitor/Models/UnifiedDailyTokenUsage.swift` | provider 中立日桶与当日 max 修补（`UnifiedDailyUsageNormalizer`） |
 | `Sources/LLM-monitor/Models/MixedCurrencyEstimate.swift` | 跨 provider 金额汇总的统一折算类型（USD ×7 → CNY） |
+| `Tests/LLMMonitorTests/MixedCurrencyEstimateTests.swift` | 跨 provider 金额折算（USD ×7 → CNY）、文案格式化与零金额兜底 |
 | `Sources/LLM-monitor/Services/ClientUsageAggregation.swift` | L3 视图模型纯函数：设置页客户端拆行、菜单 `HarnessTodaySummary` 与今日占比条段 `HarnessClientSegment`、`HarnessSummaryCache` |
 | `Sources/LLM-monitor/Services/LayoutMetrics.swift` | Services 与 Views 共读的排版常量（图表宽 / 卡片列与内容层内边距） |
 | `Sources/LLM-monitor/Models/ModelPricingCatalog.swift` | 计价引擎：加载 `Resources/ModelPricing.json`（首条命中 / exact / matchAll / zhipu 兜底 / 下划线归一化）并应用 DeepSeek 高峰倍率；资源 bundle 整体缺失时先过 `ResourceBundleProbe`、降级为空目录并记 error（不再启动即崩），bundle 在而 JSON 缺失 / 解析失败仍 preconditionFailure |
@@ -36,6 +37,7 @@
 | `Sources/LLM-monitor/Models/QuotaInfo.swift` | Provider-neutral quota 和 reset-credit 模型 |
 | `Sources/LLM-monitor/Models/QuotaWindowStatus.swift` | Provider 无关的额度窗口存在性（`.present` / `.absent`）；fetcher 在边界归一化 raw 状态码 |
 | `Sources/LLM-monitor/Models/AntigravityModelKind.swift` | Antigravity 模型族分类 enum（`gemini_models` / `gemini_argon` / `claude_and_gpt_models` wire 值的 single source of truth） |
+| `Sources/LLM-monitor/Models/MinimaxModelKind.swift` | MiniMax 模型族与用量分类 |
 | `Sources/LLM-monitor/Models/AppMetadata.swift` | 版本 / build 号（读 Info.plist，设置页「关于」展示） |
 | `Sources/LLM-monitor/Models/AnyJSON.swift` | 弱类型 JSON（Antigravity 递归解析用） |
 | `Sources/LLM-monitor/Models/LocalUsageDaily.swift` | Antigravity / Agy / Codex / Minimax / GLM / DSH / OpenCode 共享的 7-day chart 协议 + 默认实现 |
@@ -80,7 +82,7 @@
 | `Sources/LLM-monitor/Fetchers/AntigravityFetcher.swift` | Antigravity 进程发现 + 本地 RPC + protobuf-like 解析 |
 | `Sources/LLM-monitor/Fetchers/AntigravityProcessDiscovery.swift` | Antigravity 后端进程发现（IDE `language_server` / `agy` CLI 双形态、端口与 CSRF token 提取） |
 | `Sources/LLM-monitor/Fetchers/AntigravitySchemas.swift` | Antigravity RPC request / response 的 Encodable 编码 schema 与解码模型 |
-| `Sources/LLM-monitor/Fetchers/GlmCodingPlanFetcher.swift` | GLM Coding Plan 额度与 reset time 抓取 |
+| `Sources/LLM-monitor/Fetchers/GlmCodingPlanFetcher.swift` | GLM Coding Plan 额度与 reset time 抓取（支持 `GlmAuthMode`：`apiKey` / `credential`） |
 | `Sources/LLM-monitor/Fetchers/DeepseekFetcher.swift` | DeepSeek 账户余额抓取（`/user/balance`）+ 解析 |
 | `Sources/LLM-monitor/Models/PeakWindow.swift` | GLM / DeepSeek 共用的参数化高峰窗口判定（`slots` × `weekdaysOnly` × `HolidayCalendar`；统一北京时间 + Rule A 工作日口径，两家只差 slots 数量：GLM 单窗口（官方固定 14–18，不可调），DeepSeek 双窗口固定、高峰永不含周末） |
 | `Sources/LLM-monitor/Models/HolidayCalendar.swift` | 法定节假日快照模型（Rule A 的节假日数据源）：`Set<Int>` yyyyMMdd 日期键 + source/fetchedAt 元信息，`isHoliday` / `covers(year:)`；解析链纯函数（`parseSource` 源语义 / `parseSourceDates` 快照+上游 chinese-days 双格式 / `resolve` 缓存→bundle→empty / `isStale` 7 天新鲜度）与可更新的 `shared`（锁保护，`applyResolved` 替换）；bundle 加载 `loadBundled()` 先过 `ResourceBundleProbe`（资源 bundle 整体缺失时降级路径才可达）、缺失 / 损坏退化为空表并记日志；`sharedRevision` 随 `applyResolved` 递增（派生值 memo 的失效键）；上游 chinese-days 格式要求三键齐全（缺 `holidays`/`workdays`/`inLieuDays` 任一即按「格式不支持」拒绝，schema 变化不静默接受） |
@@ -123,6 +125,7 @@
 | `Sources/LLM-monitor/Services/MinimaxDBReader.swift` | 读 minimax v2 `local_runtime_token_usage` 表 |
 | `Sources/LLM-monitor/Services/MinimaxLocalUsageScanner.swift` | minimax v2 `runtime-state.sqlite` 单源 scanner（AsyncMutex + lastCommittedGeneration 串行化）|
 | `Sources/LLM-monitor/Services/MinimaxLocalUsageAggregation.swift` | minimax reasoning 字符分摊比例回写 sample 与 per-day 聚合纯函数 |
+| `Sources/LLM-monitor/Services/MinimaxSessionModelResolver.swift` | MiniMax 会话模型名解析与映射 |
 | `Sources/LLM-monitor/Services/AgyLocalUsageAggregation.swift` | agy transcript MODEL 行解析、跨文件去重、thinking 字符守恒分摊与日聚合纯函数 |
 | `Sources/LLM-monitor/Services/GlmZcodeDBReader.swift` | ZCode `model_usage` 表 SQL 读取 + Method A reasoning 归类 + per-day 聚合与 samples + 非智谱 provider 分片聚合（`ZcodeProviderSliceAggregate`） |
 | `Sources/LLM-monitor/Services/GlmZcodeOffPeakReader.swift` | `~/.zcode/v2/tasks-index.sqlite` 闲时任务时间窗口读取（额度窗口排除依据） |
@@ -138,7 +141,7 @@
 | `Sources/LLM-monitor/Services/OpencodeUsageScanner.swift` | OpenCode DB 指纹、缓存、7 天窗口与 provider slice snapshot |
 | `Sources/LLM-monitor/Services/Infra/AsyncMutex.swift` | actor-based async-aware mutex（scanner pipeline 互斥；支持 caller cancellation propagation — acquire 前 / 排队中 / acquire 后执行前三阶段均检查取消）|
 | `Sources/LLM-monitor/Services/CancellationFilter.swift` | 统一"取消错误"判断（`Task.isCancelled` / `CancellationError` / `URLError.cancelled`），AppState 与 LocalUsageScanRunner 的两个 catch 入口共用 |
-| `Sources/LLM-monitor/Services/Infra/FileManagerBox.swift` | `FileManager` 的 `@unchecked Sendable` 包装 + `fileManager` 字段 `private`（同文件 extension 之外不能直接拿到底层 `FileManager`）。`Tests/LLMMonitorTests/ConfigStoreTests.swift` 验证该访问约束；`temporaryURL()` 落 App 自有临时根（供 DSH 解压，崩溃残留可被启动 sweep 回收）。命名约定：本套 spec 说「`index.json`」指**版本化索引文档本身**（schema 名，也是目录形态输入与测试下的文件名）；生产落盘文件是 `token-monitor/<provider>.json`（`antigravity.json` / `minimax.json` / `dsh.json` / `glm-zcode.json` / `opencode.json` / `agy.json`，见 `config.md` 运行时文件表） |
+| `Sources/LLM-monitor/Services/Infra/FileManagerBox.swift` | `FileManager` 的 `@unchecked Sendable` 包装 + `fileManager` 字段 `private`（同文件 extension 之外不能直接拿到底层 `FileManager`）。`Tests/LLMMonitorTests/ConfigStoreTests.swift` 验证该访问约束；`temporaryURL()` 落 App 自有临时根（供 DSH 解压，崩溃残留可被启动 sweep 回收）。命名约定：本套 spec 说「`index.json`」指**版本化索引文档本身**（schema 名，也是目录形态输入与测试下的文件名）；生产落盘文件是 `token-monitor/<provider>.json`（共 7 个：`antigravity.json` / `minimax.json` / `dsh.json` / `glm-zcode.json` / `opencode.json` / `agy.json` / `codex.json`，见 `config.md` 运行时文件表） |
 | `Sources/LLM-monitor/Services/Infra/HTTPTimeouts.swift` | HTTP timeout 集中地（国内 domestic 10s / 海外 overseas 15s / antigravity 本机回环），改一处全局生效 |
 | `Sources/LLM-monitor/Services/Infra/ScheduledTask.swift` | 主线程延时调度工具集：`FixedDeadlineTask`（固定截止时间节流防饿死）、`KeyedScheduledTask`（按目标键固定截止调度）、`DebouncedTask`（经典静默防抖）、`LadderScheduledTask`（多阶梯重试调度） |
 | `Sources/LLM-monitor/Services/Infra/LRUCache.swift` | 通用 $O(1)$ LRU 缓存容器（双向链表 + 字典；动态容量收缩与白名单键裁剪；Codex 本地扫描器复用） |
@@ -147,11 +150,12 @@
 | `Sources/LLM-monitor/Services/LocalUsageScanRunner.swift` | 本地用量 scanner 共享的 lifecycle helper（generation 守门 / cancellation filter / defer generation 守门），消除镜像 boilerplate |
 | `Sources/LLM-monitor/Services/SingleDBSnapshotScanner.swift` | 单库全量快照 scanner 基座（db + WAL 双维指纹与缓存 index；GLM / OpenCode scanner 复用） |
 | `Sources/LLM-monitor/Services/DailyUsageAggregation.swift` | minimax / antigravity 共享的 per-day 聚合（补零填充 + 跨 source 合并） |
-| `Sources/LLM-monitor/Services/ScannerIndexIO.swift` | 6 个 scanner 共用的 versioned 缓存 index 读写（版本迁移 / 不匹配 reset）：`MinimaxLocalUsageScanner` / `AntigravityFilesystem` / `DshLocalUsageScanner` / `AgyLocalUsageScanner` 直接调用，另两个经 `SingleDBSnapshotScanner` 基座（GLM-Zcode / OpenCode）调用 |
+| `Sources/LLM-monitor/Services/ScannerIndexIO.swift` | 7 个 scanner 共用的 versioned 缓存 index 读写（版本迁移 / 不匹配 reset）：`MinimaxLocalUsageScanner` / `AntigravityFilesystem` / `DshLocalUsageScanner` / `AgyLocalUsageScanner` / `CodexLocalUsageScanner` 直接调用，另两个经 `SingleDBSnapshotScanner` 基座（GLM-Zcode / OpenCode）调用 |
 | `Sources/LLM-monitor/Services/ScannerFileError.swift` | scanner 共用的「明确不存在」错误判断（权限 / TCC / 瞬时 I/O 不误判为删除，保护 last-good cache） |
 | `Sources/LLM-monitor/Services/LocalUsageScannerBase.swift` | 本地用量 scanner 的状态、generation、取消与 in-flight 去重基座 |
 | `Sources/LLM-monitor/Services/LocalUsageSourceLifecycle.swift` | 本地用量源的 FSEvents/vnode 生命周期与 dirty 事件桥接 |
 | `Sources/LLM-monitor/Services/CodexLocalUsageScanner.swift` | Codex session JSONL 本地用量缓存与窗口汇总 |
+| `Tests/LLMMonitorTests/CodexCachePersistenceTests.swift` | Codex session 本地用量索引磁盘持久化、Codable 往返与版本校验 |
 | `Sources/LLM-monitor/Models/SleepHealthModels.swift` | 「节能」模块 UI 与服务实现之间的稳定数据契约（断言快照 / 电源参数 / 健康度结果） |
 | `Sources/LLM-monitor/Services/SleepHealthService.swift` | 睡眠健康度快照、防休眠断言与周期健康边界刷新 |
 | `Sources/LLM-monitor/Services/SleepHealthEvaluator.swift` | 睡眠锁与系统电源参数的健康度评估 |
@@ -177,6 +181,7 @@
 | `Sources/LLM-monitor/Services/EdgeDockGeometry.swift` | 边缘窗纯几何：行高/尺寸、贴边 frame、offset 往返换算、最近边吸附、行/圆矩形推算（兜底用）、popover 定位、沿边拖拽换算、贴屏侧直边的非对称标签形状 |
 | `Sources/LLM-monitor/Services/EdgeDockDisplay.swift` | 屏幕稳定身份（`EdgeDockDisplay`，display UUID）：边缘窗跨屏只记 UUID，不记 `NSScreen` 对象 / 数组下标 / 几何位置 |
 | `Sources/LLM-monitor/Services/FullscreenProbe.swift` | 当前 Space 全屏判定（`CGWindowList` 只读窗口边框 + 桌面装饰是否存在，fail-open，不需要辅助功能权限） |
+| `Sources/LLM-monitor/Services/ScreenChromeProbe.swift` | 屏幕边缘与 Dock 遮挡探测 |
 | `Sources/LLM-monitor/Services/EdgeDockController.swift` | 边缘窗控制器本体：状态与配置（`applyRuntimeConfig` 是运行时改配置的唯一入口，`config` 的 setter 保持 private）+ 接线（`attach` / `teardown`） |
 | `Sources/LLM-monitor/Services/EdgeDockController+Window.swift` | `NSPanel` 建/拆、按条目数与形态算窗口尺寸、贴到目标屏那一侧、"为什么没出现 / 出现在哪"的日志签名 |
 | `Sources/LLM-monitor/Services/EdgeDockController+Mouse.swift` | 鼠标穿透与悬停接管：monitor 装卸、2Hz 轮询节拍、命中后的接管与释放、hover / 展开 / 收起的挂起任务 |
@@ -204,6 +209,8 @@
 | `Tests/LLMMonitorTests/GlmZcodeAPIClientTests.swift` | ZCode 直连 API 响应解析、重置卡前三截断、套餐余额与预告、ProviderConfig/Draft 状态同步单测 |
 | `Tests/LLMMonitorTests/SevenDayUsageLastColumnTests.swift` | `SevenDayUsageHistoryMetricTests`：历史偏好独立于额度 segment、每日 Prompt P50 与 Fleet 无时长回归（替代旧末列耦合测试） |
 | `Sources/LLM-monitor/Views/SegmentedQuotaProgressBar.swift` | 5h / 周额度分段条（约 100 槽微栅格体系，固定 2.0pt 点宽与 1:1 呼吸间距，Half-Down 吸附点亮）、窗口颜色与 reset 标记 + `EquivalentQuotaAllocation`（binding constraint 文案与 `bindingWindow` 判定） |
+| `Tests/LLMMonitorTests/QuotaAllocationTests.swift` | 额度分段吸附计算、周等价换算与瓶颈窗口判定回归 |
+| `Tests/LLMMonitorTests/AlertThresholdConfigTests.swift` | 告警阈值配置默认值、取值区间裁切与 critical <= warning 约束单测 |
 | `Sources/LLM-monitor/Views/SettingsEnergyPane.swift` | 设置页节能 pane：睡眠健康度、防休眠与电源参数矩阵 |
 | `Sources/LLM-monitor/Views/SleepAssertionOffender+RowText.swift` | 「阻止休眠的第三方应用」行文案（`SleepAssertionOffender` 的行格式化 extension）+ 主面板 header 悬浮清单 `SleepOffendersHoverView`，两处共用同一份格式 |
 | `Sources/LLM-monitor/Views/SettingsClientsPane.swift` | 设置页「客户端」tab：本地客户端用量诊断、共享九维七天历史 + client ↔ quota 绑定开关（从 SettingsView 拆出） |
@@ -215,6 +222,8 @@
 | `Sources/LLM-monitor/Views/SettingsSaveTransaction.swift` | 设置保存事务：login item 更新 + config 保存的失败回滚语义；`SettingsLoginItemDraft` 区分系统实际状态与未保存编辑，保护菜单切换不被旧草稿覆盖 |
 | `Tests/LLMMonitorTests/SettingsLoginItemDraftTests.swift` | 菜单/设置开机自启状态同步、重复状态刷新保留本地编辑、未修改草稿服从系统实际值 |
 | `Sources/LLM-monitor/Views/SettingsView.swift` | 设置面板主框架：侧边栏、Tab 路由、表单草稿状态与保存事务入口；持有联动草稿 controller，跨 tab 保留未保存状态并在底栏提示 |
+| `Sources/LLM-monitor/Views/SettingsFormDraft.swift` | 设置页表单草稿与统一 Equatable 脏检查 |
+| `Tests/LLMMonitorTests/SettingsFormDraftTests.swift` | 设置页表单草稿等价性比较、Equatable 脏检查与重置单测 |
 | `scripts/build-app.sh` | Release arm64 `.app` bundle build（dSYM 导出 + strip）和 ad-hoc signing |
 | `scripts/build-release.sh` | 发行编排入口：依次 build-app.sh → build-dmg.sh 并产出 SHA-256 校验和，签名 / notarization 变量透传 |
 | `scripts/test-build-config.sh` | `build-app.sh` 构建期常量的 shell 冒烟测试（BUNDLE_ID 等「格式对但值被改」的回归护栏，自带框架） |
@@ -233,6 +242,4 @@
 - **串行执行是既定选择**：`swift test --parallel` 实测（2026-10-02，5 连跑 3 败）不可用——`SQLiteTempCopyTests` 的临时副本断言扫描跨进程共享目录，并行 worker 互相误判；且慢测试为睡眠型，并行的 wall 收益仅 ~4s。并行化前提：先给 SQLiteTempCopy 的副本目录引入进程级隔离，再复评。
 - 慢用例的等待注入缝已建立：调度器（now/sleep）、Bark 退避（retryDelay）、vnode 合并窗口（coalescingWindow 参数）；新增耗时敏感测试时优先走注入缝，不要写死真实 sleep。
 
-> 核对基线：2026-10-31 · 代码 8ae2952
-> 统一验证通过，详细结果见 `spec/sync.md`。本文件登记已新增的 Fleet Sync 测试文件。
-> `DeviceIdentityStore` 及其回归测试已随 6f11831 入库，详见 `spec/sync.md`。
+> 核对基线：2026-10-31 · 代码 cf39ac1

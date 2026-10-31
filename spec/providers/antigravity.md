@@ -1280,8 +1280,8 @@ Current row tints:
 Dual-window groups use a combined quota row: the metadata line is
 `<model name> … 5h <pct> 周 <pct> <reset time>` (name leading, both window
 readings plus the binding window's reset time clustered at the line end), and the
-bar is segmented by the group's weekly equivalent multiplier — 6 for
-`Gemini Models` (`Gemini 4 Argon` Pro 套餐仅返回周窗口，走单窗口路径；若返回双窗口同为 6),
+bar is segmented by the group's weekly equivalent multiplier — 4.0 for
+`Gemini Models` (`Gemini 4 Argon` Pro 套餐仅返回周窗口，走单窗口路径；若返回双窗口同为 4.0),
 2 for `Claude and GPT models` (2026-10-13 从 1 调回 2；2026-10 初曾从 3 下调到 1，
 周窗口 = 2 × 5h 额度). A 1-segment bar has no equivalent-
 weekly reading to draw, and its tooltip says 单一窗口可用进度 instead of
@@ -1292,7 +1292,7 @@ Google Antigravity                                          01:44
 alice@example.com  [AI Pro]
 ───────────────────────────── Plan详情
 Gemini Models                          5h 100%  周 85%   <weekly reset time>
-[weekly bar in 4 segments (3x 1.0 + 1x 0.33)]
+[weekly bar in 4 segments (4 segments of 25 ticks, total 100)]
 
 Gemini 4 Argon                                  周 100%  <weekly reset time>
 [single weekly bar]
@@ -1465,4 +1465,4 @@ This script:
 3. calls `RetrieveUserQuotaSummary`
 4. prints or writes the raw JSON
 
-> 核对基线：2026-10-30 · 代码 be6fb65
+> 核对基线：2026-10-31 · 代码 cf39ac1

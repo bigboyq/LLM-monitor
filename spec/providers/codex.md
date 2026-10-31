@@ -467,12 +467,12 @@ only the generic `LocalUsageScannerBase` coordinator/cache layer.
 
 Since 2026-09-06 the in-memory cache also carries a per-file resume offset: while the app is
 running, a grown session file is re-parsed only from its last complete line (append-only
-incremental parsing, ms-level per tick). The incremental state lives purely in the process —
-an app restart starts from an empty cache and performs a full cold scan (~1.3s after the
-byte-level line prefilter), and a truncated or same-size-but-modified file falls back to a full
-re-parse of that file. No disk index is written; the byte-level line prefilter
-(`event_msg` / `turn_context` markers matched via memmem before any String decoding) keeps the
-cold scan itself an order of magnitude cheaper than a naive `String.contains` pass.
+incremental parsing, ms-level per tick). The session event cache is persisted across app
+restarts to `token-monitor/codex.json` (via `ScannerIndexIO`), allowing cold starts to reuse
+the warm cache without full re-parsing; a truncated or same-size-but-modified file falls back
+to a full re-parse of that file. The byte-level line prefilter
+(`event_msg` / `turn_context` markers matched via memmem before any String decoding) keeps
+parsing an order of magnitude cheaper than a naive `String.contains` pass.
 
 The scan selects at most 1,024 recent files and retains event caches for the newest 256;
 older selected files are still scanned within the I/O budget but cannot evict that hot set.
@@ -531,7 +531,7 @@ Rules:
 ### 跨进程缓存持久化（`ScannerIndexIO`）
 
 Codex 本地会话扫描索引经 `CodexScannerIndex: Codable, Sendable` 序列化并落盘：
-- **存储路径**：`~/Library/Caches/LLM-monitor/token-monitor/codex.json`（由 `TokenMonitorPaths.IndexName.codex` 定义）；
+- **存储路径**：`~/Library/Application Support/LLM-monitor/token-monitor/codex.json`（由 `TokenMonitorProvider.codex` 定义）；
 - **生命周期**：扫描器首次或冷启动扫描前执行 `loadIfNeeded()` 读取暖索引，跳过未修改会话文件的重新解析；扫描完成时通过 `persistToDisk()` 原子写盘；
 - **增量判据**：保持基于文件 `mtime` 和 `size` 的指纹缓存，在不改动 session 内部状态的前提下杜绝冷启动全量 I/O。
 
@@ -835,4 +835,4 @@ To compare or sum daily usage across both providers, normalize both into a singl
 
 After normalization, cross-provider sum, average, and chart rendering can treat the two providers as a single data source.
 
-> 核对基线：2026-10-30 · 代码 81063ef
+> 核对基线：2026-10-31 · 代码 cf39ac1

@@ -94,7 +94,7 @@ transaction gate.
 ### 常规 pane「刷新」节与全量补跑倍率
 
 常规设置 pane（`SettingsGeneralPane.swift`）在「刷新」节提供全局刷新与全量周期的集中控制：
-- **全局刷新频率**（`refreshIntervalSeconds`）：`Picker` 下拉选择后台常规刷新间隔（30s、1m、2m、5m、10m、15m、30m、1h），默认 5 分钟。各 Provider 未单独指定频率时均沿用此全局间隔。
+- **全局刷新频率**（`refreshIntervalSeconds`）：`Slider` 滑块在 10...3600s（10 秒至 1 小时）连续调节，默认 5 分钟（300s）。各 Provider 未单独指定频率时均沿用此全局间隔。
 - **全量补跑倍率**（`periodicFullEveryN`）：`Stepper` 步进调节（范围 1...100，默认 20）。展示当前拍数及按全局间隔折算的真实换算时间（如 `约每 1 小时 40 分钟 补跑一次全量刷新`）。
   - 控制 Provider 调度器每连续执行 N 拍后台轻量模式（`.background`）后，自动补跑一次全量模式（`.full`）；
   - 受影响范围包括：Codex 重置次数抓取与陈旧度判定（`max(3 × (N × interval), 15 min)`）、GLM ZCode 额度重置卡抓取、GLM ZCode 运营活动轮询；
@@ -110,7 +110,7 @@ ChatGPT 设置 pane（`SettingsProviderPanes.swift:chatgptPane`）在基础的 `
 - **账单日**：`Picker` 下拉框（每月 1 日至 31 日，默认 11 日）。
 - **重置时间**：`DatePicker`（时分输入组件，精确至分钟粒度，如 `00:00` 或 `08:00`）。
 - API 赠金节 footer 说明首月统计可能存在偏差，后续按完整账期计算；保留现有赠金命名与算法，不做首月校准。
-- **草稿与保存**：所有字段绑定 `SettingsView` 草稿状态并参与 `draftFingerprint` 脏检查；保存时写回 `config.providers["codex_chatgpt"]`。
+- **草稿与保存**：所有字段绑定 `SettingsView` 草稿状态并参与 `SettingsFormDraft: Equatable` 统一脏检查；保存时写回 `config.providers["codex_chatgpt"]`。
 
 ### 客户端 (Clients) 与用量 pane
 
@@ -145,8 +145,12 @@ The per-client provider attribution switches are surfaced in this pane via
 `clientAttributionSection` (`SettingsClientsPane.swift`) — rendering visual toggles for
 each binding matching the active client in `draft.clientBindings`. Toggling a switch directly
 updates the draft and is saved with the form transaction, while preserving `clientBindings[]`
-as the canonical schema v2 source of truth. See `spec/ui/menu-and-cards.md`
-§Provider-Specific Card Details → *OpenCode client bindings*.
+as the canonical schema v2 source of truth. Under **Option B**, closing an attribution toggle
+gates the contribution out of the Provider card's `usageProjection`, but preserves the
+independent usage row in the client diagnostics tab (`diagnosticUsageProjection`), as
+declared in the settings footer. Disabled providers are excluded from client diagnostics
+(`guard status.isEnabled`). See `spec/ui/menu-and-cards.md` §Provider-Specific Card Details
+→ *OpenCode client bindings*.
 
 ### 界面 pane「外观」节
 
@@ -348,7 +352,7 @@ appearance-neutral.
 
 - Notifications pane 集中四个窗口类 provider 的四类事件渠道选择（`不通知` / `系统通知` / `Bark + 系统通知`）。Provider pane 保留跳转入口，不维护第二份通知草稿。
 - 同页提供系统权限查询/申请/拒绝后的设置引导/测试，以及 Bark 全局配置：`enabled` / `serverURL` / `deviceKey` / `sound` / `skipWhenAwakeAndUnlocked` / `ttl` / `group`。主动 Bark 测试使用当前草稿且明确绕过正式屏幕跳过策略。
-- **告警阈值配置**（`alertThresholdsSection`）：提供 API 配额与 DeepSeek 余额的告警阈值调节控件（余量警告 %、余量危险 %、DeepSeek 余额警告、DeepSeek 余额危险）。各输入项直接绑定 `$draft.alerts...`，由 `SettingsFormDraft` 统一进行脏检查并保存。
+- **告警阈值配置**（`alertThresholdsSection`）：提供 API 配额与 DeepSeek 余额的告警阈值调节控件（余量警告 %、余量危险 %、DeepSeek 余额警告、DeepSeek 余额危险）。各输入项直接绑定 `$draft.alertThresholds`，由 `SettingsFormDraft: Equatable` 统一进行脏检查并保存。
 - 系统通知声音绑定 `draft.systemNotificationSoundEnabled`，随普通表单保存；缺省保持出声。系统测试使用当前草稿开关，正式通知使用已保存值；Bark 铃声单独配置。
 - 字段默认值与逐字段容错见 `spec/notifications.md` §5；JSON 契约见 `spec/config.md` §Config Schema 的 `notify*` 与 `bark` 字段。
 
@@ -358,6 +362,6 @@ appearance-neutral.
 - **历史图表空间适配**：`SevenDayUsageHistoryView` 增加紧凑（`.compact`）与宽松（`.expanded`）两种模式。设置页与独立详情窗口使用 `.expanded`，宽度撑满可用区域（`.frame(maxWidth: .infinity)`），表格字号适度提至 11–11.5pt、列宽与间距自适应拉开；菜单与浮层维持 `.compact`（420pt）。坐标轴与日期标签字体提至 10–11pt、配色提至 `.secondary`。
 - **说明文字与行距紧凑化**：边缘状态窗 footer 收敛为 2 句核心操作指引，双环机制与多屏行为放入「了解更多…」popover；ChatGPT API 赠金设置移除每行冗余的 `Divider().padding(.vertical, 4)`，对齐常规表单行距。
 
-> 核对基线：2026-10-31 · 代码 6f10b16
+> 核对基线：2026-10-31 · 代码 cf39ac1
 > Sync 草稿跨 tab 保留、表单隔离与保存失败提示验证结果见 `spec/sync.md`。
 > 2026-10-25 菜单 / 设置自启同步已随 6f11831 入库：相关定向测试 27 例、完整测试 1422 例均 0 失败；测试使用模拟登录项操作，不执行真实注册 / 注销。

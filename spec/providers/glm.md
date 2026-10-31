@@ -550,7 +550,7 @@ OpenCode / DSH 合并 sample（`zhipuai-coding-plan`、`dsh:glm` 等）不带 bi
 ### ZCode 凭证解析与直连 API（Activity Plan、重置卡与营销活动）
 
 zcode SaaS 活动套餐（如周末体验套餐 `ZCode Weekend Build`）、额度重置卡与营销活动触达通过 `GlmZcodeAPIClient` 直调 `zcode.z.ai` 接口获取：
-- 凭证由 `GlmZcodeCredentialReader` 从 `~/.zcode/v2/telemetry-state.json` 与 `credentials.json` 自动解密，需用户手动开启「启用 ZCode 凭证解析」；
+- 凭证由 `GlmZcodeCredentialReader` 从 `~/.zcode/v2/telemetry-state.json` 与 `credentials.json` 自动解密，需切换为凭证认证模式（`glmAuthMode == .credential` / `isZcodeCredentialEnabled`）；
 - 抓取随 `GlmCodingPlanFetcher` 并在后台静默聚合至 `GlmZcodePackageSnapshot`，由 `GlmFillingMissingMerger` 处理跨模式合并；
 - **轮询频率与回退策略**：
   - **活动套餐余额**：与 GLM 默认 Interval 保持一致，每次刷新（`.full` 与 `.background`）均查询；
@@ -565,8 +565,8 @@ zcode SaaS 活动套餐（如周末体验套餐 `ZCode Weekend Build`）、额�
 | 接口 2：重置卡 | `GET https://zcode.z.ai/api/v1/coding-plan/reset/status`（走固定倍率回退，仅 `.full` 模式查询） |
 | 接口 3：营销活动 | `GET https://zcode.z.ai/api/v1/marketing/touch?seq=1`（仅在通知开启且 `.full` 模式轮询，1h 内不重复） |
 | 过期口径 | `expires_at <= now` 的套餐条目直接剔除；重置卡按 `expireAt` 展示 |
-| 开关 | `providers.glm_coding_plan.parseZcodeCredential`（兼容旧配置 `parseZcodePlan` 与 `parseZcodeBalanceLog`；缺省关闭） |
-| 营销活动通知 | `providers.glm_coding_plan.notifyCampaign`（`QuotaNotifyChannel`：`none` / `system` / `barkAndSystem`；缺省关闭；在凭证解析关闭时禁用） |
+| 认证模式 / 开关 | `providers.glm_coding_plan.glmAuthMode`（`GlmAuthMode`：`apiKey` / `credential`，便捷属性 `isZcodeCredentialEnabled`；兼容旧配置 `parseZcodeCredential` / `parseZcodePlan` / `parseZcodeBalanceLog`；缺省 `apiKey`） |
+| 营销活动通知 | `providers.glm_coding_plan.notifyCampaign`（`QuotaNotifyChannel`：`none` / `system` / `barkAndSystem`；缺省关闭；在凭证模式关闭时禁用） |
 | 套餐展示 | `GlmActivityPlanBalancesView`：排在标准额度之后，渲染生效中活动套餐进度条与失效倒计时，以及生效前预告置灰条 |
 | 重置卡展示 | `QuotaWindowUsageSection.glmResetCardsModule`（`GlmResetCardsBlock`）：排在「额度窗口」之后，带有标题「重置卡详情」（`QuotaModuleTitle`），双列布局，左侧 5 小时卡 `5小时重置卡 (N)`、右侧周卡 `周重置卡 (N)`；每列最多展示前 3 张（`prefix(3)`），显示彩色紧迫度圆点、`MM-dd HH:mm` 与相对倒计时；无可用卡时不占卡片高度 |
 
@@ -642,7 +642,7 @@ Bigmodel-Target-Type: PERSONAL                    # 个人账号固定为 PERSON
 
 **最终架构决策**：**Direct API Only（纯直连接口解析，解耦日志）**。
 - 去除 `GlmZcodeLocalUsageScanner` 与 `LocalUsageOrchestration` 中的日志解析调用与目录监听；
-- 统一由 `GlmCodingPlanFetcher` 携带 `isZcodePlanEnabled`，通过 `GlmZcodeAPIClient` 直连接口获取活动套餐、重置卡与营销触达；
+- 统一由 `GlmCodingPlanFetcher` 在 `glmAuthMode == .credential`（`isZcodeCredentialEnabled`）下，通过 `GlmZcodeAPIClient` 直连接口获取活动套餐、重置卡与营销触达；
 - 当直连 API 失败或本地凭证缺失时静默降级（保留原有配额刷新，不阻断主流程），旧版轮询日志解析器已被彻底移除。
 
 **可观测副作用**：用卡成功后 monitor 接口对应窗口的 `remaining` 立即回满、
@@ -721,6 +721,8 @@ session 不一定在内）。
 | Missing `data` | `解析失败：响应缺少 data` |
 | No `CREDIT_LIMIT` entries | `解析失败：GLM Coding Plan 未返回任何有效积分额度` |
 | Counts invalid (e.g. `remaining > total`) | `解析失败：GLM Coding Plan 积分额度字段非法: ...` |
+| Credential missing or not logged in | `解析失败：ZCode 本地凭证缺失或未登录` |
+| Credential token missing and no API key | `解析失败：ZCode 本地凭证缺少 bigmodel access token，且未配置备用 API Key` |
 
 **Auth failure is HTTP 200**: the 智谱 monitor API validates the key at the business layer,
 returning `{ "code": 1000, "msg": "身份验证失败。", "success": false }` with HTTP 200. The
@@ -753,14 +755,12 @@ provider-specific interval can be set via `refreshIntervalSeconds`.
 - Only the `open.bigmodel.cn` host is wired. The same monitor API is mirrored at
   `api.z.ai` (Z.ai) per the official plugin; supporting it would be a config-driven
   endpoint change.
-- ZCode 侧的 zcode-plan / coding-plan-reset 接口（`zcode.z.ai`）均未接入：活动套餐走
-  日志解析（见「Activity plan balances」），额度重置卡为私有接口有意不接入
-  （见「额度重置卡（调研记录，未接入）」）。
+- ZCode 侧的 zcode-plan / coding-plan-reset 接口（`zcode.z.ai`）：活动套餐余额与额度重置卡已在 `.credential` 认证模式下通过 `GlmZcodeAPIClient` 完整接入（旧日志解析器已废弃删除）。
 
 ## Test Coverage
 
 `Tests/LLMMonitorTests/GlmCodingPlanFetcherTests.swift / GlmZcodeDBReaderTests.swift /
-GlmOffPeakTests.swift / GlmBalanceLogReaderTests.swift / GlmUsageCategoryTests.swift`
+GlmOffPeakTests.swift / GlmZcodeAPIClientTests.swift / GlmZcodeCredentialReaderTests.swift / GlmUsageCategoryTests.swift`
 （按 MARK 段拆分，高峰窗口边界与节假日判定用例另在共享的 `PeakWindowTests.swift`，
 法定节假日快照守门在 `HolidayCalendarTests.swift`）:
 
@@ -797,4 +797,4 @@ whether the quota batch succeeded. GLM's former dedicated periodic trigger
 The scanner's db+WAL fingerprint check is unchanged: when nothing changed only a `stat()`
 runs (microseconds); SQL (~1.5ms) only runs when the WAL actually moved.
 
-> 核对基线：2026-10-31 · 代码 6f10b16
+> 核对基线：2026-10-31 · 代码 cf39ac1

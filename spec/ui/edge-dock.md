@@ -80,7 +80,7 @@ the same bottleneck model its arc length comes from — and the inner ring the c
 of the **weekly window alone**, each through
 `ModelQuota.colorLevel(percent:timeFraction:)` — the same thresholds the segmented
 bar uses. The weekly ring passes `weeklyTimeRemainingFraction(at:)` and
-gets the unified time-aware pacing line (分母 = `100% * t`, `< 20%` critical, `< 50%` warning).
+gets the unified time-aware pacing line (分母 = `100% * t`, `< 30%` critical, `< 60%` warning).
 The outer ring's time fraction **follows the binding window**: when the 5h window is the
 bottleneck it passes `intervalTimeRemainingFraction(at:)`, applying the same dynamic
 pacing rule (ensuring e.g. 15% quota remaining with 5 minutes left is correctly treated as healthy);
@@ -1336,4 +1336,4 @@ default has to preserve it — defaulting to off would put a dock inside every f
 window for every existing user. Because the setting can be flipped while the user is
 already fullscreen, a policy change re-probes instead of reusing the cached verdict.
 
-> 核对基线：2026-10-29 · 代码 b315c98
+> 核对基线：2026-10-31 · 代码 cf39ac1

@@ -189,9 +189,10 @@ Config reload path:
 |---|---|---|
 | `MinimaxTokenPlanFetcher` | `IdentityRefreshResultMerger`（默认） | 直接用新值。历史上的 `MinimaxVideoPreservingMerger`（`.background` 模式沿用上次 video 条目）已删除 |
 | `CodexFetcher` | `CodexFillingMissingMerger` | `resetCredits` / `codexUsageDetails` 缺失时回退到上次；reset credits 在 `.background` 跳过时保留原值与时间，`.full` 失败时标记「可能过期」，恢复成功清除。API 赠金独立记录新鲜度，失败保留旧值并标记「更新失败」。Admin-only 或主 quota 失败结果携带主额度错误，merger 保留 Plan 数据与时间；AppState 进入 `.failed(lastSuccess:)`，不推进成功时间或额度通知基线 |
-| `AntigravityFetcher` / `GlmCodingPlanFetcher` / `DeepseekFetcher` | `IdentityRefreshResultMerger`（默认） | 直接用新值 |
+| `GlmCodingPlanFetcher` | `GlmFillingMissingMerger` | `glmZcodePackage` 在凭证模式下跨模式合并：活动套餐余额与预告在接口缺失时回退保留上次成功数据；重置卡与运营活动在 `.background` 跳过时从上次快照继承，保证卡片展示与营销通知稳定 |
+| `AntigravityFetcher` / `DeepseekFetcher` | `IdentityRefreshResultMerger`（默认） | 直接用新值 |
 
-`CodexFetcher` 是当前**唯一**自带 merger 的 fetcher（`let resultMerger: RefreshResultMerger = CodexFillingMissingMerger()`）；其余走 `QuotaFetcher` 的默认实现。
+`CodexFetcher` 与 `GlmCodingPlanFetcher` 自带专用 merger；其余走 `QuotaFetcher` 的默认实现。
 
 AppState.fetch 成功后调 `fetcher.resultMerger.merge(new:previous:mode:)` 合成最终值。
 
@@ -266,6 +267,7 @@ Implementation notes:
 | `accountEmail` | Optional logged-in account. Only Antigravity provides it; other providers leave it nil (the card's Account Info row visibility is decided solely by `QuotaWindowAccountInfo.make`) |
 | `codexUsageDetails` | Optional local 5h / weekly token summary for Codex |
 | `balanceDetail` | Optional structured DeepSeek balance breakdown (`DeepseekBalanceDetail`); replaced the preformatted string that used to be stuffed into `accountEmail`. Always nil for other providers |
+| `glmZcodePackage` | Optional GLM ZCode 活动套餐余额、预告、额度重置卡与营销活动快照（`GlmZcodePackageSnapshot`） |
 | `openAIApiCredits` | Optional OpenAI API 赠金明细，包含独立成功时间与最近失败标记 |
 | `mainQuotaError` / `openAIApiCreditsError` | Optional Codex 部分抓取错误；主额度失败由 AppState 写入 `.failed`，赠金失败由赠金行单独呈现 |
 | `fetchedAt` | Successful fetch timestamp |
@@ -310,8 +312,8 @@ Health is computed from remaining percent and remaining time fraction:
 if percent <= 0 { return .critical }
 
 guard let timeFraction else {
-    if percent < 20.0 { return .critical }
-    if percent < 50.0 { return .warning }
+    if percent < criticalPercent { return .critical }
+    if percent < warningPercent { return .warning }
     return .healthy
 }
 
@@ -319,19 +321,19 @@ let t = min(max(timeFraction, 0.0), 1.0)
 if t <= 0 { return .healthy } // 周期已耗尽或刚到点，只要有剩余额度即算健康（成功撑过周期）
 
 // 分母 = 100% * 剩余时间百分比 (t)
-if percent < 20.0 * t { return .critical }
-if percent < 50.0 * t { return .warning }
+if percent < criticalPercent * t { return .critical }
+if percent < warningPercent * t { return .warning }
 return .healthy
 ```
 
 `ModelQuota.colorLevel` is the single source of truth for both health and progress-bar
 colors. 统一周额度与 5h 短窗口/滚动窗口节奏标色算法：
-分母 = `100% * 剩余时间百分比 (t)`。
-- Pacing ratio `< 20%`（即 `percent < 20% * t`）：红色 `.critical`
-- Pacing ratio `< 50%`（即 `percent < 50% * t`）：黄色 `.warning`
-- Pacing ratio `≥ 50%`：绿色 `.healthy`
+分母 = `100% * 剩余时间百分比 (t)`，默认阈值 `warningPercent = 60.0`（60%）、`criticalPercent = 30.0`（30%），支持通过 `config.effectiveAlertThresholds`（`AlertThresholdConfig`）集中动态配置：
+- Pacing ratio `< 30%`（即 `percent < criticalPercent * t`）：红色 `.critical`
+- Pacing ratio `< 60%`（即 `percent < warningPercent * t`）：黄色 `.warning`
+- Pacing ratio `≥ 60%`：绿色 `.healthy`
 - 当 `t <= 0`（周期已耗尽或刚到重置时刻）：余量只要大于 0 即代表平稳撑过当前窗口，判为 `.healthy`。
-- 当 `timeFraction == nil`（无窗口定义或重置时间缺失）：分母回退为基准 100%（`< 20%` 红色，`< 50%` 黄色，`>= 50%` 绿色）。
+- 当 `timeFraction == nil`（无窗口定义或重置时间缺失）：分母回退为基准 100%（`< 30%` 红色，`< 60%` 黄色，`>= 60%` 绿色）。
 此规则彻底解决了“距离重置仅剩几分钟、剩余 15% 明明充裕却因绝对值低而误报红色”的假警报问题。三个 `healthLevel` 派生属性
 （`ModelQuota.healthLevel` / `QuotaInfo.healthLevel` / `ProviderStatus.healthLevel`）
 已于 2026-10-09 随死代码清理删除：生产消费面为零，跨 model 读数统一走
@@ -509,5 +511,5 @@ These are documented product boundaries:
   have their own SQLite readers, Antigravity is pure RPC, and Codex parses JSONL on
   demand for the 7-day chart.
 
-> 核对基线：2026-10-31 · 代码 a69e749
+> 核对基线：2026-10-31 · 代码 cf39ac1
 > 2026-10-25 自启草稿与菜单实际状态同步已随 6f11831 入库：定向 27 例、完整 1422 例均通过；完整验证记录见 `spec/sync.md`。
