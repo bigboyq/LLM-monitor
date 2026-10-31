@@ -153,7 +153,7 @@ final class ProviderRefreshScheduler {
     /// reset credits 等“只在 .full 抓取”字段的实际刷新周期 = N × provider 间隔。
     /// UI 的新鲜度判定用它而不是 background 间隔，避免误报过期。
     /// nonisolated：纯常量，供默认参数与 UI 在非 MainActor 上下文引用。
-    nonisolated static let periodicFullEveryNDefault = 20
+    nonisolated static var periodicFullEveryNDefault: Int { AppConfig.defaultPeriodicFullEveryN }
 
     init(
         refreshHandler: @escaping RefreshHandler,

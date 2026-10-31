@@ -493,11 +493,14 @@ struct AppConfig: Codable, Equatable {
     /// 2. Codex 重置次数（reset-credits）抓取时机与陈旧度容忍阈值（max(3 × N × interval, 15m)）；
     /// 3. GLM ZCode 额度重置卡（5h/周卡）接口查询频率；
     /// 4. GLM ZCode 运营活动营销触达接口轮询频率（在开启通知时生效）。
+    static let defaultPeriodicFullEveryN: Int = 20
+    static let periodicFullEveryNRange: ClosedRange<Int> = 1...100
+
     var periodicFullEveryN: Int?
 
     var effectivePeriodicFullEveryN: Int {
-        let value = periodicFullEveryN ?? ProviderRefreshScheduler.periodicFullEveryNDefault
-        return min(max(value, 1), 100)
+        let value = periodicFullEveryN ?? Self.defaultPeriodicFullEveryN
+        return min(max(value, Self.periodicFullEveryNRange.lowerBound), Self.periodicFullEveryNRange.upperBound)
     }
 
     var effectiveAlertThresholds: AlertThresholdConfig {

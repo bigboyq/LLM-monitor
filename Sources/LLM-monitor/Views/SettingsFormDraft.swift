@@ -6,7 +6,7 @@ import Foundation
 /// 遵循 Equatable 实现统一脏检查（取代原先手拼 40+ 项的 draftFingerprint）。
 struct SettingsFormDraft: Equatable {
     var globalInterval: Int = 300
-    var periodicFullEveryN: Int = ProviderRefreshScheduler.periodicFullEveryNDefault
+    var periodicFullEveryN: Int = AppConfig.defaultPeriodicFullEveryN
     var statusBarIconStyle: StatusBarIconStyle = .chartBar
     var statusBarHealthDotEnabled: Bool = true
     var statusBarHealthColors: StatusBarHealthColors = .default
