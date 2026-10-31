@@ -49,6 +49,9 @@ struct GlmCodingPlanFetcher: QuotaFetcher {
     private let endpoint: URL
     private let session: URLSession
     private let client: HTTPClient
+    /// ZCode 套餐三路直连接口的注入点：默认走 `GlmZcodeAPIPackageProvider`
+    /// （转发 `GlmZcodeAPIClient` static 方法），测试注入 stub 验证编排逻辑。
+    private let packageProvider: ZcodePackageProviding
     let pollMarketingCampaign: Bool
     var resultMerger: RefreshResultMerger {
         GlmFillingMissingMerger(isZcodeCredentialEnabled: isZcodeCredentialEnabled)
@@ -64,7 +67,8 @@ struct GlmCodingPlanFetcher: QuotaFetcher {
         apiKey: String = "",
         endpoint: URL = URL(string: "https://open.bigmodel.cn/api/monitor/usage/quota/limit")!,
         pollMarketingCampaign: Bool = false,
-        session: URLSession = .shared
+        session: URLSession = .shared,
+        packageProvider: ZcodePackageProviding = GlmZcodeAPIPackageProvider()
     ) {
         self.authMode = authMode
         self.authPath = authPath
@@ -72,6 +76,7 @@ struct GlmCodingPlanFetcher: QuotaFetcher {
         self.endpoint = endpoint
         self.session = session
         self.pollMarketingCampaign = pollMarketingCampaign
+        self.packageProvider = packageProvider
         self.client = HTTPClient(session: session, logTag: Self.logTag, defaultTimeout: HTTPTimeouts.domestic)
     }
 
@@ -180,7 +185,11 @@ struct GlmCodingPlanFetcher: QuotaFetcher {
         return quotaInfo
     }
 
-    private func fetchZcodePackageSilently(mode: RefreshMode, credentials: GlmZcodeCredentials) async -> GlmZcodePackageSnapshot? {
+    /// ZCode 套餐三路编排（internal 以便单测直接验证编排逻辑）。
+    /// 部分失败静默降级：任一路成功即返回快照（失败路为 nil/空，交由
+    /// `GlmFillingMissingMerger` 从 previous 回填）；全部失败且非 background
+    /// 时返回 nil（保留既有数据）。
+    func fetchZcodePackageSilently(mode: RefreshMode, credentials: GlmZcodeCredentials) async -> GlmZcodePackageSnapshot? {
         guard credentials.hasCredentials else {
             logDebug("\(logTag) ZCode 本地凭证缺失，跳过套餐与重置卡获取")
             return nil
@@ -194,7 +203,7 @@ struct GlmCodingPlanFetcher: QuotaFetcher {
 
         // 1. 活动套餐余额：与 GLM 默认 Interval 保持一致，每次刷新都调用
         do {
-            let (b, p) = try await GlmZcodeAPIClient.fetchBalance(credentials: credentials, session: session)
+            let (b, p) = try await packageProvider.fetchBalance(credentials: credentials, session: session, now: Date())
             balances = b
             previews = p
             anySucceeded = true
@@ -206,7 +215,7 @@ struct GlmCodingPlanFetcher: QuotaFetcher {
         if mode == .full {
             if credentials.bigmodelAccessToken != nil {
                 do {
-                    resetCards = try await GlmZcodeAPIClient.fetchResetCards(credentials: credentials, session: session)
+                    resetCards = try await packageProvider.fetchResetCards(credentials: credentials, session: session, now: Date())
                     anySucceeded = true
                 } catch {
                     logWarn("\(logTag) 获取 ZCode 重置卡状态失败: \(error.localizedDescription)")
@@ -220,7 +229,7 @@ struct GlmCodingPlanFetcher: QuotaFetcher {
         if pollMarketingCampaign {
             if mode == .full {
                 do {
-                    deliveries = try await GlmZcodeAPIClient.fetchMarketingTouch(credentials: credentials, session: session)
+                    deliveries = try await packageProvider.fetchMarketingTouch(credentials: credentials, seq: 1, session: session)
                     anySucceeded = true
                 } catch {
                     logDebug("\(logTag) 获取 ZCode 营销触达失败: \(error.localizedDescription)")

@@ -82,7 +82,7 @@
 | `Sources/LLM-monitor/Fetchers/AntigravityFetcher.swift` | Antigravity 进程发现 + 本地 RPC + protobuf-like 解析 |
 | `Sources/LLM-monitor/Fetchers/AntigravityProcessDiscovery.swift` | Antigravity 后端进程发现（IDE `language_server` / `agy` CLI 双形态、端口与 CSRF token 提取） |
 | `Sources/LLM-monitor/Fetchers/AntigravitySchemas.swift` | Antigravity RPC request / response 的 Encodable 编码 schema 与解码模型 |
-| `Sources/LLM-monitor/Fetchers/GlmCodingPlanFetcher.swift` | GLM Coding Plan 额度与 reset time 抓取（支持 `GlmAuthMode`：`apiKey` / `credential`） |
+| `Sources/LLM-monitor/Fetchers/GlmCodingPlanFetcher.swift` | GLM Coding Plan 额度与 reset time 抓取（支持 `GlmAuthMode`：`apiKey` / `credential`；ZCode 套餐三路编排依赖注入 `ZcodePackageProviding`） |
 | `Sources/LLM-monitor/Fetchers/DeepseekFetcher.swift` | DeepSeek 账户余额抓取（`/user/balance`）+ 解析 |
 | `Sources/LLM-monitor/Models/PeakWindow.swift` | GLM / DeepSeek 共用的参数化高峰窗口判定（`slots` × `weekdaysOnly` × `HolidayCalendar`；统一北京时间 + Rule A 工作日口径，两家只差 slots 数量：GLM 单窗口（官方固定 14–18，不可调），DeepSeek 双窗口固定、高峰永不含周末） |
 | `Sources/LLM-monitor/Models/HolidayCalendar.swift` | 法定节假日快照模型（Rule A 的节假日数据源）：`Set<Int>` yyyyMMdd 日期键 + source/fetchedAt 元信息，`isHoliday` / `covers(year:)`；解析链纯函数（`parseSource` 源语义 / `parseSourceDates` 快照+上游 chinese-days 双格式 / `resolve` 缓存→bundle→empty / `isStale` 7 天新鲜度）与可更新的 `shared`（锁保护，`applyResolved` 替换）；bundle 加载 `loadBundled()` 先过 `ResourceBundleProbe`（资源 bundle 整体缺失时降级路径才可达）、缺失 / 损坏退化为空表并记日志；`sharedRevision` 随 `applyResolved` 递增（派生值 memo 的失效键）；上游 chinese-days 格式要求三键齐全（缺 `holidays`/`workdays`/`inLieuDays` 任一即按「格式不支持」拒绝，schema 变化不静默接受） |
@@ -130,7 +130,8 @@
 | `Sources/LLM-monitor/Services/GlmZcodeDBReader.swift` | ZCode `model_usage` 表 SQL 读取 + Method A reasoning 归类 + per-day 聚合与 samples + 非智谱 provider 分片聚合（`ZcodeProviderSliceAggregate`） |
 | `Sources/LLM-monitor/Services/GlmZcodeOffPeakReader.swift` | `~/.zcode/v2/tasks-index.sqlite` 闲时任务时间窗口读取（额度窗口排除依据） |
 | `Sources/LLM-monitor/Services/GlmZcodeCredentialReader.swift` | ZCode 本地凭证与设备标识读取（`~/.zcode/v2/telemetry-state.json` 的 deviceMid + `credentials.json` 的 zcodejwttoken AES-256-GCM 解密） |
-| `Sources/LLM-monitor/Services/GlmZcodeAPIClient.swift` | ZCode 直连 API 客户端（Start Plan / 额度重置卡 / 营销活动触达直连解析与请求） |
+| `Sources/LLM-monitor/Services/GlmZcodeAPIClient.swift` | ZCode 直连 API 客户端（Start Plan / 额度重置卡 / 营销活动触达直连解析与请求；同文件定义 `ZcodePackageProviding` 协议与默认实现 `GlmZcodeAPIPackageProvider`） |
+| `Sources/LLM-monitor/Services/ZcodeAppVersionResolver.swift` | ZCode app 版本解析（按 bundle id 定位本机 ZCode.app 读 Info.plist 的 `CFBundleShortVersionString`，失败回退 `3.17.1`；进程内缓存 + 显式刷新入口，plist 路径可注入） |
 | `Sources/LLM-monitor/Services/GlmZcodeLocalUsageScanner.swift` | GLM ZCode `db.sqlite` 单源 scanner（AsyncMutex + lastCommittedGeneration 串行化） |
 | `Sources/LLM-monitor/Services/AntigravityLocalUsageScanner.swift` | Antigravity 纯 RPC 架构 scanner（AsyncMutex + lastCommittedGeneration 串行化，不用 SQLite .db 读表）|
 | `Sources/LLM-monitor/Services/AntigravityFilesystem.swift` | `AntigravityLocalUsageScanner` 的文件系统侧 extension：conversations roots 枚举、`.db` / `.pb` 双格式识别与指纹、`isComplete` 语义（权限 / TCC / 瞬时 I/O 不得据此删缓存） |
@@ -206,7 +207,9 @@
 | `Sources/LLM-monitor/Views/SevenDayUsageHistoryChart.swift` | 菜单/详情窗口/设置共用七天单指标折线、指标图例、逐日表与来源提示；支持 compact/expanded 布局模式，坐标轴与日期标签提升为 secondary |
 | `Tests/LLMMonitorTests/UsageHistorySeriesTests.swift` | 七日槽、四桶守恒、数值价格/混币、P50、缺失/零与部分样本回归 |
 | `Tests/LLMMonitorTests/GlmZcodeCredentialReaderTests.swift` | ZCode 本地凭证读取与 AES-256-GCM JWT 解密/密钥派生/格式容错单元测试 |
-| `Tests/LLMMonitorTests/GlmZcodeAPIClientTests.swift` | ZCode 直连 API 响应解析、重置卡前三截断、套餐余额与预告、ProviderConfig/Draft 状态同步单测 |
+| `Tests/LLMMonitorTests/GlmZcodeAPIClientTests.swift` | ZCode 直连 API 响应解析、重置卡前三截断、套餐余额与预告、ProviderConfig/Draft 状态同步、三条 parse 路径 `code != 0` 业务错误单测 |
+| `Tests/LLMMonitorTests/GlmZcodePackageOrchestrationTests.swift` | ZCode 套餐三路编排测试（注入 `ZcodePackageProviding` stub）：部分失败降级与 `GlmFillingMissingMerger` 衔接、凭证缺失三路全跳过、marketing/reset 的开关与 background 门控、全失败保留既有数据 |
+| `Tests/LLMMonitorTests/ZcodeAppVersionResolverTests.swift` | ZCode app 版本解析（可注入 plist 路径）：正常读取/trim、缺键/空值/坏 plist/未安装回退、缓存与显式刷新 |
 | `Tests/LLMMonitorTests/SevenDayUsageLastColumnTests.swift` | `SevenDayUsageHistoryMetricTests`：历史偏好独立于额度 segment、每日 Prompt P50 与 Fleet 无时长回归（替代旧末列耦合测试） |
 | `Sources/LLM-monitor/Views/SegmentedQuotaProgressBar.swift` | 5h / 周额度分段条（约 100 槽微栅格体系，固定 2.0pt 点宽与 1:1 呼吸间距，Half-Down 吸附点亮）、窗口颜色与 reset 标记 + `EquivalentQuotaAllocation`（binding constraint 文案与 `bindingWindow` 判定） |
 | `Tests/LLMMonitorTests/QuotaAllocationTests.swift` | 额度分段吸附计算、周等价换算与瓶颈窗口判定回归 |

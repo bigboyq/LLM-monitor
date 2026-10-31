@@ -551,7 +551,7 @@ OpenCode / DSH 合并 sample（`zhipuai-coding-plan`、`dsh:glm` 等）不带 bi
 
 zcode SaaS 活动套餐（如周末体验套餐 `ZCode Weekend Build`）、额度重置卡与营销活动触达通过 `GlmZcodeAPIClient` 直调 `zcode.z.ai` 接口获取：
 - 凭证由 `GlmZcodeCredentialReader` 从 `~/.zcode/v2/telemetry-state.json` 与 `credentials.json` 自动解密，需切换为凭证认证模式（`glmAuthMode == .credential` / `isZcodeCredentialEnabled`）；
-- 抓取随 `GlmCodingPlanFetcher` 并在后台静默聚合至 `GlmZcodePackageSnapshot`，由 `GlmFillingMissingMerger` 处理跨模式合并；
+- 抓取随 `GlmCodingPlanFetcher` 并在后台静默聚合至 `GlmZcodePackageSnapshot`，由 `GlmFillingMissingMerger` 处理跨模式合并；三路接口经 `ZcodePackageProviding` 协议注入（默认实现 `GlmZcodeAPIPackageProvider` 转发 `GlmZcodeAPIClient` static 方法），编排逻辑（部分失败降级、凭证缺失跳过、background 门控）可注入 stub 单测；
 - **轮询频率与回退策略**：
   - **活动套餐余额**：与 GLM 默认 Interval 保持一致，每次刷新（`.full` 与 `.background`）均查询；
   - **额度重置卡**：走固定倍率回退（类似 Codex 重置卡轮询），仅在 `.full` 模式下查询，`.background` 模式按设计跳过并从上次成功快照继承；
@@ -560,8 +560,8 @@ zcode SaaS 活动套餐（如周末体验套餐 `ZCode Weekend Build`）、额�
 
 | 项 | 值 |
 |---|---|
-| 数据源 | 直连 API：`GlmZcodeAPIClient.fetchBalance()` / `fetchResetCards()` / `fetchMarketingTouch()` |
-| 接口 1：套餐余额 | `GET https://zcode.z.ai/api/v1/zcode-plan/billing/balance?app_version=...`（与 GLM 默认 Interval 一致） |
+| 数据源 | 直连 API：`GlmZcodeAPIClient.fetchBalance()` / `fetchResetCards()` / `fetchMarketingTouch()`（经 `ZcodePackageProviding` 协议注入，默认 `GlmZcodeAPIPackageProvider` 转发） |
+| 接口 1：套餐余额 | `GET https://zcode.z.ai/api/v1/zcode-plan/billing/balance?app_version=...`（与 GLM 默认 Interval 一致；`app_version` query 与两条请求的 `X-ZCode-App-Version` header 由 `ZcodeAppVersionResolver` 运行时从本机 ZCode.app 的 Info.plist（`CFBundleShortVersionString`）动态读取，读取失败回退 `3.17.1`，进程内缓存一次） |
 | 接口 2：重置卡 | `GET https://zcode.z.ai/api/v1/coding-plan/reset/status`（走固定倍率回退，仅 `.full` 模式查询） |
 | 接口 3：营销活动 | `GET https://zcode.z.ai/api/v1/marketing/touch?seq=1`（仅在通知开启且 `.full` 模式轮询，1h 内不重复） |
 | 过期口径 | `expires_at <= now` 的套餐条目直接剔除；重置卡按 `expireAt` 展示 |
@@ -623,7 +623,7 @@ Bigmodel-Target-Type: PERSONAL                    # 个人账号固定为 PERSON
    - **重置卡状态**：`GET https://zcode.z.ai/api/v1/coding-plan/reset/status`
      - 需 `Authorization: Bearer <jwt>` + `X-Bigmodel-Authorization: <token>` + `Bigmodel-Target-Type: PERSONAL`。
      - 实测返回可用周卡 3 张（`expire_at: 1797955199000`），5 小时卡 0 张。
-   - **Start Plan 余额**：`GET https://zcode.z.ai/api/v1/zcode-plan/billing/balance?app_version=3.17.1`
+   - **Start Plan 余额**：`GET https://zcode.z.ai/api/v1/zcode-plan/billing/balance?app_version=3.17.1`（实测时的版本；现已改为运行时从本机 ZCode.app 动态读取，见上表「接口 1」）
      - 需 `Authorization: Bearer <jwt>` + `X-Device-Mid` + `X-Client-Language: zh-CN` + `X-ZCode-App-Version` + `X-Bigmodel-Authorization` + `Bigmodel-Target-Type: PERSONAL`。
      - 实测返回 `ZCODE WEEKEND BUILD` 套餐，总量 500,000,000 tokens，剩余 500,000,000 tokens，生效时间 `effective_at: 1793372400`，到期时间 `ends_at: 1793581200`（注意：此接口时间戳为**秒**，与重置卡的**毫秒**不同，客户端均自适应转换）。
    - **营销活动触达（领鸡蛋）**：`GET https://zcode.z.ai/api/v1/marketing/touch?seq=1`
@@ -702,11 +702,12 @@ session 不一定在内）。
 | Off-peak window reader | `Sources/LLM-monitor/Services/GlmZcodeOffPeakReader.swift` |
 | Scanner, cache, and seven-day snapshot | `Sources/LLM-monitor/Services/GlmZcodeLocalUsageScanner.swift` |
 | ZCode 本地凭证读取（deviceMid 与 AES-256-GCM JWT 解密） | `Sources/LLM-monitor/Services/GlmZcodeCredentialReader.swift` |
-| ZCode 直连 API 客户端（套餐余额、重置卡、营销活动） | `Sources/LLM-monitor/Services/GlmZcodeAPIClient.swift` |
+| ZCode 直连 API 客户端（套餐余额、重置卡、营销活动；`ZcodePackageProviding` 协议与默认实现 `GlmZcodeAPIPackageProvider` 同文件） | `Sources/LLM-monitor/Services/GlmZcodeAPIClient.swift` |
+| ZCode app 版本解析（`app_version` / `X-ZCode-App-Version` 动态来源，读本机 ZCode.app Info.plist，失败回退 `3.17.1`） | `Sources/LLM-monitor/Services/ZcodeAppVersionResolver.swift` |
 | Provider-neutral projection with OpenCode | `Sources/LLM-monitor/Models/ProviderClientModel.swift` (`ProviderStatus.usageProjection`，帧抽取表 `usageFrameExtractors`) + `UsageProjectionKernel` |
 | Window summary + off-peak exclusion | `Sources/LLM-monitor/Models/LocalTokenUsageSample.swift` (`summary(excludeGlmOffPeak:)`；今日闲时样本筛选/聚合 `offPeakTodaySamples` / `offPeakTodaySummary`，与按 `GlmUsageCategory` 泛化的 `glmCategoryTodaySamples` / `glmCategoryTodaySummary` 共享同一谓词) |
 | Card integration | `Sources/LLM-monitor/Views/ProviderCardView.swift` + `QuotaViews.swift`；「额度窗口」表格「闲」行的构造在 `Sources/LLM-monitor/Views/ProviderCardDerived.swift`（`ProviderCardDerivedValues.offPeakUsageRow`），「免 / 速 / 它」三行在 `ProviderCardDerivedValues.glmCategoryUsageRows` |
-| Regression tests | `Tests/LLMMonitorTests/GlmCodingPlanFetcherTests.swift 等 6 个按 MARK 段拆分的 GLM 测试文件（含 GlmZcodeAPIClientTests.swift）` |
+| Regression tests | `Tests/LLMMonitorTests/GlmCodingPlanFetcherTests.swift 等 8 个按 MARK 段拆分的 GLM 测试文件（含 GlmZcodeAPIClientTests.swift / GlmZcodePackageOrchestrationTests.swift / ZcodeAppVersionResolverTests.swift）` |
 
 ## API Error Handling
 
@@ -760,7 +761,8 @@ provider-specific interval can be set via `refreshIntervalSeconds`.
 ## Test Coverage
 
 `Tests/LLMMonitorTests/GlmCodingPlanFetcherTests.swift / GlmZcodeDBReaderTests.swift /
-GlmOffPeakTests.swift / GlmZcodeAPIClientTests.swift / GlmZcodeCredentialReaderTests.swift / GlmUsageCategoryTests.swift`
+GlmOffPeakTests.swift / GlmZcodeAPIClientTests.swift / GlmZcodeCredentialReaderTests.swift / GlmUsageCategoryTests.swift /
+GlmZcodePackageOrchestrationTests.swift / ZcodeAppVersionResolverTests.swift`
 （按 MARK 段拆分，高峰窗口边界与节假日判定用例另在共享的 `PeakWindowTests.swift`，
 法定节假日快照守门在 `HolidayCalendarTests.swift`）:
 

@@ -691,4 +691,61 @@ final class GlmZcodeAPIClientTests: XCTestCase {
         XCTAssertEqual(deliveries[2].id, "Only Body")
         XCTAssertEqual(deliveries[3].id, "Only Content")
     }
+
+    // MARK: - 9. code != 0 业务错误（三条 parse 路径）
+
+    private func assertThrowsZcodeAPIError(
+        _ body: String,
+        expectedCode: Int,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        XCTAssertThrowsError(try GlmZcodeAPIClient.parseBalanceResponse(data: Data(body.utf8))) { error in
+            guard case QuotaError.apiError(let message) = error else {
+                return XCTFail("Expected QuotaError.apiError, got: \(error)", file: file, line: line)
+            }
+            XCTAssertTrue(message.contains(String(expectedCode)),
+                          "错误信息应包含业务码 \(expectedCode)，实际: \(message)", file: file, line: line)
+        }
+    }
+
+    func testParseBalanceResponseBusinessErrorWithMsgThrowsAPIError() {
+        // 业务错误走 HTTP 200 + body code（带 msg），必须抛 apiError 而非静默返回空数组
+        assertThrowsZcodeAPIError(
+            #"{"code": 40102, "msg": "token expired, please re-login"}"#,
+            expectedCode: 40102
+        )
+    }
+
+    func testParseResetCardsResponseBusinessErrorWithMsgThrowsAPIError() {
+        let errorJson = """
+        {
+          "code": 1006,
+          "msg": "token expired, please re-login",
+          "data": null
+        }
+        """
+        XCTAssertThrowsError(try GlmZcodeAPIClient.parseResetCardsResponse(data: Data(errorJson.utf8))) { error in
+            guard case QuotaError.apiError(let message) = error else {
+                return XCTFail("Expected QuotaError.apiError, got: \(error)")
+            }
+            XCTAssertTrue(message.contains("1006"), "错误信息应包含业务码，实际: \(message)")
+        }
+    }
+
+    func testParseMarketingTouchResponseBusinessErrorWithMsgThrowsAPIError() {
+        let errorJson = """
+        {
+          "code": 500,
+          "msg": "internal server error",
+          "data": { "deliveries": [{ "id": "should-not-parse" }] }
+        }
+        """
+        XCTAssertThrowsError(try GlmZcodeAPIClient.parseMarketingTouchResponse(data: Data(errorJson.utf8))) { error in
+            guard case QuotaError.apiError(let message) = error else {
+                return XCTFail("Expected QuotaError.apiError, got: \(error)")
+            }
+            XCTAssertTrue(message.contains("500"), "错误信息应包含业务码，实际: \(message)")
+        }
+    }
 }

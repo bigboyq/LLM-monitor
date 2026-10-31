@@ -1,10 +1,62 @@
 import Foundation
 
+/// ZCode 套餐三路直连接口的抽象：`GlmCodingPlanFetcher` 的编排逻辑
+/// （部分失败降级、凭证缺失跳过、background 跳过 reset/marketing）依赖此协议
+/// 注入，便于单测用 stub 替换。默认实现转发到 `GlmZcodeAPIClient` 的 static 方法。
+protocol ZcodePackageProviding: Sendable {
+    func fetchBalance(
+        credentials: GlmZcodeCredentials,
+        session: URLSession,
+        now: Date
+    ) async throws -> ([GlmActivityPlanBalance], [GlmActivityPlanPreview])
+
+    func fetchResetCards(
+        credentials: GlmZcodeCredentials,
+        session: URLSession,
+        now: Date
+    ) async throws -> GlmResetCardsSnapshot
+
+    func fetchMarketingTouch(
+        credentials: GlmZcodeCredentials,
+        seq: Int,
+        session: URLSession
+    ) async throws -> [GlmMarketingDelivery]
+}
+
+/// `ZcodePackageProviding` 的默认实现：转发 `GlmZcodeAPIClient` static 方法。
+struct GlmZcodeAPIPackageProvider: ZcodePackageProviding {
+    func fetchBalance(
+        credentials: GlmZcodeCredentials,
+        session: URLSession,
+        now: Date = Date()
+    ) async throws -> ([GlmActivityPlanBalance], [GlmActivityPlanPreview]) {
+        try await GlmZcodeAPIClient.fetchBalance(credentials: credentials, session: session, now: now)
+    }
+
+    func fetchResetCards(
+        credentials: GlmZcodeCredentials,
+        session: URLSession,
+        now: Date = Date()
+    ) async throws -> GlmResetCardsSnapshot {
+        try await GlmZcodeAPIClient.fetchResetCards(credentials: credentials, session: session, now: now)
+    }
+
+    func fetchMarketingTouch(
+        credentials: GlmZcodeCredentials,
+        seq: Int = 1,
+        session: URLSession
+    ) async throws -> [GlmMarketingDelivery] {
+        try await GlmZcodeAPIClient.fetchMarketingTouch(credentials: credentials, seq: seq, session: session)
+    }
+}
+
 /// 请求 ZCode 官方私有 API：重置卡状态、Start Plan 活动套餐余额、营销活动触达
 enum GlmZcodeAPIClient {
     static let logTag = "[glm-zcode-api]"
+    /// ZCode 客户端版本动态回退值：优先从本机安装的 ZCode.app Info.plist 读取
+    /// （`ZcodeAppVersionResolver`），读取失败时回退到该版本。
     static let defaultAppVersion = "3.17.1"
-    static let balanceURLString = "https://zcode.z.ai/api/v1/zcode-plan/billing/balance?app_version=\(defaultAppVersion)"
+    static let balanceURLString = "https://zcode.z.ai/api/v1/zcode-plan/billing/balance"
     static let resetStatusURLString = "https://zcode.z.ai/api/v1/coding-plan/reset/status"
     static let marketingTouchURLString = "https://zcode.z.ai/api/v1/marketing/touch"
 
@@ -19,7 +71,10 @@ enum GlmZcodeAPIClient {
         guard let jwtToken = credentials.jwtToken, !jwtToken.isEmpty else {
             throw QuotaError.decodingError("ZCode JWT Token 缺失")
         }
-        guard let url = URL(string: balanceURLString) else {
+        // app_version 动态取自本机 ZCode.app（回退 defaultAppVersion），避免客户端升级后被版本门槛拒绝
+        var comp = URLComponents(string: balanceURLString)
+        comp?.queryItems = [URLQueryItem(name: "app_version", value: ZcodeAppVersionResolver.currentAppVersion)]
+        guard let url = comp?.url else {
             throw QuotaError.decodingError("无效的 balance URL")
         }
 
@@ -30,7 +85,7 @@ enum GlmZcodeAPIClient {
             req.setValue(deviceMid, forHTTPHeaderField: "X-Device-Mid")
         }
         req.setValue("zh-CN", forHTTPHeaderField: "X-Client-Language")
-        req.setValue(defaultAppVersion, forHTTPHeaderField: "X-ZCode-App-Version")
+        req.setValue(ZcodeAppVersionResolver.currentAppVersion, forHTTPHeaderField: "X-ZCode-App-Version")
         if let bigmodelToken = credentials.bigmodelAccessToken, !bigmodelToken.isEmpty {
             req.setValue(bigmodelToken, forHTTPHeaderField: "X-Bigmodel-Authorization")
             req.setValue("PERSONAL", forHTTPHeaderField: "Bigmodel-Target-Type")
@@ -94,7 +149,7 @@ enum GlmZcodeAPIClient {
             req.setValue(deviceMid, forHTTPHeaderField: "X-Device-Mid")
         }
         req.setValue("zh-CN", forHTTPHeaderField: "X-Client-Language")
-        req.setValue(defaultAppVersion, forHTTPHeaderField: "X-ZCode-App-Version")
+        req.setValue(ZcodeAppVersionResolver.currentAppVersion, forHTTPHeaderField: "X-ZCode-App-Version")
 
         let client = HTTPClient(session: session, logTag: logTag, defaultTimeout: HTTPTimeouts.domestic)
         let (data, _) = try await client.send(req)
