@@ -905,6 +905,7 @@ struct MenuQuotaOverviewView: View {
                     localStatus: state.statuses.first { $0.kind == status.kind } ?? status,
                     fleet: state.fleetCardContext(for: status.kind),
                     isPinnedToStatusBar: state.configStore.config.statusBarPinnedProvider == status.id,
+                    configStore: state.configStore,
                     onTogglePin: { state.toggleStatusBarPinnedProvider(status.id) },
                     onRefresh: { onRefreshProvider(status.id) },
                     onUsageRefresh: { Task { await state.triggerLocalUsageRescan() } },
@@ -931,6 +932,7 @@ private struct MenuQuotaProviderRow: View {
     let localStatus: ProviderStatus
     let fleet: FleetCardContext?
     var isPinnedToStatusBar: Bool = false
+    var configStore: ConfigStore? = nil
     var onTogglePin: (() -> Void)? = nil
     let onRefresh: () -> Void
     let onUsageRefresh: () -> Void
@@ -1060,7 +1062,7 @@ private struct MenuQuotaProviderRow: View {
             }
 
             if isPlanExpanded {
-                ProviderCardView(status: status, fleet: fleet, presentation: .plan)
+                ProviderCardView(status: status, fleet: fleet, presentation: .plan, configStore: configStore)
                         .equatable()
                         .environment(\.hoverRevealMode, .alwaysVisible)
                         .environment(\.displayDate, displayDate)
@@ -1068,7 +1070,7 @@ private struct MenuQuotaProviderRow: View {
                         .environment(\.cardQuotaRefreshAction, { _ in onRefresh() })
             }
             if isHistoryExpanded {
-                ProviderCardView(status: status, fleet: fleet, presentation: .history)
+                ProviderCardView(status: status, fleet: fleet, presentation: .history, configStore: configStore)
                     .equatable()
                     .environment(\.hoverRevealMode, .alwaysVisible)
                     .environment(\.displayDate, displayDate)

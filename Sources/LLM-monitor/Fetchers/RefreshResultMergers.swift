@@ -80,7 +80,17 @@ struct CodexFillingMissingMerger: RefreshResultMerger {
 /// - 额度重置卡（resetCards）：类似 Codex 重置卡，走固定倍率回退，仅在 .full 模式拉取；.background 模式按设计跳过，回退保留 previous 的重置卡快照。
 /// - 运营活动（deliveries）：仅在开启通知且 .full 模式下轮询；.background 模式保留 previous 的活动列表。
 struct GlmFillingMissingMerger: RefreshResultMerger {
+    let isZcodeCredentialEnabled: Bool
+
+    init(isZcodeCredentialEnabled: Bool = true) {
+        self.isZcodeCredentialEnabled = isZcodeCredentialEnabled
+    }
+
     func merge(new: QuotaInfo, previous: QuotaInfo?, mode: RefreshMode) -> QuotaInfo {
+        if !isZcodeCredentialEnabled {
+            return new.enriched(with: nil as GlmZcodePackageSnapshot?)
+        }
+
         guard let previous else { return new }
         let prevPackage = previous.glmZcodePackage
 
@@ -97,13 +107,9 @@ struct GlmFillingMissingMerger: RefreshResultMerger {
             ? (prevPackage?.deliveries ?? [])
             : newPackage.deliveries
 
-        // activityPlanBalances：若 newPackage 抓到了则用新的，若本次接口失败为空且旧的有，则回退保留旧的
-        let mergedBalances = (!newPackage.activityPlanBalances.isEmpty || prevPackage == nil)
-            ? newPackage.activityPlanBalances
-            : (prevPackage?.activityPlanBalances ?? [])
-        let mergedPreviews = (!newPackage.activityPlanPreviews.isEmpty || prevPackage == nil)
-            ? newPackage.activityPlanPreviews
-            : (prevPackage?.activityPlanPreviews ?? [])
+        // activityPlanBalances：若 newPackage 抓到了则用新的；若本次接口失败或跳过（nil）则回退保留 previous 的数据
+        let mergedBalances = newPackage.activityPlanBalances ?? prevPackage?.activityPlanBalances ?? []
+        let mergedPreviews = newPackage.activityPlanPreviews ?? prevPackage?.activityPlanPreviews ?? []
 
         let mergedPackage = GlmZcodePackageSnapshot(
             activityPlanBalances: mergedBalances,

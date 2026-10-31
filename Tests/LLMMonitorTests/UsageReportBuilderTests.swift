@@ -738,6 +738,9 @@ final class UsageReportBuilderTests: XCTestCase {
         XCTAssertTrue(today.totalsComplete, "样本 cap 不得污染权威 totals 完整性")
         XCTAssertFalse(today.modelDetailsComplete)
         XCTAssertFalse(today.sourceTruncated)
+
+        let firstDay = try XCTUnwrap(report.dailyBuckets?.first)
+        XCTAssertTrue(firstDay.modelDetailsComplete, "样本 cap (samplesTruncated=true) 仅影响样本对不齐的当天，零用量或其他对齐的天不受污染")
         let validation = FleetReportValidator.validate(report)
         XCTAssertNil(validation.dailyBucketsError,
                      "仅样本明细不完整时，权威日 totals 仍可被 Store 接受")
@@ -940,5 +943,102 @@ final class UsageReportBuilderTests: XCTestCase {
         XCTAssertEqual(today.entries.count, 0)
         XCTAssertTrue(today.totalsComplete)
         XCTAssertFalse(today.modelDetailsComplete, "仅日汇总无明细时不宣称完整")
+    }
+
+    /// 当某一天的样本被截断（samplesTruncated 标志置位）导致该天明细对不齐时，
+    /// 不应污染其他对账一致的天或经过验证的零用量桶（0 == 0）。
+    func testTruncatedSamplesOnOneDayDoesNotInvalidateOtherDaysWithVerifiedZeroOrMatchingBuckets() throws {
+        let calendar = Calendar.current
+        let todayStart = calendar.startOfDay(for: now)
+        let yesterday = calendar.date(byAdding: .day, value: -1, to: todayStart)!
+
+        let todayDaily = DshDailyUsage(
+            dayStart: todayStart,
+            inputTokens: 200,
+            outputTokens: 20,
+            totalTokens: 220,
+            turns: 1,
+            rounds: 2
+        )
+        let yesterdayDaily = DshDailyUsage(
+            dayStart: yesterday,
+            inputTokens: 100,
+            outputTokens: 10,
+            totalTokens: 110,
+            turns: 1,
+            rounds: 1
+        )
+
+        let yesterdaySample = sample(
+            at: yesterday.addingTimeInterval(3600), model: "MiniMax-M3",
+            input: 100, cached: 0, output: 10, reasoning: 0,
+            sourceProviderID: "dsh:minimax-cn"
+        )
+        // Today's samples only cover 100 of 200 tokens (truncated)
+        let todaySample = sample(
+            at: todayStart.addingTimeInterval(3600), model: "MiniMax-M3",
+            input: 100, cached: 0, output: 10, reasoning: 0,
+            sourceProviderID: "dsh:minimax-cn"
+        )
+
+        let dshSnapshot = DshLocalUsage(
+            byProvider: [
+                "minimax-cn": DshProviderUsage(
+                    today: todayDaily,
+                    dailyTokenUsage: [yesterdayDaily, todayDaily],
+                    sessionCount: 2,
+                    roundCount: 3,
+                    recentSamples: [yesterdaySample, todaySample],
+                    recentSamplesTruncated: true
+                )
+            ],
+            modelsByProvider: ["minimax-cn": ["MiniMax-M3"]],
+            sessionsRoot: nil,
+            sessionCount: 2,
+            eventCount: 3,
+            scannedAt: now,
+            isTruncated: false
+        )
+
+        var status = ProviderStatus(
+            id: ProviderKind.minimaxTokenPlan.providerID,
+            displayName: "MiniMax",
+            kind: .minimaxTokenPlan,
+            iconSystemName: "circle",
+            accentColor: .minimax,
+            refreshIntervalSeconds: 300,
+            state: .ok(QuotaInfo(
+                models: [], resetCredits: nil, planLabel: nil, accountEmail: nil,
+                codexUsageDetails: nil, fetchedAt: now, balanceDetail: nil
+            ))
+        )
+        status.dshUsage = dshSnapshot
+
+        let report = UsageReportBuilder.build(
+            UsageReportInput(
+                nodeID: UUID(), nodeName: "Test-Mac",
+                bindings: ClientProviderBinding.defaultBindings,
+                statuses: [status], now: now, calendar: calendar
+            ),
+            seq: 1
+        )
+        let buckets = try XCTUnwrap(report.dailyBuckets)
+        XCTAssertEqual(buckets.count, 7)
+
+        let todayBucket = try XCTUnwrap(buckets.last)
+        let yesterdayBucket = buckets[buckets.count - 2]
+        let zeroBucket = try XCTUnwrap(buckets.first)
+
+        // Today has mismatch (200 daily total vs 100 sample entries)
+        XCTAssertEqual(todayBucket.totals.input, 200)
+        XCTAssertFalse(todayBucket.modelDetailsComplete, "今天样本被截断且对账不齐，modelDetailsComplete 必须为 false")
+
+        // Yesterday matches (100 daily total vs 100 sample entries)
+        XCTAssertEqual(yesterdayBucket.totals.input, 100)
+        XCTAssertTrue(yesterdayBucket.modelDetailsComplete, "昨天样本对齐，不受今天样本截断污染")
+
+        // First day has 0 totals and 0 entries
+        XCTAssertEqual(zeroBucket.totals.input, 0)
+        XCTAssertTrue(zeroBucket.modelDetailsComplete, "零用量天对齐，不受其他天样本截断污染")
     }
 }

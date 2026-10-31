@@ -45,7 +45,6 @@ enum UsageReportBuilder {
         var entryRows: [EntryKey: EntryAccumulator] = [:]
         var clientDayRows: [ClientDayKey: FleetClientProviderUsage] = [:]
         var unavailableSourcesByKey: [String: FleetDailyUnavailableSource] = [:]
-        var anySampleDetailsIncomplete = false
 
         // 每个 provider 的 L2 投影只算一次：日桶通道与窗口通道共用同一份。
         // 原来两条通道各算一遍 —— 主线程上白跑一次全量投影（帧抽取 + 日聚合
@@ -114,7 +113,6 @@ enum UsageReportBuilder {
             for contribution in projection.contributions {
                 let sourceKey = "\(contribution.clientID)|\(quotaProviderID)"
                 if unavailableSourcesByKey[sourceKey] != nil { continue }
-                if contribution.samplesTruncated { anySampleDetailsIncomplete = true }
 
                 for day in contribution.dailyTokenUsage {
                     let dayKey = FleetMerger.dayKey(of: day.dayStart, calendar: input.calendar)
@@ -199,9 +197,7 @@ enum UsageReportBuilder {
                 clientProviders: clientRows,
                 entries: entries,
                 totalsComplete: unavailableSources.isEmpty,
-                modelDetailsComplete: unavailableSources.isEmpty
-                    && !anySampleDetailsIncomplete
-                    && detailsReconciled,
+                modelDetailsComplete: unavailableSources.isEmpty && detailsReconciled,
                 sourceTruncated: unavailableSources.contains { $0.reason == .truncated },
                 unavailableSources: unavailableSources.isEmpty ? nil : unavailableSources
             ))

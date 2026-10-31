@@ -508,8 +508,8 @@ final class GlmZcodeAPIClientTests: XCTestCase {
         )
 
         let mergedBackground = merger.merge(new: newQuota, previous: prevQuota, mode: .background)
-        XCTAssertEqual(mergedBackground.glmZcodePackage?.activityPlanBalances.count, 1)
-        XCTAssertEqual(mergedBackground.glmZcodePackage?.activityPlanBalances.first?.usedUnits, 20)
+        XCTAssertEqual(mergedBackground.glmZcodePackage?.activityPlanBalances?.count, 1)
+        XCTAssertEqual(mergedBackground.glmZcodePackage?.activityPlanBalances?.first?.usedUnits, 20)
         // 关键断言：继承 previous 的重置卡与运营活动列表
         XCTAssertEqual(mergedBackground.glmZcodePackage?.resetCards?.fiveHourResets.count, 1)
         XCTAssertEqual(mergedBackground.glmZcodePackage?.deliveries.count, 1)
@@ -541,5 +541,154 @@ final class GlmZcodeAPIClientTests: XCTestCase {
     func testGlmCodingPlanFetcherUsesGlmFillingMissingMerger() {
         let fetcher = GlmCodingPlanFetcher(apiKey: "test-key", isZcodeCredentialEnabled: true)
         XCTAssertTrue(fetcher.resultMerger is GlmFillingMissingMerger)
+    }
+
+    func testGlmFillingMissingMergerEmptyBalancesReplacesPrevious() {
+        let merger = GlmFillingMissingMerger(isZcodeCredentialEnabled: true)
+        let oldBalance = GlmActivityPlanBalance(
+            planID: "plan-1", planName: "P1", entitlementID: "ent-1", showName: "GLM",
+            modelNames: ["glm"], totalUnits: 100, usedUnits: 10, remainingUnits: 90,
+            expiresAt: Date(timeIntervalSince1970: 5000), observedAt: Date(timeIntervalSince1970: 1000)
+        )
+        let prevPackage = GlmZcodePackageSnapshot(
+            activityPlanBalances: [oldBalance],
+            activityPlanPreviews: [],
+            resetCards: nil,
+            deliveries: []
+        )
+        let prevQuota = QuotaInfo(
+            models: [], resetCredits: nil, planLabel: "Pro", accountEmail: nil,
+            codexUsageDetails: nil, fetchedAt: Date(timeIntervalSince1970: 1000),
+            glmZcodePackage: prevPackage
+        )
+
+        // newPackage has empty balances (success, 0 items)
+        let newPackage = GlmZcodePackageSnapshot(
+            activityPlanBalances: [],
+            activityPlanPreviews: [],
+            resetCards: nil,
+            deliveries: []
+        )
+        let newQuota = QuotaInfo(
+            models: [], resetCredits: nil, planLabel: "Pro", accountEmail: nil,
+            codexUsageDetails: nil, fetchedAt: Date(timeIntervalSince1970: 2000),
+            glmZcodePackage: newPackage
+        )
+
+        let merged = merger.merge(new: newQuota, previous: prevQuota, mode: .background)
+        XCTAssertEqual(merged.glmZcodePackage?.activityPlanBalances?.count, 0, "空数组代表成功获取且无活动套餐，不得复活过期旧套餐")
+    }
+
+    func testGlmFillingMissingMergerNilBalancesPreservesPrevious() {
+        let merger = GlmFillingMissingMerger(isZcodeCredentialEnabled: true)
+        let oldBalance = GlmActivityPlanBalance(
+            planID: "plan-1", planName: "P1", entitlementID: "ent-1", showName: "GLM",
+            modelNames: ["glm"], totalUnits: 100, usedUnits: 10, remainingUnits: 90,
+            expiresAt: Date(timeIntervalSince1970: 5000), observedAt: Date(timeIntervalSince1970: 1000)
+        )
+        let prevPackage = GlmZcodePackageSnapshot(
+            activityPlanBalances: [oldBalance],
+            activityPlanPreviews: [],
+            resetCards: nil,
+            deliveries: []
+        )
+        let prevQuota = QuotaInfo(
+            models: [], resetCredits: nil, planLabel: "Pro", accountEmail: nil,
+            codexUsageDetails: nil, fetchedAt: Date(timeIntervalSince1970: 1000),
+            glmZcodePackage: prevPackage
+        )
+
+        // newPackage has nil balances (failed / skipped)
+        let newPackage = GlmZcodePackageSnapshot(
+            activityPlanBalances: nil,
+            activityPlanPreviews: nil,
+            resetCards: nil,
+            deliveries: []
+        )
+        let newQuota = QuotaInfo(
+            models: [], resetCredits: nil, planLabel: "Pro", accountEmail: nil,
+            codexUsageDetails: nil, fetchedAt: Date(timeIntervalSince1970: 2000),
+            glmZcodePackage: newPackage
+        )
+
+        let merged = merger.merge(new: newQuota, previous: prevQuota, mode: .background)
+        XCTAssertEqual(merged.glmZcodePackage?.activityPlanBalances?.count, 1, "nil 代表获取失败，回退保留旧数据")
+        XCTAssertEqual(merged.glmZcodePackage?.activityPlanBalances?.first?.entitlementID, "ent-1")
+    }
+
+    func testGlmFillingMissingMergerDisabledCredentialReturnsNilPackage() {
+        let merger = GlmFillingMissingMerger(isZcodeCredentialEnabled: false)
+        let oldBalance = GlmActivityPlanBalance(
+            planID: "plan-1", planName: "P1", entitlementID: "ent-1", showName: "GLM",
+            modelNames: ["glm"], totalUnits: 100, usedUnits: 10, remainingUnits: 90,
+            expiresAt: Date(timeIntervalSince1970: 5000), observedAt: Date(timeIntervalSince1970: 1000)
+        )
+        let prevPackage = GlmZcodePackageSnapshot(
+            activityPlanBalances: [oldBalance],
+            activityPlanPreviews: [],
+            resetCards: nil,
+            deliveries: []
+        )
+        let prevQuota = QuotaInfo(
+            models: [], resetCredits: nil, planLabel: "Pro", accountEmail: nil,
+            codexUsageDetails: nil, fetchedAt: Date(timeIntervalSince1970: 1000),
+            glmZcodePackage: prevPackage
+        )
+        let newQuota = QuotaInfo(
+            models: [], resetCredits: nil, planLabel: "Pro", accountEmail: nil,
+            codexUsageDetails: nil, fetchedAt: Date(timeIntervalSince1970: 2000),
+            glmZcodePackage: prevPackage
+        )
+
+        let merged = merger.merge(new: newQuota, previous: prevQuota, mode: .background)
+        XCTAssertNil(merged.glmZcodePackage, "禁用 credential 时立即剥离 ZCode package")
+    }
+
+    func testParseBalanceResponseThrowsOnErrorCodeAndMissingData() {
+        let errorJson = """
+        {
+          "code": 401,
+          "msg": "unauthorized"
+        }
+        """
+        XCTAssertThrowsError(try GlmZcodeAPIClient.parseBalanceResponse(data: Data(errorJson.utf8))) { error in
+            guard case QuotaError.apiError = error else {
+                return XCTFail("Expected QuotaError.apiError, got: \(error)")
+            }
+        }
+
+        let missingDataJson = """
+        {
+          "code": 0
+        }
+        """
+        XCTAssertThrowsError(try GlmZcodeAPIClient.parseBalanceResponse(data: Data(missingDataJson.utf8))) { error in
+            guard case QuotaError.decodingError = error else {
+                return XCTFail("Expected QuotaError.decodingError, got: \(error)")
+            }
+        }
+    }
+
+    func testParseMarketingTouchFallbackAndSkip() throws {
+        let json = """
+        {
+          "code": 0,
+          "data": {
+            "deliveries": [
+              { "id": "explicit-id", "title": "T1", "body": "B1" },
+              { "title": "Only Title", "body": "B2" },
+              { "body": "Only Body" },
+              { "content": "Only Content" },
+              {}
+            ]
+          }
+        }
+        """
+        let deliveries = try GlmZcodeAPIClient.parseMarketingTouchResponse(data: Data(json.utf8))
+        XCTAssertEqual(deliveries.count, 4, "无 id/title/body 的条目必须被跳过")
+        XCTAssertEqual(deliveries[0].id, "explicit-id")
+        XCTAssertEqual(deliveries[1].id, "Only Title")
+        XCTAssertEqual(deliveries[2].id, "Only Body")
+        XCTAssertEqual(deliveries[3].id, "Only Content")
     }
 }

@@ -218,7 +218,7 @@ actor CodexSessionEventCache {
         let reachedEOF: Bool
     }
 
-    private let cache = LRUCache<String, Entry>(capacity: 64)
+    private let cache = LRUCache<String, Entry>(capacity: CodexLocalScanLimits.production.maxEventCacheEntries)
     private var isLoadedFromDisk = false
     private var isDirty = false
     private let cacheFileURL: URL
@@ -245,6 +245,7 @@ actor CodexSessionEventCache {
                 version: { $0.version },
                 logTag: "[codex/cache]"
             )
+            cache.capacity = max(cache.capacity, index.entries.count)
             for (path, entry) in index.entries {
                 cache.setValue(entry, forKey: path)
             }
@@ -277,8 +278,11 @@ actor CodexSessionEventCache {
 
     func removeAll(except filePaths: Set<String>) {
         loadIfNeeded()
+        let countBefore = cache.count
         cache.removeAll(except: filePaths)
-        isDirty = true
+        if cache.count != countBefore {
+            isDirty = true
+        }
     }
 
     func persistToDisk() {
@@ -652,9 +656,7 @@ extension CodexFetcher {
             "[codex/local] session cache: selected=\(selectedSnapshots.count), "
                 + "loaded=\(sessionFiles.count), parsed=\(parsedFileCount)"
         )
-        if parsedFileCount > 0 || !selectedSnapshots.isEmpty {
-            await CodexSessionEventCache.shared.persistToDisk()
-        }
+        await CodexSessionEventCache.shared.persistToDisk()
         return CodexSessionScanResult(
             files: sessionFiles,
             hasPendingReads: hasPendingReads,
@@ -668,7 +670,7 @@ extension CodexFetcher {
     /// - append-only 增长（size 超过上次解析全长），或 mtime 未变但上一拍未消费
     ///   到 EOF（预算截断）→ 从上次收尾偏移只解析未读尾部；
     /// - 截断 / 同尺寸但 mtime 变化（异常改写）/ 缓存缺失 → 全量解析。
-    /// 增量状态仅存活于进程生命周期，App 重启即缓存为空、全量冷扫。
+    /// 增量状态跨进程持久化至 token-monitor/codex.json，App 重启后复用缓存，省去全量冷扫。
     nonisolated static func resolveSessionEvents(
         for snapshot: CodexSessionFileSnapshot,
         parsingFingerprint: String,

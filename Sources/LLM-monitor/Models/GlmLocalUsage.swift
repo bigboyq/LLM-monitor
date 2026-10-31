@@ -260,16 +260,16 @@ struct GlmMarketingDelivery: Equatable, Codable, Sendable, Identifiable {
 
 /// ZCode 扩展套餐、重置卡与营销触达的聚合快照
 struct GlmZcodePackageSnapshot: Equatable, Codable, Sendable {
-    let activityPlanBalances: [GlmActivityPlanBalance]
-    let activityPlanPreviews: [GlmActivityPlanPreview]
+    let activityPlanBalances: [GlmActivityPlanBalance]?
+    let activityPlanPreviews: [GlmActivityPlanPreview]?
     let resetCards: GlmResetCardsSnapshot?
     let deliveries: [GlmMarketingDelivery]
     let fetchedAt: Date
 
     init(
-        activityPlanBalances: [GlmActivityPlanBalance],
-        activityPlanPreviews: [GlmActivityPlanPreview],
-        resetCards: GlmResetCardsSnapshot?,
+        activityPlanBalances: [GlmActivityPlanBalance]? = nil,
+        activityPlanPreviews: [GlmActivityPlanPreview]? = nil,
+        resetCards: GlmResetCardsSnapshot? = nil,
         deliveries: [GlmMarketingDelivery] = [],
         fetchedAt: Date = Date()
     ) {
@@ -278,5 +278,13 @@ struct GlmZcodePackageSnapshot: Equatable, Codable, Sendable {
         self.resetCards = resetCards
         self.deliveries = deliveries
         self.fetchedAt = fetchedAt
+    }
+
+    var safeActivityPlanBalances: [GlmActivityPlanBalance] {
+        activityPlanBalances ?? []
+    }
+
+    var safeActivityPlanPreviews: [GlmActivityPlanPreview] {
+        activityPlanPreviews ?? []
     }
 }

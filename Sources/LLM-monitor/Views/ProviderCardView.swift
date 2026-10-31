@@ -134,6 +134,12 @@ struct ProviderCardView: View, Equatable {
     var isPinnedToStatusBar: Bool = false
     /// 同一张卡的共享呈现入口：完整详情、套餐或历史。
     var presentation: ProviderCardPresentation = .complete
+    /// 配置存储，用于获取全局配置（如 periodicFullEveryN）
+    var configStore: ConfigStore? = nil
+
+    private var periodicFullEveryN: Int {
+        configStore?.config.effectivePeriodicFullEveryN ?? AppConfig.defaultPeriodicFullEveryN
+    }
 
     /// 「今」行取哪一天：宿主注入的展示时钟（随浮层显隐起停），与卡内其它
     /// 倒计时/新鲜度消费者同一个 now，不取渲染时的墙钟。
@@ -574,7 +580,8 @@ struct ProviderCardView: View, Equatable {
                     glmCategoryRows: glmCategoryRows,
                     resetCredits: info.resetCredits,
                     glmResetCards: glmResetCards,
-                    refreshIntervalSeconds: status.refreshIntervalSeconds
+                    refreshIntervalSeconds: status.refreshIntervalSeconds,
+                    periodicFullEveryN: periodicFullEveryN
                 )
             }
         } else {
@@ -602,7 +609,8 @@ struct ProviderCardView: View, Equatable {
                 glmCategoryRows: glmCategoryRows,
                 resetCredits: info.resetCredits,
                 glmResetCards: glmResetCards,
-                refreshIntervalSeconds: status.refreshIntervalSeconds
+                refreshIntervalSeconds: status.refreshIntervalSeconds,
+                periodicFullEveryN: periodicFullEveryN
             )
         }
         }

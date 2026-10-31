@@ -1640,6 +1640,48 @@ final class QuotaWindowUsageValueTests: XCTestCase {
         )
     }
 
+    func testCompactResetCreditsRowPeriodicFullEveryNStaleEvaluation() {
+        let now = Date()
+        let fetchedAt = now.addingTimeInterval(-2400) // 40 minutes old
+        let baseResets = Self.resetCredits(count: 1)
+        let resets = ResetCreditsInfo(
+            entries: baseResets.entries,
+            serverAvailableCount: 1,
+            totalEarnedCount: 1,
+            fetchedAt: fetchedAt,
+            lastAttemptFailed: false
+        )
+
+        // Default periodicFullEveryN (20): period = 300 * 20 = 6000, threshold = 6000 * 3 = 18000s (5h).
+        // 2400s < 18000s -> not stale
+        let defaultRow = CompactResetCreditsRow(
+            resets: resets,
+            refreshIntervalSeconds: 300
+        )
+        XCTAssertEqual(defaultRow.periodicFullEveryN, AppConfig.defaultPeriodicFullEveryN)
+        XCTAssertFalse(resets.isStale(now: now, refreshIntervalSeconds: TimeInterval(defaultRow.refreshIntervalSeconds * defaultRow.periodicFullEveryN)))
+
+        // Custom periodicFullEveryN (2): period = 300 * 2 = 600, threshold = max(1800, 900) = 1800s (30m).
+        // 2400s > 1800s -> stale!
+        let customRow = CompactResetCreditsRow(
+            resets: resets,
+            refreshIntervalSeconds: 300,
+            periodicFullEveryN: 2
+        )
+        XCTAssertEqual(customRow.periodicFullEveryN, 2)
+        XCTAssertTrue(resets.isStale(now: now, refreshIntervalSeconds: TimeInterval(customRow.refreshIntervalSeconds * customRow.periodicFullEveryN)))
+
+        // QuotaWindowUsageSection passes down periodicFullEveryN
+        let section = QuotaWindowUsageSection(
+            snapshot: QuotaWindowUsageSnapshot(interval: nil, weekly: nil, poolCount: 1),
+            tint: .blue,
+            resetCredits: resets,
+            refreshIntervalSeconds: 300,
+            periodicFullEveryN: 5
+        )
+        XCTAssertEqual(section.periodicFullEveryN, 5)
+    }
+
     // MARK: - 账号行的可见性（段1 Account Info）
 
     /// 账号行可见性的**唯一判定来源**是 `QuotaWindowAccountInfo.make`：

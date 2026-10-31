@@ -160,9 +160,16 @@ enum GlmZcodeAPIClient {
             throw QuotaError.decodingError("GLM ZCode Balance 响应无法解析")
         }
 
-        let dataBlock = envelope.effectiveData
-        let plans = dataBlock?.plans ?? []
-        let rawBalances = dataBlock?.balances ?? []
+        if let code = envelope.code, code != 0, code != 200 {
+            throw QuotaError.apiError("ZCode API error code: \(code)")
+        }
+
+        guard let dataBlock = envelope.effectiveData else {
+            throw QuotaError.decodingError("Missing data in balance response")
+        }
+
+        let plans = dataBlock.plans ?? []
+        let rawBalances = dataBlock.balances ?? []
 
         let planNameByID = Dictionary(
             uniqueKeysWithValues: plans.compactMap { plan in
@@ -248,8 +255,15 @@ enum GlmZcodeAPIClient {
             let data: ResetData?
         }
 
-        guard let envelope = try? JSONDecoder().decode(ResetEnvelope.self, from: data),
-              let resetData = envelope.data else {
+        guard let envelope = try? JSONDecoder().decode(ResetEnvelope.self, from: data) else {
+            throw QuotaError.decodingError("GLM ZCode 重置卡状态响应无法解析")
+        }
+
+        if let code = envelope.code, code != 0, code != 200 {
+            throw QuotaError.apiError("ZCode API error code: \(code)")
+        }
+
+        guard let resetData = envelope.data else {
             throw QuotaError.decodingError("GLM ZCode 重置卡状态响应无法解析")
         }
 
@@ -302,14 +316,30 @@ enum GlmZcodeAPIClient {
             throw QuotaError.decodingError("GLM ZCode 营销触达响应无法解析")
         }
 
+        if let code = envelope.code, code != 0, code != 200 {
+            throw QuotaError.apiError("ZCode API error code: \(code)")
+        }
+
         let rawList = envelope.data?.deliveries ?? envelope.deliveries ?? []
-        return rawList.compactMap { raw in
-            let id = raw.id ?? raw.delivery_id ?? raw.plan_id ?? raw.planID ?? UUID().uuidString
+        var deliveries: [GlmMarketingDelivery] = []
+        for raw in rawList {
             let title = raw.title?.trimmingCharacters(in: .whitespacesAndNewlines)
             let body = (raw.body ?? raw.content)?.trimmingCharacters(in: .whitespacesAndNewlines)
             let planID = raw.plan_id ?? raw.planID
-            return GlmMarketingDelivery(id: id, title: title, body: body, planID: planID)
+
+            let fallbackID: String? = {
+                if let t = title, !t.isEmpty { return t }
+                if let b = body, !b.isEmpty { return b }
+                return nil
+            }()
+
+            let candidateID = raw.id ?? raw.delivery_id ?? raw.plan_id ?? raw.planID ?? fallbackID
+            guard let id = candidateID, !id.isEmpty else {
+                continue
+            }
+            deliveries.append(GlmMarketingDelivery(id: id, title: title, body: body, planID: planID))
         }
+        return deliveries
     }
 
     private static func extractModelNames(from capabilities: [String]?, fallback: String) -> [String] {

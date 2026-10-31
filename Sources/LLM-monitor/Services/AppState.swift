@@ -983,11 +983,28 @@ final class AppState: ObservableObject {
                     finalState = .notConfigured(reason: message)
                 }
             }
+
+            let cleanedFinalState: ProviderStatus.State
+            if d.kind == .glmCodingPlan, pc?.effectiveGlmAuthMode == .apiKey {
+                switch finalState {
+                case .ok(let quota):
+                    cleanedFinalState = .ok(quota.enriched(with: nil as GlmZcodePackageSnapshot?))
+                case .loading(lastSuccess: let quota):
+                    cleanedFinalState = .loading(lastSuccess: quota?.enriched(with: nil as GlmZcodePackageSnapshot?))
+                case .failed(message: let msg, lastSuccess: let quota):
+                    cleanedFinalState = .failed(message: msg, lastSuccess: quota?.enriched(with: nil as GlmZcodePackageSnapshot?))
+                default:
+                    cleanedFinalState = finalState
+                }
+            } else {
+                cleanedFinalState = finalState
+            }
+
             // 与 ProviderRefreshScheduler 共用同一份 effective interval；外部手改配置为
             // 小于 10 秒时，卡片新鲜度与实际调度都按 10 秒计算。
             let interval = Int(configStore.config.effectiveRefreshInterval(for: d.id))
 
-            if case .notConfigured = finalState {
+            if case .notConfigured = cleanedFinalState {
                 // 触发器基线跟着状态一起清：重新配置后回到"首帧只建基线"语义。
                 triggerStateStore.reset(providerID: d.id)
             }
@@ -1000,7 +1017,7 @@ final class AppState: ObservableObject {
                 accentColor: d.accentColor,
                 refreshIntervalSeconds: interval,
                 isEnabled: pc?.enabled ?? true,
-                state: finalState,
+                state: cleanedFinalState,
                 lastRefreshedAt: preserved.lastRefreshedAt ?? persistedRefreshTimes[d.id],
                 isScanningLocalUsage: preserved.isScanningLocalUsage,
                 localUsageFreshness: preserved.localUsageFreshness

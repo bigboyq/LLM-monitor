@@ -14,12 +14,13 @@ struct CompactResetCreditsRow: View {
     let resets: ResetCreditsInfo
     /// provider 的 background 刷新间隔（秒）。
     var refreshIntervalSeconds: Int = 300
+    var periodicFullEveryN: Int = AppConfig.defaultPeriodicFullEveryN
 
     /// R3: reset credits 的实际刷新周期。reset credits 只在 .full 抓取，而 scheduler
     /// 每 N 个 background 才补一次 full，所以真实周期 = N × background 间隔。
     /// 过期判定基于这个周期（3×），否则会在两次 full 之间持续误报。
     private var resetCreditsRefreshPeriod: TimeInterval {
-        TimeInterval(refreshIntervalSeconds) * TimeInterval(ProviderRefreshScheduler.periodicFullEveryNDefault)
+        TimeInterval(refreshIntervalSeconds) * TimeInterval(periodicFullEveryN)
     }
 
     /// 过期判定用宿主注入的展示时钟，不取渲染时的墙钟（与卡内其它倒计时同一个 now）。

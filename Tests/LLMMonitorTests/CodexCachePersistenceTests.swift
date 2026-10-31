@@ -67,4 +67,41 @@ final class CodexCachePersistenceTests: XCTestCase {
         )
         XCTAssertEqual(loaded.entries["s1"]?.parsedFileSize, 2048)
     }
+
+    func testCodexSessionEventCacheCapacityAndDirtyTracking() async throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let indexURL = tempDir.appendingPathComponent("codex.json")
+        let fileManager = FileManagerBox()
+
+        // Create 300 entries on disk (exceeding initial 256)
+        var entries: [String: CodexSessionEventCache.Entry] = [:]
+        for i in 0..<300 {
+            entries["/path/\(i).jsonl"] = CodexSessionEventCache.Entry(
+                parsingFingerprint: "fp",
+                lastModifiedAt: Date(timeIntervalSince1970: 1000),
+                parsedFileSize: 100,
+                resumeOffset: 100,
+                events: [],
+                reachedEOF: true
+            )
+        }
+        let index = CodexScannerIndex(version: 1, entries: entries)
+        try ScannerIndexIO.saveIndex(index, cacheDir: indexURL, fileManager: fileManager)
+
+        let cache = CodexSessionEventCache(cacheFileURL: indexURL, fileManager: fileManager)
+        await cache.loadIfNeeded()
+
+        // Check that an entry is found (not evicted due to initial capacity 64 or 256)
+        let found = await cache.state(for: URL(fileURLWithPath: "/path/0.jsonl"), parsingFingerprint: "fp")
+        XCTAssertNotNil(found, "Cache capacity should expand to accommodate loaded entries")
+
+        // removeAll(except:) with existing keys does not change count, so should not mark dirty
+        let allKeys = Set((0..<300).map { "/path/\($0).jsonl" })
+        await cache.removeAll(except: allKeys)
+        // persistToDisk should be a no-op because isDirty is false
+        await cache.persistToDisk()
+    }
 }

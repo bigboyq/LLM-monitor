@@ -47,9 +47,12 @@ struct GlmCodingPlanFetcher: QuotaFetcher {
     let authPath: String?
     let apiKey: String
     private let endpoint: URL
+    private let session: URLSession
     private let client: HTTPClient
     let pollMarketingCampaign: Bool
-    let resultMerger: RefreshResultMerger = GlmFillingMissingMerger()
+    var resultMerger: RefreshResultMerger {
+        GlmFillingMissingMerger(isZcodeCredentialEnabled: isZcodeCredentialEnabled)
+    }
 
     /// 兼容历史命名
     var isZcodeCredentialEnabled: Bool { authMode == .credential }
@@ -67,6 +70,7 @@ struct GlmCodingPlanFetcher: QuotaFetcher {
         self.authPath = authPath
         self.apiKey = apiKey
         self.endpoint = endpoint
+        self.session = session
         self.pollMarketingCampaign = pollMarketingCampaign
         self.client = HTTPClient(session: session, logTag: Self.logTag, defaultTimeout: HTTPTimeouts.domestic)
     }
@@ -108,7 +112,7 @@ struct GlmCodingPlanFetcher: QuotaFetcher {
         case .apiKey:
             return !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         case .credential:
-            return GlmZcodeCredentialReader.hasLocalAuth(authPath: authPath)
+            return GlmZcodeCredentialReader.hasLocalAuth(authPath: authPath) || !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
     }
 
@@ -142,17 +146,19 @@ struct GlmCodingPlanFetcher: QuotaFetcher {
 
     private func fetchWithCredential(mode: RefreshMode) async throws -> QuotaInfo {
         let creds = GlmZcodeCredentialReader.loadCredentials(authPath: authPath)
-        guard creds.hasCredentials else {
-            logWarn("\(logTag) ZCode 本地凭证缺失或未登录")
-            throw QuotaError.decodingError("ZCode 本地凭证缺失或未登录")
-        }
+        let usableAPIKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let tokenCandidate: String? = {
+            if let bigmodelToken = creds.bigmodelAccessToken, !bigmodelToken.isEmpty {
+                return bigmodelToken
+            }
+            if !usableAPIKey.isEmpty {
+                return usableAPIKey
+            }
+            return nil
+        }()
 
-        let token: String
-        if let bigmodelToken = creds.bigmodelAccessToken, !bigmodelToken.isEmpty {
-            token = bigmodelToken
-        } else if !apiKey.isEmpty {
-            token = apiKey
-        } else {
+        guard let token = tokenCandidate, !token.isEmpty else {
+            logWarn("\(logTag) ZCode 本地凭证缺少 bigmodel access token，且未配置备用 API Key")
             throw QuotaError.decodingError("ZCode 本地凭证缺少 bigmodel access token，且未配置备用 API Key")
         }
 
@@ -167,7 +173,7 @@ struct GlmCodingPlanFetcher: QuotaFetcher {
 
         var quotaInfo = try Self.parse(data: data)
 
-        if let package = await fetchZcodePackageSilently(mode: mode, credentials: creds) {
+        if creds.hasCredentials, let package = await fetchZcodePackageSilently(mode: mode, credentials: creds) {
             quotaInfo = quotaInfo.enriched(with: package)
         }
 
@@ -180,15 +186,15 @@ struct GlmCodingPlanFetcher: QuotaFetcher {
             return nil
         }
 
-        var balances: [GlmActivityPlanBalance] = []
-        var previews: [GlmActivityPlanPreview] = []
+        var balances: [GlmActivityPlanBalance]? = nil
+        var previews: [GlmActivityPlanPreview]? = nil
         var resetCards: GlmResetCardsSnapshot? = nil
         var deliveries: [GlmMarketingDelivery] = []
         var anySucceeded = false
 
         // 1. 活动套餐余额：与 GLM 默认 Interval 保持一致，每次刷新都调用
         do {
-            let (b, p) = try await GlmZcodeAPIClient.fetchBalance(credentials: credentials)
+            let (b, p) = try await GlmZcodeAPIClient.fetchBalance(credentials: credentials, session: session)
             balances = b
             previews = p
             anySucceeded = true
@@ -200,7 +206,7 @@ struct GlmCodingPlanFetcher: QuotaFetcher {
         if mode == .full {
             if credentials.bigmodelAccessToken != nil {
                 do {
-                    resetCards = try await GlmZcodeAPIClient.fetchResetCards(credentials: credentials)
+                    resetCards = try await GlmZcodeAPIClient.fetchResetCards(credentials: credentials, session: session)
                     anySucceeded = true
                 } catch {
                     logWarn("\(logTag) 获取 ZCode 重置卡状态失败: \(error.localizedDescription)")
@@ -214,7 +220,7 @@ struct GlmCodingPlanFetcher: QuotaFetcher {
         if pollMarketingCampaign {
             if mode == .full {
                 do {
-                    deliveries = try await GlmZcodeAPIClient.fetchMarketingTouch(credentials: credentials)
+                    deliveries = try await GlmZcodeAPIClient.fetchMarketingTouch(credentials: credentials, session: session)
                     anySucceeded = true
                 } catch {
                     logDebug("\(logTag) 获取 ZCode 营销触达失败: \(error.localizedDescription)")
