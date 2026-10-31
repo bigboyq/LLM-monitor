@@ -274,22 +274,6 @@ struct ProviderCardView: View, Equatable {
                 case .ok:
                     EmptyView()
                 }
-                let hasBalances = !status.glmActivityPlanBalances.isEmpty || !status.glmActivityPlanPreviews.isEmpty
-                if status.kind == .glmCodingPlan && hasBalances {
-                    GlmActivityPlanBalancesView(
-                        balances: status.glmActivityPlanBalances,
-                        previews: status.glmActivityPlanPreviews,
-                        tint: accentColor
-                    )
-                }
-                let hasResetCards = (status.glmResetCards?.totalCardCount ?? 0) > 0
-                if status.kind == .glmCodingPlan && hasResetCards, let resetCards = status.glmResetCards {
-                    quotaUsageDivider
-                    VStack(alignment: .leading, spacing: 5) {
-                        QuotaModuleTitle(text: QuotaWindowUsageSection.resetCreditsTitle)
-                        GlmResetCardsBlock(snapshot: resetCards, tint: accentColor)
-                    }
-                }
             }
             .padding(LayoutMetrics.cardContentPadding)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -940,79 +924,6 @@ struct ProviderCardView: View, Equatable {
                 )
             }
         }
-    }
-
-    /// 所有卡片统一展示 quota provider 关联的客户端 token 汇总；客户端来源
-    /// 只保留在 hover 明细中，避免卡片主体出现复杂的多来源信息。
-    ///
-    /// 第二轮改版后卡片上只剩 `.detail`（段3 的图表）——曾经的 `.summary`
-    /// 「今日使用情况」汇总行已摘除，其内容上移为「额度窗口用量」区块统计值里的
-    /// 「今」行（`todayUsageRow`，同源同口径）。
-    ///
-    /// - Parameter part: 现在生产路径只传 `.detail`；其余 case 是
-    ///   `LocalUsagePart` 的历史形态，见该类型的说明。
-    @ViewBuilder
-    private func localUsage(projection: ProviderUsageProjection, part: LocalUsagePart) -> some View {
-        makeLocalUsageFooter(
-            dailyTokenUsage: projection.dailyTokenUsage,
-            recentSamples: projection.recentSamples,
-            quotaProviderID: status.kind.quotaProviderID,
-            deepseekPeakWindow: status.deepseekPeakWindow ?? .defaultWindow,
-            scannedAt: projection.scannedAt,
-            isReady: projection.hasActivity
-                && (status.kind != .codexChatGpt || projection.dailyTokenUsage.count == 7),
-            freshness: projection.localUsageFreshness,
-            isTruncated: projection.isTruncated,
-            speedByDay: LocalUsageSpeedByDay.texts(
-                dayStarts: projection.dailyTokenUsage.map(\.dayStart),
-                recentSamples: projection.recentSamples
-            ),
-            lastColumnFollowsSegment: true,
-            emptyHint: emptyUsageHint,
-            part: part
-        )
-    }
-
-    private var emptyUsageHint: String {
-        switch status.kind {
-        case .codexChatGpt: return "本地 token 用量扫描尚未完成"
-        case .antigravity: return "本机未发现 Antigravity 会话数据"
-        case .minimaxTokenPlan: return "本机未发现 MiniMax Code / DSH 会话数据"
-        case .glmCodingPlan: return "本机未发现 ZCode / DSH 会话数据"
-        case .deepseek: return "暂无 DSH / OpenCode 的 DeepSeek Token 消耗历史"
-        }
-    }
-
-    @ViewBuilder
-    private func makeLocalUsageFooter<Daily: LocalUsageDaily>(
-        dailyTokenUsage: [Daily],
-        recentSamples: [LocalTokenUsageSample],
-        quotaProviderID: String,
-        deepseekPeakWindow: DeepseekPeakWindow,
-        scannedAt: Date?,
-        isReady: Bool,
-        freshness: LocalUsageFreshness,
-        isTruncated: Bool,
-        speedByDay: @autoclosure @escaping () -> [Date: String] = [:],
-        lastColumnFollowsSegment: Bool = false,
-        emptyHint: String,
-        part: LocalUsagePart
-    ) -> some View {
-        LocalUsageFooterView(
-            dailyTokenUsage: dailyTokenUsage,
-            recentSamples: recentSamples,
-            quotaProviderID: quotaProviderID,
-            deepseekPeakWindow: deepseekPeakWindow,
-            scannedAt: scannedAt,
-            isScanning: status.isScanningLocalUsage || freshness == .scanning,
-            freshness: freshness,
-            isTruncated: isTruncated,
-            speedByDay: speedByDay(),
-            lastColumnFollowsSegment: lastColumnFollowsSegment,
-            isReady: isReady,
-            emptyHint: emptyHint,
-            part: part
-        )
     }
 
     private func notConfiguredView(reason: String) -> some View {

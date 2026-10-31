@@ -453,6 +453,11 @@ extension SettingsView {
                     HStack(spacing: 8) {
                         Slider(value: $draft.alertThresholds.apiQuotaWarningPercent, in: 10...90, step: 5)
                             .frame(width: 160)
+                            .onChange(of: draft.alertThresholds.apiQuotaWarningPercent) { _, newWarning in
+                                if draft.alertThresholds.apiQuotaCriticalPercent > newWarning {
+                                    draft.alertThresholds.apiQuotaCriticalPercent = newWarning
+                                }
+                            }
                         Text("\(Int(draft.alertThresholds.apiQuotaWarningPercent))%")
                             .font(SettingsTypography.numericValue)
                             .frame(width: 40, alignment: .trailing)
@@ -464,6 +469,11 @@ extension SettingsView {
                     HStack(spacing: 8) {
                         Slider(value: $draft.alertThresholds.apiQuotaCriticalPercent, in: 5...50, step: 5)
                             .frame(width: 160)
+                            .onChange(of: draft.alertThresholds.apiQuotaCriticalPercent) { _, newCritical in
+                                if newCritical > draft.alertThresholds.apiQuotaWarningPercent {
+                                    draft.alertThresholds.apiQuotaCriticalPercent = draft.alertThresholds.apiQuotaWarningPercent
+                                }
+                            }
                         Text("\(Int(draft.alertThresholds.apiQuotaCriticalPercent))%")
                             .font(SettingsTypography.numericValue)
                             .frame(width: 40, alignment: .trailing)

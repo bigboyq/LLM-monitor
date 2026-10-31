@@ -549,6 +549,7 @@ struct SettingsView: View {
         }
 
         if let id = providerID(for: .codexChatGpt) {
+            let previousBillingTime = config.providers[id]?.adminBillingTime
             var chatgpt = config.providers[id] ?? ProviderConfig(enabled: false)
             chatgpt.enabled = draft.chatgptEnabled
             chatgpt.authPath = trimmedString(draft.chatgptAuthPath)
@@ -556,7 +557,11 @@ struct SettingsView: View {
             chatgpt.adminApiCreditsEnabled = draft.chatgptAdminCreditsEnabled
             chatgpt.adminApiKey = trimmedString(draft.chatgptAdminApiKey)
             chatgpt.adminBillingDay = draft.chatgptBillingDay
-            chatgpt.adminBillingTime = Formatters.formatTimeOfDay(draft.chatgptBillingTime)
+            if !draft.chatgptAdminCreditsEnabled && (draft.chatgptBillingTime == SettingsFormDraft.defaultBillingTime() || previousBillingTime == nil) {
+                chatgpt.adminBillingTime = previousBillingTime
+            } else {
+                chatgpt.adminBillingTime = Formatters.formatTimeOfDay(draft.chatgptBillingTime)
+            }
             if let limit = Self.validMonthlyQuotaLimit(draft.chatgptMonthlyQuotaLimit) {
                 chatgpt.adminMonthlyQuotaLimit = limit
             }
@@ -593,7 +598,9 @@ struct SettingsView: View {
         }
 
         config.clientBindings = draft.clientBindings
-        config.alerts = (draft.alertThresholds == .default) ? nil : draft.alertThresholds
+        let normalizedAlerts = draft.alertThresholds.normalized
+        draft.alertThresholds = normalizedAlerts
+        config.alerts = (normalizedAlerts == .default) ? nil : normalizedAlerts
 
         do {
             try await SettingsSaveTransaction.execute(
@@ -631,7 +638,7 @@ struct SettingsView: View {
     }
 
     static func parseBillingTime(from timeString: String?) -> Date {
-        guard let timeString else { return defaultBillingTime(hour: 0, minute: 0) }
+        guard let timeString else { return SettingsFormDraft.defaultBillingTime() }
         let parts = timeString.split(separator: ":")
         let hour = parts.count > 0 ? (Int(parts[0]) ?? 0) : 0
         let minute = parts.count > 1 ? (Int(parts[1]) ?? 0) : 0

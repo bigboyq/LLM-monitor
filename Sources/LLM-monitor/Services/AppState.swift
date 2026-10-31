@@ -1032,6 +1032,7 @@ final class AppState: ObservableObject {
             statusItem.glmLocalUsage = preserved.glmLocalUsage
             statusItem.opencodeUsage = preserved.opencodeUsage
             statusItem.dshUsage = preserved.dshUsage
+            statusItem.agyUsage = preserved.agyUsage
             // GLM 高峰期窗口固定为官方口径（`GlmPeakWindow.zhipuDefault`，与
             // DeepSeek 同形状：北京时间 + Rule A 工作日），无 config 字段可调；
             // 旧配置残留的 peak* 键由 JSONDecoder 静默忽略。

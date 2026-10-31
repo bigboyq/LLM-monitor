@@ -20,7 +20,8 @@ extension AppState {
                 minimaxLocalUsage: nil,
                 glmLocalUsage: nil,
                 opencodeUsage: nil,
-                dshUsage: nil
+                dshUsage: nil,
+                agyUsage: nil
             )
         }
         return PreservedStatusFields(
@@ -32,7 +33,8 @@ extension AppState {
             minimaxLocalUsage: old.minimaxLocalUsage,
             glmLocalUsage: old.glmLocalUsage,
             opencodeUsage: old.opencodeUsage,
-            dshUsage: old.dshUsage
+            dshUsage: old.dshUsage,
+            agyUsage: old.agyUsage
         )
     }
 
@@ -157,4 +159,5 @@ struct PreservedStatusFields {
     /// 避免配置变更触发的那次 rebuild 抹掉刚扫到的共享用量导致 footer 闪空白。
     let opencodeUsage: OpencodeLocalUsage?
     let dshUsage: DshLocalUsage?
+    let agyUsage: AgyLocalUsage?
 }

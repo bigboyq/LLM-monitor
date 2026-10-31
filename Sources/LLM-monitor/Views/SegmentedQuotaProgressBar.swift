@@ -17,10 +17,6 @@ struct SegmentedQuotaProgressBar: View {
     let timeRemainingFraction: Double?
     let primaryTimeRemainingFraction: Double?
 
-    var segments: Int {
-        Int(multiplier.rounded())
-    }
-
     init(
         primaryFraction: Double,
         weeklyFraction: Double,
@@ -103,7 +99,7 @@ struct SegmentedQuotaProgressBar: View {
     /// - 非整数倍率（如假设的 3.33，总容量 10/3：前 3 段各 30%、尾段 10%），
     ///   以 100 格为基准按容量权重分配（前 3 段各 30 点，尾段 10 点，周合计精准为 100 点）。
     static func ticksForSegment(capacity: Double, totalCapacity: Double, segmentCount: Int) -> Int {
-        if totalCapacity.truncatingRemainder(dividingBy: 1.0) < 0.001 {
+        if abs(totalCapacity - totalCapacity.rounded()) < 0.001 {
             return ticksPerSegment(for: segmentCount)
         }
         let ratio = capacity / totalCapacity
@@ -279,7 +275,7 @@ enum BindingQuotaWindow: Equatable, Sendable {
 }
 
 /// 将同时生效的短周期、周配额投影到等价短周期格。首格专属当前窗口；若周额度更高，
-/// 周剩余的余数格紧随其后，再接整格，避免截断周余额。
+/// 优先填满后续的整格单位，余数格跟随其后，避免截断周余额。
 enum EquivalentQuotaAllocation {
     /// 计算每个分段的容量权重。整段容量为 1.0；尾段容量为余数。
     static func segmentCapacities(multiplier: Double) -> [Double] {

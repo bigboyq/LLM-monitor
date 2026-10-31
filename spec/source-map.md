@@ -126,7 +126,6 @@
 | `Sources/LLM-monitor/Services/AgyLocalUsageAggregation.swift` | agy transcript MODEL 行解析、跨文件去重、thinking 字符守恒分摊与日聚合纯函数 |
 | `Sources/LLM-monitor/Services/GlmZcodeDBReader.swift` | ZCode `model_usage` 表 SQL 读取 + Method A reasoning 归类 + per-day 聚合与 samples + 非智谱 provider 分片聚合（`ZcodeProviderSliceAggregate`） |
 | `Sources/LLM-monitor/Services/GlmZcodeOffPeakReader.swift` | `~/.zcode/v2/tasks-index.sqlite` 闲时任务时间窗口读取（额度窗口排除依据） |
-| `Sources/LLM-monitor/Services/GlmZcodeBalanceLogReader.swift` | ZCode 余额轮询日志解析（历史测试兼容保留，运行时已被 GlmZcodeAPIClient 取代并标记弃用） |
 | `Sources/LLM-monitor/Services/GlmZcodeCredentialReader.swift` | ZCode 本地凭证与设备标识读取（`~/.zcode/v2/telemetry-state.json` 的 deviceMid + `credentials.json` 的 zcodejwttoken AES-256-GCM 解密） |
 | `Sources/LLM-monitor/Services/GlmZcodeAPIClient.swift` | ZCode 直连 API 客户端（Start Plan / 额度重置卡 / 营销活动触达直连解析与请求） |
 | `Sources/LLM-monitor/Services/GlmZcodeLocalUsageScanner.swift` | GLM ZCode `db.sqlite` 单源 scanner（AsyncMutex + lastCommittedGeneration 串行化） |

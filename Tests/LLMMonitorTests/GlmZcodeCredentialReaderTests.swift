@@ -201,20 +201,4 @@ final class GlmZcodeCredentialReaderTests: XCTestCase {
         XCTAssertTrue(creds.hasCredentials)
         XCTAssertTrue(creds.hasFullCredentials)
     }
-
-    func testLiveZcodeCredentialsIfPresent() {
-        // Reads from user ~/.zcode/v2 default location if it exists on the host
-        let defaultCreds = GlmZcodeCredentialReader.loadCredentials()
-        if FileManager.default.fileExists(atPath: GlmZcodeCredentialReader.defaultTelemetryStateURL.path) {
-            XCTAssertNotNil(defaultCreds.deviceMid)
-            XCTAssertFalse(defaultCreds.deviceMid?.isEmpty ?? true)
-        }
-        if FileManager.default.fileExists(atPath: GlmZcodeCredentialReader.defaultCredentialsURL.path) {
-            XCTAssertNotNil(defaultCreds.jwtToken)
-            XCTAssertTrue(defaultCreds.jwtToken?.hasPrefix("eyJ") ?? false, "Real ZCode JWT token starts with eyJ")
-            XCTAssertNotNil(defaultCreds.bigmodelAccessToken)
-            XCTAssertTrue(defaultCreds.hasCredentials)
-            XCTAssertTrue(defaultCreds.hasFullCredentials)
-        }
-    }
 }

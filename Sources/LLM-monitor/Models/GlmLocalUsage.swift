@@ -49,7 +49,7 @@ struct GlmLocalUsage: Equatable, Codable, Sendable {
     let offPeakWindows: [GlmOffPeakWindow]
 
     /// ZCode 活动套餐（zcode-plan，如周末体验套餐）余额快照，来自
-    /// `GlmZcodeBalanceLogReader` 对 ZCode 余额轮询日志的解析。
+    /// `GlmZcodeAPIClient` 对 ZCode 套餐接口的解析。
     /// optional 让旧缓存/关闭开关的快照仍可解码：nil = 未解析（开关关闭或
     /// 尚未扫到），`[]` = 解析成功但当前无活动套餐。UI 按空数组处理 nil。
     let activityPlanBalances: [GlmActivityPlanBalance]?

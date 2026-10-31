@@ -221,7 +221,15 @@ final class SegmentedQuotaProgressBarTests: XCTestCase {
         // 47.5% -> 9.5 选 9 块 (平局选小)
         XCTAssertEqual(SegmentedQuotaProgressBar.activeTickCount(fill: 0.475, totalTicks: 20), 9)
 
-        // 30 块区间（Gemini 主段）：
+        // 25 块区间（Gemini 4 段，每段 25 块）：
+        // 50.0% -> 12.5 选 12 块 (平局选小)
+        XCTAssertEqual(SegmentedQuotaProgressBar.activeTickCount(fill: 0.50, totalTicks: 25), 12)
+        // 46.0% -> 11.5 选 11 块 (平局选小)
+        XCTAssertEqual(SegmentedQuotaProgressBar.activeTickCount(fill: 0.46, totalTicks: 25), 11)
+        // 48.0% -> 12 块
+        XCTAssertEqual(SegmentedQuotaProgressBar.activeTickCount(fill: 0.48, totalTicks: 25), 12)
+
+        // 30 块区间：
         // 50.0% -> 15 块
         XCTAssertEqual(SegmentedQuotaProgressBar.activeTickCount(fill: 0.50, totalTicks: 30), 15)
         // 45.0% -> 13.5 选 13 块 (平局选小)

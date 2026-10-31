@@ -2,19 +2,16 @@ import SwiftUI
 
 /// GLM 活动套餐（zcode-plan，如周末体验套餐）余额展示行。
 ///
-/// 数据来自 `GlmZcodeAPIClient` 直连接口获取的 ZCode 活动套餐与额度重置卡（设置
+/// 数据来自 `GlmZcodeAPIClient` 直连接口获取的 ZCode 活动套餐（设置
 /// `parseZcodePlan` 开启后采集）。
 /// 布局与 OpenAI API 赠金行 / Google Argon 保持同等规格：
-/// - 有套餐或重置卡就显示，两者均无整块不渲染；
+/// - 有套餐就显示，无套餐整块不渲染；
 /// - 生效中套餐（`balances`）：正常显示卡片主题色，渲染独立进度条、剩余/总量 token 与失效倒计时（剩余X小时），<=2h 黄色预警，<=1h 红色告警；
-/// - 未生效套餐（`previews`）：整块灰色弱化显示，进度条置灰底，显示生效倒计时（X小时后生效），标注「额度：Z」；
-/// - 额度重置卡（`resetCards`）：双列展示 5 小时卡与周卡，最多展示前 3 张，无卡显示暂无可用卡。
+/// - 未生效套餐（`previews`）：整块灰色弱化显示，进度条置灰底，显示生效倒计时（X小时后生效），标注「额度：Z」。
 struct GlmActivityPlanBalancesView: View {
     let balances: [GlmActivityPlanBalance]?
     /// 生效前预告行；默认空，保持既有 `init(balances:)` 调用可编译。
     var previews: [GlmActivityPlanPreview] = []
-    /// 额度重置卡快照（5小时卡与周卡，向后兼容保留；主要呈现已移至卡片尾部重置卡详情模块）
-    var resetCards: GlmResetCardsSnapshot? = nil
     /// 卡片主题色，默认 GLM 品牌色
     var tint: Color = .glmBrand
 
@@ -23,25 +20,15 @@ struct GlmActivityPlanBalancesView: View {
     var body: some View {
         let visible = balances ?? []
         let hasBalances = !visible.isEmpty || !previews.isEmpty
-        let hasResetCards = (resetCards?.totalCardCount ?? 0) > 0
 
-        if hasBalances || hasResetCards {
+        if hasBalances {
             VStack(alignment: .leading, spacing: 6) {
-                if hasBalances {
-                    Divider().opacity(0.3)
-                    ForEach(visible, id: \.entitlementID) { balance in
-                        activeBlock(for: balance)
-                    }
-                    ForEach(previews, id: \.entitlementID) { preview in
-                        previewBlock(for: preview)
-                    }
+                Divider().opacity(0.3)
+                ForEach(visible, id: \.entitlementID) { balance in
+                    activeBlock(for: balance)
                 }
-                if let resetCards, hasResetCards {
-                    Divider().opacity(0.3)
-                    VStack(alignment: .leading, spacing: 5) {
-                        QuotaModuleTitle(text: QuotaWindowUsageSection.resetCreditsTitle)
-                        GlmResetCardsBlock(snapshot: resetCards, tint: tint)
-                    }
+                ForEach(previews, id: \.entitlementID) { preview in
+                    previewBlock(for: preview)
                 }
             }
         }

@@ -149,6 +149,15 @@ struct AlertThresholdConfig: Codable, Equatable, Sendable {
         self.deepseekBalanceWarning = dsWarning
         self.deepseekBalanceCritical = dsCritical
     }
+
+    var normalized: AlertThresholdConfig {
+        AlertThresholdConfig(
+            apiQuotaWarningPercent: apiQuotaWarningPercent,
+            apiQuotaCriticalPercent: apiQuotaCriticalPercent,
+            deepseekBalanceWarning: deepseekBalanceWarning,
+            deepseekBalanceCritical: deepseekBalanceCritical
+        )
+    }
 }
 
 extension AlertThresholdConfig {

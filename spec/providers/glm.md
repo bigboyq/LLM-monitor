@@ -4,7 +4,7 @@ Provider id: `glm_coding_plan`
 
 Implementation:
 - API fetcher: `Sources/LLM-monitor/Fetchers/GlmCodingPlanFetcher.swift`
-- Tests: `Tests/LLMMonitorTests/GlmCodingPlanFetcherTests.swift / GlmZcodeDBReaderTests.swift / GlmOffPeakTests.swift / GlmBalanceLogReaderTests.swift / GlmUsageCategoryTests.swift（按 MARK 段拆分）`
+- Tests: `Tests/LLMMonitorTests/GlmCodingPlanFetcherTests.swift / GlmZcodeDBReaderTests.swift / GlmOffPeakTests.swift / GlmUsageCategoryTests.swift（按 MARK 段拆分）`
 
 The quota portion queries 智谱 (Zhipu / BigModel) GLM Coding Plan's internal monitor
 endpoint — the same one used by the official `zai-coding-plugins` — for the 5-hour and
@@ -632,7 +632,7 @@ Bigmodel-Target-Type: PERSONAL                    # 个人账号固定为 PERSON
 
 ### 直连接口 vs 日志解析 架构对比
 
-| 维度 | 直连 API 路线 | 本地轮询日志解析路线 (`GlmZcodeBalanceLogReader`) |
+| 维度 | 直连 API 路线 | 历史本地轮询日志解析路线 |
 |---|---|---|
 | **重置卡获取** | **支持**（5h / 周卡数量及过期时间） | **不支持**（日志完全不记录重置卡请求与响应） |
 | **未领运营活动（领鸡蛋）** | **支持**（可提前检测到未领弹窗，触发 Bark 推送提醒） | **不支持**（日志仅在用户手动点击领取后记录一条 success，无法做未领提醒） |
@@ -643,7 +643,7 @@ Bigmodel-Target-Type: PERSONAL                    # 个人账号固定为 PERSON
 **最终架构决策**：**Direct API Only（纯直连接口解析，解耦日志）**。
 - 去除 `GlmZcodeLocalUsageScanner` 与 `LocalUsageOrchestration` 中的日志解析调用与目录监听；
 - 统一由 `GlmCodingPlanFetcher` 携带 `isZcodePlanEnabled`，通过 `GlmZcodeAPIClient` 直连接口获取活动套餐、重置卡与营销触达；
-- 当直连 API 失败或本地凭证缺失时静默降级（保留原有配额刷新，不阻断主流程），`GlmZcodeBalanceLogReader` 仅保留供历史测试兼容并标记为 deprecated。
+- 当直连 API 失败或本地凭证缺失时静默降级（保留原有配额刷新，不阻断主流程），旧版轮询日志解析器已被彻底移除。
 
 **可观测副作用**：用卡成功后 monitor 接口对应窗口的 `remaining` 立即回满、
 `nextResetTime` 重新滚动——LLM-monitor 不做「疑似用卡」推断展示，卡片只反映
@@ -701,7 +701,6 @@ session 不一定在内）。
 | SQLite reader | `Sources/LLM-monitor/Services/GlmZcodeDBReader.swift` |
 | Off-peak window reader | `Sources/LLM-monitor/Services/GlmZcodeOffPeakReader.swift` |
 | Scanner, cache, and seven-day snapshot | `Sources/LLM-monitor/Services/GlmZcodeLocalUsageScanner.swift` |
-| Activity-plan balance log reader（balances + 生效前 previews，同一条日志行） | `Sources/LLM-monitor/Services/GlmZcodeBalanceLogReader.swift` |
 | ZCode 本地凭证读取（deviceMid 与 AES-256-GCM JWT 解密） | `Sources/LLM-monitor/Services/GlmZcodeCredentialReader.swift` |
 | ZCode 直连 API 客户端（套餐余额、重置卡、营销活动） | `Sources/LLM-monitor/Services/GlmZcodeAPIClient.swift` |
 | Provider-neutral projection with OpenCode | `Sources/LLM-monitor/Models/ProviderClientModel.swift` (`ProviderStatus.usageProjection`，帧抽取表 `usageFrameExtractors`) + `UsageProjectionKernel` |

@@ -25,6 +25,20 @@ final class AlertThresholdConfigTests: XCTestCase {
         XCTAssertEqual(clamped.deepseekBalanceCritical, 5.0)
     }
 
+    func testNormalizedProperty() {
+        var unnormalized = AlertThresholdConfig.default
+        unnormalized.apiQuotaWarningPercent = 30.0
+        unnormalized.apiQuotaCriticalPercent = 50.0
+        unnormalized.deepseekBalanceWarning = 2.0
+        unnormalized.deepseekBalanceCritical = 5.0
+
+        let normalized = unnormalized.normalized
+        XCTAssertEqual(normalized.apiQuotaWarningPercent, 30.0)
+        XCTAssertEqual(normalized.apiQuotaCriticalPercent, 30.0)
+        XCTAssertEqual(normalized.deepseekBalanceWarning, 2.0)
+        XCTAssertEqual(normalized.deepseekBalanceCritical, 2.0)
+    }
+
     func testCodableRoundTrip() throws {
         let custom = AlertThresholdConfig(
             apiQuotaWarningPercent: 75.0,
