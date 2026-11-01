@@ -129,7 +129,7 @@ struct CreditEntryRow: View {
                 .frame(width: 5, height: 5)
 
             if let expiresAt = entry.expiresAt {
-                Text(Formatters.formatYearMonthDayMinute(expiresAt))
+                Text(Formatters.formatMonthDayMinute(expiresAt))
                     .font(.system(size: 11, weight: .medium).monospacedDigit())
                     .foregroundStyle(.primary)
 

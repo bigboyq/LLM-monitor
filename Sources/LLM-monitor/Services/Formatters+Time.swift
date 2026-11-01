@@ -120,11 +120,6 @@ extension Formatters {
         formatterCache.date(date, format: "MM-dd")
     }
 
-    /// 分钟级绝对时间，适合 hover / tooltip 细节
-    static func formatYearMonthDayMinute(_ date: Date) -> String {
-        formatterCache.date(date, format: "yyyy-MM-dd HH:mm")
-    }
-
     /// 绝对时间，对齐 codex.py 的 "YYYY-MM-DD HH:MM:SS ±HHMM" 格式
     /// 例如 "2026-07-08 12:00:00 +0800"
     static func formatAbsolute(_ date: Date) -> String {

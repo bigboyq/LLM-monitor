@@ -1427,10 +1427,12 @@ final class QuotaWindowUsageValueTests: XCTestCase {
     // MARK: - 重置卡逐张明细的可达性
 
     /// 重置卡模块是**常驻**的：折叠行（重置卡数量：N + 最近到期）下面直接接逐张
-    /// 清单，N 张可用 = N + 1 行；0 张（或没有数据）整块不画。曾经逐张明细挂在
-    /// `HoverInfoRow` 的展开态上，而两个宿主都不吃鼠标事件——折叠态等于不存在。
+    /// 清单，两列 × 至多两行、封顶 4 张（`ResetCreditsDetailList.maxVisibleEntries`）；
+    /// 0 张（或没有数据）整块不画。曾经逐张明细挂在 `HoverInfoRow` 的展开态上，
+    /// 而两个宿主都不吃鼠标事件——折叠态等于不存在。
     ///
-    /// 断言方式是量高度：条数越多高度越高，且比"没有重置数据"高得多。
+    /// 断言方式是量高度：1 行（2 张）到 2 行（4 张）高度增加，
+    /// 超过 4 张后与 4 张等高（封顶），且比"没有重置数据"高得多。
     @MainActor
     func testResetCreditsModuleRendersThePerCardListInline() {
         let snapshot = LocalUsageSummaryBuilder.windowUsage(
@@ -1443,10 +1445,14 @@ final class QuotaWindowUsageValueTests: XCTestCase {
         XCTAssertTrue(snapshot.isEmpty, "前提不成立：这里用的是没有额度窗口的快照")
 
         let withCredits = self.measuredHeight(
-            of: QuotaWindowUsageSection(snapshot: snapshot, resetCredits: Self.resetCredits(count: 3)),
+            of: QuotaWindowUsageSection(snapshot: snapshot, resetCredits: Self.resetCredits(count: 2)),
             width: Self.cardContentWidth
         )
-        let withMoreCredits = self.measuredHeight(
+        let withFullGrid = self.measuredHeight(
+            of: QuotaWindowUsageSection(snapshot: snapshot, resetCredits: Self.resetCredits(count: 4)),
+            width: Self.cardContentWidth
+        )
+        let withCappedCredits = self.measuredHeight(
             of: QuotaWindowUsageSection(snapshot: snapshot, resetCredits: Self.resetCredits(count: 6)),
             width: Self.cardContentWidth
         )
@@ -1461,8 +1467,12 @@ final class QuotaWindowUsageValueTests: XCTestCase {
             "有重置卡就必须渲染出折叠行 + 逐张清单（否则明细不可达）"
         )
         XCTAssertGreaterThan(
-            withMoreCredits, withCredits,
-            "明细是**逐张**列的：多三张卡必须多出三行，固定高度说明画的是总数不是清单"
+            withFullGrid, withCredits,
+            "明细是**逐张**列的：从 1 行（2 张）到 2 行（4 张）必须变高，固定高度说明画的是总数不是清单"
+        )
+        XCTAssertEqual(
+            withCappedCredits, withFullGrid,
+            "清单封顶 4 张：6 张与 4 张等高，多余卡片不撑高模块"
         )
     }
 

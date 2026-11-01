@@ -723,7 +723,7 @@ struct QuotaWindowUsageSection: View {
 
 
 
-/// 可用重置卡的**逐张清单**：每张的到期日。
+/// 可用重置卡的**逐张清单**：每张的到期日，两列 × 至多两行。
 ///
 /// 唯一消费面是 `QuotaWindowUsageSection` 的重置卡模块（常驻，紧接折叠行下面）。
 /// 第七轮删掉了 `showsHeader`：头部「可用重置卡 N 张」在那个入口永远画不出来
@@ -733,9 +733,20 @@ struct QuotaWindowUsageSection: View {
 struct ResetCreditsDetailList: View {
     let resets: ResetCreditsInfo
 
+    /// 最多展示 4 张（两列 × 两行，行优先填充）：去掉年份后单卡变短，
+    /// 半宽双列与 GLM 重置卡块的密度对齐；只取到期最近的 4 张，
+    /// 更远的卡对「接下来哪张先重置」没有阅读价值。
+    static let maxVisibleEntries = 4
+
+    /// 两列等宽、leading 对齐的网格；卡按到期升序以**行优先**填入
+    /// （左上 → 右上 → 左下 → 右下），与阅读顺序一致。
+    private var columns: [GridItem] {
+        [GridItem(.flexible(), alignment: .leading), GridItem(.flexible(), alignment: .leading)]
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            ForEach(Array(availableEntries.enumerated()), id: \.offset) { _, entry in
+        LazyVGrid(columns: columns, alignment: .leading, spacing: 4) {
+            ForEach(Array(availableEntries.prefix(Self.maxVisibleEntries).enumerated()), id: \.offset) { _, entry in
                 CreditEntryRow(entry: entry)
             }
         }

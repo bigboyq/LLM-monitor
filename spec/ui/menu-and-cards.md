@@ -797,7 +797,7 @@ look for a hover route to this data — the card carries it inline.
 ### ChatGPT Plan
 
 - 同时有 5h 和周额度时合并为一条，周进度条按 6 个等价额度分段（`weeklyEquivalentMultiplier` = 6）；接口只返回一个窗口时走单窗口路径，不虚构第二窗口。
-- 账号行（第一段 Account Info）= 邮箱（`~/.codex/auth.json`）+ 套餐 pill（如 `Team`）；重置卡逐张清单常驻在「额度窗口用量」区块的重置卡模块里，不再挂 hover。
+- 账号行（第一段 Account Info）= 邮箱（`~/.codex/auth.json`）+ 套餐 pill（如 `Team`）；重置卡逐张清单常驻在「额度窗口用量」区块的重置卡模块里，不再挂 hover。清单（`ResetCreditsDetailList`）按到期日升序最多展示 4 张（`prefix(4)`），以两列等宽 × 至多两行的 `LazyVGrid` 行优先填充（左上 → 右上 → 左下 → 右下），对齐 GLM 重置卡块的半宽密度；每行日期格式 `MM-dd HH:mm`（与 GLM 对齐，不显示年份）+ 紧迫度圆点 + 相对倒计时。
 - `Last Prompt` 摘要随菜单的 provider 卡一起删除，卡片里不再有这个入口；本地用量改由「额度窗口」模块（分析/用量可切换）与 7 天卡承担。
 
 ### Antigravity
@@ -1086,4 +1086,4 @@ The UI intentionally hides reset-credit id, title, description, and grant time.
 The shared Plan fallback uses the same 10pt `MenuTypography.hint` role for loading and
 failure feedback; there is no separate error-message typography role.
 
-> 核对基线：2026-10-31 · 代码 cf39ac1
+> 核对基线：2026-11-01 · 代码 3f0caba
