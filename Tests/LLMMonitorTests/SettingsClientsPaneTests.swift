@@ -175,6 +175,49 @@ final class SettingsClientsPaneTests: XCTestCase {
         )
     }
 
+    @MainActor
+    func testZcodeRowsHideZeroDisplayedUsageDespiteRetainedHistoricalSamples() throws {
+        let (_, state) = makeSettings()
+        defer { state.stop() }
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        let yesterday = try XCTUnwrap(calendar.date(byAdding: .day, value: -1, to: today))
+        let days = (0..<7).map { offset in
+            LocalDailyTokenUsage(
+                dayStart: calendar.date(byAdding: .day, value: -offset, to: today)!
+            )
+        }
+        let oldSample = LocalTokenUsageSample(
+            completedAt: try XCTUnwrap(calendar.date(byAdding: .day, value: -7, to: today)),
+            modelName: "MiniMax-M3", promptID: "old-minimax",
+            inputTokens: 200, cachedInputTokens: 0, outputTokens: 0,
+            reasoningOutputTokens: 0, sourceProviderID: "minimax"
+        )
+        state.applyGlmLocalUsage(GlmLocalUsage(
+            today: nil, dailyTokenUsage: [], scannedAt: Date(),
+            sessionCount: 1, eventCount: 1, failedSessionCount: 0,
+            recentSamples: [fixtureSample(provider: "builtin:bigmodel-coding-plan", input: 100)],
+            providerSlices: [
+                ZcodeProviderSlice.minimax.rawValue: OpencodeProviderUsage(
+                    today: nil, dailyTokenUsage: days, roundCount: 1,
+                    recentSamples: [oldSample]
+                ),
+                ZcodeProviderSlice.deepseek.rawValue: OpencodeProviderUsage(
+                    today: nil,
+                    dailyTokenUsage: [LocalDailyTokenUsage(dayStart: yesterday, inputTokens: 300, totalTokens: 300)],
+                    roundCount: 1, recentSamples: []
+                )
+            ]
+        ))
+        let minimax = try XCTUnwrap(state.statuses.first { $0.kind == .minimaxTokenPlan })
+        XCTAssertTrue(minimax.diagnosticUsageProjection(for: minimax.lastSuccess).contributions.contains {
+            $0.clientID == ClientID.zcode && $0.hasActivity
+        }, "历史样本仍可保留在投影中，但不应创建全零的设置行")
+        let rows = ClientUsageAggregation.clientProviderUsageByClient(for: state.statuses)[ClientID.zcode] ?? []
+        XCTAssertEqual(rows.map(\.providerName), ["Coding Plan", "DeepSeek"])
+        XCTAssertEqual(rows.last?.totalTokens, 300, "今天为零、七天内有历史用量的行应保留")
+    }
+
     /// 支持的 ZCode 分片来源自动计入 Provider 卡片，并保留在客户端诊断页。
     @MainActor
     func testDeepseekSliceAutomaticallyContributesAndAppearsInClientDiagnostics() {

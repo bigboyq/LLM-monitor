@@ -79,7 +79,13 @@ enum ClientUsageAggregation {
             }
         }
         return rowsByClient.mapValues { rows in
-            rows.sorted { lhs, rhs in
+            // Retained samples can outlive the displayed seven-day window.
+            // Decide visibility after grouping/windowing, using the chart's data.
+            rows.filter { row in
+                row.dailyTokenUsage.contains {
+                    $0.totalTokens > 0 || $0.turns > 0 || $0.rounds > 0
+                }
+            }.sorted { lhs, rhs in
                 // ZCode 客户端区是唯一混排多种语义行的列：GLM 分类行（套餐名）
                 // 与 DeepSeek / MiniMax 分片行（provider 名）必须按固定口径排，
                 // 字母序会得到 "Coding Plan → DeepSeek → Start Plan → …"。

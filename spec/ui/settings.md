@@ -149,6 +149,7 @@ provider card and client diagnostics through the same projection; historical dis
 bindings do not hide real usage. Native frames carry a provider ID, while shared ledgers
 use the built-in alias registry. Unknown providers are not guessed from model names.
 Disabled providers are still excluded from client diagnostics (`guard status.isEnabled`).
+显示条件在 `ClientUsageAggregation.clientProviderUsageByClient(for:)` 分组及窗口裁剪后统一判断：展示日桶中 Token、Rounds、Turns 全为 0 的行不显示，也不计入分组数量；窗口外的历史样本、扫描时间或已登记路由不构成显示依据。今天为 0 但七天内其他日期有用量的分组仍保留；仅有调用次数的记录也保留。
 
 ### 界面 pane「外观」节
 
