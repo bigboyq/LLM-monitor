@@ -147,4 +147,4 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 - Automatic updates and in-app version checks — upgrading means downloading a new build from
   GitHub Releases manually (release gating and the pre-release checklist: `spec/config.md`).
 
-> 核对基线：2026-11-03 · 代码 4c646e9
+> 核对基线：2026-11-03 · 代码 d07fa47

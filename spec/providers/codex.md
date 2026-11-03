@@ -838,4 +838,4 @@ To compare or sum daily usage across both providers, normalize both into a singl
 
 After normalization, cross-provider sum, average, and chart rendering can treat the two providers as a single data source.
 
-> 核对基线：2026-11-03 · 代码 4c646e9
+> 核对基线：2026-11-03 · 代码 d07fa47

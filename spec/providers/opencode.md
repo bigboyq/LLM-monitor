@@ -178,4 +178,4 @@ Provider 请求结算后的 `LocalUsageOrchestration.reconcile()` 驱动。启�
 | Card integration | `Sources/LLM-monitor/Views/ProviderCardView.swift` and `QuotaViews.swift` |
 | Regression tests | `Tests/LLMMonitorTests/OpencodeUsageTests.swift`（usageProjection 多 client 投影、命名空间与 reader 回归） |
 
-> 核对基线：2026-11-03 · 代码 4c646e9
+> 核对基线：2026-11-03 · 代码 d07fa47
