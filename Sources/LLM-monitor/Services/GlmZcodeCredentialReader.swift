@@ -71,7 +71,15 @@ enum GlmZcodeCredentialReader {
         guard let authPath = authPath?.trimmingCharacters(in: .whitespacesAndNewlines), !authPath.isEmpty else {
             return (defaultTelemetryStateURL, defaultCredentialsURL)
         }
-        let rawURL = URL(fileURLWithPath: NSString(string: authPath).expandingTildeInPath)
+        // 输入法易把 `~` 打成全角 `～` (U+FF5E) / `˜` (U+02DC)；expandingTildeInPath 只认
+        // ASCII `~`，不归一会让凭证静默找不到（2026-11-03 config 实际发生过）。
+        let normalizedPath: String
+        if let first = authPath.first, first == "～" || first == "˜" {
+            normalizedPath = "~" + authPath.dropFirst()
+        } else {
+            normalizedPath = authPath
+        }
+        let rawURL = URL(fileURLWithPath: NSString(string: normalizedPath).expandingTildeInPath)
         let dirURL: URL
         let credsURL: URL
         if rawURL.hasDirectoryPath || rawURL.pathExtension.isEmpty {

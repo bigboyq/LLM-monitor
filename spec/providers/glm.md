@@ -77,7 +77,7 @@ Supported provider fields:
 |---|---|
 | `enabled` | Enables/disables this provider. |
 | `glmAuthMode` | 认证方式：`apiKey`（仅标准 5h 与周额度套餐）或 `credential`（标准套餐、活动套餐、额度重置卡与运营活动推送）。缺省按历史字段迁移，无历史字段时默认为 `apiKey`。 |
-| `authPath` | 可选 ZCode 凭证文件或所在目录路径（缺省 `~/.zcode/v2`，支持 `~/.zcode/v2/credentials.json` 或自定义路径）。 |
+| `authPath` | 可选 ZCode 凭证文件或所在目录路径（缺省 `~/.zcode/v2`，支持 `~/.zcode/v2/credentials.json` 或自定义路径）。读取时将路径首字符 `～`（U+FF5E）或 `˜`（U+02DC）归一为 ASCII `~` 后展开主目录；路径中段字符保持原样。 |
 | `apiKey` | Coding Plan Key。在 `apiKey` 模式下为必填；在 `credential` 模式下作为免密凭证缺失时的可选回退。 |
 | `refreshIntervalSeconds` | Optional independent refresh interval (overrides global default of 300s). |
 | `displayName` | Optional card title override. |

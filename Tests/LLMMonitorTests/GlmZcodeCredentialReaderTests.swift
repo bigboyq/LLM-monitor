@@ -201,4 +201,22 @@ final class GlmZcodeCredentialReaderTests: XCTestCase {
         XCTAssertTrue(creds.hasCredentials)
         XCTAssertTrue(creds.hasFullCredentials)
     }
+
+    // MARK: - authPath 全角波浪号归一
+
+    func testResolveURLsNormalizesFullWidthTildePrefix() {
+        let expected = URL(fileURLWithPath: NSString(string: "~/.zcode/v2").expandingTildeInPath)
+            .appendingPathComponent("credentials.json", isDirectory: false)
+        for prefix in ["～", "˜"] {
+            let urls = GlmZcodeCredentialReader.resolveURLs(from: "\(prefix)/.zcode/v2")
+            XCTAssertEqual(urls.credentialsURL, expected, "前缀 \(prefix) (U+\(String(format: "%04X", prefix.unicodeScalars.first!.value))) 应归一为 ASCII ~")
+        }
+    }
+
+    func testResolveURLsLeavesMidPathFullWidthTildeAlone() {
+        // 只归一前缀：路径中段的全角字符不改动
+        let path = "/tmp/zcode～v2"
+        let urls = GlmZcodeCredentialReader.resolveURLs(from: path)
+        XCTAssertEqual(urls.credentialsURL.path, path + "/credentials.json")
+    }
 }
