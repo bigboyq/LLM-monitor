@@ -716,6 +716,69 @@ final class CodexFetcherTests: XCTestCase {
         let info = try await fetcher.fetch(mode: .full)
         let credits = try XCTUnwrap(info.openAIApiCredits)
         XCTAssertEqual(credits.organizationName, "Fallback Org")
+        XCTAssertEqual(StubURLProtocol.callCounts[Self.mePath], 1, "full 缺少 organization_name 时应请求 /v1/me")
+    }
+
+    func testCodexFetcherAdminCostsBackgroundSkipsMeLookup() async throws {
+        let authURL = try makeAuthFile()
+        StubURLProtocol.responses[Self.usagePath] = .init(
+            statusCode: 200,
+            headers: ["Content-Type": "application/json"],
+            body: Self.validUsageJSON()
+        )
+        StubURLProtocol.responses[Self.costsPath] = .init(
+            statusCode: 200,
+            headers: ["Content-Type": "application/json"],
+            body: Self.validCostsJSON(value: 1.75, orgName: nil)
+        )
+        // 若实现误发 /v1/me，也由 URLProtocol 截获，不会落到真实网络。
+        StubURLProtocol.responses[Self.mePath] = .init(
+            statusCode: 500,
+            headers: ["Content-Type": "application/json"],
+            body: Data("{}".utf8)
+        )
+        let fetcher = CodexFetcher(
+            authPath: authURL.path,
+            adminApiCreditsEnabled: true,
+            adminApiKey: "sk-admin-background-no-org",
+            session: makeSession()
+        )
+
+        let info = try await fetcher.fetch(mode: .background)
+        let credits = try XCTUnwrap(info.openAIApiCredits)
+        XCTAssertEqual(credits.usedAmount, 1.75)
+        XCTAssertNil(credits.organizationName)
+        XCTAssertEqual(StubURLProtocol.callCounts[Self.usagePath], 1)
+        XCTAssertEqual(StubURLProtocol.callCounts[Self.costsPath], 1)
+        XCTAssertNil(StubURLProtocol.callCounts[Self.mePath], "background 不应请求组织标题元数据")
+    }
+
+    func testCodexFetcherAdminCostsBackgroundUsesCostsOrganizationName() async throws {
+        StubURLProtocol.responses[Self.costsPath] = .init(
+            statusCode: 200,
+            headers: ["Content-Type": "application/json"],
+            body: Self.validCostsJSON(value: 2.25, orgName: "Current Org")
+        )
+        // 保障若误请求 /v1/me 仍完全由本地 fixture 截获。
+        StubURLProtocol.responses[Self.mePath] = .init(
+            statusCode: 500,
+            headers: ["Content-Type": "application/json"],
+            body: Data("{}".utf8)
+        )
+        let fetcher = CodexFetcher(
+            adminApiCreditsEnabled: true,
+            adminApiKey: "sk-admin-background-org",
+            session: makeSession()
+        )
+
+        let credits = try await fetcher.fetchAdminCosts(
+            apiKey: "sk-admin-background-org",
+            mode: .background
+        )
+        XCTAssertEqual(credits.usedAmount, 2.25)
+        XCTAssertEqual(credits.organizationName, "Current Org")
+        XCTAssertEqual(StubURLProtocol.callCounts[Self.costsPath], 1)
+        XCTAssertNil(StubURLProtocol.callCounts[Self.mePath], "costs 已提供组织名时无需请求 /v1/me")
     }
 
     func testCodexFetcherAdminCostsKeepsSuccessWhenMeLookupFails() async throws {

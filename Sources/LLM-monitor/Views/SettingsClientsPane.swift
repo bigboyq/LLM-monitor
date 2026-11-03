@@ -1,7 +1,7 @@
 import SwiftUI
 import AppKit
 
-/// SettingsView 的"客户端"tab：本地客户端用量诊断 + client ↔ quota 绑定开关。
+/// SettingsView 的"客户端"tab：本地客户端用量诊断。
 /// 从 SettingsView.swift 拆出（该文件原先 1200+ 行）。
 
 extension SettingsView {
@@ -34,8 +34,6 @@ extension SettingsView {
         let providers = resolvedUsage[client.id] ?? []
 
         return VStack(alignment: .leading, spacing: 16) {
-            clientAttributionSection(for: client)
-
             SettingsSection(
                 title: "已识别的 Provider",
                 footer: providers.isEmpty
@@ -60,27 +58,6 @@ extension SettingsView {
             }
         }
     }
-    @ViewBuilder
-    func clientAttributionSection(for client: ClientDescriptor) -> some View {
-        let indices = draft.clientBindings.indices.filter { draft.clientBindings[$0].clientID == client.id }
-        if !indices.isEmpty {
-            SettingsSection(
-                title: "用量归因设置",
-                footer: "控制是否将 \(client.displayName) 产生的该 Provider 用量并入对应的配额卡片与统计。关闭后仅在客户端诊断页保留独立用量。"
-            ) {
-                VStack(alignment: .leading, spacing: 12) {
-                    ForEach(indices, id: \.self) { idx in
-                        let binding = draft.clientBindings[idx]
-                        SettingsToggleRow(
-                            label: "并入 \(QuotaProviderID.displayName(binding.quotaProviderID)) 卡片",
-                            isOn: $draft.clientBindings[idx].enabled
-                        )
-                    }
-                }
-            }
-        }
-    }
-
     var sortedClientDescriptors: [ClientDescriptor] {
         ClientDescriptor.all.sorted {
             $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending

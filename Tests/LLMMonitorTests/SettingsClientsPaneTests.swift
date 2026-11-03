@@ -118,13 +118,10 @@ final class SettingsClientsPaneTests: XCTestCase {
         let usage = sliceFixture()
         state.applyGlmLocalUsage(usage)
         XCTAssertTrue(
-            state.statuses.filter { $0.kind != .glmCodingPlan }.allSatisfy {
-                $0.isClientBindingEnabled(
-                    clientID: ClientID.zcode,
-                    quotaProviderID: $0.kind.quotaProviderID
-                )
+            state.statuses.filter { [.deepseek, .minimaxTokenPlan].contains($0.kind) }.allSatisfy {
+                $0.usageProjection(for: $0.lastSuccess).clientIDs.contains(ClientID.zcode)
             },
-            "默认绑定（zcode → minimax / deepseek）应已开启，否则下面验不到分片行"
+            "受支持的 ZCode 分片来源应自动参与对应 Provider 归因"
         )
 
         let rows = ClientUsageAggregation.clientProviderUsageByClient(for: state.statuses)[ClientID.zcode] ?? []
@@ -178,30 +175,26 @@ final class SettingsClientsPaneTests: XCTestCase {
         )
     }
 
-    /// Option B：关闭 zcode → deepseek 绑定后，卡片用量投影（usageProjection）门控过滤该分片；
-    /// 但客户端诊断页（clientProviderUsageByClient）依据设置页 footer 声明保留独立用量行。
+    /// 支持的 ZCode 分片来源自动计入 Provider 卡片，并保留在客户端诊断页。
     @MainActor
-    func testDeepseekSliceGatedInProjectionRetainedInClientDiagnosticsWhenBindingIsOff() {
+    func testDeepseekSliceAutomaticallyContributesAndAppearsInClientDiagnostics() {
         let (_, state) = makeSettings()
         defer { state.stop() }
         state.applyGlmLocalUsage(sliceFixture())
-        state.mutateStatus(for: ProviderKind.deepseek.providerID) {
-            $0.setClientBindingEnabled(
-                clientID: ClientID.zcode, quotaProviderID: QuotaProviderID.deepseek, enabled: false
-            )
-        }
 
         let deepseekStatus = try! XCTUnwrap(state.statuses.first { $0.kind == .deepseek })
         let projection = deepseekStatus.usageProjection(for: deepseekStatus.lastSuccess)
-        XCTAssertFalse(
-            projection.contributions.contains { $0.clientID == ClientID.zcode },
-            "绑定关闭时，卡片用量投影应被门控过滤"
+        XCTAssertTrue(
+            projection.contributions.contains {
+                $0.clientID == ClientID.zcode
+            },
+            "支持的 ZCode → DeepSeek 来源应自动进入 Provider 用量投影"
         )
 
         let rows = ClientUsageAggregation.clientProviderUsageByClient(for: state.statuses)[ClientID.zcode] ?? []
         XCTAssertTrue(
             rows.contains { $0.providerName == "DeepSeek" },
-            "客户端诊断页应按 Option B 保留独立诊断行"
+            "自动归因的用量也应出现在客户端诊断页"
         )
         XCTAssertEqual(
             rows.map(\.providerName),

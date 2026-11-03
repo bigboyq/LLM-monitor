@@ -97,7 +97,7 @@ final class LocalUsageCoordinatorTests: StateTestCase {
         let activeWithoutDsh = LocalUsageOrchestration.activeSources(
             for: [noDshEnabled, explicitlyDisabled]
         )
-        XCTAssertFalse(activeWithoutDsh.dsh, "当没有有效启用的 DSH 绑定消费者时，DSH 源应被门控关闭")
+        XCTAssertTrue(activeWithoutDsh.dsh, "旧绑定开关不应阻断自动归因与共享账本扫描")
     }
     @MainActor
     func testLocalUsageCoordinatorReusesScannerAcrossTriggers() async {

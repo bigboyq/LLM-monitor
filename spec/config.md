@@ -30,21 +30,13 @@ The app reads and writes this shape:
       "enabled": false,
       "apiKey": "sk-REPLACE-WITH-YOUR-KEY"
     }
-  },
-  "clientBindings": [
-    {
-      "clientID": "opencode",
-      "quotaProviderID": "zhipu",
-      "sourceProviderAliases": ["zhipuai-coding-plan"],
-      "enabled": true
-    }
-  ]
+  }
 }
 ```
 
 首次启动模板默认关闭所有 provider，避免占位 Key 被误认为已配置。菜单中会显示“打开设置”引导；配置真实凭据后再启用对应 provider。上表是 `ConfigStore.writeTemplate` 实际生成的模板默认值（见 `ConfigStore.templateProviders()`）；两点需要说明：
 
-- `clientBindings` 模板里写的是完整的 `ClientProviderBinding.defaultBindings` 默认绑定表（10 条：opencode → minimax / openai / antigravity / zhipu / deepseek，zcode → minimax / deepseek，dsh → deepseek / minimax / zhipu；其中 opencode → zhipu 与 zcode / dsh 全部默认 `enabled: true`，opencode 的其余四路默认关闭）。agy 不在绑定表里——它的帧自带 `quotaProviderID`，native 归 Google Antigravity 卡，不走 `clientBindings` 门控。上面只摘了一条示意。
+- Harness 用量自动按账本 provider 归因，不提供归因开关。路由别名事实源是内置 `ClientProviderBinding.defaultBindings`（10 条共享账本路由全部有效）；native 帧直接使用其 `quotaProviderID`。模板不写 `clientBindings`，旧键与 provider 级 `mergeOpencodeUsage` 解码时忽略，保存时清理。
 - 模板**不写** `providerCardOrder`（nil 被 `encode(to:)` 省略），首屏按 Provider 显示名字母序；用户第一次在设置页调序后才出现该键。`statusBarIconStyle` / `statusBarHealthDotEnabled` / `statusBarHealthColors` / `bark` / `edgeDock` 同理，模板一律不写，缺省值见下表。
 
 `refreshIntervalSeconds` 除了顶层全局默认，还可以在每个 provider 下**可选覆盖**。模板默认不写该字段，下面是一个让 Codex 每 60 秒刷新一次的自定义示例（并非模板默认值）：
@@ -78,7 +70,7 @@ The app reads and writes this shape:
 | `providers.<id>.refreshIntervalSeconds` | provider | Optional provider-specific timer interval, with the same 10-second...30-day clamp. |
 | `providers.<id>.glmAuthMode` | provider | GLM 认证方式（`apiKey` / `credential`，缺省 `apiKey`）。选 `apiKey` 仅填写 API Key 并监控标准 5h 与周额度套餐；选 `credential` 自动读取本地 ZCode 凭据（免填 Key），支持标准套餐、活动套餐、额度重置卡与运营活动推送。 |
 | `providers.<id>.authPath` | provider | 自管认证文件或所在目录路径。Codex 为 `auth.json` 路径（缺省 `~/.codex/auth.json`）；GLM 为 ZCode 凭证目录或 `credentials.json` 路径（缺省 `~/.zcode/v2`）。 |
-| `providers.<id>.notifyCampaign` | provider | 运营活动通知渠道（`QuotaNotifyChannel`：`none` / `system` / `barkAndSystem`），用于 GLM 营销活动触达推送。默认关闭（`none`），仅在 `credential` 模式下生效且选定渠道时才发起轮询；走固定倍率回退（仅在 `.full` 模式下轮询），发现活动 1h 内不重复推送。 |
+| `providers.<id>.notifyCampaign` | provider | 运营活动通知渠道（`QuotaNotifyChannel`：`none` / `system` / `barkAndSystem`），用于 GLM 营销活动触达推送。默认关闭（`none`），仅在 `credential` 模式下生效且选定渠道时才发起轮询；按次要信息频率轮询（仅 `.full` 模式），发现活动 1h 内不重复推送，防抖不限制接口请求。 |
 | `providers.<id>.parseZcodeCredential` / `parseZcodePlan` / `parseZcodeBalanceLog` | legacy | 兼容历史配置字段。解码时若为 true 自动迁移至 `glmAuthMode = .credential`，保存时不落盘。 |
 | `providers.<id>.adminApiCreditsEnabled` | provider | 是否启用 OpenAI API 赠金监测（ChatGPT 专用）。缺省或 false 表示关闭；开启时在 ChatGPT 卡渲染「API赠金」进度条。 |
 | `providers.<id>.adminApiKey` | provider | OpenAI Admin API Key（`sk-admin-...`），用于查询组织消耗 `v1/organization/costs`。 |
@@ -86,10 +78,10 @@ The app reads and writes this shape:
 | `providers.<id>.adminBillingTime` | provider | 账单重置时间（`HH:mm`，如 `00:00` 或 `08:00`，缺省 `00:00`）。 |
 | `providers.<id>.adminMonthlyQuotaLimit` | provider | 每月 API 赠金额度上限（美元，缺省 40.0）。 |
 | `providers.<id>.notifyIntervalRestored` / `notifyIntervalExhausted` / `notifyWeeklyRestored` / `notifyWeeklyExhausted` | provider | 四类额度事件各自的推送渠道（`QuotaNotifyChannel`：`none` / `system` / `barkAndSystem`）。字段不存在 = 默认渠道（恢复 → 系统通知，耗尽 → 不通知），与引入通知配置前的行为一致。 |
-| `clientBindings[]` | client → quota Provider | Canonical source of truth for which Client usage slices contribute to a quota card. Schema v2; missing bindings are migrated from the legacy provider-level OpenCode switches by `AppConfig.legacyClientBindings(from:)`. 设置页「客户端」pane 提供可视化绑定开关，按选中的客户端过滤并展示对应的 Provider 卡片归属开关，直接更新 `draft.clientBindings` 并随表单保存。 |
+| `clientBindings[]` | removed | 历史 Harness 归因开关与别名配置；解码忽略、不再编码。全部已支持来源按内置 provider 路由自动归因，旧 `enabled: false` 不再屏蔽真实用量；无法识别的 provider 不猜测归属。`AppConfig.clientBindings` 仅为只读内置路由的运行时兼容出口。 |
 | `alerts` | global | 集中告警阈值配置（`AlertThresholdConfig`）。缺省或 nil 使用默认值（API 配额余量警告 60%、危险 30%；DeepSeek 余额警告 10、危险 3）。字段：`apiQuotaWarningPercent` (1...100, 默认 60)、`apiQuotaCriticalPercent` (1...100, 默认 30)、`deepseekBalanceWarning` (0..., 默认 10)、`deepseekBalanceCritical` (0..., 默认 3)。始终自动约束 `critical <= warning`。控制状态栏健康圆点、双环色段、卡片头部及 Edge Dock 呼吸环的红黄告警分档。 |
-| `periodicFullEveryN` | global | 全量刷新周期倍率（Int，范围 1...100，默认 20）。每经过 N 拍常规后台（`.background`）刷新后，自动补跑一次全量（`.full`）模式。设置页「常规」Tab 全局刷新频率处可视化配置。受影响范围详见下文。 |
-| `providers.<id>.mergeOpencodeUsage` | legacy compatibility | Decoded for older config files and projected into runtime status for compatibility. The canonical source is `clientBindings[]`; Settings does not expose a per-provider OpenCode toggle and `applyAndSave` preserves this legacy field rather than rewriting it. Defaults are encoded in `ProviderConfig.shouldMergeOpencodeUsage(for:)` (GLM `true`, others `false`), and users with non-default needs edit `config.json`. |
+| `periodicFullEveryN` | global | 次要信息频率相对 Provider 刷新间隔的倍率（Int，范围 1...30，默认 20）。沿用历史配置键；每 N 拍常规刷新有一次全量（`.full`），1 倍时每拍都抓取次要信息。设置页「常规」Tab 通过倍数下拉框配置，预计周期见各 Provider 设置。受影响范围详见下文。 |
+| `providers.<id>.mergeOpencodeUsage` | removed | 历史 OpenCode 合并开关；解码忽略、保存清理，不再影响用量归因。 |
 
 `ProviderConfig.encode(to:)` omits nil optional fields, so saved config only includes relevant keys. `ConfigStore.applyAndSave()` writes pretty-printed, sorted-key JSON and reapplies `0600`.
 旧版本残留的 provider 级键（如 GLM 曾有的 `peakStartHour` / `peakEndHour` / `peakWeekdaysOnly`——GLM 高峰窗口已固定为官方口径，DeepSeek 峰谷键当年同理）由 `JSONDecoder` **静默忽略**：解码端只认上表列出的键，残留既不报错、也不参与任何判定，下次在设置页保存时自然消失。
@@ -97,20 +89,25 @@ Unknown or incorrectly typed `statusBarIconStyle` /
 `statusBarHealthDotEnabled` values fall back
 to their defaults; cosmetic config errors do not trigger recovery of the provider settings.
 
-### 全量刷新倍率（`periodicFullEveryN`）及其影响范围
+### 次要信息频率（`periodicFullEveryN`）及其影响范围
 
-全局配置 `periodicFullEveryN`（默认 20，范围 1...100，在设置页「常规」Tab 的全局刷新频率下方配置）控制后台刷新调度器在连续执行若干次常规后台模式（`.background`）后，何时自动切换为一次全量模式（`.full`）。
+全局配置 `periodicFullEveryN`（默认 20，范围 1...30，在设置页「常规」Tab 的「默认刷新频率」下方配置）控制次要信息刷新周期。主额度与余额使用 `effectiveRefreshInterval(for:)`：有 Provider 独立间隔时使用该值，否则继承默认刷新频率。次要信息周期为该有效间隔的 N 倍，预计值不含网络请求与本地 reconcile 耗时。历史数值保留并归一化至 1...30，但周期含义从 N 次后台后再全量（N+1 拍）改为 N 拍；例如主频率 180s、配置 2，预计周期由 9 分钟改为 6 分钟。
 
 **受其影响的完整范围包括**：
 1. **调度器全量刷新循环**（`ProviderRefreshScheduler`）：
-   每个已启用的 Provider 在连续执行 `periodicFullEveryN` 次 `.background` 拍之后，下一次常规轮询自动切换为 `.full` 模式。若全局刷新间隔为 `interval`，则全量模式触发周期约为 `(N + 1) × interval`（例如默认 300s × 21 ≈ 105 分钟）。配置变更时调度器动态更新生效。
+   每个已启用的 Provider 首拍 `.full`，随后 N-1 拍 `.background` 再一次 `.full`；N=1 时每拍都是 `.full`。若 Provider 有效间隔为 `interval`，则全量模式触发周期约为 `N × interval`（例如默认 300s × 20 ≈ 100 分钟）。配置变更时调度器动态更新生效。调度器直接注入的 0 仅供内部兼容（禁用周期 full），不属于用户配置范围。
 2. **Codex / ChatGPT 重置次数（Rate-limit Reset Credits）抓取与过期判定**：
    - 抓取时机：Codex 仅在 `.full` 模式下向 `chatgpt.com/backend-api/wham/rate-limit-reset-credits` 请求重置次数，`.background` 模式跳过并保持原值；
    - 陈旧度判定：reset-credits 在卡片上标记为「可能过期」的时间阈值是 `max(3 × (periodicFullEveryN × refreshInterval), 15 min)`（默认约 5 小时），`periodicFullEveryN` 决定了该数据容许未更新的有效新鲜度窗口。
 3. **GLM Coding Plan 额度重置卡（Reset Cards）查询**：
-   - ZCode `coding-plan/reset/status` 走固定倍率回退，仅在 `.full` 模式下发起网络查询，`.background` 模式跳过并由 `GlmFillingMissingMerger` 从上一次成功快照继承；因此重置卡的实际抓取周期直接由 `periodicFullEveryN` 决定。
+   - ZCode `coding-plan/reset/status` 按次要信息频率，仅在 `.full` 模式下发起网络查询，`.background` 模式跳过并由 `GlmFillingMissingMerger` 从上一次成功快照继承；因此重置卡的实际抓取周期直接由 `periodicFullEveryN` 决定。
 4. **GLM Coding Plan 运营活动（Marketing Touch）轮询**：
-   - 营销触达接口（`marketing/touch`）仅在开启通知且模式为 `.full` 时发起轮询，未配置通知时完全不发起请求；其实际轮询频率同样由 `periodicFullEveryN` 约束（且受 1 小时防抖保护）。
+   - 营销触达接口（`marketing/touch`）仅在开启通知且模式为 `.full` 时发起轮询，未配置通知时完全不发起请求；其实际轮询频率同样由 `periodicFullEveryN` 约束。1 小时防抖只限制通知发送，不限制接口请求。
+5. **独立账号、套餐与组织信息查询**：
+   - Antigravity 的 `GetUserStatus`（账号 / 套餐）与 `GetLoadCodeAssist`（套餐兜底）仅在 `.full` 模式请求；`.background` 只请求 `RetrieveUserQuotaSummary`，保留上次账号与套餐显示。
+   - Codex Admin API 的 `/v1/organization/costs` 金额查询仍每拍执行；仅在 `.full` 且 costs 缺少组织名称时请求 `/v1/me`。后台新金额缺组织名时仅继承旧组织名，金额、账期与新鲜度均采用新结果。
+
+接口按数据职责分频：额度、余额、金额查询走 Provider 主频率；其余独立元数据、重置卡和活动查询走次要信息频率。Codex / GLM / MiniMax / Antigravity 主额度、DeepSeek 余额、启用后的 Codex Admin API 赠金以及凭证模式的 GLM 活动套餐余额均每拍获取。GLM `data.level`、costs 附带组织名等同一主响应的元数据随主响应更新；Codex 邮箱与套餐名来自构建鉴权头所需的本地 `auth.json` / JWT，没有独立网络查询。本地用量在 Provider 批次结算后独立 reconcile，高峰提示与倒计时按本地展示时钟计算。启动首刷与手动额度刷新会同时抓取主信息与次要信息。
 
 OpenCode and DSH are shared local Clients rather than menu-bar quota Providers. Their
 raw multi-provider slices are surfaced in the new "客户端" tab instead of a dedicated
@@ -157,7 +154,7 @@ value when local model samples are available.
 
 ### 首份 config.json 模板的语义
 
-`ConfigStore.writeTemplate(to:)` 走 `AppConfig.init` 的默认参数，因此模板里写入的是完整的 `ClientProviderBinding.defaultBindings`——**全部 10 条**（其中 6 条 `enabled: true`）。解码端另有两层兜底：缺 `clientBindings` 的旧文件先由 `AppConfig.legacyClientBindings(from:)` 从 provider 级 `mergeOpencodeUsage` 开关迁移，随后 `AppConfig.mergingMissingDefaultBindings(_:)` 把缺失的默认绑定补回去（`Models/AppConfig.swift` `init(from:)`）。也就是说**模板写不写这 10 条，运行行为一致**；保留自文档化（让首份 `config.json` 直接显示完整绑定表）是刻意的取舍，不是不一致。
+`ConfigStore.writeTemplate(to:)` 只写可配置字段，不写 Harness 归因开关。`AppConfig.clientBindings` 始终提供内置自动路由；历史 `clientBindings` 与 `mergeOpencodeUsage` 即使为 false 或类型错误，也不会影响配置加载和真实用量统计，下一次保存自然移除。Provider 自身的 `enabled` 仍决定其额度卡和相应扫描消费者是否启用。
 
 ## Runtime Files
 
@@ -274,4 +271,4 @@ CHANGELOG 最新条目、两份 README 的「当前版本」/DMG 名/build-relea
 的旧文案「按本机时区计算、可在设置中调整」直到发版前才发现，只因 `build-release.sh` 的
 版本门禁全绿而放行。**功能口径变了，用户文档必须同轮改**。
 
-> 核对基线：2026-10-31 · 代码 cf39ac1
+> 核对基线：2026-11-03 · 代码 4c646e9

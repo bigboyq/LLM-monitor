@@ -37,7 +37,7 @@ flowchart TD
 
   Scanners --> Frames["usageFrameExtractors\n帧抽取 (L1)"]
   Frames --> Kernel["UsageProjectionKernel.project\n(L2 唯一生产调用点)"]
-  ConfigBindings["config.json clientBindings"] --> Kernel
+  ConfigBindings["内置 Harness → Provider 自动归因路由"] --> Kernel
   Kernel --> Projection["ProviderStatus.usageProjection"]
   Projection --> ProviderCard["ProviderCardView\n(dock / 菜单兜底行 hover)"]
   Projection --> Harness["HarnessTodaySummary\n(菜单 Harness 视角)"]
@@ -120,10 +120,9 @@ deriveState 返回 `.notConfigured` 时整个 state 重置，lastSuccess 跟着�
 
 **配置重载 ≠ 冷启动**：配置写盘（设置页保存、dock 拖拽落点 App 自写 config、auth 探测翻转）触发的重排走 `ProviderRefreshScheduler.reconfigure(managed:)` 差异化路径——仍启用且 interval 未变的 provider 原样保留既有 deadline 与首刷标记（下一拍继续 `.background`），只有新增 / 重新启用 / interval 变化的 provider 才按初始排期立即纳入；冷启动语义只属于 `AppState.start()`。
 
-**周期 full（reset credits、重置卡与营销活动等“只在 full 抓取”的字段）**：`ProviderRefreshScheduler` 每累计
-`periodicFullEveryN`（默认 20，支持全局配置 `periodicFullEveryN` 动态热重载）次 `.background` 后，下一次补跑一次 `.full`（走常规 deadline，
-不改变常规排期节奏）。这样 Codex 的 reset credits 与 GLM 的重置卡 / 营销活动轮询不需要用户手动刷新也能周期性更新：默认 300s 间隔下
-约每 `20×300s ≈ 100min` 自动 full 一次。`.background` 仍只抓主 quota，不抓 reset credits / 重置卡。配置热重载时调度器即时生效。
+**次要信息频率（周期 full）**：`periodicFullEveryN`（默认 20，用户范围 1...30，动态热重载）表示次要信息周期相对 Provider 有效刷新间隔的真实倍率。`ProviderRefreshScheduler` 首拍 `.full`，随后 N-1 次 `.background` 后下一拍 `.full`，N=1 时每拍 `.full`；实际预计周期为 `N × Provider 间隔`，默认 300s × 20 ≈ 100min，仍走常规 deadline。内部直接注入 0 保留“只靠启动/手动 full”的兼容语义。
+
+次要信息包含 Codex reset credits、GLM ZCode 重置卡与营销活动（需通知开启）、Antigravity 独立账号/套餐 RPC，以及 costs 缺少组织名时 Codex `/v1/me` 查询。`.background` 同样获取主额度/余额、启用后的 Codex Admin API 赠金与 GLM 活动套餐余额；同一主响应附带元数据及 Codex 本地鉴权文件内的邮箱/套餐随主流程更新，不额外请求。Antigravity 跳过的账号与套餐、Codex 后台缺少的组织名由对应 merger 保留，额度金额与其新鲜度仍用本次结果。本地用量在批次结算后独立 reconcile，高峰提示和倒计时走本地时钟。完整范围见 `config.md` §次要信息频率。
 
 scheduler 集中持有排期与 in-flight 状态：`nextRefreshDates` / `resetCandidates` +
 `lastIntervalFinishedDates`（mid-cycle reset 点）/ `inFlightModes` / `inFlightWaiters` 等。
@@ -190,9 +189,10 @@ Config reload path:
 | `MinimaxTokenPlanFetcher` | `IdentityRefreshResultMerger`（默认） | 直接用新值。历史上的 `MinimaxVideoPreservingMerger`（`.background` 模式沿用上次 video 条目）已删除 |
 | `CodexFetcher` | `CodexFillingMissingMerger` | `resetCredits` / `codexUsageDetails` 缺失时回退到上次；reset credits 在 `.background` 跳过时保留原值与时间，`.full` 失败时标记「可能过期」，恢复成功清除。API 赠金独立记录新鲜度，失败保留旧值并标记「更新失败」。Admin-only 或主 quota 失败结果携带主额度错误，merger 保留 Plan 数据与时间；AppState 进入 `.failed(lastSuccess:)`，不推进成功时间或额度通知基线 |
 | `GlmCodingPlanFetcher` | `GlmFillingMissingMerger` | `glmZcodePackage` 在凭证模式下跨模式合并：活动套餐余额与预告在接口缺失时回退保留上次成功数据；重置卡与运营活动在 `.background` 跳过时从上次快照继承，保证卡片展示与营销通知稳定 |
-| `AntigravityFetcher` / `DeepseekFetcher` | `IdentityRefreshResultMerger`（默认） | 直接用新值 |
+| `AntigravityFetcher` | `AntigravityFillingMissingMerger` | `.background` 保留 previous 的账号/套餐信息，主额度、抓取时间及其余字段用 new；`.full` 直接采用新结果（包括 nil），避免旧账号/套餐在新查询后残留。首次无 previous 直接采用 new |
+| `DeepseekFetcher` | `IdentityRefreshResultMerger`（默认） | 直接用新值 |
 
-`CodexFetcher` 与 `GlmCodingPlanFetcher` 自带专用 merger；其余走 `QuotaFetcher` 的默认实现。
+`CodexFetcher`、`GlmCodingPlanFetcher` 与 `AntigravityFetcher` 自带专用 merger；其余走 `QuotaFetcher` 的默认实现。
 
 AppState.fetch 成功后调 `fetcher.resultMerger.merge(new:previous:mode:)` 合成最终值。
 
@@ -511,5 +511,5 @@ These are documented product boundaries:
   have their own SQLite readers, Antigravity is pure RPC, and Codex parses JSONL on
   demand for the 7-day chart.
 
-> 核对基线：2026-10-31 · 代码 cf39ac1
+> 核对基线：2026-11-03 · 代码 4c646e9
 > 2026-10-25 自启草稿与菜单实际状态同步已随 6f11831 入库：定向 27 例、完整 1422 例均通过；完整验证记录见 `spec/sync.md`。

@@ -77,18 +77,14 @@ keeps the raw provider string (trimmed; empty → `unknown`) and the Settings �
 view shows every provider found.
 
 `DshHarnessFrames.frames(from:)` emits one frame per provider key with an **empty**
-`quotaProviderID` — card attribution is not decided here. It is resolved uniformly in
-`UsageProjectionKernel.project` against the `clientBindings[]` registry, so any dsh
-provider key (including ones a future harness adds) routes through the same alias
-table rather than a dsh-local special case. A key no enabled dsh binding claims
-resolves to the empty group and is dropped from the cards; `AppState.applyDshUsage`
-logs a warning listing the unclaimed provider IDs and the registered aliases so a
-hand-edited `sourceProviderAliases` typo does not fail silently.
+`quotaProviderID` — card attribution is not decided here. `UsageProjectionKernel.project`
+resolves it against the built-in alias registry, so only registered provider aliases are
+attributed; unknown keys are not guessed into a card. An unmatched key resolves to the
+empty group and is dropped from the cards; `AppState.applyDshUsage` logs a warning listing
+unmatched provider IDs and registered aliases.
 
-The alias table below is the shipped default (all three bindings `enabled: true`) from
-`ClientProviderBinding.defaultBindings` — the array literals there are the single
-source of truth, and a binding the user sets to `enabled: false` is treated as
-deliberately unclaimed (no warning):
+The alias table below is the built-in DSH routing registry in
+`ClientProviderBinding.defaultBindings`; its alias literals are the single source of truth:
 
 | Card | dsh provider aliases |
 |---|---|
@@ -98,11 +94,9 @@ deliberately unclaimed (no warning):
 
 Alias matching is case-insensitive and substring-based (`==` or `contains`), not exact.
 
-Unlike OpenCode, DSH data is merged automatically when present. It is a native harness
-ledger, not an optional external account ledger — the three dsh bindings ship enabled,
-whereas several OpenCode bindings ship `enabled: false` because an OpenCode install is
-an optional third-party account. Disabling a dsh binding is still possible through
-`clientBindings[]`; OpenCode is independently controlled the same way.
+All supported local harness sources are automatically attributed to their matching quota
+providers. Attribution is not user-configurable; provider enable/disable settings continue
+to control whether a quota provider is active.
 
 ## Rounds and turns
 
@@ -158,7 +152,7 @@ to the next line, so a replayed event can never stall the scan.
   Settings → Clients then label the numbers as a newest-first subset.
   The provider projection also retains this source-level flag when the retained files
   contain no usage events and `byProvider` is empty. It applies only to providers with
-  an enabled DSH binding; Fleet reports keep their daily/window completeness false
+  a registered DSH route; Fleet reports keep their daily/window completeness false
   rather than treating the missing frames as authoritative zero usage.
   A sample-count cap is tracked separately by per-provider
   `DshProviderUsage.recentSamplesTruncated`: daily totals still include every scanned
@@ -203,5 +197,5 @@ to the next line, so a replayed event can never stall the scan.
 | Card integration | `Sources/LLM-monitor/Views/ProviderCardView.swift` |
 | Regression tests | `Tests/LLMMonitorTests/DshLocalUsageScannerTests.swift`, `DshHarnessFramesTests.swift`, `ScannerRetentionContractTests.swift` |
 
-> 核对基线：2026-10-28 · 代码 85f6ba9
+> 核对基线：2026-11-03 · 代码 4c646e9
 > 源级截断、样本完整性与缓存恢复验证结果见 `spec/sync.md`。

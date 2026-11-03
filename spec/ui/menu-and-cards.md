@@ -823,31 +823,34 @@ look for a hover route to this data — the card carries it inline.
   3. **额度窗口**（`QuotaWindowUsageSection.windowUsageModule`）：`quotaUsageDivider` 分隔，统一带有模块标题 `QuotaModuleTitle(text: "额度窗口")`、分析/用量分段切换器及 7 列网格（5h、周、今、闲、免、速、它）；
   4. **重置卡详情**（`QuotaWindowUsageSection.glmResetCardsModule`，在存在可用重置卡时渲染）：`moduleSeparator` 分隔，对齐 ChatGPT 标题规范带有 `QuotaModuleTitle(text: "重置卡详情")`；内容区双列展示 5 小时卡与周卡（`GlmResetCardsBlock`），左侧 `5小时重置卡 (N)`、右侧 `周重置卡 (N)`；每列最多展示前 3 张（`prefix(3)`），显示到期紧迫度彩色圆点（`CreditEntryRow.dotColor`：<=24h 红色、<=48h 黄色、>48h 绿色）、`MM-dd HH:mm` 及相对到期倒计时；若某列卡片为 0 张则显示 `暂无可用卡`；无任何可用重置卡时整块不渲染且不占卡片高度。
 
-### OpenCode client bindings（无设置页开关）
+### Automatic local usage attribution
 
-The settings panes intentionally expose **no** per-provider OpenCode toggle. Whether
-an OpenCode provider slice is merged into a card is owned by `clientBindings[]` in
-`config.json` (see `spec/config.md` §Config Schema); GLM defaults to enabled, all other
-providers to disabled. To change it, edit `config.json` and save — the directory
-watcher hot-reloads the config and rebuilds the cards, no app restart needed.
+Supported local usage is attributed automatically through the built-in
+client/provider routing registry. Native scanners stay with their provider; OpenCode,
+ZCode, and DSH ledger slices are routed by registered provider IDs or aliases. This
+mapping is not exposed as a user setting and is not read from or written to `config.json`.
+Unknown provider IDs are left unattributed rather than guessed. Provider enable/disable
+settings continue to govern provider activity independently of local usage routing.
 
-| Binding (`opencode` → quota) | Off | On |
-|---|---|---|
-| Minimax | native Minimax Scanner only | add `minimax-cn-coding-plan` OpenCode data |
-| ChatGPT | native Codex session data only | add OpenCode `openai` data to 5h / weekly summaries and daily chart |
-| Antigravity | native conversation Scanner only | add matching OpenCode Antigravity provider data |
-| GLM | native ZCode scanner only | add `zhipuai-coding-plan` OpenCode data on top of native ZCode |
+| OpenCode provider ID | Quota card |
+|---|---|
+| `minimax-cn-coding-plan` | Minimax |
+| `openai` | ChatGPT |
+| `antigravity`, `google-antigravity`, `google-vertex`, `google` | Antigravity |
+| `zhipuai-coding-plan` | GLM |
+| `deepseek` | DeepSeek |
 
-The merge itself is provider-neutral: `ProviderStatus.usageProjection` folds every
-client contribution into the card; the switch only controls whether the OpenCode
-contribution appears. OpenCode rounds are tokenized assistant messages. Turns are
-distinct user-prompt parents. The shared seven-day history chart shows selectable
-Rounds, total, value, speed, hit rate, thinking share, and output-to-input ratio trends.
+The aliases are kept in the built-in registry (`ClientProviderBinding.defaultBindings`);
+the `UsageProjectionKernel` and `ProviderStatus.usageProjection` apply the mapping and
+fold every matched contribution into its card. OpenCode rounds are tokenized assistant
+messages. Turns are distinct user-prompt parents. The shared seven-day history chart
+shows selectable Rounds, total, value, speed, hit rate, thinking share, and
+output-to-input ratio trends.
 
-ChatGPT's 5h / weekly summaries retain the preaggregated native Codex totals and
-add only the enabled OpenCode contribution. The native samples already represented
-by those totals are not added a second time; when native details are unavailable,
-the row falls back to aggregating the available combined samples.
+ChatGPT's 5h / weekly summaries retain the preaggregated native Codex totals and add the
+automatically attributed OpenCode contribution. The native samples already represented
+by those totals are not added a second time; when native details are unavailable, the row
+falls back to aggregating the available combined samples.
 
 ### Failed
 
@@ -1086,4 +1089,4 @@ The UI intentionally hides reset-credit id, title, description, and grant time.
 The shared Plan fallback uses the same 10pt `MenuTypography.hint` role for loading and
 failure feedback; there is no separate error-message typography role.
 
-> 核对基线：2026-11-01 · 代码 3f0caba
+> 核对基线：2026-11-03 · 代码 4c646e9

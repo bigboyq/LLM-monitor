@@ -36,6 +36,8 @@ Provider 策略层
 
 FSEvents/vnode 只负责把 source 标记为 dirty 和驱动 freshness UI；它不直接启动一个新的扫描，也不决定扫描范围。Provider batch settled 后由唯一的 reconcile 协调器消费这个状态。
 
+共享来源的激活由已启用 Provider 与内置自动归因 consumer 矩阵决定（`ProviderStatus.localUsageConsumers`），不再读取用户归因开关。OpenCode 向全部五个已支持 Provider 提供分片；ZCode 向 GLM / MiniMax / DeepSeek 提供分片；DSH 向 GLM / MiniMax / DeepSeek 提供分片。Provider 自身停用仍会移除其消费者；只要另有已启用的消费者，共享 scanner 仍保持活动。
+
 协调器只有一个待处理模式槽位，优先级为 `dirty < full < hardFull`；运行期间到达的请求只提升这个槽位，不再创建并行 reconcile。日历/时区失效使用单调 revision 标记：如果失效发生在当前事务期间，当前事务不能消费这次失效，事务结束后必须再执行一次 `hardFull`。
 
 ## Provider 策略矩阵
@@ -173,4 +175,4 @@ catch 块始终 `release()` 防止锁泄漏。
 测试可以注入一个 `TestGate.wait()` 让 worker 在 SQL/RPC 前阻塞, 精确控制 cancel+rescan
 时序. release build 的 binary 完全不带这个字段.
 
-> 核对基线：2026-10-31 · 代码 cf39ac1
+> 核对基线：2026-11-03 · 代码 4c646e9

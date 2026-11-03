@@ -597,7 +597,6 @@ struct SettingsView: View {
             config.providers[id] = deepseek
         }
 
-        config.clientBindings = draft.clientBindings
         let normalizedAlerts = draft.alertThresholds.normalized
         draft.alertThresholds = normalizedAlerts
         config.alerts = (normalizedAlerts == .default) ? nil : normalizedAlerts

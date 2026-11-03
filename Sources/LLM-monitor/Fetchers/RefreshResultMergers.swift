@@ -44,7 +44,21 @@ struct CodexFillingMissingMerger: RefreshResultMerger {
             mergedApiCredits = nil
             mergedApiCreditsError = nil
         } else if let newCredits = new.openAIApiCredits {
-            mergedApiCredits = newCredits
+            if mode == .background,
+               newCredits.organizationName == nil,
+               let previousOrganizationName = previous.openAIApiCredits?.organizationName {
+                mergedApiCredits = OpenAIApiCreditDetails(
+                    organizationName: previousOrganizationName,
+                    totalQuota: newCredits.totalQuota,
+                    usedAmount: newCredits.usedAmount,
+                    cycleStart: newCredits.cycleStart,
+                    cycleEnd: newCredits.cycleEnd,
+                    fetchedAt: newCredits.fetchedAt,
+                    lastAttemptFailed: newCredits.lastAttemptFailed
+                )
+            } else {
+                mergedApiCredits = newCredits
+            }
             mergedApiCreditsError = nil
         } else if let previousCredits = previous.openAIApiCredits {
             if new.openAIApiCreditsError != nil {
@@ -120,5 +134,27 @@ struct GlmFillingMissingMerger: RefreshResultMerger {
         )
 
         return new.enriched(with: mergedPackage)
+    }
+}
+
+/// Antigravity 的账号与套餐信息只在全量刷新时读取；后台刷新只提供最新额度。
+/// background 保留上次账号/套餐，full 完全采用本次元数据（包括 nil，用于清除旧账号信息）。
+struct AntigravityFillingMissingMerger: RefreshResultMerger {
+    func merge(new: QuotaInfo, previous: QuotaInfo?, mode: RefreshMode) -> QuotaInfo {
+        guard let previous, mode == .background else { return new }
+
+        return QuotaInfo(
+            models: new.models,
+            resetCredits: new.resetCredits,
+            planLabel: previous.planLabel,
+            accountEmail: previous.accountEmail,
+            codexUsageDetails: new.codexUsageDetails,
+            fetchedAt: new.fetchedAt,
+            balanceDetail: new.balanceDetail,
+            openAIApiCredits: new.openAIApiCredits,
+            glmZcodePackage: new.glmZcodePackage,
+            mainQuotaError: new.mainQuotaError,
+            openAIApiCreditsError: new.openAIApiCreditsError
+        )
     }
 }

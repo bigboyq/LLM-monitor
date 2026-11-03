@@ -106,21 +106,16 @@ struct ProviderStatus: Identifiable, Equatable, Sendable {
     /// 只在 `kind == .deepseek` 时使用；其他 provider 永远 nil。
     var deepseekPeakWindow: DeepseekPeakWindow?
 
-    /// client → quota 绑定注册表：config `clientBindings` 的**逐字快照**（P2）。
-    ///
-    /// 取代旧的 `mergeOpencodeUsage` / `mergeZcodeUsage` 派生 bool：AppState 在
-    /// rebuildStatuses 把 config 的绑定数组原样挂上来（不派生、不裁剪），共享账本
-    /// 切片（opencode 分片 / zcode 分片）的门控与 dsh 帧的归属解析都从这里取值。
-    /// native 贡献（codex / antigravity / minimax native / zcode 智谱 native）不经过
-    /// 绑定——它们是各卡自己的 native 账本，历史上就不受合并开关控制。
+    /// client → quota 内置自动归因路由快照，保留供内部诊断与兼容调用点使用。
+    /// 生产投影直接使用 `ClientProviderBinding.defaultBindings`；此处旧 config 的
+    /// aliases / enabled 值不会改变归因。native 账本直接归属各自 provider。
     var clientBindings: [ClientProviderBinding] = ClientProviderBinding.defaultBindings
 
-    /// 是否启用某条 client → quota 绑定（`AppConfig.isClientBindingEnabled` 的
-    /// 本地镜像，数据源是本 status 携带的绑定数组）。
+    /// 兼容仍查询该关系的内部调用点。只检查内置路由是否存在，忽略旧快照中的 enabled。
     func isClientBindingEnabled(clientID: String, quotaProviderID: String) -> Bool {
-        clientBindings.first {
+        ClientProviderBinding.defaultBindings.contains {
             $0.clientID == clientID && $0.quotaProviderID == quotaProviderID
-        }?.enabled ?? false
+        }
     }
 
     /// opencode 本地用量快照（四张卡共用的后台数据源）。
@@ -203,45 +198,24 @@ struct ProviderStatus: Identifiable, Equatable, Sendable {
         return localUsageFreshness.resolved(for: localUsageConsumers.map(\.source))
     }
 
-    /// Sources which can contribute to this status, after client-binding gates.
+    /// Sources which can contribute to this status under the built-in automatic attribution.
     /// This is also the source→client/provider mapping used by Fleet freshness.
     var localUsageConsumers: [LocalUsageConsumer] {
-        // 共享账本来源的消费资格由 clientBindings 决定（P2 起，取代 merge bool）。
-        let opencodeConsumer = isClientBindingEnabled(
-            clientID: ClientID.openCode,
-            quotaProviderID: kind.quotaProviderID
-        )
-        let zcodeSliceConsumer = isClientBindingEnabled(
-            clientID: ClientID.zcode,
-            quotaProviderID: kind.quotaProviderID
-        )
-        let dshConsumer = isClientBindingEnabled(
-            clientID: ClientID.dsh,
-            quotaProviderID: kind.quotaProviderID
-        )
-
         func consumers(_ sources: [LocalUsageSource]) -> [LocalUsageConsumer] {
             sources.map { LocalUsageConsumer(source: $0, quotaProviderID: kind.quotaProviderID) }
         }
 
         switch kind {
         case .codexChatGpt:
-            return consumers([.codex] + (opencodeConsumer ? [.opencode] : []))
+            return consumers([.codex, .opencode])
         case .antigravity:
-            return consumers([.antigravity, .agy] + (opencodeConsumer ? [.opencode] : []))
+            return consumers([.antigravity, .agy, .opencode])
         case .minimaxTokenPlan:
-            return consumers([.minimaxCode]
-                + (dshConsumer ? [.dsh] : [])
-                + (zcodeSliceConsumer ? [.zcode] : [])
-                + (opencodeConsumer ? [.opencode] : []))
+            return consumers([.minimaxCode, .dsh, .zcode, .opencode])
         case .glmCodingPlan:
-            return consumers([.zcode]
-                + (dshConsumer ? [.dsh] : [])
-                + (opencodeConsumer ? [.opencode] : []))
+            return consumers([.zcode, .dsh, .opencode])
         case .deepseek:
-            return consumers((dshConsumer ? [.dsh] : [])
-                + (zcodeSliceConsumer ? [.zcode] : [])
-                + (opencodeConsumer ? [.opencode] : []))
+            return consumers([.dsh, .zcode, .opencode])
         }
     }
 

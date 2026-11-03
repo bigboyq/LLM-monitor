@@ -3,8 +3,7 @@ import Foundation
 /// 客户端身份与绑定注册表（Models 层的纯事实源）。
 ///
 /// 本文件只放"身份"语汇：client / quota provider 的稳定 ID、client 的注册表
-/// 元数据，以及 client → quota 默认绑定的字面量表。它不依赖任何 Services /
-/// 配置持久化类型——`AppConfig.defaultClientBindings` 只是这里的兼容再导出，
+/// 元数据，以及 client → quota 自动归因别名表。它不依赖 Services 或配置持久化；
 /// 事实源是 `ClientProviderBinding.defaultBindings`。
 
 /// Stable IDs for the billing/quota side of the application.
@@ -48,6 +47,7 @@ struct ClientProviderBinding: Codable, Equatable, Identifiable, Sendable {
     let clientID: String
     let quotaProviderID: String
     var sourceProviderAliases: [String]
+    /// Legacy config compatibility only; automatic attribution ignores this value.
     var enabled: Bool
 
     var id: String { "\(clientID):\(quotaProviderID)" }
@@ -64,7 +64,7 @@ struct ClientProviderBinding: Codable, Equatable, Identifiable, Sendable {
         self.enabled = enabled
     }
 
-    /// 默认 client → quota 绑定注册表。
+    /// 内置 client → quota 自动归因注册表。
     ///
     /// **数组里的字面量是归因别名的唯一事实源**（P2 显式化）：`OpencodeLocalUsage`
     /// 的 providerID 常量与 dsh 帧的路由匹配都从这里导出
@@ -76,19 +76,19 @@ struct ClientProviderBinding: Codable, Equatable, Identifiable, Sendable {
             clientID: ClientID.openCode,
             quotaProviderID: QuotaProviderID.minimax,
             sourceProviderAliases: ["minimax-cn-coding-plan"],
-            enabled: false
+            enabled: true
         ),
         ClientProviderBinding(
             clientID: ClientID.openCode,
             quotaProviderID: QuotaProviderID.openAI,
             sourceProviderAliases: ["openai"],
-            enabled: false
+            enabled: true
         ),
         ClientProviderBinding(
             clientID: ClientID.openCode,
             quotaProviderID: QuotaProviderID.antigravity,
             sourceProviderAliases: ["antigravity", "google-antigravity", "google-vertex", "google"],
-            enabled: false
+            enabled: true
         ),
         ClientProviderBinding(
             clientID: ClientID.openCode,
@@ -100,12 +100,10 @@ struct ClientProviderBinding: Codable, Equatable, Identifiable, Sendable {
             clientID: ClientID.openCode,
             quotaProviderID: QuotaProviderID.deepseek,
             sourceProviderAliases: ["deepseek"],
-            enabled: false
+            enabled: true
         ),
         // ZCode 是多 provider 共享账本：`minimax` / `deepseek` 的行与智谱系行
-        // 同在 `model_usage` 表。默认开启（与 opencode → deepseek 的默认关闭相反）：
-        // ZCode 的这两路 provider 是用户显式配置过的上游，凭空关掉只会让卡片少报
-        // 一份已经真实发生的本地用量；要停用时把这两条改成 false 即可。
+        // 同在 `model_usage` 表，按内置 provider slice 自动归因。
         ClientProviderBinding(
             clientID: ClientID.zcode,
             quotaProviderID: QuotaProviderID.minimax,
@@ -119,9 +117,8 @@ struct ClientProviderBinding: Codable, Equatable, Identifiable, Sendable {
             enabled: true
         ),
         // DSH 是一份多 provider 路由的 session 账本：帧不声明归属，由内核用这里的
-        // 别名解析（contains 匹配、enabled 门控）。别名即旧 `DshHarnessFrames`
-        // 硬编码路由表，语义不变，只是搬进唯一事实源。默认开启（与 DSH 历史上
-        // 不受任何开关控制一致）。
+        // 别名解析（contains 匹配）。别名即旧 `DshHarnessFrames`
+        // 硬编码路由表，语义不变，只是搬进唯一事实源。所有内置路由均自动归因。
         ClientProviderBinding(
             clientID: ClientID.dsh,
             quotaProviderID: QuotaProviderID.deepseek,
@@ -198,7 +195,7 @@ struct ClientDescriptor: Identifiable, Equatable, Sendable {
             displayName: "ZCode",
             iconSystemName: "chevron.left.forwardslash.chevron.right",
             // 智谱系行进 GLM 卡；同库里的 minimax / deepseek 行按分片并入对应卡
-            // （开关见 clientBindings 的 zcode → minimax / deepseek 两条）。
+            // （由内置 clientBindings 的 zcode → minimax / deepseek 两条自动归因）。
             supportedQuotaProviderIDs: [
                 QuotaProviderID.zhipu,
                 QuotaProviderID.minimax,

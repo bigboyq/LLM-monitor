@@ -116,8 +116,8 @@ extension ProviderStatus {
     }
 
     /// DSH（共享 session 账本）→ 每 provider 键一帧。帧**不声明 quota 归属**：
-    /// dsh 是多 provider 路由账本，归属与启停都由内核按 `status.clientBindings`
-    /// 的 dsh 条目解析；本卡 quota 之外的组由 `usageProjection` 过滤。
+    /// dsh 是多 provider 路由账本，归属由内核按内置别名解析；
+    /// 本卡 quota 之外的组由 `usageProjection` 过滤。
     /// `isTruncated` 是快照级口径（文件数/字节预算挤出最旧 session），不随
     /// provider 分片稀释：每一帧都带快照的截断位，由内核做"任一截断即截断"。
     private static let dshFrames: @Sendable (ProviderStatus, QuotaInfo?) -> [HarnessUsageFrame] = { status, _ in
@@ -126,17 +126,13 @@ extension ProviderStatus {
 
     /// ZCode 账本里的非智谱 provider 分片（`minimax` / `deepseek`），并入
     /// MiniMax / DeepSeek 卡。由 `clientBindings` 的 zcode → <quota provider>
-    /// 绑定门控（P2 起，取代旧 `mergeZcodeUsage` 派生 bool）。
+    /// 内置路由自动映射（P2 起，取代旧 `mergeZcodeUsage` 派生 bool）。
     private static func zcodeSliceFrames(
         _ provider: ZcodeProviderSlice,
         _ slice: @escaping @Sendable (ProviderStatus) -> OpencodeProviderUsage?
     ) -> @Sendable (ProviderStatus, QuotaInfo?) -> [HarnessUsageFrame] {
         { status, _ in
-            guard status.isClientBindingEnabled(
-                    clientID: ClientID.zcode,
-                    quotaProviderID: status.kind.quotaProviderID
-            ),
-                  let usage = slice(status) else { return [] }
+            guard let usage = slice(status) else { return [] }
             return [HarnessUsageFrame(
                 clientID: ClientID.zcode,
                 sourceKey: provider.providerPrefix,
@@ -149,19 +145,14 @@ extension ProviderStatus {
         }
     }
 
-    /// OpenCode provider 分片（一份多 provider 账本）。由 `clientBindings` 的
-    /// opencode → <quota provider> 绑定门控（P2 起，取代旧 `mergeOpencodeUsage`
-    /// 派生 bool）；样本加 `opencode:<provider>:` 命名空间。
+    /// OpenCode provider 分片（一份多 provider 账本）。来源分片存在即按内置
+    /// provider 路由归因；样本加 `opencode:<provider>:` 命名空间。
     private static func opencodeFrames(
         sourceProviderID: String,
         _ slice: @escaping @Sendable (ProviderStatus) -> OpencodeProviderUsage?
     ) -> @Sendable (ProviderStatus, QuotaInfo?) -> [HarnessUsageFrame] {
         { status, _ in
-            guard status.isClientBindingEnabled(
-                    clientID: ClientID.openCode,
-                    quotaProviderID: status.kind.quotaProviderID
-            ),
-                  let usage = slice(status) else { return [] }
+            guard let usage = slice(status) else { return [] }
             return [HarnessUsageFrame(
                 clientID: ClientID.openCode,
                 sourceKey: sourceProviderID,

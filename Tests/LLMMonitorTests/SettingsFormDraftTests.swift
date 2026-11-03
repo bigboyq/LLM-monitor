@@ -27,14 +27,6 @@ final class SettingsFormDraftTests: XCTestCase {
         XCTAssertNotEqual(draftA, draftB)
         draftA.alertThresholds = draftB.alertThresholds
         XCTAssertEqual(draftA, draftB)
-
-        // Modify client bindings
-        if !draftA.clientBindings.isEmpty {
-            draftA.clientBindings[0].enabled.toggle()
-            XCTAssertNotEqual(draftA, draftB)
-            draftA.clientBindings[0].enabled.toggle()
-            XCTAssertEqual(draftA, draftB)
-        }
     }
 
     func testDraftInitFromConfig() {
@@ -73,5 +65,34 @@ final class SettingsFormDraftTests: XCTestCase {
         // 负数归一化为 0
         scheduler.updatePeriodicFullEveryN(-5)
         XCTAssertEqual(scheduler.periodicFullEveryN, 0)
+    }
+
+    func testSecondaryInfoFrequencyNormalizesConfigBeforeEditing() throws {
+        for (configured, expected) in [(-1, 1), (0, 1), (1, 1), (30, 30), (31, 30), (100, 30)] {
+            let json = """
+            {"refreshIntervalSeconds":180,"providers":{},"periodicFullEveryN":\(configured)}
+            """
+            let config = try JSONDecoder().decode(AppConfig.self, from: Data(json.utf8))
+            let draft = SettingsFormDraft(from: config, descriptors: [])
+            XCTAssertEqual(config.effectivePeriodicFullEveryN, expected)
+            XCTAssertEqual(draft.periodicFullEveryN, expected)
+        }
+    }
+
+    func testSecondaryInfoEstimateUsesProviderOverrideOrDefaultInterval() {
+        var draft = SettingsFormDraft()
+        draft.globalInterval = 180
+        draft.periodicFullEveryN = 2
+        XCTAssertEqual(draft.secondaryInfoRefreshInterval(), 360)
+        XCTAssertEqual(draft.secondaryInfoRefreshInterval(providerInterval: 60), 120)
+        XCTAssertEqual(draft.secondaryInfoRefreshInterval(providerInterval: 0), 360)
+
+        draft.periodicFullEveryN = 1
+        XCTAssertEqual(draft.secondaryInfoRefreshInterval(providerInterval: 60), 60)
+        XCTAssertEqual(draft.secondaryInfoRefreshInterval(providerInterval: 1), 10)
+        XCTAssertEqual(
+            draft.secondaryInfoRefreshInterval(providerInterval: Int.max),
+            AppConfig.maximumRefreshIntervalSeconds
+        )
     }
 }

@@ -96,7 +96,7 @@ enum ClientUsageAggregation {
     ///
     /// GLM 分类行取 `GlmUsageCategory.allCases` 的声明序（枚举加 case 时行序
     /// 自动跟随）；两个分片行来自 MiniMax / DeepSeek 卡的 ZCode 贡献
-    /// （由 `clientBindings` 的 zcode → <quota> 绑定门控），
+    /// （由内置 zcode → provider 路由自动归因），
     /// 它们不是套餐而是 provider，固定排在分类行之后。
     static func zcodeRowRank(_ row: ClientProviderUsageSummary) -> Int {
         let glmCount = GlmUsageCategory.allCases.count

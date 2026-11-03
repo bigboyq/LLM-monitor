@@ -29,7 +29,7 @@ The app never checks for or installs updates by itself. Watch or subscribe to th
 
 ### Minimax Token Plan
 
-Enable Minimax and enter a Token Plan API key. Local usage comes from `~/.minimax/v2/sqlite/runtime-state.sqlite`; ZCode's `minimax` slice is merged into this card by default (disable via `clientBindings` in `config.json`). To also include `minimax-cn-coding-plan` usage from OpenCode, set the matching `clientBindings` entry to `true` in `config.json` (see "OpenCode merge" below).
+Enable Minimax and enter a Token Plan API key. Local usage comes from `~/.minimax/v2/sqlite/runtime-state.sqlite`; supported MiniMax usage from ZCode, DSH, and OpenCode is automatically attributed to this card without a configuration switch.
 
 ### ChatGPT Plan / Codex
 
@@ -43,19 +43,19 @@ Start and sign in to Antigravity or the `agy` CLI. LLM Monitor discovers the loc
 
 Enter a Coding Plan key, commonly in `id.secret` format. Remote quota comes from GLM; local ZCode usage comes from `~/.zcode/cli/db/db.sqlite`. The peak window is fixed at Monday to Friday, 14:00–18:00 Beijing time (Asia/Shanghai), excluding statutory public holidays. It does not follow the Mac's local time zone and there is no setting to change it.
 
-ZCode tasks fall into four provider categories — Coding Plan / Start Plan (trial plan) / Off-peak / Other Zhipu plans: only Coding Plan tasks count toward the 5h / weekly quota windows, while all four appear in the local token bars. Settings → Clients → ZCode lists them as separate rows in that order (categories with no usage are omitted), each with its own bars and cost estimate, followed by the DeepSeek / MiniMax slice rows from the same ledger (each can be turned off via the client ↔ provider bindings). Enabling "Parse activity plan balance log" in Settings also shows zcode activity plans (e.g. the weekend trial plan) with remaining percentage and expiry on the card, parsed from ZCode's local balance polling log (`~/.zcode/v2/logs`); local files only, off by default.
+ZCode tasks fall into four provider categories — Coding Plan / Start Plan (trial plan) / Off-peak / Other Zhipu plans: only Coding Plan tasks count toward the 5h / weekly quota windows, while all four appear in the local token bars. Settings → Clients → ZCode lists them as separate rows in that order (categories with no usage are omitted), each with its own bars and cost estimate, followed by DeepSeek / MiniMax slices from the same ledger automatically attributed by provider. Supported local-ledger sources are attributed automatically; unknown providers are not guessed. GLM credential authentication reads activity-plan balances, reset cards, and claimable campaigns through ZCode's APIs. Plan balances follow GLM's regular refresh interval; reset cards and campaigns follow the secondary-information frequency, with campaign notifications also required for campaign polling.
 
 ### DeepSeek
 
-Enter a DeepSeek `sk-...` API key. The card displays account balance. DeepSeek has no native local ledger: local token charts come from the ZCode slice (on by default; rows in `~/.zcode/cli/db/db.sqlite` whose `provider_id` is `deepseek`), optionally overlaid with the OpenCode merge (`clientBindings` in `config.json`). DeepSeek Flash local cost estimates use ¥1 per million input tokens, ¥0.02 per million cached-read tokens, and ¥4 per million output tokens. Beijing-time weekday busy hours (Mon–Fri 9:00–12:00 and 14:00–18:00) are charged at 2×, excluding statutory public holidays; weekends are off-peak all day.
+Enter a DeepSeek `sk-...` API key. The card displays account balance. DeepSeek has no native local ledger: local token charts automatically include supported DeepSeek usage from ZCode, DSH, and OpenCode. DeepSeek Flash local cost estimates use ¥1 per million input tokens, ¥0.02 per million cached-read tokens, and ¥4 per million output tokens. Beijing-time weekday busy hours (Mon–Fri 9:00–12:00 and 14:00–18:00) are charged at 2×, excluding statutory public holidays; weekends are off-peak all day.
 
 ### OpenCode merge
 
-The app reads `~/.local/share/opencode/opencode.db` and separates rows by `providerID`. OpenCode is not a standalone card. Merging is controlled by the `opencode` bindings in `clientBindings[]` inside `~/Library/Application Support/LLM-monitor/config.json` (GLM defaults to enabled, other providers to disabled); the settings window has no per-provider toggle for it. Save the edited file and the app hot-reloads it without a restart.
+The app reads `~/.local/share/opencode/opencode.db` and separates rows by `providerID`. OpenCode is not a standalone card. Supported provider IDs are automatically attributed to their matching cards; no setting or `config.json` switch is needed. This is separate from each provider's own enable/disable setting. Unrecognized provider IDs are not guessed into a card.
 
 ### ZCode slices
 
-ZCode is a shared multi-provider ledger just like OpenCode: Zhipu-family rows feed the GLM card, while rows whose `provider_id` starts with `minimax` / `deepseek` are partitioned into slices and merged into the MiniMax / DeepSeek cards respectively. The matching `zcode` entries in `clientBindings[]` default to enabled; there is likewise no per-provider toggle in the settings window.
+ZCode is a shared multi-provider ledger just like OpenCode: Zhipu-family rows feed the GLM card, while rows whose `provider_id` starts with `minimax` / `deepseek` are partitioned into slices and automatically attributed to the MiniMax / DeepSeek cards respectively. Supported provider IDs are handled automatically, with no user-facing attribution switches; unrecognized IDs are not guessed into a card.
 
 ## Multi-device Sync (Hub and Nodes)
 
@@ -79,6 +79,8 @@ Both GLM and DeepSeek decide peak hours in Beijing time (Asia/Shanghai), countin
 
 ## Everyday controls
 
+- Independent account, tier, and organization lookups also use the secondary-information frequency: this includes Antigravity account/tier RPCs and the ChatGPT API credits organization lookup when the costs response has no organization name. Background refreshes retain existing names while updating quota and amounts. GLM's tier is included in its quota response; Codex email and plan come from its local authentication file, so neither needs an extra lookup.
+- Settings → General → “默认刷新频率” sets the default quota and balance interval for providers without an override. “次要信息频率” selects a multiplier from 1 to 30 (default 20) for ChatGPT reset cards, GLM reset cards, and claimable campaigns. Each provider's settings show its estimated period, calculated from its effective interval × multiplier: 3 minutes × 2 means about 6 minutes; 1× updates secondary information on every refresh. GLM activity-plan balances and ChatGPT API credits continue to follow the regular interval. Local token scans and peak-period countdowns are independent of this multiplier.
 - Click the menu bar icon to open or close the panel.
 - Use the refresh button to refresh all enabled providers now.
 - Click the "eye" button in a provider card header: pin the menu bar icon (Icon Duo rings and health dot) to only display that provider's quota and health; click the highlighted eye again to unpin and restore global aggregation across all enabled providers.

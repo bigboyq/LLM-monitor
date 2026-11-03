@@ -250,7 +250,15 @@ final class UsageReportBuilderTests: XCTestCase {
         XCTAssertFalse(today.totalsComplete)
         XCTAssertFalse(today.modelDetailsComplete)
         XCTAssertEqual(today.clientProviders, [], "扫描中来源不发送可能过期的贡献")
-        XCTAssertEqual(today.unavailableSources?.map(\.reason), [.scanning])
+        let scanningSources = today.unavailableSources ?? []
+        XCTAssertEqual(scanningSources.count, 2)
+        XCTAssertTrue(scanningSources.allSatisfy { $0.reason == .scanning })
+        XCTAssertEqual(
+            Set(scanningSources.map(\.clientID)),
+            Set([ClientID.codex, ClientID.openCode]),
+            "ChatGPT 的本地扫描状态影响 Codex 与自动归因的 OpenCode 行"
+        )
+        XCTAssertTrue(scanningSources.allSatisfy { $0.quotaProviderID == QuotaProviderID.openAI })
         XCTAssertEqual(report.windowUsage, [], "扫描中的窗口通道省略该 provider，保留 hub 旧范围")
         XCTAssertNotNil(report.quotas)
     }
@@ -283,7 +291,15 @@ final class UsageReportBuilderTests: XCTestCase {
 
         let scanning = codexStatus(state: .ok(emptySampleQuotaInfo()), scanning: true)
         let scanningReport = UsageReportBuilder.build(makeInput([scanning]), seq: 2)
-        XCTAssertEqual(scanningReport.dailyBuckets?.last?.unavailableSources?.map(\.reason), [.scanning])
+        let scanningSources = scanningReport.dailyBuckets?.last?.unavailableSources ?? []
+        XCTAssertEqual(scanningSources.count, 2)
+        XCTAssertTrue(scanningSources.allSatisfy { $0.reason == .scanning })
+        XCTAssertEqual(
+            Set(scanningSources.map(\.clientID)),
+            Set([ClientID.codex, ClientID.openCode]),
+            "ChatGPT 的本地扫描状态影响 Codex 与自动归因的 OpenCode 行"
+        )
+        XCTAssertTrue(scanningSources.allSatisfy { $0.quotaProviderID == QuotaProviderID.openAI })
         XCTAssertEqual(scanningReport.windowUsage, [])
         XCTAssertEqual(scanningReport.quotas?.count, 1)
 
@@ -426,10 +442,10 @@ final class UsageReportBuilderTests: XCTestCase {
             nodeID: nodeID, nodeName: "test", bindings: disabledBindings,
             statuses: [status], now: scanNow, calendar: calendar
         ), seq: 3)
-        XCTAssertTrue(disabledReport.dailyBuckets?.last?.totalsComplete == true,
-                      "关闭的DSH binding不应污染本provider的完整性")
-        XCTAssertNil(disabledReport.dailyBuckets?.last?.unavailableSources)
-        XCTAssertTrue(disabledReport.windowUsage?.first?.complete == true)
+        XCTAssertFalse(disabledReport.dailyBuckets?.last?.totalsComplete == true,
+                       "旧 DSH binding 开关不能隐藏其截断状态")
+        XCTAssertEqual(disabledReport.dailyBuckets?.last?.unavailableSources, enabledToday.unavailableSources)
+        XCTAssertFalse(disabledReport.windowUsage?.first?.complete == true)
     }
 
     func testFailedProviderDoesNotSuppressHealthyProviderWindowRows() {
@@ -652,10 +668,16 @@ final class UsageReportBuilderTests: XCTestCase {
             statuses: [disabledBinding], now: now
         ), seq: 3)
         let disabledToday = try! XCTUnwrap(disabledReport.dailyBuckets?.last)
-        XCTAssertEqual(disabledToday.totals.input, 40)
-        XCTAssertTrue(disabledToday.totalsComplete, "关闭的 DSH binding 不是不可用来源")
-        XCTAssertNil(disabledToday.unavailableSources)
+        XCTAssertEqual(disabledToday.totals.input, 40,
+                       "旧 binding 开关不能让 failed DSH 缓存贡献计入报告")
+        XCTAssertFalse(disabledToday.totalsComplete)
+        XCTAssertEqual(disabledToday.unavailableSources, [FleetDailyUnavailableSource(
+            clientID: ClientID.dsh,
+            quotaProviderID: QuotaProviderID.minimax,
+            reason: .failed
+        )])
         XCTAssertEqual(disabledToday.clientProviders.map(\.clientID), [ClientID.minimaxCode])
+        XCTAssertFalse(disabledToday.entries.contains { $0.clientID == ClientID.dsh })
     }
 
     func testDshSampleCapKeepsAuthoritativeDailyTotalsButMarksDetailsIncomplete() throws {
@@ -762,7 +784,7 @@ final class UsageReportBuilderTests: XCTestCase {
         XCTAssertFalse(window.complete)
         XCTAssertEqual(window.coverage, .partial)
 
-        // 禁用 DSH→MiniMax binding 后，未参与本卡投影的 cap marker 不应传播。
+        // 旧 binding 开关不应隐藏 DSH token 或 sample-cap incompleteness。
         var disabled = status
         var bindings = ClientProviderBinding.defaultBindings
         if let index = bindings.firstIndex(where: {
@@ -779,14 +801,11 @@ final class UsageReportBuilderTests: XCTestCase {
             seq: 2
         )
         let disabledToday = try XCTUnwrap(disabledReport.dailyBuckets?.last)
-        XCTAssertTrue(disabledToday.modelDetailsComplete)
+        XCTAssertFalse(disabledToday.modelDetailsComplete)
         let disabledWindow = try XCTUnwrap(disabledReport.windowUsage?.first)
-        XCTAssertEqual(disabledWindow.input, 0)
-        XCTAssertNil(disabledWindow.value,
-                     "无样本的真实零窗口不应伪造估算金额")
-        XCTAssertTrue(disabledWindow.complete,
-                      "干净扫描且禁用 DSH 路由时，真实零用量窗口仍应完整上报")
-        XCTAssertEqual(disabledWindow.coverage, .none)
+        XCTAssertEqual(disabledWindow.input, 200)
+        XCTAssertFalse(disabledWindow.complete)
+        XCTAssertEqual(disabledWindow.coverage, .partial)
     }
 
     // MARK: GLM「免 / 速 / 它」今日窗口行（与本地卡动态行同源同口径）

@@ -218,15 +218,14 @@ enum UsageProjectionKernel {
     /// 帧 → 投影。输出顺序 = 各 (clientID, quotaProviderID) 组首次出现的顺序，
     /// 与帧顺序一致（视图层依赖稳定的行序）。
     ///
-    /// - `bindings`：client → quota 的显式绑定。帧自带 `quotaProviderID` 时直接采用；
-    ///   只有帧未声明归属（空串）时才用绑定的 `sourceProviderAliases` 兜底解析
-    ///   （contains 匹配、仅认领 enabled 的绑定）。P2 起生产路径传入 config 的
-    ///   `clientBindings`：dsh 帧不声明归属，归属与启停都在这里解析；未被任何
-    ///   启用绑定认领的帧落成空串组，由卡片侧 `usageProjection` 按本卡 quota 过滤。
+    /// - `bindings`：client → quota 的内置别名路由快照。帧自带 `quotaProviderID` 时直接采用；
+    ///   只有帧未声明归属（空串）时才用 `sourceProviderAliases` 兜底解析
+    ///   （contains 匹配，忽略为旧 config 兼容保留的 `enabled` 值）。生产使用内置
+    ///   registry；未知 provider key 落成空串组，由卡片侧 `usageProjection` 过滤。
     /// - `deepseekPeakWindow`：名义价值用的峰谷窗口（默认官方口径）。
     static func project(
         frames: [HarnessUsageFrame],
-        bindings: [ClientProviderBinding] = [],
+        bindings: [ClientProviderBinding] = ClientProviderBinding.defaultBindings,
         now: Date = Date(),
         calendar: Calendar = .current,
         deepseekPeakWindow: DeepseekPeakWindow = .defaultWindow
@@ -290,7 +289,7 @@ enum UsageProjectionKernel {
         guard frame.quotaProviderID.isEmpty else { return frame.quotaProviderID }
         guard let sourceKey = frame.sourceKey else { return "" }
         return bindings.first { binding in
-            guard binding.clientID == frame.clientID, binding.enabled else { return false }
+            guard binding.clientID == frame.clientID else { return false }
             let value = sourceKey.lowercased()
             return binding.sourceProviderAliases.contains { alias in
                 let needle = alias.lowercased()
@@ -357,16 +356,15 @@ enum UsageProjectionKernel {
 ///
 /// dsh 是一份多 provider 路由的 session 账本。这里按**单个 provider 键**切帧
 /// （而不是先合并成一份 `DshProviderUsage`），归并与归属都交给内核：
-/// - 每帧**不声明** quota 归属（空串），由内核用 `clientBindings` 的 dsh 条目
+/// - 每帧**不声明** quota 归属（空串），由内核用内置 `clientBindings` 的 dsh 条目
 ///   按别名解析（P2 显式化，取代旧的 `providerIDs(forQuotaProviderID:)`
-///   硬编码路由表）；绑定关闭（enabled=false）的键解析不到 → 空串组 → 卡片
-///   侧按本卡 quota 过滤丢弃，等价"该路停用"；
+///   硬编码路由表）；遗留 enabled=false 不改变自动归因，未知键落成空串组并过滤；
 /// - 同一天的多个 provider 帧由内核相加（等价于旧 `mergeDaily` 的逐日相加）；
 /// - 每个 provider 帧的样本带 `dsh:<provider>:` 单层命名空间，跨路由仍能区分
 ///   prompt，不会被误去重。
 enum DshHarnessFrames {
     /// 快照 → 每 provider 键一帧（键名升序，保证样本拼接顺序稳定）。
-    /// 账本里的**全部**键都出帧：归属解析统一在内核（`clientBindings`），
+    /// 账本里的**全部**键都出帧：归属解析统一在内核（内置 `clientBindings`），
     /// 这里不做别名预过滤。
     static func frames(from usage: DshLocalUsage?) -> [HarnessUsageFrame] {
         guard let usage else { return [] }
@@ -386,13 +384,11 @@ enum DshHarnessFrames {
         }
     }
 
-    /// 账本里没被**任何** dsh 绑定别名认领的 provider 键（不论绑定启用与否）。
+    /// 账本里没被任何内置 dsh 别名认领的 provider 键。
     ///
-    /// 启用绑定的别名没匹配上的键在内核解析为空串组并被卡片过滤——用户手改
-    /// config 写错 `sourceProviderAliases` 时表现为静默漏采；本函数供
+    /// 未知键在内核解析为空串组并被卡片过滤；本函数供
     /// `AppState.applyDshUsage` 在扫描落地时检测并 logWarn（含 unmatched 的
-    /// providerID 与已登记别名，见调用点）。绑定被显式停用（enabled=false）的
-    /// 键仍算"被认领"，不算异常。
+    /// providerID 与已登记别名，见调用点）。遗留 enabled=false 不改变是否被认领。
     static func unclaimedProviderKeys(
         in usage: DshLocalUsage?,
         bindings: [ClientProviderBinding]

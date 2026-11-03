@@ -25,6 +25,8 @@ completion，而不是仅可见文字。
 
 ## Harness 对齐矩阵
 
+各 Harness 的用量按实际账本 provider 自动归因：native 帧直接使用 `quotaProviderID`，多 provider 账本使用内置 `ClientProviderBinding.defaultBindings` 别名表。归因不再有用户开关，旧配置中的关闭值不参与计算；同一来源只按现有分片规则计入对应 Provider，不跨卡重复累加。无法识别的 provider 保留未归属，不依据模型名猜测额度池。
+
 | Harness | raw input | raw cache read | raw output / reasoning | 规范化处理 |
 |---|---|---|---|---|
 | DSH | `inputTokens` = uncached | 独立字段 | `outputTokens` 含 reasoning，`reasoningTokens` 是子集 | 原生 reason 存在时 `Output = output - reason`、`Reason = reasoning`；仅对 DSH 内部的 MiniMax-M3，在原生 reason 缺失时按同一 message 的 `reasoning/text/tool-call.arguments` 字符比例估算（比例公式已收敛到共享 `ReasoningCharSplit`）；其他缺失场景 `Reason=0`、`Output=raw output` |
@@ -287,4 +289,4 @@ Rounds 是模型 API call 数；命中率为 `cacheRead / (input + cacheRead)`�
 任何新 harness 必须先补充本矩阵、provider spec 和 `TokenAccountingCatalog`，再接入 UI；
 不要在 view 或 pricing 分支里重新猜测 input/cache/reasoning 的关系。
 
-> 核对基线：2026-10-31 · 代码 cf39ac1
+> 核对基线：2026-11-03 · 代码 4c646e9

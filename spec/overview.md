@@ -63,7 +63,7 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 
 两者之间的桥只有两条：
 
-- **client → provider 门控**：`config.json` 的 `clientBindings[]`。client 不自带归属时，由 `sourceProviderAliases` 匹配 + `enabled` 门控决定贡献到哪张卡；字面量事实源是 `ClientProviderBinding.defaultBindings`（10 条，6 条默认开启），字段语义见 `config.md` §Config Schema。**例外**：Antigravity / agy 的帧自带 `quotaProviderID`，native 归 Antigravity 卡，不走门控。
+- **client → provider 自动归因**：native 帧自带 `quotaProviderID`；共享账本按已登记的 provider 别名匹配，所有已支持来源均参与统计，不提供启停开关。别名事实源是 `ClientProviderBinding.defaultBindings`（10 条共享账本路由），`AppConfig.clientBindings` 仅为只读运行时出口，历史 JSON 配置已移除。未知 provider 保留未归属，不按模型名猜测；详见 `config.md` §Config Schema。
 - **帧 → 投影**：L1 抽取注册表把各 client 的原始字段归一成 `HarnessUsageFrame`（`clientID` / `sourceKey` / quota 归属），L2 内核投影出 per-client × per-provider 结果；生产调用点唯一（`ProviderStatus.usageProjection`），详见 `runtime.md` §Architecture。
 
 计数不对称是常态：5 provider、7 client，harness 与实现了帧适配的 client 一一对应（逐个 harness 的 raw 字段口径与守恒拆分规则见 `accounting.md` §Harness 对齐矩阵）。
@@ -103,8 +103,8 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 | Antigravity | IDE `language_server` 本地 RPC | `antigravity` | `providers/antigravity.md` |
 | Agy | `~/.gemini/antigravity-cli/brain/` transcript + cli log | `antigravity`（native，帧自带归属） | `providers/agy.md` |
 | ZCode | `~/.zcode` SQLite `model_usage` | 智谱行进 GLM 卡；minimax / deepseek 分片并入对应卡 | `providers/glm.md` |
-| OpenCode | OpenCode SQLite `message` 表（多 provider 账本） | 由 `clientBindings` 决定 | `providers/opencode.md` |
-| DSH | `~/.dsh/sessions` JSONL/zstd（多 provider 账本） | 由 `clientBindings` 别名解析 | `providers/dsh.md` |
+| OpenCode | OpenCode SQLite `message` 表（多 provider 账本） | 按内置 provider 路由自动归因 | `providers/opencode.md` |
+| DSH | `~/.dsh/sessions` JSONL/zstd（多 provider 账本） | 按内置 provider 别名自动归因 | `providers/dsh.md` |
 | MiniMax Code | `runtime-state.sqlite` | `minimax_token_plan`（minimax） | `providers/minimax.md` |
 | DeepSeek | 无本地账本，纯余额 fetcher | `deepseek` | `providers/deepseek.md` |
 
@@ -147,4 +147,4 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 - Automatic updates and in-app version checks — upgrading means downloading a new build from
   GitHub Releases manually (release gating and the pre-release checklist: `spec/config.md`).
 
-> 核对基线：2026-10-31 · 代码 cf39ac1
+> 核对基线：2026-11-03 · 代码 4c646e9

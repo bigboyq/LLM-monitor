@@ -149,7 +149,7 @@ struct CodexFetcher: QuotaFetcher {
                 return (nil, nil)
             }
             do {
-                let details = try await fetchAdminCosts(apiKey: rawKey)
+                let details = try await fetchAdminCosts(apiKey: rawKey, mode: mode)
                 logInfo("[codex] admin credits fetched: used $\(String(format: "%.2f", details.usedAmount)) / $\(String(format: "%.0f", details.totalQuota))")
                 return (details, nil)
             } catch {
@@ -262,7 +262,7 @@ struct CodexFetcher: QuotaFetcher {
 
     // MARK: - Admin Costs Fetching
 
-    func fetchAdminCosts(apiKey: String) async throws -> OpenAIApiCreditDetails {
+    func fetchAdminCosts(apiKey: String, mode: RefreshMode = .full) async throws -> OpenAIApiCreditDetails {
         var cleanKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         if cleanKey.lowercased().hasPrefix("bearer ") {
             cleanKey = String(cleanKey.dropFirst(7)).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -313,7 +313,8 @@ struct CodexFetcher: QuotaFetcher {
             }
         }
 
-        if orgName == nil {
+        // 金额每拍更新；独立组织资料查询属于次要信息。
+        if orgName == nil, mode == .full {
             orgName = try await fetchOrganizationTitle(apiKey: cleanKey)
         }
         try Task.checkCancellation()

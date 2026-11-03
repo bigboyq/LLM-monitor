@@ -17,7 +17,7 @@ struct CompactResetCreditsRow: View {
     var periodicFullEveryN: Int = AppConfig.defaultPeriodicFullEveryN
 
     /// R3: reset credits 的实际刷新周期。reset credits 只在 .full 抓取，而 scheduler
-    /// 每 N 个 background 才补一次 full，所以真实周期 = N × background 间隔。
+    /// 每 N 拍抓取一次次要信息，所以真实周期 = N × Provider 刷新间隔。
     /// 过期判定基于这个周期（3×），否则会在两次 full 之间持续误报。
     private var resetCreditsRefreshPeriod: TimeInterval {
         TimeInterval(refreshIntervalSeconds) * TimeInterval(periodicFullEveryN)

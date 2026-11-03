@@ -1,7 +1,8 @@
 # OpenCode Local Usage — Provider Merge Spec
 
-OpenCode is not a menu-bar provider. It is a shared local token ledger that can be
-optionally merged into the Minimax, ChatGPT, Antigravity, GLM, and DeepSeek cards.
+OpenCode is not a menu-bar provider. It is a shared local token ledger whose supported
+provider IDs are automatically attributed to the Minimax, ChatGPT, Antigravity, GLM,
+and DeepSeek cards.
 
 ## Data source
 
@@ -44,24 +45,22 @@ completed）。
 `cacheWrite` 继续保留在 raw 诊断，但不进入统一图表、total 或价值。详见
 [`spec/accounting.md`](../accounting.md)。
 
-## Provider mapping and bindings
+## Provider mapping and automatic attribution
 
-OpenCode merge is controlled by the schema-v2 `clientBindings[]` array in `config.json`.
-The settings UI intentionally has no per-provider OpenCode toggles: the client binding is
-the canonical source of truth, while `providers.<id>.mergeOpencodeUsage` is retained only
-as a legacy compatibility field for older builds and migration. GLM defaults to enabled;
-the other supported bindings default to disabled. Users who need a non-default value edit
-`config.json` and save it; the directory watcher hot-reloads the binding.
+Supported OpenCode provider IDs are automatically attributed to their matching quota
+provider. Attribution is not user-configurable and is not read from or written to
+`config.json`. The built-in alias registry is the implementation source for supported
+IDs; provider IDs without a registered match are left unattributed rather than guessed.
 
-| Card | OpenCode providerID | Missing-field default |
-|---|---|---|
-| Minimax Token Plan | `minimax-cn-coding-plan` | `false` |
-| ChatGPT Plan | `openai` | `false` |
-| Antigravity | `antigravity`, `google-antigravity`, `google-vertex`, or `google` (多个 alias 逐项相加合并成一帧) | `false` |
-| GLM Coding Plan | `zhipuai-coding-plan` | `true` |
-| DeepSeek | `deepseek` | `false` |
+| Card | OpenCode providerID |
+|---|---|
+| Minimax Token Plan | `minimax-cn-coding-plan` |
+| ChatGPT Plan | `openai` |
+| Antigravity | `antigravity`, `google-antigravity`, `google-vertex`, or `google` (多个 alias 逐项相加合并成一帧) |
+| GLM Coding Plan | `zhipuai-coding-plan` |
+| DeepSeek | `deepseek` |
 
-别名的事实源是 `ClientProviderBinding.defaultBindings` 的
+别名的事实源是内置路由注册表 `ClientProviderBinding.defaultBindings` 的
 `clientID: openCode` 条目（`Models/ClientIdentity.swift`），
 `OpencodeLocalUsage.<x>ProviderID` 常量从那里导出。DeepSeek 行只有 `deepseek`
 一个别名——`deepseek-official` / `deepseek-cn` / `deepseek-v4` 是 **DSH** 的路由
@@ -72,8 +71,7 @@ redundant OpenCode local-capability ledger and never contributes to that quota c
 rows are still read (and still get the reasoning char split below) — the exclusion only
 keeps them out of the card merge.
 
-When the matching `clientBindings[]` entry is disabled, the card receives only its existing
-native/local data. When it is enabled, OpenCode values are added to the native values:
+For a registered provider ID, OpenCode values are added to the card's native/local values:
 
 - daily `input`, `cacheRead`, `cacheWrite`, `output`, `reasoning`, `rounds`, and `turns`;
 - quota-window token summaries (`prompts`, `rounds`, and token categories);
@@ -176,8 +174,8 @@ Provider 请求结算后的 `LocalUsageOrchestration.reconcile()` 驱动。启�
 | OpenCode sample promptID 命名空间 | `Sources/LLM-monitor/Models/UsageProjectionKernel.swift` 的 `UsageSampleNamespace.opencode`（旧 `OpencodeUsageMerger` 已吸收删除；卡片合并入口仍是 `ProviderStatus.usageProjection`） |
 | SQLite reader | `Sources/LLM-monitor/Services/OpencodeDBReader.swift` |
 | Scanner, cache, and seven-day snapshot | `Sources/LLM-monitor/Services/OpencodeUsageScanner.swift` |
-| Merge 控制（无设置页开关） | `config.json` 的 `clientBindings[]`（唯一事实源；legacy config 由 `legacyClientBindings` 从 `ProviderConfig.mergeOpencodeUsage` 迁移） |
+| Automatic attribution map | Built-in aliases in `ClientProviderBinding.defaultBindings` (`Models/ClientIdentity.swift`); no config field or user switch |
 | Card integration | `Sources/LLM-monitor/Views/ProviderCardView.swift` and `QuotaViews.swift` |
 | Regression tests | `Tests/LLMMonitorTests/OpencodeUsageTests.swift`（usageProjection 多 client 投影、命名空间与 reader 回归） |
 
-> 核对基线：2026-10-28 · 代码 85f6ba9
+> 核对基线：2026-11-03 · 代码 4c646e9

@@ -143,6 +143,103 @@ final class RefreshResultMergerTests: StateTestCase {
         XCTAssertEqual(merged.openAIApiCredits?.lastAttemptFailed, true)
         XCTAssertEqual(merged.openAIApiCreditsError, "API赠金抓取失败")
     }
+
+    func testAdminCreditsBackgroundKeepsOrganizationNameAndRefreshesCurrentValues() {
+        let previousAt = Date(timeIntervalSince1970: 1_000)
+        let previousCredits = OpenAIApiCreditDetails(
+            organizationName: "Previous Workspace",
+            totalQuota: 40,
+            usedAmount: 7,
+            cycleStart: previousAt.addingTimeInterval(-10_000),
+            cycleEnd: previousAt.addingTimeInterval(20_000),
+            fetchedAt: previousAt,
+            lastAttemptFailed: false
+        )
+        let previous = QuotaInfo(
+            models: [], resetCredits: nil, planLabel: nil, accountEmail: nil,
+            codexUsageDetails: nil, fetchedAt: previousAt, openAIApiCredits: previousCredits
+        )
+        let newAt = Date(timeIntervalSince1970: 2_000)
+        let newCredits = OpenAIApiCreditDetails(
+            organizationName: nil,
+            totalQuota: 60,
+            usedAmount: 19,
+            cycleStart: newAt.addingTimeInterval(-5_000),
+            cycleEnd: newAt.addingTimeInterval(25_000),
+            fetchedAt: newAt,
+            lastAttemptFailed: false
+        )
+        let new = QuotaInfo(
+            models: [], resetCredits: nil, planLabel: nil, accountEmail: nil,
+            codexUsageDetails: nil, fetchedAt: newAt, openAIApiCredits: newCredits
+        )
+
+        let merged = CodexFillingMissingMerger(adminApiCreditsEnabled: true).merge(
+            new: new, previous: previous, mode: .background
+        )
+        XCTAssertEqual(merged.openAIApiCredits?.organizationName, "Previous Workspace")
+        XCTAssertEqual(merged.openAIApiCredits?.totalQuota, newCredits.totalQuota)
+        XCTAssertEqual(merged.openAIApiCredits?.usedAmount, newCredits.usedAmount)
+        XCTAssertEqual(merged.openAIApiCredits?.cycleStart, newCredits.cycleStart)
+        XCTAssertEqual(merged.openAIApiCredits?.cycleEnd, newCredits.cycleEnd)
+        XCTAssertEqual(merged.openAIApiCredits?.fetchedAt, newCredits.fetchedAt)
+        XCTAssertEqual(merged.openAIApiCredits?.lastAttemptFailed, newCredits.lastAttemptFailed)
+    }
+
+    func testAdminCreditsFullRefreshReplacesOrClearsOrganizationName() {
+        let previousAt = Date(timeIntervalSince1970: 1_000)
+        let previousCredits = OpenAIApiCreditDetails(
+            organizationName: "Previous Workspace",
+            totalQuota: 40,
+            usedAmount: 7,
+            cycleStart: previousAt,
+            cycleEnd: previousAt.addingTimeInterval(30_000),
+            fetchedAt: previousAt
+        )
+        let previous = QuotaInfo(
+            models: [], resetCredits: nil, planLabel: nil, accountEmail: nil,
+            codexUsageDetails: nil, fetchedAt: previousAt, openAIApiCredits: previousCredits
+        )
+        let newAt = Date(timeIntervalSince1970: 2_000)
+        let merger = CodexFillingMissingMerger(adminApiCreditsEnabled: true)
+
+        let withNewName = OpenAIApiCreditDetails(
+            organizationName: "New Workspace",
+            totalQuota: 60,
+            usedAmount: 19,
+            cycleStart: newAt,
+            cycleEnd: newAt.addingTimeInterval(30_000),
+            fetchedAt: newAt
+        )
+        let replaced = merger.merge(
+            new: QuotaInfo(
+                models: [], resetCredits: nil, planLabel: nil, accountEmail: nil,
+                codexUsageDetails: nil, fetchedAt: newAt, openAIApiCredits: withNewName
+            ),
+            previous: previous,
+            mode: .full
+        )
+        XCTAssertEqual(replaced.openAIApiCredits?.organizationName, "New Workspace")
+
+        let withoutName = OpenAIApiCreditDetails(
+            organizationName: nil,
+            totalQuota: 60,
+            usedAmount: 19,
+            cycleStart: newAt,
+            cycleEnd: newAt.addingTimeInterval(30_000),
+            fetchedAt: newAt
+        )
+        let cleared = merger.merge(
+            new: QuotaInfo(
+                models: [], resetCredits: nil, planLabel: nil, accountEmail: nil,
+                codexUsageDetails: nil, fetchedAt: newAt, openAIApiCredits: withoutName
+            ),
+            previous: previous,
+            mode: .full
+        )
+        XCTAssertNil(cleared.openAIApiCredits?.organizationName)
+    }
+
     /// Merger 注入 / fetcher 接线 3 in 1：
     /// - IdentityRefreshResultMerger 不修改 models (always returns new)
     /// - MinimaxTokenPlanFetcher 用默认 identity merger (保留本次完整响应)
@@ -172,6 +269,88 @@ final class RefreshResultMergerTests: StateTestCase {
             XCTAssertNotNil(codexFetcher.resultMerger as? CodexFillingMissingMerger,
                             "CodexFetcher.resultMerger 应是 CodexFillingMissingMerger")
         }
+        // 4. AntigravityFetcher.resultMerger 保留 background 的账号与套餐元数据
+        do {
+            let antigravityFetcher = AntigravityFetcher(metadataServerDiscovery: { [] })
+            XCTAssertNotNil(antigravityFetcher.resultMerger as? AntigravityFillingMissingMerger,
+                            "AntigravityFetcher.resultMerger 应是 AntigravityFillingMissingMerger")
+        }
+    }
+
+    func testAntigravityBackgroundMergeKeepsMetadataAndUsesFreshQuota() {
+        let previous = QuotaInfo(
+            models: [makeModel("antigravity", intervalPercent: 82)],
+            resetCredits: nil,
+            planLabel: "Previous Plan",
+            accountEmail: "previous@example.com",
+            codexUsageDetails: nil,
+            fetchedAt: Date(timeIntervalSince1970: 1_000)
+        )
+        let newFetchedAt = Date(timeIntervalSince1970: 2_000)
+        let new = QuotaInfo(
+            models: [makeModel("antigravity", intervalPercent: 31)],
+            resetCredits: nil,
+            planLabel: nil,
+            accountEmail: nil,
+            codexUsageDetails: nil,
+            fetchedAt: newFetchedAt,
+            balanceDetail: DeepseekBalanceDetail(currency: "USD", total: 12, toppedUp: 8, granted: 4),
+            mainQuotaError: "new main quota status",
+            openAIApiCreditsError: "new auxiliary status"
+        )
+
+        let merged = AntigravityFillingMissingMerger().merge(
+            new: new, previous: previous, mode: .background
+        )
+        XCTAssertEqual(merged.accountEmail, "previous@example.com")
+        XCTAssertEqual(merged.planLabel, "Previous Plan")
+        XCTAssertEqual(merged.models, new.models, "保留账号信息不能回退主额度")
+        XCTAssertEqual(merged.fetchedAt, newFetchedAt)
+        XCTAssertEqual(merged.balanceDetail, new.balanceDetail)
+        XCTAssertEqual(merged.mainQuotaError, new.mainQuotaError)
+        XCTAssertEqual(merged.openAIApiCreditsError, new.openAIApiCreditsError)
+    }
+
+    func testAntigravityFullMergeReplacesMetadataAndClearsMissingValues() {
+        let previous = makeQuotaInfo(
+            models: [makeModel("antigravity", intervalPercent: 80)],
+            planLabel: "Previous Plan",
+            accountEmail: "previous@example.com"
+        )
+        let new = makeQuotaInfo(
+            models: [makeModel("antigravity", intervalPercent: 35)],
+            planLabel: "New Plan",
+            accountEmail: "new@example.com"
+        )
+        let merger = AntigravityFillingMissingMerger()
+
+        let replaced = merger.merge(new: new, previous: previous, mode: .full)
+        XCTAssertEqual(replaced.planLabel, "New Plan")
+        XCTAssertEqual(replaced.accountEmail, "new@example.com")
+        XCTAssertEqual(replaced.models, new.models)
+        XCTAssertEqual(replaced.fetchedAt, new.fetchedAt)
+
+        let missingMetadata = makeQuotaInfo(
+            models: [makeModel("antigravity", intervalPercent: 22)],
+            planLabel: nil,
+            accountEmail: nil
+        )
+        let cleared = merger.merge(new: missingMetadata, previous: previous, mode: .full)
+        XCTAssertNil(cleared.planLabel, "full 返回 nil 套餐时应清除旧值")
+        XCTAssertNil(cleared.accountEmail, "full 返回 nil 账号时应清除旧值")
+        XCTAssertEqual(cleared.models, missingMetadata.models)
+    }
+
+    func testAntigravityMergeWithoutPreviousReturnsNew() {
+        let new = makeQuotaInfo(
+            models: [makeModel("antigravity", intervalPercent: 43)],
+            planLabel: nil,
+            accountEmail: nil
+        )
+        let merged = AntigravityFillingMissingMerger().merge(
+            new: new, previous: nil, mode: .background
+        )
+        XCTAssertEqual(merged, new)
     }
 
     // MARK: - R3: Codex reset credits 独立新鲜度（合并自 CodexResetCreditsFreshnessTests）

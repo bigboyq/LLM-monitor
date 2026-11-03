@@ -9,8 +9,8 @@ Implementation:
 The quota portion queries 智谱 (Zhipu / BigModel) GLM Coding Plan's internal monitor
 endpoint — the same one used by the official `zai-coding-plugins` — for the 5-hour and
 weekly credit windows plus the subscribed tier (Lite / Pro / Max). Token detail is supplied
-by the native ZCode local scanner, with the shared OpenCode scanner optionally projected
-through the matching `clientBindings[]` entry.
+by the native ZCode local scanner; supported OpenCode and DSH provider IDs are also
+automatically attributed through the built-in routing registry.
 
 ## Current Status
 
@@ -23,7 +23,7 @@ through the matching `clientBindings[]` entry.
 | Quota unit | Remaining credit percent, derived from `remaining / usage` (NOT the response `percentage` field, which is *used* percent) |
 | Windows | 5h (interval) + weekly — classified by window metadata, with reset-time fallback |
 | Plan tier | `data.level` → capitalized pill (`lite` → `Lite`) |
-| Local token source | Native ZCode `~/.zcode/cli/db/db.sqlite` (`model_usage`, `provider_id LIKE 'builtin:bigmodel-%' OR LIKE 'account:bigmodel-%' OR LIKE 'account:zai-%' OR = 'offpeak-idle-plan'`); DSH `~/.dsh/sessions` (`zhipu`/`glm` aliases, merged automatically); optional OpenCode `zhipuai-coding-plan` slice merged on top |
+| Local token source | Native ZCode `~/.zcode/cli/db/db.sqlite` (`model_usage`, `provider_id LIKE 'builtin:bigmodel-%' OR LIKE 'account:bigmodel-%' OR LIKE 'account:zai-%' OR = 'offpeak-idle-plan'`); supported DSH and OpenCode GLM IDs are automatically attributed |
 
 ## Accounting contract
 
@@ -84,7 +84,6 @@ Supported provider fields:
 | `notifyCampaign` | Optional notification channel for new ZCode marketing campaigns (`none` / `system` / `barkAndSystem`). 仅在 `credential` 模式下生效。 |
 | `parseZcodeCredential` / `parseZcodePlan` / `parseZcodeBalanceLog` | 兼容历史配置字段。解码时若为 true 自动迁移至 `glmAuthMode = .credential`，保存时不落盘。 |
 | `notifyIntervalRestored` etc. (4 fields) | Optional per-event notification channels (5h/weekly × restored/exhausted): `none` / `system` / `barkAndSystem`. Defaults: restored → `system`, exhausted → `none`. See `spec/notifications.md`. |
-| `clientBindings[]` | Canonical client-to-quota binding for the optional OpenCode `zhipuai-coding-plan` slice. GLM defaults to enabled; the legacy provider-level field is migration compatibility only. |
 
 The peak window is **fixed at the official default**（Mon–Fri 14:00–18:00，北京时间，
 法定节假日除外）——there are no peak config fields and no settings controls（设置页
@@ -257,12 +256,11 @@ Window multiplier (`ModelQuota.weeklyEquivalentMultiplier`): **5** — 不再有
 
 The card shows the standard two-window layout (5h + weekly remaining %, reset countdown)
 and a tier pill (`Lite` / `Pro` / `Max`). The footer renders the shared seven-day
-Input/Cache/Output/Reason local-usage chart, fed by the native ZCode scanner with OpenCode's
-`zhipuai-coding-plan` slice optionally merged on top (`clientBindings[]`, default on).
+Input/Cache/Output/Reason local-usage chart, fed by the native ZCode scanner and all
+supported OpenCode / DSH GLM sources. Supported provider IDs are automatically attributed;
+unknown IDs are not guessed into a card and there is no user-facing attribution switch.
 The merged samples also feed the 「额度窗口」 usage table and its 「闲 / 免 / 速 / 它」
-today rows. The settings UI has no separate
-OpenCode toggle; edit `clientBindings[]` and save the config file when a non-default binding is
-needed.
+today rows.
 
 ## Peak Hours Indicator
 
@@ -295,8 +293,8 @@ needed.
 ## Local Token Source (ZCode)
 
 GLM Coding Plan's native local token detail comes from the official ZCode CLI's SQLite
-database — the same client used to drive GLM. OpenCode's `zhipuai-coding-plan` slice is an
-optional overlay on top (controlled by `clientBindings[]`, default on).
+database — the same client used to drive GLM. Supported OpenCode and DSH GLM provider IDs
+are automatically attributed alongside it.
 
 | Item | Value |
 |---|---|
@@ -483,15 +481,16 @@ Start Plan、加速卡与「其他」任务都不消耗 Coding Plan 积分，额
 Start Plan 与加速卡一起覆盖，额度窗口口径与拆行前完全一致。前缀通配保证未来智谱新套餐
 自动落进「其他」。
 非智谱 provider 不会被误算进 GLM 卡：它们由 `ZcodeProviderSlice` 的前缀谓词切出
-`providerSlices`，在 `clientBindings` 对应绑定开启时并入 DeepSeek / MiniMax 卡（默认开启）。
+`providerSlices`，再按内置 provider 路由自动归入 DeepSeek / MiniMax 卡。未知 provider 不会
+被猜测归类。
 
 设置 → 客户端 → ZCode 按 `GlmUsageCategory.classify`（与额度窗口白名单同一判定，拆行实现
 在 `Services/ClientUsageAggregation.glmUsageRows`）把
 ZCode 贡献的样本拆成 Coding Plan → Start Plan → 加速卡 → 闲时任务 → 其他任务五行（行序 =
 `GlmUsageCategory.allCases` 声明序，无用量的分类不出行），各自独立 token 柱图与计价
 ——对齐 Antigravity 按模型分组拆行的模式；弹窗卡片维持合并汇总不拆。之后依次是同一
-客户端列里 DeepSeek / MiniMax 两个分片行（来自各自卡的 ZCode 贡献，受
-`clientBindings` 门控），排序由 `ClientUsageAggregation.zcodeRowRank` 固定，不参与字母序。
+客户端列里 DeepSeek / MiniMax 两个分片行（来自各自卡的 ZCode 贡献，按 provider 自动归因），
+排序由 `ClientUsageAggregation.zcodeRowRank` 固定，不参与字母序。
 样本为空时不拆行，避免把聚合值错标成某一分类。
 
 ZCode 的闲时任务是系统赠送的、**不消耗 Coding Plan 积分**的后台任务（需提前排队）。
@@ -552,18 +551,19 @@ OpenCode / DSH 合并 sample（`zhipuai-coding-plan`、`dsh:glm` 等）不带 bi
 zcode SaaS 活动套餐（如周末体验套餐 `ZCode Weekend Build`）、额度重置卡与营销活动触达通过 `GlmZcodeAPIClient` 直调 `zcode.z.ai` 接口获取：
 - 凭证由 `GlmZcodeCredentialReader` 从 `~/.zcode/v2/telemetry-state.json` 与 `credentials.json` 自动解密，需切换为凭证认证模式（`glmAuthMode == .credential` / `isZcodeCredentialEnabled`）；
 - 抓取随 `GlmCodingPlanFetcher` 并在后台静默聚合至 `GlmZcodePackageSnapshot`，由 `GlmFillingMissingMerger` 处理跨模式合并；三路接口经 `ZcodePackageProviding` 协议注入（默认实现 `GlmZcodeAPIPackageProvider` 转发 `GlmZcodeAPIClient` static 方法），编排逻辑（部分失败降级、凭证缺失跳过、background 门控）可注入 stub 单测；
-- **轮询频率与回退策略**：
-  - **活动套餐余额**：与 GLM 默认 Interval 保持一致，每次刷新（`.full` 与 `.background`）均查询；
-  - **额度重置卡**：走固定倍率回退（类似 Codex 重置卡轮询），仅在 `.full` 模式下查询，`.background` 模式按设计跳过并从上次成功快照继承；
+- **主频与次要信息频率**：
+  - **活动套餐余额**：与 GLM Provider 生效刷新间隔保持一致（独立间隔优先，否则继承默认），每次刷新（`.full` 与 `.background`）均查询；
+  - **额度重置卡**：按「次要信息频率」轮询，仅在 `.full` 模式下查询，`.background` 模式按设计跳过并从上次成功快照继承；
   - **营销活动触达**：仅在选定通知渠道（`notifyCampaign != .none`）且在 `.full` 模式下发起轮询，未选通知完全不发请求；发现活动通知一次，1 小时内不重复通知；
+- **次要信息频率语义**：设置 UI 范围为 1...30，默认 20；内部 JSON 键仍为 `periodicFullEveryN`。每 N 个常规 provider 刷新拍中，N−1 拍为 `.background`，第 N 拍为 `.full`；N=1 时每拍均为 `.full`。默认 300 秒间隔下，重置卡约每 100 分钟刷新；180 秒间隔、N=2 时约每 6 分钟刷新。旧配置值保持原数值，超过 30 的值归一到 30。GLM 主 quota 与活动套餐余额仍按 provider 主刷新间隔每拍查询，不受此频率控制；
 - 直连失败静默回退，不影响 GLM 主卡额度抓取。
 
 | 项 | 值 |
 |---|---|
 | 数据源 | 直连 API：`GlmZcodeAPIClient.fetchBalance()` / `fetchResetCards()` / `fetchMarketingTouch()`（经 `ZcodePackageProviding` 协议注入，默认 `GlmZcodeAPIPackageProvider` 转发） |
-| 接口 1：套餐余额 | `GET https://zcode.z.ai/api/v1/zcode-plan/billing/balance?app_version=...`（与 GLM 默认 Interval 一致；`app_version` query 与两条请求的 `X-ZCode-App-Version` header 由 `ZcodeAppVersionResolver` 运行时从本机 ZCode.app 的 Info.plist（`CFBundleShortVersionString`）动态读取，读取失败回退 `3.17.1`，进程内缓存一次） |
-| 接口 2：重置卡 | `GET https://zcode.z.ai/api/v1/coding-plan/reset/status`（走固定倍率回退，仅 `.full` 模式查询） |
-| 接口 3：营销活动 | `GET https://zcode.z.ai/api/v1/marketing/touch?seq=1`（仅在通知开启且 `.full` 模式轮询，1h 内不重复） |
+| 接口 1：套餐余额 | `GET https://zcode.z.ai/api/v1/zcode-plan/billing/balance?app_version=...`（与 GLM Provider 生效刷新间隔一致；`app_version` query 与两条请求的 `X-ZCode-App-Version` header 由 `ZcodeAppVersionResolver` 运行时从本机 ZCode.app 的 Info.plist（`CFBundleShortVersionString`）动态读取，读取失败回退 `3.17.1`，进程内缓存一次） |
+| 接口 2：重置卡 | `GET https://zcode.z.ai/api/v1/coding-plan/reset/status`（按次要信息频率轮询，仅 `.full` 模式查询） |
+| 接口 3：营销活动 | `GET https://zcode.z.ai/api/v1/marketing/touch?seq=1`（仅在通知开启且 `.full` 模式轮询，通知按 delivery 做 1h 防抖） |
 | 过期口径 | `expires_at <= now` 的套餐条目直接剔除；重置卡按 `expireAt` 展示 |
 | 认证模式 / 开关 | `providers.glm_coding_plan.glmAuthMode`（`GlmAuthMode`：`apiKey` / `credential`，便捷属性 `isZcodeCredentialEnabled`；兼容旧配置 `parseZcodeCredential` / `parseZcodePlan` / `parseZcodeBalanceLog`；缺省 `apiKey`） |
 | 营销活动通知 | `providers.glm_coding_plan.notifyCampaign`（`QuotaNotifyChannel`：`none` / `system` / `barkAndSystem`；缺省关闭；在凭证模式关闭时禁用） |
@@ -742,10 +742,9 @@ provider-specific interval can be set via `refreshIntervalSeconds`.
 
 ## Known Limitations
 
-- **OpenCode only as the overlay source.** The native local scanner reads ZCode's
-  `model_usage` table; OpenCode's `zhipuai-coding-plan` slice is an optional overlay
-  (default on) controlled by `clientBindings[]`. Turning that binding off leaves only the
-  native ZCode data.
+- **OpenCode only as an additional local source.** The native local scanner reads ZCode's
+  `model_usage` table; supported OpenCode provider IDs are automatically attributed by the
+  built-in routing registry. Attribution has no user setting or config-file switch.
 - **OpenCode only for the second token source.** The `/api/monitor/usage/model-usage`
   endpoint exists and returns hourly aggregate tokens (without the Input/Cache/Reason/Output
   split used by the shared chart), so it is not used as a remote second GLM data source.
@@ -802,4 +801,4 @@ whether the quota batch succeeded. GLM's former dedicated periodic trigger
 The scanner's db+WAL fingerprint check is unchanged: when nothing changed only a `stat()`
 runs (microseconds); SQL (~1.5ms) only runs when the WAL actually moved.
 
-> 核对基线：2026-11-03 · 代码 0ccff84
+> 核对基线：2026-11-03 · 代码 4c646e9

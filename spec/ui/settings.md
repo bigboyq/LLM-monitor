@@ -91,13 +91,13 @@ addressable seam — the tests pin the action, the view only draws it. The greye
 first layer is UX, not correctness: repeated clicks are absorbed by `refreshOne`'s
 transaction gate.
 
-### 常规 pane「刷新」节与全量补跑倍率
+### 常规 pane「刷新频率」节与次要信息频率
 
-常规设置 pane（`SettingsGeneralPane.swift`）在「刷新」节提供全局刷新与全量周期的集中控制：
-- **全局刷新频率**（`refreshIntervalSeconds`）：`Slider` 滑块在 10...3600s（10 秒至 1 小时）连续调节，默认 5 分钟（300s）。各 Provider 未单独指定频率时均沿用此全局间隔。
-- **全量补跑倍率**（`periodicFullEveryN`）：`Stepper` 步进调节（范围 1...100，默认 20）。展示当前拍数及按全局间隔折算的真实换算时间（如 `约每 1 小时 40 分钟 补跑一次全量刷新`）。
-  - 控制 Provider 调度器每连续执行 N 拍后台轻量模式（`.background`）后，自动补跑一次全量模式（`.full`）；
-  - 受影响范围包括：Codex 重置次数抓取与陈旧度判定（`max(3 × (N × interval), 15 min)`）、GLM ZCode 额度重置卡抓取、GLM ZCode 运营活动轮询；
+常规设置 pane（`SettingsGeneralPane.swift`）在「刷新频率」节提供默认刷新与次要信息周期的集中控制：
+- **默认刷新频率**（`refreshIntervalSeconds`）：`Slider` 滑块在 10...3600s（10 秒至 1 小时）连续调节，默认 5 分钟（300s）。各 Provider 未单独指定频率时均沿用此全局间隔。
+- **次要信息频率**（`periodicFullEveryN`）：菜单 `Picker` 选择 1...30 倍，默认 20 倍。角标按默认间隔 × 倍率显示预计周期；ChatGPT、Antigravity 与 GLM 凭证模式的 Provider 设置另显示各自的预计周期，优先按独立刷新间隔折算、未设置则继承默认间隔，间隔与运行时一致归一化为 10s...30d。ChatGPT 标注重置卡 / 组织信息，Antigravity 标注账号 / 套餐信息，GLM 标注重置卡 / 活动。
+  - 控制 Provider 调度器每 N 拍抓取一次次要信息：N-1 拍后台模式（`.background`）后一次全量模式（`.full`），1 倍时每拍都抓取；
+  - 受影响范围包括：Codex 重置次数抓取与陈旧度判定（`max(3 × (N × interval), 15 min)`）、GLM ZCode 额度重置卡抓取、GLM ZCode 运营活动轮询、Antigravity 账号/套餐与 Codex Admin API 组织标题独立查询；
   - 绑定 `draft.periodicFullEveryN`，为默认值 20 时写回 nil，非默认值落盘，配置热重载时调度器动态更新生效。
 
 ### ChatGPT Provider Pane 与「API 赠金」设置
@@ -141,16 +141,12 @@ gaps and today is marked incomplete. Speed is calculated as daily Prompt P50. Th
 metric is persisted independently under `usageHistoryMetric` and is not coupled to the
 quota-window Analysis/Usage switch.
 
-The per-client provider attribution switches are surfaced in this pane via
-`clientAttributionSection` (`SettingsClientsPane.swift`) — rendering visual toggles for
-each binding matching the active client in `draft.clientBindings`. Toggling a switch directly
-updates the draft and is saved with the form transaction, while preserving `clientBindings[]`
-as the canonical schema v2 source of truth. Under **Option B**, closing an attribution toggle
-gates the contribution out of the Provider card's `usageProjection`, but preserves the
-independent usage row in the client diagnostics tab (`diagnosticUsageProjection`), as
-declared in the settings footer. Disabled providers are excluded from client diagnostics
-(`guard status.isEnabled`). See `spec/ui/menu-and-cards.md` §Provider-Specific Card Details
-→ *OpenCode client bindings*.
+Harness usage attribution is automatic. This pane has no attribution toggles, no binding
+draft, and no binding save action. Every supported ledger provider contributes to its mapped
+provider card and client diagnostics through the same projection; historical disabled
+bindings do not hide real usage. Native frames carry a provider ID, while shared ledgers
+use the built-in alias registry. Unknown providers are not guessed from model names.
+Disabled providers are still excluded from client diagnostics (`guard status.isEnabled`).
 
 ### 界面 pane「外观」节
 
@@ -362,6 +358,6 @@ appearance-neutral.
 - **历史图表空间适配**：`SevenDayUsageHistoryView` 增加紧凑（`.compact`）与宽松（`.expanded`）两种模式。设置页与独立详情窗口使用 `.expanded`，宽度撑满可用区域（`.frame(maxWidth: .infinity)`），表格字号适度提至 11–11.5pt、列宽与间距自适应拉开；菜单与浮层维持 `.compact`（420pt）。坐标轴与日期标签字体提至 10–11pt、配色提至 `.secondary`。
 - **说明文字与行距紧凑化**：边缘状态窗 footer 收敛为 2 句核心操作指引，双环机制与多屏行为放入「了解更多…」popover；ChatGPT API 赠金设置移除每行冗余的 `Divider().padding(.vertical, 4)`，对齐常规表单行距。
 
-> 核对基线：2026-10-31 · 代码 cf39ac1
+> 核对基线：2026-11-03 · 代码 4c646e9
 > Sync 草稿跨 tab 保留、表单隔离与保存失败提示验证结果见 `spec/sync.md`。
 > 2026-10-25 菜单 / 设置自启同步已随 6f11831 入库：相关定向测试 27 例、完整测试 1422 例均 0 失败；测试使用模拟登录项操作，不执行真实注册 / 注销。

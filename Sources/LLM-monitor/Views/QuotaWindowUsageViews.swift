@@ -168,7 +168,7 @@ struct QuotaWindowUsageSection: View {
     var glmResetCards: GlmResetCardsSnapshot? = nil
     /// 重置卡折叠行的过期判定用刷新周期（秒），透传给 `CompactResetCreditsRow`。
     var refreshIntervalSeconds: Int = 300
-    /// 重置卡折叠行的全量刷新周期倍率，透传给 `CompactResetCreditsRow`。
+    /// 重置卡折叠行的次要信息频率倍率，透传给 `CompactResetCreditsRow`。
     var periodicFullEveryN: Int = AppConfig.defaultPeriodicFullEveryN
     /// 显式覆盖 segment（供单元测试等直接指定态，不覆盖时走持久化状态）。
     var segmentOverride: QuotaWindowUsageSegment? = nil

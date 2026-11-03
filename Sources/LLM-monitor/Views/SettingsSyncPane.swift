@@ -556,9 +556,9 @@ struct SettingsSyncPane: View {
 
     /// 归因指纹不一致 → 标黄提示（§7.8：不阻断、不弹窗）。
     private var attributionNotice: some View {
-        SettingsSection(title: "归因设置不一致") {
+        SettingsSection(title: "归因规则不一致") {
             Label(
-                "各机的客户端 × Provider 归因不同，全局数字为各机口径之和",
+                "各机的客户端 × Provider 归因规则不同，请更新至相同版本；全局数字为各机口径之和",
                 systemImage: "exclamationmark.triangle.fill"
             )
             .foregroundStyle(.orange)

@@ -16,6 +16,7 @@ This provider does not call Google quota APIs with a saved OAuth access token. I
 | CSRF | IDE requires `--csrf_token`; CLI does not require any |
 | Main local RPCs | `GetUserStatus` (account + tier), `GetLoadCodeAssist` (tier fallback), `RetrieveUserQuotaSummary` (quota), `GetCascadeTrajectoryGeneratorMetadata` (per-event token usage) |
 | Account fields | `userStatus.email`, `userStatus.userTier.name`, `userStatus.planStatus.planInfo.{planDisplayName,displayName,productName,planName,planShortName}` |
+| Refresh cadence | 额度每拍；独立账号/套餐仅 `.full`，按「次要信息频率」轮询；后台通过 `AntigravityFillingMissingMerger` 保留上次账号/套餐 |
 | Model groups | `Gemini Models`, `Gemini 4 Argon`, `Claude and GPT models` |
 | Window types | `5h`, `weekly` |
 | Reset credits | Not used |
@@ -234,7 +235,15 @@ Before every POST, `serverStillOwnsEndpoint(server)` re-runs `lsof -nP -a -p <pi
 
 ## Local RPCs
 
-All quota / account calls run in parallel via `async let`. The non-quota calls use `postOptional` — they return `nil` on failure (legacy servers may not support `GetUserStatus` or `GetLoadCodeAssist`) and the quota call is the only fatal one.
+`RetrieveUserQuotaSummary` runs on every provider refresh. Independent account/tier calls
+(`GetUserStatus` and `GetLoadCodeAssist`) run only on `.full`, following 「次要信息频率」
+(1...30 × the effective provider interval, default 20). On `.full`, all three run in parallel
+via `async let`; on `.background`, only quota is requested. The non-quota calls use
+`postOptional` — they return `nil` on failure (legacy servers may not support them), and
+the quota call is the only fatal one. `AntigravityFillingMissingMerger` retains the previous
+account/tier during `.background` while applying fresh quota and `fetchedAt`; `.full`
+adopts the current metadata, including nil, so an old account/tier does not survive a
+new full query. A first refresh with no previous metadata still displays quota normally.
 
 ```text
 https://127.0.0.1:<httpsPort>/exa.language_server_pb.LanguageServerService/GetUserStatus
@@ -1465,4 +1474,4 @@ This script:
 3. calls `RetrieveUserQuotaSummary`
 4. prints or writes the raw JSON
 
-> 核对基线：2026-10-31 · 代码 cf39ac1
+> 核对基线：2026-11-03 · 代码 4c646e9

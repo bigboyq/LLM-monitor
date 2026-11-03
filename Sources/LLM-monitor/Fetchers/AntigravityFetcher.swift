@@ -19,9 +19,16 @@ import Foundation
 ///    - `GetLoadCodeAssist` — 套餐名 fallback（部分旧版本不返回 userTier）
 ///    - `RetrieveUserQuotaSummary` — 5h / 周额度
 struct AntigravityFetcher: QuotaFetcher {
+    typealias RawRPCOverride = @Sendable (
+        ServerInfo,
+        String,
+        Data?
+    ) async throws -> (Data, URLResponse)
+
     let providerID = "antigravity"
     let displayName = "Antigravity"
     let kind: ProviderKind = .antigravity
+    var resultMerger: RefreshResultMerger { AntigravityFillingMissingMerger() }
 
     /// 带 delegate 的 URLSession 会被系统强持有到 invalidate / 进程退出；本
     /// fetcher 是按需构造的轻量 struct（每轮刷新、reconcile、auth 探测都会新建
@@ -39,13 +46,21 @@ struct AntigravityFetcher: QuotaFetcher {
     }()
 
     private let metadataServerDiscovery: @Sendable () -> [ServerInfo]
+    private let quotaServerDiscovery: @Sendable () async throws -> ServerInfo
+    private let rawRPCOverride: RawRPCOverride?
 
     init(
         metadataServerDiscovery: @escaping @Sendable () -> [ServerInfo] = {
             AntigravityFetcher.defaultMetadataServers()
-        }
+        },
+        quotaServerDiscovery: @escaping @Sendable () async throws -> ServerInfo = {
+            try await AntigravityFetcher.discoverServerAsync()
+        },
+        rawRPCOverride: RawRPCOverride? = nil
     ) {
         self.metadataServerDiscovery = metadataServerDiscovery
+        self.quotaServerDiscovery = quotaServerDiscovery
+        self.rawRPCOverride = rawRPCOverride
     }
 
     func hasLocalAuth() -> Bool {
@@ -60,31 +75,38 @@ struct AntigravityFetcher: QuotaFetcher {
     }
 
     func fetch(mode: RefreshMode) async throws -> QuotaInfo {
-        let server = try await Self.discoverServerAsync()
+        let server = try await quotaServerDiscovery()
 
-        async let userStatus: UserStatusEnvelope? = postOptional(
-            server: server,
-            path: "/exa.language_server_pb.LanguageServerService/GetUserStatus",
-            body: UserStatusRequest(metadata: .init(
-                ideName: "antigravity",
-                extensionName: "antigravity",
-                ideVersion: "unknown",
-                locale: "en"
-            ))
-        )
-        async let loadCodeAssist: LoadCodeAssistEnvelope? = postOptional(
-            server: server,
-            path: "/exa.language_server_pb.LanguageServerService/GetLoadCodeAssist"
-        )
         async let quotaSummary: RetrieveUserQuotaSummaryEnvelope = post(
             server: server,
             path: "/exa.language_server_pb.LanguageServerService/RetrieveUserQuotaSummary"
         )
 
-        let user = await userStatus
-        let load = await loadCodeAssist
-        let quota = try await quotaSummary
+        let user: UserStatusEnvelope?
+        let load: LoadCodeAssistEnvelope?
+        if mode == .full {
+            async let userStatus: UserStatusEnvelope? = postOptional(
+                server: server,
+                path: "/exa.language_server_pb.LanguageServerService/GetUserStatus",
+                body: UserStatusRequest(metadata: .init(
+                    ideName: "antigravity",
+                    extensionName: "antigravity",
+                    ideVersion: "unknown",
+                    locale: "en"
+                ))
+            )
+            async let loadCodeAssist: LoadCodeAssistEnvelope? = postOptional(
+                server: server,
+                path: "/exa.language_server_pb.LanguageServerService/GetLoadCodeAssist"
+            )
+            user = await userStatus
+            load = await loadCodeAssist
+        } else {
+            user = nil
+            load = nil
+        }
 
+        let quota = try await quotaSummary
         let account = Self.parseAccount(
             userStatus: user?.userStatus,
             fallbackTier: load?.response.currentTier?.name
@@ -626,6 +648,15 @@ struct AntigravityFetcher: QuotaFetcher {
         body: Encodable?
     ) async throws -> (Data, URLResponse) {
         try Task.checkCancellation()
+        if let rawRPCOverride {
+            let requestBody: Data
+            if let body {
+                requestBody = try JSONEncoder().encode(body)
+            } else {
+                requestBody = Data("{}".utf8)
+            }
+            return try await rawRPCOverride(server, path, requestBody)
+        }
         guard Self.serverStillOwnsEndpoint(server) else {
             throw QuotaError.networkError(
                 "Antigravity 本地服务身份已变化（pid=\(server.pid), port=\(server.httpsPort)），请重试刷新"

@@ -46,8 +46,8 @@ extension AppState {
     ///
     /// ZCode 是一份多 provider 账本：GLM 卡消费智谱系 native 用量（不受绑定
     /// 约束），MiniMax / DeepSeek 卡消费同一快照里的 `providerSlices` 分片
-    /// （由 `clientBindings` 的 zcode → <quota> 绑定门控，见 `usageFrameExtractors`）。
-    /// 与 `applyOpencodeUsage` 同样只挂快照、关闭绑定时诊断页仍可见。
+    /// （由内置 zcode → provider 路由自动归因，见 `usageFrameExtractors`）。
+    /// 与 `applyOpencodeUsage` 同样只挂快照，卡片与诊断页共享自动归因投影。
     @MainActor
     func applyGlmLocalUsage(_ usage: GlmLocalUsage?) {
         let changed = mutateStatuses { copy in
@@ -90,9 +90,8 @@ extension AppState {
         }
         if changed {
             logDebug("[dsh/apply] providers=\(usage?.byProvider.count ?? 0), sessions=\(usage?.sessionCount ?? 0)")
-            // 别名失配告警（P2）：dsh 帧的归属由 config 绑定别名解析，用户手改
-            // config 写错 `sourceProviderAliases` 会让对应 provider 的用量静默漏采
-            // （帧落空串组后被卡片过滤）。这里在快照落地时检测一次并打告警；
+            // 内置归因表未识别的 provider 留在未归属组；快照落地时告警，
+            // 不按模型名猜测费用或额度归属。
             // guard changed 之上不放——同一份快照只在首次落地时告警，不随渲染重复。
             let unclaimed = DshHarnessFrames.unclaimedProviderKeys(
                 in: usage,
@@ -102,7 +101,7 @@ extension AppState {
                 logWarn(
                     "[dsh/apply] 以下 dsh provider 键没有被任何 dsh 绑定别名认领，对应用量不会并入任何卡片："
                     + "\(unclaimed.joined(separator: ", "))；"
-                    + "当前已登记别名（config clientBindings 的 sourceProviderAliases）："
+                    + "内置自动归因别名："
                     + "\(DshHarnessFrames.registeredAliases(bindings: configStore.config.clientBindings).joined(separator: ", "))"
                 )
             }

@@ -54,10 +54,10 @@ extension SettingsView {
         VStack(alignment: .leading, spacing: 20) {
             if currentTab.id == SettingsTab.generalID {
             SettingsSection(
-                title: "全局刷新间隔",
-                footer: "没有设置独立频率的 Provider 将继承此刷新时间。全量刷新倍率控制每隔 N 拍常规刷新后补跑一次 .full 全量模式。受影响范围包括：Codex 重置次数抓取与陈旧度容忍阈值、ZCode 额度重置卡状态拉取、ZCode 运营活动触达轮询（未开启通知时不请求）。默认 20 拍。"
+                title: "刷新频率",
+                footer: "额度、余额与金额按刷新频率更新；独立查询的账号、套餐、组织信息及重置卡、活动按次要信息频率更新。GLM 运营活动需开启通知。未单独设置频率的 Provider 使用默认刷新频率。"
             ) {
-                SettingsControlRow("刷新频率", alignment: .top) {
+                SettingsControlRow("默认刷新频率", alignment: .top) {
                     VStack(alignment: .trailing, spacing: 6) {
                         Slider(
                             value: Binding(
@@ -81,21 +81,24 @@ extension SettingsView {
                     .frame(width: SettingsLayout.standardControlWidth)
                 }
 
-                SettingsControlRow("全量补跑倍率", alignment: .top) {
+                SettingsControlRow("次要信息频率", alignment: .top) {
                     VStack(alignment: .trailing, spacing: 6) {
-                        Stepper(
-                            value: $draft.periodicFullEveryN,
-                            in: 1...100,
-                            step: 1
-                        ) {
-                            Text("每 \(draft.periodicFullEveryN) 拍常规刷新")
-                                .font(SettingsTypography.numericValue)
+                        Picker("", selection: $draft.periodicFullEveryN) {
+                            ForEach(AppConfig.periodicFullEveryNRange, id: \.self) { multiple in
+                                Text("\(multiple) 倍").tag(multiple)
+                            }
                         }
+                        .labelsHidden()
+                        .pickerStyle(.menu)
+                        .frame(width: SettingsLayout.standardControlWidth, alignment: .trailing)
 
-                        let totalSec = draft.globalInterval * max(draft.periodicFullEveryN, 1)
-                        Text("约每 \(Formatters.formatInterval(seconds: totalSec)) 补跑一次全量刷新")
+                        let totalSec = draft.secondaryInfoRefreshInterval()
+                        Text("预计 \(Formatters.formatInterval(seconds: totalSec))（按默认频率）")
                             .font(SettingsTypography.metadata)
                             .foregroundStyle(.secondary)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(Capsule().fill(Color.secondary.opacity(0.1)))
                     }
                     .frame(width: SettingsLayout.standardControlWidth)
                 }

@@ -348,12 +348,12 @@ extension ProviderStatus {
             && isClientBindingEnabled(clientID: ClientID.dsh, quotaProviderID: kind.quotaProviderID)
         let projections = UsageProjectionKernel.project(
             frames: frames,
-            bindings: clientBindings,
+            bindings: ClientProviderBinding.defaultBindings,
             now: now,
             deepseekPeakWindow: deepseekPeakWindow ?? .defaultWindow
         )
-        // 卡片只呈现本卡 quota 侧的贡献：dsh 帧不声明归属（由内核按绑定解析），
-        // 未被任何启用绑定认领的键会落成空串组，在这里被过滤掉，不产生垃圾贡献行。
+        // 卡片只呈现本卡 quota 侧的贡献：dsh 帧不声明归属（由内核按内置别名解析），
+        // 未被任何内置别名认领的键会落成空串组，在这里被过滤掉。
         let ownQuotaProjections = projections.filter { $0.quotaProviderID == kind.quotaProviderID }
         return ProviderUsageProjection(
             contributions: ownQuotaProjections.map {
@@ -367,14 +367,8 @@ extension ProviderStatus {
         )
     }
 
-    /// 客户端诊断页专用的用量投影：忽略 clientBindings 的 enabled 门控，保留该客户端扫描到的全部原始分片。
+    /// 客户端诊断页与常规卡片共享同一自动归因投影。
     func diagnosticUsageProjection(for info: QuotaInfo?, now: Date = Date()) -> ProviderUsageProjection {
-        var diagnosticStatus = self
-        diagnosticStatus.clientBindings = clientBindings.map {
-            var b = $0
-            b.enabled = true
-            return b
-        }
-        return diagnosticStatus.usageProjection(for: info, now: now)
+        usageProjection(for: info, now: now)
     }
 }

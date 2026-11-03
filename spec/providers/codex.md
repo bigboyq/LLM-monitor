@@ -187,7 +187,7 @@ Authorization: Bearer <admin_api_key>
 ```
 
 - **数据解析**：按日 bucket 聚合所有 `results` 下 `amount.value`，累加得到当前账单周期内的已消耗金额 `usedAmount`。
-- **空间名称获取**：优先从 costs 响应 results 的 `organization_name` 获取；若当周期刚开始尚无用量消费导致 results 为空，则回退调用 `GET https://api.openai.com/v1/me` 读取 `orgs.data[0].title`；普通请求或解析失败按可选元数据处理，显示「未知组织」。取消 `/v1/me` 请求会传播取消，不会把被取消的赠金查询记成成功。
+- **空间名称获取**：优先从 costs 响应 results 的 `organization_name` 获取；缺失时仅在 `.full` 按次要信息频率调用 `GET https://api.openai.com/v1/me` 读取 `orgs.data[0].title`。`.background` 不调用 `/v1/me`，新赠金结果缺组织名时 merger 仅继承旧组织名，金额/账期/抓取时间使用新值；`.full` 采用本次查询结果（包括 nil）。普通请求或解析失败按可选元数据处理，显示「未知组织」。取消 `/v1/me` 请求会传播取消，不会把被取消的赠金查询记成成功。
 - **容错设计**：`adminCosts` 抓取异常不会导致 ChatGPT Plan 5h/周配额刷新失败；保留上一轮赠金值，并在赠金行显示警告图标，tooltip 明确说明“API赠金更新失败，显示上次成功的数据”，可附原始错误。赠金明细独立记录 `fetchedAt` 与 `lastAttemptFailed`。
 - **主 quota 失败**：当本地 Plan auth 缺失、但 Admin API Key 可用时，仍可独立更新赠金；Codex merger 保留上次 Plan model/账号/套餐和主 quota 时间，并将本次结果作为主 quota 失败写入 `ProviderStatus.failed`。主 quota HTTP/解析失败时，并行成功的 Admin 结果只更新赠金明细及其独立时间，不更新 Plan、provider 成功时间或 quota 通知基线；赠金失败则保留旧值并标记。没有旧赠金时也展示赠金抓取错误。
 
@@ -603,19 +603,21 @@ previous value and its freshness untouched) based on the refresh mode.
 
 `fetchResetCredits` only runs on `.full` refresh — i.e. app startup, manual refresh
 (header button / card context menu / menu-bar right-click), menu open when a `.ready`
-provider exists, and the scheduler's **periodic full**. The scheduler inserts one `.full`
-every `periodicFullEveryN` (default 20) `.background` cycles, so at the default 300 s interval
-reset credits auto-refreshes roughly every `20 × 300 s ≈ 100 min` without any manual action.
-`.background` cycles intentionally skip the reset-credits request.
-**Why N=20 (not a separate timer)**: Codex reset credits are day-level events — they
-don't change every refresh, so a dedicated full-fetch timer that fires on its own schedule
-would be wasted work. Instead, the scheduler piggybacks on the existing background
-cycle and counts up; every Nth iteration is upgraded to `.full`. N=1 would mean "every
-cycle is full" (heavy given how rarely reset credits change). N=60/100 would push the
-full gap to hours-to-half-a-day — by the time the user notices a stale reset credit
-and clicks refresh, several background cycles have already been wasted on fetches that
-never bothered to look. N=20 at the default 300 s interval lands at ~100 min, which is
-"often enough to feel live, rarely enough to stay cheap".
+provider exists, and the scheduler's periodic refresh of secondary information. The setting
+is shown as 「次要信息频率」, with a UI range of 1...30 and default 20; the persisted
+`periodicFullEveryN` key remains for compatibility. Each provider runs one `.full` refresh
+per N regular ticks: N−1 `.background` ticks followed by one `.full` tick. N=1 therefore
+makes every regular tick `.full`. At the default 300 s provider interval, N=20 refreshes
+reset credits about every `20 × 300 s = 100 min`; with a 180 s provider interval and N=2,
+the interval is 6 minutes.
+Existing configured values are retained, while values above 30 normalize to 30.
+`.background` ticks intentionally skip the reset-credits request.
+
+The setting controls independent secondary-information requests: Codex reset credits and
+the optional `/v1/me` organization lookup, GLM reset cards and marketing polling, and
+Antigravity account/tier RPCs. OpenAI API credits are fetched on every Codex
+provider refresh, and `codexUsageDetails` are attached by local-usage reconciliation after
+each settled provider batch; neither uses this secondary-information cadence.
 
 Reset credits carries its own freshness metadata (`fetchedAt` / `lastAttemptFailed`), separate
 from the main `QuotaInfo.fetchedAt`:
@@ -626,10 +628,11 @@ from the main `QuotaInfo.fetchedAt`:
   `lastAttemptFailed`, so the row shows "可能过期" immediately.
 - Recovery on the next successful `.full` clears the flag and updates `fetchedAt`.
 - As a safety net, the row also shows "可能过期" when the data age exceeds
-  `max(3 × (periodicFullEveryN × refreshInterval), 15 min)` (default ≈ 5 h), meaning
-  several periodic-full cycles were missed. Normal operation never reaches this
-  (data refreshes every ~100 min). A value with no `fetchedAt` (pre-R3 cached data) is
-  not age-judged.
+  `max(3 × (N × providerRefreshInterval), 15 min)`, where N is the effective
+  `periodicFullEveryN` value (default ≈ 5 h at N=20 and 300 s). The provider-specific
+  interval is used when configured; otherwise the global interval applies. This allows
+  several secondary-information cycles to be missed before age alone marks the value
+  stale. A value with no `fetchedAt` (pre-R3 cached data) is not age-judged.
 
 ## QuotaInfo Mapping
 
@@ -835,4 +838,4 @@ To compare or sum daily usage across both providers, normalize both into a singl
 
 After normalization, cross-provider sum, average, and chart rendering can treat the two providers as a single data source.
 
-> 核对基线：2026-10-31 · 代码 cf39ac1
+> 核对基线：2026-11-03 · 代码 4c646e9

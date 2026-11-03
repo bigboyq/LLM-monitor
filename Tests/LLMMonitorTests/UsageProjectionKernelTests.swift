@@ -288,7 +288,7 @@ final class UsageProjectionKernelTests: XCTestCase {
             status.opencodeUsage = opencode
             status.dshUsage = dsh
             status.glmLocalUsage = zcode
-            status.clientBindings = ProviderStatus.allClientBindingsEnabled()
+            status.clientBindings = ClientProviderBinding.defaultBindings
             return status
         }
 
@@ -835,40 +835,62 @@ final class UsageProjectionKernelTests: XCTestCase {
         }
     }
 
-    // MARK: - P2 绑定显式化验收
+    // MARK: - 自动归因验收
 
-    /// 绑定关闭时对应切片帧不产出：zcode → minimax = false 后 MiniMax 卡不再有
-    /// ZCode 贡献，且同卡的 opencode 贡献与 DeepSeek 卡的 zcode 分片不受牵连。
-    /// 语义迁移自旧 mergeZcodeUsage 直改的开关用例。
-    func testBindingDisabledDropsZcodeSliceContribution() throws {
+    /// 旧 config 快照中的 enabled=false 不得让已有 Harness 用量从卡片或 freshness 消费者中消失。
+    func testLegacyDisabledBindingsDoNotSuppressHarnessUsage() throws {
         let now = Date()
         let (statuses, _) = makeStatuses(now: now)
+        let legacyDisabledBindings = ClientProviderBinding.defaultBindings.map { $0.withEnabled(false) }
+
+        for originalStatus in statuses {
+            var status = originalStatus
+            status.clientBindings = legacyDisabledBindings
+            let expectedSources: [LocalUsageSource]
+            switch status.kind {
+            case .codexChatGpt:
+                expectedSources = [.codex, .opencode]
+            case .antigravity:
+                expectedSources = [.antigravity, .agy, .opencode]
+            case .minimaxTokenPlan:
+                expectedSources = [.minimaxCode, .dsh, .zcode, .opencode]
+            case .glmCodingPlan:
+                expectedSources = [.zcode, .dsh, .opencode]
+            case .deepseek:
+                expectedSources = [.dsh, .zcode, .opencode]
+            }
+            XCTAssertEqual(
+                status.localUsageConsumers.map(\.source), expectedSources,
+                "\(status.kind) 的所有内置来源都应继续参与 freshness 消费"
+            )
+        }
 
         var minimax = try XCTUnwrap(statuses.first { $0.kind == .minimaxTokenPlan })
-        minimax.setClientBindingEnabled(
-            clientID: ClientID.zcode, quotaProviderID: QuotaProviderID.minimax, enabled: false
-        )
-        XCTAssertNil(
+        minimax.clientBindings = legacyDisabledBindings
+        XCTAssertNotNil(
             minimax.usageProjection(for: nil).contributions.first { $0.clientID == ClientID.zcode },
-            "zcode → minimax 绑定关闭后 MiniMax 卡不得再有 ZCode 贡献"
+            "旧 enabled=false 不能阻断 ZCode → MiniMax 分片自动归因"
         )
         XCTAssertNotNil(
             minimax.usageProjection(for: nil).contributions.first { $0.clientID == ClientID.openCode },
-            "同卡的 opencode 绑定不受 zcode 绑定关闭影响"
+            "旧 enabled=false 不能阻断 OpenCode → MiniMax 分片自动归因"
         )
+        XCTAssertTrue(minimax.localUsageConsumers.contains { $0.source == .dsh })
 
         var deepseek = try XCTUnwrap(statuses.first { $0.kind == .deepseek })
-        deepseek.setClientBindingEnabled(
-            clientID: ClientID.zcode, quotaProviderID: QuotaProviderID.minimax, enabled: false
+        deepseek.clientBindings = legacyDisabledBindings
+        XCTAssertNotNil(
+            deepseek.usageProjection(for: nil).contributions.first { $0.clientID == ClientID.dsh },
+            "旧 enabled=false 不能阻断 DSH 自动归因"
         )
         XCTAssertNotNil(
             deepseek.usageProjection(for: nil).contributions.first { $0.clientID == ClientID.zcode },
-            "关闭 minimax 侧绑定不影响 deepseek 侧的 zcode 分片"
+            "旧 enabled=false 不能阻断 ZCode → DeepSeek 分片自动归因"
         )
     }
 
-    /// dsh 帧不声明归属：内核用 clientBindings 的 dsh 条目按别名解析 quota；
-    /// 未被任何启用绑定认领的键落空串组，由卡片侧按本卡 quota 过滤。
+    /// dsh 帧不声明归属：内核用内置别名路由解析 quota；旧 enabled=false 仍自动归因，
+    /// 未知键落空串组，由卡片侧按本卡 quota 过滤。
     func testDshFramesResolveQuotaThroughBindingsAndDropUnclaimedKeys() throws {
         let day = Date(timeIntervalSince1970: 1_800_000_000)
         let usage = DshLocalUsage(
@@ -890,9 +912,8 @@ final class UsageProjectionKernelTests: XCTestCase {
 
         // 内核层：被绑定认领的键解析到对应 quota，未认领的键落空串组。
         let frames = DshHarnessFrames.frames(from: usage)
-        let projections = UsageProjectionKernel.project(
-            frames: frames, bindings: AppConfig.defaultClientBindings
-        )
+        let legacyDisabledBindings = ClientProviderBinding.defaultBindings.map { $0.withEnabled(false) }
+        let projections = UsageProjectionKernel.project(frames: frames, bindings: legacyDisabledBindings)
         XCTAssertEqual(
             projections.map(\.quotaProviderID).sorted(),
             ["", QuotaProviderID.deepseek, QuotaProviderID.minimax],
@@ -951,13 +972,8 @@ final class UsageProjectionKernelTests: XCTestCase {
             ["glm", "zhipu", "zhipuai", "bigmodel",
              "builtin:bigmodel-coding-plan", "account:bigmodel-individual-coding-plan"]
         )
-        // dsh 三条默认启用（与 DSH 历史上不受任何开关控制一致）。
-        for quota in [QuotaProviderID.deepseek, QuotaProviderID.minimax, QuotaProviderID.zhipu] {
-            XCTAssertTrue(
-                AppConfig.default.isClientBindingEnabled(clientID: ClientID.dsh, quotaProviderID: quota),
-                "dsh → \(quota) 默认绑定应启用"
-            )
-        }
+        XCTAssertEqual(ClientProviderBinding.defaultBindings.count, 10)
+        XCTAssertTrue(ClientProviderBinding.defaultBindings.allSatisfy(\.enabled))
     }
 
     /// logWarn 判定路径（纯函数部分）：账本键没被任何 dsh 绑定别名认领时返回
@@ -979,15 +995,15 @@ final class UsageProjectionKernelTests: XCTestCase {
 
         XCTAssertEqual(
             DshHarnessFrames.unclaimedProviderKeys(
-                in: usage, bindings: AppConfig.defaultClientBindings
+                in: usage, bindings: ClientProviderBinding.defaultBindings
             ),
             ["mystery-router"],
             "默认绑定下只有未登记路由是未认领键"
         )
 
-        // 用户手改 config 写错别名（deepseek → deepseak）：真实键变成未认领，
+        // 模拟内置别名漂移（deepseek → deepseak）：真实键变成未认领，
         // 这正是静默漏采需要告警的形态。
-        let typoBindings = AppConfig.defaultClientBindings.map { binding in
+        let typoBindings = ClientProviderBinding.defaultBindings.map { binding in
             guard binding.clientID == ClientID.dsh,
                   binding.quotaProviderID == QuotaProviderID.deepseek else { return binding }
             return ClientProviderBinding(
@@ -1007,8 +1023,8 @@ final class UsageProjectionKernelTests: XCTestCase {
             "告警日志里的「期望形态」应来自当前绑定注册表"
         )
 
-        // 显式停用的绑定仍算"被认领"：是刻意关闭，不是别名失配。
-        let disabledBindings = AppConfig.defaultClientBindings.toggled(
+        // 遗留 disabled 值不改变别名登记：已知路由仍算被认领。
+        let disabledBindings = ClientProviderBinding.defaultBindings.toggled(
             clientID: ClientID.dsh, quotaProviderID: QuotaProviderID.deepseek, enabled: false
         )
         XCTAssertEqual(
@@ -1017,7 +1033,7 @@ final class UsageProjectionKernelTests: XCTestCase {
         )
 
         XCTAssertEqual(
-            DshHarnessFrames.unclaimedProviderKeys(in: nil, bindings: AppConfig.defaultClientBindings),
+            DshHarnessFrames.unclaimedProviderKeys(in: nil, bindings: ClientProviderBinding.defaultBindings),
             []
         )
     }
@@ -1389,7 +1405,7 @@ private enum LegacyProjector {
     }
 }
 
-// MARK: - 跨测试文件共享的绑定夹具助手（P2）
+// MARK: - 跨测试文件共享的路由夹具助手
 
 extension ClientProviderBinding {
     /// enabled 改为指定值的副本。
@@ -1404,9 +1420,7 @@ extension ClientProviderBinding {
 }
 
 extension Array where Element == ClientProviderBinding {
-    /// 返回把指定 (clientID, quotaProviderID) 绑定的 enabled 翻到目标值的副本；
-    /// 不存在该组合时原样返回（与 `AppConfig.setClientBindingEnabled` 的补齐语义
-    /// 无关，这里只做夹具内翻转）。
+    /// 返回指定路由的旧 enabled 兼容值副本；不影响自动归因，仅供回归测试模拟历史快照。
     func toggled(
         clientID: String,
         quotaProviderID: String,
@@ -1421,8 +1435,7 @@ extension Array where Element == ClientProviderBinding {
 }
 
 extension ProviderStatus {
-    /// 把本 status 携带的绑定里某一条开/关（镜像 `AppConfig.setClientBindingEnabled`
-    /// 的更新路径；测试用它替代旧的 `mergeXxx = false` 直改）。
+    /// 在测试状态上模拟旧 config 中的 enabled 值，不会切断生产自动归因。
     mutating func setClientBindingEnabled(
         clientID: String,
         quotaProviderID: String,
@@ -1435,10 +1448,8 @@ extension ProviderStatus {
         )
     }
 
-    /// 全量启用版默认绑定：5 条 opencode + 2 条 zcode + 3 条 dsh 全部 enabled。
-    /// 对应旧测试夹具里 `mergeOpencodeUsage = true` + `mergeZcodeUsage = true` 的
-    /// "全部打开"语义。
+    /// 返回内置自动归因注册表，保留跨测试文件的历史夹具入口。
     static func allClientBindingsEnabled() -> [ClientProviderBinding] {
-        AppConfig.defaultClientBindings.map { $0.withEnabled(true) }
+        ClientProviderBinding.defaultBindings
     }
 }

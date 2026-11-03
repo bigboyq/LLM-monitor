@@ -205,7 +205,7 @@ provider 的渠道枚举坏值按缺失处理（`try? + rawValue`）；`bark` �
 ### 4.4 营销活动触达通知（`notifyMarketingCampaign`）
 
 针对 GLM Coding Plan（ZCode 直连营销活动）：
-- **按需轮询与固定倍率回退**：仅当 `glmAuthMode == .credential` 开启且 `notifyCampaign` 不是 `.none` 时，才发起运营活动轮询；未选通知（`none`）完全不发起网络请求。轮询走固定倍率回退，仅在 `.full` 模式下请求，`.background` 跳过。
+- **按需轮询与次要信息频率**：仅当 `glmAuthMode == .credential` 开启且 `notifyCampaign` 不是 `.none` 时，才发起运营活动轮询；未选通知（`none`）完全不发起网络请求。轮询按设置中的「次要信息频率」运行，仅在 `.full` 模式下请求，`.background` 跳过。该频率按每 N 个常规刷新拍一次 `.full` 计算（N−1 拍 `.background` 后一拍 `.full`；N=1 时每拍 `.full`）；UI 范围 1...30，默认 20。N 由保留兼容的 JSON 键 `periodicFullEveryN` 存储。
 - **通知渠道**：通过 `CompositeQuotaUpdateNotifier.notifyMarketingCampaign` 路由至系统通知与 Bark 推送（系统通知 title 为 `\(providerName): \(delivery.title ?? "新活动提醒")`；Bark 标题为 `\(providerName) 活动`，id：`campaign-{providerID}-{delivery.id}`，group 为 "运营活动"）。
 - **活动内容**：兼容 ZCode 的 `campaign_id` / `banner` 响应，以 campaign ID 去重；套餐名与模型 token 权益来自 `banner.background.args.zcode_plan`，不使用领取成功弹窗文案。字段回退顺序见 `providers/glm.md`「营销活动响应解析」。
 - **时间防抖**：`AppState` 维护字典 `lastMarketingNotificationTimes: [String: Date]`（key 为 `delivery.id`），每当发现活动时通知一次，1 小时（3600 秒）以内不重复通知。
@@ -279,4 +279,4 @@ provider 的渠道枚举坏值按缺失处理（`try? + rawValue`）；`bark` �
 - 决策记录：屏幕跳过语义与恢复公式阈值见 §3.2 / §4.3 的裁定标注（2026-09-13）；
   余额触发器延后（裁定）。
 
-> 核对基线：2026-11-03 · 代码 0ccff84
+> 核对基线：2026-11-03 · 代码 4c646e9

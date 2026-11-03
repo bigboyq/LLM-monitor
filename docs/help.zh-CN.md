@@ -29,7 +29,7 @@ shasum -a 256 -c SHA256SUMS.txt
 
 ### Minimax Token Plan
 
-在设置中启用 Minimax 并填写 Token Plan API Key。本地用量读取 `~/.minimax/v2/sqlite/runtime-state.sqlite`；ZCode 的 `minimax` 分片默认并入本卡（`config.json` 的 `clientBindings` 可关）；如需叠加 OpenCode 中的 `minimax-cn-coding-plan` 用量，把 `config.json` 中对应的 `clientBindings` 设为 `true`（见下文"OpenCode 合并"）。
+在设置中启用 Minimax 并填写 Token Plan API Key。本地用量读取 `~/.minimax/v2/sqlite/runtime-state.sqlite`；ZCode、DSH 与 OpenCode 中可识别为 MiniMax 的用量会按 provider 自动归入本卡，无需配置归因开关。
 
 ### ChatGPT Plan / Codex
 
@@ -43,19 +43,19 @@ shasum -a 256 -c SHA256SUMS.txt
 
 填写 Coding Plan Key，通常为 `id.secret` 格式。远程 API 提供额度；本地 ZCode 用量来自 `~/.zcode/cli/db/db.sqlite`。高峰窗口固定为北京时间（Asia/Shanghai）周一至周五 14:00–18:00，法定节假日除外；口径与本机时区无关，也没有设置开关。
 
-ZCode 的任务按 provider 分为 Coding Plan（正式套餐）/ Start Plan（体验套餐）/ 闲时 / 其他智谱套餐四类：只有 Coding Plan 计入 5h / 周额度窗口，四类 token 都计入本地柱图。设置 → 客户端 → ZCode 按这个顺序拆行显示各自独立的柱图与名义价值（没有用量的分类不出现行），其后是同一账本里的 DeepSeek / MiniMax 分片行（可在「客户端 ↔ Provider 绑定」里分别关闭）。开启设置中的「解析活动套餐余额日志」后，卡片还会显示 zcode 活动套餐（如周末体验套餐）的剩余百分比与过期时间，数据来自 ZCode 本地余额轮询日志（`~/.zcode/v2/logs`），只读本地文件，默认关闭。
+ZCode 的任务按 provider 分为 Coding Plan（正式套餐）/ Start Plan（体验套餐）/ 闲时 / 其他智谱套餐四类：只有 Coding Plan 计入 5h / 周额度窗口，四类 token 都计入本地柱图。设置 → 客户端 → ZCode 按这个顺序拆行显示各自独立的柱图与名义价值（没有用量的分类不出现行），其后是同一账本里按 provider 自动归入 DeepSeek / MiniMax 卡的分片行。所有已支持的本地账本来源都会自动归因；未知 provider 不会被猜测归类。GLM 选择凭证认证模式后，通过 ZCode 接口获取活动套餐余额、重置卡与可领取活动：套餐余额跟随 GLM 刷新频率，重置卡与可领取活动跟随「次要信息频率」，活动轮询还需开启活动通知。
 
 ### DeepSeek
 
-填写 `sk-...` 格式的 DeepSeek API Key。卡片显示账户余额；DeepSeek 没有 native 本地账本，本地 token 图表来自 ZCode 分片（默认开启，读取 `~/.zcode/cli/db/db.sqlite` 中 `provider_id` 为 `deepseek` 的行），可选再叠加 OpenCode 合并（`config.json` 的 `clientBindings`）。DeepSeek Flash 本地成本估算为：输入 ¥1/百万 token、缓存读取 ¥0.02/百万 token、输出 ¥4/百万 token；北京时间周一至周五 9:00–12:00、14:00–18:00 忙时按 2 倍计算（法定节假日除外），周末全天平价。
+填写 `sk-...` 格式的 DeepSeek API Key。卡片显示账户余额；DeepSeek 没有 native 本地账本，本地 token 图表会自动归入 ZCode、DSH 与 OpenCode 中可识别为 DeepSeek 的用量。DeepSeek Flash 本地成本估算为：输入 ¥1/百万 token、缓存读取 ¥0.02/百万 token、输出 ¥4/百万 token；北京时间周一至周五 9:00–12:00、14:00–18:00 忙时按 2 倍计算（法定节假日除外），周末全天平价。
 
 ### OpenCode 合并
 
-应用读取 `~/.local/share/opencode/opencode.db`，按 `providerID` 分片。OpenCode 不是独立卡片；合并由 `~/Library/Application Support/LLM-monitor/config.json` 中 `clientBindings[]` 的 `opencode` 绑定控制（GLM 默认开启，其他 Provider 默认关闭），设置页不提供独立开关。手工修改该文件并保存后应用会热加载，无需重启。
+应用读取 `~/.local/share/opencode/opencode.db`，按 `providerID` 分片。OpenCode 不是独立卡片；支持的 provider 会自动归入对应的 Provider 卡，无需在设置或 `config.json` 中配置归因开关。这不改变各 Provider 自身的启用/停用设置。无法匹配已支持 provider 的条目不会被猜测归类。
 
 ### ZCode 分片
 
-ZCode 与 OpenCode 一样是多 provider 共享账本：智谱系行进 GLM 卡；`minimax` / `deepseek` 前缀的行按 `provider_id` 分片，分别并入 MiniMax / DeepSeek 卡。对应绑定是 `clientBindings[]` 的 `zcode` 条目，**默认开启**，设置页同样无独立开关。
+ZCode 与 OpenCode 一样是多 provider 共享账本：智谱系行进 GLM 卡；`minimax` / `deepseek` 前缀的行按 `provider_id` 分片，分别自动归入 MiniMax / DeepSeek 卡。无需配置绑定开关；未支持的 provider 不会被猜测归类。
 
 ## 多机联动（主副节点）
 
@@ -79,6 +79,8 @@ GLM 与 DeepSeek 的高峰判定都以北京时间（Asia/Shanghai）为准，�
 
 ## 日常操作
 
+- 独立账号、套餐和组织资料查询也走「次要信息频率」：Antigravity 的账号与套餐、ChatGPT API 赠金缺组织名称时的组织资料查询已归入其中。跳过查询的后台刷新保留已有名称，同时更新额度与金额。GLM 额度响应附带的套餐级别、Codex 本地鉴权文件中的邮箱/套餐无需额外查询，随主流程读取。
+- 设置 → 常规 →「默认刷新频率」控制没有独立间隔的 Provider 主额度与余额更新；「次要信息频率」选择 1～30 倍（默认 20 倍），控制 ChatGPT 重置卡、GLM 重置卡与可领取活动。预计周期按对应 Provider 的有效刷新间隔 × 倍率计算，Provider 设置页会显示各自的预计时间。例如主频率 3 分钟、次要信息 2 倍时，预计 6 分钟更新一次；1 倍时每次都更新。GLM 活动套餐余额和 ChatGPT API 赠金仍随主频率更新。本地 token 扫描与高峰倒计时独立于该倍率。
 - 点击菜单栏图标：打开或关闭主面板。
 - 点击右上角刷新按钮：立即刷新全部 Provider。
 - 点击 Provider 卡片标题栏的「小眼睛」按钮：可将状态栏图标（Icon Duo 双环与健康圆点）固定只显示该服务商的 5h/周配额与健康度；再次点击已高亮的小眼睛即可取消固定，恢复为默认的全服务商聚合（取非零最小值）。

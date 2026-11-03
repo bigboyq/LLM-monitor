@@ -202,12 +202,12 @@ hub 的 high-water 据此拒绝迟到报告（§7.3）。持久化失败本轮�
   分组，金额走 `ModelPricingCatalog.estimate`（同一批样本）。扫描预算截断的来源
   从本次健康行中排除并以 `.truncated` 标记；partial 桶的
   `totalsComplete/modelDetailsComplete = false`，有预算截断标记时 `sourceTruncated = true`。
-  DSH 即使因预算截断后没有任何 provider 帧，也保留源级截断状态；只影响启用了
-  DSH 绑定的 provider，不制造空贡献。日桶与窗口均不得把该状态解释为完整零值。
+  DSH 即使因预算截断后没有任何 provider 帧，也保留源级截断状态；只影响内置路由支持的
+  DSH consumer provider，不制造空贡献。日桶与窗口均不得把该状态解释为完整零值。
 - DSH 最近样本数量上限与扫描文件 / 字节预算分开记录。仅逐次样本被裁剪时，
   权威日总量仍可完整上报（`totalsComplete = true`），模型明细标记
   `modelDetailsComplete = false`，其 entries 与窗口金额不得宣称完整计价。
-  `samplesTruncated` 按贡献来源 / provider 传递，关闭绑定的来源不影响该卡。
+  `samplesTruncated` 按自动归因的贡献来源 / provider 传递，不再受历史绑定开关影响。
   旧缓存缺样本完整性元数据或样本上限发生变化时重新聚合；遗漏样本全部离开
   保留窗口后，cached rebase 可以恢复样本完整性。
 - **明细对账（2026-10-30）**：`samplesTruncated` 标志只有 DSH 帧维护，Codex 等
@@ -220,8 +220,8 @@ hub 的 high-water 据此拒绝迟到报告（§7.3）。持久化失败本轮�
 - reconcile 扫描中或失败时按 `ProviderStatus.localUsageConsumers` 映射到实际
   启用的 client/provider，使用 `FleetDailyUnavailableSource` 标记 `.scanning` /
   `.failed`；健康来源继续上报。失败来源没有 contribution 时也必须标记，
-  防止空帧覆盖 hub 上次成功值。DSH 等共享来源尊重 clientBindings；关闭绑定
-  不构成不可用来源。旧 provider 级 `isScanningLocalUsage` 保守覆盖该 provider 的
+  防止空帧覆盖 hub 上次成功值。DSH 等共享来源使用内置自动归因路由，历史绑定开关
+  不再屏蔽来源或不可用标记。旧 provider 级 `isScanningLocalUsage` 保守覆盖该 provider 的
   实际消费者。所有来源不可用时仍发 partial 桶，不宣称完整零值。
   对应 provider 的窗口行保持原有整 provider 省略保护，其他 provider 窗口和有效
   `lastSuccess` 额度照常构建。
@@ -363,6 +363,8 @@ hub 的 high-water 据此拒绝迟到报告（§7.3）。持久化失败本轮�
   参加合并但不进列表**；最后上报 / seq / 离线 / 移除 →
   `removeNodeFromFleet`）、全局摘要（节点数标注含本机）、各 provider
   额度来源、归因指纹不一致标黄（`FleetNodeSnapshot.attributionFingerprint`）。
+
+  归因指纹由内置自动路由表生成，新版本不再提供 Harness 归因设置。设置页出现「归因规则不一致」时提示各机更新至相同版本；与仍按历史开关过滤来源的旧节点可以继续同步，但全局数字仍为各节点自身口径之和。
   - **主节点地址落盘前校验**：必须能解析成 http/https URL 且 host 非空
     （口径与 `SyncClient.init` 同一把尺子）；不合法**不落盘**并就地显示错误
     ——写进去的后果是角色被判成副节点、`SyncClient.init` 抛错，机器从此离线。
@@ -420,7 +422,7 @@ hub 的 high-water 据此拒绝迟到报告（§7.3）。持久化失败本轮�
 Gregorian 日键、不完整日桶拒收与部分计价保留）、
 `FleetStoreTests`（重放拒绝、通道独立、窗口 upsert 与清理、坏行清理的 generation、
 快照缓存隔离）、`UsageReportBuilderTests`（七桶权威 totals、同样本计价、
-额度门控、扫描/失败空贡献的来源标记、健康来源独立更新、DSH 恢复及关闭绑定、
+额度门控、扫描/失败空贡献的来源标记、健康来源独立更新、DSH 恢复及自动归因、
 真实 DSH 截断空帧不会覆盖旧来源值、无标志样本裁剪与仅日汇总的逐日明细对账）、
 `FleetSyncLifecycleTests`（同 UUID hub 数据库重建回填、POST 序号确认与 GET/迟到
 响应隔离、身份写盘失败停机及重试、关闭联动不生成身份）、`FleetSyncIntegrationTests`（回环端到端：health
@@ -437,7 +439,7 @@ node 协调器上线与缓存落盘）、`FleetUsageModelsTests`（生效额度�
 Sync / dock 位置写入不清常规草稿，含首次从 nil 写入默认 dock 配置；DSH scanner
 与 builder 测试覆盖样本 cap、旧缓存重建、限额变化、样本老化恢复和权威日桶保留。
 
-> 核对基线：2026-10-31 · 代码 cf39ac1
+> 核对基线：2026-11-03 · 代码 4c646e9
 > 历史验证（代码 6f11831；记录于文档提交 3ccb3de）：`swift test` 1401 例 0 失败（63.1s）；定向验证 `FleetCostTextPropagationTests` 4 例、`UsageReportBuilderTests|SettingsDraftIsolationTests` 15 例均通过。
 > 2026-10-25 提交前全量验证（即本基线工作区）：`swift test` 1435 例 0 失败（64.5s），覆盖独立 `.deviceId` 身份、默认上报周期跟随常规、菜单 / 设置自启同步、来源级日桶更新 / 输入摘要回执、节点卡片缺桶 / partial / 完整零提示，以及主节点健康用量 + DSH 失败 + 空副节点真实 POST 接入的集成回归。未替换或重启现场应用，DSH 解压依赖缺失仍通过来源不可用提示表达。
 > 2026-10-27（一）提交前全量验证：`swift test` 1513 例 0 失败（63.2s），覆盖窗口边界前沿过滤（装配下发与存储修剪每 (provider, model, kind) 最新 2 组）、`FleetWindowUsage` 移除 `observedAt`（接收时刻记行 `updated_at` 列），并对齐 683a575 聚合快照下发契约的集成测试（POST 回包轻量回执断言 + hub 侧全量快照断言）。`observedAt` 移除为破坏性 wire 变更，混跑部署须 hub 与副节点同步升级。

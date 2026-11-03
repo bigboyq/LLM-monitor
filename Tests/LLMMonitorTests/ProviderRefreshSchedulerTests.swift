@@ -609,8 +609,8 @@ final class ProviderRefreshSchedulerTests: StateTestCase {
         scheduler.cancelAll()
     }
 
-    /// reanchorProvider 清零目标 provider 的周期 full 计数：N=3 期望无重锚时
-    /// 第 5 拍进入 periodic full；在第 4 拍结算前重锚则第 5 拍仍是 background。
+    /// reanchorProvider 清零目标 provider 的周期 full 计数：N=3 时重锚后
+    /// periodic full 从第 4 拍推迟到第 5 拍。
     @MainActor
     func testReanchorProviderResetsPeriodicFullCount() async {
         let log = ModeLog()
@@ -618,7 +618,7 @@ final class ProviderRefreshSchedulerTests: StateTestCase {
         let sched = ProviderRefreshScheduler(
             refreshHandler: { _, mode in
                 let n = await log.record(mode)
-                if n == 4 {
+                if n == 3 {
                     await holder.sched?.reanchorProvider("p", at: Date(), resetDatesByProvider: [:])
                 }
                 return .completed(success: true)
@@ -630,18 +630,17 @@ final class ProviderRefreshSchedulerTests: StateTestCase {
         )
         holder.sched = sched
         sched.schedule(for: "p")
-        // 条件等待：与 testSchedulerPeriodicFullEveryNBackgrounds 相同的虚拟时间
-        // 节奏（注入 1ns sleep 让 deadline driver 立即续拍），记满 6 拍即可断言。
-        let reachedSix = await waitUntil { await log.snapshot().count >= 6 }
-        XCTAssertTrue(reachedSix, "应至少在超时前跑满 6 拍")
+        // 注入 1ns sleep 让 deadline driver 立即续拍；第 5 拍足以验证重锚后的周期边界。
+        let reachedFive = await waitUntil { await log.snapshot().count >= 5 }
+        XCTAssertTrue(reachedFive, "应至少在超时前跑满 5 拍")
         sched.cancelAll()
 
         let seq = await log.snapshot()
-        XCTAssertGreaterThanOrEqual(seq.count, 6, "应至少跑满 6 拍，实际 \(seq.count)")
+        XCTAssertGreaterThanOrEqual(seq.count, 5, "应至少跑满 5 拍，实际 \(seq.count)")
         XCTAssertEqual(
             Array(seq.prefix(5)),
-            [.full, .background, .background, .background, .background],
-            "第 4 拍结算前重锚应清零周期 full 计数：第 5 拍仍是 background 而不是 full"
+            [.full, .background, .background, .background, .full],
+            "第 3 拍结算前重锚后，第 4 拍应为 background，第 5 拍恢复周期 full"
         )
     }
 
@@ -979,9 +978,8 @@ final class ProviderRefreshSchedulerTests: StateTestCase {
     }
     @MainActor
     func testSchedulerPeriodicFullEveryNBackgrounds() async {
-        // R3/C: scheduler 每 N 次 background 补一次 .full，让 reset credits 等只在
-        // full 抓取的字段也能周期性更新。N=3 期望 mode 序列：
-        // full(首次), bg, bg, bg, full, bg, bg, bg, full ...
+        // scheduler 按 N 拍周期刷新次要信息。N=3 期望 mode 序列：
+        // full(首次), bg, bg, full, bg, bg, full ...
         // 用 actor 记录 mode + 弱引用 holder 在记满 9 个后自行 cancelAll，确定性收尾。
         let log = ModeLog()
         let holder = WeakSchedulerHolder()
@@ -1005,10 +1003,89 @@ final class ProviderRefreshSchedulerTests: StateTestCase {
 
         let seq = await log.snapshot()
         XCTAssertEqual(seq.count, 9, "应正好跑 9 轮后自行 cancel，实际 \(seq.count)")
-        let expected: [RefreshMode] = [.full, .background, .background, .background,
-                                       .full, .background, .background, .background, .full]
-        XCTAssertEqual(seq, expected, "mode 序列应为 full,bg,bg,bg,full,bg,bg,bg,full")
+        let expected: [RefreshMode] = [.full, .background, .background,
+                                       .full, .background, .background, .full,
+                                       .background, .background]
+        XCTAssertEqual(seq, expected, "mode 序列应按 3 拍周期运行")
         XCTAssertEqual(seq.filter { $0 == .full }.count, 3)
+    }
+
+    @MainActor
+    func testSchedulerPeriodicFullEveryOneRunsFullOnEveryTick() async {
+        let log = ModeLog()
+        let holder = WeakSchedulerHolder()
+        let sched = ProviderRefreshScheduler(
+            refreshHandler: { _, mode in
+                let n = await log.record(mode)
+                if n >= 5 { holder.sched?.cancelAll() }
+                return .completed(success: true)
+            },
+            intervalProvider: { _ in 60 },
+            onNextRefreshChange: {},
+            periodicFullEveryN: 1,
+            sleep: { _ in try? await Task.sleep(nanoseconds: 1) }
+        )
+        holder.sched = sched
+        sched.schedule(for: "p")
+        let reachedFive = await waitUntil { await log.snapshot().count >= 5 }
+        XCTAssertTrue(reachedFive, "1 拍周期应在超时前跑满 5 拍")
+        sched.cancelAll()
+
+        let sequence = await log.snapshot()
+        XCTAssertEqual(sequence, Array(repeating: .full, count: 5))
+    }
+
+    @MainActor
+    func testSchedulerUpdatingPeriodicFullEveryNToOneAffectsNextTick() async {
+        let log = ModeLog()
+        let holder = WeakSchedulerHolder()
+        let sched = ProviderRefreshScheduler(
+            refreshHandler: { _, mode in
+                let n = await log.record(mode)
+                if n == 2 {
+                    holder.sched?.updatePeriodicFullEveryN(1)
+                }
+                if n >= 4 { holder.sched?.cancelAll() }
+                return .completed(success: true)
+            },
+            intervalProvider: { _ in 60 },
+            onNextRefreshChange: {},
+            periodicFullEveryN: 4,
+            sleep: { _ in try? await Task.sleep(nanoseconds: 1) }
+        )
+        holder.sched = sched
+        sched.schedule(for: "p")
+        let reachedFour = await waitUntil { await log.snapshot().count >= 4 }
+        XCTAssertTrue(reachedFour, "热更新后应在超时前跑满 4 拍")
+        sched.cancelAll()
+        let sequence = await log.snapshot()
+        XCTAssertEqual(
+            sequence,
+            [.full, .background, .full, .full],
+            "更新为 1 后，后续常规拍应立即进入 full 周期"
+        )
+    }
+
+    @MainActor
+    func testSchedulerClampsPeriodicFullEveryNOnInitAndUpdate() {
+        let scheduler = ProviderRefreshScheduler(
+            refreshHandler: { _, _ in .deferred },
+            intervalProvider: { _ in 60 },
+            onNextRefreshChange: {},
+            periodicFullEveryN: AppConfig.periodicFullEveryNRange.upperBound + 1
+        )
+        XCTAssertEqual(scheduler.periodicFullEveryN, AppConfig.periodicFullEveryNRange.upperBound)
+        scheduler.updatePeriodicFullEveryN(-1)
+        XCTAssertEqual(scheduler.periodicFullEveryN, 0)
+        scheduler.updatePeriodicFullEveryN(AppConfig.periodicFullEveryNRange.upperBound + 1)
+        XCTAssertEqual(scheduler.periodicFullEveryN, AppConfig.periodicFullEveryNRange.upperBound)
+        let negativeInitial = ProviderRefreshScheduler(
+            refreshHandler: { _, _ in .deferred },
+            intervalProvider: { _ in 60 },
+            onNextRefreshChange: {},
+            periodicFullEveryN: -1
+        )
+        XCTAssertEqual(negativeInitial.periodicFullEveryN, 0)
     }
     @MainActor
     func testSchedulerEarliestNextRefreshPicksMin() async {

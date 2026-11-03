@@ -10,7 +10,7 @@
 | `Sources/LLM-monitor/Services/AppInstanceLock.swift` | Per-user single-instance lock held for the process lifetime |
 | `Sources/LLM-monitor/Fetchers/FetcherDescriptor.swift` | `FetcherDescriptor` (provider 注册元信息 single source of truth) |
 | `Sources/LLM-monitor/Models/AppConfig.swift` | 应用配置与 Provider 配置契约模型（`SyncConfig` 的逐字段容错、推送周期 effective 值、本机系统通知声音偏好、`StatusBarIconStyle` / `StatusBarHealthColors` / `BarkConfig` / `AppConfig` / `ProviderConfig`，从 ConfigStore.swift 解耦） |
-| `Sources/LLM-monitor/Models/ProviderClientModel.swift` | quota Provider / Client IDs、显式绑定、provider 中立 usage projection（区分日总量源级截断与模型 / 窗口样本截断，含无贡献时的 DSH 源级状态）与设置页摘要模型 |
+| `Sources/LLM-monitor/Models/ProviderClientModel.swift` | provider 中立 usage projection 与 Harness 自动归因（区分日总量源级截断与模型 / 窗口样本截断，含无贡献时的 DSH 源级状态）与设置页摘要模型 |
 | `Sources/LLM-monitor/Models/SyncModels.swift` | Fleet Sync wire DTO（NodeUsageReport / FleetSnapshot 等）、FleetCodec（iso8601 唯一编解码入口与整秒窗口边界匹配）、通道级报告校验（含 ASCII / Gregorian 日键校验）、日桶/窗口合并与额度选举纯函数（FleetMerger）、归因指纹（SHA256 前 8 hex）、SyncRole 单源派生 |
 | `Sources/LLM-monitor/Services/Sync/FleetStore.swift` | 应用自有 fleet.sqlite 单表 sync_records 的事务存储：报告通道独立落库、本机 seq 与节点 high-water、窗口 upsert / 过期及坏行清理（可见清理同步递增 generation）、副节点快照缓存（scope = upstreamKey+hubUUID 隔离） |
 | `Sources/LLM-monitor/Services/Sync/DeviceIdentityStore.swift` | Fleet Sync 本机节点身份 UUID 持久化；在 config 同目录独立读写 `.deviceId`，不继承 config 中旧 `sync.nodeID` |
@@ -79,7 +79,8 @@
 | `Sources/LLM-monitor/Services/Infra/QuotaError.swift` | 统一错误类型 |
 | `Sources/LLM-monitor/Fetchers/MinimaxTokenPlanFetcher.swift` | minimax Token Plan API 抓取 |
 | `Sources/LLM-monitor/Fetchers/CodexFetcher.swift` | ChatGPT Plan API 抓取 + 本地 JSONL 解析 |
-| `Sources/LLM-monitor/Fetchers/AntigravityFetcher.swift` | Antigravity 进程发现 + 本地 RPC + protobuf-like 解析 |
+| `Sources/LLM-monitor/Fetchers/AntigravityFetcher.swift` | Antigravity 进程发现 + 本地 RPC + protobuf-like 解析；主额度每拍、独立账号/套餐按次要信息频率 |
+| `Tests/LLMMonitorTests/AntigravityRefreshCadenceTests.swift` | Antigravity 主额度与次要账号/套餐 RPC 编排、可选接口失败降级、额度失败传播 |
 | `Sources/LLM-monitor/Fetchers/AntigravityProcessDiscovery.swift` | Antigravity 后端进程发现（IDE `language_server` / `agy` CLI 双形态、端口与 CSRF token 提取） |
 | `Sources/LLM-monitor/Fetchers/AntigravitySchemas.swift` | Antigravity RPC request / response 的 Encodable 编码 schema 与解码模型 |
 | `Sources/LLM-monitor/Fetchers/GlmCodingPlanFetcher.swift` | GLM Coding Plan 额度与 reset time 抓取（支持 `GlmAuthMode`：`apiKey` / `credential`；ZCode 套餐三路编排依赖注入 `ZcodePackageProviding`） |
@@ -108,7 +109,7 @@
 | `Sources/LLM-monitor/Services/LocalFSEventsWatcher.swift` | 可复用的单 scanner FSEvents 封装；每个 scanner 自己持有 watcher 与源路径，不维护全局路径表；`info` 载荷为 passRetained 的 context box（对 watcher 弱引用，stream↔watcher 不成环；旧的裸 unretained 指针已移除） |
 | `Sources/LLM-monitor/Services/LocalVnodeWriteWatcher.swift` | 文件级 write/extend vnode watcher（持续增长的日志文件 dirty 标记；只报 dirty，扫描仍归 provider 循环） |
 | `Sources/LLM-monitor/Services/AuthProber.swift` | 异步探测本地服务（antigravity）是否还活着 + 缓存 + 离/在线变化回调 |
-| `Sources/LLM-monitor/Fetchers/RefreshResultMergers.swift` | `CodexFillingMissingMerger` 与 `GlmFillingMissingMerger`（GLM ZCode 重置卡/运营活动固定倍率回退与跨模式合并）等 per-provider 合并策略（Minimax 使用默认 `IdentityRefreshResultMerger`） |
+| `Sources/LLM-monitor/Fetchers/RefreshResultMergers.swift` | `CodexFillingMissingMerger`、`GlmFillingMissingMerger` 与 `AntigravityFillingMissingMerger`：次要信息跨模式保留、主额度与金额采用新值（Minimax 使用默认 `IdentityRefreshResultMerger`） |
 | `Sources/LLM-monitor/Services/Infra/DateParser.swift` | ISO8601 / unix timestamp 统一解析 |
 | `Sources/LLM-monitor/Services/Infra/StringUtilities.swift` | 字符串小工具（trim / firstTrimmed） |
 | `Sources/LLM-monitor/Services/Infra/ProcessRunner.swift` | 同步短命令子进程执行器（pgrep / lsof / pmset / zstd / node；持续排空 pipe + 超时与取消检查）；产出文件以 0600 出生（会话明文不落 world-readable） |
@@ -216,7 +217,7 @@
 | `Tests/LLMMonitorTests/AlertThresholdConfigTests.swift` | 告警阈值配置默认值、取值区间裁切与 critical <= warning 约束单测 |
 | `Sources/LLM-monitor/Views/SettingsEnergyPane.swift` | 设置页节能 pane：睡眠健康度、防休眠与电源参数矩阵 |
 | `Sources/LLM-monitor/Views/SleepAssertionOffender+RowText.swift` | 「阻止休眠的第三方应用」行文案（`SleepAssertionOffender` 的行格式化 extension）+ 主面板 header 悬浮清单 `SleepOffendersHoverView`，两处共用同一份格式 |
-| `Sources/LLM-monitor/Views/SettingsClientsPane.swift` | 设置页「客户端」tab：本地客户端用量诊断、共享九维七天历史 + client ↔ quota 绑定开关（从 SettingsView 拆出） |
+| `Sources/LLM-monitor/Views/SettingsClientsPane.swift` | 设置页「客户端」tab：按 provider 自动归因的本地客户端用量诊断、共享七天历史；无归因开关 |
 | `Sources/LLM-monitor/Views/ClientSegmentedControl.swift` | 设置页「客户端」切换条：原生 `NSSegmentedControl` 包装（段宽按文字测量写死，客户端变多时整体变宽并横向滚动，不压成省略号） |
 | `Sources/LLM-monitor/Views/SettingsComponents.swift` | 设置窗口共享组件与统一字体角色（`SettingsTypography` / `SettingsSection` / `SettingsControlRow` / `SettingsPaneHeader`） |
 | `Sources/LLM-monitor/Views/SettingsFields.swift` | 设置页通用表单输入组件与数值/路径辅助函数（`intervalSliderField`、`secretField`、`apiKeyField`、`selectAuthFile`、`tildePath`） |
@@ -245,4 +246,4 @@
 - **串行执行是既定选择**：`swift test --parallel` 实测（2026-10-02，5 连跑 3 败）不可用——`SQLiteTempCopyTests` 的临时副本断言扫描跨进程共享目录，并行 worker 互相误判；且慢测试为睡眠型，并行的 wall 收益仅 ~4s。并行化前提：先给 SQLiteTempCopy 的副本目录引入进程级隔离，再复评。
 - 慢用例的等待注入缝已建立：调度器（now/sleep）、Bark 退避（retryDelay）、vnode 合并窗口（coalescingWindow 参数）；新增耗时敏感测试时优先走注入缝，不要写死真实 sleep。
 
-> 核对基线：2026-10-31 · 代码 fd0fb98
+> 核对基线：2026-11-03 · 代码 4c646e9

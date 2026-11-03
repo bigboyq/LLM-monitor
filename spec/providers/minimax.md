@@ -20,10 +20,10 @@ This provider covers two distinct data sources:
    database is not read. Per-day 7-day hover chart shows actual rounds /
    input / output / cache / cost.
 
-The card itself is a merged view: the local usage shown under the minimax card comes
-from every client bound to `QuotaProviderID.minimax` (MiniMax Code runtime, DSH, the
-ZCode `minimax` slice). This spec covers the MiniMax Code runtime scanner; the other
-contributors are specified in their own files.
+The card itself is a merged view: local usage from the MiniMax Code runtime, DSH, the
+ZCode `minimax` slice, and supported OpenCode provider IDs is automatically attributed
+to `QuotaProviderID.minimax`. This spec covers the MiniMax Code runtime scanner; the
+other contributors are specified in their own files.
 
 ## Current Status
 
@@ -798,9 +798,9 @@ video 行、通知检测（`QuotaEventDetector` 走 `current.models` 全量）�
 ### 7-day hover chart (shared by every local-usage client)
 
 The card no longer renders `MinimaxLocalUsage` directly. `ProviderCardView.localUsage(projection:part:)`
-feeds a `ProviderUsageProjection` — the merged view of every client bound to the
-`minimax` quota provider (MiniMax Code runtime, DSH, and the ZCode `minimax` slice; the
-scanner result reaches it as one `ClientUsageContribution`) — into the shared footer:
+feeds a `ProviderUsageProjection` — the automatically attributed local sources for the
+`minimax` quota provider (MiniMax Code runtime, DSH, ZCode `minimax` slice, and supported
+OpenCode IDs; each scanner result reaches it as a `ClientUsageContribution`) — into the shared footer:
 
 ```swift
 // ProviderCardView.localUsage(projection:part:), production path passes part: .detail
@@ -1125,4 +1125,4 @@ reasoning maximum, character aggregation, and output conservation.
 
     To realize this split, the fetcher must persist every `current_interval_remaining_percent` sample with a timestamp. Currently it only stores the most recent value in `ModelQuota`; a `local_runtime_quota_snapshots(model_name, ts, interval_remaining_percent, weekly_remaining_percent, interval_total_count, interval_usage_count, weekly_total_count, weekly_usage_count)` table is needed, and `local_runtime_token_usage` should gain a `quota_snapshot_id` so each row can be tagged "inside plan" vs "credits".
 
-> 核对基线：2026-10-28 · 代码 85f6ba9
+> 核对基线：2026-11-03 · 代码 4c646e9

@@ -432,7 +432,7 @@ struct SyncConfig: Codable, Equatable, Sendable {
 
 struct AppConfig: Codable, Equatable {
     /// 当前配置 schema。缺失该字段的历史配置按 schema 0 解码并规范化到当前版本；
-    /// schema 1 的 provider-level OpenCode 开关会迁移到 clientBindings；
+    /// 旧版 clientBindings 与 provider-level OpenCode 归因开关已移除，解码时忽略；
     /// schema 3 新增多机联动 `sync` 配置节。
     static let currentSchemaVersion = 3
     /// 防止手工配置的极大整数经过 `TimeInterval` 转换后无法安全转回 `Int`，
@@ -447,11 +447,9 @@ struct AppConfig: Codable, Equatable {
     /// 各 provider 配置（key = providerID）
     var providers: [String: ProviderConfig]
 
-    /// Client → quota Provider 的显式绑定。缺失时从旧版 provider-level
-    /// `mergeOpencodeUsage` 字段迁移生成，确保旧配置继续生效。
-    /// P2 起这是共享账本归因/门控的唯一事实源：状态卡在 rebuildStatuses 拿到
-    /// 逐字快照（`ProviderStatus.clientBindings`），帧抽取器与投影内核都从它取值。
-    var clientBindings: [ClientProviderBinding]
+    /// 内置自动归因路由的运行时快照，不再读写 config.json。
+    /// 保留此属性供状态宿主与 Fleet 归因指纹使用，不是用户可选开关。
+    var clientBindings: [ClientProviderBinding] { Self.defaultClientBindings }
 
     /// 状态栏图标风格 (nil = 默认 chartBar)
     var statusBarIconStyle: StatusBarIconStyle?
@@ -496,14 +494,16 @@ struct AppConfig: Codable, Equatable {
     /// 集中告警阈值配置（nil = 默认阈值：API 60%/30%，DeepSeek 10/3）
     var alerts: AlertThresholdConfig?
 
-    /// 全量刷新周期倍率（每 periodicFullEveryN 次 background 模式后补跑一次 full 模式，默认 20 拍）。
+    /// 次要信息刷新周期相对 Provider 刷新间隔的倍率（默认 20 倍）。
+    /// 沿用 periodicFullEveryN 配置键；每 N 拍刷新中有一拍抓取次要信息，1 倍即每拍抓取。
     /// 影响范围：
-    /// 1. Provider 刷新调度器：连续 background 达到该次数后切换为 full 模式；
+    /// 1. Provider 刷新调度器：连续 N-1 次 background 后切换为 full 模式；
     /// 2. Codex 重置次数（reset-credits）抓取时机与陈旧度容忍阈值（max(3 × N × interval, 15m)）；
     /// 3. GLM ZCode 额度重置卡（5h/周卡）接口查询频率；
     /// 4. GLM ZCode 运营活动营销触达接口轮询频率（在开启通知时生效）。
+    /// 5. Antigravity 独立账号/套餐 RPC 与 Codex Admin API 组织标题查询。
     static let defaultPeriodicFullEveryN: Int = 20
-    static let periodicFullEveryNRange: ClosedRange<Int> = 1...100
+    static let periodicFullEveryNRange: ClosedRange<Int> = 1...30
 
     var periodicFullEveryN: Int?
 
@@ -557,7 +557,6 @@ struct AppConfig: Codable, Equatable {
     static let `default` = AppConfig(
         refreshIntervalSeconds: 300,
         providers: [:],
-        clientBindings: defaultClientBindings,
         providerCardOrder: nil
     )
 
@@ -566,7 +565,7 @@ struct AppConfig: Codable, Equatable {
     /// 事实源已迁到身份模块 `ClientProviderBinding.defaultBindings`（Models 层，
     /// 不反向依赖任何 Services / 配置类型）：绑定字面量与
     /// `defaultSourceProviderAliases(clientID:quotaProviderID:)` 都在那里。本别名
-    /// 保留旧调用点（含 `AppConfig.default` / init 默认参数）零改动可编译。
+    /// 保留状态宿主、Fleet 指纹与旧内部调用点的只读兼容出口。
     static let defaultClientBindings: [ClientProviderBinding] = ClientProviderBinding.defaultBindings
 
     enum SchemaError: LocalizedError, Equatable {
@@ -584,7 +583,6 @@ struct AppConfig: Codable, Equatable {
         schemaVersion: Int = AppConfig.currentSchemaVersion,
         refreshIntervalSeconds: Int,
         providers: [String: ProviderConfig],
-        clientBindings: [ClientProviderBinding] = AppConfig.defaultClientBindings,
         statusBarIconStyle: StatusBarIconStyle? = nil,
         statusBarHealthDotEnabled: Bool? = nil,
         statusBarHealthColors: StatusBarHealthColors? = nil,
@@ -602,7 +600,6 @@ struct AppConfig: Codable, Equatable {
         self.schemaVersion = schemaVersion
         self.refreshIntervalSeconds = refreshIntervalSeconds
         self.providers = providers
-        self.clientBindings = clientBindings
         self.statusBarIconStyle = statusBarIconStyle
         self.statusBarHealthDotEnabled = statusBarHealthDotEnabled
         self.statusBarHealthColors = statusBarHealthColors
@@ -619,7 +616,7 @@ struct AppConfig: Codable, Equatable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case schemaVersion, refreshIntervalSeconds, providers, clientBindings
+        case schemaVersion, refreshIntervalSeconds, providers
         case statusBarIconStyle, statusBarHealthDotEnabled
         case statusBarHealthColors
         case systemNotificationSoundEnabled
@@ -636,8 +633,7 @@ struct AppConfig: Codable, Equatable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        // schemaVersion 缺失代表首个无版本配置格式；缺失 clientBindings 时，
-        // 由 legacyClientBindings 从旧的 ProviderConfig 字段生成迁移结果。
+        // schemaVersion 缺失代表首个无版本配置格式；历史归因开关一律忽略。
         let sourceVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 0
         guard (0...Self.currentSchemaVersion).contains(sourceVersion) else {
             throw SchemaError.unsupportedVersion(sourceVersion)
@@ -645,13 +641,6 @@ struct AppConfig: Codable, Equatable {
         self.schemaVersion = Self.currentSchemaVersion
         self.refreshIntervalSeconds = try container.decode(Int.self, forKey: .refreshIntervalSeconds)
         self.providers = try container.decode([String: ProviderConfig].self, forKey: .providers)
-        let decodedBindings = try container.decodeIfPresent(
-            [ClientProviderBinding].self,
-            forKey: .clientBindings
-        )
-        self.clientBindings = Self.mergingMissingDefaultBindings(
-            decodedBindings ?? Self.legacyClientBindings(from: self.providers)
-        )
         // 这些字段只影响图标外观，不应因手工拼写错误或新版本增加枚举值而让
         // 整份 provider 配置进入损坏恢复流程。未知值和类型不匹配均按缺失处理。
         //
@@ -784,67 +773,6 @@ struct AppConfig: Codable, Equatable {
         }?.enabled ?? false
     }
 
-    mutating func setClientBindingEnabled(
-        clientID: String,
-        quotaProviderID: String,
-        enabled: Bool
-    ) {
-        guard let index = clientBindings.firstIndex(where: {
-            $0.clientID == clientID && $0.quotaProviderID == quotaProviderID
-        }) else {
-            clientBindings.append(
-                ClientProviderBinding(
-                    clientID: clientID,
-                    quotaProviderID: quotaProviderID,
-                    enabled: enabled
-                )
-            )
-            return
-        }
-        clientBindings[index].enabled = enabled
-    }
-
-    /// 把 `defaultClientBindings` 中 (clientID, quotaProviderID) 组合在现有数组里
-    /// **不存在**的条目按默认值补到尾部。
-    ///
-    /// 老用户的 config.json 里已经有一份 clientBindings（当年只有 opencode 几条），
-    /// `decodeIfPresent` 会原样采用它——之后版本新增的默认绑定（如 zcode →
-    /// minimax / deepseek，以及 dsh 三条路由绑定）永远进不了这些配置，表现为卡片
-    /// 恒不统计该来源用量。这里按组合补齐，顺序与用户显式值一律不动：关闭绑定的
-    /// 口径是"把条目的 enabled 改成 false"，删条目不是关闭方式，所以"补上缺的"
-    /// 不会复活已关闭的绑定。
-    private static func mergingMissingDefaultBindings(
-        _ bindings: [ClientProviderBinding]
-    ) -> [ClientProviderBinding] {
-        let existingPairs = Set(bindings.map { "\($0.clientID)\u{0}\($0.quotaProviderID)" })
-        var merged = bindings
-        for fallback in defaultClientBindings where !existingPairs.contains(
-            "\(fallback.clientID)\u{0}\(fallback.quotaProviderID)"
-        ) {
-            merged.append(fallback)
-        }
-        return merged
-    }
-
-    private static func legacyClientBindings(
-        from providers: [String: ProviderConfig]
-    ) -> [ClientProviderBinding] {
-        let legacyPairs: [(ProviderKind, String, [String])] = [
-            (.minimaxTokenPlan, QuotaProviderID.minimax, [OpencodeLocalUsage.minimaxCodingPlanProviderID]),
-            (.codexChatGpt, QuotaProviderID.openAI, [OpencodeLocalUsage.openAIProviderID]),
-            (.antigravity, QuotaProviderID.antigravity, OpencodeLocalUsage.antigravityProviderIDs),
-            (.glmCodingPlan, QuotaProviderID.zhipu, [OpencodeLocalUsage.glmProviderID]),
-            (.deepseek, QuotaProviderID.deepseek, [OpencodeLocalUsage.deepseekProviderID])
-        ]
-        return legacyPairs.map { kind, quotaProviderID, aliases in
-            ClientProviderBinding(
-                clientID: ClientID.openCode,
-                quotaProviderID: quotaProviderID,
-                sourceProviderAliases: aliases,
-                enabled: providers[kind.providerID]?.shouldMergeOpencodeUsage(for: kind) ?? (kind == .glmCodingPlan)
-            )
-        }
-    }
 }
 
 // MARK: - Provider Config
@@ -886,10 +814,6 @@ struct ProviderConfig: Codable, Equatable {
 
     /// GLM Coding Plan 认证方式（apiKey / credential）
     var glmAuthMode: GlmAuthMode?
-
-    /// 是否把对应的 OpenCode provider 用量合并到菜单栏卡片。
-    /// nil = 使用 provider 的默认值：GLM 默认开启，其余 provider 默认关闭。
-    var mergeOpencodeUsage: Bool?
 
     /// 是否解析 ZCode 余额轮询日志，在 GLM 卡显示活动套餐（zcode-plan，如周末
     /// 体验套餐）的用量 / 剩余 / 过期时间。nil（字段不存在）= 关闭，不读日志。
@@ -950,7 +874,6 @@ struct ProviderConfig: Codable, Equatable {
     enum CodingKeys: String, CodingKey {
         case enabled, apiKey, displayName, refreshIntervalSeconds, authPath
         case glmAuthMode
-        case mergeOpencodeUsage
         case parseZcodeBalanceLog
         case parseZcodePlan
         case parseZcodeCredential
@@ -970,7 +893,6 @@ struct ProviderConfig: Codable, Equatable {
          refreshIntervalSeconds: Int? = nil,
          authPath: String? = nil,
          glmAuthMode: GlmAuthMode? = nil,
-         mergeOpencodeUsage: Bool? = nil,
          parseZcodeBalanceLog: Bool? = nil,
          parseZcodePlan: Bool? = nil,
          parseZcodeCredential: Bool? = nil,
@@ -990,7 +912,6 @@ struct ProviderConfig: Codable, Equatable {
         self.refreshIntervalSeconds = refreshIntervalSeconds
         self.authPath = authPath
         self.glmAuthMode = glmAuthMode
-        self.mergeOpencodeUsage = mergeOpencodeUsage
         self.parseZcodeBalanceLog = parseZcodeBalanceLog
         self.parseZcodePlan = parseZcodePlan
         self.parseZcodeCredential = parseZcodeCredential
@@ -1019,7 +940,6 @@ struct ProviderConfig: Codable, Equatable {
         self.authPath = try c.decodeIfPresent(String.self, forKey: .authPath)
         self.glmAuthMode = (try? c.decode(String.self, forKey: .glmAuthMode))
             .flatMap(GlmAuthMode.init(rawValue:))
-        self.mergeOpencodeUsage = try c.decodeIfPresent(Bool.self, forKey: .mergeOpencodeUsage)
         self.parseZcodeBalanceLog = try c.decodeIfPresent(Bool.self, forKey: .parseZcodeBalanceLog)
         self.parseZcodePlan = try c.decodeIfPresent(Bool.self, forKey: .parseZcodePlan)
         self.parseZcodeCredential = try c.decodeIfPresent(Bool.self, forKey: .parseZcodeCredential)
@@ -1043,12 +963,6 @@ struct ProviderConfig: Codable, Equatable {
 }
 
 extension ProviderConfig {
-    /// OpenCode 合并开关的兼容默认值。GLM 在该功能引入前就使用 OpenCode，
-    /// 因此缺失配置时继续保持开启；其它 provider 保持原有的本地 Scanner 口径。
-    func shouldMergeOpencodeUsage(for kind: ProviderKind) -> Bool {
-        mergeOpencodeUsage ?? (kind == .glmCodingPlan)
-    }
-
     /// 真正可用的 API Key：剔除空白 / 空 / 模板占位符（含 "REPLACE"）。
     ///
     /// 之前调用点（ConfigStore 日志 / AppState rebuildStatuses / AppState refreshProviderDirectly）

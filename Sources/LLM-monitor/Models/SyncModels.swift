@@ -287,7 +287,7 @@ struct FleetNodeSnapshot: Codable, Equatable, Sendable {
     let dailyBuckets: [FleetDailyBucket]
     let windowUsage: [FleetWindowUsage]
     let quotas: [FleetQuotaReport]
-    /// 该节点的归因设置指纹（§7.8）：≥2 种不同指纹 → 设置页提示「口径之和」。
+    /// 该节点的归因规则指纹（§7.8）：≥2 种不同指纹 → 设置页提示「口径之和」。
     /// 旧快照缺该字段按 nil（未知，不参与比较）。
     let attributionFingerprint: String?
 }
@@ -646,9 +646,9 @@ enum FleetReportValidator {
 
 // MARK: - 归因指纹（§7.8）
 
-/// 跨机可比较的归因设置指纹：SHA256 前 8 个十六进制字符。不能用 `Hasher`
-/// ——它的种子每个进程不同。别名与 enabled 都进指纹：两者任何一个变化都会
-/// 改变归属结果。
+/// 跨机可比较的归因规则指纹：SHA256 前 8 个十六进制字符。不能用 `Hasher`
+/// ——它的种子每个进程不同。新版本使用全部有效的内置路由；仍保留 enabled
+/// 在序列化中的位置，以识别旧版本按开关过滤用量时的归因口径差异。
 enum FleetAttributionFingerprint {
     static func compute(_ bindings: [ClientProviderBinding]) -> String {
         let normalized = bindings

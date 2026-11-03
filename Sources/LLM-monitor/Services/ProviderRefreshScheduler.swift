@@ -24,7 +24,7 @@ struct RefreshJobToken: Equatable, Sendable {
 /// - 单一常驻 Task 循环，维护每个 provider 的 nextDue 时间；
 /// - 循环睡眠到"最早的下一个截止时间"（regular、mid-cycle reset 或非网络辅助 deadline）；
 /// - 醒来后并发刷新所有到期的 provider（TaskGroup + 条目级 do-catch 隔离，互不阻塞）；
-/// - 既有语义逐条保留：启动首拍 .full、之后 .background、每 20 次 background 补一次 full、
+/// - 既有语义逐条保留：启动首拍 .full、之后以 N 拍周期刷新次要信息（其余拍为 .background）、
 ///   失败与 deferred 都按 baseInterval 固定间隔随下一定时周期重试（不指数退避）、
 ///   mid-cycle reset+15s 一次性补刷新（与 regular 共用 deadline driver）、健康窗口边界
 ///   （只回调 UI，不发网络请求）、ManualRefreshGate 与在飞刷新合并、配置热加载走
@@ -76,7 +76,7 @@ final class ProviderRefreshScheduler {
     private var managedProviderOrder: [String] = []
     /// 各 provider 常规刷新的下一次触发时间。UI footer 展示其中最早的一个。
     private var nextRefreshDates: [String: Date] = [:]
-    /// 已执行的 background 刷新次数；每 periodicFullEveryN 次补一次 .full。
+    /// 上次 .full 后已执行的 background 刷新次数；达到周期所需 background 拍数后下一拍 .full。
     private var backgroundsSinceFull: [String: Int] = [:]
     /// 当前排期所依据的 interval 快照。配置重载的差异化重排用它区分
     /// 「只是别的 provider 变了」与「这个 provider 自己的间隔变了」——
@@ -145,8 +145,8 @@ final class ProviderRefreshScheduler {
     /// 可注入的 sleep，生产默认为真实 Task.sleep；测试可注入立即返回的实现，
     /// 不必等待真实 15 秒。
     private let sleep: @Sendable (TimeInterval) async throws -> Void
-    /// 每 N 次 background 刷新后补一次 .full（让 reset credits 等只在 full 抓取的字段
-    /// 也能周期性更新）。生产默认 20。0 表示永不周期 full（只靠启动/手动 full）。
+    /// 次要信息刷新频率：每 N 拍执行一次 .full（其余为 .background），让 reset credits
+    /// 等只在 full 抓取的字段也能周期性更新。生产默认 20。0 表示禁用周期 full。
     private(set) var periodicFullEveryN: Int
     private let systemWakeWindow: TimeInterval
 
@@ -180,7 +180,7 @@ final class ProviderRefreshScheduler {
         self.onHealthBoundary = onHealthBoundary
         self.now = now
         self.midCycleResetDelay = midCycleResetDelay
-        self.periodicFullEveryN = max(periodicFullEveryN, 0)
+        self.periodicFullEveryN = min(max(periodicFullEveryN, 0), AppConfig.periodicFullEveryNRange.upperBound)
         self.systemWakeWindow = max(systemWakeCoalesceWindow, 0)
         self.sleep = sleep
     }
@@ -268,11 +268,11 @@ final class ProviderRefreshScheduler {
         return true
     }
 
-    /// 更新全量刷新周期倍率（每 N 次 background 补一次 full）。
+    /// 更新次要信息刷新频率（每 N 拍一次 .full；0 表示禁用周期 full）。
     func updatePeriodicFullEveryN(_ newN: Int) {
-        let valid = max(newN, 0)
+        let valid = min(max(newN, 0), AppConfig.periodicFullEveryNRange.upperBound)
         guard periodicFullEveryN != valid else { return }
-        logInfo("ProviderRefreshScheduler: 全量刷新周期倍率变更 \(periodicFullEveryN) → \(valid)")
+        logInfo("ProviderRefreshScheduler: 次要信息刷新频率变更 \(periodicFullEveryN) → \(valid) 拍/周期")
         periodicFullEveryN = valid
     }
 
@@ -409,7 +409,7 @@ final class ProviderRefreshScheduler {
                     let mode: RefreshMode
                     if !hasDoneFirstRefresh.contains(id) {
                         mode = .full
-                    } else if periodicFullEveryN > 0 && (backgroundsSinceFull[id] ?? 0) >= periodicFullEveryN {
+                    } else if periodicFullEveryN > 0 && (backgroundsSinceFull[id] ?? 0) >= periodicFullEveryN - 1 {
                         mode = .full
                     } else {
                         mode = .background

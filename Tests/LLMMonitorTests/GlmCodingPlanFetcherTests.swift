@@ -241,8 +241,7 @@ final class GlmCodingPlanFetcherTests: XCTestCase {
                     glmAuthMode: .credential,
                     notifyCampaign: .barkAndSystem
                 )
-            ],
-            clientBindings: []
+            ]
         )
 
         let descriptors = [

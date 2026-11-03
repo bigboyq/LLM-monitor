@@ -5,7 +5,7 @@ import SQLite3
 /// ZCode 是多 provider 共享账本：`model_usage` 表里既有智谱系行（进 GLM 卡），
 /// 也有用户自带的非智谱行（`minimax` / `deepseek`，按 `ZcodeProviderSlice` 切出
 /// 分片并入 MiniMax / DeepSeek 卡）。本文件钉住这条链路：读库 → 分片 → 卡片贡献
-/// → 开关关闭后贡献消失，同时锁住 GLM 既有聚合不回归。
+/// → 按 provider 自动归因，同时锁住 GLM 既有聚合不回归。
 final class ZcodeProviderSliceTests: XCTestCase {
 
     // MARK: - fixture
@@ -560,8 +560,8 @@ final class ZcodeProviderSliceTests: XCTestCase {
     }
 
     /// 默认绑定开启时 MiniMax / DeepSeek 卡各自出现 ZCode 本地数据库用量贡献；
-    /// 关闭对应绑定后贡献整体消失，卡片数据回到其它来源。
-    func testZcodeSliceContributionsAppearPerCardAndRespectSwitch() throws {
+    /// 即使旧 binding 配置关闭，受支持 provider 的 ZCode 分片仍自动归因。
+    func testZcodeSliceContributionsAppearPerCardRegardlessOfLegacySwitch() throws {
         let usage = sliceFixture()
 
         var deepseek = makeStatus(kind: .deepseek)
@@ -583,12 +583,14 @@ final class ZcodeProviderSliceTests: XCTestCase {
         XCTAssertTrue(minimaxProjection.clientIDs.contains(ClientID.zcode))
         XCTAssertEqual(minimaxProjection.dailyTokenUsage.first?.rounds, 6)
 
-        // 绑定关闭：贡献消失（帧不产出）。
+        // 旧绑定开关不应阻断已有 provider 分片的归因。
         deepseek.setClientBindingEnabled(
             clientID: ClientID.zcode, quotaProviderID: QuotaProviderID.deepseek, enabled: false
         )
-        XCTAssertTrue(deepseek.usageProjection(for: nil).clientIDs.isEmpty)
-        XCTAssertFalse(deepseek.usageProjection(for: nil).hasActivity)
+        let stillAttributed = deepseek.usageProjection(for: nil)
+        XCTAssertEqual(stillAttributed.clientIDs, [ClientID.zcode])
+        XCTAssertEqual(stillAttributed.dailyTokenUsage.first?.input, 23_771)
+        XCTAssertTrue(stillAttributed.hasActivity)
 
         // GLM 卡不消费 zcode 分片（没有 zcode → zhipu 绑定）：无智谱用量时不凭空产生贡献。
         let glm = makeStatus(kind: .glmCodingPlan)
@@ -621,8 +623,7 @@ final class ZcodeProviderSliceTests: XCTestCase {
 
     // MARK: - config
 
-    /// 默认绑定：zcode → minimax / deepseek 默认开启（与 opencode → deepseek 的
-    /// 默认关闭不同：ZCode 里这两路 provider 是用户显式配过的上游）。
+    /// ZCode 与 OpenCode 的已支持分片始终自动归因。
     func testDefaultBindingsEnableZcodeSlices() {
         XCTAssertTrue(
             AppConfig.default.isClientBindingEnabled(
@@ -634,21 +635,11 @@ final class ZcodeProviderSliceTests: XCTestCase {
                 clientID: ClientID.zcode, quotaProviderID: QuotaProviderID.deepseek
             )
         )
-        XCTAssertFalse(
+        XCTAssertTrue(
             AppConfig.default.isClientBindingEnabled(
                 clientID: ClientID.openCode, quotaProviderID: QuotaProviderID.deepseek
             ),
-            "OpenCode → DeepSeek 的既有默认关闭语义不应被改动"
-        )
-
-        var config = AppConfig.default
-        config.setClientBindingEnabled(
-            clientID: ClientID.zcode, quotaProviderID: QuotaProviderID.deepseek, enabled: false
-        )
-        XCTAssertFalse(
-            config.isClientBindingEnabled(
-                clientID: ClientID.zcode, quotaProviderID: QuotaProviderID.deepseek
-            )
+            "OpenCode 的真实 DeepSeek 用量也应自动归因"
         )
     }
 

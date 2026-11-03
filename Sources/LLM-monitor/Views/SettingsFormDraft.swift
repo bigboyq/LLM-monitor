@@ -20,7 +20,6 @@ struct SettingsFormDraft: Equatable {
     var holidaySource: String = ""
     var providerCardOrder: [String] = []
     var alertThresholds: AlertThresholdConfig = .default
-    var clientBindings: [ClientProviderBinding] = AppConfig.defaultClientBindings
 
     // Bark
     var barkEnabled: Bool = false
@@ -77,6 +76,13 @@ struct SettingsFormDraft: Equatable {
 
     init() {}
 
+    /// 常规与 Provider 设置共用的预计周期，按运行时的有效主刷新间隔折算。
+    func secondaryInfoRefreshInterval(providerInterval: Int = 0) -> Int {
+        let interval = providerInterval > 0 ? providerInterval : globalInterval
+        let effectiveInterval = min(max(interval, 10), AppConfig.maximumRefreshIntervalSeconds)
+        return effectiveInterval * periodicFullEveryN
+    }
+
     static func defaultBillingTime() -> Date {
         var components = DateComponents()
         components.hour = 8
@@ -102,7 +108,6 @@ struct SettingsFormDraft: Equatable {
 
         holidaySource = config.holidaySource ?? HolidayCalendar.defaultSourceURL
         alertThresholds = config.effectiveAlertThresholds
-        clientBindings = config.clientBindings
 
         if let bark = config.bark {
             barkEnabled = bark.enabled

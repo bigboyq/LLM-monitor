@@ -1022,10 +1022,7 @@ final class AppState: ObservableObject {
                 isScanningLocalUsage: preserved.isScanningLocalUsage,
                 localUsageFreshness: preserved.localUsageFreshness
             )
-            // client → quota 绑定注册表逐字跟随 config（P2 单一事实源）：共享账本
-            // 切片（opencode / zcode 分片）的门控与 dsh 帧的归属解析都由
-            // `status.clientBindings` 派生，不再有派生 bool（旧 mergeOpencodeUsage /
-            // mergeZcodeUsage 已删除）。
+            // 兼容状态快照使用内置自动归因表；AppConfig 此出口只读、不再落盘。
             statusItem.clientBindings = configStore.config.clientBindings
             statusItem.antigravityLocalUsage = preserved.antigravityLocalUsage
             statusItem.minimaxLocalUsage = preserved.minimaxLocalUsage

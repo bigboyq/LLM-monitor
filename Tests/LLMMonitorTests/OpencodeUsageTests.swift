@@ -33,20 +33,13 @@ final class OpencodeUsageTests: XCTestCase {
         XCTAssertEqual(scanner.lastResult, snapshot)
     }
 
-    func testOpencodeMergeDefaultsPreserveGLMCompatibility() throws {
-        let oldConfig = try JSONDecoder().decode(
-            ProviderConfig.self,
-            from: Data(#"{"enabled":true}"#.utf8)
-        )
-
-        XCTAssertTrue(oldConfig.shouldMergeOpencodeUsage(for: .glmCodingPlan))
-        XCTAssertFalse(oldConfig.shouldMergeOpencodeUsage(for: .minimaxTokenPlan))
-        XCTAssertFalse(oldConfig.shouldMergeOpencodeUsage(for: .codexChatGpt))
-        XCTAssertFalse(oldConfig.shouldMergeOpencodeUsage(for: .antigravity))
-
-        var explicitlyDisabled = oldConfig
-        explicitlyDisabled.mergeOpencodeUsage = false
-        XCTAssertFalse(explicitlyDisabled.shouldMergeOpencodeUsage(for: .glmCodingPlan))
+    func testOpencodeAutomaticallyAttributesEverySupportedProvider() {
+        for kind in ProviderKind.allCases {
+            XCTAssertTrue(AppConfig.default.isClientBindingEnabled(
+                clientID: ClientID.openCode,
+                quotaProviderID: kind.quotaProviderID
+            ))
+        }
     }
 
     func testMergeAddsDailyFieldsAndNamespacesPrompts() throws {
@@ -151,13 +144,13 @@ final class OpencodeUsageTests: XCTestCase {
             "OpenCode sample 必须带命名空间前缀"
         )
 
-        // opencode → minimax 绑定关闭时 OpenCode 贡献整体消失。
+        // 旧配置中的 disabled binding 不再阻止受支持 provider 的自动归因。
         status.setClientBindingEnabled(
             clientID: ClientID.openCode, quotaProviderID: QuotaProviderID.minimax, enabled: false
         )
-        let nativeOnly = status.usageProjection(for: nil)
-        XCTAssertEqual(nativeOnly.clientIDs, [ClientID.minimaxCode])
-        XCTAssertEqual(nativeOnly.dailyTokenUsage.first?.input, 10)
+        let stillAttributed = status.usageProjection(for: nil)
+        XCTAssertEqual(stillAttributed.clientIDs, [ClientID.minimaxCode, ClientID.openCode])
+        XCTAssertEqual(stillAttributed.dailyTokenUsage.first?.input, 15)
 
         let summary = LocalUsageSummaryBuilder.summary(
             // 只有 OpenCode 侧的样本带命名空间；native 账本保持裸 promptID。

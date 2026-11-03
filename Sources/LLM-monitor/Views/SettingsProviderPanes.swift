@@ -29,11 +29,39 @@ extension SettingsView {
                 Divider().padding(.vertical, 4)
             }
             intervalSliderField(label: "独立刷新频率", value: interval)
+            if kind == .codexChatGpt {
+                SettingsControlRow("重置卡 / 组织信息周期") {
+                    secondaryInfoCycleBadge(intervalOverride: interval.wrappedValue)
+                }
+            } else if kind == .antigravity {
+                SettingsControlRow("账号 / 套餐信息周期") {
+                    secondaryInfoCycleBadge(intervalOverride: interval.wrappedValue)
+                }
+            } else if kind == .glmCodingPlan && draft.glmAuthMode == .credential {
+                SettingsControlRow("重置卡 / 活动预计周期") {
+                    VStack(alignment: .trailing, spacing: 4) {
+                        secondaryInfoCycleBadge(intervalOverride: interval.wrappedValue)
+                        Text("运营活动需开启通知")
+                            .font(SettingsTypography.metadata)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
             Divider().padding(.vertical, 4)
             SettingsControlRow("立即刷新") {
                 providerRefreshButton(for: kind)
             }
         }
+    }
+
+    private func secondaryInfoCycleBadge(intervalOverride: Int) -> some View {
+        let seconds = draft.secondaryInfoRefreshInterval(providerInterval: intervalOverride)
+        return Text("预计 \(Formatters.formatInterval(seconds: seconds))")
+            .font(SettingsTypography.metadata)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(Capsule().fill(Color.secondary.opacity(0.1)))
     }
 
     var minimaxPane: some View {
