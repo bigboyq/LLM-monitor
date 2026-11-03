@@ -226,6 +226,187 @@ final class GlmZcodeAPIClientTests: XCTestCase {
         XCTAssertTrue(deliveries.isEmpty)
     }
 
+    func testParseMarketingTouchResponseRecognizesClaimablePlanBanner() throws {
+        let json = """
+        {
+          "code": 0,
+          "data": {
+            "deliveries": [
+              {
+                "campaign_id": "2101141259813175296",
+                "banner": {
+                  "background": {
+                    "args": {
+                      "zcode_plan": {
+                        "plan_id": "zcode-v3-start-plan-1103",
+                        "name": "ZCODE GLOBAL BUILD",
+                        "entitlements": [
+                          {
+                            "show_name": "GLM-5.3-Flash",
+                            "grant_units": 300000000
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  "buttons": [
+                    {
+                      "action": {
+                        "type": "claim_zcode_plan",
+                        "args": { "plan_id": "zcode-v3-start-plan-1103" }
+                      }
+                    }
+                  ],
+                  "success_popup": {
+                    "title": { "content": "领取成功", "format": "plaintext" }
+                  }
+                }
+              }
+            ]
+          }
+        }
+        """
+
+        let deliveries = try GlmZcodeAPIClient.parseMarketingTouchResponse(data: Data(json.utf8))
+        XCTAssertEqual(deliveries.count, 1)
+        XCTAssertEqual(deliveries[0].id, "2101141259813175296")
+        XCTAssertEqual(deliveries[0].planID, "zcode-v3-start-plan-1103")
+        XCTAssertEqual(deliveries[0].title, "ZCODE GLOBAL BUILD")
+        XCTAssertEqual(deliveries[0].body, "GLM-5.3-Flash 300000000 tokens 待领取")
+        XCTAssertNotEqual(deliveries[0].title, "领取成功")
+    }
+
+    func testParseMarketingTouchResponseKeepsClaimButtonPlanIDWithoutPlanDetails() throws {
+        let json = """
+        {
+          "code": 0,
+          "data": {
+            "deliveries": [
+              {
+                "campaign_id": "claim-only-campaign",
+                "banner": {
+                  "buttons": [
+                    {
+                      "action": {
+                        "type": "claim_zcode_plan",
+                        "args": { "plan_id": "zcode-claim-only-plan" }
+                      }
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        }
+        """
+
+        let deliveries = try GlmZcodeAPIClient.parseMarketingTouchResponse(data: Data(json.utf8))
+        XCTAssertEqual(deliveries.count, 1)
+        XCTAssertEqual(deliveries[0].id, "claim-only-campaign")
+        XCTAssertEqual(deliveries[0].planID, "zcode-claim-only-plan")
+        XCTAssertNil(deliveries[0].title)
+        XCTAssertNil(deliveries[0].body)
+    }
+
+    func testParseMarketingTouchResponseKeepsCampaignWithoutPlanAsUntitledDelivery() throws {
+        let json = """
+        {
+          "code": 0,
+          "data": {
+            "deliveries": [
+              { "campaign_id": "non-plan-campaign" }
+            ]
+          }
+        }
+        """
+
+        let deliveries = try GlmZcodeAPIClient.parseMarketingTouchResponse(data: Data(json.utf8))
+        XCTAssertEqual(deliveries.count, 1)
+        XCTAssertEqual(deliveries[0].id, "non-plan-campaign")
+        XCTAssertNil(deliveries[0].planID)
+        XCTAssertNil(deliveries[0].title)
+        XCTAssertNil(deliveries[0].body)
+    }
+
+    func testParseMarketingTouchResponsePrefersLegacyFieldsAndFallsBackFromWhitespace() throws {
+        let json = """
+        {
+          "code": 0,
+          "data": {
+            "deliveries": [
+              {
+                "id": "legacy-id",
+                "title": "Legacy title",
+                "body": "Legacy body",
+                "plan_id": "legacy-plan",
+                "campaign_id": "new-campaign-id",
+                "banner": {
+                  "background": {
+                    "args": {
+                      "zcode_plan": {
+                        "plan_id": "new-plan",
+                        "name": "New plan title",
+                        "entitlements": [
+                          { "show_name": "GLM-5.3-Flash", "grant_units": 300000000 }
+                        ]
+                      }
+                    }
+                  },
+                  "buttons": [
+                    {
+                      "action": {
+                        "type": "claim_zcode_plan",
+                        "args": { "plan_id": "button-plan" }
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "   ",
+                "title": "  ",
+                "body": "\\t",
+                "plan_id": " ",
+                "campaign_id": "fallback-campaign-id",
+                "banner": {
+                  "background": {
+                    "args": {
+                      "zcode_plan": {
+                        "plan_id": "fallback-plan",
+                        "name": "Fallback plan title",
+                        "entitlements": [
+                          { "show_name": "GLM-5.3-Flash", "grant_units": 300000000 }
+                        ]
+                      }
+                    }
+                  },
+                  "buttons": [
+                    {
+                      "action": {
+                        "type": "claim_zcode_plan",
+                        "args": { "plan_id": "button-fallback-plan" }
+                      }
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        }
+        """
+
+        let deliveries = try GlmZcodeAPIClient.parseMarketingTouchResponse(data: Data(json.utf8))
+        XCTAssertEqual(deliveries.count, 2)
+        XCTAssertEqual(deliveries[0].id, "legacy-id")
+        XCTAssertEqual(deliveries[0].planID, "legacy-plan")
+        XCTAssertEqual(deliveries[0].title, "Legacy title")
+        XCTAssertEqual(deliveries[0].body, "Legacy body")
+        XCTAssertEqual(deliveries[1].id, "fallback-campaign-id")
+        XCTAssertEqual(deliveries[1].planID, "button-fallback-plan")
+        XCTAssertEqual(deliveries[1].title, "Fallback plan title")
+        XCTAssertEqual(deliveries[1].body, "GLM-5.3-Flash 300000000 tokens 待领取")
+    }
+
     // MARK: - 4. 重置卡显示与截断 (prefix 3) 规则测试
 
     func testResetCardPrefix3Rule() {

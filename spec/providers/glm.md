@@ -570,6 +570,8 @@ zcode SaaS 活动套餐（如周末体验套餐 `ZCode Weekend Build`）、额�
 | 套餐展示 | `GlmActivityPlanBalancesView`：排在标准额度之后，渲染生效中活动套餐进度条与失效倒计时，以及生效前预告置灰条 |
 | 重置卡展示 | `QuotaWindowUsageSection.glmResetCardsModule`（`GlmResetCardsBlock`）：排在「额度窗口」之后，带有标题「重置卡详情」（`QuotaModuleTitle`），双列布局，左侧 5 小时卡 `5小时重置卡 (N)`、右侧周卡 `周重置卡 (N)`；每列最多展示前 3 张（`prefix(3)`），显示彩色紧迫度圆点、`MM-dd HH:mm` 与相对倒计时；无可用卡时不占卡片高度 |
 
+**营销活动响应解析**（`GlmZcodeAPIClient.parseMarketingTouchResponse`）：接受 `data.deliveries` 或顶层 `deliveries`。活动 ID 按非空的 `id` → `delivery_id` → `campaign_id` → 套餐 ID → 标题 → 正文回退；字符串先去首尾空白。旧格式的顶层 `title`、`body` / `content` 与 `plan_id` / `planID` 优先。banner 格式的套餐 ID 从 `banner.buttons[].action` 中 `type == "claim_zcode_plan"` 的 `args.plan_id` 获取，缺失时取 `banner.background.args.zcode_plan.plan_id`；标题回退该套餐的 `name`，正文回退其 `entitlements` 中有效的 `show_name` 与正数 `grant_units`，格式为 `GLM-5.3-Flash 300000000 tokens 待领取`（多项以 `；` 分隔）。不使用 `success_popup` 的领取成功文案。仅有 `campaign_id` 的其他营销活动也保留，通知沿用默认文案。
+
 ### 额度重置卡机制
 
 **机制**（[官方使用统计文档](https://zcode.z.ai/cn/docs/usage-stats)）：额度重置卡分
@@ -629,6 +631,7 @@ Bigmodel-Target-Type: PERSONAL                    # 个人账号固定为 PERSON
    - **营销活动触达（领鸡蛋）**：`GET https://zcode.z.ai/api/v1/marketing/touch?seq=1`
      - 需 `Authorization: Bearer <jwt>` + `X-Device-Mid` + `X-Client-Language: zh-CN`。
      - 实测返回 HTTP 200，`deliveries: []`（活动领取后为空；有活动未领取时返回活动 delivery 字典供触发推送）。
+     - 2026-11-03 实测未领活动 `ZCODE GLOBAL BUILD`：delivery 使用 `campaign_id`，`banner.background.args.zcode_plan` 提供套餐名称与 GLM-5.3-Flash 300,000,000 tokens 权益，`banner.buttons[].action.type == "claim_zcode_plan"` 提供领取动作。已领取套餐余额接口此时仍可返回空列表，未领提醒必须读取 marketing 接口；解析回归见 `GlmZcodeAPIClientTests.testParseMarketingTouchResponseRecognizesClaimablePlanBanner`。
 
 ### 直连接口 vs 日志解析 架构对比
 
@@ -799,4 +802,4 @@ whether the quota batch succeeded. GLM's former dedicated periodic trigger
 The scanner's db+WAL fingerprint check is unchanged: when nothing changed only a `stat()`
 runs (microseconds); SQL (~1.5ms) only runs when the WAL actually moved.
 
-> 核对基线：2026-10-31 · 代码 fd0fb98
+> 核对基线：2026-11-03 · 代码 43ef171

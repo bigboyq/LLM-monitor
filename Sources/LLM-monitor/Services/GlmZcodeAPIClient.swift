@@ -348,14 +348,43 @@ enum GlmZcodeAPIClient {
     }
 
     static func parseMarketingTouchResponse(data: Data) throws -> [GlmMarketingDelivery] {
+        struct EntitlementRaw: Decodable {
+            let show_name: String?
+            let grant_units: Int?
+        }
+        struct PlanRaw: Decodable {
+            let plan_id: String?
+            let name: String?
+            let entitlements: [EntitlementRaw]?
+        }
+        struct ArgsRaw: Decodable {
+            let plan_id: String?
+            let zcode_plan: PlanRaw?
+        }
+        struct BackgroundRaw: Decodable {
+            let args: ArgsRaw?
+        }
+        struct ActionRaw: Decodable {
+            let type: String?
+            let args: ArgsRaw?
+        }
+        struct ButtonRaw: Decodable {
+            let action: ActionRaw?
+        }
+        struct BannerRaw: Decodable {
+            let background: BackgroundRaw?
+            let buttons: [ButtonRaw]?
+        }
         struct DeliveryRaw: Decodable {
             let id: String?
             let delivery_id: String?
+            let campaign_id: String?
             let title: String?
             let body: String?
             let content: String?
             let plan_id: String?
             let planID: String?
+            let banner: BannerRaw?
         }
         struct TouchData: Decodable {
             let deliveries: [DeliveryRaw]?
@@ -377,19 +406,31 @@ enum GlmZcodeAPIClient {
 
         let rawList = envelope.data?.deliveries ?? envelope.deliveries ?? []
         var deliveries: [GlmMarketingDelivery] = []
+        func nonEmpty(_ value: String?) -> String? {
+            guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !value.isEmpty else { return nil }
+            return value
+        }
         for raw in rawList {
-            let title = raw.title?.trimmingCharacters(in: .whitespacesAndNewlines)
-            let body = (raw.body ?? raw.content)?.trimmingCharacters(in: .whitespacesAndNewlines)
-            let planID = raw.plan_id ?? raw.planID
-
-            let fallbackID: String? = {
-                if let t = title, !t.isEmpty { return t }
-                if let b = body, !b.isEmpty { return b }
-                return nil
-            }()
-
-            let candidateID = raw.id ?? raw.delivery_id ?? raw.plan_id ?? raw.planID ?? fallbackID
-            guard let id = candidateID, !id.isEmpty else {
+            // 真实 banner 响应以 campaign_id 标识活动，套餐信息与领取按钮位于 banner 内。
+            // success_popup 描述领取后的状态，不用其中的“领取成功”文案生成提醒。
+            let plan = raw.banner?.background?.args?.zcode_plan
+            let claimPlanID = raw.banner?.buttons?.compactMap { button -> String? in
+                guard button.action?.type == "claim_zcode_plan" else { return nil }
+                return nonEmpty(button.action?.args?.plan_id)
+            }.first
+            let planID = nonEmpty(raw.plan_id) ?? nonEmpty(raw.planID)
+                ?? claimPlanID ?? nonEmpty(plan?.plan_id)
+            let title = nonEmpty(raw.title) ?? nonEmpty(plan?.name)
+            let entitlementSummary = (plan?.entitlements ?? []).compactMap { entitlement -> String? in
+                guard let name = nonEmpty(entitlement.show_name),
+                      let units = entitlement.grant_units, units > 0 else { return nil }
+                return "\(name) \(units) tokens 待领取"
+            }.joined(separator: "；")
+            let body = nonEmpty(raw.body) ?? nonEmpty(raw.content) ?? nonEmpty(entitlementSummary)
+            let candidateID = nonEmpty(raw.id) ?? nonEmpty(raw.delivery_id)
+                ?? nonEmpty(raw.campaign_id) ?? planID ?? title ?? body
+            guard let id = candidateID else {
                 continue
             }
             deliveries.append(GlmMarketingDelivery(id: id, title: title, body: body, planID: planID))
