@@ -15,9 +15,9 @@ struct ModelQuota: Equatable, Codable, Sendable {
         case "music":         return "音乐生成"
         case "tts":           return "TTS"
         case "chatgpt_plan":  return "ChatGPT Plan"
-        case AntigravityModelKind.geminiModels.rawValue: return "Gemini Models"
-        case AntigravityModelKind.geminiArgon.rawValue: return "Gemini 4 Argon"
-        case AntigravityModelKind.claudeAndGptModels.rawValue: return "Claude and GPT models"
+        case AntigravityModelKind.geminiModels.rawValue: return AntigravityModelKind.geminiModels.displayName
+        case AntigravityModelKind.geminiArgon.rawValue: return AntigravityModelKind.geminiArgon.displayName
+        case AntigravityModelKind.claudeAndGptModels.rawValue: return AntigravityModelKind.claudeAndGptModels.displayName
         case "glm_coding_plan": return "GLM Coding Plan"
         case "deepseek_balance": return "DeepSeek API 余额"
         default:              return modelName

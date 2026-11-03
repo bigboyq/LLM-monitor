@@ -83,17 +83,34 @@ extension SettingsView {
 
                 SettingsControlRow("次要信息频率", alignment: .top) {
                     VStack(alignment: .trailing, spacing: 6) {
-                        Picker("", selection: $draft.periodicFullEveryN) {
-                            ForEach(AppConfig.periodicFullEveryNRange, id: \.self) { multiple in
-                                Text("\(multiple) 倍").tag(multiple)
+                        let frequencyRange = AppConfig.periodicFullEveryNRange
+                        Slider(
+                            value: Binding(
+                                get: { Double(draft.periodicFullEveryN) },
+                                set: { value in
+                                    draft.periodicFullEveryN = min(
+                                        max(Int(value.rounded()), frequencyRange.lowerBound),
+                                        frequencyRange.upperBound
+                                    )
+                                }
+                            ),
+                            in: Double(frequencyRange.lowerBound)...Double(frequencyRange.upperBound),
+                            step: 1,
+                            label: { EmptyView() },
+                            minimumValueLabel: {
+                                Text("\(frequencyRange.lowerBound) 倍")
+                                    .font(SettingsTypography.metadata)
+                                    .foregroundStyle(.secondary)
+                            },
+                            maximumValueLabel: {
+                                Text("\(frequencyRange.upperBound) 倍")
+                                    .font(SettingsTypography.metadata)
+                                    .foregroundStyle(.secondary)
                             }
-                        }
-                        .labelsHidden()
-                        .pickerStyle(.menu)
-                        .frame(width: SettingsLayout.standardControlWidth, alignment: .trailing)
+                        )
 
                         let totalSec = draft.secondaryInfoRefreshInterval()
-                        Text("预计 \(Formatters.formatInterval(seconds: totalSec))（按默认频率）")
+                        Text("当前：\(draft.periodicFullEveryN) 倍 · 预计 \(Formatters.formatInterval(seconds: totalSec))")
                             .font(SettingsTypography.metadata)
                             .foregroundStyle(.secondary)
                             .padding(.horizontal, 8)

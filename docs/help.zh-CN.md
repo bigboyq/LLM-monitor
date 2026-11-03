@@ -79,6 +79,7 @@ GLM 与 DeepSeek 的高峰判定都以北京时间（Asia/Shanghai）为准，�
 
 ## 日常操作
 
+- 设置 → 用量：每个 Harness 按 Provider 和共享额度池分组。同一池的 5 小时与周窗口放在一组；Antigravity、Agy 以及归入 Antigravity 的 OpenCode 用量分为 Gemini Models、Gemini 4 Argon、Claude and GPT models。ZCode 保留 Coding Plan、Start Plan 等套餐及其他 Provider 分组。无法确认额度池的样本与仅保留日汇总的差额单列「未归属额度池」，总 Token 不因此减少。
 - 独立账号、套餐和组织资料查询也走「次要信息频率」：Antigravity 的账号与套餐、ChatGPT API 赠金缺组织名称时的组织资料查询已归入其中。跳过查询的后台刷新保留已有名称，同时更新额度与金额。GLM 额度响应附带的套餐级别、Codex 本地鉴权文件中的邮箱/套餐无需额外查询，随主流程读取。
 - 设置 → 常规 →「默认刷新频率」控制没有独立间隔的 Provider 主额度与余额更新；「次要信息频率」选择 1～30 倍（默认 20 倍），控制 ChatGPT 重置卡、GLM 重置卡与可领取活动。预计周期按对应 Provider 的有效刷新间隔 × 倍率计算，Provider 设置页会显示各自的预计时间。例如主频率 3 分钟、次要信息 2 倍时，预计 6 分钟更新一次；1 倍时每次都更新。GLM 活动套餐余额和 ChatGPT API 赠金仍随主频率更新。本地 token 扫描与高峰倒计时独立于该倍率。
 - 点击菜单栏图标：打开或关闭主面板。

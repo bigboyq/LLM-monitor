@@ -35,10 +35,10 @@ extension SettingsView {
 
         return VStack(alignment: .leading, spacing: 16) {
             SettingsSection(
-                title: "已识别的 Provider",
+                title: "额度池分组",
                 footer: providers.isEmpty
                     ? "暂未发现这个客户端产生的本地 Token 数据。使用客户端完成一次模型调用后，重新扫描即可显示。"
-                    : "仅显示最近扫描到实际 Token 活动的 Provider。展开行可查看总 Token、缓存命中率和按公开 API 单价估算的价值。"
+                    : "按 Provider 与共享额度池分类，同一池的 5 小时和周额度放在一组。展开可查看 Token 用量、模型与估算价值。"
             ) {
                 if providers.isEmpty {
                     emptyClientState(client)

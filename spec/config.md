@@ -80,7 +80,7 @@ The app reads and writes this shape:
 | `providers.<id>.notifyIntervalRestored` / `notifyIntervalExhausted` / `notifyWeeklyRestored` / `notifyWeeklyExhausted` | provider | 四类额度事件各自的推送渠道（`QuotaNotifyChannel`：`none` / `system` / `barkAndSystem`）。字段不存在 = 默认渠道（恢复 → 系统通知，耗尽 → 不通知），与引入通知配置前的行为一致。 |
 | `clientBindings[]` | removed | 历史 Harness 归因开关与别名配置；解码忽略、不再编码。全部已支持来源按内置 provider 路由自动归因，旧 `enabled: false` 不再屏蔽真实用量；无法识别的 provider 不猜测归属。`AppConfig.clientBindings` 仅为只读内置路由的运行时兼容出口。 |
 | `alerts` | global | 集中告警阈值配置（`AlertThresholdConfig`）。缺省或 nil 使用默认值（API 配额余量警告 60%、危险 30%；DeepSeek 余额警告 10、危险 3）。字段：`apiQuotaWarningPercent` (1...100, 默认 60)、`apiQuotaCriticalPercent` (1...100, 默认 30)、`deepseekBalanceWarning` (0..., 默认 10)、`deepseekBalanceCritical` (0..., 默认 3)。始终自动约束 `critical <= warning`。控制状态栏健康圆点、双环色段、卡片头部及 Edge Dock 呼吸环的红黄告警分档。 |
-| `periodicFullEveryN` | global | 次要信息频率相对 Provider 刷新间隔的倍率（Int，范围 1...30，默认 20）。沿用历史配置键；每 N 拍常规刷新有一次全量（`.full`），1 倍时每拍都抓取次要信息。设置页「常规」Tab 通过倍数下拉框配置，预计周期见各 Provider 设置。受影响范围详见下文。 |
+| `periodicFullEveryN` | global | 次要信息频率相对 Provider 刷新间隔的倍率（Int，范围 1...30，默认 20）。沿用历史配置键；每 N 拍常规刷新有一次全量（`.full`），1 倍时每拍都抓取次要信息。设置页「常规」Tab 通过倍数滑块配置，预计周期见各 Provider 设置。受影响范围详见下文。 |
 | `providers.<id>.mergeOpencodeUsage` | removed | 历史 OpenCode 合并开关；解码忽略、保存清理，不再影响用量归因。 |
 
 `ProviderConfig.encode(to:)` omits nil optional fields, so saved config only includes relevant keys. `ConfigStore.applyAndSave()` writes pretty-printed, sorted-key JSON and reapplies `0600`.
@@ -271,4 +271,4 @@ CHANGELOG 最新条目、两份 README 的「当前版本」/DMG 名/build-relea
 的旧文案「按本机时区计算、可在设置中调整」直到发版前才发现，只因 `build-release.sh` 的
 版本门禁全绿而放行。**功能口径变了，用户文档必须同轮改**。
 
-> 核对基线：2026-11-03 · 代码 d07fa47
+> 核对基线：2026-11-03 · 代码 94bc4f4

@@ -4,11 +4,11 @@
 
 LLM Monitor is a macOS 14+ menu bar app for viewing quota, balance, reset times, health, and local token usage across multiple LLM services.
 
-> Current version: **2.2.0** · Apple Silicon (arm64) · Credentials and usage caches stay on your Mac
+> Current version: **2.3.0** · Apple Silicon (arm64) · Credentials and usage caches stay on your Mac
 
 ## Download
 
-1. Download `LLM-monitor-2.2.0.dmg` from [GitHub Releases](https://github.com/bigboyq/LLM-monitor/releases/latest).
+1. Download `LLM-monitor-2.3.0.dmg` from [GitHub Releases](https://github.com/bigboyq/LLM-monitor/releases/latest).
 2. Open the DMG and drag **LLM-monitor.app** to **Applications**.
 3. Launch the app, click its menu bar icon, open Settings, and enable the providers you use.
 
@@ -18,19 +18,19 @@ The public snapshot is ad-hoc signed and is not Apple-notarized. If macOS blocks
 
 | Provider | Remote data | Local usage | Authentication |
 |---|---|---|---|
-| Minimax Token Plan | Plan quota API | Minimax v2 SQLite; ZCode slices (on by default), optional OpenCode merge | Token Plan API key |
-| ChatGPT Plan / Codex | ChatGPT usage API | Codex session logs; optional OpenCode merge | `~/.codex/auth.json` |
-| Antigravity | Local language-server RPC | Local trajectory metadata RPC; optional OpenCode merge | Existing Antigravity session |
-| GLM Coding Plan | GLM quota API | ZCode SQLite; OpenCode merge (on by default) | Coding Plan key |
-| DeepSeek | Account balance API | ZCode slices (on by default), optional OpenCode merge | DeepSeek API key |
+| Minimax Token Plan | Plan quota API | Minimax v2 SQLite; supported ZCode, OpenCode, and DSH sources are automatically attributed | Token Plan API key |
+| ChatGPT Plan / Codex | ChatGPT usage API | Codex session logs; supported OpenCode sources are automatically attributed | `~/.codex/auth.json` |
+| Antigravity | Local language-server RPC | Local trajectory metadata RPC; supported OpenCode sources are automatically attributed | Existing Antigravity session |
+| GLM Coding Plan | GLM quota API | ZCode SQLite; supported OpenCode and DSH sources are automatically attributed | Coding Plan key |
+| DeepSeek | Account balance API | Supported ZCode, OpenCode, and DSH sources are automatically attributed | DeepSeek API key |
 
 DeepSeek Harness (DSH) is not a separate menu-bar provider. It is a shared local
 session ledger, partitioned by the provider recorded in each `request/context`
-event and automatically merged into the Minimax, GLM, and DeepSeek cards. ZCode
+event and automatically attributed to the Minimax, GLM, and DeepSeek cards. ZCode
 is likewise a shared multi-provider ledger: Zhipu-family rows feed the GLM card,
-while `minimax` / `deepseek` rows are partitioned by prefix and merged into the
-corresponding cards (on by default, configurable via `clientBindings` in
-config.json). All client-local usage can be inspected under Settings → Clients.
+while `minimax` / `deepseek` rows are partitioned by provider and attributed to the
+matching cards. Supported sources are automatic; unknown provider IDs are not
+guessed into a card. All client-local usage can be inspected under Settings → Clients.
 
 ## Highlights
 
@@ -42,8 +42,12 @@ config.json). All client-local usage can be inspected under Settings → Clients
 - Hub-and-node usage sync across devices: a hub aggregates reports from nodes, with global, local, and per-node views.
 - The main menu provider cards can be arranged with a custom order under Settings → General → Main Menu Provider Order; other provider and client lists remain alphabetized.
 - Per-provider refresh intervals, exponential retry backoff, and live config reload.
+- Separate default and secondary-information refresh intervals. The 1–30× secondary-information slider controls reset cards and independent account, plan, and organization lookups; provider panes show estimated periods.
+- Supported harness usage is automatically attributed to quota cards without a user-facing binding switch. Provider enable/disable remains separate, and unknown provider IDs are not guessed.
+- GLM credential mode recognizes claimable plan details from ZCode campaign banners.
+- Settings → Usage classifies harness samples by quota pool, retaining ZCode's Coding/Start categories and splitting Antigravity, Agy, and OpenCode usage attributed to Antigravity into Gemini, Claude/GPT, and Argon groups. Unmatched samples and daily-bucket differences remain separate without changing authoritative totals; a pool's 5-hour and weekly windows count as one group.
 - GLM and DeepSeek peak-period indicators. Peak hours are always evaluated in Beijing time (Asia/Shanghai) and exclude statutory public holidays; the holiday table refreshes over the network by default and can be pinned to the bundled snapshot in Settings — see the [user guide](docs/help.en.md#holiday-data-source).
-- Optional OpenCode usage merging per provider, plus ZCode ledger slices for Minimax and DeepSeek (on by default).
+- Automatic attribution of supported OpenCode, ZCode, and DSH ledger slices by provider.
 - Launch-at-login support when the app is installed in `/Applications`.
 - macOS sleep health diagnosis and keep-awake management: 1-click in-memory keep-awake toggle on the menu footer (with tri-color indicator dot); dedicated "Energy" settings tab displaying sleep blockers and system power parameter matrix (backed by native IOKit C API with zero subprocess overhead).
 - Private local storage: configuration directories use mode `0700`; config and log files use `0600`.
@@ -62,7 +66,7 @@ config.json). All client-local usage can be inspected under Settings → Clients
     <td><img src="docs/images/provider-card-minimax.png" alt="LLM Monitor provider card (minimax)"></td>
   </tr>
   <tr>
-    <td align="center">Settings: client usage and provider mapping</td>
+    <td align="center">Settings: client usage attribution</td>
     <td align="center">Provider card: plan details, quota windows (analysis/usage) and the 7-day chart</td>
   </tr>
 </table>
@@ -105,7 +109,7 @@ Run the test and audit gates:
 Create a deterministic release app, DMG, and checksum file:
 
 ```bash
-./scripts/build-release.sh 2.2.0
+./scripts/build-release.sh 2.3.0
 ```
 
 `build-app.sh` controls whether the repository's `.build_number` changes:

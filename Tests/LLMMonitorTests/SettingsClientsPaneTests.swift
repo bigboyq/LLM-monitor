@@ -511,6 +511,129 @@ final class SettingsClientsPaneTests: XCTestCase {
         XCTAssertEqual(glmRows.first?.recentSamples.count, 7)
     }
 
+    func testAntigravityQuotaPoolRowsConserveDailyBucketsAndKeepUnknownSamples() {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        func sample(_ model: String, _ id: String, input: Int, cache: Int, output: Int, reasoning: Int) -> LocalTokenUsageSample {
+            LocalTokenUsageSample(
+                completedAt: today.addingTimeInterval(3_600),
+                modelName: model,
+                promptID: id,
+                inputTokens: input,
+                cachedInputTokens: cache,
+                outputTokens: output,
+                reasoningOutputTokens: reasoning
+            )
+        }
+        let samples = [
+            sample("gemini-3.8-flash", "g", input: 10, cache: 2, output: 3, reasoning: 1),
+            sample("gemini-4-argon-trial", "a", input: 20, cache: 4, output: 5, reasoning: 2),
+            sample("claude-opus", "c", input: 30, cache: 6, output: 7, reasoning: 3),
+            sample("future-unknown-model", "u", input: 40, cache: 8, output: 9, reasoning: 4)
+        ]
+        let authoritative = [UnifiedDailyTokenUsage(
+            dayStart: today,
+            input: 120,
+            cacheRead: 30,
+            output: 40,
+            reasoning: 20,
+            turns: 9,
+            rounds: 11
+        )]
+        let contribution = ClientUsageContribution(
+            clientID: ClientID.agy,
+            displayName: "agy",
+            dailyTokenUsage: authoritative,
+            recentSamples: samples
+        )
+        let status = ProviderStatus(
+            id: "antigravity", displayName: "Antigravity", kind: .antigravity,
+            iconSystemName: "circle", accentColor: .antigravity,
+            refreshIntervalSeconds: 300, state: .ready
+        )
+
+        let rows = ClientUsageAggregation.antigravityUsageRows(status: status, contribution: contribution)
+        XCTAssertEqual(rows.map(\.providerName), [
+            "Gemini Models", "Gemini 4 Argon", "Claude and GPT models", "未归属额度池"
+        ])
+        XCTAssertEqual(rows.map(\.clientID), Array(repeating: ClientID.agy, count: 4))
+        XCTAssertEqual(rows.last?.recentSamples.map(\.promptID), ["u"])
+        XCTAssertEqual(rows.map(\.recentSamples.count), [1, 1, 1, 1])
+
+        let daily = rows.compactMap { $0.dailyTokenUsage.first }
+        XCTAssertEqual(daily.reduce(0) { $0 + $1.input }, authoritative[0].input)
+        XCTAssertEqual(daily.reduce(0) { $0 + $1.cacheRead }, authoritative[0].cacheRead)
+        XCTAssertEqual(daily.reduce(0) { $0 + $1.output }, authoritative[0].output)
+        XCTAssertEqual(daily.reduce(0) { $0 + $1.reasoning }, authoritative[0].reasoning)
+        XCTAssertEqual(daily.reduce(0) { $0 + $1.turns }, authoritative[0].turns)
+        XCTAssertEqual(daily.reduce(0) { $0 + $1.rounds }, authoritative[0].rounds)
+
+        // Unknown samples contribute their own measured usage; the remaining daily
+        // difference is added to the same unattributed pool instead of overwriting it.
+        XCTAssertEqual(rows.last?.dailyTokenUsage.first?.input, 72)
+        XCTAssertEqual(rows.last?.dailyTokenUsage.first?.cacheRead, 18)
+        XCTAssertEqual(rows.last?.dailyTokenUsage.first?.output, 25)
+        XCTAssertEqual(rows.last?.dailyTokenUsage.first?.reasoning, 14)
+    }
+
+    func testAntigravitySourcesKeepTheirClientIdentityAndEmptySamplesKeepDailyTotals() {
+        let today = Calendar.current.startOfDay(for: Date())
+        let localDay = LocalDailyTokenUsage(
+            dayStart: today,
+            inputTokens: 50,
+            outputTokens: 12,
+            cacheReadTokens: 8,
+            reasoningTokens: 4,
+            totalTokens: 74,
+            turns: 2,
+            rounds: 3
+        )
+        var status = ProviderStatus(
+            id: "antigravity", displayName: "Antigravity", kind: .antigravity,
+            iconSystemName: "circle", accentColor: .antigravity,
+            refreshIntervalSeconds: 300, state: .ready
+        )
+        status.antigravityLocalUsage = AntigravityLocalUsage(
+            today: localDay, dailyTokenUsage: [localDay], scannedAt: Date(),
+            sessionCount: 1, eventCount: 1, failedSessionCount: 0,
+            recentSamples: [fixtureSample(provider: "native", input: 50)]
+        )
+        status.agyUsage = AgyLocalUsage(
+            dailyTokenUsage: [localDay], models: ["gemini-3.8-flash"],
+            recentSamples: [fixtureSample(provider: "agy", input: 50)],
+            sessionsRoot: nil, sessionCount: 1, eventCount: 1, scannedAt: Date()
+        )
+        let opencodeSlice = OpencodeProviderUsage(
+            today: localDay, dailyTokenUsage: [localDay], roundCount: 3,
+            recentSamples: [fixtureSample(provider: "opencode", input: 50)]
+        )
+        status.opencodeUsage = OpencodeLocalUsage(
+            byProvider: [OpencodeLocalUsage.antigravitySourceProviderID: opencodeSlice],
+            modelsByProvider: [:], dbPath: nil, scannedAt: Date()
+        )
+
+        let rowsByClient = ClientUsageAggregation.clientProviderUsageByClient(for: [status])
+        for clientID in [ClientID.antigravity, ClientID.agy, ClientID.openCode] {
+            let rows = try! XCTUnwrap(rowsByClient[clientID])
+            XCTAssertEqual(rows.map(\.clientID), [clientID])
+            XCTAssertEqual(rows.first?.totalTokens, 74)
+        }
+
+        let noSamples = ClientUsageContribution(
+            clientID: ClientID.agy,
+            displayName: "agy",
+            dailyTokenUsage: [UnifiedDailyTokenUsage(localDay)],
+            isTruncated: true,
+            samplesTruncated: true
+        )
+        let dailyOnlyRows = ClientUsageAggregation.antigravityUsageRows(status: status, contribution: noSamples)
+        XCTAssertEqual(dailyOnlyRows.map(\.usageGroupID), [AntigravityUsageGroup.unattributed.rawValue])
+        XCTAssertEqual(dailyOnlyRows.first?.totalTokens, 74)
+        XCTAssertTrue(dailyOnlyRows.first?.recentSamples.isEmpty == true)
+        XCTAssertTrue(dailyOnlyRows.first?.isTruncated == true)
+        XCTAssertTrue(dailyOnlyRows.first?.samplesTruncated == true)
+    }
+
     // MARK: - 侧栏分节（通用 / 额度 / 用量）
 
     @MainActor

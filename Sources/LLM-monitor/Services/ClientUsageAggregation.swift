@@ -7,24 +7,28 @@ enum ClientUsageTruncationNotice {
 }
 
 /// Model families shown under the Antigravity client in Settings.
-enum AntigravityUsageGroup: String, CaseIterable, Sendable {
-    case gemini
-    case claudeAndGPT
-    case other
+enum AntigravityUsageGroup: String, CaseIterable, Sendable, Hashable {
+    case gemini = "gemini_models"
+    case geminiArgon = "gemini_argon"
+    case claudeAndGPT = "claude_and_gpt_models"
+    case unattributed
 
     var displayName: String {
         switch self {
-        case .gemini: return "Gemini Models"
-        case .claudeAndGPT: return "Claude and GPT Models"
-        case .other: return "Other Models"
+        case .gemini: return AntigravityModelKind.geminiModels.displayName
+        case .geminiArgon: return AntigravityModelKind.geminiArgon.displayName
+        case .claudeAndGPT: return AntigravityModelKind.claudeAndGptModels.displayName
+        case .unattributed: return "未归属额度池"
         }
     }
 
     static func classify(modelName: String?) -> Self {
-        let model = modelName?.lowercased() ?? ""
-        if model.contains("gemini") { return .gemini }
-        if model.contains("claude") || model.contains("gpt") { return .claudeAndGPT }
-        return .other
+        switch AntigravityModelKind.pool(forSampleModelName: modelName) {
+        case .geminiModels: return .gemini
+        case .geminiArgon: return .geminiArgon
+        case .claudeAndGptModels: return .claudeAndGPT
+        case nil: return .unattributed
+        }
     }
 }
 
@@ -47,7 +51,7 @@ enum ClientUsageAggregation {
             let projection = status.diagnosticUsageProjection(for: status.lastSuccess)
             for contribution in projection.contributions {
                 guard contribution.hasActivity else { continue }
-                if contribution.clientID == ClientID.antigravity, status.kind == .antigravity {
+                if status.kind == .antigravity {
                     rowsByClient[contribution.clientID, default: []].append(
                         contentsOf: antigravityUsageRows(status: status, contribution: contribution)
                     )
@@ -83,6 +87,11 @@ enum ClientUsageAggregation {
                     let l = zcodeRowRank(lhs), r = zcodeRowRank(rhs)
                     if l != r { return l < r }
                 }
+                if lhs.quotaProviderID == QuotaProviderID.antigravity,
+                   rhs.quotaProviderID == QuotaProviderID.antigravity {
+                    let l = antigravityRowRank(lhs), r = antigravityRowRank(rhs)
+                    if l != r { return l < r }
+                }
                 if lhs.providerName != rhs.providerName {
                     return lhs.providerName.localizedCaseInsensitiveCompare(rhs.providerName) == .orderedAscending
                 }
@@ -111,9 +120,13 @@ enum ClientUsageAggregation {
         }
     }
 
-    /// Antigravity owns one quota account but can produce several billable model
-    /// families. Split the settings rows using the model name recorded in each
-    /// local sample so each row gets its own token totals and price estimate.
+    private static func antigravityRowRank(_ row: ClientProviderUsageSummary) -> Int {
+        AntigravityUsageGroup.allCases.firstIndex { $0.rawValue == row.usageGroupID }
+            ?? AntigravityUsageGroup.allCases.count
+    }
+
+    /// Antigravity owns several independent quota pools. Split every client
+    /// contribution attached to its provider card by the quota-side model family.
     static func antigravityUsageRows(
         status: ProviderStatus,
         contribution: ClientUsageContribution
@@ -126,33 +139,35 @@ enum ClientUsageAggregation {
             contribution.recentSamples,
             matching: contribution.dailyTokenUsage
         )
-        let groups: [AntigravityUsageGroup: [LocalTokenUsageSample]]
-        if displayedSamples.isEmpty {
-            let hasDisplayedDailyActivity = contribution.dailyTokenUsage.contains {
-                $0.totalTokens > 0 || $0.turns > 0 || $0.rounds > 0
-            }
-            groups = hasDisplayedDailyActivity ? [.other: []] : [:]
-        } else {
-            groups = Dictionary(grouping: displayedSamples) {
-                AntigravityUsageGroup.classify(modelName: $0.modelName)
+        let samplesByGroup = Dictionary(grouping: displayedSamples) {
+            AntigravityUsageGroup.classify(modelName: $0.modelName)
+        }
+        var dailyByGroup = samplesByGroup.mapValues {
+            dailyUsage(for: $0, matching: contribution.dailyTokenUsage)
+        }
+        let unassigned = unassignedDailyUsage(
+            authoritative: contribution.dailyTokenUsage,
+            allocated: dailyByGroup.values.flatMap { $0 }
+        )
+        if unassigned.contains(where: { $0.totalTokens > 0 || $0.turns > 0 || $0.rounds > 0 }) {
+            let existingByDay = Dictionary(
+                uniqueKeysWithValues: (dailyByGroup[.unattributed] ?? []).map { ($0.dayStart, $0) }
+            )
+            dailyByGroup[.unattributed] = unassigned.map { residual in
+                existingByDay[residual.dayStart].map { $0 + residual } ?? residual
             }
         }
 
-        return groups.keys.sorted {
-            let comparison = $0.displayName.localizedCaseInsensitiveCompare($1.displayName)
-            if comparison != .orderedSame { return comparison == .orderedAscending }
-            return $0.rawValue < $1.rawValue
+        return dailyByGroup.keys.sorted {
+            antigravityGroupRank($0) < antigravityGroupRank($1)
         }.map { group in
-            let samples = groups[group] ?? []
-            let daily = samples.isEmpty
-                ? contribution.dailyTokenUsage
-                : dailyUsage(for: samples, matching: contribution.dailyTokenUsage)
+            let samples = samplesByGroup[group] ?? []
             return ClientProviderUsageSummary(
-                clientID: ClientID.antigravity,
+                clientID: contribution.clientID,
                 quotaProviderID: status.kind.quotaProviderID,
                 providerName: group.displayName,
                 usageGroupID: group.rawValue,
-                dailyTokenUsage: daily,
+                dailyTokenUsage: dailyByGroup[group] ?? [],
                 recentSamples: samples,
                 scannedAt: contribution.scannedAt,
                 isTruncated: contribution.isTruncated,
@@ -160,6 +175,47 @@ enum ClientUsageAggregation {
                 deepseekPeakWindow: status.deepseekPeakWindow ?? .defaultWindow
             )
         }
+    }
+
+    /// Keep contribution.dailyTokenUsage authoritative when samples are capped,
+    /// absent, or do not describe every daily bucket. The remainder has no sample
+    /// and therefore cannot claim a model price or sample-derived speed.
+    private static func unassignedDailyUsage(
+        authoritative: [UnifiedDailyTokenUsage],
+        allocated: [UnifiedDailyTokenUsage]
+    ) -> [UnifiedDailyTokenUsage] {
+        var allocatedByDay: [Date: UnifiedDailyTokenUsage] = [:]
+        for day in allocated {
+            allocatedByDay[day.dayStart] = allocatedByDay[day.dayStart].map { $0 + day } ?? day
+        }
+
+        return authoritative.map { day in
+            let assigned = allocatedByDay[day.dayStart]
+            let input = positiveDifference(day.input, assigned?.input ?? 0)
+            let cacheRead = positiveDifference(day.cacheRead, assigned?.cacheRead ?? 0)
+            let output = positiveDifference(day.output, assigned?.output ?? 0)
+            let reasoning = positiveDifference(day.reasoning, assigned?.reasoning ?? 0)
+            return UnifiedDailyTokenUsage(
+                dayStart: day.dayStart,
+                input: input,
+                cacheRead: cacheRead,
+                output: output,
+                reasoning: reasoning,
+                turns: positiveDifference(day.turns, assigned?.turns ?? 0),
+                rounds: positiveDifference(day.rounds, assigned?.rounds ?? 0)
+            )
+        }
+    }
+
+    private static func positiveDifference(_ authoritative: Int, _ allocated: Int) -> Int {
+        let target = max(authoritative, 0)
+        let used = max(allocated, 0)
+        return target > used ? target - used : 0
+    }
+
+    private static func antigravityGroupRank(_ group: AntigravityUsageGroup) -> Int {
+        AntigravityUsageGroup.allCases.firstIndex(of: group)
+            ?? AntigravityUsageGroup.allCases.count
     }
 
     /// ZCode 一次扫描覆盖智谱系全部 provider 任务（Coding Plan / Start Plan /

@@ -235,6 +235,8 @@ Before every POST, `serverStillOwnsEndpoint(server)` re-runs `lsof -nP -a -p <pi
 
 ## Local RPCs
 
+用量设置的 Antigravity Provider 贡献按共享额度池拆组，适用于 Antigravity、Agy 及 OpenCode 等 Harness。`AntigravityModelKind.pool(forSampleModelName:)` 是样本分类入口：先识别 Argon，再识别 Claude / GPT（含 anthropic / openai 别名），再识别普通 Gemini；展示名来自同类型的 `displayName`，与额度卡一致。同一池的 5h / 周不重复分组。未知模型与留存样本未覆盖的日桶差额进入「未归属额度池」，不按模型估算其差额金额或速度；权威日桶总量保留。额度窗口对未知模型沿用 Gemini 的历史兜底，分组不改变该统计口径。
+
 `RetrieveUserQuotaSummary` runs on every provider refresh. Independent account/tier calls
 (`GetUserStatus` and `GetLoadCodeAssist`) run only on `.full`, following 「次要信息频率」
 (1...30 × the effective provider interval, default 20). On `.full`, all three run in parallel
@@ -1474,4 +1476,4 @@ This script:
 3. calls `RetrieveUserQuotaSummary`
 4. prints or writes the raw JSON
 
-> 核对基线：2026-11-03 · 代码 d07fa47
+> 核对基线：2026-11-03 · 代码 94bc4f4

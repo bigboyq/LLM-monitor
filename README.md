@@ -2,13 +2,13 @@
 
 [English](README.en.md) | **简体中文**
 
-适用于 macOS 14 及以上版本的菜单栏额度与本地用量监视器。一个入口集中查看 Minimax、ChatGPT/Codex、Antigravity、GLM Coding Plan 与 DeepSeek，并可选择合并 OpenCode、ZCode 与 DeepSeek Harness (dsh) 的本地 token 账本。
+适用于 macOS 14 及以上版本的菜单栏额度与本地用量监视器。一个入口集中查看 Minimax、ChatGPT/Codex、Antigravity、GLM Coding Plan 与 DeepSeek，并按 provider 自动归因 OpenCode、ZCode 与 DeepSeek Harness (dsh) 的本地 token 账本。
 
-> 当前版本：**2.2.0** · 支持 Apple Silicon (arm64) · 所有凭据和用量缓存只保存在本机
+> 当前版本：**2.3.0** · 支持 Apple Silicon (arm64) · 所有凭据和用量缓存只保存在本机
 
 ## 下载与安装
 
-1. 从 [GitHub Releases](https://github.com/bigboyq/LLM-monitor/releases/latest) 下载 `LLM-monitor-2.2.0.dmg`。
+1. 从 [GitHub Releases](https://github.com/bigboyq/LLM-monitor/releases/latest) 下载 `LLM-monitor-2.3.0.dmg`。
 2. 打开 DMG，将 **LLM-monitor.app** 拖到 **Applications**。
 3. 启动应用，点击菜单栏图标，进入“设置”启用并配置需要的 Provider。
 
@@ -23,6 +23,10 @@
 - 汇总 Codex、Minimax、Antigravity、ZCode、OpenCode 与 DeepSeek Harness (dsh) 的本地 token 用量。
 - 支持主副节点用量联动：主节点汇总多台设备数据，副节点定期上报；可在全局、本机和单节点视图间切换。
 - 支持每个 Provider 独立刷新、失败退避、手动刷新和配置热重载。
+- 设置页可分别调节默认刷新频率与 1～30 倍的次要信息频率滑块；后者控制重置卡和独立账号、套餐、组织信息查询，并展示各 Provider 的预计周期。
+- 已支持的 Harness 用量按 provider 自动归入额度卡，无需配置归因开关；无法识别的 provider 不会被猜测归类，Provider 自身启停设置保持独立。
+- GLM 凭证模式可识别 ZCode 活动 banner 中的领取计划与权益，形成准确的待领取活动提醒。
+- 设置 → 用量按额度池分类，显示 ZCode 的 Coding/Start 等分类，并将 Antigravity、Agy 与归因到 Antigravity 的 OpenCode 用量拆成 Gemini、Claude/GPT 与 Argon 三组。无法归类的样本与日桶差额单独列出，不改账本权威总量；同一额度池的 5 小时与周窗口只归为一组。
 - 提供 GLM/DeepSeek 高峰时段提示、最近 7 天图表和开机自启动。高峰一律按北京时间（Asia/Shanghai）判定，且法定节假日不计入高峰；节假日表默认联网更新，也可在设置中改为只用内置快照，详见[中文帮助](docs/help.zh-CN.md#节假日数据源)。
 - 主菜单 Provider 卡片可自定义显示顺序（设置 → 常规 → 主菜单 Provider 顺序）；客户端 tab、设置页 Provider tabs 与 Client tab 内的 Provider 行按显示名称字母顺序排列，仅主菜单卡片读取 `providerCardOrder`。
 - 提供 macOS 系统睡眠健康度与防休眠管理：主面板 Footer 一键就地切换「防止休眠」临时内存开关（带三色指示灯）；设置页「节能」Tab 展示健康度状态、霸占休眠锁的违规应用明细与系统电源参数矩阵（直通 IOKit 原生 API，免子进程开销）。
@@ -42,7 +46,7 @@
     <td><img src="docs/images/provider-card-minimax.png" alt="LLM Monitor Provider 卡片（minimax）"></td>
   </tr>
   <tr>
-    <td align="center">设置：客户端用量与 Provider 映射</td>
+    <td align="center">设置：客户端用量与 Provider 归属</td>
     <td align="center">Provider 卡：Plan详情、额度窗口（分析/用量）与最近 7 天用量</td>
   </tr>
 </table>
@@ -57,15 +61,15 @@
 
 | Provider | 远程数据 | 本地用量 | 认证方式 |
 |---|---|---|---|
-| Minimax Token Plan | 套餐额度 API | Minimax v2 SQLite；默认合并 ZCode 分片（默认开启），可选合并 OpenCode（默认关闭，可在 config.json 开启） | Token Plan API Key |
-| ChatGPT Plan / Codex | ChatGPT usage API | Codex session 日志；默认合并 OpenCode（默认关闭） | `~/.codex/auth.json` |
-| Antigravity | 本地 language-server RPC | 本地 trajectory metadata RPC；默认合并 OpenCode（默认关闭） | 已登录的 Antigravity 会话 |
-| GLM Coding Plan | GLM quota API | ZCode SQLite；默认合并 OpenCode（GLM 默认开启，其余可在 config.json 调整） | Coding Plan Key |
-| DeepSeek | 账户余额 API | 默认合并 ZCode 分片（默认开启），可选合并 OpenCode（默认关闭） | DeepSeek API Key |
+| Minimax Token Plan | 套餐额度 API | Minimax v2 SQLite；自动归因支持的 ZCode、OpenCode、DSH 来源 | Token Plan API Key |
+| ChatGPT Plan / Codex | ChatGPT usage API | Codex session 日志；自动归因支持的 OpenCode 来源 | `~/.codex/auth.json` |
+| Antigravity | 本地 language-server RPC | 本地 trajectory metadata RPC；自动归因支持的 OpenCode 来源 | 已登录的 Antigravity 会话 |
+| GLM Coding Plan | GLM quota API | ZCode SQLite；自动归因支持的 OpenCode、DSH 来源 | Coding Plan Key |
+| DeepSeek | 账户余额 API | 自动归因支持的 ZCode、OpenCode、DSH 来源 | DeepSeek API Key |
 
 各数据源、token 口径、高峰窗口和合并规则见下方 Provider 规格文档。
 
-> DSH（DeepSeek Harness）不是独立菜单栏 Provider，而是共享本地 session 账本；它会按 `request/context` 中的 provider 分片，并自动合并到 MiniMax / GLM / DeepSeek 卡片。ZCode 同样是多 provider 共享账本：智谱系行进 GLM 卡，`minimax` / `deepseek` 行按前缀分片并入对应卡片（默认开启，config.json `clientBindings` 可关）。所有本地客户端用量可在"设置 → 客户端"按客户端维度查看。
+> DSH（DeepSeek Harness）不是独立菜单栏 Provider，而是共享本地 session 账本；它会按 `request/context` 中的 provider 分片，并自动归入 MiniMax / GLM / DeepSeek 卡片。ZCode 同样是多 provider 共享账本：智谱系行进 GLM 卡，`minimax` / `deepseek` 行按 provider 分片归入对应卡片。所有受支持来源自动归因，未知 provider 不作猜测；设置 → 客户端仍可按客户端维度查看本地用量。
 
 ## 文档索引
 
@@ -101,7 +105,7 @@ swift build
 构建 arm64 `.app`（含 dSYM 符号文件）、DMG 和 SHA-256 校验文件：
 
 ```bash
-./scripts/build-release.sh 2.2.0
+./scripts/build-release.sh 2.3.0
 ```
 
 `build-app.sh` 的参数决定是否会修改仓库内的 `.build_number`：

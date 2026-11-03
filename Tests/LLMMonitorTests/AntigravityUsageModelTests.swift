@@ -218,4 +218,41 @@ final class AntigravityUsageModelTests: AntigravityTestCase {
         XCTAssertFalse(dirs[0].path.contains("antigravity-ide"),
                        "不应再扫描 antigravity-ide: \(dirs[0].path)")
     }
+
+    func testAntigravitySampleModelClassifierMatchesQuotaPools() {
+        XCTAssertEqual(
+            AntigravityModelKind.pool(forSampleModelName: "gemini-4-argon-trial"),
+            .geminiArgon,
+            "Argon 应先于通用 Gemini 分类"
+        )
+        XCTAssertEqual(AntigravityModelKind.pool(forSampleModelName: "gemini-3.8-flash"), .geminiModels)
+        for model in ["claude-opus-5.5", "gpt-4.1", "anthropic-sonnet", "openai/gpt-4.1"] {
+            XCTAssertEqual(
+                AntigravityModelKind.pool(forSampleModelName: model),
+                .claudeAndGptModels,
+                "\(model) 应归入 Claude and GPT quota pool"
+            )
+        }
+        XCTAssertNil(AntigravityModelKind.pool(forSampleModelName: nil))
+        XCTAssertNil(AntigravityModelKind.pool(forSampleModelName: "future-unknown-model"))
+        XCTAssertEqual(AntigravityModelKind.geminiArgon.displayName, "Gemini 4 Argon")
+    }
+
+    func testAntigravityQuotaModelMatchingKeepsUnknownGeminiFallback() {
+        XCTAssertTrue(LocalUsageSummaryBuilder.modelMatches(
+            providerKind: .antigravity,
+            quotaModelName: AntigravityModelKind.geminiModels.rawValue,
+            sampleModelName: nil
+        ))
+        XCTAssertTrue(LocalUsageSummaryBuilder.modelMatches(
+            providerKind: .antigravity,
+            quotaModelName: AntigravityModelKind.geminiModels.rawValue,
+            sampleModelName: "future-unknown-model"
+        ))
+        XCTAssertFalse(LocalUsageSummaryBuilder.modelMatches(
+            providerKind: .antigravity,
+            quotaModelName: AntigravityModelKind.geminiArgon.rawValue,
+            sampleModelName: "future-unknown-model"
+        ))
+    }
 }

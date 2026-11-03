@@ -25,6 +25,8 @@ completion，而不是仅可见文字。
 
 ## Harness 对齐矩阵
 
+用量设置按共享额度池细分展示，一个额度池的 5h / 周窗口不重复计量。分组保留原始模型样本用于定价，权威日桶不由模型明细反算；日桶与留存样本的非负差额单列为未归属额度池，不伪造模型、金额或速度。Antigravity 与 Agy 共享 Gemini / Argon / Claude-GPT 的额度池分类，ZCode 仍按账本 provider 的 Coding Plan / Start Plan 等分类。
+
 各 Harness 的用量按实际账本 provider 自动归因：native 帧直接使用 `quotaProviderID`，多 provider 账本使用内置 `ClientProviderBinding.defaultBindings` 别名表。归因不再有用户开关，旧配置中的关闭值不参与计算；同一来源只按现有分片规则计入对应 Provider，不跨卡重复累加。无法识别的 provider 保留未归属，不依据模型名猜测额度池。
 
 | Harness | raw input | raw cache read | raw output / reasoning | 规范化处理 |
@@ -289,4 +291,4 @@ Rounds 是模型 API call 数；命中率为 `cacheRead / (input + cacheRead)`�
 任何新 harness 必须先补充本矩阵、provider spec 和 `TokenAccountingCatalog`，再接入 UI；
 不要在 view 或 pricing 分支里重新猜测 input/cache/reasoning 的关系。
 
-> 核对基线：2026-11-03 · 代码 d07fa47
+> 核对基线：2026-11-03 · 代码 94bc4f4

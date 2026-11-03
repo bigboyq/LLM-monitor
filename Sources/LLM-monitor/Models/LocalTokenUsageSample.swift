@@ -379,19 +379,13 @@ enum LocalUsageSummaryBuilder {
                 || sample.contains("m2")
                 || sample.contains("m3")
         case .antigravity:
-            let is3P = sample.contains("anthropic")
-                || sample.contains("openai")
-                || sample.contains("claude")
-                || sample.contains("gpt")
-            let isArgon = sample.contains("argon")
-            if quota == AntigravityModelKind.claudeAndGptModels.rawValue {
-                return is3P
-            }
-            if quota == AntigravityModelKind.geminiArgon.rawValue {
-                return isArgon
-            }
-            if quota == AntigravityModelKind.geminiModels.rawValue {
-                return !is3P && !isArgon
+            if let quotaPool = AntigravityModelKind(rawValue: quota) {
+                if let samplePool = AntigravityModelKind.pool(forSampleModelName: sampleModelName) {
+                    return samplePool == quotaPool
+                }
+                // Preserve the quota-window fallback: unknown/missing local model names
+                // remain included in Gemini Models, while other known pools do not claim them.
+                return quotaPool == .geminiModels
             }
             return sample == quota
         case .glmCodingPlan:

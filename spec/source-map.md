@@ -27,7 +27,7 @@
 | `Sources/LLM-monitor/Models/UnifiedDailyTokenUsage.swift` | provider 中立日桶与当日 max 修补（`UnifiedDailyUsageNormalizer`） |
 | `Sources/LLM-monitor/Models/MixedCurrencyEstimate.swift` | 跨 provider 金额汇总的统一折算类型（USD ×7 → CNY） |
 | `Tests/LLMMonitorTests/MixedCurrencyEstimateTests.swift` | 跨 provider 金额折算（USD ×7 → CNY）、文案格式化与零金额兜底 |
-| `Sources/LLM-monitor/Services/ClientUsageAggregation.swift` | L3 视图模型纯函数：设置页客户端拆行、菜单 `HarnessTodaySummary` 与今日占比条段 `HarnessClientSegment`、`HarnessSummaryCache` |
+| `Sources/LLM-monitor/Services/ClientUsageAggregation.swift` | L3 视图模型纯函数：设置页按共享额度池拆行及权威日桶差额保留、菜单 `HarnessTodaySummary` 与今日占比条段 `HarnessClientSegment`、`HarnessSummaryCache` |
 | `Sources/LLM-monitor/Services/LayoutMetrics.swift` | Services 与 Views 共读的排版常量（图表宽 / 卡片列与内容层内边距） |
 | `Sources/LLM-monitor/Models/ModelPricingCatalog.swift` | 计价引擎：加载 `Resources/ModelPricing.json`（首条命中 / exact / matchAll / zhipu 兜底 / 下划线归一化）并应用 DeepSeek 高峰倍率；资源 bundle 整体缺失时先过 `ResourceBundleProbe`、降级为空目录并记 error（不再启动即崩），bundle 在而 JSON 缺失 / 解析失败仍 preconditionFailure |
 | `Sources/LLM-monitor/Models/ResourceBundleProbe.swift` | 资源 bundle 探测：按 SwiftPM 生成的 accessor 同序候选路径判断 `Bundle.module` 是否可用（`probe` 可注入、`isResourceBundleAvailable` 进程内缓存），供定价 / 节假日资源加载在缺失时走降级而不是 fatalError |
@@ -36,7 +36,7 @@
 | `Sources/LLM-monitor/Models/ProviderStatus.swift` | UI-facing provider state + `ProviderKind` / `AccentColor` 枚举 |
 | `Sources/LLM-monitor/Models/QuotaInfo.swift` | Provider-neutral quota 和 reset-credit 模型 |
 | `Sources/LLM-monitor/Models/QuotaWindowStatus.swift` | Provider 无关的额度窗口存在性（`.present` / `.absent`）；fetcher 在边界归一化 raw 状态码 |
-| `Sources/LLM-monitor/Models/AntigravityModelKind.swift` | Antigravity 模型族分类 enum（`gemini_models` / `gemini_argon` / `claude_and_gpt_models` wire 值的 single source of truth） |
+| `Sources/LLM-monitor/Models/AntigravityModelKind.swift` | Antigravity 共享额度池 enum、展示名及样本模型分类（`gemini_models` / `gemini_argon` / `claude_and_gpt_models` 单一事实源，Argon 优先） |
 | `Sources/LLM-monitor/Models/MinimaxModelKind.swift` | MiniMax 模型族与用量分类 |
 | `Sources/LLM-monitor/Models/AppMetadata.swift` | 版本 / build 号（读 Info.plist，设置页「关于」展示） |
 | `Sources/LLM-monitor/Models/AnyJSON.swift` | 弱类型 JSON（Antigravity 递归解析用） |
@@ -217,7 +217,7 @@
 | `Tests/LLMMonitorTests/AlertThresholdConfigTests.swift` | 告警阈值配置默认值、取值区间裁切与 critical <= warning 约束单测 |
 | `Sources/LLM-monitor/Views/SettingsEnergyPane.swift` | 设置页节能 pane：睡眠健康度、防休眠与电源参数矩阵 |
 | `Sources/LLM-monitor/Views/SleepAssertionOffender+RowText.swift` | 「阻止休眠的第三方应用」行文案（`SleepAssertionOffender` 的行格式化 extension）+ 主面板 header 悬浮清单 `SleepOffendersHoverView`，两处共用同一份格式 |
-| `Sources/LLM-monitor/Views/SettingsClientsPane.swift` | 设置页「客户端」tab：按 provider 自动归因的本地客户端用量诊断、共享七天历史；无归因开关 |
+| `Sources/LLM-monitor/Views/SettingsClientsPane.swift` | 设置页「客户端」tab：按 provider 与共享额度池归组的本地用量诊断、共享七天历史；无归因开关 |
 | `Sources/LLM-monitor/Views/ClientSegmentedControl.swift` | 设置页「客户端」切换条：原生 `NSSegmentedControl` 包装（段宽按文字测量写死，客户端变多时整体变宽并横向滚动，不压成省略号） |
 | `Sources/LLM-monitor/Views/SettingsComponents.swift` | 设置窗口共享组件与统一字体角色（`SettingsTypography` / `SettingsSection` / `SettingsControlRow` / `SettingsPaneHeader`） |
 | `Sources/LLM-monitor/Views/SettingsFields.swift` | 设置页通用表单输入组件与数值/路径辅助函数（`intervalSliderField`、`secretField`、`apiKeyField`、`selectAuthFile`、`tildePath`） |
@@ -246,4 +246,4 @@
 - **串行执行是既定选择**：`swift test --parallel` 实测（2026-10-02，5 连跑 3 败）不可用——`SQLiteTempCopyTests` 的临时副本断言扫描跨进程共享目录，并行 worker 互相误判；且慢测试为睡眠型，并行的 wall 收益仅 ~4s。并行化前提：先给 SQLiteTempCopy 的副本目录引入进程级隔离，再复评。
 - 慢用例的等待注入缝已建立：调度器（now/sleep）、Bark 退避（retryDelay）、vnode 合并窗口（coalescingWindow 参数）；新增耗时敏感测试时优先走注入缝，不要写死真实 sleep。
 
-> 核对基线：2026-11-03 · 代码 d07fa47
+> 核对基线：2026-11-03 · 代码 94bc4f4
