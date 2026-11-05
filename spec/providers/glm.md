@@ -108,6 +108,23 @@ Content-Type: application/json
 protocol base URL (`https://open.bigmodel.cn/api/anthropic`). The key format is `<id>.<secret>`.
 The API Key is required. OAuth access tokens are not used for this endpoint.
 
+**认证凭证分工**（2026-11-05 实测与当前实现）：
+
+| 信息 | 当前请求使用的凭证 | 认证头 |
+|---|---|---|
+| 标准 5 小时 / 周额度 | API Key 即可，不需要 ZCode JWT | `Authorization: <API Key>` |
+| 重置卡 | ZCode JWT + API Key | `Authorization: Bearer <JWT>` + `X-Bigmodel-Authorization: <API Key>` |
+| 活动套餐余额 | ZCode JWT + API Key（当前实现） | `Authorization: Bearer <JWT>` + `X-Bigmodel-Authorization: <API Key>` |
+| 营销活动 | ZCode JWT，不携带 API Key | `Authorization: Bearer <JWT>` |
+
+API Key 可以替代双凭证接口中的 **BigModel OAuth access token**，不能替代 **ZCode JWT**。
+重置卡的成功实测保留了 ZCode JWT，只将 `X-Bigmodel-Authorization` 从 OAuth token 换成 API Key；
+不能据此推断 API Key 单独即可查询重置卡。活动套餐余额也已实测 JWT + API Key 成功，
+并未验证省略 API Key 是否仍可用；表中记录当前发送方式。
+
+应用统一要求先配置 API Key；三类 ZCode 扩展查询还须开启 `zcodeJWTEnabled` 并读取到 JWT。
+营销接口本身不发送 API Key，仍受此应用级开关与营销通知配置控制。设备、语言、版本等附加请求头见下文直连 API 小节。
+
 Logs only include the key length (e.g. `key length=48`), never the key itself or a prefix.
 
 Two related endpoints exist on the same monitor API (not used by the fetcher yet):
