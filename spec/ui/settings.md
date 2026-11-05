@@ -183,6 +183,7 @@ GLM provider pane（`SettingsProviderPanes.swift:glmPane`）包含必填 API Key
 - **启用 ZCode JWT 扩展**（`zcodeJWTEnabled`，缺省关闭）：开启后显示「ZCode 凭证路径」与营销通知配置，并读取 ZCode JWT。关闭时不读取本地凭证、不请求扩展 API，也不展示既有 package 数据。
 - **ZCode 凭证路径**（`authPath`）：扩展开启时可填写目录或 `credentials.json` 文件路径，带「选择…」文件选择按钮和 `~` 路径解析；留空默认读 `~/.zcode/v2`。JWT 存在时查询活动套餐和重置卡；重置卡跟随次要信息频率。JWT 缺失时只跳过扩展，主额度仍可正常刷新。
 - **运营活动推送通知**（`notifyCampaign`）：仅扩展开启、读到 JWT、通知渠道开启且为 `.full` 刷新时轮询活动。
+- **重置卡 / 活动预计周期**：只显示预计周期胶囊，认证说明和周期行不再重复提示开启通知，通知渠道由相邻配置项选择。
 - 新开关显式 true/false 优先；缺失时沿用旧 `effectiveGlmAuthMode` 设置（先取 `glmAuthMode`，再依次取 `parseZcodeCredential` / `parseZcodePlan` / `parseZcodeBalanceLog` 的首个非 nil 值）。设置保存写入新开关并清除历史键。
 - **高峰期提示**：只读展示（与 DeepSeek 同款 `SettingsControlRow` 写法），值行为 `工作日 14:00–18:00（北京时间 · 法定节假日除外）`，footer 注明按北京时间计算、官方口径、不可调。曾经的开始/结束小时 Stepper 与「仅工作日」开关已随 GLM 去配置化删除（`peakStartHour` / `peakEndHour` / `peakWeekdaysOnly` 键移除，残留键由 `JSONDecoder` 静默忽略，见 `spec/config.md` §Config Schema）。
 

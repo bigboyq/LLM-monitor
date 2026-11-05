@@ -39,12 +39,7 @@ extension SettingsView {
                 }
             } else if kind == .glmCodingPlan && draft.glmZcodeJWTEnabled {
                 SettingsControlRow("重置卡 / 活动预计周期") {
-                    VStack(alignment: .trailing, spacing: 4) {
-                        secondaryInfoCycleBadge(intervalOverride: interval.wrappedValue)
-                        Text("运营活动需开启通知")
-                            .font(SettingsTypography.metadata)
-                            .foregroundStyle(.secondary)
-                    }
+                    secondaryInfoCycleBadge(intervalOverride: interval.wrappedValue)
                 }
             }
             Divider().padding(.vertical, 4)
@@ -211,7 +206,7 @@ extension SettingsView {
     }
 
     private var glmAuthFooter: String {
-        "必须填写 Coding Plan API Key（格式 `id.secret`）。开启 ZCode JWT 扩展查询后，读取本地登录凭证以获取活动套餐、重置卡和营销活动；营销活动需开启通知。凭证路径留空使用 `~/.zcode/v2`。"
+        "必须填写 Coding Plan API Key（格式 `id.secret`）。开启 ZCode JWT 扩展查询后，读取本地登录凭证以获取活动套餐、重置卡和营销活动。凭证路径留空使用 `~/.zcode/v2`。"
     }
 
     var glmPane: some View {
