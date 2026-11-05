@@ -451,10 +451,11 @@ final class GlmZcodeAPIClientTests: XCTestCase {
 
         // draft 同步
         var draft = SettingsFormDraft()
-        draft.glmZcodeCredentialEnabled = decoded.isZcodeCredentialEnabled
+        draft.glmZcodeJWTEnabled = decoded.isZcodeCredentialEnabled
+        draft.glmAuthPath = "~/.zcode/v2"
         draft.glmNotifyCampaign = decoded.notifyCampaign ?? .none
-        XCTAssertTrue(draft.glmZcodeCredentialEnabled)
-        XCTAssertTrue(draft.glmZcodePlanEnabled) // 别名兼容
+        XCTAssertEqual(draft.glmAuthPath, "~/.zcode/v2")
+        XCTAssertTrue(draft.glmZcodeJWTEnabled)
         XCTAssertEqual(draft.glmNotifyCampaign, .barkAndSystem)
     }
 

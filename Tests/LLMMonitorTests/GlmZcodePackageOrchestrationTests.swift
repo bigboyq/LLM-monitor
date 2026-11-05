@@ -20,6 +20,9 @@ final class GlmZcodePackageOrchestrationTests: XCTestCase {
         private(set) var balanceCalls = 0
         private(set) var resetCalls = 0
         private(set) var marketingCalls = 0
+        private(set) var balanceCredentials: GlmZcodeCredentials?
+        private(set) var resetCredentials: GlmZcodeCredentials?
+        private(set) var marketingCredentials: GlmZcodeCredentials?
 
         func fetchBalance(
             credentials: GlmZcodeCredentials,
@@ -27,6 +30,7 @@ final class GlmZcodePackageOrchestrationTests: XCTestCase {
             now: Date
         ) async throws -> ([GlmActivityPlanBalance], [GlmActivityPlanPreview]) {
             balanceCalls += 1
+            balanceCredentials = credentials
             if let balanceError { throw balanceError }
             return balanceResult
         }
@@ -37,6 +41,7 @@ final class GlmZcodePackageOrchestrationTests: XCTestCase {
             now: Date
         ) async throws -> GlmResetCardsSnapshot {
             resetCalls += 1
+            resetCredentials = credentials
             if let resetError { throw resetError }
             return resetResult
         }
@@ -47,6 +52,7 @@ final class GlmZcodePackageOrchestrationTests: XCTestCase {
             session: URLSession
         ) async throws -> [GlmMarketingDelivery] {
             marketingCalls += 1
+            marketingCredentials = credentials
             if let marketingError { throw marketingError }
             return marketingResult
         }
@@ -69,10 +75,17 @@ final class GlmZcodePackageOrchestrationTests: XCTestCase {
         )
     }
 
-    private func makeFetcher(stub: PackageProviderStub, pollMarketingCampaign: Bool) -> GlmCodingPlanFetcher {
+    private func makeFetcher(
+        stub: PackageProviderStub,
+        pollMarketingCampaign: Bool,
+        authMode: GlmAuthMode = .credential,
+        zcodeEnabled: Bool = true,
+        apiKey: String = "coding-plan-key"
+    ) -> GlmCodingPlanFetcher {
         GlmCodingPlanFetcher(
-            authMode: .credential,
-            apiKey: "",
+            authMode: authMode,
+            isZcodeCredentialEnabled: zcodeEnabled,
+            apiKey: apiKey,
             pollMarketingCampaign: pollMarketingCampaign,
             packageProvider: stub
         )
@@ -213,17 +226,103 @@ final class GlmZcodePackageOrchestrationTests: XCTestCase {
         XCTAssertTrue(snapshot?.deliveries.isEmpty ?? false)
     }
 
-    func testResetSkippedWithoutBigmodelToken() async {
+    func testConfiguredAPIKeyEnablesResetCardsWithoutOAuthToken() async {
         let stub = PackageProviderStub()
         let jwtOnlyCredentials = GlmZcodeCredentials(
-            deviceMid: nil, jwtToken: "jwt-token", bigmodelAccessToken: nil
+            deviceMid: "mid-1", jwtToken: "jwt-token", bigmodelAccessToken: nil
+        )
+        let fetcher = makeFetcher(
+            stub: stub,
+            pollMarketingCampaign: false,
+            authMode: .apiKey,
+            zcodeEnabled: true,
+            apiKey: "  coding-plan-key  "
         )
 
-        let fetcher = makeFetcher(stub: stub, pollMarketingCampaign: false)
         let snapshot = await fetcher.fetchZcodePackageSilently(mode: .full, credentials: jwtOnlyCredentials)
 
-        XCTAssertEqual(stub.resetCalls, 0, "缺 bigmodel token 时跳过重置卡请求（双 Token 鉴权接口）")
-        XCTAssertEqual(stub.balanceCalls, 1)
         XCTAssertNotNil(snapshot)
+        XCTAssertEqual(stub.resetCalls, 1, "配置 API Key 后无需 OAuth BigModel token 也可尝试重置卡接口")
+        XCTAssertEqual(stub.resetCredentials?.jwtToken, "jwt-token", "ZCode JWT 仍用于双凭证接口")
+        XCTAssertEqual(stub.resetCredentials?.deviceMid, "mid-1")
+        XCTAssertEqual(stub.resetCredentials?.bigmodelAccessToken, "coding-plan-key")
+    }
+
+    func testConfiguredAPIKeyOverridesOAuthTokenForPackageRequests() async {
+        let stub = PackageProviderStub()
+        let credentials = GlmZcodeCredentials(
+            deviceMid: "mid-1", jwtToken: "jwt-token", bigmodelAccessToken: "expired-oauth-token"
+        )
+        let fetcher = makeFetcher(
+            stub: stub,
+            pollMarketingCampaign: true,
+            authMode: .apiKey,
+            zcodeEnabled: true,
+            apiKey: "coding-plan-key"
+        )
+
+        _ = await fetcher.fetchZcodePackageSilently(mode: .full, credentials: credentials)
+
+        XCTAssertEqual(stub.balanceCredentials?.jwtToken, "jwt-token")
+        XCTAssertEqual(stub.balanceCredentials?.bigmodelAccessToken, "coding-plan-key")
+        XCTAssertEqual(stub.resetCredentials?.bigmodelAccessToken, "coding-plan-key")
+        XCTAssertEqual(stub.marketingCredentials?.jwtToken, "jwt-token")
+        XCTAssertEqual(stub.marketingCredentials?.bigmodelAccessToken, "coding-plan-key")
+    }
+
+    func testConfiguredAPIKeyDoesNotCallZcodePackageWithoutJWT() async {
+        let stub = PackageProviderStub()
+        let credentials = GlmZcodeCredentials(
+            deviceMid: "mid-1", jwtToken: nil, bigmodelAccessToken: nil
+        )
+        let fetcher = makeFetcher(
+            stub: stub,
+            pollMarketingCampaign: true,
+            authMode: .apiKey,
+            zcodeEnabled: true,
+            apiKey: "coding-plan-key"
+        )
+
+        let snapshot = await fetcher.fetchZcodePackageSilently(mode: .full, credentials: credentials)
+
+        XCTAssertNil(snapshot)
+        XCTAssertEqual(stub.balanceCalls, 0)
+        XCTAssertEqual(stub.resetCalls, 0)
+        XCTAssertEqual(stub.marketingCalls, 0)
+    }
+
+    func testDisabledJWTExtensionSkipsAllPackageCalls() async {
+        let stub = PackageProviderStub()
+        let fetcher = makeFetcher(
+            stub: stub,
+            pollMarketingCampaign: true,
+            authMode: .credential,
+            zcodeEnabled: false,
+            apiKey: "coding-plan-key"
+        )
+
+        let snapshot = await fetcher.fetchZcodePackageSilently(mode: .full, credentials: fullCredentials)
+
+        XCTAssertNil(snapshot)
+        XCTAssertEqual(stub.balanceCalls, 0)
+        XCTAssertEqual(stub.resetCalls, 0)
+        XCTAssertEqual(stub.marketingCalls, 0)
+    }
+
+    func testMissingAPIKeySkipsPackageEvenWhenJWTIsAvailable() async {
+        let stub = PackageProviderStub()
+        let fetcher = makeFetcher(
+            stub: stub,
+            pollMarketingCampaign: true,
+            zcodeEnabled: true,
+            apiKey: "  \n "
+        )
+
+        let snapshot = await fetcher.fetchZcodePackageSilently(mode: .full, credentials: fullCredentials)
+
+        XCTAssertNil(snapshot)
+        XCTAssertEqual(stub.balanceCalls, 0)
+        XCTAssertEqual(stub.resetCalls, 0)
+        XCTAssertEqual(stub.marketingCalls, 0)
     }
 }

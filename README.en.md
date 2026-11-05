@@ -21,7 +21,7 @@ The public snapshot is ad-hoc signed and is not Apple-notarized. If macOS blocks
 | Minimax Token Plan | Plan quota API | Minimax v2 SQLite; supported ZCode, OpenCode, and DSH sources are automatically attributed | Token Plan API key |
 | ChatGPT Plan / Codex | ChatGPT usage API | Codex session logs; supported OpenCode sources are automatically attributed | `~/.codex/auth.json` |
 | Antigravity | Local language-server RPC | Local trajectory metadata RPC; supported OpenCode sources are automatically attributed | Existing Antigravity session |
-| GLM Coding Plan | GLM quota API | ZCode SQLite; supported OpenCode and DSH sources are automatically attributed | Coding Plan key |
+| GLM Coding Plan | GLM quota API | ZCode SQLite; supported OpenCode and DSH sources are automatically attributed | Required Coding Plan API key; optional ZCode JWT extension |
 | DeepSeek | Account balance API | Supported ZCode, OpenCode, and DSH sources are automatically attributed | DeepSeek API key |
 
 DeepSeek Harness (DSH) is not a separate menu-bar provider. It is a shared local
@@ -44,7 +44,7 @@ guessed into a card. All client-local usage can be inspected under Settings → 
 - Per-provider refresh intervals, exponential retry backoff, and live config reload.
 - Separate default and secondary-information refresh intervals. The 1–30× secondary-information slider controls reset cards and independent account, plan, and organization lookups; provider panes show estimated periods.
 - Supported harness usage is automatically attributed to quota cards without a user-facing binding switch. Provider enable/disable remains separate, and unknown provider IDs are not guessed.
-- GLM credential mode recognizes claimable plan details from ZCode campaign banners.
+- A GLM Coding Plan API key is required; the optional ZCode JWT extension can be enabled separately for plan balance, reset-card, and claimable-campaign lookups.
 - Settings → Usage classifies harness samples by quota pool, retaining ZCode's Coding/Start categories and splitting Antigravity, Agy, and OpenCode usage attributed to Antigravity into Gemini, Claude/GPT, and Argon groups. Unmatched samples and daily-bucket differences remain separate without changing authoritative totals; a pool's 5-hour and weekly windows count as one group.
 - GLM and DeepSeek peak-period indicators. Peak hours are always evaluated in Beijing time (Asia/Shanghai) and exclude statutory public holidays; the holiday table refreshes over the network by default and can be pinned to the bundled snapshot in Settings — see the [user guide](docs/help.en.md#holiday-data-source).
 - Automatic attribution of supported OpenCode, ZCode, and DSH ledger slices by provider.

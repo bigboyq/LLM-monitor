@@ -948,9 +948,7 @@ final class AppState: ObservableObject {
                 authProber: authProber,
                 hintProvider: externalAuthHint(for:config:)
             )
-            if d.kind == .glmCodingPlan {
-                authReadyCache[d.id] = (pc?.effectiveGlmAuthMode == .credential) ? (derived == .ready) : (pc?.usableAPIKey != nil)
-            } else if d.kind.usesExternalAuth {
+            if d.kind == .glmCodingPlan || d.kind.usesExternalAuth {
                 authReadyCache[d.id] = (derived == .ready)
             } else {
                 authReadyCache[d.id] = (pc?.usableAPIKey != nil)
@@ -984,27 +982,27 @@ final class AppState: ObservableObject {
                 }
             }
 
-            let cleanedFinalState: ProviderStatus.State
-            if d.kind == .glmCodingPlan, pc?.effectiveGlmAuthMode == .apiKey {
+            let stateForStatus: ProviderStatus.State
+            if d.kind == .glmCodingPlan, pc?.isZcodeCredentialEnabled != true {
                 switch finalState {
                 case .ok(let quota):
-                    cleanedFinalState = .ok(quota.enriched(with: nil as GlmZcodePackageSnapshot?))
+                    stateForStatus = .ok(quota.enriched(with: nil as GlmZcodePackageSnapshot?))
                 case .loading(lastSuccess: let quota):
-                    cleanedFinalState = .loading(lastSuccess: quota?.enriched(with: nil as GlmZcodePackageSnapshot?))
-                case .failed(message: let msg, lastSuccess: let quota):
-                    cleanedFinalState = .failed(message: msg, lastSuccess: quota?.enriched(with: nil as GlmZcodePackageSnapshot?))
+                    stateForStatus = .loading(lastSuccess: quota?.enriched(with: nil as GlmZcodePackageSnapshot?))
+                case .failed(message: let message, lastSuccess: let quota):
+                    stateForStatus = .failed(message: message, lastSuccess: quota?.enriched(with: nil as GlmZcodePackageSnapshot?))
                 default:
-                    cleanedFinalState = finalState
+                    stateForStatus = finalState
                 }
             } else {
-                cleanedFinalState = finalState
+                stateForStatus = finalState
             }
 
             // 与 ProviderRefreshScheduler 共用同一份 effective interval；外部手改配置为
             // 小于 10 秒时，卡片新鲜度与实际调度都按 10 秒计算。
             let interval = Int(configStore.config.effectiveRefreshInterval(for: d.id))
 
-            if case .notConfigured = cleanedFinalState {
+            if case .notConfigured = stateForStatus {
                 // 触发器基线跟着状态一起清：重新配置后回到"首帧只建基线"语义。
                 triggerStateStore.reset(providerID: d.id)
             }
@@ -1017,7 +1015,7 @@ final class AppState: ObservableObject {
                 accentColor: d.accentColor,
                 refreshIntervalSeconds: interval,
                 isEnabled: pc?.enabled ?? true,
-                state: cleanedFinalState,
+                state: stateForStatus,
                 lastRefreshedAt: preserved.lastRefreshedAt ?? persistedRefreshTimes[d.id],
                 isScanningLocalUsage: preserved.isScanningLocalUsage,
                 localUsageFreshness: preserved.localUsageFreshness
@@ -1146,16 +1144,9 @@ final class AppState: ObservableObject {
         let fetcher: any QuotaFetcher
         if descriptor.kind == .glmCodingPlan {
             let probe = descriptor.makeFetcher(pc)
-            if pc.effectiveGlmAuthMode == .credential {
-                if !probe.hasLocalAuth() {
-                    logDebug("refreshProviderDirectly[\(providerID)]: hasLocalAuth=false")
-                    return .deferred
-                }
-            } else {
-                guard pc.usableAPIKey != nil else {
-                    logDebug("refreshProviderDirectly[\(providerID)]: apiKey 无效")
-                    return .deferred
-                }
+            guard pc.usableAPIKey != nil else {
+                logDebug("refreshProviderDirectly[\(providerID)]: GLM API Key unavailable")
+                return .deferred
             }
             fetcher = probe
         } else if descriptor.kind.usesExternalAuth {
@@ -1393,11 +1384,7 @@ final class AppState: ObservableObject {
         }
         guard let descriptor = descriptors.first(where: { $0.id == providerID }) else { return false }
         if descriptor.kind == .glmCodingPlan {
-            if pc.effectiveGlmAuthMode == .credential {
-                return descriptor.makeFetcher(pc).hasLocalAuth()
-            } else {
-                return pc.usableAPIKey != nil
-            }
+            return pc.usableAPIKey != nil
         }
         if descriptor.kind.usesExternalAuth {
             return descriptor.makeFetcher(pc).hasLocalAuth()
@@ -1414,8 +1401,7 @@ final class AppState: ObservableObject {
         case .antigravity:
             return "请先启动 Antigravity 并完成登录"
         case .glmCodingPlan:
-            let path = config.authPath ?? "~/.zcode/v2"
-            return "ZCode 凭证缺失：\(path)"
+            return "API Key 未填写或为模板占位符"
         case .minimaxTokenPlan:
             return "外部 auth 未就绪"
         case .deepseek:

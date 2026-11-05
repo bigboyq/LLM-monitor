@@ -41,9 +41,9 @@ shasum -a 256 -c SHA256SUMS.txt
 
 ### GLM Coding Plan
 
-填写 Coding Plan Key，通常为 `id.secret` 格式。远程 API 提供额度；本地 ZCode 用量来自 `~/.zcode/cli/db/db.sqlite`。高峰窗口固定为北京时间（Asia/Shanghai）周一至周五 14:00–18:00，法定节假日除外；口径与本机时区无关，也没有设置开关。
+在设置中必须填写 Coding Plan API Key（通常为 `id.secret`）才能监控标准额度；OAuth 不作为回退。可单独开启「ZCode JWT 扩展」（默认关闭），开启后才读取 ZCode 凭证路径（默认 `~/.zcode/v2`）。找到 JWT 后，应用会查询活动套餐与重置卡；营销活动查询还需开启对应通知。扩展开关关闭时，不读取 ZCode 凭证，也不显示其缓存数据。本地用量来自 `~/.zcode/cli/db/db.sqlite`。高峰窗口固定为北京时间（Asia/Shanghai）周一至周五 14:00–18:00，法定节假日除外；口径与本机时区无关，也没有设置开关。
 
-ZCode 的任务按 provider 分为 Coding Plan（正式套餐）/ Start Plan（体验套餐）/ 闲时 / 其他智谱套餐四类：只有 Coding Plan 计入 5h / 周额度窗口，四类 token 都计入本地柱图。设置 → 客户端 → ZCode 按这个顺序拆行显示各自独立的柱图与名义价值（没有用量的分类不出现行），其后是同一账本里按 provider 自动归入 DeepSeek / MiniMax 卡的分片行。所有已支持的本地账本来源都会自动归因；未知 provider 不会被猜测归类。GLM 选择凭证认证模式后，通过 ZCode 接口获取活动套餐余额、重置卡与可领取活动：套餐余额跟随 GLM 刷新频率，重置卡与可领取活动跟随「次要信息频率」，活动轮询还需开启活动通知。
+ZCode 的任务按 provider 分为 Coding Plan（正式套餐）/ Start Plan（体验套餐）/ 闲时 / 其他智谱套餐四类：只有 Coding Plan 计入 5h / 周额度窗口，四类 token 都计入本地柱图。设置 → 客户端 → ZCode 按这个顺序拆行显示各自独立的柱图与名义价值（没有用量的分类不出现行），其后是同一账本里按 provider 自动归入 DeepSeek / MiniMax 卡的分片行。所有已支持的本地账本来源都会自动归因；未知 provider 不会被猜测归类。开启 JWT 扩展并读取到 ZCode JWT 后，通过 ZCode 接口获取活动套餐余额、重置卡与可领取活动：套餐余额跟随 GLM 刷新频率，重置卡与可领取活动跟随「次要信息频率」，活动轮询还需开启活动通知。
 
 ### DeepSeek
 

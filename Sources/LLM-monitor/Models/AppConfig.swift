@@ -777,7 +777,7 @@ struct AppConfig: Codable, Equatable {
 
 // MARK: - Provider Config
 
-/// GLM Coding Plan 认证方式
+/// 历史 GLM 认证方式，仅用于兼容旧配置与调用；当前使用必填 API Key 与可选 JWT 扩展。
 enum GlmAuthMode: String, Codable, CaseIterable, Identifiable, Sendable {
     case apiKey = "apiKey"
     case credential = "credential"
@@ -812,24 +812,26 @@ struct ProviderConfig: Codable, Equatable {
     /// 自管 auth 的 fetcher 用：auth 路径（如 codex 的 ~/.codex/auth.json 或 GLM 的 ~/.zcode/v2）
     var authPath: String?
 
-    /// GLM Coding Plan 认证方式（apiKey / credential）
+    /// 历史认证方式（apiKey / credential），不再控制运行时；设置保存时移除。
     var glmAuthMode: GlmAuthMode?
 
-    /// 是否解析 ZCode 余额轮询日志，在 GLM 卡显示活动套餐（zcode-plan，如周末
-    /// 体验套餐）的用量 / 剩余 / 过期时间。nil（字段不存在）= 关闭，不读日志。
-    /// （已由 parseZcodeCredential 取代，保留以兼容历史配置）
+    /// 是否启用 ZCode JWT 附加数据（活动套餐、重置卡、营销活动）。
+    /// nil 时兼容旧 glmAuthMode / parseZcode* 字段；显式 false 优先并关闭附加查询。
+    var zcodeJWTEnabled: Bool?
+
+    /// 历史日志解析开关，仅用于兼容旧配置并迁移 JWT 扩展开关。
     var parseZcodeBalanceLog: Bool?
 
-    /// 是否启用 ZCode 套餐解析（已由 parseZcodeCredential 取代，保留以兼容历史配置）
+    /// 历史套餐解析开关，仅保留旧配置兼容。
     var parseZcodePlan: Bool?
 
-    /// 是否启用 ZCode 凭据解析（解密读取 ~/.zcode/v2 本地凭据，获取活动套餐余额、额度重置卡状态与营销活动）
+    /// 历史凭据解析开关，仅用于兼容旧配置并迁移 JWT 扩展开关。
     var parseZcodeCredential: Bool?
 
     /// ZCode 运营活动推送通知渠道（none / system / barkAndSystem）
     var notifyCampaign: QuotaNotifyChannel?
 
-    /// 便捷属性：生效的 GLM 认证方式（优先用 glmAuthMode，历史配置若开启过凭证/套餐/日志解析则迁移为 credential，否则回退 apiKey）
+    /// 兼容旧配置迁移的认证方式解析结果；不控制主额度认证。
     var effectiveGlmAuthMode: GlmAuthMode {
         if let glmAuthMode { return glmAuthMode }
         if (parseZcodeCredential ?? parseZcodePlan ?? parseZcodeBalanceLog ?? false) {
@@ -838,9 +840,10 @@ struct ProviderConfig: Codable, Equatable {
         return .apiKey
     }
 
-    /// 便捷属性：是否启用 ZCode 凭据解析（由 effectiveGlmAuthMode 统一驱动）
+    /// 是否启用 ZCode JWT 附加查询。新字段显式值优先，旧配置按原设置迁移。
     var isZcodeCredentialEnabled: Bool {
-        effectiveGlmAuthMode == .credential
+        if let zcodeJWTEnabled { return zcodeJWTEnabled }
+        return effectiveGlmAuthMode == .credential
     }
 
     /// 兼容历史计算属性：是否启用 ZCode 套餐解析
@@ -873,7 +876,7 @@ struct ProviderConfig: Codable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case enabled, apiKey, displayName, refreshIntervalSeconds, authPath
-        case glmAuthMode
+        case glmAuthMode, zcodeJWTEnabled
         case parseZcodeBalanceLog
         case parseZcodePlan
         case parseZcodeCredential
@@ -893,6 +896,7 @@ struct ProviderConfig: Codable, Equatable {
          refreshIntervalSeconds: Int? = nil,
          authPath: String? = nil,
          glmAuthMode: GlmAuthMode? = nil,
+         zcodeJWTEnabled: Bool? = nil,
          parseZcodeBalanceLog: Bool? = nil,
          parseZcodePlan: Bool? = nil,
          parseZcodeCredential: Bool? = nil,
@@ -912,6 +916,7 @@ struct ProviderConfig: Codable, Equatable {
         self.refreshIntervalSeconds = refreshIntervalSeconds
         self.authPath = authPath
         self.glmAuthMode = glmAuthMode
+        self.zcodeJWTEnabled = zcodeJWTEnabled
         self.parseZcodeBalanceLog = parseZcodeBalanceLog
         self.parseZcodePlan = parseZcodePlan
         self.parseZcodeCredential = parseZcodeCredential
@@ -940,6 +945,7 @@ struct ProviderConfig: Codable, Equatable {
         self.authPath = try c.decodeIfPresent(String.self, forKey: .authPath)
         self.glmAuthMode = (try? c.decode(String.self, forKey: .glmAuthMode))
             .flatMap(GlmAuthMode.init(rawValue:))
+        self.zcodeJWTEnabled = try c.decodeIfPresent(Bool.self, forKey: .zcodeJWTEnabled)
         self.parseZcodeBalanceLog = try c.decodeIfPresent(Bool.self, forKey: .parseZcodeBalanceLog)
         self.parseZcodePlan = try c.decodeIfPresent(Bool.self, forKey: .parseZcodePlan)
         self.parseZcodeCredential = try c.decodeIfPresent(Bool.self, forKey: .parseZcodeCredential)

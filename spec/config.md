@@ -68,10 +68,11 @@ The app reads and writes this shape:
 | `providers.<id>.apiKey` | provider | API key for providers that do not manage external auth. Used by minimax. |
 | `providers.<id>.displayName` | provider | Optional UI label override. |
 | `providers.<id>.refreshIntervalSeconds` | provider | Optional provider-specific timer interval, with the same 10-second...30-day clamp. |
-| `providers.<id>.glmAuthMode` | provider | GLM 认证方式（`apiKey` / `credential`，缺省 `apiKey`）。选 `apiKey` 仅填写 API Key 并监控标准 5h 与周额度套餐；选 `credential` 自动读取本地 ZCode 凭据（免填 Key），支持标准套餐、活动套餐、额度重置卡与运营活动推送。 |
-| `providers.<id>.authPath` | provider | 自管认证文件或所在目录路径。Codex 为 `auth.json` 路径（缺省 `~/.codex/auth.json`）；GLM 为 ZCode 凭证目录或 `credentials.json` 路径（缺省 `~/.zcode/v2`）。 |
-| `providers.<id>.notifyCampaign` | provider | 运营活动通知渠道（`QuotaNotifyChannel`：`none` / `system` / `barkAndSystem`），用于 GLM 营销活动触达推送。默认关闭（`none`），仅在 `credential` 模式下生效且选定渠道时才发起轮询；按次要信息频率轮询（仅 `.full` 模式），发现活动 1h 内不重复推送，防抖不限制接口请求。 |
-| `providers.<id>.parseZcodeCredential` / `parseZcodePlan` / `parseZcodeBalanceLog` | legacy | 兼容历史配置字段。解码时若为 true 自动迁移至 `glmAuthMode = .credential`，保存时不落盘。 |
+| `providers.<id>.zcodeJWTEnabled` | provider | GLM 是否启用 ZCode JWT 扩展。缺省 false；开启时才读取 `authPath`、调用 ZCode 套餐/重置卡接口，并在通知开启时轮询活动。显式 true/false 优先于历史字段；若缺失，则沿用旧 `effectiveGlmAuthMode` 设置：先取 `glmAuthMode`，再依次取 `parseZcodeCredential` / `parseZcodePlan` / `parseZcodeBalanceLog` 的首个非 nil 值。 |
+| `providers.<id>.glmAuthMode` | legacy | GLM 历史认证模式字段（`apiKey` / `credential`）。仅在 `zcodeJWTEnabled` 缺失时，`credential` 代表启用 ZCode JWT 扩展；设置页保存时移除。 |
+| `providers.<id>.authPath` | provider | 自管认证文件或所在目录路径。Codex 为 `auth.json` 路径（缺省 `~/.codex/auth.json`）；GLM JWT 扩展开启时可指定 ZCode 凭证目录或 `credentials.json` 路径（缺省 `~/.zcode/v2`）。 |
+| `providers.<id>.notifyCampaign` | provider | 运营活动通知渠道（`QuotaNotifyChannel`：`none` / `system` / `barkAndSystem`），用于 GLM 营销活动触达推送。默认关闭（`none`）；仅 JWT 扩展开启、读取到 JWT 且通知渠道开启时，按次要信息频率轮询（仅 `.full` 模式），发现活动 1h 内不重复推送，防抖不限制接口请求。 |
+| `providers.<id>.parseZcodeCredential` / `parseZcodePlan` / `parseZcodeBalanceLog` | legacy | 兼容历史配置字段。仅当 `zcodeJWTEnabled` 和 `glmAuthMode` 缺失时，按上表优先级取首个非 nil 值用于迁移；设置页保存时不落盘。 |
 | `providers.<id>.adminApiCreditsEnabled` | provider | 是否启用 OpenAI API 赠金监测（ChatGPT 专用）。缺省或 false 表示关闭；开启时在 ChatGPT 卡渲染「API赠金」进度条。 |
 | `providers.<id>.adminApiKey` | provider | OpenAI Admin API Key（`sk-admin-...`），用于查询组织消耗 `v1/organization/costs`。 |
 | `providers.<id>.adminBillingDay` | provider | 每月账单日（1-31，缺省 11）。 |
@@ -107,7 +108,7 @@ to their defaults; cosmetic config errors do not trigger recovery of the provide
    - Antigravity 的 `GetUserStatus`（账号 / 套餐）与 `GetLoadCodeAssist`（套餐兜底）仅在 `.full` 模式请求；`.background` 只请求 `RetrieveUserQuotaSummary`，保留上次账号与套餐显示。
    - Codex Admin API 的 `/v1/organization/costs` 金额查询仍每拍执行；仅在 `.full` 且 costs 缺少组织名称时请求 `/v1/me`。后台新金额缺组织名时仅继承旧组织名，金额、账期与新鲜度均采用新结果。
 
-接口按数据职责分频：额度、余额、金额查询走 Provider 主频率；其余独立元数据、重置卡和活动查询走次要信息频率。Codex / GLM / MiniMax / Antigravity 主额度、DeepSeek 余额、启用后的 Codex Admin API 赠金以及凭证模式的 GLM 活动套餐余额均每拍获取。GLM `data.level`、costs 附带组织名等同一主响应的元数据随主响应更新；Codex 邮箱与套餐名来自构建鉴权头所需的本地 `auth.json` / JWT，没有独立网络查询。本地用量在 Provider 批次结算后独立 reconcile，高峰提示与倒计时按本地展示时钟计算。启动首刷与手动额度刷新会同时抓取主信息与次要信息。
+接口按数据职责分频：额度、余额、金额查询走 Provider 主频率；其余独立元数据、重置卡和活动查询走次要信息频率。Codex / GLM / MiniMax / Antigravity 主额度、DeepSeek 余额、启用后的 Codex Admin API 赠金以及 JWT 扩展开启并读取到 ZCode JWT 时的 GLM 活动套餐余额均每拍获取。GLM 标准额度必须使用配置的 Coding Plan API Key，没有 OAuth 回退；缺少 Key 时 Provider 未就绪。`data.level`、costs 附带组织名等同一主响应的元数据随主响应更新；Codex 邮箱与套餐名来自构建鉴权头所需的本地 `auth.json` / JWT，没有独立网络查询。本地用量在 Provider 批次结算后独立 reconcile，高峰提示与倒计时按本地展示时钟计算。启动首刷与手动额度刷新会同时抓取主信息与次要信息。
 
 OpenCode and DSH are shared local Clients rather than menu-bar quota Providers. Their
 raw multi-provider slices are surfaced in the new "客户端" tab instead of a dedicated

@@ -37,7 +37,7 @@ extension SettingsView {
                 SettingsControlRow("账号 / 套餐信息周期") {
                     secondaryInfoCycleBadge(intervalOverride: interval.wrappedValue)
                 }
-            } else if kind == .glmCodingPlan && draft.glmAuthMode == .credential {
+            } else if kind == .glmCodingPlan && draft.glmZcodeJWTEnabled {
                 SettingsControlRow("重置卡 / 活动预计周期") {
                     VStack(alignment: .trailing, spacing: 4) {
                         secondaryInfoCycleBadge(intervalOverride: interval.wrappedValue)
@@ -211,12 +211,7 @@ extension SettingsView {
     }
 
     private var glmAuthFooter: String {
-        switch draft.glmAuthMode {
-        case .apiKey:
-            return "填写智谱 GLM Coding Plan 的 API Key（格式 `id.secret`，在 bigmodel.cn 套餐概览页新建）。此模式仅监控标准 5h 与周额度套餐。"
-        case .credential:
-            return "支持填写 ZCode 凭证目录（如 `~/.zcode/v2`）或 `credentials.json` 文件，也可以直接点“选择…”。自动解析登录状态，支持标准套餐、活动套餐、额度重置卡与运营活动推送。"
-        }
+        "必须填写 Coding Plan API Key（格式 `id.secret`）。开启 ZCode JWT 扩展查询后，读取本地登录凭证以获取活动套餐、重置卡和营销活动；营销活动需开启通知。凭证路径留空使用 `~/.zcode/v2`。"
     }
 
     var glmPane: some View {
@@ -231,21 +226,13 @@ extension SettingsView {
                     footer: glmAuthFooter,
                     interval: $draft.glmInterval
                 ) {
-                    SettingsControlRow("认证方式") {
-                        Picker("", selection: $draft.glmAuthMode) {
-                            ForEach(GlmAuthMode.allCases) { mode in
-                                Text(mode.displayName).tag(mode)
-                            }
-                        }
-                        .pickerStyle(.segmented)
-                        .frame(width: SettingsLayout.standardControlWidth)
+                    SettingsControlRow("API Key（必填）") {
+                        glmApiKeyField
                     }
 
-                    if draft.glmAuthMode == .apiKey {
-                        SettingsControlRow("API Key") {
-                            glmApiKeyField
-                        }
-                    } else {
+                    SettingsToggleRow(label: "启用 ZCode JWT 扩展查询", isOn: $draft.glmZcodeJWTEnabled)
+
+                    if draft.glmZcodeJWTEnabled {
                         SettingsControlRow("ZCode 凭证路径") {
                             HStack(spacing: 8) {
                                 TextField("", text: $draft.glmAuthPath, prompt: Text("~/.zcode/v2 或 credentials.json"))

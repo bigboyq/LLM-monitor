@@ -188,7 +188,7 @@ Config reload path:
 |---|---|---|
 | `MinimaxTokenPlanFetcher` | `IdentityRefreshResultMerger`（默认） | 直接用新值。历史上的 `MinimaxVideoPreservingMerger`（`.background` 模式沿用上次 video 条目）已删除 |
 | `CodexFetcher` | `CodexFillingMissingMerger` | `resetCredits` / `codexUsageDetails` 缺失时回退到上次；reset credits 在 `.background` 跳过时保留原值与时间，`.full` 失败时标记「可能过期」，恢复成功清除。API 赠金独立记录新鲜度，失败保留旧值并标记「更新失败」。Admin-only 或主 quota 失败结果携带主额度错误，merger 保留 Plan 数据与时间；AppState 进入 `.failed(lastSuccess:)`，不推进成功时间或额度通知基线 |
-| `GlmCodingPlanFetcher` | `GlmFillingMissingMerger` | `glmZcodePackage` 在凭证模式下跨模式合并：活动套餐余额与预告在接口缺失时回退保留上次成功数据；重置卡与运营活动在 `.background` 跳过时从上次快照继承，保证卡片展示与营销通知稳定 |
+| `GlmCodingPlanFetcher` | `GlmFillingMissingMerger` | 标准额度必须使用配置的 API Key；无 Key 时 Provider 未就绪。独立 `zcodeJWTEnabled` 开关（默认 false）决定是否读取 ZCode 凭证；关闭时清除/不展示历史 package，打开且读到 JWT 后用 JWT + 配置 API Key 请求扩展接口。JWT 缺失时跳过扩展、主 quota 仍可成功；接口缺失时回退保留上次成功数据，`.background` 跳过的重置卡与活动从上次快照继承 |
 | `AntigravityFetcher` | `AntigravityFillingMissingMerger` | `.background` 保留 previous 的账号/套餐信息，主额度、抓取时间及其余字段用 new；`.full` 直接采用新结果（包括 nil），避免旧账号/套餐在新查询后残留。首次无 previous 直接采用 new |
 | `DeepseekFetcher` | `IdentityRefreshResultMerger`（默认） | 直接用新值 |
 

@@ -95,7 +95,7 @@ transaction gate.
 
 常规设置 pane（`SettingsGeneralPane.swift`）在「刷新频率」节提供默认刷新与次要信息周期的集中控制：
 - **默认刷新频率**（`refreshIntervalSeconds`）：`Slider` 滑块在 10...3600s（10 秒至 1 小时）连续调节，默认 5 分钟（300s）。各 Provider 未单独指定频率时均沿用此全局间隔。
-- **次要信息频率**（`periodicFullEveryN`）：与默认刷新频率使用相同宽度和行距的 `Slider`，范围 1...30、步长 1，左右端标注「1 倍」和「30 倍」，默认 20 倍。下方胶囊显示当前倍数及按默认间隔 × 倍率估算的预计周期；ChatGPT、Antigravity 与 GLM 凭证模式的 Provider 设置另显示各自预计周期，优先按独立刷新间隔折算、未设置则继承默认间隔，间隔与运行时一致归一化为 10s...30d。ChatGPT 标注重置卡 / 组织信息，Antigravity 标注账号 / 套餐信息，GLM 标注重置卡 / 活动。
+- **次要信息频率**（`periodicFullEveryN`）：与默认刷新频率使用相同宽度和行距的 `Slider`，范围 1...30、步长 1，左右端标注「1 倍」和「30 倍」，默认 20 倍。下方胶囊显示当前倍数及按默认间隔 × 倍率估算的预计周期；ChatGPT、Antigravity 与启用 GLM ZCode JWT 扩展时的 Provider 设置另显示各自预计周期，优先按独立刷新间隔折算、未设置则继承默认间隔，间隔与运行时一致归一化为 10s...30d。ChatGPT 标注重置卡 / 组织信息，Antigravity 标注账号 / 套餐信息，GLM 标注重置卡 / 活动。
   - 控制 Provider 调度器每 N 拍抓取一次次要信息：N-1 拍后台模式（`.background`）后一次全量模式（`.full`），1 倍时每拍都抓取；
   - 受影响范围包括：Codex 重置次数抓取与陈旧度判定（`max(3 × (N × interval), 15 min)`）、GLM ZCode 额度重置卡抓取、GLM ZCode 运营活动轮询、Antigravity 账号/套餐与 Codex Admin API 组织标题独立查询；
   - 绑定 `draft.periodicFullEveryN`，为默认值 20 时写回 nil，非默认值落盘，配置热重载时调度器动态更新生效。
@@ -176,13 +176,14 @@ Interface pane「状态栏图标」节（`SettingsGeneralPane.swift`）提供图
   - 与 Provider 卡片标题栏的「小眼睛」按钮双向联动，保存时写回 `config.json` 的 `statusBarPinnedProvider` 字段；
 - **状态圆点与三色拾色器**（`statusBarHealthDotEnabled`、`statusBarHealthColors`）。
 
-### GLM 认证方式分段（Segment）与高峰期提示
+### GLM API Key、ZCode JWT 扩展与高峰期提示
 
-GLM provider pane（`SettingsProviderPanes.swift:glmPane`）提供分段控制器（Segmented Control）切换认证模式：
-- **认证方式**（`glmAuthMode`）：分段选择「API Key」与「ZCode 凭证」。
-  - **API Key 模式**：显示 API Key 输入框（`glmApiKeyField`）；仅拉取并展示标准 5h 与周额度套餐，不查询活动套餐与重置卡，footer 提示仅监控标准额度。
-  - **ZCode 凭证模式**：类似 Codex 提供「ZCode 凭证路径」（`authPath`，支持直接填写目录或 `credentials.json` 文件路径，带「选择…」文件选择按钮与 `~` 相对路径解析）以及「运营活动推送通知」（`notifyCampaign`）下拉菜单；自动解密读取本地 Bearer Token 免 Key 请求标准套餐，同时拉取活动套餐余额、额度重置卡状态及运营活动推送。
-  - 原「启用 ZCode 凭证解析」独立设置开关已移除，由 Segment 分段直接决定功能边界与数据层分流。
+GLM provider pane（`SettingsProviderPanes.swift:glmPane`）包含必填 API Key 与独立 ZCode 扩展开关：
+- **API Key**（`apiKey`，`glmApiKeyField`）：必填 Coding Plan Key（`id.secret`），用于标准 5h/周额度。没有有效非空 Key 时 Provider 未就绪；OAuth 不作为回退。
+- **启用 ZCode JWT 扩展**（`zcodeJWTEnabled`，缺省关闭）：开启后显示「ZCode 凭证路径」与营销通知配置，并读取 ZCode JWT。关闭时不读取本地凭证、不请求扩展 API，也不展示既有 package 数据。
+- **ZCode 凭证路径**（`authPath`）：扩展开启时可填写目录或 `credentials.json` 文件路径，带「选择…」文件选择按钮和 `~` 路径解析；留空默认读 `~/.zcode/v2`。JWT 存在时查询活动套餐和重置卡；重置卡跟随次要信息频率。JWT 缺失时只跳过扩展，主额度仍可正常刷新。
+- **运营活动推送通知**（`notifyCampaign`）：仅扩展开启、读到 JWT、通知渠道开启且为 `.full` 刷新时轮询活动。
+- 新开关显式 true/false 优先；缺失时沿用旧 `effectiveGlmAuthMode` 设置（先取 `glmAuthMode`，再依次取 `parseZcodeCredential` / `parseZcodePlan` / `parseZcodeBalanceLog` 的首个非 nil 值）。设置保存写入新开关并清除历史键。
 - **高峰期提示**：只读展示（与 DeepSeek 同款 `SettingsControlRow` 写法），值行为 `工作日 14:00–18:00（北京时间 · 法定节假日除外）`，footer 注明按北京时间计算、官方口径、不可调。曾经的开始/结束小时 Stepper 与「仅工作日」开关已随 GLM 去配置化删除（`peakStartHour` / `peakEndHour` / `peakWeekdaysOnly` 键移除，残留键由 `JSONDecoder` 静默忽略，见 `spec/config.md` §Config Schema）。
 
 General pane 的「关于」之前有

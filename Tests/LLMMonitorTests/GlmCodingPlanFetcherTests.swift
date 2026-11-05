@@ -170,17 +170,21 @@ final class GlmCodingPlanFetcherTests: XCTestCase {
         XCTAssertEqual(GlmAuthMode.apiKey.displayName, "API Key")
         XCTAssertEqual(GlmAuthMode.credential.displayName, "ZCode 凭证")
 
-        // 显式 glmAuthMode
+        // JWT 扩展开关独立于 API Key 认证方式。
         let credJSON = #"{"enabled":true,"glmAuthMode":"credential","authPath":"~/.zcode/v2"}"#
         let credConfig = try JSONDecoder().decode(ProviderConfig.self, from: Data(credJSON.utf8))
         XCTAssertEqual(credConfig.effectiveGlmAuthMode, .credential)
         XCTAssertEqual(credConfig.authPath, "~/.zcode/v2")
         XCTAssertTrue(credConfig.isZcodeCredentialEnabled)
 
-        let apiKeyJSON = #"{"enabled":true,"glmAuthMode":"apiKey","apiKey":"my-key"}"#
+        let apiKeyJSON = #"{"enabled":true,"glmAuthMode":"apiKey","apiKey":"my-key","zcodeJWTEnabled":true}"#
         let apiKeyConfig = try JSONDecoder().decode(ProviderConfig.self, from: Data(apiKeyJSON.utf8))
         XCTAssertEqual(apiKeyConfig.effectiveGlmAuthMode, .apiKey)
-        XCTAssertFalse(apiKeyConfig.isZcodeCredentialEnabled)
+        XCTAssertTrue(apiKeyConfig.isZcodeCredentialEnabled)
+
+        let explicitlyDisabled = #"{"enabled":true,"glmAuthMode":"credential","zcodeJWTEnabled":false}"#
+        let disabledConfig = try JSONDecoder().decode(ProviderConfig.self, from: Data(explicitlyDisabled.utf8))
+        XCTAssertFalse(disabledConfig.isZcodeCredentialEnabled, "显式新开关优先于旧 authMode")
 
         // 历史配置向后兼容迁移
         let legacy1 = try JSONDecoder().decode(ProviderConfig.self, from: Data(#"{"enabled":true,"parseZcodeCredential":true}"#.utf8))
@@ -217,20 +221,25 @@ final class GlmCodingPlanFetcherTests: XCTestCase {
     }
 
     func testGlmCodingPlanFetcherAuthModes() {
-        let apiKeyFetcherEmpty = GlmCodingPlanFetcher(authMode: .apiKey, apiKey: "")
+        let apiKeyFetcherEmpty = GlmCodingPlanFetcher(authMode: .apiKey, isZcodeCredentialEnabled: false, authPath: "/nonexistent/path/\(UUID().uuidString)", apiKey: "")
         XCTAssertFalse(apiKeyFetcherEmpty.hasLocalAuth())
 
         let apiKeyFetcherValid = GlmCodingPlanFetcher(authMode: .apiKey, apiKey: "valid-key")
         XCTAssertTrue(apiKeyFetcherValid.hasLocalAuth())
         XCTAssertFalse(apiKeyFetcherValid.isZcodeCredentialEnabled)
 
-        let credFetcherNonExistent = GlmCodingPlanFetcher(authMode: .credential, authPath: "/nonexistent/path/\(UUID().uuidString)")
+        let credFetcherNonExistent = GlmCodingPlanFetcher(authMode: .credential, isZcodeCredentialEnabled: false, authPath: "/nonexistent/path/\(UUID().uuidString)")
         XCTAssertFalse(credFetcherNonExistent.hasLocalAuth())
-        XCTAssertTrue(credFetcherNonExistent.isZcodeCredentialEnabled)
+        XCTAssertFalse(credFetcherNonExistent.isZcodeCredentialEnabled, "legacy authMode alone cannot enable JWT extras")
+
+        let explicitEnabledFetcher = GlmCodingPlanFetcher(
+            authMode: .apiKey, isZcodeCredentialEnabled: true, apiKey: "valid-key"
+        )
+        XCTAssertTrue(explicitEnabledFetcher.isZcodeCredentialEnabled)
     }
 
     func testSettingsFormDraftGlmAuthFields() {
-        var config = AppConfig(
+        let config = AppConfig(
             schemaVersion: AppConfig.currentSchemaVersion,
             refreshIntervalSeconds: 300,
             providers: [
@@ -256,20 +265,198 @@ final class GlmCodingPlanFetcherTests: XCTestCase {
         ]
 
         let draft = SettingsFormDraft(from: config, descriptors: descriptors)
-        XCTAssertEqual(draft.glmAuthMode, .credential)
         XCTAssertEqual(draft.glmAuthPath, "~/.zcode/v2")
         XCTAssertEqual(draft.glmApiKey, "test-key")
-        XCTAssertTrue(draft.glmZcodeCredentialEnabled)
         XCTAssertEqual(draft.glmNotifyCampaign, .barkAndSystem)
+        XCTAssertTrue(draft.glmZcodeJWTEnabled, "旧 credential 配置迁移为 JWT 扩展开启")
 
         // 脏检查测试
         var draft2 = draft
         XCTAssertEqual(draft, draft2)
-        draft2.glmAuthMode = .apiKey
+        draft2.glmApiKey = "new-key"
         XCTAssertNotEqual(draft, draft2)
 
         var draft3 = draft
         draft3.glmAuthPath = "/other/path"
         XCTAssertNotEqual(draft, draft3)
+
+        var draft4 = draft
+        draft4.glmZcodeJWTEnabled = false
+        XCTAssertNotEqual(draft, draft4)
+
+        let defaultConfig = AppConfig(
+            schemaVersion: AppConfig.currentSchemaVersion,
+            refreshIntervalSeconds: 300,
+            providers: ["glm_coding_plan": ProviderConfig(enabled: true, apiKey: "key")]
+        )
+        let defaultDraft = SettingsFormDraft(from: defaultConfig, descriptors: descriptors)
+        XCTAssertFalse(defaultDraft.glmZcodeJWTEnabled)
+    }
+}
+
+/// 在 URLSession 边界验证三类凭证的实际请求头，不读取本机登录状态。
+final class GlmCodingPlanAuthenticationTests: XCTestCase {
+    private final class AuthProtocol: URLProtocol {
+        override class func canInit(with request: URLRequest) -> Bool { true }
+        override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+        override func startLoading() {
+            guard let url = request.url else {
+                client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+                return
+            }
+            let authorization = request.value(forHTTPHeaderField: "Authorization")
+            let bigmodel = request.value(forHTTPHeaderField: "X-Bigmodel-Authorization")
+            let body: String
+            switch url.path {
+            case "/quota":
+                if authorization == "configured-key" {
+                    body = #"{"code":200,"data":{"level":"lite","limits":[{"type":"CREDIT_LIMIT","usage":100,"remaining":80}]}}"#
+                } else {
+                    body = #"{"code":401,"msg":"登录状态已过期"}"#
+                }
+            case "/api/v1/zcode-plan/billing/balance":
+                guard authorization == "Bearer jwt-token", bigmodel == "configured-key" else {
+                    client?.urlProtocol(self, didFailWithError: URLError(.userAuthenticationRequired))
+                    return
+                }
+                body = #"{"code":0,"data":{"balances":[],"plans":[]}}"#
+            case "/api/v1/coding-plan/reset/status":
+                guard authorization == "Bearer jwt-token", bigmodel == "configured-key",
+                      request.value(forHTTPHeaderField: "Bigmodel-Target-Type") == "PERSONAL" else {
+                    client?.urlProtocol(self, didFailWithError: URLError(.userAuthenticationRequired))
+                    return
+                }
+                body = #"{"code":0,"data":{"available_five_hour_resets":[],"available_week_resets":[{"expire_at":4102444800000}]}}"#
+            case "/api/v1/marketing/touch":
+                guard authorization == "Bearer jwt-token" else {
+                    client?.urlProtocol(self, didFailWithError: URLError(.userAuthenticationRequired))
+                    return
+                }
+                body = #"{"code":0,"data":{"deliveries":[{"id":"campaign-test","title":"Test campaign"}]}}"#
+            default:
+                client?.urlProtocol(self, didFailWithError: URLError(.unsupportedURL))
+                return
+            }
+            let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: Data(body.utf8))
+            client?.urlProtocolDidFinishLoading(self)
+        }
+
+        override func stopLoading() {}
+    }
+
+    private func credentialsDirectory(oauth: String?, jwt: String?) throws -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("glm-auth-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        var payload: [String: String] = [:]
+        payload["oauth:bigmodel:access_token"] = oauth
+        payload["zcodejwttoken"] = jwt
+        try JSONSerialization.data(withJSONObject: payload)
+            .write(to: directory.appendingPathComponent("credentials.json"))
+        return directory
+    }
+
+    private func makeSession() -> URLSession {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [AuthProtocol.self]
+        return URLSession(configuration: config)
+    }
+
+    func testAPIKeyOverridesExpiredOAuthAndKeepsAllZcodeDetailsInBothLegacyModes() async throws {
+        let directory = try credentialsDirectory(oauth: "expired-oauth", jwt: "jwt-token")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let session = makeSession()
+        defer { session.invalidateAndCancel() }
+        for mode in GlmAuthMode.allCases {
+            let fetcher = GlmCodingPlanFetcher(
+                authMode: mode, isZcodeCredentialEnabled: true, authPath: directory.path,
+                apiKey: "  configured-key\n",
+                endpoint: URL(string: "https://glm-test.invalid/quota")!,
+                pollMarketingCampaign: true, session: session
+            )
+            let result = try await fetcher.fetch(mode: .full)
+            XCTAssertEqual(result.models.first?.intervalRemainingPercent, 80)
+            let package = try XCTUnwrap(result.glmZcodePackage)
+            XCTAssertEqual(package.activityPlanBalances, [])
+            XCTAssertEqual(package.resetCards?.weekResets.count, 1)
+            XCTAssertEqual(package.deliveries.first?.id, "campaign-test")
+        }
+    }
+
+    func testJWTAndAPIKeyFetchDetailsWithoutOAuth() async throws {
+        let directory = try credentialsDirectory(oauth: nil, jwt: "jwt-token")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let session = makeSession()
+        defer { session.invalidateAndCancel() }
+        let fetcher = GlmCodingPlanFetcher(
+            isZcodeCredentialEnabled: true, authPath: directory.path, apiKey: "configured-key",
+            endpoint: URL(string: "https://glm-test.invalid/quota")!,
+            pollMarketingCampaign: true, session: session
+        )
+        let result = try await fetcher.fetch(mode: .full)
+        XCTAssertEqual(result.glmZcodePackage?.resetCards?.weekResets.count, 1)
+        XCTAssertEqual(result.glmZcodePackage?.deliveries.first?.id, "campaign-test")
+        let merged = fetcher.resultMerger.merge(new: result, previous: nil, mode: .full)
+        XCTAssertNotNil(merged.glmZcodePackage, "历史 API Key 模式不再剥离额外信息")
+    }
+
+    func testMissingAPIKeyDoesNotFallBackToOAuthCredential() async throws {
+        let directory = try credentialsDirectory(oauth: "oauth-token", jwt: nil)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let session = makeSession()
+        defer { session.invalidateAndCancel() }
+        for key in ["", " \n "] {
+            let fetcher = GlmCodingPlanFetcher(
+                authPath: directory.path, apiKey: key,
+                endpoint: URL(string: "https://glm-test.invalid/quota")!, session: session
+            )
+            XCTAssertFalse(fetcher.hasLocalAuth())
+            do {
+                _ = try await fetcher.fetch(mode: .full)
+                XCTFail("本地 OAuth token 不能替代必需的 Coding Plan API Key")
+            } catch {
+                XCTAssertEqual(error as? QuotaError, .missingAPIKey)
+            }
+        }
+    }
+
+    func testAPIKeyWithoutJWTStillFetchesStandardQuota() async throws {
+        let directory = try credentialsDirectory(oauth: "expired-oauth", jwt: nil)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let session = makeSession()
+        defer { session.invalidateAndCancel() }
+        let fetcher = GlmCodingPlanFetcher(
+            isZcodeCredentialEnabled: false, authPath: directory.path, apiKey: "configured-key",
+            endpoint: URL(string: "https://glm-test.invalid/quota")!,
+            pollMarketingCampaign: true, session: session
+        )
+        let result = try await fetcher.fetch(mode: .full)
+        XCTAssertEqual(result.models.first?.intervalRemainingPercent, 80)
+        XCTAssertNil(result.glmZcodePackage)
+    }
+
+    func testJWTFlagOffSkipsPackageDespiteLegacyCredentialMode() async throws {
+        let directory = try credentialsDirectory(oauth: "oauth-token", jwt: "jwt-token")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let session = makeSession()
+        defer { session.invalidateAndCancel() }
+        let fetcher = GlmCodingPlanFetcher(
+            authMode: .credential,
+            isZcodeCredentialEnabled: false,
+            authPath: directory.path,
+            apiKey: "configured-key",
+            endpoint: URL(string: "https://glm-test.invalid/quota")!,
+            pollMarketingCampaign: true,
+            session: session
+        )
+
+        let result = try await fetcher.fetch(mode: .full)
+
+        XCTAssertEqual(result.models.first?.intervalRemainingPercent, 80)
+        XCTAssertNil(result.glmZcodePackage, "legacy authMode 不能越过关闭的 JWT 扩展开关")
+        XCTAssertNil(fetcher.resultMerger.merge(new: result, previous: nil, mode: .full).glmZcodePackage)
     }
 }

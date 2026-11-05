@@ -25,7 +25,7 @@
 - 支持每个 Provider 独立刷新、失败退避、手动刷新和配置热重载。
 - 设置页可分别调节默认刷新频率与 1～30 倍的次要信息频率滑块；后者控制重置卡和独立账号、套餐、组织信息查询，并展示各 Provider 的预计周期。
 - 已支持的 Harness 用量按 provider 自动归入额度卡，无需配置归因开关；无法识别的 provider 不会被猜测归类，Provider 自身启停设置保持独立。
-- GLM 凭证模式可识别 ZCode 活动 banner 中的领取计划与权益，形成准确的待领取活动提醒。
+- GLM Coding Plan API Key 为必填；可独立开启 ZCode JWT 扩展以查询活动套餐、重置卡与可领取活动。
 - 设置 → 用量按额度池分类，显示 ZCode 的 Coding/Start 等分类，并将 Antigravity、Agy 与归因到 Antigravity 的 OpenCode 用量拆成 Gemini、Claude/GPT 与 Argon 三组。无法归类的样本与日桶差额单独列出，不改账本权威总量；同一额度池的 5 小时与周窗口只归为一组。
 - 提供 GLM/DeepSeek 高峰时段提示、最近 7 天图表和开机自启动。高峰一律按北京时间（Asia/Shanghai）判定，且法定节假日不计入高峰；节假日表默认联网更新，也可在设置中改为只用内置快照，详见[中文帮助](docs/help.zh-CN.md#节假日数据源)。
 - 主菜单 Provider 卡片可自定义显示顺序（设置 → 常规 → 主菜单 Provider 顺序）；客户端 tab、设置页 Provider tabs 与 Client tab 内的 Provider 行按显示名称字母顺序排列，仅主菜单卡片读取 `providerCardOrder`。
@@ -64,7 +64,7 @@
 | Minimax Token Plan | 套餐额度 API | Minimax v2 SQLite；自动归因支持的 ZCode、OpenCode、DSH 来源 | Token Plan API Key |
 | ChatGPT Plan / Codex | ChatGPT usage API | Codex session 日志；自动归因支持的 OpenCode 来源 | `~/.codex/auth.json` |
 | Antigravity | 本地 language-server RPC | 本地 trajectory metadata RPC；自动归因支持的 OpenCode 来源 | 已登录的 Antigravity 会话 |
-| GLM Coding Plan | GLM quota API | ZCode SQLite；自动归因支持的 OpenCode、DSH 来源 | Coding Plan Key |
+| GLM Coding Plan | GLM quota API | ZCode SQLite；自动归因支持的 OpenCode、DSH 来源 | 必填 Coding Plan API Key；可选 ZCode JWT 扩展 |
 | DeepSeek | 账户余额 API | 自动归因支持的 ZCode、OpenCode、DSH 来源 | DeepSeek API Key |
 
 各数据源、token 口径、高峰窗口和合并规则见下方 Provider 规格文档。

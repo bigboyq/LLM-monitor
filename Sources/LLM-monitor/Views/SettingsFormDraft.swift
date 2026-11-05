@@ -49,24 +49,10 @@ struct SettingsFormDraft: Equatable {
 
     var glmEnabled: Bool = false
     var glmInterval: Int = 0
-    var glmAuthMode: GlmAuthMode = .apiKey
     var glmAuthPath: String = ""
     var glmApiKey: String = ""
+    var glmZcodeJWTEnabled: Bool = false
     var glmNotifyCampaign: QuotaNotifyChannel = .none
-
-    /// 兼容历史测试与调用点
-    var glmZcodeCredentialEnabled: Bool {
-        get { glmAuthMode == .credential }
-        set { glmAuthMode = newValue ? .credential : .apiKey }
-    }
-    var glmZcodePlanEnabled: Bool {
-        get { glmZcodeCredentialEnabled }
-        set { glmZcodeCredentialEnabled = newValue }
-    }
-    var glmBalanceLogParsing: Bool {
-        get { glmZcodeCredentialEnabled }
-        set { glmZcodeCredentialEnabled = newValue }
-    }
 
     var deepseekEnabled: Bool = false
     var deepseekInterval: Int = 0
@@ -178,8 +164,8 @@ struct SettingsFormDraft: Equatable {
         if let id = pid(for: .glmCodingPlan), let pc = config.providers[id] {
             glmEnabled = pc.enabled
             glmApiKey = pc.apiKey ?? ""
+            glmZcodeJWTEnabled = pc.isZcodeCredentialEnabled
             glmInterval = pc.refreshIntervalSeconds ?? 0
-            glmAuthMode = pc.effectiveGlmAuthMode
             glmAuthPath = pc.authPath ?? ""
             glmNotifyCampaign = pc.notifyCampaign ?? .none
         }

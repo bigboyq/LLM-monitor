@@ -5,6 +5,7 @@ import CryptoKit
 struct GlmZcodeCredentials: Equatable, Sendable {
     let deviceMid: String?
     let jwtToken: String?
+    /// 本地读取时是 OAuth access token；发请求前可由 fetcher 替换为配置的 API Key。
     let bigmodelAccessToken: String?
 
     init(deviceMid: String?, jwtToken: String?, bigmodelAccessToken: String? = nil) {

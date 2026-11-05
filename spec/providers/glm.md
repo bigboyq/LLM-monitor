@@ -16,8 +16,9 @@ automatically attributed through the built-in routing registry.
 
 | Item | Current implementation |
 |---|---|
-| Auth source | `providers.glm_coding_plan.apiKey`（`apiKey` 模式）或 `providers.glm_coding_plan.authPath` / `~/.zcode/v2/credentials.json`（`credential` 模式） |
-| Required key type | API Key 模式下为 GLM Coding Plan Key（格式 `<id>.<secret>`）；Credential 模式下从本地 ZCode 凭据解密获取 `oauth:bigmodel:access_token`（免填 Key），同时支持 `apiKey` 作为备选回退 |
+| Auth source | `providers.glm_coding_plan.apiKey` 与 `providers.glm_coding_plan.authPath` / 默认 `~/.zcode/v2/credentials.json` 可同时配置 |
+| Quota auth | 必填 GLM Coding Plan API Key（格式 `<id>.<secret>`）；OAuth 不用于标准额度请求 |
+| ZCode extensions | Optional `zcodeJWTEnabled` switch (default `false`); when enabled, read `zcodejwttoken` and use the configured API Key with it for supported ZCode API requests |
 | Quota endpoint | `GET https://open.bigmodel.cn/api/monitor/usage/quota/limit` |
 | Quota timeout | 10 seconds (`HTTPTimeouts.domestic`) |
 | Quota unit | Remaining credit percent, derived from `remaining / usage` (NOT the response `percentage` field, which is *used* percent) |
@@ -62,9 +63,9 @@ Full config shape:
   "providers": {
     "glm_coding_plan": {
       "enabled": true,
-      "glmAuthMode": "credential",
+      "zcodeJWTEnabled": true,
       "authPath": "~/.zcode/v2",
-      "apiKey": "optional-fallback-key",
+      "apiKey": "coding-plan-key",
       "notifyCampaign": "barkAndSystem"
     }
   }
@@ -76,13 +77,14 @@ Supported provider fields:
 | Field | Meaning |
 |---|---|
 | `enabled` | Enables/disables this provider. |
-| `glmAuthMode` | 认证方式：`apiKey`（仅标准 5h 与周额度套餐）或 `credential`（标准套餐、活动套餐、额度重置卡与运营活动推送）。缺省按历史字段迁移，无历史字段时默认为 `apiKey`。 |
-| `authPath` | 可选 ZCode 凭证文件或所在目录路径（缺省 `~/.zcode/v2`，支持 `~/.zcode/v2/credentials.json` 或自定义路径）。读取时将路径首字符 `～`（U+FF5E）或 `˜`（U+02DC）归一为 ASCII `~` 后展开主目录；路径中段字符保持原样。 |
-| `apiKey` | Coding Plan Key。在 `apiKey` 模式下为必填；在 `credential` 模式下作为免密凭证缺失时的可选回退。 |
+| `zcodeJWTEnabled` | Optional Bool; enables ZCode JWT extensions. Missing defaults to `false` for new configurations. Explicit true/false takes precedence; otherwise `effectiveGlmAuthMode` preserves the legacy setting (`glmAuthMode` first, then `parseZcodeCredential` → `parseZcodePlan` → `parseZcodeBalanceLog`, using the first non-nil value). |
+| `authPath` | ZCode 凭证文件或目录路径；仅在 `zcodeJWTEnabled` 为 true 时读取（缺省 `~/.zcode/v2`，支持 `~/.zcode/v2/credentials.json` 或自定义路径）。读取时将路径首字符 `～`（U+FF5E）或 `˜`（U+02DC）归一为 ASCII `~` 后展开主目录；路径中段字符保持原样。 |
+| `apiKey` | Required Coding Plan Key. The quota fetcher is not ready without a nonblank key. When ZCode JWT extensions are enabled, this same configured key is sent as the BigModel authorization header; OAuth is never used as fallback. |
+| `glmAuthMode` | Legacy compatibility field (`apiKey` / `credential`); when `zcodeJWTEnabled` is absent, `credential` migrates to enabled. Settings save clears this key. |
 | `refreshIntervalSeconds` | Optional independent refresh interval (overrides global default of 300s). |
 | `displayName` | Optional card title override. |
-| `notifyCampaign` | Optional notification channel for new ZCode marketing campaigns (`none` / `system` / `barkAndSystem`). 仅在 `credential` 模式下生效。 |
-| `parseZcodeCredential` / `parseZcodePlan` / `parseZcodeBalanceLog` | 兼容历史配置字段。解码时若为 true 自动迁移至 `glmAuthMode = .credential`，保存时不落盘。 |
+| `notifyCampaign` | Optional notification channel for new ZCode marketing campaigns (`none` / `system` / `barkAndSystem`). 默认关闭；JWT 扩展开启、读取到 JWT 且通知渠道开启后，仅 `.full` 刷新轮询。 |
+| `parseZcodeCredential` / `parseZcodePlan` / `parseZcodeBalanceLog` | Legacy compatibility fields; used in the above precedence order when both `zcodeJWTEnabled` and `glmAuthMode` are absent. Settings save clears these keys. |
 | `notifyIntervalRestored` etc. (4 fields) | Optional per-event notification channels (5h/weekly × restored/exhausted): `none` / `system` / `barkAndSystem`. Defaults: restored → `system`, exhausted → `none`. See `spec/notifications.md`. |
 
 The peak window is **fixed at the official default**（Mon–Fri 14:00–18:00，北京时间，
@@ -91,7 +93,7 @@ The peak window is **fixed at the official default**（Mon–Fri 14:00–18:00�
 `peakWeekdaysOnly` 键由 `JSONDecoder` 静默忽略（见 `spec/config.md` §Config Schema），
 不进损坏恢复流程、不影响判定，下次保存时自然消失。
 
-`GlmCodingPlanFetcher.hasLocalAuth()` 在 `apiKey` 模式下校验 `apiKey` 非空；在 `credential` 模式下校验 `credentials.json` 文件是否存在。`AppState` 根据此派生 ready 状态。
+`GlmCodingPlanFetcher.hasLocalAuth()` 要求存在非空 API Key 才报告 ready；即使 ZCode JWT 扩展开启且本地 JWT 存在，也不能替代主额度 API Key。JWT 有效性由 ZCode 接口验证。
 
 ## API Request
 
@@ -101,9 +103,10 @@ Authorization: <Coding Plan Key>
 Content-Type: application/json
 ```
 
-**Important — auth header**: the Coding Plan Key is sent as a **raw token** in
+**Important — auth header**: the configured Coding Plan Key is sent as a **raw token** in
 `Authorization` (no `Bearer` prefix), matching the official plugin and the Anthropic
 protocol base URL (`https://open.bigmodel.cn/api/anthropic`). The key format is `<id>.<secret>`.
+The API Key is required. OAuth access tokens are not used for this endpoint.
 
 Logs only include the key length (e.g. `key length=48`), never the key itself or a prefix.
 
@@ -153,7 +156,7 @@ Important fields:
 
 | Field | Meaning |
 |---|---|
-| `code` | Business code; `200` = success. **Auth failures come back as HTTP 200 with `code: 1000`** — must be checked in the body, not via HTTP status. |
+| `code` | Business code; `200` = success. Invalid API keys can come back as HTTP 200 with `code: 1000` — check the body, not only HTTP status. |
 | `success` | `true` / `false` business flag |
 | `data.level` | Subscribed tier: `lite` / `pro` / `max` → card pill |
 | `data.limits[]` | One entry per credit window |
@@ -549,7 +552,7 @@ OpenCode / DSH 合并 sample（`zhipuai-coding-plan`、`dsh:glm` 等）不带 bi
 ### ZCode 凭证解析与直连 API（Activity Plan、重置卡与营销活动）
 
 zcode SaaS 活动套餐（如周末体验套餐 `ZCode Weekend Build`）、额度重置卡与营销活动触达通过 `GlmZcodeAPIClient` 直调 `zcode.z.ai` 接口获取：
-- 凭证由 `GlmZcodeCredentialReader` 从 `~/.zcode/v2/telemetry-state.json` 与 `credentials.json` 自动解密，需切换为凭证认证模式（`glmAuthMode == .credential` / `isZcodeCredentialEnabled`）；
+- 必须手动填写 Coding Plan API Key 才能启动 GLM fetcher。ZCode JWT 扩展由独立配置 `zcodeJWTEnabled` 控制（缺省关闭）；关闭时不读取凭证文件、不调用三路 ZCode 接口，也不展示上一次缓存的 package。打开后才从 `authPath` 读取 JWT 与设备标识；找到 JWT 时启用套餐余额、重置卡与营销活动接口；没有 JWT 时只跳过扩展请求，主额度仍正常请求；
 - 抓取随 `GlmCodingPlanFetcher` 并在后台静默聚合至 `GlmZcodePackageSnapshot`，由 `GlmFillingMissingMerger` 处理跨模式合并；三路接口经 `ZcodePackageProviding` 协议注入（默认实现 `GlmZcodeAPIPackageProvider` 转发 `GlmZcodeAPIClient` static 方法），编排逻辑（部分失败降级、凭证缺失跳过、background 门控）可注入 stub 单测；
 - **主频与次要信息频率**：
   - **活动套餐余额**：与 GLM Provider 生效刷新间隔保持一致（独立间隔优先，否则继承默认），每次刷新（`.full` 与 `.background`）均查询；
@@ -565,8 +568,8 @@ zcode SaaS 活动套餐（如周末体验套餐 `ZCode Weekend Build`）、额�
 | 接口 2：重置卡 | `GET https://zcode.z.ai/api/v1/coding-plan/reset/status`（按次要信息频率轮询，仅 `.full` 模式查询） |
 | 接口 3：营销活动 | `GET https://zcode.z.ai/api/v1/marketing/touch?seq=1`（仅在通知开启且 `.full` 模式轮询，通知按 delivery 做 1h 防抖） |
 | 过期口径 | `expires_at <= now` 的套餐条目直接剔除；重置卡按 `expireAt` 展示 |
-| 认证模式 / 开关 | `providers.glm_coding_plan.glmAuthMode`（`GlmAuthMode`：`apiKey` / `credential`，便捷属性 `isZcodeCredentialEnabled`；兼容旧配置 `parseZcodeCredential` / `parseZcodePlan` / `parseZcodeBalanceLog`；缺省 `apiKey`） |
-| 营销活动通知 | `providers.glm_coding_plan.notifyCampaign`（`QuotaNotifyChannel`：`none` / `system` / `barkAndSystem`；缺省关闭；在凭证模式关闭时禁用） |
+| 认证方式 | `apiKey` 必填，标准额度只使用此 key。`zcodeJWTEnabled` 独立控制扩展；开启后双头 ZCode 接口发送 `Authorization: Bearer <JWT>` 与 `X-Bigmodel-Authorization: <配置的 API Key>`，不使用 OAuth |
+| 营销活动通知 | `providers.glm_coding_plan.notifyCampaign`（`QuotaNotifyChannel`：`none` / `system` / `barkAndSystem`；缺省关闭；JWT 扩展开启、JWT 可读且通知渠道开启后，仅 `.full` 模式轮询） |
 | 套餐展示 | `GlmActivityPlanBalancesView`：排在标准额度之后，渲染生效中活动套餐进度条与失效倒计时，以及生效前预告置灰条 |
 | 重置卡展示 | `QuotaWindowUsageSection.glmResetCardsModule`（`GlmResetCardsBlock`）：排在「额度窗口」之后，带有标题「重置卡详情」（`QuotaModuleTitle`），双列布局，左侧 5 小时卡 `5小时重置卡 (N)`、右侧周卡 `周重置卡 (N)`；每列最多展示前 3 张（`prefix(3)`），显示彩色紧迫度圆点、`MM-dd HH:mm` 与相对倒计时；无可用卡时不占卡片高度 |
 
@@ -610,7 +613,7 @@ Coding Plan 用户下发 5 小时卡（闲时时段 + 5h 用量超阈值 + 当�
 
 ```
 Authorization: Bearer <zcodejwttoken>            # ZCode 活跃 JWT（由 GlmZcodeCredentialReader 从 credentials.json 解密）
-X-Bigmodel-Authorization: <bigmodel access token> # oauth:bigmodel:access_token（由 GlmZcodeCredentialReader 解密）
+X-Bigmodel-Authorization: <Coding Plan API Key>       # 与标准额度 API 相同的必填配置 key
 Bigmodel-Target-Type: PERSONAL                    # 个人账号固定为 PERSONAL；团队套餐为 TEAM
 ```
 
@@ -645,7 +648,7 @@ Bigmodel-Target-Type: PERSONAL                    # 个人账号固定为 PERSON
 
 **最终架构决策**：**Direct API Only（纯直连接口解析，解耦日志）**。
 - 去除 `GlmZcodeLocalUsageScanner` 与 `LocalUsageOrchestration` 中的日志解析调用与目录监听；
-- 统一由 `GlmCodingPlanFetcher` 在 `glmAuthMode == .credential`（`isZcodeCredentialEnabled`）下，通过 `GlmZcodeAPIClient` 直连接口获取活动套餐、重置卡与营销触达；
+- 统一由 `GlmCodingPlanFetcher` 在 JWT 扩展开启且本地读到 ZCode JWT 后，通过 `GlmZcodeAPIClient` 直连接口获取活动套餐、重置卡与营销触达；
 - 当直连 API 失败或本地凭证缺失时静默降级（保留原有配额刷新，不阻断主流程），旧版轮询日志解析器已被彻底移除。
 
 **可观测副作用**：用卡成功后 monitor 接口对应窗口的 `remaining` 立即回满、
@@ -716,7 +719,7 @@ session 不一定在内）。
 
 | Situation | Current error |
 |---|---|
-| Empty API key passed to fetcher | `未配置 API Key` (`QuotaError.missingAPIKey`) |
+| API Key missing or blank | `未配置 API Key` (`QuotaError.missingAPIKey`); local OAuth does not replace the key |
 | URLSession error | `网络错误：<system message>` |
 | Non-HTTP response | `响应格式无效` |
 | HTTP non-2xx | `HTTP <status>: <body preview>` (rare — monitor API returns 200 even for errors) |
@@ -725,8 +728,7 @@ session 不一定在内）。
 | Missing `data` | `解析失败：响应缺少 data` |
 | No `CREDIT_LIMIT` entries | `解析失败：GLM Coding Plan 未返回任何有效积分额度` |
 | Counts invalid (e.g. `remaining > total`) | `解析失败：GLM Coding Plan 积分额度字段非法: ...` |
-| Credential missing or not logged in | `解析失败：ZCode 本地凭证缺失或未登录` |
-| Credential token missing and no API key | `解析失败：ZCode 本地凭证缺少 bigmodel access token，且未配置备用 API Key` |
+| JWT extension disabled or JWT missing | 主额度仍可请求；关闭时不读取本地凭证，开启但缺少 JWT 时跳过 ZCode 套餐、重置卡和营销接口 |
 
 **Auth failure is HTTP 200**: the 智谱 monitor API validates the key at the business layer,
 returning `{ "code": 1000, "msg": "身份验证失败。", "success": false }` with HTTP 200. The
@@ -758,7 +760,7 @@ provider-specific interval can be set via `refreshIntervalSeconds`.
 - Only the `open.bigmodel.cn` host is wired. The same monitor API is mirrored at
   `api.z.ai` (Z.ai) per the official plugin; supporting it would be a config-driven
   endpoint change.
-- ZCode 侧的 zcode-plan / coding-plan-reset 接口（`zcode.z.ai`）：活动套餐余额与额度重置卡已在 `.credential` 认证模式下通过 `GlmZcodeAPIClient` 完整接入（旧日志解析器已废弃删除）。
+- ZCode 侧的 zcode-plan / coding-plan-reset 接口（`zcode.z.ai`）：JWT 扩展开启且本地读到 JWT 后通过 `GlmZcodeAPIClient` 获取活动套餐余额与额度重置卡；双头接口的 BigModel 凭证只使用配置的 API Key（旧日志解析器已废弃删除）。
 
 ## Test Coverage
 
@@ -770,6 +772,10 @@ GlmZcodePackageOrchestrationTests.swift / ZcodeAppVersionResolverTests.swift`
 
 | Test | What it verifies |
 |---|---|
+| `testMissingAPIKeyDoesNotFallBackToOAuthCredential` | Missing or blank API Key prevents fetching even when local OAuth and JWT are present |
+| `testJWTFlagOffSkipsPackageDespiteLegacyCredentialMode` | Explicitly disabled JWT extension keeps standard quota and skips all ZCode requests |
+| `testJWTAndAPIKeyFetchDetailsWithoutOAuth` | Enabled JWT extension fetches details using JWT plus API Key without OAuth |
+| `testAPIKeyWithoutJWTStillFetchesStandardQuota` | Missing JWT skips extension requests while standard quota succeeds |
 | `testGlmCodingPlanFetcherParsingAndWindows` | Successful response, both windows, plan label, and display name |
 | `testGlmFetcherErrorHandling` | Business failure and empty-limit error paths |
 | `testGlmCodingPlanFetcherErrorPaths` | Invalid remaining/total boundary |

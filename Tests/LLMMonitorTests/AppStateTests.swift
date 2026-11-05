@@ -228,6 +228,101 @@ final class AppStateTests: StateTestCase {
             }
         }
     }
+
+    @MainActor
+    func testGLMAuthReadinessRequiresAPIKeyRegardlessOfLegacyMode() {
+        let localCredentialFetcher = FakeFetcher(
+            providerID: "glm_coding_plan",
+            hasLocalAuth: true,
+            checkLocalAuth: true
+        )
+        let descriptor = FetcherDescriptor(
+            id: "glm_coding_plan",
+            displayName: "GLM",
+            kind: .glmCodingPlan,
+            iconSystemName: "code",
+            accentColor: .glm,
+            makeFetcher: { _ in localCredentialFetcher }
+        )
+
+        // Local ZCode credentials alone cannot authorize the standard quota request.
+        let localCredentialOnly = ProviderConfig(
+            enabled: true,
+            authPath: "~/.zcode/v2",
+            glmAuthMode: .apiKey
+        )
+        XCTAssertEqual(
+            AppState.deriveProviderState(
+                descriptor: descriptor,
+                providerConfig: localCredentialOnly,
+                authProber: nil,
+                hintProvider: { _, _ in "API Key missing" }
+            ),
+            .notConfigured(reason: "API Key 未填写")
+        )
+
+        // An API key is sufficient even without a local ZCode JWT.
+        let apiKeyFetcher = FakeFetcher(providerID: "glm_coding_plan", hasLocalAuth: true, checkLocalAuth: true)
+        let apiKeyDescriptor = FetcherDescriptor(
+            id: "glm_coding_plan",
+            displayName: "GLM",
+            kind: .glmCodingPlan,
+            iconSystemName: "code",
+            accentColor: .glm,
+            makeFetcher: { _ in apiKeyFetcher }
+        )
+        let apiKeyOnly = ProviderConfig(enabled: true, apiKey: "valid-key", glmAuthMode: .apiKey)
+        XCTAssertEqual(
+            AppState.deriveProviderState(
+                descriptor: apiKeyDescriptor,
+                providerConfig: apiKeyOnly,
+                authProber: nil,
+                hintProvider: { _, _ in "API Key missing" }
+            ),
+            .ready
+        )
+    }
+
+    func testGLMZcodeJWTEnablementMigrationAndPrecedence() throws {
+        let legacyCredential = try JSONDecoder().decode(
+            ProviderConfig.self,
+            from: Data(#"{"enabled":true,"glmAuthMode":"credential"}"#.utf8)
+        )
+        XCTAssertTrue(legacyCredential.isZcodeCredentialEnabled)
+
+        let oldParseFlag = try JSONDecoder().decode(
+            ProviderConfig.self,
+            from: Data(#"{"enabled":true,"parseZcodeCredential":true}"#.utf8)
+        )
+        XCTAssertTrue(oldParseFlag.isZcodeCredentialEnabled)
+
+        let explicitlyDisabled = try JSONDecoder().decode(
+            ProviderConfig.self,
+            from: Data(#"{"enabled":true,"zcodeJWTEnabled":false,"glmAuthMode":"credential","parseZcodeCredential":true}"#.utf8)
+        )
+        XCTAssertFalse(explicitlyDisabled.isZcodeCredentialEnabled)
+
+        let explicitlyEnabled = try JSONDecoder().decode(
+            ProviderConfig.self,
+            from: Data(#"{"enabled":true,"zcodeJWTEnabled":true,"glmAuthMode":"apiKey"}"#.utf8)
+        )
+        XCTAssertTrue(explicitlyEnabled.isZcodeCredentialEnabled)
+
+        let roundTrip = try JSONDecoder().decode(
+            ProviderConfig.self,
+            from: JSONEncoder().encode(explicitlyEnabled)
+        )
+        XCTAssertEqual(roundTrip.zcodeJWTEnabled, true)
+        XCTAssertTrue(roundTrip.isZcodeCredentialEnabled)
+
+        let disabledRoundTrip = try JSONDecoder().decode(
+            ProviderConfig.self,
+            from: JSONEncoder().encode(explicitlyDisabled)
+        )
+        XCTAssertEqual(disabledRoundTrip.zcodeJWTEnabled, false)
+        XCTAssertFalse(disabledRoundTrip.isZcodeCredentialEnabled)
+    }
+
     // MARK: - R4: Antigravity 离线保留 lastSuccess（类型化 derive reason）
     /// R4：已配置且 auth 文件在，但本地服务探测不可用 → serviceOffline；
     ///     恢复后 → ready；禁用 → notConfigured（必须清空，不是离线）。
