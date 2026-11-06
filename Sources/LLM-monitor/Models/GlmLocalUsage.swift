@@ -279,12 +279,4 @@ struct GlmZcodePackageSnapshot: Equatable, Codable, Sendable {
         self.deliveries = deliveries
         self.fetchedAt = fetchedAt
     }
-
-    var safeActivityPlanBalances: [GlmActivityPlanBalance] {
-        activityPlanBalances ?? []
-    }
-
-    var safeActivityPlanPreviews: [GlmActivityPlanPreview] {
-        activityPlanPreviews ?? []
-    }
 }

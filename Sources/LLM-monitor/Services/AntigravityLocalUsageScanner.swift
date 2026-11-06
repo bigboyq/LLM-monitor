@@ -898,7 +898,7 @@ extension AntigravityLocalUsageScanner {
 
         // 5. 组装 AntigravityLocalUsage（只算自然日已入账的 tokens）
         let allDaily = computeGlobalDaily(from: index.dailyBySession, calendar: calendar)
-        let todayStart = todayCutoff(now: nowDate, calendar: calendar)
+        let todayStart = DailyUsageAggregation.todayCutoff(now: nowDate, calendar: calendar)
         let recent7 = filterLast7Days(allDaily: allDaily, today: todayStart, calendar: calendar)
         let recentSamples = (index.samplesBySession ?? [:]).values
             .flatMap { $0 }

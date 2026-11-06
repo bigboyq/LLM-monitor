@@ -304,14 +304,6 @@ actor CodexSessionEventCache {
             logWarn("[codex/cache] 保存磁盘缓存失败: \(error.localizedDescription)")
         }
     }
-
-    #if DEBUG
-    func resetForTesting() {
-        isLoadedFromDisk = false
-        isDirty = false
-        cache.removeAll(except: [])
-    }
-    #endif
 }
 
 extension CodexFetcher {

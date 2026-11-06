@@ -1,69 +1,6 @@
 import SwiftUI
 import AppKit
 
-/// 同一张 `ProviderCardView` 的排版规则。
-///
-/// 菜单额度行以独立 disclosure 复用 Plan 与 history；边缘浮窗用 `edgePlan` 展示
-/// 标题、scope、Account Info 与 Plan；独立详情窗口用 `complete` 展示 Plan + history。
-/// Provider 详情不再依赖 hover 二次触发。
-///
-/// 曾经按 `HoverRevealMode` 分叉的规则至此**全部收敛**，这个类型只剩下面注释里
-/// 记录的历史。收敛的判据只有一条：`hoverRevealMode` 的两个注入点
-/// 仅存的 dock 注入点 `EdgeDockController.popoverContent` **写死 `.alwaysVisible`**；
-/// 菜单 strip 宿主已删除，没有渲染宿主会读到 `.onHover`，于是每条以
-/// `mode` 为参数的判据在生产路径上都恒为常量。
-enum ProviderCardLayout {
-    // 曾有 `laysWindowDetailsSideBySide(mode:)`（`alwaysVisible` 即并排），已删除。
-    //
-    // 它唯一的消费者是 `QuotaWindowsHoverView` / `QuotaUsageWindowsHoverView` 里的
-    // 并排分支，而那两个视图只从 `QuotaCombinedUsageRow` / `QuotaSingleUsageRow`
-    // 构造，后者只出现在 model 行的 `menuLayout` 里——dock 的额度块早已重排成
-    // `ModelQuotaDockBlock` + `QuotaBarWithMetadata`，不再经过它们。于是判据恒为
-    // false，**并排那一支跑不到，堆叠那一支才是实际行为**：一个看着已实现、实际
-    // 从未生效的开关。
-    //
-    // 现在按产品决定统一成并排，并把判据内联到那两个视图里（单窗口仍单列）。
-    // dock 侧的"两列"是另一回事：`QuotaBarWithMetadata` 的元信息行本来就是
-    // `5h 62%  周 80%` 一行并排，不需要任何谓词。
-
-    // 已删除的四条（连同它们守护的菜单分支）：`hoistsResetCredits`、
-    // `hoistsPeakIndicator`、`hidesHeaderStatusDot`、`splitsIntoTwoCards`。
-    //
-    // 它们的消费方**全在 `ProviderCardView.swift` 内**，而菜单侧那条 `.onHover`
-    // 分支已经随 `menuBody` 一起没有渲染方了：重置卡与高峰期倒计时改由卡片层
-    // 无条件绘制，标题行的状态点不再画。当前 edgePlan 是一张 Plan 卡；complete
-    // 独立详情是 Plan + history 两卡；菜单可分别打开两段。
-    // 规则还在、却永远只取到 `true`，测试再断言它返回 `true` 就是三方一起给假
-    // 信号——这正是当初 `expandsAccountSection` 被拆掉时的同一个组合。
-
-    // 同一轮删掉的另外三条：消费方在 `QuotaViews` / `QuotaHoverViews`，不在本文件
-    // 内，所以是**先核实宿主、再就地内联恒定值**，而不是连消费点一起删。逐条结论：
-    //
-    // 1. `liftsProgressBar(mode:)`（恒 `true`）——消费方四处：
-    //    `ChatGPTPlanModelRow.isDockLayout`、`CombinedQuotaWindowRow.isDockLayout`、
-    //    `CombinedQuotaMetadataLine.clustersAtTrailingEdge`、
-    //    `SingleQuotaMetadataLine.clustersAtTrailingEdge`。前两处的宿主就是本卡片
-    //    （`.alwaysVisible`）；后两处既在 dock 的 `QuotaBarWithMetadata` 里（活的），
-    //    也在 `QuotaCombinedUsageRow` / `QuotaSingleUsageRow` 里（这两个只出现在 model
-    //    行的 `menuLayout`，菜单不渲染 provider 卡后已无宿主）。四处都内联成常量。
-    // 2. `splitsCachedInputRow(mode:)` / 3. `splitsRoundsRow(mode:)`（恒 `true`）——
-    //    消费方是 `UsageMetricHoverSummaryView`。它唯一的一处卡内宿主曾是
-    //    `CombinedQuotaWindowRow.dockBlock` 里的 `OffPeakUsageFootnote`（GLM 闲时
-    //    用量那条脚注）；另一处是 `QuotaUsageWindowColumn`（只从 `menuLayout`
-    //    那条路来）。两处随后续清理一起消失：闲时用量并入「额度窗口」表格的
-    //    「闲」行，脚注与该视图整个删除。判据同样内联成常量。
-    //
-    // 后续（独立的一次清理）：上面 1. 的前两处 `isDockLayout` 连同恒假的 `else`
-    // 分支（`menuLayout`）一起删除，两个 model 行的 body 直接渲染 dock；随之删除的
-    // 独占子视图是 `QuotaCombinedUsageRow` / `QuotaSingleUsageRow` /
-    // `QuotaWindowTitle` / `LastPromptHoverSummaryView`。
-    // `QuotaWindowsHoverView` / `QuotaUsageWindowsHoverView` /
-    // `QuotaUsageWindowColumn` / `SingleQuotaWindowHoverView` 同样失去了渲染宿主，
-    // `QuotaWindowsHoverView` 族（连同量宽测试）已随后续清理一并删除，
-    // 故**保守保留整族**（见 `QuotaViews.swift` 的对应注释）。新的渲染宿主若要换
-    // 形态，届时是**恢复分支**而不是从死代码里挑。
-}
-
 /// PopWindow 卡片两处时间戳的点击动作，**按数据种类拆成两个键**：标题行的
 /// `ProviderStateLabel` 是**额度**的新鲜度，点击只重抓该 provider 的额度
 /// （`AppState.refreshOne(providerID:)`，参数是 `status.id`）；段3 的
@@ -853,31 +790,44 @@ struct ProviderCardView: View, Equatable {
                 .onHover { updatePointingCursor($0) }
                 .help(isPinnedToStatusBar ? "取消在状态栏固定显示该服务商" : "在状态栏固定显示该服务商的 5h/周配额")
             }
-            if case .loading = status.state {
+            // 额度状态/时间戳胶囊（保留点击刷新支持，保持双入口与既有手势一致）
+            if let cardQuotaRefreshAction, !status.isLoading {
+                Button {
+                    logInfo("ProviderCardView: 点击额度时间戳刷新 provider=\(status.id)")
+                    cardQuotaRefreshAction(status.id)
+                } label: {
+                    ProviderStateLabel(status: status)
+                }
+                .buttonStyle(.plain)
+                .onHover { updatePointingCursor($0) }
+                .help("额度更新时间；点击立即刷新该 Provider")
+                .accessibilityLabel("额度更新时间；点击立即刷新该 Provider")
+            } else {
+                ProviderStateLabel(status: status)
+            }
+
+            // 显式刷新操作按钮 / 加载中指示器（R2）
+            if status.isLoading {
                 ProgressView()
                     .scaleEffect(0.55)
                     .frame(width: 14, height: 14)
-            } else {
-                // 按钮挂在**使用点**而不是 `ProviderStateLabel` 内部：兜底行本体
-                // 复用同一视图做 headline，行级已有自己的 tap（刷新单个 provider），
-                // 按钮进视图内部会和它打架。这枚胶囊是**额度**的新鲜度：点击只重抓
-                // 该 provider 的额度，排期重锚也只动它自己（refreshOne 语义）；
-                // nil 时为只读展示。采用 Button(.plain) 确保后台悬浮窗（EdgeDock popover）
-                // 下首击直接响应，行为与「分析/用量」切换控件完全一致。
-                if let cardQuotaRefreshAction {
-                    Button {
-                        logInfo("ProviderCardView: 点击额度时间戳刷新 provider=\(status.id)")
-                        cardQuotaRefreshAction(status.id)
-                    } label: {
-                        ProviderStateLabel(status: status)
-                    }
-                    .buttonStyle(.plain)
-                    .onHover { updatePointingCursor($0) }
-                    .help("额度更新时间；点击立即刷新该 Provider")
-                    .accessibilityLabel("额度更新时间；点击立即刷新该 Provider")
-                } else {
-                    ProviderStateLabel(status: status)
+                    .help("正在刷新 \(status.displayName) 额度")
+                    .accessibilityLabel("正在刷新 \(status.displayName) 额度")
+            } else if let cardQuotaRefreshAction {
+                Button {
+                    logInfo("ProviderCardView: 点击刷新按钮 provider=\(status.id)")
+                    cardQuotaRefreshAction(status.id)
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 11, weight: .regular))
+                        .foregroundStyle(Color.secondaryLabel.opacity(0.8))
+                        .frame(width: 14, height: 14)
+                        .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
+                .onHover { updatePointingCursor($0) }
+                .help("刷新 \(status.displayName) 额度；仅重新读取此 provider")
+                .accessibilityLabel("刷新 \(status.displayName) 额度")
             }
         }
     }
@@ -1098,12 +1048,27 @@ struct QuotaSummary: View {
                 }
             }
 
-            if info.openAIApiCredits != nil || info.openAIApiCreditsError != nil {
+            let allCredits = info.allOpenAIApiCredits
+            if !allCredits.isEmpty {
+                if !displayedModels.isEmpty {
+                    Divider().opacity(0.3)
+                }
+                ForEach(Array(allCredits.enumerated()), id: \.element.id) { index, credits in
+                    if index > 0 {
+                        Divider().opacity(0.2)
+                    }
+                    ChatGPTApiCreditsRow(
+                        credits: credits,
+                        tint: .chatgptBrand,
+                        error: credits.errorMessage ?? info.openAIApiCreditsError
+                    )
+                }
+            } else if info.openAIApiCreditsError != nil {
                 if !displayedModels.isEmpty {
                     Divider().opacity(0.3)
                 }
                 ChatGPTApiCreditsRow(
-                    credits: info.openAIApiCredits,
+                    credits: nil,
                     tint: .chatgptBrand,
                     error: info.openAIApiCreditsError
                 )

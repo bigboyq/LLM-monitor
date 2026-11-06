@@ -197,7 +197,7 @@ final class ProviderCardDerivedMemoTests: XCTestCase {
         let day = PeakWindow.beijingCalendar.startOfDay(for: beijingPeakInstant())
         let samples = [sample("turn-1", at: beijingPeakInstant())]
 
-        let first = LocalUsagePriceByDay.values(
+        let first = LocalUsagePriceByDay.estimates(
             dayStarts: [day],
             recentSamples: samples,
             quotaProviderID: QuotaProviderID.deepseek,
@@ -205,7 +205,7 @@ final class ProviderCardDerivedMemoTests: XCTestCase {
         )
         XCTAssertEqual(LocalUsagePriceByDay.computeCount, 1)
         for tick in 1...10 {
-            _ = LocalUsagePriceByDay.values(
+            _ = LocalUsagePriceByDay.estimates(
                 dayStarts: [day],
                 recentSamples: samples,
                 quotaProviderID: QuotaProviderID.deepseek,
@@ -214,13 +214,8 @@ final class ProviderCardDerivedMemoTests: XCTestCase {
             XCTAssertEqual(LocalUsagePriceByDay.computeCount, 1, "第 \(tick) 次 tick 不该重算")
         }
         XCTAssertEqual(
-            first,
-            LocalUsagePriceByDay.compute(
-                dayStarts: [day],
-                recentSamples: samples,
-                quotaProviderID: QuotaProviderID.deepseek,
-                deepseekPeakWindow: .deepseekDefault
-            )
+            first[day]?.displayText,
+            "¥2.00"
         )
     }
 
@@ -303,22 +298,22 @@ final class ProviderCardDerivedMemoTests: XCTestCase {
             "10:00 必须落在 DeepSeek 高峰时段 9–12 内"
         )
 
-        let weekday = try! XCTUnwrap(LocalUsagePriceByDay.values(
+        let weekday = try! XCTUnwrap(LocalUsagePriceByDay.estimates(
             dayStarts: [day],
             recentSamples: samples,
             quotaProviderID: QuotaProviderID.deepseek,
             deepseekPeakWindow: .deepseekDefault
-        )[day])
+        )[day]?.displayText)
         XCTAssertEqual(LocalUsagePriceByDay.computeCount, 1)
 
         let iso = HolidayCalendar.beijingDateString(on: instant)
         HolidayCalendar.applyResolved(HolidayCalendar.make(holidays: [iso]))
-        let holiday = try! XCTUnwrap(LocalUsagePriceByDay.values(
+        let holiday = try! XCTUnwrap(LocalUsagePriceByDay.estimates(
             dayStarts: [day],
             recentSamples: samples,
             quotaProviderID: QuotaProviderID.deepseek,
             deepseekPeakWindow: .deepseekDefault
-        )[day])
+        )[day]?.displayText)
 
         XCTAssertEqual(LocalUsagePriceByDay.computeCount, 2, "节假日表换版本必须重算")
         // 1M uncached input × ¥1/M：工作日高峰 ×2 → ¥2.00；同一天被标成法定假日
@@ -335,18 +330,18 @@ final class ProviderCardDerivedMemoTests: XCTestCase {
         let one = sample("turn-1", at: instant, input: 1_000_000)
         let two = sample("turn-2", at: instant, input: 3_000_000)
 
-        let before = try! XCTUnwrap(LocalUsagePriceByDay.values(
+        let before = try! XCTUnwrap(LocalUsagePriceByDay.estimates(
             dayStarts: [day],
             recentSamples: [one],
             quotaProviderID: QuotaProviderID.deepseek,
             deepseekPeakWindow: .deepseekDefault
-        )[day])
-        let after = try! XCTUnwrap(LocalUsagePriceByDay.values(
+        )[day]?.displayText)
+        let after = try! XCTUnwrap(LocalUsagePriceByDay.estimates(
             dayStarts: [day],
             recentSamples: [two],
             quotaProviderID: QuotaProviderID.deepseek,
             deepseekPeakWindow: .deepseekDefault
-        )[day])
+        )[day]?.displayText)
 
         XCTAssertEqual(LocalUsagePriceByDay.computeCount, 2)
         XCTAssertNotEqual(before, after)

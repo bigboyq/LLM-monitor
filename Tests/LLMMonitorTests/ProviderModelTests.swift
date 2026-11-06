@@ -359,25 +359,6 @@ final class ProviderModelTests: XCTestCase {
         XCTAssertNotEqual(base, dailyChanged)
     }
 
-    private struct MockDailyUsage: LocalUsageDaily {
-        let inputTokens: Int
-        let outputTokens: Int
-        let cacheReadTokens: Int
-        let cacheWriteTokens: Int
-        let reasoningTokens: Int
-        let turns: Int
-        let rounds: Int
-
-        var id: Date { dayStart }
-        var dayStart: Date { Date() }
-        var input: Int { inputTokens }
-        var cacheRead: Int { cacheReadTokens }
-        var cacheWrite: Int { cacheWriteTokens }
-        var output: Int { outputTokens }
-        var reasoning: Int { reasoningTokens }
-        var totalTokens: Int { inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens + reasoningTokens }
-    }
-
     func testAllDailyUsageTypesConformToLocalUsageDaily() {
         let day = Date(timeIntervalSince1970: 1_800_000_000)
         let antigravity = AntigravityDailyUsage(
@@ -415,17 +396,5 @@ final class ProviderModelTests: XCTestCase {
         XCTAssertEqual(dailyValues.map(\.reasoning), [50, 50, 50, 50, 50])
         XCTAssertEqual(dailyValues.map(\.turns), [6, 6, 6, 6, 6])
         XCTAssertEqual(dailyValues.map(\.rounds), [7, 7, 7, 7, 7])
-    }
-
-    func testLocalUsageChartScaleCrossDayMax() {
-        // Day 1: high output (1000), low reasoning (10)
-        let day1 = MockDailyUsage(inputTokens: 100, outputTokens: 1000, cacheReadTokens: 50, cacheWriteTokens: 0, reasoningTokens: 10, turns: 1, rounds: 1)
-        // Day 2: low output (10), high reasoning (1000)
-        let day2 = MockDailyUsage(inputTokens: 200, outputTokens: 10, cacheReadTokens: 100, cacheWriteTokens: 0, reasoningTokens: 1000, turns: 1, rounds: 1)
-
-        let scale = LocalUsageChartScale(days: [day1, day2])
-        // Output total for Day 1 is 1010, Day 2 is 1010. Max output total across days should be 1010.
-        XCTAssertEqual(scale.maxOutputWeight, 1010)
-        XCTAssertEqual(scale.maxUncached, 200)
     }
 }

@@ -53,20 +53,40 @@ extension Formatters {
         return "\(max(minutes, 1))分"
     }
 
-    /// 紧凑账单周期剩余中文倒计时："12天8小时后" / "12天后" / "2小时15分后" / "2小时后" / "25分后" / "已到期"。
-    static func formatBillingRemainingDuration(_ seconds: TimeInterval) -> String {
-        guard seconds > 0 else { return "已到期" }
+    /// 紧凑相对时间倒计时格式化
+    ///
+    /// 将秒数拆解为 天、小时、分钟：
+    /// - days > 0: `(includeHoursWhenDays && hours > 0) ? "\(days)天\(hours)小时" : "\(days)天"`
+    /// - hours > 0: `minutes > 0 ? "\(hours)小时\(minutes)分" : "\(hours)小时"`
+    /// - 否则: `"\(max(minutes, 1))分"`
+    ///
+    /// 拼装为 `\(prefix)\(core)\(suffix)`。若 `seconds <= 0` 返回 `expiredText`。
+    static func formatRelativeCountdown(
+        _ seconds: TimeInterval,
+        prefix: String = "",
+        suffix: String = "",
+        expiredText: String = "已到期",
+        includeHoursWhenDays: Bool = true
+    ) -> String {
+        guard seconds > 0 else { return expiredText }
         let total = Int(seconds.rounded())
         let days = total / 86_400
         let hours = (total % 86_400) / 3_600
         let minutes = (total % 3_600) / 60
+        let core: String
         if days > 0 {
-            return hours > 0 ? "\(days)天\(hours)小时后" : "\(days)天后"
+            core = (includeHoursWhenDays && hours > 0) ? "\(days)天\(hours)小时" : "\(days)天"
         } else if hours > 0 {
-            return minutes > 0 ? "\(hours)小时\(minutes)分后" : "\(hours)小时后"
+            core = minutes > 0 ? "\(hours)小时\(minutes)分" : "\(hours)小时"
         } else {
-            return "\(max(minutes, 1))分后"
+            core = "\(max(minutes, 1))分"
         }
+        return "\(prefix)\(core)\(suffix)"
+    }
+
+    /// 紧凑账单周期剩余中文倒计时："12天8小时后" / "12天后" / "2小时15分后" / "2小时后" / "25分后" / "已到期"。
+    static func formatBillingRemainingDuration(_ seconds: TimeInterval) -> String {
+        formatRelativeCountdown(seconds, suffix: "后", expiredText: "已到期")
     }
 
     /// 数字时钟时长展示：超过 1 小时为 `h:mm:ss`，否则 `mm:ss`。

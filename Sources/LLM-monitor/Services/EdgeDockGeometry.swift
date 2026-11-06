@@ -140,12 +140,8 @@ enum EdgeDockGeometry {
 
     /// 简版单环直径（pt），默认档。
     static var compactDiameter: CGFloat { compactMetrics(for: .default).diameter }
-    /// 简版相邻两环的间距（pt），默认档。
-    static var compactSpacing: CGFloat { compactMetrics(for: .default).spacing }
     /// 简版的内边距（pt），默认档。
     static var compactPadding: CGFloat { compactMetrics(for: .default).padding }
-    /// 简版环线宽（pt），默认档。
-    static var compactRingLineWidth: CGFloat { compactMetrics(for: .default).ringLineWidth }
     /// 简版行距（pt），默认档。
     static var compactRowStep: CGFloat { compactRowStep(for: .default) }
 

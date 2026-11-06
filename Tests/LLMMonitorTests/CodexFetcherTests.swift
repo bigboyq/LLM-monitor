@@ -31,15 +31,19 @@ final class CodexFetcherTests: XCTestCase {
         /// startLoading 里阻塞等待：那会堵住 session 的串行回调队列，连
         /// 取消完成事件都无法派发。
         nonisolated(unsafe) static var neverRespondPaths: Set<String> = []
+        /// 自定义请求动态处理器（例如基于 Authorization header 区分多 Key 响应）
+        nonisolated(unsafe) static var requestHandler: (@Sendable (URLRequest) -> Response?)? = nil
 
         static func reset() {
             responses.removeAll()
             capturedHeaders.removeAll()
             callCounts.removeAll()
             neverRespondPaths.removeAll()
+            requestHandler = nil
         }
 
         override class func canInit(with request: URLRequest) -> Bool {
+            if requestHandler != nil { return true }
             guard let path = request.url?.path else { return false }
             return responses[path] != nil
         }
@@ -47,7 +51,16 @@ final class CodexFetcherTests: XCTestCase {
         override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
         override func startLoading() {
-            guard let url = request.url, let response = Self.responses[url.path] else {
+            guard let url = request.url else {
+                client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+                return
+            }
+            let response: Response
+            if let custom = Self.requestHandler?(request) {
+                response = custom
+            } else if let r = Self.responses[url.path] {
+                response = r
+            } else {
                 client?.urlProtocol(self, didFailWithError: URLError(.badURL))
                 return
             }
@@ -865,6 +878,230 @@ final class CodexFetcherTests: XCTestCase {
         let info = try await fetcher.fetch(mode: .full)
         XCTAssertNil(info.openAIApiCredits)
         XCTAssertEqual(StubURLProtocol.callCounts[Self.costsPath] ?? 0, 0)
+    }
+
+    func testCodexFetcherEffectiveAdminKeysFallback() {
+        let legacyConfig = ProviderConfig(
+            adminApiCreditsEnabled: true,
+            adminApiKey: "sk-admin-legacy",
+            adminBillingDay: 15,
+            adminBillingTime: "12:00",
+            adminMonthlyQuotaLimit: 50.0
+        )
+        let effective = legacyConfig.effectiveAdminKeys
+        XCTAssertEqual(effective.count, 1)
+        XCTAssertEqual(effective.first?.apiKey, "sk-admin-legacy")
+        XCTAssertEqual(effective.first?.billingDay, 15)
+        XCTAssertEqual(effective.first?.billingTime, "12:00")
+        XCTAssertEqual(effective.first?.monthlyQuotaLimit, 50.0)
+
+        let multiKeyConfig = ProviderConfig(
+            adminApiCreditsEnabled: true,
+            adminApiKey: "sk-admin-legacy",
+            adminApiKeys: [
+                CodexAdminKeyConfig(id: "key1", label: "Alpha", apiKey: "sk-admin-1", monthlyQuotaLimit: 30.0),
+                CodexAdminKeyConfig(id: "key2", label: "Beta", apiKey: "sk-admin-2", monthlyQuotaLimit: 60.0)
+            ]
+        )
+        let multiEffective = multiKeyConfig.effectiveAdminKeys
+        XCTAssertEqual(multiEffective.count, 2)
+        XCTAssertEqual(multiEffective[0].id, "key1")
+        XCTAssertEqual(multiEffective[0].apiKey, "sk-admin-1")
+        XCTAssertEqual(multiEffective[1].id, "key2")
+        XCTAssertEqual(multiEffective[1].apiKey, "sk-admin-2")
+    }
+
+    func testCodexFetcherMultiKeyConcurrentSuccess() async throws {
+        let authURL = try makeAuthFile()
+        StubURLProtocol.responses[Self.usagePath] = .init(
+            statusCode: 200,
+            headers: ["Content-Type": "application/json"],
+            body: Self.validUsageJSON()
+        )
+        StubURLProtocol.responses[Self.resetPath] = .init(
+            statusCode: 200,
+            headers: ["Content-Type": "application/json"],
+            body: Self.validResetCreditsJSON(availableCount: 0, totalEarned: 0)
+        )
+
+        StubURLProtocol.requestHandler = { request in
+            guard let path = request.url?.path else { return nil }
+            if path == Self.costsPath {
+                let auth = request.value(forHTTPHeaderField: "Authorization") ?? ""
+                if auth.contains("sk-admin-1") {
+                    return .init(statusCode: 200, headers: ["Content-Type": "application/json"], body: Self.validCostsJSON(value: 10.0, orgName: "Org Alpha"))
+                } else if auth.contains("sk-admin-2") {
+                    return .init(statusCode: 200, headers: ["Content-Type": "application/json"], body: Self.validCostsJSON(value: 25.0, orgName: "Org Beta"))
+                }
+            }
+            return StubURLProtocol.responses[path]
+        }
+
+        let keys = [
+            CodexAdminKeyConfig(id: "k1", label: "Alpha", apiKey: "sk-admin-1", monthlyQuotaLimit: 50.0),
+            CodexAdminKeyConfig(id: "k2", label: "Beta", apiKey: "sk-admin-2", monthlyQuotaLimit: 100.0)
+        ]
+
+        let fetcher = CodexFetcher(
+            authPath: authURL.path,
+            adminApiCreditsEnabled: true,
+            adminApiKeys: keys,
+            session: makeSession()
+        )
+
+        let info = try await fetcher.fetch(mode: .full)
+        XCTAssertEqual(info.allOpenAIApiCredits.count, 2)
+
+        let key1 = info.allOpenAIApiCredits[0]
+        XCTAssertEqual(key1.keyId, "k1")
+        XCTAssertEqual(key1.keyLabel, "Alpha")
+        XCTAssertEqual(key1.totalQuota, 50.0)
+        XCTAssertEqual(key1.usedAmount, 10.0)
+        XCTAssertEqual(key1.remainingPercent, 80.0, accuracy: 0.01)
+        XCTAssertEqual(key1.lastAttemptFailed, false)
+
+        let key2 = info.allOpenAIApiCredits[1]
+        XCTAssertEqual(key2.keyId, "k2")
+        XCTAssertEqual(key2.keyLabel, "Beta")
+        XCTAssertEqual(key2.totalQuota, 100.0)
+        XCTAssertEqual(key2.usedAmount, 25.0)
+        XCTAssertEqual(key2.remainingPercent, 75.0, accuracy: 0.01)
+        XCTAssertEqual(key2.lastAttemptFailed, false)
+
+        XCTAssertEqual(info.openAIApiCredits?.keyId, "k1")
+    }
+
+    func testCodexFetcherMultiKeyPartialFailureIsolation() async throws {
+        let authURL = try makeAuthFile()
+        StubURLProtocol.responses[Self.usagePath] = .init(
+            statusCode: 200,
+            headers: ["Content-Type": "application/json"],
+            body: Self.validUsageJSON()
+        )
+        StubURLProtocol.responses[Self.resetPath] = .init(
+            statusCode: 200,
+            headers: ["Content-Type": "application/json"],
+            body: Self.validResetCreditsJSON(availableCount: 0, totalEarned: 0)
+        )
+
+        StubURLProtocol.requestHandler = { request in
+            guard let path = request.url?.path else { return nil }
+            if path == Self.costsPath {
+                let auth = request.value(forHTTPHeaderField: "Authorization") ?? ""
+                if auth.contains("sk-admin-1") {
+                    return .init(statusCode: 200, headers: ["Content-Type": "application/json"], body: Self.validCostsJSON(value: 15.0, orgName: "Org Success"))
+                } else if auth.contains("sk-admin-2") {
+                    return .init(statusCode: 401, headers: ["Content-Type": "application/json"], body: Data("{\"error\": \"Invalid API key\"}".utf8))
+                }
+            }
+            return StubURLProtocol.responses[path]
+        }
+
+        let keys = [
+            CodexAdminKeyConfig(id: "k1", label: "Valid Key", apiKey: "sk-admin-1", monthlyQuotaLimit: 100.0),
+            CodexAdminKeyConfig(id: "k2", label: "Invalid Key", apiKey: "sk-admin-2", monthlyQuotaLimit: 80.0)
+        ]
+
+        let fetcher = CodexFetcher(
+            authPath: authURL.path,
+            adminApiCreditsEnabled: true,
+            adminApiKeys: keys,
+            session: makeSession()
+        )
+
+        let info = try await fetcher.fetch(mode: .full)
+        XCTAssertEqual(info.allOpenAIApiCredits.count, 2)
+
+        let key1 = info.allOpenAIApiCredits[0]
+        XCTAssertEqual(key1.keyId, "k1")
+        XCTAssertEqual(key1.lastAttemptFailed, false)
+        XCTAssertEqual(key1.usedAmount, 15.0)
+
+        let key2 = info.allOpenAIApiCredits[1]
+        XCTAssertEqual(key2.keyId, "k2")
+        XCTAssertEqual(key2.lastAttemptFailed, true)
+        XCTAssertNotNil(key2.errorMessage)
+
+        // Main plan quota still succeeds
+        XCTAssertEqual(info.models.first?.intervalRemainingPercent, 80.0)
+    }
+
+    func testCodexFillingMissingMergerMultiKeyPreservesFailedKey() {
+        let merger = CodexFillingMissingMerger(adminApiCreditsEnabled: true)
+        let now = Date()
+
+        let prevKey1 = OpenAIApiCreditDetails(
+            organizationName: "Org1",
+            totalQuota: 50.0,
+            usedAmount: 10.0,
+            cycleStart: now,
+            cycleEnd: now.addingTimeInterval(86400 * 30),
+            fetchedAt: now,
+            lastAttemptFailed: false,
+            keyId: "k1",
+            keyLabel: "Key 1"
+        )
+        let prevKey2 = OpenAIApiCreditDetails(
+            organizationName: "Org2",
+            totalQuota: 100.0,
+            usedAmount: 30.0,
+            cycleStart: now,
+            cycleEnd: now.addingTimeInterval(86400 * 30),
+            fetchedAt: now,
+            lastAttemptFailed: false,
+            keyId: "k2",
+            keyLabel: "Key 2"
+        )
+
+        let previous = QuotaInfo(
+            models: [], resetCredits: nil, planLabel: nil, accountEmail: nil,
+            codexUsageDetails: nil, fetchedAt: now,
+            openAIApiCredits: prevKey1,
+            openAIApiCreditsList: [prevKey1, prevKey2]
+        )
+
+        let newKey1 = OpenAIApiCreditDetails(
+            organizationName: "Org1",
+            totalQuota: 50.0,
+            usedAmount: 12.0,
+            cycleStart: now,
+            cycleEnd: now.addingTimeInterval(86400 * 30),
+            fetchedAt: now.addingTimeInterval(60),
+            lastAttemptFailed: false,
+            keyId: "k1",
+            keyLabel: "Key 1"
+        )
+        let newKey2Failed = OpenAIApiCreditDetails(
+            organizationName: "Org2",
+            totalQuota: 100.0,
+            usedAmount: 0.0,
+            cycleStart: now,
+            cycleEnd: now.addingTimeInterval(86400 * 30),
+            fetchedAt: nil,
+            lastAttemptFailed: true,
+            keyId: "k2",
+            keyLabel: "Key 2",
+            errorMessage: "HTTP 429"
+        )
+
+        let newInfo = QuotaInfo(
+            models: [], resetCredits: nil, planLabel: nil, accountEmail: nil,
+            codexUsageDetails: nil, fetchedAt: now.addingTimeInterval(60),
+            openAIApiCredits: newKey1,
+            openAIApiCreditsList: [newKey1, newKey2Failed]
+        )
+
+        let merged = merger.merge(new: newInfo, previous: previous, mode: .full)
+        XCTAssertEqual(merged.allOpenAIApiCredits.count, 2)
+
+        let mergedK1 = merged.allOpenAIApiCredits[0]
+        XCTAssertEqual(mergedK1.usedAmount, 12.0)
+        XCTAssertEqual(mergedK1.lastAttemptFailed, false)
+
+        let mergedK2 = merged.allOpenAIApiCredits[1]
+        XCTAssertEqual(mergedK2.usedAmount, 30.0, "失败的 key 应保留上次成功的 usedAmount")
+        XCTAssertEqual(mergedK2.lastAttemptFailed, true)
+        XCTAssertEqual(mergedK2.errorMessage, "HTTP 429")
     }
 
     // MARK: - 辅助 JSON 构造

@@ -151,6 +151,8 @@ Manual refresh paths:
 | UI action | Method |
 |---|---|
 | Header refresh button | `AppState.refreshAll()` |
+| Edge dock provider circle click on `!pressBecameDrag` (悬浮窗单 Provider 图标单击) | `AppState.refreshOne(providerID:)` — 单击未达到拖拽位移阈值（< 4pt）时命中圆环，立即刷新该 Provider 额度 |
+| Popover card header `arrow.clockwise` refresh button (悬浮窗卡片头部刷新按钮) | `AppState.refreshOne(providerID:)` — 点击卡片头部独立刷新按钮（加载中呈现 ProgressView 转圈） |
 | Provider card quota timestamp（标题行胶囊，menu hover / dock popover） | `AppState.refreshOne(providerID:)` — 只刷该 provider 的额度 |
 | Provider card usage timestamp（段3 标题行） | `AppState.triggerLocalUsageRescan()` — 只重扫本地用量，不发额度请求 |
 | Provider strip left click | `AppState.refreshOne(providerID:)` |
@@ -162,6 +164,26 @@ Manual refresh paths:
 deduplicates so timer + manual + menu-open fire on the same provider collapse to a
 single in-flight request. Status mutations remain on the main actor; network waits are
 asynchronous.
+
+### 单 Provider 刷新机制与并发控制（`AppState.refreshOne`）
+
+`AppState.refreshOne(providerID:)` 为悬浮窗单 Provider 点击（图标单击 `finishPressOrDrag`、卡片头部 `arrow.clockwise` 按钮及时间戳胶囊）提供独立刷新通道：
+
+1. **外部刷新事务并发闸门（Concurrency Gating）**：
+   - 入口先通过 `refreshScheduler.beginExternalJob()` 申请全局外部刷新凭证 `RefreshJobToken`。
+   - 若已有其他刷新事务（如 `refreshAll`、唤醒刷新或正在执行的另一个 `refreshOne`）进行中，`beginExternalJob()` 返回 nil，当前调用立即被闸门安全丢弃并记日志（`"AppState.refreshOne: 已有刷新事务进行中，忽略本次 Manual"`），杜绝多入口重入竞争。
+   - 若目标 Provider 当前恰有后台定时抓取（`.background`）在飞，`refreshProviderFully` 在 `manualRefreshGate` 注册该 Provider 为 pending full，并通过 `refreshScheduler.waitUntilNotInFlight(providerID)` 异步等待后台请求结束，随后保证无缝补跑一次 `.full` 模式刷新。
+   - 额度请求完成后，异步执行 `localUsage.triggerImmediateScanAll()` 补拍本地用量，并通过 `refreshScheduler.isCurrentJob(token)` 校验事务有效性。
+
+2. **单 Provider 独立排期重锚（Single-Provider Schedule Re-anchoring）**：
+   - 刷新完成后调用 `refreshScheduler.reanchorProvider(providerID, at: Date(), resetDatesByProvider:)`。
+   - **完全隔离其他 Provider**：仅重锚被刷新的目标 Provider。刷新单张卡片**绝对不会推迟**其他 Provider 的下一次定时刷新时刻（`nextRefreshDates`），也**绝不清除**其他 Provider 的周期 full 计数（`backgroundsSinceFull`）与周期重置候选点（`resetCandidates`）。
+   - **目标 Provider 重锚行为**：
+     - 将目标 Provider 的下次定时刷新推后一个完整间隔：`nextRefreshDates[providerID] = finishedAt + interval`；
+     - 重置其后台计数：`backgroundsSinceFull[providerID] = 0`（下一拍保持 `.background` 计数）；
+     - 记录首刷已完成（`hasDoneFirstRefresh.insert(providerID)`）；
+     - 重新计算并注入跨周期重置补刷新点（`scheduleMidCycleResetRefreshes`）；
+     - 触发 `onNextRefreshChange()` 并调用 `wake()` 唤醒调度器主循环更新最近截止期。
 
 Config reload path:
 
@@ -511,5 +533,5 @@ These are documented product boundaries:
   have their own SQLite readers, Antigravity is pure RPC, and Codex parses JSONL on
   demand for the 7-day chart.
 
-> 核对基线：2026-11-05 · 代码 a8dbb52
+> 核对基线：2026-11-06 · 代码 191d07b
 > 2026-10-25 自启草稿与菜单实际状态同步已随 6f11831 入库：定向 27 例、完整 1422 例均通过；完整验证记录见 `spec/sync.md`。

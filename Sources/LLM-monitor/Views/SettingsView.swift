@@ -450,13 +450,17 @@ struct SettingsView: View {
     }
 
     func saveAndApply() async throws {
-        if draft.chatgptEnabled, draft.chatgptAdminCreditsEnabled,
-           Self.validMonthlyQuotaLimit(draft.chatgptMonthlyQuotaLimit) == nil {
-            throw NSError(
-                domain: "SettingsValidation",
-                code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "赠金额度必须是大于 0 的有限数字。"]
-            )
+        if draft.chatgptEnabled, draft.chatgptAdminCreditsEnabled {
+            for keyDraft in draft.chatgptAdminKeys {
+                let cleanKey = keyDraft.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !cleanKey.isEmpty && Self.validMonthlyQuotaLimit(keyDraft.monthlyQuotaLimit) == nil {
+                    throw NSError(
+                        domain: "SettingsValidation",
+                        code: 1,
+                        userInfo: [NSLocalizedDescriptionKey: "赠金额度必须是大于 0 的有限数字。"]
+                    )
+                }
+            }
         }
 
         let actualLaunchAtLogin = loginItemService.isEnabled
@@ -555,15 +559,26 @@ struct SettingsView: View {
             chatgpt.authPath = trimmedString(draft.chatgptAuthPath)
             chatgpt.refreshIntervalSeconds = providerRefreshInterval(from: draft.chatgptInterval)
             chatgpt.adminApiCreditsEnabled = draft.chatgptAdminCreditsEnabled
-            chatgpt.adminApiKey = trimmedString(draft.chatgptAdminApiKey)
-            chatgpt.adminBillingDay = draft.chatgptBillingDay
-            if !draft.chatgptAdminCreditsEnabled && (draft.chatgptBillingTime == SettingsFormDraft.defaultBillingTime() || previousBillingTime == nil) {
-                chatgpt.adminBillingTime = previousBillingTime
+
+            let validConfigs = draft.chatgptAdminKeys.compactMap { $0.toConfig() }
+            chatgpt.adminApiKeys = validConfigs.isEmpty ? nil : validConfigs
+
+            if let primary = validConfigs.first {
+                chatgpt.adminApiKey = primary.apiKey
+                chatgpt.adminBillingDay = primary.billingDay
+                chatgpt.adminBillingTime = primary.billingTime
+                chatgpt.adminMonthlyQuotaLimit = primary.monthlyQuotaLimit
             } else {
-                chatgpt.adminBillingTime = Formatters.formatTimeOfDay(draft.chatgptBillingTime)
-            }
-            if let limit = Self.validMonthlyQuotaLimit(draft.chatgptMonthlyQuotaLimit) {
-                chatgpt.adminMonthlyQuotaLimit = limit
+                chatgpt.adminApiKey = trimmedString(draft.chatgptAdminApiKey)
+                chatgpt.adminBillingDay = draft.chatgptBillingDay
+                if !draft.chatgptAdminCreditsEnabled && (draft.chatgptBillingTime == SettingsFormDraft.defaultBillingTime() || previousBillingTime == nil) {
+                    chatgpt.adminBillingTime = previousBillingTime
+                } else {
+                    chatgpt.adminBillingTime = Formatters.formatTimeOfDay(draft.chatgptBillingTime)
+                }
+                if let limit = Self.validMonthlyQuotaLimit(draft.chatgptMonthlyQuotaLimit) {
+                    chatgpt.adminMonthlyQuotaLimit = limit
+                }
             }
             config.providers[id] = chatgpt
         }

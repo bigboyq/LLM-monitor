@@ -15,8 +15,6 @@ import AppKit
 /// - 中心为扇形圆，满额度为 360° 正圆，随着额度消耗从 6 点钟（底端）向左右对称打开；
 ///   剩余面积保留在 12 点钟（顶端）；50% 额度时呈现 180° 上半圆；额度耗尽时呈现红色空心圆环。
 enum IconDuoSVGBuilder {
-    private static let defaultOuterColor = "#FB923C"
-    private static let defaultMiddleColor = "#2DD4BF"
     private static let defaultUnconfiguredColor = "#8E8E93"
 
     private static let center = 352.0

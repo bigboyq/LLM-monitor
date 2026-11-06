@@ -206,36 +206,20 @@ struct GlmActivityPlanBalancesView: View {
 
     /// 生效倒计时：例如 `2小时后生效`、`30分后生效`、`1天2小时后生效`
     static func formatEffectiveCountdown(from effectiveAt: Date, now: Date) -> String {
-        let delta = effectiveAt.timeIntervalSince(now)
-        guard delta > 0 else { return "已生效" }
-        let total = Int(delta.rounded())
-        let days = total / 86400
-        let hours = (total % 86400) / 3600
-        let minutes = (total % 3600) / 60
-        if days > 0 {
-            return hours > 0 ? "\(days)天\(hours)小时后生效" : "\(days)天后生效"
-        } else if hours > 0 {
-            return minutes > 0 ? "\(hours)小时\(minutes)分后生效" : "\(hours)小时后生效"
-        } else {
-            return "\(max(minutes, 1))分后生效"
-        }
+        Formatters.formatRelativeCountdown(
+            effectiveAt.timeIntervalSince(now),
+            suffix: "后生效",
+            expiredText: "已生效"
+        )
     }
 
     /// 失效倒计时：例如 `剩余12小时`、`剩余30分`、`剩余1天2小时`
     static func formatExpiryCountdown(from expiresAt: Date, now: Date) -> String {
-        let delta = expiresAt.timeIntervalSince(now)
-        guard delta > 0 else { return "已失效" }
-        let total = Int(delta.rounded())
-        let days = total / 86400
-        let hours = (total % 86400) / 3600
-        let minutes = (total % 3600) / 60
-        if days > 0 {
-            return hours > 0 ? "剩余\(days)天\(hours)小时" : "剩余\(days)天"
-        } else if hours > 0 {
-            return minutes > 0 ? "剩余\(hours)小时\(minutes)分" : "剩余\(hours)小时"
-        } else {
-            return "剩余\(max(minutes, 1))分"
-        }
+        Formatters.formatRelativeCountdown(
+            expiresAt.timeIntervalSince(now),
+            prefix: "剩余",
+            expiredText: "已失效"
+        )
     }
 
     /// 到期紧迫度颜色：<=1h 红色、<=2h 黄色、>2h 正常（次要灰）

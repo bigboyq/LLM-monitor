@@ -74,10 +74,11 @@ The app reads and writes this shape:
 | `providers.<id>.notifyCampaign` | provider | 运营活动通知渠道（`QuotaNotifyChannel`：`none` / `system` / `barkAndSystem`），用于 GLM 营销活动触达推送。默认关闭（`none`）；仅 JWT 扩展开启、读取到 JWT 且通知渠道开启时，按次要信息频率轮询（仅 `.full` 模式），发现活动 1h 内不重复推送，防抖不限制接口请求。 |
 | `providers.<id>.parseZcodeCredential` / `parseZcodePlan` / `parseZcodeBalanceLog` | legacy | 兼容历史配置字段。仅当 `zcodeJWTEnabled` 和 `glmAuthMode` 缺失时，按上表优先级取首个非 nil 值用于迁移；设置页保存时不落盘。 |
 | `providers.<id>.adminApiCreditsEnabled` | provider | 是否启用 OpenAI API 赠金监测（ChatGPT 专用）。缺省或 false 表示关闭；开启时在 ChatGPT 卡渲染「API赠金」进度条。 |
-| `providers.<id>.adminApiKey` | provider | OpenAI Admin API Key（`sk-admin-...`），用于查询组织消耗 `v1/organization/costs`。 |
-| `providers.<id>.adminBillingDay` | provider | 每月账单日（1-31，缺省 11）。 |
-| `providers.<id>.adminBillingTime` | provider | 账单重置时间（`HH:mm`，如 `00:00` 或 `08:00`，缺省 `00:00`）。 |
-| `providers.<id>.adminMonthlyQuotaLimit` | provider | 每月 API 赠金额度上限（美元，缺省 40.0）。 |
+| `providers.<id>.adminApiKeys` | provider | 多 Admin API Key 配置数组（`[CodexAdminKeyConfig]`），支持多组织/多工作区独立追踪。每个元素包含 `id`（UUID 字符串）、`label`（自定义备注标签）、`apiKey`（`sk-admin-...`）、`monthlyQuotaLimit`（月度赠金额度上限美元，默认 40.0）、`billingDay`（账单日 1-31，默认 11）、`billingTime`（重置时刻 `HH:mm`，默认 "00:00"）。若存在且非空，优先使用此列表。 |
+| `providers.<id>.adminApiKey` | legacy / fallback | OpenAI Admin API Key（`sk-admin-...`），历史单 Key 兼容标量字段。当 `adminApiKeys` 缺失或为空时，由 `effectiveAdminKeys` 自动合成为单个 `id: "default"`, `label: "Default"` 配置。 |
+| `providers.<id>.adminBillingDay` | legacy / fallback | 每月账单日（1-31，缺省 11）。仅在回退至单 Key 兼容模式时作为默认账单日使用。 |
+| `providers.<id>.adminBillingTime` | legacy / fallback | 账单重置时间（`HH:mm`，如 `00:00` 或 `08:00`，缺省 `00:00`）。仅在回退至单 Key 兼容模式时使用。 |
+| `providers.<id>.adminMonthlyQuotaLimit` | legacy / fallback | 每月 API 赠金额度上限（美元，缺省 40.0）。仅在回退至单 Key 兼容模式时使用。 |
 | `providers.<id>.notifyIntervalRestored` / `notifyIntervalExhausted` / `notifyWeeklyRestored` / `notifyWeeklyExhausted` | provider | 四类额度事件各自的推送渠道（`QuotaNotifyChannel`：`none` / `system` / `barkAndSystem`）。字段不存在 = 默认渠道（恢复 → 系统通知，耗尽 → 不通知），与引入通知配置前的行为一致。 |
 | `clientBindings[]` | removed | 历史 Harness 归因开关与别名配置；解码忽略、不再编码。全部已支持来源按内置 provider 路由自动归因，旧 `enabled: false` 不再屏蔽真实用量；无法识别的 provider 不猜测归属。`AppConfig.clientBindings` 仅为只读内置路由的运行时兼容出口。 |
 | `alerts` | global | 集中告警阈值配置（`AlertThresholdConfig`）。缺省或 nil 使用默认值（API 配额余量警告 60%、危险 30%；DeepSeek 余额警告 10、危险 3）。字段：`apiQuotaWarningPercent` (1...100, 默认 60)、`apiQuotaCriticalPercent` (1...100, 默认 30)、`deepseekBalanceWarning` (0..., 默认 10)、`deepseekBalanceCritical` (0..., 默认 3)。始终自动约束 `critical <= warning`。控制状态栏健康圆点、双环色段、卡片头部及 Edge Dock 呼吸环的红黄告警分档。 |
@@ -89,6 +90,32 @@ The app reads and writes this shape:
 Unknown or incorrectly typed `statusBarIconStyle` /
 `statusBarHealthDotEnabled` values fall back
 to their defaults; cosmetic config errors do not trigger recovery of the provider settings.
+
+### Codex Admin API 多 Key 与历史单 Key 兼容架构（Dual Schema & Fallback）
+
+为支持多组织/多 Workspace 独立的赠金追踪，`providers.codex_chatgpt` 引入 `adminApiKeys: [CodexAdminKeyConfig]?`。每个条目独立定义一个 Admin API Key 及其账单周期与配额上限：
+- `id: String`: 唯一标识符（UUID 字符串，缺省自动生成）。
+- `label: String`: 用户自定义备注名称（如 "Personal", "Team"；缺省 `""`）。
+- `apiKey: String`: OpenAI Admin API Key（`sk-admin-...`，缺省 `""`）。
+- `monthlyQuotaLimit: Double`: 每月赠金额度上限（美元，缺省 `40.0`）。
+- `billingDay: Int`: 每月账单日（`1...31`，缺省 `11`）。
+- `billingTime: String`: 账单重置时刻（`HH:mm`，如 `"00:00"` 或 `"08:00"`，缺省 `"00:00"`）。
+
+**双模式解析与透明回退（`effectiveAdminKeys`）**：
+1. **多 Key 优先**：若 `adminApiKeys` 存在且过滤掉空白 Key 后非空，`effectiveAdminKeys`（及 `effectiveAdminApiKeys`）直接返回该有效 Key 列表。
+2. **透明回退标量 Key**：若 `adminApiKeys` 缺失、为空数组或仅含空白 Key，且历史标量字段 `adminApiKey` 存在且非空，`effectiveAdminKeys` 自动将其规范化为单个配置条目：
+   ```swift
+   CodexAdminKeyConfig(
+       id: "default",
+       label: "Default",
+       apiKey: key,
+       monthlyQuotaLimit: adminMonthlyQuotaLimit ?? 40.0,
+       billingDay: adminBillingDay ?? 11,
+       billingTime: adminBillingTime ?? "00:00"
+   )
+   ```
+3. **未配置保护**：若两者均无有效 Key，`effectiveAdminKeys` 返回空数组 `[]`，系统保持安全未配置状态。
+4. **持久化契约**：设置页保存时统一将当前 Key 列表序列化为 `adminApiKeys` 写入 `config.json`；若仅配置单个 Key，亦以数组形式持久化，向后兼容双向无缝衔接。
 
 ### 次要信息频率（`periodicFullEveryN`）及其影响范围
 
@@ -272,4 +299,4 @@ CHANGELOG 最新条目、两份 README 的「当前版本」/DMG 名/build-relea
 的旧文案「按本机时区计算、可在设置中调整」直到发版前才发现，只因 `build-release.sh` 的
 版本门禁全绿而放行。**功能口径变了，用户文档必须同轮改**。
 
-> 核对基线：2026-11-05 · 代码 a8dbb52
+> 核对基线：2026-11-06 · 代码 191d07b

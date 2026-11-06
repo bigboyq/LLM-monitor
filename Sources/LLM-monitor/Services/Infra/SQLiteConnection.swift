@@ -183,11 +183,6 @@ final class SQLiteConnection {
         return sqlite3_column_int64(statement, column)
     }
 
-    static func optionalDouble(_ statement: OpaquePointer, column: Int32) -> Double {
-        guard sqlite3_column_type(statement, column) != SQLITE_NULL else { return 0 }
-        return sqlite3_column_double(statement, column)
-    }
-
     static func optionalText(_ statement: OpaquePointer, column: Int32) -> String? {
         guard sqlite3_column_type(statement, column) != SQLITE_NULL,
               let pointer = sqlite3_column_text(statement, column) else {

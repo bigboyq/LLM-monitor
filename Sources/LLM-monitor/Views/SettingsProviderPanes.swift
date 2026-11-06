@@ -106,42 +106,44 @@ extension SettingsView {
 
                 SettingsSection(
                     title: "API 赠金",
-                    footer: "开启后监测每月官方赠送的 API 额度与消耗；账单重置时间与额度上限支持按需自定义。首月统计可能存在偏差，后续按完整账期计算。"
+                    footer: "开启后监测每月官方赠送的 API 额度与消耗；支持配置多个 API Key 独立追踪。账单重置时间与额度上限支持按需自定义。首月统计可能存在偏差，后续按完整账期计算。"
                 ) {
                     SettingsToggleRow(label: "启用 API 赠金监测", isOn: $draft.chatgptAdminCreditsEnabled)
 
                     if draft.chatgptAdminCreditsEnabled {
-                        SettingsControlRow("Admin API Key") {
-                            secretField(text: $draft.chatgptAdminApiKey, isVisible: $showChatgptAdminKey, prompt: "sk-admin-...")
+                        ForEach(Array($draft.chatgptAdminKeys.enumerated()), id: \.element.id) { index, $keyDraft in
+                            CodexAdminKeyCardView(
+                                keyDraft: $keyDraft,
+                                index: index,
+                                canDelete: draft.chatgptAdminKeys.count > 1,
+                                onDelete: {
+                                    if let idx = draft.chatgptAdminKeys.firstIndex(where: { $0.id == keyDraft.id }) {
+                                        draft.chatgptAdminKeys.remove(at: idx)
+                                    }
+                                }
+                            )
                         }
 
-                        SettingsControlRow("赠金额度 ($)") {
-                            VStack(alignment: .trailing, spacing: 4) {
-                                TextField("", text: $draft.chatgptMonthlyQuotaLimit, prompt: Text("40"))
-                                    .textFieldStyle(.roundedBorder)
-                                    .frame(width: SettingsLayout.standardControlWidth)
-                                if let error = chatgptMonthlyQuotaLimitError {
-                                    Text(error)
-                                        .font(SettingsTypography.status)
-                                        .foregroundStyle(.red)
-                                }
+                        Button {
+                            draft.chatgptAdminKeys.append(
+                                CodexAdminKeyConfigDraft(
+                                    id: UUID().uuidString,
+                                    label: "",
+                                    apiKey: "",
+                                    monthlyQuotaLimit: "40",
+                                    billingDay: 11,
+                                    billingTime: SettingsFormDraft.defaultBillingTime()
+                                )
+                            )
+                        } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: "plus.circle.fill")
+                                Text("添加 API Key")
                             }
                         }
-
-                        SettingsControlRow("账单日") {
-                            Picker("", selection: $draft.chatgptBillingDay) {
-                                ForEach(1...31, id: \.self) { day in
-                                    Text("每月 \(day) 日").tag(day)
-                                }
-                            }
-                            .frame(width: SettingsLayout.standardControlWidth)
-                        }
-
-                        SettingsControlRow("重置时间") {
-                            DatePicker("", selection: $draft.chatgptBillingTime, displayedComponents: .hourAndMinute)
-                                .labelsHidden()
-                                .frame(width: SettingsLayout.standardControlWidth, alignment: .trailing)
-                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(Color.accentColor)
+                        .padding(.vertical, 4)
                     }
                 }
             }
@@ -402,5 +404,104 @@ extension SettingsView {
 
     func providerRefreshInterval(from value: Int) -> Int? {
         value == 0 ? nil : value
+    }
+}
+
+/// 单个 Codex Admin API Key 卡片控件
+struct CodexAdminKeyCardView: View {
+    @Binding var keyDraft: CodexAdminKeyConfigDraft
+    let index: Int
+    let canDelete: Bool
+    let onDelete: () -> Void
+
+    @State private var isKeyVisible: Bool = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text(keyDraft.label.isEmpty ? "API Key #\(index + 1)" : keyDraft.label)
+                    .font(SettingsTypography.rowEmphasis)
+                    .foregroundStyle(Color.primary)
+
+                Spacer()
+
+                if canDelete {
+                    Button(action: onDelete) {
+                        Image(systemName: "trash")
+                            .font(.system(size: 13))
+                            .foregroundStyle(Color.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("删除此 API Key")
+                }
+            }
+            .padding(.bottom, 2)
+
+            SettingsControlRow("备注名称") {
+                TextField("", text: $keyDraft.label, prompt: Text("例如：个人账号、团队项目"))
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: SettingsLayout.standardControlWidth)
+            }
+
+            SettingsControlRow("Admin API Key") {
+                HStack(spacing: 8) {
+                    Group {
+                        if isKeyVisible {
+                            TextField("", text: $keyDraft.apiKey, prompt: Text("sk-admin-..."))
+                        } else {
+                            SecureField("", text: $keyDraft.apiKey, prompt: Text("sk-admin-..."))
+                        }
+                    }
+                    .textFieldStyle(.roundedBorder)
+
+                    Button {
+                        isKeyVisible.toggle()
+                    } label: {
+                        Image(systemName: isKeyVisible ? "eye.slash" : "eye")
+                            .frame(width: 18, height: 18)
+                    }
+                    .buttonStyle(.borderless)
+                    .help(isKeyVisible ? "隐藏" : "显示")
+                }
+                .frame(width: SettingsLayout.standardControlWidth, alignment: .leading)
+            }
+
+            SettingsControlRow("赠金额度 ($)") {
+                VStack(alignment: .trailing, spacing: 4) {
+                    TextField("", text: $keyDraft.monthlyQuotaLimit, prompt: Text("40"))
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: SettingsLayout.standardControlWidth)
+                    if SettingsView.validMonthlyQuotaLimit(keyDraft.monthlyQuotaLimit) == nil && !keyDraft.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Text("请输入大于 0 的有限数字。")
+                            .font(SettingsTypography.status)
+                            .foregroundStyle(.red)
+                    }
+                }
+            }
+
+            SettingsControlRow("账单日") {
+                Picker("", selection: $keyDraft.billingDay) {
+                    ForEach(1...31, id: \.self) { day in
+                        Text("每月 \(day) 日").tag(day)
+                    }
+                }
+                .frame(width: SettingsLayout.standardControlWidth)
+            }
+
+            SettingsControlRow("重置时间") {
+                DatePicker("", selection: $keyDraft.billingTime, displayedComponents: .hourAndMinute)
+                    .labelsHidden()
+                    .frame(width: SettingsLayout.standardControlWidth, alignment: .trailing)
+            }
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color(nsColor: .controlBackgroundColor).opacity(0.32))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color(nsColor: .separatorColor).opacity(0.24), lineWidth: 1)
+        )
     }
 }

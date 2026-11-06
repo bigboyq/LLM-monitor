@@ -355,7 +355,7 @@ per-client sections」描述的是**本机 scope** 的内容区；多机联动�
   `FleetMenuSummary.sections`（主 provider 由 `ClientSection.dominantQuotaProviderID`
   带过来）。
 - **无设备子层**：全局 = 跨节点合并段、本机 = 本地段、节点 = 该节点平铺段
-  （`FleetClientSectionView`）；节点 scope 的段头**没有**右键刷新。
+  （`FleetClientSectionView`）；节点 scope 的段头**没有**右键刷新。原带折叠的 `FleetNodeGroupView`（曾为全宽节点行折叠组）已在 M1 彻底删除，节点统一平铺展开模型行。
 - 全局 / 节点段内的模型行与金额直接使用 fleet **已合并**条目（hub 已做同币相加、
   混币冲突置空并给出 `costText`），视图不再自行折算。
 - 模型行展示名与本机同口径，一律 `compactDisplayName`。
@@ -597,9 +597,7 @@ provider 兜底行 hover 卡」宿主已随兜底行移除（8e7278a，见上文
 `LocalUsageFreshnessState.content()` 随之删除前缀参数）。两个时间戳本来就是两种数据的
 新鲜度，点击各刷各的，不再共用全量刷新：
 
-- **额度时间戳**（标题行胶囊，VoiceOver/help 明示「额度更新时间；点击立即刷新该 Provider」）→ 环境键
-  `\.cardQuotaRefreshAction`（`((String) -> Void)?`，参数 `status.id`）→
-  `AppState.refreshOne(providerID:)`：只重抓这张卡的额度并只重锚它自己的排期；
+- **额度时间戳与显式刷新按钮**（标题行，VoiceOver/help 明示「额度更新时间；点击立即刷新该 Provider」与「刷新 <Provider> 额度；仅重新读取此 provider」）：标题行右侧并排呈现 `ProviderStateLabel` 状态/时间戳胶囊与显式 `Image(systemName: "arrow.clockwise")` 刷新按钮（14×14pt 占位，`font(.system(size: 11, weight: .regular))`）。非 loading 态下点击时间胶囊或刷新按钮均经由环境键 `\.cardQuotaRefreshAction`（`((String) -> Void)?`，参数 `status.id`）触发 `AppState.refreshOne(providerID:)`，只重抓该 Provider 额度并重锚其排期；当处于抓取中（`status.isLoading == true`）时，刷新按钮自动切换为微型 `ProgressView()`（`.scaleEffect(0.55)`，14×14pt 占位），状态胶囊同步呈现相应加载态，防止重复触发；
 - **用量时间戳**（段3 标题行，VoiceOver/help 明示「本地用量更新时间；点击重新扫描本地用量」）→ 环境键
   `\.cardUsageRefreshAction`（`(() -> Void)?`）→ `AppState.triggerLocalUsageRescan()`：
   只补拍一次本地用量 reconcile，不发额度请求、不动任何 provider 的排期；
@@ -621,10 +619,10 @@ provider 兜底行 hover 卡」宿主已随兜底行移除（8e7278a，见上文
 `ProviderCardView` 是 thin coordinator，额度行、浮层、图表和账号详情按职责分文件维护；body 的派生值（投影 / 额度窗口快照 / 「今」行 / 「闲」行 / 「免 / 速 / 它」今日动态行）收在 `Views/ProviderCardDerived.swift` 的值键 memo 里（`Models/DerivedValueMemo.swift`），只有输入真的变了才重算：
 - `QuotaViews.swift` — 所有 quota 行 / 进度条 / 重置卡 / `EquivalentQuotaAllocation`
 - `QuotaWindowUsageViews.swift` — 「额度窗口用量」区块（包含「额度窗口」分析/用量可切换模块与「重置卡详情」模块，详见 `spec/ui/edge-dock.md` §Quota window usage block）
-- `LocalUsageHoverViews.swift` — 本地历史数据适配与 `LocalUsageFreshnessBadge` / `LocalUsageFreshnessText`
+- `LocalUsageHoverViews.swift` — 本地历史数据新鲜度状态机与胶囊（`LocalUsageFreshnessState` / `LocalUsageFreshnessBadge`）；原 `LocalUsageChartDayMetrics`、`SevenDayTokenUsageHoverView`、`LocalUsageDayBar`、`LocalUsageLegendDot`、`LocalUsageFreshnessText` 与 `LocalUsageFooterView` 等 ~450 行死代码已在 M1 彻底清理
 - `SevenDayUsageHistoryChart.swift` — 菜单、Provider 卡与 Settings 共用的 7 天多指标折线图
 - `HoverPanel.swift` (386 行) — `HoverInfoRow` / `HoverPanelController` / 浮层管理
-- `QuotaHoverViews.swift` — 已空，只留删除记录注释：`UsageMetricHoverSummaryView` 随其唯一宿主 GLM 闲时脚注一并删除（脚注内容并入「额度窗口」表格「闲」行），额度窗口 hover 明细族则早已随 `menuLayout` 删除
+- 废弃图表与死代码清理：原 `QuotaHoverViews.swift`（曾保留注释的废弃明细浮层骨架）、`TokenChart.swift`（过时的 `StackedTokenBar` / `TokenBarSegment` / `TokenChartScale` 堆叠柱图原语）已在 M1 彻底删除；`HarnessUsageMenuView.swift` 中的 `FleetNodeGroupView`（曾为全宽节点行折叠组）亦随节点平铺展示设计彻底移除；`ProviderCardView.swift` 中的空 `ProviderCardLayout` 枚举一并清理
 
 Visual structure:
 
@@ -681,7 +679,7 @@ Row-level tint rules:
 | Provider icon | `BrandLogoView(kind:)` at its `defaultSize` (18pt); ChatGPT and GLM assets render as **templates** (they follow `Color.primaryLabel`, so both appearances stay readable), the rest keep their own colours, and a missing asset falls back to a per-brand SF Symbol at 0.72 × size |
 | Display name | `MenuTypography.cardTitle` — **13pt bold**, `Color.primaryLabel`, single line, tail-truncated with a `.help` of the full name |
 | Plan tag | **已从标题行移除**（2026-10 第二轮改版）。套餐 pill 挪进卡片第一段「Account Info」行（`QuotaWindowAccountInfoRow`），与账号名同一行——账号是谁、什么级别是同一个问题的两半 |
-| State tag | compact `未配置` / `待更新` / `已更新` / `需重试` label; a spinner replaces it while loading. `未配置` (not `未启用`): `.notConfigured` covers a missing API key, missing external auth and missing login as well as a disabled provider, and `未启用` made an enabled-but-keyless provider read as switched off |
+| State tag & Refresh button | compact `未配置` / `待更新` / `已更新` / `需重试` label (`ProviderStateLabel`)；紧邻其右侧为显式单 Provider 刷新按钮 `Image(systemName: "arrow.clockwise")`，在 `status.isLoading` 时切换为小型 `ProgressView()`（`.scaleEffect(0.55)`，14×14pt）旋转动画。时间戳胶囊本身亦保留点击刷新手势，形成双入口。`未配置` (not `未启用`): `.notConfigured` covers a missing API key, missing external auth and missing login as well as a disabled provider, and `未启用` made an enabled-but-keyless provider read as switched off |
 | Account block hover | **已删除**。邮箱 / 数据来源原本按 provider 分三路包在标题行的 `HoverInfoRow` 里，只为菜单那张卡服务；菜单不再渲染 provider 卡，浮层又不吃鼠标事件，这个折叠区展不开，直接不画 |
 | Seven-day usage history | 外层标题为「最近7天使用历史」，右侧新鲜度时间只在本机 scope 显示并可重扫。共享 `SevenDayUsageHistoryView` 用 7 个自然日槽位展示单指标折线；缺失日断线，今天标注未完结。7 个可选指标为总量、Rounds、价值、思考、产出、命中、速度，默认总量；选择写入独立的 `@AppStorage("usageHistoryMetric")`，不随「额度窗口」分析/用量切换。速度按 Prompt 汇总为每日 P50；比率指标 Y 轴按当前有效样本 min/max 自适应伸缩，刻度精度随跨度调整（如 49.8%–50.2% 不折叠为同一个 50%）；命中率和思考占比上限为 100%，产出比允许超过 100%。Fleet 使用当前 scope 的权威 `snapshot.daily`，无 Prompt 时长时速度显示 `—`。 |
 
@@ -798,6 +796,12 @@ look for a hover route to this data — the card carries it inline.
 
 - 同时有 5h 和周额度时合并为一条，周进度条按 6 个等价额度分段（`weeklyEquivalentMultiplier` = 6）；接口只返回一个窗口时走单窗口路径，不虚构第二窗口。
 - 账号行（第一段 Account Info）= 邮箱（`~/.codex/auth.json`）+ 套餐 pill（如 `Team`）；重置卡逐张清单常驻在「额度窗口用量」区块的重置卡模块里，不再挂 hover。清单（`ResetCreditsDetailList`）按到期日升序最多展示 4 张（`prefix(4)`），以两列等宽 × 至多两行的 `LazyVGrid` 行优先填充（左上 → 右上 → 左下 → 右下），对齐 GLM 重置卡块的半宽密度；每行日期格式 `MM-dd HH:mm`（与 GLM 对齐，不显示年份）+ 紧迫度圆点 + 相对倒计时。
+- **多 Key API 赠金渲染（`ChatGPTApiCreditsRow`）**：支持配置多个 Codex / ChatGPT API Key，数据源自 `info.allOpenAIApiCredits`（`[OpenAIApiCreditDetails]`）。每个有效 Key 均在 Plan 模型行下方渲染为独立的赠金配额卡片行（多 Key 间以 `Divider().opacity(0.2)` 分隔）：
+  - **首行标题与组织**：左侧展示 `API赠金 · <备注名称>`（未命名时显示 `API赠金 · USD`，`MenuTypography.hoverRowEmphasis`）；右侧居右展示所属组织名（未返回时显示 `未知组织`，`MenuTypography.dataLabel`，中间截断）；
+  - **独立进度条**：使用 `SegmentedQuotaProgressBar` 单段展示（`segments: 1`，高度 8pt，色调 `.chatgptBrand`），根据剩余比例（`remainingPercent / 100.0`）及账单日剩余时间比例（`timeRemainingFraction(at: displayDate)`）动态呈现时间感知进度；
+  - **已用/余量与重置倒计时**：次行左侧显示 `已用 <usedAmount> 剩余：<remainingAmount>/<totalQuota>`（金额为整数时隐藏小数位，如 `40`、`18.50`）；右侧显示周期重置时间 `周期至 MM-dd HH:mm（剩余 Xd / Xh / 已到期）`（倒计时由 `Formatters.formatRelativeCountdown` 格式化）；
+  - **错误隔离与容错**：单 Key 抓取失败或降级显示上次成功数据时，倒计时左侧展示橙色警告图标 `Image(systemName: "exclamationmark.triangle")`，tooltip 悬停提示具体错误信息。多 Key 间并发请求且错误隔离，单 Key 失败不影响其他 Key 或主套餐的正常渲染与刷新；
+  - 当无任何成功数据且存在全局错误时，退化展示单行错误提示文案。
 - `Last Prompt` 摘要随菜单的 provider 卡一起删除，卡片里不再有这个入口；本地用量改由「额度窗口」模块（分析/用量可切换）与 7 天卡承担。
 
 ### Antigravity
@@ -1089,4 +1093,4 @@ The UI intentionally hides reset-credit id, title, description, and grant time.
 The shared Plan fallback uses the same 10pt `MenuTypography.hint` role for loading and
 failure feedback; there is no separate error-message typography role.
 
-> 核对基线：2026-11-03 · 代码 d07fa47
+> 核对基线：2026-11-06 · 代码 191d07b

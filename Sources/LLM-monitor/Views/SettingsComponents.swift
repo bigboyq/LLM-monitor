@@ -9,12 +9,9 @@ enum SettingsTypography {
     static let sectionFooter = Font.caption
     static let rowLabel = Font.body
     static let rowEmphasis = Font.body.weight(.semibold)
-    static let supporting = Font.subheadline
     static let status = Font.footnote
     static let metadata = Font.caption
-    static let metadataMonospaced = Font.caption.monospaced()
     static let numericValue = Font.caption.monospacedDigit()
-    static let rowValueMonospaced = Font.system(.body, design: .monospaced)
 
     static func sidebarItem(isSelected: Bool) -> Font {
         Font.body.weight(isSelected ? .semibold : .regular)

@@ -874,6 +874,9 @@ struct ProviderConfig: Codable, Equatable {
     /// 每月 API 赠金额度上限（美元，如 40.0）
     var adminMonthlyQuotaLimit: Double?
 
+    /// 多 Admin API Key 配置列表（Codex / ChatGPT API 赠金多 Key 支持）
+    var adminApiKeys: [CodexAdminKeyConfig]?
+
     enum CodingKeys: String, CodingKey {
         case enabled, apiKey, displayName, refreshIntervalSeconds, authPath
         case glmAuthMode, zcodeJWTEnabled
@@ -888,6 +891,7 @@ struct ProviderConfig: Codable, Equatable {
         case adminBillingDay
         case adminBillingTime
         case adminMonthlyQuotaLimit
+        case adminApiKeys
     }
 
     init(enabled: Bool = true,
@@ -909,7 +913,8 @@ struct ProviderConfig: Codable, Equatable {
          adminApiKey: String? = nil,
          adminBillingDay: Int? = nil,
          adminBillingTime: String? = nil,
-         adminMonthlyQuotaLimit: Double? = nil) {
+         adminMonthlyQuotaLimit: Double? = nil,
+         adminApiKeys: [CodexAdminKeyConfig]? = nil) {
         self.enabled = enabled
         self.apiKey = apiKey
         self.displayName = displayName
@@ -930,6 +935,7 @@ struct ProviderConfig: Codable, Equatable {
         self.adminBillingDay = adminBillingDay
         self.adminBillingTime = adminBillingTime
         self.adminMonthlyQuotaLimit = adminMonthlyQuotaLimit
+        self.adminApiKeys = adminApiKeys
     }
 
     /// 自定义 decode 只为一个默认值：`enabled` 缺失按 true 处理（编译器合成的
@@ -965,6 +971,72 @@ struct ProviderConfig: Codable, Equatable {
         self.adminBillingDay = try c.decodeIfPresent(Int.self, forKey: .adminBillingDay)
         self.adminBillingTime = try c.decodeIfPresent(String.self, forKey: .adminBillingTime)
         self.adminMonthlyQuotaLimit = try c.decodeIfPresent(Double.self, forKey: .adminMonthlyQuotaLimit)
+        self.adminApiKeys = try c.decodeIfPresent([CodexAdminKeyConfig].self, forKey: .adminApiKeys)
+    }
+
+    /// 解析后的有效 Admin API Key 列表：优先取 adminApiKeys，否则回退到单 key 字段（adminApiKey 等）
+    var effectiveAdminKeys: [CodexAdminKeyConfig] {
+        if let keys = adminApiKeys, !keys.isEmpty {
+            let valid = keys.filter { !$0.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            if !valid.isEmpty { return valid }
+        }
+        if let key = adminApiKey?.trimmingCharacters(in: .whitespacesAndNewlines), !key.isEmpty {
+            return [
+                CodexAdminKeyConfig(
+                    id: "default",
+                    label: "Default",
+                    apiKey: key,
+                    monthlyQuotaLimit: adminMonthlyQuotaLimit ?? 40.0,
+                    billingDay: adminBillingDay ?? 11,
+                    billingTime: adminBillingTime ?? "00:00"
+                )
+            ]
+        }
+        return []
+    }
+
+    var effectiveAdminApiKeys: [CodexAdminKeyConfig] {
+        effectiveAdminKeys
+    }
+}
+
+/// Codex Admin API Key 配置条目（支持多组织 / 多 Workspace 独立追踪）
+public struct CodexAdminKeyConfig: Codable, Equatable, Identifiable, Sendable {
+    public var id: String
+    public var label: String
+    public var apiKey: String
+    public var monthlyQuotaLimit: Double
+    public var billingDay: Int
+    public var billingTime: String
+
+    public init(
+        id: String = UUID().uuidString,
+        label: String = "",
+        apiKey: String = "",
+        monthlyQuotaLimit: Double = 40.0,
+        billingDay: Int = 11,
+        billingTime: String = "00:00"
+    ) {
+        self.id = id
+        self.label = label
+        self.apiKey = apiKey
+        self.monthlyQuotaLimit = monthlyQuotaLimit
+        self.billingDay = billingDay
+        self.billingTime = billingTime
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, label, apiKey, monthlyQuotaLimit, billingDay, billingTime
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try c.decodeIfPresent(String.self, forKey: .id) ?? UUID().uuidString
+        self.label = try c.decodeIfPresent(String.self, forKey: .label) ?? ""
+        self.apiKey = try c.decodeIfPresent(String.self, forKey: .apiKey) ?? ""
+        self.monthlyQuotaLimit = try c.decodeIfPresent(Double.self, forKey: .monthlyQuotaLimit) ?? 40.0
+        self.billingDay = try c.decodeIfPresent(Int.self, forKey: .billingDay) ?? 11
+        self.billingTime = try c.decodeIfPresent(String.self, forKey: .billingTime) ?? "00:00"
     }
 }
 

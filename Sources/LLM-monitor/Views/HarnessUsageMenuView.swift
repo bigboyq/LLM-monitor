@@ -1419,42 +1419,6 @@ struct FleetClientSectionView: View {
     }
 }
 
-/// 一个节点组：全宽节点行（名称 + 本机/离线标记 + 该节点合计）+ 该节点的模型行。
-struct FleetNodeGroupView: View {
-    let node: FleetMenuSummary.NodeRow
-    let models: [FleetMenuSummary.ModelRow]
-    @State private var isExpanded = false
-
-    var body: some View {
-        DisclosureGroup(isExpanded: $isExpanded) {
-            ForEach(models) { model in
-                FleetModelRowView(row: model)
-            }
-        } label: {
-            HStack(alignment: .firstTextBaseline, spacing: 5) {
-                Text("── \(node.nodeName)\(node.isLocal ? "（本机）" : "")")
-                    .font(MenuTypography.dataLabel)
-                    .foregroundStyle(Color.secondaryLabel)
-                    .lineLimit(1)
-                if node.stale {
-                    Text("离线")
-                        .font(MenuTypography.hint)
-                        .foregroundStyle(Color.orange)
-                }
-                Spacer(minLength: 6)
-                Text(Formatters.formatTokenCountCompact(node.totalTokens))
-                    .font(MenuTypography.dataValue)
-                    .foregroundStyle(Color.secondaryLabel)
-                Text(node.costText)
-                    .font(MenuTypography.dataValue)
-                    .foregroundStyle(Color.primaryLabel)
-                    .frame(width: HarnessUsageMenuView.valueWidth, alignment: .trailing)
-            }
-        }
-        .tint(Color.secondaryLabel)
-    }
-}
-
 /// fleet 模型行：与本地模型行同一套列宽与层级（§10.2 K：只相对段头缩进一级）。
 struct FleetModelRowView: View {
     let row: FleetMenuSummary.ModelRow

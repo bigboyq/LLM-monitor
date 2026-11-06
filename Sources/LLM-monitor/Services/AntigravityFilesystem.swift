@@ -323,7 +323,7 @@ extension AntigravityLocalUsageScanner {
                 return nil
             }
             let allDaily = computeGlobalDaily(from: index.dailyBySession, calendar: calendar)
-            let todayStart = todayCutoff(now: now, calendar: calendar)
+            let todayStart = DailyUsageAggregation.todayCutoff(now: now, calendar: calendar)
             let recent7 = filterLast7Days(allDaily: allDaily, today: todayStart, calendar: calendar)
             let samples = (index.samplesBySession ?? [:]).values
                 .flatMap { $0 }

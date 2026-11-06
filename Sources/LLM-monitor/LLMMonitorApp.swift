@@ -213,7 +213,8 @@ struct LLMMonitorApp: App {
                         adminApiKey: config.adminApiKey,
                         adminBillingDay: config.adminBillingDay ?? 11,
                         adminBillingTime: config.adminBillingTime ?? "00:00",
-                        adminMonthlyQuotaLimit: config.adminMonthlyQuotaLimit ?? 40.0
+                        adminMonthlyQuotaLimit: config.adminMonthlyQuotaLimit ?? 40.0,
+                        adminApiKeys: config.effectiveAdminKeys
                     )
                 },
                 settingsTabTitle: "ChatGPT",

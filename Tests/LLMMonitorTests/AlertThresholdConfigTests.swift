@@ -117,4 +117,14 @@ final class AlertThresholdConfigTests: XCTestCase {
         let criticalStatus = makeDeepSeekStatus(totalBalance: 2.0)
         XCTAssertEqual(criticalStatus.aggregateHealthLevel(alertThresholds: thresholds), .critical)
     }
+
+    func testDeepseekHealthLevelDirectMethod() {
+        let thresholds = AlertThresholdConfig.default
+        XCTAssertEqual(thresholds.deepseekHealthLevel(balance: nil), .critical)
+        XCTAssertEqual(thresholds.deepseekHealthLevel(balance: -1.0), .critical)
+        XCTAssertEqual(thresholds.deepseekHealthLevel(balance: 0.0), .critical)
+        XCTAssertEqual(thresholds.deepseekHealthLevel(balance: 2.5), .critical)
+        XCTAssertEqual(thresholds.deepseekHealthLevel(balance: 5.0), .warning)
+        XCTAssertEqual(thresholds.deepseekHealthLevel(balance: 15.0), .healthy)
+    }
 }

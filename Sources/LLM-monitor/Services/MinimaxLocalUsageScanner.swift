@@ -410,7 +410,7 @@ final class MinimaxLocalUsageScanner: LocalUsageScannerBase<MinimaxLocalUsage>, 
 
         // 6. 算 today + 最近 7 天
         let nowDate = now()
-        let todayStart = Self.todayCutoff(now: nowDate, calendar: calendar)
+        let todayStart = DailyUsageAggregation.todayCutoff(now: nowDate, calendar: calendar)
         let today = allDaily.first(where: { $0.dayStart == todayStart })
         let recent7 = Self.filterLast7Days(allDaily: allDaily, today: todayStart, calendar: calendar)
         let recentSamples = (index.samplesBySource ?? [:])
@@ -697,7 +697,7 @@ extension MinimaxLocalUsageScanner {
                 return nil
             }
             let allDaily = computeGlobalDaily(from: index.dailyBySource, calendar: calendar)
-            let todayStart = todayCutoff(now: now, calendar: calendar)
+            let todayStart = DailyUsageAggregation.todayCutoff(now: now, calendar: calendar)
             let recent7 = filterLast7Days(allDaily: allDaily, today: todayStart, calendar: calendar)
             let samples = (index.samplesBySource ?? [:]).values
                 .flatMap { $0 }

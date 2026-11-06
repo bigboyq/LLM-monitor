@@ -43,6 +43,7 @@ struct CodexFetcher: QuotaFetcher {
     private let usageClient: HTTPClient
     private let resetCreditsClient: HTTPClient
     private let adminCostsClient: HTTPClient
+    private let adminApiKeys: [CodexAdminKeyConfig]?
 
     /// 从 config.json 传入的 authPath（可选，~ 开头会展开）
     init(authPath: String? = nil,
@@ -51,6 +52,7 @@ struct CodexFetcher: QuotaFetcher {
          adminBillingDay: Int = 11,
          adminBillingTime: String = "00:00",
          adminMonthlyQuotaLimit: Double = 40.0,
+         adminApiKeys: [CodexAdminKeyConfig]? = nil,
          usageURL: URL = URL(string: "https://chatgpt.com/backend-api/wham/usage")!,
          resetCreditsURL: URL = URL(string: "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits")!,
          session: URLSession = .shared) {
@@ -66,6 +68,7 @@ struct CodexFetcher: QuotaFetcher {
         self.adminBillingDay = adminBillingDay
         self.adminBillingTime = adminBillingTime
         self.adminMonthlyQuotaLimit = adminMonthlyQuotaLimit
+        self.adminApiKeys = adminApiKeys
         self.resultMerger = CodexFillingMissingMerger(adminApiCreditsEnabled: adminApiCreditsEnabled)
         self.usageURL = usageURL
         self.resetCreditsURL = resetCreditsURL
@@ -74,6 +77,27 @@ struct CodexFetcher: QuotaFetcher {
         self.usageClient = HTTPClient(session: session, logTag: "[codex/usage]", defaultTimeout: HTTPTimeouts.overseas)
         self.resetCreditsClient = HTTPClient(session: session, logTag: "[codex/reset-credits]", defaultTimeout: HTTPTimeouts.overseas)
         self.adminCostsClient = HTTPClient(session: session, logTag: "[codex/admin-costs]", defaultTimeout: HTTPTimeouts.overseas)
+    }
+
+    /// 解析后的有效 Admin API Key 列表
+    var effectiveAdminKeys: [CodexAdminKeyConfig] {
+        if let keys = adminApiKeys, !keys.isEmpty {
+            let valid = keys.filter { !$0.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            if !valid.isEmpty { return valid }
+        }
+        if let key = adminApiKey?.trimmingCharacters(in: .whitespacesAndNewlines), !key.isEmpty {
+            return [
+                CodexAdminKeyConfig(
+                    id: "default",
+                    label: "Default",
+                    apiKey: key,
+                    monthlyQuotaLimit: adminMonthlyQuotaLimit,
+                    billingDay: adminBillingDay,
+                    billingTime: adminBillingTime
+                )
+            ]
+        }
+        return []
     }
 
     nonisolated static func defaultAuthFileURL() -> URL {
@@ -135,35 +159,92 @@ struct CodexFetcher: QuotaFetcher {
 
     func hasLocalAuth() -> Bool {
         FileManager.default.fileExists(atPath: authFileURL.path)
-            || (adminApiCreditsEnabled && !(adminApiKey?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true))
+            || (adminApiCreditsEnabled && !effectiveAdminKeys.isEmpty)
     }
 
     func fetch(mode: RefreshMode) async throws -> QuotaInfo {
         let authResult = Result { try loadAuth() }
-        let shouldFetchAdminCredits = adminApiCreditsEnabled
-            && !(adminApiKey?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+        let keysToFetch = effectiveAdminKeys
+        let shouldFetchAdminCredits = adminApiCreditsEnabled && !keysToFetch.isEmpty
 
-        // 并行抓取 API 赠金（若启用且 key 存在）
-        async let adminCreditsTask: (credits: OpenAIApiCreditDetails?, error: String?) = {
-            guard shouldFetchAdminCredits, let rawKey = adminApiKey else {
-                return (nil, nil)
+        // 并行抓取所有已配置的 API 赠金 Key（错误互相隔离）
+        async let adminCreditsTask: (credits: [OpenAIApiCreditDetails], error: String?) = {
+            guard shouldFetchAdminCredits, !keysToFetch.isEmpty else {
+                return ([], nil)
             }
-            do {
-                let details = try await fetchAdminCosts(apiKey: rawKey, mode: mode)
-                logInfo("[codex] admin credits fetched: used $\(String(format: "%.2f", details.usedAmount)) / $\(String(format: "%.0f", details.totalQuota))")
-                return (details, nil)
-            } catch {
-                if CancellationFilter.shouldIgnore(error, isTaskCancelled: Task.isCancelled) {
-                    throw CancellationError()
+            return await withTaskGroup(of: (Int, Result<OpenAIApiCreditDetails, Error>).self) { group in
+                for (index, keyConfig) in keysToFetch.enumerated() {
+                    group.addTask {
+                        do {
+                            let details = try await fetchAdminCosts(keyConfig: keyConfig, mode: mode)
+                            return (index, .success(details))
+                        } catch {
+                            return (index, .failure(error))
+                        }
+                    }
                 }
-                logWarn("[codex] admin costs 拉取失败: \(error.localizedDescription)，忽略")
-                return (nil, "API赠金抓取失败")
+                var indexedResults: [(Int, Result<OpenAIApiCreditDetails, Error>)] = []
+                for await item in group {
+                    indexedResults.append(item)
+                }
+                indexedResults.sort { $0.0 < $1.0 }
+
+                var results: [OpenAIApiCreditDetails] = []
+                var errors: [String] = []
+
+                for (index, res) in indexedResults {
+                    let keyConfig = keysToFetch[index]
+                    switch res {
+                    case .success(let details):
+                        logInfo("[codex] admin credits fetched for key \(keyConfig.label.isEmpty ? keyConfig.id : keyConfig.label): used $\(String(format: "%.2f", details.usedAmount)) / $\(String(format: "%.0f", details.totalQuota))")
+                        results.append(details)
+                    case .failure(let err):
+                        logWarn("[codex] admin costs 拉取失败 for key \(keyConfig.id): \(err.localizedDescription)，忽略")
+                        errors.append(err.localizedDescription)
+
+                        let timeParts = keyConfig.billingTime.split(separator: ":")
+                        let hour = timeParts.count > 0 ? (Int(timeParts[0]) ?? 0) : 0
+                        let minute = timeParts.count > 1 ? (Int(timeParts[1]) ?? 0) : 0
+                        let (cycleStart, cycleEnd) = OpenAIApiCreditDetails.currentBillingCycle(
+                            day: keyConfig.billingDay,
+                            hour: hour,
+                            minute: minute,
+                            now: Date()
+                        )
+                        let resolvedOrgName = keyConfig.label.isEmpty || keyConfig.label == "Default" ? nil : keyConfig.label
+                        let label = keyConfig.label.isEmpty || keyConfig.label == "Default" ? nil : keyConfig.label
+
+                        let staleDetail = OpenAIApiCreditDetails(
+                            organizationName: resolvedOrgName,
+                            totalQuota: keyConfig.monthlyQuotaLimit,
+                            usedAmount: 0.0,
+                            cycleStart: cycleStart,
+                            cycleEnd: cycleEnd,
+                            fetchedAt: nil,
+                            lastAttemptFailed: true,
+                            keyId: keyConfig.id,
+                            keyLabel: label,
+                            errorMessage: err.localizedDescription
+                        )
+                        results.append(staleDetail)
+                    }
+                }
+
+                let summaryError: String?
+                if errors.isEmpty {
+                    summaryError = nil
+                } else if results.allSatisfy({ $0.lastAttemptFailed == true }) {
+                    summaryError = "API赠金抓取失败"
+                } else {
+                    summaryError = nil
+                }
+                return (results, summaryError)
             }
         }()
 
         guard case .success(let auth) = authResult else {
             // 主 auth 不可用（如无 auth.json）时仍允许独立显示 Admin 赠金结果。
-            let adminResult = try await adminCreditsTask
+            let adminResult = await adminCreditsTask
             if adminApiCreditsEnabled {
                 return QuotaInfo(
                     models: [],
@@ -172,7 +253,8 @@ struct CodexFetcher: QuotaFetcher {
                     accountEmail: nil,
                     codexUsageDetails: nil,
                     fetchedAt: Date(),
-                    openAIApiCredits: adminResult.credits,
+                    openAIApiCredits: adminResult.credits.first,
+                    openAIApiCreditsList: adminResult.credits,
                     mainQuotaError: "Codex Plan auth 缺失",
                     openAIApiCreditsError: adminResult.error
                 )
@@ -201,12 +283,13 @@ struct CodexFetcher: QuotaFetcher {
                     throw CancellationError()
                 }
                 guard shouldFetchAdminCredits else { throw error }
-                let adminResult = try await adminCreditsTask
+                let adminResult = await adminCreditsTask
                 let message = QuotaError.userFacingDescription(for: error, providerKind: .codexChatGpt)
                 return QuotaInfo(
                     models: [], resetCredits: nil, planLabel: nil, accountEmail: nil,
                     codexUsageDetails: nil, fetchedAt: Date(),
-                    openAIApiCredits: adminResult.credits,
+                    openAIApiCredits: adminResult.credits.first,
+                    openAIApiCreditsList: adminResult.credits,
                     mainQuotaError: message,
                     openAIApiCreditsError: adminResult.error
                 )
@@ -233,12 +316,13 @@ struct CodexFetcher: QuotaFetcher {
                     throw CancellationError()
                 }
                 guard shouldFetchAdminCredits else { throw error }
-                let adminResult = try await adminCreditsTask
+                let adminResult = await adminCreditsTask
                 let message = QuotaError.userFacingDescription(for: error, providerKind: .codexChatGpt)
                 return QuotaInfo(
                     models: [], resetCredits: nil, planLabel: nil, accountEmail: nil,
                     codexUsageDetails: nil, fetchedAt: Date(),
-                    openAIApiCredits: adminResult.credits,
+                    openAIApiCredits: adminResult.credits.first,
+                    openAIApiCreditsList: adminResult.credits,
                     mainQuotaError: message,
                     openAIApiCreditsError: adminResult.error
                 )
@@ -246,7 +330,7 @@ struct CodexFetcher: QuotaFetcher {
             resetCredits = nil
         }
         let model = try Self.parseUsage(usageResponse)
-        let adminResult = try await adminCreditsTask
+        let adminResult = await adminCreditsTask
 
         return QuotaInfo(
             models: [model],
@@ -255,25 +339,26 @@ struct CodexFetcher: QuotaFetcher {
             accountEmail: auth.accountEmail,
             codexUsageDetails: nil,
             fetchedAt: Date(),
-            openAIApiCredits: adminResult.credits,
+            openAIApiCredits: adminResult.credits.first,
+            openAIApiCreditsList: adminResult.credits,
             openAIApiCreditsError: adminResult.error
         )
     }
 
     // MARK: - Admin Costs Fetching
 
-    func fetchAdminCosts(apiKey: String, mode: RefreshMode = .full) async throws -> OpenAIApiCreditDetails {
-        var cleanKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+    func fetchAdminCosts(keyConfig: CodexAdminKeyConfig, mode: RefreshMode = .full) async throws -> OpenAIApiCreditDetails {
+        var cleanKey = keyConfig.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         if cleanKey.lowercased().hasPrefix("bearer ") {
             cleanKey = String(cleanKey.dropFirst(7)).trimmingCharacters(in: .whitespacesAndNewlines)
         }
 
-        let timeParts = adminBillingTime.split(separator: ":")
+        let timeParts = keyConfig.billingTime.split(separator: ":")
         let hour = timeParts.count > 0 ? (Int(timeParts[0]) ?? 0) : 0
         let minute = timeParts.count > 1 ? (Int(timeParts[1]) ?? 0) : 0
 
         let (cycleStart, cycleEnd) = OpenAIApiCreditDetails.currentBillingCycle(
-            day: adminBillingDay,
+            day: keyConfig.billingDay,
             hour: hour,
             minute: minute,
             now: Date()
@@ -319,15 +404,33 @@ struct CodexFetcher: QuotaFetcher {
         }
         try Task.checkCancellation()
 
+        let resolvedOrgName = orgName ?? (keyConfig.label.isEmpty || keyConfig.label == "Default" ? nil : keyConfig.label)
+        let label = keyConfig.label.isEmpty || keyConfig.label == "Default" ? nil : keyConfig.label
+
         return OpenAIApiCreditDetails(
-            organizationName: orgName,
-            totalQuota: adminMonthlyQuotaLimit,
+            organizationName: resolvedOrgName,
+            totalQuota: keyConfig.monthlyQuotaLimit,
             usedAmount: totalCost,
             cycleStart: cycleStart,
             cycleEnd: cycleEnd,
             fetchedAt: Date(),
-            lastAttemptFailed: false
+            lastAttemptFailed: false,
+            keyId: keyConfig.id,
+            keyLabel: label,
+            errorMessage: nil
         )
+    }
+
+    func fetchAdminCosts(apiKey: String, mode: RefreshMode = .full) async throws -> OpenAIApiCreditDetails {
+        let keyConfig = CodexAdminKeyConfig(
+            id: "default",
+            label: "Default",
+            apiKey: apiKey,
+            monthlyQuotaLimit: adminMonthlyQuotaLimit,
+            billingDay: adminBillingDay,
+            billingTime: adminBillingTime
+        )
+        return try await fetchAdminCosts(keyConfig: keyConfig, mode: mode)
     }
 
     private func fetchOrganizationTitle(apiKey: String) async throws -> String? {

@@ -158,14 +158,30 @@ extension EdgeDockController {
         deselectionTask.cancel()
     }
 
-    /// 松手的统一收尾：有位移 = 拖动（吸附 + 记住位置），无位移 = 保持现状（悬停模式由鼠标位置驱动）。
-    private func finishPressOrDrag(at mouse: CGPoint) {
+    /// 松手的统一收尾：有位移 = 拖动（吸附 + 记住位置），无位移 = 点击刷新或保持现状。
+    func finishPressOrDrag(at mouse: CGPoint) {
         guard isDragging else { return }
         isDragging = false
         // 无论是否越过阈值都要清干净：阈值内松手时不该把上一次拖拽留下的偏移
         // 写进 `config`。
         guard pressBecameDrag, let offset = dragOffset else {
             dragOffset = nil
+            // Hit test for dock circle click:
+            let entries = orderedEntries()
+            let panelFrame = panel?.frame ?? .zero
+            let circles = resolvedCircleRects(entries: entries, panelFrame: panelFrame)
+            let minRadius = isCompactAppearance ? (EdgeDockGeometry.compactRowStep(for: config.compactSize) / 2) : 0
+            if let index = Self.circleIndex(at: mouse, circles: circles, currentHovered: hoveredIndex, minimumRadius: minRadius),
+               entries.indices.contains(index) {
+                let entry = entries[index]
+                logInfo("EdgeDockController: 点击悬浮窗图标刷新 provider=\(entry.id)")
+                Task { @MainActor [weak self] in
+                    await self?.state?.refreshOne(providerID: entry.id)
+                    if self?.selectedIndex != nil {
+                        self?.updatePopover()
+                    }
+                }
+            }
             return
         }
         dragOffset = nil

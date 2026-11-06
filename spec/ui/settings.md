@@ -103,14 +103,20 @@ transaction gate.
 ### ChatGPT Provider Pane 与「API 赠金」设置
 
 ChatGPT 设置 pane（`SettingsProviderPanes.swift:chatgptPane`）在基础的 `auth.json 路径` 与刷新频率之外，提供「API 赠金」专用配置节：
-- **开关**：「启用 API 赠金监测」（`chatgptAdminCreditsEnabled`）。默认关闭；开启后向下展开选项，关闭时全部选项隐藏。
-- **Admin API Key**：`secretField` 掩码输入框（带明文/掩码切换眼标图标），支持 `sk-admin-...` 前缀的官方管理员 Key。
-- **赠金额度 ($)**：每月额度上限输入框（`chatgptMonthlyQuotaLimit`，默认 40）。
-- 启用赠金监测时，该输入必须为大于 0 的有限数字；空值、非数字、非正数或非有限数值显示行内错误并阻止保存，保留输入草稿。关闭赠金监测时该项隐藏，输入校验不阻止保存。默认 40 仅用于未配置时的初始值。
-- **账单日**：`Picker` 下拉框（每月 1 日至 31 日，默认 11 日）。
-- **重置时间**：`DatePicker`（时分输入组件，精确至分钟粒度，如 `00:00` 或 `08:00`）。
+- **开关**：「启用 API 赠金监测」（`chatgptAdminCreditsEnabled`）。默认关闭；开启后向下展开多 Key 管理卡片列表与添加按钮，关闭时全部隐藏。
+- **多 Key 管理卡片列表 (`CodexAdminKeyCardView`)**：每个 Key 呈现为一个独立卡片（圆角 8pt，填充背景与边框）：
+  - **卡头与删除操作**：卡头左侧显示自定义备注名称（未输入时显示默认占位 `API Key #N`，`SettingsTypography.rowEmphasis`）；右侧在卡片数量大于 1 时显示删除按钮（`canDelete = draft.chatgptAdminKeys.count > 1`，带 `trash` 图标与「删除此 API Key」提示；单 Key 时隐藏删除按钮以防止清空配置）；
+  - **备注名称**：输入框绑定 `keyDraft.label`，占位符为「例如：个人账号、团队项目」；
+  - **Admin API Key**：`keyDraft.apiKey` 输入框，支持明文/密文切换（`isKeyVisible` 切换 `TextField` 与 `SecureField`，带眼睛图标按钮），占位符为 `sk-admin-...`；
+  - **赠金额度 ($)**：每月额度上限输入框（`keyDraft.monthlyQuotaLimit`，默认 40）。行内实时校验：当 Key 非空且额度非大于 0 的有限数字时，输入框下方即时呈现红色错误文案「请输入大于 0 的有限数字。」。在表单保存时（`SettingsView.saveAndApply()`）执行强校验拦截，非法时抛出错误阻止保存；
+  - **账单日**：`Picker` 下拉框（每月 1 日至 31 日，默认 11 日，绑定 `keyDraft.billingDay`）；
+  - **重置时间**：`DatePicker` 时分输入组件（精确至分钟粒度，默认 `08:00`，绑定 `keyDraft.billingTime`）。
+- **添加 Key 按钮**：卡片列表下方提供「添加 API Key」操作（`plus.circle.fill` 图标），点击向 `draft.chatgptAdminKeys` 追加新的 `CodexAdminKeyConfigDraft`（新生成 UUID，默认额度 40，账单日 11 日，重置时间 08:00）。
+- **双向兼容与数据持久化**：
+  - `SettingsFormDraft` 提供 `chatgptAdminApiKey`、`chatgptBillingDay`、`chatgptBillingTime`、`chatgptMonthlyQuotaLimit` 计算属性，双向代理映射至首个 Key（`chatgptAdminKeys.first`）；
+  - 保存时，有效非空 Key 列表（`compactMap { $0.toConfig() }`）写入 `ProviderConfig.adminApiKeys` 数组；同时将首个有效 Key 镜像同步至传统标量字段（`chatgpt.adminApiKey` 等），确保旧版本客户端与单 Key 接口完全兼容；
+  - 所有卡片字段通过 `CodexAdminKeyConfigDraft: Equatable` 参与 `SettingsFormDraft: Equatable` 统一脏检查与保存流。
 - API 赠金节 footer 说明首月统计可能存在偏差，后续按完整账期计算；保留现有赠金命名与算法，不做首月校准。
-- **草稿与保存**：所有字段绑定 `SettingsView` 草稿状态并参与 `SettingsFormDraft: Equatable` 统一脏检查；保存时写回 `config.providers["codex_chatgpt"]`。
 
 ### 客户端 (Clients) 与用量 pane
 
@@ -361,8 +367,8 @@ appearance-neutral.
 
 - **切页滚动复位**：`SettingsView` 的 `detailContent` 在 `SettingsPaneHeader` 挂载 `.id("settings-top")`。普通 Tab 切换统一通过 `proxy.scrollTo("settings-top", anchor: .top)` 归位到顶部，避免继承上一页的滚动偏移；从 Provider 页点击「编辑此 Provider 的通知规则」时保留定向平滑滚动至目标项。
 - **历史图表空间适配**：`SevenDayUsageHistoryView` 增加紧凑（`.compact`）与宽松（`.expanded`）两种模式。设置页与独立详情窗口使用 `.expanded`，宽度撑满可用区域（`.frame(maxWidth: .infinity)`），表格字号适度提至 11–11.5pt、列宽与间距自适应拉开；菜单与浮层维持 `.compact`（420pt）。坐标轴与日期标签字体提至 10–11pt、配色提至 `.secondary`。
-- **说明文字与行距紧凑化**：边缘状态窗 footer 收敛为 2 句核心操作指引，双环机制与多屏行为放入「了解更多…」popover；ChatGPT API 赠金设置移除每行冗余的 `Divider().padding(.vertical, 4)`，对齐常规表单行距。
+- **说明文字与行距紧凑化**：边缘状态窗 footer 收敛为 2 句核心操作指引，双环机制与多屏行为放入「了解更多…」popover；ChatGPT API 赠金设置采用独立 `CodexAdminKeyCardView` 模块化卡片（12pt 内边距、低透明度底色与边框描边），对齐常规表单行距。
 
-> 核对基线：2026-11-05 · 代码 722f36d
+> 核对基线：2026-11-06 · 代码 191d07b
 > Sync 草稿跨 tab 保留、表单隔离与保存失败提示验证结果见 `spec/sync.md`。
 > 2026-10-25 菜单 / 设置自启同步已随 6f11831 入库：相关定向测试 27 例、完整测试 1422 例均 0 失败；测试使用模拟登录项操作，不执行真实注册 / 注销。

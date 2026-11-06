@@ -1,20 +1,5 @@
 import SwiftUI
 
-extension AccentColor {
-    /// provider 粒度的品牌色。边缘窗已改用真实品牌图标（`BrandLogoView`），
-    /// 这个映射保留给其它复用点。
-    var tintColor: Color {
-        switch self {
-        case .minimax:     return .minimaxBrand
-        case .chatgpt:     return .chatgptBrand
-        case .antigravity: return .antigravityGemini
-        case .glm:         return .glmBrand
-        case .deepseek:    return Color(red: 0.20, green: 0.36, blue: 0.85)
-        case .custom:      return .secondary
-        }
-    }
-}
-
 /// 边缘状态窗的内容：一列 provider 双环。
 ///
 /// 结构由外向内三层：

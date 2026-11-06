@@ -6,10 +6,10 @@
 
 | Path | Responsibility |
 |---|---|
-| `Sources/LLM-monitor/LLMMonitorApp.swift` | App entry point, lifecycle delegate, `FetcherDescriptor` registry, fixed menu bar label, single-instance public provider-detail Window |
+| `Sources/LLM-monitor/LLMMonitorApp.swift` | App entry point, lifecycle delegate, `FetcherDescriptor` registry（含 CodexFetcher 多 Key forwarding makeFetcher）、fixed menu bar label, single-instance public provider-detail Window |
 | `Sources/LLM-monitor/Services/AppInstanceLock.swift` | Per-user single-instance lock held for the process lifetime |
 | `Sources/LLM-monitor/Fetchers/FetcherDescriptor.swift` | `FetcherDescriptor` (provider 注册元信息 single source of truth) |
-| `Sources/LLM-monitor/Models/AppConfig.swift` | 应用配置与 Provider 配置契约模型（`SyncConfig` 的逐字段容错、推送周期 effective 值、本机系统通知声音偏好、`StatusBarIconStyle` / `StatusBarHealthColors` / `BarkConfig` / `AppConfig` / `ProviderConfig`，从 ConfigStore.swift 解耦） |
+| `Sources/LLM-monitor/Models/AppConfig.swift` | 应用配置与 Provider 配置契约模型（Codex 多 Key 模型 `CodexAdminKeyConfig`、`adminApiKeys` 与 `effectiveAdminKeys` 双模式向后兼容回退；`SyncConfig` 的逐字段容错、推送周期 effective 值、本机系统通知声音偏好、`StatusBarIconStyle` / `StatusBarHealthColors` / `BarkConfig` / `AppConfig` / `ProviderConfig`，从 ConfigStore.swift 解耦） |
 | `Sources/LLM-monitor/Models/ProviderClientModel.swift` | provider 中立 usage projection 与 Harness 自动归因（区分日总量源级截断与模型 / 窗口样本截断，含无贡献时的 DSH 源级状态）与设置页摘要模型 |
 | `Sources/LLM-monitor/Models/SyncModels.swift` | Fleet Sync wire DTO（NodeUsageReport / FleetSnapshot 等）、FleetCodec（iso8601 唯一编解码入口与整秒窗口边界匹配）、通道级报告校验（含 ASCII / Gregorian 日键校验）、日桶/窗口合并与额度选举纯函数（FleetMerger）、归因指纹（SHA256 前 8 hex）、SyncRole 单源派生 |
 | `Sources/LLM-monitor/Services/Sync/FleetStore.swift` | 应用自有 fleet.sqlite 单表 sync_records 的事务存储：报告通道独立落库、本机 seq 与节点 high-water、窗口 upsert / 过期及坏行清理（可见清理同步递增 generation）、副节点快照缓存（scope = upstreamKey+hubUUID 隔离） |
@@ -34,7 +34,7 @@
 | `Sources/LLM-monitor/Resources/ModelPricing.json` | 价格数据：随 app 打包的唯一价格源（`ModelPricingJSONTests` 守门 schema 完整性） |
 | `Sources/LLM-monitor/Resources/ChinaHolidays.json` | 法定节假日快照：随 app 打包的静态离线数据（`holidays` ∪ `inLieuDays` 日期并集，年份 [当前年-1, …]），由 `scripts/sync-holiday-data.sh` 生成，`HolidayCalendarTests` 守门 |
 | `Sources/LLM-monitor/Models/ProviderStatus.swift` | UI-facing provider state + `ProviderKind` / `AccentColor` 枚举 |
-| `Sources/LLM-monitor/Models/QuotaInfo.swift` | Provider-neutral quota 和 reset-credit 模型 |
+| `Sources/LLM-monitor/Models/QuotaInfo.swift` | Provider-neutral quota 和 reset-credit 模型（ChatGPT 多 Key 独立额度 `openAIApiCreditsList` / `allOpenAIApiCredits` 与 `OpenAIApiCreditDetails` 字段及错误隔离；裁剪无引用方法） |
 | `Sources/LLM-monitor/Models/QuotaWindowStatus.swift` | Provider 无关的额度窗口存在性（`.present` / `.absent`）；fetcher 在边界归一化 raw 状态码 |
 | `Sources/LLM-monitor/Models/AntigravityModelKind.swift` | Antigravity 共享额度池 enum、展示名及样本模型分类（`gemini_models` / `gemini_argon` / `claude_and_gpt_models` 单一事实源，Argon 优先） |
 | `Sources/LLM-monitor/Models/MinimaxModelKind.swift` | MiniMax 模型族与用量分类 |
@@ -78,7 +78,7 @@
 | `Sources/LLM-monitor/Fetchers/QuotaFetcher.swift` | `QuotaFetcher` protocol + 默认实现 |
 | `Sources/LLM-monitor/Services/Infra/QuotaError.swift` | 统一错误类型 |
 | `Sources/LLM-monitor/Fetchers/MinimaxTokenPlanFetcher.swift` | minimax Token Plan API 抓取 |
-| `Sources/LLM-monitor/Fetchers/CodexFetcher.swift` | ChatGPT Plan API 抓取 + 本地 JSONL 解析 |
+| `Sources/LLM-monitor/Fetchers/CodexFetcher.swift` | ChatGPT Plan API 抓取、多 Key Admin API 赠金并发抓取与错误隔离 + 本地 JSONL 解析 |
 | `Sources/LLM-monitor/Fetchers/AntigravityFetcher.swift` | Antigravity 进程发现 + 本地 RPC + protobuf-like 解析；主额度每拍、独立账号/套餐按次要信息频率 |
 | `Tests/LLMMonitorTests/AntigravityRefreshCadenceTests.swift` | Antigravity 主额度与次要账号/套餐 RPC 编排、可选接口失败降级、额度失败传播 |
 | `Sources/LLM-monitor/Fetchers/AntigravityProcessDiscovery.swift` | Antigravity 后端进程发现（IDE `language_server` / `agy` CLI 双形态、端口与 CSRF token 提取） |
@@ -100,7 +100,7 @@
 | `Sources/LLM-monitor/Services/ConfigStore.swift` | 配置文件（config.json）读写、文件变更监听与持久化备份事务（数据模型已下沉至 Models/AppConfig.swift；debounce + 原子替换后重开 fd + 退避重试，由 `AppState.start()` 调用） |
 | `Sources/LLM-monitor/Services/LoginItemService.swift` | `SMAppService.mainApp` 包装 + 状态显示 |
 | `Sources/LLM-monitor/Services/Formatters.swift` | 基础格式化工具：Token 紧凑计数（K/M/G 阶梯）、速度三字符数值与数量级后缀、格式化整数、百分比与额度百分比（去无效 .0）、FormatterCache 缓存 |
-| `Sources/LLM-monitor/Services/Formatters+Time.swift` | 时间与倒计时格式化扩展：相对时间（`formatRelativeShort`）、英文压缩倒计时（`formatResetSuffix`）、中文紧凑倒计时（`formatPeakDuration`）、数字时钟持续时长（`formatDigitalDuration`）、绝对时钟与日期（`formatClock` / `formatTimeOfDay` / `formatMonthDayMinute` 等）及 Codex 窗口标签与刷新间隔 |
+| `Sources/LLM-monitor/Services/Formatters+Time.swift` | 时间与倒计时格式化扩展：统一相对倒计时格式化（`formatRelativeCountdown`）、相对时间（`formatRelativeShort`）、英文压缩倒计时（`formatResetSuffix`）、中文紧凑倒计时（`formatPeakDuration`）、数字时钟持续时长（`formatDigitalDuration`）、绝对时钟与日期（`formatClock` / `formatTimeOfDay` / `formatMonthDayMinute` 等）及 Codex 窗口标签与刷新间隔 |
 | `Sources/LLM-monitor/Services/Infra/HTTPClient.swift` | 共享 HTTP 客户端（minimax / codex 三个 fetch 路径）；`ResponseByteLimits` 响应体硬上限（标准额度 8 MiB / Antigravity trajectory 64 MiB）由 `CappedDownloader.data` 在**响应体返回后**校验——超限抛 `responseTooLarge`，该错误为非瞬时（不重试、不进通知冷却）。async `session.data(for:delegate:)` 不向 per-task delegate 投递 `didReceive response` / `didReceive data` 内容回调（macOS 27 实测：URLProtocol 桩与真实网络均不触发），因此 `CappedDownloadDelegate` 的流式计数在当前调用方式下**不执行**，真正的拦截点是后置字节校验；delegate 保留待将来改用回调系任务。峰值内存仍由 URLSession 缓冲决定——该上限保证超限响应不进入调用方解析链路，不保证单次响应不被完整缓冲 |
 | `Sources/LLM-monitor/Services/LocalUsageCoordinator.swift` | scanner 协议 + Combine wire-up 容器 |
 | `Sources/LLM-monitor/Services/ProviderRefreshScheduler.swift` | 循环 A（额度循环）：单一 Task 管理所有 Provider 的 quota 定时排期，睡眠至最早截止时间，并发刷新 + 条目级隔离；配置重载走差异化重排 `reconfigure(managed:)`（未变 provider 保留 deadline 与首刷状态，避免每次写配置全员重抓）；loop 带实例 token（`cancelAll` 后旧 loop 收尾不再清新 loop 的 sleepTask、不再进入下一轮迭代） |
@@ -109,7 +109,7 @@
 | `Sources/LLM-monitor/Services/LocalFSEventsWatcher.swift` | 可复用的单 scanner FSEvents 封装；每个 scanner 自己持有 watcher 与源路径，不维护全局路径表；`info` 载荷为 passRetained 的 context box（对 watcher 弱引用，stream↔watcher 不成环；旧的裸 unretained 指针已移除） |
 | `Sources/LLM-monitor/Services/LocalVnodeWriteWatcher.swift` | 文件级 write/extend vnode watcher（持续增长的日志文件 dirty 标记；只报 dirty，扫描仍归 provider 循环） |
 | `Sources/LLM-monitor/Services/AuthProber.swift` | 异步探测本地服务（antigravity）是否还活着 + 缓存 + 离/在线变化回调 |
-| `Sources/LLM-monitor/Fetchers/RefreshResultMergers.swift` | `CodexFillingMissingMerger`、`GlmFillingMissingMerger` 与 `AntigravityFillingMissingMerger`：次要信息跨模式保留、主额度与金额采用新值（Minimax 使用默认 `IdentityRefreshResultMerger`） |
+| `Sources/LLM-monitor/Fetchers/RefreshResultMergers.swift` | `CodexFillingMissingMerger`（含多 Key 独立匹配、降级 stale 保留与组织名跨模式保留）、`GlmFillingMissingMerger` 与 `AntigravityFillingMissingMerger`：次要信息跨模式保留、主额度与金额采用新值（Minimax 使用默认 `IdentityRefreshResultMerger`） |
 | `Sources/LLM-monitor/Services/Infra/DateParser.swift` | ISO8601 / unix timestamp 统一解析 |
 | `Sources/LLM-monitor/Services/Infra/StringUtilities.swift` | 字符串小工具（trim / firstTrimmed） |
 | `Sources/LLM-monitor/Services/Infra/ProcessRunner.swift` | 同步短命令子进程执行器（pgrep / lsof / pmset / zstd / node；持续排空 pipe + 超时与取消检查）；产出文件以 0600 出生（会话明文不落 world-readable） |
@@ -173,10 +173,9 @@
 | `Tests/LLMMonitorTests/MenuRefreshPresentationTests.swift` | 页面额度时间来源：启用项、失败保留成功数据、持久成功时间与空态 |
 | `Sources/LLM-monitor/Views/MenuWindowAutoCloseBridge.swift` | 失焦立即关 + 30s 无交互关闭（菜单内 mouse/scroll/key 重置计时）；关闭统一出口 `performClose` 并发 `onPanelClose`（菜单展示时钟随之停表）；30s 计时为单个可复用 `DispatchSourceTimer`（reset 只改 deadline，鼠标事件不再重建句柄） |
 | `Sources/LLM-monitor/Views/ProviderCardDerived.swift` | 卡片 body 的派生值入口：投影 + 额度窗口快照 + 「今」行 + 「闲」行（GLM 今日闲时，`offPeakUsageRow`）+ 「免 / 速 / 它」今日动态行（`glmCategoryUsageRows`，按 `GlmUsageCategory` 今日切片）打包成一个 memo 值（共享失效条件；键 = 全值 `status` + 墙钟日 + 展示日 + `HolidayCalendar.sharedRevision` + 时区标识），展示时钟每秒 tick 不再重算 O(samples) 定价 |
-| `Sources/LLM-monitor/Views/ProviderCardView.swift` | provider 卡片 + `ProviderStateLabel` + `QuotaSummary`；`ProviderCardPresentation` 分 complete / plan / edgePlan / history，共用账号+套餐模块与七天历史，含无额度时的历史兜底；body 派生值经 `ProviderCardDerivedValues` 值键 memo；多节点 scope 控制用 `FleetScopeSwitcher` |
+| `Sources/LLM-monitor/Views/ProviderCardView.swift` | provider 卡片 + `ProviderStateLabel` + `QuotaSummary`；卡片 header 显式刷新按钮（`arrow.clockwise`，加载中显示 `ProgressView`）与时间戳胶囊刷新；支持多 Key ChatGPT API 额度独立行渲染；`ProviderCardPresentation` 分 complete / plan / edgePlan / history，共用账号+套餐模块与七天历史；body 派生值经 `ProviderCardDerivedValues` 值键 memo；多节点 scope 控制用 `FleetScopeSwitcher` |
 | `Sources/LLM-monitor/Views/QuotaViews.swift` | 各种 quota 行 + 进度条（`CombinedQuotaWindowRow` / `CombinedQuotaBar` / `SingleQuotaBar` / `ModelQuotaDockBlock` / `CompactResetCreditsRow` / `QuotaBarTooltip`）；重置倒计时与过期判定随宿主展示时钟推进（`\.displayDate`）。`OffPeakUsageFootnote` 已删除，GLM 闲时用量改由「额度窗口」表格「闲」行承担 |
 | `Sources/LLM-monitor/Views/QuotaWindowUsageViews.swift` | 「额度窗口用量」区块族：模块标题 / 细分隔线、四桶绝对值与三个比率（`QuotaWindowUsageMetrics`）、双段 capsule 切换（`QuotaWindowUsageSegmentControl` / `QuotaWindowUsageSegment`）、reset credits 明细（`ResetCreditsDetailList`）与合并统一 7 列 Grid 骨架的总段 `QuotaWindowUsageSection`；重置日期格倒计时随宿主展示时钟推进（`\.displayDate`） |
-| `Sources/LLM-monitor/Views/QuotaHoverViews.swift` | 空文件，仅留删除记录注释：`UsageMetricHoverSummaryView`（额度用量指标 hover 摘要）随其唯一宿主 `OffPeakUsageFootnote` 一并删除；旧 `QuotaWindowsHoverView` 族已随 menuLayout 死分支整体删除 |
 | `Sources/LLM-monitor/Views/HoverPanel.swift` | `HoverInfoRow` / `HoverPanelController` / 浮层管理；浮层显隐驱动共享展示时钟（经 `DisplayClockScope` 注入） |
 | `Sources/LLM-monitor/Models/EdgeDockEntry.swift` | `EdgeDockEntry` + `EdgeDockProjection`：已启用 Provider → 双环条目（外环=5h 有效额度 min(5h, 周×N) 与状态栏同口径、原始 5h 字段供 hover 文案对照、内环=原始周 各自最低 + 健康档位 + 品牌 kind）；DeepSeek 单独投影账户可用性，不生成窗口比例，纯函数 |
 | `Sources/LLM-monitor/Models/EdgeDockConfig.swift` | `DockEdge` / `EdgeDockConfig`：贴边方向 + 归一化位置（存比例不存绝对坐标），含手改值归一化 |
@@ -186,13 +185,12 @@
 | `Sources/LLM-monitor/Services/ScreenChromeProbe.swift` | 屏幕边缘与 Dock 遮挡探测 |
 | `Sources/LLM-monitor/Services/EdgeDockController.swift` | 边缘窗控制器本体：状态与配置（`applyRuntimeConfig` 是运行时改配置的唯一入口，`config` 的 setter 保持 private）+ 接线（`attach` / `teardown`） |
 | `Sources/LLM-monitor/Services/EdgeDockController+Window.swift` | `NSPanel` 建/拆、按条目数与形态算窗口尺寸、贴到目标屏那一侧、"为什么没出现 / 出现在哪"的日志签名 |
-| `Sources/LLM-monitor/Services/EdgeDockController+Mouse.swift` | 鼠标穿透与悬停接管：monitor 装卸、2Hz 轮询节拍、命中后的接管与释放、hover / 展开 / 收起的挂起任务 |
+| `Sources/LLM-monitor/Services/EdgeDockController+Mouse.swift` | 鼠标穿透与悬停接管：monitor 装卸、2Hz 轮询节拍、命中后的接管与释放、hover / 展开 / 收起挂起任务，以及松手未拖动（`!pressBecameDrag`）时点击 Provider 圆环触发该 provider 独立立即刷新（`refreshOne`） |
 | `Sources/LLM-monitor/Services/EdgeDockController+Popover.swift` | Provider 卡片浮层（与 dock 两个独立窗口）：定位、显隐、鼠标停在浮层上时的接管保持（`ignoresMouseEvents = false` 接收交互并注入 `quotaWindowSegmentEditable = true`），并经 `DisplayClockScope` 注入随显隐 start/stop 的展示时钟 |
 | `Sources/LLM-monitor/Services/EdgeDockController+Drag.swift` | 沿贴靠边滑动拖拽：阈值判定、跨屏换屏 UUID、落点吸附与位置持久化 |
 | `Sources/LLM-monitor/Services/EdgeDockController+Fullscreen.swift` | 全屏门控：判定变化后重排窗口，以及窗口进出场动画期间的阶梯补测 |
 | `Sources/LLM-monitor/Services/EdgeDockController+HitTesting.swift` | 边缘窗命中判定纯函数（`circleIndex` 圆命中 + `resolveRowRects` / `resolveCircleRects` 实测优先、几何兜底），`nonisolated static`，不读实例状态 |
 | `Sources/LLM-monitor/Views/EdgeDockContentView.swift` | 边缘窗视图（外环=5h 有效额度、内环=周、中心=Provider 品牌图标，刘海式背景） |
-| `Sources/LLM-monitor/Views/TokenChart.swift` | 7-day 柱图基础组件（`StackedTokenBar` / `TokenChartScale`） |
 | `Sources/LLM-monitor/Views/TokenBucketBar.swift` | 水平三段占比条（input / cacheRead / billableOutput，reasoning 并入 output），输入为 `TokenAccounting` 归一化四桶；桶色与 7 天柱图一致 |
 | `Sources/LLM-monitor/Views/AccountHoverViews.swift` | 账号信息值类型 + 行（`QuotaWindowAccountInfo` / `QuotaWindowAccountInfoRow`）：卡片第一段「Account Info」常驻行，取代已删除的折叠区与 `AccountHoverView` 浮层 |
 | `Sources/LLM-monitor/Views/GlmPeakIndicatorView.swift` | GLM 高峰期提示行（倒计时 + 三档颜色） |
@@ -200,10 +198,10 @@
 | `Sources/LLM-monitor/Views/DeepseekPeakIndicatorView.swift` | DeepSeek 高峰期提示行（北京时间倒计时，内嵌余额行右侧） |
 | `Sources/LLM-monitor/Views/DeepseekBalanceRow.swift` | DeepSeek API 余额专用展示行（充值与赠金明细、高峰提示布局与 between 注入） |
 | `Sources/LLM-monitor/Views/ChatGPTPlanModelRow.swift` | ChatGPT Plan 专用模型行（双窗口 dock 进度条与本地 token 聚合计算） |
-| `Sources/LLM-monitor/Views/ChatGPTApiCreditsRow.swift` | ChatGPT API 赠金用量与周期进度行（组织信息、通栏额度条+时间标记三角、单行已用/剩余与周期倒计时） |
+| `Sources/LLM-monitor/Views/ChatGPTApiCreditsRow.swift` | ChatGPT API 赠金用量与周期进度行（多 Key 备注标签 `titleText`、组织信息、通栏额度条+时间标记三角、单行已用/剩余与周期倒计时、per-key 错误提示与 Formatters 倒计时复用） |
 | `Sources/LLM-monitor/Views/PeakIndicatorView.swift` | 高峰提示行公共组件（`TimelineView` 外壳 + `formatDuration`，GLM / DeepSeek 共用） |
 | `Sources/LLM-monitor/Views/BrandLogoView.swift` | provider 品牌 logo 资源加载 + SF Symbol fallback |
-| `Sources/LLM-monitor/Views/LocalUsageHoverViews.swift` | 旧七天入口兼容包装与泛型 footer；数值逐日价格 / Prompt P50 memo，生产渲染委托共享折线历史组件 |
+| `Sources/LLM-monitor/Views/LocalUsageHoverViews.swift` | 7 天用量新鲜度状态机与胶囊（`LocalUsageFreshnessState` / `LocalUsageFreshnessBadge`）；数值逐日价格（`LocalUsagePriceByDay`）与 Prompt P50 memo（`LocalUsageSpeedByDay`） |
 | `Sources/LLM-monitor/Models/UsageHistorySeries.swift` | 九维历史指标、独立偏好键与数值日序列；固定七日槽、缺失与已知零、混币归一化及部分覆盖 |
 | `Sources/LLM-monitor/Views/SevenDayUsageHistoryChart.swift` | 菜单/详情窗口/设置共用七天单指标折线、指标图例、逐日表与来源提示；支持 compact/expanded 布局模式，坐标轴与日期标签提升为 secondary |
 | `Tests/LLMMonitorTests/UsageHistorySeriesTests.swift` | 七日槽、四桶守恒、数值价格/混币、P50、缺失/零与部分样本回归 |
@@ -222,11 +220,11 @@
 | `Sources/LLM-monitor/Views/SettingsComponents.swift` | 设置窗口共享组件与统一字体角色（`SettingsTypography` / `SettingsSection` / `SettingsControlRow` / `SettingsPaneHeader`） |
 | `Sources/LLM-monitor/Views/SettingsFields.swift` | 设置页通用表单输入组件与数值/路径辅助函数（`intervalSliderField`、`secretField`、`apiKeyField`、`selectAuthFile`、`tildePath`） |
 | `Sources/LLM-monitor/Views/SettingsGeneralPane.swift` | 设置页常规 pane：全局刷新、状态栏主题与健康色、边缘状态窗、Provider 顺序、Bark 推送与节假日源 |
-| `Sources/LLM-monitor/Views/SettingsProviderPanes.swift` | 设置页各 Provider 设置 pane（MiniMax / ChatGPT / Antigravity / GLM / DeepSeek）与四类额度通知配置 |
+| `Sources/LLM-monitor/Views/SettingsProviderPanes.swift` | 设置页各 Provider 设置 pane（MiniMax / ChatGPT 支持多 API Key 卡片列表 `CodexAdminKeyCardView`、添加/删除/编辑 / Antigravity / GLM / DeepSeek）与四类额度通知配置 |
 | `Sources/LLM-monitor/Views/SettingsSaveTransaction.swift` | 设置保存事务：login item 更新 + config 保存的失败回滚语义；`SettingsLoginItemDraft` 区分系统实际状态与未保存编辑，保护菜单切换不被旧草稿覆盖 |
 | `Tests/LLMMonitorTests/SettingsLoginItemDraftTests.swift` | 菜单/设置开机自启状态同步、重复状态刷新保留本地编辑、未修改草稿服从系统实际值 |
 | `Sources/LLM-monitor/Views/SettingsView.swift` | 设置面板主框架：侧边栏、Tab 路由、表单草稿状态与保存事务入口；持有联动草稿 controller，跨 tab 保留未保存状态并在底栏提示 |
-| `Sources/LLM-monitor/Views/SettingsFormDraft.swift` | 设置页表单草稿与统一 Equatable 脏检查 |
+| `Sources/LLM-monitor/Views/SettingsFormDraft.swift` | 设置页表单草稿与统一 Equatable 脏检查（含 `CodexAdminKeyConfigDraft` 多 Key 草稿列表及脏检查） |
 | `Tests/LLMMonitorTests/SettingsFormDraftTests.swift` | 设置页表单草稿等价性比较、Equatable 脏检查与重置单测 |
 | `scripts/build-app.sh` | Release arm64 `.app` bundle build（dSYM 导出 + strip）和 ad-hoc signing |
 | `scripts/build-release.sh` | 发行编排入口：依次 build-app.sh → build-dmg.sh 并产出 SHA-256 校验和，签名 / notarization 变量透传 |
@@ -246,4 +244,4 @@
 - **串行执行是既定选择**：`swift test --parallel` 实测（2026-10-02，5 连跑 3 败）不可用——`SQLiteTempCopyTests` 的临时副本断言扫描跨进程共享目录，并行 worker 互相误判；且慢测试为睡眠型，并行的 wall 收益仅 ~4s。并行化前提：先给 SQLiteTempCopy 的副本目录引入进程级隔离，再复评。
 - 慢用例的等待注入缝已建立：调度器（now/sleep）、Bark 退避（retryDelay）、vnode 合并窗口（coalescingWindow 参数）；新增耗时敏感测试时优先走注入缝，不要写死真实 sleep。
 
-> 核对基线：2026-11-04 · 代码 be3390b
+> 核对基线：2026-11-06 · 代码 191d07b

@@ -122,6 +122,13 @@ final class FormattersTests: XCTestCase {
         XCTAssertEqual(Formatters.formatDigitalDuration(65), "01:05")
         XCTAssertEqual(Formatters.formatDigitalDuration(3600), "1:00:00")
         XCTAssertEqual(Formatters.formatDigitalDuration(3665), "1:01:05")
+
+        // formatRelativeCountdown
+        XCTAssertEqual(Formatters.formatRelativeCountdown(2 * 86_400 + 8 * 3_600, prefix: "剩余"), "剩余2天8小时")
+        XCTAssertEqual(Formatters.formatRelativeCountdown(2 * 86_400 + 8 * 3_600, prefix: "剩余", includeHoursWhenDays: false), "剩余2天")
+        XCTAssertEqual(Formatters.formatRelativeCountdown(3600, suffix: "后生效", expiredText: "已生效"), "1小时后生效")
+        XCTAssertEqual(Formatters.formatRelativeCountdown(0, expiredText: "已生效"), "已生效")
+        XCTAssertEqual(Formatters.formatRelativeCountdown(-10, expiredText: "已失效"), "已失效")
     }
 
     /// formatDuration 与 formatInterval 与 codexWindowLabel

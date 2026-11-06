@@ -38,38 +38,76 @@ struct CodexFillingMissingMerger: RefreshResultMerger {
             mergedResetCredits = nil
         }
 
+        let mergedApiCreditsList: [OpenAIApiCreditDetails]?
         let mergedApiCredits: OpenAIApiCreditDetails?
         let mergedApiCreditsError: String?
+
         if !adminApiCreditsEnabled {
+            mergedApiCreditsList = nil
             mergedApiCredits = nil
             mergedApiCreditsError = nil
-        } else if let newCredits = new.openAIApiCredits {
-            if mode == .background,
-               newCredits.organizationName == nil,
-               let previousOrganizationName = previous.openAIApiCredits?.organizationName {
-                mergedApiCredits = OpenAIApiCreditDetails(
-                    organizationName: previousOrganizationName,
-                    totalQuota: newCredits.totalQuota,
-                    usedAmount: newCredits.usedAmount,
-                    cycleStart: newCredits.cycleStart,
-                    cycleEnd: newCredits.cycleEnd,
-                    fetchedAt: newCredits.fetchedAt,
-                    lastAttemptFailed: newCredits.lastAttemptFailed
-                )
-            } else {
-                mergedApiCredits = newCredits
-            }
-            mergedApiCreditsError = nil
-        } else if let previousCredits = previous.openAIApiCredits {
-            if new.openAIApiCreditsError != nil {
-                mergedApiCredits = previousCredits.markingStale()
-            } else {
-                mergedApiCredits = previousCredits
-            }
-            mergedApiCreditsError = new.openAIApiCreditsError
         } else {
-            mergedApiCredits = nil
-            mergedApiCreditsError = new.openAIApiCreditsError
+            let newKeys = new.allOpenAIApiCredits
+            let prevKeys = previous.allOpenAIApiCredits
+
+            if !newKeys.isEmpty {
+                var merged: [OpenAIApiCreditDetails] = []
+                for (index, newKey) in newKeys.enumerated() {
+                    let matchingPrev = prevKeys.first {
+                        if let kid = newKey.keyId, let pid = $0.keyId {
+                            return kid == pid
+                        }
+                        if let ko = newKey.organizationName, let po = $0.organizationName, ko != "未知组织" {
+                            return ko == po
+                        }
+                        return false
+                    } ?? (index < prevKeys.count ? prevKeys[index] : nil)
+
+                    if newKey.lastAttemptFailed == true {
+                        if let prev = matchingPrev {
+                            merged.append(prev.markingStale(errorMessage: newKey.errorMessage))
+                        } else {
+                            merged.append(newKey)
+                        }
+                    } else {
+                        if mode == .background,
+                           (newKey.organizationName == nil || newKey.organizationName == "未知组织"),
+                           let prevOrg = matchingPrev?.organizationName, prevOrg != "未知组织" {
+                            merged.append(OpenAIApiCreditDetails(
+                                organizationName: prevOrg,
+                                totalQuota: newKey.totalQuota,
+                                usedAmount: newKey.usedAmount,
+                                cycleStart: newKey.cycleStart,
+                                cycleEnd: newKey.cycleEnd,
+                                fetchedAt: newKey.fetchedAt,
+                                lastAttemptFailed: newKey.lastAttemptFailed,
+                                keyId: newKey.keyId,
+                                keyLabel: newKey.keyLabel,
+                                errorMessage: newKey.errorMessage
+                            ))
+                        } else {
+                            merged.append(newKey)
+                        }
+                    }
+                }
+                mergedApiCreditsList = merged
+                mergedApiCredits = merged.first
+                mergedApiCreditsError = new.openAIApiCreditsError
+            } else if !prevKeys.isEmpty {
+                if new.openAIApiCreditsError != nil {
+                    let staled = prevKeys.map { $0.markingStale() }
+                    mergedApiCreditsList = staled
+                    mergedApiCredits = staled.first
+                } else {
+                    mergedApiCreditsList = prevKeys
+                    mergedApiCredits = prevKeys.first
+                }
+                mergedApiCreditsError = new.openAIApiCreditsError
+            } else {
+                mergedApiCreditsList = nil
+                mergedApiCredits = nil
+                mergedApiCreditsError = new.openAIApiCreditsError
+            }
         }
 
         let mainQuotaFailed = new.mainQuotaError != nil
@@ -83,6 +121,7 @@ struct CodexFillingMissingMerger: RefreshResultMerger {
             fetchedAt: mainQuotaFailed ? previous.fetchedAt : new.fetchedAt,
             balanceDetail: new.balanceDetail ?? previous.balanceDetail,
             openAIApiCredits: mergedApiCredits,
+            openAIApiCreditsList: mergedApiCreditsList,
             mainQuotaError: new.mainQuotaError,
             openAIApiCreditsError: mergedApiCreditsError
         )

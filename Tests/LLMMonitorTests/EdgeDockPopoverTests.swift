@@ -390,4 +390,68 @@ final class EdgeDockPopoverTests: EdgeDockTestCase {
         controller.selectedIndex = nil
         controller.hoveredIndex = nil
     }
+
+    // MARK: - M2: 点击 Dock 圆环与状态判断
+
+    func testProviderStatusIsLoadingReflectsLoadingState() {
+        var status = ProviderStatus(
+            id: "p1",
+            displayName: "Test Provider",
+            kind: .codexChatGpt,
+            iconSystemName: "star",
+            accentColor: .custom,
+            refreshIntervalSeconds: 300,
+            state: .ready
+        )
+        XCTAssertFalse(status.isLoading, "ready 状态不是 loading")
+
+        status.state = .loading(lastSuccess: nil)
+        XCTAssertTrue(status.isLoading, "loading(lastSuccess: nil) 是 loading")
+
+        let info = QuotaInfo(
+            models: [],
+            resetCredits: nil,
+            planLabel: nil,
+            accountEmail: nil,
+            codexUsageDetails: nil,
+            fetchedAt: Date()
+        )
+        status.state = .loading(lastSuccess: info)
+        XCTAssertTrue(status.isLoading, "loading(lastSuccess: info) 是 loading")
+
+        status.state = .ok(info)
+        XCTAssertFalse(status.isLoading, "ok 状态不是 loading")
+
+        status.state = .failed(message: "Error", lastSuccess: info)
+        XCTAssertFalse(status.isLoading, "failed 状态不是 loading")
+
+        status.state = .notConfigured(reason: "No key")
+        XCTAssertFalse(status.isLoading, "notConfigured 状态不是 loading")
+    }
+
+    @MainActor
+    func testFinishPressOrDragClickWithoutDragResetsDragState() {
+        let controller = EdgeDockController.shared
+        controller.isDragging = true
+        controller.pressBecameDrag = false
+        controller.dragOffset = nil
+
+        // 点击在任意屏幕外位置（未越过拖动阈值）
+        controller.finishPressOrDrag(at: CGPoint(x: -999, y: -999))
+        XCTAssertFalse(controller.isDragging, "松手后 isDragging 必须复位为 false")
+        XCTAssertNil(controller.dragOffset, "松手后 dragOffset 为 nil")
+    }
+
+    @MainActor
+    func testFinishPressOrDragWithDragDoesNotTriggerTargetedRefresh() {
+        let controller = EdgeDockController.shared
+        controller.isDragging = true
+        controller.pressBecameDrag = true
+        controller.dragOffset = 0.5
+
+        // 有真实拖动位移时松手
+        controller.finishPressOrDrag(at: CGPoint(x: 100, y: 100))
+        XCTAssertFalse(controller.isDragging, "松手后 isDragging 必须复位为 false")
+        XCTAssertNil(controller.dragOffset, "松手后 dragOffset 为 nil")
+    }
 }

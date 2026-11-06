@@ -577,8 +577,6 @@ final class UsageProjectionKernelTests: XCTestCase {
             let projection = try! XCTUnwrap(UsageProjectionKernel.project(frames: frames).first)
             XCTAssertEqual(projection.isTruncated, expected)
         }
-        XCTAssertTrue(UsageProjectionKernel.anyTruncated([frame("a", truncated: false), frame("b", truncated: true)]))
-        XCTAssertFalse(UsageProjectionKernel.anyTruncated([]))
     }
 
     /// 命名空间登记表：每条规则的字面前缀。

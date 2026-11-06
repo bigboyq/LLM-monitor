@@ -182,11 +182,6 @@ extension MinimaxLocalUsageScanner {
     ) -> [MinimaxDailyUsage] {
         DailyUsageAggregation.filterLast7Days(allDaily: allDaily, today: today, calendar: calendar)
     }
-
-    nonisolated static func todayCutoff(now: Date, calendar: Calendar) -> Date {
-        DailyUsageAggregation.todayCutoff(now: now, calendar: calendar)
-    }
-
 }
 
 // MARK: - LocalUsageScanner 协议

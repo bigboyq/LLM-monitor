@@ -279,7 +279,10 @@ struct QuotaInfo: Equatable, Codable, Sendable {
     /// 其他 provider 永远 nil。
     let balanceDetail: DeepseekBalanceDetail?
 
-    /// OpenAI API 赠金用量与周期详情（ChatGPT 扩展）
+    /// OpenAI API 赠金用量与周期详情列表（ChatGPT 扩展，多 Key 独立追踪）
+    let openAIApiCreditsList: [OpenAIApiCreditDetails]?
+
+    /// OpenAI API 赠金用量与周期详情（ChatGPT 扩展，兼容单 Key 访问主 Key）
     let openAIApiCredits: OpenAIApiCreditDetails?
 
     /// ZCode 套餐余额与重置卡快照（GLM 扩展）
@@ -303,6 +306,7 @@ struct QuotaInfo: Equatable, Codable, Sendable {
         fetchedAt: Date,
         balanceDetail: DeepseekBalanceDetail? = nil,
         openAIApiCredits: OpenAIApiCreditDetails? = nil,
+        openAIApiCreditsList: [OpenAIApiCreditDetails]? = nil,
         glmZcodePackage: GlmZcodePackageSnapshot? = nil,
         mainQuotaError: String? = nil,
         openAIApiCreditsError: String? = nil
@@ -313,7 +317,8 @@ struct QuotaInfo: Equatable, Codable, Sendable {
         self.accountEmail = accountEmail
         self.codexUsageDetails = codexUsageDetails
         self.balanceDetail = balanceDetail
-        self.openAIApiCredits = openAIApiCredits
+        self.openAIApiCreditsList = openAIApiCreditsList ?? (openAIApiCredits.map { [$0] })
+        self.openAIApiCredits = openAIApiCredits ?? openAIApiCreditsList?.first
         self.glmZcodePackage = glmZcodePackage
         self.mainQuotaError = mainQuotaError
         self.openAIApiCreditsError = openAIApiCreditsError
@@ -321,6 +326,17 @@ struct QuotaInfo: Equatable, Codable, Sendable {
     }
 
     // MARK: - 派生属性
+
+    /// 所有已抓取的 OpenAI API 赠金详情列表（按配置顺序返回）
+    var allOpenAIApiCredits: [OpenAIApiCreditDetails] {
+        if let list = openAIApiCreditsList, !list.isEmpty {
+            return list
+        }
+        if let credits = openAIApiCredits {
+            return [credits]
+        }
+        return []
+    }
 
     /// 当前至少有一个有效额度窗口的 model。原始 `models` 仍保留无权限占位
     /// 记录，便于日志和后续状态码诊断。
@@ -365,10 +381,6 @@ struct UsageMetricSummary: Equatable, Codable, Sendable {
                 rhs.reasoningOutputTokens
             )
         )
-    }
-
-    var hasReasoningOutput: Bool {
-        reasoningOutputTokens > 0
     }
 
     /// 未命中 cache 的纯新输入 = `max(inputTokens - cachedInputTokens, 0)`。
@@ -559,11 +571,6 @@ struct ResetCreditsInfo: Equatable, Codable, Sendable {
         serverAvailableCount ?? entries.filter { $0.status.lowercased() == "available" }.count
     }
 
-    /// 已使用的次数
-    var usedCount: Int {
-        entries.filter { $0.status.lowercased() == "used" }.count
-    }
-
     /// 最早的过期时间（用于显示"X 天后过期"）
     var nearestExpiry: Date? {
         entries
@@ -623,7 +630,7 @@ struct DeepseekBalanceDetail: Equatable, Codable, Sendable {
 }
 
 /// OpenAI API 赠金用量与周期详情（ChatGPT 扩展）
-struct OpenAIApiCreditDetails: Equatable, Codable, Sendable {
+struct OpenAIApiCreditDetails: Equatable, Codable, Sendable, Identifiable {
     /// 空间 / 组织名称（如 "Personal"）
     let organizationName: String?
     /// 总额度（美元，如 40.0）
@@ -638,6 +645,16 @@ struct OpenAIApiCreditDetails: Equatable, Codable, Sendable {
     let fetchedAt: Date?
     /// 最近一次 API costs 子请求是否失败；nil 兼容新增状态前保存的数据。
     let lastAttemptFailed: Bool?
+    /// 关联的配置 Key ID（多 Key 支持）
+    let keyId: String?
+    /// 关联的自定义备注标签（如 "Personal", "Team"）
+    let keyLabel: String?
+    /// 该 Key 独立的抓取失败信息
+    let errorMessage: String?
+
+    var id: String {
+        keyId ?? organizationName ?? UUID().uuidString
+    }
 
     init(
         organizationName: String?,
@@ -646,7 +663,10 @@ struct OpenAIApiCreditDetails: Equatable, Codable, Sendable {
         cycleStart: Date,
         cycleEnd: Date,
         fetchedAt: Date? = Date(),
-        lastAttemptFailed: Bool? = false
+        lastAttemptFailed: Bool? = false,
+        keyId: String? = nil,
+        keyLabel: String? = nil,
+        errorMessage: String? = nil
     ) {
         self.organizationName = organizationName
         self.totalQuota = totalQuota
@@ -655,9 +675,12 @@ struct OpenAIApiCreditDetails: Equatable, Codable, Sendable {
         self.cycleEnd = cycleEnd
         self.fetchedAt = fetchedAt
         self.lastAttemptFailed = lastAttemptFailed
+        self.keyId = keyId
+        self.keyLabel = keyLabel
+        self.errorMessage = errorMessage
     }
 
-    func markingStale() -> OpenAIApiCreditDetails {
+    func markingStale(errorMessage: String? = nil) -> OpenAIApiCreditDetails {
         OpenAIApiCreditDetails(
             organizationName: organizationName,
             totalQuota: totalQuota,
@@ -665,7 +688,10 @@ struct OpenAIApiCreditDetails: Equatable, Codable, Sendable {
             cycleStart: cycleStart,
             cycleEnd: cycleEnd,
             fetchedAt: fetchedAt,
-            lastAttemptFailed: true
+            lastAttemptFailed: true,
+            keyId: keyId,
+            keyLabel: keyLabel,
+            errorMessage: errorMessage ?? self.errorMessage
         )
     }
 
@@ -772,6 +798,7 @@ extension QuotaInfo {
             fetchedAt: fetchedAt,
             balanceDetail: balanceDetail,
             openAIApiCredits: openAIApiCredits,
+            openAIApiCreditsList: openAIApiCreditsList,
             glmZcodePackage: glmZcodePackage,
             mainQuotaError: mainQuotaError,
             openAIApiCreditsError: openAIApiCreditsError
@@ -789,6 +816,7 @@ extension QuotaInfo {
             fetchedAt: fetchedAt,
             balanceDetail: balanceDetail,
             openAIApiCredits: openAIApiCredits,
+            openAIApiCreditsList: openAIApiCreditsList,
             glmZcodePackage: package,
             mainQuotaError: mainQuotaError,
             openAIApiCreditsError: openAIApiCreditsError

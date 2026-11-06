@@ -272,15 +272,6 @@ enum UsageProjectionKernel {
         }
     }
 
-    /// 截断标志的合并规则：任一来源截断即截断（快照级口径，不随 provider 分片稀释）。
-    static func anyTruncated(_ frames: [HarnessUsageFrame]) -> Bool {
-        frames.contains(where: \.isTruncated)
-    }
-
-    static func anySamplesTruncated(_ frames: [HarnessUsageFrame]) -> Bool {
-        frames.contains(where: \.samplesTruncated)
-    }
-
     /// 帧未声明 quota 归属时，用绑定的 `sourceProviderAliases` 解析。
     private static func resolveQuotaProviderID(
         _ frame: HarnessUsageFrame,

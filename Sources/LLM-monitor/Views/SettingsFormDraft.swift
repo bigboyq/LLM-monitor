@@ -39,10 +39,48 @@ struct SettingsFormDraft: Equatable {
     var chatgptInterval: Int = 0
     var chatgptAuthPath: String = ""
     var chatgptAdminCreditsEnabled: Bool = false
-    var chatgptAdminApiKey: String = ""
-    var chatgptBillingDay: Int = 11
-    var chatgptBillingTime: Date = SettingsFormDraft.defaultBillingTime()
-    var chatgptMonthlyQuotaLimit: String = "40"
+    var chatgptAdminKeys: [CodexAdminKeyConfigDraft] = [CodexAdminKeyConfigDraft(id: "default")]
+
+    var chatgptAdminApiKey: String {
+        get { chatgptAdminKeys.first?.apiKey ?? "" }
+        set {
+            if chatgptAdminKeys.isEmpty {
+                chatgptAdminKeys.append(CodexAdminKeyConfigDraft(id: "default", apiKey: newValue))
+            } else {
+                chatgptAdminKeys[0].apiKey = newValue
+            }
+        }
+    }
+    var chatgptBillingDay: Int {
+        get { chatgptAdminKeys.first?.billingDay ?? 11 }
+        set {
+            if chatgptAdminKeys.isEmpty {
+                chatgptAdminKeys.append(CodexAdminKeyConfigDraft(id: "default", billingDay: newValue))
+            } else {
+                chatgptAdminKeys[0].billingDay = newValue
+            }
+        }
+    }
+    var chatgptBillingTime: Date {
+        get { chatgptAdminKeys.first?.billingTime ?? SettingsFormDraft.defaultBillingTime() }
+        set {
+            if chatgptAdminKeys.isEmpty {
+                chatgptAdminKeys.append(CodexAdminKeyConfigDraft(id: "default", billingTime: newValue))
+            } else {
+                chatgptAdminKeys[0].billingTime = newValue
+            }
+        }
+    }
+    var chatgptMonthlyQuotaLimit: String {
+        get { chatgptAdminKeys.first?.monthlyQuotaLimit ?? "40" }
+        set {
+            if chatgptAdminKeys.isEmpty {
+                chatgptAdminKeys.append(CodexAdminKeyConfigDraft(id: "default", monthlyQuotaLimit: newValue))
+            } else {
+                chatgptAdminKeys[0].monthlyQuotaLimit = newValue
+            }
+        }
+    }
 
     var antigravityEnabled: Bool = false
     var antigravityInterval: Int = 0
@@ -146,13 +184,23 @@ struct SettingsFormDraft: Equatable {
             chatgptAuthPath = pc.authPath ?? ""
             chatgptInterval = pc.refreshIntervalSeconds ?? 0
             chatgptAdminCreditsEnabled = pc.adminApiCreditsEnabled ?? false
-            chatgptAdminApiKey = pc.adminApiKey ?? ""
-            chatgptBillingDay = pc.adminBillingDay ?? 11
-            chatgptBillingTime = SettingsView.parseBillingTime(from: pc.adminBillingTime)
-            if let limit = pc.adminMonthlyQuotaLimit {
-                chatgptMonthlyQuotaLimit = limit.truncatingRemainder(dividingBy: 1) == 0 ? String(format: "%.0f", limit) : String(limit)
+
+            let effective = pc.effectiveAdminKeys
+            if !effective.isEmpty {
+                chatgptAdminKeys = effective.map { CodexAdminKeyConfigDraft(from: $0) }
             } else {
-                chatgptMonthlyQuotaLimit = "40"
+                chatgptAdminKeys = [
+                    CodexAdminKeyConfigDraft(
+                        id: "default",
+                        label: "",
+                        apiKey: pc.adminApiKey ?? "",
+                        monthlyQuotaLimit: pc.adminMonthlyQuotaLimit.map {
+                            $0.truncatingRemainder(dividingBy: 1) == 0 ? String(format: "%.0f", $0) : String($0)
+                        } ?? "40",
+                        billingDay: pc.adminBillingDay ?? 11,
+                        billingTime: SettingsView.parseBillingTime(from: pc.adminBillingTime)
+                    )
+                ]
             }
         }
 
@@ -175,5 +223,56 @@ struct SettingsFormDraft: Equatable {
             deepseekApiKey = pc.apiKey ?? ""
             deepseekInterval = pc.refreshIntervalSeconds ?? 0
         }
+    }
+}
+
+/// SettingsView 中单个 Codex Admin API Key 的草稿模型
+struct CodexAdminKeyConfigDraft: Identifiable, Equatable {
+    var id: String
+    var label: String
+    var apiKey: String
+    var monthlyQuotaLimit: String
+    var billingDay: Int
+    var billingTime: Date
+
+    init(
+        id: String = UUID().uuidString,
+        label: String = "",
+        apiKey: String = "",
+        monthlyQuotaLimit: String = "40",
+        billingDay: Int = 11,
+        billingTime: Date = SettingsFormDraft.defaultBillingTime()
+    ) {
+        self.id = id
+        self.label = label
+        self.apiKey = apiKey
+        self.monthlyQuotaLimit = monthlyQuotaLimit
+        self.billingDay = billingDay
+        self.billingTime = billingTime
+    }
+
+    init(from config: CodexAdminKeyConfig) {
+        self.id = config.id
+        self.label = config.label
+        self.apiKey = config.apiKey
+        self.monthlyQuotaLimit = config.monthlyQuotaLimit.truncatingRemainder(dividingBy: 1) == 0
+            ? String(format: "%.0f", config.monthlyQuotaLimit)
+            : String(config.monthlyQuotaLimit)
+        self.billingDay = config.billingDay
+        self.billingTime = SettingsView.parseBillingTime(from: config.billingTime)
+    }
+
+    func toConfig() -> CodexAdminKeyConfig? {
+        let cleanKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanKey.isEmpty else { return nil }
+        let limit = Double(monthlyQuotaLimit.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 40.0
+        return CodexAdminKeyConfig(
+            id: id,
+            label: label.trimmingCharacters(in: .whitespacesAndNewlines),
+            apiKey: cleanKey,
+            monthlyQuotaLimit: limit > 0 && limit.isFinite ? limit : 40.0,
+            billingDay: billingDay,
+            billingTime: Formatters.formatTimeOfDay(billingTime)
+        )
     }
 }

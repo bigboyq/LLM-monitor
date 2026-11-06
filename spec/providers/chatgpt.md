@@ -47,10 +47,11 @@ Supported provider fields:
 | `displayName` | Optional card title override. |
 | `authPath` | Optional custom auth location. Accepts either an `auth.json` file path or its parent directory; see the [harness spec](../harnesses/codex.md#codex-auth-file) for default path resolution. |
 | `adminApiCreditsEnabled` | 是否启用 OpenAI API 赠金监测。缺省为 false。开启后在卡内追加「API赠金」进度条。 |
-| `adminApiKey` | OpenAI Admin API Key (`sk-admin-..`)，用于调用官方组织成本接口。 |
-| `adminBillingDay` | 每月账单日（1-31，缺省 11）。 |
-| `adminBillingTime` | 账单重置时间（`HH:mm`，如 `00:00` 或 `08:00`，缺省 `00:00`）。 |
-| `adminMonthlyQuotaLimit` | 每月赠金额度上限（美元，缺省 40.0）。 |
+| `adminApiKeys` | 多 Admin API Key 配置数组（`[CodexAdminKeyConfig]`），支持多组织/多工作区独立追踪。每个元素包含 `id`、`label`、`apiKey`、`monthlyQuotaLimit`、`billingDay`、`billingTime`。优先于标量 Key。 |
+| `adminApiKey` | OpenAI Admin API Key (`sk-admin-..`)，历史单 Key 兼容字段。未配置 `adminApiKeys` 时透明回退。 |
+| `adminBillingDay` | 每月账单日（1-31，缺省 11）。单 Key 兼容模式使用。 |
+| `adminBillingTime` | 账单重置时间（`HH:mm`，如 `00:00` 或 `08:00`，缺省 `00:00`）。单 Key 兼容模式使用。 |
+| `adminMonthlyQuotaLimit` | 每月赠金额度上限（美元，缺省 40.0）。单 Key 兼容模式使用。 |
 | `notifyIntervalRestored` etc. (4 fields) | Optional per-event notification channels (5h/weekly × restored/exhausted): `none` / `system` / `barkAndSystem`. Defaults: restored → `system`, exhausted → `none`. See `spec/notifications.md`. |
 
 
@@ -135,19 +136,52 @@ secondary window remains `.present` even when its remaining percentage is `0%`.
 
 ## OpenAI API 赠金（API 赠金）
 
-ChatGPT 用户每月可享受官方免费 API 额度福利（API 赠金）。本模块通过 OpenAI 官方 Admin 接口监测组织用量，并按滑动账单周期计算当前周期的额度消耗与剩余有效期。
+ChatGPT 用户每月可享受官方免费 API 额度福利（API 赠金）。本模块通过 OpenAI 官方 Admin 接口监测组织用量，支持多 Key 并发抓取与独立配额追踪，并按滑动账单周期计算当前周期的额度消耗与剩余有效期。
 
-### 端点与鉴权
+### 多 Key 配置与兼容回退
+
+通过 `providers.codex_chatgpt.adminApiKeys` 配置多 Key 列表（`[CodexAdminKeyConfig]`），支持多组织 / 多 Workspace 并行追踪。每个条目包含独立的 `id`、`label`、`apiKey`、`monthlyQuotaLimit`、`billingDay`、`billingTime`。未配置 `adminApiKeys` 时由 `effectiveAdminKeys` 透明回退到历史标量字段（`adminApiKey`、`adminBillingDay`、`adminBillingTime`、`adminMonthlyQuotaLimit`）。
+
+### 端点、并发抓取与鉴权
 
 ```http
 GET https://api.openai.com/v1/organization/costs?start_time=<cycle_start_epoch>&bucket_width=1d&limit=35
 Authorization: Bearer <admin_api_key>
 ```
 
+- **并发多 Key 抓取（`withTaskGroup`）**：
+  当 `adminApiCreditsEnabled` 开启且 `effectiveAdminKeys` 非空时，`CodexFetcher` 在 `fetch(mode:)` 中通过 `withTaskGroup(of: (Int, Result<OpenAIApiCreditDetails, Error>).self)` 并发执行所有 Key 的 `fetchAdminCosts(keyConfig:mode:)`。抓取结果带原始索引以严格保序返回。
 - **数据解析**：按日 bucket 聚合所有 `results` 下 `amount.value`，累加得到当前账单周期内的已消耗金额 `usedAmount`。
-- **空间名称获取**：优先从 costs 响应 results 的 `organization_name` 获取；缺失时仅在 `.full` 按次要信息频率调用 `GET https://api.openai.com/v1/me` 读取 `orgs.data[0].title`。`.background` 不调用 `/v1/me`，新赠金结果缺组织名时 merger 仅继承旧组织名，金额/账期/抓取时间使用新值；`.full` 采用本次查询结果（包括 nil）。普通请求或解析失败按可选元数据处理，显示「未知组织」。取消 `/v1/me` 请求会传播取消，不会把被取消的赠金查询记成成功。
-- **容错设计**：`adminCosts` 抓取异常不会导致 ChatGPT Plan 5h/周配额刷新失败；保留上一轮赠金值，并在赠金行显示警告图标，tooltip 明确说明“API赠金更新失败，显示上次成功的数据”，可附原始错误。赠金明细独立记录 `fetchedAt` 与 `lastAttemptFailed`。
-- **主 quota 失败**：当本地 Plan auth 缺失、但 Admin API Key 可用时，仍可独立更新赠金；Codex merger 保留上次 Plan model/账号/套餐和主 quota 时间，并将本次结果作为主 quota 失败写入 `ProviderStatus.failed`。主 quota HTTP/解析失败时，并行成功的 Admin 结果只更新赠金明细及其独立时间，不更新 Plan、provider 成功时间或 quota 通知基线；赠金失败则保留旧值并标记。没有旧赠金时也展示赠金抓取错误。
+- **空间名称获取**：优先从 costs 响应 results 的 `organization_name` 获取；缺失时若备注 `label` 非空且不为 `"Default"`，优先作为空间名称；若仍无且处于 `.full` 模式，按次要信息频率调用 `GET https://api.openai.com/v1/me` 读取 `orgs.data[0].title`。`.background` 不调用 `/v1/me`，新赠金结果缺组织名时 merger 继承旧组织名，金额/账期/抓取时间使用新值；`.full` 采用本次查询结果（包括 nil）。普通请求或解析失败按可选元数据处理，显示「未知组织」。取消 `/v1/me` 请求会传播取消，不会把被取消的赠金查询记成成功。
+
+### 隔离容错与快照合并（Fault Isolation & Merging）
+
+- **Key 间错误隔离**：
+  在 `withTaskGroup` 中，每个 Key 的网络异常、HTTP 401 Unauthorized、HTTP 429 Too Many Requests 或 HTTP 500 均被独立捕获（`.failure(error)`）。**任一 Key 的异常绝不中断兄弟 Key 的并发执行，亦不导致整体抓取批次终止**。
+  - 对于失败的 Key，`CodexFetcher` 构造该 Key 独立的 `OpenAIApiCreditDetails`（保留配置的账单周期与配额上限，附带 `lastAttemptFailed = true` 与 `errorMessage = err.localizedDescription`）。
+- **与 ChatGPT Plan 主配额完全隔离**：
+  - Admin API 全部或部分 Key 失败均不会导致 ChatGPT Plan 5h/周配额刷新失败；
+  - 当本地 Plan auth (`auth.json`) 缺失或损坏、但 Admin API Key 可用时，仍可独立成功拉取各 Admin Key 赠金；此时 `QuotaInfo` 将本次结果作为主 quota 失败记录 `mainQuotaError = "Codex Plan auth 缺失"`，但保留成功的 `openAIApiCreditsList`。
+- **多 Key 快照合并（`CodexFillingMissingMerger`）**：
+  在 `RefreshResultMergers.swift` 中，merger 将 `new.allOpenAIApiCredits` 与 `previous.allOpenAIApiCredits` 逐 Key 比对合并：
+  - **键匹配策略**：优先按 `keyId` 精确匹配；其次按非通用的 `organizationName`（`!= "未知组织"`）匹配；最后按数组索引对齐。
+  - **失败 Key 保留旧值**：若新快照中某 Key `lastAttemptFailed == true`，且上一轮快照中存在对应 Key，merger 调用 `prev.markingStale(errorMessage: newKey.errorMessage)` 保留上次成功的消耗金额与周期，仅更新陈旧标记与错误说明；若为首刷失败无旧值，则直接采用新失败明细。
+  - **后台组织名继承**：若某 Key 在 `.background` 抓取成功但未包含组织名，自动继承上一轮成功的 `organizationName`。
+  - 若所有 Key 均失败且无成功 Key，`new.openAIApiCreditsError` 统一标记为 `"API赠金抓取失败"`。
+
+### 数据模型（Data Model）
+
+- `QuotaInfo` 维护统一多 Key 状态：
+  - `openAIApiCreditsList: [OpenAIApiCreditDetails]?`: 完整的多 Key 额度明细数组；
+  - `openAIApiCredits: OpenAIApiCreditDetails?`: 指向主 Key / 首个 Key，保证向后兼容；
+  - `allOpenAIApiCredits: [OpenAIApiCreditDetails]`: 计算属性，优先返回 `openAIApiCreditsList`，若无则返回 `[openAIApiCredits]`，保证 UI 迭代干净统一。
+- `OpenAIApiCreditDetails` 契约（符合 `Identifiable`）：
+  - 属性：`keyId: String?`、`keyLabel: String?`、`organizationName: String?`、`totalQuota: Double`、`usedAmount: Double`、`cycleStart: Date`、`cycleEnd: Date`、`fetchedAt: Date?`、`lastAttemptFailed: Bool?`、`errorMessage: String?`；
+  - 稳定标识符：`id` 单源派生自 `keyId ?? organizationName ?? UUID().uuidString`；
+  - 派生算法：
+    - `remainingAmount = max(0, totalQuota - usedAmount)`；
+    - `remainingPercent`: `(remainingAmount / totalQuota) * 100`，`totalQuota <= 0` 时保护为 0%，防除以零；
+    - `timeRemainingFraction(at:)`: 周期时间进度，钳位于 `[0.0, 1.0]`，供进度条红色倒三角 `▼` 指示。
 
 ### 账单周期算法
 
@@ -158,10 +192,11 @@ Authorization: Bearer <admin_api_key>
 
 ### UI 呈现（`ChatGPTApiCreditsRow`）
 
-在 ChatGPT Provider 卡片内紧凑自适应展示（三行紧凑结构）：
-- **标题行**：`API赠金 · USD`（11pt semibold）与空间/组织名称（次要色靠右）；组织名取不到时显示「未知组织」。
-- **进度条**：单段 `SegmentedQuotaProgressBar`（高 8pt，健康度绿/黄/红自适应着色，带有表示周期时间进度的红色倒三角 `▼`），独占整行通栏显示，条两侧不放标签。
-- **明细行**：单行整合呈现「已用 <used> 剩余：<remaining>/<total>」与「周期至 MM-dd HH:mm（剩余xx）」，省略「更新 HH:mm」，节省一行垂直高度；抓取失败时周期信息前显示警告图标，图标有明确的 accessibility label，行 tooltip 说明展示上次成功的数据。首次失败且无旧明细时展示错误状态。
+在 ChatGPT Provider 卡片内为每个已配置并启用的 Admin API Key 独立渲染一行 `ChatGPTApiCreditsRow`：
+- **标题行**：左侧展示自定义标签 `keyLabel`（优先）或 `organizationName`，靠右显示组织/工作区名称（缺省「未知组织」）；若未配置 label 则显示 `API赠金 · USD`。
+- **独立进度条**：每个 Key 拥有专属的单段 `SegmentedQuotaProgressBar`（高 8pt，自适应绿/黄/红分级着色，带有表示周期时间进度的红色倒三角 `▼`），独占整行通栏显示。
+- **独立明细行**：单行整合呈现「已用 <used> 剩余：<remaining>/<total>」与该 Key 专属的「周期至 MM-dd HH:mm（剩余xx）」。
+- **局部错误与警告指示**：若某单个 Key 抓取失败或处于陈旧状态，仅在该 Key 的明细行周期信息前显示警告图标（带详细 tooltip 与 accessibility label），展示上次成功的数据及独立错误提示，兄弟 Key 进度条和明细正常展示不受干扰。
 
 ## Local Pricing Snapshot
 
@@ -535,4 +570,4 @@ line rather than a "try again in N minutes" hint.
 The Codex harness scans local session JSONL and contributes `codexUsageDetails` after the provider batch settles. Source paths, aggregation, raw token semantics, and scanner caching are documented in the [Codex harness spec](../harnesses/codex.md#local-usage-aggregation).
 
 > 拆分来源：由原 `spec/providers/codex.md` 按 ChatGPT quota provider 职责拆分；本文件主要沿用其对应章节。
-> 核对基线：2026-11-03 · 代码 d07fa47
+> 核对基线：2026-11-06 · 代码 191d07b

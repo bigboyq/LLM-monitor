@@ -230,13 +230,6 @@ struct HolidayCalendar: Sendable, Equatable {
         return .localFile(trimmed)
     }
 
-    /// 快照日期（ISO "YYYY-MM-DD"，排序）。设置页状态展示与缓存回写用。
-    var holidayDates: [String] {
-        holidayKeys.sorted().map { key in
-            String(format: "%04d-%02d-%02d", key / 10000, (key / 100) % 100, key % 100)
-        }
-    }
-
     /// 数据源解析统一入口：返回**排序去重后的**法定节假日 ISO 日期列表。
     /// 依次尝试：① 本项目快照格式（source / fetchedAt / holidays）；② 上游
     /// chinese-days 格式按脚本同款规则转换（默认源的 payload 就是该格式，App 内

@@ -10,8 +10,8 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 |---|---|
 | Platform | macOS 14+, SwiftUI `MenuBarExtra` |
 | Build system | Swift Package Manager executable target (with `LLMMonitorTests` test target) |
-| UI model | Menu bar drop-down plus a native Settings window; lightweight setup guidance appears when all providers are unconfigured |
-| Edge dock | Optional screen-edge panel, one circle per enabled Provider, click-through by default and hidden while the frontmost App is fullscreen (`hideInFullscreen`, default `true`). Shape is a four-way `EdgeDockMode` picker (无 / 状态窗 / 小圆环 / 自动隐藏状态窗) whose default is **auto-hide window** — the feature ships on, occupying only a 7pt ring column until the mouse approaches |
+| UI model | Menu bar drop-down plus a native Settings window; per-provider interactive refresh in popover card header and edge dock circles; lightweight setup guidance appears when all providers are unconfigured |
+| Edge dock | Optional screen-edge panel, one circle per enabled Provider, click-through by default and hidden while the frontmost App is fullscreen (`hideInFullscreen`, default `true`). Shape is a four-way `EdgeDockMode` picker (无 / 状态窗 / 小圆环 / 自动隐藏状态窗) whose default is **auto-hide window** — the feature ships on, occupying only a 7pt ring column until the mouse approaches; clicking an individual provider circle without dragging triggers immediate per-provider refresh (`state.refreshOne(providerID:)`) with loading spinner feedback |
 | Hover details | Delayed floating edge panels show shared account / Plan details; quota menu expands Plan details and seven-day history independently, and the independent window combines both |
 | Appearance | Settings Interface pane 「外观」 section: 浅色 / 深色 / 自动 (default), drafted with ordinary settings and applied to `NSApp.appearance` on save; `MenuBarExtra` native presentation follows the system |
 | Login item | Settings-window launch-at-login toggle backed by `SMAppService.mainApp`; menu footer's 自启 entry is also a toggle button (状态化图标 `power` / `power.dotted`) |
@@ -20,9 +20,9 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 | Fleet device identity | `~/Library/Application Support/LLM-monitor/.deviceId`; independent of config synchronization; only created when Fleet Sync is enabled |
 | Instance | One process per user config directory, enforced by `instance.lock` |
 | Runtime log | `~/Library/Application Support/LLM-monitor/log.txt` plus stdout and `os.Logger` (privacy `.private`, Console.app 默认脱敏)；测试进程改写至 `NSTemporaryDirectory()`（`LLM_MONITOR_LOG_PATH` 覆盖最优先） |
-| Quota Providers | `minimax_token_plan`, `codex_chatgpt`, `antigravity`, `glm_coding_plan`, `deepseek` |
+| Quota Providers | `minimax_token_plan`, `codex_chatgpt` (supports multi-key API quota tracking with independent allowances, progress bars and reset countdowns), `antigravity`, `glm_coding_plan`, `deepseek` |
 | Clients | Codex, Antigravity, Agy, ZCode, OpenCode, DSH, MiniMax Code; clients may contribute to multiple quota providers |
-| Refresh | Provider scheduler drives quota refreshes and settled-batch LocalUsage reconcile; scanners use FSEvents dirty invalidation |
+| Refresh | Provider scheduler drives quota refreshes and settled-batch LocalUsage reconcile; manual per-provider refresh supported via card header refresh button and edge dock provider circle click (`refreshOne`); scanners use FSEvents dirty invalidation |
 | Config reload | Event-driven via a `DispatchSourceFileSystemObject` on the `config.json` **file** itself, not the directory (the directory also holds `log.txt` / `last-refresh.json`); debounced, with reopen-on-rename/atomic-replace retry and backoff (no polling) |
 | Window lifetime | Menu closes on focus loss or after 30s of inactivity; any in-menu interaction resets the timer |
 
@@ -57,7 +57,7 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 
 | 概念 | 是什么 | 不是 | 事实源 |
 |---|---|---|---|
-| **provider** | 5 个 quota provider：`minimax_token_plan` / `codex_chatgpt` / `antigravity` / `glm_coding_plan` / `deepseek`。额度卡与 fetcher 的归属单位 | 不是本地应用；共享本地账本的客户端（OpenCode / DSH）不是 provider | `FetcherDescriptor`（`Fetchers/FetcherDescriptor.swift`）、`ProviderKind`（`Models/ProviderStatus.swift`）、`QuotaProviderID` |
+| **provider** | 5 个 quota provider：`minimax_token_plan` / `codex_chatgpt` / `antigravity` / `glm_coding_plan` / `deepseek`。额度卡与 fetcher 的归属单位（Codex ChatGPT 支持多 API Key 独立配额抓取） | 不是本地应用；共享本地账本的客户端（OpenCode / DSH）不是 provider | `FetcherDescriptor`（`Fetchers/FetcherDescriptor.swift`）、`ProviderKind`（`Models/ProviderStatus.swift`）、`QuotaProviderID` |
 | **client** | 7 个本地客户端：Codex、Antigravity、Agy、ZCode、OpenCode、DSH、MiniMax Code。本地 transcript / SQLite / RPC 账本的来源，一个 client 可向多个 provider 贡献用量 | 不是额度卡；client 自己没有 quota | `ClientID` / `ClientDescriptor`（`Models/ClientIdentity.swift`） |
 | **harness** | L1 帧适配概念：某个 client 的 `ProviderStatus` 字段被抽成 `HarnessUsageFrame`，经 L2 `UsageProjectionKernel.project` 投影后归属到 provider 卡 | 不是 provider，也不是 client——它是 client → provider 之间的适配层 | 抽取注册表 `usageFrameExtractors`（`Models/UsageFrameExtractors.swift`）、内核 `UsageProjectionKernel`（`Models/UsageProjectionKernel.swift`） |
 
@@ -93,7 +93,7 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 | `ui/menu-and-cards.md` | 菜单面板结构、header / content / footer、Provider 卡片与状态、hover 浮层、进度与健康色 |
 | `ui/settings.md` | 设置窗口：通用 pane 与字体角色、各 provider 设置、客户端 pane、开机自启 |
 | `providers/antigravity.md` | Antigravity：进程发现、本地 RPC 与响应形状、quota 读取、本地用量 scanner、文件格式 |
-| `providers/chatgpt.md` | ChatGPT Plan：远端额度、认证消费、reset credits、API 赠金、窗口估值与 Provider 展示 |
+| `providers/chatgpt.md` | ChatGPT Plan：远端额度、认证消费、reset credits、多 Key API 额度与独立用量进度、窗口估值与 Provider 展示 |
 | `providers/deepseek.md` | DeepSeek：账户余额语义、高峰窗口（北京时间）、OpenCode / ZCode / DSH 合并、错误映射 |
 | `providers/glm.md` | GLM Coding Plan：远端额度、API Key 与 JWT 扩展查询、价格、高峰时段与 Provider 展示 |
 | `providers/minimax.md` | MiniMax Token Plan：远端额度、响应解析、价格与高峰倍率、服务端限额、Provider 展示与错误处理 |
@@ -108,7 +108,7 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 
 | Client | 本地账本 / 通道 | 归属 provider | 读哪份 spec |
 |---|---|---|---|
-| Codex | 本地 session JSONL + ChatGPT Plan 远程 | `codex_chatgpt`（openai）、经 OpenCode 路径并入其他 | 本地与凭证来源：`harnesses/codex.md`；远端额度：`providers/chatgpt.md` |
+| Codex | 本地 session JSONL + ChatGPT Plan 远程（支持多 API Key 独立配额跟踪） | `codex_chatgpt`（openai）、经 OpenCode 路径并入其他 | 本地与凭证来源：`harnesses/codex.md`；远端额度：`providers/chatgpt.md` |
 | Antigravity | IDE `language_server` 本地 RPC | `antigravity` | `providers/antigravity.md` |
 | Agy | `~/.gemini/antigravity-cli/brain/` transcript + cli log | `antigravity`（native，帧自带归属） | `harnesses/agy.md` |
 | ZCode | `~/.zcode` SQLite `model_usage` | 智谱行进 GLM 卡；minimax / deepseek 分片并入对应卡 | 本地与客户端策略：`harnesses/zcode.md`；远端额度：`providers/glm.md` |
@@ -157,4 +157,4 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 - Automatic updates and in-app version checks — upgrading means downloading a new build from
   GitHub Releases manually (release gating and the pre-release checklist: `spec/config.md`).
 
-> 核对基线：2026-11-03 · 代码 d07fa47
+> 核对基线：2026-11-06 · 代码 191d07b

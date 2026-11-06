@@ -129,6 +129,12 @@ struct ProviderStatus: Identifiable, Equatable, Sendable {
         return true
     }
 
+    /// 是否处于正在抓取中状态
+    var isLoading: Bool {
+        if case .loading = state { return true }
+        return false
+    }
+
     /// 最近一次成功的数据。从 `state` 派生 —— 不再有单独的 `_lastSuccess` 字段，
     /// 避免跟 `state.failed.lastSuccess` 重复存。
     var lastSuccess: QuotaInfo? {
@@ -158,13 +164,7 @@ struct ProviderStatus: Identifiable, Equatable, Sendable {
         guard let info = lastSuccess else { return nil }
         if kind == .deepseek {
             if let balance = info.balanceDetail?.total {
-                if balance <= 0 || balance < alertThresholds.deepseekBalanceCritical {
-                    return .critical
-                } else if balance < alertThresholds.deepseekBalanceWarning {
-                    return .warning
-                } else {
-                    return .healthy
-                }
+                return alertThresholds.deepseekHealthLevel(balance: balance)
             }
             if let firstModel = info.aggregateQuotaModels(providerKind: .deepseek).first {
                 return firstModel.intervalRemainingPercent > 0 ? .healthy : .critical
