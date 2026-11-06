@@ -811,7 +811,7 @@ look for a hover route to this data — the card carries it inline.
 - 卡片标题 = `Google Antigravity`（provider 名），无 pill。
 - 账号行（第一段 Account Info）= 登录邮箱（来自 `GetUserStatus`）+ 套餐 pill（`planLabel` 去掉 `Google ` / `Antigravity ` 前缀，让 `Google AI Pro` → `AI Pro`）。两者皆缺时整行不画。这是一行**常驻**内容：菜单的 provider 卡删除前，邮箱与套餐曾按 provider 分三路包在标题行的 `HoverInfoRow` 浮层里；那些折叠区挂在随行 hover 显隐的弹层里，弹层不在场时无从展开，所以直接画成常驻行——provider 卡退出菜单后也没有「重新进入 hover 浮层」这条路径了。
 - `Gemini Models`、`Gemini 4 Argon` and `Claude and GPT models` are shown as separate model groups inside one provider card (display names align with the API-returned `displayName`).
-- 双窗口组把 5h / 周收为一条：Gemini 周等效倍率为 3.5（2026-11-06 用户实测确认周额度 $100，周容量精确为 5h 的 3.5 倍；按 3 个整段加 1 个半容量尾段展示，格数按容量比例取整），Claude and GPT models 按 2 个（`weeklyEquivalentMultiplier` = 2，周窗口即 2 × 5h 额度，每段 50 点；2026-10-13 从 1 调回 2，2026-10 初曾从 3 下调到 1）；`Gemini 4 Argon` 在 Pro 套餐下仅返回周窗口，走单窗口路径。
+- 双窗口组把 5h / 周收为一条：Gemini 周等效倍率为 4.0（2026-11-06 用户再次实测确认周额度 $120、5h $30，周容量精确为 5h 的 4 倍；按 4 个等容量整段展示，每段 25 点），Claude and GPT models 按 2 个（`weeklyEquivalentMultiplier` = 2，周窗口即 2 × 5h 额度，每段 50 点；2026-10-13 从 1 调回 2，2026-10 初曾从 3 下调到 1）；`Gemini 4 Argon` 在 Pro 套餐下仅返回周窗口，走单窗口路径。
 - **`Claude and GPT models`（`claude_and_gpt_models`）与 `Gemini 4 Argon`（`gemini_argon`）不参与聚合读数**：状态栏 iconDuo、边缘窗圆环与 provider 综合健康度经 `QuotaInfo.aggregateQuotaModels(providerKind:)` 过滤，`ModelQuota.isExcludedFromQuotaAggregation` 把这两组排除（与 minimax `video` 同规则），只以主力 `Gemini Models` 代表聚合水位；卡片三组行照常展示，通知检测不受影响。
 - The countdown suffix uses `Formatters.formatResetSuffix`'s compact ladder (e.g. `3h41m`), the same reset-suffix formatter every provider row shares.
 - The countdown follows the model tint unless quota is low enough to trigger warning or critical colors.
@@ -1095,4 +1095,4 @@ The UI intentionally hides reset-credit id, title, description, and grant time.
 The shared Plan fallback uses the same 10pt `MenuTypography.hint` role for loading and
 failure feedback; there is no separate error-message typography role.
 
-> 核对基线：2026-11-06 · 代码 46ea154
+> 核对基线：2026-11-06 · 代码 f62a128
