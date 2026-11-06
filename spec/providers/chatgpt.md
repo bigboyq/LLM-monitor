@@ -193,7 +193,7 @@ Authorization: Bearer <admin_api_key>
 ### UI 呈现（`ChatGPTApiCreditsRow`）
 
 在 ChatGPT Provider 卡片内为每个已配置并启用的 Admin API Key 独立渲染一行 `ChatGPTApiCreditsRow`：
-- **标题行**：左侧展示自定义标签 `keyLabel`（优先）或 `organizationName`，靠右显示组织/工作区名称（缺省「未知组织」）；若未配置 label 则显示 `API赠金 · USD`。
+- **标题行**：左侧显示 `API赠金 · <Key 名称>`，名称使用设置中配置的 `label`（对应 `keyLabel`，去除首尾空白）；未命名时按列表顺序显示 `API赠金 · API Key #N`，不再用币种 USD 区分 Key。长标题单行居中截断，tooltip 显示完整名称。右侧独立显示组织/工作区名称（缺省「未知组织」）。
 - **独立进度条**：每个 Key 拥有专属的单段 `SegmentedQuotaProgressBar`（高 8pt，自适应绿/黄/红分级着色，带有表示周期时间进度的红色倒三角 `▼`），独占整行通栏显示。
 - **独立明细行**：单行整合呈现「已用 <used> 剩余：<remaining>/<total>」与该 Key 专属的「周期至 MM-dd HH:mm（剩余xx）」。
 - **局部错误与警告指示**：若某单个 Key 抓取失败或处于陈旧状态，仅在该 Key 的明细行周期信息前显示警告图标（带详细 tooltip 与 accessibility label），展示上次成功的数据及独立错误提示，兄弟 Key 进度条和明细正常展示不受干扰。

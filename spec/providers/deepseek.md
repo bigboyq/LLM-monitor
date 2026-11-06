@@ -32,7 +32,7 @@ DSH 与 OpenCode 的 raw input 本就是 uncached）；余额金额和本地 API
 | Display | 余额行（`DeepseekBalanceRow`）标题 `API 账户余额`，右端 `planLabel` 金额（`¥100.50`）；`充值: ¥90.50` / `赠金: ¥10.00` 与高峰指示器同处该行第二行（单行截断，完整文本走 tooltip） |
 | Remaining percent | `100` if `is_available` 且 `total_balance > 0`，否则 `0` |
 | Windows | interval `.present` 仅保留旧状态/可用性语义，weekly `.absent`；DeepSeek 没有 5h / 周额度池与重置时间 |
-| Peak hours | 北京时间工作日 9:00–12:00 & 14:00–18:00（`DeepseekPeakWindow.defaultWindow`）；时段固定不可调，高峰永不含周末（周六、周日全天平价），法定节假日的周一–周五同样不算高峰（Rule A） |
+| Peak hours | 默认北京时间工作日 9:00–12:00 & 14:00–18:00，默认高峰倍率 2×（`DeepseekPeakWindow.defaultWindow`）；Provider JSON 的 `peakWindow` 可覆盖时段、工作日限制与倍率，设置页只读展示。默认排除周末与法定节假日（Rule A） |
 | Local token source | 无 native scanner；自动归入已支持的 ZCode、DSH、OpenCode DeepSeek 分片 |
 | Balance model row | 单个合成 model `deepseek_balance`，`ModelQuota.displayName` → `DeepSeek API 余额` |
 
@@ -60,9 +60,10 @@ Supported provider fields:
 | `apiKey` | DeepSeek API Key. Empty values and `REPLACE...` placeholders are treated as missing (`ProviderConfig.usableAPIKey`). |
 | `refreshIntervalSeconds` | Optional independent refresh interval (overrides global default of 300s). |
 | `displayName` | Optional card title override. |
+| `peakWindow` | Optional slots / weekdaysOnly / multiplier override; defaults to weekday 9–12 & 14–18, multiplier 2. See `spec/config.md` §Config Schema. |
 
 > **Note**: `deepseekPeakWeekdaysOnly` was removed together with the settings toggle
-> (peak never includes weekends is now fixed official policy). Old config files that
+> (the default still excludes weekends). Old config files that
 > still carry the key decode fine — the JSON key is silently ignored and is never
 > written back.
 
@@ -97,29 +98,28 @@ DeepSeek——`AppState.statusBarQuotaMetrics` 的循环以 `where status.kind !
 
 ## Peak hours (北京时间)
 
-DeepSeek 官方定价规则：**北京时间周一至周五 9:00–12:00 与 14:00–18:00** 为高峰，高峰
-价格为平价（1×）的 2 倍。判定全程基于 `Asia/Shanghai` 时区 Calendar
+DeepSeek 默认定价规则：**北京时间周一至周五 9:00–12:00 与 14:00–18:00** 为高峰，高峰
+价格为平价（1×）的 2 倍。Provider JSON 的 `peakWindow` 可覆盖时段、`weekdaysOnly` 与 `multiplier`（支持 1.5、3 等倍率），提示与本地 / Fleet 金额估算使用同一窗口。判定全程基于 `Asia/Shanghai` 时区 Calendar
 （`DeepseekPeakWindow.beijingCalendar`），与用户本机时区无关。
 
-**工作日口径（Rule A，与 GLM 统一形状）**：工作日 = 周一–周五 ∧ 当天不是法定节假日。
+**默认工作日口径（Rule A，与 GLM 统一形状）**：工作日 = 周一–周五 ∧ 当天不是法定节假日。
 法定节假日（含调休换来的放假日，常落在周一–周五）不算高峰、高峰 ×2 倍率不加倍
 （数据源为打包快照 `Resources/ChinaHolidays.json`，加载与退化行为见
 `Models/HolidayCalendar.swift`）；调休上班的周六/周日**有意不建模**——它们本来就不是
 周一–周五，天然不算高峰。
 
-**周末平价（官方口径）**：经确认 DeepSeek 周六、周日不执行高峰定价，高峰永不含周末。
-`DeepseekPeakWindow.defaultWindow` 固定为 `slots [9–12, 14–18]` + `weekdaysOnly: true`：
+**周末平价（默认口径）**：DeepSeek 默认周六、周日不执行高峰定价。
+`DeepseekPeakWindow.defaultWindow` 为 `slots [9–12, 14–18]` + `weekdaysOnly: true` + `multiplier: 2`：
 
 - 周一–周五执行 9–12 / 14–18 高峰（法定节假日除外）；周六、周日全天平价（1×），
   倒计时直接指向下一个工作日 9:00。`nextPeakStart` 逐日扫描跳过非高峰日
   （15 天预算：春节 8 天法定假 + 紧邻周末最长空档 ~11 天）。
-- 高峰窗口整体固定，无任何 config 字段或设置开关可调（「仅工作日」开关与
-  `deepseekPeakWeekdaysOnly` 配置键已移除；旧配置文件中的残留键会被静默忽略）。
+- 自定义配置使用 `peakWindow`；`weekdaysOnly: false` 时每天执行指定时段。设置页没有编辑开关，只展示当前配置；旧平铺键 `deepseekPeakWeekdaysOnly` 仍忽略。
 
 UI 上 `DeepseekPeakIndicatorView` 嵌在余额行右侧：
-- 高峰期 🔥：`高峰 2× · 还剩 X`（红色 pill）
-- 非高峰期，距高峰 < 1 小时 ❄️：`距高峰 X`（橙色 pill，临近）
-- 非高峰期，距高峰 ≥ 1 小时 ❄️：`距高峰 X`（绿色 pill）
+- 高峰期 🔥：`高峰期 2× · 还剩 X`（红色 pill，倍率取当前 `PeakWindow.multiplier`）
+- 非高峰期，距高峰 < 1 小时 ❄️：`距高峰期 X · 平时 1×`（橙色 pill，临近）
+- 非高峰期，距高峰 ≥ 1 小时 ❄️：`距高峰期 X · 平时 1×`（绿色 pill）
 
 倒计时纯本地计算，不依赖 API 响应，刷新失败也能显示。两个卡片宿主（菜单兜底行
 hover 浮层 / dock 浮层）均经 `DisplayClockScope` 注入随面板显隐 start/stop 的

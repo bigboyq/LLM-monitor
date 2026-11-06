@@ -480,9 +480,9 @@ Adding a provider currently requires:
 
 **已落地案例**：`DeepSeek` 完整走上述 1–8 步（无本地用量 scanner，跳过 9–12），
 且是唯一一个 **post-fetch 无副作用** 的 provider（`refreshProviderDirectly` 的
-kind 派发链里没有 `.deepseek` 分支）。它的高峰窗口为北京时间周一至周五 9–12 / 14–18
-（`DeepseekPeakWindow.defaultWindow`），时段固定不可调；高峰永不含周末，周六、周日
-全天平价。详见 [`spec/providers/deepseek.md`](providers/deepseek.md)。
+kind 派发链里没有 `.deepseek` 分支）。它的默认高峰窗口为北京时间周一至周五 9–12 / 14–18
+（`DeepseekPeakWindow.defaultWindow`），默认倍率 2×、排除周末与法定节假日。
+GLM / DeepSeek 均由 `ProviderConfig.effectivePeakWindow(for:)` 解析 Provider JSON 的 `peakWindow` 覆盖值，并在 `rebuildStatuses` 挂载至对应状态；提示、倒计时与 DeepSeek 金额估算同源。详见 [`spec/providers/deepseek.md`](providers/deepseek.md)。
 
 Lookup pattern in the rest of the code:
 

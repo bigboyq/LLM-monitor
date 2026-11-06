@@ -257,11 +257,10 @@ enum ModelPricingCatalog {
         let providerID: String
         /// 该规则适用的计价窗口类型（当前只有 DeepSeek 高峰 / 谷价两类）。
         enum Kind: Sendable {
-            /// 北京时间高峰窗口（周一–周五 ∧ 非法定节假日），命中即乘 `multiplier`。
+            /// 北京时间高峰窗口，命中即乘 `PeakWindow.multiplier`。
             case peakWindow
         }
         let kind: Kind
-        let multiplier: Double
     }
 
     /// 高峰倍率登记表。新增 provider 的峰谷规则只在这里追加一行，不改
@@ -269,8 +268,7 @@ enum ModelPricingCatalog {
     private static let pricingMultipliers: [ProviderPricingMultiplier] = [
         ProviderPricingMultiplier(
             providerID: QuotaProviderID.deepseek,
-            kind: .peakWindow,
-            multiplier: 2
+            kind: .peakWindow
         )
     ]
 
@@ -287,7 +285,7 @@ enum ModelPricingCatalog {
             switch rule.kind {
             case .peakWindow:
                 if case .peak = deepseekPeakWindow.status(at: date, calendar: PeakWindow.beijingCalendar, holidays: holidays) {
-                    return rule.multiplier
+                    return deepseekPeakWindow.multiplier
                 }
             }
         }

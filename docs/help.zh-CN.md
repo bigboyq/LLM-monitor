@@ -41,13 +41,13 @@ shasum -a 256 -c SHA256SUMS.txt
 
 ### GLM Coding Plan
 
-在设置中必须填写 Coding Plan API Key（通常为 `id.secret`）才能监控标准额度；OAuth 不作为回退。可单独开启「ZCode JWT 扩展」（默认关闭），开启后才读取 ZCode 凭证路径（默认 `~/.zcode/v2`）。找到 JWT 后，应用会查询活动套餐与重置卡；营销活动查询还需开启对应通知。扩展开关关闭时，不读取 ZCode 凭证，也不显示其缓存数据。本地用量来自 `~/.zcode/cli/db/db.sqlite`。高峰窗口固定为北京时间（Asia/Shanghai）周一至周五 14:00–18:00，法定节假日除外；口径与本机时区无关，也没有设置开关。
+在设置中必须填写 Coding Plan API Key（通常为 `id.secret`）才能监控标准额度；OAuth 不作为回退。可单独开启「ZCode JWT 扩展」（默认关闭），开启后才读取 ZCode 凭证路径（默认 `~/.zcode/v2`）。找到 JWT 后，应用会查询活动套餐与重置卡；营销活动查询还需开启对应通知。扩展开关关闭时，不读取 ZCode 凭证，也不显示其缓存数据。本地用量来自 `~/.zcode/cli/db/db.sqlite`。高峰窗口默认北京时间（Asia/Shanghai）周一至周五 14:00–18:00，法定节假日除外，积分扣费相对平时为 2×；口径与本机时区无关。GLM 与 DeepSeek 均支持在 Provider JSON 的 `peakWindow` 中配置 `slots`、`weekdaysOnly` 和 `multiplier`，设置页只读展示当前时段与倍率；GLM 的本地名义价值估算不乘积分倍率。配置示例见 [配置规格](../spec/config.md#config-schema)。
 
 ZCode 的任务按 provider 分为 Coding Plan（正式套餐）/ Start Plan（体验套餐）/ 闲时 / 其他智谱套餐四类：只有 Coding Plan 计入 5h / 周额度窗口，四类 token 都计入本地柱图。设置 → 客户端 → ZCode 按这个顺序拆行显示各自独立的柱图与名义价值（没有用量的分类不出现行），其后是同一账本里按 provider 自动归入 DeepSeek / MiniMax 卡的分片行。所有已支持的本地账本来源都会自动归因；未知 provider 不会被猜测归类。开启 JWT 扩展并读取到 ZCode JWT 后，通过 ZCode 接口获取活动套餐余额、重置卡与可领取活动：套餐余额跟随 GLM 刷新频率，重置卡与可领取活动跟随「次要信息频率」，活动轮询还需开启活动通知。
 
 ### DeepSeek
 
-填写 `sk-...` 格式的 DeepSeek API Key。卡片显示账户余额；DeepSeek 没有 native 本地账本，本地 token 图表会自动归入 ZCode、DSH 与 OpenCode 中可识别为 DeepSeek 的用量。DeepSeek Flash 本地成本估算为：输入 ¥1/百万 token、缓存读取 ¥0.02/百万 token、输出 ¥4/百万 token；北京时间周一至周五 9:00–12:00、14:00–18:00 忙时按 2 倍计算（法定节假日除外），周末全天平价。
+填写 `sk-...` 格式的 DeepSeek API Key。卡片显示账户余额；DeepSeek 没有 native 本地账本，本地 token 图表会自动归入 ZCode、DSH 与 OpenCode 中可识别为 DeepSeek 的用量。DeepSeek Flash 本地成本估算为：输入 ¥1/百万 token、缓存读取 ¥0.02/百万 token、输出 ¥4/百万 token；默认北京时间周一至周五 9:00–12:00、14:00–18:00 忙时按 2 倍计算（法定节假日除外），周末全天平价。通过 `peakWindow` 自定义时段或倍率后，本地与多机同步的金额估算、倒计时、设置展示均按当前配置计算。
 
 ### OpenCode 合并
 
@@ -70,7 +70,7 @@ ZCode 与 OpenCode 一样是多 provider 共享账本：智谱系行进 GLM 卡�
 
 ## 节假日数据源
 
-GLM 与 DeepSeek 的高峰判定都以北京时间（Asia/Shanghai）为准，只看"周一至周五 ∧ 非法定节假日"。这张节假日表决定了春节、国庆等假期不再算高峰，也决定了调休放假日（哪怕落在周一至周五）同样不算高峰。
+GLM 与 DeepSeek 的高峰判定都以北京时间（Asia/Shanghai）为准，默认只看"周一至周五 ∧ 非法定节假日"。这张节假日表决定了春节、国庆等假期不再算高峰，也决定了调休放假日（哪怕落在周一至周五）同样不算高峰。若 `peakWindow.weekdaysOnly` 设为 `false`，则每天都执行配置时段，不排除周末与节假日。
 
 - **默认联网取数**：应用启动后从上游 chinese-days 项目的 JSON（`https://cdn.jsdelivr.net/npm/chinese-days/dist/chinese-days.json`）拉取，缓存到 `~/Library/Application Support/LLM-monitor/holidays-cache.json`（权限 0600）。缓存在 7 天内不会重复请求。
 - **只用内置快照**：把「设置 → 常规 → 节假日数据源」清空成空串即可。此时应用只用随包发布的 `ChinaHolidays.json` 快照，既不联网也不读缓存。

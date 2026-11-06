@@ -199,7 +199,7 @@ hub 的 high-water 据此拒绝迟到报告（§7.3）。持久化失败本轮�
 - 日桶：权威 totals = 各 (client, provider) 日聚合的规范化汇总
   （`FleetTotals(summing:)`，uncached input / cacheRead 分列，
   与 `TokenUsageBuckets.fromSample` 同口径）；模型明细从 `recentSamples`
-  分组，金额走 `ModelPricingCatalog.estimate`（同一批样本）。扫描预算截断的来源
+  分组，金额走 `ModelPricingCatalog.estimate`（同一批样本），DeepSeek 模型明细与窗口金额均传入当前 `ProviderStatus.deepseekPeakWindow`（含配置时段与倍率），与本地计价同源。扫描预算截断的来源
   从本次健康行中排除并以 `.truncated` 标记；partial 桶的
   `totalsComplete/modelDetailsComplete = false`，有预算截断标记时 `sourceTruncated = true`。
   DSH 即使因预算截断后没有任何 provider 帧，也保留源级截断状态；只影响内置路由支持的

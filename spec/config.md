@@ -67,6 +67,7 @@ The app reads and writes this shape:
 | `providers.<id>.enabled` | provider | Disabled providers stay visible but are not fetched. Missing `enabled` decodes as `true`. |
 | `providers.<id>.apiKey` | provider | API key for providers that do not manage external auth. Used by minimax. |
 | `providers.<id>.displayName` | provider | Optional UI label override. |
+| `providers.<id>.peakWindow` | provider | GLM / DeepSeek 高峰配置，包含 `slots: [{startHour, endHour}]`、`weekdaysOnly`（缺省 true）、`multiplier`（相对非高峰期 1×，缺省 2）。省略整个字段时使用各 Provider 默认时段；按北京时间判定，设置页只读展示。小时区间须非空、互不重叠且满足 `0 ≤ startHour < endHour ≤ 24`，解码时按开始时间排序；倍率须为不小于 1 的有限数值，支持 1.5、3 等小数或整数。非法值报配置解码错误。DeepSeek 金额估算使用该倍率；GLM 只作积分提示、不改变名义价值。 |
 | `providers.<id>.refreshIntervalSeconds` | provider | Optional provider-specific timer interval, with the same 10-second...30-day clamp. |
 | `providers.<id>.zcodeJWTEnabled` | provider | GLM 是否启用 ZCode JWT 扩展。缺省 false；开启时才读取 `authPath`、调用 ZCode 套餐/重置卡接口，并在通知开启时轮询活动。显式 true/false 优先于历史字段；若缺失，则沿用旧 `effectiveGlmAuthMode` 设置：先取 `glmAuthMode`，再依次取 `parseZcodeCredential` / `parseZcodePlan` / `parseZcodeBalanceLog` 的首个非 nil 值。 |
 | `providers.<id>.glmAuthMode` | legacy | GLM 历史认证模式字段（`apiKey` / `credential`）。仅在 `zcodeJWTEnabled` 缺失时，`credential` 代表启用 ZCode JWT 扩展；设置页保存时移除。 |
@@ -86,7 +87,19 @@ The app reads and writes this shape:
 | `providers.<id>.mergeOpencodeUsage` | removed | 历史 OpenCode 合并开关；解码忽略、保存清理，不再影响用量归因。 |
 
 `ProviderConfig.encode(to:)` omits nil optional fields, so saved config only includes relevant keys. `ConfigStore.applyAndSave()` writes pretty-printed, sorted-key JSON and reapplies `0600`.
-旧版本残留的 provider 级键（如 GLM 曾有的 `peakStartHour` / `peakEndHour` / `peakWeekdaysOnly`——GLM 高峰窗口已固定为官方口径，DeepSeek 峰谷键当年同理）由 `JSONDecoder` **静默忽略**：解码端只认上表列出的键，残留既不报错、也不参与任何判定，下次在设置页保存时自然消失。
+旧版本残留的 provider 级平铺键（如 `peakStartHour` / `peakEndHour` / `peakWeekdaysOnly` / `deepseekPeakWeekdaysOnly`）仍由 `JSONDecoder` **静默忽略**，不影响判定，下次保存时清理；新的高峰配置统一放在 `peakWindow` 中。
+
+例如，在 `providers.deepseek` 中配置以下字段，即表示每天北京时间 9:00–12:00 与 14:00–18:00 按平时 1.5 倍计价；`weekdaysOnly: true` 则限定为周一至周五且排除法定节假日：
+
+```json
+"peakWindow": {
+  "slots": [{"startHour": 9, "endHour": 12}, {"startHour": 14, "endHour": 18}],
+  "weekdaysOnly": false,
+  "multiplier": 1.5
+}
+```
+
+GLM 默认 `slots: [{startHour: 14, endHour: 18}]`，DeepSeek 默认 `slots: [{startHour: 9, endHour: 12}, {startHour: 14, endHour: 18}]`；两者默认均为 `weekdaysOnly: true`、`multiplier: 2`。配置热重载后，状态、倒计时、计价与设置展示使用同一窗口；设置保存保留该字段。
 Unknown or incorrectly typed `statusBarIconStyle` /
 `statusBarHealthDotEnabled` values fall back
 to their defaults; cosmetic config errors do not trigger recovery of the provider settings.
@@ -95,7 +108,7 @@ to their defaults; cosmetic config errors do not trigger recovery of the provide
 
 为支持多组织/多 Workspace 独立的赠金追踪，`providers.codex_chatgpt` 引入 `adminApiKeys: [CodexAdminKeyConfig]?`。每个条目独立定义一个 Admin API Key 及其账单周期与配额上限：
 - `id: String`: 唯一标识符（UUID 字符串，缺省自动生成）。
-- `label: String`: 用户自定义备注名称（如 "Personal", "Team"；缺省 `""`）。
+- `label: String`: 用户自定义 Key 名称（如 "Personal", "Team"；缺省 `""`），用于 API 赠金行标题；未命名时显示列表序号 `API Key #N`。沿用原字段，旧配置无需迁移。
 - `apiKey: String`: OpenAI Admin API Key（`sk-admin-...`，缺省 `""`）。
 - `monthlyQuotaLimit: Double`: 每月赠金额度上限（美元，缺省 `40.0`）。
 - `billingDay: Int`: 每月账单日（`1...31`，缺省 `11`）。

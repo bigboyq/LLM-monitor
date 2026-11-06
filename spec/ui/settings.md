@@ -106,7 +106,7 @@ ChatGPT 设置 pane（`SettingsProviderPanes.swift:chatgptPane`）在基础的 `
 - **开关**：「启用 API 赠金监测」（`chatgptAdminCreditsEnabled`）。默认关闭；开启后向下展开多 Key 管理卡片列表与添加按钮，关闭时全部隐藏。
 - **多 Key 管理卡片列表 (`CodexAdminKeyCardView`)**：每个 Key 呈现为一个独立卡片（圆角 8pt，填充背景与边框）：
   - **卡头与删除操作**：卡头左侧显示自定义备注名称（未输入时显示默认占位 `API Key #N`，`SettingsTypography.rowEmphasis`）；右侧在卡片数量大于 1 时显示删除按钮（`canDelete = draft.chatgptAdminKeys.count > 1`，带 `trash` 图标与「删除此 API Key」提示；单 Key 时隐藏删除按钮以防止清空配置）；
-  - **备注名称**：输入框绑定 `keyDraft.label`，占位符为「例如：个人账号、团队项目」；
+  - **Key 名称**：输入框绑定 `keyDraft.label`，占位符为「例如：个人账号、团队项目」；帮助文字说明名称用于区分额度卡片中的各个 API Key，留空时显示 `API Key #N`。沿用 JSON 的 `label` 字段；
   - **Admin API Key**：`keyDraft.apiKey` 输入框，支持明文/密文切换（`isKeyVisible` 切换 `TextField` 与 `SecureField`，带眼睛图标按钮），占位符为 `sk-admin-...`；
   - **赠金额度 ($)**：每月额度上限输入框（`keyDraft.monthlyQuotaLimit`，默认 40）。行内实时校验：当 Key 非空且额度非大于 0 的有限数字时，输入框下方即时呈现红色错误文案「请输入大于 0 的有限数字。」。在表单保存时（`SettingsView.saveAndApply()`）执行强校验拦截，非法时抛出错误阻止保存；
   - **账单日**：`Picker` 下拉框（每月 1 日至 31 日，默认 11 日，绑定 `keyDraft.billingDay`）；
@@ -191,7 +191,7 @@ GLM provider pane（`SettingsProviderPanes.swift:glmPane`）包含必填 API Key
 - **运营活动推送通知**（`notifyCampaign`）：仅扩展开启、读到 JWT、通知渠道开启且为 `.full` 刷新时轮询活动。
 - **重置卡 / 活动预计周期**：只显示预计周期胶囊，认证说明和周期行不再重复提示开启通知，通知渠道由相邻配置项选择。
 - 新开关显式 true/false 优先；缺失时沿用旧 `effectiveGlmAuthMode` 设置（先取 `glmAuthMode`，再依次取 `parseZcodeCredential` / `parseZcodePlan` / `parseZcodeBalanceLog` 的首个非 nil 值）。设置保存写入新开关并清除历史键。
-- **高峰期提示**：只读展示（与 DeepSeek 同款 `SettingsControlRow` 写法），值行为 `工作日 14:00–18:00（北京时间 · 法定节假日除外）`，footer 注明按北京时间计算、官方口径、不可调。曾经的开始/结束小时 Stepper 与「仅工作日」开关已随 GLM 去配置化删除（`peakStartHour` / `peakEndHour` / `peakWeekdaysOnly` 键移除，残留键由 `JSONDecoder` 静默忽略，见 `spec/config.md` §Config Schema）。
+- **高峰期提示**：GLM 与 DeepSeek 共用 `SettingsView.peakPricingSection(for:)`，只读展示当前 `peakWindow` 的时段定义与高峰倍率（平时 1×）；GLM 行标题为「高峰期积分」，DeepSeek 为「高峰期价格」，默认均显示 `2×（平时 1×）`。时段来自 `PeakWindow.scheduleLabel`，按 `weekdaysOnly` 显示「工作日」或「每天」，工作日附「法定节假日除外」。在 JSON 中修改时段或倍率后展示随配置更新，设置页无编辑控件；GLM footer 明确积分倍率不参与本地名义价值估算。字段契约见 `spec/config.md` §Config Schema。
 
 General pane 的「关于」之前有
 「节假日数据源」节（`HolidaySourceSection`，单独 View 以 `@ObservedObject` 观察

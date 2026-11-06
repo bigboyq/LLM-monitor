@@ -183,8 +183,8 @@ struct ModelQuota: Equatable, Codable, Sendable {
             return 6.0
         case .antigravity:
             // Claude and GPT：周窗口 = 2 × 5h 额度（Antigravity 2026-10 初从 3 下调到 1，2026-10-13 调回 2）；
-            // Gemini Models：周 = 4 × 5h 额度（2026-10-30 校准：5h $25 / 周 $100，从 3.33 调为 4.0）。
-            return model.modelName.lowercased() == AntigravityModelKind.claudeAndGptModels.rawValue ? 2.0 : 4.0
+            // Gemini Models：周 = 3.5 × 5h 额度（2026-11-06 实测，周额度 $100）。
+            return model.modelName.lowercased() == AntigravityModelKind.claudeAndGptModels.rawValue ? 2.0 : 3.5
         case .glmCodingPlan:
             // GLM Coding Plan：5h 积分 × 5 = 周积分（Lite 2000/10000、Pro 12000/60000、Max 28000/140000）
             return 5.0

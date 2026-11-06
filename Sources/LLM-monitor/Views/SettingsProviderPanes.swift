@@ -256,16 +256,7 @@ extension SettingsView {
 
                 notifySection(providerID: providerID(for: .glmCodingPlan) ?? "")
 
-                SettingsSection(
-                    title: "高峰期提示",
-                    footer: "高峰期内模型调用按基础积分扣费，非高峰期按 50% 抵扣（省一半）。按北京时间计算，工作日 = 周一–周五（法定节假日除外），卡片会显示距高峰期 / 高峰结束的倒计时。官方口径，不可调。"
-                ) {
-                    SettingsControlRow("高峰时段定义") {
-                        Text("工作日 14:00–18:00（北京时间 · 法定节假日除外）")
-                            .font(SettingsTypography.numericValue)
-                            .foregroundStyle(.secondary)
-                    }
-                }
+                peakPricingSection(for: .glmCodingPlan)
             }
         }
     }
@@ -287,21 +278,31 @@ extension SettingsView {
                     }
                 }
 
-                SettingsSection(
-                    title: "高峰期提示",
-                    footer: "DeepSeek API 采用峰谷定价策略，高峰价格为平价（1×）的 2 倍（适用于所有计费项）。系统将自动换算北京时间并实时提示倒计时。高峰时段为北京时间工作日（法定节假日除外）9:00–12:00 和 14:00–18:00，周六、周日全天平价（1×）。官方口径，不可调。"
-                ) {
-                    SettingsControlRow("高峰时段定义") {
-                        Text("北京时间工作日 9:00–12:00, 14:00–18:00")
-                            .font(SettingsTypography.numericValue)
-                            .foregroundStyle(.secondary)
-                    }
-                    Divider().padding(.vertical, 4)
-                    SettingsControlRow("高峰期价格") {
-                        Text("2× 价格 (平时 1×)")
-                            .font(SettingsTypography.numericValue)
-                            .foregroundStyle(.red)
-                    }
+                peakPricingSection(for: .deepseek)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func peakPricingSection(for kind: ProviderKind) -> some View {
+        if let id = providerID(for: kind),
+           let window = (configStore.config.providers[id] ?? ProviderConfig()).effectivePeakWindow(for: kind) {
+            SettingsSection(
+                title: "高峰期提示",
+                footer: kind == .glmCodingPlan
+                    ? "显示当前高峰时段与相对平时的积分扣费倍率。按北京时间计算，卡片实时显示倒计时；本地用量的名义价值估算不受积分倍率影响。"
+                    : "显示当前高峰时段与相对平时的价格倍率。按北京时间计算，卡片实时显示倒计时；金额估算按调用发生时的高峰倍率计算。"
+            ) {
+                SettingsControlRow("高峰时段定义") {
+                    Text(window.scheduleLabel)
+                        .font(SettingsTypography.numericValue)
+                        .foregroundStyle(.secondary)
+                }
+                Divider().padding(.vertical, 4)
+                SettingsControlRow("高峰期\(kind == .glmCodingPlan ? "积分" : "价格")") {
+                    Text("\(window.multiplierLabel)（平时 1×）")
+                        .font(SettingsTypography.numericValue)
+                        .foregroundStyle(.red)
                 }
             }
         }
@@ -437,10 +438,11 @@ struct CodexAdminKeyCardView: View {
             }
             .padding(.bottom, 2)
 
-            SettingsControlRow("备注名称") {
+            SettingsControlRow("Key 名称") {
                 TextField("", text: $keyDraft.label, prompt: Text("例如：个人账号、团队项目"))
                     .textFieldStyle(.roundedBorder)
                     .frame(width: SettingsLayout.standardControlWidth)
+                    .help("用于额度卡片中区分各个 API Key；留空时显示 API Key 序号。")
             }
 
             SettingsControlRow("Admin API Key") {

@@ -70,15 +70,16 @@ tokens，模型名小写 + `_` 归一为 `-` 后按 contains 匹配，数组顺�
 
 ## Window Value Anchors（窗口价值锚，调研记录）
 
-> 2026-10-28 校准记录。额度 API 只提供 `remainingFraction` 百分比，无金额语义；以下锚点
+> 2026-11-06 校准记录。额度 API 只提供 `remainingFraction` 百分比，无金额语义；以下金额锚点
 > 由「本地目录价折算的用量 ÷ 官方已用百分比」互推得出，仅供余量折算美元参考——
 > **不进任何代码路径**（app 不展示窗口美元值）。价格口径即 §Model Pricing 的 Gemini
 > intro 折扣价。本地账本只覆盖本机 IDE + agy CLI，锚点是**下界**：账号在其他设备的
-> 用量不计入，实际配额只会更高。
+> 用量不计入。Gemini 周额度经后续实测确认为 **$100**，周 / 5h 容量比精确为 **3.5**；
+> 此倍率进入窗口换算代码，金额锚仍只作调研记录。
 
 | 组 / bucket | 窗口结构 | 整窗价值锚 | 依据 |
 |---|---|---|---|
-| `Gemini Models`（`gemini-5h` / `gemini-weekly`） | 5h + weekly，周 = 4 × 5h | **$25 / 5h，$100 / 周** | 2026-10-30 实测数据校准（5h $25 / 周 $100）；周等效倍率从 3.33 校准为 4.0（4 段等宽，每段 25 格，周合计 100 格） |
+| `Gemini Models`（`gemini-5h` / `gemini-weekly`） | 5h + weekly，周 = 3.5 × 5h | **$100 / 周，$100 ÷ 3.5 ≈ $28.57 / 5h** | 2026-11-06 用户实测确认周额度 $100、容量比精确 3.5；取代此前 4.0 倍 / 5h $25 的推算 |
 | `Gemini 4 Argon`（`gemini-argon-wtu-weekly`） | 仅周窗，独立重置时间 | **≈ $15 / 周**（实测 $14.8，取整） | 见下 |
 | `Claude and GPT models`（`3p-5h` / `3p-weekly`） | 5h + weekly，周 = 2 × 5h | 无锚点（本机 3p 用量不足以校准） | — |
 
@@ -1291,8 +1292,9 @@ Current row tints:
 Dual-window groups use a combined quota row: the metadata line is
 `<model name> … 5h <pct> 周 <pct> <reset time>` (name leading, both window
 readings plus the binding window's reset time clustered at the line end), and the
-bar is segmented by the group's weekly equivalent multiplier — 4.0 for
-`Gemini Models` (`Gemini 4 Argon` Pro 套餐仅返回周窗口，走单窗口路径；若返回双窗口同为 4.0),
+bar is segmented by the group's weekly equivalent multiplier — 3.5 for
+`Gemini Models` (three full-capacity segments and one half-capacity segment;
+`Gemini 4 Argon` Pro 套餐仅返回周窗口，走单窗口路径；若返回双窗口沿用 3.5),
 2 for `Claude and GPT models` (2026-10-13 从 1 调回 2；2026-10 初曾从 3 下调到 1，
 周窗口 = 2 × 5h 额度). A 1-segment bar has no equivalent-
 weekly reading to draw, and its tooltip says 单一窗口可用进度 instead of
@@ -1303,7 +1305,7 @@ Google Antigravity                                          01:44
 alice@example.com  [AI Pro]
 ───────────────────────────── Plan详情
 Gemini Models                          5h 100%  周 85%   <weekly reset time>
-[weekly bar in 4 segments (4 segments of 25 ticks, total 100)]
+[weekly bar in 4 segments (capacities 1, 1, 1, 0.5; ticks rounded by capacity)]
 
 Gemini 4 Argon                                  周 100%  <weekly reset time>
 [single weekly bar]

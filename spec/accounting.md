@@ -135,15 +135,14 @@ catalog 的结果已经在 reader 层固化，重建逻辑必须逐字段原样�
 
 | provider | 窗口类型 | 倍率 |
 |---|---|---|
-| `QuotaProviderID.deepseek` | `PeakWindow` 高峰窗口 | ×2 |
+| `QuotaProviderID.deepseek` | `PeakWindow` 高峰窗口 | `PeakWindow.multiplier`，默认 ×2；可由 Provider JSON 改为 ×1.5、×3 等 |
 
-判定口径为 Rule A：工作日（周一–周五 ∧ 非法定节假日，节假日表来自
+默认判定口径为 Rule A：工作日（周一–周五 ∧ 非法定节假日，节假日表来自
 `HolidayCalendar.shared`）内命中高峰窗口才乘倍率——**法定节假日的周一–周五
-不算高峰、不加倍**；调休上班的周六/周日同样不算高峰。 
+不算高峰、不加倍**；调休上班的周六/周日同样不算高峰。Provider 的 `peakWindow` 可覆盖时段、`weekdaysOnly` 与倍率；`weekdaysOnly: false` 时每天按指定时段计价。
 `pricingMultiplier(quotaProviderID:at:deepseekPeakWindow:holidays:)` 遍历登记表求值，
 未登记的 provider 或窗口未命中一律返回 1。新增 provider 的峰谷定价只往表里追加
-一行，不要在求值分支里加 `if quotaProviderID == ...`。价目本身仍然只改 JSON，
-不在本表登记。
+一行，不要在求值分支里加 `if quotaProviderID == ...`。登记表只决定哪些 Provider 参与金额倍率计算，倍率值取传入窗口的 `multiplier`；模型基础价仍只改 `ModelPricing.json`。
 
 **口径说明（勿混入积分套餐类）**：GLM（zhipu）的价值为**名义估算、与峰谷无关**
 ——峰谷对 GLM 只影响高峰提示 pill 与健康色（卡头点 floor），不参与价值系数；

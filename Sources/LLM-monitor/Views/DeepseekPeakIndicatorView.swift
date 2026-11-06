@@ -21,11 +21,11 @@ struct DeepseekPeakIndicatorView: View {
                 }
             },
             peakRow: { end in
-                // 高峰期：价格为平时 2 倍 → 红色高亮提示
+                // 高峰期：按 Provider 配置的倍率提示。
                 HStack(spacing: 3) {
                     Image(systemName: "flame.fill")
                         .font(MenuTypography.badge)
-                    Text("高峰 2× · 还剩 \(formatPeakDuration(end.timeIntervalSinceNow))")
+                    Text("高峰期 \(window.multiplierLabel) · 还剩 \(formatPeakDuration(end.timeIntervalSinceNow))")
                         .font(MenuTypography.metricValue)
                 }
                 .foregroundStyle(.red)
@@ -40,8 +40,11 @@ struct DeepseekPeakIndicatorView: View {
                 HStack(spacing: 3) {
                     Image(systemName: "snowflake")
                         .font(MenuTypography.badge)
-                    Text("距高峰 \(formatPeakDuration(secs))")
+                    Text("距高峰期 \(formatPeakDuration(secs))")
                         .font(MenuTypography.metricLabel)
+                    Text("· 平时 1×")
+                        .font(MenuTypography.badge)
+                        .foregroundStyle(.secondary)
                 }
                 .foregroundStyle(tier)
                 .padding(.horizontal, 6)

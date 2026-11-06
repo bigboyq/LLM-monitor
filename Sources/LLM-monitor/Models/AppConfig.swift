@@ -806,6 +806,17 @@ struct ProviderConfig: Codable, Equatable {
     /// 显示名（可选，覆盖默认名）
     var displayName: String?
 
+    /// 高峰时段及相对非高峰期的倍率（GLM / DeepSeek）；nil 使用 Provider 默认值。
+    var peakWindow: PeakWindow?
+
+    func effectivePeakWindow(for kind: ProviderKind) -> PeakWindow? {
+        switch kind {
+        case .glmCodingPlan: peakWindow ?? .zhipuDefault
+        case .deepseek: peakWindow ?? .deepseekDefault
+        default: nil
+        }
+    }
+
     /// 该 provider 自己的刷新间隔（秒）。nil = 用全局 config.refreshIntervalSeconds
     var refreshIntervalSeconds: Int?
 
@@ -878,7 +889,7 @@ struct ProviderConfig: Codable, Equatable {
     var adminApiKeys: [CodexAdminKeyConfig]?
 
     enum CodingKeys: String, CodingKey {
-        case enabled, apiKey, displayName, refreshIntervalSeconds, authPath
+        case enabled, apiKey, displayName, peakWindow, refreshIntervalSeconds, authPath
         case glmAuthMode, zcodeJWTEnabled
         case parseZcodeBalanceLog
         case parseZcodePlan
@@ -897,6 +908,7 @@ struct ProviderConfig: Codable, Equatable {
     init(enabled: Bool = true,
          apiKey: String? = nil,
          displayName: String? = nil,
+         peakWindow: PeakWindow? = nil,
          refreshIntervalSeconds: Int? = nil,
          authPath: String? = nil,
          glmAuthMode: GlmAuthMode? = nil,
@@ -918,6 +930,7 @@ struct ProviderConfig: Codable, Equatable {
         self.enabled = enabled
         self.apiKey = apiKey
         self.displayName = displayName
+        self.peakWindow = peakWindow
         self.refreshIntervalSeconds = refreshIntervalSeconds
         self.authPath = authPath
         self.glmAuthMode = glmAuthMode
@@ -947,6 +960,7 @@ struct ProviderConfig: Codable, Equatable {
         self.enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
         self.apiKey = try c.decodeIfPresent(String.self, forKey: .apiKey)
         self.displayName = try c.decodeIfPresent(String.self, forKey: .displayName)
+        self.peakWindow = try c.decodeIfPresent(PeakWindow.self, forKey: .peakWindow)
         self.refreshIntervalSeconds = try c.decodeIfPresent(Int.self, forKey: .refreshIntervalSeconds)
         self.authPath = try c.decodeIfPresent(String.self, forKey: .authPath)
         self.glmAuthMode = (try? c.decode(String.self, forKey: .glmAuthMode))

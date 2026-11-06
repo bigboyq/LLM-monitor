@@ -172,13 +172,13 @@ final class SegmentedQuotaProgressBarTests: XCTestCase {
         XCTAssertEqual(ticksTail, 10, "尾段应分得 10 格")
         XCTAssertEqual(ticksStandard * 3 + ticksTail, 100, "四段合计精确为 100 格")
 
-        // 整倍率 4.0（Gemini 4 倍率）：各段等宽 25 格
-        let ticksGemini4 = SegmentedQuotaProgressBar.ticksForSegment(
+        // 整倍率 4.0：各段等宽 25 格（通用整数分段行为）。
+        let ticksInteger4 = SegmentedQuotaProgressBar.ticksForSegment(
             capacity: 1.0,
             totalCapacity: 4.0,
             segmentCount: 4
         )
-        XCTAssertEqual(ticksGemini4, 25, "Gemini 4 倍率整段应分得 25 格")
+        XCTAssertEqual(ticksInteger4, 25, "4 倍率整段应分得 25 格")
     }
 
     func testActiveTickCountRoundingAndFloor() {

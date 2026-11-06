@@ -1060,7 +1060,8 @@ struct QuotaSummary: View {
                     ChatGPTApiCreditsRow(
                         credits: credits,
                         tint: .chatgptBrand,
-                        error: credits.errorMessage ?? info.openAIApiCreditsError
+                        error: credits.errorMessage ?? info.openAIApiCreditsError,
+                        keyNumber: index + 1
                     )
                 }
             } else if info.openAIApiCreditsError != nil {

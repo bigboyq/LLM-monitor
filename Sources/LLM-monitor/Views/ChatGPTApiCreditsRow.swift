@@ -5,6 +5,7 @@ struct ChatGPTApiCreditsRow: View {
     let credits: OpenAIApiCreditDetails?
     let tint: Color
     let error: String?
+    var keyNumber: Int = 1
 
     @Environment(\.displayDate) private var displayDate
 
@@ -14,6 +15,9 @@ struct ChatGPTApiCreditsRow: View {
                 Text(titleText)
                     .font(MenuTypography.hoverRowEmphasis)
                     .foregroundStyle(Color.primaryLabel)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help(titleText)
 
                 Spacer(minLength: 4)
 
@@ -68,11 +72,11 @@ struct ChatGPTApiCreditsRow: View {
         }
     }
 
-    private var titleText: String {
-        if let label = credits?.keyLabel, !label.isEmpty {
+    var titleText: String {
+        if let label = credits?.keyLabel?.trimmingCharacters(in: .whitespacesAndNewlines), !label.isEmpty {
             return "API赠金 · \(label)"
         }
-        return "API赠金 · USD"
+        return "API赠金 · API Key #\(keyNumber)"
     }
 
     private var organizationText: String {

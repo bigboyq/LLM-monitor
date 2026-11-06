@@ -106,6 +106,34 @@ final class UsageReportBuilderTests: XCTestCase {
         )
     }
 
+    func testDeepseekModelDetailsUseConfiguredPeakMultiplier() throws {
+        var status = ProviderStatus(
+            id: ProviderKind.deepseek.providerID, displayName: "DeepSeek", kind: .deepseek,
+            iconSystemName: "dollarsign.circle", accentColor: .deepseek,
+            refreshIntervalSeconds: 300, state: .ready
+        )
+        status.isEnabled = true
+        status.deepseekPeakWindow = PeakWindow(startHour: 0, endHour: 24, weekdaysOnly: false, multiplier: 3)
+        let usage = sample(at: now, model: "deepseek-v3-flash", input: 1_000_000, cached: 0, output: 0, reasoning: 0, sourceProviderID: "dsh:deepseek")
+        let day = DshDailyUsage(
+            dayStart: Calendar.current.startOfDay(for: now), inputTokens: 1_000_000,
+            outputTokens: 0, totalTokens: 1_000_000, turns: 1, rounds: 1
+        )
+        status.dshUsage = DshLocalUsage(
+            byProvider: ["deepseek": DshProviderUsage(
+                today: day, dailyTokenUsage: [day], sessionCount: 1, roundCount: 1,
+                recentSamples: [usage], recentSamplesTruncated: false
+            )],
+            modelsByProvider: ["deepseek": ["deepseek-v3-flash"]],
+            sessionsRoot: nil, sessionCount: 1, eventCount: 1, scannedAt: now
+        )
+        let report = UsageReportBuilder.build(makeInput([status]), seq: 1)
+        let entry = try XCTUnwrap(report.dailyBuckets?.flatMap(\.entries).first {
+            $0.quotaProviderID == QuotaProviderID.deepseek
+        })
+        XCTAssertEqual(try XCTUnwrap(entry.value), 3, accuracy: 0.000001)
+    }
+
     private func emptySampleQuotaInfo() -> QuotaInfo {
         QuotaInfo(
             models: [ModelQuota(

@@ -83,11 +83,7 @@ Supported provider fields:
 | `parseZcodeCredential` / `parseZcodePlan` / `parseZcodeBalanceLog` | Legacy compatibility fields; used in the above precedence order when both `zcodeJWTEnabled` and `glmAuthMode` are absent. Settings save clears these keys. |
 | `notifyIntervalRestored` etc. (4 fields) | Optional per-event notification channels (5h/weekly × restored/exhausted): `none` / `system` / `barkAndSystem`. Defaults: restored → `system`, exhausted → `none`. See `spec/notifications.md`. |
 
-The peak window is **fixed at the official default**（Mon–Fri 14:00–18:00，北京时间，
-法定节假日除外）——there are no peak config fields and no settings controls（设置页
-只读展示，见 `spec/ui/settings.md`）。旧版本残留的 `peakStartHour` / `peakEndHour` /
-`peakWeekdaysOnly` 键由 `JSONDecoder` 静默忽略（见 `spec/config.md` §Config Schema），
-不进损坏恢复流程、不影响判定，下次保存时自然消失。
+The peak window defaults to Mon–Fri 14:00–18:00（北京时间，法定节假日除外），相对平时的积分倍率默认 2×。Provider 的 `peakWindow` JSON 可覆盖时段、`weekdaysOnly` 与 `multiplier`；设置页只读展示当前值（见 `spec/config.md` §Config Schema、`spec/ui/settings.md`）。旧版本平铺的 `peakStartHour` / `peakEndHour` / `peakWeekdaysOnly` 键仍静默忽略，不参与判定、保存时清理。
 
 `GlmCodingPlanFetcher.hasLocalAuth()` 要求存在非空 API Key 才报告 ready；即使 ZCode JWT 扩展开启且本地 JWT 存在，也不能替代主额度 API Key。JWT 有效性由 ZCode 接口验证。
 
@@ -280,31 +276,29 @@ today rows.
 
 ## Peak Hours Indicator
 
-智谱官方规则：**每周一至周五 14:00–18:00**（北京时间，与 DeepSeek 统一判定形状）
+智谱默认规则：**每周一至周五 14:00–18:00**（北京时间，与 DeepSeek 统一判定形状）
 为高峰时段，**法定节假日除外**（工作日 = 周一–周五 ∧ 当天不是法定节假日，
 见 `Models/HolidayCalendar.swift`）。高峰期模型调用按基础积分扣费，**非高峰期按
-50% 抵扣**（省一半）。卡片在额度行下方显示一条倒计时提示，颜色分 3 档反映紧迫度：
+50% 抵扣**（省一半），即高峰相对平时为 **2×**。`peakWindow` 可覆盖时段与相对倍率，GLM 名义价值估算不因此乘倍率。卡片在额度行下方显示一条倒计时提示，颜色分 3 档反映紧迫度（文案倍率取当前配置）：
 
-- **高峰期** 🔥（**红色**）：`高峰期 · 还剩 1小时30分`
-- **非高峰期，距高峰 < 1 小时** ❄️（**橙色**，临近）：`距高峰期 45分 · 非高峰 5 折`
-- **非高峰期，距高峰 ≥ 1 小时** ❄️（**绿色**，余量充足）：`距高峰期 2小时13分 · 非高峰 5 折`
+- **高峰期** 🔥（**红色**）：`高峰期 2× · 还剩 1小时30分`
+- **非高峰期，距高峰 < 1 小时** ❄️（**橙色**，临近）：`距高峰期 45分 · 平时 1×`
+- **非高峰期，距高峰 ≥ 1 小时** ❄️（**绿色**，余量充足）：`距高峰期 2小时13分 · 平时 1×`
 
 实现细节：
 
 | Aspect | Behavior |
 |---|---|
-| Model | `Models/PeakWindow.swift`（`GlmPeakWindow` 为兼容 typealias，:141）— `status(at:calendar:holidays:)` 返回 `.peak(until:)` / `.offPeak(until:)` |
+| Model | `Models/PeakWindow.swift`（`GlmPeakWindow` 为兼容 typealias）— `status(at:calendar:holidays:)` 返回 `.peak(until:)` / `.offPeak(until:)` |
 | Time basis | `PeakWindow.beijingCalendar`（Asia/Shanghai，与 DeepSeek 统一；调用点显式传入），与 GLM API 无关 —— refresh 失败也能显示 |
 | Live countdown | `Views/GlmPeakIndicatorView.swift` 只注入 GLM 文案 / 图标 / 配色，倒计时读环境值 `\.displayDate`（**宿主各自注入的活动时钟**：`MenuContentView` 内联 / hover 浮层 `HoverPanelController` / dock 浮层 `EdgeDockController`，各自持有一个 `DisplayClock` 实例并经 `DisplayClockScope` 注入，随宿主显隐 start/stop）；宿主不可见即停、零开销。公共外壳与 `formatPeakDuration` 在 `Views/PeakIndicatorView.swift`，不再自挂 `TimelineView` |
-| Window source | `GlmPeakWindow.zhipuDefault` **常量**（`rebuildStatuses` 时挂在 `ProviderStatus.glmPeakWindow`，GLM kind 一律 `.zhipuDefault`、其余 kind 为 nil；无 config 查询） |
+| Window source | `ProviderConfig.effectivePeakWindow(for:)`（`rebuildStatuses` 时挂在 `ProviderStatus.glmPeakWindow`，未配置 `peakWindow` 时回退 `.zhipuDefault`；其他 kind 为 nil） |
 | Defaults | `GlmPeakWindow.zhipuDefault` = Mon–Fri 14:00–18:00 |
 | Day classification | Rule A：`Calendar.weekday` Mon–Fri = 2…6 ∧ 非法定节假日（`HolidayCalendar.shared`，打包快照 `Resources/ChinaHolidays.json`）；周末与调休上班的周六/周日永远非高峰（`weekdaysOnly`） |
 | Boundary | 半开区间 `[startHour:00, endHour:00)`：14:00:00 算高峰，18:00:00 算非高峰 |
 | Next peak | 今日 `startHour:00` 未到则取今日，否则逐日扫描跳过非高峰日（15 天预算：春节 8 天法定假 + 紧邻周末最长空档 ~11 天） |
 
-窗口固定不可调（与 DeepSeek 同形状）：北京时间 + Rule A 工作日（周一–周五 ∧ 非法定
-节假日），无任何 config 字段或设置开关；设置面板「高峰期提示」段为**只读展示**
-（`工作日 14:00–18:00（北京时间 · 法定节假日除外）`）。
+时区固定为北京时间，默认按 Rule A 工作日（周一–周五 ∧ 非法定节假日）判定；JSON 中 `weekdaysOnly: false` 改为每天执行。设置面板「高峰期提示」只读展示当前时段与积分倍率。
 
 ### ZCode 扩展 API 集成（Activity Plan、重置卡与营销活动）
 

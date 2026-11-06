@@ -135,7 +135,10 @@ enum UsageReportBuilder {
                         quotaProviderID: quotaProviderID,
                         modelName: HarnessTodaySummary.normalizedModelName(sample.modelName)
                     )
-                    entryRows[key, default: EntryAccumulator(key: key, quotaProviderID: quotaProviderID)]
+                    entryRows[key, default: EntryAccumulator(
+                        key: key, quotaProviderID: quotaProviderID,
+                        peakWindow: status.deepseekPeakWindow ?? .defaultWindow
+                    )]
                         .add(
                             sample: sample,
                             truncated: contribution.samplesTruncated
@@ -508,13 +511,15 @@ enum UsageReportBuilder {
     private struct EntryAccumulator {
         let key: EntryKey
         let quotaProviderID: String
+        let peakWindow: DeepseekPeakWindow
         var input = 0, cacheRead = 0, output = 0, reasoning = 0
         var samples: [LocalTokenUsageSample] = []
         var truncated = false
 
-        init(key: EntryKey, quotaProviderID: String) {
+        init(key: EntryKey, quotaProviderID: String, peakWindow: DeepseekPeakWindow) {
             self.key = key
             self.quotaProviderID = quotaProviderID
+            self.peakWindow = peakWindow
         }
 
         mutating func add(sample: LocalTokenUsageSample, truncated: Bool) {
@@ -533,7 +538,7 @@ enum UsageReportBuilder {
             let cost = ModelPricingCatalog.estimate(
                 samples: samples,
                 quotaProviderID: quotaProviderID,
-                deepseekPeakWindow: .defaultWindow
+                deepseekPeakWindow: peakWindow
             )
             return FleetUsageEntry(
                 clientID: key.clientID,

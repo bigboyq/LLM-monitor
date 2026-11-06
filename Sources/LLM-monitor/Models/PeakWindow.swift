@@ -3,8 +3,8 @@ import Foundation
 /// 高峰期时段窗口配置 + 时间判定（参数化：任意 slots × 任意 Calendar × 任意节假日表）。
 ///
 /// 取代原先平行实现、约 80% 重复的 `GlmPeakWindow`（单窗口）与
-/// `DeepseekPeakWindow`（双窗口）；两家的高峰形状已统一（固定窗口 + 北京时间 +
-/// Rule A 工作日口径），只差 slots 数量：
+/// `DeepseekPeakWindow`（双窗口）；默认采用北京时间与 Rule A 工作日口径，
+/// Provider 可通过 JSON 覆盖时段、工作日限制和高峰倍率：
 /// - GLM：`PeakWindow(startHour: 14, endHour: 18, weekdaysOnly: true)` + 北京时间
 ///   —— 智谱官方规则：周一至周五 14:00–18:00 高峰按基础积分，其余时段 50% 抵扣
 /// - DeepSeek：`PeakWindow(slots: [9–12, 14–18], weekdaysOnly: true)` + 北京时间
@@ -30,12 +30,22 @@ struct PeakWindow: Equatable, Sendable, Codable {
     /// `true` = 仅工作日（周一–周五）执行高峰时段；`false` = 每天
     let weekdaysOnly: Bool
 
+    /// 相对非高峰期（1×）的倍率；GLM 用于积分提示，DeepSeek 同时用于金额估算。
+    let multiplier: Double
+
+    var multiplierLabel: String { "\(multiplier.formatted(.number.precision(.fractionLength(0...6))))×" }
+
+    var scheduleLabel: String {
+        let hours = slots.map { String(format: "%02d:00–%02d:00", $0.startHour, $0.endHour) }
+            .joined(separator: ", ")
+        return "\(weekdaysOnly ? "工作日" : "每天") \(hours)（北京时间\(weekdaysOnly ? " · 法定节假日除外" : "")）"
+    }
+
     /// 智谱官方默认：Mon–Fri 14:00–18:00（北京时间，与 DeepSeek 判定形状统一）
     static let zhipuDefault = PeakWindow(startHour: 14, endHour: 18, weekdaysOnly: true)
 
     /// DeepSeek 官方口径：周一至周五 9:00–12:00 & 14:00–18:00（北京时间）为高峰，
-    /// 周六、周日全天平价 —— 高峰永不含周末，`weekdaysOnly` 固定为 true 且无
-    /// 用户可调开关。
+    /// 周六、周日全天平价；可通过 Provider JSON 覆盖默认值。
     static let deepseekDefault = PeakWindow(
         slots: [
             Slot(startHour: 9, endHour: 12),
@@ -45,13 +55,36 @@ struct PeakWindow: Equatable, Sendable, Codable {
     )
 
     /// 单窗口便捷构造（GLM 形态）
-    init(startHour: Int, endHour: Int, weekdaysOnly: Bool) {
-        self.init(slots: [Slot(startHour: startHour, endHour: endHour)], weekdaysOnly: weekdaysOnly)
+    init(startHour: Int, endHour: Int, weekdaysOnly: Bool, multiplier: Double = 2) {
+        self.init(slots: [Slot(startHour: startHour, endHour: endHour)], weekdaysOnly: weekdaysOnly, multiplier: multiplier)
     }
 
-    init(slots: [Slot], weekdaysOnly: Bool) {
+    init(slots: [Slot], weekdaysOnly: Bool, multiplier: Double = 2) {
         self.slots = slots
         self.weekdaysOnly = weekdaysOnly
+        self.multiplier = multiplier
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case slots, weekdaysOnly, multiplier
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let slots = try c.decode([Slot].self, forKey: .slots)
+        guard !slots.isEmpty,
+              slots.allSatisfy({ (0...23).contains($0.startHour) && (1...24).contains($0.endHour) && $0.startHour < $0.endHour }) else {
+            throw DecodingError.dataCorruptedError(forKey: .slots, in: c, debugDescription: "高峰时段必须为非空的小时区间，满足 0 ≤ startHour < endHour ≤ 24")
+        }
+        let sorted = slots.sorted { $0.startHour < $1.startHour }
+        guard zip(sorted, sorted.dropFirst()).allSatisfy({ $0.endHour <= $1.startHour }) else {
+            throw DecodingError.dataCorruptedError(forKey: .slots, in: c, debugDescription: "高峰时段不能重叠")
+        }
+        let multiplier = try c.decodeIfPresent(Double.self, forKey: .multiplier) ?? 2
+        guard multiplier.isFinite, multiplier >= 1 else {
+            throw DecodingError.dataCorruptedError(forKey: .multiplier, in: c, debugDescription: "高峰倍率必须为不小于 1 的有限数值")
+        }
+        self.init(slots: sorted, weekdaysOnly: try c.decodeIfPresent(Bool.self, forKey: .weekdaysOnly) ?? true, multiplier: multiplier)
     }
 
     /// 单窗口（GLM 形态）便捷访问：首个 slot 的边界。多窗口（DeepSeek）语义
@@ -93,7 +126,7 @@ struct PeakWindow: Equatable, Sendable, Codable {
         // 1. 检查 `now` 是否落在当天的某个高峰 Slot 内
         for slot in slots {
             if let start = cal.date(bySettingHour: slot.startHour, minute: 0, second: 0, of: now),
-               let end = cal.date(bySettingHour: slot.endHour, minute: 0, second: 0, of: now),
+               let end = cal.date(byAdding: .hour, value: slot.endHour, to: cal.startOfDay(for: now)),
                now >= start, now < end {
                 return .peak(until: end)
             }
