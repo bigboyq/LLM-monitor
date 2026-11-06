@@ -157,10 +157,8 @@ final class AggregateHealthLevelTests: XCTestCase {
     }
 
     /// 修复回归：状态栏 SF Symbol 圆点（systemHealthLevel）与卡片头部点
-    /// （ProviderStatus.aggregateHealthLevel）必须同口径。GLM N=5 反例：
-    /// 5h 剩 40%（无 reset 时间）、周剩 8%（8%×5=40%，并列瓶颈取 5h →
-    /// 固定 30% 黄线 → 绿）；旧实现走逐窗口 healthLevel 时周 8% 直接判红，
-    /// 两处颜色反向。
+    /// （ProviderStatus.aggregateHealthLevel）必须同口径：5h 虽充足，周额度
+    /// 8% 且剩整周时仍应告急，两处均取各窗口最差档。
     @MainActor
     func testSystemHealthLevelMatchesCardAggregateHealthLevel() {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -217,15 +215,15 @@ final class AggregateHealthLevelTests: XCTestCase {
         appState.mutateStatus(for: "test_glm") { $0.state = .ok(info) }
 
         let status = appState.statuses.first(where: { $0.id == "test_glm" })!
-        XCTAssertEqual(status.aggregateHealthLevel(at: now), .healthy, "卡片头部点按实际可用口径（周 × 5，瓶颈 5h）应为绿")
+        XCTAssertEqual(status.aggregateHealthLevel(at: now), .critical, "周窗口告急时不能被充足的5h窗口掩盖")
         XCTAssertEqual(appState.systemHealthLevel(at: now), status.aggregateHealthLevel(at: now), "状态栏 SF Symbol 圆点必须与卡片头部点同色")
-        XCTAssertEqual(appState.systemHealthLevel(at: now), .healthy)
+        XCTAssertEqual(appState.systemHealthLevel(at: now), .critical)
     }
 
     @MainActor
     // MARK: - 统一 colorLevel 判定（方案 A）
 
-    /// `ModelQuota.aggregateHealthLevel`：binding 选择与并列取 5h、周 × N 折算、
+    /// `ModelQuota.aggregateHealthLevel`：各窗口按自身尺度判色后取较差档、
     /// 高峰 floor、无窗口 .critical。
     func testModelQuotaAggregateHealthLevel() {
         let week = 7.0 * 24 * 3600
@@ -276,25 +274,22 @@ final class AggregateHealthLevelTests: XCTestCase {
         XCTAssertEqual(makeModel(intervalPercent: 8, weeklyPercent: nil, intervalTimeFraction: 0.2).aggregateHealthLevel(providerKind: .glmCodingPlan), .warning)
         XCTAssertEqual(makeModel(intervalPercent: 2, weeklyPercent: nil, intervalTimeFraction: 0.2).aggregateHealthLevel(providerKind: .glmCodingPlan), .critical)
 
-        // 3. 仅周窗口：周 × N 折算参与。GLM N=5：周 8% → 40%，瓶颈周（tf≈1 →
-        //    黄线 50）→ 黄。若未折算，8% 会直接落进 < 15 的红区。
+        // 3. 仅周窗口：使用原始周额度，不乘 N。
         XCTAssertEqual(
             makeModel(intervalPercent: nil, weeklyPercent: 8).aggregateHealthLevel(providerKind: .glmCodingPlan),
-            .warning
+            .critical
         )
-        // codex N=6：周 6% → 36% → 黄（原始 6% 为红，折算改变判定）。
+        // codex 同样按原始周额度判红。
         XCTAssertEqual(
             makeModel(intervalPercent: nil, weeklyPercent: 6).aggregateHealthLevel(providerKind: .codexChatGpt),
-            .warning
+            .critical
         )
 
-        // 4. 双窗口并列（5h 40% = 周 8%×5）：并列取 5h。
-        //    当 5h 剩余时间 tf=0.2（分母 20%）而周 tf=1.0 时，
-        //    若取 5h 则 40% >= 10% 为绿；若错误地取周瓶颈（tf=1.0）则 40% < 50% 会是黄。
+        // 4. 即使有效5h充足，原始周额度仍可单独触发红色。
         XCTAssertEqual(
             makeModel(intervalPercent: 40, weeklyPercent: 8, intervalTimeFraction: 0.2, weeklyTimeFraction: 1.0)
                 .aggregateHealthLevel(providerKind: .glmCodingPlan),
-            .healthy
+            .critical
         )
 
         // 5. 高峰 floor：healthy 被压到 warning；critical 保持 critical（红色优先）。
@@ -313,6 +308,36 @@ final class AggregateHealthLevelTests: XCTestCase {
                 .aggregateHealthLevel(providerKind: .glmCodingPlan, isPeakPrice: true),
             .critical
         )
+    }
+
+    func testGeminiEffectiveIntervalAndWeeklyUseTheirOwnTimeScales() throws {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        var thresholds = AlertThresholdConfig.default
+        thresholds.apiQuotaCriticalPercent = 20
+        func model(intervalTime: Double?, weeklyTime: Double) -> ModelQuota {
+            ModelQuota(
+                modelName: "gemini_models", intervalTotalCount: 0, intervalUsageCount: 0,
+                intervalRemainingPercent: 6.1, intervalStatus: .present,
+                intervalResetsAt: intervalTime.map { now.addingTimeInterval(5 * 3600 * $0) },
+                intervalWindowSeconds: 5 * 3600,
+                weeklyTotalCount: 0, weeklyUsageCount: 0,
+                weeklyRemainingPercent: 1.5, weeklyStatus: .present,
+                weeklyResetsAt: now.addingTimeInterval(7 * 24 * 3600 * weeklyTime),
+                weeklyWindowSeconds: 7 * 24 * 3600
+            )
+        }
+        let quota = model(intervalTime: 0.4, weeklyTime: 0.114)
+        let reading = try XCTUnwrap(quota.aggregateActualAvailable(providerKind: .antigravity, at: now))
+        XCTAssertEqual(reading.percent, 5.25, accuracy: 0.000001)
+        XCTAssertEqual(try XCTUnwrap(reading.bindingTimeFraction), 0.4, accuracy: 0.000001)
+        XCTAssertEqual(quota.aggregateHealthLevel(providerKind: .antigravity, alertThresholds: thresholds, at: now), .critical)
+        // 周窗口接近重置而健康，5h有效额度仍独立判红。
+        XCTAssertEqual(model(intervalTime: 0.4, weeklyTime: 0.01).aggregateHealthLevel(providerKind: .antigravity, alertThresholds: thresholds, at: now), .critical)
+        // 5h即将重置而健康，原始周额度仍独立判红。
+        XCTAssertEqual(model(intervalTime: 0.01, weeklyTime: 0.114).aggregateHealthLevel(providerKind: .antigravity, alertThresholds: thresholds, at: now), .critical)
+        let missing = model(intervalTime: nil, weeklyTime: 0.01)
+        XCTAssertNil(missing.aggregateActualAvailable(providerKind: .antigravity, at: now)?.bindingTimeFraction)
+        XCTAssertEqual(missing.aggregateHealthLevel(providerKind: .antigravity, alertThresholds: thresholds, at: now), .critical)
     }
 
     /// `ProviderStatus.aggregateHealthLevel`：nil 透传（灰点）、空窗口 .critical、

@@ -218,7 +218,7 @@ struct SegmentedQuotaProgressBar: View {
     }
 
     /// 第一格（interval / 5h）的颜色。
-    /// - combined 模式：只用 primaryLevel，不受 weekly 影响
+    /// - combined 模式：5h 有效额度配 5h 时间系数
     /// - singleInterval：只看 primaryLevel
     /// - singleWeekly：降级为 weeklySegmentColor（此时 index 0 就是 weekly 格）
     ///
@@ -229,8 +229,11 @@ struct SegmentedQuotaProgressBar: View {
         case .singleWeekly:
             return color(for: ModelQuota.colorLevel(percent: weeklyFraction * 100.0, timeFraction: clampedFraction))
         case .singleInterval, .combined:
-            let tf = primaryTimeRemainingFraction ?? (multiplier <= 1.001 ? clampedFraction : nil)
-            return color(for: ModelQuota.colorLevel(percent: primaryFraction * 100.0, timeFraction: tf))
+            let tf = windowMode == .combined ? primaryTimeRemainingFraction : primaryTimeRemainingFraction ?? clampedFraction
+            let fraction = windowMode == .combined
+                ? EquivalentQuotaAllocation.effectivePrimaryFraction(primaryFraction: primaryFraction, weeklyFraction: weeklyFraction, multiplier: multiplier)
+                : primaryFraction
+            return color(for: ModelQuota.colorLevel(percent: fraction * 100.0, timeFraction: tf))
         }
     }
 

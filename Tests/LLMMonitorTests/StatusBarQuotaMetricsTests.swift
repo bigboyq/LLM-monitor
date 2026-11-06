@@ -313,14 +313,13 @@ final class StatusBarQuotaMetricsTests: XCTestCase {
             accuracy: 0.001,
             "中心应取实际可用 min(5h, 周×N) 的最低值：A = min(40%, 30%×6=180%) = 40%，B = min(80%, 40%×5=200%) = 80%，两者取 min 仍为 40%"
         )
-        // 套餐点统一 colorLevel（实际可用口径）：A = min(5h 40%, 周 30%×6→100) = 40，
-        // 瓶颈 5h → 固定 30% 黄线 → healthy；B = min(5h 80%, 周 40%×5→100) = 80 → healthy。
-        // （旧 standard 阈值下 A/B 均为 warning。）
-        XCTAssertEqual(metrics.quotaHealthLevels, [.healthy, .healthy, .healthy])
+        // 综合健康度对每个窗口独立标色后取差：A 周 30% / 剩余时间 60% = 50% → warning；
+        // A 的 5h 与 B 的两个窗口均 healthy，故 A 的综合状态仍为 warning。
+        XCTAssertEqual(metrics.quotaHealthLevels, [.warning, .healthy, .healthy])
 
         // 聚合右弧的动态黄线输入取所有周窗口剩余时间比例的最大值：A = 0.6、B = 0.2 → 0.6。
         XCTAssertEqual(metrics.weeklyTimeFraction ?? -1, 0.6, accuracy: 0.001)
-        // 中心 argmin 是套餐 A（40% < 80%），瓶颈为 5h 短窗口 → 统一透传其剩余时间比例（1h / 5h = 0.2）。
+        // 中心 argmin 是套餐 A（40% < 80%），双窗中心始终透传 5h 剩余时间比例（1h / 5h = 0.2）。
         XCTAssertEqual(metrics.centerTimeFraction ?? -1, 0.2, accuracy: 0.001)
 
         // 验证 statusBarPinnedProvider 锚定生效：若锚定到 test_b，则仅计算 test_b 的指标
@@ -514,9 +513,11 @@ final class StatusBarQuotaMetricsTests: XCTestCase {
         // 左右弧仍为原始物理剩余，不受实际可用口径影响。
         XCTAssertEqual(metrics.interval.minAvailable, 0.80, accuracy: 0.001)
         XCTAssertEqual(metrics.weekly.minAvailable, 0.10, accuracy: 0.001)
-        // 中心 argmin 是套餐 A（50% < 90%），瓶颈为周窗口且刚重置 → timeFraction = 1.0
-        // 透传给中心 colorLevel（动态黄线 min(time%, 50)）。
-        XCTAssertEqual(metrics.centerTimeFraction ?? -1, 1.0, accuracy: 0.001)
+        // 回归：虽然周额度限制了中心读数，时间仍配 5h 的 1h / 5h = 0.2，
+        // 不得误用周窗口刚重置的 1.0。
+        XCTAssertEqual(metrics.centerTimeFraction ?? -1, 0.2, accuracy: 0.001)
+        XCTAssertEqual(metrics.quotaHealthLevels, [.critical, .critical, .healthy],
+                       "综合健康应独立检查原始周额度，不能沿用中心折算值的健康状态")
 
         // 2. 周 × N ≥ 5h：5h 仍是瓶颈。GLM 5h=30%、周=50%（250% ≥ 30%）；
         //    codex 5h=40%、周=20%（120% ≥ 40%）。中心取最低 30%。
@@ -532,8 +533,7 @@ final class StatusBarQuotaMetricsTests: XCTestCase {
             "周×N 仍有余量时，中心不应被压到 5h 剩余以下"
         )
 
-        // 3. 仅周窗口：按 周 × N 参与。GLM 周=20%（×5 = 100% 封顶）、
-        //    codex 周=10%（×6 = 60%）。中心取最低 60%。
+        // 3. 仅周窗口：使用原始周百分比，不乘 N。GLM 周=20%、codex 周=10%，中心取 10%。
         setQuotas(
             a: makeModel(modelName: "glm_coding_plan", intervalPercent: nil, weeklyPercent: 20),
             b: makeModel(modelName: "chatgpt_plan", intervalPercent: nil, weeklyPercent: 10)
@@ -541,12 +541,13 @@ final class StatusBarQuotaMetricsTests: XCTestCase {
         metrics = appState.statusBarQuotaMetrics(at: now)
         XCTAssertEqual(
             metrics.centerAvailable ?? -1,
-            0.60,
+            0.10,
             accuracy: 0.001,
-            "仅周窗口按 周×N 参与中心：20%×5 封顶为 100%，10%×6 = 60%"
+            "仅周窗口中心应保留原始周剩余百分比"
         )
+        XCTAssertEqual(metrics.centerTimeFraction ?? -1, 1.0, accuracy: 0.001)
 
-        // 4. 仅周窗口且 周 × N 超过 1：clamp 到 1.0，不产生超过满格的中心值。
+        // 4. 较高的仅周额度仍保留原始百分比，不因乘 N 而变为满格。
         setQuotas(
             a: makeModel(modelName: "glm_coding_plan", intervalPercent: nil, weeklyPercent: 40),
             b: makeModel(modelName: "chatgpt_plan", intervalPercent: nil, weeklyPercent: 30)
@@ -554,9 +555,9 @@ final class StatusBarQuotaMetricsTests: XCTestCase {
         metrics = appState.statusBarQuotaMetrics(at: now)
         XCTAssertEqual(
             metrics.centerAvailable ?? -1,
-            1.0,
+            0.30,
             accuracy: 0.001,
-            "40%×5 与 30%×6 均超过满格，中心应 clamp 到 100%"
+            "仅周窗口 40% 与 30% 应取 30%，不能折算为满格"
         )
 
         // 5. 仅 5h 窗口：直接按 5h 剩余参与，与原语义一致；中心 timeFraction
@@ -648,8 +649,7 @@ final class StatusBarQuotaMetricsTests: XCTestCase {
         }
 
         // 1. 接力：套餐 A 耗尽（5h 与周均 0），套餐 B 仍有 35%（仅 5h 窗口）。
-        //    中心 = B 的实际可用 35%，而非被 A 拖到 0；瓶颈是 B 的 5h 短窗口
-        //    → timeFraction 为 nil（固定 30% 黄线）。
+        //    中心 = B 的实际可用 35%，而非被 A 拖到 0；时间跟随 B 的 5h 短窗口。
         setQuotas(
             a: makeModel(modelName: "glm_coding_plan", intervalPercent: 0, weeklyPercent: 0),
             b: makeModel(modelName: "chatgpt_plan", intervalPercent: 35, weeklyPercent: nil)
@@ -665,28 +665,26 @@ final class StatusBarQuotaMetricsTests: XCTestCase {
         // 底部三点不排除耗尽套餐：A 的点保持红，B 的点为绿。
         XCTAssertEqual(metrics.quotaHealthLevels, [.critical, .healthy, .healthy])
 
-        // 2. timeFraction 跟随新胜出套餐：A 耗尽，B 仅周窗口 4%（codex ×6 = 24%）
-        //    且窗口只剩 20% 时间。中心 = 24%，timeFraction = 0.2 透传（动态黄线
-        //    min(20, 50) = 20 → 24 ≥ 20 绿色；若沿用被排除套餐的 nil/固定 30%
-        //    黄线会虚黄）。
+        // 2. timeFraction 跟随新胜出套餐：A 耗尽，B 仅周窗口 4%，只剩 20% 时间。
+        //    中心保留原始 4%，时间为 0.2；4% / 20% = 20% → critical。
         setQuotas(
             a: makeModel(modelName: "glm_coding_plan", intervalPercent: 0, weeklyPercent: 0),
             b: makeModel(modelName: "chatgpt_plan", intervalPercent: nil, weeklyPercent: 4, weeklyResetFraction: 0.2)
         )
         metrics = appState.statusBarQuotaMetrics(at: now)
-        XCTAssertEqual(metrics.centerAvailable ?? -1, 0.24, accuracy: 0.001)
+        XCTAssertEqual(metrics.centerAvailable ?? -1, 0.04, accuracy: 0.001)
         XCTAssertEqual(
             metrics.centerTimeFraction ?? -1,
             0.2,
             accuracy: 0.001,
-            "中心 timeFraction 应取自接力套餐 B 的瓶颈周窗口"
+            "仅周套餐的中心 timeFraction 应取自周窗口"
         )
         let centerLine = IconDuoSVGBuilder.buildSVG(metrics: metrics)
             .components(separatedBy: "\n")
             .first { $0.contains("id=\"center-sector\"") } ?? ""
-        XCTAssertTrue(centerLine.contains("data-value=\"24\""))
-        XCTAssertTrue(centerLine.contains("fill=\"#34C759\""), "中心应按 B 的动态黄线判绿，不得虚黄")
-        XCTAssertEqual(metrics.quotaHealthLevels, [.critical, .healthy, .healthy])
+        XCTAssertTrue(centerLine.contains("data-value=\"4\""))
+        XCTAssertTrue(centerLine.contains("fill=\"#FF453A\""), "仅周剩余 4% 应按原始额度及周时间判红")
+        XCTAssertEqual(metrics.quotaHealthLevels, [.critical, .critical, .healthy])
 
         // 3. 全部套餐耗尽：中心回退 0（红色空心环），无胜出套餐 → timeFraction nil。
         setQuotas(
@@ -704,10 +702,9 @@ final class StatusBarQuotaMetricsTests: XCTestCase {
         XCTAssertTrue(exhaustedLine.contains("stroke=\"#FF453A\""))
     }
 
-    /// 中心扇形的 timeFraction 透传：周瓶颈且临近重置（late window）时，
-    /// 动态黄线 min(time%, 50) 收紧，中心不能按「无时间系数的固定 30%」虚黄。
+    /// 仅周窗口的中心保留原始周百分比，并透传周剩余时间；不乘周等效倍率。
     @MainActor
-    func testCenterTimeFractionWeeklyBindingPassthrough() {
+    func testCenterWeeklyOnlyKeepsRawPercentAndWeeklyTime() {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -730,9 +727,8 @@ final class StatusBarQuotaMetricsTests: XCTestCase {
 
         let now = Date()
         let totalWeekSeconds = 7.0 * 24 * 3600
-        // 仅周窗口：周剩余 4%（codex ×6 = 24%），窗口只剩 20% 时间。
-        // colorLevel(24, tf=0.2)：黄线 = min(20, 50) = 20 → 24 ≥ 20 → 绿。
-        // 若 timeFraction 未透传（nil → 固定 30% 黄线），24 < 30 会虚黄。
+        // 仅周窗口：周剩余 4%，窗口只剩 20% 时间。
+        // colorLevel(4, tf=0.2)：4 / 20 = 20%，低于 30% 红线，应为 critical。
         let model = ModelQuota(
             modelName: "chatgpt_plan",
             intervalTotalCount: 0,
@@ -753,12 +749,12 @@ final class StatusBarQuotaMetricsTests: XCTestCase {
         }
 
         let metrics = appState.statusBarQuotaMetrics(at: now)
-        XCTAssertEqual(metrics.centerAvailable ?? -1, 0.24, accuracy: 0.001)
+        XCTAssertEqual(metrics.centerAvailable ?? -1, 0.04, accuracy: 0.001)
         XCTAssertEqual(metrics.centerTimeFraction ?? -1, 0.2, accuracy: 0.001)
 
         let svg = IconDuoSVGBuilder.buildSVG(metrics: metrics)
-        XCTAssertTrue(svg.contains("id=\"center-sector\" data-value=\"24\""))
-        XCTAssertTrue(svg.contains("fill=\"#34C759\""), "周瓶颈 late-window 时中心按时间感知标色应为绿色，不得虚黄")
+        XCTAssertTrue(svg.contains("id=\"center-sector\" data-value=\"4\""))
+        XCTAssertTrue(svg.contains("fill=\"#FF453A\""), "仅周窗口应按原始百分比及周剩余时间判红")
     }
 
     /// minimax 的 `video`（视频生成）是独立小配额池，不参与 iconDuo 聚合
@@ -978,6 +974,6 @@ final class StatusBarQuotaMetricsTests: XCTestCase {
         XCTAssertEqual(metrics.interval.avgAvailable, 0.4, accuracy: 0.001)
         XCTAssertFalse(metrics.weekly.isAvailable)
         XCTAssertEqual(metrics.centerAvailable ?? -1, 0.4, accuracy: 0.001, "中心仍按 video 的实际可用 40% 参与聚合")
-        XCTAssertEqual(metrics.quotaHealthLevels, [.healthy, .healthy, .healthy], "40% 高于固定 30% 黄线，video 的点为绿")
+        XCTAssertEqual(metrics.quotaHealthLevels, [.healthy, .healthy, .healthy], "40% 相对 20% 剩余时间充足，video 的点为绿")
     }
 }

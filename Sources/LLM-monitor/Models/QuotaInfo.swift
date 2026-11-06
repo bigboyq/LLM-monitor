@@ -73,9 +73,8 @@ struct ModelQuota: Equatable, Codable, Sendable {
     /// 健康度判定 —— 与卡片分段条同一套 `colorLevel` 时间感知阈值（方案 A 统一，
     /// 取代原先状态栏专用的固定阈值 `statusBarHealthLevel`）。
     ///
-    /// 输入口径 = 「实际可用」：对本套餐存在的窗口取
-    /// min(5h 剩余%, 周剩余% × 周等效倍率 N)，瓶颈窗口的剩余时间比例作为
-    /// timeFraction 参与长窗口动态黄线（详见 `aggregateActualAvailable`）。
+    /// 5h 有效额度 = min(5h 剩余%, 周剩余% × N)，配 5h 剩余时间比例；
+    /// 周额度按原始周剩余% 配周剩余时间比例。各窗口独立判色后取较差档位。
     /// `isPeakPrice`（GLM 高峰期）时该套餐状态保底 `.warning`（红色优先）；
     /// 没有任何窗口时保守返回 .critical。
     func aggregateHealthLevel(
@@ -87,12 +86,24 @@ struct ModelQuota: Equatable, Codable, Sendable {
         guard let reading = aggregateActualAvailable(providerKind: providerKind, at: now) else {
             return .critical
         }
-        let level = Self.colorLevel(
-            percent: reading.percent,
-            timeFraction: reading.bindingTimeFraction,
-            warningPercent: alertThresholds.apiQuotaWarningPercent,
-            criticalPercent: alertThresholds.apiQuotaCriticalPercent
-        )
+        var levels: [HealthLevel] = []
+        if hasIntervalWindow {
+            levels.append(Self.colorLevel(
+                percent: reading.percent,
+                timeFraction: intervalTimeRemainingFraction(at: now),
+                warningPercent: alertThresholds.apiQuotaWarningPercent,
+                criticalPercent: alertThresholds.apiQuotaCriticalPercent
+            ))
+        }
+        if hasWeeklyWindow {
+            levels.append(Self.colorLevel(
+                percent: min(max(weeklyRemainingPercent, 0), 100),
+                timeFraction: weeklyTimeRemainingFraction(at: now),
+                warningPercent: alertThresholds.apiQuotaWarningPercent,
+                criticalPercent: alertThresholds.apiQuotaCriticalPercent
+            ))
+        }
+        let level = levels.min() ?? .critical
         // HealthLevel 的 Comparable 方向：rank 越大越健康（critical 0 < warning 1 <
         // healthy 2），min 取两者中更差的一档 → healthy 被压到 .warning，而
         // .warning / .critical 保持不变（红色优先，floor 不吞掉红色）。
@@ -100,10 +111,10 @@ struct ModelQuota: Equatable, Codable, Sendable {
     }
 
     /// 「实际可用」单套餐读数，综合指示器的统一输入口径：
-    /// - `percent` = min(5h 剩余, 周剩余 × 周等效倍率 N)，每项先 clamp 到 [0, 100]；
-    /// - `bindingTimeFraction` = 取到 min 的瓶颈窗口的剩余时间比例。并列取 5h
-    ///   （对齐 `EquivalentQuotaAllocation.bindingWindow` 的并列 → .primary 约定）；
-    ///   瓶颈窗口剩余时间比例参与统一时间感知标色（分母 = 100% * timeFraction）。
+    /// - 双窗口 `percent` = min(5h 剩余, 周剩余 × N)，时间系数始终配 5h；
+    /// - 仅 5h 时按 5h 读数，仅周时按原始周读数，各配自身时间系数。
+    /// `bindingTimeFraction` 保留历史字段名，表示当前读数尺度的时间系数，
+    /// 与 UI 展示的瓶颈重置时间选择无关。
     ///
     /// 没有任何窗口时返回 nil。状态栏中心扇形（`AppState.statusBarQuotaMetrics`）
     /// 与 `aggregateHealthLevel` 共用这一份实现，避免两处口径漂移。
@@ -123,14 +134,11 @@ struct ModelQuota: Equatable, Codable, Sendable {
             : nil
         switch (intervalPercent, weeklyUnits) {
         case let (interval?, weekly?):
-            // 并列取 5h：weeklyUnits < interval 才算周瓶颈（bindingWindow 同款约定）。
-            return weekly < interval
-                ? (percent: weekly, bindingTimeFraction: weeklyTimeRemainingFraction(at: now))
-                : (percent: interval, bindingTimeFraction: intervalTimeRemainingFraction(at: now))
+            return (percent: min(interval, weekly), bindingTimeFraction: intervalTimeRemainingFraction(at: now))
         case let (interval?, nil):
             return (percent: interval, bindingTimeFraction: intervalTimeRemainingFraction(at: now))
-        case let (nil, weekly?):
-            return (percent: weekly, bindingTimeFraction: weeklyTimeRemainingFraction(at: now))
+        case (nil, .some):
+            return (percent: min(max(weeklyRemainingPercent, 0), 100), bindingTimeFraction: weeklyTimeRemainingFraction(at: now))
         case (nil, nil):
             return nil
         }

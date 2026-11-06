@@ -226,10 +226,8 @@ final class EdgeDockProjectionTests: EdgeDockTestCase {
         )
     }
 
-    /// 外环颜色跟随**有效额度**而不是原始 5h：40% 的 5h 配 5% 的周（×6 = 30%），
-    /// 有效额度 30%、瓶颈是周窗口 → 时间比例 0.6 → 动态黄线 min(60, 50) = 50，
-    /// 30% < 50 → 黄。反事实：若仍按原始 5h 算，40% 配固定 30% 黄线会是 healthy——
-    /// 这条测试钉住「颜色跟随有效额度、时间比例随瓶颈窗口走」的行为变化。
+    /// 有效5h为 min(40%, 4%×6)=24%；缺少5h重置时间时按固定阈值判红，
+    /// 不能借用周时间0.6把它变成黄色。
     func testOuterRingHealthFollowsEffectiveQuotaWithWeeklyBinding() {
         let status = makeStatus(id: "codex", kind: .codexChatGpt, state: .ok(makeInfo([
             quotaModel(intervalPercent: 40, weeklyPercent: 4, weeklyTimeFraction: 0.6),
@@ -239,14 +237,14 @@ final class EdgeDockProjectionTests: EdgeDockTestCase {
             0.24, accuracy: 0.0001
         )
         XCTAssertEqual(
-            EdgeDockProjection.intervalHealth(status, at: Self.makeNow), .warning,
-            "瓶颈是周窗口：24% 低于动态黄线 50% * 60% = 30%；若按原始 5h（40%）会是 healthy"
+            EdgeDockProjection.intervalHealth(status, at: Self.makeNow), .critical,
+            "有效5h为24%，缺5h时间按固定30%危险阈值判红，不借用周时间"
         )
     }
 
     /// 多 model 时有效额度也取**最低**的那个，且颜色与弧长来自同一个瓶颈：
     /// a 的 min(90, 90×6→封顶 100) = 90，b 的 min(80, 4×6 = 24) = 24 → 外环 24%，
-    /// 颜色也按 b 的瓶颈（周窗口、动态黄线 30）判定 → 黄。若颜色另取 model
+    /// 颜色也按 b 的有效5h判定（缺少5h时间，24%低于固定30%危险阈值）→ 红。若颜色另取 model
     /// （比如 a 的 90% 是绿的），弧长与颜色就指向两个不同的瓶颈。
     func testOuterRingEffectiveQuotaTakesWorstModel() {
         let status = makeStatus(id: "multi", kind: .codexChatGpt, state: .ok(makeInfo([
@@ -258,7 +256,7 @@ final class EdgeDockProjectionTests: EdgeDockTestCase {
             0.24, accuracy: 0.0001
         )
         XCTAssertEqual(
-            EdgeDockProjection.intervalHealth(status, at: Self.makeNow), .warning,
+            EdgeDockProjection.intervalHealth(status, at: Self.makeNow), .critical,
             "颜色来自瓶颈 model b（周瓶颈、24%），不与弧长脱钩"
         )
     }

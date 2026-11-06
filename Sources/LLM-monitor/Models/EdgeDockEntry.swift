@@ -230,11 +230,8 @@ enum EdgeDockProjection {
     /// 最低的那个 model），颜色必须和弧长指向同一个瓶颈，否则会出现"最紧的那个
     /// model 决定了弧长、另一个更闲的 model 决定了颜色"。
     ///
-    /// 时间比例**随瓶颈窗口走**（`aggregateActualAvailable` 的 `bindingTimeFraction`）：
-    /// 瓶颈是 5h 短窗口时为 nil → 固定 30% 黄线（动态黄线 `min(time%, 50)` 是
-    /// **长窗口**规则：5h 窗口本来就每 5 小时重置一次，"周还剩多少"对它没有意义）；
-    /// 瓶颈是周窗口（周 × N 比 5h 更紧）时为周剩余时间比例 → 长窗口动态黄线，
-    /// 与 `aggregateHealthLevel` 同口径。
+    /// 时间系数与读数尺度一致：有 5h 时有效额度配 5h 时间，仅周时原始周额度配
+    /// 周时间；重置时间缺失时按固定阈值判色。综合健康另取两个窗口的较差档。
     static func intervalHealth(
         _ status: ProviderStatus,
         alertThresholds: AlertThresholdConfig = .default,

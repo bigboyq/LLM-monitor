@@ -81,11 +81,11 @@ of the **weekly window alone**, each through
 `ModelQuota.colorLevel(percent:timeFraction:)` — the same thresholds the segmented
 bar uses. The weekly ring passes `weeklyTimeRemainingFraction(at:)` and
 gets the unified time-aware pacing line (分母 = `100% * t`, `< 30%` critical, `< 60%` warning).
-The outer ring's time fraction **follows the binding window**: when the 5h window is the
-bottleneck it passes `intervalTimeRemainingFraction(at:)`, applying the same dynamic
-pacing rule (ensuring e.g. 15% quota remaining with 5 minutes left is correctly treated as healthy);
-when the weekly window binds (weekly × N tighter than 5h remaining) it passes the weekly time
-fraction and gets the same dynamic line, matching `aggregateHealthLevel`. Both take
+The outer ring pairs effective 5h quota with `intervalTimeRemainingFraction(at:)`,
+even when weekly × N is the tighter limit. Weekly-only models use raw weekly percent
+and weekly time instead. A missing reset time falls back to fixed thresholds rather
+than borrowing the other window's time. Aggregate health evaluates effective 5h and
+raw weekly readings independently and takes the worse tier. Both rings take
 the **worst** model — for the outer ring the one with the lowest effective quota —
 matching how their lengths are computed, so length and colour never
 point at different bottlenecks. Off: both rings take the provider's aggregate

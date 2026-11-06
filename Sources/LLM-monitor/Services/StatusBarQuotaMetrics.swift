@@ -26,7 +26,7 @@ struct StatusBarQuotaMetrics: Equatable, Sendable {
     var interval: QuotaRingMetrics
     /// Icon Duo 中心扇形显示的剩余比例：仍有剩余的套餐中「实际可用」的最低值——
     /// 每个套餐按自身存在的窗口取 min(5h 剩余, 周剩余 × 周等效倍率 N)（与卡片
-    /// 分段条同口径；仅 5h 按 5h、仅周按 周 × N，均 clamp 到 1.0），已耗尽
+    /// 分段条同口径；仅 5h 按 5h、仅周按原始周余量，均 clamp 到 1.0），已耗尽
     /// （实际可用为 0）的套餐不参与（多套餐接力时中心不被拖到 0），全部套餐
     /// 耗尽时为 0，任何套餐都没有窗口时为 nil。nil 表示暂无额度数据。
     var centerAvailable: Double?
@@ -43,8 +43,8 @@ struct StatusBarQuotaMetrics: Equatable, Sendable {
     /// 取最宽的剩余时间比例可避免任一临近重置的套餐把整条弧压成黄色，
     /// 并与中心扇形的时间感知标色同向（分母 = 100% * timeFraction）。全部缺 reset 时间时为 nil。
     var intervalTimeFraction: Double?
-    /// 中心扇形颜色的统一时间感知输入：产生中心最小值的套餐在其瓶颈（binding）
-    /// 窗口上的剩余时间比例；全部缺 reset 时间时为 nil（分母退回 100%）。
+    /// 中心所选套餐的时间系数：有5h时配5h时间，仅周时配周时间；
+    /// 对应重置时间缺失时为 nil（分母退回100%）。
     var centerTimeFraction: Double?
     /// 集中告警配置（默认 API 60%/30%，DeepSeek 10/3）
     var alertThresholds: AlertThresholdConfig

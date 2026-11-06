@@ -54,7 +54,7 @@ available segments (a missing window keeps only its gray track). The center uses
 actual available ratio across active models — per model, `min(5h remaining, weekly remaining × N)`
 with the provider-specific weekly equivalent multiplier N (`ModelQuota.weeklyEquivalentMultiplier`,
 the same caliber as the card's segmented progress bar); a model with only one window contributes
-just that window (weekly-only models contribute weekly × N, clamped to 1.0), and the center stays
+just that window's raw remainder (without weekly × N for weekly-only models), and the center stays
 nil when no model has any window. It is a symmetrical circular sector anchored at the top (12 o'clock)
 that opens left and right from the bottom (6 o'clock) as quota depletes (full 360° circle at 100%,
 180° dome semicircle at 50%, empty red ring at 0%; there is no numeric label). Three bottom dots (enlarged to r=36) follow
@@ -67,8 +67,10 @@ center sector — go through the time-aware `ModelQuota.colorLevel` thresholds (
 `< 60% * t` yellow; otherwise green, with dynamic denominator `100% * t`, configurable via `AlertThresholdConfig`),
 the same rule the provider cards use, replacing the retired fixed `HealthLevel.standard`
 thresholds. Composite elements (the bottom dots and the center sector) read the
-"actual available" caliber — per model `min(5h, weekly × N)` via
-`ModelQuota.aggregateActualAvailable` / `aggregateHealthLevel` — while the left/right
+effective 5h reading — per dual-window model `min(5h, weekly × N)` paired with 5h time via
+`ModelQuota.aggregateActualAvailable`; weekly-only models use raw weekly percent and weekly time.
+The bottom dots and aggregate health evaluate effective 5h and raw weekly readings separately
+and take the worse tier via `aggregateHealthLevel`, while the left/right
 arcs keep their raw per-window averages (both short and weekly arcs use the widest remaining-time
 fraction across models for their dynamic thresholds). DeepSeek balance health is determined
 by balance thresholds (`< 3` red, `< 10` yellow; default `deepseekBalanceCritical = 3.0`,
@@ -92,8 +94,8 @@ sector are exempt.
 available" ratio across plans, but a plan whose value is exactly 0 is excluded from that
 comparison. This models plan hand-off: once a plan is spent, it would otherwise pin the
 ring to 0 and hide the plan now serving you, so the ring follows the one still in
-service (its `timeFraction` follows with it, keeping the yellow line consistent with the
-displayed plan). Boundaries are distinguished deliberately: readings exist but every
+service (its `timeFraction` follows with it: 5h time for effective 5h, weekly time for a
+weekly-only plan). Boundaries are distinguished deliberately: readings exist but every
 plan is exhausted → `0` (red empty ring, `timeFraction` nil since `colorLevel` treats 0%
 as critical regardless); no plan has any window at all → `nil` (gray, "not configured"
 is not "exhausted"). Ties keep the first plan encountered. The bottom dots and the card
@@ -996,7 +998,7 @@ Provider 品牌色从 `Color+Theme.swift` 统一派发：MiniMax 品牌色已统
 - **标准槽高**严格锁定为 `13pt`（`8pt` 条高 + `4pt` 顶部时间锚点三角 ▼ + `1pt` 间距），保持所有卡片行高稳定；
 - **微栅格分段渲染（Hybrid Micro-Ticks，约 100 槽微栅格体系）**：整条以约 100 槽（96~100 点）为全满基准分辨率，基于「肉眼对色块宽度敏感、对微小间距不敏感」的设计哲学，每组模型按整除需求分配专属段点数（单窗口 100 点、2 段各 50 点、4 段各 25 点、5 段各 20 点、6 段各 16 点、7 段各 14 点、10 段各 10 点），彻底根除同卡片各段间点数不等或锯齿问题；色块宽度（`tickWidth`）固定为全局恒定值 `2.0pt`（Retina 2x 屏幕下物理对应整整 4px，圆角 `1.0pt`，呈饱满垂直胶囊状），绝对不因分段动态拉伸或压缩；扣除所有色块固定宽度与分段大间隙（`macroGap = 8.0pt`，相当于整整 2 根线槽位的清晰视觉分隔，段间:段内比率近 4x）后的全部剩余空白空间平分到段内块与块的微间距（`tickGap` $\approx 2.0\sim 2.2\text{pt}$，与色块宽度形成近乎 1:1 的黄金呼吸节奏）；当 `N > 1` 时，在第 0 段与第 1 段间隙正中绘制 `1.5pt` 宽、`10pt` 高的分界锚线（`Color.primary.opacity(0.28)`），直观区分当前 5h 窗口与未来周配额；
 - **自适应栅格分配与点亮规则**：各段自适应栅格数（`ticksPerSegment(for:)`，单段 100、2 段各 50、4 段各 25、5 段各 20、6 段各 16、7 段各 14、10 段各 10；若遇非整数倍率则按容量权重分配并以 100 格为总基准）；点亮算法 `activeTickCount(fill:totalTicks:)` 采用 Half-Down 最近邻吸附（贴近最近刻度，遇到小数部分恰为 0.5 的中点平局时向小取整，保守估计余量，例如 10 格区间中 44.9% 与 45% 亮 4 格、45.1% 亮 5 格；16 格区间 50% 亮 8 格，46.875% 亮 7 格、47.0% 亮 8 格）；首段点亮栅格用 `intervalSegmentColor`（100% 不透明度），后续周段点亮栅格用 `weeklySegmentColor.opacity(0.68)`，底槽栅格用 `Color.primary.opacity(0.10)`。
-- **时间感知与三角标记解耦**：首格颜色由 `primaryTimeRemainingFraction`（即 5h 短窗口/滚动窗口的剩余时间比例）参与统一 pacing 计算（分母 = `100% * t`，默认 `< 30%` 红色，`< 60%` 黄色，`>= 60%` 绿色，支持动态配置）；而顶部时间锚点三角 ▼ 仅在长周期窗口（`>= 86400` 秒，如周配额）呈现，短窗口（`< 86400` 秒）不显示三角，避免短频跳动引起视觉干扰。
+- **时间感知与三角标记解耦**：双窗首格按有效 5h 余量 `min(primaryFraction, weeklyFraction × N)` 配 `primaryTimeRemainingFraction` 判色，周段按原始周余量配周时间。缺少 5h 重置时间时不借用周时间；单窗按自身余量和时间判色。统一 pacing 分母为 `100% * t`，默认 `< 30%` 红色、`< 60%` 黄色、其余品牌色。顶部时间锚点三角 ▼ 仅在长周期窗口（`>= 86400` 秒，如周配额）呈现，短窗口不显示三角。
 
 Progress bar fill (`SegmentedQuotaProgressBar.intervalSegmentColor` /
 `weeklySegmentColor` and `ModelQuota.colorLevel`):

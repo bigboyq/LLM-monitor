@@ -71,16 +71,31 @@ final class SegmentedQuotaProgressBarTests: XCTestCase {
 
     // MARK: - combined（segments>1，5h + 周组合条）
 
-    /// combined 模式两格独立着色：第一格只看 primaryFraction（且不带时间系数，
-    /// 即使画了时间标记三角），后续格看 weeklyFraction（时间感知）
+    /// combined 模式第一格按 5h 有效额度判色，后续格按原始周额度判色。
     func testCombinedModeColorsEachWindowIndependently() {
         let bar = makeBar(primary: 0.9, weekly: 0.05, segments: 3, timeRemaining: 0.5)
-        XCTAssertEqual(bar.intervalSegmentColor, tint, "第一格应只由 primary 决定，不受 weekly 拖累")
+        XCTAssertEqual(bar.intervalSegmentColor, Color.criticalTint, "周瓶颈将有效 5h 额度压到 15%，缺少 5h 时间时按固定阈值判红")
         XCTAssertEqual(bar.weeklySegmentColor, Color.criticalTint)
 
         let flipped = makeBar(primary: 0.05, weekly: 0.9, segments: 3, timeRemaining: 0.5)
         XCTAssertEqual(flipped.intervalSegmentColor, Color.criticalTint)
         XCTAssertEqual(flipped.weeklySegmentColor, tint, "weekly 格不应被 primary 的 critical 拖累")
+    }
+
+    func testEffectiveIntervalUsesOnlyIntervalTimeFraction() {
+        let bar = SegmentedQuotaProgressBar(
+            primaryFraction: 0.061, weeklyFraction: 0.015, tint: tint,
+            multiplier: 3.5, height: 8, timeRemainingFraction: 0.114,
+            primaryTimeRemainingFraction: 0.4
+        )
+        XCTAssertEqual(bar.intervalSegmentColor, Color.criticalTint)
+        XCTAssertEqual(bar.weeklySegmentColor, Color.criticalTint)
+        let missingIntervalTime = SegmentedQuotaProgressBar(
+            primaryFraction: 0.05, weeklyFraction: 0.05, tint: tint,
+            multiplier: 3.5, height: 8, timeRemainingFraction: 0.01
+        )
+        XCTAssertEqual(missingIntervalTime.intervalSegmentColor, Color.criticalTint,
+                       "缺少5h重置时间时不能借用周时间")
     }
 
     /// 传入越界的 timeRemainingFraction 时按 [0, 1] clamp 后再参与黄阈值计算

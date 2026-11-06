@@ -362,6 +362,12 @@ colors. 统一周额度与 5h 短窗口/滚动窗口节奏标色算法：
 `aggregateHealthLevel`；`colorLevel` 与 `stateHasSuccessData` 不受影响。`stateHasSuccessData` helper 用来判断一个 state
 是否带"上次成功数据"（`.ok/.loading/.failed` 都返回 true）。
 
+**窗口尺度配对**：双窗口的 5h 有效额度 `min(5h 剩余%, 周剩余% × N)` 只配 `intervalTimeRemainingFraction(at:)`；原始周剩余% 只配 `weeklyTimeRemainingFraction(at:)`。`ModelQuota.aggregateHealthLevel` 分别判色后取较差档，再应用 GLM 高峰 floor。仅一个窗口时按该窗口原始余量和时间判色；对应重置时间缺失则回退固定阈值，不能借用另一窗口的时间。
+
+`aggregateActualAvailable(providerKind:at:)` 为状态栏中心与边缘窗外环提供同尺度的读数：双窗口返回有效 5h 余量及 5h 时间，单窗口返回原始余量及自身时间。历史返回字段名 `bindingTimeFraction` 保留，但其含义是读数尺度对应的时间系数，不再随额度瓶颈切换。卡片显示哪个瓶颈窗口的重置时间不受此规则影响。
+
+例：5h 剩余 6.1%、周剩余 1.5%、`N = 3.5`、5h 剩余时间 40%、周剩余时间 11.4%，有效 5h 为 5.25%。5h 节奏比例 `5.25% / 40% = 13.125%`，周节奏比例 `1.5% / 11.4% ≈ 13.16%`；危险阈值配置为 20% 时两者均红，不能用 `5.25% / 11.4%` 得出黄色。
+
 | State | Health source |
 |---|---|
 | `.ok(info)` | `aggregateHealthLevel(at:)`——取聚合 model 集合（`QuotaInfo.aggregateQuotaModels(providerKind:)`）各 model 最差档，全空保守 `.critical` |

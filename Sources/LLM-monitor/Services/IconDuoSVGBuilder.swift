@@ -150,9 +150,8 @@ enum IconDuoSVGBuilder {
         }
 
         let p = min(max(pRaw, 0.0), 1.0)
-        // 中心与底部三点同用统一 colorLevel：输入是「实际可用」最小值（由
-        // AppState 计算），timeFraction 透传产生该最小值的套餐在其瓶颈窗口上的
-        // 剩余时间比例（5h 短窗口瓶颈时为 nil → 固定 30% 黄线）。
+        // 中心按所选套餐的读数尺度判色：有效5h配5h时间，仅周配周时间；
+        // 对应时间缺失时按固定阈值。底部三点另取各窗口健康档的较差值。
         let healthLevel = alertThresholds.colorLevel(percent: p * 100, timeFraction: centerTimeFraction)
         let sectorColor = resolvedHex(for: healthLevel, colors: healthColors)
         let percentValue = Int((p * 100).rounded())
