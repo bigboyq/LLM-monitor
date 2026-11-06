@@ -328,7 +328,7 @@ final class AggregateHealthLevelTests: XCTestCase {
         }
         let quota = model(intervalTime: 0.4, weeklyTime: 0.114)
         let reading = try XCTUnwrap(quota.aggregateActualAvailable(providerKind: .antigravity, at: now))
-        XCTAssertEqual(reading.percent, 5.25, accuracy: 0.000001)
+        XCTAssertEqual(reading.percent, 6.0, accuracy: 0.000001)
         XCTAssertEqual(try XCTUnwrap(reading.bindingTimeFraction), 0.4, accuracy: 0.000001)
         XCTAssertEqual(quota.aggregateHealthLevel(providerKind: .antigravity, alertThresholds: thresholds, at: now), .critical)
         // 周窗口接近重置而健康，5h有效额度仍独立判红。

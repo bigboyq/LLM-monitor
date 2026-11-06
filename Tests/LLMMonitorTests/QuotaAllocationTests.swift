@@ -155,36 +155,36 @@ final class QuotaAllocationTests: XCTestCase {
         XCTAssertTrue(tooltip.contains("▼"))
     }
 
-    func testAntigravityGeminiMultiplier3Point5Allocation() {
-        // 周额度精准为 3.5 个 5h 窗口，最后一段只有半个窗口容量。
-        let capacities = EquivalentQuotaAllocation.segmentCapacities(multiplier: 3.5)
+    func testAntigravityGeminiMultiplier4Allocation() {
+        // 周额度精准为 4 个 5h 窗口，四段等容量。
+        let capacities = EquivalentQuotaAllocation.segmentCapacities(multiplier: 4.0)
         XCTAssertEqual(capacities.count, 4)
-        XCTAssertEqual(capacities, [1.0, 1.0, 1.0, 0.5])
+        XCTAssertEqual(capacities, [1.0, 1.0, 1.0, 1.0])
 
-        // 栅格按容量比例取整，末段的格数约为整段一半。
+        // 整数倍率走统一栅格档：每段 100/4 = 25 点。
         let ticks = capacities.map {
             SegmentedQuotaProgressBar.ticksForSegment(
                 capacity: $0,
-                totalCapacity: 3.5,
+                totalCapacity: 4.0,
                 segmentCount: capacities.count
             )
         }
-        XCTAssertEqual(ticks, [29, 29, 29, 14])
+        XCTAssertEqual(ticks, [25, 25, 25, 25])
 
         // 3. 额度分配与分段充满测试
         let fills = EquivalentQuotaAllocation.segmentFills(
             primaryFraction: 0.8,
             weeklyFraction: 0.5,
-            multiplier: 3.5
+            multiplier: 4.0
         )
         XCTAssertEqual(fills.count, 4)
         XCTAssertEqual(fills[0], 0.8, accuracy: 0.0001)
-        XCTAssertEqual(fills[1], 0.95, accuracy: 0.0001)
-        XCTAssertEqual(fills[2], 0.0, accuracy: 0.0001)
+        XCTAssertEqual(fills[1], 1.0, accuracy: 0.0001)
+        XCTAssertEqual(fills[2], 0.2, accuracy: 0.0001)
         XCTAssertEqual(fills[3], 0.0, accuracy: 0.0001)
 
         XCTAssertEqual(EquivalentQuotaAllocation.effectivePrimaryFraction(
-            primaryFraction: 1, weeklyFraction: 0.2, multiplier: 3.5
-        ), 0.7, accuracy: 0.0001)
+            primaryFraction: 1, weeklyFraction: 0.2, multiplier: 4.0
+        ), 0.8, accuracy: 0.0001)
     }
 }

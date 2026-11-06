@@ -85,14 +85,14 @@ final class SegmentedQuotaProgressBarTests: XCTestCase {
     func testEffectiveIntervalUsesOnlyIntervalTimeFraction() {
         let bar = SegmentedQuotaProgressBar(
             primaryFraction: 0.061, weeklyFraction: 0.015, tint: tint,
-            multiplier: 3.5, height: 8, timeRemainingFraction: 0.114,
+            multiplier: 4.0, height: 8, timeRemainingFraction: 0.114,
             primaryTimeRemainingFraction: 0.4
         )
         XCTAssertEqual(bar.intervalSegmentColor, Color.criticalTint)
         XCTAssertEqual(bar.weeklySegmentColor, Color.criticalTint)
         let missingIntervalTime = SegmentedQuotaProgressBar(
             primaryFraction: 0.05, weeklyFraction: 0.05, tint: tint,
-            multiplier: 3.5, height: 8, timeRemainingFraction: 0.01
+            multiplier: 4.0, height: 8, timeRemainingFraction: 0.01
         )
         XCTAssertEqual(missingIntervalTime.intervalSegmentColor, Color.criticalTint,
                        "缺少5h重置时间时不能借用周时间")
