@@ -82,7 +82,8 @@ guessed into a card. All client-local usage can be inspected under Settings → 
 - Setup, everyday controls, and troubleshooting: [English user guide](docs/help.en.md) · [中文帮助文档](docs/help.zh-CN.md)
 - Interface structure and interaction rules: [UI design specification](spec/ui-design.md)
 - Architecture, state machine, refresh behavior, and data model: [project specification](spec/overview.md)
-- Provider data sources and accounting rules: [Minimax](spec/providers/minimax.md) · [ChatGPT/Codex](spec/providers/codex.md) · [Antigravity](spec/providers/antigravity.md) · [GLM](spec/providers/glm.md) · [DeepSeek](spec/providers/deepseek.md) · [OpenCode](spec/providers/opencode.md) · [DSH](spec/providers/dsh.md)
+- Provider quota, APIs, and plan rules: [MiniMax](spec/providers/minimax.md) · [ChatGPT](spec/providers/chatgpt.md) · [Antigravity](spec/providers/antigravity.md) · [GLM](spec/providers/glm.md) · [DeepSeek](spec/providers/deepseek.md)
+- Harness ledgers and client behavior: [MiniMax Code](spec/harnesses/minimaxcode.md) · [Codex](spec/harnesses/codex.md) · [ZCode](spec/harnesses/zcode.md) · [Agy](spec/harnesses/agy.md) · [OpenCode](spec/harnesses/opencode.md) · [DSH](spec/harnesses/dsh.md)
 - Engineering policies: [concurrency](docs/policy/concurrency.md) · [errors](docs/policy/error.md) · [logging](docs/policy/logging.md) · [performance](docs/policy/performance.md) · [persistence](docs/policy/persistence.md)
 - Version history: [changelog](CHANGELOG.md) · [release notes](docs/releases/README.md)
 

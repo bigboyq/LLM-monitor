@@ -132,7 +132,7 @@ ChatGPT 设置 pane（`SettingsProviderPanes.swift:chatgptPane`）在基础的 `
   the previous client's expansion by position. ZCode 的 GLM 贡献在此按
   `GlmUsageCategory` 拆成多行展示（Coding Plan → Start Plan → 加速卡 → 闲时任务 →
   其他任务，行序 = `allCases` 声明序，空分类不出行；判定与口径见
-  `spec/providers/glm.md` §Provider 分类）。
+  `spec/harnesses/zcode.md` §Provider 分类）。
 
 Antigravity Provider 的所有 Harness 贡献（Antigravity、Agy、OpenCode）共用额度侧模型池标识，按 Gemini Models → Gemini 4 Argon → Claude and GPT models 拆组；未知模型与日桶中无法由留存样本解释的差额归入「未归属额度池」。同池的 5h / 周窗口只产生一组，按原始模型样本计价后归组，不把池名作为模型定价。日桶四桶合计保持权威值，留存样本不足不把差额分给已知模型。
 

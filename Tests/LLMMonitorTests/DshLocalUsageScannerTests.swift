@@ -111,7 +111,7 @@ final class DshLocalUsageScannerTests: XCTestCase {
     }
 
     func testDshCacheWriteIsReportedSeparatelyAndExcludedFromTotal() throws {
-        // spec/providers/dsh.md：cacheWrite 单独成桶，不计入 totalTokens。
+        // spec/harnesses/dsh.md：cacheWrite 单独成桶，不计入 totalTokens。
         let base = Date(timeIntervalSince1970: 1_700_000_000)
         let calendar = makeUTCGregorianCalendar()
         let root = FileManager.default.temporaryDirectory
@@ -385,7 +385,7 @@ final class DshLocalUsageScannerTests: XCTestCase {
     }
 
     func testCorruptZstdSessionFileIsSkippedWhileGoodFilesStillAggregate() throws {
-        // spec/providers/dsh.md Scanner behavior：坏文件跳过、不中断整扫。
+        // spec/harnesses/dsh.md Scanner behavior：坏文件跳过、不中断整扫。
         let base = Date(timeIntervalSince1970: 1_700_000_000)
         let calendar = makeUTCGregorianCalendar()
         let root = FileManager.default.temporaryDirectory

@@ -147,7 +147,7 @@ DSH（DeepSeek Harness）的多 provider session 账本自动并入本卡。DSH 
 大小写不敏感且为 `==` / `contains`：`deepseek`、`deepseek-official`、`deepseek-cn`、
 `deepseek-v4`。未知 provider key 不会被猜测归类，会被丢弃并由 `AppState.applyDshUsage`
 记录未认领 ID 与已注册别名。DSH 的 `cacheWriteTokens` 只保留在
-raw daily 诊断字段，不进入统一 total / 图表 / 金额。详见 [`dsh.md`](./dsh.md)。
+raw daily 诊断字段，不进入统一 total / 图表 / 金额。详见 [`dsh.md`](../harnesses/dsh.md)。
 
 ## Error mapping
 

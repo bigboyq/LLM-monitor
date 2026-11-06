@@ -1,4 +1,4 @@
-# OpenCode Local Usage — Provider Merge Spec
+# OpenCode Local Usage — Harness Spec
 
 OpenCode is not a menu-bar provider. It is a shared local token ledger whose supported
 provider IDs are automatically attributed to the Minimax, ChatGPT, Antigravity, GLM,

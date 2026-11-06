@@ -1,4 +1,4 @@
-# DSH Local Usage — Provider Merge Spec
+# DSH Local Usage — Harness Spec
 
 DSH (`dsh`) is DeepSeek Harness, a local agent harness that persists every session as
 an append-only JSONL log. It is not a menu-bar provider. It is a shared local token
@@ -52,7 +52,7 @@ scanner 在 DSH 内部读取同一 `assistant/message` 的 `reasoning`、`text`�
 
 拆分是**事件级**的（usage 与内容块同属一个 `assistant/message` 事件），这正是 DSH 相对
 MiniMax Code 的优势——后者必须在自己的两张表之间按天对齐（见
-[`minimax.md`](./minimax.md) 的 "P1-1 v2 字符聚合风险"）。
+[`minimaxcode.md`](minimaxcode.md) 的 "P1-1 v2 字符聚合风险"）。
 
 单次调用时长（token/s 分母）：scanner 流式解析时维护 step 发起时刻表（key 为
 `sessionID:turn:step`——step 事件自身不带 provider，不掺路由键），`assistant/message`

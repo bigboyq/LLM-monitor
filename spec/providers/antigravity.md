@@ -1243,7 +1243,7 @@ separator are skipped.
 This card is also the home of the agy CLI's local usage: `agy`'s transcript frames
 carry `quotaProviderID = antigravity` (native mode, not routed through the
 `defaultBindings` matrix), so its 7-day usage lands in the same section beside the
-IDE RPC ledger — see `spec/providers/agy.md`.
+IDE RPC ledger — see `spec/harnesses/agy.md`.
 
 ### Local usage (card section 3)
 

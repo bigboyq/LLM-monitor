@@ -72,6 +72,12 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 
 ### 全文件清单
 
+文档按职责分流：`providers/` 维护远端额度、认证消费、套餐规则与 Provider 展示；
+`harnesses/` 维护本地客户端账本、扫描、计量、凭证来源及客户端自身行为。
+该目录按客户端组织 L0 数据源与 L1 帧适配规格，不改变前文 harness 的 L1 术语定义。
+跨层接线只在主责文档保留完整契约，另一侧通过链接引用；客户端从哪个 Provider 取额度，
+不决定它的本地账本应写在哪份文档。Antigravity 的同源本地 RPC 规格暂保留在现有文档中。
+
 | 文件 | 覆盖范围 |
 |---|---|
 | `overview.md` | 入口：当前范围、设计目标、分层约束与方向规则、概念模型、本路由表 |
@@ -86,26 +92,29 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 | `ui/edge-dock.md` | 屏幕边缘状态窗：几何、锚点、命中判定、拖拽、鼠标轮询、全屏门控、dock 形态 |
 | `ui/menu-and-cards.md` | 菜单面板结构、header / content / footer、Provider 卡片与状态、hover 浮层、进度与健康色 |
 | `ui/settings.md` | 设置窗口：通用 pane 与字体角色、各 provider 设置、客户端 pane、开机自启 |
-| `providers/agy.md` | agy CLI：transcript + cli log 扫描、模型名 join、帧投影命名空间 |
 | `providers/antigravity.md` | Antigravity：进程发现、本地 RPC 与响应形状、quota 读取、本地用量 scanner、文件格式 |
-| `providers/codex.md` | Codex：ChatGPT Plan 抓取、`auth.json`、本地 session 聚合、reset credits 端点 |
+| `providers/chatgpt.md` | ChatGPT Plan：远端额度、认证消费、reset credits、API 赠金、窗口估值与 Provider 展示 |
 | `providers/deepseek.md` | DeepSeek：账户余额语义、高峰窗口（北京时间）、OpenCode / ZCode / DSH 合并、错误映射 |
-| `providers/dsh.md` | DSH：`~/.dsh/sessions` 账本扫描、provider 分片与归因别名、rounds / turns |
-| `providers/glm.md` | GLM Coding Plan：API 请求与解析、高峰时段、ZCode 本地数据源与分片 |
-| `providers/minimax.md` | minimax：Token Plan 抓取与解析、`runtime-state.sqlite` scanner、价格与高峰倍率、错误处理 |
-| `providers/opencode.md` | OpenCode：`message` 表读取、provider 绑定与别名、reasoning fallback、7 天窗口 |
+| `providers/glm.md` | GLM Coding Plan：远端额度、API Key 与 JWT 扩展查询、价格、高峰时段与 Provider 展示 |
+| `providers/minimax.md` | MiniMax Token Plan：远端额度、响应解析、价格与高峰倍率、服务端限额、Provider 展示与错误处理 |
+| `harnesses/agy.md` | Agy CLI：transcript + cli log 扫描、模型名 join、帧投影命名空间 |
+| `harnesses/codex.md` | Codex：`auth.json` 凭证来源、本地 session 聚合、扫描缓存、计量与上下文压缩 |
+| `harnesses/dsh.md` | DSH：`~/.dsh/sessions` 账本扫描、provider 分片与归因别名、rounds / turns |
+| `harnesses/minimaxcode.md` | MiniMax Code：`runtime-state.sqlite`、本地 scanner / reader、reasoning 分摊与缓存口径 |
+| `harnesses/opencode.md` | OpenCode：`message` 表读取、provider 绑定与别名、reasoning fallback、7 天窗口 |
+| `harnesses/zcode.md` | ZCode：本地凭证来源、SQLite 账本与分片、扫描计量、上下文压缩及客户端自身轮询调研 |
 
 ### client → provider spec
 
 | Client | 本地账本 / 通道 | 归属 provider | 读哪份 spec |
 |---|---|---|---|
-| Codex | 本地 session JSONL + ChatGPT Plan 远程 | `codex_chatgpt`（openai）、经 OpenCode 路径并入其他 | `providers/codex.md` |
+| Codex | 本地 session JSONL + ChatGPT Plan 远程 | `codex_chatgpt`（openai）、经 OpenCode 路径并入其他 | 本地与凭证来源：`harnesses/codex.md`；远端额度：`providers/chatgpt.md` |
 | Antigravity | IDE `language_server` 本地 RPC | `antigravity` | `providers/antigravity.md` |
-| Agy | `~/.gemini/antigravity-cli/brain/` transcript + cli log | `antigravity`（native，帧自带归属） | `providers/agy.md` |
-| ZCode | `~/.zcode` SQLite `model_usage` | 智谱行进 GLM 卡；minimax / deepseek 分片并入对应卡 | `providers/glm.md` |
-| OpenCode | OpenCode SQLite `message` 表（多 provider 账本） | 按内置 provider 路由自动归因 | `providers/opencode.md` |
-| DSH | `~/.dsh/sessions` JSONL/zstd（多 provider 账本） | 按内置 provider 别名自动归因 | `providers/dsh.md` |
-| MiniMax Code | `runtime-state.sqlite` | `minimax_token_plan`（minimax） | `providers/minimax.md` |
+| Agy | `~/.gemini/antigravity-cli/brain/` transcript + cli log | `antigravity`（native，帧自带归属） | `harnesses/agy.md` |
+| ZCode | `~/.zcode` SQLite `model_usage` | 智谱行进 GLM 卡；minimax / deepseek 分片并入对应卡 | 本地与客户端策略：`harnesses/zcode.md`；远端额度：`providers/glm.md` |
+| OpenCode | OpenCode SQLite `message` 表（多 provider 账本） | 按内置 provider 路由自动归因 | `harnesses/opencode.md` |
+| DSH | `~/.dsh/sessions` JSONL/zstd（多 provider 账本） | 按内置 provider 别名自动归因 | `harnesses/dsh.md` |
+| MiniMax Code | `runtime-state.sqlite` | `minimax_token_plan`（minimax） | 本地账本：`harnesses/minimaxcode.md`；远端额度：`providers/minimax.md` |
 | DeepSeek | 无本地账本，纯余额 fetcher | `deepseek` | `providers/deepseek.md` |
 
 ### 任务配方
@@ -113,7 +122,8 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 | 任务 | 起点 |
 |---|---|
 | 新增 quota provider | `runtime.md` §Provider Registration Contract |
-| 改某 provider 的抓取 / 解析 / 缓存 / 帧适配 | `providers/<名>.md`（agy / antigravity / codex / deepseek / dsh / glm / minimax / opencode） |
+| 改 Provider 的远端抓取 / 响应解析 / 套餐规则 | `providers/<名>.md`（antigravity / chatgpt / deepseek / glm / minimax） |
+| 改本地客户端账本 / scanner / reader / 帧适配 / 客户端行为 | `harnesses/<名>.md`（agy / codex / dsh / minimaxcode / opencode / zcode）；Antigravity 本地 RPC 仍见 `providers/antigravity.md` |
 | 改配额卡、菜单结构、hover 浮层、进度与健康色 | `ui/menu-and-cards.md` §Provider Card |
 | 改屏幕边缘状态窗（几何 / 拖拽 / 全屏 / dock 形态） | `ui/edge-dock.md` §Edge Status Dock (Screen Edge Panel) |
 | 改设置窗口与客户端 pane | `ui/settings.md` §Settings Window 及其下 §客户端 (Clients) pane |

@@ -1,4 +1,4 @@
-# Agy Local Usage — Provider Merge Spec
+# Agy Local Usage — Harness Spec
 
 agy 是 Antigravity 的 CLI 分支（二进制 `agy`，数据根 `~/.gemini/antigravity-cli/`）。
 它不是菜单栏 provider，也不是 DSH / OpenCode 那种跨 provider 共享账本：其本地
@@ -102,7 +102,7 @@ agy 是单一 quota 归属，不需要 DSH / OpenCode 式的 provider 路由键�
 启用即扫描、即并入卡片（`LocalUsageOrchestration.ActiveSources.agy` 直接取
 `enabledKinds.contains(.antigravity)`）。模型价格零改动：`gemini-3.1-pro-high` 由
 contains 命中 `ModelPricing.json` 现有 `gemini-3.1-pro` 条目，其余 Gemini 模型同样
-复用 Antigravity 价目（见 [`antigravity.md`](antigravity.md) 的 Model Pricing）。
+复用 Antigravity 价目（见 [`antigravity.md`](../providers/antigravity.md) 的 Model Pricing）。
 
 ## 模型名 join
 

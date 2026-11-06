@@ -78,7 +78,8 @@
 | 安装、配置、日常操作与排错 | [中文帮助](docs/help.zh-CN.md) | [English user guide](docs/help.en.md) |
 | 界面结构与交互规则 | [交互设计规格](spec/ui-design.md) | 同一文档 |
 | 架构、状态机、刷新与数据模型 | [项目架构规格](spec/overview.md) | 同一文档 |
-| Provider 数据源与口径 | [Minimax](spec/providers/minimax.md) · [ChatGPT/Codex](spec/providers/codex.md) · [Antigravity](spec/providers/antigravity.md) · [GLM](spec/providers/glm.md) · [DeepSeek](spec/providers/deepseek.md) · [OpenCode](spec/providers/opencode.md) · [DSH](spec/providers/dsh.md) | 同左 |
+| Provider 额度、接口与套餐规则 | [MiniMax](spec/providers/minimax.md) · [ChatGPT](spec/providers/chatgpt.md) · [Antigravity](spec/providers/antigravity.md) · [GLM](spec/providers/glm.md) · [DeepSeek](spec/providers/deepseek.md) | 同左 |
+| Harness 本地账本与客户端行为 | [MiniMax Code](spec/harnesses/minimaxcode.md) · [Codex](spec/harnesses/codex.md) · [ZCode](spec/harnesses/zcode.md) · [Agy](spec/harnesses/agy.md) · [OpenCode](spec/harnesses/opencode.md) · [DSH](spec/harnesses/dsh.md) | 同左 |
 | 并发、错误、日志、性能与持久化策略 | [工程策略](docs/policy/) | 同一目录 |
 | 版本变化 | [CHANGELOG](CHANGELOG.md) | [Release notes](docs/releases/README.md) |
 

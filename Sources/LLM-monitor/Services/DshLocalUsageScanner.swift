@@ -1260,7 +1260,7 @@ private extension DshLocalUsageScanner {
             || modelLeaf.hasPrefix("minimax-m3-")
     }
 
-    /// Replay dedup identity per `spec/providers/dsh.md`:
+    /// Replay dedup identity per `spec/harnesses/dsh.md`:
     /// - both `turn` and `step` present → `(sessionID, provider, turn, step)`;
     ///   `seq` is intentionally NOT part of the key, so a retried/replayed
     ///   logical event with a fresh `seq` still counts once.
