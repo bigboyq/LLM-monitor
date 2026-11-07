@@ -400,8 +400,10 @@ per-client sections」描述的是**本机 scope** 的内容区；多机联动�
   分片多币种），模型行价值是单 provider 单币种原额。
 - **指标列标题（`HarnessMetricColumns.columnHeader`，2026-11-07 补）**：客户端段列表
   上方整表一次渲染一行列标题 `Pmt · Token · 价值 · 命中 · 思考 · 速度`——列宽与
-  `cluster` 共用同一组常量、右对齐同位，去标签数值行由此可按表读列；名称列与
-  时间槽留空占位，整行弱化（secondary 72%），口径说明挂表头 `.help`。
+  `cluster` 共用同一组常量、右对齐同位，去标签数值行由此可按表读列；标题行带
+  **弹性名称占位**（与数据行同构）撑满行宽，把标题簇推到与数据相同的列位
+  （缺占位时标题挤行首、数据贴右缘，2.3.10 修复）；名称列与时间槽留空占位，
+  整行弱化（secondary 72%），口径说明挂表头 `.help`。
 - **Per-model rows inside an expanded section**, keyed by
   `(clientID, quotaProviderID, modelName)`; samples with no usable model name
   collapse into a single 「模型名缺失」 row. Each row is a single baseline line:
@@ -1098,4 +1100,4 @@ The UI intentionally hides reset-credit id, title, description, and grant time.
 The shared Plan fallback uses the same 10pt `MenuTypography.hint` role for loading and
 failure feedback; there is no separate error-message typography role.
 
-> 核对基线：2026-11-07 · 代码 79e92b7
+> 核对基线：2026-11-07 · 代码 5e699b1
