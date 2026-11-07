@@ -730,6 +730,16 @@ no longer renders a provider card at all, 108pt narrower than either real host. 
 guardrail tests now read the same constant, so the budget and the check cannot drift
 apart again.
 
+**Flexible fill mode (`quotaTableFillsWidth`)** — since b9e1000 the numeric middle
+columns (42pt) and the 价值/速度 column (58pt) — headers included — can switch from
+`.frame(width:)` to 「`minWidth` floor + `maxWidth: .infinity`」 and stretch to fill
+whatever width the host gives. The switch is an environment key
+(`\.quotaTableFillsWidth`, default `false`), and the **only injection point is
+`ProviderDetailWindowView`**: the full detail window is resizable, so enlarging it
+stretches the table instead of leaving a fixed-width grid floating in a wide card. The
+**重置日期 column stays fixed (126pt)** in both modes. Default hosts (dock popover,
+menu) see byte-identical fixed-width layout.
+
 | Module | Content |
 |---|---|
 | Quota window (`windowUsageModule`) | Titled 「额度窗口」 (`QuotaWindowUsageSection.windowUsageTitle`). Merges the former 「额度分析」 and 「额度详情」 into a single switchable module with zero-reflow between states. The title row hosts a custom capsule `QuotaWindowUsageSegmentControl` on the right (rendered when `quotaWindowSegmentEditable` is true), offering **「分析」** (default) and **「用量」** (`QuotaWindowUsageSegment`, persisted via `@AppStorage(QuotaWindowUsageSection.segmentStorageKey)` = `"quotaWindowUsageSegment"`). The time-composition bar (`QuotaWindowTimeShareBar`) was completely removed. Below the title row sits **one unified `Grid` of 7 columns** (`horizontalSpacing: 8`, `verticalSpacing: 3`) across all visible rows (5h / 周 / 今 / 闲). Fixed columns: **类型** (left, natural width ~16pt), **价值** (fixed 58pt, `QuotaWindowUsageSection.valueColumnWidth`, right-aligned cell; the 「用量」 mode re-labels this same column to **速度** — see below), and **重置日期** (right, fixed 126pt, `QuotaWindowUsageSection.resetDateColumnWidth`, including 6pt leading gutter `QuotaWindowUsageSection.resetDateColumnLeadingGap`, with column header and cells centered in the column). The middle 4 columns switch by segment: in **「分析」** mode: `类型 | 用量 | 命中 | 产出比 | 思考 | 价值 | 重置日期` (`statsHeaders`); in **「用量」** mode: `类型 | Input | Cached | Output | Reason | 速度 | 重置日期` (`rawTableHeaders`, `value` key retained with the 「速度」 label). Middle columns share a fixed width of **42pt** (`middleColumnWidth`) and right-alignment (headers follow cell alignment). The 420pt budget: `natural (~16pt) + 4×42pt + 58pt + 126pt + 6×8pt = 416pt ≤ 420pt` (measured header 「类型」 at 20pt yields `420pt ≤ 420pt`). Both modes share the exact same Grid skeleton and column dimensions, guaranteeing zero reflow (pinned by height-equality test). Reset date is formatted as `MM-dd HH:mm (倒计时)`, 今 / 闲 rows display `—`; its 126pt width removes the former 1.2× factor, fitting the longest form `09-30 15:07 (23h59m)` (117pt) + 6pt gutter with 3pt surplus, guarded by `testResetDateColumnWidthCoversTheLongestForm`. The countdown inside the parentheses takes its value from the host-injected display clock (`\.displayDate`, started/stopped with the panel) — not the wall clock at render time. With multiple pools, a footnote below the Grid explains totals are summed and reset date is the earliest. |
@@ -1333,4 +1343,4 @@ default has to preserve it — defaulting to off would put a dock inside every f
 window for every existing user. Because the setting can be flipped while the user is
 already fullscreen, a policy change re-probes instead of reusing the cached verdict.
 
-> 核对基线：2026-11-06 · 代码 46ea154
+> 核对基线：2026-11-07 · 代码 b9e1000

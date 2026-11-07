@@ -162,7 +162,7 @@
 | `Sources/LLM-monitor/Services/SleepHealthService.swift` | 睡眠健康度快照、防休眠断言与周期健康边界刷新 |
 | `Sources/LLM-monitor/Services/SleepHealthEvaluator.swift` | 睡眠锁与系统电源参数的健康度评估 |
 | `Sources/LLM-monitor/Views/MenuBarLabel.swift` | 菜单栏 label 视图（可见输入签名去重重绘 + 分钟时钟监听，App 图标 / Icon Duo / SF Symbol 多样式）；label 宿主挂接公开 `openWindow` 路由桥 |
-| `Sources/LLM-monitor/Views/ProviderDetailWindowView.swift` | 单实例 Provider 详情窗口、菜单栏公开 Window 路由桥、停用/缺失目标的设置回退；复用完整 `ProviderCardView` |
+| `Sources/LLM-monitor/Views/ProviderDetailWindowView.swift` | 单实例 Provider 详情窗口、菜单栏公开 Window 路由桥、停用/缺失目标的设置回退；复用完整 `ProviderCardView`；窗口最小宽 `minimumWindowWidth` 由 expanded 表格常量与两层 padding 推导，并注入 `quotaTableFillsWidth` 弹性列宽 |
 | `Sources/LLM-monitor/Views/MenuContentView.swift` | 主面板（header / content / footer；header 统一页面级刷新：用量读 LocalUsage 时间并重扫，额度读 Provider 成功数据时间并刷新；footer 无重复时间）+ 高度桥 `MenuPanelHeightBridge` + `MenuHairline`；展示时钟经 `\.displayDate` 注入卡片 |
 | `Sources/LLM-monitor/Views/FleetScopeSwitcher.swift` | fleet scope 切换控件（菜单面板与 dock 详情浮层共用：≤4 段整行、>4 紧凑下拉）：`FleetScopeSwitcher` 按选项总数分叉（≤4 分段 `Picker`、>4 下拉 `FleetScopeMenu`），`FleetScopeMenu` 是下拉形态——范围文字 + 行内 `ellipsis` 标记，整组上限 120pt，截断走纯函数 `FleetScopeMenu.truncated(_:maxWidth:)`；三个 macOS `Menu` 平台怪癖（行内图 / 字符串层限宽 / 必须 `fixedSize`）写在文件头 |
 | `Sources/LLM-monitor/Views/DisplayClock.swift` | 跨宿主共享的展示时钟：`DisplayClock` + `DisplayClockScope` + `\.displayDate` 环境键；菜单内容 / hover 浮层 / dock 浮层 / provider 详情窗口各自持有实例、随宿主显隐 start/stop 并注入环境，`start()` 与 `refreshNow()` 即时同步墙钟 |
@@ -201,7 +201,7 @@
 | `Sources/LLM-monitor/Views/BrandLogoView.swift` | provider 品牌 logo 资源加载 + SF Symbol fallback |
 | `Sources/LLM-monitor/Views/LocalUsageHoverViews.swift` | 7 天用量新鲜度状态机与胶囊（`LocalUsageFreshnessState` / `LocalUsageFreshnessBadge`）；数值逐日价格（`LocalUsagePriceByDay`）与 Prompt P50 memo（`LocalUsageSpeedByDay`） |
 | `Sources/LLM-monitor/Models/UsageHistorySeries.swift` | 九维历史指标、独立偏好键与数值日序列；固定七日槽、缺失与已知零、混币归一化及部分覆盖 |
-| `Sources/LLM-monitor/Views/SevenDayUsageHistoryChart.swift` | 菜单/详情窗口/设置共用七天单指标折线、指标图例、逐日表与来源提示；支持 compact/expanded 布局模式，坐标轴与日期标签提升为 secondary |
+| `Sources/LLM-monitor/Views/SevenDayUsageHistoryChart.swift` | 菜单/详情窗口/设置共用七天单指标折线、指标图例、逐日表与来源提示；支持 compact/expanded 布局模式，坐标轴与日期标签提升为 secondary；expanded 表格列宽下限住在 `SevenDayUsageChartMetrics.expanded*`，expanded 下弹性填满可用宽度、compact 保持固定列宽 |
 | `Tests/LLMMonitorTests/UsageHistorySeriesTests.swift` | 七日槽、四桶守恒、数值价格/混币、P50、缺失/零与部分样本回归 |
 | `Tests/LLMMonitorTests/GlmZcodeCredentialReaderTests.swift` | ZCode 本地凭证读取与 AES-256-GCM JWT 解密/密钥派生/格式容错单元测试 |
 | `Tests/LLMMonitorTests/GlmZcodeAPIClientTests.swift` | ZCode 直连 API 响应解析、重置卡前三截断、套餐余额与预告、ProviderConfig/Draft 状态同步、三条 parse 路径 `code != 0` 业务错误单测 |
@@ -244,4 +244,4 @@
 - **串行执行是既定选择**：`swift test --parallel` 实测（2026-10-02，5 连跑 3 败）不可用——`SQLiteTempCopyTests` 的临时副本断言扫描跨进程共享目录，并行 worker 互相误判；且慢测试为睡眠型，并行的 wall 收益仅 ~4s。并行化前提：先给 SQLiteTempCopy 的副本目录引入进程级隔离，再复评。
 - 慢用例的等待注入缝已建立：调度器（now/sleep）、Bark 退避（retryDelay）、vnode 合并窗口（coalescingWindow 参数）；新增耗时敏感测试时优先走注入缝，不要写死真实 sleep。
 
-> 核对基线：2026-11-07 · 代码 f37e75e
+> 核对基线：2026-11-07 · 代码 b9e1000

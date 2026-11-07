@@ -584,9 +584,22 @@ The menu footer contains (right-aligned, separated by vertical hairlines):
 
 The quota page exposes “独立窗口” for each enabled provider. It opens the complete
 `ProviderCardView` in one public SwiftUI `Window`, showing Account Info + Plan and the
-seven-day history by default. The window width follows
-`EdgeDockTheme.popoverWidth` (468pt at the current 420pt chart width, including card
-and host padding). Routes keep an optional notification model name as context only;
+seven-day history by default. The window's minimum width is derived from the
+`.expanded` seven-day history table instead of the edge popover width:
+`ProviderDetailWindowView.minimumWindowWidth` =
+`SevenDayUsageChartMetrics.expandedTableWidth` (466pt) + `cardColumnHorizontalPadding`
+× 2 + `cardContentPadding` × 2 = **514pt** (two padding layers: outer VStack + card
+content). The previous 468pt (`EdgeDockTheme.popoverWidth`) left only 420pt of card
+content and clipped the table's last column. `defaultSize` in `LLMMonitorApp` starts
+the window at the same minimum width and **880pt** tall so both cards fit without
+scrolling (the former 700pt default could not). The root frame is
+`.frame(minWidth: minHeight: 420)` only — the `idealWidth`/`idealHeight` pair was
+removed because macOS SwiftUI ideal sizing fights manual resizes, and `defaultSize`
+already owns the initial size. Content stretches with the window: the `.expanded`
+history table cells use `minWidth` floor + `maxWidth: .infinity` (column floors live
+in `SevenDayUsageChartMetrics.expanded*`), and the quota-window table does the same
+for its numeric/value/speed columns via the `quotaTableFillsWidth` environment key
+(injected only here). Routes keep an optional notification model name as context only;
 the card is not filtered or scrolled to that model. A disabled provider gets an
 explanation and its settings entry; an unknown provider falls back to Notifications
 settings. The pending route is in-memory only.
@@ -1102,4 +1115,4 @@ The UI intentionally hides reset-credit id, title, description, and grant time.
 The shared Plan fallback uses the same 10pt `MenuTypography.hint` role for loading and
 failure feedback; there is no separate error-message typography role.
 
-> 核对基线：2026-11-07 · 代码 d997b23
+> 核对基线：2026-11-07 · 代码 b9e1000
