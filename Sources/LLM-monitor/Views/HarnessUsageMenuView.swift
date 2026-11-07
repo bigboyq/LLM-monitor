@@ -622,11 +622,11 @@ private struct WrapLayout: Layout {
 /// 汇总行与模型行**共用**的字段级对齐指标簇（2026-11-07 用户裁定）。
 ///
 /// 列宽固定、数值右对齐，harness 行与模型行共用同一组列 → 跨行字段对齐。
-/// 实测内容区 460pt（484 面板 − 2×12 内边距）装得下**并集**
-/// {Pmt, Token, 价值, 命中, 思考, 速度}，按裁定取并集——量测锚见
+/// 列序与英文标题（2026-11-07 用户裁定）：**Turns Token Hit Think Speed Value Update**。
+/// 实测内容区 460pt（484 面板 − 2×12 内边距）装得下**并集**，按裁定取并集——量测锚见
 /// `HarnessUsageMenuViewTests.testMetricClusterUsesUnionWithinBudget`。
 /// 数值全部自带量纲（数量级后缀 / 货币符号 / % / tok/s），不再带字段标签；
-/// 口径解释挂每格 `.help`。
+/// 口径解释挂每格 `.help` 与表头。
 enum HarnessMetricColumns {
     static let prompts: CGFloat = 30
     static let token: CGFloat = 38
@@ -635,15 +635,16 @@ enum HarnessMetricColumns {
     static let thinking: CGFloat = 28
     static let speed: CGFloat = 58
     static let spacing: CGFloat = 6
-    /// harness 行右侧扫描时间占位；模型行留空同宽，保证簇列跨行对齐。
-    static let timeSlot: CGFloat = 32
+    /// harness 行右侧「Update」列（扫描时间）；模型行留空同宽，保证簇列跨行对齐。
+    /// 宽度以放下表头标题「Update」为准（6 字符 ≈ 35pt）。
+    static let timeSlot: CGFloat = 38
     static var clusterWidth: CGFloat {
         prompts + token + value + hitRate + thinking + speed + spacing * 5
     }
 
     /// 并集六格。文本由调用方格式化；宽度固定保证跨行对齐。
-    static func cluster(prompts: String, token: String, value: String,
-                        hitRate: String, thinking: String, speed: String) -> some View {
+    static func cluster(prompts: String, token: String, hitRate: String,
+                        thinking: String, speed: String, value: String) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: spacing) {
             Text(prompts)
                 .frame(width: Self.prompts, alignment: .trailing)
@@ -651,9 +652,6 @@ enum HarnessMetricColumns {
             Text(token)
                 .frame(width: Self.token, alignment: .trailing)
                 .help("今日 Token（规范化四桶合计）")
-            Text(value)
-                .frame(width: Self.value, alignment: .trailing)
-                .help("今日价值（行内单币种原额 / 汇总为混合币种折合）")
             Text(hitRate)
                 .frame(width: Self.hitRate, alignment: .trailing)
                 .help("缓存命中率 = cacheRead / (input + cacheRead)")
@@ -663,6 +661,9 @@ enum HarnessMetricColumns {
             Text(speed)
                 .frame(width: Self.speed, alignment: .trailing)
                 .help("完整 Prompt 速度 P50，单位 tok/s")
+            Text(value)
+                .frame(width: Self.value, alignment: .trailing)
+                .help("今日价值（行内单币种原额 / 汇总为混合币种折合）")
         }
         .font(MenuTypography.hint)
         .monospacedDigit()
@@ -671,39 +672,34 @@ enum HarnessMetricColumns {
     }
 
     /// 数值列标题行：列宽与 `cluster` 一一对应（右对齐），插在客户端段列表
-    /// 上方整表一次；去标签数值行靠它读懂列义。名称列与时间槽留空占位。
-    static func headerColumn(title: String, width: CGFloat, help: String) -> some View {
-        Text(title)
-            .frame(width: width, alignment: .trailing)
-            .help(help)
-    }
-
+    /// 上方整表一次；去标签数值行靠它读懂列义。名称列留空占位。
     static var columnHeader: some View {
         HStack(alignment: .firstTextBaseline, spacing: spacing) {
             // 名称列占位（与数据行的弹性名称列同构）——把标题簇推到与数据
             // 相同的右侧位置，否则表头会挤在行首、数据贴右缘，两相错位。
             Color.clear
                 .frame(maxWidth: .infinity, alignment: .trailing)
-            Text("Pmt")
+            Text("Turns")
                 .frame(width: prompts, alignment: .trailing)
                 .help("今日已记录 Prompt 数（含无有效时长的样本）")
             Text("Token")
                 .frame(width: token, alignment: .trailing)
                 .help("今日 Token（规范化四桶合计）")
-            Text("价值")
-                .frame(width: value, alignment: .trailing)
-                .help("今日价值（行内单币种原额 / 汇总为混合币种折合）")
-            Text("命中")
+            Text("Hit")
                 .frame(width: hitRate, alignment: .trailing)
                 .help("缓存命中率 = cacheRead / (input + cacheRead)")
-            Text("思考")
+            Text("Think")
                 .frame(width: thinking, alignment: .trailing)
                 .help("思考占比 = reasoning / (output + reasoning)")
-            Text("速度")
+            Text("Speed")
                 .frame(width: speed, alignment: .trailing)
                 .help("完整 Prompt 速度 P50，单位 tok/s")
-            Color.clear
+            Text("Value")
+                .frame(width: value, alignment: .trailing)
+                .help("今日价值（行内单币种原额 / 汇总为混合币种折合）")
+            Text("Update")
                 .frame(width: timeSlot, alignment: .trailing)
+                .help("本地用量更新时间")
         }
         .font(MenuTypography.hint)
         .foregroundStyle(Color.secondaryLabel.opacity(0.72))
@@ -826,10 +822,10 @@ struct HarnessSectionView: View {
             HarnessMetricColumns.cluster(
                 prompts: "\(section.promptSpeedStatistics.totalPromptCount)",
                 token: Formatters.formatTokenCountCompact(section.totalTokens),
-                value: section.valueText,
                 hitRate: HarnessUsageMenuView.hitRateText(section.cacheHitRate),
                 thinking: HarnessModelRowView.thinkingPercent(section.buckets) ?? "—",
-                speed: Formatters.speedText(section.promptSpeedStatistics.p50)
+                speed: Formatters.speedText(section.promptSpeedStatistics.p50),
+                value: section.valueText
             )
             Group {
                 if let updateTime {
@@ -1254,10 +1250,10 @@ struct HarnessModelRowView: View {
             HarnessMetricColumns.cluster(
                 prompts: "\(row.promptSpeedStatistics.totalPromptCount)",
                 token: Formatters.formatTokenCountCompact(row.totalTokens),
-                value: row.costText,
                 hitRate: Self.percentText(row.cacheHitRate),
                 thinking: Self.thinkingPercent(row.buckets) ?? "—",
-                speed: Formatters.speedText(row.promptSpeedStatistics.p50)
+                speed: Formatters.speedText(row.promptSpeedStatistics.p50),
+                value: row.costText
             )
             Color.clear
                 .frame(width: HarnessMetricColumns.timeSlot, alignment: .trailing)

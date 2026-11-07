@@ -30,12 +30,12 @@ final class HarnessUsageMenuViewTests: XCTestCase {
     /// 并集簇的宽度预算（2026-11-07 用户裁定：够并集取并集，不够取交集）。
     ///
     /// 内容区实为 460pt（484 面板 − 2×12 内边距），实测装得下并集
-    /// {Pmt, Token, 价值, 命中, 思考, 速度} → 取并集。若未来收窄面板使并集
-    /// 装不下，本测试先失败——届时按裁定反转为交集并同步 spec。
+    /// {Turns, Token, Hit, Think, Speed, Value, Update} → 取并集。若未来收窄
+    /// 面板使并集装不下，本测试先失败——届时按裁定反转为交集并同步 spec。
     func testMetricClusterUsesUnionWithinBudget() {
         let contentWidth = MenuPanelHeightBridge.width - LayoutMetrics.cardColumnHorizontalPadding * 2
         let cluster = HarnessMetricColumns.clusterWidth
-        // 模型行：名称最小 80 + 簇 + 时间空槽。
+        // 模型行：名称最小 80 + 簇 + Update 空槽。
         XCTAssertLessThanOrEqual(
             80 + cluster + HarnessMetricColumns.timeSlot, contentWidth,
             "并集簇在模型行装不下（内容区 \(contentWidth)pt）——按裁定反转回交集"
