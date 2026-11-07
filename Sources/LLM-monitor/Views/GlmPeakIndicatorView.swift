@@ -29,6 +29,7 @@ struct GlmPeakIndicatorView: View {
             },
             offPeakRow: { start in
                 // 距高峰期 < 1 小时 → 橙色（临近）；≥ 1 小时 → 绿色。
+                // 默认价格（1×）不标注倍率；倍率只在偏离 1× 时展示（高峰行、未来的闲时折扣行）。
                 let secs = start.timeIntervalSinceNow
                 let tier: Color = secs < 3600 ? Color.warningTint : .healthyTint
                 HStack(spacing: 4) {
@@ -36,9 +37,6 @@ struct GlmPeakIndicatorView: View {
                         .font(MenuTypography.badge)
                     Text("距高峰期 \(formatPeakDuration(secs))")
                         .font(MenuTypography.metricLabel)
-                    Text("· 平时 1×")
-                        .font(MenuTypography.badge)
-                        .foregroundStyle(.secondary)
                 }
                 .foregroundStyle(tier)
             }

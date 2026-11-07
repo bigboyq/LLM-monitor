@@ -34,7 +34,8 @@ struct DeepseekPeakIndicatorView: View {
                 .background(Color.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
             },
             offPeakRow: { start in
-                // 非高峰期：平时 1× 价格。距下一轮高峰 < 1 小时 → 橙色（临近）；≥ 1 小时 → 绿色（余量充足）。
+                // 非高峰期：默认价格不标注倍率。距下一轮高峰 < 1 小时 → 橙色（临近）；≥ 1 小时 → 绿色（余量充足）。
+                // 倍率只在偏离 1× 时展示（高峰行；未来闲时折扣出现时才在闲时行标注）。
                 let secs = start.timeIntervalSinceNow
                 let tier: Color = secs < 3600 ? Color.warningTint : .healthyTint
                 HStack(spacing: 3) {
@@ -42,9 +43,6 @@ struct DeepseekPeakIndicatorView: View {
                         .font(MenuTypography.badge)
                     Text("距高峰期 \(formatPeakDuration(secs))")
                         .font(MenuTypography.metricLabel)
-                    Text("· 平时 1×")
-                        .font(MenuTypography.badge)
-                        .foregroundStyle(.secondary)
                 }
                 .foregroundStyle(tier)
                 .padding(.horizontal, 6)

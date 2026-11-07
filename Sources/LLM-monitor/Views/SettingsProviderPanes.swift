@@ -300,7 +300,8 @@ extension SettingsView {
                 }
                 Divider().padding(.vertical, 4)
                 SettingsControlRow("高峰期\(kind == .glmCodingPlan ? "积分" : "价格")") {
-                    Text("\(window.multiplierLabel)（平时 1×）")
+                    // 只显示偏离平时的倍率；默认价（1×）不额外标注（footer 已说明「相对平时」）。
+                    Text(window.multiplierLabel)
                         .font(SettingsTypography.numericValue)
                         .foregroundStyle(.red)
                 }
