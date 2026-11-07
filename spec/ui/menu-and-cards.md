@@ -378,37 +378,36 @@ per-client sections」描述的是**本机 scope** 的内容区；多机联动�
     - 归一化口径与 `TokenBucketBar` 一致：负值按 0、Double 累加分母、总量 ≤ 0 全 0（纯灰底），不产生 NaN；条高沿用 `TokenBucketBar.standardHeight`（7pt）；每段挂 `.help`：「MiniMax Code 355M（77%）」；
     - **图例**把颜色翻译回客户端并直观标注量级：`<着色图标> MiniMax Code 355M  <着色图标> Codex 120M …`。图标取 `ClientDescriptor.iconSystemName(forClientID:)`，着色即段色，紧随其后展示该客户端紧凑 Token 读数；hover 上仍挂「MiniMax Code 355M（77%）」完整 tooltip。chip 超出行宽**换行**（`WrapLayout`）而不是截断；段列表为空（今日无活动）时条只剩灰底、图例整行不画。
 - **Per-client sections（树形层级，2026-11-07 起取代方块卡片）**, ordered by
-  today-token descending and collapsed by default. 第一级 = harness 行：`▸/▾` 展开三角 +
-  客户端图标 + 名称……右侧扫描时间（`HH:mm`）；右键「刷新 <客户端名>」仍只挂这一行。
-  名称行下方是**常驻缩进块**（左缩进，左侧一条竖引导线贯穿）：今日摘要行
-  `今日 Token`、`价值`、`命中率` and `速度`. The visible label is concise while the
-  metric remains Prompt P50. `思考` is inserted between hit
-  rate and speed only when `ViewThatFits` confirms the complete summary fits; reasoning
-  is a share of `output + reasoning`, never added to output a second time. A client with no
-  today activity is dropped entirely rather than shown as an empty section. Each section
-  carries its own subtotal and value. The value is a `MixedCurrencyEstimate`, because one
-  client may span several provider slices (OpenCode / DSH / ZCode) and currencies.
-  The scan time is the latest local usage scan time for the summary; Fleet client
-  sections have no local scan time and do not fabricate one.
+  today-token descending and collapsed by default. 第一级 = harness 行：
+  `▸/▾` 展开三角 + 客户端图标 + 名称 + **同行汇总簇**……右侧扫描时间（`HH:mm`）；
+  折叠即一行，右键「刷新 <客户端名>」仍只挂这一行。截断提示独占缩进行；
   展开后第二级 = 模型行，每行带 ├─ 式短横刻线；引导线底部截短约半行近似 └ 形收尾。
   同一模型落在多个 harness 时仍按段嵌套各自展开。树形几何常量
   `guideX = 4` / `treeIndent = 14` / `tickWidth = 7` / `guideOpacity = 0.14` /
   `guideTailTrim = 7` 定义在 `HarnessSectionView`（测试锚点见 `HarnessUsageMenuViewTests`
   `testTreeSectionGeometryAnchors`）；圆角卡片底与段头下划线已随树形化移除。
+- **字段级对齐指标簇（`HarnessMetricColumns`，2026-11-07 用户裁定）**：harness 汇总行
+  与模型行共用同一组**定宽右对齐列**，纵向跨行对齐；宽度预算按「够并集取并集、
+  不够取交集」实测裁定——内容区 460pt（484 面板 − 2×12 内边距）装得下并集
+  {Pmt, Token, 价值, 命中, 思考, 速度}，故取**并集**（量测锚
+  `testMetricClusterUsesUnionWithinBudget`，若面板收窄装不下则反转回交集并同步本节）。
+  harness 行的 Pmt/Token/价值/命中/思考/速度 = 段级聚合（Pmt 用段
+  `promptSpeedStatistics.totalPromptCount`、思考用段 buckets），模型行用行级值；
+  速度均为完整 Prompt P50。数值自带量纲（数量级后缀 / 货币符号 / % / tok/s），
+  不带字段标签，口径解释挂每格 `.help`。扫描时间占固定尾槽（`timeSlot = 32`），
+  模型行留空同宽保证簇列对齐；扫描时间为 summary 级最新本地扫描时刻，
+  Fleet 段不伪造。汇总行的价值是 `MixedCurrencyEstimate`（客户端可横跨多 provider
+  分片多币种），模型行价值是单 provider 单币种原额。
 - **Per-model rows inside an expanded section**, keyed by
   `(clientID, quotaProviderID, modelName)`; samples with no usable model name
-  collapse into a single 「模型名缺失」 row. Each row is one shared-baseline text line:
-  `模型名 · Pmt · Token · 价值 · 命中 · 思考 · 速度`. The model name truncates to
-  preserve one line for the metrics; if the entire row still does not fit, `Pmt` is
-  omitted first. The model name keeps at least 80pt before it truncates. In the narrowest
-  fallback, gaps tighten and metric labels may scale to 82%. The speed label is concise;
-  help states that its value is the full-Prompt P50 in tok/s.
-  **Prompt 速度范围图（min–max 线 + 端点/最近菱形 + min/max/最近 三栏）与「共享刻度」图例已于
-  2026-11-07 移除**（用户裁定：图占位大；面板宽度本为固定 484pt 常量，移除不改变宽度、
-  只省每行两行高度与图例行）。速度分布统计（`min / max / P50 / latest`）仍按
-  `spec/accounting.md` §Prompt 速度分布计算，UI 只消费 P50 文本。`Pmt` counts all recorded
-  promptIDs, including prompts excluded from speed statistics；有效样本覆盖率不再单独展示
-  （仅保留 `Pmt` 总数与行 help / accessibility 的 P50 文案）。
+  collapse into a single 「模型名缺失」 row. Each row is a single baseline line:
+  模型名（弹性列，最小 80pt 后尾部截断，`.help` 挂全名）+ 上一条描述的
+  `HarnessMetricColumns` 并集簇 + 空时间槽——与 harness 行字段级对齐。
+  **Prompt 速度范围图与「共享刻度」图例已于 2026-11-07 移除**（用户裁定：图占位大；
+  面板宽度本为固定 484pt 常量，移除不改变宽度、只省每行高度与图例行）。速度分布统计
+  （`min / max / P50 / latest`）仍按 `spec/accounting.md` §Prompt 速度分布计算，
+  UI 只消费 P50 文本。`Pmt` counts all recorded promptIDs, including prompts excluded
+  from speed statistics；无有效时长的 Prompt 计入 Pmt、速度格按 `—` 处理。
   Fleet client sections use the same compact card summary and disclosure interaction;
   without local call durations they display speed `—`, including expanded Fleet model
   rows. Fleet model rows use the same single-baseline format and omit the unknown Pmt
@@ -1095,4 +1094,4 @@ The UI intentionally hides reset-credit id, title, description, and grant time.
 The shared Plan fallback uses the same 10pt `MenuTypography.hint` role for loading and
 failure feedback; there is no separate error-message typography role.
 
-> 核对基线：2026-11-07 · 代码 647acde
+> 核对基线：2026-11-07 · 代码 f37e75e

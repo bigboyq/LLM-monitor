@@ -166,7 +166,7 @@
 | `Sources/LLM-monitor/Views/MenuContentView.swift` | 主面板（header / content / footer；header 统一页面级刷新：用量读 LocalUsage 时间并重扫，额度读 Provider 成功数据时间并刷新；footer 无重复时间）+ 高度桥 `MenuPanelHeightBridge` + `MenuHairline`；展示时钟经 `\.displayDate` 注入卡片 |
 | `Sources/LLM-monitor/Views/FleetScopeSwitcher.swift` | fleet scope 切换控件（菜单面板与 dock 详情浮层共用：≤4 段整行、>4 紧凑下拉）：`FleetScopeSwitcher` 按选项总数分叉（≤4 分段 `Picker`、>4 下拉 `FleetScopeMenu`），`FleetScopeMenu` 是下拉形态——范围文字 + 行内 `ellipsis` 标记，整组上限 120pt，截断走纯函数 `FleetScopeMenu.truncated(_:maxWidth:)`；三个 macOS `Menu` 平台怪癖（行内图 / 字符串层限宽 / 必须 `fixedSize`）写在文件头 |
 | `Sources/LLM-monitor/Views/DisplayClock.swift` | 跨宿主共享的展示时钟：`DisplayClock` + `DisplayClockScope` + `\.displayDate` 环境键；菜单内容 / hover 浮层 / dock 浮层 / provider 详情窗口各自持有实例、随宿主显隐 start/stop 并注入环境，`start()` 与 `refreshNow()` 即时同步墙钟 |
-| `Sources/LLM-monitor/Views/HarnessUsageMenuView.swift` | 菜单用量与额度紧凑卡片（`HarnessUsageMenuView` / `MenuQuotaOverviewView`）：今日汇总、客户端占比、客户端段为引导线树形（2026-11-07 起，第一级 harness 行 + 常驻摘要缩进块，展开后模型行带 ├─ 刻线；原方块卡片与 Prompt 速度范围线均已移除，模型行为单行指标、速度为 P50 文本）。摘要按实际宽度显隐思考占比，窄时四核心指标换行。额度行展示有效额度、重置倒计时、临期/高峰事件、右侧时间与刷新；套餐详情/用量历史独立折叠、独立窗口可达，长摘要与三操作分行；`MenuContentMode` 由宿主持久化。布局回归见 `HarnessUsageMenuViewTests` |
+| `Sources/LLM-monitor/Views/HarnessUsageMenuView.swift` | 菜单用量与额度紧凑卡片（`HarnessUsageMenuView` / `MenuQuotaOverviewView`）：今日汇总、客户端占比、客户端段为引导线树形（2026-11-07 起；harness 汇总合并到一级行，折叠即一行；`HarnessMetricColumns` 并集定宽簇两级行字段级对齐；原方块卡片、独立摘要行与 Prompt 速度范围线均已移除，速度为 P50 文本）。额度行展示有效额度、重置倒计时、临期/高峰事件、右侧时间与刷新；套餐详情/用量历史独立折叠、独立窗口可达，长摘要与三操作分行；`MenuContentMode` 由宿主持久化。布局回归见 `HarnessUsageMenuViewTests` |
 | `Sources/LLM-monitor/Views/MenuTypography.swift` | 菜单面板与悬浮层统一排版常量（语义角色，禁止散落硬编码字号） |
 | `Tests/LLMMonitorTests/MenuRefreshPresentationTests.swift` | 页面额度时间来源：启用项、失败保留成功数据、持久成功时间与空态 |
 | `Sources/LLM-monitor/Views/MenuWindowAutoCloseBridge.swift` | 失焦立即关 + 30s 无交互关闭（菜单内 mouse/scroll/key 重置计时）；关闭统一出口 `performClose` 并发 `onPanelClose`（菜单展示时钟随之停表）；30s 计时为单个可复用 `DispatchSourceTimer`（reset 只改 deadline，鼠标事件不再重建句柄） |
@@ -244,4 +244,4 @@
 - **串行执行是既定选择**：`swift test --parallel` 实测（2026-10-02，5 连跑 3 败）不可用——`SQLiteTempCopyTests` 的临时副本断言扫描跨进程共享目录，并行 worker 互相误判；且慢测试为睡眠型，并行的 wall 收益仅 ~4s。并行化前提：先给 SQLiteTempCopy 的副本目录引入进程级隔离，再复评。
 - 慢用例的等待注入缝已建立：调度器（now/sleep）、Bark 退避（retryDelay）、vnode 合并窗口（coalescingWindow 参数）；新增耗时敏感测试时优先走注入缝，不要写死真实 sleep。
 
-> 核对基线：2026-11-07 · 代码 647acde
+> 核对基线：2026-11-07 · 代码 f37e75e
