@@ -18,55 +18,6 @@ final class HarnessUsageMenuViewTests: XCTestCase {
         XCTAssertEqual(HarnessModelRowView.columnSpacing, 4)
     }
 
-    func testSharedSpeedRangeUsesAllLocalModelEndpointsIncludingZero() {
-        let today = Calendar.current.startOfDay(for: Date())
-        func row(_ name: String, output: Int, duration: Double?) -> HarnessModelRow {
-            HarnessModelRow(
-                dayStart: today,
-                clientID: ClientID.openCode,
-                quotaProviderID: QuotaProviderID.openAI,
-                modelName: name,
-                samples: [LocalTokenUsageSample(
-                    completedAt: today.addingTimeInterval(60),
-                    modelName: name,
-                    promptID: name,
-                    inputTokens: 1,
-                    cachedInputTokens: 0,
-                    outputTokens: output,
-                    reasoningOutputTokens: 0,
-                    durationSeconds: duration
-                )],
-                calendar: .current
-            )
-        }
-        func section(_ clientID: String, rows: [HarnessModelRow]) -> HarnessSection {
-            HarnessSection(
-                clientID: clientID,
-                displayName: clientID,
-                iconSystemName: "terminal",
-                buckets: .zero,
-                tokensPerSecond: nil,
-                value: MixedCurrencyEstimate(estimates: []),
-                rows: rows,
-                isTruncated: false
-            )
-        }
-
-        let sections = [
-            section("slow", rows: [row("zero", output: 0, duration: 1), row("slow", output: 10, duration: 1)]),
-            section("fast", rows: [row("fast", output: 30, duration: 1)]),
-            section("missing", rows: [row("missing", output: 50, duration: nil)])
-        ]
-        let sharedRange = HarnessUsageMenuView.sharedSpeedRange(for: sections)
-
-        XCTAssertEqual(sharedRange?.lowerBound, 0)
-        XCTAssertEqual(sharedRange?.upperBound, 30)
-        XCTAssertNil(
-            sections[2].rows[0].promptSpeedStatistics.minimum,
-            "缺失时长不是 0 tok/s，也不应进入共享刻度"
-        )
-    }
-
     /// 宿主可独立展开套餐或历史；呈现模式参与值相等判断，避免 `.equatable()`
     /// 把一种模式缓存成另一种。
     func testPresentationModeParticipatesInProviderCardEquatableIdentity() {
@@ -289,7 +240,7 @@ final class HarnessUsageMenuViewTests: XCTestCase {
         XCTAssertGreaterThan(size.height, 0)
     }
 
-    /// 长模型名尾部截断，指标仍共享单行；Prompt 统计包含没有有效时长的 Prompt。
+    /// 长模型名尾部截断，指标仍共享单行；速度范围图移除后模型行只剩这一行。
     @MainActor
     func testLongModelNameKeepsMetricsWithinCompactContent() {
         let row = HarnessModelRow(
@@ -309,8 +260,8 @@ final class HarnessUsageMenuViewTests: XCTestCase {
         hosting.layoutSubtreeIfNeeded()
 
         XCTAssertLessThanOrEqual(hosting.fittingSize.width, contentWidth + 0.5)
-        XCTAssertGreaterThan(hosting.fittingSize.height, 20, "指标行下方应保留 Prompt 速度范围图")
-        XCTAssertLessThan(hosting.fittingSize.height, 36, "模型指标应保持单行，只有速度范围另起内容行")
+        XCTAssertGreaterThan(hosting.fittingSize.height, 0, "模型行必须实际布局出内容")
+        XCTAssertLessThanOrEqual(hosting.fittingSize.height, 20, "速度范围图已移除，模型行应只剩单行指标文本")
     }
 
     /// 段头与模型行同构（Token 小计 / 命中占位 / 速度汇总 / 价值四格定宽）后，

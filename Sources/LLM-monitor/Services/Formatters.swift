@@ -84,6 +84,13 @@ enum Formatters {
         return number + suffix
     }
 
+    /// 带单位的完整速度文案（`formatSpeed` + " tok/s"）。原
+    /// `PromptSpeedRangeLineView.speedText` 的继任者——范围线视图删除后
+    /// 由菜单摘要 / 模型指标行共用。
+    static func speedText(_ rate: Double?) -> String {
+        "\(formatSpeed(rate)) tok/s"
+    }
+
     // MARK: - Tokens 格式化
 
     /// 使用最多四位数字的阶梯压缩：3,000 → 3,000；30,000 → 30K；

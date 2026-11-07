@@ -29,36 +29,6 @@ struct HarnessUsageMenuView: View {
     var onRefreshSection: (HarnessSection) -> Void = { _ in }
     /// fleet 汇总可用且多于一个节点时启用双行 + 节点分组形态。
     private var fleetMenuActive: Bool { fleetSummary?.multiNode == true }
-    var localSpeedScaleRange: ClosedRange<Double>? {
-        Self.sharedSpeedRange(for: summary.sections)
-    }
-
-    static func sharedSpeedRange(for sections: [HarnessSection]) -> ClosedRange<Double>? {
-        let values = sections.flatMap(\.rows).flatMap { row in
-            [row.promptSpeedStatistics.minimum, row.promptSpeedStatistics.maximum]
-        }.compactMap { value -> Double? in
-            guard let value, value.isFinite, value >= 0 else { return nil }
-            return value
-        }
-        guard let minimum = values.min(), let maximum = values.max() else { return nil }
-        return minimum...maximum
-    }
-
-    @ViewBuilder
-    private var localSpeedScaleNote: some View {
-        if let range = localSpeedScaleRange {
-            HStack(spacing: 3) {
-                Spacer(minLength: 0)
-                Text("共享刻度 \(PromptSpeedRangeLineView.speedValue(range.lowerBound))–\(PromptSpeedRangeLineView.speedValue(range.upperBound)) tok/s")
-                Image(systemName: "diamond.fill")
-                    .font(.system(size: 6, weight: .medium))
-                Text("最近")
-            }
-            .font(MenuTypography.footer)
-            .foregroundStyle(Color.secondaryLabel.opacity(0.72))
-            .lineLimit(1)
-        }
-    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: HarnessUsageMenuView.sectionSpacing) {
@@ -97,13 +67,11 @@ struct HarnessUsageMenuView: View {
                     segments: HarnessTodaySummary.clientSegments(from: summary.sections)
                 )
                 if summary.sections.isEmpty { emptyTodayState } else {
-                    localSpeedScaleNote
                     ForEach(summary.sections) { section in
                         HarnessSectionView(
                             section: section,
                             onRefreshSection: onRefreshSection,
-                            updateTime: summary.localUsageScannedAt,
-                            sharedSpeedRange: localSpeedScaleRange
+                            updateTime: summary.localUsageScannedAt
                         )
                     }
                 }
@@ -137,13 +105,11 @@ struct HarnessUsageMenuView: View {
             } else {
                 // 联动关闭 / 只有本机节点时保持传统客户端视图，并保留顶部总览。
                 todayOverview
-                localSpeedScaleNote
                 ForEach(summary.sections) { section in
                     HarnessSectionView(
                         section: section,
                         onRefreshSection: onRefreshSection,
-                        updateTime: summary.localUsageScannedAt,
-                        sharedSpeedRange: localSpeedScaleRange
+                        updateTime: summary.localUsageScannedAt
                     )
                 }
             }
@@ -662,7 +628,6 @@ struct HarnessSectionView: View {
     /// 段头右键「刷新 <客户端名>」：按本段今日贡献行刷新涉及的 provider 卡。
     var onRefreshSection: (HarnessSection) -> Void = { _ in }
     var updateTime: Date? = nil
-    var sharedSpeedRange: ClosedRange<Double>? = nil
     @State private var isExpanded = false
 
     var body: some View {
@@ -683,7 +648,7 @@ struct HarnessSectionView: View {
                         .padding(.horizontal, 2)
                 } else {
                     ForEach(section.rows) { row in
-                        HarnessModelRowView(row: row, sharedSpeedRange: sharedSpeedRange)
+                        HarnessModelRowView(row: row)
                     }
                     if let notice = section.sampleIntegrityNotice {
                         Text(notice)
@@ -750,7 +715,7 @@ struct HarnessSectionView: View {
         let tokens = Formatters.formatTokenCountCompact(section.totalTokens)
         let value = section.valueText
         let hitRate = HarnessUsageMenuView.hitRateText(section.cacheHitRate)
-        let p50 = PromptSpeedRangeLineView.speedText(section.promptSpeedStatistics.p50)
+        let p50 = Formatters.speedText(section.promptSpeedStatistics.p50)
         return ViewThatFits(in: .horizontal) {
             summaryLine(tokens: tokens, value: value, hitRate: hitRate, p50: p50, includeThinking: true)
             summaryLine(tokens: tokens, value: value, hitRate: hitRate, p50: p50, includeThinking: false)
@@ -1167,15 +1132,15 @@ private struct MenuQuotaProviderRow: View {
     }
 }
 
-/// 本地段内单条模型行：模型名、统一顺序的今日指标、Prompt 速度范围线。
+/// 本地段内单条模型行：模型名与统一顺序的今日指标（单行文本）。
 ///
 /// 价值是**行级**的 `ModelCostEstimate.displayText` 原样文案（单 provider 单币种
 /// 原额）。行级绝不做跨币种相加——同一段里不同 provider 的行金额可能不同币种，
 /// 相加必须留到段头 / 全局的 `MixedCurrencyEstimate`。
-/// 本机与 Fleet 的模型指标均按相同顺序共用一条基线；速度范围仅本机有有效时长时绘制。
+/// 本机与 Fleet 的模型指标均按相同顺序共用一条基线；速度只保留 P50 文本
+/// （Prompt 速度范围线与共享刻度图例已于 2026-11-07 移除，用户裁定：占位大）。
 struct HarnessModelRowView: View {
     let row: HarnessModelRow
-    var sharedSpeedRange: ClosedRange<Double>? = nil
 
     /// 行与行的间距。刻意小于段间距（`sectionSpacing`），让分组层级一眼可辨。
     static let rowSpacing: CGFloat = 3
@@ -1184,16 +1149,13 @@ struct HarnessModelRowView: View {
     static let columnSpacing: CGFloat = 4
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Self.columnSpacing) {
-            ViewThatFits(in: .horizontal) {
-                metricsLine(showPromptCount: true, spacing: 7, minimumScaleFactor: 1)
-                metricsLine(showPromptCount: false, spacing: 7, minimumScaleFactor: 1)
-                metricsLine(showPromptCount: false, spacing: 3, minimumScaleFactor: 0.82)
-            }
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel(Self.accessibilityMetrics(for: row))
-            PromptSpeedRangeLineView(statistics: row.promptSpeedStatistics, scaleRange: sharedSpeedRange)
+        ViewThatFits(in: .horizontal) {
+            metricsLine(showPromptCount: true, spacing: 7, minimumScaleFactor: 1)
+            metricsLine(showPromptCount: false, spacing: 7, minimumScaleFactor: 1)
+            metricsLine(showPromptCount: false, spacing: 3, minimumScaleFactor: 0.82)
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(Self.accessibilityMetrics(for: row))
     }
 
     /// Keep model identity and all metrics on one shared baseline. The name absorbs
@@ -1235,7 +1197,7 @@ struct HarnessModelRowView: View {
                 .lineLimit(1)
                 .fixedSize(horizontal: minimumScaleFactor == 1, vertical: false)
                 .minimumScaleFactor(minimumScaleFactor)
-            Text("速度: \(PromptSpeedRangeLineView.speedText(row.promptSpeedStatistics.p50))")
+            Text("速度: \(Formatters.speedText(row.promptSpeedStatistics.p50))")
                 .lineLimit(1)
                 .fixedSize(horizontal: minimumScaleFactor == 1, vertical: false)
                 .minimumScaleFactor(minimumScaleFactor)
@@ -1256,7 +1218,7 @@ struct HarnessModelRowView: View {
     }
 
     private static func accessibilityMetrics(for row: HarnessModelRow) -> String {
-        "\(row.compactDisplayName)；Prompt \(row.promptSpeedStatistics.totalPromptCount)；Token \(Formatters.formatTokenCountCompact(row.totalTokens))；价值 \(row.costText)；命中率 \(percentText(row.cacheHitRate))；思考 \(thinkingPercent(row.buckets) ?? "—")；速度 P50 \(PromptSpeedRangeLineView.speedText(row.promptSpeedStatistics.p50))"
+        "\(row.compactDisplayName)；Prompt \(row.promptSpeedStatistics.totalPromptCount)；Token \(Formatters.formatTokenCountCompact(row.totalTokens))；价值 \(row.costText)；命中率 \(percentText(row.cacheHitRate))；思考 \(thinkingPercent(row.buckets) ?? "—")；速度 P50 \(Formatters.speedText(row.promptSpeedStatistics.p50))"
     }
 
     /// 命中率文案复用汇总块的同一实现。
