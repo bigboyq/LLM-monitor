@@ -31,6 +31,15 @@ struct ProviderDetailRouteBridge: View {
 struct ProviderDetailWindowView: View {
     static let windowID = "provider-detail"
 
+    /// 窗口最小宽：expanded 7 天历史表格的下限总宽（466pt）加上外层 padding 与
+    /// 卡片内 padding 各两层（12pt × 4）= 514pt。低于它表格最后一列就会被窗口
+    /// 右缘裁掉；初始尺寸由 App scene 的 `defaultSize` 用同一常量推导。
+    /// 也作为「额度窗口」表格弹性填满时的宽度下限（见 `quotaTableFillsWidth`）。
+    static let minimumWindowWidth =
+        SevenDayUsageChartMetrics.expandedTableWidth
+        + LayoutMetrics.cardColumnHorizontalPadding * 2
+        + LayoutMetrics.cardContentPadding * 2
+
     @ObservedObject var state: AppState
     @ObservedObject var configStore: ConfigStore
     @Environment(\.openSettings) private var openSettings
@@ -45,7 +54,7 @@ struct ProviderDetailWindowView: View {
                 ContentUnavailableView("没有待查看的 Provider", systemImage: "rectangle.portrait.and.arrow.right")
             }
         }
-        .frame(minWidth: EdgeDockTheme.popoverWidth, idealWidth: EdgeDockTheme.popoverWidth, minHeight: 420, idealHeight: 700)
+        .frame(minWidth: Self.minimumWindowWidth, minHeight: 420)
         .onAppear(perform: receivePendingRoute)
         .onReceive(state.providerDetailRouteRequests) { route in
             self.route = route
@@ -81,12 +90,13 @@ struct ProviderDetailWindowView: View {
                             configStore: configStore
                         )
                     }
-                    .frame(minWidth: EdgeDockTheme.popoverWidth - LayoutMetrics.cardColumnHorizontalPadding * 2, maxWidth: .infinity)
+                    .frame(minWidth: Self.minimumWindowWidth - LayoutMetrics.cardColumnHorizontalPadding * 2, maxWidth: .infinity)
                     .padding(.horizontal, LayoutMetrics.cardColumnHorizontalPadding)
                     .padding(.vertical, LayoutMetrics.cardColumnHorizontalPadding)
                 }
                 .environment(\.hoverRevealMode, .alwaysVisible)
                 .environment(\.usageHistoryLayoutMode, .expanded)
+                .environment(\.quotaTableFillsWidth, true)
                 .environment(\.quotaWindowSegmentEditable, true)
                 .environment(\.cardQuotaRefreshAction, { id in
                     Task { await state.refreshOne(providerID: id) }

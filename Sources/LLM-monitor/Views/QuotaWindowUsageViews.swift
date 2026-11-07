@@ -178,6 +178,9 @@ struct QuotaWindowUsageSection: View {
     /// 重置日期格倒计时的取值来源：宿主注入的展示时钟（随浮层显隐起停），
     /// 与卡内其它消费者（高峰倒计时、新鲜度胶囊）同一个 now。
     @Environment(\.displayDate) private var displayDate
+    /// 详情窗口注入的弹性列宽开关（见 `quotaTableFillsWidth`）；默认 false，
+    /// 菜单卡片与浮层宿主的固定列宽布局逐字节保持原状。
+    @Environment(\.quotaTableFillsWidth) private var fillsWidth
 
     var activeSegment: QuotaWindowUsageSegment {
         segmentOverride ?? (QuotaWindowUsageSegment(rawValue: segmentRawValue) ?? .analysis)
@@ -620,13 +623,29 @@ struct QuotaWindowUsageSection: View {
         }
     }
 
+    /// 表格数值格（含带宽度的表头格）的横向 frame：默认固定宽度，行为与旧实现
+    /// 逐字节一致；`quotaTableFillsWidth` 为 true（仅详情窗口注入）时改为
+    /// 「列宽下限 + maxWidth .infinity」弹性填满，让窗口放大时表格随窗口拉伸。
+    /// 重置日期列不走这里，恒为固定宽度。
+    @ViewBuilder
+    private func flexibleCellFrame<V: View>(_ content: V, width: CGFloat, alignment: Alignment) -> some View {
+        if fillsWidth {
+            content.frame(minWidth: width, maxWidth: .infinity, alignment: alignment)
+        } else {
+            content.frame(width: width, alignment: alignment)
+        }
+    }
+
     private func headerCell(_ title: String, width: CGFloat?, alignment: Alignment) -> some View {
         Group {
             if let width {
-                Text(title)
-                    .font(MenuTypography.metricLabel)
-                    .foregroundStyle(.secondary)
-                    .frame(width: width, alignment: alignment)
+                flexibleCellFrame(
+                    Text(title)
+                        .font(MenuTypography.metricLabel)
+                        .foregroundStyle(.secondary),
+                    width: width,
+                    alignment: alignment
+                )
             } else {
                 Text(title)
                     .font(MenuTypography.metricLabel)
@@ -644,30 +663,42 @@ struct QuotaWindowUsageSection: View {
     }
 
     private func cell(_ value: String, width: CGFloat) -> some View {
-        Text(value)
-            .foregroundStyle(.secondary)
-            .frame(width: width, alignment: .trailing)
+        flexibleCellFrame(
+            Text(value)
+                .foregroundStyle(.secondary),
+            width: width,
+            alignment: .trailing
+        )
     }
 
     private func rateCell(_ value: String, width: CGFloat, help: String? = nil) -> some View {
-        Text(value)
-            .foregroundStyle(.secondary)
-            .frame(width: width, alignment: .trailing)
-            .help(help ?? "")
+        flexibleCellFrame(
+            Text(value)
+                .foregroundStyle(.secondary)
+                .help(help ?? ""),
+            width: width,
+            alignment: .trailing
+        )
     }
 
     private func valueCell(_ cost: ModelCostEstimate?, _ costText: String? = nil) -> some View {
-        Text(costText ?? Self.costText(cost))
-            .foregroundStyle(.secondary)
-            .frame(width: Self.valueColumnWidth, alignment: .trailing)
+        flexibleCellFrame(
+            Text(costText ?? Self.costText(cost))
+                .foregroundStyle(.secondary),
+            width: Self.valueColumnWidth,
+            alignment: .trailing
+        )
     }
 
     /// 用量态第 6 列的速度格：纯数字（tok/s），nil → `—`。58pt 宽与 trailing 对齐
     /// 同「分析」态的价值列，两态切换骨架零迁移；口径说明挂在表头（speedColumnHelp）。
     private func speedCell(_ rate: Double?) -> some View {
-        Text(Self.speedText(rate))
-            .foregroundStyle(.secondary)
-            .frame(width: Self.valueColumnWidth, alignment: .trailing)
+        flexibleCellFrame(
+            Text(Self.speedText(rate))
+                .foregroundStyle(.secondary),
+            width: Self.valueColumnWidth,
+            alignment: .trailing
+        )
     }
 
     private func resetDateCell(_ resetsAt: Date?) -> some View {
@@ -773,5 +804,22 @@ struct ResetCreditsDetailList: View {
 
     private var availableEntries: [ResetCreditEntry] {
         Self.availableEntries(in: resets)
+    }
+}
+
+// MARK: - Quota Table Fill-Width Environment
+
+/// 额度窗口表格的弹性列宽开关：true 时 `QuotaWindowUsageSection` 的中间数值列
+/// 与价值 / 速度列改为「minWidth 下限 + maxWidth .infinity」弹性填满可用宽度
+/// （重置日期列除外，恒为固定宽度）。默认 false——菜单卡片与浮层宿主的固定
+/// 列宽布局逐字节保持原状。唯一注入点是 `ProviderDetailWindowView`。
+private struct QuotaTableFillsWidthKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    var quotaTableFillsWidth: Bool {
+        get { self[QuotaTableFillsWidthKey.self] }
+        set { self[QuotaTableFillsWidthKey.self] = newValue }
     }
 }

@@ -37,4 +37,19 @@ enum SevenDayUsageChartMetrics {
     /// 带价格列时的图表宽度。表格（34+48+58×4+62 + 间距 18 ≈ 394）比柱区窄，
     /// 仍以柱区为下限再留一点余量。
     static let pricedWidth: CGFloat = 420
+
+    /// `.expanded` 模式（Provider 详情独立窗口）7 天历史表格的各列下限宽度。
+    ///
+    /// 详情窗口里这些列会以 `minWidth` + `maxWidth: .infinity` 弹性填满可用宽度，
+    /// 这里的数值是**缩列时的下限**；表格总宽的下限由 `expandedTableWidth` 派生，
+    /// `ProviderDetailWindowView.minimumWindowWidth` 再据此推导窗口最小宽。
+    static let expandedDateColumnWidth: CGFloat = 42
+    static let expandedRTColumnWidth: CGFloat = 66
+    static let expandedBucketColumnWidth: CGFloat = 56
+    static let expandedDynamicColumnWidth: CGFloat = 74
+    static let expandedTableSpacing: CGFloat = 10
+
+    /// `.expanded` 表格的总宽下限：日期列 42 + R/T 66 + 分桶列 56×4 + 动态列 74
+    /// + 间距 10×6 = 466。写成表达式便于与上面各列逐项核对。
+    static let expandedTableWidth: CGFloat = 42 + 66 + 56 * 4 + 74 + 10 * 6
 }

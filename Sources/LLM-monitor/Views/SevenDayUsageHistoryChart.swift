@@ -274,11 +274,23 @@ struct SevenDayUsageHistoryView: View {
         effectiveLayoutMode == .expanded ? .system(size: 11, weight: .regular).monospacedDigit() : MenuTypography.metricValue
     }
 
-    private var dateColWidth: CGFloat { effectiveLayoutMode == .expanded ? 42 : 34 }
-    private var rtColWidth: CGFloat { effectiveLayoutMode == .expanded ? 66 : 54 }
-    private var bucketColWidth: CGFloat { effectiveLayoutMode == .expanded ? 56 : 46 }
-    private var dynamicColWidth: CGFloat { effectiveLayoutMode == .expanded ? 74 : 58 }
-    private var tableSpacing: CGFloat { effectiveLayoutMode == .expanded ? 10 : 4 }
+    private var dateColWidth: CGFloat { effectiveLayoutMode == .expanded ? SevenDayUsageChartMetrics.expandedDateColumnWidth : 34 }
+    private var rtColWidth: CGFloat { effectiveLayoutMode == .expanded ? SevenDayUsageChartMetrics.expandedRTColumnWidth : 54 }
+    private var bucketColWidth: CGFloat { effectiveLayoutMode == .expanded ? SevenDayUsageChartMetrics.expandedBucketColumnWidth : 46 }
+    private var dynamicColWidth: CGFloat { effectiveLayoutMode == .expanded ? SevenDayUsageChartMetrics.expandedDynamicColumnWidth : 58 }
+    private var tableSpacing: CGFloat { effectiveLayoutMode == .expanded ? SevenDayUsageChartMetrics.expandedTableSpacing : 4 }
+
+    /// 表格单元格的横向 frame：compact 用固定宽度；expanded 用「列宽下限 + 弹性填满」，
+    /// 让详情窗口放大时表格随窗口一起拉伸（下限来自 `SevenDayUsageChartMetrics`）。
+    /// 日期列例外——两种模式都用固定宽度，见 `dailyTable`。
+    @ViewBuilder
+    private func cellFrame<V: View>(_ content: V, width: CGFloat, alignment: Alignment) -> some View {
+        if effectiveLayoutMode == .expanded {
+            content.frame(minWidth: width, maxWidth: .infinity, alignment: alignment)
+        } else {
+            content.frame(width: width, alignment: alignment)
+        }
+    }
 
     private var dailyTable: some View {
         Grid(alignment: .leading, horizontalSpacing: tableSpacing, verticalSpacing: effectiveLayoutMode == .expanded ? 6 : 4) {
@@ -298,10 +310,13 @@ struct SevenDayUsageHistoryView: View {
                         .font(tableValueFont)
                         .foregroundStyle(day.isTodayIncomplete ? .primary : .secondary)
                         .frame(width: dateColWidth, alignment: .leading)
-                    Text(roundsTurns(day))
-                        .font(tableValueFont)
-                        .foregroundStyle(day.rounds != nil || day.turns != nil ? .primary : .secondary)
-                        .frame(width: rtColWidth, alignment: .trailing)
+                    cellFrame(
+                        Text(roundsTurns(day))
+                            .font(tableValueFont)
+                            .foregroundStyle(day.rounds != nil || day.turns != nil ? .primary : .secondary),
+                        width: rtColWidth,
+                        alignment: .trailing
+                    )
                     token(day.input, color: .tokenInputTint, width: bucketColWidth)
                     token(day.cache, color: .tokenCacheReadTint, width: bucketColWidth)
                     token(day.reason, color: Color(red: 0.90, green: 0.46, blue: 0.16), width: bucketColWidth)
@@ -401,51 +416,69 @@ struct SevenDayUsageHistoryView: View {
     }
 
     private func header(_ title: String, width: CGFloat, alignment: Alignment = .trailing) -> some View {
-        Text(title)
-            .font(tableHeaderFont)
-            .foregroundStyle(.secondary)
-            .frame(width: width, alignment: alignment)
+        cellFrame(
+            Text(title)
+                .font(tableHeaderFont)
+                .foregroundStyle(.secondary),
+            width: width,
+            alignment: alignment
+        )
     }
 
     private func rate(_ value: Double?, digits: Int, color: Color, width: CGFloat) -> some View {
-        Text(value.map { Formatters.formatPercent($0, digits: digits) } ?? "—")
-            .font(tableValueFont)
-            .foregroundStyle(value == nil ? Color.secondary : color)
-            .frame(width: width, alignment: .trailing)
+        cellFrame(
+            Text(value.map { Formatters.formatPercent($0, digits: digits) } ?? "—")
+                .font(tableValueFont)
+                .foregroundStyle(value == nil ? Color.secondary : color),
+            width: width,
+            alignment: .trailing
+        )
     }
 
     private func outputRate(_ value: Double?, color: Color, width: CGFloat) -> some View {
-        Text(value.map(QuotaWindowUsageSection.outputInputRateText) ?? "—")
-            .font(tableValueFont)
-            .foregroundStyle(value == nil ? Color.secondary : color)
-            .frame(width: width, alignment: .trailing)
+        cellFrame(
+            Text(value.map(QuotaWindowUsageSection.outputInputRateText) ?? "—")
+                .font(tableValueFont)
+                .foregroundStyle(value == nil ? Color.secondary : color),
+            width: width,
+            alignment: .trailing
+        )
     }
 
     private func token(_ value: Double?, color: Color, width: CGFloat = 58) -> some View {
-        Text(UsageHistoryNumber.integer(value).map(Formatters.formatTokenCountCompact) ?? "—")
-            .font(tableValueFont)
-            .foregroundStyle(UsageHistoryNumber.finiteNonnegative(value) == nil ? Color.secondary : color)
-            .frame(width: width, alignment: .trailing)
+        cellFrame(
+            Text(UsageHistoryNumber.integer(value).map(Formatters.formatTokenCountCompact) ?? "—")
+                .font(tableValueFont)
+                .foregroundStyle(UsageHistoryNumber.finiteNonnegative(value) == nil ? Color.secondary : color),
+            width: width,
+            alignment: .trailing
+        )
     }
 
     private func selectedValue(_ day: UsageHistoryDay, width: CGFloat = 58) -> some View {
-        Text(UsageHistoryNumber.finiteNonnegative(day.value).flatMap { value in
-            day.currency.map { "\($0.symbol)\(String(format: "%.2f", value))" }
-        } ?? "—")
-            .font(tableValueFont)
-            .foregroundStyle(day.valueIsPartial ? Color.orange : Color.secondary)
-            .frame(width: width, alignment: .trailing)
-            .lineLimit(1)
-            .minimumScaleFactor(0.65)
-            .help(day.valueIsPartial ? "部分计价或样本被截断" : "")
+        cellFrame(
+            Text(UsageHistoryNumber.finiteNonnegative(day.value).flatMap { value in
+                day.currency.map { "\($0.symbol)\(String(format: "%.2f", value))" }
+            } ?? "—")
+                .font(tableValueFont)
+                .foregroundStyle(day.valueIsPartial ? Color.orange : Color.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.65)
+                .help(day.valueIsPartial ? "部分计价或样本被截断" : ""),
+            width: width,
+            alignment: .trailing
+        )
     }
 
     private func selectedSpeed(_ day: UsageHistoryDay, width: CGFloat = 58) -> some View {
-        Text(Formatters.formatSpeed(day.speed))
-            .font(tableValueFont)
-            .foregroundStyle(day.speedIsPartial ? Color.orange : Color.secondary)
-            .frame(width: width, alignment: .trailing)
-            .help(day.speedIsPartial ? "部分样本：有 Prompt 缺少有效时长，或本地样本被截断；P50 仅统计完整 Prompt" : "")
+        cellFrame(
+            Text(Formatters.formatSpeed(day.speed))
+                .font(tableValueFont)
+                .foregroundStyle(day.speedIsPartial ? Color.orange : Color.secondary)
+                .help(day.speedIsPartial ? "部分样本：有 Prompt 缺少有效时长，或本地样本被截断；P50 仅统计完整 Prompt" : ""),
+            width: width,
+            alignment: .trailing
+        )
     }
 
     private func chartPoints(in size: CGSize) -> [CGPoint?] {

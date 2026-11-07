@@ -172,7 +172,7 @@ struct LLMMonitorApp: App {
         Window("Provider 额度详情", id: ProviderDetailWindowView.windowID) {
             ProviderDetailWindowView(state: state, configStore: configStore)
         }
-        .defaultSize(width: EdgeDockTheme.popoverWidth, height: 700)
+        .defaultSize(width: ProviderDetailWindowView.minimumWindowWidth, height: 880)
 
         Settings {
             SettingsView(
