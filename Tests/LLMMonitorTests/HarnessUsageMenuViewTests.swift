@@ -18,6 +18,16 @@ final class HarnessUsageMenuViewTests: XCTestCase {
         XCTAssertEqual(HarnessModelRowView.columnSpacing, 4)
     }
 
+    /// 树形段几何锚点（引导线 / 缩进 / 刻线）：改动取值时这里同步，
+    /// 防止缩进层级悄悄漂移。
+    func testTreeSectionGeometryAnchors() {
+        XCTAssertEqual(HarnessSectionView.guideX, 4)
+        XCTAssertEqual(HarnessSectionView.treeIndent, 14)
+        XCTAssertEqual(HarnessSectionView.tickWidth, 7)
+        XCTAssertEqual(HarnessSectionView.guideOpacity, 0.14, accuracy: 0.0001)
+        XCTAssertEqual(HarnessSectionView.guideTailTrim, 7)
+    }
+
     /// 宿主可独立展开套餐或历史；呈现模式参与值相等判断，避免 `.equatable()`
     /// 把一种模式缓存成另一种。
     func testPresentationModeParticipatesInProviderCardEquatableIdentity() {
@@ -280,14 +290,16 @@ final class HarnessUsageMenuViewTests: XCTestCase {
     }
 
     /// 核心摘要在窄容器里保留所有四项并换行，不把速度或价值挤出可见区域。
+    /// 阈值按树形布局校准（2026-11-07 去卡片底后折叠段约 48pt：harness 行 +
+    /// 两行换行摘要）。
     @MainActor
     func testSectionSummaryWrapsWithinNarrowContainer() {
         let view = HarnessSectionView(
             section: Self.sectionFixture(rowCount: 1, displayName: "OpenCode")
         ).frame(width: 230)
         let height = self.height(of: view)
-        XCTAssertGreaterThan(height, 48, "窄宽度下的摘要应自然换行")
-        XCTAssertLessThan(height, 140, "折叠卡摘要不应异常撑高")
+        XCTAssertGreaterThanOrEqual(height, 48, "窄宽度下的摘要应自然换行")
+        XCTAssertLessThan(height, 140, "折叠段摘要不应异常撑高")
     }
 
     /// 段数 / 行数增加时高度增长（有内容可滚），但单段视图本身必须矮——

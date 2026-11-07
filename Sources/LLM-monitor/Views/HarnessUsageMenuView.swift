@@ -617,7 +617,13 @@ private struct WrapLayout: Layout {
     }
 }
 
-/// 一个客户端段：段头（名称 + 今日小计 + 段价值）+ 段内模型行。
+/// 一个客户端段：树形层级（引导线树，2026-11-07 起取代原「方块卡片」）。
+///
+/// 第一级 = harness 行（▸/▾ 三角 + 图标 + 名称……扫描时间，右键挂
+/// 「刷新 <客户端名>」）；名称行下方是**常驻缩进块**（今日摘要行 + 截断提示），
+/// 展开后第二级 = 模型行，每行带 ├─ 式短横刻线，整块左侧一条竖引导线贯穿
+/// （底部截短约半行，近似 └ 形收尾）。同一模型落在多个 harness 时仍按
+/// 数据结构各自在所属 harness 下展开（`HarnessSection.rows` 本就按段嵌套）。
 ///
 /// **internal 而非 private**：留下测试缝。`HarnessUsageMenuViewTests` 要真的把
 /// 一个段布局一遍量高度与自然宽（列宽超预算、单个段撑爆菜单高度都只能这么抓），
@@ -630,83 +636,102 @@ struct HarnessSectionView: View {
     var updateTime: Date? = nil
     @State private var isExpanded = false
 
+    // MARK: 树形几何常量（测试锚点，改动需同步 `HarnessUsageMenuViewTests`）
+
+    /// 竖引导线的水平位置（≈ 展开三角形中轴）。
+    static let guideX: CGFloat = 4
+    /// 缩进块（今日摘要 / 截断提示 / 模型行）的左缩进。
+    static let treeIndent: CGFloat = 14
+    /// 模型行的 ├─ 短横刻线宽度。
+    static let tickWidth: CGFloat = 7
+    /// 引导线 / 刻线透明度（比 `MenuHairline` 的 8% 略深，缩进对照下要立得住）。
+    static let guideOpacity: Double = 0.14
+    /// 引导线底部收尾余量（≈ 半行高，画出 └ 形留白）。
+    static let guideTailTrim: CGFloat = 7
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 3) {
             Button { isExpanded.toggle() } label: {
-                header
+                harnessRow
             }
             .buttonStyle(.plain)
             .contextMenu {
                 Button("刷新本机 \(section.displayName)") { onRefreshSection(section) }
             }
-            if isExpanded {
-                if section.rows.isEmpty {
-                    Text(section.sampleIntegrityNotice ?? "暂无模型明细")
-                        .font(MenuTypography.hint)
-                        .foregroundStyle(Color.secondaryLabel)
-                        .padding(.vertical, 4)
-                        .padding(.horizontal, 2)
-                } else {
-                    ForEach(section.rows) { row in
-                        HarnessModelRowView(row: row)
-                    }
-                    if let notice = section.sampleIntegrityNotice {
-                        Text(notice)
+
+            VStack(alignment: .leading, spacing: 2) {
+                clientSummary
+                // 截断提示只在该段的数据源真的被截断时出现：数字本身仍然是"对"的，
+                // 只是"不全"——不说就等于把一份残缺统计当完整统计读。
+                if section.isTruncated {
+                    truncationNotice
+                } else if section.hasIncompleteSamples {
+                    samplesTruncationNotice
+                }
+                if isExpanded {
+                    if section.rows.isEmpty {
+                        Text(section.sampleIntegrityNotice ?? "暂无模型明细")
                             .font(MenuTypography.hint)
                             .foregroundStyle(Color.secondaryLabel)
-                            .padding(.top, 2)
+                            .padding(.vertical, 4)
                             .padding(.horizontal, 2)
+                    } else {
+                        ForEach(section.rows) { row in
+                            HarnessModelRowView(row: row)
+                                .overlay(alignment: .leading) {
+                                    Rectangle()
+                                        .fill(Color.primary.opacity(Self.guideOpacity))
+                                        .frame(width: Self.tickWidth, height: MenuHairline.thickness)
+                                        .padding(.leading, Self.guideX)
+                                }
+                        }
+                        if let notice = section.sampleIntegrityNotice {
+                            Text(notice)
+                                .font(MenuTypography.hint)
+                                .foregroundStyle(Color.secondaryLabel)
+                                .padding(.top, 2)
+                                .padding(.horizontal, 2)
+                        }
                     }
                 }
             }
+            .padding(.leading, Self.treeIndent)
+            .overlay(alignment: .topLeading) {
+                Rectangle()
+                    .fill(Color.primary.opacity(Self.guideOpacity))
+                    .frame(width: MenuHairline.thickness)
+                    .padding(.leading, Self.guideX)
+                    .padding(.bottom, isExpanded && !section.rows.isEmpty ? Self.guideTailTrim : 0)
+            }
         }
-        .padding(8)
-        .background(
-            RoundedRectangle(cornerRadius: 7)
-                .fill(Color.primary.opacity(0.045))
-                .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.primary.opacity(0.07), lineWidth: 1))
-        )
+        .padding(.vertical, 2)
     }
 
-    /// 紧凑两行卡头：首行客户端身份、用量更新时间与展开控件；次行展示今日摘要。
+    /// 第一级 harness 行：展开三角 + 客户端图标 + 名称……扫描时间（右端）。
     ///
-    /// 右键菜单挂在**段头**（不是整段）：菜单内容区现在是客户端视角，右键一个
+    /// 右键菜单挂在**这一行**（不是整段）：菜单内容区现在是客户端视角，右键一个
     /// 段名才是"针对这些数据"的语义；「刷新 <客户端名>」按本段今日贡献行刷新
     /// 涉及的 provider 卡（`HarnessSection.refreshProviderStatusIDs(in:)`），
     /// 动作实现由 `MenuContentView` 注入。
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Image(systemName: section.iconSystemName)
-                    .font(.system(size: 9))
-                    .foregroundStyle(Color.accentColor)
-                Text(section.displayName)
-                    .font(MenuTypography.dataLabel)
-                    .foregroundStyle(Color.primaryLabel)
-                    .lineLimit(1)
-                Spacer(minLength: 4)
-                if let updateTime {
-                    Text(Formatters.formatTimeOfDay(updateTime))
-                        .font(MenuTypography.hint)
-                        .foregroundStyle(Color.secondaryLabel)
-                        .monospacedDigit()
-                        .help("本地用量更新时间")
-                }
-                Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+    private var harnessRow: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 5) {
+            Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                .font(MenuTypography.hint)
+                .foregroundStyle(Color.secondaryLabel)
+            Image(systemName: section.iconSystemName)
+                .font(.system(size: 9))
+                .foregroundStyle(Color.accentColor)
+            Text(section.displayName)
+                .font(MenuTypography.dataLabel)
+                .foregroundStyle(Color.primaryLabel)
+                .lineLimit(1)
+            Spacer(minLength: 4)
+            if let updateTime {
+                Text(Formatters.formatTimeOfDay(updateTime))
                     .font(MenuTypography.hint)
                     .foregroundStyle(Color.secondaryLabel)
-            }
-            .overlay(alignment: .bottom) {
-                MenuHairline.horizontal
-            }
-            clientSummary
-                .padding(.top, 1)
-            // 截断提示只在该段的数据源真的被截断时出现：数字本身仍然是"对"的，
-            // 只是"不全"——不说就等于把一份残缺统计当完整统计读。
-            if section.isTruncated {
-                truncationNotice
-            } else if section.hasIncompleteSamples {
-                samplesTruncationNotice
+                    .monospacedDigit()
+                    .help("本地用量更新时间")
             }
         }
     }
