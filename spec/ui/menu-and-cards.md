@@ -387,23 +387,25 @@ per-client sections」描述的是**本机 scope** 的内容区；多机联动�
   `guideTailTrim = 7` 定义在 `HarnessSectionView`（测试锚点见 `HarnessUsageMenuViewTests`
   `testTreeSectionGeometryAnchors`）；圆角卡片底与段头下划线已随树形化移除。
 - **字段级对齐指标簇（`HarnessMetricColumns`，2026-11-07 用户裁定）**：harness 汇总行
-  与模型行共用同一组**定宽右对齐列**，纵向跨行对齐；宽度预算按「够并集取并集、
-  不够取交集」实测裁定——内容区 460pt（484 面板 − 2×12 内边距）装得下并集
-  {Pmt, Token, 价值, 命中, 思考, 速度}，故取**并集**（量测锚
-  `testMetricClusterUsesUnionWithinBudget`，若面板收窄装不下则反转回交集并同步本节）。
-  harness 行的 Pmt/Token/价值/命中/思考/速度 = 段级聚合（Pmt 用段
-  `promptSpeedStatistics.totalPromptCount`、思考用段 buckets），模型行用行级值；
-  速度均为完整 Prompt P50。数值自带量纲（数量级后缀 / 货币符号 / % / tok/s），
-  不带字段标签，口径解释挂每格 `.help`。扫描时间占固定尾槽（`timeSlot = 32`），
-  模型行留空同宽保证簇列对齐；扫描时间为 summary 级最新本地扫描时刻，
-  Fleet 段不伪造。汇总行的价值是 `MixedCurrencyEstimate`（客户端可横跨多 provider
-  分片多币种），模型行价值是单 provider 单币种原额。
+  与模型行共用同一组**定宽右对齐列**，纵向跨行对齐；列序与英文标题
+  **Turns · Token · Hit · Think · Speed · Value · Update**（2026-11-07 裁定：Pmt 更名
+  Turns，Value 移到 Speed 后，扫描时间以 Update 加入标题行）。宽度预算按「够并集取
+  并集、不够取交集」实测裁定——内容区 460pt（484 面板 − 2×12 内边距）装得下并集，
+  故取**并集**（量测锚 `testMetricClusterUsesUnionWithinBudget`，若面板收窄装不下
+  则反转回交集并同步本节）。harness 行的 Turns/Token/Value/Hit/Think/Speed = 段级
+  聚合（Turns 用段 `promptSpeedStatistics.totalPromptCount`、Think 用段 buckets），
+  模型行用行级值；速度均为完整 Prompt P50。数值自带量纲（数量级后缀 / 货币符号 /
+  % / tok/s），不带字段标签，口径解释挂每格 `.help` 与表头。Update 占固定尾槽
+  （`timeSlot = 38`，以放下标题「Update」为准），模型行留空同宽保证簇列对齐；
+  扫描时间为 summary 级最新本地扫描时刻，Fleet 段不伪造。汇总行的价值是
+  `MixedCurrencyEstimate`（客户端可横跨多 provider 分片多币种），模型行价值是
+  单 provider 单币种原额。
 - **指标列标题（`HarnessMetricColumns.columnHeader`，2026-11-07 补）**：客户端段列表
-  上方整表一次渲染一行列标题 `Pmt · Token · 价值 · 命中 · 思考 · 速度`——列宽与
-  `cluster` 共用同一组常量、右对齐同位，去标签数值行由此可按表读列；标题行带
-  **弹性名称占位**（与数据行同构）撑满行宽，把标题簇推到与数据相同的列位
-  （缺占位时标题挤行首、数据贴右缘，2.3.10 修复）；名称列与时间槽留空占位，
-  整行弱化（secondary 72%），口径说明挂表头 `.help`。
+  上方整表一次渲染一行列标题 `Turns · Token · Hit · Think · Speed · Value · Update`
+  ——列宽与 `cluster` 共用同一组常量、右对齐同位，去标签数值行由此可按表读列；
+  标题行带**弹性名称占位**（与数据行同构）撑满行宽，把标题簇推到与数据相同的列位
+  （缺占位时标题挤行首、数据贴右缘，2.3.10 修复）；名称列留空占位，整行弱化
+  （secondary 72%），口径说明挂表头 `.help`。
 - **Per-model rows inside an expanded section**, keyed by
   `(clientID, quotaProviderID, modelName)`; samples with no usable model name
   collapse into a single 「模型名缺失」 row. Each row is a single baseline line:
@@ -1100,4 +1102,4 @@ The UI intentionally hides reset-credit id, title, description, and grant time.
 The shared Plan fallback uses the same 10pt `MenuTypography.hint` role for loading and
 failure feedback; there is no separate error-message typography role.
 
-> 核对基线：2026-11-07 · 代码 5e699b1
+> 核对基线：2026-11-07 · 代码 d997b23
