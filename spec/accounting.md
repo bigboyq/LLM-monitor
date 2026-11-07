@@ -177,7 +177,8 @@ UI 消费：「额度窗口」模块**用量态**第 6 列从「价值」换为�
 58pt 列宽不变；**分析态仍显示价值**）。`speedText` 转用统一 `Formatters.formatSpeed`：
 数值部分含小数点最多三个字符（`8.6` / `50` / `246`），舍入跨档后不保留多余小数；
 将进位到四位时使用 K / M / G 数量级后缀（后缀不计入数值宽度），更大数量级使用指数后缀。
-nil、负值或非有限读数显示 `—`。菜单摘要、模型范围与七天速度趋势复用同一格式；表头 tooltip
+nil、负值或非有限读数显示 `—`。菜单摘要与七天速度趋势复用同一格式（原模型行
+Prompt 速度范围线 UI 已于 2026-11-07 移除，统计层保留；见 §Prompt 速度分布）；表头 tooltip
 注明口径「窗口内 (Output+Reason) ÷ 调用时长，tok/s；时长未知的调用不参与」。
 今 / 闲 / 免 / 速 / 它行速率与金额用同一批样本（`todaySamples` / `offPeakTodaySamples` /
 `glmCategoryTodaySamples`）。
@@ -290,4 +291,4 @@ Rounds 是模型 API call 数；命中率为 `cacheRead / (input + cacheRead)`�
 任何新 harness 必须先补充本矩阵、provider spec 和 `TokenAccountingCatalog`，再接入 UI；
 不要在 view 或 pricing 分支里重新猜测 input/cache/reasoning 的关系。
 
-> 核对基线：2026-11-06 · 代码 240b306
+> 核对基线：2026-11-07 · 代码 b5c7c7f

@@ -372,7 +372,7 @@ per-client sections」描述的是**本机 scope** 的内容区；多机联动�
 - **Global today summary** — 双焦点 Hero 大字卡布局（2026-10 升级）：
   - **顶栏（Header）**：左侧为范围与日期标题（单机为 `今日 MM-dd`，多机 Fleet 为 `全局 · 今日` / `本机 · 今日` / `<节点名> · 今日`），右侧为胶囊徽标 `命中 97%`（无缓存读数显示 `命中 —`）；
   - **核心数值区（Hero Row）**：左侧大号等宽粗体总 Token（如 `132M`）+ 下方副标签 `今日总 Token`；右侧大号等宽粗体总价值（单一币种直接展示如 `¥385.0` / `$47.60`，混合币种折合总额如 `¥385.0`）+ 下方副标签（单一币种 `今日花费`，混合币种展示明细 `折合总额（含$47.6）`）；
-  - 核心数值区下方是**客户端占比条**（`HarnessClientProportionBar`，2026-10 起，取代原全局 input / cacheRead / output 三段条；模型行现以 Prompt 速度范围线呈现分布）+ 一行图例（`HarnessClientLegend`）：
+  - 核心数值区下方是**客户端占比条**（`HarnessClientProportionBar`，2026-10 起，取代原全局 input / cacheRead / output 三段条；原模型行 Prompt 速度范围线已于 2026-11-07 移除）+ 一行图例（`HarnessClientLegend`）：
     - 占比条**一段一个今天有 token 活动的 harness**（`HarnessTodaySummary.clientSegments(from:)` 按 `sections` 既有的 token 降序输出、零段过滤），段宽 = 该客户端今日 token 占全部客户端的比例；
     - **段色 = 主力 provider 的卡 accent 色**：客户端横跨多个 provider 分片时（ZCode / DSH / OpenCode）取今日 token 最大的一路，并列取 quotaProviderID 字典序小者（`HarnessClientSegment.dominantQuotaProviderID`）。色值经 `AccentColor.cardAccentColor`（`Color+Theme.swift`，与 provider 卡描边 / 进度条健康态同源；minimax 亮紫 `#A855F7` / chatgpt 绿 / antigravity 蓝 / glm 靛蓝 / deepseek 青），未知 / 缺失的 providerID 回退灰；
     - 归一化口径与 `TokenBucketBar` 一致：负值按 0、Double 累加分母、总量 ≤ 0 全 0（纯灰底），不产生 NaN；条高沿用 `TokenBucketBar.standardHeight`（7pt）；每段挂 `.help`：「MiniMax Code 355M（77%）」；
@@ -391,24 +391,18 @@ per-client sections」描述的是**本机 scope** 的内容区；多机联动�
   sections have no local scan time and do not fabricate one.
 - **Per-model rows inside an expanded section**, keyed by
   `(clientID, quotaProviderID, modelName)`; samples with no usable model name
-  collapse into a single 「模型名缺失」 row. Each row uses one shared text baseline:
+  collapse into a single 「模型名缺失」 row. Each row is one shared-baseline text line:
   `模型名 · Pmt · Token · 价值 · 命中 · 思考 · 速度`. The model name truncates to
   preserve one line for the metrics; if the entire row still does not fit, `Pmt` is
   omitted first. The model name keeps at least 80pt before it truncates. In the narrowest
   fallback, gaps tighten and metric labels may scale to 82%. The speed label is concise;
   help states that its value is the full-Prompt P50 in tok/s.
-  The prompt-speed chart follows the metrics as one thin min–max line over a faint neutral
-  shared-axis hairline, with short endpoint ticks and a diamond for the latest Prompt.
-  Three fixed labels below the line are
-  min (left), max (center), and recent (right); the chart no longer repeats P50, which remains
-  in the metrics row. Every local model row uses one shared linear min…max domain built from
-  valid minimum/maximum values across all local model rows; zero is a valid endpoint, an
-  all-equal menu domain maps to the center, and a constant model row keeps its position in
-  the shared domain. If the latest Prompt lacks a valid duration, it shows `最近 —` with no
-  marker; no valid sample shows `速度范围 —`. A single light legend states
-  the shared `tok/s` scale and identifies the latest diamond. `Pmt` counts all recorded
-  promptIDs, including prompts excluded from speed statistics. Prompt coverage is available
-  in help/accessibility, without a persistent `Prompt x/y` row.
+  **Prompt 速度范围图（min–max 线 + 端点/最近菱形 + min/max/最近 三栏）与「共享刻度」图例已于
+  2026-11-07 移除**（用户裁定：图占位大；面板宽度本为固定 484pt 常量，移除不改变宽度、
+  只省每行两行高度与图例行）。速度分布统计（`min / max / P50 / latest`）仍按
+  `spec/accounting.md` §Prompt 速度分布计算，UI 只消费 P50 文本。`Pmt` counts all recorded
+  promptIDs, including prompts excluded from speed statistics；有效样本覆盖率不再单独展示
+  （仅保留 `Pmt` 总数与行 help / accessibility 的 P50 文案）。
   Fleet client sections use the same compact card summary and disclosure interaction;
   without local call durations they display speed `—`, including expanded Fleet model
   rows. Fleet model rows use the same single-baseline format and omit the unknown Pmt
@@ -1095,4 +1089,4 @@ The UI intentionally hides reset-credit id, title, description, and grant time.
 The shared Plan fallback uses the same 10pt `MenuTypography.hint` role for loading and
 failure feedback; there is no separate error-message typography role.
 
-> 核对基线：2026-11-07 · 代码 9b102b5
+> 核对基线：2026-11-07 · 代码 b5c7c7f
