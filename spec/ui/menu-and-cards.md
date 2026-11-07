@@ -377,18 +377,24 @@ per-client sections」描述的是**本机 scope** 的内容区；多机联动�
     - **段色 = 主力 provider 的卡 accent 色**：客户端横跨多个 provider 分片时（ZCode / DSH / OpenCode）取今日 token 最大的一路，并列取 quotaProviderID 字典序小者（`HarnessClientSegment.dominantQuotaProviderID`）。色值经 `AccentColor.cardAccentColor`（`Color+Theme.swift`，与 provider 卡描边 / 进度条健康态同源；minimax 亮紫 `#A855F7` / chatgpt 绿 / antigravity 蓝 / glm 靛蓝 / deepseek 青），未知 / 缺失的 providerID 回退灰；
     - 归一化口径与 `TokenBucketBar` 一致：负值按 0、Double 累加分母、总量 ≤ 0 全 0（纯灰底），不产生 NaN；条高沿用 `TokenBucketBar.standardHeight`（7pt）；每段挂 `.help`：「MiniMax Code 355M（77%）」；
     - **图例**把颜色翻译回客户端并直观标注量级：`<着色图标> MiniMax Code 355M  <着色图标> Codex 120M …`。图标取 `ClientDescriptor.iconSystemName(forClientID:)`，着色即段色，紧随其后展示该客户端紧凑 Token 读数；hover 上仍挂「MiniMax Code 355M（77%）」完整 tooltip。chip 超出行宽**换行**（`WrapLayout`）而不是截断；段列表为空（今日无活动）时条只剩灰底、图例整行不画。
-- **Per-client sections**, ordered by today-token descending and collapsed by
-  default; the disclosure header follows the quota-card two-line shape: client name,
-  latest local usage scan time (`HH:mm`), and disclosure control on line one; line two shows
+- **Per-client sections（树形层级，2026-11-07 起取代方块卡片）**, ordered by
+  today-token descending and collapsed by default. 第一级 = harness 行：`▸/▾` 展开三角 +
+  客户端图标 + 名称……右侧扫描时间（`HH:mm`）；右键「刷新 <客户端名>」仍只挂这一行。
+  名称行下方是**常驻缩进块**（左缩进，左侧一条竖引导线贯穿）：今日摘要行
   `今日 Token`、`价值`、`命中率` and `速度`. The visible label is concise while the
   metric remains Prompt P50. `思考` is inserted between hit
   rate and speed only when `ViewThatFits` confirms the complete summary fits; reasoning
   is a share of `output + reasoning`, never added to output a second time. A client with no
-  today activity is dropped entirely rather than shown as an empty section. Each
-  section subtotal and value. The value is a `MixedCurrencyEstimate`, because one
+  today activity is dropped entirely rather than shown as an empty section. Each section
+  carries its own subtotal and value. The value is a `MixedCurrencyEstimate`, because one
   client may span several provider slices (OpenCode / DSH / ZCode) and currencies.
   The scan time is the latest local usage scan time for the summary; Fleet client
   sections have no local scan time and do not fabricate one.
+  展开后第二级 = 模型行，每行带 ├─ 式短横刻线；引导线底部截短约半行近似 └ 形收尾。
+  同一模型落在多个 harness 时仍按段嵌套各自展开。树形几何常量
+  `guideX = 4` / `treeIndent = 14` / `tickWidth = 7` / `guideOpacity = 0.14` /
+  `guideTailTrim = 7` 定义在 `HarnessSectionView`（测试锚点见 `HarnessUsageMenuViewTests`
+  `testTreeSectionGeometryAnchors`）；圆角卡片底与段头下划线已随树形化移除。
 - **Per-model rows inside an expanded section**, keyed by
   `(clientID, quotaProviderID, modelName)`; samples with no usable model name
   collapse into a single 「模型名缺失」 row. Each row is one shared-baseline text line:
@@ -1089,4 +1095,4 @@ The UI intentionally hides reset-credit id, title, description, and grant time.
 The shared Plan fallback uses the same 10pt `MenuTypography.hint` role for loading and
 failure feedback; there is no separate error-message typography role.
 
-> 核对基线：2026-11-07 · 代码 b5c7c7f
+> 核对基线：2026-11-07 · 代码 647acde
