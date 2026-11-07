@@ -680,6 +680,10 @@ enum HarnessMetricColumns {
 
     static var columnHeader: some View {
         HStack(alignment: .firstTextBaseline, spacing: spacing) {
+            // 名称列占位（与数据行的弹性名称列同构）——把标题簇推到与数据
+            // 相同的右侧位置，否则表头会挤在行首、数据贴右缘，两相错位。
+            Color.clear
+                .frame(maxWidth: .infinity, alignment: .trailing)
             Text("Pmt")
                 .frame(width: prompts, alignment: .trailing)
                 .help("今日已记录 Prompt 数（含无有效时长的样本）")

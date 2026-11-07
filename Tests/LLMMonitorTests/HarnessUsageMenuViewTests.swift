@@ -309,7 +309,8 @@ final class HarnessUsageMenuViewTests: XCTestCase {
         XCTAssertGreaterThan(width, 0)
     }
 
-    /// 数值列标题行不得超内容区（列宽与指标簇共用常量，保持对齐）。
+    /// 数值列标题行不得超内容区，且必须带弹性名称占位撑满行宽——
+    /// 否则标题簇挤在行首，与贴右缘的数据列错位（2026-11-07 修）。
     @MainActor
     func testMetricColumnHeaderFitsContentWidth() {
         let view = HarnessMetricColumns.columnHeader.frame(width: contentWidth)
@@ -318,6 +319,8 @@ final class HarnessUsageMenuViewTests: XCTestCase {
         hosting.layoutSubtreeIfNeeded()
         XCTAssertLessThanOrEqual(hosting.fittingSize.width, contentWidth + 0.5)
         XCTAssertGreaterThan(hosting.fittingSize.height, 0)
+        XCTAssertGreaterThanOrEqual(hosting.fittingSize.width, contentWidth - 0.5,
+                                    "标题行必须撑满行宽（名称占位把列标题推到数据侧）")
     }
 
     /// 折叠段 = 一行（汇总上 harness 行后不再有独立摘要行）。
