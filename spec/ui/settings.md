@@ -191,7 +191,7 @@ GLM provider pane（`SettingsProviderPanes.swift:glmPane`）包含必填 API Key
 - **运营活动推送通知**（`notifyCampaign`）：仅扩展开启、读到 JWT、通知渠道开启且为 `.full` 刷新时轮询活动。
 - **重置卡 / 活动预计周期**：只显示预计周期胶囊，认证说明和周期行不再重复提示开启通知，通知渠道由相邻配置项选择。
 - 新开关显式 true/false 优先；缺失时沿用旧 `effectiveGlmAuthMode` 设置（先取 `glmAuthMode`，再依次取 `parseZcodeCredential` / `parseZcodePlan` / `parseZcodeBalanceLog` 的首个非 nil 值）。设置保存写入新开关并清除历史键。
-- **高峰期提示**：GLM 与 DeepSeek 共用 `SettingsView.peakPricingSection(for:)`，只读展示当前 `peakWindow` 的时段定义与高峰倍率（平时 1×）；GLM 行标题为「高峰期积分」，DeepSeek 为「高峰期价格」，默认均显示 `2×（平时 1×）`。时段来自 `PeakWindow.scheduleLabel`，按 `weekdaysOnly` 显示「工作日」或「每天」，工作日附「法定节假日除外」。在 JSON 中修改时段或倍率后展示随配置更新，设置页无编辑控件；GLM footer 明确积分倍率不参与本地名义价值估算。字段契约见 `spec/config.md` §Config Schema。
+- **高峰期提示**：GLM 与 DeepSeek 共用 `SettingsView.peakPricingSection(for:)`，只读展示当前 `peakWindow` 的时段定义与高峰倍率；GLM 行标题为「高峰期积分」，DeepSeek 为「高峰期价格」，默认均显示 `2×`（只显示偏离平时的倍率，不再附「平时 1×」后缀，2026-11-07 用户裁定）。时段来自 `PeakWindow.scheduleLabel`，按 `weekdaysOnly` 显示「工作日」或「每天」，工作日附「法定节假日除外」。在 JSON 中修改时段或倍率后展示随配置更新，设置页无编辑控件；GLM footer 明确积分倍率不参与本地名义价值估算。字段契约见 `spec/config.md` §Config Schema。
 
 General pane 的「关于」之前有
 「节假日数据源」节（`HolidaySourceSection`，单独 View 以 `@ObservedObject` 观察
@@ -369,6 +369,6 @@ appearance-neutral.
 - **历史图表空间适配**：`SevenDayUsageHistoryView` 增加紧凑（`.compact`）与宽松（`.expanded`）两种模式。设置页与独立详情窗口使用 `.expanded`，宽度撑满可用区域（`.frame(maxWidth: .infinity)`），表格字号适度提至 11–11.5pt、列宽与间距自适应拉开；菜单与浮层维持 `.compact`（420pt）。坐标轴与日期标签字体提至 10–11pt、配色提至 `.secondary`。
 - **说明文字与行距紧凑化**：边缘状态窗 footer 收敛为 2 句核心操作指引，双环机制与多屏行为放入「了解更多…」popover；ChatGPT API 赠金设置采用独立 `CodexAdminKeyCardView` 模块化卡片（12pt 内边距、低透明度底色与边框描边），对齐常规表单行距。
 
-> 核对基线：2026-11-06 · 代码 240b306
+> 核对基线：2026-11-07 · 代码 9b102b5
 > Sync 草稿跨 tab 保留、表单隔离与保存失败提示验证结果见 `spec/sync.md`。
 > 2026-10-25 菜单 / 设置自启同步已随 6f11831 入库：相关定向测试 27 例、完整测试 1422 例均 0 失败；测试使用模拟登录项操作，不执行真实注册 / 注销。

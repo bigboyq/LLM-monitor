@@ -822,7 +822,7 @@ look for a hover route to this data — the card carries it inline.
 - 账号行（第一段 Account Info）= 仅套餐档位 pill（`data.level` 首字母大写：`lite` → `Lite` / `Pro` / `Max`）。GLM 走 API Key 登录、拿不到邮箱，但**仅等级也显示账号行**；拿不到等级时整行不画。
 - 单条 `GLM Coding Plan` 模型行（`QuotaInfo.displayName`，不再硬编码具体模型名）：智谱 Coding Plan 的 5h + 周积分是套餐共享池，合成一条展示，周进度条按 5 个等价额度分段（`weeklyEquivalentMultiplier` = 5；周积分 = 5 × 5h 积分：Lite 2000/10000、Pro 12000/60000、Max 28000/140000）。
 - 数据来源：远程 `GET open.bigmodel.cn/api/monitor/usage/quota/limit`，Coding Plan Key 作裸 token 放 `Authorization`。鉴权失败（HTTP 200 + `code:1000`）在 parse 阶段捕获并映射成 401 语义。
-- **高峰期提示**：额度行下方一行（`PeakIndicatorView` 外壳 + `GlmPeakIndicatorView` 的文案），纯本地计算（北京时间，与 API 无关）。颜色分 3 档：高峰期 🔥 红色 `高峰期 2× · 还剩 X`；非高峰期距高峰 < 1 小时 ❄️ 橙色、≥ 1 小时 ❄️ 绿色 `距高峰期 X · 平时 1×`，倍率取当前 `peakWindow.multiplier`。默认 Mon–Fri 14–18、倍率 2×（高峰全价、非高峰 50% 抵扣）；与 DeepSeek 统一支持 JSON 配置时段、工作日限制和倍率，设置页只读展示（见 `spec/ui/settings.md`）。倒计时读环境里的 `\.displayDate`——共享展示时钟 `DisplayClock`（每个宿主各持一个实例），由卡片实际所在的宿主各自注入并随面板显隐 start/stop：菜单内容（`MenuContentView` 内联，由 `MenuWindowAutoCloseBridge.onPanelOpen` 启动并同步当前墙钟、`onPanelClose` 停表）、菜单兜底行 hover 浮层（`HoverPanelController`）与 dock 浮层（`EdgeDockController`）都持有时钟、经 `DisplayClockScope` 注入环境；不需要自己挂 `TimelineView`。
+- **高峰期提示**：额度行下方一行（`PeakIndicatorView` 外壳 + `GlmPeakIndicatorView` 的文案），纯本地计算（北京时间，与 API 无关）。颜色分 3 档：高峰期 🔥 红色 `高峰期 2× · 还剩 X`；非高峰期距高峰 < 1 小时 ❄️ 橙色、≥ 1 小时 ❄️ 绿色 `距高峰期 X`。**倍率只在偏离平时 1× 时标注**（2026-11-07 用户裁定）：高峰行显示当前 `peakWindow.multiplier`（未来可配置 5×），非高峰默认价不标注；未来若引入闲时折扣（免费 / 0.5×）才在闲时行标注。默认 Mon–Fri 14–18、倍率 2×（高峰全价、非高峰 50% 抵扣）；与 DeepSeek 统一支持 JSON 配置时段、工作日限制和倍率，设置页只读展示（见 `spec/ui/settings.md`）。倒计时读环境里的 `\.displayDate`——共享展示时钟 `DisplayClock`（每个宿主各持一个实例），由卡片实际所在的宿主各自注入并随面板显隐 start/stop：菜单内容（`MenuContentView` 内联，由 `MenuWindowAutoCloseBridge.onPanelOpen` 启动并同步当前墙钟、`onPanelClose` 停表）、菜单兜底行 hover 浮层（`HoverPanelController`）与 dock 浮层（`EdgeDockController`）都持有时钟、经 `DisplayClockScope` 注入环境；不需要自己挂 `TimelineView`。
 - **卡片段落布局（与 ChatGPT 对齐四段式流式结构）**：
   1. **标准套餐额度**（`QuotaSummary`）：Coding Plan 5h & 周进度条与额度读数，卡片级高峰期倒计时夹在进度条下方；
   2. **活动套餐额度**（`GlmActivityPlanBalancesView`，仅在存在活动套餐余额或预告时渲染）：紧跟标准套餐之后，`Divider().opacity(0.3)` 分隔。生效中套餐渲染独立进度条（8pt 单段）、`已用 X · 剩余：Y/Z (pct%)` 与 `失效时间：MM-dd HH:mm（剩余X小时）`，失效倒计时紧迫度分级（`<=1h` 红色、`<=2h` 黄色、`>2h` 正常）；生效前预告行整体置灰弱化，进度条置灰底 0%，渲染 `额度：Z` 与 `生效时间：MM-dd HH:mm（X小时后生效）`；
@@ -1095,4 +1095,4 @@ The UI intentionally hides reset-credit id, title, description, and grant time.
 The shared Plan fallback uses the same 10pt `MenuTypography.hint` role for loading and
 failure feedback; there is no separate error-message typography role.
 
-> 核对基线：2026-11-06 · 代码 f62a128
+> 核对基线：2026-11-07 · 代码 9b102b5

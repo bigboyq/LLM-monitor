@@ -116,10 +116,11 @@ DeepSeek 默认定价规则：**北京时间周一至周五 9:00–12:00 与 14:
   （15 天预算：春节 8 天法定假 + 紧邻周末最长空档 ~11 天）。
 - 自定义配置使用 `peakWindow`；`weekdaysOnly: false` 时每天执行指定时段。设置页没有编辑开关，只展示当前配置；旧平铺键 `deepseekPeakWeekdaysOnly` 仍忽略。
 
-UI 上 `DeepseekPeakIndicatorView` 嵌在余额行右侧：
+UI 上 `DeepseekPeakIndicatorView` 嵌在余额行右侧（倍率只在偏离平时 1× 时标注，
+非高峰默认价不显示倍率，2026-11-07 用户裁定）：
 - 高峰期 🔥：`高峰期 2× · 还剩 X`（红色 pill，倍率取当前 `PeakWindow.multiplier`）
-- 非高峰期，距高峰 < 1 小时 ❄️：`距高峰期 X · 平时 1×`（橙色 pill，临近）
-- 非高峰期，距高峰 ≥ 1 小时 ❄️：`距高峰期 X · 平时 1×`（绿色 pill）
+- 非高峰期，距高峰 < 1 小时 ❄️：`距高峰期 X`（橙色 pill，临近）
+- 非高峰期，距高峰 ≥ 1 小时 ❄️：`距高峰期 X`（绿色 pill）
 
 倒计时纯本地计算，不依赖 API 响应，刷新失败也能显示。两个卡片宿主（菜单兜底行
 hover 浮层 / dock 浮层）均经 `DisplayClockScope` 注入随面板显隐 start/stop 的
@@ -173,4 +174,4 @@ raw daily 诊断字段，不进入统一 total / 图表 / 金额。详见 [`dsh.
 | Brand logo | `Sources/LLM-monitor/Resources/BrandLogos/deepseek.svg`、`Views/BrandLogoView.swift` |
 | Regression tests | `Tests/LLMMonitorTests/DeepseekFetcherTests.swift`、`PeakWindowTests.swift` |
 
-> 核对基线：2026-11-06 · 代码 240b306
+> 核对基线：2026-11-07 · 代码 9b102b5
