@@ -67,6 +67,7 @@ struct HarnessUsageMenuView: View {
                     segments: HarnessTodaySummary.clientSegments(from: summary.sections)
                 )
                 if summary.sections.isEmpty { emptyTodayState } else {
+                    HarnessMetricColumns.columnHeader
                     ForEach(summary.sections) { section in
                         HarnessSectionView(
                             section: section,
@@ -105,6 +106,7 @@ struct HarnessUsageMenuView: View {
             } else {
                 // 联动关闭 / 只有本机节点时保持传统客户端视图，并保留顶部总览。
                 todayOverview
+                HarnessMetricColumns.columnHeader
                 ForEach(summary.sections) { section in
                     HarnessSectionView(
                         section: section,
@@ -666,6 +668,43 @@ enum HarnessMetricColumns {
         .monospacedDigit()
         .foregroundStyle(Color.secondaryLabel)
         .lineLimit(1)
+    }
+
+    /// 数值列标题行：列宽与 `cluster` 一一对应（右对齐），插在客户端段列表
+    /// 上方整表一次；去标签数值行靠它读懂列义。名称列与时间槽留空占位。
+    static func headerColumn(title: String, width: CGFloat, help: String) -> some View {
+        Text(title)
+            .frame(width: width, alignment: .trailing)
+            .help(help)
+    }
+
+    static var columnHeader: some View {
+        HStack(alignment: .firstTextBaseline, spacing: spacing) {
+            Text("Pmt")
+                .frame(width: prompts, alignment: .trailing)
+                .help("今日已记录 Prompt 数（含无有效时长的样本）")
+            Text("Token")
+                .frame(width: token, alignment: .trailing)
+                .help("今日 Token（规范化四桶合计）")
+            Text("价值")
+                .frame(width: value, alignment: .trailing)
+                .help("今日价值（行内单币种原额 / 汇总为混合币种折合）")
+            Text("命中")
+                .frame(width: hitRate, alignment: .trailing)
+                .help("缓存命中率 = cacheRead / (input + cacheRead)")
+            Text("思考")
+                .frame(width: thinking, alignment: .trailing)
+                .help("思考占比 = reasoning / (output + reasoning)")
+            Text("速度")
+                .frame(width: speed, alignment: .trailing)
+                .help("完整 Prompt 速度 P50，单位 tok/s")
+            Color.clear
+                .frame(width: timeSlot, alignment: .trailing)
+        }
+        .font(MenuTypography.hint)
+        .foregroundStyle(Color.secondaryLabel.opacity(0.72))
+        .lineLimit(1)
+        .padding(.leading, HarnessSectionView.treeIndent)
     }
 }
 

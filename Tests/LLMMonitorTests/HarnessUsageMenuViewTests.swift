@@ -309,6 +309,17 @@ final class HarnessUsageMenuViewTests: XCTestCase {
         XCTAssertGreaterThan(width, 0)
     }
 
+    /// 数值列标题行不得超内容区（列宽与指标簇共用常量，保持对齐）。
+    @MainActor
+    func testMetricColumnHeaderFitsContentWidth() {
+        let view = HarnessMetricColumns.columnHeader.frame(width: contentWidth)
+        let hosting = NSHostingView(rootView: AnyView(view))
+        hosting.frame = CGRect(x: 0, y: 0, width: contentWidth, height: 10_000)
+        hosting.layoutSubtreeIfNeeded()
+        XCTAssertLessThanOrEqual(hosting.fittingSize.width, contentWidth + 0.5)
+        XCTAssertGreaterThan(hosting.fittingSize.height, 0)
+    }
+
     /// 折叠段 = 一行（汇总上 harness 行后不再有独立摘要行）。
     @MainActor
     func testCollapsedSectionIsASingleHarnessLine() {
