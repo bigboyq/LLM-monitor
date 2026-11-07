@@ -15,7 +15,6 @@ final class HarnessUsageMenuViewTests: XCTestCase {
     func testRowUsesCompactTwoLineLayoutWithinMenuWidth() {
         XCTAssertEqual(MenuContentMode.usage.rawValue, "usage")
         XCTAssertEqual(MenuContentMode.quota.rawValue, "quota")
-        XCTAssertEqual(HarnessModelRowView.columnSpacing, 4)
     }
 
     /// 树形段几何锚点（引导线 / 缩进 / 刻线）：改动取值时这里同步，
@@ -26,6 +25,27 @@ final class HarnessUsageMenuViewTests: XCTestCase {
         XCTAssertEqual(HarnessSectionView.tickWidth, 7)
         XCTAssertEqual(HarnessSectionView.guideOpacity, 0.14, accuracy: 0.0001)
         XCTAssertEqual(HarnessSectionView.guideTailTrim, 7)
+    }
+
+    /// 并集簇的宽度预算（2026-11-07 用户裁定：够并集取并集，不够取交集）。
+    ///
+    /// 内容区实为 460pt（484 面板 − 2×12 内边距），实测装得下并集
+    /// {Pmt, Token, 价值, 命中, 思考, 速度} → 取并集。若未来收窄面板使并集
+    /// 装不下，本测试先失败——届时按裁定反转为交集并同步 spec。
+    func testMetricClusterUsesUnionWithinBudget() {
+        let contentWidth = MenuPanelHeightBridge.width - LayoutMetrics.cardColumnHorizontalPadding * 2
+        let cluster = HarnessMetricColumns.clusterWidth
+        // 模型行：名称最小 80 + 簇 + 时间空槽。
+        XCTAssertLessThanOrEqual(
+            80 + cluster + HarnessMetricColumns.timeSlot, contentWidth,
+            "并集簇在模型行装不下（内容区 \(contentWidth)pt）——按裁定反转回交集"
+        )
+        // harness 行：三角(≈10) + 图标(≈11) + 4×spacing，名称仍 ≥80。
+        let harnessChrome: CGFloat = 31
+        XCTAssertLessThanOrEqual(
+            harnessChrome + 80 + cluster + HarnessMetricColumns.timeSlot, contentWidth,
+            "并集簇在 harness 行挤掉名称最小宽——按裁定反转回交集"
+        )
     }
 
     /// 宿主可独立展开套餐或历史；呈现模式参与值相等判断，避免 `.equatable()`
@@ -289,17 +309,15 @@ final class HarnessUsageMenuViewTests: XCTestCase {
         XCTAssertGreaterThan(width, 0)
     }
 
-    /// 核心摘要在窄容器里保留所有四项并换行，不把速度或价值挤出可见区域。
-    /// 阈值按树形布局校准（2026-11-07 去卡片底后折叠段约 48pt：harness 行 +
-    /// 两行换行摘要）。
+    /// 折叠段 = 一行（汇总上 harness 行后不再有独立摘要行）。
     @MainActor
-    func testSectionSummaryWrapsWithinNarrowContainer() {
+    func testCollapsedSectionIsASingleHarnessLine() {
         let view = HarnessSectionView(
             section: Self.sectionFixture(rowCount: 1, displayName: "OpenCode")
-        ).frame(width: 230)
+        ).frame(width: contentWidth)
         let height = self.height(of: view)
-        XCTAssertGreaterThanOrEqual(height, 48, "窄宽度下的摘要应自然换行")
-        XCTAssertLessThan(height, 140, "折叠段摘要不应异常撑高")
+        XCTAssertGreaterThan(height, 12, "折叠段必须实际布局出内容")
+        XCTAssertLessThanOrEqual(height, 30, "折叠段应只有 harness 一行（含上下 2pt 内边距）")
     }
 
     /// 段数 / 行数增加时高度增长（有内容可滚），但单段视图本身必须矮——

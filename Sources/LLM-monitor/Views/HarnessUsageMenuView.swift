@@ -617,13 +617,66 @@ private struct WrapLayout: Layout {
     }
 }
 
+/// 汇总行与模型行**共用**的字段级对齐指标簇（2026-11-07 用户裁定）。
+///
+/// 列宽固定、数值右对齐，harness 行与模型行共用同一组列 → 跨行字段对齐。
+/// 实测内容区 460pt（484 面板 − 2×12 内边距）装得下**并集**
+/// {Pmt, Token, 价值, 命中, 思考, 速度}，按裁定取并集——量测锚见
+/// `HarnessUsageMenuViewTests.testMetricClusterUsesUnionWithinBudget`。
+/// 数值全部自带量纲（数量级后缀 / 货币符号 / % / tok/s），不再带字段标签；
+/// 口径解释挂每格 `.help`。
+enum HarnessMetricColumns {
+    static let prompts: CGFloat = 30
+    static let token: CGFloat = 38
+    static let value: CGFloat = 46
+    static let hitRate: CGFloat = 28
+    static let thinking: CGFloat = 28
+    static let speed: CGFloat = 58
+    static let spacing: CGFloat = 6
+    /// harness 行右侧扫描时间占位；模型行留空同宽，保证簇列跨行对齐。
+    static let timeSlot: CGFloat = 32
+    static var clusterWidth: CGFloat {
+        prompts + token + value + hitRate + thinking + speed + spacing * 5
+    }
+
+    /// 并集六格。文本由调用方格式化；宽度固定保证跨行对齐。
+    static func cluster(prompts: String, token: String, value: String,
+                        hitRate: String, thinking: String, speed: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: spacing) {
+            Text(prompts)
+                .frame(width: Self.prompts, alignment: .trailing)
+                .help("今日已记录 Prompt 数（含无有效时长的样本）")
+            Text(token)
+                .frame(width: Self.token, alignment: .trailing)
+                .help("今日 Token（规范化四桶合计）")
+            Text(value)
+                .frame(width: Self.value, alignment: .trailing)
+                .help("今日价值（行内单币种原额 / 汇总为混合币种折合）")
+            Text(hitRate)
+                .frame(width: Self.hitRate, alignment: .trailing)
+                .help("缓存命中率 = cacheRead / (input + cacheRead)")
+            Text(thinking)
+                .frame(width: Self.thinking, alignment: .trailing)
+                .help("思考占比 = reasoning / (output + reasoning)")
+            Text(speed)
+                .frame(width: Self.speed, alignment: .trailing)
+                .help("完整 Prompt 速度 P50，单位 tok/s")
+        }
+        .font(MenuTypography.hint)
+        .monospacedDigit()
+        .foregroundStyle(Color.secondaryLabel)
+        .lineLimit(1)
+    }
+}
+
 /// 一个客户端段：树形层级（引导线树，2026-11-07 起取代原「方块卡片」）。
 ///
-/// 第一级 = harness 行（▸/▾ 三角 + 图标 + 名称……扫描时间，右键挂
-/// 「刷新 <客户端名>」）；名称行下方是**常驻缩进块**（今日摘要行 + 截断提示），
-/// 展开后第二级 = 模型行，每行带 ├─ 式短横刻线，整块左侧一条竖引导线贯穿
-/// （底部截短约半行，近似 └ 形收尾）。同一模型落在多个 harness 时仍按
-/// 数据结构各自在所属 harness 下展开（`HarnessSection.rows` 本就按段嵌套）。
+/// 第一级 = harness 行（▸/▾ 三角 + 图标 + 名称 + **同行汇总簇**……扫描时间，
+/// 右键挂「刷新 <客户端名>」）；折叠即一行。截断提示独占缩进行；展开后
+/// 第二级 = 模型行，每行带 ├─ 式短横刻线，与 harness 行共用 `HarnessMetricColumns`
+/// 并集簇（字段级对齐），整块左侧一条竖引导线贯穿（底部截短约半行，近似 └ 形收尾）。
+/// 同一模型落在多个 harness 时仍按数据结构各自在所属 harness 下展开
+/// （`HarnessSection.rows` 本就按段嵌套）。
 ///
 /// **internal 而非 private**：留下测试缝。`HarnessUsageMenuViewTests` 要真的把
 /// 一个段布局一遍量高度与自然宽（列宽超预算、单个段撑爆菜单高度都只能这么抓），
@@ -660,7 +713,6 @@ struct HarnessSectionView: View {
             }
 
             VStack(alignment: .leading, spacing: 2) {
-                clientSummary
                 // 截断提示只在该段的数据源真的被截断时出现：数字本身仍然是"对"的，
                 // 只是"不全"——不说就等于把一份残缺统计当完整统计读。
                 if section.isTruncated {
@@ -707,12 +759,14 @@ struct HarnessSectionView: View {
         .padding(.vertical, 2)
     }
 
-    /// 第一级 harness 行：展开三角 + 客户端图标 + 名称……扫描时间（右端）。
+    /// 第一级 harness 行：展开三角 + 客户端图标 + 名称 + **同行汇总簇**……扫描时间。
     ///
-    /// 右键菜单挂在**这一行**（不是整段）：菜单内容区现在是客户端视角，右键一个
-    /// 段名才是"针对这些数据"的语义；「刷新 <客户端名>」按本段今日贡献行刷新
-    /// 涉及的 provider 卡（`HarnessSection.refreshProviderStatusIDs(in:)`），
-    /// 动作实现由 `MenuContentView` 注入。
+    /// 汇总与模型行共用 `HarnessMetricColumns.cluster`（字段级对齐）；扫描时间
+    /// 占固定尾槽，模型行留空同宽，两级行的列因此跨行对齐。右键菜单挂在
+    /// **这一行**（不是整段）：菜单内容区现在是客户端视角，右键一个段名才是
+    /// "针对这些数据"的语义；「刷新 <客户端名>」按本段今日贡献行刷新涉及的
+    /// provider 卡（`HarnessSection.refreshProviderStatusIDs(in:)`），动作实现由
+    /// `MenuContentView` 注入。
     private var harnessRow: some View {
         HStack(alignment: .firstTextBaseline, spacing: 5) {
             Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
@@ -725,54 +779,28 @@ struct HarnessSectionView: View {
                 .font(MenuTypography.dataLabel)
                 .foregroundStyle(Color.primaryLabel)
                 .lineLimit(1)
-            Spacer(minLength: 4)
-            if let updateTime {
-                Text(Formatters.formatTimeOfDay(updateTime))
-                    .font(MenuTypography.hint)
-                    .foregroundStyle(Color.secondaryLabel)
-                    .monospacedDigit()
-                    .help("本地用量更新时间")
-            }
-        }
-    }
-
-    private var clientSummary: some View {
-        let tokens = Formatters.formatTokenCountCompact(section.totalTokens)
-        let value = section.valueText
-        let hitRate = HarnessUsageMenuView.hitRateText(section.cacheHitRate)
-        let p50 = Formatters.speedText(section.promptSpeedStatistics.p50)
-        return ViewThatFits(in: .horizontal) {
-            summaryLine(tokens: tokens, value: value, hitRate: hitRate, p50: p50, includeThinking: true)
-            summaryLine(tokens: tokens, value: value, hitRate: hitRate, p50: p50, includeThinking: false)
-            WrapLayout(horizontalSpacing: 7, verticalSpacing: 2) {
-                Text("今日 Token: \(tokens)")
-                Text("价值: \(value)")
-                Text("命中率: \(hitRate)")
-                Text("速度: \(p50)")
-                    .help("完整 Prompt 速度 P50，单位 tok/s")
+                .frame(minWidth: 60, maxWidth: .infinity, alignment: .leading)
+            HarnessMetricColumns.cluster(
+                prompts: "\(section.promptSpeedStatistics.totalPromptCount)",
+                token: Formatters.formatTokenCountCompact(section.totalTokens),
+                value: section.valueText,
+                hitRate: HarnessUsageMenuView.hitRateText(section.cacheHitRate),
+                thinking: HarnessModelRowView.thinkingPercent(section.buckets) ?? "—",
+                speed: Formatters.speedText(section.promptSpeedStatistics.p50)
+            )
+            Group {
+                if let updateTime {
+                    Text(Formatters.formatTimeOfDay(updateTime))
+                        .help("本地用量更新时间")
+                } else {
+                    Color.clear
+                }
             }
             .font(MenuTypography.hint)
             .foregroundStyle(Color.secondaryLabel)
+            .monospacedDigit()
+            .frame(width: HarnessMetricColumns.timeSlot, alignment: .trailing)
         }
-    }
-
-    private func summaryLine(tokens: String, value: String, hitRate: String, p50: String, includeThinking: Bool) -> some View {
-        HStack(spacing: 7) {
-            Text("今日 Token: \(tokens)")
-            Text("价值: \(value)")
-            Text("命中率: \(hitRate)")
-            if includeThinking, let thinking = HarnessModelRowView.thinkingPercent(section.buckets) {
-                Text("思考: \(thinking)")
-            }
-            Text("速度: \(p50)")
-                .help("完整 Prompt 速度 P50，单位 tok/s")
-        }
-        .font(MenuTypography.hint)
-        .foregroundStyle(Color.secondaryLabel)
-        .lineLimit(1)
-        .fixedSize(horizontal: true, vertical: false)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityElement(children: .combine)
     }
 
     /// 橙色截断提示，**单行**短文案。
@@ -1157,81 +1185,42 @@ private struct MenuQuotaProviderRow: View {
     }
 }
 
-/// 本地段内单条模型行：模型名与统一顺序的今日指标（单行文本）。
+/// 本地段内单条模型行：模型名 + 共用交集指标簇（单行，与 harness 行字段级对齐）。
 ///
 /// 价值是**行级**的 `ModelCostEstimate.displayText` 原样文案（单 provider 单币种
 /// 原额）。行级绝不做跨币种相加——同一段里不同 provider 的行金额可能不同币种，
 /// 相加必须留到段头 / 全局的 `MixedCurrencyEstimate`。
-/// 本机与 Fleet 的模型指标均按相同顺序共用一条基线；速度只保留 P50 文本
-/// （Prompt 速度范围线与共享刻度图例已于 2026-11-07 移除，用户裁定：占位大）。
+/// 簇取并集 {Pmt, Token, 价值, 命中, 思考, 速度}（`HarnessMetricColumns`，
+/// 2026-11-07 用户裁定同线 + 字段对齐，460pt 实测装得下并集）。
+/// Prompt 速度范围线已于同日移除（用户裁定：占位大），速度只保留 P50 文本。
 struct HarnessModelRowView: View {
     let row: HarnessModelRow
 
     /// 行与行的间距。刻意小于段间距（`sectionSpacing`），让分组层级一眼可辨。
     static let rowSpacing: CGFloat = 3
 
-    /// 模型块内部的垂直间距。
-    static let columnSpacing: CGFloat = 4
-
     var body: some View {
-        ViewThatFits(in: .horizontal) {
-            metricsLine(showPromptCount: true, spacing: 7, minimumScaleFactor: 1)
-            metricsLine(showPromptCount: false, spacing: 7, minimumScaleFactor: 1)
-            metricsLine(showPromptCount: false, spacing: 3, minimumScaleFactor: 0.82)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(Self.accessibilityMetrics(for: row))
-    }
-
-    /// Keep model identity and all metrics on one shared baseline. The name absorbs
-    /// available width and truncates; only when every metric cannot fit do we hide
-    /// the comparatively low-value Prompt count.
-    private func metricsLine(
-        showPromptCount: Bool,
-        spacing: CGFloat,
-        minimumScaleFactor: CGFloat
-    ) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: spacing) {
+        HStack(alignment: .firstTextBaseline, spacing: 5) {
             Text(row.compactDisplayName)
                 .font(MenuTypography.modelTitle)
                 .foregroundStyle(Color.primaryLabel)
                 .lineLimit(1)
-                .minimumScaleFactor(1)
                 .truncationMode(.tail)
                 .help(row.displayName)
-                .frame(minWidth: 80, maxWidth: .infinity, alignment: Alignment(horizontal: .leading, vertical: .firstTextBaseline))
-            if showPromptCount {
-                Text("Pmt: \(row.promptSpeedStatistics.totalPromptCount)")
-                    .lineLimit(1)
-                    .fixedSize(horizontal: minimumScaleFactor == 1, vertical: false)
-                    .minimumScaleFactor(minimumScaleFactor)
-            }
-            Text("Token: \(Formatters.formatTokenCountCompact(row.totalTokens))")
-                .lineLimit(1)
-                .fixedSize(horizontal: minimumScaleFactor == 1, vertical: false)
-                .minimumScaleFactor(minimumScaleFactor)
-            Text("价值: \(row.costText)")
-                .lineLimit(1)
-                .fixedSize(horizontal: minimumScaleFactor == 1, vertical: false)
-                .minimumScaleFactor(minimumScaleFactor)
-            Text("命中: \(Self.percentText(row.cacheHitRate))")
-                .lineLimit(1)
-                .fixedSize(horizontal: minimumScaleFactor == 1, vertical: false)
-                .minimumScaleFactor(minimumScaleFactor)
-            Text("思考: \(Self.thinkingPercent(row.buckets) ?? "—")")
-                .lineLimit(1)
-                .fixedSize(horizontal: minimumScaleFactor == 1, vertical: false)
-                .minimumScaleFactor(minimumScaleFactor)
-            Text("速度: \(Formatters.speedText(row.promptSpeedStatistics.p50))")
-                .lineLimit(1)
-                .fixedSize(horizontal: minimumScaleFactor == 1, vertical: false)
-                .minimumScaleFactor(minimumScaleFactor)
-                .help("完整 Prompt 速度 P50，单位 tok/s")
+                .frame(minWidth: 80, maxWidth: .infinity, alignment: .leading)
+            HarnessMetricColumns.cluster(
+                prompts: "\(row.promptSpeedStatistics.totalPromptCount)",
+                token: Formatters.formatTokenCountCompact(row.totalTokens),
+                value: row.costText,
+                hitRate: Self.percentText(row.cacheHitRate),
+                thinking: Self.thinkingPercent(row.buckets) ?? "—",
+                speed: Formatters.speedText(row.promptSpeedStatistics.p50)
+            )
+            Color.clear
+                .frame(width: HarnessMetricColumns.timeSlot, alignment: .trailing)
         }
-        .font(MenuTypography.hint)
-        .foregroundStyle(Color.secondaryLabel)
-        .lineLimit(1)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(Self.accessibilityMetrics(for: row))
     }
 
     static func thinkingPercent(_ buckets: TokenUsageBuckets) -> String? {
