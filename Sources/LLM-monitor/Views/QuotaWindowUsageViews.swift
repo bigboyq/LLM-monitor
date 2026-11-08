@@ -424,9 +424,8 @@ struct QuotaWindowUsageSection: View {
     static let speedColumnHelp = "窗口内 (Output+Reason) ÷ 调用时长，tok/s；时长未知的调用不参与"
 
     /// 用量态「TTFT」表头的 hover 说明：与 speedColumnHelp 同一模式——格子里只有
-    /// 一个秒数或一个 `—`，口径（算术平均、哪些调用不参与、MiniMax Code 的 0）
-    /// 挂在表头上。
-    static let ttftColumnHelp = "窗口内调用首字延迟均值（秒）；无 TTFT 数据的调用不参与，MiniMax Code 无数据恒为 0"
+    /// 一个秒数或一个 `—`，口径（算术平均、哪些调用不参与）挂在表头上。
+    static let ttftColumnHelp = "窗口内调用首字延迟均值（秒）；无 TTFT 数据的调用不参与"
 
     /// 产出比格子的 hover 说明：格子里只有一个百分比或一个 `—`，
     /// 光标停上去才说得出代表什么——`—` 尤其需要，它不是 0%。

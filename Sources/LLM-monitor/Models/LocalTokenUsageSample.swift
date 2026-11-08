@@ -78,6 +78,9 @@ struct PromptSpeedStatistics: Equatable, Sendable {
     let minimum: Double?
     let maximum: Double?
     let p50: Double?
+    /// P95 用就近秩法（nearest-rank）：升序排序后取第 ⌈0.95 × n⌉ 个
+    /// （1-based），无有效样本为 nil。
+    let p95: Double?
     let latest: Double?
     let validPromptCount: Int
     let totalPromptCount: Int
@@ -86,6 +89,7 @@ struct PromptSpeedStatistics: Equatable, Sendable {
         minimum: nil,
         maximum: nil,
         p50: nil,
+        p95: nil,
         latest: nil,
         validPromptCount: 0,
         totalPromptCount: 0
@@ -449,7 +453,7 @@ enum LocalUsageSummaryBuilder {
     /// Prompt-level speed distribution. Calls sharing a namespaced `promptID`
     /// form one statistical sample; its speed is the combined billable output
     /// divided by the combined valid call duration. A prompt with any missing or
-    /// out-of-range call duration is omitted from min/max/P50 in its entirety.
+    /// out-of-range call duration is omitted from min/max/P50/P95 in its entirety.
     /// The newest prompt is selected by its latest `completedAt`; promptID
     /// ascending is the deterministic tie break when timestamps match.
     nonisolated static func promptSpeedStatistics(
@@ -487,6 +491,7 @@ enum LocalUsageSummaryBuilder {
                 minimum: nil,
                 maximum: nil,
                 p50: nil,
+                p95: nil,
                 latest: latestPrompt.rate,
                 validPromptCount: 0,
                 totalPromptCount: prompts.count
@@ -496,10 +501,14 @@ enum LocalUsageSummaryBuilder {
         let p50 = rates.count.isMultiple(of: 2)
             ? (rates[middle - 1] + rates[middle]) / 2
             : rates[middle]
+        // 就近秩法（nearest-rank）：升序第 ⌈0.95 × n⌉ 个（1-based）；n = 1 时
+        // 退回唯一样本，与 min / max / P50 重合。
+        let p95 = rates[max(0, Int(ceil(0.95 * Double(rates.count))) - 1)]
         return PromptSpeedStatistics(
             minimum: rates.first,
             maximum: rates.last,
             p50: p50,
+            p95: p95,
             latest: latestPrompt.rate,
             validPromptCount: rates.count,
             totalPromptCount: prompts.count

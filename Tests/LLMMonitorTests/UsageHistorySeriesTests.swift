@@ -171,6 +171,7 @@ final class UsageHistorySeriesTests: XCTestCase {
             minimum: 10,
             maximum: 80,
             p50: 40,
+            p95: 70,
             latest: 80,
             validPromptCount: 2,
             totalPromptCount: 2
@@ -195,6 +196,7 @@ final class UsageHistorySeriesTests: XCTestCase {
             minimum: 10,
             maximum: 80,
             p50: 40,
+            p95: 70,
             latest: 80,
             validPromptCount: 2,
             totalPromptCount: 3
@@ -224,6 +226,7 @@ final class UsageHistorySeriesTests: XCTestCase {
             minimum: 1,
             maximum: 1,
             p50: .nan,
+            p95: 1,
             latest: 1,
             validPromptCount: 1,
             totalPromptCount: 1

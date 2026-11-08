@@ -646,9 +646,26 @@ enum HarnessMetricColumns {
         prompts + token + value + hitRate + thinking + speed + ttft + spacing * 6
     }
 
+    /// Speed 格的 hover 文案：给**这一行的实际分布值**（Min / P50 / P95 / Max，
+    /// 统一走 `Formatters.formatSpeed` 紧凑格式）；无有效样本时退回口径说明。
+    /// 有效样本不全时追加「（valid/total Prompt 有有效时长）」披露残缺统计——
+    /// 与 `speedIsPartial` 同一披露语义。
+    static func speedDistributionHelp(_ stats: PromptSpeedStatistics) -> String {
+        guard let p50 = stats.p50 else { return "完整 Prompt 速度 P50，单位 tok/s" }
+        var text = "Min: \(Formatters.formatSpeed(stats.minimum))"
+            + " · P50: \(Formatters.formatSpeed(p50))"
+            + " · P95: \(Formatters.formatSpeed(stats.p95))"
+            + " · Max: \(Formatters.formatSpeed(stats.maximum)) tok/s"
+        if stats.validPromptCount < stats.totalPromptCount {
+            text += "（\(stats.validPromptCount)/\(stats.totalPromptCount) Prompt 有有效时长）"
+        }
+        return text
+    }
+
     /// 并集七格。文本由调用方格式化；宽度固定保证跨行对齐。
     static func cluster(prompts: String, token: String, hitRate: String,
-                        thinking: String, speed: String, ttft: String, value: String) -> some View {
+                        thinking: String, speed: String, speedHelp: String,
+                        ttft: String, value: String) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: spacing) {
             Text(prompts)
                 .frame(width: Self.prompts, alignment: .trailing)
@@ -664,10 +681,10 @@ enum HarnessMetricColumns {
                 .help("思考占比 = reasoning / (output + reasoning)")
             Text(speed)
                 .frame(width: Self.speed, alignment: .trailing)
-                .help("完整 Prompt 速度 P50，单位 tok/s")
+                .help(speedHelp)
             Text(ttft)
                 .frame(width: Self.ttft, alignment: .trailing)
-                .help("调用首字延迟 P50，单位秒（MiniMax Code 无数据恒为 0）")
+                .help("调用首字延迟 P50，单位秒")
             Text(value)
                 .frame(width: Self.value, alignment: .trailing)
                 .help("今日价值（行内单币种原额 / 汇总为混合币种折合）")
@@ -703,7 +720,7 @@ enum HarnessMetricColumns {
                 .help("完整 Prompt 速度 P50，单位 tok/s")
             Text("TTFT")
                 .frame(width: ttft, alignment: .trailing)
-                .help("调用首字延迟 P50，单位秒（MiniMax Code 无数据恒为 0）")
+                .help("调用首字延迟 P50，单位秒")
             Text("Value")
                 .frame(width: value, alignment: .trailing)
                 .help("今日价值（行内单币种原额 / 汇总为混合币种折合）")
@@ -835,6 +852,7 @@ struct HarnessSectionView: View {
                 hitRate: HarnessUsageMenuView.hitRateText(section.cacheHitRate),
                 thinking: HarnessModelRowView.thinkingPercent(section.buckets) ?? "—",
                 speed: Formatters.speedText(section.promptSpeedStatistics.p50),
+                speedHelp: HarnessMetricColumns.speedDistributionHelp(section.promptSpeedStatistics),
                 ttft: Formatters.formatTTFT(section.ttftSeconds),
                 value: section.valueText
             )
@@ -1265,6 +1283,7 @@ struct HarnessModelRowView: View {
                 hitRate: Self.percentText(row.cacheHitRate),
                 thinking: Self.thinkingPercent(row.buckets) ?? "—",
                 speed: Formatters.speedText(row.promptSpeedStatistics.p50),
+                speedHelp: HarnessMetricColumns.speedDistributionHelp(row.promptSpeedStatistics),
                 ttft: Formatters.formatTTFT(row.ttftSeconds),
                 value: row.costText
             )

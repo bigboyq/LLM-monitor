@@ -50,6 +50,43 @@ final class PromptSpeedStatisticsTests: XCTestCase {
         XCTAssertEqual(stats.p50 ?? 0, 20, accuracy: 1e-9)
     }
 
+    /// P95 就近秩法（奇数个）：⌈0.95 × 5⌉ = 5 → 取升序第 5 个（即最大值）。
+    func testP95OnOddCountUsesNearestRank() {
+        let stats = LocalUsageSummaryBuilder.promptSpeedStatistics(samples: [
+            sample("a", seconds: 1, output: 10),
+            sample("b", seconds: 1, output: 20),
+            sample("c", seconds: 1, output: 30),
+            sample("d", seconds: 1, output: 40),
+            sample("e", seconds: 1, output: 50)
+        ])
+
+        XCTAssertEqual(stats.p50 ?? 0, 30, accuracy: 1e-9)
+        XCTAssertEqual(stats.p95 ?? 0, 50, accuracy: 1e-9)
+    }
+
+    /// P95 就近秩法（均匀分布）：20 个等差样本 ⌈0.95 × 20⌉ = 19 → 第 19 个，
+    /// 不是最大值——钉住它不是「取最大」的别名。
+    func testP95OnUniformSamplesIsSecondLargestNotMaximum() {
+        let samples = (1...20).map { index in
+            sample("p\(index)", seconds: 1, output: index, completedAtOffset: TimeInterval(index))
+        }
+        let stats = LocalUsageSummaryBuilder.promptSpeedStatistics(samples: samples)
+
+        XCTAssertEqual(stats.p50 ?? 0, 10.5, accuracy: 1e-9)
+        XCTAssertEqual(stats.p95 ?? 0, 19, accuracy: 1e-9)
+        XCTAssertEqual(stats.maximum ?? 0, 20, accuracy: 1e-9)
+    }
+
+    /// 单元素：⌈0.95 × 1⌉ = 1 → 唯一样本，P95 与 min / max / P50 重合。
+    func testP95FallsBackToTheSingleSample() {
+        let stats = LocalUsageSummaryBuilder.promptSpeedStatistics(samples: [
+            sample("only", seconds: 2, output: 200)
+        ])
+
+        XCTAssertEqual(stats.p50 ?? 0, 100, accuracy: 1e-9)
+        XCTAssertEqual(stats.p95 ?? 0, 100, accuracy: 1e-9)
+    }
+
     func testLatestPromptTimestampTieBreaksByPromptIDAscending() {
         let stats = LocalUsageSummaryBuilder.promptSpeedStatistics(samples: [
             sample("b", seconds: 2, output: 180),
@@ -110,6 +147,7 @@ final class PromptSpeedStatisticsTests: XCTestCase {
         XCTAssertNil(invalid.minimum)
         XCTAssertNil(invalid.maximum)
         XCTAssertNil(invalid.p50)
+        XCTAssertNil(invalid.p95)
         XCTAssertNil(invalid.latest)
         XCTAssertEqual(invalid.validPromptCount, 0)
         XCTAssertEqual(invalid.totalPromptCount, 2)

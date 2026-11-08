@@ -397,7 +397,12 @@ per-client sections」描述的是**本机 scope** 的内容区；多机联动�
   则反转回交集并同步本节）。harness 行的 Turns/Token/Value/Hit/Think/Speed/TTFT = 段级
   聚合（Turns 用段 `promptSpeedStatistics.totalPromptCount`、Think 用段 buckets），
   模型行用行级值；速度均为完整 Prompt P50，TTFT 为**调用级 P50**
-  （`LocalUsageSummaryBuilder.callTTFTStatistics`，样本批与速度同源）。数值自带量纲（数量级后缀 / 货币符号 /
+  （`LocalUsageSummaryBuilder.callTTFTStatistics`，样本批与速度同源）。**Speed 格的
+  tooltip（2026-11-08 起）从静态口径说明改为该行实际分布**：
+  `Min: x · P50: x · P95: x · Max: x tok/s`（`Formatters.formatSpeed`，P95 就近秩法
+  第 ⌈0.95n⌉ 个观测值，`PromptSpeedStatistics.p95`），无有效样本时回退原口径文案，
+  有效数 < 总数时尾注 `（v/m Prompt 有有效时长）`；段头用段级分布、模型行用行级分布。
+  数值自带量纲（数量级后缀 / 货币符号 /
   % / tok/s / 秒），不带字段标签，口径解释挂每格 `.help` 与表头。Update 占固定尾槽
   （`timeSlot = 38`，以放下标题「Update」为准），模型行留空同宽保证簇列对齐；
   扫描时间为 summary 级最新本地扫描时刻，Fleet 段不伪造。汇总行的价值是

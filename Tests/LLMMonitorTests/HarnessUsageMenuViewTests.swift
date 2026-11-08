@@ -59,6 +59,40 @@ final class HarnessUsageMenuViewTests: XCTestCase {
         )
     }
 
+    /// Speed 格 tooltip 逐字钉死：无有效样本退回口径说明——tooltip 里不能出现
+    /// 一串「—」，口径句才是可读的空态。
+    func testSpeedDistributionHelpFallsBackToMetricDescriptionWithoutSamples() {
+        XCTAssertEqual(
+            HarnessMetricColumns.speedDistributionHelp(.empty),
+            "完整 Prompt 速度 P50，单位 tok/s"
+        )
+    }
+
+    /// 有有效样本时给这一行的实际分布值（Min / P50 / P95 / Max，统一
+    /// `Formatters.formatSpeed` 紧凑格式：≥10 无小数、<10 保留一位），
+    /// 样本覆盖完整时不带后缀。
+    func testSpeedDistributionHelpListsTheActualDistribution() {
+        XCTAssertEqual(
+            HarnessMetricColumns.speedDistributionHelp(PromptSpeedStatistics(
+                minimum: 9.5, maximum: 80, p50: 40, p95: 70,
+                latest: 80, validPromptCount: 2, totalPromptCount: 2
+            )),
+            "Min: 9.5 · P50: 40 · P95: 70 · Max: 80 tok/s"
+        )
+    }
+
+    /// 有效样本不全时追加「valid/total Prompt 有有效时长」披露残缺统计——
+    /// 与历史序列 `speedIsPartial` 同一披露语义。
+    func testSpeedDistributionHelpAppendsPartialCoverageSuffix() {
+        XCTAssertEqual(
+            HarnessMetricColumns.speedDistributionHelp(PromptSpeedStatistics(
+                minimum: 9.5, maximum: 80, p50: 40, p95: 70,
+                latest: 80, validPromptCount: 2, totalPromptCount: 3
+            )),
+            "Min: 9.5 · P50: 40 · P95: 70 · Max: 80 tok/s（2/3 Prompt 有有效时长）"
+        )
+    }
+
     /// 宿主可独立展开套餐或历史；呈现模式参与值相等判断，避免 `.equatable()`
     /// 把一种模式缓存成另一种。
     func testPresentationModeParticipatesInProviderCardEquatableIdentity() {
