@@ -109,13 +109,13 @@ class AntigravityTestCase: XCTestCase {
         var rawData: [UInt8]? = nil
         /// `f1.f4` usage 子消息存在但为**空消息**（0 字节）——presence 口径用例
         var emptyUsageSubmessage: Bool = false
-        /// `f1.f11` Duration 的写入形态（**仅作证伪回归夹具**：f11 经 2026-11-08
-        /// 实测评议证伪——其值 ≈ 整段调用时长（97~100%）、f12≈0，不是 TTFT，
-        /// reader 不得解析；nil = 不写该字段）。
+        /// `f1.f11` Duration 的写入形态（TTFT）
         var ttft: TTFTShape? = nil
+        /// `f1.f12` Duration 的写入形态（流式时长）
+        var streaming: TTFTShape? = nil
     }
 
-    /// `f1.f11` Duration 的 fixture 形态（仅用于证伪回归：断言 reader 忽略该字段）。
+    /// `f1.f11` / `f1.f12` Duration 的 fixture 形态。
     enum TTFTShape {
         /// 完整 Duration（seconds + nanos 两个 varint 都在 wire 上）
         case secondsAndNanos(seconds: UInt64, nanos: UInt64)
@@ -135,6 +135,10 @@ class AntigravityTestCase: XCTestCase {
         var nullMetadata: Bool = false
         /// metadata 写入不可解析字节
         var garbageMetadata: Bool = false
+        /// step_payload 是否为工具调用（Type A vs Type B）
+        var isToolCall: Bool? = nil
+        /// 直接给 step_payload 原始字节
+        var payloadBytes: [UInt8]? = nil
     }
 
     /// 构造 gen_metadata.data 字节：顶层 f1 事件消息 + f4 trajectory UUID；事件内
@@ -167,6 +171,16 @@ class AntigravityTestCase: XCTestCase {
         case nil:
             break
         }
+        switch row.streaming {
+        case .secondsAndNanos(let seconds, let nanos):
+            event += pbLenField(12, pbVarintField(1, seconds) + pbVarintField(2, nanos))
+        case .nanosOnly(let nanos):
+            event += pbLenField(12, pbVarintField(2, nanos))
+        case .empty:
+            event += pbLenField(12, [])
+        case nil:
+            break
+        }
         if let model = row.model {
             event += pbStringField(19, model)
         }
@@ -193,6 +207,18 @@ class AntigravityTestCase: XCTestCase {
             metadata += pbLenField(7, pbTimestamp(seconds: end.seconds, nanos: end.nanos))
         }
         return metadata.isEmpty ? nil : Data(metadata)
+    }
+
+    func makeStepPayload(_ row: StepRow) -> Data? {
+        if let payloadBytes = row.payloadBytes { return Data(payloadBytes) }
+        guard let isToolCall = row.isToolCall else { return nil }
+        var round: [UInt8] = []
+        if isToolCall {
+            round += pbStringField(7, "{\"name\":\"tool\"}")
+        } else {
+            round += pbStringField(1, "regular response")
+        }
+        return Data(pbLenField(20, round))
     }
 
     /// 现场合成一个 Antigravity 会话 .db。两个表的 DDL 可各自省略（probe 失败用例）。
@@ -251,7 +277,8 @@ class AntigravityTestCase: XCTestCase {
                         sqlite3_bind_int64(statement, 2, Int64(row.type))
                         sqlite3_bind_int64(statement, 3, 2)
                         self.bindBlob(statement, index: 4, metadata)
-                        // step_payload 保持未绑定（NULL）
+                        let payload = self.makeStepPayload(row)
+                        self.bindBlob(statement, index: 5, payload)
                     }
                 )
             }

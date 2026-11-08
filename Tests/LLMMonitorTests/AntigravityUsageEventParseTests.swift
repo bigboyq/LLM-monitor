@@ -26,7 +26,7 @@ final class AntigravityUsageEventParseTests: AntigravityTestCase {
             turns: 1, rounds: 2
         )
         let index = AntigravityLocalUsageScanner.CacheIndex(
-            version: 11,
+            version: 12,
             lastScannedAt: now,
             sessions: ["session-1": AntigravityLocalUsageScanner.SessionIndexEntry(
                 mtimeMs: 1, sizeBytes: 2, walMtimeMs: 0, walSizeBytes: 0,

@@ -99,6 +99,68 @@ enum AntigravityStepTimestampReader {
         streamDurationNanos(from: metadata)
     }
 
+    // MARK: - agy 调用时延与流式：gen_metadata f1.f11 / f1.f12 与 steps 工具调用标志
+
+    struct LLMCallTiming: Equatable, Sendable {
+        let ttftSeconds: Double?
+        let streamingSeconds: Double?
+        let isToolCall: Bool
+    }
+
+    /// 读取会话 .db 逐 LLM 调用的时延指标（以 steps.idx 为键）：
+    /// - `ttftSeconds`：gen_metadata f1.f11
+    /// - `streamingSeconds`：gen_metadata f1.f12
+    /// - `isToolCall`：steps.step_payload 是否包含工具调用
+    static func llmCallTimingByStepIndex(dbPath: URL) throws -> [Int: LLMCallTiming] {
+        let connection = try SQLiteConnection(path: dbPath, readOnly: opensReadOnly(dbPath: dbPath))
+        var isToolByStep: [Int: Bool] = [:]
+        if let stepRows = try? connection.query(
+            sql: "SELECT idx, step_payload FROM steps WHERE step_type = 15 ORDER BY idx ASC",
+            map: { statement -> (idx: Int, payload: Data?) in
+                let idx = Int(sqlite3_column_int64(statement, 0))
+                guard sqlite3_column_type(statement, 1) != SQLITE_NULL,
+                      let blob = sqlite3_column_blob(statement, 1) else {
+                    return (idx, nil)
+                }
+                let length = Int(sqlite3_column_bytes(statement, 1))
+                return (idx, Data(bytes: blob, count: length))
+            }
+        ) {
+            for (idx, payload) in stepRows {
+                isToolByStep[idx] = AntigravitySessionDBReader.isToolCall(stepPayload: payload)
+            }
+        }
+
+        let genRows = try connection.query(
+            sql: "SELECT data FROM gen_metadata ORDER BY idx ASC",
+            map: { statement -> Data? in
+                guard sqlite3_column_type(statement, 0) != SQLITE_NULL,
+                      let blob = sqlite3_column_blob(statement, 0) else {
+                    return nil
+                }
+                let length = Int(sqlite3_column_bytes(statement, 0))
+                return Data(bytes: blob, count: length)
+            }
+        )
+        var result: [Int: LLMCallTiming] = [:]
+        for data in genRows {
+            guard let data, !data.isEmpty else { continue }
+            let entry = AntigravitySessionDBReader.parseGeneratorMetadataEntry(idx: 0, data: data)
+            guard let lastStepIndex = entry.lastStepIndex else { continue }
+            let next = lastStepIndex.addingReportingOverflow(1)
+            guard !next.overflow, result[next.partialValue] == nil else { continue }
+            let stepIdx = next.partialValue
+            let isTool = isToolByStep[stepIdx] ?? false
+            let ttft = entry.timeToFirstTokenSeconds.flatMap { $0 >= 0 && $0 <= 3600 ? $0 : nil }
+            result[stepIdx] = LLMCallTiming(
+                ttftSeconds: ttft,
+                streamingSeconds: entry.streamingDurationSeconds,
+                isToolCall: isTool
+            )
+        }
+        return result
+    }
+
     // MARK: - agy 原生 usage：gen_metadata f1.f4（与 Antigravity 会话库同 schema 同字段）
 
     /// gen_metadata `f1.f4` usage 子消息解出的原生 token 三元组。db 内守恒

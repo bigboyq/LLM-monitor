@@ -188,7 +188,7 @@ final class AgyLocalUsageScannerTests: XCTestCase {
         XCTAssertEqual(
             sqlite3_exec(
                 database,
-                "CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, metadata BLOB);",
+                "CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, metadata BLOB, step_payload BLOB);",
                 nil,
                 nil,
                 nil
@@ -209,7 +209,7 @@ final class AgyLocalUsageScannerTests: XCTestCase {
         }
         var statement: OpaquePointer?
         XCTAssertEqual(
-            sqlite3_prepare_v2(database, "INSERT INTO steps VALUES (?, ?, ?);", -1, &statement, nil),
+            sqlite3_prepare_v2(database, "INSERT INTO steps (idx, step_type, metadata) VALUES (?, ?, ?);", -1, &statement, nil),
             SQLITE_OK
         )
         guard let statement else {
@@ -267,6 +267,7 @@ final class AgyLocalUsageScannerTests: XCTestCase {
     private func genData(
         lastStepIndex: UInt64,
         ttft: (seconds: UInt64, nanos: UInt64)?,
+        streaming: (seconds: UInt64, nanos: UInt64)? = nil,
         usage: (raw: UInt64, reasoning: UInt64, normalized: UInt64)? = nil
     ) -> Data {
         var event: [UInt8] = []
@@ -276,6 +277,12 @@ final class AgyLocalUsageScannerTests: XCTestCase {
             if ttft.seconds > 0 { duration += [0x08] + varintBytes(ttft.seconds) }
             duration += [0x10] + varintBytes(ttft.nanos)
             event += [0x5A, UInt8(duration.count)] + duration
+        }
+        if let streaming {
+            var duration: [UInt8] = []
+            if streaming.seconds > 0 { duration += [0x08] + varintBytes(streaming.seconds) }
+            duration += [0x10] + varintBytes(streaming.nanos)
+            event += [0x62, UInt8(duration.count)] + duration
         }
         if let usage {
             // f4 的 varint 键 = 4 << 3 | 2 = 34 → 0x22；内部 f3 = 0x18、
@@ -932,48 +939,48 @@ final class AgyLocalUsageScannerTests: XCTestCase {
         XCTAssertNil(AntigravityStepTimestampReader.streamDurationNanosForTest(from: Data([0x08, 0x01])))
     }
 
-    /// **f11 证伪回归（2026-11-08 实测）**：gen_metadata `f1.f11` 曾被当 TTFT
-    /// 接入，实测其值 ≈ 整段调用时长（97~100%）、f12≈0，不是首字延迟——夹具
-    /// 刻意写入多种 f11 wire 形态，断言样本 `ttftSeconds` 恒 nil、方案 A 时长
-    /// 仍取 steps 差分、连接不命中的计量行不受影响。
-    func testConversationDBF11NotConsumedAsTTFT() throws {
+    /// **方案 B：调用时延与流式拆分**：
+    /// - `ttftSeconds` 取自 `f1.f11`
+    /// - 工具调用或非流式短响应（f12 < 0.5s）不计入流式解码时长（`durationSeconds = nil`）
+    /// - 纯文本流式输出（无 tool_calls 且 f12 >= 0.5s）时长按 `(ttft ?? 0) + f12` 供给（使得 `decode = f12`）
+    func testConversationDBTimingOptionB() throws {
         let fixture = makeFixture()
         let epoch = UInt64(t0.timeIntervalSince1970)
         writeSession(fixture, sessionID: "session-a", mainLines: [
+            // step 1: 纯文本输出（无 tool_calls），ttft 1.5s，streaming 3.5s -> duration 5.0s, ttft 1.5s
             agyLine(type: "PLANNER_RESPONSE", createdAt: iso(t0), stepIndex: 1, input: 10, cacheRead: 0, output: 5),
+            // step 2: 纯文本短响应，ttft 0.864s，streaming 0.05s (< 0.5s) -> duration nil, ttft 0.864s
             agyLine(type: "PLANNER_RESPONSE", createdAt: iso(t0.addingTimeInterval(60)), stepIndex: 2, input: 8, cacheRead: 0, output: 3),
-            agyLine(type: "PLANNER_RESPONSE", createdAt: iso(t0.addingTimeInterval(120)), stepIndex: 3, input: 6, cacheRead: 0, output: 2),
+            // step 3: 带 tool_calls，ttft 2.0s，streaming 2.0s -> duration nil, ttft 2.0s
+            agyLine(type: "PLANNER_RESPONSE", createdAt: iso(t0.addingTimeInterval(120)), stepIndex: 3, input: 6, cacheRead: 0, output: 2,
+                    toolCalls: [["name": "bash"]]),
         ])
         try writeConversationDB(fixture, sessionID: "session-a", steps: [
             (idx: 1, stepType: 15, metadata: stepMetadata(startSeconds: epoch, endSeconds: epoch + 5)),
-            (idx: 2, stepType: 15, metadata: stepMetadata(startSeconds: epoch, endSeconds: epoch + 6)),
+            (idx: 2, stepType: 15, metadata: stepMetadata(startSeconds: epoch + 60, endSeconds: epoch + 61)),
+            (idx: 3, stepType: 15, metadata: stepMetadata(startSeconds: epoch + 120, endSeconds: epoch + 124)),
         ], genRows: [
             // last_step_index 0 → steps.idx 1（== 计量行 step_index 1）
-            genData(lastStepIndex: 0, ttft: (seconds: 1, nanos: 669_597_334)),
-            // last_step_index 1 → steps.idx 2；<1s 只有 nanos（864ms）
-            genData(lastStepIndex: 1, ttft: (seconds: 0, nanos: 864_000_000)),
-            // last_step_index 2 → steps.idx 3，gen 行未写 f11
-            genData(lastStepIndex: 2, ttft: nil),
-            // last_step_index 99 → steps.idx 100 连接不命中
-            genData(lastStepIndex: 99, ttft: (seconds: 9, nanos: 0)),
+            genData(lastStepIndex: 0, ttft: (seconds: 1, nanos: 500_000_000), streaming: (seconds: 3, nanos: 500_000_000)),
+            // last_step_index 1 → steps.idx 2；<1s 只有 nanos（864ms），streaming 50ms
+            genData(lastStepIndex: 1, ttft: (seconds: 0, nanos: 864_000_000), streaming: (seconds: 0, nanos: 50_000_000)),
+            // last_step_index 2 → steps.idx 3
+            genData(lastStepIndex: 2, ttft: (seconds: 2, nanos: 0), streaming: (seconds: 2, nanos: 0)),
         ])
 
         let result = try scan(fixture)
 
-        // f11 证伪后的口径：样本一律不携带 TTFT（重新接入即红）。
-        for promptID in ["session-a:step:1", "session-a:step:2", "session-a:step:3"] {
-            XCTAssertNil(
-                try sample(result, promptID).ttftSeconds,
-                "\(promptID)：f11 ≈ 整段调用时长而非 TTFT，样本不得携带 ttftSeconds"
-            )
-        }
-        // 方案 A 时长不受影响：仍来自 steps f7−f1。
-        XCTAssertEqual(
-            try sample(result, "session-a:step:1").durationSeconds ?? 0, 5, accuracy: 1e-9
-        )
-        XCTAssertEqual(
-            try sample(result, "session-a:step:2").durationSeconds ?? 0, 6, accuracy: 1e-9
-        )
+        let s1 = try sample(result, "session-a:step:1")
+        XCTAssertEqual(try XCTUnwrap(s1.durationSeconds), 5.0, accuracy: 1e-6)
+        XCTAssertEqual(try XCTUnwrap(s1.ttftSeconds), 1.5, accuracy: 1e-6)
+
+        let s2 = try sample(result, "session-a:step:2")
+        XCTAssertNil(s2.durationSeconds)
+        XCTAssertEqual(try XCTUnwrap(s2.ttftSeconds), 0.864, accuracy: 1e-6)
+
+        let s3 = try sample(result, "session-a:step:3")
+        XCTAssertNil(s3.durationSeconds)
+        XCTAssertEqual(try XCTUnwrap(s3.ttftSeconds), 2.0, accuracy: 1e-6)
     }
 
     /// gen_metadata f1.f4（f9 reasoning / f10 normalized / f3 raw，与 Antigravity
@@ -1290,7 +1297,7 @@ final class AgyLocalUsageScannerTests: XCTestCase {
 
         XCTAssertEqual(result.eventCount, 1, "v2 索引必须被拒绝，按真实文件重新聚合")
         let saved = try JSONSerialization.jsonObject(with: Data(contentsOf: fixture.cacheDir)) as? [String: Any]
-        XCTAssertEqual(saved?["version"] as? Int, 6, "重建后的索引以 v6 落盘")
+        XCTAssertEqual(saved?["version"] as? Int, 7, "重建后的索引以 v7 落盘")
         let rebuilt = try sample(result, "session-a:step:1")
         XCTAssertNil(rebuilt.durationSeconds, "无 .db、无 GENERIC 标记的行时长保持 nil（重建路径不炸）")
     }

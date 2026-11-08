@@ -72,15 +72,13 @@ sample 层遵守 `LocalTokenUsageSample` 历史语义：`inputTokens` 存 cache-
 样本的 `durationSeconds`（发起 → 流式完成，不含工具执行，与
 `AntigravityFetcher` 的 RPC 口径同域）按会话两级来源解析：
 
-**方案 A（真值）**：`~/.gemini/antigravity-cli/conversations/<session>.db` 与
-brain 会话目录 100% 一一对应（91/91 实测）。`.db` 的 `steps` 表 `step_type = 15`
-行的 `metadata` protobuf 携带两个 Timestamp：field 1 = 该 step 的**发起**时刻
-（与 transcript 行 `created_at` 同值，整秒），field 7 = **流式完成**时刻（纳秒级）。
-`AntigravityStepTimestampReader.llmStepStreamDurationNanos` 把全部 LLM steps 的
-`f7 − f1` 纳秒差按 `idx` 收成映射（SQLite 经 `SQLiteTempCopy.read` 打开，与
-antigravity timestamp fallback 同一 READONLY / WAL 竞态纪律），scanner 过
-(0, 3600] 有效域后按 `idx == step_index` 供给计量行。覆盖 100%（含纯文本终答），
-91 库全扫实测 ~110ms。
+**方案 A（真值，方案 B 供给）**：`~/.gemini/antigravity-cli/conversations/<session>.db` 与
+brain 会话目录 100% 一一对应（91/91 实测）。通过
+`AntigravityStepTimestampReader.llmCallTimingByStepIndex` 从 `.db` 的 `steps`
+与 `gen_metadata` 提取逐 step 调用时延（`ttftSeconds` 与 `streamingSeconds`）。
+- **纯文本流式输出**（`!hasToolCalls && streaming >= 0.5s`）：供给 `duration = (ttft ?? 0) + streaming`，使得解码耗时分母 `duration - ttft` 精确等于流式完成耗时 `f12`；
+- **工具调用**（`hasToolCalls`）或**非流式短响应**（`streaming < 0.5s`）：`duration = nil`，避免微秒级分母导致虚高速度尖峰，同时保留 `ttftSeconds`；
+- **缺失 `gen_metadata` 字段时的夹具/旧数据**：回退使用 `steps` 表 `f7 − f1` 纳秒差分（`planADurationSeconds`）。
 
 **方案 B（降级）**：`.db` 缺失 / 打不开 / 表缺失 / 该行无匹配 idx 时，带
 `tool_calls` 的 `MODEL:PLANNER_RESPONSE:DONE`（step_index=s）流式结束后，agy
@@ -99,22 +97,17 @@ GENERIC 的行也不作为标记，都不会误食。字节级 `"source":"MODEL"
 **禁止前驱差分**：transcript `created_at` 是整秒级且记录的是该 step 的**发起**
 时刻 ⌊f1⌋（不是完成时刻），`row[i] − row[i−1]` 仅 21.8% 落入有效域，完全失真。
 
-缓存：指纹缓存升级 `AgyCacheIndex` v3——旧 v2 快照无样本时长，版本不匹配
-一次性失效重建（无迁移路径，与 v1 → v2 同款）。
+缓存：指纹缓存升级 `AgyCacheIndex` v7——旧版本快照版本不匹配一次性失效重建。
 
 ## TTFT（ttftSeconds）
 
-**2026-11-08 回退：无 TTFT 数据源。** 初版（同日早些时候）曾把 gen_metadata blob
-`f1.f11` 当 timeToFirstToken 接入（`AntigravityStepTimestampReader.llmCallTTFTSecondsByStepIndex`，
-连接键与 f4 原生拆分同款）；随后全量复核证伪——**f11 占 f11+f12 的 97~100%、f12 仅
-0.01~0.18s**（对 590 tok 输出「流式 0.18s」物理不成立），即 **f11 实为整段调用时长
-而非首字延迟**（详见
-[`providers/antigravity.md`](../providers/antigravity.md) § TTFT / streaming 时长字段
-的证伪记录）。接入期间 agy 样本的「TTFT」读数实为时长，解码速度分母 ≈0。
-
-现状：`llmCallTTFTSecondsByStepIndex` 与相关透传已删除，样本 `ttftSeconds` 恒 nil
-（UI 显示 `—`；解码速度按时长全额计入）；f4 原生 token 拆分不受影响。缓存 v6
-（v5 是伪 TTFT 结果，一次性失效重建）。聚合口径见
+**方案 B 落地**：从 `~/.gemini/antigravity-cli/conversations/<session>.db` 的
+`gen_metadata` 读取 `f1.f11`（由 `AntigravityStepTimestampReader.llmCallTimingByStepIndex`
+解析）。
+- 全量调用统一采集 `ttftSeconds = f1.f11`（中位数 ~3.0s - 4.6s，包含 prefill 与内部思考）；
+- 纯文本流式调用的解码速度按 `(Think + Visible) / f12` 准确反映硬件吞吐；
+- 工具调用不提供流式耗时（`duration = nil`），但保留 `ttftSeconds`；
+- 缓存升级为 `AgyCacheIndex` **v7** 一次性重建，清除旧版本指标。聚合口径见
 [`accounting.md`](../accounting.md) §TTFT 口径。
 
 ## Provider mapping

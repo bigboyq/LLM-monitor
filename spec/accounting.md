@@ -171,17 +171,16 @@ TTFT）的读数介于解码速度与含 TTFT 速度之间，tooltip 已注明�
 | OpenCode | `data.time.completed − time_created`（data JSON 内嵌双时间戳） |
 | DSH | `assistant/message.time − step/start.time` 差分（工具执行在 message 之后，结构上不混入） |
 | Codex | `token_usage_record` 混合差分：发起锚 = max(上一条 `token_count` 时刻, 上一条 record 时刻)，回退 `task_started`；token 计量保持 `token_count` 单源，record 只计时（详见 `harnesses/codex.md` Rules） |
-| Antigravity | `.db` 直读 steps.metadata 双 Timestamp 差分：f7（流式完成）− f1（发起）（`AntigravitySessionDBReader.parseStepTimestamps`，`completedAt` 同源 f7；含 TTFT、不含工具执行；缓存 v9 重建） |
+| Antigravity | 方案 B：纯文本流式输出（`!isToolCall && f12 >= 0.5s`）供给 `(ttftSeconds ?? 0) + streamingSeconds`（解码分母 `duration − ttft` 恒等于 `f12`）；工具调用或短流式为 `nil`（避免除零虚高）；无 `gen_metadata` 夹具回退 `steps` 表 `f7 − f1` 差分；缓存 v12 重建 |
 | MiniMax | `local_runtime_message_rows.$.usage.request_duration_ms`（独立守门窗口查询 + `(session, turn)` FIFO 配对、以 input/output tokens 核对回填；缓存 v16。**禁止** `created_at_ms` 差分——toolUse 行记录的是工具完成时刻，会把工具耗时算入） |
-| agy | `conversations/<session>.db` steps metadata 纳秒差（field 7 流式完成 − field 1 发起，主路径，100% 覆盖含纯文本终答）；.db 缺失时降级 transcript 后继 `MODEL:GENERIC` 锚点差分（秒级，约 94% 覆盖）；缓存 v3 重建。**禁止**前驱行差分——transcript `created_at` 是发起时刻 ⌊f1⌋，差分量的是调度延迟/上轮工具耗时 |
+| agy | 方案 B：`conversations/<session>.db` 的 `llmCallTimingByStepIndex` 供给（纯文本流式 `(ttft ?? 0) + streaming`，工具调用 `nil`；无 gen_metadata 回退 steps 差分）；.db 缺失时降级 transcript 后继 `MODEL:GENERIC` 锚点差分（秒级，约 94% 覆盖）；缓存 v7 重建。**禁止**前驱行差分——transcript `created_at` 是发起时刻 ⌊f1⌋，差分量的是调度延迟/上轮工具耗时 |
 
-上游 TTFT 字段可得性（2026-11-08 调研、同日接入 sample `ttftSeconds`，见下节）：ZCode `model_usage`
+上游 TTFT 字段可得性（2026-11-08 调研落地，见下节）：ZCode `model_usage`
 原生 `time_to_first_token_ms`（逐调用，71% 覆盖，缺口行 nil）、Codex `task_complete` payload 原生
-`time_to_first_token_ms`（turn 级，回填 turn 首调）；~~Antigravity `gen_metadata` blob
-`f1.f11`~~ **证伪回退**——初版调研误把 f11 当 TTFT（其验证只证明 f11+f12 ≈ 时长），
-同日全量复核发现 **f11 ≈ 整段调用时长（97~100%）、f12 ≈ 0**，非首字延迟，Antigravity
-与 agy 的 f11 接入已回退（样本恒 nil，见
-[`providers/antigravity.md`](providers/antigravity.md) § TTFT 的证伪记录）；DSH 无显式字段、**三代账本均可
+`time_to_first_token_ms`（turn 级，回填 turn 首调）；Antigravity 与 agy 采用**方案 B**：
+`gen_metadata` 的 `f1.f11` 作为首字延迟 TTFT（中位数 ~3.0s - 4.6s，包含 prefill 与内部思考）；
+流式纯文本输出由 `f1.f12`（流式解码耗时）配合给出真实吞吐，工具调用 duration 置 nil；详见
+[`providers/antigravity.md`](providers/antigravity.md) § TTFT / streaming 时长字段；DSH 无显式字段、**三代账本均可
 推导**——v1 取首个独立 `assistant/chunk.time − step/start.time`，v3 / v4 取
 `assistant/message.data.stream[]` 首条 `time` 同锚点差分（初版调研漏看
 message.data.stream 误判 v3 / v4 不可得，同日复核修订；实测 v3 1094/1094、
@@ -214,8 +213,8 @@ TTFT 与 token 速率同层：只在 sample 级定义、不进入帧 / 投影内
 |---|---|
 | ZCode | `model_usage.time_to_first_token_ms` 显式列 ÷ 1000（主表与非智谱分片同口径；NULL-aware 读取，NULL → nil；缓存 v12 重建） |
 | Codex | `task_complete` payload `time_to_first_token_ms` ÷ 1000，turn 级 → 回填该 turn **第一条** `token_usage_record` 样本（文件内配对，turn_id 全局 UUID 不跨文件；缓存 v2 重建） |
-| Antigravity | **无（回退）**——`f1.f11` 实为整段调用时长而非 TTFT（证伪记录见 `providers/antigravity.md` § TTFT），样本恒 nil；缓存 v11 重建 |
-| agy | **无（回退）**——同 Antigravity 的 f11 证伪；样本恒 nil；缓存 v6 重建 |
+| Antigravity | 方案 B：`.db` 的 `gen_metadata` 解析 `f1.f11` Duration 秒数（中位数 ~3.0s - 4.6s）；缓存 v12 重建 |
+| agy | 方案 B：同 Antigravity，经 `AntigravityStepTimestampReader.llmCallTimingByStepIndex` 从 `.db` 读取 `f1.f11`；缓存 v7 重建 |
 | DSH | 双路径：v1 首个独立 `assistant/chunk.time − step/start.time` ÷ 1000（字节级预过滤 + 每 step 首 chunk 节流解码）；v3 / v4 取 `assistant/message.data.stream[]` 首条 `time` 同锚点差分（缓存 v7 重建。见 `harnesses/dsh.md` § TTFT 调研记录） |
 | MiniMax | `(request_duration_ms − decode_duration_ms) / 1000`（同一时长守门窗口查询补取 decode 键、同一 `(session, turn)` FIFO 配对；decode 缺失 / 差值 < 0 → nil。缓存 v18 重建。见 `harnesses/minimaxcode.md` § TTFT 调研记录） |
 | OpenCode | 无（恒 nil） |

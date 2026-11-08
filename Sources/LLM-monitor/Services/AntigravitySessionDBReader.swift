@@ -34,12 +34,12 @@ enum AntigravitySessionDBReader {
     /// `data` blob 缺失或无法解析时除 `idx` 外全 nil——该行随后被连接条件
     ///（模型名 + last_step_index + steps 命中）自然跳过，不影响其他行。
     ///
-    /// **f11 已证伪（2026-11-08 实测，勿再接入）**：调研曾把 blob `f1.f11` 当
-    /// TTFT、`f1.f12` 当 streaming 接入；本机 Antigravity 库（201 gen 行）实测
-    /// f11 占 f11+f12 的 97~100%（P50 99%）、f12 仅 0.01~0.18s——对数百 tok 的
-    /// 输出「流式 0.18s」物理不成立。结论：**f11 实为整段调用时长（与 steps
-    /// 差分同义）、f12≈0**，不是 TTFT/streaming 对。本 reader 不解析 f11/f12；
-    /// 单次调用时长一律取 steps.metadata f7−f1（`Call.durationSeconds`）。
+    /// **调用时延与流式拆分（方案 B）**：`f1.f11` 为首字延迟（TTFT，protobuf Duration），
+    /// `f1.f12` 为流式完成时长（protobuf Duration）。对于工具调用（Type A，
+    /// `step_payload` 含 `f20.f7`）或非流式短响应（`f12 < 0.5s`），模型批量下发完整
+    /// 载荷，不计入流式解码时长（`durationSeconds = nil`），保留 `ttftSeconds`；
+    /// 仅对纯文本流式输出（Type B，`!isToolCall && f12 >= 0.5s`），时长按
+    /// `(ttft ?? 0) + f12` 供给，使得 `decode = duration − ttft = f12`。
     struct GeneratorMetadataEntry: Equatable, Sendable {
         /// usage 子消息（`f1.f4`）。**子消息存在即视为 usage 事件**（即使全零）；
         /// 值为 0 的字段在 wire 上常缺省，缺省按 0 计；cacheWrite 不在其中。
@@ -73,10 +73,13 @@ enum AntigravitySessionDBReader {
         /// `f1.f20` map 的 `last_step_index`（十进制字符串 → Int；缺失 / 不可解析
         /// 为 nil）。连接键 = `steps.idx == lastStepIndex + 1`；nil 的行不产生 Call。
         let lastStepIndex: Int?
+        /// `f1.f11`：timeToFirstToken（protobuf Duration，秒）。
+        var timeToFirstTokenSeconds: Double? = nil
+        /// `f1.f12`：streamingDuration（protobuf Duration，秒）。
+        var streamingDurationSeconds: Double? = nil
     }
 
-    /// steps 表 `step_type=15` 行（LLM call）的双 Timestamp。metadata 缺失或时间戳
-    /// 不可解析时对应值为 nil，**行本身仍占配对序位**。
+    /// steps 表 `step_type=15` 行（LLM call）的双 Timestamp 及工具调用标志。
     struct LLMCallStep: Equatable, Sendable {
         /// steps.idx
         let idx: Int
@@ -84,6 +87,8 @@ enum AntigravitySessionDBReader {
         let startedAtSeconds: Double?
         /// metadata field 7（流式完成时刻），epoch 秒
         let completedAtSeconds: Double?
+        /// step_payload 是否为工具调用（Type A：`f20` 包含 `f7`）
+        var isToolCall: Bool = false
     }
 
     /// steps 表 `step_type=14` 行（用户轮次边界）。
@@ -119,10 +124,11 @@ enum AntigravitySessionDBReader {
         let startedAt: Date?
         /// steps metadata field 7（流式完成）
         let completedAt: Date?
-        /// completedAt − startedAt（秒）。任一端缺失时 nil；可能为负（时钟回拨），
-        /// 调用方按 (0, 3600] 有效域过滤（与窗口 token 速度过滤同口径，见
-        /// `spec/harnesses/agy.md` § 单次调用时长）。
+        /// 完整调用时长（秒）：纯文本流式输出为 `(ttft ?? 0) + streaming`，
+        /// 使得 `decode = duration − ttft = f12`；工具调用或非流式短响应为 nil。
         let durationSeconds: Double?
+        /// gen blob `f1.f11` timeToFirstToken（首字延迟，秒）。
+        var ttftSeconds: Double? = nil
     }
 
     // MARK: - probe（版本指纹门）
@@ -330,9 +336,20 @@ enum AntigravitySessionDBReader {
 
             let startedAt = step.startedAtSeconds.map(Date.init(timeIntervalSince1970:))
             let completedAt = step.completedAtSeconds.map(Date.init(timeIntervalSince1970:))
+            let ttft = entry.timeToFirstTokenSeconds.flatMap { $0 >= 0 && $0 <= 3600 ? $0 : nil }
             let duration: Double?
-            if let startedAt, let completedAt {
-                duration = completedAt.timeIntervalSince1970 - startedAt.timeIntervalSince1970
+            if step.isToolCall {
+                duration = nil
+            } else if let streaming = entry.streamingDurationSeconds {
+                if streaming >= 0.5 {
+                    let total = (ttft ?? 0) + streaming
+                    duration = (total > 0 && total <= 3600) ? total : nil
+                } else {
+                    duration = nil
+                }
+            } else if let startedAt, let completedAt {
+                let delta = completedAt.timeIntervalSince1970 - startedAt.timeIntervalSince1970
+                duration = (delta > 0 && delta <= 3600) ? delta : nil
             } else {
                 duration = nil
             }
@@ -347,7 +364,8 @@ enum AntigravitySessionDBReader {
                 reasoningTokens: usage.reasoningTokens,
                 startedAt: startedAt,
                 completedAt: completedAt,
-                durationSeconds: duration
+                durationSeconds: duration,
+                ttftSeconds: ttft
             ))
         }
         return calls
@@ -376,24 +394,46 @@ enum AntigravitySessionDBReader {
 
     private static func readLLMCallSteps(connection: SQLiteConnection) throws -> [LLMCallStep] {
         let rows = try connection.query(
-            sql: "SELECT idx, metadata FROM steps WHERE step_type = 15 ORDER BY idx ASC",
-            map: { statement -> (idx: Int, metadata: Data?) in
+            sql: "SELECT idx, metadata, step_payload FROM steps WHERE step_type = 15 ORDER BY idx ASC",
+            map: { statement -> (idx: Int, metadata: Data?, payload: Data?) in
                 let idx = Int(sqlite3_column_int64(statement, 0))
-                guard sqlite3_column_type(statement, 1) != SQLITE_NULL,
-                      let blob = sqlite3_column_blob(statement, 1) else {
-                    return (idx, nil)
+                let metadata: Data?
+                if sqlite3_column_type(statement, 1) != SQLITE_NULL,
+                   let blob = sqlite3_column_blob(statement, 1) {
+                    metadata = Data(bytes: blob, count: Int(sqlite3_column_bytes(statement, 1)))
+                } else {
+                    metadata = nil
                 }
-                return (idx, Data(bytes: blob, count: Int(sqlite3_column_bytes(statement, 1))))
+                let payload: Data?
+                if sqlite3_column_type(statement, 2) != SQLITE_NULL,
+                   let blob = sqlite3_column_blob(statement, 2) {
+                    payload = Data(bytes: blob, count: Int(sqlite3_column_bytes(statement, 2)))
+                } else {
+                    payload = nil
+                }
+                return (idx, metadata, payload)
             }
         )
-        return rows.map { idx, metadata in
+        return rows.map { idx, metadata, payload in
             let timestamps = parseStepTimestamps(metadata: metadata)
             return LLMCallStep(
                 idx: idx,
                 startedAtSeconds: timestamps.startedAt?.timeIntervalSince1970,
-                completedAtSeconds: timestamps.completedAt?.timeIntervalSince1970
+                completedAtSeconds: timestamps.completedAt?.timeIntervalSince1970,
+                isToolCall: isToolCall(stepPayload: payload)
             )
         }
+    }
+
+    /// step_payload 是否为工具调用（Type A）：`f20`（LlmRound）子消息中包含 `f7`（工具调用数据）。
+    static func isToolCall(stepPayload: Data?) -> Bool {
+        guard let stepPayload, !stepPayload.isEmpty,
+              let top = protoFields(in: stepPayload),
+              let roundBytes = firstBytes(top, fieldNumber: 20),
+              let round = protoFields(in: roundBytes) else {
+            return false
+        }
+        return round.contains { $0.fieldNumber == 7 }
     }
 
     private static func readUserTurnSteps(connection: SQLiteConnection) throws -> [UserTurnStep] {
@@ -471,9 +511,11 @@ enum AntigravitySessionDBReader {
         let lastStepIndex = attributes["last_step_index"]
             .flatMap { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
 
-        // f1.f11 / f1.f12 不解析：f11 经 2026-11-08 实测证伪——其值 ≈ 整段调用
-        // 时长（97~100%）、f12≈0，不是 TTFT/streaming 对（见类型注释），接入会
-        // 把调用时长误当首字延迟、令解码速度分母≈0。
+        // f1.f11：timeToFirstToken（protobuf Duration：f1=seconds、f2=nanos）。
+        let ttftSeconds = firstBytes(event, fieldNumber: 11).flatMap(durationSeconds(from:))
+        // f1.f12：streamingDuration（protobuf Duration：f1=seconds、f2=nanos）。
+        let streamingSeconds = firstBytes(event, fieldNumber: 12).flatMap(durationSeconds(from:))
+
         return GeneratorMetadataEntry(
             idx: idx,
             trajectoryID: trajectoryID,
@@ -481,8 +523,24 @@ enum AntigravitySessionDBReader {
             displayName: firstString(event, fieldNumber: 21),
             usage: usage,
             attributes: attributes,
-            lastStepIndex: lastStepIndex
+            lastStepIndex: lastStepIndex,
+            timeToFirstTokenSeconds: ttftSeconds,
+            streamingDurationSeconds: streamingSeconds
         )
+    }
+
+    /// protobuf Duration（field 1 = seconds varint、field 2 = nanos varint）→ 秒。
+    /// proto3 默认值省略：<1s 的时长 seconds 缺省只剩 nanos（按 0 秒处理）；
+    /// 两个字段都缺省视为上游未提供 → nil；负秒或 nanos 越界 → nil。
+    static func durationSeconds(from data: Data) -> Double? {
+        guard let fields = protoFields(in: data) else { return nil }
+        let secondsRaw = firstVarint(fields, fieldNumber: 1)
+        let nanosRaw = firstVarint(fields, fieldNumber: 2)
+        guard secondsRaw != nil || nanosRaw != nil else { return nil }
+        let seconds = secondsRaw.map(Int64.init(bitPattern:)) ?? 0
+        let nanos = nanosRaw.map(Int64.init(bitPattern:)) ?? 0
+        guard seconds >= 0, nanos >= 0, nanos <= 999_999_999 else { return nil }
+        return Double(seconds) + Double(nanos) / 1_000_000_000
     }
 
     // MARK: - steps.metadata 解析（纯函数，测试接缝 internal）

@@ -60,9 +60,11 @@ struct AgyParsedUsage: Sendable {
     let sessionID: String
     /// 会话内步骤号（方案 A/B 时长映射键；缺失时不参与时长解析）。
     let stepIndex: Int?
-    /// 单次调用流式时长（秒）：构造时带方案 A 映射值，方案 B 由 scanner 在
-    /// 会话全部文件解析完后回填（var 以便结算期写入）。
+    /// 单次调用流式时长（秒）：纯文本流式输出为 `(ttft ?? 0) + streaming`，
+    /// 使得 `decode = duration − ttft = f12`；工具调用或非流式短响应为 nil。
     var durationSeconds: Double?
+    /// 单次调用首字延迟（TTFT，秒）：来自 .db gen_metadata f1.f11。
+    var ttftSeconds: Double?
 }
 
 enum AgyLocalUsageAggregation {
@@ -153,6 +155,7 @@ enum AgyLocalUsageAggregation {
         sessionID: String,
         modelName: String?,
         planADurationSeconds: Double? = nil,
+        planATiming: AntigravityStepTimestampReader.LLMCallTiming? = nil,
         nativeUsage: AntigravityStepTimestampReader.LLMCallNativeUsage? = nil
     ) -> AgyParsedUsage {
         let split: (reasoning: Int, output: Int)?
@@ -169,6 +172,21 @@ enum AgyLocalUsageAggregation {
         }
         let stepKey = raw.stepIndex.map(String.init)
             ?? String(raw.createdAt.timeIntervalSince1970)
+
+        let ttft = planATiming?.ttftSeconds
+        let duration: Double?
+        if let timing = planATiming {
+            let isTool = raw.hasToolCalls || timing.isToolCall
+            if !isTool, let stream = timing.streamingSeconds, stream >= 0.5 {
+                let total = (ttft ?? 0) + stream
+                duration = (total > 0 && total <= 3600) ? total : nil
+            } else {
+                duration = nil
+            }
+        } else {
+            duration = planADurationSeconds
+        }
+
         return AgyParsedUsage(
             completedAt: raw.createdAt,
             inputTokens: raw.inputTokens,
@@ -179,7 +197,8 @@ enum AgyLocalUsageAggregation {
             promptID: "\(sessionID):step:\(stepKey)",
             sessionID: sessionID,
             stepIndex: raw.stepIndex,
-            durationSeconds: planADurationSeconds
+            durationSeconds: duration,
+            ttftSeconds: ttft
         )
     }
 
@@ -189,9 +208,10 @@ enum AgyLocalUsageAggregation {
     /// 方案 B 在 transcript 流式扫描中暂存/收集，会话全部文件解析完后结算
     /// （`fallbackDurations` → `settleFallbackDurations`）。
     struct AgySessionDurationContext: Sendable {
-        /// 方案 A：`conversations/<session>.db` 的 `step_index → 流式时长（秒）`，
-        /// 已过 (0, 3600] 有效域。`.db` 缺失 / 打不开 / 表缺失 / 无匹配行为空映射。
-        let planADurations: [Int: Double]
+        /// 方案 A：`conversations/<session>.db` 的 `step_index → 调用时延与流式信息`。
+        var planATimings: [Int: AntigravityStepTimestampReader.LLMCallTiming] = [:]
+        /// 方案 A：`conversations/<session>.db` 的 `step_index → 流式时长（秒）`（回退兼容）。
+        var planADurations: [Int: Double] = [:]
         /// 同一 `.db` gen_metadata `f1.f4` 的原生 usage（f9 reasoning / f10
         /// normalized / f3 raw），连接键与方案 A 同构（键即 step_index）。守恒
         /// 校验（`reasoning + normalized == 账面 output_tokens`）归 `makeUsage`
@@ -206,6 +226,22 @@ enum AgyLocalUsageAggregation {
         /// 方案 B 标记：`MODEL:GENERIC` 行（step_index → 最早 created_at =
         /// 流式完成整秒 ⌊f7⌋；同 step 的后续状态行更晚，min 保留创建行）。
         var genericMarkers: [Int: Date] = [:]
+
+        init(
+            planATimings: [Int: AntigravityStepTimestampReader.LLMCallTiming] = [:],
+            planADurations: [Int: Double] = [:],
+            nativeUsageByStepIndex: [Int: AntigravityStepTimestampReader.LLMCallNativeUsage] = [:]
+        ) {
+            self.planATimings = planATimings
+            self.planADurations = planADurations
+            self.nativeUsageByStepIndex = nativeUsageByStepIndex
+        }
+
+        /// 方案 A 时延取值（映射外的 step_index 返回 nil）。
+        func planATiming(stepIndex: Int?) -> AntigravityStepTimestampReader.LLMCallTiming? {
+            guard let stepIndex else { return nil }
+            return planATimings[stepIndex]
+        }
 
         /// 方案 A 取值（映射外的 step_index 返回 nil）。
         func planADuration(stepIndex: Int?) -> Double? {
@@ -324,7 +360,8 @@ enum AgyLocalUsageAggregation {
             outputTokens: usage.outputTokens,
             reasoningOutputTokens: usage.reasoningTokens,
             sourceProviderID: ClientID.agy,
-            durationSeconds: usage.durationSeconds
+            durationSeconds: usage.durationSeconds,
+            ttftSeconds: usage.ttftSeconds
         ))
     }
 

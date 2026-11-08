@@ -325,7 +325,7 @@ final class AntigravityDBSourceScanTests: AntigravityScanTestCase {
         XCTAssertEqual(result.failedSessionCount, 0)
         XCTAssertEqual(result.eventCount, 1, "v8 计数不继承，eventCount 来自 v9 直读重建")
         let index = try loadScanIndex(fixture)
-        XCTAssertEqual(index.version, 11)
+        XCTAssertEqual(index.version, 12)
         XCTAssertEqual(index.sessions["v8-session"]?.eventCount, 1)
         XCTAssertEqual(
             index.dailyBySession["v8-session"]?[dayKey(0)]?.inputTokens, 42,

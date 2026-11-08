@@ -141,46 +141,61 @@ final class AntigravitySessionDBReaderTests: AntigravityTestCase {
         XCTAssertNil(usage.normalizedOutputTokens)
     }
 
-    /// **f11 证伪回归（2026-11-08 实测）**：gen blob `f1.f11` 曾被当 TTFT 接入，
-    /// 实测其值 ≈ 整段调用时长（97~100%）、f12≈0，不是首字延迟——reader 不得
-    /// 解析 f11/f12。夹具刻意写入多种 f11 wire 形态，断言调用仍按连接键正常
-    /// 配对、时长一律取 steps 差分、样本 `ttftSeconds` 恒 nil。
-    func testGeneratorMetadataF11FalsifiedAndNotConsumedAsTTFT() throws {
+    /// **方案 B：调用时延与流式拆分**：
+    /// - `ttftSeconds` 取自 `f1.f11`
+    /// - 工具调用（Type A）或非流式短响应（f12 < 0.5s）不计入流式解码时长（`durationSeconds = nil`）
+    /// - 纯文本流式输出（Type B 且 f12 >= 0.5s）时长按 `(ttft ?? 0) + f12` 供给（使得 `decode = f12`）
+    func testGeneratorMetadataTimingOptionB() throws {
         let base: UInt64 = 1_787_054_898
         let dbURL = try makeSessionDB(
             gen: [
-                // 完整 Duration（seconds + nanos；曾实测的形态）照常写入
-                GenRow(model: flashModel, usage: (input: 10, cacheRead: 0, rawOutput: 5, reasoning: 0, normalized: nil),
+                // 1. 纯文本流式输出：ttft 1.5s，streaming 3.5s (>= 0.5s)，Type B (isToolCall: false)
+                GenRow(model: flashModel, usage: (input: 10, cacheRead: 0, rawOutput: 50, reasoning: 10, normalized: 40),
                        attributes: [lsi(0)],
-                       ttft: .secondsAndNanos(seconds: 1, nanos: 669_597_334)),
-                // <1s：proto3 省略 seconds，wire 上只剩 nanos（864ms）
-                GenRow(model: argonModel, usage: (input: 10, cacheRead: 0, rawOutput: 5, reasoning: 0, normalized: nil),
+                       ttft: .secondsAndNanos(seconds: 1, nanos: 500_000_000),
+                       streaming: .secondsAndNanos(seconds: 3, nanos: 500_000_000)),
+                // 2. 工具调用：ttft 2.0s，streaming 1.0s，Type A (isToolCall: true) → duration 必须为 nil
+                GenRow(model: argonModel, usage: (input: 10, cacheRead: 0, rawOutput: 20, reasoning: 0, normalized: 20),
                        attributes: [lsi(1)],
-                       ttft: .nanosOnly(864_000_000)),
-                // 空子消息 / 不写 f11：reader 无视该字段
-                GenRow(model: flashModel, usage: (input: 10, cacheRead: 0, rawOutput: 5, reasoning: 0, normalized: nil),
+                       ttft: .secondsAndNanos(seconds: 2, nanos: 0),
+                       streaming: .secondsAndNanos(seconds: 1, nanos: 0)),
+                // 3. 纯文本短响应：ttft 1.0s，streaming 0.05s (< 0.5s)，Type B → duration 必须为 nil
+                GenRow(model: flashModel, usage: (input: 10, cacheRead: 0, rawOutput: 5, reasoning: 0, normalized: 5),
                        attributes: [lsi(2)],
-                       ttft: .empty),
-                GenRow(model: argonModel, usage: (input: 10, cacheRead: 0, rawOutput: 5, reasoning: 0, normalized: nil),
+                       ttft: .secondsAndNanos(seconds: 1, nanos: 0),
+                       streaming: .nanosOnly(50_000_000)),
+                // 4. 无 f11/f12：回退 steps 时间戳差分，ttft 为 nil
+                GenRow(model: argonModel, usage: (input: 10, cacheRead: 0, rawOutput: 5, reasoning: 0, normalized: 5),
                        attributes: [lsi(3)]),
             ],
-            steps: (0..<4).map { offset in
-                StepRow(
-                    type: 15,
-                    start: (seconds: base + UInt64(offset) * 10, nanos: 0),
-                    end: (seconds: base + UInt64(offset) * 10 + 6, nanos: 0)
-                )
-            }
+            steps: [
+                StepRow(type: 15, start: (seconds: base, nanos: 0), end: (seconds: base + 5, nanos: 0), isToolCall: false),
+                StepRow(type: 15, start: (seconds: base + 10, nanos: 0), end: (seconds: base + 13, nanos: 0), isToolCall: true),
+                StepRow(type: 15, start: (seconds: base + 20, nanos: 0), end: (seconds: base + 21, nanos: 50_000_000), isToolCall: false),
+                StepRow(type: 15, start: (seconds: base + 30, nanos: 0), end: (seconds: base + 31, nanos: 0)),
+            ]
         )
 
         let calls = try AntigravitySessionDBReader.readCalls(dbPath: dbURL)
-        XCTAssertEqual(calls.count, 4, "f11 各种形态都不得影响连接配对")
-        // 时长一律来自 steps f7−f1（6s），与 f11 值无关。
-        for call in calls {
-            XCTAssertEqual(call.durationSeconds!, 6.0, accuracy: 1e-9)
-        }
+        XCTAssertEqual(calls.count, 4)
 
-        // 样本不携带 TTFT（f11 证伪后的口径；重新接入即红）。
+        // 1. 纯文本流式输出：duration = 1.5 + 3.5 = 5.0s, ttft = 1.5s
+        XCTAssertEqual(try XCTUnwrap(calls[0].durationSeconds), 5.0, accuracy: 1e-6)
+        XCTAssertEqual(try XCTUnwrap(calls[0].ttftSeconds), 1.5, accuracy: 1e-6)
+
+        // 2. 工具调用：duration 为 nil，ttft = 2.0s
+        XCTAssertNil(calls[1].durationSeconds)
+        XCTAssertEqual(try XCTUnwrap(calls[1].ttftSeconds), 2.0, accuracy: 1e-6)
+
+        // 3. 纯文本短响应（<0.5s）：duration 为 nil，ttft = 1.0s
+        XCTAssertNil(calls[2].durationSeconds)
+        XCTAssertEqual(try XCTUnwrap(calls[2].ttftSeconds), 1.0, accuracy: 1e-6)
+
+        // 4. 无 f11/f12：回退 steps 差分 (1.0s)，ttft 为 nil
+        XCTAssertEqual(try XCTUnwrap(calls[3].durationSeconds), 1.0, accuracy: 1e-6)
+        XCTAssertNil(calls[3].ttftSeconds)
+
+        // 样本层校验
         let accounting = AntigravityLocalUsageScanner.accountCalls(
             sessionID: trajectoryID,
             calls: calls,
@@ -188,10 +203,14 @@ final class AntigravitySessionDBReaderTests: AntigravityTestCase {
             calendar: testCalendar
         )
         XCTAssertEqual(accounting.samples.count, 4)
-        XCTAssertTrue(
-            accounting.samples.allSatisfy { $0.ttftSeconds == nil },
-            "f11 ≈ 整段调用时长而非 TTFT（2026-11-08 实测评议），样本不得携带 ttftSeconds"
-        )
+        XCTAssertEqual(accounting.samples[0].durationSeconds, 5.0)
+        XCTAssertEqual(accounting.samples[0].ttftSeconds, 1.5)
+        XCTAssertNil(accounting.samples[1].durationSeconds)
+        XCTAssertEqual(accounting.samples[1].ttftSeconds, 2.0)
+        XCTAssertNil(accounting.samples[2].durationSeconds)
+        XCTAssertEqual(accounting.samples[2].ttftSeconds, 1.0)
+        XCTAssertEqual(accounting.samples[3].durationSeconds, 1.0)
+        XCTAssertNil(accounting.samples[3].ttftSeconds)
     }
 
     // MARK: - steps 读取

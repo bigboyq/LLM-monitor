@@ -41,8 +41,11 @@ extension AntigravityLocalUsageScanner {
         let cacheReadTokens: Int
         let cacheWriteTokens: Int
         let reasoningTokens: Int
-        /// 单次调用时长（秒）= steps.metadata f7（流式完成）− f1（发起）。
+        /// 单次调用时长（秒）：纯文本流式输出为 `(ttft ?? 0) + streaming`，
+        /// 使得 `decode = duration − ttft = f12`；工具调用或非流式短响应为 nil。
         let durationSeconds: Double?
+        /// 单次调用首字延迟（TTFT，秒）= gen_metadata f1.f11。
+        let ttftSeconds: Double?
 
         init(
             timestamp: Date?,
@@ -52,7 +55,8 @@ extension AntigravityLocalUsageScanner {
             cacheReadTokens: Int,
             cacheWriteTokens: Int = 0,
             reasoningTokens: Int,
-            durationSeconds: Double? = nil
+            durationSeconds: Double? = nil,
+            ttftSeconds: Double? = nil
         ) {
             self.timestamp = timestamp
             self.model = model
@@ -62,6 +66,7 @@ extension AntigravityLocalUsageScanner {
             self.cacheWriteTokens = cacheWriteTokens
             self.reasoningTokens = reasoningTokens
             self.durationSeconds = durationSeconds
+            self.ttftSeconds = ttftSeconds
         }
     }
 
@@ -220,7 +225,8 @@ extension AntigravityLocalUsageScanner {
                 cacheReadTokens: call.cacheReadTokens,
                 cacheWriteTokens: 0,
                 reasoningTokens: call.reasoningTokens,
-                durationSeconds: call.durationSeconds
+                durationSeconds: call.durationSeconds,
+                ttftSeconds: call.ttftSeconds
             )
             let day = calendar.startOfDay(for: completedAt)
             var dayCounts = perDay[day] ?? DailyTurnRound(turns: 0, rounds: 0)
@@ -268,6 +274,7 @@ extension AntigravityLocalUsageScanner {
         // timestamp 缺失落 .distantPast 的兜底样本不携带时长：时长与 timestamp
         // 同源于一次真实调用，时间戳都无法归日的事件其时长也不可信。
         let durationSeconds = event.timestamp == nil ? nil : event.durationSeconds
+        let ttftSeconds = event.timestamp == nil ? nil : event.ttftSeconds
         return LocalTokenUsageSample(
             completedAt: event.timestamp ?? .distantPast,
             modelName: event.model,
@@ -276,7 +283,8 @@ extension AntigravityLocalUsageScanner {
             cachedInputTokens: buckets.cacheRead,
             outputTokens: buckets.output,
             reasoningOutputTokens: buckets.reasoning,
-            durationSeconds: durationSeconds
+            durationSeconds: durationSeconds,
+            ttftSeconds: ttftSeconds
         )
     }
 
