@@ -186,6 +186,10 @@ private struct ClientProviderExpandedContent: View {
                         dayStarts: provider.dailyTokenUsage.map(\.dayStart),
                         recentSamples: provider.recentSamples
                     ),
+                    ttftByDay: LocalUsageTTFTByDay.ttftStatistics(
+                        dayStarts: provider.dailyTokenUsage.map(\.dayStart),
+                        recentSamples: provider.recentSamples
+                    ),
                     samplesTruncated: provider.samplesTruncated,
                     isTruncated: provider.isTruncated
                 ),

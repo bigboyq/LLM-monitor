@@ -434,7 +434,11 @@ final class MinimaxDBReader {
                     cachedInputTokens: buckets.cacheRead,
                     outputTokens: buckets.output,
                     reasoningOutputTokens: buckets.reasoning,
-                    durationSeconds: sampleDuration
+                    durationSeconds: sampleDuration,
+                    // MiniMax Code 无上游 TTFT 数据（db 与 v4 会话文件均无首字
+                    // 时刻，见 spec/harnesses/minimaxcode.md § TTFT），按用户裁定
+                    // 显式写 0（与 nil 区分：0 参与统计、nil 显示 —）。
+                    ttftSeconds: 0
                 )
             }
         )

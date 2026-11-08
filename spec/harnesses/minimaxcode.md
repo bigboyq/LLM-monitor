@@ -379,6 +379,11 @@ runtime 原生记录的单次请求耗时，无此污染。实测保留窗口 30
 - 时长侧因此只有 `request_duration_ms`（含 TTFT + decode 的总时长）一条路，TTFT 无法
   从总时长反推。
 
+监控现状（2026-11-08 更新）：无上游数据不等于缺列——reader 与字符分摊重建两条
+sample 构造路径都**显式写 `ttftSeconds = 0`**（用户裁定：UI 上 MiniMax Code 的
+TTFT 读数恒为 0，不显示 `—`；0 在聚合有效性域内合法，见
+[`accounting.md`](../accounting.md) §TTFT 口径）；缓存 v17 重建。
+
 **附带发现（待观察）**：会话目录为
 `~/.minimax/v2/sessions/<日期>/<时间>-session_<base64(sessionId)>/`；样本会话是
 `sessionType=branch`、`archived/hidden`（从既有对话分支），其 db 的

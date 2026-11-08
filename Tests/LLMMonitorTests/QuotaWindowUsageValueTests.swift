@@ -335,8 +335,8 @@ final class QuotaWindowUsageValueTests: XCTestCase {
 
     /// 「额度分析」表头文案钉在这里（第五轮改版）：数据格不再带文字标签，列名
     /// 只在表头说一次；曾经的 `labels(compact:)` 紧凑降级随标签一起删除——固定
-    /// 表头文案钉在这里：分析态与用量态各七列。数据格不再带文字标签，列名
-    /// 只在表头说一次。
+    /// 表头文案钉在这里：分析态七列；用量态八列（2026-11-08 在 Reason 与速度
+    /// 之间加 TTFT）。数据格不再带文字标签，列名只在表头说一次。
     func testStatsHeaderCopyIsPinned() {
         XCTAssertEqual(QuotaWindowUsageSection.statsHeaders.type, "类型")
         XCTAssertEqual(QuotaWindowUsageSection.statsHeaders.usage, "用量")
@@ -351,6 +351,7 @@ final class QuotaWindowUsageValueTests: XCTestCase {
         XCTAssertEqual(QuotaWindowUsageSection.rawTableHeaders.cached, "Cached")
         XCTAssertEqual(QuotaWindowUsageSection.rawTableHeaders.output, "Output")
         XCTAssertEqual(QuotaWindowUsageSection.rawTableHeaders.reason, "Reason")
+        XCTAssertEqual(QuotaWindowUsageSection.rawTableHeaders.ttft, "TTFT")
         XCTAssertEqual(QuotaWindowUsageSection.rawTableHeaders.value, "速度")
         XCTAssertEqual(QuotaWindowUsageSection.rawTableHeaders.resetDate, "重置日期")
     }
@@ -402,16 +403,19 @@ final class QuotaWindowUsageValueTests: XCTestCase {
         XCTAssertEqual(QuotaWindowUsageSection.speedText(245.7), "246")
     }
 
-    /// visibleRows 必须把速度带进行：5h / 周行取 `Window.tokensPerSecond`
-    /// （基础层 `windowUsage` 写入；本例 (1000+2000) ÷ 10 = 300 tok/s，两个窗口
-    /// 都含这条样本），今 / 闲行把宿主 Row 上的速率**原样透传**（重置格强制 nil
-    /// 的改写不得顺手丢字段）。
+    /// visibleRows 必须把速度与 TTFT 一并带进行：5h / 周行取 `Window.tokensPerSecond`
+    /// 与 `Window.ttftSeconds`（基础层 `windowUsage` 写入；本例 (1000+2000) ÷ 10 =
+    /// 300 tok/s、TTFT 0.4s，两个窗口都含这条样本），今 / 闲行把宿主 Row 上的
+    /// 速率与 TTFT **原样透传**（重置格强制 nil 的改写不得顺手丢字段）。
     func testVisibleRowsCarryTokensPerSecondFromSnapshotAndHostRows() throws {
         let now = Date()
         let snapshot = LocalUsageSummaryBuilder.windowUsage(
             model: Self.model(name: "glm_coding_plan", interval: true, weekly: true, now: now),
             providerKind: .glmCodingPlan,
-            samples: [Self.sample(at: now.addingTimeInterval(-600), prompt: "p1", model: "glm-5.3", duration: 10)],
+            samples: [Self.sample(
+                at: now.addingTimeInterval(-600), prompt: "p1", model: "glm-5.3", duration: 10,
+                ttft: 0.4
+            )],
             intervalLabel: "5h",
             weeklyLabel: "周"
         )
@@ -420,18 +424,25 @@ final class QuotaWindowUsageValueTests: XCTestCase {
             "前提不成立：带时长的样本必须算出窗口速率"
         )
         XCTAssertEqual(windowRate, 3_000.0 / 10.0, accuracy: 1e-9, "前提不成立：速率为 Σ(Output+Reason) ÷ Σ时长")
+        let windowTTFT = try XCTUnwrap(
+            snapshot.interval?.ttftSeconds,
+            "前提不成立：带 TTFT 的样本必须算出窗口均值"
+        )
+        XCTAssertEqual(windowTTFT, 0.4, accuracy: 1e-9, "前提不成立：窗口 TTFT 为有效样本均值")
 
         let today = QuotaWindowUsageSection.Row(
             label: ProviderCardView.todayRowLabel,
             metrics: QuotaWindowUsageMetrics(input: 10, cachedInput: 0, output: 5, reasoning: 0),
             cost: nil,
-            tokensPerSecond: 12.5
+            tokensPerSecond: 12.5,
+            ttftSeconds: 0.86
         )
         let offPeak = QuotaWindowUsageSection.Row(
             label: QuotaWindowUsageSection.offPeakRowLabel,
             metrics: QuotaWindowUsageMetrics(input: 20, cachedInput: 0, output: 5, reasoning: 0),
             cost: nil,
-            tokensPerSecond: 7.5
+            tokensPerSecond: 7.5,
+            ttftSeconds: 1.24
         )
 
         let rows = QuotaWindowUsageSection.visibleRows(snapshot: snapshot, today: today, offPeak: offPeak)
@@ -444,15 +455,86 @@ final class QuotaWindowUsageValueTests: XCTestCase {
         XCTAssertEqual(rows[1].tokensPerSecond, windowRate, "周行速度来自 Window.tokensPerSecond")
         XCTAssertEqual(rows[2].tokensPerSecond, 12.5, "今行速度由宿主传入，原样透传")
         XCTAssertEqual(rows[3].tokensPerSecond, 7.5, "闲行速度由宿主传入，原样透传")
+        XCTAssertEqual(rows[0].ttftSeconds, windowTTFT, "5h 行 TTFT 来自 Window.ttftSeconds")
+        XCTAssertEqual(rows[1].ttftSeconds, windowTTFT, "周行 TTFT 来自 Window.ttftSeconds")
+        XCTAssertEqual(rows[2].ttftSeconds, 0.86, "今行 TTFT 由宿主传入，原样透传")
+        XCTAssertEqual(rows[3].ttftSeconds, 1.24, "闲行 TTFT 由宿主传入，原样透传")
+    }
+
+    /// 多额度池的 TTFT 合并走 Σttft ÷ Σ调用数（与速率 Σ/Σ 同模式）：
+    /// 池 A（2 次，0.2s + 0.4s）与池 B（1 次，1.2s）合并 = (0.2+0.4+1.2) ÷ 3 = 0.6s，
+    /// 不是各池均值 (0.3 / 1.2) 的平均。缺 TTFT 中间量的手工构造窗口不参与，
+    /// 全部缺席时合并结果为 nil（UI 显示 —）。
+    func testCombinedPoolsMergeTTFTBySumOverCount() throws {
+        let now = Date()
+        let poolA = LocalUsageSummaryBuilder.windowUsage(
+            model: Self.model(name: "glm_coding_plan", interval: true, weekly: false, now: now),
+            providerKind: .glmCodingPlan,
+            samples: [
+                Self.sample(at: now.addingTimeInterval(-600), prompt: "p1", model: "glm-5.3", duration: 10, ttft: 0.2),
+                Self.sample(at: now.addingTimeInterval(-500), prompt: "p2", model: "glm-5.3", duration: 10, ttft: 0.4),
+            ],
+            intervalLabel: "5h",
+            weeklyLabel: "周"
+        )
+        let poolB = LocalUsageSummaryBuilder.windowUsage(
+            model: Self.model(name: "glm_coding_plan", interval: true, weekly: false, now: now),
+            providerKind: .glmCodingPlan,
+            samples: [
+                Self.sample(at: now.addingTimeInterval(-400), prompt: "p3", model: "glm-5.3", duration: 10, ttft: 1.2),
+            ],
+            intervalLabel: "5h",
+            weeklyLabel: "周"
+        )
+
+        let combined = LocalUsageSummaryBuilder.combineWindowUsage([poolA, poolB])
+        let mergedTTFT = try XCTUnwrap(combined.interval?.ttftSeconds)
+        XCTAssertEqual(mergedTTFT, 1.8 / 3.0, accuracy: 1e-9, "多池 TTFT = Σttft ÷ Σ调用数")
+        XCTAssertEqual(combined.interval?.ttftSumSeconds ?? 0, 1.8, accuracy: 1e-9)
+        XCTAssertEqual(combined.interval?.ttftCallCount, 3)
+
+        // 手工构造的窗口（无中间量）不参与：与一个有 TTFT 的池合并仍能算出该池均值。
+        let handMade = QuotaWindowUsageSnapshot(
+            interval: QuotaWindowUsageSnapshot.Window(
+                label: "5h",
+                usage: UsageMetricSummary(
+                    prompts: 1, rounds: 1, inputTokens: 10, cachedInputTokens: 0,
+                    outputTokens: 5, reasoningOutputTokens: 0
+                ),
+                resetsAt: nil,
+                cost: nil
+            ),
+            weekly: nil,
+            poolCount: 1
+        )
+        let mergedWithHandMade = LocalUsageSummaryBuilder.combineWindowUsage([poolB, handMade])
+        XCTAssertEqual(
+            mergedWithHandMade.interval?.ttftSeconds ?? 0, 1.2, accuracy: 1e-9,
+            "缺中间量的窗口不参与 TTFT 合并"
+        )
+
+        // 两池都缺中间量 → 合并 TTFT 为 nil（不是 0）。
+        let bothHandMade = LocalUsageSummaryBuilder.combineWindowUsage([handMade, handMade])
+        XCTAssertNil(bothHandMade.interval?.ttftSeconds, "无中间量的多池合并没有 TTFT（nil，不是 0）")
+    }
+
+    /// ttftText 消费 `Formatters.formatTTFT`：`—` / 两位小数 / 一位 / 整数四档。
+    func testTTFTTextFormatting() {
+        XCTAssertEqual(QuotaWindowUsageSection.ttftText(nil), "—")
+        XCTAssertEqual(QuotaWindowUsageSection.ttftText(0), "0.00", "MiniMax Code 显式 0 是合法值")
+        XCTAssertEqual(QuotaWindowUsageSection.ttftText(0.86), "0.86")
+        XCTAssertEqual(QuotaWindowUsageSection.ttftText(12.46), "12.5")
+        XCTAssertEqual(QuotaWindowUsageSection.ttftText(124.2), "124")
     }
 
     /// 「今」行的速度：对当天样本走 `windowTokenRate`——Σ(Output+Reason) ÷ Σ时长
-    /// = (1500 + 500) ÷ (10 + 5)；时长全未知的旧账本 → nil（不是 0）。
+    /// = (1500 + 500) ÷ (10 + 5)；TTFT 对同一批样本走 `windowTTFTMeanSeconds`
+    /// （只有 t1 带 TTFT → 均值 0.5）；时长全未知的旧账本 → 两者都 nil（不是 0）。
     func testTodayUsageRowCarriesWindowTokenRate() throws {
         let now = Date()
         let day = Calendar.current.startOfDay(for: now)
         let samples = [
-            Self.dshSample("t1", at: now, output: 1_000, reasoning: 500, duration: 10),
+            Self.dshSample("t1", at: now, output: 1_000, reasoning: 500, duration: 10, ttft: 0.5),
             Self.dshSample("t2", at: now, output: 500, reasoning: 0, duration: 5),
         ]
         let fixture = Self.dshFixture(samples: samples, day: day, scannedAt: now)
@@ -473,6 +555,15 @@ final class QuotaWindowUsageValueTests: XCTestCase {
             LocalUsageSummaryBuilder.windowTokenRate(samples: samples),
             "今行速度与对同批样本直接调 windowTokenRate 逐字一致"
         )
+        XCTAssertEqual(
+            row.ttftSeconds ?? 0, 0.5, accuracy: 1e-9,
+            "今行 TTFT = 同批样本的窗口算术平均，只有 TTFT 有效的样本参与"
+        )
+        XCTAssertEqual(
+            row.ttftSeconds,
+            LocalUsageSummaryBuilder.windowTTFTMeanSeconds(samples: samples),
+            "今行 TTFT 与对同批样本直接调 windowTTFTMeanSeconds 逐字一致"
+        )
 
         // 时长全未知（旧缓存）→ 没有速率（nil，不是 0），行本身照常产出。
         let legacy = Self.dshFixture(
@@ -488,6 +579,7 @@ final class QuotaWindowUsageValueTests: XCTestCase {
             )
         )
         XCTAssertNil(legacyRow.tokensPerSecond, "时长全未知的今行没有速率（不是 0）")
+        XCTAssertNil(legacyRow.ttftSeconds, "TTFT 全未知的今行没有均值（nil，不是 0）")
     }
 
     /// 「闲」行的速度：对同一批今日闲时样本（与金额/汇总同一份谓词筛出的
@@ -847,12 +939,14 @@ final class QuotaWindowUsageValueTests: XCTestCase {
             cost: ModelCostEstimate(value: 12.34, currency: .cny, pricedModelNames: ["a"], unpricedModelNames: [])
         )
 
-        // 验证中间 4 列等宽常量
+        // 验证中间 4 列等宽常量（用量态 8 列化后 TTFT / 速度各自 30pt 窄列）
         XCTAssertEqual(QuotaWindowUsageSection.middleColumnWidth, 42)
         XCTAssertEqual(QuotaWindowUsageSection.valueColumnWidth, 58)
+        XCTAssertEqual(QuotaWindowUsageSection.ttftColumnWidth, 30)
+        XCTAssertEqual(QuotaWindowUsageSection.usageSpeedColumnWidth, 30)
         XCTAssertEqual(QuotaWindowUsageSection.resetDateColumnWidth, 126)
         XCTAssertEqual(QuotaWindowUsageSection.resetDateColumnLeadingGap, 6)
-        XCTAssertEqual(QuotaWindowUsageSection.horizontalSpacing, 8)
+        XCTAssertEqual(QuotaWindowUsageSection.horizontalSpacing, 6)
 
         // 验证两态下 visibleRows 相同
         let visibleRows = QuotaWindowUsageSection.visibleRows(snapshot: snapshot, today: today, offPeak: nil)
@@ -871,22 +965,35 @@ final class QuotaWindowUsageValueTests: XCTestCase {
         XCTAssertEqual(analysisHeight, usageHeight, accuracy: 0.5, "两态共用同高度 Grid 骨架，切换零回流")
     }
 
-    /// 420pt 卡内容宽的列宽预算 guardrail：
-    /// 类型 natural (~20pt) + 4×42pt (168pt) + 58pt (价值) + 126pt (重置日期) + 6×8pt 间距 (48pt) = 420pt ≤ 420pt。
+    /// 420pt 卡内容宽的列宽预算 guardrail（用量态 8 列化后两态各算一遍）：
+    /// - 「分析」态 7 列：类型 natural (~20pt) + 4×42pt (168pt) + 58pt (价值)
+    ///   + 126pt (重置日期) + 6×6pt 间距 (36pt) ≈ 408pt。
+    /// - 「用量」态 8 列（2026-11-08 加 TTFT）：类型 + 4×42pt + TTFT 30pt
+    ///   + 速度 30pt（独立窄列，不再共用价值列的 58pt）+ 126pt + 7×6pt 间距 ≈ 416pt。
+    /// 两态都必须 ≤ 420pt。
     @MainActor
     func testTotalWidthBudgetGuardrail() {
         let typeWidth = self.measuredWidth(of: Text("类型").font(MenuTypography.metricLabel))
         let middleColWidth = QuotaWindowUsageSection.middleColumnWidth
         let valueWidth = QuotaWindowUsageSection.valueColumnWidth
+        let ttftWidth = QuotaWindowUsageSection.ttftColumnWidth
+        let usageSpeedWidth = QuotaWindowUsageSection.usageSpeedColumnWidth
         let resetDateWidth = QuotaWindowUsageSection.resetDateColumnWidth
         let spacing = QuotaWindowUsageSection.horizontalSpacing
 
-        let totalBudget = typeWidth + (middleColWidth * 4) + valueWidth + resetDateWidth + (spacing * 6)
+        let analysisBudget = typeWidth + (middleColWidth * 4) + valueWidth + resetDateWidth + (spacing * 6)
+        let usageBudget = typeWidth + (middleColWidth * 4) + ttftWidth + usageSpeedWidth
+            + resetDateWidth + (spacing * 7)
 
         XCTAssertLessThanOrEqual(
-            totalBudget,
+            analysisBudget,
             Self.cardContentWidth,
-            "7 列总预算（\(totalBudget)pt）必须小于等于卡内容宽 420pt"
+            "「分析」态 7 列总预算（\(analysisBudget)pt）必须小于等于卡内容宽 420pt"
+        )
+        XCTAssertLessThanOrEqual(
+            usageBudget,
+            Self.cardContentWidth,
+            "「用量」态 8 列总预算（\(usageBudget)pt）必须小于等于卡内容宽 420pt"
         )
 
         // 验证中间列 42pt 能装下两态所有单元格的最宽自然宽
@@ -900,6 +1007,25 @@ final class QuotaWindowUsageValueTests: XCTestCase {
             widestMiddleCell,
             middleColWidth,
             "中间列宽度（\(middleColWidth)pt）必须容纳最宽自然宽单元格（\(widestMiddleCell)pt）"
+        )
+
+        // 验证 TTFT / 速度两根窄列各自装下最宽自然宽（表头与数值都算）。
+        // TTFT 数值恒 ≤ 4 字符（0.86 / 12.5 / 124），速度含小数点最多 3 字符 + 数量级后缀。
+        let ttftWidest = max(
+            self.measuredWidth(of: Text("TTFT").font(MenuTypography.metricLabel)),
+            self.measuredWidth(of: Text("0.86").font(MenuTypography.metricValue))
+        )
+        XCTAssertLessThanOrEqual(
+            ttftWidest, ttftWidth,
+            "TTFT 列宽（\(ttftWidth)pt）必须容纳最宽自然宽单元格（\(ttftWidest)pt）"
+        )
+        let speedWidest = max(
+            self.measuredWidth(of: Text("速度").font(MenuTypography.metricLabel)),
+            self.measuredWidth(of: Text("1.0K").font(MenuTypography.metricValue))
+        )
+        XCTAssertLessThanOrEqual(
+            speedWidest, usageSpeedWidth,
+            "用量态速度列宽（\(usageSpeedWidth)pt）必须容纳最宽自然宽单元格（\(speedWidest)pt）"
         )
     }
 
@@ -1897,7 +2023,8 @@ final class QuotaWindowUsageValueTests: XCTestCase {
         at date: Date,
         prompt: String,
         model: String,
-        duration: Double? = nil
+        duration: Double? = nil,
+        ttft: Double? = nil
     ) -> LocalTokenUsageSample {
         LocalTokenUsageSample(
             completedAt: date,
@@ -1908,17 +2035,19 @@ final class QuotaWindowUsageValueTests: XCTestCase {
             outputTokens: 1_000,
             reasoningOutputTokens: 2_000,
             sourceProviderID: nil,
-            durationSeconds: duration
+            durationSeconds: duration,
+            ttftSeconds: ttft
         )
     }
 
-    /// DSH 来源的 DeepSeek 样本（带可选时长），给「今」行速度测试用。
+    /// DSH 来源的 DeepSeek 样本（带可选时长与 TTFT），给「今」行速度 / TTFT 测试用。
     private static func dshSample(
         _ promptID: String,
         at date: Date,
         output: Int,
         reasoning: Int,
-        duration: Double?
+        duration: Double?,
+        ttft: Double? = nil
     ) -> LocalTokenUsageSample {
         LocalTokenUsageSample(
             completedAt: date,
@@ -1929,7 +2058,8 @@ final class QuotaWindowUsageValueTests: XCTestCase {
             outputTokens: output,
             reasoningOutputTokens: reasoning,
             sourceProviderID: "dsh:deepseek-official",
-            durationSeconds: duration
+            durationSeconds: duration,
+            ttftSeconds: ttft
         )
     }
 

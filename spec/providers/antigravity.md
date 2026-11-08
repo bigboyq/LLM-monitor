@@ -1387,10 +1387,14 @@ agy 的 `~/.gemini/antigravity-cli/conversations/*.db` 同 schema 同字段，�
 **假候选排除**：`f4` / `f17.f2`（请求信息子消息，`f1=1319`、`f2=9936` 非纳秒量级的伪
 Duration）、`f9.f10`（14238s 起单调递增——累计型计时器）。
 
-监控现状：`AntigravitySessionDBReader.readCalls` 未解析 f11/f12；`durationSeconds` 仍取
-steps 差分（= 两者之和，见 § Per-event field count 与
-[`accounting.md`](../accounting.md) §Token/s 速率口径）。若未来做 sample 级首字延迟，
-在现有 event 解析循环加两个字段读取即可（纯 L0 增量，无 RPC、无新表）。
+监控现状（2026-11-08 更新）：`AntigravitySessionDBReader.readCalls` 已解析 **f11**
+（timeToFirstToken，protobuf Duration：seconds 缺省按 0、双缺省 → nil、负值 /
+nanos 越界 → nil），经 `accountCalls` → sample `ttftSeconds`（缓存 v10 重建）；
+`f12`（streamingDuration）仍未读取——`durationSeconds` 维持 steps 差分（= 两者之和，
+见 § Per-event field count 与 [`accounting.md`](../accounting.md) §TTFT 口径 /
+§Token/s 速率口径）。agy 的同 schema 库经
+`AntigravityStepTimestampReader.llmCallTTFTSecondsByStepIndex` 消费同一字段（见
+[`harnesses/agy.md`](../harnesses/agy.md) § TTFT）。
 
 ### Lazy .db write — sessions don't flush while open
 

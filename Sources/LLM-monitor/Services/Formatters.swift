@@ -84,6 +84,24 @@ enum Formatters {
         return number + suffix
     }
 
+    /// TTFT（首字延迟）读数，单位秒、裸数字不带单位后缀（与 `formatSpeed`
+    /// 风格一致，单位口径由表头 help / 图表 unit 承载）。分档：nil / 非有限 /
+    /// 负值 → `—`；< 10 s 两位小数（`0.86` / `1.24`）；10..<100 s 一位小数
+    /// （`12.5`）；≥ 100 s 整数（`124`）。舍入跨档（如 9.997 → "10.00"）时
+    /// 降一档小数重排，数值恒 ≤ 4 字符，定宽列放得下。
+    static func formatTTFT(_ seconds: Double?) -> String {
+        guard let seconds, seconds.isFinite, seconds >= 0 else { return "—" }
+        if seconds < 10 {
+            let text = String(format: "%.2f", seconds)
+            if text.count <= 4 { return text }
+        }
+        if seconds < 100 {
+            let text = String(format: "%.1f", seconds)
+            if text.count <= 4 { return text }
+        }
+        return String(format: "%.0f", seconds)
+    }
+
     /// 带单位的完整速度文案（`formatSpeed` + " tok/s"）。原
     /// `PromptSpeedRangeLineView.speedText` 的继任者——范围线视图删除后
     /// 由菜单摘要 / 模型指标行共用。

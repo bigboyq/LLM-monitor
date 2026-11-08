@@ -59,6 +59,10 @@ struct AgyParsedUsage: Sendable {
     /// 单次调用流式时长（秒）：构造时带方案 A 映射值，方案 B 由 scanner 在
     /// 会话全部文件解析完后回填（var 以便结算期写入）。
     var durationSeconds: Double?
+    /// 单次调用首字延迟（TTFT，秒）：同一 `.db` gen_metadata `f1.f11`，按
+    /// `steps.idx == last_step_index + 1` 连接后与方案 A 同键供给；无方案 B
+    /// 降级（transcript 侧无首字时刻），连接不命中 / 上游未提供保持 nil。
+    var ttftSeconds: Double?
 }
 
 enum AgyLocalUsageAggregation {
@@ -141,7 +145,8 @@ enum AgyLocalUsageAggregation {
         raw: AgyRawModelRow,
         sessionID: String,
         modelName: String?,
-        planADurationSeconds: Double? = nil
+        planADurationSeconds: Double? = nil,
+        planATTFTSeconds: Double? = nil
     ) -> AgyParsedUsage {
         let split = ReasoningCharSplit.split(
             outputTokens: raw.outputTokens,
@@ -160,7 +165,8 @@ enum AgyLocalUsageAggregation {
             promptID: "\(sessionID):step:\(stepKey)",
             sessionID: sessionID,
             stepIndex: raw.stepIndex,
-            durationSeconds: planADurationSeconds
+            durationSeconds: planADurationSeconds,
+            ttftSeconds: planATTFTSeconds
         )
     }
 
@@ -173,6 +179,11 @@ enum AgyLocalUsageAggregation {
         /// 方案 A：`conversations/<session>.db` 的 `step_index → 流式时长（秒）`，
         /// 已过 (0, 3600] 有效域。`.db` 缺失 / 打不开 / 表缺失 / 无匹配行为空映射。
         let planADurations: [Int: Double]
+        /// 同一 `.db` gen_metadata `f1.f11` 的 TTFT（秒），连接键与方案 A 同构
+        /// （`steps.idx == last_step_index + 1`，键即 step_index）。负值/缺失已在
+        /// reader 层剔除，范围过滤归聚合层。`.db` 缺失 / gen_metadata 表缺失 /
+        /// 连接不命中的行为空映射（样本 TTFT 保持 nil）。
+        var planATTFTSeconds: [Int: Double] = [:]
         /// 方案 B 暂存：带 tool_calls 的 `MODEL:PLANNER_RESPONSE:DONE` 行
         ///（step_index → created_at = 发起整秒 ⌊f1⌋）。纯文本终答（无
         /// tool_calls）不入暂存，保持 nil——不误食下一轮 USER_INPUT 行。
@@ -185,6 +196,12 @@ enum AgyLocalUsageAggregation {
         func planADuration(stepIndex: Int?) -> Double? {
             guard let stepIndex else { return nil }
             return planADurations[stepIndex]
+        }
+
+        /// 同一 `.db` 的 TTFT 取值（映射外的 step_index 返回 nil）。
+        func planATTFT(stepIndex: Int?) -> Double? {
+            guard let stepIndex else { return nil }
+            return planATTFTSeconds[stepIndex]
         }
 
         /// 计量行入上下文：带 tool_calls 的 PLANNER_RESPONSE 暂存待结算。
@@ -292,7 +309,8 @@ enum AgyLocalUsageAggregation {
             outputTokens: usage.outputTokens,
             reasoningOutputTokens: usage.reasoningTokens,
             sourceProviderID: ClientID.agy,
-            durationSeconds: usage.durationSeconds
+            durationSeconds: usage.durationSeconds,
+            ttftSeconds: usage.ttftSeconds
         ))
     }
 

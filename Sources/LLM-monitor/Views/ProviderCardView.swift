@@ -340,6 +340,10 @@ struct ProviderCardView: View, Equatable {
                         dayStarts: projection.dailyTokenUsage.map(\.dayStart),
                         recentSamples: projection.recentSamples
                     ),
+                    ttftByDay: LocalUsageTTFTByDay.ttftStatistics(
+                        dayStarts: projection.dailyTokenUsage.map(\.dayStart),
+                        recentSamples: projection.recentSamples
+                    ),
                     samplesTruncated: projection.samplesTruncated,
                     isTruncated: projection.isTruncated,
                     now: displayDate
@@ -566,6 +570,8 @@ struct ProviderCardView: View, Equatable {
 
     static func fleetRow(_ row: FleetWindowUsageRow?) -> QuotaWindowUsageSection.Row? {
         guard let row else { return nil }
+        // fleet 行没有本地样本（远端上报不合并单次调用明细，wire 协议不扩展），
+        // 速度与 TTFT 都不传 → 用量态显示 `—`，与 fleet 段无 prompt 时长的口径一致。
         return QuotaWindowUsageSection.Row(
             label: row.label,
             metrics: QuotaWindowUsageMetrics(

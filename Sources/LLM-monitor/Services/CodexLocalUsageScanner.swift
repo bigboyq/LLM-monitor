@@ -50,7 +50,10 @@ struct CodexTokenUsageEvent: Sendable, Equatable, Codable {
 
 enum CodexSessionEvent: Sendable, Equatable, Codable {
     case taskStarted(timestamp: Date, turnID: String)
-    case taskCompleted(timestamp: Date, turnID: String)
+    /// `task_complete` payload 原生携带 turn 级 `time_to_first_token_ms`（该 turn
+    /// 首次响应的首字延迟；一轮内多个模型调用只有首个的 TTFT）。payload 缺字段
+    /// / 负值时为 nil。
+    case taskCompleted(timestamp: Date, turnID: String, ttftSeconds: Double?)
     case modelContext(timestamp: Date, modelName: String)
     case tokenCount(timestamp: Date, usage: CodexTokenUsageEvent)
     /// rollout 顶层的 `token_usage_record` 事件：一次模型响应完成的账面记录。
@@ -61,7 +64,7 @@ enum CodexSessionEvent: Sendable, Equatable, Codable {
     var timestamp: Date {
         switch self {
         case .taskStarted(let timestamp, _),
-             .taskCompleted(let timestamp, _),
+             .taskCompleted(let timestamp, _, _),
              .modelContext(let timestamp, _),
              .tokenCount(let timestamp, _),
              .tokenUsageRecord(let timestamp, _):
@@ -70,7 +73,7 @@ enum CodexSessionEvent: Sendable, Equatable, Codable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case type, timestamp, turnID, modelName, usage
+        case type, timestamp, turnID, ttftSeconds, modelName, usage
     }
 
     init(from decoder: Decoder) throws {
@@ -83,7 +86,9 @@ enum CodexSessionEvent: Sendable, Equatable, Codable {
             self = .taskStarted(timestamp: timestamp, turnID: turnID)
         case "taskCompleted":
             let turnID = try container.decode(String.self, forKey: .turnID)
-            self = .taskCompleted(timestamp: timestamp, turnID: turnID)
+            // v1 缓存的事件 blob 无该键，decodeIfPresent 兼容解码为 nil。
+            let ttftSeconds = try container.decodeIfPresent(Double.self, forKey: .ttftSeconds)
+            self = .taskCompleted(timestamp: timestamp, turnID: turnID, ttftSeconds: ttftSeconds)
         case "modelContext":
             let modelName = try container.decode(String.self, forKey: .modelName)
             self = .modelContext(timestamp: timestamp, modelName: modelName)
@@ -105,10 +110,12 @@ enum CodexSessionEvent: Sendable, Equatable, Codable {
             try container.encode("taskStarted", forKey: .type)
             try container.encode(timestamp, forKey: .timestamp)
             try container.encode(turnID, forKey: .turnID)
-        case .taskCompleted(let timestamp, let turnID):
+        case .taskCompleted(let timestamp, let turnID, let ttftSeconds):
             try container.encode("taskCompleted", forKey: .type)
             try container.encode(timestamp, forKey: .timestamp)
             try container.encode(turnID, forKey: .turnID)
+            // 合成 Codable 对 Optional 走 encodeIfPresent 同款：nil 不落盘。
+            try container.encodeIfPresent(ttftSeconds, forKey: .ttftSeconds)
         case .modelContext(let timestamp, let modelName):
             try container.encode("modelContext", forKey: .type)
             try container.encode(timestamp, forKey: .timestamp)
@@ -194,8 +201,12 @@ struct CodexLocalScanLimits: Sendable {
 }
 
 /// Codex 本地扫描跨进程持久化索引。
+///
+/// v2：`taskCompleted` 事件携带 `ttftSeconds`（task_complete 原生 turn 级
+/// `time_to_first_token_ms`）。v1 缓存的事件无该字段，TTFT 恒缺失，升版整体
+/// 重扫（事件从 JSONL 重新解析，无迁移路径）。
 struct CodexScannerIndex: Codable, Sendable {
-    var version: Int = 1
+    var version: Int = 2
     var entries: [String: CodexSessionEventCache.Entry] = [:]
 }
 
@@ -240,7 +251,7 @@ actor CodexSessionEventCache {
             let index: CodexScannerIndex = try ScannerIndexIO.loadIndex(
                 cacheDir: cacheFileURL,
                 fileManager: fileManager,
-                currentVersion: 1,
+                currentVersion: 2,
                 empty: CodexScannerIndex(),
                 version: { $0.version },
                 logTag: "[codex/cache]"
@@ -296,7 +307,7 @@ actor CodexSessionEventCache {
                     entries[key] = val
                 }
             }
-            let index = CodexScannerIndex(version: 1, entries: entries)
+            let index = CodexScannerIndex(version: 2, entries: entries)
             try ScannerIndexIO.saveIndex(index, cacheDir: cacheFileURL, fileManager: fileManager)
             isDirty = false
             logInfo("[codex/cache] 成功持久化 \(entries.count) 个 session 缓存到磁盘")
@@ -425,6 +436,9 @@ extension CodexFetcher {
         for sessionFile in sessionFiles {
             guard !Task.isCancelled else { break }
             scannedFileCount += 1
+            // 文件内样本切片起点：TTFT 回填只在**本文件**产出的样本里找（同
+            // turn 的更早文件样本不回填，与时长锚点的跨文件约束一致）。
+            let fileSampleStart = recentSamples.count
             var activeTurnID: String?
             var currentModelName: String?
             // 单次调用时长差分的 per-turn 状态（作用域为单个 session 文件：
@@ -437,11 +451,14 @@ extension CodexFetcher {
             // - lastRecordEnd[turnID]：上一条 token_usage_record 时刻（该次
             //   调用的完成时刻），record 无 token_count 时降级为相邻差分锚点；
             // - pendingDuration[turnID]：最近一条 record 差分出的时长，等待
-            //   下一条 token_count 构造 sample 时消费（消费即清除，防复用）。
+            //   下一条 token_count 构造 sample 时消费（消费即清除，防复用）；
+            // - taskCompleteTTFT[turnID]：task_complete 原生 turn 级 TTFT（秒）。
+            //   task_complete 在 turn 末尾到达，先收集、事件循环结束后统一回填。
             var turnStart: [String: Date] = [:]
             var lastTokenCount: [String: Date] = [:]
             var lastRecordEnd: [String: Date] = [:]
             var pendingDuration: [String: Double] = [:]
+            var taskCompleteTTFT: [String: Double] = [:]
             for event in sessionFile.events {
                 guard !Task.isCancelled else { break }
                 let timestamp = event.timestamp
@@ -463,9 +480,14 @@ extension CodexFetcher {
                     }) {
                         dailyPromptIDs[dailyWindow.startDate, default: []].insert(turnID)
                     }
-                case .taskCompleted(_, let turnID):
+                case .taskCompleted(_, let turnID, let ttftSeconds):
                     if activeTurnID == turnID {
                         activeTurnID = nil
+                    }
+                    // turn 级 TTFT：先收集（task_complete 在 turn 末尾到达），
+                    // 同 turn 多次 complete 以最后一次为准；循环结束后回填。
+                    if let ttftSeconds {
+                        taskCompleteTTFT[turnID] = ttftSeconds
                     }
                 case .tokenUsageRecord(let recordTimestamp, let turnID):
                     // 调用发起锚点 = max(上一条 token_count, 上一条 record)，
@@ -542,6 +564,19 @@ extension CodexFetcher {
                             )
                         )
                     }
+                }
+            }
+            // TTFT 回填：task_complete 在 turn 末尾到达，事件循环里收集的
+            // taskCompleteTTFT 在此统一回填到该 turn **第一条** record 样本
+            //（一轮内多个模型调用只有首个的 TTFT，turn 级粒度）。回填只在
+            // 本文件产出的样本切片内进行（turn_id 是全局 UUID，跨文件不复用，
+            // 与时长锚点同一约束）；无对应 record 的 turn 自然丢弃。
+            for (turnID, ttftSeconds) in taskCompleteTTFT {
+                let turnPromptID = "codex:\(turnID)"
+                if let index = recentSamples[fileSampleStart...].firstIndex(where: {
+                    $0.promptID == turnPromptID
+                }) {
+                    recentSamples[index].ttftSeconds = ttftSeconds
                 }
             }
         }
@@ -851,7 +886,13 @@ extension CodexFetcher {
                 }
             case "task_complete":
                 if let turnID = payload["turn_id"] as? String {
-                    events.append(.taskCompleted(timestamp: timestamp, turnID: turnID))
+                    // payload 原生 `time_to_first_token_ms`（turn 级首字延迟）：
+                    // ms → 秒，负值 / 缺失 → nil（范围过滤归聚合层）。
+                    var ttftSeconds: Double? = nil
+                    if let ms = nonNegativeDoubleValue(payload["time_to_first_token_ms"]) {
+                        ttftSeconds = ms / 1_000.0
+                    }
+                    events.append(.taskCompleted(timestamp: timestamp, turnID: turnID, ttftSeconds: ttftSeconds))
                 }
             case "token_count":
                 guard let info = payload["info"] as? [String: Any],
@@ -1207,6 +1248,30 @@ extension CodexFetcher {
            let int = Int(value),
            int >= 0 {
             return int
+        }
+        return nil
+    }
+
+    /// JSON 数值字段的严格转换（Double 版，`time_to_first_token_ms` 等 ms 字段
+    /// 可能带小数）：Bool、负数、NaN/Infinity 全部拒绝，其余有限非负值照收。
+    nonisolated static func nonNegativeDoubleValue(_ raw: Any?) -> Double? {
+        if let value = raw as? NSNumber {
+            // 同 `nonNegativeIntValue`：Foundation 会把 0/1 桥接成 Bool，
+            // 经共享 helper 只排除 JSON true/false。
+            guard !DateParser.isBoolean(value) else {
+                return nil
+            }
+            let double = value.doubleValue
+            guard double.isFinite, double >= 0 else {
+                return nil
+            }
+            return double
+        }
+        if let value = raw as? Double {
+            return value.isFinite && value >= 0 ? value : nil
+        }
+        if let value = raw as? Int {
+            return value >= 0 ? Double(value) : nil
         }
         return nil
     }

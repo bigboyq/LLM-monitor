@@ -78,6 +78,7 @@ struct SevenDayUsageHistoryView: View {
         case .rounds: Color.purple
         case .value: Color.orange
         case .speed: Color.cyan
+        case .ttft: Color.pink
         case .hit: Color.tokenCacheReadTint
         case .thinking: Color(red: 0.90, green: 0.46, blue: 0.16)
         case .outputRatio: Color.tokenInputTint
@@ -113,7 +114,7 @@ struct SevenDayUsageHistoryView: View {
                 Divider().opacity(0.45)
                 dailyTable
 
-                Text("总量 = Input + Cache + Output + Reason；Cache write 不计入。R/T = Rounds / Turns。速度为每日 Prompt P50。今天数据尚未结束；缺失日期以断线显示。")
+                Text("总量 = Input + Cache + Output + Reason；Cache write 不计入。R/T = Rounds / Turns。速度为每日 Prompt P50。TTFT 为每日调用首字延迟 P50（秒）。今天数据尚未结束；缺失日期以断线显示。")
                     .font(MenuTypography.hint)
                     .foregroundStyle(.tertiary)
 
@@ -342,6 +343,8 @@ struct SevenDayUsageHistoryView: View {
             header("产出", width: dynamicColWidth).help("产出比 = (Output + Reason) / (Input + Cache)")
         case .hit:
             header("命中", width: dynamicColWidth).help("Cache 命中率 = Cache / (Input + Cache)")
+        case .ttft:
+            header("TTFT", width: dynamicColWidth).help("每日调用首字延迟 P50，秒")
         case .speed:
             header("速度", width: dynamicColWidth).help("每日 Prompt 速度 P50，tok/s")
         }
@@ -365,6 +368,8 @@ struct SevenDayUsageHistoryView: View {
             outputRate(day.outputToInputRate, color: .tokenInputTint, width: width)
         case .hit:
             rate(day.hitRate, digits: 1, color: .tokenCacheReadTint, width: width)
+        case .ttft:
+            selectedTTFT(day, width: width)
         case .speed:
             selectedSpeed(day, width: width)
         }
@@ -384,6 +389,7 @@ struct SevenDayUsageHistoryView: View {
         case .total: "tokens"
         case .rounds: "rounds"
         case .value: "金额"
+        case .ttft: "s"
         case .speed: "tok/s"
         case .hit, .thinking, .outputRatio: "%"
         }
@@ -393,6 +399,7 @@ struct SevenDayUsageHistoryView: View {
         switch selectedMetric {
         case .value: "暂无可计价数据"
         case .speed: "暂无有效 Prompt 时长"
+        case .ttft: "暂无 TTFT 数据"
         case .hit, .outputRatio: "暂无输入数据"
         case .thinking: "暂无输出数据"
         default: "暂无该指标的历史数据"
@@ -408,6 +415,8 @@ struct SevenDayUsageHistoryView: View {
             return "\(currency.symbol)\(String(format: "%.2g", value))"
         case .speed:
             return Formatters.formatSpeed(value)
+        case .ttft:
+            return Formatters.formatTTFT(value)
         case .hit, .thinking:
             return UsageHistoryRateAxis.label(value, bounds: selectedMinimum...selectedMaximum)
         case .outputRatio:
@@ -476,6 +485,18 @@ struct SevenDayUsageHistoryView: View {
                 .font(tableValueFont)
                 .foregroundStyle(day.speedIsPartial ? Color.orange : Color.secondary)
                 .help(day.speedIsPartial ? "部分样本：有 Prompt 缺少有效时长，或本地样本被截断；P50 仅统计完整 Prompt" : ""),
+            width: width,
+            alignment: .trailing
+        )
+    }
+
+    /// TTFT 动态列：镜像 speed 路径，格式化走 `Formatters.formatTTFT`（`—` /
+    /// 两位小数 / 一位 / 整数，单位秒）；nil = 当日无 TTFT 有效样本（`—`，图表断线）。
+    private func selectedTTFT(_ day: UsageHistoryDay, width: CGFloat = 58) -> some View {
+        cellFrame(
+            Text(Formatters.formatTTFT(day.ttft))
+                .font(tableValueFont)
+                .foregroundStyle(Color.secondary),
             width: width,
             alignment: .trailing
         )

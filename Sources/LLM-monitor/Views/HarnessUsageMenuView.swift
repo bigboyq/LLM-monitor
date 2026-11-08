@@ -622,7 +622,8 @@ private struct WrapLayout: Layout {
 /// 汇总行与模型行**共用**的字段级对齐指标簇（2026-11-07 用户裁定）。
 ///
 /// 列宽固定、数值右对齐，harness 行与模型行共用同一组列 → 跨行字段对齐。
-/// 列序与英文标题（2026-11-07 用户裁定）：**Turns Token Hit Think Speed Value Update**。
+/// 列序与英文标题（2026-11-07 裁定，2026-11-08 Speed 与 Value 之间加 TTFT）：
+/// **Turns Token Hit Think Speed TTFT Value Update**。
 /// 实测内容区 460pt（484 面板 − 2×12 内边距）装得下**并集**，按裁定取并集——量测锚见
 /// `HarnessUsageMenuViewTests.testMetricClusterUsesUnionWithinBudget`。
 /// 数值全部自带量纲（数量级后缀 / 货币符号 / % / tok/s），不再带字段标签；
@@ -634,17 +635,20 @@ enum HarnessMetricColumns {
     static let hitRate: CGFloat = 28
     static let thinking: CGFloat = 28
     static let speed: CGFloat = 58
+    /// TTFT 列（调用首字延迟 P50，秒）：数值 ≤ 4 字符（`0.86` / `12.5` / `124`），
+    /// 34pt 放得下；宽度预算见 `clusterWidth` 与并集量测锚测试。
+    static let ttft: CGFloat = 34
     static let spacing: CGFloat = 6
     /// harness 行右侧「Update」列（扫描时间）；模型行留空同宽，保证簇列跨行对齐。
     /// 宽度以放下表头标题「Update」为准（6 字符 ≈ 35pt）。
     static let timeSlot: CGFloat = 38
     static var clusterWidth: CGFloat {
-        prompts + token + value + hitRate + thinking + speed + spacing * 5
+        prompts + token + value + hitRate + thinking + speed + ttft + spacing * 6
     }
 
-    /// 并集六格。文本由调用方格式化；宽度固定保证跨行对齐。
+    /// 并集七格。文本由调用方格式化；宽度固定保证跨行对齐。
     static func cluster(prompts: String, token: String, hitRate: String,
-                        thinking: String, speed: String, value: String) -> some View {
+                        thinking: String, speed: String, ttft: String, value: String) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: spacing) {
             Text(prompts)
                 .frame(width: Self.prompts, alignment: .trailing)
@@ -661,6 +665,9 @@ enum HarnessMetricColumns {
             Text(speed)
                 .frame(width: Self.speed, alignment: .trailing)
                 .help("完整 Prompt 速度 P50，单位 tok/s")
+            Text(ttft)
+                .frame(width: Self.ttft, alignment: .trailing)
+                .help("调用首字延迟 P50，单位秒（MiniMax Code 无数据恒为 0）")
             Text(value)
                 .frame(width: Self.value, alignment: .trailing)
                 .help("今日价值（行内单币种原额 / 汇总为混合币种折合）")
@@ -694,6 +701,9 @@ enum HarnessMetricColumns {
             Text("Speed")
                 .frame(width: speed, alignment: .trailing)
                 .help("完整 Prompt 速度 P50，单位 tok/s")
+            Text("TTFT")
+                .frame(width: ttft, alignment: .trailing)
+                .help("调用首字延迟 P50，单位秒（MiniMax Code 无数据恒为 0）")
             Text("Value")
                 .frame(width: value, alignment: .trailing)
                 .help("今日价值（行内单币种原额 / 汇总为混合币种折合）")
@@ -825,6 +835,7 @@ struct HarnessSectionView: View {
                 hitRate: HarnessUsageMenuView.hitRateText(section.cacheHitRate),
                 thinking: HarnessModelRowView.thinkingPercent(section.buckets) ?? "—",
                 speed: Formatters.speedText(section.promptSpeedStatistics.p50),
+                ttft: Formatters.formatTTFT(section.ttftSeconds),
                 value: section.valueText
             )
             Group {
@@ -1229,8 +1240,9 @@ private struct MenuQuotaProviderRow: View {
 /// 价值是**行级**的 `ModelCostEstimate.displayText` 原样文案（单 provider 单币种
 /// 原额）。行级绝不做跨币种相加——同一段里不同 provider 的行金额可能不同币种，
 /// 相加必须留到段头 / 全局的 `MixedCurrencyEstimate`。
-/// 簇取并集 {Pmt, Token, 价值, 命中, 思考, 速度}（`HarnessMetricColumns`，
-/// 2026-11-07 用户裁定同线 + 字段对齐，460pt 实测装得下并集）。
+/// 簇取并集 {Pmt, Token, 价值, 命中, 思考, 速度, TTFT}（`HarnessMetricColumns`，
+/// 2026-11-07 用户裁定同线 + 字段对齐，460pt 实测装得下并集；TTFT 列 2026-11-08
+/// 插在 Speed 与 Value 之间）。
 /// Prompt 速度范围线已于同日移除（用户裁定：占位大），速度只保留 P50 文本。
 struct HarnessModelRowView: View {
     let row: HarnessModelRow
@@ -1253,6 +1265,7 @@ struct HarnessModelRowView: View {
                 hitRate: Self.percentText(row.cacheHitRate),
                 thinking: Self.thinkingPercent(row.buckets) ?? "—",
                 speed: Formatters.speedText(row.promptSpeedStatistics.p50),
+                ttft: Formatters.formatTTFT(row.ttftSeconds),
                 value: row.costText
             )
             Color.clear
@@ -1271,7 +1284,7 @@ struct HarnessModelRowView: View {
     }
 
     private static func accessibilityMetrics(for row: HarnessModelRow) -> String {
-        "\(row.compactDisplayName)；Prompt \(row.promptSpeedStatistics.totalPromptCount)；Token \(Formatters.formatTokenCountCompact(row.totalTokens))；价值 \(row.costText)；命中率 \(percentText(row.cacheHitRate))；思考 \(thinkingPercent(row.buckets) ?? "—")；速度 P50 \(Formatters.speedText(row.promptSpeedStatistics.p50))"
+        "\(row.compactDisplayName)；Prompt \(row.promptSpeedStatistics.totalPromptCount)；Token \(Formatters.formatTokenCountCompact(row.totalTokens))；价值 \(row.costText)；命中率 \(percentText(row.cacheHitRate))；思考 \(thinkingPercent(row.buckets) ?? "—")；速度 P50 \(Formatters.speedText(row.promptSpeedStatistics.p50))；首字延迟 P50 \(Formatters.formatTTFT(row.ttftSeconds)) 秒"
     }
 
     /// 命中率文案复用汇总块的同一实现。

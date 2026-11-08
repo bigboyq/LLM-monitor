@@ -24,7 +24,7 @@ final class MinimaxLocalUsageScannerTests: XCTestCase {
             turns: 1, rounds: 2
         )
         let index = MinimaxLocalUsageScanner.CacheIndex(
-            version: 16,
+            version: 17,
             lastScannedAt: now,
             sources: ["runtime": MinimaxLocalUsageScanner.SourceIndexEntry(
                 mtimeMs: 1, sizeBytes: 2, walMtimeMs: 0, walSizeBytes: 0,
@@ -97,7 +97,7 @@ final class MinimaxLocalUsageScannerTests: XCTestCase {
             reasoningOutputTokens: 0
         )
         let index = MinimaxLocalUsageScanner.CacheIndex(
-            version: 16,
+            version: 17,
             lastScannedAt: now.addingTimeInterval(-60),
             sources: ["runtime": MinimaxLocalUsageScanner.SourceIndexEntry(
                 mtimeMs: mtimeMs,              // 新鲜指纹 → 不 dirty、不走 SQL
@@ -275,6 +275,41 @@ final class MinimaxLocalUsageScannerTests: XCTestCase {
         XCTAssertEqual(split[0].reasoningOutputTokens, 750, "分摊比例按 per-day 750/1000")
         XCTAssertEqual(split[0].outputTokens, 250)
         XCTAssertEqual(split[0].durationSeconds, 12.5, "durationSeconds 必须原样保留")
+        XCTAssertEqual(split[0].ttftSeconds, 0, "重建样本 ttftSeconds 与 reader 构造点一致显式写 0（无上游 TTFT 数据，用户裁定）")
+    }
+
+    /// MiniMax Code 无上游 TTFT 数据（db 与 v4 会话文件均无首字时刻）：持久
+    /// 样本显式写 0 而不是 nil（用户裁定），且字符分摊重建不丢该字段。
+    func testMiniMaxSamplesCarryExplicitZeroTTFT() throws {
+        let base = Int64(Date().timeIntervalSince1970 * 1000)
+        let databaseURL = try makeV2Database(
+            tokenRows: [TokenRow(sessionID: "s-ttft", turnID: "uuid-turn", timestampMs: base,
+                                 input: 100, output: 50, reasoning: 0, cacheRead: 0, cacheWrite: 0, raw: nil)]
+        )
+        defer { try? FileManager.default.removeItem(at: databaseURL) }
+
+        let result = try MinimaxLocalUsageScanner.performScanPureImpl(
+            runtimeDBURL: databaseURL,
+            cacheDir: FileManager.default.temporaryDirectory
+                .appendingPathComponent("minimax-ttft-cache-\(UUID().uuidString)", isDirectory: true),
+            fileManager: FileManagerBox(),
+            calendar: .current,
+            now: { Date(timeIntervalSince1970: Double(base) / 1000) },
+            shouldSave: false
+        )
+        let sample = try XCTUnwrap(result.recentSamples?.first)
+        XCTAssertEqual(sample.ttftSeconds, 0, "reader 构造点显式写 0（与 nil 区分：0 参与统计）")
+
+        // 字符分摊重建构造点：与 reader 构造保持一致，同样显式写 0。
+        let day = Calendar.current.startOfDay(for: sample.completedAt)
+        let rebuilt = MinimaxLocalUsageScanner.applyReasoningSplit(
+            samples: [sample],
+            rawPerDay: [day: MinimaxDailyUsage(dayStart: day, outputTokens: 50)],
+            adjustedPerDay: [day: MinimaxDailyUsage(dayStart: day, outputTokens: 40, reasoningTokens: 10)],
+            calendar: .current
+        )
+        XCTAssertEqual(rebuilt.count, 1)
+        XCTAssertEqual(rebuilt[0].ttftSeconds, 0, "重建样本 ttftSeconds 同样显式写 0")
     }
 
     func testV2CacheMigrationResetsLegacySourceData() throws {
@@ -297,7 +332,7 @@ final class MinimaxLocalUsageScannerTests: XCTestCase {
             cacheDir: cacheDir,
             fileManager: FileManagerBox()
         )
-        XCTAssertEqual(current.version, 16)
+        XCTAssertEqual(current.version, 17)
         XCTAssertTrue(current.sources.isEmpty)
         XCTAssertTrue(current.dailyBySource.isEmpty)
         XCTAssertEqual(current.samplesBySource, [:])

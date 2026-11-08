@@ -68,7 +68,7 @@ final class ScannerRetentionContractTests: XCTestCase {
     /// Antigravity：写回 index 前裁 `dailyBySession` 里早于窗口的日桶。
     func testAntigravityDailyBucketPruneMatchesRetentionWindow() {
         var index = AntigravityLocalUsageScanner.CacheIndex(
-            version: 9,
+            version: 10,
             lastScannedAt: Self.now,
             sessions: ["s": .init(
                 mtimeMs: 0, sizeBytes: 0, walMtimeMs: 0, walSizeBytes: 0,
@@ -91,7 +91,7 @@ final class ScannerRetentionContractTests: XCTestCase {
     /// Minimax：同上，裁 `dailyBySource`。
     func testMinimaxDailyBucketPruneMatchesRetentionWindow() {
         var index = MinimaxLocalUsageScanner.CacheIndex(
-            version: 16,
+            version: 17,
             lastScannedAt: Self.now,
             sources: ["runtime": MinimaxLocalUsageScanner.SourceIndexEntry(
                 mtimeMs: 0, sizeBytes: 0, walMtimeMs: 0, walSizeBytes: 0,
@@ -290,7 +290,7 @@ final class ScannerRetentionContractTests: XCTestCase {
 
     private func minimaxKeeps(_ dayStart: Date) -> Bool {
         var index = MinimaxLocalUsageScanner.CacheIndex(
-            version: 16,
+            version: 17,
             lastScannedAt: Self.now,
             sources: [:],
             dailyBySource: ["runtime": [dayKey(dayStart): MinimaxDailyUsage(dayStart: dayStart)]],

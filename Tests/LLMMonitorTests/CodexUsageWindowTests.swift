@@ -89,7 +89,7 @@ final class CodexUsageWindowTests: XCTestCase {
                 timestamp: base.addingTimeInterval(10),
                 usage: CodexTokenUsageEvent(inputTokens: 10, cachedInputTokens: 2, outputTokens: 5, reasoningOutputTokens: 1)
             ),
-            .taskCompleted(timestamp: base.addingTimeInterval(20), turnID: "turn-a")
+            .taskCompleted(timestamp: base.addingTimeInterval(20), turnID: "turn-a", ttftSeconds: nil)
         ]
         let files = [CodexSessionFileEvents(fileURL: fileURL, events: events)]
         let daily = [CodexFetcher.DailyUsageWindow(
@@ -118,13 +118,13 @@ final class CodexUsageWindowTests: XCTestCase {
                 timestamp: base.addingTimeInterval(10),
                 usage: CodexTokenUsageEvent(inputTokens: 10, cachedInputTokens: 2, outputTokens: 5, reasoningOutputTokens: 1)
             ),
-            .taskCompleted(timestamp: base.addingTimeInterval(20), turnID: "turn-1"),
+            .taskCompleted(timestamp: base.addingTimeInterval(20), turnID: "turn-1", ttftSeconds: nil),
             .taskStarted(timestamp: base.addingTimeInterval(30), turnID: "turn-2"),
             .tokenCount(
                 timestamp: base.addingTimeInterval(40),
                 usage: CodexTokenUsageEvent(inputTokens: 20, cachedInputTokens: 4, outputTokens: 8, reasoningOutputTokens: 2)
             ),
-            .taskCompleted(timestamp: base.addingTimeInterval(50), turnID: "turn-2")
+            .taskCompleted(timestamp: base.addingTimeInterval(50), turnID: "turn-2", ttftSeconds: nil)
         ]
         let files = [CodexSessionFileEvents(fileURL: fileURL, events: events)]
         let windows = [
@@ -173,7 +173,7 @@ final class CodexUsageWindowTests: XCTestCase {
                     reasoningOutputTokens: 2
                 )
             ),
-            .taskCompleted(timestamp: base.addingTimeInterval(2), turnID: "turn-clamp")
+            .taskCompleted(timestamp: base.addingTimeInterval(2), turnID: "turn-clamp", ttftSeconds: nil)
         ]
         let files = [CodexSessionFileEvents(fileURL: fileURL, events: events)]
         let result = CodexFetcher.summarizeLocalUsage(
@@ -211,7 +211,7 @@ final class CodexUsageWindowTests: XCTestCase {
                     reasoningOutputTokens: 5
                 )
             ),
-            .taskCompleted(timestamp: base.addingTimeInterval(3), turnID: "turn-model")
+            .taskCompleted(timestamp: base.addingTimeInterval(3), turnID: "turn-model", ttftSeconds: nil)
         ]
 
         let result = CodexFetcher.summarizeLocalUsage(
@@ -289,7 +289,7 @@ final class CodexUsageWindowTests: XCTestCase {
                 timestamp: base.addingTimeInterval(4),
                 usage: CodexTokenUsageEvent(inputTokens: 200, cachedInputTokens: 0, outputTokens: 20, reasoningOutputTokens: 0)
             ),
-            .taskCompleted(timestamp: base.addingTimeInterval(5), turnID: "turn-mid")
+            .taskCompleted(timestamp: base.addingTimeInterval(5), turnID: "turn-mid", ttftSeconds: nil)
         ]
 
         let result = CodexFetcher.summarizeLocalUsage(

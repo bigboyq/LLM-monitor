@@ -388,20 +388,23 @@ per-client sections」描述的是**本机 scope** 的内容区；多机联动�
   `testTreeSectionGeometryAnchors`）；圆角卡片底与段头下划线已随树形化移除。
 - **字段级对齐指标簇（`HarnessMetricColumns`，2026-11-07 用户裁定）**：harness 汇总行
   与模型行共用同一组**定宽右对齐列**，纵向跨行对齐；列序与英文标题
-  **Turns · Token · Hit · Think · Speed · Value · Update**（2026-11-07 裁定：Pmt 更名
-  Turns，Value 移到 Speed 后，扫描时间以 Update 加入标题行）。宽度预算按「够并集取
+  **Turns · Token · Hit · Think · Speed · TTFT · Value · Update**（2026-11-07 裁定：Pmt 更名
+  Turns，Value 移到 Speed 后，扫描时间以 Update 加入标题行；2026-11-08 TTFT 插在
+  Speed 与 Value 之间，34pt 定宽 `HarnessMetricColumns.ttft`，`clusterWidth` 的间距
+  系数随之 5→6）。宽度预算按「够并集取
   并集、不够取交集」实测裁定——内容区 460pt（484 面板 − 2×12 内边距）装得下并集，
   故取**并集**（量测锚 `testMetricClusterUsesUnionWithinBudget`，若面板收窄装不下
-  则反转回交集并同步本节）。harness 行的 Turns/Token/Value/Hit/Think/Speed = 段级
+  则反转回交集并同步本节）。harness 行的 Turns/Token/Value/Hit/Think/Speed/TTFT = 段级
   聚合（Turns 用段 `promptSpeedStatistics.totalPromptCount`、Think 用段 buckets），
-  模型行用行级值；速度均为完整 Prompt P50。数值自带量纲（数量级后缀 / 货币符号 /
-  % / tok/s），不带字段标签，口径解释挂每格 `.help` 与表头。Update 占固定尾槽
+  模型行用行级值；速度均为完整 Prompt P50，TTFT 为**调用级 P50**
+  （`LocalUsageSummaryBuilder.callTTFTStatistics`，样本批与速度同源）。数值自带量纲（数量级后缀 / 货币符号 /
+  % / tok/s / 秒），不带字段标签，口径解释挂每格 `.help` 与表头。Update 占固定尾槽
   （`timeSlot = 38`，以放下标题「Update」为准），模型行留空同宽保证簇列对齐；
   扫描时间为 summary 级最新本地扫描时刻，Fleet 段不伪造。汇总行的价值是
   `MixedCurrencyEstimate`（客户端可横跨多 provider 分片多币种），模型行价值是
   单 provider 单币种原额。
 - **指标列标题（`HarnessMetricColumns.columnHeader`，2026-11-07 补）**：客户端段列表
-  上方整表一次渲染一行列标题 `Turns · Token · Hit · Think · Speed · Value · Update`
+  上方整表一次渲染一行列标题 `Turns · Token · Hit · Think · Speed · TTFT · Value · Update`
   ——列宽与 `cluster` 共用同一组常量、右对齐同位，去标签数值行由此可按表读列；
   标题行带**弹性名称占位**（与数据行同构）撑满行宽，把标题簇推到与数据相同的列位
   （缺占位时标题挤行首、数据贴右缘，2.3.10 修复）；名称列留空占位，整行弱化
@@ -433,7 +436,10 @@ per-client sections」描述的是**本机 scope** 的内容区；多机联动�
 Visible speed readings share `Formatters.formatSpeed`: at most three numeric characters
 including the decimal point (`8.6` / `50` / `246`); larger magnitudes use a suffix such as
 `1.0K`. This changes display precision only; P50, range markers, and shared scales retain
-their original numerical values.
+their original numerical values. TTFT readings share `Formatters.formatTTFT`（裸数字秒，
+`0.86` / `12.5` / `124`，恒 ≤ 4 字符；nil → `—`）——Speed 列与 TTFT 列同批样本、
+不同聚合（速度 = Prompt 级 P50，TTFT = 调用级 P50，见 `spec/accounting.md` §TTFT 口径）。
+Fleet 段 / 模型行无本地样本，TTFT 恒 `—`（wire 协议不携带）。
 
 The 484pt menu gives the compact client summary room for four core metrics and adds
 the thinking share only when `ViewThatFits` confirms the full row fits. A narrower
@@ -708,7 +714,7 @@ Row-level tint rules:
 | Plan tag | **已从标题行移除**（2026-10 第二轮改版）。套餐 pill 挪进卡片第一段「Account Info」行（`QuotaWindowAccountInfoRow`），与账号名同一行——账号是谁、什么级别是同一个问题的两半 |
 | State tag & Refresh button | compact `未配置` / `待更新` / `已更新` / `需重试` label (`ProviderStateLabel`)；紧邻其右侧为显式单 Provider 刷新按钮 `Image(systemName: "arrow.clockwise")`，在 `status.isLoading` 时切换为小型 `ProgressView()`（`.scaleEffect(0.55)`，14×14pt）旋转动画。时间戳胶囊本身亦保留点击刷新手势，形成双入口。`未配置` (not `未启用`): `.notConfigured` covers a missing API key, missing external auth and missing login as well as a disabled provider, and `未启用` made an enabled-but-keyless provider read as switched off |
 | Account block hover | **已删除**。邮箱 / 数据来源原本按 provider 分三路包在标题行的 `HoverInfoRow` 里，只为菜单那张卡服务；菜单不再渲染 provider 卡，浮层又不吃鼠标事件，这个折叠区展不开，直接不画 |
-| Seven-day usage history | 外层标题为「最近7天使用历史」，右侧新鲜度时间只在本机 scope 显示并可重扫。共享 `SevenDayUsageHistoryView` 用 7 个自然日槽位展示单指标折线；缺失日断线，今天标注未完结。7 个可选指标为总量、Rounds、价值、思考、产出、命中、速度，默认总量；选择写入独立的 `@AppStorage("usageHistoryMetric")`，不随「额度窗口」分析/用量切换。速度按 Prompt 汇总为每日 P50；比率指标 Y 轴按当前有效样本 min/max 自适应伸缩，刻度精度随跨度调整（如 49.8%–50.2% 不折叠为同一个 50%）；命中率和思考占比上限为 100%，产出比允许超过 100%。Fleet 使用当前 scope 的权威 `snapshot.daily`，无 Prompt 时长时速度显示 `—`。 |
+| Seven-day usage history | 外层标题为「最近7天使用历史」，右侧新鲜度时间只在本机 scope 显示并可重扫。共享 `SevenDayUsageHistoryView` 用 7 个自然日槽位展示单指标折线；缺失日断线，今天标注未完结。8 个可选指标为总量、Rounds、价值、思考、产出、命中、TTFT、速度（2026-11-08 TTFT 插在命中与速度之间），默认总量；选择写入独立的 `@AppStorage("usageHistoryMetric")`，不随「额度窗口」分析/用量切换。速度按 Prompt 汇总为每日 P50；TTFT 按调用汇总为每日 P50（`LocalUsageTTFTByDay`，数值单位秒，Y 轴标签走 `Formatters.formatTTFT`）；比率指标 Y 轴按当前有效样本 min/max 自适应伸缩，刻度精度随跨度调整（如 49.8%–50.2% 不折叠为同一个 50%）；命中率和思考占比上限为 100%，产出比允许超过 100%。Fleet 使用当前 scope 的权威 `snapshot.daily`，无 Prompt 时长时速度显示 `—`，无本地样本时 TTFT 显示 `—`。 |
 
 The metric picker renders a single-row capsule list: **总量 / Rounds / 价值 / 思考 / 产出 / 命中 / 速度**。
 Total is Input + Cache + Output + Reason; cache-write tokens are excluded.
@@ -718,7 +724,7 @@ Rounds count tokenized API calls; Turns count distinct user prompts. The three r
 - **命中** (hit rate): `cacheRead / (input + cacheRead)`
 The daily table consists of 6 base columns plus 1 selected dynamic column (always 7 columns):
 - **Base columns**: `日期` (34pt), `R/T` (54pt, Rounds / Turns), `Input` (46pt), `Cache` (46pt), `Reason` (46pt), `Output` (46pt).
-- **Dynamic column** (7th column, 58pt): mirrors whichever metric is currently selected in the chart (总量, Rounds, 价值, 思考, 产出, 命中, 速度). Single-currency value keeps its currency, mixed currencies are converted to CNY using the existing mixed-currency rate, and incomplete pricing is marked partial. Speed is Prompt-level P50 per day; unavailable durations remain `—`. Fleet uses its current-scope authoritative daily snapshot and has no prompt-duration data, so Fleet speed stays `—`.
+- **Dynamic column** (7th column, 58pt): mirrors whichever metric is currently selected in the chart (总量, Rounds, 价值, 思考, 产出, 命中, TTFT, 速度). Single-currency value keeps its currency, mixed currencies are converted to CNY using the existing mixed-currency rate, and incomplete pricing is marked partial. Speed is Prompt-level P50 per day; TTFT is call-level P50 per day via `Formatters.formatTTFT` (seconds); unavailable durations / samples remain `—`. Fleet uses its current-scope authoritative daily snapshot and has no prompt-duration data, so Fleet speed and TTFT stay `—`.
 
 scope 切换**不在标题行**：选项 ≤4 时默认在标题行**下方**独占一行
 （`ProviderCardView.scopeRow`，宽度与卡片一致）；dock 贴底边时该行移到详情内容末尾、靠近
@@ -851,7 +857,7 @@ look for a hover route to this data — the card carries it inline.
 - **卡片段落布局（与 ChatGPT 对齐四段式流式结构）**：
   1. **标准套餐额度**（`QuotaSummary`）：Coding Plan 5h & 周进度条与额度读数，卡片级高峰期倒计时夹在进度条下方；
   2. **活动套餐额度**（`GlmActivityPlanBalancesView`，仅在存在活动套餐余额或预告时渲染）：紧跟标准套餐之后，`Divider().opacity(0.3)` 分隔。生效中套餐渲染独立进度条（8pt 单段）、`已用 X · 剩余：Y/Z (pct%)` 与 `失效时间：MM-dd HH:mm（剩余X小时）`，失效倒计时紧迫度分级（`<=1h` 红色、`<=2h` 黄色、`>2h` 正常）；生效前预告行整体置灰弱化，进度条置灰底 0%，渲染 `额度：Z` 与 `生效时间：MM-dd HH:mm（X小时后生效）`；
-  3. **额度窗口**（`QuotaWindowUsageSection.windowUsageModule`）：`quotaUsageDivider` 分隔，统一带有模块标题 `QuotaModuleTitle(text: "额度窗口")`、分析/用量分段切换器及 7 列网格（5h、周、今、闲、免、速、它）；
+  3. **额度窗口**（`QuotaWindowUsageSection.windowUsageModule`）：`quotaUsageDivider` 分隔，统一带有模块标题 `QuotaModuleTitle(text: "额度窗口")`、分析/用量分段切换器及两态共享骨架的网格（「分析」态 7 列、「用量」态 8 列，见 `spec/ui/edge-dock.md` §Detail Window Modules；行集 5h、周、今、闲、免、速、它）；
   4. **重置卡详情**（`QuotaWindowUsageSection.glmResetCardsModule`，在存在可用重置卡时渲染）：`moduleSeparator` 分隔，对齐 ChatGPT 标题规范带有 `QuotaModuleTitle(text: "重置卡详情")`；内容区双列展示 5 小时卡与周卡（`GlmResetCardsBlock`），左侧 `5小时重置卡 (N)`、右侧 `周重置卡 (N)`；每列最多展示前 3 张（`prefix(3)`），显示到期紧迫度彩色圆点（`CreditEntryRow.dotColor`：<=24h 红色、<=48h 黄色、>48h 绿色）、`MM-dd HH:mm` 及相对到期倒计时；若某列卡片为 0 张则显示 `暂无可用卡`；无任何可用重置卡时整块不渲染且不占卡片高度。
 
 ### Automatic local usage attribution

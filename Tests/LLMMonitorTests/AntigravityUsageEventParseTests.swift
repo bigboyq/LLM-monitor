@@ -26,7 +26,7 @@ final class AntigravityUsageEventParseTests: AntigravityTestCase {
             turns: 1, rounds: 2
         )
         let index = AntigravityLocalUsageScanner.CacheIndex(
-            version: 9,
+            version: 10,
             lastScannedAt: now,
             sessions: ["session-1": AntigravityLocalUsageScanner.SessionIndexEntry(
                 mtimeMs: 1, sizeBytes: 2, walMtimeMs: 0, walSizeBytes: 0,
@@ -174,7 +174,7 @@ final class AntigravityUsageEventParseTests: AntigravityTestCase {
         let day = testCalendar.startOfDay(for: base)
         let nextDay = testCalendar.date(byAdding: .day, value: 1, to: day)!
 
-        func call(stepIndex: Int, completedAt: Date?, model: String = "m") -> AntigravitySessionDBReader.Call {
+        func call(stepIndex: Int, completedAt: Date?, model: String = "m", ttft: Double? = nil) -> AntigravitySessionDBReader.Call {
             AntigravitySessionDBReader.Call(
                 sessionID: "sess",
                 genIndex: stepIndex,
@@ -186,14 +186,15 @@ final class AntigravityUsageEventParseTests: AntigravityTestCase {
                 reasoningTokens: 3,
                 startedAt: completedAt.map { $0.addingTimeInterval(-2) },
                 completedAt: completedAt,
-                durationSeconds: completedAt == nil ? nil : 2
+                durationSeconds: completedAt == nil ? nil : 2,
+                ttftSeconds: ttft
             )
         }
 
         let accounting = AntigravityLocalUsageScanner.accountCalls(
             sessionID: "sess",
             calls: [
-                call(stepIndex: 5, completedAt: base.addingTimeInterval(60)),
+                call(stepIndex: 5, completedAt: base.addingTimeInterval(60), ttft: 0.864),
                 call(stepIndex: 6, completedAt: base.addingTimeInterval(120)),
                 call(stepIndex: 45, completedAt: nextDay.addingTimeInterval(60)),
                 call(stepIndex: 7, completedAt: nil),  // 无时间戳：整条排除
@@ -220,6 +221,8 @@ final class AntigravityUsageEventParseTests: AntigravityTestCase {
         XCTAssertEqual(first.outputTokens, 5, "Output = raw(8) − reasoning(3)")
         XCTAssertEqual(first.reasoningOutputTokens, 3)
         XCTAssertEqual(first.durationSeconds ?? 0, 2, accuracy: 0.000_001)
+        XCTAssertEqual(first.ttftSeconds ?? 0, 0.864, accuracy: 0.000_001, "gen blob f1.f11 经 Call → UsageEvent → sample")
+        XCTAssertNil(accounting.samples[1].ttftSeconds, "gen 行未带 f11 的样本 ttftSeconds 为 nil")
 
         let dayKey = LocalUsageDayKey.make(day, calendar: testCalendar)
         let nextDayKey = LocalUsageDayKey.make(nextDay, calendar: testCalendar)

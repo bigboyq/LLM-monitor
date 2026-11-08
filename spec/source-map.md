@@ -42,7 +42,7 @@
 | `Sources/LLM-monitor/Models/AnyJSON.swift` | 弱类型 JSON（原 Antigravity RPC 递归解析用；阶段二b解析器退役后暂无生产调用方，类型与测试保留） |
 | `Sources/LLM-monitor/Models/LocalUsageDaily.swift` | Antigravity / Agy / Codex / Minimax / GLM / DSH / OpenCode 共享的 7-day chart 协议 + 默认实现 |
 | `Sources/LLM-monitor/Models/LocalDailyTokenUsage.swift` | 六个本地数据源共享的单日 token 聚合结构（统一收口原 `XxxDailyUsage`，on-disk JSON 键兼容） |
-| `Sources/LLM-monitor/Models/LocalTokenUsageSample.swift` | Provider 中立的单次模型调用 sample（cache-inclusive input 口径 + `TokenUsageBuckets` 规范化入口）；`PromptSpeedStatistics` 按 Prompt 聚合速度分布与最新值；额度窗口快照携带可选 Fleet 金额说明 `costText` |
+| `Sources/LLM-monitor/Models/LocalTokenUsageSample.swift` | Provider 中立的单次模型调用 sample（cache-inclusive input 口径 + `TokenUsageBuckets` 规范化入口；可选 `durationSeconds` / `ttftSeconds` 增强字段）；`PromptSpeedStatistics` 按 Prompt 聚合速度分布与最新值；TTFT 聚合（`CallTTFTStatistics` P50 / 窗口均值 / Σ-Σ 合并中间量）；额度窗口快照携带可选 Fleet 金额说明 `costText` |
 | `Tests/LLMMonitorTests/PromptSpeedStatisticsTests.swift` | Prompt 多轮合并、缺失时长整组排除、最新值不回退、奇偶 P50、时间并列与零速率回归 |
 | `Sources/LLM-monitor/Models/TokenAccounting.swift` | harness raw input / output 计数口径的元数据枚举（cacheInclusive / uncachedOnly 等） |
 | `Sources/LLM-monitor/Models/ReasoningCharSplit.swift` | 「思考字符数 → 思考 token 数」的守恒拆分纯函数（`reasoning + output == 账面 output` 恒成立）；5 处调用方：GLM/ZCode（`GlmZcodeDBReader`）、MiniMax Code（`MinimaxLocalUsageAggregation`）、Dsh M3（`DshLocalUsageScanner`）、OpenCode（`OpencodeDBReader`）、Agy（`AgyLocalUsageAggregation`） |
@@ -141,7 +141,7 @@
 | `Sources/LLM-monitor/Services/GlmZcodeLocalUsageScanner.swift` | GLM ZCode `db.sqlite` 单源 scanner（AsyncMutex + lastCommittedGeneration 串行化） |
 | `Sources/LLM-monitor/Services/AntigravityLocalUsageScanner.swift` | Antigravity `.db` 直读 scanner（AsyncMutex + lastCommittedGeneration 串行化；脏 session 经 `AntigravitySessionDBReader` 全量直读，不发网络请求）|
 | `Sources/LLM-monitor/Services/AntigravitySessionDBReader.swift` | Antigravity 会话 `.db` 直读模块：`probe` 版本指纹门（`gen_metadata` 首行模型名）+ `readCalls`（`steps.idx == f20.last_step_index + 1` 连接）+ `readUserTurnSteps`（step_type=14）；经 `SQLiteTempCopy`（原路径 READONLY + /tmp 副本兜底） |
-| `Sources/LLM-monitor/Services/AntigravityFilesystem.swift` | `AntigravityLocalUsageScanner` 的文件系统侧 extension：conversations roots 枚举（只收 `.db`，`.pb` 忽略）、指纹与 v9 index I/O、`isComplete` 语义（权限 / TCC / 瞬时 I/O 不得据此删缓存） |
+| `Sources/LLM-monitor/Services/AntigravityFilesystem.swift` | `AntigravityLocalUsageScanner` 的文件系统侧 extension：conversations roots 枚举（只收 `.db`，`.pb` 忽略）、指纹与 v10 index I/O、`isComplete` 语义（权限 / TCC / 瞬时 I/O 不得据此删缓存） |
 | `Sources/LLM-monitor/Services/AntigravityLocalUsageCache.swift` | `AntigravityLocalUsageScanner` 的缓存与 index 类型 extension（与上面的 scanner 同类型，按职责拆文件） |
 | `Sources/LLM-monitor/Services/AntigravityLocalUsageAggregation.swift` | Antigravity per-day 聚合与 sample 组装（`accountCalls`：turns = step14 直计、rounds = 连接命中 Call；纯函数，unit-testable） |
 | `Sources/LLM-monitor/Services/AntigravityStepTimestampReader.swift` | Antigravity SQLite step 的 protobuf Timestamp 读取（agy harness 共用；antigravity 路径阶段二b改由 `AntigravitySessionDBReader` 直读双时间戳） |
@@ -205,8 +205,8 @@
 | `Sources/LLM-monitor/Views/ChatGPTApiCreditsRow.swift` | ChatGPT API 赠金用量与周期进度行（多 Key 备注标签 `titleText`、组织信息、通栏额度条+时间标记三角、单行已用/剩余与周期倒计时、per-key 错误提示与 Formatters 倒计时复用） |
 | `Sources/LLM-monitor/Views/PeakIndicatorView.swift` | 高峰提示行公共组件（`TimelineView` 外壳 + `formatDuration`，GLM / DeepSeek 共用） |
 | `Sources/LLM-monitor/Views/BrandLogoView.swift` | provider 品牌 logo 资源加载 + SF Symbol fallback |
-| `Sources/LLM-monitor/Views/LocalUsageHoverViews.swift` | 7 天用量新鲜度状态机与胶囊（`LocalUsageFreshnessState` / `LocalUsageFreshnessBadge`）；数值逐日价格（`LocalUsagePriceByDay`）与 Prompt P50 memo（`LocalUsageSpeedByDay`） |
-| `Sources/LLM-monitor/Models/UsageHistorySeries.swift` | 九维历史指标、独立偏好键与数值日序列；固定七日槽、缺失与已知零、混币归一化及部分覆盖 |
+| `Sources/LLM-monitor/Views/LocalUsageHoverViews.swift` | 7 天用量新鲜度状态机与胶囊（`LocalUsageFreshnessState` / `LocalUsageFreshnessBadge`）；数值逐日价格（`LocalUsagePriceByDay`）与 Prompt P50 memo（`LocalUsageSpeedByDay`）、调用级 TTFT P50 memo（`LocalUsageTTFTByDay`） |
+| `Sources/LLM-monitor/Models/UsageHistorySeries.swift` | 九维历史指标（含 TTFT）、独立偏好键与数值日序列；固定七日槽、缺失与已知零、混币归一化及部分覆盖 |
 | `Sources/LLM-monitor/Views/SevenDayUsageHistoryChart.swift` | 菜单/详情窗口/设置共用七天单指标折线、指标图例、逐日表与来源提示；支持 compact/expanded 布局模式，坐标轴与日期标签提升为 secondary；expanded 表格列宽下限住在 `SevenDayUsageChartMetrics.expanded*`，expanded 下弹性填满可用宽度、compact 保持固定列宽 |
 | `Tests/LLMMonitorTests/UsageHistorySeriesTests.swift` | 七日槽、四桶守恒、数值价格/混币、P50、缺失/零与部分样本回归 |
 | `Tests/LLMMonitorTests/GlmZcodeCredentialReaderTests.swift` | ZCode 本地凭证读取与 AES-256-GCM JWT 解密/密钥派生/格式容错单元测试 |

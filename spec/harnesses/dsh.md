@@ -69,20 +69,34 @@ TTFT；工具执行在 `assistant/message` **之后**，事件结构上不混入
 DSH 每个事件都带 `time`（epoch ms）——即上面单次调用时长的差分数据面。在此之上
 **逐调用 TTFT 可推导，无需上游改 schema**：
 
-- **非 v4 文件（`session.jsonl.zstd`）**：`assistant/chunk` 流式事件（单 session 可达
+- **v1 文件（无后缀 `session.jsonl.zstd`）**：`assistant/chunk` 流式事件（单 session 可达
   3,458 条）每个都带 `time`，`首个 assistant/chunk.time − step/start.time` 即该次调用
   的首字延迟。实测 6 轮 502–1,241ms（每轮 13–27 条 chunk），数值合理。
+  **2026-11-08 全量复核（本机 26 个非 v4 文件）**：chunk 流**只存在于 v1**——所有
+  `session.v3.jsonl.zstd`（12 个）chunk 计数均为 0（同会话的 v1 副本却有上千条，
+  如 `6ebfbe7d` v1=1069 / v3=0），即 **v3 起账本不再落 chunk 级事件**；而当前 DSH
+  CLI 只写 v4（2026-11-08 起 `a564350c` 目录仅 `session.v4.jsonl.zstd`，无 v1 伴生）。
+  **结论：现版 DSH 账本（v3 / v4）TTFT 事实上不可得**，监控里 DSH 的 TTFT 读数
+  预期为 `—`（除非上游恢复 chunk 时间戳或改落别的首字时刻）。
 - **v4**（`session.v4.jsonl.zstd`，三代格式中的最新代；scanner 的 `*.jsonl.zstd` 后缀
   发现谓词天然命中，不漏扫，见 `DshLocalUsageScanner.swift:130-132`）：**无显式 TTFT
   字段**；chunk 流聚合进 `assistant/attempt.data.stream[]`（每个 chunk 自带 `time`）。
-  已观察样本中 attempt 事件仅出现在**失败** turn（401 错误流，其 chunk 时刻不可当
-  TTFT）；成功 turn 只有 `assistant/message`，仅剩总时长可差分——**v4 成功调用是否
-  保留 chunk 级时间戳待更多样本确认**。
+  attempt 事件仅出现在**失败** turn（2026-11-08 用当日真实 v4 会话复核：3 step 中仅
+  1 个失败 attempt，`stream[]` 2 条是 usage/error 记录，非流式输出，其时刻不可当
+  TTFT）；成功 turn 只有 `assistant/message`，仅剩总时长可差分——**v4 成功调用不保留
+  chunk 级时间戳**（同日真实样本确认）。
 - 账本格式与 provider 无关（样本 v4 session 的调用实为 `minimax-cn /
   MiniMax-M3.1-Flash`），结论同样适用于 DeepSeek 分片。
 
-监控现状：scanner 未消费 chunk 时刻；若未来做 sample 级首字延迟，在现有流式解析
-循环里记录首个 `assistant/chunk` 时刻即可（与时长差分同一数据面，纯 L0 增量）。
+监控现状（2026-11-08 更新）：scanner 已按上式接入逐调用 TTFT——`assistant/chunk`
+加入字节级预过滤 marker 集，`stepFirstChunkMs` 锚点表（与 stepStarts 同生命周期：
+message 命中即弹出、step/end 清除防泄漏）记录每 step 首个 chunk 时刻，
+`chunk.time − step/start.time` 写 sample `ttftSeconds`（非正 → nil；**每 step 首个
+chunk 解码后即节流**，全部 pending step 都有首 chunk 时纯 chunk 行按字节扫描跳过、
+不进 JSONDecoder——chunk 占解压后字节大头，不节流会显著拖慢扫描）；缓存 v6 重建。
+结合上段复核结论：chunk 只在 v1 存在、现版 DSH 只写 v4，**TTFT 数据面对现版账本
+恒空**——v1 / v3 / v4 样本的 `ttftSeconds` 分别为可推导 / nil / nil，监控里 DSH 的
+TTFT 读数预期为 `—`。
 
 The UI splits dsh's inclusive `outputTokens` into visible output and reasoning so the
 existing four-category chart stays consistent:

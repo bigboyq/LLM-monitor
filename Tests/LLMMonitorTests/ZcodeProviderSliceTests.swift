@@ -41,7 +41,7 @@ final class ZcodeProviderSliceTests: XCTestCase {
             input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0,
             reasoning_tokens INTEGER NOT NULL DEFAULT 0, cache_read_input_tokens INTEGER NOT NULL DEFAULT 0,
             cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0, assistant_message_id TEXT,
-            duration_ms INTEGER
+            duration_ms INTEGER, time_to_first_token_ms INTEGER
         );
         CREATE TABLE part (
             id TEXT PRIMARY KEY, message_id TEXT, data TEXT
@@ -69,7 +69,8 @@ final class ZcodeProviderSliceTests: XCTestCase {
         model: String,
         provider: String,
         assistantMessageID: String? = nil,
-        durationMs: Int64? = nil
+        durationMs: Int64? = nil,
+        ttftMs: Int64? = nil
     ) throws -> Bool {
         var db: OpaquePointer?
         guard sqlite3_open(path, &db) == SQLITE_OK else { return false }
@@ -77,8 +78,8 @@ final class ZcodeProviderSliceTests: XCTestCase {
         let sql = """
         INSERT INTO model_usage (id, session_id, turn_id, started_at, status, model_id, provider_id,
             input_tokens, output_tokens, reasoning_tokens, cache_read_input_tokens,
-            cache_creation_input_tokens, assistant_message_id, duration_ms)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            cache_creation_input_tokens, assistant_message_id, duration_ms, time_to_first_token_ms)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         """
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return false }
@@ -105,6 +106,13 @@ final class ZcodeProviderSliceTests: XCTestCase {
             sqlite3_bind_int64(stmt, 14, durationMs)
         } else {
             sqlite3_bind_null(stmt, 14)
+        }
+        // TTFT 列（reader 的分片 SELECT 已消费）；既有用例不传 → NULL，与
+        // 「账本未提供 → 样本 nil」的真实覆盖形态一致。
+        if let ttftMs {
+            sqlite3_bind_int64(stmt, 15, ttftMs)
+        } else {
+            sqlite3_bind_null(stmt, 15)
         }
         return sqlite3_step(stmt) == SQLITE_DONE
     }

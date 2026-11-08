@@ -39,7 +39,7 @@ final class AntigravityCacheMaintenanceTests: AntigravityScanTestCase {
             reasoningOutputTokens: 0
         )
         let index = AntigravityLocalUsageScanner.CacheIndex(
-            version: 9,
+            version: 10,
             lastScannedAt: now.addingTimeInterval(-60),
             sessions: [sessionID: .init(
                 mtimeMs: liveMtimeMs,          // 新鲜指纹 → 不 dirty、不读库
@@ -184,7 +184,7 @@ final class AntigravityCacheMaintenanceTests: AntigravityScanTestCase {
         try saveScanIndex(stale, fixture: fixture)
 
         let loaded = try loadScanIndex(fixture)
-        XCTAssertEqual(loaded.version, 9)
+        XCTAssertEqual(loaded.version, 10)
         XCTAssertTrue(loaded.sessions.isEmpty, "v8 session 条目不继承")
         XCTAssertTrue(loaded.dailyBySession.isEmpty, "v8 daily 全清")
         XCTAssertTrue(loaded.samplesBySession?.isEmpty == true, "v8 samples 全清")
@@ -205,7 +205,7 @@ final class AntigravityCacheMaintenanceTests: AntigravityScanTestCase {
             dayStart: now, inputTokens: 100, outputTokens: 50, totalTokens: 150
         )
         let index = AntigravityLocalUsageScanner.CacheIndex(
-            version: 9,
+            version: 10,
             lastScannedAt: now,
             sessions: ["session-1": entry],
             dailyBySession: ["session-1": [LocalUsageDayKey.make(now): dayUsage]],
@@ -220,7 +220,7 @@ final class AntigravityCacheMaintenanceTests: AntigravityScanTestCase {
         decoder.dateDecodingStrategy = .iso8601
         let decoded = try decoder.decode(AntigravityLocalUsageScanner.CacheIndex.self, from: data)
 
-        XCTAssertEqual(decoded.version, 9)
+        XCTAssertEqual(decoded.version, 10)
         XCTAssertEqual(decoded.sessions["session-1"]?.mtimeMs, 1234567890.0)
         XCTAssertEqual(decoded.sessions["session-1"]?.eventCount, 50)
         XCTAssertEqual(decoded.dailyBySession["session-1"]?.count, 1)

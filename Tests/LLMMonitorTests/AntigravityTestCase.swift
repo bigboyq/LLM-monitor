@@ -109,6 +109,18 @@ class AntigravityTestCase: XCTestCase {
         var rawData: [UInt8]? = nil
         /// `f1.f4` usage 子消息存在但为**空消息**（0 字节）——presence 口径用例
         var emptyUsageSubmessage: Bool = false
+        /// `f1.f11` timeToFirstToken（protobuf Duration）的写入形态；nil = 不写该字段。
+        var ttft: TTFTShape? = nil
+    }
+
+    /// `f1.f11` timeToFirstToken Duration 的 fixture 形态。
+    enum TTFTShape {
+        /// 完整 Duration（seconds + nanos 两个 varint 都在 wire 上）
+        case secondsAndNanos(seconds: UInt64, nanos: UInt64)
+        /// <1s：proto3 省略 seconds，wire 上只剩 nanos
+        case nanosOnly(UInt64)
+        /// 空子消息（0 字节，两个默认值字段都缺省）→ reader 应得 nil
+        case empty
     }
 
     struct StepRow {
@@ -143,6 +155,16 @@ class AntigravityTestCase: XCTestCase {
             event += pbLenField(4, usageMsg)
         }
         event += pbLenField(17, pbVarintField(2, 7) + pbStringField(4, "0123456789abcdef"))
+        switch row.ttft {
+        case .secondsAndNanos(let seconds, let nanos):
+            event += pbLenField(11, pbVarintField(1, seconds) + pbVarintField(2, nanos))
+        case .nanosOnly(let nanos):
+            event += pbLenField(11, pbVarintField(2, nanos))
+        case .empty:
+            event += pbLenField(11, [])
+        case nil:
+            break
+        }
         if let model = row.model {
             event += pbStringField(19, model)
         }

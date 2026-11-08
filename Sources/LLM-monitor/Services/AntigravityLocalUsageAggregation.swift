@@ -43,6 +43,9 @@ extension AntigravityLocalUsageScanner {
         let reasoningTokens: Int
         /// 单次调用时长（秒）= steps.metadata f7（流式完成）− f1（发起）。
         let durationSeconds: Double?
+        /// 单次调用首字延迟（TTFT，秒）= gen blob `f1.f11` timeToFirstToken。
+        /// gen 行未携带 / 不可解析 → nil。
+        let ttftSeconds: Double?
 
         init(
             timestamp: Date?,
@@ -52,7 +55,8 @@ extension AntigravityLocalUsageScanner {
             cacheReadTokens: Int,
             cacheWriteTokens: Int = 0,
             reasoningTokens: Int,
-            durationSeconds: Double? = nil
+            durationSeconds: Double? = nil,
+            ttftSeconds: Double? = nil
         ) {
             self.timestamp = timestamp
             self.model = model
@@ -62,6 +66,7 @@ extension AntigravityLocalUsageScanner {
             self.cacheWriteTokens = cacheWriteTokens
             self.reasoningTokens = reasoningTokens
             self.durationSeconds = durationSeconds
+            self.ttftSeconds = ttftSeconds
         }
     }
 
@@ -220,7 +225,8 @@ extension AntigravityLocalUsageScanner {
                 cacheReadTokens: call.cacheReadTokens,
                 cacheWriteTokens: 0,
                 reasoningTokens: call.reasoningTokens,
-                durationSeconds: call.durationSeconds
+                durationSeconds: call.durationSeconds,
+                ttftSeconds: call.ttftSeconds
             )
             let day = calendar.startOfDay(for: completedAt)
             var dayCounts = perDay[day] ?? DailyTurnRound(turns: 0, rounds: 0)
@@ -276,7 +282,8 @@ extension AntigravityLocalUsageScanner {
             cachedInputTokens: buckets.cacheRead,
             outputTokens: buckets.output,
             reasoningOutputTokens: buckets.reasoning,
-            durationSeconds: durationSeconds
+            durationSeconds: durationSeconds,
+            ttftSeconds: event.ttftSeconds
         )
     }
 

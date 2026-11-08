@@ -201,3 +201,55 @@ enum LocalUsageSpeedByDay {
         })
     }
 }
+
+/// 7 天用量的**每日调用级 TTFT 分布**（`[dayStart: CallTTFTStatistics]`）——7 天
+/// 表动态列 TTFT（每日 P50）的数据源，与 `LocalUsageSpeedByDay`（速度列）同一
+/// 分工：按日分组后逐日调 `LocalUsageSummaryBuilder.callTTFTStatistics`（统计
+/// 单位是单次调用，与 prompt 级速度不同），memo key 用 `"call-ttft"` 与速度的
+/// `"prompt-speed"` 分开。
+///
+/// 分组口径与 `LocalUsageSpeedByDay` 一致（`Calendar.current` 的
+/// `startOfDay(for: completedAt)`）；有样本但全部 TTFT 无效的日保留空统计
+/// （p50 = nil → 图表断线），与「无样本日」同为缺口。空样本集合直接返回空表。
+enum LocalUsageTTFTByDay {
+    private struct StatisticsKey: Equatable {
+        let dayStarts: [Date]
+        let recentSamples: [LocalTokenUsageSample]
+        let timeZoneIdentifier: String
+    }
+
+    private static let statisticsMemo = DerivedValueMemo<String, StatisticsKey, [Date: CallTTFTStatistics]>()
+
+    /// Daily call-level TTFT distribution for the selectable history chart.
+    /// No sample means no key; a sampled day with no valid TTFT retains an empty
+    /// statistic so the chart can tell "no data" from a plotted zero.
+    static func ttftStatistics(
+        dayStarts: [Date],
+        recentSamples: [LocalTokenUsageSample]
+    ) -> [Date: CallTTFTStatistics] {
+        guard !recentSamples.isEmpty else { return [:] }
+        let key = StatisticsKey(
+            dayStarts: dayStarts,
+            recentSamples: recentSamples,
+            timeZoneIdentifier: Calendar.current.timeZone.identifier
+        )
+        return statisticsMemo.value(for: "call-ttft", key: key) {
+            computeTTFTStatistics(dayStarts: dayStarts, recentSamples: recentSamples)
+        }
+    }
+
+    private static func computeTTFTStatistics(
+        dayStarts: [Date],
+        recentSamples: [LocalTokenUsageSample]
+    ) -> [Date: CallTTFTStatistics] {
+        let calendar = Calendar.current
+        let grouped = Dictionary(grouping: recentSamples) {
+            calendar.startOfDay(for: $0.completedAt)
+        }
+        return Dictionary(uniqueKeysWithValues: dayStarts.compactMap { dayStart in
+            let key = calendar.startOfDay(for: dayStart)
+            guard let samples = grouped[key] else { return nil }
+            return (key, LocalUsageSummaryBuilder.callTTFTStatistics(samples: samples))
+        })
+    }
+}

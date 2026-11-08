@@ -89,6 +89,20 @@ GENERIC 的行也不作为标记，都不会误食。字节级 `"source":"MODEL"
 缓存：指纹缓存升级 `AgyCacheIndex` v3——旧 v2 快照无样本时长，版本不匹配
 一次性失效重建（无迁移路径，与 v1 → v2 同款）。
 
+## TTFT（ttftSeconds）
+
+与时长同一 `.db` 数据面（2026-11-08 接入）：gen_metadata blob 事件主消息 `f1.f11`
+是 timeToFirstToken 的 protobuf Duration（与
+[`providers/antigravity.md`](../providers/antigravity.md) § TTFT / streaming 时长字段
+同一字段、同 schema；seconds 缺省只剩 nanos、双缺省 → nil）。
+`AntigravityStepTimestampReader.llmCallTTFTSecondsByStepIndex` 按方案 A 同一连接键
+`steps.idx == f20.last_step_index + 1` 收成 `steps.idx → 秒` 映射（91 库全扫实测
+连接 2012/2012 = 100% 命中、无负值），scanner 在 `AgySessionDurationContext` 里与
+计量行按 `idx == step_index` 配对供给样本；连接不上 / 读失败（`SQLiteTempCopy`
+纪律同款）降级为空映射，样本 `ttftSeconds` 保持 nil。无方案 B 降级——transcript
+无首字时刻。缓存 v4（v3 → v4 一次性失效重建）。聚合口径见
+[`accounting.md`](../accounting.md) §TTFT 口径。
+
 ## Provider mapping
 
 用量设置按 Antigravity 额度侧的共享池分类：Gemini Models、Gemini 4 Argon、Claude and GPT models。Agy 与 Antigravity / OpenCode 的 Antigravity 贡献共用 `AntigravityModelKind.pool(forSampleModelName:)`；真实模型仍用于计价，未知模型及留存样本未覆盖的日桶差额单列「未归属额度池」，不丢弃日桶用量。每个池的 5h / 周只形成一组。

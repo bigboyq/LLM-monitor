@@ -30,8 +30,9 @@ final class HarnessUsageMenuViewTests: XCTestCase {
     /// 并集簇的宽度预算（2026-11-07 用户裁定：够并集取并集，不够取交集）。
     ///
     /// 内容区实为 460pt（484 面板 − 2×12 内边距），实测装得下并集
-    /// {Turns, Token, Hit, Think, Speed, Value, Update} → 取并集。若未来收窄
-    /// 面板使并集装不下，本测试先失败——届时按裁定反转为交集并同步 spec。
+    /// {Turns, Token, Hit, Think, Speed, TTFT, Value, Update}（2026-11-08 Speed
+    /// 与 Value 之间加 TTFT 34pt 列）→ 取并集。若未来收窄面板使并集装不下，
+    /// 本测试先失败——届时按裁定反转回交集并同步 spec。
     func testMetricClusterUsesUnionWithinBudget() {
         let contentWidth = MenuPanelHeightBridge.width - LayoutMetrics.cardColumnHorizontalPadding * 2
         let cluster = HarnessMetricColumns.clusterWidth
@@ -45,6 +46,16 @@ final class HarnessUsageMenuViewTests: XCTestCase {
         XCTAssertLessThanOrEqual(
             harnessChrome + 80 + cluster + HarnessMetricColumns.timeSlot, contentWidth,
             "并集簇在 harness 行挤掉名称最小宽——按裁定反转回交集"
+        )
+        // TTFT 列宽钉住：数值恒 ≤ 4 字符（0.86 / 12.5 / 124），34pt 内放得下；
+        // 并集装不下需要缩列时也不得低于 30（低于它「124」+ 表头「TTFT」会截断）。
+        XCTAssertGreaterThanOrEqual(HarnessMetricColumns.ttft, 30)
+        XCTAssertEqual(
+            HarnessMetricColumns.clusterWidth,
+            HarnessMetricColumns.prompts + HarnessMetricColumns.token + HarnessMetricColumns.hitRate
+                + HarnessMetricColumns.thinking + HarnessMetricColumns.speed + HarnessMetricColumns.ttft
+                + HarnessMetricColumns.value + HarnessMetricColumns.spacing * 6,
+            "clusterWidth 必须覆盖全部 7 根数据列 + 6 个间距"
         )
     }
 

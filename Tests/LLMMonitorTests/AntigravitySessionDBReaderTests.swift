@@ -141,6 +141,48 @@ final class AntigravitySessionDBReaderTests: AntigravityTestCase {
         XCTAssertNil(usage.normalizedOutputTokens)
     }
 
+    /// `f1.f11` timeToFirstToken（protobuf Duration）三种 wire 形态 →
+    /// `Call.ttftSeconds`：完整 seconds+nanos、<1s 省略 seconds 只剩 nanos、
+    /// 空子消息（proto3 双默认值缺省）→ nil；gen 行未写 f11 也 → nil。
+    func testGeneratorMetadataTTFTDurationShapesReachCallTTFT() throws {
+        let base: UInt64 = 1_787_054_898
+        let dbURL = try makeSessionDB(
+            gen: [
+                // 1.669597334s（spec 实测的 seconds+nanos 完整形状）
+                GenRow(model: flashModel, usage: (input: 10, cacheRead: 0, rawOutput: 5, reasoning: 0, normalized: nil),
+                       attributes: [lsi(0)],
+                       ttft: .secondsAndNanos(seconds: 1, nanos: 669_597_334)),
+                // <1s：proto3 省略 seconds，wire 上只剩 nanos（864ms）
+                GenRow(model: argonModel, usage: (input: 10, cacheRead: 0, rawOutput: 5, reasoning: 0, normalized: nil),
+                       attributes: [lsi(1)],
+                       ttft: .nanosOnly(864_000_000)),
+                // 空子消息：两个默认值字段都缺省 → 视为未提供
+                GenRow(model: flashModel, usage: (input: 10, cacheRead: 0, rawOutput: 5, reasoning: 0, normalized: nil),
+                       attributes: [lsi(2)],
+                       ttft: .empty),
+                // 不写 f11：上游未提供 → nil
+                GenRow(model: argonModel, usage: (input: 10, cacheRead: 0, rawOutput: 5, reasoning: 0, normalized: nil),
+                       attributes: [lsi(3)]),
+            ],
+            steps: (0..<4).map { offset in
+                StepRow(
+                    type: 15,
+                    start: (seconds: base + UInt64(offset) * 10, nanos: 0),
+                    end: (seconds: base + UInt64(offset) * 10 + 6, nanos: 0)
+                )
+            }
+        )
+
+        let calls = try AntigravitySessionDBReader.readCalls(dbPath: dbURL)
+        XCTAssertEqual(calls.count, 4)
+        XCTAssertEqual(calls[0].ttftSeconds!, 1.669597334, accuracy: 1e-9, "seconds + nanos 完整 Duration")
+        XCTAssertEqual(calls[1].ttftSeconds!, 0.864, accuracy: 1e-9, "<1s 只有 nanos：按 0 秒 + nanos 处理")
+        XCTAssertNil(calls[2].ttftSeconds, "空 Duration 子消息 → 未提供")
+        XCTAssertNil(calls[3].ttftSeconds, "gen 行未写 f11 → 未提供")
+        // TTFT 与 steps 差分时长相互独立：f11 缺失不影响 durationSeconds。
+        XCTAssertEqual(calls[2].durationSeconds!, 6.0, accuracy: 1e-9)
+    }
+
     // MARK: - steps 读取
 
     func testStepReadingSeparatesLLMCallsAndUserTurns() throws {

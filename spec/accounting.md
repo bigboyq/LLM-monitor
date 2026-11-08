@@ -169,29 +169,64 @@ token 速率（tok/s）只在 sample 级定义，不进入帧 / 投影内核：�
 | MiniMax | `local_runtime_message_rows.$.usage.request_duration_ms`（独立守门窗口查询 + `(session, turn)` FIFO 配对、以 input/output tokens 核对回填；缓存 v16。**禁止** `created_at_ms` 差分——toolUse 行记录的是工具完成时刻，会把工具耗时算入） |
 | agy | `conversations/<session>.db` steps metadata 纳秒差（field 7 流式完成 − field 1 发起，主路径，100% 覆盖含纯文本终答）；.db 缺失时降级 transcript 后继 `MODEL:GENERIC` 锚点差分（秒级，约 94% 覆盖）；缓存 v3 重建。**禁止**前驱行差分——transcript `created_at` 是发起时刻 ⌊f1⌋，差分量的是调度延迟/上轮工具耗时 |
 
-上游 TTFT 字段可得性（2026-11-08 调研，均**未**进本口径的拆分）：ZCode `model_usage`
-原生 `time_to_first_token_ms`（逐调用，71% 覆盖）、Codex `task_complete` payload 原生
-`time_to_first_token_ms`（turn 级）、Antigravity `gen_metadata` blob `f1.f11`（逐调用，
-与 steps 差分亚毫秒吻合）；DSH 无显式字段但**可推导**——非 v4 文件取首个
-`assistant/chunk.time − step/start.time`（v4 成功调用待更多样本确认，见
+上游 TTFT 字段可得性（2026-11-08 调研、同日接入 sample `ttftSeconds`，见下节）：ZCode `model_usage`
+原生 `time_to_first_token_ms`（逐调用，71% 覆盖，缺口行 nil）、Codex `task_complete` payload 原生
+`time_to_first_token_ms`（turn 级，回填 turn 首调）、Antigravity `gen_metadata` blob `f1.f11`（逐调用，
+与 steps 差分亚毫秒吻合）；agy 与 Antigravity 同 schema 同字段（`steps.idx == f20.last_step_index + 1`
+连接，2026-11-08 本机 91 库实测 2012/2012 = 100% 命中）；DSH 无显式字段、**可推导但仅限
+v1 账本**——v1 文件（无后缀）取首个 `assistant/chunk.time − step/start.time`
+（2026-11-08 全量复核：v3 起无 chunk 流、v4 成功调用无 chunk 时刻，而当前 DSH 只写
+v4 → **现版账本 TTFT 事实上不可得，DSH 恒 `—`**，见
 [`harnesses/dsh.md`](harnesses/dsh.md) § TTFT 调研记录）；MiniMax Code **无**（db 与
-v4 会话文件均无 chunk 流 / 首字时刻，仅 `request_duration_ms` 总时长，见
-[`harnesses/minimaxcode.md`](harnesses/minimaxcode.md) § TTFT 调研记录）——调研记录见
+v4 会话文件均无 chunk 流 / 首字时刻，仅 `request_duration_ms` 总时长，**显式写 0**——用户裁定，
+见 [`harnesses/minimaxcode.md`](harnesses/minimaxcode.md) § TTFT 调研记录）；OpenCode 无字段（恒 nil，
+UI 显示 `—`）——调研记录见
 [`harnesses/zcode.md`](harnesses/zcode.md) /
 [`harnesses/codex.md`](harnesses/codex.md) /
 [`providers/antigravity.md`](providers/antigravity.md)。
+
+## TTFT 口径（首字延迟，sample 级）
+
+TTFT 与 token 速率同层：只在 sample 级定义、不进入帧 / 投影内核，由各家 reader 写入
+`LocalTokenUsageSample.ttftSeconds`（可选字段，秒；旧缓存解码得 nil）。**有效性域
+[0, 3600] s 且有限**——与 duration 的 [0.2, 3600] 不同，**0 是合法值**（MiniMax Code
+显式写 0，必须参与聚合）；负值 / 非有限 / 越界的样本不计。聚合函数唯一实现在
+`LocalUsageSummaryBuilder`（`Models/LocalTokenUsageSample.swift`）：
+
+| 聚合 | 函数 | 口径 |
+|---|---|---|
+| 调用级 P50 | `callTTFTStatistics`（`CallTTFTStatistics.p50`） | 有效样本排序取中位（偶数取中间均值）；Harness 列表行 / 段与 7 天历史的每日值用此口径 |
+| 窗口均值 | `windowTTFTMeanSeconds` | Σ有效 ttft ÷ Σ有效调用数（每次调用等权，0 参与）；「额度窗口」用量态 TTFT 列用此口径 |
+| 多池合并中间量 | `windowTTFTComponents` | (Σttft, 调用数)，`combineWindowUsage` 按 Σsum ÷ Σcount 合并（模式同速率 Σ/Σ），缺中间量的窗口不参与 |
+
+| Harness | ttftSeconds 来源 |
+|---|---|
+| ZCode | `model_usage.time_to_first_token_ms` 显式列 ÷ 1000（主表与非智谱分片同口径；NULL-aware 读取，NULL → nil；缓存 v12 重建） |
+| Codex | `task_complete` payload `time_to_first_token_ms` ÷ 1000，turn 级 → 回填该 turn **第一条** `token_usage_record` 样本（文件内配对，turn_id 全局 UUID 不跨文件；缓存 v2 重建） |
+| Antigravity | gen_metadata blob `f1.f11` protobuf Duration（seconds 可缺省只剩 nanos；缓存 v10 重建） |
+| agy | 同一 `conversations/<session>.db` 的 `f1.f11`，经 `AntigravityStepTimestampReader.llmCallTTFTSecondsByStepIndex` 按 steps.idx 连接（缓存 v4 重建） |
+| DSH | v1 文件首个 `assistant/chunk.time − step/start.time` ÷ 1000（scanner 字节级预过滤扩展 + 每 step 首 chunk 节流解码；缓存 v6 重建。v3 / v4 无 chunk 数据面 → nil，见 `harnesses/dsh.md` § TTFT 调研记录） |
+| MiniMax | **显式 0**（无上游数据，用户裁定；缓存 v17 重建） |
+| OpenCode | 无（恒 nil） |
+
+fleet 行的远端上报无 TTFT，TTFT 列显示 `—`（wire 协议未扩展）。
 
 多额度池合并（`combineWindowUsage`）按 Σ分子 / Σ时长 相加后再除；合并产物带
 `rateNumerator` / `rateDenominator` 中间量，多层合并不丢精度，缺中间量的手工构造
 窗口不参与速率加权。fleet 行的远端上报无时长，速度列显示 `—`（wire 协议未扩展）。
 
-UI 消费：「额度窗口」模块**用量态**第 6 列从「价值」换为「速度」（`speedCell`，
-58pt 列宽不变；**分析态仍显示价值**）。`speedText` 转用统一 `Formatters.formatSpeed`：
+UI 消费：「额度窗口」模块**用量态**的速度列从「价值」位换为「速度」（`speedCell`；
+**分析态仍显示价值**；2026-11-08 起 TTFT 列插在 Reason 与速度之间、用量态 7→8 列，
+速度列改用独立 30pt 窄列 `usageSpeedColumnWidth`，详见 `spec/ui/edge-dock.md`）。`speedText` 转用统一 `Formatters.formatSpeed`：
 数值部分含小数点最多三个字符（`8.6` / `50` / `246`），舍入跨档后不保留多余小数；
 将进位到四位时使用 K / M / G 数量级后缀（后缀不计入数值宽度），更大数量级使用指数后缀。
 nil、负值或非有限读数显示 `—`。菜单摘要与七天速度趋势复用同一格式（原模型行
 Prompt 速度范围线 UI 已于 2026-11-07 移除，统计层保留；见 §Prompt 速度分布）；表头 tooltip
 注明口径「窗口内 (Output+Reason) ÷ 调用时长，tok/s；时长未知的调用不参与」。
+TTFT 的三处 UI 消费（2026-11-08）：Harness 列表 Speed 与 Value 之间（调用级 P50，
+`Formatters.formatTTFT`）、「额度窗口」用量态 Reason 与速度之间（窗口均值）、7 天用量
+历史命中与速度之间（每日调用级 P50，单位秒）；格式统一走 `Formatters.formatTTFT`
+（裸数字秒 `0.86` / `12.5` / `124`，nil → `—`）。
 今 / 闲 / 免 / 速 / 它行速率与金额用同一批样本（`todaySamples` / `offPeakTodaySamples` /
 `glmCategoryTodaySamples`）。
 

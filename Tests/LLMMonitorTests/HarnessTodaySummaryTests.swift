@@ -222,7 +222,44 @@ final class HarnessTodaySummaryTests: XCTestCase {
         XCTAssertNil(section.tokensPerSecond, "全段都没有时长 →「—」（没得算），不是 0")
     }
 
-    // MARK: - 跨币种段价值
+    // MARK: - 行 / 段 TTFT（首字延迟 P50）
+
+    /// 行 TTFT = 行样本批的调用级 P50（`callTTFTStatistics`，统计单位是单次调用）；
+    /// 段 TTFT = 今日全部样本并集的调用级 P50，不是各行 P50 的平均。
+    /// MiniMax Code 显式写的 0 是合法值、正常参与。
+    func testRowAndSectionTTFTAreCallLevelP50OverTodaySamples() {
+        let status = codexStatus(samples: [
+            // 行 A（gpt-5.5）：TTFT 0.9 / 0.1 / 0 → 调用级中位 0.1。
+            sample(model: "gpt-5.5", at: now, input: 1_000, output: 400, promptID: "a", ttft: 0.9),
+            sample(model: "gpt-5.5", at: now, input: 1_000, output: 300, promptID: "b", ttft: 0.1),
+            sample(model: "gpt-5.5", at: now, input: 1_000, output: 200, promptID: "c", ttft: 0),
+            // 行 B（gpt-5.2）：无 TTFT 样本 → 行 TTFT nil（UI「—」，不是 0）。
+            sample(model: "gpt-5.2", at: now, input: 1_000, output: 100, promptID: "d"),
+        ])
+
+        let summary = HarnessTodaySummary.summarize(statuses: [status], now: now, calendar: calendar)
+        let section = summary.sections[0]
+        XCTAssertEqual(section.rows.count, 2, "前提：两个模型各占一行")
+
+        let rowA = try! XCTUnwrap(section.rows.first { $0.modelName == "gpt-5.5" })
+        let rowB = try! XCTUnwrap(section.rows.first { $0.modelName == "gpt-5.2" })
+        XCTAssertEqual(rowA.ttftSeconds ?? -1, 0.1, accuracy: 1e-9, "行 TTFT 是调用级 P50（0, 0.1, 0.9 的中位）")
+        XCTAssertNil(rowB.ttftSeconds, "无 TTFT 有效样本的行没有 P50（nil，不是 0）")
+
+        // 段级：今日全部样本并集 {0, 0.1, 0.9} 的 P50 = 0.1；若误用各行 P50 的
+        // 平均（或把无 TTFT 的行也计入），结果都会漂移。
+        XCTAssertEqual(section.ttftSeconds ?? -1, 0.1, accuracy: 1e-9, "段 TTFT 是并集的调用级 P50")
+
+        // 昨天的样本不进今天： yesterday 的 TTFT 不改变 P50。
+        let withYesterday = codexStatus(samples: [
+            sample(model: "gpt-5.5", at: now, input: 1_000, output: 400, promptID: "a", ttft: 0.1),
+            sample(model: "gpt-5.5", at: yesterday, input: 1_000, output: 400, promptID: "y", ttft: 9.9),
+        ])
+        let todayOnly = HarnessTodaySummary.summarize(
+            statuses: [withYesterday], now: now, calendar: calendar
+        ).sections[0]
+        XCTAssertEqual(todayOnly.ttftSeconds ?? -1, 0.1, accuracy: 1e-9, "昨天的 TTFT 样本不得进入今日 P50")
+    }
 
     /// 一个客户端横跨两个 provider 分片时（OpenCode 的 openai 分片 + 智谱分片），
     /// 段价值必须折算成 CNY 总额并保留 USD 原额，而不是把 `11.30` 和 `33.00` 裸相加。
@@ -830,7 +867,8 @@ final class HarnessTodaySummaryTests: XCTestCase {
         output: Int = 0,
         reasoning: Int = 0,
         promptID: String = "p1",
-        duration: Double? = nil
+        duration: Double? = nil,
+        ttft: Double? = nil
     ) -> LocalTokenUsageSample {
         LocalTokenUsageSample(
             completedAt: date,
@@ -840,7 +878,8 @@ final class HarnessTodaySummaryTests: XCTestCase {
             cachedInputTokens: cached,
             outputTokens: output,
             reasoningOutputTokens: reasoning,
-            durationSeconds: duration
+            durationSeconds: duration,
+            ttftSeconds: ttft
         )
     }
 

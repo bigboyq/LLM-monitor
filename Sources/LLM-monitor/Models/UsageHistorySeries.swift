@@ -1,9 +1,9 @@
 import Foundation
 
-/// The seven independently selectable measures in the seven-day local history.
+/// The eight independently selectable measures in the seven-day local history.
 /// This preference intentionally does not share the quota-window segment key.
 enum UsageHistoryMetric: String, CaseIterable, Identifiable {
-    case total, rounds, value, thinking, outputRatio, hit, speed
+    case total, rounds, value, thinking, outputRatio, hit, ttft, speed
 
     static let storageKey = "usageHistoryMetric"
 
@@ -17,6 +17,7 @@ enum UsageHistoryMetric: String, CaseIterable, Identifiable {
         case .thinking: "思考"
         case .outputRatio: "产出"
         case .hit: "命中"
+        case .ttft: "TTFT"
         case .speed: "速度"
         }
     }
@@ -26,6 +27,7 @@ enum UsageHistoryMetric: String, CaseIterable, Identifiable {
         case .total: "Token"
         case .rounds: "Rounds"
         case .value: "价值"
+        case .ttft: "s"
         case .speed: "tok/s"
         case .hit, .thinking, .outputRatio: "%"
         }
@@ -44,7 +46,7 @@ enum UsageHistoryMetric: String, CaseIterable, Identifiable {
     }
 
     static let groups: [[UsageHistoryMetric]] = [
-        [.total, .rounds, .value, .thinking, .outputRatio, .hit, .speed]
+        [.total, .rounds, .value, .thinking, .outputRatio, .hit, .ttft, .speed]
     ]
 }
 
@@ -106,6 +108,8 @@ struct UsageHistoryDay: Equatable, Identifiable {
     let valueIsPartial: Bool
     let speed: Double?
     let speedIsPartial: Bool
+    /// 每日调用级首字延迟 P50（秒）；nil = 当日没有 TTFT 有效的样本（图表断线）。
+    let ttft: Double?
     let input: Double?
     let cache: Double?
     let reason: Double?
@@ -118,7 +122,7 @@ struct UsageHistoryDay: Equatable, Identifiable {
     var id: Date { dayStart }
 
     var hasAnyData: Bool {
-        total != nil || rounds != nil || value != nil || speed != nil
+        total != nil || rounds != nil || value != nil || speed != nil || ttft != nil
             || hitRate != nil || thinkingShare != nil || outputToInputRate != nil
             || input != nil || cache != nil || reason != nil || output != nil || turns != nil
     }
@@ -129,6 +133,7 @@ struct UsageHistoryDay: Equatable, Identifiable {
         case .rounds: rounds
         case .value: value
         case .speed: speed
+        case .ttft: ttft
         case .hit: hitRate
         case .thinking: thinkingShare
         case .outputRatio: outputToInputRate
@@ -144,6 +149,7 @@ enum UsageHistorySeriesBuilder {
         days: [Daily],
         costByDay: [Date: ModelCostEstimate],
         speedByDay: [Date: PromptSpeedStatistics],
+        ttftByDay: [Date: CallTTFTStatistics] = [:],
         samplesTruncated: Bool,
         isTruncated: Bool = false,
         partialCostDays: Set<Date> = [],
@@ -208,6 +214,7 @@ enum UsageHistorySeriesBuilder {
                 speed: UsageHistoryNumber.finiteNonnegative(speedStats?.p50),
                 speedIsPartial: samplesTruncated || isTruncated
                     || (speedStats.map { $0.validPromptCount < $0.totalPromptCount } ?? false),
+                ttft: UsageHistoryNumber.finiteNonnegative(ttftByDay[dayStart]?.p50),
                 input: inputTokens,
                 cache: cacheTokens,
                 reason: reasonTokens,

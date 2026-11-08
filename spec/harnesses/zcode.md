@@ -22,6 +22,9 @@ The scanner reads the following columns from each GLM `model_usage` row:
 
 ```text
 started_at                     # epoch ms, source of per-day aggregation
+time_to_first_token_ms         # per-call TTFT (epoch ms, 71% coverage); NULL-aware
+                               #   read (NULL → nil), /1000 → sample.ttftSeconds
+                               #   (main rows and non-智谱 slices share the same rule)
 duration_ms                    # epoch ms of the full call (发起→完成, incl. TTFT);
                                #   /1000 → sample.durationSeconds (token/s denominator,
                                #   main rows and non-智谱 slices share the same rule);
@@ -377,10 +380,12 @@ session 不一定在内）。
 `time_to_first_token_ms`，`duration_ms` 100% 有值；缺口成因未深究（疑为中断调用或
 早期版本行）。
 
-监控现状：reader 只消费 `duration_ms`（含 TTFT 的总时长，见 §Local Token Source 列
-注释与 [`accounting.md`](../accounting.md) §Token/s 速率口径）；`time_to_first_token_ms`
-/ `first_token_at` 未读取。若未来做 sample 级首字延迟统计这是现成上游——
-zcode-tps-monitor 插件已在消费同库该字段（其「首字 N s」读数）。
+监控现状（2026-11-08 更新）：reader 消费 `duration_ms`（含 TTFT 的总时长，见
+§Local Token Source 列注释与 [`accounting.md`](../accounting.md) §Token/s 速率口径），
+并已接入 `time_to_first_token_ms`——主表与非智谱分片两条 SELECT 都读该列，
+NULL-aware 读取（NULL → sample `ttftSeconds` nil，71% 缺口行不伪装成 0），ms ÷ 1000
+写秒；缓存 v12 重建。`first_token_at` 仍未读取（epoch 时刻，TTFT 已含其信息）。
+zcode-tps-monitor 插件也在消费同库该字段（其「首字 N s」读数）。
 
 ## Implementation map
 

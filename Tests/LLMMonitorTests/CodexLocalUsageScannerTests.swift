@@ -690,7 +690,7 @@ final class CodexLocalUsageScannerTests: XCTestCase {
                 models.append(modelName)
             case .taskStarted(_, let turnID):
                 turns.append("start:\(turnID)")
-            case .taskCompleted(_, let turnID):
+            case .taskCompleted(_, let turnID, _):
                 turns.append("complete:\(turnID)")
             case .tokenCount(_, let usage):
                 usages.append(usage)
@@ -774,5 +774,96 @@ final class CodexLocalUsageScannerTests: XCTestCase {
         XCTAssertEqual(tokenCounts.count, 1)
         XCTAssertEqual(tokenCounts.first?.inputTokens, 7)
         XCTAssertEqual(tokenCounts.first?.outputTokens, 3)
+    }
+
+    // MARK: - task_complete 的 turn 级 TTFT（time_to_first_token_ms）
+
+    /// task_complete payload 原生 `time_to_first_token_ms` 解析为
+    /// `.taskCompleted` 的 `ttftSeconds`（ms → 秒，缺字段 / 负值 → nil），
+    /// 并在 `summarizeLocalUsage` 回填到该 turn **第一条** record 样本；
+    /// 一轮内的第二次调用不回填（turn 级粒度）；无对应 record 的 turn 丢弃。
+    func testTaskCompleteTTFTBackfillsFirstRecordSampleOfTurn() async throws {
+        let fm = FileManager.default
+        let url = fm.temporaryDirectory
+            .appendingPathComponent("codex-ttft-\(UUID().uuidString).jsonl")
+        defer { try? fm.removeItem(at: url) }
+
+        func tokenCountLine(input: Int, at iso: String) -> String {
+            codexJSONLine(
+                timestamp: iso,
+                type: "event_msg",
+                payload: ["type": "token_count", "info": ["last_token_usage": [
+                    "input_tokens": input, "cached_input_tokens": 0,
+                    "output_tokens": 1, "reasoning_output_tokens": 0,
+                ]]]
+            )
+        }
+        // 两个 turn：turn-ttft 两次模型调用（record → token_count ×2），turn
+        // 末尾 task_complete 带 864ms TTFT；turn-empty 的 task_complete 无 TTFT
+        // 字段（payload 缺省）→ nil。
+        let content = [
+            codexJSONLine(timestamp: "2026-08-12T00:00:00Z", type: "event_msg", payload: ["type": "task_started", "turn_id": "turn-ttft"]),
+            codexJSONLine(timestamp: "2026-08-12T00:00:01Z", type: "token_usage_record", payload: ["turn_id": "turn-ttft"]),
+            tokenCountLine(input: 10, at: "2026-08-12T00:00:01.5Z"),
+            codexJSONLine(timestamp: "2026-08-12T00:00:02Z", type: "token_usage_record", payload: ["turn_id": "turn-ttft"]),
+            tokenCountLine(input: 11, at: "2026-08-12T00:00:02.5Z"),
+            codexJSONLine(
+                timestamp: "2026-08-12T00:00:03Z",
+                type: "event_msg",
+                payload: ["type": "task_complete", "turn_id": "turn-ttft", "time_to_first_token_ms": 864]
+            ),
+            codexJSONLine(timestamp: "2026-08-12T00:00:04Z", type: "event_msg", payload: ["type": "task_started", "turn_id": "turn-empty"]),
+            codexJSONLine(timestamp: "2026-08-12T00:00:05Z", type: "token_usage_record", payload: ["turn_id": "turn-empty"]),
+            tokenCountLine(input: 12, at: "2026-08-12T00:00:05.5Z"),
+            codexJSONLine(
+                timestamp: "2026-08-12T00:00:06Z",
+                type: "event_msg",
+                payload: ["type": "task_complete", "turn_id": "turn-empty"]
+            ),
+        ].joined(separator: "\n") + "\n"
+        try content.write(to: url, atomically: true, encoding: .utf8)
+
+        let snap = f2MakeSnapshot(url: url, fileSize: content.utf8.count)
+        let limits = CodexLocalScanLimits(
+            maxSessionFiles: 8, maxEventsPerFile: 100, maxTotalParsedBytes: 64 * 1024 * 1024,
+            maxJSONLLineBytes: 8 * 1024 * 1024, readChunkBytes: 24
+        )
+        let files = await CodexFetcher.cachedSessionEvents(for: [snap], limits: limits)
+        let events = files.first?.events ?? []
+
+        // 原始解析层：ms → 秒；payload 缺字段 → nil
+        let taskCompletes = events.compactMap { event -> Double?? in
+            if case .taskCompleted(_, _, let ttft) = event { return .some(ttft) }
+            return nil
+        }
+        XCTAssertEqual(taskCompletes.count, 2)
+        XCTAssertEqual(taskCompletes[0] ?? -1, 0.864, accuracy: 1e-9, "ms → 秒")
+        XCTAssertNil(taskCompletes[1], "payload 缺 time_to_first_token_ms → nil")
+
+        // 严格数值转换：负值 / NaN 拒绝，小数 ms 照收（Double 版 helper）
+        XCTAssertNil(CodexFetcher.nonNegativeDoubleValue(NSNumber(value: -5)), "负 ms 拒绝")
+        XCTAssertNil(CodexFetcher.nonNegativeDoubleValue(Double.nan), "NaN 拒绝")
+        XCTAssertEqual(CodexFetcher.nonNegativeDoubleValue(NSNumber(value: 1_250.5)) ?? 0, 1_250.5, accuracy: 1e-9, "小数 ms 照收")
+
+        // 汇总层：turn-ttft 的第一条样本回填 0.864s，第二条不回填；turn-empty 全 nil
+        let base = try XCTUnwrap(DateParser.parse("2026-08-12T00:00:00Z"))
+        let daily = [CodexFetcher.DailyUsageWindow(
+            startDate: base.addingTimeInterval(-1),
+            endDate: base.addingTimeInterval(60)
+        )]
+        let result = CodexFetcher.summarizeLocalUsage(
+            windows: [:],
+            dailyWindows: daily,
+            sessionFiles: files
+        )
+        let samples = result.recentSamples
+        XCTAssertEqual(samples.count, 3)
+        let ttftSamples = samples.filter { $0.promptID == "codex:turn-ttft" }
+        XCTAssertEqual(ttftSamples.count, 2)
+        XCTAssertEqual(ttftSamples[0].ttftSeconds ?? 0, 0.864, accuracy: 1e-9, "turn 首条 record 样本回填")
+        XCTAssertNil(ttftSamples[1].ttftSeconds, "turn 次调不回填（turn 级粒度）")
+        let emptySamples = samples.filter { $0.promptID == "codex:turn-empty" }
+        XCTAssertEqual(emptySamples.count, 1)
+        XCTAssertNil(emptySamples[0].ttftSeconds, "task_complete 无 TTFT 字段 → 样本保持 nil")
     }
 }

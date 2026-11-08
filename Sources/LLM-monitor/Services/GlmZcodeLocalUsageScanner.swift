@@ -24,14 +24,16 @@ import os
 @MainActor
 final class GlmZcodeLocalUsageScanner: SingleDBSnapshotScanner<GlmLocalUsage>, @unchecked Sendable {
     nonisolated static let scanLogTag = "[glm-zcode-scan]"
-    /// 缓存版本 11：ZCode 同库内非智谱 provider（`minimax` / `deepseek`）按
+    /// 缓存版本 12：样本新增 `ttftSeconds`（`model_usage.time_to_first_token_ms`
+    /// 原生逐调用列，主表与非智谱分片同口径）。v11 快照该字段恒为 nil，升版重扫补齐。
+    /// （v11：ZCode 同库内非智谱 provider（`minimax` / `deepseek`）按
     /// `ZcodeProviderSlice` 前缀切出分片，随快照一起供 MiniMax / DeepSeek 卡消费。
     /// v10 快照的 `providerSlices` 恒为 nil，直接复用会在卡片上永久缺这条来源，
     /// 必须重扫补齐。
-    /// （v10：识别 Zcode `0020_provider_model_selection` 迁移后的
+    /// v10：识别 Zcode `0020_provider_model_selection` 迁移后的
     /// `account:bigmodel-` 前缀；v9：provider 三分类，额度窗口统计改为「仅正式
     /// Coding Plan 计入」的白名单口径——见 `spec/harnesses/zcode.md` 的 Off-peak 节。）
-    nonisolated static let cacheIndexVersion = 11
+    nonisolated static let cacheIndexVersion = 12
 
     /// 整个扫描 pipeline 的串行锁（跨实例共享）。
     nonisolated static let pipelineMutex = AsyncMutex()

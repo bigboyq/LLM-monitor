@@ -272,7 +272,7 @@ final class DshLocalUsageScanner: LocalUsageScannerBase<DshLocalUsage>, @uncheck
             )
             try saveIndex(
                 DshCacheIndex(
-                    version: 5,
+                    version: 6,
                     files: [],
                     snapshot: empty,
                     calendarSignature: LocalUsageCalendarSignature.make(calendar)
@@ -351,7 +351,7 @@ final class DshLocalUsageScanner: LocalUsageScannerBase<DshLocalUsage>, @uncheck
             return Self.markPartial(lastGood)
         }
         index = DshCacheIndex(
-            version: 5,
+            version: 6,
             files: outcome.processedFingerprints,
             snapshot: snapshot,
             calendarSignature: currentCalendarSignature
@@ -557,6 +557,10 @@ private struct DshParsedUsage: Sendable {
     /// 解析期差分好再落 `DshFileParseResult`，缓存命中时无需重放事件序。
     /// nil = step/start 缺失、turn/step 对不上或差值非法。
     let durationSeconds: Double?
+    /// 单次调用首字延迟（该 step 首条 `assistant/chunk.time` −
+    /// `step/start.time`，秒）。nil = 非流式调用、v4 文件（无 chunk 事件流）、
+    /// key 对不上或差值非正。
+    let ttftSeconds: Double?
     let turn: Int?
     let step: Int?
     let seq: Int?
@@ -811,6 +815,7 @@ private extension DshLocalUsageScanner {
     ) throws -> DshFileParseResult {
         var context: DshProviderContext?
         var stepStarts: [String: Int] = [:]
+        var stepFirstChunkMs: [String: Int] = [:]
         var usages: [DshParsedUsage] = []
         var activeProviders = Set<String>()
         var seen = Set<String>()
@@ -836,6 +841,7 @@ private extension DshLocalUsageScanner {
                     limits: limits,
                     context: &context,
                     stepStarts: &stepStarts,
+                    stepFirstChunkMs: &stepFirstChunkMs,
                     usages: &usages,
                     activeProviders: &activeProviders,
                     seen: &seen
@@ -864,6 +870,7 @@ private extension DshLocalUsageScanner {
         let decoder = JSONDecoder()
         var context: DshProviderContext?
         var stepStarts: [String: Int] = [:]
+        var stepFirstChunkMs: [String: Int] = [:]
         var usages: [DshParsedUsage] = []
         var activeProviders = Set<String>()
         var seen = Set<String>()
@@ -906,6 +913,7 @@ private extension DshLocalUsageScanner {
                         limits: limits,
                         context: &context,
                         stepStarts: &stepStarts,
+                        stepFirstChunkMs: &stepFirstChunkMs,
                         usages: &usages,
                         activeProviders: &activeProviders,
                         seen: &seen
@@ -932,6 +940,7 @@ private extension DshLocalUsageScanner {
                 limits: limits,
                 context: &context,
                 stepStarts: &stepStarts,
+                stepFirstChunkMs: &stepFirstChunkMs,
                 usages: &usages,
                 activeProviders: &activeProviders,
                 seen: &seen
@@ -940,15 +949,19 @@ private extension DshLocalUsageScanner {
         return DshFileParseResult(usages: usages, activeProviders: activeProviders)
     }
 
-    /// 一级过滤 marker 的字节形态：只有这四类行会被 `consumeLine` 消费，
-    /// 其余行（assistant/chunk、tool-call 等占解压后字节的绝大多数）无需进
+    /// 一级过滤 marker 的字节形态：只有命中这些 marker 的行才可能被
+    /// `consumeLine` 消费，其余行（tool-call 等占解压后字节的大多数）无需进
     /// JSONDecoder。marker 为纯 ASCII，不会出现在 UTF-8 多字节序列内部，
     /// 字节级命中与解码后的 type 判断一致，不会漏判。step/start / step/end
     /// 只为差分出单次调用时长（发起时刻表进、清除防泄漏），不产 token。
+    /// assistant/chunk 只为差分单次调用 TTFT（每 step 首条才被解析，见
+    /// `consumeLine` 的节流注释）；v4 文件没有 chunk 事件流（chunk 聚合进
+    /// `assistant/attempt.data.stream[]`），TTFT 自然全部落 nil。
     private nonisolated static let requestContextMarker = Data("request/context".utf8)
     private nonisolated static let assistantMessageMarker = Data("assistant/message".utf8)
     private nonisolated static let stepStartMarker = Data("step/start".utf8)
     private nonisolated static let stepEndMarker = Data("step/end".utf8)
+    private nonisolated static let assistantChunkMarker = Data("assistant/chunk".utf8)
 
     private nonisolated static func consumeLine(
         _ line: Data,
@@ -957,10 +970,24 @@ private extension DshLocalUsageScanner {
         limits: DshLocalUsageScanLimits,
         context: inout DshProviderContext?,
         stepStarts: inout [String: Int],
+        stepFirstChunkMs: inout [String: Int],
         usages: inout [DshParsedUsage],
         activeProviders: inout Set<String>,
         seen: inout Set<String>
     ) {
+        // assistant/chunk 占解压后字节的大头，但它只在「尚有 step 未记录到首条
+        // chunk」时才有信息量（每 step 只取第一条 → TTFT）。字节级节流：所有
+        // pending step 都已见过首 chunk 后，纯 chunk 行不再进 JSONDecoder，按
+        // 字节扫描直接跳过；首个 step/start 会重新打开解码窗口。
+        let hasChunkMarker = line.range(of: assistantChunkMarker) != nil
+        if hasChunkMarker,
+           line.range(of: requestContextMarker) == nil,
+           line.range(of: assistantMessageMarker) == nil,
+           line.range(of: stepStartMarker) == nil,
+           line.range(of: stepEndMarker) == nil,
+           !stepStarts.keys.contains(where: { stepFirstChunkMs[$0] == nil }) {
+            return
+        }
         guard line.isEmpty == false,
               line.count <= limits.maxJSONLLineBytes,
               // 字节级预过滤：与用量无关的行不进 JSONDecoder（解压后逐行
@@ -968,7 +995,8 @@ private extension DshLocalUsageScanner {
               line.range(of: requestContextMarker) != nil
                   || line.range(of: assistantMessageMarker) != nil
                   || line.range(of: stepStartMarker) != nil
-                  || line.range(of: stepEndMarker) != nil,
+                  || line.range(of: stepEndMarker) != nil
+                  || hasChunkMarker,
               let event = try? decoder.decode(DshRawEvent.self, from: line) else {
             return
         }
@@ -989,7 +1017,20 @@ private extension DshLocalUsageScanner {
             }
         } else if event.type == "step/end" {
             if let turn = event.data?.turn, let step = event.data?.step {
-                stepStarts.removeValue(forKey: stepStartKey(sessionID: sessionID, turn: turn, step: step))
+                let key = stepStartKey(sessionID: sessionID, turn: turn, step: step)
+                stepStarts.removeValue(forKey: key)
+                stepFirstChunkMs.removeValue(forKey: key)
+            }
+        } else if event.type == "assistant/chunk" {
+            // 每 step 只认首条 chunk（首个流式输出块的到达时刻 = 首 token 时刻）。
+            // turn/step 缺一无法与 step/start 配对，直接跳过；重复 chunk（首条已
+            // 记录）也跳过。v4 文件无此事件类型（chunk 聚合进 attempt.data.stream），
+            // 相应调用自然落 nil。
+            if let turn = event.data?.turn, let step = event.data?.step, let timeMs = event.time {
+                let key = stepStartKey(sessionID: sessionID, turn: turn, step: step)
+                if stepStarts[key] != nil, stepFirstChunkMs[key] == nil {
+                    stepFirstChunkMs[key] = timeMs
+                }
             }
         } else if event.type == "assistant/message",
                   let usage = event.data?.usage,
@@ -1011,11 +1052,23 @@ private extension DshLocalUsageScanner {
                 // assistant/message 之后）。step/start 缺失、key 对不上、差值非正
                 // 或超 1h（账本异常）都落 nil，宁缺勿假。
                 var durationSeconds: Double? = nil
-                if let turn = event.data?.turn, let step = event.data?.step, let timeMs = event.time,
-                   let startMs = stepStarts.removeValue(forKey: stepStartKey(sessionID: sessionID, turn: turn, step: step)) {
-                    let deltaMs = timeMs - startMs
-                    if deltaMs > 0, deltaMs <= 3_600_000 {
-                        durationSeconds = Double(deltaMs) / 1000.0
+                var ttftSeconds: Double? = nil
+                if let turn = event.data?.turn, let step = event.data?.step, let timeMs = event.time {
+                    let anchorKey = stepStartKey(sessionID: sessionID, turn: turn, step: step)
+                    if let startMs = stepStarts.removeValue(forKey: anchorKey) {
+                        let deltaMs = timeMs - startMs
+                        if deltaMs > 0, deltaMs <= 3_600_000 {
+                            durationSeconds = Double(deltaMs) / 1000.0
+                        }
+                        // TTFT 差分：该 step 首条 assistant/chunk.time − step/start.time
+                        // （毫秒）。缺失（非流式 / v4）或差值非正 → nil；此处只做
+                        // 忠实换算，范围过滤归聚合层。
+                        if let firstChunkMs = stepFirstChunkMs.removeValue(forKey: anchorKey) {
+                            let ttftDeltaMs = firstChunkMs - startMs
+                            if ttftDeltaMs > 0 {
+                                ttftSeconds = Double(ttftDeltaMs) / 1000.0
+                            }
+                        }
                     }
                 }
                 let parsed = normalizeUsage(
@@ -1032,6 +1085,7 @@ private extension DshLocalUsageScanner {
                     outputTokens: parsed.output,
                     reasoningTokens: parsed.reasoning,
                     durationSeconds: durationSeconds,
+                    ttftSeconds: ttftSeconds,
                     turn: event.data?.turn,
                     step: event.data?.step,
                     seq: event.seq,
@@ -1099,7 +1153,8 @@ private extension DshLocalUsageScanner {
             // The `sourceProviderID` marker stays so diagnostics can still
             // tell where each sample came from.
             sourceProviderID: "dsh:\(usage.provider)",
-            durationSeconds: usage.durationSeconds
+            durationSeconds: usage.durationSeconds,
+            ttftSeconds: usage.ttftSeconds
         )
         provider.recentSamples.append(sample)
         aggregate.providers[usage.provider] = provider
@@ -1337,7 +1392,9 @@ private struct DshCacheIndex: Codable, Equatable, Sendable {
 
 private extension DshCacheIndex {
     func matches(_ fingerprint: CacheFingerprint) -> Bool {
-        version == 5 && files == fingerprint.files
+        // v6：样本新增 ttftSeconds（非 v4 文件每 step 首条 assistant/chunk −
+        // step/start 差分）；v5 快照该字段恒为 nil，版本不匹配即整体重建。
+        version == 6 && files == fingerprint.files
     }
 }
 
@@ -1349,8 +1406,8 @@ private extension DshLocalUsageScanner {
         try ScannerIndexIO.loadIndex(
             cacheDir: cacheDir,
             fileManager: fileManager,
-            currentVersion: 5,
-            empty: DshCacheIndex(version: 5, files: [], snapshot: nil, calendarSignature: nil),
+            currentVersion: 6,
+            empty: DshCacheIndex(version: 6, files: [], snapshot: nil, calendarSignature: nil),
             version: { $0.version },
             logTag: "[dsh-scan]"
         )

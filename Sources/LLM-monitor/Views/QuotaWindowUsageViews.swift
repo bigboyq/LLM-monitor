@@ -142,8 +142,10 @@ struct QuotaWindowUsageSegmentControl: View {
 }
 
 /// 「额度窗口」区块：将原「额度分析」与「额度详情」合并为单一可切换模块。
-/// 标题行右侧带「分析 / 用量」双段 capsule 切换控件，两态共用同一套 7 列 Grid 骨架与列宽预算，
-/// 切换零回流；下方常驻挂载多额度池合计脚注与重置卡详情模块。
+/// 标题行右侧带「分析 / 用量」双段 capsule 切换控件，两态共用同一套 Grid 骨架
+/// （行高与重置日期列一致，切换零回流）；「分析」态 7 列，「用量」态 8 列
+/// （2026-11-08 在 Reason 与速度之间加 TTFT，TTFT/速度用各自的 30pt 窄列）；
+/// 下方常驻挂载多额度池合计脚注与重置卡详情模块。
 struct QuotaWindowUsageSection: View {
     let snapshot: QuotaWindowUsageSnapshot
     var tint: Color = .primary
@@ -201,6 +203,12 @@ struct QuotaWindowUsageSection: View {
         /// 「分析」态不读它（价值格照旧）；nil = 窗口内没有时长有效的样本
         /// （显示 `—`，不是 0）。默认 nil 让既有构造点（fleet 行、测试夹具）零改动。
         let tokensPerSecond: Double?
+        /// 用量态「TTFT」列的窗口首字延迟均值（秒）：窗口 TTFT 算术平均，口径
+        /// 唯一实现在 `LocalUsageSummaryBuilder.windowTTFTMeanSeconds`。与
+        /// tokensPerSecond 同点赋值、同源同批样本；nil = 窗口内没有 TTFT 有效的
+        /// 样本（显示 `—`，不是 0）。默认 nil 让既有构造点零改动；fleet 行无本地
+        /// 样本恒为 nil（wire 协议不扩展）。
+        let ttftSeconds: Double?
 
         init(
             label: String,
@@ -208,7 +216,8 @@ struct QuotaWindowUsageSection: View {
             cost: ModelCostEstimate?,
             costText: String? = nil,
             resetsAt: Date? = nil,
-            tokensPerSecond: Double? = nil
+            tokensPerSecond: Double? = nil,
+            ttftSeconds: Double? = nil
         ) {
             self.label = label
             self.metrics = metrics
@@ -216,6 +225,7 @@ struct QuotaWindowUsageSection: View {
             self.costText = costText
             self.resetsAt = resetsAt
             self.tokensPerSecond = tokensPerSecond
+            self.ttftSeconds = ttftSeconds
         }
     }
 
@@ -247,17 +257,28 @@ struct QuotaWindowUsageSection: View {
         outputInput: "产出比", think: "思考", value: "价值", resetDate: "重置日期"
     )
 
-    /// 「用量」态表头行文案（七列）。第 6 列是窗口 token 速度（tok/s），
-    /// 不再是价值（金额仍在「分析」态的价值列）。
+    /// 「用量」态表头行文案。第 6 列是窗口 token 速度（tok/s），
+    /// 不再是价值（金额仍在「分析」态的价值列）；TTFT 列插在 Reason 与速度之间，
+    /// 7→8 列只发生在用量态（「分析」态仍为七列）。
     static let rawTableHeaders = (
         type: "类型", input: "Input", cached: "Cached",
-        output: "Output", reason: "Reason", value: "速度", resetDate: "重置日期"
+        output: "Output", reason: "Reason", ttft: "TTFT", value: "速度", resetDate: "重置日期"
     )
 
     // MARK: - 列宽预算与排版常量（卡内容宽 420pt 约束）
-    static let horizontalSpacing: CGFloat = 8
+    // 「分析」态 7 列：类型(natural ~20) + 4×42 + 价值(58) + 重置日期(126) + 6×6 间距 = ~408 ≤ 420。
+    // 「用量」态 8 列（2026-11-08 加 TTFT）：类型 + 4×42 + TTFT(30) + 速度(30) + 重置日期 + 7×6 间距
+    // = ~416 ≤ 420——TTFT 与速度各自用 30pt 窄列（数值 ≤ 4 字符 + 表头 4~5 字符都放得下），
+    // 不挤占 42pt 中间列与 126pt 重置日期；价值列 58pt 只属于「分析」态。
+    static let horizontalSpacing: CGFloat = 6
     static let middleColumnWidth: CGFloat = 42
     static let valueColumnWidth: CGFloat = 58
+    /// 「用量」态 TTFT 列宽：表头「TTFT」与数值（`0.86` / `12.5` / `124`，恒 ≤ 4 字符）
+    /// 的自然宽 ≤ 28pt，30pt 留 2pt 余量。
+    static let ttftColumnWidth: CGFloat = 30
+    /// 「用量」态速度列宽：表头「速度」（2 字 ≈ 20pt）与紧凑数值（`8.6` / `246` / `1.0K`）
+    /// 的自然宽 ≤ 28pt。原与「分析」态价值列共用 58pt，8 列化后独立成窄列才放得下。
+    static let usageSpeedColumnWidth: CGFloat = 30
     static let resetDateColumnLeadingGap: CGFloat = 6
     static let resetDateColumnWidth: CGFloat = 126
 
@@ -294,7 +315,8 @@ struct QuotaWindowUsageSection: View {
                 cost: interval.cost,
                 costText: interval.costText,
                 resetsAt: interval.resetsAt,
-                tokensPerSecond: interval.tokensPerSecond
+                tokensPerSecond: interval.tokensPerSecond,
+                ttftSeconds: interval.ttftSeconds
             ))
         }
         if let weekly = snapshot.weekly {
@@ -304,7 +326,8 @@ struct QuotaWindowUsageSection: View {
                 cost: weekly.cost,
                 costText: weekly.costText,
                 resetsAt: weekly.resetsAt,
-                tokensPerSecond: weekly.tokensPerSecond
+                tokensPerSecond: weekly.tokensPerSecond,
+                ttftSeconds: weekly.ttftSeconds
             ))
         }
         if let today {
@@ -314,7 +337,8 @@ struct QuotaWindowUsageSection: View {
                 cost: today.cost,
                 costText: today.costText,
                 resetsAt: nil,
-                tokensPerSecond: today.tokensPerSecond
+                tokensPerSecond: today.tokensPerSecond,
+                ttftSeconds: today.ttftSeconds
             ))
         }
         if let offPeak {
@@ -324,7 +348,8 @@ struct QuotaWindowUsageSection: View {
                 cost: offPeak.cost,
                 costText: offPeak.costText,
                 resetsAt: nil,
-                tokensPerSecond: offPeak.tokensPerSecond
+                tokensPerSecond: offPeak.tokensPerSecond,
+                ttftSeconds: offPeak.ttftSeconds
             ))
         }
         for row in glmCategoryRows {
@@ -333,7 +358,8 @@ struct QuotaWindowUsageSection: View {
                 metrics: row.metrics,
                 cost: row.cost,
                 resetsAt: nil,
-                tokensPerSecond: row.tokensPerSecond
+                tokensPerSecond: row.tokensPerSecond,
+                ttftSeconds: row.ttftSeconds
             ))
         }
         return result.filter { $0.metrics.totalTokens > 0 }
@@ -386,9 +412,21 @@ struct QuotaWindowUsageSection: View {
         Formatters.formatSpeed(rate)
     }
 
+    /// 用量态「TTFT」列的窗口首字延迟均值文案：统一走 `Formatters.formatTTFT`
+    /// （`—` / 两位小数 `0.86` / 一位 `12.5` / 整数 `124`，单位秒），与 speedText
+    /// 同一镜像模式。数值恒 ≤ 4 字符，30pt 窄列（ttftColumnWidth）放得下。
+    static func ttftText(_ seconds: Double?) -> String {
+        Formatters.formatTTFT(seconds)
+    }
+
     /// 用量态「速度」表头的 hover 说明：列名只有「速度」两个字，光标停上去才
     /// 说得出口径（分子是哪两桶、哪些调用不参与）——与产出比格的 help 同一模式。
     static let speedColumnHelp = "窗口内 (Output+Reason) ÷ 调用时长，tok/s；时长未知的调用不参与"
+
+    /// 用量态「TTFT」表头的 hover 说明：与 speedColumnHelp 同一模式——格子里只有
+    /// 一个秒数或一个 `—`，口径（算术平均、哪些调用不参与、MiniMax Code 的 0）
+    /// 挂在表头上。
+    static let ttftColumnHelp = "窗口内调用首字延迟均值（秒）；无 TTFT 数据的调用不参与，MiniMax Code 无数据恒为 0"
 
     /// 产出比格子的 hover 说明：格子里只有一个百分比或一个 `—`，
     /// 光标停上去才说得出代表什么——`—` 尤其需要，它不是 0%。
@@ -551,7 +589,11 @@ struct QuotaWindowUsageSection: View {
                 if visibility.reason {
                     headerCell(Self.rawTableHeaders.reason, width: Self.middleColumnWidth, alignment: .trailing)
                 }
-                headerCell(Self.rawTableHeaders.value, width: Self.valueColumnWidth, alignment: .trailing)
+                // 用量态 7→8 列（TTFT 插在 Reason 与速度之间）只发生在这里；
+                // 「分析」态保持 7 列。TTFT 与速度各自用 30pt 窄列（见常量注释）。
+                headerCell(Self.rawTableHeaders.ttft, width: Self.ttftColumnWidth, alignment: .trailing)
+                    .help(Self.ttftColumnHelp)
+                headerCell(Self.rawTableHeaders.value, width: Self.usageSpeedColumnWidth, alignment: .trailing)
                     .help(Self.speedColumnHelp)
                 resetDateHeader
             }
@@ -617,6 +659,7 @@ struct QuotaWindowUsageSection: View {
                 if visibility.reason {
                     cell(Formatters.formatTokenCountCompact(row.metrics.reasoning), width: Self.middleColumnWidth)
                 }
+                cell(Self.ttftText(row.ttftSeconds), width: Self.ttftColumnWidth)
                 speedCell(row.tokensPerSecond)
                 resetDateCell(row.resetsAt)
             }
@@ -690,13 +733,14 @@ struct QuotaWindowUsageSection: View {
         )
     }
 
-    /// 用量态第 6 列的速度格：纯数字（tok/s），nil → `—`。58pt 宽与 trailing 对齐
-    /// 同「分析」态的价值列，两态切换骨架零迁移；口径说明挂在表头（speedColumnHelp）。
+    /// 用量态的速度格：纯数字（tok/s），nil → `—`。30pt 窄列（8 列化后不再与
+    /// 「分析」态价值列共用 58pt，见 `usageSpeedColumnWidth`）；口径说明挂在表头
+    /// （speedColumnHelp）。
     private func speedCell(_ rate: Double?) -> some View {
         flexibleCellFrame(
             Text(Self.speedText(rate))
                 .foregroundStyle(.secondary),
-            width: Self.valueColumnWidth,
+            width: Self.usageSpeedColumnWidth,
             alignment: .trailing
         )
     }

@@ -434,4 +434,40 @@ final class GlmZcodeDBReaderTests: GlmTestCase {
         XCTAssertEqual(deepseekSamples.count, 1)
         XCTAssertEqual(deepseekSamples[0].durationSeconds, 2.0, "分片构造点同口径（毫秒 → 秒）")
     }
+
+    /// `model_usage.time_to_first_token_ms`（原生逐调用 TTFT 列）写入 sample 的
+    /// `ttftSeconds`（秒）：正常值毫秒→秒、NULL 落 nil、负值落 nil；
+    /// 智谱主样本与非智谱分片样本两个构造点同口径。
+    func testGlmZcodeDBReaderWritesTTFTSecondsIntoSamples() throws {
+        let db = try makeDatabase()
+        defer { try? FileManager.default.removeItem(atPath: db) }
+        let day = Self.todayMidnight(calendar: localCalendar())
+        let ts = ms(day)
+        let cal = localCalendar()
+
+        // 正常：864ms → 0.864s
+        try insert(databaseURL: db, id: "f1", sessionID: "s1", turnID: "t1", timestamp: ts,
+                   input: 100, output: 10, ttftMs: 864)
+        // 缺失（NULL）：约 29% 行账本未提供 → nil
+        try insert(databaseURL: db, id: "f2", sessionID: "s1", turnID: "t2", timestamp: ts + 1,
+                   input: 100, output: 10)
+        // 负值：账本异常 → nil
+        try insert(databaseURL: db, id: "f3", sessionID: "s1", turnID: "t3", timestamp: ts + 2,
+                   input: 100, output: 10, ttftMs: -1)
+        // 非智谱分片行（deepseek）同样带 TTFT
+        try insert(databaseURL: db, id: "f4", sessionID: "s2", turnID: "t4", timestamp: ts + 3,
+                   input: 200, output: 20, model: "deepseek-flash", provider: "deepseek",
+                   ttftMs: 1_000)
+
+        let aggregate = try GlmZcodeLocalUsageScanner.aggregateFromDB(dbPath: URL(fileURLWithPath: db), calendar: cal)
+
+        XCTAssertEqual(aggregate.samples.count, 3)
+        XCTAssertEqual(aggregate.samples[0].ttftSeconds, 0.864, "毫秒 → 秒")
+        XCTAssertNil(aggregate.samples[1].ttftSeconds, "time_to_first_token_ms 缺失落 nil")
+        XCTAssertNil(aggregate.samples[2].ttftSeconds, "time_to_first_token_ms 负值落 nil")
+
+        let deepseekSamples = try XCTUnwrap(aggregate.providerSlices.samples["deepseek"])
+        XCTAssertEqual(deepseekSamples.count, 1)
+        XCTAssertEqual(deepseekSamples[0].ttftSeconds, 1.0, "分片构造点同口径（毫秒 → 秒）")
+    }
 }

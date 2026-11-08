@@ -155,12 +155,14 @@ final class AgyLocalUsageScannerTests: XCTestCase {
     }
 
     /// 建一个 `conversations/<sessionID>.db`（steps 表形态与真实 schema 的读取
-    /// 面一致：idx / step_type / metadata BLOB）。
+    /// 面一致：idx / step_type / metadata BLOB）。`genRows` 非空时一并建
+    /// `gen_metadata` 表并写入逐行 data blob（TTFT 用例）。
     @discardableResult
     private func writeConversationDB(
         _ fixture: Fixture,
         sessionID: String,
-        steps: [(idx: Int, stepType: Int, metadata: Data?)]
+        steps: [(idx: Int, stepType: Int, metadata: Data?)],
+        genRows: [Data] = []
     ) throws -> URL {
         let conversations = fixture.brainRoot.deletingLastPathComponent()
             .appendingPathComponent("conversations", isDirectory: true)
@@ -192,6 +194,18 @@ final class AgyLocalUsageScannerTests: XCTestCase {
             ),
             SQLITE_OK
         )
+        if !genRows.isEmpty {
+            XCTAssertEqual(
+                sqlite3_exec(
+                    database,
+                    "CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, data BLOB, size INTEGER);",
+                    nil,
+                    nil,
+                    nil
+                ),
+                SQLITE_OK
+            )
+        }
         var statement: OpaquePointer?
         XCTAssertEqual(
             sqlite3_prepare_v2(database, "INSERT INTO steps VALUES (?, ?, ?);", -1, &statement, nil),
@@ -216,7 +230,52 @@ final class AgyLocalUsageScannerTests: XCTestCase {
             }
             XCTAssertEqual(sqlite3_step(statement), SQLITE_DONE)
         }
+        if !genRows.isEmpty {
+            var genStatement: OpaquePointer?
+            XCTAssertEqual(
+                sqlite3_prepare_v2(
+                    database,
+                    "INSERT INTO gen_metadata (idx, data, size) VALUES (?, ?, ?);",
+                    -1, &genStatement, nil
+                ),
+                SQLITE_OK
+            )
+            guard let genStatement else {
+                XCTFail("failed to prepare gen_metadata fixture insert")
+                return dbURL
+            }
+            defer { sqlite3_finalize(genStatement) }
+            for (offset, data) in genRows.enumerated() {
+                sqlite3_reset(genStatement)
+                sqlite3_bind_int64(genStatement, 1, Int64(offset + 1))
+                data.withUnsafeBytes { bytes in
+                    sqlite3_bind_blob(genStatement, 2, bytes.baseAddress, Int32(data.count), transient)
+                }
+                sqlite3_bind_int64(genStatement, 3, Int64(data.count))
+                XCTAssertEqual(sqlite3_step(genStatement), SQLITE_DONE)
+            }
+        }
         return dbURL
+    }
+
+    /// gen_metadata.data 最小 fixture：f1 事件消息内的 f11 Duration
+    ///（timeToFirstToken，seconds 缺省 = proto3 <1s 形态）与 f20 map 的
+    /// last_step_index 条目（连接键 steps.idx == last_step_index + 1）。
+    private func genData(lastStepIndex: UInt64, ttft: (seconds: UInt64, nanos: UInt64)?) -> Data {
+        var event: [UInt8] = []
+        if let ttft {
+            var duration: [UInt8] = []
+            // seconds == 0 时不写字节，模拟 proto3 默认值省略（<1s 只剩 nanos）。
+            if ttft.seconds > 0 { duration += [0x08] + varintBytes(ttft.seconds) }
+            duration += [0x10] + varintBytes(ttft.nanos)
+            event += [0x5A, UInt8(duration.count)] + duration
+        }
+        let key = Array("last_step_index".utf8)
+        let value = Array(String(lastStepIndex).utf8)
+        let mapEntry = [0x0A, UInt8(key.count)] + key + [0x12, UInt8(value.count)] + value
+        // field 20 的 varint 键 = 20 << 3 | 2 = 162 → 0xA2 0x01
+        event += [0xA2, 0x01, UInt8(mapEntry.count)] + mapEntry
+        return Data([0x0A, UInt8(event.count)] + event)
     }
 
     private func sample(_ result: AgyLocalUsage, _ promptID: String) throws -> LocalTokenUsageSample {
@@ -855,6 +914,69 @@ final class AgyLocalUsageScannerTests: XCTestCase {
         XCTAssertNil(AntigravityStepTimestampReader.streamDurationNanosForTest(from: Data([0x08, 0x01])))
     }
 
+    /// reader 层：gen_metadata `f1.f11` Duration（timeToFirstToken）的解析——
+    /// 完整 seconds+nanos、<1s 时 proto3 省略 seconds 只剩 nanos、空子消息
+    /// （双默认值缺省）→ nil、坏 blob → nil。
+    func testStepTimestampReaderParsesTTFTDurationFields() {
+        let full = Data([0x08] + varintBytes(1) + [0x10] + varintBytes(669_597_334))
+        XCTAssertEqual(
+            AntigravityStepTimestampReader.ttftDurationSecondsForTest(from: full) ?? 0,
+            1.669_597_334, accuracy: 1e-9,
+            "seconds + nanos 完整 Duration"
+        )
+        // <1s：wire 上只剩 nanos → 按 0 秒 + nanos 处理。
+        let nanosOnly = Data([0x10] + varintBytes(864_000_000))
+        XCTAssertEqual(
+            AntigravityStepTimestampReader.ttftDurationSecondsForTest(from: nanosOnly) ?? 0,
+            0.864, accuracy: 1e-9
+        )
+        // 空子消息（两字段都缺省）→ 视为上游未提供；坏 blob（group wire type）→ nil。
+        XCTAssertNil(AntigravityStepTimestampReader.ttftDurationSecondsForTest(from: Data()))
+        XCTAssertNil(AntigravityStepTimestampReader.ttftDurationSecondsForTest(from: Data([0x0B])))
+    }
+
+    /// gen_metadata f1.f11（与 Antigravity 同 schema 同字段）经
+    /// `steps.idx == last_step_index + 1` 连接后按 step_index 逐调用供给 TTFT；
+    /// <1s 只有 nanos 的 proto3 形态照常换算；连接不命中 / gen 行未写 f11 的
+    /// 计量行保持 nil。
+    func testConversationDBProvidesTTFTPerCall() throws {
+        let fixture = makeFixture()
+        let epoch = UInt64(t0.timeIntervalSince1970)
+        writeSession(fixture, sessionID: "session-a", mainLines: [
+            agyLine(type: "PLANNER_RESPONSE", createdAt: iso(t0), stepIndex: 1, input: 10, cacheRead: 0, output: 5),
+            agyLine(type: "PLANNER_RESPONSE", createdAt: iso(t0.addingTimeInterval(60)), stepIndex: 2, input: 8, cacheRead: 0, output: 3),
+            agyLine(type: "PLANNER_RESPONSE", createdAt: iso(t0.addingTimeInterval(120)), stepIndex: 3, input: 6, cacheRead: 0, output: 2),
+        ])
+        try writeConversationDB(fixture, sessionID: "session-a", steps: [
+            (idx: 1, stepType: 15, metadata: stepMetadata(startSeconds: epoch, endSeconds: epoch + 5)),
+            (idx: 2, stepType: 15, metadata: stepMetadata(startSeconds: epoch, endSeconds: epoch + 6)),
+        ], genRows: [
+            // last_step_index 0 → steps.idx 1（== 计量行 step_index 1）
+            genData(lastStepIndex: 0, ttft: (seconds: 1, nanos: 669_597_334)),
+            // last_step_index 1 → steps.idx 2；<1s 只有 nanos（864ms）
+            genData(lastStepIndex: 1, ttft: (seconds: 0, nanos: 864_000_000)),
+            // last_step_index 2 → steps.idx 3，但 gen 行未写 f11 → 不进映射
+            genData(lastStepIndex: 2, ttft: nil),
+            // last_step_index 99 → steps.idx 100 连接不命中 → 不进映射
+            genData(lastStepIndex: 99, ttft: (seconds: 9, nanos: 0)),
+        ])
+
+        let result = try scan(fixture)
+
+        XCTAssertEqual(
+            try sample(result, "session-a:step:1").ttftSeconds ?? 0, 1.669_597_334, accuracy: 1e-9,
+            "f11 完整 Duration → 秒"
+        )
+        XCTAssertEqual(
+            try sample(result, "session-a:step:2").ttftSeconds ?? 0, 0.864, accuracy: 1e-9,
+            "<1s 只有 nanos → 按 0 秒 + nanos 处理"
+        )
+        XCTAssertNil(
+            try sample(result, "session-a:step:3").ttftSeconds,
+            "gen 行未写 f11 / 连接不命中 → 样本 ttftSeconds 保持 nil"
+        )
+    }
+
     /// 方案 A：conversations/<session>.db 的 (step_type=15, idx==step_index) 映射
     /// 直接给出真值时长，且优先于方案 B（同 step 存在 GENERIC 标记也不覆盖）；
     /// .db 无匹配 idx 的计量行保持 nil。
@@ -1080,7 +1202,7 @@ final class AgyLocalUsageScannerTests: XCTestCase {
 
         XCTAssertEqual(result.eventCount, 1, "v2 索引必须被拒绝，按真实文件重新聚合")
         let saved = try JSONSerialization.jsonObject(with: Data(contentsOf: fixture.cacheDir)) as? [String: Any]
-        XCTAssertEqual(saved?["version"] as? Int, 3, "重建后的索引以 v3 落盘")
+        XCTAssertEqual(saved?["version"] as? Int, 4, "重建后的索引以 v4 落盘")
         let rebuilt = try sample(result, "session-a:step:1")
         XCTAssertNil(rebuilt.durationSeconds, "无 .db、无 GENERIC 标记的行时长保持 nil（重建路径不炸）")
     }

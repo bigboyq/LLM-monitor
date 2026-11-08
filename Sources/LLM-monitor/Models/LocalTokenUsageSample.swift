@@ -26,6 +26,12 @@ struct LocalTokenUsageSample: Equatable, Codable, Sendable {
     /// （`LocalUsageSummaryBuilder.windowTokenRate`，全仓唯一实现）只认
     /// `0.2...3600` 秒内的值，nil 样本分子分母都不计。
     var durationSeconds: Double? = nil
+    /// 单次模型调用首 token 延迟（TTFT，发起→首 token 到达），秒。
+    /// nil = 账本未提供（旧缓存 / 不记录 TTFT 的 harness）。合成 Codable 下
+    /// 旧缓存 JSON 缺该 key 解码为 nil，无需自定义 decode。有效性域与聚合
+    /// 口径见 `LocalUsageSummaryBuilder` 的 TTFT 聚合函数（全仓唯一实现）；
+    /// MiniMax Code 无上游数据，scanner 显式写 0（用户裁定）。
+    var ttftSeconds: Double? = nil
 
     var usage: UsageMetricSummary {
         UsageMetricSummary(
@@ -54,7 +60,8 @@ struct LocalTokenUsageSample: Equatable, Codable, Sendable {
             outputTokens: outputTokens,
             reasoningOutputTokens: reasoningOutputTokens,
             sourceProviderID: sourceProviderID,
-            durationSeconds: durationSeconds
+            durationSeconds: durationSeconds,
+            ttftSeconds: ttftSeconds
         )
     }
 }
@@ -82,6 +89,19 @@ struct PromptSpeedStatistics: Equatable, Sendable {
         validPromptCount: 0,
         totalPromptCount: 0
     )
+}
+
+/// Call-level TTFT (time-to-first-token) distribution for a set of local usage
+/// samples. The statistical unit is a single model call (unlike
+/// `PromptSpeedStatistics`, which groups calls by prompt): every sample with a
+/// valid `ttftSeconds` contributes one value, and MiniMax Code's explicit 0
+/// participates like any other value. `p50` is nil iff there is no valid
+/// sample; `validCallCount` / `totalCallCount` let the UI disclose coverage.
+struct CallTTFTStatistics: Equatable, Sendable {
+    let p50: Double?
+    let validCallCount: Int
+    let totalCallCount: Int
+    static let empty = CallTTFTStatistics(p50: nil, validCallCount: 0, totalCallCount: 0)
 }
 
 /// 本地用量摘要使用的闭区间边界（实际过滤区间为 [start, end)）。
@@ -511,6 +531,70 @@ enum LocalUsageSummaryBuilder {
         guard let duration = sample.durationSeconds else { return false }
         return duration.isFinite && duration >= 0.2 && duration <= 3600
     }
+
+    // MARK: - TTFT（首字延迟）
+
+    /// 调用级 TTFT（首字延迟）P50 分布，全仓唯一实现。统计单位是**单次调用**
+    /// （与 `promptSpeedStatistics` 的 prompt 级不同）：所有 `ttftSeconds` 有效
+    /// 样本排序取中位——偶数个取中间两数平均，奇数取中间值；p50 为 nil 当且
+    /// 仅当无有效样本。MiniMax Code 显式写的 0（无上游数据）正常参与。
+    nonisolated static func callTTFTStatistics(
+        samples: [LocalTokenUsageSample]
+    ) -> CallTTFTStatistics {
+        let values = samples.compactMap { sample -> Double? in
+            guard hasValidTTFT(sample), let ttft = sample.ttftSeconds else { return nil }
+            return ttft
+        }
+        guard !values.isEmpty else { return .empty }
+        let sorted = values.sorted()
+        let middle = sorted.count / 2
+        let p50 = sorted.count.isMultiple(of: 2)
+            ? (sorted[middle - 1] + sorted[middle]) / 2
+            : sorted[middle]
+        return CallTTFTStatistics(
+            p50: p50,
+            validCallCount: sorted.count,
+            totalCallCount: samples.count
+        )
+    }
+
+    /// 窗口 TTFT 算术平均：Σ有效 ttft ÷ 有效调用数（每次调用**等权**）。与
+    /// token 速率的 Σ/Σ 加权不同——TTFT 没有随调用变大的分子量纲，按调用数
+    /// 平均即是窗口口径；MiniMax Code 的 0 也参与（0 是合法值，不是缺失）。
+    /// 无有效样本返回 nil——宁出 `—` 不出假平均。
+    nonisolated static func windowTTFTMeanSeconds(
+        samples: [LocalTokenUsageSample]
+    ) -> Double? {
+        windowTTFTComponents(samples: samples).map { $0.sum / Double($0.count) }
+    }
+
+    /// `windowTTFTMeanSeconds` 的分量形态：返回 (Σttft, 有效调用数)，供
+    /// `QuotaWindowUsageSnapshot.Window` 多额度池合并先 Σttft / Σ次数 再相除
+    /// （模式照 `windowTokenRateComponents`）。有效性过滤与口径全仓只有这一
+    /// 份，`windowTTFTMeanSeconds` 是它的商值形态。
+    nonisolated static func windowTTFTComponents(
+        samples: [LocalTokenUsageSample]
+    ) -> (sum: Double, count: Int)? {
+        let valid = samples.compactMap { sample -> Double? in
+            guard hasValidTTFT(sample), let ttft = sample.ttftSeconds else { return nil }
+            return ttft
+        }
+        guard !valid.isEmpty else { return nil }
+        let sum = valid.reduce(0.0) { $0 + $1 }
+        return (sum: sum, count: valid.count)
+    }
+
+    /// TTFT 有效性共享门（调用级分布与窗口平均同一份）：有限、`>= 0`、
+    /// `<= 3600`（超 1h 多为账本异常）。**0 合法**——MiniMax Code 无上游数据、
+    /// scanner 显式写 0，0 必须参与聚合；这与 `hasValidTokenRateDuration` 的
+    /// `[0.2, 3600]` 下限不同：时长下限挡的是把速率拉成噪声的亚秒样本，而
+    /// TTFT 本来就可以是亚秒级，不能用下限挡 0。
+    private nonisolated static func hasValidTTFT(
+        _ sample: LocalTokenUsageSample
+    ) -> Bool {
+        guard let ttft = sample.ttftSeconds else { return false }
+        return ttft.isFinite && ttft >= 0 && ttft <= 3600
+    }
 }
 
 /// 额度窗口内的本地 token 用量：短周期（`5h`）窗口与周窗口各一条。
@@ -548,6 +632,17 @@ struct QuotaWindowUsageSnapshot: Equatable, Sendable {
         /// 手工构造的 Window（fleet 行 / 测试夹具）缺省 nil，不参与速率合并。
         var rateNumerator: Double? = nil
         var rateDenominator: Double? = nil
+        /// 窗口内本地调用的首字延迟均值（TTFT，秒）：Σ有效 ttft ÷ 有效调用数
+        /// （算术平均，口径唯一实现在 `LocalUsageSummaryBuilder.windowTTFTMeanSeconds`）。
+        /// nil = 窗口内没有 TTFT 有效的样本（不是"首字延迟为 0"），UI 与
+        /// tokensPerSecond 的 `—` 同款处理。
+        var ttftSeconds: Double? = nil
+        /// TTFT 合并用的中间量：Σ有效 ttft（秒）与有效调用数。与 `ttftSeconds`
+        /// 同源同批样本、由 `windowUsage` 一并写入，`combineWindowUsage` 靠它们
+        /// 先 Σsum ÷ Σcount 再相除（模式照 rateNumerator/rateDenominator）。
+        /// 手工构造的 Window（fleet 行 / 测试夹具）缺省 nil，不参与 TTFT 合并。
+        var ttftSumSeconds: Double? = nil
+        var ttftCallCount: Int? = nil
 
         init(
             label: String,
@@ -557,7 +652,10 @@ struct QuotaWindowUsageSnapshot: Equatable, Sendable {
             costText: String? = nil,
             tokensPerSecond: Double? = nil,
             rateNumerator: Double? = nil,
-            rateDenominator: Double? = nil
+            rateDenominator: Double? = nil,
+            ttftSeconds: Double? = nil,
+            ttftSumSeconds: Double? = nil,
+            ttftCallCount: Int? = nil
         ) {
             self.label = label
             self.usage = usage
@@ -567,6 +665,9 @@ struct QuotaWindowUsageSnapshot: Equatable, Sendable {
             self.tokensPerSecond = tokensPerSecond
             self.rateNumerator = rateNumerator
             self.rateDenominator = rateDenominator
+            self.ttftSeconds = ttftSeconds
+            self.ttftSumSeconds = ttftSumSeconds
+            self.ttftCallCount = ttftCallCount
         }
     }
 
@@ -641,6 +742,9 @@ extension LocalUsageSummaryBuilder {
             // 也是——cost 同样不因 override 跳过），分子分母一并带出给
             // combineWindowUsage 做 Σ/Σ 合并。
             let tokenRate = Self.windowTokenRateComponents(samples: windowSamples)
+            // TTFT 与金额/速度同源：同用这批 windowSamples，Σsum/Σcount 一并带出
+            // 给 combineWindowUsage 做多池合并（模式照 tokenRate）。
+            let ttftParts = Self.windowTTFTComponents(samples: windowSamples)
             return QuotaWindowUsageSnapshot.Window(
                 label: label,
                 usage: usageOverride ?? (windowSamples.isEmpty
@@ -654,7 +758,10 @@ extension LocalUsageSummaryBuilder {
                 ),
                 tokensPerSecond: tokenRate.map { $0.numerator / $0.denominator },
                 rateNumerator: tokenRate?.numerator,
-                rateDenominator: tokenRate?.denominator
+                rateDenominator: tokenRate?.denominator,
+                ttftSeconds: ttftParts.map { $0.sum / Double($0.count) },
+                ttftSumSeconds: ttftParts?.sum,
+                ttftCallCount: ttftParts?.count
             )
         }
 
@@ -731,6 +838,25 @@ extension LocalUsageSummaryBuilder {
                     mergedRate = (numerator, denominator)
                 }
             }
+            // TTFT 合并走 Σttft ÷ Σ调用数（与单池同口径），不是各池 ttftSeconds
+            // 的算术平均——各池调用数不同，平均会算错整体首字延迟。中间量只有
+            // windowUsage 产出的窗口带（手工构造的 Window 缺省 nil），缺中间量的
+            // 窗口不参与加权、只能缺席；全部缺席时合并结果为 nil（UI 显示 —），
+            // 不给一个口径错误的假平均。
+            let ttftParts = windows.compactMap { (window: QuotaWindowUsageSnapshot.Window)
+                -> (sum: Double, count: Int)? in
+                guard let sum = window.ttftSumSeconds,
+                      let count = window.ttftCallCount else { return nil }
+                return (sum, count)
+            }
+            var mergedTTFT: (sum: Double, count: Int)? = nil
+            if !ttftParts.isEmpty {
+                let sum = ttftParts.reduce(0) { $0 + $1.sum }
+                let count = ttftParts.reduce(0) { $0 + $1.count }
+                if sum.isFinite, count > 0 {
+                    mergedTTFT = (sum, count)
+                }
+            }
             return QuotaWindowUsageSnapshot.Window(
                 label: first.label,
                 usage: total,
@@ -738,7 +864,10 @@ extension LocalUsageSummaryBuilder {
                 cost: mergeCost(windows.compactMap(\.cost)),
                 tokensPerSecond: mergedRate.map { $0.numerator / $0.denominator },
                 rateNumerator: mergedRate?.numerator,
-                rateDenominator: mergedRate?.denominator
+                rateDenominator: mergedRate?.denominator,
+                ttftSeconds: mergedTTFT.map { $0.sum / Double($0.count) },
+                ttftSumSeconds: mergedTTFT?.sum,
+                ttftCallCount: mergedTTFT?.count
             )
         }
         return QuotaWindowUsageSnapshot(

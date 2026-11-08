@@ -173,7 +173,8 @@ enum ProviderCardDerivedValues {
             label: ProviderCardView.todayRowLabel,
             metrics: metrics,
             cost: cost,
-            tokensPerSecond: LocalUsageSummaryBuilder.windowTokenRate(samples: todaySamples)
+            tokensPerSecond: LocalUsageSummaryBuilder.windowTokenRate(samples: todaySamples),
+            ttftSeconds: LocalUsageSummaryBuilder.windowTTFTMeanSeconds(samples: todaySamples)
         )
     }
 
@@ -242,7 +243,8 @@ enum ProviderCardDerivedValues {
             label: QuotaWindowUsageSection.offPeakRowLabel,
             metrics: metrics,
             cost: cost,
-            tokensPerSecond: LocalUsageSummaryBuilder.windowTokenRate(samples: costSamples)
+            tokensPerSecond: LocalUsageSummaryBuilder.windowTokenRate(samples: costSamples),
+            ttftSeconds: LocalUsageSummaryBuilder.windowTTFTMeanSeconds(samples: costSamples)
         )
     }
 
@@ -318,7 +320,8 @@ enum ProviderCardDerivedValues {
                 label: entry.label,
                 metrics: metrics,
                 cost: cost,
-                tokensPerSecond: LocalUsageSummaryBuilder.windowTokenRate(samples: costSamples)
+                tokensPerSecond: LocalUsageSummaryBuilder.windowTokenRate(samples: costSamples),
+                ttftSeconds: LocalUsageSummaryBuilder.windowTTFTMeanSeconds(samples: costSamples)
             )
         }
     }

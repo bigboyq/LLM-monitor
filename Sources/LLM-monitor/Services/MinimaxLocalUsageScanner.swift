@@ -550,11 +550,14 @@ extension MinimaxLocalUsageScanner {
         var calendarSignature: String? = nil
 
         static let empty = CacheIndex(
+            // v17：样本 ttftSeconds 显式写 0（MiniMax Code 无上游 TTFT 数据，
+            // 用户裁定；与 nil 区分：0 参与统计、nil 显示 —）。旧 samples 该字段
+            // 恒为 nil，必须全量重建才能补上。
             // v16：样本 durationSeconds 改由 `local_runtime_message_rows`
             // `$.usage.request_duration_ms` FIFO 回填（单次 LLM 请求完整耗时，
             // 供窗口 tok/s 分母）。旧 samples 没有时长字段值，必须全量重建才能
             // 补上，指纹推进不够。
-            version: 16,
+            version: 17,
             lastScannedAt: Date(timeIntervalSince1970: 0),
             sources: [:],
             dailyBySource: [:],
@@ -660,7 +663,7 @@ extension MinimaxLocalUsageScanner {
         try ScannerIndexIO.loadIndex(
             cacheDir: cacheDir,
             fileManager: fileManager,
-            currentVersion: 16,
+            currentVersion: 17,
             empty: .empty,
             version: { $0.version },
             logTag: "[minimax-scan]"

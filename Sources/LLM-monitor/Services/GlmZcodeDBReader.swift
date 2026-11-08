@@ -286,7 +286,8 @@ final class GlmZcodeDBReader {
           END AS reasoning_output,
           mu.cache_read_input_tokens,
           mu.provider_id,
-          mu.duration_ms
+          mu.duration_ms,
+          mu.time_to_first_token_ms
         FROM model_usage mu
         WHERE \(Self.providerFilterSQL("mu.provider_id"))
           AND mu.status = 'completed'
@@ -300,7 +301,7 @@ final class GlmZcodeDBReader {
         ORDER BY mu.started_at, mu.id
         """
         let cutoffMs = cutoff.map { Int64($0.timeIntervalSince1970 * 1000) }
-        let rows: [(String, String, Int64, String?, String?, Int64, Int64, Int64, Int64, String, Int64?)] = try connection.query(
+        let rows: [(String, String, Int64, String?, String?, Int64, Int64, Int64, Int64, String, Int64?, Int64?)] = try connection.query(
             sql: sql,
             bind: { stmt in
                 let provider = Self.bindProviders(to: stmt, index: 1)
@@ -319,12 +320,13 @@ final class GlmZcodeDBReader {
                 let cacheRead = SQLiteConnection.optionalInt64(stmt, column: 8)
                 let providerID = try SQLiteConnection.requiredText(stmt, column: 9)
                 let durationMs = SQLiteConnection.optionalInt64(stmt, column: 10)
-                return (id, sessionID, timestamp, turn, model, input, output, reasoning, cacheRead, providerID, durationMs)
+                let ttftMs = Self.optionalInt64OrNull(stmt, column: 11)
+                return (id, sessionID, timestamp, turn, model, input, output, reasoning, cacheRead, providerID, durationMs, ttftMs)
             }
         )
 
         var samples: [LocalTokenUsageSample] = []
-        for (id, sessionID, timestamp, turn, model, input, output, reasoning, cacheRead, providerID, durationMs) in rows {
+        for (id, sessionID, timestamp, turn, model, input, output, reasoning, cacheRead, providerID, durationMs, ttftMs) in rows {
             let promptComponent = turn ?? "event-\(id)"
             // R9: 读取层非负饱和；input 用 nn(input)，cachedInput 用 nn(cacheRead)。
             let inNN = SQLiteConnection.nnClamp(input)
@@ -341,7 +343,10 @@ final class GlmZcodeDBReader {
                 outputTokens: SQLiteConnection.nnClamp(output),
                 reasoningOutputTokens: SQLiteConnection.nnClamp(reasoning),
                 sourceProviderID: providerID,
-                durationSeconds: durationMs.flatMap { $0 > 0 && $0 <= 3_600_000 ? Double($0) / 1000.0 : nil }
+                durationSeconds: durationMs.flatMap { $0 > 0 && $0 <= 3_600_000 ? Double($0) / 1000.0 : nil },
+                // 原生逐调用 TTFT 列（实测约 71% 行有值，缺口视为未提供）；这里只做
+                // ms → 秒换算与非法值剔除（负/缺失 → nil），范围过滤交给聚合层。
+                ttftSeconds: ttftMs.flatMap { $0 >= 0 ? Double($0) / 1000.0 : nil }
             )
             samples.append(sample)
         }
@@ -659,7 +664,8 @@ final class GlmZcodeDBReader {
             FROM part p
             WHERE p.message_id = mu.assistant_message_id
           ), 0) AS visible_chars,
-          mu.duration_ms
+          mu.duration_ms,
+          mu.time_to_first_token_ms
         FROM model_usage mu
         WHERE \(Self.sliceFilterSQL("mu.provider_id"))
           AND mu.status = 'completed'
@@ -673,7 +679,7 @@ final class GlmZcodeDBReader {
         ORDER BY mu.started_at, mu.id
         """
         let cutoffMs = cutoff.map { Int64($0.timeIntervalSince1970 * 1000) }
-        let rows: [(String, String, Int64, String?, String?, String, Int64, Int64, Int64, Int64, Int64, Int64, Int64?)] = try connection.query(
+        let rows: [(String, String, Int64, String?, String?, String, Int64, Int64, Int64, Int64, Int64, Int64, Int64?, Int64?)] = try connection.query(
             sql: sql,
             bind: { stmt in
                 let provider = Self.bindSlices(to: stmt, index: 1)
@@ -696,15 +702,16 @@ final class GlmZcodeDBReader {
             let reasoningChars = SQLiteConnection.optionalInt64(stmt, column: 10)
             let visibleChars = SQLiteConnection.optionalInt64(stmt, column: 11)
             let durationMs = SQLiteConnection.optionalInt64(stmt, column: 12)
+            let ttftMs = Self.optionalInt64OrNull(stmt, column: 13)
             return (
                 id, sessionID, timestamp, turn, model, providerID, input, output, reasoning, cacheRead,
-                reasoningChars, visibleChars, durationMs
+                reasoningChars, visibleChars, durationMs, ttftMs
             )
             }
         )
         var out: [String: [LocalTokenUsageSample]] = [:]
         for (id, sessionID, timestamp, turn, model, providerID, input, output, reasoning, cacheRead,
-             reasoningChars, visibleChars, durationMs) in rows {
+             reasoningChars, visibleChars, durationMs, ttftMs) in rows {
             guard let slice = ZcodeProviderSlice(providerID: providerID) else { continue }
             let promptComponent = turn ?? "event-\(id)"
             // native reasoning 优先原样透传；否则按本行 part 字符比例分摊（守恒：
@@ -730,7 +737,9 @@ final class GlmZcodeDBReader {
                 outputTokens: split?.output ?? nativeOutput,
                 reasoningOutputTokens: split?.reasoning ?? nativeReasoning,
                 sourceProviderID: providerID,
-                durationSeconds: durationMs.flatMap { $0 > 0 && $0 <= 3_600_000 ? Double($0) / 1000.0 : nil }
+                durationSeconds: durationMs.flatMap { $0 > 0 && $0 <= 3_600_000 ? Double($0) / 1000.0 : nil },
+                // 与主表同口径：原生逐调用 TTFT 列，ms → 秒，非法值 → nil。
+                ttftSeconds: ttftMs.flatMap { $0 >= 0 ? Double($0) / 1000.0 : nil }
             )
             out[slice.rawValue, default: []].append(sample)
         }
@@ -739,6 +748,14 @@ final class GlmZcodeDBReader {
 
     /// 非智谱分片的 `provider_id` 谓词：每个 `ZcodeProviderSlice` 前缀一个
     /// `LIKE ?`（与智谱谓词互斥，前缀增减时谓词与绑定同步生成）。
+    /// NULL-aware 整列读取。`SQLiteConnection.optionalInt64` 把 NULL 折叠为 0，
+    /// 而 TTFT 列必须区分「账本未提供」（NULL，实测约 29% 行）与真实 0ms——
+    /// NULL → nil，真实 0 照收（0 不是非法值，非法=负/缺失）。
+    private static func optionalInt64OrNull(_ statement: OpaquePointer, column: Int32) -> Int64? {
+        guard sqlite3_column_type(statement, column) != SQLITE_NULL else { return nil }
+        return sqlite3_column_int64(statement, column)
+    }
+
     private static func sliceFilterSQL(_ column: String) -> String {
         let likes = ZcodeProviderSlice.allCases
             .map { _ in "\(column) LIKE ?" }

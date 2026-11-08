@@ -322,6 +322,12 @@ struct HarnessModelRow: Identifiable, Equatable, Sendable {
     /// 与 `cachedCostEstimate` 同源同批样本：金额算得出来的行，速率也在同一批
     /// 样本上算。`nil` = 批内没有时长有效的样本（不是"速度为 0"），UI 显示「—」。
     let tokensPerSecond: Double?
+    /// 行级今日首字延迟 P50（秒）：`init` 里对同一批今日样本调
+    /// `LocalUsageSummaryBuilder.callTTFTStatistics(samples:).p50`（与
+    /// tokensPerSecond 同点赋值、同一批样本）。统计单位是单次调用；MiniMax Code
+    /// 显式写的 0（无上游数据）正常参与。`nil` = 批内没有 TTFT 有效的样本
+    /// （不是"延迟为 0"），UI 显示「—」。
+    let ttftSeconds: Double?
     /// Prompt-level today speed distribution. Incomplete prompts are excluded
     /// from the distribution and remain visible in `totalPromptCount`.
     let promptSpeedStatistics: PromptSpeedStatistics
@@ -459,6 +465,7 @@ struct HarnessModelRow: Identifiable, Equatable, Sendable {
             reasoning: day.reasoning
         )
         self.tokensPerSecond = LocalUsageSummaryBuilder.windowTokenRate(samples: samples)
+        self.ttftSeconds = LocalUsageSummaryBuilder.callTTFTStatistics(samples: samples).p50
         self.promptSpeedStatistics = LocalUsageSummaryBuilder.promptSpeedStatistics(samples: samples)
         self.cachedCostEstimate = ModelPricingCatalog.estimate(
             samples: samples,
@@ -483,6 +490,12 @@ struct HarnessSection: Identifiable, Equatable, Sendable {
     /// （同一批今日样本、同一函数）。`nil` = 批内没有时长有效的样本（不是
     /// "速度为 0"），UI 显示「—」；fleet 段没有本地样本，恒 nil。
     let tokensPerSecond: Double?
+    /// 段级今日首字延迟 P50（秒）：对 `samplesByClient` 今日全部样本并集调
+    /// `LocalUsageSummaryBuilder.callTTFTStatistics(samples:).p50`（模式照段级
+    /// tokensPerSecond / promptSpeedStatistics——在并集上取 P50，而不是各行
+    /// P50 的平均）。`nil` = 并集内没有 TTFT 有效的样本，UI 显示「—」；fleet 段
+    /// 无本地样本，恒 nil。
+    let ttftSeconds: Double?
     /// Client-level prompt speed distribution over today's samples.
     let promptSpeedStatistics: PromptSpeedStatistics
     let value: MixedCurrencyEstimate
@@ -508,7 +521,8 @@ struct HarnessSection: Identifiable, Equatable, Sendable {
         rows: [HarnessModelRow],
         isTruncated: Bool,
         samplesTruncated: Bool = false,
-        dominantQuotaProviderID: String? = nil
+        dominantQuotaProviderID: String? = nil,
+        ttftSeconds: Double? = nil
     ) {
         self.clientID = clientID
         self.displayName = displayName
@@ -521,6 +535,7 @@ struct HarnessSection: Identifiable, Equatable, Sendable {
         self.isTruncated = isTruncated
         self.samplesTruncated = samplesTruncated
         self.dominantQuotaProviderID = dominantQuotaProviderID
+        self.ttftSeconds = ttftSeconds
     }
 
     var id: String { clientID }
@@ -814,7 +829,10 @@ struct HarnessTodaySummary: Equatable, Sendable {
                 rows: clientRows.sorted(by: modelRowOrder),
                 isTruncated: truncatedClients.contains(clientID),
                 samplesTruncated: samplesTruncatedClients.contains(clientID),
-                dominantQuotaProviderID: dominantQuotaProviderID
+                dominantQuotaProviderID: dominantQuotaProviderID,
+                ttftSeconds: LocalUsageSummaryBuilder.callTTFTStatistics(
+                    samples: samplesByClient[clientID] ?? []
+                ).p50
             )
         }
         .filter { $0.totalTokens > 0 || !$0.rows.isEmpty }

@@ -186,7 +186,7 @@ extension AntigravityLocalUsageScanner {
         try ScannerIndexIO.loadIndex(
             cacheDir: cacheDir,
             fileManager: fileManager,
-            currentVersion: 9,
+            currentVersion: 10,
             empty: .empty,
             version: { $0.version },
             logTag: "[antigravity-scan]"

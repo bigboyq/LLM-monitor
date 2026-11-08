@@ -249,6 +249,67 @@ final class DshLocalUsageScannerTests: XCTestCase {
         XCTAssertEqual(deepseek.recentSamples[1].durationSeconds, 1.0, "step/end 清除后下一步独立差分")
     }
 
+    /// TTFT = 该 step 首条 `assistant/chunk.time` − `step/start.time`（毫秒 → 秒）：
+    /// 每 step 只认首条 chunk（后续 chunk 不覆盖）；非流式调用（无 chunk）、
+    /// chunk 早于 step/start（差值非正）、`step/end` 清除锚点后复用同 key 的
+    /// 样本都落 nil，宁缺勿假。
+    func testDshSamplesCarryTTFTFromFirstAssistantChunk() throws {
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let calendar = makeUTCGregorianCalendar()
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("llm-monitor-dsh-ttft-\(UUID().uuidString)", isDirectory: true)
+        let cache = root.appendingPathComponent(".token-monitor", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let t0: Int64 = 1_700_000_000_000
+        let lines: [String] = [
+            #"{"type":"session","version":0,"id":"session-ttft","createdAt":\#(t0),"cwd":"/tmp","delegationDepth":0}"#,
+            #"{"type":"request/context","seq":1,"time":\#(t0),"data":{"provider":"deepseek-official","model":"deepseek-v4-flash"}}"#,
+            // step 0：首 chunk +600ms → TTFT 0.6s；第二条 chunk（+700ms）不得覆盖首条
+            #"{"type":"step/start","seq":2,"time":\#(t0),"data":{"turn":1,"step":0}}"#,
+            #"{"type":"assistant/chunk","seq":3,"time":\#(t0 + 600),"data":{"turn":1,"step":0}}"#,
+            #"{"type":"assistant/chunk","seq":4,"time":\#(t0 + 700),"data":{"turn":1,"step":0}}"#,
+            #"{"type":"assistant/message","seq":5,"time":\#(t0 + 4523),"data":{"turn":1,"step":0,"usage":{"inputTokens":100,"outputTokens":30,"reasoningTokens":10}}}"#,
+            #"{"type":"step/end","seq":6,"time":\#(t0 + 4600),"data":{"turn":1,"step":0}}"#,
+            // step 1：无 chunk（非流式）→ ttft nil
+            #"{"type":"step/start","seq":7,"time":\#(t0 + 5000),"data":{"turn":1,"step":1}}"#,
+            #"{"type":"assistant/message","seq":8,"time":\#(t0 + 6000),"data":{"turn":1,"step":1,"usage":{"inputTokens":50,"outputTokens":5,"reasoningTokens":0}}}"#,
+            #"{"type":"step/end","seq":9,"time":\#(t0 + 6100),"data":{"turn":1,"step":1}}"#,
+            // turn 2 step 0：chunk 锚点随 step/end 清除，message 复用同 turn/step 也不得读到过期值
+            #"{"type":"step/start","seq":10,"time":\#(t0 + 7000),"data":{"turn":2,"step":0}}"#,
+            #"{"type":"assistant/chunk","seq":11,"time":\#(t0 + 7100),"data":{"turn":2,"step":0}}"#,
+            #"{"type":"step/end","seq":12,"time":\#(t0 + 7150),"data":{"turn":2,"step":0}}"#,
+            #"{"type":"assistant/message","seq":13,"time":\#(t0 + 7200),"data":{"turn":2,"step":0,"usage":{"inputTokens":10,"outputTokens":1,"reasoningTokens":0}}}"#,
+            // turn 2 step 1：chunk 早于 step/start（差值非正）→ nil
+            #"{"type":"step/start","seq":14,"time":\#(t0 + 8000),"data":{"turn":2,"step":1}}"#,
+            #"{"type":"assistant/chunk","seq":15,"time":\#(t0 + 7900),"data":{"turn":2,"step":1}}"#,
+            #"{"type":"assistant/message","seq":16,"time":\#(t0 + 9000),"data":{"turn":2,"step":1,"usage":{"inputTokens":10,"outputTokens":1,"reasoningTokens":0}}}"#,
+        ]
+        try writeSessionLog(
+            root: root.appendingPathComponent("sessions", isDirectory: true),
+            sessionID: "session-ttft",
+            body: lines.joined(separator: "\n") + "\n"
+        )
+
+        let snapshot = try DshLocalUsageScanner.performScanPure(
+            sessionsRoot: root.appendingPathComponent("sessions", isDirectory: true),
+            cacheDir: cache,
+            fileManager: FileManagerBox(),
+            calendar: calendar,
+            now: { base },
+            decompressor: { $0 },
+            limits: DshLocalUsageScanLimits.production
+        )
+
+        let deepseek = try XCTUnwrap(snapshot.byProvider["deepseek-official"])
+        XCTAssertEqual(deepseek.recentSamples.count, 4)
+        XCTAssertEqual(deepseek.recentSamples[0].ttftSeconds ?? 0, 0.6, accuracy: 1e-9, "首 chunk − step/start（后续 chunk 不覆盖）")
+        XCTAssertEqual(deepseek.recentSamples[0].durationSeconds, 4.523, "TTFT 与时长差分互不影响")
+        XCTAssertNil(deepseek.recentSamples[1].ttftSeconds, "无 chunk 的非流式调用落 nil")
+        XCTAssertNil(deepseek.recentSamples[2].ttftSeconds, "step/end 清除 chunk 锚点后不读过期值")
+        XCTAssertNil(deepseek.recentSamples[3].ttftSeconds, "chunk 早于 step/start（差值非正）落 nil")
+    }
+
     /// step/start 缺失、差值非正、差值超 1h、`step/end` 后残留锚点（防泄漏）
     /// 四种非法场景都落 nil，宁缺勿假。
     func testDshDurationNilWhenStepStartMissingOrInvalid() throws {

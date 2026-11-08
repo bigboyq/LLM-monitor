@@ -269,11 +269,12 @@ Codex 本地会话扫描索引经 `CodexScannerIndex: Codable, Sendable` 序列�
 | `time_to_first_token_ms` | 本 turn 首次响应的首字延迟（TTFT） |
 | `turn_id` / `root_turn_id` / `last_agent_message` | 归属键与终答文本 |
 
-监控现状：scanner 已解析 `task_complete`，但只保留 `timestamp` + `turn_id`
-（`CodexLocalUsageScanner` 的 `.taskCompleted` 事件）——payload 的 `duration_ms` /
-`time_to_first_token_ms` **未读取**，`durationSeconds` 仍走 §Local session aggregation
-Rules 的 `token_usage_record` 锚点差分。若未来接入原生字段：免锚点配对、精度高于差分，
-但粒度是 **turn 级**（一轮内多个模型调用只有首个的 TTFT），与逐调用口径不能直接互换。
+监控现状（2026-11-08 更新）：scanner 已解析 `task_complete`，`durationSeconds` 仍走
+§Local session aggregation Rules 的 `token_usage_record` 锚点差分；TTFT 接入为
+`.taskCompleted` 事件携带 payload 原生 `time_to_first_token_ms`（负 / NaN 拒绝，
+ms ÷ 1000），**turn 级 → 回填该 turn 第一条 `token_usage_record` 样本**（文件内收集
+`taskCompleteTTFT[turnID]` 后统一回填，无对应 record 丢弃）；缓存 v2 重建。
+`payload.duration_ms` 仍未读取（时长口径维持 token_count 锚点差分单源，见 Rules）。
 
 ## Cross-Provider Cache Semantics (Codex vs Antigravity)
 
