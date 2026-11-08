@@ -434,4 +434,4 @@ accounting coverage lives in `GlmZcodeDBReaderTests.swift`, `GlmOffPeakTests.swi
 > 本文件源自 `spec/providers/glm.md` 的本地 harness 内容；代码核对基线继承原文件，未因本次拆分重新核对全部实现。
 外部 ZCode.app 静态观察日期：2026-11-06；版本 `3.17.2` / build `3.17.2.9661`。
 
-> 核对基线：2026-11-08 · 代码 1a4238f
+> 核对基线：2026-11-08 · 代码 e906f6c

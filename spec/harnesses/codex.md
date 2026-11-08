@@ -346,4 +346,4 @@ To compare or sum daily usage across both providers, normalize both into a singl
 After normalization, cross-provider sum, average, and chart rendering can treat the two providers as a single data source.
 
 > 拆分来源：由原 `spec/providers/codex.md` 按 Codex 本地 harness / client 职责拆分；本文件主要沿用其对应章节。
-> 核对基线：2026-11-08 · 代码 1a4238f
+> 核对基线：2026-11-08 · 代码 e906f6c
