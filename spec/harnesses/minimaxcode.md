@@ -354,35 +354,32 @@ runtime 原生记录的单次请求耗时，无此污染。实测保留窗口 30
 （~2 min）很快自然重试。`applyReasoningSplit(samples:)` 重建样本时原样保留
 `durationSeconds`（有单测锁定）。
 
-### TTFT / 首字时延字段（调研记录，2026-11-08）
+### TTFT / 首字时延字段（调研记录，2026-11-08；同日二次复核修订）
 
 > 只读调研（v4 会话 `mvs_1354…` 全链路解剖 + 全库四重验证）。非官方契约，随版本可能
-> 变化；本节只记录发现，不进任何代码路径。
+> 变化。**本节初版结论有误、已于同日复核修订**：初版断言 `usage` 全键清单里
+> 「除 `request_duration_ms` 外无任何时延键」，实际漏了 `decode_duration_ms`。
 
-**结论：MiniMax Code 没有逐调用 TTFT 数据，且 DSH 式推导（首个 chunk 时刻差分）不适用**
-——两家同属 pi-agent/pi-ai 运行时家族，但落账策略不同：DSH 账本带 chunk 级事件流
-（`assistant/chunk` / v4 `attempt.data.stream[]`，逐条带 time），MiniMax Code 只落
-**完成态**消息：
+**修订后结论：MiniMax Code 的逐调用 TTFT 可由总时长与解码时长差分推导**：
 
-- `local_runtime_*` 各表与 `data_json.$.usage`（全键 = cache_read / context_window /
-  input_tokens / output_tokens / request_duration_ms / total_tokens）除
-  `request_duration_ms` 外无任何时延键；全库 ttft-like 文本命中均为对话正文假阳性。
-- 会话目录（§Model resolution for samples 消费的 `llm-call.json` 即此布局的一部分，
-  `layout: v2-final-dated-session`，runtime `pi-agent`，`sessionDataVersion: 4`）三个
-  文件均无首字时刻：
-  - `messages.jsonl`：每行 `{message{role, timestamp(完成时刻), usage, stopReason,
-    responseId}, message_id, turn_id}`——assistant 行无 chunk 流、无首字时刻；
-  - `llm-call.json`：仅请求参数（model / provider / systemPrompt / tools）；
-  - `manifest.json`：会话元数据。
-  （`timing` 键只出现在 toolResult 的命令计时器
-  `commandTimerStartedAt` / `commandDeadlineAt`，与 LLM 时延无关。）
-- 时长侧因此只有 `request_duration_ms`（含 TTFT + decode 的总时长）一条路，TTFT 无法
-  从总时长反推。
+- `data_json.$.usage` 实际同时携带 `request_duration_ms`（发起→完成总时长，
+  含 TTFT + decode）与 **`decode_duration_ms`（纯 token 解码耗时）**；
+  thinking 模型还附带 `thinking_duration_ms`（解码前期的思考耗时，监控不消费）。
+- **推导公式：`TTFT(ms) = request_duration_ms − decode_duration_ms`**。
+  2026-11-08 全库实测（14,665 条带 request 的 assistant 行）：decode 覆盖
+  94.5%；有 decode 的行里 99.1% 满足 `request ≥ decode`（其余为取消 / 时钟
+  抖动 → nil）；P25/P50/P75 = 1.28s / 1.75s / 2.59s，量级合理。会话
+  `mvs_1354…` 逐调用验证 7/7（大 Prompt 首调 14.8s、cache 命中次调 1.2s）。
+- 初版其余观察不变：会话目录三个文件（`messages.jsonl` / `llm-call.json` /
+  `manifest.json`）无 chunk 流、无首字时刻；`timing` 键只出现在 toolResult
+  命令计时器，与 LLM 时延无关。
 
-监控现状（2026-11-08 更新）：无上游数据不等于缺列——reader 与字符分摊重建两条
-sample 构造路径都**显式写 `ttftSeconds = 0`**（用户裁定：UI 上 MiniMax Code 的
-TTFT 读数恒为 0，不显示 `—`；0 在聚合有效性域内合法，见
-[`accounting.md`](../accounting.md) §TTFT 口径）；缓存 v17 重建。
+监控现状（2026-11-08 二次修订）：reader 的时长守门窗口查询**同一查询补取
+`decode_duration_ms`**，走同一 `(session, turn)` FIFO 配对与 token 核对机制，
+sample `ttftSeconds = (request − decode) / 1000`（decode 缺失或差值 < 0 → nil，
+有效性域 [0, 3600] 过滤在聚合层）；字符分摊重建路径原样保留 `ttftSeconds`（与
+`durationSeconds` 同模式），**移除 2.5.3 的显式写 0**；缓存 v18 重建。
+聚合口径见 [`accounting.md`](../accounting.md) §TTFT 口径。
 
 **附带发现（待观察）**：会话目录为
 `~/.minimax/v2/sessions/<日期>/<时间>-session_<base64(sessionId)>/`；样本会话是

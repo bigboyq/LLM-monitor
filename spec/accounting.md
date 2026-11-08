@@ -173,13 +173,15 @@ token 速率（tok/s）只在 sample 级定义，不进入帧 / 投影内核：�
 原生 `time_to_first_token_ms`（逐调用，71% 覆盖，缺口行 nil）、Codex `task_complete` payload 原生
 `time_to_first_token_ms`（turn 级，回填 turn 首调）、Antigravity `gen_metadata` blob `f1.f11`（逐调用，
 与 steps 差分亚毫秒吻合）；agy 与 Antigravity 同 schema 同字段（`steps.idx == f20.last_step_index + 1`
-连接，2026-11-08 本机 91 库实测 2012/2012 = 100% 命中）；DSH 无显式字段、**可推导但仅限
-v1 账本**——v1 文件（无后缀）取首个 `assistant/chunk.time − step/start.time`
-（2026-11-08 全量复核：v3 起无 chunk 流、v4 成功调用无 chunk 时刻，而当前 DSH 只写
-v4 → **现版账本 TTFT 事实上不可得，DSH 恒 `—`**，见
-[`harnesses/dsh.md`](harnesses/dsh.md) § TTFT 调研记录）；MiniMax Code **无**（db 与
-v4 会话文件均无 chunk 流 / 首字时刻，仅 `request_duration_ms` 总时长，**显式写 0**——用户裁定，
-见 [`harnesses/minimaxcode.md`](harnesses/minimaxcode.md) § TTFT 调研记录）；OpenCode 无字段（恒 nil，
+连接，2026-11-08 本机 91 库实测 2012/2012 = 100% 命中）；DSH 无显式字段、**三代账本均可
+推导**——v1 取首个独立 `assistant/chunk.time − step/start.time`，v3 / v4 取
+`assistant/message.data.stream[]` 首条 `time` 同锚点差分（初版调研漏看
+message.data.stream 误判 v3 / v4 不可得，同日复核修订；实测 v3 1094/1094、
+v4 70/70 可差分，见 [`harnesses/dsh.md`](harnesses/dsh.md) § TTFT 调研记录）；
+MiniMax Code 由 **`request_duration_ms − decode_duration_ms` 差分推导**（初版调研
+漏了 `decode_duration_ms` 键误判不可得、曾显式写 0；全库 14,665 行实测覆盖 94.5%、
+差值非负 99.1%，见 [`harnesses/minimaxcode.md`](harnesses/minimaxcode.md) § TTFT 调研记录）；
+OpenCode 无字段（恒 nil，
 UI 显示 `—`）——调研记录见
 [`harnesses/zcode.md`](harnesses/zcode.md) /
 [`harnesses/codex.md`](harnesses/codex.md) /
@@ -189,8 +191,9 @@ UI 显示 `—`）——调研记录见
 
 TTFT 与 token 速率同层：只在 sample 级定义、不进入帧 / 投影内核，由各家 reader 写入
 `LocalTokenUsageSample.ttftSeconds`（可选字段，秒；旧缓存解码得 nil）。**有效性域
-[0, 3600] s 且有限**——与 duration 的 [0.2, 3600] 不同，**0 是合法值**（MiniMax Code
-显式写 0，必须参与聚合）；负值 / 非有限 / 越界的样本不计。聚合函数唯一实现在
+[0, 3600] s 且有限**——与 duration 的 [0.2, 3600] 不同，**0 是合法值**（真实 0ms
+读数不被过滤；2.5.3 曾以「MiniMax Code 显式写 0」为背景，2.5.4 起 MiniMax 改差分
+推导，规则本身不变）；负值 / 非有限 / 越界的样本不计。聚合函数唯一实现在
 `LocalUsageSummaryBuilder`（`Models/LocalTokenUsageSample.swift`）：
 
 | 聚合 | 函数 | 口径 |
@@ -205,8 +208,8 @@ TTFT 与 token 速率同层：只在 sample 级定义、不进入帧 / 投影内
 | Codex | `task_complete` payload `time_to_first_token_ms` ÷ 1000，turn 级 → 回填该 turn **第一条** `token_usage_record` 样本（文件内配对，turn_id 全局 UUID 不跨文件；缓存 v2 重建） |
 | Antigravity | gen_metadata blob `f1.f11` protobuf Duration（seconds 可缺省只剩 nanos；缓存 v10 重建） |
 | agy | 同一 `conversations/<session>.db` 的 `f1.f11`，经 `AntigravityStepTimestampReader.llmCallTTFTSecondsByStepIndex` 按 steps.idx 连接（缓存 v4 重建） |
-| DSH | v1 文件首个 `assistant/chunk.time − step/start.time` ÷ 1000（scanner 字节级预过滤扩展 + 每 step 首 chunk 节流解码；缓存 v6 重建。v3 / v4 无 chunk 数据面 → nil，见 `harnesses/dsh.md` § TTFT 调研记录） |
-| MiniMax | **显式 0**（无上游数据，用户裁定；缓存 v17 重建） |
+| DSH | 双路径：v1 首个独立 `assistant/chunk.time − step/start.time` ÷ 1000（字节级预过滤 + 每 step 首 chunk 节流解码）；v3 / v4 取 `assistant/message.data.stream[]` 首条 `time` 同锚点差分（缓存 v7 重建。见 `harnesses/dsh.md` § TTFT 调研记录） |
+| MiniMax | `(request_duration_ms − decode_duration_ms) / 1000`（同一时长守门窗口查询补取 decode 键、同一 `(session, turn)` FIFO 配对；decode 缺失 / 差值 < 0 → nil。缓存 v18 重建。见 `harnesses/minimaxcode.md` § TTFT 调研记录） |
 | OpenCode | 无（恒 nil） |
 
 fleet 行的远端上报无 TTFT，TTFT 列显示 `—`（wire 协议未扩展）。

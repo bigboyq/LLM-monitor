@@ -402,6 +402,50 @@ final class MinimaxDBReaderTests: XCTestCase {
         XCTAssertNil(aggregate.samples[2].durationSeconds, "无 message 行 → nil")
     }
 
+    /// TTFT 差分推导：`ttftSeconds` = (request_duration_ms − decode_duration_ms)
+    /// / 1000（总耗时减纯解码即首字等待），与 durationSeconds 走同一套 FIFO
+    /// 配对 + token 核对；decode 缺失或差值为负（取消 / 抖动，实测 0.9%）→ nil。
+    func testV2TTFTDerivedFromRequestMinusDecodeDuration() throws {
+        let base = Int64(Date().timeIntervalSince1970 * 1000)
+        let databaseURL = try makeV2Database(
+            tokenRows: [
+                TokenRow(sessionID: "s1", turnID: "turn-ok", timestampMs: base,
+                         input: 100, output: 50, reasoning: 0, cacheRead: 0, cacheWrite: 0, raw: nil),
+                TokenRow(sessionID: "s1", turnID: "turn-nodecode", timestampMs: base + 1_000,
+                         input: 200, output: 80, reasoning: 0, cacheRead: 0, cacheWrite: 0, raw: nil),
+                TokenRow(sessionID: "s1", turnID: "turn-negative", timestampMs: base + 2_000,
+                         input: 300, output: 120, reasoning: 0, cacheRead: 0, cacheWrite: 0, raw: nil),
+            ],
+            messageRows: [
+                // 正常差分：12345 − 4567 = 7778ms → 7.778s。
+                MessageRow(sessionID: "s1", messageID: "m1", timestampMs: base + 10,
+                           data: assistantUsageJSON(input: 100, output: 50, durationMs: 12_345, decodeMs: 4_567),
+                           turnID: "turn-ok"),
+                // decode_duration_ms 缺失 → TTFT nil，durationSeconds 不受影响。
+                MessageRow(sessionID: "s1", messageID: "m2", timestampMs: base + 1_010,
+                           data: assistantUsageJSON(input: 200, output: 80, durationMs: 9_000),
+                           turnID: "turn-nodecode"),
+                // decode > request（取消 / 抖动）→ 差值为负 → nil。
+                MessageRow(sessionID: "s1", messageID: "m3", timestampMs: base + 2_010,
+                           data: assistantUsageJSON(input: 300, output: 120, durationMs: 5_000, decodeMs: 6_000),
+                           turnID: "turn-negative"),
+            ]
+        )
+        defer { try? FileManager.default.removeItem(at: databaseURL) }
+
+        let reader = try MinimaxDBReader(path: databaseURL)
+        defer { reader.close() }
+        let aggregate = try reader.aggregate(calendar: .current)
+
+        XCTAssertEqual(aggregate.samples.count, 3)
+        XCTAssertEqual(aggregate.samples[0].ttftSeconds, 7.778, "TTFT = (12345 − 4567) / 1000 = 7.778s")
+        XCTAssertEqual(aggregate.samples[0].durationSeconds, 12.345, "durationSeconds 不受 TTFT 推导影响")
+        XCTAssertNil(aggregate.samples[1].ttftSeconds, "decode_duration_ms 缺失 → nil")
+        XCTAssertEqual(aggregate.samples[1].durationSeconds, 9.0)
+        XCTAssertNil(aggregate.samples[2].ttftSeconds, "差值为负（取消 / 抖动）→ nil")
+        XCTAssertEqual(aggregate.samples[2].durationSeconds, 5.0)
+    }
+
     /// 故障隔离：message 表坏 schema（缺 `data_json` 列，`breakMessageTableSchema`
     /// 既有模式）时时长回填查询失败，但不 throw、主 token 账本与样本字段全部
     /// 原样保留（durationSeconds 保持 nil）；字符聚合照旧置 degraded。
@@ -429,31 +473,41 @@ final class MinimaxDBReaderTests: XCTestCase {
     }
 
     /// FIFO 弹出 + 双核对的纯逻辑契约：缺 usage 的空行永不匹配；核对失败按序
-    /// 丢弃；命中即停（不吞后续条目）；命中条目缺时长返回 nil；队列耗尽 → nil。
+    /// 丢弃；命中即停（不吞后续条目）；命中条目整条返回（durationSeconds 与
+    /// ttftSeconds 同源同行）；队列耗尽 → nil。
     func testVerifiedDurationPopsFIFOUntilTokenMatch() {
-        func entry(input: Int?, output: Int?, seconds: Double?) -> MinimaxMessageDurationEntry {
-            MinimaxMessageDurationEntry(inputTokens: input, outputTokens: output, durationSeconds: seconds)
+        func entry(
+            input: Int?, output: Int?, seconds: Double?, ttft: Double? = nil
+        ) -> MinimaxMessageDurationEntry {
+            MinimaxMessageDurationEntry(
+                inputTokens: input, outputTokens: output,
+                durationSeconds: seconds, ttftSeconds: ttft
+            )
         }
 
         var queue = [
-            entry(input: nil, output: nil, seconds: 1.0),   // 空行：永不匹配
-            entry(input: 999, output: 999, seconds: 2.0),   // 核对失败：丢弃
-            entry(input: 100, output: 50, seconds: 3.5),    // 命中
-            entry(input: 100, output: 50, seconds: 9.9),    // 命中后必须留在队列
+            entry(input: nil, output: nil, seconds: 1.0),            // 空行：永不匹配
+            entry(input: 999, output: 999, seconds: 2.0),            // 核对失败：丢弃
+            entry(input: 100, output: 50, seconds: 3.5, ttft: 1.25), // 命中
+            entry(input: 100, output: 50, seconds: 9.9),             // 命中后必须留在队列
         ]
         XCTAssertEqual(
-            MinimaxDBReader.verifiedDuration(from: &queue, ledgerInputTokens: 100, ledgerOutputTokens: 50),
-            3.5
+            MinimaxDBReader.verifiedDurationEntry(from: &queue, ledgerInputTokens: 100, ledgerOutputTokens: 50),
+            entry(input: 100, output: 50, seconds: 3.5, ttft: 1.25),
+            "命中的条目整条返回，durationSeconds 与 ttftSeconds 同源"
         )
         XCTAssertEqual(queue, [entry(input: 100, output: 50, seconds: 9.9)], "命中即停，后续条目留给下一个样本")
 
         var exhausted = [entry(input: 1, output: 1, seconds: 1.0)]
-        XCTAssertNil(MinimaxDBReader.verifiedDuration(from: &exhausted, ledgerInputTokens: 100, ledgerOutputTokens: 50))
+        XCTAssertNil(MinimaxDBReader.verifiedDurationEntry(from: &exhausted, ledgerInputTokens: 100, ledgerOutputTokens: 50))
         XCTAssertTrue(exhausted.isEmpty, "队列耗尽仍无匹配 → nil，条目按序丢弃")
 
         var noDuration = [entry(input: 100, output: 50, seconds: nil)]
-        XCTAssertNil(MinimaxDBReader.verifiedDuration(from: &noDuration, ledgerInputTokens: 100, ledgerOutputTokens: 50))
-        XCTAssertTrue(noDuration.isEmpty, "命中但缺时长 → nil，条目仍被消费")
+        let noDurationMatch = MinimaxDBReader.verifiedDurationEntry(
+            from: &noDuration, ledgerInputTokens: 100, ledgerOutputTokens: 50
+        )
+        XCTAssertNil(noDurationMatch?.durationSeconds, "命中但缺时长 → durationSeconds 为 nil")
+        XCTAssertTrue(noDuration.isEmpty, "条目仍被消费")
     }
 }
 
@@ -709,12 +763,14 @@ private func jsonString(_ value: String) -> String {
 
 /// assistant 行 `data_json` 的 `$.usage` 夹具：字段按需出现（nil = 整个字段缺失，
 /// 模拟空行 / 旧 schema 行），与生产 `$.usage.input_tokens` / `$.usage.output_tokens`
-/// / `$.usage.request_duration_ms` 的键名逐字一致。
-private func assistantUsageJSON(input: Int?, output: Int?, durationMs: Int?) -> String {
+/// / `$.usage.request_duration_ms` / `$.usage.decode_duration_ms` 的键名逐字一致。
+/// 模块内可见（与 `makeV2Database` / `TokenRow` 同作用域），scanner 套件共用。
+func assistantUsageJSON(input: Int?, output: Int?, durationMs: Int?, decodeMs: Int? = nil) -> String {
     var fields: [String] = []
     if let input { fields.append("\"input_tokens\":\(input)") }
     if let output { fields.append("\"output_tokens\":\(output)") }
     if let durationMs { fields.append("\"request_duration_ms\":\(durationMs)") }
+    if let decodeMs { fields.append("\"decode_duration_ms\":\(decodeMs)") }
     return "{\"usage\":{" + fields.joined(separator: ",") + "}}"
 }
 

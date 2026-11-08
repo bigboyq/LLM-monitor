@@ -272,7 +272,7 @@ final class DshLocalUsageScanner: LocalUsageScannerBase<DshLocalUsage>, @uncheck
             )
             try saveIndex(
                 DshCacheIndex(
-                    version: 6,
+                    version: 7,
                     files: [],
                     snapshot: empty,
                     calendarSignature: LocalUsageCalendarSignature.make(calendar)
@@ -351,7 +351,7 @@ final class DshLocalUsageScanner: LocalUsageScannerBase<DshLocalUsage>, @uncheck
             return Self.markPartial(lastGood)
         }
         index = DshCacheIndex(
-            version: 6,
+            version: 7,
             files: outcome.processedFingerprints,
             snapshot: snapshot,
             calendarSignature: currentCalendarSignature
@@ -521,6 +521,17 @@ private struct DshRawEventData: Decodable {
     let provider: String?
     let model: String?
     let contextWindow: Int?
+    // v3/v4 的 chunk 流打包在 `assistant/message.data.stream[]` 里，逐条自带
+    // time（v1 的 message 无此字段）。随 message 行一起进 JSONDecoder——message
+    // 行本来就已解码，增量成本可接受；数组内其余字段由 JSONDecoder 自动忽略，
+    // 不做局部手写解析。
+    let stream: [DshStreamTimeEntry]?
+}
+
+/// v3/v4 `assistant/message.data.stream[]` 条目：TTFT 只取首条的 `time`，
+/// 其余字段（type/chunk 等）由 JSONDecoder 忽略。
+private struct DshStreamTimeEntry: Decodable {
+    let time: Int64?
 }
 
 private struct DshRawMessage: Decodable {
@@ -557,9 +568,10 @@ private struct DshParsedUsage: Sendable {
     /// 解析期差分好再落 `DshFileParseResult`，缓存命中时无需重放事件序。
     /// nil = step/start 缺失、turn/step 对不上或差值非法。
     let durationSeconds: Double?
-    /// 单次调用首字延迟（该 step 首条 `assistant/chunk.time` −
-    /// `step/start.time`，秒）。nil = 非流式调用、v4 文件（无 chunk 事件流）、
-    /// key 对不上或差值非正。
+    /// 单次调用首字延迟（秒）。v1：该 step 首条 `assistant/chunk.time` −
+    /// `step/start.time`；v3/v4：`assistant/message.data.stream[0].time` −
+    /// `step/start.time`。nil = 非流式调用、两种首 chunk 证据缺失、key 对不上
+    /// 或差值非正。
     let ttftSeconds: Double?
     let turn: Int?
     let step: Int?
@@ -955,8 +967,9 @@ private extension DshLocalUsageScanner {
     /// 字节级命中与解码后的 type 判断一致，不会漏判。step/start / step/end
     /// 只为差分出单次调用时长（发起时刻表进、清除防泄漏），不产 token。
     /// assistant/chunk 只为差分单次调用 TTFT（每 step 首条才被解析，见
-    /// `consumeLine` 的节流注释）；v4 文件没有 chunk 事件流（chunk 聚合进
-    /// `assistant/attempt.data.stream[]`），TTFT 自然全部落 nil。
+    /// `consumeLine` 的节流注释）；v3/v4 文件的 chunk 流打包在
+    /// `assistant/message.data.stream[]` 里（无独立 chunk 行），TTFT 走
+    /// message 侧的 stream 差分路径。
     private nonisolated static let requestContextMarker = Data("request/context".utf8)
     private nonisolated static let assistantMessageMarker = Data("assistant/message".utf8)
     private nonisolated static let stepStartMarker = Data("step/start".utf8)
@@ -1060,11 +1073,22 @@ private extension DshLocalUsageScanner {
                         if deltaMs > 0, deltaMs <= 3_600_000 {
                             durationSeconds = Double(deltaMs) / 1000.0
                         }
-                        // TTFT 差分：该 step 首条 assistant/chunk.time − step/start.time
-                        // （毫秒）。缺失（非流式 / v4）或差值非正 → nil；此处只做
-                        // 忠实换算，范围过滤归聚合层。
+                        // TTFT 差分 v1 路径：该 step 首条 assistant/chunk.time −
+                        // step/start.time（毫秒）。缺失（非流式调用）或差值非正 →
+                        // nil；此处只做忠实换算，范围过滤归聚合层。
                         if let firstChunkMs = stepFirstChunkMs.removeValue(forKey: anchorKey) {
                             let ttftDeltaMs = firstChunkMs - startMs
+                            if ttftDeltaMs > 0 {
+                                ttftSeconds = Double(ttftDeltaMs) / 1000.0
+                            }
+                        }
+                        // TTFT 差分 v3/v4 路径：chunk 流打包在 message.data.stream[]
+                        // 里，首条 time 即首 token 时刻。v1 的 message 无 stream 字段、
+                        // v3/v4 无独立 chunk 行，两条路天然互斥；stream 首条 time 有效
+                        // 且差值为正时以它为准，缺失或非正则沿用上面的 chunk 行结果
+                        // （真实账本中两者同为 nil）。
+                        if let firstStreamMs = event.data?.stream?.first?.time {
+                            let ttftDeltaMs = Int(firstStreamMs) - startMs
                             if ttftDeltaMs > 0 {
                                 ttftSeconds = Double(ttftDeltaMs) / 1000.0
                             }
@@ -1394,7 +1418,9 @@ private extension DshCacheIndex {
     func matches(_ fingerprint: CacheFingerprint) -> Bool {
         // v6：样本新增 ttftSeconds（非 v4 文件每 step 首条 assistant/chunk −
         // step/start 差分）；v5 快照该字段恒为 nil，版本不匹配即整体重建。
-        version == 6 && files == fingerprint.files
+        // v7：v3/v4 的 message.data.stream 首 chunk 时间差分接入 TTFT（v1 仍走
+        // chunk 行路径）；v6 快照的 v3/v4 样本 ttft 恒为 nil，版本不匹配即整体重建。
+        version == 7 && files == fingerprint.files
     }
 }
 
@@ -1406,8 +1432,8 @@ private extension DshLocalUsageScanner {
         try ScannerIndexIO.loadIndex(
             cacheDir: cacheDir,
             fileManager: fileManager,
-            currentVersion: 6,
-            empty: DshCacheIndex(version: 6, files: [], snapshot: nil, calendarSignature: nil),
+            currentVersion: 7,
+            empty: DshCacheIndex(version: 7, files: [], snapshot: nil, calendarSignature: nil),
             version: { $0.version },
             logTag: "[dsh-scan]"
         )

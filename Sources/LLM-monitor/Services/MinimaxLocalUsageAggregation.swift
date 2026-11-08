@@ -32,8 +32,9 @@ extension MinimaxLocalUsageScanner {
             )
             // 重建 sample 时必须原样带回诊断字段：sourceProviderID 供 hover / 汇总
             // 追溯来源；durationSeconds 供窗口 token 速度统计——丢了会退化成 nil，
-            // 该样本分子分母都不计，速率分母被算小。ttftSeconds 与 reader 构造点
-            // 保持一致显式写 0（MiniMax 无上游 TTFT 数据，用户裁定）。
+            // 该样本分子分母都不计，速率分母被算小。ttftSeconds（reader 由
+            // request_duration_ms − decode_duration_ms 差分推导）同理原样透传，
+            // 透传方式与 durationSeconds 完全一致。
             return LocalTokenUsageSample(
                 completedAt: sample.completedAt,
                 modelName: sample.modelName,
@@ -44,7 +45,7 @@ extension MinimaxLocalUsageScanner {
                 reasoningOutputTokens: reasoning,
                 sourceProviderID: sample.sourceProviderID,
                 durationSeconds: sample.durationSeconds,
-                ttftSeconds: 0
+                ttftSeconds: sample.ttftSeconds
             )
         }
     }

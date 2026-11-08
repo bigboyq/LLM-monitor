@@ -30,7 +30,8 @@ struct LocalTokenUsageSample: Equatable, Codable, Sendable {
     /// nil = 账本未提供（旧缓存 / 不记录 TTFT 的 harness）。合成 Codable 下
     /// 旧缓存 JSON 缺该 key 解码为 nil，无需自定义 decode。有效性域与聚合
     /// 口径见 `LocalUsageSummaryBuilder` 的 TTFT 聚合函数（全仓唯一实现）；
-    /// MiniMax Code 无上游数据，scanner 显式写 0（用户裁定）。
+    /// 各 harness 采集来源见 `spec/accounting.md` §TTFT 口径（OpenCode 无字段
+    /// 恒 nil；MiniMax Code 由 request−decode 差分推导，2.5.3 曾显式写 0）。
     var ttftSeconds: Double? = nil
 
     var usage: UsageMetricSummary {

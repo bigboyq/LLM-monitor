@@ -310,6 +310,95 @@ final class DshLocalUsageScannerTests: XCTestCase {
         XCTAssertNil(deepseek.recentSamples[3].ttftSeconds, "chunk 早于 step/start（差值非正）落 nil")
     }
 
+    /// v3/v4 TTFT：chunk 流打包在 `assistant/message.data.stream[]` 内，逐条自带
+    /// `time`；TTFT = stream[0].time − `step/start.time`。首条 time 缺失、差值
+    /// 非正、step/start 锚点缺失都落 nil，宁缺勿假；stream 数组其余字段（含
+    /// 无 time 的条目）由解码器忽略，不影响首条取值。
+    func testDshSamplesCarryTTFTFromMessageDataStreamForV3AndV4() throws {
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let calendar = makeUTCGregorianCalendar()
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("llm-monitor-dsh-ttft-stream-\(UUID().uuidString)", isDirectory: true)
+        let cache = root.appendingPathComponent(".token-monitor", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let t0: Int64 = 1_700_000_000_000
+        let lines: [String] = [
+            #"{"type":"session","version":3,"id":"session-ttft-stream","createdAt":\#(t0),"cwd":"/tmp","delegationDepth":0}"#,
+            #"{"type":"request/context","seq":1,"time":\#(t0),"data":{"provider":"deepseek-official","model":"deepseek-v4-flash"}}"#,
+            // turn1 step0：stream[0].time = start + 827ms → TTFT 0.827s；
+            // stream[1] 无 time 字段（真实 v3 账本存在此形态），不得影响首条取值。
+            #"{"type":"step/start","seq":2,"time":\#(t0),"data":{"turn":1,"step":0}}"#,
+            #"{"type":"assistant/message","seq":3,"time":\#(t0 + 2000),"data":{"turn":1,"step":0,"usage":{"inputTokens":100,"outputTokens":30,"reasoningTokens":10},"stream":[{"type":"chunk","time":\#(t0 + 827),"chunk":{"type":"block-start","index":0,"blockType":"reasoning"}},{"type":"chunk","chunk":{"type":"text","index":1}}]}}"#,
+            #"{"type":"step/end","seq":4,"time":\#(t0 + 2100),"data":{"turn":1,"step":0}}"#,
+            // turn1 step1：stream 存在但首条缺 time → nil
+            #"{"type":"step/start","seq":5,"time":\#(t0 + 5000),"data":{"turn":1,"step":1}}"#,
+            #"{"type":"assistant/message","seq":6,"time":\#(t0 + 6000),"data":{"turn":1,"step":1,"usage":{"inputTokens":50,"outputTokens":5,"reasoningTokens":0},"stream":[{"type":"chunk","chunk":{"type":"block-start","index":0,"blockType":"reasoning"}}]}}"#,
+            #"{"type":"step/end","seq":7,"time":\#(t0 + 6100),"data":{"turn":1,"step":1}}"#,
+            // turn2 step0：stream[0].time 早于 step/start（差值非正）→ nil
+            #"{"type":"step/start","seq":8,"time":\#(t0 + 8000),"data":{"turn":2,"step":0}}"#,
+            #"{"type":"assistant/message","seq":9,"time":\#(t0 + 9000),"data":{"turn":2,"step":0,"usage":{"inputTokens":10,"outputTokens":1,"reasoningTokens":0},"stream":[{"type":"chunk","time":\#(t0 + 7900),"chunk":{"type":"text","index":0}}]}}"#,
+            #"{"type":"step/end","seq":10,"time":\#(t0 + 9100),"data":{"turn":2,"step":0}}"#,
+            // turn2 step1：无 step/start 锚点，stream 再全也落 nil
+            #"{"type":"assistant/message","seq":11,"time":\#(t0 + 10000),"data":{"turn":2,"step":1,"usage":{"inputTokens":10,"outputTokens":1,"reasoningTokens":0},"stream":[{"type":"chunk","time":\#(t0 + 9800),"chunk":{"type":"text","index":0}}]}}"#,
+        ]
+        try writeSessionLog(
+            root: root.appendingPathComponent("sessions", isDirectory: true),
+            sessionID: "session-ttft-stream",
+            body: lines.joined(separator: "\n") + "\n"
+        )
+
+        let snapshot = try DshLocalUsageScanner.performScanPure(
+            sessionsRoot: root.appendingPathComponent("sessions", isDirectory: true),
+            cacheDir: cache,
+            fileManager: FileManagerBox(),
+            calendar: calendar,
+            now: { base },
+            decompressor: { $0 },
+            limits: DshLocalUsageScanLimits.production
+        )
+
+        let deepseek = try XCTUnwrap(snapshot.byProvider["deepseek-official"])
+        XCTAssertEqual(deepseek.recentSamples.count, 4)
+        XCTAssertEqual(deepseek.recentSamples[0].ttftSeconds ?? 0, 0.827, accuracy: 1e-9, "stream[0].time − step/start.time（后续条目缺 time 不影响首条）")
+        XCTAssertEqual(deepseek.recentSamples[0].durationSeconds, 2.0, "TTFT 与时长差分互不影响")
+        XCTAssertNil(deepseek.recentSamples[1].ttftSeconds, "stream 首条缺 time 落 nil")
+        XCTAssertNil(deepseek.recentSamples[2].ttftSeconds, "stream[0].time 早于 step/start（差值非正）落 nil")
+        XCTAssertNil(deepseek.recentSamples[3].ttftSeconds, "step/start 锚点缺失落 nil")
+    }
+
+    /// 缓存 index 版本钉住 7：v3/v4 的 message.data.stream 首 chunk 时间差分接入
+    /// 后，v6 及更早的旧快照必须整体重建，不得带着缺失的 ttft 命中。
+    func testDshCacheIndexVersionIsPinnedAt7() throws {
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        let calendar = makeUTCGregorianCalendar()
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("llm-monitor-dsh-cache-version-\(UUID().uuidString)", isDirectory: true)
+        let sessionsRoot = root.appendingPathComponent("sessions", isDirectory: true)
+        let cache = root.appendingPathComponent(".token-monitor", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        try writeSessionLog(
+            root: sessionsRoot,
+            sessionID: "session-version",
+            body: usageBody(inputTokens: 100)
+        )
+        _ = try DshLocalUsageScanner.performScanPure(
+            sessionsRoot: sessionsRoot,
+            cacheDir: cache,
+            fileManager: FileManagerBox(),
+            calendar: calendar,
+            now: { base },
+            decompressor: { $0 },
+            limits: DshLocalUsageScanLimits.production
+        )
+
+        let index = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: cache.appendingPathComponent("index.json"))) as? [String: Any]
+        )
+        XCTAssertEqual(index["version"] as? Int, 7, "DSH 缓存 index 版本必须钉在 7")
+    }
+
     /// step/start 缺失、差值非正、差值超 1h、`step/end` 后残留锚点（防泄漏）
     /// 四种非法场景都落 nil，宁缺勿假。
     func testDshDurationNilWhenStepStartMissingOrInvalid() throws {

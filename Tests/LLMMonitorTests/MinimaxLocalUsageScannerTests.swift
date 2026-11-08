@@ -24,7 +24,7 @@ final class MinimaxLocalUsageScannerTests: XCTestCase {
             turns: 1, rounds: 2
         )
         let index = MinimaxLocalUsageScanner.CacheIndex(
-            version: 17,
+            version: 18,
             lastScannedAt: now,
             sources: ["runtime": MinimaxLocalUsageScanner.SourceIndexEntry(
                 mtimeMs: 1, sizeBytes: 2, walMtimeMs: 0, walSizeBytes: 0,
@@ -97,7 +97,7 @@ final class MinimaxLocalUsageScannerTests: XCTestCase {
             reasoningOutputTokens: 0
         )
         let index = MinimaxLocalUsageScanner.CacheIndex(
-            version: 17,
+            version: 18,
             lastScannedAt: now.addingTimeInterval(-60),
             sources: ["runtime": MinimaxLocalUsageScanner.SourceIndexEntry(
                 mtimeMs: mtimeMs,              // 新鲜指纹 → 不 dirty、不走 SQL
@@ -245,8 +245,9 @@ final class MinimaxLocalUsageScannerTests: XCTestCase {
         )
     }
 
-    /// `applyReasoningSplit(samples:)` 重建 sample 时必须原样带回 durationSeconds：
-    /// 丢了会退化成 nil，该样本在窗口 tok/s 的分子分母里都不计，速率分母被算小。
+    /// `applyReasoningSplit(samples:)` 重建 sample 时必须原样带回 durationSeconds
+    /// / ttftSeconds：丢了会退化成 nil，该样本在窗口 tok/s / TTFT 统计的分子分母
+    /// 里都不计，分母被算小。
     func testApplyReasoningSplitPreservesDurationSeconds() {
         let day = Calendar.current.startOfDay(for: Date())
         let sample = LocalTokenUsageSample(
@@ -257,7 +258,8 @@ final class MinimaxLocalUsageScannerTests: XCTestCase {
             cachedInputTokens: 0,
             outputTokens: 1000,
             reasoningOutputTokens: 0,
-            durationSeconds: 12.5
+            durationSeconds: 12.5,
+            ttftSeconds: 3.25
         )
         let rawPerDay = [day: MinimaxDailyUsage(dayStart: day, outputTokens: 1000)]
         let adjustedPerDay = [day: MinimaxDailyUsage(
@@ -275,41 +277,68 @@ final class MinimaxLocalUsageScannerTests: XCTestCase {
         XCTAssertEqual(split[0].reasoningOutputTokens, 750, "分摊比例按 per-day 750/1000")
         XCTAssertEqual(split[0].outputTokens, 250)
         XCTAssertEqual(split[0].durationSeconds, 12.5, "durationSeconds 必须原样保留")
-        XCTAssertEqual(split[0].ttftSeconds, 0, "重建样本 ttftSeconds 与 reader 构造点一致显式写 0（无上游 TTFT 数据，用户裁定）")
+        XCTAssertEqual(split[0].ttftSeconds, 3.25, "ttftSeconds 必须原样保留（reader 差分推导值，不再写 0）")
     }
 
-    /// MiniMax Code 无上游 TTFT 数据（db 与 v4 会话文件均无首字时刻）：持久
-    /// 样本显式写 0 而不是 nil（用户裁定），且字符分摊重建不丢该字段。
-    func testMiniMaxSamplesCarryExplicitZeroTTFT() throws {
+    /// MiniMax Code 的 TTFT 由 `$.usage` 的 `request_duration_ms −
+    /// decode_duration_ms` 差分推导（总耗时减纯解码 = 首字等待），与
+    /// durationSeconds 走同一套 FIFO 配对 + token 核对；decode 缺失或差值为
+    /// 负 → nil（不再显式写 0），字符分摊重建不丢该字段，缓存版本钉 18。
+    func testMiniMaxSamplesCarryDifferentialTTFT() throws {
         let base = Int64(Date().timeIntervalSince1970 * 1000)
         let databaseURL = try makeV2Database(
-            tokenRows: [TokenRow(sessionID: "s-ttft", turnID: "uuid-turn", timestampMs: base,
-                                 input: 100, output: 50, reasoning: 0, cacheRead: 0, cacheWrite: 0, raw: nil)]
+            tokenRows: [
+                TokenRow(sessionID: "s-ttft", turnID: "turn-ok", timestampMs: base,
+                         input: 100, output: 50, reasoning: 0, cacheRead: 0, cacheWrite: 0, raw: nil),
+                TokenRow(sessionID: "s-ttft", turnID: "turn-nodecode", timestampMs: base + 1_000,
+                         input: 200, output: 80, reasoning: 0, cacheRead: 0, cacheWrite: 0, raw: nil),
+            ],
+            messageRows: [
+                // 正常差分：12345 − 4567 = 7778ms → 7.778s。
+                MessageRow(sessionID: "s-ttft", messageID: "m1", timestampMs: base + 10,
+                           data: assistantUsageJSON(input: 100, output: 50, durationMs: 12_345, decodeMs: 4_567),
+                           turnID: "turn-ok"),
+                // decode_duration_ms 缺失 → nil。
+                MessageRow(sessionID: "s-ttft", messageID: "m2", timestampMs: base + 1_010,
+                           data: assistantUsageJSON(input: 200, output: 80, durationMs: 9_000),
+                           turnID: "turn-nodecode"),
+            ]
         )
         defer { try? FileManager.default.removeItem(at: databaseURL) }
 
+        let cacheDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("minimax-ttft-cache-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: cacheDir) }
+
         let result = try MinimaxLocalUsageScanner.performScanPureImpl(
             runtimeDBURL: databaseURL,
-            cacheDir: FileManager.default.temporaryDirectory
-                .appendingPathComponent("minimax-ttft-cache-\(UUID().uuidString)", isDirectory: true),
+            cacheDir: cacheDir,
             fileManager: FileManagerBox(),
             calendar: .current,
             now: { Date(timeIntervalSince1970: Double(base) / 1000) },
-            shouldSave: false
+            shouldSave: true
         )
-        let sample = try XCTUnwrap(result.recentSamples?.first)
-        XCTAssertEqual(sample.ttftSeconds, 0, "reader 构造点显式写 0（与 nil 区分：0 参与统计）")
+        let samples = try XCTUnwrap(result.recentSamples)
+        XCTAssertEqual(samples.count, 2)
+        XCTAssertEqual(samples[0].ttftSeconds, 7.778, "reader 构造点差分推导：(12345 − 4567) / 1000")
+        XCTAssertNil(samples[1].ttftSeconds, "decode_duration_ms 缺失 → nil（不再写 0）")
 
-        // 字符分摊重建构造点：与 reader 构造保持一致，同样显式写 0。
-        let day = Calendar.current.startOfDay(for: sample.completedAt)
+        // 字符分摊重建构造点：ttftSeconds 与 durationSeconds 一样原样透传。
+        let day = Calendar.current.startOfDay(for: samples[0].completedAt)
         let rebuilt = MinimaxLocalUsageScanner.applyReasoningSplit(
-            samples: [sample],
-            rawPerDay: [day: MinimaxDailyUsage(dayStart: day, outputTokens: 50)],
-            adjustedPerDay: [day: MinimaxDailyUsage(dayStart: day, outputTokens: 40, reasoningTokens: 10)],
+            samples: samples,
+            rawPerDay: [day: MinimaxDailyUsage(dayStart: day, outputTokens: 130)],
+            adjustedPerDay: [day: MinimaxDailyUsage(dayStart: day, outputTokens: 100, reasoningTokens: 30)],
             calendar: .current
         )
-        XCTAssertEqual(rebuilt.count, 1)
-        XCTAssertEqual(rebuilt[0].ttftSeconds, 0, "重建样本 ttftSeconds 同样显式写 0")
+        XCTAssertEqual(rebuilt.count, 2)
+        XCTAssertEqual(rebuilt[0].ttftSeconds, 7.778, "重建样本 ttftSeconds 原样保留")
+        XCTAssertNil(rebuilt[1].ttftSeconds, "重建样本 ttftSeconds 的 nil 同样保留")
+
+        // 缓存版本钉 18：TTFT 口径变更必须让旧缓存全量重建。
+        let saved = try MinimaxLocalUsageScanner.loadIndex(cacheDir: cacheDir, fileManager: FileManagerBox())
+        XCTAssertEqual(saved.version, 18)
     }
 
     func testV2CacheMigrationResetsLegacySourceData() throws {
@@ -332,7 +361,7 @@ final class MinimaxLocalUsageScannerTests: XCTestCase {
             cacheDir: cacheDir,
             fileManager: FileManagerBox()
         )
-        XCTAssertEqual(current.version, 17)
+        XCTAssertEqual(current.version, 18)
         XCTAssertTrue(current.sources.isEmpty)
         XCTAssertTrue(current.dailyBySource.isEmpty)
         XCTAssertEqual(current.samplesBySource, [:])

@@ -85,10 +85,14 @@ private struct TotalsRow {
 /// 与 `local_runtime_token_usage` 对应列**逐行相等**（实测 11838/11838，全历史），
 /// 用作 FIFO 配对前的核对依据；`nil` = `$.usage` 缺该字段（空行），永不匹配。
 /// `durationSeconds` = `$.usage.request_duration_ms` / 1000（缺失 / ≤0 → nil）。
+/// `ttftSeconds` = (`request_duration_ms` − `decode_duration_ms`) / 1000：总耗时
+/// （含首字等待 + 解码）减纯解码即首字等待，2026-11-08 全库实测 94.5% 的行可
+/// 推导（14,665 / 15,513）；decode 缺失 / 负值或差值为负 → nil。
 internal struct MinimaxMessageDurationEntry: Equatable {
     let inputTokens: Int?
     let outputTokens: Int?
     let durationSeconds: Double?
+    let ttftSeconds: Double?
 }
 
 /// FIFO 配对键：`(session_id, turn_id)`。`turn_id` 为 NULL / 空串的 message 行
@@ -257,10 +261,12 @@ final class MinimaxDBReader {
         let sessionCount = totals.first?.sessions ?? 0
         let eventCount = totals.first?.events ?? 0
 
-        // request_duration_ms 回填队列（独立守门，与字符聚合的 degraded 互不影响）。
+        // request_duration_ms / decode_duration_ms 回填队列（独立守门，与字符
+        // 聚合的 degraded 互不影响）。
         // `local_runtime_message_rows`(role='assistant') 的
         // `data_json.$.usage.request_duration_ms` 是单次 LLM 请求的完整耗时
-        // （含 TTFT + decode，严格不含工具执行）。**不能**用
+        // （含 TTFT + decode，严格不含工具执行）；`decode_duration_ms` 是纯
+        // 解码耗时，两者差分即 TTFT（首字等待）。**不能**用
         // `created_at_ms − token 行 ts` 差分替代：95.8% 的 assistant 行
         // finish_reason="toolUse"，其 created_at_ms 记录的是工具执行完成时刻
         // （要把 tool_call_result_data 内嵌进同一条行才落盘），差分会把工具耗时
@@ -274,7 +280,7 @@ final class MinimaxDBReader {
             durationQueues = try runtimeAssistantDurationQueues(cutoffMs: cutoffMs)
         } catch {
             logWarn(
-                "[minimax/reader] request_duration_ms 回填查询失败，样本 durationSeconds 保持 nil: "
+                "[minimax/reader] request_duration_ms 回填查询失败，样本 durationSeconds / ttftSeconds 保持 nil: "
                     + "source=\(conn.path), error=\(error.localizedDescription)"
             )
         }
@@ -410,16 +416,17 @@ final class MinimaxDBReader {
                     rawOutput: output,
                     rawReasoning: reasoning
                 )
-                // request_duration_ms 回填：同 (session_id, turn_id) 的 message 行
-                // 按 FIFO 顺序弹出，`$.usage.input_tokens` / `output_tokens` 与账本
-                // 行原始值（nnClamp 后）双核对通过才采纳时长——对不上的条目按序
-                // 丢弃（空行 / 窗口边缘不对齐），队列耗尽仍无匹配则保持 nil，
-                // 宁可缺时长也不把时长安到错误的调用上。
-                var sampleDuration: Double? = nil
+                // request_duration_ms / decode_duration_ms 回填：同 (session_id,
+                // turn_id) 的 message 行按 FIFO 顺序弹出，`$.usage.input_tokens` /
+                // `output_tokens` 与账本行原始值（nnClamp 后）双核对通过才采纳
+                // 时长——对不上的条目按序丢弃（空行 / 窗口边缘不对齐），队列耗尽
+                // 仍无匹配则保持 nil，宁可缺时长也不把时长安到错误的调用上。
+                // ttftSeconds 与 durationSeconds 同源于命中条目，共用这一套配对。
+                var matchedEntry: MinimaxMessageDurationEntry? = nil
                 if let turnID, !turnID.isEmpty {
                     let key = MinimaxMessageDurationKey(sessionID: sessionID, turnID: turnID)
                     var queue = durationQueues[key] ?? []
-                    sampleDuration = Self.verifiedDuration(
+                    matchedEntry = Self.verifiedDurationEntry(
                         from: &queue,
                         ledgerInputTokens: uncachedInput,
                         ledgerOutputTokens: output
@@ -434,11 +441,14 @@ final class MinimaxDBReader {
                     cachedInputTokens: buckets.cacheRead,
                     outputTokens: buckets.output,
                     reasoningOutputTokens: buckets.reasoning,
-                    durationSeconds: sampleDuration,
-                    // MiniMax Code 无上游 TTFT 数据（db 与 v4 会话文件均无首字
-                    // 时刻，见 spec/harnesses/minimaxcode.md § TTFT），按用户裁定
-                    // 显式写 0（与 nil 区分：0 参与统计、nil 显示 —）。
-                    ttftSeconds: 0
+                    durationSeconds: matchedEntry?.durationSeconds,
+                    // TTFT 差分推导：TTFT(秒) = (request_duration_ms −
+                    // decode_duration_ms) / 1000——总耗时减纯解码即首字等待，
+                    // 与 durationSeconds 走同一套 FIFO 配对 + token 核对；decode
+                    // 缺失或差值为负（取消 / 抖动，实测 0.9%）→ nil，宁缺不猜，
+                    // 不再显式写 0。有效性域 [0, 3600] 的过滤在聚合层
+                    // hasValidTTFT，reader 不做范围过滤。
+                    ttftSeconds: matchedEntry?.ttftSeconds
                 )
             }
         )
@@ -546,13 +556,13 @@ final class MinimaxDBReader {
         return perDayChars
     }
 
-    /// request_duration_ms 回填队列：保留窗口内 assistant message 行按
-    /// `(session_id, turn_id)` 分组，`id` 升序（行写入序；同 turn 内与账本行
-    /// `ts` 序实测一致，全历史 11838 对 100% 配对）。与字符聚合同表同过滤风格
-    /// （`role = 'assistant'` + created_at_ms cutoff），但**独立守门**——失败由
-    /// `aggregate()` 自己的 do/catch 接住，不进 `charAggregationDegraded`。
+    /// request_duration_ms / decode_duration_ms 回填队列：保留窗口内 assistant
+    /// message 行按 `(session_id, turn_id)` 分组，`id` 升序（行写入序；同 turn 内
+    /// 与账本行 `ts` 序实测一致，全历史 11838 对 100% 配对）。与字符聚合同表同
+    /// 过滤风格（`role = 'assistant'` + created_at_ms cutoff），但**独立守门**——
+    /// 失败由 `aggregate()` 自己的 do/catch 接住，不进 `charAggregationDegraded`。
     /// 表不存在 / 缺列（旧 schema、坏 fixture）在 prepare 阶段抛 SQLITE_ERROR，
-    /// 调用方 catch 后队列为空，样本 durationSeconds 全部保持 nil。
+    /// 调用方 catch 后队列为空，样本 durationSeconds / ttftSeconds 全部保持 nil。
     private func runtimeAssistantDurationQueues(
         cutoffMs: Int64?
     ) throws -> [MinimaxMessageDurationKey: [MinimaxMessageDurationEntry]] {
@@ -565,7 +575,8 @@ final class MinimaxDBReader {
               turn_id,
               json_extract(data_json, '$.usage.input_tokens'),
               json_extract(data_json, '$.usage.output_tokens'),
-              json_extract(data_json, '$.usage.request_duration_ms')
+              json_extract(data_json, '$.usage.request_duration_ms'),
+              json_extract(data_json, '$.usage.decode_duration_ms')
             FROM local_runtime_message_rows
             WHERE role = 'assistant'
               AND turn_id IS NOT NULL AND turn_id <> ''\(cutoffPredicate)
@@ -577,6 +588,7 @@ final class MinimaxDBReader {
             let inputTokens: Int?
             let outputTokens: Int?
             let durationMs: Double?
+            let decodeMs: Double?
         }
         let rows = try conn.query(
             sql: sql,
@@ -598,7 +610,8 @@ final class MinimaxDBReader {
                 turnID: try SQLiteConnection.requiredText(stmt, column: 1),
                 inputTokens: optionalJSONInt(2),
                 outputTokens: optionalJSONInt(3),
-                durationMs: optionalJSONDouble(4)
+                durationMs: optionalJSONDouble(4),
+                decodeMs: optionalJSONDouble(5)
             )
         }
         var queues: [MinimaxMessageDurationKey: [MinimaxMessageDurationEntry]] = [:]
@@ -613,31 +626,47 @@ final class MinimaxDBReader {
                 // （0.2–3600s），0 会被 0.2 下界滤掉，但直接不写更诚实。
                 durationSeconds = nil
             }
+            // TTFT 差分推导：TTFT(秒) = (request_duration_ms − decode_duration_ms)
+            // / 1000——总耗时（含首字等待 + 解码）减纯解码即首字等待，两键同源于
+            // `$.usage` 同一行。2026-11-08 全库实测：94.5% 带 request 的行有 decode
+            // （14,665 / 15,513），其中 99.1% 满足 request ≥ decode（其余为取消 /
+            // 抖动）。decode 缺失 / 负值或差值为负 → nil，宁缺不猜；有效性域
+            // [0, 3600] 的范围过滤在聚合层 hasValidTTFT，这里不做范围过滤。
+            let ttftSeconds: Double?
+            if let requestMs = row.durationMs, requestMs.isFinite, requestMs > 0,
+               let decodeMs = row.decodeMs, decodeMs.isFinite, decodeMs >= 0,
+               requestMs >= decodeMs {
+                ttftSeconds = (requestMs - decodeMs) / 1000.0
+            } else {
+                ttftSeconds = nil
+            }
             queues[MinimaxMessageDurationKey(sessionID: row.sessionID, turnID: row.turnID), default: []]
                 .append(MinimaxMessageDurationEntry(
                     inputTokens: row.inputTokens,
                     outputTokens: row.outputTokens,
-                    durationSeconds: durationSeconds
+                    durationSeconds: durationSeconds,
+                    ttftSeconds: ttftSeconds
                 ))
         }
         return queues
     }
 
     /// 从 FIFO 队头找出第一条 `input_tokens` / `output_tokens` 都与账本行相等的
-    /// message 条目并返回其时长；核对不上的条目按序丢弃（空行 / 窗口边缘
-    /// 不对齐的行不阻塞后续配对），队列耗尽仍无匹配返回 nil——宁可缺时长，
-    /// 也不把时长安到错误的调用上。`queue` 以 inout 传出让丢弃结果留在队列里。
-    /// static 纯逻辑，单测可直接验证 FIFO / 核对语义（不需要构造 DB）。
-    static func verifiedDuration(
+    /// message 条目并整条返回（`durationSeconds` 与 `ttftSeconds` 同源同行）；
+    /// 核对不上的条目按序丢弃（空行 / 窗口边缘不对齐的行不阻塞后续配对），
+    /// 队列耗尽仍无匹配返回 nil——宁可缺时长，也不把时长安到错误的调用上。
+    /// `queue` 以 inout 传出让丢弃结果留在队列里。static 纯逻辑，单测可直接
+    /// 验证 FIFO / 核对语义（不需要构造 DB）。
+    static func verifiedDurationEntry(
         from queue: inout [MinimaxMessageDurationEntry],
         ledgerInputTokens: Int,
         ledgerOutputTokens: Int
-    ) -> Double? {
+    ) -> MinimaxMessageDurationEntry? {
         while !queue.isEmpty {
             let entry = queue.removeFirst()
             if let input = entry.inputTokens, let output = entry.outputTokens,
                input == ledgerInputTokens, output == ledgerOutputTokens {
-                return entry.durationSeconds
+                return entry
             }
         }
         return nil
