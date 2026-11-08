@@ -2,14 +2,14 @@ import Foundation
 import XCTest
 @testable import LLM_monitor
 
-/// Antigravity 额度路径（阶段一：Keychain 凭据 + 远端 Google API）的抓取节奏与
-/// 主机回退契约：
+/// Antigravity 额度路径（2.5.0：ls 优先 → keychain 兜底 → agy 代理刷新）的
+/// 远端抓取节奏与主机回退契约（本地路径正路径见 AntigravityLocalFallbackTests、
+/// 决策树分支见 AntigravityCredentialDecisionTreeTests）：
 /// - `.background` 只请求 `retrieveUserQuotaSummary`；`.full` 追加 `loadCodeAssist`
 /// - tier（loadCodeAssist）失败不影响主额度；主额度失败抛错
-/// - 主机回退序 Daily → cloudcode-pa → sandbox，仅 401 终止（credentialExpired）
-/// - 过期凭据零远端网络请求（mock 证伪）；过期/缺失凭据与远端 401 转入本地
-///   回退（2.4.2），本套件统一注入「无本地后端」发现 stub，回退即落
-///   credentialExpired（本地回退正路径见 AntigravityLocalFallbackTests）
+/// - 主机回退序 Daily → cloudcode-pa → sandbox，仅 401 终止（转入凭据策略分支）
+/// - 过期凭据零远端网络请求（mock 证伪）；keychain 兜底关闭或 autoRefresh 关闭
+///   时落统一提示（含 agy models 文案）
 /// - UA 为 hub 身份（版本取注入值，缺省回退 2.26.0）
 /// - 默认刷新间隔 300s（仅 provider 未显式配置时生效）
 final class AntigravityRefreshCadenceTests: XCTestCase {
@@ -63,23 +63,31 @@ final class AntigravityRefreshCadenceTests: XCTestCase {
         func recorded() -> [Call] { calls }
     }
 
+    /// 2.5.0 决策树的测试注入：独立 policy（隔离预检/缓存/退避）+「无本地后端」
+    /// 发现 stub，绝不触达真实 pgrep / lsof / agy / 钥匙串。
     private func makeFetcher(
         credential: AntigravityCredential? = AntigravityCredentialFixtures.valid(),
         hubVersion: String? = nil,
-        stub: RemoteStub
+        stub: RemoteStub,
+        policy: AntigravityCredentialPolicy? = nil,
+        accessTokenFallback: Bool = true,
+        autoRefresh: Bool = false
     ) -> AntigravityFetcher {
-        AntigravityFetcher(
+        let policy = policy ?? AntigravityCredentialPolicy(credentialReader: { credential })
+        return AntigravityFetcher(
             credentialReader: { credential },
             hubVersionProvider: { hubVersion },
             remotePostOverride: { host, path, headers, body in
                 try await stub.handle(host: host, path: path, headers: headers, body: body)
             },
-            // 本套件不覆盖本地回退正路径：统一注入「无本地后端」发现 stub，
-            // 保证 401 / 过期 / 缺失凭据转入本地回退后立即落 credentialExpired，
-            // 且绝不触达真实 pgrep / lsof。
+            // 本套件不覆盖本地路径：统一注入「无本地后端」发现 stub，决策树
+            // 第 1 步立即跳过，绝不触达真实 pgrep / lsof。
             localServerDiscovery: {
                 throw QuotaError.networkError("stub: 无本地后端")
-            }
+            },
+            policy: policy,
+            accessTokenFallbackEnabled: accessTokenFallback,
+            autoRefreshEnabled: autoRefresh
         )
     }
 
@@ -186,18 +194,19 @@ final class AntigravityRefreshCadenceTests: XCTestCase {
         let stub = RemoteStub(handler: { _, path in
             path == quotaPath ? (Data(), 401) : nil
         })
-        let fetcher = makeFetcher(stub: stub)
+        // autoRefresh 关：远端 401 → 凭据不可用分支直接落统一提示，不跑 agy。
+        let fetcher = makeFetcher(stub: stub, autoRefresh: false)
 
         do {
             _ = try await fetcher.fetch(mode: .background)
-            XCTFail("远端 401 在无本地后端时必须抛 credentialExpired")
+            XCTFail("远端 401（autoRefresh 关）必须抛 credentialExpired")
         } catch let error as QuotaError {
             guard case .credentialExpired = error else {
                 return XCTFail("期望 credentialExpired，实际 \(error)")
             }
-            // 远端 401 与本地过期判定落到同一提示（2.4.2 文案）。
-            XCTAssertEqual(error.errorDescription, "token 已过期：打开 Antigravity 可继续监控额度，重新登录可刷新凭据")
-            // 仅 401 终止：不做主机回退；转入本地回退也未发任何远端请求。
+            // 2.5.0 统一提示（含 agy models 手动刷新文案）。
+            XCTAssertEqual(error.errorDescription, "无法获取 Antigravity 额度：打开 Antigravity 可继续监控额度，重新登录可刷新凭据，或在终端运行 agy models 手动刷新")
+            // 仅 401 终止：不做主机回退；未走 agy 分支，远端仅 daily 一台。
             let calls = await stub.recorded()
             XCTAssertEqual(calls.map(\.host), [Self.dailyHost])
         } catch {
@@ -213,13 +222,13 @@ final class AntigravityRefreshCadenceTests: XCTestCase {
 
         do {
             _ = try await fetcher.fetch(mode: .full)
-            XCTFail("过期凭据（无本地后端）必须抛 credentialExpired")
+            XCTFail("过期凭据（autoRefresh 关）必须抛 credentialExpired")
         } catch let error as QuotaError {
             guard case .credentialExpired = error else {
                 return XCTFail("期望 credentialExpired，实际 \(error)")
             }
-            XCTAssertEqual(error.errorDescription, "token 已过期：打开 Antigravity 可继续监控额度，重新登录可刷新凭据")
-            // 过期时不发任何远端请求（mock 证伪）；本地回退走注入的发现 stub，无 RPC。
+            XCTAssertEqual(error.errorDescription, "无法获取 Antigravity 额度：打开 Antigravity 可继续监控额度，重新登录可刷新凭据，或在终端运行 agy models 手动刷新")
+            // 过期时不发任何远端请求（mock 证伪）；autoRefresh 关也不跑 agy。
             let calls = await stub.recorded()
             XCTAssertTrue(calls.isEmpty, "过期凭据不应发起任何远端请求，实际 \(calls.count) 次")
         } catch {
@@ -233,12 +242,12 @@ final class AntigravityRefreshCadenceTests: XCTestCase {
 
         do {
             _ = try await fetcher.fetch(mode: .background)
-            XCTFail("缺失凭据（无本地后端）必须抛 credentialExpired")
+            XCTFail("缺失凭据（autoRefresh 关）必须抛 credentialExpired")
         } catch let error as QuotaError {
             guard case .credentialExpired = error else {
                 return XCTFail("期望 credentialExpired，实际 \(error)")
             }
-            XCTAssertEqual(error.errorDescription, "token 已过期：打开 Antigravity 可继续监控额度，重新登录可刷新凭据")
+            XCTAssertEqual(error.errorDescription, "无法获取 Antigravity 额度：打开 Antigravity 可继续监控额度，重新登录可刷新凭据，或在终端运行 agy models 手动刷新")
             let calls = await stub.recorded()
             XCTAssertTrue(calls.isEmpty)
         } catch {
@@ -342,11 +351,11 @@ final class AntigravityRefreshCadenceTests: XCTestCase {
     func testQuotaSourceDisplayCopy() {
         XCTAssertEqual(
             AntigravityQuotaSource.remoteCloudCode.sourceDescription,
-            "远端 Cloud Code（钥匙串凭据）"
+            "远端 Cloud Code（钥匙串凭据兜底）"
         )
         XCTAssertEqual(
             AntigravityQuotaSource.localLanguageServer.sourceDescription,
-            "本地 language_server（钥匙串凭据已过期或不可用）"
+            "本地 language_server（本地服务优先）"
         )
     }
 

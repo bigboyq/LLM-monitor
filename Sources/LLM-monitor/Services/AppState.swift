@@ -125,6 +125,11 @@ final class AppState: ObservableObject {
     /// 最近一次 provider 请求完成时间（含失败，不限定为 full refresh）。
     @Published private(set) var lastRefreshAt: Date?
 
+    /// Antigravity 凭据策略启动预检结果（2.5.0）：monitor 启动与 config 热重载
+    /// 各执行一次、结果记忆到本会话。设置 pane 据此把被自动 disable 的开关显示
+    /// 为 off + disabled + 原因文案（钥匙串访问被拒 / 未找到 agy CLI）。
+    @Published private(set) var antigravityCredentialPreflight = AntigravityCredentialPolicy.Preflight()
+
     /// 下次自动刷新时间
     @Published private(set) var nextRefreshAt: Date?
 
@@ -354,6 +359,9 @@ final class AppState: ObservableObject {
         // 节假日数据源：seed 源基线（后续 config 变更据此判定「源变了」）。
         // 启动取数由 App 入口触发，不在测试会构造的 init/start 路径上发网络请求。
         holidayCalendarService.adoptSource(configStore.config.effectiveHolidaySource)
+        // Antigravity 凭据策略启动预检（2.5.0）：monitor 启动执行一次，结果
+        // 记忆到本会话；config 热重载时由 setupConfigSubscription 再次执行。
+        runAntigravityCredentialPreflight()
         setupConfigSubscription()
     }
 
@@ -922,6 +930,9 @@ final class AppState: ObservableObject {
                 self.rebuildStatuses()
                 self.applyAppearance()
                 self.rescheduleAll()
+                // Antigravity 凭据策略预检（2.5.0）：开关翻转 / 环境变化后重新
+                // 预检一次（用户手动重开被自动 disable 的开关即经此恢复）。
+                self.runAntigravityCredentialPreflight()
                 // 运行期打开多机联动开关（start() 之后再启用）。
                 if newConfig.effectiveSyncConfig.enabled, self.fleetSync == nil {
                     self.startFleetSync()
@@ -932,6 +943,26 @@ final class AppState: ObservableObject {
                 )
             }
             .store(in: &cancellables)
+    }
+
+    /// Antigravity 凭据策略启动预检（2.5.0）：monitor 启动与 config 热重载各执行
+    /// 一次（结果记忆到本会话）。provider 未启用时不做任何钥匙串/文件系统探测，
+    /// 预检清零——避免为未使用 Antigravity 的用户平白访问 gemini 钥匙串条目。
+    func runAntigravityCredentialPreflight() {
+        let pc = providerID(for: .antigravity).flatMap { configStore.config.providers[$0] }
+        guard let pc, pc.enabled else {
+            AntigravityCredentialPolicy.shared.runPreflight(
+                accessTokenFallbackOn: false,
+                autoRefreshOn: false
+            )
+            antigravityCredentialPreflight = AntigravityCredentialPolicy.shared.preflightSnapshot
+            return
+        }
+        AntigravityCredentialPolicy.shared.runPreflight(
+            accessTokenFallbackOn: pc.effectiveAccessTokenFallback,
+            autoRefreshOn: pc.effectiveAllowTokenRefresh
+        )
+        antigravityCredentialPreflight = AntigravityCredentialPolicy.shared.preflightSnapshot
     }
 
     func rebuildStatuses() {

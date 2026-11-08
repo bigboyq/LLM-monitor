@@ -220,10 +220,10 @@ AppState.fetch 成功后调 `fetcher.resultMerger.merge(new:previous:mode:)` 合
 
 ## Auth Probing
 
-Antigravity 阶段一起额度路径走钥匙串凭据 + 远端 Google API，`checkLocalAuth()` 探测
-钥匙串凭据条目是否可读（不要求 Antigravity 运行；token 过期不算不可用——2.4.2 起
-过期/缺失/远端 401 由 fetch 回退本地 language_server RPC，全部失败才抛
-`credentialExpired` 呈现；auth probe 本身不跑 pgrep）。codex 仍探测本地 auth 文件。
+Antigravity 阶段一起 `checkLocalAuth()` 探测钥匙串凭据条目是否可读（不要求
+Antigravity 运行；token 过期不算不可用——2.5.0 起过期/缺失/远端 401 由 fetch 决策树
+走 agy 代理刷新或统一提示呈现，见 `providers/antigravity.md` § Remote Quota Path；
+auth probe 本身不跑 pgrep、不跑 agy）。codex 仍探测本地 auth 文件。
 `AuthProber` 异步探测 `fetcher.checkLocalAuth()` 并缓存结果：
 
 - `scheduleProbe(for: providerID)`：启动探测（fetcher.hasLocalAuth() false 时不发）
@@ -434,10 +434,10 @@ Fetcher errors use `QuotaError`:
 连接错误分类保持不变。2026-10-25 工作区定向验证：`HTTPErrorSanitizerTests` 6 例通过；
 打包脚本 `bash -n` 及临时 plist 的用途说明 / ATS 嵌套布尔校验通过，未在另一台机器验收。
 
-Antigravity-specific note (阶段一，2026-11-08；2.4.2 增加本地回退):
+Antigravity-specific note (阶段一，2026-11-08；2.5.0 凭据策略重构):
 
-- Quota/account path uses the Keychain credential (`gemini` / `antigravity`, written and refreshed by the Antigravity client) against the remote Google quota APIs; expiry is judged locally (`now >= token.expiry`) and no remote request is made when expired — missing/expired credentials and remote 401 fall back to the local language_server RPC (see `providers/antigravity.md` § Remote Quota Path decision tree).
-- Local-usage path（阶段二b，2026-11-08）：scanner 直读会话 `.db`（`AntigravitySessionDBReader`），不发任何网络请求、不消费进程发现（进程发现 2.4.2 起仅额度回退路径复活）。
+- Quota path（2.5.0）：决策树第 1 步是本地 language_server RPC（每拍 pgrep + lsof 毫秒级发现，**不读钥匙串**）；本地不可用时按开关 `accessTokenFallback` 走 keychain 凭据 → 远端 Google 配额接口（token 过期不发远端请求），token 过期/缺失或远端 401 时按开关 `allowTokenRefresh` 运行 `agy models` 代理刷新钥匙串凭据后重试远端；失败退避一个刷新周期（见 `providers/antigravity.md` § Remote Quota Path decision tree / § Credential Preflight & Backoff）。
+- Local-usage path（阶段二b，2026-11-08）：scanner 直读会话 `.db`（`AntigravitySessionDBReader`），不发任何网络请求、不消费进程发现（进程发现 2.5.0 起是额度决策树第 1 步）。
 
 ## Provider Registration Contract
 

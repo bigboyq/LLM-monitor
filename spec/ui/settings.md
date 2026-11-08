@@ -63,9 +63,11 @@ fullscreen behavior, compact size, independent ring colors, and unrelated form d
 
 Every provider pane (five: minimax, chatgpt, antigravity, glm, deepseek) carries one
 small 「立即刷新」 row inside its
-「认证与刷新」 section（Antigravity 的认证内容是恒为关的「允许监控刷新 Token」
-开关：token 由 Antigravity 客户端自行刷新，`allowTokenRefresh` 强制 false，
-开关 disabled 不可交互；独立刷新频率未显式配置时显示专属默认 300s 而非继承全局）. It is a `SettingsControlRow` with a
+「认证与刷新」 section（Antigravity 的认证内容自 2.5.0 起是两枚**真实可交互**的
+凭据策略开关——「钥匙串额度兜底」（`accessTokenFallback`，缺省开）与「允许监控
+刷新 Token」（`allowTokenRefresh`，2.5.0 语义翻正、缺省开），细节见下节
+「Antigravity pane 的凭据策略开关」；独立刷新频率未显式配置时显示专属默认 300s
+而非继承全局）. It is a `SettingsControlRow` with a
 borderless `arrow.clockwise` button and the tooltip 「立即刷新该 Provider」, built by the
 shared `providerRefreshButton(for:)` so the five panes are one line each. The button is
 rendered only for a provider that has a registered descriptor — an unregistered kind
@@ -92,23 +94,52 @@ addressable seam — the tests pin the action, the view only draws it. The greye
 first layer is UX, not correctness: repeated clicks are absorbed by `refreshOne`'s
 transaction gate.
 
+### Antigravity pane 的凭据策略开关（2.5.0）
+
+Antigravity 设置 pane（`SettingsProviderPanes.swift:antigravityPane`）的「认证与刷新」
+节自 2.5.0 起放两枚**真实可交互**的开关（`SettingsToggleRow` 标准行，绑定
+`draft.antigravityAccessTokenFallback` / `draft.antigravityAllowTokenRefresh`；保存时
+开启写 nil=缺省、关闭写显式 false，均缺省 **true**）：
+
+- **「钥匙串额度兜底」**（`providers.antigravity.accessTokenFallback`）：控制本地
+  language_server 不可用时的 keychain → 远端 Cloud Code 兜底路径。
+- **「允许监控刷新 Token」**（`providers.antigravity.allowTokenRefresh`）：控制 token
+  过期时是否运行 agy CLI（`agy models`）代理刷新钥匙串凭据（2.4.0–2.4.3 曾恒为关
+  且 disabled，2.5.0 语义翻正）。
+
+**启动预检自动 disable（运行时生效，不改用户 json）**：monitor 启动与 config 热重载
+各执行一次预检（`AppState.runAntigravityCredentialPreflight`，结果发布在
+`state.antigravityCredentialPreflight`），被自动 disable 的开关显示
+**off + disabled + 原因文案**（`SettingsControlRow` 内 `Toggle(.constant(false))`
+disabled + `SettingsTypography.metadata` secondary 说明文字，沿用 2.4.x 恒为关行的
+布局）：
+
+| 预检结论 | UI 表现 | 恢复方式 |
+|---|---|---|
+| 钥匙串授权被拒（系统授权弹窗被拒/不可读） | ①「钥匙串额度兜底」off + disabled + 「钥匙串访问被拒」 | 授权后手动重开开关或重启 monitor（触发重新预检） |
+| agy CLI 未找到（PATH + `~/.local/bin/agy`） | ②「允许监控刷新 Token」off + disabled + 「未找到 agy CLI」 | 安装后手动重开开关或重启 monitor |
+| 钥匙串条目不存在（未登录） | **软不可用不 disable**：开关保持可交互，行下追加「未登录 Antigravity（登录后自动恢复兜底路径）」提示 | 登录后自动恢复 |
+
+不做后台自动复活；预检详情与退避契约见
+`spec/providers/antigravity.md` § Credential Preflight & Backoff。
+
 ### Antigravity pane 的「额度来源」行
 
 Antigravity 设置 pane（`SettingsProviderPanes.swift:antigravityPane`）在「认证与刷新」
-节内、「允许监控刷新 Token」开关行下方有一条**只读**的「额度来源」行
+节内、两枚凭据策略开关行下方有一条**只读**的「额度来源」行
 （`SettingsControlRow` 标准行布局，值文本用 `SettingsTypography.metadata` +
-secondary，与开关行的说明文字同款；无任何交互）。2.4.2 起额度有两条路径（钥匙串
-凭据 → 远端 Cloud Code API 主路径；keychain 过期/缺失或远端 401 → 本地
-language_server RPC 回退），本行回答「当前走的是哪条路」：
+secondary，与开关行的说明文字同款；无任何交互）。2.5.0 起额度有两条路径（本地
+language_server 主路径——ls 可用即走、不读钥匙串；本地不可用时钥匙串凭据 → 远端
+Cloud Code API，含 agy 刷新后的远端重试），本行回答「当前走的是哪条路」：
 
 - **数据源**：本机 status 最近一次成功刷新打上的
   `QuotaInfo.antigravityQuotaSource`（`AntigravityQuotaSource`，打标与合并语义见
   `spec/providers/antigravity.md` § Remote Quota Path 的「来源标记 + UI 展示」）。
   视图经 `providerID(for: .antigravity)` 查 `state.statuses` 读
   `status.lastSuccess` 的标记（`antigravityQuotaSourceDescription`），不解析状态机。
-- **文案**：`.remoteCloudCode` → 「远端 Cloud Code（钥匙串凭据）」；
-  `.localLanguageServer` → 「本地 language_server（钥匙串凭据已过期或不可用）」；
-  标记缺失（尚无成功刷新 / `lastSuccess` 为 nil）→ 中性占位「—」。来源标记不跨
+- **文案**（2.5.0 更新）：`.remoteCloudCode` → 「远端 Cloud Code（钥匙串凭据兜底）」；
+  `.localLanguageServer` → 「本地 language_server（本地服务优先）」；标记缺失
+  （尚无成功刷新 / `lastSuccess` 为 nil）→ 中性占位「—」。来源标记不跨
   启动持久化（AppState 只持久化刷新时间戳），重启后首拍刷新前显示「—」。
 - **刷新时机**：`AntigravityFillingMissingMerger` 在 background 拍保留上次来源
   （与账号/套餐同生命周期）、full 拍采纳本次值，因此本行在 full 周期粒度上稳定；

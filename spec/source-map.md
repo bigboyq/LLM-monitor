@@ -79,10 +79,13 @@
 | `Sources/LLM-monitor/Services/Infra/QuotaError.swift` | 统一错误类型 |
 | `Sources/LLM-monitor/Fetchers/MinimaxTokenPlanFetcher.swift` | minimax Token Plan API 抓取 |
 | `Sources/LLM-monitor/Fetchers/CodexFetcher.swift` | ChatGPT Plan API 抓取、多 Key Admin API 赠金并发抓取与错误隔离 + 本地 JSONL 解析 |
-| `Sources/LLM-monitor/Fetchers/AntigravityFetcher.swift` | Antigravity 额度决策树：远端配额/账号（Keychain 凭据 + Google API，主机回退）为主路径，凭据缺失/过期或远端 401 回退本地 RPC（2.4.2）；主额度每拍、tier 按次要信息频率 |
-| `Sources/LLM-monitor/Fetchers/AntigravityProcessDiscovery.swift` | Antigravity 进程发现（pgrep 分类排序 + lsof 端口 + CSRF 提取 + `serverStillOwnsEndpoint` TOCTOU 复查），2.4.2 起回退专用复活（primary 用途阶段一退役；本地用量 scanner 不消费） |
-| `Tests/LLMMonitorTests/AntigravityRefreshCadenceTests.swift` | Antigravity 主额度与次要账号/套餐（tier）编排、可选接口失败降级、额度失败传播 |
-| `Tests/LLMMonitorTests/AntigravityLocalFallbackTests.swift` | Antigravity 本地回退决策树：过期/缺失/401 → 本地 RPC、`response` 包装解析归一化、CSRF 两种头、TOCTOU 两路、tier 回退链 |
+| `Sources/LLM-monitor/Fetchers/AntigravityFetcher.swift` | Antigravity 额度决策树（2.5.0）：ls 可用 → 本地 RPC 主路径（不读钥匙串）→ keychain 兜底开关 → 远端配额/账号（Keychain 凭据 + Google API，主机回退）→ 过期/401 按 `allowTokenRefresh` 走 agy 代理刷新或统一提示；主额度每拍、tier 按次要信息频率 |
+| `Sources/LLM-monitor/Fetchers/AntigravityCredentialPolicy.swift` | Antigravity 凭据策略进程级状态（2.5.0）：启动预检三态（钥匙串授权被拒自动 disable ① / 条目缺失软不可用 / 未找到 agy CLI 自动 disable ②）、内存 token 缓存、agy 退避、`AntigravityAgyCLI`（agy 可执行查找 + `agy models` 运行：30s 超时、AsyncMutex 互斥、输出不落日志、invalid_grant 归类） |
+| `Sources/LLM-monitor/Fetchers/AntigravityProcessDiscovery.swift` | Antigravity 进程发现（pgrep 分类排序 + lsof 端口 + CSRF 提取 + `serverStillOwnsEndpoint` TOCTOU 复查），2.5.0 起决策树第 1 步（本地用量 scanner 不消费） |
+| `Tests/LLMMonitorTests/AntigravityRefreshCadenceTests.swift` | Antigravity 远端路径编排：主额度与次要账号/套餐（tier）、可选接口失败降级、额度失败传播、主机回退 |
+| `Tests/LLMMonitorTests/AntigravityLocalFallbackTests.swift` | Antigravity 本地路径（决策树第 1 步）：ls 可用优先（不读钥匙串）、本地 RPC 失败落到远端兜底、`response` 包装解析归一化、CSRF 两种头、TOCTOU 落后续分支、tier 回退链 |
+| `Tests/LLMMonitorTests/AntigravityCredentialPolicyTests.swift` | Antigravity 凭据策略单元契约（2.5.0）：预检三态与恢复、开关生效态、内存缓存命中/过期重读、退避窗口、agy 运行互斥、agy 可执行查找纯函数 |
+| `Tests/LLMMonitorTests/AntigravityCredentialDecisionTreeTests.swift` | Antigravity 决策树分支（2.5.0）：兜底开关关、预检自动 disable、fresh token 远端、401 落凭据分支、agy 成功/失败/退避/重试、invalid_grant 提示、内存缓存省钥匙串读取 |
 
 | `Sources/LLM-monitor/Fetchers/AntigravitySchemas.swift` | Antigravity 远端/本地配额响应的解码模型（`RetrieveUserQuotaSummaryResponse` / `RetrieveUserQuotaSummaryEnvelope` / `LoadCodeAssistRemoteResponse` / `UserStatus*` 一族）+ `LocalhostTrustDelegate` |
 | `Sources/LLM-monitor/Fetchers/GlmCodingPlanFetcher.swift` | GLM Coding Plan 额度与 reset time 抓取（支持 `GlmAuthMode`：`apiKey` / `credential`；ZCode 套餐三路编排依赖注入 `ZcodePackageProviding`） |

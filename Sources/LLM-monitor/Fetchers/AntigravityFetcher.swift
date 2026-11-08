@@ -2,39 +2,48 @@ import Foundation
 
 /// Antigravity 额度抓取器
 ///
-/// **阶段一（2026-11-08）：额度/账号主路径走 Keychain 凭据 + 远端 Google API**——
-/// Antigravity 未运行时额度照常工作（token 未过期时）：
+/// **2.5.0（凭据策略重构：ls 优先 + agy 代理刷新 + 开关预检）**：每次额度刷新按
+/// 以下决策树取额度（`AntigravityCredentialPolicy` 持有跨刷新的预检 / 缓存 /
+/// 退避状态）：
 ///
-/// 1. 从登录钥匙串读 `gemini` / `antigravity` 条目（Antigravity 客户端写入并
-///    自行续期，见 `AntigravityCredential`），本地判定 `token.expiry`
-/// 2. POST `https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary`
-///    （body `{}`；Bearer access_token + hub 身份 UA；主机回退序 Daily →
-///    生产 cloudcode-pa → sandbox，仅 401 终止，其余非 2xx 换下一主机）
-/// 3. `.full` 追加 `v1internal:loadCodeAssist` 取 tier（`currentTier.name` →
-///    `paidTier.name` → `paidTier.id`）；邮箱直接用 Keychain 的 `id_token_email`
+/// 1. **ls 可用？**（`AntigravityProcessDiscovery`，pgrep + lsof 毫秒级）→
+///    本地 RPC（来源 `.localLanguageServer`）。运行中的 language_server 持有
+///    host bridge 新凭据，本地 RPC 一直是权威额度来源——此步**不读钥匙串**
+///    （邮箱兜底只用内存缓存）。
+/// 2. 开关 `accessTokenFallback`（config 缺省 true；预检发现钥匙串授权被拒时
+///    运行时自动 disable）关闭 → 统一提示完成（含「或在终端运行 agy models
+///    手动刷新」）。
+/// 3. keychain access_token 未过期 → 远端 Cloud Code（来源 `.remoteCloudCode`）。
+///    读凭据先走进程内存缓存（`AntigravityCredentialPolicy`），内存过期/缺失才
+///    重读 keychain；远端 401 视同凭据不可用，走下一分支。
+/// 4. 开关 `allowTokenRefresh`（autoRefresh，2.5.0 语义翻正、缺省 true；预检
+///    发现找不到 agy CLI 时运行时自动 disable）关闭，或上轮 agy 刷新失败仍在
+///    退避期内 → 同 2 的提示完成。
+/// 5. 运行 `agy models`（`AntigravityAgyCLI`：30s 超时、AsyncMutex 互斥、输出
+///    不落日志）触发官方认证流写回 keychain → 强制重读 keychain：新 token 未
+///    过期 → 远端（来源 `.remoteCloudCode`）；agy 失败 / 重读仍过期 → 退避一个
+///    刷新周期并提示（`invalid_grant` 类 → 「请重新登录 Antigravity」）。
+///
+/// refresh_token 不落盘不进日志（不建模、输出不落日志），监控侧不回写 keychain。
+///
+/// **阶段一（2026-11-08）**：额度/账号主路径走 Keychain 凭据 + 远端 Google API：
+/// 从登录钥匙串读 `gemini` / `antigravity` 条目（见 `AntigravityCredential`），
+/// POST `https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary`
+/// （body `{}`；Bearer access_token + hub 身份 UA；主机回退序 Daily →
+/// 生产 cloudcode-pa → sandbox，仅 401 终止，其余非 2xx 换下一主机）；`.full`
+/// 追加 `v1internal:loadCodeAssist` 取 tier；邮箱直接用 Keychain 的
+/// `id_token_email`。
 ///
 /// **阶段二b（2026-11-08）**：本地用量路径退役本地 RPC
 /// `GetCascadeTrajectoryGeneratorMetadata`——scanner 直读会话
 /// `.db`（`AntigravitySessionDBReader`），与额度路径无关。
 ///
-/// **2.4.2（keychain 陈旧窗口回退）**：keychain 条目只在登录 / agy 使用时被写，
-/// IDE 运行期间刷新的 token 只在其内存（经 host bridge 分发），keychain 会陈旧；
-/// 而运行中的 language_server 持有 bridge 新凭据且本地 RPC 一直可用。因此
-/// fetch 按以下决策树取额度：
-///
-/// 1. 凭据解析成功且未过期 → 远端路径（不变）；远端配额 401（轮询间隙 token
-///    恰好过期）→ 同样转入本地回退
-/// 2. 凭据缺失/过期 → 本地回退：进程发现（`AntigravityProcessDiscovery`，
-///    pgrep + lsof + CSRF，原排序规则）→ 本地 `RetrieveUserQuotaSummary`
-///    （`response` 包装形状，group/bucket 归一化与远端共用）
-/// 3. 回退时账号信息用本地 `GetUserStatus`（email/tier，仅 `.full`，可选失败
-///    不致命，tier 回退链照 spec）；本地 RPC 成功后不再打远端
-/// 4. 回退失败时：凭据缺失或已过期 → `credentialExpired`（打开 Antigravity 可
-///    继续监控额度）；远端 401 起始且无本地后端 → 同一文案；其余错误按现有
-///    错误路径上抛
+/// **2.4.2（历史）**：keychain 陈旧窗口引入本地 RPC 回退（keychain 新鲜 → 远端；
+/// 缺失/过期/401 → 本地 RPC）。2.5.0 决策树反转：ls 检查提到最前，本地 RPC 从
+/// 「回退」变为「权威主路径」，远端改为 keychain 兜底路径。
 ///
 /// **2.4.3（来源标记）**：两条成功路径各自给返回的 `QuotaInfo` 打来源标记
-/// `antigravityQuotaSource`（远端 → `.remoteCloudCode`，本地回退 →
+/// `antigravityQuotaSource`（远端 → `.remoteCloudCode`，本地 →
 /// `.localLanguageServer`），供设置窗口 Antigravity pane 的「额度来源」行展示
 /// 当前走的是哪条路；merger 在 background 保留上次来源（与账号/套餐同语义）。
 struct AntigravityFetcher: QuotaFetcher {
@@ -95,12 +104,23 @@ struct AntigravityFetcher: QuotaFetcher {
     private let hubVersionProvider: @Sendable () -> String?
     /// 默认走 HTTPClient 生产传输；测试注入 override 后按 host 逐一记录调用。
     private let remotePost: RemotePostOverride
-    /// 本地回退路径的进程发现（默认 pgrep + lsof；测试注入固定 ServerInfo 或抛错）。
+    /// 本地路径的进程发现（默认 pgrep + lsof；测试注入固定 ServerInfo 或抛错）。
+    /// 2.5.0 决策树第 1 步每拍都会先跑发现，默认 seam 带测试进程护栏：xctest
+    /// 进程内恒走「无本地后端」，漏注入 stub 的测试不触达真实 pgrep / lsof。
     private let localServerDiscovery: @Sendable () async throws -> ServerInfo
     /// 本地 RPC 传输（默认 CappedDownloader + 共享 session；测试注入记录调用）。
     private let localPost: LocalPostOverride
     /// 本地服务 TOCTOU 复查（默认 lsof；测试可注入 true / false）。
     private let ownershipChecker: LocalOwnershipChecker
+    /// 跨刷新的凭据策略状态（预检 / 内存 token 缓存 / agy 退避）。默认进程级
+    /// 共享实例；测试注入独立实例隔离状态。
+    private let policy: AntigravityCredentialPolicy
+    /// 开关 `providers.antigravity.accessTokenFallback`（缺省 true）。
+    private let accessTokenFallbackEnabled: Bool
+    /// 开关 `providers.antigravity.allowTokenRefresh`（autoRefresh，2.5.0 缺省 true）。
+    private let autoRefreshEnabled: Bool
+    /// agy 刷新失败的退避时长 = 一个刷新周期（provider 未显式配置时为专属默认 300s）。
+    private let backoffIntervalSeconds: TimeInterval
 
     init(
         credentialReader: @escaping @Sendable () -> AntigravityCredential? = {
@@ -111,12 +131,19 @@ struct AntigravityFetcher: QuotaFetcher {
         },
         remotePostOverride: RemotePostOverride? = nil,
         localServerDiscovery: @escaping @Sendable () async throws -> ServerInfo = {
-            try await AntigravityFetcher.discoverServerAsync()
+            if AntigravityKeychain.isRunningInTestProcess {
+                throw QuotaError.networkError("test-guardrail: 进程发现在测试进程内不可用（请注入 stub）")
+            }
+            return try await AntigravityFetcher.discoverServerAsync()
         },
         localPostOverride: LocalPostOverride? = nil,
         localOwnershipChecker: @escaping LocalOwnershipChecker = {
             AntigravityFetcher.serverStillOwnsEndpoint($0)
-        }
+        },
+        policy: AntigravityCredentialPolicy? = nil,
+        accessTokenFallbackEnabled: Bool = true,
+        autoRefreshEnabled: Bool = true,
+        refreshIntervalSeconds: Int? = nil
     ) {
         self.credentialReader = credentialReader
         self.hubVersionProvider = hubVersionProvider
@@ -138,6 +165,15 @@ struct AntigravityFetcher: QuotaFetcher {
             )
         }
         self.ownershipChecker = localOwnershipChecker
+        // 默认进程级共享实例：fetcher 每轮刷新都重建，预检 / 内存缓存 / 退避必须
+        // 跨构造存活。注意 credentialReader 注入只服务 checkLocalAuth（auth 探测）
+        // ——fetch 路径的凭据一律经 policy（测试要隔离状态时注入独立 policy）。
+        self.policy = policy ?? .shared
+        self.accessTokenFallbackEnabled = accessTokenFallbackEnabled
+        self.autoRefreshEnabled = autoRefreshEnabled
+        self.backoffIntervalSeconds = TimeInterval(
+            refreshIntervalSeconds ?? AppConfig.antigravityDefaultRefreshIntervalSeconds
+        )
     }
 
     func hasLocalAuth() -> Bool {
@@ -148,47 +184,112 @@ struct AntigravityFetcher: QuotaFetcher {
     }
 
     /// 凭据可读（条目存在且结构可解析）即视为可用。token 过期不在此判定：
-    /// 过期/缺失时 fetch() 回退本地 RPC（`AntigravityProcessDiscovery`），全部
-    /// 失败才抛 `credentialExpired`。auth 探测仍只看钥匙串可读性（不跑 pgrep）。
+    /// 过期/缺失时 fetch() 按决策树走 keychain 兜底 / agy 刷新分支。auth 探测
+    /// 仍只看钥匙串可读性（不跑 pgrep、不跑 agy）。
     func checkLocalAuth() async -> Bool {
         credentialReader() != nil
     }
 
-    // MARK: - 额度抓取决策树
+    // MARK: - 额度抓取决策树（2.5.0：ls 优先 → keychain 兜底 → agy 代理刷新）
 
     func fetch(mode: RefreshMode) async throws -> QuotaInfo {
-        let credential = credentialReader()
-        if let credential, !credential.isExpired() {
-            do {
-                return try await fetchRemote(credential: credential, mode: mode)
-            } catch let error as QuotaError where error == QuotaError.credentialExpired {
-                // 远端 401：轮询间隙 keychain token 恰好过期（IDE 运行期间刷新的
-                // token 只在其内存）。转入本地回退，不再重试远端。
-                logWarn("[antigravity] 远端配额 401，回退本地 language_server RPC")
-                return try await fetchLocalFallback(
-                    origin: .remoteUnauthorized,
-                    credential: credential,
-                    mode: mode
-                )
-            }
+        // 1. ls 可用？→ 本地 RPC（来源=localLanguageServer）。运行中的
+        //    language_server 持有 host bridge 新凭据，本地 RPC 一直是权威额度
+        //    来源；发现本身 pgrep + lsof 毫秒级。此步不读钥匙串（邮箱兜底只用
+        //    内存缓存，省一次钥匙串访问）。
+        do {
+            let server = try await localServerDiscovery()
+            let cached = policy.memoryCachedFreshCredential()
+            let info = try await fetchLocal(server: server, credential: cached, mode: mode)
+            logInfo("[antigravity] 额度来源：本地 language_server")
+            return info
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as URLError where error.code == .cancelled {
+            throw error
+        } catch {
+            // ls 不可用（未发现进程/端口）或本地 RPC 失败 → 继续后续分支，
+            // 不把本地失败伪装成凭据错误。
+            logInfo("[antigravity] 本地 language_server 不可用（\(HTTPRequestLogSanitizer.networkErrorDescription(error))），转入钥匙串/远端分支")
         }
-        let origin: LocalFallbackOrigin = credential == nil ? .missingCredential : .expiredCredential
-        if let credential {
-            logWarn("[antigravity] keychain token 已过期（expiry=\(credential.expiry)），回退本地 language_server RPC")
-        } else {
-            logWarn("[antigravity] 未读取到 keychain 凭据，尝试本地 language_server RPC 回退")
-        }
-        return try await fetchLocalFallback(origin: origin, credential: credential, mode: mode)
-    }
 
-    /// 回退触发原因（决定回退失败时的错误呈现，见 `fetchLocalFallback`）。
-    private enum LocalFallbackOrigin {
-        /// keychain 凭据缺失（未登录 / 条目不可解析）。
-        case missingCredential
-        /// keychain 凭据本地过期判定 `now >= expiry`。
-        case expiredCredential
-        /// 凭据新鲜但远端配额接口 401。
-        case remoteUnauthorized
+        // 2. accessTokenFallback 关（config 关闭，或预检发现钥匙串授权被拒后
+        //    运行时自动 disable）→ 统一提示完成。
+        guard policy.isAccessTokenFallbackActive(configEnabled: accessTokenFallbackEnabled) else {
+            logWarn("[antigravity] 钥匙串额度兜底未启用，落统一提示")
+            throw QuotaError.credentialExpired
+        }
+
+        // 3. keychain access_token 未过期 → 远端（来源=remoteCloudCode）。凭据
+        //    先走进程内存缓存，内存过期/缺失才重读 keychain（省钥匙串访问）。
+        if let credential = policy.currentCredentialForRemote() {
+            if !credential.isExpired() {
+                do {
+                    let info = try await fetchRemote(credential: credential, mode: mode)
+                    logInfo("[antigravity] 额度来源：远端 Cloud Code（keychain token）")
+                    return info
+                } catch let error as QuotaError where error == QuotaError.credentialExpired {
+                    // 远端 401：token 本地未过期但已被服务端拒绝（轮询间隙被 IDE
+                    // 换掉 / 会话失效）→ 视同凭据不可用，走刷新/提示分支。
+                    logWarn("[antigravity] 远端配额 401，keychain token 视同不可用")
+                }
+            } else {
+                logWarn("[antigravity] keychain token 已过期（expiry=\(credential.expiry)）")
+            }
+        } else {
+            logWarn("[antigravity] 未读取到 keychain 凭据")
+        }
+
+        // 4. autoRefresh 关（config 关闭，或预检发现找不到 agy CLI 后运行时自动
+        //    disable），或上轮 agy 刷新失败仍在退避期内 → 同 2 的提示完成。
+        guard policy.isAutoRefreshActive(configEnabled: autoRefreshEnabled) else {
+            logWarn("[antigravity] agy 代理刷新未启用，落统一提示")
+            throw QuotaError.credentialExpired
+        }
+        guard !policy.isBackedOff() else {
+            logInfo("[antigravity] agy 刷新退避中，本拍跳过")
+            throw QuotaError.credentialExpired
+        }
+
+        // 5. 运行 agy models（30s 超时、互斥、stdout/stderr 不落日志）→ 成功后
+        //    强制重读 keychain。
+        let outcome: AntigravityAgyRunOutcome
+        do {
+            outcome = try await policy.runAgyRefresh()
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as URLError where error.code == .cancelled {
+            throw error
+        } catch {
+            logWarn("[antigravity] agy models 运行异常：\(HTTPRequestLogSanitizer.networkErrorDescription(error))")
+            outcome = .failure(reloginRequired: false)
+        }
+
+        switch outcome {
+        case .success:
+            guard let refreshed = policy.credentialAfterAgyRefresh(), !refreshed.isExpired() else {
+                // agy 成功但重读仍过期/缺失（写入延迟或钥匙串授权被拒）→
+                // 退避一个刷新周期，本拍落统一提示。
+                logWarn("[antigravity] agy 刷新后 keychain 仍无可用 token，退避一个刷新周期")
+                policy.startBackoff(intervalSeconds: backoffIntervalSeconds)
+                throw QuotaError.credentialExpired
+            }
+            logInfo("[antigravity] agy 刷新成功，新 token expiry=\(refreshed.expiry)")
+            do {
+                let info = try await fetchRemote(credential: refreshed, mode: mode)
+                logInfo("[antigravity] 额度来源：远端 Cloud Code（agy 刷新后）")
+                return info
+            } catch let error as QuotaError where error == QuotaError.credentialExpired {
+                // 全新 token 仍 401：会话被服务端吊销类故障，退避避免每拍空转。
+                logWarn("[antigravity] agy 刷新后的 token 仍被远端 401，退避一个刷新周期")
+                policy.startBackoff(intervalSeconds: backoffIntervalSeconds)
+                throw QuotaError.credentialExpired
+            }
+        case .failure(let reloginRequired):
+            logWarn("[antigravity] agy models 刷新失败（reloginRequired=\(reloginRequired)），退避一个刷新周期")
+            policy.startBackoff(intervalSeconds: backoffIntervalSeconds)
+            throw reloginRequired ? QuotaError.credentialReloginRequired : QuotaError.credentialExpired
+        }
     }
 
     /// 远端路径（阶段一原样提取）：quota + `.full` 时的 tier。
@@ -223,51 +324,9 @@ struct AntigravityFetcher: QuotaFetcher {
         )
     }
 
-    /// 本地回退路径（2.4.2）：进程发现 → 本地 quota RPC（+ `.full` 时的
-    /// GetUserStatus / GetLoadCodeAssist）。本地 RPC 成功后不再打远端。
-    ///
-    /// 失败呈现（决策树 d）：
-    /// - 取消原样上抛（AppState/CancellationFilter deferred 路径）
-    /// - 无本地后端（未发现进程 / 进程未监听端口）→ 三种 origin 都落
-    ///   `credentialExpired`（打开 Antigravity 可继续监控额度）
-    /// - 凭据缺失/过期 origin 下，本地 RPC 报错（TOCTOU / 传输 / 非 2xx / 解析）
-    ///   同样落 `credentialExpired`
-    /// - 远端 401 origin 下，本地 RPC 报错按现有错误路径上抛（后端在但 RPC 失败
-    ///   是真实的本地故障，不该伪装成 token 过期）
-    private func fetchLocalFallback(
-        origin: LocalFallbackOrigin,
-        credential: AntigravityCredential?,
-        mode: RefreshMode
-    ) async throws -> QuotaInfo {
-        let server: ServerInfo
-        do {
-            server = try await localServerDiscovery()
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch let error as URLError where error.code == .cancelled {
-            throw error
-        } catch {
-            logWarn("[antigravity] 本地回退失败（未发现可用后端）：\(HTTPRequestLogSanitizer.networkErrorDescription(error))")
-            throw QuotaError.credentialExpired
-        }
-
-        do {
-            return try await fetchLocal(server: server, credential: credential, mode: mode)
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch let error as URLError where error.code == .cancelled {
-            throw error
-        } catch {
-            guard origin == .missingCredential || origin == .expiredCredential else {
-                throw error
-            }
-            logWarn("[antigravity] 本地回退 RPC 失败：\(HTTPRequestLogSanitizer.networkErrorDescription(error))")
-            throw QuotaError.credentialExpired
-        }
-    }
-
-    /// 本地 RPC 抓取（已发现 server）。quota 致命；GetUserStatus / GetLoadCodeAssist
-    /// 可选失败不致命（对齐旧 postOptional 语义）。
+    /// 本地 RPC 抓取（2.5.0 决策树第 1 步：已发现 server）。quota 致命；
+    /// GetUserStatus / GetLoadCodeAssist 可选失败不致命（对齐旧 postOptional 语义）。
+    /// `credential` 只作邮箱兜底（传入内存缓存凭据，绝不为此触发钥匙串访问）。
     private func fetchLocal(
         server: ServerInfo,
         credential: AntigravityCredential?,

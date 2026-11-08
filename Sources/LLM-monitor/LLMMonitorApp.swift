@@ -226,9 +226,15 @@ struct LLMMonitorApp: App {
                 kind: .antigravity,
                 iconSystemName: "paperplane.circle.fill",
                 accentColor: .antigravity,
-                makeFetcher: { _ in AntigravityFetcher() },
+                makeFetcher: { config in
+                    AntigravityFetcher(
+                        accessTokenFallbackEnabled: config.effectiveAccessTokenFallback,
+                        autoRefreshEnabled: config.effectiveAllowTokenRefresh,
+                        refreshIntervalSeconds: config.refreshIntervalSeconds
+                    )
+                },
                 settingsTabTitle: "Antigravity",
-                settingsTabSubtitle: "钥匙串凭据 + 远端 Google 配额接口，无需 Antigravity 运行"
+                settingsTabSubtitle: "本地 language_server 优先 + 钥匙串凭据远端兜底 + agy 代理刷新"
             ),
             FetcherDescriptor(
                 id: ProviderKind.glmCodingPlan.providerID,

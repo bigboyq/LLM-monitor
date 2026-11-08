@@ -165,30 +165,17 @@ extension SettingsView {
             if draft.antigravityEnabled {
                 providerAuthAndRefreshSection(
                     kind: .antigravity,
-                    footer: "额度与账号信息直接使用钥匙串中 Antigravity 写入的登录凭据（gemini / antigravity）请求 Google 配额接口，Antigravity 无需保持运行；token 过期时打开 Antigravity 更新凭据即可。token 由 Antigravity 客户端自行续期，监控侧没有刷新流程。",
+                    footer: "额度优先读取本机运行中的 Antigravity 本地服务（language_server）；本地服务不可用时，用钥匙串登录凭据（gemini / antigravity）请求 Google 配额接口，可用「钥匙串额度兜底」开关关闭。token 过期时若「允许监控刷新 Token」开启，会运行终端安装的 agy CLI（agy models）自动刷新钥匙串凭据；关闭或刷新失败时，打开 Antigravity、重新登录或在终端运行 agy models 手动刷新即可。",
                     interval: $draft.antigravityInterval,
                     intervalInheritHint: "当前：默认 \(Formatters.formatInterval(seconds: AppConfig.antigravityDefaultRefreshIntervalSeconds))（未显式配置）"
                 ) {
-                    // 阶段一：token 刷新由 Antigravity 客户端负责，监控侧无 refresh
-                    // 流程。开关按 config 语义恒为关（allowTokenRefresh 强制 false，
-                    // 手改 true 走配置解码错误路径），这里仅可见、不可交互。
-                    SettingsControlRow("允许监控刷新 Token") {
-                        HStack(spacing: 8) {
-                            Toggle("", isOn: .constant(false))
-                                .labelsHidden()
-                                .toggleStyle(.switch)
-                                .controlSize(.small)
-                                .disabled(true)
-                            Text("恒为关（由 Antigravity 客户端刷新）")
-                                .font(SettingsTypography.metadata)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
+                    antigravityAccessTokenFallbackRow
+                    antigravityAllowTokenRefreshRow
 
-                    // 2.4.3：当前额度数据来源（2.4.2 起两条路径——钥匙串凭据 →
-                    // 远端 Cloud Code API；keychain 过期/缺失/远端 401 → 本地
-                    // language_server RPC 回退）。只读展示最近一次成功刷新的
-                    // 实际路径；尚无成功刷新时显示中性占位。
+                    // 2.4.3：当前额度数据来源（2.5.0 起两条路径——本地
+                    // language_server 主路径；本地不可用时钥匙串凭据 → 远端
+                    // Cloud Code API，含 agy 刷新后的远端）。只读展示最近一次
+                    // 成功刷新的实际路径；尚无成功刷新时显示中性占位。
                     SettingsControlRow("额度来源") {
                         Text(antigravityQuotaSourceDescription)
                             .font(SettingsTypography.metadata)
@@ -235,6 +222,70 @@ extension SettingsView {
                     }
                 }
             }
+        }
+    }
+
+    // MARK: - Antigravity 凭据策略开关（2.5.0）
+
+    /// Antigravity 预检结果（monitor 启动 + config 热重载各执行一次，见
+    /// `AppState.runAntigravityCredentialPreflight`）。被自动 disable 的开关显示
+    /// off + disabled + 原因文案；原因消除后由用户手动重开开关或重启 monitor
+    /// 触发重新预检恢复，不做后台自动复活。
+    private var antigravityPreflight: AntigravityCredentialPolicy.Preflight {
+        state.antigravityCredentialPreflight
+    }
+
+    /// 「钥匙串额度兜底」开关（`accessTokenFallback`，缺省开）：控制本地服务
+    /// 不可用时的 keychain → 远端路径。预检发现钥匙串授权被拒 → 运行时自动
+    /// disable（不改用户 json），显示 off + disabled + 「钥匙串访问被拒」；
+    /// 条目不存在（未登录）是软不可用——开关保持可交互，仅追加提示。
+    @ViewBuilder
+    private var antigravityAccessTokenFallbackRow: some View {
+        if antigravityPreflight.keychainAccessDenied {
+            SettingsControlRow("钥匙串额度兜底") {
+                HStack(spacing: 8) {
+                    Toggle("", isOn: .constant(false))
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                        .disabled(true)
+                    Text("钥匙串访问被拒")
+                        .font(SettingsTypography.metadata)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        } else {
+            SettingsToggleRow(label: "钥匙串额度兜底", isOn: $draft.antigravityAccessTokenFallback)
+            if antigravityPreflight.keychainEntryMissing {
+                Text("未登录 Antigravity（登录后自动恢复兜底路径）")
+                    .font(SettingsTypography.metadata)
+                    .foregroundStyle(.secondary)
+                    .padding(.leading, 4)
+            }
+        }
+    }
+
+    /// 「允许监控刷新 Token」开关（`allowTokenRefresh`，2.5.0 语义翻正、缺省开）：
+    /// 控制 token 过期时是否运行 agy models 代理刷新钥匙串凭据。预检发现找不到
+    /// agy CLI（PATH + ~/.local/bin）→ 运行时自动 disable，显示
+    /// off + disabled + 「未找到 agy CLI」。
+    @ViewBuilder
+    private var antigravityAllowTokenRefreshRow: some View {
+        if antigravityPreflight.agyCLIMissing {
+            SettingsControlRow("允许监控刷新 Token") {
+                HStack(spacing: 8) {
+                    Toggle("", isOn: .constant(false))
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                        .disabled(true)
+                    Text("未找到 agy CLI")
+                        .font(SettingsTypography.metadata)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        } else {
+            SettingsToggleRow(label: "允许监控刷新 Token", isOn: $draft.antigravityAllowTokenRefresh)
         }
     }
 

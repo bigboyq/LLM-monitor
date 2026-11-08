@@ -76,6 +76,9 @@ struct AntigravityCredential: Equatable, Sendable {
 }
 
 /// 登录钥匙串读取（Antigravity 凭据条目）。读取失败或条目不存在返回 nil。
+///
+/// 2.5.0 起另有 `readOutcome()` 三态读取（启动预检专用），本 enum 的既有
+/// `readCredential()` / `readKeychainValue()` 契约与测试护栏不变。
 enum AntigravityKeychain {
     static let service = "gemini"
     static let account = "antigravity"
@@ -116,5 +119,48 @@ enum AntigravityKeychain {
         let status = SecItemCopyMatching(query as CFDictionary, &item)
         guard status == errSecSuccess, let data = item as? Data else { return nil }
         return String(data: data, encoding: .utf8)
+    }
+
+    /// Keychain 条目的三态读取结论（2.5.0 启动预检专用）。
+    enum KeychainReadOutcome: Equatable, Sendable {
+        /// 条目存在且读出原始值（`go-keyring-base64:` 前缀形态，结构可解析性由
+        /// `AntigravityCredential.parse` 另行判定）。
+        case readable(String)
+        /// 条目不存在（未登录）——软不可用，登录后自动恢复。
+        case entryMissing
+        /// 系统授权被拒 / 不可读（errSecInteractionNotAllowed、errSecAuthFailed
+        /// 等一切非「条目不存在」的失败）——自动 disable 钥匙串兜底开关。
+        case accessDenied
+    }
+
+    /// 三态读取：区分「条目不存在（未登录）」与「系统授权被拒/不可读」——
+    /// 预检对两者采取不同策略（软不可用 vs 自动 disable），而 `readKeychainValue()`
+    /// 把两者都折叠成 nil。
+    ///
+    /// **测试进程护栏**与 `readKeychainValue()` 同款：xctest 进程内恒返回
+    /// `.entryMissing`，绝不触碰 SecItem（漏注入 seam 的预检测试只走「条目
+    /// 不存在」路径，不弹系统授权框）。
+    static func readOutcome() -> KeychainReadOutcome {
+        if isRunningInTestProcess { return .entryMissing }
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        switch status {
+        case errSecSuccess:
+            guard let data = item as? Data, let value = String(data: data, encoding: .utf8) else {
+                return .entryMissing
+            }
+            return .readable(value)
+        case errSecItemNotFound:
+            return .entryMissing
+        default:
+            return .accessDenied
+        }
     }
 }

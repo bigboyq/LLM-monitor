@@ -84,6 +84,10 @@ struct SettingsFormDraft: Equatable {
 
     var antigravityEnabled: Bool = false
     var antigravityInterval: Int = 0
+    /// Antigravity keychain → 远端兜底开关（2.5.0，config 缺省 true）。
+    var antigravityAccessTokenFallback: Bool = true
+    /// Antigravity agy 代理刷新开关（2.5.0 语义翻正，config 缺省 true）。
+    var antigravityAllowTokenRefresh: Bool = true
 
     var glmEnabled: Bool = false
     var glmInterval: Int = 0
@@ -207,6 +211,8 @@ struct SettingsFormDraft: Equatable {
         if let id = pid(for: .antigravity), let pc = config.providers[id] {
             antigravityEnabled = pc.enabled
             antigravityInterval = pc.refreshIntervalSeconds ?? 0
+            antigravityAccessTokenFallback = pc.effectiveAccessTokenFallback
+            antigravityAllowTokenRefresh = pc.effectiveAllowTokenRefresh
         }
 
         if let id = pid(for: .glmCodingPlan), let pc = config.providers[id] {

@@ -266,14 +266,16 @@ struct ModelQuota: Equatable, Codable, Sendable {
     }
 }
 
-/// Antigravity 额度数据来源（2.4.3）：标记一条 QuotaInfo 的额度数据实际走的
-/// 路径——远端 Cloud Code API（钥匙串凭据）或本地 language_server RPC 回退。
+/// Antigravity 额度数据来源（2.4.3 引入；2.5.0 起本地为主路径、远端为钥匙串
+/// 兜底路径，枚举不变）：标记一条 QuotaInfo 的额度数据实际走的路径——本地
+/// language_server RPC 或远端 Cloud Code API（钥匙串凭据，含 agy 刷新后）。
 /// 仅 Antigravity fetcher 的两条成功路径写入；其他 provider 恒 nil
 /// （见 `QuotaInfo.antigravityQuotaSource`）。
 enum AntigravityQuotaSource: String, Codable, Sendable, Equatable {
-    /// 钥匙串凭据有效 → 远端 Cloud Code API（阶段一主路径）。
+    /// 本地 language_server 不可用时，keychain access_token → 远端 Cloud Code
+    /// API（含 agy models 刷新凭据后的远端重试，来源标记不变）。
     case remoteCloudCode
-    /// keychain 过期/缺失或远端 401 → 本地 language_server RPC 回退（2.4.2）。
+    /// 本地 language_server 主路径（2.5.0：ls 可用即走本地，不读钥匙串）。
     case localLanguageServer
 
     /// 设置窗口 Antigravity pane「额度来源」行的展示文案（不含行标签前缀，
@@ -281,9 +283,9 @@ enum AntigravityQuotaSource: String, Codable, Sendable, Equatable {
     var sourceDescription: String {
         switch self {
         case .remoteCloudCode:
-            return "远端 Cloud Code（钥匙串凭据）"
+            return "远端 Cloud Code（钥匙串凭据兜底）"
         case .localLanguageServer:
-            return "本地 language_server（钥匙串凭据已过期或不可用）"
+            return "本地 language_server（本地服务优先）"
         }
     }
 }

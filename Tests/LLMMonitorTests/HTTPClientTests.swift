@@ -22,10 +22,10 @@ final class HTTPClientTests: XCTestCase {
             QuotaError.userFacingDescription(for: error, providerKind: .codexChatGpt),
             "Codex 登录已失效，请运行 codex login 后重试"
         )
-        // 阶段一起远端 401 与本地过期判定落到同一提示（credentialExpired）。
+        // 2.5.0 起远端 401 视同凭据不可用，落入统一提示（含 agy models 手动刷新文案）。
         XCTAssertEqual(
             QuotaError.userFacingDescription(for: error, providerKind: .antigravity),
-            "token 已过期：打开 Antigravity 可继续监控额度，重新登录可刷新凭据"
+            "无法获取 Antigravity 额度：打开 Antigravity 可继续监控额度，重新登录可刷新凭据，或在终端运行 agy models 手动刷新"
         )
         // round 11 P1：minimax / GLM 也需要 provider-specific 提示，
         // 否则用户看到通用 "HTTP 401" 不知道该换 key 还是换账号。

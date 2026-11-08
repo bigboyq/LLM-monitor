@@ -587,6 +587,10 @@ struct SettingsView: View {
             var antigravity = config.providers[id] ?? ProviderConfig(enabled: false)
             antigravity.enabled = draft.antigravityEnabled
             antigravity.refreshIntervalSeconds = providerRefreshInterval(from: draft.antigravityInterval)
+            // 凭据策略开关（2.5.0，均缺省 true）：开启 = 缺省（nil 不落盘），
+            // 关闭 = 显式 false 落盘。预检的运行时自动 disable 不写用户 json。
+            antigravity.accessTokenFallback = draft.antigravityAccessTokenFallback ? nil : false
+            antigravity.allowTokenRefresh = draft.antigravityAllowTokenRefresh ? nil : false
             config.providers[id] = antigravity
         }
 
