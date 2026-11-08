@@ -175,4 +175,4 @@ catch 块始终 `release()` 防止锁泄漏。
 测试可以注入一个 `TestGate.wait()` 让 worker 在 SQL/RPC 前阻塞, 精确控制 cancel+rescan
 时序. release build 的 binary 完全不带这个字段.
 
-> 核对基线：2026-11-08 · 代码 b2d3935
+> 核对基线：2026-11-08 · 代码 c79892c
