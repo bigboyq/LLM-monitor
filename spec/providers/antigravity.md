@@ -1362,6 +1362,36 @@ id/hash 字段**。模型归因的本地文件来源只有 `gen_metadata`；db �
 `.pb` 会话（2026-11-08 本机 3/361）非 SQLite、无此表；阶段二b起完全忽略（RPC 退役后
 无可用数据源，不发现、不指纹、不进 session 集）。
 
+#### TTFT / streaming 时长字段（`f1.f11` / `f1.f12`，2026-11-08 调研记录）
+
+> 无 schema protobuf 遍历实测（本机 6 个会话库、28 行含 usage 的行逐行核对，
+> IDE 2.29.0）。非官方契约，随版本可能变化；本节只记录发现，不进任何代码路径。
+
+事件主消息（`f1`）除上表字段外还携带两个 **protobuf Duration**（`f1`=seconds、
+`f2`=nanos；时长 <1s 时 proto3 省略 seconds 只剩 `f2`）：
+
+| 字段 | 含义 | 与已退役 RPC 的对应 |
+|---|---|---|
+| `f1.f11` | **timeToFirstToken**（首字延迟） | `chatModel.timeToFirstToken` |
+| `f1.f12` | **streamingDuration**（首字后的流式时长） | `chatModel.streamingDuration` |
+
+RPC `GetCascadeTrajectoryGeneratorMetadata` 返回的 `chatModel` 两时延与本字段**完全同源**
+（RPC 服务端读的就是这张表；§ GetCascadeTrajectoryGeneratorMetadata 历史节实测的
+`"11.669597334s"` 形状即此处的 seconds+nanos）。
+
+**数值验证**：`f11 + f12` 与 steps（`step_type=15`）metadata `f7 − f1` 差分的偏差
+−0.00ms ~ −0.7ms（28/28 行；覆盖 `gemini-3.8-flash(-n)` 与 `claude-sonnet-4-6`；
+agy 的 `~/.gemini/antigravity-cli/conversations/*.db` 同 schema 同字段，见
+[`harnesses/agy.md`](../harnesses/agy.md) § 单次调用时长）。
+
+**假候选排除**：`f4` / `f17.f2`（请求信息子消息，`f1=1319`、`f2=9936` 非纳秒量级的伪
+Duration）、`f9.f10`（14238s 起单调递增——累计型计时器）。
+
+监控现状：`AntigravitySessionDBReader.readCalls` 未解析 f11/f12；`durationSeconds` 仍取
+steps 差分（= 两者之和，见 § Per-event field count 与
+[`accounting.md`](../accounting.md) §Token/s 速率口径）。若未来做 sample 级首字延迟，
+在现有 event 解析循环加两个字段读取即可（纯 L0 增量，无 RPC、无新表）。
+
 ### Lazy .db write — sessions don't flush while open
 
 `language_server` (PID discoverable via `ps aux | grep language_server`) holds `.db` file handles while a session is active. Until the session closes, the conversation switch happens, or the IDE exits, **the `.db` mtime does not update** and the scanner cannot see new steps. Implication for users: counts in the app lag the real-time activity by 0 to N hours, where N depends on when Antigravity last flushed. Use `lsof +D ~/.gemini/antigravity/conversations/` to check who holds the file handle.
@@ -1873,4 +1903,4 @@ For raw quota export outside the menu app:
    的 CFBundleShortVersionString，读不到回退 2.26.0；仅 401 终止，报错文案同第 2 步）
 4. prints or writes the raw JSON（带路径参数时原子落盘 0600）
 
-> 核对基线：2026-11-08 · 代码 6496f28
+> 核对基线：2026-11-08 · 代码 1a4238f

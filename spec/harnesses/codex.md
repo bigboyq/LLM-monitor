@@ -254,6 +254,27 @@ Codex 本地会话扫描索引经 `CodexScannerIndex: Codable, Sendable` 序列�
   `last` 与 `total` 混用（与 §Local session aggregation 的 DailyTokenUsage 口径一致）。
 
 
+## TTFT / 首字时延上游字段（调研记录，2026-11-08）
+
+> 只读调研（本机 `~/.codex/sessions/2026/11/08/rollout-*.jsonl` 实测）。非官方契约，
+> 随版本可能变化；本节只记录发现，不进任何代码路径。
+
+每个 task/turn 结束时 JSONL 落一条 `type=="event_msg"` 且 `payload.type=="task_complete"`
+的事件，payload **原生携带 turn 级时延字段**：
+
+| payload 字段 | 含义 |
+|---|---|
+| `started_at` / `completed_at` | epoch 秒，turn 起止 |
+| `duration_ms` | turn 总时长 |
+| `time_to_first_token_ms` | 本 turn 首次响应的首字延迟（TTFT） |
+| `turn_id` / `root_turn_id` / `last_agent_message` | 归属键与终答文本 |
+
+监控现状：scanner 已解析 `task_complete`，但只保留 `timestamp` + `turn_id`
+（`CodexLocalUsageScanner` 的 `.taskCompleted` 事件）——payload 的 `duration_ms` /
+`time_to_first_token_ms` **未读取**，`durationSeconds` 仍走 §Local session aggregation
+Rules 的 `token_usage_record` 锚点差分。若未来接入原生字段：免锚点配对、精度高于差分，
+但粒度是 **turn 级**（一轮内多个模型调用只有首个的 TTFT），与逐调用口径不能直接互换。
+
 ## Cross-Provider Cache Semantics (Codex vs Antigravity)
 
 > Companion section: see `antigravity.md` § Cross-Provider Cache Semantics for the Antigravity side of this comparison, including the recommended `NormalizedDailyUsage` abstraction.
@@ -324,4 +345,4 @@ To compare or sum daily usage across both providers, normalize both into a singl
 After normalization, cross-provider sum, average, and chart rendering can treat the two providers as a single data source.
 
 > 拆分来源：由原 `spec/providers/codex.md` 按 Codex 本地 harness / client 职责拆分；本文件主要沿用其对应章节。
-> 核对基线：2026-11-03 · 代码 d07fa47
+> 核对基线：2026-11-08 · 代码 1a4238f

@@ -438,6 +438,6 @@ appearance-neutral.
 - **历史图表空间适配**：`SevenDayUsageHistoryView` 增加紧凑（`.compact`）与宽松（`.expanded`）两种模式。设置页与独立详情窗口使用 `.expanded`，宽度撑满可用区域（`.frame(maxWidth: .infinity)`），表格字号适度提至 11–11.5pt、列宽与间距自适应拉开；菜单与浮层维持 `.compact`（420pt）。坐标轴与日期标签字体提至 10–11pt、配色提至 `.secondary`。expanded 表格（b9e1000 起）的 R/T 与四个分桶加动态列在 expanded 下改为「`minWidth` 列宽下限 + `maxWidth: .infinity`」弹性填满（下限常量住在 `SevenDayUsageChartMetrics.expanded*`，日期列恒为固定 42pt），compact 仍为 `.frame(width:)` 固定列宽；详情窗口因此能在放大时让表格随窗口一起拉伸。
 - **说明文字与行距紧凑化**：边缘状态窗 footer 收敛为 2 句核心操作指引，双环机制与多屏行为放入「了解更多…」popover；ChatGPT API 赠金设置采用独立 `CodexAdminKeyCardView` 模块化卡片（12pt 内边距、低透明度底色与边框描边），对齐常规表单行距。
 
-> 核对基线：2026-11-08 · 代码 6496f28
+> 核对基线：2026-11-08 · 代码 4941430
 > Sync 草稿跨 tab 保留、表单隔离与保存失败提示验证结果见 `spec/sync.md`。
 > 2026-10-25 菜单 / 设置自启同步已随 6f11831 入库：相关定向测试 27 例、完整测试 1422 例均 0 失败；测试使用模拟登录项操作，不执行真实注册 / 注销。

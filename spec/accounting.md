@@ -169,6 +169,14 @@ token 速率（tok/s）只在 sample 级定义，不进入帧 / 投影内核：�
 | MiniMax | `local_runtime_message_rows.$.usage.request_duration_ms`（独立守门窗口查询 + `(session, turn)` FIFO 配对、以 input/output tokens 核对回填；缓存 v16。**禁止** `created_at_ms` 差分——toolUse 行记录的是工具完成时刻，会把工具耗时算入） |
 | agy | `conversations/<session>.db` steps metadata 纳秒差（field 7 流式完成 − field 1 发起，主路径，100% 覆盖含纯文本终答）；.db 缺失时降级 transcript 后继 `MODEL:GENERIC` 锚点差分（秒级，约 94% 覆盖）；缓存 v3 重建。**禁止**前驱行差分——transcript `created_at` 是发起时刻 ⌊f1⌋，差分量的是调度延迟/上轮工具耗时 |
 
+上游 TTFT 字段可得性（2026-11-08 调研，均**未**进本口径的拆分）：ZCode `model_usage`
+原生 `time_to_first_token_ms`（逐调用，71% 覆盖）、Codex `task_complete` payload 原生
+`time_to_first_token_ms`（turn 级）、Antigravity `gen_metadata` blob `f1.f11`（逐调用，
+与 steps 差分亚毫秒吻合）——调研记录见
+[`harnesses/zcode.md`](harnesses/zcode.md) /
+[`harnesses/codex.md`](harnesses/codex.md) /
+[`providers/antigravity.md`](providers/antigravity.md)。
+
 多额度池合并（`combineWindowUsage`）按 Σ分子 / Σ时长 相加后再除；合并产物带
 `rateNumerator` / `rateDenominator` 中间量，多层合并不丢精度，缺中间量的手工构造
 窗口不参与速率加权。fleet 行的远端上报无时长，速度列显示 `—`（wire 协议未扩展）。
@@ -291,4 +299,4 @@ Rounds 是模型 API call 数；命中率为 `cacheRead / (input + cacheRead)`�
 任何新 harness 必须先补充本矩阵、provider spec 和 `TokenAccountingCatalog`，再接入 UI；
 不要在 view 或 pricing 分支里重新猜测 input/cache/reasoning 的关系。
 
-> 核对基线：2026-11-08 · 代码 6496f28
+> 核对基线：2026-11-08 · 代码 1a4238f

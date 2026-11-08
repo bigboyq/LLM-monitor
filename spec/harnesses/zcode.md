@@ -357,6 +357,31 @@ sqlite3 -readonly /tmp/zc.db "SELECT session_id,started_at,turn_id,input_tokens,
 `~/.zcode/cli/rollout/model-io-session_*.jsonl`（**只保留最近 3 个 session**，尖峰
 session 不一定在内）。
 
+## TTFT / 首字时延上游字段（调研记录，2026-11-08）
+
+> 只读调研（本机 `~/.zcode/cli/db/db.sqlite` 实测）。非官方契约，随 ZCode 版本可能
+> 变化；本节只记录发现，不进任何代码路径。
+
+`model_usage` 表自带**逐模型调用粒度**的原生时延列：
+
+| 列 | 含义 |
+|---|---|
+| `first_token_at` | epoch 时刻，首个 token 到达 |
+| `time_to_first_token_ms` | 首 token 延迟（TTFT） |
+| `duration_ms` | 全调用时长（发起→完成，即监控现消费的口径） |
+
+另有 `turn_usage` 表（**逐 turn 粒度**）带同款时延列
+`first_model_start_at` / `first_token_at` / `duration_ms` / `time_to_first_token_ms`。
+
+覆盖率实测（2026-11-08）：`model_usage` 16,434 行中 11,658 行（**71%**）有
+`time_to_first_token_ms`，`duration_ms` 100% 有值；缺口成因未深究（疑为中断调用或
+早期版本行）。
+
+监控现状：reader 只消费 `duration_ms`（含 TTFT 的总时长，见 §Local Token Source 列
+注释与 [`accounting.md`](../accounting.md) §Token/s 速率口径）；`time_to_first_token_ms`
+/ `first_token_at` 未读取。若未来做 sample 级首字延迟统计这是现成上游——
+zcode-tps-monitor 插件已在消费同库该字段（其「首字 N s」读数）。
+
 ## Implementation map
 
 | Responsibility | Source |
@@ -404,4 +429,4 @@ accounting coverage lives in `GlmZcodeDBReaderTests.swift`, `GlmOffPeakTests.swi
 > 本文件源自 `spec/providers/glm.md` 的本地 harness 内容；代码核对基线继承原文件，未因本次拆分重新核对全部实现。
 外部 ZCode.app 静态观察日期：2026-11-06；版本 `3.17.2` / build `3.17.2.9661`。
 
-> 核对基线：2026-11-05 · 代码 a8dbb52
+> 核对基线：2026-11-08 · 代码 1a4238f
