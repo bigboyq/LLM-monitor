@@ -92,7 +92,7 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 | `ui/edge-dock.md` | 屏幕边缘状态窗：几何、锚点、命中判定、拖拽、鼠标轮询、全屏门控、dock 形态 |
 | `ui/menu-and-cards.md` | 菜单面板结构、header / content / footer、Provider 卡片与状态、hover 浮层、进度与健康色 |
 | `ui/settings.md` | 设置窗口：通用 pane 与字体角色、各 provider 设置、客户端 pane、开机自启 |
-| `providers/antigravity.md` | Antigravity：远端配额路径（Keychain 凭据 + Google API，阶段一）、本地用量 `.db` 直读 scanner（阶段二b；进程发现/本地 RPC/`.pb` 已退役）与响应形状、文件格式 |
+| `providers/antigravity.md` | Antigravity：远端配额路径（Keychain 凭据 + Google API，阶段一；2.4.2 起过期/401 回退本地 RPC）+ 本地用量 `.db` 直读 scanner（阶段二b；`.pb` 退役，进程发现仅回退复活）与响应形状、文件格式 |
 | `providers/chatgpt.md` | ChatGPT Plan：远端额度、认证消费、reset credits、多 Key API 额度与独立用量进度、窗口估值与 Provider 展示 |
 | `providers/deepseek.md` | DeepSeek：账户余额语义、高峰窗口（北京时间）、OpenCode / ZCode / DSH 合并、错误映射 |
 | `providers/glm.md` | GLM Coding Plan：远端额度、API Key 与 JWT 扩展查询、价格、高峰时段与 Provider 展示 |
@@ -109,7 +109,7 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 | Client | 本地账本 / 通道 | 归属 provider | 读哪份 spec |
 |---|---|---|---|
 | Codex | 本地 session JSONL + ChatGPT Plan 远程（支持多 API Key 独立配额跟踪） | `codex_chatgpt`（openai）、经 OpenCode 路径并入其他 | 本地与凭证来源：`harnesses/codex.md`；远端额度：`providers/chatgpt.md` |
-| Antigravity | 会话 `.db` 直读（本地用量，阶段二b）；远端额度走 Keychain 凭据 + Google API | `antigravity` | `providers/antigravity.md` |
+| Antigravity | 会话 `.db` 直读（本地用量，阶段二b）；远端额度走 Keychain 凭据 + Google API，keychain 过期/401 回退本地 RPC（2.4.2） | `antigravity` | `providers/antigravity.md` |
 | Agy | `~/.gemini/antigravity-cli/brain/` transcript + cli log | `antigravity`（native，帧自带归属） | `harnesses/agy.md` |
 | ZCode | `~/.zcode` SQLite `model_usage` | 智谱行进 GLM 卡；minimax / deepseek 分片并入对应卡 | 本地与客户端策略：`harnesses/zcode.md`；远端额度：`providers/glm.md` |
 | OpenCode | OpenCode SQLite `message` 表（多 provider 账本） | 按内置 provider 路由自动归因 | `harnesses/opencode.md` |
@@ -157,4 +157,4 @@ macOS menu bar app for watching remaining LLM service quota. The app is intentio
 - Automatic updates and in-app version checks — upgrading means downloading a new build from
   GitHub Releases manually (release gating and the pre-release checklist: `spec/config.md`).
 
-> 核对基线：2026-11-08 · 代码 1146220（阶段一路由行更新，改动待提交）
+> 核对基线：2026-11-08 · 代码 3cc7ca7（阶段一路由行更新；2.4.2：antigravity spec 地图行按本地回退更新，改动待提交）

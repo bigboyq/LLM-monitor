@@ -7,7 +7,9 @@ import XCTest
 /// - `.background` 只请求 `retrieveUserQuotaSummary`；`.full` 追加 `loadCodeAssist`
 /// - tier（loadCodeAssist）失败不影响主额度；主额度失败抛错
 /// - 主机回退序 Daily → cloudcode-pa → sandbox，仅 401 终止（credentialExpired）
-/// - 过期凭据零网络请求（mock 证伪）
+/// - 过期凭据零远端网络请求（mock 证伪）；过期/缺失凭据与远端 401 转入本地
+///   回退（2.4.2），本套件统一注入「无本地后端」发现 stub，回退即落
+///   credentialExpired（本地回退正路径见 AntigravityLocalFallbackTests）
 /// - UA 为 hub 身份（版本取注入值，缺省回退 2.26.0）
 /// - 默认刷新间隔 300s（仅 provider 未显式配置时生效）
 final class AntigravityRefreshCadenceTests: XCTestCase {
@@ -71,6 +73,12 @@ final class AntigravityRefreshCadenceTests: XCTestCase {
             hubVersionProvider: { hubVersion },
             remotePostOverride: { host, path, headers, body in
                 try await stub.handle(host: host, path: path, headers: headers, body: body)
+            },
+            // 本套件不覆盖本地回退正路径：统一注入「无本地后端」发现 stub，
+            // 保证 401 / 过期 / 缺失凭据转入本地回退后立即落 credentialExpired，
+            // 且绝不触达真实 pgrep / lsof。
+            localServerDiscovery: {
+                throw QuotaError.networkError("stub: 无本地后端")
             }
         )
     }
@@ -182,14 +190,14 @@ final class AntigravityRefreshCadenceTests: XCTestCase {
 
         do {
             _ = try await fetcher.fetch(mode: .background)
-            XCTFail("远端 401 必须抛 credentialExpired")
+            XCTFail("远端 401 在无本地后端时必须抛 credentialExpired")
         } catch let error as QuotaError {
             guard case .credentialExpired = error else {
                 return XCTFail("期望 credentialExpired，实际 \(error)")
             }
-            // 远端 401 与本地过期判定落到同一提示。
-            XCTAssertEqual(error.errorDescription, "token 已过期：在 Antigravity 中发起一次对话即可刷新凭据")
-            // 仅 401 终止：不做主机回退。
+            // 远端 401 与本地过期判定落到同一提示（2.4.2 文案）。
+            XCTAssertEqual(error.errorDescription, "token 已过期：打开 Antigravity 可继续监控额度，重新登录可刷新凭据")
+            // 仅 401 终止：不做主机回退；转入本地回退也未发任何远端请求。
             let calls = await stub.recorded()
             XCTAssertEqual(calls.map(\.host), [Self.dailyHost])
         } catch {
@@ -205,32 +213,32 @@ final class AntigravityRefreshCadenceTests: XCTestCase {
 
         do {
             _ = try await fetcher.fetch(mode: .full)
-            XCTFail("过期凭据必须抛 credentialExpired")
+            XCTFail("过期凭据（无本地后端）必须抛 credentialExpired")
         } catch let error as QuotaError {
             guard case .credentialExpired = error else {
                 return XCTFail("期望 credentialExpired，实际 \(error)")
             }
-            XCTAssertEqual(error.errorDescription, "token 已过期：在 Antigravity 中发起一次对话即可刷新凭据")
-            // 过期时不发任何网络请求（mock 证伪）。
+            XCTAssertEqual(error.errorDescription, "token 已过期：打开 Antigravity 可继续监控额度，重新登录可刷新凭据")
+            // 过期时不发任何远端请求（mock 证伪）；本地回退走注入的发现 stub，无 RPC。
             let calls = await stub.recorded()
-            XCTAssertTrue(calls.isEmpty, "过期凭据不应发起任何网络请求，实际 \(calls.count) 次")
+            XCTAssertTrue(calls.isEmpty, "过期凭据不应发起任何远端请求，实际 \(calls.count) 次")
         } catch {
             XCTFail("期望 QuotaError，实际 \(error)")
         }
     }
 
-    func testMissingCredentialThrowsWithoutNetwork() async {
+    func testMissingCredentialWithNoLocalBackendThrowsCredentialExpired() async {
         let stub = RemoteStub()
         let fetcher = makeFetcher(credential: nil, stub: stub)
 
         do {
             _ = try await fetcher.fetch(mode: .background)
-            XCTFail("缺少凭据必须抛错")
+            XCTFail("缺失凭据（无本地后端）必须抛 credentialExpired")
         } catch let error as QuotaError {
-            guard case .networkError(let message) = error else {
-                return XCTFail("期望 networkError，实际 \(error)")
+            guard case .credentialExpired = error else {
+                return XCTFail("期望 credentialExpired，实际 \(error)")
             }
-            XCTAssertTrue(message.contains("未读取到 Antigravity 登录凭据"))
+            XCTAssertEqual(error.errorDescription, "token 已过期：打开 Antigravity 可继续监控额度，重新登录可刷新凭据")
             let calls = await stub.recorded()
             XCTAssertTrue(calls.isEmpty)
         } catch {

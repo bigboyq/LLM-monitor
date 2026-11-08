@@ -9,8 +9,11 @@ enum QuotaError: LocalizedError, Equatable {
     case networkError(String)
     case apiError(String)
     /// Antigravity 额度路径专有：Keychain 凭据里的 access_token 已过本地过期判定
-    /// （`now >= expiry`），或远端配额接口对有效请求返回 401。两者落到同一提示，
-    /// 指引用户打开 Antigravity 客户端更新凭据（客户端会自行续期 Keychain 内 token）。
+    /// （`now >= expiry`），或远端配额接口对有效请求返回 401，或本地回退路径
+    /// （2.4.2 起 keychain 过期/缺失时回退本地 language_server RPC）也失败。
+    /// 落到同一提示：打开 Antigravity 可继续监控额度（IDE 运行期间经 host bridge
+    /// 分发的新凭据在 language_server 内存中，本地回退随之恢复），重新登录可刷新
+    /// Keychain 内 token。
     case credentialExpired
     /// R2: 响应体超过硬上限。只携带脱敏 endpoint 路径、上限和实测字节数，不含 body。
     case responseTooLarge(limit: Int, actual: Int, redactedPath: String)
@@ -35,7 +38,7 @@ enum QuotaError: LocalizedError, Equatable {
         case .apiError(let msg):
             return "接口错误：\(msg)"
         case .credentialExpired:
-            return "token 已过期：在 Antigravity 中发起一次对话即可刷新凭据"
+            return "token 已过期：打开 Antigravity 可继续监控额度，重新登录可刷新凭据"
         case .responseTooLarge(let limit, _, let redactedPath):
             return "响应过大（上限 \(limit) bytes）：\(redactedPath)"
         }

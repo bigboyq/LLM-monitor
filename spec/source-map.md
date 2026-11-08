@@ -79,10 +79,12 @@
 | `Sources/LLM-monitor/Services/Infra/QuotaError.swift` | 统一错误类型 |
 | `Sources/LLM-monitor/Fetchers/MinimaxTokenPlanFetcher.swift` | minimax Token Plan API 抓取 |
 | `Sources/LLM-monitor/Fetchers/CodexFetcher.swift` | ChatGPT Plan API 抓取、多 Key Admin API 赠金并发抓取与错误隔离 + 本地 JSONL 解析 |
-| `Sources/LLM-monitor/Fetchers/AntigravityFetcher.swift` | Antigravity 远端配额/账号（Keychain 凭据 + Google API，主机回退）；主额度每拍、tier 按次要信息频率（本地 RPC / 进程发现已退役） |
+| `Sources/LLM-monitor/Fetchers/AntigravityFetcher.swift` | Antigravity 额度决策树：远端配额/账号（Keychain 凭据 + Google API，主机回退）为主路径，凭据缺失/过期或远端 401 回退本地 RPC（2.4.2）；主额度每拍、tier 按次要信息频率 |
+| `Sources/LLM-monitor/Fetchers/AntigravityProcessDiscovery.swift` | Antigravity 进程发现（pgrep 分类排序 + lsof 端口 + CSRF 提取 + `serverStillOwnsEndpoint` TOCTOU 复查），2.4.2 起回退专用复活（primary 用途阶段一退役；本地用量 scanner 不消费） |
 | `Tests/LLMMonitorTests/AntigravityRefreshCadenceTests.swift` | Antigravity 主额度与次要账号/套餐（tier）编排、可选接口失败降级、额度失败传播 |
+| `Tests/LLMMonitorTests/AntigravityLocalFallbackTests.swift` | Antigravity 本地回退决策树：过期/缺失/401 → 本地 RPC、`response` 包装解析归一化、CSRF 两种头、TOCTOU 两路、tier 回退链 |
 
-| `Sources/LLM-monitor/Fetchers/AntigravitySchemas.swift` | Antigravity 远端配额响应的解码模型（`RetrieveUserQuotaSummaryResponse` / `LoadCodeAssistRemoteResponse`）+ `LocalhostTrustDelegate` |
+| `Sources/LLM-monitor/Fetchers/AntigravitySchemas.swift` | Antigravity 远端/本地配额响应的解码模型（`RetrieveUserQuotaSummaryResponse` / `RetrieveUserQuotaSummaryEnvelope` / `LoadCodeAssistRemoteResponse` / `UserStatus*` 一族）+ `LocalhostTrustDelegate` |
 | `Sources/LLM-monitor/Fetchers/GlmCodingPlanFetcher.swift` | GLM Coding Plan 额度与 reset time 抓取（支持 `GlmAuthMode`：`apiKey` / `credential`；ZCode 套餐三路编排依赖注入 `ZcodePackageProviding`） |
 | `Sources/LLM-monitor/Fetchers/DeepseekFetcher.swift` | DeepSeek 账户余额抓取（`/user/balance`）+ 解析 |
 | `Sources/LLM-monitor/Models/PeakWindow.swift` | GLM / DeepSeek 共用的高峰时段判定与倍率（`slots` / `weekdaysOnly` / `multiplier`，支持 Provider JSON 覆盖）；北京时间判定，默认按 Rule A 排除周末与法定节假日，GLM 默认 14–18，DeepSeek 默认 9–12 / 14–18，倍率均为 2×；共享设置展示文本与 JSON 校验 |
@@ -245,4 +247,4 @@
 - **串行执行是既定选择**：`swift test --parallel` 实测（2026-10-02，5 连跑 3 败）不可用——`SQLiteTempCopyTests` 的临时副本断言扫描跨进程共享目录，并行 worker 互相误判；且慢测试为睡眠型，并行的 wall 收益仅 ~4s。并行化前提：先给 SQLiteTempCopy 的副本目录引入进程级隔离，再复评。
 - 慢用例的等待注入缝已建立：调度器（now/sleep）、Bark 退避（retryDelay）、vnode 合并窗口（coalescingWindow 参数）；新增耗时敏感测试时优先走注入缝，不要写死真实 sleep。
 
-> 核对基线：2026-11-07 · 代码 b9e1000
+> 核对基线：2026-11-08 · 代码 3cc7ca7（Antigravity fetcher/discovery/schemas 行按 2.4.2 本地回退更新，改动待提交）

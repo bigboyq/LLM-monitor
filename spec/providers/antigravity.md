@@ -2,22 +2,24 @@
 
 Provider id: `antigravity`
 
-Implementation: `Sources/LLM-monitor/Fetchers/AntigravityFetcher.swift`（远端配额/账号）+ `Sources/LLM-monitor/Fetchers/AntigravityCredential.swift`（Keychain 凭据读取/解析）+ `Sources/LLM-monitor/Fetchers/AntigravitySchemas.swift`（远端响应模型）+ `Sources/LLM-monitor/Services/AntigravitySessionDBReader.swift`（会话 `.db` 直读）+ `Sources/LLM-monitor/Services/AntigravityLocalUsageScanner.swift` 及其同族（`AntigravityFilesystem.swift` / `AntigravityLocalUsageCache.swift` / `AntigravityLocalUsageAggregation.swift`；`AntigravityStepTimestampReader.swift` 由 agy harness 共用保留）
+Implementation: `Sources/LLM-monitor/Fetchers/AntigravityFetcher.swift`（额度决策树：远端主路径 + 本地回退）+ `Sources/LLM-monitor/Fetchers/AntigravityProcessDiscovery.swift`（进程发现，2.4.2 起回退专用复活）+ `Sources/LLM-monitor/Fetchers/AntigravityCredential.swift`（Keychain 凭据读取/解析）+ `Sources/LLM-monitor/Fetchers/AntigravitySchemas.swift`（远端/本地响应模型）+ `Sources/LLM-monitor/Services/AntigravitySessionDBReader.swift`（会话 `.db` 直读）+ `Sources/LLM-monitor/Services/AntigravityLocalUsageScanner.swift` 及其同族（`AntigravityFilesystem.swift` / `AntigravityLocalUsageCache.swift` / `AntigravityLocalUsageAggregation.swift`；`AntigravityStepTimestampReader.swift` 由 agy harness 共用保留）
 
-**阶段一（2026-11-08）**：额度/账号路径已切换为 Keychain 凭据 + 远端 Google API——读取登录钥匙串 `gemini` / `antigravity` 条目的 OAuth access_token，直接 POST `googleapis.com` 配额接口，额度路径退役进程发现（Antigravity 未运行时额度照常工作，token 未过期时）。
+**阶段一（2026-11-08）**：额度/账号路径已切换为 Keychain 凭据 + 远端 Google API——读取登录钥匙串 `gemini` / `antigravity` 条目的 OAuth access_token，直接 POST `googleapis.com` 配额接口，额度主路径退役进程发现（Antigravity 未运行时额度照常工作，token 未过期时）。
 
-**阶段二b（2026-11-08）**：本地用量路径退役本地 RPC / 进程发现 / `.pb` 支持——scanner 对每个脏 session 用 `AntigravitySessionDBReader.probe → readCalls + readUserTurnSteps` 直读会话 `.db`（全量读，本地 db 毫秒级），不依赖 Antigravity 进程运行、不发任何网络请求、不做混合/回退；读失败按错误类别两路收敛——probe `.incompatible` 的 session 当轮采纳当前指纹，SQLite I/O 类 `.retryable` 不采纳指纹自然重试、连续 3 次有界收敛（两路都记一次失败 + log、保留 last-good，不做 RPC 回退）。下文 § Discovery Flow / § Local RPCs / § Local RPC Response Shapes / § Incremental trajectory metadata / § Bounded convergence 均为历史记录。
+**阶段二b（2026-11-08）**：本地用量路径退役本地 RPC / `.pb` 支持——scanner 对每个脏 session 用 `AntigravitySessionDBReader.probe → readCalls + readUserTurnSteps` 直读会话 `.db`（全量读，本地 db 毫秒级），不依赖 Antigravity 进程运行、不发任何网络请求、不做混合/回退；读失败按错误类别两路收敛——probe `.incompatible` 的 session 当轮采纳当前指纹，SQLite I/O 类 `.retryable` 不采纳指纹自然重试、连续 3 次有界收敛（两路都记一次失败 + log、保留 last-good，不做 RPC 回退）。下文 § Incremental trajectory metadata / § Bounded convergence 为历史记录。
+
+**2.4.2（2026-11-08，keychain 陈旧窗口回退）**：额度路径增加「keychain 过期 → 本地 language_server RPC」回退。背景事实（已实测）：keychain 条目 `gemini/antigravity` 只在登录/agy 使用时被写，IDE 运行期间刷新的 token 只在其内存（经 host bridge 分发），keychain 会陈旧；过期 token 打远端必 401；而运行中的 language_server 持有 bridge 新凭据且本地 RPC 一直可用。决策树：凭据新鲜 → 远端主路径（不变，远端 401 亦转入本地回退）；凭据缺失/过期 → 进程发现（`AntigravityProcessDiscovery`，原 Phase-0 排序规则复活）+ 本地 `RetrieveUserQuotaSummary`（`response` 包装形状，group/bucket 归一化与远端共用），账号信息用本地 `GetUserStatus`（仅 `.full`，可选失败，tier 回退链照 spec）。本地 RPC 成功后不再打远端；回退失败时凭据缺失/过期或「远端 401 且无本地后端」落 `credentialExpired`（新文案「token 已过期：打开 Antigravity 可继续监控额度，重新登录可刷新凭据」），其余错误按现有路径上抛。用量 scanner 保持纯 `.db` 直读不变（无 RPC 回退）；refresh_token 流程仍然不做。§ Discovery Flow / § Local RPCs / § Local RPC Response Shapes 中与 quota/account 相关的小节按「回退路径」口径恢复为运行时事实。
 
 ## Current Status
 
 | Item | Current implementation |
 |---|---|
-| Auth source | 登录钥匙串条目 service=`gemini` / account=`antigravity`（Antigravity 客户端写入并自行续期）；不需要 Antigravity 运行 |
-| Direct OAuth token use | ✅ 阶段一起直接使用 Keychain access_token 请求远端配额接口；本地判定 `token.expiry`，过期不发任何网络请求 |
-| Process discovery | ✅ 阶段二b起全面退役（额度路径阶段一退役；本地用量路径改 `.db` 直读），代码中已无 `pgrep` / `lsof` / CSRF（`AntigravityProcessDiscovery.swift` 整文件删除） |
-| Main local RPCs | 无——本地 RPC 全部退役；`GetCascadeTrajectoryGeneratorMetadata`（per-event token usage）随阶段二b退役，scanner 改直读会话 `.db` |
-| Remote endpoints | `POST /v1internal:retrieveUserQuotaSummary`（quota）、`POST /v1internal:loadCodeAssist`（tier，仅 `.full`），见 § Remote Quota Path (Phase 1) |
-| Account fields | email = Keychain `id_token_email`；tier = 远端 `currentTier.name` → `paidTier.name` → `paidTier.id`（本地 `planStatus.planInfo` 细节展示名远端无对应，已退役） |
+| Auth source | 登录钥匙串条目 service=`gemini` / account=`antigravity`（Antigravity 客户端写入并自行续期）；不需要 Antigravity 运行。2.4.2 起条目缺失/过期时回退本地 RPC（见下），回退也失败才落 `credentialExpired` |
+| Direct OAuth token use | ✅ 阶段一起直接使用 Keychain access_token 请求远端配额接口；本地判定 `token.expiry`，过期不发任何远端请求、转入本地回退（2.4.2） |
+| Process discovery | ↩ 2.4.2 起**额度回退路径恢复**（`AntigravityProcessDiscovery.swift` 从 aafbae0^ 复活）：仅凭据缺失/过期或远端 401 时 pgrep + lsof + CSRF；额度主路径仍不发现进程，本地用量路径仍 `.db` 直读（阶段二b，无 pgrep） |
+| Main local RPCs | 回退路径三件套（2.4.2）：`RetrieveUserQuotaSummary`（quota，致命）+ `GetUserStatus` / `GetLoadCodeAssist`（账号/tier，仅 `.full`，可选失败）。`GetCascadeTrajectoryGeneratorMetadata`（per-event token usage）保持退役，scanner 直读会话 `.db` |
+| Remote endpoints | `POST /v1internal:retrieveUserQuotaSummary`（quota）、`POST /v1internal:loadCodeAssist`（tier，仅 `.full`），见 § Remote Quota Path (Phase 1)；仅 401 终止主机回退并转入本地回退 |
+| Account fields | email = Keychain `id_token_email`（本地回退时 GetUserStatus.email 优先、Keychain 兜底）；tier = 远端 `currentTier.name` → `paidTier.name` → `paidTier.id`；本地回退（`.full`）= `userStatus.userTier.name` → `planStatus.planInfo.*` → `GetLoadCodeAssist.currentTier.name`（见 § Local RPC Response Shapes） |
 | Refresh cadence | 默认 **300s**（provider 未显式配置时；本地 RPC 时代为 60s）；显式 `refreshIntervalSeconds` 不受影响。tier 仅 `.full`（「次要信息频率」），后台通过 `AntigravityFillingMissingMerger` 保留上次账号/套餐 |
 | Model groups | `Gemini Models`, `Gemini 4 Argon`, `Claude and GPT models` |
 | Window types | `5h`, `weekly` |
@@ -172,17 +174,13 @@ Supported provider fields:
 
 ## Local Requirements
 
-**Quota path（阶段一）**：只需要登录钥匙串存在 `gemini` / `antigravity` 凭据条目（用户在 Antigravity 或 agy CLI 登录过一次即有）。Antigravity 无需运行；token 未过期时额度照常工作。凭据读不到时 `AppState` surfaces：
+**Quota path（阶段一 + 2.4.2 本地回退）**：主路径只需要登录钥匙串存在 `gemini` / `antigravity` 凭据条目（用户在 Antigravity 或 agy CLI 登录过一次即有），Antigravity 无需运行；token 未过期时额度照常工作。凭据缺失/过期（本地时钟 `now >= expiry`）或远端 401 时转入**本地回退**：本机运行 Antigravity（或 agy CLI）且本地 RPC 可用则额度照常显示（IDE 运行期间经 host bridge 分发的新凭据在 language_server 内存中，keychain 陈旧不影响本地 RPC）；无本地后端或本地 RPC 也失败时，卡片显示：
 
 ```text
-未读取到 Antigravity 登录凭据，请打开 Antigravity 并完成登录
+token 已过期：打开 Antigravity 可继续监控额度，重新登录可刷新凭据
 ```
 
-token 过期（本地时钟 `now >= expiry`）或远端 401 时，卡片显示：
-
-```text
-token 已过期：在 Antigravity 中发起一次对话即可刷新凭据
-```
+（打开 Antigravity 即恢复本地回退的数据来源；在 Antigravity 中发起对话或重新登录可刷新 keychain 凭据，远端主路径随之恢复。）
 
 **Local-usage path**（阶段二b：直读 `~/.gemini/antigravity/conversations/*.db`）不再要求本地后端运行：
 
@@ -197,11 +195,13 @@ If `~/.gemini/antigravity/conversations/` is empty (CLI-only user with no IDE ac
 本机未发现 Antigravity 会话数据      (扫描已完成、0 session)
 ```
 
-## Discovery Flow（已退役，历史记录）
+## Discovery Flow（回退路径：2.4.2 恢复，primary 用途仍退役）
 
-> 阶段二b（2026-11-08）起进程发现整体退役（`AntigravityProcessDiscovery.swift` 删除）：
-> 额度路径阶段一改远端 Google API，本地用量路径改直读会话 `.db`，两条路径都不再
-> pgrep / lsof / CSRF。本节保留为历史记录。
+> 阶段一（2026-11-08）进程发现从额度**主**路径退役（改远端 Google API），阶段二b
+> 整文件删除（本地用量改 `.db` 直读）；**2.4.2 起 `AntigravityProcessDiscovery.swift`
+> 按「keychain 过期回退」用途复活**（从 aafbae0^ 恢复，删除了无消费者的
+> `defaultMetadataServers()`）：仅当凭据缺失/过期或远端 401 时才 pgrep / lsof / CSRF。
+> 本节描述按回退口径恢复为运行时事实；本地用量路径不消费进程发现。
 
 The fetcher scanned for **two** kinds of Antigravity backends and picked the best one (app-embedded `language_server` first, then CLI).
 
@@ -233,16 +233,33 @@ Candidates are sorted:
 
 For each candidate, `lsof -nP -a -p <pid> -iTCP -sTCP:LISTEN` finds the first `127.0.0.1:<port>` listening socket. The chosen `ServerInfo` carries the CSRF token (if any) and the discovered `kind` for diagnostics.
 
-The two consumers of discovery（均已退役）:
+The consumers of discovery:
 
-- **Quota fetch（阶段一退役）** — 改走远端 Google API，不再消费进程发现。
-- **Local-usage scan（阶段二b退役）** — 曾经 `defaultMetadataServers()` 收集全部可用候选、scanner 复用一份快照拉所有脏 session 的 metadata 页；阶段二b起 scanner 直读 `.db`，`getTrajectoryMetadata` / `serverStillOwnsEndpoint` 一族随之删除。
+- **Quota fetch 回退（2.4.2 恢复）** — 主路径走远端 Google API，不消费进程发现；
+  凭据缺失/过期或远端 401 时 `fetchLocalFallback` 经注入 seam 调
+  `discoverServerAsync()` 拿单个 server，随后本地 RPC（见 § Local RPCs）。
+  `serverStillOwnsEndpoint` 同步复活为本地 POST 前的 TOCTOU 复查（2.4.2 起在
+  每次本地 POST 前执行，与原 rawPost 逐 POST 复查口径一致）。
+- **Local-usage scan（阶段二b退役）** — 曾经 `defaultMetadataServers()` 收集全部可用候选、scanner 复用一份快照拉所有脏 session 的 metadata 页；阶段二b起 scanner 直读 `.db`，`getTrajectoryMetadata` 与 `defaultMetadataServers` 一并删除（后者无消费者，未随 2.4.2 复活）。
 
 `hasLocalAuth()` deliberately returns `true` without probing (it runs on the menu / settings hot path); the real probe is the async `checkLocalAuth()` → 读一次钥匙串凭据（`AntigravityKeychain.readCredential()`，条目存在且结构可解析即视为可用，token 过期不在此判定）。
 
-## Remote Quota Path (Phase 1, 2026-11-08)
+## Remote Quota Path (Phase 1, 2026-11-08；2.4.2 增加本地回退)
 
 额度/账号路径的运行时事实（实测依据见文末 § 已验证的远端配额与本地凭据事实）：
+
+**额度抓取决策树**（`AntigravityFetcher.fetch`，2.4.2 定稿）：
+
+1. 读凭据（经注入 seam）→ 解析成功且未过期 → **远端主路径**（本节其余内容，不变）
+2. 凭据缺失/过期，或远端配额返回 401（轮询间隙 keychain token 恰好过期）→
+   **本地回退**：进程发现（§ Discovery Flow）→ 本地 `RetrieveUserQuotaSummary`
+   （§ Local RPCs；`response` 包装形状，group/bucket 归一化与远端共用），回退时
+   账号信息用本地 `GetUserStatus`（email/tier，仅 `.full`，可选失败不致命，
+   tier 回退链照 § Local RPC Response Shapes）；本地 RPC 成功后不再打远端
+3. 回退失败时：凭据缺失或已过期 → `QuotaError.credentialExpired`（新文案，见
+   § Local Requirements）；远端 401 起始且无本地后端 → 同样该文案；其余错误
+   （远端 401 origin 下本地 RPC 报错、远端非 401 错误等）按现有错误路径上抛；
+   取消错误永远原样上抛（AppState/CancellationFilter deferred 路径）
 
 **凭据**：`AntigravityKeychain.readCredential()` 读登录钥匙串条目
 （service=`gemini`，account=`antigravity`，等价 `security find-generic-password -s gemini -a antigravity -w`），
@@ -253,8 +270,13 @@ The two consumers of discovery（均已退役）:
 `AntigravityKeychain.readKeychainValue()` 在 xctest 进程内直接返回 nil——xctest 二进制
 每次构建都在变化、不在条目 ACL 内，真实读取会每次弹系统授权框，护栏兜底让漏注入的
 测试只走「无凭据」路径（`XCTestConfigurationFilePath` 环境变量 + XCTest 框架加载
-双信号识别，SwiftPM `swift test` 不设置该变量，框架加载检测是关键信号）。本地过期判定：`now >= expiry` 即过期，**过期时不发任何网络请求**，
-直接抛 `QuotaError.credentialExpired`。
+双信号识别，SwiftPM `swift test` 不设置该变量，框架加载检测是关键信号）。本地过期判定：`now >= expiry` 即过期，**过期时不发任何远端请求**，转入本地
+回退（决策树第 2 步）。本地路径另有三个注入 seam：`localServerDiscovery`（发现）、
+`localPostOverride`（本地 POST 传输，headers 已含 Content-Type 与按需 CSRF）、
+`localOwnershipChecker`（TOCTOU 复查，默认 `serverStillOwnsEndpoint`）——测试注入
+本地 POST override 时必须同时注入发现与复查 stub，绝不触达真实 pgrep / lsof
+（`AntigravityLocalFallbackTests` 的 `makeFixture` 是参考写法；
+`AntigravityRefreshCadenceTests` 统一注入「无本地后端」发现 stub）。
 
 **请求**（两个端点同头同 UA、body 均为 `{}`）：
 
@@ -272,47 +294,52 @@ CFBundleShortVersionString，读不到回退 `2.26.0`（`fallbackHubVersion`）�
 是实测要求——裸 `antigravity/cli/…` 身份拿不到 Gemini 4 Argon 等分组。
 
 **主机回退**：`daily-cloudcode-pa.googleapis.com` → `cloudcode-pa.googleapis.com` →
-`daily-cloudcode-pa.sandbox.googleapis.com`。**仅 401 终止**（抛 `credentialExpired`，
-与本地过期落到同一提示）；其余非 2xx 与传输失败换下一主机，全部失败抛最后一台的
-错误。传输走 `HTTPClient`（Services/Infra，glm/minimax 同款），响应上限 8 MiB
+`daily-cloudcode-pa.sandbox.googleapis.com`。**仅 401 终止**主机回退并转入本地回退
+（2.4.2；无本地后端时与本地过期落到同一 `credentialExpired` 提示）；其余非 2xx 与
+传输失败换下一主机，全部失败抛最后一台的错误（不做本地回退）。传输走
+`HTTPClient`（Services/Infra，glm/minimax 同款），响应上限 8 MiB
 （`standardQuota`），超时复用 `HTTPTimeouts.antigravityRequest`（15s）。
 
 **响应解析**：quota 响应 `{groups:[…]}` 与本地 RPC 同形但**没有 `response` 包装**
-（`RetrieveUserQuotaSummaryResponse` 直接解码），group/bucket 归一化、缺 bucket 跳组、
-`remainingFraction` 校验等解析逻辑与原路径共用。tier 响应无包装，取
-`currentTier.name` → `paidTier.name` → `paidTier.id`（首个非空 trimmed 值，
+（`RetrieveUserQuotaSummaryResponse` 直接解码；本地回退经
+`RetrieveUserQuotaSummaryEnvelope` 剥 `response` 包装后复用同一模型），group/bucket
+归一化、缺 bucket 跳组、`remainingFraction` 校验等解析逻辑两路共用。tier 响应无
+包装，取 `currentTier.name` → `paidTier.name` → `paidTier.id`（首个非空 trimmed 值，
 `LoadCodeAssistRemoteResponse.tierName`）；loadCodeAssist 失败不影响主额度（对齐旧
-`postOptional` 语义）。email 直接取 Keychain `id_token_email`。本地 RPC 的
-GetUserStatus / GetLoadCodeAssist 在额度路径退役；`planStatus.planInfo` 细节展示名
-远端无对应，planLabel 回退链相应缩短（`AntigravityFetcher` fetch 处注释有记录）。
+`postOptional` 语义）。email 直接取 Keychain `id_token_email`。本地回退路径的
+GetUserStatus / GetLoadCodeAssist 见 § Local RPCs；`planStatus.planInfo` 细节展示名
+仅存在于回退路径的 GetUserStatus（远端无对应字段）。
 
 **调度节奏**：quota 每拍（provider 未显式配置间隔时默认 300s）；tier 仅 `.full`
-（「次要信息频率」）。`AntigravityFillingMissingMerger` 保留 background 时的上次
-账号/套餐，full 采用本次结果（含 nil）——语义与本地 RPC 时代一致。
+（「次要信息频率」）。本地回退沿用同一节奏（quota 每拍、账号/tier 仅 `.full`）。
+`AntigravityFillingMissingMerger` 保留 background 时的上次账号/套餐，full 采用本次
+结果（含 nil）——语义与本地 RPC 时代一致。
 
-## Local RPCs（历史 + 本地用量路径）
+## Local RPCs（额度回退路径：2.4.2 恢复三件套；trajectory RPC 保持退役）
 
 用量设置的 Antigravity Provider 贡献按共享额度池拆组，适用于 Antigravity、Agy 及 OpenCode 等 Harness。`AntigravityModelKind.pool(forSampleModelName:)` 是样本分类入口：先识别 Argon，再识别 Claude / GPT（含 anthropic / openai 别名），再识别普通 Gemini；展示名来自同类型的 `displayName`，与额度卡一致。同一池的 5h / 周不重复分组。未知模型与留存样本未覆盖的日桶差额进入「未归属额度池」，不按模型估算其差额金额或速度；权威日桶总量保留。额度窗口对未知模型沿用 Gemini 的历史兜底，分组不改变该统计口径。
 
-> 阶段二b（2026-11-08）起，本地 RPC **全部退役**：`GetCascadeTrajectoryGeneratorMetadata`
-> 的唯一消费者（scanner）改直读会话 `.db`（见 § Local Token Usage Scanner）。本节与
-> § Local RPC Response Shapes 保留为历史记录。
+> 2.4.2 起，本地 RPC `RetrieveUserQuotaSummary` / `GetUserStatus` / `GetLoadCodeAssist`
+> 作为**额度回退路径**恢复（仅凭据缺失/过期或远端 401 时调用，见 § Remote Quota Path
+> 决策树）；`GetCascadeTrajectoryGeneratorMetadata` 的唯一消费者（scanner）阶段二b改
+> 直读会话 `.db`（见 § Local Token Usage Scanner），保持退役。
 
-`RetrieveUserQuotaSummary` used to run on every provider refresh. Independent account/tier calls
-(`GetUserStatus` and `GetLoadCodeAssist`) ran only on `.full`, following 「次要信息频率」
-(1...30 × the effective provider interval, default 20). On `.full`, all three ran in parallel
-via `async let`; on `.background`, only quota was requested. The non-quota calls used
-`postOptional` — they returned `nil` on failure (legacy servers may not support them), and
-the quota call was the only fatal one. `AntigravityFillingMissingMerger` retains the previous
-account/tier during `.background` while applying fresh quota and `fetchedAt`; `.full`
-adopts the current metadata, including nil, so an old account/tier does not survive a
-new full query. A first refresh with no previous metadata still displays quota normally.
+`RetrieveUserQuotaSummary` runs on every fallback refresh. Account/tier calls
+(`GetUserStatus` and `GetLoadCodeAssist`) run only on `.full`, following 「次要信息频率」.
+On `.full`, all three run in parallel via `async let`; on `.background`, only quota is
+requested. The non-quota calls use `localPostOptional` — they return `nil` on failure
+(legacy servers may not support them), and the quota call is the only fatal one.
+`AntigravityFillingMissingMerger` retains the previous account/tier during `.background`
+while applying fresh quota and `fetchedAt`; `.full` adopts the current metadata, including
+nil, so an old account/tier does not survive a new full query. A first refresh with no
+previous metadata still displays quota normally. `.background` 回退时账号邮箱回退
+Keychain 凭据的 `id_token_email`（有过期凭据时仍可携带邮箱；凭据缺失则为 nil，merger
+保留旧值）。
 
 ```text
 https://127.0.0.1:<httpsPort>/exa.language_server_pb.LanguageServerService/GetUserStatus
 https://127.0.0.1:<httpsPort>/exa.language_server_pb.LanguageServerService/GetLoadCodeAssist
 https://127.0.0.1:<httpsPort>/exa.language_server_pb.LanguageServerService/RetrieveUserQuotaSummary
-https://127.0.0.1:<httpsPort>/exa.language_server_pb.LanguageServerService/GetCascadeTrajectoryGeneratorMetadata
 ```
 
 Required request headers:
@@ -325,27 +352,28 @@ x-codeium-csrf-token: <csrf_token>   # only set when server has one
 Bodies:
 
 - `GetUserStatus`: `{ "metadata": { "ideName": "antigravity", "extensionName": "antigravity", "ideVersion": "unknown", "locale": "en" } }`
-- `GetCascadeTrajectoryGeneratorMetadata`: `{ "cascadeId": "<sessionId>", "includeMessages": false }`
 - `GetLoadCodeAssist`, `RetrieveUserQuotaSummary`: `{}`
 
-The session trusts localhost TLS for `127.0.0.1` and `localhost`.
+The session trusts localhost TLS for `127.0.0.1` and `localhost`（共享 session 的
+`LocalhostTrustDelegate`，远端 Google API 不命中 localhost 分支）。
 
 Response caps and timeouts (`ResponseByteLimits` / `HTTPTimeouts`, enforced by
-`CappedDownloader`): the trajectory RPC allows **64 MiB** per response
-(`antigravityTrajectory`), every other call **8 MiB** (`standardQuota`); request
-timeout 15s, resource timeout 20s. Exceeding the cap cancels the download and
-surfaces as `QuotaError.responseTooLarge`.
+`CappedDownloader`): every fallback call is capped at **8 MiB** (`standardQuota`);
+request timeout 15s, resource timeout 20s. Exceeding the cap cancels the download and
+surfaces as `QuotaError.responseTooLarge`.（trajectory RPC 专属的 64 MiB
+`antigravityTrajectory` 上限随阶段二b退役一并删除，未随回退复活。）
 
 ## Local RPC Response Shapes
 
-> 阶段一起，`GetUserStatus` / `GetLoadCodeAssist` / `RetrieveUserQuotaSummary`（quota）
-> 的本地形状为**历史记录**（额度路径已退役，运行时见 § Remote Quota Path (Phase 1)）；
-> 阶段二b起 `GetCascadeTrajectoryGeneratorMetadata` 亦退役（scanner 改直读 `.db`），
-> 本节全部为历史记录。
+> 2.4.2 起，`GetUserStatus` / `GetLoadCodeAssist` / `RetrieveUserQuotaSummary`（quota）
+> 的本地形状随额度回退路径恢复为**运行时事实**（触发条件见 § Remote Quota Path
+> 决策树）；`GetCascadeTrajectoryGeneratorMetadata` 阶段二b起退役（scanner 改直读
+> `.db`），其小节保持历史记录。
 
 ### GetUserStatus
 
-Used for account metadata（已退役，历史记录）.
+Used for account metadata（2.4.2 起为回退路径运行时事实：仅本地回退 `.full` 时调用，
+可选失败不致命；失败时邮箱回退 Keychain `id_token_email`）.
 
 Observed response shape:
 
@@ -388,7 +416,10 @@ Email is `userStatus.email` trimmed; treated as missing if empty/whitespace.
 
 ### GetLoadCodeAssist
 
-Used for tier name fallback when `GetUserStatus` is missing or incomplete.
+Used for tier name fallback when `GetUserStatus` is missing or incomplete
+（2.4.2 起为回退路径运行时事实：仅本地回退 `.full` 时调用，可选失败；本地响应经
+`LoadCodeAssistLocalEnvelope` 剥 `response` 包装，内层复用远端
+`LoadCodeAssistRemoteResponse` 模型）.
 
 Observed response shape:
 
@@ -409,7 +440,9 @@ Observed response shape:
 
 ### RetrieveUserQuotaSummary
 
-Observed response shape:
+Observed response shape（本地响应带 `response` 包装，`RetrieveUserQuotaSummaryEnvelope`
+剥包装后与远端共用 `RetrieveUserQuotaSummaryResponse` 及其下游归一化；2.4.2 起为
+回退路径运行时事实）:
 
 ```json
 {
@@ -487,7 +520,7 @@ otherwise a `claude` / `gpt` hit → `claude_and_gpt_models`, otherwise the raw
 `gemini_models (0) < gemini_argon (1) < claude_and_gpt_models (2) < other (3)`.
 
 Failure is per group: a group whose `remainingFraction` is missing, non-finite or
-outside `[0, 1]` is skipped with a `logWarn` (mirroring `postOptional`'s
+outside `[0, 1]` is skipped with a `logWarn` (mirroring `localPostOptional`'s
 partial-availability semantics) and the remaining groups still produce a card;
 only when **no** group survives does the fetcher throw.
 
@@ -1428,9 +1461,11 @@ gone; a hint that can never resolve is noise in a row that is always on screen.
 
 The row shows:
 
-- Login email (Keychain `id_token_email`，随凭据带回), monospaced, single line with
+- Login email (主路径 = Keychain `id_token_email`，随凭据带回；本地回退时
+  GetUserStatus.email 优先、Keychain 兜底), monospaced, single line with
   tail truncation and the full text in `.help(...)`
-- The tier pill right after it (远端 `loadCodeAssist` tier，缩短自同一条
+- The tier pill right after it (主路径 = 远端 `loadCodeAssist` tier；本地回退 =
+  GetUserStatus/GetLoadCodeAssist tier 回退链，缩短自同一条
   `planPillLabel` 规则)
 
 Antigravity needs **either** field to draw the row; when both are missing (e.g.
@@ -1530,20 +1565,23 @@ provider 综合健康度经 `QuotaInfo.aggregateQuotaModels(providerKind:)` 取�
 
 ## Error Handling
 
-**Quota path（阶段一：Keychain 凭据 + 远端 Google API）**：
+**Quota path（阶段一：Keychain 凭据 + 远端 Google API；2.4.2 起过期/401 转本地回退）**：
 
 | Situation | Current behavior |
 |---|---|
-| Keychain 条目不存在 / 不可解析 | `网络错误：未读取到 Antigravity 登录凭据，请打开 Antigravity 并完成登录`（auth probe 亦判 false → `.notConfigured`） |
-| 本地过期判定 `now >= expiry` | 直接抛 `QuotaError.credentialExpired`（`token 已过期：在 Antigravity 中发起一次对话即可刷新凭据`），**不发任何网络请求** |
-| 远端配额/tier 接口返回 401 | 回退链立即终止，抛 `credentialExpired`——与本地过期落到同一提示 |
-| 非 401 的非 2xx | 换下一主机（Daily → cloudcode-pa → sandbox）；全部失败抛最后一台的 `HTTP <status>: 响应 <N> bytes`（body 只按大小摘要，不回显内容） |
-| 传输层失败（超时 / 连接失败等） | 同上换下一主机（HTTPClient 包装为 networkError，可回退） |
-| 取消（URLError.cancelled / CancellationError） | 原样上抛，走 AppState/CancellationFilter 的 deferred 路径，不记失败 |
-| quota JSON decode fails | `解析失败：Antigravity 响应无法解析，响应 <N> bytes` |
+| Keychain 条目不存在 / 不可解析 | 不再直接报错：转入本地回退（`网络错误：未读取到 keychain 凭据…` 仅 log）；本地 RPC 成功 → 额度照常；回退失败 → `credentialExpired`（`token 已过期：打开 Antigravity 可继续监控额度，重新登录可刷新凭据`）。auth probe 仍只看钥匙串可读性（false → `.notConfigured` 提示，不影响 fetch 决策树） |
+| 本地过期判定 `now >= expiry` | **不发任何远端请求**，转入本地回退；回退失败 → `credentialExpired`（同上新文案） |
+| 远端配额接口返回 401 | 主机回退链立即终止，转入本地回退：本地 RPC 成功 → 额度照常（不再打远端）；无本地后端 → `credentialExpired`（同上新文案）；本地 RPC 报错 → 按本地错误原样上抛（见下两行） |
+| 远端 tier（loadCodeAssist）返回 401 / 其他失败 | 不影响主额度（可选元数据，`.full` 采 nil） |
+| 非 401 的非 2xx（远端） | 换下一主机（Daily → cloudcode-pa → sandbox）；全部失败抛最后一台的 `HTTP <status>: 响应 <N> bytes`（body 只按大小摘要，不回显内容），不做本地回退 |
+| 传输层失败（超时 / 连接失败等，远端） | 同上换下一主机（HTTPClient 包装为 networkError，可回退） |
+| 本地回退：未发现进程 / 进程未监听端口 | 抛 `credentialExpired`（三种回退 origin 同文案） |
+| 本地回退：TOCTOU 复查失败（pid 不再监听端口） | `网络错误：Antigravity 本地服务身份已变化（pid=…, port=…），请重试刷新`；凭据缺失/过期 origin 下进一步落 `credentialExpired`，远端 401 origin 下原样上抛 |
+| 本地回退：RPC 传输失败 / 非 2xx / 解析失败 / 响应超 8 MiB | 凭据缺失/过期 origin → `credentialExpired`（同上文案）；远端 401 origin → 按现有路径原样上抛（`networkError` / `httpError` / `解析失败…` / `responseTooLarge`）；本地 RPC 报错永不触发远端重试 |
+| 取消（URLError.cancelled / CancellationError） | 原样上抛（含本地回退路径），走 AppState/CancellationFilter 的 deferred 路径，不记失败 |
+| quota JSON decode fails | `解析失败：Antigravity 响应无法解析，响应 <N> bytes`（本地回退路径同款，凭据缺失/过期 origin 下进一步落 `credentialExpired`） |
 | One quota group has an invalid / missing `remainingFraction` | That group is skipped with a warn; the other groups still render |
 | No quota groups survive parsing | `解析失败：Antigravity quota 响应里没有可用 bucket` |
-| tier（loadCodeAssist）失败 | 不影响主额度；`.full` 采 nil（merger 在 background 保留旧值） |
 | 响应超过字节上限 | `响应过大（上限 N bytes）：<redacted path>` (`QuotaError.responseTooLarge`) |
 | config 手改 `allowTokenRefresh: true` | 解码抛 `AppConfig.SchemaError.antigravityAllowTokenRefresh`（启动保留原文件按默认配置运行、热重载保留上次配置）+ log warn；provider 按 false 运行 |
 
@@ -1700,8 +1738,9 @@ base64 → JSON：`token.{access_token, token_type, refresh_token, expiry(ISO �
   `fetchAvailableModels`——若改走远端轮询，频率参照应 ≥300s（当前 provider 配置 60s 不适用）。
 
 **刷新语义**：access_token 有效期约 1 小时，由客户端在 Keychain 内自行续期；监控侧不做
-refresh_token 流程——读到 `token.expiry` 已过期即抛 `credentialExpired`
-（「token 已过期：在 Antigravity 中发起一次对话即可刷新凭据」），远端 401 落到同一提示。
+refresh_token 流程。读到 `token.expiry` 已过期不发远端请求、转入本地回退（2.4.2）；
+远端 401 落到同一回退；回退也失败才抛 `credentialExpired`
+（「token 已过期：打开 Antigravity 可继续监控额度，重新登录可刷新凭据」）。
 
 ## Helper Script
 
@@ -1711,16 +1750,17 @@ For raw quota export outside the menu app:
 ./scripts/export-antigravity-quota.sh /tmp/antigravity-quota.json
 ```
 
-阶段一起（2026-11-08）脚本与 app 同路径（不再依赖 Antigravity 运行、不走进程发现）：
+阶段一起（2026-11-08）脚本与 app 同路径（不再依赖 Antigravity 运行、不走进程发现）；
+**2.4.2 起脚本仍不做本地回退**（保持纯远端直连，过期文案与 app 同步）：
 
 1. `security find-generic-password -s gemini -a antigravity -w` 读登录钥匙串凭据，
    `go-keyring-base64:` 前缀 + base64 → JSON（python3 解析；凭据原文经环境变量传给
    python，token 不出现在 argv），取 `token.access_token` 与 `token.expiry`
-2. 本地判过期：`now >= expiry` 直接报错退出（提示「请打开 Antigravity 更新凭据」），
-   不发任何网络请求
+2. 本地判过期：`now >= expiry` 直接报错退出（提示「token 已过期：打开 Antigravity
+   可继续监控额度，重新登录可刷新凭据」），不发任何网络请求
 3. 未过期则 POST `v1internal:retrieveUserQuotaSummary`，UA / 请求头与主机回退序同
    § Remote Quota Path (Phase 1)（版本读 `/Applications/Antigravity.app/Contents/Info.plist`
-   的 CFBundleShortVersionString，读不到回退 2.26.0；仅 401 终止）
+   的 CFBundleShortVersionString，读不到回退 2.26.0；仅 401 终止，报错文案同第 2 步）
 4. prints or writes the raw JSON（带路径参数时原子落盘 0600）
 
-> 核对基线：2026-11-08 · 代码 1146220（阶段一：额度路径切远端 + 阶段二b：本地用量直读 `.db`、RPC/进程发现/`.pb` 退役；读失败两路有界收敛与 turns turn-0 不开轮同步，改动待提交）
+> 核对基线：2026-11-08 · 代码 3cc7ca7（2.4.2：keychain 过期/401 回退本地 RPC——`AntigravityProcessDiscovery` 复活 + fetch 决策树 + `credentialExpired` 新文案；scanner/`.db` 直读不变；改动待提交）

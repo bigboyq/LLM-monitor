@@ -221,8 +221,9 @@ AppState.fetch 成功后调 `fetcher.resultMerger.merge(new:previous:mode:)` 合
 ## Auth Probing
 
 Antigravity 阶段一起额度路径走钥匙串凭据 + 远端 Google API，`checkLocalAuth()` 探测
-钥匙串凭据条目是否可读（不要求 Antigravity 运行；token 过期不算不可用——过期由
-fetch 抛 `credentialExpired` 呈现）。codex 仍探测本地 auth 文件。
+钥匙串凭据条目是否可读（不要求 Antigravity 运行；token 过期不算不可用——2.4.2 起
+过期/缺失/远端 401 由 fetch 回退本地 language_server RPC，全部失败才抛
+`credentialExpired` 呈现；auth probe 本身不跑 pgrep）。codex 仍探测本地 auth 文件。
 `AuthProber` 异步探测 `fetcher.checkLocalAuth()` 并缓存结果：
 
 - `scheduleProbe(for: providerID)`：启动探测（fetcher.hasLocalAuth() false 时不发）
@@ -433,10 +434,10 @@ Fetcher errors use `QuotaError`:
 连接错误分类保持不变。2026-10-25 工作区定向验证：`HTTPErrorSanitizerTests` 6 例通过；
 打包脚本 `bash -n` 及临时 plist 的用途说明 / ATS 嵌套布尔校验通过，未在另一台机器验收。
 
-Antigravity-specific note (阶段一，2026-11-08):
+Antigravity-specific note (阶段一，2026-11-08；2.4.2 增加本地回退):
 
-- Quota/account path uses the Keychain credential (`gemini` / `antigravity`, written and refreshed by the Antigravity client) against the remote Google quota APIs; expiry is judged locally (`now >= token.expiry`) and no network request is made when expired. See `providers/antigravity.md` § Remote Quota Path (Phase 1).
-- Local-usage path（阶段二b，2026-11-08）：scanner 直读会话 `.db`（`AntigravitySessionDBReader`），本地进程发现与 RPC 整体退役，不发任何网络请求。
+- Quota/account path uses the Keychain credential (`gemini` / `antigravity`, written and refreshed by the Antigravity client) against the remote Google quota APIs; expiry is judged locally (`now >= token.expiry`) and no remote request is made when expired — missing/expired credentials and remote 401 fall back to the local language_server RPC (see `providers/antigravity.md` § Remote Quota Path decision tree).
+- Local-usage path（阶段二b，2026-11-08）：scanner 直读会话 `.db`（`AntigravitySessionDBReader`），不发任何网络请求、不消费进程发现（进程发现 2.4.2 起仅额度回退路径复活）。
 
 ## Provider Registration Contract
 
@@ -541,5 +542,5 @@ These are documented product boundaries:
   have their own SQLite readers, Antigravity is pure RPC, and Codex parses JSONL on
   demand for the 7-day chart.
 
-> 核对基线：2026-11-08 · 代码 1146220（阶段一：antigravity 凭据探测与刷新节奏，改动待提交）
+> 核对基线：2026-11-08 · 代码 3cc7ca7（阶段一：antigravity 凭据探测与刷新节奏；2.4.2：keychain 过期/401 回退本地 RPC 与 auth probe 语义澄清，改动待提交）
 > 2026-10-25 自启草稿与菜单实际状态同步已随 6f11831 入库：定向 27 例、完整 1422 例均通过；完整验证记录见 `spec/sync.md`。
