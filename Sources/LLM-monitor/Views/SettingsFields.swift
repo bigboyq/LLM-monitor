@@ -2,7 +2,10 @@ import SwiftUI
 import AppKit
 
 extension SettingsView {
-    func intervalSliderField(label: String, value: Binding<Int>) -> some View {
+    /// `inheritHint`：interval 为 0（未显式配置）时的展示文案。默认「继承全局」；
+    /// 有 provider 专属默认间隔（antigravity 固定 300s）的 provider 传入覆盖文案，
+    /// 避免 UI 谎报「继承全局」。
+    func intervalSliderField(label: String, value: Binding<Int>, inheritHint: String? = nil) -> some View {
         SettingsControlRow(label, alignment: .top) {
             VStack(alignment: .trailing, spacing: 6) {
                 Slider(
@@ -21,7 +24,7 @@ extension SettingsView {
                 )
 
                 Text(value.wrappedValue == 0
-                     ? "当前：继承全局（\(Formatters.formatInterval(seconds: draft.globalInterval))）"
+                     ? (inheritHint ?? "当前：继承全局（\(Formatters.formatInterval(seconds: draft.globalInterval))）")
                      : "当前：\(Formatters.formatInterval(seconds: value.wrappedValue))")
                     .font(SettingsTypography.numericValue)
                     .foregroundStyle(.secondary)

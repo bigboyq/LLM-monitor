@@ -277,7 +277,7 @@ enum ProviderKind: String, Codable, Sendable, CaseIterable {
     var usesExternalAuth: Bool {
         switch self {
         case .codexChatGpt:     return true   // 读 ~/.codex/auth.json
-        case .antigravity:      return true   // 复用本地 Antigravity language_server 登录态
+        case .antigravity:      return true   // 复用 Antigravity 客户端写入的登录钥匙串条目
         case .minimaxTokenPlan: return false
         case .glmCodingPlan:    return false  // Coding Plan Key 存在 config.json 的 apiKey
         case .deepseek:         return false  // API Key 存在 config.json 的 apiKey

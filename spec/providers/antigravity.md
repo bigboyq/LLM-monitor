@@ -2,31 +2,34 @@
 
 Provider id: `antigravity`
 
-Implementation: `Sources/LLM-monitor/Fetchers/AntigravityFetcher.swift`（RPC + `generatorMetadata` 解析）+ `Sources/LLM-monitor/Fetchers/AntigravityProcessDiscovery.swift`（进程/端口发现）+ `Sources/LLM-monitor/Fetchers/AntigravitySchemas.swift`（请求/响应模型）+ `Sources/LLM-monitor/Services/AntigravityLocalUsageScanner.swift` 及其同族（`AntigravityFilesystem.swift` / `AntigravityLocalUsageCache.swift` / `AntigravityLocalUsageAggregation.swift` / `AntigravityStepTimestampReader.swift`）
+Implementation: `Sources/LLM-monitor/Fetchers/AntigravityFetcher.swift`（远端配额/账号）+ `Sources/LLM-monitor/Fetchers/AntigravityCredential.swift`（Keychain 凭据读取/解析）+ `Sources/LLM-monitor/Fetchers/AntigravitySchemas.swift`（远端响应模型）+ `Sources/LLM-monitor/Services/AntigravitySessionDBReader.swift`（会话 `.db` 直读）+ `Sources/LLM-monitor/Services/AntigravityLocalUsageScanner.swift` 及其同族（`AntigravityFilesystem.swift` / `AntigravityLocalUsageCache.swift` / `AntigravityLocalUsageAggregation.swift`；`AntigravityStepTimestampReader.swift` 由 agy harness 共用保留）
 
-This provider does not call Google quota APIs with a saved OAuth access token. Instead, it reuses the locally authenticated Antigravity backend — the IDE's `language_server` or the `agy` CLI — discovers its local HTTPS port, and reads quota + account info + per-session token usage from local RPC endpoints.
+**阶段一（2026-11-08）**：额度/账号路径已切换为 Keychain 凭据 + 远端 Google API——读取登录钥匙串 `gemini` / `antigravity` 条目的 OAuth access_token，直接 POST `googleapis.com` 配额接口，额度路径退役进程发现（Antigravity 未运行时额度照常工作，token 未过期时）。
+
+**阶段二b（2026-11-08）**：本地用量路径退役本地 RPC / 进程发现 / `.pb` 支持——scanner 对每个脏 session 用 `AntigravitySessionDBReader.probe → readCalls + readUserTurnSteps` 直读会话 `.db`（全量读，本地 db 毫秒级），不依赖 Antigravity 进程运行、不发任何网络请求、不做混合/回退；读失败按错误类别两路收敛——probe `.incompatible` 的 session 当轮采纳当前指纹，SQLite I/O 类 `.retryable` 不采纳指纹自然重试、连续 3 次有界收敛（两路都记一次失败 + log、保留 last-good，不做 RPC 回退）。下文 § Discovery Flow / § Local RPCs / § Local RPC Response Shapes / § Incremental trajectory metadata / § Bounded convergence 均为历史记录。
 
 ## Current Status
 
 | Item | Current implementation |
 |---|---|
-| Auth source | Running Antigravity **or** agy CLI; their local authenticated language_server |
-| Direct OAuth token use | Avoided; stale `state.vscdb` tokens may return `401` |
-| Process discovery | `pgrep -fal language_server` (IDE) + `pgrep -fal agy` / `antigravity-cli` (CLI), command-line keyword filter |
-| CSRF | IDE requires `--csrf_token`; CLI does not require any |
-| Main local RPCs | `GetUserStatus` (account + tier), `GetLoadCodeAssist` (tier fallback), `RetrieveUserQuotaSummary` (quota), `GetCascadeTrajectoryGeneratorMetadata` (per-event token usage) |
-| Account fields | `userStatus.email`, `userStatus.userTier.name`, `userStatus.planStatus.planInfo.{planDisplayName,displayName,productName,planName,planShortName}` |
-| Refresh cadence | 额度每拍；独立账号/套餐仅 `.full`，按「次要信息频率」轮询；后台通过 `AntigravityFillingMissingMerger` 保留上次账号/套餐 |
+| Auth source | 登录钥匙串条目 service=`gemini` / account=`antigravity`（Antigravity 客户端写入并自行续期）；不需要 Antigravity 运行 |
+| Direct OAuth token use | ✅ 阶段一起直接使用 Keychain access_token 请求远端配额接口；本地判定 `token.expiry`，过期不发任何网络请求 |
+| Process discovery | ✅ 阶段二b起全面退役（额度路径阶段一退役；本地用量路径改 `.db` 直读），代码中已无 `pgrep` / `lsof` / CSRF（`AntigravityProcessDiscovery.swift` 整文件删除） |
+| Main local RPCs | 无——本地 RPC 全部退役；`GetCascadeTrajectoryGeneratorMetadata`（per-event token usage）随阶段二b退役，scanner 改直读会话 `.db` |
+| Remote endpoints | `POST /v1internal:retrieveUserQuotaSummary`（quota）、`POST /v1internal:loadCodeAssist`（tier，仅 `.full`），见 § Remote Quota Path (Phase 1) |
+| Account fields | email = Keychain `id_token_email`；tier = 远端 `currentTier.name` → `paidTier.name` → `paidTier.id`（本地 `planStatus.planInfo` 细节展示名远端无对应，已退役） |
+| Refresh cadence | 默认 **300s**（provider 未显式配置时；本地 RPC 时代为 60s）；显式 `refreshIntervalSeconds` 不受影响。tier 仅 `.full`（「次要信息频率」），后台通过 `AntigravityFillingMissingMerger` 保留上次账号/套餐 |
 | Model groups | `Gemini Models`, `Gemini 4 Argon`, `Claude and GPT models` |
 | Window types | `5h`, `weekly` |
 | Reset credits | Not used |
-| **Local token usage history** | ✅ Pure RPC architecture: per-event input / output / cacheRead / cacheWrite / reasoning, aggregated to last 7 local days, persisted to `~/Library/Application Support/LLM-monitor/token-monitor/antigravity.json` |
+| **Local token usage history** | ✅ `.db` 直读架构（阶段二b）：`gen_metadata` ↔ `steps` 连接命中的逐调用 uncached input / cacheRead / rawOutput（含思考）/ reasoning，聚合到最近 7 个本地日，持久化到 `~/Library/Application Support/LLM-monitor/token-monitor/antigravity.json`；turns = `step_type=14` 直计（turnIndex ≥ 1 首见开轮，turn-0 背景调用不开轮）、rounds = 连接命中 Call 数；`cacheWrite` 恒 0（db 不提供，本就排除在 total 外，仅诊断可见性损失） |
 
 ## Accounting contract
 
-Antigravity event 的 `inputTokens` 是 uncached input，`cacheReadTokens` 独立记录命中缓存。
-RPC 的 `usage.outputTokens` **已含思考**——用户在本机 271 个会话（60,373 条含 token 事件）
-上实测 100% 满足 `outputTokens == thinkingOutputTokens + responseOutputTokens`。因此
+Antigravity call 的 uncached input 与 `cacheRead` 独立记录命中缓存。raw output
+（db `gen_metadata` usage 子消息 `f3`，与旧 RPC `outputTokens` 同口径）**已含思考**——
+用户在本机 271 个会话（60,373 条含 token 事件）上实测 100% 满足
+`outputTokens == thinkingOutputTokens + responseOutputTokens`。因此
 `TokenAccountingCatalog.antigravity` 声明 `output: .reasoningIncluded`（与 DSH 同款关系）：
 规范化 `Output = outputTokens − thinkingOutputTokens`、`Reason = thinkingOutputTokens`，
 `Output + Reason == rawOutputTokens`，四桶守恒；daily 与 sample 的 raw→桶都走该 catalog
@@ -34,7 +37,6 @@ RPC 的 `usage.outputTokens` **已含思考**——用户在本机 271 个会话
 兼容历史结构将 input 保存为 `input + cacheRead`，`reasoningOutputTokens` 保存分拆后的
 思考桶。`cacheWriteTokens` 只保留在 raw 诊断数据，不进入统一 total、图表或价值估算。见
 [`spec/accounting.md`](../accounting.md)。
-| Configurable install path | Removed — fully auto-discovered via process scan |
 
 ## Model Pricing
 
@@ -115,10 +117,12 @@ p25/p75 = 9.4K/14.2K——三者合并在 input 水位中不可分离，System P
 **数据在哪看（复现路径）**：
 
 1. 事件账本：`~/Library/Application Support/LLM-monitor/token-monitor/antigravity.json`
-   的 `samplesBySession`——scanner 经 RPC `GetCascadeTrajectoryGeneratorMetadata` 拉取的
-   全量逐事件样本（非采样），每个样本带 `completedAt` / `inputTokens`（cache-inclusive，
+   的 `samplesBySession`——scanner 直读 `.db` `gen_metadata` 得到的全量逐调用样本
+   （非采样），每个样本带 `completedAt` / `inputTokens`（cache-inclusive，
    即该轮喂给模型的完整上下文）/ `promptID`（`<session>:turn-N`）。原始 db
-   （`~/.gemini/antigravity/conversations/<uuid>.db`）存的是 protobuf blob，不便直读。
+   （`~/.gemini/antigravity/conversations/<uuid>.db`）的会话过程流（`steps`/`step_payload`）
+   是 protobuf blob，不便直读；但 `gen_metadata` 表是结构化的（见下文 § Token & model data
+   ARE in `.db` `gen_metadata`，阶段二b起即 scanner 数据源）。
 2. 水位口径：按 `promptID` 聚 turn，**压缩前水位 = pre turn 的 last input**（turn 内
    递增，末次调用 = 完整历史，最后一条 input 已进历史、会被一起摘要，不扣）；
    **压缩完成水位 = 下一 turn 的 first input**（= 摘要 + 保留消息 + 新用户消息）——
@@ -132,7 +136,7 @@ p25/p75 = 9.4K/14.2K——三者合并在 input 水位中不可分离，System P
    工具定义不落盘**（db 与 transcript 均只存过程流：用户输入 / 模型输出 / 工具结果，
    请求层的 systemInstruction 与 tool schema 不在其中），底座 10.7K 的内部拆分只能靠
    turn-1 first input 总量推断。
-5. 陷阱：会话 fork/克隆在 RPC metadata 里表现为**逐秒相同时间戳的副本 session**
+5. 陷阱：会话 fork/克隆在 gen_metadata 里表现为**逐秒相同时间戳的副本 session**
    （实测 `739a3bba` 有两个克隆；另有一秒内 47 事件的 302K 快照回放），统计前必须按
    时间戳去重，否则事件数虚高、起步水位失真。
 
@@ -146,7 +150,7 @@ Full config shape:
   "providers": {
     "antigravity": {
       "enabled": true,
-      "refreshIntervalSeconds": 60
+      "refreshIntervalSeconds": 300
     }
   }
 }
@@ -157,7 +161,8 @@ Supported provider fields:
 | Field | Meaning |
 |---|---|
 | `enabled` | Enables/disables this provider. |
-| `refreshIntervalSeconds` | Optional independent refresh interval. |
+| `refreshIntervalSeconds` | Optional independent refresh interval. **Provider 未显式配置时默认 300s**（阶段一起远端轮询对齐 IDE 自身 fetchAvailableModels 的约 6 分钟节奏，取代本地 RPC 时代的 60s 档；`AppConfig.defaultProviderRefreshInterval`）。显式配置不受影响。 |
+| `allowTokenRefresh` | **强制 false**（bool，缺省 false）：token 由 Antigravity 客户端在钥匙串内自行续期，监控侧没有 refresh 流程。手改 json 为 `true` 属于无效/恶意修改——解码抛 `AppConfig.SchemaError.antigravityAllowTokenRefresh`（沿用配置解码错误呈现路径：启动保留原文件按默认配置运行、热重载保留上次配置）+ log warn，provider 按 false 运行。设置窗口开关可见但恒为关（disabled）。 |
 | `displayName` | Optional card title override. |
 | `notifyIntervalRestored` etc. (4 fields) | Optional per-event notification channels (5h/weekly × restored/exhausted): `none` / `system` / `barkAndSystem`. Defaults: restored → `system`, exhausted → `none`. See `spec/notifications.md`. |
 
@@ -167,35 +172,38 @@ Supported provider fields:
 
 ## Local Requirements
 
-For this provider to work:
-
-1. Antigravity **or** agy CLI must already be running.
-2. The user must already be logged in.
-3. The local language server (embedded in either backend) must be healthy and listening on localhost.
-4. The conversation directory is optional: without local session files, quota/account data still works and local-history totals remain empty.
-
-If any of those conditions fail, `AppState` surfaces:
+**Quota path（阶段一）**：只需要登录钥匙串存在 `gemini` / `antigravity` 凭据条目（用户在 Antigravity 或 agy CLI 登录过一次即有）。Antigravity 无需运行；token 未过期时额度照常工作。凭据读不到时 `AppState` surfaces：
 
 ```text
-未发现 Antigravity 或 agy CLI 进程，请先启动 Antigravity 并完成登录
+未读取到 Antigravity 登录凭据，请打开 Antigravity 并完成登录
 ```
 
-or, if a process is found but no port:
+token 过期（本地时钟 `now >= expiry`）或远端 401 时，卡片显示：
 
 ```text
-发现 Antigravity 进程但未监听本地端口，请确认 Antigravity 或 CLI 已完成登录
+token 已过期，请打开 Antigravity 更新凭据
 ```
 
-or, if process + port are healthy but `~/.gemini/antigravity/conversations/` is empty (CLI-only user with no IDE activity) — the local-usage card section degrades to a placeholder:
+**Local-usage path**（阶段二b：直读 `~/.gemini/antigravity/conversations/*.db`）不再要求本地后端运行：
+
+1. Antigravity / agy CLI **无需运行**——`.db` 由 IDE 懒刷新落盘（见 § Lazy .db write），活动中的会话要等下次 flush 才对 scanner 可见。
+2. 版本指纹（`gen_metadata` 首行模型名）不过关的 `.db`（旧版 IDE 会话或损坏文件）计一次失败 + log，保留 last-good 并采纳当前指纹短路，不做任何回退。SQLite I/O 类读失败（权限/锁/EIO）则**不**采纳指纹：保留脏状态下一轮重试（瞬时故障恢复后即读回），连续 3 次才按同款策略有界收敛（见 § Local Token Usage Scanner 优化 6）。
+3. The conversation directory is optional: without local session files, quota/account data still works and local-history totals remain empty.
+
+If `~/.gemini/antigravity/conversations/` is empty (CLI-only user with no IDE activity) — the local-usage card section degrades to a placeholder:
 
 ```text
 正在扫描本地 token 用量…            (扫描进行中，带 mini 进度条)
 本机未发现 Antigravity 会话数据      (扫描已完成、0 session)
 ```
 
-## Discovery Flow
+## Discovery Flow（已退役，历史记录）
 
-The fetcher scans for **two** kinds of Antigravity backends and picks the best one (app-embedded `language_server` first, then CLI).
+> 阶段二b（2026-11-08）起进程发现整体退役（`AntigravityProcessDiscovery.swift` 删除）：
+> 额度路径阶段一改远端 Google API，本地用量路径改直读会话 `.db`，两条路径都不再
+> pgrep / lsof / CSRF。本节保留为历史记录。
+
+The fetcher scanned for **two** kinds of Antigravity backends and picked the best one (app-embedded `language_server` first, then CLI).
 
 `Antigravity IDE.app` is no longer a supported backend: commands matching `AntigravityFetcher.isUnsupportedIDEAppCommand` (the `Antigravity IDE.app` bundle path, `--app_data_dir antigravity-ide`, or its arch-suffixed `language_server_<suffix>` binaries) are rejected before classification.
 
@@ -225,25 +233,77 @@ Candidates are sorted:
 
 For each candidate, `lsof -nP -a -p <pid> -iTCP -sTCP:LISTEN` finds the first `127.0.0.1:<port>` listening socket. The chosen `ServerInfo` carries the CSRF token (if any) and the discovered `kind` for diagnostics.
 
-The two consumers of discovery differ deliberately:
+The two consumers of discovery（均已退役）:
 
-- **Quota fetch** — `discoverServerAsync()` returns the **first** candidate that exposes a port; that single `ServerInfo` serves all three quota/account RPCs.
-- **Local-usage scan** — `defaultMetadataServers()` (behind `discoverMetadataServers()`) collects **every** usable candidate, and the scanner reuses that one snapshot for all dirty sessions in a scan (`fetchAll` runs pgrep+lsof once, not per session). `getTrajectoryMetadata(sessionId:offset:servers:)` then tries the servers in order and returns the first page with `metadataEntryCount > 0`; only a transport failure on every server throws.
+- **Quota fetch（阶段一退役）** — 改走远端 Google API，不再消费进程发现。
+- **Local-usage scan（阶段二b退役）** — 曾经 `defaultMetadataServers()` 收集全部可用候选、scanner 复用一份快照拉所有脏 session 的 metadata 页；阶段二b起 scanner 直读 `.db`，`getTrajectoryMetadata` / `serverStillOwnsEndpoint` 一族随之删除。
 
-`hasLocalAuth()` deliberately returns `true` without probing (it runs on the menu / settings hot path); the real probe is the async `checkLocalAuth()` → `discoverServerAsync()`.
+`hasLocalAuth()` deliberately returns `true` without probing (it runs on the menu / settings hot path); the real probe is the async `checkLocalAuth()` → 读一次钥匙串凭据（`AntigravityKeychain.readCredential()`，条目存在且结构可解析即视为可用，token 过期不在此判定）。
 
-Before every POST, `serverStillOwnsEndpoint(server)` re-runs `lsof -nP -a -p <pid> -iTCP:<port> -sTCP:LISTEN` and fails the request with `网络错误：Antigravity 本地服务身份已变化（pid=…, port=…），请重试刷新` if the original process no longer owns the port — narrowing the TOCTOU window in which a restarted server inherits the port.
+## Remote Quota Path (Phase 1, 2026-11-08)
 
-## Local RPCs
+额度/账号路径的运行时事实（实测依据见文末 § 已验证的远端配额与本地凭据事实）：
+
+**凭据**：`AntigravityKeychain.readCredential()` 读登录钥匙串条目
+（service=`gemini`，account=`antigravity`，等价 `security find-generic-password -s gemini -a antigravity -w`），
+值 `go-keyring-base64:<base64>` → JSON（解析见 `AntigravityCredential`；只消费
+`access_token` / `expiry` / `id_token_email`，`refresh_token` 有意不建模、禁止用于任何
+网络刷新）。测试侧约定：`AntigravityFetcher` 的 `credentialReader` 注入点是唯一凭据
+来源，测试一律注入 fixture（`AntigravityCredentialFixtures`，有效/过期/nil）；且
+`AntigravityKeychain.readKeychainValue()` 在 xctest 进程内直接返回 nil——xctest 二进制
+每次构建都在变化、不在条目 ACL 内，真实读取会每次弹系统授权框，护栏兜底让漏注入的
+测试只走「无凭据」路径（`XCTestConfigurationFilePath` 环境变量 + XCTest 框架加载
+双信号识别，SwiftPM `swift test` 不设置该变量，框架加载检测是关键信号）。本地过期判定：`now >= expiry` 即过期，**过期时不发任何网络请求**，
+直接抛 `QuotaError.credentialExpired`。
+
+**请求**（两个端点同头同 UA、body 均为 `{}`）：
+
+```text
+POST https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary
+POST https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist      # 仅 .full
+
+Content-Type: application/json
+Authorization: Bearer <access_token>
+User-Agent: antigravity/hub/<version> (aidev_client; os_type=darwin; arch=arm64)
+```
+
+版本取 `/Applications/Antigravity.app/Contents/Info.plist` 的
+CFBundleShortVersionString，读不到回退 `2.26.0`（`fallbackHubVersion`）。hub 身份 UA
+是实测要求——裸 `antigravity/cli/…` 身份拿不到 Gemini 4 Argon 等分组。
+
+**主机回退**：`daily-cloudcode-pa.googleapis.com` → `cloudcode-pa.googleapis.com` →
+`daily-cloudcode-pa.sandbox.googleapis.com`。**仅 401 终止**（抛 `credentialExpired`，
+与本地过期落到同一提示）；其余非 2xx 与传输失败换下一主机，全部失败抛最后一台的
+错误。传输走 `HTTPClient`（Services/Infra，glm/minimax 同款），响应上限 8 MiB
+（`standardQuota`），超时复用 `HTTPTimeouts.antigravityRequest`（15s）。
+
+**响应解析**：quota 响应 `{groups:[…]}` 与本地 RPC 同形但**没有 `response` 包装**
+（`RetrieveUserQuotaSummaryResponse` 直接解码），group/bucket 归一化、缺 bucket 跳组、
+`remainingFraction` 校验等解析逻辑与原路径共用。tier 响应无包装，取
+`currentTier.name` → `paidTier.name` → `paidTier.id`（首个非空 trimmed 值，
+`LoadCodeAssistRemoteResponse.tierName`）；loadCodeAssist 失败不影响主额度（对齐旧
+`postOptional` 语义）。email 直接取 Keychain `id_token_email`。本地 RPC 的
+GetUserStatus / GetLoadCodeAssist 在额度路径退役；`planStatus.planInfo` 细节展示名
+远端无对应，planLabel 回退链相应缩短（`AntigravityFetcher` fetch 处注释有记录）。
+
+**调度节奏**：quota 每拍（provider 未显式配置间隔时默认 300s）；tier 仅 `.full`
+（「次要信息频率」）。`AntigravityFillingMissingMerger` 保留 background 时的上次
+账号/套餐，full 采用本次结果（含 nil）——语义与本地 RPC 时代一致。
+
+## Local RPCs（历史 + 本地用量路径）
 
 用量设置的 Antigravity Provider 贡献按共享额度池拆组，适用于 Antigravity、Agy 及 OpenCode 等 Harness。`AntigravityModelKind.pool(forSampleModelName:)` 是样本分类入口：先识别 Argon，再识别 Claude / GPT（含 anthropic / openai 别名），再识别普通 Gemini；展示名来自同类型的 `displayName`，与额度卡一致。同一池的 5h / 周不重复分组。未知模型与留存样本未覆盖的日桶差额进入「未归属额度池」，不按模型估算其差额金额或速度；权威日桶总量保留。额度窗口对未知模型沿用 Gemini 的历史兜底，分组不改变该统计口径。
 
-`RetrieveUserQuotaSummary` runs on every provider refresh. Independent account/tier calls
-(`GetUserStatus` and `GetLoadCodeAssist`) run only on `.full`, following 「次要信息频率」
-(1...30 × the effective provider interval, default 20). On `.full`, all three run in parallel
-via `async let`; on `.background`, only quota is requested. The non-quota calls use
-`postOptional` — they return `nil` on failure (legacy servers may not support them), and
-the quota call is the only fatal one. `AntigravityFillingMissingMerger` retains the previous
+> 阶段二b（2026-11-08）起，本地 RPC **全部退役**：`GetCascadeTrajectoryGeneratorMetadata`
+> 的唯一消费者（scanner）改直读会话 `.db`（见 § Local Token Usage Scanner）。本节与
+> § Local RPC Response Shapes 保留为历史记录。
+
+`RetrieveUserQuotaSummary` used to run on every provider refresh. Independent account/tier calls
+(`GetUserStatus` and `GetLoadCodeAssist`) ran only on `.full`, following 「次要信息频率」
+(1...30 × the effective provider interval, default 20). On `.full`, all three ran in parallel
+via `async let`; on `.background`, only quota was requested. The non-quota calls used
+`postOptional` — they returned `nil` on failure (legacy servers may not support them), and
+the quota call was the only fatal one. `AntigravityFillingMissingMerger` retains the previous
 account/tier during `.background` while applying fresh quota and `fetchedAt`; `.full`
 adopts the current metadata, including nil, so an old account/tier does not survive a
 new full query. A first refresh with no previous metadata still displays quota normally.
@@ -278,9 +338,14 @@ surfaces as `QuotaError.responseTooLarge`.
 
 ## Local RPC Response Shapes
 
+> 阶段一起，`GetUserStatus` / `GetLoadCodeAssist` / `RetrieveUserQuotaSummary`（quota）
+> 的本地形状为**历史记录**（额度路径已退役，运行时见 § Remote Quota Path (Phase 1)）；
+> 阶段二b起 `GetCascadeTrajectoryGeneratorMetadata` 亦退役（scanner 改直读 `.db`），
+> 本节全部为历史记录。
+
 ### GetUserStatus
 
-Used for account metadata.
+Used for account metadata（已退役，历史记录）.
 
 Observed response shape:
 
@@ -440,7 +505,11 @@ Current normalized internal names (display names match the API-returned `display
 
 Returned `ModelQuota` values keep count fields at `0`, because the current local RPC only exposes fractions and reset times.
 
-### GetCascadeTrajectoryGeneratorMetadata
+### GetCascadeTrajectoryGeneratorMetadata（已退役，历史记录）
+
+> 阶段二b起 scanner 不再调用该 RPC；逐调用 token/模型/时间戳改由 `.db` 直读提供
+> （`gen_metadata` ↔ `steps` 连接，见 § Token & model data ARE in `.db` `gen_metadata`）。
+> 以下解析口径记录保留为历史。
 
 Used by `AntigravityLocalUsageScanner` to extract per-event token usage for a single session (cascade).
 
@@ -576,7 +645,10 @@ is excluded from daily tokens, turns, rounds, and samples. `eventCount` uses the
 population — it counts only events that successfully entered the daily statistics
 (`AntigravityLocalUsageScanner.accountedEventStats`).
 
-### Incremental trajectory metadata (verified on Antigravity 2.15.1)
+### Incremental trajectory metadata（已退役，历史记录）
+
+> 阶段二b起 offset 增量拉取与下文 § Bounded convergence 的全部状态机随 RPC 数据源
+> 一起退役——本地读便宜且确定性，脏了就全量重读。本节保留为历史。
 
 The local `language_server` implementation exposes more request fields than the
 current monitor sends. The request accepted by
@@ -630,9 +702,12 @@ These observations were made against the locally installed arm64 Antigravity
 descriptors and live localhost RPC responses. This is a private, version-sensitive
 interface; future Antigravity versions may change field names or semantics.
 
-#### Revised monitor strategy
+#### Revised monitor strategy（已退役，历史记录）
 
-The monitor uses offset-based fetching before generic JSON streaming:
+> 阶段二b起 offset 增量策略整体退役（本地直读便宜且确定性，脏了就全量重读）。
+> 保留为历史。
+
+The monitor used offset-based fetching before generic JSON streaming:
 
 1. Persist, per session, the number of successfully accounted generator metadata
    entries (and enough metadata to detect a reset/rewrite).
@@ -655,7 +730,18 @@ number of parsed usage events or the maximum `stepIndex`. The persisted offset m
 advance by the returned raw entry count, and only after the suffix has been parsed,
 aggregated, and saved successfully.
 
-#### Bounded convergence (empty suffixes / zero-metadata fulls)
+#### Bounded convergence（已退役，历史记录）
+
+> 阶段二b起全部打击/收敛状态机（`consecutiveEmptySuffixes` / `lastEmptySuffixAt` /
+> `emptyFullStrikesBySession` / `zeroAccountedFullStrikesBySession` /
+> `offsetRegressionStrikesBySession` / `calendarRebuildPendingSessions` /
+> `partialHitWarnedBySession` 与 per-session 的 offset 字段）随 RPC 数据源退役，
+> index v9 不再有这些字段。本地直读的失败收敛按错误类别两路：probe 结构化
+> 不兼容（表缺失/乱数据/无模型名/非 SQLite）在失败轮内即记一次失败并采纳当前
+> 文件指纹（保留 last-good），下一轮指纹已匹配、不再重读；SQLite I/O 类可重试
+> 失败不采纳指纹、下一轮自然重试，连续 3 次后采纳指纹有界收敛（条目可选字段
+> `consecutiveReadFailures` 计数，成功/收敛即清零）——现行语义见 § Local Token
+> Usage Scanner 优化 6。本节保留为历史。
 
 Two server-side failure modes used to be unbounded retry loops that pinned
 `failedSessionCount ≥ 1` forever and (via the all-or-nothing calendar signature)
@@ -795,7 +881,9 @@ outright — they consume by raw count and have no count-versus-offset relation 
 reconcile. A regression page is rejected before any parsing or aggregation, so it also
 clears the zero-metadata and zero-accountable counts for the session.
 
-**E. Why `calendarSignature` needs no per-session signature.** The signature
+**E. Why `calendarSignature` needs no per-session signature.**（历史口径，阶段二b
+签名推进的唯一阻塞源收敛为枚举不完整，读失败按错误类别两路有界收敛——不兼容当轮
+采纳指纹、可重试 I/O 连续 3 次后采纳指纹） The signature
 still advances only on a round with `failedSessionCount == 0` (all-or-nothing;
 incomplete directory enumeration correctly keeps blocking it). Every persistent
 failure source above is now bounded — empty suffixes escalate to verification
@@ -813,26 +901,30 @@ anything this bound does not already provide.
 
 `AntigravityLocalUsageScanner` runs after a settled Provider batch, independent of quota
 refresh success. The startup reconcile is a cache-assisted Full Scan: it enumerates every
-session and validates fingerprints, but unchanged sessions reuse `antigravity.json` and
-append-only changes use offset. Manual refresh, wake-up, interval refresh and natural-day
-rollover use dirty/offset mode after startup. The settings page exposes a separate explicit
-hard-full action for rebuilding every non-empty session through RPC when the cache is suspect.
-The source watcher **stays attached during a scan** (`LocalUsageScannerBase.startScan` starts it
-rather than stopping it; a mid-scan event keeps the source dirty for the next round).
-It scans the (single) supported conversation directory, accepts `.db` and `.pb`
-session files, compares file metadata (mtime/size plus WAL mtime/size for `.db`)
-against a cached index, and re-fetches only dirty sessions via
-`GetCascadeTrajectoryGeneratorMetadata`. Token
-values always come from RPC; for SQLite events that lack a timestamp, the scanner reads
-only the matching step metadata timestamp as a fallback.
+session and validates fingerprints; unchanged sessions reuse `antigravity.json` without
+opening their `.db`. Manual refresh, wake-up, interval refresh and natural-day rollover
+use dirty mode after startup. The settings page exposes a separate explicit hard-full
+action for rebuilding every non-empty session from its `.db` when the cache is suspect.
+The source watcher **stays attached during a scan** (`LocalUsageScannerBase.startScan`
+starts it rather than stopping it; a mid-scan event keeps the source dirty for the next
+round).
+
+阶段二b（2026-11-08）数据源接线：it scans the (single) supported conversation directory,
+accepts **only `.db`** session files (`.pb` 完全忽略)，compares file metadata
+(mtime/size plus WAL mtime/size) against a cached index, and re-reads only dirty
+sessions via `AntigravitySessionDBReader.probe → readCalls + readUserTurnSteps`（全量读，
+本地 db 毫秒级；不再有 offset/suffix 增量）。逐调用 token/模型/时间戳/轮次全部来自
+`.db`（`gen_metadata` ↔ `steps` 按 `steps.idx == f20.last_step_index + 1` 连接）；
+steps.metadata 缺失（无时间戳）的 Call 沿用旧口径：排除出 daily/turns/rounds/samples。
+scanner 不发任何网络请求、不依赖 Antigravity 进程运行。
 
 ### Storage layout
 
 ```
 ~/.gemini/antigravity/
 ├── conversations/                         ← Antigravity native (read-only input)
-│   ├── {sessionId}.db                      ← discovered/fingerprinted; timestamp metadata may be read
-│   └── {sessionId}.pb                      ← discovered and fingerprinted, not decoded
+│   └── {sessionId}.db                      ← discovered/fingerprinted + probe/version-gated 直读
+│                                            （`.pb` 自阶段二b起完全忽略：不发现、不指纹、不进 session 集）
 └── ...                                    ← scanner 不在客户端目录写缓存
 
 ~/Library/Application Support/LLM-monitor/token-monitor/
@@ -845,23 +937,21 @@ JSONL under `~/.gemini/antigravity/.token-monitor`, which the root migration to
 `token-monitor/` never carried over. `ensureCacheDirectoriesExist` deletes that
 tree idempotently on every scan (a failure is logged, never fatal).
 
-`index.json` schema:
+`index.json` schema（v9，阶段二b）：
 
 ```json
 {
-  "version": 8,
+  "version": 9,
   "lastScannedAt": "2026-07-15T02:00:00Z",
   "calendarSignature": "gregorian|Asia/Shanghai",
   "sessions": {
     "41272769-fe7d-4802-a174-b5b28b526ade": {
       "mtimeMs": 1752542400000.0,
       "sizeBytes": 8421376,
+      "walMtimeMs": 0.0,
+      "walSizeBytes": 0,
       "fetchedAt": "2026-07-15T02:00:00Z",
-      "eventCount": 50,
-      "generatorMetadataOffset": 50,
-      "lastMaxStepIndex": 120,
-      "lastTurnIndex": 15,
-      "consecutiveEmptySuffixes": 0
+      "eventCount": 50
     }
   },
   "dailyBySession": {
@@ -873,67 +963,105 @@ tree idempotently on every scan (a failure is logged, never fatal).
     "41272769-fe7d-4802-a174-b5b28b526ade": [
       { "completedAt": "...", "promptID": "...", "inputTokens": 1000, "outputTokens": 800, "durationSeconds": 12.561091542 }
     ]
-  },
-  "emptyFullStrikesBySession": {}
+  }
 }
 ```
 
-v8（2026-10-25）：样本新增 `durationSeconds`（TTFT + streamingDuration）且思考口径修正
-（raw `outputTokens` 含思考，catalog 改 `.reasoningIncluded`）。迁移把 v2…v7 的
-`samplesBySession` 清空——每个现有 session 因「缺逐次调用缓存」排一次 offset=0 全量
-RPC，样本与 daily 都按新口径立即重建（`dailyBySession` 在重建前保留为 last-good）。
+v9（2026-11-08，阶段二b）：数据源从本地 RPC 切换为 `.db` 直读，逐事件增量状态机
+整体退役——sessions 条目精简为 `{mtimeMs, sizeBytes, walMtimeMs, walSizeBytes,
+fetchedAt, eventCount}`（外加可选 `consecutiveReadFailures`：连续可重试读失败
+计数，见下文优化 6 的有界收敛；健康态 nil 不落盘，合成 Codable 经
+`decodeIfPresent` 兼容本版本更早落盘的 v9 缓存），顶层
+`emptyFullStrikesBySession` / `zeroAccountedFullStrikesBySession` /
+`offsetRegressionStrikesBySession` / `calendarRebuildPendingSessions` /
+`partialHitWarnedBySession` 全部删除。
+**不继承 v8 任何数据**：加载 v8 及更早索引一律重置为空缓存（`ScannerIndexIO` 打
+一行「索引版本过旧，重置索引全量重建」），daily/samples 全清，首个扫描轮对全部
+session 全量直读重建；`calendarSignature` 冷重建守卫保留。
+
+v8（2026-10-25，历史）：样本新增 `durationSeconds` 且思考口径修正（raw `outputTokens`
+含思考，catalog `.reasoningIncluded`）。
 
 `calendarSignature` (`LocalUsageCalendarSignature.make`: `calendar.identifier|timeZone.identifier`)
 is optional and gates the cold rebuild: a signature that no longer matches the
-current calendar forces an offset=0 full plan for every readable session, and a
-cold start refuses to restore cached day buckets while it differs. The remaining
-optional top-level maps (`emptyFullStrikesBySession`,
-`zeroAccountedFullStrikesBySession`, `offsetRegressionStrikesBySession`,
-`calendarRebuildPendingSessions`, `partialHitWarnedBySession`) are documented under
-"Bounded convergence" below.
+current calendar forces a full re-read for every session, and a cold start refuses
+to restore cached day buckets while it differs. 签名推进的**唯一阻塞源是枚举不完整**
+（`listing.isComplete == false`）：读失败的 session 按错误类别两路有界收敛（不兼容
+当轮采纳指纹；可重试 I/O 连续 3 次后采纳指纹），收敛后下轮指纹已匹配、不再重读，
+失败状态因此不阻塞签名——否则一个永久不兼容的 session 会让失败永远钉住、
+每轮都因 calendarChanged 冷重建全部 session（正是退役的打击状态机要切断的循环）。
 
-`dailyBySession` keeps each session's per-day token breakdown, while `samplesBySession` keeps recent per-event samples. A changed session replaces only its own entries; unchanged sessions remain cached. The source events are not persisted as JSONL — they are fetched again from RPC whenever the file fingerprint is dirty. Day buckets are retention-bounded: before each index write-back, buckets strictly older than the 8-day window (`dayStart < now - 8d`, the same predicate as `samplesBySession`) are pruned, along with sessions whose buckets are all pruned. The only consumers of day buckets are the today value and the 7-day window (`computeGlobalDaily` → `filterLast7Days`), and per-session `eventCount` lives in `sessions`, so pruning never changes any reported number.
-
-`consecutiveEmptySuffixes` (per session) and `emptyFullStrikesBySession` (top level) drive bounded convergence; both are optional and default to 0 / absent when absent — see "Bounded convergence" above. They exist purely for retry bookkeeping and never alter the accounting fields.
+`dailyBySession` keeps each session's per-day token breakdown, while `samplesBySession` keeps recent per-event samples. A changed session replaces only its own entries; unchanged sessions remain cached. The source events are not persisted as JSONL — they are re-read from the session `.db` whenever the file fingerprint is dirty. Day buckets are retention-bounded: before each index write-back, buckets strictly older than the 8-day window (`dayStart < now - 8d`, the same predicate as `samplesBySession`) are pruned, along with sessions whose buckets are all pruned. The only consumers of day buckets are the today value and the 7-day window (`computeGlobalDaily` → `filterLast7Days`), and per-session `eventCount` lives in `sessions`, so pruning never changes any reported number.
 
 ### Optimizations
 
 The scanner does heavy work in the background and is built for low-cost re-runs:
 
-1. **File + WAL fingerprint diff**: each scan starts with directory/resource metadata only. A `.db` session is re-fetched when its file mtime/size or WAL mtime/size changes; a `.pb` session uses its file mtime/size. Startup full is cache-assisted; only the explicit settings-page hard full bypasses this check for every non-empty session. Antigravity also leaves **0-byte placeholder cascades** whose mtime still moves during IDE housekeeping: those only get their fingerprint refreshed locally (no RPC) and re-enter the dirty set once the file/WAL actually grows.
+1. **File + WAL fingerprint diff**: each scan starts with directory/resource metadata only. A `.db` session is re-read when its file mtime/size or WAL mtime/size changes. Startup full is cache-assisted; only the explicit settings-page hard full bypasses this check for every non-empty session. Antigravity also leaves **0-byte placeholder cascades** whose mtime still moves during IDE housekeeping: those only get their fingerprint refreshed locally（不开库）and re-enter the dirty set once the file/WAL actually grows.
 2. **Per-session incremental aggregation**: `index.dailyBySession` stores each session's day-keyed breakdown. When a session changes, only that session's cached entry is replaced — other sessions' entries are untouched.
 3. **In-flight dedup**: `LocalUsageScannerBase.scan(mode:)` never runs two scans at once — a request arriving while a previous scan is in flight is merged into the pending slot (stronger mode wins), and the in-flight scan's completion immediately runs one more round with the merged mode. The old scan still publishes its own result via `@Published`.
 4. **Off-main-thread I/O**: the scanner class is `@MainActor` for state mutation, while the heavy pipeline lives in `nonisolated static performScanPure(...)` and runs through the non-actor-isolated `LocalUsageScanRunner`. It inherits caller cancellation and only assigns the result back on MainActor.
-5. **Bounded/adaptive RPC**: dirty sessions use four concurrent suffix requests, while
-   any batch containing full requests is limited to two. Results are reduced in small
-   batches so parsed events from all sessions are not retained until the final RPC.
-6. **Failure is non-fatal, and bounded**: RPC failures don't update `index.sessions[id].mtimeMs` — the next scan naturally retries. Persistent non-successes are bounded: empty suffixes escalate to a verification full after 2 attempts and zero-metadata fulls converge after 3 strikes (see "Bounded convergence"), and converged sessions do not count toward `failedSessionCount`, which is surfaced in the result so the UI can show a warning.
+5. **Bounded 直读并发**: dirty sessions are read in batches of four concurrent
+   `SQLiteTempCopy` reads（副本按文件大小占内存，小批量归约控制峰值；本地读毫秒级，
+   批间串行不构成瓶颈）。Results are reduced in small batches so calls from all
+   sessions are not retained until the final read.
+6. **Failure is non-fatal, and bounded（两路收敛）**: 读失败按错误类别区分收敛
+   策略，两条路径都计一次 `failedSessionCount`（UI 可见）、本轮继续扫其余、
+   绝不清空 last-good daily/samples/eventCount：
+   - **probe 结构化不兼容**（gen_metadata 表缺失/空表/乱数据/无模型名/非
+     SQLite 文件，`.incompatible`）：由文件字节内容决定、同字节重探结果恒定，
+     当轮采纳当前文件指纹——下一轮指纹已匹配、不再重读，文件再变化时自然
+     重新入账。
+   - **可重试 I/O 故障**（SQLite 打开/拷贝/查询类：权限、锁、EIO 等，
+     `.retryable`）：**不采纳指纹**，下一轮自然重试——瞬时故障（如实测撤销
+     db 读权限再恢复，mtime/size 不变）恢复后即可读回，不会把会话钉在漏计
+     状态。有界收敛由条目可选字段 `consecutiveReadFailures` 承载：任何成功
+     与指纹收敛都清零，连续
+     `retryableReadFailureConvergenceLimit`（3）次失败后按不兼容同款策略采纳
+     当前指纹收敛并保留 last-good，防永久故障把同一份字节变成每轮重读、
+     `failedSessionCount` 永远钉在 ≥1（freshness 永不 fresh）。首读即失败的
+     新 session 写「当前指纹 + 计数」条目，重试由计数条件驱动（否则无缓存
+     分支会每轮重读、计数永无机会累计）。
+   两条路径下失败轮数都有界，签名只在枚举不完整时被阻塞。
 7. **In-flight / offline tolerance**: if every entry in `defaultConversationsDirs` doesn't exist (CLI-only or no IDE activity), `listDBFilesWithStatus()` returns an empty file set (explicitly-missing directory is not an error) and the scan completes cleanly with `sessionCount: 0` — no exception. Permission / TCC / transient I/O failures instead mark the listing `isComplete == false`: already-discovered sessions are still refreshed, but no session may be declared deleted and the calendar signature is held back.
 8. **Index parse failure recovery**: a corrupted `index.json` is logged + reset to `.empty` rather than failing the whole scan.
 9. **Pipeline serialization via `AsyncMutex` + `lastCommittedGeneration`**: 整个 `performScanPure` 包在 `try await pipelineMutex.withLock { ... }` 里, 旧 worker 跑完整个 pipeline 才让新 worker 开始. 配合 `lastCommittedGeneration` 守门, cancel+rescan 期间旧 worker 即使晚到 mutex, `startedGeneration < lastCommittedGeneration` 时也跳过 saveIndex, 杜绝 cache revert. **P1 invariant**: read + write-to-disk + update 全在 mutex 内 atomic (跨 @MainActor hop `await scanner.read.../write...` 持锁执行), 不能拆到 mutex 外. 详见 `spec/local-usage-reconcile.md` "Scanner Concurrency (本地用量 scanner 的并发模型)" 段.
 10. **Generation 守门防 UI flicker**: `runScan` 用 `startedGeneration` 跟 `latestGeneration` 比对, 不一致就丢弃 in-memory result, defer 状态清理也按 generation 守门（`if startedGeneration == self.latestGeneration` 才清 isScanning / inFlightTask）. 防止 cancel+rescan 期间旧任务的 defer 把 UI 的"扫描中"状态清掉.
 11. **取消不污染 lastError**: `performScanPure` 的 catch 用 `CancellationFilter.shouldIgnore(error, isTaskCancelled: Task.isCancelled)` 过滤, 取消错误（`Task.isCancelled` / `CancellationError` / `URLError.cancelled`）直接 return, 不写 `self.lastError`. 跟 AppState 的 refresh catch 同语义.
 
-### Per-event field count (5 + total)
+### Per-event field count（四桶 + 时长）
 
-Every `UsageEvent` carries 5 token categories (input / output / cacheRead / cacheWrite / reasoning). Its consumption `totalTokens` is derived from `input + cacheRead + output + reasoning`; server totals and cache-write bookkeeping are not allowed to inflate it. Raw `outputTokens` **includes** thinking (the measured invariant above), so the normalized `Output` bucket is `outputTokens − reasoningTokens` and the raw counters only survive in diagnostics.
+Every call carries 4 token categories (input / cacheRead / rawOutput / reasoning) from
+the `.db` usage 子消息（`f4`）。Its consumption `totalTokens` is derived from
+`input + cacheRead + output + reasoning`（四桶规范化后）。Raw `outputTokens`
+**includes** thinking（db `f3` 恒等 `f10 + f9`，与旧 RPC `outputTokens` 同口径）, so the
+normalized `Output` bucket is `outputTokens − reasoningTokens`。
 
-Every event additionally carries the optional native call `durationSeconds` (TTFT + streaming, see above) which flows into `LocalTokenUsageSample.durationSeconds` for the tok/s rate.
+**`cacheWrite` 恒 0**：`.db` 的 usage 子消息不提供 cacheWrite（本就排除在 total 外）
+——统一 total、图表与价值估算不受影响，仅日桶诊断字段失去可见性（有意接受）。
 
-In the daily aggregate (`AntigravityDailyUsage`), the 5 categories are summed per day after the per-event catalog normalization (same entry point as samples), so `totalTokens` is the four-bucket day sum and stays conservation-consistent with the samples. `cacheWriteTokens` is intentionally **excluded from `totalTokens`** because it's bookkeeping (writes to a future read cache) rather than actual quota consumption — but it's still tracked separately for visibility.
+Every call additionally carries the native call `durationSeconds`（steps.metadata
+`f7 − f1`，见 `spec/harnesses/agy.md` § 单次调用时长）which flows into
+`LocalTokenUsageSample.durationSeconds` for the tok/s rate.
 
-## Session file formats (`.db` vs `.pb`)
+In the daily aggregate (`AntigravityDailyUsage`), the 4 categories are summed per day
+after the per-event catalog normalization (same entry point as samples:
+`AntigravityLocalUsageAggregation.aggregateDaily` / `makeSample`), so `totalTokens` is
+the four-bucket day sum and stays conservation-consistent with the samples.
 
-Antigravity has used two on-disk formats for per-cascade session files. The scanner accepts both via `SessionStoreFormat` and the file extension. Token data comes from the local `GetCascadeTrajectoryGeneratorMetadata` RPC for both formats. SQLite `.db` files additionally provide a narrow timestamp fallback: `stepIndices` select `step_type=15` rows and the scanner reads only their protobuf Timestamp metadata; `.pb` files remain discovery/fingerprint-only.
+## Session file formats（`.db` only；`.pb` 已忽略）
+
+阶段二b（2026-11-08）起 scanner **只收 `.db`**：会话枚举（`listDBFilesWithStatus`）按
+扩展名过滤（`SessionStoreFormat` 枚举随 `.pb` 分支一并删除），`.pb` 文件完全忽略
+（不发现、不指纹、不进 session 集）。token/模型/时间戳/轮次全部来自 `.db` 直读
+（`AntigravitySessionDBReader`，见下文 § Token & model data ARE in `.db` `gen_metadata`）。
 
 | Extension | Format | Runtime use | R/T computation | Token computation |
 |---|---|---|---|---|
-| `.db` | SQLite | 文件路径、扩展名、mtime/size 及 WAL 指纹 | RPC `stepIndices` 间隙推断（best-effort） | RPC（与文件格式无关）|
-| `.pb` | Protobuf (wrapper, not raw) | 文件路径、扩展名、mtime/size 指纹 | RPC `stepIndices` 间隙推断（best-effort） | RPC（与文件格式无关）|
+| `.db` | SQLite | 文件路径、扩展名、mtime/size 及 WAL 指纹 + `probe` 版本门直读 | `step_type=14` 直计 turns；连接命中 Call 计 rounds | `gen_metadata`（`steps.idx == f20.last_step_index + 1` 连接）|
+| `.pb` | Protobuf (wrapper, not raw) | 完全忽略（无 `gen_metadata` 结构；RPC 支持已退役） | — | — |
 
-`protoc --decode_raw` on observed `.pb` files fails with "Failed to parse input" — the wrapper is not standard raw protobuf (likely a length-prefixed stream or a custom envelope around a proto message). The bytes do not look compressed (zstd / lz4 / gzip all reject) or encrypted.
-
-For `.pb` sessions, the scanner fetches the same per-event token numbers and `stepIndices` via `GetCascadeTrajectoryGeneratorMetadata` as it does for `.db` sessions. `turns` and `rounds` are therefore populated for both formats, with the caveat that turns are inferred from step-index gaps and are not guaranteed to equal the semantic user-prompt count.
+`protoc --decode_raw` on observed `.pb` files fails with "Failed to parse input" — the wrapper is not standard raw protobuf (likely a length-prefixed stream or a custom envelope around a proto message). The bytes do not look compressed (zstd / lz4 / gzip all reject) or encrypted。
 
 ### Directories scanned (`defaultConversationsDirs`)
 
@@ -964,7 +1092,11 @@ A cascade ID is a UUID (`{cascadeId}.db`) shared with the RPC `cascadeId` parame
 | 9, 23, 33, 98, 101 | rare | Other (rare step types, not yet classified) | unused |
 
 > [!NOTE]
-> **Pure RPC 架构升级（v1.4+）**：Antigravity 监控已升级为纯基于本地 RPC (`GetCascadeTrajectoryGeneratorMetadata`) 提取 Turns、Rounds 和 5 类 Token 数据。不再调用 `AntigravityDBReader` 或连接 SQLite `.db` 文件。保留以下历史 Insights 供架构参考。
+> **架构演进（v1.4+ 纯 RPC → 阶段二b `.db` 直读）**：v1.4+ 曾升级为纯本地 RPC
+> (`GetCascadeTrajectoryGeneratorMetadata`) 提取 Turns、Rounds 和 Token 数据；阶段二b
+> （2026-11-08）起 scanner 改直读 SQLite `.db`（`gen_metadata` + `steps`），本地 RPC
+> 退役。`step_type=14/15` 语义重新成为运行时依赖（turns/rounds/时间戳），保留以下
+> 历史 Insights 供架构参考。
 
 **历史 `.db` 节点说明**（仅供分析参考）：
 
@@ -1048,14 +1180,58 @@ def get_round_text(payload):
     return final, thinking
 ```
 
-### Token data is NOT in `.db` — confirmed by Rosetta-stone search
+### Token & model data ARE in `.db` `gen_metadata`（2026-11-08 实测，IDE 2.29.0）
 
-`GetCascadeTrajectoryGeneratorMetadata` returns per-LLM-call token numbers. The scanner can reproduce these numbers as ground truth and search the .db for them. The result: **none of the token numbers (input / output / cacheRead / cacheWrite / reasoning / total) exist as protobuf fields in any .db table** (`steps`, `gen_metadata`, `executor_metadata`, `trajectory_metadata_blob`, `parent_references`, `battle_mode_infos`). All searches return:
+> **历史结论（2026-07，IDE ~2.15–2.2x，已过时）**：当时的 Rosetta-stone 搜索认定 token 数字不存在于任何
+> .db 表（`steps` / `gen_metadata` / `executor_metadata` 等），「token 只在 `language_server`
+> 进程内存中、重启即失」。该结论对当时版本成立；2026-11-08 在 2.29.0 上被推翻——schema 随版本演进，
+> 任何读 `.db` 的实现都必须先过版本指纹门（`AntigravitySessionDBReader.probe`）；probe 不过的
+> session 记一次失败并跳过（阶段二b用户裁定：不做 RPC 回退、不做混合）。
+>
+> **阶段二b（2026-11-08）起本节是 scanner 的运行时数据源**（不再是「数据侧调研」）：
+> 每个脏 session 经 `probe → readCalls + readUserTurnSteps` 直读。
 
-- false positives in protobuf noise (e.g. `cache_read=0` matches every blob because the single-byte varint `0x00` is everywhere)
-- matches in `step_payload` are text that the LLM happened to write containing the same number (e.g. the LLM writing "Output: 3182 tokens" in its response)
+`gen_metadata` 表（`idx` INTEGER PK / `data` BLOB / `size` INTEGER）每行对应一次生成调用；
+**含模型名（f19）的行与 RPC `generatorMetadata` 事件数组 1:1**（RPC 对原始表做了过滤，表行数可
+多于事件数——2026-11-08 实测 `22b4f174` 表 108 行、RPC 侧 102 事件，见 § Round ↔ step index
+mapping）。`data` 为 protobuf，解码后顶层字段：
 
-**Token data lives only in the `language_server` process memory** and is exposed via the RPC. Restarting Antigravity clears all per-round token history; only the conversation flow (steps) and structure (metadata blobs) survive in `.db`.
+| 字段 | 内容 |
+|---|---|
+| `f4` (str) | trajectory UUID |
+| `f1` (msg) | 事件主消息 |
+| `f1.f4` (msg) | **usage 子消息**：`f2`=uncached input、`f5`=cacheRead、`f3`=raw output（**含思考**，恒等 `f10 + f9`）、`f9`=reasoning、`f10`=normalized output；值为 0 的字段常缺省；**cacheWrite 不在其中** |
+| `f1.f17` (msg) | 同一 usage 的副本 + `f4`(str)=16-hex **每请求随机 id**（非模型 hash，实测 148 distinct/166 行） |
+| `f1.f19` (str) | **模型名字符串**（如 `gemini-3.8-flash-n`） |
+| `f1.f20` (repeated) | string→string map：`model_enum`=`MODEL_PLACEHOLDER_Mxxx`（家族级稳定枚举）、`cascade_id` / `root_cascade_id` / `trajectory_id` / `request_id`、`used_claude` / `used_claude_conservative` / `used_non_gemini_model`、`last_step_index` |
+| `f1.f21` (str) | 显示名（如 `Gemini 3.8 Flash (Low)`） |
+
+**验证**（monitor 缓存 `samplesBySession` 为 ground truth，按时间序 run-length 对齐）：
+
+- `22b4f174…`（双模型）：切换序列 `flash-n×22 → argon×3 → flash-n×77` **完全一致**；usage 字段多数投票 102/102（cacheRead 命中 92/92）
+- `f83f6ecb…`（三模型）：`claude×18 → argon×5 → flash-n×27` **完全一致**
+- 部分条目（实测 6/108）**无 `f19` 模型名、但有 usage、且无对应 step 行**（`f20.last_step_index + 1`
+  不在 `steps` 表中，自身也无时间戳）——后台/副调用条目。**与 `steps` 表的正确连接键是
+  `steps.idx == f20.last_step_index + 1`**（含模型名行 102/102 命中、零冲突、零遗漏）；按序号裸配对
+  会从第一条此类行起整体错位，禁止。事件集合 = 「有 f19 且连接命中」的行，其外条目的 token 不计入
+  （与退役前的 RPC 口径一致：cache rounds = 102）
+- `MODEL_PLACEHOLDER_M318/M319/M402/M418` ↔ 模型映射跨 session 稳定，但为**家族级**（M318 同时对应
+  `-n` / `-high`），精确到思考档位以 `f19` 为准
+- **turns/rounds 口径抽样**（12 session，2026-11-08）：`rounds` 与 `step_type=15` 计数 11/12 完全
+  一致（1 个差 1，懒刷新尾部）；`step_type=14` 与 transcript `USER_INPUT` 的 step_index 逐一对应
+  （23/23）。旧 RPC gap 推断 turns 严重虚高：真实会话 +37%~+273%（82→22、46→6、40→11），克隆/后台
+  会话（transcript 无 USER_INPUT，如 `67d181b9` 275 rounds）凭空计出 43 turns——阶段二b直读
+  （step_type=14 直计）语义正确，切换接受数字回落（用户裁定：以新数据源为准，不考虑历史）
+
+**transcript.jsonl 字段空间穷尽**（357 行全字段清单，2026-11-08）：除 `input_tokens` /
+`cache_read_tokens` / `output_tokens` 三个计量键外，只有 `step_index` / `source` / `type` /
+`status` / `created_at` / `content` / `tool_calls[]` / `truncated_fields[]`——**没有任何模型名或
+id/hash 字段**。模型归因的本地文件来源只有 `gen_metadata`；db 单文件即可同时提供 token 四桶（f4）、
+模型（f19）、时长（`steps.metadata` 时间戳，方案 A 见
+[`spec/harnesses/agy.md`](../harnesses/agy.md) § 单次调用时长）与轮次（`steps.step_type=14`）。
+
+`.pb` 会话（2026-11-08 本机 3/361）非 SQLite、无此表；阶段二b起完全忽略（RPC 退役后
+无可用数据源，不发现、不指纹、不进 session 集）。
 
 ### Lazy .db write — sessions don't flush while open
 
@@ -1071,13 +1247,30 @@ For historical sessions whose `.db` steps and RPC response events were in sync:
 
 This means: a `step_type=15` row at `.db idx = N` is the LLM call that produced `events[N]` in the RPC response. `step_type=14` (user prompt) `idx` values sit *before* the `step_type=15` `idx` for the LLM calls they triggered — using `step_type=14` boundaries to slice events[] gives per-turn token totals.
 
-## Current scanner pipeline (RPC token data + SQLite timestamp fallback)
+## Current scanner pipeline（`.db` 直读，阶段二b）
 
-1. **File fingerprint diff** — enumerate `.db` and `.pb` filenames and compare mtime/size; for `.db`, the adjacent WAL mtime/size is also part of the fingerprint.
-2. **RPC fetch** — for each dirty session, call `GetCascadeTrajectoryGeneratorMetadata` and parse model, token fields, timestamp, and `stepIndices` from each event. Token values always come from RPC. If a SQLite-backed event has `stepIndices` but no timestamp, read only the matching `steps.step_type=15` metadata from the `.db` to recover its timestamp; `.pb` has no fallback.
-3. **Round aggregation** — count recovered/timestamped events as rounds and bucket token totals by the local calendar day.
-4. **Turn inference** — sort events by timestamp and start a new inferred turn when the next event's minimum `stepIndices` value has a gap after the previous maximum. This is best-effort and can overcount when tool-call steps create gaps.
-5. **Cache update** — only a non-empty RPC result advances the file fingerprint and replaces the session's daily/sample cache. Failed or empty RPC responses retain last-good data and remain dirty for a later scan, with bounded convergence: consecutive empty suffixes escalate to an offset=0 verification full, and consecutive zero-metadata fulls converge after 3 strikes while keeping last-good data (see "Bounded convergence" under "Incremental trajectory metadata").
+1. **File fingerprint diff** — enumerate `.db` filenames only and compare mtime/size;
+   the adjacent WAL mtime/size is also part of the fingerprint（`.pb` 完全忽略）。
+2. **`.db` 直读** — for each dirty session: `AntigravitySessionDBReader.probe`
+   （版本指纹门：`gen_metadata` 表存在且首行解出非空 `f1.f19` 模型名）→
+   `readCalls`（gen 行 ↔ `steps.step_type=15` 行按 `steps.idx == f20.last_step_index + 1`
+   连接，产出逐调用 token/模型/双时间戳/时长）+ `readUserTurnSteps`
+   （`step_type=14` 用户轮次边界）。全量读，本地 db 毫秒级。
+3. **口径映射** — `completedAt` = f7、`durationSeconds` = f7 − f1、`cacheWrite` 恒 0；
+   四桶经 `TokenAccountingCatalog.antigravity` 规范化（rawOutput 含思考，与旧 RPC
+   同口径）。**rounds** = 带 `completedAt` 的连接命中 Call 数；**turns** =
+   `step_type=14` 直计（与 transcript USER_INPUT 23/23 对应；旧的 `stepIndices`
+   间隙推断对真实会话虚高 +37%~+273%，已随 RPC 退役），turnIndex ≥ 1 首见开轮、
+   turn-0（无前置用户输入的背景/副调用，含克隆会话）不开轮。轮 N 归入该轮第一条带
+   时间戳 call 的本地日历日；无时间戳的 Call 排除出 daily/turns/rounds/samples。
+   样本 `promptID` = `<session>:turn-N`，N = idx 小于该 Call stepIndex 的
+   `step_type=14` 行数（`turnNumber(forCallStepIndex:userTurnStepIndexes:)`）。
+4. **Day bucketing** — daily 归属按 `completedAt` 落本地日历日（沿用现有日桶逻辑，
+   `aggregateDaily` / `makeSample` 入口不变）。
+5. **Cache update** — 直读成功替换该 session 的 daily/sample 缓存并采纳文件指纹；
+   读失败按错误类别两路收敛（结构化不兼容当轮采纳当前指纹、可重试 I/O 连续 3 次
+   后采纳指纹），两路都计一次失败并保留 last-good（文件再变化时自然重新入账）。
+   日历签名只被枚举不完整阻塞。
 
 ## Historical SQLite reader investigation
 
@@ -1168,7 +1361,9 @@ The following SQLite investigation describes the removed implementation and is r
 
 如果直接 `events[i]` ↔ `roundIdxs[i]` 按位置配对，RPC 顺序变化时配对错位，部分 round 找不到 timestamp，R/T 当天显示为 "—"。**间歇性失败，看似随机**。
 
-**历史修法**：events 先按 `timestamp` 升序排，再按位置配对 roundIdxs。当前纯 RPC 实现不再进行这类 `.db` 配对，而是直接使用 RPC 事件自身的 `stepIndices` 做 best-effort turn 推断。
+**历史修法**：events 先按 `timestamp` 升序排，再按位置配对 roundIdxs。（RPC 时代与
+阶段二b直读都不再做这类按位置配对——直读的连接键是
+`steps.idx == f20.last_step_index + 1`，见 § Token & model data ARE in `.db` `gen_metadata`。）
 
 ```swift
 let sortedEvents = events
@@ -1233,9 +1428,10 @@ gone; a hint that can never resolve is noise in a row that is always on screen.
 
 The row shows:
 
-- Login email (`GetUserStatus.userStatus.email`), monospaced, single line with
+- Login email (Keychain `id_token_email`，随凭据带回), monospaced, single line with
   tail truncation and the full text in `.help(...)`
-- The tier pill right after it, shortened by the same `planPillLabel` rule
+- The tier pill right after it (远端 `loadCodeAssist` tier，缩短自同一条
+  `planPillLabel` 规则)
 
 Antigravity needs **either** field to draw the row; when both are missing (e.g.
 the user just logged out and the next refresh hasn't run) the whole row and its
@@ -1244,7 +1440,7 @@ separator are skipped.
 This card is also the home of the agy CLI's local usage: `agy`'s transcript frames
 carry `quotaProviderID = antigravity` (native mode, not routed through the
 `defaultBindings` matrix), so its 7-day usage lands in the same section beside the
-IDE RPC ledger — see `spec/harnesses/agy.md`.
+IDE `.db` ledger（阶段二b直读） — see `spec/harnesses/agy.md`。
 
 ### Local usage (card section 3)
 
@@ -1334,24 +1530,32 @@ provider 综合健康度经 `QuotaInfo.aggregateQuotaModels(providerKind:)` 取�
 
 ## Error Handling
 
+**Quota path（阶段一：Keychain 凭据 + 远端 Google API）**：
+
 | Situation | Current behavior |
 |---|---|
-| `pgrep` finds no Antigravity `language_server` and no agy CLI | `网络错误：未发现 Antigravity 或 agy CLI 进程，请先启动 Antigravity 并完成登录` |
-| Processes found but none listen on localhost | `网络错误：发现 Antigravity 进程但未监听本地端口，请确认 Antigravity 或 CLI 已完成登录` |
-| IDE candidate without `--csrf_token` | Silently rejected (`isUsableProcessCandidate`); later valid candidates still considered |
-| `lsof` / `pgrep` exits non-zero or cannot be launched | `网络错误：lsof 失败: <stderr>` (or `网络错误：无法运行 Antigravity 进程` when the process can't be spawned at all) |
-| The discovered pid no longer owns the port before the POST | `网络错误：Antigravity 本地服务身份已变化（pid=…, port=…），请重试刷新` (`serverStillOwnsEndpoint`) |
-| `RetrieveUserQuotaSummary` returns non-2xx | `HTTP <status>: 响应 <N> bytes` (the body is summarized by size only, never echoed) |
-| `GetUserStatus` or `GetLoadCodeAssist` fail | Logged at warn level (`可选接口 <path> 失败，将使用兜底`); tier / email degrade gracefully (fallback chain + nil email) |
-| RPC response exceeds the byte cap | `响应过大（上限 N bytes）：<redacted path>` (`QuotaError.responseTooLarge`) |
-| `RetrieveUserQuotaSummary` JSON decode fails | `解析失败：Antigravity 响应无法解析，响应 <N> bytes` |
+| Keychain 条目不存在 / 不可解析 | `网络错误：未读取到 Antigravity 登录凭据，请打开 Antigravity 并完成登录`（auth probe 亦判 false → `.notConfigured`） |
+| 本地过期判定 `now >= expiry` | 直接抛 `QuotaError.credentialExpired`（`token 已过期，请打开 Antigravity 更新凭据`），**不发任何网络请求** |
+| 远端配额/tier 接口返回 401 | 回退链立即终止，抛 `credentialExpired`——与本地过期落到同一提示 |
+| 非 401 的非 2xx | 换下一主机（Daily → cloudcode-pa → sandbox）；全部失败抛最后一台的 `HTTP <status>: 响应 <N> bytes`（body 只按大小摘要，不回显内容） |
+| 传输层失败（超时 / 连接失败等） | 同上换下一主机（HTTPClient 包装为 networkError，可回退） |
+| 取消（URLError.cancelled / CancellationError） | 原样上抛，走 AppState/CancellationFilter 的 deferred 路径，不记失败 |
+| quota JSON decode fails | `解析失败：Antigravity 响应无法解析，响应 <N> bytes` |
 | One quota group has an invalid / missing `remainingFraction` | That group is skipped with a warn; the other groups still render |
 | No quota groups survive parsing | `解析失败：Antigravity quota 响应里没有可用 bucket` |
-| Local RPC returns 401 | Translated to `Antigravity 登录已失效，请重新启动 Antigravity 并完成登录` |
+| tier（loadCodeAssist）失败 | 不影响主额度；`.full` 采 nil（merger 在 background 保留旧值） |
+| 响应超过字节上限 | `响应过大（上限 N bytes）：<redacted path>` (`QuotaError.responseTooLarge`) |
+| config 手改 `allowTokenRefresh: true` | 解码抛 `AppConfig.SchemaError.antigravityAllowTokenRefresh`（启动保留原文件按默认配置运行、热重载保留上次配置）+ log warn；provider 按 false 运行 |
+
+**Local-usage path（阶段二b：`.db` 直读，scanner 专用）**：
+
+| Situation | Current behavior |
+|---|---|
+| `.db` 未通过版本指纹（`probe .incompatible`：无 `gen_metadata` 表 / 表空 / 首行不可解码或无模型名）或 SQLite I/O 失败 | `failedSessionCount` +1（log warn 带原因），本轮继续扫其余；采纳当前文件指纹并保留 last-good（无 last-good 写空终结条目），下一轮指纹匹配不再重读；文件再变化时重新入账 |
 | Scanner: every entry in `defaultConversationsDirs` missing | Scan completes with `sessionCount: 0`; the local-usage section shows the "本机未发现 Antigravity 会话数据" placeholder |
 | Scanner: conversations enumeration hit a permission / TCC / I/O error | `isComplete = false` → no session is declared deleted, the calendar signature does not advance, and the round counts as one failure |
-| Scanner: `GetCascadeTrajectoryGeneratorMetadata` fails for one session | `failedSessionCount` increments; the session is retried next scan (mtime preserved) |
-| Scanner: `index.json` corrupted | Logged at warn level + reset to `.empty`; next scan rebuilds from scratch |
+| Scanner: session `.db` 直读成功但无连接命中的 Call（如纯后台/克隆会话） | 正常写空缓存（eventCount 0 / 空 samples）并采纳指纹 |
+| Scanner: `index.json` corrupted or version ≤ 8 | Logged at warn/info level + reset to `.empty`（v8 及更早整体重置，全量重建）; next scan rebuilds from scratch |
 
 ## Cross-Provider Cache Semantics (Antigravity vs Codex)
 
@@ -1393,17 +1597,17 @@ buckets.totalTokens          // = input + cacheRead + output + reasoning
 |---|---|---|
 | Cache bucket | Independent, parallel to `inputTokens` | Subset of `inputTokens` |
 | Total input = | `inputTokens + cacheReadTokens` | `inputTokens` (already includes cached) |
-| `cacheWrite` | Yes, separate field, not in `totalTokens` | **Not reported** |
+| `cacheWrite` | `.db` 直读后恒 0（usage 子消息不提供；本就不进 `totalTokens`，仅诊断可见性损失） | **Not reported** |
 | Cache hit rate | `cacheRead / (cacheRead + input)` | `cached / input` (mathematically equivalent) |
-| Per-round data | All 5 fields per LLM call | 4 fields per `token_count` event (`input_tokens`, `cached_input_tokens`, `output_tokens`, `reasoning_output_tokens`) |
-| Data source | RPC `GetCascadeTrajectoryGeneratorMetadata` (live) | Local JSONL `~/.codex/sessions/**/*.jsonl` (near-realtime) |
-| Data lag when source idle | None while IDE is running; data lost on IDE exit if session never flushes | None — CLI flushes JSONL continuously |
+| Per-round data | 4 fields per LLM call（db usage 子消息；cacheWrite 不提供） | 4 fields per `token_count` event (`input_tokens`, `cached_input_tokens`, `output_tokens`, `reasoning_output_tokens`) |
+| Data source | Local `.db` `gen_metadata`（阶段二b直读；原 RPC `GetCascadeTrajectoryGeneratorMetadata` 已退役） | Local JSONL `~/.codex/sessions/**/*.jsonl` (near-realtime) |
+| Data lag when source idle | 懒刷新落盘延迟（IDE 关闭/切换会话才 flush `.db`，见 § Lazy .db write） | None — CLI flushes JSONL continuously |
 | Reasoning vs output | Raw `outputTokens` includes reasoning; normalized `Output = rawOutput − reasoning` | Summed into `outputTotal = output + reasoning` |
 | Total tokens formula | `input + cacheRead + outputTokens`（raw output 已含思考，规范化后 = 四桶和；excludes `cacheWrite`） | `input + output + reasoning` (already includes cached) |
 
 ### Why this matters in practice
 
-- **UI stacked bars render differently.** Antigravity has 5 segments (`input`, `cacheRead`, `cacheWrite`, `output`, `reasoning`); Codex has 4 (`uncached = input - cached`, `cached`, `output`, `reasoning`). Drawing them with the same `totalSegments` assumption misaligns colors and widths.
+- **UI stacked bars render differently.** Antigravity renders 4 effective segments (`input`, `cacheRead`, `output`, `reasoning`——`cacheWrite` 恒 0 的诊断段随 `.db` 数据源退化); Codex has 4 (`uncached = input - cached`, `cached`, `output`, `reasoning`). Drawing them with the same `totalSegments` assumption misaligns colors and widths.
 - **Total computation differs.** A naive `total = input + cached + output + reasoning` over-counts Codex by `cached`.
 - **cacheWrite asymmetry.** Antigravity's "future cache" segment is just absent on the Codex side; the UI either hides the segment or shows 0 for Codex.
 - **Cross-provider sum**: only `input (uncached)`, `cacheRead/cached`, `output`, `reasoning` are comparable. `cacheWrite` is Antigravity-only.
@@ -1449,6 +1653,11 @@ After normalization, cross-provider sum, average, and chart rendering can treat 
 
 ## Recent Issues & Fixes (July 2026)
 
+> 本节三条均为本地 RPC 时代的历史修复记录（多 workspace server 快照、空 RPC 保留、
+> 纯 RPC turns 推断）；阶段二b起 scanner 直读 `.db`，其中第 2 条的 v8 迁移语义被
+> v9 整体重置取代（见 § Local Token Usage Scanner 的 index schema）、第 3 条的
+> stepIndices 间隙推断被 `step_type=14` 直计取代。
+
 ### 1. Multi-Workspace & Multi-Instance Port Discovery
 - **Issue**: When running multiple workspaces, each spawns its own isolated `language_server` process listening on a random port, and token usage metadata lives in the memory of the process running that workspace. The original implementation only queried the first process returned by `discoverServer()`, so the other workspaces reported 0 events.
 - **Fix**: The metadata path now lists **all** usable servers (`defaultMetadataServers()` behind `discoverMetadataServers()`) and the scanner reuses that one snapshot for every dirty session. `getTrajectoryMetadata(sessionId:offset:servers:)` queries them in order and returns the first page with `metadataEntryCount > 0`; a server that doesn't own the cascade is skipped and logged at info level, so a mismatching server no longer floods the log with `trajectory not found` HTTP 500s. (The quota path intentionally still stops at the first server that exposes a port — `discoverServerAsync()`.)
@@ -1463,6 +1672,37 @@ After normalization, cross-provider sum, average, and chart rendering can treat 
 
 ---
 
+## 已验证的远端配额与本地凭据事实（2026-11-08，阶段一实施依据）
+
+> 以下实测记录是 § Remote Quota Path (Phase 1) 的实施依据；阶段一起 runtime 额度
+> 路径已是「Keychain 凭据 + 远端 Google API」（`fetchAvailableModels` 仍未接入运行时，
+> 保留为调研记录）。
+
+**Keychain 凭据**（service=`gemini`，account=`antigravity`）：值为 `go-keyring-base64:` 前缀 +
+base64 → JSON：`token.{access_token, token_type, refresh_token, expiry(ISO 带时区), expires_in=3599}`、
+`auth_method="consumer"`、`id_token_email`、`writer_id`。活动 token 由运行中的客户端自行刷新；
+`~/.gemini/jetski-standalone-oauth-token` 仅账户切换时落盘（会过期，本机实测滞后 5 天）；
+`antigravity-cli/antigravity-oauth-token` 本机不存在——agy CLI 与 IDE 共用该 Keychain 条目。
+
+**远端配额端点**（用 Keychain access_token 实测 HTTP 200）：
+
+- `POST https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary`，body `{}`，
+  UA 必须为 hub 身份 `antigravity/hub/<version> (aidev_client; os_type=darwin; arch=arm64)`——裸
+  `antigravity/cli/…` 身份拿不到 Gemini 4 Argon 等分组（AntigravityManager 记录版本下限
+  `HUB_CLIENT_MIN_VERSION = 2.26.0`）；主机回退序 Daily → 生产 `cloudcode-pa` → sandbox，
+  仅 401 终止。响应 `{groups:[…]}` 与本地 RPC 同形（只少一层 `response` 包装）。
+- `POST …/v1internal:fetchAvailableModels`：返回 26 个模型的目录（modelId + displayName +
+  `quotaInfo.{remainingFraction, resetTime}` + `supportsThinking`）及 `deprecatedModelIds` 迁移
+  通道；bare 与 hub UA 结果一致（含 Argon）。注意 displayName 有 rebrand 错位
+  （`gemini-2.5-flash` 标 "Gemini 3.5 Flash Lite"），归池/计价以 modelId 为准；配额值是**组级
+  广播**（同组模型同值同 resetTime），相对 quota summary 无逐模型增量信息。
+- IDE 自身行为佐证：language_server log（`~/.gemini/antigravity/log/cli-*.log`）每约 6 分钟打一次
+  `fetchAvailableModels`——若改走远端轮询，频率参照应 ≥300s（当前 provider 配置 60s 不适用）。
+
+**刷新语义**：access_token 有效期约 1 小时，由客户端在 Keychain 内自行续期；监控侧不做
+refresh_token 流程——读到 `token.expiry` 已过期即抛 `credentialExpired`
+（「token 已过期，请打开 Antigravity 更新凭据」），远端 401 落到同一提示。
+
 ## Helper Script
 
 For raw quota export outside the menu app:
@@ -1471,11 +1711,16 @@ For raw quota export outside the menu app:
 ./scripts/export-antigravity-quota.sh /tmp/antigravity-quota.json
 ```
 
-This script:
+阶段一起（2026-11-08）脚本与 app 同路径（不再依赖 Antigravity 运行、不走进程发现）：
 
-1. discovers the running Antigravity `language_server` (IDE only; CLI not yet supported in the script)
-2. extracts its CSRF token
-3. calls `RetrieveUserQuotaSummary`
-4. prints or writes the raw JSON
+1. `security find-generic-password -s gemini -a antigravity -w` 读登录钥匙串凭据，
+   `go-keyring-base64:` 前缀 + base64 → JSON（python3 解析；凭据原文经环境变量传给
+   python，token 不出现在 argv），取 `token.access_token` 与 `token.expiry`
+2. 本地判过期：`now >= expiry` 直接报错退出（提示「请打开 Antigravity 更新凭据」），
+   不发任何网络请求
+3. 未过期则 POST `v1internal:retrieveUserQuotaSummary`，UA / 请求头与主机回退序同
+   § Remote Quota Path (Phase 1)（版本读 `/Applications/Antigravity.app/Contents/Info.plist`
+   的 CFBundleShortVersionString，读不到回退 2.26.0；仅 401 终止）
+4. prints or writes the raw JSON（带路径参数时原子落盘 0600）
 
-> 核对基线：2026-11-06 · 代码 f62a128
+> 核对基线：2026-11-08 · 代码 1146220（阶段一：额度路径切远端 + 阶段二b：本地用量直读 `.db`、RPC/进程发现/`.pb` 退役；读失败两路有界收敛与 turns turn-0 不开轮同步，改动待提交）

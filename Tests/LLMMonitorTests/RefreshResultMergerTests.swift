@@ -271,7 +271,7 @@ final class RefreshResultMergerTests: StateTestCase {
         }
         // 4. AntigravityFetcher.resultMerger 保留 background 的账号与套餐元数据
         do {
-            let antigravityFetcher = AntigravityFetcher(metadataServerDiscovery: { [] })
+            let antigravityFetcher = AntigravityFetcher(credentialReader: { AntigravityCredentialFixtures.valid() })
             XCTAssertNotNil(antigravityFetcher.resultMerger as? AntigravityFillingMissingMerger,
                             "AntigravityFetcher.resultMerger 应是 AntigravityFillingMissingMerger")
         }

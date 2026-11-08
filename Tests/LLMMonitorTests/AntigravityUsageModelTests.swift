@@ -119,41 +119,6 @@ final class AntigravityUsageModelTests: AntigravityTestCase {
         XCTAssertNotEqual(base, dailyChanged)
     }
 
-    func testAggregateDailyGroupsByLocalDay() {
-        // 三个事件：两个在"今天"，一个在"昨天"
-        let now = Date()
-        let today = testCalendar.startOfDay(for: now)
-        let yesterday = testCalendar.date(byAdding: .day, value: -1, to: today)!
-
-        let events = [
-            makeEvent(timestamp: now, input: 10, output: 5, total: 15),
-            makeEvent(timestamp: today.addingTimeInterval(3600), input: 20, output: 8, total: 28),
-            makeEvent(timestamp: yesterday, input: 30, output: 12, total: 42),
-        ]
-        let byDay = AntigravityLocalUsageScanner.aggregateDaily(events: events, calendar: testCalendar)
-
-        XCTAssertEqual(byDay.count, 2)
-        // 日键必须与聚合同一个 calendar（默认 `.current` 会与 testCalendar 错开）
-        let todayKey = LocalUsageDayKey.make(today, calendar: testCalendar)
-        let yesterdayKey = LocalUsageDayKey.make(yesterday, calendar: testCalendar)
-
-        XCTAssertEqual(byDay[todayKey]?.inputTokens, 30)   // 10 + 20
-        XCTAssertEqual(byDay[todayKey]?.outputTokens, 13)  // 5 + 8
-        XCTAssertEqual(byDay[yesterdayKey]?.inputTokens, 30)
-    }
-
-    func testAggregateDailySkipsEventsWithoutTimestamp() {
-        let now = Date()
-        let events = [
-            makeEvent(timestamp: nil, input: 100, total: 100),  // 无 timestamp 跳过
-            makeEvent(timestamp: now, input: 5, total: 5),
-        ]
-        let byDay = AntigravityLocalUsageScanner.aggregateDaily(events: events, calendar: testCalendar)
-        XCTAssertEqual(byDay.count, 1)
-        let todayKey = LocalUsageDayKey.make(testCalendar.startOfDay(for: now), calendar: testCalendar)
-        XCTAssertEqual(byDay[todayKey]?.inputTokens, 5)
-    }
-
     func testComputeGlobalDailySumsAcrossSessions() {
         let now = Date()
         let today = testCalendar.startOfDay(for: now)
@@ -197,17 +162,6 @@ final class AntigravityUsageModelTests: AntigravityTestCase {
         let date = testCalendar.date(from: DateComponents(timeZone: TimeZone(identifier: "UTC"), year: 2026, month: 7, day: 15))!
         let key = LocalUsageDayKey.make(date, calendar: testCalendar)
         XCTAssertEqual(key, "2026-07-15")
-    }
-
-    func testSessionStoreFormatFromFileExtension() {
-        XCTAssertEqual(SessionStoreFormat(fileExtension: "db"), .sqlite)
-        XCTAssertEqual(SessionStoreFormat(fileExtension: "DB"), .sqlite)
-        XCTAssertEqual(SessionStoreFormat(fileExtension: "pb"), .protobuf)
-        XCTAssertEqual(SessionStoreFormat(fileExtension: "PB"), .protobuf)
-        XCTAssertNil(SessionStoreFormat(fileExtension: "txt"))
-        XCTAssertNil(SessionStoreFormat(fileExtension: "db-wal"))  // SQLite 周边文件，不当作 session
-        XCTAssertNil(SessionStoreFormat(fileExtension: "db-shm"))
-        XCTAssertNil(SessionStoreFormat(fileExtension: ""))
     }
 
     func testDefaultConversationsDirsOnlyContainsAntigravityDir() {

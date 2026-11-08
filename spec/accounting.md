@@ -165,7 +165,7 @@ token 速率（tok/s）只在 sample 级定义，不进入帧 / 投影内核：�
 | OpenCode | `data.time.completed − time_created`（data JSON 内嵌双时间戳） |
 | DSH | `assistant/message.time − step/start.time` 差分（工具执行在 message 之后，结构上不混入） |
 | Codex | `token_usage_record` 混合差分：发起锚 = max(上一条 `token_count` 时刻, 上一条 record 时刻)，回退 `task_started`；token 计量保持 `token_count` 单源，record 只计时（详见 `harnesses/codex.md` Rules） |
-| Antigravity | RPC `chatModel.timeToFirstToken + streamingDuration`（`parseUsageEvent` 提取，事件→sample 透传；含 TTFT、不含工具执行；缓存 v8 重建） |
+| Antigravity | `.db` 直读 steps.metadata 双 Timestamp 差分：f7（流式完成）− f1（发起）（`AntigravitySessionDBReader.parseStepTimestamps`，`completedAt` 同源 f7；含 TTFT、不含工具执行；缓存 v9 重建） |
 | MiniMax | `local_runtime_message_rows.$.usage.request_duration_ms`（独立守门窗口查询 + `(session, turn)` FIFO 配对、以 input/output tokens 核对回填；缓存 v16。**禁止** `created_at_ms` 差分——toolUse 行记录的是工具完成时刻，会把工具耗时算入） |
 | agy | `conversations/<session>.db` steps metadata 纳秒差（field 7 流式完成 − field 1 发起，主路径，100% 覆盖含纯文本终答）；.db 缺失时降级 transcript 后继 `MODEL:GENERIC` 锚点差分（秒级，约 94% 覆盖）；缓存 v3 重建。**禁止**前驱行差分——transcript `created_at` 是发起时刻 ⌊f1⌋，差分量的是调度延迟/上轮工具耗时 |
 
@@ -291,4 +291,4 @@ Rounds 是模型 API call 数；命中率为 `cacheRead / (input + cacheRead)`�
 任何新 harness 必须先补充本矩阵、provider spec 和 `TokenAccountingCatalog`，再接入 UI；
 不要在 view 或 pricing 分支里重新猜测 input/cache/reasoning 的关系。
 
-> 核对基线：2026-11-07 · 代码 b5c7c7f
+> 核对基线：2026-11-08 · 代码 1146220（Antigravity durationSeconds 来源行按 `.db` 直读现状更新，改动待提交）

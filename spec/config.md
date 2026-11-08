@@ -68,7 +68,8 @@ The app reads and writes this shape:
 | `providers.<id>.apiKey` | provider | API key for providers that do not manage external auth. Used by minimax. |
 | `providers.<id>.displayName` | provider | Optional UI label override. |
 | `providers.<id>.peakWindow` | provider | GLM / DeepSeek 高峰配置，包含 `slots: [{startHour, endHour}]`、`weekdaysOnly`（缺省 true）、`multiplier`（相对非高峰期 1×，缺省 2）。省略整个字段时使用各 Provider 默认时段；按北京时间判定，设置页只读展示。小时区间须非空、互不重叠且满足 `0 ≤ startHour < endHour ≤ 24`，解码时按开始时间排序；倍率须为不小于 1 的有限数值，支持 1.5、3 等小数或整数。非法值报配置解码错误。DeepSeek 金额估算使用该倍率；GLM 只作积分提示、不改变名义价值。 |
-| `providers.<id>.refreshIntervalSeconds` | provider | Optional provider-specific timer interval, with the same 10-second...30-day clamp. |
+| `providers.<id>.refreshIntervalSeconds` | provider | Optional provider-specific timer interval, with the same 10-second...30-day clamp. `antigravity` 未显式配置时使用专属默认 **300s**（远端轮询对齐 IDE 自身约 6 分钟节奏；`AppConfig.defaultProviderRefreshInterval`），其余 provider 沿用全局。 |
+| `providers.<id>.allowTokenRefresh` | provider | Antigravity 专用，**强制 false**（bool，缺省 false）：token 由 Antigravity 客户端在钥匙串内自行续期，监控侧没有 refresh 流程。手改 json 为 `true` 属于无效/恶意修改——`providers.antigravity` 下解码抛 `AppConfig.SchemaError.antigravityAllowTokenRefresh`（沿用配置解码错误呈现路径：启动保留原文件按默认配置运行、热重载保留上次配置）+ log warn，provider 按 false 运行；校验按 provider id 收紧（在 providers 字典解码处执行），其他 provider id 下的同名键按未知键忽略——不报错、不落字段、encode 不回写。设置窗口开关可见但恒为关（disabled）。类型写错按缺失容错（false 语义）。 |
 | `providers.<id>.zcodeJWTEnabled` | provider | GLM 是否启用 ZCode JWT 扩展。缺省 false；开启时才读取 `authPath`、调用 ZCode 套餐/重置卡接口，并在通知开启时轮询活动。显式 true/false 优先于历史字段；若缺失，则沿用旧 `effectiveGlmAuthMode` 设置：先取 `glmAuthMode`，再依次取 `parseZcodeCredential` / `parseZcodePlan` / `parseZcodeBalanceLog` 的首个非 nil 值。 |
 | `providers.<id>.glmAuthMode` | legacy | GLM 历史认证模式字段（`apiKey` / `credential`）。仅在 `zcodeJWTEnabled` 缺失时，`credential` 代表启用 ZCode JWT 扩展；设置页保存时移除。 |
 | `providers.<id>.authPath` | provider | 自管认证文件或所在目录路径。Codex 为 `auth.json` 路径（缺省 `~/.codex/auth.json`）；GLM JWT 扩展开启时可指定 ZCode 凭证目录或 `credentials.json` 路径（缺省 `~/.zcode/v2`）。 |
@@ -145,7 +146,7 @@ to their defaults; cosmetic config errors do not trigger recovery of the provide
 4. **GLM Coding Plan 运营活动（Marketing Touch）轮询**：
    - 营销触达接口（`marketing/touch`）仅在开启通知且模式为 `.full` 时发起轮询，未配置通知时完全不发起请求；其实际轮询频率同样由 `periodicFullEveryN` 约束。1 小时防抖只限制通知发送，不限制接口请求。
 5. **独立账号、套餐与组织信息查询**：
-   - Antigravity 的 `GetUserStatus`（账号 / 套餐）与 `GetLoadCodeAssist`（套餐兜底）仅在 `.full` 模式请求；`.background` 只请求 `RetrieveUserQuotaSummary`，保留上次账号与套餐显示。
+   - Antigravity 的 tier（远端 `v1internal:loadCodeAssist`）仅在 `.full` 模式请求；`.background` 只请求 `v1internal:retrieveUserQuotaSummary`，账号邮箱随 Keychain 凭据每拍带回，上次套餐显示由 `AntigravityFillingMissingMerger` 保留。
    - Codex Admin API 的 `/v1/organization/costs` 金额查询仍每拍执行；仅在 `.full` 且 costs 缺少组织名称时请求 `/v1/me`。后台新金额缺组织名时仅继承旧组织名，金额、账期与新鲜度均采用新结果。
 
 接口按数据职责分频：额度、余额、金额查询走 Provider 主频率；其余独立元数据、重置卡和活动查询走次要信息频率。Codex / GLM / MiniMax / Antigravity 主额度、DeepSeek 余额、启用后的 Codex Admin API 赠金以及 JWT 扩展开启并读取到 ZCode JWT 时的 GLM 活动套餐余额均每拍获取。GLM 标准额度必须使用配置的 Coding Plan API Key，没有 OAuth 回退；缺少 Key 时 Provider 未就绪。`data.level`、costs 附带组织名等同一主响应的元数据随主响应更新；Codex 邮箱与套餐名来自构建鉴权头所需的本地 `auth.json` / JWT，没有独立网络查询。本地用量在 Provider 批次结算后独立 reconcile，高峰提示与倒计时按本地展示时钟计算。启动首刷与手动额度刷新会同时抓取主信息与次要信息。
@@ -312,4 +313,4 @@ CHANGELOG 最新条目、两份 README 的「当前版本」/DMG 名/build-relea
 的旧文案「按本机时区计算、可在设置中调整」直到发版前才发现，只因 `build-release.sh` 的
 版本门禁全绿而放行。**功能口径变了，用户文档必须同轮改**。
 
-> 核对基线：2026-11-06 · 代码 240b306
+> 核对基线：2026-11-08 · 代码 1146220（阶段一：antigravity allowTokenRefresh / 默认间隔 300s；allowTokenRefresh 校验按 provider id 收紧、其他 provider 忽略该键，改动待提交）

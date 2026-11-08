@@ -68,11 +68,11 @@ final class ScannerRetentionContractTests: XCTestCase {
     /// Antigravity：写回 index 前裁 `dailyBySession` 里早于窗口的日桶。
     func testAntigravityDailyBucketPruneMatchesRetentionWindow() {
         var index = AntigravityLocalUsageScanner.CacheIndex(
-            version: 7,
+            version: 9,
             lastScannedAt: Self.now,
             sessions: ["s": .init(
                 mtimeMs: 0, sizeBytes: 0, walMtimeMs: 0, walSizeBytes: 0,
-                fetchedAt: Self.now, eventCount: 1, generatorMetadataOffset: 0
+                fetchedAt: Self.now, eventCount: 1
             )],
             dailyBySession: ["s": [
                 dayKey(insideDayStart): AntigravityDailyUsage(dayStart: insideDayStart, inputTokens: 10, totalTokens: 10),

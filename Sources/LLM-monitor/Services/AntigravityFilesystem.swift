@@ -3,14 +3,13 @@ import Foundation
 // MARK: - Filesystem operations (off main actor)
 
 /// `internal`（default）：被 `extension AntigravityLocalUsageScanner` 里的
-/// `nonisolated static func fetchAll` 引用，必须 >= 函数的 access level。
+/// `nonisolated static func` 引用，必须 >= 函数的 access level。
 struct AntigravityDBFileInfo: Sendable {
     let url: URL
     let sizeBytes: Int
     let mtimeMs: Double
     let walSizeBytes: Int
     let walMtimeMs: Double
-    let format: SessionStoreFormat
 }
 
 /// 一次 conversations roots 枚举的结果。
@@ -22,78 +21,7 @@ struct AntigravityDBFileListing: Sendable {
     let isComplete: Bool
 }
 
-/// Antigravity 把每个 cascade 存成本地文件，扩展名用于识别文件格式和
-/// 决定是否检查 SQLite WAL 指纹。Token 数据仍只来自 RPC；SQLite 仅在 RPC
-/// 缺少时间戳时读取匹配 step metadata 做回填：
-///
-/// - `.db`（SQLite）：读取文件/WAL 指纹，必要时读取时间 metadata。
-/// - `.pb`（protobuf）：只读取文件指纹，不做 protobuf 解析。该格式最初由已剥离的
-///   Antigravity IDE.app 引入，`~/.gemini/antigravity/` 中同样会出现，故保留支持。
-///   两种格式都依赖 RPC 提供 Token、时间和 stepIndices，再推算 R/T。
-enum SessionStoreFormat: String, Sendable {
-    case sqlite        // .db
-    case protobuf      // .pb
-
-    /// 从文件扩展名推断格式。未知扩展名返回 nil。
-    init?(fileExtension ext: String) {
-        switch ext.lowercased() {
-        case "db": self = .sqlite
-        case "pb": self = .protobuf
-        default: return nil
-        }
-    }
-}
-
 extension AntigravityLocalUsageScanner {
-    /// Newer Antigravity responses can omit `createdAt` while still carrying
-    /// `stepIndices`. For SQLite sessions, those indices identify the matching
-    /// `step_type=15` rows whose metadata contains the authoritative timestamp.
-    /// Token values remain sourced exclusively from the RPC response.
-    nonisolated static func recoverMissingTimestamps(
-        _ events: [AntigravityFetcher.UsageEvent],
-        fileInfo: AntigravityDBFileInfo?
-    ) -> [AntigravityFetcher.UsageEvent] {
-        guard let fileInfo, fileInfo.format == .sqlite else { return events }
-        let missingIndices = Set(
-            events
-                .filter { $0.timestamp == nil }
-                .flatMap { $0.stepIndices ?? [] }
-        )
-        guard !missingIndices.isEmpty else { return events }
-
-        let timestamps: [Int: Date]
-        do {
-            timestamps = try SQLiteTempCopy.read(
-                dbPath: fileInfo.url,
-                logTag: "[antigravity-scan] timestamp fallback"
-            ) { dbPath in
-                try AntigravityStepTimestampReader.timestamps(
-                    dbPath: dbPath,
-                    stepIndices: missingIndices
-                )
-            }
-        } catch {
-            logWarn("[antigravity-scan] timestamp fallback failed: \(error.localizedDescription)")
-            return events
-        }
-
-        var recovered = 0
-        let mapped = events.map { event in
-            guard event.timestamp == nil,
-                  let timestamp = (event.stepIndices ?? [])
-                    .compactMap({ timestamps[$0] })
-                    .min() else {
-                return event
-            }
-            recovered = SaturatingArithmetic.add(recovered, 1)
-            return event.withTimestamp(timestamp)
-        }
-        if recovered > 0 {
-            logInfo("[antigravity-scan] timestamp fallback recovered \(recovered) events from SQLite step metadata")
-        }
-        return mapped
-    }
-
     /// `nonisolated static`：file I/O 不碰 self，可在 background 跑。
     ///
     /// - Parameters:
@@ -128,6 +56,10 @@ extension AntigravityLocalUsageScanner {
 
     /// 列出 session 文件，并额外返回枚举是否完整。可注入目录/属性读取函数，
     /// 让测试稳定模拟 TCC、权限和瞬时 I/O 错误。
+    ///
+    /// 阶段二b 起只接受 `.db`（SQLite）会话：token/模型/时间戳/轮次全部来自
+    /// `AntigravitySessionDBReader` 的直读，`.pb` 会话没有 `gen_metadata`
+    /// 结构、RPC 支持也已退役，完全忽略（不发现、不指纹、不进 session 集）。
     nonisolated static func listDBFilesWithStatus(
         conversationsDirs: [URL],
         fileManager: FileManagerBox,
@@ -163,19 +95,12 @@ extension AntigravityLocalUsageScanner {
             }
 
             var accepted: [URL] = []
-            var perFmt: [String: Int] = [:]
-            for url in entries {
-                guard let format = SessionStoreFormat(fileExtension: url.pathExtension) else { continue }
-                perFmt[format.rawValue] = SaturatingArithmetic.add(
-                    perFmt[format.rawValue, default: 0],
-                    1
-                )
+            for url in entries where url.pathExtension.lowercased() == "db" {
                 accepted.append(url)
             }
-            logInfo("[antigravity-scan] list \(dirTag)/conversations/ — \(entries.count) 文件, accepted \(accepted.count) (\(perFmt.map { "\($0.key)=\($0.value)" }.sorted().joined(separator: ", ")))")
+            logInfo("[antigravity-scan] list \(dirTag)/conversations/ — \(entries.count) 文件, accepted \(accepted.count) (db=\(accepted.count))")
 
             for url in accepted {
-                guard let format = SessionStoreFormat(fileExtension: url.pathExtension) else { continue }
                 let sessionId = url.deletingPathExtension().lastPathComponent
                 guard !sessionId.isEmpty else { continue }
                 // 同 sessionId 只接受第一个出现（目录列表顺序优先）
@@ -199,27 +124,24 @@ extension AntigravityLocalUsageScanner {
                     logWarn("[antigravity-scan] session=\(sessionId) 缺少 size/mtime 属性，保留 last-good cache")
                     continue
                 }
+                // WAL 是活跃 session 最常变化的文件，与主文件一起构成指纹。
                 let walAttributes: [FileAttributeKey: Any]?
-                if format == .sqlite {
-                    do {
-                        if let fileAttributes {
-                            walAttributes = try fileAttributes(url.path + "-wal")
-                        } else {
-                            walAttributes = try fileManager.attributesOfItem(
-                                atPath: url.path + "-wal"
-                            )
-                        }
-                    } catch {
-                        if ScannerFileError.isExplicitlyMissing(error) {
-                            walAttributes = nil
-                        } else {
-                            isComplete = false
-                            logWarn("[antigravity-scan] session=\(sessionId) WAL 属性读取失败，保留 last-good cache: \(error.localizedDescription)")
-                            continue
-                        }
+                do {
+                    if let fileAttributes {
+                        walAttributes = try fileAttributes(url.path + "-wal")
+                    } else {
+                        walAttributes = try fileManager.attributesOfItem(
+                            atPath: url.path + "-wal"
+                        )
                     }
-                } else {
-                    walAttributes = nil
+                } catch {
+                    if ScannerFileError.isExplicitlyMissing(error) {
+                        walAttributes = nil
+                    } else {
+                        isComplete = false
+                        logWarn("[antigravity-scan] session=\(sessionId) WAL 属性读取失败，保留 last-good cache: \(error.localizedDescription)")
+                        continue
+                    }
                 }
                 let walSize = (walAttributes?[.size] as? NSNumber)?.intValue ?? 0
                 let walMtime = (walAttributes?[.modificationDate] as? Date) ?? .distantPast
@@ -228,31 +150,20 @@ extension AntigravityLocalUsageScanner {
                     sizeBytes: size,
                     mtimeMs: mtime.timeIntervalSince1970 * 1000,
                     walSizeBytes: walSize,
-                    walMtimeMs: walAttributes == nil ? 0 : walMtime.timeIntervalSince1970 * 1000,
-                    format: format
+                    walMtimeMs: walAttributes == nil ? 0 : walMtime.timeIntervalSince1970 * 1000
                 )
             }
         }
         return AntigravityDBFileListing(files: result, isComplete: isComplete)
     }
 
-    /// 本 index 里被跟踪的全部 sessionId = `sessions` 的键 ∪ 全部 per-session
-    /// 状态字段的键。
+    /// 本 index 里被跟踪的全部 sessionId。
     ///
-    /// 打击计数（空 suffix / 零可计账 / offset 回归）、部分命中告警去重与旧日历
-    /// 待重建标记，都会在写 `index.sessions[id]` **之前**被写入——那些分支
-    /// `continue` 得早，先攒计数、后建条目。只按 `sessions.keys` 算「已跟踪」会
-    /// 漏掉仅有打击计数的 session：文件删除时清理循环看不到它的键，残留永久留在
-    /// index.json；同 sessionId 复活时从残留值续算，1~2 轮即提前收敛成「空终结
-    /// 条目」，把该指纹周期的数据静默丢掉。
+    /// v9 起唯一的 per-session 状态就是 `sessions` 条目（读取失败时也先写条目再
+    /// 采纳指纹，见 `performScanPureImpl`），不存在"只有打击计数、没有条目"的
+    /// 早期 return 路径；保留函数形态作为删除判定的唯一入口。
     nonisolated static func trackedSessionIDs(in index: CacheIndex) -> Set<String> {
-        var ids = Set(index.sessions.keys)
-        if let strikes = index.emptyFullStrikesBySession { ids.formUnion(strikes.keys) }
-        if let strikes = index.zeroAccountedFullStrikesBySession { ids.formUnion(strikes.keys) }
-        if let strikes = index.offsetRegressionStrikesBySession { ids.formUnion(strikes.keys) }
-        if let warned = index.partialHitWarnedBySession { ids.formUnion(warned.keys) }
-        ids.formUnion(index.calendarRebuildPendingSessions ?? [])
-        return ids
+        Set(index.sessions.keys)
     }
 
     /// 枚举完整时，未出现的被跟踪 session 才能被确认删除。
@@ -266,29 +177,18 @@ extension AntigravityLocalUsageScanner {
 
     // MARK: Index I/O
 
+    /// v9（阶段二b）：v8 及更早索引携带 RPC 增量状态机字段（offset / strikes 等），
+    /// 数据源已整体切换为 `.db` 直读——不做字段级迁移，直接重置为空缓存，首个
+    /// 扫描轮对全部 session 全量重读（本地读毫秒级；daily/samples 按新口径重建）。
+    /// `ScannerIndexIO.loadIndex` 对不支持的版本会打一行「索引版本过旧，重置索引
+    /// 全量重建」日志后返回 `empty`。
     nonisolated static func loadIndex(cacheDir: URL, fileManager: FileManagerBox) throws -> CacheIndex {
         try ScannerIndexIO.loadIndex(
             cacheDir: cacheDir,
             fileManager: fileManager,
-            currentVersion: 8,
+            currentVersion: 9,
             empty: .empty,
             version: { $0.version },
-            migrate: { idx in
-                guard (2...7).contains(idx.version) else { return false }
-                // 清空逐次调用索引的两次原因（任一命中都必须让每个现有 session 因
-                // samplesBySession?[sessionId] == nil 而强制走一次 offset=0 全量
-                // RPC 重建；dailyBySession 保留为 RPC 失败时的 last-good fallback）：
-                // - v5 及更早版本的 per-session samples 可能来自旧 SQLite 读取路径，
-                //   纯 RPC 版本的 stepIndices 推断结果不能与旧结果混用；
-                // - v8：样本新增 durationSeconds（timeToFirstToken + streamingDuration）
-                //   且思考口径修正（raw outputTokens 含思考，catalog 改
-                //   .reasoningIncluded，Output = rawOutput − reasoning）——旧 v7 缓存
-                //   的样本既没有时长、Output 桶又把思考算了两遍，daily 同样要靠这次
-                //   全量重扫按新口径重建。
-                idx.samplesBySession = [:]
-                idx.version = 8
-                return true
-            },
             logTag: "[antigravity-scan]"
         )
     }

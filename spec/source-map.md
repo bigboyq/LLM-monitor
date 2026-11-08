@@ -39,7 +39,7 @@
 | `Sources/LLM-monitor/Models/AntigravityModelKind.swift` | Antigravity 共享额度池 enum、展示名及样本模型分类（`gemini_models` / `gemini_argon` / `claude_and_gpt_models` 单一事实源，Argon 优先） |
 | `Sources/LLM-monitor/Models/MinimaxModelKind.swift` | MiniMax 模型族与用量分类 |
 | `Sources/LLM-monitor/Models/AppMetadata.swift` | 版本 / build 号（读 Info.plist，设置页「关于」展示） |
-| `Sources/LLM-monitor/Models/AnyJSON.swift` | 弱类型 JSON（Antigravity 递归解析用） |
+| `Sources/LLM-monitor/Models/AnyJSON.swift` | 弱类型 JSON（原 Antigravity RPC 递归解析用；阶段二b解析器退役后暂无生产调用方，类型与测试保留） |
 | `Sources/LLM-monitor/Models/LocalUsageDaily.swift` | Antigravity / Agy / Codex / Minimax / GLM / DSH / OpenCode 共享的 7-day chart 协议 + 默认实现 |
 | `Sources/LLM-monitor/Models/LocalDailyTokenUsage.swift` | 六个本地数据源共享的单日 token 聚合结构（统一收口原 `XxxDailyUsage`，on-disk JSON 键兼容） |
 | `Sources/LLM-monitor/Models/LocalTokenUsageSample.swift` | Provider 中立的单次模型调用 sample（cache-inclusive input 口径 + `TokenUsageBuckets` 规范化入口）；`PromptSpeedStatistics` 按 Prompt 聚合速度分布与最新值；额度窗口快照携带可选 Fleet 金额说明 `costText` |
@@ -79,10 +79,10 @@
 | `Sources/LLM-monitor/Services/Infra/QuotaError.swift` | 统一错误类型 |
 | `Sources/LLM-monitor/Fetchers/MinimaxTokenPlanFetcher.swift` | minimax Token Plan API 抓取 |
 | `Sources/LLM-monitor/Fetchers/CodexFetcher.swift` | ChatGPT Plan API 抓取、多 Key Admin API 赠金并发抓取与错误隔离 + 本地 JSONL 解析 |
-| `Sources/LLM-monitor/Fetchers/AntigravityFetcher.swift` | Antigravity 进程发现 + 本地 RPC + protobuf-like 解析；主额度每拍、独立账号/套餐按次要信息频率 |
-| `Tests/LLMMonitorTests/AntigravityRefreshCadenceTests.swift` | Antigravity 主额度与次要账号/套餐 RPC 编排、可选接口失败降级、额度失败传播 |
-| `Sources/LLM-monitor/Fetchers/AntigravityProcessDiscovery.swift` | Antigravity 后端进程发现（IDE `language_server` / `agy` CLI 双形态、端口与 CSRF token 提取） |
-| `Sources/LLM-monitor/Fetchers/AntigravitySchemas.swift` | Antigravity RPC request / response 的 Encodable 编码 schema 与解码模型 |
+| `Sources/LLM-monitor/Fetchers/AntigravityFetcher.swift` | Antigravity 远端配额/账号（Keychain 凭据 + Google API，主机回退）；主额度每拍、tier 按次要信息频率（本地 RPC / 进程发现已退役） |
+| `Tests/LLMMonitorTests/AntigravityRefreshCadenceTests.swift` | Antigravity 主额度与次要账号/套餐（tier）编排、可选接口失败降级、额度失败传播 |
+
+| `Sources/LLM-monitor/Fetchers/AntigravitySchemas.swift` | Antigravity 远端配额响应的解码模型（`RetrieveUserQuotaSummaryResponse` / `LoadCodeAssistRemoteResponse`）+ `LocalhostTrustDelegate` |
 | `Sources/LLM-monitor/Fetchers/GlmCodingPlanFetcher.swift` | GLM Coding Plan 额度与 reset time 抓取（支持 `GlmAuthMode`：`apiKey` / `credential`；ZCode 套餐三路编排依赖注入 `ZcodePackageProviding`） |
 | `Sources/LLM-monitor/Fetchers/DeepseekFetcher.swift` | DeepSeek 账户余额抓取（`/user/balance`）+ 解析 |
 | `Sources/LLM-monitor/Models/PeakWindow.swift` | GLM / DeepSeek 共用的高峰时段判定与倍率（`slots` / `weekdaysOnly` / `multiplier`，支持 Provider JSON 覆盖）；北京时间判定，默认按 Rule A 排除周末与法定节假日，GLM 默认 14–18，DeepSeek 默认 9–12 / 14–18，倍率均为 2×；共享设置展示文本与 JSON 校验 |
@@ -101,7 +101,7 @@
 | `Sources/LLM-monitor/Services/LoginItemService.swift` | `SMAppService.mainApp` 包装 + 状态显示 |
 | `Sources/LLM-monitor/Services/Formatters.swift` | 基础格式化工具：Token 紧凑计数（K/M/G 阶梯）、速度三字符数值与数量级后缀、格式化整数、百分比与额度百分比（去无效 .0）、FormatterCache 缓存 |
 | `Sources/LLM-monitor/Services/Formatters+Time.swift` | 时间与倒计时格式化扩展：统一相对倒计时格式化（`formatRelativeCountdown`）、相对时间（`formatRelativeShort`）、英文压缩倒计时（`formatResetSuffix`）、中文紧凑倒计时（`formatPeakDuration`）、数字时钟持续时长（`formatDigitalDuration`）、绝对时钟与日期（`formatClock` / `formatTimeOfDay` / `formatMonthDayMinute` 等）及 Codex 窗口标签与刷新间隔 |
-| `Sources/LLM-monitor/Services/Infra/HTTPClient.swift` | 共享 HTTP 客户端（minimax / codex 三个 fetch 路径）；`ResponseByteLimits` 响应体硬上限（标准额度 8 MiB / Antigravity trajectory 64 MiB）由 `CappedDownloader.data` 在**响应体返回后**校验——超限抛 `responseTooLarge`，该错误为非瞬时（不重试、不进通知冷却）。async `session.data(for:delegate:)` 不向 per-task delegate 投递 `didReceive response` / `didReceive data` 内容回调（macOS 27 实测：URLProtocol 桩与真实网络均不触发），因此 `CappedDownloadDelegate` 的流式计数在当前调用方式下**不执行**，真正的拦截点是后置字节校验；delegate 保留待将来改用回调系任务。峰值内存仍由 URLSession 缓冲决定——该上限保证超限响应不进入调用方解析链路，不保证单次响应不被完整缓冲 |
+| `Sources/LLM-monitor/Services/Infra/HTTPClient.swift` | 共享 HTTP 客户端（minimax / codex 三个 fetch 路径）；`ResponseByteLimits` 响应体硬上限（标准额度 8 MiB）由 `CappedDownloader.data` 在**响应体返回后**校验——超限抛 `responseTooLarge`，该错误为非瞬时（不重试、不进通知冷却）。async `session.data(for:delegate:)` 不向 per-task delegate 投递 `didReceive response` / `didReceive data` 内容回调（macOS 27 实测：URLProtocol 桩与真实网络均不触发），因此 `CappedDownloadDelegate` 的流式计数在当前调用方式下**不执行**，真正的拦截点是后置字节校验；delegate 保留待将来改用回调系任务。峰值内存仍由 URLSession 缓冲决定——该上限保证超限响应不进入调用方解析链路，不保证单次响应不被完整缓冲 |
 | `Sources/LLM-monitor/Services/LocalUsageCoordinator.swift` | scanner 协议 + Combine wire-up 容器 |
 | `Sources/LLM-monitor/Services/ProviderRefreshScheduler.swift` | 循环 A（额度循环）：单一 Task 管理所有 Provider 的 quota 定时排期，睡眠至最早截止时间，并发刷新 + 条目级隔离；配置重载走差异化重排 `reconfigure(managed:)`（未变 provider 保留 deadline 与首刷状态，避免每次写配置全员重抓）；loop 带实例 token（`cancelAll` 后旧 loop 收尾不再清新 loop 的 sleepTask、不再进入下一轮迭代） |
 | `Sources/LLM-monitor/Services/ManualRefreshGate.swift` | 手动 full refresh 与 in-flight background refresh 的合并协议（pending 登记 / 取消撤销 / 一次性补跑） |
@@ -134,11 +134,12 @@
 | `Sources/LLM-monitor/Services/GlmZcodeAPIClient.swift` | ZCode 直连 API 客户端（Start Plan / 额度重置卡 / 营销活动触达直连解析与请求；同文件定义 `ZcodePackageProviding` 协议与默认实现 `GlmZcodeAPIPackageProvider`） |
 | `Sources/LLM-monitor/Services/ZcodeAppVersionResolver.swift` | ZCode app 版本解析（按 bundle id 定位本机 ZCode.app 读 Info.plist 的 `CFBundleShortVersionString`，失败回退 `3.17.1`；进程内缓存 + 显式刷新入口，plist 路径可注入） |
 | `Sources/LLM-monitor/Services/GlmZcodeLocalUsageScanner.swift` | GLM ZCode `db.sqlite` 单源 scanner（AsyncMutex + lastCommittedGeneration 串行化） |
-| `Sources/LLM-monitor/Services/AntigravityLocalUsageScanner.swift` | Antigravity 纯 RPC 架构 scanner（AsyncMutex + lastCommittedGeneration 串行化，不用 SQLite .db 读表）|
-| `Sources/LLM-monitor/Services/AntigravityFilesystem.swift` | `AntigravityLocalUsageScanner` 的文件系统侧 extension：conversations roots 枚举、`.db` / `.pb` 双格式识别与指纹、`isComplete` 语义（权限 / TCC / 瞬时 I/O 不得据此删缓存） |
+| `Sources/LLM-monitor/Services/AntigravityLocalUsageScanner.swift` | Antigravity `.db` 直读 scanner（AsyncMutex + lastCommittedGeneration 串行化；脏 session 经 `AntigravitySessionDBReader` 全量直读，不发网络请求）|
+| `Sources/LLM-monitor/Services/AntigravitySessionDBReader.swift` | Antigravity 会话 `.db` 直读模块：`probe` 版本指纹门（`gen_metadata` 首行模型名）+ `readCalls`（`steps.idx == f20.last_step_index + 1` 连接）+ `readUserTurnSteps`（step_type=14）；经 `SQLiteTempCopy`（原路径 READONLY + /tmp 副本兜底） |
+| `Sources/LLM-monitor/Services/AntigravityFilesystem.swift` | `AntigravityLocalUsageScanner` 的文件系统侧 extension：conversations roots 枚举（只收 `.db`，`.pb` 忽略）、指纹与 v9 index I/O、`isComplete` 语义（权限 / TCC / 瞬时 I/O 不得据此删缓存） |
 | `Sources/LLM-monitor/Services/AntigravityLocalUsageCache.swift` | `AntigravityLocalUsageScanner` 的缓存与 index 类型 extension（与上面的 scanner 同类型，按职责拆文件） |
-| `Sources/LLM-monitor/Services/AntigravityLocalUsageAggregation.swift` | Antigravity per-day turns / rounds 聚合与 sample 组装（纯函数，unit-testable） |
-| `Sources/LLM-monitor/Services/AntigravityStepTimestampReader.swift` | Antigravity SQLite step 的 protobuf Timestamp 读取（RPC 事件缺 `createdAt` 时的回退） |
+| `Sources/LLM-monitor/Services/AntigravityLocalUsageAggregation.swift` | Antigravity per-day 聚合与 sample 组装（`accountCalls`：turns = step14 直计、rounds = 连接命中 Call；纯函数，unit-testable） |
+| `Sources/LLM-monitor/Services/AntigravityStepTimestampReader.swift` | Antigravity SQLite step 的 protobuf Timestamp 读取（agy harness 共用；antigravity 路径阶段二b改由 `AntigravitySessionDBReader` 直读双时间戳） |
 | `Sources/LLM-monitor/Services/OpencodeDBReader.swift` | 读取 OpenCode `message` 表并按 provider / day 聚合 |
 | `Sources/LLM-monitor/Services/OpencodeUsageScanner.swift` | OpenCode DB 指纹、缓存、7 天窗口与 provider slice snapshot |
 | `Sources/LLM-monitor/Services/Infra/AsyncMutex.swift` | actor-based async-aware mutex（scanner pipeline 互斥；支持 caller cancellation propagation — acquire 前 / 排队中 / acquire 后执行前三阶段均检查取消）|

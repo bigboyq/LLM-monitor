@@ -228,7 +228,7 @@ struct LLMMonitorApp: App {
                 accentColor: .antigravity,
                 makeFetcher: { _ in AntigravityFetcher() },
                 settingsTabTitle: "Antigravity",
-                settingsTabSubtitle: "复用本地 Antigravity / agy CLI 登录态"
+                settingsTabSubtitle: "钥匙串凭据 + 远端 Google 配额接口，无需 Antigravity 运行"
             ),
             FetcherDescriptor(
                 id: ProviderKind.glmCodingPlan.providerID,

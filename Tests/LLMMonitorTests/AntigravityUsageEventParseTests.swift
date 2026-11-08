@@ -2,19 +2,12 @@ import XCTest
 import SQLite3
 @testable import LLM_monitor
 
-/// `AntigravityFetcher.parseUsageEvent` 的解析口径，以及 F1：scanner 成功分支的
-/// turns/rounds 不得因预计算计数而双倍计数。
+/// 聚合契约（数据源无关层）：`aggregateDaily` 的日桶切分与预计算计数防双倍、
+/// `accountedEventStats` 入账口径、`accountCalls` 的 turns/rounds 直计映射，
+/// 以及冷启动恢复（RPC 时代的 `parseUsageEvent` 系列测试随该解析器退役删除）。
 final class AntigravityUsageEventParseTests: AntigravityTestCase {
 
-    // MARK: - 共享 fixture
-
-    /// decode + parse 的小工具, 11 个原测试都重复同一行, 抽出来减少 noise
-    private func parseUsageEvent(_ json: String) throws -> AntigravityFetcher.UsageEvent? {
-        let wrapped = try JSONDecoder().decode(AnyJSON.self, from: Data(json.utf8))
-        return AntigravityFetcher.parseUsageEventForTest(wrapped)
-    }
-
-    // MARK: - 测试
+    // MARK: - 冷启动恢复
 
     func testAntigravityRestoresCachedUsageOnColdStart() throws {
         let cacheDir = FileManager.default.temporaryDirectory
@@ -27,16 +20,17 @@ final class AntigravityUsageEventParseTests: AntigravityTestCase {
         let day = calendar.startOfDay(for: now)
         let usage = AntigravityDailyUsage(
             dayStart: day, inputTokens: 11,
- outputTokens: 6,
- cacheReadTokens: 3,
- cacheWriteTokens: 0, reasoningTokens: 1, totalTokens: 21,
+            outputTokens: 6,
+            cacheReadTokens: 3,
+            cacheWriteTokens: 0, reasoningTokens: 1, totalTokens: 21,
             turns: 1, rounds: 2
         )
         let index = AntigravityLocalUsageScanner.CacheIndex(
-            version: 5,
+            version: 9,
             lastScannedAt: now,
             sessions: ["session-1": AntigravityLocalUsageScanner.SessionIndexEntry(
-                mtimeMs: 1, sizeBytes: 2, fetchedAt: now, eventCount: 2
+                mtimeMs: 1, sizeBytes: 2, walMtimeMs: 0, walSizeBytes: 0,
+                fetchedAt: now, eventCount: 2
             )],
             dailyBySession: ["session-1": [LocalUsageDayKey.make(day, calendar: calendar): usage]],
             samplesBySession: nil,
@@ -61,541 +55,176 @@ final class AntigravityUsageEventParseTests: AntigravityTestCase {
         XCTAssertEqual(restored.scannedAt, now)
     }
 
-    /// 正常解析 5 种 case：完整 payload / 嵌套结构 / snake_case / placeholder model / timestamp 三种格式
-    func testParseUsageEventHappyPath() throws {
-        // 1. 完整 payload (顶层 camelCase) → 5 类 token + total = sum - cacheWrite
-        do {
-            let json = """
-            {
-              "timestamp": "2026-07-15T10:30:00Z",
-              "model": "gemini-2.5-pro",
-              "inputTokens": 100, "outputTokens": 50,
-              "cacheReadTokens": 20, "cacheWriteTokens": 5, "reasoningTokens": 10,
-              "totalTokens": 185
-            }
-            """
-            let event = try parseUsageEvent(json)
-            XCTAssertEqual(event?.inputTokens, 100)
-            XCTAssertEqual(event?.outputTokens, 50)
-            XCTAssertEqual(event?.cacheReadTokens, 20)
-            XCTAssertEqual(event?.cacheWriteTokens, 5)
-            XCTAssertEqual(event?.reasoningTokens, 10)
-            XCTAssertEqual(event?.model, "gemini-2.5-pro")
-        }
-        // 2. 嵌套结构 (ddarkr 看到的实际格式) → 字段都能从深处找到
-        do {
-            let json = """
-            {
-              "metadata": {
-                "timestamp": "2026-07-15T10:30:00Z",
-                "chatModel": {
-                  "model": "claude-sonnet-4.5",
-                  "usage": {
-                    "input_tokens": 100, "output_tokens": 50,
-                    "cacheReadTokens": 20, "reasoningTokens": 10
-                  }
-                }
-              }
-            }
-            """
-            let event = try parseUsageEvent(json)
-            XCTAssertNotNil(event)
-            XCTAssertGreaterThan(event?.inputTokens ?? 0, 0)
-            XCTAssertGreaterThan(event?.outputTokens ?? 0, 0)
-            XCTAssertGreaterThan(event?.cacheReadTokens ?? 0, 0)
-            XCTAssertGreaterThan(event?.reasoningTokens ?? 0, 0)
-            XCTAssertEqual(event?.model, "claude-sonnet-4.5")
-        }
-        // 3. snake_case (旧版本 Antigravity) → 兼容
-        do {
-            let json = """
-            {
-              "timestamp": "2026-07-15T10:30:00Z",
-              "input_tokens": 100, "output_tokens": 50,
-              "cache_read_tokens": 20, "cache_write_tokens": 5,
-              "reasoning_tokens": 10, "total_tokens": 185
-            }
-            """
-            let event = try parseUsageEvent(json)
-            XCTAssertEqual(event?.inputTokens, 100)
-            XCTAssertEqual(event?.outputTokens, 50)
-            XCTAssertEqual(event?.cacheReadTokens, 20)
-            XCTAssertEqual(event?.cacheWriteTokens, 5)
-            XCTAssertEqual(event?.reasoningTokens, 10)
-        }
-        // 4. placeholder model → model 字段被丢弃, 其他 token 字段保留
-        do {
-            let json = """
-            {
-              "timestamp": "2026-07-15T10:30:00Z",
-              "model": "MODEL_PLACEHOLDER_M9",
-              "inputTokens": 100
-            }
-            """
-            let event = try parseUsageEvent(json)
-            XCTAssertNil(event?.model, "placeholder model 名应被丢弃")
-            XCTAssertEqual(event?.inputTokens, 100)
-        }
-        // 5. timestamp 三种格式 (ISO8601 / epoch seconds / epoch millis), 嵌套层也都吃
-        do {
-            // ISO8601 嵌套
-            let iso = try parseUsageEvent(#"{"metadata":{"timestamp":"2026-07-15T10:30:00Z"},"inputTokens":100}"#)
-            XCTAssertNotNil(iso?.timestamp, "嵌套层 ISO8601 应被提取")
-            // epoch seconds 嵌套
-            let sec = try parseUsageEvent(#"{"wrapper":{"created":1721034600},"inputTokens":50}"#)
-            XCTAssertEqual(sec?.timestamp?.timeIntervalSince1970 ?? 0, 1721034600, accuracy: 0.001)
-            // `time` 字段 (legacy fallback)
-            let legacy = try parseUsageEvent(#"{"time":1721034600,"inputTokens":100}"#)
-            XCTAssertEqual(legacy?.timestamp?.timeIntervalSince1970 ?? 0, 1721034600, accuracy: 0.001)
-        }
+    // MARK: - aggregateDaily（makeSample/aggregateDaily 入口契约不变）
+
+    func testAggregateDailyGroupsByLocalDay() {
+        // 三个事件：两个在"今天"，一个在"昨天"
+        let now = Date()
+        let today = testCalendar.startOfDay(for: now)
+        let yesterday = testCalendar.date(byAdding: .day, value: -1, to: today)!
+
+        let events = [
+            makeEvent(timestamp: now, input: 10, output: 8, reasoning: 3),
+            makeEvent(timestamp: today.addingTimeInterval(3600), input: 20, output: 8),
+            makeEvent(timestamp: yesterday, input: 30, output: 12),
+        ]
+        let byDay = AntigravityLocalUsageScanner.aggregateDaily(events: events, calendar: testCalendar)
+
+        XCTAssertEqual(byDay.count, 2)
+        // 日键必须与聚合同一个 calendar（默认 `.current` 会与 testCalendar 错开）
+        let todayKey = LocalUsageDayKey.make(today, calendar: testCalendar)
+        let yesterdayKey = LocalUsageDayKey.make(yesterday, calendar: testCalendar)
+
+        XCTAssertEqual(byDay[todayKey]?.inputTokens, 30)   // 10 + 20
+        // raw output 含思考：catalog 规范化 Output = raw − reasoning。
+        XCTAssertEqual(byDay[todayKey]?.outputTokens, 13)  // (8−3) + 8
+        XCTAssertEqual(byDay[yesterdayKey]?.inputTokens, 30)
     }
 
-    func testParseUsageEventCapsRecursiveDepth() throws {
-        var json = #"{"timestamp":"2026-07-15T10:30:00Z","inputTokens":1}"#
-        for _ in 0..<40 {
-            json = "{\"nested\":\(json)}"
-        }
-
-        // R11: AnyJSON 在解码阶段统一限制嵌套深度 32；40 层 payload 应在解码阶段
-        // 被拒绝（抛 DecodingError），不再走到 visit 层的 depth cap。visit(depth<32)
-        // 保留为第二层防御。这里断言“不崩溃、被拒绝”。
-        XCTAssertThrowsError(try parseUsageEvent(json), "超过递归深度的嵌套 payload 应在解码阶段被拒绝") { error in
-            guard error is DecodingError else {
-                XCTFail("应为 DecodingError，got \(error)")
-                return
-            }
-        }
+    func testAggregateDailySkipsEventsWithoutTimestamp() {
+        let now = Date()
+        let events = [
+            makeEvent(timestamp: nil, input: 100, output: 10),
+            makeEvent(timestamp: now, input: 5, output: 2),
+        ]
+        let byDay = AntigravityLocalUsageScanner.aggregateDaily(events: events, calendar: testCalendar)
+        XCTAssertEqual(byDay.count, 1)
+        let todayKey = LocalUsageDayKey.make(testCalendar.startOfDay(for: now), calendar: testCalendar)
+        XCTAssertEqual(byDay[todayKey]?.inputTokens, 5)
     }
 
-    /// Timestamp fallback chain 5 个边界：duration 字段不能 preempt / 零 / 负数 / 过早 / 过晚
-    func testParseUsageEventTimestampHandling() throws {
-        let expected = try XCTUnwrap(DateParser.parse("2026-07-15T10:30:00Z"))
-        // 1. duration 字段 (time_to_first_token / generation_time_ms) 不能 preempt real timestamp
-        do {
-            let durationFirst = """
-            {
-              "time_to_first_token": 123, "generation_time_ms": 456,
-              "time": 1721034600, "created": 1721034700,
-              "timestamp": "2026-07-15T10:30:00Z",
-              "inputTokens": 100
-            }
-            """
-            let event = try parseUsageEvent(durationFirst)
-            XCTAssertEqual(event?.timestamp, expected, "duration 字段不能覆盖 real timestamp")
-        }
-        // 2. zero / 负数 epoch → fallback (不作为 timestamp)
-        do {
-            let zero = try parseUsageEvent(#"{"time":0,"inputTokens":100}"#)
-            XCTAssertNil(zero?.timestamp, "epoch=0 应被拒绝")
-            let negative = try parseUsageEvent(#"{"time":-1,"inputTokens":100}"#)
-            XCTAssertNil(negative?.timestamp, "epoch=-1 应被拒绝")
-        }
-        // 3. epoch 过早 (2000-01-01 之前) / 过晚 (2100-01-01 之后) → 拒绝
-        do {
-            let tooEarly = try parseUsageEvent(#"{"timestamp":946684799,"inputTokens":100}"#)
-            XCTAssertNil(tooEarly?.timestamp, "epoch<2000 应被拒绝")
-            let tooLate = try parseUsageEvent(#"{"timestamp":4102444800000,"inputTokens":100}"#)
-            XCTAssertNil(tooLate?.timestamp, "epoch>2100 应被拒绝")
-        }
-        // 4. 多个 timestamp 字段, 都无效 → fallback 到合法 epoch 字段
-        do {
-            let json = """
-            { "timestamp": 123, "created": 1721034600000, "inputTokens": 100 }
-            """
-            let event = try parseUsageEvent(json)
-            XCTAssertEqual(event?.timestamp?.timeIntervalSince1970 ?? 0, 1721034600, accuracy: 0.001,
-                           "无效 timestamp 应 fallback 到合法 created 字段")
-        }
-    }
-
-    /// 拒绝场景 3 in 1：空 payload / 无 token 字段 / 所有 token = 0
-    func testParseUsageEventRejection() throws {
-        // 1. 完全没有 token 字段 → 整个事件被丢弃
-        let noTokens = try parseUsageEvent("""
-        {
-          "timestamp": "2026-07-15T10:30:00Z",
-          "model": "gemini-2.5-pro"
-        }
-        """)
-        XCTAssertNil(noTokens)
-        // 2. 所有 token 都是 0 → 整个事件被丢弃 (不算有效用量)
-        let allZero = try parseUsageEvent("""
-        {
-          "timestamp": "2026-07-15T10:30:00Z",
-          "model": "gemini-2.5-pro",
-          "inputTokens": 0, "outputTokens": 0, "reasoningTokens": 0
-        }
-        """)
-        XCTAssertNil(allZero, "所有 token=0 的事件应被丢弃")
-        // 3. 顶层 timestamp 字段缺失, 其他字段也没带 → 无效
-        let noTimestamp = try parseUsageEvent(#"{"inputTokens":100,"model":"x"}"#)
-        XCTAssertNotNil(noTimestamp, "无 timestamp 不应让事件无效 (其他字段有效)")
-        XCTAssertNil(noTimestamp?.timestamp)
-    }
-
-    /// durationSeconds 提取（实测响应形态）：`chatModel` 下的
-    /// `timeToFirstToken` / `streamingDuration` 两个 Protobuf Duration 字符串
-    /// 之和随事件带出；token / timestamp 归类不受这两个键干扰。
-    func testParseUsageEventExtractsNativeCallDuration() throws {
-        // 1. 实测形态：字符串值 + 尾部 "s"，和 = TTFT + streaming
-        let real = try parseUsageEvent("""
-        {
-          "timestamp": "2026-07-15T10:30:00Z",
-          "model": "gemini-3-pro",
-          "chatModel": {
-            "timeToFirstToken": "11.669597334s",
-            "streamingDuration": "0.891494208s",
-            "usage": {
-              "inputTokens": 100, "outputTokens": 50,
-              "thinkingOutputTokens": 10, "responseOutputTokens": 40
-            }
-          }
-        }
-        """)
-        XCTAssertEqual(
-            real?.durationSeconds ?? 0,
-            11.669597334 + 0.891494208,
-            accuracy: 1e-9,
-            "durationSeconds = TTFT + streamingDuration"
-        )
-        XCTAssertEqual(real?.timestamp?.timeIntervalSince1970 ?? 0,
-                       try XCTUnwrap(DateParser.parse("2026-07-15T10:30:00Z")).timeIntervalSince1970,
-                       accuracy: 0.001,
-                       "耗时键不得污染 timestamp 白名单")
-        XCTAssertEqual(real?.inputTokens, 100)
-        XCTAssertEqual(real?.outputTokens, 50)
-        XCTAssertEqual(real?.reasoningTokens, 10, "thinkingOutputTokens 仍归 reasoning 桶")
-
-        // 2. snake_case 键 + 裸数字值（容错形态）也命中
-        let snake = try parseUsageEvent("""
-        {
-          "timestamp": "2026-07-15T10:30:00Z",
-          "inputTokens": 100,
-          "time_to_first_token": 2.5,
-          "streaming_duration": 3.5
-        }
-        """)
-        XCTAssertEqual(snake?.durationSeconds ?? 0, 6.0, accuracy: 1e-9)
-
-        // 3. 只有单个分量 → 以该分量为时长
-        let single = try parseUsageEvent("""
-        {"timestamp":"2026-07-15T10:30:00Z","inputTokens":1,"streamingDuration":"4.25s"}
-        """)
-        XCTAssertEqual(single?.durationSeconds ?? 0, 4.25, accuracy: 1e-9)
-    }
-
-    /// durationSeconds 缺失 / 非法值 → nil（和为 0 / 负、分量非正都按缺失处理）。
-    func testParseUsageEventDurationMissingOrNonPositiveStaysNil() throws {
-        // 1. 两个分量都缺 → nil
-        let missing = try parseUsageEvent("""
-        {"timestamp":"2026-07-15T10:30:00Z","inputTokens":100,"outputTokens":5}
-        """)
-        XCTAssertNil(missing?.durationSeconds)
-
-        // 2. 和为 0（两个分量都是 "0s"）→ nil
-        let zeroSum = try parseUsageEvent("""
-        {"timestamp":"2026-07-15T10:30:00Z","inputTokens":100,
-         "timeToFirstToken":"0s","streamingDuration":"0s"}
-        """)
-        XCTAssertNil(zeroSum?.durationSeconds, "和为 0 的时长不得带出")
-
-        // 3. 负分量按缺失处理，剩余正分量照常（−3s + 5s → 5）
-        let negative = try parseUsageEvent("""
-        {"timestamp":"2026-07-15T10:30:00Z","inputTokens":100,
-         "timeToFirstToken":"-3s","streamingDuration":"5s"}
-        """)
-        XCTAssertEqual(negative?.durationSeconds ?? 0, 5.0, accuracy: 1e-9)
-
-        // 4. 全部非正 → nil
-        let allNegative = try parseUsageEvent("""
-        {"timestamp":"2026-07-15T10:30:00Z","inputTokens":100,
-         "timeToFirstToken":"-1s","streamingDuration":"0s"}
-        """)
-        XCTAssertNil(allNegative?.durationSeconds)
-
-        // 5. 非法字符串（解析不出数字）→ nil
-        let garbage = try parseUsageEvent("""
-        {"timestamp":"2026-07-15T10:30:00Z","inputTokens":100,
-         "timeToFirstToken":"soon","streamingDuration":"1s"}
-        """)
-        XCTAssertEqual(garbage?.durationSeconds ?? 0, 1.0, accuracy: 1e-9,
-                       "非法分量缺失、合法分量照常")
-    }
-
-    /// 事件 → sample 透传：durationSeconds 原样进 sample；output 桶按新口径
-    /// 拆思考；timestamp 缺失的事件不产生样本（`.distantPast` 兜底分支不可达，
-    /// 兜底样本不带时长的规则由 makeSample 的 nil 门控保证）。
-    func testDurationSecondsFlowsFromEventToSample() {
-        let day = testCalendar.startOfDay(for: Date())
-        let ts = testCalendar.date(bySettingHour: 10, minute: 0, second: 0, of: day)!
-        let event = makeEvent(
-            timestamp: ts,
-            model: "gemini-3-pro",
-            input: 100, output: 50,
-            cacheRead: 0, cacheWrite: 0,
-            reasoning: 30, total: 150,
-            duration: 12.561091542
-        )
-        let samples = AntigravityLocalUsageScanner.fallbackSamples(
-            sessionID: "duration-session",
-            events: [event]
-        )
-        XCTAssertEqual(samples.count, 1)
-        XCTAssertEqual(samples.first?.durationSeconds, 12.561091542, "时长必须原样透传进 sample")
-        XCTAssertEqual(samples.first?.outputTokens, 20, "Output = rawOutput − thinking（50 − 30）")
-        XCTAssertEqual(samples.first?.reasoningOutputTokens, 30)
-        XCTAssertEqual(samples.first?.inputTokens, 100, "uncached input 原样（sample 层 cache-inclusive 合并）")
-
-        // timestamp 缺失的事件被 fallbackSamples 过滤，不产生兜底样本
-        let timestampless = makeEvent(timestamp: nil, input: 1, total: 1, duration: 3)
-        XCTAssertTrue(
-            AntigravityLocalUsageScanner.fallbackSamples(sessionID: "duration-session", events: [timestampless]).isEmpty
-        )
-    }
-
-    func testComputeTurnRoundDetailsSingleDay() {
-        let day = testCalendar.startOfDay(for: Date())
-        let ts = testCalendar.date(bySettingHour: 10, minute: 0, second: 0, of: day)!
-        // 模拟 2 个 turn（Prompt 1: idx 2..3, Prompt 2: idx 6..7 Gap>1），共 4 个 rounds
-        let stepIdxs: [[Int]] = [[2, 3], [3, 4], [6, 7], [7, 8]]
-        let events: [AntigravityFetcher.UsageEvent] = (0..<4).map { i in
-            AntigravityFetcher.UsageEvent(
-                timestamp: ts,
-                model: "test",
-                inputTokens: 100, outputTokens: 50,
-                cacheReadTokens: 0, cacheWriteTokens: 0,
-                reasoningTokens: 0, totalTokens: 150,
-                stepIndices: stepIdxs[i]
-            )
-        }
-
-        let details = AntigravityLocalUsageScanner.computeTurnRoundDetails(
-            sessionID: "test-session",
-            events: events,
-            calendar: testCalendar
-        )
-
-        XCTAssertEqual(details.counts.totalRounds, 4)
-        XCTAssertEqual(details.counts.totalTurns, 2)
-        XCTAssertEqual(details.counts.perDay[day]?.rounds, 4)
-        XCTAssertEqual(details.counts.perDay[day]?.turns, 2)
-        XCTAssertEqual(details.samples.count, 4)
-    }
-
-    func testComputeTurnRoundDetailsSpansMultipleDays() {
-        let day14 = testCalendar.date(from: DateComponents(year: 2026, month: 7, day: 14))!
-        let day15 = testCalendar.date(from: DateComponents(year: 2026, month: 7, day: 15))!
-        let day14Ts = testCalendar.date(bySettingHour: 10, minute: 0, second: 0, of: day14)!
-        let day15Ts = testCalendar.date(bySettingHour: 10, minute: 0, second: 0, of: day15)!
-
-        let stepIdxs: [[Int]] = [[2, 3], [3, 4], [6, 7], [7, 8], [10, 11], [11, 12]]
-        let events: [AntigravityFetcher.UsageEvent] = (0..<6).map { i in
-            AntigravityFetcher.UsageEvent(
-                timestamp: i < 4 ? day14Ts : day15Ts,
-                model: "test",
-                inputTokens: 100, outputTokens: 50,
-                cacheReadTokens: 0, cacheWriteTokens: 0,
-                reasoningTokens: 0, totalTokens: 150,
-                stepIndices: stepIdxs[i]
-            )
-        }
-
-        let details = AntigravityLocalUsageScanner.computeTurnRoundDetails(
-            sessionID: "multi-day-session",
-            events: events,
-            calendar: testCalendar
-        )
-
-        XCTAssertEqual(details.counts.perDay[day14]?.rounds, 4)
-        XCTAssertEqual(details.counts.perDay[day15]?.rounds, 2)
-        XCTAssertEqual(details.counts.perDay[day14]?.turns, 2)
-        XCTAssertEqual(details.counts.perDay[day15]?.turns, 1)
-        XCTAssertEqual(details.counts.totalRounds, 6)
-        XCTAssertEqual(details.counts.totalTurns, 3)
-    }
-
-    func testAntigravityDailyUsageIncludesTurnsAndRounds() {
-        let day = Date()
-        let usage = AntigravityDailyUsage(
-            dayStart: day,
-            inputTokens: 100, outputTokens: 50, totalTokens: 150,
-            turns: 5, rounds: 25
-        )
-        XCTAssertEqual(usage.turns, 5)
-        XCTAssertEqual(usage.rounds, 25)
-
-        let combined = usage + AntigravityDailyUsage(
-            dayStart: day,
-            inputTokens: 200, outputTokens: 100, totalTokens: 300,
-            turns: 3, rounds: 10
-        )
-        XCTAssertEqual(combined.turns, 8)
-        XCTAssertEqual(combined.rounds, 35)
-        XCTAssertEqual(combined.inputTokens, 300)
-    }
-
-    /// F1 回归：scanner 成功分支现在等价于
-    ///   let details = computeTurnRoundDetails(...)
-    ///   let newDaily = aggregateDaily(events:calendar:counts: details.counts)
-    ///   let newSamples = details.samples
-    /// 这里直接验证该路径：传入预计算 counts 后，turns/rounds 必须等于 details，
-    /// 而不是旧实现叠加出的 2 倍；token 仍按饱和加法正确累加。
-    func testF1AggregateDailyWithPrecomputedCountsDoesNotDoubleCount() {
-        let day = testCalendar.startOfDay(for: Date())
-        let ts = testCalendar.date(bySettingHour: 10, minute: 0, second: 0, of: day)!
-        // 2 个 turn（idx 2..3/3..4 与 6..7/7..8，gap>1），共 4 个 rounds
-        let stepIdxs: [[Int]] = [[2, 3], [3, 4], [6, 7], [7, 8]]
-        let events: [AntigravityFetcher.UsageEvent] = (0..<4).map { i in
-            AntigravityFetcher.UsageEvent(
-                timestamp: ts,
-                model: "test",
-                inputTokens: 100, outputTokens: 50,
-                cacheReadTokens: 10, cacheWriteTokens: 0,
-                reasoningTokens: 5, totalTokens: 150,
-                stepIndices: stepIdxs[i]
-            )
-        }
-
-        let details = AntigravityLocalUsageScanner.computeTurnRoundDetails(
-            sessionID: "f1-session",
-            events: events,
-            calendar: testCalendar
-        )
-        // 这正是 scanner 成功分支现在调用的聚合路径
+    /// F1：scanner 成功路径传入预计算的 per-day counts 时，聚合不得把同一份
+    /// turns/rounds 再叠加一次（`accountCalls` 的路径）。
+    func testAggregateDailyWithPrecomputedCountsDoesNotDoubleCount() {
+        let now = Date()
+        let today = testCalendar.startOfDay(for: now)
+        let counts = AntigravityTurnRoundCounts(perDay: [
+            today: DailyTurnRound(turns: 2, rounds: 3)
+        ])
+        let events = [
+            makeEvent(timestamp: now, input: 10, output: 5),
+            makeEvent(timestamp: now.addingTimeInterval(60), input: 20, output: 8),
+        ]
         let byDay = AntigravityLocalUsageScanner.aggregateDaily(
-            events: events,
-            calendar: testCalendar,
-            counts: details.counts
+            events: events, calendar: testCalendar, counts: counts
         )
-
-        let key = LocalUsageDayKey.make(day, calendar: testCalendar)
-        let usage = byDay[key]
-        XCTAssertNotNil(usage)
-        // turns/rounds 必须等于 details，不是 2 倍（旧 bug 在这里会得到 4/8）
-        XCTAssertEqual(usage?.turns, details.counts.perDay[day]?.turns)
-        XCTAssertEqual(usage?.rounds, details.counts.perDay[day]?.rounds)
-        XCTAssertEqual(usage?.turns, 2)
-        XCTAssertEqual(usage?.rounds, 4)
-        // daily 与 sample 同走 catalog 唯一入口：raw outputTokens 含思考，
-        // Output = rawOutput − reasoning（50 − 5 = 45/次），Reason = thinking。
-        // totalTokens = 四桶和（input 100 + cacheRead 10 + output 45 + reasoning 5）。
-        XCTAssertEqual(usage?.inputTokens, 400)
-        XCTAssertEqual(usage?.outputTokens, 180)
-        XCTAssertEqual(usage?.cacheReadTokens, 40)
-        XCTAssertEqual(usage?.reasoningTokens, 20)
-        XCTAssertEqual(usage?.totalTokens, 640)
+        let key = LocalUsageDayKey.make(today, calendar: testCalendar)
+        XCTAssertEqual(byDay[key]?.turns, 2)
+        XCTAssertEqual(byDay[key]?.rounds, 3, "预计算计数原样落到日桶，不随事件数叠加")
+        XCTAssertEqual(byDay[key]?.inputTokens, 30)
     }
 
-    /// F1：跨日 events 经 scanner 聚合路径后，每天 turns/rounds 等于 details，不翻倍。
-    func testF1AggregateDailyCrossDayWithPrecomputedCounts() {
-        let day14 = testCalendar.date(from: DateComponents(year: 2026, month: 7, day: 14))!
-        let day15 = testCalendar.date(from: DateComponents(year: 2026, month: 7, day: 15))!
-        let day14Ts = testCalendar.date(bySettingHour: 10, minute: 0, second: 0, of: day14)!
-        let day15Ts = testCalendar.date(bySettingHour: 10, minute: 0, second: 0, of: day15)!
-
-        let stepIdxs: [[Int]] = [[2, 3], [3, 4], [6, 7], [7, 8], [10, 11], [11, 12]]
-        let events: [AntigravityFetcher.UsageEvent] = (0..<6).map { i in
-            AntigravityFetcher.UsageEvent(
-                timestamp: i < 4 ? day14Ts : day15Ts,
-                model: "test",
-                inputTokens: 100, outputTokens: 50,
-                cacheReadTokens: 0, cacheWriteTokens: 0,
-                reasoningTokens: 0, totalTokens: 150,
-                stepIndices: stepIdxs[i]
-            )
-        }
-
-        let details = AntigravityLocalUsageScanner.computeTurnRoundDetails(
-            sessionID: "f1-cross-day",
-            events: events,
-            calendar: testCalendar
-        )
+    func testAggregateDailyCrossDayWithPrecomputedCounts() {
+        let now = Date()
+        let today = testCalendar.startOfDay(for: now)
+        let yesterday = testCalendar.date(byAdding: .day, value: -1, to: today)!
+        let counts = AntigravityTurnRoundCounts(perDay: [
+            today: DailyTurnRound(turns: 1, rounds: 1),
+            yesterday: DailyTurnRound(turns: 3, rounds: 4),
+        ])
+        let events = [
+            makeEvent(timestamp: now, input: 10, output: 5),
+            makeEvent(timestamp: yesterday, input: 30, output: 12),
+        ]
         let byDay = AntigravityLocalUsageScanner.aggregateDaily(
-            events: events,
-            calendar: testCalendar,
-            counts: details.counts
+            events: events, calendar: testCalendar, counts: counts
         )
-
-        let key14 = LocalUsageDayKey.make(day14, calendar: testCalendar)
-        let key15 = LocalUsageDayKey.make(day15, calendar: testCalendar)
-        XCTAssertEqual(byDay[key14]?.turns, details.counts.perDay[day14]?.turns)
-        XCTAssertEqual(byDay[key14]?.rounds, details.counts.perDay[day14]?.rounds)
-        XCTAssertEqual(byDay[key15]?.turns, details.counts.perDay[day15]?.turns)
-        XCTAssertEqual(byDay[key15]?.rounds, details.counts.perDay[day15]?.rounds)
-        // day14: 2 turns / 4 rounds；day15: 1 turn / 2 rounds
-        XCTAssertEqual(byDay[key14]?.turns, 2)
-        XCTAssertEqual(byDay[key14]?.rounds, 4)
-        XCTAssertEqual(byDay[key15]?.turns, 1)
-        XCTAssertEqual(byDay[key15]?.rounds, 2)
+        XCTAssertEqual(byDay[LocalUsageDayKey.make(today, calendar: testCalendar)]?.turns, 1)
+        XCTAssertEqual(byDay[LocalUsageDayKey.make(yesterday, calendar: testCalendar)]?.rounds, 4)
     }
 
-    /// F1：无 stepIndices 的事件，每个 event 计为 1 round，scanner 聚合路径不翻倍。
-    func testF1AggregateDailyNoStepIndicesWithPrecomputedCounts() {
-        let day = testCalendar.startOfDay(for: Date())
-        let ts = testCalendar.date(bySettingHour: 9, minute: 0, second: 0, of: day)!
-        let events: [AntigravityFetcher.UsageEvent] = (0..<3).map { _ in
-            AntigravityFetcher.UsageEvent(
-                timestamp: ts,
-                model: "test",
-                inputTokens: 50, outputTokens: 10,
-                cacheReadTokens: 0, cacheWriteTokens: 0,
-                reasoningTokens: 0, totalTokens: 60,
-                stepIndices: nil
-            )
-        }
+    // MARK: - 入账口径
 
-        let details = AntigravityLocalUsageScanner.computeTurnRoundDetails(
-            sessionID: "f1-no-idx",
-            events: events,
-            calendar: testCalendar
-        )
-        let byDay = AntigravityLocalUsageScanner.aggregateDaily(
-            events: events,
-            calendar: testCalendar,
-            counts: details.counts
-        )
-
-        let key = LocalUsageDayKey.make(day, calendar: testCalendar)
-        // 无 stepIndices 时 prevMaxStepIndex 永不更新，按现有规则每个 event 各开一个 turn；
-        // 这里只验证 F1：聚合后等于 details，而不是 2 倍。
-        XCTAssertEqual(byDay[key]?.turns, details.counts.perDay[day]?.turns)
-        XCTAssertEqual(byDay[key]?.rounds, details.counts.perDay[day]?.rounds)
-        XCTAssertEqual(byDay[key]?.turns, 3)
-        XCTAssertEqual(byDay[key]?.rounds, 3)
-    }
-
-    /// F1：默认调用（不传 counts）仍保持原有契约——等价于内部自行 computeTurnRoundCounts，
-    /// 不得因为新增参数改变既有行为。
-    func testF1AggregateDailyDefaultContractUnchanged() {
-        let day = testCalendar.startOfDay(for: Date())
-        let ts = testCalendar.date(bySettingHour: 11, minute: 0, second: 0, of: day)!
-        let events: [AntigravityFetcher.UsageEvent] = [
-            AntigravityFetcher.UsageEvent(
-                timestamp: ts, model: "m",
-                inputTokens: 100, outputTokens: 50,
-                cacheReadTokens: 0, cacheWriteTokens: 0,
-                reasoningTokens: 0, totalTokens: 150,
-                stepIndices: [0, 1]
-            ),
-            AntigravityFetcher.UsageEvent(
-                timestamp: ts, model: "m",
-                inputTokens: 20, outputTokens: 5,
-                cacheReadTokens: 0, cacheWriteTokens: 0,
-                reasoningTokens: 0, totalTokens: 25,
-                stepIndices: [1, 2]
-            ),
+    func testEventCountCountsOnlyTimestampedEventsLikeDaily() {
+        // 语义统一：eventCount = 成功进入日统计（有 timestamp）的 event 数。
+        // 无 timestamp 的 event 不进 daily/turns/rounds/samples，也不得计入
+        // eventCount，否则“事件数”与 Token 日汇总口径互相矛盾。
+        let now = Date()
+        let events = [
+            makeEvent(timestamp: nil, input: 100, output: 10),
+            makeEvent(timestamp: now, input: 5, output: 2),
+            makeEvent(timestamp: now.addingTimeInterval(60), input: 7, output: 3),
+            makeEvent(timestamp: nil, input: 200, output: 20),
         ]
 
-        let withCounts = AntigravityLocalUsageScanner.aggregateDaily(
-            events: events, calendar: testCalendar,
-            counts: AntigravityLocalUsageScanner.computeTurnRoundCounts(
-                sessionID: "", events: events, calendar: testCalendar
+        let stats = AntigravityLocalUsageScanner.accountedEventStats(events)
+        XCTAssertEqual(stats.accounted, 2)
+        XCTAssertEqual(stats.droppedTimestampless, 2)
+
+        // 与 aggregateDaily 的一致性：daily 的 token 总量只来自 accounted 事件。
+        let byDay = AntigravityLocalUsageScanner.aggregateDaily(events: events, calendar: testCalendar)
+        let dailyInput = byDay.values.reduce(0) { $0 + $1.inputTokens }
+        XCTAssertEqual(dailyInput, 12)
+        XCTAssertEqual(stats.accounted, 2, "eventCount 与 daily 计入的事件数一致")
+
+        // 全部有 timestamp：不丢弃。
+        let allStamped = [
+            makeEvent(timestamp: now, input: 1, output: 1),
+            makeEvent(timestamp: now, input: 2, output: 2),
+        ]
+        let allStats = AntigravityLocalUsageScanner.accountedEventStats(allStamped)
+        XCTAssertEqual(allStats.accounted, 2)
+        XCTAssertEqual(allStats.droppedTimestampless, 0)
+    }
+
+    // MARK: - accountCalls（turns 直计 / rounds / promptID / 时长）
+
+    func testAccountCallsMapsTurnsRoundsSamplesAndDuration() throws {
+        let base = Date(timeIntervalSince1970: 1_789_996_800)
+        let day = testCalendar.startOfDay(for: base)
+        let nextDay = testCalendar.date(byAdding: .day, value: 1, to: day)!
+
+        func call(stepIndex: Int, completedAt: Date?, model: String = "m") -> AntigravitySessionDBReader.Call {
+            AntigravitySessionDBReader.Call(
+                sessionID: "sess",
+                genIndex: stepIndex,
+                stepIndex: stepIndex,
+                modelName: model,
+                uncachedInputTokens: 10,
+                cacheReadTokens: 5,
+                rawOutputTokens: 8,
+                reasoningTokens: 3,
+                startedAt: completedAt.map { $0.addingTimeInterval(-2) },
+                completedAt: completedAt,
+                durationSeconds: completedAt == nil ? nil : 2
             )
-        )
-        let defaultAggregated = AntigravityLocalUsageScanner.aggregateDaily(
-            events: events, calendar: testCalendar
+        }
+
+        let accounting = AntigravityLocalUsageScanner.accountCalls(
+            sessionID: "sess",
+            calls: [
+                call(stepIndex: 5, completedAt: base.addingTimeInterval(60)),
+                call(stepIndex: 6, completedAt: base.addingTimeInterval(120)),
+                call(stepIndex: 45, completedAt: nextDay.addingTimeInterval(60)),
+                call(stepIndex: 7, completedAt: nil),  // 无时间戳：整条排除
+            ],
+            turnStepIndexes: [1, 40],
+            calendar: testCalendar
         )
 
-        XCTAssertEqual(defaultAggregated, withCounts, "未传 counts 时应与传入预算 counts 完全一致")
+        XCTAssertEqual(accounting.accountedEventCount, 3)
+        XCTAssertEqual(accounting.droppedTimestamplessCount, 1)
+        XCTAssertEqual(accounting.counts.totalTurns, 2, "轮 1（step<40 的 2 条 call）+ 轮 2（step 45）")
+        XCTAssertEqual(accounting.counts.totalRounds, 3)
+        XCTAssertEqual(accounting.counts.perDay[day]?.turns, 1, "轮 1 的第一条 call 决定其日归属")
+        XCTAssertEqual(accounting.counts.perDay[day]?.rounds, 2)
+        XCTAssertEqual(accounting.counts.perDay[nextDay]?.turns, 1, "轮 2 归属其第一条 call 的日子")
+        XCTAssertEqual(accounting.counts.perDay[nextDay]?.rounds, 1)
+
+        XCTAssertEqual(accounting.samples.map(\.promptID), [
+            "sess:turn-1", "sess:turn-1", "sess:turn-2",
+        ], "轮序 = idx 小于该 call stepIndex 的 step14 行数")
+        let first = try XCTUnwrap(accounting.samples.first)
+        XCTAssertEqual(first.inputTokens, 15, "sample input = uncached + cacheRead")
+        XCTAssertEqual(first.cachedInputTokens, 5)
+        XCTAssertEqual(first.outputTokens, 5, "Output = raw(8) − reasoning(3)")
+        XCTAssertEqual(first.reasoningOutputTokens, 3)
+        XCTAssertEqual(first.durationSeconds ?? 0, 2, accuracy: 0.000_001)
+
+        let dayKey = LocalUsageDayKey.make(day, calendar: testCalendar)
+        let nextDayKey = LocalUsageDayKey.make(nextDay, calendar: testCalendar)
+        XCTAssertEqual(accounting.daily[dayKey]?.inputTokens, 20, "day 桶 = 轮 1 的两条 call（10 × 2）")
+        XCTAssertEqual(accounting.daily[dayKey]?.cacheWriteTokens, 0, "cacheWrite 恒 0（db 不提供）")
+        XCTAssertEqual(accounting.daily[nextDayKey]?.inputTokens, 10)
     }
 }

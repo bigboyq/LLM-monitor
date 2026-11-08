@@ -17,7 +17,8 @@ enum HTTPTimeouts {
     /// 海外端点（codex 的 usage / reset-credits）。
     static let overseas: TimeInterval = 15
 
-    /// Antigravity 本地 language_server RPC：本机回环，不属于国内/海外任一档。
+    /// Antigravity 远端配额接口（googleapis.com；原本地 language_server RPC
+    /// 已退役，超时档位沿用）。
     /// request 略短（本地回环，5s 内不应答即视为死），
     /// resource 略宽（首次启动可能 cold start 久一些）。
     static let antigravityRequest: TimeInterval = 15

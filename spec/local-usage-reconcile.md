@@ -44,7 +44,7 @@ FSEvents/vnode 只负责把 source 标记为 dirty 和驱动 freshness UI；它�
 
 | Provider | 变化识别 | 普通/启动策略 | 不安全变化的兜底 |
 | --- | --- | --- | --- |
-| Antigravity | session + WAL `mtime/size`，并校验枚举是否完整；缓存带日历签名 | 未变化复用 `antigravity.json`；append 使用 generator metadata offset；只替换 dirty session 的 daily/sample 贡献 | shrink、缺 cache、日历变化、枚举不完整、RPC 失败保留 last-good；设置页 hard-full 才逐 session cold RPC，结果不完整时保持 dirty |
+| Antigravity | session `.db` + WAL `mtime/size` 指纹（`.pb` 完全忽略），并校验枚举是否完整；缓存带日历签名 | 未变化复用 `antigravity.json`；dirty session 全量直读 `AntigravitySessionDBReader`（probe 版本门 → `readCalls` + `readUserTurnSteps`，本地读毫秒级，无 offset/suffix 增量）；只替换 dirty session 的 daily/sample 贡献 | probe 结构化不兼容（表缺失/乱数据/无模型名/非 SQLite）当轮采纳指纹收敛、保留 last-good；SQLite I/O 类失败不采纳指纹自然重试、连续 3 次有界收敛（同样保留 last-good）；日历变化冷重建、枚举不完整保留全部 last-good 且签名停进；设置页 hard-full 逐 session 全量重读 |
 | MiniMax | runtime DB + WAL 指纹，逐 source cache；缓存带日历签名 | 未变化复用；变化 source 重聚合最近窗口，保留 sample cache | stat/SQL 不确定、日历变化或 session 失败时保留 last-good，不推进成功指纹，结果不完整时保持 dirty |
 | GLM / OpenCode | DB + WAL 指纹，快照带日历签名 | 未变化 rebase 本地日窗口；变化时重建单库 snapshot | DB/WAL 不可读、日历变化或 cache 版本不匹配时重建；失败不覆盖 last-good |
 | DSH | session 文件集合和每文件 fingerprint；聚合快照带日历签名 | 未变化复用；只解析变化文件，复用 parsed-file cache。**样本保留上限是独立于预算的第二条截断轴**：fingerprint 命中还要求 cache 带样本完整性元数据（`recentSamplesLimit` 匹配、`recentSamplesTruncated` / `latestOmittedSampleAt` 已知，见 `Models/DshLocalUsage.swift`），旧格式 cache 或 limit 变化时即使指纹未变也强制重聚合一次（一次性迁移代价）；rebase 保留已知样本截断，被挤出样本滑出保留窗后经 `latestOmittedSampleAt` 自动恢复完整标记。细则见 `harnesses/dsh.md` | 删除/压缩重写/预算截断等不安全状态回退单文件或受限全量；单文件失败时整份 index 保持 last-good 且保持 dirty，避免 fingerprint 与 aggregate 不一致 |
@@ -175,4 +175,4 @@ catch 块始终 `release()` 防止锁泄漏。
 测试可以注入一个 `TestGate.wait()` 让 worker 在 SQL/RPC 前阻塞, 精确控制 cancel+rescan
 时序. release build 的 binary 完全不带这个字段.
 
-> 核对基线：2026-11-03 · 代码 d07fa47
+> 核对基线：2026-11-08 · 代码 1146220（Antigravity 扫描策略行按 `.db` 直读现状更新，改动待提交）

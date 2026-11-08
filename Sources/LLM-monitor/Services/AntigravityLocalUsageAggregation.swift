@@ -21,31 +21,68 @@ struct AntigravityTurnRoundCounts: Equatable, Sendable {
 // MARK: - Aggregation (pure functions, unit-testable)
 
 extension AntigravityLocalUsageScanner {
-    struct TurnRoundDetails: Equatable, Sendable {
-        let counts: AntigravityTurnRoundCounts
-        let samples: [LocalTokenUsageSample]
-        let lastMaxStepIndex: Int?
-        let lastTurnIndex: Int
+    /// 一次 LLM call 的统一事件形态（数据源无关）。
+    ///
+    /// 阶段二b 起唯一生产数据源是 `AntigravitySessionDBReader.Call`（`.db`
+    /// 直读）；本结构保留原 RPC 事件模型的五类 token 字段命名，让
+    /// `aggregateDaily` / `makeSample` 的聚合契约在数据源切换时保持不变。
+    ///
+    /// - `outputTokens` 是**含思考**的 raw 口径（与旧 RPC `outputTokens` 同口径，
+    ///   db 侧 `f1.f4.f3`，恒等 normalized + reasoning），四桶规范化统一走
+    ///   `TokenAccountingCatalog.antigravity`。
+    /// - `cacheWriteTokens` 恒为 0：`.db` 的 usage 子消息不提供 cacheWrite
+    ///   （`f4` 只有 input/cacheRead/rawOutput/reasoning/normalized），本就排除在
+    ///   total 外，只有日桶诊断字段失去可见性（有意接受，spec 已注明）。
+    struct UsageEvent: Equatable, Sendable {
+        let timestamp: Date?
+        let model: String?
+        let inputTokens: Int
+        let outputTokens: Int
+        let cacheReadTokens: Int
+        let cacheWriteTokens: Int
+        let reasoningTokens: Int
+        /// 单次调用时长（秒）= steps.metadata f7（流式完成）− f1（发起）。
+        let durationSeconds: Double?
 
         init(
-            counts: AntigravityTurnRoundCounts,
-            samples: [LocalTokenUsageSample],
-            lastMaxStepIndex: Int? = nil,
-            lastTurnIndex: Int = 0
+            timestamp: Date?,
+            model: String?,
+            inputTokens: Int,
+            outputTokens: Int,
+            cacheReadTokens: Int,
+            cacheWriteTokens: Int = 0,
+            reasoningTokens: Int,
+            durationSeconds: Double? = nil
         ) {
-            self.counts = counts
-            self.samples = samples
-            self.lastMaxStepIndex = lastMaxStepIndex
-            self.lastTurnIndex = lastTurnIndex
+            self.timestamp = timestamp
+            self.model = model
+            self.inputTokens = inputTokens
+            self.outputTokens = outputTokens
+            self.cacheReadTokens = cacheReadTokens
+            self.cacheWriteTokens = cacheWriteTokens
+            self.reasoningTokens = reasoningTokens
+            self.durationSeconds = durationSeconds
         }
+    }
+
+    /// `accountCalls` 的产物：日桶、turns/rounds 计数、样本与入账统计。
+    struct CallAccounting: Equatable, Sendable {
+        /// 按 `LocalUsageDayKey` 字符串键分桶的日聚合（index 契约形态）。
+        let daily: [String: AntigravityDailyUsage]
+        let counts: AntigravityTurnRoundCounts
+        let samples: [LocalTokenUsageSample]
+        /// 进入日统计的事件数（= `eventCount` 口径，见 `accountedEventStats`）。
+        let accountedEventCount: Int
+        /// 因缺时间戳被排除的 call 数（steps.metadata 缺失）。
+        let droppedTimestamplessCount: Int
     }
 
     /// eventCount 的统一口径：只有带 timestamp、真正进入日统计的事件才计数。
     /// 无 timestamp 的 event 进不了 daily / turns / rounds / samples，也不得计入
     /// eventCount —— 一个字段不得同时代表“收到的 raw event 数”和“入账 event 数”。
-    /// raw 总数保留在 scanner 的 debug 日志里，用于诊断 RPC 返回质量。
+    /// raw 总数保留在 scanner 的日志里，用于诊断数据质量。
     nonisolated static func accountedEventStats(
-        _ events: [AntigravityFetcher.UsageEvent]
+        _ events: [UsageEvent]
     ) -> (accounted: Int, droppedTimestampless: Int) {
         var accounted = 0
         for event in events where event.timestamp != nil {
@@ -54,38 +91,25 @@ extension AntigravityLocalUsageScanner {
         return (accounted, events.count - accounted)
     }
 
-    /// 合并已有每日使用量与增量每日使用量（按日相加）。
-    nonisolated static func mergeDaily(
-        existing: [String: AntigravityDailyUsage],
-        incremental: [String: AntigravityDailyUsage]
-    ) -> [String: AntigravityDailyUsage] {
-        var merged = existing
-        for (key, incUsage) in incremental {
-            if let base = merged[key] {
-                merged[key] = base + incUsage
-            } else {
-                merged[key] = incUsage
-            }
-        }
-        return merged
-    }
-
     /// 把 events 按本地自然日分组聚合。
     /// 没有 timestamp 的事件跳过（没法归到任何一天）。
     ///
     /// raw→桶与 `makeSample` 同走 `TokenAccountingCatalog.antigravity` 唯一入口：
-    /// RPC 的 `outputTokens` 已含思考（`== thinkingOutputTokens + responseOutputTokens`），
-    /// 规范化 Output = rawOutput − reasoning、Reason = reasoning，daily 四桶才与
-    /// sample / 计价口径守恒（`totalTokens` = 四桶和，不含 cacheWrite 簿记）。
+    /// raw `outputTokens` 已含思考（db `f3` 恒等 `f10 + f9`），规范化
+    /// Output = rawOutput − reasoning、Reason = reasoning，daily 四桶才与
+    /// sample / 计价口径守恒（`totalTokens` = 四桶和；cacheWrite 恒 0、本就
+    /// 不在 total 内，仅作为诊断字段原样保留）。
     ///
-    /// `counts` 可传入调用方已经预算好的 per-day turns/rounds（避免 scanner 成功分支里
-    /// 把同一份 counts 再叠加一次造成双倍计数）；未传时由本函数自行计算，保持原有契约。
+    /// `counts` 传入调用方已经预算好的 per-day turns/rounds（`accountCalls` 的
+    /// 路径），避免把同一份 counts 再叠加一次造成双倍计数；未传时日桶的
+    /// turns/rounds 记 0（旧 `stepIndices` 间隙推断已随 RPC 数据源退役，生产
+    /// 路径恒传 `accountCalls` 预算好的计数）。
     nonisolated static func aggregateDaily(
-        events: [AntigravityFetcher.UsageEvent],
+        events: [UsageEvent],
         calendar: Calendar,
         counts: AntigravityTurnRoundCounts? = nil
     ) -> [String: AntigravityDailyUsage] {
-        let resolvedCounts = counts ?? computeTurnRoundCounts(sessionID: "", events: events, calendar: calendar)
+        let resolvedCounts = counts ?? AntigravityTurnRoundCounts(perDay: [:])
         var byDay: [String: AntigravityDailyUsage] = [:]
         for event in events {
             guard let timestamp = event.timestamp else { continue }
@@ -107,7 +131,7 @@ extension AntigravityLocalUsageScanner {
                 inputTokens: SaturatingArithmetic.add(existing.inputTokens, buckets.input),
                 outputTokens: SaturatingArithmetic.add(existing.outputTokens, buckets.output),
                 cacheReadTokens: SaturatingArithmetic.add(existing.cacheReadTokens, buckets.cacheRead),
-                // cacheWrite 是缓存簿记，在四桶规范化之外原样保留诊断值。
+                // cacheWrite 是缓存簿记，在四桶规范化之外原样保留诊断值（.db 数据源恒 0）。
                 cacheWriteTokens: SaturatingArithmetic.add(existing.cacheWriteTokens, event.cacheWriteTokens),
                 reasoningTokens: SaturatingArithmetic.add(existing.reasoningTokens, buckets.reasoning),
                 totalTokens: SaturatingArithmetic.add(existing.totalTokens, buckets.totalTokens),
@@ -118,127 +142,118 @@ extension AntigravityLocalUsageScanner {
         return byDay
     }
 
-    /// 纯 RPC 模式：基于 RPC 事件推算 per-day turns / rounds 计数。
-    nonisolated static func computeTurnRoundCounts(
-        sessionID: String,
-        events: [AntigravityFetcher.UsageEvent],
-        calendar: Calendar,
-        initialPrevMaxStepIndex: Int? = nil,
-        initialTurnIndex: Int = 0
-    ) -> AntigravityTurnRoundCounts {
-        computeTurnRoundDetails(
-            sessionID: sessionID,
-            events: events,
-            calendar: calendar,
-            initialPrevMaxStepIndex: initialPrevMaxStepIndex,
-            initialTurnIndex: initialTurnIndex
-        ).counts
-    }
-
-    /// 纯基于 RPC 事件生成 Turn/Round 明细及样本组，不再依赖 SQLite .db 读取。
-    /// 区分 Prompt (Turn) 与 LLM Call (Round)：根据 stepIndices 的间隙推算新 User Prompt 节点。
-    nonisolated static func computeTurnRoundDetails(
-        sessionID: String,
-        events: [AntigravityFetcher.UsageEvent],
-        calendar: Calendar,
-        initialPrevMaxStepIndex: Int? = nil,
-        initialTurnIndex: Int = 0
-    ) -> TurnRoundDetails {
-        let sortedEvents = events
-            .filter { $0.timestamp != nil }
-            .sorted { $0.timestamp! < $1.timestamp! }
-
-        var perDay: [Date: DailyTurnRound] = [:]
-        var prevMaxStepIndex: Int? = initialPrevMaxStepIndex
-        var turnIndex = initialTurnIndex
-
-        for event in sortedEvents {
-            guard let ts = event.timestamp else { continue }
-            let day = calendar.startOfDay(for: ts)
-            let existing = perDay[day] ?? DailyTurnRound(turns: 0, rounds: 0)
-
-            var isNewTurn = false
-            if let indices = event.stepIndices, let minIdx = indices.min(), let maxIdx = indices.max() {
-                if let prevMax = prevMaxStepIndex {
-                    if minIdx > prevMax + 1 {
-                        isNewTurn = true
-                    }
-                } else {
-                    isNewTurn = true
-                }
-                prevMaxStepIndex = max(prevMaxStepIndex ?? maxIdx, maxIdx)
-            } else if prevMaxStepIndex == nil {
-                isNewTurn = true
+    /// 轮序推断：call 的当前轮序 N = `steps.idx` 小于该 call `stepIndex` 的
+    /// `step_type=14`（用户轮次边界）行数。
+    ///
+    /// 直计口径（2026-11-08 实测：step_type=14 与 transcript USER_INPUT 23/23
+    /// 逐一对应），取代旧 RPC `stepIndices` 间隙推断（对真实会话虚高 +37%~+273%）。
+    /// `userTurnStepIndexes` 必须升序（reader 按 idx 升序返回）；二分定位首个
+    /// `>= stepIndex` 的行，其下标即小于 `stepIndex` 的行数。轮次行之前就出现的
+    /// call（克隆/后台会话没有 USER_INPUT，或首条用户输入之前的副调用）得到
+    /// N = 0（promptID `turn-0`，语义 = 背景调用）；`accountCalls` 的 turns
+    /// 首见计数只对 N >= 1 生效，turn-0 不开轮。
+    nonisolated static func turnNumber(
+        forCallStepIndex stepIndex: Int,
+        userTurnStepIndexes: [Int]
+    ) -> Int {
+        var low = 0
+        var high = userTurnStepIndexes.count
+        while low < high {
+            let mid = (low + high) / 2
+            if userTurnStepIndexes[mid] < stepIndex {
+                low = mid + 1
+            } else {
+                high = mid
             }
-
-            if isNewTurn {
-                turnIndex += 1
-            }
-
-            perDay[day] = DailyTurnRound(
-                turns: SaturatingArithmetic.add(existing.turns, isNewTurn ? 1 : 0),
-                rounds: SaturatingArithmetic.add(existing.rounds, 1)
-            )
         }
-
-        let samples = fallbackSamples(
-            sessionID: sessionID,
-            events: sortedEvents,
-            initialPrevMaxStepIndex: initialPrevMaxStepIndex,
-            initialTurnIndex: initialTurnIndex
-        )
-        return TurnRoundDetails(
-            counts: AntigravityTurnRoundCounts(perDay: perDay),
-            samples: samples,
-            lastMaxStepIndex: prevMaxStepIndex,
-            lastTurnIndex: turnIndex
-        )
+        return low
     }
 
-    nonisolated static func fallbackSamples(
+    /// 把 `.db` 直读的连接命中 Call 序列归入日桶、turns/rounds 与样本。
+    ///
+    /// - 输入按 `AntigravitySessionDBReader.readCalls` 的顺序（gen idx 升序 =
+    ///   时间序）；`turnStepIndexes` 是 `step_type=14` 行的 idx 升序数组。
+    /// - **rounds** = 带 `completedAt` 的 call 数（无时间戳的 call 整条排除出
+    ///   daily / turns / rounds / samples，沿用旧「无 timestamp 不入账」口径）。
+    /// - **turns** = `step_type=14` 直计，但只对 `turnIndex >= 1` 首见计数：
+    ///   `turnNumber` 对「无前置用户输入」的 call（克隆/后台会话、首条用户
+    ///   输入之前的副调用）返回 0——turn-0 不是真实用户轮，不开轮（否则 0 个
+    ///   step14 行的会话得 turns=1，首输入前的后台调用会把 1 个真实轮虚增成
+    ///   2）。turn-0 的 call 保留 rounds / tokens / daily 归属；样本 `promptID`
+    ///   维持 `turn-0` 标签，语义 = 背景调用（无前置用户轮），仅作样本命名
+    ///   空间，不代表一次用户轮。
+    ///   轮 N 归入「该轮第一条带时间戳 call」的本地日历日——与旧实现「触发新
+    ///   轮的第一个事件落在哪天就算哪天」一致。这是**可入账轮次**口径：某轮
+    ///   有 step14 行但该轮全部 call 无时间戳被排除时，该轮不计入 turns——与
+    ///   spec「step_type=14 直计」的差异仅在该无时间戳退化场景。
+    /// - 样本 `promptID` = `<sessionID>:turn-N`，N 由 `turnNumber` 推得。
+    /// - `cacheWrite` 恒 0（db 不提供；见 `UsageEvent` 注释）。
+    nonisolated static func accountCalls(
         sessionID: String,
-        events: [AntigravityFetcher.UsageEvent],
-        initialPrevMaxStepIndex: Int? = nil,
-        initialTurnIndex: Int = 0
-    ) -> [LocalTokenUsageSample] {
-        let sortedEvents = events
-            .filter { $0.timestamp != nil }
-            .sorted { $0.timestamp! < $1.timestamp! }
+        calls: [AntigravitySessionDBReader.Call],
+        turnStepIndexes: [Int],
+        calendar: Calendar
+    ) -> CallAccounting {
+        var events: [UsageEvent] = []
+        events.reserveCapacity(calls.count)
+        var samples: [LocalTokenUsageSample] = []
+        samples.reserveCapacity(calls.count)
+        var perDay: [Date: DailyTurnRound] = [:]
+        // 轮号 → 该轮第一条带时间戳 call 的日。轮的日归属只在首见时确定。
+        var turnDays: [Int: Date] = [:]
+        var dropped = 0
 
-        var turnIndex = initialTurnIndex
-        var prevMaxStepIndex: Int? = initialPrevMaxStepIndex
-
-        return sortedEvents.map { event in
-            var isNewTurn = false
-            if let indices = event.stepIndices, let minIdx = indices.min(), let maxIdx = indices.max() {
-                if let prevMax = prevMaxStepIndex {
-                    if minIdx > prevMax + 1 {
-                        isNewTurn = true
-                    }
-                } else {
-                    isNewTurn = true
-                }
-                prevMaxStepIndex = max(prevMaxStepIndex ?? maxIdx, maxIdx)
-            } else if prevMaxStepIndex == nil {
-                isNewTurn = true
+        for call in calls {
+            guard let completedAt = call.completedAt else {
+                dropped = SaturatingArithmetic.add(dropped, 1)
+                continue
             }
-
-            if isNewTurn {
-                turnIndex += 1
+            let turnIndex = turnNumber(
+                forCallStepIndex: call.stepIndex,
+                userTurnStepIndexes: turnStepIndexes
+            )
+            let event = UsageEvent(
+                timestamp: completedAt,
+                model: call.modelName,
+                inputTokens: call.uncachedInputTokens,
+                outputTokens: call.rawOutputTokens,
+                cacheReadTokens: call.cacheReadTokens,
+                cacheWriteTokens: 0,
+                reasoningTokens: call.reasoningTokens,
+                durationSeconds: call.durationSeconds
+            )
+            let day = calendar.startOfDay(for: completedAt)
+            var dayCounts = perDay[day] ?? DailyTurnRound(turns: 0, rounds: 0)
+            dayCounts.rounds = SaturatingArithmetic.add(dayCounts.rounds, 1)
+            // turns 首见计数只对 turnIndex >= 1 生效：turnIndex == 0 是「无前置
+            // 用户轮」的背景调用（见函数注释），不开轮。
+            if turnIndex >= 1, turnDays[turnIndex] == nil {
+                turnDays[turnIndex] = day
+                dayCounts.turns = SaturatingArithmetic.add(dayCounts.turns, 1)
             }
-
-            return makeSample(
+            perDay[day] = dayCounts
+            events.append(event)
+            samples.append(makeSample(
                 sessionID: sessionID,
                 promptComponent: "turn-\(turnIndex)",
                 event: event
-            )
+            ))
         }
+
+        let daily = aggregateDaily(events: events, calendar: calendar, counts: AntigravityTurnRoundCounts(perDay: perDay))
+        return CallAccounting(
+            daily: daily,
+            counts: AntigravityTurnRoundCounts(perDay: perDay),
+            samples: samples,
+            accountedEventCount: events.count,
+            droppedTimestamplessCount: dropped
+        )
     }
 
     private nonisolated static func makeSample(
         sessionID: String,
         promptComponent: String,
-        event: AntigravityFetcher.UsageEvent
+        event: UsageEvent
     ) -> LocalTokenUsageSample {
         // Antigravity events report uncached input and cache-read separately.
         // Route raw→桶 through the harness catalog and rebuild the historical
@@ -250,8 +265,8 @@ extension AntigravityLocalUsageScanner {
             rawOutput: event.outputTokens,
             rawReasoning: event.reasoningTokens
         )
-        // timestamp 缺失落 .distantPast 的兜底样本不携带时长：RPC duration 与
-        // timestamp 同源于一次真实调用，时间戳都无法归日的事件其时长也不可信。
+        // timestamp 缺失落 .distantPast 的兜底样本不携带时长：时长与 timestamp
+        // 同源于一次真实调用，时间戳都无法归日的事件其时长也不可信。
         let durationSeconds = event.timestamp == nil ? nil : event.durationSeconds
         return LocalTokenUsageSample(
             completedAt: event.timestamp ?? .distantPast,

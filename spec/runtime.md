@@ -96,7 +96,7 @@ State derivation is descriptor-driven:
 | `enabled == false` | `.notConfigured("已在 config.json 中禁用")` |
 | API-key provider has empty/template key | `.notConfigured("API Key 未填写")` |
 | External-auth provider has no local auth file | `.notConfigured("外部 auth 缺失：...")` |
-| Antigravity local session missing | `.notConfigured("请先启动 Antigravity 并完成登录")` |
+| Antigravity keychain credential missing | `.notConfigured("未读取到 Antigravity 登录凭据，请打开 Antigravity 并完成登录")`（阶段一起凭据可读即 ready，不要求 Antigravity 运行） |
 | Config and auth are present | `.ready` |
 | Fetch in progress | `.loading(lastSuccess: prev)` |
 | Fetch succeeds | `.ok(info)` |
@@ -114,7 +114,7 @@ deriveState 返回 `.notConfigured` 时整个 state 重置，lastSuccess 跟着�
 
 1. 注册时立即调用 `refreshHandler(providerID, .full)` → AppState 的 `refreshProviderDirectly`
 2. 每次唤醒取"最早到期时刻"，到期的 provider 用 TaskGroup 并发刷新（首轮 `.full`，后续轮询用 `.background` mode）
-3. 成功后按 `providers.<id>.refreshIntervalSeconds ?? refreshIntervalSeconds` 计算下次到期
+3. 成功后按 `effectiveRefreshInterval(for:)`（provider 显式配置 → provider 专属默认（antigravity 300s）→ 全局，clamp 10s...30d）计算下次到期
 4. 失败按同一个 baseInterval 固定间隔随下一定时周期重试（不做指数退避：后台固定间隔刷新下，拉长重试间隔只会推迟恢复）
 5. 任务被 cancel → 退出循环
 
@@ -122,7 +122,7 @@ deriveState 返回 `.notConfigured` 时整个 state 重置，lastSuccess 跟着�
 
 **次要信息频率（周期 full）**：`periodicFullEveryN`（默认 20，用户范围 1...30，动态热重载）表示次要信息周期相对 Provider 有效刷新间隔的真实倍率。`ProviderRefreshScheduler` 首拍 `.full`，随后 N-1 次 `.background` 后下一拍 `.full`，N=1 时每拍 `.full`；实际预计周期为 `N × Provider 间隔`，默认 300s × 20 ≈ 100min，仍走常规 deadline。内部直接注入 0 保留“只靠启动/手动 full”的兼容语义。
 
-次要信息包含 Codex reset credits、GLM ZCode 重置卡与营销活动（需通知开启）、Antigravity 独立账号/套餐 RPC，以及 costs 缺少组织名时 Codex `/v1/me` 查询。`.background` 同样获取主额度/余额、启用后的 Codex Admin API 赠金与 GLM 活动套餐余额；同一主响应附带元数据及 Codex 本地鉴权文件内的邮箱/套餐随主流程更新，不额外请求。Antigravity 跳过的账号与套餐、Codex 后台缺少的组织名由对应 merger 保留，额度金额与其新鲜度仍用本次结果。本地用量在批次结算后独立 reconcile，高峰提示和倒计时走本地时钟。完整范围见 `config.md` §次要信息频率。
+次要信息包含 Codex reset credits、GLM ZCode 重置卡与营销活动（需通知开启）、Antigravity 远端 tier（`v1internal:loadCodeAssist`，仅 `.full`），以及 costs 缺少组织名时 Codex `/v1/me` 查询。`.background` 同样获取主额度/余额、启用后的 Codex Admin API 赠金与 GLM 活动套餐余额；同一主响应附带元数据及 Codex 本地鉴权文件内的邮箱/套餐随主流程更新，不额外请求。Antigravity 跳过的账号与套餐、Codex 后台缺少的组织名由对应 merger 保留，额度金额与其新鲜度仍用本次结果。本地用量在批次结算后独立 reconcile，高峰提示和倒计时走本地时钟。完整范围见 `config.md` §次要信息频率。
 
 scheduler 集中持有排期与 in-flight 状态：`nextRefreshDates` / `resetCandidates` +
 `lastIntervalFinishedDates`（mid-cycle reset 点）/ `inFlightModes` / `inFlightWaiters` 等。
@@ -220,7 +220,9 @@ AppState.fetch 成功后调 `fetcher.resultMerger.merge(new:previous:mode:)` 合
 
 ## Auth Probing
 
-Antigravity 是用本地 Antigravity / agy CLI 的 `language_server`，进程可能中途崩。
+Antigravity 阶段一起额度路径走钥匙串凭据 + 远端 Google API，`checkLocalAuth()` 探测
+钥匙串凭据条目是否可读（不要求 Antigravity 运行；token 过期不算不可用——过期由
+fetch 抛 `credentialExpired` 呈现）。codex 仍探测本地 auth 文件。
 `AuthProber` 异步探测 `fetcher.checkLocalAuth()` 并缓存结果：
 
 - `scheduleProbe(for: providerID)`：启动探测（fetcher.hasLocalAuth() false 时不发）
@@ -431,10 +433,10 @@ Fetcher errors use `QuotaError`:
 连接错误分类保持不变。2026-10-25 工作区定向验证：`HTTPErrorSanitizerTests` 6 例通过；
 打包脚本 `bash -n` 及临时 plist 的用途说明 / ATS 嵌套布尔校验通过，未在另一台机器验收。
 
-Antigravity-specific note:
+Antigravity-specific note (阶段一，2026-11-08):
 
-- The fetcher does not trust stale OAuth tokens in `state.vscdb`.
-- It reuses the local authenticated Antigravity `language_server`, discovers its HTTPS port and CSRF token, and reads quota through local RPC endpoints.
+- Quota/account path uses the Keychain credential (`gemini` / `antigravity`, written and refreshed by the Antigravity client) against the remote Google quota APIs; expiry is judged locally (`now >= token.expiry`) and no network request is made when expired. See `providers/antigravity.md` § Remote Quota Path (Phase 1).
+- Local-usage path（阶段二b，2026-11-08）：scanner 直读会话 `.db`（`AntigravitySessionDBReader`），本地进程发现与 RPC 整体退役，不发任何网络请求。
 
 ## Provider Registration Contract
 
@@ -539,5 +541,5 @@ These are documented product boundaries:
   have their own SQLite readers, Antigravity is pure RPC, and Codex parses JSONL on
   demand for the 7-day chart.
 
-> 核对基线：2026-11-06 · 代码 f62a128
+> 核对基线：2026-11-08 · 代码 1146220（阶段一：antigravity 凭据探测与刷新节奏，改动待提交）
 > 2026-10-25 自启草稿与菜单实际状态同步已随 6f11831 入库：定向 27 例、完整 1422 例均通过；完整验证记录见 `spec/sync.md`。

@@ -2,148 +2,154 @@ import XCTest
 import SQLite3
 @testable import LLM_monitor
 
-/// 收敛类测试的共享基类：单 session 夹具（带 last-good 但指纹过期的 v7 index）、
-/// metadata 替身与扫描驱动。收敛类三组测试共用，故不住在任何一个测试类里。
-class AntigravityConvergenceTestCase: AntigravityTestCase {
+/// `.db` 直读扫描测试的共享基类（阶段二b）：conversations 目录 + 程序化合成
+/// 会话 `.db` + `performScanPureImpl` 驱动。RPC 时代的 metadata 替身
+/// （`MetadataStub`）随数据源退役删除——新数据源没有网络请求，测试直接构造
+/// 真实 SQLite fixture，不注入任何网络层。
+class AntigravityScanTestCase: AntigravityTestCase {
 
     // MARK: - 共享 fixture
-    //
-    // 同样刻意不是 `private`：收敛类三组测试继承本基类且分布在不同文件。
-    // `MetadataStub` / `ConvergenceFixture` 内部的 private 状态不受影响。
 
-    /// RPC 替身：线程安全地记录 (sessionID, offset) 调用并按 handler 返回。
-    /// handler 可在扫描轮次之间替换，模拟 server 从"滞后"恢复到"有数据"。
-    final class MetadataStub: @unchecked Sendable {
-        typealias Page = (events: [AntigravityFetcher.UsageEvent], metadataEntryCount: Int)
-
-        // handler 允许抛错：.failure 分支（传输层失败）没有其他测试接缝。
-        private let lock = NSLock()
-        private var handler: @Sendable (String, Int) async throws -> Page
-        private var calls: [(sessionID: String, offset: Int)] = []
-
-        init(handler: @escaping @Sendable (String, Int) async throws -> Page) {
-            self.handler = handler
-        }
-
-        func setHandler(_ handler: @escaping @Sendable (String, Int) async throws -> Page) {
-            lock.withLock { self.handler = handler }
-        }
-
-        func fetch(sessionID: String, offset: Int) async throws -> Page {
-            let current = lock.withLock {
-                calls.append((sessionID, offset))
-                return handler
-            }
-            return try await current(sessionID, offset)
-        }
-
-        var callCount: Int { lock.withLock { calls.count } }
-
-        var lastOffset: Int? { lock.withLock { calls.last?.offset } }
-    }
-
-    struct ConvergenceFixture {
+    struct ScanFixture {
         let root: URL
         let conversations: URL
         let cache: URL
-        let sessionID: String
-        let dbPath: URL
-        let liveMtimeMs: Double
-        let liveSizeBytes: Int
-        let dayKey: String
-        let dayStart: Date
         let fm: FileManager
     }
 
-    /// 单 session 收敛测试夹具：non-empty `.db` + 带 last-good（offset/事件数可配、
-    /// 当日 daily 桶 input=500、空 samples）但指纹过期的当前版本（v8）index。
-    /// version 必须跟当前缓存版本走：写旧版本会被 loadIndex 迁移清空
-    /// `samplesBySession`，把本应走增量 plan 的 session 推回 full plan。
-    /// calendarSignature 默认与 testCalendar 一致（避免触发冷重建全量路径），可注入
-    /// 旧日历签名模拟时区变更冷重建。
-    func makeConvergenceFixture(
-        cachedOffset: Int,
-        cachedEventCount: Int,
-        seededCalendarSignature: String? = nil
-    ) throws -> ConvergenceFixture {
+    /// 便于断言的固定时间基点（UTC 日内时刻；具体日期无关紧要，日键由
+    /// testCalendar.startOfDay 推得）。
+    let fixtureBaseSeconds: UInt64 = 1_789_996_800
+
+    func makeScanFixture() throws -> ScanFixture {
         let fm = FileManager.default
         let root = fm.temporaryDirectory
-            .appendingPathComponent("antigravity-converge-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("antigravity-scan-\(UUID().uuidString)", isDirectory: true)
         let conversations = root.appendingPathComponent("conversations", isDirectory: true)
         let cache = root.appendingPathComponent("cache", isDirectory: true)
         try fm.createDirectory(at: conversations, withIntermediateDirectories: true)
         try fm.createDirectory(at: cache, withIntermediateDirectories: true)
+        return ScanFixture(root: root, conversations: conversations, cache: cache, fm: fm)
+    }
 
-        let sessionID = "converge-session"
-        let dbPath = conversations.appendingPathComponent("\(sessionID).db")
-        try Data(repeating: 1, count: 128).write(to: dbPath)
-        let values = try dbPath.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
-        let liveMtimeMs = try XCTUnwrap(values.contentModificationDate).timeIntervalSince1970 * 1000
-        let liveSizeBytes = try XCTUnwrap(values.fileSize)
+    // MARK: - 会话 .db 构造
 
-        let dayStart = testCalendar.startOfDay(for: Date(timeIntervalSince1970: 1_789_996_800))
-        let dayKey = LocalUsageDayKey.make(dayStart, calendar: testCalendar)
-        let seededAt = Date(timeIntervalSince1970: 1_789_990_000)
-        let index = AntigravityLocalUsageScanner.CacheIndex(
-            version: 8,
-            lastScannedAt: seededAt,
-            sessions: [sessionID: .init(
-                mtimeMs: liveMtimeMs - 60_000,              // 过期指纹 → dirty
-                sizeBytes: liveSizeBytes - 10,              // 小于当前 → 非 shrink
-                walMtimeMs: 0,
-                walSizeBytes: 0,
-                fetchedAt: seededAt,
-                eventCount: cachedEventCount,
-                generatorMetadataOffset: cachedOffset
-            )],
-            dailyBySession: [sessionID: [
-                dayKey: AntigravityDailyUsage(dayStart: dayStart, inputTokens: 500, totalTokens: 500)
-            ]],
-            samplesBySession: [sessionID: []],
-            calendarSignature: seededCalendarSignature ?? LocalUsageCalendarSignature.make(testCalendar)
-        )
-        try AntigravityLocalUsageScanner.saveIndex(index, cacheDir: cache, fileManager: FileManagerBox(fm))
+    /// 一次 LLM call 的 fixture 描述（gen 行 + 连接命中的 step_type=15 行）。
+    struct CallSpec {
+        /// steps.idx（连接键 = gen.last_step_index + 1 == stepIndex）
+        var stepIndex: Int
+        var model: String?
+        var input: UInt64 = 100
+        var cacheRead: UInt64 = 0
+        var rawOutput: UInt64 = 30
+        var reasoning: UInt64 = 10
+        /// steps.metadata field 1（发起，epoch 秒）
+        var startSeconds: UInt64
+        /// steps.metadata field 7（流式完成，epoch 秒）；nil = 不写 field 7
+        var endSeconds: UInt64?
+        /// steps.metadata 写 NULL（call 无时间戳 → 排除出日账）
+        var nullMetadata: Bool = false
+        /// gen 行省略 usage 子消息（整条不产生 Call）
+        var omitUsage: Bool = false
+    }
 
-        return ConvergenceFixture(
-            root: root,
-            conversations: conversations,
-            cache: cache,
-            sessionID: sessionID,
-            dbPath: dbPath,
-            liveMtimeMs: liveMtimeMs,
-            liveSizeBytes: liveSizeBytes,
-            dayKey: dayKey,
-            dayStart: dayStart,
-            fm: fm
+    /// 在 fixture 的 conversations 目录下合成一个会话 `.db`：
+    /// - `turnStepIndexes`：`step_type=14` 用户轮次边界行
+    /// - `calls`：连接命中的 LLM call（gen 行 lsi = stepIndex − 1）
+    /// - `at`：覆盖输出路径（如「文件再变化」用例对同一 session 重写内容）
+    @discardableResult
+    func makeScanSessionDB(
+        in fixture: ScanFixture,
+        sessionID: String,
+        turnStepIndexes: [Int] = [],
+        turnStartSeconds: UInt64? = nil,
+        calls: [CallSpec],
+        at dbURL: URL? = nil
+    ) throws -> URL {
+        let gen: [GenRow] = calls.map { call in
+            GenRow(
+                model: call.model,
+                usage: call.omitUsage ? nil : (
+                    input: call.input,
+                    cacheRead: call.cacheRead,
+                    rawOutput: call.rawOutput,
+                    reasoning: call.reasoning,
+                    normalized: call.omitUsage ? nil : call.rawOutput - call.reasoning
+                ),
+                attributes: [lsi(UInt64(call.stepIndex - 1))]
+            )
+        }
+        var steps: [StepRow] = turnStepIndexes.map { idx in
+            StepRow(
+                idx: idx,
+                type: 14,
+                start: turnStartSeconds.map { (seconds: $0, nanos: 0) }
+            )
+        }
+        steps += calls.map { call in
+            StepRow(
+                idx: call.stepIndex,
+                type: 15,
+                start: call.nullMetadata ? nil : (seconds: call.startSeconds, nanos: 0),
+                end: call.nullMetadata ? nil : call.endSeconds.map { (seconds: $0, nanos: 0) },
+                nullMetadata: call.nullMetadata
+            )
+        }
+        return try makeSessionDB(
+            gen: gen,
+            steps: steps,
+            at: dbURL ?? fixture.conversations.appendingPathComponent("\(sessionID).db")
         )
     }
 
-    func runConvergenceScan(
-        fixture: ConvergenceFixture,
+    // MARK: - 扫描驱动
+
+    /// 直跑 scanner pipeline（真实 `.db`，无任何网络注入）。
+    func runScan(
+        fixture: ScanFixture,
         now: Date,
-        stub: MetadataStub
+        calendar: Calendar? = nil,
+        forceFull: Bool = false,
+        directoryContents: ((URL) throws -> [URL])? = nil
     ) async throws -> AntigravityLocalUsage {
         try await AntigravityLocalUsageScanner.performScanPureImpl(
-            fetcher: AntigravityFetcher(metadataServerDiscovery: {
-                // 替身路径不真正出网，但 discovery 必须非空才能进入 fetch 阶段。
-                [AntigravityFetcher.ServerInfo(pid: 1, httpsPort: 1, csrfToken: nil, kind: .ide)]
-            }),
             conversationsDirs: [fixture.conversations],
             cacheDir: fixture.cache,
             fileManager: FileManagerBox(fixture.fm),
-            calendar: testCalendar,
+            calendar: calendar ?? testCalendar,
             now: { now },
             shouldSave: true,
-            metadataFetch: { sessionID, offset in
-                try await stub.fetch(sessionID: sessionID, offset: offset)
-            }
+            forceFull: forceFull,
+            directoryContents: directoryContents
         )
     }
 
-    func loadConvergenceIndex(_ fixture: ConvergenceFixture) throws -> AntigravityLocalUsageScanner.CacheIndex {
+    func loadScanIndex(_ fixture: ScanFixture) throws -> AntigravityLocalUsageScanner.CacheIndex {
         try AntigravityLocalUsageScanner.loadIndex(
             cacheDir: fixture.cache,
             fileManager: FileManagerBox(fixture.fm)
         )
+    }
+
+    func saveScanIndex(
+        _ index: AntigravityLocalUsageScanner.CacheIndex,
+        fixture: ScanFixture
+    ) throws {
+        try AntigravityLocalUsageScanner.saveIndex(
+            index, cacheDir: fixture.cache, fileManager: FileManagerBox(fixture.fm)
+        )
+    }
+
+    /// 固定基点的 UTC 日起点/日键（第 `dayOffset` 天，0 = 基点所在日）。
+    func dayStart(_ dayOffset: Int = 0) -> Date {
+        testCalendar.date(
+            byAdding: .day,
+            value: dayOffset,
+            to: testCalendar.startOfDay(for: Date(timeIntervalSince1970: TimeInterval(fixtureBaseSeconds)))
+        )!
+    }
+
+    func dayKey(_ dayOffset: Int = 0) -> String {
+        LocalUsageDayKey.make(dayStart(dayOffset), calendar: testCalendar)
     }
 }

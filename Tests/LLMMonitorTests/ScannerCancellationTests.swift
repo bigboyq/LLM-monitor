@@ -270,8 +270,8 @@ final class ScannerCancellationTests: ScannerTestCase {
     @MainActor
     func testNewWorkerWinsEvenWhenOldWorkerGetsLockFirst_Antigravity() async throws {
         // Antigravity scanner 路径: P1 fix 同时存在于 Antigravity 和 Minimax,
-        // 这里跑同一套 invariant 验证. Antigravity 的 performScanPure 多一个
-        // fetcher 参数 (这里用真实 AntigravityFetcher(), no DB 时不会真用).
+        // 这里跑同一套 invariant 验证. 阶段二b 起 scanner 直读 .db，无 fetcher
+        // 依赖（conversations 目录为空时扫描干净完成）。
         let conversationsDir = NSTemporaryDirectory() + "antigravity-conv-\(UUID())/"
         let cacheDirName = "scanner-p1-antigravity-\(UUID().uuidString)"
         let cacheDirURL = URL(fileURLWithPath: NSTemporaryDirectory())
@@ -279,9 +279,7 @@ final class ScannerCancellationTests: ScannerTestCase {
         let fileManager: FileManagerBox = FileManagerBox()
         let calendar: Calendar = .current
         let now: @Sendable () -> Date = { Date() }
-        let fetcher = AntigravityFetcher()
         let scanner = AntigravityLocalUsageScanner(
-            fetcher: fetcher,
             conversationsDirs: [URL(fileURLWithPath: conversationsDir)],
             cacheDir: cacheDirURL,
             fileManager: fileManager,
@@ -297,7 +295,6 @@ final class ScannerCancellationTests: ScannerTestCase {
             cacheFileName: "index.json",
             runScan: { gen in
                 _ = try await AntigravityLocalUsageScanner.performScanPure(
-                    fetcher: fetcher,
                     conversationsDirs: [URL(fileURLWithPath: conversationsDir)],
                     cacheDir: cacheDirURL,
                     fileManager: fileManager,
@@ -398,9 +395,7 @@ final class ScannerCancellationTests: ScannerTestCase {
 
         let conversationsDir = tempDir.appendingPathComponent("conversations")
         try? FileManager.default.createDirectory(at: conversationsDir, withIntermediateDirectories: true)
-        let fetcher = AntigravityFetcher()
         let scanner = AntigravityLocalUsageScanner(
-            fetcher: fetcher,
             conversationsDirs: [conversationsDir],
             cacheDir: tempDir.appendingPathComponent("cache")
         )

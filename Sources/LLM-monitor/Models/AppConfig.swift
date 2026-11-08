@@ -570,11 +570,19 @@ struct AppConfig: Codable, Equatable {
 
     enum SchemaError: LocalizedError, Equatable {
         case unsupportedVersion(Int)
+        /// `providers.antigravity.allowTokenRefresh` 只接受 false / 缺省。手改为
+        /// true 属于无效（或恶意）配置——token 刷新由 Antigravity 客户端在钥匙串
+        /// 内自行完成，监控侧没有也不允许有 refresh 流程。沿用配置解码错误呈现
+        /// 路径（启动时保留原文件、按默认配置运行；热重载保留上次配置），provider
+        /// 按 false 语义运行。
+        case antigravityAllowTokenRefresh
 
         var errorDescription: String? {
             switch self {
             case .unsupportedVersion(let version):
                 return "不支持的配置 schemaVersion: \(version)"
+            case .antigravityAllowTokenRefresh:
+                return "无效配置：providers.antigravity.allowTokenRefresh 不允许为 true（token 由 Antigravity 客户端自行刷新）"
             }
         }
     }
@@ -640,7 +648,28 @@ struct AppConfig: Codable, Equatable {
         }
         self.schemaVersion = Self.currentSchemaVersion
         self.refreshIntervalSeconds = try container.decode(Int.self, forKey: .refreshIntervalSeconds)
-        self.providers = try container.decode([String: ProviderConfig].self, forKey: .providers)
+        var providers = try container.decode([String: ProviderConfig].self, forKey: .providers)
+        // `allowTokenRefresh` 是 antigravity 专属字段，校验按 provider id（字典
+        // key）收紧——ProviderConfig 的共享 decode 不知道自己属于哪个 provider，
+        // 在那里抛错会误伤其他 provider 的同名键（如 codex_chatgpt 下写 true 也
+        // 会拒掉整份配置）：
+        // - antigravity：显式 true 属于无效/恶意修改 → 抛 `SchemaError`（沿用
+        //   配置解码错误呈现路径：启动保留原文件按默认配置运行、热重载保留上次
+        //   配置），provider 按 false 运行；
+        // - 其他 provider：把该键当未知键忽略——不报错、不落字段（置 nil，与
+        //   JSON 里其他未知键同语义，后续 encode 不回写）。
+        for (providerID, config) in providers {
+            guard config.allowTokenRefresh != nil else { continue }
+            if providerID == ProviderKind.antigravity.rawValue {
+                if config.allowTokenRefresh == true {
+                    logWarn("[config] providers.antigravity.allowTokenRefresh=true 属于无效配置：token 由 Antigravity 客户端自行刷新")
+                    throw SchemaError.antigravityAllowTokenRefresh
+                }
+            } else {
+                providers[providerID]?.allowTokenRefresh = nil
+            }
+        }
+        self.providers = providers
         // 这些字段只影响图标外观，不应因手工拼写错误或新版本增加枚举值而让
         // 整份 provider 配置进入损坏恢复流程。未知值和类型不匹配均按缺失处理。
         //
@@ -757,14 +786,31 @@ struct AppConfig: Codable, Equatable {
         return TimeInterval(min(max(configured, 1), 24 * 60 * 60))
     }
 
-    /// 实际生效的刷新间隔：优先用 provider 自己的，否则用全局，最后 clamp 到 10s...30d。
+    /// 实际生效的刷新间隔：优先用 provider 自己的，其次用 provider 专属默认值，
+    /// 最后用全局，并 clamp 到 10s...30d。
     ///
     /// 之前 AppState.scheduleRefresh 直接用 `TimeInterval(pc?.refreshIntervalSeconds ?? ...)`，
     /// 如果用户手填 0 / 负数，`Task.sleep` 立即返回，刷新任务高速循环
     /// （实测 1 秒能跑几十次 refresh，CPU 飙到 100%，minimax quota API 也会被频繁 hit）。
     func effectiveRefreshInterval(for providerID: String) -> TimeInterval {
-        let value = providers[providerID]?.refreshIntervalSeconds ?? refreshIntervalSeconds
+        let value = providers[providerID]?.refreshIntervalSeconds
+            ?? Self.defaultProviderRefreshInterval(for: providerID)
+            ?? refreshIntervalSeconds
         return TimeInterval(min(max(value, 10), Self.maximumRefreshIntervalSeconds))
+    }
+
+    /// antigravity 额度路径改走远端 Google API 后的默认刷新间隔（秒）。轮询频率
+    /// 对齐 IDE 自身 fetchAvailableModels 的约 6 分钟节奏（≥300s，见
+    /// `spec/providers/antigravity.md` § 已验证的远端配额与本地凭据事实），
+    /// 取代本地 RPC 时代的 60s 档；provider 显式配置的
+    /// `refreshIntervalSeconds` 不受影响。
+    static let antigravityDefaultRefreshIntervalSeconds = 300
+
+    /// provider 未显式配置 `refreshIntervalSeconds` 时的专属默认值；nil = 沿用全局。
+    static func defaultProviderRefreshInterval(for providerID: String) -> Int? {
+        providerID == ProviderKind.antigravity.providerID
+            ? antigravityDefaultRefreshIntervalSeconds
+            : nil
     }
 
     func isClientBindingEnabled(clientID: String, quotaProviderID: String) -> Bool {
@@ -862,6 +908,12 @@ struct ProviderConfig: Codable, Equatable {
         isZcodeCredentialEnabled
     }
 
+    /// Antigravity：是否允许监控侧刷新 token。**当前强制 false**：token 由
+    /// Antigravity 客户端在钥匙串内自行续期，监控侧没有 refresh 流程；手改
+    /// config 为 true 会在解码时抛 `AppConfig.SchemaError.antigravityAllowTokenRefresh`，
+    /// provider 按 false 语义运行。设置窗口中该开关可见但恒为关（disabled）。
+    var allowTokenRefresh: Bool?
+
     /// 四类额度事件的通知渠道（5 小时 / 周额度 × 恢复 / 耗尽）。
     /// nil（字段不存在）= 使用默认渠道（恢复 → 系统通知，耗尽 → 不通知），
     /// 与引入通知配置前的行为一致。
@@ -897,6 +949,7 @@ struct ProviderConfig: Codable, Equatable {
         case notifyCampaign
         case notifyIntervalRestored, notifyIntervalExhausted
         case notifyWeeklyRestored, notifyWeeklyExhausted
+        case allowTokenRefresh
         case adminApiCreditsEnabled
         case adminApiKey
         case adminBillingDay
@@ -921,6 +974,7 @@ struct ProviderConfig: Codable, Equatable {
          notifyIntervalExhausted: QuotaNotifyChannel? = nil,
          notifyWeeklyRestored: QuotaNotifyChannel? = nil,
          notifyWeeklyExhausted: QuotaNotifyChannel? = nil,
+         allowTokenRefresh: Bool? = nil,
          adminApiCreditsEnabled: Bool? = nil,
          adminApiKey: String? = nil,
          adminBillingDay: Int? = nil,
@@ -943,6 +997,7 @@ struct ProviderConfig: Codable, Equatable {
         self.notifyIntervalExhausted = notifyIntervalExhausted
         self.notifyWeeklyRestored = notifyWeeklyRestored
         self.notifyWeeklyExhausted = notifyWeeklyExhausted
+        self.allowTokenRefresh = allowTokenRefresh
         self.adminApiCreditsEnabled = adminApiCreditsEnabled
         self.adminApiKey = adminApiKey
         self.adminBillingDay = adminBillingDay
@@ -980,6 +1035,11 @@ struct ProviderConfig: Codable, Equatable {
             .flatMap(QuotaNotifyChannel.init(rawValue:))
         self.notifyWeeklyExhausted = (try? c.decode(String.self, forKey: .notifyWeeklyExhausted))
             .flatMap(QuotaNotifyChannel.init(rawValue:))
+        // Antigravity token 刷新开关：类型写错按缺失（false 语义）容错。字段
+        // 本身是 antigravity 专属：显式 true 的校验在 providers 字典解码处按
+        // provider id 收紧（见 `AppConfig.init(from:)`）——这里不能抛错，否则
+        // 其他 provider 配置里的同名键会误伤整份配置。
+        self.allowTokenRefresh = (try? c.decodeIfPresent(Bool.self, forKey: .allowTokenRefresh)) ?? nil
         self.adminApiCreditsEnabled = try c.decodeIfPresent(Bool.self, forKey: .adminApiCreditsEnabled)
         self.adminApiKey = try c.decodeIfPresent(String.self, forKey: .adminApiKey)
         self.adminBillingDay = try c.decodeIfPresent(Int.self, forKey: .adminBillingDay)

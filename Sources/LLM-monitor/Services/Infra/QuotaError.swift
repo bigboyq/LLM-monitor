@@ -8,6 +8,10 @@ enum QuotaError: LocalizedError, Equatable {
     case decodingError(String)
     case networkError(String)
     case apiError(String)
+    /// Antigravity 额度路径专有：Keychain 凭据里的 access_token 已过本地过期判定
+    /// （`now >= expiry`），或远端配额接口对有效请求返回 401。两者落到同一提示，
+    /// 指引用户打开 Antigravity 客户端更新凭据（客户端会自行续期 Keychain 内 token）。
+    case credentialExpired
     /// R2: 响应体超过硬上限。只携带脱敏 endpoint 路径、上限和实测字节数，不含 body。
     case responseTooLarge(limit: Int, actual: Int, redactedPath: String)
 
@@ -30,6 +34,8 @@ enum QuotaError: LocalizedError, Equatable {
             return "网络错误：\(msg)"
         case .apiError(let msg):
             return "接口错误：\(msg)"
+        case .credentialExpired:
+            return "token 已过期，请打开 Antigravity 更新凭据"
         case .responseTooLarge(let limit, _, let redactedPath):
             return "响应过大（上限 \(limit) bytes）：\(redactedPath)"
         }
@@ -45,7 +51,9 @@ enum QuotaError: LocalizedError, Equatable {
             case .codexChatGpt:
                 return "Codex 登录已失效，请运行 codex login 后重试"
             case .antigravity:
-                return "Antigravity 登录已失效，请重新启动 Antigravity 并完成登录"
+                // 远端配额接口的 401 与本地过期判定（credentialExpired）落到同一
+                // 提示：Keychain 凭据过期，由 Antigravity 客户端续期后恢复。
+                return QuotaError.credentialExpired.localizedDescription
             case .minimaxTokenPlan:
                 return "minimax API Key 无效或已过期"
             case .glmCodingPlan:

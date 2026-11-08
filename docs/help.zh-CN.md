@@ -37,7 +37,7 @@ shasum -a 256 -c SHA256SUMS.txt
 
 ### Antigravity
 
-先启动并登录 Antigravity 或 `agy` CLI。应用自动发现本机 `language_server`，通过 loopback RPC 获取账号、额度和 trajectory token 信息。若显示服务离线，请确认 Antigravity 仍在运行并已完成登录。
+在 Antigravity 或 `agy` CLI 登录过一次即可：应用直接读取 macOS 钥匙串中的登录凭据（条目 `gemini` / `antigravity`），请求 Google 配额接口获取额度与账号信息，Antigravity 无需保持运行。首次读取凭据时系统会弹一次钥匙串授权，点「始终允许」后不再打扰。token 由 Antigravity 客户端自行续期（默认刷新间隔 5 分钟）；卡片提示「token 已过期」时，打开 Antigravity 更新凭据即可恢复。本地 7 天 token 用量直接读取本机会话 SQLite 数据库（`~/.gemini/antigravity/conversations/`），同样不要求 Antigravity 运行。
 
 ### GLM Coding Plan
 
@@ -149,7 +149,7 @@ GLM 与 DeepSeek 的高峰判定都以北京时间（Asia/Shanghai）为准，�
 
 ### 本地 token 用量为空
 
-对应客户端必须实际产生过会话记录。确认数据库/会话路径存在，并授予应用读取这些用户目录的权限。Antigravity 还要求本地服务正在运行；DeepSeek 的本地用量需要 ZCode 或 OpenCode 里产生过对应 provider 的调用记录。
+对应客户端必须实际产生过会话记录。确认数据库/会话路径存在，并授予应用读取这些用户目录的权限。DeepSeek 的本地用量需要 ZCode 或 OpenCode 里产生过对应 provider 的调用记录。
 
 ### 无法开启“开机自启动”
 

@@ -2,16 +2,17 @@ import XCTest
 import SQLite3
 @testable import LLM_monitor
 
-/// `listDBFiles` 的发现与去重、不可读文件的 last-good 保留、日历签名不推进，以及
-/// 已移除 / 仅记打击的 session ID 追踪。
+/// `listDBFiles` 的发现与去重（只收 `.db`）、不可读文件的 last-good 保留、
+/// 日历签名不推进，以及已跟踪 session ID 的删除判定。
+/// `.pb` 会话自阶段二b 起完全忽略（无 gen_metadata 结构、RPC 支持已退役）。
 final class AntigravityListDBFilesTests: AntigravityTestCase {
 
     // MARK: - 测试
 
-    /// listDBFiles 发现 3 in 1：扩展名 (.db / .pb) / 周边文件过滤 / 多目录 dedup / 真实 IDE 路径
+    /// listDBFiles 发现 2 in 1：扩展名（只收 .db）/ 周边文件过滤 / 多目录 dedup
     func testListDBFilesDiscoveryAndDedup() throws {
         let fm = FileManager.default
-        // 1. 扩展名 + 周边文件过滤
+        // 1. 扩展名 + 周边文件过滤 + .pb 忽略
         do {
             let tmp = fm.temporaryDirectory.appendingPathComponent("llm-monitor-ext-\(UUID().uuidString)", isDirectory: true)
             try fm.createDirectory(at: tmp, withIntermediateDirectories: true)
@@ -19,7 +20,7 @@ final class AntigravityListDBFilesTests: AntigravityTestCase {
 
             try Data().write(to: tmp.appendingPathComponent("sess-1.db"))
             try Data().write(to: tmp.appendingPathComponent("sess-2.pb"))
-            // 不应被接受：周边文件
+            // 不应被接受：周边文件与旧格式
             try Data().write(to: tmp.appendingPathComponent("sess-1.db-wal"))
             try Data().write(to: tmp.appendingPathComponent("sess-1.db-shm"))
             try Data().write(to: tmp.appendingPathComponent("notes.txt"))
@@ -28,9 +29,9 @@ final class AntigravityListDBFilesTests: AntigravityTestCase {
                 conversationsDirs: [tmp],
                 fileManager: FileManagerBox(fm)
             ).files
-            XCTAssertEqual(result.count, 2, "应接受 .db 和 .pb 两个 session")
-            XCTAssertEqual(result["sess-1"]?.format, .sqlite)
-            XCTAssertEqual(result["sess-2"]?.format, .protobuf)
+            XCTAssertEqual(result.count, 1, "会话枚举只收 .db；.pb 完全忽略")
+            XCTAssertEqual(result["sess-1"]?.url.pathExtension, "db")
+            XCTAssertNil(result["sess-2"], ".pb 不进 session 集")
             XCTAssertNil(result["sess-1.db-wal"], "周边文件应被过滤")
             XCTAssertNil(result["sess-1.db-shm"])
             XCTAssertNil(result["notes"])
@@ -46,8 +47,8 @@ final class AntigravityListDBFilesTests: AntigravityTestCase {
                 try? fm.removeItem(at: tmp2)
             }
 
-            try Data(repeating: 1, count: 100).write(to: tmp1.appendingPathComponent("shared.pb"))
-            try Data(repeating: 2, count: 200).write(to: tmp2.appendingPathComponent("shared.pb"))
+            try Data(repeating: 1, count: 100).write(to: tmp1.appendingPathComponent("shared.db"))
+            try Data(repeating: 2, count: 200).write(to: tmp2.appendingPathComponent("shared.db"))
             try Data().write(to: tmp1.appendingPathComponent("only-new.db"))
             try Data().write(to: tmp2.appendingPathComponent("only-old.db"))
 
@@ -57,12 +58,12 @@ final class AntigravityListDBFilesTests: AntigravityTestCase {
             ).files
             XCTAssertEqual(result.count, 3)
             XCTAssertEqual(result["shared"]?.url.standardizedFileURL,
-                           tmp1.appendingPathComponent("shared.pb").standardizedFileURL,
+                           tmp1.appendingPathComponent("shared.db").standardizedFileURL,
                            "同 sessionId 优先用第一个目录")
-            XCTAssertEqual(result["only-new"]?.format, .sqlite)
-            XCTAssertEqual(result["only-old"]?.format, .sqlite)
+            XCTAssertNotNil(result["only-new"])
+            XCTAssertNotNil(result["only-old"])
         }
-        // 3. 多目录扫描（注入两个 conversations root，全部 session 都要被收录；目录名仅为 fixture）
+        // 3. 多目录扫描（注入两个 conversations root，全部 .db session 都要被收录）
         do {
             let tmp = fm.temporaryDirectory.appendingPathComponent("llm-monitor-real-\(UUID().uuidString)", isDirectory: true)
             let dirA = tmp.appendingPathComponent("root-a/conversations", isDirectory: true)
@@ -74,7 +75,7 @@ final class AntigravityListDBFilesTests: AntigravityTestCase {
             try Data().write(to: dirA.appendingPathComponent("a-session-1.db"))
             try Data().write(to: dirA.appendingPathComponent("a-session-2.db"))
             try Data().write(to: dirA.appendingPathComponent("a-session-3.pb"))
-            try Data().write(to: dirB.appendingPathComponent("b-session-1.pb"))
+            try Data().write(to: dirB.appendingPathComponent("b-session-1.db"))
             try Data().write(to: dirB.appendingPathComponent("b-session-2.pb"))
             try Data().write(to: dirB.appendingPathComponent("b-session-3.pb"))
 
@@ -82,9 +83,9 @@ final class AntigravityListDBFilesTests: AntigravityTestCase {
                 conversationsDirs: [dirA, dirB],
                 fileManager: FileManagerBox(fm)
             ).files
-            XCTAssertEqual(result.count, 6, "两个目录的 session 都要被收录")
-            XCTAssertEqual(result["a-session-1"]?.format, .sqlite)
-            XCTAssertEqual(result["b-session-1"]?.format, .protobuf)
+            XCTAssertEqual(result.count, 3, "两个目录的 .db session 都要被收录；.pb 忽略")
+            XCTAssertEqual(result["a-session-1"]?.url.pathExtension, "db")
+            XCTAssertEqual(result["b-session-1"]?.url.pathExtension, "db")
         }
     }
 
@@ -104,7 +105,7 @@ final class AntigravityListDBFilesTests: AntigravityTestCase {
                 fileManager: FileManagerBox(fm)
             ).files
             XCTAssertEqual(result.count, 1, "missing 目录静默跳过, existing 仍被收录")
-            XCTAssertEqual(result["s1"]?.format, .sqlite)
+            XCTAssertNotNil(result["s1"])
         }
         // 2. missing vs unreadable 区分：missing → 视为空(可删), unreadable → 不可删 last-good cache
         do {
@@ -179,7 +180,7 @@ final class AntigravityListDBFilesTests: AntigravityTestCase {
         newCalendar.timeZone = TimeZone(identifier: "Asia/Shanghai")!
         let oldSignature = LocalUsageCalendarSignature.make(oldCalendar)
         let index = AntigravityLocalUsageScanner.CacheIndex(
-            version: 7,
+            version: 9,
             lastScannedAt: Date(),
             sessions: ["cached-session": .init(
                 mtimeMs: 1,
@@ -194,7 +195,6 @@ final class AntigravityListDBFilesTests: AntigravityTestCase {
         try AntigravityLocalUsageScanner.saveIndex(index, cacheDir: cache, fileManager: FileManagerBox(fm))
 
         let result = try await AntigravityLocalUsageScanner.performScanPureImpl(
-            fetcher: AntigravityFetcher(metadataServerDiscovery: { [] }),
             conversationsDirs: [unreadable],
             cacheDir: cache,
             fileManager: FileManagerBox(fm),
@@ -217,7 +217,7 @@ final class AntigravityListDBFilesTests: AntigravityTestCase {
     func testListDBFilesConfirmedRemovedSessionIDs() {
         let current = AntigravityDBFileInfo(
             url: URL(fileURLWithPath: "/tmp/current.db"),
-            sizeBytes: 1, mtimeMs: 1, walSizeBytes: 0, walMtimeMs: 0, format: .sqlite
+            sizeBytes: 1, mtimeMs: 1, walSizeBytes: 0, walMtimeMs: 0
         )
         let listing = AntigravityDBFileListing(files: ["current": current], isComplete: true)
         XCTAssertEqual(
@@ -228,44 +228,28 @@ final class AntigravityListDBFilesTests: AntigravityTestCase {
         )
     }
 
-    /// 仅有打击计数、没有 `sessions` 条目的 session 也必须算「被跟踪」。
-    ///
-    /// 全新 session 首轮就返回 0 条 metadata 时，打击计数先于 `sessions` 条目落盘
-    /// （`continue` 发生在建条目之前）。若删除判定只看 `sessions.keys`，这类 id
-    /// 永远进不了 removedIds → 打击计数永久残留在 index.json → 同 sessionId 复活
-    /// 时从残留值续算，1~2 轮即提前收敛成「空终结条目」，静默丢弃该指纹周期的数据。
-    func testTrackedSessionIDsIncludesStrikeOnlySessions() {
-        var index = AntigravityLocalUsageScanner.CacheIndex(
-            version: 7,
+    /// v9 的 per-session 状态只有 `sessions` 条目（读取失败也先写条目再采纳
+    /// 指纹），被跟踪集合 = `sessions.keys`。
+    func testTrackedSessionIDsAreTheSessionEntries() {
+        let index = AntigravityLocalUsageScanner.CacheIndex(
+            version: 9,
             lastScannedAt: Date(),
-            sessions: [:],
+            sessions: ["s1": .init(mtimeMs: 1, sizeBytes: 1, fetchedAt: nil, eventCount: 0)],
             dailyBySession: [:]
         )
-        index.emptyFullStrikesBySession = ["strikeOnly": 1]
-        index.zeroAccountedFullStrikesBySession = ["zeroOnly": 2]
-        index.offsetRegressionStrikesBySession = ["offsetOnly": 1]
-        index.partialHitWarnedBySession = ["partialOnly": ["input"]]
-        index.calendarRebuildPendingSessions = ["pendingOnly"]
-
-        let expected: Set<String> = [
-            "strikeOnly", "zeroOnly", "offsetOnly", "partialOnly", "pendingOnly"
-        ]
         XCTAssertEqual(
             AntigravityLocalUsageScanner.trackedSessionIDs(in: index),
-            expected,
-            "各类 per-session 状态字段的键都必须进入被跟踪集合"
+            ["s1"]
         )
 
-        // listing 完整且不含这些文件（= 已删除）时，它们必须进入删除清理集合，
-        // 否则残留计数会跨 sessionId 复活泄漏。
+        // listing 完整且不含该文件（= 已删除）时进入删除清理集合。
         let listing = AntigravityDBFileListing(files: [:], isComplete: true)
         XCTAssertEqual(
             AntigravityLocalUsageScanner.confirmedRemovedSessionIDs(
                 cachedIds: AntigravityLocalUsageScanner.trackedSessionIDs(in: index),
                 listing: listing
             ),
-            expected,
-            "仅有打击计数的 session 消失后必须被判为已删除从而被清理"
+            ["s1"]
         )
     }
 
@@ -274,7 +258,7 @@ final class AntigravityListDBFilesTests: AntigravityTestCase {
     /// session + delegate（内存持续增长的回归点）。
     func testFetcherConstructionsShareOneSession() {
         XCTAssertTrue(
-            AntigravityFetcher().sessionForTest === AntigravityFetcher().sessionForTest,
+            AntigravityFetcher(credentialReader: { AntigravityCredentialFixtures.valid() }).sessionForTest === AntigravityFetcher(credentialReader: { AntigravityCredentialFixtures.valid() }).sessionForTest,
             "AntigravityFetcher 每次构造不得新建 URLSession"
         )
     }

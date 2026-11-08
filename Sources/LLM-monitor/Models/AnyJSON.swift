@@ -2,10 +2,10 @@ import Foundation
 
 /// 弱类型 JSON 值，专给"schema 不公开或字段名会变"的端点用。
 ///
-/// Antigravity 的 `GetCascadeTrajectoryGeneratorMetadata` 响应里 token 字段
-/// 嵌套很深 + 字段名版本会变（`inputTokens` / `input_tokens` / `promptTokens`
-/// 都在历史上出现过），所以走"按 key 名正则递归分类"的策略，而不是定义
-/// 一个固定的 Decodable struct。
+/// 历史上服务于 Antigravity 的 `GetCascadeTrajectoryGeneratorMetadata`
+/// 响应解析（token 字段嵌套深、字段名版本会变，`inputTokens` / `input_tokens` /
+/// `promptTokens` 都出现过）；该解析器已随本地 RPC 数据源退役（阶段二b，scanner
+/// 直读会话 `.db`），当前无生产调用方，仅保留类型与测试。
 indirect enum AnyJSON: Equatable, Sendable {
     case null
     case bool(Bool)

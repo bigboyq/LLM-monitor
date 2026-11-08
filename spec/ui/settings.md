@@ -63,8 +63,9 @@ fullscreen behavior, compact size, independent ring colors, and unrelated form d
 
 Every provider pane (five: minimax, chatgpt, antigravity, glm, deepseek) carries one
 small 「立即刷新」 row inside its
-「认证与刷新」 section (Antigravity is the exception on placement: it has no auth
-block, so the row sits in 「刷新频率」 instead). It is a `SettingsControlRow` with a
+「认证与刷新」 section（Antigravity 的认证内容是恒为关的「允许监控刷新 Token」
+开关：token 由 Antigravity 客户端自行刷新，`allowTokenRefresh` 强制 false，
+开关 disabled 不可交互；独立刷新频率未显式配置时显示专属默认 300s 而非继承全局）. It is a `SettingsControlRow` with a
 borderless `arrow.clockwise` button and the tooltip 「立即刷新该 Provider」, built by the
 shared `providerRefreshButton(for:)` so the five panes are one line each. The button is
 rendered only for a provider that has a registered descriptor — an unregistered kind

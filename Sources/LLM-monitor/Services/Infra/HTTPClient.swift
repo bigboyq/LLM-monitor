@@ -2,10 +2,9 @@ import Foundation
 
 /// R2: HTTP/RPC 响应体硬上限常量。
 enum ResponseByteLimits {
-    /// 标准 quota / 状态响应上限。
+    /// 标准 quota / 状态响应上限。（Antigravity trajectory 专用 64 MiB 上限已随
+    /// 本地 RPC 数据源退役移除，见 spec/providers/antigravity.md § Current Status。）
     static let standardQuota: Int = 8 * 1024 * 1024
-    /// Antigravity trajectory metadata 响应上限（单 session 可能很大）。
-    static let antigravityTrajectory: Int = 64 * 1024 * 1024
 }
 
 final class CappedDownloadState: @unchecked Sendable {

@@ -37,11 +37,11 @@ import os.log
 ///
 /// ## 跟 AntigravityLocalUsageScanner 的关键区别
 ///
-/// - **不需要 RPC**：antigravity 要走 `GetCascadeTrajectoryGeneratorMetadata` RPC
-///   拉 token 用量，minimax 的 `local_runtime_token_usage` 表**直接 SQL 聚合**就有完整账单。
-///   零跨源 join，零 RPC 顺序漂移坑。
-/// - **不需要 .db SQLite step_type 查询**：antigravity 要从 `step_type=14/15`
-///   算 R/T（坑 8 跨源 join 间歇性空白），minimax 的 `turn_id` 字段在
+/// - **不需要 protobuf 解析**：antigravity 直读 `.db` 的 `gen_metadata`（protobuf
+///   blob）拉逐调用 token 用量，minimax 的 `local_runtime_token_usage` 表**直接
+///   SQL 聚合**就有完整账单。零跨源 join。
+/// - **不需要 SQLite step_type 查询**：antigravity 要连接 `steps` 表
+///   （`step_type=14/15`）算轮次与时间戳，minimax 的 `turn_id` 字段在
 ///   `local_runtime_token_usage` 里，SQL 一次 `COUNT(DISTINCT turn_id)` 算完。
 /// - **不删 -shm**：跟 antigravity 一样 copy `.db`+`.db-wal`+`.db-shm` 到 /tmp 副本上 read。
 @MainActor

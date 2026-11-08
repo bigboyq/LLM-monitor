@@ -137,7 +137,7 @@ final class AppStateTests: StateTestCase {
                 kind: .antigravity,
                 iconSystemName: "paperplane",
                 accentColor: .antigravity,
-                makeFetcher: { _ in AntigravityFetcher() }
+                makeFetcher: { _ in AntigravityFetcher(credentialReader: { AntigravityCredentialFixtures.valid() }) }
             )
         ]
         let state = AppState(descriptors: descriptors, configStore: configStore)

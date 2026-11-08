@@ -1,45 +1,22 @@
 import Foundation
 
-// MARK: - Request Bodies
-
-/// `GetUserStatus` 的 request body —— 单 metadata 块，固定字段。
-/// 用 struct（而不是 `[String: Any]` 字典）让 Encodable 路径走 compile-time check。
-struct UserStatusRequest: Encodable {
-    struct Metadata: Encodable {
-        let ideName: String
-        let extensionName: String
-        let ideVersion: String
-        let locale: String
-    }
-
-    let metadata: Metadata
-}
-
-/// `GetCascadeTrajectoryGeneratorMetadata` 的 request body。
-/// - `includeMessages: false`：避免服务端序列化并回传长会话消息正文。
-/// - `generatorMetadataOffset`：后缀增量拉取偏移量（基于已成功消费的原始
-///   generatorMetadata 条目数，而不是过滤后的 UsageEvent 数量），
-///   nil 时拉取完整列表。
-struct TrajectoryMetadataRequest: Encodable, Equatable {
-    let cascadeId: String
-    let includeMessages: Bool
-    let generatorMetadataOffset: Int?
-
-    init(cascadeId: String, includeMessages: Bool = false, generatorMetadataOffset: Int? = nil) {
-        self.cascadeId = cascadeId
-        self.includeMessages = includeMessages
-        self.generatorMetadataOffset = generatorMetadataOffset
-    }
-}
-
 // MARK: - Response Models
 
-struct LoadCodeAssistEnvelope: Decodable {
-    let response: LoadCodeAssistResponse
-}
-
-struct LoadCodeAssistResponse: Decodable {
+/// 远端 `v1internal:loadCodeAssist` 响应（无本地 RPC 的 `response` 包装）。
+///
+/// 阶段一起额度路径的 tier 只来自该接口：`currentTier.name` 优先，回退
+/// `paidTier.name` / `paidTier.id`。本地 RPC `GetUserStatus` 的
+/// `planStatus.planInfo` 细节展示名（planDisplayName / productName 等）在远端
+/// 无对应字段，planLabel 回退链相应缩短为上面三级。
+struct LoadCodeAssistRemoteResponse: Decodable {
     let currentTier: LoadCodeAssistTier?
+    let paidTier: LoadCodeAssistTier?
+
+    /// tier 名称解析（首个非空 trimmed 值生效）：
+    /// `currentTier.name` > `paidTier.name` > `paidTier.id`。
+    var tierName: String? {
+        StringUtilities.firstTrimmed(currentTier?.name, paidTier?.name, paidTier?.id)
+    }
 }
 
 struct LoadCodeAssistTier: Decodable {
@@ -47,48 +24,8 @@ struct LoadCodeAssistTier: Decodable {
     let name: String?
 }
 
-struct UserStatusEnvelope: Decodable {
-    let userStatus: UserStatus?
-}
-
-struct UserStatus: Decodable {
-    let email: String?
-    let userTier: UserTier?
-    let planStatus: PlanStatus?
-}
-
-struct UserTier: Decodable {
-    let name: String?
-}
-
-struct PlanStatus: Decodable {
-    let planInfo: PlanInfo?
-}
-
-struct PlanInfo: Decodable {
-    let planDisplayName: String?
-    let displayName: String?
-    let productName: String?
-    let planName: String?
-    let planShortName: String?
-
-    init(planDisplayName: String? = nil,
-         displayName: String? = nil,
-         productName: String? = nil,
-         planName: String? = nil,
-         planShortName: String? = nil) {
-        self.planDisplayName = planDisplayName
-        self.displayName = displayName
-        self.productName = productName
-        self.planName = planName
-        self.planShortName = planShortName
-    }
-}
-
-struct RetrieveUserQuotaSummaryEnvelope: Decodable {
-    let response: RetrieveUserQuotaSummaryResponse
-}
-
+/// 远端 `v1internal:retrieveUserQuotaSummary` 响应体：`{groups: [...]}`。
+/// 与本地 RPC 同形，但**没有** `response` 包装（2026-11-08 实测）。
 struct RetrieveUserQuotaSummaryResponse: Decodable {
     let groups: [QuotaGroup]
 }

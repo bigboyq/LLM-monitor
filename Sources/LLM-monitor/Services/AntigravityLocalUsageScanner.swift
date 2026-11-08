@@ -2,35 +2,42 @@ import Foundation
 import Combine
 import os.log
 
-/// 扫描 `~/.gemini/antigravity/conversations/`，只读取本地
-/// session 文件的路径、扩展名和 mtime/size 指纹；token 数据不从 `.db` / `.pb` 内容读取。
-/// 对 dirty session 通过 `AntigravityFetcher.getTrajectoryMetadata` RPC 拉取
-/// per-event token 用量和结构信息，聚合后写入正式的 `index.json` daily cache。
-/// 当新版 RPC 事件缺少时间戳时，`.db` session 只额外读取对应 step metadata 中的
-/// protobuf Timestamp；`.pb` 没有该回退路径。
+/// 扫描 `~/.gemini/antigravity/conversations/`，对每个脏 session 用
+/// `AntigravitySessionDBReader` 直读 `.db`（SQLite）内容：`probe` 版本指纹门 →
+/// `readCalls`（gen_metadata ↔ steps 连接命中的逐调用 token/模型/时间戳）+
+/// `readUserTurnSteps`（step_type=14 用户轮次边界），聚合后写入正式的
+/// `index.json` daily cache。
+///
+/// 阶段二b（2026-11-08）起**本地 RPC / 进程发现 / `.pb` 支持全部退役**：
+/// scanner 不依赖 Antigravity 进程运行、不发任何网络请求，也不做混合/回退。
 ///
 /// ## 优化重点
 ///
 /// 1. **fingerprint-based diff**：每次扫描先 stat 所有 session 文件及其 WAL，
-///    跟 `index.json` 里的文件/WAL `mtimeMs` / `sizeBytes` 对比；只有 changed
-///    sessions 才走 RPC。
+///    跟 `index.json` 里的文件/WAL `mtimeMs` / `sizeBytes` 对比；未变化的
+///    session 不开库，只有 changed sessions 才直读。
 /// 2. **per-session daily 缓存**：aggregated daily 数据按 session 维度存
 ///    在 `index.dailyBySession`；changed session 只替换自己的缓存贡献，
 ///    全局汇总继续复用未变化 session 的缓存。
-/// 3. **in-flight dedup**：`scan()` 调用时如果上一次还在跑，直接忽略。
-/// 4. **bounded RPC**：dirty session 以固定并发度拉 RPC，避免单个 session 阻塞整批，
-///    同时不给本地 language server 制造无界请求洪峰。本地 session 文件只用于发现和
-///    指纹比较，不参与内容解析。
-/// 5. **失败有界重试**：RPC 失败或返回空事件时保留 last-good cache，
-///    由下一次 Provider batch settle 后、source 仍 dirty 时的 reconcile 重试。
-///    重试是有界的：连续空 suffix 2 次后升级 offset=0 全量核验并可按成功
-///    收敛推进指纹；零 metadata 全量结果 3 轮打击后收敛（保留 last-good）；
-///    有 raw metadata 但零可计账 event 的全量页同样 3 轮打击后收敛
-///    （保留 last-good，offset 刻意不推进，文件再变化时用可能已修复的
-///    解析器重试）。收敛不计失败，calendar 签名因此可以在全部 session
-///    成功/收敛后推进。
-/// 6. **failure 不更新 mtime**：RPC 失败的 session 在 `index.sessions` 里
-///    mtime 保持不变，下次扫描会自然重试，不留"假成功"状态。
+/// 3. **in-flight dedup**：`scan()` 调用时如果上一次还在跑，请求合并进
+///    待执行槽位（更强模式优先），由 `LocalUsageScannerBase` 提供。
+/// 4. **bounded 并发直读**：脏 session 以固定小批量并发读库，控制
+///    SQLiteTempCopy 副本内存峰值；本地 db 毫秒级，全量重读便宜且确定
+///    （脏了就全量重读，不再维护 offset/suffix/打击状态机）。
+/// 5. **失败有界（两路收敛语义）**：读失败按错误类别区分——
+///    - **probe 结构化不兼容**（表缺失/空表/乱数据/无模型名/非 SQLite 文件，
+///      `.incompatible`）：由字节内容决定、同字节重探结果恒定，当轮采纳当前
+///      文件指纹收敛（下轮不再重读同一份字节），保留 last-good daily/samples；
+///    - **可重试故障**（SQLite 打开/拷贝/查询 I/O 类，`.retryable`）：**不采纳
+///      指纹**，下一轮自然重试——瞬时 I/O 故障（如撤销 db 读权限再恢复，
+///      mtime/size 不变）恢复后即可读回，不会把会话钉在漏计状态；连续
+///      `retryableReadFailureConvergenceLimit`（3）次可重试失败后按不兼容
+///      同款策略采纳指纹有界收敛，防永久故障把同一份字节变成每轮重读、
+///      failedSessionCount 永远钉在 ≥1（freshness 永不 fresh）。
+///    两条路径都记一次失败 + log、本轮继续扫其余，都绝不清空 last-good，
+///    文件再变化时自然重新入账。
+/// 6. **failure 不更新入账**：读失败的 session 保留 last-good 数据，
+///    不产生「假成功」的历史清空。
 @MainActor
 final class AntigravityLocalUsageScanner: LocalUsageScannerBase<AntigravityLocalUsage>, @unchecked Sendable {
     nonisolated static let scanLogTag = "[antigravity-scan]"
@@ -45,9 +52,6 @@ final class AntigravityLocalUsageScanner: LocalUsageScannerBase<AntigravityLocal
     ///
     /// `Antigravity IDE.app` 的 `~/.gemini/antigravity-ide/` 曾被同时扫描，
     /// 现已剥离，不再支持。目录列表保留数组形态，作为测试注入多个 root 的接缝。
-    ///
-    /// 同时也接受两种 session 文件格式：`.db` 和 `.pb`。
-    /// 两者都只用于文件发现与指纹比较，Token 和 Turn/Round 均走本地 RPC。
     nonisolated static let defaultConversationsDirs: [URL] = {
         let gemini = URL(fileURLWithPath: NSHomeDirectory())
             .appendingPathComponent(".gemini", isDirectory: true)
@@ -61,7 +65,6 @@ final class AntigravityLocalUsageScanner: LocalUsageScannerBase<AntigravityLocal
     nonisolated static let defaultCacheDir: URL =
         TokenMonitorPaths.cacheFile(for: .antigravity)
 
-    private let fetcher: AntigravityFetcher
     private let conversationsDirs: [URL]
     private let cacheDir: URL
     private let fileManager: FileManagerBox
@@ -76,9 +79,7 @@ final class AntigravityLocalUsageScanner: LocalUsageScannerBase<AntigravityLocal
 
     /// Test-only hook: `performScanPure` 入口会 `await` 这个闭包, 闭包默认 nil
     /// (生产零开销, 一个 nil-check). 测试可以注入一个 `TestGate.wait()`, 让
-    /// worker 在 RPC / SQL / cache 写前阻塞, 精确控制 cancel + rescan 时序
-    /// (而不是依赖 "扫描瞬间完成" 的间接验证, 那个测的是 '启动时 generation
-    /// 已变' 分支, 不是真正在压力下的 cancel 路径).
+    /// worker 在 db 读取 / cache 写前阻塞, 精确控制 cancel + rescan 时序.
     ///
     /// `#if DEBUG`: 隔离到 debug build, release build 的 binary 没有这个字段
     /// (避免生产代码带可变的非隔离测试状态). 测试 target 默认用 debug 编译
@@ -91,13 +92,11 @@ final class AntigravityLocalUsageScanner: LocalUsageScannerBase<AntigravityLocal
     nonisolated(unsafe) var testSaveIndexHook: (@Sendable () -> Void)?
     #endif
 
-    init(fetcher: AntigravityFetcher,
-         conversationsDirs: [URL] = AntigravityLocalUsageScanner.defaultConversationsDirs,
+    init(conversationsDirs: [URL] = AntigravityLocalUsageScanner.defaultConversationsDirs,
          cacheDir: URL = AntigravityLocalUsageScanner.defaultCacheDir,
          fileManager: FileManagerBox = FileManagerBox(),
          calendar: Calendar = .autoupdatingCurrent,
          now: @escaping @Sendable () -> Date = { Date() }) {
-        self.fetcher = fetcher
         self.conversationsDirs = conversationsDirs
         self.cacheDir = cacheDir
         self.fileManager = fileManager
@@ -114,7 +113,7 @@ final class AntigravityLocalUsageScanner: LocalUsageScannerBase<AntigravityLocal
         )
         configureSourceLifecycle(
             paths: conversationsDirs,
-            dynamicExtensions: ["db", "db-wal", "pb"]
+            dynamicExtensions: ["db", "db-wal"]
         )
     }
 
@@ -135,26 +134,24 @@ final class AntigravityLocalUsageScanner: LocalUsageScannerBase<AntigravityLocal
     }
 
     /// performScanPure 的 pipeline：mutex 串行 + lastCommittedGeneration 守门。
-    /// 重 I/O + RPC 全部在 background 执行（文件元数据、文件遍历、HTTP RPC、
-    /// 缓存读写），菜单栏 UI 不会被 I/O 阻塞。
+    /// 重 I/O（文件元数据、目录遍历、SQLite 直读、缓存读写）全部在 background
+    /// 执行，菜单栏 UI 不会被阻塞；scanner 不发任何网络请求。
     override func makeWork(
         startedGeneration: UInt64,
         mode: LocalUsageScanMode
     ) -> @Sendable () async throws -> AntigravityLocalUsage {
-        let fetcher = self.fetcher
         let conversationsDirs = self.conversationsDirs
         let cacheDir = self.cacheDir
         let fileManager = self.fileManager
         let calendar = self.calendar
         let now = self.now
         // Startup `.full` is a cache-assisted validation pass: unchanged
-        // sessions reuse antigravity.json and changed append-only sessions
-        // use their persisted offset. Only the settings-page action asks
-        // for a true RPC rebuild.
+        // sessions reuse antigravity.json and changed sessions are re-read
+        // from their `.db`. Only the settings-page action asks for a true
+        // full rebuild.
         let forceFull = mode.bypassesProviderCache
         return {
             try await Self.performScanPure(
-                fetcher: fetcher,
                 conversationsDirs: conversationsDirs,
                 cacheDir: cacheDir,
                 fileManager: fileManager,
@@ -173,38 +170,10 @@ final class AntigravityLocalUsageScanner: LocalUsageScannerBase<AntigravityLocal
 
 }
 
-private struct DirtySessionFetchError: Error, Sendable {
-    let message: String
-
-    var localizedDescription: String { message }
-}
-
-private enum DirtySessionFetchPayload: Sendable {
-    case events(
-        events: [AntigravityFetcher.UsageEvent],
-        metadataEntryCount: Int,
-        wasIncremental: Bool
-    )
-    /// An incremental suffix returned no metadata. Keep the session dirty and
-    /// retry with backoff; a transiently stale language server must not be
-    /// turned into a successful fingerprint update.
-    case emptyIncremental
-}
-
-private struct DirtySessionFetchResult: Sendable {
-    let index: Int
-    let sessionID: String
-    let result: Result<DirtySessionFetchPayload, DirtySessionFetchError>
-}
-
-// Cache/index 类型（SessionIndexEntry / CacheIndex）见 AntigravityLocalUsageCache.swift
-
-// MARK: - Pipeline
-
 // MARK: - Pipeline（off main actor）
 
 extension AntigravityLocalUsageScanner {
-    /// 纯计算 + I/O + RPC，不直接修改 self；由非 actor-isolated runner 执行。
+    /// 纯计算 + I/O + db 直读，不直接修改 self；由非 actor-isolated runner 执行。
     /// 所有依赖通过参数传，不依赖 @MainActor 隔离。失败抛错给外层 catch。
     ///
     /// 并发安全: 整个 pipeline 在 `Self.pipelineMutex` (AsyncMutex) 里串行执行.
@@ -214,7 +183,6 @@ extension AntigravityLocalUsageScanner {
     /// runScan 端的 generation 守门 (startedGeneration == latestGeneration) 负责
     /// 旧 worker 的 in-memory result 不污染新 worker 状态.
     nonisolated static func performScanPure(
-        fetcher: AntigravityFetcher,
         conversationsDirs: [URL],
         cacheDir: URL,
         fileManager: FileManagerBox,
@@ -224,7 +192,7 @@ extension AntigravityLocalUsageScanner {
         scanner: AntigravityLocalUsageScanner,
         forceFull: Bool = false
     ) async throws -> AntigravityLocalUsage {
-        // Test-only: 让测试精确控制 worker 在做什么 (在 RPC / SQL / cache 写前
+        // Test-only: 让测试精确控制 worker 在做什么 (在 db 读 / cache 写前
         // 阻塞等 cancel 触发). 生产环境 (release build) 没这个字段, 编译期消除.
         #if DEBUG
         if let gate = Self.testGate {
@@ -249,7 +217,6 @@ extension AntigravityLocalUsageScanner {
             let lastCommitted = await scanner.readLastCommittedGeneration()
             let shouldSave = startedGeneration > lastCommitted
             let result = try await Self.performScanPureImpl(
-                fetcher: fetcher,
                 conversationsDirs: conversationsDirs,
                 cacheDir: cacheDir,
                 fileManager: fileManager,
@@ -270,22 +237,11 @@ extension AntigravityLocalUsageScanner {
         }
     }
 
-    /// Test-only RPC 替身（仅 `performScanPureImpl` 的注入接缝）：非 nil 时替代
-    /// 真实的 `GetCascadeTrajectoryGeneratorMetadata` 网络请求，参数为
-    /// `(sessionID, offset)`，返回该页解析出的 events 与 raw metadata 条数。
-    /// offset=0 即全量/核验请求。生产路径恒传 nil，零开销。
-    typealias TrajectoryMetadataFetch = @Sendable (
-        _ sessionID: String,
-        _ offset: Int
-    ) async throws -> (events: [AntigravityFetcher.UsageEvent], metadataEntryCount: Int)
-
     /// `performScanPure` 的纯 sync 实现. 不含 testGate / AsyncMutex wrap, 在 mutex
     /// 内部跑. 调用方负责保证"同时间只有一个 worker 调这个".
     /// - `shouldSave`: 旧 generation worker 传 false, 跳过 saveIndex 让新 worker
     ///   的 view 留在磁盘.
-    /// - `metadataFetch`: 仅测试用的 RPC 替身，见 `TrajectoryMetadataFetch`。
     nonisolated static func performScanPureImpl(
-        fetcher: AntigravityFetcher,
         conversationsDirs: [URL],
         cacheDir: URL,
         fileManager: FileManagerBox,
@@ -294,8 +250,7 @@ extension AntigravityLocalUsageScanner {
         shouldSave: Bool,
         saveIndexHook: (@Sendable () -> Void)? = nil,
         forceFull: Bool = false,
-        directoryContents: ((URL) throws -> [URL])? = nil,
-        metadataFetch: TrajectoryMetadataFetch? = nil
+        directoryContents: ((URL) throws -> [URL])? = nil
     ) async throws -> AntigravityLocalUsage {
         try ensureCacheDirectoriesExist(cacheDir: cacheDir, fileManager: fileManager)
 
@@ -316,11 +271,6 @@ extension AntigravityLocalUsageScanner {
         // 1. 只有所有 conversations root 都成功枚举（或明确不存在），且每个候选
         //    文件的属性都成功读取时，才能把未出现的 session 判为已删除。权限/TCC/
         //    瞬时 I/O 错误时保留 last-good cache，避免一次失败清空历史。
-        // 用「被跟踪的 sessionId」而不是只有 `sessions.keys`：全新 session 首轮就
-        // 返回 0 条 metadata 时，打击计数先于 `sessions` 条目落盘（`continue`
-        // 发生在建条目之前）。若只按 `sessions.keys` 判定删除，这类 id 永远进不了
-        // removedIds，打击计数永久残留在 index.json；同 sessionId 复活时从残留值
-        // 续算，1~2 轮即提前收敛成「空终结条目」，静默丢弃该指纹周期的数据。
         let cachedIds = trackedSessionIDs(in: index)
         let removedIds = confirmedRemovedSessionIDs(cachedIds: cachedIds, listing: listing)
         if !listing.isComplete {
@@ -330,24 +280,18 @@ extension AntigravityLocalUsageScanner {
             index.sessions.removeValue(forKey: removedId)
             index.dailyBySession.removeValue(forKey: removedId)
             index.samplesBySession?.removeValue(forKey: removedId)
-            index.emptyFullStrikesBySession?.removeValue(forKey: removedId)
-            index.partialHitWarnedBySession?.removeValue(forKey: removedId)
-            Self.clearZeroAccountedFullStrikes(for: removedId, on: &index)
-            Self.clearOffsetRegressionStrikes(for: removedId, on: &index)
-            Self.clearCalendarRebuildPending(for: removedId, on: &index)
         }
 
         // Antigravity can leave a placeholder cascade at 0 bytes. Its mtime
-        // may still move during IDE housekeeping, but there is no metadata to
-        // fetch until the file grows. Heal both existing and newly discovered
+        // may still move during IDE housekeeping, but there is nothing to
+        // read until the file grows. Heal both existing and newly discovered
         // placeholders locally, including during startup full mode.
         for (sessionID, info) in dbFiles {
             guard info.sizeBytes == 0, info.walSizeBytes == 0 else { continue }
             if var cached = index.sessions[sessionID],
                cached.sizeBytes == 0,
                cached.walSizeBytes == 0,
-               cached.eventCount == 0,
-               cached.generatorMetadataOffset == 0 {
+               cached.eventCount == 0 {
                 guard cached.mtimeMs != info.mtimeMs || cached.walMtimeMs != info.walMtimeMs else {
                     continue
                 }
@@ -364,473 +308,150 @@ extension AntigravityLocalUsageScanner {
                     walMtimeMs: info.walMtimeMs,
                     walSizeBytes: info.walSizeBytes,
                     fetchedAt: now(),
-                    eventCount: 0,
-                    generatorMetadataOffset: 0
+                    eventCount: 0
                 )
             } else {
                 continue
             }
             index.dailyBySession.removeValue(forKey: sessionID)
             index.samplesBySession?[sessionID] = []
-            logDebug("[antigravity-scan] session=\(sessionID) 空 placeholder 仅更新 fingerprint，跳过 RPC")
+            logDebug("[antigravity-scan] session=\(sessionID) 空 placeholder 仅更新 fingerprint，跳过读取")
         }
 
-        // 2. 找出 dirty sessions（文件/WAL 指纹变化，或缺少纯 RPC 的逐次调用缓存）。
+        // 2. 找出 dirty sessions（文件/WAL 指纹变化，或缺少缓存条目/样本）。
         let nowDate = now()
         let dirtyPlans: [DirtySessionPlan] = dbFiles.compactMap { (sessionId, info) in
             guard info.sizeBytes > 0 || info.walSizeBytes > 0 else { return nil }
             guard !requiresColdRebuild, let cached = index.sessions[sessionId] else {
-                return DirtySessionPlan(
-                    sessionID: sessionId,
-                    fileInfo: info,
-                    requestedOffset: 0,
-                    isIncremental: false
-                )
+                return DirtySessionPlan(sessionID: sessionId, fileInfo: info)
             }
             if index.samplesBySession?[sessionId] == nil {
-                logDebug("[antigravity-scan] session=\(sessionId) 缺少逐次调用缓存，强制重扫")
-                return DirtySessionPlan(
-                    sessionID: sessionId,
-                    fileInfo: info,
-                    requestedOffset: 0,
-                    isIncremental: false
-                )
+                logDebug("[antigravity-scan] session=\(sessionId) 缺少逐次调用缓存，强制重读")
+                return DirtySessionPlan(sessionID: sessionId, fileInfo: info)
+            }
+            // 可重试读失败的有界收敛：失败 streak 未达上限的 session 保持 dirty
+            // 重试。首读即失败的新 session 已写当前指纹、指纹比对不可能命中，
+            // 重试完全由这个条件驱动；指纹未采纳的 session 反正也会命中下面的
+            // 指纹差异条件（streak 条件只是提前短路，语义等价）。
+            if let failures = cached.consecutiveReadFailures,
+               failures > 0,
+               failures < Self.retryableReadFailureConvergenceLimit {
+                logDebug("[antigravity-scan] session=\(sessionId) 可重试读取失败 streak=\(failures)，重试直读")
+                return DirtySessionPlan(sessionID: sessionId, fileInfo: info)
             }
             if cached.mtimeMs != info.mtimeMs
                 || cached.sizeBytes != info.sizeBytes
                 || cached.walMtimeMs != info.walMtimeMs
                 || cached.walSizeBytes != info.walSizeBytes {
-                // 带旧日历待重建标记的 session 文件重新活跃：排一次 offset=0
-                // full 按当前日历重建日桶（替代增量合并，避免新旧日历混桶）。
-                // 标记保留到该 full 成功替换日桶后再清除，重扫失败不丢失待办。
-                if index.calendarRebuildPendingSessions?.contains(sessionId) == true {
-                    return DirtySessionPlan(
-                        sessionID: sessionId,
-                        fileInfo: info,
-                        requestedOffset: 0,
-                        isIncremental: false
-                    )
-                }
-                if info.sizeBytes < cached.sizeBytes
-                    || info.walSizeBytes < cached.walSizeBytes
-                    || cached.generatorMetadataOffset <= 0 {
-                    return DirtySessionPlan(
-                        sessionID: sessionId,
-                        fileInfo: info,
-                        requestedOffset: 0,
-                        isIncremental: false
-                    )
-                }
-                if let lastEmptySuffixAt = cached.lastEmptySuffixAt,
-                   nowDate.timeIntervalSince(lastEmptySuffixAt) < 30 {
-                    return nil
-                }
-                if cached.consecutiveEmptySuffixes >= Self.emptySuffixVerificationThreshold {
-                    // 连续两次空 suffix（跨至少一次 30s 节流）：不再盲目重试同一
-                    // suffix，升级为 offset=0 全量核验。核验若确认 raw metadata
-                    // 总数未变则按成功收敛推进指纹；若 server 追上/截断则走正常
-                    // 全量重算；若返回 0 条则进入零 metadata 打击计数（有界）。
-                    return DirtySessionPlan(
-                        sessionID: sessionId,
-                        fileInfo: info,
-                        requestedOffset: 0,
-                        isIncremental: false,
-                        isVerification: true
-                    )
-                }
-                return DirtySessionPlan(
-                    sessionID: sessionId,
-                    fileInfo: info,
-                    requestedOffset: cached.generatorMetadataOffset,
-                    isIncremental: true
-                )
+                // 本地直读便宜且确定性：脏了就全量重读，不做 suffix/offset 增量。
+                return DirtySessionPlan(sessionID: sessionId, fileInfo: info)
             }
 
             return nil
         }
 
-        // 3. 有界并发拉 dirty sessions
+        // 3. 有界并发直读 dirty sessions（SQLiteTempCopy 的 /tmp 副本随文件大小
+        //    占内存，小批量归约控制峰值；本地读毫秒级，批间串行足够快）。
         // An incomplete root/file enumeration is retryable work even when all
-        // visible session RPCs succeed. Otherwise a calendar rebuild could
+        // visible session reads succeed. Otherwise a calendar rebuild could
         // advance its signature while silently omitting cached sessions.
         var failedCount = listing.isComplete ? 0 : 1
         if !dirtyPlans.isEmpty {
-            // Keep only a small completed batch of parsed events alive. The old
-            // implementation retained all 166 result arrays until the last RPC
-            // completed, which amplified the full-scan peak.
-            let batchSize = dirtyPlans.contains(where: { !$0.isIncremental }) ? 2 : 4
-            for batchStart in stride(from: 0, to: dirtyPlans.count, by: batchSize) {
-                let batchEnd = min(batchStart + batchSize, dirtyPlans.count)
+            for batchStart in stride(from: 0, to: dirtyPlans.count, by: Self.readBatchSize) {
+                let batchEnd = min(batchStart + Self.readBatchSize, dirtyPlans.count)
                 let batch = Array(dirtyPlans[batchStart..<batchEnd])
-                let results = try await fetchAll(
-                    fetcher: fetcher,
-                    plans: batch,
-                    metadataFetch: metadataFetch
-                )
-                let dirtyByID = Dictionary(uniqueKeysWithValues: batch.map { ($0.sessionID, $0.fileInfo) })
-                let verificationByID = Set(batch.filter(\.isVerification).map(\.sessionID))
+                let results = try await readAll(plans: batch)
+                let infoByID = Dictionary(uniqueKeysWithValues: batch.map { ($0.sessionID, $0.fileInfo) })
                 for entry in results {
-                let sessionId = entry.sessionID
-                guard let info = dirtyByID[sessionId] else { continue }
-                switch entry.result {
-                case .success(.emptyIncremental):
-                    failedCount = SaturatingArithmetic.add(failedCount, 1)
-                    // 空 suffix 是真实的页结果（增量页成功返回、suffix 为空），
-                    // 但它只有 0 条 raw 条目可解析，**不含任何解析证据**——与下面的
-                    // .failure 同理，不能用它证明解析已恢复。因此这里刻意不清零
-                    // 零可计账计数：若"raw 非零但零可计账"与"空 suffix"交替出现，
-                    // 计数会被反复清掉、永远凑不满 3 轮观察期 → failedCount 永不
-                    // 归零 → 签名永不推进 → 每轮 reconcile 全量冷重建，正好破坏
-                    // 打击机制守住的"持久失败有界收敛"不变量。
-                    //
-                    // 解析健康度的正面证据只有两类：产出可计账 event 的页（走分叉前
-                    // 的统一清零点），以及核验收敛页——后者是 offset=0 全量页且确认
-                    // 服务端总数未变，事件已在缓存入账故直接丢弃，解析结果不影响
-                    // "确无新事件"这一结论，属于对该 session 的有效证据。
-                    if var cached = index.sessions[sessionId] {
-                        cached.lastEmptySuffixAt = nowDate
-                        cached.consecutiveEmptySuffixes = SaturatingArithmetic.add(
-                            cached.consecutiveEmptySuffixes, 1
-                        )
-                        index.sessions[sessionId] = cached
-                        logWarn("[antigravity-scan] session=\(sessionId) 增量 suffix 暂时为空，保留 dirty 并延迟重试（连续空 suffix \(cached.consecutiveEmptySuffixes)/\(Self.emptySuffixVerificationThreshold)）")
-                    } else {
-                        logWarn("[antigravity-scan] session=\(sessionId) 增量 suffix 暂时为空，保留 dirty 并延迟重试")
-                    }
-                case .success(.events(let events, let metadataEntryCount, let wasIncremental)):
-                    // 零 raw metadata 的全量/核验页不可信（连错 server/workspace，
-                    // 或 language server 重启后丢失 trajectory 记忆）。保留
-                    // last-good 并累计打击计数，连续 `zeroMetadataFullStrikeLimit`
-                    // 轮后按成功收敛，终结"每轮全量 RPC 无限重试"。
-                    if metadataEntryCount == 0 {
-                        // 零 metadata 页（raw 总数为 0，无从谈起解析失败）是
-                        // "确定不是零可计账页"的页结果，到达即打破零可计账
-                        // 连续性；本分支的打击与收敛两条出口共用此清零点。
-                        Self.clearZeroAccountedFullStrikes(for: sessionId, on: &index)
-                        var strikes = index.emptyFullStrikesBySession ?? [:]
-                        let strikeCount = SaturatingArithmetic.add(strikes[sessionId] ?? 0, 1)
-                        if strikeCount >= Self.zeroMetadataFullStrikeLimit {
-                            if let cached = index.sessions[sessionId] {
-                                // 已有 last-good：采用当前文件指纹，但完整保留
-                                // eventCount / offset / daily / samples —— 零
-                                // metadata 绝不清空用户可见的历史数据。日历变更
-                                // 轮中保留的是旧日历日桶：打 calendarRebuildPending
-                                // 标记，文件重新活跃时排一次 offset=0 full 按当前
-                                // 日历重建（成功后清除标记）。
-                                index.sessions[sessionId] = SessionIndexEntry(
-                                    mtimeMs: info.mtimeMs,
-                                    sizeBytes: info.sizeBytes,
-                                    walMtimeMs: info.walMtimeMs,
-                                    walSizeBytes: info.walSizeBytes,
-                                    fetchedAt: nowDate,
-                                    eventCount: cached.eventCount,
-                                    generatorMetadataOffset: cached.generatorMetadataOffset,
-                                    lastMaxStepIndex: cached.lastMaxStepIndex,
-                                    lastTurnIndex: cached.lastTurnIndex
-                                )
-                                if index.samplesBySession?[sessionId] == nil {
-                                    var samplesBySession = index.samplesBySession ?? [:]
-                                    samplesBySession[sessionId] = []
-                                    index.samplesBySession = samplesBySession
-                                }
-                                if calendarChanged {
-                                    var pending = index.calendarRebuildPendingSessions ?? []
-                                    pending.insert(sessionId)
-                                    index.calendarRebuildPendingSessions = pending
-                                }
-                                logInfo("[antigravity-scan] session=\(sessionId) 连续 \(strikeCount) 轮零 metadata 全量结果，收敛并保留 last-good 缓存（eventCount=\(cached.eventCount)）\(calendarChanged ? "；daily 仍为旧日历分桶，已标记待 full 重建" : "")")
-                            } else {
-                                // 从无数据：写空终结条目，让该 session 脱离
-                                // dirty 集合；文件再变化时按 full plan 正常重扫。
-                                index.sessions[sessionId] = SessionIndexEntry(
-                                    mtimeMs: info.mtimeMs,
-                                    sizeBytes: info.sizeBytes,
-                                    walMtimeMs: info.walMtimeMs,
-                                    walSizeBytes: info.walSizeBytes,
-                                    fetchedAt: nowDate,
-                                    eventCount: 0,
-                                    generatorMetadataOffset: 0
-                                )
-                                var samplesBySession = index.samplesBySession ?? [:]
-                                samplesBySession[sessionId] = []
-                                index.samplesBySession = samplesBySession
-                                logInfo("[antigravity-scan] session=\(sessionId) 连续 \(strikeCount) 轮零 metadata 全量结果，收敛为空 session 终结态")
-                            }
-                            Self.clearEmptyFullStrikes(for: sessionId, on: &index)
-                            continue
-                        }
-                        strikes[sessionId] = strikeCount
-                        index.emptyFullStrikesBySession = strikes
+                    let sessionId = entry.sessionID
+                    guard let info = infoByID[sessionId] else { continue }
+                    switch entry.result {
+                    case .failure(let error):
+                        // 读失败按错误类别二分（两路都记一次失败、保留 last-good、
+                        // 绝不清空用户可见历史）：
+                        // - 结构化不兼容：同字节重探结果恒定 → 当轮采纳指纹收敛；
+                        // - 可重试 I/O 故障：不采纳指纹、下一轮自然重试（瞬时故障
+                        //   恢复后即读回）；连续 retryableReadFailureConvergenceLimit
+                        //   次失败后有界收敛，防永久故障把失败钉成常态。
                         failedCount = SaturatingArithmetic.add(failedCount, 1)
-                        logWarn("[antigravity-scan] session=\(sessionId) RPC 返回空 events（全量），保留 last-good cache 并重试（strike \(strikeCount)/\(Self.zeroMetadataFullStrikeLimit)）")
-                        continue
-                    }
-                    // 空后缀核验收敛：offset=0 全量核验返回的 raw metadata 总数
-                    // 与缓存一致 → "确无新事件"。按成功收敛：只推进文件指纹并
-                    // 清零空 suffix 状态，不计失败；核验页重新交付的 events 已在
-                    // 缓存中入账，直接丢弃，重复聚合会双算。
-                    if verificationByID.contains(sessionId),
-                       let cached = index.sessions[sessionId],
-                       metadataEntryCount == cached.generatorMetadataOffset {
-                        index.sessions[sessionId] = SessionIndexEntry(
-                            mtimeMs: info.mtimeMs,
-                            sizeBytes: info.sizeBytes,
-                            walMtimeMs: info.walMtimeMs,
-                            walSizeBytes: info.walSizeBytes,
-                            fetchedAt: nowDate,
-                            eventCount: cached.eventCount,
-                            generatorMetadataOffset: cached.generatorMetadataOffset,
-                            lastMaxStepIndex: cached.lastMaxStepIndex,
-                            lastTurnIndex: cached.lastTurnIndex
-                        )
-                        Self.clearEmptyFullStrikes(for: sessionId, on: &index)
-                        // 核验收敛页（raw 总数与缓存一致、events 已在缓存入账）
-                        // 同样不是零可计账页证据，到达即打破连续性。
-                        Self.clearZeroAccountedFullStrikes(for: sessionId, on: &index)
-                        logInfo("[antigravity-scan] session=\(sessionId) 全量核验确认 metadata 总数未变（offset=\(metadataEntryCount)），按成功收敛推进指纹")
-                        continue
-                    }
-                    // 全量页 offset 回归：返回的 raw metadata 总数小于缓存的
-                    // offset（server 丢数据/截断/连错 workspace）。照常全量
-                    // 替换会把 offset/eventCount 直接覆盖成小值，本地已入账
-                    // 历史永久丢失——绝不回退 last-good。镜像零 metadata 打击
-                    // 机制：连续 `offsetRegressionStrikeLimit` 轮后按成功收敛
-                    // （采用当前文件指纹、完整保留 last-good、offset 不回退），
-                    // 观察期内计失败阻塞签名推进（有界，避免 server 永久缺
-                    // 数据拖成每轮全量冷重建循环）。零 metadata（count=0）由
-                    // 上方分支先行处理，核验收敛（count == offset）已在上方
-                    // 优先收敛，均不会到达这里；增量页没有 count vs offset 的
-                    // 对账关系，不参与本检查。回归页在解析统计前即被拒绝，不
-                    // 构成零可计账页判定，顺带清零该计数与零 metadata 计数。
-                    if !wasIncremental,
-                       let cached = index.sessions[sessionId],
-                       cached.generatorMetadataOffset > 0,
-                       metadataEntryCount < cached.generatorMetadataOffset {
-                        Self.clearEmptyFullStrikes(for: sessionId, on: &index)
-                        Self.clearZeroAccountedFullStrikes(for: sessionId, on: &index)
-                        var strikes = index.offsetRegressionStrikesBySession ?? [:]
-                        let strikeCount = SaturatingArithmetic.add(strikes[sessionId] ?? 0, 1)
-                        if strikeCount >= Self.offsetRegressionStrikeLimit {
-                            // 收敛：采用当前文件指纹，完整保留 eventCount /
-                            // offset / daily / samples——offset 刻意不回退，
-                            // server 端恢复（count >= offset）后由全量重算或
-                            // 增量消费自然补齐。日历变更轮收敛的 session 保留
-                            // 的 last-good daily 仍按旧日历分桶，与零 metadata/
-                            // 零可计账收敛同款：打 calendarRebuildPending 标记，
-                            // 文件重新活跃时排一次 offset=0 full 重建。
-                            index.sessions[sessionId] = SessionIndexEntry(
-                                mtimeMs: info.mtimeMs,
-                                sizeBytes: info.sizeBytes,
-                                walMtimeMs: info.walMtimeMs,
-                                walSizeBytes: info.walSizeBytes,
-                                fetchedAt: nowDate,
-                                eventCount: cached.eventCount,
-                                generatorMetadataOffset: cached.generatorMetadataOffset,
-                                lastMaxStepIndex: cached.lastMaxStepIndex,
-                                lastTurnIndex: cached.lastTurnIndex
+                        let cached = index.sessions[sessionId]
+                        switch error.kind {
+                        case .incompatible:
+                            Self.convergeWithCurrentFingerprint(
+                                sessionId: sessionId,
+                                info: info,
+                                cachedEventCount: cached?.eventCount ?? 0,
+                                index: &index,
+                                now: nowDate
                             )
-                            if index.samplesBySession?[sessionId] == nil {
-                                var samplesBySession = index.samplesBySession ?? [:]
-                                samplesBySession[sessionId] = []
-                                index.samplesBySession = samplesBySession
-                            }
-                            if calendarChanged {
-                                var pending = index.calendarRebuildPendingSessions ?? []
-                                pending.insert(sessionId)
-                                index.calendarRebuildPendingSessions = pending
-                            }
-                            Self.clearOffsetRegressionStrikes(for: sessionId, on: &index)
-                            logInfo("[antigravity-scan] session=\(sessionId) 连续 \(strikeCount) 轮全量页 metadata 总数(\(metadataEntryCount)) < 缓存 offset(\(cached.generatorMetadataOffset))，收敛并保留 last-good 缓存（offset 不回退）\(calendarChanged ? "；daily 仍为旧日历分桶，已标记待 full 重建" : "")")
-                            continue
-                        }
-                        strikes[sessionId] = strikeCount
-                        index.offsetRegressionStrikesBySession = strikes
-                        failedCount = SaturatingArithmetic.add(failedCount, 1)
-                        logWarn("[antigravity-scan] session=\(sessionId) 全量页 metadata 总数(\(metadataEntryCount)) < 缓存 offset(\(cached.generatorMetadataOffset))，拒绝覆盖 last-good 并重试（strike \(strikeCount)/\(Self.offsetRegressionStrikeLimit)）")
-                        continue
-                    }
-                    guard isTrustworthyRPCResult(
-                        events,
-                        metadataEntryCount: metadataEntryCount
-                    ) else {
-                        failedCount = SaturatingArithmetic.add(failedCount, 1)
-                        logWarn("[antigravity-scan] session=\(sessionId) RPC 返回空 events，保留 last-good cache 并于下次重试")
-                        continue
-                    }
-                    // 拿到非零 metadata：该 session 的零 metadata 打击计数清零，
-                    // 回到正常路径。此处能到达的全量页必然 count >= 缓存 offset
-                    // （回归页已在上方拒绝），顺带清零 offset 回归打击计数；
-                    // 增量页虽无对账关系，但成功交付 suffix 同样说明 server
-                    // 正常服务，一并清零。
-                    Self.clearEmptyFullStrikes(for: sessionId, on: &index)
-                    Self.clearOffsetRegressionStrikes(for: sessionId, on: &index)
-                    let recoveredEvents = Self.recoverMissingTimestamps(
-                        events,
-                        fileInfo: info
-                    )
-                    let inputTotal = SaturatingArithmetic.sum(recoveredEvents.lazy.map(\.inputTokens))
-                    let outputTotal = SaturatingArithmetic.sum(recoveredEvents.lazy.map(\.outputTokens))
-                    let cacheReadTotal = SaturatingArithmetic.sum(recoveredEvents.lazy.map(\.cacheReadTokens))
-                    let eventStats = Self.accountedEventStats(recoveredEvents)
-                    if eventStats.droppedTimestampless > 0 {
-                        logWarn(
-                            "[antigravity-scan] session=\(sessionId) 丢弃无 timestamp 的 usage event: "
-                                + "accounted=\(eventStats.accounted), dropped=\(eventStats.droppedTimestampless), parsed=\(events.count), rawMetadata=\(metadataEntryCount)"
-                        )
-                    }
-
-                    // 页级不可信防线（全量/增量 alike，上提到全量/增量分叉前统一
-                    // 覆盖两种页）：raw metadata 非零但可计账 event 为零（events
-                    // 为空，或 events 全部缺失 timestamp 且本地回填后仍为零）。多
-                    // 由 token 字段改名/换层级导致解析失败，此时若照常推进——全量
-                    // 替换会清零 last-good daily/samples/eventCount 且 offset 推进
-                    // 整页 raw 条数；增量合并则把 offset 推进 raw 条数——这批数据
-                    // 都会被永久跳过，除非再触发 full 否则不可恢复（生产里活跃
-                    // session 有缓存后永远走增量，见 plan 逻辑）。打击有界（镜像
-                    // 零 metadata 机制）：连续 `zeroAccountedFullStrikeLimit` 轮后
-                    // 按成功收敛——否则持续零可计账的 session 会让 failedCount 永
-                    // 不归零、签名永不推进、每轮 reconcile 全量冷重建。
-                    guard eventStats.accounted > 0 else {
-                        var strikes = index.zeroAccountedFullStrikesBySession ?? [:]
-                        let strikeCount = SaturatingArithmetic.add(strikes[sessionId] ?? 0, 1)
-                        if strikeCount >= Self.zeroAccountedFullStrikeLimit {
-                            if let cached = index.sessions[sessionId] {
-                                // 收敛：采用当前文件指纹，完整保留 eventCount /
-                                // offset / lastMaxStepIndex / lastTurnIndex 与
-                                // daily / samples。offset 刻意不推进——恢复路径
-                                // 是文件再变化时 session 重新 dirty，从保留
-                                // offset 重取同一批页、用（可能已修复的）解析器
-                                // 重试；下次日历失效的冷重建也会 offset=0 全量
-                                // 重来。补写空 samples 条目，避免"缺 samples
-                                // 缓存"分支让指纹未变的 session 反复吃 full plan。
-                                index.sessions[sessionId] = SessionIndexEntry(
+                            logWarn("[antigravity-scan] session=\(sessionId) ✗ 读取失败(不兼容): \(error.message)；本轮计一次失败，采纳当前指纹并保留 last-good 缓存（eventCount=\(cached?.eventCount ?? 0)）")
+                        case .retryable:
+                            let priorFailures = cached?.consecutiveReadFailures ?? 0
+                            if priorFailures + 1 >= Self.retryableReadFailureConvergenceLimit {
+                                // 有界收敛：连续 3 次可重试失败按不兼容同款策略
+                                // 采纳指纹（保留 last-good、计数清零——收敛后下个
+                                // 脏周期重新计数），文件再变化时自然重新入账。
+                                Self.convergeWithCurrentFingerprint(
+                                    sessionId: sessionId,
+                                    info: info,
+                                    cachedEventCount: cached?.eventCount ?? 0,
+                                    index: &index,
+                                    now: nowDate
+                                )
+                                logWarn("[antigravity-scan] session=\(sessionId) ✗ 连续 \(priorFailures + 1) 次可重试读取失败: \(error.message)；按有界收敛采纳当前指纹并保留 last-good 缓存（eventCount=\(cached?.eventCount ?? 0)）")
+                            } else {
+                                // 低于收敛上限：保留脏状态重试。条目处理——
+                                // - 已有条目：原样保留旧指纹与 last-good（下轮指纹
+                                //   不匹配保持 dirty），仅递增连续失败计数；
+                                // - 无条目（首读即失败的新 session）：写当前指纹 +
+                                //   计数，靠计数驱动下轮重试（见 dirtyPlans 的
+                                //   streak 条件）——否则永久故障的新 session 会在
+                                //   无缓存分支每轮重读、计数永无机会累计。
+                                var healed = cached ?? SessionIndexEntry(
                                     mtimeMs: info.mtimeMs,
                                     sizeBytes: info.sizeBytes,
                                     walMtimeMs: info.walMtimeMs,
                                     walSizeBytes: info.walSizeBytes,
                                     fetchedAt: nowDate,
-                                    eventCount: cached.eventCount,
-                                    generatorMetadataOffset: cached.generatorMetadataOffset,
-                                    lastMaxStepIndex: cached.lastMaxStepIndex,
-                                    lastTurnIndex: cached.lastTurnIndex
+                                    eventCount: 0
                                 )
+                                healed.consecutiveReadFailures = priorFailures + 1
+                                index.sessions[sessionId] = healed
                                 if index.samplesBySession?[sessionId] == nil {
                                     var samplesBySession = index.samplesBySession ?? [:]
                                     samplesBySession[sessionId] = []
                                     index.samplesBySession = samplesBySession
                                 }
-                                if calendarChanged {
-                                    var pending = index.calendarRebuildPendingSessions ?? []
-                                    pending.insert(sessionId)
-                                    index.calendarRebuildPendingSessions = pending
-                                }
-                                logInfo("[antigravity-scan] session=\(sessionId) 连续 \(strikeCount) 轮零可计账 event 页，收敛并保留 last-good 缓存（eventCount=\(cached.eventCount)，offset=\(cached.generatorMetadataOffset) 不推进）\(calendarChanged ? "；daily 仍为旧日历分桶，已标记待 full 重建" : "")")
-                            } else {
-                                // 从无数据：写空终结条目（offset=0，不消费未
-                                // 解析的 raw 条目），让该 session 脱离 dirty
-                                // 集合；文件再变化时按 full plan 正常重扫。
-                                index.sessions[sessionId] = SessionIndexEntry(
-                                    mtimeMs: info.mtimeMs,
-                                    sizeBytes: info.sizeBytes,
-                                    walMtimeMs: info.walMtimeMs,
-                                    walSizeBytes: info.walSizeBytes,
-                                    fetchedAt: nowDate,
-                                    eventCount: 0,
-                                    generatorMetadataOffset: 0
-                                )
-                                var samplesBySession = index.samplesBySession ?? [:]
-                                samplesBySession[sessionId] = []
-                                index.samplesBySession = samplesBySession
-                                logInfo("[antigravity-scan] session=\(sessionId) 连续 \(strikeCount) 轮零可计账 event 页，收敛为空 session 终结态")
+                                logWarn("[antigravity-scan] session=\(sessionId) ✗ 读取失败(可重试 #\(priorFailures + 1)): \(error.message)；本轮计一次失败，保留脏状态下一轮重试")
                             }
-                            Self.clearZeroAccountedFullStrikes(for: sessionId, on: &index)
-                            continue
                         }
-                        strikes[sessionId] = strikeCount
-                        index.zeroAccountedFullStrikesBySession = strikes
-                        failedCount = SaturatingArithmetic.add(failedCount, 1)
-                        logWarn("[antigravity-scan] session=\(sessionId) 页有 \(metadataEntryCount) 条 raw metadata 但零可计账 event（parsed=\(events.count)，incremental=\(wasIncremental)），保留 last-good cache 并于下次重试（strike \(strikeCount)/\(Self.zeroAccountedFullStrikeLimit)）")
-                        continue
-                    }
-                    // 拿到可入账 event：该 session 的零可计账打击计数清零（覆盖
-                    // 全量/增量两种页），进入正常分叉路径。
-                    Self.clearZeroAccountedFullStrikes(for: sessionId, on: &index)
-
-                    // 部分命中分量告警（替代 parseUsageEvent 的逐事件 logWarn）：
-                    // 按 session 聚合为一条汇总——记录该 session 本页观测到的
-                    // 未命中分量集合与涉及事件数，集合与上次已告警一致时不重复
-                    // 告警（去重状态见 CacheIndex.partialHitWarnedBySession）。
-                    var observedMissing = Set<String>()
-                    var partialHitEventCount = 0
-                    for event in recoveredEvents {
-                        guard let missing = event.missingComponents, !missing.isEmpty else { continue }
-                        partialHitEventCount += 1
-                        observedMissing.formUnion(missing)
-                    }
-                    if !observedMissing.isEmpty,
-                       index.partialHitWarnedBySession?[sessionId] != observedMissing {
-                        var warned = index.partialHitWarnedBySession ?? [:]
-                        warned[sessionId] = observedMissing
-                        index.partialHitWarnedBySession = warned
-                        logWarn("[antigravity-scan] session=\(sessionId) \(partialHitEventCount) 个 usage 事件仅命中部分 token 分量（未命中分量: \(observedMissing.sorted().joined(separator: "/"))），total 采用 server 权威值")
-                    }
-
-                    if wasIncremental, let cached = index.sessions[sessionId] {
-                        logDebug("[antigravity-scan] session=\(sessionId) ✓ 增量 metadata=\(metadataEntryCount), events=\(events.count) (accounted=\(eventStats.accounted)) input=\(inputTotal) output=\(outputTotal) cacheR=\(cacheReadTotal)")
-                        let details = Self.computeTurnRoundDetails(
-                            sessionID: sessionId,
-                            events: recoveredEvents,
-                            calendar: calendar,
-                            initialPrevMaxStepIndex: cached.lastMaxStepIndex,
-                            initialTurnIndex: cached.lastTurnIndex ?? 0
-                        )
-                        let incDaily = Self.aggregateDaily(
-                            events: recoveredEvents,
-                            calendar: calendar,
-                            counts: details.counts
-                        )
-                        let existingDaily = index.dailyBySession[sessionId] ?? [:]
-                        index.dailyBySession[sessionId] = Self.mergeDaily(existing: existingDaily, incremental: incDaily)
-
-                        let existingSamples = index.samplesBySession?[sessionId] ?? []
-                        var samplesBySession = index.samplesBySession ?? [:]
-                        samplesBySession[sessionId] = (existingSamples + details.samples).filter {
-                            $0.completedAt >= nowDate.addingTimeInterval(-LocalUsageRetentionWindow.seconds)
+                    case .success(let payload):
+                        if payload.calls.isEmpty {
+                            // 没有连接命中的调用：可能是 0 事件的旧会话，也可能
+                            // 是版本指纹通过但数据被清空。照常写空缓存并采纳指
+                            // 纹——本地读确定性，重读同一份字节结果不变。
+                            logDebug("[antigravity-scan] session=\(sessionId) ✓ 无连接命中的调用（calls=0，turns=\(payload.turnStepIndexes.count)）")
                         }
-                        index.samplesBySession = samplesBySession
-
-                        index.sessions[sessionId] = SessionIndexEntry(
-                            mtimeMs: info.mtimeMs,
-                            sizeBytes: info.sizeBytes,
-                            walMtimeMs: info.walMtimeMs,
-                            walSizeBytes: info.walSizeBytes,
-                            fetchedAt: nowDate,
-                            eventCount: SaturatingArithmetic.add(cached.eventCount, eventStats.accounted),
-                            generatorMetadataOffset: Self.advanceGeneratorMetadataOffset(
-                                cached.generatorMetadataOffset,
-                                by: metadataEntryCount
-                            ),
-                            lastMaxStepIndex: details.lastMaxStepIndex ?? cached.lastMaxStepIndex,
-                            lastTurnIndex: details.lastTurnIndex
-                        )
-                    } else {
-                        logDebug("[antigravity-scan] session=\(sessionId) ✓ 全量 metadata=\(metadataEntryCount), events=\(events.count) (accounted=\(eventStats.accounted)) input=\(inputTotal) output=\(outputTotal) cacheR=\(cacheReadTotal)")
-                        let details = Self.computeTurnRoundDetails(
+                        let accounting = Self.accountCalls(
                             sessionID: sessionId,
-                            events: recoveredEvents,
+                            calls: payload.calls,
+                            turnStepIndexes: payload.turnStepIndexes,
                             calendar: calendar
                         )
-                        let newDaily = Self.aggregateDaily(
-                            events: recoveredEvents,
-                            calendar: calendar,
-                            counts: details.counts
-                        )
-                        index.dailyBySession[sessionId] = newDaily
+                        if accounting.droppedTimestamplessCount > 0 {
+                            logWarn(
+                                "[antigravity-scan] session=\(sessionId) 丢弃无 timestamp 的调用: "
+                                    + "accounted=\(accounting.accountedEventCount), dropped=\(accounting.droppedTimestamplessCount), calls=\(payload.calls.count)"
+                            )
+                        }
+                        logDebug("[antigravity-scan] session=\(sessionId) ✓ 直读 calls=\(payload.calls.count) (accounted=\(accounting.accountedEventCount), turns=\(accounting.counts.totalTurns), rounds=\(accounting.counts.totalRounds))")
+
+                        index.dailyBySession[sessionId] = accounting.daily
                         if index.dailyBySession[sessionId]?.isEmpty == true {
                             index.dailyBySession.removeValue(forKey: sessionId)
                         }
                         var samplesBySession = index.samplesBySession ?? [:]
-                        samplesBySession[sessionId] = details.samples.filter {
+                        samplesBySession[sessionId] = accounting.samples.filter {
                             $0.completedAt >= nowDate.addingTimeInterval(-LocalUsageRetentionWindow.seconds)
                         }
                         index.samplesBySession = samplesBySession
@@ -841,22 +462,9 @@ extension AntigravityLocalUsageScanner {
                             walMtimeMs: info.walMtimeMs,
                             walSizeBytes: info.walSizeBytes,
                             fetchedAt: nowDate,
-                            eventCount: eventStats.accounted,
-                            generatorMetadataOffset: metadataEntryCount,
-                            lastMaxStepIndex: details.lastMaxStepIndex,
-                            lastTurnIndex: details.lastTurnIndex
+                            eventCount: accounting.accountedEventCount
                         )
-                        // full 成功已按当前日历重建日桶，旧日历待重建标记随之清除
-                        // （零可计账打击计数已在分叉前的统一清零点处理）。
-                        Self.clearCalendarRebuildPending(for: sessionId, on: &index)
                     }
-                case .failure(let error):
-                    failedCount = SaturatingArithmetic.add(failedCount, 1)
-                    // RPC 失败是传输层结果、不含解析证据，刻意不清零
-                    // zeroAccountedFullStrikesBySession（理由见 .emptyIncremental
-                    // 分支注释）：网络抖动若也打断计数，观察期永远凑不满。
-                    logWarn("[antigravity-scan] session=\(sessionId) ✗ RPC 失败: \(error)")
-                }
                 }
             }
         }
@@ -866,28 +474,14 @@ extension AntigravityLocalUsageScanner {
         //    shouldSave=false (旧 generation) 跳过, 保留新 worker 的 cache.
         if shouldSave {
             index.lastScannedAt = nowDate
-            // 签名保持 all-or-nothing，不需要按 session 签名：持久失败源全部
-            // 变成有界收敛——空 suffix 连续 2 次后升级核验并可收敛；零 metadata
-            // 全量 3 轮打击后收敛；有 raw metadata 但零可计账 event 的页（全量/
-            // 增量 alike，打击上提到分叉前统一覆盖，增量页同款，避免解析损坏时
-            // offset 被无条件推进、raw 条目被永久吞掉）同样 3 轮打击后收敛
-            // （保留 last-good，offset 刻意不推进）；全量页 count < 缓存 offset
-            // 的回归页同样 3 轮打击后收敛（保留 last-good，offset 绝不回退）；
-            // 且收敛
-            // 不计失败——所以 `failedCount > 0`（进而所有 session 以 batch=2 走
-            // full plan）的轮数是有界的（通常 ≤ 3），之后 failedCount 归零、
-            // 签名自然推进、回到便宜的 dirty/offset 模式。枚举不完整仍阻塞
-            // 签名推进（正确：那代表本轮可能漏扫 session），保持原样。
-            //
-            // 注意：零 metadata / 零可计账收敛的 session 若是在日历变更轮收敛
-            // 的，其 last-good daily 仍按旧日历分桶，但签名照常推进。这不是
-            // 宣称旧日历桶已 current，而是有标记兜底：这些 session 记录在
-            // `calendarRebuildPendingSessions`，文件重新活跃（指纹变化）时
-            // 会被排一次 offset=0 full 按当前日历重建（成功后清除标记），
-            // 下一次日历失效的冷重建也会对它们全量重规划。若反而让签名停在
-            // 旧值，每轮 reconcile 都会全量冷重建、对零 metadata session 反复
-            // 打 RPC（旧策略的矛盾所在），代价远大于收益。
-            if failedCount == 0 {
+            // 签名保持 all-or-nothing：唯一阻塞源是**枚举不完整**（那代表本轮
+            // 可能漏扫 session）。读失败的 session 走两路有界收敛（结构化不兼容
+            // 当轮采纳指纹；可重试 I/O 故障连续 3 次后采纳指纹），收敛后下轮
+            // 指纹已匹配不再重读，失败状态因此不阻塞签名——否则一个永久不兼容
+            // 的 session 会让失败永远钉住、每轮都因 calendarChanged 冷重建全部
+            // session、失败 session 每轮重读，正是已退役的打击状态机要切断的
+            // 循环。
+            if listing.isComplete {
                 index.calendarSignature = currentCalendarSignature
             }
             // 落盘前裁掉严格早于 8 天窗口的日桶（消费面只有 today/7 天窗口，
@@ -908,7 +502,7 @@ extension AntigravityLocalUsageScanner {
             today: allDaily.first(where: { $0.dayStart == todayStart }),
             dailyTokenUsage: recent7,
             scannedAt: nowDate,
-            // sessionCount 描述本次发现的本地 session，不应因首次 RPC 失败而少算。
+            // sessionCount 描述本次发现的本地 session，不应因首次读取失败而少算。
             sessionCount: dbFiles.count,
             eventCount: SaturatingArithmetic.sum(index.sessions.values.lazy.map(\.eventCount)),
             failedSessionCount: failedCount,
@@ -916,98 +510,16 @@ extension AntigravityLocalUsageScanner {
         )
     }
 
-    /// 基线判据：未提供 raw metadata 计数时，空事件列表不可信——既可能是 RPC
-    /// 暂时未准备好，也可能来自错误的本地 server/workspace，必须保留旧缓存并重试。
-    /// 提供 `metadataEntryCount` 时（全量/核验页），非零 raw 条数即为通过：raw
-    /// 条目可以合法地不含 token 字段，offset 必须按 raw 条数推进。raw 非零但
-    /// 可计账为零的页（全量与增量 alike）由归约处的零可计账打击机制有界收敛
-    /// ——合法的零 token 页代价是按文件变化的有界重试，换取解析损坏时不吞掉
-    /// suffix 的 offset。
-    nonisolated static func isTrustworthyRPCResult(
-        _ events: [AntigravityFetcher.UsageEvent],
-        metadataEntryCount: Int? = nil
-    ) -> Bool {
-        if let metadataEntryCount {
-            return metadataEntryCount > 0
-        }
-        return !events.isEmpty
-    }
+    /// 每批并发直读的 session 数：SQLiteTempCopy 的 /tmp 副本按文件大小占内存，
+    /// 小批量归约控制峰值（本地读毫秒级，批间串行不构成瓶颈）。
+    nonisolated static let readBatchSize = 4
 
-    /// 连续空 suffix 达到该次数后，下一个 dirty plan 升级为 offset=0 全量核验。
-    /// 两次空 suffix 之间至少隔着一次 30s 节流，给滞后的 server 两次追赶机会。
-    nonisolated static let emptySuffixVerificationThreshold = 2
-
-    /// 零 metadata 全量结果的连续打击上限：达到后该 session 按成功收敛
-    /// （有 last-good 保留 last-good，无数据写空终结条目）。3 轮观察期兼顾
-    /// "连错 server 需要观察"与"不能被拖入永久全量循环"。
-    nonisolated static let zeroMetadataFullStrikeLimit = 3
-
-    /// "有 raw metadata 但零可计账 event"页（全量/增量 alike）的连续打击上限：
-    /// 达到后该 session 按成功收敛（有 last-good 保留 last-good 且 offset 刻意
-    /// 不推进，无数据写空终结条目）。与 `zeroMetadataFullStrikeLimit` 同款，
-    /// 保证"所有持久失败模式有界收敛"的不变量：解析损坏/天然全零 token 的
-    /// session 不能把 failedCount 拖成永久 > 0。
-    nonisolated static let zeroAccountedFullStrikeLimit = 3
-
-    /// 全量页 offset 回归（count < 缓存 offset）的连续打击上限：达到后按成功
-    /// 收敛（采用当前文件指纹、完整保留 last-good，offset 绝不回退）。与
-    /// `zeroMetadataFullStrikeLimit` 同款，保证 server 永久缺数据时失败轮数
-    /// 有界、签名能推进，不拖成每轮全量冷重建。
-    nonisolated static let offsetRegressionStrikeLimit = 3
-
-    /// 清除 session 的零 metadata 打击计数（拿到非零 metadata 或收敛时）。
-    /// 字典清空后写回 nil，避免 index.json 长期残留空对象。
-    private nonisolated static func clearEmptyFullStrikes(
-        for sessionID: String,
-        on index: inout CacheIndex
-    ) {
-        guard let strikes = index.emptyFullStrikesBySession,
-              strikes[sessionID] != nil else { return }
-        var updated = strikes
-        updated.removeValue(forKey: sessionID)
-        index.emptyFullStrikesBySession = updated.isEmpty ? nil : updated
-    }
-
-    /// 清除 session 的旧日历重建待办标记（full 成功按当前日历重建日桶后调用；
-    /// session 被确认删除时也走这里保持卫生）。集合清空后写回 nil，避免
-    /// index.json 长期残留空数组。
-    private nonisolated static func clearCalendarRebuildPending(
-        for sessionID: String,
-        on index: inout CacheIndex
-    ) {
-        guard var pending = index.calendarRebuildPendingSessions,
-              pending.contains(sessionID) else { return }
-        pending.remove(sessionID)
-        index.calendarRebuildPendingSessions = pending.isEmpty ? nil : pending
-    }
-
-    /// 清除 session 的零可计账页（全量/增量 alike）打击计数（页成功入账、收敛
-    /// 或 session 被确认删除时）。字典清空后写回 nil，避免 index.json 长期残留
-    /// 空对象。
-    private nonisolated static func clearZeroAccountedFullStrikes(
-        for sessionID: String,
-        on index: inout CacheIndex
-    ) {
-        guard let strikes = index.zeroAccountedFullStrikesBySession,
-              strikes[sessionID] != nil else { return }
-        var updated = strikes
-        updated.removeValue(forKey: sessionID)
-        index.zeroAccountedFullStrikesBySession = updated.isEmpty ? nil : updated
-    }
-
-    /// 清除 session 的全量页 offset 回归打击计数（拿到 count >= 缓存 offset 的
-    /// 页、收敛或 session 被确认删除时）。字典清空后写回 nil，避免 index.json
-    /// 长期残留空对象。
-    private nonisolated static func clearOffsetRegressionStrikes(
-        for sessionID: String,
-        on index: inout CacheIndex
-    ) {
-        guard let strikes = index.offsetRegressionStrikesBySession,
-              strikes[sessionID] != nil else { return }
-        var updated = strikes
-        updated.removeValue(forKey: sessionID)
-        index.offsetRegressionStrikesBySession = updated.isEmpty ? nil : updated
-    }
+    /// 可重试读失败的**有界收敛**上限：同一 session 连续 N 次 SQLite I/O 类失败
+    /// （权限、锁、EIO 等）后按结构化不兼容同款策略采纳当前指纹收敛并保留
+    /// last-good。瞬时故障（如撤销 db 读权限再恢复，mtime/size 不变）在下一轮
+    /// 自然重试、不丢数据；永久故障最多拖 N 轮即收敛——失败轮数有界，同一份
+    /// 字节不会被每轮重读，`failedSessionCount` 也不会永远钉在 ≥1。
+    nonisolated static let retryableReadFailureConvergenceLimit = 3
 
     /// 写回 index 前裁剪 `dailyBySession` 中严格早于 8 天窗口的日期桶（与
     /// samples 的 `-LocalUsageRetentionWindow.seconds` 谓词同式，按桶的
@@ -1045,174 +557,164 @@ extension AntigravityLocalUsageScanner {
         }
     }
 
-    /// The protocol offset advances by raw generatorMetadata entries, including
-    /// entries that do not contain a usable token event and are filtered out.
-    nonisolated static func advanceGeneratorMetadataOffset(
-        _ current: Int,
-        by metadataEntryCount: Int
-    ) -> Int {
-        SaturatingArithmetic.add(max(current, 0), max(metadataEntryCount, 0))
-    }
-
     struct DirtySessionPlan: Sendable {
         let sessionID: String
         let fileInfo: AntigravityDBFileInfo
-        let requestedOffset: Int
-        let isIncremental: Bool
-        /// offset=0 全量核验计划：由连续空 suffix 升级而来。线上请求形态与
-        /// full plan 相同（`isIncremental == false`），只影响结果归约：核验页
-        /// 若确认 metadata 总数未变，则按成功收敛并推进指纹，而不是重放已
-        /// 入账的 events（重复聚合会双算）。
-        var isVerification: Bool = false
     }
 
-    /// 以固定并发度拉多个 session 的 metadata。
-    /// `nonisolated static`：fetcher 通过参数传，不碰 self，可在 background 跑。
-    fileprivate nonisolated static func fetchAll(
-        fetcher: AntigravityFetcher,
-        plans: [DirtySessionPlan],
-        metadataFetch: TrajectoryMetadataFetch? = nil
-    ) async throws -> [DirtySessionFetchResult] {
-        let planTags = plans.prefix(5).map { plan -> String in
-            if plan.isVerification { return "\(plan.sessionID)(verify)" }
-            return "\(plan.sessionID)\(plan.isIncremental ? "(inc)" : "(full)")"
-        }.joined(separator: ", ")
+    /// 单个脏 session 的直读载荷。
+    struct DirtySessionPayload: Sendable {
+        /// `AntigravitySessionDBReader.readCalls`：连接命中的逐调用事件
+        /// （gen idx 升序 = 时间序）。
+        let calls: [AntigravitySessionDBReader.Call]
+        /// `step_type=14`（用户轮次边界）行的 idx 升序数组。
+        let turnStepIndexes: [Int]
+    }
+
+    /// 单次 session 直读失败的类别，决定失败轮的收敛策略（见
+    /// `performScanPureImpl` 的 `.failure` 分支与类注释「失败有界」）。
+    enum ReadFailureKind: Sendable {
+        /// probe 结构化不兼容（gen_metadata 表缺失/空表/乱数据/无模型名/非
+        /// SQLite 文件）：同字节重探结果恒定 → 当轮采纳文件指纹收敛。
+        case incompatible
+        /// 可重试故障（SQLite 打开/拷贝/查询 I/O 类）：同字节下一轮可能读成功
+        /// → 不采纳指纹自然重试，连续 `retryableReadFailureConvergenceLimit`
+        /// 次失败后有界收敛。
+        case retryable
+    }
+
+    private struct DirtySessionReadError: Error, Sendable {
+        let kind: ReadFailureKind
+        let message: String
+    }
+
+    private struct DirtySessionReadResult: Sendable {
+        let index: Int
+        let sessionID: String
+        let result: Result<DirtySessionPayload, DirtySessionReadError>
+    }
+
+    /// 单个 session 的完整直读：probe 版本指纹门 → readCalls + readUserTurnSteps。
+    /// 全部经 `SQLiteTempCopy`（原路径 READONLY + CANTOPEN/BUSY 时 /tmp 副本兜底）。
+    private nonisolated static func readSessionPayload(
+        dbPath: URL
+    ) throws -> DirtySessionPayload {
+        switch try AntigravitySessionDBReader.probe(dbPath: dbPath) {
+        case .viable:
+            break
+        case .incompatible(let reason):
+            throw DirtySessionReadError(kind: .incompatible, message: "版本指纹不兼容（\(reason)）")
+        case .retryable(let reason):
+            throw DirtySessionReadError(kind: .retryable, message: "probe 读取失败（\(reason)）")
+        }
+        do {
+            let calls = try AntigravitySessionDBReader.readCalls(dbPath: dbPath)
+            let turns = try AntigravitySessionDBReader.readUserTurnSteps(dbPath: dbPath)
+            return DirtySessionPayload(calls: calls, turnStepIndexes: turns.map(\.idx))
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            // probe 门通过后 readCalls / readUserTurnSteps 的抛错只剩 SQLite
+            // 打开/拷贝/查询 I/O 类（结构化数据问题已被 probe 拦截）→ 全部
+            // 视为可重试；CancellationToken 原样上抛，绝不伪装成读失败。
+            throw DirtySessionReadError(kind: .retryable, message: error.localizedDescription)
+        }
+    }
+
+    /// 失败轮的指纹收敛（结构化不兼容当轮 / 可重试达到上限轮共用）：采纳当前
+    /// 文件指纹（下一轮不再重读同一份字节），保留 last-good daily/samples/
+    /// eventCount，并补写空 samples 占位（避免「缺缓存」分支反复触发重读）。
+    /// 新条目的 `consecutiveReadFailures` 为 nil——收敛即清零，下个脏周期
+    /// 重新计数。
+    private nonisolated static func convergeWithCurrentFingerprint(
+        sessionId: String,
+        info: AntigravityDBFileInfo,
+        cachedEventCount: Int,
+        index: inout CacheIndex,
+        now: Date
+    ) {
+        index.sessions[sessionId] = SessionIndexEntry(
+            mtimeMs: info.mtimeMs,
+            sizeBytes: info.sizeBytes,
+            walMtimeMs: info.walMtimeMs,
+            walSizeBytes: info.walSizeBytes,
+            fetchedAt: now,
+            eventCount: cachedEventCount
+        )
+        if index.samplesBySession?[sessionId] == nil {
+            var samplesBySession = index.samplesBySession ?? [:]
+            samplesBySession[sessionId] = []
+            index.samplesBySession = samplesBySession
+        }
+    }
+
+    /// 以固定并发度直读多个 session。`nonisolated static`：无 self 依赖，
+    /// 可在 background 跑；取消沿 task group 传播。
+    private nonisolated static func readAll(
+        plans: [DirtySessionPlan]
+    ) async throws -> [DirtySessionReadResult] {
+        let planTags = plans.prefix(5).map { "\($0.sessionID)(full)" }.joined(separator: ", ")
         logInfo("[antigravity-scan] dirty sessions: \(plans.count) — \(planTags)\(plans.count > 5 ? "…" : "")")
         try Task.checkCancellation()
-        // 进程/端口发现对整次扫描只做一次，所有 session 复用同一快照。
-        let servers = fetcher.discoverMetadataServers()
-        guard !servers.isEmpty else {
-            return plans.enumerated().map { index, item in
-                DirtySessionFetchResult(
-                    index: index,
-                    sessionID: item.sessionID,
-                    result: .failure(DirtySessionFetchError(
-                        message: "未发现 Antigravity 或 agy CLI 进程，请先启动 Antigravity 并完成登录"
-                    ))
-                )
-            }
-        }
 
-        // Full responses are much more expensive than suffixes: each in-flight
-        // request temporarily holds Data plus the per-entry decode objects. Keep
-        // startup/recovery full scans at two and allow four only for small
-        // incremental suffixes.
-        let hasFullPlan = plans.contains { !$0.isIncremental }
-        let concurrencyLimit = hasFullPlan ? 2 : 4
-        let concurrency = min(concurrencyLimit, max(plans.count, 1))
+        let concurrency = min(Self.readBatchSize, max(plans.count, 1))
         var nextIndex = 0
-        var results: [DirtySessionFetchResult] = []
+        var results: [DirtySessionReadResult] = []
         results.reserveCapacity(plans.count)
 
-        return try await withThrowingTaskGroup(of: DirtySessionFetchResult.self) { group in
+        return try await withThrowingTaskGroup(of: DirtySessionReadResult.self) { group in
             for _ in 0..<concurrency {
                 guard nextIndex < plans.count else { break }
-                addFetchTask(
-                    to: &group,
-                    index: nextIndex,
-                    plans: plans,
-                    fetcher: fetcher,
-                    servers: servers,
-                    metadataFetch: metadataFetch
-                )
+                addReadTask(to: &group, index: nextIndex, plans: plans)
                 nextIndex += 1
             }
 
             while let result = try await group.next() {
                 results.append(result)
                 guard nextIndex < plans.count else { continue }
-                addFetchTask(
-                    to: &group,
-                    index: nextIndex,
-                    plans: plans,
-                    fetcher: fetcher,
-                    servers: servers,
-                    metadataFetch: metadataFetch
-                )
+                addReadTask(to: &group, index: nextIndex, plans: plans)
                 nextIndex += 1
             }
             return results.sorted { $0.index < $1.index }
         }
     }
 
-    private nonisolated static func addFetchTask(
-        to group: inout ThrowingTaskGroup<DirtySessionFetchResult, Error>,
+    private nonisolated static func addReadTask(
+        to group: inout ThrowingTaskGroup<DirtySessionReadResult, Error>,
         index: Int,
-        plans: [DirtySessionPlan],
-        fetcher: AntigravityFetcher,
-        servers: [AntigravityFetcher.ServerInfo],
-        metadataFetch: TrajectoryMetadataFetch? = nil
+        plans: [DirtySessionPlan]
     ) {
         let plan = plans[index]
         let sessionID = plan.sessionID
-        let offset = plan.requestedOffset
-        let isIncremental = plan.isIncremental
+        let dbPath = plan.fileInfo.url
 
         group.addTask {
             try Task.checkCancellation()
             do {
-                let requestedOffset = isIncremental ? offset : 0
-                let page: AntigravityFetcher.TrajectoryMetadataPage
-                if let metadataFetch {
-                    // Test-only 替身路径：不出网，按 (sessionID, offset) 返回。
-                    let stubbed = try await metadataFetch(sessionID, requestedOffset)
-                    page = AntigravityFetcher.TrajectoryMetadataPage(
-                        events: stubbed.events,
-                        metadataEntryCount: stubbed.metadataEntryCount
-                    )
-                } else {
-                    page = try await fetcher.getTrajectoryMetadata(
-                        sessionId: sessionID,
-                        offset: requestedOffset,
-                        servers: servers
-                    )
-                }
-                if isIncremental {
-                    if page.metadataEntryCount > 0 {
-                        return DirtySessionFetchResult(
-                            index: index,
-                            sessionID: sessionID,
-                            result: .success(.events(
-                                events: page.events,
-                                metadataEntryCount: page.metadataEntryCount,
-                                wasIncremental: true
-                            ))
-                        )
-                    }
-
-                    // Do not mark the file fingerprint successful: a server can
-                    // transiently return an empty suffix before its trajectory
-                    // index catches up. The plan-level timestamp throttles the
-                    // retry without falling back to another large full fetch.
-                    logInfo("[antigravity-scan] session=\(sessionID) 增量 offset=\(offset) 暂无 metadata，保留 dirty")
-                    return DirtySessionFetchResult(
-                        index: index,
-                        sessionID: sessionID,
-                        result: .success(.emptyIncremental)
-                    )
-                } else {
-                    return DirtySessionFetchResult(
-                        index: index,
-                        sessionID: sessionID,
-                        result: .success(.events(
-                            events: page.events,
-                            metadataEntryCount: page.metadataEntryCount,
-                            wasIncremental: false
-                        ))
-                    )
-                }
+                let payload = try readSessionPayload(dbPath: dbPath)
+                return DirtySessionReadResult(
+                    index: index,
+                    sessionID: sessionID,
+                    result: .success(payload)
+                )
+            } catch let readError as DirtySessionReadError {
+                // readSessionPayload 已把一切失败包成带类别的 DirtySessionReadError，
+                // 原样透传——不得在此重包成 retryable（会把结构化不兼容误分类）。
+                return DirtySessionReadResult(
+                    index: index,
+                    sessionID: sessionID,
+                    result: .failure(readError)
+                )
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
-                return DirtySessionFetchResult(
+                // 理论到不了这里，万一到达按可重试兜底（保守默认，有界收敛封顶）。
+                return DirtySessionReadResult(
                     index: index,
                     sessionID: sessionID,
-                    result: .failure(DirtySessionFetchError(message: error.localizedDescription))
+                    result: .failure(DirtySessionReadError(kind: .retryable, message: error.localizedDescription))
                 )
             }
         }
     }
 }
-
-// 文件系统与 index I/O（AntigravityDBFileInfo / AntigravityDBFileListing / SessionStoreFormat
-// 以及 recoverMissingTimestamps / listDBFilesWithStatus / loadIndex 等）见 AntigravityFilesystem.swift

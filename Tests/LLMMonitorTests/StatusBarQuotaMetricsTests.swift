@@ -849,7 +849,7 @@ final class StatusBarQuotaMetricsTests: XCTestCase {
             kind: .antigravity,
             iconSystemName: "sparkles",
             accentColor: .antigravity,
-            makeFetcher: { _ in AntigravityFetcher() }
+            makeFetcher: { _ in AntigravityFetcher(credentialReader: { AntigravityCredentialFixtures.valid() }) }
         )
         let state = AppState(descriptors: [descriptor], configStore: store)
         defer { state.stop() }

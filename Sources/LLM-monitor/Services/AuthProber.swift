@@ -3,12 +3,16 @@ import Foundation
 /// 异步探测"使用本地认证的 provider"（antigravity / codex）当前是否真的能联通
 /// 本地服务，并把结果缓存给 AppState 用。
 ///
+/// antigravity 阶段一起额度路径走钥匙串凭据 + 远端 Google API，其
+/// `checkLocalAuth()` 探测的是凭据条目是否可读（不要求 Antigravity 运行）。
+///
 /// ## 跟 ProviderRefreshScheduler 的边界
 ///
 /// AuthProber **不**管定时刷新。AppState 仍然按 refreshIntervalSeconds 调度
 /// `ProviderRefreshScheduler` 拉主 quota；AuthProber 单独负责"async 探测本地
-/// 服务是否还活着"，结果只用来给 `ProviderStatus.state` 派生 `notConfigured` 提示，
-/// 以及在检测到服务离线时主动 `rebuildStatuses() + rescheduleAll()`。
+/// 认证是否就绪"（antigravity：钥匙串凭据；codex：本地 auth 文件），
+/// 结果只用来给 `ProviderStatus.state` 派生 `notConfigured` 提示，
+/// 以及在检测到认证不可用时主动 `rebuildStatuses() + rescheduleAll()`。
 ///
 /// ## cache 语义
 ///
@@ -22,7 +26,7 @@ import Foundation
 /// ## generation 守门
 ///
 /// 故意不把 `AppState.configurationGeneration` 拉进 AuthProber。AuthProber 的
-/// cache 是"系统事实"（IDE 是否启动），跟 config 无关；config 变更时
+/// cache 是"系统事实"（凭据是否可读），跟 config 无关；config 变更时
 /// AppState 调 `reset()` 直接清空 cache + 取消所有 in-flight 即可。
 /// 这样 AuthProber 不依赖外部状态机，独立可测。
 @MainActor

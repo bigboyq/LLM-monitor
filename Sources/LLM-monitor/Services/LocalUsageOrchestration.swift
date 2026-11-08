@@ -97,6 +97,8 @@ final class LocalUsageOrchestration {
 
     /// Antigravity 本地 token 用量 scanner：通过 `LocalUsageCoordinator` 包装
     /// singleton + Combine wire-up 逻辑，避免在编排层重复 30+ 行。
+    /// 阶段二b 起直读会话 `.db`（AntigravitySessionDBReader），不依赖
+    /// AntigravityFetcher / 进程运行 / 本地 RPC。
     private lazy var antigravityCoordinator: LocalUsageCoordinator<AntigravityLocalUsage> = makeCoordinator(
         providerID: writer.providerID(for: .antigravity) ?? "",
         logTag: "antigravity",
@@ -105,7 +107,7 @@ final class LocalUsageOrchestration {
             if let factory = self?.testAntigravityScannerFactory {
                 return factory()
             }
-            return AntigravityLocalUsageScanner(fetcher: AntigravityFetcher())
+            return AntigravityLocalUsageScanner()
         },
         apply: { [weak writer] usage in writer?.applyAntigravityLocalUsage(usage) },
         setScanning: { [weak writer] isScanning in
@@ -641,9 +643,9 @@ final class LocalUsageOrchestration {
         case "agy":
             return fileManager.fileExists(atPath: AgyLocalUsageScanner.defaultBrainRoot.path)
         case "antigravity":
-            // 等价于 AntigravityFetcher().hasLocalAuth() 的常量语义：真正的本地
-            // 探测（pgrep/lsof 进程发现）推迟到 async fetch()，这里直接短路，
-            // 避免每轮 reconcile 都构造一个 fetcher。
+            // 等价于 AntigravityFetcher().hasLocalAuth() 的常量语义：真正的凭据
+            // 探测（读一次登录钥匙串）推迟到 async checkLocalAuth()/fetch()，
+            // 这里直接短路，避免每轮 reconcile 都构造一个 fetcher。
             return true
         case "codex":
             // 与 CodexFetcher 相同的解析链（config authPath → CODEX_HOME → ~/.codex），

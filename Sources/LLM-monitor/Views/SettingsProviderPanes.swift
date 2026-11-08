@@ -21,6 +21,7 @@ extension SettingsView {
         kind: ProviderKind,
         footer: String? = nil,
         interval: Binding<Int>,
+        intervalInheritHint: String? = nil,
         @ViewBuilder authContent: () -> AuthContent
     ) -> some View {
         SettingsSection(title: "认证与刷新", footer: footer) {
@@ -28,14 +29,19 @@ extension SettingsView {
             if !(AuthContent.self == EmptyView.self) {
                 Divider().padding(.vertical, 4)
             }
-            intervalSliderField(label: "独立刷新频率", value: interval)
+            intervalSliderField(label: "独立刷新频率", value: interval, inheritHint: intervalInheritHint)
             if kind == .codexChatGpt {
                 SettingsControlRow("重置卡 / 组织信息周期") {
                     secondaryInfoCycleBadge(intervalOverride: interval.wrappedValue)
                 }
             } else if kind == .antigravity {
                 SettingsControlRow("账号 / 套餐信息周期") {
-                    secondaryInfoCycleBadge(intervalOverride: interval.wrappedValue)
+                    // 未显式配置时 antigravity 有专属默认间隔（300s），预计周期按它折算。
+                    secondaryInfoCycleBadge(
+                        intervalOverride: interval.wrappedValue > 0
+                            ? interval.wrappedValue
+                            : AppConfig.antigravityDefaultRefreshIntervalSeconds
+                    )
                 }
             } else if kind == .glmCodingPlan && draft.glmZcodeJWTEnabled {
                 SettingsControlRow("重置卡 / 活动预计周期") {
@@ -159,10 +165,25 @@ extension SettingsView {
             if draft.antigravityEnabled {
                 providerAuthAndRefreshSection(
                     kind: .antigravity,
-                    footer: "Antigravity 走自动发现：扫描 `language_server`（IDE）与 `agy` / `antigravity-cli`（CLI）进程，复用它们的本地登录态，无需任何配置。",
-                    interval: $draft.antigravityInterval
+                    footer: "额度与账号信息直接使用钥匙串中 Antigravity 写入的登录凭据（gemini / antigravity）请求 Google 配额接口，Antigravity 无需保持运行；token 过期时打开 Antigravity 更新凭据即可。token 由 Antigravity 客户端自行续期，监控侧没有刷新流程。",
+                    interval: $draft.antigravityInterval,
+                    intervalInheritHint: "当前：默认 \(Formatters.formatInterval(seconds: AppConfig.antigravityDefaultRefreshIntervalSeconds))（未显式配置）"
                 ) {
-                    EmptyView()
+                    // 阶段一：token 刷新由 Antigravity 客户端负责，监控侧无 refresh
+                    // 流程。开关按 config 语义恒为关（allowTokenRefresh 强制 false，
+                    // 手改 true 走配置解码错误路径），这里仅可见、不可交互。
+                    SettingsControlRow("允许监控刷新 Token") {
+                        HStack(spacing: 8) {
+                            Toggle("", isOn: .constant(false))
+                                .labelsHidden()
+                                .toggleStyle(.switch)
+                                .controlSize(.small)
+                                .disabled(true)
+                            Text("恒为关（由 Antigravity 客户端刷新）")
+                                .font(SettingsTypography.metadata)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                 }
 
                 notifySection(providerID: providerID(for: .antigravity) ?? "")

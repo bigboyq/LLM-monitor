@@ -95,22 +95,9 @@ final class LLMMonitorTests: XCTestCase {
         XCTAssertNil(QuotaSummary.planPillLabel(providerKind: .codexChatGpt, planLabel: nil))
     }
 
-    // MARK: - User Account Parsing & String Utilities
+    // MARK: - String Utilities & DateParser
 
-    func testParseAccountAndDateParserRules() {
-        // User account parsing
-        let statusUserTierWins = UserStatus(email: "alice@example.com", userTier: UserTier(name: "Free"), planStatus: PlanStatus(planInfo: PlanInfo(planDisplayName: "Pro Max")))
-        let acc1 = AntigravityFetcher.parseAccount(userStatus: statusUserTierWins, fallbackTier: nil)
-        XCTAssertEqual(acc1.planLabel, "Free")
-        XCTAssertEqual(acc1.accountEmail, "alice@example.com")
-
-        let statusFallback = UserStatus(email: "carol@example.com", userTier: nil, planStatus: nil)
-        let acc2 = AntigravityFetcher.parseAccount(userStatus: statusFallback, fallbackTier: "Antigravity Free")
-        XCTAssertEqual(acc2.planLabel, "Antigravity Free")
-
-        let accNil = AntigravityFetcher.parseAccount(userStatus: nil, fallbackTier: nil)
-        XCTAssertNil(accNil.planLabel)
-
+    func testStringAndDateParserRules() {
         // String utilities
         XCTAssertEqual(StringUtilities.trimmedOrNil("  Free  "), "Free")
         XCTAssertNil(StringUtilities.trimmedOrNil("   "))

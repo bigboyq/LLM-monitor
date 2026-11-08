@@ -2,28 +2,33 @@ import Foundation
 
 /// Antigravity 额度抓取器
 ///
-/// 不直接读取 Google OAuth access token：
-/// - 本地 `state.vscdb` 里的 token 可能已经过期，直接请求 cloudcode 会 401
-/// - Antigravity 实际可用的认证链在它自己的本地 language_server 内
+/// **阶段一（2026-11-08）：额度/账号路径走 Keychain 凭据 + 远端 Google API**——
+/// Antigravity 未运行时额度照常工作（token 未过期时）：
 ///
-/// 自动发现本机 Antigravity 后端（IDE 或 agy CLI），复用它们的本地 RPC：
+/// 1. 从登录钥匙串读 `gemini` / `antigravity` 条目（Antigravity 客户端写入并
+///    自行续期，见 `AntigravityCredential`），本地判定 `token.expiry`：
+///    `now >= expiry` 直接抛 `QuotaError.credentialExpired`，不发任何网络请求
+/// 2. POST `https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary`
+///    （body `{}`；Bearer access_token + hub 身份 UA；主机回退序 Daily →
+///    生产 cloudcode-pa → sandbox，仅 401 终止，其余非 2xx 换下一主机）
+/// 3. `.full` 追加 `v1internal:loadCodeAssist` 取 tier（`currentTier.name` →
+///    `paidTier.name` → `paidTier.id`）；邮箱直接用 Keychain 的 `id_token_email`。
+///    本地 RPC 的 `GetUserStatus` / `GetLoadCodeAssist` 在额度路径退役
+///    （`planStatus.planInfo` 细节展示名远端无对应，planLabel 回退链相应缩短）
 ///
-/// 1. 用 `pgrep` 扫描所有 `language_server` 进程 + `agy` / `antigravity-cli` 进程
-/// 2. 根据命令行分类：
-///    - **IDE**：`language_server` 二进制 + 命令行含 `antigravity` 字样 + 需要 `--csrf_token`
-///      （`Antigravity IDE.app` 的进程已剥离支持，见 `isUnsupportedIDEAppCommand`）
-///    - **CLI**：`agy` / `antigravity-cli` 二进制（路径锚定，避免 `stragy` 误匹配），无 CSRF
-/// 3. 用 `lsof` 找到该进程监听的 HTTPS 端口
-/// 4. 调本地受保护接口：
-///    - `GetUserStatus` — 拿账号邮箱 + 套餐名（userTier.name / planStatus.planInfo）
-///    - `GetLoadCodeAssist` — 套餐名 fallback（部分旧版本不返回 userTier）
-///    - `RetrieveUserQuotaSummary` — 5h / 周额度
+/// **阶段二b（2026-11-08）**：本地用量路径退役本地 RPC
+/// `GetCascadeTrajectoryGeneratorMetadata` 与进程发现——scanner 直读会话
+/// `.db`（`AntigravitySessionDBReader`），本类型只剩远端配额/账号路径，不再
+/// 携带任何 localhost / pgrep / lsof / CSRF 代码。
 struct AntigravityFetcher: QuotaFetcher {
-    typealias RawRPCOverride = @Sendable (
-        ServerInfo,
-        String,
-        Data?
-    ) async throws -> (Data, URLResponse)
+    /// 远端配额 POST 注入点（仅测试用）：host / path / headers / body → (data, status)。
+    /// 抛错视为传输层失败（触发主机回退）；非 2xx 状态码由调用方决定回退或终止。
+    typealias RemotePostOverride = @Sendable (
+        _ host: String,
+        _ path: String,
+        _ headers: [String: String],
+        _ body: Data
+    ) async throws -> (Data, Int)
 
     let providerID = "antigravity"
     let displayName = "Antigravity"
@@ -33,7 +38,8 @@ struct AntigravityFetcher: QuotaFetcher {
     /// 带 delegate 的 URLSession 会被系统强持有到 invalidate / 进程退出；本
     /// fetcher 是按需构造的轻量 struct（每轮刷新、reconcile、auth 探测都会新建
     /// 一个），session 必须进程级共享，否则每次构造都泄漏一套 session + delegate。
-    /// LocalhostTrustDelegate 只做无状态的 localhost 信任评估，跨实例复用安全。
+    /// LocalhostTrustDelegate 只做无状态的 localhost 信任评估，跨实例复用安全；
+    /// 远端 Google API 不命中 localhost 分支，走系统默认 TLS 校验。
     private static let session: URLSession = {
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = HTTPTimeouts.antigravityRequest
@@ -45,575 +51,148 @@ struct AntigravityFetcher: QuotaFetcher {
         )
     }()
 
-    private let metadataServerDiscovery: @Sendable () -> [ServerInfo]
-    private let quotaServerDiscovery: @Sendable () async throws -> ServerInfo
-    private let rawRPCOverride: RawRPCOverride?
+    /// 远端配额接口的 HTTPClient（glm/minimax 同款 Services/Infra 基础设施）。
+    private static let remoteHTTPClient = HTTPClient(
+        session: session,
+        logTag: "antigravity",
+        defaultTimeout: HTTPTimeouts.antigravityRequest,
+        maxResponseBytes: ResponseByteLimits.standardQuota
+    )
+
+    private let credentialReader: @Sendable () -> AntigravityCredential?
+    private let hubVersionProvider: @Sendable () -> String?
+    /// 默认走 HTTPClient 生产传输；测试注入 override 后按 host 逐一记录调用。
+    private let remotePost: RemotePostOverride
 
     init(
-        metadataServerDiscovery: @escaping @Sendable () -> [ServerInfo] = {
-            AntigravityFetcher.defaultMetadataServers()
+        credentialReader: @escaping @Sendable () -> AntigravityCredential? = {
+            AntigravityKeychain.readCredential()
         },
-        quotaServerDiscovery: @escaping @Sendable () async throws -> ServerInfo = {
-            try await AntigravityFetcher.discoverServerAsync()
+        hubVersionProvider: @escaping @Sendable () -> String? = {
+            AntigravityFetcher.readAntigravityAppVersion()
         },
-        rawRPCOverride: RawRPCOverride? = nil
+        remotePostOverride: RemotePostOverride? = nil
     ) {
-        self.metadataServerDiscovery = metadataServerDiscovery
-        self.quotaServerDiscovery = quotaServerDiscovery
-        self.rawRPCOverride = rawRPCOverride
+        self.credentialReader = credentialReader
+        self.hubVersionProvider = hubVersionProvider
+        self.remotePost = remotePostOverride ?? { host, path, headers, body in
+            try await AntigravityFetcher.performRemotePost(
+                host: host,
+                path: path,
+                headers: headers,
+                body: body
+            )
+        }
     }
 
     func hasLocalAuth() -> Bool {
-        // 真正的探测需要 pgrep/lsof；这个方法会在菜单和配置变更的主线程路径中
-        // 频繁调用，这里返回 true 表示"潜在可用"，把进程发现推迟到 async fetch()，
-        // 避免打开菜单或设置窗口时发生可感知卡顿。
+        // 真正的探测在 async checkLocalAuth()（读一次钥匙串）；这个方法会在菜单
+        // 和配置变更的主线程路径中频繁调用，这里返回 true 表示"潜在可用"，
+        // 把凭据探测推迟到 async 路径，避免打开菜单或设置窗口时发生可感知卡顿。
         true
     }
 
+    /// 凭据可读（条目存在且结构可解析）即视为可用。token 过期不在此判定：
+    /// 过期时 fetch() 抛 `credentialExpired`，卡片显示「打开 Antigravity 更新凭据」。
     func checkLocalAuth() async -> Bool {
-        (try? await Self.discoverServerAsync()) != nil
+        credentialReader() != nil
     }
 
     func fetch(mode: RefreshMode) async throws -> QuotaInfo {
-        let server = try await quotaServerDiscovery()
+        guard let credential = credentialReader() else {
+            throw QuotaError.networkError(
+                "未读取到 Antigravity 登录凭据，请打开 Antigravity 并完成登录"
+            )
+        }
+        // 过期判定在本地完成：过期时不发任何网络请求，直接进入 credentialExpired。
+        if credential.isExpired() {
+            throw QuotaError.credentialExpired
+        }
 
-        async let quotaSummary: RetrieveUserQuotaSummaryEnvelope = post(
-            server: server,
-            path: "/exa.language_server_pb.LanguageServerService/RetrieveUserQuotaSummary"
+        async let quotaSummary: RetrieveUserQuotaSummaryResponse = remoteCallDecodable(
+            path: Self.remoteQuotaSummaryPath,
+            accessToken: credential.accessToken
         )
-
-        let user: UserStatusEnvelope?
-        let load: LoadCodeAssistEnvelope?
+        let tier: String?
         if mode == .full {
-            async let userStatus: UserStatusEnvelope? = postOptional(
-                server: server,
-                path: "/exa.language_server_pb.LanguageServerService/GetUserStatus",
-                body: UserStatusRequest(metadata: .init(
-                    ideName: "antigravity",
-                    extensionName: "antigravity",
-                    ideVersion: "unknown",
-                    locale: "en"
-                ))
+            // loadCodeAssist 是可选元数据：失败只丢 tier（merger 在 background
+            // 保留旧值；full 采用 nil），不影响主额度。对齐旧 postOptional 语义。
+            let load: LoadCodeAssistRemoteResponse? = try? await remoteCallDecodable(
+                path: Self.remoteLoadCodeAssistPath,
+                accessToken: credential.accessToken
             )
-            async let loadCodeAssist: LoadCodeAssistEnvelope? = postOptional(
-                server: server,
-                path: "/exa.language_server_pb.LanguageServerService/GetLoadCodeAssist"
-            )
-            user = await userStatus
-            load = await loadCodeAssist
+            tier = load?.tierName
         } else {
-            user = nil
-            load = nil
+            tier = nil
         }
 
         let quota = try await quotaSummary
-        let account = Self.parseAccount(
-            userStatus: user?.userStatus,
-            fallbackTier: load?.response.currentTier?.name
-        )
-        let models = try Self.makeModels(from: quota.response)
+        let models = try Self.makeModels(from: quota)
         return QuotaInfo(
             models: models,
             resetCredits: nil,
-            planLabel: account.planLabel,
-            accountEmail: account.accountEmail,
+            planLabel: tier,
+            accountEmail: credential.email,
             codexUsageDetails: nil,
             fetchedAt: Date()
         )
     }
 
-    // MARK: - Public RPC helpers (reused by AntigravityLocalUsageScanner)
+    // MARK: - Remote Google API（额度/账号路径）
 
-    /// 单次 LLM 调用的 token 用量（来自 `GetCascadeTrajectoryGeneratorMetadata`）
-    struct UsageEvent: Equatable, Codable, Sendable {
-        let timestamp: Date?
-        let model: String?
-        let inputTokens: Int
-        let outputTokens: Int
-        let cacheReadTokens: Int
-        let cacheWriteTokens: Int
-        let reasoningTokens: Int
-        let totalTokens: Int
-        let stepIndices: [Int]?
-        /// 仅部分命中分量且 total 采用 server 权威值时非 nil：该事件未命中的
-        /// 分量名（input/output/cacheRead/reasoning）。随事件带回调用方，由
-        /// scanner 聚合点按 session 去重后告警（本层不再逐事件 logWarn）。
-        let missingComponents: [String]?
-        /// 单次 LLM 调用的原生耗时（秒）：RPC 在 `chatModel` 下携带
-        /// `timeToFirstToken` + `streamingDuration` 两个 Protobuf Duration，
-        /// 两者之和即「发起→完成，含 TTFT、不含工具执行」。与
-        /// `LocalTokenUsageSample.durationSeconds` 同一口径；任一分量缺失或
-        /// 和 ≤ 0 时为 nil（见 `parseUsageEvent` 的提取规则）。
-        let durationSeconds: Double?
+    /// 远端配额端点（2026-11-08 用 Keychain access_token 实测 HTTP 200）。
+    /// 响应与本地 RPC 同形但**没有** `response` 包装（`RetrieveUserQuotaSummaryResponse`）。
+    static let remoteQuotaSummaryPath = "/v1internal:retrieveUserQuotaSummary"
+    /// tier 来源（`.full` 模式）。tier 取 `currentTier.name`，回退
+    /// `paidTier.name` / `paidTier.id`（见 `LoadCodeAssistRemoteResponse.tierName`）。
+    static let remoteLoadCodeAssistPath = "/v1internal:loadCodeAssist"
 
-        init(
-            timestamp: Date?,
-            model: String?,
-            inputTokens: Int,
-            outputTokens: Int,
-            cacheReadTokens: Int,
-            cacheWriteTokens: Int,
-            reasoningTokens: Int,
-            totalTokens: Int,
-            stepIndices: [Int]? = nil,
-            missingComponents: [String]? = nil,
-            durationSeconds: Double? = nil
-        ) {
-            self.timestamp = timestamp
-            self.model = model
-            self.inputTokens = inputTokens
-            self.outputTokens = outputTokens
-            self.cacheReadTokens = cacheReadTokens
-            self.cacheWriteTokens = cacheWriteTokens
-            self.reasoningTokens = reasoningTokens
-            self.totalTokens = totalTokens
-            self.stepIndices = stepIndices
-            self.missingComponents = missingComponents
-            self.durationSeconds = durationSeconds
-        }
+    /// 主机回退序：Daily → 生产 cloudcode-pa → sandbox。仅 401 终止（抛
+    /// `credentialExpired`），其余非 2xx 与传输失败换下一主机。
+    static let remoteHosts: [String] = [
+        "daily-cloudcode-pa.googleapis.com",
+        "cloudcode-pa.googleapis.com",
+        "daily-cloudcode-pa.sandbox.googleapis.com",
+    ]
 
-        func withTimestamp(_ timestamp: Date) -> UsageEvent {
-            UsageEvent(
-                timestamp: timestamp,
-                model: model,
-                inputTokens: inputTokens,
-                outputTokens: outputTokens,
-                cacheReadTokens: cacheReadTokens,
-                cacheWriteTokens: cacheWriteTokens,
-                reasoningTokens: reasoningTokens,
-                totalTokens: totalTokens,
-                stepIndices: stepIndices,
-                missingComponents: missingComponents,
-                durationSeconds: durationSeconds
-            )
-        }
+    /// AntigravityManager 记录的 hub client 版本下限；读不到 app 版本时的 UA 回退值。
+    static let fallbackHubVersion = "2.26.0"
+
+    /// hub 身份 UA（实测要求）：裸 `antigravity/cli/…` 身份拿不到 Gemini 4 Argon
+    /// 等分组。版本取 `/Applications/Antigravity.app` 的 CFBundleShortVersionString；
+    /// os_type / arch 按实测固定（分发只提供 arm64 包）。
+    static func hubUserAgent(version: String?) -> String {
+        let resolved = StringUtilities.trimmedOrNil(version) ?? fallbackHubVersion
+        return "antigravity/hub/\(resolved) (aidev_client; os_type=darwin; arch=arm64)"
     }
 
-    /// A response page keeps the raw generator-metadata entry count separate from
-    /// parsed usage events. The RPC offset is based on the former; parsing may
-    /// legitimately discard entries without token fields.
-    struct TrajectoryMetadataPage: Equatable, Sendable {
-        let events: [UsageEvent]
-        let metadataEntryCount: Int
+    static func remoteHeaders(accessToken: String, version: String?) -> [String: String] {
+        [
+            "Content-Type": "application/json",
+            "Authorization": "Bearer \(accessToken)",
+            "User-Agent": hubUserAgent(version: version),
+        ]
     }
 
-    /// 单个 trajectory / session 的 generatorMetadata 列表。
-    /// 失败/没有数据 → 返回空数组（不抛错，让 scanner 决定怎么标记 failed）。
-    func getTrajectoryMetadata(
-        sessionId: String,
-        offset: Int? = nil
-    ) async throws -> TrajectoryMetadataPage {
-        let servers = discoverMetadataServers()
-        return try await getTrajectoryMetadata(sessionId: sessionId, offset: offset, servers: servers)
-    }
-
-    func discoverMetadataServers() -> [ServerInfo] {
-        metadataServerDiscovery()
-    }
-
-    /// 使用一次扫描开始时已经发现的服务器查询 session。
-    ///
-    /// Scanner 会把同一份 `servers` 复用于所有 dirty sessions，避免每个 session
-    /// 都重新执行三次 pgrep + 多次 lsof。公开发现仍保留在上面的便利入口，供单次
-    /// 调用和兼容旧调用方使用。
-    func getTrajectoryMetadata(
-        sessionId: String,
-        offset: Int? = nil,
-        servers: [ServerInfo]
-    ) async throws -> TrajectoryMetadataPage {
-        guard !servers.isEmpty else {
-            throw QuotaError.networkError("未发现 Antigravity 或 agy CLI 进程，请先启动 Antigravity 并完成登录")
-        }
-
-        var hadSuccessfulResponse = false
-        var lastError: Error?
-        for server in servers {
-            do {
-                // Decode one generatorMetadata entry at a time. The response
-                // Data is still bounded and retained until this method returns,
-                // but we no longer build a second in-memory `[AnyJSON]` tree for
-                // all entries in a large trajectory.
-                let (data, response) = try await rawPost(
-                    server: server,
-                    path: "/exa.language_server_pb.LanguageServerService/GetCascadeTrajectoryGeneratorMetadata",
-                    body: TrajectoryMetadataRequest(
-                        cascadeId: sessionId,
-                        includeMessages: false,
-                        generatorMetadataOffset: offset
-                    )
-                )
-                try Self.checkHTTP(response: response, data: data)
-                hadSuccessfulResponse = true
-                var events: [UsageEvent] = []
-                let metadataEntryCount: Int
-                do {
-                    metadataEntryCount = try Self.decodeTrajectoryMetadata(data, into: &events)
-                } catch {
-                    throw QuotaError.decodingError(
-                        "Antigravity trajectory 响应无法解析，响应 \(data.count) bytes"
-                    )
-                }
-                guard metadataEntryCount > 0 else {
-                    continue
-                }
-                let offsetTag = offset.map { " (offset=\($0))" } ?? ""
-                logInfo("[antigravity] session=\(sessionId)\(offsetTag) 成功从 pid=\(server.pid) port=\(server.httpsPort) 获取到 \(metadataEntryCount) 个 metadata entries，解析出 \(events.count) 个 events")
-                return TrajectoryMetadataPage(
-                    events: events,
-                    metadataEntryCount: metadataEntryCount
-                )
-            } catch {
-                lastError = error
-                logInfo("[antigravity] session=\(sessionId) pid=\(server.pid) 查询失败，尝试下一个 server: \(error.localizedDescription)")
-            }
-        }
-        if !hadSuccessfulResponse {
-            throw lastError ?? QuotaError.invalidResponse
-        }
-        return TrajectoryMetadataPage(events: [], metadataEntryCount: 0)
-    }
-
-    /// Selectively decodes the top-level `generatorMetadata` array. Unknown
-    /// envelope fields are skipped byte-wise; each array item is decoded and
-    /// released before the next item is visited. This preserves the existing
-    /// tolerant AnyJSON field matching without retaining the full response tree.
-    private nonisolated static func decodeTrajectoryMetadata(
-        _ data: Data,
-        into events: inout [UsageEvent]
-    ) throws -> Int {
-        var parser = TrajectoryMetadataStreamParser(data: data)
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        return try parser.decodeGeneratorMetadata { entryData in
-            let entry = try decoder.decode(AnyJSON.self, from: entryData)
-            if let event = Self.parseUsageEvent(from: entry) {
-                events.append(event)
-            }
-        }
-    }
-
-    /// 递归遍历 JSON，按 key 名正则把 token 计数归类到 `UsageEvent`。
-    /// - timestamp：任意嵌套层都接受，但只匹配明确的 timestamp/created/time
-    ///   白名单。候选按 key 语义、嵌套深度和日期排序，结果不受 JSON 字段遍历顺序
-    ///   影响；duration / latency / time_to_first_token 等耗时字段不会参与匹配。
-    ///   `parseTimestamp` 同时限制日期必须落在合理的现代 epoch 范围内。
-    /// - durationSeconds：`chatModel` 下的 `timeToFirstToken` + `streamingDuration`
-    ///   两个 Protobuf Duration 单列提取（键名「仅字母归一」匹配，见
-    ///   `nativeCallDurationComponent`），之和 > 0 才随事件带出；其他耗时字段
-    ///   （`generation_time_ms` 等）一律忽略。
-    /// - model：只在顶层取，避免把嵌套层的 model 列表（数组）当主 model。
-    /// - token 数字：每一类取递归遍历中出现的最大值，而不是把不同嵌套层相加。
-    ///   RPC 的若干版本会在 wrapper 和 usage 对象中重复携带同一份计数；累加会
-    ///   双重计数。单个 generatorMetadata entry 代表一次调用，因此每类的最大
-    ///   非负计数是更稳妥的兼容策略。各分量的字段模式是否命中单独记录（字段
-    ///   存在即算，值为 0 也算），用于 total 口径判定：全命中 → 分量和，部分
-    ///   命中 → server 权威 total，全未命中 → server total（原语义）。
-    private nonisolated static func parseUsageEvent(from json: AnyJSON) -> UsageEvent? {
-        var inputTokens = 0
-        var outputTokens = 0
-        var cacheReadTokens = 0
-        var cacheWriteTokens = 0
-        var reasoningTokens = 0
-        var totalTokens = 0
-        // 各分量正则是否命中（字段存在即算，值为 0 也算）。分量命中数决定
-        // finalTotal 口径：全命中 → computed；部分命中 → server 权威 total；
-        // 全未命中 → server total（原语义），见下方计算处。
-        var inputMatched = false
-        var outputMatched = false
-        var cacheReadMatched = false
-        var reasoningMatched = false
-        var extractedStepIndices: [Int]? = nil
-        var timestampCandidates: [(priority: Int, depth: Int, date: Date)] = []
-        var modelCandidates: [(priority: Int, depth: Int, value: String)] = []
-        // 原生调用耗时的两个分量（秒）。真实响应在每条 generatorMetadata 的
-        // chatModel 下携带 Protobuf Duration 字符串；与 token 计数同款「取最大」
-        // 策略应对 wrapper 层重复携带同一份值。
-        var timeToFirstTokenSeconds: Double? = nil
-        var streamingDurationSeconds: Double? = nil
-
-        func visit(_ value: AnyJSON, depth: Int) {
-            guard depth < 32 else { return }
-            switch value {
-            case .object(let dict):
-                for (key, child) in dict {
-                    let lower = key.lowercased()
-                    if lower == "stepindices" || lower == "step_indices" {
-                        if case .array(let arr) = child {
-                            let nums = arr.compactMap(\.intValue)
-                            if !nums.isEmpty {
-                                extractedStepIndices = nums
-                            }
-                        }
-                    }
-                    if lower == "apiprovider" || lower == "api_provider" {
-                        if let str = child.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines), !str.isEmpty {
-                            modelCandidates.append((priority: 4, depth: depth, value: str))
-                        }
-                    }
-                    if let priority = Self.timestampPriority(forKey: lower),
-                       let parsed = Self.parseTimestamp(child) {
-                        timestampCandidates.append((priority, depth, parsed))
-                    }
-                    // 单次调用耗时（TTFT / streaming）：键名经「仅字母归一」完整
-                    // 匹配，camelCase / snake_case 都命中；`timestampPriority` 的
-                    // 白名单刻意不含这两个键（"time" 只做完整字符串匹配，不会把
-                    // timetofirsttoken 误当事件时间），token 正则对字符串值也不
-                    // 命中，因此这里单列提取不影响任何既有归类。
-                    if let seconds = Self.nativeCallDurationComponent(forKey: lower, value: child) {
-                        switch seconds.key {
-                        case .timeToFirstToken:
-                            timeToFirstTokenSeconds = max(timeToFirstTokenSeconds ?? 0, seconds.value)
-                        case .streamingDuration:
-                            streamingDurationSeconds = max(streamingDurationSeconds ?? 0, seconds.value)
-                        }
-                    }
-                    // generator metadata 的真实响应会把 model 放在
-                    // metadata.chatModel.model 等嵌套层级。旧逻辑只读顶层，
-                    // 导致所有 Antigravity 样本都无法区分 Gemini / Claude。
-                    if let priority = Self.modelPriority(forKey: lower),
-                       let str = child.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
-                       !str.isEmpty,
-                       !str.hasPrefix("MODEL_PLACEHOLDER_") {
-                        modelCandidates.append((priority, depth, str))
-                    }
-                    if let n = child.intValue, n >= 0 {
-                        if Self.matches(lower, pattern: #"^(input|prompt).*token"#) {
-                            inputTokens = max(inputTokens, n)
-                            inputMatched = true
-                        } else if Self.matches(lower, pattern: #"^(output|completion).*token"#) {
-                            outputTokens = max(outputTokens, n)
-                            outputMatched = true
-                        } else if Self.matches(lower, pattern: #"cache.*read.*token"#) {
-                            cacheReadTokens = max(cacheReadTokens, n)
-                            cacheReadMatched = true
-                        } else if Self.matches(lower, pattern: #"cache.*write.*token"#) {
-                            cacheWriteTokens = max(cacheWriteTokens, n)
-                        } else if Self.matches(lower, pattern: #"(reasoning|thinking).*token"#) {
-                            reasoningTokens = max(reasoningTokens, n)
-                            reasoningMatched = true
-                        } else if lower == "totaltokens" || lower == "total_tokens" {
-                            totalTokens = max(totalTokens, n)
-                        }
-                    }
-                    visit(child, depth: depth + 1)
-                }
-            case .array(let arr):
-                for child in arr {
-                    visit(child, depth: depth + 1)
-                }
-            case .null, .string, .bool, .number:
-                break
-            }
-        }
-
-        visit(json, depth: 0)
-        let timestamp = timestampCandidates.min { lhs, rhs in
-            if lhs.priority != rhs.priority {
-                return lhs.priority < rhs.priority
-            }
-            if lhs.depth != rhs.depth {
-                return lhs.depth < rhs.depth
-            }
-            return lhs.date < rhs.date
-        }?.date
-        let model = modelCandidates.min { lhs, rhs in
-            if lhs.priority != rhs.priority {
-                return lhs.priority < rhs.priority
-            }
-            if lhs.depth != rhs.depth {
-                return lhs.depth < rhs.depth
-            }
-            return lhs.value < rhs.value
-        }?.value
-
-        // cacheWrite 是缓存簿记量，不计入对外 token 总量。部分 RPC 版本的
-        // totalTokens 会把 cacheWrite 算进去，所以不能直接信任 server total；
-        // 反过来，分量正则只命中一部分（如 token 字段改名后只剩 cacheRead）时
-        // computed 缺分量、会系统性偏低，也不能用。口径按分量命中数三分：
-        // - 全命中 → computed（分量和，应与 server total 一致）；
-        // - 部分命中 → server total 权威优先（未命中分量以 missingComponents
-        //   随事件带回调用方，由 scanner 聚合点按 session 去重后告警，不再逐
-        //   事件 logWarn 冲刷轮转日志），
-        //   server 缺失或为 0 时退回 computed（尽力而为，避免把真实事件算成 0 丢掉）；
-        // - 全未命中 → server total（原语义）。
-        let components = [inputTokens, outputTokens, cacheReadTokens, reasoningTokens]
-        let componentsMatched = [inputMatched, outputMatched, cacheReadMatched, reasoningMatched]
-        let computedTotal = components.reduce(0, Self.saturatingAdd)
-        let matchedCount = componentsMatched.filter { $0 }.count
-        let finalTotal: Int
-        var missingComponents: [String]? = nil
-        if matchedCount == componentsMatched.count {
-            finalTotal = computedTotal
-        } else if matchedCount == 0 {
-            // server 也没给 total 时 computedTotal 同为 0，事件由下方 guard 丢弃
-            finalTotal = totalTokens
-        } else if totalTokens > 0 {
-            // 部分命中且采用 server 权威 total：未命中分量随事件带回调用方，
-            // 由 scanner 聚合点按 session 去重后打一条汇总（此前这里逐事件
-            // logWarn，token 字段改名场景下会把 5MB×3 轮转日志冲掉好几轮）。
-            missingComponents = ["input", "output", "cacheRead", "reasoning"].enumerated()
-                .filter { !componentsMatched[$0.offset] }
-                .map(\.element)
-            finalTotal = totalTokens
-        } else {
-            finalTotal = computedTotal
-        }
-
-        // 完全没有 token 数据的事件跳过（避免空 entry 污染聚合）
-        guard finalTotal > 0 || cacheWriteTokens > 0 else {
+    /// 从本机 Antigravity.app 的 Info.plist 读 CFBundleShortVersionString；
+    /// 读不到返回 nil（调用方回退 `fallbackHubVersion`）。
+    static func readAntigravityAppVersion(bundlePath: String = "/Applications/Antigravity.app") -> String? {
+        let plistURL = URL(fileURLWithPath: bundlePath)
+            .appendingPathComponent("Contents")
+            .appendingPathComponent("Info.plist")
+        guard let data = try? Data(contentsOf: plistURL),
+              let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil),
+              let info = plist as? [String: Any] else {
             return nil
         }
-        // durationSeconds：两个分量之和（分量在提取处已保证 > 0）。任一分量缺失
-        // 时以另一分量为和（不影响合法性）；两者全缺 → nil，和 ≤ 0 → nil。
-        let durationSeconds: Double?
-        if timeToFirstTokenSeconds != nil || streamingDurationSeconds != nil {
-            let total = (timeToFirstTokenSeconds ?? 0) + (streamingDurationSeconds ?? 0)
-            durationSeconds = total > 0 ? total : nil
-        } else {
-            durationSeconds = nil
-        }
-        return UsageEvent(
-            timestamp: timestamp,
-            model: model,
-            inputTokens: inputTokens,
-            outputTokens: outputTokens,
-            cacheReadTokens: cacheReadTokens,
-            cacheWriteTokens: cacheWriteTokens,
-            reasoningTokens: reasoningTokens,
-            totalTokens: finalTotal,
-            stepIndices: extractedStepIndices,
-            missingComponents: missingComponents,
-            durationSeconds: durationSeconds
-        )
+        return StringUtilities.trimmedOrNil(info["CFBundleShortVersionString"] as? String)
     }
 
-    /// 原生调用耗时分量键（`GetCascadeTrajectoryGeneratorMetadata` 响应中
-    /// `chatModel` 下的两个 Protobuf Duration 字段；实测 60,373 条事件 100% 携带，
-    /// 两者之和与 steps 表 DONE−createdAt 亚毫秒吻合）。
-    private nonisolated enum NativeCallDurationKey {
-        case timeToFirstToken
-        case streamingDuration
-    }
-
-    /// 耗时键匹配 + 值解析。键名经「仅字母归一」后做完整字符串匹配（与
-    /// `timestampPriority` 同款归一化，camelCase / snake_case / kebab-case 统一），
-    /// 因此 `timeToFirstToken` / `time_to_first_token` 都命中，而 `generationTimeMs`
-    /// 等其他耗时字段不会误入。值支持 Protobuf Duration 字符串（`"11.669597334s"`，
-    /// 去掉尾部 `s` 后按十进制秒解析）与裸数字（秒）。非正 / 非有限的值按缺失
-    /// 处理（返回 nil），由调用方的「和 > 0」门控决定事件是否携带时长。
-    private nonisolated static func nativeCallDurationComponent(
-        forKey key: String,
-        value: AnyJSON
-    ) -> (key: NativeCallDurationKey, value: Double)? {
-        let normalized = key.filter(\.isLetter).lowercased()
-        let durationKey: NativeCallDurationKey
-        switch normalized {
-        case "timetofirsttoken":
-            durationKey = .timeToFirstToken
-        case "streamingduration":
-            durationKey = .streamingDuration
-        default:
-            return nil
-        }
-        let rawSeconds: Double?
-        if let text = value.stringValue {
-            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            let withoutSuffix = trimmed.hasSuffix("s") ? String(trimmed.dropLast()) : trimmed
-            rawSeconds = Double(withoutSuffix)
-        } else {
-            rawSeconds = value.doubleValue
-        }
-        guard let seconds = rawSeconds, seconds.isFinite, seconds > 0 else {
-            return nil
-        }
-        return (durationKey, seconds)
-    }
-
-    /// 明确模型字段优先于包含 "model" 的兼容字段；深度只作为同优先级的
-    /// 次级排序，因此 `metadata.chatModel.model` 可以稳定覆盖外围描述字段。
-    private nonisolated static func modelPriority(forKey key: String) -> Int? {
-        switch key {
-        case "model":
-            return 0
-        case "response_model", "responsemodel":
-            return 1
-        case "model_name", "modelname":
-            return 2
-        default:
-            return key.contains("model") ? 3 : nil
-        }
-    }
-
-    /// 明确的事件时间字段白名单。数字越小优先级越高：
-    /// - timestamp 是 RPC 已知主字段；
-    /// - createdAt / created 是兼容旧响应的 fallback；
-    /// - time 只保留历史兼容，不能盖过语义更明确的字段。
-    ///
-    /// 先移除常见分隔符以同时支持 camelCase / snake_case / kebab-case，但最终仍
-    /// 只做完整字符串匹配，`generation_time_ms`、`time_to_first_token` 等不会命中。
-    private nonisolated static func timestampPriority(forKey key: String) -> Int? {
-        let normalized = key.filter(\.isLetter).lowercased()
-        switch normalized {
-        case "timestamp", "timestampms", "timestampseconds":
-            return 0
-        case "eventtimestamp":
-            return 1
-        case "createdat":
-            return 2
-        case "created":
-            return 3
-        case "time":
-            return 4
-        default:
-            return nil
-        }
-    }
-
-    private nonisolated static func parseTimestamp(_ value: AnyJSON) -> Date? {
-        // Antigravity 是现代产品；2000...2100 足以覆盖真实会话，同时排除 duration、
-        // 相对计时器和单位误判造成的 1970 / 极远未来日期。
-        let minimumEpochSeconds = 946_684_800.0   // 2000-01-01T00:00:00Z
-        let maximumEpochSeconds = 4_102_444_800.0 // 2100-01-01T00:00:00Z
-
-        func isReasonable(_ date: Date) -> Bool {
-            let seconds = date.timeIntervalSince1970
-            return seconds >= minimumEpochSeconds && seconds < maximumEpochSeconds
-        }
-
-        if let n = value.doubleValue, n.isFinite {
-            // epoch seconds 跟 millis 都吃：> 20 000 000 000 视为 millis
-            let seconds = n > 20_000_000_000 ? n / 1000 : n
-            let date = Date(timeIntervalSince1970: seconds)
-            return isReasonable(date) ? date : nil
-        }
-        if let s = value.stringValue, !s.isEmpty {
-            guard let date = DateParser.parse(s), isReasonable(date) else {
-                return nil
-            }
-            return date
-        }
-        return nil
-    }
-
-    private nonisolated static func matches(_ text: String, pattern: String) -> Bool {
-        text.range(of: pattern, options: .regularExpression) != nil
-    }
-
-    private nonisolated static func saturatingAdd(_ lhs: Int, _ rhs: Int) -> Int {
-        let (sum, overflow) = lhs.addingReportingOverflow(rhs)
-        return overflow ? Int.max : sum
-    }
-
-    // MARK: - Local RPC
-
-    private func post<Response: Decodable>(
-        server: ServerInfo,
+    private func remoteCallDecodable<Response: Decodable>(
         path: String,
-        body: Encodable? = nil
+        accessToken: String
     ) async throws -> Response {
-        let (data, response) = try await rawPost(server: server, path: path, body: body)
-        try Self.checkHTTP(response: response, data: data)
-
+        let data = try await remoteCall(path: path, accessToken: accessToken)
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         do {
@@ -625,138 +204,90 @@ struct AntigravityFetcher: QuotaFetcher {
         }
     }
 
-    private func postOptional<Response: Decodable>(
-        server: ServerInfo,
-        path: String,
-        body: Encodable? = nil
-    ) async -> Response? {
-        do {
-            let (data, response) = try await rawPost(server: server, path: path, body: body)
-            try Self.checkHTTP(response: response, data: data)
-            let decoder = JSONDecoder()
-            decoder.dateDecodingStrategy = .iso8601
-            return try decoder.decode(Response.self, from: data)
-        } catch {
-            logWarn("[antigravity] 可选接口 \(path) 失败，将使用兜底: \(error.localizedDescription)")
-            return nil
+    /// 远端配额调用（主机回退）。401 → `credentialExpired`（远端 401 与本地
+    /// 过期判定落到同一提示）；其余非 2xx 与传输失败换下一主机，全部失败抛
+    /// 最后一台的错误。
+    private func remoteCall(path: String, accessToken: String) async throws -> Data {
+        let headers = Self.remoteHeaders(
+            accessToken: accessToken,
+            version: hubVersionProvider()
+        )
+        // 两个端点的 body 都是 `{}`。
+        let body = Data("{}".utf8)
+        var lastError: Error?
+        for host in Self.remoteHosts {
+            do {
+                let (data, status) = try await remotePost(host, path, headers, body)
+                if (200..<300).contains(status) {
+                    return data
+                }
+                if status == 401 {
+                    // 仅 401 终止回退：同一凭据在所有主机上都无效。
+                    throw QuotaError.credentialExpired
+                }
+                lastError = QuotaError.httpError(status: status, body: "响应 \(data.count) bytes")
+            } catch let error as URLError where error.code == .cancelled {
+                // 保留取消错误类型，让 AppState/CancellationFilter 走 deferred 路径。
+                throw error
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch let error as QuotaError {
+                switch error {
+                case .credentialExpired:
+                    throw error
+                case .networkError, .httpError:
+                    // HTTPClient 把传输失败包装成 networkError、非 2xx 抛 httpError
+                    // —— 都属可回退错误，换下一主机。
+                    logWarn("[antigravity] 远端 \(host)\(path) 失败：\(error.localizedDescription)，回退下一主机")
+                    lastError = error
+                default:
+                    throw error
+                }
+            } catch {
+                // 其余传输层异常（未被 HTTPClient 包装的 URLError 等）同按可回退处理。
+                logWarn("[antigravity] 远端 \(host)\(path) 失败：\(HTTPRequestLogSanitizer.networkErrorDescription(error))，回退下一主机")
+                lastError = error
+            }
         }
+        throw lastError ?? QuotaError.invalidResponse
     }
 
-    private func rawPost(
-        server: ServerInfo,
+    /// 生产传输：POST `https://<host><path>`。HTTPClient 对非 2xx 抛 httpError，
+    /// 这里把状态码还原为返回值供主机回退判定（401 终止 / 其他回退）。
+    private static func performRemotePost(
+        host: String,
         path: String,
-        body: Encodable?
-    ) async throws -> (Data, URLResponse) {
-        try Task.checkCancellation()
-        if let rawRPCOverride {
-            let requestBody: Data
-            if let body {
-                requestBody = try JSONEncoder().encode(body)
-            } else {
-                requestBody = Data("{}".utf8)
-            }
-            return try await rawRPCOverride(server, path, requestBody)
-        }
-        guard Self.serverStillOwnsEndpoint(server) else {
-            throw QuotaError.networkError(
-                "Antigravity 本地服务身份已变化（pid=\(server.pid), port=\(server.httpsPort)），请重试刷新"
-            )
-        }
-        guard let url = URL(string: "https://127.0.0.1:\(server.httpsPort)\(path)") else {
+        headers: [String: String],
+        body: Data
+    ) async throws -> (Data, Int) {
+        guard let url = URL(string: "https://\(host)\(path)") else {
             throw QuotaError.invalidResponse
         }
-
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        if let body {
-            let encoder = JSONEncoder()
-            request.httpBody = try encoder.encode(body)
-        } else {
-            request.httpBody = Data("{}".utf8)
+        request.httpBody = body
+        for (field, value) in headers {
+            request.setValue(value, forHTTPHeaderField: field)
         }
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        if let csrfToken = server.csrfToken, !csrfToken.isEmpty {
-            request.setValue(csrfToken, forHTTPHeaderField: "x-codeium-csrf-token")
-        }
-
-        // R2: 按 path 选择响应上限。trajectory metadata 单 session 可能很大（64 MiB）；
-        // 普通状态/额度 8 MiB。流式累计，超过立即取消。
-        let maxBytes = path.contains("TrajectoryGeneratorMetadata")
-            ? ResponseByteLimits.antigravityTrajectory
-            : ResponseByteLimits.standardQuota
-        let redactedPath = HTTPRequestLogSanitizer.sanitizedURL(url)
-
-        logInfo("[antigravity] POST \(url.absoluteString) (kind=\(server.kind.rawValue))")
-        let startedAt = Date()
-        let data: Data
-        let response: URLResponse
         do {
-            let (downloaded, http) = try await CappedDownloader.data(
-                for: request,
-                session: Self.session,
-                maxBytes: maxBytes,
-                redactedPath: redactedPath
-            )
-            data = downloaded
-            response = http
-        } catch let error as URLError where error.code == .cancelled {
-            // 保留取消错误类型，让 AppState/CancellationFilter 走 deferred 路径。
+            let (data, http) = try await remoteHTTPClient.send(request)
+            return (data, http.statusCode)
+        } catch let error as QuotaError {
+            if case let .httpError(status, _) = error {
+                return (Data(), status)
+            }
             throw error
-        } catch let error as URLError {
-            throw QuotaError.networkError(
-                "Antigravity RPC 失败: \(HTTPRequestLogSanitizer.networkErrorDescription(error))"
-            )
-        } catch let quotaError as QuotaError {
-            throw quotaError
-        }
-        let elapsedMs = Int(Date().timeIntervalSince(startedAt) * 1000)
-        let status = (response as? HTTPURLResponse)?.statusCode ?? -1
-        let bodyBytes = data.count
-        logInfo("[antigravity] ← \(status) \(bodyBytes) bytes in \(elapsedMs)ms \(url.lastPathComponent)")
-        return (data, response)
-    }
-
-    private nonisolated static func checkHTTP(response: URLResponse, data: Data) throws {
-        guard let http = response as? HTTPURLResponse else {
-            throw QuotaError.invalidResponse
-        }
-        guard (200..<300).contains(http.statusCode) else {
-            throw QuotaError.httpError(
-                status: http.statusCode,
-                body: "响应 \(data.count) bytes"
-            )
         }
     }
 
     // MARK: - Mapping
 
-    /// 账号信息：(planLabel, accountEmail)。任一为 nil 表示该字段无法确定。
-    struct AccountInfo {
-        let planLabel: String?
-        let accountEmail: String?
-    }
-
-    /// 解析账号信息：邮箱取 `userStatus.email`；套餐名优先级
-    /// `userStatus.userTier.name` > `userStatus.planStatus.planInfo.*` > `GetLoadCodeAssist.currentTier.name`。
-    nonisolated static func parseAccount(
-        userStatus: UserStatus?,
-        fallbackTier: String?
-    ) -> AccountInfo {
-        let email = StringUtilities.trimmedOrNil(userStatus?.email)
-        let tier = StringUtilities.trimmedOrNil(userStatus?.userTier?.name)
-        let planInfo = userStatus?.planStatus?.planInfo
-        let planName = StringUtilities.firstTrimmed(
-            planInfo?.planDisplayName,
-            planInfo?.displayName,
-            planInfo?.productName,
-            planInfo?.planName,
-            planInfo?.planShortName
-        )
-        let planLabel = StringUtilities.firstTrimmed(tier, planName, StringUtilities.trimmedOrNil(fallbackTier))
-        return AccountInfo(planLabel: planLabel, accountEmail: email)
-    }
-
-
+    /// 账号信息组装（阶段一起）：邮箱 = Keychain `id_token_email`（随凭据每次
+    /// 带回）；planLabel = 远端 `loadCodeAssist` 的 `currentTier.name` →
+    /// `paidTier.name` → `paidTier.id`（解析见 `LoadCodeAssistRemoteResponse.tierName`）。
+    /// 本地 RPC `GetUserStatus` / `GetLoadCodeAssist` 已在额度路径退役；其
+    /// `planStatus.planInfo` 细节展示名（planDisplayName / productName 等）在
+    /// 远端无对应字段，planLabel 回退链相应缩短为上述三级。
     private nonisolated static func makeModels(from response: RetrieveUserQuotaSummaryResponse) throws -> [ModelQuota] {
         // 单个 group 的 bucket 数据异常（缺/非法 remainingFraction）只跳过该
         // group 并记日志，不作废整次额度刷新 —— 对齐 postOptional 的部分可用
@@ -866,189 +397,9 @@ struct AntigravityFetcher: QuotaFetcher {
     }
 }
 
-/// Minimal byte walker used only for the trajectory envelope. It deliberately
-/// does not build a generic JSON tree: unknown values are skipped, and one
-/// generator-metadata object is handed to JSONDecoder at a time.
-private struct TrajectoryMetadataStreamParser {
-    private let data: Data
-    private var index: Int = 0
-
-    init(data: Data) {
-        self.data = data
-    }
-
-    mutating func decodeGeneratorMetadata(
-        _ consume: (Data) throws -> Void
-    ) throws -> Int {
-        skipWhitespace()
-        try expect(utf8: 123) // {
-        while true {
-            skipWhitespace()
-            if consumeByte(125) { return 0 } // empty envelope
-            let key = try readString()
-            skipWhitespace()
-            try expect(utf8: 58) // :
-            skipWhitespace()
-            if key == "generatorMetadata", peek() == 91 {
-                return try readMetadataArray(consume)
-            }
-            try skipValue(depth: 0)
-            skipWhitespace()
-            if consumeByte(125) { return 0 }
-            try expect(utf8: 44) // ,
-        }
-    }
-
-    private mutating func readMetadataArray(
-        _ consume: (Data) throws -> Void
-    ) throws -> Int {
-        try expect(utf8: 91) // [
-        skipWhitespace()
-        if consumeByte(93) { return 0 }
-
-        var count = 0
-        while true {
-            skipWhitespace()
-            let start = index
-            try skipValue(depth: 0)
-            let end = index
-            guard end > start else {
-                throw parseError("generatorMetadata entry 为空")
-            }
-            try consume(Data(data[start..<end]))
-            count = SaturatingArithmetic.add(count, 1)
-            skipWhitespace()
-            if consumeByte(93) { return count }
-            try expect(utf8: 44) // ,
-        }
-    }
-
-    private mutating func skipValue(depth: Int) throws {
-        guard depth < 64 else { throw parseError("JSON 嵌套深度超过 64") }
-        skipWhitespace()
-        switch peek() {
-        case 34: try skipString()
-        case 123: try skipObject(depth: depth + 1)
-        case 91: try skipArray(depth: depth + 1)
-        case 116: try skipLiteral("true")
-        case 102: try skipLiteral("false")
-        case 110: try skipLiteral("null")
-        default: try skipNumber()
-        }
-    }
-
-    private mutating func skipObject(depth: Int) throws {
-        try expect(utf8: 123)
-        skipWhitespace()
-        if consumeByte(125) { return }
-        while true {
-            skipWhitespace()
-            try skipString()
-            skipWhitespace()
-            try expect(utf8: 58)
-            try skipValue(depth: depth)
-            skipWhitespace()
-            if consumeByte(125) { return }
-            try expect(utf8: 44)
-        }
-    }
-
-    private mutating func skipArray(depth: Int) throws {
-        try expect(utf8: 91)
-        skipWhitespace()
-        if consumeByte(93) { return }
-        while true {
-            try skipValue(depth: depth)
-            skipWhitespace()
-            if consumeByte(93) { return }
-            try expect(utf8: 44)
-        }
-    }
-
-    private mutating func skipString() throws {
-        try expect(utf8: 34)
-        while index < data.count {
-            let byte = data[index]
-            index += 1
-            if byte == 34 { return }
-            if byte == 92 {
-                guard index < data.count else { throw parseError("JSON 字符串转义不完整") }
-                index += 1
-            }
-        }
-        throw parseError("JSON 字符串未闭合")
-    }
-
-    private mutating func readString() throws -> String {
-        let start = index
-        try skipString()
-        return try JSONDecoder().decode(String.self, from: Data(data[start..<index]))
-    }
-
-    private mutating func skipLiteral(_ literal: String) throws {
-        for expected in literal.utf8 {
-            try expect(utf8: expected)
-        }
-    }
-
-    private mutating func skipNumber() throws {
-        let start = index
-        while index < data.count {
-            switch data[index] {
-            case 9, 10, 13, 32, 44, 93, 125:
-                break
-            default:
-                index += 1
-                continue
-            }
-            break
-        }
-        guard index > start else { throw parseError("JSON 值无效") }
-    }
-
-    private mutating func expect(utf8 expected: UInt8) throws {
-        guard consumeByte(expected) else {
-            throw parseError("JSON 结构无效，期望字节 \(expected)")
-        }
-    }
-
-    private mutating func consumeByte(_ expected: UInt8) -> Bool {
-        guard index < data.count, data[index] == expected else { return false }
-        index += 1
-        return true
-    }
-
-    private func peek() -> UInt8? {
-        index < data.count ? data[index] : nil
-    }
-
-    private mutating func skipWhitespace() {
-        while index < data.count, [9, 10, 13, 32].contains(data[index]) {
-            index += 1
-        }
-    }
-
-    private func parseError(_ message: String) -> QuotaError {
-        .decodingError("Antigravity trajectory JSON: \(message) at byte \(index)")
-    }
-}
-
 // MARK: - Test surface
 
 extension AntigravityFetcher {
-    /// 从 `AnyJSON` 直接调用 `parseUsageEvent`（仅测试用，跳过 Data → JSON 解析层）
-    nonisolated static func parseUsageEventForTest(_ json: AnyJSON) -> UsageEvent? {
-        parseUsageEvent(from: json)
-    }
-
-    nonisolated static func decodeTrajectoryMetadataForTest(
-        _ data: Data
-    ) throws -> TrajectoryMetadataPage {
-        var events: [UsageEvent] = []
-        let count = try decodeTrajectoryMetadata(data, into: &events)
-        return TrajectoryMetadataPage(events: events, metadataEntryCount: count)
-    }
-
     /// 暴露本实例实际使用的 URLSession（仅测试用：验证多个 fetcher 实例共享
     /// 同一个进程级 session，防止退回"每次构造新建 delegate session"的泄漏）。
     var sessionForTest: URLSession { Self.session }
