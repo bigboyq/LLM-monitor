@@ -354,6 +354,37 @@ runtime 原生记录的单次请求耗时，无此污染。实测保留窗口 30
 （~2 min）很快自然重试。`applyReasoningSplit(samples:)` 重建样本时原样保留
 `durationSeconds`（有单测锁定）。
 
+### TTFT / 首字时延字段（调研记录，2026-11-08）
+
+> 只读调研（v4 会话 `mvs_1354…` 全链路解剖 + 全库四重验证）。非官方契约，随版本可能
+> 变化；本节只记录发现，不进任何代码路径。
+
+**结论：MiniMax Code 没有逐调用 TTFT 数据，且 DSH 式推导（首个 chunk 时刻差分）不适用**
+——两家同属 pi-agent/pi-ai 运行时家族，但落账策略不同：DSH 账本带 chunk 级事件流
+（`assistant/chunk` / v4 `attempt.data.stream[]`，逐条带 time），MiniMax Code 只落
+**完成态**消息：
+
+- `local_runtime_*` 各表与 `data_json.$.usage`（全键 = cache_read / context_window /
+  input_tokens / output_tokens / request_duration_ms / total_tokens）除
+  `request_duration_ms` 外无任何时延键；全库 ttft-like 文本命中均为对话正文假阳性。
+- 会话目录（§Model resolution for samples 消费的 `llm-call.json` 即此布局的一部分，
+  `layout: v2-final-dated-session`，runtime `pi-agent`，`sessionDataVersion: 4`）三个
+  文件均无首字时刻：
+  - `messages.jsonl`：每行 `{message{role, timestamp(完成时刻), usage, stopReason,
+    responseId}, message_id, turn_id}`——assistant 行无 chunk 流、无首字时刻；
+  - `llm-call.json`：仅请求参数（model / provider / systemPrompt / tools）；
+  - `manifest.json`：会话元数据。
+  （`timing` 键只出现在 toolResult 的命令计时器
+  `commandTimerStartedAt` / `commandDeadlineAt`，与 LLM 时延无关。）
+- 时长侧因此只有 `request_duration_ms`（含 TTFT + decode 的总时长）一条路，TTFT 无法
+  从总时长反推。
+
+**附带发现（待观察）**：会话目录为
+`~/.minimax/v2/sessions/<日期>/<时间>-session_<base64(sessionId)>/`；样本会话是
+`sessionType=branch`、`archived/hidden`（从既有对话分支），其 db 的
+`local_runtime_message_rows` / `token_usage` 行数为 0——branch 会话的用量是否最终落
+columnar 表待更多样本确认；若不落，只读 db 的 scanner 会漏 branch 会话用量。
+
 ### Reasoning split (output → realOutput + reason)
 
 `MinimaxLocalUsageScanner.applyReasoningSplit(perDay:perDayChars:)` 在 SQL 聚合之上把账单的 `outputTokens` 拆成 (realOutput, reason),per-day 决策:
@@ -739,4 +770,4 @@ reasoning maximum, character aggregation, and output conservation.
 
 
 > 本文由 `spec/providers/minimax.md` 拆分；内容沿用该文件已核对的代码基线，本次未重新逐项核对全部代码。
-> 核对基线：2026-11-03 · 代码 d07fa47
+> 核对基线：2026-11-08 · 代码 031d458
