@@ -1,12 +1,15 @@
 import AppKit
 import Foundation
-import SwiftUI
 
 /// 拦截菜单栏图标的右键点击事件，显示“刷新”“设置”和“退出”菜单。
 @MainActor
 final class MenuBarRightClickHandler: NSObject, NSMenuDelegate {
     private var statusButton: NSButton?
     private var state: AppState?
+    /// AppKit 拿不到 SwiftUI 的 EnvironmentValues；`SettingsOpenerBridge` 在
+    /// MenuBarExtra label 的 background 挂载时注入 `\.openSettings`。未注入
+    /// （如纯单元测试）时 `settingsClicked` 回退到 `showSettingsWindow:` 选择器。
+    var settingsOpener: (() -> Void)?
     /// `NSEvent.addLocalMonitorForEvents` 返回的 monitor handle 是 `Any` token。
     /// Swift 6 mode 下 `Any` 不是 `Sendable`，无法从 `nonisolated deinit`
     /// 访问——这里标 `nonisolated(unsafe)` 是为了在 app 退出时同步清理 monitor，
@@ -87,41 +90,33 @@ final class MenuBarRightClickHandler: NSObject, NSMenuDelegate {
         return nil
     }
     
-    private func showRightClickMenu(sender: NSButton) {
+    /// 菜单结构抽出为独立函数供测试断言（条目、顺序、动作绑定）。
+    func makeRightClickMenu() -> NSMenu {
         let menu = NSMenu()
         menu.delegate = self
-        
+
         let refreshItem = NSMenuItem(title: "刷新", action: #selector(refreshClicked), keyEquivalent: "r")
         refreshItem.target = self
         menu.addItem(refreshItem)
 
-        let settingsItem = NSMenuItem()
-        settingsItem.title = "设置"
-        settingsItem.view = NSHostingView(
-            rootView: SettingsLink {
-                Text("设置")
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .accessibilityLabel("打开设置")
-            }
-            .buttonStyle(.plain)
-            .simultaneousGesture(TapGesture().onEnded { [weak menu] in
-                MenuBarAppActivation.activateForWindowPresentation()
-                DispatchQueue.main.async {
-                    menu?.cancelTracking()
-                }
-            })
-            .frame(width: 150, height: 24)
-        )
+        // 普通 NSMenuItem + openSettings 动作。不要用 view 宿主 SettingsLink：
+        // NSHostingView 在 popUp 出来的 NSMenu 里不渲染——2.5.1 之前「设置」
+        // 条目长期隐形（用户看到 刷新/打开配置文件/退出 三项）的根因。
+        let settingsItem = NSMenuItem(title: "设置", action: #selector(settingsClicked), keyEquivalent: "")
+        settingsItem.target = self
         menu.addItem(settingsItem)
 
         menu.addItem(NSMenuItem.separator())
-        
+
         let quitItem = NSMenuItem(title: "退出", action: #selector(quitClicked), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
-        
+        return menu
+    }
+
+    private func showRightClickMenu(sender: NSButton) {
+        let menu = makeRightClickMenu()
+
         // 使用非弃用 API 将菜单显示在状态栏按钮的正下方
         let buttonFrame = sender.frame
         let position = NSPoint(x: 0, y: buttonFrame.height)
@@ -132,6 +127,18 @@ final class MenuBarRightClickHandler: NSObject, NSMenuDelegate {
         logInfo("RightClickHandler: 触发右键菜单手动刷新")
         Task {
             await state?.refreshAll()
+        }
+    }
+
+    @objc func settingsClicked() {
+        logInfo("RightClickHandler: 触发右键菜单打开设置")
+        MenuBarAppActivation.activateForWindowPresentation()
+        if let settingsOpener {
+            settingsOpener()
+        } else {
+            // 回退：Settings scene 在 macOS 13+ 响应该选择器（非公开 API，
+            // 社区事实标准；正常路径由 SettingsOpenerBridge 注入覆盖）。
+            NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
         }
     }
 

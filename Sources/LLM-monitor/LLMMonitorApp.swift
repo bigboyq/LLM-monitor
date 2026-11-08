@@ -164,7 +164,10 @@ struct LLMMonitorApp: App {
         } label: {
             MenuBarLabel(state: state, configStore: configStore)
                 .background {
-                    ProviderDetailRouteBridge(state: state)
+                    ZStack {
+                        ProviderDetailRouteBridge(state: state)
+                        SettingsOpenerBridge(handler: rightClickHandler)
+                    }
                 }
         }
         .menuBarExtraStyle(.window)
@@ -270,5 +273,19 @@ struct LLMMonitorApp: App {
                 settingsTabSubtitle: "DeepSeek API Key 与余额查询刷新频率"
             ),
         ]
+    }
+}
+
+/// 把 SwiftUI 的 `\.openSettings` 环境动作桥接给 AppKit 右键菜单。
+/// AppKit 侧拿不到 EnvironmentValues；桥接视图挂载在 MenuBarExtra label 的
+/// background 里（与 `ProviderDetailRouteBridge` 同款模式），onAppear 注入。
+private struct SettingsOpenerBridge: View {
+    let handler: MenuBarRightClickHandler
+    @Environment(\.openSettings) private var openSettings
+
+    var body: some View {
+        Color.clear.onAppear {
+            handler.settingsOpener = { openSettings() }
+        }
     }
 }

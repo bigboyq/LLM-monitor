@@ -49,8 +49,6 @@ final class DisplayClockHostCoverageTests: XCTestCase {
         // `\.displayDate` 的子视图，无需展示时钟。
         "Services/EdgeDockController+Window.swift":
             "dock 主面板（圆环+数值）不渲染读 \\.displayDate 的视图",
-        "Services/MenuBarRightClickHandler.swift":
-            "右键菜单只托管静态 SettingsLink，不渲染读 \\.displayDate 的视图",
     ]
 
     /// 已知关键读端：这些文件必须仍在读 `\.displayDate`。防止改名/搬家把读端

@@ -2,6 +2,12 @@
 
 本文件记录面向用户的版本变化；审计、重构和测试补强只在影响使用行为时摘要记录。
 
+## [2.5.2] - 2026-11-08
+
+### Fixed
+
+- 右键菜单「设置」条目隐形修复：条目由 view 宿主 `SettingsLink` 改为普通 `NSMenuItem`，经 `SettingsOpenerBridge` 注入的 `\.openSettings` 动作打开设置窗口（缺省回退 `showSettingsWindow:` 选择器）。根因是 `NSHostingView` 在 popUp 出来的 NSMenu 里不渲染——该条目自引入起从未显示过。
+
 ## [2.5.1] - 2026-11-08
 
 ### Changed

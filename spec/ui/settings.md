@@ -349,7 +349,7 @@ targets:
 | Target | Menu item | Action |
 |---|---|---|
 | Client section header（本机 scope 的 `HarnessSectionView`，及 fleet 全局 / 本机形态的 `FleetClientSectionView`） | `刷新本机 <客户端名>` | `AppState.refreshOne` over the section's provider cards |
-| Menu-bar icon（右键菜单栏图标） | 刷新 / 设置 / 退出 | `refreshAll` / 托管的公开 `SettingsLink`（文案「设置」）打开设置窗口 / terminate——2.5.1 起旧「打开配置文件」条目删除，设置项即原「打开设置…」项更名 |
+| Menu-bar icon（右键菜单栏图标） | 刷新 / 设置 / 退出 | `refreshAll` / 普通 `NSMenuItem` 经注入的 `\.openSettings` 动作（`SettingsOpenerBridge`）打开设置窗口 / terminate——2.5.1 起旧「打开配置文件」条目删除；2.5.2 起弃用 view 宿主 `SettingsLink`（弹出菜单中不渲染） |
 
 When the menu appears, `MenuContentView.onAppear` refreshes the login-item status and
 forces a sleep-health probe, and — if **any** provider is `.ready` — triggers

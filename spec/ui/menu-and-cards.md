@@ -521,8 +521,11 @@ deepseek shard rows refreshes all of them), and `MenuContentView.refreshSectionF
 then runs `AppState.refreshOne` over those cards sequentially. 「打开配置文件」 used to
 live here too; it later moved to the menu-bar icon's right-click menu and was removed
 outright in 2.5.1（旧「用默认编辑器打开 config.json」能力整体删除，无替代入口）.
-That menu now reads 「刷新 / 设置 / 退出」; the Settings entry uses a hosted public
-SwiftUI `SettingsLink`（2.5.1 起文案为「设置」）.
+That menu now reads 「刷新 / 设置 / 退出」; the Settings entry is a plain
+`NSMenuItem` invoking the SwiftUI `OpenSettingsAction`（`\.openSettings`，经
+`SettingsOpenerBridge` 注入 `MenuBarRightClickHandler`；2.5.1 起文案为「设置」，
+2.5.2 起弃用 view 宿主 `SettingsLink`——`NSHostingView` 在 popUp 出来的 NSMenu
+里不渲染，该条目曾因此长期隐形）.
 The menu is attached to the header rather than the whole section so that the right-click
 target reads as "these numbers". **节点 scope 的段头没有右键**——刷新只对本机数据有意义，
 节点数据由同步链路维护（`spec/sync.md` §10.2）。
