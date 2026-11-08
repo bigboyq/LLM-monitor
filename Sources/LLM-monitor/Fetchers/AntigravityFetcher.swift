@@ -32,6 +32,11 @@ import Foundation
 /// 4. 回退失败时：凭据缺失或已过期 → `credentialExpired`（打开 Antigravity 可
 ///    继续监控额度）；远端 401 起始且无本地后端 → 同一文案；其余错误按现有
 ///    错误路径上抛
+///
+/// **2.4.3（来源标记）**：两条成功路径各自给返回的 `QuotaInfo` 打来源标记
+/// `antigravityQuotaSource`（远端 → `.remoteCloudCode`，本地回退 →
+/// `.localLanguageServer`），供设置窗口 Antigravity pane 的「额度来源」行展示
+/// 当前走的是哪条路；merger 在 background 保留上次来源（与账号/套餐同语义）。
 struct AntigravityFetcher: QuotaFetcher {
     /// 远端配额 POST 注入点（仅测试用）：host / path / headers / body → (data, status)。
     /// 抛错视为传输层失败（触发主机回退）；非 2xx 状态码由调用方决定回退或终止。
@@ -213,7 +218,8 @@ struct AntigravityFetcher: QuotaFetcher {
             planLabel: tier,
             accountEmail: credential.email,
             codexUsageDetails: nil,
-            fetchedAt: Date()
+            fetchedAt: Date(),
+            antigravityQuotaSource: .remoteCloudCode
         )
     }
 
@@ -311,7 +317,8 @@ struct AntigravityFetcher: QuotaFetcher {
             planLabel: account.planLabel,
             accountEmail: account.accountEmail ?? credential?.email,
             codexUsageDetails: nil,
-            fetchedAt: Date()
+            fetchedAt: Date(),
+            antigravityQuotaSource: .localLanguageServer
         )
     }
 

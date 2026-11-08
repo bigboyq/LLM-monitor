@@ -10,6 +10,8 @@ Implementation: `Sources/LLM-monitor/Fetchers/AntigravityFetcher.swift`（额度
 
 **2.4.2（2026-11-08，keychain 陈旧窗口回退）**：额度路径增加「keychain 过期 → 本地 language_server RPC」回退。背景事实（已实测）：keychain 条目 `gemini/antigravity` 只在登录/agy 使用时被写，IDE 运行期间刷新的 token 只在其内存（经 host bridge 分发），keychain 会陈旧；过期 token 打远端必 401；而运行中的 language_server 持有 bridge 新凭据且本地 RPC 一直可用。决策树：凭据新鲜 → 远端主路径（不变，远端 401 亦转入本地回退）；凭据缺失/过期 → 进程发现（`AntigravityProcessDiscovery`，原 Phase-0 排序规则复活）+ 本地 `RetrieveUserQuotaSummary`（`response` 包装形状，group/bucket 归一化与远端共用），账号信息用本地 `GetUserStatus`（仅 `.full`，可选失败，tier 回退链照 spec）。本地 RPC 成功后不再打远端；回退失败时凭据缺失/过期或「远端 401 且无本地后端」落 `credentialExpired`（新文案「token 已过期：打开 Antigravity 可继续监控额度，重新登录可刷新凭据」），其余错误按现有路径上抛。用量 scanner 保持纯 `.db` 直读不变（无 RPC 回退）；refresh_token 流程仍然不做。§ Discovery Flow / § Local RPCs / § Local RPC Response Shapes 中与 quota/account 相关的小节按「回退路径」口径恢复为运行时事实。
 
+**2.4.3（2026-11-08，额度来源标记 + 设置窗口展示）**：两条成功路径给返回的 `QuotaInfo` 打来源标记 `antigravityQuotaSource`（远端 → `.remoteCloudCode`、本地回退 → `.localLanguageServer`，见 § Remote Quota Path 的「来源标记 + UI 展示」）；设置窗口 Antigravity pane 在「允许监控刷新 Token」开关下方新增只读「额度来源」行展示当前路径（UI 细节见 [`spec/ui/settings.md`](../ui/settings.md) § Antigravity pane 的「额度来源」行）。
+
 ## Current Status
 
 | Item | Current implementation |
@@ -260,6 +262,20 @@ The consumers of discovery:
    § Local Requirements）；远端 401 起始且无本地后端 → 同样该文案；其余错误
    （远端 401 origin 下本地 RPC 报错、远端非 401 错误等）按现有错误路径上抛；
    取消错误永远原样上抛（AppState/CancellationFilter deferred 路径）
+
+**来源标记 + UI 展示（2.4.3）**：两条成功路径给返回的 `QuotaInfo` 打来源标记
+`antigravityQuotaSource: AntigravityQuotaSource?`（`Models/QuotaInfo.swift`）——
+远端成功 → `.remoteCloudCode`，本地回退成功 → `.localLanguageServer`；其他
+provider 恒 nil，可选字段经 synthesized `decodeIfPresent` 解码，旧持久化数据自动
+兼容。`AntigravityFillingMissingMerger` 对来源标记**不**沿用账号/套餐的保留语义：
+额度（连同其来源）每一拍都重新抓取，background 拍也采纳本次值——否则 keychain
+在两次 full 之间过期转本地回退时，展示行最长滞后一个 full 周期仍显示「远端」；
+某拍两路
+皆败保留 last-good 时，来源随 `lastSuccess` 整体保留（AppState 直通，与 last-good
+同生命周期）。设置窗口 Antigravity pane 在「允许监控刷新 Token」开关下方以只读行
+展示当前路径（行标签「额度来源」，文案与布局见 [`spec/ui/settings.md`](../ui/settings.md)
+§ Antigravity pane 的「额度来源」行）；设置页「立即刷新」走 `.full`，完成后本行
+立即反映当次实际路径。
 
 **凭据**：`AntigravityKeychain.readCredential()` 读登录钥匙串条目
 （service=`gemini`，account=`antigravity`，等价 `security find-generic-password -s gemini -a antigravity -w`），

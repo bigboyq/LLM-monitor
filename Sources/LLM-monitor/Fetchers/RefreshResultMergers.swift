@@ -178,6 +178,9 @@ struct GlmFillingMissingMerger: RefreshResultMerger {
 
 /// Antigravity 的账号与套餐信息只在全量刷新时读取；后台刷新只提供最新额度。
 /// background 保留上次账号/套餐，full 完全采用本次元数据（包括 nil，用于清除旧账号信息）。
+/// 2.4.3 起额度来源标记（`antigravityQuotaSource`）**不**沿用该保留语义：额度（连同其来源）
+/// 每一拍都会重新抓取，background 也采纳本次值——否则 keychain 在两次 full 之间过期转
+/// 本地回退时，展示行最长滞后一个 full 周期仍显示「远端」。
 struct AntigravityFillingMissingMerger: RefreshResultMerger {
     func merge(new: QuotaInfo, previous: QuotaInfo?, mode: RefreshMode) -> QuotaInfo {
         guard let previous, mode == .background else { return new }
@@ -193,7 +196,8 @@ struct AntigravityFillingMissingMerger: RefreshResultMerger {
             openAIApiCredits: new.openAIApiCredits,
             glmZcodePackage: new.glmZcodePackage,
             mainQuotaError: new.mainQuotaError,
-            openAIApiCreditsError: new.openAIApiCreditsError
+            openAIApiCreditsError: new.openAIApiCreditsError,
+            antigravityQuotaSource: new.antigravityQuotaSource
         )
     }
 }

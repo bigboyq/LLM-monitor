@@ -92,6 +92,28 @@ addressable seam — the tests pin the action, the view only draws it. The greye
 first layer is UX, not correctness: repeated clicks are absorbed by `refreshOne`'s
 transaction gate.
 
+### Antigravity pane 的「额度来源」行
+
+Antigravity 设置 pane（`SettingsProviderPanes.swift:antigravityPane`）在「认证与刷新」
+节内、「允许监控刷新 Token」开关行下方有一条**只读**的「额度来源」行
+（`SettingsControlRow` 标准行布局，值文本用 `SettingsTypography.metadata` +
+secondary，与开关行的说明文字同款；无任何交互）。2.4.2 起额度有两条路径（钥匙串
+凭据 → 远端 Cloud Code API 主路径；keychain 过期/缺失或远端 401 → 本地
+language_server RPC 回退），本行回答「当前走的是哪条路」：
+
+- **数据源**：本机 status 最近一次成功刷新打上的
+  `QuotaInfo.antigravityQuotaSource`（`AntigravityQuotaSource`，打标与合并语义见
+  `spec/providers/antigravity.md` § Remote Quota Path 的「来源标记 + UI 展示」）。
+  视图经 `providerID(for: .antigravity)` 查 `state.statuses` 读
+  `status.lastSuccess` 的标记（`antigravityQuotaSourceDescription`），不解析状态机。
+- **文案**：`.remoteCloudCode` → 「远端 Cloud Code（钥匙串凭据）」；
+  `.localLanguageServer` → 「本地 language_server（钥匙串凭据已过期或不可用）」；
+  标记缺失（尚无成功刷新 / `lastSuccess` 为 nil）→ 中性占位「—」。来源标记不跨
+  启动持久化（AppState 只持久化刷新时间戳），重启后首拍刷新前显示「—」。
+- **刷新时机**：`AntigravityFillingMissingMerger` 在 background 拍保留上次来源
+  （与账号/套餐同生命周期）、full 拍采纳本次值，因此本行在 full 周期粒度上稳定；
+  设置页「立即刷新」（`.full`）完成后立即反映当次实际路径。
+
 ### 常规 pane「刷新频率」节与次要信息频率
 
 常规设置 pane（`SettingsGeneralPane.swift`）在「刷新频率」节提供默认刷新与次要信息周期的集中控制：

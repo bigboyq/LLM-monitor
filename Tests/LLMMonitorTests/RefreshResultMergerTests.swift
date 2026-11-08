@@ -341,6 +341,83 @@ final class RefreshResultMergerTests: StateTestCase {
         XCTAssertEqual(cleared.models, missingMetadata.models)
     }
 
+    // MARK: - 2.4.3 额度来源标记（antigravityQuotaSource）的合并语义
+
+    /// background 采纳本次来源：额度（连同其来源）每一拍都重新抓取，来源标记
+    /// 不沿用账号/套餐的保留语义——上一拍 remote、本次 background 拍走 local
+    /// 回退时，展示行必须立即反映 local。
+    func testAntigravityBackgroundMergeAdoptsNewQuotaSource() {
+        let previous = QuotaInfo(
+            models: [makeModel("antigravity", intervalPercent: 82)],
+            resetCredits: nil,
+            planLabel: "Previous Plan",
+            accountEmail: "previous@example.com",
+            codexUsageDetails: nil,
+            fetchedAt: Date(timeIntervalSince1970: 1_000),
+            antigravityQuotaSource: .remoteCloudCode
+        )
+        let new = QuotaInfo(
+            models: [makeModel("antigravity", intervalPercent: 31)],
+            resetCredits: nil,
+            planLabel: nil,
+            accountEmail: nil,
+            codexUsageDetails: nil,
+            fetchedAt: Date(timeIntervalSince1970: 2_000),
+            antigravityQuotaSource: .localLanguageServer
+        )
+
+        let merged = AntigravityFillingMissingMerger().merge(
+            new: new, previous: previous, mode: .background
+        )
+        XCTAssertEqual(
+            merged.antigravityQuotaSource, .localLanguageServer,
+            "background 拍应采纳本次来源（来源每拍已知，不保留上次）"
+        )
+        // models 永远用新值：额度数据是本次抓的。
+        XCTAssertEqual(merged.models, new.models)
+        XCTAssertEqual(merged.accountEmail, "previous@example.com")
+    }
+
+    /// full 采纳本次来源（.full 直接返回 new）；本次没有来源（nil）时同样采纳
+    /// nil，与「full 完全采用本次元数据（包括 nil）」的既有语义一致。
+    func testAntigravityFullMergeAdoptsNewQuotaSource() {
+        let previous = QuotaInfo(
+            models: [makeModel("antigravity", intervalPercent: 82)],
+            resetCredits: nil,
+            planLabel: "Previous Plan",
+            accountEmail: "previous@example.com",
+            codexUsageDetails: nil,
+            fetchedAt: Date(timeIntervalSince1970: 1_000),
+            antigravityQuotaSource: .remoteCloudCode
+        )
+        let localFull = QuotaInfo(
+            models: [makeModel("antigravity", intervalPercent: 35)],
+            resetCredits: nil,
+            planLabel: "New Plan",
+            accountEmail: "new@example.com",
+            codexUsageDetails: nil,
+            fetchedAt: Date(timeIntervalSince1970: 2_000),
+            antigravityQuotaSource: .localLanguageServer
+        )
+
+        let adopted = AntigravityFillingMissingMerger().merge(
+            new: localFull, previous: previous, mode: .full
+        )
+        XCTAssertEqual(adopted.antigravityQuotaSource, .localLanguageServer)
+
+        // full 且本次无来源标记（nil）→ 清掉旧值。
+        let cleared = AntigravityFillingMissingMerger().merge(
+            new: makeQuotaInfo(
+                models: [makeModel("antigravity", intervalPercent: 22)],
+                planLabel: nil,
+                accountEmail: nil
+            ),
+            previous: previous,
+            mode: .full
+        )
+        XCTAssertNil(cleared.antigravityQuotaSource, "full 返回 nil 来源时应清除旧值")
+    }
+
     func testAntigravityMergeWithoutPreviousReturnsNew() {
         let new = makeQuotaInfo(
             models: [makeModel("antigravity", intervalPercent: 43)],

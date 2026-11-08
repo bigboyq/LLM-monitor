@@ -324,6 +324,32 @@ final class AntigravityRefreshCadenceTests: XCTestCase {
         )
     }
 
+    // MARK: - 额度来源标记（2.4.3）
+
+    /// 远端主路径成功 → QuotaInfo 打 `.remoteCloudCode` 来源标记
+    /// （设置窗口「额度来源」行的数据源，spec § Remote Quota Path）。
+    func testRemoteSuccessMarksQuotaSourceRemoteCloudCode() async throws {
+        let stub = RemoteStub()
+        let fetcher = makeFetcher(stub: stub)
+
+        let background = try await fetcher.fetch(mode: .background)
+        XCTAssertEqual(background.antigravityQuotaSource, .remoteCloudCode)
+
+        let full = try await fetcher.fetch(mode: .full)
+        XCTAssertEqual(full.antigravityQuotaSource, .remoteCloudCode)
+    }
+
+    func testQuotaSourceDisplayCopy() {
+        XCTAssertEqual(
+            AntigravityQuotaSource.remoteCloudCode.sourceDescription,
+            "远端 Cloud Code（钥匙串凭据）"
+        )
+        XCTAssertEqual(
+            AntigravityQuotaSource.localLanguageServer.sourceDescription,
+            "本地 language_server（钥匙串凭据已过期或不可用）"
+        )
+    }
+
     // MARK: - 默认刷新间隔
 
     func testDefaultRefreshIntervalIs300s() {

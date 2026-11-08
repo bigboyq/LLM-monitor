@@ -283,6 +283,39 @@ final class AntigravityLocalFallbackTests: XCTestCase {
         }
     }
 
+    // MARK: - 额度来源标记（2.4.3）
+
+    /// keychain 过期 → 本地回退成功 → QuotaInfo 打 `.localLanguageServer`
+    /// 来源标记（设置窗口「额度来源」行的数据源）。
+    func testExpiredCredentialLocalFallbackMarksQuotaSourceLocalLanguageServer() async throws {
+        let fixture = makeFixture(
+            credential: AntigravityCredentialFixtures.expired(),
+            discovery: { try self.discoveredServer() }
+        )
+
+        let result = try await fixture.fetcher.fetch(mode: .background)
+
+        XCTAssertFalse(result.models.isEmpty)
+        XCTAssertEqual(result.antigravityQuotaSource, .localLanguageServer)
+    }
+
+    /// 远端 401 起始的本地回退成功 → 同样标记 `.localLanguageServer`。
+    func testRemote401LocalFallbackMarksQuotaSourceLocalLanguageServer() async throws {
+        let quotaPath = AntigravityFetcher.remoteQuotaSummaryPath
+        let fixture = makeFixture(
+            credential: AntigravityCredentialFixtures.valid(),
+            discovery: { try self.discoveredServer() },
+            remoteHandler: { _, path in
+                path == quotaPath ? (Data(), 401) : nil
+            }
+        )
+
+        let result = try await fixture.fetcher.fetch(mode: .background)
+
+        XCTAssertFalse(result.models.isEmpty)
+        XCTAssertEqual(result.antigravityQuotaSource, .localLanguageServer)
+    }
+
     // MARK: - 本地响应解析（response 包装 → 归一化共用）
 
     func testLocalEnvelopeParsingNormalizesGroups() async throws {

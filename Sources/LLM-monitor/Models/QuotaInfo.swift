@@ -266,6 +266,28 @@ struct ModelQuota: Equatable, Codable, Sendable {
     }
 }
 
+/// Antigravity 额度数据来源（2.4.3）：标记一条 QuotaInfo 的额度数据实际走的
+/// 路径——远端 Cloud Code API（钥匙串凭据）或本地 language_server RPC 回退。
+/// 仅 Antigravity fetcher 的两条成功路径写入；其他 provider 恒 nil
+/// （见 `QuotaInfo.antigravityQuotaSource`）。
+enum AntigravityQuotaSource: String, Codable, Sendable, Equatable {
+    /// 钥匙串凭据有效 → 远端 Cloud Code API（阶段一主路径）。
+    case remoteCloudCode
+    /// keychain 过期/缺失或远端 401 → 本地 language_server RPC 回退（2.4.2）。
+    case localLanguageServer
+
+    /// 设置窗口 Antigravity pane「额度来源」行的展示文案（不含行标签前缀，
+    /// 与 `SettingsControlRow("额度来源")` 组合成完整句子）。
+    var sourceDescription: String {
+        switch self {
+        case .remoteCloudCode:
+            return "远端 Cloud Code（钥匙串凭据）"
+        case .localLanguageServer:
+            return "本地 language_server（钥匙串凭据已过期或不可用）"
+        }
+    }
+}
+
 /// 通用额度数据 — 一个 provider 抓取一次的结果
 struct QuotaInfo: Equatable, Codable, Sendable {
     /// 该 provider 下的所有 model 额度（一般 1-5 个）
@@ -279,6 +301,11 @@ struct QuotaInfo: Equatable, Codable, Sendable {
 
     /// 登录账号（仅 Antigravity 提供；其他 provider 留空）
     let accountEmail: String?
+
+    /// Antigravity 额度数据来源路径（仅 Antigravity 提供；其他 provider 留空）。
+    /// nil = 尚无成功刷新，或来自 2.4.3 之前构造/持久化的旧数据
+    /// （可选字段 synthesized 解码走 decodeIfPresent，旧数据自动兼容）。
+    let antigravityQuotaSource: AntigravityQuotaSource?
 
     /// Codex / ChatGPT Plan 的本地 token 统计明细
     let codexUsageDetails: CodexUsageDetails?
@@ -317,7 +344,8 @@ struct QuotaInfo: Equatable, Codable, Sendable {
         openAIApiCreditsList: [OpenAIApiCreditDetails]? = nil,
         glmZcodePackage: GlmZcodePackageSnapshot? = nil,
         mainQuotaError: String? = nil,
-        openAIApiCreditsError: String? = nil
+        openAIApiCreditsError: String? = nil,
+        antigravityQuotaSource: AntigravityQuotaSource? = nil
     ) {
         self.models = models
         self.resetCredits = resetCredits
@@ -330,6 +358,7 @@ struct QuotaInfo: Equatable, Codable, Sendable {
         self.glmZcodePackage = glmZcodePackage
         self.mainQuotaError = mainQuotaError
         self.openAIApiCreditsError = openAIApiCreditsError
+        self.antigravityQuotaSource = antigravityQuotaSource
         self.fetchedAt = fetchedAt
     }
 
@@ -809,7 +838,8 @@ extension QuotaInfo {
             openAIApiCreditsList: openAIApiCreditsList,
             glmZcodePackage: glmZcodePackage,
             mainQuotaError: mainQuotaError,
-            openAIApiCreditsError: openAIApiCreditsError
+            openAIApiCreditsError: openAIApiCreditsError,
+            antigravityQuotaSource: antigravityQuotaSource
         )
     }
 
@@ -827,7 +857,8 @@ extension QuotaInfo {
             openAIApiCreditsList: openAIApiCreditsList,
             glmZcodePackage: package,
             mainQuotaError: mainQuotaError,
-            openAIApiCreditsError: openAIApiCreditsError
+            openAIApiCreditsError: openAIApiCreditsError,
+            antigravityQuotaSource: antigravityQuotaSource
         )
     }
 }

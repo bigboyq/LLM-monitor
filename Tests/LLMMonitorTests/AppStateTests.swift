@@ -750,6 +750,90 @@ final class AppStateTests: StateTestCase {
             "保留的 lastSuccess 字段应跟第一次成功数据一致"
         )
     }
+
+    /// 2.4.3 额度来源标记的 last-good 保留：成功拍打上的
+    /// `antigravityQuotaSource` 随 lastSuccess 一起保留，某拍两路皆败
+    /// （fetch 抛错）时来源与 last-good 同生命周期，不丢标记。
+    /// 沿用上面 TwoShotFetcher 的脚手架（kind 用 .codexChatGpt 避免测试进程
+    /// 触碰真实用户目录；来源标记的保留是 provider 无关的 lastSuccess 直通）。
+    @MainActor
+    func testAppStateRefreshFailurePreservesLastGoodQuotaSource() async {
+        final class SourceMarkingTwoShotFetcher: QuotaFetcher, @unchecked Sendable {
+            let providerID = "source_marking_two_shot"
+            let displayName = "source_marking_two_shot"
+            let kind = ProviderKind.codexChatGpt
+            let logTag = "[source_marking_two_shot]"
+            private(set) var calls: Int = 0
+            func fetch(mode: RefreshMode) async throws -> QuotaInfo {
+                calls += 1
+                if calls == 1 {
+                    return QuotaInfo(
+                        models: [ModelQuota(
+                            modelName: "gemini_models",
+                            intervalTotalCount: 0, intervalUsageCount: 0,
+                            intervalRemainingPercent: 60, intervalStatus: .present,
+                            intervalResetsAt: nil, intervalWindowSeconds: nil,
+                            weeklyTotalCount: 0, weeklyUsageCount: 0,
+                            weeklyRemainingPercent: 0, weeklyStatus: .absent,
+                            weeklyResetsAt: nil, weeklyWindowSeconds: nil
+                        )],
+                        resetCredits: nil, planLabel: nil, accountEmail: nil,
+                        codexUsageDetails: nil,
+                        fetchedAt: Date(timeIntervalSince1970: 1_900_000_000),
+                        antigravityQuotaSource: .remoteCloudCode
+                    )
+                }
+                struct Boom: LocalizedError { var errorDescription: String? { "boom" } }
+                throw Boom()
+            }
+            func hasLocalAuth() -> Bool { true }
+            func checkLocalAuth() async -> Bool { true }
+        }
+        let fetcher = SourceMarkingTwoShotFetcher()
+        let configStore = makeIsolatedConfigStore()
+        var config = configStore.config
+        config.providers[fetcher.providerID] = ProviderConfig(
+            enabled: true,
+            authPath: configStore.configURL.deletingLastPathComponent()
+                .appendingPathComponent("auth.json").path
+        )
+        try! configStore.applyAndSave(config)
+
+        let descriptors: [FetcherDescriptor] = [
+            FetcherDescriptor(
+                id: fetcher.providerID,
+                displayName: fetcher.providerID,
+                kind: .codexChatGpt,
+                iconSystemName: "star",
+                accentColor: .chatgpt,
+                makeFetcher: { _ in fetcher }
+            )
+        ]
+        let realState = AppState(descriptors: descriptors, configStore: configStore)
+        realState.stop()
+        defer { realState.stop() }
+
+        let idx = realState.statuses.firstIndex(where: { $0.id == fetcher.providerID })!
+        // 1. 成功拍：来源标记随 .ok 落到 lastSuccess。
+        await realState.refreshOne(providerID: fetcher.providerID)
+        guard case .ok(let firstInfo) = realState.statuses[idx].state else {
+            XCTFail("第一次 refresh 应 .ok，实际：\(realState.statuses[idx].state)")
+            return
+        }
+        XCTAssertEqual(firstInfo.antigravityQuotaSource, .remoteCloudCode)
+
+        // 2. 失败拍（两路皆败的等价形态：fetch 抛错）：.failed 保留的
+        //    lastSuccess 必须带着上一次的来源标记。
+        await realState.refreshOne(providerID: fetcher.providerID)
+        guard case .failed(_, let lastSuccess) = realState.statuses[idx].state else {
+            XCTFail("第二次 refresh 应 .failed，实际：\(realState.statuses[idx].state)")
+            return
+        }
+        XCTAssertEqual(
+            lastSuccess?.antigravityQuotaSource, .remoteCloudCode,
+            "两路皆败保留 last-good 时，来源标记应与 last-good 同生命周期"
+        )
+    }
     // MARK: - 单 provider 重锚契约（回归 a287e8d 的 reanchorAllProviders）
 
     /// refreshOne(A) 只重锚 A（回归：旧实现 refreshOne 无条件 reanchorAllProviders，

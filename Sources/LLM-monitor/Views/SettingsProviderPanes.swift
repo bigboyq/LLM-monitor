@@ -184,6 +184,16 @@ extension SettingsView {
                                 .foregroundStyle(.secondary)
                         }
                     }
+
+                    // 2.4.3：当前额度数据来源（2.4.2 起两条路径——钥匙串凭据 →
+                    // 远端 Cloud Code API；keychain 过期/缺失/远端 401 → 本地
+                    // language_server RPC 回退）。只读展示最近一次成功刷新的
+                    // 实际路径；尚无成功刷新时显示中性占位。
+                    SettingsControlRow("额度来源") {
+                        Text(antigravityQuotaSourceDescription)
+                            .font(SettingsTypography.metadata)
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 notifySection(providerID: providerID(for: .antigravity) ?? "")
@@ -391,6 +401,19 @@ extension SettingsView {
     /// 通过 descriptors 拿实际 provider id — 不再硬编码。
     func providerID(for kind: ProviderKind) -> String? {
         descriptors.first(where: { $0.kind == kind })?.id
+    }
+
+    /// Antigravity pane「额度来源」行的展示值：本机 status 最近一次成功刷新
+    /// 打上的来源标记（`QuotaInfo.antigravityQuotaSource`，background 拍由
+    /// merger 保留上次来源、full 拍采纳本次）。尚无成功刷新 / 没有可显示的
+    /// 来源时显示中性占位「—」。只读展示，无交互。
+    var antigravityQuotaSourceDescription: String {
+        guard let id = providerID(for: .antigravity),
+              let status = state.statuses.first(where: { $0.id == id }),
+              let source = status.lastSuccess?.antigravityQuotaSource else {
+            return "—"
+        }
+        return source.sourceDescription
     }
 
     // MARK: - 单个 provider 的「立即刷新」（设置页侧唯一入口）
