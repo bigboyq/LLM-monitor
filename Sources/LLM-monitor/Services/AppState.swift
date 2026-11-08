@@ -887,10 +887,6 @@ final class AppState: ObservableObject {
         })
     }
 
-    func openConfigFile() {
-        configStore.openInDefaultEditor()
-    }
-
     func revealLogFile() {
         let url = URL(fileURLWithPath: AppLog.shared.logFilePath)
         NSWorkspace.shared.activateFileViewerSelecting([url])

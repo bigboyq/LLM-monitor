@@ -436,6 +436,21 @@ struct SettingsView: View {
         }
     }
 
+    /// 常规 pane「打开设置目录」按钮的 Finder reveal 出口（可注入 seam）。
+    ///
+    /// 生产默认在 Finder 中打开配置目录并选中 `config.json`
+    /// （`activateFileViewerSelecting` 会打开参数文件所在目录再选中该文件）；
+    /// SwiftUI `Button` 没有可寻址的测试缝，UI 测试基建也没有 NSWorkspace 替身，
+    /// 所以执行出口包成闭包——测试注入记录闭包断言参数（见
+    /// `SettingsGeneralPaneTests`），视图只把按钮画出来。
+    var revealConfigDirectory: (URL) -> Void = { NSWorkspace.shared.activateFileViewerSelecting([$0]) }
+
+    /// 「打开设置目录」按钮动作：reveal 目标的事实源是 `ConfigStore.configURL`
+    /// （`~/Library/Application Support/LLM-monitor/config.json`）。
+    func openSettingsDirectory() {
+        revealConfigDirectory(configStore.configURL)
+    }
+
     /// 配置变了，但**变的不是表单关心的东西**吗？
     ///
     /// Sync pane 逐字段即时写 config，常规 General/provider 表单则仍有独立的保存事务；

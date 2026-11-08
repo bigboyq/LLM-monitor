@@ -401,6 +401,20 @@ extension SettingsView {
             }
 
             if currentTab.id == SettingsTab.generalID {
+            SettingsSection(
+                title: "配置文件",
+                footer: "所有设置的事实源是配置目录下的 config.json（日志等运行数据也在同一目录）；在 Finder 中打开可手工编辑或排障，保存后 App 自动热重载。"
+            ) {
+                SettingsControlRow("设置目录") {
+                    Button("打开设置目录") {
+                        openSettingsDirectory()
+                    }
+                    .help("在 Finder 中打开配置目录并选中 config.json")
+                }
+            }
+            }
+
+            if currentTab.id == SettingsTab.generalID {
             SettingsSection(title: "关于") {
                 SettingsControlRow("LLM Monitor") {
                     Text("版本 \(AppMetadata.version)（\(AppMetadata.build)）")

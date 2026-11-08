@@ -14,7 +14,7 @@ section components. The sidebar is structured into three native macOS sections:
 - **额度** (`providerTabs`): ChatGPT、Antigravity、GLM、MiniMax、DeepSeek 等注册的 Provider 配额设置页；
 - **用量** (`clientTabs`): Codex、Antigravity、Agy、ZCode、OpenCode、DSH、MiniMax Code 等本地客户端（`ClientDescriptor.all`），直接点击展示该客户端已识别的 Provider token 明细、7 天用量历史与估算价值，无需经由二级横向分段控件反复切换。同名条目（如 Antigravity 额度 vs 用量）通过前缀 `client.<id>` 隔离 ID。
 
-General contains refresh, launch-at-login, holiday source and About;
+General contains refresh, launch-at-login, holiday source, config-directory and About;
 Interface contains appearance, status-bar icon, edge dock preview/configuration and menu
 Provider order; Notifications contains system authorization, Bark and all windowed-provider
 event channels. Provider panes place notification links after authentication/refresh settings;
@@ -284,6 +284,22 @@ General pane 的「关于」之前有
   「仅支持本项目 JSON 快照格式，可用 scripts/sync-holiday-data.sh 生成」，不猜测
   解析。取数走 `Services/Infra/HTTPClient`（overseas 超时档），本地路径直接读文件。
 
+### 常规 pane「配置文件」节与「打开设置目录」按钮（2.5.1）
+
+常规 pane「关于」之前有「配置文件」节：`SettingsControlRow("设置目录")` 行内一枚
+「打开设置目录」按钮（hover 文案「在 Finder 中打开配置目录并选中 config.json」，
+行布局沿用「恢复默认位置」式按钮行惯例）。点击经
+`SettingsView.openSettingsDirectory()` 把 `ConfigStore.configURL`
+（`~/Library/Application Support/LLM-monitor/config.json`，URL 事实源唯一）交给
+注入的 reveal 出口 `SettingsView.revealConfigDirectory`——生产默认
+`NSWorkspace.activateFileViewerSelecting([url])`（Finder 打开配置目录并选中
+config.json），测试注入记录闭包断言参数（`Tests/LLMMonitorTests/SettingsGeneralPaneTests.swift`；
+SwiftUI `Button` 无可寻址测试缝，UI 测试基建也没有 NSWorkspace 替身，故执行出口包成闭包）。
+
+同版本（2.5.1）删除旧「用系统默认应用打开 config.json」入口
+（`ConfigStore.openInDefaultEditor` / `AppState.openConfigFile`）：右键菜单
+「打开配置文件」条目与菜单空态「打开配置文件」按钮一并移除，不做替代入口。
+
 ## Header
 
 Implemented in `MenuContentView.headerBar`.
@@ -309,8 +325,7 @@ Clicking refresh runs:
 
 If `state.statuses` is empty:
 
-- text: `没有注册 provider`
-- link-style button: `打开配置文件`
+- text: `没有注册 provider`（2.5.1 起不再附「打开配置文件」按钮——用系统默认应用打开 config.json 的入口已整体删除，见下文「配置文件」节）
 
 Otherwise:
 
@@ -334,7 +349,7 @@ targets:
 | Target | Menu item | Action |
 |---|---|---|
 | Client section header（本机 scope 的 `HarnessSectionView`，及 fleet 全局 / 本机形态的 `FleetClientSectionView`） | `刷新本机 <客户端名>` | `AppState.refreshOne` over the section's provider cards |
-| Menu-bar icon（右键菜单栏图标） | 刷新 / 打开配置文件 / 退出 | `refreshAll` / `openConfigFile` / terminate——「打开配置文件」已从段头右键移到这里 |
+| Menu-bar icon（右键菜单栏图标） | 刷新 / 设置 / 退出 | `refreshAll` / 托管的公开 `SettingsLink`（文案「设置」）打开设置窗口 / terminate——2.5.1 起旧「打开配置文件」条目删除，设置项即原「打开设置…」项更名 |
 
 When the menu appears, `MenuContentView.onAppear` refreshes the login-item status and
 forces a sleep-health probe, and — if **any** provider is `.ready` — triggers

@@ -158,7 +158,7 @@ Manual refresh paths:
 | Provider strip left click | `AppState.refreshOne(providerID:)` |
 | Section header right-click 「刷新 <客户端名>」 | sequential `AppState.refreshOne` over the section's contributed providers (`HarnessSection.refreshProviderStatusIDs`) |
 | Menu open with any `.ready` provider | `MenuContentView.onAppear` triggers `refreshAll()` |
-| Right-click menu bar icon 刷新 | `MenuBarRightClickHandler.refreshClicked`；同一菜单的「配置」项（`configClicked`）经 `AppState.openConfigFile()` 用默认编辑器打开 `config.json` |
+| Right-click menu bar icon 刷新 | `MenuBarRightClickHandler.refreshClicked`；同一菜单为「刷新 / 设置 / 退出」——设置项是托管的公开 `SettingsLink`（文案「设置」），直接打开设置窗口（2.5.1 起旧「打开配置文件」/ `configClicked` / `AppState.openConfigFile()` 已删除，配置目录入口在设置常规 pane「打开设置目录」） |
 
 `refreshAll()` starts one child task per refreshable provider. `ProviderRefreshScheduler.markInFlight`
 deduplicates so timer + manual + menu-open fire on the same provider collapse to a

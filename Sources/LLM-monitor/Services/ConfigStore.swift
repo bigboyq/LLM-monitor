@@ -232,11 +232,6 @@ final class ConfigStore: ObservableObject, BarkConfigProviding {
         logInfo("ConfigStore.reload: 成功，providers \(oldCount) → \(fresh.providers.count)")
     }
 
-    /// 用系统默认 app 打开配置文件（TextEdit / VSCode / Cursor …）
-    func openInDefaultEditor() {
-        NSWorkspace.shared.open(configURL)
-    }
-
     /// 外部检查"是否需要 reload"
     func hasChangedSinceLastRead() -> Bool {
         hasChangedSinceLastRead(using: Self.data(from: configURL))

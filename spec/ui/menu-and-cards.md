@@ -519,8 +519,10 @@ complete, and staying silent would let a partial total read as a complete one.
 section's today contributions came from (a ZCode section spanning GLM / minimax /
 deepseek shard rows refreshes all of them), and `MenuContentView.refreshSectionFromMenu`
 then runs `AppState.refreshOne` over those cards sequentially. 「打开配置文件」 used to
-live here too; it moved to the menu-bar icon's right-click menu, whose entries distinguish
-「打开设置…」 from 「打开配置文件」. The Settings entry uses a hosted public SwiftUI `SettingsLink`.
+live here too; it later moved to the menu-bar icon's right-click menu and was removed
+outright in 2.5.1（旧「用默认编辑器打开 config.json」能力整体删除，无替代入口）.
+That menu now reads 「刷新 / 设置 / 退出」; the Settings entry uses a hosted public
+SwiftUI `SettingsLink`（2.5.1 起文案为「设置」）.
 The menu is attached to the header rather than the whole section so that the right-click
 target reads as "these numbers". **节点 scope 的段头没有右键**——刷新只对本机数据有意义，
 节点数据由同步链路维护（`spec/sync.md` §10.2）。

@@ -328,9 +328,6 @@ struct MenuContentView: View {
                             Text("没有注册 provider")
                                 .font(.system(size: 12))
                                 .foregroundStyle(.secondary)
-                            Button("打开配置文件") { state.openConfigFile() }
-                                .buttonStyle(.link)
-                                .font(.system(size: 11))
                         } else {
                             Image(systemName: "square.stack.3d.up.slash")
                                 .font(.system(size: 20))
