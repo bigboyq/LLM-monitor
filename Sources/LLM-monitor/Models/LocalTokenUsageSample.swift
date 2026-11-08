@@ -70,7 +70,8 @@ struct LocalTokenUsageSample: Equatable, Codable, Sendable {
 /// Per-prompt token-speed distribution for a set of local usage samples.
 ///
 /// A prompt is included in the distribution only when every call in that prompt
-/// has a valid duration. This avoids presenting partial multi-call prompts as a
+/// has a valid decode duration (call duration in range and positive after
+/// subtracting TTFT). This avoids presenting partial multi-call prompts as a
 /// complete request speed. `latest` always refers to the newest prompt in the
 /// input, and is nil when that prompt is incomplete; it never falls back to an
 /// older prompt.
@@ -436,14 +437,17 @@ enum LocalUsageSummaryBuilder {
         )
     }
 
-    /// 窗口 token 速度（tok/s）的**唯一**实现：Σ(Output+Reason) ÷ Σ单次调用时长。
+    /// 窗口 token 速度（tok/s）的**唯一**实现：Σ(Output+Reason) ÷ Σ解码时长。
     ///
     /// 口径：分子 = `outputTokens + reasoningOutputTokens`（billable 两桶）；分母 =
-    /// 单次调用完整时长（发起→完成，含 TTFT、不含工具执行）。聚合是 **Σ/Σ 加权**
-    /// ——等价于把窗口内所有秒摊到一起看平均速度，而不是各样本速率的算术平均
-    /// （那会让大量短请求淹没长请求）。有效性过滤 `durationSeconds ∈ [0.2, 3600]`：
-    /// 亚秒样本把速率拉成噪声，超 1h 的多为账本异常；`durationSeconds == nil`
-    /// （账本未提供时长）的样本分子分母都不计。没有有效样本返回 nil。
+    /// 解码时长 = 单次调用完整时长（发起→完成，含 TTFT、不含工具执行）− 首字延迟
+    /// （TTFT）。无 TTFT（`ttftSeconds == nil`，旧缓存 / OpenCode）的调用按时长全额
+    /// 计入；`ttft ≥ duration` 视为账本异常，整条剔除（分子分母都不计）。聚合是
+    /// **Σ/Σ 加权**——等价于把窗口内所有解码秒摊到一起看平均速度，而不是各样本
+    /// 速率的算术平均（那会让大量短请求淹没长请求）。有效性过滤
+    /// `durationSeconds ∈ [0.2, 3600]`：亚秒样本把速率拉成噪声，超 1h 的多为账本
+    /// 异常；`durationSeconds == nil`（账本未提供时长）的样本分子分母都不计。没有
+    /// 有效样本返回 nil。
     nonisolated static func windowTokenRate(
         samples: [LocalTokenUsageSample]
     ) -> Double? {
@@ -452,8 +456,10 @@ enum LocalUsageSummaryBuilder {
 
     /// Prompt-level speed distribution. Calls sharing a namespaced `promptID`
     /// form one statistical sample; its speed is the combined billable output
-    /// divided by the combined valid call duration. A prompt with any missing or
-    /// out-of-range call duration is omitted from min/max/P50/P95 in its entirety.
+    /// divided by the combined decode duration (call duration minus TTFT; calls
+    /// without TTFT count their full duration). A prompt with any call whose
+    /// duration is missing, out of range, or leaves no positive decode time is
+    /// omitted from min/max/P50/P95 in its entirety.
     /// The newest prompt is selected by its latest `completedAt`; promptID
     /// ascending is the deterministic tie break when timestamps match.
     nonisolated static func promptSpeedStatistics(
@@ -470,7 +476,7 @@ enum LocalUsageSummaryBuilder {
 
         let prompts = grouped.map { promptID, calls -> PromptRate in
             let completedAt = calls.map(\.completedAt).max() ?? .distantPast
-            guard calls.allSatisfy({ hasValidTokenRateDuration($0) }),
+            guard calls.allSatisfy({ hasValidDecodeDuration($0) }),
                   let rate = windowTokenRate(samples: calls) else {
                 return PromptRate(promptID: promptID, completedAt: completedAt, rate: nil)
             }
@@ -517,15 +523,18 @@ enum LocalUsageSummaryBuilder {
 
     /// `windowTokenRate` 的分量形态：返回 (Σ分子, Σ分母)，让 `windowUsage` 把
     /// 中间量一并写进产物（`QuotaWindowUsageSnapshot.Window.rateNumerator` /
-    /// `rateDenominator`），`combineWindowUsage` 才能跨池先加和再相除。过滤规则
-    /// 与口径全仓只有这一份，`windowTokenRate` 是它的商值形态。
+    /// `rateDenominator`），`combineWindowUsage` 才能跨池先加和再相除。分母是
+    /// **解码时长**（调用时长 − 首字延迟；无 TTFT 按全额，`ttft ≥ duration` 整条
+    /// 剔除，见 `hasValidDecodeDuration`）。过滤规则与口径全仓只有这一份，
+    /// `windowTokenRate` 是它的商值形态。
     private nonisolated static func windowTokenRateComponents(
         samples: [LocalTokenUsageSample]
     ) -> (numerator: Double, denominator: Double)? {
         let valid = samples.compactMap { sample -> (tokens: Int, seconds: Double)? in
-            guard hasValidTokenRateDuration(sample),
+            guard hasValidDecodeDuration(sample),
                   let duration = sample.durationSeconds else { return nil }
-            return (SaturatingArithmetic.sum(sample.outputTokens, sample.reasoningOutputTokens), duration)
+            let decode = duration - (sample.ttftSeconds ?? 0)
+            return (SaturatingArithmetic.sum(sample.outputTokens, sample.reasoningOutputTokens), decode)
         }
         guard !valid.isEmpty else { return nil }
         let numerator = SaturatingArithmetic.sum(valid.lazy.map(\.tokens))
@@ -540,6 +549,19 @@ enum LocalUsageSummaryBuilder {
     ) -> Bool {
         guard let duration = sample.durationSeconds else { return false }
         return duration.isFinite && duration >= 0.2 && duration <= 3600
+    }
+
+    /// 解码时长有效性门（窗口 token 速率与完整 prompt 门控同一份）：在
+    /// `hasValidTokenRateDuration` 之上再要求解码时长 = 调用时长 − 首字延迟
+    /// **有限且为正**。无 TTFT（nil）→ 时长全额计入；`ttft ≥ duration` 视为
+    /// 账本异常，整条不参与（分子分母都不计）——宁缺毋假。
+    private nonisolated static func hasValidDecodeDuration(
+        _ sample: LocalTokenUsageSample
+    ) -> Bool {
+        guard hasValidTokenRateDuration(sample),
+              let duration = sample.durationSeconds else { return false }
+        let decode = duration - (sample.ttftSeconds ?? 0)
+        return decode.isFinite && decode > 0
     }
 
     // MARK: - TTFT（首字延迟）
@@ -631,12 +653,13 @@ struct QuotaWindowUsageSnapshot: Equatable, Sendable {
         let cost: ModelCostEstimate?
         /// Fleet 聚合的完整计价说明（部分计价或混币）；本地窗口默认由 `cost` 推导。
         let costText: String?
-        /// 窗口内本地 token 速度（tok/s）：Σ(Output+Reason) ÷ Σ单次调用时长，
-        /// 只统计 `durationSeconds ∈ [0.2, 3600]` 的样本——口径唯一实现在
-        /// `LocalUsageSummaryBuilder.windowTokenRate`。nil = 窗口内没有时长有效
-        /// 的样本（不是"速度为 0"），UI 与 cost 的 `—` 同款处理。
+        /// 窗口内本地 token 速度（tok/s）：Σ(Output+Reason) ÷ Σ解码时长（调用时长
+        /// − 首字延迟；无 TTFT 的调用按时长全额计入），只统计 `durationSeconds ∈
+        /// [0.2, 3600]` 的样本——口径唯一实现在
+        /// `LocalUsageSummaryBuilder.windowTokenRate`。nil = 窗口内没有解码时长
+        /// 有效的样本（不是"速度为 0"），UI 与 cost 的 `—` 同款处理。
         var tokensPerSecond: Double? = nil
-        /// 速率合并用的中间量：Σ(Output+Reason)（billable 分子）与 Σ时长（秒，
+        /// 速率合并用的中间量：Σ(Output+Reason)（billable 分子）与 Σ解码时长（秒，
         /// 分母）。与 `tokensPerSecond` 同源同批样本、由 `windowUsage` 一并写入，
         /// `combineWindowUsage` 靠它们先加和再相除（Σ/Σ，不是各池速率的平均）。
         /// 手工构造的 Window（fleet 行 / 测试夹具）缺省 nil，不参与速率合并。

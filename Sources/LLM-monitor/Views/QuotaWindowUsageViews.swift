@@ -198,9 +198,10 @@ struct QuotaWindowUsageSection: View {
         /// 有文案时优先于 `cost` 渲染（混币不是「没有金额」，不能退化成「—」）。
         let costText: String?
         let resetsAt: Date?
-        /// 用量态第 6 列的窗口 token 速度（tok/s）：Σ(Output+Reason) ÷ Σ单次调用
-        /// 时长，口径唯一实现在 `LocalUsageSummaryBuilder.windowTokenRate`。
-        /// 「分析」态不读它（价值格照旧）；nil = 窗口内没有时长有效的样本
+        /// 用量态第 6 列的窗口 token 速度（tok/s）：Σ(Output+Reason) ÷ Σ解码时长
+        /// （调用时长 − 首字延迟；无 TTFT 的调用按时长全额计入），口径唯一实现在
+        /// `LocalUsageSummaryBuilder.windowTokenRate`。
+        /// 「分析」态不读它（价值格照旧）；nil = 窗口内没有解码时长有效的样本
         /// （显示 `—`，不是 0）。默认 nil 让既有构造点（fleet 行、测试夹具）零改动。
         let tokensPerSecond: Double?
         /// 用量态「TTFT」列的窗口首字延迟均值（秒）：窗口 TTFT 算术平均，口径
@@ -421,7 +422,7 @@ struct QuotaWindowUsageSection: View {
 
     /// 用量态「速度」表头的 hover 说明：列名只有「速度」两个字，光标停上去才
     /// 说得出口径（分子是哪两桶、哪些调用不参与）——与产出比格的 help 同一模式。
-    static let speedColumnHelp = "窗口内 (Output+Reason) ÷ 调用时长，tok/s；时长未知的调用不参与"
+    static let speedColumnHelp = "窗口内 (Output+Reason) ÷ 解码时长，tok/s；解码时长 = 调用时长 − 首字延迟，无 TTFT 数据的调用按时长全额计入"
 
     /// 用量态「TTFT」表头的 hover 说明：与 speedColumnHelp 同一模式——格子里只有
     /// 一个秒数或一个 `—`，口径（算术平均、哪些调用不参与）挂在表头上。

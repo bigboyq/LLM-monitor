@@ -404,9 +404,9 @@ final class QuotaWindowUsageValueTests: XCTestCase {
     }
 
     /// visibleRows 必须把速度与 TTFT 一并带进行：5h / 周行取 `Window.tokensPerSecond`
-    /// 与 `Window.ttftSeconds`（基础层 `windowUsage` 写入；本例 (1000+2000) ÷ 10 =
-    /// 300 tok/s、TTFT 0.4s，两个窗口都含这条样本），今 / 闲行把宿主 Row 上的
-    /// 速率与 TTFT **原样透传**（重置格强制 nil 的改写不得顺手丢字段）。
+    /// 与 `Window.ttftSeconds`（基础层 `windowUsage` 写入；本例 (1000+2000) ÷
+    /// (10 − 0.4) = 312.5 tok/s、TTFT 0.4s，两个窗口都含这条样本），今 / 闲行把
+    /// 宿主 Row 上的速率与 TTFT **原样透传**（重置格强制 nil 的改写不得顺手丢字段）。
     func testVisibleRowsCarryTokensPerSecondFromSnapshotAndHostRows() throws {
         let now = Date()
         let snapshot = LocalUsageSummaryBuilder.windowUsage(
@@ -423,7 +423,7 @@ final class QuotaWindowUsageValueTests: XCTestCase {
             snapshot.interval?.tokensPerSecond,
             "前提不成立：带时长的样本必须算出窗口速率"
         )
-        XCTAssertEqual(windowRate, 3_000.0 / 10.0, accuracy: 1e-9, "前提不成立：速率为 Σ(Output+Reason) ÷ Σ时长")
+        XCTAssertEqual(windowRate, 3_000.0 / 9.6, accuracy: 1e-9, "前提不成立：速率为 Σ(Output+Reason) ÷ Σ解码时长")
         let windowTTFT = try XCTUnwrap(
             snapshot.interval?.ttftSeconds,
             "前提不成立：带 TTFT 的样本必须算出窗口均值"
@@ -527,8 +527,9 @@ final class QuotaWindowUsageValueTests: XCTestCase {
         XCTAssertEqual(QuotaWindowUsageSection.ttftText(124.2), "124")
     }
 
-    /// 「今」行的速度：对当天样本走 `windowTokenRate`——Σ(Output+Reason) ÷ Σ时长
-    /// = (1500 + 500) ÷ (10 + 5)；TTFT 对同一批样本走 `windowTTFTMeanSeconds`
+    /// 「今」行的速度：对当天样本走 `windowTokenRate`——Σ(Output+Reason) ÷ Σ解码
+    /// 时长 = (1500 + 500) ÷ (9.5 + 5)（t1 扣 TTFT 0.5s，t2 无 TTFT 按全额）；
+    /// TTFT 对同一批样本走 `windowTTFTMeanSeconds`
     /// （只有 t1 带 TTFT → 均值 0.5）；时长全未知的旧账本 → 两者都 nil（不是 0）。
     func testTodayUsageRowCarriesWindowTokenRate() throws {
         let now = Date()
@@ -547,8 +548,8 @@ final class QuotaWindowUsageValueTests: XCTestCase {
             "当天有本地数据时必须产出「今」行"
         )
         XCTAssertEqual(
-            row.tokensPerSecond ?? 0, 2_000.0 / 15.0, accuracy: 1e-9,
-            "今行速度 = Σ(Output+Reason) ÷ Σ时长，只计时长有效的样本"
+            row.tokensPerSecond ?? 0, 2_000.0 / 14.5, accuracy: 1e-9,
+            "今行速度 = Σ(Output+Reason) ÷ Σ解码时长，只计解码时长有效的样本"
         )
         XCTAssertEqual(
             row.tokensPerSecond,

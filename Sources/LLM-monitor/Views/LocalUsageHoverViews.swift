@@ -153,7 +153,7 @@ enum LocalUsagePriceByDay {
 /// `startOfDay(for: completedAt)`），产物 key 用 days 的 `dayStart`（构造链里
 /// 已按同一 calendar 归一，见 `UnifiedDailyUsageNormalizer`），速率口径唯一
 /// 实现在 `LocalUsageSummaryBuilder.windowTokenRate`（Σ(Output+Reason) ÷ Σ
-/// 调用时长），文案统一走 `QuotaWindowUsageSection.speedText`（与「额度窗口」
+/// 解码时长，2026-11-08 起分母扣除 TTFT），文案统一走 `QuotaWindowUsageSection.speedText`（与「额度窗口」
 /// 用量态的速度格同分档）。
 ///
 /// 不像 priceByDay 那样上 memo：这里只有一次按日分组 + 逐日一次 `windowTokenRate`

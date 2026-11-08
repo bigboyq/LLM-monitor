@@ -149,15 +149,21 @@ catalog 的结果已经在 reader 层固化，重建逻辑必须逐字段原样�
 倍率表只登记按量计费类 provider（当前仅 DeepSeek），勿给积分套餐类 provider
 （GLM Coding Plan 这类共享积分池）加价值系数。
 
-## Token/s 速率口径（调用级窗口速度）
+## Token/s 速率口径（解码速度，2026-11-08 起分母扣除 TTFT）
 
 token 速率（tok/s）只在 sample 级定义，不进入帧 / 投影内核：分子 = `Output + Reason`
-（billable output，与四桶规范化同源）；分母 = 单次模型调用完整时长（发起→完成，
-含 TTFT、不含工具执行），由各家 reader 写入 `LocalTokenUsageSample.durationSeconds`
-（可选字段，旧缓存解码得 nil）。窗口聚合 = Σ分子 ÷ Σ时长（加权平均，排除空闲与
-工具等待），**唯一实现在 `LocalUsageSummaryBuilder.windowTokenRate`**
-（`Models/LocalTokenUsageSample.swift`）；有效性域 duration ∈ [0.2, 3600] s，
-时长缺失或越界的样本分子分母都不计——宁出 `—` 不出假平均。
+（billable output，与四桶规范化同源）；分母 = **解码时长 = 单次调用完整时长 − 首字延迟**
+（2026-11-08 起；此前是含 TTFT 的完整时长）。调用时长由各家 reader 写入
+`LocalTokenUsageSample.durationSeconds`（可选字段，旧缓存解码得 nil），首字延迟在
+`ttftSeconds`（见下节）；**无 TTFT 的调用按 0 计——时长全额计入解码**（用户裁定），
+`ttft ≥ duration` 的异常样本整条剔除。窗口聚合 = Σ分子 ÷ Σ解码时长，**唯一实现在
+`LocalUsageSummaryBuilder.windowTokenRate`**（`Models/LocalTokenUsageSample.swift`）；
+有效性域 duration ∈ [0.2, 3600] s 且解码时长 > 0，缺失或越界的样本分子分母都不计
+——宁出 `—` 不出假平均。Prompt 级分布（`promptSpeedStatistics`，Harness 列表 Speed
+列与 7 天历史用）同口径：任一调用解码时长非正 → 整个 prompt 不进分布（沿用
+「宁缺毋假」门控），Prompt 速率 = Σtokens ÷ Σ解码时长。混合覆盖窗口（部分调用无
+TTFT）的读数介于解码速度与含 TTFT 速度之间，tooltip 已注明「无 TTFT 数据的调用
+按时长全额计入」。
 
 | Harness | durationSeconds 来源 |
 |---|---|
@@ -225,7 +231,8 @@ UI 消费：「额度窗口」模块**用量态**的速度列从「价值」位�
 将进位到四位时使用 K / M / G 数量级后缀（后缀不计入数值宽度），更大数量级使用指数后缀。
 nil、负值或非有限读数显示 `—`。菜单摘要与七天速度趋势复用同一格式（原模型行
 Prompt 速度范围线 UI 已于 2026-11-07 移除，统计层保留；见 §Prompt 速度分布）；表头 tooltip
-注明口径「窗口内 (Output+Reason) ÷ 调用时长，tok/s；时长未知的调用不参与」。
+注明口径「窗口内 (Output+Reason) ÷ 解码时长，tok/s；解码时长 = 调用时长 − 首字延迟，
+无 TTFT 数据的调用按时长全额计入」（2026-11-08 起分母扣除 TTFT，见 §Token/s 速率口径）。
 TTFT 的三处 UI 消费（2026-11-08）：Harness 列表 Speed 与 Value 之间（调用级 P50，
 `Formatters.formatTTFT`）、「额度窗口」用量态 Reason 与速度之间（窗口均值）、7 天用量
 历史命中与速度之间（每日调用级 P50，单位秒）；格式统一走 `Formatters.formatTTFT`

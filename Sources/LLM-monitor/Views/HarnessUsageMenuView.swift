@@ -651,7 +651,7 @@ enum HarnessMetricColumns {
     /// 有效样本不全时追加「（valid/total Prompt 有有效时长）」披露残缺统计——
     /// 与 `speedIsPartial` 同一披露语义。
     static func speedDistributionHelp(_ stats: PromptSpeedStatistics) -> String {
-        guard let p50 = stats.p50 else { return "完整 Prompt 速度 P50，单位 tok/s" }
+        guard let p50 = stats.p50 else { return "完整 Prompt 解码速度 P50，单位 tok/s" }
         var text = "Min: \(Formatters.formatSpeed(stats.minimum))"
             + " · P50: \(Formatters.formatSpeed(p50))"
             + " · P95: \(Formatters.formatSpeed(stats.p95))"
@@ -717,7 +717,7 @@ enum HarnessMetricColumns {
                 .help("思考占比 = reasoning / (output + reasoning)")
             Text("Speed")
                 .frame(width: speed, alignment: .trailing)
-                .help("完整 Prompt 速度 P50，单位 tok/s")
+                .help("完整 Prompt 解码速度 P50，单位 tok/s")
             Text("TTFT")
                 .frame(width: ttft, alignment: .trailing)
                 .help("调用首字延迟 P50，单位秒")

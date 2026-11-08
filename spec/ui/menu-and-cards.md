@@ -430,9 +430,11 @@ per-client sections」描述的是**本机 scope** 的内容区；多机联动�
   count; help explains that duration data is not synchronized. The row value is the **single-provider,
   single-currency** original amount (`ModelCostEstimate.displayText`: `¥3.21` /
   `$9.80` / `未定价`) — cross currency folding happens only at section and global
-  level, never per row. Prompt speed is `Σ(Output+Reason) ÷ Σ call duration` over
-  all calls in one prompt. A prompt joins the distribution only when all call
-  durations are valid; `latest` is the newest prompt and is `—` when that newest
+  level, never per row. Prompt speed is `Σ(Output+Reason) ÷ Σ decode duration`
+  over all calls in one prompt（解码时长 = 调用时长 − 首字延迟，无 TTFT 的调用按
+  时长全额计入，2026-11-08 起见 `spec/accounting.md` §Token/s 速率口径）. A prompt
+  joins the distribution only when all call
+  durations are valid（且解码时长为正）; `latest` is the newest prompt and is `—` when that newest
   prompt is incomplete (never an older fallback). Help explains excluded samples.
   The client summary `速度` is calculated from
   all of that client's daily prompts, not by averaging model-row percentiles. The

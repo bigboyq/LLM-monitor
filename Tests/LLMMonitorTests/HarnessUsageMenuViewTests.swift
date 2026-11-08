@@ -64,7 +64,7 @@ final class HarnessUsageMenuViewTests: XCTestCase {
     func testSpeedDistributionHelpFallsBackToMetricDescriptionWithoutSamples() {
         XCTAssertEqual(
             HarnessMetricColumns.speedDistributionHelp(.empty),
-            "完整 Prompt 速度 P50，单位 tok/s"
+            "完整 Prompt 解码速度 P50，单位 tok/s"
         )
     }
 

@@ -316,7 +316,7 @@ struct HarnessModelRow: Identifiable, Equatable, Sendable {
     /// `nil` = 样本没有可用模型名，UI 渲染成「模型名缺失」行。
     let modelName: String?
     let buckets: TokenUsageBuckets
-    /// 行级今日 token 速度（tok/s）：`init` 里对**同一批今日样本**调
+    /// 行级今日 token 解码速度（tok/s，分母扣除 TTFT）：`init` 里对**同一批今日样本**调
     /// `LocalUsageSummaryBuilder.windowTokenRate`（全仓唯一速率口径，
     /// Σ(Output+Reason) ÷ Σ调用时长，时长 ∈ [0.2, 3600]s 的样本才参与）——
     /// 与 `cachedCostEstimate` 同源同批样本：金额算得出来的行，速率也在同一批
@@ -483,7 +483,7 @@ struct HarnessSection: Identifiable, Equatable, Sendable {
     let displayName: String
     let iconSystemName: String
     let buckets: TokenUsageBuckets
-    /// 段级今日 token 速度（tok/s）：对该段（clientID）的**今日全部样本**调
+    /// 段级今日 token 解码速度（tok/s，分母扣除 TTFT）：对该段（clientID）的**今日全部样本**调
     /// `LocalUsageSummaryBuilder.windowTokenRate`（与行速度同一个全仓唯一口径）。
     /// 样本全集 = 段内各行的分组样本并集（跨 provider 分片一起进 Σ/Σ），
     /// 单 provider 客户段因此与 popwindow「额度窗口」表格「今」行的速度同值

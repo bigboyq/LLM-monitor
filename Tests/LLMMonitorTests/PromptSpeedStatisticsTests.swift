@@ -9,7 +9,8 @@ final class PromptSpeedStatisticsTests: XCTestCase {
         seconds: Double?,
         output: Int,
         reasoning: Int = 0,
-        completedAtOffset: TimeInterval = 0
+        completedAtOffset: TimeInterval = 0,
+        ttft: Double? = nil
     ) -> LocalTokenUsageSample {
         LocalTokenUsageSample(
             completedAt: base.addingTimeInterval(completedAtOffset),
@@ -19,7 +20,8 @@ final class PromptSpeedStatisticsTests: XCTestCase {
             cachedInputTokens: 0,
             outputTokens: output,
             reasoningOutputTokens: reasoning,
-            durationSeconds: seconds
+            durationSeconds: seconds,
+            ttftSeconds: ttft
         )
     }
 
@@ -151,5 +153,32 @@ final class PromptSpeedStatisticsTests: XCTestCase {
         XCTAssertNil(invalid.latest)
         XCTAssertEqual(invalid.validPromptCount, 0)
         XCTAssertEqual(invalid.totalPromptCount, 2)
+    }
+
+    /// 速度分母是**解码时长**：prompt 内多条调用按各自解码时长合计——带 TTFT 的
+    /// 调用扣掉首字延迟（10 − 2 = 8s），无 TTFT 的调用按时长全额（5s）。
+    func testPromptRateSumsDecodeDurationsAcrossMixedTTFTCalls() {
+        let stats = LocalUsageSummaryBuilder.promptSpeedStatistics(samples: [
+            sample("mixed", seconds: 10, output: 100, ttft: 2),
+            sample("mixed", seconds: 5, output: 150),
+        ])
+
+        XCTAssertEqual(stats.p50 ?? 0, 250.0 / 13.0, accuracy: 1e-9, "解码时长 = 8s（扣 TTFT）+ 5s（全额）")
+        XCTAssertEqual(stats.validPromptCount, 1)
+        XCTAssertEqual(stats.totalPromptCount, 1)
+    }
+
+    /// prompt 内任一调用 `ttft ≥ duration`（解码时长非正，账本异常）→ 整组剔除：
+    /// 分布、validPromptCount 都不含，latest 落在剩下的最新完整 prompt 上。
+    func testPromptWithAnyCallCoveredByTTFTIsExcludedAsAWhole() {
+        let stats = LocalUsageSummaryBuilder.promptSpeedStatistics(samples: [
+            sample("anomaly", seconds: 10, output: 200, ttft: 10),
+            sample("complete", seconds: 2, output: 400, completedAtOffset: 1)
+        ])
+
+        XCTAssertEqual(stats.p50 ?? 0, 200, accuracy: 1e-9)
+        XCTAssertEqual(stats.validPromptCount, 1)
+        XCTAssertEqual(stats.totalPromptCount, 2)
+        XCTAssertEqual(stats.latest ?? 0, 200, accuracy: 1e-9, "异常组整条剔除，latest 不回退到更旧的 prompt")
     }
 }

@@ -406,6 +406,43 @@ final class QuotaWindowUsageTests: XCTestCase {
         ]), "全被有效性过滤剔除时同样没有速率")
     }
 
+    /// 速度分母是**解码时长**（调用时长 − 首字延迟）：10s 时长 + 2s TTFT +
+    /// 100 token → 100 ÷ (10 − 2) = 12.5 tok/s，而不是 100 ÷ 10。
+    func testWindowTokenRateSubtractsTTFTFromTheDenominator() throws {
+        let now = Date()
+        let rate = try XCTUnwrap(LocalUsageSummaryBuilder.windowTokenRate(samples: [
+            Self.timedSample(at: now, prompt: "decode", output: 80, reasoning: 20, duration: 10, ttft: 2),
+        ]))
+        XCTAssertEqual(rate, 100.0 / 8.0, accuracy: 1e-9, "分母扣除 TTFT：duration − ttft = 8s")
+    }
+
+    /// 无 TTFT（nil，旧缓存 / OpenCode）的调用按时长**全额**计入：与带 TTFT 的
+    /// 调用混合时 Σ/Σ 各取各的解码时长（8s 扣减 + 5s 全额）。
+    func testWindowTokenRateCountsFullDurationWhenTTFTIsMissing() throws {
+        let now = Date()
+        let rate = try XCTUnwrap(LocalUsageSummaryBuilder.windowTokenRate(samples: [
+            Self.timedSample(at: now, prompt: "with-ttft", output: 100, reasoning: 0, duration: 10, ttft: 2),
+            Self.timedSample(at: now, prompt: "without-ttft", output: 150, reasoning: 0, duration: 5),
+        ]))
+        XCTAssertEqual(rate, 250.0 / 13.0, accuracy: 1e-9, "解码时长 = (10 − 2)s + 5s 全额")
+    }
+
+    /// `ttft ≥ duration` 视为账本异常：该调用整条剔除（分子分母都不计），
+    /// 全部异常时没有速率（nil，不是 0）。
+    func testWindowTokenRateExcludesCallsWhereTTFTCoversTheDuration() throws {
+        let now = Date()
+        let rate = try XCTUnwrap(LocalUsageSummaryBuilder.windowTokenRate(samples: [
+            Self.timedSample(at: now, prompt: "valid", output: 100, reasoning: 0, duration: 10, ttft: 2),
+            Self.timedSample(at: now, prompt: "anomaly-equal", output: 9_000, reasoning: 0, duration: 10, ttft: 10),
+            Self.timedSample(at: now, prompt: "anomaly-over", output: 9_000, reasoning: 0, duration: 10, ttft: 12),
+        ]))
+        XCTAssertEqual(rate, 100.0 / 8.0, accuracy: 1e-9, "ttft ≥ duration 的两条异常调用不参与")
+
+        XCTAssertNil(LocalUsageSummaryBuilder.windowTokenRate(samples: [
+            Self.timedSample(at: now, prompt: "only-anomaly", output: 10, reasoning: 0, duration: 10, ttft: 10),
+        ]), "全部调用 ttft ≥ duration 时没有速率（nil，不是 0）")
+    }
+
     /// `windowUsage` 把速率写进产物：与 cost 同源（同一批 windowSamples），
     /// 分子分母一并带出供 `combineWindowUsage` 合并；时长全未知的窗口三元组全 nil。
     func testWindowUsageCarriesTokenRateWithMergeInputs() {
@@ -603,7 +640,8 @@ final class QuotaWindowUsageTests: XCTestCase {
         prompt: String,
         output: Int,
         reasoning: Int,
-        duration: Double?
+        duration: Double?,
+        ttft: Double? = nil
     ) -> LocalTokenUsageSample {
         var sample = LocalTokenUsageSample(
             completedAt: date,
@@ -615,6 +653,7 @@ final class QuotaWindowUsageTests: XCTestCase {
             reasoningOutputTokens: reasoning
         )
         sample.durationSeconds = duration
+        sample.ttftSeconds = ttft
         return sample
     }
 }
