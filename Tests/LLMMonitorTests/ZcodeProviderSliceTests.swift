@@ -310,6 +310,7 @@ final class ZcodeProviderSliceTests: XCTestCase {
 
     /// ZCode 账本 `reasoning_tokens` 恒 0，MiniMax 卡必须按 part 表字符比例分摊：
     /// 当日 300 output / 1500 思考字符 / 500 可见字符 → 225 reasoning + 75 output。
+    /// 分摊只在样本行级发生，日聚合取其按日累计（两行同比例，累计与旧日级分摊同值）。
     func testZcodeSliceSplitsReasoningFromPartChars() throws {
         let db = try makeDatabase()
         defer { try? FileManager.default.removeItem(atPath: db) }
@@ -332,7 +333,7 @@ final class ZcodeProviderSliceTests: XCTestCase {
             dbPath: URL(fileURLWithPath: db), calendar: cal
         )
         let day = try XCTUnwrap(aggregate.providerSlices.perSliceDay["minimax"]?[today])
-        XCTAssertEqual(day.reasoningTokens, 225, "300 × 1500/2000，day 级分摊")
+        XCTAssertEqual(day.reasoningTokens, 225, "300 × 1500/2000，行级分摊按日累计")
         XCTAssertEqual(day.outputTokens, 75)
         XCTAssertEqual(day.reasoningTokens + day.outputTokens, 300, "守恒")
         XCTAssertEqual(day.inputTokens, 2_000)
@@ -341,7 +342,7 @@ final class ZcodeProviderSliceTests: XCTestCase {
             day.inputTokens + day.cacheReadTokens + day.outputTokens + day.reasoningTokens
         )
 
-        // 样本是行级分摊（200×0.75 / 100×0.75），合计与 day 级一致。
+        // 样本是行级分摊（200×0.75 / 100×0.75）；日聚合直接取该按日累计，两边必然一致。
         let samples = try XCTUnwrap(aggregate.providerSlices.samples["minimax"])
         XCTAssertEqual(samples.map(\.reasoningOutputTokens), [150, 75])
         XCTAssertEqual(samples.map(\.outputTokens), [50, 25])
@@ -449,9 +450,10 @@ final class ZcodeProviderSliceTests: XCTestCase {
         XCTAssertEqual(sample.outputTokens, 200)
     }
 
-    /// 智谱主卡与分片统一走字符分摊（旧 Method A 整轮归类已下线）：有思考 part 的
-    /// 智谱行按 `ReasoningCharSplit` 比例拆分 output，native `reasoning_tokens > 0`
-    /// 的日子/行账单值优先透传，分摊守恒，与非智谱分片互不干扰。
+    /// 智谱主卡与分片统一走行级字符分摊（旧 Method A 整轮归类与日级分摊均已下线）：
+    /// 有思考 part 的智谱行按 `ReasoningCharSplit` 比例拆分 output，native
+    /// `reasoning_tokens > 0` 的行账单值优先透传；日聚合 = 该日样本行级分摊按日
+    /// 累计，与样本严格同源，分摊守恒，与非智谱分片互不干扰。
     func testZcodeGlmRowsSplitByCharsUnifiedWithSlices() throws {
         let db = try makeDatabase()
         defer { try? FileManager.default.removeItem(atPath: db) }
@@ -459,12 +461,21 @@ final class ZcodeProviderSliceTests: XCTestCase {
         let today = cal.startOfDay(for: Date())
         let yesterday = cal.date(byAdding: .day, value: -1, to: today)!
 
-        // 今日：思考 750 字符 / 可见 250 字符 → 200 output 按 75% 拆分
+        // 今日两行思考比例刻意错开——
+        // glm1: 200 output × 750 思考/250 可见（75%）→ 150 reasoning + 50 output
+        // glm3: 100 output × 400 思考/600 可见（40%）→ 40 reasoning + 60 output
+        // 行级按日累计 190/110；旧日级分摊把整天 300 output 按 1150/2000 拆，
+        // 与样本Σ不一致（本用例钉死两者必须一致）。
         try insert(databaseURL: db, id: "glm1", sessionID: "g-s", turnID: "g-t1", timestamp: ms(today),
                    input: 100, output: 200, model: "GLM-5.3",
                    provider: "builtin:bigmodel-coding-plan", assistantMessageID: "g-msg")
         try insertPart(databaseURL: db, partID: "p-r", messageID: "g-msg", data: reasoningPartJSON(chars: 750))
         try insertPart(databaseURL: db, partID: "p-t", messageID: "g-msg", data: textPartJSON(chars: 250))
+        try insert(databaseURL: db, id: "glm3", sessionID: "g-s3", turnID: "g-t3", timestamp: ms(today) + 1,
+                   input: 100, output: 100, model: "GLM-5.3",
+                   provider: "builtin:bigmodel-coding-plan", assistantMessageID: "g-msg3")
+        try insertPart(databaseURL: db, partID: "p-r3", messageID: "g-msg3", data: reasoningPartJSON(chars: 400))
+        try insertPart(databaseURL: db, partID: "p-t3", messageID: "g-msg3", data: textPartJSON(chars: 600))
         // 昨天：账面 reasoning_tokens > 0 → 账单值优先（独立日子，避免与字符分摊日混算）
         try insert(databaseURL: db, id: "glm2", sessionID: "g-s2", turnID: "g-t2", timestamp: ms(yesterday),
                    input: 100, output: 200, reasoning: 60, model: "GLM-5.3",
@@ -476,26 +487,92 @@ final class ZcodeProviderSliceTests: XCTestCase {
             dbPath: URL(fileURLWithPath: db), calendar: cal
         )
 
-        // 日聚合与分片同一字符分摊公式
+        // 日聚合 = 该日样本行级分摊之和（150+40 reasoning / 50+60 output），守恒
         let glmDay = try XCTUnwrap(aggregate.perDay[today])
-        XCTAssertEqual(glmDay.reasoningTokens, 150, "200 × 750/1000，day 级分摊")
-        XCTAssertEqual(glmDay.outputTokens, 50)
-        XCTAssertEqual(glmDay.reasoningTokens + glmDay.outputTokens, 200, "守恒")
+        XCTAssertEqual(glmDay.reasoningTokens, 190, "行级累计 150+40；旧日级分摊按整天比例拆，与样本Σ不一致")
+        XCTAssertEqual(glmDay.outputTokens, 110)
+        XCTAssertEqual(glmDay.reasoningTokens + glmDay.outputTokens, 300, "守恒")
+        XCTAssertEqual(glmDay.totalTokens, 500, "total 不变：200 input + 300（分摊守恒）")
 
-        // native reasoning 列全和 > 0 的日子按账单值优先透传，不按字符二次分摊
+        // native reasoning 列 > 0 的行按账单值优先透传，不按字符二次分摊
         let nativeDay = try XCTUnwrap(aggregate.perDay[yesterday])
         XCTAssertEqual(nativeDay.reasoningTokens, 60)
         XCTAssertEqual(nativeDay.outputTokens, 200)
 
-        // 样本行级分摊（started_at 升序：昨天在前），与日级同公式
-        XCTAssertEqual(aggregate.samples.count, 2)
-        XCTAssertEqual(aggregate.samples.map(\.reasoningOutputTokens), [60, 150])
-        XCTAssertEqual(aggregate.samples.map(\.outputTokens), [200, 50])
+        // 样本行级分摊（started_at 升序：昨天在前），日聚合直接取其按日累计
+        XCTAssertEqual(aggregate.samples.count, 3)
+        XCTAssertEqual(aggregate.samples.map(\.reasoningOutputTokens), [60, 150, 40])
+        XCTAssertEqual(aggregate.samples.map(\.outputTokens), [200, 50, 60])
         XCTAssertEqual(aggregate.samples[1].reasoningOutputTokens + aggregate.samples[1].outputTokens, 200, "行级也守恒")
+
+        // 日聚合与样本严格同源：日桶 = 该日样本行级分摊之和
+        let todaySamples = aggregate.samples.filter { cal.startOfDay(for: $0.completedAt) == today }
+        XCTAssertEqual(glmDay.outputTokens, todaySamples.reduce(0) { $0 + $1.outputTokens })
+        XCTAssertEqual(glmDay.reasoningTokens, todaySamples.reduce(0) { $0 + $1.reasoningOutputTokens })
 
         // 分片互不干扰
         XCTAssertNil(aggregate.providerSlices.perSliceDay["minimax"])
         XCTAssertNil(aggregate.providerSlices.perSliceDay["deepseek"])
+    }
+
+    /// 一致性回归（投影膨胀修复，分片侧）：同一 fixture 下，slice 日聚合的
+    /// output/reasoning 桶逐日等于该分片样本行级分摊之和，且 totalTokens 不因
+    /// 对齐改变。旧 slice 日级分摊与行级分摊分桶不同，会在投影逐桶 max() 合并
+    /// 时凭空膨胀——两侧同源后 max() 退化为精确 no-op（对真实截断仍是安全网）。
+    /// fixture 两行思考比例刻意错开，使行级累计区别于旧日级分摊。
+    func testZcodeSliceDailyBucketsEqualRowLevelSampleSums() throws {
+        let db = try makeDatabase()
+        defer { try? FileManager.default.removeItem(atPath: db) }
+        let cal = localCalendar()
+        let today = cal.startOfDay(for: Date())
+        let yesterday = cal.date(byAdding: .day, value: -1, to: today)!
+
+        // 今天（minimax）：60 output × 75% → 45/15；20 output × 25% → 5/15
+        // 行级按日累计 50/30；旧日级分摊会把整天 80 output 按 1000/2000 拆成 40/40。
+        for (index, output) in [(0, 60), (1, 20)] {
+            let messageID = "mm-msg-\(index)"
+            let reasoningChars = index == 0 ? 750 : 250
+            try insert(databaseURL: db, id: "mm\(index)", sessionID: "mm-s", turnID: "mm-t\(index)",
+                       timestamp: ms(today) + Int64(index), input: 1_000, output: output,
+                       model: "MiniMax-M3.1-Flash-Preview", provider: "minimax",
+                       assistantMessageID: messageID)
+            try insertPart(databaseURL: db, partID: "p-r-\(index)", messageID: messageID,
+                           data: reasoningPartJSON(chars: reasoningChars))
+            try insertPart(databaseURL: db, partID: "p-t-\(index)", messageID: messageID,
+                           data: textPartJSON(chars: 1_000 - reasoningChars))
+        }
+        // 昨天（deepseek）：native reasoning 行 → 账单值优先透传
+        try insert(databaseURL: db, id: "ds1", sessionID: "ds-s", turnID: "ds-t1",
+                   timestamp: ms(yesterday), input: 500, output: 100, reasoning: 30,
+                   model: "deepseek-reasoner", provider: "deepseek")
+
+        let aggregate = try GlmZcodeLocalUsageScanner.aggregateFromDB(
+            dbPath: URL(fileURLWithPath: db), calendar: cal
+        )
+
+        for (slice, byDay) in aggregate.providerSlices.perSliceDay {
+            let sliceSamples = aggregate.providerSlices.samples[slice] ?? []
+            for (dayStart, day) in byDay {
+                let daySamples = sliceSamples.filter { cal.startOfDay(for: $0.completedAt) == dayStart }
+                XCTAssertFalse(daySamples.isEmpty, "\(slice) 每个日桶都应有同源样本")
+                XCTAssertEqual(
+                    day.outputTokens, daySamples.reduce(0) { $0 + $1.outputTokens },
+                    "\(slice) 日桶 output 必须等于该日样本行级分摊之和")
+                XCTAssertEqual(
+                    day.reasoningTokens, daySamples.reduce(0) { $0 + $1.reasoningOutputTokens },
+                    "\(slice) 日桶 reasoning 必须等于该日样本行级分摊之和")
+                // totalTokens 不变：对齐只改分桶，不改四桶合计
+                XCTAssertEqual(
+                    day.totalTokens,
+                    day.inputTokens + day.cacheReadTokens + day.outputTokens + day.reasoningTokens
+                )
+            }
+        }
+        // 今天精确值：行级累计 50/30（旧日级分摊会拆成 40/40）
+        let minimaxDay = try XCTUnwrap(aggregate.providerSlices.perSliceDay["minimax"]?[today])
+        XCTAssertEqual(minimaxDay.reasoningTokens, 50)
+        XCTAssertEqual(minimaxDay.outputTokens, 30)
+        XCTAssertEqual(minimaxDay.totalTokens, 2_080, "2000 input + 80 output+reasoning（分摊守恒，total 不变）")
     }
 
     // MARK: - snapshot

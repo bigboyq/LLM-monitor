@@ -83,12 +83,18 @@ GLM 系列是 reasoning model。ZCode 的账单层 `model_usage.reasoning_tokens
 前者贴近基准）；整轮归类会把全部可见正文算进 reasoning。字符比例分摊与分片、
 MiniMax Code runtime / Dsh M3 同口径，是该数据面下唯一一致的估算法。
 
-- **日聚合**（`queryPerDay` + `queryReasoningChars`）：SQL 按日汇总原始列与思考/可见
-  字符，Swift 按 day 守恒分摊（当日 native `reasoning_tokens` 全和 > 0 → 整日照账单值
-  透传）。
 - **样本**（`querySamples`）：行级两个相关子查询取本行字符，行级守恒分摊（native 优先
   透传）。
-- 缓存 v13 重建（v12 是 Method A 结果）。
+- **日聚合**（`queryPerDay`，2026-11-08 二次修订）：`outputTokens` / `reasoningTokens`
+  **不再做独立的日级字符分摊**，直接取行级分摊的按日累计值（与样本严格同源）；
+  `inputTokens` / `cacheRead` / `cacheWrite` / `rounds` / `turns` 是拆分不变量，维持
+  SQL 按日求和。**修订原因**：初版（ea43cff）日级 / 行级两路粒度不同、分桶不一致
+  （实测日级 703,147/1,005,504 vs 行级Σ 735,889/972,762），经投影内核
+  `UnifiedDailyUsageNormalizer.includingCurrentDay` 的**逐桶 max()** 合并后
+  Output+Reasoning 凭空膨胀（+32,742），触发 harness 段「明细采样已达上限」常亮；
+  统一行级累计后 max() 在数据一致时为精确 no-op（对真实截断的来源仍是安全网）。
+  当日级字符查询 `queryReasoningChars` 随之删除。
+- 缓存 v14 重建（v13 是日级 / 行级双轨的结果）。
 
 | 边界条件 | 行为 |
 |---|---|
@@ -126,7 +132,7 @@ ZCode 的 `model_usage.reasoning_tokens` 对**所有** provider 恒 0，非智�
 | ② 字符分摊 | 无 native + 该 slice/day（或该行）的 `part` 表里有思考文本 | 按上式拆成 `reasoning_tokens` + `output_tokens`（守恒） |
 | ③ 兜底 | 都没有（无 part / 损坏 JSON / 字符里没有思考文本） | `reasoning_tokens = 0`，`output_tokens` 保持原样 |
 
-字符口径（`querySliceReasoningChars`，与 MiniMax Code 的字符桶同构）：
+字符口径（`querySliceSamples` 行级字符子查询，与 MiniMax Code 的字符桶同构；历史上有过按日汇总的 `querySliceReasoningChars`，已随日级分摊一并删除）：
 
 | 类别 | `part.data` 条件 | 取的字符 |
 |---|---|---|
@@ -134,9 +140,10 @@ ZCode 的 `model_usage.reasoning_tokens` 对**所有** provider 恒 0，非智�
 | 可见输出 | `$.type = 'text'` | `$.text` 长度 |
 | 可见输出 | `$.type = 'tool'` | `$.state.input` 长度（工具参数同属模型生成输出，对应 MiniMax Code 的 `tool_call_args` 桶） |
 
-**粒度**：日聚合（`querySlicePerDay`）是 **day 级**分摊 —— `querySliceReasoningChars`
-按 provider × 本地自然日汇总两类字符；逐次样本（`querySliceSamples`）是**行级**分摊 ——
-SELECT 里两个相关子查询按 `assistant_message_id` 关联本行 part 字符。两者共用
+**粒度**：与智谱主卡同步（2026-11-08 二次修订），日聚合（`querySlicePerDay`）的
+`output` / `reasoning` 直接取逐次样本（`querySliceSamples`）**行级分摊的按日累计值**，
+不再走 `querySliceReasoningChars` 的 day 级独立分摊（该查询随之删除）——避免日级 /
+行级双轨经 `includingCurrentDay` 逐桶 max() 合并时凭空膨胀。两者共用
 `ReasoningCharSplit`，都是守恒拆分，所以重算 `totalTokens` 后仍等于原始
 `input + output + cacheRead`。
 
@@ -430,4 +437,4 @@ accounting coverage lives in `GlmZcodeDBReaderTests.swift`, `GlmOffPeakTests.swi
 > 本文件源自 `spec/providers/glm.md` 的本地 harness 内容；代码核对基线继承原文件，未因本次拆分重新核对全部实现。
 外部 ZCode.app 静态观察日期：2026-11-06；版本 `3.17.2` / build `3.17.2.9661`。
 
-> 核对基线：2026-11-08 · 代码 ea43cff
+> 核对基线：2026-11-08 · 代码 841a287

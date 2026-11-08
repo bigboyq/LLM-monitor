@@ -8,10 +8,10 @@ import os
 /// 及迁移后 `account:bigmodel-*-coding-plan`，正常交互）、`offpeak-idle-plan`
 /// （闲时任务，不消耗积分）与其余智谱前缀（其他智谱套餐，如体验套餐，不消耗积分），
 /// 按本地自然日聚合 +
-/// 7 天窗口 + 最近 8 天逐次调用样本。Reasoning 归类与分片统一走 `ReasoningCharSplit`
-/// 字符分摊（日聚合 day 级、样本行级，native `reasoning_tokens > 0` 账单值优先），
-/// 在 `GlmZcodeDBReader.queryPerDay` / `querySamples` 内完成，scanner 端不再有
-/// 分摊步骤。
+/// 7 天窗口 + 最近 8 天逐次调用样本。Reasoning 归类统一走 `ReasoningCharSplit`
+/// 字符分摊，且只在 `GlmZcodeDBReader.querySamples` / `querySliceSamples` 行级
+/// 发生一次（native `reasoning_tokens > 0` 账单值优先）；日聚合的 output/reasoning
+/// 桶直接取行级分摊的按日累计，与样本严格同源——scanner 端不再有分摊步骤。
 /// 活动套餐（zcode-plan）与额度重置卡已改由 `GlmZcodeAPIClient` 直连接口解析，
 /// 本 scanner 仅负责扫描 SQLite（`db.sqlite` 与 `tasks-index.sqlite`）。
 ///
@@ -25,10 +25,15 @@ import os
 @MainActor
 final class GlmZcodeLocalUsageScanner: SingleDBSnapshotScanner<GlmLocalUsage>, @unchecked Sendable {
     nonisolated static let scanLogTag = "[glm-zcode-scan]"
-    /// 缓存版本 13：智谱主卡 reasoning 归类从 Method A 整轮硬分类改为与分片统一的
+    /// 缓存版本 14：日聚合的 output/reasoning 口径统一为行级分摊按日累计
+    /// （分摊只在 `querySamples` / `querySliceSamples` 行级发生一次），修复
+    /// `UnifiedDailyUsageNormalizer.includingCurrentDay` 对日级 / 行级两套分桶
+    /// 逐桶 max() 合并时的 Output+Reasoning 凭空膨胀。v13 快照的日聚合按旧
+    /// 日级分摊口径算出，升版重扫重算。
+    /// （v13：智谱主卡 reasoning 归类从 Method A 整轮硬分类改为与分片统一的
     /// `ReasoningCharSplit` 字符分摊（native `reasoning_tokens > 0` 仍账单值优先）。
     /// v12 快照的日聚合 / 样本 reasoning 按旧口径算出，升版重扫重算。
-    /// （v12：样本新增 `ttftSeconds`（`model_usage.time_to_first_token_ms`
+    /// v12：样本新增 `ttftSeconds`（`model_usage.time_to_first_token_ms`
     /// 原生逐调用列，主表与非智谱分片同口径）。v11 快照该字段恒为 nil，升版重扫补齐。
     /// v11：ZCode 同库内非智谱 provider（`minimax` / `deepseek`）按
     /// `ZcodeProviderSlice` 前缀切出分片，随快照一起供 MiniMax / DeepSeek 卡消费。
@@ -37,7 +42,7 @@ final class GlmZcodeLocalUsageScanner: SingleDBSnapshotScanner<GlmLocalUsage>, @
     /// v10：识别 Zcode `0020_provider_model_selection` 迁移后的
     /// `account:bigmodel-` 前缀；v9：provider 三分类，额度窗口统计改为「仅正式
     /// Coding Plan 计入」的白名单口径——见 `spec/harnesses/zcode.md` 的 Off-peak 节。）
-    nonisolated static let cacheIndexVersion = 13
+    nonisolated static let cacheIndexVersion = 14
 
     /// 整个扫描 pipeline 的串行锁（跨实例共享）。
     nonisolated static let pipelineMutex = AsyncMutex()
@@ -181,8 +186,9 @@ final class GlmZcodeLocalUsageScanner: SingleDBSnapshotScanner<GlmLocalUsage>, @
 
     /// 把 per-day 聚合压成 7 天窗口的 `GlmLocalUsage`。
     ///
-    /// `adjustedPerDay` 直接来自 `GlmZcodeDBReader.queryPerDay`,字符分摊归类后的最终值
-    /// (`outputTokens` / `reasoningTokens` 已经按 part 字符比例 + native priority 算好)。
+    /// `adjustedPerDay` 直接来自 `GlmZcodeDBReader.queryPerDay`,output/reasoning
+    /// 已是行级分摊按日累计的最终值（与样本严格同源，见
+    /// `GlmZcodeDBReader.perDayAlignedWithRowSplitSamples`）。
     /// buildSnapshot 只负责 7 天窗口滚动 + 今日挑选 + samples 保留。
     /// `providerSlices` 是同库内非智谱 provider 的分片（已由
     /// `providerSlices(from:calendar:now:)` 压成 7 天窗口），照原样挂到快照上。

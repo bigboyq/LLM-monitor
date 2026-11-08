@@ -4,10 +4,11 @@ import SQLite3
 
 final class GlmZcodeDBReaderTests: GlmTestCase {
 
-    /// 合并测试：日级字符分摊 + native 优先 + 无 part → reasoning=0 + malformed JSON。
-    /// 智谱行与分片统一走 `ReasoningCharSplit`：日聚合按 day 分摊、样本按行分摊，
-    /// native `reasoning_tokens > 0` 的日子/行按账单值优先。三个互不重叠的日子，
-    /// 避免 day 级分摊互相稀释。
+    /// 合并测试：行级字符分摊 + native 优先 + 无 part → reasoning=0 + malformed JSON。
+    /// 分摊只在 `querySamples` 行级发生，日聚合的 output/reasoning 桶 = 该日样本
+    /// 行级分摊之和（日级分摊已删除，与样本严格同源）。Day A 两行思考比例刻意
+    /// 错开（75% / 25%），使行级累计（50/30）区别于旧日级分摊（80×1000/2000 =
+    /// 40/40）——钉死「日聚合与样本严格同源」。三个互不重叠的日子，避免跨日稀释。
     func testGlmZcodeDBReaderCharSplitDayAggregation() throws {
         let db = try makeDatabase()
         defer { try? FileManager.default.removeItem(atPath: db) }
@@ -16,16 +17,25 @@ final class GlmZcodeDBReaderTests: GlmTestCase {
         let yesterday = cal.date(byAdding: .day, value: -1, to: day)!
         let olderDay = cal.date(byAdding: .day, value: -2, to: day)!
 
-        // Day A（今天）：两行思考行，各 750 思考 / 250 可见字符 → 75% 占比
-        for index in 0...1 {
-            try insert(databaseURL: db, id: "a\(index)", sessionID: "sA", turnID: "ta\(index)",
-                       timestamp: ms(day) + Int64(index), input: 100, output: 40,
-                       assistantMessageID: "msg_a\(index)")
-            try insertPart(databaseURL: db, id: "pa_r\(index)", messageID: "msg_a\(index)",
-                           jsonData: #"{"type":"reasoning","text":"\#(String(repeating: "x", count: 750))"}"#)
-            try insertPart(databaseURL: db, id: "pa_t\(index)", messageID: "msg_a\(index)",
-                           jsonData: #"{"type":"text","text":"\#(String(repeating: "y", count: 250))"}"#)
-        }
+        // Day A（今天）：两行思考行，比例刻意错开——
+        // a0: 60 output × 750 思考/250 可见（75%）→ 45 reasoning + 15 output
+        // a1: 20 output × 250 思考/750 可见（25%）→ 5 reasoning + 15 output
+        // 行级按日累计 50/30；旧日级分摊把整天 80 output 按 1000/2000 拆成 40/40，
+        // 与样本Σ不一致（本用例钉死两者必须一致）。
+        try insert(databaseURL: db, id: "a0", sessionID: "sA", turnID: "ta0",
+                   timestamp: ms(day), input: 100, output: 60,
+                   assistantMessageID: "msg_a0")
+        try insertPart(databaseURL: db, id: "pa_r0", messageID: "msg_a0",
+                       jsonData: #"{"type":"reasoning","text":"\#(String(repeating: "x", count: 750))"}"#)
+        try insertPart(databaseURL: db, id: "pa_t0", messageID: "msg_a0",
+                       jsonData: #"{"type":"text","text":"\#(String(repeating: "y", count: 250))"}"#)
+        try insert(databaseURL: db, id: "a1", sessionID: "sA", turnID: "ta1",
+                   timestamp: ms(day) + 1, input: 100, output: 20,
+                   assistantMessageID: "msg_a1")
+        try insertPart(databaseURL: db, id: "pa_r1", messageID: "msg_a1",
+                       jsonData: #"{"type":"reasoning","text":"\#(String(repeating: "x", count: 250))"}"#)
+        try insertPart(databaseURL: db, id: "pa_t1", messageID: "msg_a1",
+                       jsonData: #"{"type":"text","text":"\#(String(repeating: "y", count: 750))"}"#)
         // Day B（昨天）：native reasoning 行 → 账单值优先透传（即使 part 字符比例不同）
         try insert(databaseURL: db, id: "b1", sessionID: "sB", turnID: "tb1",
                    timestamp: ms(yesterday), input: 100, output: 50, reasoning: 20,
@@ -44,17 +54,18 @@ final class GlmZcodeDBReaderTests: GlmTestCase {
 
         let aggregate = try GlmZcodeLocalUsageScanner.aggregateFromDB(dbPath: URL(fileURLWithPath: db), calendar: cal)
 
-        // Day A：80 output × 1500/2000 思考占比 → 60 reasoning + 20 output，守恒
+        // Day A：日桶 = 该日样本行级分摊之和（45+5 reasoning、15+15 output），守恒
         let dayA = try XCTUnwrap(aggregate.perDay[day])
         XCTAssertEqual(dayA.inputTokens, 200)
-        XCTAssertEqual(dayA.reasoningTokens, 60, "80 × 750/1000，day 级分摊与分片同公式")
-        XCTAssertEqual(dayA.outputTokens, 20)
+        XCTAssertEqual(dayA.reasoningTokens, 50, "行级累计 45+5；旧日级分摊会得 40，与样本Σ不一致")
+        XCTAssertEqual(dayA.outputTokens, 30)
         XCTAssertEqual(dayA.reasoningTokens + dayA.outputTokens, 80, "守恒")
         XCTAssertEqual(dayA.rounds, 2)
+        XCTAssertEqual(dayA.totalTokens, 280, "total 不变：200 input + 0 cacheRead + 80（分摊守恒）")
         // 守恒: total = uncached input + cacheRead + tout + trsn
         XCTAssertEqual(dayA.totalTokens, dayA.inputTokens + dayA.cacheReadTokens + dayA.outputTokens + dayA.reasoningTokens)
 
-        // Day B：native reasoning 列全和 > 0 → 整日照账单值，不做字符分摊
+        // Day B：native reasoning 列 > 0 → 该行账单值优先透传，不做字符分摊
         let dayB = try XCTUnwrap(aggregate.perDay[yesterday])
         XCTAssertEqual(dayB.reasoningTokens, 20, "native 优先透传")
         XCTAssertEqual(dayB.outputTokens, 50)
@@ -65,11 +76,78 @@ final class GlmZcodeDBReaderTests: GlmTestCase {
         XCTAssertEqual(dayC.outputTokens, 66, "无 part / malformed JSON 行不凭空生思考")
 
         // 样本行级分摊（started_at 升序：Day C → Day B → Day A）：
-        // 40 × 0.75 = 30；native 行透传；Day C 行保持 0
+        // 45/15 + 5/15；native 行透传；Day C 行保持 0
         XCTAssertEqual(aggregate.samples.count, 5)
-        XCTAssertEqual(aggregate.samples.map(\.reasoningOutputTokens), [0, 0, 20, 30, 30])
-        XCTAssertEqual(aggregate.samples.map(\.outputTokens), [33, 33, 50, 10, 10])
-        XCTAssertEqual(aggregate.samples[3].reasoningOutputTokens + aggregate.samples[3].outputTokens, 40, "行级守恒")
+        XCTAssertEqual(aggregate.samples.map(\.reasoningOutputTokens), [0, 0, 20, 45, 5])
+        XCTAssertEqual(aggregate.samples.map(\.outputTokens), [33, 33, 50, 15, 15])
+        XCTAssertEqual(aggregate.samples[3].reasoningOutputTokens + aggregate.samples[3].outputTokens, 60, "行级守恒")
+
+        // 日聚合与样本严格同源：日桶 = 该日样本行级分摊之和
+        let dayASamples = aggregate.samples.filter { cal.startOfDay(for: $0.completedAt) == day }
+        XCTAssertEqual(dayA.outputTokens, dayASamples.reduce(0) { $0 + $1.outputTokens })
+        XCTAssertEqual(dayA.reasoningTokens, dayASamples.reduce(0) { $0 + $1.reasoningOutputTokens })
+    }
+
+    /// 一致性回归（投影膨胀修复）：同一 fixture 下，日聚合的 output/reasoning 桶
+    /// 逐日等于该日样本行级分摊之和，且 totalTokens 不因对齐改变。旧实现的日级
+    /// 分摊与行级分摊分桶不同（2026-11-08 真实数据：日级 703,147/1,005,504 vs
+    /// 行级Σ 735,889/972,762），投影 `includingCurrentDay` 逐桶 max() 合并时
+    /// Output+Reasoning 凭空膨胀 +32,742——两侧同源后 max() 退化为精确 no-op
+    /// （对真实截断的来源仍是安全网）。fixture 覆盖三种日形态：比例错开的多行
+    /// 思考日、native 优先日、无 part 日。
+    func testGlmZcodeDailyBucketsEqualRowLevelSampleSumsPerDay() throws {
+        let db = try makeDatabase()
+        defer { try? FileManager.default.removeItem(atPath: db) }
+        let cal = localCalendar()
+        let day = Self.todayMidnight(calendar: cal)
+        let yesterday = cal.date(byAdding: .day, value: -1, to: day)!
+        let olderDay = cal.date(byAdding: .day, value: -2, to: day)!
+
+        // 今天：两行思考比例错开（行级累计 ≠ 旧日级分摊）
+        try insert(databaseURL: db, id: "h1", sessionID: "s1", turnID: "t1",
+                   timestamp: ms(day), input: 100, output: 60,
+                   assistantMessageID: "m_h1")
+        try insertPart(databaseURL: db, id: "ph_r1", messageID: "m_h1",
+                       jsonData: #"{"type":"reasoning","text":"\#(String(repeating: "x", count: 750))"}"#)
+        try insertPart(databaseURL: db, id: "ph_t1", messageID: "m_h1",
+                       jsonData: #"{"type":"text","text":"\#(String(repeating: "y", count: 250))"}"#)
+        try insert(databaseURL: db, id: "h2", sessionID: "s1", turnID: "t2",
+                   timestamp: ms(day) + 1, input: 100, output: 20,
+                   assistantMessageID: "m_h2")
+        try insertPart(databaseURL: db, id: "ph_r2", messageID: "m_h2",
+                       jsonData: #"{"type":"reasoning","text":"\#(String(repeating: "x", count: 250))"}"#)
+        try insertPart(databaseURL: db, id: "ph_t2", messageID: "m_h2",
+                       jsonData: #"{"type":"text","text":"\#(String(repeating: "y", count: 750))"}"#)
+        // 昨天：native reasoning 行
+        try insert(databaseURL: db, id: "h3", sessionID: "s2", turnID: "t3",
+                   timestamp: ms(yesterday), input: 100, output: 50, reasoning: 20)
+        // 前天：无 part
+        try insert(databaseURL: db, id: "h4", sessionID: "s3", turnID: "t4",
+                   timestamp: ms(olderDay), input: 100, output: 33)
+
+        let aggregate = try GlmZcodeLocalUsageScanner.aggregateFromDB(dbPath: URL(fileURLWithPath: db), calendar: cal)
+
+        XCTAssertEqual(aggregate.perDay.count, 3)
+        for (dayStart, day) in aggregate.perDay {
+            let daySamples = aggregate.samples.filter { cal.startOfDay(for: $0.completedAt) == dayStart }
+            XCTAssertFalse(daySamples.isEmpty, "每个日桶都应有同源样本（两查询 WHERE 与 cutoff 一致）")
+            XCTAssertEqual(
+                day.outputTokens, daySamples.reduce(0) { $0 + $1.outputTokens },
+                "日桶 output 必须等于该日样本行级分摊之和")
+            XCTAssertEqual(
+                day.reasoningTokens, daySamples.reduce(0) { $0 + $1.reasoningOutputTokens },
+                "日桶 reasoning 必须等于该日样本行级分摊之和")
+            // totalTokens 不变：对齐只改分桶，不改四桶合计
+            XCTAssertEqual(
+                day.totalTokens,
+                day.inputTokens + day.cacheReadTokens + day.outputTokens + day.reasoningTokens
+            )
+        }
+        // 今天精确值：行级累计 50/30（旧日级分摊会拆成 40/40）
+        let today = try XCTUnwrap(aggregate.perDay[day])
+        XCTAssertEqual(today.reasoningTokens, 50)
+        XCTAssertEqual(today.outputTokens, 30)
+        XCTAssertEqual(today.totalTokens, 280, "200 input + 80 output+reasoning（分摊守恒，total 不变）")
     }
 
     /// R9: 单行负 token 不能抵消其他行的合法正值；所有公开字段保持 0...Int.max。
